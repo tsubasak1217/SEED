@@ -40,6 +40,8 @@ pub mod rasterizer;
 pub mod sdf;
 /// テキスト寸法計算（GPU 非依存の純関数。描画とピックで共有する）
 pub mod text_layout;
+/// テキストの自動折り返し（枠幅に収める行分割・簡易禁則。GPU 非依存の純関数）
+pub mod text_wrap;
 
 use ab_glyph::{Font, InvalidFont, PxScale, ScaleFont};
 use wgpu::util::DeviceExt;
@@ -99,6 +101,39 @@ impl FontConfig {
 const NO_OUTLINE_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// 縁取り無しを表す SDF 距離（0 = シェーダー側で縁取りを無効化する）。
 const NO_OUTLINE_DIST: f32 = 0.0;
+
+/// グリフ 1 枚の陰影パラメータ（頂点属性として運ぶ値の束）。
+///
+/// 引数を並べると 8 個を超えて取り違えが起きるため、意味のある単位で束ねる。
+/// すべて「クアッド内で定数」なので 4 頂点へ同じ値を積む。
+#[derive(Clone, Copy, Debug)]
+pub struct GlyphShading {
+    /// 文字本体の色（RGBA 0..1）。
+    pub color: [f32; 4],
+    /// 縁取りの色（RGBA 0..1）。
+    pub outline_color: [f32; 4],
+    /// 縁取りの太さ（SDF テクスチャ単位。0 = 縁取りなし）。
+    pub outline_dist: f32,
+    /// 太さ調整（SDF テクスチャ単位。正で太く・負で細く。0 = フォント本来）。
+    pub weight_dist: f32,
+    /// 追加のスムース幅（SDF テクスチャ単位。影のぼかし。0 = シャープ）。
+    pub softness: f32,
+}
+
+impl GlyphShading {
+    /// 縁取り・太さ調整・ぼかしのいずれも無い、色だけの陰影を作る。
+    ///
+    /// ギズモ・操作ガイドなど「ただ文字を出す」経路が使う（従来挙動と同一）。
+    pub fn plain(color: [f32; 4]) -> Self {
+        Self {
+            color,
+            outline_color: NO_OUTLINE_COLOR,
+            outline_dist: NO_OUTLINE_DIST,
+            weight_dist: 0.0,
+            softness: 0.0,
+        }
+    }
+}
 
 /// CPU 側のテキスト描画バッチ。
 pub struct TextBatch {
@@ -162,9 +197,7 @@ impl TextBatch {
                 ],
                 info.uv_min,
                 info.uv_max,
-                color,
-                NO_OUTLINE_COLOR,
-                NO_OUTLINE_DIST,
+                &GlyphShading::plain(color),
             );
 
             pen_x += info.advance_px(font_size);
@@ -178,30 +211,25 @@ impl TextBatch {
     /// 呼び出し側が済ませている場合に使う（キャンバステキストが CPU で
     /// カメラ VP まで通した結果を積むための入口）。
     ///
-    /// - `outline_color`: 縁取りの色（RGBA）
-    /// - `outline_dist` : 縁取りの太さ（SDF テクスチャ単位。0 = 縁取りなし。
-    ///   `sdf::outline_px_to_sdf` で px から変換する）
+    /// - `shading`: 色・縁取り・太さ・ぼかし（`GlyphShading`。px からの変換は
+    ///   `sdf::outline_px_to_sdf` / `sdf::px_to_sdf` を使う）
     pub fn add_quad_ndc(
         &mut self,
         corners: [[f32; 3]; 4],
         uv_min: [f32; 2],
         uv_max: [f32; 2],
-        color: [f32; 4],
-        outline_color: [f32; 4],
-        outline_dist: f32,
+        shading: &GlyphShading,
     ) {
-        self.push_quad(corners, uv_min, uv_max, color, outline_color, outline_dist);
+        self.push_quad(corners, uv_min, uv_max, shading);
     }
 
-    /// 4 隅・UV・色からクアッドを積む共通処理（頂点順と索引の唯一の定義）。
+    /// 4 隅・UV・陰影からクアッドを積む共通処理（頂点順と索引の唯一の定義）。
     fn push_quad(
         &mut self,
         corners: [[f32; 3]; 4],
         uv_min: [f32; 2],
         uv_max: [f32; 2],
-        color: [f32; 4],
-        outline_color: [f32; 4],
-        outline_dist: f32,
+        shading: &GlyphShading,
     ) {
         let base = self.vertices.len() as u32;
         let uvs = [
@@ -214,9 +242,11 @@ impl TextBatch {
             self.vertices.push(TextVertex {
                 position,
                 uv,
-                color,
-                outline_color,
-                outline_dist,
+                color: shading.color,
+                outline_color: shading.outline_color,
+                outline_dist: shading.outline_dist,
+                weight_dist: shading.weight_dist,
+                softness: shading.softness,
             });
         }
         self.indices

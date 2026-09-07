@@ -19,10 +19,10 @@
 //  行幅・ブロック高さを先に測ってから `align` / `vertical_align` のオフセットを適用する。
 // ============================================================
 
-use super::sdf::outline_px_to_sdf;
-use super::text_layout::{TextLocalBox, layout_origin, line_base_x, measure_text_box};
-use super::{FontSystem, GpuTextBatch, TextBatch};
-use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS};
+use super::sdf::{outline_px_to_sdf, px_to_sdf};
+use super::text_layout::{ResolvedLayout, TextLayoutSpec, TextLocalBox, resolve_layout};
+use super::{FontSystem, GlyphShading, GpuTextBatch, TextBatch};
+use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign};
 
 // ─── CanvasTextItem ───────────────────────────────────────────
 
@@ -56,6 +56,49 @@ pub struct CanvasTextItem {
     pub outline_width: f32,
     /// 縁取りの色（RGBA 0..1）。
     pub outline_color: [f32; 4],
+    /// 枠の幅（キャンバスピクセル）。0 = 枠なし（従来どおり原点基準に置く）。
+    pub box_width: f32,
+    /// 枠の最小高さ（キャンバスピクセル）。実際の高さは内容高さとの大きいほう。
+    pub box_height: f32,
+    /// 枠幅での自動折り返しを行うか（`box_width > 0` のときのみ有効）。
+    pub wrap: bool,
+    /// 正規化ピボット（枠サイズに対する 0..1）。
+    ///
+    /// **枠なしのときは呼び出し側が `[0, 0]` を渡すこと**（従来挙動の維持）。
+    /// 枠ありでは `model` を pivot 無しで組み、ここでグリフ座標を平行移動する。
+    pub pivot: [f32; 2],
+    /// 文字の太さ（キャンバスピクセル。負で細く・正で太く）。
+    pub weight: f32,
+    /// ドロップシャドウのオフセット（キャンバスピクセル。X 右・Y 下）。
+    pub shadow_offset: [f32; 2],
+    /// ドロップシャドウの色（RGBA 0..1）。
+    pub shadow_color: [f32; 4],
+    /// ドロップシャドウのぼかし幅（キャンバスピクセル。0 = シャープ）。
+    pub shadow_softness: f32,
+}
+
+impl CanvasTextItem {
+    /// このアイテムのレイアウト条件を組み立てる。
+    ///
+    /// 描画（`append_item`）と計測（`CanvasTextRenderer::resolve_bounds`）が
+    /// 同じ条件を作れるよう、変換の定義はここ 1 箇所に置く。
+    pub fn layout_spec(&self) -> TextLayoutSpec {
+        TextLayoutSpec {
+            font_size: self.font_size,
+            line_spacing: self.line_spacing,
+            align: self.align,
+            vertical_align: self.vertical_align,
+            outline_width: self.outline_width,
+            box_width: self.box_width,
+            box_height: self.box_height,
+            wrap: self.wrap,
+        }
+    }
+
+    /// ドロップシャドウを描くか（オフセットがゼロ、または完全透明なら描かない）。
+    pub fn has_shadow(&self) -> bool {
+        (self.shadow_offset[0] != 0.0 || self.shadow_offset[1] != 0.0) && self.shadow_color[3] > 0.0
+    }
 }
 
 // ─── CanvasTextRenderer ───────────────────────────────────────
@@ -118,34 +161,23 @@ impl CanvasTextRenderer {
         self.font.build_gpu_batch(&batch, device)
     }
 
-    /// テキストの表示寸法（キャンバスローカル px の境界矩形）を測る。
+    /// テキストの表示寸法（キャンバスローカル px の境界矩形と pivot 基準サイズ）を測る。
     ///
-    /// 描画（`append_item`）と**同一のレイアウト規則**（`text_layout::measure_text_box`）を
+    /// 描画（`append_item`）と**同一のレイアウト規則**（`text_layout::resolve_layout`）を
     /// 使うため、ピックのヒット矩形・選択アウトラインが必ず見た目と一致する。
     /// フォントは `font_path` から解決する（未ロードならここで読み込まれ、
     /// 以降はレジストリのキャッシュが効く）。空文字・サイズ 0 は `None`。
-    #[allow(clippy::too_many_arguments)]
-    pub fn measure_text_box(
+    ///
+    /// 戻り値の 2 要素目は pivot を掛ける基準サイズ（枠なしは `[0, 0]` ＝ pivot 無効）。
+    pub fn resolve_bounds(
         &mut self,
         text: &str,
-        font_size: f32,
-        line_spacing: f32,
-        align: TextAlign,
-        vertical_align: TextVerticalAlign,
+        spec: &TextLayoutSpec,
         font_path: &str,
-        outline_width: f32,
-    ) -> Option<TextLocalBox> {
+    ) -> Option<(TextLocalBox, [f32; 2])> {
         let font_id = self.font.registry.font_id(font_path);
         let font = self.font.registry.font(font_id);
-        measure_text_box(
-            font,
-            text,
-            font_size,
-            line_spacing,
-            align,
-            vertical_align,
-            outline_width,
-        )
+        resolve_layout(font, text, spec).map(|r| (r.bounds, r.pivot_size))
     }
 
     /// 焼いたバッチをレンダーパスへ描画する。
@@ -160,87 +192,90 @@ impl CanvasTextRenderer {
     // ── 内部: 1 アイテム分の頂点生成 ─────────────────────────
 
     /// 1 つの `CanvasTextItem` をバッチへ追加する。
+    ///
+    /// 手順は「レイアウト解決 → 行ごとのグリフ準備 → 影を描く → 本体を描く」。
+    /// 影と本体はまったく同じグリフ列を平行移動して描くため、
+    /// **アイテム単位で影を全部描いてから本体を描く**（グリフ単位で交互に積むと
+    /// 隣の文字の本体の上へ次の文字の影が乗ってしまう）。
     fn append_item(
         &mut self,
         batch: &mut TextBatch,
         item: &CanvasTextItem,
         view_proj: &[[f32; 4]; 4],
     ) {
-        // 空文字・非表示（完全透明）・サイズ 0 は頂点を作らない。
-        if item.text.is_empty() || item.font_size <= 0.0 || item.color[3] <= 0.0 {
+        // 空文字・サイズ 0 は頂点を作らない。
+        // 本体が完全透明でも、影が見えるなら描く必要がある。
+        let draw_body = item.color[3] > 0.0;
+        let draw_shadow = item.has_shadow();
+        if item.text.is_empty() || item.font_size <= 0.0 || (!draw_body && !draw_shadow) {
             return;
         }
 
-        // 描画上限で切り詰める（暴走した文字列でフレームを潰さないため）。
-        let text: String = if item.text.chars().count() > MAX_TEXT_CHARS {
-            item.text.chars().take(MAX_TEXT_CHARS).collect()
-        } else {
-            item.text.clone()
+        // レイアウト解決。フォント実体は clone（Arc）して借用衝突を避ける
+        // （このあと `self.font` を可変借用してグリフをアトラスへ登録するため）。
+        let font_id = self.font.registry.font_id(&item.font_path);
+        let font = self.font.registry.font(font_id).clone();
+        let spec = item.layout_spec();
+        let Some(layout) = resolve_layout(&font, &item.text, &spec) else {
+            return;
         };
 
-        // 行ごとにグリフを準備し、同時に行幅を測る。
+        // 行ごとにグリフを準備する（範囲は resolve_layout が決めた行分割）。
         // `prepare_glyphs` はアウトラインを持たない文字（スペース等）を返さないため、
         // 送り幅はフォントから別途取得して補う（さもないと空白が詰まる）。
-        let mut lines: Vec<LineLayout> = Vec::new();
-        for raw_line in text.split('\n') {
-            lines.push(self.layout_line(raw_line, item.font_size, &item.font_path));
-        }
-        if lines.is_empty() {
-            return;
+        let mut lines: Vec<LineLayout> = Vec::with_capacity(layout.lines.len());
+        for wrapped in &layout.lines {
+            let text = layout.text[wrapped.range.clone()].to_string();
+            lines.push(self.layout_line(&text, item.font_size, &item.font_path));
         }
 
-        // 縁取りの太さ（px）を SDF テクスチャ単位へ 1 度だけ変換する
-        // （グリフごとに計算しても同じ値なので外へ括り出す）。
+        // px → SDF テクスチャ単位の変換は 1 度だけ行う（グリフごとに同じ値）。
         let outline_dist = outline_px_to_sdf(item.outline_width, item.font_size);
+        let weight_dist = px_to_sdf(item.weight, item.font_size);
 
-        // レイアウト原点は計測（measure_text_box）と**同じ関数**から得る。
-        // ここを各々で計算すると選択枠・ピック矩形が字とズレる。
-        let origin = layout_origin(
-            item.font_size,
-            item.line_spacing,
-            lines.len(),
-            item.vertical_align,
-        );
+        // 枠ありのときだけ pivot がローカル平行移動として効く（枠なしは [0,0]）。
+        let pivot_offset = layout.pivot_offset(item.pivot);
 
-        for (row, line) in lines.iter().enumerate() {
-            // 水平方向オフセット（行ごとに幅が違うので行単位で計算する）。
-            let base_x = line_base_x(item.align, line.width);
-            // ペン Y は当該行の**ベースライン**。GlyphInfo.bearing[1] は
-            // ベースラインからクアッド左上へのオフセット（上向きが負）なので
-            // そのまま足せる。
-            let pen_y = origin.first_baseline_y + origin.line_step * row as f32;
-            let mut pen_x = base_x;
+        // ── 影（本体より先に積む＝下へ回る）──
+        if draw_shadow {
+            let mut shadow = GlyphShading::plain(item.shadow_color);
+            // 影も本体と同じ太さで抜く（太くした文字の影だけ細いと不自然になる）。
+            shadow.weight_dist = weight_dist;
+            shadow.softness = px_to_sdf(item.shadow_softness, item.font_size);
+            emit_glyph_quads(
+                batch,
+                &layout,
+                &lines,
+                [
+                    pivot_offset[0] + item.shadow_offset[0],
+                    pivot_offset[1] + item.shadow_offset[1],
+                ],
+                item.font_size,
+                &shadow,
+                &item.model,
+                view_proj,
+            );
+        }
 
-            for placed in &line.glyphs {
-                let advance = placed.advance;
-                if let Some(info) = placed.info {
-                    // キャンバスローカル（px）でのクアッド 4 隅。
-                    // メトリクスは em 単位なのでフォントサイズを掛けて px にする。
-                    let bearing = info.bearing_px(item.font_size);
-                    let size = info.size_px(item.font_size);
-                    let x0 = pen_x + bearing[0];
-                    let y0 = pen_y + bearing[1];
-                    let x1 = x0 + size[0];
-                    let y1 = y0 + size[1];
-
-                    // 4 隅を NDC へ変換する。1 頂点でもクリップ外（w<=0）なら
-                    // このグリフごと捨てる（カメラ背後の 3D キャンバス対策）。
-                    let Some(p00) = project(x0, y0, &item.model, view_proj) else { pen_x += advance; continue };
-                    let Some(p10) = project(x1, y0, &item.model, view_proj) else { pen_x += advance; continue };
-                    let Some(p11) = project(x1, y1, &item.model, view_proj) else { pen_x += advance; continue };
-                    let Some(p01) = project(x0, y1, &item.model, view_proj) else { pen_x += advance; continue };
-
-                    batch.add_quad_ndc(
-                        [p00, p10, p11, p01],
-                        [info.uv_min[0], info.uv_min[1]],
-                        [info.uv_max[0], info.uv_max[1]],
-                        item.color,
-                        item.outline_color,
-                        outline_dist,
-                    );
-                }
-                pen_x += advance;
-            }
+        // ── 本体 ──
+        if draw_body {
+            let body = GlyphShading {
+                color: item.color,
+                outline_color: item.outline_color,
+                outline_dist,
+                weight_dist,
+                softness: 0.0,
+            };
+            emit_glyph_quads(
+                batch,
+                &layout,
+                &lines,
+                pivot_offset,
+                item.font_size,
+                &body,
+                &item.model,
+                view_proj,
+            );
         }
     }
 
@@ -290,6 +325,67 @@ struct LineLayout {
     glyphs: Vec<PlacedGlyph>,
     /// 行の総幅（px。整列計算に使う）。
     width: f32,
+}
+
+// ─── グリフクアッドの生成（影・本体で共有）─────────────────────
+
+/// 解決済みレイアウトと準備済みグリフから、クアッド列をバッチへ積む。
+///
+/// 影と本体はまったく同じ形状を「オフセットと陰影だけ変えて」描くため、
+/// この 1 本を 2 回呼ぶ形にして式の二重定義を避ける。
+///
+/// - `offset`  : すべてのグリフへ一様に足すローカル平行移動（px）。
+///   pivot ぶんの移動と、影のオフセットがここに合流する。
+/// - `shading` : 色・縁取り・太さ・ぼかし（クアッド内で定数）。
+#[allow(clippy::too_many_arguments)]
+fn emit_glyph_quads(
+    batch: &mut TextBatch,
+    layout: &ResolvedLayout,
+    lines: &[LineLayout],
+    offset: [f32; 2],
+    font_size: f32,
+    shading: &GlyphShading,
+    model: &[[f32; 4]; 4],
+    view_proj: &[[f32; 4]; 4],
+) {
+    for (row, line) in lines.iter().enumerate() {
+        // 水平方向の開始 X（行ごとに幅が違うので行単位で決まっている）。
+        let base_x = layout.base_x[row] + offset[0];
+        // ペン Y は当該行の**ベースライン**。GlyphInfo.bearing[1] は
+        // ベースラインからクアッド左上へのオフセット（上向きが負）なので
+        // そのまま足せる。
+        let pen_y = layout.first_baseline_y + layout.line_step * row as f32 + offset[1];
+        let mut pen_x = base_x;
+
+        for placed in &line.glyphs {
+            let advance = placed.advance;
+            if let Some(info) = placed.info {
+                // キャンバスローカル（px）でのクアッド 4 隅。
+                // メトリクスは em 単位なのでフォントサイズを掛けて px にする。
+                let bearing = info.bearing_px(font_size);
+                let size = info.size_px(font_size);
+                let x0 = pen_x + bearing[0];
+                let y0 = pen_y + bearing[1];
+                let x1 = x0 + size[0];
+                let y1 = y0 + size[1];
+
+                // 4 隅を NDC へ変換する。1 頂点でもクリップ外（w<=0）なら
+                // このグリフごと捨てる（カメラ背後の 3D キャンバス対策）。
+                let Some(p00) = project(x0, y0, model, view_proj) else { pen_x += advance; continue };
+                let Some(p10) = project(x1, y0, model, view_proj) else { pen_x += advance; continue };
+                let Some(p11) = project(x1, y1, model, view_proj) else { pen_x += advance; continue };
+                let Some(p01) = project(x0, y1, model, view_proj) else { pen_x += advance; continue };
+
+                batch.add_quad_ndc(
+                    [p00, p10, p11, p01],
+                    [info.uv_min[0], info.uv_min[1]],
+                    [info.uv_max[0], info.uv_max[1]],
+                    shading,
+                );
+            }
+            pen_x += advance;
+        }
+    }
 }
 
 // ─── 座標変換 ─────────────────────────────────────────────────

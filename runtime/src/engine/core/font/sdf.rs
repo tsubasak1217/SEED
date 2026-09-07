@@ -49,6 +49,22 @@ pub const MAX_OUTLINE_SDF: f32 = 0.5;
 /// 返り値は「エッジ(0.5) から外側へ何テクスチャ単位ぶん広げるか」。
 /// 0.5 = スプレッド一杯（これ以上太くできない上限）。
 /// `font_size <= 0` や `width <= 0` は 0（＝縁取りなし）を返す。
+/// 任意の px 量を SDF テクスチャ単位へ変換する（**符号つき**）。
+///
+/// - `px`           : 変換したい距離（負値も許す）
+/// - `font_size_px` : そのテキストのフォントサイズ（px）
+///
+/// 文字の太さ調整（負 = 細く / 正 = 太く）と、影のぼかし幅に使う。
+/// 焼いてある距離場の範囲（±`MAX_OUTLINE_SDF`）で頭打ちにするのは
+/// `outline_px_to_sdf` と同じ理由（それ以上は距離が存在しない）。
+/// `font_size <= 0` は 0 を返す（0 除算回避）。
+pub fn px_to_sdf(px: f32, font_size_px: f32) -> f32 {
+    if font_size_px <= 0.0 {
+        return 0.0;
+    }
+    ((px / font_size_px) / SDF_RANGE_EM).clamp(-MAX_OUTLINE_SDF, MAX_OUTLINE_SDF)
+}
+
 pub fn outline_px_to_sdf(outline_width_px: f32, font_size_px: f32) -> f32 {
     // 太さ 0 以下・サイズ 0 以下は縁取り無し（0 除算も避ける）。
     if outline_width_px <= 0.0 || font_size_px <= 0.0 {
@@ -97,5 +113,18 @@ mod tests {
         let expect = (w / fs) / SDF_RANGE_EM;
         assert!(expect < MAX_OUTLINE_SDF, "テスト値がクランプ域に入っている");
         assert!((outline_px_to_sdf(w, fs) - expect).abs() < 1e-6);
+    }
+
+    /// 符号つき変換は 0 で 0、正負対称、スプレッド上限で頭打ちになる。
+    #[test]
+    fn px_to_sdf_is_signed_and_clamped() {
+        assert_eq!(px_to_sdf(0.0, 24.0), 0.0);
+        assert_eq!(px_to_sdf(1.0, 0.0), 0.0, "サイズ 0 は 0");
+        let a = px_to_sdf(2.0, 40.0);
+        let b = px_to_sdf(-2.0, 40.0);
+        assert!((a + b).abs() < 1e-6, "正負対称");
+        // 0.125em（= スプレッド）を超えると ±0.5 で頭打ち。
+        assert!((px_to_sdf(1000.0, 40.0) - MAX_OUTLINE_SDF).abs() < 1e-6);
+        assert!((px_to_sdf(-1000.0, 40.0) + MAX_OUTLINE_SDF).abs() < 1e-6);
     }
 }

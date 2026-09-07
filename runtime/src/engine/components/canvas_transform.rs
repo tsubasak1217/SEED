@@ -185,6 +185,28 @@ impl CanvasTransform {
     pub fn to_mesh_mat4(&self, scale_x: f32, scale_y: f32) -> [[f32; 4]; 4] {
         self.to_sprite_mat4(scale_x, scale_y)
     }
+
+    /// `to_mesh_mat4` から **pivot の効果だけを外した**ローカル行列を返す。
+    ///
+    /// # なぜ必要か
+    /// `to_mesh_mat4` の pivot は「メッシュローカルのピクセルオフセット」として
+    /// 効く（`pivot * scale`）。これは頂点が実寸を持つスキンメッシュ向けの規約で、
+    /// 「コンテンツサイズに対する正規化 pivot」という Sprite 側の規約とは意味が違う。
+    ///
+    /// 枠つきテキストは Sprite と同じ「枠サイズに対する正規化 pivot」を使いたいので、
+    /// 行列側では pivot を一切効かせず（この関数）、枠サイズを知っている
+    /// レイアウト側（`ResolvedLayout::pivot_offset`）でローカル平行移動として適用する。
+    /// こうすると行列を組む側がフォントを測る必要が無くなる。
+    ///
+    /// `to_mesh_mat4` のセマンティクスは変更しない（`SkinnedSprite` が共有しているため）。
+    #[inline]
+    pub fn to_mesh_mat4_no_pivot(&self, scale_x: f32, scale_y: f32) -> [[f32; 4]; 4] {
+        Self {
+            pivot: [0.0, 0.0],
+            ..self.clone()
+        }
+        .to_sprite_mat4(scale_x, scale_y)
+    }
 }
 
 impl Default for CanvasTransform {
@@ -204,3 +226,49 @@ impl Default for CanvasTransform {
 }
 
 impl Component for CanvasTransform {}
+
+// ============================================================
+//  単体テスト（行列は純粋計算なので GPU 不要）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `to_mesh_mat4_no_pivot` は pivot だけを無視し、他成分は `to_mesh_mat4` と一致する。
+    #[test]
+    fn mesh_mat4_no_pivot_ignores_pivot_only() {
+        let ct = CanvasTransform {
+            position: [10.0, 20.0],
+            rotation: 30.0,
+            scale: [2.0, 3.0],
+            pivot: [0.5, 1.0],
+            ..CanvasTransform::default()
+        };
+        let with_pivot = ct.to_mesh_mat4(1.0, 1.0);
+        let without = ct.to_mesh_mat4_no_pivot(1.0, 1.0);
+        // 基底（回転・スケール）は完全一致する。
+        for row in 0..2 {
+            for col in 0..2 {
+                assert!((with_pivot[row][col] - without[row][col]).abs() < 1e-5);
+            }
+        }
+        // 平行移動は pivot を外したぶんだけ違う（＝ pivot 無しは position そのもの）。
+        assert!((without[0][3] - 10.0).abs() < 1e-5);
+        assert!((without[1][3] - 20.0).abs() < 1e-5);
+        assert!((with_pivot[0][3] - without[0][3]).abs() > 1e-3);
+    }
+
+    /// pivot がゼロなら両者は完全一致する（枠なしテキストの従来経路が変わらないことの保証）。
+    #[test]
+    fn zero_pivot_matrices_are_identical() {
+        let ct = CanvasTransform {
+            position: [-4.0, 7.5],
+            rotation: -15.0,
+            scale: [1.5, 0.5],
+            pivot: [0.0, 0.0],
+            ..CanvasTransform::default()
+        };
+        assert_eq!(ct.to_mesh_mat4(2.0, 3.0), ct.to_mesh_mat4_no_pivot(2.0, 3.0));
+    }
+}

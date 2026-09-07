@@ -428,6 +428,19 @@ pub(super) fn text_box_unit_quad_mat(min: [f32; 2], max: [f32; 2]) -> Option<[[f
     ])
 }
 
+/// ID パス（GPU ピッキング）へ積む Text 1 件ぶんの情報。
+///
+/// 枠モードのテキストは pivot を行列側で効かせてはいけないため、
+/// 「どちらの行列を使うか」を呼び出し側へ伝える必要がある。
+pub(super) struct TextIdItem {
+    /// ユニットクワッド [0,1]^2 を実測枠へ写すローカル行列（行優先）。
+    pub local_box_mat: [[f32; 4]; 4],
+    /// 描画レイヤー（大きいほど手前）。
+    pub layer: i32,
+    /// 変換行列に pivot を効かせてはいけないか（枠モード）。
+    pub zero_pivot: bool,
+}
+
 /// アクターの Text スロットから ID パス用の「ローカル枠行列 + レイヤー」を求める。
 ///
 /// 2D（`collect_canvas_id_items`）と 3D ワールドキャンバス（`walk_3d_canvas_children_id`）で
@@ -443,7 +456,7 @@ pub(super) fn text_id_item_local(
     actor: &Actor,
     world: &World,
     text_bounds: &TextBoundsMap,
-) -> Option<([[f32; 4]; 4], i32)> {
+) -> Option<TextIdItem> {
     for slot in actor.slots() {
         if slot.kind != ComponentKind::Text || !slot.enabled {
             continue;
@@ -454,10 +467,14 @@ pub(super) fn text_id_item_local(
         let Some(bx) = text_bounds.get(&slot.entity) else {
             continue;
         };
-        let Some(m) = text_box_unit_quad_mat(bx.min, bx.max) else {
+        let Some(m) = text_box_unit_quad_mat(bx.local.min, bx.local.max) else {
             continue;
         };
-        return Some((m, tc.layer));
+        return Some(TextIdItem {
+            local_box_mat: m,
+            layer: tc.layer,
+            zero_pivot: bx.zero_pivot,
+        });
     }
     None
 }
@@ -896,6 +913,22 @@ pub(super) fn collect_sprite_items(
                 if tc.content.is_empty() {
                     continue;
                 }
+                // 枠モード（box_width > 0）は pivot を行列で効かせず、
+                // グリフ座標側（CanvasTextItem::pivot）で平行移動する。
+                // こうすると行列がフォント寸法に依存しなくなる。
+                let has_box = tc.box_width > 0.0;
+                let text_model = if has_box {
+                    canvas_mat_to_gpu(
+                        mat4x4_mul(
+                            parent_world_rs,
+                            eff_ct.to_mesh_mat4_no_pivot(size_scale_x, size_scale_y),
+                        ),
+                        canvas_scale,
+                        y_sign,
+                    )
+                } else {
+                    node_mesh_gpu_mat
+                };
                 text_out.push(CanvasTextItem {
                     text: tc.content.clone(),
                     // フォントサイズは**素の値**を渡す。キャンバスの拡縮
@@ -906,7 +939,7 @@ pub(super) fn collect_sprite_items(
                     align: tc.align,
                     vertical_align: tc.vertical_align,
                     line_spacing: tc.line_spacing,
-                    model: node_mesh_gpu_mat,
+                    model: text_model,
                     zone: my_zone,
                     layer: tc.layer,
                     // フォント指定と縁取りはコンポーネントの値をそのまま渡す
@@ -914,6 +947,17 @@ pub(super) fn collect_sprite_items(
                     font_path: tc.font_path.clone(),
                     outline_width: tc.outline_width,
                     outline_color: tc.outline_color,
+                    // 枠・折り返し（0 = 枠なし = 従来レイアウト）
+                    box_width: tc.box_width,
+                    box_height: tc.box_height,
+                    wrap: tc.wrap,
+                    // 枠なしのときは pivot を渡さない（従来どおり pivot 無効）
+                    pivot: if has_box { eff_ct.pivot } else { [0.0, 0.0] },
+                    // SDF の太さとドロップシャドウ
+                    weight: tc.weight,
+                    shadow_offset: [tc.shadow_offset_x, tc.shadow_offset_y],
+                    shadow_color: tc.shadow_color,
+                    shadow_softness: tc.shadow_softness,
                 });
             }
 
@@ -1289,9 +1333,14 @@ pub(super) fn collect_canvas_rects(
                         const TEXT_OUTLINE_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
                         // グリフは実寸 px で組まれるため、スプライトではなくメッシュ用
                         // 変換連鎖（to_mesh_mat4）を使う（描画・ピックと同一）。
+                        // 枠モードは pivot を矩形側へ焼き込み済みなので行列は pivot 無し。
                         let m = mat4x4_mul(
                             parent_world_rs,
-                            eff_ct.to_mesh_mat4(size_sc_x, size_sc_y),
+                            if bx.zero_pivot {
+                                eff_ct.to_mesh_mat4_no_pivot(size_sc_x, size_sc_y)
+                            } else {
+                                eff_ct.to_mesh_mat4(size_sc_x, size_sc_y)
+                            },
                         );
                         let csy_t = canvas_scale * y_sign;
                         let tp = |lx: f32, ly: f32| -> [f32; 3] {
@@ -1304,10 +1353,10 @@ pub(super) fn collect_canvas_rects(
                         add_thick_rect(
                             lb,
                             [
-                                tp(bx.min[0], bx.min[1]),
-                                tp(bx.max[0], bx.min[1]),
-                                tp(bx.max[0], bx.max[1]),
-                                tp(bx.min[0], bx.max[1]),
+                                tp(bx.local.min[0], bx.local.min[1]),
+                                tp(bx.local.max[0], bx.local.min[1]),
+                                tp(bx.local.max[0], bx.local.max[1]),
+                                tp(bx.local.min[0], bx.local.max[1]),
                             ],
                             TEXT_OUTLINE_COL,
                             OUTLINE_RINGS_THICK,
@@ -1666,10 +1715,17 @@ pub(super) fn collect_canvas_id_items(
                 // ユニットクワッドを枠へ一致させる（tex_path=None → 白フォールバックで
                 // 枠全面が alpha=1 ＝ 文字の隙間でも掴める）。
                 if gpu_mat_and_path.is_none() {
-                    if let Some((box_mat, layer)) = text_id_item_local(actor, world, text_bounds) {
+                    if let Some(item) = text_id_item_local(actor, world, text_bounds) {
+                        // 枠モードは pivot を枠矩形へ焼き込み済み＝行列側は pivot 無し。
+                        let node = if item.zero_pivot {
+                            eff_ct.to_mesh_mat4_no_pivot(id_sc_x, id_sc_y)
+                        } else {
+                            eff_ct.to_mesh_mat4(id_sc_x, id_sc_y)
+                        };
+                        let layer = item.layer;
                         let tw = mat4x4_mul(
-                            mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(id_sc_x, id_sc_y)),
-                            box_mat,
+                            mat4x4_mul(parent_world_rs, node),
+                            item.local_box_mat,
                         );
                         gpu_mat_and_path = Some((
                             [
@@ -2119,14 +2175,17 @@ fn walk_3d_canvas_children_id(
             // スプライト系が無いアクターのみテキストをピック対象にする
             // （2D の collect_canvas_id_items と同一の優先規約・同一の枠形状）。
             if !pushed {
-                if let Some((box_mat, layer)) = text_id_item_local(actor, world, text_bounds) {
+                if let Some(item) = text_id_item_local(actor, world, text_bounds) {
                     // to_mesh_mat4（実寸 px ローカル）→ 枠のユニットクワッド化 の順に掛ける
-                    let sw = mat4x4_mul(
-                        mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y)),
-                        box_mat,
-                    );
+                    // 枠モードは pivot を枠矩形へ焼き込み済み＝行列側は pivot 無し。
+                    let node = if item.zero_pivot {
+                        eff_ct.to_mesh_mat4_no_pivot(size_sc_x, size_sc_y)
+                    } else {
+                        eff_ct.to_mesh_mat4(size_sc_x, size_sc_y)
+                    };
+                    let sw = mat4x4_mul(mat4x4_mul(parent_world_rs, node), item.local_box_mat);
                     // テクスチャなし = 白フォールバック（枠全面 alpha=1）
-                    out.push((mc_total + my_dfs + 1, to_gpu_mat(sw), None, None, layer));
+                    out.push((mc_total + my_dfs + 1, to_gpu_mat(sw), None, None, item.layer));
                 }
             }
 
@@ -3023,6 +3082,18 @@ mod tests {
     /// テスト用テキストの描画レイヤー。
     const TEXT_LAYER: i32 = 7;
 
+    /// テスト用の実測結果を組み立てるヘルパ。
+    fn text_bounds(
+        min: [f32; 2],
+        max: [f32; 2],
+        zero_pivot: bool,
+    ) -> super::super::canvas_text_bounds::TextBounds {
+        super::super::canvas_text_bounds::TextBounds {
+            local: crate::engine::core::font::text_layout::TextLocalBox { min, max },
+            zero_pivot,
+        }
+    }
+
     /// Text スロットを 1 つ持つ 2D アクターを作り、(アクター, スロット entity) を返す。
     fn make_text_actor(world: &mut World, name: &str) -> (Actor, Entity) {
         let entity = world.spawn();
@@ -3048,17 +3119,13 @@ mod tests {
         let mut world = World::new();
         let (actor, slot) = make_text_actor(&mut world, "Label");
         let mut bounds = TextBoundsMap::new();
-        bounds.insert(
-            slot,
-            crate::engine::core::font::text_layout::TextLocalBox {
-                min: TEXT_BOX_MIN,
-                max: TEXT_BOX_MAX,
-            },
-        );
+        bounds.insert(slot, text_bounds(TEXT_BOX_MIN, TEXT_BOX_MAX, false));
 
-        let (m, layer) =
+        let item =
             text_id_item_local(&actor, &world, &bounds).expect("実測枠があれば ID アイテムが出る");
+        let (m, layer) = (item.local_box_mat, item.layer);
         assert_eq!(layer, TEXT_LAYER, "レイヤーは TextComponent のものを使う");
+        assert!(!item.zero_pivot, "枠なしテキストは従来どおり pivot 付き行列を使う");
         // ユニットクワッドの (0,0) → 枠の min、(1,1) → 枠の max
         let apply = |u: f32, v: f32| -> [f32; 2] {
             [
@@ -3087,13 +3154,7 @@ mod tests {
         let mut world = World::new();
         let (actor, slot) = make_text_actor(&mut world, "Empty");
         let mut bounds = TextBoundsMap::new();
-        bounds.insert(
-            slot,
-            crate::engine::core::font::text_layout::TextLocalBox {
-                min: [0.0, 0.0],
-                max: [0.0, 24.0],
-            },
-        );
+        bounds.insert(slot, text_bounds([0.0, 0.0], [0.0, 24.0], false));
         assert!(text_id_item_local(&actor, &world, &bounds).is_none());
     }
 
@@ -3104,13 +3165,19 @@ mod tests {
         let (mut actor, slot) = make_text_actor(&mut world, "Hidden");
         actor.slots_mut()[0].enabled = false;
         let mut bounds = TextBoundsMap::new();
-        bounds.insert(
-            slot,
-            crate::engine::core::font::text_layout::TextLocalBox {
-                min: TEXT_BOX_MIN,
-                max: TEXT_BOX_MAX,
-            },
-        );
+        bounds.insert(slot, text_bounds(TEXT_BOX_MIN, TEXT_BOX_MAX, false));
         assert!(text_id_item_local(&actor, &world, &bounds).is_none());
+    }
+
+    /// 枠モードの実測結果は `zero_pivot = true` として ID アイテムへ伝わる
+    /// （呼び出し側が pivot 無しの行列を選ぶための唯一の手掛かり）。
+    #[test]
+    fn boxed_text_requests_zero_pivot_matrix() {
+        let mut world = World::new();
+        let (actor, slot) = make_text_actor(&mut world, "Boxed");
+        let mut bounds = TextBoundsMap::new();
+        bounds.insert(slot, text_bounds(TEXT_BOX_MIN, TEXT_BOX_MAX, true));
+        let item = text_id_item_local(&actor, &world, &bounds).expect("ID アイテムが出る");
+        assert!(item.zero_pivot);
     }
 }

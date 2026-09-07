@@ -14,32 +14,47 @@
 //
 //  【座標系】
 //  値はアクターのキャンバスローカル px（原点 = アクター位置、X 右・Y 下）。
-//  スプライトと同じ `to_mesh_mat4` チェーンでキャンバス空間へ写して使う。
+//
+//  【pivot の扱い（重要）】
+//  枠あり（`box_width > 0`）のテキストは pivot が Sprite と同じ意味を持つ。
+//  描画側は「pivot 無しの行列 + グリフ座標の平行移動」で実現しているので、
+//  ここで返す矩形も**同じ平行移動を適用済み**にし、
+//  `zero_pivot = true` を立てて「行列は `to_mesh_mat4_no_pivot` を使え」と伝える。
+//  枠なしは従来どおり（pivot は行列側でも無効なので何もしない）。
 // ============================================================
 
 use std::collections::HashMap;
 
-use crate::engine::components::{ComponentKind, TextComponent};
-use crate::engine::core::font::text_layout::TextLocalBox;
+use crate::engine::components::{CanvasTransform, ComponentKind, TextComponent};
+use crate::engine::core::font::text_layout::{TextLayoutSpec, TextLocalBox};
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 
 use super::App;
 
-/// Text スロット entity → テキストのローカル境界矩形。
-pub(super) type TextBoundsMap = HashMap<Entity, TextLocalBox>;
+/// 1 つの Text スロットの実測結果。
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TextBounds {
+    /// ローカル境界矩形（枠ありのときは pivot ぶんの平行移動を**適用済み**）。
+    pub local: TextLocalBox,
+    /// 変換行列に pivot を効かせてはいけないか（＝枠モードか）。
+    ///
+    /// `true` の呼び出し側は `CanvasTransform::to_mesh_mat4_no_pivot` を使うこと。
+    pub zero_pivot: bool,
+}
+
+/// Text スロット entity → テキストの実測結果。
+pub(super) type TextBoundsMap = HashMap<Entity, TextBounds>;
 
 /// 実測に必要な 1 スロットぶんのパラメータ（シーン借用を閉じるための中間表現）。
 struct TextMeasureReq {
     slot_entity: Entity,
     content: String,
-    font_size: f32,
-    line_spacing: f32,
-    align: crate::engine::components::TextAlign,
-    vertical_align: crate::engine::components::TextVerticalAlign,
     font_path: String,
-    /// 縁取りの太さ（px）。枠は縁取りぶんだけ外へ広がるので計測に渡す。
-    outline_width: f32,
+    /// レイアウト条件（サイズ・整列・縁取り・枠・折り返し）。
+    spec: TextLayoutSpec,
+    /// 所属アクターの正規化ピボット（枠ありのときだけ効く）。
+    pivot: [f32; 2],
 }
 
 impl App {
@@ -62,17 +77,26 @@ impl App {
             return map;
         };
         for r in reqs {
-            if let Some(bx) = renderer.measure_text_box(
-                &r.content,
-                r.font_size,
-                r.line_spacing,
-                r.align,
-                r.vertical_align,
-                &r.font_path,
-                r.outline_width,
-            ) {
-                map.insert(r.slot_entity, bx);
-            }
+            let Some((bx, pivot_size)) = renderer.resolve_bounds(&r.content, &r.spec, &r.font_path)
+            else {
+                continue;
+            };
+            // 枠ありのみ pivot を矩形へ焼き込む（描画側の平行移動と同じ式）。
+            let (dx, dy) = if r.spec.has_box() {
+                (-r.pivot[0] * pivot_size[0], -r.pivot[1] * pivot_size[1])
+            } else {
+                (0.0, 0.0)
+            };
+            map.insert(
+                r.slot_entity,
+                TextBounds {
+                    local: TextLocalBox {
+                        min: [bx.min[0] + dx, bx.min[1] + dy],
+                        max: [bx.max[0] + dx, bx.max[1] + dy],
+                    },
+                    zero_pivot: r.spec.has_box(),
+                },
+            );
         }
         map
     }
@@ -88,6 +112,11 @@ fn collect_text_reqs(
     world: &crate::engine::ecs::World,
     out: &mut Vec<TextMeasureReq>,
 ) {
+    // pivot はアクターのルートに直付けされた CanvasTransform が持つ。
+    let pivot = world
+        .get::<CanvasTransform>(actor.entity)
+        .map(|ct| ct.pivot)
+        .unwrap_or([0.0, 0.0]);
     for slot in actor.slots() {
         if slot.kind != ComponentKind::Text {
             continue;
@@ -98,12 +127,18 @@ fn collect_text_reqs(
         out.push(TextMeasureReq {
             slot_entity: slot.entity,
             content: tc.content.clone(),
-            font_size: tc.font_size,
-            line_spacing: tc.line_spacing,
-            align: tc.align,
-            vertical_align: tc.vertical_align,
             font_path: tc.font_path.clone(),
-            outline_width: tc.outline_width,
+            spec: TextLayoutSpec {
+                font_size: tc.font_size,
+                line_spacing: tc.line_spacing,
+                align: tc.align,
+                vertical_align: tc.vertical_align,
+                outline_width: tc.outline_width,
+                box_width: tc.box_width,
+                box_height: tc.box_height,
+                wrap: tc.wrap,
+            },
+            pivot,
         });
     }
     for child in actor.children() {

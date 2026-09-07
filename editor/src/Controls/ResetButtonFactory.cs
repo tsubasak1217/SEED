@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -33,11 +33,34 @@ internal static class ResetButtonFactory
     /// <summary>ボタン枠線色。</summary>
     private static readonly Color BorderColor = Color.FromRgb(0x44, 0x44, 0x44);
 
+    /// <summary>ボタン内側の左右余白（px）。記号が中央に見える値。</summary>
+    private const double ContentPaddingX = 5;
+
+    /// <summary>ボタン内側の下余白（px）。</summary>
+    private const double ContentPaddingBottom = 1;
+
+    /// <summary>ボタン枠線の太さ（px）。</summary>
+    private const double BorderThicknessPx = 1;
+
+    /// <summary>行本体とボタンの間隔（px）。</summary>
+    private const double OuterMarginLeft = 4;
+
     /// <summary>ボタン内側の余白（左右 5・下 1 で記号が中央に見える値）。</summary>
-    private static readonly Thickness ContentPadding = new(5, 0, 5, 1);
+    private static readonly Thickness ContentPadding =
+        new(ContentPaddingX, 0, ContentPaddingX, ContentPaddingBottom);
 
     /// <summary>行本体との間隔。</summary>
-    private static readonly Thickness OuterMargin = new(4, 0, 0, 0);
+    private static readonly Thickness OuterMargin = new(OuterMarginLeft, 0, 0, 0);
+
+    /// <summary>
+    /// 行の右端でこのボタンが占める幅（px。左側の間隔を含む）。
+    ///
+    /// ⟲ ボタンを持たない行（複数行の TextBox など）へ同じ右余白を空けて、
+    /// 入力欄の右端を他の行とそろえるために使う。
+    /// 定数を各所へ書き写すとボタンのサイズ変更時にずれるため、ここから引くこと。
+    /// </summary>
+    internal const double ReservedRowWidth =
+        IconSize + ContentPaddingX * 2 + BorderThicknessPx * 2 + OuterMarginLeft;
 
     /// <summary>
     /// 「デフォルトに戻す」ボタンを 1 個生成する。
@@ -52,7 +75,7 @@ internal static class ResetButtonFactory
             Background        = new SolidColorBrush(BackgroundColor),
             Foreground        = new SolidColorBrush(ForegroundColor),
             BorderBrush       = new SolidColorBrush(BorderColor),
-            BorderThickness   = new Thickness(1),
+            BorderThickness   = new Thickness(BorderThicknessPx),
             Padding           = ContentPadding,
             Margin            = OuterMargin,
             Cursor            = Cursors.Hand,

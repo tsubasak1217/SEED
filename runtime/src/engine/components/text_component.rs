@@ -51,6 +51,48 @@ pub const MIN_OUTLINE_WIDTH: f32 = 0.0;
 /// 入力段階でも常識的な範囲へ丸めておく。
 pub const MAX_OUTLINE_WIDTH: f32 = 64.0;
 
+/// 枠サイズ（幅・高さ）の下限。0 = 枠なし（従来どおりの原点基準レイアウト）。
+pub const MIN_BOX_SIZE: f32 = 0.0;
+
+/// 枠サイズ（幅・高さ）の上限（キャンバスピクセル）。
+///
+/// 4K の 4 倍まで許容する現実的な上限。これを超える値は入力段階で丸める
+/// （巨大な枠で折り返し計算が無意味に走るのを防ぐ）。
+pub const MAX_BOX_SIZE: f32 = 16384.0;
+
+/// 自動折り返しの既定値（枠を設定したら折り返すのが期待挙動）。
+///
+/// `box_width = 0`（枠なし）のときは無視されるため、旧シーンの挙動は変わらない。
+pub const DEFAULT_TEXT_WRAP: bool = true;
+
+/// 文字の太さ（SDF しきい値オフセット）の既定値。0 = フォント本来の太さ。
+pub const DEFAULT_TEXT_WEIGHT: f32 = 0.0;
+
+/// 文字の太さの絶対値上限（キャンバスピクセル）。
+///
+/// SDF は四方に `SDF_SPREAD_EM`（= 0.125em）ぶんしか焼かれていないため、
+/// 実効的にはフォントサイズの 1/8 で頭打ちになる。入力段階でも
+/// 縁取り（`MAX_OUTLINE_WIDTH`）と同じ常識的な範囲へ丸めておく。
+pub const MAX_TEXT_WEIGHT: f32 = MAX_OUTLINE_WIDTH;
+
+/// ドロップシャドウのオフセット上限（キャンバスピクセル。絶対値）。
+///
+/// 影は本体と同じグリフを平行移動して描くだけなので、極端な値でも破綻はしないが、
+/// 誤入力で画面外へ飛ぶのを防ぐために上限を設ける。
+pub const MAX_SHADOW_OFFSET: f32 = 1024.0;
+
+/// ドロップシャドウのぼかし幅の上限（キャンバスピクセル）。
+///
+/// SDF のスムース幅を広げてぼかすため、スプレッドを超えると効果が飽和する。
+/// 縁取りと同じ上限にそろえる。
+pub const MAX_SHADOW_SOFTNESS: f32 = MAX_OUTLINE_WIDTH;
+
+/// ドロップシャドウのぼかし幅の下限（負のぼかしは意味を持たない）。
+pub const MIN_SHADOW_SOFTNESS: f32 = 0.0;
+
+/// ドロップシャドウ色の既定値（半透明の黒）。
+pub const DEFAULT_SHADOW_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.5];
+
 /// 1 つの TextComponent が描画できる最大文字数。
 ///
 /// スクリプトが誤って巨大な文字列を毎フレーム設定してもフレームバジェットを
@@ -68,6 +110,12 @@ fn default_color() -> [f32; 4] {
 }
 fn default_outline_color() -> [f32; 4] {
     DEFAULT_OUTLINE_COLOR
+}
+fn default_text_wrap() -> bool {
+    DEFAULT_TEXT_WRAP
+}
+fn default_shadow_color() -> [f32; 4] {
+    DEFAULT_SHADOW_COLOR
 }
 
 // ─── TextAlign ────────────────────────────────────────────────
@@ -178,6 +226,30 @@ pub struct TextComponentData {
     /// 縁取りの色（RGBA 0..1）。
     #[serde(default = "default_outline_color")]
     pub outline_color: [f32; 4],
+    /// 枠の幅（キャンバスピクセル）。0 = 枠なし（従来どおりの原点基準レイアウト）。
+    #[serde(default)]
+    pub box_width: f32,
+    /// 枠の最小高さ（キャンバスピクセル）。実際の高さは `max(box_height, 内容高さ)`。
+    #[serde(default)]
+    pub box_height: f32,
+    /// 枠幅での自動折り返しを行うか（`box_width > 0` のときのみ有効）。
+    #[serde(default = "default_text_wrap")]
+    pub wrap: bool,
+    /// 文字の太さ（キャンバスピクセル。負で細く・正で太く。0 = フォント本来）。
+    #[serde(default)]
+    pub weight: f32,
+    /// ドロップシャドウの X オフセット（キャンバスピクセル）。
+    #[serde(default)]
+    pub shadow_offset_x: f32,
+    /// ドロップシャドウの Y オフセット（キャンバスピクセル。Y は下向き）。
+    #[serde(default)]
+    pub shadow_offset_y: f32,
+    /// ドロップシャドウの色（RGBA 0..1）。
+    #[serde(default = "default_shadow_color")]
+    pub shadow_color: [f32; 4],
+    /// ドロップシャドウのぼかし幅（キャンバスピクセル。0 = シャープ）。
+    #[serde(default)]
+    pub shadow_softness: f32,
 }
 
 impl Default for TextComponentData {
@@ -193,6 +265,14 @@ impl Default for TextComponentData {
             font_path: String::new(),
             outline_width: DEFAULT_OUTLINE_WIDTH,
             outline_color: default_outline_color(),
+            box_width: MIN_BOX_SIZE,
+            box_height: MIN_BOX_SIZE,
+            wrap: default_text_wrap(),
+            weight: DEFAULT_TEXT_WEIGHT,
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 0.0,
+            shadow_color: default_shadow_color(),
+            shadow_softness: MIN_SHADOW_SOFTNESS,
         }
     }
 }
@@ -223,6 +303,26 @@ pub struct TextComponent {
     pub outline_width: f32,
     /// 縁取りの色（RGBA 0..1）。
     pub outline_color: [f32; 4],
+    /// 枠の幅（キャンバスピクセル）。0 = 枠なし。
+    ///
+    /// **0 か否かでレイアウト規則が切り替わる要のフィールド**。
+    /// 0: align / vertical_align はアクター原点に対するブロック配置、pivot は無効。
+    /// 正: align / vertical_align は枠内での配置、pivot は Sprite と同じ意味を持つ。
+    pub box_width: f32,
+    /// 枠の最小高さ（キャンバスピクセル）。実際の高さは `max(box_height, 内容高さ)`。
+    pub box_height: f32,
+    /// 枠幅での自動折り返しを行うか（`box_width > 0` のときのみ有効）。
+    pub wrap: bool,
+    /// 文字の太さ（キャンバスピクセル。負で細く・正で太く。0 = フォント本来）。
+    pub weight: f32,
+    /// ドロップシャドウの X オフセット（キャンバスピクセル）。
+    pub shadow_offset_x: f32,
+    /// ドロップシャドウの Y オフセット（キャンバスピクセル。Y は下向き）。
+    pub shadow_offset_y: f32,
+    /// ドロップシャドウの色（RGBA 0..1）。
+    pub shadow_color: [f32; 4],
+    /// ドロップシャドウのぼかし幅（キャンバスピクセル。0 = シャープ）。
+    pub shadow_softness: f32,
 }
 
 impl TextComponent {
@@ -239,6 +339,14 @@ impl TextComponent {
             font_path: data.font_path,
             outline_width: data.outline_width,
             outline_color: data.outline_color,
+            box_width: data.box_width,
+            box_height: data.box_height,
+            wrap: data.wrap,
+            weight: data.weight,
+            shadow_offset_x: data.shadow_offset_x,
+            shadow_offset_y: data.shadow_offset_y,
+            shadow_color: data.shadow_color,
+            shadow_softness: data.shadow_softness,
         }
     }
 
@@ -255,6 +363,14 @@ impl TextComponent {
             font_path: self.font_path.clone(),
             outline_width: self.outline_width,
             outline_color: self.outline_color,
+            box_width: self.box_width,
+            box_height: self.box_height,
+            wrap: self.wrap,
+            weight: self.weight,
+            shadow_offset_x: self.shadow_offset_x,
+            shadow_offset_y: self.shadow_offset_y,
+            shadow_color: self.shadow_color,
+            shadow_softness: self.shadow_softness,
         }
     }
 }
@@ -266,3 +382,68 @@ impl Default for TextComponent {
 }
 
 impl Component for TextComponent {}
+
+// ============================================================
+//  単体テスト（serde 互換 = 旧 .scene が読めることの保証）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 新フィールドを持たない旧 .scene の JSON が既定値で読める。
+    ///
+    /// ここが落ちると「そのフィールドが無いシーンの読み込みが丸ごと失敗」する。
+    #[test]
+    fn legacy_scene_json_loads_with_defaults() {
+        let json = r#"{
+            "content": "所持金",
+            "font_size": 32.0,
+            "color": [1.0, 1.0, 1.0, 1.0],
+            "align": "center",
+            "vertical_align": "middle",
+            "line_spacing": 1.2,
+            "layer": 3,
+            "font_path": "",
+            "outline_width": 2.0,
+            "outline_color": [0.0, 0.0, 0.0, 1.0]
+        }"#;
+        let d: TextComponentData = serde_json::from_str(json).expect("旧シーンが読める");
+        // 枠なし = 従来レイアウト。折り返しフラグは既定 true だが枠なしでは無視される。
+        assert_eq!(d.box_width, MIN_BOX_SIZE);
+        assert_eq!(d.box_height, MIN_BOX_SIZE);
+        assert!(d.wrap);
+        assert_eq!(d.weight, DEFAULT_TEXT_WEIGHT);
+        assert_eq!(d.shadow_offset_x, 0.0);
+        assert_eq!(d.shadow_offset_y, 0.0);
+        assert_eq!(d.shadow_color, DEFAULT_SHADOW_COLOR);
+        assert_eq!(d.shadow_softness, MIN_SHADOW_SOFTNESS);
+        // 既存フィールドが壊れていないことも併せて確認する。
+        assert_eq!(d.content, "所持金");
+        assert_eq!(d.align, TextAlign::Center);
+        assert_eq!(d.vertical_align, TextVerticalAlign::Middle);
+    }
+
+    /// from_data / to_data が新フィールドを往復できる（Undo のスナップショット経路）。
+    #[test]
+    fn from_data_to_data_roundtrips_new_fields() {
+        let mut data = TextComponentData::default();
+        data.box_width = 320.0;
+        data.box_height = 120.0;
+        data.wrap = false;
+        data.weight = -1.5;
+        data.shadow_offset_x = 2.0;
+        data.shadow_offset_y = 3.0;
+        data.shadow_color = [1.0, 0.0, 0.0, 0.25];
+        data.shadow_softness = 4.0;
+        let back = TextComponent::from_data(data.clone()).to_data();
+        assert_eq!(back.box_width, data.box_width);
+        assert_eq!(back.box_height, data.box_height);
+        assert_eq!(back.wrap, data.wrap);
+        assert_eq!(back.weight, data.weight);
+        assert_eq!(back.shadow_offset_x, data.shadow_offset_x);
+        assert_eq!(back.shadow_offset_y, data.shadow_offset_y);
+        assert_eq!(back.shadow_color, data.shadow_color);
+        assert_eq!(back.shadow_softness, data.shadow_softness);
+    }
+}

@@ -881,6 +881,15 @@ public partial class InspectorPanel : UserControl
         string TextFontPath = "",
         float TextOutlineWidth = 0f,
         float TextOutlineR = 0f, float TextOutlineG = 0f, float TextOutlineB = 0f, float TextOutlineA = 1f,
+        // 枠と自動折り返し（JSON キーは "box_width" / "box_height" / "wrap"）。
+        // 枠幅 0 = 枠なし＝従来どおりの原点基準レイアウト（pivot も折り返しも無効）。
+        float TextBoxWidth = 0f, float TextBoxHeight = 0f, bool TextWrap = true,
+        // 文字の太さとドロップシャドウ。影の色キーは "shadow_r".."shadow_a"
+        //（本文色 "text_r".."text_a" / 縁取り色 "outline_r".."outline_a" と衝突しない専用の綴り）。
+        float TextWeight = 0f,
+        float TextShadowOffsetX = 0f, float TextShadowOffsetY = 0f,
+        float TextShadowR = 0f, float TextShadowG = 0f, float TextShadowB = 0f, float TextShadowA = 0.5f,
+        float TextShadowSoftness = 0f,
         // AnimatorComponent 用フィールド（clips は JSON 配列文字列 [{"name":..,"path":..},...] のまま保持し、
         // UI 構築時にパースする。値そのものは Rust 側 AnimatorComponentData と同一構造）
         string AnimClipsJson = "[]",
@@ -1450,6 +1459,19 @@ public partial class InspectorPanel : UserControl
             var textOutlineG   = comp.TryGetProperty("outline_g",      out var txog) ? txog.GetSingle() : 0f;
             var textOutlineB   = comp.TryGetProperty("outline_b",      out var txob) ? txob.GetSingle() : 0f;
             var textOutlineA   = comp.TryGetProperty("outline_a",      out var txoa) ? txoa.GetSingle() : 1f;
+            // 枠・自動折り返し（枠幅 0 = 枠なし。wrap は 0/1 の数値で届く）。
+            var textBoxWidth   = comp.TryGetProperty("box_width",      out var txbw) ? txbw.GetSingle() : 0f;
+            var textBoxHeight  = comp.TryGetProperty("box_height",     out var txbh) ? txbh.GetSingle() : 0f;
+            var textWrap       = comp.TryGetProperty("wrap",           out var txwr) ? ReadJsonBool(txwr, true) : true;
+            // 文字の太さ（負で細く・正で太く）とドロップシャドウ（オフセット・色・ぼかし）。
+            var textWeight     = comp.TryGetProperty("weight",           out var txwt) ? txwt.GetSingle() : 0f;
+            var textShadowX    = comp.TryGetProperty("shadow_offset_x",  out var txsx) ? txsx.GetSingle() : 0f;
+            var textShadowY    = comp.TryGetProperty("shadow_offset_y",  out var txsy) ? txsy.GetSingle() : 0f;
+            var textShadowR    = comp.TryGetProperty("shadow_r",         out var txsr) ? txsr.GetSingle() : 0f;
+            var textShadowG    = comp.TryGetProperty("shadow_g",         out var txsg) ? txsg.GetSingle() : 0f;
+            var textShadowB    = comp.TryGetProperty("shadow_b",         out var txsb) ? txsb.GetSingle() : 0f;
+            var textShadowA    = comp.TryGetProperty("shadow_a",         out var txsa) ? txsa.GetSingle() : 0.5f;
+            var textShadowSoft = comp.TryGetProperty("shadow_softness",  out var txss) ? txss.GetSingle() : 0f;
             // AnimatorComponent 用: クリップ一覧（生 JSON のまま保持）・既定クリップ・自動再生・速度
             var animClipsJson    = comp.TryGetProperty("clips",         out var acj) ? acj.GetRawText() : "[]";
             var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
@@ -1694,6 +1716,12 @@ public partial class InspectorPanel : UserControl
                 TextFontPath: textFontPath, TextOutlineWidth: textOutlineW,
                 TextOutlineR: textOutlineR, TextOutlineG: textOutlineG,
                 TextOutlineB: textOutlineB, TextOutlineA: textOutlineA,
+                TextBoxWidth: textBoxWidth, TextBoxHeight: textBoxHeight, TextWrap: textWrap,
+                TextWeight: textWeight,
+                TextShadowOffsetX: textShadowX, TextShadowOffsetY: textShadowY,
+                TextShadowR: textShadowR, TextShadowG: textShadowG,
+                TextShadowB: textShadowB, TextShadowA: textShadowA,
+                TextShadowSoftness: textShadowSoft,
                 AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
                 AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed,
                 AnimDefaultFadeSeconds: animDefaultFade,
@@ -8818,6 +8846,49 @@ public partial class InspectorPanel : UserControl
     /// <summary>content 入力欄の高さ（複数行を編集できる程度）。</summary>
     private const double TextContentBoxHeight = 56;
 
+    /// <summary>
+    /// content 入力欄が右端に空ける余白（px）。
+    ///
+    /// 他の行は右端に「⟲ 既定値に戻す」ボタンが乗るため入力欄がその手前で終わる。
+    /// content 欄は ⟲ を持たないので、同じ幅を余白として空けないと 1 行だけ
+    /// 右端いっぱいまで伸びて窮屈に見える。
+    /// </summary>
+    private static readonly double TextContentRightInset =
+        ResetButtonFactory.ReservedRowWidth + InspectorFieldRightMargin;
+
+    /// <summary>枠幅の行のツールチップ（0 のときの意味を明示する）。</summary>
+    private const string TextBoxWidthTooltip =
+        "テキストを収める枠の幅（px）。0 = 枠なし（従来どおり）で、折り返さず "
+        + "CanvasTransform のピボットも効きません。"
+        + "正の値にすると枠が有効になり、水平・垂直位置は「枠の中での配置」になり、"
+        + "ピボットが Sprite と同じ意味で効きます";
+
+    /// <summary>枠高さの行のツールチップ（自動伸縮であることを明示する）。</summary>
+    private const string TextBoxHeightTooltip =
+        "枠の最小高さ（px）。実際の高さは「この値」と「行数から決まる内容の高さ」の"
+        + "大きいほうになります（内容が増えれば下へ伸びる）";
+
+    /// <summary>自動折り返しのツールチップ。</summary>
+    private const string TextWrapTooltip =
+        "枠の幅で自動的に折り返します（枠の幅が 0 のときは無視されます）。"
+        + "英数字は単語単位、日本語は文字単位で折り、句読点や閉じ括弧は行頭に来ないよう調整します";
+
+    /// <summary>文字の太さのツールチップ。</summary>
+    private const string TextWeightTooltip =
+        "文字の太さ（px）。負で細く・正で太くなります。0 = フォント本来の太さ。"
+        + "フォントサイズの約 1/8 が実効上限です";
+
+    /// <summary>影のオフセットのツールチップ。</summary>
+    private const string TextShadowOffsetTooltip =
+        "ドロップシャドウのずらし量（px。X は右・Y は下が正）。X と Y が両方 0 なら影は出ません";
+
+    /// <summary>影のぼかしのツールチップ。</summary>
+    private const string TextShadowSoftnessTooltip =
+        "ドロップシャドウのぼかし幅（px）。0 = 輪郭のはっきりした影";
+
+    /// <summary>チェックボックス行のラベル色。</summary>
+    private static readonly Color TextRowLabelColor = Color.FromRgb(0xAA, 0xAA, 0xAA);
+
     /// <summary>フォント参照行が受け付ける拡張子（ドラッグ＆ドロップ判定にも使う）。</summary>
     private static readonly string[] TextFontExtensions = { ".otf", ".ttf" };
 
@@ -8882,7 +8953,14 @@ public partial class InspectorPanel : UserControl
             Height          = TextContentBoxHeight,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             FontSize        = 12,
-            Margin          = new Thickness(0, 0, 0, 4),
+            // 配色は他の入力欄（数値行）と共通（黒地に白文字）。
+            Background      = new SolidColorBrush(InspectorFieldBackground),
+            Foreground      = new SolidColorBrush(InspectorFieldForeground),
+            BorderBrush     = new SolidColorBrush(InspectorFieldBorder),
+            BorderThickness = new Thickness(InspectorFieldBorderThickness),
+            Padding         = new Thickness(3, 1, 3, 1),
+            // 右端は ⟲ ボタンぶんの余白を空けて他の行とそろえる。
+            Margin          = new Thickness(0, 0, TextContentRightInset, 4),
             ToolTip         = "表示する文字列。改行できます。スクリプトからは "
                               + "gameObject.GetComponent<Text>().Content で毎フレーム差し替えられます",
         };
@@ -8985,6 +9063,57 @@ public partial class InspectorPanel : UserControl
             TextNumberFormat,
             v => SendField("line_spacing", v.ToString(CultureInfo.InvariantCulture))));
 
+        // ── 枠（幅 0 = 枠なし＝従来どおりの原点基準レイアウト）─────
+        // 枠を与えると「折り返し」「枠内配置」「ピボット」が同時に有効になる。
+        sp.Children.Add(WithRowTooltip(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "枠の幅(px)", info.TextBoxWidth, "box_width",
+            TextNumberFormat,
+            v => SendField("box_width", v.ToString(CultureInfo.InvariantCulture))),
+            TextBoxWidthTooltip));
+
+        sp.Children.Add(WithRowTooltip(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "枠の高さ(px)", info.TextBoxHeight, "box_height",
+            TextNumberFormat,
+            v => SendField("box_height", v.ToString(CultureInfo.InvariantCulture))),
+            TextBoxHeightTooltip));
+
+        // ── 自動折り返し（枠の幅が 0 のときは無視される）────────
+        // 真偽値は 0/1 の数値で送る（ランタイム側 text_ops の "wrap" 分岐と対）。
+        sp.Children.Add(BuildTextCheckRow(
+            "自動折り返し", info.TextWrap, TextWrapTooltip,
+            on => SendField("wrap", on ? "1" : "0")));
+
+        // ── 文字の太さ（SDF のしきい値をずらす。負で細く・正で太く）─
+        sp.Children.Add(WithRowTooltip(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "太さ(px)", info.TextWeight, "weight",
+            TextNumberFormat,
+            v => SendField("weight", v.ToString(CultureInfo.InvariantCulture))),
+            TextWeightTooltip));
+
+        // ── ドロップシャドウ（オフセット・色・ぼかし）──────────
+        sp.Children.Add(WithRowTooltip(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "影のオフセットX", info.TextShadowOffsetX,
+            "shadow_offset_x", TextNumberFormat,
+            v => SendField("shadow_offset_x", v.ToString(CultureInfo.InvariantCulture))),
+            TextShadowOffsetTooltip));
+
+        sp.Children.Add(WithRowTooltip(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "影のオフセットY", info.TextShadowOffsetY,
+            "shadow_offset_y", TextNumberFormat,
+            v => SendField("shadow_offset_y", v.ToString(CultureInfo.InvariantCulture))),
+            TextShadowOffsetTooltip));
+
+        sp.Children.Add(BuildColorPickerRow(
+            "影の色", info.TextShadowR, info.TextShadowG, info.TextShadowB, info.TextShadowA,
+            info.SlotIdx, TextComponentType, "shadow_color",
+            (r, g, b, a) => SendField("shadow_color", FormattableString.Invariant($"{r},{g},{b},{a}"))));
+
+        sp.Children.Add(WithRowTooltip(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "影のぼかし(px)", info.TextShadowSoftness,
+            "shadow_softness", TextNumberFormat,
+            v => SendField("shadow_softness", v.ToString(CultureInfo.InvariantCulture))),
+            TextShadowSoftnessTooltip));
+
         // ── 描画レイヤー（Sprite と同じ規約で前後関係が決まる）─────
         sp.Children.Add(BuildResettableFloatRow(
             info.SlotIdx, TextComponentType, "レイヤー", info.TextLayer, "layer",
@@ -8992,6 +9121,60 @@ public partial class InspectorPanel : UserControl
             v => SendField("layer", ((int)MathF.Round(v)).ToString(CultureInfo.InvariantCulture))));
 
         return sp;
+    }
+
+    /// <summary>
+    /// 生成済みの行要素へツールチップを設定して返す。
+    ///
+    /// <see cref="BuildResettableFloatRow"/> はツールチップ引数を持たない
+    /// （値域表と ⟲ の配線だけを担う共通入口のため）ので、
+    /// 説明を付けたい行はこのヘルパで包む。行の中身には一切触れない。
+    /// </summary>
+    /// <param name="row">対象の行要素。</param>
+    /// <param name="tooltip">表示する説明文。</param>
+    private static UIElement WithRowTooltip(UIElement row, string tooltip)
+    {
+        if (row is FrameworkElement fe) fe.ToolTip = tooltip;
+        return row;
+    }
+
+    /// <summary>
+    /// TextComponent セクション用の「ラベル + チェックボックス」行を作る。
+    ///
+    /// 真偽値は IPC では 0/1 の数値として送る（ランタイム側 text_ops の受け側と対）。
+    /// ラベル幅は他の行（<see cref="InspectorRowLabelWidth"/>）とそろえる。
+    /// </summary>
+    /// <param name="label">行ラベル。</param>
+    /// <param name="isChecked">現在値。</param>
+    /// <param name="tooltip">ラベル・チェックボックス共通のツールチップ。</param>
+    /// <param name="onChanged">変更時に呼ぶ処理（true = チェック）。</param>
+    private static UIElement BuildTextCheckRow(
+        string label, bool isChecked, string tooltip, Action<bool> onChanged)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin      = new Thickness(0, 4, 0, 2),
+        };
+        row.Children.Add(new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(TextRowLabelColor),
+            FontSize          = 11,
+            Width             = InspectorRowLabelWidth,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip           = tooltip,
+        });
+        var check = new CheckBox
+        {
+            IsChecked         = isChecked,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip           = tooltip,
+        };
+        check.Checked   += (_, _) => onChanged(true);
+        check.Unchecked += (_, _) => onChanged(false);
+        row.Children.Add(check);
+        return row;
     }
 
     /// <summary>
@@ -9610,13 +9793,13 @@ public partial class InspectorPanel : UserControl
         {
             Text              = initText,
             Tag               = initText, // フォーカス前の最終有効値を保持する
-            Background        = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
-            Foreground        = new SolidColorBrush(Colors.White),
-            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
-            BorderThickness   = new Thickness(1),
+            Background        = new SolidColorBrush(InspectorFieldBackground),
+            Foreground        = new SolidColorBrush(InspectorFieldForeground),
+            BorderBrush       = new SolidColorBrush(InspectorFieldBorder),
+            BorderThickness   = new Thickness(InspectorFieldBorderThickness),
             FontSize          = 11,
             Padding           = new Thickness(3, 1, 3, 1),
-            Margin            = new Thickness(1, 1, 2, 1),
+            Margin            = new Thickness(1, 1, InspectorFieldRightMargin, 1),
             VerticalAlignment = VerticalAlignment.Center,
             SelectionBrush    = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF)),
         };

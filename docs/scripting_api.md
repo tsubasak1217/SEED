@@ -891,6 +891,7 @@ if (gameObject.GetComponent<CanvasTransform>() is { } ct)   // CanvasTransform?�
     ct.Rotation            // float（get/set。Z 軸周りの度）
     ct.Scale               // Vector2（get/set）
     ct.Pivot               // Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）
+                           //   ※ Text へは Text.BoxWidth > 0（枠あり）のときだけ効く
     ct.Anchor              // Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）
     ct.ScreenPosition      // Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル）
 }
@@ -1220,6 +1221,32 @@ if (gameObject.GetComponent<Text>() is { } label)
     label.FontPath       // string（get/set。assets:// 仮想パス。空文字=組み込みフォント）
     label.OutlineWidth   // float（get/set。縁取りの太さ px。0=縁取りなし）
     label.OutlineColor   // Color（get/set。縁取りの色。既定=不透明な黒）
+
+    // 枠（テキストボックス）と自動折り返し
+    label.BoxWidth       // float（get/set。枠の幅 px。0=枠なし＝従来レイアウト）
+    label.BoxHeight      // float（get/set。枠の最小高さ px。実高さ=max(この値, 内容の高さ)）
+    label.Wrap           // bool（get/set。枠幅で自動折り返し。BoxWidth=0 なら無視）
+
+    // 太さとドロップシャドウ
+    label.Weight         // float（get/set。文字の太さ px。負=細く / 正=太く / 0=フォント本来）
+    label.ShadowOffset   // Vector2（get/set。影のずらし量 px。X 右・Y 下。(0,0)=影なし）
+    label.ShadowColor    // Color（get/set。影の色。既定=半透明の黒）
+    label.ShadowSoftness // float（get/set。影のぼかし幅 px。0=シャープ）
+}
+```
+
+```csharp
+// 例: 会話ウィンドウの本文（枠に収めて自動折り返し・影つき）
+if (gameObject.GetComponent<Text>() is { } body)
+{
+    body.BoxWidth       = 640f;   // 枠を与えると折り返しとピボットが有効になる
+    body.BoxHeight      = 160f;   // 最小高さ（内容が増えれば下へ伸びる）
+    body.Wrap           = true;
+    body.Align          = "left"; // 枠あり: 「枠の中での配置」を意味する
+    body.VerticalAlign  = "top";
+    body.Weight         = 0.5f;   // ほんの少し太らせて可読性を上げる
+    body.ShadowOffset   = new SEED.Vector2(2f, 2f);
+    body.ShadowSoftness = 1f;
 }
 ```
 
@@ -1233,6 +1260,12 @@ public void Update()
 ```
 
 > **重要**: `Align` / `VerticalAlign` に未知の文字列を代入しても無視され、既存の値が保たれます（typo で表示が崩れません）。1 つの Text が描ける文字数の上限は 4096 文字で、超えた分は切り捨てられます。縁取りの太さはフォントサイズの約 1/8 が上限で、それを超える指定は上限で頭打ちになります（SDF のスプレッド幅による）。
+
+> **重要 — `BoxWidth` の 0 か正かでレイアウトの意味が変わります**。`BoxWidth = 0`（枠なし・既定）では従来どおり `Align` / `VerticalAlign` は「アクターの位置に対してテキストブロックをどう置くか」を意味し、自動折り返しも `CanvasTransform.Pivot` も効きません。`BoxWidth > 0`（枠あり）にすると、枠のローカル矩形は Sprite と同じ「左上原点・[0,W]×[0,H]」になり、`Align` / `VerticalAlign` は「枠の中での配置」、`Pivot` は Sprite とまったく同じ意味（枠サイズに対する正規化基準点）で効きます。既存シーンは `BoxWidth` が 0 のままなので見た目は変わりません。
+
+> **重要 — 折り返しの規則**: 英数字は単語単位（`'` と `-` は単語の一部として扱う）、日本語などは 1 文字単位で折ります。行末の空白は幅に数えず、次の行頭へは送りません。1 単語が枠幅より長い場合は文字単位で強制分割します。簡易禁則として、句読点・閉じ括弧・長音・小書き仮名（`、。・？！」）】ー` など）は行頭に来ないよう**最大 2 文字まで前の行末へぶら下げ**、開き括弧（`「（【` など）が行末に来た場合は次の行頭へ追い出します。
+
+> **重要 — 太さと影**: `Weight` は SDF のしきい値をずらして太さを変えるため、縁取りと同じくフォントサイズの約 1/8 で頭打ちになります。影は本体と同じ字形を `ShadowOffset` だけずらして本体の下へ描くもので、`ShadowOffset` が (0,0) か `ShadowColor` のアルファが 0 のときは描かれません（＝コストもかかりません）。
 
 ### Skybox（天球の色調整：時間帯・天候の演出）
 
@@ -1407,7 +1440,7 @@ public class FishingLine : SEEDScript
 | `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3） |
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
-| `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・フォント（assets:// の .otf/.ttf）・サイズ・色・**縁取り**（太さ・色）・整列・行送り・レイヤー |
+| `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・フォント（assets:// の .otf/.ttf）・サイズ・色・**縁取り**（太さ・色）・**枠と自動折り返し**（BoxWidth/BoxHeight/Wrap）・**太さ**（Weight）・**ドロップシャドウ**（ShadowOffset/ShadowColor/ShadowSoftness）・整列・行送り・レイヤー |
 | `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
 | `ControlPointPath` | `gameObject.GetComponent<ControlPointPath>()` | コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用） |
 

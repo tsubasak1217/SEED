@@ -763,6 +763,17 @@ fn read_floats(
                 // 縁取り（太さはキャンバスピクセル、0 = 縁取りなし）
                 "outline_width" => put(out, &[t.outline_width]),
                 "outline_color" => put(out, &t.outline_color),
+                // 枠と自動折り返し（box_width 0 = 枠なし。wrap は bool = 0/1）
+                "box_width"    => put(out, &[t.box_width]),
+                "box_height"   => put(out, &[t.box_height]),
+                "wrap"         => put(out, &[if t.wrap { 1.0 } else { 0.0 }]),
+                // 文字の太さ（キャンバスピクセル。負で細く・正で太く）
+                "weight"       => put(out, &[t.weight]),
+                // ドロップシャドウ（オフセット px・色 RGBA・ぼかし px）
+                "shadow_offset_x" => put(out, &[t.shadow_offset_x]),
+                "shadow_offset_y" => put(out, &[t.shadow_offset_y]),
+                "shadow_color"    => put(out, &t.shadow_color),
+                "shadow_softness" => put(out, &[t.shadow_softness]),
                 // 描画優先度レイヤー（i32 → f32 変換して返す。Sprite の layer と同様）
                 "layer"        => put(out, &[t.layer as f32]),
                 _              => None,
@@ -1115,6 +1126,17 @@ fn write_floats(
                 // 縁取り（太さはキャンバスピクセル、0 = 縁取りなし）
                 "outline_width" => take::<1>(v).map(|a| t.outline_width = a[0]).is_some(),
                 "outline_color" => take(v).map(|a| t.outline_color = a).is_some(),
+                // 枠と自動折り返し（box_width 0 = 枠なし。wrap は bool = 0/1）
+                "box_width"    => take::<1>(v).map(|a| t.box_width = a[0]).is_some(),
+                "box_height"   => take::<1>(v).map(|a| t.box_height = a[0]).is_some(),
+                "wrap"         => take::<1>(v).map(|a| t.wrap = a[0] != 0.0).is_some(),
+                // 文字の太さ（キャンバスピクセル。負で細く・正で太く）
+                "weight"       => take::<1>(v).map(|a| t.weight = a[0]).is_some(),
+                // ドロップシャドウ（オフセット px・色 RGBA・ぼかし px）
+                "shadow_offset_x" => take::<1>(v).map(|a| t.shadow_offset_x = a[0]).is_some(),
+                "shadow_offset_y" => take::<1>(v).map(|a| t.shadow_offset_y = a[0]).is_some(),
+                "shadow_color"    => take(v).map(|a| t.shadow_color = a).is_some(),
+                "shadow_softness" => take::<1>(v).map(|a| t.shadow_softness = a[0]).is_some(),
                 // 描画優先度レイヤー（f32 → i32 変換して格納。Sprite の layer と同様）
                 "layer"        => take::<1>(v).map(|a| t.layer = a[0] as i32).is_some(),
                 _              => false,

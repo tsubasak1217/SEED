@@ -94,6 +94,9 @@ pub use line_renderer_component::{
 pub use text_component::{
     TextComponent, TextComponentData, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS,
     MAX_OUTLINE_WIDTH, MIN_OUTLINE_WIDTH,
+    // 枠・折り返し・太さ・ドロップシャドウの入力範囲（IPC の clamp が参照する）
+    MIN_BOX_SIZE, MAX_BOX_SIZE, MAX_TEXT_WEIGHT, MAX_SHADOW_OFFSET,
+    MIN_SHADOW_SOFTNESS, MAX_SHADOW_SOFTNESS,
 };
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,

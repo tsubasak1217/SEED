@@ -773,7 +773,7 @@ icon.SetParent(<span class="k">null</span>);     <span class="c">// シーンの
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed">
+<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -801,7 +801,7 @@ transform.Position += transform.Forward * 5f * <span class="t">SEED.Time</span>.
   <div class="api"><code class="sig">ct.Position</code><span class="desc">Vector2（get/set。親 Canvas 基準の相対座標）</span></div>
   <div class="api"><code class="sig">ct.Rotation</code><span class="desc">float（get/set。Z 軸周りの度）</span></div>
   <div class="api"><code class="sig">ct.Scale</code><span class="desc">Vector2（get/set）</span></div>
-  <div class="api"><code class="sig">ct.Pivot</code><span class="desc">Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）</span></div>
+  <div class="api"><code class="sig">ct.Pivot</code><span class="desc">Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）。※ Text へは Text.BoxWidth &gt; 0（枠あり）のときだけ効く</span></div>
   <div class="api"><code class="sig">ct.Anchor</code><span class="desc">Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）</span></div>
   <div class="api"><code class="sig">ct.ScreenPosition</code><span class="desc">Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル。アンカー・スケールモード・親チェーンをすべて反映した絶対位置）</span></div>
 
@@ -979,6 +979,13 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">label.FontPath</code><span class="desc">string（get/set。assets:// 仮想パス。空文字=組み込みフォント）</span></div>
   <div class="api"><code class="sig">label.OutlineWidth</code><span class="desc">float（get/set。縁取りの太さ px。0=縁取りなし）</span></div>
   <div class="api"><code class="sig">label.OutlineColor</code><span class="desc">Color（get/set。縁取りの色。既定=不透明な黒）</span></div>
+  <div class="api"><code class="sig">label.BoxWidth</code><span class="desc">float（get/set。枠の幅 px。0=枠なし＝従来レイアウト）</span></div>
+  <div class="api"><code class="sig">label.BoxHeight</code><span class="desc">float（get/set。枠の最小高さ px。実高さ=max(この値, 内容の高さ)）</span></div>
+  <div class="api"><code class="sig">label.Wrap</code><span class="desc">bool（get/set。枠幅で自動折り返し。BoxWidth=0 なら無視）</span></div>
+  <div class="api"><code class="sig">label.Weight</code><span class="desc">float（get/set。文字の太さ px。負=細く / 正=太く / 0=フォント本来）</span></div>
+  <div class="api"><code class="sig">label.ShadowOffset</code><span class="desc">Vector2（get/set。影のずらし量 px。X 右・Y 下。(0,0)=影なし）</span></div>
+  <div class="api"><code class="sig">label.ShadowColor</code><span class="desc">Color（get/set。影の色。既定=半透明の黒）</span></div>
+  <div class="api"><code class="sig">label.ShadowSoftness</code><span class="desc">float（get/set。影のぼかし幅 px。0=シャープ）</span></div>
 <pre><span class="c">// 所持金の表示を毎フレーム更新する</span>
 <span class="k">public override void</span> Update()
 {
@@ -989,6 +996,19 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <b>Align / VerticalAlign に未知の文字列を代入しても無視され、既存の値が保たれます</b>（typo で表示が崩れません）。<br>
     1 つの Text が描ける文字数の上限は <b>4096 文字</b>で、超えた分は切り捨てられます。<br>
     縁取りの太さは<b>フォントサイズの約 1/8 が上限</b>で、それを超える指定は上限で頭打ちになります（SDF のスプレッド幅による）。
+  </div>
+  <div class="warn">
+    <b>BoxWidth の 0 か正かでレイアウトの意味が変わります</b>。<br>
+    <b>BoxWidth = 0（枠なし・既定）</b>: 従来どおり <code>Align</code> / <code>VerticalAlign</code> は「アクターの位置に対してテキストブロックをどう置くか」を意味し、自動折り返しも <code>CanvasTransform.Pivot</code> も効きません。<br>
+    <b>BoxWidth &gt; 0（枠あり）</b>: 枠のローカル矩形は Sprite と同じ「左上原点・[0,W]×[0,H]」になり、<code>Align</code> / <code>VerticalAlign</code> は「枠の中での配置」、<code>Pivot</code> は Sprite とまったく同じ意味（枠サイズに対する正規化基準点）で効きます。<br>
+    既存シーンは BoxWidth が 0 のままなので見た目は変わりません。
+  </div>
+  <div class="warn">
+    <b>折り返しの規則</b>: 英数字は単語単位（<code>'</code> と <code>-</code> は単語の一部）、日本語などは 1 文字単位で折ります。行末の空白は幅に数えず次の行頭へ送りません。1 単語が枠幅より長い場合は文字単位で強制分割します。<br>
+    簡易禁則として、句読点・閉じ括弧・長音・小書き仮名（<code>、。・？！」）】ー</code> など）は行頭に来ないよう<b>最大 2 文字まで前の行末へぶら下げ</b>、開き括弧（<code>「（【</code> など）が行末に来た場合は次の行頭へ追い出します。
+  </div>
+  <div class="warn">
+    <b>太さと影</b>: <code>Weight</code> は SDF のしきい値をずらすため、縁取りと同じく<b>フォントサイズの約 1/8 で頭打ち</b>になります。影は本体と同じ字形を <code>ShadowOffset</code> だけずらして本体の下へ描くもので、<code>ShadowOffset</code> が (0,0) か <code>ShadowColor</code> のアルファが 0 のときは描かれません。
   </div>
 
   <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>
@@ -1101,7 +1121,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>WaterVolume</code></td><td><code>gameObject.GetComponent&lt;WaterVolume&gt;()</code></td><td>現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3）</td></tr>
     <tr><td><code>WaterLink</code></td><td><code>gameObject.GetComponent&lt;WaterLink&gt;()</code></td><td>水位グラフの開口。<b>開閉率（バルブ）</b>・開口寸法・流量係数</td></tr>
     <tr><td><code>LineRenderer</code></td><td><code>gameObject.GetComponent&lt;LineRenderer&gt;()</code></td><td>3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト</td></tr>
-    <tr><td><code>Text</code></td><td><code>gameObject.GetComponent&lt;Text&gt;()</code></td><td>キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・整列・行送り・レイヤー</td></tr>
+    <tr><td><code>Text</code></td><td><code>gameObject.GetComponent&lt;Text&gt;()</code></td><td>キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・縁取り・枠と自動折り返し（BoxWidth/BoxHeight/Wrap）・太さ（Weight）・ドロップシャドウ（ShadowOffset/ShadowColor/ShadowSoftness）・整列・行送り・レイヤー</td></tr>
     <tr><td><code>ControlPointPath</code></td><td><code>gameObject.GetComponent&lt;ControlPointPath&gt;()</code></td><td>コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用）</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>

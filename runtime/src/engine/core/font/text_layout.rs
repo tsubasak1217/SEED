@@ -20,6 +20,7 @@
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 
 use super::sdf::{SDF_EM_PX, SDF_SPREAD_EM};
+use super::text_wrap::{WrappedLine, wrap_lines};
 use crate::engine::components::{MAX_TEXT_CHARS, TextAlign, TextVerticalAlign};
 
 /// テキストブロックのローカル境界矩形（キャンバス px）。
@@ -157,7 +158,145 @@ pub fn measure_text_box(
     vertical_align: TextVerticalAlign,
     outline_width: f32,
 ) -> Option<TextLocalBox> {
-    if text.is_empty() || font_size <= 0.0 {
+    // 枠なし（box_width = 0）の `resolve_layout` は従来式とビット互換である。
+    // 定義を 2 本持たないため、ここは薄い委譲に留める。
+    resolve_layout(
+        font,
+        text,
+        &TextLayoutSpec {
+            font_size,
+            line_spacing,
+            align,
+            vertical_align,
+            outline_width,
+            ..TextLayoutSpec::default()
+        },
+    )
+    .map(|r| r.bounds)
+}
+
+// ============================================================
+//  枠つきレイアウト（TextLayoutSpec / ResolvedLayout）
+//
+//  「枠なし」と「枠あり」でレイアウト規則が変わるため、両方を 1 つの
+//  純関数へ集約する。描画（canvas_text）・ピック（pick_2d）・選択枠
+//  （canvas_collect）はすべてこの結果を使い、式を各所で再実装しない。
+// ============================================================
+
+/// テキストのレイアウト条件（コンポーネントの値をそのまま写したもの）。
+///
+/// `box_width <= 0` は **枠なし**を意味し、従来どおり
+/// 「align / vertical_align はアクター原点に対するブロック配置」になる。
+/// `box_width > 0` は **枠あり**で、align / vertical_align は枠内での配置になる。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextLayoutSpec {
+    /// フォントサイズ（キャンバス px）。
+    pub font_size: f32,
+    /// 行送り倍率（フォントサイズに対する倍率）。
+    pub line_spacing: f32,
+    /// 水平方向の基準位置。
+    pub align: TextAlign,
+    /// 垂直方向の基準位置。
+    pub vertical_align: TextVerticalAlign,
+    /// 縁取りの太さ（px。境界矩形の四方パディングになる）。
+    pub outline_width: f32,
+    /// 枠の幅（px）。0 = 枠なし（従来経路）。
+    pub box_width: f32,
+    /// 枠の最小高さ（px）。実際の高さは `max(box_height, 内容高さ)`。
+    pub box_height: f32,
+    /// 自動折り返しを行うか（`box_width > 0` のときのみ意味を持つ）。
+    pub wrap: bool,
+}
+
+impl Default for TextLayoutSpec {
+    /// 枠なし・折り返しなしの既定条件（`measure_text_box` の従来経路）。
+    fn default() -> Self {
+        Self {
+            font_size: 0.0,
+            line_spacing: 1.0,
+            align: TextAlign::Left,
+            vertical_align: TextVerticalAlign::Top,
+            outline_width: 0.0,
+            box_width: 0.0,
+            box_height: 0.0,
+            wrap: false,
+        }
+    }
+}
+
+impl TextLayoutSpec {
+    /// 枠を持つか（＝枠基準のレイアウト・pivot が有効か）。
+    ///
+    /// 判定はこの 1 か所だけを使う（各所で `> 0.0` を書くと規則がぶれる）。
+    #[inline]
+    pub fn has_box(&self) -> bool {
+        self.box_width > 0.0
+    }
+
+    /// 折り返しに使う最大幅（px）。0 = 折り返さない。
+    #[inline]
+    fn wrap_width(&self) -> f32 {
+        if self.has_box() && self.wrap {
+            self.box_width
+        } else {
+            0.0
+        }
+    }
+}
+
+/// レイアウト解決結果（描画・計測が共有する唯一の中間表現）。
+pub struct ResolvedLayout {
+    /// 描画上限で切り詰めた後の文字列。`lines` の範囲はこの文字列に対するもの。
+    pub text: String,
+    /// 行分割の結果（範囲と幅）。
+    pub lines: Vec<WrappedLine>,
+    /// 行送り（px）= font_size * line_spacing。
+    pub line_step: f32,
+    /// 1 行目の**ベースライン** Y（px。Y は下向き）。
+    pub first_baseline_y: f32,
+    /// 行ごとのペン開始 X（px。`lines` と同じ長さ・同じ順）。
+    pub base_x: Vec<f32>,
+    /// 枠の矩形（枠なしのときは `None`）。
+    pub frame: Option<TextLocalBox>,
+    /// pivot を掛ける基準サイズ（px）。枠なしは `[0, 0]`（＝ pivot 無効）。
+    pub pivot_size: [f32; 2],
+    /// 枠と字面を合わせた境界矩形（ピック・選択枠が使う）。
+    pub bounds: TextLocalBox,
+}
+
+impl ResolvedLayout {
+    /// 正規化 pivot からローカル平行移動量（px）を求める。
+    ///
+    /// 枠ありのテキストは、行列側ではなく**グリフ座標側**で pivot を適用する
+    /// （行列が「フォントを測らないと組めない」状態になるのを避けるため）。
+    /// 枠なしは `pivot_size = [0, 0]` なので常に `[0, 0]` を返す＝従来どおり pivot 無効。
+    #[inline]
+    pub fn pivot_offset(&self, pivot: [f32; 2]) -> [f32; 2] {
+        [
+            -pivot[0] * self.pivot_size[0],
+            -pivot[1] * self.pivot_size[1],
+        ]
+    }
+}
+
+/// レイアウトを解決する（**描画・計測の唯一の定義**）。
+///
+/// # 枠なし（`spec.box_width <= 0`）
+/// 従来の `layout_origin` / `line_base_x` と完全に同じ結果を返す。
+/// 折り返しは行わず、明示改行だけで行が分かれる。`pivot_size = [0, 0]`。
+///
+/// # 枠あり（`spec.box_width > 0`）
+/// - 枠のローカル矩形は `[0, W] × [0, H]`（左上原点。Sprite と同じ規約）
+/// - `W = box_width`、`H = max(box_height, 行送り × 行数)`
+/// - 行 i のベースライン = `v_off + i * line_step + half_leading + ascent`
+///   （`half_leading = (line_step − (ascent + descent)) / 2`。行送りの余白を
+///   行の上下へ均等に配る＝一般的なテキストレイアウトと同じ規則）
+/// - `v_off` は Top:0 / Middle:(H − 内容高さ)/2 / Bottom:H − 内容高さ
+/// - 行の開始 X は Left:0 / Center:(W − 行幅)/2 / Right:W − 行幅
+///
+/// 描画されない入力（空文字・サイズ 0）は `None` を返す。
+pub fn resolve_layout(font: &FontArc, text: &str, spec: &TextLayoutSpec) -> Option<ResolvedLayout> {
+    if text.is_empty() || spec.font_size <= 0.0 {
         return None;
     }
     // 描画側と同じ上限で切り詰める（表示されない文字を枠に含めない）。
@@ -167,37 +306,92 @@ pub fn measure_text_box(
         text.to_string()
     };
 
-    let widths: Vec<f32> = truncated
-        .split('\n')
-        .map(|line| measure_line_width(font, line, font_size))
-        .collect();
-    if widths.is_empty() {
+    // 行分割（枠なし・折り返し無効なら明示改行での分割と同一）。
+    let lines = wrap_lines(font, &truncated, spec.font_size, spec.wrap_width());
+    if lines.is_empty() {
         return None;
     }
 
-    // 描画とまったく同じ原点計算を使う（定義は 1 箇所だけ）。
-    let origin = layout_origin(font_size, line_spacing, widths.len(), vertical_align);
+    let line_step = spec.font_size * spec.line_spacing;
+    let ascent = ascent_em(font) * spec.font_size;
+    let descent = descent_em(font) * spec.font_size;
+    let pad = outline_pad_px(spec.outline_width, spec.font_size);
+    let content_h = line_step * lines.len() as f32;
 
-    // 水平方向は行ごとに基準位置が変わるため、全行の最小/最大を取る。
+    // 枠の有無でベースライン・行頭 X の規則が変わる。
+    let (first_baseline_y, base_x, frame, pivot_size) = if spec.has_box() {
+        let w = spec.box_width;
+        // 指定高さと内容高さの大きいほうが実際の枠の高さ（自動伸縮）。
+        let h = spec.box_height.max(content_h);
+        // 枠内でのブロック全体の縦オフセット。
+        let v_off = match spec.vertical_align {
+            TextVerticalAlign::Top => 0.0,
+            TextVerticalAlign::Middle => (h - content_h) * 0.5,
+            TextVerticalAlign::Bottom => h - content_h,
+        };
+        // 行送りの余りを行の上下へ均等配分した半分（行の上側の余白）。
+        let half_leading = (line_step - (ascent + descent)) * 0.5;
+        let base_x: Vec<f32> = lines
+            .iter()
+            .map(|l| match spec.align {
+                TextAlign::Left => 0.0,
+                TextAlign::Center => (w - l.width) * 0.5,
+                TextAlign::Right => w - l.width,
+            })
+            .collect();
+        (
+            v_off + half_leading + ascent,
+            base_x,
+            Some(TextLocalBox {
+                min: [0.0, 0.0],
+                max: [w, h],
+            }),
+            [w, h],
+        )
+    } else {
+        // 従来経路（アクター原点に対するブロック配置。pivot は効かない）。
+        let origin = layout_origin(
+            spec.font_size,
+            spec.line_spacing,
+            lines.len(),
+            spec.vertical_align,
+        );
+        let base_x: Vec<f32> = lines
+            .iter()
+            .map(|l| line_base_x(spec.align, l.width))
+            .collect();
+        (origin.first_baseline_y, base_x, None, [0.0, 0.0])
+    };
+
+    // ── 字面の境界（縁取りぶんを四方へ足す）──
     let mut min_x = f32::MAX;
     let mut max_x = f32::MIN;
-    for w in &widths {
-        let base_x = line_base_x(align, *w);
-        min_x = min_x.min(base_x);
-        max_x = max_x.max(base_x + w);
+    for (line, bx) in lines.iter().zip(base_x.iter()) {
+        min_x = min_x.min(*bx);
+        max_x = max_x.max(bx + line.width);
+    }
+    let last_baseline_y = first_baseline_y + line_step * (lines.len() as f32 - 1.0);
+    let mut bounds = TextLocalBox {
+        min: [min_x - pad, first_baseline_y - ascent - pad],
+        max: [max_x + pad, last_baseline_y + descent + pad],
+    };
+    // 枠がある場合は枠との和集合にする（空白だけの行でも枠全体を掴めるように）。
+    if let Some(f) = frame {
+        bounds.min[0] = bounds.min[0].min(f.min[0]);
+        bounds.min[1] = bounds.min[1].min(f.min[1]);
+        bounds.max[0] = bounds.max[0].max(f.max[0]);
+        bounds.max[1] = bounds.max[1].max(f.max[1]);
     }
 
-    // 縦は「ベースライン基準」で実際の字面の上下端へ換算する。
-    let ascent = ascent_em(font) * font_size;
-    let descent = descent_em(font) * font_size;
-    let last_baseline_y =
-        origin.first_baseline_y + origin.line_step * (widths.len() as f32 - 1.0);
-    // 縁取りぶんの余白（四方）。
-    let pad = outline_pad_px(outline_width, font_size);
-
-    Some(TextLocalBox {
-        min: [min_x - pad, origin.first_baseline_y - ascent - pad],
-        max: [max_x + pad, last_baseline_y + descent + pad],
+    Some(ResolvedLayout {
+        text: truncated,
+        lines,
+        line_step,
+        first_baseline_y,
+        base_x,
+        frame,
+        pivot_size,
+        bounds,
     })
 }
 
@@ -428,5 +622,130 @@ mod tests {
         let w1 = measure_line_width(&f, "Test", 10.0);
         let w2 = measure_line_width(&f, "Test", 20.0);
         assert!((w2 - w1 * 2.0).abs() < 1e-3);
+    }
+
+    // ── 枠つきレイアウト（resolve_layout）────────────────────
+
+    /// 枠つきレイアウトの共通スペックを作る。
+    fn box_spec(w: f32, h: f32, wrap: bool) -> TextLayoutSpec {
+        TextLayoutSpec {
+            font_size: 20.0,
+            line_spacing: 1.5,
+            box_width: w,
+            box_height: h,
+            wrap,
+            ..TextLayoutSpec::default()
+        }
+    }
+
+    /// 枠なしの resolve_layout は従来の枠計算と一致し、pivot も無効（サイズ 0）。
+    #[test]
+    fn frameless_layout_matches_legacy_box() {
+        let f = builtin();
+        let spec = TextLayoutSpec {
+            font_size: 24.0,
+            line_spacing: 1.2,
+            align: TextAlign::Center,
+            vertical_align: TextVerticalAlign::Middle,
+            ..TextLayoutSpec::default()
+        };
+        let r = resolve_layout(&f, "Ab\nCd", &spec).expect("枠が得られる");
+        let legacy = measure_text_box(
+            &f,
+            "Ab\nCd",
+            24.0,
+            1.2,
+            TextAlign::Center,
+            TextVerticalAlign::Middle,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(r.bounds, legacy);
+        assert!(r.frame.is_none());
+        assert_eq!(r.pivot_size, [0.0, 0.0]);
+        assert_eq!(r.pivot_offset([0.5, 0.5]), [0.0, 0.0], "枠なしは pivot 無効");
+    }
+
+    /// 枠の高さは「指定値と内容高さの大きいほう」になる（自動伸縮）。
+    #[test]
+    fn box_height_is_max_of_specified_and_content() {
+        let f = builtin();
+        // 1 行 = 20 * 1.5 = 30px。指定 10px なら内容 30px が勝つ。
+        let grown = resolve_layout(&f, "A", &box_spec(200.0, 10.0, false)).unwrap();
+        assert!((grown.frame.unwrap().max[1] - 30.0).abs() < 1e-4);
+        // 指定 100px なら指定が勝つ。
+        let fixed = resolve_layout(&f, "A", &box_spec(200.0, 100.0, false)).unwrap();
+        assert!((fixed.frame.unwrap().max[1] - 100.0).abs() < 1e-4);
+        // pivot 基準サイズは枠そのもの。
+        assert_eq!(fixed.pivot_size, [200.0, 100.0]);
+    }
+
+    /// 枠内では align が「枠内の水平配置」になる（原点基準ではない）。
+    #[test]
+    fn box_align_places_line_inside_frame() {
+        let f = builtin();
+        let width = 200.0;
+        let left = resolve_layout(&f, "Ab", &box_spec(width, 0.0, false)).unwrap();
+        assert!((left.base_x[0]).abs() < 1e-4, "左揃えは枠の左端");
+        let mut spec = box_spec(width, 0.0, false);
+        spec.align = TextAlign::Center;
+        let center = resolve_layout(&f, "Ab", &spec).unwrap();
+        let line_w = center.lines[0].width;
+        assert!((center.base_x[0] - (width - line_w) * 0.5).abs() < 1e-4);
+        spec.align = TextAlign::Right;
+        let right = resolve_layout(&f, "Ab", &spec).unwrap();
+        assert!((right.base_x[0] - (width - line_w)).abs() < 1e-4);
+    }
+
+    /// 枠内では vertical_align が「枠内の垂直配置」になる。
+    #[test]
+    fn box_vertical_align_places_block_inside_frame() {
+        let f = builtin();
+        let h = 200.0;
+        let content = 20.0 * 1.5; // 1 行ぶんの行送り
+        let mut spec = box_spec(100.0, h, false);
+        let top = resolve_layout(&f, "A", &spec).unwrap();
+        spec.vertical_align = TextVerticalAlign::Middle;
+        let mid = resolve_layout(&f, "A", &spec).unwrap();
+        spec.vertical_align = TextVerticalAlign::Bottom;
+        let bottom = resolve_layout(&f, "A", &spec).unwrap();
+        assert!((mid.first_baseline_y - top.first_baseline_y - (h - content) * 0.5).abs() < 1e-4);
+        assert!((bottom.first_baseline_y - top.first_baseline_y - (h - content)).abs() < 1e-4);
+        // 上端揃えの 1 行目は「枠上端 + ハーフレディング + アセント」に載る。
+        let ascent = ascent_em(&f) * 20.0;
+        let descent = descent_em(&f) * 20.0;
+        let half_leading = (content - (ascent + descent)) * 0.5;
+        assert!((top.first_baseline_y - (half_leading + ascent)).abs() < 1e-4);
+    }
+
+    /// 枠 + 折り返し有効なら、長い文字列が複数行になり枠の高さが伸びる。
+    #[test]
+    fn box_wrap_grows_height() {
+        let f = builtin();
+        let src = "あいうえおかきくけこ";
+        let five = measure_line_width(&f, "あいうえお", 20.0) + 0.01;
+        let r = resolve_layout(&f, src, &box_spec(five, 0.0, true)).unwrap();
+        assert_eq!(r.lines.len(), 2, "5 文字幅なら 2 行");
+        assert!((r.frame.unwrap().max[1] - 20.0 * 1.5 * 2.0).abs() < 1e-4);
+        // 折り返し無効なら 1 行のまま（枠からはみ出す）。
+        let no_wrap = resolve_layout(&f, src, &box_spec(five, 0.0, false)).unwrap();
+        assert_eq!(no_wrap.lines.len(), 1);
+    }
+
+    /// pivot は枠サイズに対する正規化値としてローカル平行移動になる。
+    #[test]
+    fn pivot_offset_scales_with_frame() {
+        let f = builtin();
+        let r = resolve_layout(&f, "A", &box_spec(200.0, 100.0, false)).unwrap();
+        assert_eq!(r.pivot_offset([0.5, 1.0]), [-100.0, -100.0]);
+    }
+
+    /// 枠ありの境界矩形は枠と字面の和集合になる（空白行でも枠全体を含む）。
+    #[test]
+    fn box_bounds_include_frame() {
+        let f = builtin();
+        let r = resolve_layout(&f, " ", &box_spec(200.0, 100.0, false)).unwrap();
+        assert!(r.bounds.min[0] <= 0.0 && r.bounds.min[1] <= 0.0);
+        assert!(r.bounds.max[0] >= 200.0 && r.bounds.max[1] >= 100.0);
     }
 }

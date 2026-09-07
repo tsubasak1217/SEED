@@ -496,8 +496,11 @@ impl App {
                     // スロット共通ラッパと衝突しないことを確認済み（同一 JSON
                     // オブジェクト内でキーが重複すると C# 側の解析が壊れるため）。
                     let font_path_json = serde_json::to_string(&d.font_path).unwrap_or_default();
+                    // 【キー名】枠・折り返し・太さ・影は serde 名をそのまま使う。
+                    // 影の色だけは縁取り（outline_*）と同じ流儀で "shadow_r".."shadow_a" に
+                    // 展開する（同一 JSON オブジェクト内でのキー重複を避けるため）。
                     ("TextComponent", format!(
-                        r#","content":{content_json},"font_size":{:.4},"text_r":{:.4},"text_g":{:.4},"text_b":{:.4},"text_a":{:.4},"align":"{}","vertical_align":"{}","line_spacing":{:.4},"text_layer":{},"font_path":{font_path_json},"outline_width":{:.4},"outline_r":{:.4},"outline_g":{:.4},"outline_b":{:.4},"outline_a":{:.4}"#,
+                        r#","content":{content_json},"font_size":{:.4},"text_r":{:.4},"text_g":{:.4},"text_b":{:.4},"text_a":{:.4},"align":"{}","vertical_align":"{}","line_spacing":{:.4},"text_layer":{},"font_path":{font_path_json},"outline_width":{:.4},"outline_r":{:.4},"outline_g":{:.4},"outline_b":{:.4},"outline_a":{:.4},"box_width":{:.4},"box_height":{:.4},"wrap":{},"weight":{:.4},"shadow_offset_x":{:.4},"shadow_offset_y":{:.4},"shadow_r":{:.4},"shadow_g":{:.4},"shadow_b":{:.4},"shadow_a":{:.4},"shadow_softness":{:.4}"#,
                         d.font_size,
                         d.color[0], d.color[1], d.color[2], d.color[3],
                         d.align.key(), d.vertical_align.key(),
@@ -505,6 +508,12 @@ impl App {
                         d.outline_width,
                         d.outline_color[0], d.outline_color[1],
                         d.outline_color[2], d.outline_color[3],
+                        d.box_width, d.box_height, d.wrap as u8,
+                        d.weight,
+                        d.shadow_offset_x, d.shadow_offset_y,
+                        d.shadow_color[0], d.shadow_color[1],
+                        d.shadow_color[2], d.shadow_color[3],
+                        d.shadow_softness,
                     ))
                 }
                 ComponentData::InteractionSourceComponent(d) => {

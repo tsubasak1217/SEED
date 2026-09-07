@@ -25,6 +25,15 @@ pub struct TextVertex {
     pub color: [f32; 4],
     pub outline_color: [f32; 4],
     pub outline_dist: f32,
+    /// 太さ調整（SDF テクスチャ単位）。正で太く・負で細くなる。
+    ///
+    /// シェーダーは「エッジ = 0.5 − weight_dist」としてしきい値をずらす。
+    /// 0 のとき従来とビット互換（しきい値 0.5 のまま）。
+    pub weight_dist: f32,
+    /// 追加のスムース幅（SDF テクスチャ単位）。ドロップシャドウのぼかしに使う。
+    ///
+    /// fwidth 由来のアンチエイリアス幅へ加算する。0 のとき従来とビット互換。
+    pub softness: f32,
 }
 
 // ── 頂点属性のオフセット（マジックナンバーをここへ集約する）────
@@ -39,6 +48,10 @@ const ATTR_OFFSET_COLOR: u64 = 20;
 const ATTR_OFFSET_OUTLINE_COLOR: u64 = 36;
 /// outline_dist (f32) のバイトオフセット。
 const ATTR_OFFSET_OUTLINE_DIST: u64 = 52;
+/// weight_dist (f32) のバイトオフセット。
+const ATTR_OFFSET_WEIGHT_DIST: u64 = 56;
+/// softness (f32) のバイトオフセット。
+const ATTR_OFFSET_SOFTNESS: u64 = 60;
 
 // ── TextPipeline ──────────────────────────────────────────────
 
@@ -127,6 +140,18 @@ impl TextPipeline {
                     offset: ATTR_OFFSET_OUTLINE_DIST,
                     shader_location: 4,
                 },
+                // location 5: weight_dist (f32) — 太さ調整
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: ATTR_OFFSET_WEIGHT_DIST,
+                    shader_location: 5,
+                },
+                // location 6: softness (f32) — 影のぼかし幅
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: ATTR_OFFSET_SOFTNESS,
+                    shader_location: 6,
+                },
             ],
         };
 
@@ -204,13 +229,16 @@ mod tests {
     /// 「色だけおかしい」「文字が消える」といった原因追跡の難しい不具合になる。
     #[test]
     fn vertex_layout_offsets_match_struct() {
-        // position(12) + uv(8) + color(16) + outline_color(16) + outline_dist(4) = 56
-        assert_eq!(std::mem::size_of::<TextVertex>(), 56);
+        // position(12) + uv(8) + color(16) + outline_color(16)
+        //   + outline_dist(4) + weight_dist(4) + softness(4) = 64
+        assert_eq!(std::mem::size_of::<TextVertex>(), 64);
         assert_eq!(ATTR_OFFSET_POSITION, 0);
         assert_eq!(ATTR_OFFSET_UV, 12);
         assert_eq!(ATTR_OFFSET_COLOR, 20);
         assert_eq!(ATTR_OFFSET_OUTLINE_COLOR, 36);
         assert_eq!(ATTR_OFFSET_OUTLINE_DIST, 52);
+        assert_eq!(ATTR_OFFSET_WEIGHT_DIST, 56);
+        assert_eq!(ATTR_OFFSET_SOFTNESS, 60);
     }
 
     /// シェーダーが naga で parse + validate できること。

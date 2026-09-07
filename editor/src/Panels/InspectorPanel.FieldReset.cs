@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using SEEDEditor;
 using SEEDEditor.Controls;
 
@@ -99,6 +100,28 @@ public partial class InspectorPanel
     /// **セクション内でそろえる**（共通入口へこの値を渡す）方針とする。
     /// </summary>
     internal const double ParticleRowLabelWidth = 110;
+
+    // ── 入力欄の共通スタイル ─────────────────────────────────────
+    // 数値行・複数行テキスト欄などの入力欄は同じ配色・同じ右余白でそろえる。
+    // 各行ビルダが色リテラルを持つと、行ごとに微妙に見た目が違う状態になる。
+
+    /// <summary>入力欄の背景色（暗いグレー）。</summary>
+    internal static readonly Color InspectorFieldBackground = Color.FromRgb(0x1A, 0x1A, 0x1A);
+
+    /// <summary>入力欄の文字色（白）。</summary>
+    internal static readonly Color InspectorFieldForeground = Colors.White;
+
+    /// <summary>入力欄の枠線色。</summary>
+    internal static readonly Color InspectorFieldBorder = Color.FromRgb(0x3F, 0x3F, 0x46);
+
+    /// <summary>入力欄の枠線の太さ（px）。</summary>
+    internal const double InspectorFieldBorderThickness = 1;
+
+    /// <summary>
+    /// 入力欄が行の右端に空ける余白（px）。
+    /// 数値行の TextBox の Margin と一致させること（右端をそろえるため）。
+    /// </summary>
+    internal const double InspectorFieldRightMargin = 2;
 
     /// <summary>
     /// 既存の行要素の右端に「⟲ 既定値に戻す」ボタンを添えて返す。

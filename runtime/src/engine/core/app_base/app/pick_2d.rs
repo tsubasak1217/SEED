@@ -670,8 +670,17 @@ pub(super) fn walk_pick_candidates_2d(
                 let Some(tc) = world.get::<TextComponent>(slot.entity) else {
                     continue;
                 };
-                let m = mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y));
-                if hit_test_local_box_2d(canvas_x, canvas_y, &m, bx.min, bx.max) {
+                // 枠モード（box_width > 0）は pivot を枠矩形へ焼き込み済みなので、
+                // 行列側では pivot を効かせない（描画・ID パスと同一の規約）。
+                let m = mat4x4_mul(
+                    parent_world_rs,
+                    if bx.zero_pivot {
+                        eff_ct.to_mesh_mat4_no_pivot(size_sc_x, size_sc_y)
+                    } else {
+                        eff_ct.to_mesh_mat4(size_sc_x, size_sc_y)
+                    },
+                );
+                if hit_test_local_box_2d(canvas_x, canvas_y, &m, bx.local.min, bx.local.max) {
                     out.push(PickCand2d {
                         dfs: my_dfs,
                         entity: actor.entity,
@@ -1148,7 +1157,14 @@ mod tests {
         )
         .expect("枠が得られる");
         let mut map = TextBoundsMap::new();
-        map.insert(text_slot, bx);
+        // 枠なし（従来レイアウト）なので pivot は行列側で無効のまま。
+        map.insert(
+            text_slot,
+            super::super::canvas_text_bounds::TextBounds {
+                local: bx,
+                zero_pivot: false,
+            },
+        );
 
         (vec![root], world, map, bx)
     }

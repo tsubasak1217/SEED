@@ -1,4 +1,4 @@
-namespace SEED;
+﻿namespace SEED;
 
 /// <summary>
 /// キャンバス上のテキスト表示（TextComponent）へのアクセサ。
@@ -117,5 +117,81 @@ public readonly struct Text : IComponentHandle<Text>
     {
         get => ScriptHost.TryGetString(_entity, Comp, "vertical_align", out var s) ? s : "top";
         set => ScriptHost.TrySetString(_entity, Comp, "vertical_align", value ?? "top");
+    }
+
+    /// <summary>
+    /// 枠の幅（get/set。キャンバスピクセル。0 = 枠なし）。
+    ///
+    /// <para>0 のときは従来どおり「アクター位置に対してブロックを置く」レイアウトで、
+    /// 自動折り返しも <c>CanvasTransform.Pivot</c> も効かない。
+    /// 正の値にすると枠が有効になり、<see cref="Align"/> / <see cref="VerticalAlign"/> は
+    /// 「枠の中でのどこへ置くか」を意味し、pivot が Sprite と同じ意味で効く。</para>
+    /// </summary>
+    public float BoxWidth
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "box_width", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "box_width", value);
+    }
+
+    /// <summary>
+    /// 枠の最小高さ（get/set。キャンバスピクセル）。
+    /// 実際の高さは「この値」と「行数から決まる内容高さ」の**大きいほう**になる（自動伸縮）。
+    /// </summary>
+    public float BoxHeight
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "box_height", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "box_height", value);
+    }
+
+    /// <summary>
+    /// 枠幅での自動折り返しを行うか（get/set）。<see cref="BoxWidth"/> が 0 のときは無視される。
+    /// </summary>
+    public bool Wrap
+    {
+        get => ScriptHost.TryGetBool(_entity, Comp, "wrap", out var b) && b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "wrap", value);
+    }
+
+    /// <summary>
+    /// 文字の太さ（get/set。キャンバスピクセル。負で細く・正で太く。0 = フォント本来）。
+    /// 縁取りと同じく、フォントサイズの約 1/8 が実効上限で、それを超えると頭打ちになる。
+    /// </summary>
+    public float Weight
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "weight", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "weight", value);
+    }
+
+    /// <summary>
+    /// ドロップシャドウのオフセット（get/set。キャンバスピクセル。X 右・Y 下）。
+    /// (0, 0) で影なし。
+    /// </summary>
+    public Vector2 ShadowOffset
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "shadow_offset_x", out var x)
+            && ScriptHost.TryGetFloat(_entity, Comp, "shadow_offset_y", out var y)
+            ? new Vector2(x, y)
+            : Vector2.Zero;
+        set
+        {
+            ScriptHost.TrySetFloat(_entity, Comp, "shadow_offset_x", value.x);
+            ScriptHost.TrySetFloat(_entity, Comp, "shadow_offset_y", value.y);
+        }
+    }
+
+    /// <summary>ドロップシャドウの色（get/set。RGBA 0..1。既定は半透明の黒）。</summary>
+    public Color ShadowColor
+    {
+        get => ScriptHost.TryGetColor(_entity, Comp, "shadow_color", out var c) ? c : Color.Black;
+        set => ScriptHost.TrySetColor(_entity, Comp, "shadow_color", value);
+    }
+
+    /// <summary>
+    /// ドロップシャドウのぼかし幅（get/set。キャンバスピクセル。0 = シャープ）。
+    /// </summary>
+    public float ShadowSoftness
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "shadow_softness", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "shadow_softness", value);
     }
 }
