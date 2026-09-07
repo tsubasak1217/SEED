@@ -1,0 +1,94 @@
+{
+  "name": "MissionMarker",
+  "transform": {
+    "position": [
+      0.0,
+      -100.0,
+      0.0
+    ],
+    "rotation": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale": [
+      1.5,
+      1.5,
+      1.5
+    ]
+  },
+  "components": [
+    {
+      "name": "Canvas",
+      "component": {
+        "type": "CanvasComponent",
+        "data": {
+          "width": 150.0,
+          "height": 150.0,
+          "auto_scale": false,
+          "viewport_ref": {
+            "type": "window"
+          },
+          "gravity_mode": "world_down",
+          "draw_zone": "foreground",
+          "pivot": [
+            0.5,
+            1.0
+          ]
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "MissionMarkerArrow",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          8.86
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/arrow.png",
+              "color": [
+                0.45,
+                1.0,
+                0.65,
+                0.9
+              ],
+              "width": 150.0,
+              "height": 120.0,
+              "layer": 0,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

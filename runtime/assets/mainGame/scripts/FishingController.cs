@@ -1335,6 +1335,59 @@ public class FishingController : SEEDScript
     public SEED.Vector3 RodTipWorldPosition => RodTipPosition();
 
     /// <summary>
+    /// いま掛かっている魚（掛かっていなければ null）。
+    /// チュートリアルの台本が「掛かっている魚のそばに別の魚を出す」ために位置を読む。
+    /// </summary>
+    public Fish? HookedFish => hookedFish;
+
+    /// <summary>
+    /// やり取り（リズム勝負）の本体。UI やチュートリアルが状態を読むための参照。
+    /// シーンで未設定なら null。
+    /// </summary>
+    public FishingFight? Fight => fight;
+
+    /// <summary>
+    /// 直前に釣り上げた魚（釣果演出中のあいだ有効。演出が終わっても値は残る）。
+    /// <see cref="FishingEvents.Catch"/> は表示名しか運ばないので、
+    /// 「どの種類を釣ったか」を知りたい購読側はこの魚と
+    /// <see cref="FishManager.PrefabPathOf"/> を突き合わせる。
+    /// </summary>
+    public Fish? LastCaughtFish { get; private set; }
+
+    /// <summary>
+    /// チュートリアルの「糸切れで仕切り直し」が発動した回数。
+    /// ミッション側が「何度やり直したか」を表示するために読む
+    /// （仕切り直しでは fishing.line_break を飛ばさないので、代わりの手がかりになる）。
+    /// </summary>
+    public int TutorialFightRestartCount { get; private set; }
+
+    /// <summary>
+    /// 巻き取りの操舵角（度）。0 が「ウキ → 竿先」の基準方向、正が左・負が右。
+    /// チュートリアルが「どちら向きに巻いているか」を判定するのに使う。
+    /// </summary>
+    public float ReelAngleOffsetDegrees => reelAngleOffsetDegrees;
+
+    /// <summary>
+    /// いま巻いたときにウキが進む水平方向（正規化。決められないときは長さ 0）。
+    ///
+    /// 「ウキ → 竿先」の水平方向を <see cref="ReelAngleOffsetDegrees"/> だけ回したもので、
+    /// チュートリアルが「巻いた先へ必ず漂流物を流す」ために出現位置を作るのに使う。
+    /// </summary>
+    public SEED.Vector3 ReelAimDirection
+    {
+        get
+        {
+            var toRod = RodTipWorldPosition - FloatWorldPosition;
+            var flat  = new SEED.Vector3(toRod.x, 0f, toRod.z);
+            if (flat.SqrMagnitude < SqrEpsilon) { return SEED.Vector3.Zero; }
+
+            float yaw = SEED.Mathf.Atan2(flat.x, flat.z) * SEED.Mathf.Rad2Deg + reelAngleOffsetDegrees;
+            float yawRad = yaw * SEED.Mathf.Deg2Rad;
+            return new SEED.Vector3(SEED.Mathf.Sin(yawRad), 0f, SEED.Mathf.Cos(yawRad));
+        }
+    }
+
+    /// <summary>
     /// 掛かっている魚のレベル（1 始まり）。掛かっていない／レベル不明なら
     /// <see cref="Fish.UnknownLevel"/>。魚側の格上カリングの基準になる。
     /// </summary>
@@ -2210,7 +2263,23 @@ public class FishingController : SEEDScript
         // 残り距離（ウキ→竿先の水平距離）の表示。ウキが無ければ 0 を出す。
         f.UpdateDistanceDisplay(CurrentFloatDistance());
 
-        if (f.LineBroken) { BreakLine(); return; }
+        if (f.LineBroken)
+        {
+            // チュートリアルの「釣り上げよう」ミッションでは、糸が切れても投げ直しへ戻さず
+            // 掛かった状態のままやり取りだけを仕切り直す（練習を続けさせるため）。
+            // 上書きが無ければ従来どおり糸切れで終わる。
+            if (TutorialRules.Active && TutorialRules.RestartFightOnLineBreak && hookedFish is { } stillHooked)
+            {
+                f.EndFight();
+                f.BeginFight(stillHooked, HookJudgement.Nice, CurrentFloatDistance());
+                TutorialFightRestartCount++;
+                SEED.Debug.Log("[Fishing] 糸切れ → チュートリアルのため掛かった状態から仕切り直し");
+                return;
+            }
+
+            BreakLine();
+            return;
+        }
 
         // 魚 HP を削り切ったら釣り上げ成立【新仕様の主たる成功条件】。
         if (f.FishDefeated) { FinishReeling(); }
@@ -2862,6 +2931,10 @@ public class FishingController : SEEDScript
             caught.OnCaught();
             hookedFish = null;           // ReleaseFromHook は呼ばない（この個体は演出側が持つ）
 
+            // 「何を釣ったか」を購読側が種類まで辿れるよう控えておく
+            // （fishing.catch は表示名しか運ばないため）
+            LastCaughtFish = caught;
+
             State = FishState.Catching;
             // 演出中はマウスの振りを読まないのでカーソルロックを引き直す（解除される）。
             UpdateCursorLock();
@@ -3255,6 +3328,18 @@ public class FishingController : SEEDScript
         LastJudgement = HookJudgement.Miss;
         ShowJudgement(HookJudgement.Miss);
         State = FishState.Floating;
+
+        // チュートリアルの「合わせ」練習中は、ミスしても魚を逃がさず前アタリからやり直す。
+        // 逃がすと次のアタリが来るまで待たされ、練習にならないため。
+        // 上書きが無ければ（TutorialRules.Active が false なら）従来どおり魚は逃げる。
+        if (TutorialRules.Active && TutorialRules.RebiteAfterHookMiss && fish is { } retryFish)
+        {
+            if (BeginNibbling(retryFish))
+            {
+                SEED.Debug.Log($"[Fishing] Miss（{reason}）→ チュートリアルのため同じ魚で再アタリ");
+                return;
+            }
+        }
 
         fish?.ReleaseFromHook();       // 魚は逃げる（Escape → クールダウン付きで回遊へ）
         SEED.Debug.Log($"[Fishing] Miss（{reason}）");

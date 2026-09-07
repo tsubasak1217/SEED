@@ -1,0 +1,388 @@
+{
+  "name": "MissionPanel",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      20.0,
+      208.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.0,
+      0.0
+    ],
+    "anchor": [
+      0.0,
+      0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "MissionPanel",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "assets://mainGame/scripts/Tutorial/UI/MissionPanel.cs",
+          "fields": {
+            "bgSprite": "MissionPanelBg|Sprite",
+            "titleText": "MissionPanelTitle|Text",
+            "objectiveText": "MissionPanelObjective|Text",
+            "checksText": "MissionPanelChecks|Text",
+            "progressText": "MissionPanelProgress|Text",
+            "rootTransform": "MissionPanel",
+            "appearSeconds": "0.300",
+            "disappearSeconds": "0.160"
+          }
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "MissionPanelBg",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                0.02,
+                0.04,
+                0.07,
+                0.74
+              ],
+              "width": 212.0,
+              "height": 152.0,
+              "layer": 20,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "MissionPanelTitle",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          11.0,
+          6.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 18.0,
+              "color": [
+                1.0,
+                0.9,
+                0.6,
+                1.0
+              ],
+              "align": "left",
+              "vertical_align": "top",
+              "line_spacing": 1.15,
+              "layer": 22,
+              "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+              "icon_set": "assets://mainGame/ui/tutorial.icons",
+              "outline_width": 1.5,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.05,
+                1.0
+              ],
+              "box_width": 190.0,
+              "box_height": 22.0,
+              "wrap": true,
+              "weight": 0.7,
+              "shadow_offset_x": 1.0,
+              "shadow_offset_y": 1.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.55
+              ],
+              "shadow_softness": 1.0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "MissionPanelObjective",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          11.0,
+          32.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 14.0,
+              "color": [
+                0.96,
+                0.98,
+                1.0,
+                1.0
+              ],
+              "align": "left",
+              "vertical_align": "top",
+              "line_spacing": 1.25,
+              "layer": 22,
+              "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+              "icon_set": "assets://mainGame/ui/tutorial.icons",
+              "outline_width": 1.5,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.05,
+                1.0
+              ],
+              "box_width": 190.0,
+              "box_height": 36.0,
+              "wrap": true,
+              "weight": 0.2,
+              "shadow_offset_x": 1.0,
+              "shadow_offset_y": 1.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.55
+              ],
+              "shadow_softness": 1.0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "MissionPanelChecks",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          11.0,
+          72.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 13.0,
+              "color": [
+                0.82,
+                0.96,
+                0.86,
+                1.0
+              ],
+              "align": "left",
+              "vertical_align": "top",
+              "line_spacing": 1.35,
+              "layer": 22,
+              "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+              "icon_set": "assets://mainGame/ui/tutorial.icons",
+              "outline_width": 1.5,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.05,
+                1.0
+              ],
+              "box_width": 190.0,
+              "box_height": 52.0,
+              "wrap": true,
+              "weight": 0.2,
+              "shadow_offset_x": 1.0,
+              "shadow_offset_y": 1.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.55
+              ],
+              "shadow_softness": 1.0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "MissionPanelProgress",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          11.0,
+          128.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 13.0,
+              "color": [
+                0.78,
+                0.88,
+                1.0,
+                1.0
+              ],
+              "align": "left",
+              "vertical_align": "top",
+              "line_spacing": 1.15,
+              "layer": 22,
+              "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+              "icon_set": "assets://mainGame/ui/tutorial.icons",
+              "outline_width": 1.5,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.05,
+                1.0
+              ],
+              "box_width": 190.0,
+              "box_height": 18.0,
+              "wrap": true,
+              "weight": 0.2,
+              "shadow_offset_x": 1.0,
+              "shadow_offset_y": 1.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.55
+              ],
+              "shadow_softness": 1.0
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

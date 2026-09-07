@@ -208,6 +208,11 @@ public class CameraMove : SEEDScript
     /// <summary>Update 後の更新。目標トランスフォームが確定した後に追従する。</summary>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
+        // チュートリアルの締めの演出中は、演出側がカメラを直接動かすので追従しない
+        // （両方が同じフレームで書くと、こちらが後から上書きして演出が効かなくなる）。
+        // 上書きが無ければ従来どおり毎フレーム追従する。
+        if (TutorialRules.Active && TutorialRules.CameraSuspended) { return; }
+
         if (SelectGoalTransform() is not { } t || !t.IsValid) { return; }
 
         // 目標 = 目標トランスフォームの位置・回転そのまま。

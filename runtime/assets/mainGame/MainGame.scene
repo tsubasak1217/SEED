@@ -654,7 +654,7 @@
             "rotation": [
               1.2524877,
               167.28851,
-              0.0000025785946
+              2.5785946e-06
             ],
             "scale": [
               2.7811875,
@@ -678,7 +678,7 @@
                         37.960476
                       ],
                       [
-                        1.2513732e-7,
+                        1.2513732e-07,
                         5.559396,
                         -0.060792,
                         3.2836604
@@ -989,7 +989,7 @@
             "rotation": [
               -0.7586146,
               168.34944,
-              -1.8087846e-7
+              -1.8087846e-07
             ],
             "scale": [
               1.3905941,
@@ -1448,7 +1448,7 @@
         "rotation": [
           1.1905385,
           267.66238,
-          -0.000006509732
+          -6.509732e-06
         ],
         "scale": [
           1.0,
@@ -4365,6 +4365,565 @@
               "children": []
             }
           ]
+        },
+        {
+          "name": "MissionPanel",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              20.0,
+              208.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "MissionPanel",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://mainGame/scripts/Tutorial/UI/MissionPanel.cs",
+                  "fields": {
+                    "bgSprite": "MissionPanelBg|Sprite",
+                    "titleText": "MissionPanelTitle|Text",
+                    "objectiveText": "MissionPanelObjective|Text",
+                    "checksText": "MissionPanelChecks|Text",
+                    "progressText": "MissionPanelProgress|Text",
+                    "rootTransform": "MissionPanel",
+                    "appearSeconds": "0.300",
+                    "disappearSeconds": "0.160"
+                  }
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "MissionPanelBg",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "color": [
+                        0.02,
+                        0.04,
+                        0.07,
+                        0.74
+                      ],
+                      "width": 212.0,
+                      "height": 152.0,
+                      "layer": 20,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "MissionPanelTitle",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  11.0,
+                  6.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "",
+                      "font_size": 18.0,
+                      "color": [
+                        1.0,
+                        0.9,
+                        0.6,
+                        1.0
+                      ],
+                      "align": "left",
+                      "vertical_align": "top",
+                      "line_spacing": 1.15,
+                      "layer": 22,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "assets://mainGame/ui/tutorial.icons",
+                      "outline_width": 1.5,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.05,
+                        1.0
+                      ],
+                      "box_width": 190.0,
+                      "box_height": 22.0,
+                      "wrap": true,
+                      "weight": 0.7,
+                      "shadow_offset_x": 1.0,
+                      "shadow_offset_y": 1.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.55
+                      ],
+                      "shadow_softness": 1.0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "MissionPanelObjective",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  11.0,
+                  32.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "",
+                      "font_size": 14.0,
+                      "color": [
+                        0.96,
+                        0.98,
+                        1.0,
+                        1.0
+                      ],
+                      "align": "left",
+                      "vertical_align": "top",
+                      "line_spacing": 1.25,
+                      "layer": 22,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "assets://mainGame/ui/tutorial.icons",
+                      "outline_width": 1.5,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.05,
+                        1.0
+                      ],
+                      "box_width": 190.0,
+                      "box_height": 36.0,
+                      "wrap": true,
+                      "weight": 0.2,
+                      "shadow_offset_x": 1.0,
+                      "shadow_offset_y": 1.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.55
+                      ],
+                      "shadow_softness": 1.0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "MissionPanelChecks",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  11.0,
+                  72.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "",
+                      "font_size": 13.0,
+                      "color": [
+                        0.82,
+                        0.96,
+                        0.86,
+                        1.0
+                      ],
+                      "align": "left",
+                      "vertical_align": "top",
+                      "line_spacing": 1.35,
+                      "layer": 22,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "assets://mainGame/ui/tutorial.icons",
+                      "outline_width": 1.5,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.05,
+                        1.0
+                      ],
+                      "box_width": 190.0,
+                      "box_height": 52.0,
+                      "wrap": true,
+                      "weight": 0.2,
+                      "shadow_offset_x": 1.0,
+                      "shadow_offset_y": 1.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.55
+                      ],
+                      "shadow_softness": 1.0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "MissionPanelProgress",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  11.0,
+                  128.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "",
+                      "font_size": 13.0,
+                      "color": [
+                        0.78,
+                        0.88,
+                        1.0,
+                        1.0
+                      ],
+                      "align": "left",
+                      "vertical_align": "top",
+                      "line_spacing": 1.15,
+                      "layer": 22,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "assets://mainGame/ui/tutorial.icons",
+                      "outline_width": 1.5,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.05,
+                        1.0
+                      ],
+                      "box_width": 190.0,
+                      "box_height": 18.0,
+                      "wrap": true,
+                      "weight": 0.2,
+                      "shadow_offset_x": 1.0,
+                      "shadow_offset_y": 1.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.55
+                      ],
+                      "shadow_softness": 1.0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "MissionClearBanner",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              -110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "MissionClearBanner",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://mainGame/scripts/Tutorial/UI/MissionClearBanner.cs",
+                  "fields": {
+                    "bgSprite": "MissionClearBg|Sprite",
+                    "bannerText": "MissionClearText|Text",
+                    "rootTransform": "MissionClearBanner",
+                    "bannerLabel": "ミッションクリア！",
+                    "appearSeconds": "0.380",
+                    "holdSeconds": "0.600",
+                    "disappearSeconds": "0.180"
+                  }
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "MissionClearBg",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "color": [
+                        0.03,
+                        0.05,
+                        0.1,
+                        0.8
+                      ],
+                      "width": 520.0,
+                      "height": 96.0,
+                      "layer": 1500,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "MissionClearText",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "ミッションクリア！",
+                      "font_size": 40.0,
+                      "color": [
+                        1.0,
+                        0.88,
+                        0.42,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 1502,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "assets://mainGame/ui/tutorial.icons",
+                      "outline_width": 3.0,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.05,
+                        1.0
+                      ],
+                      "box_width": 520.0,
+                      "box_height": 96.0,
+                      "wrap": true,
+                      "weight": 1.0,
+                      "shadow_offset_x": 1.0,
+                      "shadow_offset_y": 1.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.55
+                      ],
+                      "shadow_softness": 1.0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
         }
       ]
     },
@@ -4580,9 +5139,14 @@
                     "autoStart": "true",
                     "debugForceTutorial": "true",
                     "onTutorialFinished": "[]",
-                    "stepInputLockSeconds": "0.150",
-                    "steps": "[{\"text\": \"よし、着いたぜ。\\nここが俺の釣り場だ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"飛べねェ鳥にゃ\\n海が狩り場よ。\\n釣りを教えてやる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"まずは足だ。\\n[icon:key_w] で前、\\n[icon:key_s] で後ろに歩く。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"歩いてみな！\\n[icon:key_w] [icon:key_s] で前後によ。\", \"anchorMode\": \"AboveTarget\", \"target\": \"Player\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Seconds\", \"finishEventName\": \"\", \"finishSeconds\": 6.0, \"pauseTime\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"場所を決めたら\\n[icon:mouse_l] を押しっぱだ。\\n竿を構えるんだぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"構えてる間は\\n[icon:key_a] [icon:key_d] で向きを\\n変えられるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"[icon:mouse_l] を押して\\n構えてみな。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.ready_begin\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"構えたままだと\\n竿が振りかぶる。\\n着水点の印が\\n行ったり来たりだ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"狙いの位置に来たら\\nマウスを左から右へ\\n勢いよく振る！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"印が合ったら\\n左から右へ振れ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.cast\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"着水したな。\\nウキが大きく沈む\\n瞬間があるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"OnEvent\", \"startEventName\": \"fishing.land\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"ForceBite\", \"scriptedParam\": \"\", \"scriptedSeconds\": 2.0, \"scriptedLevel\": 1, \"onStart\": [], \"onEnd\": []}, {\"text\": \"沈んだ瞬間に\\n[icon:mouse_l] で竿を振る。\\n早くても遅くても\\n逃げられるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"沈んだ瞬間に\\n[icon:mouse_l] で合わせろ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.fight_begin\", \"finishSeconds\": 90.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"掛かったな！\\nここからが勝負だ。\\n魚のリズムで印が\\n流れてくるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"重なった瞬間に\\n[icon:mouse_l] でタップだ。\\n外すと糸が減るぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ピタリと決まりゃ\\n魚が長くひるむ。\\nそこが狙い目よ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"リズムに合わせて\\n[icon:mouse_l] でタップ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.stun_begin\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ひるんだぞ！\\n今のうちに糸を巻け。\\nホイールを回すんだ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"[icon:key_a] [icon:key_d] でウキを\\n左右に寄せられる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ホイールを回して\\n糸を巻きな！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.reel\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": true, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"海にゃ漂流物が\\n流れてくる。\\n巻き寄せて拾いな。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"SpawnDrift\", \"scriptedParam\": \"line_recover\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"糸が直ったり\\n魚がひるんだりだ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"だが魚が元気に\\nなって沖へ走る\\nシロモノもある。\\n気をつけな。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"最後に大事な話だ。\\n釣った魚は\\n次のエサになる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"デケェ魚は\\n小せェ魚を狙う。\\n小魚から順に\\n大物へつなげろ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ま、体で覚えな。\\n行ってきな、ササミ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}]",
-                    "window": "TutorialWindow"
+                    "inputLockSeconds": "0.150",
+                    "gaugeRestoreSeconds": "0.500",
+                    "window": "TutorialWindow",
+                    "panel": "MissionPanel",
+                    "banner": "MissionClearBanner",
+                    "playerMove": "Player|Script",
+                    "missions": "[{\"id\": \"t1_move\", \"kind\": \"Move\", \"title\": \"はじめの一歩\", \"objective\": \"[icon:key_w] [icon:key_s] で目印まで歩こう\", \"skipClearBanner\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"TutorialMoveTarget\", \"paramText\": \"\", \"paramValue\": 3.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_ready\", \"kind\": \"Ready\", \"title\": \"竿を構える\", \"objective\": \"[icon:mouse_l] を押しっぱなしで構えよう\", \"skipClearBanner\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_cast\", \"kind\": \"Cast\", \"title\": \"仕掛けを投げる\", \"objective\": \"構えてマウスを左から右へ振ろう\", \"skipClearBanner\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_hook\", \"kind\": \"Hook\", \"title\": \"アタリを取る\", \"objective\": \"ウキが沈んだら [icon:mouse_l] で合わせよう\", \"skipClearBanner\": false, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"driftDisabled\": true, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": true, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_beat\", \"kind\": \"Beat\", \"title\": \"リズムを刻む\", \"objective\": \"ミスなしで 1 周たたこう\", \"skipClearBanner\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": true, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": true, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_reel\", \"kind\": \"Reel\", \"title\": \"巻き上げる\", \"objective\": \"ホイールを回して魚を寄せよう\", \"skipClearBanner\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": true, \"beatDisabled\": true, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": true, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"s1_catch\", \"kind\": \"CatchTarget\", \"title\": \"クマノミを釣ろう！\", \"objective\": \"クマノミを 1 匹釣り上げよう\", \"skipClearBanner\": false, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"driftDisabled\": true, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"kumanomi\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_chain\", \"kind\": \"ChainCatch\", \"title\": \"魚で魚を釣ろう！\", \"objective\": \"掛かった魚を大物に食わせよう\", \"skipClearBanner\": false, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"driftDisabled\": true, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_drift\", \"kind\": \"DriftPickup\", \"title\": \"漂流物を拾おう！\", \"objective\": \"巻く向きを決めて 3 種とも拾おう\", \"skipClearBanner\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": true, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_land\", \"kind\": \"Land\", \"title\": \"釣り上げよう！\", \"objective\": \"糸が切れても最後まで巻き上げよう\", \"skipClearBanner\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": true, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"end_kaiju\", \"kind\": \"Cutscene\", \"title\": \"海の主\", \"objective\": \"……\", \"skipClearBanner\": true, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"driftDisabled\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"assets://mainGame/actors/Fish/Lv10/kaiju.actor\", \"paramValue\": 3.4, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}]",
+                    "dialogues": "[{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"よし、着いたぜ。\\nここが俺の釣り場だ。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"飛べねェ鳥にゃ\\n海が狩り場よ。\\n釣りを教えてやる。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"まずは足だ。\\n[icon:key_w] で前、\\n[icon:key_s] で後ろに歩く。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"あの光ってる印まで\\n歩いてみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"pauseTime\": true}, {\"missionId\": \"t1_move\", \"slot\": \"Clear\", \"text\": \"その調子だ。\\n釣りは足場が肝心よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"場所を決めたら\\n[icon:mouse_l] を押しっぱだ。\\n竿を構えるんだぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"構えてる間は\\n[icon:key_a] [icon:key_d] で向きを\\n変えられるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"右と左、\\n端まで振ってみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"pauseTime\": true}, {\"missionId\": \"t1_ready\", \"slot\": \"Clear\", \"text\": \"そうだ。\\n狙う先は自分で決めな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_cast\", \"slot\": \"Intro\", \"text\": \"構えたままだと\\n竿が振りかぶる。\\n着水点の印が\\n行ったり来たりだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_cast\", \"slot\": \"Intro\", \"text\": \"狙いの位置に来たら\\nマウスを左から右へ\\n勢いよく振る！\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_cast\", \"slot\": \"Clear\", \"text\": \"見事な飛びだ。\\nあとは待つだけよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"着水したな。\\nウキが大きく沈む\\n瞬間があるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"沈んだ瞬間に\\n[icon:mouse_l] で竿を振る。\\n早くても遅くても\\n逃げられるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"外しても大丈夫だ。\\n今日は魚が\\n何度でも戻ってくる。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_hook\", \"slot\": \"Clear\", \"text\": \"掛かったな！\\nいい合わせだったぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ここからが勝負だ。\\n魚のリズムで印が\\n流れてくるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"重なった瞬間に\\n[icon:mouse_l] でタップだ。\\n外すと糸が減るぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ピタリと決まりゃ\\n魚が長くひるむ。\\nそこが狙い目よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"今は糸が切れねェ。\\n一周ミスなしで\\n刻んでみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Clear\", \"text\": \"上出来だ。\\n魚がひるんでるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_reel\", \"slot\": \"Intro\", \"text\": \"ひるんだぞ！\\n今のうちに糸を巻け。\\nホイールを回すんだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_reel\", \"slot\": \"Intro\", \"text\": \"[icon:key_a] [icon:key_d] でウキを\\n左右に寄せられる。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t1_reel\", \"slot\": \"Clear\", \"text\": \"釣り上げたな。\\nこれで一人前の入口よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"さて、本番だ。\\nこの辺りにゃ\\n小魚がうようよいる。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"俺が欲しいのは\\nクマノミって魚よ。\\nオレンジの縞々だ。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"ほかのが掛かっても\\n気にすんな。\\n粘って釣り当てな。\", \"anchorTarget\": \"AnchorTopLeft\", \"pauseTime\": true}, {\"missionId\": \"s1_catch\", \"slot\": \"Clear\", \"text\": \"そいつだ！\\n狙って釣るってのは\\nこういうことよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"大事な話だ。\\n釣った魚は\\n次のエサになる。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"デケェ魚は\\n小せェ魚を狙う。\\n小魚から順に\\n大物へつなげろ。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"掛けたら隙を作りな。\\nひるんでる間に\\n横取りされるのよ。\", \"anchorTarget\": \"AnchorTopLeft\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Clear\", \"text\": \"乗り換わったな。\\nこれがわらしべよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"Intro\", \"text\": \"海にゃ漂流物が\\n流れてくる。\\n巻き寄せて拾いな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"Intro\", \"text\": \"[icon:key_a] [icon:key_d] で巻く向きを\\n決めるんだ。\\nその先に流してやる。\", \"anchorTarget\": \"AnchorTopLeft\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"DriftLineRecover\", \"text\": \"そいつは糸を直す。\\n切れかけを\\n戻せるってわけだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"DriftStun\", \"text\": \"そいつで魚がひるむ。\\n巻ける隙が\\n伸びるのよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"DriftFishRecover\", \"text\": \"だが魚が元気に\\nなって沖へ走る\\nシロモノもある。\\n気をつけな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"Clear\", \"text\": \"三つとも覚えたな。\\n拾うかどうかは\\n自分で決めろよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"最後だ。\\n今度は糸が切れる。\\n本番と同じよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"切れても魚は\\n逃がさねェでおく。\\n何度でも巻き直しな。\", \"anchorTarget\": \"AnchorTopLeft\", \"pauseTime\": true}, {\"missionId\": \"t2_land\", \"slot\": \"Clear\", \"text\": \"見事だ、ササミ。\\nもう教えることはねェ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"pauseTime\": true}, {\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"……見たか、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"俺が唯一釣れなかった\\nアイツを、\\n釣りあげてくれ。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}, {\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"ま、体で覚えな。\\n行ってきな、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"pauseTime\": true}]"
                   }
                 }
               }
@@ -5305,7 +5869,7 @@
                       ],
                       [
                         1.5036188,
-                        -0.00007515028,
+                        -7.515028e-05,
                         0.84553915,
                         -657.0699
                       ],
@@ -14194,6 +14758,28 @@
           ]
         }
       ]
+    },
+    {
+      "name": "TutorialMoveTarget",
+      "transform": {
+        "position": [
+          43.09,
+          1.61,
+          43.2
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [],
+      "children": []
     }
   ]
 }

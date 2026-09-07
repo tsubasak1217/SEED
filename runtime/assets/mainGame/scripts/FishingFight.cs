@@ -191,6 +191,12 @@ public class FishingFight : SEEDScript
     private const int MinPhaseBars = 1;
 
     /// <summary>
+    /// チュートリアルで「ビートバトルなし」を指定されたときの隙の小節数。
+    /// 事実上終わらない長さにして、魚をずっとひるませたまま巻かせる。
+    /// </summary>
+    private const int TutorialEndlessRestBars = 9999;
+
+    /// <summary>
     /// ドラムループ素材の拍子（4/4 前提）。素材の小節数から総拍数を出すのに使う。
     /// 魚側の拍子（<see cref="beatsPerBar"/>）とは別物なので混同しないこと。
     /// </summary>
@@ -1135,6 +1141,8 @@ public class FishingFight : SEEDScript
     /// <param name="ctx">フレーム情報（未使用）。</param>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
+        // 表示用のゲージは「ゲームが止まっていても動く」演出なので実時間で進める
+        UpdateGaugeDisplay(SEED.Time.UnscaledDeltaTime);
         DrawGauge();
     }
 
@@ -1204,6 +1212,26 @@ public class FishingFight : SEEDScript
                      + $" / 掛かった距離 {hookDistance:F1}m → 目標 {DesiredFloatDistance:F1}m"
                      + $" / {BpmOf(fish):F0}BPM {beatsPerBar}拍子 / パターン {patterns.Count} 種"
                      + $" / 初期の糸の残り {Line01:F2}");
+    }
+
+    /// <summary>
+    /// 糸の残りを満タンへ戻す【復帰の唯一の入口】。
+    ///
+    /// チュートリアルの「ミスしたらもう一周」で、周回の頭にゲージを戻すために使う。
+    /// 実値は即座に満タンになり、<b>見た目だけ</b>が指定秒数かけて追いつく
+    /// （<see cref="Easing.OutBack"/> なので少し行き過ぎてから収まり、「ぬっ」と伸びて見える）。
+    /// </summary>
+    /// <param name="seconds">見た目が追いつくまでの秒数（0 以下なら即座に満タン表示）。</param>
+    public void RestoreLineFull(float seconds)
+    {
+        gaugeEaseFrom    = gaugeDisplayLine01;
+        gaugeEaseElapsed = 0f;
+        gaugeEaseSeconds = SEED.Mathf.Max(seconds, 0f);
+
+        Line01     = Line01Max;
+        LineBroken = false;
+
+        if (gaugeEaseSeconds <= 0f) { gaugeDisplayLine01 = Line01; }
     }
 
     /// <summary>
@@ -1704,7 +1732,36 @@ public class FishingFight : SEEDScript
 
         if (clockTime < phaseEndTime) { return; }
 
-        EnterPhase(NextPhase(CurrentPhase));
+        EnterPhase(ResolveNextPhase(NextPhase(CurrentPhase)));
+    }
+
+    /// <summary>
+    /// 巡回順で決まった次のフェーズへ、チュートリアルのルール上書きを掛ける
+    /// 【遷移先の上書きの唯一の場所】。
+    ///
+    /// 上書きが無ければ（<see cref="TutorialRules.Active"/> が false なら）
+    /// 引数をそのまま返すので、本編の巡回は一切変わらない。
+    /// </summary>
+    /// <param name="natural">巡回順（<see cref="NextPhase"/>）が決めた本来の遷移先。</param>
+    /// <returns>実際に入るフェーズ。</returns>
+    private Phase ResolveNextPhase(Phase natural)
+    {
+        if (!TutorialRules.Active) { return natural; }
+
+        // ビート無効: 出題・回答を行わず、ずっと隙（＝巻けるだけ）にする
+        if (TutorialRules.BeatDisabled) { return Phase.Rest; }
+
+        // ミス即やり直し: 回答を終えた時点でミスがあれば、隙を挟まず出題へ戻す。
+        // やり直しの頭でゲージを満タンへ戻すので、何度でも同じ条件で挑める。
+        if (TutorialRules.RestartCycleOnMiss
+            && CurrentPhase == Phase.Answer
+            && missedThisCycle)
+        {
+            RestoreLineFull(TutorialRules.GaugeRestoreSeconds);
+            return Phase.Call;
+        }
+
+        return natural;
     }
 
     /// <summary>
@@ -1721,7 +1778,7 @@ public class FishingFight : SEEDScript
         if (beats <= 0)
         {
             clockTime = 0f;
-            EnterPhase(Phase.Call);
+            EnterPhase(ResolveNextPhase(Phase.Call));
             return;
         }
 
@@ -1841,6 +1898,7 @@ public class FishingFight : SEEDScript
 
         ResetIcons(callHitSubs.Count);
         extraClickCount = 0;
+        missedThisCycle = false;   // 新しい周回の頭でミス記録を畳む
         iconFadeStartTime = NoFadeStart;
 
         RestartDrumAtCallHead();
@@ -1960,6 +2018,10 @@ public class FishingFight : SEEDScript
     {
         if (phase == Phase.Rest)
         {
+            // チュートリアルで「ビートバトルなし」のときは隙から出さない
+            // （魚は最初からひるんでいて、巻くだけで釣り上げられる状態になる）
+            if (TutorialRules.Active && TutorialRules.BeatDisabled) { return TutorialEndlessRestBars; }
+
             return SEED.Mathf.Max(lastAnswerPerfect ? restBarsPerfect : restBarsNormal, MinPhaseBars);
         }
 
@@ -2230,9 +2292,22 @@ public class FishingFight : SEEDScript
     /// </summary>
     private void ApplyMiss()
     {
+        // この周回でミスが出たことを控える（チュートリアルの再周回判断が読む）
+        missedThisCycle = true;
+
         SubtractLine(SEED.Mathf.Max(missLoss, 0f));
         FishingController.Current?.ShowFightJudgement(FishingController.HookJudgement.Miss, 0f);
     }
+
+    /// <summary>
+    /// 糸ゲージの<b>表示用</b>の残量【描画が読む唯一の値】。
+    ///
+    /// 通常は <see cref="Line01"/> と同値だが、<see cref="RestoreLineFull"/> で満タンへ戻すときだけ
+    /// この値がイージングで追いつく（「ぬっ」と伸びる手触りを出すため）。
+    /// 実値と表示値を分けておかないと、演出のために実値を書き換えることになり
+    /// 判定（糸切れ）と見た目がずれる。
+    /// </summary>
+    public float DisplayLine01 => gaugeDisplayLine01;
 
     /// <summary>左クリックの押下をこのフレームに読んだか（叩き入力の唯一の入口）。</summary>
     private static bool ReadTapDown()
@@ -2301,6 +2376,11 @@ public class FishingFight : SEEDScript
 
         Line01 = SEED.Mathf.Max(Line01 - amount, Line01Min);
         if (Line01 > Line01Min) { return; }
+
+        // チュートリアルの練習ミッションでは、糸が 0 になっても切らさない
+        // （減っていく見た目は残したまま、失敗で中断されないようにする）。
+        if (TutorialRules.Active && TutorialRules.LineBreakDisabled) { return; }
+
         if (LineBroken) { return; }             // 既に通知済みなら二重に鳴らさない
 
         LineBroken = true;
@@ -2396,6 +2476,26 @@ public class FishingFight : SEEDScript
         SEED.Audio.Play(answerClickSePath, answerClickSeVolume);
     }
 
+    // ─── 内部状態: 糸ゲージの表示演出 ───────────────────────
+
+    /// <summary>表示中の糸残量（0〜1。実値 <see cref="Line01"/> に追従する）。</summary>
+    private float gaugeDisplayLine01 = Line01Max;
+
+    /// <summary>復帰イージングの開始時点の表示値。</summary>
+    private float gaugeEaseFrom = Line01Max;
+
+    /// <summary>復帰イージングの所要秒（0 以下なら演出せず実値へ即追従）。</summary>
+    private float gaugeEaseSeconds;
+
+    /// <summary>復帰イージングの経過秒（実時間）。</summary>
+    private float gaugeEaseElapsed;
+
+    /// <summary>
+    /// この周回（出題→回答）でミスがあったか。
+    /// チュートリアルの「1 周ミスなしで刻む」ミッションが再周回の判断に使う。
+    /// </summary>
+    private bool missedThisCycle;
+
     /// <summary>実行時の状態をすべて初期値へ戻す（開始前・終了後の共通処理）。</summary>
     private void ResetRuntimeState()
     {
@@ -2413,6 +2513,13 @@ public class FishingFight : SEEDScript
         LineBroken = false;
         CurrentPhase = Phase.None;
         Line01 = Line01Max;
+
+        // 表示用のゲージも実値へ揃え、掛かりかけの復帰演出を持ち越さない
+        gaugeDisplayLine01 = Line01Max;
+        gaugeEaseFrom      = Line01Max;
+        gaugeEaseSeconds   = 0f;
+        gaugeEaseElapsed   = 0f;
+        missedThisCycle    = false;
         fishHp = 0f;
         fishHpMax = 0f;
         metersPerHp = 0f;
@@ -2480,7 +2587,7 @@ public class FishingFight : SEEDScript
         float alpha = SEED.Mathf.Clamped01(segmentOpacity);
         SEED.Color litColor = LineDepletionColor(alpha);
         SEED.Color unlitColor = ToColor(emptyColor, alpha);
-        float lit = SEED.Mathf.Clamped01(Line01) * count;
+        float lit = SEED.Mathf.Clamped01(gaugeDisplayLine01) * count;
 
         float halfWidth = segmentWidthPx * HalfScale;
         float halfHeight = segmentHeightPx * HalfScale;
@@ -2555,6 +2662,31 @@ public class FishingFight : SEEDScript
         => new SEED.Vector2(origin.x + offset.x, origin.y + offset.y);
 
     /// <summary>
+    /// 糸ゲージの表示値を実値へ追いつかせる【表示値更新の唯一の実装】。
+    /// 復帰イージング中でなければ実値をそのまま写す（＝従来と同じ見た目）。
+    /// </summary>
+    /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
+    private void UpdateGaugeDisplay(float unscaledDelta)
+    {
+        if (gaugeEaseSeconds <= 0f)
+        {
+            gaugeDisplayLine01 = Line01;
+            return;
+        }
+
+        gaugeEaseElapsed += SEED.Mathf.Max(unscaledDelta, 0f);
+
+        float progress = Easing.Progress01(gaugeEaseElapsed, gaugeEaseSeconds);
+        gaugeDisplayLine01 = SEED.Mathf.LerpUnclamped(gaugeEaseFrom, Line01, Easing.OutBack(progress));
+
+        if (progress >= 1f)
+        {
+            gaugeEaseSeconds   = 0f;
+            gaugeDisplayLine01 = Line01;
+        }
+    }
+
+    /// <summary>
     /// 糸の残り（<see cref="Line01"/>）に応じた点灯セグメントの色。
     /// 満タン(1.0)＝<see cref="fullColor"/> → 中間(0.5)＝<see cref="midColor"/> →
     /// 危険(0.0)＝<see cref="dangerColor"/> の 2 区間線形補間。
@@ -2562,7 +2694,7 @@ public class FishingFight : SEEDScript
     /// <param name="alpha">不透明度。</param>
     private SEED.Color LineDepletionColor(float alpha)
     {
-        float line = SEED.Mathf.Clamped01(Line01);
+        float line = SEED.Mathf.Clamped01(gaugeDisplayLine01);
         const float Mid = 0.5f;
 
         if (line >= Mid)

@@ -73,6 +73,9 @@ public class FishManager : SEEDScript
     /// </summary>
     private const float RareFishRate = 0.1f;
 
+    /// <summary>レベル番号（1 始まり）を <see cref="levels"/> の添字（0 始まり）へ直す差分。</summary>
+    private const int LevelNumberToIndex = 1;
+
     /// <summary>
     /// 距離の一致とみなす微小量（メートル）。
     /// 近／遠マーカーが同距離のときの 0 除算を避けるための下限に使う。
@@ -149,6 +152,16 @@ public class FishManager : SEEDScript
     /// </summary>
     private readonly Dictionary<(uint Index, uint Generation), int> fishLevels = new();
 
+    /// <summary>
+    /// 生成した魚のエンティティ → 生成に使った .actor パスの対応表
+    /// 【魚の「種類」を後から知る唯一の手段】。
+    ///
+    /// <see cref="Fish"/> は表示名しか持たず、どの prefab から生まれたかを覚えていない。
+    /// 「クマノミを釣ったらクリア」のように<b>種類で判定したい</b>場面のために、
+    /// 生成側（ここ）がパスを控えておく。キーの作り方は <see cref="fishLevels"/> と同じ。
+    /// </summary>
+    private readonly Dictionary<(uint Index, uint Generation), string> fishPrefabPaths = new();
+
     // ─── 台本（チュートリアル用の強制設定）─────────────────
 
     /// <summary>台本のレベル指定が無いことを表す値（負のレベルは存在しないため番人値に使える）。</summary>
@@ -206,6 +219,20 @@ public class FishManager : SEEDScript
         return fishLevels.TryGetValue((fish.Entity.Index, fish.Entity.Generation), out int level)
             ? level
             : Fish.UnknownLevel;
+    }
+
+    /// <summary>
+    /// 指定の魚アクタが「どの .actor から生まれたか」を返す。
+    /// このマネージャが生成していない魚（手置きなど）は空文字。
+    /// </summary>
+    /// <param name="fish">魚のアクタ。</param>
+    /// <returns>生成に使った assets:// パス。未登録なら空文字。</returns>
+    public string PrefabPathOf(SEED.GameObject fish)
+    {
+        if (!fish.IsValid) { return string.Empty; }
+        return fishPrefabPaths.TryGetValue((fish.Entity.Index, fish.Entity.Generation), out string? path)
+            ? path
+            : string.Empty;
     }
 
     // ─── 台本 API（チュートリアルから呼ぶ強制設定）─────────
@@ -355,13 +382,27 @@ public class FishManager : SEEDScript
             // 台本を解除すれば次のフレームから通常どおり全レベルが補充される。
             if (HasScriptedSpawn && i != scriptedLevelIndex) { continue; }
 
+            // チュートリアルのミッションが「このレベルの魚だけ出す」と指定していれば従う。
+            // 上書きが無ければ（TutorialRules.Active が false なら）この分岐は素通りし、
+            // 従来どおり全レベルが補充される。
+            if (TutorialRules.Active
+                && TutorialRules.FishLevelFilter > TutorialRules.NoLevelFilter
+                && i != TutorialRules.FishLevelFilter - LevelNumberToIndex)
+            {
+                continue;
+            }
+
             var alive = spawnedFish[i];
             // 死んだ個体は追跡リストからもレベル対応表からも同時に外す
             // （対応表だけ残すとエンティティの使い回しで別個体へ誤ったレベルが付く）
             alive.RemoveAll(f =>
             {
                 if (IsAlive(f)) { return false; }
-                if (f.IsValid) { fishLevels.Remove((f.Entity.Index, f.Entity.Generation)); }
+                if (f.IsValid)
+                {
+                    fishLevels.Remove((f.Entity.Index, f.Entity.Generation));
+                    fishPrefabPaths.Remove((f.Entity.Index, f.Entity.Generation));
+                }
                 return true;
             });
 
@@ -378,6 +419,39 @@ public class FishManager : SEEDScript
     /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
     /// <param name="fish">生成した魚（失敗時は無効ハンドル）。</param>
     private bool TrySpawnOne(int levelIndex, out SEED.GameObject fish)
+        => TrySpawnOneCore(levelIndex, false, SEED.Vector3.Zero, 0f, out fish);
+
+    /// <summary>
+    /// 指定した地点のまわりに魚を 1 匹その場で生成する【台本用の位置指定生成】。
+    ///
+    /// わらしべ連鎖のチュートリアルのように「掛かっている魚のすぐそばに
+    /// 上位レベルの魚を必ず出す」場面で使う。通常の出現円環を無視するので、
+    /// 本編の出現ロジックには一切影響しない。
+    /// </summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="center">出現の中心（ワールド座標。Y は生成高さで上書きされる）。</param>
+    /// <param name="radius">中心からのばらつき半径（メートル。0 以下なら中心ちょうど）。</param>
+    /// <param name="fish">生成した魚（失敗時は無効ハンドル）。</param>
+    /// <returns>生成できたら true。</returns>
+    public bool SpawnOneNear(int levelIndex, SEED.Vector3 center, float radius, out SEED.GameObject fish)
+        => TrySpawnOneCore(levelIndex, true, center, SEED.Mathf.Max(radius, 0f), out fish);
+
+    /// <summary>
+    /// 魚 1 匹の生成の実体【生成の唯一の出口】。
+    /// prefab の抽選・出現位置の決定・レベル / パスの控えをここに集約する。
+    /// </summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="usePositionOverride">true なら円環ではなく <paramref name="overrideCenter"/> の近くに出す。</param>
+    /// <param name="overrideCenter">位置指定生成の中心（ワールド座標）。</param>
+    /// <param name="overrideRadius">位置指定生成のばらつき半径（メートル）。</param>
+    /// <param name="fish">生成した魚（失敗時は無効ハンドル）。</param>
+    /// <returns>生成できたら true。</returns>
+    private bool TrySpawnOneCore(
+        int levelIndex,
+        bool usePositionOverride,
+        SEED.Vector3 overrideCenter,
+        float overrideRadius,
+        out SEED.GameObject fish)
     {
         fish = default;
         if (levelIndex < 0 || levelIndex >= levels.Count) { return false; }
@@ -386,15 +460,109 @@ public class FishManager : SEEDScript
         bool hasRare   = level.rareFishPrefabs is { Count: > 0 };
         if (!hasNormal && !hasRare) { return false; }
 
-        // 出現枠の抽選: レア枠は合計 RareFishRate(10%)、残り(90%)は通常枠。
-        // 片方の枠しか無いレベルではその枠が 100% になる。枠内は均等割りなので、
-        // 「レア魚の出現率 10%・残りを残りの魚で割る」という仕様がそのまま成立する。
-        bool pickRare = hasRare && (!hasNormal || random.NextDouble() < RareFishRate);
-        var pool = pickRare ? level.rareFishPrefabs : level.fishPrefabs;
+        // チュートリアルが「必ずこの魚を出せ」と言っていれば、抽選より先にそれを探す。
+        // 見つからなければ（そのレベルに居ない魚を指定した等）通常の抽選へ落ちる。
+        string path = PickTutorialPrefab(level);
 
-        // prefab をランダムに 1 つ選ぶ（空文字は未設定とみなしてスキップ）
-        string path = pool[random.Next(pool.Count)];
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            // 出現枠の抽選: レア枠は合計 RareFishRate(10%)、残り(90%)は通常枠。
+            // 片方の枠しか無いレベルではその枠が 100% になる。枠内は均等割りなので、
+            // 「レア魚の出現率 10%・残りを残りの魚で割る」という仕様がそのまま成立する。
+            bool pickRare = hasRare && (!hasNormal || random.NextDouble() < RareFishRate);
+            var pool = pickRare ? level.rareFishPrefabs : level.fishPrefabs;
+
+            // prefab をランダムに 1 つ選ぶ（空文字は未設定とみなしてスキップ）
+            path = pool[random.Next(pool.Count)];
+        }
+
         if (string.IsNullOrWhiteSpace(path)) { return false; }
+
+        // 出現位置を決める（円環内のランダム、または台本の位置指定）
+        if (!TryPickSpawnPosition(levelIndex, usePositionOverride, overrideCenter, overrideRadius, out var spawnPos))
+        {
+            return false;
+        }
+
+        // 生成して位置を合わせる（Instantiate 失敗時は false）
+        fish = SEED.GameObject.Instantiate(path);
+        if (!fish.IsValid) { return false; }
+        if (fish.GetComponent<SEED.Transform>() is not { } t || !t.IsValid) { return false; }
+        t.Position = spawnPos;
+
+        // レベル（1 始まり）と .actor パスを対応表へ控える。
+        // 魚側は OnStart でレベルを 1 度だけ読み、種類の判定はパスの方を使う。
+        fishLevels[(fish.Entity.Index, fish.Entity.Generation)] = levelIndex + LevelNumberToIndex;
+        fishPrefabPaths[(fish.Entity.Index, fish.Entity.Generation)] = path;
+        return true;
+    }
+
+    /// <summary>
+    /// チュートリアルの魚種フィルタに一致する prefab を、このレベルの候補から探す。
+    /// フィルタが無い・一致が無い場合は空文字を返し、呼び出し側は通常の抽選へ落ちる。
+    /// </summary>
+    /// <param name="level">対象のレベル定義。</param>
+    /// <returns>一致した .actor パス。無ければ空文字。</returns>
+    private static string PickTutorialPrefab(FishLevelEntry level)
+    {
+        if (!TutorialRules.Active) { return string.Empty; }
+
+        string filter = TutorialRules.FishPrefabFilter;
+        if (string.IsNullOrWhiteSpace(filter)) { return string.Empty; }
+
+        string? hit = FindPrefabContaining(level.fishPrefabs, filter)
+                   ?? FindPrefabContaining(level.rareFishPrefabs, filter);
+        return hit ?? string.Empty;
+    }
+
+    /// <summary>
+    /// prefab パスのリストから、指定の文字列を含む最初のパスを探す。
+    /// </summary>
+    /// <param name="paths">探索対象のリスト（null 可）。</param>
+    /// <param name="needle">含まれていてほしい文字列（ファイル名の一部など）。</param>
+    /// <returns>見つかったパス。無ければ null。</returns>
+    private static string? FindPrefabContaining(List<string>? paths, string needle)
+    {
+        if (paths is null) { return null; }
+        for (int i = 0; i < paths.Count; i++)
+        {
+            string candidate = paths[i];
+            if (string.IsNullOrWhiteSpace(candidate)) { continue; }
+            if (candidate.Contains(needle, System.StringComparison.OrdinalIgnoreCase)) { return candidate; }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 魚 1 匹の出現位置を決める【出現位置決定の唯一の実装】。
+    /// 通常は円環内のランダム、台本の位置指定があればその近傍。
+    /// </summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="usePositionOverride">true なら位置指定を使う。</param>
+    /// <param name="overrideCenter">位置指定の中心。</param>
+    /// <param name="overrideRadius">位置指定のばらつき半径。</param>
+    /// <param name="spawnPos">決定した出現位置。</param>
+    /// <returns>位置を決められたら true（円環の設定不備なら false）。</returns>
+    private bool TryPickSpawnPosition(
+        int levelIndex,
+        bool usePositionOverride,
+        SEED.Vector3 overrideCenter,
+        float overrideRadius,
+        out SEED.Vector3 spawnPos)
+    {
+        spawnPos = SEED.Vector3.Zero;
+
+        if (usePositionOverride)
+        {
+            // 台本の位置指定: 指定点まわりの円内へ一様に散らす。
+            float overrideAngle    = (float)random.NextDouble() * FullTurnRadians;
+            float overrideDistance = (float)random.NextDouble() * overrideRadius;
+            spawnPos = new SEED.Vector3(
+                overrideCenter.x + SEED.Mathf.Sin(overrideAngle) * overrideDistance,
+                spawnHeight,
+                overrideCenter.z + SEED.Mathf.Cos(overrideAngle) * overrideDistance);
+            return true;
+        }
 
         // 出現距離の範囲（円環）= 中心点から各マーカーまでの XZ 平面距離。
         // マーカー未設定・近遠が逆などの設定不備なら生成しない（静かに握り潰さない）。
@@ -407,19 +575,10 @@ public class FishManager : SEEDScript
         float distance = ring.Near + (float)random.NextDouble() * span;
 
         // 高さ: 「生成する高さ(Y)」の固定値をそのまま使う。
-        var spawnPos = new SEED.Vector3(
+        spawnPos = new SEED.Vector3(
             center.x + SEED.Mathf.Sin(angle) * distance,
             spawnHeight,
             center.z + SEED.Mathf.Cos(angle) * distance);
-
-        // 生成して位置を合わせる（Instantiate 失敗時は false）
-        fish = SEED.GameObject.Instantiate(path);
-        if (!fish.IsValid) { return false; }
-        if (fish.GetComponent<SEED.Transform>() is not { } t || !t.IsValid) { return false; }
-        t.Position = spawnPos;
-
-        // レベル（1 始まり）を対応表へ控える。魚側は OnStart でここから 1 度だけ読む。
-        fishLevels[(fish.Entity.Index, fish.Entity.Generation)] = levelIndex + 1;
         return true;
     }
 

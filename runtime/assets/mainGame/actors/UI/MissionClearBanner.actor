@@ -1,0 +1,171 @@
+{
+  "name": "MissionClearBanner",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      -110.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.5,
+      0.5
+    ],
+    "anchor": [
+      0.5,
+      0.5
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "MissionClearBanner",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "assets://mainGame/scripts/Tutorial/UI/MissionClearBanner.cs",
+          "fields": {
+            "bgSprite": "MissionClearBg|Sprite",
+            "bannerText": "MissionClearText|Text",
+            "rootTransform": "MissionClearBanner",
+            "bannerLabel": "ミッションクリア！",
+            "appearSeconds": "0.380",
+            "holdSeconds": "0.600",
+            "disappearSeconds": "0.180"
+          }
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "MissionClearBg",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                0.03,
+                0.05,
+                0.1,
+                0.8
+              ],
+              "width": 520.0,
+              "height": 96.0,
+              "layer": 1500,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "MissionClearText",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "ミッションクリア！",
+              "font_size": 40.0,
+              "color": [
+                1.0,
+                0.88,
+                0.42,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 1502,
+              "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+              "icon_set": "assets://mainGame/ui/tutorial.icons",
+              "outline_width": 3.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.05,
+                1.0
+              ],
+              "box_width": 520.0,
+              "box_height": 96.0,
+              "wrap": true,
+              "weight": 1.0,
+              "shadow_offset_x": 1.0,
+              "shadow_offset_y": 1.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.55
+              ],
+              "shadow_softness": 1.0
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

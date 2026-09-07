@@ -173,6 +173,11 @@ public class DriftItemManager : SEEDScript
     /// </summary>
     private bool ShouldSpawn()
     {
+        // チュートリアルのミッションが「漂流物なし」と言っていれば自然出現は止める
+        // （台本による明示生成 SpawnScripted は別経路なので影響を受けない）。
+        // 上書きが無ければこの分岐は素通りし、従来どおり出現する。
+        if (TutorialRules.Active && TutorialRules.DriftDisabled) { return false; }
+
         if (FishingController.Current is not { } controller) { return false; }
         if (!activeOnlyWhileHooked) { return true; }
         return controller.IsHooked;

@@ -36,6 +36,14 @@ public class PlayerMove : SEEDScript
         FishingStance,
     }
 
+    /// <summary>
+    /// プレイヤーのワールド位置【外部から位置を知る唯一の手段】。
+    ///
+    /// <c>SEEDScript.transform</c> は protected なので、他スクリプトからは読めない。
+    /// チュートリアルの「指定地点まで歩く」ミッションが到達判定に使う。
+    /// </summary>
+    public SEED.Vector3 WorldPosition => transform.IsValid ? transform.Position : SEED.Vector3.Zero;
+
     /// <summary>現在の行動状態（他スクリプトから参照する読み取り専用プロパティ）。</summary>
     public PlayerState State { get; private set; } = PlayerState.Normal;
 
@@ -188,6 +196,12 @@ public class PlayerMove : SEEDScript
 
     /// <summary>現在の構え中の振れ角（度）。<see cref="FishingController"/> がキャスト方向計算などに読める。</summary>
     public float StanceYawOffsetDegrees => stanceYawOffset;
+
+    /// <summary>
+    /// 構え中に振れる左右の限界角（度）。
+    /// チュートリアルの「構えて右／左を向こう」が「端まで振ったか」を判定するのに使う。
+    /// </summary>
+    public float StanceTurnRangeDegrees => stanceTurnRangeDegrees;
 
     // ─── 回転補間 ─────────────────────────────────────────────
     //
