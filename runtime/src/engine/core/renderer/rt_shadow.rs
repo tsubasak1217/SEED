@@ -47,6 +47,7 @@ use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch, RtSkinne
 use super::lighting::LightBuffer;
 use super::lod_settings::NUM_LODS;
 use super::pipeline::SkinDeformPipeline;
+use super::render_relevance::RelevanceVolume;
 use super::rt_skin_blas::{
     skin_blas_size_desc, RtSkinBlasManager, SkinBlasKey, SkinPrimInput, SKIN_DEFORM_VERTEX_STRIDE,
 };
@@ -75,6 +76,21 @@ pub fn rt_shadows_supported() -> bool {
 /// TLAS に格納できるインスタンス（キャスター×メッシュノードプリミティブ）の上限。
 /// これを超えるキャスターは影を落とさない（オーバーフロー時に 1 回だけ警告）。
 pub const MAX_RT_INSTANCES: u32 = 4096;
+
+/// RT 加速構造へ登録する「カメラ近傍」の半径（メートル）。
+///
+/// 【役割】TLAS へ載せるインスタンスを絞るための最後の受け皿。関与判定は
+/// 「カメラ視錐台 ∪ 影カスケード ∪ この半径の球」の**合併**なので、
+///   ・画面に映っているもの        → 視錐台で必ず含まれる
+///   ・画面外だが影を落とすもの    → 影カスケードで必ず含まれる
+///   ・そのどちらでもないが近いもの → この半径で含まれる（反射・GI の映り込み用）
+/// となり、この定数が効くのは「画面外かつ影カスケード外」の遠方インスタンスだけ。
+///
+/// 【調整の指針】RT 反射／GI に遠景を映したい場合はここを大きくする。小さくするほど
+/// TLAS 登録数とスキン BLAS 再構築数（＝毎フレームの RT コスト）が減る。
+/// 画面内・影内のものは半径に関係なく必ず含まれるため、この値を下げても
+/// 「見えている物の影が消える」ことは起きない。
+pub const RT_CASTER_RADIUS: f32 = 150.0;
 
 /// マテリアルレコード（平均アルベド storage ／ bindless インスタンステーブル）の上限。
 ///
@@ -399,6 +415,10 @@ impl RtShadowResources {
         // None を渡すとスキンメッシュは一切 TLAS に載らない（従来挙動へ縮退）。
         // 実運用では常に Some だが、パイプライン非依存のテストを書けるよう Option にしている。
         skin_deform: Option<&SkinDeformPipeline>,
+        // このフレームの「関与領域」（カメラ視錐台 ∪ 影カスケード ∪ RT キャスタ半径）。
+        // ここから外れたインスタンスは TLAS へ登録せず、BLAS も作らず、スキン変形も走らせない。
+        // `None` を渡すと従来どおり全インスタンスを登録する（保守側の既定）。
+        relevance: Option<&RelevanceVolume>,
     ) -> RtBuildStat {
         // ── 1. 新規 BLAS の作成対象を収集（キャッシュ未登録の非スキンプリミティブ）──
         // 借用衝突を避けるため、先に「作成すべきキー＋対象プリミティブ参照」を集める。
@@ -417,7 +437,7 @@ impl RtShadowResources {
             // 今フレームに要る (mesh, prim, lod) を重複無しで集める。
             let mut needed: std::collections::HashSet<(usize, usize, usize)> =
                 std::collections::HashSet::new();
-            batch.rt_enumerate(|mesh_idx, prim_idx, _material_idx, lod, _transform| {
+            batch.rt_enumerate(relevance, |mesh_idx, prim_idx, _material_idx, lod, _transform| {
                 needed.insert((mesh_idx, prim_idx, lod));
             });
             // 決定的な順序でビルド待ち行列へ入れる（HashSet の反復順は不定のため整列する）。
@@ -502,7 +522,7 @@ impl RtShadowResources {
         let mut skin_cands: Vec<SkinEntryInfo> = Vec::new();
         if skin_deform.is_some() {
             for (caster_i, (_path, gpu, batch)) in casters.iter().enumerate() {
-                batch.rt_enumerate_skinned(|g| {
+                batch.rt_enumerate_skinned(relevance, |g| {
                     // ポーズ依存値（アニメ index・時刻・クロスフェードの weight）。
                     // Animator 非駆動（None）は静止扱いで、実値と衝突しない番兵ビットになる。
                     let pose_bits = crate::engine::core::renderer::skin_system::pose_sig_bits(
@@ -549,7 +569,7 @@ impl RtShadowResources {
                 // パスはキャスター単位で 1 回だけ混ぜる（列挙順がグループを保つ）。
                 hasher.write(path.as_bytes());
                 hasher.write_u8(0xff); // 区切り
-                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, lod, transform| {
+                batch.rt_enumerate(relevance, |mesh_idx, prim_idx, material_idx, lod, transform| {
                     hasher.write_usize(mesh_idx);
                     hasher.write_usize(prim_idx);
                     // LOD 別 BLAS: 距離で LOD が切り替わると **参照する BLAS が変わる**
@@ -911,7 +931,7 @@ impl RtShadowResources {
 
             let mut overflow = false;
             for (path, gpu, batch) in casters {
-                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, lod, transform| {
+                batch.rt_enumerate(relevance, |mesh_idx, prim_idx, material_idx, lod, transform| {
                     // TLAS スロットとレコードの両方に空きが要る（非スキンは 1 件ずつ消費）。
                     if inst_count >= MAX_RT_INSTANCES as usize
                         || record_count >= MAX_RT_RECORDS as usize { overflow = true; return; }

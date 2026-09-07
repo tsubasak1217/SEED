@@ -33,6 +33,11 @@ struct ScriptCall {
     needs_start: bool,
     /// このフェーズで [SerializeField] 参照フィールドの解決を先に発行すべきか
     needs_resolve: bool,
+    /// プロファイラの型別スコープ名（"スクリプト/Update/<型名>"。未インターン時 None）。
+    ///
+    /// Update フェーズでのみ使う。`ScriptComponent` が生成時にインターン済みの
+    /// `&'static str` を持っているので、ここは Copy するだけでコストがかからない。
+    update_scope_name: Option<&'static str>,
 }
 
 /// 全フェーズにスクリプト駆動システムを登録する。
@@ -68,6 +73,7 @@ pub fn register(schedule: &mut Schedule) {
                     entity,
                     needs_start:   is_first_phase && !sc.started,
                     needs_resolve: is_first_phase && sc.refs_dirty,
+                    update_scope_name: sc.update_scope_name,
                 })
                 .collect();
             if calls.is_empty() { return; }
@@ -87,6 +93,17 @@ pub fn register(schedule: &mut Schedule) {
                     if c.needs_start {
                         ScriptComponent::run_on_start_raw(&c.host, c.handle, c.owner);
                     }
+                    // ── 型別プロファイル計測（Update フェーズのみ）──────────────
+                    // 「スクリプト/Update」が重いとき、どの型が食っているかを切り分けるための
+                    // 内訳。プロファイラ無効時は `ScopeGuard::new` が AtomicBool 1 回の
+                    // ロードだけで戻る（＝実質ゼロコスト）ため常時仕込んでよい。
+                    // 同名スコープは profiling::scope 側で 1 ノードへマージされるので、
+                    // インスタンスが何体いても行は型ごとに 1 行にまとまる。
+                    let _prof_type = if phase == Phase::Update {
+                        c.update_scope_name.map(crate::engine::core::profiling::ScopeGuard::new)
+                    } else {
+                        None
+                    };
                     ScriptComponent::run_phase_raw(&c.host, c.handle, c.owner, phase, ctx);
                 }
             });

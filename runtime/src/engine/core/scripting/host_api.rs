@@ -148,9 +148,118 @@ pub fn with_world<R>(world: &mut World, f: impl FnOnce() -> R) -> R {
 /// Actor 名を参照できるようにする。World とは別フィールドのため借用は競合しない。
 pub fn with_actors<R>(actors: &Vec<Actor>, f: impl FnOnce() -> R) -> R {
     let prev = ACTORS_PTR.with(|p| p.replace(actors as *const Vec<Actor>));
+    // 公開する Actor ツリーが差し替わったので、entity → Actor の索引を無効化する。
+    // 実際の構築は最初の引き当てで遅延実行される（索引を一度も引かないフェーズでは
+    // 構築コストがまったく発生しない）。
+    actor_index_invalidate();
     let result = f();
     ACTORS_PTR.with(|p| p.set(prev));
+    // スコープを抜けたら索引は前のツリーに対応していないので必ず無効化する。
+    actor_index_invalidate();
     result
+}
+
+// ─── entity → Actor 索引（FFI アクセサの O(N) ツリー走査を排除する）────────
+//
+// 【なぜ要るか】
+// `locate::<T>` / `actor_of_entity` / `actor_root_transform_of` は「この entity を
+// 持つ Actor はどれか」を求めるために **Actor ツリー全体を再帰 DFS** していた。
+// これは 1 回の FFI 呼び出しあたり O(アクタ総数)。スクリプトは 1 フレームに
+// 「アクタ数 × プロパティ数」回この経路を通るため、全体では O(アクタ数²) になり、
+// 魚のような大量スポーンを行うシーンでスクリプトフェーズが支配的な負荷になっていた。
+// （例: Transform.Position の **書き込み**は必ず `actor_of_entity` を通る）
+//
+// 【設計】
+// Actor ツリーはフェーズ実行中は構造不変（Instantiate / Destroy は遅延コマンド）なので、
+// フェーズごとに 1 回だけ「entity → &Actor」のハッシュ表を作れば、以降の引き当ては O(1)。
+// 構築は遅延（最初の引き当て時）で、`with_actors` の出入りで無効化する。
+// 表そのものはスレッドローカルに保持し、フレーム間で確保を使い回す。
+
+thread_local! {
+    /// entity → Actor の索引（`with_actors` のスコープごとに構築し直す）。
+    static ACTOR_INDEX: RefCell<ActorIndex> = RefCell::new(ActorIndex::new());
+}
+
+/// entity から Actor を引くための索引。
+///
+/// - `by_root`: **ルート entity のみ**をキーにした表。従来の `a.entity == e` 判定と等価。
+/// - `by_any` : ルート entity に加えて**各コンポーネントスロットの entity** もキーにした表。
+///              従来の「ルートかスロットのどちらかが一致」判定（`find_owner`）と等価。
+///
+/// 値は Actor への生ポインタ。`ACTORS_PTR` が指すツリーの寿命内でのみ有効で、
+/// `with_actors` のスコープ内でしか引かれない（スコープ出入りで `built` が落ちる）。
+struct ActorIndex {
+    /// 現在公開中のツリーに対して構築済みか。
+    built:   bool,
+    /// ルート entity → Actor。
+    by_root: HashMap<Entity, *const Actor>,
+    /// ルート entity ＋ スロット entity → Actor。
+    by_any:  HashMap<Entity, *const Actor>,
+}
+
+impl ActorIndex {
+    /// 空の索引を作る（構築は遅延）。
+    fn new() -> Self {
+        Self { built: false, by_root: HashMap::new(), by_any: HashMap::new() }
+    }
+
+    /// 公開中の Actor ツリーから索引を作り直す。確保はフレーム間で使い回す。
+    fn rebuild(&mut self, actors: &[Actor]) {
+        self.by_root.clear();
+        self.by_any.clear();
+        Self::walk(actors, &mut self.by_root, &mut self.by_any);
+        self.built = true;
+    }
+
+    /// Actor ツリーを再帰走査して両方の表へ登録する。
+    fn walk(
+        actors:  &[Actor],
+        by_root: &mut HashMap<Entity, *const Actor>,
+        by_any:  &mut HashMap<Entity, *const Actor>,
+    ) {
+        for a in actors {
+            let p: *const Actor = a;
+            // 【先勝ちにする理由】従来の再帰 DFS は「最初に見つかった Actor」を返していた。
+            // entity が重複することは通常無いが、万一重複しても挙動を変えないよう
+            // `or_insert` で先勝ちを保つ。
+            by_root.entry(a.entity).or_insert(p);
+            by_any.entry(a.entity).or_insert(p);
+            for s in a.slots() {
+                by_any.entry(s.entity).or_insert(p);
+            }
+            Self::walk(a.children(), by_root, by_any);
+        }
+    }
+}
+
+/// 索引を無効化する（次の引き当てで作り直される）。
+fn actor_index_invalidate() {
+    ACTOR_INDEX.with(|i| i.borrow_mut().built = false);
+}
+
+/// entity から Actor を引く共通処理。
+///
+/// `root_only = true`  … ルート entity 一致のみ（旧 `find_actor` と等価）。
+/// `root_only = false` … ルート entity かスロット entity のどちらか一致（旧 `find_owner` と等価）。
+///
+/// 返す参照は「公開中の Actor ツリー」の寿命に紐づく。呼び出し側は `with_actors` の
+/// スコープ内で即座に使い切ること（従来の DFS 版とまったく同じ制約）。
+fn actor_index_lookup<'a>(entity: Entity, root_only: bool) -> Option<&'a Actor> {
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() { return None; }
+    // SAFETY: ACTORS_PTR はフェーズ実行中のみ非 null で、その間ツリーは構造不変。
+    let actors = unsafe { &*actors_ptr };
+
+    ACTOR_INDEX.with(|cell| {
+        let mut idx = cell.borrow_mut();
+        if !idx.built {
+            idx.rebuild(actors);
+        }
+        let table = if root_only { &idx.by_root } else { &idx.by_any };
+        // SAFETY: 表の値は上で走査した `actors` 内の Actor を指す生ポインタ。
+        // `actors` はスコープ内で不変なので参照化して返してよい。
+        table.get(&entity).map(|&p| unsafe { &*p })
+    })
 }
 
 /// OnDestroy 通知を再入ガード下で実行する。
@@ -300,20 +409,8 @@ fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Op
         return Some(entity);
     }
     // 2. Actor ツリーからルートエンティティ一致のアクターを探し、スロットを走査する
-    let actors_ptr = ACTORS_PTR.with(|p| p.get());
-    if actors_ptr.is_null() { return None; }
-
-    /// ルートエンティティが一致するアクターを再帰検索するローカル関数
-    fn find_actor(actors: &[Actor], e: Entity) -> Option<&Actor> {
-        for a in actors {
-            if a.entity == e { return Some(a); }
-            if let Some(found) = find_actor(a.children(), e) { return Some(found); }
-        }
-        None
-    }
-
-    let actors = unsafe { &*actors_ptr };
-    let actor  = find_actor(actors, entity)?;
+    //    （索引引き当ては O(1)。旧実装はここで毎回ツリー全体を DFS していた）
+    let actor = actor_index_lookup(entity, true)?;
     actor.slots().iter()
         .map(|s| s.entity)
         .find(|&se| world.get::<T>(se).is_some())
@@ -328,22 +425,9 @@ fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Op
 /// 戻り値の参照はフェーズ内でのみ有効。呼び出し側は即座に使い切ること。
 /// ツリーが未公開（ポインタが null）の場合は None。
 fn actor_of_entity<'a>(entity: Entity) -> Option<&'a Actor> {
-    let actors_ptr = ACTORS_PTR.with(|p| p.get());
-    if actors_ptr.is_null() { return None; }
-
-    /// ルートエンティティが一致するアクターを再帰検索するローカル関数
-    fn find_actor(actors: &[Actor], e: Entity) -> Option<&Actor> {
-        for a in actors {
-            if a.entity == e { return Some(a); }
-            if let Some(found) = find_actor(a.children(), e) { return Some(found); }
-        }
-        None
-    }
-
-    // SAFETY: ACTORS_PTR はフェーズ実行中のみ非 null で、その間ツリーは不変。
-    // world（&mut World）とは別オブジェクトなのでエイリアス違反にはならない。
-    let actors = unsafe { &*actors_ptr };
-    find_actor(actors, entity)
+    // 索引引き当て（O(1)）。旧実装は呼び出しごとに Actor ツリー全体を DFS していたため、
+    // Transform の書き込みだけで O(アクタ数) を毎回支払っていた。
+    actor_index_lookup(entity, true)
 }
 
 // ─── コンポーネント種別文字列（GetComponent<T> の解決キー）────────
@@ -1560,22 +1644,9 @@ fn actor_root_transform_of(world: &World, entity: Entity) -> Transform {
         return Transform::identity();
     }
 
-    /// ルート entity かスロット entity のどちらかが一致するアクタを再帰検索する。
-    fn find_owner(actors: &[Actor], e: Entity) -> Option<&Actor> {
-        for a in actors {
-            if a.entity == e || a.slots().iter().any(|s| s.entity == e) {
-                return Some(a);
-            }
-            if let Some(found) = find_owner(a.children(), e) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    // SAFETY: ACTORS_PTR はスクリプトフェーズ実行中のみ非 null で、その間ツリーは不変。
-    let actors = unsafe { &*actors_ptr };
-    find_owner(actors, entity)
+    // ルート entity かスロット entity のどちらかが一致するアクタを索引から引く（O(1)）。
+    // 旧実装は呼び出しごとに Actor ツリー全体を再帰 DFS していた。
+    actor_index_lookup(entity, false)
         .and_then(|a| world.get::<Transform>(a.entity).cloned())
         .unwrap_or_else(Transform::identity)
 }

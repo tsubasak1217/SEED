@@ -1907,6 +1907,9 @@ fn compute_model_aabb(model: &Model) -> ([f32; 3], [f32; 3]) {
 // 定数ではなくプロセスグローバルなアトミック値になっている）。
 // ここでは従来どおり `gpu_resources::NUM_LODS` で参照できるよう再輸出する。
 pub use super::lod_settings::NUM_LODS;
+
+// RT 加速構造への登録可否を決める「関与領域」（視錐台 ∪ 影カスケード ∪ RT 半径）。
+use super::render_relevance::RelevanceVolume;
 use super::lod_settings::lod_bucket_for_instance;
 
 /// ワールド AABB の中心とカメラ位置から距離の二乗を求める純関数（LOD 振り分けの入力）。
@@ -1949,6 +1952,56 @@ pub struct NodePrimDraw {
 /// ## Dirty Flag
 /// インスタンス変換が変化した場合のみワールド行列・AABB を再計算する。
 /// 視錐台カリング・LOD 選択は毎フレーム実行する（カメラが動くため）。
+/// `InstancedModelBatch::update()` が毎フレーム使う作業バッファ。
+///
+/// 【なぜ構造体に持たせるか】
+/// 旧実装は `update()` の中で
+///   - `flat`         : `vec![ModelUniform::identity(); インスタンス数 × メッシュノード数]`
+///   - `compact`      : `NUM_LODS × メッシュノード数` 本の `Vec<ModelUniform>`
+///   - `compact_prev` : 同じ形の `Vec<PrevModelUniform>`
+///   - `lod_visible_insts` / ID 列
+/// を**毎回新規確保**していた。バッチ 1 件あたりの確保回数は
+/// `2 × NUM_LODS × メッシュノード数 + 数本` で、ノード数の多いモデル（スキンメッシュ・
+/// 地形チャンク）を毎フレーム更新するシーンでは、これだけで数千回／フレームの
+/// malloc/free とゼロ埋めが発生する。中身は毎回上書きされるため、確保だけが純粋な無駄。
+///
+/// ここへ退避しておき `clear()` で使い回すことで、定常状態の確保をゼロにする。
+/// アップロードされる内容は 1 ビットも変わらない。
+#[derive(Default)]
+struct UpdateScratch {
+    /// 全インスタンス × 全メッシュノードのワールド行列（`world_mats_cache` と入れ替える）。
+    flat:              Vec<ModelUniform>,
+    /// `[lod][メッシュノード位置]` ごとの可視インスタンス行列列。
+    compact:           Vec<Vec<ModelUniform>>,
+    /// `compact` と同じ並びの前フレーム行列列（モーションベクタ用）。
+    compact_prev:      Vec<Vec<PrevModelUniform>>,
+    /// `[lod]` ごとの可視インスタンス添字列（`lod_compact_insts` と入れ替える）。
+    lod_visible_insts: Vec<Vec<usize>>,
+    /// ID パスへアップロードする元インスタンス添字列。
+    ids:               Vec<u32>,
+    /// `lod_buckets_unchanged()` が使う「インスタンス添字 → 前回 LOD」の逆引き表。
+    assigned:          Vec<usize>,
+}
+
+impl UpdateScratch {
+    /// `[lod][pos]` の 2 次元バッファを `lods × n_pos` 本へ整え、各本を空にする。
+    ///
+    /// 添字は `lod * n_pos + pos` のフラット表現。ネストした `Vec<Vec<Vec<..>>>` を
+    /// 毎フレーム作り直す代わりに、外側の本数だけ合わせて内側は `clear()` で使い回す。
+    fn reshape<T>(buf: &mut Vec<Vec<T>>, lods: usize, n_pos: usize, reserve_each: usize) {
+        let want = lods * n_pos;
+        if buf.len() < want {
+            buf.resize_with(want, Vec::new);
+        } else {
+            buf.truncate(want);
+        }
+        for v in buf.iter_mut() {
+            v.clear();
+            v.reserve(reserve_each);
+        }
+    }
+}
+
 pub struct InstancedModelBatch {
     /// このバッチの `node_prim_list`（添字表）を作った CPU モデルのジオメトリ署名
     /// （`model_geometry_signature`）。同じ値を持つ `GpuModel` と組んだときだけ
@@ -1980,6 +2033,8 @@ pub struct InstancedModelBatch {
     /// 「前フレームのワールド行列」CPU キャッシュ: flat[inst_idx * n_mesh_nodes + pos]。
     /// `world_mats_cache` と同じ添字体系。`update()` の末尾で今フレームぶんを複製する。
     prev_models:            Vec<[[f32; 4]; 4]>,
+    /// `update()` / `lod_buckets_unchanged()` の作業バッファ（フレーム間で使い回す）。
+    scratch:                UpdateScratch,
 
     /// 次の `update()` で「前フレーム＝今フレーム」を強制するか（速度リセット）。
     ///
@@ -2394,6 +2449,7 @@ impl InstancedModelBatch {
             lod_node_prev,
             identity_prev_bg,
             prev_models: Vec::new(),
+            scratch:     UpdateScratch::default(),
             // 生成直後は前フレームが存在しない ⇒ 初回 update は prev=curr（速度 0）。
             velocity_reset: true,
             num_instances,
@@ -2497,30 +2553,40 @@ impl InstancedModelBatch {
     ///
     /// `false` を返すのは「バケットが 1 つでも移動した」場合と、内部状態が
     /// 未確定（`dirty` / AABB キャッシュ長の不一致）の場合。安全側に倒して再計算させる。
-    pub fn lod_buckets_unchanged(&self, camera_pos: [f32; 3]) -> bool {
+    pub fn lod_buckets_unchanged(&mut self, camera_pos: [f32; 3]) -> bool {
         // ワールド行列キャッシュが未確定なら判定できない（＝更新させる）。
         if self.dirty { return false; }
         let n_instances = self.world_aabbs.len();
         if n_instances == 0 { return false; }
         // 前回の振り分け結果を「インスタンス添字 → LOD」の逆引き表に展開する。
         // 全 LOD の合計が n_instances と一致しなければ整合が取れていない＝再計算。
+        // 表はスクラッチへ持たせてフレーム間で使い回す（毎フレームの確保を避けるため）。
         const LOD_UNASSIGNED: usize = usize::MAX;
-        let mut assigned = vec![LOD_UNASSIGNED; n_instances];
+        let mut assigned = std::mem::take(&mut self.scratch.assigned);
+        assigned.clear();
+        assigned.resize(n_instances, LOD_UNASSIGNED);
         let mut total = 0usize;
-        for (lod, insts) in self.lod_compact_insts.iter().enumerate() {
-            for &inst_idx in insts {
-                if inst_idx >= n_instances { return false; }
-                assigned[inst_idx] = lod;
-                total += 1;
+        // 判定を途中で抜けるときもスクラッチを必ず返せるよう、結果をまとめて算出する。
+        let unchanged = 'check: {
+            for (lod, insts) in self.lod_compact_insts.iter().enumerate() {
+                for &inst_idx in insts {
+                    if inst_idx >= n_instances { break 'check false; }
+                    assigned[inst_idx] = lod;
+                    total += 1;
+                }
             }
-        }
-        if total != n_instances { return false; }
-        // 現在のカメラ位置で振り直して 1 つでも違えば「変化あり」。
-        for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
-            let dist_sq = lod_dist_sq_from_aabb(aabb.aabb_min, aabb.aabb_max, camera_pos);
-            if self.lod_bucket_of(inst_idx, dist_sq) != assigned[inst_idx] { return false; }
-        }
-        true
+            if total != n_instances { break 'check false; }
+            // 現在のカメラ位置で振り直して 1 つでも違えば「変化あり」。
+            for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
+                let dist_sq = lod_dist_sq_from_aabb(aabb.aabb_min, aabb.aabb_max, camera_pos);
+                if self.lod_bucket_of(inst_idx, dist_sq) != assigned[inst_idx] {
+                    break 'check false;
+                }
+            }
+            true
+        };
+        self.scratch.assigned = assigned;
+        unchanged
     }
 
     // ── GPU メッシュレットカリング（第1弾）─────────────────────
@@ -2726,11 +2792,18 @@ impl InstancedModelBatch {
             return;
         }
 
+        // 作業バッファを取り出す（フレーム間で確保を使い回すため、最後に必ず返す）。
+        let mut scratch = std::mem::take(&mut self.scratch);
+
         // ── ① ワールド行列と AABB をキャッシュ（dirty 時のみ）──────
         if self.dirty {
             self.dirty = false;
 
-            let mut flat = vec![ModelUniform::identity(); n_instances * n_mesh_nodes];
+            // 前フレームのキャッシュ確保をそのまま作業領域として使い回す
+            // （`resize` の埋め値は旧実装の `vec![identity(); n]` と同じ）。
+            let flat = &mut scratch.flat;
+            flat.clear();
+            flat.resize(n_instances * n_mesh_nodes, ModelUniform::identity());
             let node_pos_map = &self.node_pos_map;
             let root_nodes   = &model.root_nodes;
             let tags         = &self.render_tags;
@@ -2745,30 +2818,40 @@ impl InstancedModelBatch {
                         fill_chunk(model, root_node, root_t, node_pos_map, tag, chunk);
                     }
                 });
-            self.world_mats_cache = flat;
+            // 中身を入れ替える（＝旧キャッシュの確保が次フレームの作業領域になる）。
+            std::mem::swap(&mut self.world_mats_cache, flat);
 
             let aabb_min = self.model_aabb_min;
             let aabb_max = self.model_aabb_max;
-            self.world_aabbs = root_transforms
-                .par_iter()
-                .map(|mat| {
-                    let (wmin, wmax) = transform_aabb(aabb_min, aabb_max, mat);
-                    GpuCullData { aabb_min: wmin, _pad0: 0.0, aabb_max: wmax, _pad1: 0.0 }
-                })
-                .collect();
+            // AABB も確保を使い回す（長さが変わらないフレームでは再確保が起きない）。
+            self.world_aabbs.clear();
+            self.world_aabbs.par_extend(
+                root_transforms
+                    .par_iter()
+                    .map(|mat| {
+                        let (wmin, wmax) = transform_aabb(aabb_min, aabb_max, mat);
+                        GpuCullData { aabb_min: wmin, _pad0: 0.0, aabb_max: wmax, _pad1: 0.0 }
+                    })
+            );
         }
 
         // ── ② 距離 LOD → per-LOD 可視インスタンスリスト ─
         // オブジェクト単位の視錐台カリングは行わない（全インスタンスを可視扱い）。
         // カメラからの距離のみで LOD バケットへ振り分ける。
-        let mut lod_visible_insts: Vec<Vec<usize>> = vec![Vec::new(); NUM_LODS];
-        let mut compact: Vec<Vec<Vec<ModelUniform>>> = (0..NUM_LODS)
-            .map(|_| (0..n_mesh_nodes).map(|_| Vec::with_capacity(n_instances / NUM_LODS + 1)).collect())
-            .collect();
-        // 速度バッファ用: 前フレーム行列を **現行行列とまったく同じ順序** で詰める箱。
-        let mut compact_prev: Vec<Vec<Vec<PrevModelUniform>>> = (0..NUM_LODS)
-            .map(|_| (0..n_mesh_nodes).map(|_| Vec::with_capacity(n_instances / NUM_LODS + 1)).collect())
-            .collect();
+        //
+        // 3 つの作業バッファはいずれもスクラッチから使い回す（毎フレームの確保をゼロにする）。
+        // `compact` / `compact_prev` は `[lod * n_mesh_nodes + pos]` のフラット添字。
+        let reserve_each = n_instances / NUM_LODS + 1;
+        if scratch.lod_visible_insts.len() < NUM_LODS {
+            scratch.lod_visible_insts.resize_with(NUM_LODS, Vec::new);
+        }
+        for v in scratch.lod_visible_insts.iter_mut() { v.clear(); }
+        UpdateScratch::reshape(&mut scratch.compact,      NUM_LODS, n_mesh_nodes, reserve_each);
+        UpdateScratch::reshape(&mut scratch.compact_prev, NUM_LODS, n_mesh_nodes, reserve_each);
+        let lod_visible_insts = &mut scratch.lod_visible_insts;
+        let compact           = &mut scratch.compact;
+        let compact_prev      = &mut scratch.compact_prev;
+        let ids               = &mut scratch.ids;
 
         // 前フレームキャッシュを「使ってよいか」の単一判定。
         //   - velocity_reset : 外部からのリセット要求（Play⇄Edit・シーンロード・テレポート）
@@ -2784,12 +2867,13 @@ impl InstancedModelBatch {
             let lod = self.lod_bucket_of(inst_idx, dist_sq);
 
             lod_visible_insts[lod].push(inst_idx);
+            let lod_base = lod * n_mesh_nodes;
             for pos in 0..n_mesh_nodes {
                 let cache_idx = inst_idx * n_mesh_nodes + pos;
                 let cur = self.world_mats_cache[cache_idx];
-                compact[lod][pos].push(cur);
+                compact[lod_base + pos].push(cur);
                 // 同じループ・同じ push 順で前フレーム行列を詰める（＝スロット対応の構造的保証）。
-                compact_prev[lod][pos].push(if prev_usable {
+                compact_prev[lod_base + pos].push(if prev_usable {
                     PrevModelUniform { prev_model: self.prev_models[cache_idx] }
                 } else {
                     PrevModelUniform::from_current(&cur)
@@ -2799,8 +2883,10 @@ impl InstancedModelBatch {
 
         // ── ③ 各 LOD: モデル行列・インスタンス ID をアップロード ──────
         // CPU 側コンパクトリストを保存（アウトライン描画で compact_idx を逆引きするため）
+        // swap にすることで、前フレームの `lod_compact_insts` の確保が次フレームの
+        // 作業領域として再利用される（take だと確保が毎フレーム捨てられる）。
         for lod in 0..NUM_LODS {
-            self.lod_compact_insts[lod] = std::mem::take(&mut lod_visible_insts[lod]);
+            std::mem::swap(&mut self.lod_compact_insts[lod], &mut lod_visible_insts[lod]);
         }
 
         for lod in 0..NUM_LODS {
@@ -2808,19 +2894,21 @@ impl InstancedModelBatch {
             self.lod_visible_counts[lod] = visible;
 
             if visible > 0 {
+                let lod_base = lod * n_mesh_nodes;
                 for (pos, &node_idx) in self.mesh_node_indices.iter().enumerate() {
                     if let Some((buf, _)) = &self.lod_node_data[lod][node_idx] {
-                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact[lod][pos]));
+                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact[lod_base + pos]));
                     }
                     // 速度バッファ用: 前フレーム行列を同じスロット順でアップロードする。
                     if let Some((buf, _)) = &self.lod_node_prev[lod][node_idx] {
-                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact_prev[lod][pos]));
+                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact_prev[lod_base + pos]));
                     }
                 }
 
-                // ID パス用: 元インスタンスインデックスをアップロード
-                let ids: Vec<u32> = self.lod_compact_insts[lod].iter().map(|&i| i as u32).collect();
-                queue.write_buffer(&self.lod_id_buffers[lod], 0, bytemuck::cast_slice(&ids));
+                // ID パス用: 元インスタンスインデックスをアップロード（バッファは使い回す）
+                ids.clear();
+                ids.extend(self.lod_compact_insts[lod].iter().map(|&i| i as u32));
+                queue.write_buffer(&self.lod_id_buffers[lod], 0, bytemuck::cast_slice(ids));
             }
 
             // スキンシステムへの再生指定転送（GPU スキニング計算の入力）
@@ -2843,6 +2931,9 @@ impl InstancedModelBatch {
         self.prev_models.clear();
         self.prev_models.reserve(self.world_mats_cache.len());
         self.prev_models.extend(self.world_mats_cache.iter().map(|m| m.model));
+
+        // 作業バッファを戻す（次フレームも同じ確保を使い回す）。
+        self.scratch = scratch;
     }
 
     // ── 速度バッファ（モーションベクタ）用アクセサ ──────────────────────
@@ -2949,7 +3040,29 @@ impl InstancedModelBatch {
     /// スキン／非スキンで別の LOD を辿ることになる）。
     ///
     /// `update()` 前（`lod_compact_insts` が空）のインスタンスは LOD0 として扱う。
-    pub fn rt_enumerate<F: FnMut(usize, usize, Option<usize>, usize, [f32; 12])>(&self, mut f: F) {
+    /// 指定インスタンスが RT 加速構造へ登録されるべきか（関与判定）。
+    ///
+    /// `relevance` が `None`、または関与領域が何も絞っていない、あるいはこのバッチの
+    /// ワールド AABB キャッシュが未確定な場合は **常に true**（保守側＝従来どおり全登録）。
+    /// AABB が取れる場合のみ「視錐台 ∪ 影カスケード ∪ RT 半径」の合併で判定する。
+    ///
+    /// 判定にインスタンス原点ではなく**ワールド AABB** を使うのは、原点が遠くても
+    /// 形状がカメラ近傍まで伸びている物体（地形チャンク・大きな岩）を誤って
+    /// 外さないため。
+    #[inline]
+    fn rt_instance_relevant(&self, relevance: Option<&RelevanceVolume>, inst: usize) -> bool {
+        let Some(vol) = relevance else { return true };
+        if vol.is_unbounded() { return true; }
+        match self.world_aabbs.get(inst) {
+            Some(a) => vol.contains_aabb(a.aabb_min, a.aabb_max),
+            // AABB 未確定（update 未実行など）は判定材料が無いので登録する。
+            None => true,
+        }
+    }
+
+    pub fn rt_enumerate<F: FnMut(usize, usize, Option<usize>, usize, [f32; 12])>(
+        &self, relevance: Option<&RelevanceVolume>, mut f: F,
+    ) {
         // ワールド行列キャッシュが未生成（update 未実行）なら何もしない。
         if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }
         let n_inst = self.num_instances as usize;
@@ -2961,6 +3074,9 @@ impl InstancedModelBatch {
             }
         }
         for inst in 0..n_inst {
+            // 関与判定（視錐台 ∪ 影カスケード ∪ RT 半径）から外れたインスタンスは
+            // TLAS へ登録しない＝BLAS も作らない。AABB が取れない場合は保守側で登録する。
+            if !self.rt_instance_relevant(relevance, inst) { continue; }
             let lod = inst_lod[inst];
             for draw in &self.node_prim_list {
                 if draw.is_skinned { continue; }
@@ -3008,7 +3124,9 @@ impl InstancedModelBatch {
     /// 【順序の安定性】グループ内のプリミティブ順は `node_prim_list` の順、
     /// グループ順は node_idx の昇順で決定的である。この順序は BLAS の `geometry_index` と
     /// bindless レコードの並び順に直結するため、フレーム間で揺れてはならない。
-    pub fn rt_enumerate_skinned<F: FnMut(RtSkinnedNodeInstance<'_>)>(&self, mut f: F) {
+    pub fn rt_enumerate_skinned<F: FnMut(RtSkinnedNodeInstance<'_>)>(
+        &self, relevance: Option<&RelevanceVolume>, mut f: F,
+    ) {
         // スキンシステムが無いバッチは対象外。
         if self.skin.is_none() { return; }
         if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }
@@ -3046,6 +3164,9 @@ impl InstancedModelBatch {
         }
 
         for inst in 0..n_inst {
+            // 非スキンと同じ関与判定。スキンは 1 体ごとに変形 compute と BLAS 再構築が
+            // 走るため、遠方インスタンスを外せる効果が最も大きい。
+            if !self.rt_instance_relevant(relevance, inst) { continue; }
             let Some((lod, compact)) = inv[inst] else { continue };
             for (&node_idx, prims) in &by_node {
                 let Some(pos) = self.node_pos_map[node_idx] else { continue };

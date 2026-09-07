@@ -37,6 +37,13 @@ const DEBUG_LOG_FRAMES: u64 = 10;
 /// VRAM が定常状態へ戻る。
 const STALE_BATCH_PRUNE_FRAMES: u32 = 60;
 
+/// 統合バッチの「規模ログ」を出す最小間隔（秒）。
+///
+/// プロファイラパネルを開いている間だけ、この間隔でバッチ数・インスタンス数を
+/// 標準エラーへ出す。毎フレーム出すとログ自体が負荷になり、かつ読めないため
+/// 間隔を空ける（計測の邪魔にならない程度に長く取る）。
+const MERGE_STATS_LOG_INTERVAL_SECS: f64 = 5.0;
+
 /// パフォーマンスログ用フレームカウンター。
 /// PERF_LOG_INTERVAL フレームごとに各処理の CPU 消費時間と MC/スキン数をログ出力する。
 static PERF_FRAME: AtomicU64 = AtomicU64::new(0);
@@ -1272,9 +1279,18 @@ impl App {
         // 「点を掴んでも見た目のギズモはアクターの位置に居座り、当たり判定だけ点の位置にある」
         // という状態になっていた（＝実機で「制御点にギズモが出ない」と報告された不具合の原因）。
         // 判定側と同じく制御点を最優先にする。
-        let gizmo_pos = self.selected_control_point_world_pos()
-            .or_else(|| self.selected_actors_centroid())
-            .or_else(|| self.actor_virtual_world_pos());
+        //
+        // 【Play 中は計算しない】この値の唯一の消費者は下のギズモ生成
+        // （`show_gizmo_pre = (Edit || paused) && !physics_timeline_locked` の内側）で、
+        // 非ポーズの Play では必ず None 相当に落ちる。3 本とも Actor ツリーの
+        // DFS を伴うので、Play では計算そのものを省く（描画結果は不変）。
+        let gizmo_pos = if in_editor {
+            self.selected_control_point_world_pos()
+                .or_else(|| self.selected_actors_centroid())
+                .or_else(|| self.actor_virtual_world_pos())
+        } else {
+            None
+        };
 
         // アクター仮想選択のワールド位置（レンダラー借用外で取得）
         let actor_virtual_pos: Option<[f32; 3]> = if self.actor_virtual_selected_idx.is_some() {
@@ -1504,14 +1520,17 @@ impl App {
             || (self.selected_primary_actor_is_2d() && use_screen_space);
         // 3D Canvas 子アクター軸をレンダーパス開始前（可変借用前）に事前計算する。
         // レンダーパス内では &mut self.renderer の可変借用が続くため self の不変借用が取れない。
-        let canvas_child_axes_pre = self.selected_canvas_child_axes();
+        // 【Play 中は計算しない】以下 4 つの消費者はいずれもギズモ生成の内側
+        // （`show_gizmo_pre` 配下）で、非ポーズの Play では参照されない。
+        // どれも選択アクタの探索（Actor ツリー走査）を伴うため Play では省く。
+        let canvas_child_axes_pre = if in_editor { self.selected_canvas_child_axes() } else { None };
         // gizmo_space = Local のとき、選択中プライマリアクター（3D）のローカル回転軸を
         // レンダーパス開始前（可変借用前）に事前計算する。3D Canvas 子（canvas_child_axes_pre）
         // が優先されるため、そちらが Some の場合はここでは使用されない。
-        let local_axes_pre = self.selected_local_axes();
+        let local_axes_pre = if in_editor { self.selected_local_axes() } else { None };
         // 2D キャンバスギズモの Local 軸基底も可変借用前に事前計算する。
         // ヒットテスト（gizmo_handler）と同一関数を使うことで、見た目と当たり判定を必ず一致させる。
-        let canvas_local_axes_2d_pre = self.canvas_gizmo_axes_2d();
+        let canvas_local_axes_2d_pre = if in_editor { self.canvas_gizmo_axes_2d() } else { None };
         // テキストの選択枠用にブロック寸法を実測する。フォントレジストリの可変借用が
         // 要るため、シーンを不変借用する描画ブロックへ入る前にここで表を作る
         // （ピック側 pick_2d と同じ build_text_bounds_map ＝ 枠とクリック判定が一致する）。
@@ -1532,7 +1551,7 @@ impl App {
         //     ギズモも表示しない（3D ワールドキャンバスの子は表示継続）
         //   - View2D で 3D アクターを選択中: 3D シーン非表示のためギズモも表示しない
         // 判定ロジックは gizmo_handler 側の操作抑制と共通（gizmo_suppressed_by_edit_view）。
-        let gizmo_suppressed_by_view = self.gizmo_suppressed_by_edit_view();
+        let gizmo_suppressed_by_view = in_editor && self.gizmo_suppressed_by_edit_view();
         // 「エディタ状態収集」区間ここまで（以降はパーティクル・水・地形の毎フレーム更新）。
         drop(_prof_editor_state);
 
@@ -1927,41 +1946,45 @@ impl App {
                     // 50 アクター × 1 モデルの場合は理論上 ~50 倍の高速化が見込まれる。
                     //
                     // ① MC を source_path でグループ化（CPU データのみ収集）
-                    /// 同一 source_path を持つ全 MC を 1 バッチへ統合するための集約先。
-                    struct MergeInfo {
-                        cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
-                        mats:      Vec<[[f32; 4]; 4]>,
-                        /// 統合インスタンス i の Animator 駆動再生指定（None = 静止・先頭フレーム凍結）。
-                        /// ModelComponent::anim_drive 由来で、アニメ index・時刻に加えて
-                        /// クロスフェードのフェード元と weight まで含む。
-                        /// 同一 MC の全インスタンスに同じ値を複製する。
-                        pose_overrides: Vec<Option<crate::engine::core::renderer::skin_system::SkinAnimPose>>,
-                        /// 統合インスタンス i の絶対 ID（元 MC の id_base + 元インスタンス idx）
-                        abs_ids:   Vec<u32>,
-                        /// 統合インスタンス i のセマンティックタグ（0..15。0 = タグ無し）。
-                        /// `ModelComponent::render_tag` 由来で、同一 MC の全インスタンスに同じ値を複製する
-                        /// （タグはアクタ単位の属性であり、インスタンス個別には持たせない）。
-                        render_tags: Vec<u8>,
-                        /// 統合インスタンス i の「LOD を適用しない」フラグ。
-                        /// `ModelComponent::disable_lod` 由来で、同一 MC の全インスタンスへ
-                        /// 同じ値を複製する（LOD 無効はアクタ単位の属性）。
-                        /// true のインスタンスはカメラ距離に関係なく常に LOD0 で描かれる。
-                        disable_lods: Vec<bool>,
-                    }
-                    // (dfs_id, slot_i) → (source_path, merged_start, n_instances)
+                    // (dfs_id, slot_i) → (batch_key, merged_start, n_instances)
                     // アウトライン描画時に統合バッチ内のインスタンス範囲を特定するために使う。
                     // merged_start: このMCの先頭インスタンスの統合バッチ内インデックス
                     // n_instances:  このMCのインスタンス数
+                    //
+                    // 【選択中アクタぶんだけ載せる理由】この表を引くのはアウトライン描画
+                    // （選択アクタのステンシル＋輪郭）だけで、キーは
+                    //   ・`self.selected_actor_dfs_ids` の各 dfs_id（slot 0）
+                    //   ・アクタ仮想選択の (dfs_id, slot_idx)
+                    // のいずれかしか使われない。旧実装は全 MC 分（＝毎フレーム MC 数ぶんの
+                    // String 確保＋HashMap 挿入）を作っていたが、そのほとんどは一度も引かれない。
+                    // 引かれ得るキーだけを載せることで、収集ループから
+                    // 「MC 数に比例する確保」を丸ごと落とす（描画結果は不変）。
                     let mut mc_outline_map: std::collections::HashMap<
                         (u32, usize),
                         (String, u32, u32),
                     > = std::collections::HashMap::new();
+                    // アウトライン表に載せるべき MC か（＝選択中アクタのものか）を判定する。
+                    let outline_virtual_key: Option<(u32, usize)> = self
+                        .actor_virtual_selected_idx
+                        .map(|dfs| (dfs as u32, self.actor_virtual_selected_slot_idx));
+                    let selected_dfs_ids = &self.selected_actor_dfs_ids;
+                    let wants_outline = |dfs_id: u32, slot_i: usize| -> bool {
+                        (slot_i == 0 && selected_dfs_ids.iter().any(|&d| d as u32 == dfs_id))
+                            || outline_virtual_key == Some((dfs_id, slot_i))
+                    };
                     // merge_map 構築＋全統合バッチ update() の CPU 時間を計測する（merge バケット）。
                     let _perf_t_merge = std::time::Instant::now();
                     let _prof_merge = ScopeGuard::new("描画/統合バッチ更新");
-                    let merge_map: std::collections::HashMap<String, MergeInfo> = {
-                        let mut map: std::collections::HashMap<String, MergeInfo>
-                            = std::collections::HashMap::new();
+                    // ダーティゲートでこのフレームに update() を省けたバッチ数（規模ログ用）。
+                    let mut merge_skipped_batches = 0usize;
+                    // 統合バッチ収集。集約先（HashMap と各 Vec）はフレーム間で使い回すため、
+                    // 定常状態ではここでのヒープ確保が発生しない（merge_collect.rs 参照）。
+                    let merge_map = &mut self.merge_collector;
+                    {
+                        crate::profile_scope!("描画/統合バッチ更新/収集");
+                        merge_map.begin_frame();
+                        // batch_key を書き込む使い回しバッファ（MC ごとの String 確保を無くす）。
+                        let mut key_buf = String::new();
                         for &(id_base, dfs_id, slot_i, amc) in &all_mcs {
                             if amc.source_path.is_empty()  { continue; }
                             if amc.gpu_model.is_none()     { continue; }
@@ -1971,16 +1994,8 @@ impl App {
                             // 従来どおり 1 バッチへ統合される（描画経路・性能ともに不変）。
                             // オーバーライドを持つ MC は署名が異なるため別バッチへ分離され、
                             // その代表 GpuModel（各 MC が自前で焼き込み済み）で描画される＝方式(a)。
-                            let batch_key = amc.batch_key();
-                            let e = map.entry(batch_key.clone())
-                                .or_insert_with(|| MergeInfo {
-                                    cpu_model: arc_m.clone(),
-                                    mats:      Vec::new(),
-                                    pose_overrides: Vec::new(),
-                                    abs_ids:   Vec::new(),
-                                    render_tags: Vec::new(),
-                                    disable_lods: Vec::new(),
-                                });
+                            amc.batch_key_into(&mut key_buf);
+                            let e = merge_map.entry_for(&key_buf, arc_m);
                             // この MC が Animator 駆動中なら権威時刻を、そうでなければ None を
                             // 全インスタンス分複製する（インスタンスは同一アニメを共有再生する）。
                             // Animator 駆動の再生指定（アニメ index・時刻・ブレンド状態）を
@@ -2023,10 +2038,13 @@ impl App {
                             // このMCが統合バッチに追加される前の先頭インデックスを記録する
                             let merged_start = e.mats.len() as u32;
                             let n_insts      = amc.instance_mats.len() as u32;
-                            mc_outline_map.insert(
-                                (dfs_id, slot_i),
-                                (batch_key, merged_start, n_insts),
-                            );
+                            // アウトライン表は「引かれ得るキー（選択中アクタ）」だけに載せる。
+                            if wants_outline(dfs_id, slot_i) {
+                                mc_outline_map.insert(
+                                    (dfs_id, slot_i),
+                                    (key_buf.clone(), merged_start, n_insts),
+                                );
+                            }
                             // ── 描画オフセットの適用【全描画経路で唯一の合成点】────────────
                             // ModelComponent の offset_position/rotation/scale を
                             //   instance = actor_world * offset_trs
@@ -2049,11 +2067,18 @@ impl App {
                                 e.disable_lods.push(amc.disable_lod);
                             }
                         }
-                        map
-                    };
+                        // このフレームに現れなかった batch_key を落とす
+                        // （＝旧実装が毎フレーム HashMap を作り直していたのと同じ集合になる）。
+                        merge_map.finish_frame();
+                    }
+                    let merge_map = &*merge_map;
+
+                    // ID バッファへ書き戻す「絶対 ID 列」の詰め替えバッファ。
+                    // バッチ × LOD の数だけ確保が発生しないよう、ループの外で 1 本持って使い回す。
+                    let mut abs_id_remap: Vec<u32> = Vec::new();
 
                     // ② 統合バッチ生成/更新（容量不足時は再生成）
-                    for (path, info) in &merge_map {
+                    for (path, info) in merge_map.iter() {
                         let total = info.mats.len();
                         // この batch_key の CPU モデルのジオメトリ構造。
                         // キャッシュ済みバッチの添字表（node_prim_list）がこの構造で
@@ -2124,15 +2149,22 @@ impl App {
                             // LOD 無効フラグは「LOD 振り分けの入力」なので、バケット再判定
                             // （lod_buckets_unchanged）より前に必ず同期する。順序が逆だと
                             // 古いフラグでバケットを比べてしまい、チェック操作が 1 フレーム遅れる。
-                            sd.batch.set_disable_lod_flags(&info.disable_lods);
-                            let lod_unchanged = sd.batch.lod_buckets_unchanged(saved_camera_pos);
-                            // 速度リセット要求フレーム（Play⇄Edit 切替・シーンロード・RT リサイズ）は
-                            // 必ず update を通し、prev=curr を GPU へ反映させる。
-                            if sd.merge_gate.decide(&gate_inputs, lod_unchanged, velocity_reset_frame) {
+                            let skip = {
+                                crate::profile_scope!("描画/統合バッチ更新/ゲート判定");
+                                sd.batch.set_disable_lod_flags(&info.disable_lods);
+                                let lod_unchanged =
+                                    sd.batch.lod_buckets_unchanged(saved_camera_pos);
+                                // 速度リセット要求フレーム（Play⇄Edit 切替・シーンロード・RT リサイズ）は
+                                // 必ず update を通し、prev=curr を GPU へ反映させる。
+                                sd.merge_gate.decide(&gate_inputs, lod_unchanged, velocity_reset_frame)
+                            };
+                            if skip {
                                 // 入力不変: 既存の lod バッファ・compact をそのまま使い回す。
+                                merge_skipped_batches += 1;
                                 continue;
                             }
                             {
+                                crate::profile_scope!("描画/統合バッチ更新/バッチ更新");
                                 // フィールド分割借用: batch は可変、cpu_model は不変
                                 let batch     = &mut sd.batch;
                                 let cpu_model = &sd.cpu_model;
@@ -2157,14 +2189,18 @@ impl App {
                                 // CPU ピッキングのデコードロジックをそのまま使えるようにする。
                                 for lod in 0..NUM_LODS {
                                     if batch.lod_visible_counts[lod] > 0 {
-                                        let remapped: Vec<u32> = batch.lod_compact_insts[lod]
-                                            .iter()
-                                            .map(|&merged_idx| info.abs_ids[merged_idx])
-                                            .collect();
+                                        // 詰め替えバッファはバッチ／LOD をまたいで使い回す
+                                        // （毎 LOD の Vec 確保をゼロにする。中身は都度上書き）。
+                                        abs_id_remap.clear();
+                                        abs_id_remap.extend(
+                                            batch.lod_compact_insts[lod]
+                                                .iter()
+                                                .map(|&merged_idx| info.abs_ids[merged_idx]),
+                                        );
                                         draw_ctx.queue.write_buffer(
                                             &batch.lod_id_buffers[lod],
                                             0,
-                                            bytemuck::cast_slice(&remapped),
+                                            bytemuck::cast_slice(&abs_id_remap),
                                         );
                                     }
                                 }
@@ -2176,6 +2212,28 @@ impl App {
                     drop(_prof_merge);
                     perf_merge_ms = _perf_t_merge.elapsed().as_secs_f64() * 1000.0;
 
+                    // ── 統合バッチの「規模」ログ（プロファイラ有効時のみ・一定間隔）──────
+                    // プロファイラのスコープが運べるのは時間と呼び出し回数だけで、
+                    // 「バッチ数・インスタンス数」といった件数は載せられない。
+                    // 時間だけ見ても「1 インスタンスあたりが重いのか、数が多いのか」が
+                    // 切り分けられないため、パネルを開いている間だけ間隔を空けて出す。
+                    if crate::engine::core::profiling::is_enabled() {
+                        let now = std::time::Instant::now();
+                        let due = self.merge_stats_logged_at.is_none_or(|t| {
+                            now.duration_since(t).as_secs_f64() >= MERGE_STATS_LOG_INTERVAL_SECS
+                        });
+                        if due {
+                            self.merge_stats_logged_at = Some(now);
+                            let batches   = merge_map.len();
+                            let instances: usize = merge_map.iter().map(|(_, i)| i.len()).sum();
+                            eprintln!(
+                                "[SEED PERF] 統合バッチ更新: MC {} 件 / バッチ {} 件                                  （うちゲートでスキップ {} 件）/ 統合インスタンス {} 件 / {:.2} ms",
+                                all_mcs.len(), batches, merge_skipped_batches,
+                                instances, perf_merge_ms,
+                            );
+                        }
+                    }
+
                     // ─── stale 統合バッチ／BLAS キャッシュの遅延 prune ──────────────
                     // マテリアルのインライン編集（スライダードラッグ等）は署名が変わるたびに
                     // 新しい batch_key を生む。以前は shared_model_batches も RT の BLAS キャッシュも
@@ -2186,7 +2244,7 @@ impl App {
                     // ものだけ＝描画結果は不変。遅延方式で非同期ロード時の誤解放も避ける。
                     {
                         let alive: std::collections::HashSet<String> =
-                            merge_map.keys().cloned().collect();
+                            merge_map.keys().cloned().collect::<std::collections::HashSet<String>>();
                         let cache_keys: std::collections::HashSet<String> =
                             self.shared_model_batches.keys().cloned().collect();
                         let freed = compute_stale_batch_prune(
@@ -2233,11 +2291,18 @@ impl App {
                         String,
                         &crate::engine::methods::drawer::GpuModel,
                     > = {
+                        crate::profile_scope!("描画/統合バッチ更新/GpuModel 表");
                         let mut map = std::collections::HashMap::new();
+                        // キーは使い回しバッファへ書き、**新しいキーのときだけ** String を確保する
+                        // （旧実装は MC ごとに `batch_key()` で String を作っては捨てていた）。
+                        let mut key_buf = String::new();
                         for &(_, _, _, amc) in &all_mcs {
                             if amc.source_path.is_empty() { continue; }
                             let Some(gpu) = amc.gpu_model.as_ref() else { continue };
-                            map.entry(amc.batch_key()).or_insert(gpu);
+                            amc.batch_key_into(&mut key_buf);
+                            if !map.contains_key(key_buf.as_str()) {
+                                map.insert(key_buf.clone(), gpu);
+                            }
                         }
                         map
                     };
@@ -5431,6 +5496,29 @@ impl App {
                                 for (key, gpu, batch) in &scatter_rt {
                                     rt_casters.push((key.as_str(), gpu, batch));
                                 }
+                                // このフレームの「関与領域」を組む。
+                                // カメラ視錐台 ∪ 影カスケード ∪ RT キャスタ半径 の合併。
+                                // ここから外れたインスタンスは TLAS へ登録せず、BLAS も作らず、
+                                // スキン変形 compute も走らせない（遠方の大量スキンが毎フレーム
+                                // BLAS を作り直すのが RT の主コストなので、ここが最も効く）。
+                                //
+                                // 【見えている物の影が消えない理由】画面内は視錐台で、
+                                // 画面外キャスタは影カスケードで必ず拾われる。半径が効くのは
+                                // 「画面外かつ影カスケード外」の遠方インスタンスだけ。
+                                let cascade_vps: Vec<[[f32; 4]; 4]> = if shadow_plan.dir_active {
+                                    shadow_plan.cascade_vp.iter().map(|m| m.data).collect()
+                                } else {
+                                    Vec::new()
+                                };
+                                let rt_relevance =
+                                    crate::engine::core::renderer::render_relevance::RelevanceVolume
+                                        ::default()
+                                        .with_camera(&saved_view_proj)
+                                        .with_shadow_cascades(&cascade_vps)
+                                        .with_rt_radius(
+                                            saved_camera_pos,
+                                            crate::engine::core::renderer::rt_shadow::RT_CASTER_RADIUS,
+                                        );
                                 let _perf_t_tlas = std::time::Instant::now();
                                 let _prof_tlas = ScopeGuard::new("RT/TLAS・BLAS ビルド");
                                 // バインドレス（B2）: 対応 GPU では instance_table も同時に詰めさせる。
@@ -5444,6 +5532,7 @@ impl App {
                                     &draw_ctx.device, &draw_ctx.queue, frame.encoder_mut(),
                                     &rt_casters, bindless_ref.as_deref(),
                                     Some(&draw_ctx.pipelines.skin_deform),
+                                    Some(&rt_relevance),
                                 );
                                 drop(_prof_tlas);
                                 perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;

@@ -330,6 +330,25 @@ impl ModelComponent {
             .any(|o| matches!(o.kind, MaterialOverrideKind::Inline { .. }))
     }
 
+    /// `batch_key()` と同じキーを、呼び出し側の使い回しバッファへ書き込む（確保なし版）。
+    ///
+    /// 毎フレーム全 ModelComponent に対して呼ばれる経路（統合バッチ収集）では、
+    /// `batch_key()` が返す `String` の確保・解放が MC 数ぶん積み上がる。
+    /// バッファを使い回せる呼び出し側はこちらを使うこと。
+    /// **`batch_key()` と 1 バイトも違わないキーを書く**こと（両者が食い違うと
+    /// 統合バッチと GpuModel の対応が壊れる）ので、実装は必ず一方をもう一方へ委譲する。
+    pub fn batch_key_into(&self, out: &mut String) {
+        out.clear();
+        // ① オーバーライド無し → source_path とビット一致。
+        if self.material_overrides.is_empty() {
+            out.push_str(&self.source_path);
+            return;
+        }
+        // ②③ は書式が長いので `batch_key()` の実装をそのまま使う
+        //（オーバーライドを持つ MC は少数なので、ここでの確保は問題にならない）。
+        out.push_str(&self.batch_key());
+    }
+
     pub fn batch_key(&self) -> String {
         // ① オーバーライド無し → source_path とビット一致（旧シーン・性能を一切変えない）。
         if self.material_overrides.is_empty() {

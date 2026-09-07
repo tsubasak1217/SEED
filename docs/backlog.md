@@ -126,3 +126,30 @@
 - [ ] **トラックリストにフォーカスがあるときの `Delete` はキー選択より優先される** — 2026-09-07。`LstTracks` 自身の `KeyDown`（`OnTrackListKeyDown`）が先に走るため、キーを複数選択した状態でもリスト側にフォーカスがあるとトラックが消える。パネル側の `HandleTimelineKey` は「キー選択があればキー削除」を優先する実装なので、両者で判断が違う。リスト側でもキー選択の有無を見るか、リストの `Delete` は削除ボタン/右クリックメニューへ寄せるのが筋。関連: `editor/src/Panels/AnimationTimelinePanel.xaml.cs::OnTrackListKeyDown`。
 
 - [ ] **`duration` を超えるキーの貼り付けは最終フレームへ丸めて重なる** — 2026-09-07。`AnimKeyClipboard.Paste` はクリップ外へキーを作らない方針でフレームをクランプするため、長いキー列をクリップ末尾付近へ貼ると複数キーが最終フレームで潰れて上書きし合う（データは失われる）。「貼り付けで足りない長さを自動的に伸ばすか確認する」ほうが親切。関連: `editor/src/Panels/AnimationTimeline/AnimKeyClipboard.cs`。
+
+## フレーム性能（2026-09-07 の統合バッチ／スクリプト／RT 最適化での残件）
+
+- [ ] **統合バッチの部分書き込み（変更行だけの `write_buffer`）は未実装** — 2026-09-07。`InstancedModelBatch::update` は可視インスタンスを (LOD, メッシュノード) ごとの連続バッファへ詰め直し、`queue.write_buffer` で**全行**を書く。1 体だけ動いたフレームでも全行アップロードになる。行の位置（compact index）は LOD バケット割り当てが変わらない限り安定なので、「前フレームの compact 列と一致する区間はスキップし、変わった行の範囲だけオフセット付きで書く」ことは原理的に可能。ただし ①バケットが 1 つでも動くと全行がずれる ②`write_buffer` はサイズより呼び出し回数のほうが支配的になりやすい、の 2 点があるため、**先に新設のサブスコープ（`描画/統合バッチ更新/バッチ更新`）で「バッチ更新」の実測を取ってから**着手すること。関連: `runtime/src/engine/core/renderer/gpu_resources.rs::InstancedModelBatch::update`。
+
+- [ ] **インスタンス単位の関与カリング（視錐台 ∪ 影 ∪ RT）はラスタ側へ未適用** — 2026-09-07。`renderer/render_relevance.rs` の `RelevanceVolume` は用意して RT（TLAS/BLAS/スキン変形）にだけ適用した。ラスタの統合バッチへ適用すると「関与しないインスタンスは行列再計算もアップロードもしない」ができるが、**過去に同種の視錐台カリングが誤棄却（画面端ポッピング・チャンク消え）で撤去された経緯**があるため、合併領域の妥当性を実機で確認してからにすること。なお釣りシーンの主負荷である魚は 1 バッチを共有して全員が動くため、バッチ単位のゲートでは効かない（インスタンス単位でしか効果が出ない）点に注意。関連: `runtime/src/engine/core/app_base/app/merge_batch_gate.rs`。
+
+- [ ] **`rt_enumerate` / `rt_enumerate_skinned` が呼び出しごとに作業 Vec / BTreeMap を確保する** — 2026-09-07。`rt_enumerate` は `inst_lod`（インスタンス数ぶんの Vec）を毎回作り、1 フレームにキャスタ数 × 3 回呼ばれる。`rt_enumerate_skinned` はさらに `BTreeMap` と逆引き Vec を作る。バッチ側にスクラッチを持たせれば消せる（`update()` で同じ対処を入れた）。関連: `runtime/src/engine/core/renderer/gpu_resources.rs`。
+
+- [ ] **`ScriptSystem` が毎フェーズ `Vec<ScriptCall>` と `Arc::clone` を作る** — 2026-09-07。1 フレーム 7 フェーズ × スクリプト数ぶんの `Arc` 増減と Vec 確保が発生する。収集バッファをフレーム間で使い回すか、`Arc` ではなくホストの生ポインタを持てば消せる。関連: `runtime/src/engine/systems/script_system.rs`。
+
+- [ ] **FFI アクセサはコンポーネント名・フィールド名の文字列 match でディスパッチしている** — 2026-09-07。`read_floats` / `write_floats` は呼び出しのたびに `&str` の多段 match を通る。呼び出し回数が多い経路（Transform の位置・回転）では、C# 側で ID を持たせて整数ディスパッチにすると削れる。今回は「Actor ツリーの全探索」（O(アクタ数)/呼び出し）のほうが桁違いに重かったのでそちらを索引化した。関連: `runtime/src/engine/core/scripting/host_api.rs`。
+
+- [ ] **`actor_virtual_pos` は計算されているが誰も使っていない** — 2026-09-07。`frame_renderer.rs` のエディタ状態収集で `self.actor_virtual_world_pos()`（Actor ツリー走査）を呼んで束縛しているが、参照箇所が 1 つも無い（デッドコード）。消してよいはずだが、今回のタスク範囲外なので触っていない。関連: `runtime/src/engine/core/app_base/app/frame_renderer.rs`。
+
+- [ ] **エディタ状態収集の残り（Play 中も走る DFS 群）** — 2026-09-07。ギズモ位置・ギズモ軸基底は `in_editor` で囲って Play 中は計算しないようにしたが、同区間にはピック ID レイアウト算出・各種シーンギズモ収集など Actor ツリー走査を伴う処理がまだ残る。計測（`エディタ状態収集` は 1.4ms / フレーム）に対して割に合うかを見てから、消費側が `show_gizmo_pre` 配下だと確認できたものから順に囲うこと。関連: `runtime/src/engine/core/app_base/app/frame_renderer.rs`。
+
+## 釣りシーンのスクリプト側 per-frame コスト（2026-09-07 の静的監査／未修正）
+
+- [ ] **`FishingController.UpdateFishRadar` が毎フレーム `Fish.All` / `DriftItem.All` を全走査する** — `FishingController.cs` 2341-2422（`Update` から無条件呼び出し・1625 行）。距離判定より**先に** `Transform.Position` を FFI で読むため、`Fish.UpdateFarLevelCulling`（`Fish.cs` 815）で既に遠距離カリング済みの魚まで毎フレーム 1 回ずつ FFI が走る。レーダー射程で空間分割するか、少なくとも既存のカリングフラグを見てから Transform を触ること。
+- [ ] **`FishManager` が管理魚 1 体につき毎フレーム 2 回 `GetComponent<Transform>()` を呼ぶ** — `IsAlive`（267-272 / 538-541）と `ClampFishToRings`（497-527、`LateUpdate` から毎フレーム）。`TrySpawnOne`（324 行）で解決済みの `Transform` ハンドルを `spawnedFish` と一緒に保持すれば 0 回にできる。
+- [ ] **`Fish` 1 体の 1 フレームで Transform の get/set が 5〜7 回に膨らむ** — `UpdateApproach` の遠距離枝（1072-1122）は `Position` を 3 回読み 2 回書く（`SwimTowardHeading` 1192-1202 が内部で再取得するため）。取得済み座標を引数で渡し、Y 補正を合成してから 1 回だけ書くようにすれば 2〜3 回に減る。
+- [ ] **`FishingFight.DrawGauge` が毎フレーム 48 回の `Draw.Rect`** — `FishingFight.cs` 2428-2491。設計上の割り切りだが、点灯状態が変わったセグメントだけ描き直せば大半のフレームで数回に減る。
+- [ ] **`FishingFight.ApplyBeatIcons` がアイコンプール全件に毎フレーム Position/Scale/Color を書く** — 2702-2734。非表示（alpha=0）で不変のアイコンにも書いている。`ApplyIconSizes` が既にやっている「変化時だけ書く」パターンを広げる。
+- [ ] **`FishingController.UpdateLine` が毎フレーム `LineHelper.Catenary` の戻り配列を確保する** — 3788-3806。`lineSegments + 1` 点の配列をフレームごとに作って `SetPoints` へ渡している。事前確保したバッファを埋める形にし、浮きが動いていないフレームは `SetPoints` 自体を省く。
+- [ ] **`FishingFight.ApplyStatusText` が毎フレーム文字列補間して `Text.Content` を設定する** — 2799-2816。フェーズ名は数秒不変なのに毎フレーム作り直している。直近値をキャッシュして変化時だけ設定する。
+- [ ] **`CameraMove.UpdateFov`（452 行）と `PlayerMove`（415 / 792 行）が毎フレーム `GetComponent` を呼ぶ** — いずれも単一インスタンスなので影響は小さいが、`IsValid` が落ちたときだけ引き直す遅延キャッシュにできる（ホットリロード追従も保てる）。

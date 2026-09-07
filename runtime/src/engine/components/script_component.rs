@@ -288,6 +288,13 @@ pub struct ScriptComponent {
     pub(crate) host:      Arc<ScriptingHost>,
     pub(crate) handle:    isize,
     pub(crate) type_name: String,
+    /// プロファイラの「スクリプト/Update/<型名>」スコープ名（インターン済み）。
+    ///
+    /// スコープ名は `&'static str` でなければならない（profiling::scope 参照）ため、
+    /// 生成時に 1 回だけインターンして保持する。毎フレームの文字列生成・ロック取得を
+    /// 避けるためのキャッシュで、インターン上限を超えた型では `None`（＝その型は
+    /// 型別内訳に出ないが、親の「スクリプト/Update」には従来どおり含まれる）。
+    pub(crate) update_scope_name: Option<&'static str>,
     /// [SerializeField] フィールドの現在値（シリアライズ・再生成時の復元用）。
     pub fields: BTreeMap<String, String>,
     /// このスクリプトが乗る GameObject（所有 Entity）。
@@ -315,6 +322,12 @@ pub struct ScriptComponent {
     pub(crate) refs_dirty: bool,
 }
 
+/// 型別プロファイル計測のスコープ名プレフィックス。
+///
+/// フレームループ側の親スコープ名（"スクリプト/Update"）と階層が繋がるように
+/// 同じ接頭辞を使う。パネル上では「スクリプト/Update」の子として型別内訳が並ぶ。
+const SCRIPT_UPDATE_SCOPE_PREFIX: &str = "スクリプト/Update/";
+
 impl ScriptComponent {
     /// CLR 上でスクリプトを生成して返す。生成に失敗した場合は None。
     pub fn new(host: Arc<ScriptingHost>, type_name: impl Into<String>) -> Option<Self> {
@@ -322,8 +335,12 @@ impl ScriptComponent {
         let bytes     = type_name.as_bytes();
         let handle    = unsafe { (host.create_fn)(bytes.as_ptr(), bytes.len() as i32) };
         if handle == 0 { return None; }
+        // プロファイラ用スコープ名を生成時に 1 度だけインターンする（毎フレームは触らない）。
+        let update_scope_name = crate::engine::core::profiling::intern_name(
+            &format!("{SCRIPT_UPDATE_SCOPE_PREFIX}{type_name}")
+        );
         Some(Self {
-            host, handle, type_name,
+            host, handle, type_name, update_scope_name,
             fields:  BTreeMap::new(),
             owner:   None,
             active:  true,

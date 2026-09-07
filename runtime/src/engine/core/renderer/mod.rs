@@ -42,6 +42,10 @@ pub(crate) mod view_mode;
 pub(crate) mod gbuffer;
 /// モデル LOD の段数と切替距離（シーン設定で可変・LOD 選択の唯一の判定点）。
 pub mod lod_settings;
+
+// 「このフレームの描画に関与するか」（視錐台 ∪ 影カスケード ∪ RT 半径）の合併判定。
+// 画面外オブジェクトの更新を省くための可視性判定を 1 箇所へ集約する。
+pub mod render_relevance;
 /// G-Buffer の空きチャンネルへ詰める「サーフェス識別情報」のビット規約
 /// （セマンティックタグ／シェーディングモデル ID／ユーザーデータ）。
 pub mod surface_id;

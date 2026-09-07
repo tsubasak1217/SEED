@@ -73,6 +73,7 @@ mod frame_renderer;
 /// IPC 駆動スクリーンショット（SCREENSHOT:）のアプリ側処理。
 mod screenshot_ops;
 mod merge_batch_gate;
+mod merge_collect;
 mod canvas_collect;
 mod collider2d_wireframe;
 mod collider3d_pick;
@@ -1036,6 +1037,10 @@ pub struct App {
     /// このマップで「N フレーム連続で不在」を検出し、遅延して安全に解放する（誤解放防止）。
     /// alive（今フレーム存在）になったキーはエントリを除去してカウンタをリセットする。
     batch_absent_frames: HashMap<String, u32>,
+    /// 統合バッチ収集の集約先（フレーム間で確保を使い回す。詳細は `merge_collect` モジュール）。
+    merge_collector: merge_collect::MergeCollector,
+    /// 統合バッチの規模ログを最後に出した時刻（プロファイラ有効時のみ使用）。
+    merge_stats_logged_at: Option<std::time::Instant>,
 
     // ── ドラッグ&ドロップ ───────────────────────────────────────
     /// DROP_ACTOR コマンドを受け取ったときに設定する。
@@ -1529,6 +1534,8 @@ impl App {
             velocity_prev_key:        None,
             velocity_reset_requested: false,
             batch_absent_frames:     HashMap::new(),
+            merge_collector:         merge_collect::MergeCollector::default(),
+            merge_stats_logged_at:   None,
             pending_drop:            None,
             pending_water_param_decls_resend: false,
             pending_shading_param_decls_resend: false,
