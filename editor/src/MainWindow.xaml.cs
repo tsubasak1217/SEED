@@ -982,10 +982,25 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                 // 「開始シーンからプレイ」ON: null を渡してランタイムに start_scene を使わせる
                 _runtimeManager.PlayScenePath = null;
             }
+            else if (_embeddedPlay)
+            {
+                // 埋め込み Play は「稼働中の Edit ランタイムをその場で Play 化する」経路
+                // （ENTER_PLAY を送るだけ）であり、シーンをディスクから読み直さない。
+                // したがって _play_temp.scene への一時保存は Play の動作に一切使われず、
+                // 毎回のシーン全体書き出しと地形（.tvox 等）フラッシュを起こすだけになる。
+                // 「未保存編集を守る」役目は、ランタイム側の Play 開始スナップショット
+                // （runtime の play_snapshot.rs）が Play 停止時の復元まで含めて担う。
+                //
+                // PlayScenePath は、何らかの理由で埋め込み経路に入れず新規プロセス起動へ
+                // フォールバックしたときのために現在のシーンパスを入れておく
+                // （null のままだと開始シーンが起動してしまう）。
+                _runtimeManager.PlayScenePath = _currentScenePath;
+            }
             else
             {
+                // ウィンドウ Play は別プロセス／常駐プロセスがシーンをディスクから読む。
                 // 現在の Edit ランタイムのシーン状態（未保存変更を含む）を
-                // 一時ファイルへ保存してから Play する。
+                // 一時ファイルへ保存してから、そのパスを渡す。
                 // これによりファイル保存なしでも常に最新状態で実行できる。
                 var tempPath = await _runtimeManager.SaveCurrentSceneToTempAsync();
                 if (tempPath is null)
@@ -1003,7 +1018,6 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             // Play 起動フラグを設定してから PlayAsync を呼ぶ。
             // EmbeddedPlay=true のときは別プロセスを起動せず、現 Edit ランタイムへ
             // ENTER_PLAY を送ってその場で Play 化する（地形・散布・GPU を保持）。
-            // なお _play_temp.scene への一時保存（上）は EmbeddedPlay でもクラッシュ保険として維持する。
             _runtimeManager.PlayColliderDraw = _playColliderDraw;
             _runtimeManager.EmbeddedPlay     = _embeddedPlay;
             try { await _runtimeManager.PlayAsync(); }

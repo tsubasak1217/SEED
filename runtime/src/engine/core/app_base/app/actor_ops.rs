@@ -1519,9 +1519,12 @@ pub(super) fn snapshot_actors(
 
 /// 地形ルート 1 体を「位置マーカー」の ActorData として組み立てる。
 ///
+/// Undo/Redo のツリー退避（本ファイル）と Play 開始スナップショット
+/// （play_snapshot.rs）で共有する。
+///
 /// 子（チャンクサブツリー）とコンポーネントを持たない、名前とフォルダ属性だけの
 /// ノード。`to_data` を経由しないので全チャンクの serde コストが掛からない。
-fn terrain_marker_data(actor: &Actor) -> ActorData {
+pub(super) fn terrain_marker_data(actor: &Actor) -> ActorData {
     ActorData {
         name:             actor.name.clone(),
         dfs_id:           None,
@@ -1544,7 +1547,7 @@ fn terrain_marker_data(actor: &Actor) -> ActorData {
 /// 地形ルート自身はフォルダノードで元々スロットを持たないが、
 /// 旧シーン由来のデータでも確実にマーカー化するため両方を空にする。
 /// 戻り値は「地形ルートが見つかったか」。
-fn prune_terrain_subtree(data: &mut ActorData) -> bool {
+pub(super) fn prune_terrain_subtree(data: &mut ActorData) -> bool {
     if data.name == TERRAIN_ROOT_NAME {
         data.children.clear();
         data.components.clear();

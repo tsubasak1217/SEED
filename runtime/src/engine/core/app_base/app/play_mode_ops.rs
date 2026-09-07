@@ -31,42 +31,9 @@ use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 use crate::engine::core::clock::Clock;
 
-use std::cell::RefCell;
-use std::path::Path;
-
 use super::{App, RuntimeMode, PlaySnapshot, PlaySnapshotEntry, despawn_actor_recursive};
-use super::app_init::SceneInstallOptions;
+use super::play_snapshot::PlayStartState;
 use super::terrain_ops::TERRAIN_ROOT_NAME;
-
-// ============================================================
-//  Play 開始時のシーンパス保持
-//
-//  【なぜ App のフィールドではないのか】
-//  本来は `App::play_start_scene_path` として持たせたいが、`App` 構造体および
-//  `PlaySnapshot` の定義はいずれも `app/mod.rs` にあり、当該ファイルは
-//  別作業と競合するため本変更では編集できない。Play の開始/停止は
-//  ウィンドウイベントループ（メインスレッド）からしか呼ばれず、App も
-//  1 プロセス 1 インスタンスであるため、スレッドローカルに退避しても
-//  「App のフィールドと同じ寿命・同じ可視性」が保たれる。
-//  （mod.rs を編集できるようになった時点で App のフィールドへ移すのが望ましい）
-// ============================================================
-
-thread_local! {
-    /// ENTER_PLAY した時点で読み込んでいたシーンのパス（`App::loaded_scene_path` の複製）。
-    /// Play 中にスクリプトの `SEED.Scene.Transition` で別シーンへ移ったかどうかを、
-    /// EXIT_PLAY 時に現在の `loaded_scene_path` と突き合わせて判定するために使う。
-    static PLAY_START_SCENE_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Play 開始時のシーンパスを記録する（ENTER_PLAY から呼ぶ）。
-fn set_play_start_scene_path(path: Option<String>) {
-    PLAY_START_SCENE_PATH.with(|c| *c.borrow_mut() = path);
-}
-
-/// Play 開始時のシーンパスを取り出して忘れる（EXIT_PLAY から呼ぶ。冪等）。
-fn take_play_start_scene_path() -> Option<String> {
-    PLAY_START_SCENE_PATH.with(|c| c.borrow_mut().take())
-}
 
 impl App {
     /// あるトップレベルアクターが「地形ルート」か（world_line == 0 かつ名前が terrain）。
@@ -113,14 +80,16 @@ impl App {
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_ENTERED"); }
             return;
         }
-        // ── Play 開始時のシーンパスを記録する ───────────────────────────────
+        // ── Play 開始状態の器を作る ───────────────────────────────────────
         // Play 中に `SEED.Scene.Transition` で別シーンへ遷移すると
         // `install_loaded_scene` がシーンを丸ごと差し替え、`loaded_scene_path` も
-        // 遷移先へ書き換わる。EXIT_PLAY で「開始時のシーンへ戻す」判断ができるよう、
-        // ここで開始時点のパスを退避しておく。
+        // 遷移先へ書き換わる。EXIT_PLAY で「Play 開始直前の編集状態へ戻す」ために、
+        // ここで開始時点のパスを記録しておく（シーン本体の退避は下の
+        // `capture_play_start_scene` が埋める。シーン未ロードでも遷移判定が
+        // できるよう、パスの記録だけは先に済ませる）。
         // 二重開始（べき等パス）の後ろに置いてあるので、Play 中に ENTER_PLAY が
         // 重複して届いても記録が遷移先パスで上書きされることはない。
-        set_play_start_scene_path(self.loaded_scene_path.clone());
+        self.play_start = Some(PlayStartState::new(self.loaded_scene_path.clone()));
 
         if self.scene.is_none() {
             // シーン未ロードでは Play しても意味がないが、エディタの状態機械を進めるため
@@ -138,23 +107,15 @@ impl App {
         //   1 チャンク 2KB 強なので複製コストは無視できる。
         self.snapshot_cover_for_play();
 
-        // ── 1) アクター状態のスナップショット（順序保持）──────────────────
+        // ── 1) Play 開始状態のスナップショット ──────────────────────────────
         // トップレベルアクターを並び順に走査し、wl0 非地形は ActorData へシリアライズ、
-        // 地形ルート・編集タブは Keep(entity) として現物を退避する。順序を保つことで
-        // 復元後の DFS ID 対応（物理・スクリプトイベント配信が依存）が Play 前と一致する。
-        let snapshot = {
-            let scene = self.scene.as_ref().unwrap();
-            let mut entries = Vec::with_capacity(scene.actors.len());
-            for root in &scene.actors {
-                if Self::is_snapshot_target(root) {
-                    entries.push(PlaySnapshotEntry::Restore(root.to_data(&scene.world)));
-                } else {
-                    entries.push(PlaySnapshotEntry::Keep(root.entity));
-                }
-            }
-            PlaySnapshot { entries }
-        };
-        self.play_snapshot = Some(snapshot);
+        // 地形ルート・編集タブは Keep(entity) として現物を退避する（`play_snapshot`）。
+        // 順序を保つことで復元後の DFS ID 対応（物理・スクリプトイベント配信が依存）が
+        // Play 前と一致する。
+        // 同じ 1 回の走査で、シーン遷移が起きたとき用の完全スナップショット
+        // （シーンの直列化 JSON ＋ 編集タブのアクターデータ）も `play_start` へ作る。
+        // 詳細は play_snapshot.rs を参照。
+        self.capture_play_start_scene();
 
         // ── 2) 編集専用状態のリセット（選択・ギズモ・ホバー・ドラッグ）──────────
         self.selected_instances.clear();
@@ -247,9 +208,9 @@ impl App {
         // 残すと、次の Play で「前回 Play 終了時の相対関係」が使われてしまう。
         self.joint_attach_child_locals.clear();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
-        // 開始時シーンパスの記録も必ず捨てる（次の Play へ持ち越さない）。
+        // 開始状態の記録も必ず捨てる（次の Play へ持ち越さない）。
         if self.mode != RuntimeMode::Play {
-            take_play_start_scene_path();
+            self.play_start = None;
             self.mode = RuntimeMode::Edit;
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_EXITED"); }
             return;
@@ -282,35 +243,29 @@ impl App {
         // 地表カバー場を Edit の保存状態へ戻す（Play 中に積もったぶんは捨てる。I3.1）。
         self.restore_cover_after_play();
 
-        // ── 2) Play 中にシーン遷移が起きたかを判定する ───────────────────────
-        // 開始時に退避したパスと、いま読み込んでいるパス（`SEED.Scene.Transition` が
-        // `set_loaded_scene_path` で書き換える）を突き合わせる。両方が既知で
-        // 食い違っているときだけ「遷移が起きた」と判定する。
-        // 片方が未知（起動直後などパス未確定）のケースは判定材料が無いため、
-        // 従来どおりスナップショット復元へ倒す（挙動を変えない）。
-        let start_scene_path = take_play_start_scene_path();
-        let transitioned_path: Option<String> = match (&start_scene_path, &self.loaded_scene_path) {
-            (Some(start), Some(current)) if start != current => Some(start.clone()),
-            _ => None,
-        };
+        // ── 2) Play 中にシーンの差し替え（遷移）が起きたかを判定する ─────────
+        // 判定の第一根拠は差し替えフックが立てるフラグ、保険としてパス比較も見る
+        // （`PlayStartState::is_scene_replaced`）。
+        let play_start = self.play_start.take();
+        let scene_replaced = play_start
+            .as_ref()
+            .map(|s| s.is_scene_replaced(self.loaded_scene_path.as_deref()))
+            .unwrap_or(false);
 
         // ── 3) アクターツリーを復元 ─────────────────────────────────────
-        // (a) 遷移が起きていない通常の Play 停止（従来どおり）:
-        //     スナップショットから wl0 非地形アクターを再構築する。
-        //     スナップショットが無い（ウィンドウ Play 等、想定外経路）場合は何もしない。
+        // (a) 遷移が起きていない通常の Play 停止（従来どおり・最速）:
+        //     スナップショットから wl0 非地形アクターを再構築する。地形・編集タブは
+        //     現物を保持しているので触らない。スナップショットが無い
+        //     （ウィンドウ Play 等、想定外経路）場合は何もしない。
         // (b) 遷移が起きた場合:
-        //     スナップショットは使えない。Keep エントリが指す entity は差し替えで
+        //     軽量スナップショットは使えない。Keep エントリが指す entity は差し替えで
         //     破棄された旧 World のものであり、復元しても実体が存在しないため。
-        //     代わりに Play 開始時のシーンファイルを読み直して据え付ける。
+        //     Play 開始時にメモリへ取った完全スナップショットから編集状態を組み直す
+        //     （ファイルを読まないので、Play 開始前の未保存編集もそのまま戻る）。
+        //     それに失敗したときだけ、最後の手段として開始シーンのファイルを読み直す。
         let t_restore = Instant::now();
-        let mut reloaded_scene_path: Option<String> = None;
-        if let Some(start_path) = transitioned_path {
-            if self.reload_scene_after_play_transition(&start_path) {
-                reloaded_scene_path = Some(start_path);
-            }
-            // 読み直しに失敗した場合は現状維持（遷移先シーンのまま Edit へ戻る）。
-            // 保存は scene_save_ops の path_mismatch 保護に弾かれるため、
-            // 誤ったシーンへの上書き事故にはならない。
+        if scene_replaced {
+            self.restore_edit_state_after_scene_replaced(play_start);
         } else if let (Some(snapshot), true) =
             (snapshot, self.draw_ctx.is_some() && self.scene.is_some())
         {
@@ -373,95 +328,59 @@ impl App {
             self.edit_physics_enabled
         );
 
-        if let Some(ipc) = &self.ipc {
-            ipc.send("PLAY_EXITED");
-            // シーンを読み直したときだけ追加で通知する。
-            // PLAY_EXITED の「後」に送るのは、エディタ側の状態機械が PLAY_EXITED で
-            // Play→Edit へ遷移し終えてから通知（ダイアログ）を出させるため。
-            // 逆順にすると Play→Edit 遷移中にモーダルが割り込むことになる。
-            if let Some(path) = &reloaded_scene_path {
-                ipc.send(&format!("PLAY_SCENE_RELOADED:{path}"));
-            }
-        }
+        if let Some(ipc) = &self.ipc { ipc.send("PLAY_EXITED"); }
     }
 
-    /// Play 中のシーン遷移から、Play 開始時のシーンを読み直して据え付ける
+    /// Play 中にシーンが差し替わった状態から、Play 開始直前の編集状態へ戻す
     /// （EXIT_PLAY 内部ヘルパ）。
     ///
-    /// スナップショット復元の代替経路。Play 開始時のシーンファイルを
-    /// `Scene::load` で読み直し、`install_loaded_scene` で据え付けたうえで
-    /// `loaded_scene_path` を開始時のパスへ戻す。
+    /// Unity の Play 停止と同じく **必ず Play 開始直前の状態へ戻す** のがここの責務。
+    ///   ① Play 開始時にメモリへ取った完全スナップショットから復元する（第一選択）。
+    ///      ファイルを読まないので、Play 開始前の未保存編集もそのまま戻る。
+    ///   ② ①が失敗したときだけ、最後の手段として開始シーンのファイルを読み直す。
+    ///      このときは未保存編集が失われるためエラーログを出す。
+    ///   ③ どちらも不可能なら遷移先のシーンのまま Edit へ戻る。保存は
+    ///      scene_save_ops の path_mismatch 保護に弾かれるので誤上書き事故にはならない。
     ///
-    /// LOAD_SCENE ハンドラとの差分:
-    /// - undo 履歴の破棄・選択状態のクリア・`send_hierarchy` / `send_selected`・
-    ///   編集時物理の再起動は、いずれも `exit_play` の後半処理が同じ内容を行うため
-    ///   ここでは行わない（二重実行を避ける）。ここで行うのは undo 履歴の破棄だけで、
-    ///   これは exit_play 側に無いため必須（旧 World の Entity を指したままになる）。
-    /// - カメラ退避（`saved_cameras`）と `active_world_line` の切り替えも行わない。
-    ///   Play 中に world_line は変わらず、編集タブはそのまま引き継ぐため。
-    ///
-    /// # 戻り値
-    /// 読み直しに成功したら true。失敗（DrawContext 無し／ファイル読み込み失敗）
-    /// なら false を返し、シーンは遷移先のまま維持する。
-    fn reload_scene_after_play_transition(&mut self, start_path: &str) -> bool {
-        if self.draw_ctx.is_none() {
+    /// 復元処理の実体は play_snapshot.rs にある（退避と復元を 1 ファイルへ集約するため）。
+    fn restore_edit_state_after_scene_replaced(&mut self, play_start: Option<PlayStartState>) {
+        // 開始状態が無い（ウィンドウ Play 等の想定外経路）なら何もできない。
+        let Some(start) = play_start else {
             eprintln!(
-                "[SEED PLAY] Play 中にシーン遷移が起きましたが、DrawContext が無いため                  開始シーン({start_path})を読み直せませんでした"
+                "[SEED PLAY] Play 中にシーンが差し替わりましたが、Play 開始状態の記録が \
+                 無いため復元できません"
             );
-            return false;
+            return;
+        };
+        // 最後の手段で使うので、消費される前にパスだけ控えておく。
+        let start_path = start.scene_path.clone();
+
+        // ① メモリ上の完全スナップショットから復元する。
+        if self.restore_from_play_start(start) {
+            eprintln!(
+                "[SEED PLAY] Play 中にシーン遷移が起きたため Play 開始時の編集状態へ復元しました"
+            );
+            return;
         }
 
-        // シーン差し替えの前に mode を Edit へ落としておく。
-        // `install_loaded_scene` は `mode == Play` のとき地形 LOD の事前収束
-        //（数秒かかりうるブロッキング処理）を行うが、これから Edit へ戻るので不要。
-        // 後段の「編集状態へ復帰」でも同じ代入を行うため冪等。
-        self.mode = RuntimeMode::Edit;
-
-        // scripting_host は clone してから draw_ctx を借りる（同時可変借用を避ける）。
-        let host   = self.scripting_host.clone();
-        let loaded = {
-            let ctx = self.draw_ctx.as_ref().unwrap();
-            crate::engine::core::app_base::scene::Scene::load(Path::new(start_path), ctx, host.as_ref())
+        // ② ファイル読み直しへフォールバック（未保存編集は失われる）。
+        let Some(path) = start_path else {
+            eprintln!(
+                "[SEED PLAY] Play 開始時の編集状態を復元できず、開始シーンのパスも不明なため \
+                 遷移先のシーンのまま Edit へ戻ります"
+            );
+            return;
         };
-
-        match loaded {
-            Ok((new_scene, cam_data)) => {
-                // Undo 履歴は旧シーン（遷移先）の Entity を参照しているため破棄する。
-                // LOAD_SCENE ハンドラと同じ理由・同じ手順。
-                self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
-
-                self.install_loaded_scene(
-                    new_scene,
-                    cam_data,
-                    SceneInstallOptions {
-                        // アクター編集タブ（world_line > 0）は Play を跨いで残す
-                        keep_actor_edit_tabs: true,
-                        // 破棄済みアクターを掴んだままのポインタ状態を捨てる
-                        reset_pointer: true,
-                        // 遷移先で鳴っていたコンポーネント音源を止める
-                        reset_audio_components: true,
-                        // 旧 Entity をキーに持つ物理キャッシュ・タイムラインを捨てる
-                        reset_physics_caches: true,
-                        ..Default::default()
-                    },
-                );
-
-                // 「いま何を読み込んでいるか」を Play 開始時のシーンへ戻す。
-                // これを忘れると、エディタが編集中と思っているシーンとランタイムの
-                // 実体がずれたままになり、保存が path_mismatch で拒否され続ける。
-                self.set_loaded_scene_path(start_path);
-
-                eprintln!(
-                    "[SEED PLAY] Play 中にシーン遷移が起きたため、Play 開始時のシーンを読み直しました:                      {start_path}（Play 開始前に保存していなかった編集は失われています）"
-                );
-                true
-            }
-            Err(e) => {
-                eprintln!(
-                    "[SEED PLAY] Play 開始時のシーン({start_path})の読み直しに失敗しました: {e}                      — 遷移先のシーンを保持したまま Edit へ戻ります"
-                );
-                false
-            }
+        if self.reload_scene_file_after_play(&path) {
+            eprintln!(
+                "[SEED PLAY] Play 開始時の編集状態を復元できなかったため、開始シーン({path})を \
+                 ファイルから読み直しました（Play 開始前に保存していなかった編集は失われています）"
+            );
+        } else {
+            eprintln!(
+                "[SEED PLAY] Play 開始シーン({path})の読み直しにも失敗したため、遷移先の \
+                 シーンのまま Edit へ戻ります"
+            );
         }
     }
 

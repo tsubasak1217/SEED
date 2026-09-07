@@ -237,6 +237,14 @@ impl App {
         };
         let Some((new_scene, cam_data)) = loaded else { return };
 
+        // ── Play 開始状態の保全（シーン差し替えの直前に必ず行う）──────────────
+        // `install_loaded_scene` は旧 World を捨て、`rebuild_terrain_after_load` が
+        // `TerrainState` を作り直す。つまりこの行より後では「Play 開始前の未保存の
+        // スカルプト・散布・カバー場」がメモリからも消える。Play 停止時に開始直前の
+        // 編集状態へ戻せるよう、ここで地形の実データを丸ごと退避し、
+        // 「差し替えが起きた」ことも記録しておく（詳細は play_snapshot.rs）。
+        self.stash_terrain_before_scene_swap();
+
         // ── 物理スレッドの停止（新シーンの内容で再収集させるため）──────────────
         // 起動していたかどうかを記録してから止め、据え付け完了後に同じ構成で再起動する。
         let had_physics    = self.physics_thread.is_some();

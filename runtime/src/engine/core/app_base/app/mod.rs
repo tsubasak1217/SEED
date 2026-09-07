@@ -87,6 +87,8 @@ mod script_scene_ops;
 mod scene_save_ops;
 /// 埋め込みインプレース Play（フェーズ2）: ENTER_PLAY / EXIT_PLAY の状態遷移とアクター退避/復元。
 mod play_mode_ops;
+/// Play 開始時の編集状態の退避と復元（軽量スナップショット＋シーン遷移対策の完全スナップショット）。
+mod play_snapshot;
 /// 【一時】埋め込み Play の凍結/黒画面 診断計器（ウォッチドッグ・ステージ印・イベントトレース）。原因確定後に撤去。
 mod play_diag;
 mod audio_ops;
@@ -494,31 +496,14 @@ pub enum RuntimeMode {
 }
 
 // ============================================================
-//  PlaySnapshot — 埋め込みインプレース Play のアクター状態退避
+//  Play スナップショット型の再エクスポート
+//
+//  実体は play_snapshot.rs（退避・復元の責務ごと切り出してある）。
+//  App のフィールド型としてここで名前を通す。
 // ============================================================
 
-/// 埋め込み Play（ENTER_PLAY）開始時に取るシーンのトップレベルアクター状態のスナップショット。
-///
-/// 【設計】高速化の本体は「地形・散布・GPU リソースを作り直さない」こと。そのため
-/// スナップショットは **シーン世界線（world_line == 0）の非地形アクターのみ** を対象とし、
-/// 地形ルート（`TERRAIN_ROOT_NAME`）とアクター編集タブ（world_line > 0）のアクターは
-/// 「現物を保持（Keep）」して一切触らない。Play 中に地形は変化せず（スクリプトに地形編集
-/// API は無い）、編集タブはシミュレートされないため、保持で状態は保たれる。
-///
-/// トップレベルアクターの **並び順を保持** することで、復元後も DFS ID の対応
-/// （物理・スクリプトのイベント配信が依存）を Play 前と一致させる。
-pub struct PlaySnapshot {
-    /// Play 前のトップレベルアクター列（順序保持）。各要素が復元方法を持つ。
-    entries: Vec<PlaySnapshotEntry>,
-}
-
-/// トップレベルアクター 1 体分のスナップショット項目。
-enum PlaySnapshotEntry {
-    /// スナップショット対象（world_line == 0・非地形）。ActorData から再構築する。
-    Restore(ActorData),
-    /// 保持対象（地形ルート・world_line > 0）。ルート entity をキーに現物を退避して戻す。
-    Keep(crate::engine::ecs::Entity),
-}
+pub use play_snapshot::{PlaySnapshot, PlayStartState};
+use play_snapshot::PlaySnapshotEntry;
 
 /// Edit モードのビューポート表示モード（エディタの「3Dシーン / 2Dシーン」タブに対応）。
 ///
@@ -1325,6 +1310,14 @@ pub struct App {
     /// EXIT_PLAY でここから非地形アクターを再構築して編集状態へ復帰する。
     /// None = 埋め込み Play 中でない（通常の Edit / ウィンドウ Play）。
     pub(super) play_snapshot: Option<PlaySnapshot>,
+
+    /// ENTER_PLAY 開始時の編集状態一式（シーンの直列化 JSON・編集タブ・地形の実データ）。
+    ///
+    /// Play 中にスクリプトのシーン遷移が起きると `play_snapshot` の Keep entity が
+    /// 死ぬため復元に使えない。その場合に「Play 開始直前の編集状態（未保存を含む）」へ
+    /// 確実に戻すための原本がこれ。詳細は play_snapshot.rs を参照。
+    /// None = 埋め込み Play 中でない。
+    pub(super) play_start: Option<PlayStartState>,
 }
 
 /// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
@@ -1557,6 +1550,7 @@ impl App {
             joint_attach_child_locals: std::collections::HashMap::new(),
             terrain:             terrain_ops::TerrainState::default(),
             play_snapshot:       None,
+            play_start:          None,
         }
     }
 

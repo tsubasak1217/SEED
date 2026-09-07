@@ -1458,29 +1458,6 @@ public sealed class RuntimeManager : IDisposable
             Application.Current?.Dispatcher.InvokeAsync(EnsureRuntimeEmbedded);
             ChangeState(EditorState.Edit);
         }
-        else if (msg.StartsWith("PLAY_SCENE_RELOADED:", StringComparison.Ordinal))
-        {
-            // Play 中にスクリプト（SEED.Scene.Transition）でシーン遷移が起きたため、
-            // ランタイムが Play 停止時に「Play 開始時のシーン」を読み直したという通知。
-            // PLAY_EXITED の直後に届く（Edit へ戻り終えてから通知が出る順序）。
-            //
-            // エディタが保持する現在シーンパスは Play 前から変わっていないため変更不要。
-            // ヒエラルキーはランタイムの send_hierarchy で更新される。
-            // 読み直しにより「Play 開始前に保存していなかった編集」は失われているので、
-            // ユーザーへ必ず知らせる。
-            var reloadedPath = msg["PLAY_SCENE_RELOADED:".Length..];
-            EditorLog.Write($"[Runtime→Editor] PLAY_SCENE_RELOADED — Play 中のシーン遷移により開始シーンを読み直し: {reloadedPath}");
-            // 改行は Environment.NewLine で組み立てる（メッセージ内に制御文字を直書きしない）。
-            var reloadedMessage =
-                "Play 中にシーン遷移が起きたため、Play 開始時のシーン" + Environment.NewLine +
-                reloadedPath + Environment.NewLine +
-                "を読み直しました。" + Environment.NewLine + Environment.NewLine +
-                "Play 開始前に保存していなかった編集は失われています。";
-            Application.Current?.Dispatcher.InvokeAsync(() =>
-                SEEDEditor.Headless.EditorDialogs.Show(
-                    reloadedMessage,
-                    "SEED Editor", MessageBoxButton.OK, MessageBoxImage.Warning));
-        }
         else if (msg.StartsWith("WGSL_DIAG:", StringComparison.Ordinal))
         {
             // 書式: WGSL_DIAG:{request_id},{json_array}

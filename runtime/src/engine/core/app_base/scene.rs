@@ -145,6 +145,34 @@ struct SceneData {
     actors: Vec<ActorData>,
 }
 
+/// `SceneData` の **書き出し専用・借用版**。
+///
+/// 直列化するだけなら Scene のメタデータ（名前・シェーディング設定・地形フォルダ参照）を
+/// clone する必要が無い。さらにアクター列を `&[ActorData]` で受け取れるため、呼び出し側が
+/// 用意したアクターデータ（Play スナップショットの地形マーカー版など）をそのまま
+/// **所有権を渡さずに** 書き出せる。
+///
+/// 【`SceneData` と同じ JSON を出す責任】
+/// フィールド名・`skip_serializing_if` 属性は `SceneData` と 1 対 1 に保つこと。
+/// ずれると保存した `.scene` が読めなくなる（両者の往復テストが scene.rs 末尾にある）。
+#[derive(Serialize)]
+struct SceneDataRef<'a> {
+    name:   &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug_camera: Option<&'a DebugCameraData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shading_asset: Option<&'a str>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    shading_params: &'a std::collections::BTreeMap<String, [f32; 4]>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    shading_bindings: &'a std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settings: Option<&'a SceneSettingsData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terrain_dir: Option<&'a str>,
+    actors: &'a [ActorData],
+}
+
 // ============================================================
 //  Scene — World のオーナー + アクターツリー管理
 // ============================================================
@@ -395,21 +423,51 @@ impl Scene {
 
     // ── 保存 ──────────────────────────────────────────────────
 
-    pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
-        let data = SceneData {
-            name:         self.name.clone(),
-            debug_camera: Some(camera.clone()),
+    /// シーンを `.scene` の JSON テキストへ直列化する（ファイルへは書かない）。
+    ///
+    /// アクター列は `self.actors` を丸ごと `to_data` した内容になる。
+    /// **アクター列を差し替えて書きたい場合**（Play スナップショットのように地形
+    /// サブツリーを位置マーカーへ削ぐなど）は `to_json_with_actors` を直接呼ぶ。
+    pub fn to_json(&self, camera: &DebugCameraData) -> Result<String, SceneError> {
+        let actors: Vec<ActorData> =
+            self.actors.iter().map(|a| a.to_data(&self.world)).collect();
+        self.to_json_with_actors(camera, &actors)
+    }
+
+    /// シーンのメタデータ（名前・シェーディング・シーン設定・地形フォルダ参照）と
+    /// **呼び出し側が用意したアクターデータ列**から `.scene` の JSON テキストを組み立てる。
+    ///
+    /// 【なぜアクター列を外から受け取るのか】
+    /// 通常の保存は「World の現状をそのまま」書けばよいが、Play スナップショット
+    /// （`app/play_snapshot.rs`）は地形サブツリーを位置マーカーへ削いだアクター列を
+    /// 書きたい。チャンク数百枚を serde するコストを避け、地形の復元をメモリ上の
+    /// `TerrainState` からに揃えるためである。両者で異なるのはアクター列だけなので、
+    /// そこだけを引数にして直列化本体（メタデータの組み立てと JSON 化）を共有する。
+    pub fn to_json_with_actors(
+        &self,
+        camera: &DebugCameraData,
+        actors: &[ActorData],
+    ) -> Result<String, SceneError> {
+        // 借用版の直列化型を使い、メタデータの clone を避ける。
+        let data = SceneDataRef {
+            name:         &self.name,
+            debug_camera: Some(camera),
             // シーン既定のシェーディングアセット（未設定なら None のまま出力を省略する）
-            shading_asset:    self.shading_asset.clone(),
-            shading_params:   self.shading_params.clone(),
-            shading_bindings: self.shading_bindings.clone(),
+            shading_asset:    self.shading_asset.as_deref(),
+            shading_params:   &self.shading_params,
+            shading_bindings: &self.shading_bindings,
             // シーン単位のビューポート／レンダリング設定（未設定なら None のまま出力を省略する）
-            settings:      self.settings.clone(),
+            settings:      self.settings.as_ref(),
             // 地形フォルダ参照（未設定なら None のまま出力を省略する＝旧 .scene と同じ形）
-            terrain_dir:   self.terrain_dir.clone(),
-            actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
+            terrain_dir:   self.terrain_dir.as_deref(),
+            actors,
         };
-        let json = serde_json::to_string_pretty(&data)?;
+        Ok(serde_json::to_string_pretty(&data)?)
+    }
+
+    /// シーンを `.scene` ファイルへ保存する（直列化は `to_json` に委譲）。
+    pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
+        let json = self.to_json(camera)?;
         // 直接 write せず「旧版を .backup へ退避 → .tmp へ書き切ってから rename」する。
         // 途中で落ちても元の .scene は無傷で残り、誤った内容で上書きしても
         // 直前 10 世代から戻せる（safe_write.rs のコメント参照）。
@@ -461,13 +519,27 @@ impl Scene {
         Ok(actor)
     }
 
+    /// `.scene` ファイルを読み込んでシーンを構築する（構築本体は `from_json`）。
     pub fn load(
         path:           &Path,
         ctx:            &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
-        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
-        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+        let raw = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
+        Self::from_json(&raw, ctx, scripting_host)
+    }
+
+    /// `.scene` の JSON テキストからシーンを構築する（ファイル読み込みを伴わない）。
+    ///
+    /// `load` の実体。ファイル経路と、メモリ上の直列化文字列から復元する経路
+    /// （Play スナップショットの復元＝`app/play_snapshot.rs`）で共有する。
+    /// 先頭の BOM は許容する（エディタや外部ツールが付けることがあるため）。
+    pub fn from_json(
+        raw:            &str,
+        ctx:            &DrawContext,
+        scripting_host: Option<&Arc<ScriptingHost>>,
+    ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
+        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
         let data: SceneData = serde_json::from_str(json)?;
 
         let cam = data.debug_camera;
@@ -1054,6 +1126,43 @@ mod folder_transform_tests {
 
         let ct = world.get::<CanvasTransform>(e).cloned().unwrap();
         assert_eq!(ct.position, [12.0, 34.0], "通常 2D アクタは保存値を復元する");
+    }
+
+    /// 書き出した JSON が、読み込み側の型（`SceneData`）でそのまま読めること。
+    ///
+    /// 直列化は借用版の `SceneDataRef`、逆直列化は所有版の `SceneData` という
+    /// 2 つの型に分かれている。フィールド名や `skip_serializing_if` がずれると
+    /// 「保存した .scene が読めない」という最悪の退行になるため、往復で固定する。
+    #[test]
+    fn scene_json_is_readable_as_scene_data() {
+        let mut scene = Scene::new("round_trip");
+        scene.shading_asset = Some("assets://shading/x.wgsl".to_string());
+        scene.terrain_dir   = Some("terrain/round_trip".to_string());
+        scene.shading_params.insert("tint".to_string(), [1.0, 2.0, 3.0, 4.0]);
+        scene.shading_bindings.insert("target".to_string(), "Actor|Model|pos".to_string());
+        // アクターを 1 体（子付き）置く。GPU は要らない。
+        let parent_e = scene.world.spawn();
+        scene.world.insert(parent_e, Transform::default());
+        let mut parent = Actor::new(parent_e, "Parent");
+        let child_e = scene.world.spawn();
+        scene.world.insert(child_e, Transform::default());
+        parent.add_child(Actor::new(child_e, "Child"));
+        scene.actors.push(parent);
+
+        let camera = DebugCameraData::default();
+        let json   = scene.to_json(&camera).expect("直列化できること");
+        let data: SceneData = serde_json::from_str(&json).expect("読み込み側の型で読めること");
+
+        assert_eq!(data.name, "round_trip");
+        assert_eq!(data.shading_asset.as_deref(), Some("assets://shading/x.wgsl"));
+        assert_eq!(data.terrain_dir.as_deref(), Some("terrain/round_trip"));
+        assert_eq!(data.shading_params.get("tint"), Some(&[1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(data.shading_bindings.get("target").map(String::as_str), Some("Actor|Model|pos"));
+        assert!(data.debug_camera.is_some(), "デバッグカメラが往復する");
+        assert_eq!(data.actors.len(), 1, "トップレベルアクター数が往復する");
+        assert_eq!(data.actors[0].name, "Parent");
+        assert_eq!(data.actors[0].children.len(), 1, "子ツリーが往復する");
+        assert_eq!(data.actors[0].children[0].name, "Child");
     }
 
     /// ActorData（is_folder=true / Actor2D）の serde 往復後も、読み込み経路を通せば

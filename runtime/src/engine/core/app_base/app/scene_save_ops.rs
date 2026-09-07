@@ -152,15 +152,7 @@ impl App {
             return;
         };
 
-        let pos = self.camera.base.transform.position;
-        let cam_data = DebugCameraData {
-            position: [pos.x, pos.y, pos.z],
-            yaw: self.camera.yaw,
-            pitch: self.camera.pitch,
-            fov_deg: self.camera.base.projection.fov_y_rad.to_degrees(),
-            far: self.camera.base.projection.far,
-            speed: self.camera.move_speed,
-        };
+        let cam_data = self.debug_camera_data();
 
         match scene.save(Path::new(path), &cam_data) {
             Ok(()) => {
@@ -176,6 +168,22 @@ impl App {
                     ipc.send(&format!("SAVE_ERROR:{e}"));
                 }
             }
+        }
+    }
+
+    /// 現在のデバッグカメラ（Edit のフリーカメラ）を保存データへ写し取る。
+    ///
+    /// `.scene` への保存と、Play スナップショットのメモリ内直列化
+    /// （`play_snapshot.rs`）の両方が同じ値を必要とするため関数化してある。
+    pub(super) fn debug_camera_data(&self) -> DebugCameraData {
+        let pos = self.camera.base.transform.position;
+        DebugCameraData {
+            position: [pos.x, pos.y, pos.z],
+            yaw:      self.camera.yaw,
+            pitch:    self.camera.pitch,
+            fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
+            far:      self.camera.base.projection.far,
+            speed:    self.camera.move_speed,
         }
     }
 
