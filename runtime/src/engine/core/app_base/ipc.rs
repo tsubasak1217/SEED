@@ -1066,6 +1066,12 @@ pub enum IpcCommand {
     ///   abs_path … 書き出し先の絶対パス（カンマを含まない前提で最初の 1 個で分割する）
     /// 応答: `SCREENSHOT_DONE:{abs_path},{width},{height}` または `SCREENSHOT_ERROR:{message}`
     Screenshot { target: String, path: String },
+    /// `RENDER_ACTOR_THUMBNAIL:{actor},{out_png},{size_px},{view}` — アクタ 1 体を
+    /// 背景透明の正方形 PNG（図鑑画像）として書き出す。
+    ///
+    /// 引数は**未解釈のまま**運ぶ。解釈に失敗した理由もエディタへ返したいので、
+    /// パースはハンドラ側（app/thumbnail_ops.rs）で行う。
+    RenderActorThumbnail(String),
 
     // ─── 入力注入（エディタ／MCP 経由の AI がゲームを操作する）──────────────
     /// 外部から注入されたゲーム入力 1 件。
@@ -1140,6 +1146,9 @@ impl IpcClient {
 
 /// `SCREENSHOT:` コマンドの接頭辞。
 const SCREENSHOT_PREFIX: &str = "SCREENSHOT:";
+
+/// `RENDER_ACTOR_THUMBNAIL:` コマンドの接頭辞（図鑑画像の生成）。
+const RENDER_ACTOR_THUMBNAIL_PREFIX: &str = "RENDER_ACTOR_THUMBNAIL:";
 /// target と出力パスを区切る文字。
 const SCREENSHOT_ARG_SEPARATOR: char = ',';
 /// `SCREENSHOT:` の引数個数（target と path の 2 つ）。
@@ -3064,6 +3073,9 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             Some(IpcCommand::AnimReload { clip_path })
                         }
                         s if s.starts_with(ANIM_PREVIEW_CLIP_PREFIX) => parse_anim_preview_clip(s),
+                        s if s.starts_with(RENDER_ACTOR_THUMBNAIL_PREFIX) => s
+                            .strip_prefix(RENDER_ACTOR_THUMBNAIL_PREFIX)
+                            .map(|rest| IpcCommand::RenderActorThumbnail(rest.to_string())),
                         s if s.starts_with(SCREENSHOT_PREFIX) => parse_screenshot(s),
                         // 入力注入（INPUT_*）。パースは input::inject::command が正典で、
                         // ここは 1 行を渡して IpcCommand へ包むだけ。

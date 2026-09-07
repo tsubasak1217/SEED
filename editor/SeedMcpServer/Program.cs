@@ -190,6 +190,9 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
             // プロファイラ一発計測: 応答 JSON を要約表へ整形して返す専用経路
             "seed_profile"           => await HandleProfileAsync(http, args),
 
+            // 図鑑（魚カタログ）画像の一括生成: 変更系なので束縛済みインスタンスが必須
+            "seed_generate_fish_thumbnails" => await PostCmdAsync(http, "generate_fish_thumbnails", args),
+
             _ => $"ERROR: 不明なツール '{name}'"
         };
 
@@ -614,6 +617,7 @@ static object[] BuildToolList() => new[]
     SeedSaveSceneTool(),
     SeedSendIpcTool(),
     SeedProfileTool(),
+    SeedGenerateFishThumbnailsTool(),
     GameInputKeyTool(),
     GameInputMouseTool(),
     GameInputSequenceTool(),
@@ -1023,6 +1027,29 @@ static object SeedSendIpcTool() => new
             command = new { type = "string", description = "ランタイムへ送る IPC 文字列（例: \"ANIM_RELOAD:seed://animations/foo.anim\"）" }
         },
         required = new[] { "command" }
+    }
+};
+
+static object SeedGenerateFishThumbnailsTool() => new
+{
+    name        = "seed_generate_fish_thumbnails",
+    description =
+        "魚図鑑（ずかん）用の画像を一括生成する。"
+      + "assets/mainGame/actors/Fish/Lv<N>/*.actor の全 prefab を 1 匹ずつランタイムに"
+      + "オフスクリーン描画させ、横向き（side）の透過 PNG を"
+      + "assets/mainGame/textures/zukan/Lv<N>/<名前>.png へ書き出す。"
+      + "全部を描き終えたあと、スクリプトから参照する静的データ表"
+      + "assets/mainGame/scripts/FishCatalog.cs を prefab の内容から丸ごと再生成する。"
+      + "現在開いているシーンは変更しない（描画はオフスクリーンで行う）。"
+      + "魚の追加・リネーム・見た目の変更をしたら実行すること。"
+      + "1 匹ずつ逐次で往復するため、匹数に比例して時間がかかる。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            size = new { type = "integer", description = "生成するサムネイルの一辺ピクセル数。省略時 512。" }
+        }
     }
 };
 

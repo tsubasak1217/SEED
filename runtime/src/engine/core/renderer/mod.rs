@@ -73,6 +73,9 @@ pub mod caustics;
 pub mod interaction;
 /// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
 pub(crate) mod screenshot;
+/// アクタ・サムネイル（図鑑画像）生成の純粋ロジック（構図計算・ID マスク・PNG 書き出し）。
+/// GPU/ECS には触らないので単体テストできる。実際の描画駆動は app/thumbnail_ops.rs 側。
+pub mod actor_thumbnail;
 /// テクスチャ画素の CPU 前処理（アルファブリード等）。GPU アップロード前に掛ける。
 pub mod texture;
 /// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
@@ -1894,6 +1897,41 @@ impl<'r> RenderFrame<'r> {
         );
     }
 
+    /// ID テクスチャを**全画面ぶん** `readback_buf` へコピーするコマンドを積む。
+    ///
+    /// アクタ・サムネイル（図鑑画像）が、背景（ID == 0）を透明に抜くためのマスクとして使う。
+    /// 1 ピクセルだけ読む [`Self::schedule_id_copy`] と違い、行パディング（256 バイト境界）を
+    /// 含めた `bytes_per_row` を指定する必要がある（呼び出し側が `IdBuffer::padded_bytes_per_row()`
+    /// で求めた値を渡す）。
+    ///
+    /// `frame.finish()` → GPU サブミット後に `IdBuffer::read_full_id_alpha` で読み出す。
+    pub fn schedule_id_copy_full(
+        &mut self,
+        src_texture:         &wgpu::Texture,
+        readback_buf:        &wgpu::Buffer,
+        padded_bytes_per_row: u32,
+        width:               u32,
+        height:              u32,
+    ) {
+        self.encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture:   src_texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: readback_buf,
+                layout: wgpu::ImageDataLayout {
+                    offset:         0,
+                    bytes_per_row:  Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+    }
+
     /// コマンドを GPU にサブミットしてフレームを表示する。
     ///
     /// スクリーンショット機能が有効かつ現フレームが撮影対象なら、
@@ -1914,6 +1952,12 @@ impl<'r> RenderFrame<'r> {
         let pending_request =
             screenshot::schedule_requested(self.device, &mut self.encoder, &self.output.texture);
 
+        // 図鑑サムネイル（RENDER_ACTOR_THUMBNAIL:）のカラー読み戻し要求があれば、
+        // 同じフレームからもう 1 枚コピーを積む。こちらは PNG を書かず生ピクセルを返す
+        // （ID バッファ由来のマスクでアルファを抜いてから初めて完成するため）。
+        let pending_thumbnail =
+            screenshot::schedule_thumbnail_color(self.device, &mut self.encoder, &self.output.texture);
+
         self.queue.submit(std::iter::once(self.encoder.finish()));
         self.output.present();
 
@@ -1923,6 +1967,9 @@ impl<'r> RenderFrame<'r> {
         }
         if let Some(pending) = pending_request {
             screenshot::resolve_requested(self.device, pending);
+        }
+        if let Some(pending) = pending_thumbnail {
+            screenshot::resolve_thumbnail_color(self.device, pending);
         }
     }
 }

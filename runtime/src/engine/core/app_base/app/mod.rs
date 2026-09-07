@@ -74,6 +74,8 @@ mod render;
 mod frame_renderer;
 /// IPC 駆動スクリーンショット（SCREENSHOT:）のアプリ側処理。
 mod screenshot_ops;
+/// アクタ・サムネイル（図鑑画像）生成の駆動（IPC `RENDER_ACTOR_THUMBNAIL:` の状態機械）。
+pub(crate) mod thumbnail_ops;
 mod merge_batch_gate;
 mod merge_collect;
 pub(crate) mod merge_stats;
@@ -777,6 +779,18 @@ pub struct App {
     fps_frame_start: std::time::Instant,
     /// グリッド描画フラグ（エディタモードのみ）。
     show_grid: bool,
+    /// アクタ・サムネイル生成セッション。連続生成の間だけ Some。
+    ///
+    /// 1 匹ごとにワールド線を戻すとシーン全体のレイトレーシング加速構造が
+    /// 組み直されて破綻するため、連続生成中は隔離ワールド線に留まる
+    /// （詳細は thumbnail_ops.rs の SESSION_IDLE_SECONDS）。
+    pub(crate) thumbnail_session: Option<thumbnail_ops::ThumbnailSession>,
+    /// アクタ・サムネイル（図鑑画像）生成ジョブの進行状態。None = 実行中でない。
+    ///
+    /// `RENDER_ACTOR_THUMBNAIL:` を受けてからサムネイル 1 枚を書き出すまでの間だけ Some になり、
+    /// この間はエディタ用オーバーレイ（グリッド・ギズモ）とカメラ操作を止めて
+    /// 「被写体だけが写った素の絵」を得る（詳細は app/thumbnail_ops.rs）。
+    pub(crate) thumbnail_job: Option<thumbnail_ops::ThumbnailJob>,
     /// レンダリング機能マトリクス（影/GI/反射/AO/半透明のモード集合）。
     /// プロジェクト設定・IPC（RT_SHADOWS / SET_POST_FX の features）で更新する。
     /// 実行時分岐は resolve() 済みの ResolvedFeatures を参照する（frame_renderer）。
@@ -1463,6 +1477,8 @@ impl App {
             fps_frame_count:       0,
             fps_frame_start:       std::time::Instant::now(),
             show_grid:       true,
+            thumbnail_job:     None,
+            thumbnail_session: None,
             render_features:    crate::engine::core::renderer::RenderFeatures::default(),
             features_log_state: None,
             show_axis_gizmo: true,

@@ -36,6 +36,8 @@ impl ApplicationHandler for App {
         self.pump_frame_when_redraw_stalled(event_loop);
         // 撮影が終わっていればエディタへ SCREENSHOT_DONE / SCREENSHOT_ERROR を返す。
         self.poll_screenshot_outcomes();
+        // 図鑑サムネイル生成ジョブを 1 段進める（完了時に応答を返し、状態を復帰する）。
+        self.poll_thumbnail_job();
     }
 
     /// ウィンドウイベントを処理する（キー入力・マウス・リサイズ・メインループ）。

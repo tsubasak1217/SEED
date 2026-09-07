@@ -145,6 +145,7 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_save_scene` | `confirm?`（ヘッドレスでは必須） | `{ok, scene_path}` |
 | `seed_send_ipc` | `command` | `{ok, sent}` |
 | `seed_profile` | `seconds?`（既定 3・範囲 0.2〜30）, `top?`（既定 40） | 要約表（テキスト）＋ `{ok, seconds, dump:{profile, merge}}` |
+| `seed_generate_fish_thumbnails` | `size?`（既定 512・範囲 64〜2048） | `{ok, total, succeeded, failed, catalog_path, failures[]}`（図鑑画像の一括生成。11.x 章） |
 | `game_input_key` | `key`（KeyCode 名）, `down`（bool） | `{ok, sent, reply}`（Play 中のみ。9 章） |
 | `game_input_mouse` | `button?`+`down?` / `dx?`,`dy?` / `x?`,`y?` / `scroll?` のいずれか 1 種 | `{ok, sent, reply}` |
 | `game_input_sequence` | `events`（9.3 の JSON 配列）, `wait?`（既定 true） | `{ok, sent, reply}`（wait 時は `INPUT_SEQUENCE_DONE` まで待つ） |
@@ -178,6 +179,7 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_state` | `get_editor_state` | `IEditorAiHost` の各プロパティ |
 | `seed_send_ipc` | `send_ipc` | `RuntimeManager.SendToRuntime` へ素通し |
 | `seed_profile` | `profile` | `IEditorAiHost.ProfileDumpAsync`（IPC `PROFILE_DUMP:{秒}` → `PROFILE_DUMP_DONE:{パス}`） |
+| `seed_generate_fish_thumbnails` | `generate_fish_thumbnails` | `IEditorAiHost.RenderActorThumbnailAsync`（IPC `RENDER_ACTOR_THUMBNAIL:...` → `RENDER_ACTOR_THUMBNAIL_DONE\|_ERROR`）を魚 prefab ごとに逐次 |
 | `game_input_key` | `game_input_key` | `EditorCommandExecutor.GameInput.cs` → IPC `INPUT_KEY:{key},{down\|up}` |
 | `game_input_mouse` | `game_input_mouse` | 同上 → `INPUT_MOUSE_BUTTON` / `INPUT_MOUSE_MOVE` / `INPUT_MOUSE_POS` / `INPUT_SCROLL` |
 | `game_input_sequence` | `game_input_sequence` | 同上 → `INPUT_SEQUENCE:{json}`（応答待ちは `IEditorAiHost.InjectGameInputAsync`） |
@@ -814,3 +816,55 @@ seed_screenshot(target:"game", max_width:800)
 game_input_release_all()
 seed_play(action:"stop")
 ```
+
+---
+
+## 図鑑画像の一括生成（`seed_generate_fish_thumbnails`）
+
+魚 prefab を 1 体ずつオフスクリーンで描いて、**背景が透明な横向きサムネイル PNG** を書き出し、
+最後に魚図鑑のデータ表 `FishCatalog.cs` を生成し直す。
+
+| | |
+|---|---|
+| 入口 | エディタ `ツール > 図鑑画像を生成` / MCP `seed_generate_fish_thumbnails(size?)` / cmd `generate_fish_thumbnails` |
+| 入力 | `runtime/assets/mainGame/actors/Fish/Lv<N>/*.actor`（`Lv<N>` ディレクトリがレベルの正典） |
+| 出力 | `runtime/assets/mainGame/textures/zukan/Lv<N>/<名前>.png`（正方形 RGBA）<br>`runtime/assets/mainGame/scripts/FishCatalog.cs` |
+| エディタ無しでの再生成 | `python tools/gen_fish_catalog.py`（PNG は作らず `FishCatalog.cs` のみ） |
+
+### ランタイム側の IPC
+
+```
+RENDER_ACTOR_THUMBNAIL:<actor>,<out_png>,<size_px>,<view>
+  → RENDER_ACTOR_THUMBNAIL_DONE:<out_png>
+  → RENDER_ACTOR_THUMBNAIL_ERROR:<理由>
+```
+
+- `<actor>` は `assets://` 仮想パスでも絶対パスでもよい。`<out_png>` は絶対パス。
+- `<view>` は `side`（+X 側から。図鑑はこれ）/ `front`（+Z 側から）/ `top`（+Y 側から）。
+- **パスにカンマは使えない**（引数の区切りと区別できないため、明示的にエラーを返す）。
+- 実装は `runtime/src/engine/core/app_base/app/thumbnail_ops.rs`（進行）と
+  `runtime/src/engine/core/renderer/actor_thumbnail.rs`（構図計算・マスク・PNG 化）。
+
+### 仕組み（現在のシーンを壊さない理由）
+
+1. 専用の**隔離ワールド線**へアクタを 1 体だけ読み込む。SEED の描画は
+   `active_world_line` に属するアクタだけを集めるので、ユーザーのシーンは
+   エンティティごと残ったまま「描かれない」状態になる。スクリプトは
+   `scripting_host: None` で読み込むため生成すらされない（魚が泳ぎ出さない）。
+2. AABB から正射カメラを組み、**ID パスを強制**して 1 枚撮る。
+   ID テクスチャは背景に 0 を書くので、`ID != 0` が色に依存しない被写体マスクになる。
+3. 撮れたマスクの実測値で構図を**追い込む**（最大 4 回）。モデルのローカル AABB は
+   実際に描かれる範囲より大きいことがあり（描画されない補助メッシュなど）、
+   AABB だけで決めると被写体が隅に小さく写る prefab が実在した。
+4. マスクでアルファを抜き、アルファブリードを掛けてから中央の正方形を切り出して縮小し、PNG を書く。
+5. 撮影が終わってもすぐにはワールド線を戻さない（**セッション**）。1 体ごとに戻すと
+   その 1 フレームのためにシーン全体のレイトレーシング加速構造が組み直され、
+   一括生成の途中で GPU 資源を使い切ってランタイムが落ちる。
+   最後の要求から 2 秒間何も来なければ、元のシーンとカメラへ戻す。
+
+### 注意
+
+- 一括生成は**逐次**（1 体ずつ）。31 体で実測 35 秒前後。
+- サムネイルの解像度はウィンドウの短辺が上限（中央の正方形を切り出して縮小するため）。
+  ヘッドレスは 1920x1080 なので 1080px まで劣化なしで出せる。
+- シーンの保存は一切行わない。読み取り専用で開いたシーンでも実行できる。

@@ -133,6 +133,30 @@ public interface IEditorAiHost
         string target, string path, int timeoutMs);
 
     /// <summary>
+    /// ランタイムに .actor 単体を読み込ませ、透過 PNG のサムネイルを描かせる
+    /// （IPC <c>RENDER_ACTOR_THUMBNAIL:</c>）。図鑑（魚カタログ）画像の生成に使う。
+    ///
+    /// <para>
+    /// ランタイムは現在のシーンを壊さずオフスクリーンで 1 枚描き、
+    /// <c>RENDER_ACTOR_THUMBNAIL_DONE:{path}</c> か
+    /// <c>RENDER_ACTOR_THUMBNAIL_ERROR:{message}</c> を 1 行だけ返す。
+    /// 応答は 1 往復ごとに 1 通しか来ないため、呼び出し側は必ず逐次で使うこと
+    /// （並行して撃つと、どの応答がどの依頼のものか区別できない）。
+    /// </para>
+    /// </summary>
+    /// <param name="actorPath">描く .actor のパス（<c>assets://</c> URI または絶対パス）。カンマ不可。</param>
+    /// <param name="outPngPath">書き出し先 PNG の絶対パス。カンマ不可。</param>
+    /// <param name="sizePx">出力画像の一辺のピクセル数（正方形）。</param>
+    /// <param name="view">視点。"side" / "front" / "top" のいずれか。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <returns>
+    /// 成功なら <c>(true, 書き出された PNG のパス)</c>、
+    /// 失敗・タイムアウトなら <c>(false, 理由メッセージ)</c>。
+    /// </returns>
+    Task<(bool Ok, string Message)> RenderActorThumbnailAsync(
+        string actorPath, string outPngPath, int sizePx, string view, int timeoutMs);
+
+    /// <summary>
     /// エディタを正常終了させる（ヘッドレス運用の後始末）。
     /// ランタイム子プロセスの停止を含め、通常のウィンドウクローズと同じ経路を通す。
     /// 呼び出しは即座に返り、実際の終了は次のディスパッチャ周回で行われる

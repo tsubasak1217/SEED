@@ -32,7 +32,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using SEEDEditor.AI.Capture;
 
@@ -109,6 +111,38 @@ public partial class EditorCommandExecutor
     /// <summary>profile の引数名: 計測秒数。</summary>
     private const string ProfileSecondsKey = "seconds";
 
+    // ── 図鑑サムネイル生成（generate_fish_thumbnails）の定数 ──────────
+
+    /// <summary>generate_fish_thumbnails の引数名: 出力画像の一辺のピクセル数。</summary>
+    private const string FishThumbnailSizeKey = "size";
+
+    /// <summary>図鑑サムネイルの既定サイズ（px）。</summary>
+    private const int FishThumbnailDefaultSize = 512;
+
+    /// <summary>図鑑サムネイルの最小サイズ（px）。これ未満は魚の形が判別できない。</summary>
+    private const int FishThumbnailMinSize = 64;
+
+    /// <summary>
+    /// 図鑑サムネイルの最大サイズ（px）。
+    /// 全魚ぶんの PNG がリポジトリに入るため、際限なく大きくできないよう上限を設ける。
+    /// </summary>
+    private const int FishThumbnailMaxSize = 2048;
+
+    /// <summary>1 匹ぶんの描画応答を待つタイムアウト（ミリ秒）。モデル読み込みを含むため長め。</summary>
+    private const int FishThumbnailTimeoutMs = 60_000;
+
+    /// <summary>図鑑サムネイルの視点。魚は横向きの絵が図鑑として分かりやすいので side 固定。</summary>
+    private const string FishThumbnailView = "side";
+
+    /// <summary>レベルディレクトリ名の書式（"Lv3" → 3）。</summary>
+    private static readonly Regex FishLevelDirPattern = new(@"^Lv(\d+)$", RegexOptions.Compiled);
+
+    /// <summary>魚 prefab の拡張子。</summary>
+    private const string FishActorExt = ".actor";
+
+    /// <summary>ランタイムが解決できるアセット URI のスキーム接頭辞。</summary>
+    private const string VisualAssetUriPrefix = "assets://";
+
     // ── ディスパッチ ─────────────────────────────────────────────
 
     /// <summary>
@@ -141,6 +175,7 @@ public partial class EditorCommandExecutor
             "save_scene"        => await ExecuteSaveSceneAsync(args),
             "get_editor_state"  => ExecuteGetEditorState(),
             "profile"           => await ExecuteProfileAsync(args),
+            "generate_fish_thumbnails" => await ExecuteGenerateFishThumbnailsAsync(args),
             _                   => null,
         };
     }
@@ -348,6 +383,136 @@ public partial class EditorCommandExecutor
             seconds,
             dump    = RawJson(json),
         });
+    }
+
+    // ── 図鑑サムネイル生成 ───────────────────────────────────────
+
+    /// <summary>図鑑サムネイル生成の対象 1 匹ぶん（走査結果）。</summary>
+    /// <param name="Level">魚レベル（prefab の置き場所 Lv&lt;N&gt; 由来）。</param>
+    /// <param name="LevelDirName">レベルディレクトリ名（"Lv3" など）。</param>
+    /// <param name="FileName">.actor のファイル名（拡張子つき）。</param>
+    /// <param name="Stem">.actor のファイル名（拡張子なし）。出力 PNG の名前になる。</param>
+    private readonly record struct FishThumbnailTarget(
+        int Level, string LevelDirName, string FileName, string Stem);
+
+    /// <summary>
+    /// 全魚 prefab の図鑑サムネイル（透過 PNG）を生成し、最後に FishCatalog.cs を再生成する。
+    ///
+    /// <para>
+    /// ランタイムの <c>RENDER_ACTOR_THUMBNAIL:</c> は 1 往復 1 応答なので、
+    /// **必ず 1 匹ずつ逐次**で回す（並行させると応答の対応付けができない）。
+    /// 途中で失敗した魚があっても中断せず、最後まで回して失敗一覧を返す
+    /// （1 匹の不備で他 30 匹の再生成をやり直す羽目にならないようにするため）。
+    /// </para>
+    /// </summary>
+    /// <param name="args">ツール引数。<c>size</c>（省略可）だけを見る。</param>
+    private async Task<string> ExecuteGenerateFishThumbnailsAsync(JsonElement args)
+    {
+        var host = Host;
+        if (host is null) return Error("エディタ本体へ接続されていません（host 未設定）。");
+
+        // ── 出力サイズ（範囲外はクランプ）──────────────────────────
+        var sizeArg = GetDouble(args, FishThumbnailSizeKey);
+        var sizePx  = sizeArg is null
+            ? FishThumbnailDefaultSize
+            : (int)Math.Clamp(Math.Round(sizeArg.Value), FishThumbnailMinSize, FishThumbnailMaxSize);
+
+        // ── 対象の走査（レベル昇順 → ファイル名の序数順で決定的に）────
+        var fishDir = FishCatalogGenerator.GetFishActorDir(_assetsPath);
+        if (!Directory.Exists(fishDir))
+            return Error($"魚 prefab のディレクトリが見つかりません: {fishDir}");
+
+        var targets = CollectFishThumbnailTargets(fishDir);
+        if (targets.Count == 0)
+            return Error($"魚 prefab（Lv<N>/*.actor）が 1 件も見つかりません: {fishDir}");
+
+        // ── 1 匹ずつ描かせる ────────────────────────────────────────
+        var failures  = new List<object>();
+        var succeeded = 0;
+
+        for (var i = 0; i < targets.Count; i++)
+        {
+            var target   = targets[i];
+            var outPath  = FishCatalogGenerator.GetImagePath(
+                _assetsPath, target.LevelDirName, target.Stem);
+            var actorUri = $"{VisualAssetUriPrefix}{FishCatalogGenerator.FISH_ACTOR_REL_DIR}"
+                         + $"/{target.LevelDirName}/{target.FileName}";
+
+            // 出力先ディレクトリはランタイム任せにせず、こちらで先に用意しておく。
+            var outDir = Path.GetDirectoryName(outPath);
+            if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
+
+            _log($"[図鑑] ({i + 1}/{targets.Count}) {target.LevelDirName}/{target.Stem} -> {outPath}");
+
+            var (ok, message) = await host.RenderActorThumbnailAsync(
+                actorUri, outPath, sizePx, FishThumbnailView, FishThumbnailTimeoutMs);
+
+            if (ok)
+            {
+                succeeded++;
+            }
+            else
+            {
+                _log($"[図鑑] 失敗: {target.LevelDirName}/{target.Stem}: {message}");
+                failures.Add(new { actor = actorUri, error = message });
+            }
+        }
+
+        // ── カタログ（FishCatalog.cs）の再生成 ──────────────────────
+        // 画像が一部欠けていてもカタログ自体は prefab から作れるので、必ず更新する。
+        string catalogPath;
+        try
+        {
+            var (path, count) = FishCatalogGenerator.Generate(_assetsPath);
+            catalogPath = path;
+            _log($"[図鑑] FishCatalog.cs を再生成しました（{count} 種）: {path}");
+        }
+        catch (Exception ex)
+        {
+            return Error($"FishCatalog.cs の生成に失敗しました: {ex.Message}");
+        }
+
+        return Json(new
+        {
+            ok            = failures.Count == 0,
+            total         = targets.Count,
+            succeeded,
+            failed        = failures.Count,
+            catalog_path  = catalogPath,
+            failures      = failures.ToArray(),
+        });
+    }
+
+    /// <summary>
+    /// 魚 prefab ディレクトリを走査して、サムネイル生成対象を決定的な順序で列挙する。
+    /// 並び順は「レベル昇順 → ファイル名（拡張子なし）の序数順」。
+    /// </summary>
+    /// <param name="fishDir">魚 prefab のルートディレクトリ（絶対パス）。</param>
+    private static List<FishThumbnailTarget> CollectFishThumbnailTargets(string fishDir)
+    {
+        var targets = new List<FishThumbnailTarget>();
+
+        foreach (var levelDir in Directory.GetDirectories(fishDir))
+        {
+            // "Lv<N>" 以外（FishBase.actor の置き場など）は図鑑の対象外。
+            var levelDirName = Path.GetFileName(levelDir);
+            var matched      = FishLevelDirPattern.Match(levelDirName);
+            if (!matched.Success) continue;
+            if (!int.TryParse(matched.Groups[1].Value, out var level)) continue;
+
+            foreach (var actorFile in Directory.GetFiles(levelDir, "*" + FishActorExt))
+            {
+                var fileName = Path.GetFileName(actorFile);
+                if (!fileName.EndsWith(FishActorExt, StringComparison.Ordinal)) continue;
+                targets.Add(new FishThumbnailTarget(
+                    level, levelDirName, fileName, fileName[..^FishActorExt.Length]));
+            }
+        }
+
+        return targets
+            .OrderBy(t => t.Level)
+            .ThenBy(t => t.Stem, StringComparer.Ordinal)
+            .ToList();
     }
 
     /// <summary>現在のヒエラルキーツリー（ランタイムが最後に push した内容）を返す。</summary>

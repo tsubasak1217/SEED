@@ -1368,6 +1368,10 @@ impl App {
                 IpcCommand::Screenshot { target, path } => {
                     self.handle_screenshot_request(&target, &path);
                 }
+                // 図鑑画像（アクタ 1 体の背景透明サムネイル）の生成。実処理は thumbnail_ops.rs。
+                IpcCommand::RenderActorThumbnail(args) => {
+                    self.handle_render_actor_thumbnail(&args);
+                }
                 IpcCommand::AnimReload { clip_path } => {
                     self.handle_anim_reload(&clip_path);
                 }

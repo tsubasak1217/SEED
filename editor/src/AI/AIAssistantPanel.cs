@@ -265,6 +265,18 @@ public class AIAssistantPanel
     /// EditorCommandExecutor を共有するため、Executor もフィールドで保持する。
     /// </summary>
     private readonly EditorCommandExecutor        _sharedExecutor;
+
+    /// <summary>
+    /// このパネル・HTTP ブリッジ・MCP が共有するエディタコマンド実行エンジン。
+    ///
+    /// <para>
+    /// メニュー項目など「パネルの外」からエディタコマンドを実行したいときも、
+    /// 経路を増やさずこの 1 個を使い回す（許可判定・ログ出力・ホスト解決が
+    /// 1 か所に揃っている状態を崩さないため）。
+    /// </para>
+    /// </summary>
+    public EditorCommandExecutor SharedExecutor => _sharedExecutor;
+
     /// <summary>HTTP ブリッジ本体（ポート 7234）。アプリ終了まで動作し続ける。</summary>
     private readonly SeedAIBridge                 _bridge;
 

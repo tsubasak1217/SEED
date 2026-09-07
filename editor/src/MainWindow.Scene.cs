@@ -102,6 +102,78 @@ public partial class MainWindow
     private void OnMenuDelete(object sender, RoutedEventArgs e)
         => TryDeleteSelected();
 
+    // ── ツールメニュー: 図鑑画像の生成 ────────────────────────────
+
+    /// <summary>図鑑画像生成のエディタコマンド名（MCP ツール seed_generate_fish_thumbnails と同一経路）。</summary>
+    private const string GenerateFishThumbnailsCommand = "generate_fish_thumbnails";
+
+    /// <summary>図鑑画像生成のツール呼び出し ID（ログ上で経路を見分けるための固定値）。</summary>
+    private const string GenerateFishThumbnailsCallId = "menu-generate-fish-thumbnails";
+
+    /// <summary>引数を指定しないツール呼び出しの引数 JSON（既定値で実行する）。</summary>
+    private const string EmptyToolArgumentsJson = "{}";
+
+    /// <summary>
+    /// 図鑑画像の生成が実行中か。メニューの二度押しで 2 本同時に走らないようにする
+    /// （ランタイムへの描画依頼は 1 往復 1 応答で、並行すると応答の対応付けが壊れる）。
+    /// </summary>
+    private bool _generatingFishThumbnails;
+
+    /// <summary>
+    /// 「ツール → 図鑑画像を生成」: 全魚 prefab のサムネイル PNG を生成し、
+    /// FishCatalog.cs を再生成する。
+    ///
+    /// <para>
+    /// MCP ツール <c>seed_generate_fish_thumbnails</c> と**同じ経路**を通すため、
+    /// AI アシスタントパネルが持つ共有 EditorCommandExecutor へ ToolCall を投げる
+    /// （生成処理をここへ複製しない）。発信元は利用者自身の操作なので UserInitiated。
+    /// </para>
+    /// </summary>
+    private async void OnGenerateFishThumbnails(object sender, RoutedEventArgs e)
+    {
+        // 実行中の二重起動を防ぐ（メニューは連打できてしまうため）。
+        if (_generatingFishThumbnails)
+        {
+            EditorLog.Write("[図鑑] すでに生成中です。完了までお待ちください。");
+            return;
+        }
+
+        var executor = _aiPanel?.SharedExecutor;
+        if (executor is null)
+        {
+            EditorLog.Write("[図鑑] AI アシスタントパネルが初期化されていないため実行できません。");
+            return;
+        }
+
+        _generatingFishThumbnails = true;
+        try
+        {
+            EditorLog.Write("[図鑑] 図鑑画像の生成を開始します。");
+
+            var result = await executor.ExecuteAsync(
+                new SEEDEditor.AI.Models.ToolCall
+                {
+                    Id            = GenerateFishThumbnailsCallId,
+                    FunctionName  = GenerateFishThumbnailsCommand,
+                    ArgumentsJson = EmptyToolArgumentsJson,
+                },
+                // シーン情報の自動取得は不要（シーンを触らないコマンドのため）。
+                includeSceneInfo: false,
+                origin:           SEEDEditor.AI.AiCommandOrigin.UserInitiated);
+
+            EditorLog.Write($"[図鑑] 生成結果: {result}");
+        }
+        catch (Exception ex)
+        {
+            // メニューハンドラ（async void）から例外を投げるとアプリごと落ちるため必ず握る。
+            EditorLog.Write($"[図鑑] 生成中に例外が発生しました: {ex}");
+        }
+        finally
+        {
+            _generatingFishThumbnails = false;
+        }
+    }
+
     // 表示メニューが開くたびに実際の表示状態でチェックを更新する
     private void OnViewMenuOpened(object sender, RoutedEventArgs e)
     {

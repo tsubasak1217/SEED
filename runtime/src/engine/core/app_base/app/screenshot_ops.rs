@@ -117,7 +117,9 @@ impl App {
     ///
     /// 前提: `handle_resumed` 完了後（ウィンドウ・レンダラー初期化済み）にのみ動く。
     pub(super) fn pump_frame_when_redraw_stalled(&mut self, event_loop: &ActiveEventLoop) {
-        if !*HEADLESS && !screenshot::has_pending_request() {
+        // 図鑑サムネイル生成中も同じ理由でフレームを回す必要がある
+        //（隔離ワールド線を描いて読み戻すまでジョブが進まないため）。
+        if !*HEADLESS && !screenshot::has_pending_request() && self.thumbnail_job.is_none() {
             return;
         }
         // 初期化前・終了中はフレームを回せない。

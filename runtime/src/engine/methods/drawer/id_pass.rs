@@ -169,6 +169,61 @@ impl IdBuffer {
         let world_pos = if id != 0 { Some([x, y, z]) } else { None };
         (world_pos, id)
     }
+
+    // ─── 全画面リードバック（アクタ・サムネイルのアルファマスク用）───────
+
+    /// 1 行ぶんのコピーに必要なバイト数（`ROW_ALIGNMENT` の倍数へ切り上げ）。
+    ///
+    /// `copy_texture_to_buffer` は `bytes_per_row` が 256 の倍数であることを要求するため、
+    /// 行末にパディングが入る。読み出し側はこの値で行頭を求める。
+    pub fn padded_bytes_per_row(&self) -> u32 {
+        let unpadded = self.width as u64 * BYTES_PER_PIXEL as u64;
+        let aligned = unpadded.div_ceil(ROW_ALIGNMENT) * ROW_ALIGNMENT;
+        aligned as u32
+    }
+
+    /// 全画面ぶんの ID テクスチャを受け取れる読み戻しバッファを作る。
+    ///
+    /// 常設の `readback_buf` は 1 ピクセル専用（ピッキング用）なので、
+    /// 全画面が要る用途（図鑑サムネイルの切り抜きマスク）はそのつど確保する。
+    /// フル解像度 × 16 byte/px と大きいので、使い終わったら速やかに破棄すること。
+    pub fn create_full_readback_buffer(&self, device: &wgpu::Device) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label:              Some("World Pos ID Full Readback Buffer"),
+            size:               self.padded_bytes_per_row() as u64 * self.height as u64,
+            usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// `create_full_readback_buffer` で確保したバッファから **A チャンネルだけ** を取り出す。
+    ///
+    /// A には `bitcast<f32>(instance_id)` が入っており、0 = 背景。
+    /// サムネイルの切り抜きはこの「0 かどうか」しか使わないので、
+    /// ワールド座標（RGB）は捨てて 1/4 の大きさで返す（`width × height` 要素）。
+    ///
+    /// GPU サブミット後（`frame.finish()` の後）に呼ぶこと。行パディングはここで取り除く。
+    pub fn read_full_id_alpha(&self, device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<f32> {
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::Wait);
+        let data = slice.get_mapped_range();
+
+        let padded = self.padded_bytes_per_row() as usize;
+        let mut out = Vec::with_capacity(self.width as usize * self.height as usize);
+        for row in 0..self.height as usize {
+            let row_head = row * padded;
+            for col in 0..self.width as usize {
+                // 1 ピクセル 16 byte のうち、A は末尾 4 byte
+                let at = row_head + col * BYTES_PER_PIXEL + (BYTES_PER_PIXEL - 4);
+                out.push(f32::from_ne_bytes(data[at..at + 4].try_into().unwrap()));
+            }
+        }
+
+        drop(data);
+        buffer.unmap();
+        out
+    }
 }
 
 // ============================================================

@@ -57,6 +57,12 @@ public partial class MainWindow : IEditorAiHost
     /// <summary>撮影応答の最小フィールド数（パス・幅・高さ）。</summary>
     private const int AiScreenshotFieldCount = 3;
 
+    /// <summary>アクターサムネイル描画コマンド（RENDER_ACTOR_THUMBNAIL:）の接頭辞。</summary>
+    private const string AiActorThumbnailCommandPrefix = "RENDER_ACTOR_THUMBNAIL:";
+
+    /// <summary>アクターサムネイル描画コマンドの引数区切り文字。</summary>
+    private const string AiActorThumbnailArgSeparator = ",";
+
     // ── 状態キャッシュ ───────────────────────────────────────────
 
     /// <summary>
@@ -361,6 +367,53 @@ public partial class MainWindow : IEditorAiHost
         finally
         {
             _runtimeManager.ScreenshotCompleted -= OnDone;
+        }
+    }
+
+    /// <inheritdoc/>
+    async Task<(bool Ok, string Message)> IEditorAiHost.RenderActorThumbnailAsync(
+        string actorPath, string outPngPath, int sizePx, string view, int timeoutMs)
+    {
+        if (_runtimeManager is null)
+            return (false, "ランタイムが初期化されていません。");
+        if (!_runtimeManager.IsPipeConnected)
+            return (false, "ランタイムへ接続されていません（未起動 / 起動中）。");
+
+        // ランタイム側はコマンド行をカンマで区切って解釈するため、パスにカンマがあると
+        // 引数がずれる（ランタイムはこれを拒否する）。送る前にここで弾いて理由を明示する。
+        if (actorPath.Contains(AiActorThumbnailArgSeparator, StringComparison.Ordinal))
+            return (false, $"アクターパスにカンマを含められません: {actorPath}");
+        if (outPngPath.Contains(AiActorThumbnailArgSeparator, StringComparison.Ordinal))
+            return (false, $"出力パスにカンマを含められません: {outPngPath}");
+
+        // 応答を取りこぼさないよう、送信より先に購読する。
+        // ランタイム側のイベントはパイプ受信スレッドで発火するため、
+        // 継続を非同期実行にして UI スレッドの再入を避ける。
+        var tcs = new TaskCompletionSource<(bool Ok, string Message)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnDone(string path)     => tcs.TrySetResult((true,  path));
+        void OnFailed(string reason) => tcs.TrySetResult((false, reason));
+        _runtimeManager.ActorThumbnailCompleted += OnDone;
+        _runtimeManager.ActorThumbnailFailed    += OnFailed;
+
+        try
+        {
+            _runtimeManager.SendToRuntime(
+                $"{AiActorThumbnailCommandPrefix}{actorPath}{AiActorThumbnailArgSeparator}"
+              + $"{outPngPath}{AiActorThumbnailArgSeparator}"
+              + $"{sizePx.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+              + $"{AiActorThumbnailArgSeparator}{view}");
+
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+            if (completed != tcs.Task)
+                return (false, $"サムネイル描画の応答が {timeoutMs} ms 以内に返りませんでした。");
+
+            return await tcs.Task;
+        }
+        finally
+        {
+            _runtimeManager.ActorThumbnailCompleted -= OnDone;
+            _runtimeManager.ActorThumbnailFailed    -= OnFailed;
         }
     }
 

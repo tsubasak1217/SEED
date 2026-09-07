@@ -298,6 +298,28 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<string>? ScreenshotCompleted;
 
+    // ── アクターサムネイル描画（RENDER_ACTOR_THUMBNAIL: の応答）──────────────
+    //  図鑑（魚のカタログ）画像の生成に使う。ランタイムは .actor を単体で読み込み、
+    //  指定ビュー（side / front / top）から透過 PNG へオフスクリーン描画して
+    //  下記いずれか 1 行だけを返す。1 匹ずつ逐次で往復する前提。
+
+    /// <summary>アクターサムネイル描画の成功応答の接頭辞。後ろに書き出した PNG の絶対パスが続く。</summary>
+    public const string RENDER_ACTOR_THUMBNAIL_DONE_PREFIX = "RENDER_ACTOR_THUMBNAIL_DONE:";
+
+    /// <summary>アクターサムネイル描画の失敗応答の接頭辞。後ろに理由メッセージが続く。</summary>
+    public const string RENDER_ACTOR_THUMBNAIL_ERROR_PREFIX = "RENDER_ACTOR_THUMBNAIL_ERROR:";
+
+    /// <summary>
+    /// アクターサムネイル描画が成功したときに発火する（引数は書き出された PNG の絶対パス）。
+    /// 失敗時は <see cref="ActorThumbnailFailed"/> が代わりに発火する。
+    /// </summary>
+    public event Action<string>? ActorThumbnailCompleted;
+
+    /// <summary>
+    /// アクターサムネイル描画がランタイム側で失敗したときに発火する（引数は理由メッセージ）。
+    /// </summary>
+    public event Action<string>? ActorThumbnailFailed;
+
     // ── ゲーム入力注入（INPUT_*）の応答 ─────────────────────────
     //  ランタイム側の実装は runtime/src/engine/core/input/inject/ 一式。
     //  応答は「1 行 1 メッセージ」で下記 3 種類しか来ない。解釈は待ち受け側
@@ -1909,6 +1931,19 @@ public sealed class RuntimeManager : IDisposable
             // 解釈は待ち受け側（MainWindow.AiHost）に任せ、ここでは生文字列を配るだけにする。
             EditorLog.Write($"[Runtime→Editor] {msg}");
             ScreenshotCompleted?.Invoke(msg);
+        }
+        else if (msg.StartsWith(RENDER_ACTOR_THUMBNAIL_DONE_PREFIX, StringComparison.Ordinal))
+        {
+            // アクターサムネイル描画の成功応答。ペイロードは書き出された PNG の絶対パス。
+            // スクリーンショットと違い成否で別イベントへ振り分ける（待ち受け側の分岐を減らすため）。
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+            ActorThumbnailCompleted?.Invoke(msg[RENDER_ACTOR_THUMBNAIL_DONE_PREFIX.Length..]);
+        }
+        else if (msg.StartsWith(RENDER_ACTOR_THUMBNAIL_ERROR_PREFIX, StringComparison.Ordinal))
+        {
+            // アクターサムネイル描画の失敗応答。ペイロードは理由メッセージ。
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+            ActorThumbnailFailed?.Invoke(msg[RENDER_ACTOR_THUMBNAIL_ERROR_PREFIX.Length..]);
         }
         else if (msg.StartsWith("LOAD_ERROR:", StringComparison.Ordinal))
         {

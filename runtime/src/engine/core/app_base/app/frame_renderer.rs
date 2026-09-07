@@ -170,7 +170,13 @@ fn should_draw_id_pass(
     in_editor:            bool,
     has_readback_request: bool,
     id_pass_in_play:      bool,
+    force:                bool,
 ) -> bool {
+    // 図鑑サムネイル生成は、背景を透明に抜くマスクとして ID バッファを必ず必要とする。
+    // ピック要求とは無関係に立つので、モード判定より先に見る。
+    if force {
+        return true;
+    }
     if in_editor {
         // エディタ操作フレーム: 読み戻し要求があるフレームだけ描く（オンデマンド）。
         has_readback_request
@@ -791,7 +797,10 @@ impl App {
         // オーバーレイパスは使わずメインパスで直接描画する。
         let scene_canvas_ss = ss_layout && !edit_view_2d;
 
-        if in_editor {
+        // 図鑑サムネイル生成中はカメラを一切動かさない。
+        // thumbnail_ops.rs が AABB から算出した正射カメラを固定で使うため、
+        // スナップ補間・投影ブレンド・オービット・入力反映が 1 フレームでも走ると構図がずれる。
+        if in_editor && self.thumbnail_job.is_none() {
             if use_ortho_2d_camera {
                 // 2D ビュー（アクター編集タブ / 2D シーンビュー）:
                 // MMB ドラッグで XY パン、スクロールでズーム。3D デバッグカメラは動かさない。
@@ -3610,7 +3619,12 @@ impl App {
                     //   - アクター編集タブの 2D キャンバス（従来動作）
                     //   - Edit の 2D シーンビュー（2D オルソカメラでパン・ズームするため）
                     let is_2d_grid_view = is_actor_edit_canvas || edit_view_2d;
-                    let grid_gpu_batch = if in_editor && (self.show_grid || (self.active_world_line != 0 && !is_actor_edit_canvas)) {
+                    // 図鑑サムネイル生成中はグリッドを描かない。
+                    // サムネイルは隔離ワールド線（active_world_line != 0）で描くため、
+                    // 上の「アクター編集タブでは常にグリッドを出す」規則に引っかかって
+                    // show_grid を false にしても格子が写り込んでしまう。
+                    let grid_gpu_batch = if in_editor && self.thumbnail_job.is_none()
+                        && (self.show_grid || (self.active_world_line != 0 && !is_actor_edit_canvas)) {
                         let mut lb = LineBatch::new();
                         // モード別グリッド色
                         // 2D アクター編集・2D シーンビュー: 薄い青系（minor: 薄く, major: 中程度）
@@ -8236,10 +8250,20 @@ impl App {
                     // 毎フレーム描いて合成（第 3 層）が読める per-actor マスクを供給する。
                     // 判断根拠と使い分けの指針は id_pass.rs の ID_PASS_IN_PLAY コメントを参照。
                     // コストは [PERF] 行の `id=` フィールドで計測できる（SEED_PERF_LOG=1）。
+                    // 図鑑サムネイルの撮影フレームか（ID バッファ全面をマスクとして読み戻す）。
+                    let thumbnail_wants_id_pass = self
+                        .thumbnail_job
+                        .as_ref()
+                        .is_some_and(|job| job.wants_capture_this_frame());
+                    // 予約した全面コピーの受け皿。`&self.id_buffer` の不変借用中は
+                    // `self.thumbnail_job` を可変で触れないので、いったんローカルへ置き、
+                    // frame.finish()（＝ GPU サブミット）後にジョブへ引き渡して読み出す。
+                    let mut thumbnail_id_readback: Option<(wgpu::Buffer, u32, u32)> = None;
                     let draw_id_pass_this_frame = should_draw_id_pass(
                         in_editor,
                         readback_pos.is_some(),
                         crate::engine::methods::drawer::id_pass::id_pass_enabled_in_play(),
+                        thumbnail_wants_id_pass,
                     );
                     if draw_id_pass_this_frame {
                         if let Some(id_buf) = &self.id_buffer {
@@ -8746,6 +8770,19 @@ impl App {
                             perf_id_ms = _perf_t_id.elapsed().as_secs_f64() * 1000.0;
                             // 読み戻し要求（readback_pos）は ID パス描画の要否判定と共有するため
                             // このブロックへ入る前に確定済み。ここではコピー予約とフラグ更新だけを行う。
+                            // 図鑑サムネイル: ID テクスチャ全面を専用バッファへコピー予約する。
+                            // 1px のピック用コピーとは独立で、両方が同じフレームに積まれても問題ない。
+                            if thumbnail_wants_id_pass {
+                                let buffer = id_buf.create_full_readback_buffer(&draw_ctx.device);
+                                frame.schedule_id_copy_full(
+                                    &id_buf.texture,
+                                    &buffer,
+                                    id_buf.padded_bytes_per_row(),
+                                    id_buf.width,
+                                    id_buf.height,
+                                );
+                                thumbnail_id_readback = Some((buffer, id_buf.width, id_buf.height));
+                            }
                             if let Some((px, py)) = readback_pos {
                                 let px = px.min(id_buf.width.saturating_sub(1));
                                 let py = py.min(id_buf.height.saturating_sub(1));
@@ -8788,6 +8825,34 @@ impl App {
                     }
                     perf_finish_ms = _perf_t_finish.elapsed().as_secs_f64() * 1000.0;
                     mark_frame_stage(FrameStage::PresentDone);
+
+                    // ── 図鑑サムネイル: 「1 枚描けた」ことをジョブへ伝える ──────
+                    //   待機フレーム数は about_to_wait の回数ではなく実描画数で数える
+                    //   （about_to_wait はフレームと無関係に何度でも回るため）。
+                    if let Some(job) = self.thumbnail_job.as_mut() {
+                        job.on_frame_rendered();
+                    }
+
+                    // ── 図鑑サムネイル: ID バッファ全面を読み出してジョブへ預ける ──────
+                    //   map_async はサブミット後にしか呼べないため、必ず frame.finish() の後で行う。
+                    //   カラー側は screenshot::resolve_thumbnail_color が finish() の内側で
+                    //   済ませているので、ここで両方が揃い、次の poll で PNG 化される。
+                    if let Some((buffer, width, height)) = thumbnail_id_readback {
+                        let id_alpha = match (&self.id_buffer, &self.draw_ctx) {
+                            (Some(id_buf), Some(ctx)) => {
+                                Some(id_buf.read_full_id_alpha(&ctx.device, &buffer))
+                            }
+                            _ => None,
+                        };
+                        // 【必須】フル解像度 × 16 byte/px（1080p で約 33MB）の MAP_READ バッファを
+                        // 明示的に解放する。Drop 任せだと実際の解放が遅延し、サムネイルを
+                        // 連続生成すると数百 MB 積み上がってドライバが停止する
+                        //（実測: 9 匹目でランタイムが応答しなくなった）。
+                        buffer.destroy();
+                        if let Some(job) = self.thumbnail_job.as_mut() {
+                            job.receive_id_mask(id_alpha, width, height);
+                        }
+                    }
 
                     // ── Hi-Z: submit 後に読み戻しマップを予約する（1 フレーム遅延の要）──────
                     //   schedule_readback で staging へ写した可視性を、次フレームの
@@ -9515,25 +9580,43 @@ mod id_pass_gate_tests {
     #[test]
     fn editor_draws_only_when_readback_requested() {
         assert!(
-            should_draw_id_pass(true, true, false),
+            should_draw_id_pass(true, true, false, false),
             "ピック／D&D の読み戻し要求があるフレームは必ず描く必要がある"
         );
         assert!(
-            !should_draw_id_pass(true, false, false),
+            !should_draw_id_pass(true, false, false, false),
             "読み戻し要求が無いフレームは描かない（4〜5ms/フレームの削減点）"
         );
+    }
+
+    /// 図鑑サムネイルの撮影フレームは、モードにも読み戻し要求にも関わらず必ず描くこと。
+    ///
+    /// サムネイルは ID バッファを「背景を抜くマスク」として使うので、
+    /// ここで描き損ねると背景が透明にならない（＝機能が成立しない）。
+    #[test]
+    fn thumbnail_capture_forces_the_pass_in_every_mode() {
+        for in_editor in [true, false] {
+            for has_readback in [true, false] {
+                for in_play in [true, false] {
+                    assert!(
+                        should_draw_id_pass(in_editor, has_readback, in_play, true),
+                        "強制フラグが立っているのに描かれない                          (in_editor={in_editor}, readback={has_readback}, in_play={in_play})"
+                    );
+                }
+            }
+        }
     }
 
     /// Play（非ポーズ）は既定でスキップし、環境変数指定時のみ毎フレーム描くこと。
     #[test]
     fn play_skips_unless_env_opt_in() {
-        assert!(!should_draw_id_pass(false, false, false), "Play 既定はスキップ");
+        assert!(!should_draw_id_pass(false, false, false, false), "Play 既定はスキップ");
         assert!(
-            !should_draw_id_pass(false, true, false),
+            !should_draw_id_pass(false, true, false, false),
             "Play 既定では読み戻し要求があってもスキップ（従来挙動を変えない）"
         );
         assert!(
-            should_draw_id_pass(false, false, true),
+            should_draw_id_pass(false, false, true, false),
             "SEED_ID_PASS_IN_PLAY 指定時は要求の有無に関わらず毎フレーム描く"
         );
     }
@@ -9541,8 +9624,8 @@ mod id_pass_gate_tests {
     /// エディタでは環境変数指定は判定に影響しないこと（Play 専用のスイッチである）。
     #[test]
     fn editor_gate_is_independent_of_play_env() {
-        assert!(!should_draw_id_pass(true, false, true));
-        assert!(should_draw_id_pass(true, true, true));
+        assert!(!should_draw_id_pass(true, false, true, false));
+        assert!(should_draw_id_pass(true, true, true, false));
     }
 }
 

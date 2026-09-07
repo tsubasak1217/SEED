@@ -359,6 +359,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private readonly SEEDEditor.Debugger.FrozenFramePreview _frozenPreview = new();
     /// <summary>AI アシスタントパネルのビルド済み UI 要素（LoadLayout でコンテンツを復元するために保持）</summary>
     private UIElement?             _aiPanelUi;
+    /// <summary>
+    /// AI アシスタントパネル本体。メニューからエディタコマンド（generate_fish_thumbnails など）を
+    /// 実行するときに、パネル・HTTP ブリッジと同じ EditorCommandExecutor を使い回すために保持する。
+    /// </summary>
+    private SEEDEditor.AI.AIAssistantPanel? _aiPanel;
     /// <summary>「タブ」パネル（スクリプトで開いているファイル一覧）。LoadLayout で復元。</summary>
     private OpenDocumentsPanel?    _openDocsPanel;
     /// <summary>「エラー一覧」パネル。LoadLayout で復元。</summary>
@@ -668,6 +673,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // LoadLayout() がこの後に呼ばれてコンテンツを上書きするため、
         // _aiPanelUi にビルド済み要素を保持して LoadLayout 内で参照する。
         var aiPanel = new AIAssistantPanel(_runtimeManager, AssetsPath);
+        _aiPanel   = aiPanel;
         _aiPanelUi = aiPanel.Build();
 
         // 物理タイムラインのシークバーイベントをバインドする

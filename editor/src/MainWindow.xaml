@@ -891,6 +891,13 @@
                           Click="OnAttachVisualStudio"/>
             </MenuItem>
 
+            <!-- ツール: アセットの一括生成など、シーン編集に属さない補助機能 -->
+            <MenuItem Header="ツール">
+                <!-- 全魚 prefab を透過 PNG へ描き出し、FishCatalog.cs を再生成する。
+                     ランタイムへ 1 匹ずつ描画を依頼するため、完了までしばらくかかる。 -->
+                <MenuItem Header="図鑑画像を生成" Click="OnGenerateFishThumbnails"/>
+            </MenuItem>
+
         </Menu>
 
         <!-- ── 上部ツールバー ────────────────────────────────────── -->

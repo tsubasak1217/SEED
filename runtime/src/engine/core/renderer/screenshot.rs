@@ -566,3 +566,89 @@ mod tests {
         assert!(!is_bgra(wgpu::TextureFormat::Rgba8UnormSrgb));
     }
 }
+
+// ============================================================
+//  アクタ・サムネイル用のカラー読み戻し（図鑑画像）
+// ------------------------------------------------------------
+//  上の `SCREENSHOT:` レーンとの違いは 1 点だけ:
+//    こちらは **PNG を書かず、生の RGBA ピクセルを返す**。
+//
+//  なぜ分けたか:
+//    サムネイルはカラーだけでは完成しない。ID バッファから作ったマスクでアルファを
+//    抜き、アルファブリードを掛け、正方形に切り出して縮小してから初めて PNG になる。
+//    途中経過を一度 PNG にして読み直すのは無駄なうえ、`SCREENSHOT_DONE:` 応答が
+//    エディタへ飛んでしまい（撮っていないはずのスクリーンショットが記録される）
+//    プロトコルが濁る。そのため専用レーンを設けた。
+//
+//  同時実行しない前提:
+//    サムネイル生成は 1 枚ずつ逐次進む状態機械（app/thumbnail_ops.rs）が駆動するので、
+//    要求も結果も常に高々 1 件。キューではなく Option で持つ。
+// ============================================================
+
+/// サムネイル用カラー読み戻しの要求フラグ（true = 次のフレームで 1 枚読み戻す）。
+static THUMBNAIL_REQUESTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+
+/// サムネイル用カラー読み戻しの結果（`(RGBA ピクセル, 幅, 高さ)` または失敗メッセージ）。
+static THUMBNAIL_RESULT: std::sync::Mutex<Option<Result<(Vec<u8>, u32, u32), String>>> =
+    std::sync::Mutex::new(None);
+
+/// 次に描くフレームの提示テクスチャを、サムネイル用に読み戻すよう要求する。
+pub fn request_thumbnail_color() {
+    if let Ok(mut flag) = THUMBNAIL_REQUESTED.lock() {
+        *flag = true;
+    }
+    if let Ok(mut result) = THUMBNAIL_RESULT.lock() {
+        // 前回の残骸を必ず捨てる（古い絵をそのまま採用してしまう事故を防ぐ）
+        *result = None;
+    }
+}
+
+/// 要求が立っていれば、提示テクスチャ → 読み戻しバッファのコピーを `encoder` へ積む。
+///
+/// `RenderFrame::finish()` から `schedule_requested` と並べて呼ぶ。
+pub fn schedule_thumbnail_color(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+) -> Option<PendingCapture> {
+    {
+        let mut flag = THUMBNAIL_REQUESTED.lock().ok()?;
+        if !*flag {
+            return None;
+        }
+        // 1 フレームで消費する（多重に積まない）
+        *flag = false;
+    }
+    // 出力先パスは使わないが PendingCapture が要求するのでダミーを入れる
+    Some(begin_copy(device, encoder, texture, PathBuf::new()))
+}
+
+/// GPU サブミット後にピクセルを読み出して結果へ積む（PNG は書かない）。
+pub fn resolve_thumbnail_color(device: &wgpu::Device, pending: PendingCapture) {
+    let outcome = match read_back_pixels(device, &pending) {
+        Ok(pixels) => Ok((pixels, pending.width, pending.height)),
+        Err(message) => Err(message),
+    };
+    // 【必須】読み戻しバッファを明示的に解放する。Drop 任せだと解放が遅延し、
+    // サムネイルの連続生成でフレームバッファ数枚ぶんが積み上がる。
+    // 同じ理由で ID バッファ側も frame_renderer で destroy している。
+    pending.buffer.destroy();
+    if let Ok(mut slot) = THUMBNAIL_RESULT.lock() {
+        *slot = Some(outcome);
+    }
+}
+
+/// 読み戻し結果を取り出す（取り出した分は消える）。まだ来ていなければ None。
+pub fn take_thumbnail_color_result() -> Option<Result<(Vec<u8>, u32, u32), String>> {
+    THUMBNAIL_RESULT.lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// 未処理のサムネイル要求・結果を捨てる（ジョブ中断・失敗時の後始末）。
+pub fn clear_thumbnail_color() {
+    if let Ok(mut flag) = THUMBNAIL_REQUESTED.lock() {
+        *flag = false;
+    }
+    if let Ok(mut slot) = THUMBNAIL_RESULT.lock() {
+        *slot = None;
+    }
+}

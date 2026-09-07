@@ -443,6 +443,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::AnimPreviewClip { .. }
         // スクリーンショットはシーンを一切変更しないため Undo 対象外。
         | IpcCommand::Screenshot { .. }
+        // 図鑑サムネイル生成は隔離ワールド線で描いて元に戻すだけで、
+        // ユーザーのシーンを一切変更しないため Undo 対象外。
+        | IpcCommand::RenderActorThumbnail(..)
         // 入力注入は Play 中の一時的な入力状態であってシーンの編集ではない。
         | IpcCommand::InputInject(..)
         | IpcCommand::SetEditPhysics { .. }
