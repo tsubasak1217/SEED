@@ -1135,6 +1135,135 @@ mod tests {
         );
     }
 
+    // ────────────────────────────────────────────────────────────
+    //  Play 停止（entity 再生成）をまたいだ Undo/Redo の対象解決
+    // ────────────────────────────────────────────────────────────
+
+    /// テスト用: Transform を持つトップレベルアクターを 1 つだけ持つシーンを作る。
+    ///
+    /// 戻り値はそのアクターの entity。DFS ID は 0 になる。
+    fn scene_with_single_actor(name: &str, pos_x: f32) -> (Scene, Entity) {
+        let mut scene = Scene::new("play_undo_test");
+        let entity = scene.world.spawn();
+        scene.world.insert(
+            entity,
+            Transform {
+                position: [pos_x, 0.0, 0.0],
+                ..Default::default()
+            },
+        );
+        scene.actors.push(Actor::new(entity, name));
+        (scene, entity)
+    }
+
+    /// テスト用: 「Play 停止でアクターツリーが作り直される」状況を再現する。
+    ///
+    /// 実際の復元（`play_mode_ops::restore_actors_from_snapshot` /
+    /// `play_snapshot::restore_from_play_start`）は GPU（DrawContext）を要するためここでは
+    /// 呼べない。本質だけを写し取り、**同じ名前・同じ木構造のアクターを新しい entity で
+    /// 作り直す**（＝ DFS ID は変わらず entity だけが別物になる）ことで再現する。
+    ///
+    /// 戻り値は新しい entity。
+    fn rebuild_actor_with_new_entity(scene: &mut Scene, pos_x: f32) -> Entity {
+        // 旧アクターを名前ごと引き取って捨てる（entity も ECS から消す＝Play 停止と同じ）。
+        let old = scene.actors.remove(0);
+        scene.world.despawn(old.entity);
+
+        // 新しい entity で同じ木を組み直す。
+        let entity = scene.world.spawn();
+        scene.world.insert(
+            entity,
+            Transform {
+                position: [pos_x, 0.0, 0.0],
+                ..Default::default()
+            },
+        );
+        scene.actors.push(Actor::new(entity, old.name));
+        entity
+    }
+
+    /// テスト用: アクター（DFS ID 0）の Transform.position.x を読む。
+    fn actor_pos_x(scene: &Scene, entity: Entity) -> f32 {
+        scene
+            .world
+            .get::<Transform>(entity)
+            .expect("アクターは Transform を持つ")
+            .position[0]
+    }
+
+    /// Play 停止で entity が作り直されても、Play 前に積んだ Undo が同じアクターへ効くこと。
+    ///
+    /// これは「Play → Stop のあと Ctrl+Z が Play 前まで遡れない」という報告の回帰テストである。
+    /// 履歴を Play 前後で保持できる根拠＝ **Undo コマンドが対象を entity ではなく
+    /// (world_line, DFS ID) で持ち、適用時にアクターツリーから entity を引き直すこと**を
+    /// 直接検証する（App 側の退避・復帰は GPU を要するためここでは扱わない）。
+    #[test]
+    fn undo_resolves_target_after_entity_rebuild() {
+        // Play 前の編集: x を 1.0 → 5.0 へ動かした、という履歴を積む。
+        const BEFORE_X: f32 = 1.0;
+        const AFTER_X:  f32 = 5.0;
+        let (mut scene, old_entity) = scene_with_single_actor("Player", AFTER_X);
+        let mut history = UndoHistory::new();
+        history.record(Box::new(ActorTransformCommand {
+            world_line: 0,
+            dfs_id:     0,
+            old_transform: Transform { position: [BEFORE_X, 0.0, 0.0], ..Default::default() },
+            new_transform: Transform { position: [AFTER_X,  0.0, 0.0], ..Default::default() },
+        }));
+
+        // Play → Stop 相当: 同じ木を新しい entity で作り直す（値は Play 開始時＝AFTER_X）。
+        let new_entity = rebuild_actor_with_new_entity(&mut scene, AFTER_X);
+        assert_ne!(old_entity, new_entity, "entity は作り直されて別物になっていること");
+
+        // Stop 後の Ctrl+Z が「新しい entity の」Transform を Play 前の値へ戻すこと。
+        assert!(history.undo(&mut scene).is_some(), "Play 停止後も undo できること");
+        assert_eq!(
+            actor_pos_x(&scene, new_entity),
+            BEFORE_X,
+            "作り直された entity に対して Play 前の Undo が効くこと"
+        );
+
+        // Redo も同じ経路で解決できること（対称性）。
+        assert!(history.redo(&mut scene).is_some(), "Play 停止後も redo できること");
+        assert_eq!(
+            actor_pos_x(&scene, new_entity),
+            AFTER_X,
+            "作り直された entity に対して Play 前の Redo が効くこと"
+        );
+    }
+
+    /// entity 再生成をまたいでも履歴の **深さと順序** が保たれること
+    /// （＝ Play 前に積んだ複数の操作を順に遡れること）。
+    ///
+    /// 遷移あり停止（シーンを JSON から組み直す経路）でも、木の形が Play 開始時と同じである
+    /// 限り DFS ID による解決は成立するため、経路によらずこの性質だけを検証すれば足りる。
+    #[test]
+    fn undo_history_survives_multiple_steps_across_entity_rebuild() {
+        const X0: f32 = 0.0; // 初期
+        const X1: f32 = 1.0; // 1 回目の編集後
+        const X2: f32 = 2.0; // 2 回目の編集後
+        let (mut scene, _) = scene_with_single_actor("Player", X2);
+        let mut history = UndoHistory::new();
+        for (old_x, new_x) in [(X0, X1), (X1, X2)] {
+            history.record(Box::new(ActorTransformCommand {
+                world_line: 0,
+                dfs_id:     0,
+                old_transform: Transform { position: [old_x, 0.0, 0.0], ..Default::default() },
+                new_transform: Transform { position: [new_x, 0.0, 0.0], ..Default::default() },
+            }));
+        }
+
+        // Play → Stop 相当（Play 開始時点の値 X2 で作り直される）。
+        let new_entity = rebuild_actor_with_new_entity(&mut scene, X2);
+
+        // 2 段階ぶん遡れること。
+        history.undo(&mut scene);
+        assert_eq!(actor_pos_x(&scene, new_entity), X1, "1 回目の Undo で 1 手前へ戻ること");
+        history.undo(&mut scene);
+        assert_eq!(actor_pos_x(&scene, new_entity), X0, "2 回目の Undo で初期状態まで戻ること");
+        assert!(!history.can_undo(), "Play 前の 2 手をすべて遡ったら履歴は空になること");
+    }
+
     /// Redo がカバー場を「操作後」へ進めること（undo と対称であること）。
     #[test]
     fn cover_edit_redo_restores_after_state() {

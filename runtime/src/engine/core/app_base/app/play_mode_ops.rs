@@ -100,7 +100,20 @@ impl App {
             return;
         }
 
-        // ── 0) 地表カバー場（I3.1）を退避する ──────────────────────────
+        // ── 0-a) Undo/Redo 履歴を退避する（Play をまたいだ履歴の連続性）───────
+        //   Unity と同じく、Play を停止したあとも Play 前の操作を Ctrl+Z で遡れるようにする。
+        //   Play 停止時にアクターツリーは Play 開始直前の状態へ完全復元されるので、
+        //   ここで退けておいた履歴は EXIT_PLAY 後にそのまま使える（各 Undo コマンドは
+        //   対象を entity ではなく (world_line, DFS ID) で持ち、適用時に引き直すため、
+        //   entity が作り直されても解決できる。詳細は App::undo_history_before_play）。
+        //   Play 中に何かが履歴へ積まれても、それは Play 用の空履歴に積まれて
+        //   EXIT_PLAY で丸ごと捨てられる（Play 中の状態変化は編集操作ではない）。
+        self.undo_history_before_play = Some(std::mem::replace(
+            &mut self.undo_history,
+            crate::engine::core::app_base::undo::UndoHistory::new(),
+        ));
+
+        // ── 0-b) 地表カバー場（I3.1）を退避する ────────────────────────
         //   Play 中の積算はゲーム状態であって編集データではない。Stop したときに
         //   Edit 時の保存状態へ戻せるよう、ここで丸ごと複製しておく
         //   （水位 `sim_level_y` が Play 中だけ揮発するのと同じ考え方）。
@@ -188,6 +201,17 @@ impl App {
         }
     }
 
+    /// ENTER_PLAY で退避した Undo/Redo 履歴を編集側へ戻す（EXIT_PLAY 内部ヘルパ）。
+    ///
+    /// 退避が無い場合（ウィンドウ Play 等の想定外経路、またはファイル読み直しへ
+    /// フォールバックして退避を破棄した場合）は現在の履歴をそのまま使う。
+    /// 何度呼んでも安全（退避は take で 1 度きり消費される）。
+    fn restore_undo_history_after_play(&mut self) {
+        if let Some(history) = self.undo_history_before_play.take() {
+            self.undo_history = history;
+        }
+    }
+
     /// 埋め込みインプレース Play を停止して編集状態へ復帰する（IPC: EXIT_PLAY）。
     ///
     /// ENTER_PLAY で取ったスナップショットから wl0 非地形アクターを再構築し、mode を
@@ -211,6 +235,10 @@ impl App {
         // 開始状態の記録も必ず捨てる（次の Play へ持ち越さない）。
         if self.mode != RuntimeMode::Play {
             self.play_start = None;
+            // 退避した履歴が残っていれば戻す（Play に入れていない＝シーンは無傷なので、
+            // そのまま使える）。持ち越すと次の Play 開始で上書きされ、
+            // 本来の履歴が失われるため必ずここで回収する。
+            self.restore_undo_history_after_play();
             self.mode = RuntimeMode::Edit;
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_EXITED"); }
             return;
@@ -272,6 +300,15 @@ impl App {
             self.restore_actors_from_snapshot(snapshot);
         }
         let restore_ms = t_restore.elapsed().as_secs_f64() * 1000.0;
+
+        // ── 3-b) Undo/Redo 履歴を Play 開始前のものへ戻す ─────────────────
+        //   アクターツリーの復元が終わったこの時点で戻す（復元経路の途中には
+        //   `install_loaded_scene` を通る道があり、その呼び出し元が履歴を破棄するため、
+        //   必ず復元の「後」で書き戻す必要がある）。
+        //   Play 中に積まれた履歴（通常は空）はここで捨てられる。
+        //   例外的に、ファイル読み直しへフォールバックした場合は
+        //   `reload_scene_file_after_play` が退避を破棄しているので履歴は空のままとなる。
+        self.restore_undo_history_after_play();
 
         // ── 4) 編集状態へ復帰 ───────────────────────────────────────────
         self.mode = RuntimeMode::Edit;

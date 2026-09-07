@@ -385,9 +385,16 @@ impl App {
             }
         };
 
-        // Undo 履歴は差し替えで死んだ World の Entity を参照しているため破棄する
-        // （LOAD_SCENE ハンドラと同じ理由・同じ手順）。
-        self.undo_history = UndoHistory::new();
+        // 【履歴について】ここでは Undo 履歴を破棄しない。
+        //   Undo コマンドは対象を entity ではなく (world_line, DFS ID)・スロット番号・
+        //   インスタンス番号で保持し、適用時にアクターツリーから entity を引き直すため
+        //   （undo.rs の find_entity_by_dfs 系）、World が差し替わっても解決できる。
+        //   そのうえで、この関数が組み直すのは **Play 開始直前の編集状態そのもの** なので、
+        //   Play 前に積んだ履歴の前提は完全に満たされる。
+        //   Play 用に一時的な空履歴へ差し替えてある本体（App::undo_history）は、
+        //   復元後に exit_play が `undo_history_before_play` から書き戻す。
+        //   なお下の install_loaded_scene も履歴には触れない（破棄しているのは
+        //   LOAD_SCENE 等の呼び出し元側であり、こちらの経路では通らない）。
 
         self.install_loaded_scene(
             new_scene,
@@ -466,7 +473,14 @@ impl App {
         };
         match loaded {
             Ok((new_scene, cam_data)) => {
+                // こちらは **ファイルから読み直す** 最後の手段の経路。
+                // Play 開始前の未保存編集が失われており、履歴が前提とする状態を
+                // 再現できないため、現行の履歴も Play 前の退避も両方破棄する
+                // （退避を残すと exit_play が「ファイルの内容」に対して
+                //   「未保存編集を前提にした履歴」を適用してしまい、
+                //   Undo が別のアクターを壊しうる）。
                 self.undo_history = UndoHistory::new();
+                self.undo_history_before_play = None;
                 self.install_loaded_scene(
                     new_scene,
                     cam_data,

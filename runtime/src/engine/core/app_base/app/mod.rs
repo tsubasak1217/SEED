@@ -1318,6 +1318,23 @@ pub struct App {
     /// 確実に戻すための原本がこれ。詳細は play_snapshot.rs を参照。
     /// None = 埋め込み Play 中でない。
     pub(super) play_start: Option<PlayStartState>,
+
+    /// ENTER_PLAY 直前の Undo/Redo 履歴の退避先
+    /// （Unity と同じく「Play を挟んでも履歴が Play 前から連続する」ための器）。
+    ///
+    /// 【なぜ退避するのか】
+    /// Play 中の状態変化（スクリプトのアクタ生成・Transform 更新など）は編集操作ではないので
+    /// 履歴に混ぜたくない。一方、Play を停止するとアクターツリーは Play 開始直前の状態へ
+    /// 完全復元されるため、**Play 開始前に積んだ履歴はそのまま有効**である
+    /// （`undo.rs` の各コマンドは対象を entity ではなく (world_line, DFS ID) や
+    /// スロット番号・インスタンス番号で保持し、適用時にアクターツリーから entity を
+    /// 引き直すため、entity が作り直されても同じ対象へ解決できる）。
+    /// そこで ENTER_PLAY で丸ごと退避し、EXIT_PLAY の復元完了後に戻す。
+    ///
+    /// None = 退避なし（Play 中でない、または退避を破棄した）。
+    /// 破棄するのは「Play 開始状態の復元に失敗し、開始シーンをファイルから読み直した」経路
+    /// だけである（未保存編集が失われ、履歴が前提とする状態を再現できないため）。
+    pub(super) undo_history_before_play: Option<UndoHistory>,
 }
 
 /// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
@@ -1551,6 +1568,8 @@ impl App {
             terrain:             terrain_ops::TerrainState::default(),
             play_snapshot:       None,
             play_start:          None,
+            // Play をまたぐ Undo 履歴の退避（起動直後は退避なし）。
+            undo_history_before_play: None,
         }
     }
 
