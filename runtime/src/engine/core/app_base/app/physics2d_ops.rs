@@ -50,7 +50,9 @@
 //    edit_physics_2d_with_rigidbody=true  : 通常の Play 物理と同様（重力・ダイナミクスあり）。
 // ============================================================
 
-use super::canvas_collect::{build_canvas_viewport_map, canvas_node_is_transparent, root_anchor_offset};
+use super::canvas_collect::{
+    build_canvas_viewport_map, canvas_node_is_transparent, child_anchor_basis, node_anchor_offset,
+};
 use super::{App, InspectorTransformDrag, RuntimeMode, find_actor_by_dfs};
 use crate::engine::components::{
     AspectRatioAxis, CanvasComponent, CanvasTransform, Collider2dComponent, ComponentKind,
@@ -289,7 +291,8 @@ pub(crate) fn collect_actor2d_contexts(
             .unwrap_or((1.0, 1.0));
 
         // 子が参照する「有効 Canvas サイズ」（scale_size・アスペクト比モード考慮済み）
-        let child_canvas_size = my_canvas_base.map(|[bw, bh]| [bw * phys_sc_x, bh * phys_sc_y]);
+        let child_anchor_basis_size =
+            child_anchor_basis(my_canvas_base.map(|[bw, bh]| [bw * phys_sc_x, bh * phys_sc_y]));
 
         // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する。
         // ルートアクター（parent_canvas_size=None）のみオーバーライドマップを参照する。
@@ -343,24 +346,17 @@ pub(crate) fn collect_actor2d_contexts(
         // ── 子への canvas 原点・累積回転を計算する ─────────────────────────────
         // child_canvas_origin = 自アクターの canvas ローカル [0,0] がマップされるワールド位置。
         let (child_canvas_origin, child_world_rot) = if let Some(ct) = ct_opt {
-            // アンカーオフセット（canvas_collect.rs と同一）:
-            //   ルートレベル: [vw * anchor - vw/2, vh * anchor - vh/2]（ortho 中心基準）
-            //   子レベル: parent_canvas_size * anchor * parent_cumul_scale
+            // アンカーオフセット（canvas_collect.rs と同一の共通ヘルパー）:
+            //   最上位: ビューポート基準（design_space により原点位置が変わる）
+            //   子レベル: 親のアンカー基準サイズ × anchor × parent_cumul_scale
             // eff_viewport を使用: CanvasViewportRef::Camera 参照時はカメラの実効サイズを基準とする
-            let anchor_off_child = match parent_canvas_size {
-                None => {
-                    if let Some([vw, vh]) = eff_viewport {
-                        // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
-                        root_anchor_offset(ct.anchor, vw, vh, design_space)
-                    } else {
-                        [0.0f32, 0.0]
-                    }
-                }
-                Some([pw, ph]) => [
-                    pw * ct.anchor[0] * parent_cumul_scale[0],
-                    ph * ct.anchor[1] * parent_cumul_scale[1],
-                ],
-            };
+            let anchor_off_child = node_anchor_offset(
+                parent_canvas_size,
+                ct.anchor,
+                parent_cumul_scale,
+                eff_viewport,
+                design_space,
+            );
 
             let eff_pos_local = if sm_transform {
                 [
@@ -412,7 +408,7 @@ pub(crate) fn collect_actor2d_contexts(
         for child in actor.children.iter().rev() {
             stack.push((
                 child,
-                child_canvas_size,
+                child_anchor_basis_size,
                 child_cumul_scale,
                 child_canvas_origin,
                 child_world_rot,
@@ -442,19 +438,16 @@ pub(crate) fn collect_actor2d_contexts(
 
         // ── 1. アンカー補正（canvas_collect.rs と同一） ───────────────────────
         // eff_viewport: CanvasViewportRef::Camera 参照時はカメラの実効サイズを基準とする
-        let anchor_off = match parent_canvas_size {
-            None => {
-                if let Some([vw, vh]) = eff_viewport {
-                    [vw * ct.anchor[0] - vw / 2.0, vh * ct.anchor[1] - vh / 2.0]
-                } else {
-                    [0.0f32, 0.0]
-                }
-            }
-            Some([pw, ph]) => [
-                pw * ct.anchor[0] * parent_cumul_scale[0],
-                ph * ct.anchor[1] * parent_cumul_scale[1],
-            ],
-        };
+        // 描画（canvas_collect）と同じ共通ヘルパーを使う。
+        // 以前はここだけ design_space を見ずに常に `-vp/2` していたため、
+        // ビューポートタブ（設計空間）でギズモ位置が描画とズレていた。
+        let anchor_off = node_anchor_offset(
+            parent_canvas_size,
+            ct.anchor,
+            parent_cumul_scale,
+            eff_viewport,
+            design_space,
+        );
 
         let eff_pos_local = if sm_transform {
             [

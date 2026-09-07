@@ -85,6 +85,14 @@ impl LineBatch {
     /// （`is_empty` だけでは「描いた／描かない」しか区別できない）。
     pub fn line_count(&self) -> usize { self.vertices.len() / 2 }
 
+    /// 積まれた頂点列への読み取り参照を返す。
+    ///
+    /// 「どこに」線を積んだかを検証するためのアクセサ。`line_count` が
+    /// 「何本引いたか」しか分からないのに対し、こちらは座標まで確認できる。
+    /// 2D キャンバスの選択枠が正しい位置に出るかを CPU だけで検証する
+    /// ユニットテスト（canvas_collect）が使う。
+    pub fn vertices(&self) -> &[ColorVertex] { &self.vertices }
+
     pub fn build(&self, device: &wgpu::Device) -> GpuLineBatch {
         GpuLineBatch::new(device, &self.vertices)
     }

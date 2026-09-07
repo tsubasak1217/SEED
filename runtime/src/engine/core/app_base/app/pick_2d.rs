@@ -31,7 +31,9 @@ use crate::engine::structs::objects::Actor;
 
 use super::App;
 use super::canvas_text_bounds::TextBoundsMap;
-use super::canvas_collect::{canvas_node_is_transparent, root_anchor_offset, skip_dfs_subtree};
+use super::canvas_collect::{
+    canvas_node_is_transparent, child_anchor_basis, node_anchor_offset, skip_dfs_subtree,
+};
 
 /// 巡回選択で「同一地点クリック」とみなすスクリーン座標の許容誤差（ピクセル）。
 const PICK_CYCLE_TOLERANCE_PX: f32 = 4.0;
@@ -507,19 +509,14 @@ pub(super) fn walk_pick_candidates_2d(
         } else {
             viewport_size
         };
-        let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
-            if let Some([vw, vh]) = eff_viewport {
-                let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
-                (ox, oy)
-            } else {
-                (0.0, 0.0)
-            }
-        } else {
-            (
-                parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-                parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
-            )
-        };
+        // アンカーオフセットは描画（canvas_collect）と同じ共通ヘルパーを使う。
+        let [anchor_off_x, anchor_off_y] = node_anchor_offset(
+            parent_canvas_size,
+            ct.anchor,
+            parent_cumul_scale,
+            eff_viewport,
+            design_space,
+        );
 
         let eff_pos = if sm_transform {
             [
@@ -712,7 +709,7 @@ pub(super) fn walk_pick_candidates_2d(
         // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
         let child_info =
             my_canvas.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
-        let child_canvas_size = child_info.map(|(sz, _)| sz);
+        let child_anchor_basis_size = child_anchor_basis(child_info.map(|(sz, _)| sz));
         let auto_scale_factor = if parent_canvas_size.is_none() {
             if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                 [
@@ -746,7 +743,7 @@ pub(super) fn walk_pick_candidates_2d(
             counter,
             self_world_rs,
             child_cumul_scale,
-            child_canvas_size,
+            child_anchor_basis_size,
             depth + 1,
             my_zone,
             viewport_size,
@@ -1290,5 +1287,116 @@ mod tests {
         m[0][0] = 0.0;
         m[1][1] = 0.0;
         assert!(!hit_test_mesh_2d(50.0, 40.0, &m, &mesh, &bones));
+    }
+
+    // ── 入れ子 2D（CanvasComponent を持たない親の子）のピック ──────────────
+    //
+    //  描画（canvas_collect）と同じアンカー規則を使うことの回帰テスト。
+    //  親スプライトは「キャンバス領域」を定義しないので、子の anchor は
+    //  ビューポートではなく「効かない（オフセット 0）」に解決されなければならない。
+
+    /// 親スプライト（名札相当）の寸法・配置。
+    const NEST_PLATE_SIZE: [f32; 2] = [219.0, 65.4];
+    const NEST_PLATE_POS: [f32; 2] = [-283.0, -256.5];
+    const NEST_PLATE_PIVOT: [f32; 2] = [0.5, 0.5];
+    const NEST_PLATE_ANCHOR: [f32; 2] = [0.5, 1.0];
+    /// 子スプライトの寸法・アンカー（親中央に置いたつもりのノード）。
+    const NEST_CHILD_SIZE: [f32; 2] = [40.0, 20.0];
+    const NEST_CHILD_ANCHOR: [f32; 2] = [0.5, 0.5];
+
+    /// Canvas(1280x720) > Sprite(名札) > Sprite(子) のシーンを作る。
+    fn build_nested_sprite_scene() -> (Vec<Actor>, World) {
+        let mut world = World::new();
+        let root_entity = world.spawn();
+        world.insert(root_entity, CanvasTransform::default());
+        let root_slot = world.spawn();
+        world.insert(
+            root_slot,
+            CanvasComponent {
+                width: UI_CANVAS[0],
+                height: UI_CANVAS[1],
+                auto_scale: false,
+                ..CanvasComponent::default()
+            },
+        );
+        let mut root = Actor::new_2d(root_entity, "DialogueWindow");
+        root.world_line = 0;
+        root.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, root_slot);
+
+        let plate_entity = world.spawn();
+        world.insert(
+            plate_entity,
+            CanvasTransform {
+                position: NEST_PLATE_POS,
+                pivot: NEST_PLATE_PIVOT,
+                anchor: NEST_PLATE_ANCHOR,
+                ..CanvasTransform::default()
+            },
+        );
+        let plate_slot = world.spawn();
+        world.insert(
+            plate_slot,
+            SpriteComponent {
+                width: NEST_PLATE_SIZE[0],
+                height: NEST_PLATE_SIZE[1],
+                ..SpriteComponent::default()
+            },
+        );
+        let mut plate = Actor::new_2d(plate_entity, "DialogueNameplate");
+        plate.world_line = 0;
+        plate.add_slot_typed::<SpriteComponent>("Sprite", ComponentKind::Sprite, plate_slot);
+
+        let child_entity = world.spawn();
+        world.insert(
+            child_entity,
+            CanvasTransform {
+                anchor: NEST_CHILD_ANCHOR,
+                pivot: [0.5, 0.5],
+                ..CanvasTransform::default()
+            },
+        );
+        let child_slot = world.spawn();
+        world.insert(
+            child_slot,
+            SpriteComponent {
+                width: NEST_CHILD_SIZE[0],
+                height: NEST_CHILD_SIZE[1],
+                ..SpriteComponent::default()
+            },
+        );
+        let mut child = Actor::new_2d(child_entity, "NestedChild");
+        child.world_line = 0;
+        child.add_slot_typed::<SpriteComponent>("Sprite", ComponentKind::Sprite, child_slot);
+        plate.add_child(child);
+        root.add_child(plate);
+        (vec![root], world)
+    }
+
+    /// 親スプライトの中心をクリックすると子ノード（DFS=2）が当たる。
+    ///
+    /// 修正前は子の anchor がビューポート基準で解決され、設計空間では
+    /// +(640,360)px 先が当たり判定になっていた。
+    #[test]
+    fn nested_child_of_sprite_hits_at_parent_center() {
+        let (actors, world) = build_nested_sprite_scene();
+        let center = [
+            UI_CANVAS[0] * NEST_PLATE_ANCHOR[0] + NEST_PLATE_POS[0],
+            UI_CANVAS[1] * NEST_PLATE_ANCHOR[1] + NEST_PLATE_POS[1],
+        ];
+        let hits = editor_hits(&actors, &world, center);
+        assert!(
+            hits.iter().any(|c| c.dfs == 2),
+            "親スプライト中央では子ノード（dfs=2）に当たらなければならない"
+        );
+        // ずれていた位置（anchor × ビューポート）には何も無いこと
+        let wrong = [
+            center[0] + UI_CANVAS[0] * NEST_CHILD_ANCHOR[0],
+            center[1] + UI_CANVAS[1] * NEST_CHILD_ANCHOR[1],
+        ];
+        let wrong_hits = editor_hits(&actors, &world, wrong);
+        assert!(
+            !wrong_hits.iter().any(|c| c.dfs == 2),
+            "ビューポート基準のずれた位置で当たってはならない"
+        );
     }
 }

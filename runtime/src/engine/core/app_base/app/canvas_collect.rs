@@ -65,6 +65,77 @@ pub(super) fn root_anchor_offset(
     }
 }
 
+// ─── アンカー基準サイズの共通規則 ────────────────────────────────────────────
+
+/// CanvasComponent を持たないノードが子へ渡すアンカー基準サイズ。
+///
+/// Sprite / Text / SkinnedSprite だけを持つノードは「キャンバス領域」を定義しない。
+/// そのため配下のノードの `anchor` は掛ける相手が無く、オフセット 0 ＝ 無効になる。
+/// （anchor を親スプライトの寸法基準にはしない。スロットは複数持てるうえ、
+///   スプライトの寸法は描画物のサイズであってレイアウト領域ではないため。）
+pub(super) const NO_ANCHOR_BASIS: [f32; 2] = [0.0, 0.0];
+
+/// 子ノードへ渡す「アンカー基準サイズ」を決める共通ヘルパー。
+///
+/// # なぜ関数にするか
+/// アンカー基準サイズの `None` は **「最上位ノード（親が居ない）＝ビューポートを
+/// 仮想親とする」** という特別な意味を持つ。ここを素直に
+/// `my_canvas.map(|cc| [cc.width, cc.height])` と書くと、CanvasComponent を持たない
+/// ノード（Sprite など）の**子**にまで `None` が伝播し、その子が「最上位」と
+/// 誤判定される。すると子の anchor がビューポート基準で解決され、
+/// 設計空間表示では `anchor × ビューポートサイズ` ぶん（例: anchor=(0.5,0.5) で
+/// +(640,360)px）描画位置がずれる。
+///
+/// この関数を通すことで「`None` は最上位専用」という不変条件を型ではなく
+/// 呼び出し規約として 1 か所に固定する。
+///
+/// # 引数
+/// - `my_canvas_size`: 自ノードの CanvasComponent の実効サイズ（無ければ None）
+///
+/// # 戻り値
+/// 常に `Some`。CanvasComponent が無いノードでは `Some(NO_ANCHOR_BASIS)` ＝
+/// 「子の anchor は効かない」を意味する。
+#[inline]
+pub(super) fn child_anchor_basis(my_canvas_size: Option<[f32; 2]>) -> Option<[f32; 2]> {
+    Some(my_canvas_size.unwrap_or(NO_ANCHOR_BASIS))
+}
+
+/// ノード 1 つぶんのアンカーオフセット（親ローカル px）を求める共通ヘルパー。
+///
+/// 描画（`collect_sprite_items`）・選択枠（`collect_canvas_rects`）・
+/// GPU ピッキング（`collect_canvas_id_items`）・CPU ピック（`pick_2d`）・
+/// 2D 物理／ギズモ（`physics2d_ops`）がすべてこの関数を共有することで、
+/// 「ギズモは正しいのに描画だけズレる」類の食い違いを構造的に防ぐ。
+///
+/// # 引数
+/// - `parent_basis`: 親から渡されたアンカー基準サイズ。
+///   `None` = 最上位ノード（ビューポートが仮想親）／
+///   `Some([w,h])` = 親のキャンバス領域（`NO_ANCHOR_BASIS` なら anchor 無効）
+/// - `anchor`: 自ノードの正規化アンカー
+/// - `parent_cumul_scale`: 親までの累積スケール（子レベルのみ乗算する）
+/// - `eff_viewport`: 最上位ノードの基準ビューポートサイズ（無ければオフセット 0）
+/// - `design_space`: ビューポートタブの設計空間表示中か
+#[inline]
+pub(super) fn node_anchor_offset(
+    parent_basis: Option<[f32; 2]>,
+    anchor: [f32; 2],
+    parent_cumul_scale: [f32; 2],
+    eff_viewport: Option<[f32; 2]>,
+    design_space: bool,
+) -> [f32; 2] {
+    match parent_basis {
+        // 最上位: ビューポートを仮想親として原点位置を決める
+        None => eff_viewport.map_or([0.0, 0.0], |[vw, vh]| {
+            root_anchor_offset(anchor, vw, vh, design_space)
+        }),
+        // 子レベル: 親のキャンバス領域 × anchor（位置と同じく親の累積スケールが掛かる）
+        Some([pw, ph]) => [
+            pw * anchor[0] * parent_cumul_scale[0],
+            ph * anchor[1] * parent_cumul_scale[1],
+        ],
+    }
+}
+
 // ─── フォルダノード（レイアウト透明ノード）の共通規則 ────────────────────────
 
 /// キャンバスレイアウト上「透明」なノードかを判定する共通ヘルパー。
@@ -532,7 +603,9 @@ pub(super) fn collect_sprite_items(
     world: &World,
     wl: u32,
     draw_ctx: &DrawContext,
-    // 親アクターの CanvasComponent サイズ（anchor 計算用）。None = ルートレベル。
+    // 親から渡されたアンカー基準サイズ（anchor 計算用）。
+    // None = 最上位ノード（ビューポートが仮想親）。子へ渡す値は必ず
+    // `child_anchor_basis()` で作ること（None は最上位専用の意味を持つため）。
     parent_canvas_size: Option<[f32; 2]>,
     // 親のワールド行列（スケールなし: 回転+平行移動のみ）
     parent_world_rs: [[f32; 4]; 4],
@@ -647,22 +720,15 @@ pub(super) fn collect_sprite_items(
             } else {
                 viewport_size
             };
-            let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
-                if let Some([vw, vh]) = eff_viewport {
-                    // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
-                    let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
-                    (ox, oy)
-                } else {
-                    (0.0, 0.0)
-                }
-            } else {
-                (
-                    parent_canvas_size
-                        .map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-                    parent_canvas_size
-                        .map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
-                )
-            };
+            // アンカーオフセット（最上位＝ビューポート基準／子＝親キャンバス基準）は
+            // 描画・枠・ピック・物理で共有する node_anchor_offset に一本化する。
+            let [anchor_off_x, anchor_off_y] = node_anchor_offset(
+                parent_canvas_size,
+                ct.anchor,
+                parent_cumul_scale,
+                eff_viewport,
+                design_space,
+            );
 
             // 有効位置（スケールモードに応じて位置にスケールを乗算する）
             let eff_pos = if sm_transform {
@@ -961,12 +1027,12 @@ pub(super) fn collect_sprite_items(
                 });
             }
 
-            // 子アクターへの基準 Canvas サイズと auto_scale を構築する
-            // （子のアンカー基準サイズにも自動解像度上書きを反映する）。
+            // 子アクターへのアンカー基準サイズと auto_scale を構築する
+            // （自動解像度上書きを反映。CanvasComponent が無ければ anchor 無効の基準）。
             // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
             let child_info =
                 my_canvas.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
-            let child_canvas_size = child_info.map(|(sz, _)| sz);
+            let child_anchor_basis_size = child_anchor_basis(child_info.map(|(sz, _)| sz));
             // ルートキャンバスかつ auto_scale=true のとき、ビューポートサイズ/参照サイズで自動スケールする
             // Camera 参照の場合は eff_viewport がカメラの描画範囲になる
             let auto_scale_factor = if parent_canvas_size.is_none() {
@@ -996,7 +1062,7 @@ pub(super) fn collect_sprite_items(
                 world,
                 wl,
                 draw_ctx,
-                child_canvas_size,
+                child_anchor_basis_size,
                 self_world_rs,
                 child_cumul_scale,
                 canvas_scale,
@@ -1127,22 +1193,15 @@ pub(super) fn collect_canvas_rects(
             } else {
                 viewport_size
             };
-            let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
-                if let Some([vw, vh]) = eff_viewport {
-                    // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
-                    let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
-                    (ox, oy)
-                } else {
-                    (0.0, 0.0)
-                }
-            } else {
-                (
-                    parent_canvas_size
-                        .map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-                    parent_canvas_size
-                        .map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
-                )
-            };
+            // アンカーオフセット（最上位＝ビューポート基準／子＝親キャンバス基準）は
+            // 描画・枠・ピック・物理で共有する node_anchor_offset に一本化する。
+            let [anchor_off_x, anchor_off_y] = node_anchor_offset(
+                parent_canvas_size,
+                ct.anchor,
+                parent_cumul_scale,
+                eff_viewport,
+                design_space,
+            );
 
             // 有効位置（スケールモードに応じて）
             let eff_pos = if sm_transform {
@@ -1371,7 +1430,7 @@ pub(super) fn collect_canvas_rects(
             // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
             let child_info =
                 my_canvas_r.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
-            let child_canvas_size = child_info.map(|(sz, _)| sz);
+            let child_anchor_basis_size = child_anchor_basis(child_info.map(|(sz, _)| sz));
             let auto_scale_factor = if parent_canvas_size.is_none() {
                 if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                     [vw / my_eff_w_r, vh / my_eff_h_r]
@@ -1400,7 +1459,7 @@ pub(super) fn collect_canvas_rects(
                 col,
                 selected_dfs_ids,
                 counter,
-                child_canvas_size,
+                child_anchor_basis_size,
                 self_world_rs,
                 child_cumul_scale,
                 canvas_scale,
@@ -1551,22 +1610,15 @@ pub(super) fn collect_canvas_id_items(
                 } else {
                     viewport_size
                 };
-                let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
-                    if let Some([vw, vh]) = eff_viewport {
-                        // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
-                        let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
-                        (ox, oy)
-                    } else {
-                        (0.0, 0.0)
-                    }
-                } else {
-                    (
-                        parent_canvas_size
-                            .map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-                        parent_canvas_size
-                            .map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
-                    )
-                };
+                // アンカーオフセット（最上位＝ビューポート基準／子＝親キャンバス基準）は
+                // 描画・枠・ピック・物理で共有する node_anchor_offset に一本化する。
+                let [anchor_off_x, anchor_off_y] = node_anchor_offset(
+                    parent_canvas_size,
+                    ct.anchor,
+                    parent_cumul_scale,
+                    eff_viewport,
+                    design_space,
+                );
                 let eff_pos = if sm_transform {
                     [
                         ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
@@ -1762,7 +1814,7 @@ pub(super) fn collect_canvas_id_items(
                 // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
                 let child_info =
                     my_canvas.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
-                let child_canvas_size = child_info.map(|(sz, _)| sz);
+                let child_anchor_basis_size = child_anchor_basis(child_info.map(|(sz, _)| sz));
                 let auto_scale_factor = if parent_canvas_size.is_none() {
                     if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                         [vw / my_eff_w, vh / my_eff_h]
@@ -1783,7 +1835,7 @@ pub(super) fn collect_canvas_id_items(
                         ct.scale[1] * auto_scale_factor[1],
                     ]
                 };
-                (child_canvas_size, child_cumul_scale, self_world_rs, my_zone)
+                (child_anchor_basis_size, child_cumul_scale, self_world_rs, my_zone)
             } else {
                 // CanvasTransform なし・または SS サブツリー外:
                 // ID quad は出力せず、子は親の情報をそのまま引き継ぐ（DFS カウントのみ）
@@ -2039,13 +2091,10 @@ fn walk_3d_canvas_children_id(
                 matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
             );
             // アンカーオフセット（collect_sprite_items の 3D Canvas パスと同じロジック）
-            let (anchor_off_x, anchor_off_y) =
-                parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
-                    (
-                        pw * ct.anchor[0] * parent_cumul_scale[0],
-                        ph * ct.anchor[1] * parent_cumul_scale[1],
-                    )
-                });
+            // 3D ワールドキャンバス配下は常に「子レベル」（最上位分岐なし）。
+            // 2D と同じ共通ヘルパーを使い、基準サイズの規則を 1 か所に保つ。
+            let [anchor_off_x, anchor_off_y] =
+                node_anchor_offset(parent_canvas_size, ct.anchor, parent_cumul_scale, None, false);
 
             // 有効位置（スケールモードに応じて親累積スケールを適用する）
             let eff_pos = if sm_transform {
@@ -2191,7 +2240,7 @@ fn walk_3d_canvas_children_id(
 
             // 子への基準 Canvas サイズを計算する。
             // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-            let child_canvas_size = my_canvas.map(|cc| [cc.width, cc.height]);
+            let child_anchor_basis_size = child_anchor_basis(my_canvas.map(|cc| [cc.width, cc.height]));
             let child_cumul_scale = if sm_transform {
                 [
                     parent_cumul_scale[0] * ct.scale[0],
@@ -2200,7 +2249,7 @@ fn walk_3d_canvas_children_id(
             } else {
                 [ct.scale[0], ct.scale[1]]
             };
-            (child_canvas_size, self_world_rs, child_cumul_scale)
+            (child_anchor_basis_size, self_world_rs, child_cumul_scale)
         } else {
             // CanvasTransform なし: 親情報をそのまま引き継ぐ
             (parent_canvas_size, parent_world_rs, parent_cumul_scale)
@@ -2285,13 +2334,10 @@ pub(super) fn collect_3d_canvas_child_outlines(
                 matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
             );
             // アンカーオフセット（walk_3d_canvas_children_id / collect_sprite_items と同じ）
-            let (anchor_off_x, anchor_off_y) =
-                parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
-                    (
-                        pw * ct.anchor[0] * parent_cumul_scale[0],
-                        ph * ct.anchor[1] * parent_cumul_scale[1],
-                    )
-                });
+            // 3D ワールドキャンバス配下は常に「子レベル」（最上位分岐なし）。
+            // 2D と同じ共通ヘルパーを使い、基準サイズの規則を 1 か所に保つ。
+            let [anchor_off_x, anchor_off_y] =
+                node_anchor_offset(parent_canvas_size, ct.anchor, parent_cumul_scale, None, false);
             // 有効位置（スケールモードに応じて親累積スケールを適用する）
             let eff_pos = if sm_transform {
                 [
@@ -2373,7 +2419,7 @@ pub(super) fn collect_3d_canvas_child_outlines(
             }
 
             // 子への基準 Canvas サイズと累積スケール（walk_3d_canvas_children_id と同一）
-            let child_canvas_size = my_canvas.map(|cc| [cc.width, cc.height]);
+            let child_anchor_basis_size = child_anchor_basis(my_canvas.map(|cc| [cc.width, cc.height]));
             let child_cumul_scale = if sm_transform {
                 [
                     parent_cumul_scale[0] * ct.scale[0],
@@ -2382,7 +2428,7 @@ pub(super) fn collect_3d_canvas_child_outlines(
             } else {
                 [ct.scale[0], ct.scale[1]]
             };
-            (child_canvas_size, self_world_rs, child_cumul_scale)
+            (child_anchor_basis_size, self_world_rs, child_cumul_scale)
         } else {
             // CanvasTransform なし: 親情報をそのまま引き継ぐ
             (parent_canvas_size, parent_world_rs, parent_cumul_scale)
@@ -3179,5 +3225,343 @@ mod tests {
         bounds.insert(slot, text_bounds(TEXT_BOX_MIN, TEXT_BOX_MAX, true));
         let item = text_id_item_local(&actor, &world, &bounds).expect("ID アイテムが出る");
         assert!(item.zero_pivot);
+    }
+
+    // ========================================================
+    //  テスト — 入れ子 2D（CanvasComponent を持たない親の子）のアンカー解決
+    // ========================================================
+    //
+    //  症状（回帰の対象）:
+    //    Canvas(1280x720) > Sprite(名札) > Text(話者名) と入れ子にすると、
+    //    Text の anchor が「親スプライト」ではなくビューポート基準で解決され、
+    //    設計空間表示で anchor×(1280,720) ぶん（= +(640,360)px）ずれて描画された。
+    //    原因は「親のアンカー基準サイズ = None」が最上位ノードの意味を持つのに、
+    //    CanvasComponent を持たない親がそのまま None を子へ渡していたこと。
+    //
+    //  ここでは GPU 不要な collect_canvas_rects（選択枠）を通して描画と同一の
+    //  変換連鎖を実行し、枠の座標そのものを検証する。
+
+    /// テスト用ルートキャンバスの設計解像度（ビューポートと同値 = auto_scale 影響なし）。
+    const NEST_CANVAS: [f32; 2] = [1280.0, 720.0];
+    /// 名札スプライトの寸法・配置（proLogue.scene の DialogueNameplate と同値）。
+    const NAMEPLATE_SIZE: [f32; 2] = [219.0, 65.4];
+    const NAMEPLATE_POS: [f32; 2] = [-283.0, -256.5];
+    const NAMEPLATE_PIVOT: [f32; 2] = [0.5, 0.5];
+    const NAMEPLATE_ANCHOR: [f32; 2] = [0.5, 1.0];
+    /// 名札の子ノード（話者名テキスト／確認用スプライト）のアンカーと位置。
+    const NESTED_CHILD_ANCHOR: [f32; 2] = [0.5, 0.5];
+    const NESTED_CHILD_POS: [f32; 2] = [0.0, 0.0];
+    /// 子スプライト（入れ子スプライトの回帰確認用）の寸法とピボット。
+    const NESTED_SPRITE_SIZE: [f32; 2] = [40.0, 20.0];
+    const NESTED_SPRITE_PIVOT: [f32; 2] = [0.5, 0.5];
+    /// 話者名テキストの実測枠（中央寄せ相当。原点をまたぐ矩形）。
+    const SPEAKER_BOX_MIN: [f32; 2] = [-40.0, -13.0];
+    const SPEAKER_BOX_MAX: [f32; 2] = [40.0, 13.0];
+    /// 選択枠の許容誤差（px）。
+    ///
+    /// CanvasComponent を持たないノードは「基準サイズ 1x1」という既存規約で
+    /// pivot を解決するため、子の座標系原点が pivot ぶん（最大 1px）ずれる。
+    /// 本テストの検証対象（アンカー基準サイズ）とは別問題なので許容幅に含める。
+    const NEST_TOL: f32 = 1.0;
+    /// 選択枠のリング間隔を 0 にして太線の複数リングを 1 本に重ねる
+    /// （枠の外接矩形を理論値と厳密に比較できるようにするため）。
+    const NEST_OUTLINE_STEP: f32 = 0.0;
+    /// 子ノードの DFS 番号（0=DialogueWindow / 1=DialogueNameplate / 2=子）。
+    const NESTED_CHILD_DFS: usize = 2;
+    /// 選択枠の色（collect_canvas_rects が選択中ノードへ使うオレンジ）。
+    const NEST_SELECTED_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
+
+    /// 名札スプライトの中心（＝子ノードの座標系原点）の設計空間座標。
+    fn nameplate_center() -> [f32; 2] {
+        [
+            NEST_CANVAS[0] * NAMEPLATE_ANCHOR[0] + NAMEPLATE_POS[0],
+            NEST_CANVAS[1] * NAMEPLATE_ANCHOR[1] + NAMEPLATE_POS[1],
+        ]
+    }
+
+    /// Canvas(1280x720) > Sprite(名札) > 子ノード のシーンを作る。
+    ///
+    /// nest_text=true で子を Text（実測枠つき）に、false で子を Sprite にする。
+    /// 戻り値: (アクター列, World, テキスト実測枠の表)
+    fn build_nested_scene(nest_text: bool) -> (Vec<Actor>, World, TextBoundsMap) {
+        let mut world = World::new();
+        let mut bounds = TextBoundsMap::new();
+
+        // ルートキャンバス（DialogueWindow 相当）
+        let root_entity = world.spawn();
+        world.insert(root_entity, CanvasTransform::default());
+        let root_slot = world.spawn();
+        world.insert(
+            root_slot,
+            CanvasComponent {
+                width: NEST_CANVAS[0],
+                height: NEST_CANVAS[1],
+                // 自動スケールは検証対象外なので固定倍率（1.0）にする
+                auto_scale: false,
+                ..CanvasComponent::default()
+            },
+        );
+        let mut root = Actor::new_2d(root_entity, "DialogueWindow");
+        root.world_line = 0;
+        root.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, root_slot);
+
+        // 名札スプライト（CanvasComponent を持たない中間ノード）
+        let plate_entity = world.spawn();
+        world.insert(
+            plate_entity,
+            CanvasTransform {
+                position: NAMEPLATE_POS,
+                pivot: NAMEPLATE_PIVOT,
+                anchor: NAMEPLATE_ANCHOR,
+                ..CanvasTransform::default()
+            },
+        );
+        let plate_slot = world.spawn();
+        world.insert(
+            plate_slot,
+            SpriteComponent {
+                width: NAMEPLATE_SIZE[0],
+                height: NAMEPLATE_SIZE[1],
+                ..SpriteComponent::default()
+            },
+        );
+        let mut plate = Actor::new_2d(plate_entity, "DialogueNameplate");
+        plate.world_line = 0;
+        plate.add_slot_typed::<SpriteComponent>("Sprite", ComponentKind::Sprite, plate_slot);
+
+        // 名札の子（Text または Sprite）
+        let child_entity = world.spawn();
+        world.insert(
+            child_entity,
+            CanvasTransform {
+                position: NESTED_CHILD_POS,
+                anchor: NESTED_CHILD_ANCHOR,
+                pivot: if nest_text {
+                    [0.0, 0.0]
+                } else {
+                    NESTED_SPRITE_PIVOT
+                },
+                ..CanvasTransform::default()
+            },
+        );
+        let child_slot = world.spawn();
+        let mut child = Actor::new_2d(child_entity, "NestedChild");
+        child.world_line = 0;
+        if nest_text {
+            world.insert(child_slot, TextComponent::default());
+            child.add_slot_typed::<TextComponent>("Text", ComponentKind::Text, child_slot);
+            // 枠なし（box_width=0）なので pivot は行列側では効かない（zero_pivot=false）
+            bounds.insert(
+                child_slot,
+                text_bounds(SPEAKER_BOX_MIN, SPEAKER_BOX_MAX, false),
+            );
+        } else {
+            world.insert(
+                child_slot,
+                SpriteComponent {
+                    width: NESTED_SPRITE_SIZE[0],
+                    height: NESTED_SPRITE_SIZE[1],
+                    ..SpriteComponent::default()
+                },
+            );
+            child.add_slot_typed::<SpriteComponent>("Sprite", ComponentKind::Sprite, child_slot);
+        }
+        plate.add_child(child);
+        root.add_child(plate);
+        (vec![root], world, bounds)
+    }
+
+    /// 子ノードの選択枠を収集し、その線分頂点の外接矩形 (min, max) を返す。
+    ///
+    /// ルートキャンバスの枠も同時に積まれるため、選択色の頂点だけを対象にする。
+    fn nested_child_outline_bbox(
+        actors: &[Actor],
+        world: &World,
+        bounds: &TextBoundsMap,
+        design_space: bool,
+    ) -> ([f32; 2], [f32; 2]) {
+        let empty: HashMap<Entity, [f32; 2]> = HashMap::new();
+        let mut lb = LineBatch::new();
+        let mut counter = 0u32;
+        collect_canvas_rects(
+            actors,
+            world,
+            0,
+            &mut lb,
+            [1.0, 1.0, 1.0, 1.0],
+            &[NESTED_CHILD_DFS],
+            &mut counter,
+            None,
+            crate::engine::core::loader::sprite_mesh::IDENTITY_MAT4,
+            [1.0, 1.0],
+            1.0,
+            1.0,
+            Some(NEST_CANVAS),
+            &empty,
+            &empty,
+            design_space,
+            NEST_OUTLINE_STEP,
+            None,
+            bounds,
+        );
+        let mut min = [f32::MAX, f32::MAX];
+        let mut max = [f32::MIN, f32::MIN];
+        for v in lb.vertices() {
+            if v.color != NEST_SELECTED_COL {
+                continue;
+            }
+            for i in 0..2 {
+                min[i] = min[i].min(v.position[i]);
+                max[i] = max[i].max(v.position[i]);
+            }
+        }
+        assert!(min[0] <= max[0], "選択枠が 1 本も積まれていない");
+        (min, max)
+    }
+
+    /// 近似比較（NEST_TOL 以内）。
+    fn assert_near2(actual: [f32; 2], expect: [f32; 2], what: &str) {
+        for i in 0..2 {
+            assert!(
+                (actual[i] - expect[i]).abs() <= NEST_TOL,
+                "{what}[{i}] actual={actual:?} expect={expect:?}"
+            );
+        }
+    }
+
+    /// 【回帰テスト】名札スプライトの子テキストは名札の中央に描かれる。
+    ///
+    /// 修正前は子の anchor(0.5,0.5) がビューポート基準で解決され、
+    /// 設計空間では +(640,360)px ずれていた。
+    #[test]
+    fn nested_text_under_sprite_is_centered_on_parent() {
+        let (actors, world, bounds) = build_nested_scene(true);
+        let c = nameplate_center();
+        let (min, max) = nested_child_outline_bbox(&actors, &world, &bounds, true);
+        assert_near2(
+            min,
+            [c[0] + SPEAKER_BOX_MIN[0], c[1] + SPEAKER_BOX_MIN[1]],
+            "テキスト枠 min",
+        );
+        assert_near2(
+            max,
+            [c[0] + SPEAKER_BOX_MAX[0], c[1] + SPEAKER_BOX_MAX[1]],
+            "テキスト枠 max",
+        );
+    }
+
+    /// 実ゲーム合成（design_space=false）でも子テキストは名札の中央にある。
+    ///
+    /// この場合はルートキャンバスのアンカーだけがビューポート中央基準（-vp/2）で
+    /// 解決され、子はその内側の相対位置を保つ。
+    #[test]
+    fn nested_text_under_sprite_is_centered_in_screen_space() {
+        let (actors, world, bounds) = build_nested_scene(true);
+        let c = nameplate_center();
+        // ルートキャンバス（anchor=(0,0)）のオフセットぶんだけ全体が動く
+        let root_off = [-NEST_CANVAS[0] / 2.0, -NEST_CANVAS[1] / 2.0];
+        let (min, max) = nested_child_outline_bbox(&actors, &world, &bounds, false);
+        assert_near2(
+            min,
+            [
+                c[0] + root_off[0] + SPEAKER_BOX_MIN[0],
+                c[1] + root_off[1] + SPEAKER_BOX_MIN[1],
+            ],
+            "テキスト枠 min",
+        );
+        assert_near2(
+            max,
+            [
+                c[0] + root_off[0] + SPEAKER_BOX_MAX[0],
+                c[1] + root_off[1] + SPEAKER_BOX_MAX[1],
+            ],
+            "テキスト枠 max",
+        );
+    }
+
+    /// 【回帰テスト】スプライトの子スプライトも同じ規則（親中央）に従う。
+    #[test]
+    fn nested_sprite_under_sprite_is_centered_on_parent() {
+        let (actors, world, bounds) = build_nested_scene(false);
+        let c = nameplate_center();
+        let (min, max) = nested_child_outline_bbox(&actors, &world, &bounds, true);
+        assert_near2(
+            min,
+            [
+                c[0] - NESTED_SPRITE_SIZE[0] * 0.5,
+                c[1] - NESTED_SPRITE_SIZE[1] * 0.5,
+            ],
+            "スプライト枠 min",
+        );
+        assert_near2(
+            max,
+            [
+                c[0] + NESTED_SPRITE_SIZE[0] * 0.5,
+                c[1] + NESTED_SPRITE_SIZE[1] * 0.5,
+            ],
+            "スプライト枠 max",
+        );
+    }
+
+    /// CanvasComponent を持つノードは自身のサイズを、持たないノードは
+    /// 「anchor 無効」を意味する NO_ANCHOR_BASIS を子へ渡す。
+    /// どちらの場合も None（＝最上位マーカー）を子へ漏らさないことが要点。
+    #[test]
+    fn child_anchor_basis_never_leaks_root_marker() {
+        assert_eq!(child_anchor_basis(Some(NEST_CANVAS)), Some(NEST_CANVAS));
+        assert_eq!(child_anchor_basis(None), Some(NO_ANCHOR_BASIS));
+    }
+
+    /// アンカーオフセットの 3 系統（最上位 / 親キャンバス / 基準なし）。
+    #[test]
+    fn node_anchor_offset_covers_all_levels() {
+        let vp = Some(NEST_CANVAS);
+        // 最上位・設計空間: キャンバス左上が原点 → anchor × ビューポート
+        assert_eq!(
+            node_anchor_offset(None, [0.5, 0.5], [1.0, 1.0], vp, true),
+            [640.0, 360.0]
+        );
+        // 最上位・実ゲーム合成: ortho 中心が原点 → anchor × vp - vp/2
+        assert_eq!(
+            node_anchor_offset(None, [0.5, 0.5], [1.0, 1.0], vp, false),
+            [0.0, 0.0]
+        );
+        // 子レベル: 親キャンバスサイズ × anchor × 親累積スケール
+        assert_eq!(
+            node_anchor_offset(Some([200.0, 100.0]), [0.5, 1.0], [2.0, 3.0], vp, true),
+            [200.0, 300.0]
+        );
+        // 基準なし（CanvasComponent を持たない親の子）: anchor は効かない
+        assert_eq!(
+            node_anchor_offset(Some(NO_ANCHOR_BASIS), [0.5, 0.5], [1.0, 1.0], vp, true),
+            [0.0, 0.0]
+        );
+    }
+
+    /// 【回帰テスト】枠つき Text（box_width>0）を入れ子にしても中央に出る。
+    ///
+    /// 枠モードは pivot を行列ではなく実測枠側へ焼き込む（zero_pivot=true）ため
+    /// 選択枠・ピックが to_mesh_mat4_no_pivot 経路を通る。その経路でも
+    /// 親子のアンカー解決が同じ規則であることを確認する。
+    #[test]
+    fn nested_boxed_text_under_sprite_is_centered_on_parent() {
+        // 枠の半径（pivot=(0.5,0.5) を焼き込み済みのローカル枠）
+        const BOX_HALF: [f32; 2] = [60.0, 20.0];
+        let (actors, world, _) = build_nested_scene(true);
+        // DFS: root > plate > child。子アクターの Text スロット entity を引く
+        let child_slot = actors[0].children()[0].children()[0].slots()[0].entity;
+        let mut bounds = TextBoundsMap::new();
+        bounds.insert(
+            child_slot,
+            text_bounds(
+                [-BOX_HALF[0], -BOX_HALF[1]],
+                [BOX_HALF[0], BOX_HALF[1]],
+                true,
+            ),
+        );
+        let c = nameplate_center();
+        let (min, max) = nested_child_outline_bbox(&actors, &world, &bounds, true);
+        assert_near2(min, [c[0] - BOX_HALF[0], c[1] - BOX_HALF[1]], "枠つき min");
+        assert_near2(max, [c[0] + BOX_HALF[0], c[1] + BOX_HALF[1]], "枠つき max");
     }
 }
