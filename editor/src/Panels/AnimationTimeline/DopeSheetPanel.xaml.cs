@@ -35,6 +35,8 @@ internal enum DopeSheetDragMode
     None,
     Key,
     Playhead,
+    /// <summary>サマリー行（「全チャンネル」）の◆をドラッグ中。</summary>
+    SummaryKey,
 }
 
 /// <summary>
@@ -60,11 +62,22 @@ internal partial class DopeSheetPanel : UserControl
     private int _selectedTrackForKey = -1;
     private int _selectedKeyIndex    = -1;
 
+    /// <summary>
+    /// サマリー行（「全チャンネル」）で選択中のフレーム時刻（秒）。未選択は null。
+    /// 通常キーの選択（_selectedTrackForKey/_selectedKeyIndex）とは排他。
+    /// 「どの (トラック,キー) か」ではなく「どのフレームか」で持つ理由は、
+    /// サマリー行の◆がトラックをまたいだ集計（AnimKeyEditor.SummaryFrames）の
+    /// 派生表示であり、トラック側の増減で添字が意味を失うため。
+    /// </summary>
+    private float? _selectedSummaryTime;
+
     // ── ドラッグ状態 ────────────────────────────────────────────
 
     private DopeSheetDragMode _dragMode = DopeSheetDragMode.None;
     private int    _dragTrackIndex = -1;
     private int    _dragKeyIndex   = -1;
+    /// <summary>サマリー◆ドラッグ中の「元の時刻」。移動のたびに現在位置へ更新する。</summary>
+    private float  _dragSummaryTime;
 
     // ── 公開イベント（親パネルが購読して IPC 送信・モデル更新を行う）────
 
@@ -84,6 +97,19 @@ internal partial class DopeSheetPanel : UserControl
     /// <summary>プレイヘッドのスクラブ操作が終了した。</summary>
     public event Action? PlayheadScrubEnded;
 
+    // ── サマリー行（「全チャンネル」）のイベント ──────────────────
+    // 通常キーの (trackIndex, keyIndex) では「どのフレームか」を表せないため、
+    // サマリー行専用に時刻ベースのイベントを別途用意する。
+
+    /// <summary>サマリー行のダブルクリックでキー追加を要求（time）。全トラックへ一括挿入する。</summary>
+    public event Action<float>? SummaryKeyAddRequested;
+    /// <summary>サマリー◆ドラッグで時刻が変わった（oldTime, newTime）。ドラッグ中に連続発火。</summary>
+    public event Action<float, float>? SummaryKeyMoved;
+    /// <summary>サマリー◆右クリックメニューからの削除要求（time）。</summary>
+    public event Action<float>? SummaryKeyDeleteRequested;
+    /// <summary>サマリー◆選択が変わった（null = 選択解除）。</summary>
+    public event Action<float?>? SummaryKeySelectionChanged;
+
     public DopeSheetPanel()
     {
         InitializeComponent();
@@ -98,6 +124,7 @@ internal partial class DopeSheetPanel : UserControl
         _clip = clip;
         _selectedTrackForKey = -1;
         _selectedKeyIndex    = -1;
+        _selectedSummaryTime = null;
         Redraw();
     }
 
@@ -121,6 +148,9 @@ internal partial class DopeSheetPanel : UserControl
     /// <summary>現在選択中のキー（トラックインデックス, キーインデックス）。未選択は (-1,-1)。</summary>
     public (int trackIndex, int keyIndex) SelectedKey => (_selectedTrackForKey, _selectedKeyIndex);
 
+    /// <summary>サマリー行で現在選択中のフレーム時刻（秒）。未選択は null。</summary>
+    public float? SelectedSummaryTime => _selectedSummaryTime;
+
     /// <summary>水平ズーム（1 秒あたりピクセル数）を変更する。</summary>
     public void SetPixelsPerSecond(double pps)
     {
@@ -133,8 +163,15 @@ internal partial class DopeSheetPanel : UserControl
     private double TimeToX(float time) => time * _pixelsPerSecond;
     private float XToTime(double x) => (float)(x / _pixelsPerSecond);
 
+    /// <summary>
+    /// サマリー行（「全チャンネル」）の上端 Y 座標。ルーラー直下・常に 1 行ぶんを占有する。
+    /// 実トラック行はこの下（<see cref="TrackRowTop"/>）に積む。
+    /// </summary>
+    private double SummaryRowTop => AnimationTimelineConstants.RulerHeight;
+
     private double TrackRowTop(int trackIndex) =>
-        AnimationTimelineConstants.RulerHeight + trackIndex * AnimationTimelineConstants.TrackRowHeight;
+        AnimationTimelineConstants.RulerHeight + AnimationTimelineConstants.TrackRowHeight
+        + trackIndex * AnimationTimelineConstants.TrackRowHeight;
 
     /// <summary>編集中クリップのフレームレート（クリップ未ロード時は既定 fps）。</summary>
     private float Fps => AnimFrameMath.NormalizeFps(_clip?.Fps ?? AnimFrameMath.DefaultFps);
@@ -156,14 +193,18 @@ internal partial class DopeSheetPanel : UserControl
 
         var duration   = Math.Max(_clip.Duration, AnimationTimelineConstants.MinDuration);
         var contentW   = Math.Max(TimeToX(duration) + 40, ActualWidth);
-        var contentH   = AnimationTimelineConstants.RulerHeight + _clip.Tracks.Count * AnimationTimelineConstants.TrackRowHeight;
+        // +1 行ぶんは常時先頭のサマリー行（「全チャンネル」）。
+        var contentH   = AnimationTimelineConstants.RulerHeight
+                        + (1 + _clip.Tracks.Count) * AnimationTimelineConstants.TrackRowHeight;
         DrawCanvas.Width  = contentW;
         DrawCanvas.Height = Math.Max(contentH, ActualHeight);
 
         DrawTrackRowBackgrounds(contentW);
+        DrawSummaryRowBackground(contentW);
         DrawGrid(contentW, contentH, duration);
         DrawRuler(contentW, duration);
         DrawKeys();
+        DrawSummaryKeys();
         DrawPlayhead(contentH);
     }
 
@@ -307,11 +348,14 @@ internal partial class DopeSheetPanel : UserControl
         }
     }
 
-    /// <summary>1 個のキーフレーム◆マーカーを描画する。Tag に (trackIndex, keyIndex) を仕込みヒットテストに使う。</summary>
-    private void DrawDiamond(double cx, double cy, bool isSelected, bool inSelectedTrack, int trackIndex, int keyIndex)
+    /// <summary>
+    /// ◆形状そのものを作る共通ヘルパー（通常キー・サマリーキーの両方から使う）。
+    /// 塗り色・Tag の付け方はそれぞれの呼び出し側に任せる。
+    /// </summary>
+    private static Polygon CreateDiamondShape(double cx, double cy, Brush fill)
     {
         var r = AnimationTimelineConstants.KeyDiamondRadius;
-        var poly = new Polygon
+        return new Polygon
         {
             Points = new PointCollection
             {
@@ -320,16 +364,55 @@ internal partial class DopeSheetPanel : UserControl
                 new Point(cx,     cy + r),
                 new Point(cx - r, cy),
             },
-            Fill        = new SolidColorBrush(isSelected
-                ? AnimationTimelineConstants.KeyDiamondSelectedFill
-                : inSelectedTrack
-                    ? AnimationTimelineConstants.KeyDiamondTrackHighlightFill
-                    : AnimationTimelineConstants.KeyDiamondFill),
+            Fill            = fill,
             Stroke          = new SolidColorBrush(AnimationTimelineConstants.KeyDiamondBorder),
             StrokeThickness = 1,
-            Tag             = (trackIndex, keyIndex),
         };
+    }
+
+    /// <summary>1 個のキーフレーム◆マーカーを描画する。Tag に (trackIndex, keyIndex) を仕込みヒットテストに使う。</summary>
+    private void DrawDiamond(double cx, double cy, bool isSelected, bool inSelectedTrack, int trackIndex, int keyIndex)
+    {
+        var fill = new SolidColorBrush(isSelected
+            ? AnimationTimelineConstants.KeyDiamondSelectedFill
+            : inSelectedTrack
+                ? AnimationTimelineConstants.KeyDiamondTrackHighlightFill
+                : AnimationTimelineConstants.KeyDiamondFill);
+        var poly = CreateDiamondShape(cx, cy, fill);
+        poly.Tag = (trackIndex, keyIndex);
         DrawCanvas.Children.Add(poly);
+    }
+
+    /// <summary>サマリー行（先頭固定・常にトラック行の上）の背景とラベルを描画する。</summary>
+    private void DrawSummaryRowBackground(double contentW)
+    {
+        var rect = new Rectangle
+        {
+            Width  = contentW,
+            Height = AnimationTimelineConstants.TrackRowHeight,
+            Fill   = new SolidColorBrush(AnimationTimelineConstants.SummaryRowBackground),
+        };
+        Canvas.SetLeft(rect, 0);
+        Canvas.SetTop(rect, SummaryRowTop);
+        DrawCanvas.Children.Add(rect);
+    }
+
+    /// <summary>
+    /// サマリー行の◆（いずれかのトラックにキーがあるフレーム）を描画する。
+    /// 集計そのものは AnimKeyEditor.SummaryFrames（純ロジック、単体テスト済み）に委ねる。
+    /// </summary>
+    private void DrawSummaryKeys()
+    {
+        if (_clip is null) return;
+        var rowCenterY = SummaryRowTop + AnimationTimelineConstants.TrackRowHeight / 2.0;
+        foreach (var time in AnimKeyEditor.SummaryFrames(_clip.Tracks))
+        {
+            var isSelected = _selectedSummaryTime is { } sel && AnimFrameMath.SameFrame(sel, time, Fps);
+            var fill = new SolidColorBrush(isSelected
+                ? AnimationTimelineConstants.KeyDiamondSelectedFill
+                : AnimationTimelineConstants.KeyDiamondFill);
+            DrawCanvas.Children.Add(CreateDiamondShape(TimeToX(time), rowCenterY, fill));
+        }
     }
 
     /// <summary>プレイヘッド（縦線 + 上部ハンドル）を描画する。</summary>
@@ -383,12 +466,29 @@ internal partial class DopeSheetPanel : UserControl
         return null;
     }
 
-    /// <summary>座標が属するトラック行インデックス（ルーラー領域は -1）。</summary>
+    /// <summary>座標が属するトラック行インデックス（ルーラー・サマリー行は -1）。</summary>
     private int HitTestTrackRow(Point p)
     {
-        if (_clip is null || p.Y < AnimationTimelineConstants.RulerHeight) return -1;
-        var idx = (int)((p.Y - AnimationTimelineConstants.RulerHeight) / AnimationTimelineConstants.TrackRowHeight);
+        var tracksTop = AnimationTimelineConstants.RulerHeight + AnimationTimelineConstants.TrackRowHeight;
+        if (_clip is null || p.Y < tracksTop) return -1;
+        var idx = (int)((p.Y - tracksTop) / AnimationTimelineConstants.TrackRowHeight);
         return idx >= 0 && idx < _clip.Tracks.Count ? idx : -1;
+    }
+
+    /// <summary>座標がサマリー行（ルーラー直下 1 行）の帯の中にあるか。</summary>
+    private bool IsInSummaryRow(Point p) =>
+        p.Y >= SummaryRowTop && p.Y < SummaryRowTop + AnimationTimelineConstants.TrackRowHeight;
+
+    /// <summary>座標からサマリー行の◆を特定する（見つからなければ null）。ヒットしたフレームの時刻を返す。</summary>
+    private float? HitTestSummaryKey(Point p)
+    {
+        if (_clip is null || !IsInSummaryRow(p)) return null;
+        foreach (var time in AnimKeyEditor.SummaryFrames(_clip.Tracks))
+        {
+            var x = TimeToX(time);
+            if (Math.Abs(p.X - x) <= AnimationTimelineConstants.KeyDiamondHitRadius) return time;
+        }
+        return null;
     }
 
     // ── マウス操作 ──────────────────────────────────────────────
@@ -407,10 +507,41 @@ internal partial class DopeSheetPanel : UserControl
             return;
         }
 
+        // サマリー行（「全チャンネル」）のクリック/ドラッグ開始
+        if (IsInSummaryRow(p))
+        {
+            var summaryHit = HitTestSummaryKey(p);
+            if (summaryHit is { } st)
+            {
+                SelectSummaryKey(st);
+                _dragMode        = DopeSheetDragMode.SummaryKey;
+                _dragSummaryTime = st;
+                DrawCanvas.CaptureMouse();
+                Redraw();
+                e.Handled = true;
+                return;
+            }
+
+            // 空白部のダブルクリック → 全トラックへキー追加を要求する
+            if (e.ClickCount == 2)
+            {
+                var time = ClampAndSnapTime(XToTime(p.X));
+                SummaryKeyAddRequested?.Invoke(time);
+                e.Handled = true;
+                return;
+            }
+
+            // 空白部の単クリックは選択解除
+            SelectSummaryKey(null);
+            Redraw();
+            return;
+        }
+
         var hit = HitTestKey(p);
         if (hit is { } h)
         {
             // ダブルクリックは無視（キー追加はダブルクリック時に別処理する既存キー上では発火しない）
+            SelectSummaryKey(null);
             _selectedTrackForKey = h.trackIndex;
             _selectedKeyIndex    = h.keyIndex;
             KeySelectionChanged?.Invoke(h.trackIndex, h.keyIndex);
@@ -441,7 +572,23 @@ internal partial class DopeSheetPanel : UserControl
         _selectedTrackForKey = -1;
         _selectedKeyIndex    = -1;
         KeySelectionChanged?.Invoke(-1, -1);
+        SelectSummaryKey(null);
         Redraw();
+    }
+
+    /// <summary>
+    /// サマリー行の選択状態を設定し、通常キーの選択を解除する（両者は排他）。
+    /// 選択解除（null）でも SummaryKeySelectionChanged を発火する。
+    /// </summary>
+    private void SelectSummaryKey(float? time)
+    {
+        _selectedSummaryTime = time;
+        if (time is not null)
+        {
+            _selectedTrackForKey = -1;
+            _selectedKeyIndex    = -1;
+        }
+        SummaryKeySelectionChanged?.Invoke(time);
     }
 
     private void OnCanvasMouseMove(object sender, MouseEventArgs e)
@@ -462,6 +609,15 @@ internal partial class DopeSheetPanel : UserControl
                 KeyMoved?.Invoke(_dragTrackIndex, _dragKeyIndex, newTime);
                 Redraw();
                 break;
+
+            case DopeSheetDragMode.SummaryKey when _clip is not null:
+                var newSummaryTime = ClampAndSnapTime(XToTime(p.X));
+                AnimKeyEditor.MoveKeysAtFrame(_clip.Tracks, _dragSummaryTime, newSummaryTime, Fps);
+                SummaryKeyMoved?.Invoke(_dragSummaryTime, newSummaryTime);
+                _dragSummaryTime      = newSummaryTime;
+                _selectedSummaryTime  = newSummaryTime;
+                Redraw();
+                break;
         }
     }
 
@@ -469,8 +625,8 @@ internal partial class DopeSheetPanel : UserControl
     {
         if (_dragMode == DopeSheetDragMode.Playhead)
             PlayheadScrubEnded?.Invoke();
-        else if (_dragMode == DopeSheetDragMode.Key)
-            KeyDragEnded?.Invoke();
+        else if (_dragMode is DopeSheetDragMode.Key or DopeSheetDragMode.SummaryKey)
+            KeyDragEnded?.Invoke();   // Undo 履歴に 1 段積む処理は通常キー・サマリーキーで共通
 
         _dragMode = DopeSheetDragMode.None;
         DrawCanvas.ReleaseMouseCapture();
@@ -478,7 +634,25 @@ internal partial class DopeSheetPanel : UserControl
 
     private void OnCanvasMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        var p   = e.GetPosition(DrawCanvas);
+        var p = e.GetPosition(DrawCanvas);
+
+        if (IsInSummaryRow(p))
+        {
+            var summaryHit = HitTestSummaryKey(p);
+            if (summaryHit is not { } st) return;
+
+            SelectSummaryKey(st);
+            Redraw();
+
+            var summaryMenu = new ContextMenu { Background = new SolidColorBrush(AnimationTimelineConstants.ToolbarBackground) };
+            var summaryDeleteItem = new MenuItem { Header = "キーを削除（全トラック）", Foreground = new SolidColorBrush(AnimationTimelineConstants.TextColor) };
+            summaryDeleteItem.Click += (_, _) => SummaryKeyDeleteRequested?.Invoke(st);
+            summaryMenu.Items.Add(summaryDeleteItem);
+            summaryMenu.IsOpen = true;
+            e.Handled = true;
+            return;
+        }
+
         var hit = HitTestKey(p);
         if (hit is not { } h) return;
 

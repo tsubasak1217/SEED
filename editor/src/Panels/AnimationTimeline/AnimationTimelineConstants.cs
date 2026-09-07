@@ -93,6 +93,20 @@ internal static class AnimationTimelineConstants
     /// <summary>プレビュー再生タイマの間隔（ミリ秒）。約 60fps。</summary>
     public const int PreviewTickIntervalMs = 16;
 
+    // ── 現在値スナップショットの問い合わせ ─────────────────────
+
+    /// <summary>
+    /// キー挿入時にキー対象アクタの現在値スナップショットがまだ届いていない場合、
+    /// GET_ACTOR_COMPONENTS を送って応答を待つ最大時間（秒）。
+    /// 超過したら諦めて「取得できません」を表示する（ランタイム未接続等で無限待ちにしないため）。
+    /// </summary>
+    public const double SnapshotFetchTimeoutSeconds = 2.0;
+
+    // ── サマリー行（全チャンネル）──────────────────────────────
+
+    /// <summary>サマリー行のラベル文字列。トラックリスト先頭に常に表示する。</summary>
+    public const string SummaryRowLabel = "全チャンネル";
+
     // ── 配色（既存パネルのダークテーマに合わせる） ────────────────
 
     public static readonly Color BackgroundColor      = Color.FromRgb(0x1E, 0x1E, 0x1E);
@@ -114,4 +128,6 @@ internal static class AnimationTimelineConstants
     public static readonly Color KeyDiamondBorder        = Color.FromRgb(0x1E, 0x1E, 0x1E);
     public static readonly Color TextColor               = Color.FromRgb(0xCC, 0xCC, 0xCC);
     public static readonly Color SubTextColor            = Color.FromRgb(0x88, 0x88, 0x88);
+    /// <summary>サマリー行（全チャンネル）の背景。通常のトラック行と区別するため専用色にする。</summary>
+    public static readonly Color SummaryRowBackground    = Color.FromRgb(0x2E, 0x2A, 0x1A);
 }

@@ -40,6 +40,13 @@ public static class Program
         harness.Add("値の要素数は value_type に合わせられる",       ValuesAreFittedToValueType);
         harness.Add("直前キーの値を初期値として取れる",             PreviousValuesAreCloned);
 
+        // ── 2b. サマリー行（全チャンネル）──
+        harness.Add("サマリーはいずれかのトラックのキー時刻を集約する",   SummaryFramesUnionsAllTracks);
+        harness.Add("サマリー挿入は actor_path 一致トラックだけへ打つ",   InsertOnAllTracksFiltersByActorPath);
+        harness.Add("サマリー挿入は一致が無ければ全トラックへ打つ",       InsertOnAllTracksFallsBackToAllTracks);
+        harness.Add("サマリー移動は該当フレームのキーだけ動かす",         MoveKeysAtFrameMovesOnlyMatchingKeys);
+        harness.Add("サマリー削除は該当フレームのキーだけ消す",           DeleteKeysAtFrameDeletesOnlyMatchingKeys);
+
         // ── 3. 祖先探索 / actor_path ──
         harness.Add("祖先を遡って最も近い Animator を見つける",     FindsNearestAnimatorAncestor);
         harness.Add("Animator が無ければ null を返す",              NoAnimatorReturnsNull);
@@ -222,6 +229,93 @@ public static class Program
         var empty = AnimKeyEditor.PreviousOrDefaultValues(Vec3Track(), 0.5f);
         Check.Equal(3, empty.Length, "vec3 の要素数");
         Check.Equal(0f, empty[0], "0 埋め");
+    }
+
+    // ── 2b. サマリー行（全チャンネル）────────────────────────────
+
+    private static void SummaryFramesUnionsAllTracks()
+    {
+        const float fps = 30f;
+        var a = Vec3Track("Arm", "position");
+        var b = Vec3Track("Leg", "position");
+        AnimKeyEditor.InsertOrUpdate(a, AnimFrameMath.FrameToTime(0, fps), new[] { 1f, 1f, 1f }, fps);
+        AnimKeyEditor.InsertOrUpdate(a, AnimFrameMath.FrameToTime(10, fps), new[] { 2f, 2f, 2f }, fps);
+        AnimKeyEditor.InsertOrUpdate(b, AnimFrameMath.FrameToTime(5, fps), new[] { 3f, 3f, 3f }, fps);
+        // Arm の frame 10 と重複させて、和集合が重複を除去することも確認する
+        AnimKeyEditor.InsertOrUpdate(b, AnimFrameMath.FrameToTime(10, fps), new[] { 4f, 4f, 4f }, fps);
+
+        var frames = AnimKeyEditor.SummaryFrames(new[] { a, b });
+        Check.Equal(3, frames.Count, "0 / 5 / 10 の 3 フレーム分（10 は重複除去済み）");
+        Check.Equal(0,  AnimFrameMath.TimeToFrame(frames[0], fps), "昇順の先頭は frame 0");
+        Check.Equal(5,  AnimFrameMath.TimeToFrame(frames[1], fps), "次は frame 5");
+        Check.Equal(10, AnimFrameMath.TimeToFrame(frames[2], fps), "最後は frame 10");
+    }
+
+    private static void InsertOnAllTracksFiltersByActorPath()
+    {
+        const float fps = 30f;
+        var armTrack  = Vec3Track("Arm", "position");
+        var legTrack  = Vec3Track("Leg", "position");
+        var tracks    = new List<AnimTrack> { armTrack, legTrack };
+        var time      = AnimFrameMath.FrameToTime(3, fps);
+
+        AnimKeyEditor.InsertOnAllTracks(tracks, "Arm", time, _ => new[] { 9f, 9f, 9f }, fps);
+
+        Check.Equal(1, armTrack.Keys.Count, "actor_path が一致する Arm だけに挿入される");
+        Check.Equal(0, legTrack.Keys.Count, "一致しない Leg には挿入されない");
+    }
+
+    private static void InsertOnAllTracksFallsBackToAllTracks()
+    {
+        const float fps = 30f;
+        var armTrack = Vec3Track("Arm", "position");
+        var legTrack = Vec3Track("Leg", "position");
+        var tracks   = new List<AnimTrack> { armTrack, legTrack };
+        var time     = AnimFrameMath.FrameToTime(1, fps);
+
+        // "Head" に一致するトラックが 1 本も無い → 全トラックへフォールバックする
+        var results = AnimKeyEditor.InsertOnAllTracks(tracks, "Head", time, _ => new[] { 1f, 1f, 1f }, fps);
+
+        Check.Equal(2, results.Count, "一致が無いので全トラックへ挿入される");
+        Check.Equal(1, armTrack.Keys.Count, "Arm にも挿入される");
+        Check.Equal(1, legTrack.Keys.Count, "Leg にも挿入される");
+    }
+
+    private static void MoveKeysAtFrameMovesOnlyMatchingKeys()
+    {
+        const float fps = 30f;
+        var a = Vec3Track("Arm");
+        var b = Vec3Track("Leg");
+        var oldTime = AnimFrameMath.FrameToTime(4, fps);
+        var newTime = AnimFrameMath.FrameToTime(8, fps);
+        AnimKeyEditor.InsertOrUpdate(a, oldTime, new[] { 1f, 0f, 0f }, fps);
+        AnimKeyEditor.InsertOrUpdate(b, AnimFrameMath.FrameToTime(4, fps), new[] { 2f, 0f, 0f }, fps);
+        // b には frame 4 と別に frame 20 のキーもある（動かないことを確認する対照）
+        AnimKeyEditor.InsertOrUpdate(b, AnimFrameMath.FrameToTime(20, fps), new[] { 3f, 0f, 0f }, fps);
+
+        AnimKeyEditor.MoveKeysAtFrame(new[] { a, b }, oldTime, newTime, fps);
+
+        Check.Equal(8, AnimFrameMath.TimeToFrame(a.Keys[0].Time, fps), "Arm の frame 4 キーが frame 8 へ動く");
+        Check.Equal(2, b.Keys.Count, "Leg のキー本数は変わらない");
+        Check.True(b.Keys.Any(k => AnimFrameMath.TimeToFrame(k.Time, fps) == 8), "Leg の frame 4 キーも frame 8 へ動く");
+        Check.True(b.Keys.Any(k => AnimFrameMath.TimeToFrame(k.Time, fps) == 20), "Leg の frame 20 キーは動かない");
+    }
+
+    private static void DeleteKeysAtFrameDeletesOnlyMatchingKeys()
+    {
+        const float fps = 30f;
+        var a = Vec3Track("Arm");
+        var b = Vec3Track("Leg");
+        var target = AnimFrameMath.FrameToTime(6, fps);
+        AnimKeyEditor.InsertOrUpdate(a, target, new[] { 1f, 0f, 0f }, fps);
+        AnimKeyEditor.InsertOrUpdate(b, target, new[] { 2f, 0f, 0f }, fps);
+        AnimKeyEditor.InsertOrUpdate(b, AnimFrameMath.FrameToTime(12, fps), new[] { 3f, 0f, 0f }, fps);
+
+        AnimKeyEditor.DeleteKeysAtFrame(new[] { a, b }, target, fps);
+
+        Check.Equal(0, a.Keys.Count, "Arm の frame 6 キーが消える");
+        Check.Equal(1, b.Keys.Count, "Leg は frame 6 だけ消えて frame 12 は残る");
+        Check.Equal(12, AnimFrameMath.TimeToFrame(b.Keys[0].Time, fps), "残ったのは frame 12");
     }
 
     // ── 3. 祖先探索 / actor_path ────────────────────────────────

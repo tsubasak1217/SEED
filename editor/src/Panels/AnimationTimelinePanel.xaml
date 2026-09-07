@@ -161,9 +161,14 @@
                                  ToolTip="対象アクターへの相対パス（空 = 自分自身）"/>
                     </StackPanel>
                 </Border>
+                <!--
+                    HorizontalContentAlignment="Stretch": 各行（DockPanel。トラック行は
+                    削除ボタンを右端固定で持つ）をリスト幅いっぱいへ広げるため。
+                    既定（Left）のままだと行が内容幅に縮み、削除ボタンが右端に来ない。
+                -->
                 <ListBox x:Name="LstTracks"
                          Background="#232323" BorderThickness="0" Foreground="#CCCCCC"
-                         FontSize="11"
+                         FontSize="11" HorizontalContentAlignment="Stretch"
                          SelectionChanged="OnTrackListSelectionChanged"
                          KeyDown="OnTrackListKeyDown"/>
             </DockPanel>

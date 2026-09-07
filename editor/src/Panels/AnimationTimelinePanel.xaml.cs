@@ -112,8 +112,27 @@ public partial class AnimationTimelinePanel : UserControl
     /// <summary>キー対象アクタの現在値スナップショット（キー挿入で使う）。</summary>
     private AnimActorSnapshot _keyTargetSnapshot = AnimActorSnapshot.Parse("");
 
+    /// <summary>
+    /// アクター仮想ノード ID の下限。RuntimeManager.SelectionChanged が渡す id は
+    /// Rust 側 send_selected() が単一選択時に付ける「999_000_000 + DFS ID」の仮想 ID であり、
+    /// 生の DFS ID ではない（HierarchyPanel / InspectorPanel と同じ規約。値は両者と合わせること）。
+    /// 本パネルは複数選択（SelectionMultiChanged）は購読していない＝従来通り単一選択のみ追従する。
+    /// </summary>
+    private const int VirtualActorNodeIdBase = 999_000_000;
+
     /// <summary>🔒 で文脈を固定中か。true の間はアクタ選択の変化を無視する。</summary>
     private bool _contextLocked;
+
+    // ── 現在値スナップショットの問い合わせ（未到着時に GET_ACTOR_COMPONENTS で取りに行く）──
+
+    /// <summary>問い合わせ中のキー対象 DFS ID（-1 = 問い合わせ中でない）。</summary>
+    private int _pendingSnapshotDfsId = -1;
+
+    /// <summary>スナップショットが届いたら再実行する処理（キー挿入・上書きの呼び出し自身）。</summary>
+    private Action? _pendingSnapshotCallback;
+
+    /// <summary>問い合わせのタイムアウト監視タイマ。</summary>
+    private DispatcherTimer? _pendingSnapshotTimer;
 
     /// <summary>祖先 Animator 探索の対象チェーン（[自分, 親, …, ルート]）。探索していないときは null。</summary>
     private List<int>? _probeChain;
@@ -148,6 +167,11 @@ public partial class AnimationTimelinePanel : UserControl
         DopeSheet.KeySelectionChanged  += OnDopeSheetKeySelectionChanged;
         DopeSheet.PlayheadScrubbed     += OnPlayheadScrubbed;
         DopeSheet.PlayheadScrubEnded   += OnPlayheadScrubEnded;
+        // サマリー行（「全チャンネル」）: 対象トラック全部への一括挿入・移動・削除
+        DopeSheet.SummaryKeyAddRequested      += OnDopeSheetSummaryKeyAddRequested;
+        DopeSheet.SummaryKeyMoved             += OnDopeSheetSummaryKeyMoved;
+        DopeSheet.SummaryKeyDeleteRequested   += OnDopeSheetSummaryKeyDeleteRequested;
+        DopeSheet.SummaryKeySelectionChanged  += OnDopeSheetSummaryKeySelectionChanged;
 
         // プレビュー再生タイマ（約 60fps）。Play 中のみ Tick で時間を進める。
         _previewTimer = new DispatcherTimer(DispatcherPriority.Render)
@@ -157,9 +181,14 @@ public partial class AnimationTimelinePanel : UserControl
         _previewTimer.Tick += OnPreviewTick;
 
         // パネルが非表示になったら必ずプレビューを止めて元値を復元する。
+        // 保留中のスナップショット問い合わせも破棄する（非表示中に応答が来ても意味が無いため）。
         IsVisibleChanged += (_, e) =>
         {
-            if (e.NewValue is false) StopPreview();
+            if (e.NewValue is false)
+            {
+                StopPreview();
+                ClearPendingSnapshotRequest();
+            }
         };
 
         // Delete キーでのキー削除（OnKeyDown）を受けるため、パネル内クリックでキーボードフォーカスを取得する。
@@ -267,10 +296,17 @@ public partial class AnimationTimelinePanel : UserControl
             // 選択が外れた／別アクターへ移った → 進行中のプレビューを止めて元値へ復元する
             StopPreview();
 
-            _selectedActorDfsId = id;
-            _probeChain         = null;   // 前回の祖先探索は破棄する
+            // RuntimeManager から届く id は仮想 ID（999_000_000 + DFS ID）のことがある
+            // （Rust 側 send_selected() が単一選択時に必ずこの形で送る）。
+            // 正規化せずに DFS ID として使うと、後続の ACTOR_COMPONENTS（id は生の DFS ID）と
+            // 一切一致しなくなり、キー対象の現在値スナップショットが更新されなくなる。
+            var dfsId = id >= VirtualActorNodeIdBase ? id - VirtualActorNodeIdBase : id;
 
-            if (id < 0)
+            _selectedActorDfsId = dfsId;
+            _probeChain         = null;   // 前回の祖先探索は破棄する
+            ClearPendingSnapshotRequest(); // 選択が変わったので前回の問い合わせは無効
+
+            if (dfsId < 0)
             {
                 _actorDfsId     = -1;
                 _keyTargetDfsId = -1;
@@ -312,6 +348,14 @@ public partial class AnimationTimelinePanel : UserControl
                     _keyTargetDfsId     = dfsId;
                     // 現在値スナップショット（キー挿入で使う）はキー対象アクタのものだけ保持する
                     _keyTargetSnapshot  = AnimActorSnapshot.Parse(json);
+
+                    // キー挿入・上書きが「現在値がまだ無い」ために保留していた処理があれば、
+                    // ここで届いたスナップショットを使って再実行する。
+                    if (_pendingSnapshotDfsId == dfsId && _pendingSnapshotCallback is { } pendingRetry)
+                    {
+                        ClearPendingSnapshotRequest();
+                        pendingRetry();
+                    }
 
                     if (animator is not null)
                     {
@@ -815,20 +859,41 @@ public partial class AnimationTimelinePanel : UserControl
         CommitEdit(refreshTracks: true);
     }
 
+    /// <summary>
+    /// トラックリストの Delete キー。ListBox 自身の KeyDown（バブルの最初の受け手）で
+    /// 拾えなかった場合の保険として <see cref="HandleTimelineKey"/> からも同じ
+    /// <see cref="DeleteTrackAt"/> を呼べるようにしてある（実体は共通・二重削除の心配はない。
+    /// ここで e.Handled=true にすれば HandleTimelineKey 側の Delete 処理は走らない）。
+    /// </summary>
     private void OnTrackListKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Delete) return;
-        if (_clip is null || _selectedTrackIndex < 0 || _selectedTrackIndex >= _clip.Tracks.Count) return;
-        _clip.Tracks.RemoveAt(_selectedTrackIndex);
-        _selectedTrackIndex = -1;
-        DopeSheet.SetSelectedTrackIndex(-1);
-        CommitEdit(refreshTracks: true);
+        if (_selectedTrackIndex < 0) return; // サマリー行・未選択は削除対象なし
+        DeleteTrackAt(_selectedTrackIndex);
         e.Handled = true;
     }
 
+    /// <summary>
+    /// 指定インデックスのトラックを削除する（Delete キー・行の削除ボタン・右クリックメニュー共通）。
+    /// 削除後は選択を解除し、Undo 履歴に積む。
+    /// </summary>
+    private void DeleteTrackAt(int trackIndex)
+    {
+        if (_clip is null || trackIndex < 0 || trackIndex >= _clip.Tracks.Count) return;
+        _clip.Tracks.RemoveAt(trackIndex);
+        _selectedTrackIndex = -1;
+        DopeSheet.SetSelectedTrackIndex(-1);
+        CommitEdit(refreshTracks: true);
+    }
+
+    /// <summary>
+    /// トラックリストの選択変更。先頭は常に「全チャンネル」サマリー行（リスト添字 0）なので、
+    /// _selectedTrackIndex（トラック配列内の添字）は 1 引いた値になる。
+    /// サマリー行・未選択はどちらも -1 として扱う（キー挿入の「全トラック対象」と同義にするため）。
+    /// </summary>
     private void OnTrackListSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        _selectedTrackIndex = LstTracks.SelectedIndex;
+        _selectedTrackIndex = LstTracks.SelectedIndex - 1;
         DopeSheet.SetSelectedTrackIndex(_selectedTrackIndex);
     }
 
@@ -845,15 +910,79 @@ public partial class AnimationTimelinePanel : UserControl
         return $"{mark}{actor} : {t.Target.Component}.{t.Target.Property}  [{t.ValueType}]";
     }
 
+    /// <summary>
+    /// サマリー行（「全チャンネル」）の行 UI を作る。削除不可・常に先頭（リスト添字 0）。
+    /// </summary>
+    private static UIElement BuildSummaryRowElement() => new TextBlock
+    {
+        Text       = AnimationTimelineConstants.SummaryRowLabel,
+        FontWeight = FontWeights.Bold,
+        FontSize   = 11,
+        Foreground = new SolidColorBrush(AnimationTimelineConstants.PlayheadColor),
+        Padding    = new Thickness(4, 3, 4, 3),
+        ToolTip    = "いずれかのトラックにキーがあるフレームを表示する集計行。\n" +
+                     "選択中はキー挿入・削除・移動が対象トラック全部へ一括適用される。",
+    };
+
+    /// <summary>
+    /// 1 トラック行の UI（ラベル + 削除ボタン）を作る。右クリックメニューからも削除できる。
+    /// index はビルド時点でのトラック配列の添字を closure で捕まえる（行 UI は毎回作り直すため、
+    /// リストの増減があってもズレない）。
+    /// </summary>
+    private UIElement BuildTrackRowElement(AnimTrack track, int index)
+    {
+        var row = new DockPanel { LastChildFill = true };
+
+        var deleteButton = new Button
+        {
+            Width = 16, Height = 16, Padding = new Thickness(0),
+            Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            Cursor = System.Windows.Input.Cursors.Hand, ToolTip = "このトラックを削除",
+            Content = new SEEDEditor.Controls.AppIcon { IconKey = "Icon.Delete", Width = 10, Height = 10 },
+        };
+        deleteButton.Click += (_, _) => DeleteTrackAt(index);
+        DockPanel.SetDock(deleteButton, Dock.Right);
+        row.Children.Add(deleteButton);
+
+        var label = new TextBlock
+        {
+            Text = DescribeTrack(track), FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        row.Children.Add(label);
+
+        var menu = new ContextMenu { Background = new SolidColorBrush(AnimationTimelineConstants.ToolbarBackground) };
+        var deleteItem = new MenuItem
+        {
+            Header     = "トラックを削除",
+            Foreground = new SolidColorBrush(AnimationTimelineConstants.TextColor),
+        };
+        deleteItem.Click += (_, _) => DeleteTrackAt(index);
+        menu.Items.Add(deleteItem);
+        row.ContextMenu = menu;
+
+        return row;
+    }
+
     private void RefreshTrackList()
     {
         LstTracks.SelectionChanged -= OnTrackListSelectionChanged;
         LstTracks.Items.Clear();
+
         if (_clip is not null)
-            foreach (var t in _clip.Tracks)
-                LstTracks.Items.Add(DescribeTrack(t));
-        if (_selectedTrackIndex >= 0 && _selectedTrackIndex < LstTracks.Items.Count)
-            LstTracks.SelectedIndex = _selectedTrackIndex;
+        {
+            // サマリー行（「全チャンネル」）は常に先頭・削除不可。クリップが無いときは
+            // トラックリスト自体を空のままにする（従来通り、空状態表示に委ねる）。
+            LstTracks.Items.Add(BuildSummaryRowElement());
+            for (int i = 0; i < _clip.Tracks.Count; i++)
+                LstTracks.Items.Add(BuildTrackRowElement(_clip.Tracks[i], i));
+
+            // リスト添字 = トラック添字 + 1（サマリー行の分）。_selectedTrackIndex < 0 はサマリー行選択。
+            var listIndex = _selectedTrackIndex < 0 ? 0 : _selectedTrackIndex + 1;
+            if (listIndex < LstTracks.Items.Count) LstTracks.SelectedIndex = listIndex;
+        }
+
         LstTracks.SelectionChanged += OnTrackListSelectionChanged;
     }
 
@@ -904,6 +1033,48 @@ public partial class AnimationTimelinePanel : UserControl
 
     private void OnDopeSheetKeySelectionChanged(int trackIndex, int keyIndex) => RefreshValueEditor(trackIndex, keyIndex);
 
+    // ── ドープシートからのサマリー行イベント（「全チャンネル」）────
+    //
+    // ロジック本体は AnimKeyEditor の純粋関数（InsertOnAllTracks / MoveKeysAtFrame /
+    // DeleteKeysAtFrame）に委ね、ここでは「対象トラック列 = _clip.Tracks」と
+    // 「値の出所 = 現在値スナップショット」を渡す接着だけを行う。
+
+    /// <summary>サマリー行のダブルクリック: キー対象アクタに一致する全トラックへ一括挿入する。</summary>
+    private void OnDopeSheetSummaryKeyAddRequested(float time)
+    {
+        if (_clip is null) return;
+        if (!EnsureKeyTargetSnapshot(() => OnDopeSheetSummaryKeyAddRequested(time))) return;
+
+        AnimKeyEditor.InsertOnAllTracks(
+            _clip.Tracks, _keyTargetActorPath, time,
+            track => CurrentValuesForTrack(track) ?? AnimKeyEditor.PreviousOrDefaultValues(track, time),
+            ClipFps);
+        CommitEdit();
+    }
+
+    /// <summary>
+    /// サマリー◆ドラッグ中の時刻変更。DopeSheetPanel 側で既に全トラックへ適用済みなので、
+    /// ここではダーティ化・値エディタ・ライブプレビューだけを行う（Undo は KeyDragEnded で積む）。
+    /// </summary>
+    private void OnDopeSheetSummaryKeyMoved(float oldTime, float newTime)
+    {
+        if (_clip is null) return;
+        MarkDirty();
+        ClearValueEditor();   // サマリーキーは単一トラックの値ではないため値エディタは表示しない
+        PushClipToRuntimeAndPreview();
+    }
+
+    /// <summary>サマリー◆右クリックメニュー: そのフレームのキーを全トラックから削除する。</summary>
+    private void OnDopeSheetSummaryKeyDeleteRequested(float time)
+    {
+        if (_clip is null) return;
+        AnimKeyEditor.DeleteKeysAtFrame(_clip.Tracks, time, ClipFps);
+        CommitEdit();
+        ClearValueEditor();
+    }
+
+    private void OnDopeSheetSummaryKeySelectionChanged(float? time) => ClearValueEditor();
+
     // ── キーボード操作 ──────────────────────────────────────────
 
     /// <summary>
@@ -953,10 +1124,23 @@ public partial class AnimationTimelinePanel : UserControl
         {
             case Key.Delete:
             {
+                // 1) 通常キーが選択中ならそのキーを削除
                 var (ti, ki) = DopeSheet.SelectedKey;
-                if (ti < 0 || ki < 0) return false;
-                OnDopeSheetKeyDeleteRequested(ti, ki);
-                return true;
+                if (ti >= 0 && ki >= 0) { OnDopeSheetKeyDeleteRequested(ti, ki); return true; }
+
+                // 2) サマリー行のキーが選択中なら全トラックから削除
+                if (DopeSheet.SelectedSummaryTime is { } summaryTime)
+                {
+                    OnDopeSheetSummaryKeyDeleteRequested(summaryTime);
+                    return true;
+                }
+
+                // 3) トラックリストでトラックそのものが選択中ならトラックを削除
+                //    （ListBox 自身の KeyDown で先に処理されるのが通常経路。
+                //     フォーカスの都合でここまで来た場合の保険として同じ処理を呼ぶ）
+                if (_selectedTrackIndex >= 0) { DeleteTrackAt(_selectedTrackIndex); return true; }
+
+                return false;
             }
             case Key.Left:  StepFrame(-step); return true;
             case Key.Right: StepFrame(+step); return true;
@@ -1037,50 +1221,116 @@ public partial class AnimationTimelinePanel : UserControl
     ///
     /// 対象トラックの決め方:
     ///  1. トラックリストで 1 本選択中なら、そのトラックだけ。
-    ///  2. 未選択なら、キー対象アクタ（actor_path 一致）かつ現在値が取れるトラック全部。
-    ///  3. どれも無ければトラック生成を提案する（<see cref="OfferCreateTracks"/>）。
+    ///  2. 未選択（＝サマリー行「全チャンネル」選択時と同義）なら、
+    ///     キー対象アクタ（actor_path 一致）のトラック全部へ挿入する
+    ///     （<see cref="AnimKeyEditor.InsertOnAllTracks"/> に委譲。1 本も一致しなければ全トラックへ挿入する）。
+    ///  3. クリップにトラックが 1 本も無ければトラック生成を提案する（<see cref="OfferCreateTracks"/>）。
     ///
     /// 同じフレームに既存キーがあれば値を上書きする（AnimKeyEditor が保証）。
+    /// キー対象アクタの現在値スナップショットがまだ届いていない場合は、
+    /// <see cref="EnsureKeyTargetSnapshot"/> が GET_ACTOR_COMPONENTS で取りに行き、
+    /// 届いた時点でこのメソッド自身を再実行する（今回の呼び出しはここで中断する）。
     /// </summary>
     private void InsertKeyAtPlayhead()
     {
         if (_clip is null) return;
+        if (!EnsureKeyTargetSnapshot(InsertKeyAtPlayhead)) return;
 
         var fps  = ClipFps;
         var time = AnimFrameMath.ClampAndSnapTime(_previewTime, fps, _clip.Duration);
 
-        var targets = new List<AnimTrack>();
+        // 1) トラックリストで 1 本だけ選択中 → そのトラックだけに打つ
         if (_selectedTrackIndex >= 0 && _selectedTrackIndex < _clip.Tracks.Count)
         {
-            targets.Add(_clip.Tracks[_selectedTrackIndex]);
-        }
-        else
-        {
-            targets.AddRange(_clip.Tracks.Where(t =>
-                t.Target.ActorPath == _keyTargetActorPath &&
-                _keyTargetSnapshot.Has(t.Target.Component, t.Target.Property)));
-        }
-
-        if (targets.Count == 0)
-        {
-            targets = OfferCreateTracks();
-            if (targets.Count == 0) return;
-        }
-
-        foreach (var track in targets)
-        {
-            var values = CurrentValuesForTrack(track)
-                      ?? AnimKeyEditor.PreviousOrDefaultValues(track, time);
+            var track  = _clip.Tracks[_selectedTrackIndex];
+            var values = CurrentValuesForTrack(track) ?? AnimKeyEditor.PreviousOrDefaultValues(track, time);
             AnimKeyEditor.InsertOrUpdate(track, time, values, fps);
+            CommitEdit(refreshTracks: true);
+            return;
         }
 
+        // 2) クリップにトラックが 1 本も無い → 作成を提案する（実アクタが初めて動く場合）
+        if (_clip.Tracks.Count == 0)
+        {
+            var created = OfferCreateTracks();
+            if (created.Count == 0) return;
+            foreach (var track in created)
+            {
+                var values = CurrentValuesForTrack(track) ?? AnimKeyEditor.PreviousOrDefaultValues(track, time);
+                AnimKeyEditor.InsertOrUpdate(track, time, values, fps);
+            }
+            CommitEdit(refreshTracks: true);
+            return;
+        }
+
+        // 3) 未選択（サマリー行と同義）→ キー対象アクタに一致する全トラックへ（無ければ全トラックへ）
+        AnimKeyEditor.InsertOnAllTracks(
+            _clip.Tracks, _keyTargetActorPath, time,
+            track => CurrentValuesForTrack(track) ?? AnimKeyEditor.PreviousOrDefaultValues(track, time),
+            fps);
         CommitEdit(refreshTracks: true);
+    }
+
+    /// <summary>
+    /// キー対象アクタの現在値スナップショットが使える状態か確認する。
+    ///
+    /// 【なぜ要るか】
+    /// 選択直後などスナップショットがまだ届いていないタイミングで I / U を押すと、
+    /// 従来は「取れない現在値」を黙って直前キーの値へフォールバックしてしまい、
+    /// 見た目上キーは増えるのに値が反映されない（キー挿入で値が書き込まれない）不具合の
+    /// 一因になっていた。ここで明示的に GET_ACTOR_COMPONENTS を送って応答を待ち、
+    /// 届いてから呼び出し元をもう一度実行することで、必ず本物の現在値でキーを打つ。
+    /// </summary>
+    /// <param name="retry">スナップショットが届いた後にもう一度実行する処理（呼び出し元自身）。</param>
+    /// <returns>
+    /// スナップショットが既に対象アクタのものであれば true（そのまま処理を続けてよい）。
+    /// false のときは今回の呼び出しを中断済み。<paramref name="retry"/> は応答到着時または
+    /// タイムアウト時に破棄される（タイムアウト時は再実行されない。TbTitleStatus に理由を出す）。
+    /// </returns>
+    private bool EnsureKeyTargetSnapshot(Action retry)
+    {
+        if (_keyTargetDfsId < 0) return true; // 文脈なし。既存のエラー表示に処理を委ねる
+        if (_keyTargetSnapshot.ActorDfsId == _keyTargetDfsId && !_keyTargetSnapshot.IsEmpty)
+            return true; // 既に対象アクタの現在値が揃っている
+
+        _pendingSnapshotDfsId    = _keyTargetDfsId;
+        _pendingSnapshotCallback = retry;
+        _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_keyTargetDfsId}");
+        StartPendingSnapshotTimeout();
+        TbTitleStatus.Text = "現在値を取得中…";
+        return false;
+    }
+
+    /// <summary>スナップショット問い合わせのタイムアウト監視を（作り直して）開始する。</summary>
+    private void StartPendingSnapshotTimeout()
+    {
+        _pendingSnapshotTimer?.Stop();
+        _pendingSnapshotTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(AnimationTimelineConstants.SnapshotFetchTimeoutSeconds),
+        };
+        _pendingSnapshotTimer.Tick += (_, _) =>
+        {
+            ClearPendingSnapshotRequest();
+            TbTitleStatus.Text = "現在値の取得がタイムアウトしました（対象アクタを選択し直してください）";
+        };
+        _pendingSnapshotTimer.Start();
+    }
+
+    /// <summary>保留中のスナップショット問い合わせを破棄する（応答到着・タイムアウト・選択変更時に呼ぶ）。</summary>
+    private void ClearPendingSnapshotRequest()
+    {
+        _pendingSnapshotTimer?.Stop();
+        _pendingSnapshotTimer    = null;
+        _pendingSnapshotCallback = null;
+        _pendingSnapshotDfsId    = -1;
     }
 
     /// <summary>ドープシートで選択中のキーを、選択アクタの現在値で上書きする（U）。</summary>
     private void OverwriteSelectedKey()
     {
         if (_clip is null) return;
+        if (!EnsureKeyTargetSnapshot(OverwriteSelectedKey)) return;
         var (ti, ki) = DopeSheet.SelectedKey;
         if (ti < 0 || ti >= _clip.Tracks.Count) return;
 
