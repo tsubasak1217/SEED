@@ -73,6 +73,8 @@ pub mod caustics;
 pub mod interaction;
 /// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
 pub(crate) mod screenshot;
+/// テクスチャ画素の CPU 前処理（アルファブリード等）。GPU アップロード前に掛ける。
+pub mod texture;
 /// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
 pub(crate) mod terrain_layer_textures;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）

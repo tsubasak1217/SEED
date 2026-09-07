@@ -1339,13 +1339,18 @@ fn load_particle_textures(
         } else {
             crate::engine::asset_fs::read_image(p)
         };
-        if img.dimensions() == (w, h) {
-            data.extend_from_slice(img.as_raw());
+        // レイヤ 1 枚ぶんの RGBA を基準サイズで取り出す。
+        let mut layer: Vec<u8> = if img.dimensions() == (w, h) {
+            img.into_raw()
         } else {
-            let resized =
-                image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
-            data.extend_from_slice(resized.as_raw());
-        }
+            image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle).into_raw()
+        };
+        // アルファブリード（白フチ対策）: パーティクルもリニアフィルタ＋アルファ合成なので
+        // 完全透明テクセルの RGB が境界に滲む。レイヤ単位で掛ける（層をまたいで混ぜない）。
+        crate::engine::core::renderer::texture::alpha_bleed::bleed_alpha_edges_default(
+            w, h, &mut layer,
+        );
+        data.extend_from_slice(&layer);
     }
 
     // texture_2d_array を確保して全レイヤを一括アップロードする。

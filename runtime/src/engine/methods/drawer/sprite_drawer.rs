@@ -103,6 +103,15 @@ pub fn load_sprite_texture(
     let rgba = crate::engine::asset_fs::read_image(path);
     let (w, h) = rgba.dimensions();
 
+    // ── アルファブリード（白フチ対策） ─────────────────────────
+    // スプライトは Linear フィルタ＋ストレートアルファ合成で描かれるため、
+    // 完全透明テクセルの RGB（PNG では白のことが多い）が境界で混ざり、
+    // 輪郭に白い線が出る。GPU へ送る前に透明テクセルの色を隣接不透明色で
+    // 埋めておくことで、ブレンド設定やシェーダに触れずに根本解決する。
+    // アルファは変化しないので抜きの形は一切変わらない。
+    let mut rgba = rgba.into_raw();
+    crate::engine::core::renderer::texture::alpha_bleed::bleed_alpha_edges_default(w, h, &mut rgba);
+
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("SpriteTexture"),
         size: wgpu::Extent3d {
