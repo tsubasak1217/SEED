@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  SeedMcpServer — SEED エディタ MCP (Model Context Protocol) サーバー
 //
 //  Claude Code / Gemini CLI にエディタ操作をネイティブツールとして公開する。
@@ -9,8 +9,11 @@
 //   ■ シーン編集（従来）
 //     seed_query(type, dir?)         → GET シーン情報またはアセット一覧
 //     seed_batch(operations: [...])  → POST 操作を一括実行（一括変更の手段）
+//   ■ ヘッドレス運用（エディタの起動・終了）
+//     seed_launch(headless?, scene?, wait_seconds?) → エディタを（既定で）画面に出さずに起動
+//     seed_shutdown()                → エディタを正常終了
 //   ■ 目視確認・アニメ編集（追加）
-//     seed_screenshot(target, path?) → 画面キャプチャを画像として返す
+//     seed_screenshot(target, method?, path?) → キャプチャを画像として返す（既定は GPU 読み戻し）
 //     seed_state()                   → エディタ状態（Edit/Play/Pause・シーン・選択）
 //     seed_hierarchy()               → ヒエラルキーツリー
 //     seed_select(actor_dfs_id|name) → アクター選択＋コンポーネント情報
@@ -52,6 +55,12 @@ const int HTTP_TIMEOUT_SECONDS = 120;
 
 /// <summary>MCP の image コンテンツとして返せる PNG の上限バイト数。超過時はパスのみ返す。</summary>
 const int MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/// <summary>seed_screenshot の method: ランタイムの GPU 読み戻し（既定）。</summary>
+const string SCREENSHOT_METHOD_GPU = "gpu";
+
+/// <summary>seed_screenshot の method: 画面 DC からの BitBlt（従来方式）。</summary>
+const string SCREENSHOT_METHOD_SCREEN = "screen";
 
 var http = new HttpClient { Timeout = TimeSpan.FromSeconds(HTTP_TIMEOUT_SECONDS) };
 
@@ -130,6 +139,10 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
 
         var result = name switch
         {
+            // ヘッドレス運用: エディタの起動・終了
+            "seed_launch"            => await HandleLaunchAsync(args),
+            "seed_shutdown"          => await PostCmdAsync(http, "shutdown",          args),
+
             "seed_query"             => await ExecQueryAsync(args, http),
             "seed_batch"             => await ExecBatchAsync(args, http),
 
@@ -283,7 +296,20 @@ static async Task<string> ExecBatchAsync(JsonElement args, HttpClient http)
 /// </summary>
 static async Task<string> HandleScreenshotAsync(JsonElement id, JsonElement args, HttpClient http)
 {
-    var raw = await PostCmdAsync(http, "screenshot", args);
+    // method="gpu"（既定）: ランタイムの GPU 読み戻し。ウィンドウが隠れていても撮れる。
+    // method="screen"    : 従来の画面 DC BitBlt。エディタ UI 全体（target="editor"）はこちらのみ。
+    var method = args.ValueKind == JsonValueKind.Object
+              && args.TryGetProperty("method", out var mEl) ? mEl.GetString() : null;
+    method ??= SCREENSHOT_METHOD_GPU;
+
+    // target="editor" は GPU 読み戻しでは撮れない（ランタイムの提示画像しか持っていない）ため、
+    // 黙って失敗させず画面キャプチャへフォールバックする。
+    var target = args.ValueKind == JsonValueKind.Object
+              && args.TryGetProperty("target", out var tEl) ? tEl.GetString() : null;
+    if (target == "editor") method = SCREENSHOT_METHOD_SCREEN;
+
+    var cmd = method == SCREENSHOT_METHOD_SCREEN ? "screenshot" : "screenshot_gpu";
+    var raw = await PostCmdAsync(http, cmd, args);
 
     // エディタ側は {"ok":true,"path":...} 形式の JSON を返す。
     // 到達できない・失敗した場合はテキストのみ返してエラーとする。
@@ -338,6 +364,32 @@ static async Task<string> HandleScreenshotAsync(JsonElement id, JsonElement args
 }
 
 /// <summary>
+/// seed_launch: SEED エディタを（既定でヘッドレスに）起動し、AI ブリッジが応答するまで待つ。
+/// すでに起動していれば何もせず現在の状態を返す。
+/// </summary>
+static async Task<string> HandleLaunchAsync(JsonElement args)
+{
+    var headless = true;
+    string? scene = null;
+    var waitSeconds = SeedMcpServer.Launcher.DEFAULT_WAIT_SECONDS;
+
+    if (args.ValueKind == JsonValueKind.Object)
+    {
+        if (args.TryGetProperty("headless", out var hEl)
+            && (hEl.ValueKind == JsonValueKind.True || hEl.ValueKind == JsonValueKind.False))
+            headless = hEl.GetBoolean();
+
+        if (args.TryGetProperty("scene", out var sEl) && sEl.ValueKind == JsonValueKind.String)
+            scene = sEl.GetString();
+
+        if (args.TryGetProperty("wait_seconds", out var wEl) && wEl.ValueKind == JsonValueKind.Number)
+            waitSeconds = wEl.GetDouble();
+    }
+
+    return await SeedMcpServer.Launcher.LaunchAsync(API_BASE, headless, scene, waitSeconds);
+}
+
+/// <summary>
 /// エディタの POST /seed-ai/cmd を 1 回叩く。
 /// MCP ツールの引数オブジェクトへ "cmd" フィールドを足したものをそのまま本文にする。
 /// </summary>
@@ -353,7 +405,9 @@ static async Task<string> PostCmdAsync(HttpClient http, string cmd, JsonElement 
     catch (Exception ex)
     {
         return $"ERROR: SEED エディタへ接続できません（{API_BASE}）。"
-             + $"エディタが起動しているか確認してください。詳細: {ex.Message}";
+             + "エディタが起動していません。seed_launch を呼んで起動してください"
+             + "（自動起動はしません）。"
+             + $"詳細: {ex.Message}";
     }
 }
 
@@ -445,6 +499,8 @@ static string InjectActorDfsId(JsonElement op, int dfsId)
 /// <summary>MCP tools/list レスポンス用のツール定義配列を返す。</summary>
 static object[] BuildToolList() => new[]
 {
+    SeedLaunchTool(),
+    SeedShutdownTool(),
     SeedQueryTool(),
     SeedBatchTool(),
     SeedStateTool(),
@@ -462,6 +518,49 @@ static object[] BuildToolList() => new[]
 
 /// <summary>引数を取らないツールの共通スキーマ。</summary>
 static object EmptySchema() => new { type = "object", properties = new { } };
+
+static object SeedLaunchTool() => new
+{
+    name        = "seed_launch",
+    description =
+        "SEED エディタを起動する（既定はヘッドレス＝画面に何も出さない）。"
+      + "ヘッドレスではウィンドウを画面外へ置いたまま WPF とランタイムを動かすため、"
+      + "人が見ていない環境でも seed_play / seed_screenshot(method=\"gpu\") が正しく動く。"
+      + "すでに起動していれば何もせず現在の状態を返す（already_running=true）。"
+      + "他のツールが「エディタへ接続できません」を返したら、まずこれを呼ぶこと。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            headless = new
+            {
+                type        = "boolean",
+                description = "true（既定）で画面に出さずに起動する。false にすると通常のウィンドウで起動する。"
+            },
+            scene = new
+            {
+                type        = "string",
+                description = "起動時に開く .scene の絶対パス。省略時は前回開いていたシーンを復元する。"
+            },
+            wait_seconds = new
+            {
+                type        = "number",
+                description = "AI ブリッジが応答するまで待つ上限秒数（既定 60、最大 300）。"
+            }
+        }
+    }
+};
+
+static object SeedShutdownTool() => new
+{
+    name        = "seed_shutdown",
+    description =
+        "SEED エディタを正常終了させる（ランタイム子プロセスも停止する）。"
+      + "seed_launch で起動したセッションの後始末に使う。応答を返してから終了するため、"
+      + "呼び出しは成功で返り、その直後にプロセスが消える。",
+    inputSchema = EmptySchema()
+};
 
 static object SeedQueryTool() => new
 {
@@ -591,10 +690,12 @@ static object SeedScreenshotTool() => new
 {
     name        = "seed_screenshot",
     description =
-        "現在画面に出ている内容を PNG でキャプチャし、画像として返す（同時にファイルへも保存する）。"
+        "描画結果を PNG でキャプチャし、画像として返す（同時にファイルへも保存する）。"
       + "target=\"viewport\": シーンビュー、\"game\": Play 中のゲーム画面、\"editor\": エディタウィンドウ全体。"
-      + "変更の結果を推測せず目視確認するために使う。"
-      + "【制約】画面に映っているものを撮る方式のため、エディタウィンドウが最小化・他ウィンドウで隠れていると正しく撮れない。",
+      + "method=\"gpu\"（既定）はランタイムの GPU から直接読み戻すため、"
+      + "ウィンドウが隠れていても・最小化でも・ヘッドレス起動でも正しく撮れる（target は viewport/game のみ）。"
+      + "method=\"screen\" は画面に映っているものを撮る従来方式で、target=\"editor\" のときはこちらが自動的に使われる"
+      + "（この方式はウィンドウが最小化・他ウィンドウで隠れていると正しく撮れない）。",
     inputSchema = new
     {
         type       = "object",
@@ -604,7 +705,13 @@ static object SeedScreenshotTool() => new
             {
                 type        = "string",
                 @enum       = new[] { "viewport", "game", "editor" },
-                description = "撮影対象。省略時は viewport。"
+                description = "撮影対象。省略時は viewport（method=gpu では viewport と game は同じ絵）。"
+            },
+            method = new
+            {
+                type        = "string",
+                @enum       = new[] { "gpu", "screen" },
+                description = "撮影方式。省略時は gpu（隠れていても撮れる）。target=\"editor\" では自動的に screen。"
             },
             path = new
             {

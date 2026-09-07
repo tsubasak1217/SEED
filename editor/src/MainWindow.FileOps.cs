@@ -38,7 +38,7 @@ public partial class MainWindow
 
         if (_isDirty)
         {
-            var result = MessageBox.Show(
+            var result = SEEDEditor.Headless.EditorDialogs.Show(
                 "未保存の変更があります。シーンを切り替える前に保存しますか？",
                 "SEED Editor",
                 MessageBoxButton.YesNoCancel,
@@ -410,6 +410,17 @@ public partial class MainWindow
     {
         try
         {
+            // --scene <path> が指定されていればそれを最優先で開く（ヘッドレス運用の入口）。
+            // 存在しない / 拡張子違いは EditorStartupOptions 側で弾かれ null になるため、
+            // ここへ来る値は必ず実在する .scene の絶対パス。
+            var startup = SEEDEditor.Headless.EditorStartupOptions.StartupScenePath;
+            if (startup is not null)
+            {
+                EditorLog.Write($"起動時シーン指定 — {startup}");
+                LoadScene(startup);
+                return;
+            }
+
             var last = SEEDEditor.ProjectSettings.RecentProjectsManager.LoadRecentProjects()
                 .FirstOrDefault(p =>
                     !string.IsNullOrEmpty(p)

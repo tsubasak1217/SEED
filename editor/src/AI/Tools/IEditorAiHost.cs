@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  IEditorAiHost.cs — AI ツールがエディタ本体へ要求する操作の契約
 //
 //  MCP / HTTP ブリッジから呼ばれる「見た目の確認」「再生制御」「保存」などは、
@@ -83,4 +83,29 @@ public interface IEditorAiHost
     /// <param name="timeoutMs">保存完了通知を待つタイムアウト（ミリ秒）。</param>
     /// <returns>成功なら null、失敗ならその理由。</returns>
     Task<string?> SaveSceneAsync(int timeoutMs);
+
+    /// <summary>
+    /// ランタイムに GPU 読み戻しスクリーンショットを撮らせる（IPC <c>SCREENSHOT:</c>）。
+    ///
+    /// <para>
+    /// 画面 DC からの BitBlt と違い、ウィンドウが隠れていても・画面外にあっても撮れる。
+    /// ヘッドレス運用ではこちらが既定の撮影手段になる。
+    /// </para>
+    /// </summary>
+    /// <param name="target">"game" / "viewport"（どちらも提示中のカラーターゲット）。</param>
+    /// <param name="path">書き出し先の絶対パス（.png）。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <returns>
+    /// 成功なら <c>(true, パス, 幅, 高さ)</c>、失敗なら <c>(false, エラーメッセージ, 0, 0)</c>。
+    /// </returns>
+    Task<(bool Ok, string Message, int Width, int Height)> CaptureRuntimeScreenshotAsync(
+        string target, string path, int timeoutMs);
+
+    /// <summary>
+    /// エディタを正常終了させる（ヘッドレス運用の後始末）。
+    /// ランタイム子プロセスの停止を含め、通常のウィンドウクローズと同じ経路を通す。
+    /// 呼び出しは即座に返り、実際の終了は次のディスパッチャ周回で行われる
+    /// （HTTP 応答を返す前にプロセスが消えると、呼び出し側がエラーになるため）。
+    /// </summary>
+    void RequestShutdown();
 }

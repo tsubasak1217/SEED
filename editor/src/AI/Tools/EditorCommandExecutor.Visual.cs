@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  EditorCommandExecutor.Visual.cs — 視覚確認・再生制御系コマンド
 //
 //  Claude Code などの外部エージェントが「実際の見た目」を確認しながら
@@ -61,6 +61,19 @@ public partial class EditorCommandExecutor
     /// <summary>スクリーンショットのファイル名に使う時刻フォーマット。</summary>
     private const string VisualScreenshotTimeFormat = "yyyyMMdd_HHmmss_fff";
 
+    /// <summary>GPU 撮影（screenshot_gpu）の既定 target。</summary>
+    private const string VisualGpuDefaultTarget = "game";
+
+    /// <summary>GPU 撮影の応答 JSON に入れる method 名。</summary>
+    private const string VisualGpuMethodName = "gpu";
+
+    /// <summary>
+    /// GPU 撮影の応答待ちタイムアウト（ミリ秒）。
+    /// 非表示時はイベントループ側からフレームを回すため通常は数十 ms で返るが、
+    /// 大きなシーンのロード直後などを見込んで余裕を持たせる。
+    /// </summary>
+    private const int VisualGpuScreenshotTimeoutMs = 15_000;
+
     /// <summary>アクター未指定・未解決を表す DFS ID。</summary>
     private const int VisualNoActor = -1;
 
@@ -78,6 +91,8 @@ public partial class EditorCommandExecutor
         return command switch
         {
             "screenshot"        => ExecuteScreenshot(args),
+            "screenshot_gpu"    => await ExecuteScreenshotGpuAsync(args),
+            "shutdown"          => ExecuteShutdown(),
             "select_actor"      => await ExecuteSelectActorAsync(args),
             "get_hierarchy"     => ExecuteGetHierarchy(),
             "play_control"      => await ExecutePlayControlAsync(args),
@@ -147,6 +162,61 @@ public partial class EditorCommandExecutor
             warning = result.Warning,
             state   = host.RuntimeState.ToString(),
         });
+    }
+
+    /// <summary>
+    /// ランタイムに GPU 読み戻しでスクリーンショットを撮らせる（IPC SCREENSHOT:）。
+    ///
+    /// 画面 DC からの BitBlt（<see cref="ExecuteScreenshot"/>）と違い、
+    /// ウィンドウが他ウィンドウの裏・画面外・最小化でも撮れる。
+    /// そのかわりランタイムの提示画像しか撮れない（エディタ UI 全体は撮れない）。
+    /// target は "game" / "viewport" のみ（どちらも提示中のカラーターゲット＝同じ絵）。
+    /// </summary>
+    private async Task<string> ExecuteScreenshotGpuAsync(JsonElement args)
+    {
+        var host = Host;
+        if (host is null) return Error("エディタ本体へ接続されていません（host 未設定）。");
+
+        var target = GetString(args, "target") ?? VisualGpuDefaultTarget;
+        if (target is not ("game" or "viewport"))
+            return Error($"method='gpu' では target は game / viewport のみです（指定: '{target}'）。");
+
+        var path = GetString(args, "path");
+        if (string.IsNullOrWhiteSpace(path))
+            path = Path.Combine(
+                Path.GetTempPath(), VisualScreenshotSubDir,
+                $"seed_{target}_{DateTime.Now.ToString(VisualScreenshotTimeFormat, CultureInfo.InvariantCulture)}.png");
+        path = Path.GetFullPath(path);
+
+        var (ok, message, width, height) =
+            await host.CaptureRuntimeScreenshotAsync(target, path, VisualGpuScreenshotTimeoutMs);
+        if (!ok) return Error(message);
+
+        _log($"[AI ツール] screenshot_gpu({target}) → {message} ({width}x{height})");
+        return Json(new
+        {
+            ok     = true,
+            target,
+            method = VisualGpuMethodName,
+            path   = message,
+            width,
+            height,
+            state  = host.RuntimeState.ToString(),
+        });
+    }
+
+    /// <summary>
+    /// エディタを正常終了させる（ヘッドレス運用の後始末）。
+    /// 実際の終了は応答を返した後に行われるため、ここでは受理した旨だけを返す。
+    /// </summary>
+    private string ExecuteShutdown()
+    {
+        var host = Host;
+        if (host is null) return Error("エディタ本体へ接続されていません（host 未設定）。");
+
+        host.RequestShutdown();
+        _log("[AI ツール] shutdown");
+        return Json(new { ok = true, shutting_down = true });
     }
 
     /// <summary>

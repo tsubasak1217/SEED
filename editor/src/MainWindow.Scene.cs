@@ -171,7 +171,7 @@ public partial class MainWindow
         _deleteDialogOpen = true;
         try
         {
-            var result = MessageBox.Show(
+            var result = SEEDEditor.Headless.EditorDialogs.Show(
                 "選択中のオブジェクトに子オブジェクトが含まれています。\n\n" +
                 "「はい」　— 子も含めてすべて削除\n" +
                 "「いいえ」— 選択オブジェクトのみ削除（子は切り離してルートへ）",
@@ -320,7 +320,7 @@ public partial class MainWindow
             {
                 _isSavingActor = false;
                 _pendingSceneLoad = null;
-                MessageBox.Show($"保存に失敗しました:\n{errorMsg}", "SEED Editor",
+                SEEDEditor.Headless.EditorDialogs.Show($"保存に失敗しました:\n{errorMsg}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         });

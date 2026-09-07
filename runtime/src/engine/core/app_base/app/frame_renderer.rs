@@ -564,7 +564,11 @@ impl App {
         // AI 実行中はレンダリングをスキップして GPU リソースを LLM に解放する。
         // IPC は process_ipc で処理済みなので RESUME_RENDER を受け取れる。
         // request_redraw() でポーリングを継続し、RESUME_RENDER 受信後に即復帰できるようにする。
-        if self.render_paused {
+        // 撮影要求が残っているときは、レンダリング一時停止中でも 1 枚だけ描く
+        // （描かないと提示テクスチャが更新されず、撮影が永久に完了しないため）。
+        if self.render_paused
+            && !crate::engine::core::renderer::screenshot::has_pending_request()
+        {
             self.pace_frame_if_unfocused(perf_t_total);
             if let Some(w) = &self.window { w.request_redraw(); }
             return;
@@ -586,6 +590,12 @@ impl App {
         if let Some(w) = &self.window {
             let sz = w.inner_size();
             if sz.width == 0 || sz.height == 0 {
+                // このフレームは描けない＝提示テクスチャが更新されないため、
+                // 待っているスクリーンショット要求はここで失敗として打ち切る
+                //（放置すると強制フレームポンプが空回りして応答が返らない）。
+                crate::engine::core::renderer::screenshot::fail_pending_requests(
+                    "ウィンドウが最小化（サイズ 0）のため撮影できません",
+                );
                 self.pace_frame_if_unfocused(perf_t_total);
                 w.request_redraw();
                 return;

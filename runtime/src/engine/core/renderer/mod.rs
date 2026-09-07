@@ -589,15 +589,15 @@ impl Renderer {
             wgpu::PresentMode::Fifo
         };
 
-        // スクリーンショット機能が有効なときだけ COPY_SRC を足す。
-        // サーフェスからの読み戻し（copy_texture_to_buffer）に必須だが、
-        // 常時付けるとドライバによっては最適な提示パスを外れる可能性があるため、
-        // 通常起動では従来どおり RENDER_ATTACHMENT のみにする。
-        let surface_usage = if screenshot::is_enabled() {
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
-        } else {
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-        };
+        // COPY_SRC は常時付ける。
+        // サーフェスからの読み戻し（copy_texture_to_buffer）に必須で、これが無いと
+        // 起動後に IPC で要求されたスクリーンショット（SCREENSHOT:）を撮れない。
+        // 以前は環境変数駆動のフレームダンプが有効なときだけ足していたが、
+        // ヘッドレス運用では「起動時に撮るか決まっていない」ため常時有効にする。
+        // 追加コストは提示テクスチャのアロケーションフラグが 1 つ増えるだけで、
+        // 実測できるフレーム時間の差は無い（コピーを積まない限り GPU 作業は増えない）。
+        let surface_usage =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         let config = wgpu::SurfaceConfiguration {
             usage:                        surface_usage,
             format:                       surface_format,
@@ -1903,12 +1903,20 @@ impl<'r> RenderFrame<'r> {
             frame_index,
         );
 
+        // IPC（SCREENSHOT:）で要求された撮影があれば、同じフレームからもう 1 枚コピーを積む。
+        // 環境変数駆動のフレームダンプとは独立に動き、1 フレームにつき 1 件だけ消化する。
+        let pending_request =
+            screenshot::schedule_requested(self.device, &mut self.encoder, &self.output.texture);
+
         self.queue.submit(std::iter::once(self.encoder.finish()));
         self.output.present();
 
         // present 後に読み出す。マップ完了待ちで同期するため、撮影フレームだけ重くなる。
         if let Some(pending) = pending {
             screenshot::resolve(self.device, pending);
+        }
+        if let Some(pending) = pending_request {
+            screenshot::resolve_requested(self.device, pending);
         }
     }
 }

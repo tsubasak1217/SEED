@@ -276,6 +276,22 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>アクター編集モードでコンポーネント一覧が返ってきたときに発火する（JSON 文字列）。</summary>
     public event Action<string>? ActorComponentsReceived;
 
+    // ── GPU 読み戻しスクリーンショット（SCREENSHOT: の応答）────────────────
+    /// <summary>ランタイムへ渡すヘッドレス指示の環境変数名。</summary>
+    private const string RUNTIME_HEADLESS_ENV = "SEED_HEADLESS";
+    /// <summary>ヘッドレスを有効とみなす環境変数の値。</summary>
+    private const string RUNTIME_HEADLESS_ENV_VALUE = "1";
+    /// <summary>撮影成功応答の接頭辞（ランタイム screenshot_ops.rs と対）。</summary>
+    public const string SCREENSHOT_DONE_PREFIX = "SCREENSHOT_DONE:";
+    /// <summary>撮影失敗応答の接頭辞。</summary>
+    public const string SCREENSHOT_ERROR_PREFIX = "SCREENSHOT_ERROR:";
+
+    /// <summary>
+    /// スクリーンショットの応答行（SCREENSHOT_DONE: / SCREENSHOT_ERROR: を含む生文字列）。
+    /// 待ち受け側が接頭辞で成否を判定する。
+    /// </summary>
+    public event Action<string>? ScreenshotCompleted;
+
     /// <summary>
     /// 水面シェーダの <c>@ref</c> パラメータに繋げられるバインド元候補が返ってきたときに発火する
     /// （GET_BINDABLE_SOURCES への応答。引数は JSON 文字列）。
@@ -1220,7 +1236,7 @@ public sealed class RuntimeManager : IDisposable
 
         var stderr = new System.Text.StringBuilder();
 
-        _process = Process.Start(new ProcessStartInfo
+        var startInfo = new ProcessStartInfo
         {
             FileName               = _runtimeExePath,
             Arguments              = args,
@@ -1229,7 +1245,17 @@ public sealed class RuntimeManager : IDisposable
             CreateNoWindow         = true,
             RedirectStandardError  = true,
             RedirectStandardOutput = true,
-        }) ?? throw new InvalidOperationException("Failed to start runtime.");
+        };
+        // ヘッドレス起動時はランタイムへも伝える。
+        // エディタのウィンドウが画面外にあると OS が WM_PAINT を配送せず、
+        // ランタイムの RedrawRequested によるフレームループが止まってしまう。
+        // ランタイムはこの環境変数を見て、イベントループから自前でフレームを回す
+        //（＝非表示でもシミュレーションが進み、GPU 読み戻しの撮影も成立する）。
+        if (SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
+            startInfo.Environment[RUNTIME_HEADLESS_ENV] = RUNTIME_HEADLESS_ENV_VALUE;
+
+        _process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Failed to start runtime.");
 
         EditorLog.Write($"Process started — PID={_process.Id}");
 
@@ -1807,12 +1833,22 @@ public sealed class RuntimeManager : IDisposable
             EditorLog.Write($"[WorldLine] {info}");
             WorldLineInfoReceived?.Invoke(info);
         }
+        else if (msg.StartsWith(SCREENSHOT_DONE_PREFIX, StringComparison.Ordinal)
+              || msg.StartsWith(SCREENSHOT_ERROR_PREFIX, StringComparison.Ordinal))
+        {
+            // GPU 読み戻しスクリーンショットの応答（screenshot_ops.rs が送る）。
+            //   SCREENSHOT_DONE:{path},{width},{height}
+            //   SCREENSHOT_ERROR:{message}
+            // 解釈は待ち受け側（MainWindow.AiHost）に任せ、ここでは生文字列を配るだけにする。
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+            ScreenshotCompleted?.Invoke(msg);
+        }
         else if (msg.StartsWith("LOAD_ERROR:", StringComparison.Ordinal))
         {
             var err = msg["LOAD_ERROR:".Length..];
             EditorLog.Write($"[Runtime→Editor] LOAD_ERROR: {err}");
             Application.Current.Dispatcher.InvokeAsync(() =>
-                MessageBox.Show($"シーンの読み込みに失敗しました:\n{err}", "SEED Editor",
+                SEEDEditor.Headless.EditorDialogs.Show($"シーンの読み込みに失敗しました:\n{err}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error));
         }
         else if (msg.StartsWith("FPS:", StringComparison.Ordinal) &&

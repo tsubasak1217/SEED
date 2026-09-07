@@ -32,6 +32,10 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         super::play_diag::atw_tick();
         self.pump_ipc_while_frames_stalled(event_loop);
+        // 表示由来の再描画が来ない状況（ヘッドレス／撮影待ち）でフレームを強制的に回す。
+        self.pump_frame_when_redraw_stalled(event_loop);
+        // 撮影が終わっていればエディタへ SCREENSHOT_DONE / SCREENSHOT_ERROR を返す。
+        self.poll_screenshot_outcomes();
     }
 
     /// ウィンドウイベントを処理する（キー入力・マウス・リサイズ・メインループ）。

@@ -30,5 +30,18 @@ public partial class App : Application
             catch { }
         };
     }
+
+    /// <summary>
+    /// コマンドライン引数（--headless / --scene）を MainWindow 生成より前に解析する。
+    ///
+    /// StartupUri による MainWindow のインスタンス化は base.OnStartup の中で起きるため、
+    /// ここで解析しておけば MainWindow のコンストラクタから
+    /// <see cref="Headless.EditorStartupOptions"/> を参照できる。
+    /// </summary>
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        Headless.EditorStartupOptions.Parse(e.Args);
+        base.OnStartup(e);
+    }
 }
 

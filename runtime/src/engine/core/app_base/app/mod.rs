@@ -68,6 +68,8 @@ mod pointer_events;
 mod canvas_drop;
 mod render;
 mod frame_renderer;
+/// IPC 駆動スクリーンショット（SCREENSHOT:）のアプリ側処理。
+mod screenshot_ops;
 mod merge_batch_gate;
 mod canvas_collect;
 mod collider2d_wireframe;

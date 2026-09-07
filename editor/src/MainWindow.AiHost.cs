@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainWindow.AiHost.cs — MainWindow による IEditorAiHost 実装
 //
 //  MCP / HTTP ブリッジ（SeedAIBridge → EditorCommandExecutor）から呼ばれる
@@ -44,6 +44,12 @@ public partial class MainWindow : IEditorAiHost
 
     /// <summary>選択なしを表す DFS ID。</summary>
     private const int AiNoSelection = -1;
+
+    /// <summary>撮影応答（SCREENSHOT_DONE:）のフィールド区切り文字。</summary>
+    private const string AiScreenshotFieldSeparator = ",";
+
+    /// <summary>撮影応答の最小フィールド数（パス・幅・高さ）。</summary>
+    private const int AiScreenshotFieldCount = 3;
 
     // ── 状態キャッシュ ───────────────────────────────────────────
 
@@ -206,6 +212,75 @@ public partial class MainWindow : IEditorAiHost
         {
             _runtimeManager.SaveCompleted -= OnSaved;
         }
+    }
+
+    /// <inheritdoc/>
+    async Task<(bool Ok, string Message, int Width, int Height)>
+        IEditorAiHost.CaptureRuntimeScreenshotAsync(string target, string path, int timeoutMs)
+    {
+        if (_runtimeManager is null)
+            return (false, "ランタイムが初期化されていません。", 0, 0);
+        if (!_runtimeManager.IsPipeConnected)
+            return (false, "ランタイムへ接続されていません（未起動 / 起動中）。", 0, 0);
+
+        // 応答を取りこぼさないよう、送信より先に購読する。
+        // ランタイム側のイベントはパイプ受信スレッドで発火するため、
+        // 継続を非同期実行にして UI スレッドの再入を避ける。
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnDone(string reply) => tcs.TrySetResult(reply);
+        _runtimeManager.ScreenshotCompleted += OnDone;
+
+        try
+        {
+            _runtimeManager.SendToRuntime($"SCREENSHOT:{target},{path}");
+
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+            if (completed != tcs.Task)
+                return (false, $"ランタイムから撮影応答が {timeoutMs} ms 以内に返りませんでした。", 0, 0);
+
+            return ParseScreenshotReply(await tcs.Task);
+        }
+        finally
+        {
+            _runtimeManager.ScreenshotCompleted -= OnDone;
+        }
+    }
+
+    /// <summary>
+    /// ランタイムの撮影応答を解釈する。
+    ///   成功: <c>SCREENSHOT_DONE:{path},{width},{height}</c>
+    ///   失敗: <c>SCREENSHOT_ERROR:{message}</c>
+    /// パスにカンマは含まれない前提で、末尾 2 個のカンマで幅・高さを切り出す。
+    /// </summary>
+    private static (bool Ok, string Message, int Width, int Height) ParseScreenshotReply(string reply)
+    {
+        if (reply.StartsWith(RuntimeManager.SCREENSHOT_ERROR_PREFIX, StringComparison.Ordinal))
+            return (false, reply[RuntimeManager.SCREENSHOT_ERROR_PREFIX.Length..], 0, 0);
+
+        if (!reply.StartsWith(RuntimeManager.SCREENSHOT_DONE_PREFIX, StringComparison.Ordinal))
+            return (false, $"想定外の撮影応答です: {reply}", 0, 0);
+
+        var body  = reply[RuntimeManager.SCREENSHOT_DONE_PREFIX.Length..];
+        var parts = body.Split(AiScreenshotFieldSeparator);
+        if (parts.Length < AiScreenshotFieldCount)
+            return (false, $"撮影応答の書式が不正です: {reply}", 0, 0);
+
+        // 幅・高さは末尾 2 要素。残り（先頭側）を連結し直したものがパス。
+        var width  = int.TryParse(parts[^2], out var w) ? w : 0;
+        var height = int.TryParse(parts[^1], out var h) ? h : 0;
+        var path   = string.Join(AiScreenshotFieldSeparator, parts[..^2]);
+        return (true, path, width, height);
+    }
+
+    /// <inheritdoc/>
+    void IEditorAiHost.RequestShutdown()
+    {
+        EditorLog.Write("[AI ツール] shutdown 要求を受理しました。エディタを終了します。");
+        // HTTP 応答を返しきってから落とすため、次のディスパッチャ周回へ回す。
+        // Application.Shutdown は通常終了と同じ経路で OnWindowClosing を通し、
+        // ランタイム子プロセスの停止・レイアウト保存を行う。
+        Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()),
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
 
     // ── 内部ヘルパー ─────────────────────────────────────────────

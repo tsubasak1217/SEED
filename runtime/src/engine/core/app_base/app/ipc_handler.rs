@@ -1365,6 +1365,10 @@ impl App {
                 IpcCommand::AnimPreviewStop { actor_dfs_id } => {
                     self.handle_anim_preview_stop(actor_dfs_id);
                 }
+                // GPU 読み戻しスクリーンショット（実処理は screenshot_ops.rs）。
+                IpcCommand::Screenshot { target, path } => {
+                    self.handle_screenshot_request(&target, &path);
+                }
                 IpcCommand::AnimReload { clip_path } => {
                     self.handle_anim_reload(&clip_path);
                 }

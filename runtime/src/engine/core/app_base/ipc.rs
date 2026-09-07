@@ -1019,6 +1019,14 @@ pub enum IpcCommand {
     /// 指定クリップのロード済みキャッシュを破棄する（.anim 保存後の再読込用）。
     /// フォーマット: ANIM_RELOAD:{clip_path}
     AnimReload { clip_path: String },
+
+    // ─── スクリーンショット（GPU 読み戻し）────────────────────────────────
+    /// 次に描いたフレームの提示テクスチャを PNG として書き出す。
+    /// フォーマット: SCREENSHOT:{target},{abs_path}
+    ///   target   … `game` / `viewport` / `surface`（いずれも提示中のカラーターゲット）
+    ///   abs_path … 書き出し先の絶対パス（カンマを含まない前提で最初の 1 個で分割する）
+    /// 応答: `SCREENSHOT_DONE:{abs_path},{width},{height}` または `SCREENSHOT_ERROR:{message}`
+    Screenshot { target: String, path: String },
 }
 
 // ============================================================
@@ -1069,6 +1077,36 @@ impl IpcClient {
     pub fn try_recv(&self) -> Option<IpcCommand> {
         self.commands.try_recv().ok()
     }
+}
+
+// ============================================================
+//  スクリーンショットコマンドのパース（SCREENSHOT:）
+//
+//  read_loop の match から切り出した純粋関数。
+//  「文字列 in / IpcCommand out」で副作用を持たないためユニットテストできる。
+// ============================================================
+
+/// `SCREENSHOT:` コマンドの接頭辞。
+const SCREENSHOT_PREFIX: &str = "SCREENSHOT:";
+/// target と出力パスを区切る文字。
+const SCREENSHOT_ARG_SEPARATOR: char = ',';
+/// `SCREENSHOT:` の引数個数（target と path の 2 つ）。
+const SCREENSHOT_ARG_COUNT: usize = 2;
+
+/// `SCREENSHOT:{target},{abs_path}` を [`IpcCommand::Screenshot`] へ変換する。
+///
+/// パスに Windows のドライブレターやスペースが含まれても壊れないよう、
+/// 最初のカンマ 1 個だけで分割する（パス自体にカンマは無い前提）。
+/// target・path のどちらかが空なら `None`（＝ 不正コマンドとして無視）。
+fn parse_screenshot(line: &str) -> Option<IpcCommand> {
+    let rest = line.strip_prefix(SCREENSHOT_PREFIX)?;
+    let mut it = rest.splitn(SCREENSHOT_ARG_COUNT, SCREENSHOT_ARG_SEPARATOR);
+    let target = it.next()?.trim().to_string();
+    let path = it.next()?.trim().to_string();
+    if target.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(IpcCommand::Screenshot { target, path })
 }
 
 // ============================================================
@@ -2950,6 +2988,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let clip_path = s["ANIM_RELOAD:".len()..].to_string();
                             Some(IpcCommand::AnimReload { clip_path })
                         }
+                        s if s.starts_with(SCREENSHOT_PREFIX) => parse_screenshot(s),
 
                         _                    => None,
                     }
@@ -3335,4 +3374,36 @@ mod tests {
             _ => panic!("旧形式の TerrainHeightmap を期待した"),
         }
     }
+
+    // ── SCREENSHOT: のパース ────────────────────────────────────────────
+    /// 正常な `SCREENSHOT:` を target / path に分解できること。
+    /// Windows 絶対パス（ドライブレターのコロン・空白）が壊れないことも確認する。
+    #[test]
+    fn parse_screenshot_ok() {
+        match parse_screenshot(r"SCREENSHOT:game,C:	emp\seed shots.png") {
+            Some(IpcCommand::Screenshot { target, path }) => {
+                assert_eq!(target, "game");
+                assert_eq!(path, r"C:	emp\seed shots.png");
+            }
+            _ => panic!("Screenshot を期待した"),
+        }
+        // 前後の空白は落とす。
+        match parse_screenshot("SCREENSHOT: viewport , D:/out.png ") {
+            Some(IpcCommand::Screenshot { target, path }) => {
+                assert_eq!(target, "viewport");
+                assert_eq!(path, "D:/out.png");
+            }
+            _ => panic!("Screenshot を期待した"),
+        }
+    }
+
+    /// 引数不足・空引数は None（不正コマンドとして無視）になること。
+    #[test]
+    fn parse_screenshot_rejects_malformed() {
+        assert!(parse_screenshot("SCREENSHOT:game").is_none());
+        assert!(parse_screenshot("SCREENSHOT:,C:/a.png").is_none());
+        assert!(parse_screenshot("SCREENSHOT:game,").is_none());
+        assert!(parse_screenshot("SCREENSHOT:").is_none());
+    }
+
 }

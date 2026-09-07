@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainWindow.SceneAutoReload.cs — シーンの自動再読込（外部変更の取り込み）
 //
 //  担当:
@@ -107,7 +107,7 @@ public partial class MainWindow
 
         if (_isDirty)
         {
-            var result = MessageBox.Show(
+            var result = SEEDEditor.Headless.EditorDialogs.Show(
                 "未保存の変更があります。ディスクから再読込すると変更は失われます。続行しますか？",
                 "SEED Editor",
                 MessageBoxButton.OKCancel,

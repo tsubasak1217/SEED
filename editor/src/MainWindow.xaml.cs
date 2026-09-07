@@ -353,6 +353,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         InitializeComponent();
         ApplyDockTheme();
+
+        // ヘッドレス起動: 画面に出さないまま HWND とレイアウトだけ生かす。
+        // ShowActivated は表示後に変えても効かないため、必ず Show() 前（＝ここ）で設定する。
+        if (SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
+        {
+            SEEDEditor.Headless.HeadlessWindow.Apply(this);
+            EditorLog.Write("ヘッドレス起動: ウィンドウを画面外へ配置しました（--headless）");
+        }
     }
 
     // ── ウィンドウ初期化 ─────────────────────────────────────────
@@ -378,6 +386,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private void OnWindowLoaded(object sender, RoutedEventArgs e)
     {
         ApplyDarkTitleBar();
+
+        // ヘッドレス時はレイアウト復元などで位置が動き得るため、ここで再適用して
+        // 画面に出てしまう事故を防ぐ。
+        if (SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
+            SEEDEditor.Headless.HeadlessWindow.Reapply(this);
+
         EditorLog.Write($"OnWindowLoaded — RuntimeExePath={RuntimeExePath}");
 
         // シーン設定（デバッグカメラ・レンダリング・編集時物理）を読み込む。
@@ -888,7 +902,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             {
                 EditorLog.Write($"StartEditAsync EXCEPTION: {ex}");
                 Dispatcher.BeginInvoke(() =>
-                    MessageBox.Show($"Runtime 起動失敗:\n{ex}", "SEED Editor",
+                    SEEDEditor.Headless.EditorDialogs.Show($"Runtime 起動失敗:\n{ex}", "SEED Editor",
                         MessageBoxButton.OK, MessageBoxImage.Error));
             }
         });
@@ -915,7 +929,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
         // エラー一覧ウィンドウを自動でアクティブにしてからダイアログを表示する
         ShowAnchorable("error_list");
-        MessageBox.Show(
+        SEEDEditor.Headless.EditorDialogs.Show(
             $"スクリプトにコンパイルエラーが {diags.Count} 件あるため実行できません。\n\n" +
             "エラー一覧ウィンドウの内容を確認し、修正してから再度実行してください。\n" +
             "（行をダブルクリックすると該当箇所へジャンプします）",
@@ -937,7 +951,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             {
                 EditorLog.Write($"Play を中止しました（アセット不在）— {assets.LogLine}");
                 TxtViewportStatus.Text = "アセットフォルダが利用できないため実行できません — " + assets.Reason;
-                MessageBox.Show(
+                SEEDEditor.Headless.EditorDialogs.Show(
                     $"アセットフォルダが利用できないため実行できません。\n\n{assets.Path}\n\n理由: {assets.Reason}",
                     "SEED Editor — 実行できません",
                     MessageBoxButton.OK, MessageBoxImage.Error);
@@ -993,7 +1007,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             catch (Exception ex)
             {
                 EditorLog.Write($"OnPlayPause(Play) EXCEPTION: {ex}");
-                MessageBox.Show($"Play 起動失敗:\n{ex.Message}", "SEED Editor",
+                SEEDEditor.Headless.EditorDialogs.Show($"Play 起動失敗:\n{ex.Message}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -1240,7 +1254,17 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
     private void OnWindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
     {
-        if (_isDirty)
+        // ヘッドレスでは未保存確認を出さずにそのまま閉じる。
+        // ここでダイアログを出すと、画面外に出たモーダルを誰も操作できず終了できない
+        //（seed_shutdown が永久に返らない）。安全側（Cancel）へ倒すと今度は終了要求自体が
+        // 無効になるため、「終了は明示的な要求である」ことを優先して破棄で閉じる。
+        // 保存が要るなら終了前に seed_save_scene を呼ぶこと（docs/editor_mcp.md に明記）。
+        if (SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
+        {
+            if (_isDirty)
+                EditorLog.Write("[ヘッドレス] 未保存の変更を破棄して終了します（確認ダイアログは出しません）。");
+        }
+        else if (_isDirty)
         {
             var result = MessageBox.Show(
                 "未保存の変更があります。終了する前に保存しますか？",
