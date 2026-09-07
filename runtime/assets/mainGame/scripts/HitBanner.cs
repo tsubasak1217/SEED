@@ -34,17 +34,22 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]（衝突しない
 /// 本スクリプトはその 4 つの Animator を <see cref="animators"/> にまとめて持ち、
 /// <b>同じクリップ名を全員へ同時に流す</b>（＝ 4 つのクリップが 1 つの演出を構成する）。
 ///
-/// したがって本スクリプトの責務は次の 3 つだけで、<b>動きの数値は一切持たない</b>:
+/// したがって本スクリプトの責務は次の 4 つだけで、<b>動きの数値は一切持たない</b>:
 /// <list type="number">
 ///   <item>2 つの Text に文字列（「Lv◯ 魚名」「HIT!!!」）を流し込む</item>
 ///   <item>フォント・縁取りのようにアニメーションしない見た目を <see cref="OnStart"/> で整える</item>
 ///   <item><see cref="Play"/> で全 Animator にクリップの再生を依頼する</item>
+///   <item>演出ルート（<see cref="bannerRoot"/>＝「HitBannerItems」）の <c>Visible</c> を
+///       演出中だけ true にし、Play 開始直後や待機中に黒帯・文字が見えないようにする</item>
 /// </list>
 ///
-/// <b>待機中は帯も文字も透明</b>: シーン上ではアイテムを不透明のまま置いてよい
-/// （エディタで位置を確認しながら並べるため）。<see cref="OnStart"/> が帯スプライトと
-/// 文字のアルファを 0 にして待機状態にし、再生中の表示はクリップの色トラック
-/// （先頭で不透明・終端で透明）が受け持つ。
+/// <b>待機中は演出ルートごと非表示</b>: シーンでは <c>HitBannerItems</c> に
+/// <c>"visible": false</c> を持たせ、待機中は 4 アイテムの描画そのものを止める
+/// （祖先が非表示の子孫は自動的に非表示になる）。<see cref="Play"/> が演出開始時に
+/// <c>Visible = true</c> へ切り替え、<see cref="Update"/> が再生完了（<see cref="IsPlaying"/>
+/// が false）を検知して <c>Visible = false</c> へ戻す。帯・文字のアルファを 0 にする
+/// <see cref="OnStart"/> の処理はエディタでの位置確認用に不透明のまま置ける保険であり、
+/// 表示/非表示の正典はあくまで <c>Visible</c> である。
 ///
 /// <b>動きを直したいとき</b>: シーン上の各アイテムの位置が「出現したときの静止位置」。
 /// 位置を並べ直したら、生成スクリプト（<c>tools/gen_hit_banner_clips.py</c>）で
@@ -130,9 +135,28 @@ public class HitBanner : SEEDScript
     /// <summary>
     /// 待機中に透明にしておく帯スプライトのアクタ名。シーンでは不透明のまま置けるよう、
     /// <see cref="OnStart"/> が名前で探してアルファを 0 にする（見つからなければ何もしない）。
+    ///
+    /// <b>注意</b>: これは保険の透明化であり、Play 開始直後に黒帯・文字が一瞬でも見えてしまう
+    /// 問題自体は <see cref="bannerRoot"/> の <c>Visible</c> 切替（表示のオン/オフの正典）で防ぐ。
     /// </summary>
     [Header("帯"), SerializeField(Label = "帯スプライトのアクタ名")]
     private List<string> bandActorNames = new() { "HitBandBlackTop", "HitBandBlackBottom" };
+
+    // ─── 表示制御（Play 開始前は完全に非表示にする） ─────────────────
+
+    /// <summary>
+    /// 演出 4 アイテム（帯 2 本＋文字 2 つ）をまとめて持つ親アクタ（フォルダ「HitBannerItems」）
+    /// への参照。<c>GameObject.Visible</c> は祖先が非表示なら子孫も非表示になる
+    /// （docs/scripting_api.md「表示 / 非表示（GameObject.Visible）」）ため、
+    /// ここ 1 か所を切り替えるだけで 4 アイテムをまとめて表示/非表示にできる。
+    ///
+    /// シーン側は待機状態として <c>"visible": false</c> を持たせておき、
+    /// <see cref="Play"/> 開始時に <c>true</c>、演出終了時に <c>false</c> へ戻す。
+    /// これにより「Play 開始直後の 1 フレーム目だけ黒帯・文字が見えてしまう」問題を、
+    /// アルファ操作ではなく描画そのものの ON/OFF で確実に防ぐ。
+    /// </summary>
+    [SerializeField(Label = "演出ルート(HitBannerItems)")]
+    private SEED.GameObject? bannerRoot = null;
 
     // ─── 実行時の状態 ────────────────────────────────────────
 
@@ -174,6 +198,14 @@ public class HitBanner : SEEDScript
         SetTextContent(levelLabel, string.Format(levelTextFormat, levelPart, fishName));
         SetTextContent(hitLabel, hitText);
 
+        // 演出ルートを表示状態にする。GameObject.Visible の実際の反映（描画への反映）は
+        // フレーム末尾だが、Animator はこの Visible フラグと無関係に毎フレーム自動で
+        // 進行する（docs/scripting_api.md「表示 / 非表示」の「止まらないもの」参照）。
+        // したがって「同フレームで表示 ON → 直後に Animator.Play」の順で呼んでも、
+        // このフレームの描画時点では既に表示状態が反映されており、演出の 1 フレーム目が
+        // 欠けたり黒帯・文字が一瞬透明のまま出たりすることはない。
+        if (bannerRoot is { IsValid: true } root) { root.Visible = true; }
+
         // クリップが位置と不透明度（アルファ 1 → 末尾で 0）をすべて駆動する。
         // 4 つのアイテムへ同じクリップ名を同時に流し、1 つの演出として揃える。
         for (int i = 0; i < animators.Count; i++)
@@ -198,6 +230,24 @@ public class HitBanner : SEEDScript
         HideText(levelLabel);
         HideText(hitLabel);
         for (int i = 0; i < bandActorNames.Count; i++) { HideBandByName(bandActorNames[i]); }
+    }
+
+    /// <summary>
+    /// 演出終了の検知と後始末（毎フレーム）。
+    ///
+    /// <see cref="bannerRoot"/> が「表示中」なのに <see cref="IsPlaying"/> が false
+    /// （＝ 4 つのクリップが尺の末尾に達し、エンジンが自動で再生を止めた）になった
+    /// 最初のフレームで、演出ルートを非表示へ戻す。<see cref="Play"/> 以外の経路で
+    /// 表示 ON になることは無いため、「表示中でなければ何もしない」早期リターンで
+    /// 通常時（待機中）は毎フレームの Visible 書き込みを避ける。
+    /// </summary>
+    /// <param name="ctx">エンジンから渡されるフレーム情報（本処理では未使用）。</param>
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        if (bannerRoot is not { IsValid: true } root) { return; }
+        if (!root.Visible) { return; }
+        if (IsPlaying) { return; }
+        root.Visible = false;
     }
 
     /// <summary>名前で帯アクタを探し、その Sprite を透明にする（無ければ何もしない）。</summary>
