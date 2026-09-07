@@ -618,6 +618,9 @@ public class CatchPresenter : SEEDScript
         holdApplied = false;
         EnterPhase(CatchPhase.ApproachCamera);
 
+        // 魚を釣り上げた（引数は魚の表示名。チュートリアル・図鑑・SE などが購読する）
+        SEED.Events.Raise(FishingEvents.Catch, fish.DisplayName);
+
         SEED.Debug.Log($"[Catch] 演出開始: {fish.DisplayName}");
     }
 
@@ -735,6 +738,9 @@ public class CatchPresenter : SEEDScript
 
         // ポップが終わるまでは入力を受け付けない（見せる前に閉じられるのを防ぐ）
         if (popRatio < 1f) { return; }
+        // チュートリアル中は「釣果表示を閉じる」入力を止められる（通常時は常に許可）。
+        // 説明を読ませている最中のクリックで釣果が閉じてしまわないようにするため。
+        if (!InputGate.Allows(GameAction.UiConfirm)) { return; }
         if (!SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left)) { return; }
 
         EnterPhase(CatchPhase.Close);

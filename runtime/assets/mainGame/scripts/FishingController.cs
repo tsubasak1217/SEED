@@ -1445,6 +1445,8 @@ public class FishingController : SEEDScript
         CancelHop();                   // 跳ねの最中に前アタリが始まったら跳ねを打ち切る
         RollNibbleSequence();
 
+        // 前アタリ（コツコツ）が始まった
+        SEED.Events.Raise(FishingEvents.Nibble);
         SEED.Debug.Log($"[Fishing] 前アタリ開始: {fish.DisplayName}（{nibbleRemaining} 回）");
         return true;
     }
@@ -1506,6 +1508,9 @@ public class FishingController : SEEDScript
 
         // 通常のヒットと同じくヒット演出を出す（乗り換わった「新しい魚」の名前とレベルで）
         ShowHitBanner(newFish);
+
+        // わらしべ成立（掛かっている魚がより大きな魚へ乗り換わった）
+        SEED.Events.Raise(FishingEvents.LevelUp);
     }
 
     /// <summary>
@@ -1638,6 +1643,8 @@ public class FishingController : SEEDScript
         // （経路移動モードでないと EnterFishingStance が false を返し、釣りは始まらない）
         if (State == FishState.Idle)
         {
+            // チュートリアル中は「構え」に入る操作を止められる（通常時は常に許可）
+            if (!InputGate.Allows(GameAction.Ready)) { return; }
             if (!SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left)) { return; }
             if (!pm.EnterFishingStance()) { return; }
             EnterAiming();
@@ -1768,6 +1775,8 @@ public class FishingController : SEEDScript
         CrossFadeBoth(floatClip, playerFloatClip);
         // マウスの振りを読む区間へ入ったのでカーソルをロックする（判断は UpdateCursorLock が一元管理）。
         UpdateCursorLock();
+        // 構えに入った（チュートリアルの手順送りなどが購読する）
+        SEED.Events.Raise(FishingEvents.ReadyBegin);
         SEED.Debug.Log("[Fishing] Aiming");
     }
 
@@ -1777,6 +1786,10 @@ public class FishingController : SEEDScript
     /// </summary>
     private void CancelToIdle()
     {
+        // 「構えていた状態から待機へ戻った」ときだけ通知する
+        //（既に Idle のときに呼ばれてもイベントは飛ばさない）
+        bool wasFishing = State != FishState.Idle;
+
         State = FishState.Idle;
         ResetGesture();
         CancelHop();                   // 姿勢解除・中断でも跳ねを畳む（フラグの持ち越し防止）
@@ -1796,6 +1809,7 @@ public class FishingController : SEEDScript
         radarVisibleElapsed = 0f;      // 着水からの待ち時間も戻す
         // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
         UpdateCursorLock();
+        if (wasFishing) { SEED.Events.Raise(FishingEvents.ReadyEnd); }
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
     }
 
@@ -1899,7 +1913,9 @@ public class FishingController : SEEDScript
     {
         // キャスト前に左クリックを離したら中断（＝この状態の唯一の終了条件）。
         // 巻き取り完了で Aiming へ戻ってきたときも、押していなければここで即座に移動へ戻る。
-        if (!SEED.Input.GetMouseButton(SEED.MouseButton.Left))
+        // チュートリアルで「構え」を止めている間は解除も判定しない
+        //（説明中にボタンを離しただけで構えが解けると、台本どおりに進まなくなるため）。
+        if (InputGate.Allows(GameAction.Ready) && !SEED.Input.GetMouseButton(SEED.MouseButton.Left))
         {
             ExitToMovement();
             return;
@@ -1911,7 +1927,8 @@ public class FishingController : SEEDScript
 
         // MouseDelta はウィンドウ内カーソル位置の差分（px、右が +X / 下が +Y）。
         // MouseMove（Raw Input 由来）は埋め込み時に届かないことがあるのでこちらを使う。
-        float deltaX = SEED.Input.MouseDelta.x;
+        // チュートリアル中は振りかぶりのジェスチャを止められる（通常時は常に許可）
+        float deltaX = InputGate.Allows(GameAction.Cast) ? SEED.Input.MouseDelta.x : 0f;
         if (deltaX < 0f)
         {
             // 左へ振っている: 振りかぶり量を積算する（最初の 1 フレームでスクラブを開始）
@@ -1943,9 +1960,13 @@ public class FishingController : SEEDScript
     {
         if (playerMove is not { } pm) { return; }
 
+        // チュートリアル中は左右の狙いを止められる（通常時は常に許可）
         float turn = 0f;
-        if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn -= 1f; }   // A: 左（プレイヤー視点）
-        if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn += 1f; }   // D: 右（プレイヤー視点）
+        if (InputGate.Allows(GameAction.Aim))
+        {
+            if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn -= 1f; }   // A: 左（プレイヤー視点）
+            if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn += 1f; }   // D: 右（プレイヤー視点）
+        }
 
         pm.TurnInStance(turn, deltaTime);
     }
@@ -1982,8 +2003,9 @@ public class FishingController : SEEDScript
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateWindupState(float deltaTime)
     {
-        // 振り抜く前に離したらキャンセル（振りかぶりを解いて移動へ戻る）
-        if (!SEED.Input.GetMouseButton(SEED.MouseButton.Left))
+        // 振り抜く前に離したらキャンセル（振りかぶりを解いて移動へ戻る）。
+        // 構えを止めている間は解除も判定しない（UpdateAiming と同じ理由）。
+        if (InputGate.Allows(GameAction.Ready) && !SEED.Input.GetMouseButton(SEED.MouseButton.Left))
         {
             ExitToMovement();
             return;
@@ -1996,7 +2018,8 @@ public class FishingController : SEEDScript
         // 飛距離プレビューの往復位相を進める
         previewElapsed += deltaTime;
 
-        float deltaX = SEED.Input.MouseDelta.x;
+        // チュートリアル中は振り抜きのジェスチャを止められる（通常時は常に許可）
+        float deltaX = InputGate.Allows(GameAction.Cast) ? SEED.Input.MouseDelta.x : 0f;
         if (deltaX > 0f)
         {
             swingAccumPx += deltaX;
@@ -2111,6 +2134,8 @@ public class FishingController : SEEDScript
         State = FishState.Casting;
         HideCastPreview();
         PlaySe(castSePath, castSeVolume);
+        // 仕掛けを投げた（チュートリアルの手順送りなどが購読する）
+        SEED.Events.Raise(FishingEvents.Cast);
 
         // 以降はホイールと A / D だけの操作になるのでカーソルを返す（振りを読む区間の終わり）。
         UpdateCursorLock();
@@ -2150,6 +2175,8 @@ public class FishingController : SEEDScript
             State = FishState.Floating;
             CrossFadeBoth(floatClip, playerFloatClip);
             PlaySe(splashSePath, splashSeVolume);
+            // 着水した
+            SEED.Events.Raise(FishingEvents.Land);
             SEED.Debug.Log("[Fishing] Floating");
         }
     }
@@ -2220,6 +2247,8 @@ public class FishingController : SEEDScript
             if (HorizontalDistance(floatPosition, item.Position) > item.HitRadius) { continue; }
 
             ApplyDriftEffect(f, item);
+            // 漂流物を巻き込んだ（引数は種類。効果を適用した直後・破棄する前に流す）
+            SEED.Events.Raise(FishingEvents.DriftPickup, item.Kind);
             item.PlayHitSe();
             item.Kill();
         }
@@ -2654,6 +2683,8 @@ public class FishingController : SEEDScript
         CrossFadeBoth(floatClip, playerFloatClip);
         // 再び振りを読む区間へ戻るのでカーソルロックを引き直す。
         UpdateCursorLock();
+        // 糸が切れた
+        SEED.Events.Raise(FishingEvents.LineBreak);
         SEED.Debug.Log("[Fishing] 糸が切れた");
     }
 
@@ -2894,6 +2925,10 @@ public class FishingController : SEEDScript
     /// </summary>
     private float ReadReelAmount()
     {
+        // チュートリアル中は巻き取りを止められる（通常時は常に許可）。
+        // ここは全ての巻き経路（UpdateReeling / FishingFight.Tick）の唯一の入力源なので、
+        // 1 か所ゲートを挟めば巻きに関わる挙動すべてが止まる。
+        if (!InputGate.Allows(GameAction.Reel)) { return 0f; }
         return SEED.Mathf.Abs(SEED.Input.MouseScroll) * metersPerWheelUnit;
     }
 
@@ -2931,7 +2966,8 @@ public class FishingController : SEEDScript
         //   入力の意図を明確にするため先に無視しておく）。
         float half = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f * steerFactor;
         float turn = 0f;
-        if (steerFactor > 0f)
+        // チュートリアル中は操舵を止められる（通常時は常に許可）
+        if (steerFactor > 0f && InputGate.Allows(GameAction.Reel))
         {
             if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn += 1f; }   // A: ウキを左へ寄せる
             if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn -= 1f; }   // D: ウキを右へ寄せる
@@ -3152,6 +3188,8 @@ public class FishingController : SEEDScript
         reactionElapsed = 0f;
         nibbleDipElapsed = NoDipElapsed;
         PlaySe(hookSePath, hookSeVolume);
+        // 本アタリ（合わせの受付が開いた）
+        SEED.Events.Raise(FishingEvents.Bite);
         SEED.Debug.Log($"[Fishing] 本アタリ! {fish.DisplayName}");
     }
 
@@ -3179,6 +3217,9 @@ public class FishingController : SEEDScript
             reactionSeconds <= greatSeconds ? HookJudgement.Great :
             reactionSeconds <= niceSeconds ? HookJudgement.Nice :
             HookJudgement.Miss;
+
+        // 判定が確定した（引数は判定名。Miss も含めて必ずここで 1 回だけ流す）
+        SEED.Events.Raise(FishingEvents.HookJudged, judgement.ToString());
 
         if (judgement == HookJudgement.Miss)
         {
@@ -3277,6 +3318,8 @@ public class FishingController : SEEDScript
     /// <returns>このフレームに振りが成立したら true。</returns>
     private bool UpdateSwingDetection()
     {
+        // チュートリアル中は「竿を振る（合わせ・空振り）」を止められる（通常時は常に許可）
+        if (!InputGate.Allows(GameAction.Hook)) { return false; }
         if (!SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left)) { return false; }
 
         // 番号は「どの状態で振ったか」に依らず増やす（魚は状態を見ずに変化だけを見る）

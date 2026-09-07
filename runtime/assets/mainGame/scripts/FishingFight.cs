@@ -1044,6 +1044,12 @@ public class FishingFight : SEEDScript
     private float lastReelInputTime = NoReelInputTime;
 
     /// <summary>
+    /// 直前のフレームに巻き取り入力があったか。
+    /// 「巻き始め」の 1 回だけイベント（<see cref="FishingEvents.Reel"/>）を流すための立ち上がり検出に使う。
+    /// </summary>
+    private bool reelInputHeld = false;
+
+    /// <summary>
     /// 打点アイコンの出現（ポップ）開始時刻（秒・絶対時刻）。
     /// <see cref="IconHidden"/> なら「まだ出現していない」。判定した瞬間に判定時刻で上書きして跳ねさせる。
     /// 添字は<b>打点の通し番号</b>（分割番号ではない）。
@@ -1190,6 +1196,9 @@ public class FishingFight : SEEDScript
         InvalidateIconCache();
         ApplyUi();
 
+        // やり取り（リズム勝負）が始まった
+        SEED.Events.Raise(FishingEvents.FightBegin);
+
         SEED.Debug.Log($"[Fight] 開始: {fish.DisplayName} / 総合力 {CurrentFishPower():F2} vs 竿 {rodPower:F2}"
                      + $" / 魚HP {fishHpMax:F1}（取り分 {fishShare:P0}）"
                      + $" / 掛かった距離 {hookDistance:F1}m → 目標 {DesiredFloatDistance:F1}m"
@@ -1203,8 +1212,15 @@ public class FishingFight : SEEDScript
     /// </summary>
     public void EndFight()
     {
+        // 隙（スタン）の最中に終わった場合も「隙が終わった」ことは通知する。
+        // ここで流さないと、購読側（チュートリアル・演出）が
+        // 開始だけ受け取って終了を受け取れない状態になる。
+        bool wasResting = Active && CurrentPhase == Phase.Rest;
+
         ResetRuntimeState();
         HideUi();
+
+        if (wasResting) { SEED.Events.Raise(FishingEvents.StunEnd); }
     }
 
     /// <summary>
@@ -1720,6 +1736,9 @@ public class FishingFight : SEEDScript
         ClearCallHits();
         lastBeatPlayed = NoBeatPlayed;    // 余白 1 拍目の頭で必ずメトロノームが鳴るようにする
 
+        // 魚が沖へ走り出した（余白フェーズのあいだウキが引き伸ばされる）
+        SEED.Events.Raise(FishingEvents.FishRun);
+
         SEED.Debug.Log($"[Fight] {PhaseLabel(Phase.LeadIn)}（{beats}拍）");
     }
 
@@ -1749,7 +1768,15 @@ public class FishingFight : SEEDScript
         // 隙の長さ（PhaseBarsOf）がこの結果を読むので、必ず長さの算出より前に評価する。
         if (next == Phase.Rest) { lastAnswerPerfect = EvaluateAnswerPerfect(); }
 
+        // 隙（スタン）の出入りを通知する【スタン通知の唯一の場所】。
+        // 実際の切り替え（CurrentPhase への代入）より前に「抜ける」ほうを流し、
+        // フェーズ確定後に「入る」ほうを流すので、購読側から見た順序が入れ替わらない。
+        bool leavingRest = CurrentPhase == Phase.Rest && next != Phase.Rest;
+
         CurrentPhase = next;
+
+        if (leavingRest)          { SEED.Events.Raise(FishingEvents.StunEnd); }
+        if (next == Phase.Rest)   { SEED.Events.Raise(FishingEvents.StunBegin); }
         phaseBars = PhaseBarsOf(next);
 
         // 隙以外のフェーズ中に拾った漂流物「ひるませ」の延長ぶんを、ここで 1 度だけ足し込む
@@ -2208,7 +2235,10 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>左クリックの押下をこのフレームに読んだか（叩き入力の唯一の入口）。</summary>
-    private static bool ReadTapDown() => SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left);
+    private static bool ReadTapDown()
+        // チュートリアル中はリズム回答のタップを止められる（通常時は常に許可）
+        => InputGate.Allows(GameAction.Rhythm)
+        && SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left);
 
     // ─── 内部処理: 隙（巻き取り）─────────────────────────────
 
@@ -2239,7 +2269,19 @@ public class FishingFight : SEEDScript
         CloseExpiredHits();
 
         // 巻き取り: 巻いた距離ぶんだけ魚 HP を削る
-        if (reelAmount <= ReelInputEpsilon) { return; }
+        if (reelAmount <= ReelInputEpsilon)
+        {
+            reelInputHeld = false;   // 立ち下がり: 次に巻いたら「巻き始め」として通知する
+            return;
+        }
+
+        // 巻き始めの 1 回だけ通知する（巻いている間ずっと流すと購読側が毎フレーム走るため）。
+        // 直前フレームに巻き入力が無かったときだけ「巻き始め」とみなす。
+        if (!reelInputHeld)
+        {
+            reelInputHeld = true;
+            SEED.Events.Raise(FishingEvents.Reel);
+        }
 
         // 漂流物の巻き込み判定（ReelingRecently）が読む「最後に巻いた時刻」を控える
         lastReelInputTime = clockTime;
@@ -2392,6 +2434,7 @@ public class FishingFight : SEEDScript
         lastAnswerPerfect = false;
         pendingExtraRestBars = 0;
         lastReelInputTime = NoReelInputTime;
+        reelInputHeld = false;
         ResetIcons(0);
         iconFadeStartTime = NoFadeStart;
     }

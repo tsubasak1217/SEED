@@ -106,17 +106,32 @@ public class DriftItemManager : SEEDScript
     /// <summary>片付けのために <see cref="DriftItem.All"/> を写す作業用リスト（毎フレームの確保を避ける）。</summary>
     private readonly List<DriftItem> workItems = new();
 
+    // ─── 他スクリプトからの参照点（静的アクセサ）───────────────
+
+    /// <summary>
+    /// 現在シーンで動いている漂流物マネージャ（実質シングルトン）。
+    ///
+    /// チュートリアル（<c>TutorialDirector</c>）は動的に生成されるわけではないが、
+    /// 「シーンにこのマネージャが居れば台本生成を頼む」という緩い結び付きにしたいので、
+    /// <see cref="FishManager.Current"/> / <c>FishingController.Current</c> と同じ方式で公開する。
+    /// ホットリロードでは静的フィールドごと作り直され OnStart が再実行されるため、
+    /// 古い参照が残ることはない。
+    /// </summary>
+    public static DriftItemManager? Current { get; private set; } = null;
+
     // ─── ライフサイクル ────────────────────────────────────
 
     /// <summary>最初の生成をすぐ行わないよう、生成間隔ぶん待ってから始める。</summary>
     public override void OnStart()
     {
+        Current = this;
         spawnTimer = spawnIntervalSeconds;
     }
 
     /// <summary>破棄されるときは残った漂流物も片付ける（シーン遷移で置き去りにしない）。</summary>
     public override void OnDestroy()
     {
+        if (ReferenceEquals(Current, this)) { Current = null; }
         ClearAll();
     }
 
@@ -172,22 +187,91 @@ public class DriftItemManager : SEEDScript
     private void SpawnOne()
     {
         if (FishingController.Current is not { } controller) { return; }
-
-        string path = NormalizeAssetPath(PickPrefabPath());
-        if (string.IsNullOrEmpty(path)) { return; }
-
         if (!TryPickSpawnPosition(controller, out var position)) { return; }
+
+        SpawnAt(PickPrefabPath(), position);
+    }
+
+    /// <summary>
+    /// 指定した prefab パスの漂流物を指定位置に 1 個生成する【生成の唯一の実体】。
+    ///
+    /// 通常の抽選生成も、チュートリアルの台本生成も必ずここを通るので、
+    /// 出現イベント（<see cref="FishingEvents.DriftSpawn"/>）の発火もここ 1 か所で済む。
+    /// </summary>
+    /// <param name="prefabPath">生成する prefab（.actor）のパス。空なら何もしない。</param>
+    /// <param name="position">生成位置（ワールド）。</param>
+    /// <returns>生成できたら true。</returns>
+    private bool SpawnAt(string prefabPath, SEED.Vector3 position)
+    {
+        string path = NormalizeAssetPath(prefabPath);
+        if (string.IsNullOrEmpty(path)) { return false; }
 
         var obj = SEED.GameObject.Instantiate(path);
         if (!obj.IsValid)
         {
             SEED.Debug.LogWarning($"[DriftItemManager] 漂流物 prefab の読み込みに失敗しました: {path}");
-            return;
+            return false;
         }
 
         // 生成直後のフレームでも位置を反映しておく（Instantiate 直後の Transform 設定は有効）
         if (obj.GetComponent<SEED.Transform>() is { IsValid: true } t) { t.Position = position; }
+
+        // 漂流物が 1 個出た（チュートリアルの手順送り・SE などが購読できる）
+        SEED.Events.Raise(FishingEvents.DriftSpawn);
+        return true;
     }
+
+    // ─── 台本 API（チュートリアルから呼ぶ強制生成）─────────
+
+    /// <summary>
+    /// 種類を指定して漂流物を 1 個、指定位置に生成する【台本生成の唯一の入口】。
+    ///
+    /// 抽選（<see cref="PickPrefabPath"/>）を通さず種類を直接指定するので、
+    /// チュートリアルで「必ずこの種類の漂流物を出す」ことができる。
+    /// 出現間隔・同時出現数の上限も見ない（説明の手順を確実に進めるため）。
+    /// </summary>
+    /// <param name="kind">漂流物の種類（<see cref="DriftItem.KindStun"/> など）。</param>
+    /// <param name="position">生成位置（ワールド）。</param>
+    /// <returns>生成できたら true。種類が未知・prefab が読めないときは false。</returns>
+    public bool SpawnScripted(string kind, SEED.Vector3 position)
+    {
+        string path = PrefabPathOf(kind);
+        if (string.IsNullOrEmpty(path))
+        {
+            SEED.Debug.LogWarning($"[DriftItemManager] 未知の漂流物の種類 \"{kind}\" が指定されました（生成しません）。");
+            return false;
+        }
+
+        return SpawnAt(path, position);
+    }
+
+    /// <summary>
+    /// 種類を指定して漂流物を 1 個、ウキの周りの通常の出現範囲に生成する。
+    /// 位置を自分で決められない呼び出し側（チュートリアル）はこちらを使う。
+    /// </summary>
+    /// <param name="kind">漂流物の種類（<see cref="DriftItem.KindStun"/> など）。</param>
+    /// <returns>生成できたら true。釣り中でない・位置が決まらない場合は false。</returns>
+    public bool SpawnScriptedNearFloat(string kind)
+    {
+        if (FishingController.Current is not { } controller) { return false; }
+        if (!TryPickSpawnPosition(controller, out var position)) { return false; }
+
+        return SpawnScripted(kind, position);
+    }
+
+    /// <summary>
+    /// 種類の文字列から prefab パスを引く【種類とパスの唯一の対応表】。
+    /// 未知の種類は空文字を返す。
+    /// </summary>
+    /// <param name="kind">漂流物の種類。</param>
+    /// <returns>prefab パス（未知なら空文字）。</returns>
+    private string PrefabPathOf(string kind) => kind switch
+    {
+        DriftItem.KindStun         => stunPrefabPath,
+        DriftItem.KindFishRecover  => fishRecoverPrefabPath,
+        DriftItem.KindLineRecover  => lineRecoverPrefabPath,
+        _ => "",
+    };
 
     /// <summary>
     /// 重み付き抽選で prefab のパスを 1 つ選ぶ【種類の抽選の唯一の実装】。

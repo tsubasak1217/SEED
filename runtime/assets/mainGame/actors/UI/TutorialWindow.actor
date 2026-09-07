@@ -1,0 +1,280 @@
+{
+  "name": "TutorialWindow",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.5,
+      0.5
+    ],
+    "anchor": [
+      0.5,
+      0.5
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "TutorialWindow",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "assets://mainGame/scripts/Tutorial/TutorialWindow.cs",
+          "fields": {
+            "charaSprite": "TutorialChara|Sprite",
+            "balloonSprite": "TutorialBalloon|Sprite",
+            "bodyText": "TutorialBodyText|Text",
+            "nextArrowSprite": "TutorialNextArrow|Sprite",
+            "projectionCamera": "",
+            "charInterval": "0.030",
+            "arrowBlinkPeriod": "0.800",
+            "fontPath": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+            "iconSetPath": "assets://mainGame/ui/tutorial.icons",
+            "boxWidth": "680.000",
+            "boxHeight": "170.000",
+            "canvasWidth": "1920.000",
+            "canvasHeight": "1080.000",
+            "screenMargin": "260.000",
+            "aboveTargetWorldOffsetY": "1.800",
+            "aboveTargetCanvasOffsetY": "-120.000"
+          }
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "TutorialBalloon",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          60.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                0.05,
+                0.06,
+                0.1,
+                0.8
+              ],
+              "width": 760.0,
+              "height": 220.0,
+              "layer": 1000,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "TutorialChara",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          -400.0,
+          10.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                0.98,
+                0.74,
+                0.45,
+                1.0
+              ],
+              "width": 170.0,
+              "height": 170.0,
+              "layer": 1001,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "TutorialBodyText",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          -300.0,
+          -80.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 30.0,
+              "color": [
+                1.0,
+                0.98,
+                0.94,
+                1.0
+              ],
+              "align": "left",
+              "vertical_align": "top",
+              "line_spacing": 1.35,
+              "layer": 1002,
+              "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+              "icon_set": "assets://mainGame/ui/tutorial.icons",
+              "outline_width": 2.0,
+              "outline_color": [
+                0.05,
+                0.05,
+                0.08,
+                1.0
+              ],
+              "box_width": 680.0,
+              "box_height": 170.0,
+              "wrap": true,
+              "weight": 0.3,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "TutorialNextArrow",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          390.0,
+          85.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://prologue/textures/nextArrow.png",
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "width": 41.3,
+              "height": 43.4,
+              "layer": 1003,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

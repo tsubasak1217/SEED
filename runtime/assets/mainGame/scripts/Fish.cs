@@ -979,7 +979,14 @@ public class Fish : SEEDScript
         if (!biteWaitStarted)
         {
             biteWaitStarted = true;
-            biteWaitRemaining = SEED.Random.Range(biteDelayMin, SEED.Mathf.Max(biteDelayMin, biteDelayMax));
+
+            // チュートリアルの台本が「必ず食いつかせる」設定なら、乱数の待ち時間ではなく
+            // 台本が指定した秒数を使う（＝説明どおりのタイミングで確実にアタリが来る）。
+            // 台本が無効なときは従来どおり biteDelayMin〜biteDelayMax の乱数。
+            biteWaitRemaining =
+                (FishManager.Current is { ScriptedForceBite: true } scripted && scripted.ScriptedBiteDelaySeconds >= 0f)
+                    ? scripted.ScriptedBiteDelaySeconds
+                    : SEED.Random.Range(biteDelayMin, SEED.Mathf.Max(biteDelayMin, biteDelayMax));
         }
 
         biteWaitRemaining -= dt;

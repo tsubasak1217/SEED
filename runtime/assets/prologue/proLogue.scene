@@ -2,9 +2,9 @@
   "name": "Tutorial",
   "debug_camera": {
     "position": [
-      40.237217,
-      10.916286,
-      8.17452
+      46.465263,
+      11.428616,
+      2.93576
     ],
     "yaw": -13.056012,
     "pitch": 0.20352417,
@@ -1103,8 +1103,8 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "あああああああああああああああああああああああああああああああ\n",
-                  "font_size": 32.0,
+                  "content": "あああああああああああああああああああああああああああああああ",
+                  "font_size": 28.0,
                   "color": [
                     0.019780114,
                     0.007463167,
@@ -1112,10 +1112,10 @@
                     1.0
                   ],
                   "align": "center",
-                  "vertical_align": "top",
+                  "vertical_align": "middle",
                   "line_spacing": 1.3,
                   "layer": 102,
-                  "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                  "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Bold.ttf",
                   "outline_width": 0.0,
                   "outline_color": [
                     0.0,
@@ -1250,8 +1250,8 @@
                   "fields": {
                     "autoStart": "true",
                     "cameraDirector": "MainCamera",
-                    "entries": "[{\"speaker\":\"\",\"text\":\"――この島に流れ着いて、はじめての朝。\",\"cameraTarget\":\"CamTarget_Wide\",\"cameraMode\":\"Cut\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"謎の男\",\"text\":\"よお、目ェ覚ましたか。お前も災難だな。こんな島に流されるなんてよ。\",\"cameraTarget\":\"CamTarget_OwnerFront\",\"cameraMode\":\"Cut\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[{\"actor\":\"\",\"script\":\"\",\"method\":\"\",\"argKind\":\"none\",\"arg\":\"\"}]},{\"speaker\":\"ササミ\",\"text\":\"ああ、災難だったよ。これで俺も流刑の身ってわけだ。ところであんたは？一体ここはどこなんだ？\",\"cameraTarget\":\"CamTarget_Player\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"謎の男\",\"text\":\"俺ァ \\\"テバ\\\"ってんだ。そんでここは名もない小さな島さ。\\nだが海だけは、そこらの港より豊かだぜ。\",\"cameraTarget\":\"CamTarget_Owner\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"にしてもお前、一体何をしでかしたんだ？この島に流されるたァ、\",\"cameraTarget\":\"\",\"cameraMode\":\"Cut\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"太りすぎて飛べなくなっちまってよ。満足に狩りすらできねぇんだ。\",\"cameraTarget\":\"CamTarget_Player\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"飛べない鳥はただの肉。口減らしってヤツさ。にしてもあんたも俺と同じくらいには太ってるみてえだな\",\"cameraTarget\":\"\",\"cameraMode\":\"Cut\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"ああ、そうか。俺も同じさ。巣で食って寝るだけしてたらいきなり島流しされちまったんだ。\",\"cameraTarget\":\"CamTarget_Owner\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"なるほどな。つまりここは穀潰しの行きつく先ってわけか。\",\"cameraTarget\":\"CamTarget_Player\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"にしてもあんたはどうやって生きてんだ？こんななんもない島で。飛べないんだろ？\",\"cameraTarget\":\"\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"さっきも言ったけどよ、ここは特別海が豊かなんだぜ。見たこともねえような魚がウヨウヨしてる。\",\"cameraTarget\":\"CamTarget_Ocean\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"まあ、飛ぶだけが狩りじゃねェ、ってことさ。ついて来な。\",\"cameraTarget\":\"\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[]}]",
-                    "onDialogueFinished": "[{\"actor\": \"Flow\", \"script\": \"PrologueFlow\", \"method\": \"GoToTutorial\", \"argKind\": \"none\", \"arg\": \"\"}]",
+                    "entries": "[{\"speaker\":\"\",\"text\":\"――この島に流れ着いて、はじめての朝。\",\"cameraTarget\":\"CamTarget_Wide\",\"cameraMode\":\"Cut\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"謎の男\",\"text\":\"よお、目ェ覚ましたか。お前も災難だな。\\r\\nこんな島に流されるなんてよ。\",\"cameraTarget\":\"CamTarget_OwnerFront\",\"cameraMode\":\"Cut\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[{\"actor\":\"\",\"script\":\"\",\"method\":\"\",\"argKind\":\"none\",\"arg\":\"\"}]},{\"speaker\":\"ササミ\",\"text\":\"ああ、災難だったよ。\\nこれで俺も流刑の身ってわけだ。\\nところであんたは？一体ここはどこなんだ？\",\"cameraTarget\":\"CamTarget_Player\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"謎の男\",\"text\":\"俺ァ \\\"テバ\\\"ってんだ。\\r\\nそんでここは名もない小さな島さ。\\nだが海だけは、そこらの港より豊かだぜ。\",\"cameraTarget\":\"CamTarget_Owner\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"にしてもお前、一体何をしでかしたんだ？\\r\\nこんな島に流されるなんてよ。\",\"cameraTarget\":\"\",\"cameraMode\":\"Cut\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"太りすぎて飛べなくなっちまってよ。\\r\\n満足に狩りすらできねぇんだ。\",\"cameraTarget\":\"CamTarget_Player\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"飛べない鳥はただの肉。口減らしってヤツさ。\\r\\nにしてもあんたも俺と同じくらいには太ってるみてえだな\",\"cameraTarget\":\"\",\"cameraMode\":\"Cut\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"ああ、そうか。俺も同じさ。\\r\\n巣で食って寝るだけしてたらいきなり\\r\\n島流しにされちまったんだ。\",\"cameraTarget\":\"CamTarget_Owner\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"なるほどな。\\r\\nつまりここは穀潰しの行きつく先ってわけか。\",\"cameraTarget\":\"CamTarget_Player\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"ササミ\",\"text\":\"にしてもあんたはどうやって生きてんだ？\\r\\nこんななんもない島で。飛べないんだろ？\",\"cameraTarget\":\"\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"さっきも言ったけどよ、\\r\\nここは特別海が豊かなんだぜ。\\r\\n見たこともねえような魚がウヨウヨしてる。\",\"cameraTarget\":\"CamTarget_Ocean\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0.9,\"onStart\":[],\"onEnd\":[]},{\"speaker\":\"テバ\",\"text\":\"まあ、飛ぶだけが狩りじゃねェ、ってことさ。\\r\\nついて来な。\",\"cameraTarget\":\"\",\"cameraMode\":\"Lerp\",\"lerpDuration\":0,\"onStart\":[],\"onEnd\":[]}]",
+                    "onDialogueFinished": "[{\"actor\": \"Flow\", \"script\": \"PrologueFlow\", \"method\": \"GoToMainGame\", \"argKind\": \"none\", \"arg\": \"\"}]",
                     "window": "DialogueWindow"
                   }
                 }

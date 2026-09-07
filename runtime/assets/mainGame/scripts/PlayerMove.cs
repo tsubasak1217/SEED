@@ -417,7 +417,10 @@ public class PlayerMove : SEEDScript
         // 前後入力だけを使う（左右は経路に沿う移動では意味を持たない）。
         // カメラは逆走でも回り込まない（CameraMove が視点を安定化する）ため、
         // 入力の意味は常に一定: +y = 経路の正方向。ラッチや反転処理は不要。
-        float effectiveAxis = im.GetVector2("Move").y;
+        // チュートリアル中は移動を止められる（通常時は常に許可）。
+        // 入力そのものを 0 にすることで、移動アニメ・足音・カメラ追従まで
+        // 「入力が無かったフレーム」と同じ扱いになる。
+        float effectiveAxis = InputGate.Allows(GameAction.Move) ? im.GetVector2("Move").y : 0f;
 
         // 初回は経路の開始時刻へ合わせる（時刻の原点は制御点が決めるので 0 とは限らない）
         if (!pathTimeInitialized)
@@ -791,8 +794,10 @@ public class PlayerMove : SEEDScript
         if (cameraTransform is not { } cam) { return false; }
         if (gameObject.GetComponent<SEED.InputMap>() is not { } im) { return false; }
 
-        var input = im.GetVector2("Move");
-        var upDown = im.GetAxis("UpDown");
+        // チュートリアル中は移動を止められる（通常時は常に許可）
+        bool moveAllowed = InputGate.Allows(GameAction.Move);
+        var input  = moveAllowed ? im.GetVector2("Move") : SEED.Vector2.Zero;
+        var upDown = moveAllowed ? im.GetAxis("UpDown")  : 0f;
 
         // Vector3 は不変構造体なので、Y を捨てた新しいベクトルを作る
         var fwd = new SEED.Vector3(cam.Forward.x, 0f, cam.Forward.z);

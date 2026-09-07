@@ -3,9 +3,6 @@
 //  会話窓（吹き出し・名札・本文・送りマーク）の「表示」だけを担当する。
 // ============================================================================
 
-using System.Collections.Generic;
-using System.Globalization;
-using System.Text;
 using SEEDEditor.Scripting;
 
 /// <summary>
@@ -46,9 +43,6 @@ public class DialogueWindow : SEEDScript
     /// <summary>送りマークの点滅周期（秒）の既定値。</summary>
     private const float DefaultArrowBlinkPeriod = 0.8f;
 
-    /// <summary>これ以下の間隔は「即時全表示」とみなす（0 除算・無限ループ回避）。</summary>
-    private const float MinCharInterval = 0.0001f;
-
     /// <summary>点滅周期がこれ以下なら点滅させない（0 除算回避）。</summary>
     private const float MinBlinkPeriod = 0.0001f;
 
@@ -63,9 +57,6 @@ public class DialogueWindow : SEEDScript
 
     /// <summary>話者名が未設定のときに表示する文字列。</summary>
     private const string EmptyText = "";
-
-    /// <summary>1 フレームに進められる最大文字数（極端な DeltaTime での暴走を防ぐ）。</summary>
-    private const int MaxCharsPerFrame = 64;
 
     // ── インスペクタ公開フィールド（参照）───────────────────
 
@@ -139,19 +130,13 @@ public class DialogueWindow : SEEDScript
     private bool _nameplateVisible = true;
 
     /// <summary>
-    /// 表示対象の本文を書記素クラスタ（見た目 1 文字）単位に分解したもの。
-    /// サロゲートペア・結合文字を途中で切らないため char 単位ではなくこれを使う。
+    /// 文字送りの進行【文字送りロジックの唯一の置き場】。
+    ///
+    /// 書記素クラスタ単位の分解とインライン画像記法のまとめ扱いは
+    /// <see cref="TypewriterText"/>（common/scripts/UI）が担当する。
+    /// チュートリアル窓（TutorialWindow）と実装を共有するため純 C# クラスへ切り出してある。
     /// </summary>
-    private readonly List<string> _textElements = new();
-
-    /// <summary>現在までに表示した文字数（書記素クラスタ数）。</summary>
-    private int _shownCount;
-
-    /// <summary>文字送りの端数時間（秒）。</summary>
-    private float _charTimer;
-
-    /// <summary>表示中の文字列を組み立てるバッファ（毎フレームの文字列連結を避ける）。</summary>
-    private readonly StringBuilder _shownBuilder = new();
+    private readonly TypewriterText _writer = new();
 
     /// <summary>点滅用の経過時間（秒）。</summary>
     private float _blinkTimer;
@@ -159,7 +144,7 @@ public class DialogueWindow : SEEDScript
     // ── 公開プロパティ ──────────────────────────────────────
 
     /// <summary>本文をすべて表示し終えているか（送り待ちの状態か）。</summary>
-    public bool IsTextComplete => _shownCount >= _textElements.Count;
+    public bool IsTextComplete => _writer.IsComplete;
 
     /// <summary>窓を表示中か。</summary>
     public bool IsVisible => _visible;
@@ -239,23 +224,12 @@ public class DialogueWindow : SEEDScript
     {
         CaptureBaseColors();
 
-        // 書記素クラスタ単位へ分解し直す
-        _textElements.Clear();
-        if (!string.IsNullOrEmpty(text))
-        {
-            var enumerator = StringInfo.GetTextElementEnumerator(text);
-            while (enumerator.MoveNext())
-                _textElements.Add((string)enumerator.Current);
-        }
-
-        _shownCount = 0;
-        _charTimer  = 0f;
+        _writer.Begin(text);
         _blinkTimer = 0f;
-        _shownBuilder.Clear();
 
-        // 文字送りを行わない設定なら最初から全文を出す
-        if (charInterval <= MinCharInterval) CompleteText();
-        else ApplyBodyContent();
+        // 文字送りを行わない設定なら最初から全文を出す（判断は共通ヘルパー側の閾値に従う）
+        if (charInterval <= TypewriterText.MinCharInterval) { _writer.Complete(); }
+        ApplyBodyContent();
     }
 
     /// <summary>
@@ -263,15 +237,7 @@ public class DialogueWindow : SEEDScript
     /// </summary>
     public void CompleteText()
     {
-        if (IsTextComplete) return;
-
-        // 未表示ぶんをまとめて連結する
-        for (int i = _shownCount; i < _textElements.Count; i++)
-            _shownBuilder.Append(_textElements[i]);
-
-        _shownCount = _textElements.Count;
-        _charTimer  = 0f;
-        ApplyBodyContent();
+        if (_writer.Complete()) { ApplyBodyContent(); }
     }
 
     // ── 内部処理 ────────────────────────────────────────────
@@ -340,27 +306,8 @@ public class DialogueWindow : SEEDScript
     /// <param name="deltaTime">前フレームからの経過秒。</param>
     private void AdvanceText(float deltaTime)
     {
-        if (IsTextComplete) return;
-        if (charInterval <= MinCharInterval) { CompleteText(); return; }
-
-        _charTimer += deltaTime;
-
-        // 端数時間から「今フレームに出す文字数」を求める
-        int advance = 0;
-        while (_charTimer >= charInterval
-               && advance < MaxCharsPerFrame
-               && _shownCount + advance < _textElements.Count)
-        {
-            _charTimer -= charInterval;
-            advance++;
-        }
-        if (advance <= 0) return;
-
-        for (int i = 0; i < advance; i++)
-            _shownBuilder.Append(_textElements[_shownCount + i]);
-        _shownCount += advance;
-
-        ApplyBodyContent();
+        // 進んだフレームだけ Text へ書き戻す（毎フレームの無駄な代入を避ける）
+        if (_writer.Advance(deltaTime, charInterval)) { ApplyBodyContent(); }
     }
 
     /// <summary>
@@ -400,6 +347,6 @@ public class DialogueWindow : SEEDScript
     private void ApplyBodyContent()
     {
         if (bodyText is { } body && body.IsValid)
-            body.Content = _shownBuilder.ToString();
+            body.Content = _writer.Shown;
     }
 }

@@ -149,6 +149,26 @@ public class FishManager : SEEDScript
     /// </summary>
     private readonly Dictionary<(uint Index, uint Generation), int> fishLevels = new();
 
+    // ─── 台本（チュートリアル用の強制設定）─────────────────
+
+    /// <summary>台本のレベル指定が無いことを表す値（負のレベルは存在しないため番人値に使える）。</summary>
+    private const int NoScriptedLevel = -1;
+
+    /// <summary>台本の食いつき待ち秒数が指定されていないことを表す値。</summary>
+    private const float NoScriptedBiteDelay = -1f;
+
+    /// <summary>
+    /// 台本で固定するレベル（levels の添字、0 始まり）。
+    /// <see cref="NoScriptedLevel"/> なら台本は無効で、通常どおり全レベルを維持する。
+    /// </summary>
+    private int scriptedLevelIndex = NoScriptedLevel;
+
+    /// <summary>台本の食いつき待ち秒数。<see cref="NoScriptedBiteDelay"/> なら指定なし。</summary>
+    private float scriptedBiteDelaySeconds = NoScriptedBiteDelay;
+
+    /// <summary>台本で「必ず食いつかせる」か（<see cref="Fish"/> が食いつき待ちの抽選前に読む）。</summary>
+    private bool scriptedForceBite = false;
+
     // ─── 他スクリプトからの参照点（静的アクセサ）───────────────
 
     /// <summary>
@@ -186,6 +206,75 @@ public class FishManager : SEEDScript
         return fishLevels.TryGetValue((fish.Entity.Index, fish.Entity.Generation), out int level)
             ? level
             : Fish.UnknownLevel;
+    }
+
+    // ─── 台本 API（チュートリアルから呼ぶ強制設定）─────────
+
+    /// <summary>台本が有効か（レベル指定が入っているか）。</summary>
+    public bool HasScriptedSpawn => scriptedLevelIndex >= 0;
+
+    /// <summary>台本で固定しているレベル（levels の添字、0 始まり）。無効なら負値。</summary>
+    public int ScriptedLevelIndex => scriptedLevelIndex;
+
+    /// <summary>台本で「必ず食いつかせる」設定か（<see cref="Fish"/> が読む）。</summary>
+    public bool ScriptedForceBite => scriptedForceBite;
+
+    /// <summary>
+    /// 台本の食いつき待ち秒数（0 以上なら有効・負なら指定なし）。
+    /// <see cref="Fish"/> が食いつき待ちの抽選をする直前にこの値を優先して読む。
+    /// </summary>
+    public float ScriptedBiteDelaySeconds => scriptedBiteDelaySeconds;
+
+    /// <summary>
+    /// チュートリアル用の強制設定を掛ける【台本設定の唯一の入口】。
+    ///
+    /// 掛けている間は次の 2 点が本編の乱数挙動より優先される。
+    /// <list type="number">
+    ///   <item>自動補充の対象を <paramref name="levelIndex"/> のレベルだけに絞る
+    ///         （他のレベルは減っても補充しない。既に泳いでいる個体は消さない）</item>
+    ///   <item><paramref name="forceBite"/> が true なら、魚が餌に着いてからの
+    ///         食いつき待ち時間を <paramref name="delaySeconds"/> で固定する
+    ///         （乱数の待ち時間を使わないので「必ず・すぐに」アタリが来る）</item>
+    /// </list>
+    /// </summary>
+    /// <param name="levelIndex">固定するレベル（levels の添字、0 始まり）。範囲外なら台本は無効になる。</param>
+    /// <param name="delaySeconds">食いつくまでの待ち秒数（負なら 0 として扱う）。</param>
+    /// <param name="forceBite">true で食いつき待ち時間を固定する。</param>
+    public void SetScriptedSpawn(int levelIndex, float delaySeconds, bool forceBite)
+    {
+        if (levelIndex < 0 || levelIndex >= levels.Count)
+        {
+            SEED.Debug.LogWarning($"[FishManager] 台本のレベル {levelIndex + 1} は定義されていません（定義数 {levels.Count}）。台本を無効にします。");
+            ClearScripted();
+            return;
+        }
+
+        scriptedLevelIndex       = levelIndex;
+        scriptedForceBite        = forceBite;
+        scriptedBiteDelaySeconds = forceBite ? SEED.Mathf.Max(delaySeconds, 0f) : NoScriptedBiteDelay;
+
+        SEED.Debug.Log($"[FishManager] 台本: Lv{levelIndex + 1} / 食いつき待ち {scriptedBiteDelaySeconds:F2} 秒 / 強制 {forceBite}");
+    }
+
+    /// <summary>
+    /// 台本の強制設定を解除して、本編どおりの乱数挙動へ戻す【台本解除の唯一の出口】。
+    /// </summary>
+    public void ClearScripted()
+    {
+        scriptedLevelIndex       = NoScriptedLevel;
+        scriptedBiteDelaySeconds = NoScriptedBiteDelay;
+        scriptedForceBite        = false;
+    }
+
+    /// <summary>
+    /// 台本で固定しているレベルの魚を、いますぐ 1 匹その場で生成する。
+    /// 自動補充を待たずに確実に 1 匹用意したいとき（チュートリアルの手順頭）に使う。
+    /// </summary>
+    /// <returns>生成できたら true。台本が無効・生成に失敗したら false。</returns>
+    public bool SpawnScriptedNow()
+    {
+        if (!HasScriptedSpawn) { return false; }
+        return SpawnOne(scriptedLevelIndex);
     }
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
@@ -261,6 +350,11 @@ public class FishManager : SEEDScript
 
         for (int i = 0; i < levels.Count; i++)
         {
+            // 台本（チュートリアル）が掛かっている間は、指定レベル以外を補充しない。
+            // 「説明したいレベルの魚だけが寄ってくる」状態を作るための強制設定で、
+            // 台本を解除すれば次のフレームから通常どおり全レベルが補充される。
+            if (HasScriptedSpawn && i != scriptedLevelIndex) { continue; }
+
             var alive = spawnedFish[i];
             // 死んだ個体は追跡リストからもレベル対応表からも同時に外す
             // （対応表だけ残すとエンティティの使い回しで別個体へ誤ったレベルが付く）

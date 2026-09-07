@@ -24,7 +24,7 @@ using SEEDEditor.Scripting;
 ///
 /// 【シーン側の設定】
 ///  - window / cameraDirector に、それぞれ会話窓アクターと MainCamera を指定する。
-///  - onDialogueFinished に「会話後にやること」（例: PrologueFlow.GoToTutorial）を結線する。
+///  - onDialogueFinished に「会話後にやること」（例: PrologueFlow.GoToMainGame）を結線する。
 /// </summary>
 public class DialogueDirector : SEEDScript
 {

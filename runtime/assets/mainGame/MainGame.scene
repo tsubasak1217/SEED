@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      50.642944,
-      10.124281,
-      -28.60966
+      73.69241,
+      7.4191766,
+      26.708971
     ],
-    "yaw": -0.122265466,
-    "pitch": 0.020778932,
+    "yaw": -7.6094475,
+    "pitch": 0.25010267,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 5.0
+    "speed": 7.2000003
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -654,7 +654,7 @@
             "rotation": [
               1.2524877,
               167.28851,
-              0.0000025785946
+              2.5785946e-06
             ],
             "scale": [
               2.7811875,
@@ -678,7 +678,7 @@
                         37.960476
                       ],
                       [
-                        1.2513732e-7,
+                        1.2513732e-07,
                         5.559396,
                         -0.060792,
                         3.2836604
@@ -826,19 +826,19 @@
               "name": "RodTip",
               "transform": {
                 "position": [
-                  34.469772,
-                  10.919611,
-                  46.70662
+                  38.007725,
+                  11.463051,
+                  47.37176
                 ],
                 "rotation": [
-                  -6.9641647,
-                  88.21752,
-                  -18.155903
+                  -0.0,
+                  0.0,
+                  0.0
                 ],
                 "scale": [
-                  0.9999719,
-                  1.0000323,
-                  0.9999956
+                  0.08793362,
+                  0.08793362,
+                  0.08793362
                 ]
               },
               "components": [],
@@ -989,7 +989,7 @@
             "rotation": [
               -0.7586146,
               168.34944,
-              -1.8087846e-7
+              -1.8087846e-07
             ],
             "scale": [
               1.3905941,
@@ -1448,7 +1448,7 @@
         "rotation": [
           1.1905385,
           267.66238,
-          -0.000006509732
+          -6.509732e-06
         ],
         "scale": [
           1.0,
@@ -2773,7 +2773,20 @@
                     0.0,
                     0.0,
                     1.0
-                  ]
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": true,
+                  "weight": 0.0,
+                  "shadow_offset_x": 0.0,
+                  "shadow_offset_y": 0.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 0.0
                 }
               }
             }
@@ -2831,7 +2844,20 @@
                     0.0,
                     0.0,
                     1.0
-                  ]
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": true,
+                  "weight": 0.0,
+                  "shadow_offset_x": 0.0,
+                  "shadow_offset_y": 0.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 0.0
                 }
               }
             }
@@ -2889,7 +2915,20 @@
                     0.0,
                     0.0,
                     1.0
-                  ]
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": true,
+                  "weight": 0.0,
+                  "shadow_offset_x": 0.0,
+                  "shadow_offset_y": 0.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 0.0
                 }
               }
             }
@@ -2974,13 +3013,13 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  154.5213,
-                  242.3263
+                  191.25076,
+                  106.356575
                 ],
                 "rotation": -12.0,
                 "scale": [
-                  0.6667,
-                  0.6667
+                  0.667,
+                  0.667
                 ],
                 "pivot": [
                   0.5,
@@ -3023,25 +3062,38 @@
                     "type": "TextComponent",
                     "data": {
                       "content": "Lv? 魚",
-                      "font_size": 120.0,
+                      "font_size": 174.3,
                       "color": [
                         1.0,
                         1.0,
                         1.0,
                         1.0
                       ],
-                      "align": "left",
+                      "align": "center",
                       "vertical_align": "middle",
                       "line_spacing": 1.2,
                       "layer": 26,
                       "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
-                      "outline_width": 8.0,
+                      "outline_width": 21.1,
                       "outline_color": [
                         0.0,
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 437.2,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0
                     }
                   }
                 }
@@ -3053,8 +3105,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -120.6383,
-                  -82.9194
+                  -214.72229,
+                  -116.37158
                 ],
                 "rotation": -12.0,
                 "scale": [
@@ -3102,25 +3154,38 @@
                     "type": "TextComponent",
                     "data": {
                       "content": "HIT!!!",
-                      "font_size": 160.0,
+                      "font_size": 239.9,
                       "color": [
                         1.0,
                         1.0,
                         1.0,
                         1.0
                       ],
-                      "align": "right",
+                      "align": "center",
                       "vertical_align": "middle",
                       "line_spacing": 1.2,
                       "layer": 26,
                       "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
-                      "outline_width": 8.0,
+                      "outline_width": 26.5,
                       "outline_color": [
                         0.0,
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 568.4,
+                      "box_height": 287.6,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0
                     }
                   }
                 }
@@ -3132,8 +3197,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  300.0,
-                  140.0
+                  275.2691,
+                  23.650345
                 ],
                 "rotation": -12.0,
                 "scale": [
@@ -3185,10 +3250,10 @@
                         0.0,
                         0.0,
                         0.0,
-                        0.0
+                        1.0
                       ],
                       "width": 2400.0,
-                      "height": 220.0,
+                      "height": 300.0,
                       "layer": 25,
                       "postfx_path": "",
                       "raycast_target": false
@@ -3203,12 +3268,12 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -300.0,
-                  -140.0
+                  -273.18713,
+                  -13.857849
                 ],
                 "rotation": -12.0,
                 "scale": [
-                  0.5833,
+                  0.583,
                   0.5
                 ],
                 "pivot": [
@@ -3256,10 +3321,10 @@
                         0.0,
                         0.0,
                         0.0,
-                        0.0
+                        1.0
                       ],
                       "width": 2400.0,
-                      "height": 220.0,
+                      "height": 300.0,
                       "layer": 25,
                       "postfx_path": "",
                       "raycast_target": false
@@ -3582,7 +3647,20 @@
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0
                     }
                   }
                 }
@@ -3640,7 +3718,20 @@
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0
                     }
                   }
                 }
@@ -3698,7 +3789,20 @@
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0
                     }
                   }
                 }
@@ -3756,7 +3860,20 @@
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0
                     }
                   }
                 }
@@ -3814,7 +3931,300 @@
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "TutorialWindow",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "TutorialWindow",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://mainGame/scripts/Tutorial/TutorialWindow.cs",
+                  "fields": {
+                    "charaSprite": "TutorialChara|Sprite",
+                    "balloonSprite": "TutorialBalloon|Sprite",
+                    "bodyText": "TutorialBodyText|Text",
+                    "nextArrowSprite": "TutorialNextArrow|Sprite",
+                    "projectionCamera": "MainCamera|Camera",
+                    "charInterval": "0.030",
+                    "arrowBlinkPeriod": "0.800",
+                    "fontPath": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                    "iconSetPath": "assets://mainGame/ui/tutorial.icons",
+                    "boxWidth": "680.000",
+                    "boxHeight": "170.000",
+                    "canvasWidth": "1920.000",
+                    "canvasHeight": "1080.000",
+                    "screenMargin": "260.000",
+                    "aboveTargetWorldOffsetY": "1.800",
+                    "aboveTargetCanvasOffsetY": "-120.000"
+                  }
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "TutorialBalloon",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  60.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "color": [
+                        0.05,
+                        0.06,
+                        0.1,
+                        0.8
+                      ],
+                      "width": 760.0,
+                      "height": 220.0,
+                      "layer": 1000,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "TutorialChara",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -400.0,
+                  10.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "color": [
+                        0.98,
+                        0.74,
+                        0.45,
+                        1.0
+                      ],
+                      "width": 170.0,
+                      "height": 170.0,
+                      "layer": 1001,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "TutorialBodyText",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -300.0,
+                  -80.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "",
+                      "font_size": 30.0,
+                      "color": [
+                        1.0,
+                        0.98,
+                        0.94,
+                        1.0
+                      ],
+                      "align": "left",
+                      "vertical_align": "top",
+                      "line_spacing": 1.35,
+                      "layer": 1002,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "assets://mainGame/ui/tutorial.icons",
+                      "outline_width": 2.0,
+                      "outline_color": [
+                        0.05,
+                        0.05,
+                        0.08,
+                        1.0
+                      ],
+                      "box_width": 680.0,
+                      "box_height": 170.0,
+                      "wrap": true,
+                      "weight": 0.3,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "TutorialNextArrow",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  390.0,
+                  85.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://prologue/textures/nextArrow.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 41.3,
+                      "height": 43.4,
+                      "layer": 1003,
+                      "postfx_path": "",
+                      "raycast_target": false
                     }
                   }
                 }
@@ -4000,6 +4410,46 @@
                     "spawnRadiusMin": "4.000",
                     "stunPrefabPath": "assets://mainGame/actors/Drift/DriftStun.actor",
                     "stunWeight": "1.000"
+                  }
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "TutorialDirector",
+          "transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Script",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://mainGame/scripts/Tutorial/TutorialDirector.cs",
+                  "fields": {
+                    "window": "TutorialWindow",
+                    "autoStart": "true",
+                    "debugForceTutorial": "false",
+                    "stepInputLockSeconds": "0.150",
+                    "onTutorialFinished": "[]",
+                    "steps": "[{\"text\": \"ようこそ、わらしべフィッシングへ！\\nまずは基本の操作を覚えていこう。\\n[icon:mouse_l] か Enter で次へ進むよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"砂浜は [icon:key_w] で前へ、[icon:key_s] で後ろへ歩けるよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"さっそく歩いてみよう！\\n[icon:key_w] [icon:key_s] で前後に動けるよ。\", \"anchorMode\": \"AboveTarget\", \"target\": \"Player\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Seconds\", \"finishEventName\": \"\", \"finishSeconds\": 6.0, \"pauseTime\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"釣りたい場所まで来たら、マウスの左ボタン [icon:mouse_l] を押しっぱなしにして竿を構えよう。\\n構えている間は [icon:key_a] [icon:key_d] で狙う向きを変えられる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"左ボタン [icon:mouse_l] を押して構えてみよう！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.ready_begin\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"構えたまま、マウスを左へ引くと竿が振りかぶるよ。\\n着水点のマーカーが行ったり来たりするから、投げたい位置に来た瞬間にマウスを左から右へ勢いよく振る！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"マーカーが狙いの位置に来たら、マウスを左→右へ振って投げよう！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.cast\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"よし、着水した！\\nしばらくするとウキがコツコツ揺れて、やがて大きく沈む。\\nその瞬間に [icon:mouse_l] で竿を振る（合わせる）と魚が掛かるよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"OnEvent\", \"startEventName\": \"fishing.land\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"ForceBite\", \"scriptedParam\": \"\", \"scriptedSeconds\": 2.0, \"scriptedLevel\": 1, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ウキが大きく沈んだ瞬間に [icon:mouse_l]！\\n早すぎても遅すぎても逃げられるから、よく見ていよう。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.fight_begin\", \"finishSeconds\": 90.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"掛かった！ ここからは魚とのやり取りだ。\\n魚のリズムに合わせて流れてくる印が重なった瞬間に [icon:mouse_l] でタップ！\\n外すと糸が削られてしまうけど、ぴったり決めると魚が長くひるむよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"リズムに合わせて [icon:mouse_l] でタップ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.stun_begin\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"魚がひるんだ！ このスキに糸を巻こう。\\nマウスホイールを回すと巻き取れて、[icon:key_a] [icon:key_d] でウキを左右に寄せられる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ホイールを回して巻いてみよう！\\n[icon:key_a] [icon:key_d] で寄せたい方向も選べるよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.reel\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": true, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"海には漂流物が流れてくる。\\n巻き寄せて拾うと、糸が回復したり魚が長くひるんだりするよ。\\nただし魚が元気になって沖へ走り出すものもあるから気をつけて！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"SpawnDrift\", \"scriptedParam\": \"line_recover\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"最後に大事な話。\\n釣り上げた魚は、次のエサになる。\\n大きい魚は小さい魚を狙うから、小魚 → 中くらいの魚 → 大物とわらしべ式に釣り上げていこう！\\nそれじゃあ、いってらっしゃい！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}]"
                   }
                 }
               }
@@ -4722,7 +5172,7 @@
                       ],
                       [
                         1.5036188,
-                        -0.00007515028,
+                        -7.515028e-05,
                         0.84553915,
                         -657.0699
                       ],
