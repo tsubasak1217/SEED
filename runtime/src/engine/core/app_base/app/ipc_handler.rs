@@ -1368,6 +1368,10 @@ impl App {
                 IpcCommand::AnimReload { clip_path } => {
                     self.handle_anim_reload(&clip_path);
                 }
+                // 未保存クリップ本文でプレビューキャッシュを差し替える（anim_preview_clip_ops.rs）。
+                IpcCommand::AnimPreviewClip { clip_path, json } => {
+                    self.handle_anim_preview_clip(&clip_path, &json);
+                }
                 IpcCommand::SetCanvasAnchor { actor_dfs_id, ax, ay } => {
                     self.handle_set_canvas_anchor(actor_dfs_id, ax, ay);
                 }

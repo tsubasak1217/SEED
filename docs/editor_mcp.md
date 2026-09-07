@@ -136,7 +136,7 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_state` | なし | `{ok, state, runtime_connected, scene_path, selected_actor_dfs_id, actor_count, assets_path}` |
 | `seed_hierarchy` | なし | `{ok, count, hierarchy:[{id,name,parent,is_2d,is_vp,active,has_canvas,is_prefab,is_folder}]}` |
 | `seed_select` | `actor_dfs_id` \| `name` | `{ok, actor_dfs_id, components}`（ACTOR_COMPONENTS の JSON） |
-| `seed_screenshot` | `target`: `"viewport"`\|`"game"`\|`"editor"`, `method?`: `"gpu"`（既定）\|`"screen"`, `path?` | **画像（base64 PNG）** ＋ `{ok, path, width, height, method, warning?}` |
+| `seed_screenshot` | `target`: `"viewport"`\|`"game"`\|`"editor"`, `method?`: `"gpu"`（既定）\|`"screen"`, `path?`, `max_width?`, `scale?`, `keep_full?` | **画像（base64 PNG）** ＋ `{ok, path, width, height, scaled, full_width, full_height, full_path?, method, warning?}` |
 | `seed_play` | `action`: `play`\|`pause`\|`resume`\|`stop`, `wait_seconds?` | `{ok, action, state, waited_secs}` |
 | `seed_anim_preview` | `actor_dfs_id`\|`name`, `clip_path`, `time` | `{ok, actor_dfs_id, clip_path, time}` |
 | `seed_anim_preview_stop` | `actor_dfs_id` \| `name` | `{ok, actor_dfs_id}` |
@@ -258,7 +258,34 @@ dotnet build editor/SEEDEditor.csproj
 
 ## 6. 制約・注意点
 
-### 6.1 スクリーンショットの 2 方式
+### 6.1 スクリーンショットの縮小（`max_width` / `scale` / `keep_full`）
+
+フル解像度の PNG をそのまま埋め込むとコンテキストを大量に消費するため、
+`seed_screenshot` は撮影後の共通後処理として縮小を掛けられる。
+撮影方式（`gpu` / `screen`）に依らず同じ挙動になる。
+
+| 引数 | 型 | 意味 |
+|---|---|---|
+| `max_width` | integer | 縮小後の最大幅（px）。元画像がこれより狭ければ何もしない。 |
+| `scale` | number | 縮小率 0〜1。1 以上は「指定なし」と同じ。 |
+| `keep_full` | boolean | true なら縮小前のフル解像度版を `<名前>.full.png` として隣に残す。 |
+
+- `max_width` と `scale` を両方指定した場合は **より小さくなるほう** が採用される（どちらも上限として働く）。
+- 縮小後は縦横比を保ち、高さは自動で決まる（最低 1 px）。
+- **返す画像も保存されるファイル（`path`）も縮小版**になる。フル解像度が必要なときは
+  `keep_full: true` を付けて `full_path` を読むこと。
+- 応答 JSON には `scaled`（縮小したか）と `full_width` / `full_height`（縮小前の寸法）が入る。
+- リサンプルは WPF の `BitmapScalingMode.HighQuality`（Fant）。
+- 読み込み・縮小に失敗しても撮影自体は成功しているため、**エラーにはせず**
+  フル解像度のまま返し、理由を `warning` に入れる。
+
+実装: `editor/src/AI/Capture/ScreenshotDownscaler.cs`（純粋な後処理ユーティリティ）を
+`EditorCommandExecutor.Visual.cs::ApplyScreenshotDownscale` から両コマンドで共用する。
+
+目安: レイアウトや配置の確認だけなら `max_width: 800`、
+テクスチャや文字の確認まで要るときは無指定（フル解像度）。
+
+### 6.2 スクリーンショットの 2 方式
 
 `seed_screenshot` には `method` が 2 つある。**既定は `gpu`**。
 
@@ -293,13 +320,13 @@ OS が `WM_PAINT` を配送しないため、winit の `RedrawRequested` によ�
 なお `target="viewport"` と `"game"` は `gpu` 方式では**同じ絵**になる
 （どちらも「いま提示しているカラーターゲット」＝ Edit ならシーンビュー、Play ならゲーム画面）。
 
-### 6.2 `target` の "viewport" と "game" は同じウィンドウのことがある
+### 6.3 `target` の "viewport" と "game" は同じウィンドウのことがある
 
 埋め込み Play（既定）では Edit ランタイムがそのまま Play になるため、
 シーンビューとゲーム画面は同一の HWND。ウィンドウ Play（「ウィンドウを出してプレイ」）では
 別プロセスの別ウィンドウになり、`RuntimeManager.RuntimeHwnd` がそちらへ差し替わる。
 
-### 6.3 状態依存の制約
+### 6.4 状態依存の制約
 
 - `seed_play(action:"play")` は **Edit 状態でのみ**、`pause` は Play 中のみ、
   `resume` は Pause 中のみ、`stop` は Play/Pause 中のみ実行できる。それ以外は
@@ -316,7 +343,7 @@ OS が `WM_PAINT` を配送しないため、winit の `RedrawRequested` によ�
   **ヘッドレス起動（`seed_launch`）ではこれらは抑止され、ログへ流れる**ので
   この問題は起きない。人が画面を見ていない環境では必ずヘッドレスで起動すること。
 
-### 6.4 タイムアウト
+### 6.5 タイムアウト
 
 | 対象 | 上限 |
 |---|---|
@@ -330,7 +357,7 @@ OS が `WM_PAINT` を配送しないため、winit の `RedrawRequested` によ�
 すべて `await` ベースで実装しており、UI スレッドをブロックしない
 （待っている間もエディタは操作できる）。
 
-### 6.5 その他
+### 6.6 その他
 
 - `seed_hierarchy` はランタイムが**変化時にのみ push** した `HIERARCHY:` の
   キャッシュを返す。エディタ起動直後にまだ 1 度も届いていなければ `[]`。

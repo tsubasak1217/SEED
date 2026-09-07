@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  AnimClipIO.cs — .anim ファイルの読み込み／書き出し
 //
 //  Rust 側（serde_json）と完全互換な JSON 構造で読み書きする。
@@ -39,6 +39,11 @@ internal static class AnimClipIO
         {
             Name     = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "",
             Duration = root.TryGetProperty("duration", out var dp) ? dp.GetSingle() : 0f,
+            // fps は後付けフィールド。旧 .anim には無いので既定値へ落とす
+            // （NormalizeFps が 0・負値・NaN もまとめて既定へ矯正する）。
+            Fps      = AnimFrameMath.NormalizeFps(
+                           root.TryGetProperty("fps", out var fp) && fp.ValueKind == JsonValueKind.Number
+                               ? fp.GetSingle() : AnimFrameMath.DefaultFps),
             LoopMode = root.TryGetProperty("loop_mode", out var lp) ? lp.GetString() ?? AnimLoopMode.Once : AnimLoopMode.Once,
         };
 
@@ -147,6 +152,8 @@ internal static class AnimClipIO
             writer.WriteStartObject();
             writer.WriteString("name", clip.Name);
             writer.WriteNumber("duration", clip.Duration);
+            // 編集用フレームレート（Rust 側は #[serde(default)] なので旧エディタとも共存できる）
+            writer.WriteNumber("fps", AnimFrameMath.NormalizeFps(clip.Fps));
             writer.WriteString("loop_mode", clip.LoopMode);
 
             writer.WriteStartArray("tracks");

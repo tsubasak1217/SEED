@@ -436,6 +436,7 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::AnimPreview { .. }
         | IpcCommand::AnimPreviewStop { .. }
         | IpcCommand::AnimReload { .. }
+        | IpcCommand::AnimPreviewClip { .. }
         // スクリーンショットはシーンを一切変更しないため Undo 対象外。
         | IpcCommand::Screenshot { .. }
         | IpcCommand::SetEditPhysics { .. }

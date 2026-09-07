@@ -825,7 +825,9 @@ static object SeedScreenshotTool() => new
       + "method=\"gpu\"（既定）はランタイムの GPU から直接読み戻すため、"
       + "ウィンドウが隠れていても・最小化でも・ヘッドレス起動でも正しく撮れる（target は viewport/game のみ）。"
       + "method=\"screen\" は画面に映っているものを撮る従来方式で、target=\"editor\" のときはこちらが自動的に使われる"
-      + "（この方式はウィンドウが最小化・他ウィンドウで隠れていると正しく撮れない）。",
+      + "（この方式はウィンドウが最小化・他ウィンドウで隠れていると正しく撮れない）。"
+      + "max_width / scale を指定すると縮小した PNG を返す（保存されるファイルも縮小版になる）。"
+      + "レイアウト確認だけなら max_width=800 程度にするとコンテキスト消費を大きく減らせる。",
     inputSchema = new
     {
         type       = "object",
@@ -847,6 +849,21 @@ static object SeedScreenshotTool() => new
             {
                 type        = "string",
                 description = "出力 PNG の絶対パス。省略時は OS のテンポラリ配下へ自動命名で保存する。"
+            },
+            max_width = new
+            {
+                type        = "integer",
+                description = "縮小後の最大幅（px）。これより広い画像は縦横比を保って縮小される。省略時は縮小しない。"
+            },
+            scale = new
+            {
+                type        = "number",
+                description = "縮小率（0〜1）。max_width と併用した場合は「より小さくなるほう」が採用される。"
+            },
+            keep_full = new
+            {
+                type        = "boolean",
+                description = "true なら縮小前のフル解像度 PNG も \"<名前>.full.png\" として保存する（返す画像は縮小版のまま）。"
             }
         }
     }

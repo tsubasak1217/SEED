@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  AnimationTimelinePanel.xaml.cs — キーフレームアニメーション編集パネル
 //
 //  .anim クリップ（AnimClip モデル、AnimClipIO で読み書き）を
@@ -11,10 +11,23 @@
 //  ・ファイル単独モード:「直接開く」で任意の .anim を開く。アクター文脈が
 //    無いためプレビュー不可（ボタンをグレーアウト）。
 //
+//  【時間軸はフレーム基準】
+//  クリップは編集用フレームレート（AnimClip.Fps、.anim の "fps"）を持ち、
+//  ルーラー・プレイヘッド・キー操作はすべてフレーム境界にスナップする。
+//  秒⇔フレームの変換は AnimFrameMath に集約している（ランタイムは秒しか見ない）。
+//
+//  【編集文脈（Animator アクタとキー対象アクタ）】
+//  選択アクタが Animator を持たない場合、ヒエラルキーを遡って最も近い
+//  Animator 保持アクタを編集文脈に採用し、選択アクタ自身は「キー対象」として覚える。
+//  新規トラックの actor_path はその相対パスで自動的に埋まる（AnimHierarchyNav）。
+//  🔒 トグルで文脈を固定でき、以後アクタ選択が変わっても切り替わらない。
+//
 //  【IPC】
 //  ・ANIM_PREVIEW:{actor},{clip_path},{time} — プレビュー中は毎 tick 送信
-//  ・ANIM_PREVIEW_STOP:{actor} — プレビュー終了時に必ず送信し元値へ復元する
+//  ・ANIM_PREVIEW_STOP:{actor} — プレビュー終了時に必ず送信し元値を復元する
+//  ・ANIM_PREVIEW_CLIP:{clip_path},{json_base64} — 未保存の編集内容をランタイムへ反映（ライブプレビュー）
 //  ・ANIM_RELOAD:{clip_path} — 保存直後にランタイムのキャッシュを破棄させる
+//  ・GET_ACTOR_COMPONENTS:{dfs_id} — 祖先の Animator 探索で使う（選択は変えない）
 // ============================================================
 
 using System;
@@ -22,6 +35,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -80,6 +94,41 @@ public partial class AnimationTimelinePanel : UserControl
     /// <summary>ANIM_PREVIEW を送信中（=ANIM_PREVIEW_STOP で復元が必要）かどうか。</summary>
     private bool  _previewActive;
 
+    // ── 編集文脈（Animator アクタ / キー対象アクタ）────────────────
+
+    /// <summary>ヒエラルキー（DFS ID → 最小ノード）。HIERARCHY 通知のたびに更新する。</summary>
+    private IReadOnlyDictionary<int, AnimHierarchyNode> _hierarchy =
+        new Dictionary<int, AnimHierarchyNode>();
+
+    /// <summary>ユーザーが実際に選択しているアクタの DFS ID（-1 = 未選択）。</summary>
+    private int _selectedActorDfsId = -1;
+
+    /// <summary>キーの対象アクタ（＝選択アクタ）の DFS ID。Animator アクタと同じこともある。</summary>
+    private int _keyTargetDfsId = -1;
+
+    /// <summary>Animator アクタから見たキー対象アクタへの相対 actor_path（空 = Animator 自身）。</summary>
+    private string _keyTargetActorPath = "";
+
+    /// <summary>キー対象アクタの現在値スナップショット（キー挿入で使う）。</summary>
+    private AnimActorSnapshot _keyTargetSnapshot = AnimActorSnapshot.Parse("");
+
+    /// <summary>🔒 で文脈を固定中か。true の間はアクタ選択の変化を無視する。</summary>
+    private bool _contextLocked;
+
+    /// <summary>祖先 Animator 探索の対象チェーン（[自分, 親, …, ルート]）。探索していないときは null。</summary>
+    private List<int>? _probeChain;
+
+    /// <summary>_probeChain 内で現在問い合わせ中の位置。</summary>
+    private int _probeCursor;
+
+    // ── Undo / Redo ─────────────────────────────────────────────
+
+    /// <summary>クリップ JSON スナップショットによるパネル内 Undo スタック。</summary>
+    private readonly AnimUndoStack _undo = new();
+
+    /// <summary>Undo/Redo による復元中は履歴を積まないためのガード。</summary>
+    private bool _isRestoringUndo;
+
     /// <summary>パネルの表示タイトルが変わったことを通知する（MainWindow が LayoutAnchorable.Title へ反映）。</summary>
     public event Action<string>? TitleChanged;
 
@@ -94,6 +143,7 @@ public partial class AnimationTimelinePanel : UserControl
 
         DopeSheet.KeyAddRequested      += OnDopeSheetKeyAddRequested;
         DopeSheet.KeyMoved             += OnDopeSheetKeyMoved;
+        DopeSheet.KeyDragEnded         += OnDopeSheetKeyDragEnded;
         DopeSheet.KeyDeleteRequested   += OnDopeSheetKeyDeleteRequested;
         DopeSheet.KeySelectionChanged  += OnDopeSheetKeySelectionChanged;
         DopeSheet.PlayheadScrubbed     += OnPlayheadScrubbed;
@@ -115,6 +165,11 @@ public partial class AnimationTimelinePanel : UserControl
         // Delete キーでのキー削除（OnKeyDown）を受けるため、パネル内クリックでキーボードフォーカスを取得する。
         PreviewMouseDown += (_, _) => Focus();
 
+        // ビューポート操作中（＝パネルにフォーカスが無い）でも I / U を効かせるため、
+        // 所属ウィンドウの PreviewKeyDown をパネル表示中だけ購読する。
+        Loaded   += OnPanelLoaded;
+        Unloaded += OnPanelUnloaded;
+
         UpdateEmptyState();
     }
 
@@ -128,11 +183,14 @@ public partial class AnimationTimelinePanel : UserControl
             _runtime.SelectionChanged        -= OnSelectionChanged;
             _runtime.ActorComponentsReceived -= OnActorComponentsReceived;
             _runtime.StateChanged            -= OnRuntimeStateChanged;
+            _runtime.HierarchyUpdated        -= OnHierarchyUpdated;
         }
         _runtime = runtime;
         _runtime.SelectionChanged        += OnSelectionChanged;
         _runtime.ActorComponentsReceived += OnActorComponentsReceived;
         _runtime.StateChanged            += OnRuntimeStateChanged;
+        // 祖先 Animator の探索と actor_path 生成にヒエラルキーが要る
+        _runtime.HierarchyUpdated        += OnHierarchyUpdated;
         UpdatePreviewAvailability();
     }
 
@@ -154,6 +212,8 @@ public partial class AnimationTimelinePanel : UserControl
             _isDirty          = false;
             _selectedTrackIndex = -1;
             _isModelClipSelected = false;
+            _previewTime      = 0f;
+            ResetUndo();
             RefreshAll();
         }
         catch (Exception ex)
@@ -185,30 +245,56 @@ public partial class AnimationTimelinePanel : UserControl
     private void OnRuntimeStateChanged(EditorState state) =>
         Dispatcher.InvokeAsync(UpdatePreviewAvailability);
 
+    /// <summary>ヒエラルキー更新を受け取り、祖先探索用のノード表を作り直す。</summary>
+    private void OnHierarchyUpdated(string json)
+    {
+        Dispatcher.InvokeAsync(() =>
+        {
+            _hierarchy = AnimHierarchyNav.ParseHierarchy(json);
+            // アクタのリネーム・親替えで actor_path が変わるため、文脈表示を張り直す
+            RecomputeKeyTargetPath();
+            UpdateContextInfo();
+        });
+    }
+
     private void OnSelectionChanged(int id)
     {
         Dispatcher.InvokeAsync(() =>
         {
             if (_isFileOnlyMode) return; // ファイル単独モード中はアクター選択変化を無視する
+            if (_contextLocked)  return; // 🔒 固定中は選択変化を無視する
 
             // 選択が外れた／別アクターへ移った → 進行中のプレビューを止めて元値へ復元する
             StopPreview();
 
+            _selectedActorDfsId = id;
+            _probeChain         = null;   // 前回の祖先探索は破棄する
+
             if (id < 0)
             {
-                _actorDfsId = -1;
+                _actorDfsId     = -1;
+                _keyTargetDfsId = -1;
                 _actorClips.Clear();
                 UpdateEmptyState();
+                UpdateContextInfo();
             }
             // 実データは ACTOR_COMPONENTS 側で届くのでここでは文脈クリアのみ行う
         });
     }
 
+    /// <summary>
+    /// ACTOR_COMPONENTS を受け取り、編集文脈（Animator アクタ）とキー対象の現在値を更新する。
+    ///
+    /// 届く ACTOR_COMPONENTS は「ユーザーの選択」だけでなく、
+    /// 本パネル自身の祖先探索（GET_ACTOR_COMPONENTS）や他パネルの問い合わせでも飛んでくる。
+    /// そのため DFS ID を見て「選択のもの」「探索中のもの」「無関係」を明確に振り分ける。
+    /// </summary>
     private void OnActorComponentsReceived(string json)
     {
         Dispatcher.InvokeAsync(() =>
         {
             if (_isFileOnlyMode) return;
+            if (_contextLocked)  return;
 
             try
             {
@@ -217,30 +303,179 @@ public partial class AnimationTimelinePanel : UserControl
                 var dfsId = root.TryGetProperty("id", out var idEl) ? idEl.GetInt32() : -1;
                 if (dfsId < 0) return;
 
-                AnimatorComponentInfo? animator = null;
-                if (root.TryGetProperty("components", out var comps))
+                var animator = FindAnimator(root);
+
+                // ── (a) ユーザーが選択したアクタの情報 ──
+                if (dfsId == _selectedActorDfsId || _selectedActorDfsId < 0)
                 {
-                    foreach (var comp in comps.EnumerateArray())
+                    _selectedActorDfsId = dfsId;
+                    _keyTargetDfsId     = dfsId;
+                    // 現在値スナップショット（キー挿入で使う）はキー対象アクタのものだけ保持する
+                    _keyTargetSnapshot  = AnimActorSnapshot.Parse(json);
+
+                    if (animator is not null)
                     {
-                        var type = comp.TryGetProperty("type", out var tp) ? tp.GetString() ?? "" : "";
-                        if (type != "AnimatorComponent") continue;
-                        animator = ParseAnimatorComponent(comp);
-                        break;
+                        AdoptAnimatorContext(dfsId, animator);
+                        return;
                     }
+
+                    // Animator が無い → 祖先を遡って探す（backlog 項目 1 の修正）
+                    BeginAncestorProbe(dfsId);
+                    return;
                 }
 
-                _actorDfsId = dfsId;
-                _actorClips.Clear();
-                if (animator is not null) _actorClips.AddRange(animator.Clips);
-                // clips が空（Animator 無し、または clips 未設定）の場合は
-                // RebuildClipCombo 内部で UpdateEmptyState が呼ばれ編集領域が空になる。
-                RebuildClipCombo(animator?.DefaultClip ?? "");
+                // ── (b) 祖先探索の応答 ──
+                if (_probeChain is not null && _probeCursor < _probeChain.Count
+                                            && _probeChain[_probeCursor] == dfsId)
+                {
+                    if (animator is not null)
+                    {
+                        _probeChain = null;
+                        AdoptAnimatorContext(dfsId, animator);
+                        return;
+                    }
+                    _probeCursor++;
+                    ProbeNextAncestor();
+                    return;
+                }
+
+                // ── (c) 無関係な問い合わせ（他パネルのリファレンスピッカー等）は無視 ──
             }
             catch (Exception ex)
             {
                 EditorLog.Write($"AnimationTimelinePanel: ACTOR_COMPONENTS 解析失敗: {ex.Message}");
             }
         });
+    }
+
+    /// <summary>ACTOR_COMPONENTS のルートから AnimatorComponent を探す（無ければ null）。</summary>
+    private static AnimatorComponentInfo? FindAnimator(JsonElement root)
+    {
+        if (!root.TryGetProperty("components", out var comps) || comps.ValueKind != JsonValueKind.Array)
+            return null;
+        foreach (var comp in comps.EnumerateArray())
+        {
+            var type = comp.TryGetProperty("type", out var tp) ? tp.GetString() ?? "" : "";
+            if (type != "AnimatorComponent") continue;
+            return ParseAnimatorComponent(comp);
+        }
+        return null;
+    }
+
+    // ── 祖先 Animator の探索 ────────────────────────────────────
+
+    /// <summary>
+    /// 選択アクタが Animator を持たないとき、祖先を 1 つずつ問い合わせて
+    /// 最も近い Animator 保持アクタを探し始める。
+    /// ヒエラルキーが未取得（起動直後など）の場合は探索できないので空表示にする。
+    /// </summary>
+    private void BeginAncestorProbe(int selectedDfsId)
+    {
+        var chain = AnimHierarchyNav.SelfAndAncestors(_hierarchy, selectedDfsId);
+        if (chain.Count <= 1)
+        {
+            // 祖先がいない（ルート、またはヒエラルキー未取得）
+            _probeChain = null;
+            ClearAnimatorContext();
+            return;
+        }
+
+        _probeChain  = chain;
+        _probeCursor = 1;      // 0 は自分自身（Animator 無しと判明済み）
+        ProbeNextAncestor();
+    }
+
+    /// <summary>探索チェーンの次の祖先へ GET_ACTOR_COMPONENTS を投げる。尽きたら文脈なしにする。</summary>
+    private void ProbeNextAncestor()
+    {
+        if (_probeChain is null || _probeCursor >= _probeChain.Count)
+        {
+            _probeChain = null;
+            ClearAnimatorContext();
+            return;
+        }
+        // GET_ACTOR_COMPONENTS は選択を変えずに 1 通だけ ACTOR_COMPONENTS を返させる
+        _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_probeChain[_probeCursor]}");
+    }
+
+    /// <summary>Animator が 1 つも見つからなかったときの状態（編集領域を空にする）。</summary>
+    private void ClearAnimatorContext()
+    {
+        _actorDfsId = -1;
+        _actorClips.Clear();
+        _keyTargetActorPath = "";
+        UpdateEmptyState();
+        UpdateContextInfo();
+    }
+
+    /// <summary>
+    /// 指定アクタの Animator を編集文脈として採用する。
+    ///
+    /// 同じ Animator・同じクリップ構成のまま子アクタを選び直しただけのときは
+    /// ComboBox を作り直さない（未保存の編集内容が捨てられるのを防ぐ）。
+    /// </summary>
+    private void AdoptAnimatorContext(int animatorDfsId, AnimatorComponentInfo animator)
+    {
+        var sameContext = _actorDfsId == animatorDfsId
+                       && _actorClips.Count == animator.Clips.Count
+                       && !_actorClips.Where((c, i) => c != animator.Clips[i]).Any();
+
+        _actorDfsId = animatorDfsId;
+        RecomputeKeyTargetPath();
+
+        if (sameContext)
+        {
+            // クリップは読み直さない。文脈表示と新規トラックの既定パスだけ更新する。
+            UpdateContextInfo();
+            return;
+        }
+
+        _actorClips.Clear();
+        _actorClips.AddRange(animator.Clips);
+        // clips が空（clips 未設定）の場合は RebuildClipCombo 内部で
+        // UpdateEmptyState が呼ばれ編集領域が空になる。
+        RebuildClipCombo(animator.DefaultClip);
+        UpdateContextInfo();
+    }
+
+    /// <summary>Animator アクタ → キー対象アクタの相対 actor_path を計算し直す。</summary>
+    private void RecomputeKeyTargetPath()
+    {
+        if (_actorDfsId < 0 || _keyTargetDfsId < 0) { _keyTargetActorPath = ""; return; }
+        _keyTargetActorPath = AnimHierarchyNav.BuildActorPath(_hierarchy, _actorDfsId, _keyTargetDfsId) ?? "";
+        // 新規トラック追加欄の既定値を、いま選んでいる子アクタへのパスにする
+        TbNewTrackActorPath.Text = _keyTargetActorPath;
+    }
+
+    /// <summary>ツールバーの文脈表示（Animator アクタ / キー対象）を更新する。</summary>
+    private void UpdateContextInfo()
+    {
+        if (_isFileOnlyMode)
+        {
+            TbContextInfo.Text = "ファイル単独モード（アクタ文脈なし）";
+            return;
+        }
+        if (_actorDfsId < 0)
+        {
+            TbContextInfo.Text = "";
+            return;
+        }
+
+        var animatorName = NodeName(_actorDfsId);
+        var targetLabel  = _keyTargetActorPath.Length == 0 ? "(Animator 自身)" : _keyTargetActorPath;
+        var lockMark     = _contextLocked ? " 🔒" : "";
+        TbContextInfo.Text = $"Animator: {animatorName} / キー対象: {targetLabel}{lockMark}";
+    }
+
+    /// <summary>DFS ID からアクタ名を引く（未知なら "#id" 表記）。</summary>
+    private string NodeName(int dfsId)
+        => _hierarchy.TryGetValue(dfsId, out var n) && n.Name.Length > 0 ? n.Name : $"#{dfsId}";
+
+    /// <summary>🔒 トグル: 編集文脈を固定／解除する。</summary>
+    private void OnToggleLockContext(object sender, RoutedEventArgs e)
+    {
+        _contextLocked = BtnLockContext.IsChecked == true;
+        UpdateContextInfo();
     }
 
     /// <summary>ACTOR_COMPONENTS 内の 1 コンポーネント（type=="AnimatorComponent"）を解析する。</summary>
@@ -324,6 +559,8 @@ public partial class AnimationTimelinePanel : UserControl
             _isDirty            = false;
             _selectedTrackIndex = -1;
             _isModelClipSelected = false;
+            _previewTime        = 0f;
+            ResetUndo();
             RefreshAll();
         }
         catch (Exception ex)
@@ -381,12 +618,20 @@ public partial class AnimationTimelinePanel : UserControl
     private void OnNewClip(object sender, RoutedEventArgs e)
     {
         StopPreview();
-        _clip = new AnimClip { Name = "new_clip", Duration = 1f, LoopMode = AnimLoopMode.Once };
+        _clip = new AnimClip
+        {
+            Name     = "new_clip",
+            Duration = 1f,
+            Fps      = AnimFrameMath.DefaultFps,
+            LoopMode = AnimLoopMode.Once,
+        };
         _currentFilePath = null;
         _isDirty = true;
         _selectedTrackIndex = -1;
         _isFileOnlyMode = true; // 保存先未確定のため、明示的に保存するまでファイル単独扱いにする
         _isModelClipSelected = false;
+        _previewTime = 0f;
+        ResetUndo();
         RefreshAll();
     }
 
@@ -428,6 +673,7 @@ public partial class AnimationTimelinePanel : UserControl
             UpdateTitle();
 
             // ランタイム側のクリップキャッシュを破棄させ、次回参照時に再読込させる
+            // （ライブプレビューで差し替えたキャッシュも、ここで保存済みの .anim へ戻る）
             var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
             _runtime?.SendToRuntime($"ANIM_RELOAD:{virtualPath}");
         }
@@ -453,8 +699,95 @@ public partial class AnimationTimelinePanel : UserControl
         var v = AnimClipIO.ParseFloatOr(TbDuration.Text, _clip.Duration);
         _clip.Duration = Math.Max(v, AnimationTimelineConstants.MinDuration);
         TbDuration.Text = _clip.Duration.ToString(CultureInfo.InvariantCulture);
-        MarkDirty();
-        DopeSheet.NotifyClipChanged();
+        // duration が縮んだらプレイヘッドも収まる位置へ寄せる
+        SetPlayheadFrame(AnimFrameMath.TimeToFrame(_previewTime, ClipFps), sendPreview: false);
+        CommitEdit();
+    }
+
+    // ── fps 編集 ────────────────────────────────────────────────
+
+    private void OnFpsKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Return or Key.Enter) { CommitFps(); e.Handled = true; }
+    }
+    private void OnFpsLostFocus(object sender, RoutedEventArgs e) => CommitFps();
+
+    /// <summary>
+    /// fps 入力を確定する。
+    ///
+    /// fps はスナップの格子そのものなので、変更すると既存キーの「フレーム位置」が変わる。
+    /// ただしキーの**秒**は動かさない（.anim の正はあくまで秒であり、
+    /// fps 変更で既存アニメの見た目が変わってしまうのを避けるため）。
+    /// </summary>
+    private void CommitFps()
+    {
+        if (_clip is null) return;
+        var v   = AnimClipIO.ParseFloatOr(TbFps.Text, _clip.Fps);
+        var fps = AnimFrameMath.NormalizeFps(v);
+        TbFps.Text = fps.ToString(CultureInfo.InvariantCulture);
+        if (Math.Abs(fps - _clip.Fps) < float.Epsilon) return;
+
+        _clip.Fps = fps;
+        // 新しい格子へプレイヘッドを乗せ直す
+        _previewTime = AnimFrameMath.ClampAndSnapTime(_previewTime, fps, _clip.Duration);
+        DopeSheet.SetPlayheadTime(_previewTime);
+        UpdateFrameBox();
+        CommitEdit();
+    }
+
+    // ── フレーム送り ────────────────────────────────────────────
+
+    /// <summary>編集中クリップのフレームレート（未ロード時は既定 fps）。</summary>
+    private float ClipFps => AnimFrameMath.NormalizeFps(_clip?.Fps ?? AnimFrameMath.DefaultFps);
+
+    private void OnFrameStart(object sender, RoutedEventArgs e) => SetPlayheadFrame(0);
+    private void OnFrameEnd(object sender, RoutedEventArgs e)
+        => SetPlayheadFrame(AnimFrameMath.LastFrame(ClipFps, _clip?.Duration ?? 0f));
+    private void OnFramePrev(object sender, RoutedEventArgs e) => StepFrame(-AnimationTimelineConstants.FrameStepSmall);
+    private void OnFrameNext(object sender, RoutedEventArgs e) => StepFrame(+AnimationTimelineConstants.FrameStepSmall);
+
+    /// <summary>現在フレームから delta だけ進める（負で戻る）。</summary>
+    private void StepFrame(int delta)
+        => SetPlayheadFrame(AnimFrameMath.TimeToFrame(_previewTime, ClipFps) + delta);
+
+    /// <summary>
+    /// プレイヘッドを指定フレームへ移動し、必要ならプレビューを送り直す。
+    /// 再生中に手で動かしたときは再生を止める（意図しない上書きを避けるため）。
+    /// </summary>
+    private void SetPlayheadFrame(int frame, bool sendPreview = true)
+    {
+        if (_clip is null) return;
+        if (_isPlaying) StopPreviewPlaybackOnly();
+
+        var fps     = ClipFps;
+        var clamped = AnimFrameMath.ClampFrame(frame, fps, _clip.Duration);
+        _previewTime = AnimFrameMath.FrameToTime(clamped, fps);
+        DopeSheet.SetPlayheadTime(_previewTime);
+        UpdateFrameBox();
+        if (sendPreview) SendPreview(_previewTime);
+    }
+
+    /// <summary>フレーム番号ボックスの表示を現在位置に合わせる。</summary>
+    private void UpdateFrameBox()
+        => TbFrame.Text = AnimFrameMath.TimeToFrame(_previewTime, ClipFps)
+                                       .ToString(CultureInfo.InvariantCulture);
+
+    private void OnFrameBoxKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Return or Key.Enter) { CommitFrameBox(); e.Handled = true; }
+    }
+    private void OnFrameBoxLostFocus(object sender, RoutedEventArgs e) => CommitFrameBox();
+
+    /// <summary>フレーム番号ボックスの入力を確定してプレイヘッドを移動する。</summary>
+    private void CommitFrameBox()
+    {
+        if (_clip is null) return;
+        if (!int.TryParse(TbFrame.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var frame))
+        {
+            UpdateFrameBox();   // 不正入力は現在値へ戻す
+            return;
+        }
+        SetPlayheadFrame(frame);
     }
 
     private void OnLoopModeChanged(object sender, SelectionChangedEventArgs e)
@@ -463,7 +796,7 @@ public partial class AnimationTimelinePanel : UserControl
         if (CmbLoopMode.SelectedItem is not ComboBoxItem item || item.Tag is not string mode) return;
         if (_clip.LoopMode == mode) return;
         _clip.LoopMode = mode;
-        MarkDirty();
+        CommitEdit();
     }
 
     // ── トラック追加/削除 ───────────────────────────────────────
@@ -479,9 +812,7 @@ public partial class AnimationTimelinePanel : UserControl
             ValueType = entry.ValueType,
         };
         _clip.Tracks.Add(track);
-        MarkDirty();
-        RefreshTrackList();
-        DopeSheet.NotifyClipChanged();
+        CommitEdit(refreshTracks: true);
     }
 
     private void OnTrackListKeyDown(object sender, KeyEventArgs e)
@@ -490,10 +821,8 @@ public partial class AnimationTimelinePanel : UserControl
         if (_clip is null || _selectedTrackIndex < 0 || _selectedTrackIndex >= _clip.Tracks.Count) return;
         _clip.Tracks.RemoveAt(_selectedTrackIndex);
         _selectedTrackIndex = -1;
-        MarkDirty();
-        RefreshTrackList();
         DopeSheet.SetSelectedTrackIndex(-1);
-        DopeSheet.NotifyClipChanged();
+        CommitEdit(refreshTracks: true);
         e.Handled = true;
     }
 
@@ -503,11 +832,17 @@ public partial class AnimationTimelinePanel : UserControl
         DopeSheet.SetSelectedTrackIndex(_selectedTrackIndex);
     }
 
-    /// <summary>トラックの表示文字列（"actor_path : component.property (value_type)"）を作る。</summary>
-    private static string DescribeTrack(AnimTrack t)
+    /// <summary>
+    /// トラックの表示文字列（"actor_path : component.property [value_type]"）を作る。
+    /// いま選んでいるキー対象アクタと一致するトラックには先頭に ● を付け、
+    /// 「I キーで打たれるのはどれか」を一目で分かるようにする。
+    /// </summary>
+    private string DescribeTrack(AnimTrack t)
     {
-        var actor = string.IsNullOrEmpty(t.Target.ActorPath) ? "(自分)" : t.Target.ActorPath;
-        return $"{actor} : {t.Target.Component}.{t.Target.Property}  [{t.ValueType}]";
+        var actor  = string.IsNullOrEmpty(t.Target.ActorPath) ? "(Animator 自身)" : t.Target.ActorPath;
+        var isTarget = t.Target.ActorPath == _keyTargetActorPath;
+        var mark   = isTarget ? "● " : "   ";
+        return $"{mark}{actor} : {t.Target.Component}.{t.Target.Property}  [{t.ValueType}]";
     }
 
     private void RefreshTrackList()
@@ -529,27 +864,33 @@ public partial class AnimationTimelinePanel : UserControl
         if (_clip is null || trackIndex < 0 || trackIndex >= _clip.Tracks.Count) return;
         var track = _clip.Tracks[trackIndex];
 
-        // 直前のキー（時刻がそれ以下で最大のもの）の値を初期値として複製する。無ければ 0 埋め。
-        var prev = track.Keys.Where(k => k.Time <= time).OrderBy(k => k.Time).LastOrDefault();
-        var count = AnimPropertyRegistry.ComponentCount(track.ValueType);
-        var values = prev is not null ? (float[])prev.Values.Clone() : new float[count];
+        // アクタの現在値が取れるならそれを使う（ダブルクリックでも「いまの見た目」がキーになる）。
+        // 取れない場合だけ、従来どおり直前のキーの値を複製する。
+        var values = CurrentValuesForTrack(track) ?? AnimKeyEditor.PreviousOrDefaultValues(track, time);
 
-        track.Keys.Add(new AnimKey { Time = time, Values = values, Interp = AnimInterp.Linear });
-        track.Keys.Sort((a, b) => a.Time.CompareTo(b.Time));
-        MarkDirty();
-        DopeSheet.NotifyClipChanged();
+        AnimKeyEditor.InsertOrUpdate(track, time, values, ClipFps);
+        CommitEdit();
     }
 
+    /// <summary>
+    /// ◆ドラッグ中の時刻変更。ドラッグ中は連続発火するため、ここでは
+    /// ダーティ化・整列・ライブプレビューだけを行い、Undo 履歴は積まない
+    /// （履歴は <see cref="OnDopeSheetKeyDragEnded"/> で 1 段だけ積む）。
+    /// </summary>
     private void OnDopeSheetKeyMoved(int trackIndex, int keyIndex, float newTime)
     {
+        if (_clip is null) return;
         MarkDirty();
         // 時刻変更でソート順が崩れる可能性があるため、選択キーを追跡しつつ並べ替える。
-        if (_clip is null) return;
         var track = _clip.Tracks[trackIndex];
         var key   = track.Keys[keyIndex];
-        track.Keys.Sort((a, b) => a.Time.CompareTo(b.Time));
+        AnimKeyEditor.SortKeys(track);
         RefreshValueEditor(trackIndex, track.Keys.IndexOf(key));
+        PushClipToRuntimeAndPreview();
     }
+
+    /// <summary>◆ドラッグが終わった時点で Undo 履歴を 1 段だけ積む。</summary>
+    private void OnDopeSheetKeyDragEnded() => PushUndoSnapshot();
 
     private void OnDopeSheetKeyDeleteRequested(int trackIndex, int keyIndex)
     {
@@ -557,23 +898,329 @@ public partial class AnimationTimelinePanel : UserControl
         var track = _clip.Tracks[trackIndex];
         if (keyIndex < 0 || keyIndex >= track.Keys.Count) return;
         track.Keys.RemoveAt(keyIndex);
-        MarkDirty();
-        DopeSheet.NotifyClipChanged();
+        CommitEdit();
         ClearValueEditor();
     }
 
     private void OnDopeSheetKeySelectionChanged(int trackIndex, int keyIndex) => RefreshValueEditor(trackIndex, keyIndex);
 
-    // ── Delete キーでの選択キー削除 ─────────────────────────────
+    // ── キーボード操作 ──────────────────────────────────────────
 
+    /// <summary>
+    /// パネル自身がフォーカスを持っているときのキー操作。
+    ///
+    /// ・Delete            : 選択キーを削除
+    /// ・← / →            : プレイヘッドを 1 フレーム送る（Shift で 10 フレーム）
+    /// ・Home / End        : 先頭 / 最終フレームへ
+    /// ・I                 : プレイヘッド位置へ現在値でキー挿入
+    /// ・U                 : 選択キーを現在値で上書き
+    /// ・Ctrl+Z / Ctrl+Y   : クリップ編集の Undo / Redo
+    ///
+    /// テキスト入力中（fps・長さ・フレーム番号ボックス）は素通しする。
+    /// </summary>
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.Key != Key.Delete) return;
+        if (e.Handled || IsTextInputFocused()) return;
+        if (HandleTimelineKey(e.Key, Keyboard.Modifiers)) e.Handled = true;
+    }
+
+    /// <summary>
+    /// タイムラインのキー操作を実行する。処理したら true。
+    /// パネル内フォーカスとウィンドウレベルのフック（<see cref="OnWindowPreviewKeyDown"/>）の
+    /// 双方から呼ばれるため、判定と実行をここへ 1 本化している。
+    /// </summary>
+    private bool HandleTimelineKey(Key key, ModifierKeys modifiers)
+    {
+        var ctrl  = (modifiers & ModifierKeys.Control) != 0;
+        var shift = (modifiers & ModifierKeys.Shift)   != 0;
+
+        if (ctrl)
+        {
+            switch (key)
+            {
+                case Key.Z: UndoClipEdit(); return true;
+                case Key.Y: RedoClipEdit(); return true;
+                default:    return false;   // Ctrl+S 等はエディタ本体へ渡す
+            }
+        }
+
+        var step = shift
+            ? AnimationTimelineConstants.FrameStepLarge
+            : AnimationTimelineConstants.FrameStepSmall;
+
+        switch (key)
+        {
+            case Key.Delete:
+            {
+                var (ti, ki) = DopeSheet.SelectedKey;
+                if (ti < 0 || ki < 0) return false;
+                OnDopeSheetKeyDeleteRequested(ti, ki);
+                return true;
+            }
+            case Key.Left:  StepFrame(-step); return true;
+            case Key.Right: StepFrame(+step); return true;
+            case Key.Home:  SetPlayheadFrame(0); return true;
+            case Key.End:   SetPlayheadFrame(AnimFrameMath.LastFrame(ClipFps, _clip?.Duration ?? 0f)); return true;
+            case Key.I:     InsertKeyAtPlayhead(); return true;
+            case Key.U:     OverwriteSelectedKey(); return true;
+            default:        return false;
+        }
+    }
+
+    /// <summary>いまテキスト入力欄にフォーカスがあるか（あればホットキーを横取りしない）。</summary>
+    private static bool IsTextInputFocused()
+        => Keyboard.FocusedElement is TextBox or System.Windows.Documents.TextElement;
+
+    // ── ウィンドウレベルのホットキー（ビューポート操作中でも I / U を効かせる）──
+
+    /// <summary>
+    /// 所属ウィンドウの PreviewKeyDown を購読する。
+    ///
+    /// 埋め込み Edit モードではキーボードフォーカスがエディタ（WPF）側にあるため、
+    /// ビューポートを触っている最中でもここでキーを拾える。
+    /// 他パネルの入力を奪わないよう、発火条件は
+    /// 「本パネルが表示中」「編集対象クリップがある」「テキスト入力中でない」
+    /// 「I / U のみ」に絞る（フレーム送りや Delete はパネルフォーカス時だけ）。
+    /// </summary>
+    private void OnPanelLoaded(object sender, RoutedEventArgs e)
+    {
+        if (Window.GetWindow(this) is { } w)
+        {
+            w.PreviewKeyDown -= OnWindowPreviewKeyDown;
+            w.PreviewKeyDown += OnWindowPreviewKeyDown;
+        }
+    }
+
+    private void OnPanelUnloaded(object sender, RoutedEventArgs e)
+    {
+        if (Window.GetWindow(this) is { } w) w.PreviewKeyDown -= OnWindowPreviewKeyDown;
+    }
+
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Handled) return;
+        if (!IsVisible || _clip is null) return;
+        if (Keyboard.Modifiers != ModifierKeys.None) return;   // Ctrl/Alt/Shift 付きは対象外
+        if (e.Key is not (Key.I or Key.U)) return;
+        if (IsKeyboardFocusWithin) return;                     // パネル内は OnKeyDown が処理する
+        if (!IsViewportFocused()) return;                      // ビューポート操作中だけを対象にする
+
+        if (HandleTimelineKey(e.Key, ModifierKeys.None)) e.Handled = true;
+    }
+
+    /// <summary>
+    /// いまキーボードフォーカスがビューポート（ランタイムウィンドウのホスト）側にあるか。
+    ///
+    /// スクリプトエディタ（AvalonEdit）やインスペクタの入力欄で "i" / "u" を打っただけで
+    /// キーが横取りされると実害が大きいため、ホワイトリスト方式にしている。
+    /// フォーカスが誰にも無い（＝クリック直後にランタイムの子ウィンドウへ渡った）場合も
+    /// ビューポート扱いにする。
+    /// </summary>
+    private static bool IsViewportFocused()
+    {
+        // ContentElement（FlowDocument 内など）はビジュアルツリーを辿れないので対象外とする。
+        if (Keyboard.FocusedElement is not Visual focused) return Keyboard.FocusedElement is null;
+
+        for (DependencyObject? d = focused; d is Visual; d = VisualTreeHelper.GetParent(d))
+            if (d is SEEDEditor.Viewport.ViewportHost) return true;
+        return false;
+    }
+
+    // ── キー挿入 / 現在値での上書き ─────────────────────────────
+
+    private void OnInsertKey(object sender, RoutedEventArgs e)  => InsertKeyAtPlayhead();
+    private void OnOverwriteKey(object sender, RoutedEventArgs e) => OverwriteSelectedKey();
+
+    /// <summary>
+    /// プレイヘッド位置に、選択アクタの**現在値**でキーを打つ。
+    ///
+    /// 対象トラックの決め方:
+    ///  1. トラックリストで 1 本選択中なら、そのトラックだけ。
+    ///  2. 未選択なら、キー対象アクタ（actor_path 一致）かつ現在値が取れるトラック全部。
+    ///  3. どれも無ければトラック生成を提案する（<see cref="OfferCreateTracks"/>）。
+    ///
+    /// 同じフレームに既存キーがあれば値を上書きする（AnimKeyEditor が保証）。
+    /// </summary>
+    private void InsertKeyAtPlayhead()
+    {
+        if (_clip is null) return;
+
+        var fps  = ClipFps;
+        var time = AnimFrameMath.ClampAndSnapTime(_previewTime, fps, _clip.Duration);
+
+        var targets = new List<AnimTrack>();
+        if (_selectedTrackIndex >= 0 && _selectedTrackIndex < _clip.Tracks.Count)
+        {
+            targets.Add(_clip.Tracks[_selectedTrackIndex]);
+        }
+        else
+        {
+            targets.AddRange(_clip.Tracks.Where(t =>
+                t.Target.ActorPath == _keyTargetActorPath &&
+                _keyTargetSnapshot.Has(t.Target.Component, t.Target.Property)));
+        }
+
+        if (targets.Count == 0)
+        {
+            targets = OfferCreateTracks();
+            if (targets.Count == 0) return;
+        }
+
+        foreach (var track in targets)
+        {
+            var values = CurrentValuesForTrack(track)
+                      ?? AnimKeyEditor.PreviousOrDefaultValues(track, time);
+            AnimKeyEditor.InsertOrUpdate(track, time, values, fps);
+        }
+
+        CommitEdit(refreshTracks: true);
+    }
+
+    /// <summary>ドープシートで選択中のキーを、選択アクタの現在値で上書きする（U）。</summary>
+    private void OverwriteSelectedKey()
+    {
+        if (_clip is null) return;
         var (ti, ki) = DopeSheet.SelectedKey;
-        if (ti < 0 || ki < 0) return;
-        OnDopeSheetKeyDeleteRequested(ti, ki);
-        e.Handled = true;
+        if (ti < 0 || ti >= _clip.Tracks.Count) return;
+
+        var track = _clip.Tracks[ti];
+        if (ki < 0 || ki >= track.Keys.Count) return;
+
+        var values = CurrentValuesForTrack(track);
+        if (values is null)
+        {
+            TbTitleStatus.Text = "現在値が取得できません（対象アクタを選択してください）";
+            return;
+        }
+
+        track.Keys[ki].Values = AnimKeyEditor.FitValues(values, track.ValueType);
+        CommitEdit();
+        RefreshValueEditor(ti, ki);
+    }
+
+    /// <summary>
+    /// トラックの (component, property) に対応する、キー対象アクタの現在値を返す。
+    /// トラックの actor_path がキー対象と違う／値が取れない場合は null。
+    /// </summary>
+    private float[]? CurrentValuesForTrack(AnimTrack track)
+    {
+        if (track.Target.ActorPath != _keyTargetActorPath) return null;
+        return _keyTargetSnapshot.TryGet(track.Target.Component, track.Target.Property);
+    }
+
+    /// <summary>
+    /// 打てるトラックが 1 本も無いとき、選択アクタの種別に合わせたトラック生成を提案する。
+    /// 「はい」= 位置・回転・スケールの 3 本（全変換キー）、「いいえ」= 位置だけ。
+    /// </summary>
+    /// <returns>生成したトラック（キャンセル時は空リスト）。</returns>
+    private List<AnimTrack> OfferCreateTracks()
+    {
+        var created = new List<AnimTrack>();
+        if (_clip is null) return created;
+
+        // 2D（CanvasTransform）か 3D（Transform）かは現在値スナップショットで判別する
+        var component = _keyTargetSnapshot.Has(AnimActorSnapshot.CanvasTransformComponent,
+                                               AnimActorSnapshot.PositionProperty)
+            ? AnimActorSnapshot.CanvasTransformComponent
+            : AnimActorSnapshot.TransformComponent;
+
+        if (!_keyTargetSnapshot.Has(component, AnimActorSnapshot.PositionProperty))
+        {
+            TbTitleStatus.Text = "現在値が取得できません（対象アクタを選択してください）";
+            return created;
+        }
+
+        var targetLabel = _keyTargetActorPath.Length == 0 ? "(Animator 自身)" : _keyTargetActorPath;
+        var answer = MessageBox.Show(
+            Window.GetWindow(this),
+            $"「{targetLabel}」に対応するトラックがありません。\n\n" +
+            "［はい］  位置・回転・スケールの 3 本を作る（全変換キー）\n" +
+            "［いいえ］位置のトラックだけ作る\n" +
+            "［キャンセル］何もしない",
+            "トラックの作成", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+        if (answer == MessageBoxResult.Cancel) return created;
+
+        var properties = answer == MessageBoxResult.Yes
+            ? AnimActorSnapshot.TransformProperties
+            : new[] { AnimActorSnapshot.PositionProperty };
+
+        foreach (var property in properties)
+        {
+            var valueType = AnimPropertyRegistry.ResolveValueType(component, property);
+            if (valueType is null) continue;                       // レジストリ未登録の組は作らない
+            if (!_keyTargetSnapshot.Has(component, property)) continue;
+
+            var track = new AnimTrack
+            {
+                Target    = new AnimTarget
+                {
+                    ActorPath = _keyTargetActorPath,
+                    Component = component,
+                    Property  = property,
+                },
+                ValueType = valueType,
+            };
+            _clip.Tracks.Add(track);
+            created.Add(track);
+        }
+        return created;
+    }
+
+    // ── Undo / Redo（パネル内・クリップ JSON スナップショット）──
+
+    /// <summary>クリップを差し替えたときに履歴を張り直す。</summary>
+    private void ResetUndo() => _undo.Reset(_clip is null ? "" : AnimClipIO.Serialize(_clip));
+
+    /// <summary>編集後のスナップショットを履歴へ積む。</summary>
+    private void PushUndoSnapshot()
+    {
+        if (_isRestoringUndo || _clip is null) return;
+        _undo.Push(AnimClipIO.Serialize(_clip));
+    }
+
+    private void UndoClipEdit() => RestoreSnapshot(_undo.Undo());
+    private void RedoClipEdit() => RestoreSnapshot(_undo.Redo());
+
+    /// <summary>スナップショット JSON からクリップを復元して UI を作り直す。</summary>
+    private void RestoreSnapshot(string? snapshot)
+    {
+        if (snapshot is null || snapshot.Length == 0) return;
+        try
+        {
+            _isRestoringUndo = true;
+            _clip = AnimClipIO.Parse(snapshot);
+            _selectedTrackIndex = -1;
+            MarkDirty();
+            RefreshAll();
+            PushClipToRuntimeAndPreview();
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"AnimationTimelinePanel: Undo 復元失敗: {ex.Message}");
+        }
+        finally
+        {
+            _isRestoringUndo = false;
+        }
+    }
+
+    // ── 編集の共通後処理 ────────────────────────────────────────
+
+    /// <summary>
+    /// クリップを変更した直後に必ず通す後処理。
+    /// ダーティ化 → Undo 履歴 → 再描画 → ライブプレビュー送信を 1 本にまとめる
+    /// （どれか 1 つを呼び忘れる事故を構造的に防ぐ）。
+    /// </summary>
+    /// <param name="refreshTracks">トラックの増減があった場合は true（左のリストを作り直す）。</param>
+    private void CommitEdit(bool refreshTracks = false)
+    {
+        MarkDirty();
+        PushUndoSnapshot();
+        if (refreshTracks) RefreshTrackList();
+        DopeSheet.NotifyClipChanged();
+        PushClipToRuntimeAndPreview();
     }
 
     // ── 値エディタ ──────────────────────────────────────────────
@@ -595,16 +1242,37 @@ public partial class AnimationTimelinePanel : UserControl
             FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 4, 0),
         });
 
-        // ── 時刻 ──
-        AddLabel("時刻");
+        // ── フレーム番号（編集可。時刻の正はこちらで、秒は参考表示）──
+        AddLabel("フレーム");
+        var tbFrame = NewNumberBox(AnimFrameMath.TimeToFrame(key.Time, ClipFps)
+                                                .ToString(CultureInfo.InvariantCulture));
+        tbFrame.Width = 44;
+        tbFrame.LostFocus += (_, _) =>
+        {
+            if (!int.TryParse(tbFrame.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var f))
+            {
+                tbFrame.Text = AnimFrameMath.TimeToFrame(key.Time, ClipFps).ToString(CultureInfo.InvariantCulture);
+                return;
+            }
+            key.Time = AnimFrameMath.FrameToTime(
+                AnimFrameMath.ClampFrame(f, ClipFps, _clip.Duration), ClipFps);
+            AnimKeyEditor.SortKeys(track);
+            CommitEdit();
+            RefreshValueEditor(trackIndex, track.Keys.IndexOf(key));
+        };
+        ValueEditorHost.Children.Add(tbFrame);
+
+        // ── 時刻（秒）──
+        AddLabel("秒");
         var tbTime = NewNumberBox(key.Time.ToString("0.###", CultureInfo.InvariantCulture));
         tbTime.LostFocus += (_, _) =>
         {
             var t = AnimClipIO.ParseFloatOr(tbTime.Text, key.Time);
-            key.Time = Math.Clamp(t, 0f, Math.Max(_clip.Duration, 0f));
-            MarkDirty();
-            OnDopeSheetKeyMoved(trackIndex, track.Keys.IndexOf(key), key.Time);
-            DopeSheet.NotifyClipChanged();
+            // 秒で入れてもフレーム格子へスナップする（キーが格子から外れないようにする）
+            key.Time = AnimFrameMath.ClampAndSnapTime(t, ClipFps, _clip.Duration);
+            AnimKeyEditor.SortKeys(track);
+            CommitEdit();
+            RefreshValueEditor(trackIndex, track.Keys.IndexOf(key));
         };
         ValueEditorHost.Children.Add(tbTime);
 
@@ -617,8 +1285,7 @@ public partial class AnimationTimelinePanel : UserControl
             tb.LostFocus += (_, _) =>
             {
                 key.Values[idx] = AnimClipIO.ParseFloatOr(tb.Text, key.Values[idx]);
-                MarkDirty();
-                DopeSheet.NotifyClipChanged();
+                CommitEdit();
             };
             ValueEditorHost.Children.Add(tb);
         }
@@ -633,7 +1300,8 @@ public partial class AnimationTimelinePanel : UserControl
         {
             if (cmbInterp.SelectedItem is not ComboBoxItem item || item.Tag is not string interp) return;
             key.Interp = interp;
-            MarkDirty();
+            CommitEdit();
+            RefreshValueEditor(trackIndex, track.Keys.IndexOf(key));
         };
         ValueEditorHost.Children.Add(cmbInterp);
 
@@ -664,7 +1332,7 @@ public partial class AnimationTimelinePanel : UserControl
                 var idx = i;
                 var tb = NewNumberBox(arr[i].ToString("0.###", CultureInfo.InvariantCulture));
                 tb.Width = 44;
-                tb.LostFocus += (_, _) => { arr[idx] = AnimClipIO.ParseFloatOr(tb.Text, arr[idx]); MarkDirty(); };
+                tb.LostFocus += (_, _) => { arr[idx] = AnimClipIO.ParseFloatOr(tb.Text, arr[idx]); CommitEdit(); };
                 ValueEditorHost.Children.Add(tb);
             }
         }
@@ -708,6 +1376,7 @@ public partial class AnimationTimelinePanel : UserControl
         var dt = AnimationTimelineConstants.PreviewTickIntervalMs / 1000f;
         _previewTime = AdvancePreviewTime(_previewTime, dt, _clip.Duration, _clip.LoopMode);
         DopeSheet.SetPlayheadTime(_previewTime);
+        UpdateFrameBox();
         SendPreview(_previewTime);
     }
 
@@ -733,6 +1402,7 @@ public partial class AnimationTimelinePanel : UserControl
     private void OnPlayheadScrubbed(float time)
     {
         _previewTime = time;
+        UpdateFrameBox();
         SendPreview(time);
     }
 
@@ -741,13 +1411,22 @@ public partial class AnimationTimelinePanel : UserControl
     /// <summary>プレビュー再生・スクラブを停止し、必要なら ANIM_PREVIEW_STOP を送信して元値を復元する。</summary>
     private void StopPreview()
     {
-        _isPlaying = false;
-        BtnPlayPause.Content = SEEDEditor.Controls.AppIcon.Create("Icon.Play", PlayPauseIconSize);
-        _previewTimer.Stop();
+        StopPreviewPlaybackOnly();
 
         if (_previewActive && _actorDfsId >= 0)
             _runtime?.SendToRuntime($"ANIM_PREVIEW_STOP:{_actorDfsId}");
         _previewActive = false;
+    }
+
+    /// <summary>
+    /// 再生タイマだけを止める（プレビュー適用値はそのまま残す）。
+    /// フレーム送りなど「再生は止めたいが、いま見えている姿勢は保ちたい」操作で使う。
+    /// </summary>
+    private void StopPreviewPlaybackOnly()
+    {
+        _isPlaying = false;
+        BtnPlayPause.Content = SEEDEditor.Controls.AppIcon.Create("Icon.Play", PlayPauseIconSize);
+        _previewTimer.Stop();
     }
 
     private void SendPreview(float time)
@@ -757,6 +1436,36 @@ public partial class AnimationTimelinePanel : UserControl
         _runtime?.SendToRuntime(FormattableString.Invariant(
             $"ANIM_PREVIEW:{_actorDfsId},{virtualPath},{time}"));
         _previewActive = true;
+    }
+
+    // ── ライブプレビュー（未保存の編集内容をランタイムへ反映）────────
+
+    /// <summary>
+    /// 編集中（未保存）のクリップ本文をランタイムのプレビューキャッシュへ押し込み、
+    /// 続けて現在のプレイヘッド位置でプレビューを適用し直す。
+    ///
+    /// これが無いと、ランタイムはディスク上の .anim をキャッシュしたままなので
+    /// 「キーを動かしても保存するまで見た目が変わらない」状態になる。
+    ///
+    /// JSON は改行・カンマを含むため Base64 で包む（IPC は 1 行 1 コマンドのテキストプロトコル）。
+    /// </summary>
+    private void PushClipToRuntimeAndPreview()
+    {
+        if (_clip is null || _currentFilePath is null) return;
+        if (!CanPreview()) return;
+
+        try
+        {
+            var virtualPath = VirtualPath.ToVirtual(_currentFilePath, _assetsPath);
+            var json        = AnimClipIO.Serialize(_clip);
+            var base64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+            _runtime?.SendToRuntime($"ANIM_PREVIEW_CLIP:{virtualPath},{base64}");
+            SendPreview(_previewTime);
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"AnimationTimelinePanel: ライブプレビュー送信失敗: {ex.Message}");
+        }
     }
 
     // ── 全体再描画・ダーティ管理 ─────────────────────────────────
@@ -779,6 +1488,7 @@ public partial class AnimationTimelinePanel : UserControl
     private void RefreshAll()
     {
         TbDuration.Text = (_clip?.Duration ?? 0f).ToString(CultureInfo.InvariantCulture);
+        TbFps.Text      = ClipFps.ToString(CultureInfo.InvariantCulture);
 
         CmbLoopMode.SelectionChanged -= OnLoopModeChanged;
         var mode = _clip?.LoopMode ?? AnimLoopMode.Once;
@@ -787,9 +1497,14 @@ public partial class AnimationTimelinePanel : UserControl
 
         RefreshTrackList();
         DopeSheet.SetClip(_clip);
-        DopeSheet.SetPlayheadTime(0f);
+        // プレイヘッドは保持する（Undo やトラック追加のたびに先頭へ飛ぶと編集にならない）。
+        // クリップ差し替え時は呼び出し側が事前に _previewTime = 0 にしている。
+        _previewTime = AnimFrameMath.ClampAndSnapTime(_previewTime, ClipFps, _clip?.Duration ?? 0f);
+        DopeSheet.SetPlayheadTime(_previewTime);
+        UpdateFrameBox();
         ClearValueEditor();
         UpdatePreviewAvailability();
+        UpdateContextInfo();
         UpdateTitle();
 
         var hasClip = _clip is not null;
@@ -805,5 +1520,14 @@ public partial class AnimationTimelinePanel : UserControl
         // （ドープシート同様「モデル内蔵アニメはInspectorで編集」の対象）。
         TbDuration.IsEnabled  = hasClip;
         CmbLoopMode.IsEnabled = hasClip;
+        // フレーム操作・キー挿入はクリップが無いと意味がないためまとめて無効化する
+        TbFps.IsEnabled           = hasClip;
+        TbFrame.IsEnabled         = hasClip;
+        BtnFrameStart.IsEnabled   = hasClip;
+        BtnFramePrev.IsEnabled    = hasClip;
+        BtnFrameNext.IsEnabled    = hasClip;
+        BtnFrameEnd.IsEnabled     = hasClip;
+        BtnInsertKey.IsEnabled    = hasClip;
+        BtnOverwriteKey.IsEnabled = hasClip;
     }
 }

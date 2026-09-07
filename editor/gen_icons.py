@@ -49,6 +49,16 @@ CATALOG = [
     ("Icon.Dirty", "circle-medium"),
     ("Icon.Prefab", "package-variant-closed"),
 
+    ("── アニメーションタイムライン ──", None),
+    # フレーム送り（|◀ ◀ ▶ ▶|）とキー打ち込み。プレイバーの再生/一時停止は
+    # Icon.Play / Icon.Pause を流用するのでここには置かない。
+    ("Icon.Anim.FrameStart", "skip-previous"),
+    ("Icon.Anim.FramePrev", "step-backward"),
+    ("Icon.Anim.FrameNext", "step-forward"),
+    ("Icon.Anim.FrameEnd", "skip-next"),
+    ("Icon.Anim.InsertKey", "key-plus"),
+    ("Icon.Anim.OverwriteKey", "key-change"),
+
     ("── スクリプトデバッグ ──", None),
     ("Icon.Debug.StepOver", "debug-step-over"),
     ("Icon.Debug.StepInto", "debug-step-into"),

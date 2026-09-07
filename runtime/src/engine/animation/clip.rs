@@ -186,6 +186,13 @@ pub struct AnimationClip {
     pub name: String,
     /// 全体尺（秒）。0 以下ならロード時に最大キー時刻から補完する。
     pub duration: f32,
+    /// 編集用のフレームレート（fps）。
+    ///
+    /// エディタのタイムラインが「1 フレーム = 1/fps 秒」でスナップ表示するためだけの
+    /// メタデータであり、**ランタイムのサンプリングは一切参照しない**
+    /// （キー時刻は常に秒で保持され、評価も秒で行われる）。
+    /// 旧 .anim には存在しないため、省略時は `DEFAULT_EDIT_FPS` を採用する。
+    pub fps: f32,
     /// ループ種別
     pub loop_mode: LoopMode,
     /// トラック列
@@ -233,6 +240,15 @@ fn default_duration() -> f32 {
     0.0
 }
 
+/// `fps` 省略時（旧 .anim）に採用する編集用フレームレート。
+/// エディタのタイムライン表示単位であり、ランタイムのサンプリングには影響しない。
+pub const DEFAULT_EDIT_FPS: f32 = 30.0;
+
+/// fps 省略時の既定値関数。
+fn default_fps() -> f32 {
+    DEFAULT_EDIT_FPS
+}
+
 /// AnimationClip の serde 受け口。
 #[derive(Deserialize)]
 struct RawClip {
@@ -240,6 +256,9 @@ struct RawClip {
     name: String,
     #[serde(default = "default_duration")]
     duration: f32,
+    /// 編集用フレームレート。旧 .anim には無いので省略可（既定 30fps）。
+    #[serde(default = "default_fps")]
+    fps: f32,
     #[serde(default)]
     loop_mode: LoopMode,
     #[serde(default)]
@@ -382,9 +401,17 @@ impl AnimationClip {
                 .fold(0.0_f32, f32::max);
         }
 
+        // fps が不正（0 以下・非有限）な場合は既定へ落とす（0 除算を編集側へ持ち込まない）。
+        let fps = if raw.fps.is_finite() && raw.fps > 0.0 {
+            raw.fps
+        } else {
+            DEFAULT_EDIT_FPS
+        };
+
         Ok(AnimationClip {
             name: raw.name,
             duration,
+            fps,
             loop_mode: raw.loop_mode,
             tracks,
             events: raw.events,

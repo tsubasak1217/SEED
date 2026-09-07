@@ -1,4 +1,4 @@
-# エディタのアイコン（正典）
+﻿# エディタのアイコン（正典）
 
 SEED エディタ（`editor/`, WPF）のアイコン運用の正典ドキュメント。
 **エディタに新しいボタン・パネル・コンポーネント種別・ファイル形式を足すときは必ずここを見る。**
@@ -239,6 +239,20 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `Icon.Lock` | `lock-outline` |
 | `Icon.Dirty` | `circle-medium` |
 | `Icon.Prefab` | `package-variant-closed` |
+
+#### アニメーションタイムライン
+
+タイムラインのツールバー（フレーム送り・キー打ち込み）で使う。
+再生 / 一時停止は `Icon.Play` / `Icon.Pause`、文脈ロックは `Icon.Lock` を流用する。
+
+| アイコンキー | MDI アイコン名 |
+|---|---|
+| `Icon.Anim.FrameStart` | `skip-previous` |
+| `Icon.Anim.FramePrev` | `step-backward` |
+| `Icon.Anim.FrameNext` | `step-forward` |
+| `Icon.Anim.FrameEnd` | `skip-next` |
+| `Icon.Anim.InsertKey` | `key-plus` |
+| `Icon.Anim.OverwriteKey` | `key-change` |
 
 #### スクリプトデバッグ
 

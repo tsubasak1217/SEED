@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  AnimationTimelineConstants.cs — アニメーションタイムライン用定数
 //
 //  ドープシートの描画・スナップ・配色に関するマジックナンバーを
@@ -42,27 +42,51 @@ internal static class AnimationTimelineConstants
     /// <summary>プレイヘッド縦線の太さ（ピクセル）。</summary>
     public const double PlayheadLineThickness = 1.5;
 
-    // ── ルーラー目盛 ────────────────────────────────────────────
+    // ── ルーラー目盛（フレーム基準）──────────────────────────────
 
-    /// <summary>ルーラーに目盛を描く最小間隔（ピクセル）。これを下回る密度になる時間刻みは間引く。</summary>
+    /// <summary>ラベル付きの主目盛を描く最小間隔（ピクセル）。これを下回る密度の刻みは間引く。</summary>
     public const double MinRulerTickSpacingPx = 48.0;
 
-    /// <summary>ルーラー目盛の時間刻み候補（秒）。ズームに応じてこの中から最適なものを選ぶ。</summary>
-    public static readonly double[] RulerTickStepsSeconds =
+    /// <summary>
+    /// 副目盛（フレーム 1 個ぶんの細い線）を描く最小間隔（ピクセル）。
+    /// これを下回るズームではフレーム線が潰れて可読性を損なうため描かない。
+    /// </summary>
+    public const double MinFrameTickSpacingPx = 5.0;
+
+    /// <summary>
+    /// 主目盛のフレーム刻み候補。ズームに応じてこの中から
+    /// 「MinRulerTickSpacingPx 以上の間隔になる最小の刻み」を選ぶ。
+    /// 5 / 10 / 30 のような区切りのよい値を並べ、フレーム番号を読みやすくする。
+    /// </summary>
+    public static readonly int[] RulerTickStepsFrames =
     {
-        0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0,
+        1, 2, 5, 10, 15, 20, 30, 60, 120, 300, 600, 1800, 3600,
     };
+
+    /// <summary>ルーラー主目盛の縦線の長さ（ピクセル、ルーラー下端から上へ）。</summary>
+    public const double RulerMajorTickLength = 8.0;
+
+    /// <summary>ルーラー副目盛（1 フレーム）の縦線の長さ（ピクセル）。</summary>
+    public const double RulerMinorTickLength = 4.0;
 
     // ── スナップ ────────────────────────────────────────────────
 
-    /// <summary>タイムライン編集の基準フレームレート（キー時刻のスナップ単位算出に使用）。</summary>
-    public const float TimelineFrameRate = 60f;
-
-    /// <summary>キー移動・新規作成時のスナップ間隔（秒）。1 フレーム分＝1/60 秒。</summary>
-    public const float SnapSeconds = 1f / TimelineFrameRate;
-
+    /// <summary>
+    /// スナップ単位はクリップの fps（AnimClip.Fps）から算出する。
+    /// 固定値を持たないのは、刻みたい単位がクリップごとに違うため
+    /// （ドット絵 8fps / UI 演出 30fps / カメラ 60fps）。
+    /// 変換は <see cref="AnimFrameMath"/> が担当する。
+    /// </summary>
     /// <summary>クリップの最小長（秒）。0 長クリップでの除算を避けるための下限。</summary>
     public const float MinDuration = 0.01f;
+
+    // ── フレーム送り操作 ────────────────────────────────────────
+
+    /// <summary>◀ ▶ ボタン・←→ キーでのフレーム送り量。</summary>
+    public const int FrameStepSmall = 1;
+
+    /// <summary>Shift + ←→ でのフレーム送り量（粗送り）。</summary>
+    public const int FrameStepLarge = 10;
 
     // ── プレビュー再生 ──────────────────────────────────────────
 
@@ -83,6 +107,10 @@ internal static class AnimationTimelineConstants
     public static readonly Color PlayheadColor           = Color.FromRgb(0xE5, 0xC0, 0x7B);
     public static readonly Color KeyDiamondFill          = Color.FromRgb(0x61, 0xAF, 0xEF);
     public static readonly Color KeyDiamondSelectedFill  = Color.FromRgb(0xE5, 0xC0, 0x7B);
+    /// <summary>選択中トラックのキー◆の塗り（どのトラックを編集中か一目で分かるようにする）。</summary>
+    public static readonly Color KeyDiamondTrackHighlightFill = Color.FromRgb(0x98, 0xC3, 0x79);
+    /// <summary>副目盛（1 フレーム線）の色。主目盛より暗くして主従を付ける。</summary>
+    public static readonly Color RulerMinorTickColor     = Color.FromRgb(0x4A, 0x4A, 0x4A);
     public static readonly Color KeyDiamondBorder        = Color.FromRgb(0x1E, 0x1E, 0x1E);
     public static readonly Color TextColor               = Color.FromRgb(0xCC, 0xCC, 0xCC);
     public static readonly Color SubTextColor            = Color.FromRgb(0x88, 0x88, 0x88);

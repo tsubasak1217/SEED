@@ -38,6 +38,8 @@ mod field_edit;
 /// （RESET_COMPONENT_FIELD）。
 mod component_reset_ops;
 mod ipc_handler;
+/// 未保存クリップのライブプレビュー（ANIM_PREVIEW_CLIP）
+mod anim_preview_clip_ops;
 mod hierarchy_sync;
 mod clipboard;
 mod actor_ops;

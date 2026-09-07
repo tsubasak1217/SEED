@@ -1,4 +1,4 @@
-# 作業バックログ（未着手・保留の課題）
+﻿# 作業バックログ（未着手・保留の課題）
 
 セッションやエージェントをまたいで共有する「今後やらないといけないこと」の一覧。
 着手するときは該当項目を読み、完了したら項目を削除する（履歴は git に残る）。
@@ -6,11 +6,11 @@
 
 記法: `- [ ] 題名 — 背景 / 関連 / 備考`。優先度は上から順（高→低）。
 
-## エディタ
+関連ドキュメント: アニメーションタイムラインの操作・仕様は
+[docs/editor_animation_timeline.md](editor_animation_timeline.md)（フレーム編集 / キー挿入 /
+ライブプレビュー / 既知の制限）が正典。
 
-- [ ] **アニメーションパネルが子アクタ選択で切り替わる問題** — 2026-09-07。パネルは選択アクタの Animator に連動するため、クリップの対象である子アクタを触ると空になる。
-  案: (1) 選択アクタに Animator が無ければ先祖の Animator を保持、(2) 🔒 ロックトグル、(3)「選択アクタの現在値をキーに記録」ボタン（ビューポートで動かして記録）。
-  関連: `editor/src/Panels/AnimationTimelinePanel.xaml.cs`（`OnSelectionChanged` / `OnActorComponentsReceived`）。当面の回避策は「直接開く」でファイル単独モード（プレビュー不可）。
+## エディタ
 
 - [ ] **SkinnedSprite ノードの pivot が事実上効いていない** — 2026-09-07。`CanvasTransform::to_mesh_mat4(sx, sy)` が `to_sprite_mat4` に委譲しており、pivot オフセットが `pivot × size_scale`（≒0.5px）にしかならない。描画と枠は同じ行列なので位置ズレは無いが、Inspector の pivot を変えても回転中心が動かない。**Text は解決済み**（2026-09-07。枠あり = `box_width > 0` のときのみ、`to_mesh_mat4_no_pivot` + レイアウト側の平行移動で Sprite と同じ正規化 pivot が効くようにした。枠なしは従来どおり pivot 無効）。SkinnedSprite は未対応（メッシュ寸法を pivot の基準サイズとして採るか、実寸 px を直に採るかの規約を決めるところから）。
   対処には「Text は実測枠のサイズを pivot の基準にする」設計判断が要る。関連: `runtime/src/engine/components/canvas_transform.rs`、`font/canvas_text.rs`、`app/canvas_text_bounds.rs`。

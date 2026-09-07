@@ -1031,6 +1031,18 @@ pub enum IpcCommand {
     /// 指定クリップのロード済みキャッシュを破棄する（.anim 保存後の再読込用）。
     /// フォーマット: ANIM_RELOAD:{clip_path}
     AnimReload { clip_path: String },
+    /// エディタが編集中（未保存）のクリップ本文でプレビューキャッシュを差し替える。
+    ///
+    /// タイムラインでキーを触るたびに保存を強制しないためのライブプレビュー用。
+    /// これを受け取った後の ANIM_PREVIEW は、ディスク上の .anim ではなく
+    /// ここで渡された本文を評価する（ANIM_RELOAD で従来どおり破棄できる）。
+    ///
+    /// フォーマット: ANIM_PREVIEW_CLIP:{clip_path},{json_base64}
+    ///   json_base64 … .anim と同じ JSON を UTF-8 → 標準 Base64 したもの。
+    ///   Base64 にするのは、JSON 本文の改行・カンマが 1 行 1 コマンドの
+    ///   IPC フレーミングを壊すため（SET_ANIMATOR_CLIPS のような末尾 JSON 方式は
+    ///   改行を含められない）。
+    AnimPreviewClip { clip_path: String, json: String },
 
     // ─── スクリーンショット（GPU 読み戻し）────────────────────────────────
     /// 次に描いたフレームの提示テクスチャを PNG として書き出す。
@@ -3009,6 +3021,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let clip_path = s["ANIM_RELOAD:".len()..].to_string();
                             Some(IpcCommand::AnimReload { clip_path })
                         }
+                        s if s.starts_with(ANIM_PREVIEW_CLIP_PREFIX) => parse_anim_preview_clip(s),
                         s if s.starts_with(SCREENSHOT_PREFIX) => parse_screenshot(s),
 
                         _                    => None,
@@ -3036,6 +3049,37 @@ fn peek_pipe(handle: std::os::windows::raw::HANDLE) -> u32 {
         );
     }
     available
+}
+
+/// ANIM_PREVIEW_CLIP コマンドの接頭辞。
+const ANIM_PREVIEW_CLIP_PREFIX: &str = "ANIM_PREVIEW_CLIP:";
+
+/// `ANIM_PREVIEW_CLIP:{clip_path},{json_base64}` を解析する。
+///
+/// - clip_path は "assets://..." 仮想パス（カンマを含まない前提で最初の 1 個で分割する）。
+/// - json_base64 は標準 Base64（パディングあり）。デコード結果が UTF-8 でない、
+///   または Base64 として不正な場合は None を返し、コマンド自体を捨てる
+///   （壊れた本文でプレビューキャッシュを汚さないため）。
+///
+/// read_loop から切り出した純関数。単体テストはこの関数を直接呼ぶ。
+fn parse_anim_preview_clip(line: &str) -> Option<IpcCommand> {
+    use base64::Engine as _;
+
+    let rest = line.strip_prefix(ANIM_PREVIEW_CLIP_PREFIX)?;
+    let (clip_path, b64) = rest.split_once(',')?;
+    if clip_path.is_empty() {
+        return None;
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
+    let json = String::from_utf8(bytes).ok()?;
+
+    Some(IpcCommand::AnimPreviewClip {
+        clip_path: clip_path.to_string(),
+        json,
+    })
 }
 
 fn try_open(path: &str) -> std::io::Result<std::fs::File> {
@@ -3427,4 +3471,60 @@ mod tests {
         assert!(parse_screenshot("SCREENSHOT:").is_none());
     }
 
+    // ── ANIM_PREVIEW_CLIP: のパース ─────────────────────────────────────
+
+    /// 正常な `ANIM_PREVIEW_CLIP:` を clip_path と復号済み JSON に分解できること。
+    /// 本文に改行・カンマ・非 ASCII が含まれても Base64 を挟むことで壊れないのが要点。
+    #[test]
+    fn parse_anim_preview_clip_ok() {
+        use base64::Engine as _;
+
+        let json = "{
+  \"name\": \"歩き, 走り\",
+  \"duration\": 1.5
+}";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
+        let line = format!("ANIM_PREVIEW_CLIP:assets://animations/walk.anim,{b64}");
+
+        match parse_anim_preview_clip(&line) {
+            Some(IpcCommand::AnimPreviewClip { clip_path, json: decoded }) => {
+                assert_eq!(clip_path, "assets://animations/walk.anim");
+                assert_eq!(decoded, json, "改行・カンマ・日本語がそのまま復元されること");
+            }
+            _ => panic!("AnimPreviewClip を期待した"),
+        }
+    }
+
+    /// 不正な入力（区切り無し・空パス・Base64 として壊れている）は None になること。
+    /// 壊れた本文でプレビューキャッシュを汚さないための防御。
+    #[test]
+    fn parse_anim_preview_clip_rejects_malformed() {
+        assert!(parse_anim_preview_clip("ANIM_PREVIEW_CLIP:").is_none());
+        assert!(parse_anim_preview_clip("ANIM_PREVIEW_CLIP:assets://a.anim").is_none(), "カンマ無し");
+        assert!(parse_anim_preview_clip("ANIM_PREVIEW_CLIP:,e30=").is_none(), "空パス");
+        assert!(
+            parse_anim_preview_clip("ANIM_PREVIEW_CLIP:assets://a.anim,!!not-base64!!").is_none(),
+            "Base64 として不正"
+        );
+    }
+
+    /// `fps` を書いていない旧 .anim も読め、既定 30fps が入ること（後方互換の要）。
+    /// 併せて明示指定した fps がそのまま採用されることも確認する。
+    #[test]
+    fn anim_clip_fps_defaults_to_30() {
+        use crate::engine::animation::clip::{AnimationClip, DEFAULT_EDIT_FPS};
+
+        let legacy = r#"{"name":"old","duration":1.0,"tracks":[]}"#;
+        let clip = AnimationClip::from_json("test://old.anim", legacy).expect("旧形式が読めること");
+        assert_eq!(clip.fps, DEFAULT_EDIT_FPS);
+
+        let with_fps = r#"{"name":"new","duration":1.0,"fps":24,"tracks":[]}"#;
+        let clip = AnimationClip::from_json("test://new.anim", with_fps).expect("新形式が読めること");
+        assert_eq!(clip.fps, 24.0);
+
+        // 0 や負値は 0 除算の元になるため既定へ落とす。
+        let bad_fps = r#"{"name":"bad","duration":1.0,"fps":0,"tracks":[]}"#;
+        let clip = AnimationClip::from_json("test://bad.anim", bad_fps).expect("読めること");
+        assert_eq!(clip.fps, DEFAULT_EDIT_FPS);
+    }
 }

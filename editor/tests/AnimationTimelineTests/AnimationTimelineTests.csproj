@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AnimationTimeline</RootNamespace>
+    <AssemblyName>AnimationTimelineTests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!--
+      テスト対象はいずれも WPF 非依存の純ロジック。
+      SEEDEditor.csproj（WinExe）は参照せず、対象ファイルだけをリンクして取り込む
+      （AiSafetyTests と同じ方式）。ここに並べたファイルが WPF 型を使い始めると
+      ビルドが壊れるので、それが「UI と純ロジックの分離が崩れた」検知器になる。
+    -->
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimFrameMath.cs">
+      <Link>Linked\AnimFrameMath.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimKeyEditor.cs">
+      <Link>Linked\AnimKeyEditor.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimHierarchyNav.cs">
+      <Link>Linked\AnimHierarchyNav.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimUndoStack.cs">
+      <Link>Linked\AnimUndoStack.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimActorSnapshot.cs">
+      <Link>Linked\AnimActorSnapshot.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimClipModel.cs">
+      <Link>Linked\AnimClipModel.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimClipIO.cs">
+      <Link>Linked\AnimClipIO.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimPropertyRegistry.cs">
+      <Link>Linked\AnimPropertyRegistry.cs</Link>
+    </Compile>
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+</Project>

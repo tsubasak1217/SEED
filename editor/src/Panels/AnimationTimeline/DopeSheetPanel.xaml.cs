@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  DopeSheetPanel.xaml.cs — ドープシート描画・編集コントロール
 //
 //  AnimClip の全トラックを行として並べ、各トラックのキーフレームを
@@ -9,6 +9,12 @@
 //  ・見た目の描画（ルーラー目盛・トラック行の背景・グリッド線・◆・プレイヘッド）
 //  ・マウス操作（ダブルクリックでキー追加、ドラッグでキー移動、右クリックで削除、
 //    ルーラードラッグでプレイヘッドのスクラブ）をイベントとして親パネルへ通知する
+//
+//  【時間軸はフレーム基準】
+//  ルーラーの目盛・ラベルはクリップの fps（AnimClip.Fps）に基づくフレーム番号で、
+//  プレイヘッドもキー移動も必ずフレーム境界へスナップする。
+//  内部の保持値は従来どおり秒（.anim / ランタイムの単位）で、
+//  フレームとの変換は AnimFrameMath に集約している。
 //
 //  データの保持・IPC 送信・値エディタとの連携は親（AnimationTimelinePanel）が行う。
 //  本コントロールは AnimClip を「参照」として持つのみで、モデルの所有権は持たない。
@@ -66,6 +72,9 @@ internal partial class DopeSheetPanel : UserControl
     public event Action<int, float>? KeyAddRequested;
     /// <summary>◆ドラッグでキーの時刻が変わった（trackIndex, keyIndex, newTime）。ドラッグ中に連続発火。</summary>
     public event Action<int, int, float>? KeyMoved;
+    /// <summary>◆のドラッグ移動が終わった。Undo 履歴を 1 操作＝1 段にするために使う
+    /// （KeyMoved はドラッグ中に連続発火するため、そこで履歴を積むと段数が爆発する）。</summary>
+    public event Action? KeyDragEnded;
     /// <summary>◆右クリックメニューからの削除要求（trackIndex, keyIndex）。</summary>
     public event Action<int, int>? KeyDeleteRequested;
     /// <summary>◆選択が変わった（trackIndex, keyIndex）。(-1,-1) は選択解除。</summary>
@@ -127,14 +136,15 @@ internal partial class DopeSheetPanel : UserControl
     private double TrackRowTop(int trackIndex) =>
         AnimationTimelineConstants.RulerHeight + trackIndex * AnimationTimelineConstants.TrackRowHeight;
 
-    /// <summary>時刻をスナップ間隔に丸め、[0, duration] にクランプする。</summary>
+    /// <summary>編集中クリップのフレームレート（クリップ未ロード時は既定 fps）。</summary>
+    private float Fps => AnimFrameMath.NormalizeFps(_clip?.Fps ?? AnimFrameMath.DefaultFps);
+
+    /// <summary>時刻をフレーム境界へ丸め、[0, duration] にクランプする。</summary>
     private float ClampAndSnapTime(float time)
-    {
-        var duration = _clip?.Duration ?? 0f;
-        var snap     = AnimationTimelineConstants.SnapSeconds;
-        var snapped  = MathF.Round(time / snap) * snap;
-        return Math.Clamp(snapped, 0f, Math.Max(duration, 0f));
-    }
+        => AnimFrameMath.ClampAndSnapTime(time, Fps, _clip?.Duration ?? 0f);
+
+    /// <summary>現在のプレイヘッド位置をフレーム番号で返す。</summary>
+    public int PlayheadFrame => AnimFrameMath.TimeToFrame(_playheadTime, Fps);
 
     // ── 描画 ────────────────────────────────────────────────────
 
@@ -179,14 +189,15 @@ internal partial class DopeSheetPanel : UserControl
         }
     }
 
-    /// <summary>秒単位の縦グリッド線を描画する。</summary>
+    /// <summary>主目盛のフレーム位置に縦グリッド線を描画する。</summary>
     private void DrawGrid(double contentW, double contentH, float duration)
     {
-        var step = PickRulerStep();
+        var step  = PickRulerStepFrames();
+        var last  = AnimFrameMath.LastFrame(Fps, duration);
         var brush = new SolidColorBrush(AnimationTimelineConstants.GridLineColor);
-        for (double t = 0; t <= duration + 1e-6; t += step)
+        for (int f = 0; f <= last; f += step)
         {
-            var x = TimeToX((float)t);
+            var x = TimeToX(AnimFrameMath.FrameToTime(f, Fps));
             var line = new Line
             {
                 X1 = x, X2 = x,
@@ -197,15 +208,22 @@ internal partial class DopeSheetPanel : UserControl
         }
     }
 
-    /// <summary>現在のズームで見やすい目盛間隔（秒）を候補から選ぶ。</summary>
-    private double PickRulerStep()
+    /// <summary>1 フレームぶんの横幅（ピクセル）。</summary>
+    private double PixelsPerFrame => _pixelsPerSecond / Fps;
+
+    /// <summary>
+    /// 現在のズームで読みやすい主目盛のフレーム刻みを候補から選ぶ。
+    /// 「1 刻みの幅が MinRulerTickSpacingPx 以上になる最小の候補」を採用する。
+    /// </summary>
+    private int PickRulerStepFrames()
     {
-        foreach (var step in AnimationTimelineConstants.RulerTickStepsSeconds)
+        var ppf = PixelsPerFrame;
+        foreach (var step in AnimationTimelineConstants.RulerTickStepsFrames)
         {
-            if (step * _pixelsPerSecond >= AnimationTimelineConstants.MinRulerTickSpacingPx)
+            if (step * ppf >= AnimationTimelineConstants.MinRulerTickSpacingPx)
                 return step;
         }
-        return AnimationTimelineConstants.RulerTickStepsSeconds[^1];
+        return AnimationTimelineConstants.RulerTickStepsFrames[AnimationTimelineConstants.RulerTickStepsFrames.Length - 1];
     }
 
     /// <summary>上部の時間ルーラー（背景・目盛・秒数ラベル）を描画する。</summary>
@@ -221,22 +239,46 @@ internal partial class DopeSheetPanel : UserControl
         Canvas.SetTop(rulerBg, 0);
         DrawCanvas.Children.Add(rulerBg);
 
-        var step = PickRulerStep();
+        var fps       = Fps;
+        var last      = AnimFrameMath.LastFrame(fps, duration);
+        var step      = PickRulerStepFrames();
         var tickBrush = new SolidColorBrush(AnimationTimelineConstants.RulerTickColor);
-        for (double t = 0; t <= duration + 1e-6; t += step)
+
+        // 副目盛（1 フレームごと）。密になりすぎるズームでは省略する。
+        if (PixelsPerFrame >= AnimationTimelineConstants.MinFrameTickSpacingPx)
         {
-            var x = TimeToX((float)t);
+            var minorBrush = new SolidColorBrush(AnimationTimelineConstants.RulerMinorTickColor);
+            for (int f = 0; f <= last; f++)
+            {
+                if (f % step == 0) continue;   // 主目盛の位置は下のループで描く
+                var mx = TimeToX(AnimFrameMath.FrameToTime(f, fps));
+                DrawCanvas.Children.Add(new Line
+                {
+                    X1 = mx, X2 = mx,
+                    Y1 = AnimationTimelineConstants.RulerHeight - AnimationTimelineConstants.RulerMinorTickLength,
+                    Y2 = AnimationTimelineConstants.RulerHeight,
+                    Stroke = minorBrush, StrokeThickness = 1,
+                });
+            }
+        }
+
+        // 主目盛 + フレーム番号ラベル
+        for (int f = 0; f <= last; f += step)
+        {
+            var x = TimeToX(AnimFrameMath.FrameToTime(f, fps));
             var tick = new Line
             {
                 X1 = x, X2 = x,
-                Y1 = AnimationTimelineConstants.RulerHeight - 8, Y2 = AnimationTimelineConstants.RulerHeight,
+                Y1 = AnimationTimelineConstants.RulerHeight - AnimationTimelineConstants.RulerMajorTickLength,
+                Y2 = AnimationTimelineConstants.RulerHeight,
                 Stroke = tickBrush, StrokeThickness = 1,
             };
             DrawCanvas.Children.Add(tick);
 
             var label = new TextBlock
             {
-                Text       = t.ToString("0.##") + "s",
+                // フレーム番号で表示する（秒は値エディタ側に併記される）
+                Text       = f.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 Foreground = new SolidColorBrush(AnimationTimelineConstants.RulerTextColor),
                 FontSize   = 9,
             };
@@ -258,13 +300,15 @@ internal partial class DopeSheetPanel : UserControl
             {
                 var key = track.Keys[ki];
                 var isSelected = ti == _selectedTrackForKey && ki == _selectedKeyIndex;
-                DrawDiamond(TimeToX(key.Time), rowCenterY, isSelected, ti, ki);
+                // 選択中トラックのキーは色を変え、どのトラックを編集中か一目で分かるようにする
+                var inSelectedTrack = ti == _selectedTrackIndex;
+                DrawDiamond(TimeToX(key.Time), rowCenterY, isSelected, inSelectedTrack, ti, ki);
             }
         }
     }
 
     /// <summary>1 個のキーフレーム◆マーカーを描画する。Tag に (trackIndex, keyIndex) を仕込みヒットテストに使う。</summary>
-    private void DrawDiamond(double cx, double cy, bool isSelected, int trackIndex, int keyIndex)
+    private void DrawDiamond(double cx, double cy, bool isSelected, bool inSelectedTrack, int trackIndex, int keyIndex)
     {
         var r = AnimationTimelineConstants.KeyDiamondRadius;
         var poly = new Polygon
@@ -278,7 +322,9 @@ internal partial class DopeSheetPanel : UserControl
             },
             Fill        = new SolidColorBrush(isSelected
                 ? AnimationTimelineConstants.KeyDiamondSelectedFill
-                : AnimationTimelineConstants.KeyDiamondFill),
+                : inSelectedTrack
+                    ? AnimationTimelineConstants.KeyDiamondTrackHighlightFill
+                    : AnimationTimelineConstants.KeyDiamondFill),
             Stroke          = new SolidColorBrush(AnimationTimelineConstants.KeyDiamondBorder),
             StrokeThickness = 1,
             Tag             = (trackIndex, keyIndex),
@@ -423,6 +469,8 @@ internal partial class DopeSheetPanel : UserControl
     {
         if (_dragMode == DopeSheetDragMode.Playhead)
             PlayheadScrubEnded?.Invoke();
+        else if (_dragMode == DopeSheetDragMode.Key)
+            KeyDragEnded?.Invoke();
 
         _dragMode = DopeSheetDragMode.None;
         DrawCanvas.ReleaseMouseCapture();
@@ -447,11 +495,13 @@ internal partial class DopeSheetPanel : UserControl
         e.Handled = true;
     }
 
-    /// <summary>プレイヘッドを x 座標に応じた時刻へ移動し、スクラブイベントを発火する。</summary>
+    /// <summary>
+    /// プレイヘッドを x 座標に応じた時刻へ移動し、スクラブイベントを発火する。
+    /// 位置は必ずフレーム境界へスナップする（キーと同じ格子に乗せるため）。
+    /// </summary>
     private void ScrubTo(double x)
     {
-        var duration = _clip?.Duration ?? 0f;
-        var time = Math.Clamp(XToTime(x), 0f, Math.Max(duration, 0f));
+        var time = ClampAndSnapTime(XToTime(x));
         _playheadTime = time;
         Redraw();
         PlayheadScrubbed?.Invoke(time);

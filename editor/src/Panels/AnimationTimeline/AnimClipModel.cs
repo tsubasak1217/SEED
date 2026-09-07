@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  AnimClipModel.cs — .anim クリップの編集用データモデル
 //
 //  Rust 側（runtime/src/engine/animation/*）の AnimationClip / AnimTrack /
@@ -99,6 +99,12 @@ internal sealed class AnimClip
 {
     public string Name { get; set; } = "";
     public float Duration { get; set; } = 1f;
+    /// <summary>
+    /// 編集用フレームレート（タイムラインのフレーム表示・スナップ単位）。
+    /// .anim の "fps" フィールドに対応し、旧ファイル（fps 無し）では既定値が入る。
+    /// ランタイムのサンプリングは秒でしか行わないため、この値は再生結果に影響しない。
+    /// </summary>
+    public float Fps { get; set; } = AnimFrameMath.DefaultFps;
     /// <summary>ループモード（<see cref="AnimLoopMode"/>）。</summary>
     public string LoopMode { get; set; } = AnimLoopMode.Once;
     public List<AnimTrack> Tracks { get; set; } = new();

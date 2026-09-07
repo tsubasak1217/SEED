@@ -14,6 +14,7 @@
 //
 //  【対応コマンド】
 //    screenshot        : ビューポート / ゲーム画面 / エディタ全体を PNG でキャプチャ
+//                        （max_width / scale / keep_full で縮小して返せる）
 //    select_actor      : アクターを選択し ACTOR_COMPONENTS を返す
 //    get_hierarchy     : 現在のヒエラルキーツリー
 //    play_control      : play / pause / resume / stop
@@ -66,6 +67,15 @@ public partial class EditorCommandExecutor
 
     /// <summary>GPU 撮影の応答 JSON に入れる method 名。</summary>
     private const string VisualGpuMethodName = "gpu";
+
+    /// <summary>縮小オプション: 縮小後の最大幅（px）を指定する引数名。</summary>
+    private const string VisualScreenshotMaxWidthKey = "max_width";
+
+    /// <summary>縮小オプション: 縮小率 0..1 を指定する引数名。</summary>
+    private const string VisualScreenshotScaleKey = "scale";
+
+    /// <summary>縮小オプション: フル解像度版も残すかを指定する引数名。</summary>
+    private const string VisualScreenshotKeepFullKey = "keep_full";
 
     /// <summary>
     /// GPU 撮影の応答待ちタイムアウト（ミリ秒）。
@@ -167,16 +177,23 @@ public partial class EditorCommandExecutor
         var result = WindowScreenCapture.Capture(hwnd, clientAreaOnly, path);
         if (!result.Ok) return Error(result.Error ?? "キャプチャに失敗しました。");
 
-        _log($"[AI ツール] screenshot({target}) → {result.Path} ({result.Width}x{result.Height})");
+        // 撮影後の共通後処理として縮小を掛ける（max_width / scale 未指定なら素通り）。
+        var shrink = ApplyScreenshotDownscale(args, result.Path!);
+
+        _log($"[AI ツール] screenshot({target}) → {shrink.Path} ({shrink.Width}x{shrink.Height})");
         return Json(new
         {
-            ok      = true,
+            ok           = true,
             target,
-            path    = result.Path,
-            width   = result.Width,
-            height  = result.Height,
-            warning = result.Warning,
-            state   = host.RuntimeState.ToString(),
+            path         = shrink.Path,
+            width        = shrink.Width,
+            height       = shrink.Height,
+            scaled       = shrink.Scaled,
+            full_width   = shrink.FullWidth,
+            full_height  = shrink.FullHeight,
+            full_path    = shrink.FullPath,
+            warning      = MergeWarnings(result.Warning, shrink.Warning),
+            state        = host.RuntimeState.ToString(),
         });
     }
 
@@ -208,16 +225,24 @@ public partial class EditorCommandExecutor
             await host.CaptureRuntimeScreenshotAsync(target, path, VisualGpuScreenshotTimeoutMs);
         if (!ok) return Error(message);
 
-        _log($"[AI ツール] screenshot_gpu({target}) → {message} ({width}x{height})");
+        // GPU 読み戻しで書かれた PNG も、画面キャプチャと同じ後処理で縮小する。
+        var shrink = ApplyScreenshotDownscale(args, message);
+
+        _log($"[AI ツール] screenshot_gpu({target}) → {shrink.Path} ({shrink.Width}x{shrink.Height})");
         return Json(new
         {
-            ok     = true,
+            ok          = true,
             target,
-            method = VisualGpuMethodName,
-            path   = message,
-            width,
-            height,
-            state  = host.RuntimeState.ToString(),
+            method      = VisualGpuMethodName,
+            path        = shrink.Path,
+            width       = shrink.Width,
+            height      = shrink.Height,
+            scaled      = shrink.Scaled,
+            full_width  = shrink.FullWidth,
+            full_height = shrink.FullHeight,
+            full_path   = shrink.FullPath,
+            warning     = shrink.Warning,
+            state       = host.RuntimeState.ToString(),
         });
     }
 
@@ -474,6 +499,38 @@ public partial class EditorCommandExecutor
                                         CultureInfo.InvariantCulture, out var v) ? v : null,
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// スクリーンショット引数（max_width / scale / keep_full）に従って PNG を縮小する。
+    ///
+    /// 撮影方式（画面 DC / GPU 読み戻し）に依らない共通後処理。
+    /// 縮小指定が無ければ何もせず、元画像の寸法をそのまま返す。
+    /// WPF のイメージング API を使うため UI スレッドから呼ぶこと
+    /// （AI ブリッジは Dispatcher へマーシャルしているのでこの前提は満たされる）。
+    /// </summary>
+    /// <param name="args">ツール呼び出し引数。</param>
+    /// <param name="path">撮影済み PNG の絶対パス。</param>
+    private static DownscaleResult ApplyScreenshotDownscale(JsonElement args, string path)
+    {
+        var maxWidthArg = GetDouble(args, VisualScreenshotMaxWidthKey);
+        var scaleArg    = GetDouble(args, VisualScreenshotScaleKey);
+        var keepFull    = GetBool(args, VisualScreenshotKeepFullKey);
+
+        // max_width は px 数なので整数へ丸める（0 以下は「指定なし」扱い）。
+        int? maxWidth = maxWidthArg is not null && maxWidthArg.Value >= 1.0
+            ? (int)Math.Round(maxWidthArg.Value)
+            : null;
+
+        return ScreenshotDownscaler.Apply(path, maxWidth, scaleArg, keepFull);
+    }
+
+    /// <summary>撮影側と縮小側の警告を 1 本にまとめる（両方無ければ null）。</summary>
+    private static string? MergeWarnings(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a)) return string.IsNullOrEmpty(b) ? null : b;
+        if (string.IsNullOrEmpty(b)) return a;
+        return a + " / " + b;
     }
 
     /// <summary>
