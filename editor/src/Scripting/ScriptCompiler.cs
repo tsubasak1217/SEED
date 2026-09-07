@@ -387,6 +387,14 @@ public static class ScriptCompiler
         // 判定の正典は SEED.ScriptEvent.IsScriptEventType（ランタイム側と同一実装）。
         var isScriptEvent = reference is null && SEED.ScriptEvent.IsScriptEventType(f.FieldType);
 
+        // 列挙型（[Flags] を除く）フィールドか。そうならドロップダウンの選択肢
+        //（メンバ名の宣言順一覧）をここでリフレクションから採取する。
+        // 判定の正典は SEED.ScriptEnumField.IsEnumFieldType（ランタイム側と同一実装）。
+        IReadOnlyList<string>? enumOptions =
+            reference is null && SEED.ScriptEnumField.IsEnumFieldType(f.FieldType)
+                ? SEED.ScriptEnumField.GetOptions(f.FieldType)
+                : null;
+
         // 配列フィールド（T[] / List<T>）は 1 本の JSON 配列文字列として扱う葉。
         // List<T> は BCL で [Serializable] が付いているため、ネスト判定より
         // 先に配列判定を行わないと List の内部フィールドへ降りてしまう。
@@ -437,10 +445,12 @@ public static class ScriptCompiler
             Reference = reference,
             Array     = arrayInfo,
             IsScriptEvent = isScriptEvent,
+            EnumOptions   = enumOptions,
             // [Serializable] ネストクラスそのものにはボタンを出さない
             // （子を一括で戻すと Undo が 1 手にまとまらないため。子フィールド個別には付けられる）。
             // ScriptEvent も同様に出さない（結線の並び全体を 1 手で消すのは事故が大きく、
             // 各行の削除ボタンで十分なため）。
+            // 列挙型は 1 個の値なのでボタンを出せる（戻り先は宣言時初期値のメンバ名）。
             ShowResetButton = children is null && !isScriptEvent && HasResetButton(f),
         };
     }

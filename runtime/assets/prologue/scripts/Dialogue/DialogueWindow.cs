@@ -123,6 +123,14 @@ public class DialogueWindow : SEEDScript
     private bool _visible;
 
     /// <summary>
+    /// 名札（帯）と話者名 Text を表示すべきか。
+    /// 話者名が空白のみ（ナレーション・心の声）のときは false になり、
+    /// ApplyVisibility 内で窓全体の表示状態と AND を取って隠す。
+    /// 既定値は true（未設定時は従来どおり名札を出す）。
+    /// </summary>
+    private bool _nameplateVisible = true;
+
+    /// <summary>
     /// 表示対象の本文を書記素クラスタ（見た目 1 文字）単位に分解したもの。
     /// サロゲートペア・結合文字を途中で切らないため char 単位ではなくこれを使う。
     /// </summary>
@@ -195,12 +203,23 @@ public class DialogueWindow : SEEDScript
 
     /// <summary>
     /// 名札の話者名を差し替える。
+    /// 話者名が空白のみ（null・空文字・スペースのみ）の場合はナレーション／心の声とみなし、
+    /// 名札 Sprite と話者名 Text を非表示にする。話者名があれば表示に戻す。
     /// </summary>
-    /// <param name="speaker">表示する話者名（null・空文字なら空欄）。</param>
+    /// <param name="speaker">表示する話者名（null・空文字・空白文字のみなら名札ごと非表示）。</param>
     public void SetSpeaker(string speaker)
     {
+        // Show/Hide より先に呼ばれる可能性があるため、ここでも一度控えておく
+        CaptureBaseColors();
+
+        // 空白のみならナレーション扱いとして名札を隠す
+        _nameplateVisible = !string.IsNullOrWhiteSpace(speaker);
+
         if (speakerText is { } label && label.IsValid)
             label.Content = speaker ?? EmptyText;
+
+        // 現在の窓表示状態と組み合わせて、名札の見た目へ即座に反映する
+        ApplyVisibility();
     }
 
     /// <summary>
@@ -276,12 +295,16 @@ public class DialogueWindow : SEEDScript
     {
         float alphaScale = _visible ? AlphaScaleVisible : AlphaScaleHidden;
 
+        // 名札（帯）と話者名 Text は「窓が見えている」かつ「話者名がある」の両方を満たすときだけ表示する。
+        // 窓が隠れていれば当然名札も出ないし、窓が見えていても話者名が空白なら名札だけ隠す。
+        float nameplateAlphaScale = (_visible && _nameplateVisible) ? AlphaScaleVisible : AlphaScaleHidden;
+
         if (balloonSprite   is { } balloon   && balloon.IsValid)
             balloon.Color = _balloonBaseColor.WithAlpha(_balloonBaseColor.a * alphaScale);
         if (nameplateSprite is { } nameplate && nameplate.IsValid)
-            nameplate.Color = _nameplateBaseColor.WithAlpha(_nameplateBaseColor.a * alphaScale);
+            nameplate.Color = _nameplateBaseColor.WithAlpha(_nameplateBaseColor.a * nameplateAlphaScale);
         if (speakerText     is { } speaker   && speaker.IsValid)
-            speaker.Color = _speakerBaseColor.WithAlpha(_speakerBaseColor.a * alphaScale);
+            speaker.Color = _speakerBaseColor.WithAlpha(_speakerBaseColor.a * nameplateAlphaScale);
         if (bodyText        is { } body      && body.IsValid)
             body.Color = _bodyBaseColor.WithAlpha(_bodyBaseColor.a * alphaScale);
         if (nextArrowSprite is { } arrow     && arrow.IsValid)

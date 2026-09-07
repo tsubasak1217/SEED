@@ -29,7 +29,7 @@ public sealed class ScriptStructMemberInfo
     public required string Label { get; init; }
 
     /// <summary>
-    /// 型タグ。スカラは <c>float</c> / <c>int</c> / <c>bool</c> / <c>string</c> / <c>reference</c>、
+    /// 型タグ。スカラは <c>float</c> / <c>int</c> / <c>bool</c> / <c>string</c> / <c>reference</c> / <c>enum</c>、
     /// 入れ子の配列メンバは <c>array:&lt;要素型タグ&gt;</c>。
     /// Rust 側 <c>value_matches_type</c> の判定と 1 対 1 で対応させること。
     /// </summary>
@@ -60,6 +60,13 @@ public sealed class ScriptStructMemberInfo
     /// </summary>
     public bool IsScriptEvent { get; init; }
 
+    /// <summary>
+    /// メンバ自身が列挙型（<c>[Flags]</c> を除く）か。
+    /// 値は enum メンバ名の文字列として JSON へ書く（判定・変換の正典は
+    /// <see cref="ScriptEnumField"/>）。エンコード／デコードの分岐に使う。
+    /// </summary>
+    public bool IsEnum { get; init; }
+
     /// <summary>配列メンバの要素が参照型か。</summary>
     public bool IsReferenceElement { get; init; }
 
@@ -85,6 +92,7 @@ public sealed class ScriptStructMemberInfo
 /// メンバは <c>[SerializeField]</c> が付いた public/private フィールドで、型は
 /// - スカラ（float / double / int / long / short / bool / string）
 /// - 参照型（GameObject / Transform / Camera … のハンドル）
+/// - 列挙型（<c>[Flags]</c> を除く。値はメンバ名の文字列）
 /// - 上記の <c>List&lt;&gt;</c> / 配列（入れ子は 1 段まで）
 /// のいずれか。1 つでも非対応メンバがあれば**配列フィールド全体を非対応**として扱う
 /// （半端に一部だけ編集できる UI は、保存されないメンバを見落とす事故のもとになるため）。
@@ -211,6 +219,20 @@ public static class ScriptStructArray
             };
         }
 
+        // 列挙型メンバ（[Flags] を除く）。値はメンバ名の文字列 1 個＝葉として扱う。
+        // 宣言時初期値は「サンプル実体が持つ値の名前」（初期化子が無ければ 0 値の名前）。
+        if (ScriptEnumField.IsEnumFieldType(f.FieldType))
+        {
+            return new ScriptStructMemberInfo
+            {
+                Field        = f,
+                Label        = label,
+                TypeTag      = ScriptEnumField.TypeTag,
+                DefaultValue = ScriptEnumField.ToText(f.FieldType, value),
+                IsEnum       = true,
+            };
+        }
+
         // 配列メンバ（入れ子は 1 段まで＝要素はスカラか参照のみ）
         if (ScriptArray.TryGetElementType(f.FieldType, out var elemType, out var isList))
         {
@@ -231,7 +253,7 @@ public static class ScriptStructArray
 
         // スカラメンバ
         var tag = ScalarTypeTag(f.FieldType);
-        if (tag is null) return null;   // 入れ子の構造体・列挙型などは非対応
+        if (tag is null) return null;   // 入れ子の構造体・[Flags] 列挙型などは非対応
         return new ScriptStructMemberInfo
         {
             Field        = f,
@@ -406,6 +428,13 @@ public static class ScriptStructArray
         if (m.IsScriptEvent)
             return value.ValueKind == JsonValueKind.Array ? value.GetRawText() : null;
 
+        // 列挙型は JSON 文字列（メンバ名）。名前が宣言に無いかどうかはここでは見ない
+        // （実体化時の TryParse が弾き、そのメンバだけ宣言時初期値になる）。
+        if (m.IsEnum)
+            return value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? ScriptEnumField.UnsetValue
+                : null;
+
         if (m.IsArray)
             return value.ValueKind == JsonValueKind.Array ? value.GetRawText() : null;
 
@@ -452,6 +481,14 @@ public static class ScriptStructArray
                 // ScriptEvent は JSON 配列を生のまま埋め込む（クォートすると二重エスケープになる）。
                 // 壊れた文字列を埋め込まないよう必ず Normalize を通す。
                 sb.Append(ScriptEvent.Normalize(raw));
+                continue;
+            }
+
+            if (m.IsEnum)
+            {
+                // 列挙型はメンバ名の文字列として書く。宣言に無い名前でも書き換えず保つ
+                //（列挙子を一時的に消しただけのケースで値を失わないため。読み取り時に既定値へ落ちる）。
+                sb.Append(ScriptArray.Quote(raw));
                 continue;
             }
 
@@ -558,6 +595,8 @@ public static class ScriptStructArray
                     { IsReference: true }   => ScriptReference.UnsetValue,
                     // 結線はインスペクタで作るものなので宣言時初期値は常に「結線なし」
                     { IsScriptEvent: true } => ScriptEvent.EmptyJson,
+                    // 列挙型は数値ではなくメンバ名で書き出す
+                    { IsEnum: true }        => ScriptEnumField.ToText(m.Field.FieldType, v),
                     { IsArray: true }       => ScriptArray.EncodeValue(v, m.ElementType!),
                     _                       => ScalarValueString(v),
                 };

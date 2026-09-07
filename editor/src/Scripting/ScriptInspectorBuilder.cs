@@ -140,7 +140,7 @@ public static class ScriptInspectorBuilder
         var row = BuildRowCore(field, path, values, onChange, onRefDrop, eventCatalog);
         if (row is null || !field.ShowResetButton) return row;
 
-        // 既定値を文字列化できない型（列挙型など未対応の読み取り専用行）はボタンを出さない。
+        // 既定値を文字列化できない型（[Flags] 列挙型など未対応の読み取り専用行）はボタンを出さない。
         var resetValue = FormatResetValue(field);
         if (resetValue is null) return row;
 
@@ -167,6 +167,14 @@ public static class ScriptInspectorBuilder
         // 事故が大きく、各行の削除ボタンで足りるため）。ScriptCompiler 側でも
         // ShowResetButton を落としているが、呼ばれても安全なようにここでも弾く。
         if (field.IsScriptEvent) return null;
+
+        // 列挙型は宣言時初期値の「メンバ名」へ戻す（保存書式と同じ文字列）。
+        // 初期値が宣言に無い数値（未定義値のキャスト）なら名前が無いのでボタンを出さない。
+        if (field.EnumOptions is not null)
+        {
+            var enumDefault = SEED.ScriptEnumField.ToText(field.Field.FieldType, field.DefaultValue);
+            return enumDefault.Length == 0 ? null : enumDefault;
+        }
 
         // 配列フィールドは宣言時初期値の実配列を JSON 配列文字列へ戻す（未初期化なら空配列）。
         if (field.Array is { } arrayInfo)
@@ -240,6 +248,11 @@ public static class ScriptInspectorBuilder
         if (field.IsScriptEvent)
             return ScriptEventFieldBuilder.Build(
                 field, raw, onLeaf, onRefDrop, eventCatalog, expandStates, expandKey);
+
+        // 列挙型（enum）はメンバ名を選ぶドロップダウン。
+        // 構造体リストのメンバ行もこの入口を通るので、スカラ判定より先に置く。
+        if (field.EnumOptions is { } enumOptions)
+            return ScriptEnumFieldBuilder.Build(field, enumOptions, raw, onLeaf);
 
         if (t == typeof(float) || t == typeof(double))
         {

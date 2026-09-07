@@ -636,6 +636,10 @@ public static unsafe class ScriptBridge
         // 配列判定より先に見る（内部実装が List<T> でも配列フィールド扱いにしないため）。
         if (SEED.ScriptEvent.IsScriptEventType(t)) return SEED.ScriptEvent.TypeTag;
 
+        // 列挙型（[Flags] を除く）はメンバ名の文字列 1 本として保存する葉。
+        // 判定・書式の正典は SEED.ScriptEnumField（エディタ／Rust と共有）。
+        if (SEED.ScriptEnumField.IsEnumFieldType(t)) return SEED.ScriptEnumField.TypeTag;
+
         // 配列フィールド（T[] / List<T>）は "array:要素型タグ" で表す。
         // 要素型がインスペクタ非対応なら配列全体を unsupported とする。
         if (SEED.ScriptArray.TryGetElementType(t, out var elementType, out _))
@@ -664,6 +668,11 @@ public static unsafe class ScriptBridge
         // （スクリプト側の初期化子で結線を書く用途は想定しない＝データ側の一元管理を保つ）
         if (!isReference && SEED.ScriptEvent.IsScriptEventType(type))
             return SEED.ScriptEvent.EmptyJson;
+
+        // 列挙型は宣言時初期値の「メンバ名」を返す（数値ではなく名前で保存する規約）。
+        // 宣言に無い値（未定義値のキャスト）は名前を持たないので空文字になる。
+        if (!isReference && SEED.ScriptEnumField.IsEnumFieldType(type))
+            return SEED.ScriptEnumField.ToText(type, value);
 
         // 配列フィールドは実配列を JSON 配列文字列へ書き出す（未初期化なら "[]"）
         if (!isReference && SEED.ScriptArray.TryGetElementType(type, out var elementType, out _))
@@ -941,7 +950,10 @@ public static unsafe class ScriptBridge
         var converted = ConvertValue(leaf.FieldType, value);
         if (converted is null)
         {
-            Console.Error.WriteLine($"[SEEDScripting] unsupported field type: {leaf.FieldType.Name} ({leaf.Name})");
+            // 列挙型は「未知のメンバ名・空文字 → 現在値（宣言時初期値）を維持」が仕様なので、
+            // 変換失敗は異常ではない。列挙子を削除／改名した後の古い保存値で毎回警告が出るのを避ける。
+            if (!SEED.ScriptEnumField.IsEnumFieldType(leaf.FieldType))
+                Console.Error.WriteLine($"[SEEDScripting] unsupported field type: {leaf.FieldType.Name} ({leaf.Name})");
             return;
         }
         leaf.SetValue(owner, converted);
@@ -1080,6 +1092,12 @@ public static unsafe class ScriptBridge
         // NeedsDeferredReferenceResolution の対象にはしない。
         if (SEED.ScriptEvent.IsScriptEventType(type))
             return SEED.ScriptEvent.BuildInstance(value);
+
+        // 列挙型フィールド: メンバ名の文字列 → 列挙型の値（大文字小文字は区別しない）。
+        // 未知の名前・空文字は「変換失敗（null）」とし、呼び出し側が値の書き込みを
+        // 見送ることで宣言時の初期値が保たれる（SetFieldByPath / BuildInstance を参照）。
+        if (SEED.ScriptEnumField.IsEnumFieldType(type))
+            return SEED.ScriptEnumField.TryParse(type, value, out var enumValue) ? enumValue : null;
 
         // 構造体配列フィールド: JSON オブジェクト配列文字列 → List<構造体> / 構造体[]
         // 参照メンバを含む構造体は World が必要なのでここでは扱わない

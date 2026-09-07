@@ -38,7 +38,7 @@ pub struct ScriptComponentData {
 /// CLR の `ScriptBridge.DescribeSerializeFields` が返す JSON 要素に対応する。
 /// - `name`  : ドット区切りのフィールドパス（例 `"stats.hp"`）
 /// - `type_tag`: `float`/`double`/`int`/`long`/`short`/`bool`/`string`/
-///               `reference`/`scriptevent`/`unsupported`、および配列フィールドの
+///               `reference`/`scriptevent`/`enum`/`unsupported`、および配列フィールドの
 ///               `array:<要素型タグ>`（例 `array:float` / `array:reference`）。
 ///               配列の値は JSON 配列文字列（例 `[1.0,2.5]` / `["a","b"]`）で保存される。
 ///               `scriptevent`（C# の `SEED.ScriptEvent` = UnityEvent 相当）も
@@ -62,7 +62,7 @@ pub struct ScriptFieldDef {
 ///
 /// - `name`     : JSON オブジェクトのキー（＝メンバのフィールド名）
 /// - `label`    : インスペクタ表示名（Rust では判定に使わないが、往復の情報欠落を避けて保持する）
-/// - `type_tag` : `float`/`int`/`bool`/`string`/`reference`/`scriptevent` と
+/// - `type_tag` : `float`/`int`/`bool`/`string`/`reference`/`scriptevent`/`enum` と
 ///                入れ子配列 `array:<要素型タグ>`
 /// - `default_value`: 宣言時初期値の文字列化
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +102,7 @@ fn value_matches_type(type_tag: &str, value: &str, members: &[ScriptStructMember
         "bool"                    => value == "true" || value == "false",
         "string" | "reference"    => true,
         SCRIPT_EVENT_TYPE_TAG     => script_event_value_matches(value),
+        ENUM_TYPE_TAG             => enum_value_matches(value),
         _                         => false,
     }
 }
@@ -123,6 +124,29 @@ fn script_event_value_matches(value: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value.trim()) else { return false };
     let serde_json::Value::Array(items) = parsed else { return false };
     items.iter().all(|item| item.is_object())
+}
+
+/// 列挙型フィールドの型タグ（C# 側 `SEED.ScriptEnumField.TypeTag` と一致させること）。
+const ENUM_TYPE_TAG: &str = "enum";
+
+/// 保存済みの値が列挙型フィールドとして引き継げるかを判定する。
+///
+/// 【規則】値は「enum メンバ名の文字列」なので、**C# の識別子として成立する文字列**
+/// （先頭が英字か `_`、以降は英数字か `_`）か、空文字であることだけを見る。
+///
+/// 【なぜ名前の一覧と照合しないのか】
+/// Rust 側は列挙子の一覧を持たない（型タグは `"enum"` 固定で、選択肢はエディタが
+/// リフレクションで得る）。宣言に無い名前が残っていても CLR 側 `ScriptEnumField.TryParse`
+/// が弾いて宣言時初期値になるため、ここで落とす必要がない。
+/// 逆に識別子として成立しない値（`"12.5"` など、float から型を変えた後の残骸）は
+/// 明確に別種のデータなので引き継がない。
+fn enum_value_matches(value: &str) -> bool {
+    let v = value.trim();
+    // 空文字は「未設定＝宣言時初期値を使う」を表す正規の値なので適合とする
+    if v.is_empty() { return true; }
+    let mut chars = v.chars();
+    let first_ok = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_');
+    first_ok && chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// 配列フィールドの型タグ接頭辞（C# 側 `SEED.ScriptArray.TypeTagPrefix` と一致させること）。
@@ -187,6 +211,9 @@ fn json_scalar_matches_tag(type_tag: &str, value: &serde_json::Value) -> bool {
         // 構造体メンバの ScriptEvent は JSON 配列がそのまま入れ子で埋め込まれている。
         // 外形（配列であること）だけを見る点は script_event_value_matches と同じ理由。
         SCRIPT_EVENT_TYPE_TAG    => value.is_array(),
+        // 構造体メンバの列挙型は JSON 文字列（メンバ名）。
+        // 名前の妥当性は value_matches_type と同じ規則（識別子か空文字）で見る。
+        ENUM_TYPE_TAG            => value.as_str().is_some_and(enum_value_matches),
         _                        => false,
     }
 }
@@ -1016,6 +1043,55 @@ mod tests {
         let to_float = [def("onStart", "float", "0")];
         let bindings = r#"[{"actor":"A","script":"B","method":"C","argKind":"none","arg":""}]"#;
         assert!(carry_over_script_fields(&old(&[("onStart", bindings)]), &to_float).is_empty());
+    }
+
+    /// 列挙型フィールドは、同じ型タグのままなら保存済みのメンバ名をそのまま引き継ぐ。
+    /// 列挙子の追加・並べ替え・削除は Rust 側では判別できないが、宣言に無い名前は
+    /// CLR 側 `ScriptEnumField.TryParse` が弾いて宣言時初期値になるので安全に引き継げる。
+    #[test]
+    fn keeps_enum_value_when_tag_matches() {
+        let defs = [def("blendMode", "enum", "Cut")];
+
+        // 宣言にある名前はそのまま引き継ぐ
+        let merged = carry_over_script_fields(&old(&[("blendMode", "Lerp")]), &defs);
+        assert_eq!(merged.get("blendMode").map(String::as_str), Some("Lerp"));
+
+        // 宣言から消えた列挙子の名前も文字列としては引き継ぐ（CLR 側で既定値へ落ちる）
+        let merged_unknown = carry_over_script_fields(&old(&[("blendMode", "Removed")]), &defs);
+        assert_eq!(merged_unknown.get("blendMode").map(String::as_str), Some("Removed"));
+
+        // 未設定（空文字）も正規の値として引き継ぐ
+        let merged_empty = carry_over_script_fields(&old(&[("blendMode", "")]), &defs);
+        assert_eq!(merged_empty.get("blendMode").map(String::as_str), Some(""));
+
+        // 構造体配列のメンバとしての列挙型（JSON 文字列）も引き継げる
+        let struct_defs = [struct_def("steps", "StepEntry",
+                                      &[("delay", "float"), ("mode", "enum")])];
+        let nested = r#"[{"delay":2.5,"mode":"Lerp"},{"delay":0.0,"mode":"Cut"}]"#;
+        let merged_nested = carry_over_script_fields(&old(&[("steps", nested)]), &struct_defs);
+        assert_eq!(merged_nested.get("steps").map(String::as_str), Some(nested));
+    }
+
+    /// 型が変わった場合は引き継がない（float の値 → 列挙型、および逆方向）。
+    /// 識別子として成立しない値は列挙型のメンバ名ではありえないため落とす。
+    #[test]
+    fn drops_enum_when_type_changed() {
+        // float で保存されていた値を enum フィールドへは引き継がない
+        let to_enum = [def("blendMode", "enum", "Cut")];
+        assert!(carry_over_script_fields(&old(&[("blendMode", "12.5")]), &to_enum).is_empty());
+        // 数値だけの文字列・記号混じりも識別子ではないので不適合
+        assert!(carry_over_script_fields(&old(&[("blendMode", "3")]), &to_enum).is_empty());
+        assert!(carry_over_script_fields(&old(&[("blendMode", "a b")]), &to_enum).is_empty());
+
+        // 逆方向: 列挙型のメンバ名を float フィールドへは引き継がない
+        let to_float = [def("blendMode", "float", "0")];
+        assert!(carry_over_script_fields(&old(&[("blendMode", "Lerp")]), &to_float).is_empty());
+
+        // 構造体メンバの列挙型が数値へ変わっている（型変更）場合はその配列全体を引き継がない
+        let struct_defs = [struct_def("steps", "StepEntry",
+                                      &[("delay", "float"), ("mode", "enum")])];
+        let broken = r#"[{"delay":2.5,"mode":3}]"#;
+        assert!(carry_over_script_fields(&old(&[("steps", broken)]), &struct_defs).is_empty());
     }
 
     /// CLR が返す構造体配列 JSON（members 付き）をそのままデシリアライズできる。

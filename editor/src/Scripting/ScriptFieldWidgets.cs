@@ -203,6 +203,34 @@ internal static class ScriptFieldWidgets
     };
 
     /// <summary>
+    /// インスペクタ共通の見た目を持つコンボボックス（ドロップダウン）を作る。
+    ///
+    /// 項目は呼び出し側が <c>Items</c> へ詰める。テキストボックスと同じ配色・余白・
+    /// フォントサイズにしてあるため、同じ行の中に混在しても高さが揃う。
+    /// キーボードによる誤操作ガード（<see cref="SEEDEditor.Controls.ComboBoxKeyGuard"/>）は
+    /// App.xaml の暗黙スタイルでも有効になるが、暗黙スタイルが効かない文脈でも
+    /// 確実に働くようここでも明示的に有効化する。
+    /// </summary>
+    /// <param name="tooltip">ツールチップ（null なら付けない）。</param>
+    public static ComboBox MakeComboBox(object? tooltip = null)
+    {
+        var combo = new ComboBox
+        {
+            Background               = BrushBg,
+            Foreground               = BrushText,
+            BorderBrush              = BrushBorder,
+            BorderThickness          = new Thickness(1),
+            FontSize                 = RowFontSize,
+            Padding                  = new Thickness(3, 1, 3, 1),
+            Margin                   = new Thickness(2, 1, 0, 1),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            ToolTip                  = tooltip,
+        };
+        SEEDEditor.Controls.ComboBoxKeyGuard.SetEnabled(combo, true);
+        return combo;
+    }
+
+    /// <summary>
     /// 数値テキストボックスの左に添える「横ドラッグで値を増減するハンドル」を作る。
     /// ドラッグ中は 1px ごとに値を送るため、呼び出し側の onChange は連続発火に耐える必要がある
     /// （SET_SCRIPT_FIELD 経路はランタイム側で Undo がまとめられる）。

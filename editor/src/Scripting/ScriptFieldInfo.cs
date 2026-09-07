@@ -98,4 +98,15 @@ public record ScriptFieldInfo(
     /// （ランタイム側の値注入と同じ実装を共有する）。
     /// </summary>
     public bool IsScriptEvent { get; init; }
+
+    /// <summary>
+    /// 列挙型（enum）フィールドの選択肢（メンバ名の宣言順一覧）。
+    /// null なら列挙型フィールドではない（<c>[Flags]</c> 付きの列挙型もここでは null）。
+    ///
+    /// 保存値は enum メンバ名の文字列で、判定・変換の正典は
+    /// <see cref="SEED.ScriptEnumField"/>（ランタイム側の値注入と同じ実装を共有する）。
+    /// 選択肢そのものはエディタが型を直接持っているのでリフレクションで得る
+    /// （Rust 側は型タグ <c>"enum"</c> で文字列であることだけを検査する）。
+    /// </summary>
+    public IReadOnlyList<string>? EnumOptions { get; init; }
 }
