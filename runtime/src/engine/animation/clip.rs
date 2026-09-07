@@ -428,46 +428,75 @@ mod tests {
     use super::*;
     use crate::engine::animation::sampler::sample_track;
 
-    /// HIT 帯演出クリップが置かれているディレクトリ（runtime/assets は junction）。
-    const CLIP_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/mainGame/animations/");
+    // ─── フィクスチャ ──────────────────────────────────────────
+    //  実アセット（runtime/assets/mainGame/animations/*.anim）はユーザーがエディタで
+    //  自由に編集するため、テストはアセットに依存せず、ここに埋め込んだクリップで
+    //  「.anim フォーマットの解釈」と「明示タンジェントによるイージング再現」を検証する。
 
-    /// 帯（上）のクリップ名。入場は法線の逆側から降りてくる。
-    const BAND_TOP_CLIP: &str = "hit_banner_band_top.anim";
-
-    /// 帯（下）のクリップ名。入場は法線側から上がってくる。
-    const BAND_BOTTOM_CLIP: &str = "hit_banner_band_bottom.anim";
-
-    /// 「Lv◯ 魚名」文字のクリップ名。
-    const TEXT_LEVEL_CLIP: &str = "hit_banner_text_level.anim";
-
-    /// 「HIT!!!」文字のクリップ名。
-    const TEXT_HIT_CLIP: &str = "hit_banner_text_hit.anim";
-
-    /// 4 つのクリップ（アイテム 1 つにつき 1 ファイル）。
-    const ALL_CLIPS: [&str; 4] = [
-        BAND_TOP_CLIP,
-        BAND_BOTTOM_CLIP,
-        TEXT_LEVEL_CLIP,
-        TEXT_HIT_CLIP,
-    ];
-
-    /// 文字クリップが画面外で静止している時間（秒）。文字の出遅れ表現。
-    const TEXT_DELAY_SECONDS: f32 = 0.10;
-
+    /// 静止位置（px）。
+    const REST: [f32; 2] = [300.0, 140.0];
+    /// 入場開始・退場終了位置（px）。
+    const START: [f32; 2] = [196.04, -349.07];
+    /// 入場が終わる時刻（秒）。
+    const ENTRANCE_END: f32 = 0.25;
+    /// 静止が終わる時刻（秒）。
+    const HOLD_END: f32 = 1.45;
+    /// 尺（秒）。
+    const DURATION: f32 = 1.75;
     /// 位置の比較に許す誤差（px）。明示タンジェントの丸め誤差ぶんだけ緩める。
     const POSITION_EPSILON: f32 = 0.5;
 
-    /// クリップを実ファイルから読む（読めない・壊れているならテストを落とす）。
-    fn load(file_name: &str) -> AnimationClip {
-        let path = format!("{CLIP_DIR}{file_name}");
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{file_name} が読めること: {e}"));
-        AnimationClip::from_json(&path, &text)
-            .unwrap_or_else(|e| panic!("{file_name} の JSON が解析できること: {e}"))
+    /// easeOutCubic の入場（out_tan = 3Δ/dt, in_tan = 0）と
+    /// easeInCubic の退場（out_tan = 0, in_tan = 3Δ/dt）を明示タンジェントで書いたクリップ。
+    fn fixture_json() -> String {
+        let d_in = [(REST[0] - START[0]) / ENTRANCE_END, (REST[1] - START[1]) / ENTRANCE_END];
+        let d_out = [
+            (START[0] - REST[0]) / (DURATION - HOLD_END),
+            (START[1] - REST[1]) / (DURATION - HOLD_END),
+        ];
+        format!(
+            r#"{{
+  "name": "Hit",
+  "duration": {DURATION},
+  "loop_mode": "once",
+  "tracks": [
+    {{
+      "target": {{ "actor_path": "", "component": "canvas_transform", "property": "position" }},
+      "value_type": "vec2",
+      "keys": [
+        {{ "time": 0.0, "value": [{}, {}], "interp": "bezier", "out_tan": [{}, {}] }},
+        {{ "time": {ENTRANCE_END}, "value": [{}, {}], "interp": "linear", "in_tan": [0.0, 0.0] }},
+        {{ "time": {HOLD_END}, "value": [{}, {}], "interp": "bezier", "out_tan": [0.0, 0.0] }},
+        {{ "time": {DURATION}, "value": [{}, {}], "interp": "linear", "in_tan": [{}, {}] }}
+      ]
+    }},
+    {{
+      "target": {{ "actor_path": "", "component": "canvas_transform", "property": "rotation" }},
+      "value_type": "float",
+      "keys": [ {{ "time": 0.0, "value": -12.0, "interp": "step" }} ]
+    }},
+    {{
+      "target": {{ "actor_path": "", "component": "sprite", "property": "color" }},
+      "value_type": "color",
+      "keys": [
+        {{ "time": 0.0, "value": [0.0, 0.0, 0.0, 1.0], "interp": "step" }},
+        {{ "time": {DURATION}, "value": [0.0, 0.0, 0.0, 0.0], "interp": "step" }}
+      ]
+    }}
+  ]
+}}"#,
+            START[0], START[1], 3.0 * d_in[0], 3.0 * d_in[1],
+            REST[0], REST[1],
+            REST[0], REST[1],
+            START[0], START[1], 3.0 * d_out[0], 3.0 * d_out[1],
+        )
+    }
+
+    fn fixture() -> AnimationClip {
+        AnimationClip::from_json("fixture", &fixture_json()).expect("フィクスチャが解析できること")
     }
 
     /// 指定トラックを探す（見つからなければパニックしてテストを落とす）。
-    /// アイテムごとにクリップを分けたので、束縛先は常に自分自身（actor_path 空文字）。
     fn find_track<'a>(clip: &'a AnimationClip, comp: &str, prop: &str) -> &'a Track {
         clip.tracks
             .iter()
@@ -483,140 +512,83 @@ mod tests {
         }
     }
 
-    /// 4 つの実ファイルを読んで構造（尺・ループ・トラック構成・束縛先）を検証する。
+    /// フォーマット解釈: 尺・ループ・トラック構成・束縛先・値型。
     #[test]
-    fn hit_banner_clips_parse() {
-        for file_name in ALL_CLIPS {
-            let clip = load(file_name);
-
-            assert_eq!(clip.name, "Hit", "{file_name}");
-            assert_eq!(clip.duration, 1.75, "{file_name}");
-            assert_eq!(clip.loop_mode, LoopMode::Once, "{file_name}");
-            // 1 アイテムにつき 位置・回転・色 の 3 トラック
-            assert_eq!(clip.tracks.len(), 3, "{file_name}");
-
-            // すべてのトラックが「Animator を持つアクタ自身」を指すこと
-            // （アンカーが異なるアイテムを 1 本のクリップでまとめて動かせないための分割）
-            for track in &clip.tracks {
-                assert!(track.target.actor_path.is_empty(), "{file_name}");
-            }
-
-            // 傾きは演出中ずっと一定（−12°）
-            let rotation = find_track(&clip, "canvas_transform", "rotation");
-            assert_eq!(rotation.keys.len(), 1, "{file_name}");
-            assert_eq!(rotation.keys[0].value, AnimValue::Float(-12.0), "{file_name}");
+    fn fixture_clip_parses() {
+        let clip = fixture();
+        assert_eq!(clip.name, "Hit");
+        assert_eq!(clip.duration, DURATION);
+        assert_eq!(clip.loop_mode, LoopMode::Once);
+        assert_eq!(clip.tracks.len(), 3);
+        for track in &clip.tracks {
+            assert!(track.target.actor_path.is_empty());
         }
+        let rotation = find_track(&clip, "canvas_transform", "rotation");
+        assert_eq!(rotation.keys.len(), 1);
+        assert_eq!(rotation.keys[0].value, AnimValue::Float(-12.0));
+        let color = find_track(&clip, "sprite", "color");
+        assert_eq!(color.value_type, ValueType::Color);
+        assert_eq!(color.keys[0].value, AnimValue::Color([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(color.keys[1].value, AnimValue::Color([0.0, 0.0, 0.0, 0.0]));
     }
 
-    /// 色トラックが「不透明 → 尺の末尾で透明」の 2 キーであること
-    /// （帯は sprite.color・文字は text.color を駆動する）。
+    /// fps を省略した旧フォーマットは既定値（30）になる。
     #[test]
-    fn hit_banner_clips_fade_out_at_end() {
-        let cases: [(&str, &str, [f32; 3]); 4] = [
-            (BAND_TOP_CLIP, "sprite", [0.0, 0.0, 0.0]),
-            (BAND_BOTTOM_CLIP, "sprite", [0.0, 0.0, 0.0]),
-            (TEXT_LEVEL_CLIP, "text", [1.0, 1.0, 1.0]),
-            (TEXT_HIT_CLIP, "text", [1.0, 1.0, 1.0]),
-        ];
-
-        for (file_name, component, rgb) in cases {
-            let clip = load(file_name);
-            let color = find_track(&clip, component, "color");
-
-            assert_eq!(color.value_type, ValueType::Color, "{file_name}");
-            assert_eq!(color.keys.len(), 2, "{file_name}");
-            assert_eq!(
-                color.keys[0].value,
-                AnimValue::Color([rgb[0], rgb[1], rgb[2], 1.0]),
-                "{file_name}"
-            );
-            assert_eq!(
-                color.keys[1].value,
-                AnimValue::Color([rgb[0], rgb[1], rgb[2], 0.0]),
-                "{file_name}"
-            );
-        }
+    fn fps_defaults_when_omitted() {
+        let clip = fixture();
+        assert_eq!(clip.fps, DEFAULT_EDIT_FPS);
     }
 
-    /// 入場区間の明示タンジェントが easeOutCubic を再現すること
-    /// （旧 HitBanner.cs の `1 - (1 - t)^3` と一致する）。4 クリップすべてで確認する。
+    /// 入場区間の明示タンジェント（out_tan = 3Δ/dt, in_tan = 0）が easeOutCubic
+    /// `1 - (1 - t)^3` を再現すること。
     #[test]
     fn entrance_tangents_reproduce_ease_out_cubic() {
-        for file_name in ALL_CLIPS {
-            let clip = load(file_name);
-            let track = find_track(&clip, "canvas_transform", "position");
-
-            // 文字クリップは先頭に「画面外で静止する step キー」が 1 つ増えるので、
-            // 入場区間は「最後から 3 番目 → 4 番目」＝ 静止キーの 1 つ手前から始まる。
-            let entrance = track.keys.len() - 4;
-            let start = vec2_of(track.keys[entrance].value);
-            let rest = vec2_of(track.keys[entrance + 1].value);
-            let (t0, t1) = (track.keys[entrance].time, track.keys[entrance + 1].time);
-
-            // 区間内を細かく走査し、easeOutCubic の解析解と一致するか見る
-            for step in 0..=10 {
-                let u = step as f32 / 10.0;
-                let eased = 1.0 - (1.0 - u).powi(3);
-                let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
-                for c in 0..2 {
-                    let want = start[c] + (rest[c] - start[c]) * eased;
-                    assert!(
-                        (got[c] - want).abs() < POSITION_EPSILON,
-                        "{file_name} u={u} 成分{c}: got {} want {}",
-                        got[c],
-                        want
-                    );
-                }
-            }
-        }
-    }
-
-    /// 退場区間の明示タンジェントが easeInCubic（t^3）を再現すること。4 クリップすべてで確認する。
-    #[test]
-    fn exit_tangents_reproduce_ease_in_cubic() {
-        for file_name in ALL_CLIPS {
-            let clip = load(file_name);
-            let track = find_track(&clip, "canvas_transform", "position");
-
-            let last = track.keys.len() - 1;
-            let rest = vec2_of(track.keys[last - 1].value);
-            let exit = vec2_of(track.keys[last].value);
-            let (t0, t1) = (track.keys[last - 1].time, track.keys[last].time);
-
-            for step in 0..=10 {
-                let u = step as f32 / 10.0;
-                let eased = u * u * u;
-                let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
-                for c in 0..2 {
-                    let want = rest[c] + (exit[c] - rest[c]) * eased;
-                    assert!(
-                        (got[c] - want).abs() < POSITION_EPSILON,
-                        "{file_name} u={u} 成分{c}: got {} want {}",
-                        got[c],
-                        want
-                    );
-                }
-            }
-        }
-    }
-
-    /// 文字は再生開始から TEXT_DELAY_SECONDS（0.10 秒）まで画面外で静止すること（step 区間）。
-    /// 帯には遅れが無いので、この確認は文字クリップだけに行う。
-    #[test]
-    fn text_holds_offscreen_during_delay() {
-        for file_name in [TEXT_LEVEL_CLIP, TEXT_HIT_CLIP] {
-            let clip = load(file_name);
-            let track = find_track(&clip, "canvas_transform", "position");
-
-            let start = vec2_of(track.keys[0].value);
-            assert_eq!(track.keys[1].time, TEXT_DELAY_SECONDS, "{file_name}");
-            for t in [0.0_f32, 0.05, 0.099] {
-                assert_eq!(
-                    vec2_of(sample_track(track, t).unwrap()),
-                    start,
-                    "{file_name} t={t}"
+        let clip = fixture();
+        let track = find_track(&clip, "canvas_transform", "position");
+        for step in 0..=10 {
+            let u = step as f32 / 10.0;
+            let eased = 1.0 - (1.0 - u).powi(3);
+            let got = vec2_of(sample_track(track, ENTRANCE_END * u).unwrap());
+            for c in 0..2 {
+                let want = START[c] + (REST[c] - START[c]) * eased;
+                assert!(
+                    (got[c] - want).abs() < POSITION_EPSILON,
+                    "u={u} 成分{c}: got {} want {}",
+                    got[c],
+                    want
                 );
             }
+        }
+    }
+
+    /// 退場区間の明示タンジェント（out_tan = 0, in_tan = 3Δ/dt）が easeInCubic `t^3` を再現すること。
+    #[test]
+    fn exit_tangents_reproduce_ease_in_cubic() {
+        let clip = fixture();
+        let track = find_track(&clip, "canvas_transform", "position");
+        for step in 0..=10 {
+            let u = step as f32 / 10.0;
+            let eased = u * u * u;
+            let got = vec2_of(sample_track(track, HOLD_END + (DURATION - HOLD_END) * u).unwrap());
+            for c in 0..2 {
+                let want = REST[c] + (START[c] - REST[c]) * eased;
+                assert!(
+                    (got[c] - want).abs() < POSITION_EPSILON,
+                    "u={u} 成分{c}: got {} want {}",
+                    got[c],
+                    want
+                );
+            }
+        }
+    }
+
+    /// 静止区間（linear で同値）は静止位置のまま。
+    #[test]
+    fn hold_segment_stays_at_rest() {
+        let clip = fixture();
+        let track = find_track(&clip, "canvas_transform", "position");
+        for t in [ENTRANCE_END, 0.8, HOLD_END] {
+            assert_eq!(vec2_of(sample_track(track, t).unwrap()), REST, "t={t}");
         }
     }
 }
