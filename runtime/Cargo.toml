@@ -2,6 +2,11 @@
 name = "SEED"
 version = "0.1.0"
 edition = "2024"
+# cargo のパッケージファイル走査（ビルドスクリプトの再実行判定・packaging）から
+# アセット（runtime/assets = D:\SEED_assets への junction。数百 MB）を外す。
+# 走査対象に入っていると毎ビルドが遅く、権限の壊れたフォルダがあると
+# "failed to determine package fingerprint" で失敗する。
+exclude = ["assets/**", "save/**", "logs/**"]
 
 [dependencies]
 winit = "0.30"
