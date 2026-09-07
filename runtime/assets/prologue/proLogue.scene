@@ -1,5 +1,5 @@
 {
-  "name": "NewScene",
+  "name": "Tutorial",
   "debug_camera": {
     "position": [
       51.766262,
@@ -10,7 +10,7 @@
     "pitch": 0.13952377,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 44.580544
+    "speed": 5.0
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -320,8 +320,7 @@
           "component": {
             "type": "ScriptComponent",
             "data": {
-              "type_name": "assets://prologue/scripts/Dialogue/DialogueCameraDirector.cs",
-              "fields": {}
+              "type_name": "assets://prologue/scripts/Dialogue/DialogueCameraDirector.cs"
             }
           }
         }
@@ -8694,12 +8693,12 @@
             "data": {
               "type_name": "assets://common/scripts/SceneFlow.cs",
               "fields": {
-                "nextScene": "tutorial",
-                "fadeDuration": "0.500",
-                "fadeColorR": "0.000",
-                "fadeColorG": "0.000",
                 "fadeColorB": "0.000",
-                "fadeInOnStart": "true"
+                "fadeColorG": "0.000",
+                "fadeColorR": "0.000",
+                "fadeDuration": "0.500",
+                "fadeInOnStart": "true",
+                "nextScene": "tutorial"
               }
             }
           }
@@ -8723,9 +8722,9 @@
       "name": "CamTarget_Wide",
       "transform": {
         "position": [
-          44.680741,
+          44.68074,
           8.244501,
-          18.831437
+          18.831436
         ],
         "rotation": [
           9.2299,
@@ -8745,9 +8744,9 @@
       "name": "CamTarget_Owner",
       "transform": {
         "position": [
-          34.120194,
+          34.120193,
           6.99957,
-          33.801475
+          33.801476
         ],
         "rotation": [
           2.5854,
@@ -8839,13 +8838,13 @@
             "data": {
               "type_name": "assets://prologue/scripts/Dialogue/DialogueWindow.cs",
               "fields": {
+                "arrowBlinkPeriod": "0.800",
                 "balloonSprite": "DialogueBalloon|Sprite",
-                "nameplateSprite": "DialogueNameplate|Sprite",
-                "speakerText": "DialogueSpeakerText|Text",
                 "bodyText": "DialogueBodyText|Text",
-                "nextArrowSprite": "DialogueNextArrow|Sprite",
                 "charInterval": "0.040",
-                "arrowBlinkPeriod": "0.800"
+                "nameplateSprite": "DialogueNameplate|Sprite",
+                "nextArrowSprite": "DialogueNextArrow|Sprite",
+                "speakerText": "DialogueSpeakerText|Text"
               }
             }
           }
@@ -8892,7 +8891,7 @@
                     1.0
                   ],
                   "width": 880.0,
-                  "height": 390.188679245283,
+                  "height": 270.8,
                   "layer": 100,
                   "postfx_path": "",
                   "raycast_target": false
@@ -8907,10 +8906,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              -280.0,
-              -360.188679245283
+              -283.0483,
+              -256.5459
             ],
-            "rotation": 0.0,
+            "rotation": -2.8430662,
             "scale": [
               1.0,
               1.0
@@ -8942,7 +8941,7 @@
                     1.0
                   ],
                   "width": 219.0,
-                  "height": 65.39999999999999,
+                  "height": 65.4,
                   "layer": 101,
                   "postfx_path": "",
                   "raycast_target": false
@@ -8957,10 +8956,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              -280.0,
-              -360.188679245283
+              -283.87238,
+              -228.7146
             ],
-            "rotation": 0.0,
+            "rotation": -2.3861952,
             "scale": [
               1.0,
               1.0
@@ -8984,7 +8983,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "仮テキスト",
                   "font_size": 26.0,
                   "color": [
                     1.0,
@@ -9015,8 +9014,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              -348.0,
-              -310.188679245283
+              -325.77777,
+              -180.5589
             ],
             "rotation": 0.0,
             "scale": [
@@ -9042,7 +9041,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "あああああああああああああああああああああああああああああああ\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nくぁｗｓｄｒｆｔｇｙふじこｌｐ",
                   "font_size": 28.0,
                   "color": [
                     0.29,
@@ -9074,12 +9073,12 @@
           "canvas_transform": {
             "position": [
               344.0,
-              -78.0
+              -85.62079
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.79527116,
+              0.79527116
             ],
             "pivot": [
               0.5,
@@ -9147,11 +9146,11 @@
             "data": {
               "type_name": "assets://prologue/scripts/Dialogue/DialogueDirector.cs",
               "fields": {
-                "entries": "[{\"speaker\": \"\", \"text\": \"――この島に流れ着いて、はじめての朝。\", \"cameraTarget\": \"CamTarget_Wide\", \"cameraMode\": \"cut\", \"lerpDuration\": 0.0, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"店主\", \"text\": \"おう、目が覚めたか。\\nずいぶん派手に流されてきたもんだな。\", \"cameraTarget\": \"CamTarget_Owner\", \"cameraMode\": \"lerp\", \"lerpDuration\": 1.2, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"少年\", \"text\": \"……ここ、どこですか。\\n船も、荷物も、みんな流されちゃって。\", \"cameraTarget\": \"CamTarget_Player\", \"cameraMode\": \"lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"店主\", \"text\": \"名もない小さな島さ。\\nだが海だけは、そこらの港より豊かだぞ。\", \"cameraTarget\": \"CamTarget_Owner\", \"cameraMode\": \"lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"店主\", \"text\": \"身一つで生きるってなら、まずは釣りだ。\\n古い竿を貸してやる。ついてこい。\", \"cameraTarget\": \"CamTarget_Wide\", \"cameraMode\": \"lerp\", \"lerpDuration\": 1.4, \"onStart\": [], \"onEnd\": []}]",
-                "window": "DialogueWindow",
-                "cameraDirector": "MainCamera",
                 "autoStart": "true",
-                "onDialogueFinished": "[{\"actor\": \"Flow\", \"script\": \"PrologueFlow\", \"method\": \"GoToTutorial\", \"argKind\": \"none\", \"arg\": \"\"}]"
+                "cameraDirector": "MainCamera",
+                "entries": "[{\"speaker\": \"\", \"text\": \"――この島に流れ着いて、はじめての朝。\", \"cameraTarget\": \"CamTarget_Wide\", \"cameraMode\": \"Cut\", \"lerpDuration\": 0.0, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"店主\", \"text\": \"おう、目が覚めたか。\\nずいぶん派手に流されてきたもんだな。\", \"cameraTarget\": \"CamTarget_Owner\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 1.2, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"少年\", \"text\": \"……ここ、どこですか。\\n船も、荷物も、みんな流されちゃって。\", \"cameraTarget\": \"CamTarget_Player\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"店主\", \"text\": \"名もない小さな島さ。\\nだが海だけは、そこらの港より豊かだぞ。\", \"cameraTarget\": \"CamTarget_Owner\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"店主\", \"text\": \"身一つで生きるってなら、まずは釣りだ。\\n古い竿を貸してやる。ついてこい。\", \"cameraTarget\": \"CamTarget_Wide\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 1.4, \"onStart\": [], \"onEnd\": []}]",
+                "onDialogueFinished": "[{\"actor\": \"Flow\", \"script\": \"PrologueFlow\", \"method\": \"GoToTutorial\", \"argKind\": \"none\", \"arg\": \"\"}]",
+                "window": "DialogueWindow"
               }
             }
           }

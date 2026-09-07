@@ -99,7 +99,7 @@ public class DialogueCameraDirector : SEEDScript
     /// <param name="target">目標の空アクターの Transform。無効なら何もしない。</param>
     /// <param name="mode">移動方法（DialogueCameraMode.Cut / Lerp）。</param>
     /// <param name="duration">lerp のときの移動時間（秒）。0 以下なら cut と同じ。</param>
-    public void MoveTo(SEED.Transform target, string mode, float duration)
+    public void MoveTo(SEED.Transform target, DialogueCameraMode mode, float duration)
     {
         // 目標未設定（IsValid == false）ならカメラを動かさない
         if (!target.IsValid) return;
@@ -108,13 +108,17 @@ public class DialogueCameraDirector : SEEDScript
         var endPosition = target.Position;
         var endRotation = target.Rotation;
 
-        // 未知の文字列は cut に倒す（データの打ち間違いで会話が止まらないように）
-        string normalized = DialogueCameraMode.Normalize(mode);
-        if (normalized != DialogueCameraMode.Lerp || duration <= MinMoveDuration)
+        // Lerp 以外（未知の値は宣言時の初期値である Cut に丸められる）は即時切り替え
+        switch (mode)
         {
-            ApplyImmediately(endPosition, endRotation);
-            _moving = false;
-            return;
+            case DialogueCameraMode.Lerp when duration > MinMoveDuration:
+                break;
+
+            case DialogueCameraMode.Cut:
+            default:
+                ApplyImmediately(endPosition, endRotation);
+                _moving = false;
+                return;
         }
 
         _startPosition = transform.Position;

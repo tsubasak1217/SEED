@@ -6,38 +6,20 @@
 using SEEDEditor.Scripting;
 
 /// <summary>
-/// カメラの移動方法を表す文字列定数。
+/// カメラの移動方法を表す列挙型。
 ///
-/// 【なぜ列挙型でなく文字列か】
-/// インスペクタの構造体リストは列挙型メンバを読み取り専用表示にしてしまうため
-/// （docs/scripting_api.md「構造体のリスト」参照）、シーン側から編集できる
-/// 文字列で持ち、比較はこの定数を通して行う（直書きによるタイプミスを防ぐ）。
+/// インスペクタでドロップダウン編集できる（docs/scripting_api.md「列挙型（enum）の
+/// フィールド」参照。構造体リストの要素メンバでも編集可能になったため、
+/// 従来の文字列定数＋Normalize による代用は不要になった）。
+/// 保存形式はメンバ名の文字列（大文字小文字非区別、未知の値は宣言時の初期値を維持）。
 /// </summary>
-public static class DialogueCameraMode
+public enum DialogueCameraMode
 {
     /// <summary>即座に目標のカメラ姿勢へ切り替える（カット）。</summary>
-    public const string Cut = "cut";
+    Cut,
 
     /// <summary>目標のカメラ姿勢へ時間を掛けて滑らかに移動する。</summary>
-    public const string Lerp = "lerp";
-
-    /// <summary>未入力（空文字）のときに採用する既定の移動方法。</summary>
-    public const string Default = Cut;
-
-    /// <summary>
-    /// 入力文字列を既知のモードへ正規化する。
-    /// 空文字・未知の文字列は <see cref="Default"/> として扱い、
-    /// データの打ち間違いで会話が止まらないようにする。
-    /// </summary>
-    /// <param name="mode">シーンデータに書かれた文字列。</param>
-    /// <returns><see cref="Cut"/> または <see cref="Lerp"/>。</returns>
-    public static string Normalize(string mode)
-    {
-        if (string.IsNullOrEmpty(mode)) return Default;
-        // 大文字小文字・前後の空白の揺れを吸収する（データ入力の事故対策）
-        var trimmed = mode.Trim().ToLowerInvariant();
-        return trimmed == Lerp ? Lerp : Cut;
-    }
+    Lerp,
 }
 
 /// <summary>
@@ -70,9 +52,9 @@ public struct DialogueEntry
     [SerializeField(Label = "カメラ目標", Tooltip = "この台詞で寄せるカメラ姿勢の空アクター。未設定ならカメラは動かさない")]
     public SEED.Transform cameraTarget;
 
-    /// <summary>カメラの移動方法（<see cref="DialogueCameraMode"/> の文字列）。</summary>
-    [SerializeField(Label = "カメラ移動方法", Tooltip = "cut = 即切り替え / lerp = 補間移動")]
-    public string cameraMode;
+    /// <summary>カメラの移動方法。</summary>
+    [SerializeField(Label = "カメラ移動方法", Tooltip = "Cut = 即切り替え / Lerp = 補間移動")]
+    public DialogueCameraMode cameraMode;
 
     /// <summary>lerp のときの移動時間（秒）。cut のときは使われない。</summary>
     [SerializeField(Label = "補間時間(秒)", Tooltip = "cameraMode が lerp のときの移動時間")]
