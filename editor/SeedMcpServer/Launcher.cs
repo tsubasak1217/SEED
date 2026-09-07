@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  Launcher.cs — エディタのヘッドレス起動 / 終了（seed_launch / seed_shutdown）
 //
 //  Blender の --background に相当する運用を可能にする部分。
@@ -31,6 +31,13 @@ internal static class Launcher
 {
     /// <summary>エディタ実行ファイル名。</summary>
     private const string EDITOR_EXE_NAME = "SEEDEditor.exe";
+
+    /// <summary>
+    /// エディタ exe の探索先を上書きする環境変数名。
+    /// 開発・計測時に別 OutDir へビルドしたエディタを seed_launch で起動するために使う
+    /// （docs/editor_mcp.md「自前ビルドで起動する」を参照）。
+    /// </summary>
+    private const string EDITOR_EXE_ENV_VAR = "SEED_EDITOR_EXE";
 
     /// <summary>ヘッドレス起動を指示するコマンドライン引数。</summary>
     private const string ARG_HEADLESS = "--headless";
@@ -231,6 +238,13 @@ internal static class Launcher
     /// <returns>見つかった絶対パス。見つからなければ null。</returns>
     public static string? ResolveEditorExePath()
     {
+        // 0) 環境変数による明示指定を最優先する（実在するファイルのときだけ採用）。
+        //    利用者のエディタが起動していると通常の出力先はロックされているため、
+        //    別の OutDir へビルドしたエディタを起動したいときに使う。
+        var overridePath = Environment.GetEnvironmentVariable(EDITOR_EXE_ENV_VAR);
+        if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
+            return Path.GetFullPath(overridePath);
+
         var baseDir = AppContext.BaseDirectory;
 
         // 1) エディタと同じフォルダへコピーされている配置

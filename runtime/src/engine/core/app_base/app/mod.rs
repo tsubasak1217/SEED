@@ -74,6 +74,7 @@ mod frame_renderer;
 mod screenshot_ops;
 mod merge_batch_gate;
 mod merge_collect;
+pub(crate) mod merge_stats;
 mod canvas_collect;
 mod collider2d_wireframe;
 mod collider3d_pick;

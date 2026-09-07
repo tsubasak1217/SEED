@@ -1980,6 +1980,8 @@ impl App {
                     // 統合バッチ収集。集約先（HashMap と各 Vec）はフレーム間で使い回すため、
                     // 定常状態ではここでのヒープ確保が発生しない（merge_collect.rs 参照）。
                     let merge_map = &mut self.merge_collector;
+                    // 一発計測のフレーム数カウンタ（更新バッチ数の「毎フレーム平均」の分母）。
+                    super::merge_stats::note_frame();
                     {
                         crate::profile_scope!("描画/統合バッチ更新/収集");
                         merge_map.begin_frame();
@@ -2149,7 +2151,7 @@ impl App {
                             // LOD 無効フラグは「LOD 振り分けの入力」なので、バケット再判定
                             // （lod_buckets_unchanged）より前に必ず同期する。順序が逆だと
                             // 古いフラグでバケットを比べてしまい、チェック操作が 1 フレーム遅れる。
-                            let skip = {
+                            let gate_reason = {
                                 crate::profile_scope!("描画/統合バッチ更新/ゲート判定");
                                 sd.batch.set_disable_lod_flags(&info.disable_lods);
                                 let lod_unchanged =
@@ -2158,9 +2160,22 @@ impl App {
                                 // 必ず update を通し、prev=curr を GPU へ反映させる。
                                 sd.merge_gate.decide(&gate_inputs, lod_unchanged, velocity_reset_frame)
                             };
-                            if skip {
+                            // 一発計測（PROFILE_DUMP）の窓が開いているときだけ、
+                            // 「どのバッチが・どの入力の変化で」更新に落ちたかを積む。
+                            // 窓が閉じていれば AtomicBool ロード 1 回で戻る。
+                            super::merge_stats::record(path, total, gate_reason);
+                            if gate_reason.is_skip() {
                                 // 入力不変: 既存の lod バッファ・compact をそのまま使い回す。
                                 merge_skipped_batches += 1;
+                                continue;
+                            }
+                            if gate_reason.is_pose_only() {
+                                // 再生指定だけが進んだフレーム（＝行列は静止したまま
+                                // アニメだけ動いているモデル）。全更新の出力のうち実際に
+                                // 変わるのはスキンの再生指定アップロードだけなので、
+                                // そこだけを上げ直す（merge_batch_gate::PoseOnly 参照）。
+                                crate::profile_scope!("描画/統合バッチ更新/再生指定のみ更新");
+                                sd.batch.update_poses_only(&draw_ctx.queue, &info.pose_overrides);
                                 continue;
                             }
                             {
@@ -9325,6 +9340,23 @@ impl App {
         if let Some(report_json) = profiling::end_frame() {
             if let Some(ipc) = &self.ipc {
                 ipc.send(&format!("PROFILER:{report_json}"));
+            }
+        }
+
+        // ── プロファイラ一発計測（PROFILE_DUMP）の満了処理 ────────────────
+        //   `end_frame()` の中でダンプ窓も畳まれるので、満了していればここで
+        //   「スコープツリー ＋ 統合バッチ更新ゲートの理由集計」を 1 個の JSON に
+        //   まとめ、一時ファイルへ書いてパスだけを IPC で返す。
+        //   （JSON は数十 KB になりうるため、1 行 1 メッセージの IPC には載せない）
+        if let Some(profile_json) = profiling::take_finished_dump() {
+            let merge_json = super::merge_stats::end_and_take_json()
+                .unwrap_or(serde_json::Value::Null);
+            let reply = match profiling::write_dump_file(&profile_json, &merge_json) {
+                Ok(path) => format!("PROFILE_DUMP_DONE:{path}"),
+                Err(e)   => format!("PROFILE_DUMP_ERROR:{e}"),
+            };
+            if let Some(ipc) = &self.ipc {
+                ipc.send(&reply);
             }
         }
 

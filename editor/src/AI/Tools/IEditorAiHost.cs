@@ -70,6 +70,16 @@ public interface IEditorAiHost
     Task<string?> SelectActorAsync(int dfsId, int timeoutMs);
 
     /// <summary>
+    /// プロファイラの一発計測（PROFILE_DUMP）を実行し、ランタイムが書き出した
+    /// ダンプ JSON の中身を返す。計測中はランタイムが自動でプロファイラを有効化する
+    /// （プロファイラパネルを開いている必要はない）。
+    /// </summary>
+    /// <param name="seconds">計測する実時間（秒）。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。計測秒数より十分長くすること。</param>
+    /// <returns>ダンプ JSON 文字列。タイムアウト・失敗時は null。</returns>
+    Task<string?> ProfileDumpAsync(double seconds, int timeoutMs);
+
+    /// <summary>
     /// 再生制御（play / pause / resume / stop）を実行する。
     /// エディタのプレイバーのボタンと同じ経路を通る。
     /// </summary>

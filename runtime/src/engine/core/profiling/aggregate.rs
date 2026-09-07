@@ -52,16 +52,28 @@ pub struct ProfilerAggregator {
     pub frame_count: u32,
     /// 窓内の各フレームの所要時間（ミリ秒）。推移グラフ用。
     pub frame_samples: Vec<f32>,
+    /// この集計器の窓の長さ（秒）。
+    ///
+    /// パネルへの定期送信は `WINDOW_DURATION_SECS`（0.5 秒）固定だが、
+    /// `PROFILE_DUMP` の一発計測は「指定秒数ぶんを 1 窓に畳む」必要があるため、
+    /// 窓長を集計器ごとに持たせて両方を同じ実装で扱えるようにする。
+    window_target_secs: f64,
 }
 
 impl ProfilerAggregator {
-    /// 空の集計器を作る（ルートノードのみ）。
+    /// 空の集計器を作る（ルートノードのみ／既定の窓長）。
     pub fn new() -> Self {
+        Self::with_window_secs(WINDOW_DURATION_SECS)
+    }
+
+    /// 窓長を指定して空の集計器を作る（`PROFILE_DUMP` の一発計測用）。
+    pub fn with_window_secs(window_target_secs: f64) -> Self {
         Self {
             nodes:         vec![Self::new_node(FRAME_ROOT_NAME, None)],
             window_start:  Instant::now(),
             frame_count:   0,
             frame_samples: Vec::new(),
+            window_target_secs,
         }
     }
 
@@ -83,7 +95,7 @@ impl ProfilerAggregator {
         // フレームが 1 つも入っていない窓を送っても意味がないため、
         // 経過時間とフレーム数の両方を条件にする。
         self.frame_count > 0
-            && self.window_start.elapsed().as_secs_f64() >= WINDOW_DURATION_SECS
+            && self.window_start.elapsed().as_secs_f64() >= self.window_target_secs
     }
 
     /// 窓の実経過時間（秒）。レポートの fps 算出に使う。

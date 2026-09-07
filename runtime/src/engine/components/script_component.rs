@@ -328,6 +328,44 @@ pub struct ScriptComponent {
 /// 同じ接頭辞を使う。パネル上では「スクリプト/Update」の子として型別内訳が並ぶ。
 const SCRIPT_UPDATE_SCOPE_PREFIX: &str = "スクリプト/Update/";
 
+/// スクリプトの `.cs` ファイル拡張子（スコープ名の短縮で取り除く）。
+const SCRIPT_FILE_EXTENSION: &str = ".cs";
+
+/// プロファイラのスコープ名に使う「短い型名」を取り出す。
+///
+/// `ScriptComponent::type_name` には、スクリプトスロットの指定方法に応じて
+///   - `.cs` ファイルパス（例 `assets/mainGame/scripts/Fish.cs`）
+///   - C# の型名（例 `Fish`、名前空間つきなら `Game.Fish`）
+/// のどちらも入りうる。前者をそのままスコープ名にすると、プロファイラパネルの
+/// 行がフルパスで埋まって読めない（実際に「スクリプト/Update/<長いパス>」が
+/// 切り詰め表示されていた）。ここでフォルダ区切りと拡張子を落とし、
+/// クラス名に相当する末尾だけを返す。
+///
+/// C# のクラス名はファイル名（ステム）と一致させる規約なので、パス由来でも
+/// 実際のクラス名と一致する。名前空間つき型名の場合も `.` の右側だけを返す。
+/// 空文字になる入力（末尾が区切り文字だけ、など）では元の文字列をそのまま返す
+/// （名前を失って計測行が消えるより、長くても出るほうがよい）。
+pub fn script_scope_short_name(type_name: &str) -> &str {
+    // 1) フォルダ区切り（`/` と `\` の両方）の右側を採る。
+    let after_dir = type_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(type_name);
+    // 2) `.cs` 拡張子を落とす（大文字小文字を問わない）。
+    let is_cs_file = after_dir.len() > SCRIPT_FILE_EXTENSION.len()
+        && after_dir[after_dir.len() - SCRIPT_FILE_EXTENSION.len()..]
+            .eq_ignore_ascii_case(SCRIPT_FILE_EXTENSION);
+    if is_cs_file {
+        // ファイル名由来のときはステムがそのままクラス名。
+        // ここで `.` 分割まで掛けると `Fish.Extra.cs` の前半を落としてしまうので掛けない。
+        let stem = &after_dir[..after_dir.len() - SCRIPT_FILE_EXTENSION.len()];
+        return if stem.is_empty() { type_name } else { stem };
+    }
+    // 3) ファイル名でない（＝型名）ときだけ、名前空間つき（`Game.Fish`）の最後の要素を採る。
+    let short = after_dir.rsplit('.').next().unwrap_or(after_dir);
+    if short.is_empty() { type_name } else { short }
+}
+
 impl ScriptComponent {
     /// CLR 上でスクリプトを生成して返す。生成に失敗した場合は None。
     pub fn new(host: Arc<ScriptingHost>, type_name: impl Into<String>) -> Option<Self> {
@@ -336,8 +374,10 @@ impl ScriptComponent {
         let handle    = unsafe { (host.create_fn)(bytes.as_ptr(), bytes.len() as i32) };
         if handle == 0 { return None; }
         // プロファイラ用スコープ名を生成時に 1 度だけインターンする（毎フレームは触らない）。
+        // スコープ名はフルパスではなく短い型名（クラス名相当）で作る。
+        // フルパスのままだとプロファイラの行が読めないため（script_scope_short_name）。
         let update_scope_name = crate::engine::core::profiling::intern_name(
-            &format!("{SCRIPT_UPDATE_SCOPE_PREFIX}{type_name}")
+            &format!("{SCRIPT_UPDATE_SCOPE_PREFIX}{}", script_scope_short_name(&type_name))
         );
         Some(Self {
             host, handle, type_name, update_scope_name,
@@ -1123,5 +1163,24 @@ mod tests {
         assert_eq!(defs[0].members.len(), 2);
         assert_eq!(defs[0].members[0].name, "spawnDistance");
         assert_eq!(defs[0].members[1].type_tag, "array:string");
+    }
+
+    /// プロファイラのスコープ名は、フルパスでもクラス名相当まで短縮されること。
+    #[test]
+    fn shortens_script_scope_name() {
+        use super::script_scope_short_name as short;
+        // `.cs` フルパス（区切りは / と \ の両方）
+        assert_eq!(short("assets/mainGame/scripts/Fish.cs"), "Fish");
+        assert_eq!(short(r"assets\mainGame\scripts\Fish.cs"), "Fish");
+        // 拡張子の大文字小文字は問わない
+        assert_eq!(short("scripts/Player.CS"), "Player");
+        // 既に短い型名はそのまま
+        assert_eq!(short("Fish"), "Fish");
+        // 名前空間つき型名は最後の要素だけ
+        assert_eq!(short("Game.Enemies.Fish"), "Fish");
+        // 複合ファイル名は拡張子だけを落とす（前半を失わない）
+        assert_eq!(short("scripts/Fish.Extra.cs"), "Fish.Extra");
+        // 区切りだけの退化入力では元の文字列を保つ（名前を失わない）
+        assert_eq!(short("scripts/"), "scripts/");
     }
 }

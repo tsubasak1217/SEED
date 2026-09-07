@@ -1739,6 +1739,13 @@ impl App {
                     // ここで false にしても Edit 中の編集フローには影響しない。
                     self.play_shader_hot_reload = v;
                 }
+                IpcCommand::ProfileDump { seconds } => {
+                    // 一発計測の窓を開く。プロファイラのスコープ計測と、統合バッチ更新
+                    // ゲートの判定理由集計を同じ窓で回し、満了フレームでまとめて送る
+                    // （送信側は frame_renderer の PROFILER 送信の直後）。
+                    crate::engine::core::profiling::begin_dump(seconds);
+                    super::merge_stats::begin();
+                }
                 IpcCommand::SetProfilerEnabled(v) => {
                     // プロファイラパネルの購読状態に追従して計測の有効／無効を切り替える。
                     // 無効化時は集計器も破棄されるため、次に開いたとき古い窓のデータが混ざらない。

@@ -393,6 +393,18 @@ public sealed class RuntimeManager : IDisposable
     public event Action<string>? ProfilerReportReceived;
 
     /// <summary>
+    /// プロファイラの一発計測（PROFILE_DUMP）が完了したときに発火する。
+    /// 引数はランタイムが書き出したダンプ JSON ファイルのフルパス。
+    /// 計測に失敗した場合は <see cref="ProfileDumpFailed"/> が代わりに発火する。
+    /// </summary>
+    public event Action<string>? ProfileDumpReady;
+
+    /// <summary>
+    /// プロファイラの一発計測がランタイム側で失敗したときに発火する（引数は理由）。
+    /// </summary>
+    public event Action<string>? ProfileDumpFailed;
+
+    /// <summary>
     /// ロード済みプラグイン一覧が返ってきたときに発火する（JSON 文字列）。
     /// フォーマット: [{"name":"...","version":"...","description":"..."},...]
     /// </summary>
@@ -1888,6 +1900,17 @@ public sealed class RuntimeManager : IDisposable
         {
             // プロファイラ計測レポート（0.5秒ごと、JSON）。SET_PROFILER で購読 ON の間だけ届く。
             ProfilerReportReceived?.Invoke(msg["PROFILER:".Length..]);
+        }
+        else if (msg.StartsWith("PROFILE_DUMP_DONE:", StringComparison.Ordinal))
+        {
+            // 一発計測（PROFILE_DUMP:<秒>）の完了。ペイロードはダンプ JSON のファイルパス。
+            // JSON 本体は数十 KB になりうるため IPC 行には載せず、ファイル経由で受け渡す。
+            ProfileDumpReady?.Invoke(msg["PROFILE_DUMP_DONE:".Length..]);
+        }
+        else if (msg.StartsWith("PROFILE_DUMP_ERROR:", StringComparison.Ordinal))
+        {
+            // 一発計測がランタイム側で失敗した（書き出し失敗など）。
+            ProfileDumpFailed?.Invoke(msg["PROFILE_DUMP_ERROR:".Length..]);
         }
         else if (msg.StartsWith("PLUGIN_LIST:", StringComparison.Ordinal))
         {

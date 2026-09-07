@@ -28,6 +28,73 @@ use crate::engine::core::renderer::skin_system::SkinAnimPose;
 /// した場合」と完全に同一になり、見た目は 1 ビットも変わらない。
 pub(crate) const MERGE_SKIP_STABLE_FRAMES: u32 = 2;
 
+/// 統合バッチ 1 件について、そのフレームに `update()` を実行した／省いた**理由**。
+///
+/// 「静止しているはずのシーンで毎フレーム 40 バッチが更新される」といった症状を
+/// 計測から切り分けるために、ゲートの判定結果を分類して持ち出せるようにしたもの。
+/// `Skipped` 以外はすべて「このフレームは `update()` を実行した」を意味する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MergeGateReason {
+    /// 入力不変が整定フレーム数ぶん続いたので `update()` を省いた。
+    Skipped,
+    /// スナップショット未取得（初回フレーム／バッチ再生成直後）。
+    FirstFrame,
+    /// インスタンス行列列が変化した。
+    Mats,
+    /// 絶対 ID 列が変化した（ピッキング ID バッファが陳腐化する）。
+    AbsIds,
+    /// セマンティックタグ列が変化した。
+    Tags,
+    /// Animator 駆動の再生指定（アニメ index・時刻・クロスフェード weight）が変化した。
+    /// 重い入力（行列・ID・タグ・LOD）も同時に動いた／整定前なので、通常の全更新を行う。
+    Pose,
+    /// **再生指定だけ**が変化し、重い入力（行列・絶対 ID・タグ・LOD 無効フラグ・
+    /// LOD バケット割り当て）は整定済みで 1 ビットも動いていない。
+    ///
+    /// この場合、`InstancedModelBatch::update()` の出力のうち実際に変わるのは
+    /// スキンの再生指定アップロードだけで、ワールド行列キャッシュ・LOD 振り分け・
+    /// 全ノードバッファ・ID バッファ・前フレーム行列は前回とビット単位で同一になる。
+    /// 呼び出し元は全更新の代わりに `update_poses_only()` を使ってよい。
+    ///
+    /// 「整定済み」の条件が要るのは速度バッファのため。重い入力が動いた次のフレームは
+    /// GPU 上の前フレーム行列がまだ 1 フレーム古いので、そこは通常の更新を通す
+    /// （`MERGE_SKIP_STABLE_FRAMES` と同じ理屈）。
+    PoseOnly,
+    /// 「LOD を適用しない」フラグ列が変化した。
+    DisableLod,
+    /// 距離 LOD のバケット割り当てが変化した（カメラ移動など）。
+    Lod,
+    /// 速度バッファのリセット要求フレーム（Play⇄Edit 切替・シーンロード・RT リサイズ）。
+    VelocityReset,
+    /// 入力は一致したが、速度バッファ整定のための 1 回目なので更新した。
+    Settling,
+}
+
+impl MergeGateReason {
+    /// このフレームは `update()` を省いてよいか。
+    pub fn is_skip(self) -> bool { matches!(self, MergeGateReason::Skipped) }
+
+    /// 再生指定だけのアップロード（`update_poses_only`）で足りるか。
+    pub fn is_pose_only(self) -> bool { matches!(self, MergeGateReason::PoseOnly) }
+
+    /// 集計・JSON 出力用の安定した識別子（列挙子名と一致させる）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeGateReason::Skipped       => "Skipped",
+            MergeGateReason::FirstFrame    => "FirstFrame",
+            MergeGateReason::Mats          => "Mats",
+            MergeGateReason::AbsIds        => "AbsIds",
+            MergeGateReason::Tags          => "Tags",
+            MergeGateReason::Pose          => "Pose",
+            MergeGateReason::PoseOnly      => "PoseOnly",
+            MergeGateReason::DisableLod    => "DisableLod",
+            MergeGateReason::Lod           => "Lod",
+            MergeGateReason::VelocityReset => "VelocityReset",
+            MergeGateReason::Settling      => "Settling",
+        }
+    }
+}
+
 /// 統合バッチ 1 件について、`InstancedModelBatch::update()` の出力を決める CPU 入力一式（借用）。
 ///
 /// `update()` の出力（ワールド行列キャッシュ・LOD 別ノードバッファ・ID バッファ・
@@ -70,11 +137,22 @@ struct MergeBatchSnapshot {
 impl MergeBatchSnapshot {
     /// このスナップショットが与えられた入力と完全一致するか。
     fn matches(&self, i: &MergeBatchInputs<'_>) -> bool {
-        self.mats.as_slice()           == i.mats
-            && self.abs_ids.as_slice()        == i.abs_ids
-            && self.render_tags.as_slice()    == i.render_tags
-            && self.pose_overrides.as_slice() == i.pose_overrides
-            && self.disable_lods.as_slice()   == i.disable_lods
+        self.first_mismatch(i).is_none()
+    }
+
+    /// 最初に食い違ったフィールドを返す（全一致なら `None`）。
+    ///
+    /// 一致判定そのものは `matches` と同じだが、「なぜ再計算に落ちたか」を
+    /// 診断できるよう**どの列が違ったか**まで返す。比較順は
+    /// 「変化の主因になりやすい順（行列 → ID → タグ → ポーズ → LOD 無効）」で、
+    /// 複数が同時に変わったフレームは先頭のものが理由として記録される。
+    fn first_mismatch(&self, i: &MergeBatchInputs<'_>) -> Option<MergeGateReason> {
+        if self.mats.as_slice()           != i.mats           { return Some(MergeGateReason::Mats); }
+        if self.abs_ids.as_slice()        != i.abs_ids        { return Some(MergeGateReason::AbsIds); }
+        if self.render_tags.as_slice()    != i.render_tags    { return Some(MergeGateReason::Tags); }
+        if self.pose_overrides.as_slice() != i.pose_overrides { return Some(MergeGateReason::Pose); }
+        if self.disable_lods.as_slice()   != i.disable_lods   { return Some(MergeGateReason::DisableLod); }
+        None
     }
 
     /// 与えられた入力でスナップショットを取り直す（確保は「変化したフレーム」だけ）。
@@ -94,6 +172,12 @@ pub(crate) struct MergeBatchGate {
     last: Option<MergeBatchSnapshot>,
     /// 入力が連続一致したフレーム数（一致するたびに +1、変化で 0 へ戻る）。
     stable_frames: u32,
+    /// **重い入力だけ**が連続一致したフレーム数。
+    ///
+    /// 重い入力＝行列・絶対 ID・タグ・LOD 無効フラグ・LOD バケット割り当て・強制更新。
+    /// 再生指定（pose_overrides）だけが動くフレームでも切れずに伸びるので、
+    /// アニメ再生中でも「行列は止まっている」ことを検出できる。
+    heavy_stable_frames: u32,
 }
 
 impl MergeBatchGate {
@@ -107,26 +191,75 @@ impl MergeBatchGate {
     ///                          `update()` の出力は同一になるため）
     /// - `force_update`:        速度リセット要求など、無条件で再計算すべきフレームか。
     ///
-    /// 戻り値 `true` = スキップしてよい（`update()` を呼ばない）。
+    /// 戻り値 = このフレームの判定理由。`MergeGateReason::is_skip()` が `true` の
+    /// ときだけ `update()` を省いてよい（それ以外はすべて「更新した理由」）。
     pub fn decide(
         &mut self,
         inputs: &MergeBatchInputs<'_>,
         lod_buckets_unchanged: bool,
         force_update: bool,
-    ) -> bool {
-        // 入力が変わった／LOD 振り分けが変わった／強制更新フレームは、連続一致を切って更新する。
-        let matches_last = self.last.as_ref().is_some_and(|s| s.matches(inputs));
-        if force_update || !lod_buckets_unchanged || !matches_last {
-            if !matches_last {
+    ) -> MergeGateReason {
+        // どの列が食い違ったか（＝再計算の直接原因）をまず確定させる。
+        // スナップショット未取得は「初回フレーム」として区別する。
+        let mismatch = match self.last.as_ref() {
+            None    => Some(MergeGateReason::FirstFrame),
+            Some(s) => s.first_mismatch(inputs),
+        };
+        // 「重い入力」が動いたか。＝全更新（ワールド行列再計算・全ノードバッファ書込・
+        // ID バッファ書込）をやり直さないと出力が合わなくなる変化。
+        // 再生指定（Pose）だけはスキンのアップロードにしか効かないので、ここには含めない。
+        let heavy_changed = force_update
+            || !lod_buckets_unchanged
+            || matches!(
+                mismatch,
+                Some(MergeGateReason::FirstFrame)
+                    | Some(MergeGateReason::Mats)
+                    | Some(MergeGateReason::AbsIds)
+                    | Some(MergeGateReason::Tags)
+                    | Some(MergeGateReason::DisableLod)
+            );
+
+        if heavy_changed {
+            if mismatch.is_some() {
                 // スナップショットの詰め直しは「変化したフレーム」だけ（定常時は確保ゼロ）。
                 self.last.get_or_insert_with(MergeBatchSnapshot::default).store(inputs);
             }
-            self.stable_frames = 0;
-            return false;
+            self.stable_frames       = 0;
+            self.heavy_stable_frames = 0;
+            // 理由は「全更新を強制した原因」を記録する。
+            // 重い列（行列・ID・タグ・LOD 無効・初回）の変化があればそれを、
+            // 無ければ強制更新 → LOD 振り分け変化の順。
+            // 再生指定（Pose）だけが動いていても、全更新を強制したのは Pose ではないので
+            // ここでは採らない（軽量経路に落とせなかった真の理由を残すため）。
+            return match mismatch {
+                Some(m) if m != MergeGateReason::Pose => m,
+                _ if force_update                     => MergeGateReason::VelocityReset,
+                _                                     => MergeGateReason::Lod,
+            };
         }
+
+        // ここから先、重い入力は 1 ビットも動いていない。
+        self.heavy_stable_frames = self.heavy_stable_frames.saturating_add(1);
+
+        if mismatch == Some(MergeGateReason::Pose) {
+            // 再生指定だけが進んだフレーム。スナップショットへ取り込み、
+            // 速度バッファが整定済みなら軽量アップロードに落とす。
+            self.last.get_or_insert_with(MergeBatchSnapshot::default).store(inputs);
+            self.stable_frames = 0;
+            return if self.heavy_stable_frames >= MERGE_SKIP_STABLE_FRAMES {
+                MergeGateReason::PoseOnly
+            } else {
+                MergeGateReason::Pose
+            };
+        }
+
         // 連続一致数を伸ばし、速度バッファ整定ぶんを超えたらスキップする。
         self.stable_frames = self.stable_frames.saturating_add(1);
-        self.stable_frames >= MERGE_SKIP_STABLE_FRAMES
+        if self.stable_frames >= MERGE_SKIP_STABLE_FRAMES {
+            MergeGateReason::Skipped
+        } else {
+            MergeGateReason::Settling
+        }
     }
 }
 
@@ -188,16 +321,16 @@ mod tests {
         let mut gate = MergeBatchGate::default();
         let base = Fixture::with_disable_lod(1.0, 0, 0, None, false);
         for _ in 0..3 { gate.decide(&base.inputs(), true, false); }
-        assert!(gate.decide(&base.inputs(), true, false), "前提: スキップ状態");
+        assert!(gate.decide(&base.inputs(), true, false).is_skip(), "前提: スキップ状態");
         let toggled = Fixture::with_disable_lod(1.0, 0, 0, None, true);
-        assert!(!gate.decide(&toggled.inputs(), true, false), "LOD 無効フラグの変化で再計算");
+        assert!(!gate.decide(&toggled.inputs(), true, false).is_skip(), "LOD 無効フラグの変化で再計算");
     }
 
     /// 初回フレームは必ず更新する（スナップショット未取得のため）。
     #[test]
     fn first_frame_always_updates() {
         let mut gate = MergeBatchGate::default();
-        assert!(!gate.decide(&sig_of(1.0, 0, 0, None).inputs(), true, false));
+        assert!(!gate.decide(&sig_of(1.0, 0, 0, None).inputs(), true, false).is_skip());
     }
 
     /// 入力不変: 一致 1 回目は速度バッファ整定のため更新し、2 回目以降スキップする。
@@ -205,10 +338,10 @@ mod tests {
     fn unchanged_input_skips_after_settling_frame() {
         let mut gate = MergeBatchGate::default();
         let s = sig_of(1.0, 0, 0, None);
-        assert!(!gate.decide(&s.inputs(), true, false), "初回は更新");
-        assert!(!gate.decide(&s.inputs(), true, false), "一致1回目は速度整定のため更新");
-        assert!(gate.decide(&s.inputs(), true, false), "一致2回目からスキップ");
-        assert!(gate.decide(&s.inputs(), true, false), "以降も継続してスキップ");
+        assert!(!gate.decide(&s.inputs(), true, false).is_skip(), "初回は更新");
+        assert!(!gate.decide(&s.inputs(), true, false).is_skip(), "一致1回目は速度整定のため更新");
+        assert!(gate.decide(&s.inputs(), true, false).is_skip(), "一致2回目からスキップ");
+        assert!(gate.decide(&s.inputs(), true, false).is_skip(), "以降も継続してスキップ");
     }
 
     /// 行列が変化したら即座に再計算へ戻る。
@@ -217,11 +350,11 @@ mod tests {
         let mut gate = MergeBatchGate::default();
         let a = sig_of(1.0, 0, 0, None);
         for _ in 0..4 { gate.decide(&a.inputs(), true, false); }
-        assert!(gate.decide(&a.inputs(), true, false), "前提: スキップ状態に入っている");
+        assert!(gate.decide(&a.inputs(), true, false).is_skip(), "前提: スキップ状態に入っている");
         let b = sig_of(2.0, 0, 0, None);
-        assert!(!gate.decide(&b.inputs(), true, false), "行列変化で再計算");
-        assert!(!gate.decide(&b.inputs(), true, false), "変化直後の一致1回目は整定のため更新");
-        assert!(gate.decide(&b.inputs(), true, false), "整定後は再びスキップ");
+        assert!(!gate.decide(&b.inputs(), true, false).is_skip(), "行列変化で再計算");
+        assert!(!gate.decide(&b.inputs(), true, false).is_skip(), "変化直後の一致1回目は整定のため更新");
+        assert!(gate.decide(&b.inputs(), true, false).is_skip(), "整定後は再びスキップ");
     }
 
     /// 絶対 ID・タグ・アニメ時刻の変化も、それぞれ単独で再計算を起こす。
@@ -235,8 +368,8 @@ mod tests {
             let mut gate = MergeBatchGate::default();
             let base = sig_of(1.0, 0, 0, None);
             for _ in 0..3 { gate.decide(&base.inputs(), true, false); }
-            assert!(gate.decide(&base.inputs(), true, false), "前提: スキップ状態");
-            assert!(!gate.decide(&changed.inputs(), true, false), "入力変化で再計算");
+            assert!(gate.decide(&base.inputs(), true, false).is_skip(), "前提: スキップ状態");
+            assert!(!gate.decide(&changed.inputs(), true, false).is_skip(), "入力変化で再計算");
         }
     }
 
@@ -251,9 +384,9 @@ mod tests {
         let mut gate = MergeBatchGate::default();
         let base = sig_of(1.0, 0, 0, Some(pose_a));
         for _ in 0..3 { gate.decide(&base.inputs(), true, false); }
-        assert!(gate.decide(&base.inputs(), true, false), "前提: スキップ状態");
+        assert!(gate.decide(&base.inputs(), true, false).is_skip(), "前提: スキップ状態");
         assert!(
-            !gate.decide(&sig_of(1.0, 0, 0, Some(pose_b)).inputs(), true, false),
+            !gate.decide(&sig_of(1.0, 0, 0, Some(pose_b)).inputs(), true, false).is_skip(),
             "weight だけの変化でも再計算へ倒れる"
         );
     }
@@ -264,10 +397,10 @@ mod tests {
         let mut gate = MergeBatchGate::default();
         let s = sig_of(1.0, 0, 0, None);
         for _ in 0..3 { gate.decide(&s.inputs(), true, false); }
-        assert!(gate.decide(&s.inputs(), true, false), "前提: スキップ状態");
-        assert!(!gate.decide(&s.inputs(), false, false), "LOD 振り分けが変われば再計算");
-        assert!(!gate.decide(&s.inputs(), true, false), "整定フレームは更新");
-        assert!(gate.decide(&s.inputs(), true, false), "その後スキップへ復帰");
+        assert!(gate.decide(&s.inputs(), true, false).is_skip(), "前提: スキップ状態");
+        assert!(!gate.decide(&s.inputs(), false, false).is_skip(), "LOD 振り分けが変われば再計算");
+        assert!(!gate.decide(&s.inputs(), true, false).is_skip(), "整定フレームは更新");
+        assert!(gate.decide(&s.inputs(), true, false).is_skip(), "その後スキップへ復帰");
     }
 
     /// 速度リセット要求フレームは入力不変でも必ず更新する。
@@ -276,8 +409,8 @@ mod tests {
         let mut gate = MergeBatchGate::default();
         let s = sig_of(1.0, 0, 0, None);
         for _ in 0..3 { gate.decide(&s.inputs(), true, false); }
-        assert!(gate.decide(&s.inputs(), true, false), "前提: スキップ状態");
-        assert!(!gate.decide(&s.inputs(), true, true), "強制更新フレームはスキップしない");
+        assert!(gate.decide(&s.inputs(), true, false).is_skip(), "前提: スキップ状態");
+        assert!(!gate.decide(&s.inputs(), true, true).is_skip(), "強制更新フレームはスキップしない");
     }
 
     /// NaN を含む行列は常に「変化した」と判定され、スキップに入らない（安全側）。
@@ -286,7 +419,119 @@ mod tests {
         let mut gate = MergeBatchGate::default();
         let s = sig_of(f32::NAN, 0, 0, None);
         for _ in 0..5 {
-            assert!(!gate.decide(&s.inputs(), true, false), "NaN 入力はスキップしない");
+            assert!(!gate.decide(&s.inputs(), true, false).is_skip(), "NaN 入力はスキップしない");
         }
+    }
+
+    /// 判定理由がどの列の変化かまで分解されること（診断ダンプの根拠）。
+    #[test]
+    fn reports_specific_reason_per_changed_field() {
+        // 初回フレームは FirstFrame
+        let mut gate = MergeBatchGate::default();
+        let base = sig_of(1.0, 0, 0, None);
+        assert_eq!(gate.decide(&base.inputs(), true, false), MergeGateReason::FirstFrame);
+        // 一致 1 回目は Settling、2 回目から Skipped
+        assert_eq!(gate.decide(&base.inputs(), true, false), MergeGateReason::Settling);
+        assert_eq!(gate.decide(&base.inputs(), true, false), MergeGateReason::Skipped);
+        // 行列の変化
+        assert_eq!(gate.decide(&sig_of(2.0, 0, 0, None).inputs(), true, false), MergeGateReason::Mats);
+        // 絶対 ID の変化
+        assert_eq!(gate.decide(&sig_of(2.0, 7, 0, None).inputs(), true, false), MergeGateReason::AbsIds);
+        // タグの変化
+        assert_eq!(gate.decide(&sig_of(2.0, 7, 5, None).inputs(), true, false), MergeGateReason::Tags);
+        // ポーズの変化
+        assert_eq!(
+            gate.decide(&sig_of(2.0, 7, 5, Some(SkinAnimPose::single(0, 0.25))).inputs(), true, false),
+            MergeGateReason::Pose
+        );
+    }
+
+    /// 入力不変のまま LOD／強制更新だけが立った場合の理由分類。
+    #[test]
+    fn reports_lod_and_velocity_reset_reasons() {
+        let mut gate = MergeBatchGate::default();
+        let s = sig_of(1.0, 0, 0, None);
+        for _ in 0..3 { gate.decide(&s.inputs(), true, false); }
+        assert_eq!(gate.decide(&s.inputs(), false, false), MergeGateReason::Lod);
+        for _ in 0..3 { gate.decide(&s.inputs(), true, false); }
+        assert_eq!(gate.decide(&s.inputs(), true, true), MergeGateReason::VelocityReset);
+    }
+
+    /// 「LOD を適用しない」フラグ単独の変化は DisableLod として記録される。
+    #[test]
+    fn reports_disable_lod_reason() {
+        let mut gate = MergeBatchGate::default();
+        let base = Fixture::with_disable_lod(1.0, 0, 0, None, false);
+        for _ in 0..3 { gate.decide(&base.inputs(), true, false); }
+        let toggled = Fixture::with_disable_lod(1.0, 0, 0, None, true);
+        assert_eq!(gate.decide(&toggled.inputs(), true, false), MergeGateReason::DisableLod);
+    }
+
+    /// アニメ再生中（再生指定だけが毎フレーム進む）でも、行列が静止していれば
+    /// 整定後は軽量経路（PoseOnly）へ落ちること。
+    /// これが無いと「1 体でもアニメしていればバッチ全体が毎フレーム全更新」になる。
+    #[test]
+    fn pose_only_change_falls_back_to_light_path_after_settling() {
+        let mut gate = MergeBatchGate::default();
+        // 初回 → 整定
+        let f0 = sig_of(1.0, 0, 0, Some(SkinAnimPose::single(0, 0.00)));
+        assert_eq!(gate.decide(&f0.inputs(), true, false), MergeGateReason::FirstFrame);
+        // 以降、行列は不変のまま再生時刻だけが毎フレーム進む。
+        // 重い入力の整定（MERGE_SKIP_STABLE_FRAMES）までは通常の全更新。
+        let f1 = sig_of(1.0, 0, 0, Some(SkinAnimPose::single(0, 0.01)));
+        assert_eq!(gate.decide(&f1.inputs(), true, false), MergeGateReason::Pose);
+        // 整定後は軽量経路へ
+        for t in 2..6 {
+            let f = sig_of(1.0, 0, 0, Some(SkinAnimPose::single(0, t as f32 * 0.01)));
+            assert_eq!(gate.decide(&f.inputs(), true, false), MergeGateReason::PoseOnly,
+                       "行列が静止していれば再生指定だけの更新に落ちる");
+        }
+        assert!(MergeGateReason::PoseOnly.is_pose_only());
+        assert!(!MergeGateReason::PoseOnly.is_skip(), "PoseOnly はスキップではない（軽量更新）");
+    }
+
+    /// 行列が動いたフレームの直後は、再生指定だけが進んでいても通常の全更新へ戻る
+    /// （速度バッファの前フレーム行列を整定させるため）。
+    #[test]
+    fn pose_only_requires_settled_velocity_buffer() {
+        let mut gate = MergeBatchGate::default();
+        let pose = |t: f32| Some(SkinAnimPose::single(0, t));
+        // まず PoseOnly まで持っていく
+        for t in 0..5 {
+            gate.decide(&sig_of(1.0, 0, 0, pose(t as f32 * 0.01)).inputs(), true, false);
+        }
+        assert_eq!(
+            gate.decide(&sig_of(1.0, 0, 0, pose(0.05)).inputs(), true, false),
+            MergeGateReason::PoseOnly
+        );
+        // 行列が動いた → 全更新
+        assert_eq!(
+            gate.decide(&sig_of(2.0, 0, 0, pose(0.06)).inputs(), true, false),
+            MergeGateReason::Mats
+        );
+        // その次のフレームは、再生指定だけの変化でも整定のため全更新
+        assert_eq!(
+            gate.decide(&sig_of(2.0, 0, 0, pose(0.07)).inputs(), true, false),
+            MergeGateReason::Pose
+        );
+        // さらに次から軽量経路
+        assert_eq!(
+            gate.decide(&sig_of(2.0, 0, 0, pose(0.08)).inputs(), true, false),
+            MergeGateReason::PoseOnly
+        );
+    }
+
+    /// LOD バケットが動いたフレームは、再生指定だけの変化でも全更新へ倒れる。
+    #[test]
+    fn lod_change_overrides_pose_only() {
+        let mut gate = MergeBatchGate::default();
+        let pose = |t: f32| Some(SkinAnimPose::single(0, t));
+        for t in 0..5 {
+            gate.decide(&sig_of(1.0, 0, 0, pose(t as f32 * 0.01)).inputs(), true, false);
+        }
+        assert_eq!(
+            gate.decide(&sig_of(1.0, 0, 0, pose(0.05)).inputs(), false, false),
+            MergeGateReason::Lod
+        );
     }
 }

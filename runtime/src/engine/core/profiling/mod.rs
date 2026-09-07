@@ -100,6 +100,86 @@ pub fn intern_name(name: &str) -> Option<&'static str> {
     Some(leaked)
 }
 
+// ─── 一発計測（PROFILE_DUMP）─────────────────────────────────────────
+//
+// エディタのプロファイラパネルは 0.5 秒窓を延々と受け取り続けるが、
+// 「いま N 秒ぶんを測って 1 個の結果として返せ」という要求（MCP の `seed_profile`）は
+// それとは独立に成立させたい。そこで通常の集計器とは別に、窓長 N 秒の集計器を
+// もう 1 本だけ動かし、満了時に JSON を確定させて取り出せるようにする。
+//
+// パネルが閉じていて計測が無効なときは、ダンプの間だけ強制的に有効化し、
+// 満了時に元へ戻す（勝手に計測が残り続けないようにするため）。
+
+/// 進行中のダンプ窓。
+struct DumpState {
+    /// ダンプ専用の集計器（窓長は要求秒数）。
+    agg: ProfilerAggregator,
+    /// ダンプのために計測を強制有効化したか（満了時に無効へ戻すか）。
+    forced_enable: bool,
+}
+
+/// 進行中のダンプ窓（無ければ `None`）。
+static DUMP: Mutex<Option<DumpState>> = Mutex::new(None);
+
+/// 満了して取り出し待ちのダンプ結果 JSON。
+static FINISHED_DUMP: Mutex<Option<String>> = Mutex::new(None);
+
+/// ダンプ窓を開始する（既に進行中なら開始し直す）。
+///
+/// `secs` は計測する実時間（秒）。この間に流れたフレームを 1 窓へ畳み込む。
+pub fn begin_dump(secs: f64) {
+    // 計測が無効（＝パネルが閉じている）ならダンプの間だけ有効化する。
+    let forced_enable = !scope::is_enabled();
+    if forced_enable {
+        scope::set_enabled(true);
+    }
+    let mut guard = lock_dump();
+    *guard = Some(DumpState {
+        agg: ProfilerAggregator::with_window_secs(secs),
+        forced_enable,
+    });
+}
+
+/// 満了済みのダンプ結果を取り出す（無ければ `None`）。取り出すと消える。
+pub fn take_finished_dump() -> Option<String> {
+    let mut guard = match FINISHED_DUMP.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.take()
+}
+
+/// ダンプ窓のロック取得（毒された場合も中身をそのまま使う）。
+fn lock_dump() -> std::sync::MutexGuard<'static, Option<DumpState>> {
+    match DUMP.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// 1 フレーム分の計測ツリーをダンプ窓へ畳み込み、満了していれば結果を確定させる。
+fn accumulate_dump_frame(frame: &scope::FrameTree) {
+    let mut guard = lock_dump();
+    let Some(dump) = guard.as_mut() else { return };
+    dump.agg.accumulate_frame(frame);
+    if !dump.agg.window_elapsed() {
+        return;
+    }
+    // 満了: JSON を確定し、強制有効化していたなら計測を元へ戻す。
+    let json          = report::build_report_json(&dump.agg);
+    let forced_enable = dump.forced_enable;
+    *guard = None;
+    drop(guard);
+    if forced_enable {
+        scope::set_enabled(false);
+    }
+    let mut finished = match FINISHED_DUMP.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *finished = Some(json);
+}
+
 /// フレーム冒頭で呼ぶ。計測が有効なら、このフレームのルートスコープを開始する。
 pub fn begin_frame() {
     scope::frame_begin();
@@ -113,6 +193,11 @@ pub fn end_frame() -> Option<String> {
     // 計測が無効なら何もしない（フレーム記録も空）。
     let frame = scope::frame_end_take()?;
 
+    // 一発計測（PROFILE_DUMP）の窓はパネル購読とは独立に回す。
+    // パネルが閉じていて AGGREGATOR が None のときでもダンプは成立させたいので、
+    // 通常集計より先に処理する。
+    accumulate_dump_frame(&frame);
+
     let mut guard = match AGGREGATOR.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
@@ -125,5 +210,61 @@ pub fn end_frame() -> Option<String> {
         Some(json)
     } else {
         None
+    }
+}
+
+// ─── ダンプ結果のファイル書き出し ────────────────────────────────────
+//
+// IPC は「1 行 = 1 メッセージ」なので、数十 KB になりうるダンプ JSON を
+// そのまま載せると行が極端に長くなる（読み手のバッファ・ログも汚す）。
+// 一時ディレクトリへ書き出し、IPC ではパスだけを返す。
+// エディタとランタイムは同一マシン上の同一ユーザーで動くため、パス受け渡しで足りる。
+
+/// ダンプファイル名の接頭辞（他の一時ファイルと混ざらないようにするため）。
+const DUMP_FILE_PREFIX: &str = "seed_profile_dump_";
+
+/// スコープツリーの JSON（1 行）と、統合バッチ更新ゲートの理由集計をまとめて
+/// 一時ファイルへ書き出し、そのフルパスを返す。
+///
+/// 出力スキーマ:
+/// ```text
+/// { "profile": <report.rs のレポート JSON>, "merge": <merge_stats の集計 JSON> }
+/// ```
+pub fn write_dump_file(
+    profile_json: &str,
+    merge_json:   &serde_json::Value,
+) -> Result<String, String> {
+    // レポートは既に文字列化済みなので、値へ戻してから包む（二重エスケープを避ける）。
+    let profile_value: serde_json::Value = serde_json::from_str(profile_json)
+        .map_err(|e| format!("プロファイル JSON の解釈に失敗: {e}"))?;
+    let combined = serde_json::json!({
+        "profile": profile_value,
+        "merge":   merge_json,
+    });
+
+    // 同一秒に複数回ダンプしても衝突しないよう、ナノ秒までをファイル名に含める。
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("{DUMP_FILE_PREFIX}{stamp}.json"));
+    std::fs::write(&path, combined.to_string())
+        .map_err(|e| format!("ダンプの書き出しに失敗 ({}): {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    /// ダンプファイルが `{profile, merge}` の形で書き出され、読み戻せること。
+    #[test]
+    fn writes_combined_dump_file() {
+        let profile = r#"{"frames":3,"root":{"name":"Frame"}}"#;
+        let merge   = serde_json::json!({ "frames": 3, "batches": [] });
+        let path    = super::write_dump_file(profile, &merge).expect("書き出せること");
+        let text    = std::fs::read_to_string(&path).expect("読み戻せること");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("有効な JSON");
+        assert_eq!(v["profile"]["frames"], 3);
+        assert_eq!(v["merge"]["frames"], 3);
+        let _ = std::fs::remove_file(&path);
     }
 }

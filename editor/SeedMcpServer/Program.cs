@@ -181,6 +181,9 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
             "seed_save_scene"        => await PostCmdAsync(http, "save_scene",        args),
             "seed_send_ipc"          => await PostCmdAsync(http, "send_ipc",          args),
 
+            // プロファイラ一発計測: 応答 JSON を要約表へ整形して返す専用経路
+            "seed_profile"           => await HandleProfileAsync(http, args),
+
             _ => $"ERROR: 不明なツール '{name}'"
         };
 
@@ -604,6 +607,7 @@ static object[] BuildToolList() => new[]
     SeedLogTool(),
     SeedSaveSceneTool(),
     SeedSendIpcTool(),
+    SeedProfileTool(),
 };
 
 /// <summary>引数を取らないツールの共通スキーマ。</summary>
@@ -1008,6 +1012,153 @@ static object SeedSendIpcTool() => new
         required = new[] { "command" }
     }
 };
+
+static object SeedProfileTool() => new
+{
+    name        = "seed_profile",
+    description =
+        "ランタイムの CPU プロファイラを seconds 秒ぶん計測し、セクション別の時間表と"
+      + "「統合バッチ更新ゲート」の判定理由集計を返す。プロファイラパネルを開く必要はない"
+      + "（計測中だけ自動で有効化される）。Play 中でも Edit 中でも計測できる。"
+      + "戻り値は上位 top 件の要約表（テキスト）＋ 完全な JSON。"
+      + "性能改修の「計測 → 修正 → 再計測」ループの入口として使う。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            seconds = new { type = "number", description = "計測する実時間（秒）。既定 3、範囲 0.2〜30。" },
+            top     = new { type = "number", description = "要約表に出すスコープ行数（既定 40）。" }
+        }
+    }
+};
+
+// ── seed_profile: 応答 JSON の要約整形 ────────────────────────────────────────
+
+/// <summary>要約表に出すスコープ行数の既定値。</summary>
+const int PROFILE_DEFAULT_TOP = 40;
+
+/// <summary>要約表に出すスコープ行数の上限（応答が読めない長さになるのを防ぐ）。</summary>
+const int PROFILE_MAX_TOP = 200;
+
+/// <summary>統合バッチ統計で「更新に落ちたバッチ」を並べる最大件数。</summary>
+const int PROFILE_MAX_BATCH_ROWS = 30;
+
+/// <summary>スコープ階層の区切り（フラット化したパス表記に使う）。</summary>
+const string PROFILE_PATH_SEPARATOR = " > ";
+
+/// <summary>
+/// profile コマンドを実行し、応答 JSON を「要約表 ＋ 完全 JSON」のテキストへ整形する。
+/// 整形に失敗した場合は元の JSON をそのまま返す（情報を失わない）。
+/// </summary>
+static async Task<string> HandleProfileAsync(HttpClient http, JsonElement args)
+{
+    var raw = await PostCmdAsync(http, "profile", args);
+    if (IsErrorResult(raw)) return raw;
+
+    var top = PROFILE_DEFAULT_TOP;
+    if (args.ValueKind == JsonValueKind.Object
+        && args.TryGetProperty("top", out var topEl)
+        && topEl.ValueKind == JsonValueKind.Number
+        && topEl.TryGetInt32(out var requestedTop))
+    {
+        top = Math.Clamp(requestedTop, 1, PROFILE_MAX_TOP);
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(raw);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("dump", out var dump)) return raw;
+
+        var sb = new StringBuilder();
+        AppendProfileScopeTable(sb, dump, top);
+        AppendProfileMergeTable(sb, dump);
+        sb.Append("\n── 完全な JSON ──\n").Append(raw);
+        return sb.ToString();
+    }
+    catch (Exception)
+    {
+        // 整形できない形（スキーマ変更など）でも生 JSON は必ず返す。
+        return raw;
+    }
+}
+
+/// <summary>スコープツリーをフラット化し、平均時間の降順で表にする。</summary>
+static void AppendProfileScopeTable(StringBuilder sb, JsonElement dump, int top)
+{
+    if (!dump.TryGetProperty("profile", out var profile)) return;
+
+    double GetNum(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0.0;
+
+    sb.Append("── フレーム ──\n");
+    sb.Append($"frames={GetNum(profile, "frames"):0} window={GetNum(profile, "window_ms"):0} ms ")
+      .Append($"fps={GetNum(profile, "fps"):0.0} ")
+      .Append($"frame_avg={GetNum(profile, "frame_avg_ms"):0.00} ms ")
+      .Append($"frame_max={GetNum(profile, "frame_max_ms"):0.00} ms\n\n");
+
+    // (パス, avg_ms, max_ms, self_ms, share, calls) をフラットに集める。
+    var rows = new List<(string Path, double Avg, double Max, double Self, double Share, double Calls)>();
+    void Walk(JsonElement node, string prefix)
+    {
+        var name = node.TryGetProperty("name", out var n) ? (n.GetString() ?? "") : "";
+        var path = prefix.Length == 0 ? name : prefix + PROFILE_PATH_SEPARATOR + name;
+        rows.Add((path, GetNum(node, "avg_ms"), GetNum(node, "max_ms"),
+                  GetNum(node, "self_ms"), GetNum(node, "share"), GetNum(node, "calls")));
+        if (node.TryGetProperty("children", out var kids) && kids.ValueKind == JsonValueKind.Array)
+            foreach (var kid in kids.EnumerateArray()) Walk(kid, path);
+    }
+    if (profile.TryGetProperty("root", out var rootNode)) Walk(rootNode, "");
+
+    rows.Sort((a, b) => b.Avg.CompareTo(a.Avg));
+    sb.Append("── スコープ（avg_ms 降順・上位 ").Append(top).Append(" 件）──\n");
+    sb.Append("  avg_ms   max_ms  self_ms   share  calls/f  scope\n");
+    foreach (var r in rows.Take(top))
+    {
+        sb.Append($"{r.Avg,8:0.000} {r.Max,8:0.000} {r.Self,8:0.000} {r.Share,6:0.0}% {r.Calls,8:0.0}  {r.Path}\n");
+    }
+    sb.Append('\n');
+}
+
+/// <summary>統合バッチ更新ゲートの判定理由集計を表にする。</summary>
+static void AppendProfileMergeTable(StringBuilder sb, JsonElement dump)
+{
+    if (!dump.TryGetProperty("merge", out var merge) || merge.ValueKind != JsonValueKind.Object) return;
+
+    double GetNum(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0.0;
+
+    sb.Append("── 統合バッチ更新ゲート ──\n");
+    sb.Append($"frames={GetNum(merge, "frames"):0} batches={GetNum(merge, "batches_total"):0} ")
+      .Append($"updates/frame={GetNum(merge, "updates_per_frame"):0.00}\n");
+
+    if (merge.TryGetProperty("reason_totals", out var reasons) && reasons.ValueKind == JsonValueKind.Object)
+    {
+        sb.Append("理由別合計: ");
+        foreach (var r in reasons.EnumerateObject())
+            sb.Append(r.Name).Append('=').Append(r.Value.ToString()).Append("  ");
+        sb.Append('\n');
+    }
+
+    if (merge.TryGetProperty("batches", out var batches) && batches.ValueKind == JsonValueKind.Array)
+    {
+        sb.Append("\n updated skipped  insts  upd/f  reasons  key\n");
+        var shown = 0;
+        foreach (var b in batches.EnumerateArray())
+        {
+            if (GetNum(b, "updated") <= 0) break;   // 更新回数の降順なので 0 が出たら以降は全部 0
+            if (shown++ >= PROFILE_MAX_BATCH_ROWS) break;
+            var reasonText = "";
+            if (b.TryGetProperty("reasons", out var rs) && rs.ValueKind == JsonValueKind.Object)
+                reasonText = string.Join(",", rs.EnumerateObject().Select(x => $"{x.Name}:{x.Value}"));
+            var key = b.TryGetProperty("key", out var k) ? (k.GetString() ?? "") : "";
+            sb.Append($"{GetNum(b, "updated"),8:0} {GetNum(b, "skipped"),7:0} {GetNum(b, "instances"),6:0} ")
+              .Append($"{GetNum(b, "updates_per_frame"),6:0.00}  {reasonText}  {key}\n");
+        }
+    }
+    sb.Append('\n');
+}
 
 // ── JSON-RPC 2.0 ヘルパー ─────────────────────────────────────────────────────
 

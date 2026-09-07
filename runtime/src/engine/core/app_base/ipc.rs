@@ -996,6 +996,15 @@ pub enum IpcCommand {
     /// フォーマット: SET_PROFILER:{0|1}
     SetProfilerEnabled(bool),
 
+    /// プロファイラの一発計測（指定秒数ぶんを 1 窓に畳んで返す）。
+    ///
+    /// パネルの定期購読（`SetProfilerEnabled`）とは独立に動き、購読していなくても
+    /// 計測期間だけ一時的に計測を有効化する。満了するとランタイムが
+    /// `PROFILE_DUMP_DONE:{path}` を返す（JSON 本体は 1 行 IPC に収まらない大きさに
+    /// なりうるため、一時ファイルへ書き出してそのパスだけを返す）。
+    /// フォーマット: PROFILE_DUMP:{seconds}
+    ProfileDump { seconds: f64 },
+
     // ─── 編集時物理タイムライン ─────────────────────────────────────────────
     /// 再生/停止トグル。
     /// フォーマット: EDIT_PHYSICS_PLAY_PAUSE
@@ -2990,6 +2999,15 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         // プロファイラ計測の購読 ON/OFF（プロファイラパネルの表示状態と 1 対 1）。
                         "SET_PROFILER:1" => Some(IpcCommand::SetProfilerEnabled(true)),
                         "SET_PROFILER:0" => Some(IpcCommand::SetProfilerEnabled(false)),
+
+                        // プロファイラの一発計測。フォーマット: PROFILE_DUMP:{seconds}
+                        s if s.starts_with("PROFILE_DUMP:") => {
+                            s["PROFILE_DUMP:".len()..]
+                                .trim()
+                                .parse::<f64>()
+                                .ok()
+                                .map(|seconds| IpcCommand::ProfileDump { seconds })
+                        }
 
                         s if s.starts_with("SET_ANIMATOR_CLIPS:") => {
                             // フォーマット: SET_ANIMATOR_CLIPS:{actor_dfs_id},{slot_idx},{json}

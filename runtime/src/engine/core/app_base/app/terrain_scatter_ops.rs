@@ -51,6 +51,10 @@ use crate::engine::terrain::settings::TerrainSettings;
 use crate::engine::core::loader::{load_model, model::Model};
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
 
+/// PROFILE_DUMP の統合バッチ統計に散布モデルを載せるときのキー接頭辞。
+/// 通常の統合バッチ（batch_key = モデルパス）と区別できるようにする。
+const SCATTER_STATS_KEY_PREFIX: &str = "散布/";
+
 // ============================================================
 //  定数（マジックナンバー禁止）
 // ============================================================
@@ -1724,7 +1728,10 @@ impl TerrainState {
         let nocull = *SCATTER_CULL_DISABLED;
         let mut dbg_total = 0usize;
         let mut dbg_visible = 0usize;
-        for res in self.scatter_models.values_mut() {
+        // キーも取るのは、統合バッチ更新ゲートの判定理由を PROFILE_DUMP へ
+        // 「散布/<モデル名>」として出すため（どの散布モデルが毎フレーム更新に
+        // 落ちているかを、通常の統合バッチと同じ表で読めるようにする）。
+        for (scatter_key, res) in self.scatter_models.iter_mut() {
             // 可視チャンクの行列を連結する（スクラッチは毎フレーム作り捨て）。
             let mut visible: Vec<[[f32; 4]; 4]> = Vec::new();
             for span in &res.chunk_spans {
@@ -1772,7 +1779,14 @@ impl TerrainState {
                     disable_lods:   &[],
                 };
                 let lod_unchanged = res.batch.lod_buckets_unchanged(camera_pos);
-                if res.merge_gate.decide(&gate_inputs, lod_unchanged, false) {
+                let gate_reason = res.merge_gate.decide(&gate_inputs, lod_unchanged, false);
+                // 一発計測（PROFILE_DUMP）の窓が開いているときだけ記録する。
+                super::merge_stats::record(
+                    &format!("{SCATTER_STATS_KEY_PREFIX}{scatter_key}"),
+                    visible.len(),
+                    gate_reason,
+                );
+                if gate_reason.is_skip() {
                     continue;
                 }
             }

@@ -232,8 +232,23 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         return relPath;
     }
 
+    /// <summary>
+    /// ランタイム exe の探索先を上書きする環境変数名。
+    ///
+    /// 利用者のエディタが起動していると <c>runtime/target/debug/SEED.exe</c> は
+    /// ロックされていて上書きできない。開発・計測時に別の target-dir へビルドした
+    /// SEED.exe を使いたい場合に、この環境変数へ絶対パスを入れて起動する。
+    /// （docs/editor_mcp.md「自前ビルドで起動する」を参照）
+    /// </summary>
+    private const string RuntimeExeEnvVar = "SEED_RUNTIME_EXE";
+
     private static string ResolveRuntimePath()
     {
+        // 0) 環境変数による明示指定を最優先する（実在するファイルのときだけ採用）。
+        var overridePath = Environment.GetEnvironmentVariable(RuntimeExeEnvVar);
+        if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
+            return Path.GetFullPath(overridePath);
+
         var baseDir = AppDomain.CurrentDomain.BaseDirectory;
         var sameDir = Path.Combine(baseDir, "SEED.exe");
         if (File.Exists(sameDir)) return sameDir;

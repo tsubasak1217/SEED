@@ -144,12 +144,13 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_log` | `lines?`（既定 200・最大 5000） | `{ok, path, lines, content}` |
 | `seed_save_scene` | `confirm?`（ヘッドレスでは必須） | `{ok, scene_path}` |
 | `seed_send_ipc` | `command` | `{ok, sent}` |
+| `seed_profile` | `seconds?`（既定 3・範囲 0.2〜30）, `top?`（既定 40） | 要約表（テキスト）＋ `{ok, seconds, dump:{profile, merge}}` |
 
 `seed_screenshot` 以外の追加ツールは、内部的には
 `POST /seed-ai/cmd` に `{"cmd":"<コマンド名>", ...}` を投げているだけなので、
 `seed_batch` の `operations` からも同じコマンド名で呼べる
 （`anim_preview` / `anim_preview_stop` / `anim_reload` / `select_actor` / `play_control` /
-`save_scene` / `send_ipc`）。
+`save_scene` / `send_ipc` / `profile`）。
 
 ### エディタ側コマンド名との対応
 
@@ -171,6 +172,7 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_save_scene` | `save_scene` | `MainWindow.DoQuickSave()`（Ctrl+S と同じ） |
 | `seed_state` | `get_editor_state` | `IEditorAiHost` の各プロパティ |
 | `seed_send_ipc` | `send_ipc` | `RuntimeManager.SendToRuntime` へ素通し |
+| `seed_profile` | `profile` | `IEditorAiHost.ProfileDumpAsync`（IPC `PROFILE_DUMP:{秒}` → `PROFILE_DUMP_DONE:{パス}`） |
 
 ---
 
@@ -253,6 +255,76 @@ dotnet build editor/SEEDEditor.csproj
 3. seed_screenshot(target:"viewport")
 4. seed_save_scene(confirm:true)   … ヘッドレスでは confirm が必須
 ```
+
+### 5.4 「計測 → 修正」ループ（性能改修）
+
+性能の作業は、**必ず `seed_profile` の数字から始めて、同じ数字で締める**。
+「速くなったはず」はレビューできない。
+
+```
+seed_launch(headless:true, scene:"<絶対パス>")
+seed_play(action:"play", wait_seconds:5)      # 定常状態に入れてから測る
+seed_profile(seconds:5, top:40)               # ← 修正前の数字
+（コードを直す → ランタイムをビルドし直す → 上を繰り返す）
+seed_profile(seconds:5, top:40)               # ← 修正後の数字
+seed_shutdown()
+```
+
+`seed_profile` の返り値は 2 段構成になっている。
+
+1. **スコープ表** — `profile_scope!` で仕込まれたセクションを `avg_ms` の降順で並べたもの。
+   列は `avg_ms`（1 フレームあたりの平均）/ `max_ms`（窓内の最悪フレーム）/
+   `self_ms`（子を除いた自己時間）/ `share`（フレーム比）/ `calls/f`（1 フレームあたりの
+   呼び出し回数）/ 階層パス。**`calls/f` は「何回やっているか」を直接示す**ので、
+   時間より先にここを見ると無駄な繰り返しが見つかる。
+2. **統合バッチ更新ゲート表** — 統合バッチ（`InstancedModelBatch`）ごとに、
+   そのフレームに `update()` を実行したか省いたか、実行したなら**なぜ省けなかったか**。
+   理由は `merge_batch_gate::MergeGateReason` の列挙子名で出る。
+
+| 理由 | 意味 | 静止シーンで出たら |
+|---|---|---|
+| `Skipped` | 入力不変で `update()` を省いた | 正常（この行が多いほどよい） |
+| `PoseOnly` | 行列は静止・再生指定だけが進んだ → 軽量アップロードで済ませた | 正常（アニメ再生中のモデル） |
+| `Mats` | インスタンス行列が変化した | 本当に動いているか確認する |
+| `AbsIds` / `Tags` / `DisableLod` | 絶対 ID / セマンティックタグ / LOD 無効フラグが変化 | 異常。毎フレーム値が揺れている |
+| `Pose` | 再生指定が変化（重い入力の整定前） | 数フレームだけなら正常 |
+| `Lod` | 距離 LOD のバケット割り当てが変化 | カメラ静止中に出るなら異常（バケット境界の振動） |
+| `VelocityReset` | 速度バッファのリセット要求フレーム | 毎フレーム出るなら異常 |
+| `FirstFrame` | スナップショット未取得（初回・バッチ再生成直後） | 毎フレーム出るならバッチが作り直され続けている |
+
+`updates_per_frame` が「1 フレームあたり何バッチを更新しているか」。
+静止した画で二桁が出ていたら、上の理由表から犯人を特定する。
+
+計測は**プロファイラパネルを開いていなくても動く**（計測中だけランタイムが自動で
+有効化し、終わったら元へ戻す）。ダンプ本体はランタイムが一時ファイルへ書き、
+IPC ではそのパスだけを返す（`PROFILE_DUMP_DONE:{パス}`）。
+
+### 5.5 自前ビルドで起動する（利用者のエディタが動いている間）
+
+利用者のエディタが起動していると `runtime/target/debug/SEED.exe` と
+`editor/bin/Debug/net9.0-windows/SEEDEditor.exe` はロックされ、上書きできない。
+別の出力先へビルドしたものを `seed_launch` で起動したいときは、
+**MCP サーバーを起動するプロセスの環境変数**で exe の場所を上書きする。
+
+| 環境変数 | 何を差し替えるか | 解決箇所 |
+|---|---|---|
+| `SEED_EDITOR_EXE` | `seed_launch` が起動する `SEEDEditor.exe` | `SeedMcpServer/Launcher.cs::ResolveEditorExePath` |
+| `SEED_RUNTIME_EXE` | エディタが起動する `SEED.exe` | `editor/src/MainWindow.xaml.cs::ResolveRuntimePath` |
+
+どちらも「実在するファイルを指しているときだけ」採用され、未設定・不在なら
+従来の探索順にそのまま落ちる。環境変数はエディタへ継承されるので、
+MCP サーバー側に 1 度設定すれば両方に効く。
+
+```bash
+# 例: ロックを避けて別ディレクトリへビルドしてから測る
+cargo build --manifest-path runtime/Cargo.toml --target-dir /tmp/rt_target
+dotnet build editor/SEEDEditor.csproj -p:OutDir=/tmp/ed_out/
+SEED_RUNTIME_EXE=/tmp/rt_target/debug/SEED.exe SEED_EDITOR_EXE=/tmp/ed_out/SEEDEditor.exe   <MCP サーバーを起動するコマンド>
+```
+
+なお `SEED_RUNTIME_EXE` を使うと、エディタの「ソース変更を検知して cargo build」
+（`RuntimeSourceWatcher`）は自動的に無効になる（指定先の 2 階層上に `Cargo.toml` が
+無いため）。**ランタイムのビルドは自分で回すこと。**
 
 ---
 

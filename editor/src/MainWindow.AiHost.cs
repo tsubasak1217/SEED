@@ -14,6 +14,7 @@
 
 using System;
 
+using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
@@ -142,6 +143,49 @@ public partial class MainWindow : IEditorAiHost
         finally
         {
             _runtimeManager.ActorComponentsReceived -= OnComponents;
+        }
+    }
+
+    /// <inheritdoc/>
+    async Task<string?> IEditorAiHost.ProfileDumpAsync(double seconds, int timeoutMs)
+    {
+        if (_runtimeManager is null) return null;
+
+        // 応答を取りこぼさないよう、送信より先に購読する
+        // （SelectActorAsync と同じ理由: イベントはパイプ受信スレッドで発火する）。
+        var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnReady(string path)  => tcs.TrySetResult(path);
+        void OnFailed(string _)    => tcs.TrySetResult(null);
+        _runtimeManager.ProfileDumpReady  += OnReady;
+        _runtimeManager.ProfileDumpFailed += OnFailed;
+
+        try
+        {
+            _runtimeManager.SendToRuntime(
+                $"PROFILE_DUMP:{seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+            if (completed != tcs.Task) return null;
+
+            var path = await tcs.Task;
+            if (string.IsNullOrEmpty(path)) return null;
+
+            // ランタイムはエディタと同一マシン・同一ユーザーで動くので、
+            // 書き出されたファイルをそのまま読める。
+            try
+            {
+                return await File.ReadAllTextAsync(path);
+            }
+            catch (Exception)
+            {
+                // 読めない場合（消された・権限など）はタイムアウトと同様に null 扱いにする。
+                return null;
+            }
+        }
+        finally
+        {
+            _runtimeManager.ProfileDumpReady  -= OnReady;
+            _runtimeManager.ProfileDumpFailed -= OnFailed;
         }
     }
 

@@ -469,7 +469,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::GetBindableSources { .. }
         // シーン既定のパラメータ一覧の問い合わせ。読み取りのみでシーンを変えない。
         | IpcCommand::GetSceneShadingParams
-        | IpcCommand::ValidateWgsl { .. } => FieldEditTarget::None,
+        | IpcCommand::ValidateWgsl { .. }
+        // プロファイラの一発計測。計測するだけでシーンを変えない。
+        | IpcCommand::ProfileDump { .. } => FieldEditTarget::None,
     }
 }
 

@@ -142,6 +142,10 @@ Frame
 │   ├─ スクリプト/BeginFrame
 │   ├─ スクリプト/EarlyUpdate
 │   ├─ スクリプト/Update
+│   │   └─ スクリプト/Update/<型名>       … スクリプトの型別内訳。
+│   │                                        名前は **C# のクラス名相当（短縮名）**で、
+│   │                                        .cs のフルパスではない
+│   │                                        （script_component::script_scope_short_name）
 │   ├─ スクリプト/ConstantUpdate          … 固定ステップ。回数列で「追いつき」が分かる
 │   ├─ スクリプト/LateUpdate
 │   └─ スクリプト/Render
@@ -154,6 +158,10 @@ Frame
 ├─ 水/岸波フィールド更新                  … ショアフィールドのベイク（署名変化時のみ）
 ├─ インタラクションフィールド更新          … 草・水面への干渉場コンピュート
 ├─ 描画/統合バッチ更新                    … merge_map 構築＋全統合バッチの update
+│   ├─ 描画/統合バッチ更新/収集            … MC を batch_key でグループ化
+│   ├─ 描画/統合バッチ更新/ゲート判定      … ダーティゲート（呼び出し回数＝バッチ数）
+│   ├─ 描画/統合バッチ更新/バッチ更新      … 全更新した回数。**静止画で多いなら異常**
+│   └─ 描画/統合バッチ更新/再生指定のみ更新 … 行列が静止したアニメの軽量アップロード
 ├─ 描画/スキニング Compute 記録            … スキン compute の dispatch 記録
 ├─ 描画/メインパス                        … シャドウ〜ライティング〜半透明〜オーバーレイ一式
 │   ├─ 描画/シャドウ深度パス
@@ -266,6 +274,59 @@ PROFILER:{"frames":30,"window_ms":501.2,"fps":59.9,"frame_avg_ms":16.7,"frame_ma
 
 セクションノード: `name` / `avg_ms` / `max_ms` / `self_ms` / `share`(%) / `calls`（1 フレームあたり平均）/
 `calls_total`（窓内合計）/ `children`（実行順）。
+
+### 一発計測（`PROFILE_DUMP`）— MCP / エージェント向け
+
+パネルの定期購読（`PROFILER:`）とは独立に、「いま N 秒ぶんを測って 1 個の結果として返せ」
+という一発計測の経路があります。MCP ツール `seed_profile` の実体です
+（`docs/editor_mcp.md` §5.4「計測 → 修正ループ」）。
+
+**エディタ → ランタイム**
+
+```
+PROFILE_DUMP:5          … 5 秒ぶんを 1 窓に畳んで計測する
+```
+
+- 計測が無効（パネルを開いていない）ときは、**この計測の間だけ**自動で有効化し、
+  満了時に元の状態へ戻します。
+- 通常の 0.5 秒窓とは別の集計器で回るので、パネルの表示が乱れることはありません。
+
+**ランタイム → エディタ**（満了したフレームで 1 回）
+
+```
+PROFILE_DUMP_DONE:{ダンプ JSON のフルパス}
+PROFILE_DUMP_ERROR:{理由}
+```
+
+ダンプ JSON は数十 KB になりうるため IPC 行には載せず、一時ファイル
+（`%TEMP%\seed_profile_dump_<ナノ秒>.json`）へ書き出して**パスだけ**を返します
+（IPC は 1 行 1 メッセージのため）。ファイルの中身は次の形です。
+
+```json
+{
+  "profile": { "…": "PROFILER: と同じスキーマ" },
+  "merge": {
+    "frames": 409,
+    "batches_total": 17,
+    "updates_per_frame": 7.0,
+    "reason_totals": { "Mats": 818, "PoseOnly": 2045 },
+    "batches": [
+      { "key": "…/models/sakanadori.glb", "instances": 21,
+        "updated": 409, "skipped": 0, "updates_per_frame": 1.0,
+        "reasons": { "Mats": 409 } }
+    ]
+  }
+}
+```
+
+`merge` は**統合バッチ更新のダーティゲート**（`merge_batch_gate.rs`）の判定を
+計測窓のあいだ積んだものです。バッチごとに「`update()` を実行したか／省いたか」と、
+実行したなら**なぜ省けなかったか**（`MergeGateReason` の列挙子名）が入ります。
+理由の一覧と読み方は `docs/editor_mcp.md` §5.4 の表を参照してください。
+`batches` は更新回数の降順（＝重い犯人から）で並びます。
+
+実装: `profiling::begin_dump` / `take_finished_dump` / `write_dump_file`（`profiling/mod.rs`）、
+統計側は `app/merge_stats.rs`。
 
 ### 計装を増やすには
 

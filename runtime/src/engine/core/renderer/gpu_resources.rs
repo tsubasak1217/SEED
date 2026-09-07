@@ -2557,7 +2557,19 @@ impl InstancedModelBatch {
         // ワールド行列キャッシュが未確定なら判定できない（＝更新させる）。
         if self.dirty { return false; }
         let n_instances = self.world_aabbs.len();
-        if n_instances == 0 { return false; }
+        if n_instances == 0 {
+            // インスタンスが 1 本も無いバッチ（＝非表示 ModelComponent）。
+            // 振り分ける対象が無いのだから、カメラがどこへ動いてもバケットは変わりようがない
+            // ＝「不変」が正しい。ここで false を返していたころは、非表示のまま置かれた
+            // モデルが**毎フレーム必ず update() に落ち続けていた**（更新結果は毎回
+            // 「全 LOD カウント 0」で同一なのに、ゲートが永久にスキップへ入れなかった）。
+            //
+            // 安全性: `update()` の 0 インスタンス枝は world_mats_cache / world_aabbs /
+            // prev_models を空にし全 LOD カウントを 0 にするだけなので、2 回目以降の
+            // 呼び出しは完全な no-op。スキップしても GPU 上の状態は変わらない。
+            // `dirty` が立っていれば上の行で false を返すため、未確定状態も取りこぼさない。
+            return true;
+        }
         // 前回の振り分け結果を「インスタンス添字 → LOD」の逆引き表に展開する。
         // 全 LOD の合計が n_instances と一致しなければ整合が取れていない＝再計算。
         // 表はスクラッチへ持たせてフレーム間で使い回す（毎フレームの確保を避けるため）。
@@ -2934,6 +2946,45 @@ impl InstancedModelBatch {
 
         // 作業バッファを戻す（次フレームも同じ確保を使い回す）。
         self.scratch = scratch;
+    }
+
+    /// **再生指定（スキンのアニメ index・時刻・ブレンド）だけ**を GPU へ上げ直す軽量更新。
+    ///
+    /// 【いつ使うか】統合バッチのダーティゲートが `MergeGateReason::PoseOnly` を返した
+    /// フレーム、すなわち「行列・絶対 ID・タグ・LOD 無効フラグ・LOD バケット割り当てが
+    /// 前フレームと 1 ビットも変わらず、速度バッファも整定済みで、Animator の再生指定
+    /// だけが進んだ」フレーム。
+    ///
+    /// 【なぜ正しいか】その条件下で `update()` が書き出す
+    ///   - ワールド行列キャッシュ / AABB（`dirty` が立っていないので再計算されない）
+    ///   - LOD 振り分け結果（`lod_compact_insts` / `lod_visible_counts`）
+    ///   - 各 LOD のノードバッファ・前フレームノードバッファ・ID バッファ
+    ///   - `prev_models`（＝変化していない world_mats_cache の複製）
+    /// はすべて前フレームとビット単位で同一になる。実際に内容が変わるのは
+    /// `skin.upload_lod_poses` だけなので、そこだけを呼び直せば GPU 上の状態は
+    /// 「毎フレーム全更新した場合」と完全に一致する。
+    ///
+    /// アニメーション再生中のモデルは行列が静止していても毎フレーム再生指定が進むため、
+    /// この経路が無いと「1 体でもアニメしていれば、そのバッチは毎フレーム全更新」に
+    /// なっていた（統合バッチ更新時間の主因）。
+    ///
+    /// スキンを持たないバッチでは再生指定はどこにも効かないので何もしない。
+    pub fn update_poses_only(
+        &mut self,
+        queue: &wgpu::Queue,
+        poses: &[Option<SkinAnimPose>],
+    ) {
+        // 描かれる形（スキンのポーズ）は変わるので、内容の版番号は必ず進める
+        // （影の静的カスケードスキップがこの版番号を見ている）。
+        self.content_generation = next_gpu_generation();
+        self.set_anim_pose_overrides(poses);
+
+        let Some(skin) = &self.skin else { return };
+        for lod in 0..NUM_LODS {
+            skin.upload_lod_poses(
+                queue, lod, &self.lod_compact_insts[lod], &self.anim_pose_overrides,
+            );
+        }
     }
 
     // ── 速度バッファ（モーションベクタ）用アクセサ ──────────────────────

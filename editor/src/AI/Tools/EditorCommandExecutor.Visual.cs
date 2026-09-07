@@ -87,6 +87,27 @@ public partial class EditorCommandExecutor
     /// <summary>アクター未指定・未解決を表す DFS ID。</summary>
     private const int VisualNoActor = -1;
 
+    // ── プロファイラ一発計測（profile）────────────────────────────
+
+    /// <summary>profile の計測秒数の既定値。</summary>
+    private const double ProfileDefaultSeconds = 3.0;
+
+    /// <summary>profile の計測秒数の下限（これ未満は 1 窓にフレームが乗らない）。</summary>
+    private const double ProfileMinSeconds = 0.2;
+
+    /// <summary>profile の計測秒数の上限（MCP/HTTP のタイムアウトより十分短く）。</summary>
+    private const double ProfileMaxSeconds = 30.0;
+
+    /// <summary>
+    /// profile の応答待ちに、計測秒数へ上乗せする余裕（ミリ秒）。
+    /// ランタイムはフレーム末尾で窓の満了を判定するため、低フレームレート時に
+    /// 1〜2 フレームぶん遅れて返ることを見込む。
+    /// </summary>
+    private const int ProfileTimeoutMarginMs = 5_000;
+
+    /// <summary>profile の引数名: 計測秒数。</summary>
+    private const string ProfileSecondsKey = "seconds";
+
     // ── ディスパッチ ─────────────────────────────────────────────
 
     /// <summary>
@@ -113,6 +134,7 @@ public partial class EditorCommandExecutor
             "get_log"           => ExecuteGetLog(args),
             "save_scene"        => await ExecuteSaveSceneAsync(args),
             "get_editor_state"  => ExecuteGetEditorState(),
+            "profile"           => await ExecuteProfileAsync(args),
             _                   => null,
         };
     }
@@ -282,6 +304,43 @@ public partial class EditorCommandExecutor
             ok           = true,
             actor_dfs_id = dfsId,
             components   = RawJson(json),
+        });
+    }
+
+    /// <summary>
+    /// プロファイラの一発計測を実行する（IPC: PROFILE_DUMP:&lt;秒&gt;）。
+    ///
+    /// ランタイムは指定秒数ぶんのフレームを 1 窓へ畳み込み、
+    /// 「セクション別 CPU 時間ツリー」と「統合バッチ更新ゲートの判定理由集計」を
+    /// 1 個の JSON にまとめて返す。プロファイラパネルを開いている必要はない
+    /// （計測期間だけランタイムが自動で計測を有効化する）。
+    /// </summary>
+    private async Task<string> ExecuteProfileAsync(JsonElement args)
+    {
+        var host = Host;
+        if (host is null) return Error("エディタ本体へ接続されていません（host 未設定）。");
+
+        // 計測秒数（範囲外はクランプ。極端な値で HTTP タイムアウトへ落ちないようにする）。
+        var seconds = ProfileDefaultSeconds;
+        if (args.ValueKind == JsonValueKind.Object
+            && args.TryGetProperty(ProfileSecondsKey, out var secElem)
+            && secElem.ValueKind == JsonValueKind.Number
+            && secElem.TryGetDouble(out var requested))
+        {
+            seconds = Math.Clamp(requested, ProfileMinSeconds, ProfileMaxSeconds);
+        }
+
+        var timeoutMs = (int)(seconds * 1000.0) + ProfileTimeoutMarginMs;
+        var json      = await host.ProfileDumpAsync(seconds, timeoutMs);
+        if (json is null)
+            return Error($"PROFILE_DUMP が {timeoutMs} ms 以内に返りませんでした"
+                       + "（ランタイム未接続、または描画ループが回っていない可能性）。");
+
+        return Json(new
+        {
+            ok      = true,
+            seconds,
+            dump    = RawJson(json),
         });
     }
 
