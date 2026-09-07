@@ -118,3 +118,11 @@
 - [ ] **終了時の保存失敗で `_pendingClose` が残る（既存の不具合）** — 2026-09-07 に発見、今回は未修正。`OnWindowClosing` の「保存して終了」で保存が失敗すると `OnSaveCompleted` の失敗側が `_pendingClose` をクリアしないため、フラグが立ったままになる。次に別の保存が成功した瞬間にウィンドウが閉じる。今回パス不一致で保存が失敗しうるようになったので、遭遇確率は上がっている。関連: `editor/src/MainWindow.Scene.cs::OnSaveCompleted`。
 
 - [ ] **`.actor` / `.anim` にはシーンロックが無い** — 2026-09-07。ロックは `.scene` だけ。プレハブ（`.actor`）を 2 つのエディタで同時に開くと、後勝ちで上書きされる（バックアップからは戻せる）。`SceneLock` は拡張子を問わない実装なので、アクタータブの開閉に繋げるだけで対応できる。関連: `editor/src/Scene/SceneLock.cs`、`editor/src/MainWindow.FileOps.cs`。
+
+## アニメーションタイムライン（2026-09-07 の複数選択・ナビゲーション実装での残件）
+
+- [ ] **トラック名リストとドープシート行がピクセル単位では揃っていない** — 2026-09-07。左のトラックリスト（`ListBox`）はヘッダー Border の高さ・`ListBoxItem` の実高さがドープシート側の `RulerHeight` / `TrackRowHeight` と一致していない（従来からの状態で、今回は変更していない）。そのため `Shift`+ホイールの縦スクロール同期は「ピクセル量 ÷ 行高 = アイテム数」への換算による**近似**にとどまる。厳密に揃えるには、リスト側を `ScrollViewer.CanContentScroll=False`（ピクセルスクロール）にし、`ItemContainerStyle` で行高を `TrackRowHeight` に固定し、ヘッダー高さをルーラー高に合わせる必要がある。関連: `editor/src/Panels/AnimationTimelinePanel.xaml`、`DopeSheetPanel.xaml.cs::ScrollVerticalBy`。
+
+- [ ] **トラックリストにフォーカスがあるときの `Delete` はキー選択より優先される** — 2026-09-07。`LstTracks` 自身の `KeyDown`（`OnTrackListKeyDown`）が先に走るため、キーを複数選択した状態でもリスト側にフォーカスがあるとトラックが消える。パネル側の `HandleTimelineKey` は「キー選択があればキー削除」を優先する実装なので、両者で判断が違う。リスト側でもキー選択の有無を見るか、リストの `Delete` は削除ボタン/右クリックメニューへ寄せるのが筋。関連: `editor/src/Panels/AnimationTimelinePanel.xaml.cs::OnTrackListKeyDown`。
+
+- [ ] **`duration` を超えるキーの貼り付けは最終フレームへ丸めて重なる** — 2026-09-07。`AnimKeyClipboard.Paste` はクリップ外へキーを作らない方針でフレームをクランプするため、長いキー列をクリップ末尾付近へ貼ると複数キーが最終フレームで潰れて上書きし合う（データは失われる）。「貼り付けで足りない長さを自動的に伸ばすか確認する」ほうが親切。関連: `editor/src/Panels/AnimationTimeline/AnimKeyClipboard.cs`。

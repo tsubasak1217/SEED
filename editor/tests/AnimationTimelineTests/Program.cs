@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using SEEDEditor.Panels.AnimationTimeline;
@@ -17,6 +17,11 @@ namespace AnimationTimelineTests;
 ///   <item>Undo / Redo スタック（AnimUndoStack）</item>
 ///   <item>ACTOR_COMPONENTS からの現在値抽出（AnimActorSnapshot）</item>
 ///   <item>.anim の fps ラウンドトリップと旧ファイル互換（AnimClipIO）</item>
+///   <item>複数選択モデルと正規化（AnimKeySelection）</item>
+///   <item>選択キーの一括移動・上書き・削除（AnimKeyEditor）</item>
+///   <item>キーのコピー / 貼り付け（AnimKeyClipboard）</item>
+///   <item>矩形選択・ズームの座標計算（AnimDopeSheetLayout / AnimTimelineZoom）</item>
+///   <item>選択込み Undo / Redo（AnimUndoStack + スナップショット規約）</item>
 /// </list>
 /// </summary>
 public static class Program
@@ -73,6 +78,43 @@ public static class Program
         harness.Add("fps 無しの旧 .anim は既定 fps で読める",       LegacyClipGetsDefaultFps);
         harness.Add("fps は保存・再読込で往復する",                 FpsRoundTripsThroughJson);
 
+        // ── 7. 複数選択モデル ──
+        harness.Add("Ctrl クリック相当のトグルで選択が反転する",     SelectionTogglesKeys);
+        harness.Add("Shift クリック相当の追加で選択が増える",        SelectionAddsKeys);
+        harness.Add("削除後に選択の添字が詰められる",                SelectionNormalizesAfterDelete);
+        harness.Add("範囲外の選択は正規化で捨てられる",              SelectionNormalizeDropsOutOfRange);
+        harness.Add("同一フレームのキーをまとめて選択できる",        SelectionSelectsWholeFrame);
+        harness.Add("選択は JSON で往復する",                        SelectionRoundTripsThroughJson);
+
+        // ── 8. 選択キーの一括移動・削除・補間変更 ──
+        harness.Add("選択キーはまとめて移動する",                    MoveSelectionShiftsAllKeys);
+        harness.Add("移動先の既存キーは置き換えられる",              MoveSelectionReplacesOverlappedKey);
+        harness.Add("移動量は 0 フレーム未満へはみ出さない",         MoveSelectionClampsAtFrameZero);
+        harness.Add("移動量は最終フレームを超えない",                MoveSelectionClampsAtLastFrame);
+        harness.Add("選択キーをまとめて削除できる",                  DeleteSelectionRemovesAllKeys);
+        harness.Add("選択キーの補間をまとめて変えられる",            SetInterpAppliesToSelection);
+
+        // ── 9. コピー / 貼り付け ──
+        harness.Add("コピーは先頭キーからの相対フレームで持つ",      CopyStoresRelativeFrames);
+        harness.Add("貼り付けはプレイヘッド基準で相対位置を保つ",    PastePlacesKeysRelativeToPlayhead);
+        harness.Add("貼り付け先に無いトラックは作られる",            PasteCreatesMissingTrack);
+        harness.Add("同一フレームのキーは貼り付けで上書きされる",    PasteReplacesKeysOnSameFrame);
+        harness.Add("クリップボード JSON は往復する",                ClipboardJsonRoundTrips);
+        harness.Add("無関係なテキストは貼り付け対象にならない",      ClipboardRejectsForeignText);
+
+        // ── 10. 座標計算（矩形選択・ズーム）──
+        harness.Add("矩形内のキーだけを拾う",                        MarqueeSelectsKeysInsideRect);
+        harness.Add("矩形は始点と終点の順序を問わない",              MarqueeAcceptsReversedRect);
+        harness.Add("ズームしてもカーソル下の時刻が動かない",        ZoomKeepsTimeUnderCursor);
+        harness.Add("ズーム倍率は上下限でクランプされる",            ZoomClampsToRange);
+        harness.Add("F はクリップ全体が収まる倍率を返す",            FitFillsViewportWidth);
+
+        // ── 11. 選択込み Undo / Redo ──
+        harness.Add("一括削除の Undo でキーと選択が戻る",            UndoRestoresDeletedKeysAndSelection);
+        harness.Add("Redo で一括削除がやり直される",                 RedoReappliesDeletion);
+        harness.Add("N 回の移動は N 回の Undo で元へ戻る",           UndoUnwindsRepeatedNudges);
+        harness.Add("貼り付けの Undo で作られたトラックも消える",    UndoRemovesPastedTrack);
+
         return harness.Run();
     }
 
@@ -84,6 +126,28 @@ public static class Program
         Target    = new AnimTarget { ActorPath = actorPath, Component = "actor_transform", Property = property },
         ValueType = AnimValueType.Vec3,
     };
+
+    /// <summary>Undo テスト用: クリップ JSON だけを持つスナップショット（選択は空）。</summary>
+    private static AnimUndoSnapshot Snap(string clipJson) => new(clipJson, "[]");
+
+    /// <summary>Undo テスト用: スナップショットのクリップ JSON を取り出す（null は空文字列）。</summary>
+    private static string ClipOf(AnimUndoSnapshot? snapshot) => snapshot?.ClipJson ?? "";
+
+    /// <summary>フレーム番号を指定してキーを打つ（テスト記述を短くするためのヘルパー）。</summary>
+    private static void KeyAt(AnimTrack track, int frame, float fps, params float[] values)
+        => AnimKeyEditor.InsertOrUpdate(track, AnimFrameMath.FrameToTime(frame, fps), values, fps);
+
+    /// <summary>トラック内のキーのフレーム番号一覧を返す。</summary>
+    private static List<int> FramesOf(AnimTrack track, float fps)
+        => track.Keys.Select(k => AnimFrameMath.TimeToFrame(k.Time, fps)).ToList();
+
+    /// <summary>vec3 トラック 1 本を持つ、fps 30 / 長さ 2 秒のクリップを作る。</summary>
+    private static AnimClip ClipWithTrack(string actorPath = "", string property = "position")
+    {
+        var clip = new AnimClip { Name = "test", Duration = 2f, Fps = 30f };
+        clip.Tracks.Add(Vec3Track(actorPath, property));
+        return clip;
+    }
 
     /// <summary>テスト用のヒエラルキー表を組み立てる。</summary>
     private static Dictionary<int, AnimHierarchyNode> Nodes(params AnimHierarchyNode[] nodes)
@@ -406,11 +470,11 @@ public static class Program
     private static void UndoRestoresPrevious()
     {
         var undo = new AnimUndoStack();
-        undo.Reset("A");
-        undo.Push("B");
+        undo.Reset(Snap("A"));
+        undo.Push(Snap("B"));
 
         Check.True(undo.CanUndo, "Undo できる");
-        Check.Equal("A", undo.Undo() ?? "", "1 つ前へ戻る");
+        Check.Equal("A", ClipOf(undo.Undo()), "1 つ前へ戻る");
         Check.True(!undo.CanUndo, "これ以上は戻れない");
         Check.True(undo.Undo() is null, "戻れないときは null");
     }
@@ -418,40 +482,40 @@ public static class Program
     private static void RedoReappliesEdit()
     {
         var undo = new AnimUndoStack();
-        undo.Reset("A");
-        undo.Push("B");
+        undo.Reset(Snap("A"));
+        undo.Push(Snap("B"));
         undo.Undo();
 
         Check.True(undo.CanRedo, "Redo できる");
-        Check.Equal("B", undo.Redo() ?? "", "編集後の状態へ進む");
+        Check.Equal("B", ClipOf(undo.Redo()), "編集後の状態へ進む");
         Check.True(!undo.CanRedo, "これ以上は進めない");
     }
 
     private static void NewEditClearsRedo()
     {
         var undo = new AnimUndoStack();
-        undo.Reset("A");
-        undo.Push("B");
+        undo.Reset(Snap("A"));
+        undo.Push(Snap("B"));
         undo.Undo();          // 現在 = A、Redo に B
-        undo.Push("C");       // 新しい編集
+        undo.Push(Snap("C"));       // 新しい編集
 
         Check.True(!undo.CanRedo, "Redo 系列が破棄される");
-        Check.Equal("A", undo.Undo() ?? "", "Undo は新しい編集の前へ戻る");
+        Check.Equal("A", ClipOf(undo.Undo()), "Undo は新しい編集の前へ戻る");
     }
 
     private static void IdenticalPushIsIgnored()
     {
         var undo = new AnimUndoStack();
-        undo.Reset("A");
-        undo.Push("A");
+        undo.Reset(Snap("A"));
+        undo.Push(Snap("A"));
         Check.True(!undo.CanUndo, "同じ内容では履歴が増えない");
     }
 
     private static void UndoRespectsCapacity()
     {
         var undo = new AnimUndoStack(capacity: 3);
-        undo.Reset("s0");
-        for (int i = 1; i <= 10; i++) undo.Push("s" + i);
+        undo.Reset(Snap("s0"));
+        for (int i = 1; i <= 10; i++) undo.Push(Snap("s" + i));
 
         // 3 段までしか戻れない
         int steps = 0;
@@ -555,5 +619,549 @@ public static class Program
         Check.Equal("Arm", reloaded.Tracks[0].Target.ActorPath, "actor_path が往復する");
         Check.Equal(12, AnimFrameMath.TimeToFrame(reloaded.Tracks[0].Keys[0].Time, 24f),
             "キーのフレーム位置が往復する");
+    }
+
+    // ── 7. 複数選択モデル（AnimKeySelection）────────────────────
+
+    private static void SelectionTogglesKeys()
+    {
+        var sel = new AnimKeySelection();
+        Check.True(sel.IsEmpty, "初期状態は未選択");
+
+        Check.True(sel.Toggle(0, 1), "1 回目のトグルで選択される");
+        Check.True(sel.Contains(0, 1), "選択に含まれる");
+        Check.True(!sel.Toggle(0, 1), "2 回目のトグルで解除される");
+        Check.True(sel.IsEmpty, "解除後は空");
+    }
+
+    private static void SelectionAddsKeys()
+    {
+        var sel = new AnimKeySelection();
+        sel.SelectSingle(0, 0);
+        sel.Add(1, 2);
+        sel.Add(1, 2);                       // 重複追加は増えない（集合であること）
+
+        Check.Equal(2, sel.Count, "選択件数");
+        Check.True(sel.IsMultiple, "複数選択と判定される");
+        var ordered = sel.Ordered();
+        Check.Equal(0, ordered[0].TrackIndex, "トラック昇順で並ぶ");
+        Check.Equal(2, ordered[1].KeyIndex,   "キー添字も保持される");
+    }
+
+    private static void SelectionNormalizesAfterDelete()
+    {
+        // トラック 0 のキー 0,1,2,3 のうち 1 を削除 → 2,3 は 1,2 へ詰まる
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0); sel.Add(0, 2); sel.Add(0, 3); sel.Add(1, 5);
+        sel.NormalizeAfterDelete(new[] { new AnimKeyRef(0, 1) });
+
+        Check.True(sel.Contains(0, 0), "削除位置より前はそのまま");
+        Check.True(sel.Contains(0, 1), "削除位置より後ろは 1 つ詰まる");
+        Check.True(sel.Contains(0, 2), "同上");
+        Check.True(sel.Contains(1, 5), "別トラックは影響を受けない");
+        Check.Equal(4, sel.Count, "件数は変わらない");
+
+        // 削除されたキー自身は選択から外れる
+        var sel2 = new AnimKeySelection();
+        sel2.Add(0, 1);
+        sel2.NormalizeAfterDelete(new[] { new AnimKeyRef(0, 1) });
+        Check.True(sel2.IsEmpty, "消えたキーは選択から外れる");
+    }
+
+    private static void SelectionNormalizeDropsOutOfRange()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        KeyAt(clip.Tracks[0], 0, fps, 1, 2, 3);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0);
+        sel.Add(0, 5);      // 存在しないキー
+        sel.Add(3, 0);      // 存在しないトラック
+        sel.Normalize(clip.Tracks);
+
+        Check.Equal(1, sel.Count, "範囲内の 1 個だけが残る");
+        Check.True(sel.Contains(0, 0), "残るのは実在するキー");
+    }
+
+    private static void SelectionSelectsWholeFrame()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        clip.Tracks.Add(Vec3Track("", "scale"));
+        KeyAt(clip.Tracks[0], 10, fps, 1, 1, 1);
+        KeyAt(clip.Tracks[1], 10, fps, 2, 2, 2);
+        KeyAt(clip.Tracks[1], 20, fps, 3, 3, 3);
+
+        var sel = new AnimKeySelection();
+        sel.SelectFrame(clip.Tracks, AnimFrameMath.FrameToTime(10, fps), fps);
+
+        Check.Equal(2, sel.Count, "フレーム 10 のキーが両トラックぶん選ばれる");
+        Check.True(sel.Contains(0, 0) && sel.Contains(1, 0), "各トラックの該当キー");
+
+        sel.SelectAll(clip.Tracks);
+        Check.Equal(3, sel.Count, "全選択は全キー");
+    }
+
+    private static void SelectionRoundTripsThroughJson()
+    {
+        var sel = new AnimKeySelection();
+        sel.Add(0, 1); sel.Add(2, 3);
+
+        var restored = new AnimKeySelection();
+        restored.Restore(sel.Serialize());
+
+        Check.Equal(2, restored.Count, "件数が往復する");
+        Check.True(restored.Contains(0, 1) && restored.Contains(2, 3), "内容が往復する");
+
+        restored.Restore("{ broken");
+        Check.True(restored.IsEmpty, "壊れた JSON は選択なしとして扱う");
+    }
+
+    // ── 8. 選択キーの一括移動・削除・補間変更 ────────────────────
+
+    private static void MoveSelectionShiftsAllKeys()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        var track = clip.Tracks[0];
+        KeyAt(track, 0, fps, 1, 0, 0);
+        KeyAt(track, 5, fps, 2, 0, 0);
+        KeyAt(track, 20, fps, 3, 0, 0);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0); sel.Add(0, 1);        // フレーム 0 と 5
+
+        var moved = AnimKeyEditor.MoveSelectedKeys(clip.Tracks, sel, 3, fps, clip.Duration);
+
+        Check.Equal(3, moved, "要求どおり 3 フレーム動く");
+        Check.Equal(3, FramesOf(track, fps)[0], "先頭キーは 3 へ");
+        Check.Equal(8, FramesOf(track, fps)[1], "2 番目は 8 へ（相対間隔を保つ）");
+        Check.Equal(20, FramesOf(track, fps)[2], "非選択キーは動かない");
+        Check.True(sel.Contains(0, 0) && sel.Contains(0, 1), "移動後も同じキーが選択されている");
+    }
+
+    private static void MoveSelectionReplacesOverlappedKey()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        var track = clip.Tracks[0];
+        KeyAt(track, 0, fps, 1, 0, 0);
+        KeyAt(track, 5, fps, 9, 9, 9);       // 移動先に居座る非選択キー
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0);
+
+        AnimKeyEditor.MoveSelectedKeys(clip.Tracks, sel, 5, fps, clip.Duration);
+
+        Check.Equal(1, track.Keys.Count, "重なったキーは置き換えられて 1 本になる");
+        Check.Equal(5, FramesOf(track, fps)[0], "移動先フレーム");
+        Check.Equal(1f, track.Keys[0].Values[0], "残ったのは動かしてきた側の値");
+        Check.True(sel.Contains(0, 0), "移動後の添字で選択が張り直される");
+    }
+
+    private static void MoveSelectionClampsAtFrameZero()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        var track = clip.Tracks[0];
+        KeyAt(track, 2, fps, 1, 0, 0);
+        KeyAt(track, 8, fps, 2, 0, 0);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0); sel.Add(0, 1);
+
+        var moved = AnimKeyEditor.MoveSelectedKeys(clip.Tracks, sel, -10, fps, clip.Duration);
+
+        Check.Equal(-2, moved, "先頭が 0 フレームで止まるぶんだけ動く");
+        Check.Equal(0, FramesOf(track, fps)[0], "先頭は 0 フレーム");
+        Check.Equal(6, FramesOf(track, fps)[1], "相対間隔は保たれる");
+    }
+
+    private static void MoveSelectionClampsAtLastFrame()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();               // duration 2 秒 → 最終フレーム 60
+        var track = clip.Tracks[0];
+        KeyAt(track, 58, fps, 1, 0, 0);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0);
+
+        var moved = AnimKeyEditor.MoveSelectedKeys(clip.Tracks, sel, 10, fps, clip.Duration);
+
+        Check.Equal(2, moved, "最終フレームまでしか動かない");
+        Check.Equal(60, FramesOf(track, fps)[0], "最終フレームで止まる");
+    }
+
+    private static void DeleteSelectionRemovesAllKeys()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        clip.Tracks.Add(Vec3Track("", "scale"));
+        KeyAt(clip.Tracks[0], 0, fps, 1, 0, 0);
+        KeyAt(clip.Tracks[0], 5, fps, 2, 0, 0);
+        KeyAt(clip.Tracks[1], 5, fps, 3, 0, 0);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0); sel.Add(0, 1); sel.Add(1, 0);
+
+        var removed = AnimKeyEditor.DeleteSelectedKeys(clip.Tracks, sel);
+
+        Check.Equal(3, removed, "3 個削除される");
+        Check.Equal(0, clip.Tracks[0].Keys.Count, "トラック 0 は空");
+        Check.Equal(0, clip.Tracks[1].Keys.Count, "トラック 1 も空");
+        Check.True(sel.IsEmpty, "削除後の選択は空");
+    }
+
+    private static void SetInterpAppliesToSelection()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        var track = clip.Tracks[0];
+        KeyAt(track, 0, fps, 1, 0, 0);
+        KeyAt(track, 5, fps, 2, 0, 0);
+        KeyAt(track, 10, fps, 3, 0, 0);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0); sel.Add(0, 2);
+
+        var changed = AnimKeyEditor.SetInterpForSelection(clip.Tracks, sel, AnimInterp.Step);
+
+        Check.Equal(2, changed, "選択ぶんだけ変わる");
+        Check.Equal(AnimInterp.Step,   track.Keys[0].Interp, "1 個目");
+        Check.Equal(AnimInterp.Linear, track.Keys[1].Interp, "非選択キーは変わらない");
+        Check.Equal(AnimInterp.Step,   track.Keys[2].Interp, "3 個目");
+    }
+
+    // ── 9. コピー / 貼り付け（AnimKeyClipboard）──────────────────
+
+    private static void CopyStoresRelativeFrames()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack("Arm");
+        var track = clip.Tracks[0];
+        KeyAt(track, 10, fps, 1, 0, 0);
+        KeyAt(track, 14, fps, 2, 0, 0);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0); sel.Add(0, 1);
+
+        var data = AnimKeyClipboard.Copy(clip.Tracks, sel, fps);
+
+        Check.Equal(1, data.Tracks.Count, "トラック 1 本ぶん");
+        Check.Equal("Arm", data.Tracks[0].ActorPath, "対象の actor_path を持つ");
+        Check.Equal(0, data.Tracks[0].Keys[0].FrameOffset, "先頭キーはアンカー（相対 0）");
+        Check.Equal(4, data.Tracks[0].Keys[1].FrameOffset, "2 個目は +4 フレーム");
+    }
+
+    private static void PastePlacesKeysRelativeToPlayhead()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        var track = clip.Tracks[0];
+        KeyAt(track, 10, fps, 1, 0, 0);
+        KeyAt(track, 14, fps, 2, 0, 0);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0); sel.Add(0, 1);
+        var data = AnimKeyClipboard.Copy(clip.Tracks, sel, fps);
+
+        var pasted = AnimKeyClipboard.Paste(clip, data, 20);
+
+        Check.Equal(2, pasted.Count, "2 個貼り付けられる");
+        var frames = FramesOf(track, fps);
+        Check.Equal(4, frames.Count, "元の 2 個 + 貼り付け 2 個");
+        Check.Equal(20, frames[2], "先頭キーはプレイヘッド位置へ");
+        Check.Equal(24, frames[3], "相対間隔が保たれる");
+    }
+
+    private static void PasteCreatesMissingTrack()
+    {
+        const float fps = 30f;
+        var source = ClipWithTrack("Arm/Hand");
+        KeyAt(source.Tracks[0], 6, fps, 7, 8, 9);
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0);
+        var data = AnimKeyClipboard.Copy(source.Tracks, sel, fps);
+
+        // 貼り付け先には該当トラックが無い（＝別クリップへの貼り付け）
+        var target = new AnimClip { Name = "other", Duration = 2f, Fps = 30f };
+        var pasted = AnimKeyClipboard.Paste(target, data, 0);
+
+        Check.Equal(1, target.Tracks.Count, "トラックが作られる");
+        Check.Equal("Arm/Hand", target.Tracks[0].Target.ActorPath, "actor_path が引き継がれる");
+        Check.Equal("position", target.Tracks[0].Target.Property, "property が引き継がれる");
+        Check.Equal(AnimValueType.Vec3, target.Tracks[0].ValueType, "value_type が引き継がれる");
+        Check.Equal(1, pasted.Count, "キーが 1 個入る");
+        Check.Equal(9f, target.Tracks[0].Keys[0].Values[2], "値も引き継がれる");
+    }
+
+    private static void PasteReplacesKeysOnSameFrame()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        var track = clip.Tracks[0];
+        KeyAt(track, 0, fps, 1, 1, 1);
+        KeyAt(track, 10, fps, 5, 5, 5);      // 貼り付け先に既存キー
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0);                        // フレーム 0 のキーをコピー
+        var data = AnimKeyClipboard.Copy(clip.Tracks, sel, fps);
+
+        AnimKeyClipboard.Paste(clip, data, 10);
+
+        Check.Equal(2, track.Keys.Count, "キーは増えない（上書き）");
+        Check.Equal(1f, track.Keys[1].Values[0], "フレーム 10 の値が貼り付け内容で置き換わる");
+    }
+
+    private static void ClipboardJsonRoundTrips()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack("Arm");
+        var track = clip.Tracks[0];
+        KeyAt(track, 3, fps, 1, 2, 3);
+        track.Keys[0].Interp     = AnimInterp.Bezier;
+        track.Keys[0].InTangent  = new[] { 0.5f, 0f, 0f };
+        track.Keys[0].OutTangent = new[] { -0.5f, 0f, 0f };
+
+        var sel = new AnimKeySelection();
+        sel.Add(0, 0);
+
+        var json     = AnimKeyClipboard.Serialize(AnimKeyClipboard.Copy(clip.Tracks, sel, fps));
+        var restored = AnimKeyClipboard.Parse(json);
+
+        Check.True(restored is not null, "パースできる");
+        Check.Equal("Arm", restored!.Tracks[0].ActorPath, "actor_path が往復する");
+        Check.Equal(AnimInterp.Bezier, restored.Tracks[0].Keys[0].Interp, "補間が往復する");
+        Check.Equal(0.5f,  restored.Tracks[0].Keys[0].InTangent![0],  "入タンジェントが往復する");
+        Check.Equal(-0.5f, restored.Tracks[0].Keys[0].OutTangent![0], "出タンジェントが往復する");
+        Check.Equal(2f,    restored.Tracks[0].Keys[0].Values[1],      "値が往復する");
+    }
+
+    private static void ClipboardRejectsForeignText()
+    {
+        Check.True(AnimKeyClipboard.Parse("hello world") is null, "ただのテキストは対象外");
+        Check.True(AnimKeyClipboard.Parse("""{"format":"other","tracks":[]}""") is null, "別形式の JSON も対象外");
+        Check.True(AnimKeyClipboard.Parse(null) is null, "null も対象外");
+        Check.True(AnimKeyClipboard.Parse("") is null,   "空文字も対象外");
+    }
+
+    // ── 10. 座標計算（矩形選択・ズーム）─────────────────────────
+
+    private static void MarqueeSelectsKeysInsideRect()
+    {
+        const float fps = 30f;
+        const double pps = 100.0;             // 1 秒 = 100px
+        var clip = ClipWithTrack();
+        clip.Tracks.Add(Vec3Track("", "scale"));
+        KeyAt(clip.Tracks[0], 3, fps, 0, 0, 0);    // 0.1 秒 → x=10
+        KeyAt(clip.Tracks[0], 15, fps, 0, 0, 0);   // 0.5 秒 → x=50
+        KeyAt(clip.Tracks[1], 3, fps, 0, 0, 0);    // 別トラック・同じ x=10
+
+        var layout = AnimDopeSheetLayout.Create(pps, 0);
+        var row0 = layout.TrackRowCenterY(0);
+        var row1 = layout.TrackRowCenterY(1);
+
+        // トラック 0 の行だけを x=0..30 で囲う → x=10 のキー 1 個
+        var one = layout.KeysInRect(clip.Tracks, 0, row0 - 5, 30, row0 + 5);
+        Check.Equal(1, one.Count, "矩形内は 1 個");
+        Check.Equal(0, one[0].TrackIndex, "トラック 0 のキー");
+
+        // 2 トラックにまたがって x=0..30 → 各トラック 1 個ずつ
+        var across = layout.KeysInRect(clip.Tracks, 0, row0 - 5, 30, row1 + 5);
+        Check.Equal(2, across.Count, "トラックをまたいで拾える");
+
+        // 全部囲えば 3 個
+        Check.Equal(3, layout.KeysInRect(clip.Tracks, -10, 0, 1000, row1 + 20).Count, "全キーを拾える");
+    }
+
+    private static void MarqueeAcceptsReversedRect()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        KeyAt(clip.Tracks[0], 3, fps, 0, 0, 0);
+
+        var layout = AnimDopeSheetLayout.Create(100.0, 0);
+        var row0 = layout.TrackRowCenterY(0);
+
+        var forward  = layout.KeysInRect(clip.Tracks, 0, row0 - 5, 30, row0 + 5);
+        var backward = layout.KeysInRect(clip.Tracks, 30, row0 + 5, 0, row0 - 5);
+
+        Check.Equal(forward.Count, backward.Count, "右下→左上のドラッグでも同じ結果");
+        Check.Equal(1, backward.Count, "1 個拾える");
+    }
+
+    private static void ZoomKeepsTimeUnderCursor()
+    {
+        const double oldPps = 100.0;
+        const double scrollX = 120.0;
+        const double cursorX = 40.0;
+
+        var newPps     = AnimTimelineZoom.ZoomedPixelsPerSecond(oldPps, 1);
+        var newScrollX = AnimTimelineZoom.ScrollXForZoomAtCursor(oldPps, newPps, scrollX, cursorX);
+
+        var timeBefore = (scrollX + cursorX) / oldPps;
+        var timeAfter  = (newScrollX + cursorX) / newPps;
+        Check.Close(timeBefore, timeAfter, 1e-9, "カーソル下の時刻が固定される");
+        Check.True(newPps > oldPps, "1 ノッチで拡大する");
+
+        // 縮小方向でも同じ
+        var zoomOut   = AnimTimelineZoom.ZoomedPixelsPerSecond(oldPps, -1);
+        var outScroll = AnimTimelineZoom.ScrollXForZoomAtCursor(oldPps, zoomOut, scrollX, cursorX);
+        Check.Close(timeBefore, (outScroll + cursorX) / zoomOut, 1e-9, "縮小でも時刻が固定される");
+
+        // 左端付近では負のスクロールにならない
+        Check.True(AnimTimelineZoom.ScrollXForZoomAtCursor(oldPps, zoomOut, 0, cursorX) >= 0, "スクロール量は 0 以上");
+    }
+
+    private static void ZoomClampsToRange()
+    {
+        var max = AnimTimelineZoom.ZoomedPixelsPerSecond(AnimationTimelineConstants.MaxPixelsPerSecond, 10);
+        Check.Equal(AnimationTimelineConstants.MaxPixelsPerSecond, max, "上限でクランプ");
+
+        var min = AnimTimelineZoom.ZoomedPixelsPerSecond(AnimationTimelineConstants.MinPixelsPerSecond, -10);
+        Check.Equal(AnimationTimelineConstants.MinPixelsPerSecond, min, "下限でクランプ");
+    }
+
+    private static void FitFillsViewportWidth()
+    {
+        const double viewport = 640.0;
+        var pps = AnimTimelineZoom.FitPixelsPerSecond(viewport, 2f);
+
+        Check.Close((viewport - AnimationTimelineConstants.FitContentMarginPx) / 2.0, pps, 1e-9,
+            "余白を除いた幅にクリップ全体が収まる");
+        // 極端に短いクリップでも上限を超えない
+        Check.True(AnimTimelineZoom.FitPixelsPerSecond(viewport, 0.0001f) <= AnimationTimelineConstants.MaxPixelsPerSecond,
+            "上限を超えない");
+        // 幅が取れないうちは既定値
+        Check.Equal(AnimationTimelineConstants.DefaultPixelsPerSecond, AnimTimelineZoom.FitPixelsPerSecond(0, 1f),
+            "レイアウト前は既定倍率");
+    }
+
+    // ── 11. 選択込み Undo / Redo ────────────────────────────────
+    //
+    // パネル（WPF）は動かせないため、AnimationTimelinePanel が守っている規約
+    //  「編集 → AnimUndoStack.Push(クリップ JSON, 選択 JSON)」
+    //  「Undo → クリップを Parse して選択を Restore」
+    // をここで再現し、スタック・直列化・選択復元の組み合わせを検証する。
+
+    /// <summary>パネルの CommitEdit 相当（編集後のスナップショットを積む）。</summary>
+    private static void PushSnapshot(AnimUndoStack undo, AnimClip clip, AnimKeySelection selection)
+        => undo.Push(new AnimUndoSnapshot(AnimClipIO.Serialize(clip), selection.Serialize()));
+
+    /// <summary>パネルの RestoreSnapshot 相当（クリップと選択を戻す）。</summary>
+    private static AnimClip ApplySnapshot(AnimUndoSnapshot? snapshot, AnimKeySelection selection)
+    {
+        var snap = snapshot!.Value;
+        var clip = AnimClipIO.Parse(snap.ClipJson);
+        selection.Restore(snap.SelectionJson);
+        selection.Normalize(clip.Tracks);
+        return clip;
+    }
+
+    private static void UndoRestoresDeletedKeysAndSelection()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        KeyAt(clip.Tracks[0], 0, fps, 1, 0, 0);
+        KeyAt(clip.Tracks[0], 10, fps, 2, 0, 0);
+
+        var selection = new AnimKeySelection();
+        selection.Add(0, 0); selection.Add(0, 1);
+
+        var undo = new AnimUndoStack();
+        undo.Reset(new AnimUndoSnapshot(AnimClipIO.Serialize(clip), selection.Serialize()));
+
+        AnimKeyEditor.DeleteSelectedKeys(clip.Tracks, selection);
+        PushSnapshot(undo, clip, selection);
+        Check.Equal(0, clip.Tracks[0].Keys.Count, "削除後はキーが無い");
+
+        clip = ApplySnapshot(undo.Undo(), selection);
+
+        Check.Equal(2, clip.Tracks[0].Keys.Count, "Undo でキーが戻る");
+        Check.Equal(2, selection.Count, "選択も戻る");
+        Check.True(selection.Contains(0, 0) && selection.Contains(0, 1), "戻ったキーが選択されている");
+    }
+
+    private static void RedoReappliesDeletion()
+    {
+        const float fps = 30f;
+        var clip = ClipWithTrack();
+        KeyAt(clip.Tracks[0], 0, fps, 1, 0, 0);
+
+        var selection = new AnimKeySelection();
+        selection.Add(0, 0);
+
+        var undo = new AnimUndoStack();
+        undo.Reset(new AnimUndoSnapshot(AnimClipIO.Serialize(clip), selection.Serialize()));
+
+        AnimKeyEditor.DeleteSelectedKeys(clip.Tracks, selection);
+        PushSnapshot(undo, clip, selection);
+
+        clip = ApplySnapshot(undo.Undo(), selection);
+        Check.Equal(1, clip.Tracks[0].Keys.Count, "Undo で戻る");
+
+        clip = ApplySnapshot(undo.Redo(), selection);
+        Check.Equal(0, clip.Tracks[0].Keys.Count, "Redo で再び削除される");
+        Check.True(selection.IsEmpty, "Redo 後は選択も削除時の状態（空）");
+    }
+
+    private static void UndoUnwindsRepeatedNudges()
+    {
+        const float fps = 30f;
+        const int nudges = 5;
+        var clip = ClipWithTrack();
+        KeyAt(clip.Tracks[0], 10, fps, 1, 0, 0);
+
+        var selection = new AnimKeySelection();
+        selection.Add(0, 0);
+
+        var undo = new AnimUndoStack();
+        undo.Reset(new AnimUndoSnapshot(AnimClipIO.Serialize(clip), selection.Serialize()));
+
+        // ← → キーの連打相当。1 回の移動 = Undo 1 段。
+        for (int i = 0; i < nudges; i++)
+        {
+            AnimKeyEditor.MoveSelectedKeys(clip.Tracks, selection, 1, fps, clip.Duration);
+            PushSnapshot(undo, clip, selection);
+        }
+        Check.Equal(15, FramesOf(clip.Tracks[0], fps)[0], "5 回で 5 フレーム進む");
+
+        for (int i = 0; i < nudges; i++)
+            clip = ApplySnapshot(undo.Undo(), selection);
+
+        Check.Equal(10, FramesOf(clip.Tracks[0], fps)[0], "同じ回数の Undo で元の位置へ戻る");
+        Check.True(!undo.CanUndo, "これ以上戻せない");
+        Check.True(selection.Contains(0, 0), "選択は保たれている");
+    }
+
+    private static void UndoRemovesPastedTrack()
+    {
+        const float fps = 30f;
+        var source = ClipWithTrack("Arm");
+        KeyAt(source.Tracks[0], 4, fps, 1, 2, 3);
+
+        var sourceSel = new AnimKeySelection();
+        sourceSel.Add(0, 0);
+        var data = AnimKeyClipboard.Copy(source.Tracks, sourceSel, fps);
+
+        var clip      = new AnimClip { Name = "target", Duration = 2f, Fps = 30f };
+        var selection = new AnimKeySelection();
+        var undo      = new AnimUndoStack();
+        undo.Reset(new AnimUndoSnapshot(AnimClipIO.Serialize(clip), selection.Serialize()));
+
+        var pasted = AnimKeyClipboard.Paste(clip, data, 12);
+        selection.SetFromKeys(clip.Tracks, pasted);
+        PushSnapshot(undo, clip, selection);
+
+        Check.Equal(1, clip.Tracks.Count, "貼り付けでトラックが作られる");
+        Check.Equal(1, selection.Count,   "貼り付けたキーが選択される");
+
+        clip = ApplySnapshot(undo.Undo(), selection);
+
+        Check.Equal(0, clip.Tracks.Count, "Undo で作られたトラックごと消える");
+        Check.True(selection.IsEmpty, "選択も貼り付け前（空）に戻る");
     }
 }

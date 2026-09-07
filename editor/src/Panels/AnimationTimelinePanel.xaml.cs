@@ -160,18 +160,17 @@ public partial class AnimationTimelinePanel : UserControl
         CmbNewTrackProperty.DisplayMemberPath = nameof(AnimPropertyEntry.DisplayName);
         if (AnimPropertyRegistry.Entries.Count > 0) CmbNewTrackProperty.SelectedIndex = 0;
 
-        DopeSheet.KeyAddRequested      += OnDopeSheetKeyAddRequested;
-        DopeSheet.KeyMoved             += OnDopeSheetKeyMoved;
-        DopeSheet.KeyDragEnded         += OnDopeSheetKeyDragEnded;
-        DopeSheet.KeyDeleteRequested   += OnDopeSheetKeyDeleteRequested;
-        DopeSheet.KeySelectionChanged  += OnDopeSheetKeySelectionChanged;
-        DopeSheet.PlayheadScrubbed     += OnPlayheadScrubbed;
-        DopeSheet.PlayheadScrubEnded   += OnPlayheadScrubEnded;
-        // サマリー行（「全チャンネル」）: 対象トラック全部への一括挿入・移動・削除
-        DopeSheet.SummaryKeyAddRequested      += OnDopeSheetSummaryKeyAddRequested;
-        DopeSheet.SummaryKeyMoved             += OnDopeSheetSummaryKeyMoved;
-        DopeSheet.SummaryKeyDeleteRequested   += OnDopeSheetSummaryKeyDeleteRequested;
-        DopeSheet.SummaryKeySelectionChanged  += OnDopeSheetSummaryKeySelectionChanged;
+        DopeSheet.KeyAddRequested       += OnDopeSheetKeyAddRequested;
+        DopeSheet.SelectionMoved        += OnDopeSheetSelectionMoved;
+        DopeSheet.KeyDragEnded          += OnDopeSheetKeyDragEnded;
+        DopeSheet.KeyDeleteRequested    += DeleteSelectedKeys;
+        DopeSheet.SelectionChanged      += OnDopeSheetSelectionChanged;
+        DopeSheet.PlayheadScrubbed      += OnPlayheadScrubbed;
+        DopeSheet.PlayheadScrubEnded    += OnPlayheadScrubEnded;
+        // サマリー行（「全チャンネル」）のダブルクリックは対象トラック全部への一括挿入
+        DopeSheet.SummaryKeyAddRequested += OnDopeSheetSummaryKeyAddRequested;
+        // トラックリストの縦位置をドープシートの縦スクロールへ追従させる
+        DopeSheet.VerticalScrollChanged += OnDopeSheetVerticalScrollChanged;
 
         // プレビュー再生タイマ（約 60fps）。Play 中のみ Tick で時間を進める。
         _previewTimer = new DispatcherTimer(DispatcherPriority.Render)
@@ -883,7 +882,11 @@ public partial class AnimationTimelinePanel : UserControl
         _clip.Tracks.RemoveAt(trackIndex);
         _selectedTrackIndex = -1;
         DopeSheet.SetSelectedTrackIndex(-1);
+        // トラックが 1 本消えると後続トラックの添字が繰り上がるため、キー選択は捨てる。
+        // （範囲チェックだけでは「別トラックのキーを選んだまま」になり、次の一括操作が誤爆する）
+        DopeSheet.Selection.Clear();
         CommitEdit(refreshTracks: true);
+        DopeSheet.NotifySelectionChangedExternally();
     }
 
     /// <summary>
@@ -1002,42 +1005,64 @@ public partial class AnimationTimelinePanel : UserControl
     }
 
     /// <summary>
-    /// ◆ドラッグ中の時刻変更。ドラッグ中は連続発火するため、ここでは
-    /// ダーティ化・整列・ライブプレビューだけを行い、Undo 履歴は積まない
+    /// ◆ドラッグ中の選択キー移動。ドラッグ中は連続発火するため、ここでは
+    /// ダーティ化・値エディタ更新・ライブプレビューだけを行い、Undo 履歴は積まない
     /// （履歴は <see cref="OnDopeSheetKeyDragEnded"/> で 1 段だけ積む）。
+    /// モデルの書き換えと選択の張り直しは DopeSheetPanel 側
+    /// （AnimKeyEditor.MoveSelectedKeys）が済ませている。
     /// </summary>
-    private void OnDopeSheetKeyMoved(int trackIndex, int keyIndex, float newTime)
+    private void OnDopeSheetSelectionMoved()
     {
         if (_clip is null) return;
         MarkDirty();
-        // 時刻変更でソート順が崩れる可能性があるため、選択キーを追跡しつつ並べ替える。
-        var track = _clip.Tracks[trackIndex];
-        var key   = track.Keys[keyIndex];
-        AnimKeyEditor.SortKeys(track);
-        RefreshValueEditor(trackIndex, track.Keys.IndexOf(key));
+        RefreshValueEditorFromSelection();
         PushClipToRuntimeAndPreview();
     }
 
     /// <summary>◆ドラッグが終わった時点で Undo 履歴を 1 段だけ積む。</summary>
     private void OnDopeSheetKeyDragEnded() => PushUndoSnapshot();
 
-    private void OnDopeSheetKeyDeleteRequested(int trackIndex, int keyIndex)
+    /// <summary>キー選択が変わったら値エディタを作り直す（0 個 / 1 個 / 複数で内容が変わる）。</summary>
+    private void OnDopeSheetSelectionChanged() => RefreshValueEditorFromSelection();
+
+    /// <summary>
+    /// ドープシートの縦スクロールへトラックリストを追従させる。
+    /// ListBox は既定でアイテム単位スクロールのため、ピクセル量を行数へ換算して渡す。
+    /// </summary>
+    private void OnDopeSheetVerticalScrollChanged(double scrollY)
     {
-        if (_clip is null) return;
-        var track = _clip.Tracks[trackIndex];
-        if (keyIndex < 0 || keyIndex >= track.Keys.Count) return;
-        track.Keys.RemoveAt(keyIndex);
-        CommitEdit();
-        ClearValueEditor();
+        if (FindDescendantScrollViewer(LstTracks) is { } sv)
+            sv.ScrollToVerticalOffset(scrollY / AnimationTimelineConstants.TrackRowHeight);
     }
 
-    private void OnDopeSheetKeySelectionChanged(int trackIndex, int keyIndex) => RefreshValueEditor(trackIndex, keyIndex);
+    /// <summary>コントロール配下の最初の ScrollViewer を探す（ListBox の内部スクロールを掴むため）。</summary>
+    private static ScrollViewer? FindDescendantScrollViewer(DependencyObject root)
+    {
+        if (root is ScrollViewer sv) return sv;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            if (FindDescendantScrollViewer(VisualTreeHelper.GetChild(root, i)) is { } found) return found;
+        return null;
+    }
+
+    /// <summary>値エディタの「削除」ボタン用: 単一キーを削除する（従来どおりの単体削除）。</summary>
+    private void DeleteKeyAt(int trackIndex, int keyIndex)
+    {
+        if (_clip is null || trackIndex < 0 || trackIndex >= _clip.Tracks.Count) return;
+        var track = _clip.Tracks[trackIndex];
+        if (keyIndex < 0 || keyIndex >= track.Keys.Count) return;
+
+        track.Keys.RemoveAt(keyIndex);
+        DopeSheet.Selection.NormalizeAfterDelete(new[] { new AnimKeyRef(trackIndex, keyIndex) });
+        CommitEdit();
+        DopeSheet.NotifySelectionChangedExternally();
+    }
 
     // ── ドープシートからのサマリー行イベント（「全チャンネル」）────
     //
-    // ロジック本体は AnimKeyEditor の純粋関数（InsertOnAllTracks / MoveKeysAtFrame /
-    // DeleteKeysAtFrame）に委ね、ここでは「対象トラック列 = _clip.Tracks」と
-    // 「値の出所 = 現在値スナップショット」を渡す接着だけを行う。
+    // サマリー◆の選択・移動・削除は通常の複数選択へ統合した（◆クリックで
+    // そのフレームのキーが全トラックぶん選択され、以降はドラッグ移動・Delete・
+    // コピー等がすべて同じ経路で効く）。ここに残るのは
+    // 「サマリー行のダブルクリックによる一括挿入」だけ。
 
     /// <summary>サマリー行のダブルクリック: キー対象アクタに一致する全トラックへ一括挿入する。</summary>
     private void OnDopeSheetSummaryKeyAddRequested(float time)
@@ -1052,40 +1077,153 @@ public partial class AnimationTimelinePanel : UserControl
         CommitEdit();
     }
 
+    // ── 選択キーへの一括操作（移動 / 削除 / コピー / 貼り付け / 複製）──
+    //
+    // ロジック本体は純ロジック側（AnimKeyEditor / AnimKeyClipboard）に置き、
+    // ここでは「操作 → CommitEdit（ダーティ化 + Undo 1 段 + 再描画 + ライブプレビュー）
+    // → 選択の反映」という接着だけを行う。どの操作も 1 回の CommitEdit で
+    // Undo 1 段に対応する（コピーだけはモデルを変えないので履歴を積まない）。
+
     /// <summary>
-    /// サマリー◆ドラッグ中の時刻変更。DopeSheetPanel 側で既に全トラックへ適用済みなので、
-    /// ここではダーティ化・値エディタ・ライブプレビューだけを行う（Undo は KeyDragEnded で積む）。
+    /// アプリ内キークリップボード（JSON）。
+    /// 静的にしているのは、別のクリップを開いても内容を保つため。
+    /// システムクリップボード（テキスト）にも同じ JSON を載せ、読むときはそちらを優先する。
     /// </summary>
-    private void OnDopeSheetSummaryKeyMoved(float oldTime, float newTime)
-    {
-        if (_clip is null) return;
-        MarkDirty();
-        ClearValueEditor();   // サマリーキーは単一トラックの値ではないため値エディタは表示しない
-        PushClipToRuntimeAndPreview();
-    }
+    private static string? _keyClipboardJson;
 
-    /// <summary>サマリー◆右クリックメニュー: そのフレームのキーを全トラックから削除する。</summary>
-    private void OnDopeSheetSummaryKeyDeleteRequested(float time)
+    /// <summary>選択キーを ±delta フレーム動かす（←→ キー）。1 回の押下で Undo 1 段。</summary>
+    private void NudgeSelection(int frameDelta)
     {
         if (_clip is null) return;
-        AnimKeyEditor.DeleteKeysAtFrame(_clip.Tracks, time, ClipFps);
+        var moved = AnimKeyEditor.MoveSelectedKeys(
+            _clip.Tracks, DopeSheet.Selection, frameDelta, ClipFps, _clip.Duration);
+        if (moved == 0) return;
+
         CommitEdit();
-        ClearValueEditor();
+        DopeSheet.NotifySelectionChangedExternally();
     }
 
-    private void OnDopeSheetSummaryKeySelectionChanged(float? time) => ClearValueEditor();
+    /// <summary>選択キーをすべて削除する（Delete / BackSpace / ◆右クリックメニュー）。</summary>
+    private void DeleteSelectedKeys()
+    {
+        if (_clip is null || DopeSheet.Selection.IsEmpty) return;
+        if (AnimKeyEditor.DeleteSelectedKeys(_clip.Tracks, DopeSheet.Selection) == 0) return;
+
+        CommitEdit();
+        DopeSheet.NotifySelectionChangedExternally();
+    }
+
+    /// <summary>クリップ内の全キーを選択する（Ctrl+A）。</summary>
+    private void SelectAllKeys()
+    {
+        if (_clip is null) return;
+        DopeSheet.Selection.SelectAll(_clip.Tracks);
+        DopeSheet.NotifySelectionChangedExternally();
+    }
+
+    /// <summary>キー選択を解除する（Esc）。</summary>
+    private void ClearKeySelection()
+    {
+        DopeSheet.Selection.Clear();
+        DopeSheet.NotifySelectionChangedExternally();
+    }
+
+    /// <summary>選択キーをクリップボードへコピーする（Ctrl+C）。モデルは変えないので Undo は積まない。</summary>
+    private void CopySelectedKeys()
+    {
+        if (_clip is null || DopeSheet.Selection.IsEmpty) return;
+
+        var count = DopeSheet.Selection.Count;
+        var json  = AnimKeyClipboard.Serialize(
+            AnimKeyClipboard.Copy(_clip.Tracks, DopeSheet.Selection, ClipFps));
+        _keyClipboardJson = json;
+        TrySetSystemClipboard(json);
+        TbTitleStatus.Text = string.Format(CultureInfo.InvariantCulture,
+            AnimationTimelineConstants.CopiedKeysStatusFormat, count);
+    }
+
+    /// <summary>選択キーを切り取る（Ctrl+X）。コピー後に削除するので Undo は削除ぶんの 1 段。</summary>
+    private void CutSelectedKeys()
+    {
+        if (_clip is null || DopeSheet.Selection.IsEmpty) return;
+        CopySelectedKeys();
+        DeleteSelectedKeys();
+    }
+
+    /// <summary>
+    /// クリップボードのキーをプレイヘッド位置へ貼り付ける（Ctrl+V）。
+    /// 対象トラックが無ければ作成されるため、トラックリストも作り直す。
+    /// </summary>
+    private void PasteKeys()
+    {
+        if (_clip is null) return;
+
+        var data = AnimKeyClipboard.Parse(TryGetSystemClipboard()) ?? AnimKeyClipboard.Parse(_keyClipboardJson);
+        if (data is null || data.IsEmpty)
+        {
+            TbTitleStatus.Text = AnimationTimelineConstants.NothingToPasteStatus;
+            return;
+        }
+
+        PasteClipboardData(data);
+    }
+
+    /// <summary>
+    /// 選択キーを複製してプレイヘッド位置へ貼り付ける（Shift+D）。
+    /// クリップボードは汚さない（コピー中の内容を失わせないため、複製専用の一時データを使う）。
+    /// </summary>
+    private void DuplicateSelectedKeys()
+    {
+        if (_clip is null || DopeSheet.Selection.IsEmpty) return;
+        PasteClipboardData(AnimKeyClipboard.Copy(_clip.Tracks, DopeSheet.Selection, ClipFps));
+    }
+
+    /// <summary>クリップボード内容をプレイヘッド位置へ貼り付け、貼り付けたキーを選択し直す共通処理。</summary>
+    private void PasteClipboardData(AnimClipboardData data)
+    {
+        if (_clip is null) return;
+
+        var pasted = AnimKeyClipboard.Paste(_clip, data, DopeSheet.PlayheadFrame);
+        if (pasted.Count == 0) return;
+
+        DopeSheet.Selection.SetFromKeys(_clip.Tracks, pasted);
+        CommitEdit(refreshTracks: true);      // トラックが増えている可能性があるため作り直す
+        DopeSheet.NotifySelectionChangedExternally();
+    }
+
+    /// <summary>システムクリップボードへ書く（他プロセスが握っている等で失敗しても編集は続行する）。</summary>
+    private static void TrySetSystemClipboard(string text)
+    {
+        try { Clipboard.SetText(text); }
+        catch (Exception ex) { EditorLog.Write($"AnimationTimelinePanel: クリップボード書き込み失敗: {ex.Message}"); }
+    }
+
+    /// <summary>システムクリップボードのテキストを読む（読めなければ null）。</summary>
+    private static string? TryGetSystemClipboard()
+    {
+        try { return Clipboard.ContainsText() ? Clipboard.GetText() : null; }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"AnimationTimelinePanel: クリップボード読み取り失敗: {ex.Message}");
+            return null;
+        }
+    }
 
     // ── キーボード操作 ──────────────────────────────────────────
 
     /// <summary>
     /// パネル自身がフォーカスを持っているときのキー操作。
     ///
-    /// ・Delete            : 選択キーを削除
-    /// ・← / →            : プレイヘッドを 1 フレーム送る（Shift で 10 フレーム）
-    /// ・Home / End        : 先頭 / 最終フレームへ
-    /// ・I                 : プレイヘッド位置へ現在値でキー挿入
-    /// ・U                 : 選択キーを現在値で上書き
-    /// ・Ctrl+Z / Ctrl+Y   : クリップ編集の Undo / Redo
+    /// ・Delete / BackSpace        : 選択キーを削除（選択が無ければ選択トラックを削除）
+    /// ・← / →                    : 選択キーを 1 フレーム移動（選択が無ければプレイヘッド送り。Shift で 10）
+    /// ・Home / End                : 先頭 / 最終フレームへ
+    /// ・F                         : クリップ全体を画面幅に収める
+    /// ・Esc                       : 選択解除
+    /// ・I                         : プレイヘッド位置へ現在値でキー挿入
+    /// ・U                         : 選択キーを現在値で上書き
+    /// ・Shift+D                   : 選択キーをプレイヘッド位置へ複製
+    /// ・Ctrl+A / C / X / V        : 全選択 / コピー / 切り取り / 貼り付け
+    /// ・Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y : クリップ編集の Undo / Redo
     ///
     /// テキスト入力中（fps・長さ・フレーム番号ボックス）は素通しする。
     /// </summary>
@@ -1110,9 +1248,14 @@ public partial class AnimationTimelinePanel : UserControl
         {
             switch (key)
             {
-                case Key.Z: UndoClipEdit(); return true;
-                case Key.Y: RedoClipEdit(); return true;
-                default:    return false;   // Ctrl+S 等はエディタ本体へ渡す
+                case Key.Z when shift: RedoClipEdit(); return true;   // Ctrl+Shift+Z も Redo（一般的な別名）
+                case Key.Z:            UndoClipEdit(); return true;
+                case Key.Y:            RedoClipEdit(); return true;
+                case Key.A:            SelectAllKeys();     return true;
+                case Key.C:            CopySelectedKeys();  return true;
+                case Key.X:            CutSelectedKeys();   return true;
+                case Key.V:            PasteKeys();         return true;
+                default:               return false;   // Ctrl+S 等はエディタ本体へ渡す
             }
         }
 
@@ -1120,32 +1263,34 @@ public partial class AnimationTimelinePanel : UserControl
             ? AnimationTimelineConstants.FrameStepLarge
             : AnimationTimelineConstants.FrameStepSmall;
 
+        // キー選択があるかどうかで ←→ / Delete の対象が変わる
+        var hasKeySelection = !DopeSheet.Selection.IsEmpty;
+
         switch (key)
         {
             case Key.Delete:
+            case Key.Back:
             {
-                // 1) 通常キーが選択中ならそのキーを削除
-                var (ti, ki) = DopeSheet.SelectedKey;
-                if (ti >= 0 && ki >= 0) { OnDopeSheetKeyDeleteRequested(ti, ki); return true; }
+                // 1) キーが選択中なら選択キーを全部削除
+                if (hasKeySelection) { DeleteSelectedKeys(); return true; }
 
-                // 2) サマリー行のキーが選択中なら全トラックから削除
-                if (DopeSheet.SelectedSummaryTime is { } summaryTime)
-                {
-                    OnDopeSheetSummaryKeyDeleteRequested(summaryTime);
-                    return true;
-                }
-
-                // 3) トラックリストでトラックそのものが選択中ならトラックを削除
+                // 2) トラックリストでトラックそのものが選択中ならトラックを削除
                 //    （ListBox 自身の KeyDown で先に処理されるのが通常経路。
                 //     フォーカスの都合でここまで来た場合の保険として同じ処理を呼ぶ）
                 if (_selectedTrackIndex >= 0) { DeleteTrackAt(_selectedTrackIndex); return true; }
 
                 return false;
             }
-            case Key.Left:  StepFrame(-step); return true;
-            case Key.Right: StepFrame(+step); return true;
+            // キー選択中は「選択キーの移動」、非選択時は従来どおり「プレイヘッド送り」。
+            // 1 つのキーに 2 つの意味を持たせるのは、ドープシートの標準的な操作感
+            // （選択があるならそれを動かす）に合わせるため。
+            case Key.Left:  if (hasKeySelection) NudgeSelection(-step); else StepFrame(-step); return true;
+            case Key.Right: if (hasKeySelection) NudgeSelection(+step); else StepFrame(+step); return true;
             case Key.Home:  SetPlayheadFrame(0); return true;
             case Key.End:   SetPlayheadFrame(AnimFrameMath.LastFrame(ClipFps, _clip?.Duration ?? 0f)); return true;
+            case Key.F:     DopeSheet.FrameAll(); return true;
+            case Key.Escape: ClearKeySelection(); return true;
+            case Key.D when shift: DuplicateSelectedKeys(); return true;
             case Key.I:     InsertKeyAtPlayhead(); return true;
             case Key.U:     OverwriteSelectedKey(); return true;
             default:        return false;
@@ -1331,22 +1476,31 @@ public partial class AnimationTimelinePanel : UserControl
     {
         if (_clip is null) return;
         if (!EnsureKeyTargetSnapshot(OverwriteSelectedKey)) return;
-        var (ti, ki) = DopeSheet.SelectedKey;
-        if (ti < 0 || ti >= _clip.Tracks.Count) return;
+        if (DopeSheet.Selection.IsEmpty) return;
 
-        var track = _clip.Tracks[ti];
-        if (ki < 0 || ki >= track.Keys.Count) return;
+        // 選択キーすべてを、それぞれのトラックに対応する現在値で上書きする
+        // （複数選択に合わせた拡張。現在値が取れないトラックのキーは触らない）。
+        var applied = 0;
+        foreach (var r in DopeSheet.Selection.Ordered())
+        {
+            if (r.TrackIndex < 0 || r.TrackIndex >= _clip.Tracks.Count) continue;
+            var track = _clip.Tracks[r.TrackIndex];
+            if (r.KeyIndex < 0 || r.KeyIndex >= track.Keys.Count) continue;
 
-        var values = CurrentValuesForTrack(track);
-        if (values is null)
+            var values = CurrentValuesForTrack(track);
+            if (values is null) continue;
+
+            track.Keys[r.KeyIndex].Values = AnimKeyEditor.FitValues(values, track.ValueType);
+            applied++;
+        }
+
+        if (applied == 0)
         {
             TbTitleStatus.Text = "現在値が取得できません（対象アクタを選択してください）";
             return;
         }
 
-        track.Keys[ki].Values = AnimKeyEditor.FitValues(values, track.ValueType);
         CommitEdit();
-        RefreshValueEditor(ti, ki);
     }
 
     /// <summary>
@@ -1420,30 +1574,42 @@ public partial class AnimationTimelinePanel : UserControl
 
     // ── Undo / Redo（パネル内・クリップ JSON スナップショット）──
 
+    /// <summary>
+    /// いまのクリップと選択からスナップショットを作る。
+    /// 選択を含めるのは「Delete を Undo したら消えたキーが選び直された状態で戻る」ようにするため。
+    /// </summary>
+    private AnimUndoSnapshot CurrentSnapshot()
+        => new(_clip is null ? "" : AnimClipIO.Serialize(_clip), DopeSheet.Selection.Serialize());
+
     /// <summary>クリップを差し替えたときに履歴を張り直す。</summary>
-    private void ResetUndo() => _undo.Reset(_clip is null ? "" : AnimClipIO.Serialize(_clip));
+    private void ResetUndo() => _undo.Reset(CurrentSnapshot());
 
     /// <summary>編集後のスナップショットを履歴へ積む。</summary>
     private void PushUndoSnapshot()
     {
         if (_isRestoringUndo || _clip is null) return;
-        _undo.Push(AnimClipIO.Serialize(_clip));
+        _undo.Push(CurrentSnapshot());
     }
 
     private void UndoClipEdit() => RestoreSnapshot(_undo.Undo());
     private void RedoClipEdit() => RestoreSnapshot(_undo.Redo());
 
-    /// <summary>スナップショット JSON からクリップを復元して UI を作り直す。</summary>
-    private void RestoreSnapshot(string? snapshot)
+    /// <summary>
+    /// スナップショットからクリップと選択を復元して UI を作り直す。
+    /// 復元後は必ずライブプレビューを送り直し、ビューポートの見た目を戻した状態へ揃える。
+    /// </summary>
+    private void RestoreSnapshot(AnimUndoSnapshot? snapshot)
     {
-        if (snapshot is null || snapshot.Length == 0) return;
+        if (snapshot is not { } snap || snap.IsEmpty) return;
         try
         {
             _isRestoringUndo = true;
-            _clip = AnimClipIO.Parse(snapshot);
+            _clip = AnimClipIO.Parse(snap.ClipJson);
             _selectedTrackIndex = -1;
             MarkDirty();
-            RefreshAll();
+            RefreshAll();                                   // ここで DopeSheet.SetClip が選択を捨てるので
+            DopeSheet.Selection.Restore(snap.SelectionJson); // 復元はその後に行う
+            DopeSheet.NotifySelectionChangedExternally();
             PushClipToRuntimeAndPreview();
         }
         catch (Exception ex)
@@ -1470,12 +1636,91 @@ public partial class AnimationTimelinePanel : UserControl
         PushUndoSnapshot();
         if (refreshTracks) RefreshTrackList();
         DopeSheet.NotifyClipChanged();
+        RefreshValueEditorFromSelection();
         PushClipToRuntimeAndPreview();
     }
 
     // ── 値エディタ ──────────────────────────────────────────────
 
     private void ClearValueEditor() => ValueEditorHost.Children.Clear();
+
+    /// <summary>
+    /// いまの選択に合わせて値エディタを作り直す。
+    /// 0 個 = 空、1 個 = 従来どおりの詳細編集、複数 = 件数表示 + 補間の一括変更。
+    /// </summary>
+    private void RefreshValueEditorFromSelection()
+    {
+        var selection = DopeSheet.Selection;
+        if (_clip is null || selection.IsEmpty) { ClearValueEditor(); return; }
+
+        if (selection.IsMultiple) { BuildMultiSelectionEditor(selection); return; }
+
+        var only = selection.Ordered()[0];
+        RefreshValueEditor(only.TrackIndex, only.KeyIndex);
+    }
+
+    /// <summary>
+    /// 複数選択時の値エディタ（件数表示・補間の一括変更・一括削除）。
+    /// 値そのものはトラックごとに型が違いうるため、ここでは編集させない。
+    /// </summary>
+    private void BuildMultiSelectionEditor(AnimKeySelection selection)
+    {
+        ValueEditorHost.Children.Clear();
+
+        ValueEditorHost.Children.Add(new TextBlock
+        {
+            Text = string.Format(CultureInfo.InvariantCulture,
+                                 AnimationTimelineConstants.MultiSelectionLabelFormat, selection.Count),
+            Foreground = new SolidColorBrush(AnimationTimelineConstants.PlayheadColor),
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 4, 0),
+        });
+
+        ValueEditorHost.Children.Add(new TextBlock
+        {
+            Text = "補間", Foreground = new SolidColorBrush(AnimationTimelineConstants.SubTextColor),
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 4, 0),
+        });
+
+        var cmbInterp = new ComboBox { Width = 80, FontSize = 11, Height = 20, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var interp in AnimInterp.All)
+            cmbInterp.Items.Add(new ComboBoxItem { Content = interp, Tag = interp });
+        // 選択キーの補間が全て同じときだけ現在値を出す（バラバラなら未選択表示のままにする）
+        cmbInterp.SelectedIndex = Array.IndexOf(AnimInterp.All, CommonInterpOf(selection) ?? "");
+        // 初期表示のための SelectedIndex 設定で発火させないよう、ハンドラは後から付ける
+        cmbInterp.SelectionChanged += (_, _) =>
+        {
+            if (_clip is null || cmbInterp.SelectedItem is not ComboBoxItem item || item.Tag is not string interp) return;
+            if (AnimKeyEditor.SetInterpForSelection(_clip.Tracks, selection, interp) == 0) return;
+            CommitEdit();
+        };
+        ValueEditorHost.Children.Add(cmbInterp);
+
+        var btnDelete = new Button
+        {
+            Content = "選択キーを削除", Background = new SolidColorBrush(Color.FromRgb(0x40, 0x28, 0x28)),
+            Foreground = new SolidColorBrush(AnimationTimelineConstants.TextColor), BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), Cursor = Cursors.Hand,
+        };
+        btnDelete.Click += (_, _) => DeleteSelectedKeys();
+        ValueEditorHost.Children.Add(btnDelete);
+    }
+
+    /// <summary>選択キーの補間方式が全て同じならその値、違うものが混ざっていれば null。</summary>
+    private string? CommonInterpOf(AnimKeySelection selection)
+    {
+        if (_clip is null) return null;
+        string? common = null;
+        foreach (var r in selection.Ordered())
+        {
+            if (r.TrackIndex < 0 || r.TrackIndex >= _clip.Tracks.Count) continue;
+            var keys = _clip.Tracks[r.TrackIndex].Keys;
+            if (r.KeyIndex < 0 || r.KeyIndex >= keys.Count) continue;
+
+            if (common is null) common = keys[r.KeyIndex].Interp;
+            else if (common != keys[r.KeyIndex].Interp) return null;
+        }
+        return common;
+    }
 
     /// <summary>選択中キーの time / value / interp / tangent を編集する行を再構築する。</summary>
     private void RefreshValueEditor(int trackIndex, int keyIndex)
@@ -1507,8 +1752,10 @@ public partial class AnimationTimelinePanel : UserControl
             key.Time = AnimFrameMath.FrameToTime(
                 AnimFrameMath.ClampFrame(f, ClipFps, _clip.Duration), ClipFps);
             AnimKeyEditor.SortKeys(track);
+            // 並べ替えで添字が動くため、選択をキーオブジェクトから張り直す
+            DopeSheet.Selection.SetFromKeys(_clip.Tracks, new[] { (trackIndex, key) });
             CommitEdit();
-            RefreshValueEditor(trackIndex, track.Keys.IndexOf(key));
+            DopeSheet.NotifySelectionChangedExternally();
         };
         ValueEditorHost.Children.Add(tbFrame);
 
@@ -1521,8 +1768,9 @@ public partial class AnimationTimelinePanel : UserControl
             // 秒で入れてもフレーム格子へスナップする（キーが格子から外れないようにする）
             key.Time = AnimFrameMath.ClampAndSnapTime(t, ClipFps, _clip.Duration);
             AnimKeyEditor.SortKeys(track);
+            DopeSheet.Selection.SetFromKeys(_clip.Tracks, new[] { (trackIndex, key) });
             CommitEdit();
-            RefreshValueEditor(trackIndex, track.Keys.IndexOf(key));
+            DopeSheet.NotifySelectionChangedExternally();
         };
         ValueEditorHost.Children.Add(tbTime);
 
@@ -1572,7 +1820,7 @@ public partial class AnimationTimelinePanel : UserControl
             Foreground = new SolidColorBrush(AnimationTimelineConstants.TextColor), BorderThickness = new Thickness(0),
             Padding = new Thickness(8, 2, 8, 2), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), Cursor = Cursors.Hand,
         };
-        btnDelete.Click += (_, _) => OnDopeSheetKeyDeleteRequested(trackIndex, track.Keys.IndexOf(key));
+        btnDelete.Click += (_, _) => DeleteKeyAt(trackIndex, track.Keys.IndexOf(key));
         ValueEditorHost.Children.Add(btnDelete);
 
         void AddTangentBoxes(float[] arr)

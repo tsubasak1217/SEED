@@ -180,4 +180,146 @@ internal static class AnimKeyEditor
             if (idx >= 0) track.Keys.RemoveAt(idx);
         }
     }
+
+    // ── 複数選択への一括操作 ────────────────────────────────────
+    //
+    // ドープシートの複数選択（AnimKeySelection）に対する移動・削除・補間変更。
+    // いずれも「選択の張り直し」まで面倒を見る（添字は並べ替えでズレるため、
+    // 呼び出し側に正規化を任せると必ず取りこぼす）。
+
+    /// <summary>
+    /// 選択キーをまとめて動かせる実際のフレーム移動量を求める。
+    /// 先頭が 0 フレームより前へ、末尾が最終フレームより後ろへ出ないよう縮める
+    /// （選択の相対間隔を保つため、個別にクランプせず移動量そのものを詰める）。
+    /// </summary>
+    /// <param name="tracks">クリップの全トラック。</param>
+    /// <param name="selection">選択中のキー。</param>
+    /// <param name="frameDelta">要求する移動量（フレーム）。</param>
+    /// <param name="fps">フレームレート。</param>
+    /// <param name="duration">クリップ長（秒）。</param>
+    public static int ClampFrameDelta(
+        IReadOnlyList<AnimTrack> tracks, AnimKeySelection selection, int frameDelta, float fps, float duration)
+    {
+        var frames = SelectedFrames(tracks, selection, fps);
+        if (frames.Count == 0) return 0;
+
+        var last = AnimFrameMath.LastFrame(fps, duration);
+        var min  = frames.Min();
+        var max  = frames.Max();
+
+        if (frameDelta < 0) return Math.Max(frameDelta, -min);
+        if (frameDelta > 0) return Math.Min(frameDelta, last - max);
+        return 0;
+    }
+
+    /// <summary>選択キーのフレーム番号一覧（重複あり）。移動量クランプの内部計算用。</summary>
+    private static List<int> SelectedFrames(IReadOnlyList<AnimTrack> tracks, AnimKeySelection selection, float fps)
+    {
+        var frames = new List<int>(selection.Count);
+        foreach (var r in selection.Ordered())
+        {
+            if (r.TrackIndex < 0 || r.TrackIndex >= tracks.Count) continue;
+            var keys = tracks[r.TrackIndex].Keys;
+            if (r.KeyIndex < 0 || r.KeyIndex >= keys.Count) continue;
+            frames.Add(AnimFrameMath.TimeToFrame(keys[r.KeyIndex].Time, fps));
+        }
+        return frames;
+    }
+
+    /// <summary>
+    /// 選択キーを frameDelta フレームだけまとめて動かす。
+    ///
+    /// 移動先に**選択されていない**既存キーがあれば、そのキーを削除して置き換える
+    /// （Blender と同じ「上書き」方針。拒否より、見た目どおりに動くほうが編集は速い）。
+    /// 移動後は時刻昇順へ並べ直し、選択をキーオブジェクトから引き直す。
+    /// </summary>
+    /// <param name="tracks">クリップの全トラック。</param>
+    /// <param name="selection">選択中のキー（移動後の添字へ更新される）。</param>
+    /// <param name="frameDelta">移動量（フレーム）。クランプ前の値でよい。</param>
+    /// <param name="fps">フレームレート。</param>
+    /// <param name="duration">クリップ長（秒）。</param>
+    /// <returns>実際に移動したフレーム数（0 なら何もしていない）。</returns>
+    public static int MoveSelectedKeys(
+        IReadOnlyList<AnimTrack> tracks, AnimKeySelection selection, int frameDelta, float fps, float duration)
+    {
+        var delta = ClampFrameDelta(tracks, selection, frameDelta, fps, duration);
+        if (delta == 0) return 0;
+
+        var moved = new List<(int TrackIndex, AnimKey Key)>(selection.Count);
+
+        foreach (var (trackIndex, keyIndices) in selection.ByTrack())
+        {
+            if (trackIndex < 0 || trackIndex >= tracks.Count) continue;
+            var track = tracks[trackIndex];
+
+            // 1) 移動対象のキーオブジェクトと移動先フレームを先に確定する
+            //    （添字は削除で動くため、オブジェクト参照で持ち回る）
+            var plans = new List<(AnimKey Key, int Frame)>(keyIndices.Count);
+            foreach (var ki in keyIndices)
+            {
+                if (ki < 0 || ki >= track.Keys.Count) continue;
+                var key = track.Keys[ki];
+                plans.Add((key, AnimFrameMath.TimeToFrame(key.Time, fps) + delta));
+            }
+            if (plans.Count == 0) continue;
+
+            // 2) 移動先に居座る「選択されていない」キーを退かす（上書き）
+            var targetFrames = new HashSet<int>(plans.Select(p => p.Frame));
+            var movingKeys   = new HashSet<AnimKey>(plans.Select(p => p.Key));
+            track.Keys.RemoveAll(k => !movingKeys.Contains(k)
+                                   && targetFrames.Contains(AnimFrameMath.TimeToFrame(k.Time, fps)));
+
+            // 3) 時刻を書き換えて整列する
+            foreach (var (key, frame) in plans)
+            {
+                key.Time = AnimFrameMath.FrameToTime(frame, fps);
+                moved.Add((trackIndex, key));
+            }
+            SortKeys(track);
+        }
+
+        selection.SetFromKeys(tracks, moved);
+        return delta;
+    }
+
+    /// <summary>
+    /// 選択キーをすべて削除する。削除後は選択を空にする
+    /// （消したものを選び続けないため。呼び出し側での選択解除忘れも防ぐ）。
+    /// </summary>
+    /// <returns>削除したキー数。</returns>
+    public static int DeleteSelectedKeys(IReadOnlyList<AnimTrack> tracks, AnimKeySelection selection)
+    {
+        var removed = 0;
+        foreach (var (trackIndex, keyIndices) in selection.ByTrack())
+        {
+            if (trackIndex < 0 || trackIndex >= tracks.Count) continue;
+            var keys = tracks[trackIndex].Keys;
+            // 後ろから消す（前から消すと残りの添字がズレる）
+            foreach (var ki in keyIndices.OrderByDescending(i => i))
+            {
+                if (ki < 0 || ki >= keys.Count) continue;
+                keys.RemoveAt(ki);
+                removed++;
+            }
+        }
+        selection.Clear();
+        return removed;
+    }
+
+    /// <summary>選択キーの補間方式をまとめて変更する（値エディタの一括編集）。</summary>
+    /// <returns>変更したキー数。</returns>
+    public static int SetInterpForSelection(
+        IReadOnlyList<AnimTrack> tracks, AnimKeySelection selection, string interp)
+    {
+        var changed = 0;
+        foreach (var r in selection.Ordered())
+        {
+            if (r.TrackIndex < 0 || r.TrackIndex >= tracks.Count) continue;
+            var keys = tracks[r.TrackIndex].Keys;
+            if (r.KeyIndex < 0 || r.KeyIndex >= keys.Count) continue;
+            keys[r.KeyIndex].Interp = interp;
+            changed++;
+        }
+        return changed;
+    }
 }

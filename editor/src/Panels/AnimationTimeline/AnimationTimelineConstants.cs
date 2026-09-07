@@ -1,19 +1,22 @@
 ﻿// ============================================================
 //  AnimationTimelineConstants.cs — アニメーションタイムライン用定数
 //
-//  ドープシートの描画・スナップ・配色に関するマジックナンバーを
+//  ドープシートの描画・スナップ・操作に関するマジックナンバーを
 //  すべてここへ集約する（プロジェクト規約: マジックナンバー禁止）。
+//  配色だけは WPF 依存のため AnimationTimelineConstants.Colors.cs に分離してある。
 // ============================================================
-
-using System.Windows.Media;
 
 namespace SEEDEditor.Panels.AnimationTimeline;
 
 /// <summary>
-/// アニメーションタイムラインパネル／ドープシートで使用する定数群。
-/// 数値・色を一元管理し、見た目やスナップ挙動の調整をここだけで完結させる。
+/// アニメーションタイムラインパネル／ドープシートで使用する定数群（寸法・挙動・文言）。
+/// 調整をここだけで完結させる。
+///
+/// 配色は WPF の Color 型を使うため <c>AnimationTimelineConstants.Colors.cs</c> へ分けてある。
+/// 本ファイルは WPF に依存しない（AnimDopeSheetLayout / AnimTimelineZoom などの純ロジックが
+/// 参照し、editor/tests からもリンクされるため、ここへ WPF 型を持ち込まないこと）。
 /// </summary>
-internal static class AnimationTimelineConstants
+internal static partial class AnimationTimelineConstants
 {
     // ── レイアウト寸法 ──────────────────────────────────────────
 
@@ -41,6 +44,36 @@ internal static class AnimationTimelineConstants
 
     /// <summary>プレイヘッド縦線の太さ（ピクセル）。</summary>
     public const double PlayheadLineThickness = 1.5;
+
+    /// <summary>
+    /// 描画コンテンツ右端に足す余白（ピクセル）。
+    /// クリップ末尾の◆が画面際で切れないようにする。「F」（全体表示）の
+    /// 収まり幅計算にも同じ値を使い、余白の定義を 1 か所に保つ。
+    /// </summary>
+    public const double FitContentMarginPx = 40.0;
+
+    // ── ナビゲーション（ズーム・スクロール・パン）────────────────
+
+    /// <summary>Ctrl+ホイール 1 ノッチあたりのズーム倍率（1 より大きい値で拡大方向）。</summary>
+    public const double WheelZoomFactor = 1.15;
+
+    /// <summary>ホイール 1 ノッチあたりの横スクロール量（ピクセル）。</summary>
+    public const double WheelScrollStepPx = 90.0;
+
+    /// <summary>Shift+ホイール 1 ノッチあたりの縦スクロール行数。</summary>
+    public const int WheelVerticalScrollRows = 2;
+
+    /// <summary>WPF のホイール 1 ノッチぶんの Delta 値（System.Windows.Input.Mouse.MouseWheelDeltaForOneLine と同値）。</summary>
+    public const double WheelDeltaPerNotch = 120.0;
+
+    /// <summary>
+    /// クリックとラバーバンド（矩形選択）を分ける移動量のしきい値（ピクセル）。
+    /// これ未満の移動は「クリック」として扱い、選択解除だけを行う。
+    /// </summary>
+    public const double MarqueeStartThresholdPx = 3.0;
+
+    /// <summary>矩形選択の枠線の太さ（ピクセル）。</summary>
+    public const double MarqueeBorderThickness = 1.0;
 
     // ── ルーラー目盛（フレーム基準）──────────────────────────────
 
@@ -107,27 +140,20 @@ internal static class AnimationTimelineConstants
     /// <summary>サマリー行のラベル文字列。トラックリスト先頭に常に表示する。</summary>
     public const string SummaryRowLabel = "全チャンネル";
 
-    // ── 配色（既存パネルのダークテーマに合わせる） ────────────────
+    // ── UI 文言（右クリックメニュー・値エディタ）──────────────────
 
-    public static readonly Color BackgroundColor      = Color.FromRgb(0x1E, 0x1E, 0x1E);
-    public static readonly Color ToolbarBackground     = Color.FromRgb(0x2D, 0x2D, 0x2D);
-    public static readonly Color RulerBackground        = Color.FromRgb(0x25, 0x25, 0x25);
-    public static readonly Color TrackRowEvenBackground = Color.FromRgb(0x22, 0x22, 0x22);
-    public static readonly Color TrackRowOddBackground  = Color.FromRgb(0x1E, 0x1E, 0x1E);
-    public static readonly Color TrackRowSelectedBackground = Color.FromRgb(0x25, 0x3A, 0x50);
-    public static readonly Color GridLineColor           = Color.FromRgb(0x33, 0x33, 0x33);
-    public static readonly Color RulerTickColor          = Color.FromRgb(0x77, 0x77, 0x77);
-    public static readonly Color RulerTextColor          = Color.FromRgb(0xAA, 0xAA, 0xAA);
-    public static readonly Color PlayheadColor           = Color.FromRgb(0xE5, 0xC0, 0x7B);
-    public static readonly Color KeyDiamondFill          = Color.FromRgb(0x61, 0xAF, 0xEF);
-    public static readonly Color KeyDiamondSelectedFill  = Color.FromRgb(0xE5, 0xC0, 0x7B);
-    /// <summary>選択中トラックのキー◆の塗り（どのトラックを編集中か一目で分かるようにする）。</summary>
-    public static readonly Color KeyDiamondTrackHighlightFill = Color.FromRgb(0x98, 0xC3, 0x79);
-    /// <summary>副目盛（1 フレーム線）の色。主目盛より暗くして主従を付ける。</summary>
-    public static readonly Color RulerMinorTickColor     = Color.FromRgb(0x4A, 0x4A, 0x4A);
-    public static readonly Color KeyDiamondBorder        = Color.FromRgb(0x1E, 0x1E, 0x1E);
-    public static readonly Color TextColor               = Color.FromRgb(0xCC, 0xCC, 0xCC);
-    public static readonly Color SubTextColor            = Color.FromRgb(0x88, 0x88, 0x88);
-    /// <summary>サマリー行（全チャンネル）の背景。通常のトラック行と区別するため専用色にする。</summary>
-    public static readonly Color SummaryRowBackground    = Color.FromRgb(0x2E, 0x2A, 0x1A);
+    /// <summary>◆右クリックメニューの削除項目（単一選択時）。</summary>
+    public const string DeleteKeyMenuHeader = "キーを削除";
+
+    /// <summary>◆右クリックメニューの削除項目（複数選択時。{0} は選択件数）。</summary>
+    public const string DeleteSelectedKeysMenuFormat = "選択キー {0} 個を削除";
+
+    /// <summary>値エディタの複数選択見出し（{0} は選択件数）。</summary>
+    public const string MultiSelectionLabelFormat = "{0} 個のキーを選択中";
+
+    /// <summary>コピー完了時のステータス表示（{0} はコピー件数）。</summary>
+    public const string CopiedKeysStatusFormat = "{0} 個のキーをコピーしました";
+
+    /// <summary>クリップボードに貼り付け可能なキーが無いときのステータス表示。</summary>
+    public const string NothingToPasteStatus = "貼り付けできるキーがありません";
 }

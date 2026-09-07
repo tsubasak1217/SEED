@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net9.0</TargetFramework>
@@ -37,6 +37,25 @@
     </Compile>
     <Compile Include="..\..\src\Panels\AnimationTimeline\AnimPropertyRegistry.cs">
       <Link>Linked\AnimPropertyRegistry.cs</Link>
+    </Compile>
+    <!--
+      寸法・挙動の定数（配色は AnimationTimelineConstants.Colors.cs 側にあり WPF 依存なので含めない）。
+      レイアウト計算・ズーム計算がこれを参照するため、ここにも並べる。
+    -->
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimationTimelineConstants.cs">
+      <Link>Linked\AnimationTimelineConstants.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimKeySelection.cs">
+      <Link>Linked\AnimKeySelection.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimKeyClipboard.cs">
+      <Link>Linked\AnimKeyClipboard.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimDopeSheetLayout.cs">
+      <Link>Linked\AnimDopeSheetLayout.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\AnimTimelineZoom.cs">
+      <Link>Linked\AnimTimelineZoom.cs</Link>
     </Compile>
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  AnimUndoStack.cs — クリップ編集の Undo / Redo（純ロジック）
 //
 //  タイムライン内の編集（キー追加・移動・削除・値変更・fps/duration 変更）を
@@ -21,18 +21,33 @@ using System.Collections.Generic;
 
 namespace SEEDEditor.Panels.AnimationTimeline;
 
-/// <summary>クリップ JSON のスナップショットによる Undo / Redo スタック。</summary>
+/// <summary>
+/// Undo に積む 1 段ぶんのスナップショット。
+///
+/// クリップ本体（JSON）に加えて**そのときの選択**（AnimKeySelection の JSON）も一緒に持つ。
+/// 選択を持たないと「Delete を Undo したのにキーが選ばれていない」「Undo 直後に
+/// ←→ で動かすと別のキーが動く」といった、操作の連続性が切れる不快な挙動になるため。
+/// </summary>
+/// <param name="ClipJson">クリップ全体の JSON（AnimClipIO.Serialize の出力）。</param>
+/// <param name="SelectionJson">選択の JSON（AnimKeySelection.Serialize の出力）。</param>
+internal readonly record struct AnimUndoSnapshot(string ClipJson, string SelectionJson)
+{
+    /// <summary>クリップ内容が空（＝未初期化）か。</summary>
+    public bool IsEmpty => string.IsNullOrEmpty(ClipJson);
+}
+
+/// <summary>クリップ JSON + 選択のスナップショットによる Undo / Redo スタック。</summary>
 internal sealed class AnimUndoStack
 {
     /// <summary>保持するスナップショットの最大数（古いものから捨てる）。</summary>
     public const int DefaultCapacity = 64;
 
-    private readonly List<string> _undo = new();
-    private readonly List<string> _redo = new();
+    private readonly List<AnimUndoSnapshot> _undo = new();
+    private readonly List<AnimUndoSnapshot> _redo = new();
     private readonly int          _capacity;
 
     /// <summary>直近に確定したスナップショット（= 現在の状態）。未初期化なら null。</summary>
-    private string? _current;
+    private AnimUndoSnapshot? _current;
 
     /// <param name="capacity">履歴の最大段数（0 以下は既定値）。</param>
     public AnimUndoStack(int capacity = DefaultCapacity)
@@ -47,7 +62,7 @@ internal sealed class AnimUndoStack
     /// <summary>
     /// クリップを差し替えた（別ファイルを開いた・新規作成した）ときに履歴を捨てて基準を張り直す。
     /// </summary>
-    public void Reset(string snapshot)
+    public void Reset(AnimUndoSnapshot snapshot)
     {
         _undo.Clear();
         _redo.Clear();
@@ -62,35 +77,35 @@ internal sealed class AnimUndoStack
     /// 呼び忘れの穴が小さいのでこちらを採用する。
     /// 内容が変わっていなければ履歴を汚さない。
     /// </summary>
-    public void Push(string newSnapshot)
+    public void Push(AnimUndoSnapshot newSnapshot)
     {
         if (_current is null) { _current = newSnapshot; return; }
-        if (_current == newSnapshot) return;
+        if (_current.Value == newSnapshot) return;
 
-        _undo.Add(_current);
+        _undo.Add(_current.Value);
         if (_undo.Count > _capacity) _undo.RemoveAt(0);
         _redo.Clear();                          // 新しい編集で Redo 系列は無効になる
         _current = newSnapshot;
     }
 
     /// <summary>1 つ戻す。戻せない場合は null。</summary>
-    public string? Undo()
+    public AnimUndoSnapshot? Undo()
     {
         if (_undo.Count == 0 || _current is null) return null;
         var prev = _undo[^1];
         _undo.RemoveAt(_undo.Count - 1);
-        _redo.Add(_current);
+        _redo.Add(_current.Value);
         _current = prev;
         return prev;
     }
 
     /// <summary>1 つ進める。進められない場合は null。</summary>
-    public string? Redo()
+    public AnimUndoSnapshot? Redo()
     {
         if (_redo.Count == 0 || _current is null) return null;
         var next = _redo[^1];
         _redo.RemoveAt(_redo.Count - 1);
-        _undo.Add(_current);
+        _undo.Add(_current.Value);
         _current = next;
         return next;
     }
