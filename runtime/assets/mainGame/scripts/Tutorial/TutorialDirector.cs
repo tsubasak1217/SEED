@@ -267,6 +267,10 @@ public class TutorialDirector : SEEDScript
         if (step.startCondition == TutorialStartCondition.OnEvent
             && !string.IsNullOrWhiteSpace(step.startEventName))
         {
+            // 待っている間は前の手順の説明が出しっぱなしにならないよう窓を引っ込める。
+            // （退場演出が走り、次の手順で改めて出現演出が再生される）
+            window?.Hide();
+
             phase = DirectorPhase.WaitingStart;
             startSubscription = On(step.startEventName, OnStartEventRaised);
             return;
@@ -438,11 +442,13 @@ public class TutorialDirector : SEEDScript
 
         if (step.anchorMode == TutorialAnchorMode.AboveTarget)
         {
-            w.ShowAboveTarget(step.target, step.scale);
+            w.ShowAboveTarget(step.target);
             return;
         }
 
-        w.ShowAt(new SEED.Vector2(step.screenX, step.screenY), step.scale);
+        // 画面固定は「位置アンカーアクタ」の CanvasTransform を写して置く。
+        // 画面上のどこに出すかはシーン側のアクタ配置で決まる（データドリブン）。
+        w.ShowAtAnchor(step.anchorTarget);
     }
 
     // ─── 内部処理: 時間停止と入力制限 ───────────────────────

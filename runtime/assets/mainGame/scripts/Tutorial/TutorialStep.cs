@@ -48,17 +48,20 @@ public struct TutorialStep
     [SerializeField(Label = "追従対象", Tooltip = "配置モードが AboveTarget のときに追従するアクタ")]
     public SEED.Transform target;
 
-    /// <summary>画面固定時のキャンバス X 座標（画面中央が 0・右が正・1 単位 1px）。</summary>
-    [SerializeField(Label = "画面位置X", Tooltip = "画面固定時のキャンバス X（中央=0・右が正）")]
-    public float screenX;
-
-    /// <summary>画面固定時のキャンバス Y 座標（画面中央が 0・下が正・1 単位 1px）。</summary>
-    [SerializeField(Label = "画面位置Y", Tooltip = "画面固定時のキャンバス Y（中央=0・下が正）")]
-    public float screenY;
-
-    /// <summary>説明窓全体の拡大率（0 以下は 1 として扱う）。</summary>
-    [SerializeField(Label = "サイズ倍率", Tooltip = "説明窓全体の拡大率。0 以下なら 1 倍")]
-    public float scale;
+    /// <summary>
+    /// ScreenFixed のときに窓を重ねる「位置アンカー」アクタの CanvasTransform。
+    ///
+    /// 【なぜ座標値ではなく参照なのか】
+    /// 画面位置を数値（X / Y / 倍率）で持つと、解像度・キャンバス基準が変わるたびに
+    /// 全手順の数値を打ち直すことになり、しかもエディタ上で位置を目視できない。
+    /// 空の 2D アクタ（TutorialAnchors/AnchorCenter など）を画面上の狙った場所に置き、
+    /// その CanvasTransform（アンカー・ピボット・位置・拡大率）を丸ごと窓へ写せば、
+    /// 位置調整は「アクタをドラッグするだけ」で済み、レイアウトはシーン側のデータになる。
+    ///
+    /// 未設定・無効なら窓は現在の位置のまま出る（詰まらないためのフォールバック）。
+    /// </summary>
+    [SerializeField(Label = "位置アンカー", Tooltip = "画面固定時に窓を重ねる 2D アクタ（TutorialAnchors 配下）")]
+    public SEED.CanvasTransform anchorTarget;
 
     // ─── 開始条件 ───────────────────────────────────────────
 

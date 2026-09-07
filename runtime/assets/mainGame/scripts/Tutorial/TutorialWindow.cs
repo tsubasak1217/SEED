@@ -9,26 +9,34 @@ using SEEDEditor.Scripting;
 /// チュートリアル説明窓の表示担当コンポーネント。説明窓アクタ（Actor2D）のルートに付ける。
 ///
 /// 【責務】
-///  1. 窓全体の表示／非表示（ShowAt / ShowAboveTarget / Hide）
-///  2. 表示位置とサイズの適用（画面固定・ワールド対象への追従）
-///  3. 本文の 1 文字ずつの表示（SetText / CompleteText / IsTextComplete）
-///  4. 送りマークの点滅（本文を出し切っている間だけ）
+///  1. 窓全体の表示／非表示（ShowAtAnchor / ShowAboveTarget / Hide）
+///  2. 表示位置の適用（位置アンカーアクタの写し取り・ワールド対象への追従）
+///  3. 出現／退場の演出（吹き出し・本文・送りマーク・ミニキャラの拡大縮小と回転）
+///  4. 本文の 1 文字ずつの表示（SetText / CompleteText / IsTextComplete）
+///  5. 送りマークの点滅（本文を出し切っている間だけ）
 ///
 /// 「次に何を説明するか」「入力で送るか」といった進行判断は持たない。
 /// それは <see cref="TutorialDirector"/> の責務（単一責任）。
 ///
 /// 【時間軸】
 /// チュートリアルはゲーム時間を止めた（Time.Scale = 0）状態でも動く必要があるため、
-/// 文字送りも点滅も追従も<b>すべて Time.UnscaledDeltaTime</b> で進める。
+/// 文字送りも点滅も追従も演出も<b>すべて Time.UnscaledDeltaTime</b> で進める。
+///
+/// 【位置の決め方（データドリブン）】
+/// 画面固定の位置は数値ではなく「位置アンカーアクタ」で与える
+/// （<see cref="TutorialStep.anchorTarget"/>）。空の 2D アクタを画面上の狙った場所に置き、
+/// その CanvasTransform（アンカー・ピボット・位置・拡大率・回転）を丸ごと窓へ写す。
+/// 位置調整はエディタでアクタを動かすだけで済み、スクリプトの変更は要らない。
 ///
 /// 【表示切替の実装方針】
 /// アクター単位の表示 ON/OFF を行うスクリプト API は無いので、
 /// 参照している Sprite / Text のアルファを 0 にして隠す（DialogueWindow と同じ方式）。
 /// 元の色はシーンで設定された値を初回に控え、表示時にそれへ戻す。
+/// 拡大縮小・回転は各パーツの CanvasTransform を毎フレーム書き換えて表現する。
 ///
 /// 【シーン側の設定】
-/// 参照フィールドには同じ説明窓アクタ配下の子を「子名|スロット名」で指定する
-/// （例: TutorialBodyText|Text）。
+/// 参照フィールドには同じ説明窓アクタ配下の子を指定する
+/// （Sprite / Text は「子名|スロット名」、CanvasTransform は「子名」）。
 /// </summary>
 public class TutorialWindow : SEEDScript
 {
@@ -58,8 +66,35 @@ public class TutorialWindow : SEEDScript
     /// <summary>点滅周期を往路の長さへ直す係数（1 周期 = 往復）。</summary>
     private const float BlinkHalfPeriodRatio = 0.5f;
 
-    /// <summary>サイズ倍率が 0 以下のときに使う既定倍率。</summary>
-    private const float DefaultScale = 1f;
+    /// <summary>出現演出の所要秒（既定）。</summary>
+    private const float DefaultAppearSeconds = 0.35f;
+
+    /// <summary>吹き出しに対して中身（本文・送りマーク）を遅らせる秒数（既定）。</summary>
+    private const float DefaultContentDelaySeconds = 0.08f;
+
+    /// <summary>吹き出しに対してミニキャラを遅らせる秒数（既定）。</summary>
+    private const float DefaultCharaDelaySeconds = 0.05f;
+
+    /// <summary>ミニキャラの出現開始時の回転角（度）。ここから 0 へ戻りながら現れる。</summary>
+    private const float DefaultCharaAppearRotation = -25f;
+
+    /// <summary>退場演出の所要秒（既定。出現より短くして待たされ感を無くす）。</summary>
+    private const float DefaultDisappearSeconds = 0.18f;
+
+    /// <summary>説明中にミニキャラが左右へ揺れる振れ幅（度・既定）。</summary>
+    private const float DefaultSwayAmplitudeDegrees = 3f;
+
+    /// <summary>説明中にミニキャラが 1 往復する秒数（既定）。</summary>
+    private const float DefaultSwayPeriodSeconds = 2.5f;
+
+    /// <summary>演出の進捗が完了とみなせる値（0〜1 の 1）。</summary>
+    private const float ProgressComplete = 1f;
+
+    /// <summary>拡大率 0（＝完全に潰れた状態）。</summary>
+    private const float ScaleZero = 0f;
+
+    /// <summary>回転なし（度）。</summary>
+    private const float RotationNone = 0f;
 
     /// <summary>キャンバスの既定の幅（px）。画面外クランプの基準に使う。</summary>
     private const float DefaultCanvasWidth = 1280f;
@@ -70,18 +105,46 @@ public class TutorialWindow : SEEDScript
     /// <summary>キャンバス半分を求める係数（中央原点なので幅・高さの半分が端になる）。</summary>
     private const float CanvasHalf = 0.5f;
 
+    /// <summary>
+    /// AboveTarget で使うアンカー／ピボットの正規化値（0.5 = 中央）。
+    /// Camera.WorldToCanvas は「画面中央が原点」の座標を返すため、
+    /// 窓側も中央基準にそろえないと射影結果と位置がずれる。
+    /// </summary>
+    private const float CenterNormalized = 0.5f;
+
     /// <summary>カメラ前方距離がこの値以下なら「カメラの背後」とみなす。</summary>
     private const float BehindCameraDepth = 0f;
 
     /// <summary>カメラ背後のとき、方向を保ったまま画面外へ押し出す倍率（クランプで端に張り付く）。</summary>
     private const float BehindPushFactor = 1000f;
 
+    /// <summary>位置アンカーが「同じ場所」かを判定する許容誤差（px・正規化値）。</summary>
+    private const float AnchorSameEpsilon = 0.01f;
+
     /// <summary>空文字（未設定）。</summary>
     private const string EmptyText = "";
 
-    // ─── インスペクタ公開フィールド（参照）───────────────────
+    // ─── 表示演出の段階 ──────────────────────────────────────
 
-    /// <summary>ミニキャラのスプライト（素材が来るまでは白テクスチャを着色した矩形）。</summary>
+    /// <summary>説明窓の見た目の段階（出現・表示・退場のどこに居るか）。</summary>
+    private enum WindowVisualState
+    {
+        /// <summary>完全に隠れている（更新も止める）。</summary>
+        Hidden,
+
+        /// <summary>出現演出の再生中。</summary>
+        Appearing,
+
+        /// <summary>出現し切って読ませている最中（ミニキャラだけ揺れる）。</summary>
+        Shown,
+
+        /// <summary>退場演出の再生中（出現の逆再生）。</summary>
+        Disappearing,
+    }
+
+    // ─── インスペクタ公開フィールド（参照: 見た目）───────────
+
+    /// <summary>ミニキャラのスプライト。</summary>
     [Header("参照"), SerializeField(Label = "ミニキャラ", Tooltip = "ミニキャラの Sprite（子名|Sprite）")]
     public SEED.Sprite? charaSprite;
 
@@ -101,6 +164,28 @@ public class TutorialWindow : SEEDScript
     [SerializeField(Label = "射影カメラ", Tooltip = "対象アクタの追従に使うカメラ（MainCamera）")]
     public SEED.Camera? projectionCamera;
 
+    // ─── インスペクタ公開フィールド（参照: 演出用の変形）─────
+
+    /// <summary>
+    /// 吹き出しの CanvasTransform（出現演出の拡大縮小に使う）。
+    /// Sprite スロットの参照だけでは位置・拡大率を触れないため、変形は別に受け取る。
+    /// </summary>
+    [Header("参照（演出用の変形）")]
+    [SerializeField(Label = "吹き出しの変形", Tooltip = "吹き出し子アクタの CanvasTransform（子名）")]
+    public SEED.CanvasTransform? balloonTransform;
+
+    /// <summary>ミニキャラの CanvasTransform（拡大縮小と回転・揺れに使う）。</summary>
+    [SerializeField(Label = "ミニキャラの変形", Tooltip = "ミニキャラ子アクタの CanvasTransform（子名）")]
+    public SEED.CanvasTransform? charaTransform;
+
+    /// <summary>本文テキストの CanvasTransform（出現演出の拡大縮小に使う）。</summary>
+    [SerializeField(Label = "本文の変形", Tooltip = "本文子アクタの CanvasTransform（子名）")]
+    public SEED.CanvasTransform? bodyTransform;
+
+    /// <summary>送りマークの CanvasTransform（出現演出の拡大縮小に使う）。</summary>
+    [SerializeField(Label = "送りマークの変形", Tooltip = "送りマーク子アクタの CanvasTransform（子名）")]
+    public SEED.CanvasTransform? arrowTransform;
+
     // ─── インスペクタ公開フィールド（値）─────────────────────
 
     /// <summary>1 文字あたりの表示間隔（秒）。0 以下なら即座に全文表示する。</summary>
@@ -116,18 +201,21 @@ public class TutorialWindow : SEEDScript
     [AssetReference("ttf", "otf")]
     public string fontPath = EmptyText;
 
-    /// <summary>本文のインライン画像に使うアイコンセット（.icons）。空なら [icon:...] は空白になる。</summary>
-    [SerializeField(Label = "アイコンセット", Tooltip = "[icon:名前] を解決する .icons ファイル")]
+    /// <summary>本文のインライン画像に使うアイコンセット（.icons）。空なら Text 側の設定のまま。</summary>
+    [SerializeField(Label = "アイコンセット", Tooltip = "[icon:名前] を解決する .icons ファイル。空なら Text の設定のまま")]
     [AssetReference("icons")]
     public string iconSetPath = EmptyText;
 
-    /// <summary>本文の枠幅（px）。0 より大きいと自動折り返しとピボットが有効になる。</summary>
-    [Header("本文の枠"), SerializeField(Label = "枠の幅(px)", Tooltip = "本文の折り返し幅。0 なら折り返さない")]
-    public float boxWidth = 420f;
+    /// <summary>
+    /// 本文の枠幅（px）。<b>0 なら Text コンポーネント側のシーン設定をそのまま使う</b>。
+    /// 素材に合わせて枠を作り込むのはシーン側の仕事なので、既定は 0（＝触らない）。
+    /// </summary>
+    [Header("本文の枠"), SerializeField(Label = "枠の幅(px)", Tooltip = "本文の折り返し幅。0 なら Text 側のシーン設定を使う")]
+    public float boxWidth = 0f;
 
-    /// <summary>本文の枠の最小高さ（px）。内容が増えれば下へ伸びる。</summary>
-    [SerializeField(Label = "枠の最小高さ(px)", Tooltip = "本文の枠の最小高さ")]
-    public float boxHeight = 120f;
+    /// <summary>本文の枠の最小高さ（px）。枠の幅が 0 のときは使わない。</summary>
+    [SerializeField(Label = "枠の最小高さ(px)", Tooltip = "本文の枠の最小高さ（枠の幅が 0 のときは無視）")]
+    public float boxHeight = 0f;
 
     /// <summary>画面外クランプに使うキャンバスの幅（px）。</summary>
     [Header("画面外クランプ"), SerializeField(Label = "キャンバス幅(px)", Tooltip = "追従時の画面内クランプに使う幅")]
@@ -149,7 +237,37 @@ public class TutorialWindow : SEEDScript
     [SerializeField(Label = "追従の画面オフセットY(px)", Tooltip = "追従時に画面上でさらにずらす量（負で上）")]
     public float aboveTargetCanvasOffsetY = -80f;
 
-    // ─── 内部状態 ────────────────────────────────────────────
+    // ─── インスペクタ公開フィールド（出現・退場の演出）───────
+
+    /// <summary>吹き出しが 0 倍から等倍になるまでの秒数（実時間）。</summary>
+    [Header("出現演出"), SerializeField(Label = "出現の秒数", Tooltip = "吹き出しが 0 倍から等倍になるまでの秒数")]
+    public float appearSeconds = DefaultAppearSeconds;
+
+    /// <summary>吹き出しより中身（本文・送りマーク）を遅らせる秒数。</summary>
+    [SerializeField(Label = "中身の遅れ(秒)", Tooltip = "吹き出しより本文・送りマークを遅らせる秒数")]
+    public float contentDelaySeconds = DefaultContentDelaySeconds;
+
+    /// <summary>吹き出しよりミニキャラを遅らせる秒数。</summary>
+    [SerializeField(Label = "キャラの遅れ(秒)", Tooltip = "吹き出しよりミニキャラを遅らせる秒数")]
+    public float charaDelaySeconds = DefaultCharaDelaySeconds;
+
+    /// <summary>ミニキャラが現れ始めるときの回転角（度）。ここから 0 へ戻りながら出る。</summary>
+    [SerializeField(Label = "キャラの開始角(度)", Tooltip = "ミニキャラが現れ始めるときの傾き（度）")]
+    public float charaAppearRotation = DefaultCharaAppearRotation;
+
+    /// <summary>退場演出の秒数（出現の逆再生）。</summary>
+    [SerializeField(Label = "退場の秒数", Tooltip = "隠すときに縮んで消えるまでの秒数")]
+    public float disappearSeconds = DefaultDisappearSeconds;
+
+    /// <summary>説明中にミニキャラが左右へ揺れる振れ幅（度）。0 で揺らさない。</summary>
+    [SerializeField(Label = "キャラの揺れ幅(度)", Tooltip = "説明中にミニキャラが左右へ傾く角度。0 で揺らさない")]
+    public float swayAmplitudeDegrees = DefaultSwayAmplitudeDegrees;
+
+    /// <summary>説明中にミニキャラが 1 往復する秒数。</summary>
+    [SerializeField(Label = "キャラの揺れ周期(秒)", Tooltip = "ミニキャラが 1 往復するのに掛かる秒数")]
+    public float swayPeriodSeconds = DefaultSwayPeriodSeconds;
+
+    // ─── 内部状態: 元の色 ────────────────────────────────────
 
     // 元の色は「部品ごとに」控える。窓全体で 1 つのフラグにすると、
     // 参照がまだ解決されていない時点で 1 度呼ばれただけで「控えた」ことになってしまい、
@@ -179,14 +297,63 @@ public class TutorialWindow : SEEDScript
     /// <summary>送りマークの元の色。</summary>
     private SEED.Color arrowBaseColor;
 
-    /// <summary>窓を表示中か。</summary>
+    // ─── 内部状態: 元の変形 ──────────────────────────────────
+
+    // 拡大率・回転は毎フレーム上書きするため、シーンで設定された値を必ず控えてから触る。
+    // 控える前に書き換えると、ホットリロードのたびに素材の基準サイズが失われてしまう。
+
+    /// <summary>吹き出しの元の拡大率を控えたか。</summary>
+    private bool balloonTransformCaptured;
+
+    /// <summary>ミニキャラの元の拡大率・回転を控えたか。</summary>
+    private bool charaTransformCaptured;
+
+    /// <summary>本文の元の拡大率を控えたか。</summary>
+    private bool bodyTransformCaptured;
+
+    /// <summary>送りマークの元の拡大率を控えたか。</summary>
+    private bool arrowTransformCaptured;
+
+    /// <summary>吹き出しの元の拡大率。</summary>
+    private SEED.Vector2 balloonBaseScale = SEED.Vector2.One;
+
+    /// <summary>ミニキャラの元の拡大率。</summary>
+    private SEED.Vector2 charaBaseScale = SEED.Vector2.One;
+
+    /// <summary>本文の元の拡大率。</summary>
+    private SEED.Vector2 bodyBaseScale = SEED.Vector2.One;
+
+    /// <summary>送りマークの元の拡大率。</summary>
+    private SEED.Vector2 arrowBaseScale = SEED.Vector2.One;
+
+    /// <summary>ミニキャラの元の回転角（度）。揺れはここを中心に振れる。</summary>
+    private float charaBaseRotation = RotationNone;
+
+    // ─── 内部状態: 表示と位置 ────────────────────────────────
+
+    /// <summary>窓を表示中か（アルファを戻してあるか）。</summary>
     private bool visible;
+
+    /// <summary>現在の見た目の段階。</summary>
+    private WindowVisualState visualState = WindowVisualState.Hidden;
+
+    /// <summary>出現・退場演出の経過秒（実時間）。</summary>
+    private float animTimer;
+
+    /// <summary>ミニキャラの揺れの経過秒（実時間）。</summary>
+    private float swayTimer;
 
     /// <summary>現在の配置モード（表示中のみ意味を持つ）。</summary>
     private TutorialAnchorMode anchorMode = TutorialAnchorMode.ScreenFixed;
 
-    /// <summary>画面固定時の表示位置（キャンバス座標）。</summary>
-    private SEED.Vector2 fixedPosition = SEED.Vector2.Zero;
+    /// <summary>直近に写し取った位置アンカーの位置（同じ場所への再表示を見分けるために控える）。</summary>
+    private SEED.Vector2 appliedAnchorPosition = SEED.Vector2.Zero;
+
+    /// <summary>直近に写し取った位置アンカーのアンカー値（同上）。</summary>
+    private SEED.Vector2 appliedAnchorAnchor = SEED.Vector2.Zero;
+
+    /// <summary>位置アンカーを 1 度でも写し取ったか（初回は必ず演出を再生する）。</summary>
+    private bool anchorApplied;
 
     /// <summary>追従対象（配置モードが AboveTarget のときだけ使う）。</summary>
     private SEED.Transform followTarget;
@@ -202,22 +369,23 @@ public class TutorialWindow : SEEDScript
     /// <summary>本文をすべて表示し終えているか（送り待ちの状態か）。</summary>
     public bool IsTextComplete => writer.IsComplete;
 
-    /// <summary>窓を表示中か。</summary>
+    /// <summary>窓を表示中か（退場演出の最中も true）。</summary>
     public bool IsVisible => visible;
 
     // ─── ライフサイクル ──────────────────────────────────────
 
     /// <summary>
-    /// 初期化。元の色を控え、フォント・アイコンセット・本文の枠を適用してから隠す。
+    /// 初期化。元の色と変形を控え、フォント・アイコンセット・本文の枠を適用してから隠す。
     /// </summary>
     public override void OnStart()
     {
         CaptureBaseColors();
+        CaptureBaseTransforms();
         ApplyTextStyle();
 
-        // 自分より先に TutorialDirector の OnStart が走って ShowAt / SetText 済みの
-        // ことがある（スクリプトの OnStart 順は保証されない）。
-        // そこで無条件に Hide せず、「まだ表示要求が来ていないときだけ」隠す。
+        // 自分より先に TutorialDirector の OnStart が走って表示要求済みのことがある
+        // （スクリプトの OnStart 順は保証されない）。
+        // そこで無条件に隠さず、「まだ表示要求が来ていないときだけ」隠す。
         // 表示要求済みなら、参照が解決された今の状態で色と本文を貼り直す。
         if (visible)
         {
@@ -226,45 +394,57 @@ public class TutorialWindow : SEEDScript
             return;
         }
 
-        Hide();
+        HideImmediate();
     }
 
     /// <summary>
-    /// 毎フレーム、追従・文字送り・送りマークの点滅を進める。
+    /// 毎フレーム、追従・文字送り・送りマークの点滅・出現演出を進める。
     /// ゲーム時間が止まっていても動く必要があるので、必ず実時間で進める。
     /// </summary>
     /// <param name="ctx">フレーム情報（ここでは使わず Time.UnscaledDeltaTime を使う）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
-        // 非表示中は何も進めない（隠したまま文字送りが進むのを防ぐ）
-        if (!visible) { return; }
+        // 完全に隠れている間は何も進めない（隠したまま文字送りが進むのを防ぐ）
+        if (visualState == WindowVisualState.Hidden) { return; }
 
-        // 参照が後から有効になった場合に備えて、未取得の部品だけ元の色を控える
+        // 参照が後から有効になった場合に備えて、未取得の部品だけ控える
         CaptureBaseColors();
+        CaptureBaseTransforms();
 
         float unscaledDelta = SEED.Time.UnscaledDeltaTime;
+        animTimer += unscaledDelta;
+        swayTimer += unscaledDelta;
 
         UpdateFollow();
         if (writer.Advance(unscaledDelta, charInterval)) { ApplyBodyContent(); }
         UpdateArrow(unscaledDelta);
+        UpdateVisual();
     }
 
     // ─── 公開メソッド: 表示・非表示 ─────────────────────────
 
     /// <summary>
-    /// 画面上の固定位置に窓を表示する。
+    /// 位置アンカーアクタの上に窓を重ねて表示する【画面固定表示の唯一の入口】。
+    ///
+    /// アンカーの CanvasTransform（アンカー・ピボット・位置・拡大率・回転）を
+    /// そのまま自分へ写すので、画面のどこに出すかはシーン側のアクタ配置で決まる。
     /// </summary>
-    /// <param name="canvasPosition">表示位置（キャンバス座標。画面中央が原点・Y 下向き）。</param>
-    /// <param name="scale">窓全体の拡大率（0 以下なら 1 倍）。</param>
-    public void ShowAt(SEED.Vector2 canvasPosition, float scale)
+    /// <param name="anchor">位置アンカーアクタの CanvasTransform（無効なら現在位置のまま出す）。</param>
+    public void ShowAtAnchor(SEED.CanvasTransform anchor)
     {
-        anchorMode    = TutorialAnchorMode.ScreenFixed;
-        fixedPosition = canvasPosition;
-        followTarget  = default;
+        // 直前と同じ場所へ続けて出す場合は演出をやり直さない
+        // （説明が続く手順ごとに窓が跳ね直すと、読んでいる側の目が疲れる）
+        bool samePlace = visualState == WindowVisualState.Shown
+                      && anchorMode == TutorialAnchorMode.ScreenFixed
+                      && IsSameAnchor(anchor);
 
-        ApplyScale(scale);
-        ApplyPosition(canvasPosition);
-        Show();
+        anchorMode   = TutorialAnchorMode.ScreenFixed;
+        followTarget = default;
+
+        ApplyAnchor(anchor);
+
+        if (samePlace) { Show(); return; }
+        BeginAppear();
     }
 
     /// <summary>
@@ -274,23 +454,29 @@ public class TutorialWindow : SEEDScript
     /// 対象がカメラの背後にある場合は方向を保ったまま画面端へクランプする
     /// （背後の点は射影結果の X / Y が意味を持たないため、符号を反転して押し出す）。
     /// </summary>
-    /// <param name="target">追従する対象の Transform。無効なら画面中央固定へフォールバックする。</param>
-    /// <param name="scale">窓全体の拡大率（0 以下なら 1 倍）。</param>
-    public void ShowAboveTarget(SEED.Transform target, float scale)
+    /// <param name="target">追従する対象の Transform。無効なら現在位置のまま表示する。</param>
+    public void ShowAboveTarget(SEED.Transform target)
     {
         if (!target.IsValid)
         {
-            SEED.Debug.LogWarning("[TutorialWindow] 追従対象が未設定・無効です。画面中央に表示します。");
-            ShowAt(SEED.Vector2.Zero, scale);
+            SEED.Debug.LogWarning("[TutorialWindow] 追従対象が未設定・無効です。現在の位置に表示します。");
+            anchorMode = TutorialAnchorMode.ScreenFixed;
+            BeginAppear();
             return;
         }
+
+        bool samePlace = visualState == WindowVisualState.Shown
+                      && anchorMode == TutorialAnchorMode.AboveTarget;
 
         anchorMode   = TutorialAnchorMode.AboveTarget;
         followTarget = target;
 
-        ApplyScale(scale);
+        // WorldToCanvas は画面中央原点で返るので、窓側も中央基準にそろえる
+        ApplyCenterAnchor();
         UpdateFollow();       // 表示した最初のフレームから正しい位置に出す
-        Show();
+
+        if (samePlace) { Show(); return; }
+        BeginAppear();
     }
 
     /// <summary>
@@ -311,22 +497,161 @@ public class TutorialWindow : SEEDScript
         if (writer.Complete()) { ApplyBodyContent(); }
     }
 
-    /// <summary>窓を隠す（各パーツのアルファを 0 にする）。</summary>
+    /// <summary>
+    /// 窓を隠す【非表示要求の唯一の入口】。
+    /// 表示中なら退場演出（出現の逆再生）を始め、既に隠れているなら即座に隠す。
+    /// </summary>
     public void Hide()
     {
         CaptureBaseColors();
-        visible = false;
-        ApplyVisibility();
+        CaptureBaseTransforms();
+
+        if (visualState == WindowVisualState.Hidden) { HideImmediate(); return; }
+
+        visualState = WindowVisualState.Disappearing;
+        animTimer   = 0f;
     }
 
-    // ─── 内部処理: 表示状態 ─────────────────────────────────
+    // ─── 内部処理: 表示状態と演出 ───────────────────────────
 
-    /// <summary>窓を表示する（各パーツの色を元の値へ戻す）。</summary>
+    /// <summary>出現演出を最初から再生する【出現演出の唯一の入口】。</summary>
+    private void BeginAppear()
+    {
+        CaptureBaseColors();
+        CaptureBaseTransforms();
+
+        visualState = WindowVisualState.Appearing;
+        animTimer   = 0f;
+        swayTimer   = 0f;
+
+        Show();
+        UpdateVisual();   // 出だしのフレームから 0 倍で始める（1 フレーム等倍で見える事故を防ぐ）
+    }
+
+    /// <summary>窓を表示状態にする（各パーツの色を元の値へ戻す）。</summary>
     private void Show()
     {
         CaptureBaseColors();
         visible = true;
+        if (visualState == WindowVisualState.Hidden) { visualState = WindowVisualState.Shown; }
         ApplyVisibility();
+    }
+
+    /// <summary>演出を挟まずに即座に隠す（初期化時・完全に隠れているときの再要求用）。</summary>
+    private void HideImmediate()
+    {
+        visible     = false;
+        visualState = WindowVisualState.Hidden;
+        animTimer   = 0f;
+        ApplyVisibility();
+    }
+
+    /// <summary>
+    /// 出現・表示・退場の各段階に応じて、パーツの拡大率と回転を更新する
+    /// 【演出計算の唯一の実装】。
+    /// </summary>
+    private void UpdateVisual()
+    {
+        switch (visualState)
+        {
+            case WindowVisualState.Appearing:
+                UpdateAppearing();
+                break;
+
+            case WindowVisualState.Shown:
+                UpdateShown();
+                break;
+
+            case WindowVisualState.Disappearing:
+                UpdateDisappearing();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 出現演出の 1 フレームぶん。
+    /// 吹き出し → 中身 → ミニキャラの順に、少しずつ遅らせて立ち上げる。
+    /// </summary>
+    private void UpdateAppearing()
+    {
+        // 吹き出しと中身は「行き過ぎて戻る」曲線でポンと出す
+        float balloonRate = Easing.OutBack(Easing.Progress01(animTimer, appearSeconds));
+        float contentRate = Easing.OutBack(Easing.Progress01(animTimer - contentDelaySeconds, appearSeconds));
+
+        // ミニキャラは行き過ぎない曲線で、傾きを戻しながら立ち上がる
+        float charaProgress = Easing.OutCubic(Easing.Progress01(animTimer - charaDelaySeconds, appearSeconds));
+
+        ApplyPartScale(balloonTransform, balloonBaseScale, balloonRate);
+        ApplyPartScale(bodyTransform,    bodyBaseScale,    contentRate);
+        ApplyPartScale(arrowTransform,   arrowBaseScale,   contentRate);
+        ApplyPartScale(charaTransform,   charaBaseScale,   charaProgress);
+        ApplyCharaRotation(SEED.Mathf.LerpUnclamped(
+            charaBaseRotation + charaAppearRotation, charaBaseRotation, charaProgress));
+
+        // いちばん遅く始まるパーツが終わったら「表示中」へ移る
+        float lastDelay = SEED.Mathf.Max(contentDelaySeconds, charaDelaySeconds);
+        if (animTimer >= appearSeconds + SEED.Mathf.Max(lastDelay, 0f))
+        {
+            visualState = WindowVisualState.Shown;
+            swayTimer   = 0f;
+        }
+    }
+
+    /// <summary>説明を読ませている最中の 1 フレームぶん（ミニキャラだけゆっくり揺らす）。</summary>
+    private void UpdateShown()
+    {
+        ApplyPartScale(balloonTransform, balloonBaseScale, ProgressComplete);
+        ApplyPartScale(bodyTransform,    bodyBaseScale,    ProgressComplete);
+        ApplyPartScale(arrowTransform,   arrowBaseScale,   ProgressComplete);
+        ApplyPartScale(charaTransform,   charaBaseScale,   ProgressComplete);
+
+        float sway = Easing.PingPongSigned(swayTimer, swayPeriodSeconds) * swayAmplitudeDegrees;
+        ApplyCharaRotation(charaBaseRotation + sway);
+    }
+
+    /// <summary>退場演出の 1 フレームぶん（出現の逆再生。終わったら完全に隠す）。</summary>
+    private void UpdateDisappearing()
+    {
+        // 残り率 1 → 0。InCubic で「すっと吸い込まれる」縮み方にする
+        float remain = ProgressComplete - Easing.Progress01(animTimer, disappearSeconds);
+        float rate   = Easing.InCubic(remain);
+
+        ApplyPartScale(balloonTransform, balloonBaseScale, rate);
+        ApplyPartScale(bodyTransform,    bodyBaseScale,    rate);
+        ApplyPartScale(arrowTransform,   arrowBaseScale,   rate);
+        ApplyPartScale(charaTransform,   charaBaseScale,   rate);
+        ApplyCharaRotation(SEED.Mathf.LerpUnclamped(
+            charaBaseRotation + charaAppearRotation, charaBaseRotation, rate));
+
+        if (animTimer >= disappearSeconds)
+        {
+            // 次に出すときに等倍のまま一瞬見えないよう、潰した状態で隠す
+            ApplyPartScale(balloonTransform, balloonBaseScale, ScaleZero);
+            ApplyPartScale(bodyTransform,    bodyBaseScale,    ScaleZero);
+            ApplyPartScale(arrowTransform,   arrowBaseScale,   ScaleZero);
+            ApplyPartScale(charaTransform,   charaBaseScale,   ScaleZero);
+            HideImmediate();
+        }
+    }
+
+    /// <summary>
+    /// パーツの拡大率を「シーンで設定された元の拡大率 × 演出の倍率」で書き換える。
+    /// </summary>
+    /// <param name="part">対象の CanvasTransform（未設定・無効なら何もしない）。</param>
+    /// <param name="baseScale">シーンで設定された元の拡大率。</param>
+    /// <param name="rate">演出の倍率（0 で消滅・1 で等倍。OutBack では 1 を少し超える）。</param>
+    private static void ApplyPartScale(SEED.CanvasTransform? part, SEED.Vector2 baseScale, float rate)
+    {
+        if (part is not { } ct || !ct.IsValid) { return; }
+        ct.Scale = new SEED.Vector2(baseScale.x * rate, baseScale.y * rate);
+    }
+
+    /// <summary>ミニキャラの回転角（度）を書き換える。</summary>
+    /// <param name="degrees">適用する角度（度）。</param>
+    private void ApplyCharaRotation(float degrees)
+    {
+        if (charaTransform is not { } ct || !ct.IsValid) { return; }
+        ct.Rotation = degrees;
     }
 
     /// <summary>
@@ -365,6 +690,35 @@ public class TutorialWindow : SEEDScript
     }
 
     /// <summary>
+    /// シーンで設定された各パーツの拡大率・回転を初回だけ控える。
+    /// 色と同じ理由（参照の解決タイミングが読めない）で、部品ごとに判定する。
+    /// </summary>
+    private void CaptureBaseTransforms()
+    {
+        if (!balloonTransformCaptured && balloonTransform is { } balloon && balloon.IsValid)
+        {
+            balloonBaseScale         = balloon.Scale;
+            balloonTransformCaptured = true;
+        }
+        if (!bodyTransformCaptured    && bodyTransform    is { } body    && body.IsValid)
+        {
+            bodyBaseScale         = body.Scale;
+            bodyTransformCaptured = true;
+        }
+        if (!arrowTransformCaptured   && arrowTransform   is { } arrow   && arrow.IsValid)
+        {
+            arrowBaseScale         = arrow.Scale;
+            arrowTransformCaptured = true;
+        }
+        if (!charaTransformCaptured   && charaTransform   is { } chara   && chara.IsValid)
+        {
+            charaBaseScale         = chara.Scale;
+            charaBaseRotation      = chara.Rotation;
+            charaTransformCaptured = true;
+        }
+    }
+
+    /// <summary>
     /// 現在の表示状態を各パーツの色へ反映する。
     /// 送りマークは「本文完了時のみ表示」なのでここでは必ず消し、
     /// <see cref="UpdateArrow"/> が毎フレーム上書きする。
@@ -393,7 +747,7 @@ public class TutorialWindow : SEEDScript
 
     /// <summary>
     /// インスペクタで指定したフォント・アイコンセット・枠設定を本文 Text へ適用する。
-    /// 未設定（空文字）の項目は Text 側のシーン設定を尊重して触らない。
+    /// 未設定（空文字・0）の項目は Text 側のシーン設定を尊重して触らない。
     /// </summary>
     private void ApplyTextStyle()
     {
@@ -402,7 +756,8 @@ public class TutorialWindow : SEEDScript
         if (!string.IsNullOrEmpty(fontPath))    { body.FontPath = fontPath; }
         if (!string.IsNullOrEmpty(iconSetPath)) { body.IconSet  = iconSetPath; }
 
-        // 枠幅が正のときだけ「枠あり」レイアウト（自動折り返し・ピボット有効）にする
+        // 枠幅が正のときだけ「枠あり」レイアウトを上書きする。
+        // 0 のときはシーンで作り込んだ枠（素材に合わせた幅・高さ）をそのまま活かす。
         if (boxWidth > 0f)
         {
             body.BoxWidth  = boxWidth;
@@ -411,18 +766,71 @@ public class TutorialWindow : SEEDScript
         }
     }
 
-    // ─── 内部処理: 位置とサイズ ─────────────────────────────
+    // ─── 内部処理: 位置 ─────────────────────────────────────
+
+    /// <summary>ルートの CanvasTransform を取得する（未アタッチなら null）。</summary>
+    /// <returns>ルートの CanvasTransform、または null。</returns>
+    private SEED.CanvasTransform? RootTransform()
+    {
+        if (gameObject.GetComponent<SEED.CanvasTransform>() is not { } ct || !ct.IsValid) { return null; }
+        return ct;
+    }
 
     /// <summary>
-    /// 窓全体の拡大率をルートの CanvasTransform へ適用する。
+    /// 位置アンカーアクタの変形を自分のルートへ写す【画面固定位置の唯一の実装】。
     /// </summary>
-    /// <param name="scale">拡大率（0 以下なら 1 倍）。</param>
-    private void ApplyScale(float scale)
+    /// <param name="anchor">位置アンカーアクタの CanvasTransform（無効なら何もしない）。</param>
+    private void ApplyAnchor(SEED.CanvasTransform anchor)
     {
-        if (gameObject.GetComponent<SEED.CanvasTransform>() is not { } ct || !ct.IsValid) { return; }
+        if (!anchor.IsValid)
+        {
+            SEED.Debug.LogWarning("[TutorialWindow] 位置アンカーが未設定・無効です。現在の位置に表示します。");
+            return;
+        }
+        if (RootTransform() is not { } ct) { return; }
 
-        float applied = scale > 0f ? scale : DefaultScale;
-        ct.Scale = new SEED.Vector2(applied, applied);
+        // アンカー・ピボット・位置・拡大率・回転をまとめて写す。
+        // アンカーと同じ親（同じキャンバス）に置いてある前提なので、位置はそのまま使える。
+        ct.Anchor   = anchor.Anchor;
+        ct.Pivot    = anchor.Pivot;
+        ct.Position = anchor.Position;
+        ct.Scale    = anchor.Scale;
+        ct.Rotation = anchor.Rotation;
+
+        appliedAnchorPosition = anchor.Position;
+        appliedAnchorAnchor   = anchor.Anchor;
+        anchorApplied         = true;
+    }
+
+    /// <summary>
+    /// 与えられた位置アンカーが、直前に写し取ったものと同じ場所か。
+    /// </summary>
+    /// <param name="anchor">判定する位置アンカー。</param>
+    /// <returns>同じ場所とみなせるなら true。</returns>
+    private bool IsSameAnchor(SEED.CanvasTransform anchor)
+    {
+        if (!anchorApplied || !anchor.IsValid) { return false; }
+
+        return SEED.Mathf.Abs(anchor.Position.x - appliedAnchorPosition.x) <= AnchorSameEpsilon
+            && SEED.Mathf.Abs(anchor.Position.y - appliedAnchorPosition.y) <= AnchorSameEpsilon
+            && SEED.Mathf.Abs(anchor.Anchor.x   - appliedAnchorAnchor.x)   <= AnchorSameEpsilon
+            && SEED.Mathf.Abs(anchor.Anchor.y   - appliedAnchorAnchor.y)   <= AnchorSameEpsilon;
+    }
+
+    /// <summary>
+    /// ルートのアンカー・ピボットを画面中央基準にそろえる（AboveTarget 用）。
+    /// </summary>
+    private void ApplyCenterAnchor()
+    {
+        if (RootTransform() is not { } ct) { return; }
+
+        ct.Anchor   = new SEED.Vector2(CenterNormalized, CenterNormalized);
+        ct.Pivot    = new SEED.Vector2(CenterNormalized, CenterNormalized);
+        ct.Scale    = SEED.Vector2.One;
+        ct.Rotation = RotationNone;
+
+        // 画面固定へ戻ったときに必ず写し直させる（同じ場所判定の取りこぼしを防ぐ）
+        anchorApplied = false;
     }
 
     /// <summary>
@@ -431,13 +839,13 @@ public class TutorialWindow : SEEDScript
     /// <param name="canvasPosition">キャンバス座標（画面中央が原点・Y 下向き）。</param>
     private void ApplyPosition(SEED.Vector2 canvasPosition)
     {
-        if (gameObject.GetComponent<SEED.CanvasTransform>() is not { } ct || !ct.IsValid) { return; }
+        if (RootTransform() is not { } ct) { return; }
         ct.Position = canvasPosition;
     }
 
     /// <summary>
     /// 追従モードのとき、対象のワールド位置を画面へ射影して窓を置き直す。
-    /// 画面固定モードでは何もしない（ShowAt で置いた位置のまま）。
+    /// 画面固定モードでは何もしない（位置アンカーで置いた位置のまま）。
     /// </summary>
     private void UpdateFollow()
     {

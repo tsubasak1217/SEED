@@ -654,7 +654,7 @@
             "rotation": [
               1.2524877,
               167.28851,
-              2.5785946e-06
+              0.0000025785946
             ],
             "scale": [
               2.7811875,
@@ -678,7 +678,7 @@
                         37.960476
                       ],
                       [
-                        1.2513732e-07,
+                        1.2513732e-7,
                         5.559396,
                         -0.060792,
                         3.2836604
@@ -989,7 +989,7 @@
             "rotation": [
               -0.7586146,
               168.34944,
-              -1.8087846e-07
+              -1.8087846e-7
             ],
             "scale": [
               1.3905941,
@@ -1448,7 +1448,7 @@
         "rotation": [
           1.1905385,
           267.66238,
-          -6.509732e-06
+          -0.000006509732
         ],
         "scale": [
           1.0,
@@ -2712,7 +2712,7 @@
                     0.0
                   ],
                   "width": 1280.0,
-                  "height": 720.0,
+                  "height": 762.2,
                   "layer": 10,
                   "postfx_path": "",
                   "raycast_target": false
@@ -3002,9 +3002,9 @@
                       "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\HitBanner.cs",
                       "fields": {
                         "animators": "[\"HitBandBlackTop|Animator\", \"HitBandBlackBottom|Animator\", \"HitTextLevel|Animator\", \"HitTextHit|Animator\"]",
+                        "bannerRoot": "HitBannerItems",
                         "hitLabel": "HitTextHit|Text",
-                        "levelLabel": "HitTextLevel|Text",
-                        "bannerRoot": "HitBannerItems"
+                        "levelLabel": "HitTextLevel|Text"
                       }
                     }
                   }
@@ -3966,6 +3966,123 @@
           ]
         },
         {
+          "name": "TutorialAnchors",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [],
+          "children": [
+            {
+              "name": "AnchorCenter",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": []
+            },
+            {
+              "name": "AnchorBottomCenter",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -240.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  1.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": []
+            },
+            {
+              "name": "AnchorTopLeft",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  420.0,
+                  200.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": []
+            }
+          ]
+        },
+        {
           "name": "TutorialWindow",
           "actor_kind": "Actor2D",
           "canvas_transform": {
@@ -4002,14 +4119,18 @@
                     "aboveTargetCanvasOffsetY": "-120.000",
                     "aboveTargetWorldOffsetY": "1.800",
                     "arrowBlinkPeriod": "0.800",
+                    "arrowTransform": "TutorialNextArrow",
                     "balloonSprite": "TutorialBalloon|Sprite",
+                    "balloonTransform": "TutorialBalloon",
                     "bodyText": "TutorialBodyText|Text",
-                    "boxHeight": "170.000",
-                    "boxWidth": "680.000",
+                    "bodyTransform": "TutorialBodyText",
+                    "boxHeight": "0.000",
+                    "boxWidth": "0.000",
                     "canvasHeight": "1080.000",
                     "canvasWidth": "1920.000",
                     "charInterval": "0.030",
                     "charaSprite": "TutorialChara|Sprite",
+                    "charaTransform": "TutorialChara",
                     "fontPath": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
                     "iconSetPath": "assets://mainGame/ui/tutorial.icons",
                     "nextArrowSprite": "TutorialNextArrow|Sprite",
@@ -4026,7 +4147,7 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  60.0,
+                  54.919495,
                   0.0
                 ],
                 "rotation": 0.0,
@@ -4039,8 +4160,8 @@
                   0.5
                 ],
                 "anchor": [
-                  0.0,
-                  0.0
+                  0.5,
+                  0.5
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -4053,15 +4174,15 @@
                   "component": {
                     "type": "SpriteComponent",
                     "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "texture_path": "assets://mainGame/textures/tutorial/miniHukidashi.png",
                       "color": [
-                        0.05,
-                        0.06,
-                        0.1,
-                        0.8
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
                       ],
-                      "width": 760.0,
-                      "height": 220.0,
+                      "width": 469.0,
+                      "height": 288.3,
                       "layer": 1000,
                       "postfx_path": "",
                       "raycast_target": false
@@ -4076,8 +4197,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -400.0,
-                  10.0
+                  -274.68008,
+                  72.65997
                 ],
                 "rotation": 0.0,
                 "scale": [
@@ -4103,15 +4224,15 @@
                   "component": {
                     "type": "SpriteComponent",
                     "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "texture_path": "assets://mainGame/textures/tutorial/tutorial_teba.png",
                       "color": [
-                        0.98,
-                        0.74,
-                        0.45,
+                        1.0,
+                        1.0,
+                        1.0,
                         1.0
                       ],
-                      "width": 170.0,
-                      "height": 170.0,
+                      "width": 162.5,
+                      "height": 117.1,
                       "layer": 1001,
                       "postfx_path": "",
                       "raycast_target": false
@@ -4126,8 +4247,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -300.0,
-                  -80.0
+                  55.000183,
+                  0.0
                 ],
                 "rotation": 0.0,
                 "scale": [
@@ -4135,12 +4256,12 @@
                   1.0
                 ],
                 "pivot": [
-                  0.0,
-                  0.0
+                  0.5,
+                  0.5
                 ],
                 "anchor": [
-                  0.0,
-                  0.0
+                  0.5,
+                  0.5
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -4153,38 +4274,38 @@
                   "component": {
                     "type": "TextComponent",
                     "data": {
-                      "content": "",
+                      "content": "あああああああああああああああああああああああああああああああ",
                       "font_size": 30.0,
                       "color": [
-                        1.0,
-                        0.98,
-                        0.94,
+                        0.0031118586,
+                        0.035014804,
+                        0.021825666,
                         1.0
                       ],
-                      "align": "left",
-                      "vertical_align": "top",
+                      "align": "center",
+                      "vertical_align": "middle",
                       "line_spacing": 1.35,
                       "layer": 1002,
                       "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
                       "icon_set": "assets://mainGame/ui/tutorial.icons",
                       "outline_width": 2.0,
                       "outline_color": [
-                        0.05,
-                        0.05,
+                        0.049999997,
+                        0.049999997,
                         0.08,
-                        1.0
+                        0.0
                       ],
-                      "box_width": 680.0,
-                      "box_height": 170.0,
+                      "box_width": 326.7,
+                      "box_height": 181.7,
                       "wrap": true,
-                      "weight": 0.3,
+                      "weight": 1.5,
                       "shadow_offset_x": 2.0,
                       "shadow_offset_y": 2.0,
                       "shadow_color": [
                         0.0,
                         0.0,
                         0.0,
-                        0.5
+                        0.63400334
                       ],
                       "shadow_softness": 1.0
                     }
@@ -4198,8 +4319,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  390.0,
-                  85.0
+                  228.0177,
+                  97.89844
                 ],
                 "rotation": 0.0,
                 "scale": [
@@ -4211,8 +4332,8 @@
                   0.5
                 ],
                 "anchor": [
-                  0.0,
-                  0.0
+                  0.5,
+                  0.5
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -4457,10 +4578,10 @@
                   "type_name": "assets://mainGame/scripts/Tutorial/TutorialDirector.cs",
                   "fields": {
                     "autoStart": "true",
-                    "debugForceTutorial": "false",
+                    "debugForceTutorial": "true",
                     "onTutorialFinished": "[]",
                     "stepInputLockSeconds": "0.150",
-                    "steps": "[{\"text\": \"ようこそ、わらしべフィッシングへ！\\nまずは基本の操作を覚えていこう。\\n[icon:mouse_l] か Enter で次へ進むよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"砂浜は [icon:key_w] で前へ、[icon:key_s] で後ろへ歩けるよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"さっそく歩いてみよう！\\n[icon:key_w] [icon:key_s] で前後に動けるよ。\", \"anchorMode\": \"AboveTarget\", \"target\": \"Player\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Seconds\", \"finishEventName\": \"\", \"finishSeconds\": 6.0, \"pauseTime\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"釣りたい場所まで来たら、マウスの左ボタン [icon:mouse_l] を押しっぱなしにして竿を構えよう。\\n構えている間は [icon:key_a] [icon:key_d] で狙う向きを変えられる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"左ボタン [icon:mouse_l] を押して構えてみよう！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.ready_begin\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"構えたまま、マウスを左へ引くと竿が振りかぶるよ。\\n着水点のマーカーが行ったり来たりするから、投げたい位置に来た瞬間にマウスを左から右へ勢いよく振る！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"マーカーが狙いの位置に来たら、マウスを左→右へ振って投げよう！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.cast\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"よし、着水した！\\nしばらくするとウキがコツコツ揺れて、やがて大きく沈む。\\nその瞬間に [icon:mouse_l] で竿を振る（合わせる）と魚が掛かるよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"OnEvent\", \"startEventName\": \"fishing.land\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"ForceBite\", \"scriptedParam\": \"\", \"scriptedSeconds\": 2.0, \"scriptedLevel\": 1, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ウキが大きく沈んだ瞬間に [icon:mouse_l]！\\n早すぎても遅すぎても逃げられるから、よく見ていよう。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.fight_begin\", \"finishSeconds\": 90.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"掛かった！ ここからは魚とのやり取りだ。\\n魚のリズムに合わせて流れてくる印が重なった瞬間に [icon:mouse_l] でタップ！\\n外すと糸が削られてしまうけど、ぴったり決めると魚が長くひるむよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"リズムに合わせて [icon:mouse_l] でタップ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.stun_begin\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"魚がひるんだ！ このスキに糸を巻こう。\\nマウスホイールを回すと巻き取れて、[icon:key_a] [icon:key_d] でウキを左右に寄せられる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ホイールを回して巻いてみよう！\\n[icon:key_a] [icon:key_d] で寄せたい方向も選べるよ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.reel\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": true, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"海には漂流物が流れてくる。\\n巻き寄せて拾うと、糸が回復したり魚が長くひるんだりするよ。\\nただし魚が元気になって沖へ走り出すものもあるから気をつけて！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"SpawnDrift\", \"scriptedParam\": \"line_recover\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"最後に大事な話。\\n釣り上げた魚は、次のエサになる。\\n大きい魚は小さい魚を狙うから、小魚 → 中くらいの魚 → 大物とわらしべ式に釣り上げていこう！\\nそれじゃあ、いってらっしゃい！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"screenX\": 0.0, \"screenY\": 340.0, \"scale\": 1.0, \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}]",
+                    "steps": "[{\"text\": \"よし、着いたぜ。\\nここが俺の釣り場だ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"飛べねェ鳥にゃ\\n海が狩り場よ。\\n釣りを教えてやる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"まずは足だ。\\n[icon:key_w] で前、\\n[icon:key_s] で後ろに歩く。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"歩いてみな！\\n[icon:key_w] [icon:key_s] で前後によ。\", \"anchorMode\": \"AboveTarget\", \"target\": \"Player\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Seconds\", \"finishEventName\": \"\", \"finishSeconds\": 6.0, \"pauseTime\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"場所を決めたら\\n[icon:mouse_l] を押しっぱだ。\\n竿を構えるんだぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"構えてる間は\\n[icon:key_a] [icon:key_d] で向きを\\n変えられるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"[icon:mouse_l] を押して\\n構えてみな。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.ready_begin\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"構えたままだと\\n竿が振りかぶる。\\n着水点の印が\\n行ったり来たりだ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"狙いの位置に来たら\\nマウスを左から右へ\\n勢いよく振る！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"印が合ったら\\n左から右へ振れ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.cast\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"着水したな。\\nウキが大きく沈む\\n瞬間があるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"OnEvent\", \"startEventName\": \"fishing.land\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"ForceBite\", \"scriptedParam\": \"\", \"scriptedSeconds\": 2.0, \"scriptedLevel\": 1, \"onStart\": [], \"onEnd\": []}, {\"text\": \"沈んだ瞬間に\\n[icon:mouse_l] で竿を振る。\\n早くても遅くても\\n逃げられるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"沈んだ瞬間に\\n[icon:mouse_l] で合わせろ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.fight_begin\", \"finishSeconds\": 90.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"掛かったな！\\nここからが勝負だ。\\n魚のリズムで印が\\n流れてくるぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"重なった瞬間に\\n[icon:mouse_l] でタップだ。\\n外すと糸が減るぜ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ピタリと決まりゃ\\n魚が長くひるむ。\\nそこが狙い目よ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"リズムに合わせて\\n[icon:mouse_l] でタップ！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.stun_begin\", \"finishSeconds\": 60.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ひるんだぞ！\\n今のうちに糸を巻け。\\nホイールを回すんだ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"[icon:key_a] [icon:key_d] でウキを\\n左右に寄せられる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ホイールを回して\\n糸を巻きな！\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorTopLeft\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"OnEvent\", \"finishEventName\": \"fishing.reel\", \"finishSeconds\": 45.0, \"pauseTime\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": true, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"海にゃ漂流物が\\n流れてくる。\\n巻き寄せて拾いな。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"SpawnDrift\", \"scriptedParam\": \"line_recover\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"糸が直ったり\\n魚がひるんだりだ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"だが魚が元気に\\nなって沖へ走る\\nシロモノもある。\\n気をつけな。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorBottomCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"最後に大事な話だ。\\n釣った魚は\\n次のエサになる。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"デケェ魚は\\n小せェ魚を狙う。\\n小魚から順に\\n大物へつなげろ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}, {\"text\": \"ま、体で覚えな。\\n行ってきな、ササミ。\", \"anchorMode\": \"ScreenFixed\", \"target\": \"\", \"anchorTarget\": \"AnchorCenter\", \"startCondition\": \"Immediately\", \"startEventName\": \"\", \"finishCondition\": \"Confirm\", \"finishEventName\": \"\", \"finishSeconds\": 0.0, \"pauseTime\": true, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"scriptedAction\": \"None\", \"scriptedParam\": \"\", \"scriptedSeconds\": 0.0, \"scriptedLevel\": 0, \"onStart\": [], \"onEnd\": []}]",
                     "window": "TutorialWindow"
                   }
                 }
@@ -5184,7 +5305,7 @@
                       ],
                       [
                         1.5036188,
-                        -7.515028e-05,
+                        -0.00007515028,
                         0.84553915,
                         -657.0699
                       ],
