@@ -60,6 +60,10 @@ public static unsafe class ScriptBridge
         ForgetErrorState(handlePtr);
         // 未解決のまま残った参照フィールドの保留エントリも掃除する
         ForgetPendingReferences(handlePtr);
+        // this.On で張った名前付きイベント購読を解除する。
+        // OnDestroy が呼ばれない破棄経路（OnStart 前の破棄など）でも、
+        // 静的な購読テーブルへ死んだインスタンスのデリゲートが残らないようにする。
+        if (Get(handlePtr) is SEEDScript script) script.UnsubscribeAllEvents();
         GCHandle.FromIntPtr(handlePtr).Free();
     }
 
@@ -100,7 +104,16 @@ public static unsafe class ScriptBridge
         {
             if (Get(h) is not SEEDScript ss) return;
             ss.BindEntity(entityIndex, entityGeneration);
-            ss.OnDestroy();
+            try
+            {
+                ss.OnDestroy();
+            }
+            finally
+            {
+                // this.On で張った名前付きイベント購読をここで自動解除する
+                // （ユーザーの OnDestroy が例外で落ちても必ず解除されるよう finally に置く）。
+                ss.UnsubscribeAllEvents();
+            }
         }
         catch (Exception ex)
         {
@@ -253,6 +266,10 @@ public static unsafe class ScriptBridge
             // ホットリロードで全インスタンスが作り直されるため、
             // 旧インスタンスに紐づく例外抑制状態はここで全消去する。
             ClearAllErrorState();
+            // 名前付きイベント（SEED.Events）の購読も全消去する。
+            // 購読テーブルは静的なので、旧アセンブリのメソッドを指すデリゲートを
+            // 握ったままだとアンロード可能な ALC が解放されず、ホットリロードが破綻する。
+            SEED.Events.ClearAll();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }

@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace SEEDEditor.Scripting;
 
 /// <summary>
@@ -111,4 +114,63 @@ public abstract class SEEDScript : IScriptComponent
     /// ボタンの上で押して別の場所で離した場合は呼ばれない（＝クリックのキャンセル）。
     /// </summary>
     public virtual void OnPointerClick() {}
+
+    // ── 名前付きイベント（SEED.Events）の購読ヘルパ ────────────
+    // Events.Subscribe を直接呼ぶと解除はスクリプト側の責任になるが、
+    // ここ（this.On）経由なら購読ハンドルをインスタンスが保持し、
+    // 破棄時（ScriptBridge の OnDestroy / DestroyComponent 経路）に自動で解除される。
+    // 破棄済みスクリプトのハンドラが呼ばれ続ける事故を防ぐため、通常はこちらを使う。
+
+    /// <summary>
+    /// このスクリプトが張った購読ハンドル（自動解除の対象）。
+    /// 購読を 1 件も張らないスクリプトでリストを確保しないよう、初回購読時に生成する。
+    /// </summary>
+    private List<SEED.EventSubscription>? _eventSubscriptions;
+
+    /// <summary>
+    /// 名前付きイベント（引数なし）を購読する。このスクリプトの破棄時に自動で解除される。
+    /// </summary>
+    /// <param name="name">イベント名（大文字小文字を区別）。</param>
+    /// <param name="handler">呼び出すハンドラ。</param>
+    /// <returns>購読ハンドル（早期に解除したい場合は Dispose する）。</returns>
+    protected SEED.EventSubscription On(string name, Action handler)
+        => TrackSubscription(SEED.Events.Subscribe(name, handler));
+
+    /// <summary>名前付きイベント（string 引数）を購読する。破棄時に自動解除。</summary>
+    protected SEED.EventSubscription On(string name, Action<string> handler)
+        => TrackSubscription(SEED.Events.Subscribe(name, handler));
+
+    /// <summary>名前付きイベント（float 引数）を購読する。破棄時に自動解除。</summary>
+    protected SEED.EventSubscription On(string name, Action<float> handler)
+        => TrackSubscription(SEED.Events.Subscribe(name, handler));
+
+    /// <summary>名前付きイベント（GameObject 引数）を購読する。破棄時に自動解除。</summary>
+    protected SEED.EventSubscription On(string name, Action<SEED.GameObject> handler)
+        => TrackSubscription(SEED.Events.Subscribe(name, handler));
+
+    /// <summary>
+    /// 購読ハンドルを自動解除リストへ登録する（登録に失敗したハンドルは追跡しない）。
+    /// </summary>
+    private SEED.EventSubscription TrackSubscription(SEED.EventSubscription subscription)
+    {
+        // 空名などで登録されなかったハンドル（IsActive=false）は解除不要なので抱えない。
+        if (!subscription.IsActive) return subscription;
+
+        _eventSubscriptions ??= new List<SEED.EventSubscription>();
+        _eventSubscriptions.Add(subscription);
+        return subscription;
+    }
+
+    /// <summary>
+    /// エンジン内部用: this.On で張った購読をすべて解除する。
+    /// ScriptBridge がインスタンス破棄時（OnDestroy 直後・および GCHandle 解放前）に呼ぶ。
+    /// ユーザーコードからは呼ばない。二重呼び出しは無害。
+    /// </summary>
+    internal void UnsubscribeAllEvents()
+    {
+        if (_eventSubscriptions is null) return;
+        foreach (var subscription in _eventSubscriptions) SEED.Events.Unsubscribe(subscription);
+        _eventSubscriptions.Clear();
+        _eventSubscriptions = null;
+    }
 }
