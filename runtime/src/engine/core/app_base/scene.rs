@@ -410,7 +410,12 @@ impl Scene {
             actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
         };
         let json = serde_json::to_string_pretty(&data)?;
-        std::fs::write(path, json)?;
+        // 直接 write せず「旧版を .backup へ退避 → .tmp へ書き切ってから rename」する。
+        // 途中で落ちても元の .scene は無傷で残り、誤った内容で上書きしても
+        // 直前 10 世代から戻せる（safe_write.rs のコメント参照）。
+        if let Some(warning) = crate::engine::core::app_base::safe_write::write_atomic_with_backup(path, &json)? {
+            eprintln!("[SEED SAVE] {warning}");
+        }
         Ok(())
     }
 

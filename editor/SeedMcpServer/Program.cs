@@ -3,15 +3,20 @@
 //
 //  Claude Code / Gemini CLI にエディタ操作をネイティブツールとして公開する。
 //  stdin/stdout で JSON-RPC 2.0（改行区切り）を話し、
-//  ツール呼び出しは SeedAIBridge HTTP API（http://localhost:7234/seed-ai/）へ転送する。
+//  ツール呼び出しは SeedAIBridge HTTP API へ転送する。
+//  **転送先は固定ポートではない**。seed_launch が起動した（または seed_attach で明示的に
+//  接続した）インスタンスのポートとトークンへだけ送る。束縛が無い状態では変更系ツールを
+//  一切実行しない（詳細は SeedInstance.cs と docs/editor_mcp.md のポストモーテム節）。
 //
 //  【公開ツール】
 //   ■ シーン編集（従来）
 //     seed_query(type, dir?)         → GET シーン情報またはアセット一覧
 //     seed_batch(operations: [...])  → POST 操作を一括実行（一括変更の手段）
-//   ■ ヘッドレス運用（エディタの起動・終了）
-//     seed_launch(headless?, scene?, wait_seconds?) → エディタを（既定で）画面に出さずに起動
-//     seed_shutdown()                → エディタを正常終了
+//   ■ ヘッドレス運用（インスタンスの束縛・起動・終了）
+//     seed_launch(headless?, scene?, wait_seconds?) → 空きポート＋トークンでエディタを起動し束縛
+//     seed_attach(port, token)       → 利用者が明示的に許可したエディタへ接続
+//     seed_instance()                → 現在の束縛状態
+//     seed_shutdown()                → 束縛中のエディタを正常終了
 //   ■ 目視確認・アニメ編集（追加）
 //     seed_screenshot(target, method?, path?) → キャプチャを画像として返す（既定は GPU 読み戻し）
 //     seed_state()                   → エディタ状態（Edit/Play/Pause・シーン・選択）
@@ -43,8 +48,10 @@ using System.Threading.Tasks;
 
 // ── 設定 ─────────────────────────────────────────────────────────────────────
 
-/// <summary>SeedAIBridge（エディタ内 HTTP サーバー）のベース URL。</summary>
-const string API_BASE = "http://localhost:7234/seed-ai";
+// SeedAIBridge（エディタ内 HTTP サーバー）のベース URL は固定値ではない。
+// 「この MCP サーバーが seed_launch で起動した（あるいは seed_attach で明示的に
+//  繋いだ）インスタンス」のポートを SeedInstance が保持しており、そこから解決する。
+// かつてここが 7234 固定だったために、利用者のエディタを誤って操作する事故が起きた。
 
 /// <summary>
 /// HTTP のタイムアウト（秒）。
@@ -65,7 +72,7 @@ const string SCREENSHOT_METHOD_SCREEN = "screen";
 var http = new HttpClient { Timeout = TimeSpan.FromSeconds(HTTP_TIMEOUT_SECONDS) };
 
 // stderr をログ用に使う（stdout は JSON-RPC 専用で汚してはいけない）
-Console.Error.WriteLine($"[SeedMcpServer] 起動 — SEED API: {API_BASE}");
+Console.Error.WriteLine("[SeedMcpServer] 起動 — 操作対象は seed_launch / seed_attach で束縛します（既定では未束縛）。");
 
 // ── メインループ: 1 行 = 1 JSON-RPC メッセージ ────────────────────────────────
 string? line;
@@ -133,15 +140,31 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
 
     try
     {
+        // ── インスタンス束縛のゲート ─────────────────────────────
+        // seed_launch / seed_attach でこの MCP サーバーが操作対象を束縛するまで、
+        // 変更系ツールは一切実行しない。既定ポートに居る「利用者のエディタ」へ
+        // 暗黙に接続してしまう事故（ポストモーテム参照）を構造的に防ぐ。
+        var denial = SeedMcpServer.SeedInstance.CheckToolAllowed(name);
+        if (denial is not null)
+        {
+            return Reply(id, new
+            {
+                content = new[] { new { type = "text", text = denial } },
+                isError = true
+            });
+        }
+
         // スクリーンショットだけは画像コンテンツを返すため専用経路
         if (name == "seed_screenshot")
             return await HandleScreenshotAsync(id, args, http);
 
         var result = name switch
         {
-            // ヘッドレス運用: エディタの起動・終了
+            // ヘッドレス運用: エディタの起動・終了・接続
             "seed_launch"            => await HandleLaunchAsync(args),
-            "seed_shutdown"          => await PostCmdAsync(http, "shutdown",          args),
+            "seed_attach"            => await HandleAttachAsync(args),
+            "seed_instance"          => SeedMcpServer.SeedInstance.ToJson(),
+            "seed_shutdown"          => await HandleShutdownAsync(http, args),
 
             "seed_query"             => await ExecQueryAsync(args, http),
             "seed_batch"             => await ExecBatchAsync(args, http),
@@ -191,18 +214,17 @@ static async Task<string> ExecQueryAsync(JsonElement args, HttpClient http)
 
     if (type == "scene")
     {
-        var resp = await http.GetAsync($"{API_BASE}/scene");
-        return await resp.Content.ReadAsStringAsync();
+        return await GetWithTokenAsync(http, $"{SeedMcpServer.SeedInstance.ApiBase}/scene");
     }
 
     if (type == "assets")
     {
         var dir = args.TryGetProperty("dir", out var d) ? d.GetString() ?? "" : "";
+        var apiBase = SeedMcpServer.SeedInstance.ApiBase;
         var url = string.IsNullOrEmpty(dir)
-            ? $"{API_BASE}/assets"
-            : $"{API_BASE}/assets?dir={Uri.EscapeDataString(dir)}";
-        var resp = await http.GetAsync(url);
-        return await resp.Content.ReadAsStringAsync();
+            ? $"{apiBase}/assets"
+            : $"{apiBase}/assets?dir={Uri.EscapeDataString(dir)}";
+        return await GetWithTokenAsync(http, url);
     }
 
     return $"ERROR: 不明な type '{type}'（scene / assets のいずれかを指定）";
@@ -260,11 +282,9 @@ static async Task<string> ExecBatchAsync(JsonElement args, HttpClient http)
             opJson = op.GetRawText();
         }
 
-        var content = new StringContent(opJson, Encoding.UTF8, "application/json");
         try
         {
-            var resp   = await http.PostAsync($"{API_BASE}/cmd", content);
-            var result = await resp.Content.ReadAsStringAsync();
+            var result = await PostRawAsync(http, opJson);
             sb.AppendLine($"[Op {i}] {result.TrimEnd()}");
             if (IsErrorResult(result))
                 failure++;
@@ -386,7 +406,78 @@ static async Task<string> HandleLaunchAsync(JsonElement args)
             waitSeconds = wEl.GetDouble();
     }
 
-    return await SeedMcpServer.Launcher.LaunchAsync(API_BASE, headless, scene, waitSeconds);
+    return await SeedMcpServer.Launcher.LaunchAsync(headless, scene, waitSeconds);
+}
+
+/// <summary>
+/// seed_attach: 利用者が開いているエディタへ、明示的な同意（ポート＋トークン）で接続する。
+///
+/// トークンはエディタの「編集 → 環境設定」に表示される。利用者がそれを渡したときにだけ
+/// 成立するので、AI が勝手に対話エディタへ繋ぐことはできない。
+/// </summary>
+static async Task<string> HandleAttachAsync(JsonElement args)
+{
+    if (args.ValueKind != JsonValueKind.Object
+        || !args.TryGetProperty("port", out var portEl)
+        || portEl.ValueKind != JsonValueKind.Number)
+    {
+        return "ERROR: port（数値）が必要です。エディタの「編集 → 環境設定」に表示されています。";
+    }
+    if (!args.TryGetProperty("token", out var tokenEl)
+        || tokenEl.ValueKind != JsonValueKind.String
+        || string.IsNullOrWhiteSpace(tokenEl.GetString()))
+    {
+        return "ERROR: token（文字列）が必要です。エディタの「編集 → 環境設定」に表示されています。";
+    }
+
+    return await SeedMcpServer.Launcher.AttachAsync(portEl.GetInt32(), tokenEl.GetString()!);
+}
+
+/// <summary>
+/// seed_shutdown: 束縛中のインスタンスを終了させ、束縛を解除する。
+///
+/// エディタ側も「ヘッドレス、または利用者が AI 操作を許可したインスタンス」でなければ
+/// shutdown を拒否する。ここで束縛を解除するのは、終了済みの相手へ以後の
+/// コマンドを投げ続けないため。
+/// </summary>
+static async Task<string> HandleShutdownAsync(HttpClient http, JsonElement args)
+{
+    var result = await PostCmdAsync(http, "shutdown", args);
+    if (!IsErrorResult(result)) SeedMcpServer.SeedInstance.Clear();
+    return result;
+}
+
+/// <summary>
+/// 束縛中インスタンスのトークンを載せて GET する。
+/// トークンが無い（未束縛での観測系）場合はヘッダーを付けない。
+/// </summary>
+static async Task<string> GetWithTokenAsync(HttpClient http, string url)
+{
+    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+    AttachToken(req);
+    var resp = await http.SendAsync(req);
+    return await resp.Content.ReadAsStringAsync();
+}
+
+/// <summary>束縛中インスタンスのトークンを載せて POST /cmd する（本文はそのまま送る）。</summary>
+static async Task<string> PostRawAsync(HttpClient http, string body)
+{
+    using var req = new HttpRequestMessage(
+        HttpMethod.Post, $"{SeedMcpServer.SeedInstance.ApiBase}/cmd")
+    {
+        Content = new StringContent(body, Encoding.UTF8, "application/json"),
+    };
+    AttachToken(req);
+    var resp = await http.SendAsync(req);
+    return await resp.Content.ReadAsStringAsync();
+}
+
+/// <summary>束縛中インスタンスのトークンをリクエストヘッダーへ付ける。</summary>
+static void AttachToken(HttpRequestMessage req)
+{
+    var token = SeedMcpServer.SeedInstance.Token;
+    if (!string.IsNullOrEmpty(token))
+        req.Headers.Add(SeedMcpServer.SeedInstance.TOKEN_HEADER, token);
 }
 
 /// <summary>
@@ -398,13 +489,11 @@ static async Task<string> PostCmdAsync(HttpClient http, string cmd, JsonElement 
     var body = BuildCmdBody(cmd, args);
     try
     {
-        var content = new StringContent(body, Encoding.UTF8, "application/json");
-        var resp    = await http.PostAsync($"{API_BASE}/cmd", content);
-        return await resp.Content.ReadAsStringAsync();
+        return await PostRawAsync(http, body);
     }
     catch (Exception ex)
     {
-        return $"ERROR: SEED エディタへ接続できません（{API_BASE}）。"
+        return $"ERROR: SEED エディタへ接続できません（{SeedMcpServer.SeedInstance.ApiBase}）。"
              + "エディタが起動していません。seed_launch を呼んで起動してください"
              + "（自動起動はしません）。"
              + $"詳細: {ex.Message}";
@@ -467,8 +556,7 @@ static async Task<int> FetchActorCountAsync(HttpClient http)
 {
     try
     {
-        var resp = await http.GetAsync($"{API_BASE}/scene");
-        var json = await resp.Content.ReadAsStringAsync();
+        var json = await GetWithTokenAsync(http, $"{SeedMcpServer.SeedInstance.ApiBase}/scene");
         using var doc = JsonDocument.Parse(json);
         if (doc.RootElement.ValueKind == JsonValueKind.Array)
             return doc.RootElement.GetArrayLength();
@@ -500,6 +588,8 @@ static string InjectActorDfsId(JsonElement op, int dfsId)
 static object[] BuildToolList() => new[]
 {
     SeedLaunchTool(),
+    SeedAttachTool(),
+    SeedInstanceTool(),
     SeedShutdownTool(),
     SeedQueryTool(),
     SeedBatchTool(),
@@ -526,8 +616,11 @@ static object SeedLaunchTool() => new
         "SEED エディタを起動する（既定はヘッドレス＝画面に何も出さない）。"
       + "ヘッドレスではウィンドウを画面外へ置いたまま WPF とランタイムを動かすため、"
       + "人が見ていない環境でも seed_play / seed_screenshot(method=\"gpu\") が正しく動く。"
-      + "すでに起動していれば何もせず現在の状態を返す（already_running=true）。"
-      + "他のツールが「エディタへ接続できません」を返したら、まずこれを呼ぶこと。",
+      + "空きポート（7300〜7399）とランダムなトークンを選び、起動したプロセスの pid と"
+      + "トークンが一致することを確認してから成功を返す。以後この MCP サーバーは"
+      + "**そのインスタンスだけ**を操作する（利用者が開いているエディタには一切触れない）。"
+      + "この MCP サーバーがすでにインスタンスを束縛していれば already_running=true を返す。"
+      + "他のツールが「seed_launch で起動したインスタンスのみ操作できます」を返したら、まずこれを呼ぶこと。",
     inputSchema = new
     {
         type       = "object",
@@ -552,13 +645,50 @@ static object SeedLaunchTool() => new
     }
 };
 
+/// <summary>
+/// seed_attach: 利用者が開いているエディタへ明示的に接続するツール定義。
+/// トークンはエディタの環境設定に表示され、利用者が渡したときだけ成立する。
+/// </summary>
+static object SeedAttachTool() => new
+{
+    name        = "seed_attach",
+    description =
+        "利用者がすでに開いている SEED エディタへ接続する（明示的な同意が必要）。"
+      + "エディタ側で「編集 → 環境設定 → AI 操作を許可（このインスタンス）」をオンにすると"
+      + "ポートとトークンが表示されるので、それを利用者から受け取って渡すこと。"
+      + "AI の判断だけで対話中のエディタへ接続することはできない。"
+      + "通常のヘッドレス作業では seed_launch を使い、このツールは使わない。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            port  = new { type = "number", description = "エディタの環境設定に表示されているポート番号。" },
+            token = new { type = "string", description = "エディタの環境設定に表示されているインスタンストークン。" }
+        },
+        required = new[] { "port", "token" }
+    }
+};
+
+/// <summary>seed_instance: 現在の束縛状態（どのインスタンスを操作しているか）を返す。</summary>
+static object SeedInstanceTool() => new
+{
+    name        = "seed_instance",
+    description =
+        "この MCP サーバーが現在操作対象として束縛しているエディタインスタンスを返す"
+      + "（bound / port / pid / headless / attached）。"
+      + "bound=false のときは変更系ツールがすべて拒否される。",
+    inputSchema = EmptySchema()
+};
+
 static object SeedShutdownTool() => new
 {
     name        = "seed_shutdown",
     description =
-        "SEED エディタを正常終了させる（ランタイム子プロセスも停止する）。"
+        "束縛中の SEED エディタを正常終了させる（ランタイム子プロセスも停止する）。"
       + "seed_launch で起動したセッションの後始末に使う。応答を返してから終了するため、"
-      + "呼び出しは成功で返り、その直後にプロセスが消える。",
+      + "呼び出しは成功で返り、その直後にプロセスが消える。"
+      + "利用者が開いている対話エディタは既定で終了できない（エディタ側が拒否する）。",
     inputSchema = EmptySchema()
 };
 
@@ -824,8 +954,24 @@ static object SeedLogTool() => new
 static object SeedSaveSceneTool() => new
 {
     name        = "seed_save_scene",
-    description = "現在のシーンを保存する（Ctrl+S 相当）。Edit 状態でのみ実行でき、保存完了通知まで待つ。",
-    inputSchema = EmptySchema()
+    description =
+        "現在のシーンを保存する（Ctrl+S 相当）。Edit 状態でのみ実行でき、保存完了通知まで待つ。"
+      + "ヘッドレスインスタンスでは confirm:true が必須（利用者が見ていない場所で "
+      + ".scene を書き換えないための安全弁）。"
+      + "他のエディタが同じシーンを開いている（.lock がある）場合は拒否される。"
+      + "ランタイムが実際に読み込んでいるシーンと保存先が違う場合も拒否される。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            confirm = new
+            {
+                type        = "boolean",
+                description = "ヘッドレスで保存する場合は true を明示する。省略すると拒否される。"
+            }
+        }
+    }
 };
 
 static object SeedSendIpcTool() => new

@@ -81,6 +81,8 @@ mod physics_ops;
 mod physics_timeline;
 mod tab_physics;
 mod script_scene_ops;
+/// シーン保存のパス整合性ガード（誤ったパスへの上書きを止める）
+mod scene_save_ops;
 /// 埋め込みインプレース Play（フェーズ2）: ENTER_PLAY / EXIT_PLAY の状態遷移とアクター退避/復元。
 mod play_mode_ops;
 /// 【一時】埋め込み Play の凍結/黒画面 診断計器（ウォッチドッグ・ステージ印・イベントトレース）。原因確定後に撤去。
@@ -675,6 +677,20 @@ pub struct App {
     editor_resources: Option<String>,
     /// Play モードで読み込むシーンパス。None なら project_settings.json の start_scene を使う。
     scene_path: Option<String>,
+
+    /// **実際に読み込み済みのシーンのパス**（単一の真実）。
+    ///
+    /// `scene_path` は「起動時に読めと言われたパス」でしかなく、その後の
+    /// `LOAD_SCENE` では変わらない。保存先の妥当性を判断するには
+    /// 「いまメモリ上にあるシーンがどのファイル由来か」が要るのでこれを持つ。
+    ///
+    /// - `LOAD_SCENE` / 起動時ロードの成功時にだけ更新する
+    /// - `SCENE_LOADED:<path>` でエディタへ通知する（エディタ側の現在シーンパスの出所）
+    /// - `SAVE_SCENE` はこの値と保存先が一致するときしか書き込まない
+    ///
+    /// `None` は「まだ何も読み込んでいない（新規シーン）」を意味し、その場合の
+    /// `SAVE_SCENE` は初回保存として受理してこの値を採用する。
+    loaded_scene_path: Option<String>,
 
     /// カメラ操作（中ボタン／右ボタン）開始時のスクリーン座標。
     ///
@@ -1379,6 +1395,8 @@ impl App {
             assets_root:      args.assets_root,
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,
+            // 実際に読み込んだシーンのパスはロード成功時にだけ入る（起動直後は未確定）。
+            loaded_scene_path: None,
             cam_grab_screen_pos: None,
             camera_cursor: Default::default(),
             play_clamp: false,

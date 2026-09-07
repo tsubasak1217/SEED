@@ -24,7 +24,7 @@ public sealed class EditorPreferencesWindow : Window
 
     // ── レイアウト定数 ────────────────────────────────────────
     private const double WindowW = 420;
-    private const double WindowH = 330;
+    private const double WindowH = 470;
     private const double LabelColumnWidth = 140;
 
     // ── 配色（他の設定ウィンドウと統一したダークテーマ）────────
@@ -39,6 +39,18 @@ public sealed class EditorPreferencesWindow : Window
 
     /// <summary>「選択でシーンタブを自動切替」のチェックボックス。</summary>
     private readonly CheckBox _cbSceneTabAutoSwitch;
+
+    /// <summary>
+    /// 「AI 操作を許可（このインスタンス）」のチェックボックス。
+    ///
+    /// 外部エージェント（MCP / CLI）からの**変更系**コマンドの可否を切り替える。
+    /// 既定はオフ（読み取り専用）で、**永続化しない**。エディタを再起動すると
+    /// 必ずオフへ戻る。うっかり許可したまま忘れる状態を作らないための設計。
+    /// </summary>
+    private readonly CheckBox _cbAllowAiOperations;
+
+    /// <summary>AI 操作の接続情報（ポート・トークン）を表示するテキスト。</summary>
+    private readonly TextBlock _txtAiEndpoint;
 
     public EditorPreferencesWindow()
     {
@@ -88,6 +100,35 @@ public sealed class EditorPreferencesWindow : Window
             Margin = new Thickness(0, 6, 0, 0),
         });
 
+        // ── AI 操作の許可（このインスタンス限り）──
+        _cbAllowAiOperations = new CheckBox
+        {
+            Content    = "AI 操作を許可（このインスタンス）",
+            IsChecked  = SEEDEditor.AI.AiOperationPolicy.MutationsEnabled,
+            Foreground = Text,
+            FontSize   = 12,
+            Margin     = new Thickness(0, 16, 0, 0),
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        panel.Children.Add(_cbAllowAiOperations);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "MCP / CLI エージェントからの変更操作（保存・シーン編集・再生・終了）を許可します。\n"
+                 + "既定はオフで、オフの間は状態取得とスクリーンショットしか通しません。\n"
+                 + "この設定は保存されません（エディタを再起動すると必ずオフに戻ります）。",
+            Foreground = Dim, FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+        });
+
+        // 接続情報（seed_attach に必要な値）。トークンが無いインスタンスはその旨を出す。
+        _txtAiEndpoint = new TextBlock
+        {
+            Text = BuildAiEndpointText(),
+            Foreground = Dim, FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
+        panel.Children.Add(_txtAiEndpoint);
+
         // ── OK / キャンセル ──
         var btnRow = new StackPanel
         {
@@ -129,6 +170,30 @@ public sealed class EditorPreferencesWindow : Window
         // シーンタブ自動切替の設定を反映する
         EditorPreferences.Instance.SceneTabAutoSwitch = _cbSceneTabAutoSwitch.IsChecked == true;
         EditorPreferences.Save();
+
+        // AI 操作の許可はセッション限りの状態なので EditorPreferences には保存しない。
+        // 変更したことはログへ残す（後から「誰が許可したか」を追えるようにするため）。
+        var allowAi = _cbAllowAiOperations.IsChecked == true;
+        if (allowAi != SEEDEditor.AI.AiOperationPolicy.MutationsEnabled)
+        {
+            SEEDEditor.AI.AiOperationPolicy.MutationsEnabled = allowAi;
+            EditorLog.Write($"[AI 操作] このインスタンスの変更操作を{(allowAi ? "許可" : "禁止")}しました。 "
+                          + BuildAiEndpointText());
+        }
+    }
+
+    /// <summary>
+    /// AI ブリッジの接続情報（seed_attach に渡す値）を 1 行で表す。
+    /// トークンはこのインスタンスを名指しするための値であり、
+    /// 利用者が意図して渡すときだけ使う。
+    /// </summary>
+    private static string BuildAiEndpointText()
+    {
+        var token = SEEDEditor.AI.AiOperationPolicy.Token;
+        var tokenText = string.IsNullOrEmpty(token)
+            ? "（トークンなし。seed_attach には --ai-token 付きで起動したインスタンスが必要です）"
+            : token;
+        return $"接続先: ポート {SEEDEditor.AI.AiOperationPolicy.Port} / トークン {tokenText}";
     }
 
     // ── UI 部品生成 ───────────────────────────────────────────

@@ -268,6 +268,11 @@ impl App {
             },
         );
 
+        // 「いま何を読み込んでいるか」を確定させる（保存先の突き合わせに使う）。
+        // シーン遷移は Play 中にしか起きないが、読み込み中パスの更新規約は
+        // 3 経路（起動時ロード / LOAD_SCENE / スクリプト遷移）で揃えておく。
+        self.set_loaded_scene_path(&path);
+
         // 物理を新シーンの内容で再起動する
         if had_physics    { self.start_physics(); }
         if had_physics_2d { self.start_physics_2d(); }

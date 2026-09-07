@@ -84,10 +84,31 @@ public partial class EditorCommandExecutor
     ///   seed_batch 内部でも EditorCommandExecutor が呼ばれるが、バッチ内の各操作では
     ///   中間結果が Gemini に届かないため自動取得は無駄な IPC 往復になる。
     /// </param>
+    /// <param name="origin">
+    /// コマンドの発信元。既定は <see cref="AiCommandOrigin.UserInitiated"/>（＝AI アシスタント
+    /// パネルからの、利用者自身が起こした操作）。HTTP ブリッジ経由の外部プロセスからの
+    /// リクエストは <see cref="AiCommandOrigin.Remote"/> を渡すこと。両者は同じ許可判定
+    /// （<see cref="AiOperationPolicy.CheckAllowed"/>）を通り、Remote だけが
+    /// 読み取り専用ポリシーの対象になる。
+    /// </param>
     /// </summary>
-    public async Task<string> ExecuteAsync(ToolCall toolCall, bool includeSceneInfo = true)
+    public async Task<string> ExecuteAsync(
+        ToolCall toolCall,
+        bool includeSceneInfo = true,
+        AiCommandOrigin origin = AiCommandOrigin.UserInitiated)
     {
         _log($"[AI ツール] {toolCall.FunctionName}({toolCall.ArgumentsJson})");
+
+        // ── 実行許可の判定（唯一の関門）──────────────────────────
+        // パネル内蔵 AI も外部エージェントもここを通る。判定そのものを 1 か所に
+        // まとめておくことで、経路を増やしたときに検査漏れが起きないようにする。
+        var denial = AiOperationPolicy.CheckAllowed(toolCall.FunctionName, origin);
+        if (denial is not null)
+        {
+            var denyMsg = $"エラー: {denial}";
+            _log($"[AI ツール] {toolCall.FunctionName} を拒否しました: {denial}");
+            return denyMsg;
+        }
 
         try
         {
@@ -250,9 +271,13 @@ public partial class EditorCommandExecutor
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        File.WriteAllText(fullPath, content);
-        _log($"[AI ツール] write_asset_file → {fullPath}");
-        return $"'{relPath}' に {content.Length} 文字を書き出しました。";
+        // 既存ファイルを上書きするときは、旧版を <assets>/.backup へ退避してから
+        // 原子的に置換する（AI の書き込みで .anim / .scene を失わないため）。
+        var backup = SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(fullPath, content, assetsRoot);
+        _log($"[AI ツール] write_asset_file → {fullPath}"
+           + (backup is null ? "" : $"（旧版を {backup} へ退避）"));
+        return $"'{relPath}' に {content.Length} 文字を書き出しました。"
+             + (backup is null ? "" : $"（上書き前のファイルは .backup へ退避済み）");
     }
 
     /// <summary>

@@ -193,6 +193,9 @@ public partial class MainWindow : IEditorAiHost
             return $"シーン保存は Edit 状態でのみ実行できます（現在: {_runtimeManager.State}）。";
         if (_currentScenePath is null && _activeActorPath is null)
             return "保存先が未確定です（新規シーン）。エディタで一度「名前を付けて保存」してください。";
+        // 別インスタンスがこのシーンを開いている間は保存させない。
+        // ここで弾かないと DoQuickSave が黙って何もせず、保存完了通知を待ち続けてしまう。
+        if (SceneSaveDenialReason is { } denial) return denial;
 
         var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnSaved(bool ok, string err) => tcs.TrySetResult(ok ? null : err);

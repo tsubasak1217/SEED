@@ -101,11 +101,27 @@ public partial class EditorCommandExecutor
             "anim_preview_stop" => ExecuteAnimPreviewStop(args),
             "anim_reload"       => ExecuteAnimReload(args),
             "get_log"           => ExecuteGetLog(args),
-            "save_scene"        => await ExecuteSaveSceneAsync(),
+            "save_scene"        => await ExecuteSaveSceneAsync(args),
             "get_editor_state"  => ExecuteGetEditorState(),
             _                   => null,
         };
     }
+
+    // ── 保存の明示同意 ───────────────────────────────────────────
+
+    /// <summary>ヘッドレスでの保存に必要な明示同意フラグの引数名。</summary>
+    private const string SaveConfirmKey = "confirm";
+
+    /// <summary>明示同意が無いままヘッドレス保存を要求されたときのメッセージ。</summary>
+    private const string SaveConfirmRequiredMessage =
+        "ヘッドレスインスタンスでのシーン保存には confirm:true が必要です"
+      + "（利用者が見ていない場所で .scene を書き換えないための安全弁）。";
+
+    /// <summary>引数から真偽値を取り出す。未指定・型違いは false。</summary>
+    private static bool GetBool(JsonElement args, string key)
+        => args.ValueKind == JsonValueKind.Object
+        && args.TryGetProperty(key, out var el)
+        && el.ValueKind == JsonValueKind.True;
 
     // ── コマンド実装 ─────────────────────────────────────────────
 
@@ -387,10 +403,16 @@ public partial class EditorCommandExecutor
     }
 
     /// <summary>現在のシーンを保存する（Ctrl+S 相当）。</summary>
-    private async Task<string> ExecuteSaveSceneAsync()
+    private async Task<string> ExecuteSaveSceneAsync(JsonElement args)
     {
         var host = Host;
         if (host is null) return Error("エディタ本体へ接続されていません（host 未設定）。");
+
+        // ヘッドレスインスタンスの保存は明示同意（confirm:true）を要求する。
+        // AI が「とりあえず保存」してしまうと、利用者が見ていない場所で
+        // .scene が書き換わる。保存は必ず意図した操作として行わせる。
+        if (SEEDEditor.Headless.EditorStartupOptions.IsHeadless && !GetBool(args, SaveConfirmKey))
+            return Error(SaveConfirmRequiredMessage);
 
         var error = await host.SaveSceneAsync(VisualSaveTimeoutMs);
         if (error is not null) return Error(error);

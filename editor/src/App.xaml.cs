@@ -41,6 +41,12 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         Headless.EditorStartupOptions.Parse(e.Args);
+        // AI ブリッジの許可ポリシー（ポート・トークン・読み取り専用既定）を確定させる。
+        // MainWindow → AIAssistantPanel がブリッジを起動するより前に済ませておく必要がある。
+        AI.AiOperationPolicy.Configure(
+            Headless.EditorStartupOptions.AiPort,
+            Headless.EditorStartupOptions.AiToken,
+            Headless.EditorStartupOptions.IsHeadless);
         base.OnStartup(e);
     }
 }

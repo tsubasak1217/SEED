@@ -101,3 +101,20 @@
 - [ ] **2D ノードのレイアウト計算が 5 か所に重複コピーされている** — 2026-09-07。`collect_sprite_items` / `collect_canvas_rects` / `collect_canvas_id_items` / `pick_2d::walk_pick_candidates_2d` / `physics2d_ops::collect_actor2d_contexts` が、root_auto 上書き → eff_viewport → アンカー → eff_ct → size_scale → self_world_rs → 子への継承、という同じ 60〜80 行をそれぞれ持っている。今回の「子のアンカー基準サイズ」バグは、この重複のうち 1 か所（`physics2d_ops` のギズモ用アンカー）だけ挙動が違ったせいで「ギズモは正しいのに描画がずれる」という形で表面化した。アンカー部分は共通ヘルパー（`node_anchor_offset` / `child_anchor_basis`）へ切り出したが、残りは未統合。`CanvasNodePlacement::resolve()` のような純関数へ一本化したい。関連: 上記 5 ファイル。
 
 - [ ] **入れ子 2D の anchor 仕様がドキュメント化されていない** — 2026-09-07。「anchor は**親の CanvasComponent 領域**に対する比率で、Canvas 領域を持たない親（Sprite など）の子では anchor は効かない（親の原点＝親の position 点が基準）」という規則を docs 側に明記する。エディタのインスペクタでも、親が Canvas 領域を持たないときは anchor 欄をグレーアウトするのが親切。
+
+## MCP 安全機構（2026-09-07 のシーン上書き事故対応の残件）
+
+事故の経緯と入れた対策は **docs/editor_mcp.md の 7 章・8 章**（正典）を参照。
+ここには「今回のスコープ外として意図的に残したもの」だけを書く。
+
+- [ ] **`seed_attach` の実機フローが未検証** — 2026-09-07。実装（エディタ側の環境設定チェックボックス＋ポート・トークン表示、MCP 側 `seed_attach`）は入れて単体テストも通したが、**動作中のエディタを使った往復は行っていない**（利用者のエディタが起動中だったため、静的検証のみで完了させた）。次に対話エディタを触るときに「環境設定でオン → 表示された値で `seed_attach` → 変更系ツールが通る → オフに戻すと拒否される」を一度確認すること。
+
+- [ ] **`--ai-token` なしのインスタンスへは `seed_attach` できない** — 2026-09-07。トークンは起動引数からしか設定できないため、利用者が普通に起動したエディタ（トークンなし）は環境設定で「AI 操作を許可」しても `seed_attach` の対象にならない（ブリッジ側のトークン検証は素通しなので、実際には既定ポートへ直接叩けば通ってしまう）。**厳密にやるなら、環境設定でオンにした瞬間にトークンを生成して表示し、以後そのトークンを要求する**（＝ブリッジのトークンを実行時に設定できるようにする）。今回は「既定は読み取り専用」で実害を止めることを優先した。関連: `editor/src/AI/AiOperationPolicy.cs`（`Token` が `Configure` でしか入らない）。
+
+- [ ] **保存の可否をシーンの中身（scene_id / name）でも照合していない** — 2026-09-07。`SAVE_SCENE` はパスの一致だけを見ている。`.scene` のトップレベルには `name` があるので、「ファイルに書かれている name とランタイムのシーン名が食い違うときも拒否する」という二重化ができる。ただし別名保存直後などは正当に食い違うため、規約を決めてからにする。関連: `runtime/src/engine/core/app_base/app/scene_save_ops.rs`。
+
+- [ ] **`.backup` の総量に上限が無い** — 2026-09-07。1 ファイルあたり 10 世代までは切り詰めるが、ファイル数が増えれば `<assets>/.backup/` は際限なく育つ（大きなシーンだと 1 世代で数 MB）。古い世代を日数で掃除する仕組みか、エディタ側に「バックアップを整理」メニューが要る。関連: `runtime/src/engine/core/app_base/safe_write.rs`、`editor/src/Assets/SafeFileWriter.cs`。
+
+- [ ] **終了時の保存失敗で `_pendingClose` が残る（既存の不具合）** — 2026-09-07 に発見、今回は未修正。`OnWindowClosing` の「保存して終了」で保存が失敗すると `OnSaveCompleted` の失敗側が `_pendingClose` をクリアしないため、フラグが立ったままになる。次に別の保存が成功した瞬間にウィンドウが閉じる。今回パス不一致で保存が失敗しうるようになったので、遭遇確率は上がっている。関連: `editor/src/MainWindow.Scene.cs::OnSaveCompleted`。
+
+- [ ] **`.actor` / `.anim` にはシーンロックが無い** — 2026-09-07。ロックは `.scene` だけ。プレハブ（`.actor`）を 2 つのエディタで同時に開くと、後勝ちで上書きされる（バックアップからは戻せる）。`SceneLock` は拡張子を問わない実装なので、アクタータブの開閉に繋げるだけで対応できる。関連: `editor/src/Scene/SceneLock.cs`、`editor/src/MainWindow.FileOps.cs`。

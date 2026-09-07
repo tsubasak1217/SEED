@@ -346,33 +346,19 @@ impl App {
                 IpcCommand::CreateGroupWithChildren { name, parent, children } => {
                     self.handle_create_group(name, parent, children);
                 }
+                // ── シーン保存の 3 系統 ────────────────────────────────
+                //   SAVE_SCENE      : 上書き。読み込み中のシーンパスと一致しなければ拒否する。
+                //   SAVE_SCENE_AS   : 別名保存。書いた先を以後の「読み込み中」として採用する。
+                //   SAVE_SCENE_COPY : 複製出力（Play 用一時シーン）。読み込み中パスは変えない。
+                //  可否判定と書き込みの実体は scene_save_ops.rs に集約してある。
                 IpcCommand::SaveScene(path) => {
-                    // ── 地形の実体（.tvox / .tscatter / .tcover）も一緒にフラッシュする ──
-                    //   地形は .scene の外に住んでいるため、ここで書かないと
-                    //   「Ctrl+S したのに掘った地形・積もった雪が消える」ことになる。
-                    //   書くのはダーティなチャンクだけなので、地形を触っていない
-                    //   セッションでは 1 バイトも触らない（保存が遅くならない）。
-                    //   .scene 本体より先に書き、最後の .scene 書き込みを確定操作にする。
-                    if let Err(e) = self.flush_dirty_terrain() {
-                        if let Some(ipc) = &self.ipc {
-                            ipc.send(&format!("TERRAIN_SAVE_ERROR:{e}"));
-                        }
-                    }
-                    if let Some(scene) = &self.scene {
-                        let pos = self.camera.base.transform.position;
-                        let cam_data = DebugCameraData {
-                            position: [pos.x, pos.y, pos.z],
-                            yaw:      self.camera.yaw,
-                            pitch:    self.camera.pitch,
-                            fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
-                            far:      self.camera.base.projection.far,
-                            speed:    self.camera.move_speed,
-                        };
-                        match scene.save(std::path::Path::new(&path), &cam_data) {
-                            Ok(())   => { if let Some(ipc) = &self.ipc { ipc.send("SAVE_OK"); } }
-                            Err(e)   => { if let Some(ipc) = &self.ipc { ipc.send(&format!("SAVE_ERROR:{e}")); } }
-                        }
-                    }
+                    self.save_scene_with_terrain(path, super::scene_save_ops::SceneSaveMode::Overwrite);
+                }
+                IpcCommand::SaveSceneAs(path) => {
+                    self.save_scene_with_terrain(path, super::scene_save_ops::SceneSaveMode::SaveAs);
+                }
+                IpcCommand::SaveSceneCopy(path) => {
+                    self.save_scene_with_terrain(path, super::scene_save_ops::SceneSaveMode::Copy);
                 }
                 IpcCommand::TerrainInit { config } => {
                     // ボクセル地形を初期化する（地形ツリー生成＋初期地面のメッシュ化）。
@@ -505,7 +491,13 @@ impl App {
                         // 書き出さない（テンプレートへの自己参照・二重リンク混入を防ぐ）。
                         data.prefab_source = None;
                         let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
-                        std::fs::write(&path, json).map_err(|e| e.to_string())?;
+                        // .actor もシーンと同じ「旧版を .backup へ退避 → .tmp → rename」で書く。
+                        // プレハブ本体を壊すと全インスタンスへ波及するため保護価値が高い。
+                        if let Some(w) = crate::engine::core::app_base::safe_write::write_atomic_with_backup(
+                            std::path::Path::new(&path), &json).map_err(|e| e.to_string())?
+                        {
+                            eprintln!("[SEED SAVE] {w}");
+                        }
                         Ok(())
                     })();
                     match result {
@@ -968,8 +960,12 @@ impl App {
                                 self.clock = crate::engine::core::clock::Clock::new();
                                 self.paused = false;
                             }
+                            // 「いま何を読み込んでいるか」を確定させる唯一の場所。
+                            // エディタはこの応答に載ったパスだけを現在シーンパスとして採用し、
+                            // 保存時の突き合わせにも使う（誤ったパスへの上書きを防ぐ）。
+                            self.set_loaded_scene_path(&path);
                             if let Some(ipc) = &self.ipc {
-                                ipc.send("SCENE_LOADED");
+                                ipc.send(&format!("SCENE_LOADED:{path}"));
                                 let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
                                 ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
                             }

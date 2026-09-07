@@ -853,6 +853,9 @@ impl App {
                         ..Default::default()
                     },
                 );
+                // 「いま何を読み込んでいるか」を確定させる（保存先の突き合わせに使う）。
+                // LOAD_SCENE 経路と同じ規約で 1 か所にだけ書く。
+                self.set_loaded_scene_path(&scene_path_str);
             }
             Some(Err(e)) => {
                 eprintln!("[SEED INIT] load_play_scene FAILED: {e}");

@@ -190,8 +190,20 @@ pub enum IpcCommand {
     },
     /// インスタンス名変更
     Rename { idx: u32, name: String },
-    /// シーンを指定パスへ保存
+    /// シーンを指定パスへ上書き保存する。
+    ///
+    /// **パス整合性チェック付き**。ランタイムが実際に読み込んでいるシーンのパスと
+    /// 一致しない場合は書き込まず `SAVE_ERROR:path_mismatch:<実際のパス>` を返す。
+    /// 「エディタが思っているシーン」と「ランタイムが持っているシーン」がずれた状態で
+    /// 保存すると、別シーンの内容で上書きするデータ損失が起きるため
+    /// （docs/editor_mcp.md のポストモーテム節を参照）。
     SaveScene(String),
+    /// シーンを別名保存する（「名前を付けて保存」）。
+    /// パス整合性チェックを行わず、保存後はこのパスを「読み込み中のシーン」として採用する。
+    SaveSceneAs(String),
+    /// シーンの内容を指定パスへ複製出力する（Play 用の一時シーンなど）。
+    /// パス整合性チェックを行わず、「読み込み中のシーン」も変更しない。
+    SaveSceneCopy(String),
     /// ボクセル地形を初期化する（地形ツリー生成＋初期地面）。
     /// ワイヤ形式:
     ///   - `TERRAIN_INIT`（引数なし・旧形式。現在の TerrainSettings で初期化する）
@@ -1657,6 +1669,15 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // "id,name" — name 中にカンマを含む可能性があるため parse1u_tail を使用
                             parse1u_tail(&s["RENAME:".len()..])
                                 .map(|(idx, name)| IpcCommand::Rename { idx, name: name.to_string() })
+                        }
+                        // 別名保存・複製出力は SAVE_SCENE: より前に判定する必要は無い
+                        // （"SAVE_SCENE_AS:" は "SAVE_SCENE:" で始まらない）が、
+                        // 読み手が対応関係を追えるよう 3 つを隣接させて並べる。
+                        s if s.starts_with("SAVE_SCENE_AS:") => {
+                            Some(IpcCommand::SaveSceneAs(s["SAVE_SCENE_AS:".len()..].to_string()))
+                        }
+                        s if s.starts_with("SAVE_SCENE_COPY:") => {
+                            Some(IpcCommand::SaveSceneCopy(s["SAVE_SCENE_COPY:".len()..].to_string()))
                         }
                         s if s.starts_with("SAVE_SCENE:") => {
                             Some(IpcCommand::SaveScene(s["SAVE_SCENE:".len()..].to_string()))

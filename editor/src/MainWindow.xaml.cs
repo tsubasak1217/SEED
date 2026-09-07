@@ -426,6 +426,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.EditPhysicsStateReceived      += OnEditPhysicsStateReceived;
         _runtimeManager.HierarchyUpdated              += _ => MarkDirtyFromHierarchy();
         _runtimeManager.SceneModified                 += MarkDirty;
+        // ランタイムが実際に読み込んだシーンのパス。エディタの現在シーンパスは
+        // この通知だけを正とする（誤ったパスへの上書き保存を防ぐ）。
+        _runtimeManager.SceneLoaded                   += OnRuntimeSceneLoaded;
         // ランタイム側のツールホットキー（Q/W/E/T）とツールバーの表示を同期する。
         _runtimeManager.ToolModeChanged               += OnRuntimeToolModeChanged;
         // モーダルトランスフォーム（G/R/S）の進行状態。キーフックの分岐に使う。
@@ -1309,7 +1312,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                         if (dlg.ShowDialog(this) == true)
                         {
                             _pendingClose = true;
-                            ExecuteSave(dlg.FileName);
+                            // 新規シーンの初回保存は別名保存（パス整合性チェックの対象外）。
+                            ExecuteSaveAs(dlg.FileName);
                         }
                         // Save As でキャンセルした場合は閉じない（e.Cancel = true のまま）
                     }
@@ -1329,6 +1333,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
         // ここまで来たら正常終了。クラッシュ復元用の退避データを消す。
         PanelScriptEditor.ClearRecovery();
+
+        // 自分が持っているシーンロックを解放する。残したままだと次の起動が
+        // 読み取り専用になる（プロセス死亡判定で回収はされるが、無用な混乱を招く）。
+        ReleaseSceneLock();
 
         SaveLayout();
         // シーンごとのビュー状態はデバウンス保存なので、終了時に確実に書き出す

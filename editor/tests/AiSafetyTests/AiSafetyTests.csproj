@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    AI ブリッジ／MCP の安全機構の単体テスト。
+
+    対象:
+      - AiOperationPolicy : トークン検証・読み取り専用の既定・shutdown の可否
+      - SceneLock         : ロックの stale 判定（別プロセス死亡／別マシン）
+      - SafeFileWriter    : バックアップ世代の切り詰めと原子的書き込み
+      - Launcher          : 空きポート選択・起動インスタンスの同一性検証
+      - SeedInstance      : 束縛が無いときの変更系ツール拒否
+
+    SpriteRigTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （ここに列挙したファイルが WPF 型を使い始めたらビルドが壊れ、それが設計崩れの検知器になる）
+
+    実行方法: dotnet run (project=editor/tests/AiSafetyTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AiSafety</RootNamespace>
+    <AssemblyName>AiSafetyTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\AI\AiOperationPolicy.cs">
+      <Link>Linked\AI\AiOperationPolicy.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Scene\SceneLock.cs">
+      <Link>Linked\Scene\SceneLock.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\SafeFileWriter.cs">
+      <Link>Linked\Assets\SafeFileWriter.cs</Link>
+    </Compile>
+    <!-- MCP サーバー側（インスタンス束縛・起動時の同一性検証） -->
+    <Compile Include="..\..\SeedMcpServer\SeedInstance.cs">
+      <Link>Linked\Mcp\SeedInstance.cs</Link>
+    </Compile>
+    <Compile Include="..\..\SeedMcpServer\Launcher.cs">
+      <Link>Linked\Mcp\Launcher.cs</Link>
+    </Compile>
+    <!-- テストランナー（SpriteRigTests と共用） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

@@ -283,6 +283,12 @@ public sealed class RuntimeManager : IDisposable
     private const string RUNTIME_HEADLESS_ENV_VALUE = "1";
     /// <summary>撮影成功応答の接頭辞（ランタイム screenshot_ops.rs と対）。</summary>
     public const string SCREENSHOT_DONE_PREFIX = "SCREENSHOT_DONE:";
+
+    /// <summary>
+    /// シーン読み込み完了通知の接頭辞。後ろに **ランタイムが実際に読み込んだパス** が続く。
+    /// エディタの現在シーンパスはこの通知だけを出所とする。
+    /// </summary>
+    public const string SCENE_LOADED_PREFIX = "SCENE_LOADED:";
     /// <summary>撮影失敗応答の接頭辞。</summary>
     public const string SCREENSHOT_ERROR_PREFIX = "SCREENSHOT_ERROR:";
 
@@ -321,6 +327,14 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>ランタイム側でシーンが変更されたときに発火する（ギズモドラッグ完了など）。</summary>
     public event Action? SceneModified;
+
+    /// <summary>
+    /// ランタイムがシーンを読み込み終えた（<c>SCENE_LOADED:&lt;path&gt;</c>）。
+    /// 引数は **ランタイムが実際に読み込んだシーンの絶対パス**。
+    /// エディタの「現在のシーンパス」はこの値だけを正とする。
+    /// 旧ランタイム互換でパスが無い場合は空文字。
+    /// </summary>
+    public event Action<string>? SceneLoaded;
 
     /// <summary>
     /// ランタイム側のホットキー（Q/W/E/T）でツールモードが変わったときに発火する。
@@ -890,8 +904,12 @@ public sealed class RuntimeManager : IDisposable
         SaveCompleted += OnSave;
         try
         {
-            _pipe.Send($"SAVE_SCENE:{tempPath}");
-            EditorLog.Write($"SaveCurrentSceneToTempAsync — SAVE_SCENE:{tempPath}");
+            // SAVE_SCENE ではなく SAVE_SCENE_COPY を使う。
+            // SAVE_SCENE は「ランタイムが読み込んでいるシーンのパスと一致するときだけ書く」
+            // 整合性チェック付きになったため、一時ファイルへの書き出しは弾かれてしまう。
+            // 複製出力はチェックせず、ランタイム側の「読み込み中シーン」も変更しない。
+            _pipe.Send($"SAVE_SCENE_COPY:{tempPath}");
+            EditorLog.Write($"SaveCurrentSceneToTempAsync — SAVE_SCENE_COPY:{tempPath}");
 
             // 最大 10 秒待機する（ディスク書き込みに時間がかかる場合に備える）
             var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
@@ -1756,9 +1774,16 @@ public sealed class RuntimeManager : IDisposable
             Application.Current.Dispatcher.InvokeAsync(() =>
                 Application.Current.MainWindow?.Activate());
         }
-        else if (msg == "SCENE_LOADED")
+        else if (msg == "SCENE_LOADED" || msg.StartsWith(SCENE_LOADED_PREFIX, StringComparison.Ordinal))
         {
-            EditorLog.Write("[Runtime→Editor] SCENE_LOADED");
+            // ランタイムが「実際に読み込んだシーンのパス」を返す。
+            // エディタの現在シーンパスはこの通知だけを出所とする（誤保存の防止）。
+            // 旧ランタイム（パスなし）との互換のため、パスが無い場合は空文字を渡す。
+            var loadedPath = msg.Length > SCENE_LOADED_PREFIX.Length && msg.StartsWith(SCENE_LOADED_PREFIX, StringComparison.Ordinal)
+                ? msg[SCENE_LOADED_PREFIX.Length..]
+                : "";
+            EditorLog.Write($"[Runtime→Editor] SCENE_LOADED path={loadedPath}");
+            SceneLoaded?.Invoke(loadedPath);
         }
         else if (msg.StartsWith("CAM_STATE:", StringComparison.Ordinal))
         {

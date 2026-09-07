@@ -453,6 +453,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::Undo
         | IpcCommand::Redo
         | IpcCommand::SaveScene(..)
+        | IpcCommand::SaveSceneAs(..)
+        | IpcCommand::SaveSceneCopy(..)
         | IpcCommand::SaveActor(..)
         | IpcCommand::LoadScene(..)
         | IpcCommand::OpenActor { .. }

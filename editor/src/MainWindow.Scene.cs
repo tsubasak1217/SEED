@@ -197,6 +197,9 @@ public partial class MainWindow
     private void DoQuickSave()
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
+        // 別インスタンスがこのシーンを開いている間は保存させない
+        //（後から保存した方が相手の変更を丸ごと消してしまうため）。
+        if (RefuseSaveIfReadOnly()) return;
         // キャンバス編集タブ表示中の保存はシーン保存として扱う。
         // タブを閉じてアクターをシーンへ戻してから保存する（開いたまま SAVE_SCENE
         // するとアクターが編集用世界線に居るため正しく書き出されない）。
@@ -208,6 +211,23 @@ public partial class MainWindow
             ExecuteSave(_currentScenePath);
         else
             ShowSaveAsDialog();
+    }
+
+    /// <summary>
+    /// 読み取り専用シーンの保存要求を弾く。弾いたら true。
+    /// エラーの提示（トースト＋ログ）もここで済ませる。
+    /// </summary>
+    private bool RefuseSaveIfReadOnly()
+    {
+        var reason = SceneSaveDenialReason;
+        if (reason is null) return false;
+
+        EditorLog.Write($"保存を拒否しました: {reason}");
+        // ヘッドレスではモーダルを出せないのでトーストとログのみ（非モーダル）。
+        ShowToast("読み取り専用のため保存できません");
+        if (!SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
+            MessageBox.Show(reason, "SEED Editor", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return true;
     }
 
     /// <summary>Ctrl+Shift+S / 名前を付けて保存。</summary>
@@ -248,31 +268,62 @@ public partial class MainWindow
                 dlg.FileName = System.IO.Path.GetFileName(_currentScenePath);
 
             if (dlg.ShowDialog(this) == true)
-                ExecuteSave(dlg.FileName);
+                ExecuteSaveAs(dlg.FileName);
         }
     }
 
-    /// <summary>IPC でシーン保存コマンドを送出し、パスを記録する。</summary>
+    /// <summary>
+    /// 現在のシーンを上書き保存する（IPC <c>SAVE_SCENE</c>）。
+    ///
+    /// <para>
+    /// **保存先を変える用途では使わないこと**。ランタイム側は「自分が読み込んでいる
+    /// シーンのパスと一致するか」を検査し、違えば 1 バイトも書かずに
+    /// <c>SAVE_ERROR:path_mismatch</c> を返す。別名で保存するときは
+    /// <see cref="ExecuteSaveAs"/> を使う。
+    /// </para>
+    /// </summary>
     private void ExecuteSave(string path)
     {
-        // 「名前を付けて保存」で保存先が変わる場合は、ビュー状態の保存キーも新しいパスへ移す。
-        // 移さないと、この後の操作が旧シーンのエントリへ書き込まれてしまう。
-        // 展開状態は破棄せず現在の状態を新キーへ引き継ぐ（保存でツリーが畳まれると驚きになる）。
-        bool pathChanged = !string.Equals(_currentScenePath, path, StringComparison.OrdinalIgnoreCase);
-        _currentScenePath = path;
-        if (pathChanged)
-        {
-            PanelHierarchy.MoveSceneViewKey(path);
-            PersistToolbarViewState();
-        }
+        if (RefuseSaveIfReadOnly()) return;
+
         // シーン自動再読込へ「これから自分が書き込む」と伝える。
         // 実際に .scene を書き出すのはランタイム（SAVE_SCENE の非同期処理）のため、
         // 保存完了通知（OnSaveCompleted）までを 1 つの自己書き込み窓として扱う。
         _sceneAutoReloader?.NotifySelfSaveStarted();
-        // 「名前を付けて保存」で保存先が変わったら監視対象も新しいファイルへ移す。
-        if (pathChanged) RetargetSceneAutoReloader();
         _runtimeManager?.SendToRuntime($"SAVE_SCENE:{path}");
         EditorLog.Write($"ExecuteSave — SAVE_SCENE:{path}");
+    }
+
+    /// <summary>
+    /// シーンを別名で保存する（IPC <c>SAVE_SCENE_AS</c>）。
+    ///
+    /// ランタイム側はパス整合性チェックを行わず、保存後はこのパスを
+    /// 「読み込み中のシーン」として採用する。エディタ側もビュー状態の保存キーと
+    /// 自動再読込の監視対象を新しいパスへ移す。
+    /// </summary>
+    private void ExecuteSaveAs(string path)
+    {
+        if (RefuseSaveIfReadOnly()) return;
+
+        // 保存先が変わる場合は、ビュー状態の保存キーも新しいパスへ移す。
+        // 移さないと、この後の操作が旧シーンのエントリへ書き込まれてしまう。
+        // 展開状態は破棄せず現在の状態を新キーへ引き継ぐ（保存でツリーが畳まれると驚きになる）。
+        bool pathChanged = !string.Equals(_currentScenePath, path, StringComparison.OrdinalIgnoreCase);
+        if (pathChanged)
+        {
+            // 旧シーンのロックを解放してから新しいパスを現在シーンにする。
+            ReleaseSceneLock();
+            _currentScenePath = path;
+            AcquireSceneLock(path);
+            PanelHierarchy.MoveSceneViewKey(path);
+            PersistToolbarViewState();
+            RetargetSceneAutoReloader();
+            UpdateTitle();
+        }
+
+        _sceneAutoReloader?.NotifySelfSaveStarted();
+        _runtimeManager?.SendToRuntime($"SAVE_SCENE_AS:{path}");
+        EditorLog.Write($"ExecuteSaveAs — SAVE_SCENE_AS:{path}");
     }
 
     /// <summary>IPC でアクター保存コマンドを送出する。</summary>
@@ -320,10 +371,32 @@ public partial class MainWindow
             {
                 _isSavingActor = false;
                 _pendingSceneLoad = null;
-                SEEDEditor.Headless.EditorDialogs.Show($"保存に失敗しました:\n{errorMsg}", "SEED Editor",
+                EditorLog.Write($"OnSaveCompleted — 保存失敗: {errorMsg}");
+                SEEDEditor.Headless.EditorDialogs.Show(
+                    $"保存に失敗しました:\n{DescribeSaveError(errorMsg)}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         });
+    }
+
+    /// <summary>ランタイムの SAVE_ERROR 本文を、原因の分かる日本語へ言い換える。</summary>
+    private static string DescribeSaveError(string errorMsg)
+    {
+        // ランタイムはパス不一致を "path_mismatch:<実際に読み込んでいるパス>" で返す。
+        const string mismatchTag = "path_mismatch:";
+        if (errorMsg.StartsWith(mismatchTag, StringComparison.Ordinal))
+        {
+            var actual = errorMsg[mismatchTag.Length..];
+            return "保存先とランタイムが実際に読み込んでいるシーンが違うため、書き込みを中止しました。\n"
+                 + $"ランタイムが持っているシーン: {actual}\n"
+                 + "別シーンの内容で上書きしてしまう事故を防ぐための保護です。"
+                 + "対象のシーンを開き直してから保存してください。";
+        }
+        const string noSceneTag = "no_scene_loaded";
+        if (errorMsg.Contains(noSceneTag, StringComparison.Ordinal))
+            return "ランタイムがシーンを保持していないため保存できません。シーンを開き直してください。";
+
+        return errorMsg;
     }
 
     // ── ダーティ状態管理 ─────────────────────────────────────────
@@ -365,7 +438,10 @@ public partial class MainWindow
         var name = _currentScenePath != null
             ? System.IO.Path.GetFileNameWithoutExtension(_currentScenePath)
             : "新規シーン";
-        Title = _isDirty ? $"SEED Editor — {name}*" : $"SEED Editor — {name}";
+        // 読み取り専用（他インスタンスがロック保持中）は必ずタイトルへ出す。
+        // 保存できないことに気づかないまま作業を続ける事故を防ぐため。
+        var readOnly = _sceneReadOnly ? $" {ReadOnlyTitleMark}" : "";
+        Title = _isDirty ? $"SEED Editor — {name}*{readOnly}" : $"SEED Editor — {name}{readOnly}";
         MenuQuickSave.Header = _currentScenePath != null ? "上書き保存" : "上書き保存（未保存）";
     }
 

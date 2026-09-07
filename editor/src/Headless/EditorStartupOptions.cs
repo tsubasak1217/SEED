@@ -41,6 +41,19 @@ internal static class EditorStartupOptions
     /// <summary>シーンファイルの拡張子（<c>--scene</c> の妥当性チェックに使う）。</summary>
     private const string SCENE_EXTENSION = ".scene";
 
+    /// <summary>AI ブリッジの待ち受けポートを指示するコマンドライン引数。</summary>
+    private const string ARG_AI_PORT = "--ai-port";
+    /// <summary>AI ブリッジのインスタンストークンを指示するコマンドライン引数。</summary>
+    private const string ARG_AI_TOKEN = "--ai-token";
+    /// <summary>AI ブリッジのポートを指示する環境変数名（引数の保険）。</summary>
+    private const string ENV_AI_PORT = "SEED_AI_PORT";
+    /// <summary>AI ブリッジのトークンを指示する環境変数名（引数の保険）。</summary>
+    private const string ENV_AI_TOKEN = "SEED_AI_TOKEN";
+    /// <summary>ポート番号として受け付ける最小値（0 番と特権ポートは対象外）。</summary>
+    private const int AI_PORT_MIN = 1024;
+    /// <summary>ポート番号として受け付ける最大値。</summary>
+    private const int AI_PORT_MAX = 65535;
+
     /// <summary>解析済みかどうか（多重解析を避ける）。</summary>
     private static bool _parsed;
 
@@ -49,6 +62,21 @@ internal static class EditorStartupOptions
 
     /// <summary>起動時に開くシーンの絶対パス。指定が無ければ null。</summary>
     public static string? StartupScenePath { get; private set; }
+
+    /// <summary>
+    /// AI ブリッジが待ち受けるポート。指定が無ければ null（＝既定ポートを使う）。
+    ///
+    /// 指定されている場合、そのポートを掴めなかったら**エディタは起動を中止する**。
+    /// 別のインスタンスへ黙って乗り移らせないための、意図的に厳しい仕様
+    /// （docs/editor_mcp.md のポストモーテム節を参照）。
+    /// </summary>
+    public static int? AiPort { get; private set; }
+
+    /// <summary>
+    /// AI ブリッジのインスタンストークン。指定が無ければ null（＝トークン検証なし）。
+    /// MCP サーバーは自分が起動したインスタンスのトークンだけを知っている。
+    /// </summary>
+    public static string? AiToken { get; private set; }
 
     /// <summary>
     /// コマンドライン引数と環境変数を解析する。アプリ起動時に 1 回だけ呼ぶ。
@@ -94,9 +122,57 @@ internal static class EditorStartupOptions
                 && i + 1 < args.Length)
             {
                 StartupScenePath = NormalizeScenePath(args[++i]);
+                continue;
+            }
+
+            // --ai-port N / --ai-port=N
+            var portValue = TakeValue(args, ref i, ARG_AI_PORT);
+            if (portValue is not null)
+            {
+                AiPort = ParsePort(portValue);
+                continue;
+            }
+
+            // --ai-token T / --ai-token=T
+            var tokenValue = TakeValue(args, ref i, ARG_AI_TOKEN);
+            if (tokenValue is not null)
+            {
+                AiToken = tokenValue.Length == 0 ? null : tokenValue;
             }
         }
+
+        // 引数で指定が無ければ環境変数を見る（プロセス起動方法に依らず届くようにする保険）。
+        AiPort  ??= ParsePort(Environment.GetEnvironmentVariable(ENV_AI_PORT));
+        AiToken ??= NullIfEmpty(Environment.GetEnvironmentVariable(ENV_AI_TOKEN));
     }
+
+    /// <summary>
+    /// <c>--name value</c> / <c>--name=value</c> の両形式から値を取り出す。
+    /// 一致しなければ null を返し、<paramref name="i"/> は動かさない。
+    /// </summary>
+    private static string? TakeValue(string[] args, ref int i, string name)
+    {
+        var arg = args[i];
+        if (arg.StartsWith(name + ARG_INLINE_SEPARATOR, StringComparison.OrdinalIgnoreCase))
+            return arg[(name.Length + 1)..].Trim().Trim('"');
+
+        if (string.Equals(arg, name, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            return args[++i].Trim().Trim('"');
+
+        return null;
+    }
+
+    /// <summary>ポート文字列を検証して返す。範囲外・数値でない場合は null。</summary>
+    private static int? ParsePort(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (!int.TryParse(raw.Trim(), out var port)) return null;
+        return port is >= AI_PORT_MIN and <= AI_PORT_MAX ? port : null;
+    }
+
+    /// <summary>空文字を null へ畳む。</summary>
+    private static string? NullIfEmpty(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     /// <summary>
     /// <c>--scene</c> の値を絶対パスへ正規化する。

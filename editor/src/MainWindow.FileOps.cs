@@ -371,14 +371,65 @@ public partial class MainWindow
             ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    /// <summary>シーンを読み込む（ダーティチェック済みの場合に直接呼ぶ）。</summary>
-    private void LoadScene(string path)
-    {
-        _currentScenePath = path;
-        _isDirty = false;
-        SEEDEditor.ProjectSettings.RecentProjectsManager.AddProject(path);
-        SendNavCommand($"LOAD_SCENE:{path}");
+    // ── シーンパスの整合性・多重編集ロック ──────────────────────
+    //
+    //  【なぜこの節があるか】
+    //   かつて「エディタが思っている現在シーン」と「ランタイムが実際に持っている
+    //   シーン」がずれ、Ctrl+S 相当の保存が別シーンの内容で .scene を上書きして
+    //   データを失う事故が起きた（docs/editor_mcp.md のポストモーテム節）。
+    //   対策として現在シーンパスの設定口を ApplyCurrentScenePath 1 つに絞り、
+    //   ランタイムの SCENE_LOADED:<path> 応答を正としてそこへ流し込む。
+    //   併せて 2 つ目のエディタが同じシーンを開いたら読み取り専用へ落とす。
 
+    /// <summary>
+    /// このインスタンスが現在のシーンを読み取り専用で開いているか。
+    /// 他インスタンスがロックを保持している場合に true になり、保存が禁止される。
+    /// </summary>
+    private bool _sceneReadOnly;
+
+    /// <summary>読み取り専用の原因となっているロック保持者（説明メッセージ用）。</summary>
+    private SEEDEditor.Scene.SceneLockInfo? _sceneLockHolder;
+
+    /// <summary>読み取り専用時にタイトルへ付ける印。</summary>
+    private const string ReadOnlyTitleMark = "[読み取り専用]";
+
+    /// <summary>
+    /// 現在のシーンが保存禁止（読み取り専用）かどうか。
+    /// null なら保存可、非 null なら理由メッセージ。
+    /// </summary>
+    internal string? SceneSaveDenialReason
+        => _sceneReadOnly
+            ? string.Format(SEEDEditor.Scene.SceneLock.DENY_LOCKED_FORMAT,
+                            _sceneLockHolder?.Describe() ?? "別プロセス")
+            : null;
+
+    /// <summary>
+    /// 現在のシーンパスを確定させる**唯一の場所**。
+    ///
+    /// メニューからの読み込み・IPC の LOAD_SCENE・自動再読込・AI 経由、どの経路でも
+    /// 最終的にここを通す。シーンが変わったときだけロックの張り替えとビュー状態の
+    /// 切り替えを行い、同じパスなら表示更新だけで済ませる（べき等）。
+    /// </summary>
+    /// <param name="path">ランタイムが実際に読み込んだシーンの絶対パス。</param>
+    private void ApplyCurrentScenePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        // ロックの張り替えは「別のシーンへ移った」ときだけ行う。
+        // 同じシーンの読み直し（自動再読込・ランタイム応答による再確定）で
+        // 解放→再取得すると、その一瞬だけロックが空く。
+        bool changed = !string.Equals(_currentScenePath, path, StringComparison.OrdinalIgnoreCase);
+        if (changed)
+        {
+            ReleaseSceneLock();
+            _currentScenePath = path;
+            AcquireSceneLock(path);
+        }
+
+        // 以下は同じシーンの読み直しでも必ずやり直す。
+        // 特に RetargetSceneAutoReloader はファイル内容のハッシュを取り込むため、
+        // 省略すると自分の読み込み直後の変更を外部変更と誤認して再読込ループになる。
+        //
         // シーンごとのビュー状態を切り替える。
         //  - Hierarchy: このシーンの保存済み展開キーを読み直す（保存が無ければ全折りたたみ）
         //  - 上部トグル: このシーンの保存値（無ければ既定）へ戻す
@@ -387,8 +438,6 @@ public partial class MainWindow
         LoadToolbarViewStateForCurrentScene();
 
         // シーン設定（.scene の settings 節）を新しいシーンから読み直し、ランタイムへ全項目を再送する。
-        // LOAD_SCENE はランタイムへ非同期に届くが IPC の順序は保たれるため、
-        // 必ず LOAD_SCENE の「後」に送ってシーン側の初期値を上書きする。
         LoadSceneSettingsForCurrentScene();
         if (_viewportSettingsInitialized) SyncViewportSettings();
 
@@ -398,6 +447,89 @@ public partial class MainWindow
         RetargetSceneAutoReloader();
 
         UpdateTitle();
+    }
+
+    /// <summary>
+    /// ランタイムからの <c>SCENE_LOADED:&lt;path&gt;</c> を受けて現在シーンパスを確定させる。
+    ///
+    /// <para>
+    /// Play 中のシーン差し替え（一時シーンの読み込み）でも同じ通知が飛ぶため、
+    /// **Edit 状態のときだけ**採用する。Play 用の一時シーンを現在シーンとして
+    /// 記録してしまうと、Play を止めたときにそちらを開き直してしまう。
+    /// </para>
+    /// </summary>
+    private void OnRuntimeSceneLoaded(string loadedPath)
+    {
+        // 旧ランタイム（パスなしの SCENE_LOADED）とは共存できるよう、空なら何もしない。
+        if (string.IsNullOrWhiteSpace(loadedPath)) return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_runtimeManager?.State != EditorState.Edit)
+            {
+                EditorLog.Write($"SCENE_LOADED（Edit 以外のため現在シーンには反映しない）: {loadedPath}");
+                return;
+            }
+            // Play 用の一時シーンは現在シーンにしない（停止時に開き直す先が壊れるため）。
+            if (!string.IsNullOrEmpty(_runtimeManager.PlayScenePath)
+                && string.Equals(_runtimeManager.PlayScenePath, loadedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (!string.Equals(_currentScenePath, loadedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                EditorLog.Write(
+                    $"現在シーンパスをランタイムの実体に合わせました: {_currentScenePath ?? "(なし)"} → {loadedPath}");
+            }
+            ApplyCurrentScenePath(loadedPath);
+        });
+    }
+
+    /// <summary>
+    /// シーンのロックを取得する。取れなければ読み取り専用モードへ落とす。
+    /// </summary>
+    private void AcquireSceneLock(string path)
+    {
+        var acquired = SEEDEditor.Scene.SceneLock.TryAcquire(
+            path, SEEDEditor.Headless.EditorStartupOptions.IsHeadless, out var holder);
+
+        _sceneReadOnly   = !acquired;
+        _sceneLockHolder = holder;
+
+        if (acquired) return;
+
+        var msg = string.Format(SEEDEditor.Scene.SceneLock.DENY_LOCKED_FORMAT,
+                                holder?.Describe() ?? "別プロセス");
+        EditorLog.Write($"[シーンロック] {path} — {msg}");
+        // ヘッドレスではモーダルを出せない（誰も閉じられない）ためログのみ。
+        if (!SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
+            ShowToast("別のエディタが開いているため読み取り専用で開きました");
+    }
+
+    /// <summary>現在のシーンのロックを解放する（シーン切り替え・エディタ終了時）。</summary>
+    private void ReleaseSceneLock()
+    {
+        if (_currentScenePath is null) return;
+        SEEDEditor.Scene.SceneLock.Release(_currentScenePath);
+        _sceneReadOnly   = false;
+        _sceneLockHolder = null;
+    }
+
+    /// <summary>シーンを読み込む（ダーティチェック済みの場合に直接呼ぶ）。</summary>
+    private void LoadScene(string path)
+    {
+        _isDirty = false;
+        SEEDEditor.ProjectSettings.RecentProjectsManager.AddProject(path);
+        // LOAD_SCENE はランタイムへ非同期に届くが IPC の順序は保たれるため、
+        // 後続のシーン設定送信はシーン側の初期値を必ず上書きできる。
+        SendNavCommand($"LOAD_SCENE:{path}");
+
+        // 楽観的にここでも現在シーンパスを確定させる（UI をすぐ切り替えるため）。
+        // 最終的な正はランタイムの SCENE_LOADED:<path> 応答で、
+        // ずれていれば OnRuntimeSceneLoaded がこの値を上書きする。
+        ApplyCurrentScenePath(path);
+
         EditorLog.Write($"LoadScene — LOAD_SCENE:{path}");
     }
 
