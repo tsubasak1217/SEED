@@ -15,6 +15,8 @@
 using System;
 
 using System.IO;
+using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
@@ -45,6 +47,9 @@ public partial class MainWindow : IEditorAiHost
 
     /// <summary>選択なしを表す DFS ID。</summary>
     private const int AiNoSelection = -1;
+
+    /// <summary>ゲーム入力注入（INPUT_*）でランタイムが未接続のときに返す応答（擬似応答）。</summary>
+    private const string AiInputNotConnectedReply = "INPUT_ERROR:runtime_not_connected";
 
     /// <summary>撮影応答（SCREENSHOT_DONE:）のフィールド区切り文字。</summary>
     private const string AiScreenshotFieldSeparator = ",";
@@ -186,6 +191,72 @@ public partial class MainWindow : IEditorAiHost
         {
             _runtimeManager.ProfileDumpReady  -= OnReady;
             _runtimeManager.ProfileDumpFailed -= OnFailed;
+        }
+    }
+
+    /// <inheritdoc/>
+    async Task<string?> IEditorAiHost.InjectGameInputAsync(
+        string command, int timeoutMs, bool waitSequenceDone)
+    {
+        if (_runtimeManager is null) return null;
+        // 未接続なら送っても誰も応答しない。タイムアウトを待たせず、
+        // 呼び出し元が INPUT_ERROR: と同じ扱いで整形できる擬似応答を返す。
+        if (!_runtimeManager.IsPipeConnected) return AiInputNotConnectedReply;
+
+        // 応答を取りこぼさないよう、送信より先に購読する
+        // （SelectActorAsync と同じ理由: イベントはパイプ受信スレッドで発火する）。
+        // INPUT_SEQUENCE は「受理 → 完了」の 2 通が届くため、TaskCompletionSource ではなく
+        // キュー（Channel）で受けて 1 通ずつ読み進める。
+        var channel = Channel.CreateUnbounded<string>(
+            new UnboundedChannelOptions { SingleReader = true });
+        void OnReply(string line) => channel.Writer.TryWrite(line);
+        _runtimeManager.InputInjectReplyReceived += OnReply;
+
+        try
+        {
+            _runtimeManager.SendToRuntime(command);
+
+            // タイムアウトは「一連の応答を待ち切る全体の制限時間」として 1 本で管理する。
+            using var cts = new CancellationTokenSource(timeoutMs);
+            var accepted  = false;   // INPUT_OK を受け取ったか（DONE の取り違え防止に使う）
+
+            while (true)
+            {
+                string line;
+                try
+                {
+                    line = await channel.Reader.ReadAsync(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return null;     // タイムアウト
+                }
+
+                // 拒否はその場で確定。理由をそのまま呼び出し元へ渡す。
+                if (line.StartsWith(RuntimeManager.INPUT_ERROR_PREFIX, StringComparison.Ordinal))
+                    return line;
+
+                if (line == RuntimeManager.INPUT_OK_MESSAGE)
+                {
+                    if (!waitSequenceDone) return line;
+                    accepted = true; // 受理された。あとは完了通知を待つ。
+                    continue;
+                }
+
+                if (line == RuntimeManager.INPUT_SEQUENCE_DONE_MESSAGE)
+                {
+                    // 受理応答より先に来た DONE は、以前に投げっぱなしにした
+                    // シーケンス（wait:false）の残りなので自分のものではない。
+                    if (waitSequenceDone && !accepted) continue;
+                    return line;
+                }
+
+                // 未知の応答（将来の拡張）は無視して待ち続ける。
+            }
+        }
+        finally
+        {
+            _runtimeManager.InputInjectReplyReceived -= OnReply;
         }
     }
 

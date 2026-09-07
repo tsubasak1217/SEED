@@ -81,6 +81,25 @@ public static class AiOperationPolicy
         "インスタンストークンが一致しません。"
       + "seed_launch で起動したインスタンス以外は操作できません。";
 
+    /// <summary>
+    /// ゲーム入力注入コマンドの接頭辞（<c>game_input_key</c> / <c>game_input_mouse</c> /
+    /// <c>game_input_sequence</c> / <c>game_input_release_all</c>）。
+    ///
+    /// これらは「ランタイムの入力状態を書き換えて実際にゲームを操作する」ため、
+    /// 観測系ではなく**変更系**として扱う（ReadOnlyCommands には決して入れないこと）。
+    /// 利用者が手で開いているエディタで遊んでいる最中に、外部エージェントが
+    /// 勝手にキーを押し込めるようになってはいけない。
+    /// </summary>
+    public const string GAME_INPUT_COMMAND_PREFIX = "game_input_";
+
+    /// <summary>読み取り専用インスタンスへゲーム入力注入が来たときのメッセージ。</summary>
+    public const string DENY_GAME_INPUT =
+        "このエディタは読み取り専用のため、ゲームへの入力注入（game_input_*）はできません"
+      + "（利用者が操作中のゲームを AI が横から動かさないための制限）。"
+      + "seed_launch で起動したヘッドレスインスタンスで実行するか、"
+      + "エディタの「編集 → 環境設定」で「AI 操作を許可（このインスタンス）」を"
+      + "オンにしてください。";
+
     /// <summary>ヘッドレスでないインスタンスへ shutdown が来たときのメッセージ。</summary>
     public const string DENY_SHUTDOWN =
         "shutdown は seed_launch で起動したヘッドレスインスタンスにのみ実行できます"
@@ -102,6 +121,7 @@ public static class AiOperationPolicy
         "get_log",
         "screenshot",
         "screenshot_gpu",
+        // 注意: game_input_* はここに入れない（変更系。GAME_INPUT_COMMAND_PREFIX 参照）。
     };
 
     // ── 状態 ─────────────────────────────────────────────────────
@@ -193,6 +213,12 @@ public static class AiOperationPolicy
         // shutdown は「AI が起動したヘッドレス」か「利用者が明示的に許可した」ときだけ通す。
         // 既定の対話エディタを AI が勝手に閉じることは絶対に無い（事故の再発防止）。
         if (command == "shutdown" && !IsHeadless && !MutationsEnabled) return DENY_SHUTDOWN;
+
+        // ゲーム入力の注入は変更系。拒否理由を専用メッセージにして、
+        // 「なぜ遊べないのか」がエージェント側の応答だけで分かるようにする。
+        if (command.StartsWith(GAME_INPUT_COMMAND_PREFIX, StringComparison.Ordinal)
+            && !MutationsEnabled)
+            return DENY_GAME_INPUT;
 
         // その他の変更系は「このインスタンスで AI 操作が許可されている」ことが条件。
         if (!MutationsEnabled) return DENY_READ_ONLY;

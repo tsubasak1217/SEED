@@ -181,6 +181,12 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
             "seed_save_scene"        => await PostCmdAsync(http, "save_scene",        args),
             "seed_send_ipc"          => await PostCmdAsync(http, "send_ipc",          args),
 
+            // ゲーム入力の注入: エディタ側が INPUT_* IPC を送り、1 行応答まで待って返す
+            "game_input_key"          => await PostCmdAsync(http, "game_input_key",         args),
+            "game_input_mouse"        => await PostCmdAsync(http, "game_input_mouse",       args),
+            "game_input_sequence"     => await PostCmdAsync(http, "game_input_sequence",    args),
+            "game_input_release_all"  => await PostCmdAsync(http, "game_input_release_all", args),
+
             // プロファイラ一発計測: 応答 JSON を要約表へ整形して返す専用経路
             "seed_profile"           => await HandleProfileAsync(http, args),
 
@@ -608,6 +614,10 @@ static object[] BuildToolList() => new[]
     SeedSaveSceneTool(),
     SeedSendIpcTool(),
     SeedProfileTool(),
+    GameInputKeyTool(),
+    GameInputMouseTool(),
+    GameInputSequenceTool(),
+    GameInputReleaseAllTool(),
 };
 
 /// <summary>引数を取らないツールの共通スキーマ。</summary>
@@ -758,7 +768,10 @@ static object SeedBatchTool() => new
                                 "set_value", "remove_actor", "write_asset_file",
                                 // 目視確認ループで一括実行したくなる変更系も許可する
                                 "anim_reload", "anim_preview", "anim_preview_stop",
-                                "select_actor", "play_control", "save_scene", "send_ipc"
+                                "select_actor", "play_control", "save_scene", "send_ipc",
+                                // ゲーム入力の注入（Play 中のみ有効）
+                                "game_input_key", "game_input_mouse",
+                                "game_input_sequence", "game_input_release_all"
                             },
                             description = "コマンド名"
                         },
@@ -1031,6 +1044,106 @@ static object SeedProfileTool() => new
             top     = new { type = "number", description = "要約表に出すスコープ行数（既定 40）。" }
         }
     }
+};
+
+
+// ── ゲーム入力の注入（game_input_*）────────────────────────────────────────────
+//  ランタイムの Input へ直接注入するツール群。スクリプトの SEED.Input.* /
+//  InputMap のアクションがそのまま反応する。Play 中のみ有効。
+//  IPC とその応答の仕様は docs/editor_mcp.md 9 章が正典。
+
+static object GameInputKeyTool() => new
+{
+    name        = "game_input_key",
+    description =
+        "ゲームへキー入力を注入する（Play 中のみ）。down:true で押し、false で離す。"
+      + "押しっぱなしは離すまで（または game_input_release_all / Play 停止まで）保持される。"
+      + "キー名は InputMap と同じ表記（W / Space / Enter / LeftShift / Alpha0 / UpArrow / F1 …）。"
+      + "OS のカーソルやフォーカスには影響しない。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            key  = new { type = "string",  description = "キー名（InputMap と同じ表記）" },
+            down = new { type = "boolean", description = "true = 押す / false = 離す" }
+        },
+        required = new[] { "key", "down" }
+    }
+};
+
+static object GameInputMouseTool() => new
+{
+    name        = "game_input_mouse",
+    description =
+        "ゲームへマウス操作を 1 件注入する（Play 中のみ）。"
+      + "button(+down) = ボタン押下/解放、dx,dy = 相対移動（実入力へ加算）、"
+      + "x,y = 絶対座標（ゲームビューポート左上原点 px。注入中は実カーソルより優先）、"
+      + "scroll = ホイール（ライン数）。"
+      + "1 回の呼び出しで指定できるのは 1 種類だけ。複数を組み合わせたい場合や"
+      + "「左から右へ振る」ような連続移動は game_input_sequence を使う。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            button = new
+            {
+                type        = "string",
+                @enum       = new[] { "left", "right", "middle" },
+                description = "押下/解放するボタン。指定時は down も必須。"
+            },
+            down   = new { type = "boolean", description = "button 指定時: true = 押す / false = 離す" },
+            dx     = new { type = "number",  description = "相対移動量 X（px）" },
+            dy     = new { type = "number",  description = "相対移動量 Y（px）" },
+            x      = new { type = "number",  description = "絶対座標 X（px、y と併用）" },
+            y      = new { type = "number",  description = "絶対座標 Y（px、x と併用）" },
+            scroll = new { type = "number",  description = "ホイール量（ライン数。負値で下方向）" }
+        }
+    }
+};
+
+static object GameInputSequenceTool() => new
+{
+    name        = "game_input_sequence",
+    description =
+        "時間軸付きの入力イベント列をまとめて再生する（Play 中のみ）。"
+      + "各要素は {\"t\":秒, ...} で、操作は 1 要素につき 1 個だけ書く"
+      + "（key+down / mouse_button+down / mouse_move:[dx,dy] / mouse_pos:[x,y] / scroll）。"
+      + "t は再生開始からの実時間で、省略時は 0（即時）。同じ t の要素は書いた順に同一フレームで発火する。"
+      + "既定（wait:true）では全イベントを撃ち終える（INPUT_SEQUENCE_DONE）まで待って返るので、"
+      + "直後に seed_screenshot を撮れば操作後の画面が得られる。"
+      + "例: [{\"t\":0,\"key\":\"W\",\"down\":true},{\"t\":1.0,\"key\":\"W\",\"down\":false}]",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            events = new
+            {
+                type        = "array",
+                description = "イベントの配列（docs/editor_mcp.md 9.3 節の書式）",
+                items       = new { type = "object", additionalProperties = true }
+            },
+            wait = new
+            {
+                type        = "boolean",
+                description = "true（既定）= 再生完了まで待つ / false = 受理された時点で返る"
+            }
+        },
+        required = new[] { "events" }
+    }
+};
+
+static object GameInputReleaseAllTool() => new
+{
+    name        = "game_input_release_all",
+    description =
+        "注入中のキー・マウスボタンの押下をすべて解放し、絶対座標の注入も解除する（安全弁）。"
+      + "解放されたキーはそのフレームの GetKeyUp として観測されるので、"
+      + "スクリプトの状態機械が押しっぱなしのまま取り残されない。"
+      + "一連の操作を終えたら Play を止める前にこれを呼ぶこと。",
+    inputSchema = EmptySchema()
 };
 
 // ── seed_profile: 応答 JSON の要約整形 ────────────────────────────────────────

@@ -298,6 +298,27 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<string>? ScreenshotCompleted;
 
+    // ── ゲーム入力注入（INPUT_*）の応答 ─────────────────────────
+    //  ランタイム側の実装は runtime/src/engine/core/input/inject/ 一式。
+    //  応答は「1 行 1 メッセージ」で下記 3 種類しか来ない。解釈は待ち受け側
+    //  （MainWindow.AiHost の InjectGameInputAsync）に任せ、ここでは生文字列を配るだけにする。
+
+    /// <summary>入力注入コマンドの受理応答（引数の無い完全一致メッセージ）。</summary>
+    public const string INPUT_OK_MESSAGE = "INPUT_OK";
+
+    /// <summary>入力注入コマンドの拒否応答の接頭辞。後ろに理由（not_playing など）が続く。</summary>
+    public const string INPUT_ERROR_PREFIX = "INPUT_ERROR:";
+
+    /// <summary>入力シーケンスの再生完了通知（受理応答とは別に、非同期で後から届く）。</summary>
+    public const string INPUT_SEQUENCE_DONE_MESSAGE = "INPUT_SEQUENCE_DONE";
+
+    /// <summary>
+    /// ゲーム入力注入（INPUT_*）の応答行。
+    /// <c>INPUT_OK</c> / <c>INPUT_ERROR:{reason}</c> / <c>INPUT_SEQUENCE_DONE</c> の
+    /// いずれかが生文字列のまま渡る。
+    /// </summary>
+    public event Action<string>? InputInjectReplyReceived;
+
     /// <summary>
     /// 水面シェーダの <c>@ref</c> パラメータに繋げられるバインド元候補が返ってきたときに発火する
     /// （GET_BINDABLE_SOURCES への応答。引数は JSON 文字列）。
@@ -1869,6 +1890,15 @@ public sealed class RuntimeManager : IDisposable
             var info = msg["WORLD_LINE_INFO:".Length..];
             EditorLog.Write($"[WorldLine] {info}");
             WorldLineInfoReceived?.Invoke(info);
+        }
+        else if (msg == INPUT_OK_MESSAGE
+              || msg == INPUT_SEQUENCE_DONE_MESSAGE
+              || msg.StartsWith(INPUT_ERROR_PREFIX, StringComparison.Ordinal))
+        {
+            // ゲーム入力注入（INPUT_* IPC）の応答。docs/editor_mcp.md 9.2 節を参照。
+            // 成否の判定と待ち合わせは呼び出し元（MainWindow.AiHost）が行う。
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+            InputInjectReplyReceived?.Invoke(msg);
         }
         else if (msg.StartsWith(SCREENSHOT_DONE_PREFIX, StringComparison.Ordinal)
               || msg.StartsWith(SCREENSHOT_ERROR_PREFIX, StringComparison.Ordinal))

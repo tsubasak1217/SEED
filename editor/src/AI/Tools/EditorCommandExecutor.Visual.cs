@@ -25,6 +25,7 @@
 //    get_log           : エディタログ（ランタイム stderr 含む）の末尾 N 行
 //    save_scene        : 現在のシーンを保存（Ctrl+S 相当）
 //    get_editor_state  : エディタ状態のスナップショット
+//    game_input_*      : ゲーム入力の注入（別ファイル: EditorCommandExecutor.GameInput.cs）
 // ============================================================
 
 using System;
@@ -118,6 +119,11 @@ public partial class EditorCommandExecutor
     {
         using var doc = ParseArgs(argsJson);
         var args = doc.RootElement;
+
+        // ゲーム入力の注入（game_input_*）は別ファイルへ分けている。
+        // 該当しなければ null が返るので、そのまま下の switch へ落ちる。
+        if (ExecuteGameInputTool(command, args) is { } gameInputTask)
+            return await gameInputTask;
 
         return command switch
         {

@@ -80,6 +80,27 @@ public interface IEditorAiHost
     Task<string?> ProfileDumpAsync(double seconds, int timeoutMs);
 
     /// <summary>
+    /// ゲーム入力注入コマンド（<c>INPUT_*</c>）をランタイムへ送り、1 行応答を待つ。
+    ///
+    /// <para>
+    /// ランタイムは受理で <c>INPUT_OK</c>、拒否で <c>INPUT_ERROR:{reason}</c> を返す。
+    /// <c>INPUT_SEQUENCE</c> だけは受理応答のあとに、全イベントを撃ち終えた時点で
+    /// <c>INPUT_SEQUENCE_DONE</c> が非同期で届く（詳細は docs/editor_mcp.md 9 章）。
+    /// </para>
+    /// </summary>
+    /// <param name="command">送信する IPC 文字列（例: <c>INPUT_KEY:W,down</c>）。改行を含めないこと。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <param name="waitSequenceDone">
+    /// true なら <c>INPUT_OK</c> のあとさらに <c>INPUT_SEQUENCE_DONE</c> まで待つ
+    /// （<c>INPUT_SEQUENCE</c> 用）。false なら最初の応答で返る。
+    /// </param>
+    /// <returns>
+    /// 受け取った応答行（<c>INPUT_OK</c> / <c>INPUT_ERROR:...</c> / <c>INPUT_SEQUENCE_DONE</c>）。
+    /// タイムアウト・ランタイム未初期化のときは null。
+    /// </returns>
+    Task<string?> InjectGameInputAsync(string command, int timeoutMs, bool waitSequenceDone);
+
+    /// <summary>
     /// 再生制御（play / pause / resume / stop）を実行する。
     /// エディタのプレイバーのボタンと同じ経路を通る。
     /// </summary>

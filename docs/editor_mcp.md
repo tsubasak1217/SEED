@@ -145,12 +145,17 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_save_scene` | `confirm?`（ヘッドレスでは必須） | `{ok, scene_path}` |
 | `seed_send_ipc` | `command` | `{ok, sent}` |
 | `seed_profile` | `seconds?`（既定 3・範囲 0.2〜30）, `top?`（既定 40） | 要約表（テキスト）＋ `{ok, seconds, dump:{profile, merge}}` |
+| `game_input_key` | `key`（KeyCode 名）, `down`（bool） | `{ok, sent, reply}`（Play 中のみ。9 章） |
+| `game_input_mouse` | `button?`+`down?` / `dx?`,`dy?` / `x?`,`y?` / `scroll?` のいずれか 1 種 | `{ok, sent, reply}` |
+| `game_input_sequence` | `events`（9.3 の JSON 配列）, `wait?`（既定 true） | `{ok, sent, reply}`（wait 時は `INPUT_SEQUENCE_DONE` まで待つ） |
+| `game_input_release_all` | なし | `{ok, sent, reply}` |
 
 `seed_screenshot` 以外の追加ツールは、内部的には
 `POST /seed-ai/cmd` に `{"cmd":"<コマンド名>", ...}` を投げているだけなので、
 `seed_batch` の `operations` からも同じコマンド名で呼べる
 （`anim_preview` / `anim_preview_stop` / `anim_reload` / `select_actor` / `play_control` /
-`save_scene` / `send_ipc` / `profile`）。
+`save_scene` / `send_ipc` / `profile` / `game_input_key` / `game_input_mouse` /
+`game_input_sequence` / `game_input_release_all`）。
 
 ### エディタ側コマンド名との対応
 
@@ -173,6 +178,10 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_state` | `get_editor_state` | `IEditorAiHost` の各プロパティ |
 | `seed_send_ipc` | `send_ipc` | `RuntimeManager.SendToRuntime` へ素通し |
 | `seed_profile` | `profile` | `IEditorAiHost.ProfileDumpAsync`（IPC `PROFILE_DUMP:{秒}` → `PROFILE_DUMP_DONE:{パス}`） |
+| `game_input_key` | `game_input_key` | `EditorCommandExecutor.GameInput.cs` → IPC `INPUT_KEY:{key},{down\|up}` |
+| `game_input_mouse` | `game_input_mouse` | 同上 → `INPUT_MOUSE_BUTTON` / `INPUT_MOUSE_MOVE` / `INPUT_MOUSE_POS` / `INPUT_SCROLL` |
+| `game_input_sequence` | `game_input_sequence` | 同上 → `INPUT_SEQUENCE:{json}`（応答待ちは `IEditorAiHost.InjectGameInputAsync`） |
+| `game_input_release_all` | `game_input_release_all` | 同上 → `INPUT_RELEASE_ALL` |
 
 ---
 
@@ -725,27 +734,78 @@ AI が**実際にゲームを遊んで**（キーボード・マウスを送っ�
   スクリーンショットにカーソルは写らないし、他のウィンドウにも影響しない。
 - ゲームパッドの注入は未対応（必要になったら `INPUT_PAD_*` を同じ流儀で足す）。
 
-### 9.6 エディタ / MCP 側の結線（未実装）
+### 9.6 エディタ / MCP 側の結線（実装済み）
 
-ランタイム側だけが実装済みで、**エディタ・MCP サーバー側は未着手**。
-必要な差分は以下（`seed_send_ipc` で上記コマンドを直接送れば今すぐ動作確認はできる）。
+ランタイム・エディタ・MCP のすべてが結線済みで、MCP ツールから直接ゲームを操作できる。
 
-1. `editor/src/AI/Tools/EditorCommandExecutor.Visual.cs` に `game_input_*` コマンドを追加し、
-   `RuntimeManager.SendToRuntime` で `INPUT_*` を送る。応答（`INPUT_OK` /
-   `INPUT_ERROR:` / `INPUT_SEQUENCE_DONE`）は既存の `SCREENSHOT_DONE` と同じ
-   「ランタイム → エディタの 1 行応答」待ち機構で拾う。
-2. `AiOperationPolicy` の許可表に `game_input_*` を**変更系**として登録する
-   （読み取り専用インスタンスからゲームを操作させない）。
-3. `editor/SeedMcpServer/Program.cs` に MCP ツールを追加する。
+- MCP ツール定義: `editor/SeedMcpServer/Program.cs`（`GameInputKeyTool` ほか）
+- コマンド実装: `editor/src/AI/Tools/EditorCommandExecutor.GameInput.cs`
+- 1 行応答の待ち合わせ: `editor/src/MainWindow.AiHost.cs::InjectGameInputAsync`
+  （`RuntimeManager.InputInjectReplyReceived` を購読して待つ。`SCREENSHOT_DONE` と同じ流儀だが、
+  `INPUT_SEQUENCE` は「受理 → 完了」の 2 通が届くのでキュー（`Channel`）で 1 通ずつ読む）
+- 実行許可: `editor/src/AI/AiOperationPolicy.cs`（`GAME_INPUT_COMMAND_PREFIX`）。
+  `game_input_*` は**変更系**。読み取り専用インスタンス（利用者が手で起動したエディタ）では
+  `DENY_GAME_INPUT` で拒否される。
 
 | MCP ツール | 引数 | 説明 |
 |---|---|---|
 | `game_input_key` | `key`（KeyCode 名）, `down`（bool） | キーを押す / 離す。押しっぱなしは維持される |
-| `game_input_mouse` | `button?`（left/right/middle）, `down?`, `dx?`,`dy?`（相対移動）, `x?`,`y?`（絶対座標）, `scroll?` | マウス操作 1 件。指定した種類の `INPUT_MOUSE_*` / `INPUT_SCROLL` へ振り分ける |
-| `game_input_sequence` | `events`（上記 JSON 配列）, `wait?`（既定 true = `INPUT_SEQUENCE_DONE` まで待つ） | 時間軸付き操作をまとめて再生 |
+| `game_input_mouse` | `button?`（left/right/middle）＋`down?`, `dx?`,`dy?`（相対移動）, `x?`,`y?`（絶対座標）, `scroll?` | マウス操作 1 件。**1 回につき 1 種類だけ**指定する（2 種類以上はエラー） |
+| `game_input_sequence` | `events`（9.3 の JSON 配列）, `wait?`（既定 true = `INPUT_SEQUENCE_DONE` まで待つ） | 時間軸付き操作をまとめて再生 |
 | `game_input_release_all` | なし | 注入中の押下をすべて解放 |
 
-典型ループ:
+**戻り値**（4 ツール共通）:
+
+```json
+{"ok": true,  "sent": "INPUT_KEY:W,down", "reply": "INPUT_OK"}
+{"ok": false, "sent": "INPUT_KEY:W,down", "reply": "INPUT_ERROR:not_playing",
+ "error": "Play 中ではないため入力を注入できません（…）。seed_play(action:\"play\") で再生してから呼んでください。"}
+```
+
+`reply` はランタイムの生応答、`error` はそれを読んで対処できる日本語へ言い換えたもの
+（理由コードの一覧は 9.2 節）。応答が返らなかった場合は `reply: null` とタイムアウトの旨が入る。
+
+**タイムアウト**: 単発コマンドは 5 秒。`game_input_sequence` は `wait:true` のとき
+「events の最大 `t` ＋ 5 秒」まで待つ（最大 `t` の上限は 60 秒。それより長い操作は
+分割するか `wait:false` で投げて `seed_screenshot` で確認する）。
+
+#### 使用例
+
+W を 1 秒だけ押して前進させ、その結果を撮る（単発コマンド版。押している間の待ちは
+`seed_play(wait_seconds:...)` で作る）:
+
+```
+seed_play(action:"play", wait_seconds:2)
+game_input_key(key:"W", down:true)          # → {"ok":true,"reply":"INPUT_OK"}
+seed_play(action:"pause", wait_seconds:1)   # 1 秒ぶん進めてから止める（押下は保持される）
+game_input_key(key:"W", down:false)
+seed_screenshot(target:"game", max_width:800)
+```
+
+同じことをシーケンスで（**待ち時間まで含めて 1 回で済む**ので通常はこちらを使う）:
+
+```
+game_input_sequence(events:[
+  {"t":0.0, "key":"W", "down":true},
+  {"t":1.0, "key":"W", "down":false}
+])                                     # INPUT_SEQUENCE_DONE まで待って返る
+seed_screenshot(target:"game", max_width:800)
+```
+
+マウスを左から右へ振る（1 フレームに全部入れても速度は生まれないので複数フレームへ割る）:
+
+```
+game_input_sequence(events:[
+  {"t":0.00, "mouse_move":[60,0]},
+  {"t":0.02, "mouse_move":[60,0]},
+  {"t":0.04, "mouse_move":[60,0]},
+  {"t":0.06, "mouse_move":[60,0]},
+  {"t":0.08, "mouse_move":[60,0]}
+])
+seed_screenshot(target:"game", max_width:800)
+```
+
+典型ループ（後始末を忘れないこと）:
 
 ```
 seed_play(action:"play", wait_seconds:2)
