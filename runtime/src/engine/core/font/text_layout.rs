@@ -20,7 +20,7 @@
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 
 use super::sdf::{SDF_EM_PX, SDF_SPREAD_EM};
-use super::text_wrap::{WrappedLine, wrap_lines};
+use super::text_wrap::{WrappedLine, normalize_newlines, wrap_lines};
 use crate::engine::components::{MAX_TEXT_CHARS, TextAlign, TextVerticalAlign};
 
 /// テキストブロックのローカル境界矩形（キャンバス px）。
@@ -299,11 +299,24 @@ pub fn resolve_layout(font: &FontArc, text: &str, spec: &TextLayoutSpec) -> Opti
     if text.is_empty() || spec.font_size <= 0.0 {
         return None;
     }
+
+    // 改行表記を \n に正規化してから切り詰める（正規化は normalize_newlines
+    // 1 関数に集約。詳細は text_wrap.rs のコメントを参照）。
+    //
+    // 【正規化を先に行う理由】
+    // ここで正規化した文字列を `layout.text`（ResolvedLayout::text）として
+    // 保持し、そのまま `wrap_lines` にも渡す。`wrap_lines` は自分でも同じ
+    // 関数で正規化するが、入力が既に正規化済みなら \r を含まないため
+    // 何もしない（Cow::Borrowed）。こうして「layout.text の内容」と
+    // 「wrap_lines が返す WrappedLine::range の基準文字列」を必ず一致させる
+    // （どちらかだけ正規化すると、CRLF が \r\n → \n で 1 バイト縮む分だけ
+    //  range がズレて canvas_text.rs のスライスが破綻する）。
+    let normalized = normalize_newlines(text);
     // 描画側と同じ上限で切り詰める（表示されない文字を枠に含めない）。
-    let truncated: String = if text.chars().count() > MAX_TEXT_CHARS {
-        text.chars().take(MAX_TEXT_CHARS).collect()
+    let truncated: String = if normalized.chars().count() > MAX_TEXT_CHARS {
+        normalized.chars().take(MAX_TEXT_CHARS).collect()
     } else {
-        text.to_string()
+        normalized.into_owned()
     };
 
     // 行分割（枠なし・折り返し無効なら明示改行での分割と同一）。
@@ -747,5 +760,46 @@ mod tests {
         let r = resolve_layout(&f, " ", &box_spec(200.0, 100.0, false)).unwrap();
         assert!(r.bounds.min[0] <= 0.0 && r.bounds.min[1] <= 0.0);
         assert!(r.bounds.max[0] >= 200.0 && r.bounds.max[1] >= 100.0);
+    }
+
+    /// CRLF（WPF TextBox が Enter で挿入する改行）を含む文字列でも、
+    /// LF だけの同内容と完全に同じ枠になる（本不具合の回帰テスト）。
+    ///
+    /// 正規化前は `\r` が 1 文字ぶんの幅を持つ未定義グリフとして描かれ、
+    /// 行の幅・枠の右端が余分に広がっていた。
+    #[test]
+    fn measure_text_box_ignores_carriage_return() {
+        let f = builtin();
+        let font_size = 24.0;
+        let line_spacing = 1.2;
+        let lf = measure_text_box(
+            &f, "a\nb", font_size, line_spacing,
+            TextAlign::Left, TextVerticalAlign::Top, 0.0,
+        )
+        .unwrap();
+        let crlf = measure_text_box(
+            &f, "a\r\nb", font_size, line_spacing,
+            TextAlign::Left, TextVerticalAlign::Top, 0.0,
+        )
+        .unwrap();
+        let cr = measure_text_box(
+            &f, "a\rb", font_size, line_spacing,
+            TextAlign::Left, TextVerticalAlign::Top, 0.0,
+        )
+        .unwrap();
+        assert_eq!(crlf, lf, "CRLF は LF と完全に同じ枠になる（\r が幅に混入しない）");
+        assert_eq!(cr, lf, "単独 CR も LF と完全に同じ枠になる");
+    }
+
+    /// 枠あり（box_width 指定）レイアウトでも CRLF は行数・枠高さに影響しない。
+    #[test]
+    fn resolve_layout_box_ignores_carriage_return() {
+        let f = builtin();
+        let lf = resolve_layout(&f, "A\nB", &box_spec(200.0, 0.0, false)).unwrap();
+        let crlf = resolve_layout(&f, "A\r\nB", &box_spec(200.0, 0.0, false)).unwrap();
+        assert_eq!(lf.lines.len(), crlf.lines.len(), "行数が変わらない");
+        assert_eq!(lf.bounds, crlf.bounds, "枠が変わらない");
+        // layout.text（wrap_lines の range が対応する文字列）にも \r が残らない。
+        assert!(!crlf.text.contains('\r'), "正規化済みの text に \r が残っていない");
     }
 }

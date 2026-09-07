@@ -77,6 +77,46 @@ public static class ScriptTextArea
     private const char TabChar = 't';
 
     /// <summary>
+    /// 改行表記を LF（\n）だけに正規化する（純関数）。
+    ///
+    /// 【なぜ必要か】
+    /// WPF の TextBox は Enter で CRLF（\r\n）を挿入する。
+    /// トップレベル（＋ネストクラス）の [TextArea] 文字列は
+    /// Escape がこの正規化を兼ねているが、構造体リスト内の
+    /// string メンバは JSON 経由（ScriptArray.Quote）でそのまま保存され、
+    /// Escape を通らない。そのため確定時にここで正規化しておかないと
+    /// \r がそのまま保存され、ランタイムのテキストレイアウトが
+    /// \n だけを改行とみなす都合で未定義グリフ（tofu）として描かれてしまう。
+    ///
+    /// 【正規化のルール】
+    /// - \r\n → \n（1 つの改行として畳む。次の LF を読み飛ばす）
+    /// - 単独 \r（Mac 旧式改行を含む）→ \n
+    ///
+    /// Escape もこの関数を内部で使う（規則を 1 か所に集約するため）。
+    /// </summary>
+    /// <param name="raw">生の文字列（null は空文字として扱う）。</param>
+    public static string NormalizeNewlines(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+
+        var sb = new StringBuilder(raw!.Length);
+        for (int i = 0; i < raw.Length; i++)
+        {
+            var c = raw[i];
+            if (c == '\r')
+            {
+                if (i + 1 < raw.Length && raw[i + 1] == '\n') i++;
+                sb.Append('\n');
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// 生の文字列を IPC・シーン保存用のエスケープ表記へ畳む。
     ///
     /// バックスラッシュ自体を先に 2 文字へ増やしてから改行・タブを置換するので、
@@ -89,19 +129,18 @@ public static class ScriptTextArea
     {
         if (string.IsNullOrEmpty(raw)) return string.Empty;
 
-        var sb = new StringBuilder(raw!.Length);
-        for (int i = 0; i < raw.Length; i++)
+        // 改行の正規化（CR+LF・単独 CR → LF）は NormalizeNewlines に集約する。
+        // 構造体リスト側の確定処理（ScriptTextAreaFieldBuilder）と同じ関数を
+        // 使うことで、CR の扱いが 2 か所でずれないようにする。
+        var normalized = NormalizeNewlines(raw);
+
+        var sb = new StringBuilder(normalized.Length);
+        foreach (var c in normalized)
         {
-            var c = raw[i];
             switch (c)
             {
                 case EscapeChar:
                     sb.Append(EscapeChar).Append(EscapeChar);
-                    break;
-                case '\r':
-                    // CR+LF は 1 つの改行として畳む（次の LF を読み飛ばす）
-                    if (i + 1 < raw.Length && raw[i + 1] == '\n') i++;
-                    sb.Append(EscapeChar).Append(NewLineChar);
                     break;
                 case '\n':
                     sb.Append(EscapeChar).Append(NewLineChar);

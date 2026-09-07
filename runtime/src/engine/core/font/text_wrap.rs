@@ -32,6 +32,7 @@
 //  改行での分割と完全に同一の結果を返す（枠なしテキストの従来経路）。
 // ============================================================
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use ab_glyph::FontArc;
@@ -60,6 +61,51 @@ pub const MAX_HANGING_CHARS: usize = 2;
 ///
 /// アポストロフィ（don't）とハイフン（well-known）を単語の途中で切らないため。
 const WORD_INNER_SYMBOLS: [char; 2] = ['\'', '-'];
+
+// ─── 改行の正規化 ────────────────────────────────────────────────
+
+/// 改行表記を `\n`（LF）だけに正規化する（純関数）。
+///
+/// 【なぜ必要か】
+/// WPF の `TextBox` は Enter で CRLF（`\r\n`）を挿入する。また構造体リスト
+/// 内の string は JSON 経由（`ScriptArray.Quote`）で保存されるため、
+/// トップレベル `[TextArea]` 用の CRLF→LF 正規化（エディタ側 `Escape`）を
+/// 通らずに `\r\n` のまま渡ってくる経路がある。
+/// 本エンジンの行分割・描画は `\n` だけを改行とみなすため、正規化せずに
+/// `\r` を渡すと「未定義グリフ（tofu）」として描画されてしまう。
+///
+/// 【正規化のルール】
+/// - `\r\n` → `\n`（CRLF は 1 つの改行として扱う。2 行に分裂させない）
+/// - 単独 `\r`（Mac 旧式改行を含む）→ `\n`
+///
+/// 【なぜここに集約するか】
+/// 行分割の唯一の入口は `wrap_lines`（`resolve_layout` が呼ぶ唯一の
+/// 行分割関数）なので、ここで正規化すれば描画（canvas_text.rs）・
+/// 計測（text_layout.rs の `measure_text_box` / `resolve_layout`）の
+/// 両方に自動的に効く。各所で個別に `\r` を除去するとルールがぶれるため、
+/// 正規化はこの 1 関数だけが持つ。
+///
+/// `\r` を含まない場合はアロケーションしない（`Cow::Borrowed`）。
+pub fn normalize_newlines(text: &str) -> Cow<'_, str> {
+    if !text.contains('\r') {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            // "\r\n" はまとめて 1 つの改行として \n に変換する
+            // （先読みで \n を消費し、2 行に分裂させない）。
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
+}
 
 // ─── 公開型 ────────────────────────────────────────────────────
 
@@ -221,6 +267,11 @@ fn explode_cluster(font: &FontArc, text: &str, cluster: &Cluster, font_size: f32
 ///
 /// 空文字列に対しては「幅 0 の 1 行」を返す（行数 1 = 従来の分割と同じ）。
 pub fn wrap_lines(font: &FontArc, text: &str, font_size: f32, max_width: f32) -> Vec<WrappedLine> {
+    // 改行表記を \n へ正規化する（唯一の入口。詳細は normalize_newlines のコメント）。
+    // Cow なので \r を含まない通常入力ではアロケーションが発生しない。
+    let normalized = normalize_newlines(text);
+    let text: &str = &normalized;
+
     let mut out: Vec<WrappedLine> = Vec::new();
     let mut base = 0usize;
     for para in text.split('\n') {
@@ -461,5 +512,70 @@ mod tests {
         let w = measure_line_width(&f, "あいう", font_size) + 0.01;
         let lines = wrap_lines(&f, src, font_size, w);
         assert_eq!(texts(src, &lines), vec!["あいう", "えお", "かきく", "けこ"]);
+    }
+
+    /// CRLF（`\r\n`）・単独 CR（`\r`）・LF（`\n`）はすべて同じ改行として扱われ、
+    /// 同じ行数・同じ行幅になる（本不具合の再現条件そのもの）。
+    ///
+    /// WPF の `TextBox` は Enter で CRLF を挿入するため、これを正規化しないまま
+    /// 描画すると `\r` が未定義グリフ（tofu）として描かれてしまう。
+    #[test]
+    fn crlf_and_lone_cr_are_treated_as_newline() {
+        let f = builtin();
+        let font_size = 20.0;
+
+        // 折り返しなし（max_width <= 0）経路。
+        let lf = wrap_lines(&f, "a\nb", font_size, 0.0);
+        let crlf = wrap_lines(&f, "a\r\nb", font_size, 0.0);
+        let cr = wrap_lines(&f, "a\rb", font_size, 0.0);
+
+        assert_eq!(lf.len(), 2, "LF は 2 行になる（前提）");
+        assert_eq!(crlf.len(), lf.len(), "CRLF は 1 つの改行として扱われ、3 行に分裂しない");
+        assert_eq!(cr.len(), lf.len(), "単独 CR も改行として扱われる");
+
+        for i in 0..lf.len() {
+            assert!(
+                (crlf[i].width - lf[i].width).abs() < 1e-6,
+                "CRLF 版の行幅に \r ぶんの幅が混入している（{} 行目: {} vs {}）",
+                i, crlf[i].width, lf[i].width
+            );
+            assert!(
+                (cr[i].width - lf[i].width).abs() < 1e-6,
+                "単独 CR 版の行幅に \r ぶんの幅が混入している（{} 行目: {} vs {}）",
+                i, cr[i].width, lf[i].width
+            );
+        }
+
+        // wrap_lines が返す range は「正規化後」の文字列に対するバイト範囲になる
+        // （resolve_layout 側も同じ正規化結果を layout.text として保持するため整合する）。
+        // ここでは normalize_newlines を直接使って範囲の妥当性と \r 不在を確認する。
+        let normalized_crlf = normalize_newlines("a\r\nb");
+        let normalized_cr = normalize_newlines("a\rb");
+        assert_eq!(normalized_crlf.as_ref(), "a\nb", "CRLF は 1 文字の \n に正規化される");
+        assert_eq!(normalized_cr.as_ref(), "a\nb", "単独 CR も \n に正規化される");
+        for l in &crlf {
+            assert!(
+                !normalized_crlf[l.range.clone()].contains('\r'),
+                "折り返し結果の範囲に \r が残っている"
+            );
+        }
+        for l in &cr {
+            assert!(
+                !normalized_cr[l.range.clone()].contains('\r'),
+                "折り返し結果の範囲に \r が残っている"
+            );
+        }
+    }
+
+    /// 折り返し（max_width > 0）経路でも CRLF は 1 つの改行として扱われる
+    /// （段落分割 = `split('\n')` の前で正規化されているため）。
+    #[test]
+    fn crlf_is_single_newline_when_wrapping_enabled() {
+        let f = builtin();
+        let font_size = 20.0;
+        let w = measure_line_width(&f, "あいう", font_size) + 0.01;
+        let lf = wrap_lines(&f, "あいうえお\nかきくけこ", font_size, w);
+        let crlf = wrap_lines(&f, "あいうえお\r\nかきくけこ", font_size, w);
+        assert_eq!(lf.len(), crlf.len(), "CRLF でも折り返し結果の行数が変わらない");
     }
 }

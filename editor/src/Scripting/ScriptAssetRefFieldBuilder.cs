@@ -83,12 +83,44 @@ internal static class ScriptAssetRefFieldBuilder
             ? value
             : "Project パネルまたはエクスプローラーから " + string.Join(" / ", dotted) + " をドロップ";
 
+        // ── クリア（×）ボタン（表示更新から参照するため先に生成）────
+        // ハンドラは下で表示更新関数を定義してから差し込む。
+        var clearBtn = MakeIconButton(
+            "Icon.Close", BrushText, "参照を解除する",
+            () => { },
+            iconSize: ClearButtonIconSize,
+            isEnabled: hasPath);
+
+        // 行内の表示を新しい値に合わせる。
+        // pathBox は読み取り専用で、ユーザー操作（ダイアログ／ドロップ／×）が
+        // テキストボックス自体を書き換えないため、onChange の通知だけでは表示が
+        // 古い値のまま残る（次にインスペクタ全体が再構築されるまで）。
+        // ここで表示名・ツールチップ・× の有効状態を即時に同期する。
+        void UpdateDisplay(string newValue)
+        {
+            var has = !string.IsNullOrEmpty(newValue);
+            pathBox.Text    = has ? Path.GetFileName(newValue) : UnsetText;
+            pathBox.ToolTip = has
+                ? newValue
+                : "Project パネルまたはエクスプローラーから " + string.Join(" / ", dotted) + " をドロップ";
+            clearBtn.IsEnabled = has;
+        }
+
         // 値を確定してランタイムへ送る共通処理（参照ボタン・ドロップの両方から呼ぶ）
         void CommitAbsolutePath(string absolutePath)
         {
             if (assetPathToVirtual is null) return;
-            onChange(assetPathToVirtual(absolutePath));
+            var virtualPath = assetPathToVirtual(absolutePath);
+            onChange(virtualPath);
+            UpdateDisplay(virtualPath);
         }
+
+        // × クリア: 空文字を送り、表示も未設定に戻す
+        clearBtn.Click += (_, _) =>
+        {
+            onChange(string.Empty);
+            UpdateDisplay(string.Empty);
+        };
 
         if (canEdit) AttachDrop(pathBox, dotted, CommitAbsolutePath);
 
@@ -118,13 +150,6 @@ internal static class ScriptAssetRefFieldBuilder
             };
             if (dlg.ShowDialog() == true) CommitAbsolutePath(dlg.FileName);
         };
-
-        // ── クリア（×）ボタン ────────────────────────────────
-        var clearBtn = MakeIconButton(
-            "Icon.Close", BrushText, "参照を解除する",
-            () => onChange(string.Empty),
-            iconSize: ClearButtonIconSize,
-            isEnabled: hasPath);
 
         // ── 3 つを 1 つのコントロールへまとめる ───────────────
         var grid = new Grid();

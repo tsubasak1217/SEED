@@ -22,6 +22,15 @@ namespace SEEDEditor.Scripting;
 /// 呼び出し側（<see cref="ScriptInspectorBuilder"/> のトップレベル行の入口）が行う。
 /// 構造体リストのメンバとして使われる場合は、要素が JSON オブジェクト文字列として
 /// 運ばれるためエスケープは不要（JSON 文字列リテラルの規則で既に畳まれている）。
+///
+/// 【CRLF の正規化（本ビルダーの責務）】
+/// WPF の TextBox は Enter で CRLF（\r\n）を挿入する。トップレベル経路は
+/// 呼び出し側の Escape が CRLF を LF へ正規化するが、構造体リスト経路は
+/// Escape を通らず JSON へそのまま乗るため、正規化しないと \r がランタイムの
+/// テキストレイアウトで未定義グリフ（tofu）として描かれてしまう。
+/// そこで確定（LostFocus）時にここで <c>SEED.ScriptTextArea.NormalizeNewlines</c>
+/// を通し、どちらの経路でも \r が残らないようにする
+/// （トップレベル経路では Escape 側の正規化と重複するが、既に \r が無いので副作用はない）。
 /// </summary>
 internal static class ScriptTextAreaFieldBuilder
 {
@@ -37,7 +46,7 @@ internal static class ScriptTextAreaFieldBuilder
     /// <param name="field">フィールド情報（ラベル・説明・行数）。</param>
     /// <param name="lines">表示行数（1 以上。解決済みの値を渡すこと）。</param>
     /// <param name="value">現在値（生の改行を含む文字列）。</param>
-    /// <param name="onChange">確定時の通知（生の改行を含む文字列を渡す）。</param>
+    /// <param name="onChange">確定時の通知（改行を LF へ正規化した文字列を渡す）。</param>
     public static UIElement Build(
         ScriptFieldInfo field, int lines, string value, Action<string> onChange)
     {
@@ -50,7 +59,9 @@ internal static class ScriptTextAreaFieldBuilder
         tb.VerticalContentAlignment    = VerticalAlignment.Top;
         tb.Height                      = (lines * RowFontSize * LineHeightRatio) + VerticalChromeHeight;
 
-        tb.LostFocus += (_, _) => onChange(tb.Text);
+        // CRLF・単独 CR を LF へ正規化してから通知する（クラスコメントの
+        // 「CRLF の正規化」を参照。構造体リスト経路の \r 未定義グリフ不具合の修正）。
+        tb.LostFocus += (_, _) => onChange(SEED.ScriptTextArea.NormalizeNewlines(tb.Text));
 
         return MakeRow(field, null, tb);
     }
