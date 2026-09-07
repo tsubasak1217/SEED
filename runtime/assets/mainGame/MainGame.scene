@@ -2974,8 +2974,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -350.0259,
-                  36.749
+                  154.5213,
+                  242.3263
                 ],
                 "rotation": -12.0,
                 "scale": [
@@ -2987,8 +2987,8 @@
                   0.5
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  0.0,
+                  0.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -3053,8 +3053,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  383.9088,
-                  122.6579
+                  -120.6383,
+                  -82.9194
                 ],
                 "rotation": -12.0,
                 "scale": [
@@ -3066,8 +3066,8 @@
                   0.5
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  1.0,
+                  1.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -3132,21 +3132,21 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -22.1784,
-                  -104.341
+                  300.0,
+                  140.0
                 ],
                 "rotation": -12.0,
                 "scale": [
-                  0.6667,
-                  0.6667
+                  0.5833,
+                  0.5
                 ],
                 "pivot": [
                   0.5,
                   0.5
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  0.0,
+                  0.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -3203,21 +3203,21 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  22.1784,
-                  104.341
+                  -300.0,
+                  -140.0
                 ],
                 "rotation": -12.0,
                 "scale": [
-                  0.6667,
-                  0.6667
+                  0.5833,
+                  0.5
                 ],
                 "pivot": [
                   0.5,
                   0.5
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  1.0,
+                  1.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
