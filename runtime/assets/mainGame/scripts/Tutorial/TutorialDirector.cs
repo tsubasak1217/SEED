@@ -907,6 +907,7 @@ public class TutorialDirector : SEEDScript
         TutorialRules.FishLevelFilter         = data.fishLevelFilter;
         TutorialRules.FishPrefabFilter        = data.fishPrefabFilter ?? TutorialRules.NoPrefabFilter;
         TutorialRules.FishPrefabExclusive     = data.fishPrefabExclusive;
+        TutorialRules.FishPrefabRequired      = data.fishPrefabRequired ?? TutorialRules.NoPrefabFilter;
         TutorialRules.FishPopulationOverride  = data.fishPopulationOverride;
         TutorialRules.ChainDisabled           = data.chainDisabled;
         TutorialRules.DriftDisabled           = data.driftDisabled;

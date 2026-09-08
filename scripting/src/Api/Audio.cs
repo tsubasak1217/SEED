@@ -15,6 +15,8 @@ public static class Audio
     private const int CmdStopBgm = 2;
     private const int CmdSetBgmVolume = 3;
     private const int CmdSetBgmSpeed = 4;
+    private const int CmdPauseBgm = 5;
+    private const int CmdResumeBgm = 6;
 
     /// <summary>
     /// 効果音を再生する（多重再生可）。
@@ -36,6 +38,25 @@ public static class Audio
     /// <summary>BGM を停止する。</summary>
     public static void StopBgm()
         => ScriptHost.AudioCommand(CmdStopBgm, "", 0f, 0);
+
+    /// <summary>
+    /// BGM を一時停止する（<b>再生位置を保持したまま</b>止める）。
+    ///
+    /// <see cref="StopBgm"/> と違い、<see cref="ResumeBgm"/> で<b>止めた位置から</b>続けられる。
+    /// ゲーム時間を止めている間だけ BGM も凍結し、再開時に拍の位相をそのまま繋ぎたい
+    /// （リズムゲームのループなど）場面で使う。
+    ///
+    /// BGM が鳴っていないとき・既に一時停止しているときは何も起きない（多重呼び出し安全）。
+    /// </summary>
+    public static void PauseBgm()
+        => ScriptHost.AudioCommand(CmdPauseBgm, "", 0f, 0);
+
+    /// <summary>
+    /// <see cref="PauseBgm"/> で止めた BGM を、止めた位置から再開する。
+    /// BGM が鳴っていないとき・再生中のときは何も起きない（多重呼び出し安全）。
+    /// </summary>
+    public static void ResumeBgm()
+        => ScriptHost.AudioCommand(CmdResumeBgm, "", 0f, 0);
 
     /// <summary>再生中の BGM の音量を変更する（1.0 = 等倍）。</summary>
     public static void SetBgmVolume(float volume)

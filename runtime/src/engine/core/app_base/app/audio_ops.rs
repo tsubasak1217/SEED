@@ -65,6 +65,16 @@ impl App {
                         audio.stop_bgm();
                     }
                 }
+                ScriptAudioCommand::PauseBgm => {
+                    if let Some(audio) = &mut self.audio {
+                        audio.pause_bgm();
+                    }
+                }
+                ScriptAudioCommand::ResumeBgm => {
+                    if let Some(audio) = &mut self.audio {
+                        audio.resume_bgm();
+                    }
+                }
                 ScriptAudioCommand::SetBgmVolume { volume } => {
                     if let Some(audio) = &mut self.audio {
                         audio.set_bgm_volume(volume);

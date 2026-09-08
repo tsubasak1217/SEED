@@ -106,6 +106,23 @@ public struct TutorialMission
     public bool fishPrefabExclusive;
 
     /// <summary>
+    /// <b>最低 1 匹は海に居させたい</b>魚の .actor パスに含まれる文字列（例 kumanomi）。空なら指定なし。
+    ///
+    /// 【<see cref="fishPrefabFilter"/> との違い】
+    /// <list type="bullet">
+    ///   <item><see cref="fishPrefabFilter"/> は「出す魚を<b>その 1 種に固定</b>する」指定
+    ///         （抽選より優先されるので、補充される魚が全部その種類になる）。</item>
+    ///   <item>こちらは「<b>ほかの魚種は普通に抽選しつつ</b>、その魚種が 1 匹も居なければ
+    ///         優先的に 1 匹だけ補充する」指定。釣り上げて居なくなればまた 1 匹補充される。</item>
+    /// </list>
+    /// 「〇〇を釣ろう」という狙い撃ちのミッションで、海の顔ぶれはランダムのまま
+    /// <b>目当ての魚が必ず 1 匹は居る</b>状態を保証するために使う。
+    /// 指定した魚がそのレベルの候補（FishLevelEntry の魚 prefab リスト）に無ければ何も起きない。
+    /// </summary>
+    [SerializeField(Label = "必ず含める魚種", Tooltip = "最低 1 匹は居させたい魚の .actor 名の一部（例 kumanomi）。空で指定なし")]
+    public string fishPrefabRequired;
+
+    /// <summary>
     /// このミッションの間、対象レベルの自然出現の維持数をこの値へ強制的に置き換える。
     /// 0（既定）は「上書きしない＝<see cref="FishLevelEntry.maintainCount"/> のまま」を表す
     /// （<see cref="TutorialRules.NoPopulationOverride"/> と同じ約束）。

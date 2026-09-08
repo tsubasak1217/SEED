@@ -88,6 +88,17 @@ public static class TutorialRules
     /// </summary>
     public static bool FishPrefabExclusive;
 
+    /// <summary>
+    /// <b>最低 1 匹は維持したい</b>魚の .actor パスに含まれる文字列（例 <c>"kumanomi"</c>）。
+    /// <see cref="NoPrefabFilter"/>（空文字）で指定なし。
+    ///
+    /// <see cref="FishPrefabFilter"/> が「出す魚をその 1 種へ固定する」のに対し、
+    /// こちらは<b>他の魚種の抽選はそのままに</b>、対象の魚が 1 匹も居ないときだけ
+    /// 優先的に 1 匹補充させる（<see cref="FishManager"/> の個体補充が読む）。
+    /// 釣り上げて居なくなれば、次の補充でまた 1 匹だけ供給される。
+    /// </summary>
+    public static string FishPrefabRequired = NoPrefabFilter;
+
     /// <summary>維持数の上書き「上書き無し」を表す値。</summary>
     public const int NoPopulationOverride = 0;
 
@@ -241,6 +252,7 @@ public static class TutorialRules
         FishLevelFilter      = NoLevelFilter;
         FishPrefabFilter     = NoPrefabFilter;
         FishPrefabExclusive  = false;
+        FishPrefabRequired   = NoPrefabFilter;
         FishPopulationOverride = NoPopulationOverride;
         ChainDisabled        = false;
         DriftDisabled        = false;

@@ -436,6 +436,10 @@ pub enum ScriptAudioCommand {
     PlayBgm { path: String, volume: f32, looped: bool },
     /// BGM を停止する
     StopBgm,
+    /// BGM を一時停止する（再生位置を保持したまま止める）
+    PauseBgm,
+    /// 一時停止した BGM を止めた位置から再開する
+    ResumeBgm,
     /// BGM の音量を変更する
     SetBgmVolume { volume: f32 },
     /// BGM の再生速度を変更する（1.0 = 等倍。速度に比例してピッチも変わる）
@@ -2723,6 +2727,8 @@ const AUDIO_CMD_PLAY_BGM: i32 = 1;       // BGM 再生（path, volume, flag=ル�
 const AUDIO_CMD_STOP_BGM: i32 = 2;       // BGM 停止
 const AUDIO_CMD_SET_BGM_VOLUME: i32 = 3; // BGM 音量変更（volume）
 const AUDIO_CMD_SET_BGM_SPEED: i32 = 4;  // BGM 再生速度変更（volume 引数を速度として使う）
+const AUDIO_CMD_PAUSE_BGM: i32 = 5;      // BGM 一時停止（再生位置を保持）
+const AUDIO_CMD_RESUME_BGM: i32 = 6;     // BGM 再開（一時停止した位置から）
 
 /// オーディオコマンドを発行する。受理=1 / 失敗=0。
 ///
@@ -2749,6 +2755,8 @@ unsafe extern "system" fn ffi_audio(
         AUDIO_CMD_STOP_BGM       => ScriptAudioCommand::StopBgm,
         AUDIO_CMD_SET_BGM_VOLUME => ScriptAudioCommand::SetBgmVolume { volume },
         AUDIO_CMD_SET_BGM_SPEED  => ScriptAudioCommand::SetBgmSpeed { speed: volume },
+        AUDIO_CMD_PAUSE_BGM      => ScriptAudioCommand::PauseBgm,
+        AUDIO_CMD_RESUME_BGM     => ScriptAudioCommand::ResumeBgm,
         _ => return 0,
     };
     AUDIO_COMMANDS.with(|q| q.borrow_mut().push(cmd));

@@ -27,8 +27,17 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <b>再生位置 API が無いことへの対処</b>
 /// スクリプト API には再生位置・長さの取得手段が無いため、素材の長さは
 /// <see cref="clipSeconds"/>（実測値）を人が入れる<b>データ駆動</b>とし、
-/// 経過時間はこのスクリプトが <c>ctx.DeltaTime</c> の積算で自前に管理する。
+/// 経過時間はこのスクリプトが実時間の積算で自前に管理する。
 /// 素材を差し替えたら <see cref="clipSeconds"/> も更新すること。
+///
+/// <b>時間停止（Time.Scale = 0）中も進める理由【重要】</b>
+/// オーディオの再生は <c>Time.Scale</c> の影響を受けない（鳴りっぱなしになる）。
+/// にもかかわらず経過時間を <c>ctx.DeltaTime</c>（＝スケール適用後のゲーム時間）で
+/// 積むと、チュートリアルの説明中（<c>Time.Scale = 0</c>）に音だけが進んで
+/// タイマーが止まり、素材の末尾に達してもクロスフェードが始まらない。
+/// <see cref="SEED.AudioSource.Loop"/> は false なので<b>そのまま無音になる</b>。
+/// そこで経過時間は必ず <see cref="SEED.Time.UnscaledDeltaTime"/>（実時間）で積む。
+/// 環境音は時間停止中も鳴り続けるのが正しい挙動である。
 ///
 /// <b>ホットリロードについて</b>
 /// スクリプトを再読み込みするとインスタンスが作り直されるため、
@@ -142,7 +151,10 @@ public class AmbientLoop : SEEDScript
         }
     }
 
-    /// <summary>経過時間を進め、クロスフェードの開始・進行・完了を処理する。</summary>
+    /// <summary>
+    /// 経過時間（実時間）を進め、クロスフェードの開始・進行・完了を処理する。
+    /// 時間停止中（<c>Time.Scale = 0</c>）も進む点に注意（クラスコメント参照）。
+    /// </summary>
     public override void Update(ref NativeFrameContext ctx)
     {
         if (!playing)
@@ -156,7 +168,10 @@ public class AmbientLoop : SEEDScript
             return;
         }
 
-        float dt = ctx.DeltaTime;
+        // 【重要】スケール後の ctx.DeltaTime ではなく実時間で積む。
+        // 音は Time.Scale の影響を受けずに鳴り続けるので、時間停止中も
+        // 同じ速さで進めないと再生位置とタイマーがズレて無音になる。
+        float dt = SEED.Time.UnscaledDeltaTime;
         currentElapsed += dt;
 
         if (crossfading)

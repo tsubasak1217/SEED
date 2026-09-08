@@ -536,7 +536,7 @@ Time.Scale                // float（get/set）: ゲーム時間の進む速さ�
 | 水面・水位シミュレーション・インタラクション場 | 止まる |
 | `Time.UnscaledDeltaTime` / `Time.UnscaledElapsedTime` | 止まらない |
 | 入力（`Input.*`） | 止まらない |
-| オーディオ（`Audio.PlayBgm` などの再生） | 止まらない（BGM は鳴り続ける） |
+| オーディオ（`Audio.PlayBgm` / `AudioSource` の再生） | 止まらない（`Scale = 0` でも鳴り続ける。止めたいときは `Audio.PauseBgm` / `AudioSource.Stop` を明示的に呼ぶ） |
 | `Update` などフェーズの呼び出しそのもの | 止まらない（毎フレーム呼ばれ続ける） |
 | エディタのカメラ操作・Edit モードのプレビュー | 影響なし（Play 中のみ効く） |
 
@@ -848,11 +848,14 @@ SEED.Audio.Play("assets://sounds/hit.ogg", 0.5f);       // 音量指定
 SEED.Audio.PlayBgm("assets://sounds/stage1.ogg");
 SEED.Audio.PlayBgm("assets://sounds/jingle.ogg", 0.8f, loop: false);
 
+SEED.Audio.PauseBgm();           // BGM を一時停止（再生位置は保持）
+SEED.Audio.ResumeBgm();          // 一時停止した位置から再開
 SEED.Audio.SetBgmVolume(0.3f);   // BGM 音量を変更
 SEED.Audio.SetBgmSpeed(1.25f);   // BGM 再生速度を変更（1.0 = 等倍）
 SEED.Audio.StopBgm();            // BGM を停止
 ```
 
+- `PauseBgm` / `ResumeBgm` は **Sink を破棄せずに止める／続ける**ので、再生位置（＝ループの途中位置）がそのまま保たれます。`StopBgm` → `PlayBgm` は必ず先頭からの再生になるため、位相を保ったまま止めたい場面（`Time.Scale = 0` に合わせてリズムのループを凍結するなど）では `PauseBgm` を使ってください。BGM が無い／既に同じ状態のときは何も起きません（多重呼び出し安全）。**`Time.Scale` は BGM を自動では止めません**（下表のとおりオーディオは dt 駆動ではありません）。止めたいときは明示的に `PauseBgm` を呼びます。
 - `SetBgmSpeed` は早送り／スロー再生なので、**速度に比例してピッチも変わります**（テンポだけを変える機能ではありません）。値は 0.25〜4.0 にクランプされ、BGM を差し替えても保持されます（`PlayBgm` の前後どちらで指定しても同じ結果）。等倍へ戻すときは明示的に `1.0` を渡してください。素材の BPM が分かっていれば `SetBgmSpeed(目標BPM / 素材BPM)` で任意のテンポに合わせられます。
 - 同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。
 - オーディオデバイスが無い環境では全操作が無音で無視されます（エラーになりません）。

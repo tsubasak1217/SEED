@@ -34,7 +34,10 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 放っておくと出題の頭とズレる。そこで <see cref="drumRestartAtCall"/>（既定 true）で
 /// <b>出題フェーズの頭ごとにループを鳴らし直す</b>ことを既定の同期手段とし、
 /// <see cref="drumResyncBars"/> 小節ごとの定期再同期は任意の補助として残す。
-/// <see cref="Paused"/> 中は止め、再開時は次のループ境界へ揃えて鳴らし直す。
+/// <see cref="Paused"/>・チュートリアルの説明中は <see cref="SEED.Audio.PauseBgm"/> で
+/// <b>再生位置ごと凍結</b>し、再開時に <see cref="SEED.Audio.ResumeBgm"/> で続きから鳴らす。
+/// 拍時計も同じ区間で止まっているので、位相は自動的に一致する
+/// （停止→頭出しで鳴らし直す方式は、次のループ境界まで最大 1 周ぶん無音になるため廃止）。
 /// メトロノームと併用する前提だが、メトロノームの音量を 0 にすればドラムだけにもできる。
 ///
 /// ■ フェーズ（LeadIn だけ<b>拍単位</b>・それ以外は<b>小節単位</b>、切り替えは必ず小節頭）
@@ -1015,7 +1018,11 @@ public class FishingFight : SEEDScript
     /// <summary>ドラムループを鳴らし直す周期（秒）。0 以下なら再同期しない。</summary>
     private float drumResyncSeconds = 0f;
 
-    /// <summary><see cref="Paused"/> によってドラムを止めたか（再開時に整列して鳴らし直す）。</summary>
+    /// <summary>
+    /// <see cref="Paused"/>（またはチュートリアルの説明）によってドラムを
+    /// <b>一時停止</b>しているか（true = <see cref="ResumeDrumLoop"/> 待ち）。
+    /// 停止（<see cref="StopDrumLoop"/>）とは違い再生位置は保持されている。
+    /// </summary>
     private bool drumPausedByFight = false;
 
     /// <summary>現在のフェーズが始まった時刻（秒・必ず小節頭）。</summary>
@@ -1338,13 +1345,9 @@ public class FishingFight : SEEDScript
         // 時計も値も一切進めない。
         if (Paused || suppressedByTutorial)
         {
-            // 拍時計だけが止まってドラムが鳴り続けると位相が壊れるので、ドラムも止める。
-            // 再開時は次のループ境界（＝小節頭）へ揃えて鳴らし直す（UpdateDrumLoop 参照）。
-            if (drumPlaying)
-            {
-                StopDrumLoop();
-                drumPausedByFight = true;
-            }
+            // 拍時計だけが止まってドラムが鳴り続けると位相が壊れるので、ドラムも凍結する。
+            // 再生位置ごと止める（PauseDrumLoop）ので、再開時は続きから鳴らせば位相が合う。
+            PauseDrumLoop();
             ApplyUi();
             return;
         }
@@ -1361,11 +1364,8 @@ public class FishingFight : SEEDScript
         // 釣り上げの成立判定はコントローラ側（HP 0 かつ竿先の近傍）が行う。
         if (FishDefeated)
         {
-            if (drumPlaying)
-            {
-                StopDrumLoop();
-                drumPausedByFight = true;
-            }
+            // 拍時計を止めるのと同じ理由でドラムも凍結する（終了時に ResetRuntimeState が止める）
+            PauseDrumLoop();
             ApplyUi();
             return;
         }
@@ -1726,11 +1726,12 @@ public class FishingFight : SEEDScript
     {
         if (!drumScheduled) { return; }
 
-        // 一時停止から戻ったフレーム: 次のループ境界（＝小節頭）まで開始を持ち越す
+        // 一時停止から戻ったフレーム: 止めた位置から鳴らし直す。
+        // 一時停止中は拍時計（clockTime）もドラムの再生位置も同時に凍結していたので、
+        // 続きから再開するだけで位相は一致する（開始時刻の付け替えは不要）。
         if (drumPausedByFight)
         {
-            drumPausedByFight = false;
-            drumStartTime = NextDrumBoundaryAtOrAfter(clockTime);
+            ResumeDrumLoop();
         }
 
         // 開始待ち
@@ -1765,9 +1766,43 @@ public class FishingFight : SEEDScript
         drumPlaying = true;
     }
 
-    /// <summary>ドラムループを止める（鳴っていなければ何もしない）。</summary>
+    /// <summary>
+    /// ドラムループを一時停止する【ドラム凍結の唯一の出口】。
+    ///
+    /// <see cref="StopDrumLoop"/> と違い <b>再生位置を保持したまま</b>止めるので、
+    /// <see cref="ResumeDrumLoop"/> で続きから鳴らせる。拍時計（<see cref="clockTime"/>）も
+    /// 同じ区間だけ止まっているため、再開時にドラムと拍のズレが生じない。
+    /// 鳴っていない・既に一時停止しているときは何もしない（毎フレーム呼んでよい）。
+    /// </summary>
+    private void PauseDrumLoop()
+    {
+        if (!drumPlaying || drumPausedByFight) { return; }
+
+        SEED.Audio.PauseBgm();
+        drumPausedByFight = true;
+    }
+
+    /// <summary>
+    /// 一時停止していたドラムループを、止めた位置から再開する。
+    /// 一時停止していなければ何もしない。
+    /// </summary>
+    private void ResumeDrumLoop()
+    {
+        if (!drumPausedByFight) { return; }
+
+        drumPausedByFight = false;
+        if (!drumPlaying) { return; }   // 停止を挟んでいた場合の保険（開始待ちへ戻す）
+
+        SEED.Audio.ResumeBgm();
+    }
+
+    /// <summary>
+    /// ドラムループを止める（鳴っていなければ何もしない）。
+    /// 停止した Sink は再開できないので、一時停止中の記録もここで捨てる。
+    /// </summary>
     private void StopDrumLoop()
     {
+        drumPausedByFight = false;
         if (!drumPlaying) { return; }
 
         SEED.Audio.StopBgm();
@@ -1782,18 +1817,6 @@ public class FishingFight : SEEDScript
         float barSeconds = SecondsPerBar;
         if (barSeconds <= DivideEpsilon) { return time; }
         return SEED.Mathf.Ceil(time / barSeconds - GridEpsilon) * barSeconds;
-    }
-
-    /// <summary>
-    /// 指定時刻以降で最初の「ループ先頭かつ魚の小節頭」になる時刻（秒）。
-    /// <see cref="drumStartTime"/> からの <see cref="drumUnitSeconds"/> の整数倍で求める。
-    /// </summary>
-    /// <param name="time">基準の時刻（<see cref="clockTime"/> と同じ時間軸）。</param>
-    private float NextDrumBoundaryAtOrAfter(float time)
-    {
-        if (drumUnitSeconds <= DivideEpsilon) { return NextBarHeadAtOrAfter(time); }
-        float units = SEED.Mathf.Ceil((time - drumStartTime) / drumUnitSeconds - GridEpsilon);
-        return drumStartTime + units * drumUnitSeconds;
     }
 
     /// <summary>最大公約数（0 以下が混ざっても 1 以上を返す番人つき）。</summary>

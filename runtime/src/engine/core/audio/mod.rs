@@ -135,6 +135,26 @@ impl AudioManager {
         self.bgm = Some(sink);
     }
 
+    /// BGM を一時停止する（再生位置は保持する）。
+    ///
+    /// stop_bgm と違い Sink を破棄しないので、resume_bgm で**止めた位置から**続けられる。
+    /// リズムゲームのように「ゲーム時間の停止に合わせて BGM も凍結し、
+    /// 再開時に拍の位相をそのまま繋ぎたい」用途のために用意している。
+    /// BGM が無いとき・既に一時停止しているときは何もしない（多重呼び出し安全）。
+    pub fn pause_bgm(&mut self) {
+        if let Some(sink) = &self.bgm {
+            sink.pause();
+        }
+    }
+
+    /// 一時停止していた BGM を止めた位置から再開する。
+    /// BGM が無いとき・再生中のときは何もしない（多重呼び出し安全）。
+    pub fn resume_bgm(&mut self) {
+        if let Some(sink) = &self.bgm {
+            sink.play();
+        }
+    }
+
     /// BGM を停止する。
     pub fn stop_bgm(&mut self) {
         if let Some(sink) = self.bgm.take() {

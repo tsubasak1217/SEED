@@ -2,12 +2,12 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      21.604757,
-      10.02972,
-      -17.80705
+      59.00213,
+      9.964713,
+      -13.92961
     ],
-    "yaw": 0.55439883,
-    "pitch": 0.020779025,
+    "yaw": -0.19338079,
+    "pitch": 0.020778932,
     "fov_deg": 25.0,
     "far": 1000.0,
     "speed": 5.0
@@ -342,6 +342,7 @@
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
+              "rt_exclude": false,
               "offset_position": [
                 0.0,
                 0.0,
@@ -357,57 +358,6 @@
                 0.3,
                 0.3
               ]
-            }
-          }
-        },
-        {
-          "name": "Collider",
-          "component": {
-            "type": "ColliderComponent",
-            "data": {
-              "shape": {
-                "type": "Capsule",
-                "radius": 0.3,
-                "half_height": 0.3
-              },
-              "offset": [
-                0.0,
-                2.4,
-                0.0
-              ],
-              "is_trigger": false,
-              "physics_layer": 1,
-              "layer_mask": 0,
-              "use_rigidbody": true,
-              "mass": 1.0,
-              "restitution": 0.3,
-              "friction": 0.5,
-              "linear_damping": 0.01,
-              "angular_damping": 0.05,
-              "gravity_scale": 1.0,
-              "is_kinematic": true,
-              "freeze_position": [
-                false,
-                false,
-                false
-              ],
-              "freeze_rotation": [
-                true,
-                false,
-                true
-              ],
-              "initial_linear_velocity": [
-                0.0,
-                0.0,
-                0.0
-              ],
-              "initial_angular_velocity": [
-                0.0,
-                0.0,
-                0.0
-              ],
-              "is_character_controller": true,
-              "apply_gravity": true
             }
           }
         },
@@ -556,8 +506,6 @@
                 "castWindupSeconds": "0.500",
                 "fight": "Player|Fight",
                 "hitBanner": "HitBanner|Script",
-                "hopHeight": "0.800",
-                "hopPullDistance": "0.500",
                 "judgeExcellentSprite": "JudgeExcellent|Sprite",
                 "judgeGreatSprite": "JudgeGreat|Sprite",
                 "judgeHintText": "JudgeHint|Text",
@@ -600,27 +548,13 @@
             "data": {
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\CatchPresenter.cs",
               "fields": {
-                "bestText": "CatchBest|Text",
+                "cameraHeightAboveFocus": "1.000",
                 "cameraMove": "MainCamera|Script",
-                "cameraTransform": "MainCamera",
                 "catchCameraTarget": "CatchCameraTarget",
-                "fishHoldOffsetY": "2.200",
-                "headAnchor": "HeadAnchor",
-                "headClearance": "2.000",
-                "nameText": "CatchName|Text",
-                "playerAnimator": "Player|Animator",
-                "playerCatchClip": "ShowOff",
-                "playerHoldClip": "ShowOffHold",
-                "playerModel": "Player|Model",
+                "jumpHeight": "5.000",
                 "playerTransform": "Player",
-                "promptText": "CatchPrompt|Text",
-                "rankText": "CatchRank|Text",
-                "resultCamPullBase": "4.000",
-                "resultCamPullPerSize": "1.000",
-                "resultCamera": "MainCamera|Camera",
-                "resultCameraTarget": "ResultCameraTarget",
-                "rodAnimator": "sao|Animator",
-                "sizeText": "CatchSize|Text",
+                "sideCameraPhi": "10.000",
+                "sideCameraTheta": "110.000",
                 "whiteoutSprite": "Whiteout|Sprite"
               }
             }
@@ -722,6 +656,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -1106,6 +1041,7 @@
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
+              "rt_exclude": false,
               "offset_position": [
                 0.0,
                 0.0,
@@ -1315,6 +1251,7 @@
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": false,
+              "rt_exclude": false,
               "offset_position": [
                 0.0,
                 0.0,
@@ -1962,6 +1899,7 @@
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
+              "rt_exclude": false,
               "offset_position": [
                 0.0,
                 0.2,
@@ -2380,6 +2318,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2469,6 +2408,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2558,6 +2498,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2787,79 +2728,8 @@
                     0.0,
                     0.5
                   ],
-                  "shadow_softness": 0.0
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "JudgeHint",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              60.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Text",
-              "component": {
-                "type": "TextComponent",
-                "data": {
-                  "content": "",
-                  "font_size": 28.0,
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "align": "center",
-                  "vertical_align": "middle",
-                  "line_spacing": 1.2,
-                  "layer": 20,
-                  "font_path": "",
-                  "icon_set": "",
-                  "outline_width": 0.0,
-                  "outline_color": [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0
-                  ],
-                  "box_width": 0.0,
-                  "box_height": 0.0,
-                  "wrap": true,
-                  "weight": 0.0,
-                  "shadow_offset_x": 0.0,
-                  "shadow_offset_y": 0.0,
-                  "shadow_color": [
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.5
-                  ],
-                  "shadow_softness": 0.0
+                  "shadow_softness": 0.0,
+                  "slots": []
                 }
               }
             }
@@ -2931,7 +2801,8 @@
                     0.0,
                     0.5
                   ],
-                  "shadow_softness": 0.0
+                  "shadow_softness": 0.0,
+                  "slots": []
                 }
               }
             }
@@ -3098,7 +2969,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -3191,7 +3063,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -3668,7 +3541,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -3740,7 +3614,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -3812,7 +3687,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -3884,7 +3760,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -3956,7 +3833,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -4307,7 +4185,8 @@
                         0.0,
                         0.63400334
                       ],
-                      "shadow_softness": 1.0
+                      "shadow_softness": 1.0,
+                      "slots": []
                     }
                   }
                 }
@@ -4403,7 +4282,6 @@
                     "appearSeconds": "0.300",
                     "bgSprite": "MissionPanelBg|Sprite",
                     "checksText": "MissionPanelChecks|Text",
-                    "disappearSeconds": "0.160",
                     "objectiveText": "MissionPanelObjective|Text",
                     "progressText": "MissionPanelProgress|Text",
                     "rootTransform": "MissionPanel",
@@ -4529,7 +4407,8 @@
                         0.0,
                         0.55
                       ],
-                      "shadow_softness": 1.0
+                      "shadow_softness": 1.0,
+                      "slots": []
                     }
                   }
                 }
@@ -4601,7 +4480,8 @@
                         0.0,
                         0.55
                       ],
-                      "shadow_softness": 1.0
+                      "shadow_softness": 1.0,
+                      "slots": []
                     }
                   }
                 }
@@ -4673,7 +4553,8 @@
                         0.0,
                         0.55
                       ],
-                      "shadow_softness": 1.0
+                      "shadow_softness": 1.0,
+                      "slots": []
                     }
                   }
                 }
@@ -4745,7 +4626,8 @@
                         0.0,
                         0.55
                       ],
-                      "shadow_softness": 1.0
+                      "shadow_softness": 1.0,
+                      "slots": []
                     }
                   }
                 }
@@ -4938,7 +4820,8 @@
                         0.0,
                         0.55
                       ],
-                      "shadow_softness": 1.0
+                      "shadow_softness": 1.0,
+                      "slots": []
                     }
                   }
                 }
@@ -4948,6 +4831,861 @@
           ]
         }
       ]
+    },
+    {
+      "name": "ResultPanel",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 1280.0,
+              "height": 720.0,
+              "auto_scale": true,
+              "viewport_ref": {
+                "type": "main_camera"
+              },
+              "gravity_mode": "world_down",
+              "draw_zone": "foreground",
+              "pivot": [
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "name": "ResultPanel",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://mainGame/scripts/ResultPanel.cs"
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "ResultBody",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [],
+          "children": [
+            {
+              "name": "ResultBg",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/tutorial/sampleBG2.png",
+                      "color": [
+                        0.0,
+                        1.0,
+                        0.001944708,
+                        1.0
+                      ],
+                      "width": 900.0,
+                      "height": 480.0,
+                      "layer": 3000,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "FishImage",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -12.962891,
+                  15.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/zukan/Lv2/tobiuo.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 300.0,
+                      "height": 300.0,
+                      "layer": 3002,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "FishName",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -111.481
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.318,
+                  1.318
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "トビウオ",
+                      "font_size": 48.0,
+                      "color": [
+                        1.0,
+                        0.96,
+                        0.86,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 3003,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "icon_set": "",
+                      "outline_width": 4.0,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.06,
+                        1.0
+                      ],
+                      "box_width": 394.9,
+                      "box_height": 0.0,
+                      "wrap": false,
+                      "weight": 0.8,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.5,
+                      "slots": []
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "FishSize",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  93.148
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "1.2cm",
+                      "font_size": 71.0,
+                      "color": [
+                        1.0,
+                        0.96,
+                        0.86,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 3003,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "icon_set": "",
+                      "outline_width": 3.0,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.06,
+                        1.0
+                      ],
+                      "box_width": 218.3,
+                      "box_height": 0.0,
+                      "wrap": false,
+                      "weight": 0.7,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.5,
+                      "slots": []
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "FishRank",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  132.716,
+                  150.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "ランク A",
+                      "font_size": 34.0,
+                      "color": [
+                        1.0,
+                        0.96,
+                        0.86,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 3003,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "icon_set": "",
+                      "outline_width": 3.0,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.06,
+                        1.0
+                      ],
+                      "box_width": 117.0,
+                      "box_height": 0.0,
+                      "wrap": false,
+                      "weight": 0.6,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.5,
+                      "slots": []
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "FishBest",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -49.957,
+                  150.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "自己ベスト: 1.2cm",
+                      "font_size": 34.0,
+                      "color": [
+                        0.82,
+                        0.9,
+                        1.0,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 3003,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "icon_set": "",
+                      "outline_width": 3.0,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.06,
+                        1.0
+                      ],
+                      "box_width": 256.1,
+                      "box_height": 0.0,
+                      "wrap": false,
+                      "weight": 0.5,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.5,
+                      "slots": []
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "NewRecord",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -142.30823,
+                  124.42343
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "New Record!!",
+                      "font_size": 23.1,
+                      "color": [
+                        1.0,
+                        0.76944,
+                        0.009970914,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 3003,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "icon_set": "",
+                      "outline_width": 1.8,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.06,
+                        1.0
+                      ],
+                      "box_width": 144.1,
+                      "box_height": 0.0,
+                      "wrap": false,
+                      "weight": 0.4,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.5,
+                      "slots": []
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "RegisteredPanel",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": true,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": [
+                {
+                  "name": "RegisteredBg",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      0.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.5,
+                      0.5
+                    ],
+                    "anchor": [
+                      0.5,
+                      0.5
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Sprite",
+                      "component": {
+                        "type": "SpriteComponent",
+                        "data": {
+                          "texture_path": "assets://mainGame/textures/tutorial/sampleBG2.png",
+                          "color": [
+                            0.0043,
+                            0.7234689,
+                            1.0,
+                            0.95
+                          ],
+                          "width": 780.0,
+                          "height": 180.0,
+                          "layer": 3010,
+                          "postfx_path": "",
+                          "raycast_target": false
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "RegisteredTitle",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      0.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.5,
+                      0.5
+                    ],
+                    "anchor": [
+                      0.5,
+                      0.5
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "図鑑に登録されました",
+                          "font_size": 39.8,
+                          "color": [
+                            1.0,
+                            0.8741789,
+                            0.12673119,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 3011,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 3.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 290.8,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": -0.4,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5,
+                          "slots": []
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "RegisteredHint",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      37.19998
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.5,
+                      0.5
+                    ],
+                    "anchor": [
+                      0.5,
+                      0.5
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "図鑑はポーズメニューから見られます",
+                          "font_size": 24.0,
+                          "color": [
+                            0.86,
+                            0.94,
+                            1.0,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 3011,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 3.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 370.8,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": -0.4,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5,
+                          "slots": []
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                }
+              ],
+              "visible": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "JudgeHint",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          60.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 28.0,
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                0.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 20,
+              "font_path": "",
+              "icon_set": "",
+              "outline_width": 0.0,
+              "outline_color": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": true,
+              "weight": 0.0,
+              "shadow_offset_x": 0.0,
+              "shadow_offset_y": 0.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 0.0,
+              "slots": []
+            }
+          }
+        }
+      ],
+      "children": []
     },
     {
       "name": "Managers",
@@ -5166,11 +5904,11 @@
                     "cameraZoomLerpRate": "3.000",
                     "cameraZoomLookHeight": "2.000",
                     "debugForceTutorial": "true",
-                    "dialogues": "[{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"よし、着いたぜ。\\nここが俺の釣り場だ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"飛べねェ鳥にゃ\\n海が狩り場よ。\\n釣りを教えてやる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"まずは足だ。\\n[icon:key_w] で前、\\n[icon:key_s] で後ろに歩く。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"あの光ってる印まで\\n歩いてみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"TutorialMoveTarget\", \"pauseTime\": false}, {\"missionId\": \"t1_move\", \"slot\": \"Clear\", \"text\": \"その調子だ。\\n釣りは足場が肝心よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"場所を決めたら\\n[icon:mouse_l] を押しっぱだ。\\n竿を構えるんだぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"構えてる間は\\n[icon:key_a] [icon:key_d] で向きを\\n変えられるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"右と左、\\n端まで振ってみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_ready\", \"slot\": \"Clear\", \"text\": \"そうだ。\\n狙う先は自分で決めな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_cast\", \"slot\": \"Intro\", \"text\": \"構えたままだと\\n竿が振りかぶる。\\n着水点の印が\\n行ったり来たりだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_cast\", \"slot\": \"Intro\", \"text\": \"狙いの位置に来たら\\nマウスを左から右へ\\n勢いよく振る！\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_cast\", \"slot\": \"Clear\", \"text\": \"見事な飛びだ。\\nあとは待つだけよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"着水したな。\\nウキが大きく沈む\\n瞬間があるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"沈んだ瞬間に\\n[icon:mouse_l] で竿を振る。\\n早くても遅くても\\n逃げられるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"外しても大丈夫だ。\\n今日は魚が\\n何度でも戻ってくる。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_hook\", \"slot\": \"Clear\", \"text\": \"掛かったな！\\nいい合わせだったぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ここからが勝負だ。\\n魚のリズムで印が\\n流れてくるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"重なった瞬間に\\n[icon:mouse_l] でタップだ。\\n外すと糸が減るぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ピタリと決まりゃ\\n魚が長くひるむ。\\nそこが狙い目よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"今は糸が切れねェ。\\n一周ミスなしで\\n刻んでみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_beat\", \"slot\": \"Clear\", \"text\": \"上出来だ。\\n魚がひるんでるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_reel\", \"slot\": \"Intro\", \"text\": \"ひるんだぞ！\\n今のうちに糸を巻け。\\nホイールを回すんだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_reel\", \"slot\": \"Intro\", \"text\": \"[icon:key_a] [icon:key_d] でウキを\\n左右に寄せられる。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t1_reel\", \"slot\": \"Clear\", \"text\": \"釣り上げたな。\\nこれで一人前の入口よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"さて、本番だ。\\nこの辺りにゃ\\n小魚がうようよいる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"俺が欲しいのは\\nクマノミって魚よ。\\nオレンジの縞々だ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"ほかのが掛かっても\\n気にすんな。\\n粘って釣り当てな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"s1_catch\", \"slot\": \"Clear\", \"text\": \"そいつだ！\\n狙って釣るってのは\\nこういうことよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"大事な話だ。\\n釣った魚は\\n次のエサになる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"デケェ魚は\\n小せェ魚を狙う。\\n小魚から順に\\n大物へつなげろ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"掛けたら隙を作りな。\\nひるんでる間に\\n横取りされるのよ。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_chain\", \"slot\": \"Clear\", \"text\": \"乗り換わったな。\\nこれがわらしべよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"Intro\", \"text\": \"海にゃ漂流物が\\n流れてくる。\\n巻き寄せて拾いな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"Intro\", \"text\": \"今日は一直線に\\n流しておいてやる。\\nまっすぐ巻きな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"DriftLineRecover\", \"text\": \"そいつは糸を直す。\\n切れかけを\\n戻せるってわけだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"DriftStun\", \"text\": \"そいつで魚がひるむ。\\n巻ける隙が\\n伸びるのよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"DriftFishRecover\", \"text\": \"だが魚が元気に\\nなって沖へ走る\\nシロモノもある。\\n気をつけな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_drift\", \"slot\": \"Clear\", \"text\": \"三つとも覚えたな。\\n拾うかどうかは\\n自分で決めろよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"最後だ。\\n今度は糸が切れる。\\n本番と同じよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"切れても魚は\\n逃がさねェでおく。\\n何度でも巻き直しな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": true}, {\"missionId\": \"t2_land\", \"slot\": \"Clear\", \"text\": \"見事だ、ササミ。\\nもう教えることはねェ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"……見たか、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"俺が唯一釣れなかった\\nアイツを、\\n釣りあげてくれ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}, {\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"ま、体で覚えな。\\n行ってきな、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}]",
+                    "dialogues": "[{\"missionId\":\"t1_move\",\"slot\":\"Intro\",\"text\":\"さあ、それじゃ\\n説明を始めるぜ\",\"anchorTarget\":\"AnchorCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"飛べねェ鳥にゃ\\n海が狩り場よ。\\n釣りを教えてやる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t1_move\",\"slot\":\"Intro\",\"text\":\"まずは移動だ。\\n[icon:key_w] で前、\\n[icon:key_s] で後ろに歩く。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"あの光ってる印まで\\n歩いてみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"TutorialMoveTarget\", \"pauseTime\": false},{\"missionId\":\"t1_move\",\"slot\":\"Clear\",\"text\":\"その調子だ。\\n釣りは場所取りが肝心よ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\":\"t1_ready\",\"slot\":\"Intro\",\"text\":\"場所を決めたら\\n[icon:mouse_l] を押しっぱで\\n竿を構えるんだぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"構えてる間は\\n[icon:key_a] [icon:key_d] で向きを\\n変えられるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"右と左、\\n端まで振ってみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t1_ready\", \"slot\": \"Clear\", \"text\": \"そうだ。\\n狙う先は自分で決めな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t1_cast\",\"slot\":\"Intro\",\"text\":\"構えたまま\\nマウスを左に動かせば\\n準備が完了だ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\":\"t1_cast\",\"slot\":\"Intro\",\"text\":\"矢印がマーカーが\\n狙いの位置に来たら\\nマウスを右へ振る！\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"着水したな。\\nウキが大きく沈む\\n瞬間があるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_hook\",\"slot\":\"Intro\",\"text\":\"沈んだ瞬間に\\n[icon:mouse_l] で合わせる。\\n早くても遅くても\\n逃げられるぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"外しても大丈夫だ。\\n今日は魚が\\n何度でも戻ってくる。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_hook\", \"slot\": \"Clear\", \"text\": \"掛かったな！\\nいい合わせだったぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ここからが勝負だ。\\n魚のリズムで印が\\n流れてくるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_beat\",\"slot\":\"Intro\",\"text\":\"重なった瞬間に\\n[icon:mouse_l] でタップだ。\\n外すと糸が傷つくぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ピタリと決まりゃ\\n魚が長くひるむ。\\nそこが狙い目よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"今は糸が切れねェ。\\n一周ミスなしで\\n刻んでみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Clear\", \"text\": \"上出来だ。\\n魚がひるんでるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_reel\",\"slot\":\"Intro\",\"text\":\"ひるんだぞ！\\n今のうちに糸を巻け。\\nホイール[icon:wheel]を回すんだ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\":\"t1_reel\",\"slot\":\"Intro\",\"text\":\"[icon:key_a] [icon:key_d] で\\n巻く方向を調整できる。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_reel\", \"slot\": \"Clear\", \"text\": \"釣り上げたな。\\nこれで一人前の入口よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"さて、本番だ。\\nこの辺りにゃ\\n小魚がうようよいる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"俺が欲しいのは\\nクマノミって魚よ。\\nオレンジの縞々だ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"ほかのが掛かっても\\n気にすんな。\\n粘って釣り当てな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Clear\", \"text\": \"そいつだ！\\n狙って釣るってのは\\nこういうことよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"大事な話だ。\\n釣った魚は\\n次のエサになる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"デケェ魚は\\n小せェ魚を狙う。\\n小魚から順に\\n大物へつなげろ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"掛けたら隙を作りな。\\nひるんでる間に\\n横取りされるのよ。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Clear\", \"text\": \"乗り換わったな。\\nこれがわらしべよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_drift\", \"slot\": \"Intro\", \"text\": \"海にゃ漂流物が\\n流れてくる。\\n巻き寄せて拾いな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t2_drift\",\"slot\":\"Intro\",\"text\":\"今日はきれいに\\n一直線に流れてるな。\\nまっすぐ巻きな。\",\"anchorTarget\":\"AnchorTopLeft\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t2_drift\", \"slot\": \"DriftLineRecover\", \"text\": \"そいつは糸を直す。\\n切れかけを\\n戻せるってわけだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t2_drift\",\"slot\":\"DriftStun\",\"text\":\"そいつで魚がひるむ。\\n巻ける時間が\\n伸びるのよ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\":\"t2_drift\",\"slot\":\"DriftFishRecover\",\"text\":\"これは魚が回復する。\\n沖に逃げてくが、\\n海の奥でより大物を\\n狙えるかもしれねえな。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t2_drift\", \"slot\": \"Clear\", \"text\": \"三つとも覚えたな。\\n拾うかどうかは\\n自分で決めろよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"最後だ。\\n今度は糸が切れる。\\n本番と同じよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"切れても魚は\\n逃がさねェでおく。\\n何度でも巻き直しな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_land\", \"slot\": \"Clear\", \"text\": \"見事だ、ササミ。\\nもう教えることはねェ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"……見たか、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"end_kaiju\",\"slot\":\"Clear\",\"text\":\"俺が唯一釣れなかった\\nアイツを、お前は\\n釣りあげられると\\n信じてるぜ。\",\"anchorTarget\":\"AnchorCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"ま、体で覚えな。\\n行ってきな、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}]",
                     "gaugeRestoreSeconds": "0.500",
                     "inputLockSeconds": "0.150",
                     "introDelaySeconds": "1.500",
-                    "missions": "[{\"id\": \"t1_move\", \"kind\": \"Move\", \"title\": \"はじめの一歩\", \"objective\": \"[icon:key_w] [icon:key_s] で目印まで歩こう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"TutorialMoveTarget\", \"paramText\": \"\", \"paramValue\": 3.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_ready\", \"kind\": \"Ready\", \"title\": \"竿を構える\", \"objective\": \"[icon:mouse_l] を押しっぱなしで構えよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_cast\", \"kind\": \"Cast\", \"title\": \"仕掛けを投げる\", \"objective\": \"構えてマウスを左から右へ振ろう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"suppressBite\": true, \"chainDisabled\": true, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_hook\", \"kind\": \"Hook\", \"title\": \"アタリを取る\", \"objective\": \"ウキが沈んだら [icon:mouse_l] で合わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": true, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_beat\", \"kind\": \"Beat\", \"title\": \"リズムを刻む\", \"objective\": \"ミスなしで 1 周たたこう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": true, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_reel\", \"kind\": \"Reel\", \"title\": \"巻き上げる\", \"objective\": \"ホイールを回して魚を寄せよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": true, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": true, \"allowCast\": false, \"allowReel\": true, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"s1_catch\", \"kind\": \"CatchTarget\", \"title\": \"クマノミを釣ろう！\", \"objective\": \"クマノミを 1 匹釣り上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"kumanomi\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_chain\", \"kind\": \"ChainCatch\", \"title\": \"魚で魚を釣ろう！\", \"objective\": \"掛かった魚を大物に食わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_drift\", \"kind\": \"DriftPickup\", \"title\": \"漂流物を拾おう！\", \"objective\": \"まっすぐ巻いて 3 種とも拾おう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": true, \"driftPickupRadius\": 0.9, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": false, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_land\", \"kind\": \"Land\", \"title\": \"釣り上げよう！\", \"objective\": \"糸が切れても最後まで巻き上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": true, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"end_kaiju\", \"kind\": \"Cutscene\", \"title\": \"海の主\", \"objective\": \"……\", \"skipClearBanner\": true, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"assets://mainGame/actors/Fish/Lv10/kaiju.actor\", \"paramValue\": 3.4, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}]",
+                    "missions": "[{\"id\": \"t1_move\", \"kind\": \"Move\", \"title\": \"はじめの一歩\", \"objective\": \"[icon:key_w] [icon:key_s] で目印まで歩こう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"TutorialMoveTarget\", \"paramText\": \"\", \"paramValue\": 3.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_ready\", \"kind\": \"Ready\", \"title\": \"竿を構える\", \"objective\": \"[icon:mouse_l] を押しっぱなしで構えよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_cast\", \"kind\": \"Cast\", \"title\": \"仕掛けを投げる\", \"objective\": \"構えてマウスを左から右へ振ろう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"suppressBite\": true, \"chainDisabled\": true, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_hook\", \"kind\": \"Hook\", \"title\": \"アタリを取る\", \"objective\": \"ウキが沈んだら [icon:mouse_l] で合わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": true, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_beat\", \"kind\": \"Beat\", \"title\": \"リズムを刻む\", \"objective\": \"ミスなしで 1 周たたこう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": true, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\":\"t1_reel\",\"kind\":\"Reel\",\"title\":\"巻き上げる\",\"objective\":\"[icon:wheel] ホイールを回して魚を寄せよう\",\"skipClearBanner\":false,\"pauseOnClear\":false,\"scriptAfterIntro\":true,\"fishLevelFilter\":1,\"fishPrefabFilter\":\"nanyouhagi\",\"fishPrefabExclusive\":true,\"fishPopulationOverride\":1,\"suppressBite\":false,\"chainDisabled\":true,\"driftDisabled\":true,\"driftStationary\":false,\"driftPickupRadius\":0,\"beatDisabled\":true,\"lineBreakDisabled\":true,\"restartCycleOnMiss\":false,\"rebiteAfterHookMiss\":false,\"restartFightOnLineBreak\":false,\"allowMove\":false,\"allowReady\":false,\"allowAim\":true,\"allowCast\":false,\"allowReel\":true,\"allowHook\":false,\"allowRhythm\":true,\"allowUiConfirm\":true,\"targetActor\":\"\",\"paramText\":\"\",\"paramValue\":0,\"paramCount\":0,\"onStart\":[],\"onEnd\":[]},{\"id\": \"s1_catch\", \"kind\": \"CatchTarget\", \"title\": \"クマノミを釣ろう！\", \"objective\": \"クマノミを 1 匹釣り上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"fishPrefabRequired\": \"kumanomi\", \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"kumanomi\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []},{\"id\": \"t2_chain\", \"kind\": \"ChainCatch\", \"title\": \"魚で魚を釣ろう！\", \"objective\": \"掛かった魚を大物に食わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []},{\"id\": \"t2_drift\", \"kind\": \"DriftPickup\", \"title\": \"漂流物を拾おう！\", \"objective\": \"まっすぐ巻いて 3 種とも拾おう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": true, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": false, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t2_land\", \"kind\": \"Land\", \"title\": \"釣り上げよう！\", \"objective\": \"糸が切れても最後まで巻き上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": true, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"end_kaiju\", \"kind\": \"Cutscene\", \"title\": \"海の主\", \"objective\": \"……\", \"skipClearBanner\": true, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"assets://mainGame/actors/Fish/Lv10/kaiju.actor\", \"paramValue\": 3.4, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}]",
                     "onTutorialFinished": "[]",
                     "panel": "MissionPanel",
                     "playerMove": "Player|Script",
@@ -5285,6 +6023,7 @@
                   ],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -5475,6 +6214,7 @@
                   ],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -5665,6 +6405,7 @@
                   ],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -5834,6 +6575,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": true,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -5923,6 +6665,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6012,6 +6755,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6101,6 +6845,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": true,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6190,6 +6935,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": true,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6279,6 +7025,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": true,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6375,6 +7122,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6540,6 +7288,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6705,6 +7454,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -6870,6 +7620,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7035,6 +7786,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7200,6 +7952,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7372,6 +8125,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7513,6 +8267,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7661,6 +8416,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7751,6 +8507,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7841,6 +8598,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -7938,6 +8696,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -8026,6 +8785,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8117,6 +8877,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -8205,6 +8966,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8296,6 +9058,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -8384,6 +9147,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8475,6 +9239,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -8563,6 +9328,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8654,6 +9420,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -8742,6 +9509,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8833,6 +9601,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -8921,6 +9690,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9012,6 +9782,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -9100,6 +9871,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9191,6 +9963,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -9279,6 +10052,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9370,6 +10144,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -9458,6 +10233,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9549,6 +10325,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -9637,6 +10414,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9740,6 +10518,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9848,6 +10627,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9956,6 +10736,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10064,6 +10845,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10172,6 +10954,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10280,6 +11063,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10388,6 +11172,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10496,6 +11281,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10604,6 +11390,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10712,6 +11499,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10820,6 +11608,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -10928,6 +11717,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11036,6 +11826,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11144,6 +11935,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11252,6 +12044,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11360,6 +12153,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11468,6 +12262,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11576,6 +12371,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11684,6 +12480,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11792,6 +12589,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -11900,6 +12698,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12008,6 +12807,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12116,6 +12916,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12224,6 +13025,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12332,6 +13134,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12440,6 +13243,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12548,6 +13352,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12656,6 +13461,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12764,6 +13570,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12872,6 +13679,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -12980,6 +13788,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13088,6 +13897,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13196,6 +14006,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13304,6 +14115,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13412,6 +14224,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13520,6 +14333,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13628,6 +14442,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13736,6 +14551,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13844,6 +14660,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -13952,6 +14769,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14060,6 +14878,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14168,6 +14987,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14276,6 +15096,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14384,6 +15205,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14492,6 +15314,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14600,6 +15423,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14708,6 +15532,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -14749,9 +15574,9 @@
       "name": "TutorialMoveTarget",
       "transform": {
         "position": [
-          42.852757,
-          1.6099977,
-          18.84111
+          34.272903,
+          1.6099968,
+          16.819063
         ],
         "rotation": [
           -0.0,

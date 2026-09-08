@@ -611,11 +611,147 @@ public class FishManager : SEEDScript
                 ? TutorialRules.FishPopulationOverride
                 : MaintainCountOf(i);
 
+            // チュートリアルが「この魚は最低 1 匹居ること」と指定していれば、
+            // 通常の補充より先に枠を 1 つ確保する（指定が無ければ何もしない）。
+            EnsureRequiredPrefabPopulated(i, want);
+
             while (pool.UnpinnedCount(i) < want)
             {
                 if (!TryCreateRecord(i, false, SEED.Vector3.Zero, 0f, false, out _)) { break; }
             }
         }
+    }
+
+    /// <summary>
+    /// 「必ず含める魚種」（<see cref="TutorialRules.FishPrefabRequired"/>）が
+    /// このレベルに最低 1 匹居る状態を維持する
+    /// 【必須魚種の補充の唯一の実装】。
+    ///
+    /// [手順]
+    /// <list type="number">
+    ///   <item>指定が無い／このレベルの候補にその魚が居ないなら何もしない</item>
+    ///   <item>既に 1 匹以上（仮想でも実体でも）居るなら何もしない</item>
+    ///   <item>維持数がいっぱいなら、差し替え可能な 1 匹を退かして枠を空ける</item>
+    ///   <item>空いた枠へ、魚種を指名してレコードを 1 件作る</item>
+    /// </list>
+    /// 釣り上げられて居なくなれば <see cref="SyncMaterializedRecords"/> がレコードを外すので、
+    /// 次の補充でまた 1 匹だけ供給される（＝常に「最低 1 匹」が保たれる）。
+    /// </summary>
+    /// <param name="levelIndex">対象レベルの添字（0 始まり）。</param>
+    /// <param name="maintainCount">このレベルで維持する個体数（自然出現の上限）。</param>
+    private void EnsureRequiredPrefabPopulated(int levelIndex, int maintainCount)
+    {
+        string required = RequiredPrefabNeedle();
+        if (required.Length == 0) { return; }
+
+        // そのレベルに存在しない魚を指定された場合は黙って無視する
+        // （台本の書き間違いでレベルの個体数を壊さないための番人）。
+        var level = levels[levelIndex];
+        if ((FindPrefabContaining(level.fishPrefabs, required)
+             ?? FindPrefabContaining(level.rareFishPrefabs, required)) is not { } namedPath)
+        {
+            return;
+        }
+
+        // 許可リスト（魚種を固定）と矛盾する指定は無視する。
+        // ここで作っても EnforceExclusivePrefabFilter が即座に取り除くため、
+        // 生成と削除を毎フレーム繰り返すだけになる。
+        if (IsExclusivePrefabFilterActive()
+            && !namedPath.Contains(TutorialRules.FishPrefabFilter, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        // 既に居るなら何もしない（仮想レコードも「居る」に数える）
+        if (CountPrefabMatches(levelIndex, required) > 0) { return; }
+
+        // 枠が埋まっているなら 1 匹退かして空ける（退かせなければ今回は諦める）
+        if (pool.UnpinnedCount(levelIndex) >= maintainCount && !TryDropOneReplaceable(levelIndex, required))
+        {
+            return;
+        }
+
+        TryCreateRecord(levelIndex, false, SEED.Vector3.Zero, 0f, false, out _, required);
+    }
+
+    /// <summary>
+    /// 「必ず含める魚種」の指定文字列を返す
+    /// 【必須魚種の指定を読む唯一の場所】。指定が無ければ空文字。
+    /// </summary>
+    /// <returns>指定文字列（無指定なら空文字）。</returns>
+    private static string RequiredPrefabNeedle()
+    {
+        if (!TutorialRules.Active) { return string.Empty; }
+
+        string required = TutorialRules.FishPrefabRequired;
+        return string.IsNullOrWhiteSpace(required) ? string.Empty : required;
+    }
+
+    /// <summary>
+    /// 指定レベルに、指定文字列を含む prefab の個体が何匹居るかを数える（仮想・実体の別を問わない）。
+    /// </summary>
+    /// <param name="levelIndex">対象レベルの添字（0 始まり）。</param>
+    /// <param name="needle">prefab パスに含まれていてほしい文字列。</param>
+    /// <returns>一致した個体数。</returns>
+    private int CountPrefabMatches(int levelIndex, string needle)
+    {
+        var records = pool.RecordsOf(levelIndex);
+        int count = 0;
+        for (int i = 0; i < records.Count; i++)
+        {
+            if (MatchesPrefab(records[i], needle)) { count++; }
+        }
+        return count;
+    }
+
+    /// <summary>レコードの prefab パスが指定文字列を含むか。</summary>
+    /// <param name="record">判定する個体。</param>
+    /// <param name="needle">含まれていてほしい文字列。</param>
+    /// <returns>含んでいれば true。</returns>
+    private static bool MatchesPrefab(VirtualFish record, string needle)
+        => !string.IsNullOrEmpty(record.PrefabPath)
+        && record.PrefabPath.Contains(needle, System.StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 必須魚種を入れる枠を空けるために、差し替えても支障のない個体を 1 匹だけ退かす。
+    ///
+    /// 退かしてよいのは「台本の個体（<see cref="VirtualFish.Pinned"/>）でなく、
+    /// 餌に関与していない（寄り・つつき・掛かり・釣り上げ演出中でない）」個体だけ。
+    /// <b>仮想の個体を優先</b>する（実体を消すと画面から魚が突然消えるため）。
+    /// </summary>
+    /// <param name="levelIndex">対象レベルの添字（0 始まり）。</param>
+    /// <param name="needle">必須魚種の指定文字列（一致する個体は退かさない）。</param>
+    /// <returns>1 匹退かせたら true。</returns>
+    private bool TryDropOneReplaceable(int levelIndex, string needle)
+    {
+        var records = pool.RecordsOf(levelIndex);
+        var fishing = FishingController.Current;
+
+        VirtualFish? materializedCandidate = null;
+
+        for (int i = 0; i < records.Count; i++)
+        {
+            var record = records[i];
+            if (record.Pinned) { continue; }
+            if (MatchesPrefab(record, needle)) { continue; }
+
+            if (!record.Materialized)
+            {
+                // 仮想の個体は見つけ次第その場で退かす（画面には映っていない）
+                pool.Remove(record);
+                return true;
+            }
+
+            // 実体は「ほかに候補が無かったとき用」に控えておく（餌に関与中の個体は除く）
+            if (fishing is { } fc && fc.IsEngaged(record.Actor)) { continue; }
+            materializedCandidate ??= record;
+        }
+
+        if (materializedCandidate is not { } victim) { return false; }
+
+        Dematerialize(victim);
+        pool.Remove(victim);
+        return true;
     }
 
     /// <summary>
@@ -967,6 +1103,10 @@ public class FishManager : SEEDScript
     /// <param name="overrideRadius">位置指定生成のばらつき半径（メートル）。</param>
     /// <param name="pinned">常時実体化する台本個体なら true。</param>
     /// <param name="record">作成したレコード（失敗時は null）。</param>
+    /// <param name="requiredPrefab">
+    /// 魚種の指名（.actor パスに含まれる文字列）。空なら通常どおり抽選する。
+    /// 「必ず含める魚種」の補充（<see cref="EnsureRequiredPrefabPopulated"/>）だけが使う。
+    /// </param>
     /// <returns>作成できたら true。</returns>
     private bool TryCreateRecord(
         int levelIndex,
@@ -974,11 +1114,12 @@ public class FishManager : SEEDScript
         SEED.Vector3 overrideCenter,
         float overrideRadius,
         bool pinned,
-        out VirtualFish record)
+        out VirtualFish record,
+        string requiredPrefab = "")
     {
         record = null!;
         if (levelIndex < 0 || levelIndex >= levels.Count) { return false; }
-        if (!TryPickPrefab(levels[levelIndex], out string path)) { return false; }
+        if (!TryResolvePrefab(levels[levelIndex], requiredPrefab, out string path)) { return false; }
         if (!TryPickSpawnPosition(levelIndex, usePositionOverride, overrideCenter, overrideRadius, out var spawnPos))
         {
             return false;
@@ -988,6 +1129,34 @@ public class FishManager : SEEDScript
         record = new VirtualFish(levelIndex, path, spawnPos, heading, pinned);
         pool.Add(record);
         return true;
+    }
+
+    /// <summary>
+    /// 出す魚の .actor パスを決める【レコード生成から見た魚種決定の唯一の入口】。
+    ///
+    /// 魚種の指名（<paramref name="requiredPrefab"/>）があり、それがこのレベルの候補に
+    /// 実在すればそれを使う。無ければ通常の抽選（<see cref="TryPickPrefab"/>）へ落ちる。
+    /// </summary>
+    /// <param name="level">対象のレベル定義。</param>
+    /// <param name="requiredPrefab">魚種の指名（空なら抽選）。</param>
+    /// <param name="path">決まった .actor パス（失敗時は空文字）。</param>
+    /// <returns>パスを決められたら true。</returns>
+    private bool TryResolvePrefab(FishLevelEntry level, string requiredPrefab, out string path)
+    {
+        path = string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(requiredPrefab))
+        {
+            string? named = FindPrefabContaining(level.fishPrefabs, requiredPrefab)
+                         ?? FindPrefabContaining(level.rareFishPrefabs, requiredPrefab);
+            if (named is not null)
+            {
+                path = named;
+                return true;
+            }
+        }
+
+        return TryPickPrefab(level, out path);
     }
 
     /// <summary>
