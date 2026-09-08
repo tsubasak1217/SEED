@@ -481,8 +481,10 @@ public class FishingFight : SEEDScript
     /// （<see cref="pendingReelAmount"/> に繰り越すので入力は捨てない）。
     /// こうすると「魚 HP の減り」「ウキの実移動」「距離表示」が同じ速度で揃う。
     /// </summary>
+    /// 既定 24 m/秒: 上限導入前（HP がホイール量そのままで減っていた頃）の
+    /// 体感に合わせた値。6 m/秒では同じ距離を巻くのに約 4 倍の操作が要った。
     [SerializeField(Label = "寄せ速度の上限(m/秒)")]
-    private float reelInSpeedMax = 6f;
+    private float reelInSpeedMax = 24f;
 
     /// <summary>
     /// 巻き取り量の繰り越し上限（秒）。頭打ちで余った巻き量は
@@ -490,8 +492,9 @@ public class FishingFight : SEEDScript
     /// 貯めすぎると入力を止めてもしばらく巻け続けてしまうので
     /// 「<see cref="reelInSpeedMax"/> × この秒数」で頭を押さえる。
     /// </summary>
+    /// 既定 1.0 秒: ホイールを勢いよく回した瞬間の入力を取りこぼさない程度に貯める。
     [SerializeField(Label = "巻き取りの繰り越し上限(秒)")]
-    private float reelCarryOverMaxSeconds = 0.5f;
+    private float reelCarryOverMaxSeconds = 1.0f;
 
     /// <summary>
     /// 「いま巻いている」とみなし続ける保持時間（秒）【漂流物の巻き込み判定の唯一の猶予】。
