@@ -9,13 +9,17 @@ using SEEDEditor.Scripting;
 /// ミッション達成のバナー【達成を見せる演出の唯一の置き場】。
 ///
 /// 【責務】
-/// 「出す」「一拍置く」「決定で閉じる」だけ。次に何をするかは知らない
-/// （進行は <see cref="TutorialDirector"/> の責務）。
+/// 「出す」「一拍置く」「自動でフェードアウトして閉じる」だけ。
+/// 次に何をするかは知らない（進行は <see cref="TutorialDirector"/> の責務）。
+/// 閉じ切ったことは <see cref="ConsumeFinished"/> で外へ伝える。
 ///
 /// 【手触りの狙い】
 /// 達成の瞬間に次の説明へ飛ばされると「何を達成したのか」が読めない。
 /// EaseOutBack で勢いよく出したあと <see cref="holdSeconds"/> のあいだは
-/// 決定を受け付けず、必ず一拍置いてからプレイヤーの決定で閉じる。
+/// じっくり読ませ、そのあとは決定入力を待たずに <see cref="fadeOutSeconds"/>
+/// かけてアルファを 1 → 0 へフェードアウトさせて自動的に閉じる
+/// （決定待ちのぶん次の説明が遅れるのを避け、テンポよく進めるため）。
+/// フェード中は決定入力を一切読まないため、早送りはできない。
 ///
 /// 【構成（シーン側）】
 ///  MissionClearBanner       … このスクリプト
@@ -23,9 +27,9 @@ using SEEDEditor.Scripting;
 ///   MissionClearText        … Text（「ミッションクリア！」）
 ///
 /// 【時間軸】
-/// スクリプト側のタイマー（timer の加算・IsConfirmPressed の判定）は
-/// すべて実時間（Time.UnscaledDeltaTime）で進む。これはバナー表示中に
-/// ゲーム時間を止める（Time.Scale = 0）ミッションでも決定待ちが機能するようにするため。
+/// スクリプト側のタイマー（timer の加算）はすべて実時間（Time.UnscaledDeltaTime）
+/// で進む。これはバナー表示中にゲーム時間を止める（Time.Scale = 0）ミッションでも
+/// 保持〜フェードアウトの自動進行が機能するようにするため。
 ///
 /// ただし Animator（<see cref="useAnimator"/> = true 時）はスケール後の
 /// ゲーム時間で進む別系統のため、Time.Scale = 0 の間は動かない。
@@ -46,17 +50,20 @@ public class MissionClearBanner : SEEDScript
     /// <summary>出現演出の既定の秒数。</summary>
     private const float DefaultAppearSeconds = 0.38f;
 
-    /// <summary>出し切ってから決定を受け付けるまでの既定の秒数（＝一拍）。</summary>
-    private const float DefaultHoldSeconds = 0.60f;
+    /// <summary>出し切ってから自動でフェードアウトを始めるまでの既定の秒数（＝一拍）。</summary>
+    private const float DefaultHoldSeconds = 1.2f;
 
-    /// <summary>退場演出の既定の秒数。</summary>
-    private const float DefaultDisappearSeconds = 0.18f;
+    /// <summary>自動フェードアウト演出の既定の秒数。</summary>
+    private const float DefaultFadeOutSeconds = 0.4f;
 
     /// <summary>バナーに出す既定の文字列。</summary>
     private const string DefaultBannerText = "ミッションクリア！";
 
     /// <summary>Animator に再生させる既定のクリップ名。</summary>
     private const string DefaultAnimatorClipName = "mission_clear";
+
+    /// <summary>クリア効果音の既定の音量。</summary>
+    private const float DefaultClearSeVolume = 1.0f;
 
     /// <summary>進捗が 1 のときの値。</summary>
     private const float ProgressComplete = 1f;
@@ -72,17 +79,18 @@ public class MissionClearBanner : SEEDScript
         /// <summary>隠れている。</summary>
         Hidden,
 
-        /// <summary>出現演出の最中（決定は受け付けない）。</summary>
+        /// <summary>出現演出の最中。</summary>
         Appearing,
 
-        /// <summary>出し切って一拍置いている最中（決定は受け付けない）。</summary>
+        /// <summary>出し切って一拍置いている最中（この間は自動では閉じない）。</summary>
         Holding,
 
-        /// <summary>決定待ち。</summary>
-        Waiting,
-
-        /// <summary>退場演出の最中。</summary>
-        Disappearing,
+        /// <summary>
+        /// 自動フェードアウトの最中（決定入力は読まない。早送り不可）。
+        /// 帯・文字のアルファを 1 → 0 へ下げ、下げ切ったら Hidden へ戻って
+        /// 完了フラグ（<see cref="finished"/>）を立てる。
+        /// </summary>
+        FadingOut,
     }
 
     // ─── 参照（インスペクタで結線）───────────────────────────
@@ -109,13 +117,28 @@ public class MissionClearBanner : SEEDScript
     [SerializeField(Label = "出現の秒数", Tooltip = "バナーが 0 倍から等倍になるまでの秒数")]
     public float appearSeconds = DefaultAppearSeconds;
 
-    /// <summary>出し切ってから決定を受け付けるまでの秒数（一拍置く時間）。</summary>
-    [SerializeField(Label = "間の秒数", Tooltip = "出し切ってから決定を受け付けるまでの秒数（一瞬で進ませないための間）")]
+    /// <summary>出し切ってから自動でフェードアウトを始めるまでの秒数（一拍置く時間）。</summary>
+    [SerializeField(Label = "間の秒数", Tooltip = "出し切ってから自動でフェードアウトを始めるまでの秒数（一瞬で消えないための間）")]
     public float holdSeconds = DefaultHoldSeconds;
 
-    /// <summary>退場演出の秒数。</summary>
-    [SerializeField(Label = "退場の秒数", Tooltip = "閉じるときに縮んで消えるまでの秒数")]
-    public float disappearSeconds = DefaultDisappearSeconds;
+    /// <summary>自動フェードアウト演出の秒数（帯・文字のアルファを 1 から 0 へ下げる時間）。</summary>
+    [SerializeField(Label = "フェードアウトの秒数", Tooltip = "保持時間が終わったあと、帯と文字のアルファを 1→0 へ下げて自動的に閉じるまでの秒数")]
+    public float fadeOutSeconds = DefaultFadeOutSeconds;
+
+    // ─── クリア効果音 ────────────────────────────────────────
+
+    /// <summary>
+    /// バナー表示開始時に 1 回だけ鳴らすクリア効果音のアセットパス（空なら鳴らさない）。
+    /// 既定の素材は同梱していないため空のままで、必要になったら差し替える
+    /// （データドリブン：音を変えるのにコード変更は不要）。
+    /// </summary>
+    [Header("効果音"), SerializeField(Label = "クリア効果音", Tooltip = "バナー表示開始時に 1 回だけ鳴らす効果音。空なら鳴らさない")]
+    [AssetReference("mp3", "wav", "ogg")]
+    public string clearSePath = "";
+
+    /// <summary>クリア効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "クリア効果音の音量", Tooltip = "クリア効果音の音量（0〜1）")]
+    public float clearSeVolume = DefaultClearSeVolume;
 
     // ─── Animator 演出 ──────────────────────────────────────
     // シーン側の MissionClearBanner には AnimatorComponent（クリップ mission_clear）が
@@ -200,12 +223,8 @@ public class MissionClearBanner : SEEDScript
                 UpdateHolding();
                 break;
 
-            case BannerState.Waiting:
-                UpdateWaiting();
-                break;
-
-            case BannerState.Disappearing:
-                UpdateDisappearing();
+            case BannerState.FadingOut:
+                UpdateFadingOut();
                 break;
         }
     }
@@ -254,6 +273,10 @@ public class MissionClearBanner : SEEDScript
         finished = false;
         state    = BannerState.Appearing;
         timer    = 0f;
+
+        // 表示開始のたびに 1 回だけクリア効果音を鳴らす（Play は 1 回の表示につき
+        // 1 回しか呼ばれない契約のため、ここで呼べば多重再生にはならない）。
+        PlayClearSe();
 
         // Animator 側で隠していた場合（HideImmediate で Visible=false にしたケース）に
         // 備えて、表示の入口では必ず可視へ戻す。
@@ -344,7 +367,7 @@ public class MissionClearBanner : SEEDScript
         timer = 0f;
     }
 
-    /// <summary>一拍置いている最中（決定は受け付けない）。</summary>
+    /// <summary>一拍置いている最中（この間は自動では閉じない）。</summary>
     private void UpdateHolding()
     {
         // Animator 使用時はクリップ側（loop_mode=loop）がここも動かし続けるので触らない。
@@ -352,48 +375,39 @@ public class MissionClearBanner : SEEDScript
 
         if (timer < SEED.Mathf.Max(holdSeconds, 0f)) { return; }
 
-        state = BannerState.Waiting;
+        // 決定入力は待たず、保持時間が経過したら自動でフェードアウトへ進む。
+        state = BannerState.FadingOut;
         timer = 0f;
     }
 
-    /// <summary>決定待ち（押されたら退場演出へ）。</summary>
-    private void UpdateWaiting()
+    /// <summary>
+    /// 自動フェードアウト（決定入力は読まない＝早送り不可）。
+    /// 帯・文字のアルファだけを 1 → 0 へ下げる。Animator 使用時も拡大率など
+    /// 他の見た目は Animator に委ねたままにし、アルファだけスクリプトで下げる
+    /// （CanvasTransform の書き換えは行わないため Animator と競合しない）。
+    /// </summary>
+    private void UpdateFadingOut()
     {
-        if (!animatorActive) { ApplyRootScale(ProgressComplete); }
+        float progress   = Easing.Progress01(timer, fadeOutSeconds); // 0（開始）→1（下げ切り）
+        float alphaScale = ProgressComplete - progress;               // 1 → 0
+        ApplyAlpha(alphaScale);
 
-        if (!IsConfirmPressed()) { return; }
+        if (timer < SEED.Mathf.Max(fadeOutSeconds, 0f)) { return; }
 
-        state = BannerState.Disappearing;
-        timer = 0f;
-    }
-
-    /// <summary>退場演出（縮んで消え、閉じ切ったら合図を立てる）。</summary>
-    private void UpdateDisappearing()
-    {
-        // Animator 使用時は退場の縮小演出をスクリプトでは行わない
-        // （mission_clear クリップに退場演出は無いため、disappearSeconds は
-        // 「決定してから実際に消えるまでの間」としてだけ機能する）。
-        if (!animatorActive)
-        {
-            float remain = ProgressComplete - Easing.Progress01(timer, disappearSeconds);
-            ApplyRootScale(Easing.InCubic(remain));
-        }
-
-        if (timer < SEED.Mathf.Max(disappearSeconds, 0f)) { return; }
-
+        // 端数誤差で α が完全な 0 にならない場合があるため、隠す際に
+        // HideImmediate 内の ApplyAlpha(AlphaScaleHidden) で確実に 0 へ揃える。
         HideImmediate();
         finished = true;   // ConsumeFinished で 1 回だけ拾われる
     }
 
-    // ─── 内部処理: 入力 ─────────────────────────────────────
+    // ─── 内部処理: 効果音 ───────────────────────────────────
 
-    /// <summary>
-    /// 決定入力（Enter / Space / 左クリック）が押されたか。
-    /// バナーは説明窓と同じ操作感で閉じたいので、判定も同じ組み合わせにする。
-    /// </summary>
-    /// <returns>押されていれば true。</returns>
-    private static bool IsConfirmPressed()
-        => SceneFlow.IsConfirmPressed() || SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left);
+    /// <summary>クリア効果音を鳴らす（パス未設定なら何もしない）。</summary>
+    private void PlayClearSe()
+    {
+        if (string.IsNullOrEmpty(clearSePath)) { return; }
+        SEED.Audio.Play(clearSePath, SEED.Mathf.Clamped01(clearSeVolume));
+    }
 
     // ─── 内部処理: 見た目の適用 ─────────────────────────────
 

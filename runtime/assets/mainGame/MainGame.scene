@@ -2871,8 +2871,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              -60.0,
-              -60.0
+              -39.42383,
+              -11.988953
             ],
             "rotation": 0.0,
             "scale": [
@@ -2880,8 +2880,8 @@
               1.0
             ],
             "pivot": [
-              0.5,
-              0.5
+              1.0,
+              1.0
             ],
             "anchor": [
               1.0,
@@ -2899,27 +2899,27 @@
                 "type": "TextComponent",
                 "data": {
                   "content": "1.5m",
-                  "font_size": 96.0,
+                  "font_size": 80.0,
                   "color": [
                     1.0,
-                    0.25,
-                    0.2,
-                    0.0
+                    0.23350072,
+                    0.005367624,
+                    1.0
                   ],
                   "align": "right",
                   "vertical_align": "bottom",
                   "line_spacing": 1.2,
                   "layer": 20,
-                  "font_path": "",
+                  "font_path": "assets://templates/fonts/Digital/851Gkktt_005.ttf",
                   "icon_set": "",
-                  "outline_width": 0.0,
+                  "outline_width": 9.6,
                   "outline_color": [
-                    0.0,
-                    0.0,
-                    0.0,
+                    0.035014804,
+                    0.0038012674,
+                    0.0038012674,
                     1.0
                   ],
-                  "box_width": 0.0,
+                  "box_width": 393.8,
                   "box_height": 0.0,
                   "wrap": true,
                   "weight": 0.0,
@@ -4793,7 +4793,6 @@
                     "bannerText": "MissionClearText|Text",
                     "bgSprite": "MissionClearBg|Sprite",
                     "clipName": "mission_clear",
-                    "disappearSeconds": "0.180",
                     "holdSeconds": "0.600",
                     "rootTransform": "MissionClearBanner",
                     "useAnimator": "true"
