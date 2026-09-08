@@ -29,6 +29,9 @@
     <Compile Include="..\..\src\Panels\AnimationTimeline\AnimActorSnapshot.cs">
       <Link>Linked\AnimActorSnapshot.cs</Link>
     </Compile>
+    <Compile Include="..\..\src\Panels\AnimationTimeline\KeyInsertPrecheck.cs">
+      <Link>Linked\KeyInsertPrecheck.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Panels\AnimationTimeline\AnimClipModel.cs">
       <Link>Linked\AnimClipModel.cs</Link>
     </Compile>

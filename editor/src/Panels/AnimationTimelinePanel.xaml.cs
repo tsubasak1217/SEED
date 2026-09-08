@@ -81,6 +81,20 @@ public partial class AnimationTimelinePanel : UserControl
     private const string DefaultNoClipHint = "Animator 付きアクタを選択するか、「直接開く」で .anim を開いてください";
     private const string ModelClipHint     = "モデル内蔵アニメは編集できません（再生設定は Inspector で行ってください）";
 
+    // ── キー挿入前提チェック（KeyInsertPrecheck）の案内文 ──────────
+    // 文言はここへ集約し、KeyInsertPrecheckResult の各値と 1:1 対応させる
+    // （テストと実 UI で同じ文言を参照できるようにするため）。
+
+    /// <summary>NoSnapshot（現在値がまだ届いていない）の間、取得完了まで表示する案内文。</summary>
+    private const string SnapshotFetchingHint = "現在値をまだ受信していません…再試行します";
+
+    private const string FileOnlyHint =
+        "ファイル単独モードでは現在値を取得できません（Animator を持つアクタを選択して開いてください）";
+    private const string NoContextHint =
+        "対象アクタが定まっていません（Animator を持つアクタを選択してください）";
+    private const string FolderHint =
+        "フォルダは変換を持たないためアニメーションできません。子をまとめて動かすには通常の 2D アクタ（空のアクタ）を親にしてください";
+
     // ── 編集中クリップ ──────────────────────────────────────────
     private AnimClip? _clip;
     /// <summary>編集中ファイルの絶対パス（未保存の新規クリップは null）。</summary>
@@ -337,7 +351,6 @@ public partial class AnimationTimelinePanel : UserControl
         Dispatcher.InvokeAsync(() =>
         {
             if (_isFileOnlyMode) return;
-            if (_contextLocked)  return;
 
             try
             {
@@ -345,6 +358,27 @@ public partial class AnimationTimelinePanel : UserControl
                 var root = doc.RootElement;
                 var dfsId = root.TryGetProperty("id", out var idEl) ? idEl.GetInt32() : -1;
                 if (dfsId < 0) return;
+
+                // ── 🔒 文脈固定中 ──
+                // Animator アクタ／キー対象アクタは変えないが、それら自身の ACTOR_COMPONENTS
+                // （EnsureKeyTargetReady が明示的に投げる GET_ACTOR_COMPONENTS の応答を含む）は
+                // 現在値スナップショットの更新にだけ使う。これを弾くと、固定中は一度取得した
+                // 現在値が古いまま変わらず、キー挿入のたびに「現在値がまだ届いていない」扱いに
+                // なり続けてしまう（実際に報告された不具合の一因）。
+                if (_contextLocked)
+                {
+                    if (dfsId == _keyTargetDfsId || dfsId == _actorDfsId)
+                    {
+                        _keyTargetSnapshot = AnimActorSnapshot.Parse(json);
+                        if (_pendingSnapshotDfsId == dfsId && _pendingSnapshotCallback is { } lockedRetry)
+                        {
+                            ClearPendingSnapshotRequest();
+                            lockedRetry();
+                        }
+                        UpdateContextInfo();
+                    }
+                    return;
+                }
 
                 var animator = FindAnimator(root);
 
@@ -512,15 +546,32 @@ public partial class AnimationTimelinePanel : UserControl
             return;
         }
 
-        var animatorName = NodeName(_actorDfsId);
-        var targetLabel  = _keyTargetActorPath.Length == 0 ? "(Animator 自身)" : _keyTargetActorPath;
-        var lockMark     = _contextLocked ? " 🔒" : "";
-        TbContextInfo.Text = $"Animator: {animatorName} / キー対象: {targetLabel}{lockMark}";
+        var animatorName  = NodeName(_actorDfsId);
+        var targetLabel   = _keyTargetActorPath.Length == 0 ? "(Animator 自身)" : _keyTargetActorPath;
+        var lockMark      = _contextLocked ? " 🔒" : "";
+        var keyTargetName = _keyTargetDfsId >= 0 ? NodeName(_keyTargetDfsId) : "?";
+        var kindLabel     = KeyTargetKindLabel();
+        TbContextInfo.Text =
+            $"Animator: {animatorName} / キー対象: {targetLabel} " +
+            $"[{keyTargetName} (dfs {_keyTargetDfsId}) {kindLabel}]{lockMark}";
     }
 
     /// <summary>DFS ID からアクタ名を引く（未知なら "#id" 表記）。</summary>
     private string NodeName(int dfsId)
         => _hierarchy.TryGetValue(dfsId, out var n) && n.Name.Length > 0 ? n.Name : $"#{dfsId}";
+
+    /// <summary>
+    /// キー対象アクタの種別表示（コンテキスト行用）。
+    /// スナップショットが対象アクタのものとまだ一致していなければ「取得中」を返す
+    /// （KeyInsertPrecheckResult.NoSnapshot と同じ判定基準）。
+    /// </summary>
+    private string KeyTargetKindLabel()
+    {
+        if (_keyTargetDfsId < 0) return "-";
+        if (_keyTargetSnapshot.ActorDfsId != _keyTargetDfsId) return "取得中";
+        if (_keyTargetSnapshot.IsFolder) return "フォルダ";
+        return _keyTargetSnapshot.Is2D ? "2D" : "3D";
+    }
 
     /// <summary>🔒 トグル: 編集文脈を固定／解除する。</summary>
     private void OnToggleLockContext(object sender, RoutedEventArgs e)
@@ -1076,7 +1127,13 @@ public partial class AnimationTimelinePanel : UserControl
     private void OnDopeSheetSummaryKeyAddRequested(float time)
     {
         if (_clip is null) return;
-        if (!EnsureKeyTargetSnapshot(() => OnDopeSheetSummaryKeyAddRequested(time))) return;
+        var precheck = EnsureKeyTargetReady(() => OnDopeSheetSummaryKeyAddRequested(time));
+        if (precheck == KeyInsertPrecheckResult.NoSnapshot) return;
+        if (precheck != KeyInsertPrecheckResult.Ok)
+        {
+            TbTitleStatus.Text = DescribePrecheckFailure(precheck);
+            return;
+        }
 
         AnimKeyEditor.InsertOnAllTracks(
             _clip.Tracks, _keyTargetActorPath, time,
@@ -1406,13 +1463,21 @@ public partial class AnimationTimelinePanel : UserControl
     ///
     /// 同じフレームに既存キーがあれば値を上書きする（AnimKeyEditor が保証）。
     /// キー対象アクタの現在値スナップショットがまだ届いていない場合は、
-    /// <see cref="EnsureKeyTargetSnapshot"/> が GET_ACTOR_COMPONENTS で取りに行き、
+    /// <see cref="EnsureKeyTargetReady"/> が GET_ACTOR_COMPONENTS で取りに行き、
     /// 届いた時点でこのメソッド自身を再実行する（今回の呼び出しはここで中断する）。
+    /// それ以外の前提条件を満たさない場合（フォルダ・種別不一致等）は
+    /// <see cref="KeyInsertPrecheckResult"/> に応じた案内文を出して中断する。
     /// </summary>
     private void InsertKeyAtPlayhead()
     {
         if (_clip is null) return;
-        if (!EnsureKeyTargetSnapshot(InsertKeyAtPlayhead)) return;
+        var precheck = EnsureKeyTargetReady(InsertKeyAtPlayhead);
+        if (precheck == KeyInsertPrecheckResult.NoSnapshot) return; // 取得中。retry が再実行する
+        if (precheck != KeyInsertPrecheckResult.Ok)
+        {
+            TbTitleStatus.Text = DescribePrecheckFailure(precheck);
+            return;
+        }
 
         var fps  = ClipFps;
         var time = AnimFrameMath.ClampAndSnapTime(_previewTime, fps, _clip.Duration);
@@ -1450,33 +1515,72 @@ public partial class AnimationTimelinePanel : UserControl
     }
 
     /// <summary>
-    /// キー対象アクタの現在値スナップショットが使える状態か確認する。
+    /// キー対象アクタの現在値スナップショットが使える状態か確認する（<see cref="KeyInsertPrecheck"/> 参照）。
     ///
-    /// 【なぜ要るか】
-    /// 選択直後などスナップショットがまだ届いていないタイミングで I / U を押すと、
-    /// 従来は「取れない現在値」を黙って直前キーの値へフォールバックしてしまい、
-    /// 見た目上キーは増えるのに値が反映されない（キー挿入で値が書き込まれない）不具合の
-    /// 一因になっていた。ここで明示的に GET_ACTOR_COMPONENTS を送って応答を待ち、
-    /// 届いてから呼び出し元をもう一度実行することで、必ず本物の現在値でキーを打つ。
+    /// 【1b: キー対象アクタが未定でも、編集文脈（Animator アクタ）自体は分かっている場合】
+    /// Inspector の「タイムラインで編集」等でクリップを開いた直後は、選択連動の
+    /// ACTOR_COMPONENTS がまだキー対象を確定させていないことがある。この場合は
+    /// Animator アクタ（<see cref="_actorDfsId"/>）自身をキー対象として採用する
+    /// （actor_path 空 = Animator 自身。ユーザーがクリップを開いた時点で選択していたのは
+    /// 通常 Animator アクタ自身であり、そのアクタの現在値を取りに行くのが自然なため）。
+    ///
+    /// 【NoSnapshot: 現在値がまだ届いていない】
+    /// 明示的に GET_ACTOR_COMPONENTS を送って応答を待ち、届いたら <paramref name="retry"/> を
+    /// 再実行する。🔒 固定中でも、この明示的な問い合わせへの応答だけは
+    /// <see cref="OnActorComponentsReceived"/> がスナップショット更新に限って受け付ける
+    /// （Animator / キー対象という文脈自体は固定中のため変えない）。
     /// </summary>
-    /// <param name="retry">スナップショットが届いた後にもう一度実行する処理（呼び出し元自身）。</param>
+    /// <param name="retry">現在値が届いた後にもう一度実行する処理（呼び出し元自身）。</param>
     /// <returns>
-    /// スナップショットが既に対象アクタのものであれば true（そのまま処理を続けてよい）。
-    /// false のときは今回の呼び出しを中断済み。<paramref name="retry"/> は応答到着時または
-    /// タイムアウト時に破棄される（タイムアウト時は再実行されない。TbTitleStatus に理由を出す）。
+    /// Ok ならそのまま処理を続けてよい。NoSnapshot は今回の呼び出しを中断済み
+    /// （<paramref name="retry"/> は応答到着時またはタイムアウト時に消費される）。
+    /// それ以外は確定した失敗理由で、呼び出し元は <see cref="DescribePrecheckFailure"/> で案内する。
     /// </returns>
-    private bool EnsureKeyTargetSnapshot(Action retry)
+    private KeyInsertPrecheckResult EnsureKeyTargetReady(Action retry)
     {
-        if (_keyTargetDfsId < 0) return true; // 文脈なし。既存のエラー表示に処理を委ねる
-        if (_keyTargetSnapshot.ActorDfsId == _keyTargetDfsId && !_keyTargetSnapshot.IsEmpty)
-            return true; // 既に対象アクタの現在値が揃っている
+        // 1b: キー対象未定＋編集文脈は既知 → Animator アクタ自身をキー対象として採用する
+        if (_keyTargetDfsId < 0 && _actorDfsId >= 0)
+        {
+            _keyTargetDfsId          = _actorDfsId;
+            _keyTargetActorPath      = "";
+            TbNewTrackActorPath.Text = "";
+        }
+
+        var tracks = (IReadOnlyList<AnimTrack>?)_clip?.Tracks ?? Array.Empty<AnimTrack>();
+        var result = KeyInsertPrecheck.Evaluate(
+            _keyTargetSnapshot, _keyTargetDfsId, hasContext: _keyTargetDfsId >= 0, _isFileOnlyMode, tracks);
+
+        if (result != KeyInsertPrecheckResult.NoSnapshot) return result;
 
         _pendingSnapshotDfsId    = _keyTargetDfsId;
         _pendingSnapshotCallback = retry;
         _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_keyTargetDfsId}");
         StartPendingSnapshotTimeout();
-        TbTitleStatus.Text = "現在値を取得中…";
-        return false;
+        TbTitleStatus.Text = SnapshotFetchingHint;
+        return KeyInsertPrecheckResult.NoSnapshot;
+    }
+
+    /// <summary>KeyInsertPrecheckResult（Ok / NoSnapshot 以外）を日本語の案内文へ変換する。</summary>
+    private string DescribePrecheckFailure(KeyInsertPrecheckResult result) => result switch
+    {
+        KeyInsertPrecheckResult.FileOnly     => FileOnlyHint,
+        KeyInsertPrecheckResult.NoContext    => NoContextHint,
+        KeyInsertPrecheckResult.Folder       => FolderHint,
+        KeyInsertPrecheckResult.NoTransform  =>
+            $"「{NodeName(_keyTargetDfsId)}」の現在値が取得できません" +
+            "（transform なし / canvas_transform なし）。想定外の状態です。お手数ですが再現手順を報告してください",
+        KeyInsertPrecheckResult.KindMismatch => DescribeKindMismatch(),
+        _ => FileOnlyHint, // Ok / NoSnapshot はここに来ない想定（フォールバック）
+    };
+
+    /// <summary>KindMismatch の詳細文言（実際のアクタ種別とトラックが要求する種別を両方示す）。</summary>
+    private string DescribeKindMismatch()
+    {
+        var name    = NodeName(_keyTargetDfsId);
+        var actorIs2D = _keyTargetSnapshot.Has(AnimActorSnapshot.CanvasTransformComponent, AnimActorSnapshot.PositionProperty);
+        return actorIs2D
+            ? $"対象アクタ「{name}」は 2D(CanvasTransform) ですがトラックは 3D(Transform) 用です"
+            : $"対象アクタ「{name}」は 3D(Transform) ですがトラックは CanvasTransform です";
     }
 
     /// <summary>スナップショット問い合わせのタイムアウト監視を（作り直して）開始する。</summary>
@@ -1508,7 +1612,13 @@ public partial class AnimationTimelinePanel : UserControl
     private void OverwriteSelectedKey()
     {
         if (_clip is null) return;
-        if (!EnsureKeyTargetSnapshot(OverwriteSelectedKey)) return;
+        var precheck = EnsureKeyTargetReady(OverwriteSelectedKey);
+        if (precheck == KeyInsertPrecheckResult.NoSnapshot) return;
+        if (precheck != KeyInsertPrecheckResult.Ok)
+        {
+            TbTitleStatus.Text = DescribePrecheckFailure(precheck);
+            return;
+        }
         if (DopeSheet.Selection.IsEmpty) return;
 
         // 選択キーすべてを、それぞれのトラックに対応する現在値で上書きする
@@ -1549,6 +1659,10 @@ public partial class AnimationTimelinePanel : UserControl
     /// <summary>
     /// 打てるトラックが 1 本も無いとき、選択アクタの種別に合わせたトラック生成を提案する。
     /// 「はい」= 位置・回転・スケールの 3 本（全変換キー）、「いいえ」= 位置だけ。
+    ///
+    /// 呼び出し元（<see cref="InsertKeyAtPlayhead"/>）が <see cref="EnsureKeyTargetReady"/> で
+    /// 事前に Ok を確認済みである前提のため、ここでは現在値の有無を再チェックしない
+    /// （フォルダ・現在値未取得等は呼び出し元が先に弾いている）。
     /// </summary>
     /// <returns>生成したトラック（キャンセル時は空リスト）。</returns>
     private List<AnimTrack> OfferCreateTracks()
@@ -1557,16 +1671,11 @@ public partial class AnimationTimelinePanel : UserControl
         if (_clip is null) return created;
 
         // 2D（CanvasTransform）か 3D（Transform）かは現在値スナップショットで判別する
+        // （Ok 確認済みのため、いずれか一方は必ず Has(Position) を満たす）。
         var component = _keyTargetSnapshot.Has(AnimActorSnapshot.CanvasTransformComponent,
                                                AnimActorSnapshot.PositionProperty)
             ? AnimActorSnapshot.CanvasTransformComponent
             : AnimActorSnapshot.TransformComponent;
-
-        if (!_keyTargetSnapshot.Has(component, AnimActorSnapshot.PositionProperty))
-        {
-            TbTitleStatus.Text = "現在値が取得できません（対象アクタを選択してください）";
-            return created;
-        }
 
         var targetLabel = _keyTargetActorPath.Length == 0 ? "(Animator 自身)" : _keyTargetActorPath;
         var answer = MessageBox.Show(

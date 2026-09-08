@@ -43,6 +43,20 @@ internal sealed class AnimActorSnapshot
     /// <summary>このスナップショットの対象アクタの DFS ID（未解析なら -1）。</summary>
     public int ActorDfsId { get; private init; } = -1;
 
+    /// <summary>
+    /// 対象アクタがフォルダノード（整理専用・Transform 非保持）か。
+    /// ランタイムはフォルダに対して transform / canvas_transform フィールド自体を
+    /// 送らない（component_ops.rs 参照）ため、フォルダは <see cref="IsEmpty"/> にも
+    /// 該当するが、原因を区別して案内文を出し分けるためにフラグとして別途保持する。
+    /// </summary>
+    public bool IsFolder { get; private init; }
+
+    /// <summary>
+    /// 対象アクタ自身の種別（2D=true / 3D=false）。フォルダは Transform を出さないため
+    /// この値だけが 2D/3D 判定の唯一の手がかりになる（transform_json の有無からは判別できない）。
+    /// </summary>
+    public bool Is2D { get; private init; }
+
     /// <summary>取得できたプロパティの (component, property) 一覧。</summary>
     public IEnumerable<(string Component, string Property)> AvailableProperties => _values.Keys;
 
@@ -76,7 +90,9 @@ internal sealed class AnimActorSnapshot
 
             var id = root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.Number
                 ? idEl.GetInt32() : -1;
-            var result = new AnimActorSnapshot { ActorDfsId = id };
+            var isFolder = root.TryGetProperty("is_folder", out var ifEl) && ifEl.ValueKind == JsonValueKind.True;
+            var is2D     = root.TryGetProperty("is_2d",     out var i2El) && i2El.ValueKind == JsonValueKind.True;
+            var result = new AnimActorSnapshot { ActorDfsId = id, IsFolder = isFolder, Is2D = is2D };
 
             ReadTransform(root, result);
             ReadCanvasTransform(root, result);

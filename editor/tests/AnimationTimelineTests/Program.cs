@@ -73,6 +73,18 @@ public static class Program
         harness.Add("2D の canvas_transform から現在値を取れる",    SnapshotReadsCanvasTransform);
         harness.Add("Sprite / Text の色を取れる",                   SnapshotReadsColors);
         harness.Add("壊れた JSON でも例外を出さない",               SnapshotSurvivesBrokenJson);
+        harness.Add("is_folder / is_2d を読める",                    SnapshotReadsFolderAndIs2D);
+
+        // ── 5b. キー挿入前提チェック（KeyInsertPrecheck）──────────
+        harness.Add("ファイル単独モードは FileOnly",                 PrecheckFileOnly);
+        harness.Add("文脈が無ければ NoContext",                      PrecheckNoContext);
+        harness.Add("スナップショット未到着は NoSnapshot",           PrecheckNoSnapshot);
+        harness.Add("フォルダは Folder",                             PrecheckFolder);
+        harness.Add("Transform も CanvasTransform も無ければ NoTransform", PrecheckNoTransform);
+        harness.Add("2D アクタに 3D トラックは KindMismatch",        PrecheckKindMismatch2DActor3DTrack);
+        harness.Add("3D アクタに 2D トラックは KindMismatch",        PrecheckKindMismatch3DActor2DTrack);
+        harness.Add("種別が一致すれば Ok",                           PrecheckOkWhenKindMatches);
+        harness.Add("トラック 0 本（新規作成前）は種別チェックをしない", PrecheckOkWithNoTracksYet);
 
         // ── 6. .anim の fps 互換 ──
         harness.Add("fps 無しの旧 .anim は既定 fps で読める",       LegacyClipGetsDefaultFps);
@@ -588,6 +600,111 @@ public static class Program
         Check.True(AnimActorSnapshot.Parse("{ broken").IsEmpty, "壊れた JSON は空スナップショット");
         Check.True(AnimActorSnapshot.Parse("").IsEmpty,          "空文字も空スナップショット");
         Check.True(AnimActorSnapshot.Parse("[1,2,3]").IsEmpty,   "配列は対象外");
+    }
+
+    private static void SnapshotReadsFolderAndIs2D()
+    {
+        // フォルダノード（component_ops.rs: is_folder=1 のときは transform フィールド自体が無い）
+        const string folderJson = """{"id":5,"is_folder":true,"is_2d":true}""";
+        var folder = AnimActorSnapshot.Parse(folderJson);
+        Check.True(folder.IsFolder, "is_folder が読める");
+        Check.True(folder.Is2D,     "is_2d が読める（フォルダでも種別は持つ）");
+        Check.True(folder.IsEmpty,  "フォルダは transform を持たないので空");
+
+        // 通常アクタ（is_folder 省略 = false）
+        const string normalJson = """{"id":6,"is_2d":false,"transform":{"px":0,"py":0,"pz":0}}""";
+        var normal = AnimActorSnapshot.Parse(normalJson);
+        Check.True(!normal.IsFolder, "is_folder 省略時は false");
+        Check.True(!normal.Is2D,     "is_2d=false が読める");
+    }
+
+    // ── 5b. キー挿入前提チェック（KeyInsertPrecheck）────────────
+
+    /// <summary>2D の transform 値だけを持つ、フォルダでも空でもないスナップショットを作る。</summary>
+    private static AnimActorSnapshot Snapshot2D(int id = 1) =>
+        AnimActorSnapshot.Parse(
+            "{\"id\":" + id + ",\"is_2d\":true,\"canvas_transform\":" +
+            "{\"px\":0,\"py\":0,\"rotation\":0,\"sx\":1,\"sy\":1}}");
+
+    /// <summary>3D の transform 値だけを持つスナップショットを作る。</summary>
+    private static AnimActorSnapshot Snapshot3D(int id = 1) =>
+        AnimActorSnapshot.Parse(
+            "{\"id\":" + id + ",\"is_2d\":false,\"transform\":" +
+            "{\"px\":0,\"py\":0,\"pz\":0,\"ex\":0,\"ey\":0,\"ez\":0,\"sx\":1,\"sy\":1,\"sz\":1}}");
+
+    private static void PrecheckFileOnly()
+    {
+        var result = KeyInsertPrecheck.Evaluate(
+            Snapshot2D(), keyTargetDfsId: 1, hasContext: true, fileOnly: true, clipTracks: new List<AnimTrack>());
+        Check.Equal(KeyInsertPrecheckResult.FileOnly, result, "ファイル単独モードは最優先で弾かれる");
+    }
+
+    private static void PrecheckNoContext()
+    {
+        var result = KeyInsertPrecheck.Evaluate(
+            AnimActorSnapshot.Parse(""), keyTargetDfsId: -1, hasContext: false, fileOnly: false, clipTracks: new List<AnimTrack>());
+        Check.Equal(KeyInsertPrecheckResult.NoContext, result, "キー対象未定・文脈も無ければ NoContext");
+    }
+
+    private static void PrecheckNoSnapshot()
+    {
+        // キー対象 DFS ID は決まっているが、スナップショットはまだ別 ID（既定 -1）のまま
+        var result = KeyInsertPrecheck.Evaluate(
+            AnimActorSnapshot.Parse(""), keyTargetDfsId: 7, hasContext: true, fileOnly: false, clipTracks: new List<AnimTrack>());
+        Check.Equal(KeyInsertPrecheckResult.NoSnapshot, result, "対象アクタのスナップショットがまだ届いていない");
+    }
+
+    private static void PrecheckFolder()
+    {
+        var folder = AnimActorSnapshot.Parse("""{"id":9,"is_folder":true,"is_2d":true}""");
+        var result = KeyInsertPrecheck.Evaluate(
+            folder, keyTargetDfsId: 9, hasContext: true, fileOnly: false, clipTracks: new List<AnimTrack>());
+        Check.Equal(KeyInsertPrecheckResult.Folder, result, "フォルダはアニメーション不可");
+    }
+
+    private static void PrecheckNoTransform()
+    {
+        // フォルダではないが transform も canvas_transform も無い異常系（例: 想定外のルート種別）
+        var weird = AnimActorSnapshot.Parse("""{"id":3}""");
+        var result = KeyInsertPrecheck.Evaluate(
+            weird, keyTargetDfsId: 3, hasContext: true, fileOnly: false, clipTracks: new List<AnimTrack>());
+        Check.Equal(KeyInsertPrecheckResult.NoTransform, result, "フォルダでもないのに変換値が無い異常系");
+    }
+
+    private static void PrecheckKindMismatch2DActor3DTrack()
+    {
+        var tracks = new List<AnimTrack> { Vec3Track(property: "position") }; // actor_transform（3D）既定
+        var result = KeyInsertPrecheck.Evaluate(
+            Snapshot2D(), keyTargetDfsId: 1, hasContext: true, fileOnly: false, clipTracks: tracks);
+        Check.Equal(KeyInsertPrecheckResult.KindMismatch, result, "2D アクタに 3D 用トラックは不一致");
+    }
+
+    private static void PrecheckKindMismatch3DActor2DTrack()
+    {
+        var tracks = new List<AnimTrack>
+        {
+            new() { Target = new AnimTarget { Component = AnimActorSnapshot.CanvasTransformComponent, Property = "position" },
+                    ValueType = AnimValueType.Vec2 },
+        };
+        var result = KeyInsertPrecheck.Evaluate(
+            Snapshot3D(), keyTargetDfsId: 1, hasContext: true, fileOnly: false, clipTracks: tracks);
+        Check.Equal(KeyInsertPrecheckResult.KindMismatch, result, "3D アクタに 2D 用トラックは不一致");
+    }
+
+    private static void PrecheckOkWhenKindMatches()
+    {
+        var tracks = new List<AnimTrack> { Vec3Track(property: "position") }; // actor_transform（3D）
+        var result = KeyInsertPrecheck.Evaluate(
+            Snapshot3D(), keyTargetDfsId: 1, hasContext: true, fileOnly: false, clipTracks: tracks);
+        Check.Equal(KeyInsertPrecheckResult.Ok, result, "種別が一致すれば Ok");
+    }
+
+    private static void PrecheckOkWithNoTracksYet()
+    {
+        // OfferCreateTracks で新規作成する直前の状態（トラック 0 本）は種別チェック対象外
+        var result = KeyInsertPrecheck.Evaluate(
+            Snapshot2D(), keyTargetDfsId: 1, hasContext: true, fileOnly: false, clipTracks: new List<AnimTrack>());
+        Check.Equal(KeyInsertPrecheckResult.Ok, result, "トラックが無ければ種別不一致は起こり得ない");
     }
 
     // ── 6. .anim の fps 互換 ────────────────────────────────────
