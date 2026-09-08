@@ -2529,6 +2529,40 @@ public class FishingController : SEEDScript
             radarCandidates.Add(new RadarCandidate(sqrDistance, new RadarEntry(pos, r.CatchableColor, alpha)));
         }
 
+        // -- 1-b) 仮想の魚（アクタを持たない個体）--
+        // 沖合の魚は負荷対策で実体化していない（FishManager の仮想魚プール）。
+        // レーダーの魚影は従来どおり「維持数ぶん」出したいので、未実体化の個体も載せる。
+        // 実体化済みの個体は上のループ（Fish.All）で載せているため、ここでは重複させない。
+        if (FishManager.Current is { } fishManager)
+        {
+            int hookedLevel = hooked ? HookedFishLevel : Fish.UnknownLevel;
+            for (int level = 0; level < fishManager.PooledLevelCount; level++)
+            {
+                var records = fishManager.PooledFishOf(level);
+                for (int i = 0; i < records.Count; i++)
+                {
+                    var record = records[i];
+                    if (record.Materialized) { continue; }
+
+                    // ヒット中は「掛かっている魚より格上」だけ載せる（実体の魚と同じ規則）。
+                    // 掛かっている魚のレベルが不明なときは格上か判定できないので載せない
+                    // （Fish.OutranksForRadar の大きさ比較は、実体の無い個体では行えない）。
+                    if (hooked && (hookedLevel == Fish.UnknownLevel || record.Level <= hookedLevel)) { continue; }
+
+                    var virtualPos = record.Position;
+                    float vdx = virtualPos.x - center.x;
+                    float vdz = virtualPos.z - center.z;
+                    float virtualSqrDistance = vdx * vdx + vdz * vdz;
+                    if (virtualSqrDistance > sqrRange) { continue; }   // 射程外は載せない
+
+                    // 未実体化の個体は実体化レベル帯の外＝掛かっている魚より確実に格上なので、
+                    // 実体の魚と同じく「捕食できる（＝不透明）」扱いで描く。
+                    radarCandidates.Add(new RadarCandidate(
+                        virtualSqrDistance, new RadarEntry(virtualPos, r.CatchableColor, opaque)));
+                }
+            }
+        }
+
         radarCandidates.Sort(RadarNearestFirst);
         for (int i = 0; i < radarCandidates.Count; i++) { radarEntries.Add(radarCandidates[i].Entry); }
 
