@@ -3251,6 +3251,12 @@ public class FishingController : SEEDScript
                 return;
             }
 
+            // チュートリアルの説明台詞を表示している間（TutorialRules.BiteSuppressed）は、
+            // 前アタリから本アタリ（HookWindow）へ進むカウントダウンも同様に保留する。
+            // （入力ゲートで Hook は既に閉じられているので swung は通常発生しないが、
+            //  安全策としてタイマー進行自体も止めておく）。
+            if (TutorialRules.Active && TutorialRules.BiteSuppressed) { return; }
+
             nibbleTimer -= deltaTime;
             if (nibbleTimer > 0f) { return; }
 

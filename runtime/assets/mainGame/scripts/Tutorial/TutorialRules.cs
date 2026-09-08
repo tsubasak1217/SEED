@@ -150,6 +150,31 @@ public static class TutorialRules
     /// </summary>
     public static bool RestartFightOnLineBreak;
 
+    // ─── アタリの抑止（説明台詞を読ませている間の足止め） ───
+
+    /// <summary>
+    /// true の間、魚の食いつきに関わる進行を<b>一時停止</b>する。
+    ///
+    /// 止めるのは 2 箇所（<see cref="Fish"/> と <see cref="FishingController"/> の
+    /// 双方が個別に見る）。
+    /// <list type="bullet">
+    ///   <item>まだ食いつく前の魚の待ちカウントダウン（台本の秒数・通常抽選の乱数の両方）</item>
+    ///   <item>既に前アタリ（コツコツ）に入っている魚が本アタリ（合わせ受付）へ進む処理</item>
+    /// </list>
+    ///
+    /// 【なぜ必要か】
+    /// チュートリアルは「ミッションの台本（魚の仕込みなど）を説明より先に済ませる」設計
+    /// （<see cref="TutorialDirector.AdvanceToNextMission"/> 参照）になっているため、
+    /// 何も対策しないと<b>説明を読んでいる最中にアタリが来て魚が掛かってしまう</b>。
+    /// このフラグで「読んでいる間はアタリの時計を進めない」ようにし、読み終えた瞬間
+    /// （<see cref="TutorialDirector.OnIntroFinished"/> など）に false へ戻すことで
+    /// 続きから自然にアタリが再開する（＝待ち直しにはならない。タイマー自体はリセットしない）。
+    ///
+    /// 掛けるのは <see cref="TutorialDirector"/> だけ。説明・クリアバナー・ Outro の
+    /// 表示中は true、ミッション本編（Playing）に入ると必ず false に戻す。
+    /// </summary>
+    public static bool BiteSuppressed;
+
     // ─── 解除 ────────────────────────────────────────────────
 
     /// <summary>
@@ -170,6 +195,7 @@ public static class TutorialRules
         RestartCycleOnMiss   = false;
         RebiteAfterHookMiss  = false;
         RestartFightOnLineBreak = false;
+        BiteSuppressed          = false;
         CameraSuspended         = false;
         GaugeRestoreSeconds  = DefaultGaugeRestoreSeconds;
     }

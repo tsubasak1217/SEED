@@ -67,6 +67,24 @@ public struct TutorialMission
     [SerializeField(Label = "達成中は時間停止", Tooltip = "true で達成バナーの間ゲーム時間を止める（釣りの最中のミッション用）")]
     public bool pauseOnClear;
 
+    /// <summary>
+    /// true の場合、このミッションの台本（<see cref="TutorialDirector.StartCurrentMission"/> が
+    /// 行うルール上書き・入力許可・判定クラスの Begin 一式）の適用を、
+    /// 開始前の説明（Intro）を読み終えるまで遅らせる。
+    ///
+    /// 【何のためにあるか】
+    /// 既定では台本は説明より<b>先に</b>適用される（移動ミッションが目印を説明時点で
+    /// 見せるための仕様）。しかし合わせ・ビート・巻きなど「台本がすぐにアタリや
+    /// 出題を仕込む」種類のミッションでは、説明を読んでいる最中に台本が進んでしまい、
+    /// 読み終える前に魚が食いついてしまう事故が起きる。true にすると、台本の適用が
+    /// <see cref="TutorialDirector.OnIntroFinished"/> まで丸ごと遅れるので、
+    /// 読み終えるまでは何も仕込まれていない安全な状態になる。
+    ///
+    /// 目印を先に見せたい移動系のミッションでは false のままにする。
+    /// </summary>
+    [SerializeField(Label = "台本を説明後に開始", Tooltip = "true で台本の適用(ルール上書き・魚の仕込み等)をIntro終了後に遅らせる")]
+    public bool scriptAfterIntro;
+
     // ─── ルール上書き（釣りシステムへの例外規則）───────────
 
     /// <summary>

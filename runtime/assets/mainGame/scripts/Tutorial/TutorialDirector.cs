@@ -410,6 +410,7 @@ public class TutorialDirector : SEEDScript
         if (!QueueDialogues(missions[missionIndex].id, slot)) { return; }
 
         resumePhase = DirectorPhase.Playing;
+        SetBiteSuppressed(true);
         phase       = DirectorPhase.Interjecting;
         ShowCurrentDialogue();
     }
@@ -449,10 +450,31 @@ public class TutorialDirector : SEEDScript
         // パネルはミッションを始める前から出しておく（説明を読む前に「何をするのか」が見える）
         ApplyPanel(data);
 
-        // ミッションの台本（目印の設置・魚の仕込み）は<b>説明より先に</b>済ませる。
+        // ミッションの台本（目印の設置・魚の仕込み）は既定では<b>説明より先に</b>済ませる。
         // 説明中にカメラを目印へ寄せる演出があるため、説明の時点で目印が
         // 置かれていないと「何も無い場所」を映すことになる。
         // 判定（Update）は Playing 段階でしか走らないので、先に始めても進行はしない。
+        //
+        // ただし data.scriptAfterIntro が true のミッション（合わせ・ビート・巻きなど、
+        // 台本が「アタリ」「出題」を即座に仕込む種類）は、台本の適用そのものを
+        // 説明を読み終えるまで遅らせる。説明中はアタリのカウントダウンを
+        // TutorialRules.BiteSuppressed で止める安全策（SetBiteSuppressed）もあるが、
+        // それとは別に「そもそも仕込みを後回しにする」ことで二重に取りこぼしを防ぐ。
+        if (data.scriptAfterIntro)
+        {
+            if (QueueDialogues(data.id, TutorialDialogueSlot.Intro))
+            {
+                SetBiteSuppressed(true);
+                phase = DirectorPhase.Intro;
+                ShowCurrentDialogue();
+                return;
+            }
+
+            // 説明が無いミッションは従来どおりすぐに台本を適用する
+            StartCurrentMission();
+            return;
+        }
+
         StartCurrentMission();
 
         // 開始に失敗して次のミッションへ飛んだ場合は、ここで割り込まない
@@ -462,6 +484,7 @@ public class TutorialDirector : SEEDScript
         // 開始前の説明があれば読ませる。読み終えたら操作を解禁して本編へ入る
         if (QueueDialogues(data.id, TutorialDialogueSlot.Intro))
         {
+            SetBiteSuppressed(true);
             phase = DirectorPhase.Intro;
             ShowCurrentDialogue();
         }
@@ -470,6 +493,10 @@ public class TutorialDirector : SEEDScript
     /// <summary>
     /// 開始前の説明を読み終えたときの処理。
     /// 説明のあいだ止めていた操作・時間を、このミッションの設定へ戻して本編を始める。
+    ///
+    /// <see cref="TutorialMission.scriptAfterIntro"/> が true のミッションでは、
+    /// ここが初めて台本を適用する場所になる（<see cref="StartCurrentMission"/> を
+    /// そのまま呼び、ルール上書き・入力許可・判定クラスの Begin をまとめて行わせる）。
     /// </summary>
     private void OnIntroFinished()
     {
@@ -482,9 +509,19 @@ public class TutorialDirector : SEEDScript
         var data = missions[missionIndex];
 
         window?.Hide();                 // 説明は出しっぱなしにしない
+
+        if (data.scriptAfterIntro)
+        {
+            // 台本（ルール上書き・入力許可・魚の仕込み等）をここで初めて適用する。
+            // StartCurrentMission が SetBiteSuppressed(false) を含めて面倒を見る。
+            StartCurrentMission();
+            return;
+        }
+
         ApplyMissionRules(data);
         ApplyMissionGates(data);
         SEED.Time.Scale = TimeScaleNormal;
+        SetBiteSuppressed(false);        // 読み終えたのでアタリの足止めを解く
 
         phase = DirectorPhase.Playing;
     }
@@ -493,7 +530,8 @@ public class TutorialDirector : SEEDScript
     /// 現在のミッションを開始する【ミッション開始処理の唯一の入口】。
     /// ルール上書きと入力制限を適用し、判定クラスの台本（目印・魚の仕込み）を走らせる。
     ///
-    /// 開始前の説明がある場合は、この直後に説明の段階（Intro）へ移る。
+    /// 開始前の説明がある場合は、この直後に説明の段階（Intro）へ移る
+    /// （<see cref="TutorialMission.scriptAfterIntro"/> が false のとき）。
     /// 説明の間は <see cref="ShowCurrentDialogue"/> が入力を止め直すので、
     /// ここで許可した操作が説明中に効いてしまうことはない。
     /// </summary>
@@ -511,6 +549,7 @@ public class TutorialDirector : SEEDScript
         ApplyMissionRules(data);
         ApplyMissionGates(data);
         SEED.Time.Scale = TimeScaleNormal;
+        SetBiteSuppressed(false);        // 台本の適用＝本編開始なのでアタリの足止めを解く
 
         mission.Begin(context);
         phase = DirectorPhase.Playing;
@@ -544,6 +583,10 @@ public class TutorialDirector : SEEDScript
     {
         EndCurrentMissionKeepingData();
         ReleaseAllRestrictions();
+
+        // ReleaseAllRestrictions() で一旦解除されるため、バナー表示中も
+        // アタリを進めたくないのであらためて抑止を掛け直す
+        SetBiteSuppressed(true);
 
         // バナーを読ませるあいだはゲームを止める（背後で釣りが進んで状況が変わらないように）
         // 達成バナー中に時間を止めるかはミッションごとの設定に従う
@@ -586,6 +629,7 @@ public class TutorialDirector : SEEDScript
     {
         if (QueueDialogues(missions[missionIndex].id, TutorialDialogueSlot.Clear))
         {
+            SetBiteSuppressed(true);   // 既に true のはずだが明示しておく
             phase = DirectorPhase.Outro;
             ShowCurrentDialogue();
             return;
@@ -605,6 +649,7 @@ public class TutorialDirector : SEEDScript
         ApplyMissionRules(data);
         ApplyMissionGates(data);
         SEED.Time.Scale = TimeScaleNormal;
+        SetBiteSuppressed(false);   // 読み終えたので元の状態へ戻す
 
         phase = resumePhase;
     }
@@ -817,6 +862,29 @@ public class TutorialDirector : SEEDScript
         InputGate.SetAllowed(GameAction.Hook,      data.allowHook);
         InputGate.SetAllowed(GameAction.Rhythm,    data.allowRhythm);
         InputGate.SetAllowed(GameAction.UiConfirm, data.allowUiConfirm);
+    }
+
+    /// <summary>
+    /// 魚の食いつきを一時停止するかどうかを切り替える【アタリ抑止の唯一の入口】。
+    ///
+    /// 説明の台詞・クリアバナー・Outro を表示しているあいだ（＝プレイヤーがまだ読んでいる間）は
+    /// true にして、Fish / FishingController のアタリ進行カウントダウンを止める。
+    /// ミッション本編（Playing）へ入るときは必ず false へ戻す。
+    ///
+    /// 【なぜここで Active も立てるのか】
+    /// TutorialRules.Active は「読む側が個別フィールドを見てよいか」の門番。
+    /// TutorialMission.scriptAfterIntro が true のミッションでは、台本の適用
+    /// （ApplyMissionRules を含む StartCurrentMission 一式）を Intro が終わるまで
+    /// 遅らせるため、Intro の時点ではまだ Active が立っていないことがある。
+    /// ここで先に true にしておかないと、抑止フラグが門番で弾かれて素通りしてしまう。
+    /// 他のフィールドは TutorialRules.Clear() の既定値（上書き無し）のままなので、
+    /// Active を早めても挙動には一切影響しない。
+    /// </summary>
+    /// <param name="suppressed">true でアタリの進行を止める。</param>
+    private void SetBiteSuppressed(bool suppressed)
+    {
+        if (suppressed) { TutorialRules.Active = true; }
+        TutorialRules.BiteSuppressed = suppressed;
     }
 
     /// <summary>

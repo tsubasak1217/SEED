@@ -989,6 +989,11 @@ public class Fish : SEEDScript
                     : SEED.Random.Range(biteDelayMin, SEED.Mathf.Max(biteDelayMin, biteDelayMax));
         }
 
+        // チュートリアルの説明台詞を表示している間（TutorialRules.BiteSuppressed）は、
+        // 台本秒数・通常抽選の乱数どちらであっても待ちカウントダウンを進めない。
+        // タイマー自体はリセットしないので、読み終えた瞬間に続きから自然に再開する。
+        if (TutorialRules.Active && TutorialRules.BiteSuppressed) { return; }
+
         biteWaitRemaining -= dt;
         if (biteWaitRemaining > 0f) { return; }
 
