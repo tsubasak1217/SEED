@@ -153,6 +153,17 @@ public class ResultPanel : SEEDScript
         /// <summary>図鑑登録パネルも出きって、決定入力を待っている。</summary>
         RegisteredIdle,
 
+        /// <summary>
+        /// 図鑑登録パネルだけが easeInBack で原寸 → 0 へ縮んでいる。
+        /// 縮み切ったら本体の <see cref="Closing"/> へ続く。
+        ///
+        /// <b>本体と同時に縮めない理由</b>: 登録パネルは本体（ResultBody）の子なので、
+        /// スケールは親の累積スケールで<b>乗算</b>される。同時に縮めると二乗で潰れて
+        /// 一瞬で消えたように見えるうえ、どちらの演出も読み取れない。
+        /// 「登録パネルが引っ込む → 本体が引っ込む」の順に見せる。
+        /// </summary>
+        RegisteredClosing,
+
         /// <summary>全体が easeInBack で原寸 → 0 へ縮んでいる。縮み切ったら <see cref="Hidden"/>。</summary>
         Closing,
     }
@@ -265,6 +276,13 @@ public class ResultPanel : SEEDScript
     /// <summary>全体が原寸 → 0 へ縮む秒数（easeInBack・実時間）。</summary>
     [SerializeField(Label = "閉じる秒数")]
     private float closeSeconds = 0.22f;
+
+    /// <summary>
+    /// 図鑑登録パネルが原寸 → 0 へ縮む秒数（easeInBack・実時間）。
+    /// この縮みが終わってから本体が <see cref="closeSeconds"/> で閉じる。
+    /// </summary>
+    [SerializeField(Label = "登録パネルを閉じる秒数")]
+    private float registeredCloseSeconds = 0.22f;
 
     /// <summary>
     /// easeOutBack / easeInBack の跳ね返り量（1 で標準。0 でただの 3 次補間、
@@ -415,6 +433,9 @@ public class ResultPanel : SEEDScript
         ApplyRegisteredScale(MinScale);
         panelRoot.Visible = false;
 
+        // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
+        SEED.Debug.OnCommand(DebugCommandResultConfirm, HandleResultConfirmCommand);
+
         // 生成フォールバック経由なら、預かっていた内容でそのまま表示へ入る
         if (!hasPendingData)
         {
@@ -431,7 +452,33 @@ public class ResultPanel : SEEDScript
     /// <summary>破棄時の後始末。自分が現役のときだけ静的状態を戻す。</summary>
     public override void OnDestroy()
     {
+        // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
+        SEED.Debug.OffCommand(DebugCommandResultConfirm, HandleResultConfirmCommand);
         if (ReferenceEquals(Current, this)) { ResetStaticState(); }
+    }
+
+    // ─── デバッグコマンド（開発・AI 検証用）──────────────────
+
+    /// <summary>
+    /// デバッグコマンド名: 決定入力の代わりにパネルを次へ進める。
+    /// <c>seed_script_debug(name:"result_confirm")</c> で叩く。
+    /// </summary>
+    private const string DebugCommandResultConfirm = "result_confirm";
+
+    /// <summary>
+    /// <see cref="DebugCommandResultConfirm"/> のハンドラ
+    /// 【パネルの開閉を検証するための唯一の近道】。
+    ///
+    /// 実際の決定入力と同じ分岐（<see cref="AdvanceOnConfirm"/>）を、
+    /// 入力の待ち時間と <see cref="InputGate"/> だけ飛ばして呼ぶ。
+    /// 進行の中身は本物と同じなので、ここで確認した見た目は本番でもそのまま出る
+    /// （チュートリアル中で決定が塞がれていても検証できる）。
+    /// </summary>
+    /// <param name="arg">未使用（コマンドの引数は取らない）。</param>
+    private void HandleResultConfirmCommand(string arg)
+    {
+        SEED.Debug.Log($"[ResultPanel] result_confirm: phase={phase}");
+        AdvanceOnConfirm();
     }
 
     /// <summary>
@@ -451,6 +498,7 @@ public class ResultPanel : SEEDScript
             case PanelPhase.Idle:              UpdateIdle();              break;
             case PanelPhase.RegisteredOpening: UpdateRegisteredOpening(); break;
             case PanelPhase.RegisteredIdle:    UpdateIdle();              break;
+            case PanelPhase.RegisteredClosing: UpdateRegisteredClosing(); break;
             case PanelPhase.Closing:           UpdateClosing();           break;
         }
     }
@@ -475,18 +523,52 @@ public class ResultPanel : SEEDScript
         EnterPhase(PanelPhase.RegisteredIdle);
     }
 
-    /// <summary>
-    /// 決定入力の待ち【次に何が起きるかを決める唯一の分岐】。
-    ///
-    /// - 本体だけ出ていて<b>初捕獲</b>なら … 図鑑登録パネルを開く
-    /// - それ以外なら … 全体を閉じる
-    /// </summary>
+    /// <summary>決定入力の待ち。押されたら <see cref="AdvanceOnConfirm"/> が次を決める。</summary>
     private void UpdateIdle()
     {
         if (!IsConfirmPressed()) { return; }
+        AdvanceOnConfirm();
+    }
 
-        bool openRegistered = phase == PanelPhase.Idle && data.FirstCatch;
-        EnterPhase(openRegistered ? PanelPhase.RegisteredOpening : PanelPhase.Closing);
+    /// <summary>
+    /// 決定が入ったときに次へ進む【次に何が起きるかを決める唯一の分岐】。
+    ///
+    /// - 本体だけ出ていて<b>初捕獲</b>なら … 図鑑登録パネルを開く
+    /// - 本体だけ出ていて初捕獲でないなら … 全体を閉じる
+    /// - 図鑑登録パネルまで出ているなら … まず登録パネルを畳み、その後で本体を閉じる
+    ///
+    /// 入力の可否（待ち時間・<see cref="InputGate"/>）は呼び出し側の責務。
+    /// 待ち受け中でないフェーズで呼ばれても何もしない。
+    /// </summary>
+    private void AdvanceOnConfirm()
+    {
+        switch (phase)
+        {
+            case PanelPhase.Idle:
+                EnterPhase(data.FirstCatch ? PanelPhase.RegisteredOpening : PanelPhase.Closing);
+                break;
+
+            case PanelPhase.RegisteredIdle:
+                EnterPhase(PanelPhase.RegisteredClosing);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 図鑑登録パネルの縮小（easeInBack で原寸 → 0）。
+    /// 縮み切ったら登録パネルを隠し、続けて本体を閉じる。
+    /// </summary>
+    private void UpdateRegisteredClosing()
+    {
+        float ratio = Progress(registeredCloseSeconds);
+        ApplyRegisteredScale(1f - EaseInBack(ratio));
+        if (ratio < 1f) { return; }
+
+        // 縮み切った状態を確定させてから本体の閉じへ渡す
+        // （中途半端なスケールのまま隠すと、次に開いたとき一瞬その大きさで見える）。
+        ApplyRegisteredScale(MinScale);
+        SetRegisteredVisible(false);
+        EnterPhase(PanelPhase.Closing);
     }
 
     /// <summary>全体の縮小（easeInBack で原寸 → 0）。縮み切ったら非表示にして通知する。</summary>

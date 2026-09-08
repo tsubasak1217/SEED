@@ -903,6 +903,7 @@ public override void OnDestroy()
 | name | arg | 何が起きるか |
 |---|---|---|
 | `catch_test` | 魚の表示名（省略可） | 進行中の釣りを畳み、指定の魚（省略時は竿先に一番近い魚）でその場で釣り上げ演出（ホワイトアウト → 縦跳び → 釣果パネル）を起こす。実装は `FishingController.HandleCatchTestCommand` |
+| `result_confirm` | なし | 釣果パネルの決定入力の代わりに 1 段進める（本体 → 図鑑登録パネル → 登録パネルを畳む → 本体を閉じる）。入力の待ち時間と `InputGate` を飛ばすので、チュートリアル中で決定が塞がれていても開閉を確認できる。実装は `ResultPanel.HandleResultConfirmCommand` |
 
 ### 10.4 使い方の例（釣り上げ演出の確認）
 

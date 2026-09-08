@@ -3179,9 +3179,24 @@ public class FishingController : SEEDScript
 
         p.Tick(deltaTime);
 
-        // 魚が跳ねる区間（Fade / SlowArc）を抜けたらウキを手元へ畳む。
-        // ParkFloatHidden は表示フラグと位置を引き直すだけなので毎フレーム呼んで安全。
-        if (p.Phase is not (CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc))
+        // ── ウキの扱い（釣り上げ演出中の唯一の分岐）──────────────
+        // 魚が跳ねる区間（Fade / SlowArc）はウキを畳まない。さらに演出が跳びの位置を
+        // 指定してきたら（CatchPresenter.FloatFollowPosition）、ウキをそこへ置いて
+        // 魚と一緒に水面から引き抜かれるように見せる。
+        // 釣り糸（LineRenderer）は LateUpdate の UpdateLine が「竿先 → ウキ」で毎フレーム
+        // 張り直し、その表示判定 IsFloatOut() は Fade / SlowArc を<b>含む</b>ので、
+        // ここでウキを動かすだけで糸も一緒に跳ね上がる（追加の制御は要らない）。
+        // 跳びの区間を抜けたら従来どおり手元へ畳む
+        // （ParkFloatHidden は表示フラグと位置を引き直すだけなので毎フレーム呼んで安全）。
+        if (p.Phase is CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc)
+        {
+            if (p.FloatFollowPosition is { } floatGoal)
+            {
+                ShowFloat();
+                SetFloatPosition(floatGoal);
+            }
+        }
+        else
         {
             ParkFloatHidden();
         }

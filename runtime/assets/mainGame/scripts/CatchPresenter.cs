@@ -40,11 +40,15 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///
 /// <b>カット（<see cref="SwitchToSlowArcComposition"/>）</b>
 /// 画面が完全に白いあいだに構図を切り替えるので、視点の飛びが見えない。
-/// - 横カメラの目標（<see cref="catchCameraTarget"/>）を「ウキ→プレイヤーの向きに対して
-///   直角・跳びの中ほどの高さ」へ置き、<see cref="CameraMove.RequestSnap"/> で<b>補間せず</b>飛ばす。
+/// - 「ウキ→プレイヤーの向きに対して直角・跳びの中ほどの高さ」の姿勢を計算し、
+///   <see cref="CameraMove.SetOverrideGoal"/> に<b>姿勢そのもの</b>と画角を渡して
+///   1 フレームで飛ばす（＝シーンで結線した目標アクタに依存しない）。
 ///   カメラ距離は「跳びの縦幅が画角に収まる距離」と「基準距離＋ランクぶん」の<b>大きい方</b>
 ///   （<see cref="RequiredVerticalFitDistance"/>）。
+///   以後この姿勢は<b>一切動かさない</b>ので、カットしてから釣果パネルまでカメラは静止する。
 /// - 魚をウキから外し、水面のすぐ下（<see cref="fishSubmergeDepth"/>）へ置く。
+/// - ウキも魚と一緒に跳ばす（<see cref="FloatFollowPosition"/> を
+///   <see cref="FishingController"/> が読んで動かす。釣り糸もウキを追う）。
 /// - しぶき（<see cref="splashActorPath"/> のパーティクル）と水音を出す。
 ///
 /// <b>魚の姿勢</b>
@@ -140,18 +144,19 @@ public class CatchPresenter : SEEDScript
     /// <summary>
     /// 釣り上げ演出中のカメラ目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」）。
     ///
-    /// 真っ白の瞬間に本スクリプトが「ウキ→プレイヤーの向きに対して直角・跳びの中ほどの高さ」の
-    /// 姿勢へ置き直し、<see cref="CameraMove.RequestSnap"/> でカットする。以後この構図は
-    /// 動かさない（跳ね上がる魚だけが動く画になる）。
-    /// 未設定なら構図は切り替わらない（<see cref="CameraMove"/> が従来の目標を追い続ける）。
+    /// <b>目印としてだけ</b>使う（構図の確認用）。カメラの追従先には使わないので、
+    /// 未設定でも構図は成立する（カメラへは <see cref="CameraMove.SetOverrideGoal"/> で
+    /// 姿勢を直接渡す）。割り当てがあれば、真っ白の瞬間に計算した姿勢を書き込む。
     /// </summary>
     [Header("参照"), SerializeField(Label = "横カメラの目標(CatchCameraTarget)")]
     private SEED.Transform? catchCameraTarget = null;
 
     /// <summary>
-    /// カメラの追従スクリプト。真っ白の瞬間に <see cref="CameraMove.RequestSnap"/> を呼び、
-    /// 構図の切り替えを補間ではなく<b>カット</b>にする（白の裏で切るので視点の飛びが見えない）。
-    /// 未設定なら補間で繋がる（白が晴れたあとにカメラが動いて見える可能性がある）。
+    /// カメラの追従スクリプト。真っ白の瞬間に <see cref="CameraMove.SetOverrideGoal"/> へ
+    /// 「横から見る姿勢」と画角を渡し、補間ではなく<b>カット</b>で切り替える
+    /// （白の裏で切るので視点の飛びが見えない）。演出の終わりに
+    /// <see cref="CameraMove.ClearOverrideGoal"/> で通常の追従へ返す。
+    /// <b>未設定だと構図が切り替わらない</b>（従来の目標を追い続ける）ので必ず結線すること。
     /// </summary>
     [SerializeField(Label = "カメラ(CameraMove)")]
     private CameraMove? cameraMove = null;
@@ -285,6 +290,18 @@ public class CatchPresenter : SEEDScript
     [SerializeField(Label = "スローの速さ")]
     private float slowScale = 0.3f;
 
+    /// <summary>
+    /// 跳びのあいだ、ウキを魚のどこへ付けるか（魚の位置からのオフセット・メートル）。
+    ///
+    /// 跳ねている魚は<b>頭を真上へ向けた姿勢</b>で固定されるので、魚の「上（口・鼻先の方向）」は
+    /// そのままワールドの +Y になる。したがってここはワールド座標のオフセットとして扱い、
+    /// 既定 (0, +0.3, 0) で「口先のすこし上にウキが咥えられている」見え方になる。
+    /// 竿先からウキへ張る釣り糸（LineRenderer）は <see cref="FishingController.UpdateLine"/> が
+    /// このウキを終端として毎フレーム張り直すので、糸も一緒に跳ね上がる。
+    /// </summary>
+    [SerializeField(Label = "ウキの位置(魚からのオフセット・m)")]
+    private SEED.Vector3 floatOffsetFromFish = new(0f, 0.3f, 0f);
+
     // ─── しぶき（SlowArc の頭）─────────────────────────────────
 
     /// <summary>
@@ -355,6 +372,17 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>現在のフェーズ（<see cref="CameraMove"/> がカメラ目標の選択に使う読み取り専用値）。</summary>
     public CatchPhase Phase { get; private set; } = CatchPhase.None;
+
+    /// <summary>
+    /// 跳びのあいだ、ウキを置くべきワールド位置【ウキを一緒に跳ばすための唯一の窓口】。
+    /// null なら「演出はウキの位置を指定しない」＝従来どおり <see cref="FishingController"/> の
+    /// 都合（格納・追従）で決めてよい、という意味。
+    ///
+    /// ウキ本体を持っているのは <see cref="FishingController"/> なので、本スクリプトは
+    /// 位置を<b>教えるだけ</b>にして、実際に動かすのは持ち主に任せる
+    /// （＝ウキの参照をこちらにも結線する必要が無く、シーンの結線が増えない）。
+    /// </summary>
+    public SEED.Vector3? FloatFollowPosition { get; private set; } = null;
 
     // ─── 内部状態 ─────────────────────────────────────────────
 
@@ -633,7 +661,7 @@ public class CatchPresenter : SEEDScript
     /// 真っ白の瞬間に行うカット【構図・魚の差し替えの唯一の集約点】。
     ///
     /// 1. 跳びの始点と魚の向きを決める（水面と「ウキ→プレイヤー」の向きが基準）
-    /// 2. 横カメラの目標を置き、<see cref="CameraMove.RequestSnap"/> で補間を飛ばす
+    /// 2. 横カメラの姿勢を計算し、<see cref="CameraMove.SetOverrideGoal"/> へ渡してカットする
     /// 3. 魚をウキから外して始点（水面のすこし下）へ置く
     /// 4. しぶきと水音を出す
     /// </summary>
@@ -645,9 +673,9 @@ public class CatchPresenter : SEEDScript
         fishYawDegrees = SEED.Mathf.Atan2(toPlayer.x, toPlayer.z) * SEED.Mathf.Rad2Deg
                        + fishYawOffsetDegrees;
 
-        // 2. 横カメラの構図を作ってカット
+        // 2. 横カメラの構図を作ってカット（構図の受け渡しとカットは
+        //    ApplySideCameraFraming が CameraMove.SetOverrideGoal で同時に行う）
         ApplySideCameraFraming(toPlayer);
-        if (cameraMove is { } cam) { cam.RequestSnap(); }
 
         // 3. 魚を始点へ（跳びの t=0 の姿勢）
         PlaceFishOnJump(0f);
@@ -677,6 +705,13 @@ public class CatchPresenter : SEEDScript
         DestroySplash();
         ApplySlow(false);
 
+        // ウキの位置指定を返上する（以後は FishingController の都合＝格納に戻る）
+        FloatFollowPosition = null;
+
+        // カメラの姿勢の上書きも必ず外す（外し忘れると演出が終わっても
+        // カメラが横向きのまま固まる）。戻りは補間なので構図は滑らかに繋がる。
+        cameraMove?.ClearOverrideGoal();
+
         Phase = CatchPhase.None;
         phaseElapsed = 0f;
         SetWhiteoutAlpha(0f);
@@ -699,13 +734,18 @@ public class CatchPresenter : SEEDScript
     /// <param name="t">跳びの進行度（0〜1）。</param>
     private void PlaceFishOnJump(float t)
     {
-        if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
-
         float ratio = SEED.Mathf.Clamped01(t);
         float height = ParabolaPeakCoefficient * jumpHeight * ratio * (1f - ratio);
+        var fishPosition = jumpStart + SEED.Vector3.Up * height;
+
+        // ウキの追従先は魚の有無に関わらず更新する（魚が破棄されていても
+        // ウキだけ跳んだ位置に取り残されない＝位置の真実を 1 か所に保つ）。
+        FloatFollowPosition = fishPosition + floatOffsetFromFish;
+
+        if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
 
         var fishTf = fish.Transform;
-        fishTf.Position = jumpStart + SEED.Vector3.Up * height;
+        fishTf.Position = fishPosition;
         fishTf.Rotation = new SEED.Vector3(
             NoseUpPitchDegrees + fishNoseTiltDegrees, fishYawDegrees, 0f);
     }
@@ -773,8 +813,6 @@ public class CatchPresenter : SEEDScript
     /// <param name="toPlayer">「ウキ→プレイヤー」の水平方向（正規化済み）。</param>
     private void ApplySideCameraFraming(SEED.Vector3 toPlayer)
     {
-        if (catchCameraTarget is not { IsValid: true } goal) { return; }
-
         // 注視点＝跳びの真上・中ほどの高さ（水平位置は跳びの始点＝ウキの真下と同じ）
         var focus = jumpStart
                   + SEED.Vector3.Up * (jumpHeight * SEED.Mathf.Clamped01(cameraFocusRatio));
@@ -797,8 +835,24 @@ public class CatchPresenter : SEEDScript
             focus.y + cameraHeightAboveFocus + distance * SEED.Mathf.Sin(phiRad),
             focus.z + horizDir.z * distance * SEED.Mathf.Cos(phiRad));
 
-        goal.Position = camPos;
-        goal.Rotation = LookRotation(focus - camPos);
+        var camRot = LookRotation(focus - camPos);
+
+        // 目印アクタが割り当ててあれば同じ姿勢を書いておく（エディタで構図を確認するため。
+        // カメラの追従先としては使わないので、未設定でも構図は成立する）。
+        if (catchCameraTarget is { IsValid: true } goal)
+        {
+            goal.Position = camPos;
+            goal.Rotation = camRot;
+        }
+
+        // カメラへは<b>姿勢そのもの</b>を渡してカットする。
+        // シーンで結線した目標アクタ（CameraMove.catchTarget）に依存しないので、
+        // 結線の有無・取り違えで構図が変わらない。画角も同時に固定して、
+        // 位置・回転だけが飛んで FOV が補間で寄る（＝止まっているのに画が動く）のを防ぐ。
+        if (cameraMove is { } cam)
+        {
+            cam.SetOverrideGoal(camPos, camRot, snap: true, fovDegrees: verticalFitFovDegrees);
+        }
     }
 
     /// <summary>
@@ -822,7 +876,10 @@ public class CatchPresenter : SEEDScript
     /// </summary>
     private float RequiredVerticalFitDistance()
     {
-        float span = SEED.Mathf.Max(jumpHeight, 0f) + SEED.Mathf.Max(fishSubmergeDepth, 0f);
+        // 魚と一緒に跳ぶウキは魚より上に居るので、その高さぶんも収める対象に含める。
+        float span = SEED.Mathf.Max(jumpHeight, 0f)
+                   + SEED.Mathf.Max(fishSubmergeDepth, 0f)
+                   + SEED.Mathf.Max(floatOffsetFromFish.y, 0f);
         float halfSpan = span / HalfDivisor * SEED.Mathf.Max(verticalFitMargin, 0f);
 
         float halfFovRad = SEED.Mathf.Max(verticalFitFovDegrees, 0f)

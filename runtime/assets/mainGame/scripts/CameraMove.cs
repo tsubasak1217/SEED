@@ -25,6 +25,12 @@ public class CameraMove : SEEDScript
     /// <summary>度→ラジアン変換係数。</summary>
     private const float DegToRad = 3.14159265f / HalfTurnDegrees;
 
+    /// <summary>
+    /// 「視野角を上書きしない」ことを表す値（<see cref="SetOverrideGoal"/> の既定）。
+    /// 0 度の画角には意味が無いので、0 以下を「指定なし」の合図に使う。
+    /// </summary>
+    private const float FovOverrideDisabled = 0f;
+
     // ─── 参照 ─────────────────────────────────────────────────
 
     /// <summary>
@@ -185,6 +191,25 @@ public class CameraMove : SEEDScript
     /// </summary>
     private bool snapRequested = false;
 
+    /// <summary>
+    /// 上書き姿勢が入っているか（<see cref="SetOverrideGoal"/> が立て、
+    /// <see cref="ClearOverrideGoal"/> が落とす）。
+    /// true のあいだ <see cref="SelectGoalTransform"/> は一切参照しない。
+    /// </summary>
+    private bool hasOverrideGoal = false;
+
+    /// <summary>上書き姿勢の位置（ワールド）。<see cref="hasOverrideGoal"/> が true のときだけ意味を持つ。</summary>
+    private SEED.Vector3 overrideGoalPosition = SEED.Vector3.Zero;
+
+    /// <summary>上書き姿勢の回転（オイラー角・度）。<see cref="hasOverrideGoal"/> が true のときだけ意味を持つ。</summary>
+    private SEED.Vector3 overrideGoalRotation = SEED.Vector3.Zero;
+
+    /// <summary>
+    /// 上書き中の視野角（度）。<see cref="FovOverrideDisabled"/> 以下なら上書きしない
+    /// （＝従来どおり釣り姿勢の判定で <see cref="fishingFov"/> / <see cref="normalFov"/> を選ぶ）。
+    /// </summary>
+    private float overrideFovDegrees = FovOverrideDisabled;
+
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -213,21 +238,41 @@ public class CameraMove : SEEDScript
         // 上書きが無ければ従来どおり毎フレーム追従する。
         if (TutorialRules.Active && TutorialRules.CameraSuspended) { return; }
 
-        if (SelectGoalTransform() is not { } t || !t.IsValid) { return; }
-
-        // 目標 = 目標トランスフォームの位置・回転そのまま。
-        // 構図の計算はシーンの親子配置に完全に委ねる（このスクリプトは補間とロールだけを担う）。
-        var goalPos = t.Position;
-        var goalRot = t.Rotation;
+        // ── 目標の姿勢を決める ─────────────────────────────
+        // 上書き姿勢（SetOverrideGoal）が入っているあいだは、シーンのどの
+        // トランスフォームも見ずにその姿勢だけを使う
+        // （＝構図を渡した側が「どこから・どっちを向くか」を完全に決める。
+        //   シーンで結線した目標アクタの有無に結果が左右されない）。
+        SEED.Vector3 goalPos;
+        SEED.Vector3 goalRot;
+        if (hasOverrideGoal)
+        {
+            goalPos = overrideGoalPosition;
+            goalRot = overrideGoalRotation;
+        }
+        else
+        {
+            // 目標 = 目標トランスフォームの位置・回転そのまま。
+            // 構図の計算はシーンの親子配置に完全に委ねる（このスクリプトは補間とロールだけを担う）。
+            if (SelectGoalTransform() is not { } t || !t.IsValid) { return; }
+            goalPos = t.Position;
+            goalRot = t.Rotation;
+        }
 
         // 移動ロール: プレイヤーの横方向速度（カメラの右方向成分）に比例した
         // 傾き（Z軸）を目標回転へ加算する。停止すれば 0 に戻り水平へ復帰する。
+        //
+        // 上書き姿勢のあいだは<b>加算しない</b>（止めた画が揺れて見えないように）。
+        // ただし速度の基準になる前フレーム位置は毎フレーム必ず引き直す
+        // （飛ばすと、上書きを外した最初のフレームに溜まった移動量が
+        //   1 フレームぶんの速度として現れ、画面が跳ねて傾く）。
         if (player is { } p && p.IsValid)
         {
-            goalRot = new SEED.Vector3(
-                goalRot.x,
-                goalRot.y,
-                goalRot.z + ComputeMovementRoll(p.Position, goalRot.y, ctx.DeltaTime));
+            float roll = ComputeMovementRoll(p.Position, goalRot.y, ctx.DeltaTime);
+            if (!hasOverrideGoal)
+            {
+                goalRot = new SEED.Vector3(goalRot.x, goalRot.y, goalRot.z + roll);
+            }
         }
 
         // 初回スナップ（開始時にカメラが遠くから飛んでくるのを防ぐ）
@@ -284,6 +329,46 @@ public class CameraMove : SEEDScript
     /// 呼んだ次の <see cref="LateUpdate"/> 1 回だけ効く。
     /// </summary>
     public void RequestSnap() => snapRequested = true;
+
+    /// <summary>
+    /// 追従先を<b>姿勢そのもの</b>で上書きする【演出側が構図を握る唯一の入口】。
+    ///
+    /// シーンで結線した目標トランスフォーム（<see cref="catchTarget"/> など）に依存せず、
+    /// 呼び出し側が計算した位置・回転（・視野角）へカメラを合わせる。
+    /// 上書きは <see cref="ClearOverrideGoal"/> を呼ぶまで続き、そのあいだ
+    /// 移動ロールも掛からない（＝渡した姿勢がそのまま画になる）。
+    ///
+    /// <paramref name="snap"/> を true にすると次の <see cref="LateUpdate"/> 1 回だけ
+    /// 補間せず飛ぶ（＝カット）。上書きの設定と同じ呼び出しでカットまで済ませるので、
+    /// 「切り替える前の目標へスナップしてしまう」取り違えが起こらない。
+    /// </summary>
+    /// <param name="position">目標の位置（ワールド）。</param>
+    /// <param name="rotationDegrees">目標の回転（オイラー角・度）。</param>
+    /// <param name="snap">true で補間せず 1 フレームで飛ぶ（カット）。</param>
+    /// <param name="fovDegrees">
+    /// 上書きする視野角（度）。<see cref="FovOverrideDisabled"/> 以下（既定）なら上書きせず、
+    /// 従来どおり釣り姿勢の判定で決める。<paramref name="snap"/> が true ならこの値へも瞬時に合う。
+    /// </param>
+    public void SetOverrideGoal(
+        SEED.Vector3 position, SEED.Vector3 rotationDegrees,
+        bool snap, float fovDegrees = FovOverrideDisabled)
+    {
+        hasOverrideGoal = true;
+        overrideGoalPosition = position;
+        overrideGoalRotation = rotationDegrees;
+        overrideFovDegrees = fovDegrees;
+        if (snap) { snapRequested = true; }
+    }
+
+    /// <summary>
+    /// 姿勢の上書きを外して通常の追従（<see cref="SelectGoalTransform"/>）へ戻す。
+    /// 補間で戻るので、演出の終わりに呼べば構図が滑らかに繋がる。
+    /// </summary>
+    public void ClearOverrideGoal()
+    {
+        hasOverrideGoal = false;
+        overrideFovDegrees = FovOverrideDisabled;
+    }
 
     /// <summary>描画フェーズで呼ばれる。描画に関わる処理向け。</summary>
     public override void Render(ref NativeFrameContext ctx)
@@ -457,9 +542,15 @@ public class CameraMove : SEEDScript
     {
         if (gameObject.GetComponent<SEED.Camera>() is not { } cam || !cam.IsValid) { return; }
 
-        // 釣り姿勢中もキャスト中も同じ寄り（fishingFov）にする。
+        // 上書き中（演出が構図を握っている区間）は指定された画角を最優先で使う。
+        // ここを通さないと、カットで位置・回転だけが飛んで画角だけが補間で寄っていき、
+        // 「止まっているのに画が動く」状態になる。
+        //
+        // 上書きが無ければ、釣り姿勢中もキャスト中も同じ寄り（fishingFov）にする。
         // キャスト専用の FOV は今のところ必要が無く、切替が増えるほど画が落ち着かないため。
-        float goalFov = (IsPlayerFishing() || IsFloatOut()) ? fishingFov : normalFov;
+        float goalFov = hasOverrideGoal && overrideFovDegrees > FovOverrideDisabled
+            ? overrideFovDegrees
+            : ((IsPlayerFishing() || IsFloatOut()) ? fishingFov : normalFov);
 
         if (snap)
         {
