@@ -13,13 +13,13 @@ using SEEDEditor.Scripting;
 /// 誰がポーズを要求したかは知らない（<c>FishingController</c> が Esc を拾って
 /// <see cref="Toggle"/> を呼ぶだけ）。
 ///
-/// 【シーンを編集せずに差し込む方式】
+/// 【配置方式】
 /// このスクリプトはプレハブ <c>assets://mainGame/actors/UI/PauseMenu.actor</c> の
-/// ルート（Canvas を持つ Actor2D）に付いている。<see cref="Open"/> が
-/// 初回だけそのプレハブをシーンのルートへ <c>Instantiate</c> するので、
-/// MainGame.scene 側に何も置かなくてもポーズメニューが使える。
-/// 2 回目以降は生成し直さず <c>Visible</c> の切り替えで出し入れする
-/// （Instantiate / Destroy の繰り返しはアクタ構築コストがそのまま積み上がるため）。
+/// ルート（Canvas を持つ Actor2D）に付いている。推奨は<b>プレハブのインスタンスを
+/// あらかじめシーン（MainGame.scene）のルートへ置いておく</b>こと。<see cref="OnStart"/> が
+/// 自分を本体として登録し、開くまで非表示にする。出し入れは <c>Visible</c> の切り替えだけで、
+/// 生成・破棄は行わない。シーンに置かれていない場合に限り、<see cref="Open"/> が
+/// フォールバックとしてプレハブを <c>Instantiate</c> する。
 ///
 /// 【構成（プレハブ側）】
 ///  PauseMenu              … このスクリプト（Canvas 1920x1080 / auto_scale）
@@ -90,7 +90,10 @@ public class PauseMenu : SEEDScript
 
     // ─── 静的状態（ポーズの単一の真実）───────────────────────
 
-    /// <summary>生成済みのメニュー本体（未生成なら <c>IsValid == false</c>）。</summary>
+    /// <summary>
+    /// メニュー本体（シーン配置済みなら <see cref="OnStart"/> で登録、無ければ
+    /// <see cref="Open"/> が生成して登録。未登録なら <c>IsValid == false</c>）。
+    /// </summary>
     private static SEED.GameObject menuRoot;
 
     /// <summary>いまポーズ中か。ゲーム側はこれを見て入力を止める。</summary>
@@ -236,9 +239,11 @@ public class PauseMenu : SEEDScript
 
         if (!menuRoot.IsValid)
         {
+            // シーンに配置されたインスタンスが無い場合だけプレハブを生成する（フォールバック）。
+            // 推奨はシーンへあらかじめ置いて非表示にしておくこと（OnStart が登録する）。
             if (string.IsNullOrWhiteSpace(actorPath))
             {
-                SEED.Debug.LogWarning("[PauseMenu] プレハブのパスが未設定のため開けない");
+                SEED.Debug.LogWarning("[PauseMenu] シーンに PauseMenu が無く、プレハブのパスも未設定のため開けない");
                 return;
             }
             menuRoot = SEED.GameObject.Instantiate(actorPath);
@@ -290,11 +295,22 @@ public class PauseMenu : SEEDScript
 
     // ─── ライフサイクル ──────────────────────────────────────
 
-    /// <summary>生成直後の初期化。文言を流し込み、選択を先頭へ戻す。</summary>
+    /// <summary>
+    /// 初期化。文言を流し込み、選択を先頭へ戻す。
+    ///
+    /// <b>あらかじめシーンに置かれたインスタンス</b>（推奨）は、ここで自分を
+    /// <see cref="menuRoot"/> として登録し、開くまで非表示にする。
+    /// 実行時生成（<see cref="Open"/> のフォールバック）でも同じ経路を通る。
+    /// </summary>
     public override void OnStart()
     {
         Current = this;
         selectedIndex = IndexResume;
+
+        // シーン配置済みの本体を採用する。まだ開いていなければ隠しておく
+        // （シーン上で visible=true のまま保存されていても Play 開始時に必ず隠れる）。
+        menuRoot = gameObject;
+        if (!IsOpen) { menuRoot.Visible = false; }
 
         SetContent(titleText, titleLabel);
         SetContent(item0Text, resumeLabel);
