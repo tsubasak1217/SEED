@@ -71,10 +71,35 @@ public static class TutorialRules
     /// </summary>
     public static string FishPrefabFilter = NoPrefabFilter;
 
+    /// <summary>
+    /// 魚種フィルタを<b>許可リスト</b>として扱うか。
+    ///
+    /// false（既定）なら <see cref="FishPrefabFilter"/> は「できればこの魚」の希望で、
+    /// 一致する候補が無ければ通常の抽選へフォールバックする（従来の挙動）。
+    /// true なら一致しない魚は<b>一切出さず、既に泳いでいる個体も取り除く</b>。
+    /// 「連鎖が起きない・目当ての魚だけが居る」状態を作る説明ミッション用。
+    /// </summary>
+    public static bool FishPrefabExclusive;
+
+    // ─── わらしべ連鎖の制限 ─────────────────────────────────
+
+    /// <summary>
+    /// true の間、掛かっている魚を別の魚が食う<b>わらしべ連鎖を成立させない</b>。
+    /// 巻き上げの練習中に横取りされて手順が飛ぶのを防ぐ
+    /// （<c>FishingController.TryEatHookedFish</c> が早期 return する）。
+    /// </summary>
+    public static bool ChainDisabled;
+
     // ─── 漂流物の制限 ────────────────────────────────────────
 
     /// <summary>true の間、漂流物を自然出現させない（台本による明示生成だけを許す）。</summary>
     public static bool DriftDisabled;
+
+    /// <summary>
+    /// true の間、漂流物を<b>漂わせず・寿命でも消さない</b>（置いた場所に留める）。
+    /// 台本が「巻く方向の一直線上」に並べた漂流物がずれて拾えなくなるのを防ぐ。
+    /// </summary>
+    public static bool DriftStationary;
 
     // ─── やり取り（ビートバトル）の制限 ─────────────────────
 
@@ -136,7 +161,10 @@ public static class TutorialRules
         Active               = false;
         FishLevelFilter      = NoLevelFilter;
         FishPrefabFilter     = NoPrefabFilter;
+        FishPrefabExclusive  = false;
+        ChainDisabled        = false;
         DriftDisabled        = false;
+        DriftStationary      = false;
         BeatDisabled         = false;
         LineBreakDisabled    = false;
         RestartCycleOnMiss   = false;

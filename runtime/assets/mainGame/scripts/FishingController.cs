@@ -1611,6 +1611,10 @@ public class FishingController : SEEDScript
     /// <returns>成立したら true。</returns>
     public bool TryEatHookedFish(Fish eater)
     {
+        // チュートリアルが連鎖を止めている間は成立させない
+        // （巻き上げの練習中に横取りされると、手順が飛んで説明と噛み合わなくなる）。
+        if (TutorialRules.Active && TutorialRules.ChainDisabled) { return false; }
+
         if (State != FishState.Hooked) { return false; }
         if (hookedFish is not { } prey) { return false; }
         if (ReferenceEquals(eater, prey)) { return false; }         // 自分自身は食えない
@@ -3068,8 +3072,10 @@ public class FishingController : SEEDScript
         //   入力の意図を明確にするため先に無視しておく）。
         float half = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f * steerFactor;
         float turn = 0f;
-        // チュートリアル中は操舵を止められる（通常時は常に許可）
-        if (steerFactor > 0f && InputGate.Allows(GameAction.Reel))
+        // チュートリアル中は操舵だけを止められる（通常時は常に許可）。
+        // 巻き取り（ホイール）は GameAction.Reel、左右の操舵は GameAction.Aim で分けて見る。
+        // こうすると「巻けるが向きは変えられない（＝まっすぐ巻く）」場面が作れる。
+        if (steerFactor > 0f && InputGate.Allows(GameAction.Aim))
         {
             if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn += 1f; }   // A: ウキを左へ寄せる
             if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn -= 1f; }   // D: ウキを右へ寄せる

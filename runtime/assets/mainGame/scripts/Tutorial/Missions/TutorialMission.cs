@@ -59,6 +59,14 @@ public struct TutorialMission
     [SerializeField(Label = "クリアバナー無し", Tooltip = "true で達成バナーを出さず、そのまま次の台詞へ進む")]
     public bool skipClearBanner;
 
+    /// <summary>
+    /// 達成バナーを出しているあいだゲーム時間を止めるか。
+    /// 釣りの最中に達成するミッション（魚が泳いで逃げる）だけ true にする。
+    /// 止める必要が無い場面で止めると波まで固まって「フリーズした」ように見える。
+    /// </summary>
+    [SerializeField(Label = "達成中は時間停止", Tooltip = "true で達成バナーの間ゲーム時間を止める（釣りの最中のミッション用）")]
+    public bool pauseOnClear;
+
     // ─── ルール上書き（釣りシステムへの例外規則）───────────
 
     /// <summary>
@@ -75,9 +83,21 @@ public struct TutorialMission
     [SerializeField(Label = "魚種の指定", Tooltip = "必ず出したい魚の .actor 名の一部（例 kumanomi）。空で制限なし")]
     public string fishPrefabFilter;
 
-    /// <summary>true で漂流物を自然出現させない。</summary>
+    /// <summary>true で「魚種の指定」に一致しない魚だけにする（許可リスト扱い）。</summary>
+    [SerializeField(Label = "魚種を固定", Tooltip = "true で「魚種の指定」に一致しない魚を一切出さず、泳いでいる個体も取り除く")]
+    public bool fishPrefabExclusive;
+
+    /// <summary>true の間、わらしべ連鎖（他の魚が掛かった魚を食う）を成立させない。</summary>
+    [SerializeField(Label = "連鎖なし", Tooltip = "true で掛かった魚を他の魚が食う連鎖を起こさない")]
+    public bool chainDisabled;
+
+    /// <summary>true の間、漂流物を自然出現させない。</summary>
     [SerializeField(Label = "漂流物なし", Tooltip = "true で漂流物を自然出現させない（台本での生成は別）")]
     public bool driftDisabled;
+
+    /// <summary>true の間、漂流物を漂わせず寿命でも消さない（台本が並べた位置に留める）。</summary>
+    [SerializeField(Label = "漂流物を固定", Tooltip = "true で漂流物が流れず寿命でも消えない（一直線に並べる台本用）")]
+    public bool driftStationary;
 
     /// <summary>true でビートバトルを行わず、魚をずっとひるませたままにする。</summary>
     [SerializeField(Label = "ビートなし", Tooltip = "true で出題・回答を行わず、魚をずっとひるませる（巻くだけ）")]

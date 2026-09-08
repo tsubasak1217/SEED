@@ -760,7 +760,15 @@ public class CatchPresenter : SEEDScript
         SetFishScale(1f - EaseInBack(ratio));
 
         if (ratio < 1f) { return; }
+
+        // 表示名は Finish() で参照が消えるので、閉じる前に控えておく
+        string presentedName = shownFish is { } presented ? presented.DisplayName : string.Empty;
+
         Finish();
+
+        // 獲得演出を最後まで見せ切った（中断＝Abort ではここを通らない）。
+        // チュートリアルの「巻き上げ／釣り上げ」ミッションはこの瞬間をクリアの合図にする。
+        SEED.Events.Raise(FishingEvents.CatchPresented, presentedName);
     }
 
     // ─── フェーズ遷移 ─────────────────────────────────────────

@@ -321,6 +321,7 @@ public class FishManager : SEEDScript
     public override void Update(ref NativeFrameContext ctx)
     {
         ValidateLevelsOnce();
+        EnforceExclusivePrefabFilter();
         EnsurePopulation();
     }
 
@@ -466,6 +467,10 @@ public class FishManager : SEEDScript
 
         if (string.IsNullOrWhiteSpace(path))
         {
+            // 許可リスト指定中は、一致する魚がこのレベルに居なければ<b>何も出さない</b>。
+            // 通常の抽選へ落とすと「この魚しか居ない」状態が作れない（連鎖が起きてしまう）。
+            if (IsExclusivePrefabFilterActive()) { return false; }
+
             // 出現枠の抽選: レア枠は合計 RareFishRate(10%)、残り(90%)は通常枠。
             // 片方の枠しか無いレベルではその枠が 100% になる。枠内は均等割りなので、
             // 「レア魚の出現率 10%・残りを残りの魚で割る」という仕様がそのまま成立する。
@@ -495,6 +500,62 @@ public class FishManager : SEEDScript
         fishLevels[(fish.Entity.Index, fish.Entity.Generation)] = levelIndex + LevelNumberToIndex;
         fishPrefabPaths[(fish.Entity.Index, fish.Entity.Generation)] = path;
         return true;
+    }
+
+    /// <summary>
+    /// 魚種の「許可リスト」指定が効いているか
+    /// 【許可リスト判定の唯一の実装】。
+    ///
+    /// チュートリアルが有効で、魚種フィルタが指定されていて、かつ
+    /// それを許可リストとして扱う設定になっているときだけ true。
+    /// </summary>
+    /// <returns>許可リストとして扱うなら true。</returns>
+    private static bool IsExclusivePrefabFilterActive()
+        => TutorialRules.Active
+        && TutorialRules.FishPrefabExclusive
+        && !string.IsNullOrWhiteSpace(TutorialRules.FishPrefabFilter);
+
+    /// <summary>
+    /// 許可リストに一致しない魚を取り除く【既存個体の掃除の唯一の実装】。
+    ///
+    /// 補充を止めるだけでは、指定より前から泳いでいた魚が残って連鎖や横取りが起きる。
+    /// 掛かっている魚だけは除外する（やり取りの最中に消すとヒットが宙に浮くため）。
+    /// 破棄した個体は次の <see cref="EnsurePopulation"/> が登録簿から外す。
+    /// </summary>
+    private void EnforceExclusivePrefabFilter()
+    {
+        if (!IsExclusivePrefabFilterActive()) { return; }
+
+        string filter = TutorialRules.FishPrefabFilter;
+        var hooked = FishingController.Current?.HookedFish;
+
+        for (int level = 0; level < spawnedFish.Count; level++)
+        {
+            var alive = spawnedFish[level];
+            for (int i = 0; i < alive.Count; i++)
+            {
+                var fish = alive[i];
+                if (!fish.IsValid) { continue; }
+
+                // 掛かっている魚は消さない（やり取りが壊れる）
+                if (hooked is { } hookedFish
+                    && hookedFish.Actor.IsValid
+                    && hookedFish.Actor.Entity.Index == fish.Entity.Index
+                    && hookedFish.Actor.Entity.Generation == fish.Entity.Generation)
+                {
+                    continue;
+                }
+
+                string path = PrefabPathOf(fish);
+                if (!string.IsNullOrEmpty(path)
+                    && path.Contains(filter, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;   // 許可された魚
+                }
+
+                fish.Destroy();
+            }
+        }
     }
 
     /// <summary>

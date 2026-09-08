@@ -40,6 +40,9 @@ public class DialogueWindow : SEEDScript
     /// <summary>1 文字あたりの表示間隔（秒）の既定値。</summary>
     private const float DefaultCharInterval = 0.04f;
 
+    /// <summary>文字送り効果音の既定パス（会話窓・チュートリアル窓で共通の「ぴこぴこ」音）。</summary>
+    private const string DefaultMessageSePath = "assets://mainGame/audios/message.mp3";
+
     /// <summary>送りマークの点滅周期（秒）の既定値。</summary>
     private const float DefaultArrowBlinkPeriod = 0.8f;
 
@@ -89,6 +92,32 @@ public class DialogueWindow : SEEDScript
     /// <summary>送りマークの点滅周期（秒）。</summary>
     [SerializeField(Label = "送りマーク点滅周期(秒)", Tooltip = "送りマークが 1 往復するのに掛かる秒数")]
     public float arrowBlinkPeriod = DefaultArrowBlinkPeriod;
+
+    /// <summary>
+    /// 文字送り中に鳴らす効果音のアセットパス（空なら鳴らさない）。
+    /// 実際の再生は <see cref="TypewriterText"/> が間隔を見て行う（窓は設定を渡すだけ）。
+    /// </summary>
+    [SerializeField(Label = "文字送りSE", Tooltip = "文字送り中に鳴らす効果音。空なら鳴らさない")]
+    [AssetReference("mp3", "wav", "ogg")]
+    public string messageSePath = DefaultMessageSePath;
+
+    /// <summary>文字送り効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "文字送りSEの音量", Tooltip = "文字送り効果音の音量（0〜1）")]
+    public float messageSeVolume = TypewriterText.DefaultSeVolume;
+
+    /// <summary>
+    /// 文字送り効果音の再生間隔（秒）。1 文字ごとではなくこの間隔で間引く。
+    /// 実際の間隔は <see cref="messageSeLength"/> との大きい方（音が重ならないため）。
+    /// </summary>
+    [SerializeField(Label = "文字送りSEの間隔(秒)", Tooltip = "効果音を鳴らす間隔。音の実尺より短くしても重ねては鳴らさない")]
+    public float messageSeInterval = TypewriterText.DefaultSeIntervalSeconds;
+
+    /// <summary>
+    /// 文字送り効果音の実尺（秒）。前の音が鳴り終わる前に次を鳴らさないための下限。
+    /// 音を差し替えたら、その音の長さをここへ入れる。
+    /// </summary>
+    [SerializeField(Label = "文字送りSEの長さ(秒)", Tooltip = "効果音の実尺。この時間が経つまで次を鳴らさない（重複防止）")]
+    public float messageSeLength = TypewriterText.DefaultSeLengthSeconds;
 
     /// <summary>
     /// 話者名・本文に共通で使うフォントファイル（.ttf / .otf）の assets:// 参照。
@@ -223,6 +252,7 @@ public class DialogueWindow : SEEDScript
     public void BeginText(string text)
     {
         CaptureBaseColors();
+        ApplyTypewriterSeSettings();
 
         _writer.Begin(text);
         _blinkTimer = 0f;
@@ -238,6 +268,18 @@ public class DialogueWindow : SEEDScript
     public void CompleteText()
     {
         if (_writer.Complete()) { ApplyBodyContent(); }
+    }
+
+    /// <summary>
+    /// 文字送り効果音の設定を <see cref="_writer"/> へ渡す【SE 設定の唯一の受け渡し点】。
+    /// 本文を差し替えるたびに呼ぶので、インスペクタでの変更がその場で効く。
+    /// </summary>
+    private void ApplyTypewriterSeSettings()
+    {
+        _writer.SePath            = messageSePath;
+        _writer.SeVolume          = messageSeVolume;
+        _writer.SeIntervalSeconds = messageSeInterval;
+        _writer.SeLengthSeconds   = messageSeLength;
     }
 
     // ── 内部処理 ────────────────────────────────────────────

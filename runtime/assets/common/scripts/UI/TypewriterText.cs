@@ -46,6 +46,43 @@ public sealed class TypewriterText
     /// <summary>1 回の <see cref="Advance"/> で進められる最大単位数（極端な経過時間での暴走を防ぐ）。</summary>
     private const int MaxUnitsPerAdvance = 64;
 
+    /// <summary>
+    /// 文字送り効果音の既定の再生間隔（秒）。
+    ///
+    /// <b>音が重ならないこと</b>を優先して、既定の効果音（message.mp3）の実尺
+    /// 約 1.02 秒より少し長い値にしてある。<see cref="SEED.Audio.Play"/> は多重再生できるため、
+    /// これより短い間隔で鳴らすと前の音の上に次の音が重なって濁る。
+    /// </summary>
+    public const float DefaultSeIntervalSeconds = 1.05f;
+
+    /// <summary>
+    /// 効果音の既定の実尺（秒）。既定の効果音（message.mp3・192kbps/44.1kHz・39 フレーム）は
+    /// 約 1.02 秒なので、余白を含めてこの値にしてある。
+    /// 音を差し替えたときは窓のインスペクタで実尺を入れ直すこと。
+    /// </summary>
+    public const float DefaultSeLengthSeconds = 1.05f;
+
+    /// <summary>まだ 1 度も効果音を鳴らしていないことを表す時刻。</summary>
+    private const float NoSePlayTime = float.NegativeInfinity;
+
+    /// <summary>効果音の音量の既定値（0〜1）。</summary>
+    public const float DefaultSeVolume = 1f;
+
+    /// <summary>効果音を「鳴らさない」ことを表すパス。</summary>
+    private const string NoSePath = "";
+
+    // ─── 効果音の重複防止（インスタンス共通）─────────────────
+
+    /// <summary>
+    /// 最後に文字送り効果音を鳴らした時刻（<see cref="SEED.Time.UnscaledElapsedTime"/>）
+    /// 【重複再生を止める唯一の判断材料】。
+    ///
+    /// <b>static にしている理由</b>: 会話窓（DialogueWindow）とチュートリアル窓
+    /// （TutorialWindow）は別インスタンスだが、鳴っている音は 1 つのスピーカーから出る。
+    /// インスタンスごとに持つと、窓が切り替わった瞬間に音が重なってしまう。
+    /// </summary>
+    private static float _lastSePlayTime = NoSePlayTime;
+
     /// <summary>インライン記法の開始文字。</summary>
     private const char MarkupOpen = '[';
 
@@ -84,6 +121,33 @@ public sealed class TypewriterText
     /// <summary>直近に組み立てた表示済み文字列（<see cref="Shown"/> の実体）。</summary>
     private string _shown = "";
 
+    // ─── 効果音の設定（呼び出し側＝窓スクリプトが差し込むフック）───
+
+    /// <summary>
+    /// 文字送り中に鳴らす効果音のアセットパス【SE を鳴らすか否かの唯一のスイッチ】。
+    ///
+    /// 空文字なら鳴らさない（既定）。パス・音量・間隔は窓スクリプト側の
+    /// インスペクタ項目から差し込む想定で、このクラスは値を持つだけで判断しない。
+    /// </summary>
+    public string SePath = NoSePath;
+
+    /// <summary>文字送り効果音の音量（0〜1）。</summary>
+    public float SeVolume = DefaultSeVolume;
+
+    /// <summary>
+    /// 文字送り効果音の再生間隔（秒）。1 文字ごとではなくこの間隔で間引いて鳴らす。
+    ///
+    /// 実際に使われる間隔は <see cref="SeLengthSeconds"/> との大きい方。
+    /// これより短い値を入れても、前の音が鳴り終わる前に次を鳴らすことはない。
+    /// </summary>
+    public float SeIntervalSeconds = DefaultSeIntervalSeconds;
+
+    /// <summary>
+    /// 文字送り効果音の実尺（秒）【重ならない間隔の下限】。
+    /// 音を差し替えたら、その音の長さをここへ入れる。
+    /// </summary>
+    public float SeLengthSeconds = DefaultSeLengthSeconds;
+
     // ─── 公開プロパティ ──────────────────────────────────────
 
     /// <summary>現在までに表示すべき文字列（Text.Content へそのまま入れる）。</summary>
@@ -110,6 +174,10 @@ public sealed class TypewriterText
         _timer      = 0f;
         _builder.Clear();
         _shown = "";
+
+        // 効果音の間隔は台詞をまたいで数える（＝ここでは何もリセットしない）。
+        // 送りが速いと、前の台詞の最後に鳴らした音がまだ鳴っている間に
+        // 次の台詞の 1 文字目が出るため、リセットすると音が重なってしまう。
     }
 
     /// <summary>
@@ -144,6 +212,10 @@ public sealed class TypewriterText
         for (int i = 0; i < advance; i++) { _builder.Append(_units[_shownCount + i]); }
         _shownCount += advance;
         _shown = _builder.ToString();
+
+        // 文字が進んだフレームだけ効果音を鳴らす
+        // （送り待ち・全文表示済みのあいだは鳴らないので、止める処理は要らない）
+        PlaySeIfDue();
         return true;
     }
 
@@ -159,7 +231,40 @@ public sealed class TypewriterText
         _shownCount = _units.Count;
         _timer      = 0f;
         _shown      = _builder.ToString();
+
+        // 全文表示（スキップ）では効果音を鳴らさない。
+        // 以降 Advance は即 return するので、鳴り続けることも無い。
         return true;
+    }
+
+    // ─── 内部処理: 効果音 ────────────────────────────────────
+
+    /// <summary>
+    /// 文字送り効果音を「前の音が鳴り終わっていれば」1 回鳴らす
+    /// 【SE 再生の唯一の実装】。
+    ///
+    /// 【重ならない仕組み】
+    /// <see cref="SEED.Audio.Play"/> は多重再生できるので、間隔を置かずに呼ぶと
+    /// 音が重なって濁る。最後に鳴らした時刻（実時間）を覚えておき、
+    /// 「間隔（<see cref="SeIntervalSeconds"/>）」と「音の実尺
+    /// （<see cref="SeLengthSeconds"/>）」の<b>大きい方</b>が経つまでは鳴らさない。
+    /// これで同時に 2 つ以上鳴ることはない。
+    /// </summary>
+    private void PlaySeIfDue()
+    {
+        if (string.IsNullOrEmpty(SePath)) { return; }
+
+        float interval = SEED.Mathf.Max(SeIntervalSeconds, SEED.Mathf.Max(SeLengthSeconds, 0f));
+        float now = SEED.Time.UnscaledElapsedTime;
+
+        // Play をやり直すと時計は 0 へ戻る。巻き戻ったら「鳴らしていない」ものとして扱う
+        // （そうしないと、次の Play で二度と鳴らなくなる）。
+        if (now < _lastSePlayTime) { _lastSePlayTime = NoSePlayTime; }
+
+        if (now - _lastSePlayTime < interval) { return; }
+
+        _lastSePlayTime = now;
+        SEED.Audio.Play(SePath, SEED.Mathf.Clamped01(SeVolume));
     }
 
     // ─── 内部処理: 分割 ──────────────────────────────────────

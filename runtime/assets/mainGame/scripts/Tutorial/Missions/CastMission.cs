@@ -28,10 +28,15 @@ public sealed class CastMission : MissionBase
     /// <summary>構えているときに出す案内。</summary>
     private const string HintReady = "マウスを左から右へ振ろう";
 
+    /// <summary>投げたあと、着水を待っているあいだに出す進捗の一言。</summary>
+    private const string HintFlying = "仕掛けの着水を待とう";
+
     // ─── 内部状態 ────────────────────────────────────────────
 
-    /// <summary>いま構えているか（ready_begin / ready_end で切り替わる）。</summary>
     private bool isReady;
+
+    /// <summary>竿を振り切って仕掛けが飛んでいるか（着水待ち）。</summary>
+    private bool isFlying;
 
     // ─── IMission ────────────────────────────────────────────
 
@@ -39,14 +44,24 @@ public sealed class CastMission : MissionBase
     public override MissionKind Kind => MissionKind.Cast;
 
     /// <summary>いま何をすればよいかの案内。</summary>
-    public override string ProgressText => isReady ? HintReady : HintNotReady;
+    public override string ProgressText
+        => isFlying ? HintFlying
+         : isReady  ? HintReady
+         :            HintNotReady;
 
     /// <summary>構えの出入りと、投げの成立を購読する。</summary>
     /// <param name="ctx">周辺への窓口。</param>
     protected override void OnBegin(MissionContext ctx)
     {
+        isFlying = false;
+
         Subscribe(FishingEvents.ReadyBegin, () => isReady = true);
         Subscribe(FishingEvents.ReadyEnd,   () => isReady = false);
-        Subscribe(FishingEvents.Cast,       MarkCleared);
+
+        // 投げた瞬間ではなく「着水した瞬間」で達成にする。
+        // 投げた瞬間にクリアにすると、飛んでいる最中にバナーと次の説明が重なり、
+        // 自分の投げた仕掛けがどこへ落ちたのか見えないまま話が進んでしまう。
+        Subscribe(FishingEvents.Cast, () => isFlying = true);
+        Subscribe(FishingEvents.Land, MarkCleared);
     }
 }

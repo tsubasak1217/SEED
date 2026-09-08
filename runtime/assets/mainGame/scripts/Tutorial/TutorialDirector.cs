@@ -57,6 +57,24 @@ public class TutorialDirector : SEEDScript
     /// <summary>ミッションが 1 件も無いことを表す添字。</summary>
     private const int NoMissionIndex = -1;
 
+    /// <summary>チュートリアル開始から最初の台詞までに置く既定の待ち時間（秒・実時間）。</summary>
+    private const float DefaultIntroDelaySeconds = 1.5f;
+
+    /// <summary>台詞でカメラを寄せるときの、対象からの既定の水平距離（メートル）。</summary>
+    private const float DefaultCameraZoomDistance = 14.0f;
+
+    /// <summary>台詞でカメラを寄せるときの、対象からの既定の高さ（メートル）。</summary>
+    private const float DefaultCameraZoomHeight = 6.0f;
+
+    /// <summary>台詞でカメラを寄せるときの既定の追従率（大きいほど速く寄る）。</summary>
+    private const float DefaultCameraZoomLerpRate = 3.0f;
+
+    /// <summary>台詞でカメラを寄せるときに、対象のどれだけ上を見るかの既定値（メートル）。</summary>
+    private const float DefaultCameraZoomLookHeight = 2.0f;
+
+    /// <summary>ゼロ除算・縮退ベクトルの判定に使う微小値。</summary>
+    private const float DivideEpsilon = 1e-4f;
+
     /// <summary>台詞の列が空であることを表す添字。</summary>
     private const int NoQueueIndex = 0;
 
@@ -67,6 +85,12 @@ public class TutorialDirector : SEEDScript
     {
         /// <summary>まだ始まっていない（autoStart が false のときの待機）。</summary>
         Idle,
+
+        /// <summary>
+        /// 開始直後の猶予。シーン遷移のフェードインが明けるまで喋らずに待つ段階。
+        /// ここでは入力だけ止め、ゲーム時間は流したまま（波・鳥は動く）にする。
+        /// </summary>
+        StartDelay,
 
         /// <summary>ミッション開始前の説明を読ませている。</summary>
         Intro,
@@ -105,6 +129,13 @@ public class TutorialDirector : SEEDScript
     [SerializeField(Label = "プレイヤー", Tooltip = "位置の取得に使う PlayerMove")]
     public PlayerMove? playerMove;
 
+    /// <summary>
+    /// カメラ本体のトランスフォーム（台詞でカメラを寄せるときに直接動かす）。
+    /// 未設定ならカメラ寄せは行わない（説明はそのまま流れる）。
+    /// </summary>
+    [SerializeField(Label = "カメラ", Tooltip = "台詞でカメラを寄せる対象（MainCamera の Transform）")]
+    public SEED.Transform? cameraTransform;
+
     // ─── インスペクタ公開フィールド（データ）───────────────
 
     /// <summary>ミッションのリスト（上から順に進む）。</summary>
@@ -136,6 +167,32 @@ public class TutorialDirector : SEEDScript
     [SerializeField(Label = "ゲージ復帰の秒数", Tooltip = "周回のやり直しで糸ゲージが満タンへ戻るまでの秒数")]
     public float gaugeRestoreSeconds = TutorialRules.DefaultGaugeRestoreSeconds;
 
+    /// <summary>
+    /// チュートリアル開始から最初の台詞までの待ち時間（秒・実時間）。
+    /// シーン遷移のフェードインが明けてから喋り出すための猶予。
+    /// </summary>
+    [SerializeField(Label = "開始の猶予(秒)", Tooltip = "Play 開始から最初の台詞までの待ち時間（実時間）")]
+    public float introDelaySeconds = DefaultIntroDelaySeconds;
+
+    /// <summary>台詞でカメラを寄せるときの、対象からの水平距離（メートル）。</summary>
+    [Header("台詞中のカメラ寄せ"), SerializeField(Label = "寄りの距離(m)", Tooltip = "カメラ寄せ先からの水平距離")]
+    public float cameraZoomDistance = DefaultCameraZoomDistance;
+
+    /// <summary>台詞でカメラを寄せるときの、対象からの高さ（メートル）。</summary>
+    [SerializeField(Label = "寄りの高さ(m)", Tooltip = "カメラ寄せ先からの高さ")]
+    public float cameraZoomHeight = DefaultCameraZoomHeight;
+
+    /// <summary>台詞でカメラを寄せるときの追従率（大きいほど速く寄る）。</summary>
+    [SerializeField(Label = "寄りの追従率", Tooltip = "カメラが寄る速さ。大きいほど速い")]
+    public float cameraZoomLerpRate = DefaultCameraZoomLerpRate;
+
+    /// <summary>
+    /// 寄せたカメラが見る点を、対象からどれだけ上へずらすか（メートル）。
+    /// 地面の一点を真っ直ぐ見ると画面が地面で埋まるので、少し上を見て水平線を残す。
+    /// </summary>
+    [SerializeField(Label = "注視点の高さ(m)", Tooltip = "カメラが見る点を対象から何 m 上へずらすか")]
+    public float cameraZoomLookHeight = DefaultCameraZoomLookHeight;
+
     /// <summary>全ミッションが終わった瞬間に呼ぶイベント（BGM 切替・HUD 表示などの結線用）。</summary>
     [SerializeField(Label = "完了時イベント", Tooltip = "全ミッションを終えた瞬間に呼ばれる")]
     public SEED.ScriptEvent onTutorialFinished;
@@ -162,6 +219,12 @@ public class TutorialDirector : SEEDScript
 
     /// <summary>いまの台詞を表示してからの経過秒（実時間）。</summary>
     private float dialogueElapsed;
+
+    /// <summary>開始の猶予（<see cref="DirectorPhase.StartDelay"/>）の残り秒数（実時間）。</summary>
+    private float startDelayRemaining;
+
+    /// <summary>いま台詞がカメラを寄せている対象（寄せていなければ null）。</summary>
+    private SEED.Transform? activeCameraTarget;
 
     /// <summary>割り込みが終わったあとに戻る段階。</summary>
     private DirectorPhase resumePhase = DirectorPhase.Playing;
@@ -246,6 +309,10 @@ public class TutorialDirector : SEEDScript
 
         switch (phase)
         {
+            case DirectorPhase.StartDelay:
+                UpdateStartDelay(unscaledDelta);
+                break;
+
             case DirectorPhase.Intro:
                 UpdateDialogue(OnIntroFinished);
                 break;
@@ -266,6 +333,9 @@ public class TutorialDirector : SEEDScript
                 UpdateDialogue(AdvanceToNextMission);
                 break;
         }
+
+        // 台詞によるカメラ寄せは段階に関わらず毎フレーム進める（実時間で動かす）
+        UpdateDialogueCamera(unscaledDelta);
     }
 
     // ─── 公開メソッド ────────────────────────────────────────
@@ -285,6 +355,32 @@ public class TutorialDirector : SEEDScript
         }
 
         missionIndex = NoMissionIndex;
+
+        // 猶予が設定されていれば、フェードインを見せてから喋り出す。
+        // ここでは入力だけ止める（時間は止めない＝波や鳥はそのまま動く）。
+        float delay = SEED.Mathf.Max(introDelaySeconds, 0f);
+        if (delay > 0f)
+        {
+            startDelayRemaining = delay;
+            phase = DirectorPhase.StartDelay;
+            InputGate.DenyAll();
+            HideAllUi();
+            return;
+        }
+
+        AdvanceToNextMission();
+    }
+
+    /// <summary>
+    /// 開始の猶予を進める。時間切れで最初のミッションへ入る。
+    /// </summary>
+    /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
+    private void UpdateStartDelay(float unscaledDelta)
+    {
+        startDelayRemaining -= unscaledDelta;
+        if (startDelayRemaining > 0f) { return; }
+
+        startDelayRemaining = 0f;
         AdvanceToNextMission();
     }
 
@@ -353,25 +449,53 @@ public class TutorialDirector : SEEDScript
         // パネルはミッションを始める前から出しておく（説明を読む前に「何をするのか」が見える）
         ApplyPanel(data);
 
-        // 開始前の説明があれば読ませてから、無ければすぐミッションを始める
+        // ミッションの台本（目印の設置・魚の仕込み）は<b>説明より先に</b>済ませる。
+        // 説明中にカメラを目印へ寄せる演出があるため、説明の時点で目印が
+        // 置かれていないと「何も無い場所」を映すことになる。
+        // 判定（Update）は Playing 段階でしか走らないので、先に始めても進行はしない。
+        StartCurrentMission();
+
+        // 開始に失敗して次のミッションへ飛んだ場合は、ここで割り込まない
+        // （飛んだ先の段階を、このミッションの説明で上書きしてしまうため）
+        if (phase != DirectorPhase.Playing) { return; }
+
+        // 開始前の説明があれば読ませる。読み終えたら操作を解禁して本編へ入る
         if (QueueDialogues(data.id, TutorialDialogueSlot.Intro))
         {
             phase = DirectorPhase.Intro;
             ShowCurrentDialogue();
-            return;
         }
-
-        StartCurrentMission();
     }
 
     /// <summary>
-    /// 開始前の説明を読み終えたときの処理（ミッション本編へ入る）。
+    /// 開始前の説明を読み終えたときの処理。
+    /// 説明のあいだ止めていた操作・時間を、このミッションの設定へ戻して本編を始める。
     /// </summary>
-    private void OnIntroFinished() { StartCurrentMission(); }
+    private void OnIntroFinished()
+    {
+        if (currentMission is null || currentContext is null)
+        {
+            AdvanceToNextMission();
+            return;
+        }
+
+        var data = missions[missionIndex];
+
+        window?.Hide();                 // 説明は出しっぱなしにしない
+        ApplyMissionRules(data);
+        ApplyMissionGates(data);
+        SEED.Time.Scale = TimeScaleNormal;
+
+        phase = DirectorPhase.Playing;
+    }
 
     /// <summary>
     /// 現在のミッションを開始する【ミッション開始処理の唯一の入口】。
-    /// 吹き出しを引っ込め、ルール上書きと入力制限を適用してから判定を走らせる。
+    /// ルール上書きと入力制限を適用し、判定クラスの台本（目印・魚の仕込み）を走らせる。
+    ///
+    /// 開始前の説明がある場合は、この直後に説明の段階（Intro）へ移る。
+    /// 説明の間は <see cref="ShowCurrentDialogue"/> が入力を止め直すので、
+    /// ここで許可した操作が説明中に効いてしまうことはない。
     /// </summary>
     private void StartCurrentMission()
     {
@@ -422,7 +546,9 @@ public class TutorialDirector : SEEDScript
         ReleaseAllRestrictions();
 
         // バナーを読ませるあいだはゲームを止める（背後で釣りが進んで状況が変わらないように）
-        SEED.Time.Scale = TimeScalePaused;
+        // 達成バナー中に時間を止めるかはミッションごとの設定に従う
+        // （釣りの最中でないミッションまで止めると画面が固まって見える）
+        SEED.Time.Scale = missions[missionIndex].pauseOnClear ? TimeScalePaused : TimeScaleNormal;
         InputGate.DenyAll();
 
         SEED.Debug.Log($"[Tutorial] ミッション {missionIndex + 1}「{missions[missionIndex].title}」を達成");
@@ -572,6 +698,9 @@ public class TutorialDirector : SEEDScript
         InputGate.DenyAll();
         SEED.Time.Scale = line.pauseTime ? TimeScalePaused : TimeScaleNormal;
 
+        // この台詞がカメラ寄せを指定していれば寄せ始める（指定が無ければ追従へ戻す）
+        BeginDialogueCamera(line.cameraTarget);
+
         if (window is not { } w)
         {
             SEED.Debug.LogWarning("[Tutorial] 説明窓が未設定のため、台詞を表示できません。");
@@ -600,6 +729,9 @@ public class TutorialDirector : SEEDScript
 
         dialogueQueue.Clear();
         dialogueIndex = NoQueueIndex;
+
+        // 台詞の列を出し切ったらカメラは通常の追従へ戻す
+        EndDialogueCamera();
         onFinished();
     }
 
@@ -657,7 +789,10 @@ public class TutorialDirector : SEEDScript
         TutorialRules.Active                  = true;
         TutorialRules.FishLevelFilter         = data.fishLevelFilter;
         TutorialRules.FishPrefabFilter        = data.fishPrefabFilter ?? TutorialRules.NoPrefabFilter;
+        TutorialRules.FishPrefabExclusive     = data.fishPrefabExclusive;
+        TutorialRules.ChainDisabled           = data.chainDisabled;
         TutorialRules.DriftDisabled           = data.driftDisabled;
+        TutorialRules.DriftStationary         = data.driftStationary;
         TutorialRules.BeatDisabled            = data.beatDisabled;
         TutorialRules.LineBreakDisabled       = data.lineBreakDisabled;
         TutorialRules.RestartCycleOnMiss      = data.restartCycleOnMiss;
@@ -692,6 +827,7 @@ public class TutorialDirector : SEEDScript
     {
         SEED.Time.Scale = TimeScaleNormal;
         InputGate.AllowAll();
+        EndDialogueCamera();
         TutorialRules.Clear();
         FishManager.Current?.ClearScripted();
     }
@@ -702,5 +838,96 @@ public class TutorialDirector : SEEDScript
         window?.Hide();
         panel?.Hide();
         banner?.Cancel();
+    }
+
+    // ─── 台詞中のカメラ寄せ ─────────────────────────────────
+
+    /// <summary>
+    /// 台詞のカメラ寄せを始める【カメラ寄せを掛ける唯一の入口】。
+    ///
+    /// 対象が未設定・無効なら寄せを解除する（台詞ごとに指定が変わるため、
+    /// 「指定が無い台詞＝寄せない」を毎回ここで反映する）。
+    /// 寄せている間は <see cref="TutorialRules.CameraSuspended"/> で
+    /// <see cref="CameraMove"/> の通常追従を止め、こちらが直接動かす。
+    /// </summary>
+    /// <param name="target">寄せる対象のトランスフォーム。</param>
+    private void BeginDialogueCamera(SEED.Transform target)
+    {
+        if (!target.IsValid || cameraTransform is not { IsValid: true })
+        {
+            EndDialogueCamera();
+            return;
+        }
+
+        activeCameraTarget = target;
+
+        // 上書きの門番（Active）が閉じていると CameraMove が寄せを見ないので必ず開ける
+        TutorialRules.Active          = true;
+        TutorialRules.CameraSuspended = true;
+    }
+
+    /// <summary>
+    /// 台詞のカメラ寄せをやめて通常の追従へ戻す【解除の唯一の出口】。
+    /// 追従側（<see cref="CameraMove"/>）が補間で戻すので、切り替えは滑らかになる。
+    /// </summary>
+    private void EndDialogueCamera()
+    {
+        activeCameraTarget            = null;
+        TutorialRules.CameraSuspended = false;
+    }
+
+    /// <summary>
+    /// 寄せ中のカメラを対象へ近づける（実時間で動かす）。
+    ///
+    /// 目標位置は「対象から見て<b>いまカメラが居る向き</b>へ
+    /// <see cref="cameraZoomDistance"/> 離れ、<see cref="cameraZoomHeight"/> 高い点」。
+    /// 画角の向きを大きく変えずに寄るだけなので、寄り／戻りで絵が回らない。
+    /// </summary>
+    /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
+    private void UpdateDialogueCamera(float unscaledDelta)
+    {
+        if (activeCameraTarget is not { IsValid: true } target) { return; }
+        if (cameraTransform is not { IsValid: true } cam) { return; }
+
+        // 見る点は対象の少し上（地面の一点を真正面から見ると画面が地面で埋まるため）
+        var targetPosition = target.Position;
+        var focus = new SEED.Vector3(
+            targetPosition.x,
+            targetPosition.y + cameraZoomLookHeight,
+            targetPosition.z);
+
+        // 対象 → カメラの水平方向（縮退しているときは寄せ先を決められないので何もしない）
+        var flat = new SEED.Vector3(cam.Position.x - focus.x, 0f, cam.Position.z - focus.z);
+        if (flat.SqrMagnitude <= DivideEpsilon) { return; }
+        var dir = flat.Normalized;
+
+        var desired = new SEED.Vector3(
+            focus.x + dir.x * cameraZoomDistance,
+            focus.y + cameraZoomHeight,
+            focus.z + dir.z * cameraZoomDistance);
+
+        float blend = ExponentialBlend(cameraZoomLerpRate, unscaledDelta);
+        cam.Position = SEED.Vector3.Lerp(cam.Position, desired, blend);
+
+        // 寄った位置から対象を見る（位置が補間なので向きも滑らかに変わる）
+        var toTarget = focus - cam.Position;
+        float distance = toTarget.Magnitude;
+        if (distance <= DivideEpsilon) { return; }
+
+        float yaw   = SEED.Mathf.Atan2(toTarget.x, toTarget.z) * SEED.Mathf.Rad2Deg;
+        float pitch = -SEED.Mathf.Asin(SEED.Mathf.Clamped(toTarget.y / distance, -1f, 1f)) * SEED.Mathf.Rad2Deg;
+        cam.Rotation = new SEED.Vector3(pitch, yaw, 0f);
+    }
+
+    /// <summary>
+    /// フレームレートに依存しない補間係数を返す（追従率 rate の指数ブレンド）。
+    /// </summary>
+    /// <param name="rate">追従率（大きいほど速く寄る）。0 以下なら動かさない。</param>
+    /// <param name="deltaTime">経過秒数。</param>
+    /// <returns>0〜1 の補間係数。</returns>
+    private static float ExponentialBlend(float rate, float deltaTime)
+    {
+        if (rate <= 0f || deltaTime <= 0f) { return 0f; }
+        return SEED.Mathf.Clamped01(1f - SEED.Mathf.Exp(-rate * deltaTime));
     }
 }

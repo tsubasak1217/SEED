@@ -51,6 +51,9 @@ public class TutorialWindow : SEEDScript
     /// <summary>1 文字あたりの表示間隔（秒）の既定値。</summary>
     private const float DefaultCharInterval = 0.03f;
 
+    /// <summary>文字送り効果音の既定パス（吹き出しの「ぴこぴこ」音）。</summary>
+    private const string DefaultMessageSePath = "assets://mainGame/audios/message.mp3";
+
     /// <summary>送りマークの点滅周期（秒）の既定値。</summary>
     private const float DefaultArrowBlinkPeriod = 0.8f;
 
@@ -195,6 +198,32 @@ public class TutorialWindow : SEEDScript
     /// <summary>送りマークの点滅周期（秒）。</summary>
     [SerializeField(Label = "送りマーク点滅周期(秒)", Tooltip = "送りマークが 1 往復するのに掛かる秒数")]
     public float arrowBlinkPeriod = DefaultArrowBlinkPeriod;
+
+    /// <summary>
+    /// 文字送り中に鳴らす効果音のアセットパス（空なら鳴らさない）。
+    /// 実際の再生は <see cref="TypewriterText"/> が間隔を見て行う（窓は設定を渡すだけ）。
+    /// </summary>
+    [SerializeField(Label = "文字送りSE", Tooltip = "文字送り中に鳴らす効果音。空なら鳴らさない")]
+    [AssetReference("mp3", "wav", "ogg")]
+    public string messageSePath = DefaultMessageSePath;
+
+    /// <summary>文字送り効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "文字送りSEの音量", Tooltip = "文字送り効果音の音量（0〜1）")]
+    public float messageSeVolume = TypewriterText.DefaultSeVolume;
+
+    /// <summary>
+    /// 文字送り効果音の再生間隔（秒）。1 文字ごとではなくこの間隔で間引く。
+    /// 実際の間隔は <see cref="messageSeLength"/> との大きい方（音が重ならないため）。
+    /// </summary>
+    [SerializeField(Label = "文字送りSEの間隔(秒)", Tooltip = "効果音を鳴らす間隔。音の実尺より短くしても重ねては鳴らさない")]
+    public float messageSeInterval = TypewriterText.DefaultSeIntervalSeconds;
+
+    /// <summary>
+    /// 文字送り効果音の実尺（秒）。前の音が鳴り終わる前に次を鳴らさないための下限。
+    /// 音を差し替えたら、その音の長さをここへ入れる。
+    /// </summary>
+    [SerializeField(Label = "文字送りSEの長さ(秒)", Tooltip = "効果音の実尺。この時間が経つまで次を鳴らさない（重複防止）")]
+    public float messageSeLength = TypewriterText.DefaultSeLengthSeconds;
 
     /// <summary>本文に使うフォント（.ttf / .otf）。空なら Text 側の設定をそのまま使う。</summary>
     [SerializeField(Label = "フォント", Tooltip = "本文に使うフォント。空なら Text の設定のまま")]
@@ -404,8 +433,20 @@ public class TutorialWindow : SEEDScript
     /// <param name="ctx">フレーム情報（ここでは使わず Time.UnscaledDeltaTime を使う）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
-        // 完全に隠れている間は何も進めない（隠したまま文字送りが進むのを防ぐ）
-        if (visualState == WindowVisualState.Hidden) { return; }
+        // 完全に隠れている間は演出も文字送りも進めない。
+        // ただし色の適用だけは試み続ける: 参照（子の Text / Sprite）は自分の OnStart の
+        // 直前に解決されるため、TutorialDirector から先に隠された場合は
+        // 「まだ参照が無効で alpha を 0 にできなかった」ことがある。
+        // 一度も表示要求が来ないまま（＝開始の猶予中など）だと、シーンに置いた
+        // 初期テキストが画面に残り続けてしまうので、毎フレーム貼り直す。
+        if (visualState == WindowVisualState.Hidden)
+        {
+            CaptureBaseColors();
+            CaptureBaseTransforms();
+            ApplyVisibility();
+            CollapseParts();
+            return;
+        }
 
         // 参照が後から有効になった場合に備えて、未取得の部品だけ控える
         CaptureBaseColors();
@@ -486,6 +527,7 @@ public class TutorialWindow : SEEDScript
     public void SetText(string text)
     {
         CaptureBaseColors();
+        ApplyTypewriterSeSettings();
         writer.Begin(text);
         ApplyBodyContent();
         blinkTimer = 0f;
@@ -495,6 +537,18 @@ public class TutorialWindow : SEEDScript
     public void CompleteText()
     {
         if (writer.Complete()) { ApplyBodyContent(); }
+    }
+
+    /// <summary>
+    /// 文字送り効果音の設定を <see cref="writer"/> へ渡す【SE 設定の唯一の受け渡し点】。
+    /// 本文を差し替えるたびに呼ぶので、インスペクタでの変更がその場で効く。
+    /// </summary>
+    private void ApplyTypewriterSeSettings()
+    {
+        writer.SePath           = messageSePath;
+        writer.SeVolume         = messageSeVolume;
+        writer.SeIntervalSeconds = messageSeInterval;
+        writer.SeLengthSeconds   = messageSeLength;
     }
 
     /// <summary>
@@ -544,6 +598,22 @@ public class TutorialWindow : SEEDScript
         visualState = WindowVisualState.Hidden;
         animTimer   = 0f;
         ApplyVisibility();
+
+        // 潰しておかないと、一度も表示していない窓が「シーンに置いたままの大きさ」で
+        // 見えてしまう（本文 Text は色の alpha だけでは消えない）。
+        CollapseParts();
+    }
+
+    /// <summary>
+    /// 窓のパーツを拡大率 0 へ潰す【「見えなくする」ことの唯一の実装】。
+    /// 退場演出の終わりと、表示前の初期状態の両方から使う。
+    /// </summary>
+    private void CollapseParts()
+    {
+        ApplyPartScale(balloonTransform, balloonBaseScale, ScaleZero);
+        ApplyPartScale(bodyTransform,    bodyBaseScale,    ScaleZero);
+        ApplyPartScale(arrowTransform,   arrowBaseScale,   ScaleZero);
+        ApplyPartScale(charaTransform,   charaBaseScale,   ScaleZero);
     }
 
     /// <summary>
@@ -626,10 +696,6 @@ public class TutorialWindow : SEEDScript
         if (animTimer >= disappearSeconds)
         {
             // 次に出すときに等倍のまま一瞬見えないよう、潰した状態で隠す
-            ApplyPartScale(balloonTransform, balloonBaseScale, ScaleZero);
-            ApplyPartScale(bodyTransform,    bodyBaseScale,    ScaleZero);
-            ApplyPartScale(arrowTransform,   arrowBaseScale,   ScaleZero);
-            ApplyPartScale(charaTransform,   charaBaseScale,   ScaleZero);
             HideImmediate();
         }
     }

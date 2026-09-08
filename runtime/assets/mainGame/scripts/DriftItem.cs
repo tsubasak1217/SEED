@@ -144,6 +144,13 @@ public class DriftItem : SEEDScript
     /// <summary>上下の揺れの初期位相（ラジアン・個体ごとにばらつかせる）。</summary>
     private float bobPhase = 0f;
 
+    /// <summary>
+    /// その場に留まるか（漂わず・寿命でも消えない）。
+    /// 生成された瞬間の <see cref="TutorialRules.DriftStationary"/> で 1 度だけ決まる。
+    /// チュートリアルが「巻く方向の一直線上」に並べた個体がずれて拾えなくなるのを防ぐ。
+    /// </summary>
+    private bool stationary = false;
+
     // ─── 公開プロパティ（巻き込み判定・効果適用で読む値）──────────────
 
     /// <summary>このスクリプトが乗っているアクタ（<c>gameObject</c> は protected なので公開する）。</summary>
@@ -170,6 +177,9 @@ public class DriftItem : SEEDScript
     public override void OnStart()
     {
         All.Add(this);
+
+        // 台本が位置を決めて置いた個体は、その場に留める（漂うと一直線が崩れる）
+        stationary = TutorialRules.Active && TutorialRules.DriftStationary;
 
         float angle = SEED.Random.Range(0f, FullTurnRadians);
         driftDirX = SEED.Mathf.Sin(angle);
@@ -203,8 +213,9 @@ public class DriftItem : SEEDScript
 
         elapsed += dt;
 
-        // 寿命切れ: 自分で消える（登録簿からは OnDestroy で外れる）
-        if (elapsed >= SEED.Mathf.Max(lifetimeSeconds, MinLifetimeSeconds))
+        // 寿命切れ: 自分で消える（登録簿からは OnDestroy で外れる）。
+        // その場に留める個体は台本が拾わせる前提なので寿命では消さない。
+        if (!stationary && elapsed >= SEED.Mathf.Max(lifetimeSeconds, MinLifetimeSeconds))
         {
             Kill();
             return;
@@ -212,10 +223,11 @@ public class DriftItem : SEEDScript
 
         if (!transform.IsValid) { return; }
 
-        // 水平方向: 生成時に決めた方位へ一定速度で流れる
+        // 水平方向: 生成時に決めた方位へ一定速度で流れる（留める個体は動かさない）
         var position = transform.Position;
-        float x = position.x + driftDirX * driftSpeed * dt;
-        float z = position.z + driftDirZ * driftSpeed * dt;
+        float speed = stationary ? 0f : driftSpeed;
+        float x = position.x + driftDirX * speed * dt;
+        float z = position.z + driftDirZ * speed * dt;
 
         // 垂直方向: 水面の高さ ＋ オフセット ＋ 上下の揺れ
         float surface = FishingController.Current is { } controller

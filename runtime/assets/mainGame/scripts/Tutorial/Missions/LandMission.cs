@@ -48,7 +48,8 @@ public sealed class LandMission : MissionBase
         retryCount     = 0;
         restartBaseline = ctx.Controller?.TutorialFightRestartCount ?? 0;
 
-        Subscribe(FishingEvents.Catch, _ => MarkCleared());
+        // 釣果の獲得演出を見せ終えて閉じた瞬間に達成とする（巻き上げミッションと同じ流儀）
+        Subscribe(FishingEvents.CatchPresented, _ => MarkCleared());
     }
 
     /// <summary>

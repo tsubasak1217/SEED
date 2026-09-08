@@ -27,13 +27,31 @@ public sealed class DriftPickupMission : MissionBase
 {
     // ─── 定数（マジックナンバー禁止）─────────────────────────
 
-    /// <summary>ウキから漂流物を出す距離（メートル）。巻けば必ず通る位置。</summary>
-    private const float SpawnDistanceMeters = 6.0f;
+    /// <summary>並べ直しを試みる間隔（秒）。位置が決まらない間の再試行を間引く。</summary>
+    private const float SpawnRetryIntervalSeconds = 0.5f;
 
-    /// <summary>次の漂流物を出すまでの間隔（秒・実時間）。</summary>
-    private const float SpawnIntervalSeconds = 3.0f;
+    /// <summary>
+    /// 一直線に並べるときの、隣り合う漂流物どうしの最小間隔（メートル）。
+    /// 近すぎると 1 回の巻きで 2 個まとめて拾ってしまい、解説が重なる。
+    /// </summary>
+    private const float MinSpacingMeters = 2.0f;
 
-    /// <summary>出す順番（この順に 1 個ずつ流す）。</summary>
+    /// <summary>一直線に並べるときの、隣り合う漂流物どうしの最大間隔（メートル）。</summary>
+    private const float MaxSpacingMeters = 4.0f;
+
+    /// <summary>
+    /// 並べるのに必要な「ウキ → 竿先」の最小距離（メートル）。
+    /// これより近いと並べる余地が無いので、投げ直し・巻き戻しを待つ。
+    /// </summary>
+    private const float MinLineLengthMeters = 3.0f;
+
+    /// <summary>間隔を割り出すときの区間数の加算（残り n 個なら n+1 等分して手前から置く）。</summary>
+    private const int SpacingSegmentBias = 1;
+
+    /// <summary>1 個目を置く区間の番号（ウキから数えて 1 区間先）。</summary>
+    private const int FirstSlotIndex = 1;
+
+    /// <summary>並べる順番（この順にウキから近い側へ置く）。</summary>
     private static readonly string[] SpawnOrder =
     {
         DriftItem.KindLineRecover,
@@ -46,7 +64,7 @@ public sealed class DriftPickupMission : MissionBase
     /// <summary>種類ごとのサブ目標（拾ったらチェックが入る）。</summary>
     private readonly Dictionary<string, MissionObjective> objectiveByKind = new();
 
-    /// <summary>次に漂流物を出すまでの残り秒（実時間）。</summary>
+    /// <summary>並べ直しを試みるまでの残り時間（秒）。</summary>
     private float spawnCooldown;
 
     /// <summary>拾った種類の数。</summary>
@@ -76,85 +94,119 @@ public sealed class DriftPickupMission : MissionBase
     }
 
     /// <summary>
-    /// 巻いている方向の先へ、まだ拾っていない種類の漂流物を流す。
+    /// まだ拾っていない漂流物を、巻き方向の一直線上へまとめて並べる。
     ///
-    /// 「出し切ったら終わり」ではなく<b>海に無ければ出し直す</b>方式にしてある。
-    /// 漂流物には寿命があり、拾う前に消えると二度と出せず詰まってしまうため。
-    /// 同時に出るのは 1 個だけなので、狙って拾う練習としても成立する。
+    /// 【出し直す方式】
+    /// 「出し切ったら終わり」ではなく<b>海に 1 個も無ければ並べ直す</b>。
+    /// 投げ直し・糸切れで漂流物が失われても詰まらないようにするため。
+    ///
+    /// 【まとめて並べる理由】
+    /// このミッションは左右の操舵を止めてあるので、まっすぐ巻けば一直線上の
+    /// 漂流物を手前から順に必ず拾える。1 個ずつ出すより手順が読みやすい。
     /// </summary>
     /// <param name="ctx">周辺への窓口。</param>
     /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
     protected override void OnUpdate(MissionContext ctx, float unscaledDelta)
     {
+        // 拾い残しが 1 つでも浮いている間は何もしない（並べ直して二重に出さない）
+        if (AnyItemAfloat()) { return; }
+
+        // まだ拾っていない種類が無ければ、このミッションはもう並べる物が無い
+        if (CountUnpicked() <= 0) { return; }
+
         spawnCooldown -= unscaledDelta;
         if (spawnCooldown > 0f) { return; }
+        spawnCooldown = SpawnRetryIntervalSeconds;
 
-        spawnCooldown = SpawnIntervalSeconds;
-
-        string? kind = NextUnpickedKind();
-        if (kind is null) { return; }
-        if (IsKindAfloat(kind)) { return; }
-
-        TrySpawn(ctx, kind);
+        TrySpawnLine(ctx);
     }
 
     /// <summary>
-    /// まだ拾っていない種類のうち、出す順番がいちばん早いものを返す。
+    /// まだ拾っていない種類の数を数える。
     /// </summary>
-    /// <returns>出すべき種類。すべて拾い終えていれば null。</returns>
-    private string? NextUnpickedKind()
+    /// <returns>未取得の種類の数（0 なら全部拾っている）。</returns>
+    private int CountUnpicked()
     {
+        int count = 0;
         for (int i = 0; i < SpawnOrder.Length; i++)
         {
-            string kind = SpawnOrder[i];
-            if (objectiveByKind.TryGetValue(kind, out var objective) && !objective.Done)
+            if (objectiveByKind.TryGetValue(SpawnOrder[i], out var objective) && !objective.Done)
             {
-                return kind;
+                count++;
             }
         }
-        return null;
+        return count;
     }
 
     /// <summary>
-    /// 指定の種類の漂流物がいま海に浮いているか。
+    /// 漂流物が 1 個でも水面に出ているか（種類は問わない）。
     /// </summary>
-    /// <param name="kind">調べる種類。</param>
     /// <returns>1 個でも浮いていれば true。</returns>
-    private static bool IsKindAfloat(string kind)
-    {
-        foreach (var item in DriftItem.All)
-        {
-            if (item.Kind == kind) { return true; }
-        }
-        return false;
-    }
-
-    // ─── 内部処理 ────────────────────────────────────────────
+    private static bool AnyItemAfloat() => DriftItem.All.Count > 0;
 
     /// <summary>
-    /// 指定の種類の漂流物を、いま巻いている方向の先へ流す。
-    /// 巻き方向が決まらない（ウキと竿先が重なっている等）ときは次の間隔でやり直す。
+    /// まだ拾っていない漂流物を<b>巻き方向の一直線上へ等間隔に</b>並べる
+    /// 【台本生成の唯一の実装】。
+    ///
+    /// 【なぜ一直線なのか】
+    /// このミッションは左右の操舵（A / D）を止めてあるので、巻けばウキは
+    /// 「ウキ → 竿先」の直線上を手前へ進む。その直線上に等間隔で置けば、
+    /// まっすぐ巻くだけで必ず順番どおり 1 個ずつ拾える。
+    ///
+    /// 【位置の決め方】
+    /// ウキ → 竿先の水平距離を「残り個数 + 1」で等分し、ウキ側から
+    /// 1 区間目・2 区間目…へ置く。間隔は近すぎ／遠すぎを避けるため
+    /// <see cref="MinSpacingMeters"/> 〜 <see cref="MaxSpacingMeters"/> に丸める。
+    /// 生成位置は必ず線上なので、拾い判定（DriftItem の当たり半径）に確実に入る。
     /// </summary>
     /// <param name="ctx">周辺への窓口。</param>
-    /// <param name="kind">出す漂流物の種類。</param>
-    private void TrySpawn(MissionContext ctx, string kind)
+    private void TrySpawnLine(MissionContext ctx)
     {
         if (ctx.Controller is not { } controller) { return; }
         if (ctx.Drift is not { } manager) { return; }
 
-        // 巻いた先＝ウキが進む向き。A / D の操舵ぶんも含んだ方向が返る。
+        // 巻いたときにウキが進む向き（操舵が止まっているので「ウキ → 竿先」と一致する）
         var direction = controller.ReelAimDirection;
         if (direction.SqrMagnitude <= 0f) { return; }
 
         var origin = controller.FloatWorldPosition;
-        var position = new SEED.Vector3(
-            origin.x + direction.x * SpawnDistanceMeters,
-            controller.WaterSurfaceY(),
-            origin.z + direction.z * SpawnDistanceMeters);
+        var rodTip = controller.RodTipWorldPosition;
 
-        if (!manager.SpawnScripted(kind, position))
+        // ウキ → 竿先の水平距離。短すぎると並べる余地が無い（投げ直しを待つ）
+        float dx = rodTip.x - origin.x;
+        float dz = rodTip.z - origin.z;
+        float lineLength = SEED.Mathf.Sqrt(dx * dx + dz * dz);
+        if (lineLength < MinLineLengthMeters) { return; }
+
+        int remaining = CountUnpicked();
+        if (remaining <= 0) { return; }
+
+        float spacing = SEED.Mathf.Clamped(
+            lineLength / (remaining + SpacingSegmentBias),
+            MinSpacingMeters,
+            MaxSpacingMeters);
+
+        float surfaceY = controller.WaterSurfaceY();
+
+        // 未取得の種類を SpawnOrder の順に、ウキへ近い側から並べる
+        int slot = FirstSlotIndex;
+        for (int i = 0; i < SpawnOrder.Length; i++)
         {
-            SEED.Debug.LogWarning($"[Mission] {ctx.Data.id}: 漂流物「{kind}」を出せませんでした。");
+            string kind = SpawnOrder[i];
+            if (!objectiveByKind.TryGetValue(kind, out var objective) || objective.Done) { continue; }
+
+            float distance = spacing * slot;
+            var position = new SEED.Vector3(
+                origin.x + direction.x * distance,
+                surfaceY,
+                origin.z + direction.z * distance);
+
+            if (!manager.SpawnScripted(kind, position))
+            {
+                SEED.Debug.LogWarning($"[Mission] {ctx.Data.id}: 漂流物「{kind}」を出せませんでした。");
+            }
+
+            slot++;
         }
     }
 

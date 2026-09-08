@@ -73,6 +73,14 @@ public static class FishingEvents
     /// <summary>魚を釣り上げた瞬間（釣果演出の開始）。引数は魚の表示名 string。</summary>
     public const string Catch = "fishing.catch";
 
+    /// <summary>
+    /// 釣果の獲得演出を<b>見せ終えて閉じた</b>瞬間。引数は魚の表示名 string。
+    ///
+    /// <see cref="Catch"/> は演出の「開始」なので、演出中に次の説明を割り込ませたくない
+    /// チュートリアルはこちらを待つ。演出が中断（シーン遷移・破棄）されたときは飛ばない。
+    /// </summary>
+    public const string CatchPresented = "fishing.catch_presented";
+
     /// <summary>漂流物が 1 個出現した瞬間。引数なし。</summary>
     public const string DriftSpawn = "fishing.drift_spawn";
 

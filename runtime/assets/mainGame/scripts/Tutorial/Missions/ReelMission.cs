@@ -51,7 +51,10 @@ public sealed class ReelMission : MissionBase
     /// <param name="ctx">周辺への窓口。</param>
     protected override void OnBegin(MissionContext ctx)
     {
-        Subscribe(FishingEvents.Catch, OnCaught);
+        // 釣果の獲得演出が終わって閉じた瞬間に達成とする。
+        // 演出の開始（FishingEvents.Catch）で達成にすると、魚を掲げている最中に
+        // クリアバナーが重なって、何を釣ったのか見えないまま話が進んでしまう。
+        Subscribe(FishingEvents.CatchPresented, OnCaught);
     }
 
     /// <summary>

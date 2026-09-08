@@ -53,6 +53,16 @@ public struct TutorialDialogue
     public SEED.CanvasTransform anchorTarget;
 
     /// <summary>
+    /// この台詞を出しているあいだカメラを寄せる先（空アクタでよい）。
+    ///
+    /// 設定すると、台詞の表示中だけ通常のカメラ追従（<see cref="CameraMove"/>）を止め、
+    /// チュートリアル側がこのアクタへ向かって滑らかにカメラを寄せる。
+    /// 台詞が終わると追従へ戻る（元位置へも滑らかに戻る）。未設定なら何もしない。
+    /// </summary>
+    [SerializeField(Label = "カメラ寄せ先", Tooltip = "この台詞の間だけカメラを寄せる対象アクタ（未設定なら寄せない）")]
+    public SEED.Transform cameraTarget;
+
+    /// <summary>
     /// この台詞を出しているあいだゲーム時間を止めるか。
     /// 説明だけを読ませたいときは true、ミッションの最中に差し込むときも
     /// 手を止めて読ませたいなら true にする。
