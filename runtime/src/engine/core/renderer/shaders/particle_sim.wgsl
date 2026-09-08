@@ -45,6 +45,11 @@ const PI: f32 = 3.14159265359;
 const SIM_SPACE_WORLD: u32 = 0u;
 const SIM_SPACE_LOCAL: u32 = 1u;
 
+// 2D キャンバスモード（EmitterParams.mode_2d）。1 = 粒子を XY 平面へ拘束する。
+const MODE_2D_ON: u32 = 1u;
+// 平面射影の縮退判定しきい値（XY 成分の長さがこれ以下なら代表方向 +X を使う）。
+const PLANAR_EPSILON: f32 = 1e-6;
+
 // スポーン体積コード（SpawnVolume::to_code と一致）。
 const SPAWN_POINT:  u32 = 0u;
 const SPAWN_BOX:    u32 = 1u;
@@ -118,7 +123,7 @@ struct EmitterParams {
     initial_rot_min:     f32,         // 188  初期回転角 min（ラジアン）
     initial_rot_max:     f32,         // 192  初期回転角 max（ラジアン）
     tex_layer_count:     u32,         // 196  テクスチャ配列レイヤ数（描画用）
-    _pad0:               u32,         // 200
+    mode_2d:             u32,         // 200  0=3D / 1=2D キャンバス（粒子を XY 平面に拘束）
     _pad1:               u32,         // 204
 };
 
@@ -236,6 +241,26 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // ローカル空間の体積内スポーン位置。
         let local_pos = sample_spawn_pos(base);
 
+        // ── 2D キャンバスモード: 粒子を XY 平面（z=0）へ拘束する ──────────
+        // UI は正射影カメラで描くため Z 方向の運動は画面上まったく見えない一方、
+        // near/far クリップ面を越えた粒子だけが忽然と消える（＝粒子が歯抜けになる）。
+        // そこで放出方向とスポーン位置の Z を落とし、キャンバス平面内だけで
+        // シミュレーションする。方向は XY へ射影してから再正規化する
+        // （全球ランダム spread のときも円周上のランダム方向になる）。
+        // 縮退（XY 成分がほぼ 0 ＝ 真正面／真後ろ向き）のときは +X を代表として使う。
+        var cone_dir_eff = cone_dir;
+        var spawn_pos    = local_pos;
+        if params.mode_2d == MODE_2D_ON {
+            let flat = vec3<f32>(cone_dir.x, cone_dir.y, 0.0);
+            let flat_len = length(flat);
+            cone_dir_eff = select(
+                vec3<f32>(1.0, 0.0, 0.0),
+                flat / max(flat_len, PLANAR_EPSILON),
+                flat_len > PLANAR_EPSILON,
+            );
+            spawn_pos = vec3<f32>(local_pos.x, local_pos.y, 0.0);
+        }
+
         var p: Particle;
         p.seed       = base;
         p.age        = 0.0;
@@ -249,13 +274,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         if params.sim_space == SIM_SPACE_WORLD {
             // ワールド空間シム: 位置・方向をエミッタ行列で変換して固定する。
-            p.pos      = (params.world_mat * vec4<f32>(local_pos, 1.0)).xyz;
-            let wdir   = (params.world_mat * vec4<f32>(cone_dir, 0.0)).xyz;
+            p.pos      = (params.world_mat * vec4<f32>(spawn_pos, 1.0)).xyz;
+            let wdir   = (params.world_mat * vec4<f32>(cone_dir_eff, 0.0)).xyz;
             p.emit_dir = normalize(wdir);
         } else {
-            // ローカル空間シム: ローカルのまま保持し、描画時に行列変換する。
-            p.pos      = local_pos;
-            p.emit_dir = cone_dir;
+            // ローカル空間シム: ローカルのまま保持し、描画時に行列変換する
+            // （2D キャンバスは常にこちら。粒子座標＝エミッタのローカル px）。
+            p.pos      = spawn_pos;
+            p.emit_dir = cone_dir_eff;
         }
 
         particles[i] = p;

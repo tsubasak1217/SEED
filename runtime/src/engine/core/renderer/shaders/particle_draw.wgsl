@@ -98,7 +98,7 @@ struct EmitterParams {
     initial_rot_min:     f32,         // 188  初期回転角 min（ラジアン。描画では未使用）
     initial_rot_max:     f32,         // 192  初期回転角 max（ラジアン。描画では未使用）
     tex_layer_count:     u32,         // 196  テクスチャ配列レイヤ数
-    _pad0:               u32,         // 200
+    mode_2d:             u32,         // 200  0=3D / 1=2D キャンバス（回転を Z 軸に限定）
     _pad1:               u32,         // 204
 };
 
@@ -231,10 +231,16 @@ fn vs_main(
     let a = compute_attr(p);
 
     // 粒子ごとのランダム回転軸（seed から球面一様に決定的生成）。
+    //
+    // 2D キャンバスモード（mode_2d=1）では回転軸を **Z 軸固定** にする。
+    // 3D と同じ球面ランダム軸で回すとクアッドが板として奥へ倒れ、
+    // UI では「一部の粒子だけ細い線に潰れる」という壊れた見た目になるため。
+    // Z 軸固定なら xy 平面内の面内回転だけになり、スプライトの回転と同じ意味になる。
     let cos_t = rand_f32(p.seed ^ SALT_AXIS_COS) * 2.0 - 1.0;
     let sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
     let phi   = rand_f32(p.seed ^ SALT_AXIS_PHI) * 2.0 * PI;
-    let axis  = vec3<f32>(sin_t * cos(phi), sin_t * sin(phi), cos_t);
+    let axis_3d = vec3<f32>(sin_t * cos(phi), sin_t * sin(phi), cos_t);
+    let axis    = select(axis_3d, vec3<f32>(0.0, 0.0, 1.0), params.mode_2d == 1u);
     // スケール → 軸角回転 → 平行移動。
     let v = rotate_axis_angle(vpos * a.scale3, axis, p.rot_angle);
 

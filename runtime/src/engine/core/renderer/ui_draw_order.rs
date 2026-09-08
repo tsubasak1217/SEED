@@ -10,7 +10,8 @@
 //  チュートリアル吹き出しの文字が乗る）。
 //
 //  【本モジュールの役割】
-//  レイヤー昇順にソート済みの 3 リストを 1 本の描画列（ラン列）へマージする
+//  レイヤー昇順にソート済みの 4 リスト（スプライト／プリミティブ／2D パーティクル／
+//  テキスト）を 1 本の描画列（ラン列）へマージする
 //  **純関数**を提供する。GPU にも wgpu にも依存しないため単体テストできる。
 //
 //  ラン（`UiDrawRun`）= 「同一種別が連続する区間」。隣接する同種別アイテムは
@@ -23,7 +24,7 @@
 /// UI 描画アイテムの種別。同一レイヤー内の前後関係（奥 → 手前）を決める。
 ///
 /// docs/scripting_api.md §7.8 の規約
-/// 「zone → layer → 同一 layer 内はスプライト → プリミティブ → テキスト」
+/// 「zone → layer → 同一 layer 内はスプライト → プリミティブ → パーティクル → テキスト」
 /// の「種別」部分がこの列挙型で、宣言順がそのまま描画順（奥 → 手前）になる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UiDrawKind {
@@ -31,6 +32,11 @@ pub enum UiDrawKind {
     Sprite,
     /// スクリプト 2D プリミティブ（`SEED.Draw`）。
     Primitive,
+    /// 2D パーティクル（CanvasTransform を持つアクターの ParticleEmitterComponent）。
+    ///
+    /// テキストより奥に置くのは「文字は常に読めるべき」という UI の原則による
+    /// （同一レイヤーに置いた場合の既定。手前に出したいときは layer を上げる）。
+    Particle,
     /// テキスト（TextComponent）。同一レイヤー内で最も手前。
     Text,
 }
@@ -43,15 +49,20 @@ impl UiDrawKind {
         match self {
             UiDrawKind::Sprite => 0,
             UiDrawKind::Primitive => 1,
-            UiDrawKind::Text => 2,
+            UiDrawKind::Particle => 2,
+            UiDrawKind::Text => 3,
         }
     }
 }
 
 /// マージ時に走査する種別の一覧（描画順の昇順）。
 /// 種別を増やすときはここと `UiDrawKind::draw_order` の 2 箇所だけを直す。
-const KIND_SCAN_ORDER: [UiDrawKind; 3] =
-    [UiDrawKind::Sprite, UiDrawKind::Primitive, UiDrawKind::Text];
+const KIND_SCAN_ORDER: [UiDrawKind; 4] = [
+    UiDrawKind::Sprite,
+    UiDrawKind::Primitive,
+    UiDrawKind::Particle,
+    UiDrawKind::Text,
+];
 
 // ─── ラン ────────────────────────────────────────────────────
 
@@ -83,7 +94,7 @@ impl UiDrawRun {
 
 // ─── マージ本体 ──────────────────────────────────────────────
 
-/// レイヤー昇順にソート済みの 3 リストを、1 本の描画ラン列へマージする。
+/// レイヤー昇順にソート済みの 4 リストを、1 本の描画ラン列へマージする。
 ///
 /// # 引数
 /// 各引数は「そのリストのアイテムのレイヤー値」を**昇順（安定ソート済み）**に
@@ -96,17 +107,19 @@ impl UiDrawRun {
 ///
 /// # 性能
 /// 隣接する同種別アイテムは 1 ランへ融合するため、
-/// - レイヤーの交互出現が無い UI（従来どおりの使い方）: 種別数ぶん＝最大 3 ラン。
+/// - レイヤーの交互出現が無い UI（従来どおりの使い方）: 種別数ぶん＝最大 4 ラン。
 /// - 最悪ケース: レイヤーと種別が 1 アイテムごとに入れ替わる UI で
 ///   ラン数 = アイテム総数（＝ 1 アイテム 1 ドローコール）。
 ///   これは「意図的に交互のレイヤーを振った」場合のみ発生する。
 pub fn merge_ui_draw_runs(
     sprite_layers: &[i32],
     primitive_layers: &[i32],
+    particle_layers: &[i32],
     text_layers: &[i32],
 ) -> Vec<UiDrawRun> {
-    // 種別ごとの入力リストと走査カーソル。
-    let lists: [&[i32]; KIND_SCAN_ORDER.len()] = [sprite_layers, primitive_layers, text_layers];
+    // 種別ごとの入力リストと走査カーソル（KIND_SCAN_ORDER と同じ並び）。
+    let lists: [&[i32]; KIND_SCAN_ORDER.len()] =
+        [sprite_layers, primitive_layers, particle_layers, text_layers];
     let mut cursors = [0usize; KIND_SCAN_ORDER.len()];
     let mut runs: Vec<UiDrawRun> = Vec::new();
 
@@ -153,32 +166,63 @@ mod tests {
         UiDrawRun { kind, start, end }
     }
 
-    /// 3 リストとも空 → ランは 1 本も出ない。
+    /// 4 リストとも空 → ランは 1 本も出ない。
     #[test]
     fn empty_lists_produce_no_runs() {
-        assert!(merge_ui_draw_runs(&[], &[], &[]).is_empty());
+        assert!(merge_ui_draw_runs(&[], &[], &[], &[]).is_empty());
     }
 
     /// 1 種別だけのときは全件が 1 ランへ融合される（従来と同じドローコール数）。
     #[test]
     fn single_kind_is_one_run() {
-        let runs = merge_ui_draw_runs(&[0, 5, 10], &[], &[]);
+        let runs = merge_ui_draw_runs(&[0, 5, 10], &[], &[], &[]);
         assert_eq!(runs, vec![run(UiDrawKind::Sprite, 0, 3)]);
 
-        let runs = merge_ui_draw_runs(&[], &[], &[1, 2]);
+        let runs = merge_ui_draw_runs(&[], &[], &[], &[1, 2]);
         assert_eq!(runs, vec![run(UiDrawKind::Text, 0, 2)]);
+
+        // パーティクルだけのときも同様に 1 ランへ融合される。
+        let runs = merge_ui_draw_runs(&[], &[], &[3, 3, 4], &[]);
+        assert_eq!(runs, vec![run(UiDrawKind::Particle, 0, 3)]);
     }
 
-    /// 同一レイヤーではスプライト → プリミティブ → テキストの順になる。
+    /// 同一レイヤーではスプライト → プリミティブ → パーティクル → テキストの順になる。
     #[test]
     fn same_layer_orders_by_kind() {
-        let runs = merge_ui_draw_runs(&[7], &[7], &[7]);
+        let runs = merge_ui_draw_runs(&[7], &[7], &[7], &[7]);
         assert_eq!(
             runs,
             vec![
                 run(UiDrawKind::Sprite, 0, 1),
                 run(UiDrawKind::Primitive, 0, 1),
+                run(UiDrawKind::Particle, 0, 1),
                 run(UiDrawKind::Text, 0, 1),
+            ]
+        );
+    }
+
+    /// 種別の描画順キーは宣言順（奥 → 手前）と一致する。
+    /// パーティクルはプリミティブより手前・テキストより奥。
+    #[test]
+    fn draw_order_keys_are_monotonic() {
+        assert!(UiDrawKind::Sprite.draw_order() < UiDrawKind::Primitive.draw_order());
+        assert!(UiDrawKind::Primitive.draw_order() < UiDrawKind::Particle.draw_order());
+        assert!(UiDrawKind::Particle.draw_order() < UiDrawKind::Text.draw_order());
+    }
+
+    /// 2D パーティクルは layer でスプライトと交互に並ぶ（種別内で閉じない）。
+    ///
+    /// レイヤー 0 の背景スプライト → レイヤー 10 のパーティクル →
+    /// レイヤー 20 の前景スプライトの順（＝パーティクルが 2 枚のスプライトに挟まる）。
+    #[test]
+    fn particles_interleave_with_sprites_by_layer() {
+        let runs = merge_ui_draw_runs(&[0, 20], &[], &[10], &[]);
+        assert_eq!(
+            runs,
+            vec![
+                run(UiDrawKind::Sprite, 0, 1),   // layer 0
+                run(UiDrawKind::Particle, 0, 1), // layer 10
+                run(UiDrawKind::Sprite, 1, 2),   // layer 20（パーティクルより手前）
             ]
         );
     }
@@ -189,13 +233,13 @@ mod tests {
     fn text_below_higher_layer_sprite() {
         // スプライト: 1000（吹き出し背景）, 2002（ポーズボタン）
         // テキスト  : 1002（吹き出しの文字）
-        let runs = merge_ui_draw_runs(&[1000, 2002], &[], &[1002]);
+        let runs = merge_ui_draw_runs(&[1000, 2002], &[], &[], &[1002]);
         assert_eq!(
             runs,
             vec![
-                run(UiDrawKind::Sprite, 0, 1),    // layer 1000
-                run(UiDrawKind::Text, 0, 1),      // layer 1002
-                run(UiDrawKind::Sprite, 1, 2),    // layer 2002（テキストより手前）
+                run(UiDrawKind::Sprite, 0, 1), // layer 1000
+                run(UiDrawKind::Text, 0, 1),   // layer 1002
+                run(UiDrawKind::Sprite, 1, 2), // layer 2002（テキストより手前）
             ]
         );
     }
@@ -204,7 +248,7 @@ mod tests {
     #[test]
     fn interleaved_layers_split_and_coalesce() {
         // スプライト: 0, 0, 20   テキスト: 10, 30, 30
-        let runs = merge_ui_draw_runs(&[0, 0, 20], &[], &[10, 30, 30]);
+        let runs = merge_ui_draw_runs(&[0, 0, 20], &[], &[], &[10, 30, 30]);
         assert_eq!(
             runs,
             vec![
@@ -216,16 +260,17 @@ mod tests {
         );
     }
 
-    /// 3 種別が入り混じるケース。プリミティブが正しい位置へ挟まる。
+    /// 4 種別が入り混じるケース。プリミティブ／パーティクルが正しい位置へ挟まる。
     #[test]
-    fn three_kinds_interleaved() {
-        // スプライト: 0, 100  プリミティブ: 50, 100  テキスト: 50, 100
-        let runs = merge_ui_draw_runs(&[0, 100], &[50, 100], &[50, 100]);
+    fn four_kinds_interleaved() {
+        // スプライト: 0, 100  プリミティブ: 50, 100  パーティクル: 50  テキスト: 50, 100
+        let runs = merge_ui_draw_runs(&[0, 100], &[50, 100], &[50], &[50, 100]);
         assert_eq!(
             runs,
             vec![
                 run(UiDrawKind::Sprite, 0, 1),    // 0
                 run(UiDrawKind::Primitive, 0, 1), // 50
+                run(UiDrawKind::Particle, 0, 1),  // 50
                 run(UiDrawKind::Text, 0, 1),      // 50
                 run(UiDrawKind::Sprite, 1, 2),    // 100
                 run(UiDrawKind::Primitive, 1, 2), // 100
@@ -237,10 +282,16 @@ mod tests {
     /// 負のレイヤーでも順序規則は同じ（背景側へ回り込む）。
     #[test]
     fn negative_layers_are_ordered_correctly() {
-        let runs = merge_ui_draw_runs(&[0], &[], &[-5]);
+        let runs = merge_ui_draw_runs(&[0], &[], &[], &[-5]);
         assert_eq!(
             runs,
             vec![run(UiDrawKind::Text, 0, 1), run(UiDrawKind::Sprite, 0, 1)]
+        );
+        // パーティクルも同じ（負レイヤーはスプライトより奥）。
+        let runs = merge_ui_draw_runs(&[0], &[], &[-5], &[]);
+        assert_eq!(
+            runs,
+            vec![run(UiDrawKind::Particle, 0, 1), run(UiDrawKind::Sprite, 0, 1)]
         );
     }
 
@@ -249,10 +300,14 @@ mod tests {
     fn total_item_count_is_preserved() {
         let sprites = [3, 3, 8, 12];
         let prims = [1, 8];
+        let parts = [0, 8, 12];
         let texts = [8, 8, 9];
-        let runs = merge_ui_draw_runs(&sprites, &prims, &texts);
+        let runs = merge_ui_draw_runs(&sprites, &prims, &parts, &texts);
         let total: usize = runs.iter().map(|r| r.len()).sum();
-        assert_eq!(total, sprites.len() + prims.len() + texts.len());
+        assert_eq!(
+            total,
+            sprites.len() + prims.len() + parts.len() + texts.len()
+        );
         // 各種別の区間が先頭から隙間なく連続していることも確認する。
         for kind in KIND_SCAN_ORDER {
             let mut expect = 0usize;

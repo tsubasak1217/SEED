@@ -954,6 +954,9 @@ public partial class InspectorPanel : UserControl
         // 回転・サイズ・テクスチャ・ブレンド・空間）。デフォルト値は Rust 側
         // ParticleEmitterComponentData と一致させる（受信欠落時のフォールバックにも使用）。
         int PeMaxParticles = 1024,
+        // 描画レイヤー（2D キャンバスアクター時のみ使用。スプライト／テキストと同じ
+        // レイヤー空間で前後関係を決める。3D アクターでは無視される）
+        int PeLayer = 0,
         // 形状（pixel/sphere/box/plane/model。旧 "point" は "pixel" に改名）と Model 形状時のパス
         string PeShape = "pixel", string PeShapeModelPath = "",
         // 出現範囲（point/box/sphere）とパラメータ
@@ -1564,6 +1567,8 @@ public partial class InspectorPanel : UserControl
             // サイズ・テクスチャ・ブレンド・空間を受け取る。欠落時は Rust 側デフォルトと一致する
             // フォールバック値を用いる（カーブ JSON は今回未実装のカーブエディタでは未使用のため保持しない）。
             var peMaxParticles      = comp.TryGetProperty("max_particles",       out var pmp)  ? pmp.GetInt32()  : 1024;
+            // 描画レイヤー（2D キャンバスアクター時のみ意味を持つ。3D では未使用）
+            var peLayer             = comp.TryGetProperty("layer", out var pelj) ? pelj.GetInt32() : 0;
             // 形状: 旧 "point" は "pixel" に改名済み。フォールバックも "pixel"。
             var peShape             = comp.TryGetProperty("shape",               out var psh)  ? psh.GetString() ?? "pixel" : "pixel";
             var peShapeModelPath    = comp.TryGetProperty("shape_model_path",    out var pshp) ? pshp.GetString() ?? "" : "";
@@ -1790,6 +1795,7 @@ public partial class InspectorPanel : UserControl
                 SkyboxHueShift: skyboxHueShift, SkyboxSaturation: skyboxSaturation,
                 SkyboxBrightness: skyboxBrightness, SkyboxContrast: skyboxContrast,
                 PeMaxParticles: peMaxParticles,
+                PeLayer: peLayer,
                 PeShape: peShape, PeShapeModelPath: peShapeModelPath,
                 PeSpawnVolume: peSpawnVolume,
                 PeSpawnBoxX: peSpawnBoxX, PeSpawnBoxY: peSpawnBoxY, PeSpawnBoxZ: peSpawnBoxZ,
@@ -8394,6 +8400,21 @@ public partial class InspectorPanel : UserControl
         AddHeading("再生");
         AddCheckRow("再生", info.PePlaying, "playing");
 
+        // ── 描画レイヤー（2D キャンバスアクター時のみ）─────────────
+        // 2D では粒子がスプライト／プリミティブ／テキストと同じレイヤー空間で
+        // 前後関係を決める（同一 layer 内は スプライト → プリミティブ → パーティクル → テキスト）。
+        // 3D アクターでは深度で前後が決まるため、この項目自体を出さない。
+        if (_isActor2D)
+        {
+            var rowPeLayer = BuildResettableFloatRow(
+                info.SlotIdx, ParticleEmitterComponentType, "レイヤー", info.PeLayer, "layer",
+                "F0",
+                v => SendField("layer", ((int)MathF.Round(v)).ToString(CultureInfo.InvariantCulture)));
+            if (rowPeLayer is FrameworkElement peLayerFe)
+                peLayerFe.ToolTip = "描画優先度。大きいほど手前。\nスプライト／テキストと同じレイヤー空間で比較されます。";
+            sp.Children.Add(rowPeLayer);
+        }
+
         // ── 形状 ───────────────────────────────────────────────
         AddHeading("形状");
         // "pixel" が旧 "point" 相当（先頭）。sphere/box/plane/model は据え置き。
@@ -8757,9 +8778,14 @@ public partial class InspectorPanel : UserControl
         AddDropdownRow("合成方法", blends, info.PeBlend, "blend");
 
         // ── 空間 ───────────────────────────────────────────────
-        AddHeading("シミュレーション空間");
-        var spaces = new (string, string)[] { ("world", "ワールド (World)"), ("local", "ローカル (Local)") };
-        AddDropdownRow("空間", spaces, info.PeSimSpace, "sim_space");
+        // 2D キャンバスアクターでは常にキャンバス（ローカル）空間で動くため、
+        // シミュレーション空間の切り替え自体に意味が無く行を出さない。
+        if (!_isActor2D)
+        {
+            AddHeading("シミュレーション空間");
+            var spaces = new (string, string)[] { ("world", "ワールド (World)"), ("local", "ローカル (Local)") };
+            AddDropdownRow("空間", spaces, info.PeSimSpace, "sim_space");
+        }
 
         // 初期構築時点での形状に合わせて Pixel 専用非表示行を反映する。
         UpdatePixelHiddenVisibility(pixelHiddenRows, info.PeShape);

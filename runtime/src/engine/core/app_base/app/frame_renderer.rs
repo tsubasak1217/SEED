@@ -3006,6 +3006,8 @@ impl App {
                                         // カメラプレビューはスクリプトプリミティブを描かないため
                                         // 座標空間も捨てる（本描画側で改めて収集される）。
                                         &mut crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector::new(),
+                                        // カメラプレビューは 2D パーティクルも描かない（捨てバッファ）。
+                                        &mut Vec::new(),
                                     );
                                     items[canvas_start..].sort_by_key(|it| it.layer);
                                 }
@@ -4295,6 +4297,9 @@ impl App {
                     let (
                         items_2d_bg, items_2d_fg, canvas3d_segments,
                         text_items_2d_bg, text_items_2d_fg,
+                        // 2D パーティクル（ゾーンごと。3D ワールドキャンバス分は
+                        // canvas3d_segments に同梱する）。
+                        particle_items_2d_bg, particle_items_2d_fg,
                         // スクリプト 2D プリミティブ（SEED.Draw）の座標空間マップと
                         // スクリーンスペース用モデル行列。
                         prim_spaces, prim_screen_model,
@@ -4309,7 +4314,12 @@ impl App {
                         let mut canvas3d_segments: Vec<(
                             Vec<crate::engine::core::renderer::SpriteDrawItem>,
                             Vec<CanvasTextItem>,
+                            Vec<crate::engine::core::renderer::ui_draw_pass::Particle2dDrawItem>,
                         )> = Vec::new();
+                        // 2D キャンバス配下のパーティクルエミッタ（スプライトと同じ走査で集まる）。
+                        let mut particle_items_2d: Vec<
+                            crate::engine::core::renderer::ui_draw_pass::Particle2dDrawItem,
+                        > = Vec::new();
                         // テキスト（TextComponent）。スプライトと同じ走査で同時に集まる。
                         // 描画は専用のフォントパイプラインなのでリストだけ分けて持つ。
                         let mut text_items_2d: Vec<CanvasTextItem> = Vec::new();
@@ -4390,6 +4400,7 @@ impl App {
                                     &root_auto_sizes, CanvasDrawZone::Foreground, edit_view_2d, &mut items_2d,
                                     &mut text_items_2d,
                                     &mut prim_spaces,
+                                    &mut particle_items_2d,
                                 );
 
                             }
@@ -4439,6 +4450,9 @@ impl App {
                                     crate::engine::core::renderer::SpriteDrawItem,
                                 > = Vec::new();
                                 let mut seg_texts: Vec<CanvasTextItem> = Vec::new();
+                                let mut seg_particles: Vec<
+                                    crate::engine::core::renderer::ui_draw_pass::Particle2dDrawItem,
+                                > = Vec::new();
                                 // このサブツリーは 3D ワールドキャンバス配下 →
                                 // スクリプトプリミティブもワールド空間・深度テスト付きで描く。
                                 // どのキャンバス配下かを通し番号で記録し、プリミティブも
@@ -4457,13 +4471,16 @@ impl App {
                                     CanvasDrawZone::Foreground, false, &mut seg_sprites,
                                     &mut seg_texts,
                                     &mut prim_spaces,
+                                    &mut seg_particles,
                                 );
                                 prim_spaces.world3d = false;
                                 seg_sprites.sort_by_key(|it| it.layer);
                                 // テキストもこのキャンバス内でレイヤー昇順に安定ソートする
                                 // （スプライトと同じ規約。ゾーン概念はワールドキャンバスに無い）。
                                 seg_texts.sort_by_key(|it| it.layer);
-                                canvas3d_segments.push((seg_sprites, seg_texts));
+                                // パーティクルもこのキャンバス内でレイヤー昇順に安定ソートする。
+                                seg_particles.sort_by_key(|it| it.layer);
+                                canvas3d_segments.push((seg_sprites, seg_texts, seg_particles));
                             }
                         }
 
@@ -4490,11 +4507,21 @@ impl App {
                         text_2d_bg.sort_by_key(|it| it.layer);
                         text_2d_fg.sort_by_key(|it| it.layer);
 
+                        // ── 2D パーティクルも同じ規約（ゾーン分割 → レイヤー安定ソート）──
+                        // これで layer 値がスプライト・プリミティブ・テキストと
+                        // 同じ土俵で比較され、UI の中へ自然に挟まる。
+                        let (mut part_2d_bg, mut part_2d_fg): (Vec<_>, Vec<_>) =
+                            particle_items_2d.into_iter()
+                                .partition(|it| it.zone == CanvasDrawZone::Background);
+                        part_2d_bg.sort_by_key(|it| it.layer);
+                        part_2d_fg.sort_by_key(|it| it.layer);
+
                         // GPU への積み込み（バッチ化）は、プリミティブ・テキストと
                         // レイヤー順にマージしてから「ラン単位」で行う（後段の統合ブロック）。
                         // ここではソート済みの生リストのまま返す。
                         (items_2d_bg, items_2d_fg, canvas3d_segments,
                          text_2d_bg, text_2d_fg,
+                         part_2d_bg, part_2d_fg,
                          prim_spaces, prim_screen_model)
                     };
 
@@ -4875,6 +4902,24 @@ impl App {
                             saved_view_proj
                         };
 
+                        // ── 2D パーティクルの座標行列を GPU の uniform へ書き戻す ──
+                        // エミッタ収集（collect_and_consume）とパラメータ書き込み（sync_gpu）は
+                        // フレーム前半で済んでいるが、そこでは 2D の実行列がまだ決まっていない
+                        // （キャンバスのアンカー／自動解像度は本ブロックの DFS でしか求まらない）。
+                        // 2D は sim_space=Local 固定で compute が world_mat を参照しないため、
+                        // 描画直前のここで uniform の world_mat だけを差し替えれば遅延なく正しい。
+                        if self.particle_system.has_2d_emitters() {
+                            let mats: Vec<(crate::engine::ecs::Entity, [[f32; 4]; 4])> =
+                                particle_items_2d_bg
+                                    .iter()
+                                    .chain(particle_items_2d_fg.iter())
+                                    .chain(canvas3d_segments.iter().flat_map(|(_, _, p)| p.iter()))
+                                    .map(|it| (it.emitter, it.model))
+                                    .collect();
+                            self.particle_system
+                                .upload_2d_world_mats(&draw_ctx.queue, &mats);
+                        }
+
                         // ── ゾーンごとに統合描画列を構築する ──────────────────
                         // スプライトは main チャンネルへ、プリミティブは専用バッファへ積む。
                         // どちらも「begin → 全ゾーンの build → upload」の順序を守ること。
@@ -4889,6 +4934,7 @@ impl App {
                             vec![UiDrawSegment {
                                 sprites: items_2d_bg,
                                 primitives: prim_bg,
+                                particles: particle_items_2d_bg,
                                 texts: text_items_2d_bg,
                             }],
                             &mut sb.main,
@@ -4908,6 +4954,7 @@ impl App {
                             vec![UiDrawSegment {
                                 sprites: items_2d_fg,
                                 primitives: prim_fg,
+                                particles: particle_items_2d_fg,
                                 texts: text_items_2d_fg,
                             }],
                             &mut sb.main,
@@ -4927,9 +4974,10 @@ impl App {
                         let segs_3d: Vec<UiDrawSegment> = canvas3d_segments
                             .into_iter()
                             .zip(prim_3d)
-                            .map(|((sprites, texts), primitives)| UiDrawSegment {
+                            .map(|((sprites, texts, particles), primitives)| UiDrawSegment {
                                 sprites,
                                 primitives,
+                                particles,
                                 texts,
                             })
                             .collect();
@@ -7007,6 +7055,8 @@ impl App {
                                     &main_inst_buf,
                                     self.primitive2d.as_ref(),
                                     self.canvas_text.as_ref(),
+                                    // 2D パーティクルは UI と同じ描画列（レイヤー順）で描く。
+                                    Some((&self.particle_system, &draw_ctx.pipelines.particles)),
                                 );
                             }
                         }
@@ -7370,6 +7420,7 @@ impl App {
                                 &main_inst_buf,
                                 self.primitive2d.as_ref(),
                                 self.canvas_text.as_ref(),
+                                Some((&self.particle_system, &draw_ctx.pipelines.particles)),
                             );
                         }
 
@@ -7404,6 +7455,7 @@ impl App {
                                     &main_inst_buf,
                                     self.primitive2d.as_ref(),
                                     self.canvas_text.as_ref(),
+                                    Some((&self.particle_system, &draw_ctx.pipelines.particles)),
                                 );
                             }
                         }
@@ -8146,6 +8198,18 @@ impl App {
                                     &main_inst_buf,
                                     self.primitive2d.as_ref(),
                                     self.canvas_text.as_ref(),
+                                    Some((&self.particle_system, &draw_ctx.pipelines.particles)),
+                                );
+                            }
+                            // 2D 由来の孤児粒子（エミッタは消えたが寿命が残っている粒子群）。
+                            // シーン走査に現れないため統合描画列へは載らない。UI 最前面の
+                            // 末尾でまとめて描く（順序が多少変わっても「消えたエミッタの
+                            // 粒子が突然消滅する」より害が小さい、という割り切り）。
+                            if self.particle_system.has_2d_orphans() {
+                                overlay_pass.set_bind_group(0, &canvas_cam_buf.bind_group, &[]);
+                                self.particle_system.draw_orphans_2d(
+                                    &mut overlay_pass,
+                                    &draw_ctx.pipelines.particles,
                                 );
                             }
 

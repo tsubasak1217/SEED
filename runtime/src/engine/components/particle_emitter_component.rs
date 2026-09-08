@@ -107,6 +107,13 @@ fn default_size_range() -> [f32; 2] {
 fn default_playing() -> bool {
     true
 }
+/// layer（2D キャンバス描画優先度）の既定値。
+///
+/// スプライト／テキストの `layer` と同じ意味空間・同じ既定（0）にそろえる。
+/// 3D アクター（Transform 側）では未使用（インスペクタでも非表示）。
+fn default_layer() -> i32 {
+    0
+}
 
 // ─── ParticleBlend ────────────────────────────────────────────
 
@@ -793,9 +800,21 @@ pub struct ParticleEmitterComponentData {
     /// 合成モード。既定 Add。
     pub blend: ParticleBlend,
     /// シミュレーション空間（world / local）。既定 world。
+    ///
+    /// 2D キャンバスアクター（CanvasTransform 所持・Transform 無し）では
+    /// **常に local 扱い**に強制される（レンダラ側。docs/scripting_api.md 参照）。
     pub sim_space: ParticleSimSpace,
     /// 放出中フラグ（Play 開始時に放出を開始するか）。既定 true。
     pub playing: bool,
+
+    // ── 2D キャンバス専用 ──
+    /// 2D キャンバス描画優先度（大きいほど手前）。既定 0。
+    ///
+    /// スプライト／プリミティブ／テキストと**同じレイヤー空間**で比較され、
+    /// 同一 layer 内では「スプライト → プリミティブ → パーティクル → テキスト」の順になる
+    /// （renderer/ui_draw_order.rs）。3D アクターでは未使用。
+    #[serde(default = "default_layer")]
+    pub layer: i32,
 }
 
 impl Default for ParticleEmitterComponentData {
@@ -826,6 +845,7 @@ impl Default for ParticleEmitterComponentData {
             blend: ParticleBlend::default(),
             sim_space: ParticleSimSpace::default(),
             playing: default_playing(),
+            layer: default_layer(),
         }
     }
 }
@@ -857,6 +877,9 @@ struct ParticleEmitterComponentRaw {
     sim_space: Option<ParticleSimSpace>,
     #[serde(default)]
     playing: Option<bool>,
+    /// 2D キャンバス描画優先度（Phase 2DFX で追加。旧 .scene には存在しない）。
+    #[serde(default)]
+    layer: Option<i32>,
 
     // 新フィールド
     #[serde(default)]
@@ -1027,6 +1050,8 @@ impl From<ParticleEmitterComponentRaw> for ParticleEmitterComponentData {
             blend: r.blend.unwrap_or(def.blend),
             sim_space: r.sim_space.unwrap_or(def.sim_space),
             playing: r.playing.unwrap_or(def.playing),
+            // 2D 描画優先度（旧 .scene には無いので既定 0）。
+            layer: r.layer.unwrap_or(def.layer),
         }
     }
 }
@@ -1065,6 +1090,8 @@ pub struct ParticleEmitterComponent {
     pub blend: ParticleBlend,
     pub sim_space: ParticleSimSpace,
     pub playing: bool,
+    /// 2D キャンバス描画優先度（大きいほど手前）。3D アクターでは未使用。
+    pub layer: i32,
     /// スクリプト Burst(n) が積む「即時放出リクエスト数」（ランタイム専用・非シリアライズ）。
     ///
     /// スクリプト API（host_api）が加算し、GPU パーティクルシステムが毎フレーム
@@ -1107,6 +1134,7 @@ impl ParticleEmitterComponent {
             blend: data.blend,
             sim_space: data.sim_space,
             playing: data.playing,
+            layer: data.layer,
             // ランタイム専用（非シリアライズ）は常に初期値から始める。
             pending_burst: 0,
             curve_generation: 0,
@@ -1141,6 +1169,7 @@ impl ParticleEmitterComponent {
             blend: self.blend,
             sim_space: self.sim_space,
             playing: self.playing,
+            layer: self.layer,
         }
     }
 
@@ -1190,6 +1219,26 @@ mod tests {
         assert_eq!(data.blend, def.blend);
         assert_eq!(data.blend, ParticleBlend::Add);
         assert_eq!(data.playing, def.playing);
+        // 2D 描画優先度は旧 .scene に存在しないため既定 0 で埋まること
+        // （#[serde(default = "default_layer")] が無いとここで読み込み全体が失敗する）。
+        assert_eq!(data.layer, 0);
+        assert_eq!(data.layer, def.layer);
+    }
+
+    /// `layer` を明示した JSON はその値が読まれ、ラウンドトリップで保持されること。
+    #[test]
+    fn layer_roundtrips_through_component() {
+        let data: ParticleEmitterComponentData =
+            serde_json::from_str(r#"{"layer": 1500}"#).expect("layer 付き JSON の読込に失敗");
+        assert_eq!(data.layer, 1500);
+
+        // ECS 実体 → データ → JSON → データ の往復で値が保たれること。
+        let comp = ParticleEmitterComponent::from_data(data);
+        assert_eq!(comp.layer, 1500);
+        let json = serde_json::to_string(&comp.to_data()).expect("シリアライズ失敗");
+        let back: ParticleEmitterComponentData =
+            serde_json::from_str(&json).expect("再デシリアライズ失敗");
+        assert_eq!(back.layer, 1500);
     }
 
     /// 新スキーマの from_data → serialize → deserialize → to_data ラウンドトリップ。
@@ -1230,6 +1279,7 @@ mod tests {
             blend: ParticleBlend::Screen,
             sim_space: ParticleSimSpace::Local,
             playing: false,
+            layer: -25,
         };
 
         let component = ParticleEmitterComponent::from_data(original.clone());
@@ -1239,6 +1289,7 @@ mod tests {
             serde_json::from_str(&json).expect("デシリアライズに失敗");
 
         assert_eq!(restored.max_particles, original.max_particles);
+        assert_eq!(restored.layer, original.layer);
         assert_eq!(restored.shape, original.shape);
         assert_eq!(restored.spawn_volume, original.spawn_volume);
         assert_eq!(restored.emit_mode, original.emit_mode);

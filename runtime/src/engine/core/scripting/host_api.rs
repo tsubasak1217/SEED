@@ -1080,6 +1080,8 @@ fn read_floats(
                         * crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG,
                 ]),
                 "playing"          => put(out, &[if p.playing { 1.0 } else { 0.0 }]),
+                // 2D キャンバス描画優先度（大きいほど手前）。3D アクターでは未使用。
+                "layer"            => put(out, &[p.layer as f32]),
                 // loop_emit = emit_mode が Loop かどうか。
                 "loop_emit"        => put(out, &[
                     if p.emit_mode == crate::engine::components::EmitMode::Loop { 1.0 } else { 0.0 },
@@ -1486,6 +1488,11 @@ fn write_floats(
                         / crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG;
                 }).is_some(),
                 "playing"          => take::<1>(v).map(|x| p.playing = x[0] != 0.0).is_some(),
+                // 2D キャンバス描画優先度。f32 で受けて i32 へ丸める
+                // （スクリプト API のスカラーは f32 統一のため）。
+                "layer"            => take::<1>(v)
+                    .map(|x| p.layer = x[0].round() as i32)
+                    .is_some(),
                 // loop_emit: true → Loop / false → Once（Count 指定はエディタ側のみ）。
                 "loop_emit"        => take::<1>(v).map(|x| {
                     p.emit_mode = if x[0] != 0.0 {

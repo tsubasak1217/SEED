@@ -67,6 +67,14 @@ impl App {
                     pe.max_particles = v.clamp(1, MAX_PARTICLES_PER_EMITTER);
                 }
             }
+            // ─── 2D キャンバス描画優先度 ───────────────────────
+            // 2D アクター（CanvasTransform 所持）でのみ意味を持つ。
+            // スプライト／プリミティブ／テキストと同じレイヤー空間で比較される。
+            "layer" => {
+                if let Ok(v) = value.parse::<i32>() {
+                    pe.layer = v;
+                }
+            }
             // ─── 形状 ───────────────────────────────────────────
             // shape: tag（point|sphere|box|plane|model）から作る。Model 化する場合は
             // 現在の model_path を引き継ぐ（新規 Model 化は空パスから始まり、

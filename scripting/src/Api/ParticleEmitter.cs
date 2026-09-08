@@ -94,4 +94,16 @@ public readonly struct ParticleEmitter : IComponentHandle<ParticleEmitter>
         get => ScriptHost.TryGetFloat(_entity, Comp, "spread_angle_deg", out var v) ? v : 0f;
         set => ScriptHost.TrySetFloat(_entity, Comp, "spread_angle_deg", value);
     }
+
+    /// <summary>
+    /// 2D キャンバス用の描画優先度（大きいほど手前）。
+    /// スプライト／テキストと同じレイヤー空間で比較され、同一 layer 内は
+    /// スプライト → プリミティブ → パーティクル → テキストの順で描かれる。
+    /// 3D アクター（Transform 持ち）では未使用（前後関係は深度で決まる）。
+    /// </summary>
+    public int Layer
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "layer", out var v) ? (int)v : 0;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "layer", value);
+    }
 }

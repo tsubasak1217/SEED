@@ -105,6 +105,37 @@
 
 - [ ] **`seed_launch` が起動したエディタは MCP サーバー終了後も残る** — 2026-09-07。ジョブオブジェクトで括っていないため、`seed_shutdown` を忘れるとプロセスが残る。必要なら Job Object + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を検討。関連: `editor/SeedMcpServer/Launcher.cs`。
 
+## 2D パーティクル（2026-09-08 実装の残件）
+
+`ParticleEmitter` を 2D キャンバスアクターへ付けられるようにし、UI の統合描画列
+（`renderer/ui_draw_order.rs` の `UiDrawKind::Particle`）へ `layer` 順で差し込むようにした。
+仕様は docs/scripting_api.md の「2D キャンバス（UI）のパーティクル」が正典。以下は残件。
+
+- [ ] **2D 由来の孤児粒子はレイヤー順を失い、SS 合成時にしか描かれない** — 2026-09-08。
+  エミッタが消えた後も寿命ぶん残る粒子群（孤児）はシーン走査に現れないため統合描画列に載せられず、
+  `ParticleSystem::draw_orphans_2d` で「2D 前面ゾーンの末尾」にまとめて描いている。
+  さらにその呼び出しは `scene_canvas_ss`（Play / Edit View3D の SS 合成）のオーバーレイパスにしか
+  入れていないため、2D シーンビュー・アクター編集タブでは 2D の孤児粒子が描かれない。
+  直すなら孤児にゾーン／レイヤー／最終行列を保持させ、統合描画列へ合流させる。
+  関連: `renderer/particle_system.rs::draw_orphans_2d`、`app/frame_renderer.rs`（オーバーレイパス）。
+
+- [ ] **フォルダノードに付けた 2D エミッタは描かれない** — 2026-09-08。`canvas_collect.rs` の
+  フォルダ透過分岐（`canvas_node_is_transparent`）では粒子アイテムを積んでいない。
+  スプライト／テキストも同じ規約なので実害は小さいが、エミッタだけは「Transform を持たない
+  フォルダ」に置きたくなる場面があり得る。関連: `app/canvas_collect.rs::collect_sprite_items`。
+
+- [ ] **2D パーティクルは GPU ピッキングの対象外** — 2026-09-08。`collect_canvas_id_items` に
+  パーティクルの ID アイテムを積んでいないため、シーンビューで粒子をクリックしてもエミッタは選べない
+  （エミッタアクター自体は他のコンポーネントか階層から選ぶ）。関連: `app/canvas_collect.rs`。
+
+- [ ] **2D エミッタの `world_mat` 書き戻しはフレーム後半の暗黙依存** — 2026-09-08。
+  2D は `sim_space=Local` 固定で compute が `world_mat` を見ないことを根拠に、
+  キャンバス走査の後で `upload_2d_world_mats` が uniform の先頭 64 バイトだけを差し替えている。
+  将来 2D でも World シムを許すなら、この前提が崩れる（先に行列を確定させる設計変更が要る）。
+  実装時に「渡す行列は既に GPU 列優先」を取り違えて二重転置し、全粒子がキャンバス原点へ集まる
+  不具合を出した。単体テストで守れていないので、型（newtype）で区別する余地がある。
+  関連: `renderer/particle_system.rs::upload_2d_world_mats`。
+
 ## 2D キャンバス（2026-09-07 の入れ子アンカー修正の残件）
 
 - [ ] **CanvasComponent を持たないノードの pivot は「基準サイズ 1x1」で解決される** — 2026-09-07。`collect_sprite_items` / `collect_canvas_rects` / `pick_2d` は、自ノードに CanvasComponent が無いとき `to_mat4_sized(1.0, 1.0)` で子への座標系原点（`self_world_rs`）を作る。このため pivot が `pivot × 1px` の平行移動として残り、Sprite（例: pivot=(0.5,0.5)）の子は**最大 1px** 親の中心からずれる。目視できない量だが規約としては誤り。「Canvas 領域を持たないノードの pivot は子の座標系に影響しない（＝ 0 基準）」へ寄せるのが筋。影響が全入れ子 2D に及ぶため単独タスクで実施する。関連: `runtime/src/engine/core/app_base/app/canvas_collect.rs`（`my_eff_w/h` の `.unwrap_or((1.0, 1.0))`）、`physics2d_ops.rs`（`canvas_eff_w/h`）。

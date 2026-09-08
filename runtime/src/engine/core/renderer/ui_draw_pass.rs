@@ -3,8 +3,8 @@
 //
 //  【役割】
 //  `ui_draw_order::merge_ui_draw_runs`（純ロジック）が決めた描画順に従って、
-//  スプライト・スクリプト 2D プリミティブ・テキストを **1 本の描画列**として
-//  GPU へ積み（`build`）、レンダーパスへ流す（`draw`）。
+//  スプライト・スクリプト 2D プリミティブ・2D パーティクル・テキストを
+//  **1 本の描画列**として GPU へ積み（`build`）、レンダーパスへ流す（`draw`）。
 //
 //  【なぜ必要か】
 //  種別ごとに別々のリストを順番に描くと `layer` が種別内でしか効かず、
@@ -29,7 +29,34 @@ use crate::engine::core::renderer::primitive2d::pass::PrimitiveSpaceMap;
 use crate::engine::core::renderer::primitive2d::{
     Primitive2dRenderer, PrimitiveCommand, PrimitiveRange,
 };
+use crate::engine::core::renderer::particle_system::ParticleSystem;
+use crate::engine::core::renderer::pipeline::ParticlePipelines;
 use crate::engine::core::renderer::ui_draw_order::{merge_ui_draw_runs, UiDrawKind};
+use crate::engine::components::CanvasDrawZone;
+use crate::engine::ecs::Entity;
+
+// ─── 2D パーティクル描画アイテム ─────────────────────────────
+
+/// 2D キャンバス配下の ParticleEmitter 1 スロット分の描画アイテム。
+///
+/// パーティクル本体（プール・パラメータ・テクスチャ）は `ParticleSystem` が
+/// エミッタの entity をキーに保持しているため、ここでは**描画順を決めるための情報**
+/// （どのエミッタか・どのゾーンか・どのレイヤーか）だけを持つ。
+/// 座標変換は `ParticleSystem::upload_2d_world_mats` で GPU の uniform へ渡す。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Particle2dDrawItem {
+    /// ParticleEmitter スロットの entity（`ParticleSystem` のキー）。
+    pub emitter: Entity,
+    /// 「エミッタのローカル px → キャンバスワールド」GPU 行列の供給元アクター。
+    ///
+    /// スプライト／テキスト／スクリプトプリミティブとまったく同じ
+    /// `node_mesh_gpu_mat` を使うため、canvas_collect が計算した行列をそのまま持つ。
+    pub model: [[f32; 4]; 4],
+    /// 描画ゾーン（背景／前面）。スプライトと同じ規約。
+    pub zone: CanvasDrawZone,
+    /// 描画優先度レイヤー（大きいほど手前）。スプライトと同じレイヤー空間。
+    pub layer: i32,
+}
 
 // ─── 入力セグメント ──────────────────────────────────────────
 
@@ -47,14 +74,19 @@ pub struct UiDrawSegment {
     pub sprites: Vec<SpriteDrawItem>,
     /// スクリプト 2D プリミティブのコマンド（レイヤー昇順・安定ソート済み）。
     pub primitives: Vec<PrimitiveCommand>,
+    /// 2D パーティクル（レイヤー昇順・安定ソート済み）。
+    pub particles: Vec<Particle2dDrawItem>,
     /// テキスト（レイヤー昇順・安定ソート済み）。
     pub texts: Vec<CanvasTextItem>,
 }
 
 impl UiDrawSegment {
-    /// 3 種すべて空か。
+    /// 4 種すべて空か。
     pub fn is_empty(&self) -> bool {
-        self.sprites.is_empty() && self.primitives.is_empty() && self.texts.is_empty()
+        self.sprites.is_empty()
+            && self.primitives.is_empty()
+            && self.particles.is_empty()
+            && self.texts.is_empty()
     }
 }
 
@@ -66,6 +98,11 @@ enum UiZoneRun {
     Sprite(SpriteBatchList),
     /// スクリプト 2D プリミティブ（インデックス区間）。
     Primitive(PrimitiveRange),
+    /// 2D パーティクル（このランに含まれるエミッタ entity 列）。
+    ///
+    /// パーティクルはエミッタごとに専用のバインドグループとプールを持つため
+    /// バッチ融合できない（1 エミッタ = 1 ドローコール）。
+    Particle(Vec<Entity>),
     /// テキスト（インデックス区間）。
     Text(TextDrawRange),
 }
@@ -123,8 +160,14 @@ impl UiZoneDraw {
         for (si, seg) in segments.iter().enumerate() {
             let sprite_layers: Vec<i32> = seg.sprites.iter().map(|it| it.layer).collect();
             let prim_layers: Vec<i32> = seg.primitives.iter().map(|c| c.layer).collect();
+            let part_layers: Vec<i32> = seg.particles.iter().map(|it| it.layer).collect();
             let text_layers: Vec<i32> = seg.texts.iter().map(|it| it.layer).collect();
-            for run in merge_ui_draw_runs(&sprite_layers, &prim_layers, &text_layers) {
+            for run in merge_ui_draw_runs(
+                &sprite_layers,
+                &prim_layers,
+                &part_layers,
+                &text_layers,
+            ) {
                 ordered.push((si, run));
             }
         }
@@ -182,6 +225,16 @@ impl UiZoneDraw {
                         runs.push(UiZoneRun::Primitive(range));
                     }
                 }
+                UiDrawKind::Particle => {
+                    // パーティクルは GPU 資源をエミッタ側（ParticleSystem）が持つため、
+                    // ここでは描画順に並んだ entity 列を控えるだけでよい。
+                    runs.push(UiZoneRun::Particle(
+                        segments[*si].particles[run.start..run.end]
+                            .iter()
+                            .map(|it| it.emitter)
+                            .collect(),
+                    ));
+                }
                 UiDrawKind::Text => {
                     // テキストランはグループと同順で並んでいる。
                     // バッチ構築に失敗した場合（フォント未初期化等）は区間が無いので飛ばす。
@@ -219,6 +272,8 @@ impl UiZoneDraw {
     /// - `camera_bg`: スプライトパイプラインの group 0（プリミティブ／テキストの
     ///   頂点は CPU で NDC 化済みのためカメラバインドグループを使わない）。
     /// - `inst_buf`: `build` で使った `InstanceStream` の GPU バッファ。
+    /// - `particles`: 2D パーティクルを描くための (システム, パイプライン)。
+    ///   `None` を渡すとパーティクルランは黙って飛ばされる（描画順は変わらない）。
     #[allow(clippy::too_many_arguments)]
     pub fn draw<'rp>(
         &'rp self,
@@ -228,6 +283,7 @@ impl UiZoneDraw {
         inst_buf: &'rp wgpu::Buffer,
         primitive2d: Option<&'rp Primitive2dRenderer>,
         canvas_text: Option<&'rp CanvasTextRenderer>,
+        particles: Option<(&'rp ParticleSystem, &'rp ParticlePipelines)>,
     ) {
         for run in &self.runs {
             match run {
@@ -237,6 +293,16 @@ impl UiZoneDraw {
                 UiZoneRun::Primitive(range) => {
                     if let Some(p) = primitive2d {
                         p.draw(range, pass);
+                    }
+                }
+                UiZoneRun::Particle(emitters) => {
+                    if let Some((sys, pl)) = particles {
+                        // group0（camera）はパーティクル用パイプラインでも同一 BGL。
+                        // スプライトのランがセットしたものと同じ BG なので毎ラン設定してよい。
+                        pass.set_bind_group(0, camera_bg, &[]);
+                        for e in emitters {
+                            sys.draw_one_2d(pass, pl, *e);
+                        }
                     }
                 }
                 UiZoneRun::Text(range) => {

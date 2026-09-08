@@ -15,8 +15,8 @@ use std::sync::Arc;
 use crate::engine::core::renderer::ui_draw_order::UiDrawKind;
 use crate::engine::components::{
     AspectRatioAxis, CameraComponent, CanvasComponent, CanvasDrawZone, CanvasTransform,
-    CanvasViewportRef, ComponentKind, ScalingMode, SkinnedSpriteComponent, SpriteComponent,
-    TextComponent, Transform as ActorTransform,
+    CanvasViewportRef, ComponentKind, ParticleEmitterComponent, ScalingMode,
+    SkinnedSpriteComponent, SpriteComponent, TextComponent, Transform as ActorTransform,
 };
 use crate::engine::core::font::canvas_text::CanvasTextItem;
 use crate::engine::core::font::inline::markup::TOKEN_OPEN as INLINE_MARKUP_OPEN;
@@ -26,6 +26,7 @@ use crate::engine::core::font::text_layout::{TextLayoutSpec, resolve_layout_with
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
 use crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector;
 use crate::engine::core::renderer::SpriteDrawItem;
+use crate::engine::core::renderer::ui_draw_pass::Particle2dDrawItem;
 use crate::engine::core::renderer::sprite_skin::{SkinnedSpriteDraw, resolve_bone};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::drawer::{
@@ -787,6 +788,12 @@ pub(super) fn collect_sprite_items(
     // まったく同じ変換連鎖）。3D ワールドキャンバス配下かどうかは呼び出し側が
     // 収集器の world3d フラグで指定する。
     space_out: &mut PrimitiveSpaceCollector,
+    // 2D パーティクル（CanvasTransform を持つアクターの ParticleEmitterComponent）の
+    // 描画アイテム収集先。スプライト／テキストとまったく同じ走査・同じ変換連鎖で積む
+    // （＝子として置いたスプライトと 1px も位置がズレない）。
+    // 粒子の実体（GPU プール）は ParticleSystem 側が持つため、ここでは
+    // 「どのエミッタを・どの行列で・どのゾーンの・どのレイヤーへ描くか」だけを集める。
+    particle_out: &mut Vec<Particle2dDrawItem>,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -832,6 +839,7 @@ pub(super) fn collect_sprite_items(
                 out,
                 text_out,
                 space_out,
+                particle_out,
             );
             continue;
         }
@@ -966,6 +974,27 @@ pub(super) fn collect_sprite_items(
             // スクリプト 2D プリミティブの座標空間として登録する
             // （`SEED.Draw.*(space: canvasTransform)` がこの行列を引く）。
             space_out.insert(actor.entity, node_mesh_gpu_mat, my_zone);
+
+            // ── 2D パーティクルエミッタ（ParticleEmitterComponent）─────────
+            // スクリプトプリミティブと同じ `node_mesh_gpu_mat`（このノードの
+            // 「ローカル px → キャンバスワールド」行列）をそのまま渡す。
+            // これにより粒子のローカル座標は px 単位・Y 下向きになり、
+            // 同じアクターへ置いたスプライトと完全に同じ基準で並ぶ。
+            // 無効化スロットは描かない（スプライト・テキストと同じ規約）。
+            for slot in actor.slots() {
+                if slot.kind != ComponentKind::ParticleEmitter || !slot.enabled {
+                    continue;
+                }
+                let Some(pe) = world.get::<ParticleEmitterComponent>(slot.entity) else {
+                    continue;
+                };
+                particle_out.push(Particle2dDrawItem {
+                    emitter: slot.entity,
+                    model: node_mesh_gpu_mat,
+                    zone: my_zone,
+                    layer: pe.layer,
+                });
+            }
 
             // SpriteComponent スロットを走査して GPU 行列とテクスチャを収集する
             // （enabled=false のスロットは非表示）
@@ -1240,6 +1269,7 @@ pub(super) fn collect_sprite_items(
                 out,
                 text_out,
                 space_out,
+                particle_out,
             );
         }
     }
@@ -3769,5 +3799,123 @@ mod tests {
         let (min, max) = nested_child_outline_bbox(&actors, &world, &bounds, true);
         assert_near2(min, [c[0] - BOX_HALF[0], c[1] - BOX_HALF[1]], "枠つき min");
         assert_near2(max, [c[0] + BOX_HALF[0], c[1] + BOX_HALF[1]], "枠つき max");
+    }
+    // ─── 2D パーティクルの座標空間（ローカル px → キャンバスワールド）────
+    //
+    // 2D エミッタは「スクリプト 2D プリミティブとまったく同じ node_mesh_gpu_mat」を
+    // 使うと決めた。この行列が「子として置いたスプライトと同じ基準」であることを
+    // 行列レベルで固定する（回帰したら粒子だけが別の場所へ飛ぶ）。
+
+    /// テスト用: エミッタノードの位置（親キャンバスのローカル px）。
+    const FX_NODE_POS: [f32; 2] = [100.0, 50.0];
+    /// テスト用: 粒子のローカル座標（px, Y 下向き）。
+    const FX_LOCAL_PX: [f32; 2] = [30.0, 40.0];
+
+    /// GPU（列優先）行列をローカル座標 (x, y, 0) へ適用してワールド座標を返す。
+    ///
+    /// particle_draw.wgsl の `params.world_mat * vec4(p.pos, 1.0)` と同じ計算
+    /// （col0*x + col1*y + col2*z + col3）を CPU で再現する。
+    fn apply_gpu_mat(m: [[f32; 4]; 4], local: [f32; 3]) -> [f32; 3] {
+        std::array::from_fn(|k| {
+            m[0][k] * local[0] + m[1][k] * local[1] + m[2][k] * local[2] + m[3][k]
+        })
+    }
+
+    /// スクリーンスペース 2D キャンバスの単位系（1px = 1 単位・Y 反転なし）。
+    const SS_CANVAS_SCALE: f32 = 1.0;
+    const SS_Y_SIGN: f32 = 1.0;
+
+    /// エミッタノードの `node_mesh_gpu_mat`（＝ 2D パーティクルへ渡す行列）を組む。
+    /// canvas_collect の本体とまったく同じ式を使う。
+    fn fx_node_gpu_mat(rotation_deg: f32) -> [[f32; 4]; 4] {
+        let ct = CanvasTransform {
+            position: FX_NODE_POS,
+            rotation: rotation_deg,
+            ..CanvasTransform::default()
+        };
+        canvas_mat_to_gpu(
+            mat4x4_mul(IDENTITY, ct.to_mesh_mat4(1.0, 1.0)),
+            SS_CANVAS_SCALE,
+            SS_Y_SIGN,
+        )
+    }
+
+    /// 粒子のローカル px は「同じ値を position に持つ子スプライト」と同じ場所へ落ちる。
+    ///
+    /// これが 2D パーティクルの位置仕様そのもの:
+    /// 「エミッタアクターの CanvasTransform 原点を (0,0)、1 単位 = 1px、+Y は画面下」。
+    #[test]
+    fn particle_2d_local_px_matches_sprite_child_position() {
+        let node = fx_node_gpu_mat(0.0);
+        let particle_world = apply_gpu_mat(node, [FX_LOCAL_PX[0], FX_LOCAL_PX[1], 0.0]);
+
+        // 同じノードの子として position = FX_LOCAL_PX に置いたスプライトの原点。
+        let child = CanvasTransform {
+            position: FX_LOCAL_PX,
+            ..CanvasTransform::default()
+        };
+        let child_world_row = mat4x4_mul(
+            mat4x4_mul(
+                IDENTITY,
+                CanvasTransform {
+                    position: FX_NODE_POS,
+                    ..CanvasTransform::default()
+                }
+                .to_mesh_mat4(1.0, 1.0),
+            ),
+            child.to_mesh_mat4(1.0, 1.0),
+        );
+        let child_gpu = canvas_mat_to_gpu(child_world_row, SS_CANVAS_SCALE, SS_Y_SIGN);
+        // 子スプライトの原点 = GPU 行列の平行移動列。
+        let sprite_world = [child_gpu[3][0], child_gpu[3][1], child_gpu[3][2]];
+
+        assert_near2(
+            [particle_world[0], particle_world[1]],
+            [sprite_world[0], sprite_world[1]],
+            "粒子のローカル px と子スプライトの位置",
+        );
+        // 期待値そのものも固定する（親が恒等なら単純な加算）。
+        assert_near2(
+            [particle_world[0], particle_world[1]],
+            [
+                FX_NODE_POS[0] + FX_LOCAL_PX[0],
+                FX_NODE_POS[1] + FX_LOCAL_PX[1],
+            ],
+            "粒子のワールド位置（親恒等）",
+        );
+    }
+
+    /// キャンバス空間の +Y は「画面下」であること（重力 +Y が落下になる根拠）。
+    ///
+    /// スクリーンスペース 2D では y_sign = 1.0 なので Y 反転は起きない。
+    /// ここが反転すると重力の符号が逆になり、粒子が上へ落ちる。
+    #[test]
+    fn particle_2d_local_plus_y_is_screen_down() {
+        let node = fx_node_gpu_mat(0.0);
+        let origin = apply_gpu_mat(node, [0.0, 0.0, 0.0]);
+        let below = apply_gpu_mat(node, [0.0, 10.0, 0.0]);
+        assert!(
+            below[1] > origin[1],
+            "ローカル +Y はキャンバスワールドでも +Y（画面下）であること: {} vs {}",
+            below[1],
+            origin[1]
+        );
+        // X は変化しない（軸が混ざっていない）。
+        assert!((below[0] - origin[0]).abs() < 1e-4);
+    }
+
+    /// エミッタノードの回転は粒子のローカル座標にもそのまま効く
+    /// （＝ 子スプライトと同じ変換連鎖に乗っている）。
+    #[test]
+    fn particle_2d_inherits_node_rotation() {
+        // 90 度回転したノードでは、ローカル +X は キャンバス +Y（画面下）へ向く。
+        let node = fx_node_gpu_mat(90.0);
+        let origin = apply_gpu_mat(node, [0.0, 0.0, 0.0]);
+        let along_x = apply_gpu_mat(node, [10.0, 0.0, 0.0]);
+        assert_near2(
+            [along_x[0] - origin[0], along_x[1] - origin[1]],
+            [0.0, 10.0],
+            "90 度回転ノードのローカル +X",
+        );
     }
 }

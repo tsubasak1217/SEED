@@ -79,7 +79,7 @@ use crate::engine::components::particle_emitter_component::{
     MAX_PARTICLES_PER_EMITTER, ParamCurve, ParticleBlend, ParticleEmitterComponent, ParticleShape,
     ParticleSimSpace, SpawnVolume,
 };
-use crate::engine::components::{ComponentKind, Transform};
+use crate::engine::components::{CanvasTransform, ComponentKind, Transform};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
@@ -113,6 +113,15 @@ const SHAPE_MODE_MESH: u32 = 1;
 /// LUT に固定で並ぶカーブ本数（speed / rot_speed / scale）。
 /// 色カーブ（最低 1 本）はこの後ろに可変本数で続く。
 const LUT_FIXED_CURVES: usize = 3;
+
+/// 行優先 4x4 の恒等行列（2D エミッタの暫定 world_mat・行列合成の初期値）。
+/// マジックナンバー（リテラルの行列）を各所へ散らさないため定数化する。
+const IDENTITY_MAT4: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
 
 /// 孤児パーティクル（エミッタ消滅後も残る粒子群）の TTL に足す余裕秒。
 ///
@@ -222,8 +231,14 @@ pub struct GpuEmitterParams {
     pub initial_rot_max: f32,
     /// テクスチャ配列レイヤ数（0/1=単層。粒子ごとに seed で選ぶ）。offset 196
     pub tex_layer_count: u32,
-    /// パディング（16 バイト境界）。offset 200/204
-    pub _pad0: u32,
+    /// 2D キャンバスモード（0=3D / 1=2D）。offset 200
+    ///
+    /// 1 のとき描画シェーダはメッシュ形状の回転を **Z 軸まわりの面内回転**に限定する
+    /// （3D の球面ランダム軸で回すとクアッドが板として立ってしまい、UI では潰れて見えるため）。
+    /// シミュレーション（compute）は 3D と完全に同一のコードで走る
+    /// （2D は sim_space=Local 固定＋Z 成分 0 のパラメータで運用する）。
+    pub mode_2d: u32,
+    /// パディング（16 バイト境界）。offset 204
     pub _pad1: u32,
 }
 
@@ -414,6 +429,8 @@ impl EmitterGpuState {
 /// 行列を保持し続けることでワールド空間上のその場に留まる）。
 #[derive(Clone)]
 struct OrphanSeed {
+    /// 2D キャンバスエミッタ由来か（描画先パスの振り分けに使う）。
+    is_2d: bool,
     /// 合成モード（描画パイプライン選択）。
     blend: ParticleBlend,
     /// 形状（描画のメッシュ解決に使う。メッシュは ShapeMeshCache に残っている）。
@@ -448,6 +465,9 @@ struct OrphanEmitter {
 struct EmitterFrameDesc {
     /// エミッタスロットの entity（gpu マップのキー）。
     entity: Entity,
+    /// 2D キャンバスエミッタか。true のものは 3D パーティクルパスでは描かず、
+    /// UI 統合描画列（ui_draw_pass）から `draw_one_2d` 経由で描く。
+    is_2d: bool,
     /// 合成モード（描画パイプライン選択）。
     blend: ParticleBlend,
     /// プール容量（dispatch のワークグループ数・draw のインスタンス数）。
@@ -526,6 +546,14 @@ pub struct ParticleSystem {
 struct RawEmitter {
     entity: Entity,
     world_mat: [[f32; 4]; 4], // 行優先（CPU）
+    /// 2D キャンバスエミッタか（CanvasTransform を持ち Transform を持たないアクター）。
+    ///
+    /// true のとき `world_mat` は暫定の恒等行列で、実際の「ローカル px → キャンバスワールド」
+    /// 行列はキャンバス走査（canvas_collect）が確定したあと
+    /// `upload_2d_world_mats` で GPU の uniform へ直接書き込まれる。
+    /// 2D は常に `sim_space = Local` として扱うため、compute は world_mat を一切参照しない
+    /// （particle_sim.wgsl は sim_space==World のときだけ world_mat を使う）。
+    is_2d: bool,
     max_particles: u32,
     shape: ParticleShape,
     spawn_volume: SpawnVolume,
@@ -794,21 +822,31 @@ impl ParticleSystem {
                     .to_radians(),
                 // shape_mode は常に mesh（Pixel は専用 PointList パイプラインで描く）。
                 shape_mode: SHAPE_MODE_MESH,
-                direction_local: raw.direction_local,
+                // 2D キャンバスでは Z 方向の運動が画面に一切現れない（正射影）ため、
+                // 放出方向・重力の Z を落として平面内へ閉じ込める。
+                // 円錐スプレッドが生む Z 成分はシェーダ側（mode_2d）で射影する。
+                direction_local: flatten_dir_if_2d(raw.direction_local, raw.is_2d),
                 speed_min: raw.initial_speed[0],
                 speed_max: raw.initial_speed[1],
                 lifetime_min: raw.lifetime[0],
                 lifetime_max: raw.lifetime[1],
                 // 回転速度は度/秒 → ラジアン/秒 へ変換して渡す。
                 rot_speed_min: raw.rot_speed_range[0].to_radians(),
-                gravity: raw.gravity,
+                gravity: flatten_z_if_2d(raw.gravity, raw.is_2d),
                 rot_speed_max: raw.rot_speed_range[1].to_radians(),
                 spawn_box: raw.spawn_volume.box_half_extents(),
                 spawn_sphere_radius: raw.spawn_volume.sphere_radius(),
                 size_min: raw.size_range[0],
                 size_max: raw.size_range[1],
                 spawn_volume: raw.spawn_volume.to_code(),
-                sim_space: raw.sim_space.to_code(),
+                // 2D キャンバスは常に Local シム（粒子座標＝エミッタのローカル px）。
+                // world_mat は canvas_collect 確定後に書き戻すため、compute が
+                // world_mat を参照する World シムは 2D では成立しない。
+                sim_space: if raw.is_2d {
+                    ParticleSimSpace::Local.to_code()
+                } else {
+                    raw.sim_space.to_code()
+                },
                 // 仮の use_texture / tex_layer_count（sync_gpu がロード結果で確定する）。
                 use_texture: if raw.texture_paths.is_empty() { 0 } else { 1 },
                 lut_samples: CURVE_LUT_SAMPLES as u32,
@@ -818,7 +856,7 @@ impl ParticleSystem {
                 initial_rot_min: raw.initial_rotation_range[0].to_radians(),
                 initial_rot_max: raw.initial_rotation_range[1].to_radians(),
                 tex_layer_count: 0,
-                _pad0: 0,
+                mode_2d: u32::from(raw.is_2d),
                 _pad1: 0,
             }
         };
@@ -878,6 +916,7 @@ impl ParticleSystem {
 
         self.frame.push(EmitterFrameDesc {
             entity: raw.entity,
+            is_2d: raw.is_2d,
             blend: raw.blend,
             max_particles: max,
             texture_paths: raw.texture_paths,
@@ -1057,6 +1096,7 @@ impl ParticleSystem {
             self.seeds.insert(
                 entity,
                 OrphanSeed {
+                    is_2d: self.frame[i].is_2d,
                     blend: self.frame[i].blend,
                     shape: shape.clone(),
                     max_particles: capacity,
@@ -1135,8 +1175,11 @@ impl ParticleSystem {
         // group0（camera）は全パイプラインでレイアウト共通のため 1 度だけセットする。
         pass.set_bind_group(0, camera_bg, &[]);
 
-        // 生存中のエミッタ。
+        // 生存中のエミッタ（3D のみ。2D キャンバスのエミッタは UI 統合描画列で描く）。
         for desc in &self.frame {
+            if desc.is_2d {
+                continue;
+            }
             let Some(g) = self.gpu.get(&desc.entity) else {
                 continue;
             };
@@ -1152,7 +1195,11 @@ impl ParticleSystem {
             );
         }
         // 孤児（エミッタは消えたが寿命が残っている粒子群）。凍結した seed で描く。
+        // 2D 由来の孤児は `draw_orphans_2d` で UI パスへ描くのでここでは飛ばす。
         for o in &self.orphans {
+            if o.seed.is_2d {
+                continue;
+            }
             Self::draw_pool(
                 pass,
                 draw_pl,
@@ -1164,6 +1211,124 @@ impl ParticleSystem {
                 o.seed.params.use_texture,
             );
         }
+    }
+
+    // ── 2D キャンバス（UI）向け API ────────────────────────────
+    //
+    // 2D エミッタはシミュレーション（compute）を 3D と完全に共有し、
+    // **描画だけ** を UI の統合描画列（ui_draw_pass）へ差し込む。
+    // これにより `layer` がスプライト／プリミティブ／テキストと同じ土俵で効く。
+
+    /// 2D エミッタが 1 つでもこのフレームに存在するか。
+    ///
+    /// UI 側で「パーティクルの world_mat を書き戻す必要があるか」の早期判定に使う
+    /// （0 個ならマップ構築も uniform 書き込みもスキップできる）。
+    pub fn has_2d_emitters(&self) -> bool {
+        self.frame.iter().any(|d| d.is_2d) || self.orphans.iter().any(|o| o.seed.is_2d)
+    }
+
+    /// 2D エミッタの「ローカル px → キャンバスワールド」行列を GPU の uniform へ書き戻す。
+    ///
+    /// # なぜ後から書くのか
+    /// キャンバスの実効行列（アンカー・親累積スケール・ビューポート自動解像度）は
+    /// `canvas_collect` の DFS を通さないと決まらず、その走査は `collect_and_consume` /
+    /// `sync_gpu` より後のフレーム後半で行われる。2D は `sim_space = Local` 固定で
+    /// compute が `world_mat` を参照しないため（particle_sim.wgsl）、描画直前に
+    /// uniform の先頭 64 バイト（world_mat）だけを差し替えれば 1 フレームの遅れもなく正しい。
+    ///
+    /// # 引数
+    /// - `mats`: (エミッタスロット entity, **GPU 列優先**のモデル行列)。
+    ///   `canvas_collect` の `canvas_mat_to_gpu` が返す行列をそのまま渡すこと
+    ///   （スプライトの `SpriteDrawItem::model` と同じ形式＝既に列優先なので
+    ///   **転置してはいけない**。ここで転置すると平行移動列が消えて
+    ///   全ての 2D 粒子がキャンバス原点に集まる）。
+    ///
+    /// GPU 状態が未確保のエミッタ（sync_gpu 前）は黙って飛ばす。
+    pub fn upload_2d_world_mats(&mut self, queue: &wgpu::Queue, mats: &[(Entity, [[f32; 4]; 4])]) {
+        // uniform 内の world_mat のオフセットは 0（GpuEmitterParams のレイアウト）。
+        const WORLD_MAT_OFFSET: wgpu::BufferAddress = 0;
+        for (entity, mat) in mats {
+            let Some(desc) = self.frame.iter_mut().find(|d| d.entity == *entity && d.is_2d) else {
+                continue;
+            };
+            // 受け取る行列は既に GPU 列優先（canvas_mat_to_gpu の出力）なので
+            // そのまま使う。以降のフレームのスナップショット（孤児の種）にも
+            // 反映されるよう、フレーム記述側の params も更新しておく。
+            let col_major = *mat;
+            desc.params.world_mat = col_major;
+            let Some(g) = self.gpu.get(entity) else {
+                continue;
+            };
+            queue.write_buffer(
+                &g.params_buf,
+                WORLD_MAT_OFFSET,
+                bytemuck::bytes_of(&col_major),
+            );
+        }
+    }
+
+    /// 2D エミッタ 1 本を UI のレンダーパスへ描く（ui_draw_pass のパーティクルランから呼ぶ）。
+    ///
+    /// group0（camera）は呼び出し側が UI 用カメラでセット済みであること。
+    /// 該当 entity が 2D エミッタでない／GPU 未確保／sync_gpu 前なら何も描かない。
+    pub fn draw_one_2d<'p>(
+        &'p self,
+        pass: &mut wgpu::RenderPass<'p>,
+        draw_pl: &'p ParticlePipelines,
+        entity: Entity,
+    ) {
+        let Some(shapes) = &self.shapes else {
+            return; // sync_gpu 前は描画しない
+        };
+        let Some(desc) = self.frame.iter().find(|d| d.entity == entity && d.is_2d) else {
+            return;
+        };
+        let Some(g) = self.gpu.get(&entity) else {
+            return;
+        };
+        Self::draw_pool(
+            pass,
+            draw_pl,
+            shapes,
+            g,
+            desc.blend,
+            &desc.shape,
+            desc.max_particles,
+            desc.params.use_texture,
+        );
+    }
+
+    /// 2D 由来の孤児粒子群（エミッタは消えたが寿命が残っている粒子）を UI パスへ描く。
+    ///
+    /// 孤児はシーン走査に現れないため統合描画列へは載らない。レイヤーも失われているので、
+    /// 「2D UI の最前面ゾーンの末尾」でまとめて描く（消えたエミッタの粒子が残り続けるより
+    /// 順序が多少変わるほうが害が小さい、という割り切り）。
+    /// group0（camera）は呼び出し側でセット済みであること。
+    pub fn draw_orphans_2d<'p>(
+        &'p self,
+        pass: &mut wgpu::RenderPass<'p>,
+        draw_pl: &'p ParticlePipelines,
+    ) {
+        let Some(shapes) = &self.shapes else {
+            return;
+        };
+        for o in self.orphans.iter().filter(|o| o.seed.is_2d) {
+            Self::draw_pool(
+                pass,
+                draw_pl,
+                shapes,
+                &o.gpu,
+                o.seed.blend,
+                &o.seed.shape,
+                o.seed.max_particles,
+                o.seed.params.use_texture,
+            );
+        }
+    }
+
+    /// 2D 由来の孤児が 1 つでもあるか（UI パスで `draw_orphans_2d` を呼ぶ判定用）。
+    pub fn has_2d_orphans(&self) -> bool {
+        self.orphans.iter().any(|o| o.seed.is_2d)
     }
 
     /// パーティクルプール 1 本を描画する（生存エミッタ／孤児で共用する内部ヘルパ）。
@@ -1247,11 +1412,31 @@ fn gather_emitters(
             continue;
         }
         if actor.world_line == wl {
-            // 先に Transform 行列をコピーして World の不変借用を解放する。
-            let mat = world.get::<Transform>(actor.entity).map(|t| t.to_mat4());
+            // ── エミッタの基準行列と空間種別を決める ─────────────────────
+            // 3D アクター（Transform 所持）: Transform のワールド行列をそのまま使う。
+            // 2D キャンバスアクター（CanvasTransform 所持・Transform 無し）:
+            //   ここでは基準行列を決められない（キャンバスのアンカー／親スケール／
+            //   ビューポート解決は canvas_collect の DFS でしか求まらない）。
+            //   そのため暫定の恒等行列を置き、実行列は `upload_2d_world_mats` で
+            //   GPU の uniform へ直接書き戻す。2D は sim_space=Local 固定なので
+            //   compute は world_mat を参照せず、この遅延書き込みで正しさが保たれる。
+            let (mat, is_2d) = match world.get::<Transform>(actor.entity) {
+                Some(t) => (Some(t.to_mat4()), false),
+                None => {
+                    if world.get::<CanvasTransform>(actor.entity).is_some() {
+                        (Some(IDENTITY_MAT4), true)
+                    } else {
+                        (None, false)
+                    }
+                }
+            };
             if let Some(mat) = mat {
                 for slot in actor.slots() {
                     if slot.kind != ComponentKind::ParticleEmitter {
+                        continue;
+                    }
+                    // 無効化されたスロットは収集しない（スプライト等と同じ規約）。
+                    if !slot.enabled {
                         continue;
                     }
                     // pending_burst を消費するため &mut で取得する。
@@ -1261,6 +1446,7 @@ fn gather_emitters(
                         out.push(RawEmitter {
                             entity: slot.entity,
                             world_mat: mat,
+                            is_2d,
                             max_particles: c.max_particles,
                             shape: c.shape.clone(),
                             spawn_volume: c.spawn_volume,
@@ -1406,6 +1592,40 @@ fn load_particle_textures(
 }
 
 /// 行優先行列（CPU）→ 列優先行列（GPU）への転置（skin_system と同一）。
+/// 2D キャンバスの既定放出方向（キャンバス Y は下向きなので -Y ＝ 画面上）。
+/// Z だけを向いた放出方向が平面射影で縮退したときの代表方向として使う。
+const DEFAULT_2D_DIRECTION: [f32; 3] = [0.0, -1.0, 0.0];
+
+/// 平面射影後の方向ベクトルを「縮退した」とみなす長さのしきい値。
+const PLANAR_DIR_EPSILON: f32 = 1e-6;
+
+/// 2D キャンバスエミッタの**放出方向**から Z 成分を落とす（3D ならそのまま返す）。
+///
+/// `flatten_z_if_2d` との違いは縮退の扱い。放出方向は後段でシェーダが
+/// `normalize` するため、Z だけを向いた方向（例 `[0, 0, 1]`）をそのまま潰すと
+/// ゼロベクトルの正規化＝NaN になり、粒子が 1 つも見えなくなる。
+/// そのときはキャンバスの既定方向（画面上）へフォールバックする。
+fn flatten_dir_if_2d(v: [f32; 3], is_2d: bool) -> [f32; 3] {
+    if !is_2d {
+        return v;
+    }
+    let flat = [v[0], v[1], 0.0];
+    if flat[0].hypot(flat[1]) > PLANAR_DIR_EPSILON {
+        flat
+    } else {
+        DEFAULT_2D_DIRECTION
+    }
+}
+
+/// 2D キャンバスエミッタのベクトルから Z 成分を落とす（3D ならそのまま返す）。
+///
+/// 2D は正射影カメラで描くため Z 方向の運動は画面に現れず、
+/// near/far クリップを越えた粒子だけが消えるという分かりにくい不具合になる。
+/// 「2D の値は px（XY）だけを意味する」という契約をここで一点強制する。
+fn flatten_z_if_2d(v: [f32; 3], is_2d: bool) -> [f32; 3] {
+    if is_2d { [v[0], v[1], 0.0] } else { v }
+}
+
 fn transpose4x4(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut out = [[0.0f32; 4]; 4];
     for i in 0..4 {
@@ -1478,6 +1698,34 @@ mod layout_tests {
         assert_eq!(offset_of!(GpuEmitterParams, initial_rot_min), 188);
         assert_eq!(offset_of!(GpuEmitterParams, initial_rot_max), 192);
         assert_eq!(offset_of!(GpuEmitterParams, tex_layer_count), 196);
+        assert_eq!(offset_of!(GpuEmitterParams, mode_2d), 200);
+    }
+
+    /// 2D の放出方向は XY へ射影され、縮退（Z のみ）なら既定方向へ落ちる。
+    ///
+    /// 潰してゼロベクトルのままにするとシェーダの `normalize` が NaN を返し、
+    /// 粒子が 1 つも描かれなくなる（見つけにくい「何も出ない」故障）。
+    #[test]
+    fn flatten_dir_falls_back_when_degenerate() {
+        // 3D はそのまま素通し。
+        assert_eq!(flatten_dir_if_2d([0.0, 0.0, 1.0], false), [0.0, 0.0, 1.0]);
+        // 2D で XY 成分があるなら Z だけを落とす。
+        assert_eq!(flatten_dir_if_2d([3.0, -4.0, 9.0], true), [3.0, -4.0, 0.0]);
+        // 2D で Z のみ（＝射影すると長さ 0）は既定方向（画面上）へ。
+        assert_eq!(flatten_dir_if_2d([0.0, 0.0, 1.0], true), DEFAULT_2D_DIRECTION);
+        assert_eq!(flatten_dir_if_2d([0.0, 0.0, -5.0], true), DEFAULT_2D_DIRECTION);
+        // 完全なゼロベクトルも同様（3D 側は従来どおり normalize 側の責務）。
+        assert_eq!(flatten_dir_if_2d([0.0, 0.0, 0.0], true), DEFAULT_2D_DIRECTION);
+    }
+
+    /// 2D キャンバスエミッタでは Z 成分が落ちる（3D は素通し）。
+    ///
+    /// これが崩れると 2D 粒子が正射影カメラの near/far を越えて歯抜けに消える。
+    #[test]
+    fn flatten_z_only_applies_to_2d() {
+        let v = [1.0f32, -9.8, 3.0];
+        assert_eq!(flatten_z_if_2d(v, true), [1.0, -9.8, 0.0]);
+        assert_eq!(flatten_z_if_2d(v, false), v);
     }
 
     /// LUT の連結順（speed / rot_speed / scale / color_0..M-1）と行数。

@@ -87,7 +87,10 @@ public static class ComponentCatalog
         }),
         ("エフェクト", new List<ComponentEntry>
         {
-            new("ParticleEmitterComponent", "Particle Emitter", "ParticleEmitter", "GPUパーティクルエミッタ。放出レート・寿命・色・サイズ補間などをデータドリブンに設定", ComponentActorTarget.Actor3D),
+            // 2D キャンバスアクターにも付けられるようにする。2D の場合はキャンバス空間
+            // （px 単位・Y 下向き）でエミッタが動作し、layer によって
+            // スプライト／プリミティブ／テキストと前後関係を揃えられる。
+            new("ParticleEmitterComponent", "Particle Emitter", "ParticleEmitter", "GPUパーティクルエミッタ。放出レート・寿命・色・サイズ補間などをデータドリブンに設定", ComponentActorTarget.Common),
         }),
         // 「ツール」カテゴリ: シーン編集の道具として使う汎用コンポーネント。
         // ControlPoint は川・巡回ルート・カメラフライスルーなど用途に依存しない

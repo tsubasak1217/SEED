@@ -1007,6 +1007,30 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">ps.LoopEmit</code><span class="desc">bool（get/set。寿命ループ放出するか）</span></div>
   <div class="api"><code class="sig">ps.Drag</code><span class="desc">float（get/set。空気抵抗係数。負値は 0 にクランプ）</span></div>
   <div class="api"><code class="sig">ps.SpreadAngle</code><span class="desc">float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）</span></div>
+  <div class="api"><code class="sig">ps.Layer</code><span class="desc">int（get/set。<b>2D キャンバスアクター専用</b>の描画優先度。大きいほど手前）</span></div>
+
+  <h4>2D キャンバス（UI）のパーティクル</h4>
+  <p class="section-note">
+    <code>ParticleEmitter</code> は <b>3D アクター（Transform 持ち）と 2D キャンバスアクター（CanvasTransform 持ち）の両方</b>に
+    付けられます。アクターが 2D のとき、エミッタは自動的に<b>キャンバス空間</b>で動きます
+    （コンポーネントは共通で、専用の 2D 用コンポーネントはありません）。
+  </p>
+  <table>
+    <tr><th>項目</th><th>3D アクター</th><th>2D キャンバスアクター</th></tr>
+    <tr><td>原点</td><td><code>Transform</code></td><td><code>CanvasTransform</code>（子スプライトと同じ基準）</td></tr>
+    <tr><td>座標・サイズ</td><td>ワールドユニット（m）</td><td><b>px</b></td></tr>
+    <tr><td>初速 / 重力</td><td>m/s・m/s&sup2;</td><td><b>px/s・px/s&sup2;</b></td></tr>
+    <tr><td>Y 軸</td><td>+Y が上</td><td><b>+Y が下</b>（落下は <code>gravity = [0, +N, 0]</code>）</td></tr>
+    <tr><td>Z 方向</td><td>自由</td><td><b>常に 0 に拘束</b>（正射影で見えず、クリップ面で消えるだけのため）</td></tr>
+    <tr><td><code>sim_space</code></td><td>world / local</td><td><b>常に local</b>（インスペクタにも出しません）</td></tr>
+    <tr><td>前後関係</td><td>深度バッファ</td><td><b><code>Layer</code></b>（スプライト／テキストと同じレイヤー空間）</td></tr>
+  </table>
+  <div class="warn">
+    形状は <code>plane</code>（板ポリ）を推奨します。<code>sphere</code> / <code>box</code> は 3D 形状なので UI では潰れて見えます。
+    2D では粒子の回転は <b>Z 軸まわりの面内回転</b>に限定されます。サイズは
+    「<code>size_range</code> × スケールカーブ」がそのまま <b>px</b> になります。
+    サンプル: <code>assets://mainGame/actors/FX/Sparkle2D.actor</code>。
+  </div>
 
   <h3 id="cmp-inputmap">InputMap（入力アクションマップ）</h3>
   <p class="section-note">エディタの「コンポーネント追加 → 入力 → Input Map」で <code>.inputmap</code>（アクション名 → 物理入力）を割り当て、アクション名で入力を取得します。<b>キーボード（Key）に加えてゲームパッド（GamepadButton / GamepadAxis）</b>を評価します（PC）。</p>
@@ -1478,7 +1502,10 @@ SolvePath();
     <b>同じソート軸</b>で、大きいほど手前です。UI の重なり順は次の 3 段で
     <b>種別を跨いで</b>決まります:
     <br><b>zone（背景 / 前面） → layer（昇順・大きいほど手前） → 同一 layer 内は
-    スプライト → プリミティブ → テキスト</b>。
+    スプライト → プリミティブ → パーティクル → テキスト</b>。
+    「パーティクル」は 2D キャンバスアクターに付けた <code>ParticleEmitter</code>（<code>ParticleEmitter.Layer</code>）です。
+    同一 layer でテキストより奥に置くのは「文字は常に読めるべき」という UI の原則によるもので、
+    手前に出したいときは <code>Layer</code> を上げてください。
     同一レイヤー・同一種別のときはヒエラルキーの並び順（DFS 順）が保たれます。
     描画ゾーン（Canvas の背景／前面）は <code>space</code> に渡したキャンバスのゾーンを継承し、
     スクリーンスペース（<code>space: null</code>）は前面ゾーン扱いです。
