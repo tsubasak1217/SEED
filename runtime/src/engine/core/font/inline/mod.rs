@@ -60,3 +60,117 @@ pub fn invalidate_caches() {
     image_meta::invalidate_all();
     doc::reset_warnings();
 }
+
+// ============================================================
+//  ライブ編集の自動反映（ポーリング）
+//
+//  【背景】
+//  `icon_set` / `image_meta` は「1 度読んだら二度と読まない」プロセス内
+//  キャッシュのため、`.icons` や参照先の画像を外部エディタで編集しても
+//  エディタ（SEEDEditor）を再起動するまで反映されなかった。
+//
+//  【方式】
+//  各キャッシュのエントリに「実ファイルパス＋読み込み時点の更新時刻」を
+//  持たせ（`icon_set::poll_changes` / `image_meta::poll_changes`）、
+//  ここ `poll_asset_changes` がフレーム頭（`App::build_text_expand_map`）
+//  から毎回呼ばれる前提で、`ICON_SET_POLL_INTERVAL` に 1 回だけ実際の
+//  ディスク確認を行う（間引きにより、確認自体のコストは無視できる）。
+//
+//  【PAK モード】
+//  パッケージ実行では `asset_fs` が実ファイルを持たない（PAK 内蔵）ため、
+//  ファイルは差し替えようがない。確認そのものを丸ごとスキップする。
+// ============================================================
+
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+use crate::engine::asset_fs;
+
+/// ポーリングの実行結果。
+///
+/// 「間引きで確認自体を行わなかった」ことと「確認したが変化が無かった」ことを
+/// 呼び出し側（テスト）が区別できるよう、確認したかどうかを型で分ける。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollOutcome {
+    /// PAK パッケージ実行中、またはポーリング間隔が未経過のため確認しなかった。
+    Skipped,
+    /// 実際にディスクの更新時刻を確認した（内包する bool = 1 件以上再読込したか）。
+    Ran(bool),
+}
+
+/// 直前にポーリングを実行した時刻（プロセス内で 1 つ）。
+///
+/// `None` は「まだ 1 度も実行していない」＝ 初回呼び出しは必ず実行する。
+static LAST_POLL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+/// `LAST_POLL` への排他アクセスを得る。
+fn last_poll() -> &'static Mutex<Option<Instant>> {
+    LAST_POLL.get_or_init(|| Mutex::new(None))
+}
+
+/// `.icons` と画像寸法のライブ編集を定期的にポーリングし、
+/// 実ファイルが更新されていれば該当キャッシュだけ破棄・再読込する。
+///
+/// - `App::build_text_expand_map`（フレーム頭で 1 回）の先頭から呼ぶこと。
+/// - 戻り値が `true` のとき、呼び出し側は展開結果キャッシュ
+///   （`text_expand::invalidate_text_expand_cache`）を破棄すること。
+///   展開結果のハッシュは `.icons` の中身や画像のアスペクト比を含まないため、
+///   ここで明示的に破棄しないと差し替えが永久に反映されない。
+pub fn poll_asset_changes() -> bool {
+    matches!(poll_asset_changes_at(Instant::now()), PollOutcome::Ran(true))
+}
+
+/// `poll_asset_changes` の内部実装。「現在時刻」を引数で受け取れるようにして、
+/// テストから間引き（`ICON_SET_POLL_INTERVAL`）の挙動を検証できるようにする。
+fn poll_asset_changes_at(now: Instant) -> PollOutcome {
+    // PAK パッケージ実行では実ファイルが無いので確認自体が無意味。
+    if asset_fs::is_packaged() {
+        return PollOutcome::Skipped;
+    }
+    {
+        let Ok(mut last) = last_poll().lock() else { return PollOutcome::Skipped };
+        if let Some(prev) = *last {
+            if now.duration_since(prev) < icon_set::ICON_SET_POLL_INTERVAL {
+                return PollOutcome::Skipped;
+            }
+        }
+        *last = Some(now);
+    }
+
+    let icon_changed = icon_set::poll_changes();
+    let image_changed = image_meta::poll_changes();
+    let changed = icon_changed || image_changed;
+    if changed {
+        // 未解決だった参照が直った可能性があるので、警告の重複抑止を解除し
+        // 次回の展開で改めて評価されるようにする。
+        doc::reset_warnings();
+    }
+    PollOutcome::Ran(changed)
+}
+
+#[cfg(test)]
+mod poll_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// テスト間で `LAST_POLL` を汚さないよう、明示的にリセットするヘルパ。
+    fn reset_last_poll() {
+        *last_poll().lock().unwrap() = None;
+    }
+
+    /// ポーリング間隔が経過していない連続呼び出しは、確認自体を行わない（`Skipped`）。
+    #[test]
+    fn interval_throttles_repeated_calls() {
+        reset_last_poll();
+        let t0 = Instant::now();
+        // 初回は必ず実行される（Skipped にはならない）。
+        assert_ne!(poll_asset_changes_at(t0), PollOutcome::Skipped);
+        // 間隔未満での 2 回目は間引かれる。
+        let t1 = t0 + Duration::from_millis(500);
+        assert_eq!(poll_asset_changes_at(t1), PollOutcome::Skipped);
+        // 間隔経過後は再び実行される。
+        let t2 = t0 + icon_set::ICON_SET_POLL_INTERVAL + Duration::from_millis(1);
+        assert_ne!(poll_asset_changes_at(t2), PollOutcome::Skipped);
+        reset_last_poll();
+    }
+}

@@ -36,6 +36,7 @@ use std::rc::Rc;
 
 use crate::engine::components::text_slots::{SlotValue, TextSlotData, TextSlotKind};
 use crate::engine::components::{ComponentKind, TextComponent};
+use crate::engine::core::font::inline;
 use crate::engine::core::font::inline::color_runs::ColorRuns;
 use crate::engine::core::font::inline::doc::{InlineDoc, build_doc_with_slots};
 use crate::engine::ecs::{Entity, World};
@@ -294,6 +295,14 @@ impl App {
     /// 呼ばなくても表示は壊れない（`expanded_for` がその場で展開する）が、
     /// 1 フレームに同じ展開が複数回走る。
     pub(super) fn build_text_expand_map(&self) {
+        // ── `.icons` / 画像寸法のライブ編集を確認する（フレーム頭で 1 回）──
+        // 実際のディスク確認は `ICON_SET_POLL_INTERVAL` に間引かれるため、
+        // 毎フレーム呼んでもコストは無視できる。変化があった場合のみ、
+        // 本文の展開結果キャッシュ（ハッシュに `.icons` の中身を含まない）を
+        // 明示的に破棄しないと、直した内容が永久に反映されないままになる。
+        if inline::poll_asset_changes() {
+            invalidate_text_expand_cache();
+        }
         let Some(scene) = self.scene.as_ref() else {
             invalidate_text_expand_cache();
             clear_bound_values();

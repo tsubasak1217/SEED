@@ -211,7 +211,7 @@
 ## Text のインライン画像記法の残件（2026-09-07 実装時）
 
 - [ ] **実機での描画確認が未実施** — 2026-09-07。記法パーサ・`.icons` 解析・折り返し・境界矩形・切り詰めは Rust 単体テストで確認したが、Play / エディタでの目視確認をしていない。特に「画像の縦位置（x ハイト中央そろえ）が本文中で自然に見えるか」「枠つきテキスト＋pivot で画像がグリフとズレないか」は実機で確認すること。関連: `runtime/src/engine/core/font/inline/`。
-- [ ] **`.icons` と画像寸法のキャッシュがホットリロードへ未接続** — 2026-09-07。`font::inline::invalidate_caches()` を用意したが、アセット更新の通知経路（`canvas_component_ops.rs` の `sprite_tex_cache.remove` と同じ場所）からはまだ呼んでいない。`.icons` を編集してもエディタを再起動するまで反映されない。
+- [x] **`.icons` と画像寸法のキャッシュがホットリロードへ未接続** — 2026-09-07 記載 / 2026-09-09 対応。通知経路への接続ではなく、`ICON_SET_POLL_INTERVAL`（1 秒）ごとの更新時刻ポーリング方式で解決。`icon_set::poll_changes` / `image_meta::poll_changes` が各エントリの実ファイル mtime を比較し、変化したものだけ再読込する（解析・デコード失敗時は前回の内容を維持し、次回また再試行する）。`inline::poll_asset_changes()` を `App::build_text_expand_map`（フレーム頭）から呼び、変化があれば `invalidate_text_expand_cache` と `doc::reset_warnings` を実行する。PAK 実行では丸ごとスキップ。関連: `runtime/src/engine/core/font/inline/{icon_set.rs, image_meta.rs, mod.rs}`、`runtime/src/engine/core/app_base/app/text_expand.rs`。実機（Play/エディタでの反映確認）は未検証。
 - [ ] **インライン画像のレイアウトが 1 フレームに 2 回解かれる** — 2026-09-07。グリフ描画（`canvas_text::append_item`）とスプライト収集（`canvas_collect::collect_inline_image_sprites`）が同じ `resolve_layout_with_images` を別々に呼ぶ。記法を含まない本文は角括弧の有無で早期に抜けるため通常は無視できるが、記法を多用する画面では 1 回に減らす余地がある（レイアウト結果をフレーム内キャッシュする等）。
 - [ ] **レイアウト用フォントが描画用レジストリと別実体** — 2026-09-07。`font::layout_fonts` は GPU 非依存の層（スプライト収集）から寸法を測るために独自の `FontRegistry` を持つ。組み込みフォントは静的参照なので複製されないが、外部フォント（.ttf）を指定すると描画側と合わせて 2 部常駐する。共有したい場合は描画器のレジストリを `Arc<Mutex<..>>` 化する必要がある。
 - [ ] **インライン画像に太さ・影のぼかしが効かない** — 2026-09-07（仕様として割り切り）。`weight` は SDF のしきい値操作なので画像には適用できず、`shadow_softness` もスプライト経路ではぼかせない。影自体は同じオフセットで落ちる。
@@ -219,7 +219,7 @@
 ## わらしべフィッシングのチュートリアルモード（2026-09-07 実装時）
 
 - [ ] **説明窓の素材が未着（仮素材で実装済み）** — 2026-09-07。`runtime/assets/mainGame/actors/UI/TutorialWindow.actor` のミニキャラと吹き出しは `assets://mainGame/textures/ui/white.png` を着色した矩形、送りマークは prologue の `nextArrow.png` を流用している。差し替えは Sprite の `texture_path`（と `width` / `height`）を変えるだけでよく、スクリプトの変更は不要。
-- [ ] **キーアイコンが仮画像** — 2026-09-07。`runtime/assets/mainGame/ui/tutorial.icons` の `key_w` / `key_s` / `key_a` / `key_d` / `mouse_l` はすべて `white.png` を指している。本番画像ができたら `.icons` の `path` を差し替えるだけで説明文（`[icon:key_w]` 等）へ反映される。なお `.icons` のキャッシュはホットリロード未接続なので、差し替え後はエディタの再起動が要る（本ファイル「Text のインライン画像記法の残件」参照）。
+- [ ] **キーアイコンが仮画像** — 2026-09-07。`runtime/assets/mainGame/ui/tutorial.icons` の `key_w` / `key_s` / `key_a` / `key_d` / `mouse_l` はすべて `white.png` を指している。本番画像ができたら `.icons` の `path` を差し替えるだけで説明文（`[icon:key_w]` 等）へ反映される。`.icons` のキャッシュは 1 秒間隔のポーリングで自動反映されるため、差し替え後はエディタの再起動不要（本ファイル「Text のインライン画像記法の残件」参照）。
 - [ ] **チュートリアルの実機確認が未実施** — 2026-09-07。スクリプトのコンパイルとシーン JSON の整合（参照先アクタ・フィールド名）はプログラムで照合したが、Play での目視確認をしていない。特に (1) `Time.Scale = 0` 中に釣りの各状態が破綻しないか、(2) 説明窓の追従（`Camera.WorldToCanvas`）が 1920x1080 設計キャンバス上で意図した位置に出るか、(3) 台本（必ず食いつく／漂流物を出す）が手順どおり効くか、の 3 点は実機で確認すること。
 - [ ] **`runtime/assets/tutorial/scripts` の空ディレクトリが残っている** — 2026-09-07。旧チュートリアルシーン（`tutorial.scene` / `TutorialFlow.cs`）は削除済みだが、実行中のエディタがディレクトリのハンドルを掴んでいるため空フォルダだけ消せなかった。エディタを閉じてから削除すること。
 

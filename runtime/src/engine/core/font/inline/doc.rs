@@ -291,22 +291,33 @@ fn resolve_icon(
     let scale = markup_scale
         .or(entry.height_scale)
         .unwrap_or(markup::DEFAULT_HEIGHT_SCALE);
-    make_image(&entry.path, scale)
+    // アイコン名は見つかったが「解決先の画像自体」が読めない場合の警告に
+    // アイコン名も出せるよう、経由元をここで渡しておく。
+    make_image(&entry.path, scale, Some(name))
 }
 
 /// 画像パスを解決する（読めない場合は未解決画像）。
 fn resolve_image(path: &str, markup_scale: Option<f32>) -> InlineImage {
     let scale = markup_scale.unwrap_or(markup::DEFAULT_HEIGHT_SCALE);
-    make_image(path, scale)
+    // `[img:]` 記法の直接指定にはアイコン名という概念が無い。
+    make_image(path, scale, None)
 }
 
 /// パスとアスペクト比から画像情報を作る。寸法が取れなければ未解決扱い。
-fn make_image(path: &str, height_scale: f32) -> InlineImage {
+///
+/// `icon_name`: `[icon:名前]` 経由で辿り着いた場合の元の名前（`[img:]` 直接指定なら `None`）。
+/// 警告メッセージに「アイコン名」と「解決先パス」の**両方**を出すことで、
+/// `.icons` のどのエントリがどのファイルを指していて壊れているのかを
+/// ログだけで特定できるようにする。
+fn make_image(path: &str, height_scale: f32, icon_name: Option<&str>) -> InlineImage {
     let Some(aspect) = image_meta::aspect_cached(path) else {
-        warn_once(
-            format!("img:{path}"),
-            &format!("インライン画像を解決できません（1em の空白で代用します）: {path}"),
-        );
+        let message = match icon_name {
+            Some(name) => format!(
+                "インライン画像を解決できません（1em の空白で代用します）: icon={name} path={path}"
+            ),
+            None => format!("インライン画像を解決できません（1em の空白で代用します）: path={path}"),
+        };
+        warn_once(format!("img:{path}"), &message);
         return unresolved();
     };
     InlineImage {
