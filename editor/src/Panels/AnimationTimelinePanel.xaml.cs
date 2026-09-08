@@ -39,6 +39,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -191,7 +192,14 @@ public partial class AnimationTimelinePanel : UserControl
         };
 
         // Delete キーでのキー削除（OnKeyDown）を受けるため、パネル内クリックでキーボードフォーカスを取得する。
-        PreviewMouseDown += (_, _) => Focus();
+        // ただし ComboBox / TextBox / ListBox など「自分でフォーカスを持つ入力部品」の上では奪わない。
+        // 奪うと ComboBox のドロップダウンが項目を確定する前に閉じてしまい、
+        // 「position 以外を選んでも position のまま」になる（実際に起きた不具合）。
+        PreviewMouseDown += (_, e) =>
+        {
+            if (IsInsideFocusableInput(e.OriginalSource as DependencyObject)) return;
+            Focus();
+        };
 
         // ビューポート操作中（＝パネルにフォーカスが無い）でも I / U を効かせるため、
         // 所属ウィンドウの PreviewKeyDown をパネル表示中だけ購読する。
@@ -1312,6 +1320,31 @@ public partial class AnimationTimelinePanel : UserControl
     /// 「本パネルが表示中」「編集対象クリップがある」「テキスト入力中でない」
     /// 「I / U のみ」に絞る（フレーム送りや Delete はパネルフォーカス時だけ）。
     /// </summary>
+    /// <summary>
+    /// マウスダウン位置が「自分でキーボードフォーカスを扱う入力部品」の内側かを判定する。
+    /// ComboBox（ドロップダウンの Popup 内の項目を含む）・TextBox・ListBox・Button が対象。
+    /// ビジュアルツリーを親方向へたどり、途中で該当部品に当たれば true。
+    /// </summary>
+    /// <param name="source">ルーティングイベントの OriginalSource。</param>
+    private static bool IsInsideFocusableInput(DependencyObject? source)
+    {
+        var node = source;
+        while (node is not null)
+        {
+            if (node is ComboBox || node is ComboBoxItem || node is TextBoxBase
+                || node is ListBox || node is ListBoxItem || node is ButtonBase
+                || node is System.Windows.Controls.Primitives.Popup)
+            {
+                return true;
+            }
+            // Popup の中身は VisualTreeHelper では親へ辿れないため、論理親も併用する
+            node = node is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(node) ?? LogicalTreeHelper.GetParent(node)
+                : LogicalTreeHelper.GetParent(node);
+        }
+        return false;
+    }
+
     private void OnPanelLoaded(object sender, RoutedEventArgs e)
     {
         if (Window.GetWindow(this) is { } w)
