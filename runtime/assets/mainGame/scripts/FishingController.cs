@@ -43,18 +43,17 @@
 /// 判定は <see cref="LastJudgement"/> に残り、画面中央へ判定画像を出す。
 /// アタリ〜合わせのあいだ巻き取り入力（ホイール・A/D）は受け付けない。
 ///
-/// <b>合わせ＝左クリック（自由な竿振り／どうぶつの森方式の「いつでも振れる」）</b>
-/// 餌が水にあるあいだ（<see cref="FishState.Floating"/> /
-/// <see cref="FishState.Reeling"/> / <see cref="FishState.Nibbling"/> /
-/// <see cref="FishState.HookWindow"/>）は、状態に関わらず
-/// <see cref="UpdateSwingDetection"/> が<b>左クリックの押下</b>を読む
-/// （マウスの振り上げ検出は廃止。押下フレームだけを見る単純な 1 クリック操作）。
+/// <b>合わせ＝左クリック（掛かる可能性がある状態でだけ振りを読む）</b>
+/// <see cref="UpdateSwingDetection"/> が<b>左クリックの押下</b>を読むのは、掛かる可能性がある
+/// 状態（<see cref="FishState.Nibbling"/> / <see cref="FishState.HookWindow"/>）だけに限る。
 /// 振りの<b>意味</b>だけが状態ごとに変わる:
-/// - Floating / Reeling … <b>空振り</b>。ウキが竿先方向へ小さく跳ねる
-///   （<see cref="hopSeconds"/> / <see cref="hopPullDistance"/> / <see cref="hopHeight"/>）。
-///   跳ねているあいだ巻き取り入力（ホイール・A/D）は受け付けないが、糸は張られたまま。
 /// - Nibbling … 早合わせ（<see cref="HookJudgement.Miss"/>。魚は逃げる）
 /// - HookWindow … 合わせ判定（Excellent / Great / Nice / Miss）
+///
+/// <b>アタリが無いとき（Floating / Reeling）の左クリックは無視する</b>
+/// まだ何もアタっていないあいだ（<see cref="FishState.Floating"/> / <see cref="FishState.Reeling"/>）は
+/// 左クリックの押下フレームを一切読まない。ウキが跳ねる演出も、それに伴う効果音も、
+/// イベント発火も、状態遷移も起こさない（＝入力そのものを無視する）。
 /// - Hooked … 振りを読まない（ヒット中の竿振りは未仕様）
 ///
 /// <b>わらしべ連鎖</b>
@@ -87,7 +86,7 @@ public class FishingController : SEEDScript
     /// Floating/Reeling --魚が BeginNibbling--> Nibbling（前アタリ）
     /// Nibbling --前アタリを撃ち切り＋1 間隔--> HookWindow（本アタリ・反応受付）
     /// Nibbling --早すぎる合わせ--> Floating（Miss。魚は逃げる）
-    /// Floating/Reeling --竿を振る（アタリ無し）--> 同じ状態のままウキが跳ねる（空振り）
+    /// Floating/Reeling --竿を振る（アタリ無し）--> 無視（状態遷移も演出も無し）
     /// HookWindow --niceSeconds 以内に合わせ--> Hooked（Excellent/Great/Nice）
     /// HookWindow --遅い合わせ／時間切れ--> Floating（Miss。魚は逃げる）
     /// Aiming（巻き取り後）--左クリックを離していれば即--> Idle
@@ -124,8 +123,8 @@ public class FishingController : SEEDScript
 
         /// <summary>
         /// 着水後。ウキが水面で待機している（アタリ待ち）。
-        /// この状態で竿を振ると空振りになり、ウキが手前へ小さく跳ねる
-        /// （跳ねているあいだだけ巻き取り入力を受け付けない）。
+        /// まだ何もアタっていないので、この状態で竿を振っても無視される
+        /// （ウキは跳ねず、演出・効果音・状態遷移のいずれも起きない）。
         /// </summary>
         Floating,
 
@@ -146,7 +145,7 @@ public class FishingController : SEEDScript
 
         /// <summary>
         /// 巻き取り中。ウキが手前へ寄り、プレイヤーもウキの方へ歩く。
-        /// <see cref="Floating"/> と同じく竿を振れて、振れば空振りの跳ねが入る。
+        /// <see cref="Floating"/> と同じく、まだ何もアタっていないので竿を振っても無視される。
         /// </summary>
         Reeling,
 
@@ -910,33 +909,15 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "前アタリの沈み時間(秒)")]
     private float nibbleDipSeconds = 0.25f;
 
-    // ─── 空振り（ウキの跳ね）─────────────────────────────────
+    // ─── 合わせ（Nibbling / HookWindow だけが竿振りを読む）───────
     //
-    // 「まだ魚がアタっていない」状態（Floating / Reeling）で竿を振ったときの演出。
-    // 竿は<b>いつでも</b>振れる（＝左クリック 1 回でいつでも合わせられる）ので、
-    // アタリが無いときの振りはウキが手前へ小さく跳ねるだけの空振りになる。
-    //
+    // アタリが無い状態（Floating / Reeling）は竿を振っても無視するため、
+    // 空振り演出（ウキの跳ね）とそれ専用のパラメータは廃止した。
     // 合わせの操作は「左クリックの押下」そのものなので、しきい値・時間窓・
     // クールダウンといった調整パラメータは持たない（旧フリック検出は廃止）。
 
-    /// <summary>ウキの跳ね 1 回に掛ける秒数。この間は巻き取り入力（ホイール・A/D）を受け付けない。</summary>
-    [Header("合わせ"), SerializeField(Label = "ウキの跳ね時間(秒)")]
-    private float hopSeconds = 0.35f;
-
-    /// <summary>
-    /// ウキの跳ねで竿先方向へ引き寄せる水平距離（メートル）。
-    /// 「竿先までの残り距離 −<see cref="reelEndDistance"/>」でクランプするので、
-    /// 跳ねだけで巻き取りが完了してしまうことはない。
-    /// </summary>
-    [SerializeField(Label = "ウキの跳ねの引き寄せ距離(m)")]
-    private float hopPullDistance = 1f;
-
-    /// <summary>ウキの跳ねの最高到達高さ（メートル、水面からの相対）。放物線 4h·t·(1−t) の h。</summary>
-    [SerializeField(Label = "ウキの跳ねの高さ(m)")]
-    private float hopHeight = 0.4f;
-
     /// <summary>Excellent と判定される反応時間の上限（秒）。</summary>
-    [SerializeField(Label = "Excellent の反応時間(秒)")]
+    [Header("合わせ"), SerializeField(Label = "Excellent の反応時間(秒)")]
     private float excellentSeconds = 0.25f;
 
     /// <summary>Great と判定される反応時間の上限（秒）。</summary>
@@ -1004,6 +985,64 @@ public class FishingController : SEEDScript
     /// </summary>
     [SerializeField(Label = "釣り上げ演出(CatchPresenter)")]
     private CatchPresenter? presenter = null;
+
+    // ─── バトル評価バナー（Perfect! / Good!）─────────────────────
+    //
+    // 釣り上げが決まった瞬間に「今の戦いがどうだったか」を一言で返す。
+    // 出す・見せる・引っ込めるは FightEvalBanner の責務で、
+    // ここが持つのは「どちらの文言を、どの色で、いつ出すか」だけ。
+
+    /// <summary>
+    /// 評価バナーのプレハブ（<c>assets://</c> パス）。
+    /// シーンに <c>FightEvalBanner</c> のインスタンスを置いていない場合の
+    /// 生成フォールバックにだけ使う。空にすると生成できない（＝評価は出ない）。
+    /// </summary>
+    [Header("バトル評価バナー"), SerializeField(Label = "バナーのプレハブ")]
+    private string fightEvalBannerActorPath = "assets://mainGame/actors/UI/FightEvalBanner.actor";
+
+    /// <summary>全判定が Excellent だったときの文言。</summary>
+    [SerializeField(Label = "完璧のときの文言")]
+    private string fightEvalPerfectLabel = "Perfect!";
+
+    /// <summary>Excellent 以外が混じったときの文言。</summary>
+    [SerializeField(Label = "通常のときの文言")]
+    private string fightEvalGoodLabel = "Good!";
+
+    /// <summary>
+    /// 完璧のときの文字色（16 進カラーコード）。既定は金。
+    /// 16 進文字列で持つ理由は <see cref="UiColorUtil"/> のクラスコメントを参照。
+    /// </summary>
+    [SerializeField(Label = "完璧のときの色(16進)")]
+    private string fightEvalPerfectColor = "#FFD54A";
+
+    /// <summary>通常のときの文字色（16 進カラーコード）。既定は白。</summary>
+    [SerializeField(Label = "通常のときの色(16進)")]
+    private string fightEvalGoodColor = "#FFFFFF";
+
+    /// <summary>
+    /// 評価バナーを出してから釣り上げ演出（ホワイトアウト）を始めるまでの秒数。
+    ///
+    /// 0 にすると評価と同時に白へ飛び込むため、評価がほとんど読めない。
+    /// かといって長く取ると釣れた手応えが遅れるので、
+    /// 「読めるが待たされない」ぎりぎりの短い間だけ空ける。
+    /// この間はゲームの見た目が止まらない（ウキも糸もそのまま）ので、
+    /// 実時間（<c>Time.UnscaledDeltaTime</c>）で数える。
+    /// </summary>
+    [SerializeField(Label = "評価から演出開始までの秒数")]
+    private float fightEvalLeadSeconds = 0.6f;
+
+    /// <summary>
+    /// 評価バナーを出したあと、釣り上げ演出の開始を待っている魚。
+    /// <c>null</c> なら待ちは無い。<see cref="FloatWorldPosition"/> は待っている間に
+    /// 変わり得るので、位置も <see cref="pendingCatchFloatPosition"/> へ控えておく。
+    /// </summary>
+    private Fish? pendingCatchFish = null;
+
+    /// <summary>釣り上げが決まった瞬間のウキのワールド位置（演出の「水面の基準点」）。</summary>
+    private SEED.Vector3 pendingCatchFloatPosition = default;
+
+    /// <summary>釣り上げ演出を始めるまでの残り秒数（実時間）。0 以下で開始する。</summary>
+    private float pendingCatchDelaySeconds = 0f;
 
     /// <summary>
     /// ヒット中のやり取り（テンションゲージ・糸 HP）を司るスクリプト。
@@ -1142,9 +1181,9 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 竿を振った瞬間（<see cref="UpdateSwingDetection"/> が左クリックを拾った瞬間）に鳴らす
-    /// 効果音のアセットパス。空文字なら鳴らさない。振りはどの状態
-    /// （Floating / Reeling / Nibbling / HookWindow）でも同じ 1 か所で検出するので、
-    /// 効果音もそこ 1 か所から鳴らす。
+    /// 効果音のアセットパス。空文字なら鳴らさない。振りを読むのは
+    /// 掛かる可能性がある状態（Nibbling / HookWindow）だけなので、効果音もそこでしか鳴らない
+    /// （Floating / Reeling は竿振り自体を無視するため対象外）。
     /// </summary>
     [SerializeField(Label = "竿振りの効果音")]
     private string swingSePath = "";
@@ -1206,18 +1245,6 @@ public class FishingController : SEEDScript
 
     /// <summary>本アタリからの経過秒数（＝合わせの反応時間）。</summary>
     private float reactionElapsed = 0f;
-
-    /// <summary>ウキの跳ね（空振り演出）を再生中か。true のあいだ <see cref="UpdateReeling"/> は走らせない。</summary>
-    private bool hopActive = false;
-
-    /// <summary>ウキの跳ねの経過秒数（0〜<see cref="hopSeconds"/>）。</summary>
-    private float hopElapsed = 0f;
-
-    /// <summary>跳ね開始時のウキの水平位置（Y は使わない）。</summary>
-    private SEED.Vector3 hopStart = SEED.Vector3.Zero;
-
-    /// <summary>跳ね終了時のウキの水平位置（竿先方向へ <see cref="hopPullDistance"/> だけ寄せた点。Y は使わない）。</summary>
-    private SEED.Vector3 hopEnd = SEED.Vector3.Zero;
 
     /// <summary>いま表示している判定（<see cref="HookJudgement.None"/> = 非表示）。</summary>
     private HookJudgement judgeDisplay = HookJudgement.None;
@@ -1294,6 +1321,7 @@ public class FishingController : SEEDScript
 
         // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
         SEED.Debug.OnCommand(DebugCommandCatchTest, HandleCatchTestCommand);
+        SEED.Debug.OnCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
     }
 
     /// <summary>
@@ -1304,6 +1332,7 @@ public class FishingController : SEEDScript
     {
         // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
         SEED.Debug.OffCommand(DebugCommandCatchTest, HandleCatchTestCommand);
+        SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
         AbortBiteTiming();
         ReleaseHook();
         fight?.EndFight();
@@ -1516,7 +1545,6 @@ public class FishingController : SEEDScript
         nibblingFish = fish;
         State = FishState.Nibbling;
         LastJudgement = HookJudgement.None;
-        CancelHop();                   // 跳ねの最中に前アタリが始まったら跳ねを打ち切る
         RollNibbleSequence();
 
         // 前アタリ（コツコツ）が始まった
@@ -1771,13 +1799,11 @@ public class FishingController : SEEDScript
 
             case FishState.Floating:
             case FishState.Reeling:
-                // 餌が水にあるあいだは、アタリが無くても竿を振れる（自由な竿振り）。
-                // 振ればウキが手前へ小さく跳ねる空振りになり、跳ねているあいだは
-                // 巻き取り入力（ホイール・A/D）を受け付けない。
-                if (UpdateSwingDetection()) { TryStartHop(); }
-
-                if (hopActive) { UpdateHop(ctx.DeltaTime); }
-                else { UpdateReeling(ctx.DeltaTime); }
+                // まだ何もアタっていないので、この状態での左クリック（竿振り）は
+                // 完全に無視する（ウキを跳ねさせない・演出/SE/イベントも出さない・
+                // 状態も変えない）。そのため UpdateSwingDetection は呼ばず、
+                // 常に巻き取り更新だけを行う。
+                UpdateReeling(ctx.DeltaTime);
                 break;
 
             case FishState.Hooked:
@@ -1855,7 +1881,6 @@ public class FishingController : SEEDScript
     {
         State = FishState.Aiming;
         ResetGesture();
-        CancelHop();                   // 跳ね中に狙いへ戻ったら跳ねも畳む
         AbortBiteTiming();             // アタリ進行中の魚が居れば逃がす
         ReleaseHook();                 // 掛かったままの魚が居れば逃がす
         fight?.EndFight();             // やり取りの UI・内部値も畳む
@@ -1883,10 +1908,10 @@ public class FishingController : SEEDScript
 
         State = FishState.Idle;
         ResetGesture();
-        CancelHop();                   // 姿勢解除・中断でも跳ねを畳む（フラグの持ち越し防止）
         AbortBiteTiming();             // 姿勢解除・中断でもアタリ進行を打ち切る
         ReleaseHook();                 // 姿勢解除・中断でも必ず魚を逃がす
         fight?.EndFight();             // 姿勢解除・中断でもやり取りを畳む
+        ClearPendingCatchBegin();      // 評価バナー待ちで演出が始まっていない場合の取り残しも断つ
         presenter?.Abort();            // 釣り上げ演出中なら畳む（魚の破棄・白／テキストの消去も込み）
         HideJudgement();               // 判定画像も消す
         // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
@@ -1932,15 +1957,26 @@ public class FishingController : SEEDScript
     ///
     /// 状態を 1 つ増やすたびに各所の列挙を直して回る（＝直し漏れが必ず出る）のを避けるため、
     /// 「ウキが出ている」を意味する判定はすべてこの関数を通す。
-    /// ただし<b>意味が違うもの</b>（餌として有効か＝<see cref="BaitActive"/>、
-    /// 竿を振ってよいか＝<see cref="TryStartHop"/> の前提）はここに混ぜない。
+    /// ただし<b>意味が違うもの</b>（餌として有効か＝<see cref="BaitActive"/>）はここに混ぜない。
     /// </summary>
     private bool IsFloatOut()
         => State is FishState.Casting or FishState.Floating or FishState.Reeling
                  or FishState.Nibbling or FishState.HookWindow
                  or FishState.Hooked
         || (State == FishState.Catching
-            && CatchPhase is CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc);
+            && (IsWaitingCatchStart
+                || CatchPhase is CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc));
+
+    /// <summary>
+    /// 釣り上げは決まったが、評価バナーを読ませるために演出の開始をまだ待っているか。
+    ///
+    /// この間は <see cref="CatchPresenter.Phase"/> がまだ <c>None</c> なので、
+    /// 「演出中の区間」を <c>Phase</c> だけで判定すると<b>糸だけが消える</b>
+    /// （ウキは掛かったときの位置に残るので、宙に浮いたウキだけが見える）。
+    /// 待ち区間も「ウキが出ている区間」に含めることで、
+    /// 掛かった瞬間の絵をそのまま保ったまま評価を読ませられる。
+    /// </summary>
+    private bool IsWaitingCatchStart => pendingCatchFish is not null;
 
     /// <summary>
     /// カーソルロックの望ましい状態。
@@ -2833,7 +2869,6 @@ public class FishingController : SEEDScript
     {
         fight?.EndFight();             // Paused も EndFight で必ず解除される
         nibbleDipElapsed = NoDipElapsed;   // 出題の沈みアニメが途中なら必ず戻す
-        CancelHop();
         ReleaseHook();                 // 掛かっていた魚を逃がす（Escape → 退場）
 
         LastJudgement = HookJudgement.Miss;
@@ -3010,7 +3045,6 @@ public class FishingController : SEEDScript
     /// </summary>
     private void FinishReeling()
     {
-        CancelHop();                   // 巻き取りが終わったら跳ねも必ず畳む
         fight?.EndFight();             // やり取り（テンション・魚HP）は成否にかかわらずここで畳む
         nibbleDipElapsed = NoDipElapsed;   // 出題の沈みアニメが途中なら必ず戻す（ウキが沈んだまま残らないように）
 
@@ -3036,7 +3070,19 @@ public class FishingController : SEEDScript
             // 演出プレゼンタが未設定なら演出を飛ばす（魚を消して移動へ戻すだけ）
             // ウキの位置は演出側の「水面の基準点」になる（魚の跳ね始め・カメラの高さ・
             // しぶきの位置がすべてここから決まる）ので、この瞬間の値を渡す。
-            if (presenter is { } p) { p.Begin(caught, FloatWorldPosition); }
+            // 戦いの評価（Perfect! / Good!）をこの瞬間に出す。
+            // fight.EndFight() は上で済ませてあるが、AllExcellent は次の
+            // BeginFight まで保たれる設計なので、ここで読んでよい。
+            ShowFightEvalBanner();
+
+            if (presenter is not null)
+            {
+                // 評価を読ませる間だけ演出の開始を待つ（待ち時間は UpdateCatching が数える）。
+                // 待っている間もウキ・糸は掛かったときのまま残るので、絵が飛ばない。
+                pendingCatchFish = caught;
+                pendingCatchFloatPosition = FloatWorldPosition;
+                pendingCatchDelaySeconds = SEED.Mathf.Max(fightEvalLeadSeconds, 0f);
+            }
             else
             {
                 caught.Actor.Destroy();
@@ -3056,6 +3102,34 @@ public class FishingController : SEEDScript
         SEED.Debug.Log("[Fishing] Aiming（空振り）");
     }
 
+    // ─── バトル評価バナー ────────────────────────────────────
+
+    /// <summary>
+    /// 戦いの評価（Perfect! / Good!）を出す【評価表示の唯一の場所】。
+    ///
+    /// 判断材料は <see cref="FishingFight.AllExcellent"/> ただ 1 つ。
+    /// やり取り自体が無かった（<see cref="fight"/> 未設定）ときは通常評価にする。
+    /// </summary>
+    private void ShowFightEvalBanner()
+    {
+        bool perfect = fight is { } f && f.AllExcellent;
+
+        FightEvalBanner.Show(
+            fightEvalBannerActorPath,
+            perfect ? fightEvalPerfectLabel : fightEvalGoodLabel,
+            perfect ? fightEvalPerfectColor : fightEvalGoodColor);
+    }
+
+    /// <summary>
+    /// 釣り上げ演出の開始待ちを取り消す【待ち状態を捨てる唯一の場所】。
+    /// 魚そのものはここでは触らない（破棄の責任は演出側／中断処理側にある）。
+    /// </summary>
+    private void ClearPendingCatchBegin()
+    {
+        pendingCatchFish = null;
+        pendingCatchDelaySeconds = 0f;
+    }
+
     // ─── デバッグコマンド（開発・AI 検証用）──────────────────
 
     /// <summary>
@@ -3063,6 +3137,28 @@ public class FishingController : SEEDScript
     /// <c>seed_script_debug(name:"catch_test", arg:"<魚のアクタ名>")</c> で叩く。
     /// </summary>
     private const string DebugCommandCatchTest = "catch_test";
+
+    /// <summary>
+    /// デバッグコマンド名: 図鑑（釣果記録）を全消しする。
+    /// <c>seed_script_debug(name:"records_reset")</c> で叩く（引数は不要）。
+    ///
+    /// 図鑑の「未捕獲の見た目」や初捕獲演出は、一度釣ってしまうと二度と確認できない。
+    /// 釣りシーンと図鑑シーンの<b>両方</b>から同じ名前で叩けるよう、
+    /// 本スクリプト（釣りシーンに常駐）と <c>Zukan</c>（図鑑シーンに常駐）の
+    /// 両方が同じ名前で登録している。
+    /// </summary>
+    private const string DebugCommandRecordsReset = "records_reset";
+
+    /// <summary>
+    /// <see cref="DebugCommandRecordsReset"/> のハンドラ。
+    /// 釣果記録だけを消す（進行フラグなど他のセーブデータは触らない）。
+    /// </summary>
+    /// <param name="arg">引数（使わない）。</param>
+    private void HandleRecordsResetCommand(string arg)
+    {
+        int deleted = FishRecords.ResetAll();
+        SEED.Debug.Log($"[Fishing] records_reset: 釣果記録を消去した（削除キー {deleted} 本）");
+    }
 
     /// <summary>
     /// <see cref="DebugCommandCatchTest"/> のハンドラ
@@ -3175,6 +3271,20 @@ public class FishingController : SEEDScript
         {
             ExitToMovement();
             return;
+        }
+
+        // 評価バナーを読ませるための待ちが残っているあいだは、演出をまだ始めない。
+        // ここで早期 return するので、この間は「Phase == None ＝ 演出完了」と
+        // 誤判定されて移動へ戻ってしまうこともない。
+        if (pendingCatchFish is not null)
+        {
+            pendingCatchDelaySeconds -= SEED.Time.UnscaledDeltaTime;
+            if (pendingCatchDelaySeconds > 0f) { return; }
+
+            Fish start = pendingCatchFish;
+            ClearPendingCatchBegin();
+            p.Begin(start, pendingCatchFloatPosition);
+            return;   // 開始したフレームは進めない（従来も Begin の次フレームから Tick していた）
         }
 
         p.Tick(deltaTime);
@@ -3599,9 +3709,11 @@ public class FishingController : SEEDScript
     /// <summary>
     /// 竿振り（＝合わせ）の検出【振りを読む唯一の入口】。
     ///
-    /// 餌が水に有るあいだ（<see cref="FishState.Floating"/> /
-    /// <see cref="FishState.Reeling"/> / <see cref="FishState.Nibbling"/> /
-    /// <see cref="FishState.HookWindow"/>）は、状態に関わらずこの関数で振りを読む。
+    /// 掛かる可能性がある状態（<see cref="FishState.Nibbling"/> /
+    /// <see cref="FishState.HookWindow"/>）でだけこの関数を呼び、振りを読む。
+    /// アタリが無い状態（<see cref="FishState.Floating"/> / <see cref="FishState.Reeling"/>）は
+    /// 呼び出し側（<see cref="Update"/> の switch）がそもそもこの関数を呼ばないため、
+    /// その状態での左クリックは完全に無視される（ウキは跳ねず、演出・SE・イベントも出ない）。
     ///
     /// <b>操作は「左クリックを押した瞬間」だけ</b>。
     /// <see cref="SEED.Input.GetMouseButtonDown"/> は押下フレームでしか true を返さないので、
@@ -3613,7 +3725,7 @@ public class FishingController : SEEDScript
     /// <b>釣り姿勢に入るクリックを合わせとして食わない理由</b>:
     /// 姿勢に入るのは <see cref="FishState.Idle"/> で押下した<b>そのフレーム</b>だけで、
     /// その時点で状態は <see cref="FishState.Aiming"/>（＝ウキは手元にあり水に出ていない）。
-    /// この関数は Floating / Reeling / Nibbling / HookWindow でしか呼ばれないので、
+    /// この関数は Nibbling / HookWindow でしか呼ばれないので、
     /// 姿勢に入る押下がここへ届くことはない。キャストは左クリックを押したまま成立し、
     /// 押しっぱなしのあいだは押下フレームが来ないため、着水後に<b>改めて押し直した</b>
     /// クリックだけが合わせになる。
@@ -3622,102 +3734,20 @@ public class FishingController : SEEDScript
     /// <see cref="SwingSerial"/> の加算（魚への通知）と効果音。
     ///
     /// <b>振りの結果は呼び出し側が決める</b>（状態ごとに意味が違うため）:
-    /// - Floating / Reeling … ウキが跳ねる空振り（<see cref="TryStartHop"/>）
     /// - Nibbling           … 早合わせ（Miss。魚は逃げる）
     /// - HookWindow         … 合わせ判定（Excellent / Great / Nice / Miss）
     /// </summary>
     /// <returns>このフレームに振りが成立したら true。</returns>
     private bool UpdateSwingDetection()
     {
-        // チュートリアル中は「竿を振る（合わせ・空振り）」を止められる（通常時は常に許可）
+        // チュートリアル中は「竿を振る（合わせ）」を止められる（通常時は常に許可）
         if (!InputGate.Allows(GameAction.Hook)) { return false; }
         if (!SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left)) { return false; }
 
-        // 番号は「どの状態で振ったか」に依らず増やす（魚は状態を見ずに変化だけを見る）
+        // 番号は振るたびに増やす（魚は状態を見ずに変化だけを見る）
         SwingSerial++;
         PlaySe(swingSePath, swingSeVolume);
         return true;
-    }
-
-    // ─── 空振り（ウキの跳ね）─────────────────────────────────
-
-    /// <summary>
-    /// ウキの跳ね（空振り演出）を開始する【跳ね開始の唯一の入口】。
-    ///
-    /// アタリが無い状態（<see cref="FishState.Floating"/> /
-    /// <see cref="FishState.Reeling"/>）で竿を振ったときだけ成立する。
-    /// アタリ中（Nibbling / HookWindow）とヒット中（Hooked）は振りの意味が
-    /// まったく別なので、ここで弾いて絶対に跳ねさせない。
-    ///
-    /// 引き寄せ距離は「竿先までの残り水平距離 −<see cref="reelEndDistance"/>」で
-    /// クランプするので、跳ねだけで巻き取りが完了することはない
-    /// （＝跳ねが <see cref="FinishReeling"/> を誘発しない）。
-    /// </summary>
-    private void TryStartHop()
-    {
-        // 跳ねてよい状態か（アタリ中・ヒット中は不可）
-        if (State is not (FishState.Floating or FishState.Reeling)) { return; }
-        if (IsHooked || nibblingFish is not null) { return; }
-        if (hopActive) { return; }                                   // 跳ね中の多重発火は無視する
-        if (hopSeconds <= DivideEpsilon) { return; }                 // 0 秒の跳ねは演出にならないので行わない
-        if (uki is not { IsValid: true } floatTf) { return; }
-
-        // ウキ→竿先の水平ベクトル（＝引き寄せる向き）と残り距離
-        var target = ReelTargetPosition();
-        var toTarget = new SEED.Vector3(target.x - floatTf.Position.x, 0f, target.z - floatTf.Position.z);
-        float remaining = SEED.Mathf.Sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
-
-        // 引き寄せ量: 要求値を「巻き取りが完了しない範囲」へクランプする（負なら 0 ＝その場で跳ねるだけ）
-        float pull = SEED.Mathf.Max(0f, SEED.Mathf.Min(hopPullDistance, remaining - reelEndDistance));
-
-        hopStart = floatTf.Position;
-        hopEnd = remaining > DivideEpsilon
-            ? hopStart + new SEED.Vector3(toTarget.x / remaining, 0f, toTarget.z / remaining) * pull
-            : hopStart;                                              // 竿先に重なっている異常時はその場で跳ねる
-        hopElapsed = 0f;
-        hopActive = true;
-    }
-
-    /// <summary>
-    /// ウキの跳ねの毎フレーム更新（<see cref="hopActive"/> のあいだ
-    /// <see cref="UpdateReeling"/> の代わりに走る）。
-    ///
-    /// 水平は開始点→終了点の線形補間、垂直は水面から <c>4h·t·(1−t)</c> の放物線で、
-    /// t=1（＝<see cref="hopSeconds"/> 経過）でちょうど水面へ戻って跳ねが終わる。
-    /// 釣り糸は従来どおり <see cref="LateUpdate"/> の <see cref="UpdateLine"/> が
-    /// ウキの位置から引き直すので、跳ねているあいだも糸は繋がったままになる。
-    /// </summary>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateHop(float deltaTime)
-    {
-        hopElapsed += deltaTime;
-
-        // 進行度 t（0〜1）。hopSeconds は TryStartHop で 0 でないことを保証済みだが、
-        // インスペクタで実行中に 0 へ書き換えられても壊れないよう分母を守る。
-        float t = SEED.Mathf.Clamped01(hopElapsed / SEED.Mathf.Max(hopSeconds, DivideEpsilon));
-
-        // 水平: 開始点 → 終了点の線形補間
-        var horizontal = hopStart + (hopEnd - hopStart) * t;
-
-        // 垂直: 水面（通常のウキ高さ）＋ 放物線の持ち上げ。t=0 と t=1 で持ち上げは 0 になる。
-        float lift = ParabolaApexCoefficient * hopHeight * t * (1f - t);
-        SetFloatPosition(new SEED.Vector3(horizontal.x, FloatSurfaceY() + lift, horizontal.z));
-
-        if (t >= 1f) { CancelHop(); }
-    }
-
-    /// <summary>
-    /// 跳ねを終了・中断する【跳ね解除の唯一の出口】。
-    /// 自然終了（着水）だけでなく、状態が Floating / Reeling を離れるとき
-    /// （キャンセル・狙いへの復帰・前アタリ開始・巻き取り完了）にも呼び、
-    /// 「跳ねフラグが立ったまま別の状態へ持ち越される」ことを防ぐ。
-    /// ウキの Y は次フレームの通常更新（<see cref="FloatSurfaceY"/>）が水面へ戻すので、
-    /// ここでは位置を触らない。
-    /// </summary>
-    private void CancelHop()
-    {
-        hopActive = false;
-        hopElapsed = 0f;
     }
 
     // ─── 判定表示（スクリーンスペース UI）─────────────────────
