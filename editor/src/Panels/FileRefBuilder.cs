@@ -20,6 +20,9 @@ internal static class FileRefBuilder
     /// <summary>ダブルクリックと判定するクリック回数（WPF の ClickCount 比較用）。</summary>
     private const int DoubleClickCount = 2;
 
+    /// <summary>ラベル列の既定幅（px）。インスペクタの既存ファイル参照行はこの幅で並んでいる。</summary>
+    private const double DefaultLabelWidth = 48;
+
     /// <summary>
     /// パス表示部（ファイル名が書かれた箱）がダブルクリックされたときに発火するフック。
     /// 引数は <see cref="Build"/> に渡された currentPath そのもの
@@ -40,19 +43,24 @@ internal static class FileRefBuilder
     /// （参照を未設定へ戻す用途）。null のときクリアボタンは表示しない。
     /// 既存の呼び出し側をそのままコンパイルできるよう省略可能引数にしている。
     /// </param>
+    /// <param name="labelWidth">
+    /// ラベル列の幅（px）。この行を別のレイアウトへ埋め込み、見出しを外側で出す場合は
+    /// 0 を渡してラベル列を潰す（Text の差し込みスロット行がこの使い方をする）。
+    /// </param>
     public static UIElement Build(
         string label,
         string? currentPath,
         string[] acceptedExtensions,
         Func<string?> browseFn,
         Action<string> onPathSet,
-        Action? onClear = null)
+        Action? onClear = null,
+        double labelWidth = DefaultLabelWidth)
     {
         var hasPath = !string.IsNullOrEmpty(currentPath);
         var display = hasPath ? Path.GetFileName(currentPath) : "（未設定）";
 
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(labelWidth) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         // クリアボタン用の列（onClear が null のときは幅 0 のまま使われない）

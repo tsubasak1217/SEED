@@ -106,8 +106,23 @@ public partial class InspectorPanel
     /// <summary>3 成分ベクトル（color パラメータ）。</summary>
     private const string BindableValueTypeVector3 = "vec3";
 
+    /// <summary>
+    /// 文字列。シェーダのパラメータには現れないが、Text の差し込みスロット
+    /// （<c>{string}</c>）が同じバインド行を使うため、この表に同居させている。
+    /// </summary>
+    private const string BindableValueTypeString = "str";
+
     /// <summary>アセット宣言の型名のうち、色（vec3）として扱うもの。</summary>
     private const string ShaderParamTypeColor = "color";
+
+    /// <summary>アセット宣言の型名のうち、スカラー（range / float）を代表する綴り。</summary>
+    private const string ShaderParamTypeFloat = "float";
+
+    /// <summary>
+    /// 文字列を要求する行の型名。Text の差し込みスロット（<c>{string}</c>）専用で、
+    /// シェーディングアセットの宣言には現れない。
+    /// </summary>
+    private const string ShaderParamTypeString = "str";
 
     /// <summary>警告アイコンのキー（バインドが解決できないときに行へ添える）。</summary>
     private const string BindingWarnIconKey = "Icon.Warning";
@@ -254,11 +269,18 @@ public partial class InspectorPanel
     // ============================================================
 
     /// <summary>
-    /// アセット宣言の型名（color / range / float）を、GET_BINDABLE_SOURCES へ渡す
-    /// 値型名へ変換する。色だけが 3 成分、それ以外はスカラーである。
+    /// 行の型名（color / range / float / str）を、GET_BINDABLE_SOURCES へ渡す
+    /// 値型名へ変換する。色は 3 成分、文字列は str、それ以外はスカラーである。
+    ///
+    /// **どのコンポーネントのどの変数がその型を供給できるか**はランタイムの表だけが知っている。
+    /// ここで行うのは型名の綴り合わせだけで、候補の判定は決して C# 側に持たない。
     /// </summary>
-    private static string BindableValueTypeOf(string paramType)
-        => paramType == ShaderParamTypeColor ? BindableValueTypeVector3 : BindableValueTypeScalar;
+    private static string BindableValueTypeOf(string paramType) => paramType switch
+    {
+        ShaderParamTypeColor  => BindableValueTypeVector3,
+        ShaderParamTypeString => BindableValueTypeString,
+        _                     => BindableValueTypeScalar,
+    };
 
     // ============================================================
     //  バインド行の生成

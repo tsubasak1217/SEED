@@ -893,6 +893,10 @@ public partial class InspectorPanel : UserControl
         float TextShadowOffsetX = 0f, float TextShadowOffsetY = 0f,
         float TextShadowR = 0f, float TextShadowG = 0f, float TextShadowB = 0f, float TextShadowA = 0.5f,
         float TextShadowSoftness = 0f,
+        // 本文のプレースホルダ記法に対応する差し込みスロットの配列 JSON
+        // （[{"index","kind","format","h","path","rgba","bind","bind_ok","text","num"},...]）。
+        // 記法の解析はランタイムだけが行い、エディタはこの配列をそのまま行へ落とす。
+        string TextSlotsJson = TextSlotsEmptyJson,
         // AnimatorComponent 用フィールド（clips は JSON 配列文字列 [{"name":..,"path":..},...] のまま保持し、
         // UI 構築時にパースする。値そのものは Rust 側 AnimatorComponentData と同一構造）
         string AnimClipsJson = "[]",
@@ -1513,6 +1517,10 @@ public partial class InspectorPanel : UserControl
             var textShadowB    = comp.TryGetProperty("shadow_b",         out var txsb) ? txsb.GetSingle() : 0f;
             var textShadowA    = comp.TryGetProperty("shadow_a",         out var txsa) ? txsa.GetSingle() : 0.5f;
             var textShadowSoft = comp.TryGetProperty("shadow_softness",  out var txss) ? txss.GetSingle() : 0f;
+            // 差し込みスロット配列。解析は InspectorPanel.TextSlots.cs 側で行うので生 JSON のまま運ぶ
+            // （キーが無い旧シーンでは空配列＝スロット欄を出さない）。
+            var textSlotsJson  = comp.TryGetProperty(TextSlotsJsonKey,    out var txsl)
+                ? txsl.GetRawText() : TextSlotsEmptyJson;
             // AnimatorComponent 用: クリップ一覧（生 JSON のまま保持）・既定クリップ・自動再生・速度
             var animClipsJson    = comp.TryGetProperty("clips",         out var acj) ? acj.GetRawText() : "[]";
             var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
@@ -1766,6 +1774,7 @@ public partial class InspectorPanel : UserControl
                 TextShadowR: textShadowR, TextShadowG: textShadowG,
                 TextShadowB: textShadowB, TextShadowA: textShadowA,
                 TextShadowSoftness: textShadowSoft,
+                TextSlotsJson: textSlotsJson,
                 AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
                 AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed,
                 AnimDefaultFadeSeconds: animDefaultFade,
@@ -4979,10 +4988,17 @@ public partial class InspectorPanel : UserControl
     /// 色は値域表（ComponentFieldRanges）の対象外だが、「⟲ 既定値に戻す」は
     /// 共通機構（WithFieldReset）へ載せる。
     /// </summary>
+    /// <param name="field">
+    /// Rust の serde フィールド名（⟲ の送信に使う）。
+    /// null を渡すと ⟲ を付けない（差し込みスロットの <c>slot.{i}.rgba</c> のように、
+    /// 汎用リセットが引けない合成キーの行で使う）。
+    /// </param>
+    /// <param name="labelWidth">ラベル列の幅（px）。既定は他の色行と同じ。</param>
     private UIElement BuildColorPickerRow(
         string label, float r, float g, float b, float a,
-        int slotIdx, string componentType, string field,
-        Action<float, float, float, float> onPicked)
+        int slotIdx, string componentType, string? field,
+        Action<float, float, float, float> onPicked,
+        double labelWidth = ColorRowLabelWidth)
     {
         float curR = r, curG = g, curB = b, curA = a;
 
@@ -5030,7 +5046,7 @@ public partial class InspectorPanel : UserControl
             Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
             FontSize          = 11,
             VerticalAlignment = VerticalAlignment.Center,
-            Width             = ColorRowLabelWidth,
+            Width             = labelWidth,
         });
         colorRow.Children.Add(colorSwatch);
 
@@ -5044,7 +5060,10 @@ public partial class InspectorPanel : UserControl
             onPicked(curR, curG, curB, curA);
         };
 
-        return WithFieldReset(colorRow, slotIdx, componentType, field, label);
+        // field が null の行は ⟲ を付けない（押しても無反応なボタンを置かないため）。
+        return field is null
+            ? colorRow
+            : WithFieldReset(colorRow, slotIdx, componentType, field, label);
     }
 
     // ── SkinnedSpriteComponent inspector ──────────────────────
@@ -9078,6 +9097,12 @@ public partial class InspectorPanel : UserControl
         // フォーカスが外れた時点で確定して送る（1 文字ごとに IPC を撃たない）。
         contentBox.LostFocus += (_, _) => SendField("content", EscapeIpcText(contentBox.Text));
         sp.Children.Add(contentBox);
+
+        // ── 差し込みスロット（本文のプレースホルダ記法に対応する値の入力欄）──
+        // 本文欄の直後・フォント／アイコンセット行の前に置く。
+        // 0 件なら null が返るので何も出さない。実装は InspectorPanel.TextSlots.cs。
+        var textSlotsSection = BuildTextSlotsSection(info, SendField);
+        if (textSlotsSection is not null) sp.Children.Add(textSlotsSection);
 
         // ── フォントファイル選択行（空欄 = 組み込みフォント）──────
         // 音声セクションと同じ FileRefBuilder + OpenFileDialog + 仮想パス変換の流儀に合わせる。
