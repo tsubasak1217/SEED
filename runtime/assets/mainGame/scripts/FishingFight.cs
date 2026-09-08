@@ -27,13 +27,12 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <see cref="Paused"/>（外部都合の一時停止フック）のあいだは時計ごと止まる＝無音になる。
 ///
 /// ■ ドラムループ（<see cref="SetupDrumLoop"/>）
-/// バトル中は BGM 枠でドラムループを鳴らし、再生速度を <c>魚のBPM ÷ 素材のBPM</c> に
-/// 変えて魚の拍と同じテンポにする。開始は余白の頭（余白が拍子の倍数でないときだけ
-/// 次の小節頭まで待つ）。
-/// フェーズ長が可変（隙が 1 小節または 2 小節）になったため、ドラムの 2 小節ループは
-/// 放っておくと出題の頭とズレる。そこで <see cref="drumRestartAtCall"/>（既定 true）で
-/// <b>出題フェーズの頭ごとにループを鳴らし直す</b>ことを既定の同期手段とし、
-/// <see cref="drumResyncBars"/> 小節ごとの定期再同期は任意の補助として残す。
+/// バトル中は BGM 枠でドラムループを鳴らし、再生速度を <c>いまのテンポ ÷ 素材のBPM</c> に
+/// 変えて拍を一致させる（<see cref="ApplyDrumSpeed"/>）。<b>隙（Rest）のあいだだけ
+/// <see cref="restBpm"/> に同期</b>し、戦闘（余白・出題・回答）へ戻ると魚の BPM に戻る。
+/// 開始は余白の頭（余白が拍子の倍数でないときだけ最初の出題の頭まで待つ）。
+/// フェーズ長もテンポも可変なので、位相合わせは <see cref="drumRestartAtCall"/>（既定 true）の
+/// <b>出題フェーズの頭ごとにループを鳴らし直す</b>方式だけに一本化してある。
 /// <see cref="Paused"/>・チュートリアルの説明中は <see cref="SEED.Audio.PauseBgm"/> で
 /// <b>再生位置ごと凍結</b>し、再開時に <see cref="SEED.Audio.ResumeBgm"/> で続きから鳴らす。
 /// 拍時計も同じ区間で止まっているので、位相は自動的に一致する
@@ -45,8 +44,10 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 余白(LeadIn) → 出題(Call) → 回答(Answer) → 隙(Rest) → 出題 → …
 /// 既定の長さ: 余白 leadInBeats 拍 / 出題 callBars 小節(既定 2) / 回答 answerBars 小節(既定 2)
 ///             隙 = 直前の回答の出来で決まる（下表）
-/// 出題・回答の小節数は魚データ（Fish.RhythmCallBars / RhythmAnswerBars）が 1 以上ならそちらが優先。
-/// 隙の小節数は「回答の出来」で毎回決まるので、魚データの RhythmRestBars は<b>参照しない</b>。
+/// 出題・回答の小節数は<b>ビートパターン 1 行の小節数</b>で決まる（＝出題と回答は必ず同じ長さ）。
+/// パターンが 1 行も読めなかったときだけ、魚データ（Fish.RhythmCallBars /
+/// RhythmAnswerBars）→ バトル側の既定値の順でフォールバックする。
+/// 隙の小節数は「回答の出来」で毎回決まる（魚データ側の指定は廃止した）。
 /// </code>
 /// <b>隙の長さの規則（2026-09-06 改定）</b>
 /// <code>
@@ -54,6 +55,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// それ以外                                                        → restBarsNormal  小節（既定 1）
 /// </code>
 /// ＝ うまく叩けたご褒美として巻ける時間が伸びる。
+/// <b>隙だけは専用のテンポ</b>（<see cref="restBpm"/>・既定 100）で数えるので、
+/// 「1 小節」の実時間は魚の BPM ではなくこの値で決まる。ドラムループも同じ値へ同期する。
 /// <see cref="Phase.LeadIn"/> はバトル開始直後にだけ 1 度通る特別な区間で、
 /// メトロノームだけが leadInBeats 拍ぶん鳴り、出題・回答・巻きは一切行わない
 /// （中央テキストには残り拍数「4 3 2 1」を出す）。時計の原点（clockTime == 0）を
@@ -62,12 +65,18 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ズレずに接続できる（詳細は <see cref="EnterLeadInOrCall"/>）。
 /// 次のフェーズは<b>1 拍前</b>に中央テキストで予告する（LeadIn を除く）。
 ///
-/// ■ フレーズ（出題・回答で共有する打点の並び）
-/// 魚のリズムパターン（8 分音符の並び。'x' が打点・'.' が休符）は<b>1 行 ＝ 1 小節</b>が基本だが、
-/// 小節数ぶんの長さ（例: 2 小節 ＝ 拍子 × 2 × 2 文字）の行もそのまま使える。
-/// 出題フェーズの小節数ぶんの「フレーズ」を、パターンをランダムに（重複可で）
-/// 連結して組み立てる（<see cref="BuildPhrase"/>）。回答フェーズでは同じフレーズを
-/// 先頭から並べ直す（回答が長ければ循環させる）ので、出題と回答で打点位置が一致する。
+/// ■ ビートパターン（出題・回答で共有する打点の並び）【2026-09-09 改定】
+/// 出題データは<b>レベルデザイン用のテキストファイル</b>
+/// （<see cref="beatPatternPath"/>・既定 assets://mainGame/rhythm/beat_patterns.txt）から読む。
+/// 1 行 ＝ 戦闘サイクル 1 周ぶん（＝<see cref="callBars"/> 小節）で、記法は
+/// <c>{1/4}t,,t,,  {1/6},,,{1/4}t,,  [1-3,5]</c>（詳細は docs/beat_patterns.md）。
+/// 行末の <c>[...]</c> は対象の魚レベル帯で、魚の <see cref="Fish.Level"/> に該当する行から
+/// 抽選する（該当が無ければ全レベル行 → それも無ければフォールバックを合成して警告）。
+/// 内部表現は<b>固定グリッドではなく「小節内の位置（0.0〜小節数）」</b>なので、
+/// 1/4・1/6・1/8 が混ざった行もそのまま扱える。判定・アイコン配置・ドラムの頭出しは
+/// すべて「フェーズ開始時刻 ＋ 位置 × 1 小節の秒数」で求めた<b>時刻</b>だけを見る。
+/// 回答フェーズには同じ位置列を先頭から並べ直す（回答が長ければ繰り返す）ので、
+/// 出題と回答で打点位置が完全に一致する。
 ///
 /// ■ 出題（Call）
 /// 打点の時刻ごとに<b>前アタリと同じ演出</b>（つつき音＋ウキの沈み）を出す
@@ -175,15 +184,6 @@ public class FishingFight : SEEDScript
     /// <summary>1 分の秒数（BPM →「1 拍の秒数」の換算に使う）。</summary>
     private const float SecondsPerMinute = 60f;
 
-    /// <summary>1 拍を分割する数（8 分音符 ＝ 1 拍を 2 分割）。</summary>
-    private const int SubdivisionsPerBeat = 2;
-
-    /// <summary>パターン文字列で「打点」を表す文字。</summary>
-    private const char PatternHitChar = 'x';
-
-    /// <summary>パターン文字列で「休符」を表す文字。</summary>
-    private const char PatternRestChar = '.';
-
     /// <summary>拍子（1 小節の拍数）の下限。データが壊れていても時計が止まらないようにする。</summary>
     private const int MinBeatsPerBar = 1;
 
@@ -194,25 +194,21 @@ public class FishingFight : SEEDScript
     private const int MinPhaseBars = 1;
 
     /// <summary>
+    /// フォールバックのビートパターンに付ける行番号（ファイル由来でないことを表す）。
+    /// </summary>
+    private const int FallbackPatternLineNumber = 0;
+
+    /// <summary>フォールバックのビートパターンの出所を表すラベル（ログ用）。</summary>
+    private const string FallbackPatternLabel = "(フォールバック: 各拍の頭)";
+
+    /// <summary>
     /// チュートリアルで「ビートバトルなし」を指定されたときの隙の小節数。
     /// 事実上終わらない長さにして、魚をずっとひるませたまま巻かせる。
     /// </summary>
     private const int TutorialEndlessRestBars = 9999;
 
-    /// <summary>
-    /// ドラムループ素材の拍子（4/4 前提）。素材の小節数から総拍数を出すのに使う。
-    /// 魚側の拍子（<see cref="beatsPerBar"/>）とは別物なので混同しないこと。
-    /// </summary>
-    private const int DrumMaterialBeatsPerBar = 4;
-
-    /// <summary>ドラムループ素材の小節数の下限。</summary>
-    private const int MinDrumLoopBars = 1;
-
     /// <summary>ドラムループ素材の BPM の下限（0 除算・速度破綻の番人値）。</summary>
     private const float MinDrumLoopBpm = 1f;
-
-    /// <summary>ドラムループを再同期しないことを表す小節数。</summary>
-    private const int DrumResyncDisabled = 0;
 
     /// <summary>再生速度の既定値（等倍）。</summary>
     private const float NormalPlaybackSpeed = 1f;
@@ -333,6 +329,46 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "開始時の余白(拍)")]
     private int leadInBeats = 4;
 
+    /// <summary>
+    /// 1 小節の拍数（拍子）【拍子の唯一の置き場所】。
+    ///
+    /// 2026-09-09 改定で<b>魚データ側の「拍子」は廃止</b>し、バトル側の設定に一本化した。
+    /// ビートパターンは「小節を 1.0 とした位置」で書くので拍子に依存しないが、
+    /// メトロノームの強拍・ドラムの小節線・余白の拍数はこの値で決まる。
+    /// </summary>
+    [SerializeField(Label = "拍子(1小節の拍数)")]
+    private int beatsPerBar = 4;
+
+    /// <summary>
+    /// 隙（<see cref="Phase.Rest"/>）を数えるときの BPM【隙専用のテンポ】。
+    ///
+    /// 巻きに専念する区間だけテンポを落として（上げて）間を作るための設定。
+    /// 隙の小節数は <see cref="restBarsPerfect"/> / <see cref="restBarsNormal"/> のままで、
+    /// その 1 小節の長さだけがこの BPM で決まる。ドラムループの再生速度も
+    /// 隙のあいだはこの BPM に同期し、戦闘（余白・出題・回答）へ戻ると魚の BPM に戻る。
+    /// </summary>
+    [SerializeField(Label = "隙のBPM")]
+    private float restBpm = 100f;
+
+    // ─── ビートパターン（レベルデザイン用テキスト）─────────────
+
+    /// <summary>
+    /// ビートパターンを書いたテキストファイルのアセットパス
+    /// 【出題データの唯一の供給源】。記法は docs/beat_patterns.md を参照。
+    /// 1 行 ＝ 戦闘サイクル 1 周ぶん（＝<see cref="callBars"/> 小節）。
+    /// </summary>
+    [Header("ビートパターン"), SerializeField(Label = "パターンのファイル")]
+    private string beatPatternPath = "assets://mainGame/rhythm/beat_patterns.txt";
+
+    /// <summary>
+    /// パターンを<b>サイクルごと</b>に引き直すか。
+    ///
+    /// true（既定）… 出題フェーズのたびに抽選する（1 戦のあいだに譜面が変わる）
+    /// false        … 1 戦につき 1 度だけ抽選し、同じ譜面を繰り返す
+    /// </summary>
+    [SerializeField(Label = "サイクルごとに抽選する")]
+    private bool drawPatternEachCycle = true;
+
     // ─── メトロノーム ────────────────────────────────────
 
     /// <summary>拍ごとに鳴らすクリック音のアセットパス（空なら鳴らさない）。</summary>
@@ -362,33 +398,20 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "素材のBPM")]
     private float drumLoopBpm = 100f;
 
-    /// <summary>ドラムループ素材の小節数（4/4 前提）。ループ長＝この小節数ぶんの拍。</summary>
-    [SerializeField(Label = "素材の小節数(4/4)")]
-    private int drumLoopBars = 2;
-
     /// <summary>ドラムループの音量（1.0 = 等倍）。</summary>
     [SerializeField(Label = "ドラムループの音量")]
     private float drumLoopVolume = 0.8f;
 
     /// <summary>
-    /// 出題（Call）フェーズの頭ごとにドラムループを鳴らし直すか【既定の同期手段】。
+    /// 出題（Call）フェーズの頭ごとにドラムループを鳴らし直すか【唯一の同期手段】。
     ///
-    /// 隙の長さが 1 小節／2 小節と変わるため、ループ長（既定 2 小節）と小節線の関係が
-    /// サイクルごとにズレる。出題の頭で必ず鳴らし直せば、<b>各フェーズ＝ループ 1 周</b>が
-    /// 常に保証される（出題 2 小節・素材 2 小節の既定構成の場合）。
-    /// false にすると <see cref="drumResyncBars"/> による定期再同期だけになる。
+    /// 隙の長さ（1〜2 小節）だけでなくテンポ（<see cref="restBpm"/>）まで変わるため、
+    /// 放っておくとループ先頭と出題の頭は必ずズレる。出題の頭で鳴らし直せば
+    /// <b>1 サイクル＝ループ 1 周</b>（出題 2 小節・素材 2 小節の既定構成）が常に保たれる。
+    /// false にすると鳴らし直さないので、素材の周期がサイクルと合っていないと位相がずれていく。
     /// </summary>
     [SerializeField(Label = "出題の頭でループを鳴らし直す")]
     private bool drumRestartAtCall = true;
-
-    /// <summary>
-    /// ドラムループを鳴らし直して位相ズレを消す間隔（小節）。0 なら再同期しない。
-    /// <see cref="drumRestartAtCall"/> が true なら基本的に不要な補助機能。
-    /// 実際の再同期はこの小節数<b>以上</b>で、かつ「ループ先頭かつ魚の小節頭」に
-    /// なる最小周期の整数倍になる（<see cref="SetupDrumLoop"/> で算出）。
-    /// </summary>
-    [SerializeField(Label = "再同期の間隔(小節・0で無効)")]
-    private int drumResyncBars = 8;
 
     // ─── 判定窓 ──────────────────────────────────────────
 
@@ -896,28 +919,48 @@ public class FishingFight : SEEDScript
     public float SecondsSincePhaseStart
         => Active ? SEED.Mathf.Max(clockTime - phaseStartTime, 0f) : 0f;
 
-    /// <summary>1 拍の秒数（＝ 60 ÷ BPM）。</summary>
+    /// <summary>魚のテンポでの 1 拍の秒数（＝ 60 ÷ 魚の BPM）。</summary>
     public float SecondsPerBeat => secondsPerBeat;
 
-    /// <summary>1 小節の秒数（＝ 1 拍の秒数 × 拍子）。</summary>
-    public float SecondsPerBar => secondsPerBeat * beatsPerBar;
+    /// <summary>魚のテンポでの 1 小節の秒数（＝ 1 拍の秒数 × 拍子）。</summary>
+    public float SecondsPerBar => secondsPerBeat * SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
 
-    /// <summary>開始からの通し拍番号（0 始まり）。</summary>
-    public int BeatIndex => secondsPerBeat > DivideEpsilon
-        ? SEED.Mathf.FloorToInt(clockTime / secondsPerBeat)
+    /// <summary>隙（<see cref="Phase.Rest"/>）のテンポでの 1 拍の秒数（＝ 60 ÷ 隙のBPM）。</summary>
+    public float RestSecondsPerBeat => restSecondsPerBeat;
+
+    /// <summary>隙（<see cref="Phase.Rest"/>）のテンポでの 1 小節の秒数。</summary>
+    public float RestSecondsPerBar => restSecondsPerBeat * SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
+
+    /// <summary>
+    /// <b>いまのフェーズ</b>の 1 小節の秒数【小節の物差しを読む唯一の入口】。
+    /// 隙だけ隙のBPM で数え、それ以外は魚の BPM で数える。
+    /// フェーズに入る前（未設定）は魚のテンポを返す。
+    /// </summary>
+    public float PhaseBarSeconds => phaseBarSeconds > DivideEpsilon ? phaseBarSeconds : SecondsPerBar;
+
+    /// <summary>いまのフェーズの 1 拍の秒数（＝ <see cref="PhaseBarSeconds"/> ÷ 拍子）。</summary>
+    public float PhaseBeatSeconds => PhaseBarSeconds / SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
+
+    /// <summary>
+    /// いまのフェーズに入ってからの通し拍番号（0 始まり）。
+    /// 隙だけテンポが変わるため、拍はバトル全体ではなく<b>フェーズ内</b>で数える。
+    /// 余白（LeadIn）は開始時刻が負なので 0,1,2… と素直に増える。
+    /// </summary>
+    public int BeatIndex => PhaseBeatSeconds > DivideEpsilon
+        ? SEED.Mathf.FloorToInt((clockTime - phaseStartTime) / PhaseBeatSeconds)
         : 0;
 
-    /// <summary>開始からの通し小節番号（0 始まり）。</summary>
+    /// <summary>いまのフェーズに入ってからの通し小節番号（0 始まり）。</summary>
     public int BarIndex => beatsPerBar > 0 ? BeatIndex / beatsPerBar : 0;
 
     /// <summary>拍のなかの進行（0〜1）。0 が拍頭。</summary>
-    public float BeatPhase01 => secondsPerBeat > DivideEpsilon
-        ? SEED.Mathf.Repeat(clockTime / secondsPerBeat, 1f)
+    public float BeatPhase01 => PhaseBeatSeconds > DivideEpsilon
+        ? SEED.Mathf.Repeat((clockTime - phaseStartTime) / PhaseBeatSeconds, 1f)
         : 0f;
 
     /// <summary>小節のなかの進行（0〜1）。0 が小節頭。</summary>
-    public float BarPhase01 => SecondsPerBar > DivideEpsilon
-        ? SEED.Mathf.Repeat(clockTime / SecondsPerBar, 1f)
+    public float BarPhase01 => PhaseBarSeconds > DivideEpsilon
+        ? SEED.Mathf.Repeat((clockTime - phaseStartTime) / PhaseBarSeconds, 1f)
         : 0f;
 
     /// <summary>
@@ -942,11 +985,11 @@ public class FishingFight : SEEDScript
     /// <param name="subdivision">1 拍の分割数（1 ＝ 拍・2 ＝ 8 分音符）。</param>
     public float TimeToNearestBeat(int subdivision)
     {
-        float grid = secondsPerBeat / SEED.Mathf.Max(subdivision, 1);
+        float grid = PhaseBeatSeconds / SEED.Mathf.Max(subdivision, 1);
         if (grid <= DivideEpsilon) { return 0f; }
 
-        float offset = SEED.Mathf.Repeat(clockTime, grid);
-        return offset <= grid * 0.5f ? offset : offset - grid;
+        float offset = SEED.Mathf.Repeat(clockTime - phaseStartTime, grid);
+        return offset <= grid * HalfScale ? offset : offset - grid;
     }
 
     // ─── 実行時の内部状態 ─────────────────────────────────
@@ -988,14 +1031,17 @@ public class FishingFight : SEEDScript
     /// <summary>1 拍の秒数（BPM から <see cref="BeginFight"/> で決まる）。</summary>
     private float secondsPerBeat = 0.6f;
 
-    /// <summary>1 小節の拍数（拍子）。</summary>
-    private int beatsPerBar = 4;
+    /// <summary>隙（<see cref="Phase.Rest"/>）での 1 拍の秒数（＝ 60 ÷ <see cref="restBpm"/>）。</summary>
+    private float restSecondsPerBeat = 0.6f;
 
-    /// <summary>1 小節の分割数（＝ 拍子 × <see cref="SubdivisionsPerBeat"/>）。</summary>
-    private int subsPerBar = 8;
-
-    /// <summary>1 分割（8 分音符）の秒数。</summary>
-    private float secondsPerSub = 0.3f;
+    /// <summary>
+    /// <b>いまのフェーズ</b>の 1 小節の秒数【フェーズ長・打点時刻の唯一の物差し】。
+    ///
+    /// 隙だけ <see cref="restBpm"/> で数えるので、全フェーズを 1 本の小節グリッドへ
+    /// 揃えることはできない。そこでフェーズごとに物差しを持ち、フェーズの開始時刻は
+    /// 「直前のフェーズの終了時刻」をそのまま引き継ぐ（<see cref="EnterPhase"/>）。
+    /// </summary>
+    private float phaseBarSeconds = 0f;
 
     /// <summary>最後にメトロノームを鳴らした拍番号（<see cref="NoBeatPlayed"/> ＝ 未再生）。</summary>
     private int lastBeatPlayed = NoBeatPlayed;
@@ -1011,15 +1057,6 @@ public class FishingFight : SEEDScript
     /// 必ず魚の小節頭に一致する。
     /// </summary>
     private float drumStartTime = 0f;
-
-    /// <summary>
-    /// ドラムループの位相が「ループ先頭かつ魚の小節頭」へ戻る最小周期（秒）。
-    /// 開始・再同期・一時停止からの復帰はすべてこの周期の整数倍の時刻で行う。
-    /// </summary>
-    private float drumUnitSeconds = 0f;
-
-    /// <summary>ドラムループを鳴らし直す周期（秒）。0 以下なら再同期しない。</summary>
-    private float drumResyncSeconds = 0f;
 
     /// <summary>
     /// <see cref="Paused"/>（またはチュートリアルの説明）によってドラムを
@@ -1041,22 +1078,26 @@ public class FishingFight : SEEDScript
     private bool nextPhaseAnnounced = false;
 
     /// <summary>
-    /// このバトルで使う有効なリズムパターン（1 要素 ＝ 1 小節<b>以上</b>ぶんの文字列。
-    /// 長さは必ず <see cref="subsPerBar"/> の正の整数倍）。
+    /// ビートパターンのテキストを読み込んで保持する蔵書
+    /// 【譜面データの唯一の供給元】。バトルをまたいで使い回し、
+    /// ファイルが更新されたら戦闘の合間に読み直す（ホットリロード）。
     /// </summary>
-    private readonly List<string> patterns = new();
+    private readonly BeatPatternLibrary patternLibrary = new();
 
     /// <summary>
-    /// いま出題／回答しているフレーズ（出題フェーズの小節数ぶんの長さ）。
-    /// パターンを連結して <see cref="BuildPhrase"/> が組み立てる。
+    /// いま出題／回答しているビートパターン（＝戦闘サイクル 1 周ぶんの打点の並び）。
+    /// 出題フェーズへ入るたびに <see cref="ResolveCyclePattern"/> が確定させる。
     /// </summary>
-    private string currentPhrase = "";
+    private BeatPattern? currentPattern = null;
+
+    /// <summary>
+    /// <see cref="drawPatternEachCycle"/> が false のときに、この 1 戦で使い続ける
+    /// パターン（最初の出題で 1 度だけ抽選する）。true のときは常に null。
+    /// </summary>
+    private BeatPattern? fightPattern = null;
 
     /// <summary>出題フェーズで鳴らす打点の時刻（秒・絶対時刻・昇順）。</summary>
     private readonly List<float> callHitTimes = new();
-
-    /// <summary>出題フェーズの打点の分割番号（フェーズ内の通し番号。UI の角度算出に使う）。</summary>
-    private readonly List<int> callHitSubs = new();
 
     /// <summary>
     /// 出題フェーズで最後に音を鳴らした打点の添字（<see cref="NoHitFired"/> ＝ 未再生）。
@@ -1184,6 +1225,9 @@ public class FishingFight : SEEDScript
         ResetRuntimeState();
         HideUi();
         EnsureIconPool(initialBeatIconPool);
+
+        // ビートパターンは起動時に 1 度読み込む（以後は LateUpdate のホットリロードで追従する）
+        patternLibrary.Configure(beatPatternPath, CyclePatternBars);
     }
 
     /// <summary>
@@ -1210,6 +1254,10 @@ public class FishingFight : SEEDScript
     /// <param name="ctx">フレーム情報（未使用）。</param>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
+        // ビートパターンの更新確認は<b>戦闘中でないときだけ</b>行う。
+        // ＝ 読み直しが効くのは必ず次の戦闘からで、進行中の譜面が途中で入れ替わらない。
+        if (!Active) { patternLibrary.PollHotReload(SEED.Time.UnscaledElapsedTime); }
+
         // 表示用のゲージは「ゲームが止まっていても動く」演出なので実時間で進める
         UpdateGaugeDisplay(SEED.Time.UnscaledDeltaTime);
         DrawGauge();
@@ -1285,7 +1333,8 @@ public class FishingFight : SEEDScript
         SEED.Debug.Log($"[Fight] 開始: {fish.DisplayName} / 総合力 {CurrentFishPower():F2} vs 竿 {rodPower:F2}"
                      + $" / 魚HP {fishHpMax:F1}（取り分 {fishShare:P0}）"
                      + $" / 掛かった距離 {hookDistance:F1}m → 目標 {DesiredFloatDistance:F1}m"
-                     + $" / {BpmOf(fish):F0}BPM {beatsPerBar}拍子 / パターン {patterns.Count} 種"
+                     + $" / {BpmOf(fish):F0}BPM {beatsPerBar}拍子 / 隙 {restBpm:F0}BPM"
+                     + $" / パターン {patternLibrary.Count} 行"
                      + $" / 初期の糸の残り {Line01:F2}");
     }
 
@@ -1495,7 +1544,7 @@ public class FishingFight : SEEDScript
         if (CurrentPhase == Phase.Rest)
         {
             phaseBars += extra;
-            phaseEndTime = phaseStartTime + phaseBars * SecondsPerBar;
+            phaseEndTime = phaseStartTime + phaseBars * phaseBarSeconds;
             nextPhaseAnnounced = false;     // 予告済みでも、伸びた終わりで出し直す
             SEED.Debug.Log($"[Fight] 漂流物: 隙を {extra} 小節延長（合計 {phaseBars} 小節）");
             return;
@@ -1542,113 +1591,81 @@ public class FishingFight : SEEDScript
     // ─── 内部処理: リズムデータの取り込み ───────────────────
 
     /// <summary>
-    /// 魚のリズムデータ（BPM・拍子・パターン）を取り込む【拍時計の初期化の唯一の入口】。
-    /// パターン文字列は長さと文字を検証し、壊れているものは捨てて 1 度だけ警告する。
-    /// 有効なパターンが 1 つも無ければ「各拍の頭を叩くだけ」の安全なパターンを合成する。
+    /// 魚のテンポとビートパターンを取り込む【拍時計の初期化の唯一の入口】。
+    ///
+    /// 2026-09-09 改定で、出題データは<b>魚データではなくテキストファイル</b>
+    /// （<see cref="beatPatternPath"/>）から読むようになった。魚固有なのは BPM だけで、
+    /// 拍子・隙の長さはバトル側の設定に一本化してある。
     /// </summary>
-    /// <param name="fish">掛かった魚。</param>
+    /// <param name="fish">掛かった魚（BPM だけを読む）。</param>
     private void SetupRhythm(Fish fish)
     {
-        beatsPerBar = SEED.Mathf.Max(fish.RhythmBeatsPerBar, MinBeatsPerBar);
-        subsPerBar = beatsPerBar * SubdivisionsPerBeat;
+        beatsPerBar = SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
         secondsPerBeat = SecondsPerMinute / SEED.Mathf.Max(BpmOf(fish), MinBpm);
-        secondsPerSub = secondsPerBeat / SubdivisionsPerBeat;
+        restSecondsPerBeat = SecondsPerMinute / SEED.Mathf.Max(restBpm, MinBpm);
 
-        patterns.Clear();
-        int invalidCount = 0;
-        // 魚データ側のリストが未設定（null）でも落ちないようにしてから検証する
-        foreach (var raw in fish.RhythmPatterns ?? new List<string>())
-        {
-            if (IsValidPattern(raw)) { patterns.Add(raw.ToLowerInvariant()); }
-            else { invalidCount++; }
-        }
+        // 想定小節数（＝戦闘サイクルの長さ）が変わっていれば読み直される
+        patternLibrary.Configure(beatPatternPath, CyclePatternBars);
 
-        if (invalidCount > 0)
-        {
-            SEED.Debug.LogWarning($"[Fight] {fish.DisplayName} のリズムパターンに無効な行が {invalidCount} 件あります"
-                                + $"（1 行 = {subsPerBar} 文字の整数倍・'{PatternHitChar}' か '{PatternRestChar}' のみ）");
-        }
-
-        if (patterns.Count == 0) { patterns.Add(BuildFallbackPattern()); }
+        currentPattern = null;
+        fightPattern = null;
     }
+
+    /// <summary>
+    /// ビートパターン 1 行に期待する小節数（＝戦闘サイクルの長さ）
+    /// 【想定小節数の唯一の定義】。出題フェーズの既定小節数をそのまま使う。
+    /// </summary>
+    private int CyclePatternBars => SEED.Mathf.Max(callBars, MinPhaseBars);
 
     /// <summary>魚の BPM（0 以下なら下限へクランプ）。</summary>
     /// <param name="fish">対象の魚。</param>
     private float BpmOf(Fish fish) => SEED.Mathf.Max(fish.RhythmBpm, MinBpm);
 
     /// <summary>
-    /// パターン文字列が有効か【パターン検証の唯一の判定点】。
+    /// このサイクルで使うビートパターンを確定させる【譜面抽選の唯一の入口】。
     ///
-    /// 長さが 1 小節の分割数（<see cref="subsPerBar"/>）の<b>正の整数倍</b>で、
-    /// 打点／休符の文字だけで出来ていること。
-    /// ＝ 1 小節ぶんの行も、2 小節ぶん（拍子 × 2 × 2 文字）以上の行もそのまま使える。
+    /// 1. <see cref="drawPatternEachCycle"/> が false で既に引いてあれば、それを使い続ける
+    /// 2. 魚のレベルに該当する行から抽選する（<see cref="BeatPatternLibrary.Pick"/>）
+    /// 3. 1 行も無ければ「各拍の頭を叩くだけ」のフォールバックを合成して警告する
+    ///
+    /// 戻り値は必ず非 null なので、呼び出し側に「譜面が無い」分岐は要らない。
     /// </summary>
-    /// <param name="pattern">検証する文字列。</param>
-    private bool IsValidPattern(string? pattern)
+    private BeatPattern ResolveCyclePattern()
     {
-        if (string.IsNullOrEmpty(pattern)) { return false; }
-        if (subsPerBar <= 0) { return false; }
-        if (pattern.Length % subsPerBar != 0) { return false; }
+        if (!drawPatternEachCycle && fightPattern is { } reused) { return reused; }
 
-        foreach (char c in pattern)
+        int level = target is { } fish ? fish.Level : Fish.UnknownLevel;
+        BeatPattern? picked = patternLibrary.Pick(level);
+
+        if (picked is null)
         {
-            char lower = char.ToLowerInvariant(c);
-            if (lower != PatternHitChar && lower != PatternRestChar) { return false; }
+            picked = BuildFallbackPattern();
+            SEED.Debug.LogWarning($"[Fight] レベル {level} に使えるビートパターンが 1 行もありません"
+                                + $"（{patternLibrary.AssetPath}）。フォールバックで進めます");
         }
-        return true;
+
+        if (!drawPatternEachCycle) { fightPattern = picked; }
+        return picked;
     }
 
     /// <summary>
-    /// フレーズ（出題 1 回ぶんの打点の並び）を組み立てる【フレーズ生成の唯一の入口】。
-    ///
-    /// 必要な小節数になるまで、<b>残り小節数に収まるパターンをランダムに（重複可で）</b>
-    /// 選んで後ろへ連結する。2 小節ぶんの長さを持つパターンはそのまま 2 小節として使われる。
-    /// 残りに収まるパターンが 1 つも無い（例: 残り 1 小節・パターンが全部 2 小節）ときだけ、
-    /// 安全なフォールバックパターン（各拍の頭）で 1 小節ぶん埋める。
+    /// ビートパターンが 1 行も使えないときに合成する安全な譜面
+    /// 【フォールバック生成の唯一の場所】＝<b>各拍の頭だけを叩く</b>。
+    /// 長さは戦闘サイクルの小節数（<see cref="CyclePatternBars"/>）に合わせる。
     /// </summary>
-    /// <param name="bars">組み立てるフレーズの小節数。</param>
-    /// <returns>長さが <c>bars × <see cref="subsPerBar"/></c> の文字列。</returns>
-    private string BuildPhrase(int bars)
+    private BeatPattern BuildFallbackPattern()
     {
-        int need = SEED.Mathf.Max(bars, MinPhaseBars);
-        var buffer = new System.Text.StringBuilder(need * subsPerBar);
-        int remaining = need;
+        int bars = CyclePatternBars;
+        int beats = SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
 
-        while (remaining > 0)
+        var positions = new List<double>(bars * beats);
+        for (int i = 0; i < bars * beats; i++)
         {
-            // 残り小節数に収まる候補だけを集める（毎回作り直すので候補が尽きても破綻しない）
-            var candidates = new List<string>();
-            foreach (string p in patterns)
-            {
-                if (p.Length / subsPerBar <= remaining) { candidates.Add(p); }
-            }
-
-            if (candidates.Count == 0)
-            {
-                buffer.Append(BuildFallbackPattern());
-                remaining--;
-                continue;
-            }
-
-            string picked = candidates[SEED.Random.Range(0, candidates.Count)];
-            buffer.Append(picked);
-            remaining -= picked.Length / subsPerBar;
+            positions.Add((double)i / beats);
         }
 
-        return buffer.ToString();
-    }
-
-    /// <summary>
-    /// 有効なパターンが 1 つも無いときに使う安全なパターン（各拍の頭だけを叩く・1 小節ぶん）。
-    /// </summary>
-    private string BuildFallbackPattern()
-    {
-        var buffer = new System.Text.StringBuilder(subsPerBar);
-        for (int i = 0; i < subsPerBar; i++)
-        {
-            buffer.Append(i % SubdivisionsPerBeat == 0 ? PatternHitChar : PatternRestChar);
-        }
-        return buffer.ToString();
+        return new BeatPattern(positions, bars, LevelRange.Any,
+                               FallbackPatternLineNumber, FallbackPatternLabel);
     }
 
     // ─── 内部処理: 拍時計とフェーズ ─────────────────────────
@@ -1661,6 +1678,7 @@ public class FishingFight : SEEDScript
     {
         if (string.IsNullOrEmpty(metronomeSePath)) { return; }
 
+        // 拍はフェーズ内で数える（隙だけテンポが変わるため、通し拍番号では強拍がズレる）
         int beat = BeatIndex;
         if (beat == lastBeatPlayed) { return; }
 
@@ -1674,47 +1692,31 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// ドラムループを仕込む【ドラムの時間設計を決める唯一の入口】。
     /// <see cref="SetupRhythm"/> と <see cref="EnterLeadInOrCall"/> の<b>後</b>に呼ぶこと
-    /// （魚の BPM と拍時計の原点が確定していないと開始時刻を計算できない）。
+    /// （テンポと拍時計の原点が確定していないと開始時刻を計算できない）。
     ///
-    /// 【設計】
-    /// ・素材は 4/4・<see cref="drumLoopBars"/> 小節と仮定し、総拍数
-    ///   <c>loopBeats = drumLoopBars × 4</c> で長さを数える。
-    ///   再生速度を <c>魚のBPM ÷ 素材のBPM</c> にすると、素材の 1 拍が魚の 1 拍に一致するので、
-    ///   ループ長は<b>魚のテンポでの loopBeats 拍</b>になる。
-    /// ・開始時刻は「いまの時刻（＝余白の開始。余白なしなら最初の Call）以降で最初の魚の小節頭」。
-    ///   余白が拍子の倍数（例: 1 小節 = 4 拍）なら余白の開始そのものが小節頭なので、
-    ///   要求どおり<b>余白の頭からドラムが鳴る</b>。倍数でない半端な余白のときだけ、
-    ///   小節頭が来るまで開始を遅らせる（＝小節線が絶対にズレない）。
-    /// ・ループ先頭が再び魚の小節頭に重なる最小周期
-    ///   <c>drumUnitSeconds = loopBeats × (beatsPerBar / gcd(loopBeats, beatsPerBar)) 拍</c>
-    ///   を求めておき、再同期も一時停止からの復帰もこの周期の時刻でだけ行う。
-    ///   （余白 1 小節・素材 2 小節・4 拍子なら loopBeats=8, beatsPerBar=4 → 8 拍 = 2 小節ごと。）
+    /// 【設計】2026-09-09 改定
+    /// ・素材は 4/4・<see cref="drumLoopBars"/> 小節と仮定し、再生速度を
+    ///   <c>いまのテンポ(BPM) ÷ 素材の BPM</c> にして拍を一致させる
+    ///   （<see cref="ApplyDrumSpeed"/>）。隙のあいだだけ <see cref="restBpm"/> に同期する。
+    /// ・開始時刻は<b>余白の頭</b>。ただし余白が拍子の倍数でない（＝小節の途中で終わる）
+    ///   ときだけ、小節線がズレないように最初の出題の頭（時刻 0）まで待つ。
+    /// ・フェーズごとにテンポが変わるようになったため、旧「一定間隔での再同期」は廃止した。
+    ///   位相合わせは <see cref="drumRestartAtCall"/>（出題の頭で鳴らし直す）に一本化する。
     /// </summary>
     private void SetupDrumLoop()
     {
         StopDrumLoop();
         drumScheduled = false;
         drumPausedByFight = false;
-        drumUnitSeconds = 0f;
-        drumResyncSeconds = 0f;
 
         if (string.IsNullOrEmpty(drumLoopPath)) { return; }
 
-        // 素材の総拍数（4/4 前提）と、位相が魚の小節頭へ戻る最小のループ回数
-        int loopBeats = SEED.Mathf.Max(drumLoopBars, MinDrumLoopBars) * DrumMaterialBeatsPerBar;
+        int beats = SEED.Mathf.Max(leadInBeats, 0);
         int barBeats = SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
-        int unitBeats = loopBeats * (barBeats / Gcd(loopBeats, barBeats));
-        drumUnitSeconds = unitBeats * secondsPerBeat;
+        bool leadInBreaksBarLine = beats > 0 && beats % barBeats != 0;
 
-        // 再同期の周期: 指定小節数以上で、かつ最小周期の整数倍（＝必ずループ先頭かつ小節頭）
-        if (drumResyncBars > DrumResyncDisabled && unitBeats > 0)
-        {
-            int neededBeats = drumResyncBars * barBeats;
-            int multiplier = SEED.Mathf.Max(CeilDiv(neededBeats, unitBeats), 1);
-            drumResyncSeconds = unitBeats * multiplier * secondsPerBeat;
-        }
-
-        drumStartTime = NextBarHeadAtOrAfter(clockTime);
+        // 半端な余白のときだけ、最初の出題の頭（＝時計の原点 0）まで開始を遅らせる
+        drumStartTime = leadInBreaksBarLine ? 0f : phaseStartTime;
         drumScheduled = true;
 
         // 開始時刻に既に達しているなら（＝余白の頭が小節頭）このフレームで鳴らし始める
@@ -1722,7 +1724,7 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// ドラムループを進める【開始待ち・再同期・一時停止復帰の唯一の集約点】。
+    /// ドラムループを進める【開始待ち・一時停止復帰の唯一の集約点】。
     /// 拍時計を進めた直後に毎フレーム呼ぶ。
     /// </summary>
     private void UpdateDrumLoop()
@@ -1738,35 +1740,49 @@ public class FishingFight : SEEDScript
         }
 
         // 開始待ち
-        if (!drumPlaying)
+        if (!drumPlaying && clockTime + DivideEpsilon >= drumStartTime)
         {
-            if (clockTime + DivideEpsilon >= drumStartTime) { StartDrumLoop(); }
-            return;
-        }
-
-        // 再同期（鳴らし直しで累積したズレを消す。わずかな途切れは許容する）
-        if (drumResyncSeconds <= DivideEpsilon) { return; }
-        if (clockTime + DivideEpsilon >= drumStartTime + drumResyncSeconds)
-        {
-            drumStartTime += drumResyncSeconds;
             StartDrumLoop();
         }
     }
 
     /// <summary>
     /// ドラムループを実際に鳴らす【BGM 発行の唯一の出口】。
-    /// 再生速度＝<c>魚の BPM ÷ 素材の BPM</c>（速度に比例してピッチも上がる点は素材側で許容する）。
+    /// 再生速度は <see cref="ApplyDrumSpeed"/> がフェーズのテンポから決める。
     /// </summary>
     private void StartDrumLoop()
     {
-        float fishBpm = secondsPerBeat > DivideEpsilon
-            ? SecondsPerMinute / secondsPerBeat
-            : MinBpm;
-        float speed = fishBpm / SEED.Mathf.Max(drumLoopBpm, MinDrumLoopBpm);
-
         SEED.Audio.PlayBgm(drumLoopPath, SEED.Mathf.Max(drumLoopVolume, VolumeMin), loop: true);
-        SEED.Audio.SetBgmSpeed(speed);
         drumPlaying = true;
+        ApplyDrumSpeed();
+    }
+
+    /// <summary>
+    /// ドラムループの再生速度を、いまのフェーズのテンポへ合わせる
+    /// 【BGM の再生速度を書く唯一の出口】。
+    ///
+    /// 速度 ＝ <see cref="CurrentTempoBpm"/> ÷ 素材の BPM。
+    /// 隙（Rest）へ入った瞬間に <see cref="restBpm"/> のテンポへ、
+    /// 戦闘（余白・出題・回答）へ戻った瞬間に魚の BPM へ切り替わる。
+    /// 鳴っていないときは何もしない（<see cref="StartDrumLoop"/> が改めて呼ぶ）。
+    /// </summary>
+    private void ApplyDrumSpeed()
+    {
+        if (!drumPlaying) { return; }
+
+        float speed = CurrentTempoBpm() / SEED.Mathf.Max(drumLoopBpm, MinDrumLoopBpm);
+        SEED.Audio.SetBgmSpeed(speed);
+    }
+
+    /// <summary>
+    /// いまのフェーズで刻んでいるテンポ（BPM）【テンポの唯一の問い合わせ点】。
+    /// 隙（Rest）だけ <see cref="restBpm"/>、それ以外は魚の BPM。
+    /// </summary>
+    private float CurrentTempoBpm()
+    {
+        if (CurrentPhase == Phase.Rest) { return SEED.Mathf.Max(restBpm, MinBpm); }
+
+        return secondsPerBeat > DivideEpsilon ? SecondsPerMinute / secondsPerBeat : MinBpm;
     }
 
     /// <summary>
@@ -1813,37 +1829,6 @@ public class FishingFight : SEEDScript
         drumPlaying = false;
     }
 
-    /// <summary>指定時刻以降で最初の魚の小節頭の時刻（秒）。</summary>
-    /// <param name="time">基準の時刻（<see cref="clockTime"/> と同じ時間軸）。</param>
-    private float NextBarHeadAtOrAfter(float time)
-    {
-        float barSeconds = SecondsPerBar;
-        if (barSeconds <= DivideEpsilon) { return time; }
-        return SEED.Mathf.Ceil(time / barSeconds - GridEpsilon) * barSeconds;
-    }
-
-    /// <summary>最大公約数（0 以下が混ざっても 1 以上を返す番人つき）。</summary>
-    /// <param name="a">値 A。</param>
-    /// <param name="b">値 B。</param>
-    private static int Gcd(int a, int b)
-    {
-        a = SEED.Mathf.Abs(a);
-        b = SEED.Mathf.Abs(b);
-        while (b != 0)
-        {
-            int t = a % b;
-            a = b;
-            b = t;
-        }
-        return a > 0 ? a : 1;
-    }
-
-    /// <summary>切り上げ除算（除数が 0 以下なら 1 を返す番人つき）。</summary>
-    /// <param name="value">被除数。</param>
-    /// <param name="divisor">除数。</param>
-    private static int CeilDiv(int value, int divisor)
-        => divisor > 0 ? (value + divisor - 1) / divisor : 1;
-
     /// <summary>
     /// フェーズの切り替えと予告を行う【フェーズ遷移の唯一の集約点】。
     /// 切り替えは必ず小節頭（フェーズ長がすべて小節単位なので時刻で判定できる）。
@@ -1851,7 +1836,7 @@ public class FishingFight : SEEDScript
     private void UpdatePhaseTransition()
     {
         // 1 拍前の予告（UI のテキスト表示で使う）
-        if (!nextPhaseAnnounced && clockTime >= phaseEndTime - secondsPerBeat)
+        if (!nextPhaseAnnounced && clockTime >= phaseEndTime - PhaseBeatSeconds)
         {
             nextPhaseAnnounced = true;
         }
@@ -1912,6 +1897,7 @@ public class FishingFight : SEEDScript
 
         CurrentPhase = Phase.LeadIn;
         clockTime = -leadInSeconds;
+        phaseBarSeconds = SecondsPerBar;   // 余白は魚のテンポで数える
         phaseStartTime = clockTime;
         phaseEndTime = 0f;               // 0 に達した瞬間＝最初の小節頭で Call へ
         phaseBars = MinPhaseBars;        // 小節単位のフェーズではないので参照はされない
@@ -1966,10 +1952,22 @@ public class FishingFight : SEEDScript
         // フェーズ確定後に「入る」ほうを流すので、購読側から見た順序が入れ替わらない。
         bool leavingRest = CurrentPhase == Phase.Rest && next != Phase.Rest;
 
+        // フェーズの開始時刻は<b>直前のフェーズの終了時刻そのもの</b>【時刻を連結する唯一の場所】。
+        // 隙だけテンポ（1 小節の秒数）が変わるため、全フェーズを 1 本の小節グリッドへ
+        // 丸めることはもうできない。連結にすれば切れ目は必ず一致し、丸め誤差も入らない。
+        float start = CurrentPhase == Phase.None ? 0f : phaseEndTime;
+
         CurrentPhase = next;
 
         if (leavingRest)          { SEED.Events.Raise(FishingEvents.StunEnd); }
         if (next == Phase.Rest)   { SEED.Events.Raise(FishingEvents.StunBegin); }
+
+        // 出題の頭でこのサイクルの譜面を確定させる【必ずフェーズ長の算出より前】。
+        // 出題・回答の小節数はパターン 1 行の小節数で決まるため、順序を入れ替えてはいけない。
+        if (next == Phase.Call) { currentPattern = ResolveCyclePattern(); }
+
+        // 隙だけ隙のBPM で数える（＝1 小節の秒数が変わる）
+        phaseBarSeconds = next == Phase.Rest ? RestSecondsPerBar : SecondsPerBar;
         phaseBars = PhaseBarsOf(next);
 
         // 隙以外のフェーズ中に拾った漂流物「ひるませ」の延長ぶんを、ここで 1 度だけ足し込む
@@ -1980,9 +1978,11 @@ public class FishingFight : SEEDScript
             pendingExtraRestBars = 0;
         }
 
-        phaseStartTime = CurrentBarStartTime();
-        phaseEndTime = phaseStartTime + phaseBars * SecondsPerBar;
+        phaseStartTime = start;
+        phaseEndTime = phaseStartTime + phaseBars * phaseBarSeconds;
         nextPhaseAnnounced = false;
+        lastBeatPlayed = NoBeatPlayed;   // 拍はフェーズ内で数え直す（強拍を頭に合わせるため）
+        ApplyDrumSpeed();                // 隙の出入りでドラムのテンポを切り替える
 
         switch (next)
         {
@@ -2009,9 +2009,10 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// 出題フェーズへ入るときの準備【フレーズ確定の唯一の入口】。
+    /// 出題フェーズへ入るときの準備【打点の時刻を確定させる唯一の入口】。
     ///
-    /// 1. フレーズを引き直す（出題の小節数ぶん）
+    /// 1. このサイクルの譜面は <see cref="EnterPhase"/> が既に確定させている
+    ///    （<see cref="currentPattern"/>。フェーズ長がその小節数で決まるため）
     /// 2. 出題で鳴らす打点の時刻を<b>解析的に</b>全て確定させる（<see cref="BuildCallHits"/>）
     /// 3. 次に来る回答フェーズの期待打点を先読み生成する
     ///    （回答フェーズ開始を待って生成すると、出題→回答の境界をまたぐ早打ちが
@@ -2021,18 +2022,17 @@ public class FishingFight : SEEDScript
     ///
     /// <b>順序の注意</b>: 3 の <see cref="BuildExpectedHits"/> は前サイクルの取りこぼしを
     /// Miss として締める（＝前サイクルのアイコンを判定色にする）ので、
-    /// アイコンの作り直し（4）は必ずその<b>後</b>に行うこと。逆にすると新しいフレーズの
+    /// アイコンの作り直し（4）は必ずその<b>後</b>に行うこと。逆にすると新しい譜面の
     /// アイコンが前サイクルの判定色で光ってしまう。
     /// </summary>
     private void EnterCallPhase()
     {
-        currentPhrase = BuildPhrase(phaseBars);
         BuildCallHits();
 
         int nextAnswerBars = PhaseBarsOf(Phase.Answer);
         BuildExpectedHits(phaseEndTime, nextAnswerBars);
 
-        ResetIcons(callHitSubs.Count);
+        ResetIcons(callHitTimes.Count);
         extraClickCount = 0;
         missedThisCycle = false;   // 新しい周回の頭でミス記録を畳む
         iconFadeStartTime = NoFadeStart;
@@ -2041,19 +2041,20 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// 出題フェーズで鳴らす打点の時刻・分割番号を作る【出題打点の唯一の生成点】。
-    /// 時刻は「フェーズ開始時刻 ＋ 分割番号 × 1 分割の秒数」で、以後この値だけを見て音を鳴らす。
+    /// 出題フェーズで鳴らす打点の時刻を作る【出題打点の唯一の生成点】。
+    /// 時刻は「フェーズ開始時刻 ＋ 小節内の位置 × 1 小節の秒数」で、
+    /// 以後この値だけを見て音を鳴らす（固定グリッドの添字は持たない）。
     /// </summary>
     private void BuildCallHits()
     {
         ClearCallHits();
+        if (currentPattern is not { } pattern) { return; }
 
-        for (int s = 0; s < currentPhrase.Length; s++)
+        // 打点の位置は「小節を 1.0 とした行頭からの位置」なので、
+        // 1 小節の秒数を掛けるだけで実時刻になる（固定グリッドへの量子化は一切しない）。
+        foreach (double position in pattern.TriggerPositions)
         {
-            if (currentPhrase[s] != PatternHitChar) { continue; }
-
-            callHitSubs.Add(s);
-            callHitTimes.Add(phaseStartTime + s * secondsPerSub);
+            callHitTimes.Add(phaseStartTime + (float)(position * phaseBarSeconds));
         }
     }
 
@@ -2061,7 +2062,6 @@ public class FishingFight : SEEDScript
     private void ClearCallHits()
     {
         callHitTimes.Clear();
-        callHitSubs.Clear();
         lastFiredCallHit = NoHitFired;
     }
 
@@ -2119,7 +2119,8 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// 出題フェーズの頭でドラムループを鳴らし直す【フェーズとループの位相合わせの唯一の出口】。
     ///
-    /// 隙の長さが 1 小節／2 小節と変わるため、放置するとループ先頭と出題の頭がズレていく。
+    /// 隙は長さ（1〜2 小節）だけでなくテンポ（隙のBPM）も変わるため、
+    /// 放置するとループ先頭と出題の頭は必ずズレていく。
     /// フェーズ頭で鳴らし直せば「1 フェーズ ＝ ループ 1 周」（出題 2 小節・素材 2 小節の既定構成）
     /// が常に保たれる。一時停止中・開始待ちの最中は触らない（そちらの整列処理に任せる）。
     /// </summary>
@@ -2131,14 +2132,6 @@ public class FishingFight : SEEDScript
 
         drumStartTime = phaseStartTime;
         StartDrumLoop();
-    }
-
-    /// <summary>いまの小節が始まった時刻（秒）。フェーズの開始時刻を小節頭へ揃えるのに使う。</summary>
-    private float CurrentBarStartTime()
-    {
-        float barSeconds = SecondsPerBar;
-        if (barSeconds <= DivideEpsilon) { return clockTime; }
-        return SEED.Mathf.Floor(clockTime / barSeconds) * barSeconds;
     }
 
     /// <summary>
@@ -2160,6 +2153,10 @@ public class FishingFight : SEEDScript
 
             return SEED.Mathf.Max(lastAnswerPerfect ? restBarsPerfect : restBarsNormal, MinPhaseBars);
         }
+
+        // 出題・回答の長さは「ビートパターン 1 行の小節数」で決まる。
+        // 出題と回答が必ず同じ長さになるので、打点アイコンが同じ角度に並ぶ。
+        if (currentPattern is { } pattern) { return SEED.Mathf.Max(pattern.Bars, MinPhaseBars); }
 
         int fromFish = target is { } fish
             ? phase switch
@@ -2233,11 +2230,12 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// 回答フェーズで期待する打点の一覧を作る【期待打点の唯一の生成点】。
-    /// 出題と同じフレーズ（<see cref="currentPhrase"/>）を回答フェーズの先頭から並べ直す。
-    /// 回答が出題より長い場合はフレーズを循環させ、短い場合は入り切る分だけを使う。
+    /// 出題と同じ譜面（<see cref="currentPattern"/>）を回答フェーズの先頭から並べ直す。
+    /// 回答が出題より長い場合は譜面を繰り返し、短い場合は入り切る分だけを使う。
     ///
-    /// 打点の時刻は出題と同じ式（開始時刻 ＋ 分割番号 × 1 分割の秒数）で<b>解析的に</b>求めるので、
-    /// 出題と回答の小節数が同じなら「フェーズ頭からの相対時刻」が完全に一致する
+    /// 打点の時刻は出題と同じ式（開始時刻 ＋ 小節内の位置 × 1 小節の秒数）で
+    /// <b>解析的に</b>求めるので、出題と回答の小節数が同じなら
+    /// 「フェーズ頭からの相対時刻」が完全に一致する
     /// ＝ 打点アイコンが出題時とまったく同じ角度に並ぶ。
     ///
     /// 出題→回答の境界をまたぐ早打ちを判定できるように、回答フェーズへ入る前
@@ -2254,16 +2252,26 @@ public class FishingFight : SEEDScript
         // ため到達しないが、取りこぼしたまま黙って消してしまわないための保険）。
         FailRemainingHits();
         ClearExpectedHits();
-        if (currentPhrase.Length <= 0 || subsPerBar <= 0) { return; }
+        if (currentPattern is not { } pattern || pattern.Bars <= 0) { return; }
 
-        int answerSubs = SEED.Mathf.Max(answerBars, MinPhaseBars) * subsPerBar;
-        for (int phaseSub = 0; phaseSub < answerSubs; phaseSub++)
+        // 回答フェーズは魚のテンポで数える（隙のテンポが混ざらないよう SecondsPerBar を使う）
+        float barSeconds = SecondsPerBar;
+        int bars = SEED.Mathf.Max(answerBars, MinPhaseBars);
+
+        // 回答が出題より長い場合はパターンを後ろへ繰り返す（短ければ入り切る分だけ使う）
+        for (int repeat = 0; repeat * pattern.Bars < bars; repeat++)
         {
-            if (currentPhrase[phaseSub % currentPhrase.Length] != PatternHitChar) { continue; }
+            double repeatOffsetBars = (double)repeat * pattern.Bars;
 
-            expectedTimes.Add(answerStartTime + phaseSub * secondsPerSub);
-            expectedJudged.Add(false);
-            expectedResults.Add(FishingController.HookJudgement.None);
+            foreach (double position in pattern.TriggerPositions)
+            {
+                double placed = repeatOffsetBars + position;
+                if (placed >= bars) { continue; }
+
+                expectedTimes.Add(answerStartTime + (float)(placed * barSeconds));
+                expectedJudged.Add(false);
+                expectedResults.Add(FishingController.HookJudgement.None);
+            }
         }
     }
 
@@ -2678,8 +2686,6 @@ public class FishingFight : SEEDScript
         drumScheduled = false;
         drumPausedByFight = false;
         drumStartTime = 0f;
-        drumUnitSeconds = 0f;
-        drumResyncSeconds = 0f;
 
         Active = false;
         Paused = false;                // 一時停止の持ち越しを防ぐ
@@ -2706,8 +2712,9 @@ public class FishingFight : SEEDScript
         phaseEndTime = 0f;
         phaseBars = MinPhaseBars;
         nextPhaseAnnounced = false;
-        currentPhrase = "";
-        patterns.Clear();
+        phaseBarSeconds = 0f;
+        currentPattern = null;
+        fightPattern = null;
         ClearCallHits();
         ClearExpectedHits();
 
@@ -3174,7 +3181,9 @@ public class FishingFight : SEEDScript
     /// 0 で Call へ切り替わるので、符号を反転するだけで「4 3 2 1」のカウントダウンになる。
     /// </summary>
     private int LeadInRemainingBeats()
-        => CurrentPhase == Phase.LeadIn ? SEED.Mathf.Max(-BeatIndex, 0) : 0;
+        => CurrentPhase == Phase.LeadIn
+            ? SEED.Mathf.Max(SEED.Mathf.Max(leadInBeats, 0) - BeatIndex, 0)
+            : 0;
 
     /// <summary>セグメント <paramref name="index"/> の角度（度・真上が 0・右回り）。</summary>
     /// <param name="index">セグメントの添字。</param>

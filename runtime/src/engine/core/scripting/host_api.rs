@@ -2250,6 +2250,52 @@ unsafe extern "system" fn ffi_script_debug_take(out: *mut u8, cap: i32) -> i32 {
     len
 }
 
+// ─── アセットのテキスト読み込み FFI（SEED.Assets）─────────────
+
+/// `ffi_asset_text` の kind: ファイル本文を UTF-8 テキストとして読む。
+const ASSET_TEXT_KIND_READ: i32 = 0;
+/// `ffi_asset_text` の kind: 最終更新時刻（UNIX 秒）を 10 進文字列で返す。
+const ASSET_TEXT_KIND_MTIME: i32 = 1;
+
+/// アセット（`assets://…` 仮想パス・絶対パスのどちらでも可）をテキストとして読む。
+///
+/// レベルデザイン用のテキストデータ（例: リズムのビートパターン表）を
+/// スクリプトから読むための最小 API。実体は `asset_fs::read_string` /
+/// `asset_fs::mtime` で、PAK・実ファイルのどちらにも対応する。
+///
+/// 【返り値】
+/// - `-1` … 読めなかった（パスが空・ファイルが無い・UTF-8 でない）
+/// - `0` 以上 … 結果の UTF-8 バイト数
+///
+/// 【バッファのやり取り】
+/// `ffi_save_string` の GET と同じ 2 段階プロトコル。返り値が `cap` 以下のときだけ
+/// `out` へ書き込むので、呼び出し側は「小さいバッファで 1 回試す → 足りなければ
+/// 返り値ぶん確保して呼び直す」だけでよい。
+unsafe extern "system" fn ffi_asset_text(
+    kind: i32,
+    path: *const u8, path_len: i32,
+    out: *mut u8, cap: i32,
+) -> i32 {
+    let path_s = str_from(path, path_len);
+    if path_s.is_empty() { return -1; }
+
+    // kind ごとに「返したい文字列」をここで 1 本に畳んでから、書き出しは共通処理に任せる
+    let text = match kind {
+        ASSET_TEXT_KIND_READ => match crate::engine::asset_fs::read_string(path_s) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        },
+        ASSET_TEXT_KIND_MTIME => crate::engine::asset_fs::mtime(path_s).to_string(),
+        _ => return -1,
+    };
+
+    let bytes = text.as_bytes();
+    if !out.is_null() && cap >= 0 && bytes.len() <= cap as usize {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+    }
+    bytes.len() as i32
+}
+
 /// `ffi_find_actor_from` の scope: 参照フィールド解決（サブツリー優先＋全体フォールバック）。
 const REF_SCOPE_REFERENCE: i32 = 0;
 /// `ffi_find_actor_from` の scope: サブツリー限定（GameObject.FindChild）。
@@ -3510,6 +3556,9 @@ pub struct ScriptHostApi {
     // デバッグコマンドの取り出し（SEED.Debug.OnCommand ／ SCRIPT_DEBUG IPC）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     script_debug_take:       unsafe extern "system" fn(*mut u8, i32) -> i32,
+    // アセットのテキスト読み込み（SEED.Assets.ReadText / GetModifiedTime）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    asset_text:              unsafe extern "system" fn(i32, *const u8, i32, *mut u8, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3554,6 +3603,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     camera_world_to_screen:  ffi_camera_world_to_screen,
     find_actor_from:         ffi_find_actor_from,
     script_debug_take:       ffi_script_debug_take,
+    asset_text:              ffi_asset_text,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

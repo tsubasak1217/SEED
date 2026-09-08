@@ -2064,6 +2064,38 @@ void OnCatch(string fishId, float sizeCm, int price)
 
 ---
 
+## 7.75 Assets（アセットのテキスト読み込み：レベルデザイン用データ）
+
+譜面表・会話台本・湧きテーブルのように「**差し替えるだけで挙動が変わる**」データを、ソースコードではなくテキストファイルへ置いて読み込むための API です。実体は Rust ランタイムの `asset_fs` なので、PAK 同梱でもエディタ Play でも同じパスで動きます（スクリプト側はファイル IO を意識しません）。
+
+```csharp
+// 本文を読む（失敗したら false。text は空文字列）
+if (SEED.Assets.TryReadText("assets://mainGame/rhythm/beat_patterns.txt", out string text))
+{
+    foreach (string line in text.Split('\n')) { /* … */ }
+}
+
+// 読めなくても既定値で進めたいとき
+string body = SEED.Assets.ReadText("assets://mainGame/data/table.txt", fallback: "");
+
+// 更新されたかを調べる（ホットリロード用。UNIX 秒。取得できないときは 0）
+long stamp = SEED.Assets.GetModifiedTime("assets://mainGame/rhythm/beat_patterns.txt");
+```
+
+| メンバー | 説明 |
+| -------- | ---- |
+| `bool TryReadText(string path, out string text)` | UTF-8 テキストとして読む（BOM は除去）。読めなければ false |
+| `string ReadText(string path, string fallback = "")` | 同上。失敗時は `fallback` を返す簡便版 |
+| `long GetModifiedTime(string path)` | 最終更新時刻（UNIX 秒）。取得できないときは `Assets.UnknownModifiedTime`（0） |
+
+**注意**
+
+- 呼ぶたびにディスク（または PAK）から読み直します。**毎フレーム呼ばないこと**。起動時や場面の切り替えで 1 度だけ読み、結果はスクリプト側で保持します。
+- ホットリロードしたいときは `GetModifiedTime` を数秒に 1 度だけ調べ、値が変わったときだけ読み直すのが安上がりです（実例: `runtime/assets/mainGame/scripts/Rhythm/BeatPatternLibrary.cs`）。
+- 書き込み API はありません。永続化したい値は `SaveData`（7.7）を使ってください。
+
+---
+
 ## 7.8 Draw（2D プリミティブ描画：ゲージ・レーダー・図形 UI）
 
 `SEED.Draw` は**イミディエイトモード**の 2D 図形描画 API です。Update などから**毎フレーム呼ぶ**と、そのフレームだけ図形が描かれます（オブジェクトは作られず、フレーム終了時にコマンドは破棄されます）。Unity の Gizmos / Debug.DrawLine に似ていますが、こちらはデバッグ用ではなく**ゲーム本編の UI として使える描画物**です。

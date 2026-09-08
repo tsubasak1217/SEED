@@ -1028,6 +1028,59 @@ public static unsafe class ScriptHost
         entity = new Entity(outBuf[0], outBuf[1]);
         return true;
     }
+
+    // -- アセットのテキスト読み込み（SEED.Assets）--------------------
+
+    /// <summary>AssetText の kind: 本文を読む（Rust 側 ASSET_TEXT_KIND_READ と一致）。</summary>
+    public const int AssetTextKindRead = 0;
+
+    /// <summary>AssetText の kind: 最終更新時刻を読む（Rust 側 ASSET_TEXT_KIND_MTIME と一致）。</summary>
+    public const int AssetTextKindModifiedTime = 1;
+
+    /// <summary>
+    /// アセットをテキストとして読む（<see cref="AssetTextKindRead"/>）か、
+    /// 最終更新時刻（UNIX 秒の 10 進文字列）を読む（<see cref="AssetTextKindModifiedTime"/>）。
+    ///
+    /// 必要長を返す 2 段階プロトコル（<see cref="SaveGetString"/> と同じ）。
+    /// 読めなかった場合は false を返し <paramref name="value"/> は空文字列。
+    /// </summary>
+    /// <param name="kind">操作の種類（Read / ModifiedTime）。</param>
+    /// <param name="path">アセットパス（assets:// 仮想パスまたは絶対パス）。</param>
+    /// <param name="value">読み取った文字列。</param>
+    public static bool AssetText(int kind, string path, out string value)
+    {
+        value = "";
+        if (!_available || _api.AssetText == null || string.IsNullOrEmpty(path)) return false;
+
+        int pl = Encoding.UTF8.GetByteCount(path);
+        Span<byte> pb = stackalloc byte[pl];
+        Encoding.UTF8.GetBytes(path, pb);
+
+        // 1 回目: 初期バッファで試す（更新時刻や短いファイルはここで完結する）
+        Span<byte> stack = stackalloc byte[InitialStringBufferSize];
+        int needed;
+        fixed (byte* pp = pb)
+        fixed (byte* sp = stack)
+            needed = _api.AssetText(kind, pp, pl, sp, stack.Length);
+
+        if (needed < 0) return false;                       // 読めなかった
+        if (needed <= stack.Length)
+        {
+            value = Encoding.UTF8.GetString(stack[..needed]);
+            return true;
+        }
+
+        // 2 回目: 必要長ちょうどのヒープバッファで再取得する
+        var heap = new byte[needed];
+        int written;
+        fixed (byte* pp = pb)
+        fixed (byte* hp = heap)
+            written = _api.AssetText(kind, pp, pl, hp, heap.Length);
+
+        if (written < 0 || written > heap.Length) return false;
+        value = Encoding.UTF8.GetString(heap, 0, written);
+        return true;
+    }
 }
 
 /// <summary>
@@ -1118,4 +1171,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, int, byte*, int, uint*, int> FindActorFrom;
     /// <summary>(out buf, cap) → -1=待ち行列が空 / 0以上="name\narg" のバイト数（デバッグコマンドの取り出し）</summary>
     public delegate* unmanaged[Cdecl]<byte*, int, int> ScriptDebugTake;
+    /// <summary>(kind, path, pathLen, out buf, cap) → -1=失敗 / 0以上=必要バイト長（アセットのテキスト読み込み。kind: 0=本文/1=更新時刻）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, int> AssetText;
 }

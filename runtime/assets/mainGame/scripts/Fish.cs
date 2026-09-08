@@ -271,20 +271,10 @@ public class Fish : SEEDScript
     [Header("リズム(釣りバトル)"), SerializeField(Label = "BPM")]
     private float rhythmBpm = 100f;
 
-    /// <summary>1 小節の拍数（拍子）。4 なら 4 拍子。</summary>
-    [SerializeField(Label = "拍子(1小節の拍数)")]
-    private int rhythmBeatsPerBar = 4;
-
-    /// <summary>
-    /// 出題に使うリズムパターン（1 要素 ＝ 1 小節ぶん）。
-    ///
-    /// 文字列は<b>8 分音符の並び</b>で、'x' が打点・'.' が休符。
-    /// 長さは必ず「拍子 × 2」文字（4 拍子なら 8 文字）にすること。
-    /// 長さや文字が違う要素は釣りバトル側で捨てられ、警告が 1 度だけ出る。
-    /// 出題のたびにこの中から 1 つがランダムに選ばれる。
-    /// </summary>
-    [SerializeField(Label = "リズムパターン(x=打点/.=休符)")]
-    private List<string> rhythmPatterns = new() { "x.x.x.x.", "x..x..x.", "x.xx..x." };
+    // 2026-09-09 改定: 「拍子」と「リズムパターン」は魚データから撤去した。
+    // 拍子は FishingFight の設定に一本化し、出題パターンはレベルデザイン用の
+    // テキストファイル（assets://mainGame/rhythm/beat_patterns.txt）から
+    // 魚のレベルで抽選する（記法は docs/beat_patterns.md）。
 
     /// <summary>出題フェーズの小節数（0 ＝ 釣りバトル側の既定値を使う）。</summary>
     [SerializeField(Label = "出題の小節数(0で既定)")]
@@ -294,13 +284,8 @@ public class Fish : SEEDScript
     [SerializeField(Label = "回答の小節数(0で既定)")]
     private int rhythmAnswerBars = 0;
 
-    /// <summary>
-    /// 隙フェーズの小節数（0 ＝ 釣りバトル側の既定値を使う）。
-    /// <b>2026-09-06 現在の <see cref="FishingFight"/> は本値を参照しない</b>
-    /// （隙の長さは直前の回答の出来で決まるため）。将来また魚ごとに固定したくなったとき用に残してある。
-    /// </summary>
-    [SerializeField(Label = "隙の小節数(0で既定)")]
-    private int rhythmRestBars = 0;
+    // 2026-09-09 改定: 「隙の小節数」も魚データから撤去した。
+    // 隙の長さは FishingFight の設定（回答の出来で完璧/通常を切り替える）に一本化してある。
 
     /// <summary>
     /// 表示名（釣果ログ・UI 用）。空なら <see cref="DefaultDisplayName"/> を使う。
@@ -571,26 +556,11 @@ public class Fish : SEEDScript
     /// <summary>釣りバトルのテンポ（BPM）。</summary>
     public float RhythmBpm => rhythmBpm;
 
-    /// <summary>釣りバトルの拍子（1 小節の拍数）。</summary>
-    public int RhythmBeatsPerBar => rhythmBeatsPerBar;
-
-    /// <summary>
-    /// 出題に使うリズムパターン（1 要素 ＝ 1 小節ぶん・8 分音符の並び）。
-    /// 検証（長さ・使用文字）は釣りバトル側が行う。
-    /// </summary>
-    public List<string> RhythmPatterns => rhythmPatterns;
-
     /// <summary>出題フェーズの小節数（0 ＝ 釣りバトル側の既定値）。</summary>
     public int RhythmCallBars => rhythmCallBars;
 
     /// <summary>回答フェーズの小節数（0 ＝ 釣りバトル側の既定値）。</summary>
     public int RhythmAnswerBars => rhythmAnswerBars;
-
-    /// <summary>
-    /// 隙フェーズの小節数（0 ＝ 釣りバトル側の既定値）。
-    /// 現行の <see cref="FishingFight"/> は参照しない（隙の長さは回答の出来で決まる）。
-    /// </summary>
-    public int RhythmRestBars => rhythmRestBars;
 
     /// <summary>餌の感知距離（釣りバトル側から参照する）。</summary>
     public float BaitSenseDistance => baitSenseDistance;
