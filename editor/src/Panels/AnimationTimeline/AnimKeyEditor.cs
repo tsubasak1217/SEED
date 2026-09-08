@@ -109,6 +109,85 @@ internal static class AnimKeyEditor
         return -1;
     }
 
+    // ── トラック種別変換（KindMismatch の解消）────────────────────
+    //
+    // トラック追加時にドロップダウンの既定選択を誤る／actor_path で意図的に
+    // 別種のアクタを狙う等で、対象アクタの実際の種別（2D=CanvasTransform /
+    // 3D=Transform）とトラックの種別が食い違う（KindInsertPrecheck.KindMismatch）
+    // ことがある。以前はエラーで中断するだけだったが、位置・回転・スケールは
+    // 2D⇔3D で機械的に変換できるため、ユーザーの承諾を得たうえで
+    // トラックの種別そのものを変換して続行できるようにする。
+
+    /// <summary>
+    /// トラックの変換コンポーネント種別（actor_transform ⇔ canvas_transform）を変換する。
+    /// 対象は Position/Rotation/Scale の 3 プロパティのみ（このレジストリに変換規則がある組だけ）。
+    /// Sprite の色など変換規則を持たないプロパティは <paramref name="toComponent"/> が
+    /// レジストリに未登録の組になり、その場合は何もしない（安全側）。
+    ///
+    /// 【変換規則】
+    ///  actor_transform.position (vec3 x,y,z)  ⇔ canvas_transform.position (vec2 x,y)
+    ///     3D→2D: z を切り捨てる。2D→3D: z=0 で補う。
+    ///  actor_transform.rotation (vec3 Euler)  ⇔ canvas_transform.rotation (float z)
+    ///     3D→2D: ez だけを残す。2D→3D: (0, 0, rz) として復元する。
+    ///  actor_transform.scale    (vec3 x,y,z)  ⇔ canvas_transform.scale    (vec2 x,y)
+    ///     3D→2D: sz を切り捨てる。2D→3D: sz=1 で補う。
+    ///
+    /// 時刻・補間方式はそのまま保つ。タンジェント（bezier 補間時のみ設定される）は
+    /// 有無をそのまま保ちつつ、値配列と同じ規則で要素数を詰め直す。
+    /// </summary>
+    /// <param name="track">変換対象トラック（in-place で書き換える）。</param>
+    /// <param name="toComponent">変換先のコンポーネント種別
+    /// （<see cref="AnimActorSnapshot.TransformComponent"/> か <see cref="AnimActorSnapshot.CanvasTransformComponent"/>）。</param>
+    public static void ConvertTrackKind(AnimTrack track, string toComponent)
+    {
+        if (track.Target.Component == toComponent) return; // 既に変換先と同じなら何もしない
+
+        var property     = track.Target.Property;
+        var newValueType = AnimPropertyRegistry.ResolveValueType(toComponent, property);
+        if (newValueType is null) return; // 変換規則を持たない組（未登録）は変換しない
+
+        var toIs2D = toComponent == AnimActorSnapshot.CanvasTransformComponent;
+        foreach (var key in track.Keys)
+        {
+            key.Values     = ConvertTransformValues(key.Values, property, toIs2D);
+            key.InTangent  = key.InTangent  is null ? null : ConvertTransformValues(key.InTangent,  property, toIs2D);
+            key.OutTangent = key.OutTangent is null ? null : ConvertTransformValues(key.OutTangent, property, toIs2D);
+        }
+
+        track.Target.Component = toComponent;
+        track.ValueType        = newValueType;
+    }
+
+    /// <summary>
+    /// Position/Rotation/Scale 1 プロパティぶんの値配列を 2D⇔3D 間で変換する。
+    /// <see cref="ConvertTrackKind"/> の値・タンジェント配列どちらにも使う共通ロジック。
+    /// </summary>
+    /// <param name="values">変換前の値（要素の欠落は 0 として扱う）。</param>
+    /// <param name="property">プロパティ名（<see cref="AnimActorSnapshot"/> の *Property 定数）。</param>
+    /// <param name="toIs2D">変換先が 2D（CanvasTransform）なら true、3D（Transform）なら false。</param>
+    private static float[] ConvertTransformValues(float[] values, string property, bool toIs2D)
+    {
+        float At(int i) => i < values.Length ? values[i] : 0f;
+
+        if (property == AnimActorSnapshot.PositionProperty)
+            return toIs2D
+                ? new[] { At(0), At(1) }         // vec3(x,y,z)    → vec2(x,y)
+                : new[] { At(0), At(1), 0f };     // vec2(x,y)      → vec3(x,y,z=0)
+
+        if (property == AnimActorSnapshot.ScaleProperty)
+            return toIs2D
+                ? new[] { At(0), At(1) }         // vec3(sx,sy,sz) → vec2(sx,sy)
+                : new[] { At(0), At(1), 1f };     // vec2(sx,sy)    → vec3(sx,sy,sz=1)
+
+        if (property == AnimActorSnapshot.RotationProperty)
+            return toIs2D
+                ? new[] { At(2) }                 // vec3 Euler(ex,ey,ez) → float(z=ez)
+                : new[] { 0f, 0f, At(0) };         // float(rz)            → vec3 Euler(0,0,rz)
+
+        // 変換規則を持たないプロパティ（呼び出し元が ResolveValueType で弾いているため通常は来ない）
+        return values;
+    }
+
     // ── サマリー行（全チャンネル）────────────────────────────────
     //
     // Blender の「Summary」チャンネルに相当する機能。ドープシート最上段に

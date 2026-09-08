@@ -7,6 +7,11 @@
              Focusable="True"
              FocusVisualStyle="{x:Null}">
     <!-- ComboBox / ComboBoxItem の配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる -->
+    <UserControl.Resources>
+        <!-- CmbNewTrackProperty の各項目が、対象アクタの種別（Tag = bool is2D）と
+             一致するかを判定する（一致しない項目はグレーアウト表示にする。選択自体は禁止しない）。 -->
+        <timeline:AnimPropertyKindMatchConverter x:Key="PropertyKindMatchConverter"/>
+    </UserControl.Resources>
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>   <!-- ツールバー -->
@@ -148,7 +153,26 @@
                     <StackPanel>
                         <TextBlock Text="トラック" Foreground="#999999" FontSize="11" Margin="0,0,0,2"/>
                         <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                            <ComboBox x:Name="CmbNewTrackProperty" Width="150" FontSize="10" Height="20"/>
+                            <ComboBox x:Name="CmbNewTrackProperty" Width="150" FontSize="10" Height="20"
+                                      ToolTip="灰色の項目は対象アクタの種別（2D/3D）と食い違うため、キー挿入時に変換確認が出ます">
+                                <ComboBox.ItemContainerStyle>
+                                    <Style TargetType="ComboBoxItem">
+                                        <Style.Triggers>
+                                            <!-- Component と Tag(is2D) が食い違う項目だけグレーアウトする -->
+                                            <DataTrigger Value="False">
+                                                <DataTrigger.Binding>
+                                                    <MultiBinding Converter="{StaticResource PropertyKindMatchConverter}">
+                                                        <Binding Path="Component"/>
+                                                        <Binding RelativeSource="{RelativeSource AncestorType=ComboBox}" Path="Tag"/>
+                                                    </MultiBinding>
+                                                </DataTrigger.Binding>
+                                                <Setter Property="Foreground" Value="#808080"/>
+                                                <Setter Property="Opacity" Value="0.6"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ComboBox.ItemContainerStyle>
+                            </ComboBox>
                             <Button x:Name="BtnAddTrack" Click="OnAddTrack"
                                     Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
                                     Width="20" Margin="2,0,0,0" Cursor="Hand"

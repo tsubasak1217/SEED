@@ -128,6 +128,21 @@ public partial class AnimationTimelinePanel : UserControl
     private AnimActorSnapshot _keyTargetSnapshot = AnimActorSnapshot.Parse("");
 
     /// <summary>
+    /// トラック追加ドロップダウン（CmbNewTrackProperty）の既定選択を、ユーザーが手動で
+    /// 選び直しているか。true の間は <see cref="UpdateNewTrackPropertyDefault"/> による
+    /// 自動再設定を行わない。キー対象アクタ自体が変わったら false へ戻す
+    /// （新しい対象では改めて種別に合った既定値を出したいため）。
+    /// </summary>
+    private bool _newTrackPropertyManuallyPicked;
+
+    /// <summary>
+    /// UpdateNewTrackPropertyDefault が CmbNewTrackProperty.SelectedIndex をコードから
+    /// 書き換えている間だけ立てるガード。これが無いと、コード側の代入も
+    /// OnNewTrackPropertySelectionChangedByUser に「ユーザー操作」と誤認識されてしまう。
+    /// </summary>
+    private bool _settingNewTrackPropertyProgrammatically;
+
+    /// <summary>
     /// アクター仮想ノード ID の下限。RuntimeManager.SelectionChanged が渡す id は
     /// Rust 側 send_selected() が単一選択時に付ける「999_000_000 + DFS ID」の仮想 ID であり、
     /// 生の DFS ID ではない（HierarchyPanel / InspectorPanel と同じ規約。値は両者と合わせること）。
@@ -174,6 +189,9 @@ public partial class AnimationTimelinePanel : UserControl
         CmbNewTrackProperty.ItemsSource       = AnimPropertyRegistry.Entries;
         CmbNewTrackProperty.DisplayMemberPath = nameof(AnimPropertyEntry.DisplayName);
         if (AnimPropertyRegistry.Entries.Count > 0) CmbNewTrackProperty.SelectedIndex = 0;
+        // キー対象アクタの種別が分かるたびに既定選択を作り直す（UpdateNewTrackPropertyDefault）。
+        // ユーザー自身の選択と区別するため、そちらの変更だけこのハンドラで検知する。
+        CmbNewTrackProperty.SelectionChanged += OnNewTrackPropertySelectionChangedByUser;
 
         DopeSheet.KeyAddRequested       += OnDopeSheetKeyAddRequested;
         DopeSheet.SelectionMoved        += OnDopeSheetSelectionMoved;
@@ -331,6 +349,7 @@ public partial class AnimationTimelinePanel : UserControl
             {
                 _actorDfsId     = -1;
                 _keyTargetDfsId = -1;
+                _newTrackPropertyManuallyPicked = false; // 対象が変わったので既定選択をやり直せるようにする
                 _actorClips.Clear();
                 UpdateEmptyState();
                 UpdateContextInfo();
@@ -370,6 +389,7 @@ public partial class AnimationTimelinePanel : UserControl
                     if (dfsId == _keyTargetDfsId || dfsId == _actorDfsId)
                     {
                         _keyTargetSnapshot = AnimActorSnapshot.Parse(json);
+                        UpdateNewTrackPropertyDefault(); // 固定中でも種別（Tag）は最新化する
                         if (_pendingSnapshotDfsId == dfsId && _pendingSnapshotCallback is { } lockedRetry)
                         {
                             ClearPendingSnapshotRequest();
@@ -385,10 +405,16 @@ public partial class AnimationTimelinePanel : UserControl
                 // ── (a) ユーザーが選択したアクタの情報 ──
                 if (dfsId == _selectedActorDfsId || _selectedActorDfsId < 0)
                 {
+                    // キー対象アクタ自体が切り替わったときだけ、トラック追加ドロップダウンの
+                    // 手動選択フラグをリセットする（同じアクタの transform 更新のたびに
+                    // ユーザーの選び直しを揉み消してしまわないため）。
+                    if (_keyTargetDfsId != dfsId) _newTrackPropertyManuallyPicked = false;
+
                     _selectedActorDfsId = dfsId;
                     _keyTargetDfsId     = dfsId;
                     // 現在値スナップショット（キー挿入で使う）はキー対象アクタのものだけ保持する
                     _keyTargetSnapshot  = AnimActorSnapshot.Parse(json);
+                    UpdateNewTrackPropertyDefault();
 
                     // キー挿入・上書きが「現在値がまだ無い」ために保留していた処理があれば、
                     // ここで届いたスナップショットを使って再実行する。
@@ -903,6 +929,46 @@ public partial class AnimationTimelinePanel : UserControl
 
     // ── トラック追加/削除 ───────────────────────────────────────
 
+    /// <summary>
+    /// ドロップダウン（CmbNewTrackProperty）のユーザー操作による選択変更。
+    /// <see cref="UpdateNewTrackPropertyDefault"/> がコードから SelectedIndex を
+    /// 書き換えるときは <see cref="_settingNewTrackPropertyProgrammatically"/> を立てて
+    /// 呼ぶため、ここには「ユーザーが実際にドロップダウンを操作した」場合だけ届く。
+    /// 一度でも手動選択したら、以後キー対象が変わるまで自動既定値の上書きをやめる。
+    /// </summary>
+    private void OnNewTrackPropertySelectionChangedByUser(object sender, SelectionChangedEventArgs e)
+    {
+        if (_settingNewTrackPropertyProgrammatically) return;
+        _newTrackPropertyManuallyPicked = true;
+    }
+
+    /// <summary>
+    /// キー対象アクタの種別（2D/3D）が判明・更新されるたびに呼ぶ。
+    /// ドロップダウンの既定選択をその種別に合わせ直し（ユーザーが手動選択済みなら触らない）、
+    /// グレーアウト判定用の Tag（bool = is2D）も最新化する。
+    ///
+    /// 【解決したい問題】
+    /// 以前はコンストラクタで先頭（"Transform / 位置" = 3D 用）を選んだきり変わらなかったため、
+    /// 2D アクタを対象にトラックを追加すると種別違いのトラックができ、I キーで初めて
+    /// KindMismatch エラーに気付く不具合があった（実例: MissionClearBanner）。
+    /// </summary>
+    private void UpdateNewTrackPropertyDefault()
+    {
+        // スナップショットがまだ「キー対象アクタ自身」のものでない、またはフォルダ／空なら
+        // 種別が判定できないため何もしない（誤った既定値を出すよりは変えない方が安全）。
+        if (_keyTargetSnapshot.ActorDfsId != _keyTargetDfsId) return;
+        if (_keyTargetSnapshot.IsFolder || _keyTargetSnapshot.IsEmpty) return;
+
+        // グレーアウト判定（AnimPropertyKindMatchConverter）用の Tag は手動選択中でも更新する
+        CmbNewTrackProperty.Tag = _keyTargetSnapshot.Is2D;
+
+        if (_newTrackPropertyManuallyPicked) return;
+
+        _settingNewTrackPropertyProgrammatically = true;
+        try   { CmbNewTrackProperty.SelectedIndex = AnimPropertyRegistry.DefaultIndexFor(_keyTargetSnapshot.Is2D); }
+        finally { _settingNewTrackPropertyProgrammatically = false; }
+    }
+
     private void OnAddTrack(object sender, RoutedEventArgs e)
     {
         if (_clip is null) return;
@@ -915,6 +981,15 @@ public partial class AnimationTimelinePanel : UserControl
         };
         _clip.Tracks.Add(track);
         CommitEdit(refreshTracks: true);
+
+        // 追加したトラックがキー対象アクタの種別と食い違う場合はブロックせずヒントだけ出す
+        // （actor_path で別アクタを明示的に狙う上級者の使い方もあるため、エラー扱いにはしない）。
+        if (IsKindMismatch(track))
+        {
+            var wantLabel = _keyTargetSnapshot.Is2D ? "CanvasTransform" : "Transform";
+            var kindLabel = _keyTargetSnapshot.Is2D ? "2D" : "3D";
+            TbTitleStatus.Text = $"対象は {kindLabel} です。{wantLabel} 用のトラックを選ぶと現在値でキーを打てます";
+        }
     }
 
     /// <summary>
@@ -1055,6 +1130,12 @@ public partial class AnimationTimelinePanel : UserControl
         if (_clip is null || trackIndex < 0 || trackIndex >= _clip.Tracks.Count) return;
         var track = _clip.Tracks[trackIndex];
 
+        // ダブルクリック対象のトラック自体がキー対象アクタの種別と食い違う場合は、
+        // 変換を提案する（EnsureKeyTargetReady の全体前提チェックは通さない＝
+        // 文脈未確定など他の理由でダブルクリックが効かなくなる回帰を避けるため、
+        // ここでは種別不一致だけを個別に見る）。
+        if (IsKindMismatch(track) && !TryResolveKindMismatchByConversion(track.Target.ActorPath)) return;
+
         // アクタの現在値が取れるならそれを使う（ダブルクリックでも「いまの見た目」がキーになる）。
         // 取れない場合だけ、従来どおり直前のキーの値を複製する。
         var values = CurrentValuesForTrack(track) ?? AnimKeyEditor.PreviousOrDefaultValues(track, time);
@@ -1129,6 +1210,11 @@ public partial class AnimationTimelinePanel : UserControl
         if (_clip is null) return;
         var precheck = EnsureKeyTargetReady(() => OnDopeSheetSummaryKeyAddRequested(time));
         if (precheck == KeyInsertPrecheckResult.NoSnapshot) return;
+        if (precheck == KeyInsertPrecheckResult.KindMismatch)
+        {
+            if (TryResolveKindMismatchByConversion(_keyTargetActorPath)) OnDopeSheetSummaryKeyAddRequested(time);
+            return;
+        }
         if (precheck != KeyInsertPrecheckResult.Ok)
         {
             TbTitleStatus.Text = DescribePrecheckFailure(precheck);
@@ -1473,6 +1559,12 @@ public partial class AnimationTimelinePanel : UserControl
         if (_clip is null) return;
         var precheck = EnsureKeyTargetReady(InsertKeyAtPlayhead);
         if (precheck == KeyInsertPrecheckResult.NoSnapshot) return; // 取得中。retry が再実行する
+        if (precheck == KeyInsertPrecheckResult.KindMismatch)
+        {
+            // 変換を承諾できたら、変換後の状態で自分自身をもう一度実行する（precheck は Ok になっている）。
+            if (TryResolveKindMismatchByConversion(_keyTargetActorPath)) InsertKeyAtPlayhead();
+            return;
+        }
         if (precheck != KeyInsertPrecheckResult.Ok)
         {
             TbTitleStatus.Text = DescribePrecheckFailure(precheck);
@@ -1544,6 +1636,7 @@ public partial class AnimationTimelinePanel : UserControl
             _keyTargetDfsId          = _actorDfsId;
             _keyTargetActorPath      = "";
             TbNewTrackActorPath.Text = "";
+            _newTrackPropertyManuallyPicked = false; // 新たにキー対象が定まったので既定選択を効かせる
         }
 
         var tracks = (IReadOnlyList<AnimTrack>?)_clip?.Tracks ?? Array.Empty<AnimTrack>();
@@ -1614,6 +1707,11 @@ public partial class AnimationTimelinePanel : UserControl
         if (_clip is null) return;
         var precheck = EnsureKeyTargetReady(OverwriteSelectedKey);
         if (precheck == KeyInsertPrecheckResult.NoSnapshot) return;
+        if (precheck == KeyInsertPrecheckResult.KindMismatch)
+        {
+            if (TryResolveKindMismatchByConversion(_keyTargetActorPath)) OverwriteSelectedKey();
+            return;
+        }
         if (precheck != KeyInsertPrecheckResult.Ok)
         {
             TbTitleStatus.Text = DescribePrecheckFailure(precheck);
@@ -1644,6 +1742,82 @@ public partial class AnimationTimelinePanel : UserControl
         }
 
         CommitEdit();
+    }
+
+    // ── トラック種別（2D/3D）の不一致検出・変換 ───────────────────
+    //
+    // KeyInsertPrecheck.KindMismatch はクリップ内の全トラックを見て判定するため、
+    // 「対象アクタの actor_path に一致するトラックだけ」を見たい場面（トラック追加時の
+    // ヒント・ダブルクリック時の判定）には使えない。ここではその狭い判定を別途持つ。
+
+    /// <summary>
+    /// 指定トラックが、キー対象アクタの実際の種別（2D=CanvasTransform/3D=Transform）と
+    /// 食い違っているか。種別が未確定（スナップショット未到着・フォルダ）、
+    /// トラックが別アクタ（actor_path 不一致）宛、変換対象外（Sprite の色など）の
+    /// プロパティのいずれかなら「判定できない＝不一致ではない」として false を返す。
+    /// </summary>
+    private bool IsKindMismatch(AnimTrack track)
+    {
+        if (_keyTargetSnapshot.ActorDfsId != _keyTargetDfsId) return false;
+        if (_keyTargetSnapshot.IsFolder || _keyTargetSnapshot.IsEmpty) return false;
+        if (track.Target.ActorPath != _keyTargetActorPath) return false;
+
+        var trackIsCanvas    = track.Target.Component == AnimActorSnapshot.CanvasTransformComponent;
+        var trackIsTransform = track.Target.Component == AnimActorSnapshot.TransformComponent;
+        if (!trackIsCanvas && !trackIsTransform) return false; // 変換コンポーネント以外は対象外
+
+        return trackIsCanvas ? !_keyTargetSnapshot.Is2D : _keyTargetSnapshot.Is2D;
+    }
+
+    /// <summary>
+    /// KindMismatch を検知したときに、ユーザーへ変換の可否を尋ねる。
+    /// 承諾されれば <paramref name="actorPath"/> が一致する変換系トラック（Transform/
+    /// CanvasTransform）を全部、キー対象アクタの実際の種別へ 1 回の Undo 履歴で変換する。
+    ///
+    /// 【無限ループ対策】
+    /// KeyInsertPrecheck.KindMismatch はクリップ全トラックを見て判定するため、
+    /// actorPath 一致トラックが 0 本でも（＝別アクタ宛のトラックが原因で）成立しうる。
+    /// その場合は自動変換のしようがないため、通常の案内文で中断する
+    /// （でなければ「変換 0 件 → 呼び出し元が再実行 → また KindMismatch」の無限再帰になる）。
+    /// </summary>
+    /// <param name="actorPath">変換対象を絞り込む actor_path（トラックの Target.ActorPath と一致するものだけ）。</param>
+    /// <returns>変換して続行してよければ true。ユーザーがキャンセルした、または自動変換できない場合は false。</returns>
+    private bool TryResolveKindMismatchByConversion(string actorPath)
+    {
+        if (_clip is null) return false;
+
+        var toComponent = _keyTargetSnapshot.Is2D
+            ? AnimActorSnapshot.CanvasTransformComponent
+            : AnimActorSnapshot.TransformComponent;
+
+        var targets = _clip.Tracks.Where(t =>
+            t.Target.ActorPath == actorPath &&
+            t.Target.Component != toComponent &&
+            (t.Target.Component == AnimActorSnapshot.CanvasTransformComponent ||
+             t.Target.Component == AnimActorSnapshot.TransformComponent)).ToList();
+
+        if (targets.Count == 0)
+        {
+            // このアクタ自身のトラックには不一致が無い＝クリップ内の別アクタ宛トラックが原因。
+            // 自動変換できないので、従来どおりの案内文を出して中断する。
+            TbTitleStatus.Text = DescribeKindMismatch();
+            return false;
+        }
+
+        var kindLabel = _keyTargetSnapshot.Is2D ? "CanvasTransform" : "Transform";
+        var answer = MessageBox.Show(
+            Window.GetWindow(this),
+            "トラックの種別が対象アクタと違います。\n\n" +
+            $"［はい］  {kindLabel} 用に変換する（位置・回転・スケールの値を変換）\n" +
+            "［いいえ］何もしない（キー挿入を中止）",
+            "トラック種別の変換", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes) return false;
+
+        foreach (var t in targets)
+            AnimKeyEditor.ConvertTrackKind(t, toComponent);
+
+        CommitEdit(refreshTracks: true); // 変換そのものを 1 回の Undo 履歴として積む
+        return true;
     }
 
     /// <summary>

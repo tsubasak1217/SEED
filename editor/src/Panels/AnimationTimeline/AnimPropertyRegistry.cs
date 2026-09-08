@@ -59,4 +59,25 @@ internal static class AnimPropertyRegistry
         "color" => 4,
         _       => 1, // float / bool
     };
+
+    /// <summary>
+    /// トラック追加ドロップダウンの既定選択インデックスを、対象アクタの種別（2D/3D）に合わせて求める。
+    ///
+    /// 【解決したい問題】
+    /// ドロップダウンは常に先頭（"Transform / 位置" = 3D 用）が選ばれた状態で開くため、
+    /// 2D アクタを対象にトラックを追加すると種別違いのトラックができてしまい、
+    /// あとで I キーを押した時点で初めて KindMismatch エラーに気付く（実際に起きた不具合）。
+    /// 呼び出し側（AnimationTimelinePanel）はキー対象の種別が分かるたびにこれを呼び直し、
+    /// コンボの既定選択をその場で作り直す。
+    /// </summary>
+    /// <param name="is2D">対象アクタが 2D（CanvasTransform 系）なら true。</param>
+    /// <returns>Entries 内で、対象種別の Position トラックに一致する最初のインデックス。
+    /// 一致するものが無ければ 0（先頭）。</returns>
+    public static int DefaultIndexFor(bool is2D)
+    {
+        var wantComponent = is2D ? AnimActorSnapshot.CanvasTransformComponent : AnimActorSnapshot.TransformComponent;
+        for (int i = 0; i < Entries.Count; i++)
+            if (Entries[i].Component == wantComponent) return i;
+        return 0;
+    }
 }

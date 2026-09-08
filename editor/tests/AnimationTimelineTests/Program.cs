@@ -86,6 +86,21 @@ public static class Program
         harness.Add("種別が一致すれば Ok",                           PrecheckOkWhenKindMatches);
         harness.Add("トラック 0 本（新規作成前）は種別チェックをしない", PrecheckOkWithNoTracksYet);
 
+        // ── 5c. トラック追加ドロップダウンの既定選択（AnimPropertyRegistry.DefaultIndexFor）──
+        harness.Add("2D なら CanvasTransform / 位置が既定になる",     DefaultIndexPicks2DPositionEntry);
+        harness.Add("3D なら Transform / 位置が既定になる",           DefaultIndexPicks3DPositionEntry);
+
+        // ── 5d. トラック種別変換（AnimKeyEditor.ConvertTrackKind）──
+        harness.Add("position: 3D→2D は z を切り捨てる",             ConvertPositionActorToCanvasDropsZ);
+        harness.Add("position: 2D→3D は z=0 で補う",                 ConvertPositionCanvasToActorAddsZeroZ);
+        harness.Add("rotation: 3D→2D は ez だけを残す",              ConvertRotationActorToCanvasKeepsEz);
+        harness.Add("rotation: 2D→3D は (0,0,rz) に復元する",        ConvertRotationCanvasToActorRestoresEuler);
+        harness.Add("scale: 3D→2D は sz を切り捨てる",               ConvertScaleActorToCanvasDropsSz);
+        harness.Add("scale: 2D→3D は sz=1 で補う",                   ConvertScaleCanvasToActorAddsOneSz);
+        harness.Add("変換してもキーの時刻・補間方式は変わらない",     ConvertKeepsTimeAndInterp);
+        harness.Add("タンジェントも値と同じ規則で詰め直される",       ConvertResizesTangentsToo);
+        harness.Add("既に変換先と同じ種別なら何もしない",             ConvertNoOpWhenAlreadyTargetKind);
+
         // ── 6. .anim の fps 互換 ──
         harness.Add("fps 無しの旧 .anim は既定 fps で読める",       LegacyClipGetsDefaultFps);
         harness.Add("fps は保存・再読込で往復する",                 FpsRoundTripsThroughJson);
@@ -705,6 +720,148 @@ public static class Program
         var result = KeyInsertPrecheck.Evaluate(
             Snapshot2D(), keyTargetDfsId: 1, hasContext: true, fileOnly: false, clipTracks: new List<AnimTrack>());
         Check.Equal(KeyInsertPrecheckResult.Ok, result, "トラックが無ければ種別不一致は起こり得ない");
+    }
+
+    // ── 5c. トラック追加ドロップダウンの既定選択（AnimPropertyRegistry.DefaultIndexFor）──
+
+    private static void DefaultIndexPicks2DPositionEntry()
+    {
+        var index = AnimPropertyRegistry.DefaultIndexFor(is2D: true);
+        var entry = AnimPropertyRegistry.Entries[index];
+        Check.Equal(AnimActorSnapshot.CanvasTransformComponent, entry.Component, "2D の既定は CanvasTransform");
+        Check.Equal(AnimActorSnapshot.PositionProperty,         entry.Property,  "2D の既定は position");
+    }
+
+    private static void DefaultIndexPicks3DPositionEntry()
+    {
+        var index = AnimPropertyRegistry.DefaultIndexFor(is2D: false);
+        var entry = AnimPropertyRegistry.Entries[index];
+        Check.Equal(AnimActorSnapshot.TransformComponent, entry.Component, "3D の既定は Transform（actor_transform）");
+        Check.Equal(AnimActorSnapshot.PositionProperty,   entry.Property,  "3D の既定は position");
+    }
+
+    // ── 5d. トラック種別変換（AnimKeyEditor.ConvertTrackKind）──────
+
+    /// <summary>2D（CanvasTransform）用のトラックを 1 本作る。</summary>
+    private static AnimTrack CanvasTrack(string property, string valueType, string actorPath = "") => new()
+    {
+        Target    = new AnimTarget { ActorPath = actorPath, Component = AnimActorSnapshot.CanvasTransformComponent, Property = property },
+        ValueType = valueType,
+    };
+
+    private static void ConvertPositionActorToCanvasDropsZ()
+    {
+        var track = Vec3Track(property: AnimActorSnapshot.PositionProperty);
+        track.Keys.Add(new AnimKey { Time = 0f, Values = new[] { 1f, 2f, 3f } });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.CanvasTransformComponent);
+
+        Check.Equal(AnimActorSnapshot.CanvasTransformComponent, track.Target.Component, "コンポーネントが変換される");
+        Check.Equal(AnimValueType.Vec2, track.ValueType, "value_type が vec2 になる");
+        Check.Equal(2, track.Keys[0].Values.Length, "値が 2 要素になる");
+        Check.True(track.Keys[0].Values[0] == 1f && track.Keys[0].Values[1] == 2f, "x,y はそのまま・z は捨てられる");
+    }
+
+    private static void ConvertPositionCanvasToActorAddsZeroZ()
+    {
+        var track = CanvasTrack(AnimActorSnapshot.PositionProperty, AnimValueType.Vec2);
+        track.Keys.Add(new AnimKey { Time = 0f, Values = new[] { 4f, 5f } });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.TransformComponent);
+
+        Check.Equal(AnimActorSnapshot.TransformComponent, track.Target.Component, "コンポーネントが変換される");
+        Check.Equal(AnimValueType.Vec3, track.ValueType, "value_type が vec3 になる");
+        var v = track.Keys[0].Values;
+        Check.True(v.Length == 3 && v[0] == 4f && v[1] == 5f && v[2] == 0f, "x,y はそのまま・z は 0 で補われる");
+    }
+
+    private static void ConvertRotationActorToCanvasKeepsEz()
+    {
+        var track = Vec3Track(property: AnimActorSnapshot.RotationProperty);
+        track.Keys.Add(new AnimKey { Time = 0f, Values = new[] { 10f, 20f, 30f } }); // ex,ey,ez
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.CanvasTransformComponent);
+
+        Check.Equal(AnimValueType.Float, track.ValueType, "value_type が float になる");
+        var v = track.Keys[0].Values;
+        Check.True(v.Length == 1 && v[0] == 30f, "ez だけが残る");
+    }
+
+    private static void ConvertRotationCanvasToActorRestoresEuler()
+    {
+        var track = CanvasTrack(AnimActorSnapshot.RotationProperty, AnimValueType.Float);
+        track.Keys.Add(new AnimKey { Time = 0f, Values = new[] { 45f } });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.TransformComponent);
+
+        Check.Equal(AnimValueType.Vec3, track.ValueType, "value_type が vec3 になる");
+        var v = track.Keys[0].Values;
+        Check.True(v.Length == 3 && v[0] == 0f && v[1] == 0f && v[2] == 45f, "(0,0,rz) として復元される");
+    }
+
+    private static void ConvertScaleActorToCanvasDropsSz()
+    {
+        var track = Vec3Track(property: AnimActorSnapshot.ScaleProperty);
+        track.Keys.Add(new AnimKey { Time = 0f, Values = new[] { 2f, 3f, 4f } });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.CanvasTransformComponent);
+
+        Check.Equal(AnimValueType.Vec2, track.ValueType, "value_type が vec2 になる");
+        var v = track.Keys[0].Values;
+        Check.True(v.Length == 2 && v[0] == 2f && v[1] == 3f, "sx,sy はそのまま・sz は捨てられる");
+    }
+
+    private static void ConvertScaleCanvasToActorAddsOneSz()
+    {
+        var track = CanvasTrack(AnimActorSnapshot.ScaleProperty, AnimValueType.Vec2);
+        track.Keys.Add(new AnimKey { Time = 0f, Values = new[] { 2f, 3f } });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.TransformComponent);
+
+        Check.Equal(AnimValueType.Vec3, track.ValueType, "value_type が vec3 になる");
+        var v = track.Keys[0].Values;
+        Check.True(v.Length == 3 && v[0] == 2f && v[1] == 3f && v[2] == 1f, "sx,sy はそのまま・sz は 1 で補われる");
+    }
+
+    private static void ConvertKeepsTimeAndInterp()
+    {
+        var track = Vec3Track(property: AnimActorSnapshot.PositionProperty);
+        track.Keys.Add(new AnimKey { Time = 1.25f, Values = new[] { 1f, 2f, 3f }, Interp = AnimInterp.Bezier });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.CanvasTransformComponent);
+
+        Check.Equal(1.25f, track.Keys[0].Time, "時刻は変わらない");
+        Check.Equal(AnimInterp.Bezier, track.Keys[0].Interp, "補間方式は変わらない");
+    }
+
+    private static void ConvertResizesTangentsToo()
+    {
+        var track = Vec3Track(property: AnimActorSnapshot.PositionProperty);
+        track.Keys.Add(new AnimKey
+        {
+            Time       = 0f,
+            Values     = new[] { 1f, 2f, 3f },
+            Interp     = AnimInterp.Bezier,
+            InTangent  = new[] { 0.1f, 0.2f, 0.3f },
+            OutTangent = new[] { 0.4f, 0.5f, 0.6f },
+        });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.CanvasTransformComponent);
+
+        var key = track.Keys[0];
+        Check.True(key.InTangent  is { Length: 2 } inT  && inT[0]  == 0.1f && inT[1]  == 0.2f, "InTangent も vec2 へ詰め直される");
+        Check.True(key.OutTangent is { Length: 2 } outT && outT[0] == 0.4f && outT[1] == 0.5f, "OutTangent も vec2 へ詰め直される");
+    }
+
+    private static void ConvertNoOpWhenAlreadyTargetKind()
+    {
+        var track = Vec3Track(property: AnimActorSnapshot.PositionProperty);
+        track.Keys.Add(new AnimKey { Time = 0f, Values = new[] { 1f, 2f, 3f } });
+
+        AnimKeyEditor.ConvertTrackKind(track, AnimActorSnapshot.TransformComponent); // 既に actor_transform
+
+        Check.Equal(AnimValueType.Vec3, track.ValueType, "value_type は変わらない");
+        Check.True(track.Keys[0].Values.Length == 3, "値も変わらない");
     }
 
     // ── 6. .anim の fps 互換 ────────────────────────────────────
