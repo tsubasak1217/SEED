@@ -68,10 +68,9 @@ thread_local! {
 
 /// スロットのバインド先から実値を解決する口。
 ///
-/// **後続実装（スクリプト／組込コンポーネントのバインド解決）の差し込み口は
-/// ここ 1 か所である。** 新しい解決器を足すときは、この trait を実装した型を
-/// `current_provider()` が返すようにするだけでよい（展開器・描画・IPC は
-/// いずれも `SlotValue` しか見ないので、他を触る必要は無い）。
+/// **解決器の差し込み口はここ 1 か所である。** 新しい解決器を足すときは、
+/// この trait を実装した型を `current_provider()` が返すようにするだけでよい
+/// （展開器・描画・IPC はいずれも `SlotValue` しか見ないので、他を触る必要は無い）。
 pub(super) trait SlotValueProvider {
     /// バインド文字列（"アクタ名|スロット名|変数名"）から実値を引く。
     ///
@@ -80,22 +79,120 @@ pub(super) trait SlotValueProvider {
     fn resolve(&self, bind: &str, kind: TextSlotKind) -> Option<SlotValue>;
 }
 
-/// 何も解決しない既定の供給器（＝常にフォールバック値を使う）。
-///
-/// バインドの実解決は後続タスクで差し込む。ここを空実装のままにしておくことで、
-/// 「バインド未設定と解決失敗が同じ挙動になる」ことを構造的に保証している。
-pub(super) struct FallbackValueProvider;
+thread_local! {
+    /// このフレームで解決済みの**数値**バインド（バインド文字列 → 値）。
+    static BOUND_NUMS: RefCell<HashMap<String, f32>> = RefCell::new(HashMap::new());
+    /// このフレームで解決済みの**文字列**バインド（バインド文字列 → 値）。
+    static BOUND_STRS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
 
-impl SlotValueProvider for FallbackValueProvider {
-    fn resolve(&self, _bind: &str, _kind: TextSlotKind) -> Option<SlotValue> {
-        None
+/// 解決済みバインド表を引く供給器（実運用の供給器）。
+///
+/// ## なぜ「その場で解決」ではなく表引きなのか
+/// 展開の入口（`expanded_for`）は描画・実測・画像収集の 3 経路から呼ばれ、
+/// そのうち 2 経路は既にシーンを不変借用した内側に居るため、
+/// ここから Actor ツリー・World へ触りに行くとシグネチャが芋づるに動く。
+/// また 3 経路が別々のタイミングで解決すると、
+/// **同じフレーム内で値が変わって展開キャッシュが毎回作り直される**。
+/// そこで「フレームの頭で 1 回だけ解決して表にする」方式にしてある
+/// （表を作るのは `App::build_text_expand_map` の先頭 = シーンを触れる場所）。
+pub(super) struct ResolvedValueProvider;
+
+impl SlotValueProvider for ResolvedValueProvider {
+    fn resolve(&self, bind: &str, kind: TextSlotKind) -> Option<SlotValue> {
+        if bind.is_empty() { return None; }
+        match kind {
+            // 数値スロットは f32 の供給値だけを受け取る。
+            TextSlotKind::Num =>
+                BOUND_NUMS.with(|m| m.borrow().get(bind).copied()).map(SlotValue::Num),
+            // 文字列スロットは str の供給値だけを受け取る。
+            TextSlotKind::String =>
+                BOUND_STRS.with(|m| m.borrow().get(bind).cloned()).map(SlotValue::Str),
+            // 画像・色スロットは差し込む「値」を持たない（パス／RGBA は
+            // スロット自身のフィールドが正典）。バインドの対象外。
+            TextSlotKind::Image | TextSlotKind::Color => None,
+        }
     }
 }
 
 /// 現在有効な供給器を返す（**差し込み口はこの 1 関数**）。
 #[inline]
 fn current_provider() -> impl SlotValueProvider {
-    FallbackValueProvider
+    ResolvedValueProvider
+}
+
+/// このフレームぶんのバインド解決表を作り直す（**フレームに 1 回**）。
+///
+/// 対象は「アクティブ世界線の全 Text スロットに書かれたバインド文字列」だけで、
+/// 同じバインド文字列は何個のスロットから指されていても **1 回しか解決しない**
+/// （スクリプトの `[Bindable]` メソッド呼び出しがスロット数ぶん走るのを防ぐ）。
+///
+/// 解決できなかったバインドは表に載せない ＝ 展開時にスロットの
+/// フォールバック値が使われる（「未設定」と「解決失敗」が同じ挙動になる契約）。
+fn refresh_bound_values(actors: &[Actor], world: &World, world_line: u32) {
+    use crate::engine::binding::resolve::{parse_binding, resolve_binding, resolve_binding_str};
+    use crate::engine::binding::catalog::BindableValueType;
+
+    // ── ① 解決すべきバインドを集める（種類ごとに重複排除）──
+    let mut want_nums: HashSet<String> = HashSet::new();
+    let mut want_strs: HashSet<String> = HashSet::new();
+    /// アクタとその子孫の Text スロットからバインド文字列を集める。
+    fn collect(
+        actor: &Actor,
+        world: &World,
+        nums:  &mut HashSet<String>,
+        strs:  &mut HashSet<String>,
+    ) {
+        for slot in actor.slots() {
+            if slot.kind != ComponentKind::Text { continue; }
+            let Some(tc) = world.get::<TextComponent>(slot.entity) else { continue };
+            for s in &tc.slots {
+                if s.bind.is_empty() { continue; }
+                match s.kind {
+                    TextSlotKind::Num    => { nums.insert(s.bind.clone()); }
+                    TextSlotKind::String => { strs.insert(s.bind.clone()); }
+                    TextSlotKind::Image | TextSlotKind::Color => {}
+                }
+            }
+        }
+        for child in actor.children() {
+            collect(child, world, nums, strs);
+        }
+    }
+    for actor in actors.iter().filter(|a| a.world_line == world_line) {
+        collect(actor, world, &mut want_nums, &mut want_strs);
+    }
+
+    // ── ② 実際に解決して表を作り直す（前フレームの結果は捨てる）──
+    BOUND_NUMS.with(|m| {
+        let mut map = m.borrow_mut();
+        map.clear();
+        for bind in want_nums {
+            let Some(target) = parse_binding(&bind) else { continue };
+            if let Some(v) =
+                resolve_binding(actors, world, world_line, &target, BindableValueType::F32)
+            {
+                // スカラーは第 1 成分のみ（`pack_scalar` の逆）。
+                map.insert(bind, v[0]);
+            }
+        }
+    });
+    BOUND_STRS.with(|m| {
+        let mut map = m.borrow_mut();
+        map.clear();
+        for bind in want_strs {
+            let Some(target) = parse_binding(&bind) else { continue };
+            if let Some(v) = resolve_binding_str(actors, world, world_line, &target) {
+                map.insert(bind, v);
+            }
+        }
+    });
+}
+
+/// バインド解決表を空にする（シーンが無いとき・テスト用）。
+fn clear_bound_values() {
+    BOUND_NUMS.with(|m| m.borrow_mut().clear());
+    BOUND_STRS.with(|m| m.borrow_mut().clear());
 }
 
 /// バインド文字列が解決できるか（インスペクタの警告表示用）。
@@ -199,9 +296,14 @@ impl App {
     pub(super) fn build_text_expand_map(&self) {
         let Some(scene) = self.scene.as_ref() else {
             invalidate_text_expand_cache();
+            clear_bound_values();
             return;
         };
         let wl = self.active_world_line;
+        // 展開より**先に**バインドを解決して表にする。
+        // ここがシーン（Actor ツリー・World）へ触れる唯一の場所であり、
+        // 以降の展開・描画・実測は表引きだけで済む。
+        refresh_bound_values(&scene.actors, &scene.world, wl);
         let mut live: HashSet<Entity> = HashSet::new();
         for actor in scene.actors.iter().filter(|a| a.world_line == wl) {
             warm_text_slots(actor, &scene.world, &mut live);
@@ -288,10 +390,10 @@ mod tests {
         assert_eq!(b.doc.text, "2");
     }
 
-    /// 既定の供給器では、バインドが書かれていても解決されない
-    /// （＝フォールバック値が使われる。後続タスクの差し込み前提の確認）。
+    /// 解決表が空なら、バインドが書かれていてもフォールバック値が使われること。
     #[test]
-    fn fallback_provider_never_resolves() {
+    fn unresolved_binding_falls_back() {
+        clear_bound_values();
         assert!(!slot_bind_resolves("Player|Status|hp", TextSlotKind::Num));
         assert!(!slot_bind_resolves("", TextSlotKind::Num));
         invalidate_text_expand_cache();
@@ -300,5 +402,64 @@ mod tests {
         slot.bind = "Player|Status|hp".into();
         slot.num = 5.0;
         assert_eq!(expanded_for(e, &text_with("{num}", vec![slot])).doc.text, "5");
+    }
+
+    /// 解決表に値があれば、フォールバック値ではなくそちらが差し込まれること（数値）。
+    #[test]
+    fn resolved_number_binding_wins_over_fallback() {
+        clear_bound_values();
+        BOUND_NUMS.with(|m| m.borrow_mut().insert("Player|Status|hp".into(), 42.0));
+        assert!(slot_bind_resolves("Player|Status|hp", TextSlotKind::Num));
+
+        invalidate_text_expand_cache();
+        let e = Entity::from_raw(9005, 0);
+        let mut slot = TextSlotData::new_of_kind(TextSlotKind::Num);
+        slot.bind = "Player|Status|hp".into();
+        slot.num  = 5.0; // フォールバック値（使われないはず）
+        assert_eq!(expanded_for(e, &text_with("{num}", vec![slot])).doc.text, "42");
+        clear_bound_values();
+    }
+
+    /// 解決表に値があれば、フォールバック文字列ではなくそちらが差し込まれること。
+    #[test]
+    fn resolved_string_binding_wins_over_fallback() {
+        clear_bound_values();
+        BOUND_STRS.with(|m| m.borrow_mut().insert("Player|Info|Title".into(), "勇者".into()));
+        assert!(slot_bind_resolves("Player|Info|Title", TextSlotKind::String));
+
+        invalidate_text_expand_cache();
+        let e = Entity::from_raw(9006, 0);
+        let mut slot = TextSlotData::new_of_kind(TextSlotKind::String);
+        slot.bind = "Player|Info|Title".into();
+        slot.text = "名無し".into(); // フォールバック値（使われないはず）
+        assert_eq!(expanded_for(e, &text_with("{string}", vec![slot])).doc.text, "勇者");
+        clear_bound_values();
+    }
+
+    /// 種類が違えば解決しないこと（数値の表に文字列スロットが繋がらない）。
+    #[test]
+    fn binding_tables_are_separated_by_slot_kind() {
+        clear_bound_values();
+        BOUND_NUMS.with(|m| m.borrow_mut().insert("A|B|c".into(), 1.0));
+        assert!(slot_bind_resolves("A|B|c", TextSlotKind::Num));
+        assert!(!slot_bind_resolves("A|B|c", TextSlotKind::String), "数値の表は文字列へ流れない");
+        // 画像・色スロットはバインドの対象外。
+        assert!(!slot_bind_resolves("A|B|c", TextSlotKind::Image));
+        assert!(!slot_bind_resolves("A|B|c", TextSlotKind::Color));
+        clear_bound_values();
+    }
+
+    /// 空文字列の解決は「成功して空」であり、フォールバックへ落ちないこと。
+    #[test]
+    fn resolved_empty_string_is_not_a_failure() {
+        clear_bound_values();
+        BOUND_STRS.with(|m| m.borrow_mut().insert("A|B|c".into(), String::new()));
+        invalidate_text_expand_cache();
+        let e = Entity::from_raw(9007, 0);
+        let mut slot = TextSlotData::new_of_kind(TextSlotKind::String);
+        slot.bind = "A|B|c".into();
+        slot.text = "落ちてはいけない".into();
+        assert_eq!(expanded_for(e, &text_with("[{string}]", vec![slot])).doc.text, "[]");
+        clear_bound_values();
     }
 }

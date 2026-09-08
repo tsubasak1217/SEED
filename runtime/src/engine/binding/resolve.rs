@@ -14,7 +14,8 @@
 //    ① アクタ名 → 世界線を DFS して最初の一致（`find_actor_by_name`）
 //    ② スロット名 → そのアクタの有効スロットのうち名前が一致する最初のもの
 //                   （特例: 変数が Transform のものならアクタのルート実体）
-//    ③ 変数名 → 組込カタログ、またはスクリプトの `[Bindable]` フィールド
+//    ③ 変数名 → 組込カタログ、またはスクリプトの `[Bindable]` メンバ
+//                   （フィールド／プロパティ／引数なしメソッド）
 //    ④ 型が要求と厳密一致したときだけ値を返す
 //  どこかで外れたら `None`（＝呼び出し側は保存値／既定値へフォールバックし、
 //  インスペクタに ⚠ を出す）。
@@ -22,12 +23,13 @@
 //  ## スクリプトの値は「C# 側の実行中の値」が正典
 //  Rust の `ScriptComponent::fields` は**編集時のシリアライズ値**であり、
 //  Play 中にスクリプトが書き換えた値は反映されない。したがって解決は必ず
-//  FFI（`ScriptComponent::read_bindable_field`）で CLR 側の実インスタンスを読む。
+//  FFI（`read_bindable_field` / `read_bindable_num` / `read_bindable_string`）で
+//  CLR 側の実インスタンスを読む。
 //  `[Bindable]` の検証も C# 側で行う（＝ランタイム読み取り時に毎回検証される）。
 // ============================================================
 
 use crate::engine::components::script_component::ScriptComponent;
-use crate::engine::components::{ComponentKind, Transform};
+use crate::engine::components::ComponentKind;
 use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
 
@@ -118,22 +120,24 @@ pub fn resolve_binding(
     target:     &BindingTarget,
     want:       BindableValueType,
 ) -> Option<[f32; BINDING_VALUE_COMPONENTS]> {
-    // 文字列型の供給値はまだ存在しない（組込カタログにも [Bindable] にも無い）。
+    // 文字列は `[f32; 4]` に載せられないため、この関数では扱わない
+    //（文字列バインドの解決は `resolve_binding_str` が担当する）。
     // 先に弾いておかないと、成分数 0 で FFI を叩く無意味な呼び出しが走る。
-    // 文字列バインドの解決は後続タスクでここへ実装を足す。
     if want == BindableValueType::Str {
         return None;
     }
     let actor = find_actor_by_name(actors, world_line, &target.actor)?;
 
-    // ── ① アクタのルート直付け（Transform）─────────────────
+    // ── ① アクタのルート直付け（Transform / CanvasTransform）──
     //     スロット一覧には現れないので、スロット走査より先に見る。
-    //     スロット名は組込カタログの表示名（"Transform"）と一致していること。
-    if world.get::<Transform>(actor.entity).is_some() {
-        for var in catalog::variables_for(BindableHost::ActorRoot, want) {
-            if var.component_label == target.slot && var.variable == target.variable {
-                return catalog::read_builtin(world, actor.entity, var);
-            }
+    //     スロット名は組込カタログの表示名（"Transform" / "CanvasTransform"）と一致していること。
+    //     対象コンポーネントが載っていなければ `read_builtin` が `None` を返すので、
+    //     ここで事前に存在判定はしない（判定の重複＝食い違いの元を作らない）。
+    for var in catalog::variables_for(BindableHost::ActorRoot, want) {
+        if var.component_label == target.slot && var.variable == target.variable
+            && let Some(v) = catalog::read_builtin(world, actor.entity, var)
+        {
+            return Some(v);
         }
     }
 
@@ -144,7 +148,21 @@ pub fn resolve_binding(
     // ── ③-a スクリプト（C# 側の実行中の値を FFI で読む）──────
     if slot.kind == ComponentKind::Script {
         let sc = world.get::<ScriptComponent>(slot.entity)?;
-        return sc.read_bindable_field(&target.variable, want.components());
+        // まず既存経路（`ReadFieldFloats`）。水面シェーダの `@ref` はこの契約
+        //（`[SerializeField] + [Bindable]` の `float` / `Vector3` フィールド）で動いており、
+        // 挙動を 1 ミリも変えないため**必ず先に**試す。
+        if let Some(v) = sc.read_bindable_field(&target.variable, want.components()) {
+            return Some(v);
+        }
+        // 次に新経路（`ReadBindableValue`）。`[Bindable]` のプロパティ・引数なしメソッド・
+        // `int` フィールドはこちらでしか読めない。スカラー要求のときだけ意味がある
+        //（新経路は 3 成分を運ばない）。
+        if want == BindableValueType::F32
+            && let Some(v) = sc.read_bindable_num(&target.variable)
+        {
+            return Some(BindableValueType::pack_scalar(v));
+        }
+        return None;
     }
 
     // ── ③-b 組込コンポーネント（カタログ）──────────────────
@@ -156,12 +174,41 @@ pub fn resolve_binding(
     None
 }
 
+/// 文字列バインド 1 本を解決する（Text の `{string}` プレースホルダ用）。
+///
+/// 数値版（`resolve_binding`）と分けてあるのは、内部表現が `[f32; 4]` 固定で
+/// 文字列を運べないため。**解決規則（アクタ探索・スロット探索・無効スロットの扱い）は
+/// 数値版と完全に同じ**で、違うのは「供給元がスクリプトだけ」という点である
+/// （組込コンポーネントは文字列の供給値を持たない。カタログにも `Str` の行は無い）。
+///
+/// 解決できないケースはすべて `None`:
+///   ・アクタが見つからない／スロットが見つからない／無効スロット
+///   ・スロットがスクリプトでない（組込は文字列を供給しない）
+///   ・`[Bindable]` の `string` メンバが無い／型が違う
+///   ・スクリプトが CLR 未起動のプレースホルダである（Edit 中など）
+///
+/// 空文字列は「解決成功して空」であり `Some(String::new())` を返す
+/// （呼び出し側はフォールバック値へ落とさない）。
+pub fn resolve_binding_str(
+    actors:     &[Actor],
+    world:      &World,
+    world_line: u32,
+    target:     &BindingTarget,
+) -> Option<String> {
+    let actor = find_actor_by_name(actors, world_line, &target.actor)?;
+    let slot  = actor.slots().iter().find(|s| s.enabled && s.name == target.slot)?;
+    if slot.kind != ComponentKind::Script { return None; }
+    let sc = world.get::<ScriptComponent>(slot.entity)?;
+    sc.read_bindable_string(&target.variable)
+}
+
 // ============================================================
 //  テスト
 // ============================================================
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::components::Transform;
     use crate::engine::components::light_component::LightComponent;
 
     /// バインド先文字列が往復すること。

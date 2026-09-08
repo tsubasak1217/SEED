@@ -214,4 +214,78 @@ public readonly struct Text : IComponentHandle<Text>
         get => ScriptHost.TryGetFloat(_entity, Comp, "shadow_softness", out var v) ? v : 0f;
         set => ScriptHost.TrySetFloat(_entity, Comp, "shadow_softness", value);
     }
+
+    // ─── 差し込みスロット（プレースホルダ記法 {image} / {color} / {string} / {num}）───
+    //
+    // 【スロットとは】
+    // 本文（Content）に書いた記法 1 つにつき 1 件の「差し込み値」が対応する。
+    // 何番目のスロットかは本文の登場順（0 始まり）で決まり、`{num:2}` のように
+    // 明示番号も書ける。値の種類（画像／色／文字列／数値）は**本文の記法が決める**ので、
+    // 種類の違うセッターを呼んでも本文の記法は変わらない（そのスロットの
+    // 対応するフィールドが更新されるだけで、表示に使われるのは記法に合う値である）。
+    //
+    // 【添字が範囲外のとき】
+    // ゲッターは既定値、セッターは無視される（例外は投げない）。
+    // 本文を書き換えると `SlotCount` も変わるため、毎フレーム添字を決め打ちするより
+    // `SlotCount` を見てから触るほうが安全である。
+    //
+    // 【バインドとの優先順位】
+    // スロットにバインド（インスペクタの「バインド先」）が設定され、かつ解決できた場合は
+    // **バインドの値が優先**され、ここで設定した値はフォールバックとして扱われる。
+
+    /// <summary>
+    /// 差し込みスロットの件数（get のみ。本文の記法が決めるので書き換えられない）。
+    ///
+    /// <para>= max(記法の出現数, 明示番号の最大 + 1)。本文に記法が無ければ 0。</para>
+    /// </summary>
+    public int SlotCount
+        => ScriptHost.TryGetFloat(_entity, Comp, "slot_count", out var v) ? (int)v : 0;
+
+    /// <summary>スロット添字からフィールドキー（<c>slot.{i}.{field}</c>）を組み立てる。</summary>
+    private static string SlotKey(int index, string field) => $"slot.{index}.{field}";
+
+    /// <summary>
+    /// 画像スロット（<c>{image}</c>）の画像を設定する。
+    ///
+    /// <paramref name="path"/> は <c>assets://</c> の画像パス、または
+    /// <see cref="IconSet"/> に登録したアイコン名（スキーム区切りを含まない文字列）。
+    /// </summary>
+    public void SetSlotImage(int index, string path)
+        => ScriptHost.TrySetString(_entity, Comp, SlotKey(index, "path"), path ?? "");
+
+    /// <summary>画像スロットの画像パス／アイコン名を取得する（未設定・範囲外は空文字）。</summary>
+    public string GetSlotImage(int index)
+        => ScriptHost.TryGetString(_entity, Comp, SlotKey(index, "path"), out var s) ? s : "";
+
+    /// <summary>
+    /// 色スロット（<c>{color}</c>〜<c>{/color}</c>）の色を設定する（RGBA 0..1）。
+    /// </summary>
+    public void SetSlotColor(int index, Color color)
+        => ScriptHost.TrySetColor(_entity, Comp, SlotKey(index, "rgba"), color);
+
+    /// <summary>色スロットの色を取得する（範囲外は不透明な白）。</summary>
+    public Color GetSlotColor(int index)
+        => ScriptHost.TryGetColor(_entity, Comp, SlotKey(index, "rgba"), out var c) ? c : Color.White;
+
+    /// <summary>
+    /// 文字列スロット（<c>{string}</c>）へ差し込む文字列を設定する。
+    /// 1 件あたり 256 文字を超える分は表示時に切り詰められる。
+    /// </summary>
+    public void SetSlotText(int index, string text)
+        => ScriptHost.TrySetString(_entity, Comp, SlotKey(index, "text"), text ?? "");
+
+    /// <summary>文字列スロットの文字列を取得する（範囲外は空文字）。</summary>
+    public string GetSlotText(int index)
+        => ScriptHost.TryGetString(_entity, Comp, SlotKey(index, "text"), out var s) ? s : "";
+
+    /// <summary>
+    /// 数値スロット（<c>{num}</c> / <c>{num.3}</c>）へ差し込む数値を設定する。
+    /// 小数の桁数は本文の記法（<c>{num.3}</c> の <c>.3</c>）が決める。
+    /// </summary>
+    public void SetSlotNumber(int index, float value)
+        => ScriptHost.TrySetFloat(_entity, Comp, SlotKey(index, "num"), value);
+
+    /// <summary>数値スロットの数値を取得する（範囲外は 0）。</summary>
+    public float GetSlotNumber(int index)
+        => ScriptHost.TryGetFloat(_entity, Comp, SlotKey(index, "num"), out var v) ? v : 0f;
 }

@@ -501,7 +501,6 @@ impl App {
         use super::find_actor_by_dfs;
         use crate::engine::binding::catalog::{self, BindableHost, BindableValueType};
         use crate::engine::components::script_component::ScriptComponent;
-        use crate::engine::components::Transform;
 
         let Some(ipc)   = &self.ipc   else { return };
         let Some(scene) = &self.scene else { return };
@@ -525,31 +524,43 @@ impl App {
 
         let mut out: Vec<serde_json::Value> = Vec::new();
 
-        // ── ① アクタのルート直付け（Transform）────────────────
+        // ── ① アクタのルート直付け（Transform / CanvasTransform）──
         //     スロット一覧に現れないので先に見る。スロット名は表の表示名をそのまま使う
         //     （解決側 `resolve_binding` と同じ規約）。
-        if scene.world.get::<Transform>(actor.entity).is_some() {
+        //     ルート直付けは複数のコンポーネント（Transform / CanvasTransform）が
+        //     同じ `ActorRoot` に載るため、**表示名ごとに 1 エントリ**へまとめる。
+        //     そのコンポーネントが実際に載っていないアクタでは候補に出さない
+        //     （選んでも絶対に解決できない行を作らないため）。
+        for label in catalog::variables_for(BindableHost::ActorRoot, want)
+            .map(|v| v.component_label)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
             let vars: Vec<serde_json::Value> =
                 catalog::variables_for(BindableHost::ActorRoot, want)
+                    .filter(|v| v.component_label == label)
+                    // 実際に読めるものだけ（＝そのコンポーネントが載っているか）。
+                    .filter(|v| catalog::read_builtin(&scene.world, actor.entity, v).is_some())
                     .map(|v| serde_json::json!({ "name": v.variable, "label": v.variable_label }))
                     .collect();
-            if let Some(first) = catalog::variables_for(BindableHost::ActorRoot, want).next()
-                && !vars.is_empty()
-            {
-                out.push(entry(first.component_label, first.component_label, vars));
-            }
+            if vars.is_empty() { continue; }
+            out.push(entry(label, label, vars));
         }
 
         // ── ② スロット（有効なもののみ）──────────────────────
         for slot in actor.slots().iter().filter(|s| s.enabled) {
             let vars: Vec<serde_json::Value> = if slot.kind == ComponentKind::Script {
-                // スクリプトは C# 側が正典。[SerializeField] の各フィールドへ
-                // 実際に読み取りを試し、**要求型と成分数が一致したものだけ**を候補にする
-                //（＝[Bindable] の検証も型判定も CLR 側の 1 か所で完結する）。
+                // スクリプトは C# 側が正典。`DescribeBindableMembers` が返す
+                // 「`[Bindable]` メンバとそのワイヤ型名」の一覧から、
+                // **要求型と一致するものだけ**を候補にする。
+                //
+                // 一覧には従来の `[SerializeField, Bindable]` フィールドも含まれるため、
+                // 水面シェーダの `@ref`（f32 / vec3）の候補は以前と同じものが出る（上位互換）。
+                // 加えて `[Bindable]` のプロパティ・引数なしメソッド・`int`・`string` も出る。
                 let Some(sc) = scene.world.get::<ScriptComponent>(slot.entity) else { continue };
-                sc.fields.keys()
-                    .filter(|name| sc.read_bindable_field(name, want.components()).is_some())
-                    .map(|name| serde_json::json!({ "name": name, "label": name }))
+                let Some(members) = sc.describe_bindable_members() else { continue };
+                members.iter()
+                    .filter(|m| m.value_type == want.as_str())
+                    .map(|m| serde_json::json!({ "name": m.name, "label": m.name }))
                     .collect()
             } else {
                 catalog::variables_for(BindableHost::Slot(slot.kind), want)

@@ -50,7 +50,7 @@ public class Mover : SEEDScript
 | `[Tooltip("説明")]` | フィールド | マウスオーバー時の説明。`[SerializeField(Tooltip = ...)]` より**独立した `[Tooltip]` が優先**される |
 | `[Range(min, max)]` | フィールド | 数値フィールドをスライダー表示にする（float / int） |
 | `[ResetButton]` | フィールド | 行の右端に「デフォルトに戻す」ボタン（⟲）を出す。押すと**宣言の初期化子の値**（無ければ 0 / false / 空文字 / 参照は未設定）へ戻る。Ctrl+Z で取り消せる |
-| `[Bindable]` | フィールド | このフィールドを**シェーダパラメータのバインド元**として公開する（`[SerializeField]` との併用が必須）。対応型は `float` と `Vector3` のみ |
+| `[Bindable]` | フィールド / プロパティ / 引数なしメソッド | そのメンバを**バインド元（値の供給元）**として公開する。供給先は水面シェーダの `@ref` パラメータと Text のプレースホルダ（`{num}` / `{string}`）。フィールドは `[SerializeField]` との併用が必須（プロパティ・メソッドは不要）。対応型は `float` / `int` / `string`、`Vector3` は水面シェーダ専用でフィールドのみ |
 | `[TextArea]` / `[TextArea(4)]` | フィールド | `string` を**複数行のテキストボックス**にする（既定 3 行、引数で行数指定。`MinLines` / `MaxLines` も指定できる）。Enter は改行で、値の確定はフォーカスが外れたとき |
 | `[AssetReference("ttf", "otf")]` | フィールド | `string` を**アセットファイルへの参照行**（パス表示＋参照ボタン＋✕）にする。指定した拡張子のファイルだけを D&D で受け付け、値は `assets://` 仮想パスで保存される |
 | `[RequireComponent(typeof(OtherScript))]` / `[RequireComponent("Camera")]` | クラス | アタッチ時に不足コンポーネントを**自動追加**する。型指定＝他スクリプト（型名から `.cs` を探す）、文字列指定＝ネイティブコンポーネント名 |
@@ -90,20 +90,31 @@ public class CameraShake : SEEDScript
 
 **`[Bindable]` の詳細**
 
-- 水面シェーディングアセット（`.wgsl`）が `@ref` を付けて宣言したパラメータは、
-  インスペクタで「アクタ → コンポーネント → 変数」を選ぶだけで、このフィールドの
-  **実行中の値**が毎フレームシェーダへ流し込まれます（`docs/water_shading_asset.md` の
-  「3.6 `@ref` — シーンから値を流し込む」を参照）。
-- `[SerializeField]` との**併用が必須**です。`[SerializeField]` の無いフィールドに
-  付けてもバインド候補には現れません（インスペクタに出ない値をバインド候補に出すと、
-  何がどこから流れているのか追跡できなくなるため）。
-- 対応する型は WGSL 側と厳密に対応する 2 つだけです。
-  - `float` … WGSL の `f32` パラメータへ繋がる
-  - `Vector3` … WGSL の `vec3<f32>`（色）パラメータへ繋がる
+- バインドの消費者は 2 つあります。
+  - **水面シェーディングアセット（`.wgsl`）の `@ref` パラメータ** — インスペクタで
+    「アクタ → コンポーネント → 変数」を選ぶだけで、そのメンバの**実行中の値**が
+    毎フレームシェーダへ流し込まれます（`docs/water_shading_asset.md` の
+    「3.6 `@ref` — シーンから値を流し込む」を参照）。
+  - **Text のプレースホルダ記法（`{num}` / `{string}`）** — 本文の差し込み口へ
+    実行中の値が毎フレーム差し込まれます（第 7 節「プレースホルダ記法」を参照）。
+- **付けられる場所**はフィールド・プロパティ・引数なしメソッドの 3 つです。
+  - フィールド … `[SerializeField]` との**併用が必須**です（インスペクタに出ない値を
+    バインド候補に出すと、何がどこから流れているのか追跡できなくなるため）。
+  - プロパティ … get アクセサを持つこと。`[SerializeField]` は**不要**です。
+  - メソッド … **引数なし**で戻り値を返すこと。`[SerializeField]` は**不要**です。
+- 対応する型は次のとおりです。
+  - `float` … Text の `{num}` / WGSL の `f32` パラメータへ繋がる
+  - `int` … Text の `{num}` へ繋がる（`float` へ変換されます）
+  - `string` … Text の `{string}` へ繋がる
+  - `Vector3` … WGSL の `vec3<f32>`（色）パラメータ専用。**フィールドのみ**
+    （`[SerializeField]` 併用必須）
 
   **成分の部分取り出しは行いません。** `Vector3` を `f32` のパラメータへ繋ぐことは
-  できません（X 成分だけ欲しいなら `float` のフィールドを別に用意してください）。
-  上記以外の型に付けても候補には現れません。
+  できません（X 成分だけ欲しいなら
+  `[Bindable] public float PosX => transform.Position.x;` のようにプロパティを
+  1 本生やしてください）。上記以外の型に付けても候補には現れません。
+- **プロパティ・メソッドは毎フレーム呼び出されます。** カウンタを進める・生成する・
+  ログを出すといった**副作用を持たせてはいけません**（読むだけの純粋な計算にすること）。
 - 値は**毎フレーム、描画の直前に実行中のインスタンスから直接**読まれます（Edit /
   Play の両方）。したがって `Update` などで書き換えた値がそのままシェーダへ届きます。
 - `[Bindable]` が付いているかどうかの検証は、**値を読み取るたびにランタイム側で
@@ -116,8 +127,12 @@ public class CameraShake : SEEDScript
   候補に一切現れません（まずコンパイルエラーを直してください）。
 
 ```csharp
-[SerializeField, Bindable]
+[SerializeField, Bindable]                                  // フィールド（SerializeField 併用が必須）
 private float glowPower = 1.0f;
+
+[Bindable] public float PosX => transform.Position.x;       // プロパティ（SerializeField 不要）
+[Bindable] public string PlayerName => saveName;            // 文字列は Text の {string} へ
+[Bindable] public int    Score() => hits * 100;             // 引数なしメソッド（副作用禁止）
 ```
 
 **`[TextArea]` の詳細（改行の扱い）**
@@ -1459,6 +1474,17 @@ if (gameObject.GetComponent<Text>() is { } label)
     label.ShadowOffset   // Vector2（get/set。影のずらし量 px。X 右・Y 下。(0,0)=影なし）
     label.ShadowColor    // Color（get/set。影の色。既定=半透明の黒）
     label.ShadowSoftness // float（get/set。影のぼかし幅 px。0=シャープ）
+
+    // プレースホルダ記法（{image} {color} {string} {num}）の差し込みスロット
+    label.SlotCount               // int（get のみ。本文の記法が決めるスロット件数）
+    label.SetSlotImage(0, "assets://ui/coin.png"); // {image} の画像（アイコン名でも可）
+    label.GetSlotImage(0)         // string
+    label.SetSlotColor(1, SEED.Color.Red);         // {color} の色
+    label.GetSlotColor(1)         // Color
+    label.SetSlotText(2, "勇者");                   // {string} の文字列
+    label.GetSlotText(2)          // string
+    label.SetSlotNumber(3, 1234.5f);               // {num} の数値
+    label.GetSlotNumber(3)        // float
 }
 ```
 
@@ -1530,6 +1556,95 @@ if (gameObject.GetComponent<Text>() is { } hint)
 > **重要 — 未解決・不正な記法のときの挙動**: アイコン名が `.icons` に無い、`IconSet` が未設定、画像ファイルが読めない、といった場合は **幅 1em（フォントサイズと同じ幅）の空白**になり、本文のレイアウトは崩れません。警告はその名前／パスにつき **1 回だけ** ログへ出ます。`[` で始まっても `icon:` / `img:` のどちらでもないもの（例 `[0]`、`[note:x]`）、対応する `]` が無いもの（例 `[icon:key_w`）は **記法とみなさず、そのまま通常の文字として描かれます**。
 
 > **重要 — 制限**: (1) 画像に文字の太さ（`Weight`）は効きません（SDF のしきい値操作なので画像には適用できません）。(2) 影は画像にも同じオフセットで落ちますが、`ShadowSoftness`（ぼかし）は画像には効きません（スプライトとして描くため）。(3) 画像は `Color` で着色されません（アイコン本来の色で出ます）が、`Color` のアルファには追従します。(4) 縦書きには対応していません。(5) 画像も 1 つにつき 1 文字として数えるため、4096 文字の上限に含まれます（上限で切れても記法の途中で壊れることはありません）。(6) 画像は本文のグリフと同じレイヤー値で、スプライトとして描かれます（同一レイヤー内ではグリフより 1 段奥になりますが、文字と画像は重ならないため見た目には現れません）。
+
+#### プレースホルダ記法（`{image}` / `{color}` / `{string}` / `{num}`）
+
+本文（`Content`）に「差し込み口」を置く記法です。差し込む値そのものは本文ではなく**スロット配列**が持ち、インスペクタかスクリプト（`SetSlotXxx`）、あるいは**バインド**（他のアクターのコンポーネント／スクリプトの値を毎フレーム引いてくる仕組み）で決めます。
+
+| 記法 | 意味 |
+| --- | --- |
+| `{image}` | 画像を 1 文字ぶん差し込む（`[img:]` / `[icon:]` と同じ解決規則） |
+| `{image h=1.4}` | 高さ倍率つき（画像の高さ = フォントサイズ × h。既定 1.0） |
+| `{color}` | ここから先の文字色をスロットの色へ切り替える |
+| `{/color}` | 色区間の終わり（省略時は行末＝次の改行の直前まで） |
+| `{string}` | 文字列を差し込む |
+| `{num}` | 数値を整数（四捨五入）で差し込む |
+| `{num.3}` | 数値を小数 3 桁で差し込む |
+| `{image:1}` / `{num:2}` | **番号指定**（既にあるスロット 1 番 / 2 番を参照する） |
+| `{num:2.3}` | 番号 + 書式（スロット 2 番を小数 3 桁で） |
+| `\{` | 「{」そのものを描くエスケープ |
+
+**番号の決まり** — 通し番号カウンタは記法が出るたびに必ず 1 進みます（明示番号を書いても進みます）。番号を書かなければそのときのカウンタ値が添字です。スロット配列の長さは `max(記法の出現数, 明示番号の最大 + 1)` になります。
+
+**既知キーワード以外は通常文字** — `{` で始まっても `image` / `color` / `/color` / `string` / `num` のいずれでもない場合（例 `{0}`、`{name}`）、および対応する `}` が無い場合は、**波括弧ごとそのまま描かれます**。プログラム的な `{}` を含む説明文の見た目は 1 文字も変わりません。
+
+**スロットの保存形式** — 1 件につき「種類 / 画像パス / RGBA / バインド先 / フォールバック文字列 / フォールバック数値」を持ちます。本文を書き換えると記法に合わせて再マッピングされ、**種類が一致するスロットの値だけが引き継がれます**（種類が変わった位置は既定値へ戻ります）。
+
+**インスペクタでの設定** — Text コンポーネントのインスペクタに、本文の記法から作られたスロットの行が並びます。各行で値（画像 / 色 / 文字列 / 数値）を直接入力するか、「バインド先」に **アクター → コンポーネント → 変数** を選びます。バインドが解決できない行には ⚠ が出ます。
+
+**バインド候補になる条件** — バインドの供給元は次の 2 つで、**要求される型と厳密一致**したものだけが候補に出ます（`{num}` は `f32`、`{string}` は `str`）。
+
+| 供給元 | 候補になる変数 |
+| --- | --- |
+| エンジン組込コンポーネント | `Transform.position` / `Transform.scale`（vec3）、`CanvasTransform.rotation`、`Light.intensity` / `Light.color`、`WaterVolume.wave_amplitude` / `surface_height` / `shallow_color` / `deep_color`、`Text.font_size`、`Sprite.layer` |
+| C# スクリプト | `[Bindable]` を付けた **フィールド**（`[SerializeField]` 併用が必須）・**プロパティ**（get 必須）・**引数なしメソッド**。型は `float` / `int`（→ `{num}`）と `string`（→ `{string}`） |
+
+> **重要 — 成分の部分取り出しはできません**。`Transform.position` は `vec3` なので `{num}` へは繋がりません。「X 座標だけ表示したい」場合は、スクリプトに 1 行足してスカラーとして公開してください。
+
+```csharp
+// Transform の X 成分を {num} へ流すための書き方（プロパティなので [SerializeField] 不要）
+[Bindable] public float PosX => transform.Position.x;
+
+// int も {num} に繋がる（float へ変換されます）
+[SerializeField, Bindable] private int hp = 100;
+
+// 文字列は {string} に繋がる
+[Bindable] public string PlayerName => saveName;
+```
+
+> **重要 — `[Bindable]` のプロパティ・メソッドは毎フレーム呼ばれます**。カウンタを進める・オブジェクトを生成する・ログを出すといった**副作用を書かないでください**（読むだけの純粋な計算にすること）。
+
+> **重要 — Edit 中（Play していないとき）はフォールバック値が出ます**。スクリプトのインスタンスは Play 中にしか存在しないため、エディタで編集しているあいだスクリプトへのバインドは解決されず、スロットに入力した値（フォールバック値）がそのまま表示されます。組込コンポーネント（`Light.intensity` など）へのバインドは Edit 中でも解決されます。
+
+**差し込みの上限と数値の書式** — 1 スロットが差し込める文字数は **256 文字**までで、超えた分は切り捨てられます（本文全体の 4096 文字上限とは別に、先に 1 件単位で切ります）。数値は **half-away-from-zero（0.5 は絶対値が大きい側へ）** で丸めてから桁を固定します（`{num}` で 2.5 → `3`、`{num.1}` で 0.25 → `0.3`）。`NaN` は `NaN`、無限大は `∞` / `-∞`、負のゼロは `0` として表示されます。
+
+**スクリプトからスロットを触る** — 添字は本文の登場順（0 始まり）です。範囲外の添字はゲッターが既定値を返し、セッターは無視されます。
+
+```csharp
+if (gameObject.GetComponent<Text>() is { } label)
+{
+    label.SlotCount              // int（get のみ。本文の記法が決めるスロット件数）
+    label.SetSlotImage(0, "assets://ui/coin.png"); // {image} の画像（アイコン名でも可）
+    label.GetSlotImage(0)        // string
+    label.SetSlotColor(1, SEED.Color.Red);         // {color} の色
+    label.GetSlotColor(1)        // Color
+    label.SetSlotText(2, "勇者");                   // {string} の文字列
+    label.GetSlotText(2)         // string
+    label.SetSlotNumber(3, 1234.5f);               // {num} の数値
+    label.GetSlotNumber(3)       // float
+}
+```
+
+```csharp
+// 例: "[画像]所持金 1,234 円" のような HUD（本文は 1 回だけ、値は毎フレーム）
+public void OnStart()
+{
+    if (gameObject.GetComponent<Text>() is { } hud)
+    {
+        hud.Content = "{image h=1.2} 所持金 {color}{num}{/color} 円";
+        hud.SetSlotImage(0, "assets://ui/coin.png");
+        hud.SetSlotColor(1, new SEED.Color(1f, 0.9f, 0.2f, 1f));
+    }
+}
+
+public void Update()
+{
+    if (gameObject.GetComponent<Text>() is { } hud)
+        hud.SetSlotNumber(2, money);   // 3 番目の記法 {num} が添字 2
+}
+```
+
+> **重要 — バインドが設定されているスロットでは、`SetSlotText` / `SetSlotNumber` の値はフォールバックになります**（バインドが解決できたらそちらが優先されます）。スクリプトから毎フレーム値を入れるなら、そのスロットのバインドは空のままにしてください。
 
 ### Skybox（天球の色調整：時間帯・天候の演出）
 

@@ -246,6 +246,38 @@ fn array_value_matches_type(element_tag: &str, value: &str) -> bool {
     })
 }
 
+// ─── [Bindable] メンバ読み取りの定数（マジックナンバー禁止）───────
+//
+// 値は C# 側（`ScriptBridge.BindableKindNum` 等）と**完全一致**させること。
+
+/// 要求種別: 数値（`BindableValueType::F32`）。
+const BINDABLE_KIND_NUM: i32 = 0;
+/// 要求種別: 文字列（`BindableValueType::Str`）。
+const BINDABLE_KIND_STR: i32 = 1;
+/// 数値バインドが受け取るバイト数（`f32` 1 個 = リトルエンディアン 4 バイト）。
+const BINDABLE_NUM_BYTES: usize = 4;
+/// 「バッファ不足」を表す戻り値の上限（これ以下ならバッファ不足）。
+/// 失敗コード `-1` と区別するため、バッファ不足は必ず `-2` 以下になる。
+const BINDABLE_SHORT_BUFFER_MAX: i32 = -2;
+/// 文字列読み取りで最初に確保するバッファ長。
+/// Text スロットの注入上限（256 文字）を UTF-8 最長 4 バイトで見積もっても収まる。
+const BINDABLE_STRING_INITIAL_CAPACITY: usize = 1024;
+/// メンバ一覧 JSON で最初に確保するバッファ長。
+const BINDABLE_MEMBERS_INITIAL_CAPACITY: usize = 4096;
+
+/// `[Bindable]` メンバ 1 件の定義（`DescribeBindableMembers` の JSON 要素）。
+///
+/// エディタのバインド先候補一覧を組み立てるためだけに使う。
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct BindableMemberDef {
+    /// メンバ名（`ReadBindableValue` に渡す名前であり、バインド文字列の 3 要素目になる）。
+    pub name: String,
+    /// 供給値のワイヤ型名（`f32` / `str` / `vec3`。`BindableValueType::as_str` と一致）。
+    #[serde(rename = "type")]
+    pub value_type: String,
+}
+
+
 /// ホットリロード時のフィールド値引き継ぎ（純粋関数）。
 ///
 /// 【規則】新しいフィールド定義に**存在し、かつ旧値がその型で解釈できる**ものだけを残す。
@@ -530,6 +562,86 @@ impl ScriptComponent {
         // 0 以下 = 読めなかった。成分数不一致 = 型が違う（どちらも解決失敗）。
         if written <= 0 || written as usize != want_components { return None; }
         Some(buf)
+    }
+
+    /// `[Bindable]` メンバ（フィールド／プロパティ／引数なしメソッド）の**数値**を読む。
+    ///
+    /// `read_bindable_field`（水面シェーダの `@ref` 経路）との違いは、
+    /// `[SerializeField]` の無いプロパティ・メソッドも読め、`int` も受け付ける点。
+    /// 対象が無い・型が違う・例外が出た場合は `None`（＝スロットのフォールバック値へ落ちる）。
+    ///
+    /// **毎フレーム呼ばれる**。C# 側のメソッドに副作用を書いてはならない契約は
+    /// `BindableAttribute` の doc コメントに明記してある。
+    pub fn read_bindable_num(&self, name: &str) -> Option<f32> {
+        let n = name.as_bytes();
+        // 数値はリトルエンディアン 4 バイトで返る（C# 側 WriteSingleLittleEndian と対）。
+        let mut buf = [0u8; BINDABLE_NUM_BYTES];
+        let written = unsafe {
+            (self.host.read_bindable_value_fn)(
+                self.handle,
+                n.as_ptr(), n.len() as i32,
+                BINDABLE_KIND_NUM,
+                buf.as_mut_ptr(), BINDABLE_NUM_BYTES as i32,
+            )
+        };
+        // バイト数が一致したときだけ成功（C# 側は必ず 4 を返す）。
+        if written != BINDABLE_NUM_BYTES as i32 { return None; }
+        Some(f32::from_le_bytes(buf))
+    }
+
+    /// `[Bindable]` メンバの**文字列**を読む（Text の `{string}` プレースホルダ用）。
+    ///
+    /// 空文字列は「成功して空」であり `Some(String::new())` を返す
+    /// （解決失敗の `None` と区別できる。フォールバック値へ落ちない）。
+    ///
+    /// バッファが足りなければ C# が必要バイト数を返すので、1 度だけ確保し直して再試行する。
+    pub fn read_bindable_string(&self, name: &str) -> Option<String> {
+        let n = name.as_bytes();
+        let mut buf = vec![0u8; BINDABLE_STRING_INITIAL_CAPACITY];
+        let mut written = self.call_read_bindable_string(n, &mut buf);
+
+        // `<= -2` はバッファ不足。必要バイト数 = -(戻り値) - 1。
+        if written <= BINDABLE_SHORT_BUFFER_MAX {
+            let needed = (-written - 1) as usize;
+            buf = vec![0u8; needed];
+            written = self.call_read_bindable_string(n, &mut buf);
+        }
+        if written < 0 { return None; }
+        String::from_utf8(buf[..written as usize].to_vec()).ok()
+    }
+
+    /// 文字列読み取りの FFI 呼び出し 1 回ぶん（`read_bindable_string` の内部用）。
+    fn call_read_bindable_string(&self, name: &[u8], buf: &mut [u8]) -> i32 {
+        unsafe {
+            (self.host.read_bindable_value_fn)(
+                self.handle,
+                name.as_ptr(), name.len() as i32,
+                BINDABLE_KIND_STR,
+                buf.as_mut_ptr(), buf.len() as i32,
+            )
+        }
+    }
+
+    /// このスクリプトが公開している `[Bindable]` メンバの一覧を取得する。
+    ///
+    /// インスペクタのバインド先候補列挙（GET_BINDABLE_SOURCES）でのみ使う
+    /// （毎フレームは呼ばない）。取得できない・JSON が壊れている場合は `None`。
+    pub fn describe_bindable_members(&self) -> Option<Vec<BindableMemberDef>> {
+        let mut buf = vec![0u8; BINDABLE_MEMBERS_INITIAL_CAPACITY];
+        let mut written = unsafe {
+            (self.host.describe_bindable_members_fn)(self.handle, buf.as_mut_ptr(), buf.len() as i32)
+        };
+        // 負値 = バッファ不足。必要量が返るので確保し直して 1 度だけ再試行する。
+        if written < 0 {
+            let needed = (-written) as usize;
+            buf = vec![0u8; needed];
+            written = unsafe {
+                (self.host.describe_bindable_members_fn)(self.handle, buf.as_mut_ptr(), buf.len() as i32)
+            };
+        }
+        if written <= 0 { return None; }
+        let json = std::str::from_utf8(&buf[..written as usize]).ok()?;
+        serde_json::from_str::<Vec<BindableMemberDef>>(json).ok()
     }
 
     /// CLR インスタンスへフィールド値を FFI 経由で書き込む（内部用）。

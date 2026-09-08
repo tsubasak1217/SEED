@@ -1708,6 +1708,16 @@ const TEXT_SLOT_NO_HEIGHT: f32 = 0.0;
 /// 小数桁「指定なし」を表す値（記法が付いていないスロット）。
 const TEXT_SLOT_NO_FORMAT: i32 = -1;
 
+/// インスペクタ送出 JSON で、数値スロットの値が有限でないときに使う代替値。
+const TEXT_SLOT_NUM_JSON_FALLBACK: f32 = 0.0;
+/// インスペクタ送出 JSON で、色成分が有限でないときに使う代替値。
+const TEXT_SLOT_COLOR_JSON_FALLBACK: f32 = 1.0;
+
+/// 有限な f32 は小数 4 桁で、NaN / ±∞ は `fallback` を同じ書式で JSON 数値として返す。
+fn json_finite_or_default(value: f32, fallback: f32) -> String {
+    let v = if value.is_finite() { value } else { fallback };
+    format!("{v:.4}")
+}
 /// TextComponent の差し込みスロットをインスペクタ向け JSON 配列にする。
 ///
 /// 【なぜ本文を再解析するのか】
@@ -1751,12 +1761,20 @@ fn text_slots_json(
         let bind_json = serde_json::to_string(&slot.bind).unwrap_or_default();
         let text_json = serde_json::to_string(&slot.text).unwrap_or_default();
         let bind_ok = super::text_expand::slot_bind_resolves(&slot.bind, kind);
+        // JSON は NaN / ±∞ を表現できない（`{:.4}` だと "NaN" / "inf" が素で出て
+        // インスペクタ側の ACTOR_COMPONENTS 解析ごと壊れる）。有限でない数値は
+        // 送出時だけ既定値に丸める（保存値は変えない）。
+        let num_json = json_finite_or_default(slot.num, TEXT_SLOT_NUM_JSON_FALLBACK);
+        let rgba_json: Vec<String> = slot
+            .rgba
+            .iter()
+            .map(|c| json_finite_or_default(*c, TEXT_SLOT_COLOR_JSON_FALLBACK))
+            .collect();
         out.push_str(&format!(
-            r#"{{"index":{index},"kind":"{}","format":{format},"h":{height:.4},"path":{path_json},"rgba":[{:.4},{:.4},{:.4},{:.4}],"bind":{bind_json},"bind_ok":{},"text":{text_json},"num":{:.4}}}"#,
+            r#"{{"index":{index},"kind":"{}","format":{format},"h":{height:.4},"path":{path_json},"rgba":[{},{},{},{}],"bind":{bind_json},"bind_ok":{},"text":{text_json},"num":{num_json}}}"#,
             kind.key(),
-            slot.rgba[0], slot.rgba[1], slot.rgba[2], slot.rgba[3],
+            rgba_json[0], rgba_json[1], rgba_json[2], rgba_json[3],
             bind_ok as u8,
-            slot.num,
         ));
     }
     out.push(']');

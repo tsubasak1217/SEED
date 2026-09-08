@@ -252,7 +252,7 @@
 </div>
 
 <!-- ════════════════ 1. 基本形 ════════════════ -->
-<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable Bindable バインド 参照バインド 水面シェーダ ref ScriptEvent UnityEvent イベント 結線 コールバック 呼び出し Invoke バインディング 引数 argKind enum 列挙型 列挙子 ドロップダウン コンボボックス プルダウン 選択肢 Flags TextArea 複数行 テキストエリア 改行 エスケープ AssetReference アセット参照 パス 拡張子 ドラッグアンドドロップ フォント">
+<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable Bindable バインド 参照バインド 水面シェーダ ref ScriptEvent UnityEvent イベント 結線 コールバック 呼び出し Invoke バインディング 引数 argKind enum 列挙型 列挙子 ドロップダウン コンボボックス プルダウン 選択肢 Flags TextArea 複数行 テキストエリア 改行 エスケープ AssetReference アセット参照 パス 拡張子 ドラッグアンドドロップ フォント プレースホルダ 差し込み スロット バインド元 供給元 プロパティ メソッド int string 副作用">
   <h2>1. スクリプトの基本形</h2>
   <p class="section-note">C# で書き、<code>SEEDScript</code>（<code>SEEDEditor.Scripting</code> 名前空間）を継承します。</p>
 <pre><span class="k">using</span> SEEDEditor.Scripting;   <span class="c">// SEEDScript・[SerializeField]・NativeFrameContext</span>
@@ -282,7 +282,7 @@
     <tr><td><code>[Tooltip("説明")]</code></td><td>フィールド</td><td>マウスオーバー時の説明。<code>[SerializeField(Tooltip = ...)]</code> より<b>独立した <code>[Tooltip]</code> が優先</b>される</td></tr>
     <tr><td><code>[Range(min, max)]</code></td><td>フィールド</td><td>数値フィールドをスライダー表示にする（float / int）</td></tr>
     <tr><td><code>[ResetButton]</code></td><td>フィールド</td><td>行の右端に「デフォルトに戻す」ボタン（⟲）を出す。押すと<b>宣言の初期化子の値</b>（無ければ 0 / false / 空文字 / 参照は未設定）へ戻る。Ctrl+Z で取り消せる</td></tr>
-    <tr><td><code>[Bindable]</code></td><td>フィールド</td><td>このフィールドを<b>シェーダパラメータのバインド元</b>として公開する（<code>[SerializeField]</code> との併用が必須）。対応型は <code>float</code> と <code>Vector3</code> のみ</td></tr>
+    <tr><td><code>[Bindable]</code></td><td>フィールド / プロパティ / 引数なしメソッド</td><td>そのメンバを<b>バインド元（値の供給元）</b>として公開する。供給先は水面シェーダの <code>@ref</code> パラメータと Text のプレースホルダ（<code>{num}</code> / <code>{string}</code>）。フィールドは <code>[SerializeField]</code> との併用が必須（プロパティ・メソッドは不要）。対応型は <code>float</code> / <code>int</code> / <code>string</code>、<code>Vector3</code> は水面シェーダ専用でフィールドのみ</td></tr>
     <tr><td><code>[TextArea]</code> / <code>[TextArea(4)]</code></td><td>フィールド</td><td><code>string</code> を<b>複数行のテキストボックス</b>にする（既定 3 行、引数で行数指定。<code>MinLines</code> / <code>MaxLines</code> も指定できる）。Enter は改行で、値の確定はフォーカスが外れたとき</td></tr>
     <tr><td><code>[AssetReference("ttf", "otf")]</code></td><td>フィールド</td><td><code>string</code> を<b>アセットファイルへの参照行</b>（パス表示＋参照ボタン＋✕）にする。指定した拡張子のファイルだけを D&amp;D で受け付け、値は <code>assets://</code> 仮想パスで保存される</td></tr>
     <tr><td><code>[RequireComponent(typeof(OtherScript))]</code> / <code>[RequireComponent("Camera")]</code></td><td>クラス</td><td>アタッチ時に不足コンポーネントを<b>自動追加</b>する。型指定＝他スクリプト（型名から <code>.cs</code> を探す）、文字列指定＝ネイティブコンポーネント名</td></tr>
@@ -311,14 +311,19 @@
   <p class="section-note"><code>[Serializable]</code> ネストクラスの<b>フィールドそのもの</b>に付けてもボタンは出ません（子をまとめて戻すと Ctrl+Z が 1 手にまとまらないため）。<b>ネストの中の個々のフィールド</b>には付けられます。その場合の戻り先は<b>そのネストクラス側の初期化子</b>であり、外側での <code>new Nested { inner = 99f }</code> のような初期化は反映されません。</p>
 
   <h3><code>[Bindable]</code> の詳細</h3>
-  <p class="section-note">水面シェーディングアセット（<code>.wgsl</code>）が <code>@ref</code> を付けて宣言したパラメータは、インスペクタで「アクタ → コンポーネント → 変数」を選ぶだけで、このフィールドの<b>実行中の値</b>が毎フレームシェーダへ流し込まれます（<a href="water_shading_asset.md">water_shading_asset.md</a> の「3.6 <code>@ref</code> — シーンから値を流し込む」を参照）。</p>
-  <p class="section-note"><code>[SerializeField]</code> との<b>併用が必須</b>です。<code>[SerializeField]</code> の無いフィールドに付けてもバインド候補には現れません（インスペクタに出ない値をバインド候補に出すと、何がどこから流れているのか追跡できなくなるため）。</p>
-  <p class="section-note">対応する型は WGSL 側と厳密に対応する 2 つだけです。<code>float</code> … WGSL の <code>f32</code> パラメータへ繋がる／<code>Vector3</code> … WGSL の <code>vec3&lt;f32&gt;</code>（色）パラメータへ繋がる。<b>成分の部分取り出しは行いません。</b> <code>Vector3</code> を <code>f32</code> のパラメータへ繋ぐことはできません（X 成分だけ欲しいなら <code>float</code> のフィールドを別に用意してください）。上記以外の型に付けても候補には現れません。</p>
+  <p class="section-note">バインドの消費者は 2 つあります。① <b>水面シェーディングアセット（<code>.wgsl</code>）の <code>@ref</code> パラメータ</b> — インスペクタで「アクタ → コンポーネント → 変数」を選ぶだけで、そのメンバの<b>実行中の値</b>が毎フレームシェーダへ流し込まれます（<a href="water_shading_asset.md">water_shading_asset.md</a> の「3.6 <code>@ref</code> — シーンから値を流し込む」を参照）。② <b>Text のプレースホルダ記法（<code>{num}</code> / <code>{string}</code>）</b> — 本文の差し込み口へ実行中の値が毎フレーム差し込まれます。</p>
+  <p class="section-note"><b>付けられる場所</b>はフィールド・プロパティ・引数なしメソッドの 3 つです。フィールドは <code>[SerializeField]</code> との<b>併用が必須</b>です（インスペクタに出ない値をバインド候補に出すと、何がどこから流れているのか追跡できなくなるため）。プロパティは get アクセサを持つこと、メソッドは引数なしで戻り値を返すことが条件で、どちらも <code>[SerializeField]</code> は<b>不要</b>です。</p>
+  <p class="section-note">対応する型は <code>float</code>（Text の <code>{num}</code> / WGSL の <code>f32</code>）、<code>int</code>（<code>{num}</code> へ。float へ変換）、<code>string</code>（<code>{string}</code> へ）、<code>Vector3</code>（WGSL の <code>vec3&lt;f32&gt;</code> 専用・<b>フィールドのみ</b>）です。<b>成分の部分取り出しは行いません。</b> <code>Vector3</code> を <code>f32</code> のパラメータへ繋ぐことはできません（X 成分だけ欲しいなら <code>[Bindable] public float PosX =&gt; transform.Position.x;</code> のようにプロパティを 1 本生やしてください）。上記以外の型に付けても候補には現れません。</p>
+  <p class="section-note"><b>プロパティ・メソッドは毎フレーム呼び出されます。</b> カウンタを進める・生成する・ログを出すといった<b>副作用を持たせてはいけません</b>（読むだけの純粋な計算にすること）。</p>
   <p class="section-note">値は<b>毎フレーム、描画の直前に実行中のインスタンスから直接</b>読まれます（Edit / Play の両方）。したがって <code>Update</code> などで書き換えた値がそのままシェーダへ届きます。</p>
   <p class="section-note"><code>[Bindable]</code> が付いているかどうかの検証は、<b>値を読み取るたびにランタイム側で毎回行われます</b>（設定時に一度だけ検証してキャッシュする方式ではありません）。そのため、バインドを張った後にこの属性を外す・フィールドを消す・型を変える、といった変更をすると、<b>その瞬間からバインドは静かに切れます</b>。シェーダのパラメータは保存値（無ければアセットの既定値）へフォールバックし、インスペクタのその行に ⚠ が出ます。</p>
   <p class="section-note">スクリプトのコンパイルに失敗している間は、そのスクリプトのフィールドはバインド候補に一切現れません（まずコンパイルエラーを直してください）。</p>
-<pre>[<span class="t">SerializeField</span>, <span class="t">Bindable</span>]
-<span class="k">private float</span> glowPower = 1.0f;</pre>
+<pre>[<span class="t">SerializeField</span>, <span class="t">Bindable</span>]                       <span class="c">// フィールド（SerializeField 併用が必須）</span>
+<span class="k">private float</span> glowPower = 1.0f;
+
+[<span class="t">Bindable</span>] <span class="k">public float</span>  PosX =&gt; transform.Position.x;   <span class="c">// プロパティ（SerializeField 不要）</span>
+[<span class="t">Bindable</span>] <span class="k">public string</span> PlayerName =&gt; saveName;        <span class="c">// 文字列は Text の {string} へ</span>
+[<span class="t">Bindable</span>] <span class="k">public int</span>    Score() =&gt; hits * 100;         <span class="c">// 引数なしメソッド（副作用禁止）</span></pre>
 
   <h3><code>[TextArea]</code> の詳細（改行の扱い）</h3>
 <pre>[<span class="t">SerializeField</span>(Label = <span class="s">"本文"</span>), <span class="t">TextArea</span>(4)]     <span class="c">// 4 行ぶんの高さで表示する</span>
@@ -855,7 +860,7 @@ icon.SetParent(<span class="k">null</span>);     <span class="c">// シーンの
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="RayTracingExcluded レイトレ レイトレーシング 対象外 除外 BLAS TLAS 反射 GI AO 影 負荷 軽量化 rt_exclude Visible 表示 非表示 表示切替 隠す 可視 可視性 目アイコン eye 描画停止 レンダラー Renderer.enabled visible Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst Tint 色味 着色 ティント アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed WorldToScreen WorldToCanvas ワールド スクリーン 画面座標 スクリーン座標 キャンバス座標 射影 変換 頭上UI HPバー ダメージ表示 ミニマップ">
+<section id="sec-components" data-keywords="RayTracingExcluded レイトレ レイトレーシング 対象外 除外 BLAS TLAS 反射 GI AO 影 負荷 軽量化 rt_exclude Visible 表示 非表示 表示切替 隠す 可視 可視性 目アイコン eye 描画停止 レンダラー Renderer.enabled visible Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst Tint 色味 着色 ティント アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed WorldToScreen WorldToCanvas ワールド スクリーン 画面座標 スクリーン座標 キャンバス座標 射影 変換 頭上UI HPバー ダメージ表示 ミニマップ プレースホルダ 差し込み スロット slot num string image color 記法 バインド Bindable 番号指定 エスケープ 四捨五入 SetSlotText SetSlotNumber SetSlotImage SetSlotColor SlotCount フォールバック">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-visible">GameObject.Visible（アクターの表示 / 非表示）</h3>
@@ -1118,6 +1123,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">label.ShadowOffset</code><span class="desc">Vector2（get/set。影のずらし量 px。X 右・Y 下。(0,0)=影なし）</span></div>
   <div class="api"><code class="sig">label.ShadowColor</code><span class="desc">Color（get/set。影の色。既定=半透明の黒）</span></div>
   <div class="api"><code class="sig">label.ShadowSoftness</code><span class="desc">float（get/set。影のぼかし幅 px。0=シャープ）</span></div>
+  <div class="api"><code class="sig">label.SlotCount / SetSlotImage / SetSlotColor / SetSlotText / SetSlotNumber</code><span class="desc">プレースホルダ記法の差し込みスロット（下の「プレースホルダ記法」を参照）</span></div>
 <pre><span class="c">// 所持金の表示を毎フレーム更新する</span>
 <span class="k">public override void</span> Update()
 {
@@ -1175,6 +1181,72 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
     (4) 縦書きには対応していません。<br>
     (5) 画像も 1 つにつき 1 文字として数えるため、4096 文字の上限に含まれます（上限で切れても記法の途中で壊れることはありません）。<br>
     (6) 画像は本文のグリフと同じレイヤー値でスプライトとして描かれます（同一レイヤー内ではグリフより 1 段奥ですが、文字と画像は重ならないため見た目には現れません）。
+  </div>
+
+
+  <h4>プレースホルダ記法（{image} / {color} / {string} / {num}）</h4>
+  <p class="section-note">本文（<code>Content</code>）に「差し込み口」を置く記法です。差し込む値そのものは本文ではなく<b>スロット配列</b>が持ち、インスペクタかスクリプト（<code>SetSlotXxx</code>）、あるいは<b>バインド</b>（他のアクターのコンポーネント／スクリプトの値を毎フレーム引いてくる仕組み）で決めます。</p>
+  <div class="api"><code class="sig">{image}</code><span class="desc">画像を 1 文字ぶん差し込む（[img:] / [icon:] と同じ解決規則）</span></div>
+  <div class="api"><code class="sig">{image h=1.4}</code><span class="desc">高さ倍率つき（画像の高さ = フォントサイズ × h。既定 1.0）</span></div>
+  <div class="api"><code class="sig">{color} … {/color}</code><span class="desc">区間の文字色をスロットの色へ切り替える（終端の省略時は行末まで）</span></div>
+  <div class="api"><code class="sig">{string}</code><span class="desc">文字列を差し込む</span></div>
+  <div class="api"><code class="sig">{num} / {num.3}</code><span class="desc">数値を差し込む（整数へ四捨五入 / 小数 3 桁）</span></div>
+  <div class="api"><code class="sig">{image:1} / {num:2.3}</code><span class="desc">番号指定（既にあるスロットを参照する。番号 + 書式も可）</span></div>
+  <div class="api"><code class="sig">&#92;{</code><span class="desc">「{」そのものを描くエスケープ</span></div>
+  <p class="section-note"><b>番号の決まり</b>: 通し番号カウンタは記法が出るたびに必ず 1 進みます（明示番号を書いても進みます）。番号を書かなければそのときのカウンタ値が添字です。スロット配列の長さは <code>max(記法の出現数, 明示番号の最大 + 1)</code> になります。</p>
+  <div class="warn">
+    <b>既知キーワード以外は通常文字</b>: <code>{</code> で始まっても <code>image</code> / <code>color</code> / <code>/color</code> / <code>string</code> / <code>num</code> のいずれでもない場合（例 <code>{0}</code>、<code>{name}</code>）、および対応する <code>}</code> が無い場合は、<b>波括弧ごとそのまま描かれます</b>。プログラム的な <code>{}</code> を含む説明文の見た目は 1 文字も変わりません。
+  </div>
+  <p class="section-note"><b>スロットの保存形式</b>: 1 件につき「種類 / 画像パス / RGBA / バインド先 / フォールバック文字列 / フォールバック数値」を持ちます。本文を書き換えると記法に合わせて再マッピングされ、<b>種類が一致するスロットの値だけが引き継がれます</b>（種類が変わった位置は既定値へ戻ります）。</p>
+  <p class="section-note"><b>インスペクタでの設定</b>: Text コンポーネントのインスペクタに、本文の記法から作られたスロットの行が並びます。各行で値（画像 / 色 / 文字列 / 数値）を直接入力するか、「バインド先」に <b>アクター → コンポーネント → 変数</b> を選びます。バインドが解決できない行には ⚠ が出ます。</p>
+  <p class="section-note"><b>バインド候補になる条件</b>: 供給元は「エンジン組込コンポーネント」と「C# スクリプトの <code>[Bindable]</code> メンバ」の 2 つで、<b>要求される型と厳密一致</b>したものだけが候補に出ます（<code>{num}</code> は f32、<code>{string}</code> は str）。</p>
+  <table>
+    <tr><th>供給元</th><th>候補になる変数</th></tr>
+    <tr><td>エンジン組込コンポーネント</td><td><code>Transform.position</code> / <code>Transform.scale</code>（vec3）、<code>CanvasTransform.rotation</code>、<code>Light.intensity</code> / <code>Light.color</code>、<code>WaterVolume.wave_amplitude</code> / <code>surface_height</code> / <code>shallow_color</code> / <code>deep_color</code>、<code>Text.font_size</code>、<code>Sprite.layer</code></td></tr>
+    <tr><td>C# スクリプト</td><td><code>[Bindable]</code> を付けた<b>フィールド</b>（<code>[SerializeField]</code> 併用が必須）・<b>プロパティ</b>（get 必須）・<b>引数なしメソッド</b>。型は <code>float</code> / <code>int</code>（→ {num}）と <code>string</code>（→ {string}）</td></tr>
+  </table>
+  <div class="warn">
+    <b>成分の部分取り出しはできません</b>。<code>Transform.position</code> は vec3 なので <code>{num}</code> へは繋がりません。「X 座標だけ表示したい」場合はスクリプトに 1 行足してスカラーとして公開してください。
+  </div>
+<pre><span class="c">// Transform の X 成分を {num} へ流すための書き方（プロパティなので SerializeField 不要）</span>
+[<span class="t">Bindable</span>] <span class="k">public float</span> PosX =&gt; transform.Position.x;
+
+<span class="c">// int も {num} に繋がる（float へ変換されます）</span>
+[<span class="t">SerializeField</span>, <span class="t">Bindable</span>] <span class="k">private int</span> hp = 100;
+
+<span class="c">// 文字列は {string} に繋がる</span>
+[<span class="t">Bindable</span>] <span class="k">public string</span> PlayerName =&gt; saveName;</pre>
+  <div class="warn">
+    <b><code>[Bindable]</code> のプロパティ・メソッドは毎フレーム呼ばれます</b>。カウンタを進める・オブジェクトを生成する・ログを出すといった<b>副作用を書かないでください</b>（読むだけの純粋な計算にすること）。
+  </div>
+  <div class="warn">
+    <b>Edit 中（Play していないとき）はフォールバック値が出ます</b>。スクリプトのインスタンスは Play 中にしか存在しないため、エディタで編集しているあいだスクリプトへのバインドは解決されず、スロットに入力した値がそのまま表示されます。組込コンポーネント（<code>Light.intensity</code> など）へのバインドは Edit 中でも解決されます。
+  </div>
+  <p class="section-note"><b>差し込みの上限と数値の書式</b>: 1 スロットが差し込める文字数は <b>256 文字</b>までで、超えた分は切り捨てられます（本文全体の 4096 文字上限とは別に、先に 1 件単位で切ります）。数値は <b>half-away-from-zero（0.5 は絶対値が大きい側へ）</b>で丸めてから桁を固定します（<code>{num}</code> で 2.5 → 3、<code>{num.1}</code> で 0.25 → 0.3）。<code>NaN</code> は <code>NaN</code>、無限大は <code>∞</code> / <code>-∞</code>、負のゼロは <code>0</code> として表示されます。</p>
+  <p class="section-note"><b>スクリプトからスロットを触る</b>: 添字は本文の登場順（0 始まり）です。範囲外の添字はゲッターが既定値を返し、セッターは無視されます。</p>
+  <div class="api"><code class="sig">label.SlotCount</code><span class="desc">int（get のみ。本文の記法が決めるスロット件数）</span></div>
+  <div class="api"><code class="sig">label.SetSlotImage(i, path) / GetSlotImage(i)</code><span class="desc">{image} の画像（assets:// パス、またはアイコン名）</span></div>
+  <div class="api"><code class="sig">label.SetSlotColor(i, color) / GetSlotColor(i)</code><span class="desc">{color} の色（RGBA 0..1）</span></div>
+  <div class="api"><code class="sig">label.SetSlotText(i, text) / GetSlotText(i)</code><span class="desc">{string} の文字列（256 文字を超える分は表示時に切り詰め）</span></div>
+  <div class="api"><code class="sig">label.SetSlotNumber(i, value) / GetSlotNumber(i)</code><span class="desc">{num} の数値（小数桁は本文の記法が決める）</span></div>
+<pre><span class="c">// "[画像]所持金 1,234 円" のような HUD（本文は 1 回だけ、値は毎フレーム）</span>
+<span class="k">public void</span> OnStart()
+{
+    <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">Text</span>&gt;() <span class="k">is</span> { } hud)
+    {
+        hud.Content = <span class="s">"{image h=1.2} 所持金 {color}{num}{/color} 円"</span>;
+        hud.SetSlotImage(0, <span class="s">"assets://ui/coin.png"</span>);
+        hud.SetSlotColor(1, <span class="k">new</span> <span class="t">SEED.Color</span>(1f, 0.9f, 0.2f, 1f));
+    }
+}
+
+<span class="k">public void</span> Update()
+{
+    <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">Text</span>&gt;() <span class="k">is</span> { } hud)
+        hud.SetSlotNumber(2, money);   <span class="c">// 3 番目の記法 {num} が添字 2</span>
+}</pre>
+  <div class="warn">
+    <b>バインドが設定されているスロットでは、<code>SetSlotText</code> / <code>SetSlotNumber</code> の値はフォールバックになります</b>（バインドが解決できたらそちらが優先されます）。スクリプトから毎フレーム値を入れるなら、そのスロットのバインドは空のままにしてください。
   </div>
 
   <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>

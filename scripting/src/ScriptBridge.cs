@@ -549,6 +549,313 @@ public static unsafe class ScriptBridge
         }
     }
 
+    // ─── バインド値の汎用読み取り（Text の {num} / {string}・新経路）───
+    //
+    // 【なぜ ReadFieldFloats と別に用意するのか】
+    // ReadFieldFloats は「水面シェーダの @ref」専用に設計されており、
+    //   ・[SerializeField] + [Bindable] の**フィールド**だけ
+    //   ・float / Vector3 だけ（float 配列で運ぶ）
+    // という契約を持つ。Text のプレースホルダ（{string}）は文字列を運ぶ必要があり、
+    // また「計算結果を出したい」用途ではプロパティやメソッドを公開したい。
+    // 既存経路の契約を広げると水面側の互換が壊れるため、**新経路を並走**させる。
+
+    /// <summary>数値（float / int）を要求する種別コード（Rust 側 BindableValueType::F32 に対応）。</summary>
+    private const int BindableKindNum = 0;
+
+    /// <summary>文字列を要求する種別コード（Rust 側 BindableValueType::Str に対応）。</summary>
+    private const int BindableKindStr = 1;
+
+    /// <summary>解決に失敗したことを表す戻り値（見つからない・型不一致・例外）。</summary>
+    private const int BindableFailure = -1;
+
+    /// <summary>
+    /// バッファ不足を表す戻り値の基準値。
+    /// 実際の戻り値は <c>-(必要バイト数) + BindableShortBufferBase</c>（= -必要バイト数 - 1）で、
+    /// 失敗コード <see cref="BindableFailure"/>（-1）と必ず区別できる。
+    /// </summary>
+    private const int BindableShortBufferBase = -1;
+
+    /// <summary>数値バインドが書き込むバイト数（float 1 個 = リトルエンディアン 4 バイト）。</summary>
+    private const int BindableNumBytes = 4;
+
+    /// <summary>
+    /// <c>[Bindable]</c> メンバの**実行中の値**を、要求種別に合わせて読み出す FFI。
+    ///
+    /// <para>対象になるメンバ（<see cref="BindableAttribute"/> の契約）:
+    /// <c>[SerializeField, Bindable]</c> のフィールド／<c>[Bindable]</c> の get 付きプロパティ／
+    /// <c>[Bindable]</c> の引数なしメソッド。型は <c>float</c> / <c>int</c>（→ <c>{num}</c>）と
+    /// <c>string</c>（→ <c>{string}</c>）。</para>
+    ///
+    /// <para><b>メソッドは毎フレーム呼び出される。</b> 副作用を持たせてはならない。</para>
+    ///
+    /// 引数:
+    ///   <paramref name="wantKind"/> … 0 = 数値 / 1 = 文字列（それ以外は失敗）
+    ///   <paramref name="outBuf"/>, <paramref name="capacity"/> … 値の書き込み先（バイト列）
+    ///
+    /// <para><b>ワイヤ表現（Rust 側と一致必須）</b>: 数値は <c>float</c> を
+    /// <b>リトルエンディアンの 4 バイト</b>で書く（Rust は <c>f32::from_le_bytes</c> で読む）。
+    /// 文字列は UTF-8 バイト列をそのまま書く。
+    /// バッファを 1 本にしているのは、FFI の引数が 6 個までという制約
+    /// （netcorehost の <c>FnPtr</c> 実装が既定で 6 引数まで）に収めるためである。</para>
+    ///
+    /// 戻り値:
+    ///   <c>&gt;= 0</c> … 成功。書き込んだバイト数（数値は必ず 4、
+    ///                    文字列は UTF-8 のバイト数。空文字列は 0 で、これも成功）。
+    ///   <c>-1</c>      … 解決失敗（メンバが無い・属性が無い・型不一致・例外）。
+    ///   <c>&lt;= -2</c> … バッファ不足。必要バイト数 = <c>-(戻り値) - 1</c>。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int ReadBindableValue(
+        nint h, byte* namePtr, int nameLen, int wantKind, byte* outBuf, int capacity)
+    {
+        string path = string.Empty;
+        try
+        {
+            var target = Get(h);
+            if (target is null) return BindableFailure;
+
+            path = Encoding.UTF8.GetString(namePtr, nameLen);
+            if (!TryReadBindableMember(target, path, out var value)) return BindableFailure;
+
+            switch (wantKind)
+            {
+                // ── 数値（float / int を LE 4 バイトで運ぶ）──
+                case BindableKindNum:
+                {
+                    if (!TryToBindableFloat(value, out var f)) return BindableFailure;
+                    if (outBuf is null || capacity < BindableNumBytes)
+                        return -BindableNumBytes + BindableShortBufferBase;
+                    System.Buffers.Binary.BinaryPrimitives.WriteSingleLittleEndian(
+                        new Span<byte>(outBuf, BindableNumBytes), f);
+                    return BindableNumBytes;
+                }
+                // ── 文字列（UTF-8 バイト列で運ぶ）──
+                case BindableKindStr:
+                {
+                    if (value is not string s) return BindableFailure;
+                    var bytes = Encoding.UTF8.GetBytes(s);
+                    if (outBuf is null || capacity < bytes.Length)
+                        return -bytes.Length + BindableShortBufferBase;
+                    for (int i = 0; i < bytes.Length; i++) outBuf[i] = bytes[i];
+                    return bytes.Length;
+                }
+                // ── 未知の種別コード（Rust 側の型追加漏れ）──
+                default:
+                    return BindableFailure;
+            }
+        }
+        catch (Exception ex)
+        {
+            // 毎フレーム呼ばれる経路なので、同じ (ハンドル, メンバ) につき 1 回だけ通知する。
+            LogBindableErrorOnce(h, path, ex);
+            return BindableFailure;
+        }
+    }
+
+    /// <summary>
+    /// このスクリプトが公開している <c>[Bindable]</c> メンバの一覧を JSON 配列で書き出す FFI。
+    ///
+    /// <para>形式: <c>[{"name":"Speed","type":"f32"},{"name":"Title","type":"str"}]</c>
+    ///  - name … <see cref="ReadBindableValue"/> に渡すメンバ名
+    ///  - type … <c>f32</c>（float / int）/ <c>str</c>（string）/ <c>vec3</c>（Vector3 フィールド）</para>
+    ///
+    /// <para><c>vec3</c> は水面シェーダの <c>@ref</c> 専用で、既存経路
+    /// （<see cref="ReadFieldFloats"/>）が読める <c>[SerializeField, Bindable]</c> の
+    /// <c>Vector3</c> <b>フィールドだけ</b>を挙げる
+    /// （プロパティ／メソッドの <c>Vector3</c> は既存経路が読めないため候補にしない）。</para>
+    ///
+    /// <para>候補列挙はインスペクタのバインド先選択でのみ使う（毎フレームでは呼ばれない）。
+    /// リフレクションのみで World へは触れないため、スクリプトフェーズ外でも安全。</para>
+    ///
+    /// 戻り値: 書き込んだバイト数（空配列でも "[]" の 2 バイト）。
+    ///         バッファ不足なら**必要バイト数の負値**。ハンドル無効・例外時は 0。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int DescribeBindableMembers(nint h, byte* outBuf, int capacity)
+    {
+        try
+        {
+            var target = Get(h);
+            if (target is null) return 0;
+
+            var sb    = new StringBuilder("[");
+            var seen  = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+            var first = true;
+            foreach (var (name, typeTag) in EnumerateBindableMembers(target.GetType()))
+            {
+                // 同名メンバ（フィールドを隠すプロパティ等）は最初の 1 件だけ載せる。
+                if (!seen.Add(name)) continue;
+                if (!first) sb.Append(',');
+                first = false;
+                sb.Append("{\"name\":").Append(JsonString(name))
+                  .Append(",\"type\":").Append(JsonString(typeTag)).Append('}');
+            }
+            sb.Append(']');
+
+            var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            if (outBuf is null || capacity < bytes.Length) return -bytes.Length;
+            for (int i = 0; i < bytes.Length; i++) outBuf[i] = bytes[i];
+            return bytes.Length;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] DescribeBindableMembers failed: {ex.Message}");
+            return 0;
+        }
+    }
+
+    // ─── [Bindable] メンバの走査・型判定（上記 2 つの FFI が共有）───
+
+    /// <summary>プロパティ／メソッドの走査に使う BindingFlags（<see cref="FieldFlags"/> と対）。</summary>
+    private const System.Reflection.BindingFlags BindableMemberFlags =
+        System.Reflection.BindingFlags.Public |
+        System.Reflection.BindingFlags.NonPublic |
+        System.Reflection.BindingFlags.Instance;
+
+    /// <summary>数値バインドのワイヤ型名（Rust の BindableValueType::as_str と一致必須）。</summary>
+    private const string BindableTypeF32 = "f32";
+    /// <summary>文字列バインドのワイヤ型名（同上）。</summary>
+    private const string BindableTypeStr = "str";
+    /// <summary>3 成分バインドのワイヤ型名（同上。水面シェーダ専用）。</summary>
+    private const string BindableTypeVec3 = "vec3";
+
+    /// <summary>
+    /// 型が公開している <c>[Bindable]</c> メンバを (メンバ名, ワイヤ型名) の列として返す。
+    ///
+    /// 並び順は「フィールド → プロパティ → メソッド」で、その中は宣言順
+    /// （＝インスペクタの候補一覧の並びになる）。
+    /// </summary>
+    private static System.Collections.Generic.IEnumerable<(string Name, string TypeTag)>
+        EnumerateBindableMembers(Type type)
+    {
+        // ── フィールド（[SerializeField] 併用が必須）──
+        foreach (var f in type.GetFields(FieldFlags))
+        {
+            if (!HasAttributeNamed(f, nameof(BindableAttribute)))       continue;
+            if (!HasAttributeNamed(f, nameof(SerializeFieldAttribute))) continue;
+            // Vector3 はフィールドのときだけ候補にする（既存の @ref 経路が読めるのがフィールドだけのため）。
+            if (f.FieldType == typeof(SEED.Vector3)) { yield return (f.Name, BindableTypeVec3); continue; }
+            if (TryGetBindableTypeTag(f.FieldType, out var tag)) yield return (f.Name, tag);
+        }
+        // ── プロパティ（get があること。[SerializeField] は不要）──
+        foreach (var p in type.GetProperties(BindableMemberFlags))
+        {
+            if (!HasAttributeNamed(p, nameof(BindableAttribute))) continue;
+            if (p.GetMethod is null || p.GetIndexParameters().Length > 0) continue;
+            if (TryGetBindableTypeTag(p.PropertyType, out var tag)) yield return (p.Name, tag);
+        }
+        // ── メソッド（引数なし・戻り値あり。[SerializeField] は不要）──
+        foreach (var m in type.GetMethods(BindableMemberFlags))
+        {
+            if (!HasAttributeNamed(m, nameof(BindableAttribute))) continue;
+            if (m.GetParameters().Length > 0 || m.IsGenericMethodDefinition) continue;
+            if (TryGetBindableTypeTag(m.ReturnType, out var tag)) yield return (m.Name, tag);
+        }
+    }
+
+    /// <summary>
+    /// バインドで運べる型かを判定し、ワイヤ型名を返す。
+    /// <c>float</c> / <c>int</c> は <c>f32</c>、<c>string</c> は <c>str</c>。それ以外は false。
+    /// </summary>
+    private static bool TryGetBindableTypeTag(Type t, out string tag)
+    {
+        if (t == typeof(float) || t == typeof(int)) { tag = BindableTypeF32; return true; }
+        if (t == typeof(string))                    { tag = BindableTypeStr; return true; }
+        tag = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// 名前で <c>[Bindable]</c> メンバを引き当て、その**実行中の値**を取り出す。
+    ///
+    /// 探索順は宣言と同じ「フィールド → プロパティ → メソッド」。
+    /// 属性・アクセサ・引数の条件は <see cref="EnumerateBindableMembers"/> と完全に同じで、
+    /// 「候補には出るが読めない」「読めるのに候補に出ない」が起きないようにしてある。
+    /// </summary>
+    private static bool TryReadBindableMember(object target, string name, out object? value)
+    {
+        value = null;
+        var type = target.GetType();
+
+        // ── フィールド（[SerializeField] + [Bindable]）──
+        var field = type.GetField(name, FieldFlags);
+        if (field is not null
+            && HasAttributeNamed(field, nameof(BindableAttribute))
+            && HasAttributeNamed(field, nameof(SerializeFieldAttribute)))
+        {
+            value = field.GetValue(target);
+            return true;
+        }
+
+        // ── プロパティ（[Bindable] + get あり・添字なし）──
+        var prop = type.GetProperty(name, BindableMemberFlags);
+        if (prop is not null
+            && HasAttributeNamed(prop, nameof(BindableAttribute))
+            && prop.GetMethod is not null
+            && prop.GetIndexParameters().Length == 0)
+        {
+            value = prop.GetValue(target);
+            return true;
+        }
+
+        // ── メソッド（[Bindable] + 引数なし）──
+        var method = type.GetMethod(
+            name, BindableMemberFlags, binder: null, types: Type.EmptyTypes, modifiers: null);
+        if (method is not null
+            && HasAttributeNamed(method, nameof(BindableAttribute))
+            && !method.IsGenericMethodDefinition)
+        {
+            value = method.Invoke(target, null);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 数値バインドの値を float へ変換する（<c>int</c> は float へ広げる）。
+    /// それ以外の型（<c>string</c> / <c>Vector3</c> / null 等）は false。
+    /// </summary>
+    private static bool TryToBindableFloat(object? value, out float result)
+    {
+        switch (value)
+        {
+            case float f: result = f;  return true;
+            case int   i: result = i;  return true;
+            default:      result = 0f; return false;
+        }
+    }
+
+    /// <summary>
+    /// バインド読み取りで起きた例外を、(ハンドル, メンバ名) につき 1 回だけ通知する。
+    ///
+    /// この経路は**毎フレーム**走るため、素直にログを出すと 1 例外で
+    /// コンソールが埋まって他のエラーが読めなくなる。
+    /// </summary>
+    private static void LogBindableErrorOnce(nint h, string member, Exception ex)
+    {
+        try
+        {
+            lock (ScriptErrorLock)
+            {
+                if (!BindableErrorLogged.Add((h, member))) return;
+            }
+            Console.Error.WriteLine(
+                $"[SEEDScripting] ReadBindableValue failed: {SafeTypeName(h)}.{member}: {ex.Message}"
+                + "（以降このメンバの失敗は通知しません）");
+        }
+        catch
+        {
+            // ログ出力自体の失敗（stderr 切断等）でプロセスを落とさない。
+        }
+    }
+
+    /// <summary>
+    /// 通知済みのバインド読み取り例外（(ハンドル, メンバ名) の集合）。
+    /// <see cref="ScriptErrorLock"/> で保護し、ハンドル破棄・ホットリロードで掃除する。
+    /// </summary>
+    private static readonly System.Collections.Generic.HashSet<(nint Handle, string Member)>
+        BindableErrorLogged = new();
+
     // ─── [SerializeField] 定義のスナップショット（ホットリロードの値引き継ぎ）───
     //
     // 【なぜ必要か】
@@ -782,6 +1089,13 @@ public static unsafe class ScriptBridge
         => field.GetCustomAttributesData().Any(a => a.AttributeType.Name == attributeTypeName);
 
     /// <summary>
+    /// フィールド以外のメンバ（プロパティ・メソッド）に指定名の属性が付いているかを
+    /// **属性名で**判定する（フィールド版と同じ理由で型一致を使わない）。
+    /// </summary>
+    private static bool HasAttributeNamed(System.Reflection.MemberInfo member, string attributeTypeName)
+        => member.GetCustomAttributesData().Any(a => a.AttributeType.Name == attributeTypeName);
+
+    /// <summary>
     /// 指定パスの末端フィールドが参照フィールド型かを判定する。
     /// 途中のネストオブジェクトを生成せずに型だけを辿るため、判定に副作用がない。
     /// </summary>
@@ -980,13 +1294,20 @@ public static unsafe class ScriptBridge
             // 対象ハンドルのエントリのみ列挙して削除する（コールバック種別ごとに最大 1 件）
             foreach (var callback in AllScriptCallbacks)
                 ScriptErrorCounts.Remove((h, callback));
+            // バインド読み取りの通知済みフラグも同じハンドル単位で捨てる
+            //（同じ GCHandle 値が再利用されたときに、初回の通知が握り潰されないようにする）。
+            BindableErrorLogged.RemoveWhere(k => k.Handle == h);
         }
     }
 
     /// <summary>例外抑制状態を全消去する（ホットリロード時）。</summary>
     private static void ClearAllErrorState()
     {
-        lock (ScriptErrorLock) ScriptErrorCounts.Clear();
+        lock (ScriptErrorLock)
+        {
+            ScriptErrorCounts.Clear();
+            BindableErrorLogged.Clear();
+        }
     }
 
     // ─── 内部ヘルパー ─────────────────────────────────────────

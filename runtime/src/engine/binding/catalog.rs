@@ -22,7 +22,9 @@
 
 use crate::engine::components::light_component::LightComponent;
 use crate::engine::components::water_volume_component::WaterVolumeComponent;
-use crate::engine::components::{ComponentKind, Transform};
+use crate::engine::components::{
+    CanvasTransform, ComponentKind, SpriteComponent, TextComponent, Transform,
+};
 use crate::engine::ecs::{Entity, World};
 
 /// バインドで運べる値の型。**WGSL 側の型と 1 対 1** に対応する。
@@ -136,6 +138,23 @@ pub const BUILTIN_BINDABLES: &[BindableVariable] = &[
         host: BindableHost::ActorRoot, component_label: "Transform",
         variable: "scale", variable_label: "スケール", value_type: BindableValueType::Vec3,
     },
+    // ── CanvasTransform（2D アクタのルート直付け）──────────
+    //     位置・スケールは 2 成分なので Vec3（3 成分）へは繋がらない。
+    //     したがって供給するのは Z 軸回転（度）だけである。
+    BindableVariable {
+        host: BindableHost::ActorRoot, component_label: "CanvasTransform",
+        variable: "rotation", variable_label: "回転（度）", value_type: BindableValueType::F32,
+    },
+    // ── Text（キャンバスの文字表示）──────────────────────
+    BindableVariable {
+        host: BindableHost::Slot(ComponentKind::Text), component_label: "Text",
+        variable: "font_size", variable_label: "フォントサイズ", value_type: BindableValueType::F32,
+    },
+    // ── Sprite（2D スプライト）───────────────────────────
+    BindableVariable {
+        host: BindableHost::Slot(ComponentKind::Sprite), component_label: "Sprite",
+        variable: "layer", variable_label: "描画レイヤー", value_type: BindableValueType::F32,
+    },
     // ── Light ───────────────────────────────────────────────
     BindableVariable {
         host: BindableHost::Slot(ComponentKind::Light), component_label: "Light",
@@ -187,15 +206,19 @@ pub fn read_builtin(
     var:    &BindableVariable,
 ) -> Option<[f32; BINDING_VALUE_COMPONENTS]> {
     match var.host {
-        // ── Transform（アクタのルート実体）────────────────────
-        BindableHost::ActorRoot => {
-            let t = world.get::<Transform>(entity)?;
-            match var.variable {
-                "position" => Some(BindableValueType::pack_vec3(t.position)),
-                "scale"    => Some(BindableValueType::pack_vec3(t.scale)),
-                _          => None,
-            }
-        }
+        // ── アクタのルート実体（Transform / CanvasTransform）──
+        //     ルート直付けは 2 種類あるので、まず表示名でコンポーネントを分ける
+        //     （3D アクタに CanvasTransform は無く、その逆も同じなので、
+        //      対象コンポーネントが載っていなければ `None` = 解決失敗になる）。
+        BindableHost::ActorRoot => match (var.component_label, var.variable) {
+            ("Transform", "position") =>
+                Some(BindableValueType::pack_vec3(world.get::<Transform>(entity)?.position)),
+            ("Transform", "scale") =>
+                Some(BindableValueType::pack_vec3(world.get::<Transform>(entity)?.scale)),
+            ("CanvasTransform", "rotation") =>
+                Some(BindableValueType::pack_scalar(world.get::<CanvasTransform>(entity)?.rotation)),
+            _ => None,
+        },
         // ── Light ───────────────────────────────────────────
         BindableHost::Slot(ComponentKind::Light) => {
             let l = world.get::<LightComponent>(entity)?;
@@ -217,6 +240,23 @@ pub fn read_builtin(
                 "shallow_color"  => Some(BindableValueType::pack_vec3(w.shallow_color)),
                 "deep_color"     => Some(BindableValueType::pack_vec3(w.deep_color)),
                 _                => None,
+            }
+        }
+        // ── Text ────────────────────────────────────────────
+        BindableHost::Slot(ComponentKind::Text) => {
+            let t = world.get::<TextComponent>(entity)?;
+            match var.variable {
+                "font_size" => Some(BindableValueType::pack_scalar(t.font_size)),
+                _           => None,
+            }
+        }
+        // ── Sprite ──────────────────────────────────────────
+        BindableHost::Slot(ComponentKind::Sprite) => {
+            let sp = world.get::<SpriteComponent>(entity)?;
+            match var.variable {
+                // 描画レイヤーは i32。f32 は 2^24 まで無損失なので実用上の欠損は無い。
+                "layer" => Some(BindableValueType::pack_scalar(sp.layer as f32)),
+                _       => None,
             }
         }
         // 表に載っていない種別（＝供給値を持たないコンポーネント）。
@@ -243,11 +283,20 @@ mod tests {
             let e = world.spawn();
             // その行の腕が読めるよう、対応するコンポーネントを既定値で置く。
             match var.host {
-                BindableHost::ActorRoot => world.insert(e, Transform::default()),
+                // ルート直付けは表示名でコンポーネントが分かれる（Transform / CanvasTransform）。
+                BindableHost::ActorRoot => match var.component_label {
+                    "Transform"       => world.insert(e, Transform::default()),
+                    "CanvasTransform" => world.insert(e, CanvasTransform::default()),
+                    other => panic!("表に未知のルート直付け {other} が増えている（テストを更新すること）"),
+                },
                 BindableHost::Slot(ComponentKind::Light) =>
                     world.insert(e, LightComponent::default()),
                 BindableHost::Slot(ComponentKind::WaterVolume) =>
                     world.insert(e, WaterVolumeComponent::default()),
+                BindableHost::Slot(ComponentKind::Text) =>
+                    world.insert(e, TextComponent::default()),
+                BindableHost::Slot(ComponentKind::Sprite) =>
+                    world.insert(e, SpriteComponent::default()),
                 other => panic!("表に未知の居場所 {other:?} が増えている（テストを更新すること）"),
             }
             assert!(read_builtin(&world, e, var).is_some(),
@@ -283,7 +332,7 @@ mod tests {
     /// 型のワイヤ表現が往復すること（IPC の型名が壊れない土台）。
     #[test]
     fn value_type_wire_roundtrip() {
-        for t in [BindableValueType::F32, BindableValueType::Vec3] {
+        for t in [BindableValueType::F32, BindableValueType::Vec3, BindableValueType::Str] {
             assert_eq!(BindableValueType::from_str(t.as_str()), Some(t));
         }
         assert_eq!(BindableValueType::from_str("vec4"), None);

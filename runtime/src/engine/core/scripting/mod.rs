@@ -182,6 +182,42 @@ type ReadFieldFloatsFn =
 /// ホットリロード時の「保存済みフィールド値の引き継ぎ」判定に使う。
 /// リフレクションのみで World へ触れないため、フェーズ外でも安全に呼べる。
 type DescribeFieldsFn = unsafe extern "system" fn(isize, *mut u8, i32) -> i32;
+/// `[Bindable]` メンバの**実行中の値**を、要求種別に合わせて読む（Text のプレースホルダ用）。
+///
+/// `ReadFieldFloats`（水面シェーダの `@ref` 専用）とは**別経路**である。
+/// 違いは 3 点:
+///   ① フィールドだけでなく、`[Bindable]` の**プロパティ・引数なしメソッド**も読める
+///      （プロパティ／メソッドは `[SerializeField]` の併用が不要）
+///   ② `string` を返せる（`{string}` プレースホルダ用）
+///   ③ `int` を `f32` へ変換して受け付ける
+///
+/// 引数: (ハンドル, メンバ名 UTF-8 ポインタ, その長さ, 要求種別, 書き込み先, その容量)
+/// 要求種別: 0 = 数値（`BindableValueType::F32`）/ 1 = 文字列（同 `Str`）。
+///
+/// ## ワイヤ表現（C# 側と一致必須）
+/// 書き込み先は**バイト列 1 本**である。
+///   ・数値   … `f32` をリトルエンディアン 4 バイト（`f32::from_le_bytes` で読む）
+///   ・文字列 … UTF-8 バイト列
+/// バッファを 1 本にまとめてあるのは、FFI の引数を **6 個以内**に収めるため
+/// （`netcorehost` が使う `fn_ptr` クレートの `FnPtr` 実装が既定で 6 引数までしかない）。
+///
+/// 戻り値: `>= 0` … 成功（書き込んだバイト数。数値は必ず 4、空文字列は 0）
+///         `-1`   … 解決失敗（メンバが無い・属性が無い・型不一致・例外）
+///         `<= -2`… バッファ不足。必要バイト数 = `-(戻り値) - 1`
+///
+/// **メソッドは毎フレーム呼ばれる**（＝C# 側で副作用を書いてはならない契約）。
+/// リフレクションのみで World へ触れないため、フェーズ外でも安全に呼べる。
+type ReadBindableValueFn =
+    unsafe extern "system" fn(isize, *const u8, i32, i32, *mut u8, i32) -> i32;
+/// スクリプトが公開している `[Bindable]` メンバの一覧を JSON 配列で書き出す。
+///
+/// 引数: (ハンドル, 書き込み先バッファ, バッファ容量バイト数)
+/// 戻り値: 書き込んだバイト数。バッファ不足なら **必要バイト数の負値**、
+///         ハンドル無効・例外時は 0（`DescribeSerializeFields` と同じ規約）。
+///
+/// 形式: `[{"name":"Speed","type":"f32"},{"name":"Title","type":"str"}]`
+/// インスペクタのバインド先候補列挙（GET_BINDABLE_SOURCES）でのみ使う。
+type DescribeBindableMembersFn = unsafe extern "system" fn(isize, *mut u8, i32) -> i32;
 /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
 type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostApi);
 
@@ -221,6 +257,11 @@ pub struct ScriptingHost {
     /// `[SerializeField]` フィールド定義のスナップショット取得
     /// （ホットリロード時の値引き継ぎで使用）
     pub(crate) describe_fields_fn: DescribeFieldsFn,
+    /// `[Bindable]` メンバ（フィールド／プロパティ／引数なしメソッド）の値の読み取り
+    /// （Text のプレースホルダ `{num}` / `{string}` の解決で使用）
+    pub(crate) read_bindable_value_fn: ReadBindableValueFn,
+    /// `[Bindable]` メンバ一覧の取得（インスペクタのバインド先候補列挙で使用）
+    pub(crate) describe_bindable_members_fn: DescribeBindableMembersFn,
     register_host_api_fn:    RegisterHostApiFn,
 }
 
@@ -281,6 +322,10 @@ impl ScriptingHost {
                                                                               pdcstr!("ReadFieldFloats")),
             describe_fields_fn: get_fn!(fn(isize, *mut u8, i32) -> i32,
                                                                               pdcstr!("DescribeSerializeFields")),
+            read_bindable_value_fn: get_fn!(fn(isize, *const u8, i32, i32, *mut u8, i32) -> i32,
+                                                                              pdcstr!("ReadBindableValue")),
+            describe_bindable_members_fn: get_fn!(fn(isize, *mut u8, i32) -> i32,
+                                                                              pdcstr!("DescribeBindableMembers")),
             register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
         }))
     }
