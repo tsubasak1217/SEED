@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::engine::core::renderer::ui_draw_order::UiDrawKind;
 use crate::engine::components::{
     AspectRatioAxis, CameraComponent, CanvasComponent, CanvasDrawZone, CanvasTransform,
     CanvasViewportRef, ComponentKind, ScalingMode, SkinnedSpriteComponent, SpriteComponent,
@@ -1669,6 +1670,13 @@ pub(super) struct CanvasIdItem {
     pub zone: CanvasDrawZone,
     /// レイヤー（描画順ソート用）。
     pub layer: i32,
+    /// 描画種別（同一レイヤー内の前後関係に使う）。
+    ///
+    /// ID パスは後勝ちなので、描画と**まったく同じ順序**
+    /// （zone → layer → スプライト → プリミティブ → テキスト）で描くことで
+    /// 「見た目で最前面のものがピックされる」が保証される。
+    /// プリミティブは ID を持たないため、ここに現れるのは Sprite / Text のみ。
+    pub kind: UiDrawKind,
 }
 
 /// キャンバスアクター ID アイテムを DFS 順に収集する。
@@ -1860,11 +1868,13 @@ pub(super) fn collect_canvas_id_items(
                 // SpriteComponent を持つアクターをピッキング対象にする。
                 // テクスチャなし（単色）は白テクスチャフォールバックを使用して全面選択可能にする。
                 let csy = canvas_scale * y_sign;
+                // (行列, テクスチャパス, レイヤー, スキンメッシュ, 描画種別)
                 let mut gpu_mat_and_path: Option<(
                     [[f32; 4]; 4],
                     Option<String>,
                     i32,
                     Option<Arc<SkinnedSpriteDraw>>,
+                    UiDrawKind,
                 )> = None;
                 // スキンスプライト（`.sprite_mesh`）: 変形済み頂点でメッシュ形状のまま
                 // ID を書く。矩形スプライトより先に走査するのではなく**後**に見るため、
@@ -1892,6 +1902,7 @@ pub(super) fn collect_canvas_id_items(
                                 tex_path,
                                 sc.layer,
                                 None,
+                                UiDrawKind::Sprite,
                             ));
                             break;
                         }
@@ -1927,6 +1938,7 @@ pub(super) fn collect_canvas_id_items(
                             tex_path,
                             ss.layer,
                             Some(mesh_draw),
+                            UiDrawKind::Sprite,
                         ));
                         break;
                     }
@@ -1961,11 +1973,12 @@ pub(super) fn collect_canvas_id_items(
                             None,
                             layer,
                             None,
+                            UiDrawKind::Text,
                         ));
                     }
                 }
 
-                if let Some((gpu_mat, tex_path, layer, mesh)) = gpu_mat_and_path {
+                if let Some((gpu_mat, tex_path, layer, mesh, kind)) = gpu_mat_and_path {
                     // raw_id = mc_total + my_dfs + 1
                     // （0 = 背景、1..mc_total = 3D MC インスタンス）
                     // 描画ゾーン・レイヤーは呼び出し側の描画順ソートに使用する
@@ -1976,6 +1989,7 @@ pub(super) fn collect_canvas_id_items(
                         mesh,
                         zone: my_zone,
                         layer,
+                        kind,
                     });
                 }
 
@@ -2162,6 +2176,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
                         Option<String>,
                         Option<Arc<SkinnedSpriteDraw>>,
                         i32,
+                        UiDrawKind,
                     )> = Vec::new();
                     walk_3d_canvas_children_id(
                         &actor.children,
@@ -2176,12 +2191,14 @@ pub(super) fn collect_3d_canvas_child_id_items(
                         text_bounds,
                         &mut canvas_items,
                     );
-                    // 安定ソート: 同一レイヤーはヒエラルキー DFS 順を維持する
-                    canvas_items.sort_by_key(|it| it.4);
+                    // 安定ソート: 描画と同じ「レイヤー昇順 → 種別（スプライト → テキスト）」。
+                    // 同一キーはヒエラルキー DFS 順を維持する。
+                    // ID パスは後勝ちなので、これで見た目の最前面がピックされる。
+                    canvas_items.sort_by_key(|it| (it.4, it.5.draw_order()));
                     out.extend(
                         canvas_items
                             .into_iter()
-                            .map(|(id, m, p, mesh, _)| (id, m, p, mesh)),
+                            .map(|(id, m, p, mesh, _, _)| (id, m, p, mesh)),
                     );
                     true
                 } else {
@@ -2229,12 +2246,15 @@ fn walk_3d_canvas_children_id(
     draw_ctx: &DrawContext,
     // テキストの実測枠（Text スロット entity → ローカル境界矩形）
     text_bounds: &TextBoundsMap,
+    // (raw_id, GPU 行列, テクスチャパス, スキンメッシュ, レイヤー, 描画種別)
+    // 描画種別は同一レイヤー内の前後関係（スプライト → テキスト）に使う。
     out: &mut Vec<(
         u32,
         [[f32; 4]; 4],
         Option<String>,
         Option<Arc<SkinnedSpriteDraw>>,
         i32,
+        UiDrawKind,
     )>,
 ) {
     for actor in actors {
@@ -2358,7 +2378,10 @@ fn walk_3d_canvas_children_id(
                         };
                         // raw_id = canvas_id_offset + dfs_id（canvas_id_offset = mc_total）
                         // layer は呼び出し側のキャンバス内レイヤーソートに使用する
-                        out.push((mc_total + my_dfs + 1, to_gpu_mat(sw), tex_path, None, sc.layer));
+                        out.push((
+                            mc_total + my_dfs + 1, to_gpu_mat(sw), tex_path, None,
+                            sc.layer, UiDrawKind::Sprite,
+                        ));
                         pushed = true;
                         break;
                     }
@@ -2392,6 +2415,7 @@ fn walk_3d_canvas_children_id(
                         tex_path,
                         Some(mesh_draw),
                         ss.layer,
+                        UiDrawKind::Sprite,
                     ));
                     pushed = true;
                     break;
@@ -2410,7 +2434,10 @@ fn walk_3d_canvas_children_id(
                     };
                     let sw = mat4x4_mul(mat4x4_mul(parent_world_rs, node), item.local_box_mat);
                     // テクスチャなし = 白フォールバック（枠全面 alpha=1）
-                    out.push((mc_total + my_dfs + 1, to_gpu_mat(sw), None, None, item.layer));
+                    out.push((
+                        mc_total + my_dfs + 1, to_gpu_mat(sw), None, None,
+                        item.layer, UiDrawKind::Text,
+                    ));
                 }
             }
 

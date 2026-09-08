@@ -106,6 +106,13 @@ pub struct PrimitiveSpace {
     pub model: [[f32; 4]; 4],
     /// 描画先の分類。
     pub target: PrimitiveSpaceTarget,
+    /// 3D ワールドキャンバスの通し番号（`target = World3d` のときのみ意味を持つ）。
+    ///
+    /// ワールドキャンバスはキャンバスごとに独立したレイヤー空間を持つため、
+    /// 描画順の統合（レイヤーマージ）はキャンバス単位で行う必要がある。
+    /// そのため「どのキャンバス配下の図形か」をここで持ち回る。
+    /// `Canvas2d` では常に 0（未使用）。
+    pub world3d_group: u32,
 }
 
 /// キャンバスアクター entity → 座標空間のマップ。
@@ -122,6 +129,9 @@ pub struct PrimitiveSpaceCollector {
     /// これから収集するサブツリーが 3D ワールドキャンバス配下か。
     /// `true` のとき `target` は常に `World3d` になる（ゾーン概念なし）。
     pub world3d: bool,
+    /// これから収集する 3D ワールドキャンバスの通し番号
+    /// （`world3d = true` のときのみ意味を持つ。キャンバスごとに呼び出し側が更新する）。
+    pub world3d_group: u32,
 }
 
 impl PrimitiveSpaceCollector {
@@ -139,7 +149,16 @@ impl PrimitiveSpaceCollector {
         } else {
             PrimitiveSpaceTarget::Canvas2d(zone)
         };
-        self.map.insert(entity, PrimitiveSpace { model, target });
+        // ワールドキャンバス配下のみキャンバス通し番号を記録する（2D は 0 固定）。
+        let world3d_group = if self.world3d { self.world3d_group } else { 0 };
+        self.map.insert(
+            entity,
+            PrimitiveSpace {
+                model,
+                target,
+                world3d_group,
+            },
+        );
     }
 }
 

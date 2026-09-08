@@ -157,6 +157,14 @@ impl TextBatch {
         self.vertices.is_empty()
     }
 
+    /// 現在までに積んだインデックス数。
+    ///
+    /// 「1 本のバッチの中の部分区間だけを描く」（UI 描画順の統合＝ラン単位描画）ために、
+    /// アイテムを積む合間で区間の境目を記録する用途に使う。
+    pub fn index_len(&self) -> u32 {
+        self.indices.len() as u32
+    }
+
     /// スクリーン座標（ピクセル）でテキストを追加する。
     ///
     /// `x`, `y` はペン基点（スクリーン左上原点、Y 下向き）。
@@ -448,6 +456,31 @@ impl FontSystem {
         pass.set_vertex_buffer(0, gpu.vertex_buf.slice(..));
         pass.set_index_buffer(gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..gpu.index_count, 0, 0..1);
+    }
+
+    /// テキストバッチの **部分区間だけ**をレンダーパスへ描画する。
+    ///
+    /// UI 描画順の統合（スプライト／プリミティブ／テキストをレイヤー順に 1 列へ並べる）で、
+    /// 1 本の頂点バッファを保ったままラン単位に分割描画するために使う。
+    ///
+    /// - `first_index`: バッチ先頭からのインデックス番号
+    /// - `index_count`: 描くインデックス数（0 なら何もしない）
+    pub fn draw_text_batch_range<'pass>(
+        &'pass self,
+        gpu: &'pass GpuTextBatch,
+        first_index: u32,
+        index_count: u32,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        // 空区間、またはバッチ範囲外の指定は描かない（安全側に倒す）。
+        if index_count == 0 || first_index + index_count > gpu.index_count {
+            return;
+        }
+        pass.set_pipeline(&self.pipeline.pipeline);
+        pass.set_bind_group(0, &self.atlas_bg, &[]);
+        pass.set_vertex_buffer(0, gpu.vertex_buf.slice(..));
+        pass.set_index_buffer(gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(first_index..(first_index + index_count), 0, 0..1);
     }
 
     /// ワンショットヘルパー: 組み込みフォントでテキストを準備してバッチに追加する。

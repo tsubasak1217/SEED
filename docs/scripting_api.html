@@ -1451,11 +1451,22 @@ SolvePath();
   <h3 id="draw-layer">レイヤーと重なり順</h3>
   <p class="section-note">
     <code>layer</code> はスプライト（<code>Sprite.Layer</code>）・テキスト（<code>Text.Layer</code>）と
-    <b>同じソート軸</b>で、大きいほど手前です。同じレイヤー値のときの前後は
-    「<b>スプライト → プリミティブ → テキスト</b>」の順になります。
+    <b>同じソート軸</b>で、大きいほど手前です。UI の重なり順は次の 3 段で
+    <b>種別を跨いで</b>決まります:
+    <br><b>zone（背景 / 前面） → layer（昇順・大きいほど手前） → 同一 layer 内は
+    スプライト → プリミティブ → テキスト</b>。
+    同一レイヤー・同一種別のときはヒエラルキーの並び順（DFS 順）が保たれます。
     描画ゾーン（Canvas の背景／前面）は <code>space</code> に渡したキャンバスのゾーンを継承し、
     スクリーンスペース（<code>space: null</code>）は前面ゾーン扱いです。
+    3D ワールドキャンバス配下ではレイヤーはそのキャンバス内で完結します。
+    GPU ピッキング（クリック選択）もこの描画順と同一規則で並びます。
   </p>
+  <div class="warn">
+    <b>2026-09 修正</b>: 以前は「全スプライト → 全プリミティブ → 全テキスト」の順に描いていたため、
+    <code>layer</code> は同じ種別の中でしか効かず、<b>低い layer のテキストが高い layer の
+    スプライトより手前に出る</b>不具合がありました。現在は 3 種を 1 本の描画列へマージするため、
+    <code>layer 1002</code> のテキストは <code>layer 2002</code> のスプライトに正しく覆われます。
+  </div>
 
   <h3 id="draw-shapes">図形一覧</h3>
   <div class="api"><code class="sig">Draw.Rect(p0, p1, p2, p3, srt, color, mode, thickness, layer, space)</code><span class="desc">4 点指定の四角形</span></div>

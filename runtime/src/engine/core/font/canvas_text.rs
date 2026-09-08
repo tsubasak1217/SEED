@@ -111,6 +111,26 @@ impl CanvasTextItem {
     }
 }
 
+// ─── TextDrawRange ────────────────────────────────────────────
+
+/// 1 本のテキストバッチ内の部分区間（＝ 1 ドローコール分）。
+///
+/// UI 描画順の統合でテキストを「ラン」単位に分割描画するために使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextDrawRange {
+    /// バッチ先頭からのインデックス番号。
+    pub first_index: u32,
+    /// 描くインデックス数（0 = 空区間）。
+    pub index_count: u32,
+}
+
+impl TextDrawRange {
+    /// 空区間（描く文字が無い）か。
+    pub fn is_empty(&self) -> bool {
+        self.index_count == 0
+    }
+}
+
 // ─── CanvasTextRenderer ───────────────────────────────────────
 
 /// キャンバステキスト描画器。フォントシステム 1 つを保持する。
@@ -171,6 +191,45 @@ impl CanvasTextRenderer {
         self.font.build_gpu_batch(&batch, device)
     }
 
+    /// テキストアイテムを**グループ単位に区切って** 1 本の GPU バッチへ焼く。
+    ///
+    /// UI 描画順の統合（スプライト／プリミティブ／テキストをレイヤー順に 1 列へ並べる）で、
+    /// 「テキストのラン 1 本」＝「グループ 1 つ」として分割描画するために使う。
+    /// 頂点バッファは従来どおり 1 本しか作らない（グループごとの GPU 確保は発生しない）。
+    ///
+    /// - `groups`: 描画順に並んだアイテム区間の列。
+    /// - 返り値: `(GPU バッチ, グループと 1:1 対応するインデックス区間)`。
+    ///   描く文字が 1 つも無ければ `None`（呼び出し側は描画をスキップする）。
+    pub fn build_grouped(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        groups: &[&[CanvasTextItem]],
+        view_proj: &[[f32; 4]; 4],
+    ) -> Option<(GpuTextBatch, Vec<TextDrawRange>)> {
+        if groups.iter().all(|g| g.is_empty()) {
+            return None;
+        }
+        let mut batch = TextBatch::new();
+        let mut ranges: Vec<TextDrawRange> = Vec::with_capacity(groups.len());
+        for group in groups {
+            // グループ開始時点のインデックス位置を記録し、積み終わりとの差を区間長にする。
+            let first_index = batch.index_len();
+            for item in group.iter() {
+                self.append_item(&mut batch, item, view_proj);
+            }
+            ranges.push(TextDrawRange {
+                first_index,
+                index_count: batch.index_len() - first_index,
+            });
+        }
+        // 新しく増えたグリフをアトラスへアップロードする（毎フレーム必須）。
+        self.font.flush(queue);
+        self.font
+            .build_gpu_batch(&batch, device)
+            .map(|gpu| (gpu, ranges))
+    }
+
     /// テキストの表示寸法（キャンバスローカル px の境界矩形と pivot 基準サイズ）を測る。
     ///
     /// 描画（`append_item`）と**同一のレイアウト規則**（`text_layout::resolve_layout`）を
@@ -201,6 +260,17 @@ impl CanvasTextRenderer {
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         self.font.draw_text_batch(gpu, pass);
+    }
+
+    /// 焼いたバッチの **1 区間だけ**をレンダーパスへ描画する（ラン単位描画）。
+    pub fn draw_range<'pass>(
+        &'pass self,
+        gpu: &'pass GpuTextBatch,
+        range: &TextDrawRange,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        self.font
+            .draw_text_batch_range(gpu, range.first_index, range.index_count, pass);
     }
 
     // ── 内部: 1 アイテム分の頂点生成 ─────────────────────────

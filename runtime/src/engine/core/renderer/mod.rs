@@ -20,6 +20,10 @@ pub(crate) mod rt_skin_blas;
 pub(crate) mod post;
 pub(crate) mod transparency;
 pub(crate) mod batch2d;
+/// UI 描画順（ゾーン → レイヤー → 種別）の統合ロジック（純関数・単体テストあり）
+pub mod ui_draw_order;
+/// UI 1 ゾーン分の統合描画列（ラン列）の構築と描画
+pub mod ui_draw_pass;
 /// GPU パーティクル シミュレーション＋描画（Phase RP）
 pub(crate) mod particle_system;
 /// GPU パーティクルの組込み形状メッシュ（Point/Sphere/Box/Plane/Model）
