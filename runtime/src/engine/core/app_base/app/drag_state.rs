@@ -34,6 +34,28 @@ pub(super) struct ChildDragStart {
     pub tf_start: [[f32; 4]; 4],
 }
 
+/// 2D アクタ 1 体分のギズモドラッグ開始スナップショット。
+///
+/// 【なぜ Vec で持つか】
+/// 2D の書き戻し（`apply_gizmo_new_mat` の 2D 分岐）は以前プライマリ 1 体しか
+/// 見ておらず、複数選択して動かしても 1 体しか動かなかった。3D 側と同じく
+/// 「選択アクタごとに開始スナップショットを持ち、共通デルタを各自へ適用する」
+/// 設計へ揃えるため、DragState では常に Vec で保持する（先頭 = プライマリ）。
+#[derive(Clone)]
+pub(super) struct CanvasDragStart {
+    /// 対象 2D アクタの DFS ID。
+    pub dfs_id: u32,
+    /// ドラッグ開始時の CanvasTransform（位置・回転・スケール・ピボット）。
+    pub start_ct: CanvasTransform,
+    /// ドラッグ開始時のギズモ空間ワールド位置。
+    ///
+    /// 通常の 2D 表示ではキャンバス px 空間、3D ワールドキャンバスの子では
+    /// 3D ワールド空間の座標。回転・拡縮でピボット周りに公転させるため、
+    /// 「各アクタの開始位置」をドラッグ開始時に凍結して持つ必要がある
+    /// （ドラッグ中はレイアウトが変化するので都度計算では二重適用になる）。
+    pub start_world_pos: [f32; 3],
+}
+
 /// LMB ドラッグに関連する全状態を集約する。
 ///
 /// App から分離することで App 構造体の責任範囲を減らし、
@@ -53,8 +75,12 @@ pub(super) struct DragState {
     pub actor_child_drag_starts: Vec<ChildDragStart>,
     /// アクタートランスフォームをギズモでドラッグ中に保持する開始状態 (dfs_id, old_transform)。
     pub actor_transform_drag_start: Option<(u32, ActorTransform)>,
-    /// 2D アクターの CanvasTransform をギズモでドラッグ中に保持する開始状態 (dfs_id, old_canvas_transform)。
-    pub canvas_transform_drag_start: Option<(u32, CanvasTransform)>,
+    /// 2D アクターの CanvasTransform をギズモでドラッグ中に保持する開始状態。
+    ///
+    /// **先頭がプライマリ選択**で、以降は同時選択された他の 2D アクタ
+    /// （祖先が同時選択されている子孫は二重適用を避けるため除外済み）。
+    /// 空 = 2D ドラッグではない。
+    pub canvas_drag_starts: Vec<CanvasDragStart>,
     /// ギズモドラッグ開始時の追加 MC スロット開始行列。
     /// タプル: (slot_i, 全インスタンス開始行列 Vec)
     /// 選択スロット以外の MC を選択スロットと一緒に動かすために使う。
@@ -102,7 +128,7 @@ impl DragState {
             drag_child_starts:              Vec::new(),
             actor_child_drag_starts:        Vec::new(),
             actor_transform_drag_start:     None,
-            canvas_transform_drag_start:    None,
+            canvas_drag_starts:             Vec::new(),
             actor_extra_mc_drag_starts:     Vec::new(),
             multi_actor_drag_starts:        Vec::new(),
             control_point_drag:             None,

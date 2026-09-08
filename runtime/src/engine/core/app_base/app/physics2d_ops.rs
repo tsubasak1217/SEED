@@ -1261,7 +1261,7 @@ impl App {
     /// 2. CheckKinematicOverlap2d で 2D 物理スレッドへ同期問い合わせし、提案位置で他の
     ///    非 Dynamic・非センサーコライダーとめり込むかを判定する。
     /// 3. めり込む場合: 最終有効位置（drag_collider_last_valid_pos_2d）へ CanvasTransform を
-    ///    復元し、ドラッグ開始 CanvasTransform（canvas_transform_drag_start）をローカル座標系で
+    ///    復元し、ドラッグ開始 CanvasTransform（drag.canvas_drag_starts）をローカル座標系で
     ///    シフトしてチラつきを防止する。
     /// 4. めり込まない場合: 提案位置を検証済みの最終有効位置として採用する。
     ///
@@ -1313,16 +1313,20 @@ impl App {
             write_back_canvas_transform(scene, ctx, last_pos, last_rot);
         }
 
-        // ドラッグ開始 CanvasTransform（canvas_transform_drag_start）をシフトしてチラつきを防止する。
+        // ドラッグ開始 CanvasTransform（drag.canvas_drag_starts）をシフトしてチラつきを防止する。
         // 3D 版はワールド座標のまま平行移動成分を引くだけだが、2D の CanvasTransform.position は
         // アンカー・親スケール・回転を経たローカル座標のため、提案位置・安全位置それぞれを
         // compute_canvas_local_transform でローカル座標へ変換してから差分（オフセット）を取る。
         let (prop_local, _) = compute_canvas_local_transform(ctx, prop_pos, prop_rot);
         let (safe_local, _) = compute_canvas_local_transform(ctx, last_pos, last_rot);
         let off_local = [prop_local[0] - safe_local[0], prop_local[1] - safe_local[1]];
-        if let Some((_, start_ct)) = &mut self.drag.canvas_transform_drag_start {
-            start_ct.position[0] -= off_local[0];
-            start_ct.position[1] -= off_local[1];
+        // 押し戻しの対象はドラッグ中の 1 体（drag_id = プライマリ DFS + 1）なので、
+        // 複数選択でも該当アクタのスナップショットだけをシフトする。
+        if let Some(st) = self.drag.canvas_drag_starts.iter_mut()
+            .find(|st| st.dfs_id as u64 + 1 == drag_id)
+        {
+            st.start_ct.position[0] -= off_local[0];
+            st.start_ct.position[1] -= off_local[1];
         }
     }
 }

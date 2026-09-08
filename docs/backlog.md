@@ -17,7 +17,8 @@
 
 - [ ] **アクター編集タブで親が回転している 2D アクタの移動書き戻し** — 2026-09-07。`actor_2d_layout_ctx` が None のフォールバック経路は親回転の逆適用をしない（World/Local どちらでも同じ既存の制約）。関連: `app/drag_handler.rs`、`app/canvas_gizmo_basis.rs::canvas_world_to_parent_local_pos`。
 
-- [ ] **2D のモーダル変形／ギズモドラッグがプライマリ 1 体にしか効かない** — 2026-09-07。`apply_gizmo_new_mat` の 2D 分岐が `canvas_transform_drag_start` 単体しか見ない。複数選択を回転・拡縮したい場合に拡張が必要。関連: `app/drag_handler.rs`、`app/modal_transform.rs`。
+- [ ] **2D 複数選択時のギズモピボットが 2D/3D 混在で壊れる** — 2026-09-08。`selected_actors_centroid` はキャンバス px（2D）とワールド座標（3D）を区別せず平均するため、混在選択ではピボット位置が意味の無い点になる。変形自体はプライマリの種別だけに効く（＝結果は壊れない）が、ギズモの表示位置と回転中心がずれる。関連: `app/gizmo_handler.rs::selected_actors_centroid`。
+- [ ] **2D 複数選択ドラッグ中の物理押し戻しはプライマリ 1 体にしか効かない** — 2026-09-08。`apply_drag_pushback_2d` はドラッグ中エンティティ（プライマリ DFS+1）のスナップショットだけをシフトするため、複数選択でコライダーがめり込んだ場合に非プライマリ側は押し戻されない。関連: `app/physics2d_ops.rs`。
 
 - [ ] **モーダル変形のステータス表示（数値入力の表示欄）が無い** — 2026-09-07。3D/2D とも G/R/S 中の入力値・軸拘束をエディタのステータスバーに出す仕組みが未実装。関連: `app/modal_transform.rs`（`MODAL:*` IPC）、`editor/src/MainWindow*.cs`。
 

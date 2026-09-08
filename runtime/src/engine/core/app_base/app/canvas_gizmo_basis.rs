@@ -116,6 +116,43 @@ pub(crate) fn canvas_world_to_parent_local_pos(
     }
 }
 
+/// ギズモのデルタ行列を「点」へ適用する（行優先 4x4 × 同次座標 w=1）。
+///
+/// 複数選択の 2D 変形で使う。各アクタのドラッグ開始位置 `p` にギズモの
+/// デルタ（`new_mat * inv(start_mat)`。start_mat の平行移動成分＝ピボット）を
+/// 掛けることで、移動は平行移動、回転・拡縮はピボット周りの公転になる。
+pub(crate) fn apply_delta_to_point(delta: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    let mut out = [0.0f32; 3];
+    for (r, o) in out.iter_mut().enumerate() {
+        *o = delta[r][0] * p[0] + delta[r][1] * p[1] + delta[r][2] * p[2] + delta[r][3];
+    }
+    out
+}
+
+/// 選択集合から「祖先も同時選択されている子孫」を落とし、変形の適用対象だけを返す。
+///
+/// 2D の CanvasTransform は**親ローカル**の値なので、親を動かせば子は自動的に
+/// 追従する。祖先と子孫の両方へデルタを適用すると子だけ二重に動いてしまうため、
+/// 祖先が選択集合に含まれる子孫は対象から外す（3D 側の
+/// `ModelComponent::filter_selection_roots` と同じ考え方を DFS ID で行う）。
+///
+/// 入力は `(dfs_id, subtree_size)` の並び（`actor_subtree_size` は自身を含む
+/// ノード数）。DFS 採番では、あるノードの子孫は
+/// `dfs_id + 1 ..= dfs_id + subtree_size - 1` に必ず入る。
+/// 戻り値は入力順を保った dfs_id の並び。
+pub(crate) fn filter_canvas_drag_roots(selected: &[(u32, u32)]) -> Vec<u32> {
+    selected
+        .iter()
+        .filter(|&&(dfs, _)| {
+            // 自分を子孫として含む選択ノードが他にあれば対象外（祖先が動かす）
+            !selected
+                .iter()
+                .any(|&(other_dfs, other_size)| other_dfs < dfs && dfs < other_dfs + other_size)
+        })
+        .map(|&(dfs, _)| dfs)
+        .collect()
+}
+
 // ============================================================
 //  アクターツリー走査（フォールバック経路）
 // ============================================================
@@ -389,6 +426,143 @@ mod tests {
             (p1[0] - p0[0] - 10.0).abs() < 1e-4,
             "ワールド 20px の移動 → position は +10"
         );
+    }
+
+    // ── 複数選択（マルチアクタ）の純ロジック ────────────────────
+
+    /// ピボット周りの回転デルタ行列を組む（テスト用ヘルパー）。
+    fn rotation_delta_about(pivot: [f32; 3], deg: f32) -> [[f32; 4]; 4] {
+        let (sin, cos) = deg.to_radians().sin_cos();
+        let mut d = [[0.0f32; 4]; 4];
+        d[0][0] = cos;
+        d[0][1] = -sin;
+        d[1][0] = sin;
+        d[1][1] = cos;
+        d[2][2] = 1.0;
+        d[3][3] = 1.0;
+        d[0][3] = pivot[0] - (cos * pivot[0] - sin * pivot[1]);
+        d[1][3] = pivot[1] - (sin * pivot[0] + cos * pivot[1]);
+        d
+    }
+
+    /// 平行移動デルタは、親が違う複数アクタへ「同じキャンバス空間移動量」を与える。
+    /// 各アクタの position デルタは自分の親の回転・スケールで割り戻された値になる。
+    #[test]
+    fn multi_translation_applies_same_canvas_delta_to_all_parents() {
+        // 移動のみのデルタ（キャンバス空間で +30, -10）
+        let mut delta = [[0.0f32; 4]; 4];
+        for i in 0..4 {
+            delta[i][i] = 1.0;
+        }
+        delta[0][3] = 30.0;
+        delta[1][3] = -10.0;
+
+        // アクタ A: 親は無回転・スケール 1
+        let a_start = [100.0f32, 200.0, 0.0];
+        let a_world = apply_delta_to_point(&delta, a_start);
+        let a_p0 = canvas_world_to_parent_local_pos(
+            [a_start[0], a_start[1]], [0.0, 0.0], 0.0, [0.0, 0.0], [1.0, 1.0], false);
+        let a_p1 = canvas_world_to_parent_local_pos(
+            [a_world[0], a_world[1]], [0.0, 0.0], 0.0, [0.0, 0.0], [1.0, 1.0], false);
+        assert!((a_p1[0] - a_p0[0] - 30.0).abs() < 1e-4);
+        assert!((a_p1[1] - a_p0[1] + 10.0).abs() < 1e-4);
+
+        // アクタ B: 親が 90° 回転 + 親累積スケール 2（sm_transform）
+        let parent_rot = 90f32.to_radians();
+        let b_start = [-50.0f32, 40.0, 0.0];
+        let b_world = apply_delta_to_point(&delta, b_start);
+        let b_p0 = canvas_world_to_parent_local_pos(
+            [b_start[0], b_start[1]], [10.0, 20.0], parent_rot, [5.0, 5.0], [2.0, 2.0], true);
+        let b_p1 = canvas_world_to_parent_local_pos(
+            [b_world[0], b_world[1]], [10.0, 20.0], parent_rot, [5.0, 5.0], [2.0, 2.0], true);
+        // 親ローカルでは (dx, dy) = R(-90°)*(30, -10) / 2 = (-5, -15)
+        assert!((b_p1[0] - b_p0[0] + 5.0).abs() < 1e-4, "親ローカル X");
+        assert!((b_p1[1] - b_p0[1] + 15.0).abs() < 1e-4, "親ローカル Y");
+    }
+
+    /// 回転デルタ（ピボット周り 90°）は、各アクタの位置をピボット周りに公転させる。
+    /// 回転角そのものは全アクタ共通で、各自の開始 rotation へ加算される。
+    #[test]
+    fn multi_rotation_orbits_positions_around_pivot() {
+        let pivot = [100.0f32, 100.0, 0.0];
+        let delta = rotation_delta_about(pivot, 90.0);
+
+        // ピボット上のアクタは動かない
+        let on_pivot = apply_delta_to_point(&delta, pivot);
+        assert!((on_pivot[0] - pivot[0]).abs() < 1e-3);
+        assert!((on_pivot[1] - pivot[1]).abs() < 1e-3);
+
+        // ピボットの +X 側 50px にいるアクタは +Y 側 50px へ公転する
+        let moved = apply_delta_to_point(&delta, [150.0, 100.0, 0.0]);
+        assert!((moved[0] - 100.0).abs() < 1e-3, "X = pivot.x");
+        assert!((moved[1] - 150.0).abs() < 1e-3, "Y = pivot.y + 50");
+
+        // 書き戻し角度は new_mat の col0 から取る式（drag_handler と同じ）
+        let delta_angle = delta[1][0].atan2(delta[0][0]).to_degrees();
+        assert!((delta_angle - 90.0).abs() < 1e-3);
+        // 各アクタの開始 rotation に加算される（開始 10° → 100°）
+        assert!((10.0 + delta_angle - 100.0).abs() < 1e-3);
+    }
+
+    /// 拡縮デルタ（ピボット中心 2 倍）は位置をピボットから 2 倍の距離へ動かす。
+    #[test]
+    fn multi_scale_moves_positions_away_from_pivot() {
+        let pivot = [100.0f32, 100.0, 0.0];
+        let factor = 2.0f32;
+        let mut delta = [[0.0f32; 4]; 4];
+        delta[0][0] = factor;
+        delta[1][1] = factor;
+        delta[2][2] = 1.0;
+        delta[3][3] = 1.0;
+        delta[0][3] = pivot[0] * (1.0 - factor);
+        delta[1][3] = pivot[1] * (1.0 - factor);
+
+        let moved = apply_delta_to_point(&delta, [150.0, 80.0, 0.0]);
+        assert!((moved[0] - 200.0).abs() < 1e-3, "pivot + 50*2");
+        assert!((moved[1] - 60.0).abs() < 1e-3, "pivot - 20*2");
+        // スケール係数の取り出しは全アクタ共通（各自の start_ct.scale に乗算する）
+        assert!((axis_scale_factor(&delta, [1.0, 0.0, 0.0]) - factor).abs() < 1e-5);
+    }
+
+    /// 単一選択では「デルタをピボット（= 自分の位置）へ適用」した結果が
+    /// new_mat の平行移動成分と一致する（単一選択の挙動が変わらない根拠）。
+    #[test]
+    fn single_selection_delta_reproduces_new_mat_translation() {
+        // start_mat = T(pivot)、new_mat = delta * start_mat のとき
+        // new_mat の平行移動成分 = delta を pivot へ適用した点。
+        let pivot = [70.0f32, -20.0, 0.0];
+        let delta = rotation_delta_about(pivot, 30.0);
+        let p = apply_delta_to_point(&delta, pivot);
+        // 回転のピボットが自分自身なので位置は変わらない
+        assert!((p[0] - pivot[0]).abs() < 1e-3);
+        assert!((p[1] - pivot[1]).abs() < 1e-3);
+    }
+
+    /// 祖先と子孫を同時選択した場合、子孫は変形対象から外れる（二重適用の防止）。
+    #[test]
+    fn ancestor_descendant_dedupe() {
+        // ツリー: 0(size4) → 1(size2) → 2(size1) / 3(size1)、別ルート 4(size1)
+        // 選択: 祖先 0 と子孫 2、無関係な 4
+        let roots = filter_canvas_drag_roots(&[(0, 4), (2, 1), (4, 1)]);
+        assert_eq!(roots, vec![0, 4]);
+    }
+
+    /// 祖先が選択されていなければ子孫はそのまま対象に残る。
+    #[test]
+    fn dedupe_keeps_siblings_and_unrelated_nodes() {
+        // 1 と 3 は 0 の子孫だが 0 は未選択 → 両方残る
+        let roots = filter_canvas_drag_roots(&[(1, 2), (3, 1)]);
+        assert_eq!(roots, vec![1, 3]);
+        // 入力順は保たれる
+        let roots = filter_canvas_drag_roots(&[(3, 1), (1, 2)]);
+        assert_eq!(roots, vec![3, 1]);
+    }
+
+    /// 単一選択では常にそのアクタ 1 体が対象（既存挙動の維持）。
+    #[test]
+    fn dedupe_single_selection_is_identity() {
+        assert_eq!(filter_canvas_drag_roots(&[(7, 3)]), vec![7]);
+        assert!(filter_canvas_drag_roots(&[]).is_empty());
     }
 
     /// 軸スケール係数: World（対角行列）では列長と一致する。

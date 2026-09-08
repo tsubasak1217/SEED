@@ -238,11 +238,13 @@ impl App {
     /// そのまま流用できる。異なるのはレイの作り方・ビュー法線・回転符号だけ。
     ///
     /// # マルチ選択・2D3D 混在
-    /// ピボットは 3D と同じく全選択アクタの重心（`current_gizmo_pos`）だが、
-    /// **書き戻しはプライマリ 1 体のみ**に効く。これは 2D ギズモドラッグの
-    /// 既存挙動と同一で（`apply_gizmo_new_mat` の 2D 分岐が
-    /// `canvas_transform_drag_start` だけを見るため）、
-    /// 2D/3D 混在選択でもプライマリの種別の経路しか動かない。
+    /// ピボットは 3D と同じく全選択アクタの重心（`current_gizmo_pos`）で、
+    /// **書き戻しは選択中の全アクタ**に効く（2D も 2026-09-08 に対応済み。
+    /// `collect_transform_drag_starts` が選択 2D アクタ全件のスナップショットを
+    /// `drag.canvas_drag_starts` へ collect し、`apply_gizmo_new_mat` の 2D 分岐が
+    /// 各自へ共通デルタを適用する）。
+    /// ただし 2D/3D 混在選択では**プライマリの種別の経路しか動かない**
+    /// （キャンバス px 空間のデルタを 3D ワールドへ適用しないため）。
     pub(super) fn try_begin_modal_transform(&mut self, kind: ModalKind) -> bool {
         // ── 前提条件 ──────────────────────────────────────────
         if self.modal_transform.is_some() {
@@ -630,7 +632,7 @@ impl App {
         self.drag.actor_extra_mc_drag_starts.clear();
         self.drag.multi_actor_drag_starts.clear();
         self.drag.actor_transform_drag_start = None;
-        self.drag.canvas_transform_drag_start = None;
+        self.drag.canvas_drag_starts.clear();
 
         // インスペクタを開始時の値へ戻す（モーダル中は更新していないため）
         if let Some(dfs) = self.actor_virtual_selected_idx {
@@ -670,7 +672,7 @@ impl App {
         self.drag.actor_extra_mc_drag_starts.clear();
         self.drag.multi_actor_drag_starts.clear();
         self.drag.actor_transform_drag_start = None;
-        self.drag.canvas_transform_drag_start = None;
+        self.drag.canvas_drag_starts.clear();
         self.send_modal_transform_state(false);
     }
 

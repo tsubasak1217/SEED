@@ -31,88 +31,14 @@ impl App {
         if self.selected_actor_dfs_ids.is_empty() {
             return None;
         }
-        let scene = self.scene.as_ref()?;
-        let wl = self.active_world_line;
-        let is_canvas = self.canvas_world_lines.contains(&wl);
-        // ワールドスペースモード判定: エディタでスクリーンスペース OFF ならワールドスペース
-        let in_editor = self.mode == RuntimeMode::Edit || self.paused;
-        let use_screen_space = self.canvas_screen_space_overlay
-            || !in_editor
-            || self.actor_edit_canvas_wls.contains(&wl);
         let mut sum = [0.0f32; 3];
         let mut count = 0usize;
         for &dfs_id in &self.selected_actor_dfs_ids {
-            let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id as u32, &mut c) {
-                // シーン全体の is_canvas ではなく、アクター個別の種別で分岐する。
-                // 3D/2D 混在シーンで 3D アクターを選んでも正しく ActorTransform を参照できる。
-                let pos = if actor.is_2d() {
-                    // 2D アクター: CanvasTransform から位置を取得し、アンカーオフセットを加算する
-                    scene.world.get::<CanvasTransform>(actor.entity).map(|ct| {
-                        let off = canvas_anchor_offset_for_dfs(
-                            &scene.actors,
-                            &scene.world,
-                            wl,
-                            dfs_id as u32,
-                        );
-                        let cx = ct.position[0] + off[0];
-                        let cy = ct.position[1] + off[1];
-
-                        // 3D Canvas の子かどうか確認する（親が Actor3D + CanvasComponent）
-                        let parent_ctw = {
-                            let mut c_p = 0u32;
-                            find_parent_actor_of_dfs(
-                                &scene.actors,
-                                wl,
-                                dfs_id as u32,
-                                &mut c_p,
-                                None,
-                            )
-                            .and_then(|p| get_3d_canvas_world_mat(p, &scene.world))
-                        };
-                        if let Some(ctw) = parent_ctw {
-                            // 3D Canvas の子: canvas_to_world を適用して正確な 3D 位置を計算する
-                            [
-                                ctw[0][0] * cx + ctw[0][1] * cy + ctw[0][3],
-                                ctw[1][0] * cx + ctw[1][1] * cy + ctw[1][3],
-                                ctw[2][0] * cx + ctw[2][1] * cy + ctw[2][3],
-                            ]
-                        } else if let Some(ctx2d) = self.actor_2d_layout_ctx(dfs_id as u32) {
-                            // シーン SS レイアウト時: 描画と完全に同一の変換チェーンで計算した
-                            // ピボット点ワールド座標を使う（自動解像度・ルート恒等化・
-                            // ビューポート基準アンカー・auto_scale 対応。Phase B バグ修正）
-                            [ctx2d.pivot_world_px[0], ctx2d.pivot_world_px[1], 0.0]
-                        } else {
-                            // 通常 2D Canvas: ワールドスペースモードでは座標をスケール・Y 反転する
-                            let ws = if !use_screen_space {
-                                CANVAS_WORLD_SCALE
-                            } else {
-                                1.0
-                            };
-                            let y_sign = if !use_screen_space { -1.0f32 } else { 1.0 };
-                            [cx * ws, cy * ws * y_sign, 0.0]
-                        }
-                    })
-                } else {
-                    // 3D アクター: MC の instance_mats[0] を優先、なければ ActorTransform.position を使う
-                    actor
-                        .mc_entity()
-                        .and_then(|e| scene.world.get::<ModelComponent>(e))
-                        .and_then(|mc| mc.instance_mats.first())
-                        .map(|m| [m[0][3], m[1][3], m[2][3]])
-                        .or_else(|| {
-                            scene
-                                .world
-                                .get::<ActorTransform>(actor.entity)
-                                .map(|tf| tf.position)
-                        })
-                };
-                if let Some(p) = pos {
-                    sum[0] += p[0];
-                    sum[1] += p[1];
-                    sum[2] += p[2];
-                    count += 1;
-                }
+            if let Some(p) = self.actor_gizmo_world_pos(dfs_id as u32) {
+                sum[0] += p[0];
+                sum[1] += p[1];
+                sum[2] += p[2];
+                count += 1;
             }
         }
         if count > 0 {
@@ -123,6 +49,76 @@ impl App {
             ])
         } else {
             None
+        }
+    }
+
+    /// DFS ID で指定したアクター 1 体の「ギズモ空間ワールド位置」を返す。
+    ///
+    /// ギズモ空間は 3D アクターならワールド空間、2D アクターなら
+    /// キャンバス px 空間（3D ワールドキャンバスの子だけは 3D ワールド空間）。
+    /// `selected_actors_centroid`（重心＝ギズモピボット）と
+    /// `collect_transform_drag_starts`（複数選択 2D ドラッグの開始位置）が
+    /// **同じ座標系の値**を使うよう、算出は必ずこの 1 関数に集約する。
+    pub(super) fn actor_gizmo_world_pos(&self, dfs_id: u32) -> Option<[f32; 3]> {
+        let scene = self.scene.as_ref()?;
+        let wl = self.active_world_line;
+        // ワールドスペースモード判定: エディタでスクリーンスペース OFF ならワールドスペース
+        let in_editor = self.mode == RuntimeMode::Edit || self.paused;
+        let use_screen_space = self.canvas_screen_space_overlay
+            || !in_editor
+            || self.actor_edit_canvas_wls.contains(&wl);
+        let mut c = 0u32;
+        let actor = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)?;
+        // シーン全体の canvas_world_lines ではなくアクター個別の種別で分岐する。
+        // 3D/2D 混在シーンで 3D アクターを選んでも正しく ActorTransform を参照できる。
+        if actor.is_2d() {
+            // 2D アクター: CanvasTransform から位置を取得し、アンカーオフセットを加算する
+            let ct = scene.world.get::<CanvasTransform>(actor.entity)?;
+            let off = canvas_anchor_offset_for_dfs(&scene.actors, &scene.world, wl, dfs_id);
+            let cx = ct.position[0] + off[0];
+            let cy = ct.position[1] + off[1];
+
+            // 3D Canvas の子かどうか確認する（親が Actor3D + CanvasComponent）
+            let parent_ctw = {
+                let mut c_p = 0u32;
+                find_parent_actor_of_dfs(&scene.actors, wl, dfs_id, &mut c_p, None)
+                    .and_then(|p| get_3d_canvas_world_mat(p, &scene.world))
+            };
+            if let Some(ctw) = parent_ctw {
+                // 3D Canvas の子: canvas_to_world を適用して正確な 3D 位置を計算する
+                return Some([
+                    ctw[0][0] * cx + ctw[0][1] * cy + ctw[0][3],
+                    ctw[1][0] * cx + ctw[1][1] * cy + ctw[1][3],
+                    ctw[2][0] * cx + ctw[2][1] * cy + ctw[2][3],
+                ]);
+            }
+            if let Some(ctx2d) = self.actor_2d_layout_ctx(dfs_id) {
+                // シーン SS レイアウト時: 描画と完全に同一の変換チェーンで計算した
+                // ピボット点ワールド座標を使う（自動解像度・ルート恒等化・
+                // ビューポート基準アンカー・auto_scale 対応。Phase B バグ修正）
+                return Some([ctx2d.pivot_world_px[0], ctx2d.pivot_world_px[1], 0.0]);
+            }
+            // 通常 2D Canvas: ワールドスペースモードでは座標をスケール・Y 反転する
+            let ws = if !use_screen_space {
+                CANVAS_WORLD_SCALE
+            } else {
+                1.0
+            };
+            let y_sign = if !use_screen_space { -1.0f32 } else { 1.0 };
+            Some([cx * ws, cy * ws * y_sign, 0.0])
+        } else {
+            // 3D アクター: MC の instance_mats[0] を優先、なければ ActorTransform.position を使う
+            actor
+                .mc_entity()
+                .and_then(|e| scene.world.get::<ModelComponent>(e))
+                .and_then(|mc| mc.instance_mats.first())
+                .map(|m| [m[0][3], m[1][3], m[2][3]])
+                .or_else(|| {
+                    scene
+                        .world
+                        .get::<ActorTransform>(actor.entity)
+                        .map(|tf| tf.position)
+                })
         }
     }
 

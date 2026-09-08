@@ -29,6 +29,7 @@ use super::{
     collect_canvas_actors_in_rect,
     collect_transform_only_in_rect,
     collect_child_actor_drag_starts,
+    actor_subtree_size,
     canvas_anchor_offset_for_dfs,
     find_parent_actor_of_dfs,
     get_3d_canvas_world_mat,
@@ -37,8 +38,10 @@ use super::{
     CANVAS_WORLD_SCALE,
 };
 use super::canvas_gizmo_basis::{
-    axis_scale_factor, canvas_gizmo_axes_world, canvas_world_to_parent_local_pos,
+    apply_delta_to_point, axis_scale_factor, canvas_gizmo_axes_world,
+    canvas_world_to_parent_local_pos, filter_canvas_drag_roots,
 };
+use super::drag_state::CanvasDragStart;
 
 /// CanvasTransform.scale へ書き戻す最小のスケール係数。
 /// これ以下は「ギズモを中心へ潰し切った」状態で符号反転・ゼロ化を招くため無視する。
@@ -313,13 +316,32 @@ impl App {
                 let wl           = self.active_world_line;
                 let selected_dfs = self.actor_virtual_selected_idx;
 
-                // 2D ドラッグ書き戻し用: 描画と完全に同一の変換チェーンで計算した
-                // レイアウトコンテキスト（親原点・アンカーオフセット・累積スケール）を
-                // scene の可変借用前に事前計算する（シーン SS レイアウト時のみ Some）。
-                // ルート恒等化・自動解像度・ビューポート基準アンカーを反映した逆変換に使用する。
-                let drag_ctx_2d = self.drag.canvas_transform_drag_start.as_ref()
-                    .map(|&(dfs, _)| dfs)
-                    .and_then(|dfs| self.actor_2d_layout_ctx(dfs));
+                // 2D ドラッグ書き戻し用の事前計算（scene の可変借用前に &self で済ませる）。
+                // 対象は「選択中の全 2D アクタ」で、1 体ごとに
+                //   - 描画と完全に同一の変換チェーンで計算したレイアウトコンテキスト
+                //     （親原点・アンカーオフセット・累積スケール。シーン SS レイアウト時のみ Some。
+                //       ルート恒等化・自動解像度・ビューポート基準アンカーを反映した逆変換に使う）
+                //   - デルタ適用後のギズモ空間ワールド位置
+                // を求めておく。
+                let canvas_targets_2d: Vec<_> = {
+                    let starts = self.drag.canvas_drag_starts.clone();
+                    // 単一選択のときは従来どおり new_mat の平行移動成分をそのまま使う。
+                    // 複数選択の式（デルタを各自の開始位置へ適用）と数学的には同値だが
+                    // （delta * start_mat = new_mat、start_mat の平行移動＝ピボット＝自分の位置）、
+                    // 逆行列を経由しない分だけ丸め誤差が入らず既存挙動と完全に一致する。
+                    let single = starts.len() == 1;
+                    starts.into_iter()
+                        .map(|st| {
+                            let ctx   = self.actor_2d_layout_ctx(st.dfs_id);
+                            let world = if single {
+                                [new_mat[0][3], new_mat[1][3], new_mat[2][3]]
+                            } else {
+                                apply_delta_to_point(&delta, st.start_world_pos)
+                            };
+                            (st, ctx, world)
+                        })
+                        .collect()
+                };
 
                 // 2D 書き戻しの分岐に使う実効ツールモード。
                 // 通常のギズモドラッグではツールバーの tool_mode そのものだが、
@@ -390,135 +412,156 @@ impl App {
                     }
                     // MC なし（インスタンス空含む）のアクターは Transform を直接ドラッグする
                     if self.drag.drag_root_starts.is_empty() {
-                        // canvas_drag_start が設定されているなら2Dアクター、
+                        // canvas_drag_starts が空でないなら2Dアクター、
                         // actor_transform_drag_start が設定されているなら3Dアクターとして処理する。
                         // canvas_world_lines.contains(&wl) は「世界線に2Dアクターが存在するか」であり、
                         // 3D/2D混在シーンで3DアクターをMixすると誤判定するためここでは使わない。
-                        if self.drag.canvas_transform_drag_start.is_some() {
-                            // 2D: CanvasTransform の XY 位置・Z 回転・XY スケールを更新する
-                            if let Some((drag_dfs, ref start_ct)) = self.drag.canvas_transform_drag_start.clone() {
+                        if !canvas_targets_2d.is_empty() {
+                            // 2D: 選択された全 2D アクタの CanvasTransform を更新する。
+                            // 位置は「各自の開始位置へ共通デルタを適用した点」を書き戻し、
+                            // 回転角・拡縮係数（new_mat の線形部から取る値。ギズモ開始行列は
+                            // 単位回転なので線形部はデルタそのもの）は全アクタ共通で使う。
+                            // これで移動は平行移動、回転・拡縮はピボット（複数選択時は
+                            // 選択重心）周りの公転＋自身の rotation/scale への加算になる。
+                            // 複数選択かどうか（単一選択では既存挙動を 1 ビットも変えない）
+                            let multi_2d = canvas_targets_2d.len() > 1;
+                            for (st, drag_ctx_2d, new_world) in &canvas_targets_2d {
+                                let drag_dfs = st.dfs_id;
+                                let start_ct = &st.start_ct;
                                 let entity = {
                                     let mut c = 0u32;
                                     find_actor_by_dfs(&scene.actors, wl, drag_dfs, &mut c)
                                         .map(|a| a.entity)
                                 };
-                                if let Some(entity) = entity {
-                                    // new_mat の平行移動成分はアンカーオフセット込みのgizmo位置を基点とするため、
-                                    // CanvasTransform.position（アンカーオフセットなし）に戻すためにオフセットを引く。
-                                    let anchor_off = canvas_anchor_offset_for_dfs(
-                                        &scene.actors, &scene.world, wl, drag_dfs,
-                                    );
+                                let Some(entity) = entity else { continue };
+                                // new_world はアンカーオフセット込みの gizmo 位置を基点とするため、
+                                // CanvasTransform.position（アンカーオフセットなし）に戻すために
+                                // オフセットを引く。
+                                let anchor_off = canvas_anchor_offset_for_dfs(
+                                    &scene.actors, &scene.world, wl, drag_dfs,
+                                );
 
-                                    // 3D Canvas の子かどうか確認する
-                                    let parent_ctw = {
-                                        let mut c_p = 0u32;
-                                        find_parent_actor_of_dfs(&scene.actors, wl, drag_dfs, &mut c_p, None)
-                                            .and_then(|p| get_3d_canvas_world_mat(p, &scene.world))
-                                    };
+                                // 3D Canvas の子かどうか確認する
+                                let parent_ctw = {
+                                    let mut c_p = 0u32;
+                                    find_parent_actor_of_dfs(&scene.actors, wl, drag_dfs, &mut c_p, None)
+                                        .and_then(|p| get_3d_canvas_world_mat(p, &scene.world))
+                                };
 
-                                    if let Some(ct) = scene.world.get_mut::<CanvasTransform>(entity) {
-                                        if let Some(ctw) = parent_ctw {
-                                            // 3D Canvas の子: canvas_to_world の逆変換でキャンバス座標に戻す
-                                            let ctw_inv = mat4x4_inv(ctw);
-                                            let wx = new_mat[0][3];
-                                            let wy = new_mat[1][3];
-                                            let wz = new_mat[2][3];
-                                            let cx = ctw_inv[0][0]*wx + ctw_inv[0][1]*wy + ctw_inv[0][2]*wz + ctw_inv[0][3];
-                                            let cy = ctw_inv[1][0]*wx + ctw_inv[1][1]*wy + ctw_inv[1][2]*wz + ctw_inv[1][3];
-                                            match canvas_tool_mode {
-                                                crate::engine::core::app_base::ipc::ToolMode::Rotate => {
-                                                    // 3D Canvas の Y 反転を考慮して回転方向を逆符号にする
-                                                    let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
-                                                    ct.rotation = start_ct.rotation - delta_angle;
-                                                    ct.scale    = start_ct.scale;
-                                                }
-                                                crate::engine::core::app_base::ipc::ToolMode::Scale => {
-                                                    let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
-                                                    let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
-                                                    if sx > 0.001 { ct.scale[0] = start_ct.scale[0] * sx; }
-                                                    if sy > 0.001 { ct.scale[1] = start_ct.scale[1] * sy; }
-                                                    ct.rotation = start_ct.rotation;
-                                                }
-                                                _ => {
-                                                    // Move: canvas_to_world 逆変換で canvas 座標に変換
-                                                    ct.position[0] = cx - anchor_off[0];
-                                                    ct.position[1] = cy - anchor_off[1];
-                                                    ct.rotation = start_ct.rotation;
-                                                    ct.scale    = start_ct.scale;
-                                                }
+                                let Some(ct) = scene.world.get_mut::<CanvasTransform>(entity) else { continue };
+                                if let Some(ctw) = parent_ctw {
+                                    // 3D Canvas の子: canvas_to_world の逆変換でキャンバス座標に戻す
+                                    let ctw_inv = mat4x4_inv(ctw);
+                                    let wx = new_world[0];
+                                    let wy = new_world[1];
+                                    let wz = new_world[2];
+                                    let cx = ctw_inv[0][0]*wx + ctw_inv[0][1]*wy + ctw_inv[0][2]*wz + ctw_inv[0][3];
+                                    let cy = ctw_inv[1][0]*wx + ctw_inv[1][1]*wy + ctw_inv[1][2]*wz + ctw_inv[1][3];
+                                    match canvas_tool_mode {
+                                        crate::engine::core::app_base::ipc::ToolMode::Rotate => {
+                                            // 3D Canvas の Y 反転を考慮して回転方向を逆符号にする
+                                            let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
+                                            ct.rotation = start_ct.rotation - delta_angle;
+                                            ct.scale    = start_ct.scale;
+                                            // 複数選択ではピボット周りに公転するため位置も更新する
+                                            // （単一選択では自分自身がピボットで位置は不変。
+                                            //   丸め誤差を持ち込まないよう書き戻さない）
+                                            if multi_2d {
+                                                ct.position[0] = cx - anchor_off[0];
+                                                ct.position[1] = cy - anchor_off[1];
                                             }
-                                            ct.pivot = start_ct.pivot;
-                                        } else {
-                                            // 通常 2D Canvas 処理
-                                            // SS 表示かどうか（位置の逆変換と回転方向の符号に使用）。
-                                            // drag_ctx_2d が Some のとき（シーン SS レイアウト。
-                                            // View2D ビューポートタブ含む）は常に SS 扱い。
-                                            let in_editor_c = self.mode == RuntimeMode::Edit || self.paused;
-                                            let use_ss_c = drag_ctx_2d.is_some()
-                                                || self.canvas_screen_space_overlay || !in_editor_c
-                                                || self.actor_edit_canvas_wls.contains(&wl);
-                                            if let Some(ctx2d) = &drag_ctx_2d {
-                                                // シーン SS レイアウト: 描画と同一チェーンの逆変換で
-                                                // position を求める（自動解像度・ルート恒等化・
-                                                // ビューポート基準アンカー・auto_scale 対応）。
-                                                // world → 親キャンバスローカル（親累積回転の逆適用）
-                                                // 逆変換（親原点 → 親回転の逆 → アンカー除去 →
-                                                // sm_transform の逆スケール）は純関数へ集約している。
-                                                // Local モードで回転軸に沿って動かした場合も、
-                                                // ここで親回転・親スケールを外すことで
-                                                // 正しい親ローカル position デルタになる。
-                                                let p = canvas_world_to_parent_local_pos(
-                                                    [new_mat[0][3], new_mat[1][3]],
-                                                    ctx2d.parent_canvas_origin,
-                                                    ctx2d.parent_world_rot,
-                                                    ctx2d.anchor_off,
-                                                    ctx2d.cumul_scale,
-                                                    ctx2d.sm_transform,
-                                                );
-                                                ct.position[0] = p[0];
-                                                ct.position[1] = p[1];
-                                            } else {
-                                                // 従来経路（ワールドスペース・アクター編集タブ）
-                                                // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
-                                                // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
-                                                let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
-                                                let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
-                                                ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
-                                                ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
+                                        }
+                                        crate::engine::core::app_base::ipc::ToolMode::Scale => {
+                                            let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
+                                            let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
+                                            if sx > CANVAS_SCALE_MIN_FACTOR { ct.scale[0] = start_ct.scale[0] * sx; }
+                                            if sy > CANVAS_SCALE_MIN_FACTOR { ct.scale[1] = start_ct.scale[1] * sy; }
+                                            ct.rotation = start_ct.rotation;
+                                            // 複数選択ではピボットからの距離も伸縮するため位置を更新する
+                                            // （単一選択では自分自身がピボットで位置は不変）
+                                            if multi_2d {
+                                                ct.position[0] = cx - anchor_off[0];
+                                                ct.position[1] = cy - anchor_off[1];
                                             }
-                                            match canvas_tool_mode {
-                                                crate::engine::core::app_base::ipc::ToolMode::Rotate => {
-                                                    // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転。
-                                                    // ワールドスペース描画時は Y 軸が反転しているため回転方向を逆符号にする。
-                                                    let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
-                                                    let rot_sign = if use_ss_c { 1.0f32 } else { -1.0 };
-                                                    ct.rotation = start_ct.rotation + delta_angle * rot_sign;
-                                                    ct.scale    = start_ct.scale;
-                                                }
-                                                crate::engine::core::app_base::ipc::ToolMode::Scale => {
-                                                    // ギズモ基底方向のスケール係数を取り出す。
-                                                    // World モード（軸整列）では従来の「列ベクトル長」と同値、
-                                                    // Local モードでは回転した軸方向の係数が得られる
-                                                    // （列長を使うと軸が斜めのとき誤った倍率になる）。
-                                                    // CanvasTransform.scale は元々ローカル軸のスケールなので、
-                                                    // どちらのモードでも書き戻し先は scale x/y で変わらない。
-                                                    let [gax, gay, _] = drag.axes.unwrap_or_else(canvas_gizmo_axes_world);
-                                                    let sx = axis_scale_factor(&new_mat, gax);
-                                                    let sy = axis_scale_factor(&new_mat, gay);
-                                                    if sx > CANVAS_SCALE_MIN_FACTOR { ct.scale[0] = start_ct.scale[0] * sx; }
-                                                    if sy > CANVAS_SCALE_MIN_FACTOR { ct.scale[1] = start_ct.scale[1] * sy; }
-                                                    ct.rotation = start_ct.rotation;
-                                                }
-                                                _ => {
-                                                    // Move: 位置のみ変化
-                                                    ct.rotation = start_ct.rotation;
-                                                    ct.scale    = start_ct.scale;
-                                                }
-                                            }
-                                            // ピボットはドラッグ中変化なし
-                                            ct.pivot = start_ct.pivot;
+                                        }
+                                        _ => {
+                                            // Move: canvas_to_world 逆変換で canvas 座標に変換
+                                            ct.position[0] = cx - anchor_off[0];
+                                            ct.position[1] = cy - anchor_off[1];
+                                            ct.rotation = start_ct.rotation;
+                                            ct.scale    = start_ct.scale;
                                         }
                                     }
+                                    ct.pivot = start_ct.pivot;
+                                } else {
+                                    // 通常 2D Canvas 処理
+                                    // SS 表示かどうか（位置の逆変換と回転方向の符号に使用）。
+                                    // drag_ctx_2d が Some のとき（シーン SS レイアウト。
+                                    // View2D ビューポートタブ含む）は常に SS 扱い。
+                                    let in_editor_c = self.mode == RuntimeMode::Edit || self.paused;
+                                    let use_ss_c = drag_ctx_2d.is_some()
+                                        || self.canvas_screen_space_overlay || !in_editor_c
+                                        || self.actor_edit_canvas_wls.contains(&wl);
+                                    if let Some(ctx2d) = drag_ctx_2d {
+                                        // シーン SS レイアウト: 描画と同一チェーンの逆変換で
+                                        // position を求める（自動解像度・ルート恒等化・
+                                        // ビューポート基準アンカー・auto_scale 対応）。
+                                        // world → 親キャンバスローカル（親累積回転の逆適用）
+                                        // 逆変換（親原点 → 親回転の逆 → アンカー除去 →
+                                        // sm_transform の逆スケール）は純関数へ集約している。
+                                        // Local モードで回転軸に沿って動かした場合も、
+                                        // ここで親回転・親スケールを外すことで
+                                        // 正しい親ローカル position デルタになる。
+                                        let p = canvas_world_to_parent_local_pos(
+                                            [new_world[0], new_world[1]],
+                                            ctx2d.parent_canvas_origin,
+                                            ctx2d.parent_world_rot,
+                                            ctx2d.anchor_off,
+                                            ctx2d.cumul_scale,
+                                            ctx2d.sm_transform,
+                                        );
+                                        ct.position[0] = p[0];
+                                        ct.position[1] = p[1];
+                                    } else {
+                                        // 従来経路（ワールドスペース・アクター編集タブ）
+                                        // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
+                                        // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
+                                        let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
+                                        let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                        ct.position[0] = new_world[0] * pos_inv_scale - anchor_off[0];
+                                        ct.position[1] = new_world[1] * pos_inv_scale * y_inv_sign - anchor_off[1];
+                                    }
+                                    match canvas_tool_mode {
+                                        crate::engine::core::app_base::ipc::ToolMode::Rotate => {
+                                            // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転。
+                                            // ワールドスペース描画時は Y 軸が反転しているため回転方向を逆符号にする。
+                                            let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
+                                            let rot_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                            ct.rotation = start_ct.rotation + delta_angle * rot_sign;
+                                            ct.scale    = start_ct.scale;
+                                        }
+                                        crate::engine::core::app_base::ipc::ToolMode::Scale => {
+                                            // ギズモ基底方向のスケール係数を取り出す。
+                                            // World モード（軸整列）では従来の「列ベクトル長」と同値、
+                                            // Local モードでは回転した軸方向の係数が得られる
+                                            // （列長を使うと軸が斜めのとき誤った倍率になる）。
+                                            // CanvasTransform.scale は元々ローカル軸のスケールなので、
+                                            // どちらのモードでも書き戻し先は scale x/y で変わらない。
+                                            let [gax, gay, _] = drag.axes.unwrap_or_else(canvas_gizmo_axes_world);
+                                            let sx = axis_scale_factor(&new_mat, gax);
+                                            let sy = axis_scale_factor(&new_mat, gay);
+                                            if sx > CANVAS_SCALE_MIN_FACTOR { ct.scale[0] = start_ct.scale[0] * sx; }
+                                            if sy > CANVAS_SCALE_MIN_FACTOR { ct.scale[1] = start_ct.scale[1] * sy; }
+                                            ct.rotation = start_ct.rotation;
+                                        }
+                                        _ => {
+                                            // Move: 位置のみ変化
+                                            ct.rotation = start_ct.rotation;
+                                            ct.scale    = start_ct.scale;
+                                        }
+                                    }
+                                    // ピボットはドラッグ中変化なし
+                                    ct.pivot = start_ct.pivot;
                                 }
                             }
                         } else if let Some((drag_dfs, ref start_tf)) = self.drag.actor_transform_drag_start.clone() {
@@ -717,13 +760,46 @@ impl App {
                                 // canvas_world_lines.contains(&wl) は「世界線に2Dアクターが存在するか」のため、
                                 // 3D/2D混在シーンでは3DアクターがCanvas扱いになって動かせなくなる。
                                 // 開始時に両方クリアしてから新しい値をセットする（ステール防止）。
-                                self.drag.canvas_transform_drag_start = None;
+                                self.drag.canvas_drag_starts.clear();
                                 self.drag.actor_transform_drag_start  = None;
                                 if actor.is_2d() {
-                                    // 2D: CanvasTransform のスナップショットを保持する
-                                    let old_ct = scene.world.get::<CanvasTransform>(actor.entity)
-                                        .cloned().unwrap_or_default();
-                                    self.drag.canvas_transform_drag_start = Some((dfs as u32, old_ct));
+                                    // ── 2D: 選択中の全 2D アクタのスナップショットを収集する ──
+                                    // 対象はプライマリ + 同時選択された他の 2D アクタ。
+                                    // 3D アクタは混在選択でも対象外（プライマリの種別しか動かさない
+                                    // 既存方針。キャンバス px のデルタを 3D ワールドへ適用しないため）。
+                                    let primary_dfs = dfs as u32;
+                                    let mut candidates: Vec<u32> = vec![primary_dfs];
+                                    for &other in &self.selected_actor_dfs_ids {
+                                        let other = other as u32;
+                                        if candidates.contains(&other) { continue; }
+                                        let mut c2 = 0u32;
+                                        let is_2d = find_actor_by_dfs(&scene.actors, wl, other, &mut c2)
+                                            .map(|a| a.is_2d()).unwrap_or(false);
+                                        if is_2d { candidates.push(other); }
+                                    }
+                                    // (dfs_id, 部分木ノード数) を作り、祖先が同時選択されている
+                                    // 子孫を落とす（親が動けば子は追従するため二重適用になる）。
+                                    let spans: Vec<(u32, u32)> = candidates.iter()
+                                        .filter_map(|&d| {
+                                            let mut c2 = 0u32;
+                                            find_actor_by_dfs(&scene.actors, wl, d, &mut c2)
+                                                .map(|a| (d, actor_subtree_size(a)))
+                                        })
+                                        .collect();
+                                    for d in filter_canvas_drag_roots(&spans) {
+                                        let mut c2 = 0u32;
+                                        let Some(a) = find_actor_by_dfs(&scene.actors, wl, d, &mut c2) else { continue };
+                                        let start_ct = scene.world.get::<CanvasTransform>(a.entity)
+                                            .cloned().unwrap_or_default();
+                                        // 回転・拡縮でピボット周りに公転させるため、
+                                        // ギズモ空間での開始位置を凍結して持つ
+                                        // （ギズモ重心＝current_gizmo_pos と同じ座標系）。
+                                        let start_world_pos = self.actor_gizmo_world_pos(d)
+                                            .unwrap_or([0.0; 3]);
+                                        self.drag.canvas_drag_starts.push(CanvasDragStart {
+                                            dfs_id: d, start_ct, start_world_pos,
+                                        });
+                                    }
                                 } else {
                                     let old_tf = scene.world.get::<ActorTransform>(actor.entity)
                                         .cloned().unwrap_or_default();
@@ -732,8 +808,12 @@ impl App {
                             }
                         }
                     }
-                    // マルチ選択: プライマリ以外の選択アクターの開始行列を収集する
-                    if self.selected_actor_dfs_ids.len() > 1 {
+                    // マルチ選択: プライマリ以外の選択アクターの開始行列を収集する。
+                    // 2D ドラッグ（canvas_drag_starts が非空）のときは収集しない。
+                    // 選択中の 2D アクタは既に canvas_drag_starts 側で扱われており、
+                    // 混在選択の 3D アクタはキャンバス px のデルタを適用すべきではないため
+                    //（＝プライマリの種別だけを動かす、という 2D 側の既存方針）。
+                    if self.selected_actor_dfs_ids.len() > 1 && self.drag.canvas_drag_starts.is_empty() {
                         for &other_dfs in &self.selected_actor_dfs_ids {
                             if Some(other_dfs) == selected_dfs { continue; }
                             let mut c = 0u32;
@@ -836,28 +916,50 @@ impl App {
         let mut primary_recorded = false;
         if self.drag.gizmo_drag.is_some() {
             // CanvasTransform ドラッグ終了処理: 必ず take() してステール状態を防ぐ。
-            // canvas_transform_drag_start が take() されないまま残ると、次の 3D アクター
+            // canvas_drag_starts が take() されないまま残ると、次の 3D アクター
             // ドラッグ時に canvas 用パスが誤って選択されてしまう原因になる。
-            if let Some((canvas_drag_dfs, old_ct)) = self.drag.canvas_transform_drag_start.take() {
+            let canvas_starts = std::mem::take(&mut self.drag.canvas_drag_starts);
+            if !canvas_starts.is_empty() {
                 let wl = self.active_world_line;
-                let new_ct_opt = self.scene.as_ref().and_then(|s| {
-                    let mut c = 0u32;
-                    find_actor_by_dfs(&s.actors, wl, canvas_drag_dfs, &mut c)
-                        .and_then(|a| s.world.get::<crate::engine::components::CanvasTransform>(a.entity).cloned())
-                });
-                if let Some(new_ct) = new_ct_opt {
-                    if old_ct != new_ct {
-                        self.undo_history.record(Box::new(CanvasTransformCommand {
-                            world_line: wl,
-                            dfs_id:     canvas_drag_dfs,
-                            old_ct,
-                            new_ct,
-                        }));
-                        primary_recorded = true;
-                        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                // 変化のあったアクタごとに CanvasTransformCommand を作る。
+                // 複数選択のドラッグは CompositeCommand で束ねて **Undo 1 エントリ**にし、
+                // Undo/Redo が 1 操作で全アクタへ効くようにする（3D 経路と同じ方針）。
+                let mut cmds: Vec<Box<dyn crate::engine::core::app_base::undo::Command>> = Vec::new();
+                for st in &canvas_starts {
+                    let new_ct_opt = self.scene.as_ref().and_then(|s| {
+                        let mut c = 0u32;
+                        find_actor_by_dfs(&s.actors, wl, st.dfs_id, &mut c)
+                            .and_then(|a| s.world.get::<crate::engine::components::CanvasTransform>(a.entity).cloned())
+                    });
+                    if let Some(new_ct) = new_ct_opt {
+                        if st.start_ct != new_ct {
+                            cmds.push(Box::new(CanvasTransformCommand {
+                                world_line: wl,
+                                dfs_id:     st.dfs_id,
+                                old_ct:     st.start_ct.clone(),
+                                new_ct,
+                            }));
+                        }
                     }
                 }
-                self.send_actor_components(canvas_drag_dfs, self.actor_virtual_selected_slot_idx);
+                if !cmds.is_empty() {
+                    // 1 体だけなら従来どおり単体コマンド（Undo 時のインスペクタ通知も同じ）
+                    let cmd: Box<dyn crate::engine::core::app_base::undo::Command> = if cmds.len() == 1 {
+                        cmds.remove(0)
+                    } else {
+                        Box::new(CompositeCommand { commands: cmds })
+                    };
+                    self.undo_history.record(cmd);
+                    primary_recorded = true;
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+                // インスペクタはプライマリ選択アクタへ反映する。
+                // （祖先が同時選択されていてプライマリ自身が対象から外れた場合も、
+                //   表示中のインスペクタはプライマリなのでこちらを更新する）
+                let primary_dfs = self.actor_virtual_selected_idx
+                    .map(|d| d as u32)
+                    .unwrap_or(canvas_starts[0].dfs_id);
+                self.send_actor_components(primary_dfs, self.actor_virtual_selected_slot_idx);
             }
 
             if let Some((dfs_id, old_transform)) = self.drag.actor_transform_drag_start.take() {
@@ -1051,6 +1153,7 @@ impl App {
             }
         } else {
             self.drag.actor_transform_drag_start = None;
+            self.drag.canvas_drag_starts.clear();
             self.drag.drag_root_starts.clear();
             self.drag.drag_child_starts.clear();
             self.drag.actor_child_drag_starts.clear();

@@ -128,3 +128,27 @@ CPU ピック（`runtime/src/engine/core/app_base/app/pick_2d.rs` の `walk_pick
 
 矩形選択（`collect_canvas_actors_in_rect`）は形状ではなく `CanvasTransform.position` の
 点包含で判定するため、テキストを含む全ての 2D アクターが元から対象になっている。
+
+## 2D 編集でのギズモ変形（複数選択の扱い）
+
+2D のギズモドラッグとモーダル変形（`G` / `R` / `S`）は、
+`CanvasTransform`（`position` / `rotation` / `scale`）への書き戻しまで
+**3D と同一の機構**（`collect_transform_drag_starts` → `apply_gizmo_new_mat` →
+`finish_gizmo_drag_and_record`）を通る。関係する実装は
+`runtime/src/engine/core/app_base/app/drag_handler.rs` と
+`canvas_gizmo_basis.rs`（座標変換の純関数）。
+
+| 項目 | 挙動 |
+| --- | --- |
+| ピボット | 選択中アクタの重心（`current_gizmo_pos` → `selected_actors_centroid`）。単一選択ではそのアクタのピボット点 |
+| 移動 | 選択中の**全 2D アクタ**へ同じキャンバス空間移動量を与える。書き戻しは `canvas_world_to_parent_local_pos` を通すので、親の回転・累積スケールが違っても見た目の移動量は揃う |
+| 回転 | 各アクタの位置がピボット周りに**公転**し、`rotation` にはデルタ角が加算される（自転） |
+| 拡縮 | 各アクタの位置がピボットからの距離ぶん伸縮し、`scale` には軸ごとの係数が乗算される（World / Local は `canvas_gizmo_basis` の軸基底に従う） |
+| 祖先と子孫の同時選択 | **祖先だけ**を動かす。`CanvasTransform` は親ローカルの値で子は親に追従するため、両方へ適用すると子だけ二重に動く（`filter_canvas_drag_roots`） |
+| 2D / 3D 混在選択 | **プライマリ選択の種別だけ**が動く。プライマリが 2D のときは 3D アクタを一切動かさない（キャンバス px のデルタを 3D ワールドへ適用しないため） |
+| Undo | ドラッグ 1 回 = Undo 1 エントリ。複数アクタは `CompositeCommand` で `CanvasTransformCommand` を束ねる（Redo も 1 操作で全アクタへ戻る） |
+| インスペクタ | 確定時にプライマリ選択アクタのコンポーネントを再送する |
+
+各アクタの「ドラッグ開始位置」は開始時に `drag.canvas_drag_starts` へ凍結して持つ
+（`App::actor_gizmo_world_pos` が算出。ギズモ重心と同じ座標系）。
+ドラッグ中はレイアウトが変化するため、毎フレーム再計算するとデルタが二重に載る。
