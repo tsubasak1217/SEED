@@ -680,6 +680,8 @@ pub fn build_actor(
                 let visible      = mc_data.visible;
                 // LOD を適用しないか（旧 .scene には無いため既定 false）。
                 let disable_lod  = mc_data.disable_lod;
+                // RT 対象外フラグ（旧 .scene には無いため ModelComponentData 側で既定 false）。
+                let rt_exclude   = mc_data.rt_exclude;
                 // 【地形チャンクの特例】source_path が `terrain://` 接頭辞の場合は実ファイルが
                 // 存在しないため load_model をスキップする（さもないとシーンロード全体が失敗する）。
                 // model/gpu_model は None のままにし、terrain_ops の rebuild_terrain_after_load が
@@ -703,6 +705,7 @@ pub fn build_actor(
                         cast_shadows,
                         visible,
                         disable_lod,
+                        rt_exclude,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
@@ -748,6 +751,7 @@ pub fn build_actor(
                         cast_shadows,
                         visible,
                         disable_lod,
+                        rt_exclude,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,

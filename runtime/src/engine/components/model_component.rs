@@ -150,6 +150,11 @@ pub struct ModelComponentData {
     /// 旧 `.scene` にはフィールドが無いため欠落時は false へフォールバックする。
     #[serde(default)]
     pub disable_lod: bool,
+    /// レイトレーシング（RT）の対象から外すか。既定 false（＝従来どおり RT に参加する）。
+    /// 旧 `.scene` にはフィールドが無いため欠落時は false へフォールバックし、
+    /// 既存シーンの描画は 1 ビットも変わらない。
+    #[serde(default)]
+    pub rt_exclude: bool,
     /// 描画オフセット: 位置（アクタのローカル空間・既定 [0,0,0]）。
     /// 旧 .scene には無いため欠落時は既定へフォールバックし、従来と完全に同じ描画になる。
     #[serde(default = "default_offset_position")]
@@ -264,6 +269,27 @@ pub struct ModelComponent {
     /// 全ラスタ経路へ一貫して効く。RT（BLAS）はもともと LOD0 のインデックス
     /// バッファのみで構築されるため、この設定にかかわらず常に LOD0 である。
     pub disable_lod:     bool,
+    /// このモデルをレイトレーシング（RT）の対象から外すか（既定 false ＝従来どおり参加）。
+    ///
+    /// true のとき、この MC の全インスタンスは
+    /// **RT 用 BLAS の構築（静的・スキンとも）と TLAS のインスタンス登録**から除外される。
+    /// 影響を受ける RT 経路は影・反射・GI(DDGI)・AO・トランスルーセンシーのすべて
+    /// （いずれも同じ TLAS を参照するため、除外は 1 か所で全経路へ効く）。
+    ///
+    /// 【何をしないか】通常のラスタ描画・ラスタのシャドウマップ・ID ピッキング・
+    /// アウトライン・LOD には一切影響しない。見た目はそのまま画面に出るが、
+    /// 「他の物体に映り込む影／反射」には現れなくなる。
+    ///
+    /// 【なぜ必要か】スキンモデル（魚など）は毎フレーム BLAS を作り直す必要があり、
+    /// 大量に存在すると BLAS/TLAS 構築だけでフレーム時間を食い潰す。
+    /// 小物・群体のように「映り込みに寄与しないが数が多い」対象を明示的に外すためのフラグ。
+    ///
+    /// 【RT 再構築の抑止】除外されたインスタンスは TLAS の署名（RT 静止判定）にも
+    /// 含めないため、除外した対象が動き続けても RT の再構築は走らない。
+    ///
+    /// 配管経路: 本フィールド → 統合バッチの `rt_excludes` →
+    /// `InstancedModelBatch::set_rt_exclude_flags` → TLAS 構築／スキン BLAS 生成のスキップ。
+    pub rt_exclude:      bool,
     /// 描画オフセット: 位置（アクタのローカル空間。既定 [0,0,0] ＝ずらさない）。
     ///
     /// アクタの `Transform` は動かさず、**このモデルの描画だけ**をローカルにずらす。
@@ -302,6 +328,8 @@ impl ModelComponent {
             render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
             // LOD は既定で適用する（従来と 1 ビットも変わらない描画）。
             disable_lod:     false,
+            // 既定では RT に参加する（従来と 1 ビットも変わらない描画）。
+            rt_exclude:      false,
             // 描画オフセットは既定＝恒等（従来と 1 ビットも変わらない描画）。
             offset_position: OFFSET_POSITION_DEFAULT,
             offset_rotation: OFFSET_ROTATION_DEFAULT,
@@ -513,6 +541,7 @@ impl ModelComponent {
             material_overrides: self.material_overrides.clone(),
             render_tag:    self.render_tag,
             disable_lod:   self.disable_lod,
+            rt_exclude:    self.rt_exclude,
             offset_position: self.offset_position,
             offset_rotation: self.offset_rotation,
             offset_scale:    self.offset_scale,
@@ -633,6 +662,8 @@ mod override_serde_tests {
             // 非既定値を入れて往復漏れを検出する。
             disable_lod:   true,
             // 非既定値を入れて往復漏れを検出する。
+            rt_exclude:    true,
+            // 非既定値を入れて往復漏れを検出する。
             offset_position: [1.5, -2.0, 0.25],
             offset_rotation: [10.0, 20.0, 30.0],
             offset_scale:    [2.0, 0.5, 3.0],
@@ -678,6 +709,7 @@ mod override_serde_tests {
 
         // 主要フィールドを個別にも検証（JSON 比較のすり抜け防止）。
         assert!(!restored.visible, "visible が往復すること（非既定値 false）");
+        assert!(restored.rt_exclude, "rt_exclude が往復すること（非既定値 true）");
         assert_eq!(restored.material_overrides.len(), 2);
         match &restored.material_overrides[0].kind {
             MaterialOverrideKind::Inline {
@@ -731,6 +763,8 @@ mod override_serde_tests {
         assert_eq!(data.offset_position, OFFSET_POSITION_DEFAULT, "欠落時は位置オフセット 0");
         assert_eq!(data.offset_rotation, OFFSET_ROTATION_DEFAULT, "欠落時は回転オフセット 0");
         assert_eq!(data.offset_scale,    OFFSET_SCALE_DEFAULT,    "欠落時はスケールオフセット 1");
+        // RT 対象外フラグ（後から追加したフィールド）も既定 false へフォールバックすること。
+        assert!(!data.rt_exclude, "欠落時は rt_exclude=false へフォールバック（従来どおり RT に参加）");
     }
 
     /// 描画オフセットの往復を個別にも検証する（JSON 比較のすり抜け防止）。

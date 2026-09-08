@@ -886,6 +886,10 @@ fn read_floats(
                 "offset_scale"    => put(out, &m.offset_scale),
                 // 表示フラグ（bool = 0/1。LineRenderer の "visible" と同流儀）
                 "visible"         => put(out, &[if m.visible { 1.0 } else { 0.0 }]),
+                // レイトレーシング対象外フラグ（bool = 0/1）。
+                // true のときこのモデルは RT の BLAS/TLAS から外れる（影・反射・GI・AO に映らない）。
+                // 通常描画・ラスタシャドウ・ID ピックには影響しない。
+                "rt_exclude"      => put(out, &[if m.rt_exclude { 1.0 } else { 0.0 }]),
                 // ── モデルローカル AABB（read のみ・3 成分）──
                 // 読み込み済み CPU モデル（Arc<Model>）の全頂点範囲をそのまま返す。
                 // **オフセット（offset_position/rotation/scale）もアクターの Transform.Scale も
@@ -1277,6 +1281,9 @@ fn write_floats(
                 // 従来どおり動き続ける（描画から外れるだけ）。
                 // 統合バッチは毎フレーム全 MC から詰め直されるので dirty 化は不要。
                 "visible"         => take::<1>(v).map(|a| m.visible = a[0] != 0.0).is_some(),
+                // レイトレーシング対象外フラグ（0/1）。RT の列挙フラグは統合バッチ収集時に
+                // 毎フレーム MC から詰め直されるため、dirty 化は不要。
+                "rt_exclude"      => take::<1>(v).map(|a| m.rt_exclude = a[0] != 0.0).is_some(),
                 _                 => false,
             }
         }

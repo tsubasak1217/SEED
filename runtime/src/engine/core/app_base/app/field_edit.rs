@@ -642,6 +642,8 @@ pub(super) fn apply_component_data_in_place(
             mc.render_tag = d.render_tag;
             // LOD 無効フラグ（インスペクタのチェック・Undo/Redo で戻る値）。
             mc.disable_lod = d.disable_lod;
+            // RT 対象外フラグ（インスペクタのチェック・Undo/Redo で戻る値）。
+            mc.rt_exclude = d.rt_exclude;
             // 描画オフセット（インスペクタの「オフセット」節・Undo/Redo で戻る値）。
             mc.offset_position = d.offset_position;
             mc.offset_rotation = d.offset_rotation;
@@ -1501,6 +1503,7 @@ mod tests {
                 cast_shadows: true,
                 visible:      true,
                 disable_lod: false,
+                rt_exclude: false,
                 material_overrides: Vec::new(),
                 render_tag: 0,
                 // 描画オフセットは既定（恒等）。テストの関心外だが構造体の全フィールドは必須。

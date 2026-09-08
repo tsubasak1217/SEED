@@ -55,6 +55,10 @@ pub(crate) struct MergeInfo {
     /// 統合インスタンス i の「LOD を適用しない」フラグ。
     /// `ModelComponent::disable_lod` 由来で、同一 MC の全インスタンスへ同じ値を複製する。
     pub disable_lods: Vec<bool>,
+    /// 統合インスタンス i の「レイトレーシング対象外」フラグ。
+    /// `ModelComponent::rt_exclude` 由来で、同一 MC の全インスタンスへ同じ値を複製する。
+    /// ラスタ描画には影響せず、RT の列挙（BLAS/TLAS）だけを間引くために使う。
+    pub rt_excludes: Vec<bool>,
     /// このフレームに 1 度でも参照されたか（＝このフレームの描画対象か）。
     ///
     /// フレーム冒頭で全エントリ false に落とし、初出で true に立てる。
@@ -73,6 +77,7 @@ impl MergeInfo {
             abs_ids:        Vec::new(),
             render_tags:    Vec::new(),
             disable_lods:   Vec::new(),
+            rt_excludes:    Vec::new(),
             live:           true,
         }
     }
@@ -84,6 +89,7 @@ impl MergeInfo {
         self.abs_ids.clear();
         self.render_tags.clear();
         self.disable_lods.clear();
+        self.rt_excludes.clear();
         self.live = false;
     }
 

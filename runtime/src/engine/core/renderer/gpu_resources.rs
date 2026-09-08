@@ -2119,6 +2119,22 @@ pub struct InstancedModelBatch {
     /// （＝従来どおり距離 LOD を適用）として扱う。
     disable_lod_flags: Vec<bool>,
 
+    /// 「レイトレーシング（RT）の対象外」フラグ（元インスタンスインデックス順・
+    /// `render_tags` / `disable_lod_flags` と同順・同長）。
+    ///
+    /// true のインスタンスは `rt_enumerate` / `rt_enumerate_skinned` の列挙から外れ、
+    /// 結果として **BLAS 構築（静的・スキンとも）・TLAS 登録・RT 静止判定の署名**の
+    /// すべてから除外される（RT 側はこの 2 関数を唯一の列挙経路にしているため、
+    /// ここでのフィルタが RT 影・反射・GI・AO・トランスルーセンシーへ一貫して効く）。
+    ///
+    /// `ModelComponent::rt_exclude` が統合バッチ経由でここへ複製される（MC 単位の値を
+    /// その MC の全インスタンスへ展開）。長さが合わない／空のときは全インスタンス false
+    /// （＝従来どおり RT に参加）として扱う。
+    ///
+    /// ラスタ描画・シャドウマップ・ID バッファ・LOD 振り分けはこのフラグを参照しないため、
+    /// 見た目（直接描画）は 1 ビットも変わらない。
+    rt_exclude_flags: Vec<bool>,
+
     // ── GPU メッシュレットカリング（第1弾）─────────────────────
     /// `node_prim_list`（ソート後）と同順・同長。メッシュレットを持つ非スキンプリミティブに
     /// 対してのみ Some。LOD0 の間接描画用リソース（コマンド/カウント/パラメータバッファ）と
@@ -2476,6 +2492,9 @@ impl InstancedModelBatch {
             // LOD 無効フラグは呼び出し元が set_disable_lod_flags で与える
             // （空 = 全インスタンスへ距離 LOD を適用＝従来と同一）。
             disable_lod_flags:   Vec::new(),
+            // RT 対象外フラグは呼び出し元が set_rt_exclude_flags で与える
+            // （空 = 全インスタンスが RT に参加＝従来と同一）。
+            rt_exclude_flags:    Vec::new(),
         }
     }
 
@@ -2493,6 +2512,32 @@ impl InstancedModelBatch {
         if self.disable_lod_flags.as_slice() == flags { return; }
         self.disable_lod_flags.clear();
         self.disable_lod_flags.extend_from_slice(flags);
+    }
+
+    /// 「レイトレーシング対象外」フラグ配列を同期する（元インスタンスインデックス順）。
+    ///
+    /// `rt_enumerate` / `rt_enumerate_skinned` を呼ぶ**前に**毎フレーム呼ぶこと。
+    /// 統合バッチ更新のダーティゲートが `update()` をスキップしたフレームでも RT の列挙は
+    /// 走るため、`set_disable_lod_flags` と同じくゲート判定より前で無条件に同期する。
+    ///
+    /// 空配列を渡すと全インスタンスが RT に参加する
+    /// （＝この機能を使わない呼び出し元は従来と完全に同じ挙動になる）。
+    pub fn set_rt_exclude_flags(&mut self, flags: &[bool]) {
+        // 定常状態でのヒープ確保を避けるため、内容が同じなら何もしない。
+        if self.rt_exclude_flags.as_slice() == flags { return; }
+        self.rt_exclude_flags.clear();
+        self.rt_exclude_flags.extend_from_slice(flags);
+    }
+
+    /// 指定インスタンスを RT（BLAS/TLAS）へ登録しないか。
+    ///
+    /// **RT 除外判定の唯一の入口**。`rt_enumerate`（非スキン）と
+    /// `rt_enumerate_skinned`（スキン）が同じ判定を通ることで、
+    /// 「TLAS には載るが BLAS が無い」といった食い違いが構造的に起きない。
+    /// フラグ未設定（長さ不一致・空）は false 扱い＝従来どおり RT に参加する。
+    #[inline]
+    fn rt_instance_excluded(&self, inst: usize) -> bool {
+        self.rt_exclude_flags.get(inst).copied().unwrap_or(false)
     }
 
     /// 指定インスタンスの LOD バケットを決める（距離 LOD ＋「LOD を適用しない」の合成）。
@@ -3128,6 +3173,9 @@ impl InstancedModelBatch {
             // 関与判定（視錐台 ∪ 影カスケード ∪ RT 半径）から外れたインスタンスは
             // TLAS へ登録しない＝BLAS も作らない。AABB が取れない場合は保守側で登録する。
             if !self.rt_instance_relevant(relevance, inst) { continue; }
+            // 「レイトレ対象外」に指定されたインスタンス（ModelComponent::rt_exclude）は
+            // TLAS へ登録しない＝BLAS も作らない＝RT 静止判定の署名にも入らない。
+            if self.rt_instance_excluded(inst) { continue; }
             let lod = inst_lod[inst];
             for draw in &self.node_prim_list {
                 if draw.is_skinned { continue; }
@@ -3218,6 +3266,9 @@ impl InstancedModelBatch {
             // 非スキンと同じ関与判定。スキンは 1 体ごとに変形 compute と BLAS 再構築が
             // 走るため、遠方インスタンスを外せる効果が最も大きい。
             if !self.rt_instance_relevant(relevance, inst) { continue; }
+            // 「レイトレ対象外」の指定（ModelComponent::rt_exclude）。スキンは 1 体ごとに
+            // BLAS を作り直すため、大量のスキンモデル（魚など）を外す効果が最も大きい。
+            if self.rt_instance_excluded(inst) { continue; }
             let Some((lod, compact)) = inv[inst] else { continue };
             for (&node_idx, prims) in &by_node {
                 let Some(pos) = self.node_pos_map[node_idx] else { continue };

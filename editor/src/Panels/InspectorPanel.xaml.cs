@@ -919,6 +919,10 @@ public partial class InspectorPanel : UserControl
         // ModelComponent 用フィールド（距離 LOD を適用しないか。true で常に LOD0＝最高品質）。
         // 旧ランタイム／旧シーンではキーが欠落しうるため既定 false（＝従来どおり LOD を適用）。
         bool ModelDisableLod = false,
+        // ModelComponent 用フィールド（レイトレーシングの対象から外すか）。
+        // true で BLAS/TLAS の構築対象外になり、影・反射などのレイトレ計算へ出なくなる。
+        // 旧ランタイム／旧シーンではキーが欠落しうるため既定 false（＝従来どおり RT に参加）。
+        bool ModelRtExclude = false,
         // ModelComponent 用フィールド（セマンティックな描画タグ。0 = タグ無し）。
         // 合成/演出でグループ指定に使うため G-Buffer へ焼かれる値で、
         // 有効範囲は ModelRenderTagMin..ModelRenderTagMax（ランタイムの RENDER_TAG_BITS と一致）。
@@ -1354,6 +1358,8 @@ public partial class InspectorPanel : UserControl
             var modelVisible = !comp.TryGetProperty("visible", out var mvs) || ReadJsonBool(mvs, true);
             // ModelComponent 用: 距離 LOD を適用しないか（既定 false = 従来どおり適用）
             var modelDisableLod = comp.TryGetProperty("disable_lod", out var mdl) && ReadJsonBool(mdl, false);
+            // ModelComponent 用: レイトレーシング対象外か（既定 false = 従来どおり RT に参加）
+            var modelRtExclude = comp.TryGetProperty("rt_exclude", out var mrx) && ReadJsonBool(mrx, false);
             // ModelComponent 用: セマンティックな描画タグ（0 = タグ無し）。
             // 旧ランタイム／旧シーンではキーが欠落しうるため、その場合は既定 0 とする。
             var modelRenderTag = comp.TryGetProperty("render_tag", out var mrt) && mrt.TryGetInt32(out var mrtv)
@@ -1769,6 +1775,7 @@ public partial class InspectorPanel : UserControl
                 ModelCastShadows: modelCastShadows,
                 ModelVisible: modelVisible,
                 ModelDisableLod: modelDisableLod,
+                ModelRtExclude: modelRtExclude,
                 ModelRenderTag: modelRenderTag,
                 ModelOffPX: modelOffPX, ModelOffPY: modelOffPY, ModelOffPZ: modelOffPZ,
                 ModelOffRX: modelOffRX, ModelOffRY: modelOffRY, ModelOffRZ: modelOffRZ,
@@ -3993,6 +4000,14 @@ public partial class InspectorPanel : UserControl
         "ON にすると、カメラからの距離に関係なく常に LOD0（フル解像度）で描画します。\n" +
         "切替距離はシーン設定の「LOD」カテゴリで変更できます。";
 
+    /// <summary>「レイトレ対象外」チェックのツールチップ。</summary>
+    private const string ModelRtExcludeTooltip =
+        "影・反射などのレイトレ計算から除外して負荷を下げる。大量の小物・魚向け。\n" +
+        "ON にすると、このモデルはレイトレ用の BLAS/TLAS へ登録されなくなります\n" +
+        "（レイトレの影・反射・GI・AO に映り込まなくなります）。\n" +
+        "通常の描画・ラスタのシャドウマップ・クリック選択には影響しません。\n" +
+        "スクリプトからは model.RayTracingExcluded で同じ切り替えができます。";
+
     private UIElement BuildModelSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
@@ -4057,6 +4072,28 @@ public partial class InspectorPanel : UserControl
         lodCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},disable_lod,0");
         lodRow.Children.Add(lodCheck);
         sp.Children.Add(lodRow);
+
+        // ── レイトレ対象外（RT の BLAS/TLAS から除外）─────────────
+        // 「LODを適用しない」行と同じスタイル・同じ SET_MODEL_FIELD 経路で送る
+        // （＝ランタイム側でフィールド編集の Undo/Redo に自動的に載る）。
+        // ON でも通常描画・ラスタシャドウ・ID ピックは従来どおり動く（RT だけを外す）。
+        var rtRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        rtRow.Children.Add(new TextBlock
+        {
+            Text = "レイトレ対象外", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var rtCheck = new CheckBox
+        {
+            IsChecked = info.ModelRtExclude, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+            ToolTip = ModelRtExcludeTooltip,
+        };
+        rtCheck.Checked   += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},rt_exclude,1");
+        rtCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},rt_exclude,0");
+        rtRow.Children.Add(rtCheck);
+        sp.Children.Add(rtRow);
 
         // ── レンダータグ（セマンティックタグ）─────────────────────
         // 整数入力（ModelRenderTagMin..ModelRenderTagMax）。SpriteComponent の「レイヤー」行と

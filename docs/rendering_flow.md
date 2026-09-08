@@ -657,6 +657,32 @@ LOD0 がフル解像度で、LOD1/2/3 はロード時に生成される簡略イ
   → `SET_MODEL_FIELD:{actor},{slot},disable_lod,{0|1}`（Undo / Redo / ⟲ は `field_edit.rs` の共通機構に載る）
 - スクリプト API では公開していない
 
+### レイトレ対象外（`ModelComponent::rt_exclude`）
+
+`ModelComponent` の `rt_exclude`（既定 false）を ON にすると、その MC の全インスタンスは
+**レイトレ用の BLAS 構築と TLAS のインスタンス登録から除外**される。
+影響するのは RT 経路（レイトレ影・反射・DDGI・AO・トランスルーセンシー）だけで、
+ラスタ描画・ラスタのシャドウマップ・ID ピッキング・アウトライン・LOD は一切変わらない。
+
+用途は「映り込みへの寄与が小さいのに数が多い」対象の間引き。とくにスキンモデルは
+1 体ごとに毎フレーム BLAS を作り直すため（`rt_skin_blas.rs`）、魚の群れのような大量配置では
+RT の構築コストだけでフレーム時間を食い潰す。
+
+- 配管: `ModelComponent::rt_exclude` → 統合バッチ構築の `MergeInfo::rt_excludes`（MC 単位の値を
+  その MC の全インスタンスへ複製）→ `InstancedModelBatch::set_rt_exclude_flags()` →
+  `rt_enumerate()` / `rt_enumerate_skinned()` の列挙スキップ
+- 一貫性: RT 側の入口は上記 2 つの列挙関数だけ（静的 BLAS 収集・スキン BLAS 収集・TLAS 詰め直し・
+  RT 静止判定の署名がすべてここを通る）。したがって列挙で外すだけで
+  「TLAS には載るが BLAS が無い」といった食い違いが構造的に起きない
+- RT 静止判定: 除外インスタンスは署名（`rt_shadow.rs` の `last_tlas_sig`）の計算にも入らないため、
+  除外した対象がいくら動いても TLAS の再構築は走らない
+- 統合バッチのダーティゲート: `MergeBatchInputs` には**含めない**（`update()` の出力＝行列・
+  ノードバッファ・ID・LOD 振り分けに影響しないため）。代わりに `set_rt_exclude_flags()` を
+  ゲート判定より前で毎フレーム無条件に呼び、`update()` をスキップしたフレームでも同期を保つ
+- インスペクタ: ModelComponent の「レイトレ対象外」チェック
+  → `SET_MODEL_FIELD:{actor},{slot},rt_exclude,{0|1}`（Undo / Redo / ⟲ は `field_edit.rs` の共通機構に載る）
+- スクリプト API: `model.RayTracingExcluded`（get/set）
+
 ---
 
 ## 3. ライティング段の切り替え（機能マトリクス）

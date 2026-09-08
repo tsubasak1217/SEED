@@ -112,4 +112,27 @@ public readonly struct Model : IComponentHandle<Model>
         get => !ScriptHost.TryGetBool(_entity, Comp, "visible", out var b) || b;
         set => ScriptHost.TrySetBool(_entity, Comp, "visible", value);
     }
+
+    /// <summary>
+    /// レイトレーシング（RT）の対象から外すか（既定 false ＝ RT に参加する）。
+    ///
+    /// <para>true にすると、このモデルは <b>RT 用 BLAS の構築と TLAS への登録</b>から除外される。
+    /// 影響するのは RT 経路（レイトレ影・反射・GI・AO・トランスルーセンシー）だけで、
+    /// 通常のラスタ描画・ラスタのシャドウマップ・ID ピッキング・アウトラインは一切変わらない。
+    /// 画面には従来どおり映るが、他の物体への「映り込み」には現れなくなる。</para>
+    ///
+    /// <para><b>用途</b>: スキンモデルは 1 体ごとに毎フレーム BLAS を作り直すため、
+    /// 大量に存在すると RT の構築コストだけでフレーム時間を食い潰す。
+    /// 魚の群れのような「映り込みへの寄与が小さく数が多い」対象を明示的に外すためのフラグ。
+    /// 除外されたインスタンスは RT の静止判定（署名）にも含まれないため、
+    /// 動き続けても RT の再構築を誘発しない。</para>
+    ///
+    /// 読み取りに失敗した場合（Model を持たないエンティティ）はコンポーネントの
+    /// 既定値と同じ false を返す。
+    /// </summary>
+    public bool RayTracingExcluded
+    {
+        get => ScriptHost.TryGetBool(_entity, Comp, "rt_exclude", out var b) && b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "rt_exclude", value);
+    }
 }

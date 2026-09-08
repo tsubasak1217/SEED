@@ -216,6 +216,8 @@ impl App {
                     // 新規追加アクタは表示状態から始まる。
                     visible:         true,
                     disable_lod:    false,
+                    // 新規追加の MC は既定で RT に参加する。
+                    rt_exclude:     false,
                     material_overrides: Vec::new(),
                     // 新規追加アクタはタグ無しから始まる。
                     render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
@@ -360,12 +362,14 @@ impl App {
                     let [orx, ory, orz] = d.offset_rotation;
                     let [osx, osy, osz] = d.offset_scale;
                     ("ModelComponent", format!(
-                        r#","model_path":{path_json},{anims_fields},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{},"visible":{},"disable_lod":{},"render_tag":{},"offset_px":{:.4},"offset_py":{:.4},"offset_pz":{:.4},"offset_rx":{:.4},"offset_ry":{:.4},"offset_rz":{:.4},"offset_sx":{:.4},"offset_sy":{:.4},"offset_sz":{:.4}"#,
+                        r#","model_path":{path_json},{anims_fields},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{},"visible":{},"disable_lod":{},"rt_exclude":{},"render_tag":{},"offset_px":{:.4},"offset_py":{:.4},"offset_pz":{:.4},"offset_rx":{:.4},"offset_ry":{:.4},"offset_rz":{:.4},"offset_sx":{:.4},"offset_sy":{:.4},"offset_sz":{:.4}"#,
                         d.cast_shadows as u8,
                         // 描画するか（インスペクタの「表示」チェック初期値。既定 true）。
                         d.visible as u8,
                         // LOD を適用しないか（インスペクタのチェック初期値）。
                         d.disable_lod as u8,
+                        // レイトレ対象外か（インスペクタのチェック初期値。既定 false）。
+                        d.rt_exclude as u8,
                         d.render_tag,
                         opx, opy, opz, orx, ory, orz, osx, osy, osz,
                     ))
@@ -946,7 +950,9 @@ impl App {
                         cast_shadows:    true,
                         // 新規追加アクタは表示状態から始まる。
                         visible:         true,
-                        disable_lod:    false,
+                        disable_lod:     false,
+                        // 新規追加の MC は既定で RT に参加する。
+                        rt_exclude:      false,
                         material_overrides: Vec::new(),
                         // 新規追加アクタはタグ無しから始まる。
                         render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,

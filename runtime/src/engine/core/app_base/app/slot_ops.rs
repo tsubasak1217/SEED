@@ -194,6 +194,11 @@ impl App {
             // 統合バッチのダーティゲートはこのフラグを入力に含むため、
             // ここで書き換えれば次フレームの update() で必ず振り分けが焼き直される。
             "disable_lod" => mc.disable_lod = value == "1" || value == "true",
+            // レイトレーシングの対象から外す（BLAS 構築 / TLAS 登録をスキップ）。
+            // 値は "1"/"0"（cast_shadows と同流儀）。統合バッチのダーティゲートは
+            // このフラグを入力に含むため、書き換えれば次フレームの update() で
+            // RT 用フラグが焼き直され、TLAS も作り直される。
+            "rt_exclude" => mc.rt_exclude = value == "1" || value == "true",
             // セマンティックタグ（G-Buffer RT3.a へ 4bit で焼かれる描画用タグ）。
             // 数値としてパースできない値は無視し、パースできた場合も有効ビット幅で
             // マスクして隣のビット（シェーディングモデル域）を侵食しないようにする。
@@ -636,6 +641,8 @@ impl App {
                 let visible      = mc_data.visible;
                 // LOD を適用しないか（旧 .scene には無いため既定 false）。
                 let disable_lod  = mc_data.disable_lod;
+                // RT 対象外フラグ（旧 .scene には無いため ModelComponentData 側で既定 false）。
+                let rt_exclude   = mc_data.rt_exclude;
                 let mc = if mc_data.model_path.is_empty() {
                     ModelComponent {
                         source_path: String::new(),
@@ -650,6 +657,7 @@ impl App {
                         cast_shadows,
                         visible,
                         disable_lod,
+                        rt_exclude,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
@@ -703,6 +711,7 @@ impl App {
                         cast_shadows,
                         visible,
                         disable_lod,
+                        rt_exclude,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
@@ -1285,6 +1294,8 @@ impl App {
                     let visible      = mc_data.visible;
                 // LOD を適用しないか（旧 .scene には無いため既定 false）。
                 let disable_lod  = mc_data.disable_lod;
+                // RT 対象外フラグ（旧 .scene には無いため ModelComponentData 側で既定 false）。
+                let rt_exclude   = mc_data.rt_exclude;
                     let mc = if mc_data.model_path.is_empty() {
                         ModelComponent {
                             source_path: String::new(),
@@ -1299,6 +1310,7 @@ impl App {
                             cast_shadows,
                             visible,
                             disable_lod,
+                            rt_exclude,
                             material_overrides: mc_data.material_overrides,
                             // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                             render_tag:      mc_data.render_tag,
@@ -1349,6 +1361,7 @@ impl App {
                             cast_shadows,
                             visible,
                             disable_lod,
+                            rt_exclude,
                             material_overrides: mc_data.material_overrides,
                             // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                             render_tag:      mc_data.render_tag,

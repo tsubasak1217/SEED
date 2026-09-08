@@ -2144,6 +2144,8 @@ impl App {
                                 e.render_tags.push(amc.render_tag);
                                 // LOD 無効も MC 単位の属性（同上）。
                                 e.disable_lods.push(amc.disable_lod);
+                                // RT 対象外も MC 単位の属性（同上）。
+                                e.rt_excludes.push(amc.rt_exclude);
                             }
                         }
                         // このフレームに現れなかった batch_key を落とす
@@ -2231,6 +2233,11 @@ impl App {
                             let gate_reason = {
                                 crate::profile_scope!("描画/統合バッチ更新/ゲート判定");
                                 sd.batch.set_disable_lod_flags(&info.disable_lods);
+                                // RT 対象外フラグは「RT の列挙（BLAS/TLAS）の入力」であり、
+                                // 統合バッチ更新をゲートでスキップしたフレームでも RT の
+                                // 列挙は走る。よって update() の可否に関わらず、この
+                                // 早期 return より前で毎フレーム同期する。
+                                sd.batch.set_rt_exclude_flags(&info.rt_excludes);
                                 let lod_unchanged =
                                     sd.batch.lod_buckets_unchanged(saved_camera_pos);
                                 // 速度リセット要求フレーム（Play⇄Edit 切替・シーンロード・RT リサイズ）は

@@ -65,6 +65,7 @@
           "material_overrides": [],
           "render_tag": 0,
           "disable_lod": false,
+          "rt_exclude": true,
           "offset_position": [
             0.0,
             0.0,

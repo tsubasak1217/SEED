@@ -1035,6 +1035,7 @@ if (gameObject.GetComponent<Model>() is { } model)   // Model?（未アタッチ
     model.OffsetRotation   // Vector3（get/set。YXZ オイラー角・度・既定 (0,0,0)）
     model.OffsetScale      // Vector3（get/set。既定 (1,1,1)）
     model.Visible          // bool（get/set。既定 true。false でこのモデルだけ描かれなくなる）
+    model.RayTracingExcluded // bool（get/set。既定 false。true でレイトレの BLAS/TLAS から除外）
 
     model.LocalBoundsMin   // Vector3（get のみ。モデルローカル AABB の最小側）
     model.LocalBoundsMax   // Vector3（get のみ。モデルローカル AABB の最大側）
@@ -1043,6 +1044,9 @@ if (gameObject.GetComponent<Model>() is { } model)   // Model?（未アタッチ
     // 例: 座標は追従させたまま見た目だけ隠す（画面外へ退避させる必要はない）
     model.Visible = false;
 
+    // 例: 大量に出す小物・魚をレイトレ（影・反射）の計算対象から外して負荷を下げる
+    model.RayTracingExcluded = true;
+
     // 例: 釣り竿の持ち手を手の位置へ合わせる
     model.OffsetPosition = new Vector3(0f, -0.15f, 0.4f);
     model.OffsetRotation = new Vector3(0f, 0f, 25f);
@@ -1050,6 +1054,8 @@ if (gameObject.GetComponent<Model>() is { } model)   // Model?（未アタッチ
 ```
 
 > **重要**: `Visible = false` は**描画だけ**を止めます。Transform・親子の追従・JointAttach のソケット追従・コライダー・スクリプトは通常どおり更新され続けるので、子アクタをカメラの注視点にしているような「見えないが位置は正しくいてほしい」オブジェクトを安全に隠せます（非表示中は影も落とさず、選択アウトラインも出ません）。
+
+> **重要**: `RayTracingExcluded = true` はレイトレ経路（レイトレ影・反射・GI・AO・トランスルーセンシー）からだけ外します。通常のラスタ描画・ラスタのシャドウマップ・クリック選択・アウトラインは従来どおりです（画面には映るが、他の物体への映り込みには出なくなります）。スキンモデルは 1 体ごとに毎フレーム BLAS を作り直すため、魚の群れのように数が多く映り込みへの寄与が小さい対象を外すと効果が大きく、除外したインスタンスはレイトレの静止判定にも入らないので動き続けても再構築を誘発しません。エディタのインスペクタでは Model の「レイトレ対象外」チェックが同じ値です。
 
 > **重要**: オフセットは**描画にだけ**効きます（通常描画・スキン・LOD・影・レイトレース・クリック判定・選択枠まで一貫）。物理コライダー・レイキャスト・`Transform` の値は一切変わりません。当たり判定をずらしたい場合はコライダー側のオフセットを使ってください。
 
@@ -1628,7 +1634,7 @@ public class FishingLine : SEEDScript
 | （アクター自身） | `gameObject.Visible` | アクターと全子孫の**描画だけ**を止める表示フラグ。スクリプト・物理は動き続ける |
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
-| `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）と描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
+| `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）・レイトレ除外（`RayTracingExcluded`）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |

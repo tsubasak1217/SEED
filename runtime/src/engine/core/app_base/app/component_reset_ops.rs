@@ -379,6 +379,8 @@ mod tests {
             cast_shadows:  true,
             visible:       true,
             disable_lod:   false,
+            // RT 対象外はリセット時も既定（RT に参加）へ戻す。
+            rt_exclude:    false,
             material_overrides: vec![MaterialOverride {
                 slot: 3,
                 kind: MaterialOverrideKind::Inline {
@@ -478,6 +480,8 @@ mod tests {
             cast_shadows:  true,
             visible:       true,
             disable_lod:   false,
+            // RT 対象外はリセット時も既定（RT に参加）へ戻す。
+            rt_exclude:    false,
             // 添字 0 → slot 7 / 添字 1 → slot 1（並びとスロット番号が一致しない配置）。
             material_overrides: vec![inline_metallic(7, 0.10), inline_metallic(1, 0.90)],
             render_tag: 0,
@@ -523,6 +527,8 @@ mod tests {
             cast_shadows:  true,
             visible:       true,
             disable_lod:   false,
+            // RT 対象外はリセット時も既定（RT に参加）へ戻す。
+            rt_exclude:    false,
             material_overrides: vec![MaterialOverride {
                 slot: 0,
                 kind: MaterialOverrideKind::MatAsset { path: "assets://a.mat".into() },
