@@ -29,9 +29,13 @@ using SEEDEditor.Scripting;
 /// アクタ単位の表示切り替えではなく<b>アルファを 0 にして隠す</b>
 /// （<see cref="TutorialWindow"/> と同じ流儀）。部品ごとに元色を控えてから
 /// 倍率を掛けるので、シーンで設定した色味がそのまま活きる。
+/// 表示要求は <see cref="Show"/>、非表示要求は <see cref="Hide"/> に一本化している
+/// （<see cref="Apply"/> は内容の差し替えだけを行い、表示状態には触れない）。
+/// 出現は拡大率の OutBack（0 倍 → 等倍）、非表示はアルファのフェードアウト
+/// （等倍のまま <see cref="hideFadeSeconds"/> かけて 1 → 0）と、演出の質が違う。
 ///
 /// 【時間軸】
-/// 出現・退場の演出はすべて実時間（Time.UnscaledDeltaTime）で進める。
+/// 出現・非表示の演出はすべて実時間（Time.UnscaledDeltaTime）で進める。
 /// 説明中はゲーム時間が止まるので、ゲーム時間で進めると演出が固まる。
 /// </summary>
 public class MissionPanel : SEEDScript
@@ -47,8 +51,8 @@ public class MissionPanel : SEEDScript
     /// <summary>出現演出の既定の秒数。</summary>
     private const float DefaultAppearSeconds = 0.30f;
 
-    /// <summary>退場演出の既定の秒数。</summary>
-    private const float DefaultDisappearSeconds = 0.16f;
+    /// <summary>非表示にするときのフェードアウトの既定の秒数。</summary>
+    private const float DefaultHideFadeSeconds = 0.30f;
 
     /// <summary>進捗が 1 のときの値（演出の完了判定に使う）。</summary>
     private const float ProgressComplete = 1f;
@@ -76,7 +80,7 @@ public class MissionPanel : SEEDScript
         /// <summary>出ている（内容だけが差し替わる）。</summary>
         Shown,
 
-        /// <summary>退場演出の最中。</summary>
+        /// <summary>非表示演出（アルファのフェードアウト）の最中。</summary>
         Disappearing,
     }
 
@@ -112,9 +116,12 @@ public class MissionPanel : SEEDScript
     [Header("演出"), SerializeField(Label = "出現の秒数", Tooltip = "パネルが 0 倍から等倍になるまでの秒数")]
     public float appearSeconds = DefaultAppearSeconds;
 
-    /// <summary>退場演出の秒数。</summary>
-    [SerializeField(Label = "退場の秒数", Tooltip = "隠すときに縮んで消えるまでの秒数")]
-    public float disappearSeconds = DefaultDisappearSeconds;
+    /// <summary>
+    /// 非表示にするときのフェードアウトの秒数（実時間・Unscaled）。
+    /// 帯・文字の<b>アルファ</b>をこの秒数で 1 → 0 へ落とす（拡大率は等倍のまま動かさない）。
+    /// </summary>
+    [SerializeField(Label = "非表示の秒数", Tooltip = "隠すときにアルファがフェードアウトするまでの秒数（実時間）")]
+    public float hideFadeSeconds = DefaultHideFadeSeconds;
 
     // ─── 内部状態 ────────────────────────────────────────────
 
@@ -199,13 +206,18 @@ public class MissionPanel : SEEDScript
 
     // ─── 公開 API ────────────────────────────────────────────
 
-    /// <summary>表示中か（退場演出中も true）。</summary>
+    /// <summary>
+    /// 表示要求が出ているか。
+    /// <see cref="Hide"/> を呼んだ瞬間（フェードアウトの演出中）から false になる点に注意
+    /// （＝「まだ画面上に見えているか」ではなく「表示指示が出ているか」を返す）。
+    /// </summary>
     public bool IsVisible => visible;
 
     /// <summary>
-    /// パネルの内容を差し替えて表示する【表示の唯一の入口】。
+    /// パネルの内容を差し替える【内容更新の唯一の入口】。
     ///
-    /// すでに出ているときは演出を再生し直さず、中身だけを差し替える
+    /// 表示 / 非表示には一切触れない（隠れているあいだに呼んでも見た目は変わらない）。
+    /// 表示するかどうかは呼び出し側が <see cref="Show"/> / <see cref="Hide"/> で決める
     /// （ミッション中に進捗が変わるたびに毎フレーム呼んでよい）。
     /// </summary>
     /// <param name="title">ミッション名。</param>
@@ -222,12 +234,26 @@ public class MissionPanel : SEEDScript
         SetContent(checksText,    BuildObjectiveLines(objectives));
         SetContent(progressText,  progress);
 
-        if (!visible) { BeginAppear(); }
+        // 表示 / 非表示の切り替えはここでは行わない【Show / Hide に一本化】。
+        // 呼び出し側（TutorialDirector）が「いま指示を出している最中か」を判断して
+        // Show / Hide を呼ぶ設計にしたため、内容の更新だけを行うこの入口が
+        // 勝手に表示状態を変えると、隠しておきたい場面（Intro・クリアバナー等）で
+        // 意図せず出てしまう事故になる。
+    }
+
+    /// <summary>
+    /// パネルを表示する【表示要求の唯一の入口】。
+    /// すでに出ている（退場演出中も含む）ときは何もしない。
+    /// </summary>
+    public void Show()
+    {
+        if (visible) { return; }
+        BeginAppear();
     }
 
     /// <summary>
     /// パネルを隠す【非表示要求の唯一の入口】。
-    /// 出ているときは退場演出を再生し、すでに隠れていれば何もしない。
+    /// 出ているときはフェードアウト演出を再生し、すでに隠れていれば何もしない。
     /// </summary>
     public void Hide()
     {
@@ -309,15 +335,19 @@ public class MissionPanel : SEEDScript
         }
     }
 
-    /// <summary>退場演出（縮んで消える）。</summary>
+    /// <summary>
+    /// 非表示演出（帯・文字の<b>アルファ</b>を 1 → 0 へフェードする）。
+    /// 拡大率は等倍のまま動かさない（縮小まで重ねると「フェード」ではなく
+    /// 「縮んで消える」印象になり、要求どおりの見た目にならないため）。
+    /// </summary>
     private void UpdateDisappearing()
     {
-        float remain = ProgressComplete - Easing.Progress01(animTimer, disappearSeconds);
-        ApplyRootScale(Easing.InCubic(remain));
+        float alphaRate = ProgressComplete - Easing.Progress01(animTimer, hideFadeSeconds);
+        ApplyRootScale(ProgressComplete);
+        ApplyAlphaScale(SEED.Mathf.Clamped01(alphaRate));
 
-        if (animTimer >= SEED.Mathf.Max(disappearSeconds, 0f))
+        if (animTimer >= SEED.Mathf.Max(hideFadeSeconds, 0f))
         {
-            ApplyRootScale(ScaleZero);
             HideImmediate();
         }
     }
@@ -334,11 +364,18 @@ public class MissionPanel : SEEDScript
         ct.Scale = new SEED.Vector2(rootBaseScale.x * rate, rootBaseScale.y * rate);
     }
 
-    /// <summary>表示 / 非表示をアルファで適用する【可視化の唯一の実装】。</summary>
+    /// <summary>表示 / 非表示を二値のアルファで適用する（即時の切り替え専用）。</summary>
     private void ApplyVisibility()
-    {
-        float alphaScale = visible ? AlphaScaleVisible : AlphaScaleHidden;
+        => ApplyAlphaScale(visible ? AlphaScaleVisible : AlphaScaleHidden);
 
+    /// <summary>
+    /// 帯・文字のアルファへ倍率を掛ける【アルファ適用の唯一の実装】。
+    /// 二値の表示切り替え（<see cref="ApplyVisibility"/>）とフェードアウト演出
+    /// （<see cref="UpdateDisappearing"/>）の両方がここを通る。
+    /// </summary>
+    /// <param name="alphaScale">アルファ倍率（0 で透明、1 でシーン設定どおり）。</param>
+    private void ApplyAlphaScale(float alphaScale)
+    {
         if (bgSprite is { } bg && bg.IsValid)
         {
             bg.Color = bgBaseColor.WithAlpha(bgBaseColor.a * alphaScale);

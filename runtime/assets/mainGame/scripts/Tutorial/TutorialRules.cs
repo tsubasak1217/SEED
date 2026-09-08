@@ -81,6 +81,18 @@ public static class TutorialRules
     /// </summary>
     public static bool FishPrefabExclusive;
 
+    /// <summary>維持数の上書き「上書き無し」を表す値。</summary>
+    public const int NoPopulationOverride = 0;
+
+    /// <summary>
+    /// 対象レベル（<see cref="FishLevelFilter"/> の対象、または <see cref="FishManager"/> の
+    /// 台本が固定しているレベル）の自然出現の維持数をこの値へ強制的に置き換える。
+    /// <see cref="NoPopulationOverride"/>（0）で上書きなし（<see cref="FishLevelEntry.maintainCount"/> のまま）。
+    /// 「魚種は固定したいが、個体数はもっと絞りたい」説明ミッション用
+    /// （<see cref="TutorialMission.fishPopulationOverride"/> から渡される）。
+    /// </summary>
+    public static int FishPopulationOverride = NoPopulationOverride;
+
     // ─── わらしべ連鎖の制限 ─────────────────────────────────
 
     /// <summary>
@@ -171,7 +183,10 @@ public static class TutorialRules
     /// 続きから自然にアタリが再開する（＝待ち直しにはならない。タイマー自体はリセットしない）。
     ///
     /// 掛けるのは <see cref="TutorialDirector"/> だけ。説明・クリアバナー・ Outro の
-    /// 表示中は true、ミッション本編（Playing）に入ると必ず false に戻す。
+    /// 表示中は必ず true。ミッション本編（Playing）に入るときは、そのミッションの
+    /// <see cref="TutorialMission.suppressBite"/> の値へ差し替える（既定 false なので
+    /// 通常は解除されるが、true が指定されたミッションでは本編中も抑止が続く。
+    /// 「まず海を空にしてから次のミッションで狙った魚だけを仕込みたい」場面用）。
     /// </summary>
     public static bool BiteSuppressed;
 
@@ -187,6 +202,7 @@ public static class TutorialRules
         FishLevelFilter      = NoLevelFilter;
         FishPrefabFilter     = NoPrefabFilter;
         FishPrefabExclusive  = false;
+        FishPopulationOverride = NoPopulationOverride;
         ChainDisabled        = false;
         DriftDisabled        = false;
         DriftStationary      = false;

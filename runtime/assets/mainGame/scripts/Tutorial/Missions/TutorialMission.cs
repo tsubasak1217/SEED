@@ -105,6 +105,34 @@ public struct TutorialMission
     [SerializeField(Label = "魚種を固定", Tooltip = "true で「魚種の指定」に一致しない魚を一切出さず、泳いでいる個体も取り除く")]
     public bool fishPrefabExclusive;
 
+    /// <summary>
+    /// このミッションの間、対象レベルの自然出現の維持数をこの値へ強制的に置き換える。
+    /// 0（既定）は「上書きしない＝<see cref="FishLevelEntry.maintainCount"/> のまま」を表す
+    /// （<see cref="TutorialRules.NoPopulationOverride"/> と同じ約束）。
+    ///
+    /// 「魚種を固定」で許可リストにした魚が何匹も泳いでいると、狙わせたい 1 匹以外にも
+    /// 目移りしてしまう。個体数そのものを絞りたい説明ミッション向けの上書き。
+    /// 効くのは「魚レベル制限」の対象レベル、または台本（<see cref="FishManager.SetScriptedSpawn"/>）
+    /// が固定しているレベルだけで、それ以外のレベルには影響しない。
+    /// </summary>
+    [SerializeField(Label = "維持数の上書き(0で無指定)", Tooltip = "0 以外を指定すると、このミッションの間だけ対象レベルの自然出現数をこの値に固定する")]
+    public int fishPopulationOverride;
+
+    /// <summary>
+    /// true の間、魚の食いつき（ルアーへのアタリ）の進行を一時停止する
+    /// （<see cref="TutorialRules.BiteSuppressed"/> をミッション本編中も適用する）。
+    ///
+    /// 既定では読む側（<see cref="TutorialDirector.SetBiteSuppressed"/>）は説明・クリアバナー・
+    /// Outro のあいだだけ抑止し、ミッション本編（Playing）に入ると必ず解除する。しかし
+    /// 「まず海を空にして、次のミッションで狙った魚だけを仕込みたい」場面（例: 投げの
+    /// 練習中は誰も食いつかせたくない）では、本編中も抑止を続けたい。true にすると
+    /// Playing 中もこのフラグが立ったままになり、次のミッションへ切り替わるときに
+    /// （<see cref="TutorialDirector.ApplyMissionRules"/> と同じタイミングで）自動的に
+    /// そのミッションの設定へ差し替わる。
+    /// </summary>
+    [SerializeField(Label = "食いつきを抑止", Tooltip = "true でミッション本編中も魚の食いつきの進行を止める（海を空にしてから次で仕込みたい場面用）")]
+    public bool suppressBite;
+
     /// <summary>true の間、わらしべ連鎖（他の魚が掛かった魚を食う）を成立させない。</summary>
     [SerializeField(Label = "連鎖なし", Tooltip = "true で掛かった魚を他の魚が食う連鎖を起こさない")]
     public bool chainDisabled;

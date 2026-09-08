@@ -468,6 +468,7 @@ public class TutorialDirector : SEEDScript
             if (QueueDialogues(data.id, TutorialDialogueSlot.Intro))
             {
                 SetBiteSuppressed(true);
+                panel?.Hide();               // 指示（説明）が無い間はパネルを隠す
                 phase = DirectorPhase.Intro;
                 ShowCurrentDialogue();
                 return;
@@ -475,6 +476,7 @@ public class TutorialDirector : SEEDScript
 
             // 説明が無いミッションは従来どおりすぐに台本を適用する
             StartCurrentMission();
+            ShowPanelIfSettledPlaying();
             return;
         }
 
@@ -488,9 +490,29 @@ public class TutorialDirector : SEEDScript
         if (QueueDialogues(data.id, TutorialDialogueSlot.Intro))
         {
             SetBiteSuppressed(true);
+            panel?.Hide();                   // 指示（説明）が無い間はパネルを隠す
             phase = DirectorPhase.Intro;
             ShowCurrentDialogue();
         }
+        else
+        {
+            // 説明が無ければそのまま実践中になるので、ここでパネルを出す
+            panel?.Show();
+        }
+    }
+
+    /// <summary>
+    /// StartCurrentMission の呼び出し直後に、段階が本当に Playing のまま確定していれば
+    /// パネルを表示する【表示ガードの唯一の実装】。
+    ///
+    /// StartCurrentMission はミッションが無効だと <see cref="AdvanceToNextMission"/> を
+    /// 再帰的に呼んで別の段階（次のミッションの Intro など）へ移ることがある。
+    /// そこを見ずに無条件で Show すると、直後に別の理由で Hide されて
+    /// 「一瞬出て消える」点滅になるため、必ずこのガード越しに呼ぶこと。
+    /// </summary>
+    private void ShowPanelIfSettledPlaying()
+    {
+        if (phase == DirectorPhase.Playing) { panel?.Show(); }
     }
 
     /// <summary>
@@ -516,17 +538,21 @@ public class TutorialDirector : SEEDScript
         if (data.scriptAfterIntro)
         {
             // 台本（ルール上書き・入力許可・魚の仕込み等）をここで初めて適用する。
-            // StartCurrentMission が SetBiteSuppressed(false) を含めて面倒を見る。
+            // StartCurrentMission が SetBiteSuppressed(data.suppressBite) を含めて面倒を見る。
             StartCurrentMission();
+            ShowPanelIfSettledPlaying();    // 説明を読み終えて実践中が確定したのでパネルを出す
             return;
         }
 
         ApplyMissionRules(data);
         ApplyMissionGates(data);
         SEED.Time.Scale = TimeScaleNormal;
-        SetBiteSuppressed(false);        // 読み終えたのでアタリの足止めを解く
+        // 読み終えたので既定はアタリの足止めを解くが、このミッションが「本編中も抑止」を
+        // 指定していれば（TutorialMission.suppressBite）そのまま抑止を続ける。
+        SetBiteSuppressed(data.suppressBite);
 
         phase = DirectorPhase.Playing;
+        panel?.Show();
     }
 
     /// <summary>
@@ -552,10 +578,18 @@ public class TutorialDirector : SEEDScript
         ApplyMissionRules(data);
         ApplyMissionGates(data);
         SEED.Time.Scale = TimeScaleNormal;
-        SetBiteSuppressed(false);        // 台本の適用＝本編開始なのでアタリの足止めを解く
+        // 台本の適用＝本編開始なので既定はアタリの足止めを解くが、このミッションが
+        // 「本編中も抑止」を指定していれば（TutorialMission.suppressBite）そのまま続ける。
+        SetBiteSuppressed(data.suppressBite);
 
         mission.Begin(context);
         phase = DirectorPhase.Playing;
+
+        // パネルの表示は呼び出し元に任せる: このあと Intro へ上書きされる経路
+        // （scriptAfterIntro=false で説明が控えている場合）では、ここで出してすぐ
+        // 隠すと 1 フレームぶん「出た→消える」の点滅になる。呼び出し元
+        // （AdvanceToNextMission / OnIntroFinished）が「このまま Playing で確定する」
+        // ときだけ Show() を呼ぶ。
 
         SEED.Debug.Log($"[Tutorial] ミッション {missionIndex + 1}/{missions.Count}「{data.title}」を開始");
     }
@@ -590,6 +624,9 @@ public class TutorialDirector : SEEDScript
         // ReleaseAllRestrictions() で一旦解除されるため、バナー表示中も
         // アタリを進めたくないのであらためて抑止を掛け直す
         SetBiteSuppressed(true);
+
+        // 指示（達成バナー・この後の Outro）が無い間はパネルを隠す
+        panel?.Hide();
 
         // バナーを読ませるあいだはゲームを止める（背後で釣りが進んで状況が変わらないように）
         // 達成バナー中に時間を止めるかはミッションごとの設定に従う
@@ -644,6 +681,7 @@ public class TutorialDirector : SEEDScript
         if (QueueDialogues(missions[missionIndex].id, TutorialDialogueSlot.Clear))
         {
             SetBiteSuppressed(true);   // 既に true のはずだが明示しておく
+            panel?.Hide();             // 既に隠れているはずだが明示しておく（Outro 中も非表示）
             phase = DirectorPhase.Outro;
             ShowCurrentDialogue();
             return;
@@ -663,9 +701,15 @@ public class TutorialDirector : SEEDScript
         ApplyMissionRules(data);
         ApplyMissionGates(data);
         SEED.Time.Scale = TimeScaleNormal;
-        SetBiteSuppressed(false);   // 読み終えたので元の状態へ戻す
+        // 読み終えたので既定は元の状態（抑止解除）へ戻すが、このミッションが
+        // 「本編中も抑止」を指定していれば（TutorialMission.suppressBite）そのまま続ける。
+        SetBiteSuppressed(data.suppressBite);
 
         phase = resumePhase;
+
+        // 割り込み中もパネルは表示したままのはずだが、念のため確定させる
+        // （合いの手＝実践の途中なので、割り込みを終えたら必ず実践中の表示に戻す）。
+        if (phase == DirectorPhase.Playing) { panel?.Show(); }
     }
 
     /// <summary>
@@ -849,6 +893,7 @@ public class TutorialDirector : SEEDScript
         TutorialRules.FishLevelFilter         = data.fishLevelFilter;
         TutorialRules.FishPrefabFilter        = data.fishPrefabFilter ?? TutorialRules.NoPrefabFilter;
         TutorialRules.FishPrefabExclusive     = data.fishPrefabExclusive;
+        TutorialRules.FishPopulationOverride  = data.fishPopulationOverride;
         TutorialRules.ChainDisabled           = data.chainDisabled;
         TutorialRules.DriftDisabled           = data.driftDisabled;
         TutorialRules.DriftStationary         = data.driftStationary;

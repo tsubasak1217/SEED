@@ -407,7 +407,12 @@ public class FishManager : SEEDScript
                 return true;
             });
 
-            int want = levels[i].maintainCount;
+            // チュートリアルが維持数を上書きしていれば従う（0 = 無指定でレベル定義どおり）。
+            // 上の 2 つの continue により、ここへ来る時点で i は「制限が掛かっているなら
+            // その対象レベル」に絞られているので、単純に上書き値を使ってよい。
+            int want = (TutorialRules.Active && TutorialRules.FishPopulationOverride > TutorialRules.NoPopulationOverride)
+                ? TutorialRules.FishPopulationOverride
+                : levels[i].maintainCount;
             while (alive.Count < want)
             {
                 if (!TrySpawnOne(i, out var fish)) { break; }
