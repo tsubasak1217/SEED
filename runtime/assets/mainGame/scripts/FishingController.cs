@@ -1918,9 +1918,10 @@ public class FishingController : SEEDScript
     /// （<see cref="FishState.Floating"/>）・巻き取り中（<see cref="FishState.Reeling"/>）・
     /// アタリ中（<see cref="FishState.Nibbling"/> / <see cref="FishState.HookWindow"/>）・
     /// ヒット中（<see cref="FishState.Hooked"/>。わらしべ連鎖はこの状態のまま進む）が該当する。
-    /// 釣り上げ演出（<see cref="FishState.Catching"/>）は<b>寄りのフェーズだけ</b>該当する:
-    /// ホワイトアウトで構図を切り替えたあとは、沖のウキと釣り糸が釣果の画に映り込まないよう
-    /// ウキを手元へ畳むため（<see cref="UpdateCatching"/>）。
+    /// 釣り上げ演出（<see cref="FishState.Catching"/>）は<b>白へ沈むまで（Fade）と
+    /// スロー放物線（SlowArc）だけ</b>該当する: 魚はウキの位置から跳ね上がるので、
+    /// その 2 フェーズはウキが画に映っていてよい。釣果パネルへ移ったあとは
+    /// ウキを手元へ畳む（<see cref="UpdateCatching"/>）。
     /// 逆に <see cref="FishState.Idle"/> / <see cref="FishState.Aiming"/> /
     /// <see cref="FishState.Windup"/> ではウキは非表示で手元にある。
     ///
@@ -1934,7 +1935,7 @@ public class FishingController : SEEDScript
                  or FishState.Nibbling or FishState.HookWindow
                  or FishState.Hooked
         || (State == FishState.Catching
-            && CatchPhase == CatchPresenter.CatchPhase.ApproachCamera);
+            && CatchPhase is CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc);
 
     /// <summary>
     /// カーソルロックの望ましい状態。
@@ -3028,7 +3029,9 @@ public class FishingController : SEEDScript
             UpdateCursorLock();
 
             // 演出プレゼンタが未設定なら演出を飛ばす（魚を消して移動へ戻すだけ）
-            if (presenter is { } p) { p.Begin(caught); }
+            // ウキの位置は演出側の「水面の基準点」になる（魚の跳ね始め・カメラの高さ・
+            // しぶきの位置がすべてここから決まる）ので、この瞬間の値を渡す。
+            if (presenter is { } p) { p.Begin(caught, FloatWorldPosition); }
             else
             {
                 caught.Actor.Destroy();
@@ -3067,9 +3070,12 @@ public class FishingController : SEEDScript
 
         p.Tick(deltaTime);
 
-        // 寄りのフェーズを抜けた（＝白で覆われている）以降はウキを手元へ畳む。
+        // 魚が跳ねる区間（Fade / SlowArc）を抜けたらウキを手元へ畳む。
         // ParkFloatHidden は表示フラグと位置を引き直すだけなので毎フレーム呼んで安全。
-        if (p.Phase != CatchPresenter.CatchPhase.ApproachCamera) { ParkFloatHidden(); }
+        if (p.Phase is not (CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc))
+        {
+            ParkFloatHidden();
+        }
 
         // Phase が None に戻った ＝ 演出完了（魚もプレゼンタ側で破棄済み）
         if (p.Phase != CatchPresenter.CatchPhase.None) { return; }

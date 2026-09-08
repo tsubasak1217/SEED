@@ -108,7 +108,7 @@ public class CameraMove : SEEDScript
     private SEED.Transform? callTarget = null;
 
     /// <summary>
-    /// 釣り上げ演出の「寄り」フェーズ（<see cref="CatchPresenter.CatchPhase.ApproachCamera"/>）の
+    /// 釣り上げ演出のスロー放物線以降（<see cref="CatchPresenter.CatchPhase.SlowArc"/> 以降）の
     /// 目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」を割り当てる想定）。
     /// 位置・向きは <see cref="CatchPresenter"/> が毎フレーム「魚を見る姿勢」へ置き直す。
     /// 未設定なら寄りの構図は効かない（従来の目標を追い続ける）。
@@ -118,7 +118,7 @@ public class CameraMove : SEEDScript
 
     /// <summary>
     /// 釣果表示の目標トランスフォーム（プレイヤーの子アクタ「ResultCameraTarget」を割り当てる想定）。
-    /// <see cref="CatchPresenter.CatchPhase.WhiteOut"/> 以降のあいだ使う。
+    /// <see cref="catchTarget"/> が未設定のときの予備として使う。
     /// 切り替えは真っ白の裏で <see cref="RequestSnap"/> により<b>カット</b>されるので、
     /// 構図が飛ぶところは見えない。未設定なら釣果の構図は切り替わらない。
     /// </summary>
@@ -336,8 +336,12 @@ public class CameraMove : SEEDScript
     /// 釣り上げ演出中に追うべき目標トランスフォームを返す（演出中でなければ null）。
     ///
     /// フェーズは順序どおりに並んでいるので、判定は
-    /// 「<see cref="CatchPresenter.CatchPhase.ApproachCamera"/> なら寄り、
-    /// それ以外（None を除く）なら釣果」の 2 分岐で済む。
+    /// 「<see cref="CatchPresenter.CatchPhase.Fade"/>（白へ沈むまで）は<b>通常の構図のまま</b>、
+    /// それ以降（None を除く）は演出専用の構図」の 2 分岐で済む。
+    ///
+    /// <b>Fade で切り替えない理由</b>: 構図のカットは画面が真っ白になった裏で
+    /// <see cref="CatchPresenter"/> が行う（<c>RequestSnap</c>）。白より前に切り替えると
+    /// 視点の飛びがそのまま見えてしまう。
     /// 割り当てが無いフェーズでは null を返し、呼び出し側が従来の選択へ落ちる。
     /// </summary>
     private SEED.Transform? SelectCatchGoal()
@@ -347,12 +351,9 @@ public class CameraMove : SEEDScript
 
         var phase = f.CatchPhase;
         if (phase == CatchPresenter.CatchPhase.None) { return null; }
+        if (phase == CatchPresenter.CatchPhase.Fade) { return null; }
 
-        if (phase == CatchPresenter.CatchPhase.ApproachCamera)
-        {
-            return catchTarget is { IsValid: true } ct ? ct : null;
-        }
-
+        if (catchTarget is { IsValid: true } ct) { return ct; }
         return resultTarget is { IsValid: true } rt ? rt : null;
     }
 

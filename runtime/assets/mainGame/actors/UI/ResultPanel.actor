@@ -1,0 +1,848 @@
+{
+  "name": "ResultPanel",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.0,
+      0.0
+    ],
+    "anchor": [
+      0.0,
+      0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "Canvas",
+      "component": {
+        "type": "CanvasComponent",
+        "data": {
+          "width": 1280.0,
+          "height": 720.0,
+          "auto_scale": true,
+          "viewport_ref": {
+            "type": "main_camera"
+          },
+          "gravity_mode": "world_down",
+          "draw_zone": "foreground",
+          "pivot": [
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "name": "ResultPanel",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "assets://mainGame/scripts/ResultPanel.cs",
+          "fields": {}
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "ResultBody",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          -90.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          0.0,
+          0.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [],
+      "children": [
+        {
+          "name": "ResultBg",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/tutorial/sampleBG2.png",
+                  "color": [
+                    0.1,
+                    0.22,
+                    0.4,
+                    0.95
+                  ],
+                  "width": 900.0,
+                  "height": 480.0,
+                  "layer": 3000,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "FishImage",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              -250.0,
+              15.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                  ],
+                  "width": 300.0,
+                  "height": 300.0,
+                  "layer": 3002,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "FishName",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              150.0,
+              -130.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "さかな",
+                  "font_size": 48.0,
+                  "color": [
+                    1.0,
+                    0.96,
+                    0.86,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 3003,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 4.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.8,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "FishSize",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              150.0,
+              -55.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "0.0cm",
+                  "font_size": 40.0,
+                  "color": [
+                    1.0,
+                    0.96,
+                    0.86,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 3003,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 3.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.7,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "FishRank",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              150.0,
+              15.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "ランク C",
+                  "font_size": 34.0,
+                  "color": [
+                    1.0,
+                    0.96,
+                    0.86,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 3003,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 3.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.6,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "FishBest",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              150.0,
+              75.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "自己ベスト: 0.0cm",
+                  "font_size": 28.0,
+                  "color": [
+                    0.82,
+                    0.9,
+                    1.0,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 3003,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 3.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.5,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "NewRecord",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              150.0,
+              130.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "New Record!!",
+                  "font_size": 34.0,
+                  "color": [
+                    1.0,
+                    0.9,
+                    0.35,
+                    0.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 3003,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 3.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.8,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "Prompt",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              185.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "決定で閉じる",
+                  "font_size": 26.0,
+                  "color": [
+                    0.9,
+                    0.95,
+                    1.0,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 3003,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 3.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.5,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RegisteredPanel",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              345.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [],
+          "children": [
+            {
+              "name": "RegisteredBg",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/tutorial/sampleBG2.png",
+                      "color": [
+                        0.08,
+                        0.35,
+                        0.28,
+                        0.95
+                      ],
+                      "width": 780.0,
+                      "height": 180.0,
+                      "layer": 3010,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "RegisteredTitle",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -2.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "図鑑に登録されました",
+                      "font_size": 34.0,
+                      "color": [
+                        1.0,
+                        0.98,
+                        0.8,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 3011,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "icon_set": "",
+                      "outline_width": 3.0,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.06,
+                        1.0
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": false,
+                      "weight": 0.8,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.5
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "RegisteredHint",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  48.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "図鑑はポーズメニューから見られます",
+                      "font_size": 24.0,
+                      "color": [
+                        0.86,
+                        0.94,
+                        1.0,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 3011,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "icon_set": "",
+                      "outline_width": 3.0,
+                      "outline_color": [
+                        0.02,
+                        0.03,
+                        0.06,
+                        1.0
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": false,
+                      "weight": 0.5,
+                      "shadow_offset_x": 2.0,
+                      "shadow_offset_y": 2.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 1.5
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ],
+          "visible": false
+        }
+      ]
+    }
+  ]
+}

@@ -94,6 +94,47 @@ public static class FishRecords
     // ─── 書き込み ────────────────────────────────────────────
 
     /// <summary>
+    /// 1 匹ぶんの釣果を記録した結果【釣果 UI が「何を出すか」を決めるための唯一の返り値】。
+    ///
+    /// <see cref="FishRecords.RecordCatch"/> は「釣った数を増やす」「ベストを更新する」の
+    /// 2 つを同時に行うため、呼び出し側（釣果パネル）が欲しい情報は 1 つの bool では
+    /// 足りない（初捕獲＝図鑑登録の演出を出すか／ベスト更新＝New Record を出すか／
+    /// 更新前のベストは幾つだったか、の 3 つ）。値を足すたびに関数を増やさずに済むよう、
+    /// 結果はこの構造体 1 つにまとめて返す。
+    /// </summary>
+    public readonly struct CatchRecordResult
+    {
+        /// <summary>
+        /// この 1 匹が<b>その魚種の初捕獲</b>か（＝記録前の釣った数が 0 だったか）。
+        /// true なら図鑑へ新規登録されたことになるので、釣果パネルは
+        /// 「図鑑に登録されました」の演出を追加で出す。
+        /// </summary>
+        public readonly bool FirstCatch;
+
+        /// <summary>ベストサイズを更新したか（＝新記録か）。</summary>
+        public readonly bool NewBest;
+
+        /// <summary>
+        /// <b>この 1 匹を記録する前の</b>ベストサイズ（表示単位）。未捕獲なら 0。
+        /// 釣果パネルの「自己ベスト」行は<b>更新後</b>の値を出したいことが多いが、
+        /// 「前回までのベスト」を並べて見せる演出もできるよう、更新前の値を返す
+        /// （更新後の値は <see cref="FishRecords.BestSize"/> で読める）。
+        /// </summary>
+        public readonly float PreviousBest;
+
+        /// <summary>全項目を指定して作る（生成はこのクラスの中だけ）。</summary>
+        /// <param name="firstCatch">初捕獲か。</param>
+        /// <param name="newBest">ベスト更新か。</param>
+        /// <param name="previousBest">記録前のベストサイズ。</param>
+        public CatchRecordResult(bool firstCatch, bool newBest, float previousBest)
+        {
+            FirstCatch = firstCatch;
+            NewBest = newBest;
+            PreviousBest = previousBest;
+        }
+    }
+
+    /// <summary>
     /// 1 匹ぶんの釣果を記録する【釣果の書き込みの唯一の入口】。
     ///
     /// 釣った数は必ず 1 増える。ベストサイズを更新したときだけ、
@@ -107,17 +148,28 @@ public static class FishRecords
     /// <param name="displayName">魚の表示名。空白のみなら何もしない。</param>
     /// <param name="displaySize">釣った個体の表示サイズ。</param>
     /// <param name="sizeRank">釣った個体のサイズランク（<c>Fish.SizeRank</c>）。</param>
-    /// <returns>ベストサイズを更新したら true（＝新記録）。</returns>
-    public static bool RecordCatch(string displayName, float displaySize, string sizeRank)
+    /// <returns>
+    /// 初捕獲か・ベスト更新か・更新前のベストサイズ（<see cref="CatchRecordResult"/>）。
+    /// 表示名が使えないときは全項目が既定値（false / false / 0）の結果を返す。
+    /// </returns>
+    public static CatchRecordResult RecordCatch(string displayName, float displaySize, string sizeRank)
     {
-        if (!IsUsableName(displayName)) { return false; }
+        if (!IsUsableName(displayName))
+        {
+            return new CatchRecordResult(firstCatch: false, newBest: false, previousBest: NoBestSize);
+        }
+
+        // 記録前の状態を控える（初捕獲判定と「更新前のベスト」の両方に使う）。
+        // 釣った数を増やしたあとでは初捕獲を判定できないので、必ず先に読む。
+        int count = SEED.SaveData.GetInt(CatchCountKeyPrefix + displayName, NoCatchCount);
+        float previousBest = BestSize(displayName);
+        bool firstCatch = count < CaughtThreshold;
 
         // 釣った数は成否に関わらず 1 増やす
-        int count = SEED.SaveData.GetInt(CatchCountKeyPrefix + displayName, NoCatchCount);
         SEED.SaveData.SetInt(CatchCountKeyPrefix + displayName, count + CatchIncrement);
 
         // ベストサイズは超えたときだけ更新し、ランクも同時に差し替える
-        bool isNewRecord = displaySize > BestSize(displayName);
+        bool isNewRecord = displaySize > previousBest;
         if (isNewRecord)
         {
             SEED.SaveData.SetFloat(BestSizeKeyPrefix + displayName, displaySize);
@@ -125,7 +177,7 @@ public static class FishRecords
         }
 
         SEED.SaveData.Save();
-        return isNewRecord;
+        return new CatchRecordResult(firstCatch, isNewRecord, previousBest);
     }
 
     // ─── 内部処理 ────────────────────────────────────────────

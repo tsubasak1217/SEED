@@ -1,46 +1,54 @@
-using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
+// ============================================================================
+//  CatchPresenter.cs
+//  釣り上げ演出（ホワイトアウト → スロー放物線 → 釣果パネル）の進行。
+// ============================================================================
+
+using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext
 
 /// <summary>
-/// 釣り上げ演出（Catching 状態）の進行だけを担うプレゼンタ。
+/// 釣り上げ演出（<c>Catching</c> 状態）の進行だけを担うプレゼンタ。
 ///
 /// <b>プレイヤーアクタに付ける</b>（<see cref="FishingController"/> と同じアクタに
-/// 2 本目のスクリプトスロット「Catch」として置き、コントローラの
-/// <c>presenter</c> フィールドから参照する）。
+/// 2 本目のスクリプトスロットとして置き、コントローラの <c>presenter</c> フィールドから
+/// 参照する）。
 ///
 /// <b>責務の分割</b>
 /// - 釣りの進行（キャスト〜巻き取り〜ヒット判定）… <see cref="FishingController"/>
-/// - <b>釣り上げた瞬間からの見せ場</b>（カメラ寄り／ホワイトアウト／魚のポップ／釣果 UI）… 本スクリプト
+/// - <b>釣り上げた瞬間からの見せ場の進行</b> … 本スクリプト
+/// - 釣果の中身の表示（絵・名前・サイズ・図鑑登録）… <see cref="ResultPanel"/>
+/// - 釣果の保存（ベスト・釣った数）… <see cref="FishRecords"/>
 /// - カメラの追従補間そのもの … <see cref="CameraMove"/>
 ///
-/// 本スクリプトは「どこを見せるか（目標トランスフォームの座標）」だけを毎フレーム決め、
+/// 本スクリプトは「どこを見せるか（目標トランスフォームの座標）」だけを決め、
 /// カメラ本体は一切動かさない。カメラは <see cref="CameraMove"/> が
 /// <see cref="FishingController.State"/> と <see cref="FishingController.CatchPhase"/> を見て
-/// 目標を切り替え、いつもの指数補間で追う（＝構図の作り方が他の場面と完全に同じになる）。
+/// 目標を切り替える。
 ///
 /// <b>フェーズ（<see cref="CatchPhase"/>）と時間</b>
 /// <code>
-/// ApproachCamera … catchCameraSeconds 秒       カメラが魚へ寄る（魚はウキに付いたまま）
-/// WhiteOut       … whiteoutFadeInSeconds       白へフェードイン
-///                  ＋ whiteoutHoldSeconds      真っ白の保持（この境目で構図と魚を差し替える）
-/// Show           … whiteoutFadeOutSeconds で白が晴れ、
-///                  fishPopSeconds で魚が easeOutBack で 0 → 原寸へ膨らむ。
-///                  釣果テキストを表示し、ポップ完了後の左クリックを待つ。
-/// Close          … fishCloseSeconds 秒で easeInBack で原寸 → 0 へ縮み、テキストを消す。
-///                  終わったら Phase を None に戻し、コントローラが移動へ復帰させる。
+/// Fade    … whiteoutFadeInSeconds 秒で白へ沈み、
+///           whiteoutHoldSeconds 秒の真っ白を保持する。
+///           真っ白になった最初のフレームでカット（SwitchToSlowArcComposition）。
+/// SlowArc … 白が whiteoutFadeOutSeconds 秒で晴れ、水面を真横から見る構図で
+///           魚がウキの位置から放物線を描いて跳ね上がる（Time.Scale = slowScale）。
+///           arcSeconds × arcApexRatio 秒（＝頂点）で魚を隠し、次へ。
+/// Result  … Time.Scale を戻し、ResultPanel を開く。
+///           パネルが閉じ切る（ResultPanel.IsActive が false になる）まで待つ。
+/// Close   … closeSeconds 秒の間を置いてから後始末（魚の破棄・カメラ復帰）。
 /// </code>
 ///
-/// <b>真っ白の瞬間にやること（<see cref="SwitchToResultComposition"/>）</b>
-/// 画面が完全に白いあいだにカット（構図の切り替え）を済ませるので、視点の飛びが見えない。
-/// - カメラ目標を <see cref="resultCameraTarget"/> へ切り替え、<see cref="CameraMove.RequestSnap"/> で
-///   補間せず瞬間移動させる
-/// - 魚をウキから外して頭上へ運び、カメラを向かせる。頭のアンカー（<c>headAnchor</c>）が
-///   設定されていれば「頭の位置 × 魚の実寸」から置く高さを、「プレイヤーの全身 ＋ 頭上の魚」
-///   が収まる距離としてカメラ距離を自動計算し
-///   （<c>ComputeAutoLayout</c> / <c>ApplyResultCameraFraming</c>）、未設定なら従来の
-///   固定オフセット（<c>fishHoldOffsetX/Y/Z</c>）＋引き量へフォールバックする
-/// - 魚のスケールを 0 にする（Show のポップの開始値）
-/// - プレイヤー本体・竿を持ち上げ（LIFT）クリップへ切り替える。<c>liftSeconds</c> 秒後に
-///   維持（HOLD）クリップへクロスフェードする（<see cref="UpdateShow"/> が判定する）
+/// <b>カット（<see cref="SwitchToSlowArcComposition"/>）</b>
+/// 画面が完全に白いあいだに構図を切り替えるので、視点の飛びが見えない。
+/// - 横カメラの目標（<see cref="catchCameraTarget"/>）を「ウキ→プレイヤーの向きに対して
+///   直角・水面のすこし上」へ置き、<see cref="CameraMove.RequestSnap"/> で<b>補間せず</b>飛ばす。
+///   カメラ距離は魚のサイズランクぶん遠のく（大きい魚ほど弧が大きいため）。
+/// - 魚をウキから外し、水面のすぐ下（<see cref="fishSubmergeDepth"/>）へ置く。
+/// - しぶき（<see cref="splashActorPath"/> のパーティクル）と水音を出す。
+///
+/// <b>時間軸</b>
+/// スロー中（<c>Time.Scale</c> を下げている区間）でも演出の秒数がぶれないよう、
+/// 本スクリプトの進行はすべて<b>実時間</b>（<c>Time.UnscaledDeltaTime</c>）で数える。
+/// <see cref="Tick"/> の引数の経過秒（ゲーム時間）は意図的に使わない。
 /// </summary>
 public class CatchPresenter : SEEDScript
 {
@@ -49,9 +57,8 @@ public class CatchPresenter : SEEDScript
     /// <summary>
     /// 釣り上げ演出の進行フェーズ。
     ///
-    /// <see cref="CameraMove"/> は <c>ApproachCamera</c> なら魚へ寄る目標、
-    /// それ以外（<c>WhiteOut</c> 以降）なら釣果用の目標を追う、という 2 分岐だけで済むよう
-    /// 順序どおりに並べてある。
+    /// <see cref="CameraMove"/> は「<c>Fade</c> なら通常の構図のまま／それ以降は
+    /// 横カメラの目標」という 2 分岐だけで済むよう順序どおりに並べてある。
     /// スクリプトはファイル名＝型名で 1 ファイル 1 クラスとして扱われるため、
     /// この列挙型は独立ファイルにせず本クラスの入れ子として定義する
     /// （外部からは <c>CatchPresenter.CatchPhase</c> で参照できる）。
@@ -61,16 +68,16 @@ public class CatchPresenter : SEEDScript
         /// <summary>演出していない（待機）。</summary>
         None,
 
-        /// <summary>カメラが水面の魚へ寄っていく。魚はまだウキに付いている。</summary>
-        ApproachCamera,
-
         /// <summary>白へフェードイン＋真っ白の保持。保持へ入る瞬間に構図と魚を差し替える。</summary>
-        WhiteOut,
+        Fade,
 
-        /// <summary>白が晴れ、魚がポップして釣果テキストが出る。左クリック待ち。</summary>
-        Show,
+        /// <summary>白が晴れ、魚が水面から放物線を描いて跳ね上がる（スロー）。</summary>
+        SlowArc,
 
-        /// <summary>魚が縮んで消える。終わり次第 <see cref="None"/> へ戻る。</summary>
+        /// <summary>釣果パネルを開き、閉じ切るまで待つ。</summary>
+        Result,
+
+        /// <summary>後始末の間（この後 <see cref="None"/> へ戻る）。</summary>
         Close,
     }
 
@@ -82,66 +89,44 @@ public class CatchPresenter : SEEDScript
     /// <summary>0 除算を避けるための「実質 0」しきい値（秒数などの分母に使う）。</summary>
     private const float DivideEpsilon = 1e-4f;
 
-    /// <summary>ラジアン→度変換係数。</summary>
-    private const float RadToDeg = HalfTurnDegrees / SEED.Mathf.PI;
-
-    /// <summary>度→ラジアン変換係数（視野角の半角を三角関数へ渡すのに使う）。</summary>
-    private const float DegToRad = SEED.Mathf.PI / HalfTurnDegrees;
-
-    /// <summary>「半分」を表す係数（AABB の中心・視野角の半角など、2 で割る場面の共通定数）。</summary>
+    /// <summary>「半分」を表す係数（中点・半角など、2 で割る場面の共通定数）。</summary>
     private const float Half = 0.5f;
 
     /// <summary>
-    /// 半回転（度）。魚をカメラへ向ける（プレイヤーの真逆を向く＝正面）向きに使う。
-    /// <see cref="fishFacingYawOffsetDegrees"/> の「正面」側の値（＝180）。
+    /// 放物線の頂点係数。<c>4·h·t·(1−t)</c> は t=0.5 でちょうど h になるので、
+    /// 「頂点の高さ」をそのままインスペクタで指定できる。
     /// </summary>
-    private const float HalfTurnDegrees = 180f;
+    private const float ParabolaPeakCoefficient = 4f;
 
-    /// <summary>
-    /// 四分の一回転（度）。魚をカメラへ対して横向きにするのに使う。
-    /// <see cref="fishFacingYawOffsetDegrees"/> の既定値（＝90＝横向き）。
-    /// </summary>
-    private const float QuarterTurnDegrees = 90f;
+    /// <summary>通常時のゲーム時間の速さ（スローから戻すときの値）。</summary>
+    private const float TimeScaleNormal = 1f;
 
-    /// <summary>easeOutBack / easeInBack の跳ね返り係数 c1（標準値）。</summary>
-    private const float BackEaseC1 = 1.70158f;
+    /// <summary>サイズランク S の段位（カメラ距離の加算段数。C=0 から数える）。</summary>
+    private const int RankStepS = 3;
 
-    /// <summary>easeOutBack / easeInBack の跳ね返り係数 c3 ＝ c1 + 1（標準値）。</summary>
-    private const float BackEaseC3 = BackEaseC1 + 1f;
+    /// <summary>サイズランク A の段位。</summary>
+    private const int RankStepA = 2;
 
-    // ベストサイズ・ベストランク・釣った数の保存キーは FishRecords が一元管理する
-    // （図鑑 Zukan と CatchPresenter でキーがずれる事故を防ぐため、ここには持たない）。
+    /// <summary>サイズランク B の段位。</summary>
+    private const int RankStepB = 1;
 
-    /// <summary>ベスト更新時にサイズ表示へ添える文言。</summary>
-    private const string NewRecordSuffix = "  NEW!";
+    /// <summary>サイズランク C（既定）の段位。</summary>
+    private const int RankStepC = 0;
+
+    // ベストサイズ・ベストランク・釣った数の保存キーは FishRecords が一元管理する。
 
     // ─── 参照（インスペクタで割り当てる）───────────────────────
 
     /// <summary>
-    /// カメラが魚へ寄るときの目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」）。
-    /// <see cref="CatchPhase.ApproachCamera"/> のあいだ、本スクリプトが毎フレーム
-    /// 「魚の少し手前・少し上から魚を見る」姿勢へ置き直す。
-    /// 未設定ならカメラ寄りの演出は効かない（<see cref="CameraMove"/> が従来の目標を追い続ける）。
+    /// 釣り上げ演出中のカメラ目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」）。
+    ///
+    /// 真っ白の瞬間に本スクリプトが「ウキ→プレイヤーの向きに対して直角・水面のすこし上」の
+    /// 姿勢へ置き直し、<see cref="CameraMove.RequestSnap"/> でカットする。以後この構図は
+    /// 動かさない（跳ね上がる魚だけが動く画になる）。
+    /// 未設定なら構図は切り替わらない（<see cref="CameraMove"/> が従来の目標を追い続ける）。
     /// </summary>
-    [Header("参照"), SerializeField(Label = "寄りカメラの目標(CatchCameraTarget)")]
+    [Header("参照"), SerializeField(Label = "横カメラの目標(CatchCameraTarget)")]
     private SEED.Transform? catchCameraTarget = null;
-
-    /// <summary>
-    /// 釣果表示中のカメラ目標トランスフォーム（プレイヤーの子アクタ「ResultCameraTarget」）。
-    /// プレイヤーの正面に置き、プレイヤー（と頭上の魚）を振り返って見る構図をシーン側で作る。
-    /// <see cref="CatchPhase.Show"/> では魚の大きさに応じて後方へ押し出す
-    /// （<see cref="ApplyResultCameraPull"/>）。未設定なら釣果の構図は切り替わらない。
-    /// </summary>
-    [SerializeField(Label = "釣果カメラの目標(ResultCameraTarget)")]
-    private SEED.Transform? resultCameraTarget = null;
-
-    /// <summary>
-    /// カメラ本体のトランスフォーム（<b>読むだけ</b>）。
-    /// <see cref="CatchPhase.ApproachCamera"/> で「カメラ→魚」の向きを求めるのに使う。
-    /// 未設定なら寄りの目標は魚の真後ろ（ワールド -Z 側）を既定の向きとして置く。
-    /// </summary>
-    [SerializeField(Label = "カメラ本体")]
-    private SEED.Transform? cameraTransform = null;
 
     /// <summary>
     /// カメラの追従スクリプト。真っ白の瞬間に <see cref="CameraMove.RequestSnap"/> を呼び、
@@ -152,29 +137,11 @@ public class CatchPresenter : SEEDScript
     private CameraMove? cameraMove = null;
 
     /// <summary>
-    /// プレイヤー本体のトランスフォーム（魚を頭上へ置く基準）。
+    /// プレイヤー本体のトランスフォーム（魚が跳ねてくる向きの基準）。
     /// 未設定なら本スクリプトが乗っているアクタ自身のトランスフォームを使う。
     /// </summary>
     [SerializeField(Label = "プレイヤーのトランスフォーム")]
     private SEED.Transform? playerTransform = null;
-
-    /// <summary>
-    /// プレイヤー本体の <see cref="SEED.Model"/>（<b>読むだけ</b>）。
-    /// 釣果構図の自動レイアウトで「プレイヤーの全身 ＋ 頭上の魚」を画面へ収めるために、
-    /// プレイヤーの実寸（高さ・幅・足元の高さ）を測るのに使う。
-    /// 未設定なら足元＝<see cref="playerTransform"/> の位置、幅 0 として扱う
-    /// （＝魚の実寸だけでフレーミングした従来に近い構図になる）。
-    /// </summary>
-    [SerializeField(Label = "プレイヤーの Model")]
-    private SEED.Model? playerModel = null;
-
-    /// <summary>プレイヤー本体の Animator（釣り上げポーズの再生先）。未設定なら本体アニメを触らない。</summary>
-    [SerializeField(Label = "プレイヤー本体の Animator")]
-    private SEED.Animator? playerAnimator = null;
-
-    /// <summary>竿の Animator（釣り上げポーズの再生先）。未設定なら竿アニメを触らない。</summary>
-    [SerializeField(Label = "竿の Animator")]
-    private SEED.Animator? rodAnimator = null;
 
     /// <summary>
     /// 全画面ホワイトアウト用のスプライト（FishingUI キャンバスの子「Whiteout」）。
@@ -184,237 +151,134 @@ public class CatchPresenter : SEEDScript
     [SerializeField(Label = "ホワイトアウトのSprite")]
     private SEED.Sprite? whiteoutSprite = null;
 
-    /// <summary>釣果テキスト: 魚の名前。</summary>
-    [Header("釣果テキスト"), SerializeField(Label = "名前")]
-    private SEED.Text? nameText = null;
-
-    /// <summary>釣果テキスト: サイズ。</summary>
-    [SerializeField(Label = "サイズ")]
-    private SEED.Text? sizeText = null;
-
-    /// <summary>釣果テキスト: サイズランク。</summary>
-    [SerializeField(Label = "サイズランク")]
-    private SEED.Text? rankText = null;
-
-    /// <summary>釣果テキスト: ベストサイズ（自己ベスト）。</summary>
-    [SerializeField(Label = "ベストサイズ")]
-    private SEED.Text? bestText = null;
-
-    /// <summary>釣果テキスト: 「クリックで戻る」の操作案内。</summary>
-    [SerializeField(Label = "操作案内")]
-    private SEED.Text? promptText = null;
-
-    // ─── 寄りカメラ（ApproachCamera）───────────────────────────
-
-    /// <summary>カメラが魚へ寄っているフェーズの長さ（秒）。</summary>
-    [Header("寄りカメラ"), SerializeField(Label = "寄りの時間(秒)")]
-    private float catchCameraSeconds = 0.8f;
-
-    /// <summary>
-    /// 寄りの目標を魚から何メートル手前（カメラ側）へ置くか。
-    /// 目標位置 ＝ 魚 − normalize(魚 − カメラ) × この距離 ＋ 上方向 × <see cref="catchCamHeight"/>。
-    /// </summary>
-    [SerializeField(Label = "魚からの距離(m)")]
-    private float catchCamDistance = 1.6f;
-
-    /// <summary>寄りの目標を魚からどれだけ高い位置へ置くか（メートル）。</summary>
-    [SerializeField(Label = "魚からの高さ(m)")]
-    private float catchCamHeight = 0.6f;
-
-    // ─── ホワイトアウト（WhiteOut → Show）─────────────────────
+    // ─── ホワイトアウト（Fade → SlowArc）───────────────────────
 
     /// <summary>白へ塗り潰すまでの秒数（アルファ 0 → 1）。</summary>
     [Header("ホワイトアウト"), SerializeField(Label = "フェードイン(秒)")]
-    private float whiteoutFadeInSeconds = 0.4f;
+    private float whiteoutFadeInSeconds = 0.35f;
 
     /// <summary>真っ白のまま保持する秒数（この区間の頭で構図と魚を差し替える）。</summary>
     [SerializeField(Label = "真っ白の保持(秒)")]
-    private float whiteoutHoldSeconds = 0.2f;
+    private float whiteoutHoldSeconds = 0.15f;
 
-    /// <summary>白が晴れるまでの秒数（アルファ 1 → 0。<see cref="CatchPhase.Show"/> の頭で進む）。</summary>
+    /// <summary>白が晴れるまでの秒数（アルファ 1 → 0。<see cref="CatchPhase.SlowArc"/> の頭で進む）。</summary>
     [SerializeField(Label = "フェードアウト(秒)")]
-    private float whiteoutFadeOutSeconds = 0.4f;
+    private float whiteoutFadeOutSeconds = 0.30f;
 
-    // ─── 釣果の見せ方（Show / Close）───────────────────────────
-
-    /// <summary>
-    /// 魚を掲げる位置のオフセット（プレイヤーのローカル座標系の<b>右</b>成分、メートル）。
-    /// [SerializeField] がシーンから復元できるのは数値・真偽・文字列だけなので、
-    /// ベクトルは成分ごとの float フィールドとして持つ（インスペクタでも個別に調整できる）。
-    /// </summary>
-    [Header("釣果の見せ方"), SerializeField(Label = "魚を掲げる位置X(右, m)")]
-    private float fishHoldOffsetX = 0f;
-
-    /// <summary>魚を掲げる位置のオフセットの<b>上</b>成分（メートル）。既定は頭上 2.2m。</summary>
-    [SerializeField(Label = "魚を掲げる位置Y(上, m)")]
-    private float fishHoldOffsetY = 2.2f;
-
-    /// <summary>魚を掲げる位置のオフセットの<b>前</b>成分（メートル）。</summary>
-    [SerializeField(Label = "魚を掲げる位置Z(前, m)")]
-    private float fishHoldOffsetZ = 0f;
+    // ─── 横カメラ（SlowArc の構図）─────────────────────────────
 
     /// <summary>
-    /// 掲げた魚のヨー角オフセット（度）。プレイヤーのヨー ＋ この値を魚のヨーにする。
-    /// カメラに対して横向き＝90、正面（プレイヤーの真逆＝振り返って見ているカメラの方を
-    /// 向く）＝180。既定は 90（横向き）＝魚を横から見せて体高・体長のシルエットが
-    /// 見えるようにする。
-    ///
-    /// <b>幅のフレーミングとの整合について</b>: <see cref="ApplyResultCameraFraming"/> が
-    /// 画面へ収める幅 <see cref="fishScaledWidth"/> は
-    /// <c>max(実寸サイズ.x, 実寸サイズ.z)</c>（<see cref="ComputeAutoLayout"/>）で、
-    /// ヨーがどちらでも画面からはみ出さないよう X・Z の大きい方を安全側で採る設計に
-    /// なっている。そのため 90 度（横向き＝ローカル X 側が正面）でも 180 度
-    /// （正面＝ローカル Z 側が正面）でも、この幅計算をそのまま使い回せる
-    /// （＝この値だけを差し替えれば向きが変わり、フレーミングの他コードは変更不要）。
+    /// 横カメラの方位角（度）。基準は「ウキ→プレイヤー」の水平方向で、
+    /// そこから右回りにこの角度だけ回した向きへカメラを置く。
+    /// <b>90 度＝真横</b>（＝ウキ→プレイヤーの向きに対して直角）で、魚が描く弧を
+    /// 真横から見る構図になる。0 でプレイヤーの背後側、180 で沖側。
     /// </summary>
-    [SerializeField(Label = "魚のヨーオフセット(度)")]
-    private float fishFacingYawOffsetDegrees = QuarterTurnDegrees;
-
-    /// <summary>魚が 0 から原寸へ膨らむのに掛ける秒数（easeOutBack）。</summary>
-    [SerializeField(Label = "魚のポップ(秒)")]
-    private float fishPopSeconds = 0.5f;
-
-    /// <summary>魚が原寸から 0 へ縮むのに掛ける秒数（easeInBack）。</summary>
-    [SerializeField(Label = "魚の閉じ(秒)")]
-    private float fishCloseSeconds = 0.35f;
+    [Header("横カメラ"), SerializeField(Label = "方位角θ(度)")]
+    private float sideCameraTheta = 90f;
 
     /// <summary>
-    /// 持ち上げ（LIFT）で 1 回だけ再生するプレイヤー本体のクリップ名。
-    /// <see cref="SwitchToResultComposition"/>（真っ白の瞬間）で再生を始め、
-    /// <see cref="liftSeconds"/> 経過後に <see cref="playerHoldClip"/> へ
-    /// クロスフェードする（<see cref="UpdateShow"/> / <see cref="ApplyHoldClips"/>）。
-    /// クリップの長さを取得する API が無いため、経過秒数の決め打ちで切り替えている。
-    ///
-    /// <b>ループ設定について</b>: このクリップはシーン側（Animator のクリップ設定）で
-    /// <c>loop_mode</c> を「一度きり」として登録すること。ループするかどうかは
-    /// あくまでシーンの設定が決め、本スクリプトはクロスフェードのタイミングだけを管理する。
-    ///
-    /// <b>暫定</b>: sakanadori.glb には「掲げる」専用のクリップがまだ無い
-    /// （収録済み: Walk / Idle / WalkCarry / IdleFishing / Cast / Reel / Hooked /
-    ///  IdleFree / WalkFishingL / WalkFishingR）。本来のクリップを追加したら
-    /// インスペクタでこの値を差し替えること。
+    /// 横カメラの仰角（度）。0 で水平、正で上から見下ろす。
+    /// 「水面のすこし上から真横に見る」構図なので既定は 0 に近い値。
     /// </summary>
-    [SerializeField(Label = "本体の持ち上げクリップ名")]
-    private string playerCatchClip = "IdleFree";
+    [SerializeField(Label = "仰角φ(度)")]
+    private float sideCameraPhi = 6f;
 
     /// <summary>
-    /// 持ち上げ後に維持し続けるプレイヤー本体のクリップ名（HOLD）。
-    /// <see cref="liftSeconds"/> 経過後に <see cref="playerCatchClip"/> から
-    /// クロスフェードする。空文字なら切り替えず持ち上げクリップのまま維持する。
-    /// このクリップはシーン側で <c>loop_mode</c> を「ループ」として登録すること。
+    /// 横カメラの基準距離（メートル）。実際の距離は
+    /// <c>sideCameraDistance ＋ sideCameraDistancePerRank × ランク段位</c>。
+    /// ランク段位は C=0 / B=1 / A=2 / S=3（<see cref="RankStep"/>）。
     /// </summary>
-    [SerializeField(Label = "本体の維持クリップ名")]
-    private string playerHoldClip = "IdleFree";
+    [SerializeField(Label = "距離(m)")]
+    private float sideCameraDistance = 5.5f;
+
+    /// <summary>サイズランク 1 段ごとに増やすカメラ距離（メートル）。0 でランク非依存。</summary>
+    [SerializeField(Label = "ランク1段あたりの距離(m)")]
+    private float sideCameraDistancePerRank = 1.8f;
 
     /// <summary>
-    /// 持ち上げ（LIFT）で 1 回だけ再生する竿のクリップ名。詳細は
-    /// <see cref="playerCatchClip"/> と同じ（ループ設定・切り替えタイミング）。
+    /// 水面からのカメラの高さ（メートル）。カメラの高さは
+    /// <c>水面 ＋ この値 ＋ 距離 × sin(仰角)</c> で決まる（＝水面のすこし上に置く）。
     /// </summary>
-    [SerializeField(Label = "竿の持ち上げクリップ名")]
-    private string rodCatchClip = "Idle_竿";
+    [SerializeField(Label = "水面からの高さ(m)")]
+    private float sideCameraHeight = 0.5f;
+
+    // ─── 魚の放物線（SlowArc）──────────────────────────────────
+
+    /// <summary>魚が跳ね始める深さ（水面からどれだけ下に置くか。メートル）。</summary>
+    [Header("魚の放物線"), SerializeField(Label = "水面下の開始深さ(m)")]
+    private float fishSubmergeDepth = 0.25f;
+
+    /// <summary>放物線の頂点の高さ（開始点からの高さ。メートル）。</summary>
+    [SerializeField(Label = "跳ねる高さ(m)")]
+    private float arcHeight = 3.0f;
+
+    /// <summary>放物線がプレイヤー側へ進む水平距離（メートル）。</summary>
+    [SerializeField(Label = "プレイヤー側へ進む距離(m)")]
+    private float arcHorizontalDistance = 2.5f;
+
+    /// <summary>放物線を端から端まで描くのに掛ける秒数（実時間）。</summary>
+    [SerializeField(Label = "放物線の秒数")]
+    private float arcSeconds = 1.4f;
 
     /// <summary>
-    /// 持ち上げ後に維持し続ける竿のクリップ名（HOLD）。詳細は
-    /// <see cref="playerHoldClip"/> と同じ（空文字なら持ち上げクリップを維持）。
+    /// 放物線のどこで釣果パネルへ切り替えるか（0〜1 の比率）。
+    /// 0.5＝頂点。頂点で魚を隠し、そのままパネルが開く。
     /// </summary>
-    [SerializeField(Label = "竿の維持クリップ名")]
-    private string rodHoldClip = "Idle_竿";
+    [SerializeField(Label = "パネルへ切り替える比率")]
+    private float arcApexRatio = 0.5f;
 
-    /// <summary>クリップ切替時のクロスフェード秒数（0 で即時切替）。</summary>
-    [SerializeField(Label = "切替フェード(秒)")]
-    private float catchFadeSeconds = 0.15f;
+    /// <summary>魚が横軸まわりに回る速さ（度／秒）。0 で回転しない。</summary>
+    [SerializeField(Label = "回転速度(度/秒)")]
+    private float fishSpinDegPerSecond = 240f;
+
+    /// <summary>放物線のあいだのゲーム時間の速さ（0.3＝3 割の速さ＝スロー）。</summary>
+    [SerializeField(Label = "スローの速さ")]
+    private float slowScale = 0.3f;
+
+    // ─── しぶき（SlowArc の頭）─────────────────────────────────
 
     /// <summary>
-    /// 持ち上げ（LIFT）クリップを再生してから維持（HOLD）クリップへ切り替えるまでの秒数。
-    /// クリップの長さを取得する API が無いためこの秒数で決め打ちする。起点は
-    /// <see cref="SwitchToResultComposition"/>（真っ白の瞬間、LIFT の再生開始）で、
-    /// フェーズをまたいで（WhiteOut の保持中でも）数え続ける（<see cref="liftElapsedSeconds"/>）。
-    /// 判定自体は <see cref="CatchPhase.Show"/> の更新（<see cref="UpdateShow"/>）で行う。
+    /// しぶきのパーティクルのプレハブ（<c>assets://</c> パス）。空なら出さない。
+    /// プレハブ側で「一定個数を放出したら止まる」設定にしてあるので、
+    /// 本スクリプトは生成して置くだけで、放出の制御は行わない。
     /// </summary>
-    [SerializeField(Label = "持ち上げの秒数")]
-    private float liftSeconds = 0.8f;
+    [Header("しぶき"), SerializeField(Label = "しぶきのプレハブ")]
+    private string splashActorPath = "assets://mainGame/actors/FX/Splash.actor";
 
-    // ─── 釣果カメラの引き（魚が大きいほど後ろへ下がる）─────────
+    /// <summary>しぶきのアクタを消すまでの秒数（実時間）。パーティクルの寿命より長くすること。</summary>
+    [SerializeField(Label = "しぶきを消すまでの秒数")]
+    private float splashLifeSeconds = 2.0f;
+
+    /// <summary>着水音（<c>assets://</c> パス）。空なら鳴らさない。</summary>
+    [SerializeField(Label = "水音")]
+    private string splashSePath = "assets://mainGame/audios/sei_ge_mizu_chapon06.mp3";
+
+    /// <summary>着水音の音量（0〜1）。</summary>
+    [SerializeField(Label = "水音の音量")]
+    private float splashSeVolume = 0.9f;
+
+    // ─── 釣果パネル（Result）───────────────────────────────────
 
     /// <summary>
-    /// 釣果カメラを後方へ押し出す基準量（メートル）。
-    /// 引き量 ＝ <see cref="resultCamPullBase"/> ＋ <see cref="resultCamPullPerSize"/> × 見た目サイズ指標。
-    /// 見た目サイズ指標は <see cref="Fish.VisualSizeMetric"/>（＝出現時に
-    /// サイズ倍率を掛けたあとの Transform.Scale の最大成分）で、魚が大きいほど大きくなる。
+    /// 釣果パネルのプレハブ（<c>assets://</c> パス）。
+    /// シーンに <c>ResultPanel</c> のインスタンスを置いていない場合のフォールバックとして
+    /// <see cref="ResultPanel.Show"/> が生成に使う。空にすると生成できない。
     /// </summary>
-    [Header("釣果カメラの引き"), SerializeField(Label = "引きの基準量(m)")]
-    private float resultCamPullBase = 0f;
+    [Header("釣果パネル"), SerializeField(Label = "パネルのプレハブ")]
+    private string resultPanelActorPath = "assets://mainGame/actors/UI/ResultPanel.actor";
 
-    /// <summary>見た目サイズ指標 1 あたりの追加の引き量（メートル）。0 で引きを無効化できる。</summary>
-    [SerializeField(Label = "サイズあたりの引き量(m)")]
-    private float resultCamPullPerSize = 0.6f;
+    /// <summary>釣果パネルが閉じ切ってから移動へ戻すまでの間（秒・実時間）。</summary>
+    [SerializeField(Label = "閉じたあとの間(秒)")]
+    private float closeSeconds = 0.15f;
 
-    // ─── 釣果構図の自動レイアウト（頭の位置 × 魚の実寸）─────────
-
-    /// <summary>
-    /// プレイヤーの頭に追従する空アクタ（Player の子「HeadAnchor」。JointAttach で
-    /// ボーン "Head" へ吸着させてある）のトランスフォーム。
-    ///
-    /// <b>これが設定されているときだけ</b>釣果の構図が自動計算になる:
-    /// 魚は「頭のてっぺん ＋ <see cref="headClearance"/> ＋ 魚の実寸高さの半分」へ置かれ、
-    /// カメラは<b>プレイヤーの足元から魚の上端まで</b>が画面へ収まる距離まで自動で下がる
-    /// （<see cref="ComputeAutoLayout"/> / <see cref="ApplyResultCameraFraming"/>）。
-    ///
-    /// <b>未設定なら従来動作</b>（<c>fishHoldOffsetX/Y/Z</c> の固定オフセットと
-    /// <c>resultCamPullBase/PerSize</c> の引き量）にそのままフォールバックする。
-    /// </summary>
-    [Header("釣果構図の自動レイアウト"), SerializeField(Label = "頭のアンカー")]
-    private SEED.Transform? headAnchor = null;
-
-    /// <summary>頭のてっぺんと魚の下端のあいだに空ける余白（メートル）。</summary>
-    [SerializeField(Label = "頭上の余白(m)")]
-    private float headClearance = 0.15f;
-
-    /// <summary>
-    /// 画面に対してフレーム箱（プレイヤー＋魚）のまわりへ足す余白の比率（箱の寸法に対する割合）。
-    /// 0.25 なら「箱の 1.25 倍の大きさが画面へ収まる」距離まで下がる。
-    /// </summary>
-    [SerializeField(Label = "画面余白の比率")]
-    private float screenMarginRatio = 0.25f;
-
-    /// <summary>自動計算したカメラ距離の下限（メートル）。被写体が小さいときの寄りすぎを防ぐ。</summary>
-    [SerializeField(Label = "カメラ最小距離(m)")]
-    private float resultCamMinDistance = 2.5f;
-
-    /// <summary>
-    /// カメラの高さの微調整オフセット（メートル）。
-    /// 基準はフレーム箱（足元〜魚の上端）の中心の高さで、0 ならその高さから水平に見る。
-    /// 正で上から、負で下から見る構図になる。
-    /// </summary>
-    [SerializeField(Label = "カメラの高さオフセット(m)")]
-    private float resultCamHeightOffset = 0f;
-
-    /// <summary>
-    /// 画角の計算に使うカメラ（<b>読むだけ</b>。垂直 FOV と基準解像度からアスペクト比を得る）。
-    /// 未設定・無効なら <see cref="fallbackFovDegrees"/> と <see cref="assumedAspect"/> を使う。
-    /// </summary>
-    [SerializeField(Label = "カメラ(Camera)")]
-    private SEED.Camera? resultCamera = null;
-
-    /// <summary><see cref="resultCamera"/> が読めないときに使う垂直視野角（度）。</summary>
-    [SerializeField(Label = "FOVの代替値(度)")]
-    private float fallbackFovDegrees = 45f;
-
-    /// <summary>
-    /// カメラの基準解像度が読めないときに使うアスペクト比（横 ÷ 縦）。既定は 16:9。
-    /// </summary>
-    [SerializeField(Label = "アスペクト比の代替値")]
-    private float assumedAspect = 16f / 9f;
-
-    // ─── サイズランク ─────────────────────────────────────────
+    // ─── 表示ラベル ───────────────────────────────────────────
     //
     // ランクの<b>しきい値</b>は <see cref="Fish.SizeRank"/> に一元化してある
     // （FishingFight もヒット直後の引き距離の算出に同じランクを参照するため、
-    // ここで重複して持つと閾値だけ食い違う事故の元になる）。
-    // ここに残すのは表示用のラベル文字列だけ。
+    //  ここで重複して持つと閾値だけ食い違う事故の元になる）。ここに残すのは表示用の文字列だけ。
 
-    /// <summary>ランク表示のラベル（S / A / B / C）。</summary>
-    [Header("サイズランク（表示ラベル。しきい値は Fish.SizeRank が持つ）"), SerializeField(Label = "S のラベル")]
+    /// <summary>ランク S のラベル。</summary>
+    [Header("表示ラベル（しきい値は Fish.SizeRank が持つ）"), SerializeField(Label = "S のラベル")]
     private string rankSLabel = "S";
 
     /// <summary>ランク A のラベル。</summary>
@@ -429,120 +293,61 @@ public class CatchPresenter : SEEDScript
     [SerializeField(Label = "C のラベル")]
     private string rankCLabel = "C";
 
-    /// <summary>ランク行の書式の接頭辞（例: 「ランク: S」）。</summary>
+    /// <summary>ランク行の接頭辞（例「ランク S」）。</summary>
     [SerializeField(Label = "ランク行の見出し")]
-    private string rankLabelPrefix = "ランク: ";
+    private string rankLabelPrefix = "ランク ";
 
-    /// <summary>ベスト行の書式の接頭辞（例: 「ベスト: 12.3 cm」）。</summary>
+    /// <summary>自己ベスト行の接頭辞（例「自己ベスト: 30.0cm」）。</summary>
     [SerializeField(Label = "ベスト行の見出し")]
-    private string bestLabelPrefix = "ベスト: ";
+    private string bestLabelPrefix = "自己ベスト: ";
 
-    /// <summary>操作案内の文言。</summary>
-    [SerializeField(Label = "操作案内の文言")]
-    private string promptMessage = "クリックで戻る";
-
-    // ─── 内部状態 ─────────────────────────────────────────────
+    // ─── 公開状態 ─────────────────────────────────────────────
 
     /// <summary>現在のフェーズ（<see cref="CameraMove"/> がカメラ目標の選択に使う読み取り専用値）。</summary>
     public CatchPhase Phase { get; private set; } = CatchPhase.None;
 
+    // ─── 内部状態 ─────────────────────────────────────────────
+
     /// <summary>演出中の魚（null = 演出していない）。<see cref="Begin"/> で束縛し、<see cref="Finish"/> で破棄する。</summary>
     private Fish? shownFish = null;
 
-    /// <summary>魚の原寸スケール（ポップの目標値。生成時にサイズ倍率を掛けたあとの値）。</summary>
-    private SEED.Vector3 fishTargetScale = SEED.Vector3.One;
+    /// <summary>釣り上げた瞬間のウキのワールド位置（＝水面の基準点）。<see cref="Begin"/> で受け取る。</summary>
+    private SEED.Vector3 floatPosition = SEED.Vector3.Zero;
 
-    /// <summary>現在のフェーズに入ってからの経過秒数。</summary>
+    /// <summary>魚が跳ね始める点（水面のすこし下）。カットの瞬間に確定する。</summary>
+    private SEED.Vector3 arcStart = SEED.Vector3.Zero;
+
+    /// <summary>魚が跳ね終わる点（プレイヤー側・開始点と同じ高さ）。カットの瞬間に確定する。</summary>
+    private SEED.Vector3 arcEnd = SEED.Vector3.Zero;
+
+    /// <summary>魚の進行方向のヨー角（度）。放物線のあいだ固定で、回転はピッチだけが進む。</summary>
+    private float arcYawDegrees = 0f;
+
+    /// <summary>現在のフェーズに入ってからの経過秒数（実時間）。</summary>
     private float phaseElapsed = 0f;
 
     /// <summary>白のアルファ（0＝透明 / 1＝真っ白）。フェーズ間で持ち越すので状態として持つ。</summary>
     private float whiteoutAlpha = 0f;
 
-    /// <summary>
-    /// 釣果カメラ目標の書き換え前の位置（シーンで作った構図の値）。
-    /// 演出の終わりに必ずここへ戻すので、引き・自動フレーミングが次回へ蓄積することはない。
-    /// null = まだ書き換えていない。
-    /// </summary>
-    private SEED.Vector3? resultCameraBasePosition = null;
+    /// <summary>生成したしぶきのアクタ（<see cref="splashElapsed"/> 秒後に破棄する）。</summary>
+    private SEED.GameObject splashActor;
 
-    /// <summary>
-    /// 釣果カメラ目標の書き換え前の回転（シーンで作った構図の値）。
-    /// 自動フレーミングは回転も書き換えるため、位置と対で控えて必ず戻す。
-    /// </summary>
-    private SEED.Vector3 resultCameraBaseRotation = SEED.Vector3.Zero;
+    /// <summary>しぶきを生成してからの経過秒数（実時間）。</summary>
+    private float splashElapsed = 0f;
 
-    // ─── 自動レイアウトの計算結果（真っ白の瞬間に 1 回だけ求めて使い回す）───
-
-    /// <summary>
-    /// 自動レイアウトが成立しているか（<see cref="headAnchor"/> と魚の実寸が取れたか）。
-    /// false のあいだは従来の固定オフセット＋引き量にフォールバックする。
-    /// </summary>
-    private bool autoLayoutReady = false;
-
-    /// <summary>魚の実寸の高さ（原寸スケール適用後・メートル）。<see cref="ComputeAutoLayout"/> が求める。</summary>
-    private float fishScaledHeight = 0f;
-
-    /// <summary>
-    /// 魚の実寸の幅（原寸スケール適用後・メートル）。ヨーで向きが変わるので
-    /// X と Z の大きい方を採り、どちらを向いても画面からはみ出さないようにする。
-    /// </summary>
-    private float fishScaledWidth = 0f;
-
-    /// <summary>
-    /// 魚のモデル原点から見た「実寸 AABB の中心」の高さ（メートル）。
-    /// モデルの原点が中心に無い（足元原点など）魚でも、狙った位置に中心が来るよう
-    /// アクターの位置からこの分を引く。
-    /// </summary>
-    private float fishCenterOffsetY = 0f;
-
-    /// <summary>
-    /// プレイヤーの足元の高さ（<see cref="playerTransform"/> の位置からの相対、メートル）。
-    /// 実寸 AABB の下端をアクター座標系へ持ち上げた値で、通常は負（原点より下に足がある）。
-    /// <see cref="playerModel"/> 未設定なら 0（＝アクターの位置をそのまま足元とみなす）。
-    /// </summary>
-    private float playerBottomOffsetY = 0f;
-
-    /// <summary>
-    /// プレイヤーの実寸の幅（メートル）。魚と同じくヨーで向きが変わるので X と Z の大きい方を採る。
-    /// <see cref="playerModel"/> 未設定なら 0（＝幅の制約は魚だけで決まる）。
-    /// </summary>
-    private float playerScaledWidth = 0f;
-
-    /// <summary>
-    /// <see cref="SwitchToResultComposition"/> のデバッグログを出力済みか。
-    /// 1 回の釣果につき 1 回だけ出す（<see cref="Begin"/> でリセットする）ためのガード。
-    /// 頭上に魚が見えない不具合の切り分け用で、以後も必要なら残してよい。
-    /// </summary>
-    private bool loggedResultComposition = false;
-
-    /// <summary>
-    /// 持ち上げ（LIFT）クリップの再生開始（<see cref="SwitchToResultComposition"/>）
-    /// からの経過秒数。フェーズをまたいで（WhiteOut の保持中も）<see cref="Tick"/> で
-    /// 数え続け、<see cref="liftSeconds"/> と比較して維持（HOLD）クリップへの
-    /// 切り替えタイミングを判定する（<see cref="UpdateShow"/>）。
-    /// <see cref="Begin"/> で 0 に、<see cref="SwitchToResultComposition"/> で
-    /// 再度 0 にリセットする（後者が実質の起点）。
-    /// </summary>
-    private float liftElapsedSeconds = 0f;
-
-    /// <summary>
-    /// 維持（HOLD）クリップへの切り替えを適用済みか。1 回の釣果につき 1 回だけ
-    /// 切り替えるためのガード。<see cref="Begin"/> と <see cref="Finish"/>
-    /// （＝<see cref="Abort"/> の内部でも通る）でリセットする。
-    /// </summary>
-    private bool holdApplied = false;
+    /// <summary>スロー（<see cref="slowScale"/>）を掛けているか。戻し忘れを防ぐためのガード。</summary>
+    private bool slowApplied = false;
 
     // ─── ライフサイクル ───────────────────────────────────────
 
-    /// <summary>生成直後の初期化。白と釣果テキストは必ず消えた状態から始める。</summary>
+    /// <summary>生成直後の初期化。白は必ず消えた状態から始める。</summary>
     public override void OnStart()
     {
         Phase = CatchPhase.None;
         SetWhiteoutAlpha(0f);
-        HideTexts();
     }
 
-    /// <summary>破棄直前の後始末。演出中なら魚を消し、カメラ目標の押し出しも戻す。</summary>
+    /// <summary>破棄直前の後始末。演出中なら畳む（スローの戻しも込み）。</summary>
     public override void OnDestroy()
     {
         Abort();
@@ -596,27 +401,23 @@ public class CatchPresenter : SEEDScript
     ///
     /// 呼び出し側（<see cref="FishingController.FinishReeling"/>）は、これを呼ぶ前に
     /// 魚を <see cref="Fish.OnCaught"/> で AI 停止させ、自身の状態を
-    /// <see cref="FishingController.FishState.Catching"/> にしておくこと。
+    /// <c>Catching</c> にしておくこと。
     /// </summary>
     /// <param name="fish">釣り上げた魚。</param>
-    public void Begin(Fish fish)
+    /// <param name="floatWorldPosition">
+    /// 釣り上げた瞬間のウキのワールド位置。<b>水面の基準点</b>として、魚の跳ね始め・
+    /// カメラの高さ・しぶきの位置のすべてがここから決まる。
+    /// </param>
+    public void Begin(Fish fish, SEED.Vector3 floatWorldPosition)
     {
         // 直前の演出が残っていたら畳んでから始める（多重開始でも状態が壊れないようにする）
         if (Phase != CatchPhase.None) { Abort(); }
 
         shownFish = fish;
-        fishTargetScale = fish.CaughtScale;
+        floatPosition = floatWorldPosition;
         whiteoutAlpha = 0f;
         SetWhiteoutAlpha(0f);
-        HideTexts();
-        loggedResultComposition = false;
-        // 前回の魚の寸法を持ち越さない（魚ごとに真っ白の瞬間へ計算し直す）
-        autoLayoutReady = false;
-        // LIFT→HOLD 切り替えの状態も魚ごとにリセットする（実質の起点は
-        // SwitchToResultComposition で再度リセットされる）
-        liftElapsedSeconds = 0f;
-        holdApplied = false;
-        EnterPhase(CatchPhase.ApproachCamera);
+        EnterPhase(CatchPhase.Fade);
 
         // 魚を釣り上げた（引数は魚の表示名。チュートリアル・図鑑・SE などが購読する）
         SEED.Events.Raise(FishingEvents.Catch, fish.DisplayName);
@@ -630,28 +431,31 @@ public class CatchPresenter : SEEDScript
     /// 進行が終わると <see cref="Phase"/> が <see cref="CatchPhase.None"/> に戻るので、
     /// 呼び出し側はそれを見て移動状態へ復帰させる。
     /// </summary>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    /// <param name="deltaTime">
+    /// このフレームの<b>ゲーム時間</b>の経過秒数。本スクリプトはスロー区間を持つため
+    /// この値は使わず、常に実時間（<c>Time.UnscaledDeltaTime</c>）で数える
+    /// （引数は呼び出し側の作法を変えないために残してある）。
+    /// </param>
     public void Tick(float deltaTime)
     {
         if (Phase == CatchPhase.None) { return; }
 
-        phaseElapsed += deltaTime;
-        // LIFT クリップ開始からの経過秒数。フェーズをまたいで数える（起点は
-        // SwitchToResultComposition が liftElapsedSeconds を 0 にリセットする瞬間）。
-        liftElapsedSeconds += deltaTime;
+        float dt = SEED.Time.UnscaledDeltaTime;
+        phaseElapsed += dt;
+        UpdateSplashLife(dt);
 
         switch (Phase)
         {
-            case CatchPhase.ApproachCamera: UpdateApproachCamera(); break;
-            case CatchPhase.WhiteOut:       UpdateWhiteOut();       break;
-            case CatchPhase.Show:           UpdateShow(deltaTime);  break;
-            case CatchPhase.Close:          UpdateClose();          break;
+            case CatchPhase.Fade:    UpdateFade();    break;
+            case CatchPhase.SlowArc: UpdateSlowArc(); break;
+            case CatchPhase.Result:  UpdateResult();  break;
+            case CatchPhase.Close:   UpdateClose();   break;
         }
     }
 
     /// <summary>
     /// 演出を強制的に打ち切る（釣り姿勢が外部から解除された・破棄された場合の後始末）。
-    /// 魚を消し、白とテキストを消し、カメラ目標の押し出しを元へ戻す。
+    /// 魚・しぶきを消し、白を消し、スローを戻す。
     /// </summary>
     public void Abort()
     {
@@ -662,104 +466,78 @@ public class CatchPresenter : SEEDScript
     // ─── フェーズごとの更新 ───────────────────────────────────
 
     /// <summary>
-    /// <see cref="CatchPhase.ApproachCamera"/> の更新。
+    /// <see cref="CatchPhase.Fade"/> の更新（白へフェードイン → 真っ白を保持）。
     ///
-    /// 「魚の少し手前・少し上」を毎フレーム求めて <see cref="catchCameraTarget"/> へ書き込む。
-    /// カメラ本体は <see cref="CameraMove"/> がこの目標へ<b>補間で</b>寄っていくので、
-    /// 目標を置くだけで「寄っていく」動きになる（本スクリプトはカメラを直接動かさない）。
-    /// 魚はこのあいだウキに付いたまま（＝どちらも動かないので見た目は静止）。
-    /// </summary>
-    private void UpdateApproachCamera()
-    {
-        UpdateCatchCameraTarget();
-
-        if (phaseElapsed < catchCameraSeconds) { return; }
-        EnterPhase(CatchPhase.WhiteOut);
-    }
-
-    /// <summary>
-    /// <see cref="CatchPhase.WhiteOut"/> の更新（白へフェードイン → 真っ白を保持）。
-    ///
-    /// アルファが 1 に達した最初のフレームで <see cref="SwitchToResultComposition"/> を呼び、
+    /// アルファが 1 に達した最初のフレームで <see cref="SwitchToSlowArcComposition"/> を呼び、
     /// 構図と魚の差し替えを<b>白の裏で</b>済ませる。保持時間が過ぎたら
-    /// <see cref="CatchPhase.Show"/> へ移り、そこで白が晴れる。
+    /// <see cref="CatchPhase.SlowArc"/> へ移り、そこで白が晴れる。
     /// </summary>
-    private void UpdateWhiteOut()
+    private void UpdateFade()
     {
         float fadeIn = SEED.Mathf.Max(whiteoutFadeInSeconds, 0f);
-        // フェードイン中は寄りカメラの目標を更新し続ける（白の下でもカメラは寄り続ける）
-        if (phaseElapsed < fadeIn) { UpdateCatchCameraTarget(); }
 
         // アルファ: フェードイン秒数までは 0→1、それ以降は 1 で保持
         float alpha = fadeIn <= DivideEpsilon ? 1f : SEED.Mathf.Clamped01(phaseElapsed / fadeIn);
         bool reachedFullWhite = whiteoutAlpha < 1f && alpha >= 1f;
         SetWhiteoutAlpha(alpha);
 
-        // 真っ白になった最初のフレームでカット（構図の切り替え）を済ませる
-        if (reachedFullWhite) { SwitchToResultComposition(); }
+        // 真っ白になった最初のフレームでカット（構図と魚の差し替え）を済ませる
+        if (reachedFullWhite) { SwitchToSlowArcComposition(); }
 
         if (phaseElapsed < fadeIn + SEED.Mathf.Max(whiteoutHoldSeconds, 0f)) { return; }
-        EnterPhase(CatchPhase.Show);
+        EnterPhase(CatchPhase.SlowArc);
     }
 
     /// <summary>
-    /// <see cref="CatchPhase.Show"/> の更新（白が晴れる／魚のポップ／左クリック待ち）。
+    /// <see cref="CatchPhase.SlowArc"/> の更新（白が晴れる／魚が放物線を描く）。
     ///
     /// - 白: <see cref="whiteoutFadeOutSeconds"/> で 1 → 0
-    /// - 魚: <see cref="fishPopSeconds"/> で easeOutBack により 0 → 原寸
-    /// - 入力: ポップが終わってからの左クリックで <see cref="CatchPhase.Close"/> へ
+    /// - 魚: <see cref="arcStart"/> → <see cref="arcEnd"/> の放物線を
+    ///   <see cref="arcSeconds"/> 秒で進み、横軸まわりに <see cref="fishSpinDegPerSecond"/> で回る
+    /// - <see cref="arcSeconds"/> × <see cref="arcApexRatio"/> 秒（既定＝頂点）で次のフェーズへ
     /// </summary>
-    /// <param name="deltaTime">このフレームの経過秒数（魚の姿勢の再計算に使う）。</param>
-    private void UpdateShow(float deltaTime)
+    private void UpdateSlowArc()
     {
         // 白を晴らす
         float fadeOut = SEED.Mathf.Max(whiteoutFadeOutSeconds, 0f);
         float alpha = fadeOut <= DivideEpsilon ? 0f : 1f - SEED.Mathf.Clamped01(phaseElapsed / fadeOut);
         SetWhiteoutAlpha(alpha);
 
-        // 魚の位置・向きは毎フレーム置き直す（プレイヤーが微動しても頭上に付いてくる）
-        PlaceFishAbovePlayer();
+        // 放物線上の位置と回転を置き直す
+        float span = SEED.Mathf.Max(arcSeconds, DivideEpsilon);
+        float t = SEED.Mathf.Clamped01(phaseElapsed / span);
+        PlaceFishOnArc(t);
 
-        // LIFT → HOLD の切り替え。liftElapsedSeconds は真っ白の瞬間
-        // （SwitchToResultComposition）からフェーズをまたいで数えているので、
-        // WhiteOut の保持中にすでに liftSeconds を超えていれば、Show へ入った
-        // 最初のこの更新で即座に切り替わる（＝Show が短くても取りこぼさない）。
-        // holdApplied は Begin / Finish でリセットする 1 回きりガード。
-        if (!holdApplied && liftElapsedSeconds >= SEED.Mathf.Max(liftSeconds, 0f))
-        {
-            ApplyHoldClips();
-            holdApplied = true;
-        }
+        // 頂点（既定）まで来たら魚を隠して釣果パネルへ
+        float switchSeconds = span * SEED.Mathf.Clamped01(arcApexRatio);
+        if (phaseElapsed < switchSeconds) { return; }
 
-        // ポップ（easeOutBack で 0 → 原寸）
-        float popSeconds = SEED.Mathf.Max(fishPopSeconds, DivideEpsilon);
-        float popRatio = SEED.Mathf.Clamped01(phaseElapsed / popSeconds);
-        SetFishScale(EaseOutBack(popRatio));
+        HideFish();
+        EnterPhase(CatchPhase.Result);
+    }
 
-        // ポップが終わるまでは入力を受け付けない（見せる前に閉じられるのを防ぐ）
-        if (popRatio < 1f) { return; }
-        // チュートリアル中は「釣果表示を閉じる」入力を止められる（通常時は常に許可）。
-        // 説明を読ませている最中のクリックで釣果が閉じてしまわないようにするため。
-        if (!InputGate.Allows(GameAction.UiConfirm)) { return; }
-        if (!SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left)) { return; }
-
+    /// <summary>
+    /// <see cref="CatchPhase.Result"/> の更新（釣果パネルが閉じ切るのを待つ）。
+    ///
+    /// パネルの開閉・図鑑登録の追加表示・入力受付はすべて <see cref="ResultPanel"/> の責務。
+    /// ここは「まだ出ているか」（<see cref="ResultPanel.IsActive"/>）を見るだけにして、
+    /// パネルの中身が変わっても本スクリプトを触らずに済ませる。
+    /// </summary>
+    private void UpdateResult()
+    {
+        if (ResultPanel.IsActive) { return; }
         EnterPhase(CatchPhase.Close);
     }
 
     /// <summary>
-    /// <see cref="CatchPhase.Close"/> の更新（魚が easeInBack で縮んで消える）。
-    /// 縮み切ったら <see cref="Finish"/> で後始末し、<see cref="Phase"/> を
-    /// <see cref="CatchPhase.None"/> へ戻す（＝コントローラが移動へ復帰する合図）。
+    /// <see cref="CatchPhase.Close"/> の更新（後始末までの間）。
+    /// <see cref="closeSeconds"/> 秒たったら <see cref="Finish"/> し、
+    /// <see cref="Phase"/> を <see cref="CatchPhase.None"/> へ戻す
+    /// （＝コントローラが移動へ復帰する合図）。
     /// </summary>
     private void UpdateClose()
     {
-        PlaceFishAbovePlayer();
-
-        float closeSeconds = SEED.Mathf.Max(fishCloseSeconds, DivideEpsilon);
-        float ratio = SEED.Mathf.Clamped01(phaseElapsed / closeSeconds);
-        SetFishScale(1f - EaseInBack(ratio));
-
-        if (ratio < 1f) { return; }
+        if (phaseElapsed < SEED.Mathf.Max(closeSeconds, 0f)) { return; }
 
         // 表示名は Finish() で参照が消えるので、閉じる前に控えておく
         string presentedName = shownFish is { } presented ? presented.DisplayName : string.Empty;
@@ -785,18 +563,15 @@ public class CatchPresenter : SEEDScript
 
         switch (next)
         {
-            case CatchPhase.Show:
-                // 釣果カメラの構図を確定させ、テキストを出す。
-                // 自動レイアウトが成立しているときは真っ白の瞬間
-                // （SwitchToResultComposition）で確定済みなので触らない。
-                // 従来の引き量フォールバックだけをここで適用する
-                // （押し出しは Show の頭で確定させ、フェーズ中は動かさない）。
-                if (!autoLayoutReady) { ApplyResultCameraPull(); }
-                ShowTexts();
+            case CatchPhase.SlowArc:
+                // 弧を見せているあいだだけゲーム時間を遅くする（戻しは Result / Finish）
+                ApplySlow(true);
                 break;
 
-            case CatchPhase.Close:
-                HideTexts();
+            case CatchPhase.Result:
+                // スローは必ずここで戻す（パネル表示中は等倍）
+                ApplySlow(false);
+                ShowResultPanel();
                 break;
         }
     }
@@ -804,55 +579,36 @@ public class CatchPresenter : SEEDScript
     /// <summary>
     /// 真っ白の瞬間に行うカット【構図・魚の差し替えの唯一の集約点】。
     ///
-    /// 1. カメラ目標を釣果用へ切り替える（フェーズが WhiteOut 以降なら
-    ///    <see cref="CameraMove"/> が <c>resultTarget</c> を選ぶ）＋ <see cref="CameraMove.RequestSnap"/>
-    ///    で補間を飛ばす
-    /// 2. 魚をウキから外してプレイヤーの頭上へ運び、カメラの方を向かせる
-    /// 3. 魚のスケールを 0 にする（Show のポップの開始値）
-    /// 4. プレイヤー本体・竿を釣り上げポーズへ切り替える
+    /// 1. 放物線の始点・終点・向きを決める（水面と「ウキ→プレイヤー」の向きが基準）
+    /// 2. 横カメラの目標を置き、<see cref="CameraMove.RequestSnap"/> で補間を飛ばす
+    /// 3. 魚をウキから外して始点（水面のすこし下）へ置く
+    /// 4. しぶきと水音を出す
     /// </summary>
-    private void SwitchToResultComposition()
+    private void SwitchToSlowArcComposition()
     {
-        // 0. 魚の実寸を測り、頭の位置を基準にした構図を組み立てる
-        //    （魚ごとに大きさが違うので、置く高さもカメラ距離もここで決め直す）。
-        autoLayoutReady = ComputeAutoLayout();
+        // 1. 放物線の始点・終点・向き
+        SEED.Vector3 toPlayer = HorizontalToPlayer();
+        arcStart = floatPosition - SEED.Vector3.Up * SEED.Mathf.Max(fishSubmergeDepth, 0f);
+        arcEnd = arcStart + toPlayer * arcHorizontalDistance;
+        arcYawDegrees = SEED.Mathf.Atan2(toPlayer.x, toPlayer.z) * SEED.Mathf.Rad2Deg;
 
-        // 1. カメラをカット（この時点で SelectGoalTransform は resultTarget を返す）
-        //    カットの前に釣果カメラ目標を最終構図へ置く（スナップ先が正しい構図になる）。
-        if (autoLayoutReady) { ApplyResultCameraFraming(); }
+        // 2. 横カメラの構図を作ってカット
+        ApplySideCameraFraming(toPlayer);
         if (cameraMove is { } cam) { cam.RequestSnap(); }
 
-        // 2 / 3. 魚を頭上へ運び、スケール 0 から膨らませる下地を作る
-        PlaceFishAbovePlayer();
-        SetFishScale(0f);
+        // 3. 魚を始点へ（放物線の t=0 の姿勢）
+        PlaceFishOnArc(0f);
 
-        // デバッグ用: 「頭上に魚が見えない」不具合の切り分け用に、差し替え直後の
-        // 魚位置・プレイヤー位置・原寸スケールを 1 回だけログへ出す（毎フレーム出ると
-        // 埋もれるので loggedResultComposition で釣果 1 回につき 1 回に絞る）。
-        if (!loggedResultComposition)
-        {
-            loggedResultComposition = true;
-            var fishPos = shownFish is { } loggedFish && loggedFish.Actor.IsValid
-                ? loggedFish.Transform.Position
-                : SEED.Vector3.Zero;
-            var playerPos = ResolvePlayerTransform() is { } loggedPlayer
-                ? loggedPlayer.Position
-                : SEED.Vector3.Zero;
-            SEED.Debug.Log(
-                $"[Catch] 差し替え直後: fishPos={fishPos} playerPos={playerPos} fishTargetScale={fishTargetScale}");
-        }
+        // 4. しぶき・水音
+        SpawnSplash();
+        PlaySplashSe();
 
-        // 4. 持ち上げ（LIFT）ポーズの再生を開始する。liftSeconds 経過後に
-        //    UpdateShow が維持（HOLD）クリップへクロスフェードするので、
-        //    ここで経過秒数を 0 リセットして起点を揃える。
-        liftElapsedSeconds = 0f;
-        CrossFade(playerAnimator, playerCatchClip);
-        CrossFade(rodAnimator, rodCatchClip);
+        SEED.Debug.Log($"[Catch] カット: start={arcStart} end={arcEnd} yaw={arcYawDegrees:F1}");
     }
 
     /// <summary>
     /// 演出を畳む【終了の唯一の出口】。
-    /// 魚を破棄し、白・テキストを消し、釣果カメラの押し出しを元へ戻す。
+    /// 魚としぶきを破棄し、白を消し、スローを戻す。
     /// </summary>
     private void Finish()
     {
@@ -862,336 +618,263 @@ public class CatchPresenter : SEEDScript
             // Fish.OnDestroy が自分で外すので、ここでは触らない。
             fish.Actor.Destroy();
         }
-
         shownFish = null;
+
+        DestroySplash();
+        ApplySlow(false);
+
         Phase = CatchPhase.None;
         phaseElapsed = 0f;
         SetWhiteoutAlpha(0f);
-        HideTexts();
-        RestoreResultCameraTarget();
-        autoLayoutReady = false;
-        // LIFT→HOLD 切り替えのガードもここでリセットする（Abort は本メソッドを経由するので、
-        // Begin / Finish（Abort 含む）の両方でリセットされる）。
-        holdApplied = false;
-        liftElapsedSeconds = 0f;
     }
 
-    // ─── カメラ目標の計算 ─────────────────────────────────────
+    // ─── 魚の放物線 ───────────────────────────────────────────
 
     /// <summary>
-    /// 寄りカメラの目標（<see cref="catchCameraTarget"/>）を魚に合わせて置き直す。
+    /// 放物線上の位置・姿勢へ魚を置く【魚の見た目を決める唯一の場所】。
     ///
-    /// <b>位置</b> ＝ 魚 − normalize(魚 − カメラ) × <see cref="catchCamDistance"/>
-    ///              ＋ (0, <see cref="catchCamHeight"/>, 0)
-    /// （＝いまカメラが居る方向へ <see cref="catchCamDistance"/> だけ手前、少し上）。
-    /// <b>回転</b> ＝ その位置から魚を見る向き（エンジン規約 yaw = atan2(x, z) /
-    /// pitch = -asin(dy / len)、ロールは 0）。
+    /// 位置 ＝ <c>lerp(始点, 終点, t) ＋ 上 × 4·h·t·(1−t)</c>
+    /// （<c>4·h·t·(1−t)</c> は t=0.5 でちょうど h になるので、
+    /// 　インスペクタの「跳ねる高さ」がそのまま頂点の高さになる）。
+    ///
+    /// 姿勢 ＝ ヨーは進行方向（<see cref="arcYawDegrees"/>）で固定、
+    /// ピッチだけが <see cref="fishSpinDegPerSecond"/> で進む。
+    /// カメラは進行方向に対して直角に置いてあるので、この回転は
+    /// 画面内で<b>横軸まわりの一回転</b>（前転）に見える。
     /// </summary>
-    private void UpdateCatchCameraTarget()
+    /// <param name="t">放物線の進行度（0〜1）。</param>
+    private void PlaceFishOnArc(float t)
     {
-        if (catchCameraTarget is not { } goal || !goal.IsValid) { return; }
         if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
 
-        var fishPos = fish.Transform.Position;
+        float ratio = SEED.Mathf.Clamped01(t);
+        float height = ParabolaPeakCoefficient * arcHeight * ratio * (1f - ratio);
 
-        // 「カメラ → 魚」の向き（カメラが未設定・ほぼ同一点なら既定の -Z 側から見る）
-        var viewDir = SEED.Vector3.Forward;
-        if (cameraTransform is { IsValid: true } camTf)
+        var flat = arcStart + (arcEnd - arcStart) * ratio;
+        var fishTf = fish.Transform;
+        fishTf.Position = flat + SEED.Vector3.Up * height;
+
+        // 回転は「放物線に入ってからの経過秒数 × 速度」。位置と同じ引数で決まるよう
+        // 経過秒数ではなく進行度から復元する（t=1 で arcSeconds ぶん回った状態になる）。
+        float spunDegrees = fishSpinDegPerSecond * SEED.Mathf.Max(arcSeconds, 0f) * ratio;
+        fishTf.Rotation = new SEED.Vector3(spunDegrees, arcYawDegrees, 0f);
+    }
+
+    /// <summary>
+    /// 魚を見えなくする（破棄はしない。破棄は <see cref="Finish"/> の責務）。
+    /// 描画だけを止めるので、直後に釣果パネルが開いても魚が画面に残らない。
+    /// </summary>
+    private void HideFish()
+    {
+        if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
+
+        // ハンドルは一旦ローカルへ受ける（プロパティの戻り値へ直接代入すると CS1612）。
+        // GameObject はハンドル（構造体）なので、控えへの代入でも実体に効く。
+        var actor = fish.Actor;
+        actor.Visible = false;
+    }
+
+    /// <summary>
+    /// 「ウキ→プレイヤー」の水平方向（正規化済み）。
+    ///
+    /// 巻き切った直後はウキとプレイヤーが重なっていることがあり、その場合は向きが
+    /// 定まらないので、<b>プレイヤーの正面の逆</b>（＝プレイヤーは水面を向いているので、
+    /// 水面からプレイヤーへ向かう向き）へフォールバックする。
+    /// </summary>
+    private SEED.Vector3 HorizontalToPlayer()
+    {
+        var player = ResolvePlayerTransform();
+        if (player is { } tf)
         {
-            var d = fishPos - camTf.Position;
-            if (d.SqrMagnitude > SqrEpsilon) { viewDir = d.Normalized; }
+            var flat = new SEED.Vector3(tf.Position.x - floatPosition.x, 0f, tf.Position.z - floatPosition.z);
+            if (flat.SqrMagnitude > SqrEpsilon) { return flat.Normalized; }
+
+            // 重なっている: プレイヤーの正面の逆向き（水面 → プレイヤー）
+            var back = new SEED.Vector3(-tf.Forward.x, 0f, -tf.Forward.z);
+            if (back.SqrMagnitude > SqrEpsilon) { return back.Normalized; }
         }
-
-        // 魚の手前・少し上へ目標を置き、そこから魚を見る姿勢にする
-        var goalPos = fishPos - viewDir * catchCamDistance + SEED.Vector3.Up * catchCamHeight;
-        goal.Position = goalPos;
-        goal.Rotation = LookRotation(fishPos - goalPos);
+        return SEED.Vector3.Forward;
     }
 
+    // ─── 横カメラの構図 ───────────────────────────────────────
+
     /// <summary>
-    /// 魚の実寸から釣果の構図を組み立てる【自動レイアウトの計算の唯一の場所】。
+    /// 横カメラの目標（<see cref="catchCameraTarget"/>）を放物線に合わせて置く
+    /// 【この構図の唯一の算出点】。
     ///
     /// <code>
-    /// 実寸スケール = 魚の原寸スケール（Fish.CaughtScale）× モデルの描画オフセットスケール
-    /// 実寸サイズ   = モデルローカル AABB のサイズ × 実寸スケール（成分ごと）
-    /// 高さ H       = 実寸サイズ.y
-    /// 幅   W       = max(実寸サイズ.x, 実寸サイズ.z)   ← ヨーで向きが変わるので安全側
-    /// 中心の高さ   = (AABB.min.y + AABB.max.y) / 2 × 実寸スケール.y
+    /// 注視点   ＝ 弧の中心（始点と終点の中点 ＋ 上 × 跳ねる高さ/2）
+    /// 水平方向 ＝ 「ウキ→プレイヤー」を方位角θぶん右へ回した向き（θ=90 で真横）
+    /// 距離     ＝ 基準距離 ＋ ランク段位 × ランクあたりの距離
+    /// 位置     ＝ (注視点の水平位置 ＋ 水平方向 × 距離·cosφ,
+    ///              水面 ＋ 高さ ＋ 距離·sinφ,
+    ///              …)
+    /// 向き     ＝ その位置から注視点を見る向き
     /// </code>
-    ///
-    /// <see cref="headAnchor"/> が未設定、魚に <see cref="SEED.Model"/> が無い、
-    /// モデル未ロードで AABB が縮退している場合は false を返し、呼び出し側は
-    /// 従来の固定オフセット＋引き量へフォールバックする。
+    /// カメラの高さだけは注視点ではなく<b>水面</b>を基準にする（「水面のすこし上から
+    /// 真横に見る」という構図の指定をそのまま数式にするため）。
     /// </summary>
-    /// <returns>自動レイアウトが成立したか。</returns>
-    private bool ComputeAutoLayout()
+    /// <param name="toPlayer">「ウキ→プレイヤー」の水平方向（正規化済み）。</param>
+    private void ApplySideCameraFraming(SEED.Vector3 toPlayer)
     {
-        if (headAnchor is not { IsValid: true }) { return false; }
-        if (shownFish is not { } fish || !fish.Actor.IsValid) { return false; }
-        if (fish.Actor.GetComponent<SEED.Model>() is not { } model || !model.IsValid) { return false; }
+        if (catchCameraTarget is not { IsValid: true } goal) { return; }
 
-        var boundsMin = model.LocalBoundsMin;
-        var boundsMax = model.LocalBoundsMax;
-        var boundsSize = boundsMax - boundsMin;
+        // 注視点＝弧の中心
+        var focus = (arcStart + arcEnd) * Half + SEED.Vector3.Up * (arcHeight * Half);
 
-        // モデル未ロード（AABB がゼロ）なら実寸が測れない ＝ 自動レイアウトは成立しない
-        if (boundsSize.SqrMagnitude < SqrEpsilon) { return false; }
+        // toPlayer を右へ 90° 回した水平方向（θ=90° の方位に対応）
+        var right = new SEED.Vector3(toPlayer.z, 0f, -toPlayer.x);
 
-        // 原寸スケール（サイズ倍率込み）× 描画オフセットスケール ＝ 画面に出る実寸の倍率
-        var scale = SEED.Vector3.Scale(fishTargetScale, model.OffsetScale);
-        var scaledSize = SEED.Vector3.Scale(boundsSize, scale);
+        float thetaRad = sideCameraTheta * SEED.Mathf.Deg2Rad;
+        float phiRad = sideCameraPhi * SEED.Mathf.Deg2Rad;
+        var horizDir = toPlayer * SEED.Mathf.Cos(thetaRad) + right * SEED.Mathf.Sin(thetaRad);
 
-        fishScaledHeight = SEED.Mathf.Abs(scaledSize.y);
-        fishScaledWidth = SEED.Mathf.Max(SEED.Mathf.Abs(scaledSize.x), SEED.Mathf.Abs(scaledSize.z));
-        fishCenterOffsetY = (boundsMin.y + boundsMax.y) * Half * scale.y;
+        float distance = SEED.Mathf.Max(
+            sideCameraDistance + sideCameraDistancePerRank * RankStep(), 0f);
 
-        // プレイヤーの実寸（全身を画面へ収めるのに要る）も同じ瞬間に測っておく
-        ComputePlayerExtent();
+        var camPos = new SEED.Vector3(
+            focus.x + horizDir.x * distance * SEED.Mathf.Cos(phiRad),
+            floatPosition.y + sideCameraHeight + distance * SEED.Mathf.Sin(phiRad),
+            focus.z + horizDir.z * distance * SEED.Mathf.Cos(phiRad));
 
-        return fishScaledHeight > DivideEpsilon;
-    }
-
-    /// <summary>
-    /// プレイヤーの実寸から「足元の高さ」と「幅」を求める【プレイヤー寸法の唯一の計測点】。
-    ///
-    /// <code>
-    /// ワールドの寸法 = モデルローカル AABB のサイズ × Model.OffsetScale × Transform.Scale（成分ごと）
-    /// 足元の相対高さ = (AABB.min.y × OffsetScale.y + OffsetPosition.y) × Transform.Scale.y
-    /// 幅 Wp         = max(ワールド寸法.x, ワールド寸法.z)   ← ヨーで向きが変わるので安全側
-    /// </code>
-    ///
-    /// 描画は「アクターの行列 × 描画オフセットの行列 × モデルローカル」の順に掛かるので、
-    /// AABB にはオフセットのスケール／位置を先に、アクターのスケールを後に掛ける。
-    /// <see cref="playerModel"/> 未設定・モデル未ロード（AABB が縮退）なら
-    /// 足元 0・幅 0 にリセットし、魚の実寸だけでフレーミングする。
-    /// </summary>
-    private void ComputePlayerExtent()
-    {
-        playerBottomOffsetY = 0f;
-        playerScaledWidth = 0f;
-
-        if (playerModel is not { IsValid: true } model) { return; }
-        if (ResolvePlayerTransform() is not { } player) { return; }
-
-        var boundsMin = model.LocalBoundsMin;
-        var boundsMax = model.LocalBoundsMax;
-        var boundsSize = boundsMax - boundsMin;
-        if (boundsSize.SqrMagnitude < SqrEpsilon) { return; }
-
-        var offsetScale = model.OffsetScale;
-        var offsetPosition = model.OffsetPosition;
-        var actorScale = player.Scale;
-
-        // 各軸の実寸（オフセットスケール → アクタースケールの順に掛ける）
-        var scaledSize = SEED.Vector3.Scale(SEED.Vector3.Scale(boundsSize, offsetScale), actorScale);
-
-        playerScaledWidth = SEED.Mathf.Max(SEED.Mathf.Abs(scaledSize.x), SEED.Mathf.Abs(scaledSize.z));
-        playerBottomOffsetY = (boundsMin.y * offsetScale.y + offsetPosition.y) * actorScale.y;
-    }
-
-    /// <summary>
-    /// 自動レイアウトでの魚の表示中心（ワールド座標）を求める。
-    /// 頭のアンカーの真上に「余白 ＋ 実寸高さの半分」だけ上げた点＝魚の中心。
-    /// </summary>
-    /// <param name="anchorPosition">頭のアンカーのワールド位置。</param>
-    private SEED.Vector3 FishDisplayCenter(SEED.Vector3 anchorPosition)
-        => anchorPosition + SEED.Vector3.Up * (headClearance + fishScaledHeight * Half);
-
-    /// <summary>
-    /// 釣果カメラの目標を、<b>プレイヤーの全身と頭上の魚がまとめて</b>画面へ収まる
-    /// 位置・向きへ置く【自動フレーミング】。
-    ///
-    /// <code>
-    /// 下端 bottom = プレイヤーの位置.y ＋ 足元の相対高さ（playerBottomOffsetY）
-    /// 上端 top    = 魚の中心.y ＋ 魚の実寸高さ Hf / 2      ← 余白 headClearance は中心に織り込み済み
-    /// 箱の高さ Ht = top − bottom
-    /// 箱の幅   Wt = max(プレイヤーの幅 Wp, 魚の幅 Wf)
-    /// 箱の中心    = (プレイヤーの XZ, (top + bottom) / 2)  ← 魚はプレイヤーの真上なので XZ は共通
-    ///
-    /// 必要距離 d = max( カメラ最小距離,
-    ///                   (Ht × (1 + 余白比) / 2) / tan(FOV/2),                 ← 縦で決まる距離
-    ///                   (Wt × (1 + 余白比) / 2) / (tan(FOV/2) × アスペクト比) ) ← 横で決まる距離
-    /// 位置 = 箱の中心 ＋ プレイヤーの前方(水平) × d ＋ 上 × 高さオフセット
-    /// 回転 = 箱の中心を見る向き
-    /// </code>
-    ///
-    /// <b>プレイヤーの「前方」側にカメラを置く</b>のは、釣果の構図が
-    /// 「プレイヤーを正面から振り返って見る」ものだから（シーンの ResultCameraTarget も
-    /// プレイヤーの前方に置かれている）。魚は <see cref="fishFacingYawOffsetDegrees"/> で
-    /// この構図に正対する。
-    ///
-    /// 元の位置・回転は控えて演出の終わりに必ず戻す（<see cref="RestoreResultCameraTarget"/>）。
-    /// </summary>
-    private void ApplyResultCameraFraming()
-    {
-        if (resultCameraTarget is not { } goal || !goal.IsValid) { return; }
-        if (headAnchor is not { IsValid: true } anchor) { return; }
-        if (ResolvePlayerTransform() is not { } player) { return; }
-
-        // シーンで作った構図の値を控える（多重適用でも基準がずれないよう、控えていなければ今の値）
-        var basePos = resultCameraBasePosition ?? goal.Position;
-        if (resultCameraBasePosition is null) { resultCameraBaseRotation = goal.Rotation; }
-        resultCameraBasePosition = basePos;
-
-        var playerPos = player.Position;
-        var fishCenter = FishDisplayCenter(anchor.Position);
-
-        // フレーム箱（足元 〜 魚の上端）を組み立てる
-        float bottom = playerPos.y + playerBottomOffsetY;
-        float top = fishCenter.y + fishScaledHeight * Half;
-        float frameHeight = SEED.Mathf.Max(top - bottom, DivideEpsilon);
-        float frameWidth = SEED.Mathf.Max(playerScaledWidth, fishScaledWidth);
-
-        // 箱の中心。魚はプレイヤーの真上に置かれるので水平位置はプレイヤーに合わせる。
-        var frameCenter = new SEED.Vector3(playerPos.x, (top + bottom) * Half, playerPos.z);
-
-        float distance = ComputeFramingDistance(frameHeight, frameWidth);
-
-        // 前方（水平化）＝ プレイヤーが向いている側。縮退したらシーンの構図のまま何もしない。
-        var forward = player.Forward;
-        var horizontal = new SEED.Vector3(forward.x, 0f, forward.z);
-        if (horizontal.SqrMagnitude < SqrEpsilon) { return; }
-        var dir = horizontal.Normalized;
-
-        var camPos = frameCenter + dir * distance + SEED.Vector3.Up * resultCamHeightOffset;
         goal.Position = camPos;
-        goal.Rotation = LookRotation(frameCenter - camPos);
+        goal.Rotation = LookRotation(focus - camPos);
     }
 
     /// <summary>
-    /// フレーム箱の実寸（高さ・幅）と画角から、その箱が画面へ収まる最短距離を求める。
-    /// 縦・横それぞれで必要な距離を出し、大きい方（＝両方収まる方）と最小距離の最大を採る。
+    /// 演出中の魚のサイズランクの段位（C=0 / B=1 / A=2 / S=3）。
+    /// カメラ距離を「ランクが上がるほど遠のく」形で伸ばすのに使う。
+    /// しきい値の判定自体は <see cref="Fish.SizeRank"/> に一元化してある。
     /// </summary>
-    /// <param name="frameHeight">収めたい箱の高さ（メートル）。</param>
-    /// <param name="frameWidth">収めたい箱の幅（メートル）。</param>
-    private float ComputeFramingDistance(float frameHeight, float frameWidth)
+    private int RankStep()
     {
-        // 画角（垂直・度）とアスペクト比（横 ÷ 縦）はカメラから読む。読めなければ代替値。
-        float fovDegrees = fallbackFovDegrees;
-        float aspect = assumedAspect;
-        if (resultCamera is { IsValid: true } cam)
+        if (shownFish is not { } fish) { return RankStepC; }
+        return fish.SizeRank switch
         {
-            if (cam.FieldOfView > DivideEpsilon) { fovDegrees = cam.FieldOfView; }
-            if (cam.TargetWidth > 0 && cam.TargetHeight > 0)
-            {
-                aspect = (float)cam.TargetWidth / cam.TargetHeight;
-            }
-        }
-        if (aspect <= DivideEpsilon) { aspect = assumedAspect; }
-
-        // tan(FOV/2)。極端な値でも 0 除算しないよう下限で守る。
-        float halfTan = SEED.Mathf.Tan(SEED.Mathf.Max(fovDegrees, DivideEpsilon) * Half * DegToRad);
-        halfTan = SEED.Mathf.Max(halfTan, DivideEpsilon);
-
-        float margin = 1f + SEED.Mathf.Max(screenMarginRatio, 0f);
-        float distanceForHeight = frameHeight * margin * Half / halfTan;
-        float distanceForWidth = frameWidth * margin * Half / (halfTan * aspect);
-
-        return SEED.Mathf.Max(
-            SEED.Mathf.Max(resultCamMinDistance, distanceForHeight),
-            distanceForWidth);
+            "S" => RankStepS,
+            "A" => RankStepA,
+            "B" => RankStepB,
+            _ => RankStepC,
+        };
     }
 
+    // ─── しぶき ───────────────────────────────────────────────
+
     /// <summary>
-    /// 釣果カメラの目標を、魚の見た目の大きさに応じて<b>後方へ</b>押し出す。
-    ///
-    /// <code>
-    /// 引き量 = resultCamPullBase + resultCamPullPerSize × Fish.VisualSizeMetric
-    /// 押し出し後の位置 = 元の位置 − 水平化した目標の前方 × 引き量
-    /// </code>
-    /// 上下方向は変えない（水平に後退するだけ）ので、構図の高さは崩れない。
-    /// 元の位置は <see cref="resultCameraBasePosition"/> に控え、演出の終わりに必ず戻す。
+    /// しぶきのパーティクルを水面へ置く【しぶき生成の唯一の場所】。
+    /// プレハブ側が「一定個数を放出したら止まる」設定なので、生成して置くだけでよい。
+    /// パスが空・生成に失敗した場合は何もしない（演出は続く）。
     /// </summary>
-    private void ApplyResultCameraPull()
+    private void SpawnSplash()
     {
-        if (resultCameraTarget is not { } goal || !goal.IsValid) { return; }
+        DestroySplash();   // 前回の取り残しがあれば先に片付ける
+        if (string.IsNullOrWhiteSpace(splashActorPath)) { return; }
+
+        splashActor = SEED.GameObject.Instantiate(splashActorPath);
+        if (!splashActor.IsValid)
+        {
+            SEED.Debug.LogWarning($"[Catch] しぶきを生成できない: {splashActorPath}");
+            return;
+        }
+
+        // 3D アクタなので生成と同じフレームに位置を設定してよい（2D と違いここで効く）
+        if (splashActor.GetComponent<SEED.Transform>() is { } tf) { tf.Position = floatPosition; }
+        splashElapsed = 0f;
+    }
+
+    /// <summary>しぶきの寿命を数え、過ぎていたら破棄する。</summary>
+    /// <param name="deltaTime">このフレームの実時間の経過秒数。</param>
+    private void UpdateSplashLife(float deltaTime)
+    {
+        if (!splashActor.IsValid) { return; }
+        splashElapsed += deltaTime;
+        if (splashElapsed < SEED.Mathf.Max(splashLifeSeconds, 0f)) { return; }
+        DestroySplash();
+    }
+
+    /// <summary>しぶきのアクタを破棄する（生成していなければ何もしない）。</summary>
+    private void DestroySplash()
+    {
+        if (splashActor.IsValid) { splashActor.Destroy(); }
+        splashActor = default;
+        splashElapsed = 0f;
+    }
+
+    /// <summary>着水音を鳴らす（パスが空なら何もしない）。</summary>
+    private void PlaySplashSe()
+    {
+        if (string.IsNullOrWhiteSpace(splashSePath)) { return; }
+        SEED.Audio.Play(splashSePath, SEED.Mathf.Clamped01(splashSeVolume));
+    }
+
+    // ─── 釣果パネル ───────────────────────────────────────────
+
+    /// <summary>
+    /// 釣果を記録して釣果パネルを開く【表示内容を組み立てる唯一の場所】。
+    ///
+    /// 記録（ベスト・釣った数）は <see cref="FishRecords.RecordCatch"/> に任せ、
+    /// その戻り値（初捕獲か・新記録か）をそのままパネルへ渡す。
+    /// このメソッドは <see cref="CatchPhase.Result"/> へ入った瞬間に 1 回だけ呼ばれるので、
+    /// ここで釣った数を 1 増やしても二重加算にはならない。
+    /// </summary>
+    private void ShowResultPanel()
+    {
         if (shownFish is not { } fish) { return; }
 
-        // 元位置を控える（多重適用しても基準がずれないよう、控えていなければ今の値を採る）。
-        // 回転も対で控える（自動フレーミングと復元処理を共有するため）。
-        var basePos = resultCameraBasePosition ?? goal.Position;
-        if (resultCameraBasePosition is null) { resultCameraBaseRotation = goal.Rotation; }
-        resultCameraBasePosition = basePos;
+        string displayName = fish.DisplayName;
+        float displaySize = fish.DisplaySize;
+        string unit = fish.SizeUnitLabel;
 
-        float pull = resultCamPullBase + resultCamPullPerSize * fish.VisualSizeMetric;
-        if (pull <= 0f) { goal.Position = basePos; return; }
+        FishRecords.CatchRecordResult record =
+            FishRecords.RecordCatch(displayName, displaySize, fish.SizeRank);
+        float best = FishRecords.BestSize(displayName);
 
-        // 目標の前方を水平化して「後退方向」を作る（縮退時は押し出さない）
-        var forward = goal.Forward;
-        var horizontal = new SEED.Vector3(forward.x, 0f, forward.z);
-        if (horizontal.SqrMagnitude < SqrEpsilon) { goal.Position = basePos; return; }
+        // 図鑑画像は表示名でカタログを引く（見つからなければ空＝パネル側の代替画像）
+        string imagePath = FishCatalog.TryGetByDisplayName(displayName, out FishCatalogEntry entry)
+            ? entry.imagePath
+            : string.Empty;
 
-        goal.Position = basePos - horizontal.Normalized * pull;
+        ResultPanel.Show(resultPanelActorPath, new ResultPanel.ResultData(
+            name: displayName,
+            sizeText: FormatSize(displaySize, unit),
+            bestText: bestLabelPrefix + FormatSize(best, unit),
+            rankText: rankLabelPrefix + RankLabel(fish.SizeRank),
+            imagePath: imagePath,
+            newRecord: record.NewBest,
+            firstCatch: record.FirstCatch));
     }
 
-    /// <summary>
-    /// 釣果カメラの目標をシーンで作った構図（位置・回転）へ戻す
-    /// 【演出の終わり・中断の共通出口】。
-    /// 引きの押し出しも自動フレーミングもここで元へ戻るので、次回へ蓄積しない。
-    /// 控えが無ければ何もしない（書き換えていない ＝ 戻す必要が無い）。
-    /// </summary>
-    private void RestoreResultCameraTarget()
-    {
-        if (resultCameraBasePosition is not { } basePos) { return; }
-        resultCameraBasePosition = null;
-
-        if (resultCameraTarget is not { } goal || !goal.IsValid) { return; }
-        goal.Position = basePos;
-        goal.Rotation = resultCameraBaseRotation;
-    }
-
-    // ─── 魚の配置・スケール ───────────────────────────────────
+    /// <summary>サイズ表示の書式（小数第 1 位＋単位ラベル。例「32.5cm」）。</summary>
+    /// <param name="size">表示するサイズ。</param>
+    /// <param name="unit">単位ラベル（例 "cm"）。</param>
+    private static string FormatSize(float size, string unit) => $"{size:F1}{unit}";
 
     /// <summary>
-    /// 魚を頭上へ置き、カメラの方へ向ける（毎フレーム呼ばれる＝頭に追従する）。
-    ///
-    /// <b>自動レイアウト</b>（<see cref="autoLayoutReady"/> が true）のときは
-    /// 「頭のアンカー ＋ 余白 ＋ 実寸高さの半分」を魚の<b>中心</b>とし、そこから
-    /// モデル原点と中心のズレ（<see cref="fishCenterOffsetY"/>）を引いた位置へアクタを置く。
-    /// これで原点が中心に無い魚でも、狙った高さに魚の中心が来る
-    /// （水平方向のズレはヨーで回るため無視する。魚モデルは前後に長く上下左右の偏りが小さい）。
-    ///
-    /// <b>フォールバック</b>（アンカー未設定・実寸が測れない）のときは従来どおり
-    /// プレイヤーのローカル軸で <c>fishHoldOffsetX/Y/Z</c> ぶんずらした固定位置に置く。
+    /// <see cref="Fish.SizeRank"/>（"S" / "A" / "B" / それ以外＝"C"）を表示ラベルへ変換する。
+    /// しきい値の判定自体は Fish 側に一元化してあり、ここではラベル文字列の差し替えだけ担う。
     /// </summary>
-    private void PlaceFishAbovePlayer()
+    /// <param name="sizeRank">個体のサイズランク。</param>
+    private string RankLabel(string sizeRank) => sizeRank switch
     {
-        if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
-        if (ResolvePlayerTransform() is not { } player) { return; }
+        "S" => rankSLabel,
+        "A" => rankALabel,
+        "B" => rankBLabel,
+        _ => rankCLabel,
+    };
 
-        SEED.Vector3 pos;
-        if (autoLayoutReady && headAnchor is { IsValid: true } anchor)
-        {
-            // 表示中心を求め、モデル原点とのズレぶん下げた位置をアクタ位置にする
-            pos = FishDisplayCenter(anchor.Position) - SEED.Vector3.Up * fishCenterOffsetY;
-        }
-        else
-        {
-            pos = player.Position
-                + player.Right * fishHoldOffsetX
-                + player.Up * fishHoldOffsetY
-                + player.Forward * fishHoldOffsetZ;
-        }
-
-        var fishTf = fish.Transform;
-        fishTf.Position = pos;
-        // プレイヤーの真逆（既定）を向く ＝ 振り返って見ているカメラと正対する
-        fishTf.Rotation = new SEED.Vector3(0f, player.Rotation.y + fishFacingYawOffsetDegrees, 0f);
-    }
+    // ─── 汎用ヘルパー ─────────────────────────────────────────
 
     /// <summary>
-    /// 魚のスケールを「原寸 × <paramref name="ratio"/>」に設定する。
-    /// 負の値は 0 に丸める（easeInBack / easeOutBack の行き過ぎで裏返らないようにする）。
+    /// スローの掛け外し【<c>Time.Scale</c> を触る唯一の場所】。
+    /// すでにその状態なら何もしないので、二重に呼んでも安全
+    /// （＝<see cref="Finish"/> の戻し忘れ防止をここ 1 か所で担保できる）。
     /// </summary>
-    /// <param name="ratio">原寸に対する倍率（0＝消える / 1＝原寸）。</param>
-    private void SetFishScale(float ratio)
+    /// <param name="slow">true でスロー、false で等倍へ戻す。</param>
+    private void ApplySlow(bool slow)
     {
-        if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
-
-        // ハンドルは一旦ローカルへ受ける（プロパティの戻り値へ直接代入すると CS1612）
-        var fishTf = fish.Transform;
-        float safe = SEED.Mathf.Max(ratio, 0f);
-        fishTf.Scale = fishTargetScale * safe;
+        if (slowApplied == slow) { return; }
+        slowApplied = slow;
+        SEED.Time.Scale = slow ? SEED.Mathf.Max(slowScale, 0f) : TimeScaleNormal;
     }
 
     /// <summary>
@@ -1204,8 +887,6 @@ public class CatchPresenter : SEEDScript
         if (playerTransform is { IsValid: true } assigned) { return assigned; }
         return transform.IsValid ? transform : null;
     }
-
-    // ─── UI（ホワイトアウト・釣果テキスト）─────────────────────
 
     /// <summary>
     /// ホワイトアウトのアルファを設定する（RGB はシーンで設定した色を保つ）。
@@ -1220,115 +901,6 @@ public class CatchPresenter : SEEDScript
     }
 
     /// <summary>
-    /// 釣果テキストを組み立てて表示する【表示内容を決める唯一の場所】。
-    ///
-    /// サイズは「魚の基準サイズ × 個体のサイズ倍率」で、単位ラベルは魚側の設定
-    /// （<see cref="Fish.SizeUnitLabel"/>）を使う。釣果（ベストサイズ・ベストランク・
-    /// 釣った数）の保存は <see cref="FishRecords.RecordCatch"/> が担当する
-    /// （キーの定義とセーブのタイミングは FishRecords に一元化してある）。
-    /// </summary>
-    private void ShowTexts()
-    {
-        if (shownFish is not { } fish) { return; }
-
-        string displayName = fish.DisplayName;
-        float displaySize = fish.DisplaySize;
-        string unit = fish.SizeUnitLabel;
-
-        // 釣果（ベストサイズ・ベストランク・釣った数）を 1 回だけ記録する。
-        // このフェーズの頭でしか呼ばれない（EnterPhase(CatchPhase.Show)）ので、
-        // ここで釣った数を 1 増やしても二重加算にはならない。
-        bool isNewRecord = FishRecords.RecordCatch(displayName, displaySize, fish.SizeRank);
-        float best = FishRecords.BestSize(displayName);
-
-        SetText(nameText, displayName);
-        SetText(sizeText, FormatSize(displaySize, unit) + (isNewRecord ? NewRecordSuffix : ""));
-        SetText(rankText, rankLabelPrefix + RankLabel(fish.SizeRank));
-        SetText(bestText, bestLabelPrefix + FormatSize(best, unit));
-        SetText(promptText, promptMessage);
-    }
-
-    /// <summary>釣果テキストをすべて消す（アルファ 0）。</summary>
-    private void HideTexts()
-    {
-        SetTextAlpha(nameText, 0f);
-        SetTextAlpha(sizeText, 0f);
-        SetTextAlpha(rankText, 0f);
-        SetTextAlpha(bestText, 0f);
-        SetTextAlpha(promptText, 0f);
-    }
-
-    /// <summary>
-    /// テキストへ文字列を設定して表示する（アルファを 1 へ戻す）。
-    /// 未設定・破棄済みなら何もしない。
-    /// </summary>
-    /// <param name="text">対象のテキスト（未設定可）。</param>
-    /// <param name="content">表示する文字列。</param>
-    private void SetText(SEED.Text? text, string content)
-    {
-        if (text is not { } t || !t.IsValid) { return; }
-        t.Content = content;
-        t.Color = t.Color.WithAlpha(1f);
-    }
-
-    /// <summary>テキストのアルファだけを書き換える（RGB と文字列は保つ）。</summary>
-    /// <param name="text">対象のテキスト（未設定可）。</param>
-    /// <param name="alpha">不透明度（0〜1 へクランプする）。</param>
-    private void SetTextAlpha(SEED.Text? text, float alpha)
-    {
-        if (text is not { } t || !t.IsValid) { return; }
-        t.Color = t.Color.WithAlpha(SEED.Mathf.Clamped01(alpha));
-    }
-
-    /// <summary>サイズ表示の書式（小数第 1 位＋単位ラベル）。</summary>
-    /// <param name="size">表示するサイズ。</param>
-    /// <param name="unit">単位ラベル（例: "cm"）。</param>
-    private static string FormatSize(float size, string unit) => $"{size:F1} {unit}";
-
-    /// <summary>
-    /// <see cref="Fish.SizeRank"/>（"S" / "A" / "B" / それ以外＝"C"）を表示ラベルへ変換する。
-    /// しきい値の判定自体は Fish 側に一元化してあり、ここではラベル文字列の差し替えだけ担う。
-    /// </summary>
-    /// <param name="sizeRank">個体のサイズランク（<see cref="Fish.SizeRank"/>）。</param>
-    private string RankLabel(string sizeRank) => sizeRank switch
-    {
-        "S" => rankSLabel,
-        "A" => rankALabel,
-        "B" => rankBLabel,
-        _ => rankCLabel,
-    };
-
-    // ─── 汎用ヘルパー ─────────────────────────────────────────
-
-    /// <summary>
-    /// LIFT クリップから HOLD クリップへ切り替える【HOLD 切り替えの唯一の実行箇所】。
-    /// プレイヤー本体・竿それぞれ、維持クリップ名が空文字なら何もしない
-    /// （＝再生中の持ち上げクリップをそのまま維持する。<see cref="CrossFade"/> は
-    /// 同一クリップ再生中も何もしないので、二重に呼んでも安全ではあるが、
-    /// 空文字を渡すと不正なクリップ名として扱われかねないため呼ばないのが正しい）。
-    /// </summary>
-    private void ApplyHoldClips()
-    {
-        if (!string.IsNullOrEmpty(playerHoldClip)) { CrossFade(playerAnimator, playerHoldClip); }
-        if (!string.IsNullOrEmpty(rodHoldClip)) { CrossFade(rodAnimator, rodHoldClip); }
-    }
-
-    /// <summary>
-    /// 指定 Animator を指定クリップへクロスフェードする
-    /// （未設定・無効・空名・同一クリップ再生中は何もしない）。
-    /// </summary>
-    /// <param name="animator">対象の Animator（未設定可）。</param>
-    /// <param name="clip">再生するクリップ名。</param>
-    private void CrossFade(SEED.Animator? animator, string clip)
-    {
-        if (animator is not { } anim || !anim.IsValid) { return; }
-        if (string.IsNullOrEmpty(clip)) { return; }
-        if (anim.IsPlaying && anim.CurrentClip == clip) { return; }
-
-        anim.CrossFade(clip, catchFadeSeconds);
-    }
-
-    /// <summary>
     /// 方向ベクトルから「その向きを見る」オイラー角（度）を作る。
     /// エンジン規約: yaw = atan2(x, z)（前方 +Z）、pitch = -asin(y / 長さ)、ロールは 0。
     /// 長さが 0 なら無回転を返す。
@@ -1339,28 +911,8 @@ public class CatchPresenter : SEEDScript
         float length = direction.Magnitude;
         if (length < DivideEpsilon) { return SEED.Vector3.Zero; }
 
-        float yaw = SEED.Mathf.Atan2(direction.x, direction.z) * RadToDeg;
-        float pitch = -SEED.Mathf.Asin(SEED.Mathf.Clamped(direction.y / length, -1f, 1f)) * RadToDeg;
+        float yaw = SEED.Mathf.Atan2(direction.x, direction.z) * SEED.Mathf.Rad2Deg;
+        float pitch = -SEED.Mathf.Asin(SEED.Mathf.Clamped(direction.y / length, -1f, 1f)) * SEED.Mathf.Rad2Deg;
         return new SEED.Vector3(pitch, yaw, 0f);
-    }
-
-    /// <summary>
-    /// easeOutBack: <c>1 + c3·(t−1)³ + c1·(t−1)²</c>（1 を少し行き過ぎてから戻る）。
-    /// </summary>
-    /// <param name="t">進行度（0〜1）。</param>
-    private static float EaseOutBack(float t)
-    {
-        float u = SEED.Mathf.Clamped01(t) - 1f;
-        return 1f + BackEaseC3 * u * u * u + BackEaseC1 * u * u;
-    }
-
-    /// <summary>
-    /// easeInBack: <c>c3·t³ − c1·t²</c>（0 側へ少し引いてから縮む）。
-    /// </summary>
-    /// <param name="t">進行度（0〜1）。</param>
-    private static float EaseInBack(float t)
-    {
-        float u = SEED.Mathf.Clamped01(t);
-        return BackEaseC3 * u * u * u - BackEaseC1 * u * u;
     }
 }
