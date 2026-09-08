@@ -147,6 +147,14 @@ pub struct ActorData {
     /// 旧 `.scene` との互換性のため省略可（省略時 None）、None のときは書き出さない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefab_source: Option<String>,
+    /// プレハブ再展開時に取り込んだ `.actor` ファイル内容のハッシュ（16 桁の 16 進数）。
+    /// `prefab_source` を持つインスタンスのルートにだけ載り、子アクターは常に None。
+    /// 「シーンへ取り込んだプレハブの版」を表すため、シーンロード時にファイルの現在の
+    /// ハッシュと突き合わせるだけで「プレハブが更新されている（stale）」を検出できる。
+    /// 算出は `prefab_ops::prefab_content_hash`（FNV-1a 64bit）に集約する。
+    /// 旧 `.scene` との互換性のため省略可（省略時 None ＝ 版が不明なので stale 判定しない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefab_hash: Option<String>,
     /// 地形散布（kind=Actor プロップ）で自動生成されたアクタのマーカー。
     /// 値は生成元プロップの ID（散布グループフォルダ自身は専用マーカー値を持つ）。
     /// 再散布時に「このプロップ由来の既存生成アクタ」を特定して置き換えるために使う。
@@ -205,6 +213,11 @@ pub struct Actor {
     /// **インスタンスのルートのみ Some**（子アクターは常に None）。
     /// build_actor で ActorData から復元し、to_data で書き戻す。
     pub prefab_source: Option<String>,
+    /// 取り込み済みプレハブ内容のハッシュ。ActorData の同名フィールドと対応する。
+    /// **インスタンスのルートのみ Some**。再展開（`reinstantiate_single`）と
+    /// プレハブからの生成時に、そのとき読んだファイル内容のハッシュを書き込む。
+    /// シーンロード後の「プレハブが更新されています」検出（`PREFAB_STATUS`）に使う。
+    pub prefab_hash: Option<String>,
     /// 地形散布（kind=Actor プロップ）による自動生成マーカー。ActorData の同名フィールドと対応。
     /// 値は生成元プロップ ID。手動配置のアクタは常に None。
     pub scatter_prop_id: Option<String>,
@@ -237,6 +250,7 @@ impl Actor {
             // 表示フラグの既定は「表示」。非表示はエディタ／スクリプトからの明示操作でのみ立つ。
             visible:    true,
             prefab_source: None,
+            prefab_hash: None,
             scatter_prop_id: None,
             is_folder,
             slots:      Vec::new(),
@@ -399,6 +413,8 @@ impl Actor {
             visible:          self.visible,
             // プレハブ参照リンクを往復させる（ルートのみ Some、子は None）。
             prefab_source:    self.prefab_source.clone(),
+            // 取り込み済みプレハブ内容のハッシュを往復させる（未取り込み／非プレハブは None）。
+            prefab_hash:      self.prefab_hash.clone(),
             // 散布自動生成マーカーを往復させる（手動配置は None）。
             scatter_prop_id:  self.scatter_prop_id.clone(),
         }
@@ -573,6 +589,7 @@ mod folder_tests {
             active:           true,
             visible:          true,
             prefab_source:    None,
+            prefab_hash:      None,
             scatter_prop_id:  None,
         };
 
@@ -672,8 +689,38 @@ mod visible_tests {
             active:           true,
             visible,
             prefab_source:    None,
+            prefab_hash:      None,
             scatter_prop_id:  None,
         }
+    }
+
+    /// プレハブの版ハッシュ（prefab_hash）の serde 往復と、旧シーンとの後方互換を検証する。
+    ///
+    /// - Some は JSON へ出力され、往復で保持される（＝版ずれ検出の材料が失われない）。
+    /// - None は skip_serializing_if で出力されない（旧 .scene とバイト互換）。
+    /// - prefab_hash フィールドを持たない旧 JSON は None（＝版が不明）として読める。
+    #[test]
+    fn prefab_hash_serde_roundtrip_and_backward_compat() {
+        let mut data = minimal_actor_data(true);
+        data.prefab_source = Some("assets://zukan/actors/ZukanCard.actor".into());
+        data.prefab_hash   = Some("0123456789abcdef".into());
+
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"prefab_hash\":\"0123456789abcdef\""), "hash must serialize: {json}");
+        let back: ActorData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.prefab_hash.as_deref(), Some("0123456789abcdef"));
+
+        // None は出力しない（既存シーンとのバイト互換維持）。
+        let plain = minimal_actor_data(true);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("prefab_hash"), "None must be omitted: {json}");
+
+        // prefab_hash を持たない旧 JSON（＝プレハブリンクだけある .scene）は None として読める。
+        let legacy = r#"{"name":"Card","components":[],"children":[],
+                         "prefab_source":"assets://zukan/actors/ZukanCard.actor"}"#;
+        let back: ActorData = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back.prefab_source.as_deref(), Some("assets://zukan/actors/ZukanCard.actor"));
+        assert!(back.prefab_hash.is_none(), "旧シーンは版が不明（None）として読めること");
     }
 
     /// 表示フラグの serde 往復と、旧シーンとの後方互換を検証する。

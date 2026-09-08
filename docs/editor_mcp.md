@@ -134,7 +134,7 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_query` | `type`: `"scene"` \| `"assets"`, `dir?` | シーン情報 / アセット絶対パス一覧 |
 | `seed_batch` | `operations: [{cmd, ...}]` | 各操作の成否（編集はここに集約する） |
 | `seed_state` | なし | `{ok, state, runtime_connected, scene_path, selected_actor_dfs_id, actor_count, assets_path}` |
-| `seed_hierarchy` | なし | `{ok, count, hierarchy:[{id,name,parent,is_2d,is_vp,active,has_canvas,is_prefab,is_folder}]}` |
+| `seed_hierarchy` | なし | `{ok, count, hierarchy:[{id,name,parent,is_2d,is_vp,active,has_canvas,is_prefab,prefab_source,prefab_hash,is_folder}]}`（`prefab_source` はプレハブの `assets://` パス、`prefab_hash` はシーンへ取り込んだ版のハッシュ。非プレハブ／版が不明なら `null`） |
 | `seed_select` | `actor_dfs_id` \| `name` | `{ok, actor_dfs_id, components}`（ACTOR_COMPONENTS の JSON） |
 | `seed_screenshot` | `target`: `"viewport"`\|`"game"`\|`"editor"`, `method?`: `"gpu"`（既定）\|`"screen"`, `path?`, `max_width?`, `scale?`, `keep_full?` | **画像（base64 PNG）** ＋ `{ok, path, width, height, scaled, full_width, full_height, full_path?, method, warning?}` |
 | `seed_play` | `action`: `play`\|`pause`\|`resume`\|`stop`, `wait_seconds?` | `{ok, action, state, waited_secs}` |
@@ -144,6 +144,7 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_log` | `lines?`（既定 200・最大 5000） | `{ok, path, lines, content}` |
 | `seed_save_scene` | `confirm?`（ヘッドレスでは必須） | `{ok, scene_path}` |
 | `seed_send_ipc` | `command` | `{ok, sent}` |
+| `seed_prefab_reapply` | `actor_dfs_id` \| `name` \| `prefab_path` \| `all: true` のいずれか 1 つ | `{ok, target, sent, ...}`（プレハブインスタンスを .actor の最新内容で再展開。**破壊的**だが Undo 可能。docs/editor_prefab.md） |
 | `seed_profile` | `seconds?`（既定 3・範囲 0.2〜30）, `top?`（既定 40） | 要約表（テキスト）＋ `{ok, seconds, dump:{profile, merge}}` |
 | `seed_generate_fish_thumbnails` | `size?`（既定 512・範囲 64〜2048） | `{ok, total, succeeded, failed, catalog_path, failures[]}`（図鑑画像の一括生成。11.x 章） |
 | `seed_save_get` | `key` | `{ok, result:{op,key,found,type,value}}`（実行中ランタイムの SEED.SaveData を読む） |
@@ -161,7 +162,7 @@ dotnet build editor/SEEDEditor.csproj
 `POST /seed-ai/cmd` に `{"cmd":"<コマンド名>", ...}` を投げているだけなので、
 `seed_batch` の `operations` からも同じコマンド名で呼べる
 （`anim_preview` / `anim_preview_stop` / `anim_reload` / `select_actor` / `play_control` /
-`save_scene` / `send_ipc` / `profile` / `game_input_key` / `game_input_mouse` /
+`save_scene` / `send_ipc` / `prefab_reapply` / `profile` / `game_input_key` / `game_input_mouse` /
 `game_input_sequence` / `game_input_release_all` / `save_data` / `find_actor`）。
 `seed_save_*` は 1 つのコマンド `save_data` に `op`（get / set / delete / save）を足したもので、
 `seed_batch` からは `{"cmd":"save_data","op":"set","key":"money","value":1200}` の形で呼ぶ。
@@ -188,6 +189,7 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_save_scene` | `save_scene` | `MainWindow.DoQuickSave()`（Ctrl+S と同じ） |
 | `seed_state` | `get_editor_state` | `IEditorAiHost` の各プロパティ |
 | `seed_send_ipc` | `send_ipc` | `RuntimeManager.SendToRuntime` へ素通し |
+| `seed_prefab_reapply` | `prefab_reapply` | `EditorCommandExecutor.Visual.cs::ExecutePrefabReapply` → IPC `PREFAB_REAPPLY:{dfs}` / `PREFAB_REAPPLY_PATH:{path}` / `PREFAB_REAPPLY_ALL`（実装は `runtime/.../app/prefab_ops.rs`） |
 | `seed_profile` | `profile` | `IEditorAiHost.ProfileDumpAsync`（IPC `PROFILE_DUMP:{秒}` → `PROFILE_DUMP_DONE:{パス}`） |
 | `seed_generate_fish_thumbnails` | `generate_fish_thumbnails` | `IEditorAiHost.RenderActorThumbnailAsync`（IPC `RENDER_ACTOR_THUMBNAIL:...` → `RENDER_ACTOR_THUMBNAIL_DONE\|_ERROR`）を魚 prefab ごとに逐次 |
 | `seed_save_get` / `seed_save_set` / `seed_save_delete` / `seed_save_flush` | `save_data`（`op` 違い） | `EditorCommandExecutor.SaveData.cs` → IPC `SAVE_DATA:{json}` → `SAVE_DATA_OK:{json}` / `SAVE_DATA_ERROR:{msg}`（実装は `runtime/.../app/save_data_ops.rs`） |

@@ -192,6 +192,8 @@ public partial class MainWindow
         MenuItemAutoReloadScripts.IsChecked = EditorPreferences.Instance.AutoReloadScripts;
         // シーン自動再読込の設定値も同様にチェック状態へ反映する（設定ファイルが正）。
         MenuItemAutoReloadScene.IsChecked = EditorPreferences.Instance.AutoReloadScene;
+        // プレハブ保存時の自動反映の設定値も同様（設定ファイルが正）。
+        MenuItemPrefabAutoPropagate.IsChecked = EditorPreferences.Instance.PrefabAutoPropagateOnSave;
     }
 
     /// <summary>スクリプトエディタ（LayoutDocument）がレイアウト上に存在するか。</summary>
@@ -402,6 +404,8 @@ public partial class MainWindow
     private void ExecuteActorSave(string path)
     {
         _isSavingActor = true;
+        // 保存完了（SAVE_OK）後にシーン内インスタンスへ自動反映するため、対象パスを覚えておく。
+        NotifyActorSaveStarted(path);
         _runtimeManager?.SendToRuntime($"SAVE_ACTOR:{path}");
         EditorLog.Write($"ExecuteActorSave — SAVE_ACTOR:{path}");
     }
@@ -418,10 +422,15 @@ public partial class MainWindow
             {
                 EditorLog.Write("OnSaveCompleted — 保存成功");
                 MarkClean();
-                string toast = _isSavingActor ? "アクターを保存しました" : "シーンを保存しました";
+                bool wasActorSave = _isSavingActor;
+                string toast = wasActorSave ? "アクターを保存しました" : "シーンを保存しました";
                 _isSavingActor = false;
                 ShowToast(toast);
                 UpdateTitle();
+
+                // プレハブ（.actor）を保存したときは、設定に従ってシーン内の
+                // インスタンスへ自動反映する（件数のトーストは反映完了時に出す）。
+                if (wasActorSave) PropagateSavedPrefabToScene();
 
                 // 保存→ウィンドウを閉じる（終了時確認フロー）
                 if (_pendingClose)
@@ -442,6 +451,8 @@ public partial class MainWindow
             else
             {
                 _isSavingActor = false;
+                // 保存に失敗したので自動反映もしない（覚えていたパスを捨てる）。
+                _savingActorPath = null;
                 _pendingSceneLoad = null;
                 EditorLog.Write($"OnSaveCompleted — 保存失敗: {errorMsg}");
                 SEEDEditor.Headless.EditorDialogs.Show(

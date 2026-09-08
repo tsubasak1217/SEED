@@ -971,6 +971,20 @@ pub enum IpcCommand {
     /// フォーマット: PREFAB_REAPPLY_ALL（引数なし）
     ReapplyAllPrefabs,
 
+    /// **指定した 1 本のプレハブファイル**を参照する全インスタンスを再展開する。
+    /// エディタの「プレハブ保存時にシーンのインスタンスへ自動反映」設定の実行経路。
+    /// 再展開件数は応答 `PREFAB_REAPPLY_DONE:{件数},{仮想パス}` で返す（0 件でも返す）。
+    /// Undo で 1 操作として戻せる。
+    /// フォーマット: PREFAB_REAPPLY_PATH:{path}（絶対パス／`assets://` 仮想パスのどちらも可）
+    ReapplyPrefabPath { path: String },
+
+    /// シーン内のプレハブインスタンスの「版ずれ」を問い合わせる（**読み取りのみ**）。
+    /// 応答は `PREFAB_STATUS:{json}`。json は
+    /// `[{"source":..,"total":N,"stale":N,"unknown":N,"missing":bool}, ..]`。
+    /// シーンを開いた直後にエディタが投げ、stale が 1 以上ならバナーを出す。
+    /// フォーマット: PREFAB_STATUS（引数なし）
+    PrefabStatus,
+
     /// 編集時の物理シミュレーション設定。
     /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
     /// enabled=true かつ with_rigidbody=true  : 重力・ダイナミクスも有効な完全シミュレーション
@@ -2991,6 +3005,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         // シーン内全プレハブの一括更新（引数なし）。
                         // "PREFAB_REAPPLY:" 判定とは接頭辞が異なるため衝突しない。
                         "PREFAB_REAPPLY_ALL" => Some(IpcCommand::ReapplyAllPrefabs),
+
+                        s if s.starts_with("PREFAB_REAPPLY_PATH:") => {
+                            // フォーマット: PREFAB_REAPPLY_PATH:{path}
+                            // 上の "PREFAB_REAPPLY:" 判定は直後がコロンのときだけ一致するため
+                            // （ここは "_PATH:"）衝突しない。パスは空白を含み得るので trim のみ。
+                            let path = s["PREFAB_REAPPLY_PATH:".len()..].trim().to_string();
+                            if path.is_empty() { None }
+                            else { Some(IpcCommand::ReapplyPrefabPath { path }) }
+                        }
+
+                        // プレハブの版ずれ問い合わせ（引数なし・読み取りのみ）。
+                        "PREFAB_STATUS" => Some(IpcCommand::PrefabStatus),
 
                         "EDIT_PHYSICS_PLAY_PAUSE" => {
                             Some(IpcCommand::EditPhysicsPlayPause)

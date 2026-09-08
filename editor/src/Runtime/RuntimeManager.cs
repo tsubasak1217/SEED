@@ -289,6 +289,17 @@ public sealed class RuntimeManager : IDisposable
     /// エディタの現在シーンパスはこの通知だけを出所とする。
     /// </summary>
     public const string SCENE_LOADED_PREFIX = "SCENE_LOADED:";
+
+    /// <summary>
+    /// プレハブ参照パス指定の一括再展開（PREFAB_REAPPLY_PATH）の完了通知の接頭辞。
+    /// 後ろに <c>{再展開件数},{assets:// 仮想パス}</c> が続く。
+    /// </summary>
+    public const string PREFAB_REAPPLY_DONE_PREFIX = "PREFAB_REAPPLY_DONE:";
+
+    /// <summary>
+    /// プレハブ版ずれ問い合わせ（PREFAB_STATUS）への応答の接頭辞。後ろに JSON 配列が続く。
+    /// </summary>
+    public const string PREFAB_STATUS_PREFIX = "PREFAB_STATUS:";
     /// <summary>撮影失敗応答の接頭辞。</summary>
     public const string SCREENSHOT_ERROR_PREFIX = "SCREENSHOT_ERROR:";
 
@@ -475,6 +486,18 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>アクターファイル書き出し完了通知。true=成功（保存パス）/ false=失敗（エラーメッセージ）。</summary>
     public event Action<bool, string>? ExportActorCompleted;
+
+    /// <summary>
+    /// プレハブ参照パス指定の一括再展開の完了通知（<c>PREFAB_REAPPLY_DONE:{件数},{仮想パス}</c>）。
+    /// 引数は (再展開したインスタンス数, プレハブの assets:// 仮想パス)。0 件でも届く。
+    /// </summary>
+    public event Action<int, string>? PrefabReapplyCompleted;
+
+    /// <summary>
+    /// プレハブの版ずれ問い合わせ（<c>PREFAB_STATUS</c>）への応答。
+    /// 引数は <c>[{"source":..,"total":N,"stale":N,"unknown":N,"missing":bool}, ..]</c> の JSON。
+    /// </summary>
+    public event Action<string>? PrefabStatusReceived;
 
     /// <summary>地形の初期化完了通知（TERRAIN_INIT_OK）。</summary>
     public event Action? TerrainInitCompleted;
@@ -2012,6 +2035,24 @@ public sealed class RuntimeManager : IDisposable
             var json = msg["SCENE_INFO:".Length..];
             EditorLog.Write($"[Runtime→Editor] SCENE_INFO ({json.Length} chars)");
             SceneInfoReceived?.Invoke(json);
+        }
+        else if (msg.StartsWith(PREFAB_REAPPLY_DONE_PREFIX, StringComparison.Ordinal))
+        {
+            // フォーマット: PREFAB_REAPPLY_DONE:{件数},{仮想パス}
+            // 仮想パス自体にカンマが入り得るため、最初のカンマだけで区切る。
+            var payload = msg[PREFAB_REAPPLY_DONE_PREFIX.Length..];
+            int comma   = payload.IndexOf(',');
+            var countText = comma >= 0 ? payload[..comma] : payload;
+            var source    = comma >= 0 ? payload[(comma + 1)..] : "";
+            _ = int.TryParse(countText, out int count);
+            EditorLog.Write($"[Runtime→Editor] PREFAB_REAPPLY_DONE count={count} source={source}");
+            PrefabReapplyCompleted?.Invoke(count, source);
+        }
+        else if (msg.StartsWith(PREFAB_STATUS_PREFIX, StringComparison.Ordinal))
+        {
+            var json = msg[PREFAB_STATUS_PREFIX.Length..];
+            EditorLog.Write($"[Runtime→Editor] PREFAB_STATUS {json}");
+            PrefabStatusReceived?.Invoke(json);
         }
         else if (msg.StartsWith("EXPORT_ACTOR_OK:", StringComparison.Ordinal))
         {

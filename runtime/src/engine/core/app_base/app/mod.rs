@@ -834,8 +834,9 @@ pub struct App {
     /// ブラシ散布は 1 ストロークで何十回も飛んでくるため、同じ .actor ファイルの
     /// 再読込・再パースを避ける。プレハブ内容が変わりうる操作（ルール再散布の開始・
     /// プレハブ再展開系）でクリアする。
+    /// 値は `(ActorData, 内容ハッシュ)`。ハッシュは生成アクタの `prefab_hash` へ焼き込む。
     pub(super) scatter_prefab_cache: std::collections::HashMap<
-        String, crate::engine::structs::objects::actor::ActorData>,
+        String, (crate::engine::structs::objects::actor::ActorData, String)>,
 
     // ── 世界線システム ───────────────────────────────────────────
     /// 現在アクティブな世界線 (0=通常シーン, N=アクター編集タブ)。

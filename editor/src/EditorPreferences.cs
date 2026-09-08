@@ -93,6 +93,22 @@ public sealed class EditorPreferences
     public bool AutoReloadScene { get; set; } = true;
 
     /// <summary>
+    /// プレハブ（.actor / .actor2d）をアクタータブで保存したときに、
+    /// 今開いているシーン内の同じプレハブのインスタンスへ自動で反映するかどうか。既定はオン。
+    ///
+    /// オンのとき、保存成功（SAVE_OK）に続けて IPC <c>PREFAB_REAPPLY_PATH</c> を送り、
+    /// そのプレハブを参照するインスタンスだけを再展開する。反映は Undo 1 操作で戻せ、
+    /// 反映件数はトーストで必ず知らせる。
+    ///
+    /// オフにすると従来どおり手動更新（ヒエラルキー右クリックの「プレハブから更新」／
+    /// 「シーン内の全プレハブを更新」）だけになる。インスタンスごとに手を入れて
+    /// 使い分けている場合は、その変更が上書きされないようオフにする。
+    /// UI 上の「表示 > シーン > プレハブ保存時にシーンのインスタンスへ自動反映」と 1 対 1 に対応する。
+    /// </summary>
+    [JsonPropertyName("prefab_auto_propagate_on_save")]
+    public bool PrefabAutoPropagateOnSave { get; set; } = true;
+
+    /// <summary>
     /// ロジック配置ダイアログで最後に使ったパターン指定。
     ///
     /// 「円形に 12 個」「5×5 グリッド」といった指定は同じ設定を続けて使うことが多く、

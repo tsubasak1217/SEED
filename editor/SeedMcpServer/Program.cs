@@ -181,6 +181,9 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
             "seed_save_scene"        => await PostCmdAsync(http, "save_scene",        args),
             "seed_send_ipc"          => await PostCmdAsync(http, "send_ipc",          args),
 
+            // プレハブインスタンスの再展開（変更系。束縛インスタンスが必要）
+            "seed_prefab_reapply"    => await PostCmdAsync(http, "prefab_reapply",    args),
+
             // セーブデータ（SEED.SaveData）の読み書き: 実行中ランタイムのストアを直接触る
             "seed_save_get"          => await PostCmdWithOpAsync(http, "save_data", args, "get"),
             "seed_save_set"          => await PostCmdWithOpAsync(http, "save_data", args, "set"),
@@ -753,6 +756,7 @@ static object[] BuildToolList() => new[]
     SeedLogTool(),
     SeedSaveSceneTool(),
     SeedSendIpcTool(),
+    SeedPrefabReapplyTool(),
     SeedProfileTool(),
     SeedGenerateFishThumbnailsTool(),
     SeedSaveGetTool(),
@@ -922,7 +926,9 @@ static object SeedBatchTool() => new
                                 // セーブデータ（進行状態を作ってから Play する用）
                                 "save_data",
                                 // アクタ検索（名前 → DFS ID。後続操作の宛先を得る）
-                                "find_actor"
+                                "find_actor",
+                                // プレハブインスタンスの再展開（破壊的。Undo 可能）
+                                "prefab_reapply"
                             },
                             description = "コマンド名"
                         },
@@ -966,7 +972,8 @@ static object SeedHierarchyTool() => new
 {
     name        = "seed_hierarchy",
     description =
-        "現在のヒエラルキーツリーを JSON で返す（id = DFS ID、name、parent、is_2d、is_vp、active、is_folder、is_prefab）。"
+        "現在のヒエラルキーツリーを JSON で返す（id = DFS ID、name、parent、is_2d、is_vp、active、is_folder、"
+      + "is_prefab、prefab_source = プレハブの assets:// パス、prefab_hash = シーンへ取り込んだ版のハッシュ）。"
       + "seed_query(type=\"scene\") より軽量で、名前から DFS ID を引くのに使う。",
     inputSchema = EmptySchema()
 };
@@ -1178,6 +1185,30 @@ static object SeedSendIpcTool() => new
             command = new { type = "string", description = "ランタイムへ送る IPC 文字列（例: \"ANIM_RELOAD:seed://animations/foo.anim\"）" }
         },
         required = new[] { "command" }
+    }
+};
+
+static object SeedPrefabReapplyTool() => new
+{
+    name        = "seed_prefab_reapply",
+    description =
+        "プレハブインスタンスを .actor ファイルの最新内容で再展開する（ヒエラルキー右クリックの"
+      + "「プレハブから更新」と同じ経路）。指定は 3 通りのいずれか 1 つ: "
+      + "actor_dfs_id（または name）= そのアクタ配下のインスタンスだけ、"
+      + "prefab_path = その .actor を参照する全インスタンス、all:true = シーン内の全プレハブ。"
+      + "【破壊的】インスタンス側で加えた変更（コンポーネント追加・値変更・子の追加）は"
+      + "ファイル内容で上書きされて失われる。ランタイム側で Undo 1 操作として記録されるため"
+      + "Ctrl+Z で戻せる。変更系なので束縛インスタンス（seed_launch / seed_attach）が必要。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            actor_dfs_id = new { type = "integer", description = "更新するアクターの DFS ID" },
+            name         = new { type = "string",  description = "アクター名（DFS ID が不明なとき）" },
+            prefab_path  = new { type = "string",  description = "プレハブの assets:// 仮想パスまたは絶対パス" },
+            all          = new { type = "boolean", description = "true でシーン内の全プレハブインスタンスを更新" }
+        }
     }
 };
 

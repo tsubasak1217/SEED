@@ -872,6 +872,15 @@
                               Header="シーンを自動再読込"
                               IsCheckable="True"
                               Click="OnToggleAutoReloadScene"/>
+                    <!-- プレハブ（.actor）を保存したとき、今開いているシーン内の
+                         同じプレハブのインスタンスへ自動で反映する。反映は Undo 1 操作で
+                         戻せ、件数はトーストで知らせる。インスタンスごとに手を入れて
+                         使い分けている場合はオフにする。
+                         設定は EditorPreferences.PrefabAutoPropagateOnSave に永続化。 -->
+                    <MenuItem x:Name="MenuItemPrefabAutoPropagate"
+                              Header="プレハブ保存時にシーンのインスタンスへ自動反映"
+                              IsCheckable="True"
+                              Click="OnTogglePrefabAutoPropagate"/>
                     <Separator/>
                     <MenuItem Header="シーンをディスクから再読込"
                               Click="OnMenuReloadSceneFromDisk"/>
@@ -2220,6 +2229,38 @@
         </avd:DockingManager>
 
     </DockPanel>
+
+    <!-- ── プレハブ版ずれバナー（上部オーバーレイ・非モーダル）────────
+         シーンを開いた直後の PREFAB_STATUS で「取り込んだ版より新しいプレハブ」が
+         見つかったときだけ出す。ロード時に自動で上書きはしない（データ損失防止）。
+         ［更新する］を押したときだけ再展開し、Undo 1 操作で戻せる。 -->
+    <Border x:Name="PrefabStaleBanner"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            Margin="0,8,0,0"
+            Padding="14,8"
+            CornerRadius="4"
+            Background="#CC6B551E"
+            BorderBrush="#44FFDDAA"
+            BorderThickness="1"
+            Visibility="Collapsed"
+            Panel.ZIndex="999">
+        <StackPanel Orientation="Horizontal">
+            <TextBlock x:Name="PrefabStaleText"
+                       Text="プレハブが更新されています"
+                       Foreground="#E0FFFFFF"
+                       FontSize="12"
+                       VerticalAlignment="Center"/>
+            <Button Content="更新する"
+                    Margin="14,0,0,0"
+                    Padding="10,2"
+                    Click="OnPrefabStaleUpdate"/>
+            <Button Content="無視"
+                    Margin="6,0,0,0"
+                    Padding="10,2"
+                    Click="OnPrefabStaleIgnore"/>
+        </StackPanel>
+    </Border>
 
     <!-- ── トースト通知（右下オーバーレイ）──────────────────── -->
     <Border x:Name="ToastBorder"

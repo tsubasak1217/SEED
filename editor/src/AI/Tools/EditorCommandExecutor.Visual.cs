@@ -172,6 +172,7 @@ public partial class EditorCommandExecutor
             "get_hierarchy"     => ExecuteGetHierarchy(),
             "play_control"      => await ExecutePlayControlAsync(args),
             "send_ipc"          => ExecuteSendIpc(args),
+            "prefab_reapply"    => ExecutePrefabReapply(args),
             "anim_preview"      => ExecuteAnimPreview(args),
             "anim_preview_stop" => ExecuteAnimPreviewStop(args),
             "anim_reload"       => ExecuteAnimReload(args),
@@ -578,6 +579,60 @@ public partial class EditorCommandExecutor
         _sendToRuntime(command);
         return Json(new { ok = true, sent = command });
     }
+
+    /// <summary>
+    /// プレハブインスタンスを .actor の最新内容で再展開する（PREFAB_REAPPLY 系）。
+    ///
+    /// 指定方法は 3 通りで、いずれか 1 つだけを使う:
+    /// <list type="bullet">
+    ///   <item><c>actor_dfs_id</c> / <c>name</c>: そのアクタ配下のインスタンスだけを更新</item>
+    ///   <item><c>prefab_path</c>: その .actor を参照するインスタンスだけを更新</item>
+    ///   <item><c>all: true</c>: シーン内の全プレハブインスタンスを更新</item>
+    /// </list>
+    ///
+    /// いずれも**破壊的**（インスタンス側で加えた変更がファイル内容で上書きされる）だが、
+    /// ランタイム側で Undo 1 操作として記録されるため Ctrl+Z で戻せる。
+    /// </summary>
+    private string ExecutePrefabReapply(JsonElement args)
+    {
+        // all: true — シーン内の全プレハブ（引数なしの IPC）。
+        if (GetBool(args, "all"))
+        {
+            _sendToRuntime(PrefabReapplyAllCommand);
+            return Json(new { ok = true, target = "all", sent = PrefabReapplyAllCommand });
+        }
+
+        // prefab_path — 指定した 1 本の .actor を参照する全インスタンス。
+        var prefabPath = GetString(args, "prefab_path");
+        if (!string.IsNullOrWhiteSpace(prefabPath))
+        {
+            var cmd = $"{PrefabReapplyPathCommandPrefix}{prefabPath}";
+            _sendToRuntime(cmd);
+            return Json(new { ok = true, target = "path", prefab_path = prefabPath, sent = cmd });
+        }
+
+        // actor_dfs_id / name — そのアクタ配下のインスタンス。
+        var (dfsId, resolveError) = ResolveActorDfsId(args);
+        if (resolveError is not null)
+        {
+            return Error(resolveError
+                + "（シーン全体を更新するなら all:true、"
+                + "特定の .actor を指すなら prefab_path を使ってください）");
+        }
+
+        var single = FormattableString.Invariant($"{PrefabReapplyCommandPrefix}{dfsId}");
+        _sendToRuntime(single);
+        return Json(new { ok = true, target = "actor", actor_dfs_id = dfsId, sent = single });
+    }
+
+    /// <summary>指定アクタ配下のプレハブインスタンスを更新する IPC の接頭辞。</summary>
+    private const string PrefabReapplyCommandPrefix = "PREFAB_REAPPLY:";
+
+    /// <summary>指定した .actor を参照する全インスタンスを更新する IPC の接頭辞。</summary>
+    private const string PrefabReapplyPathCommandPrefix = "PREFAB_REAPPLY_PATH:";
+
+    /// <summary>シーン内の全プレハブインスタンスを更新する IPC（引数なし）。</summary>
+    private const string PrefabReapplyAllCommand = "PREFAB_REAPPLY_ALL";
 
     /// <summary>Edit モードのアニメーションプレビューを指定時刻へ適用する（ANIM_PREVIEW）。</summary>
     private string ExecuteAnimPreview(JsonElement args)

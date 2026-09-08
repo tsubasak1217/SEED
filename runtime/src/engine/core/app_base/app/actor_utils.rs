@@ -67,6 +67,11 @@ pub(super) fn collect_actor_nodes(
     // インスタンスのルートのみ Some を持つため、子ノードは自然と false になる。
     // エディタのヒエラルキーでプレハブアイコン表示に使用する（C# パースは次ウェーブ）。
     let is_prefab = actor.prefab_source.is_some();
+    // prefab_source / prefab_hash: プレハブ参照パスと「取り込んだ版」。
+    // MCP（seed_hierarchy）とエディタの自動反映が、どのインスタンスがどのファイル由来かを
+    // ヒエラルキーだけで判別できるようにするために載せる（非プレハブは None）。
+    let prefab_source = actor.prefab_source.clone();
+    let prefab_hash   = actor.prefab_hash.clone();
     // is_folder: 整理専用のフォルダノードか（Transform 非保持・透過）。
     // エディタでフォルダアイコン表示＋Inspector で Transform を出さない判定に使う。
     let is_folder = actor.is_folder();
@@ -83,6 +88,8 @@ pub(super) fn collect_actor_nodes(
         self_visible: actor.visible,
         has_canvas,
         is_prefab,
+        prefab_source,
+        prefab_hash,
         is_folder,
     });
     for child in actor.children() {
@@ -116,6 +123,10 @@ pub(super) struct ActorNodeInfo {
     pub has_canvas:   bool,
     /// プレハブインスタンスのルートか。
     pub is_prefab:    bool,
+    /// プレハブ参照パス（`assets://` 仮想パス）。非プレハブは None。
+    pub prefab_source: Option<String>,
+    /// 取り込み済みプレハブ内容のハッシュ。版が不明な旧シーン由来のインスタンスは None。
+    pub prefab_hash:   Option<String>,
     /// 整理専用のフォルダノードか。
     pub is_folder:    bool,
 }
@@ -150,6 +161,14 @@ struct HierarchyNode<'a> {
     /// このアクターがプレハブインスタンスのルート（prefab_source を持つ）か。
     /// エディタのプレハブアイコン表示・右クリック「リンク解除」メニュー活性化に使用する。
     is_prefab: bool,
+    /// プレハブ参照パス（`assets://` 仮想パス）。非プレハブは None（JSON では null）。
+    /// エディタの「プレハブ保存時の自動反映」と MCP `seed_hierarchy` が、
+    /// どのインスタンスがどの `.actor` 由来かをヒエラルキーだけで判別するために使う。
+    prefab_source: Option<&'a str>,
+    /// シーンへ取り込んだプレハブ内容のハッシュ（`prefab_ops::prefab_content_hash`）。
+    /// 版が不明な旧シーン由来のインスタンスは None。ファイルの現在値との比較で
+    /// 「プレハブが更新されている」を判定する（判定自体は PREFAB_STATUS が行う）。
+    prefab_hash:   Option<&'a str>,
     /// このアクターが整理専用のフォルダノード（Transform 非保持・透過）か。
     /// エディタのヒエラルキーでフォルダアイコン表示、Inspector で Transform を
     /// 出さない（名前変更のみ）判定に使用する。地形ルート／チャンクの器などに付く。
@@ -174,6 +193,8 @@ pub(super) fn build_hierarchy_json(nodes: &[ActorNodeInfo]) -> String {
             self_visible: n.self_visible,
             has_canvas: n.has_canvas,
             is_prefab: n.is_prefab,
+            prefab_source: n.prefab_source.as_deref(),
+            prefab_hash:   n.prefab_hash.as_deref(),
             is_folder: n.is_folder,
         })
         .collect();

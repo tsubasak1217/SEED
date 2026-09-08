@@ -334,6 +334,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::UnlinkPrefab { .. }
         | IpcCommand::ReapplyPrefab { .. }
         | IpcCommand::ReapplyAllPrefabs
+        // 参照パス指定の一括更新もハンドラ側が ActorTreeSnapshotCommand を 1 件積む。
+        | IpcCommand::ReapplyPrefabPath { .. }
+        // 版ずれの問い合わせは読み取りのみ（シーンを変更しない）。
+        | IpcCommand::PrefabStatus
         | IpcCommand::AiAddActor { .. }
         | IpcCommand::AiRemoveActor { .. }
         | IpcCommand::AiMoveActor { .. }

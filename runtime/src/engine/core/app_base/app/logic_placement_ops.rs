@@ -55,7 +55,7 @@ use crate::engine::terrain::scatter::{surface_hit_down, ScatterField};
 use super::actor_utils::dfs_ids_for_entities;
 use super::control_point_ops::transform_point;
 use super::placement_mode::placement_world_positions;
-use super::prefab_ops::load_actor_data;
+use super::prefab_ops::load_actor_data_with_hash;
 use super::terrain_scatter_ops::TerrainScatterField;
 use super::{insert_group_actor, App};
 
@@ -438,9 +438,12 @@ impl App {
         }
 
         // ── 配置元アクタファイルを 1 回だけ読む（点ごとに読み直さない）──
+        // 内容ハッシュ（＝取り込んだプレハブの版）も一緒に受け取り、生成する全インスタンスへ
+        // 焼き込む。これが無いとシーンを開き直したときに更新検出（PREFAB_STATUS）が効かない。
+        let mut prefab_hash: Option<String> = None;
         let source = match req.source_path.as_deref().filter(|s| !s.is_empty()) {
-            Some(path) => match load_actor_data(path) {
-                Ok(data) => Some((path.to_string(), data)),
+            Some(path) => match load_actor_data_with_hash(path) {
+                Ok((data, hash)) => { prefab_hash = Some(hash); Some((path.to_string(), data)) }
                 Err(e) => {
                     self.notify_placement_error(&format!(
                         "配置元アクタファイルを読めません '{path}': {e}"
@@ -476,7 +479,12 @@ impl App {
                 Some((path, data)) => {
                     let ctx = draw_ctx.as_ref().expect("直前に None を弾いてある");
                     build_actor(data.clone(), ctx, world, host.as_ref(), None)
-                        .map(|mut a| { a.prefab_source = Some(path.clone()); a })
+                        .map(|mut a| {
+                            a.prefab_source = Some(path.clone());
+                            // 取り込んだプレハブの版（内容ハッシュ）も記録する（更新検出用）。
+                            a.prefab_hash   = prefab_hash.clone();
+                            a
+                        })
                         .map_err(|e| format!("アクタファイル '{path}' の構築に失敗: {e}"))
                 }
                 // 配置元 = 空アクタ。

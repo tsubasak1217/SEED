@@ -1655,6 +1655,19 @@ impl App {
                     // .actor の内容で再展開する（確認ダイアログはエディタ側で表示済み）。
                     self.handle_reapply_prefab(actor_dfs);
                 }
+                IpcCommand::ReapplyPrefabPath { path } => {
+                    // プレハブ本体の保存に続いてエディタが送る「そのプレハブのインスタンスだけ
+                    // 更新する」コマンド。件数を返すのでエディタはトーストで件数を出せる。
+                    let count = self.handle_reapply_prefab_path(&path);
+                    let vpath = crate::engine::asset_fs::to_virtual(&path);
+                    if let Some(ipc) = &self.ipc {
+                        ipc.send(&format!("PREFAB_REAPPLY_DONE:{count},{vpath}"));
+                    }
+                }
+                IpcCommand::PrefabStatus => {
+                    // 読み取りのみ。シーンには一切触れない（バナー表示用の問い合わせ）。
+                    self.handle_prefab_status();
+                }
                 IpcCommand::ReapplyAllPrefabs => {
                     // 明示操作による「シーン内の全プレハブを更新」。
                     // シーン側の変更を破棄して .actor の内容で全インスタンスを再展開する

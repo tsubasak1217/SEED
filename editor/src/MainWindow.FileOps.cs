@@ -483,6 +483,11 @@ public partial class MainWindow
                     $"現在シーンパスをランタイムの実体に合わせました: {_currentScenePath ?? "(なし)"} → {loadedPath}");
             }
             ApplyCurrentScenePath(loadedPath);
+
+            // 読み込んだシーンのプレハブインスタンスに「取り込んだ版より新しいプレハブ」が
+            // 無いかを問い合わせる（読み取りのみ。自動では絶対に上書きしない）。
+            // 更新が来ていればバナーで知らせ、押されたときだけ再展開する。
+            RequestPrefabStatus();
         });
     }
 

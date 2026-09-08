@@ -449,6 +449,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // ランタイムが実際に読み込んだシーンのパス。エディタの現在シーンパスは
         // この通知だけを正とする（誤ったパスへの上書き保存を防ぐ）。
         _runtimeManager.SceneLoaded                   += OnRuntimeSceneLoaded;
+        // プレハブの伝播（MainWindow.Prefab.cs）: 保存時の自動反映の結果と、
+        // シーンを開いた直後の版ずれ問い合わせの応答。
+        _runtimeManager.PrefabReapplyCompleted        += OnPrefabReapplyCompleted;
+        _runtimeManager.PrefabStatusReceived          += OnPrefabStatusReceived;
         // ランタイム側のツールホットキー（Q/W/E/T）とツールバーの表示を同期する。
         _runtimeManager.ToolModeChanged               += OnRuntimeToolModeChanged;
         // モーダルトランスフォーム（G/R/S）の進行状態。キーフックの分岐に使う。

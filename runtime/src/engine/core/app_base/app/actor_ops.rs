@@ -396,6 +396,9 @@ impl App {
                 // （シーンロード時の自動再展開は廃止した。prefab_ops.rs 冒頭コメント参照）
                 // 子アクターには設定しない（インスタンスのルートのみが Some を持つ）。
                 actor.prefab_source = Some(crate::engine::asset_fs::to_virtual(path));
+                // 取り込んだプレハブの版（内容ハッシュ）も記録する。これが無いと、
+                // 次にシーンを開いたときに「プレハブが更新されたか」を判定できない。
+                actor.prefab_hash = super::prefab_ops::prefab_content_hash(path);
                 if actor.is_2d() {
                     // ── 2D キャンバスアクター ─────────────────────────────────────
                     // ドロップ位置は無視する。
@@ -517,6 +520,8 @@ impl App {
                 // 場合のみ、生成ルートへ参照元パス（assets:// 仮想パス）を記録する。
                 if !is_image_path(path) {
                     actor.prefab_source = Some(crate::engine::asset_fs::to_virtual(path));
+                    // 取り込んだプレハブの版（内容ハッシュ）も記録する（更新検出用）。
+                    actor.prefab_hash = super::prefab_ops::prefab_content_hash(path);
                 }
                 // ドロップカーソル位置を ortho（キャンバス）空間へ変換する
                 let drop_pt = self.window_to_canvas_2d(screen_x as f32, screen_y as f32);
@@ -1403,6 +1408,8 @@ impl App {
                         find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c)
                     {
                         actor.prefab_source = Some(vpath.clone());
+                        // 書き出した内容がそのまま「取り込み済みの版」になる。
+                        actor.prefab_hash = super::prefab_ops::prefab_content_hash(&vpath);
                     }
                 }
                 if let Some(ipc) = &self.ipc {
@@ -1539,6 +1546,7 @@ pub(super) fn terrain_marker_data(actor: &Actor) -> ActorData {
         // 表示フラグもマーカーへ引き継ぐ（地形ルートを非表示にした状態を保存で失わない）。
         visible:          actor.visible,
         prefab_source:    None,
+        prefab_hash:      None,
         scatter_prop_id:  None,
     }
 }

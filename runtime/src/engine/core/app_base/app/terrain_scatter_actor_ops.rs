@@ -39,7 +39,7 @@ use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::scatter::{PropKind, ScatterInstance, TerrainPropSet};
 
-use super::prefab_ops::load_actor_data;
+use super::prefab_ops::load_actor_data_with_hash;
 use super::{despawn_actor_recursive, App};
 
 // ============================================================
@@ -125,10 +125,12 @@ impl App {
 
                 // ── プレハブを読む（キャッシュ経由。ブラシ 1 ストロークで
                 //    何十回も呼ばれるため、同じファイルの再読込・再パースを避ける）──
-                let data = if let Some(d) = self.scatter_prefab_cache.get(&prefab_path) {
+                // キャッシュには ActorData と「そのとき読んだ内容のハッシュ」を対で入れる
+                // （生成アクタの prefab_hash に焼き込み、シーンを開き直したときの更新検出に使う）。
+                let (data, prefab_hash) = if let Some(d) = self.scatter_prefab_cache.get(&prefab_path) {
                     d.clone()
                 } else {
-                    match load_actor_data(&prefab_path) {
+                    match load_actor_data_with_hash(&prefab_path) {
                         Ok(d) => {
                             self.scatter_prefab_cache.insert(prefab_path.clone(), d.clone());
                             d
@@ -187,6 +189,7 @@ impl App {
                     new_actor.name = format!("{prop_id}_{:04}", existing + n);
                     new_actor.set_world_line_recursive(wl);
                     new_actor.prefab_source   = Some(prefab_path.clone());
+                    new_actor.prefab_hash     = Some(prefab_hash.clone());
                     new_actor.scatter_prop_id = Some(prop_id.clone());
 
                     // ── ルート Transform を散布点へ移す ──
