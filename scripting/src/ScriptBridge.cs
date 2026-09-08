@@ -128,7 +128,41 @@ public static unsafe class ScriptBridge
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void BeginFrame(nint h, NativeFrameContext* ctx)
-    { InvokePhase(h, ctx, ScriptCallback.BeginFrame); }
+    {
+        DispatchDebugCommandsOncePerFrame(ctx);
+        InvokePhase(h, ctx, ScriptCallback.BeginFrame);
+    }
+
+    /// <summary>
+    /// このフレームでまだ配っていなければ、外部から届いたデバッグコマンド
+    /// （<c>SCRIPT_DEBUG</c> IPC）を <see cref="SEED.Debug"/> のハンドラへ配る
+    /// 【外部指示がゲームへ入る唯一のタイミング】。
+    ///
+    /// <c>BeginFrame</c> は<b>スクリプトの数だけ</b>呼ばれるので、
+    /// フレームの実時間（<c>UnscaledElapsedTime</c>）が前回と変わったときだけ動かし、
+    /// 1 フレームにつき 1 回に絞る。
+    ///
+    /// <b>注意</b>: 同じフレームの <c>OnStart</c> で登録したハンドラは、
+    /// 登録がこの呼び出しより後になると 1 件取りこぼすことがある
+    /// （ランタイムは Play 開始時に待ち行列を空にするので、通常の
+    /// 「OnStart で登録 → あとからコマンドを送る」使い方では起きない）。
+    /// </summary>
+    private static void DispatchDebugCommandsOncePerFrame(NativeFrameContext* ctx)
+    {
+        float now = ctx->UnscaledElapsedTime;
+        if (now == _lastDebugDispatchTime) { return; }
+        _lastDebugDispatchTime = now;
+
+        try { SEED.Debug.DispatchPendingCommands(); }
+        catch (Exception ex)
+        {
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            Console.Error.WriteLine($"[SEEDScripting] デバッグコマンドの配信で例外: {ex}");
+        }
+    }
+
+    /// <summary>デバッグコマンドを最後に配ったフレームの実時間（同一フレームの二重配信よけ）。</summary>
+    private static float _lastDebugDispatchTime = float.NaN;
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void EarlyUpdate(nint h, NativeFrameContext* ctx)

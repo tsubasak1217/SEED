@@ -42,6 +42,8 @@ mod ipc_handler;
 mod input_inject_ops;
 // セーブデータ（SEED.SaveData）の IPC 読み書き（AI 検証用）
 mod save_data_ops;
+/// デバッグコマンド IPC（SCRIPT_DEBUG）のハンドラ。
+mod script_debug_ops;
 /// 未保存クリップのライブプレビュー（ANIM_PREVIEW_CLIP）
 mod anim_preview_clip_ops;
 mod hierarchy_sync;

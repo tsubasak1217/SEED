@@ -202,6 +202,9 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
             "game_input_sequence"     => await PostCmdAsync(http, "game_input_sequence",    args),
             "game_input_release_all"  => await PostCmdAsync(http, "game_input_release_all", args),
 
+            // デバッグコマンド: ゲーム側スクリプトの SEED.Debug.OnCommand を叩く（変更系）
+            "seed_script_debug"      => await PostCmdAsync(http, "script_debug",      args),
+
             // プロファイラ一発計測: 応答 JSON を要約表へ整形して返す専用経路
             "seed_profile"           => await HandleProfileAsync(http, args),
 
@@ -769,6 +772,7 @@ static object[] BuildToolList() => new[]
     GameInputMouseTool(),
     GameInputSequenceTool(),
     GameInputReleaseAllTool(),
+    SeedScriptDebugTool(),
 };
 
 /// <summary>引数を取らないツールの共通スキーマ。</summary>
@@ -925,6 +929,8 @@ static object SeedBatchTool() => new
                                 "game_input_sequence", "game_input_release_all",
                                 // セーブデータ（進行状態を作ってから Play する用）
                                 "save_data",
+                                // デバッグコマンド（ゲームの途中の状態を 1 手で作る）
+                                "script_debug",
                                 // アクタ検索（名前 → DFS ID。後続操作の宛先を得る）
                                 "find_actor",
                                 // プレハブインスタンスの再展開（破壊的。Undo 可能）
@@ -1373,6 +1379,37 @@ static object SeedInputTool() => new
 //  ランタイムの Input へ直接注入するツール群。スクリプトの SEED.Input.* /
 //  InputMap のアクションがそのまま反応する。Play 中のみ有効。
 //  IPC とその応答の仕様は docs/editor_mcp.md 9 章が正典。
+
+/// <summary>
+/// <c>seed_script_debug</c> — ゲーム側スクリプトへ名前付きのデバッグ指示を送る。
+///
+/// ゲーム側が <c>SEED.Debug.OnCommand(name, handler)</c> で登録した入口を直接叩くので、
+/// 「釣り上げ演出だけを見たい」のような<b>ゲームの奥まった場面</b>を、
+/// 人の操作を真似ることなく 1 手で再現できる（AI 検証の標準手段）。
+///
+/// 変更系なので束縛済み（seed_launch で起動した）インスタンスでのみ実行できる。
+/// ランタイムは Play 中以外を一律で拒否する。
+/// 仕様は docs/editor_mcp.md 10 章、スクリプト側の API は docs/scripting_api.md が正典。
+/// </summary>
+static object SeedScriptDebugTool() => new
+{
+    name        = "seed_script_debug",
+    description =
+        "ゲーム側スクリプトへデバッグ指示を送る（Play 中のみ）。"
+      + "ゲーム側が SEED.Debug.OnCommand(name, handler) で登録した名前を指定する。"
+      + "入力注入（seed_input）で長い手順を踏まなくても、確認したい場面だけを 1 手で作れる。"
+      + "登録が無い名前を送ると受理はされるが何も起きない（seed_log に警告が出る）。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            name = new { type = "string", description = "コマンド名（ゲーム側が登録したもの。カンマ・改行不可）" },
+            arg  = new { type = "string", description = "コマンドの引数（省略可。改行不可。カンマは使える）" }
+        },
+        required = new[] { "name" }
+    }
+};
 
 static object GameInputKeyTool() => new
 {

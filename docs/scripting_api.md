@@ -566,6 +566,42 @@ Debug.LogWarning("注意");       // 警告
 Debug.LogError("失敗");         // エラー
 ```
 
+### Debug.OnCommand（外部からのデバッグ指示を受ける）
+
+エディタ／MCP から送られた**デバッグコマンド**（`SCRIPT_DEBUG:{name},{arg}` IPC）を
+スクリプトで受け取る仕組みです。「ゲームの奥まった場面だけを、人の操作なしで 1 手で作る」
+ための開発用の入口で、**AI がゲームの流れを検証するときの標準手段**です
+（送り方は `docs/editor_mcp.md` 10 章）。
+
+```csharp
+public override void OnStart()
+{
+    // name は大文字小文字を区別しない。同じ名前へ複数のスクリプトが登録してもよい
+    SEED.Debug.OnCommand("catch_test", arg => FakeCatch(arg));
+}
+
+public override void OnDestroy()
+{
+    // 登録解除は必須（外さないと破棄済みスクリプトのハンドラが呼ばれ続ける）
+    SEED.Debug.OffCommand("catch_test");
+}
+```
+
+| API | 意味 |
+|---|---|
+| `Debug.OnCommand(string name, Action<string> handler)` | ハンドラを登録する。同じ名前とハンドラの組は二重登録されない |
+| `Debug.OffCommand(string name, Action<string>? handler = null)` | ハンドラを外す。`handler` 省略でその名前を丸ごと外す |
+| `Debug.ResetCommandHandlers()` | 登録をすべて捨てる（シーン遷移で持ち越さないため） |
+
+- ハンドラは**ゲームスレッドのフレーム先頭（`BeginFrame` フェーズ）**で呼ばれます。
+  中で ECS を触って構いません。
+- `arg` はコマンドの引数（無指定なら空文字）。改行は含まれません。
+- **Play 中のみ**届きます（Edit 中はランタイムが受け取り自体を拒否します）。
+  Play の開始・停止で未配信の分は捨てられるので、前回 Play の指示が突然走ることはありません。
+- ハンドラが例外を投げても、次のハンドラ・次のコマンドへ進みます（ログには残ります）。
+- 未登録の名前が届くと `[Script:警告] [Debug] 登録されていないデバッグコマンド: xxx` が出ます。
+- 静的な登録表なので、**シーン遷移では作り直されません**。必ず `OnDestroy` で外してください。
+
 ---
 
 ## 4. Mathf（数学ユーティリティ・float 中心）

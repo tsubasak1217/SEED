@@ -125,6 +125,7 @@ public static class AiOperationPolicy
         "find_actor",
         // 注意: save_data はここに入れない（セーブデータを書き換える変更系）。
         // 注意: game_input_* はここに入れない（変更系。GAME_INPUT_COMMAND_PREFIX 参照）。
+        // 注意: script_debug もここに入れない（ゲームの状態を書き換える変更系）。
     };
 
     // ── 状態 ─────────────────────────────────────────────────────

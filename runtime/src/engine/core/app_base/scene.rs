@@ -33,6 +33,13 @@ use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::{ActorData, ActorKind};
 use crate::engine::core::app_base::scene_settings::SceneSettingsData;
 
+/// ゲーム本編（Play で動くシーン）の世界線番号。
+///
+/// アクタ編集タブ（`OPEN_ACTOR`）は 1 以上の世界線へ `.actor` を読み込む。
+/// スクリプトを走らせてよいのはこの世界線のアクタだけ
+/// （`sync_script_owners` の説明を参照）。
+const SCENE_WORLD_LINE: u32 = 0;
+
 // ============================================================
 //  SceneError — シーン読み書き時のエラー型
 // ============================================================
@@ -389,8 +396,21 @@ impl Scene {
     /// Entity と実効アクティブフラグを書き込む。ScriptComponent はスロット専用 entity に
     /// 格納されており、それ自身は所有 Actor を知らないため、ここで橋渡しする。
     ///
-    /// 実効アクティブ = 自身と全祖先の active が true かつ スロットの enabled が true。
+    /// 実効アクティブ = 自身と全祖先の active が true かつ スロットの enabled が true
+    /// **かつ、シーン世界線（`world_line == SCENE_WORLD_LINE`）に居ること**。
     /// false のスクリプトは script_system がライフサイクル呼び出しをスキップする。
+    ///
+    /// 【世界線で切る理由】
+    /// アクタ編集タブ（`OPEN_ACTOR`）で開いた `.actor` は、同じ `World` の
+    /// 別の世界線（`world_line >= 1`）へ読み込まれる。ここで世界線を見ないと、
+    /// **編集タブで開いているだけのアクタのスクリプトが Play 中に走ってしまう**。
+    ///
+    /// これは「静的フィールドで自分を登録するシングルトン」（`PauseMenu` /
+    /// `ResultPanel` など、`OnStart` で `Current = this` を立てる作り）を静かに壊す:
+    /// 編集タブ側のインスタンスが本体として登録されてしまい、ゲーム側から開こうとしても
+    /// <b>画面に映らない世界線のパネルが開く</b>（＝「押しても何も出ない」）。
+    /// 実際に 2026-09 の釣果パネルの不具合はこれが原因だった
+    /// （ResultPanel.actor を編集タブで開いたあとの釣り上げだけパネルが出なかった）。
     fn sync_script_owners(
         actors: &[crate::engine::structs::objects::Actor],
         world:  &mut crate::engine::ecs::World,
@@ -417,7 +437,10 @@ impl Scene {
         }
 
         for actor in actors {
-            walk(actor, world, true);
+            // 世界線はトップレベルアクタが持ち、子は親の世界線に属する。
+            // シーン世界線以外（＝アクタ編集タブのプレビュー）はサブツリーごと非アクティブ。
+            let in_scene = actor.world_line == SCENE_WORLD_LINE;
+            walk(actor, world, in_scene);
         }
     }
 

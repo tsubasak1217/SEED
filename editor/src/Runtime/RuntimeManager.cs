@@ -345,6 +345,18 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>入力シーケンスの再生完了通知（受理応答とは別に、非同期で後から届く）。</summary>
     public const string INPUT_SEQUENCE_DONE_MESSAGE = "INPUT_SEQUENCE_DONE";
 
+    // ── デバッグコマンド（SCRIPT_DEBUG）の応答 ──────────────────
+    //  ランタイム側の実装は runtime/.../app/script_debug_ops.rs。
+    //  応答は 1 行 1 メッセージで下記 2 種類しか来ない。入力注入と同じく
+    //  生文字列のまま InputInjectReplyReceived で配り、解釈は待ち受け側に任せる
+    //  （待ち合わせの仕組みを 2 つ持たないため、意図的に同じ経路へ相乗りさせている）。
+
+    /// <summary>デバッグコマンドの受理応答（引数の無い完全一致メッセージ）。</summary>
+    public const string SCRIPT_DEBUG_OK_MESSAGE = "SCRIPT_DEBUG_OK";
+
+    /// <summary>デバッグコマンドの拒否応答の接頭辞。後ろに理由（not_playing など）が続く。</summary>
+    public const string SCRIPT_DEBUG_ERROR_PREFIX = "SCRIPT_DEBUG_ERROR:";
+
     /// <summary>セーブデータ操作（SAVE_DATA IPC）の成功応答の接頭辞。後ろに結果 JSON が続く。</summary>
     public const string SAVE_DATA_OK_PREFIX = "SAVE_DATA_OK:";
 
@@ -1951,9 +1963,12 @@ public sealed class RuntimeManager : IDisposable
         }
         else if (msg == INPUT_OK_MESSAGE
               || msg == INPUT_SEQUENCE_DONE_MESSAGE
-              || msg.StartsWith(INPUT_ERROR_PREFIX, StringComparison.Ordinal))
+              || msg.StartsWith(INPUT_ERROR_PREFIX, StringComparison.Ordinal)
+              || msg == SCRIPT_DEBUG_OK_MESSAGE
+              || msg.StartsWith(SCRIPT_DEBUG_ERROR_PREFIX, StringComparison.Ordinal))
         {
-            // ゲーム入力注入（INPUT_* IPC）の応答。docs/editor_mcp.md 9.2 節を参照。
+            // ゲーム入力注入（INPUT_* IPC）とデバッグコマンド（SCRIPT_DEBUG IPC）の応答。
+            // docs/editor_mcp.md 9.2 節／10 章を参照。
             // 成否の判定と待ち合わせは呼び出し元（MainWindow.AiHost）が行う。
             EditorLog.Write($"[Runtime→Editor] {msg}");
             InputInjectReplyReceived?.Invoke(msg);

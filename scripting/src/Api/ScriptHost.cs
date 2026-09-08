@@ -954,6 +954,55 @@ public static unsafe class ScriptHost
         return true;
     }
 
+    /// <summary>
+    /// 待ち行列の先頭のデバッグコマンド（<c>SCRIPT_DEBUG</c> IPC）を 1 件取り出す。
+    ///
+    /// Rust 側は <c>name\narg</c> の形で 1 本の UTF-8 文字列を返す
+    /// （IPC は 1 行 1 コマンドなので、name にも arg にも改行は入り得ない
+    /// ＝改行を区切りに使えばエスケープ無しで確実に元へ戻せる）。
+    ///
+    /// バッファが足りないときは Rust 側が<b>取り出さずに必要な長さだけ</b>返すので、
+    /// その長さで確保し直して呼び直す（＝バッファ不足で取りこぼさない）。
+    /// </summary>
+    /// <param name="name">取り出したコマンド名（失敗時は空文字）。</param>
+    /// <param name="arg">取り出した引数（失敗時は空文字）。</param>
+    /// <returns>取り出せたら true、待ち行列が空なら false。</returns>
+    public static bool TryTakeDebugCommand(out string name, out string arg)
+    {
+        name = string.Empty;
+        arg  = string.Empty;
+        if (!_available || _api.ScriptDebugTake == null) return false;
+
+        // 1 回目は既定の大きさで試す。足りなければ返り値の長さで確保して 2 回目を呼ぶ。
+        int cap = DebugCommandInitialCapacity;
+        for (int attempt = 0; attempt < DebugCommandMaxAttempts; attempt++)
+        {
+            byte[] buffer = new byte[cap];
+            int len;
+            fixed (byte* bp = buffer) { len = _api.ScriptDebugTake(bp, cap); }
+
+            if (len < 0) return false;              // 待ち行列が空
+            if (len > cap) { cap = len; continue; } // 足りない → 必要な長さで取り直す
+
+            string encoded = Encoding.UTF8.GetString(buffer, 0, len);
+            int sep = encoded.IndexOf(DebugCommandSeparator);
+            if (sep < 0) { name = encoded; return true; }   // 区切りが無い＝引数なし
+            name = encoded.Substring(0, sep);
+            arg  = encoded.Substring(sep + 1);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>デバッグコマンドの取り出しに最初に使うバッファのバイト数。</summary>
+    private const int DebugCommandInitialCapacity = 512;
+
+    /// <summary>デバッグコマンド 1 件あたりの取り出し試行回数（1 回目＋拡張して 2 回目）。</summary>
+    private const int DebugCommandMaxAttempts = 2;
+
+    /// <summary>Rust 側が name と arg を繋ぐ区切り文字（debug_command.rs と一致させること）。</summary>
+    private const char DebugCommandSeparator = '\n';
+
     /// <summary>FindActorFrom の scope: 参照フィールド解決（サブツリー優先＋シーン全体フォールバック）。</summary>
     private const int RefScopeReference = 0;
 
@@ -1067,4 +1116,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, float*, int, float*, int> CameraWorldToScreen;
     /// <summary>(ownerIdx, ownerGen, scope, path, pathLen, out uint[2] entity) → 1/0（アクタ参照のパス解決）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, int, byte*, int, uint*, int> FindActorFrom;
+    /// <summary>(out buf, cap) → -1=待ち行列が空 / 0以上="name\narg" のバイト数（デバッグコマンドの取り出し）</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> ScriptDebugTake;
 }

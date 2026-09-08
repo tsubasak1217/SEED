@@ -30,8 +30,9 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///           whiteoutHoldSeconds 秒の真っ白を保持する。
 ///           真っ白になった最初のフレームでカット（SwitchToSlowArcComposition）。
 /// SlowArc … 白が whiteoutFadeOutSeconds 秒で晴れ、水面を真横から見る構図で
-///           魚がウキの位置から放物線を描いて跳ね上がる（Time.Scale = slowScale）。
-///           arcSeconds × arcApexRatio 秒（＝頂点）で魚を隠し、次へ。
+///           魚がウキの位置から<b>真上へ</b>跳ね上がる（Time.Scale = slowScale）。
+///           水平移動はしない（＝ウキの真上を上下するだけ）。
+///           jumpSeconds × jumpApexRatio 秒で魚を隠し、次へ。
 /// Result  … Time.Scale を戻し、ResultPanel を開く。
 ///           パネルが閉じ切る（ResultPanel.IsActive が false になる）まで待つ。
 /// Close   … closeSeconds 秒の間を置いてから後始末（魚の破棄・カメラ復帰）。
@@ -40,10 +41,16 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <b>カット（<see cref="SwitchToSlowArcComposition"/>）</b>
 /// 画面が完全に白いあいだに構図を切り替えるので、視点の飛びが見えない。
 /// - 横カメラの目標（<see cref="catchCameraTarget"/>）を「ウキ→プレイヤーの向きに対して
-///   直角・水面のすこし上」へ置き、<see cref="CameraMove.RequestSnap"/> で<b>補間せず</b>飛ばす。
-///   カメラ距離は魚のサイズランクぶん遠のく（大きい魚ほど弧が大きいため）。
+///   直角・跳びの中ほどの高さ」へ置き、<see cref="CameraMove.RequestSnap"/> で<b>補間せず</b>飛ばす。
+///   カメラ距離は「跳びの縦幅が画角に収まる距離」と「基準距離＋ランクぶん」の<b>大きい方</b>
+///   （<see cref="RequiredVerticalFitDistance"/>）。
 /// - 魚をウキから外し、水面のすぐ下（<see cref="fishSubmergeDepth"/>）へ置く。
 /// - しぶき（<see cref="splashActorPath"/> のパーティクル）と水音を出す。
+///
+/// <b>魚の姿勢</b>
+/// 跳ねているあいだ、魚は<b>頭を真上へ向けた姿勢</b>で固定する
+/// （<see cref="NoseUpPitchDegrees"/> ＋ <see cref="fishNoseTiltDegrees"/>）。
+/// 回転はさせないので、モデルのアニメーション（泳ぎ・待機）はそのまま流れ続ける。
 ///
 /// <b>時間軸</b>
 /// スロー中（<c>Time.Scale</c> を下げている区間）でも演出の秒数がぶれないよう、
@@ -71,7 +78,7 @@ public class CatchPresenter : SEEDScript
         /// <summary>白へフェードイン＋真っ白の保持。保持へ入る瞬間に構図と魚を差し替える。</summary>
         Fade,
 
-        /// <summary>白が晴れ、魚が水面から放物線を描いて跳ね上がる（スロー）。</summary>
+        /// <summary>白が晴れ、魚が水面から真上へ跳ね上がる（スロー）。</summary>
         SlowArc,
 
         /// <summary>釣果パネルを開き、閉じ切るまで待つ。</summary>
@@ -89,11 +96,8 @@ public class CatchPresenter : SEEDScript
     /// <summary>0 除算を避けるための「実質 0」しきい値（秒数などの分母に使う）。</summary>
     private const float DivideEpsilon = 1e-4f;
 
-    /// <summary>「半分」を表す係数（中点・半角など、2 で割る場面の共通定数）。</summary>
-    private const float Half = 0.5f;
-
     /// <summary>
-    /// 放物線の頂点係数。<c>4·h·t·(1−t)</c> は t=0.5 でちょうど h になるので、
+    /// 跳びの高さ曲線の頂点係数。<c>4·h·t·(1−t)</c> は t=0.5 でちょうど h になるので、
     /// 「頂点の高さ」をそのままインスペクタで指定できる。
     /// </summary>
     private const float ParabolaPeakCoefficient = 4f;
@@ -113,6 +117,22 @@ public class CatchPresenter : SEEDScript
     /// <summary>サイズランク C（既定）の段位。</summary>
     private const int RankStepC = 0;
 
+    /// <summary>
+    /// 「頭を真上へ向ける」ためのピッチ角（度）。
+    ///
+    /// 本エンジンの回転（オイラー角）は <see cref="LookRotation"/> と同じ規約で、
+    /// ピッチ ＝ <c>-asin(向きのY成分)</c>。したがって<b>真上（+Y）を向く</b>ピッチは -90 度。
+    /// モデルの前方が +Z である前提（魚の遊泳 AI も <c>Rotation=(0,yaw,0)</c> で
+    /// +Z を進行方向として扱っている＝<see cref="Fish"/> と同じ規約）。
+    /// </summary>
+    private const float NoseUpPitchDegrees = -90f;
+
+    /// <summary>画角から必要距離を出すときの分母 <c>tan(fov/2)</c> の下限（0 除算よけ）。</summary>
+    private const float MinTangent = 1e-3f;
+
+    /// <summary>画角の半分を出すための除数。</summary>
+    private const float HalfDivisor = 2f;
+
     // ベストサイズ・ベストランク・釣った数の保存キーは FishRecords が一元管理する。
 
     // ─── 参照（インスペクタで割り当てる）───────────────────────
@@ -120,7 +140,7 @@ public class CatchPresenter : SEEDScript
     /// <summary>
     /// 釣り上げ演出中のカメラ目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」）。
     ///
-    /// 真っ白の瞬間に本スクリプトが「ウキ→プレイヤーの向きに対して直角・水面のすこし上」の
+    /// 真っ白の瞬間に本スクリプトが「ウキ→プレイヤーの向きに対して直角・跳びの中ほどの高さ」の
     /// 姿勢へ置き直し、<see cref="CameraMove.RequestSnap"/> でカットする。以後この構図は
     /// 動かさない（跳ね上がる魚だけが動く画になる）。
     /// 未設定なら構図は切り替わらない（<see cref="CameraMove"/> が従来の目標を追い続ける）。
@@ -178,14 +198,18 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>
     /// 横カメラの仰角（度）。0 で水平、正で上から見下ろす。
-    /// 「水面のすこし上から真横に見る」構図なので既定は 0 に近い値。
+    ///
+    /// 縦跳びは「跳びの中ほどの高さ」（<see cref="cameraFocusRatio"/>）を注視するので、
+    /// <b>既定は 0＝完全な真横</b>。カメラ自身の高さも注視点と同じ高さになるため、
+    /// 上下どちらへも同じだけ余白が残る（＝3 m 跳んでも頭が切れない）。
     /// </summary>
     [SerializeField(Label = "仰角φ(度)")]
-    private float sideCameraPhi = 6f;
+    private float sideCameraPhi = 0f;
 
     /// <summary>
     /// 横カメラの基準距離（メートル）。実際の距離は
-    /// <c>sideCameraDistance ＋ sideCameraDistancePerRank × ランク段位</c>。
+    /// <c>max(sideCameraDistance ＋ sideCameraDistancePerRank × ランク段位,
+    /// 縦幅が画角に収まる距離)</c>（<see cref="RequiredVerticalFitDistance"/>）。
     /// ランク段位は C=0 / B=1 / A=2 / S=3（<see cref="RankStep"/>）。
     /// </summary>
     [SerializeField(Label = "距離(m)")]
@@ -196,42 +220,68 @@ public class CatchPresenter : SEEDScript
     private float sideCameraDistancePerRank = 1.8f;
 
     /// <summary>
-    /// 水面からのカメラの高さ（メートル）。カメラの高さは
-    /// <c>水面 ＋ この値 ＋ 距離 × sin(仰角)</c> で決まる（＝水面のすこし上に置く）。
+    /// 注視点を跳びのどの高さに置くか（0〜1 の比率。跳ねる高さ <see cref="jumpHeight"/> に掛ける）。
+    /// 0.5＝跳びの中ほど（上下の余白が等しくなるので既定）。
     /// </summary>
-    [SerializeField(Label = "水面からの高さ(m)")]
-    private float sideCameraHeight = 0.5f;
+    [SerializeField(Label = "注視点の高さ比率")]
+    private float cameraFocusRatio = 0.5f;
 
-    // ─── 魚の放物線（SlowArc）──────────────────────────────────
-
-    /// <summary>魚が跳ね始める深さ（水面からどれだけ下に置くか。メートル）。</summary>
-    [Header("魚の放物線"), SerializeField(Label = "水面下の開始深さ(m)")]
-    private float fishSubmergeDepth = 0.25f;
-
-    /// <summary>放物線の頂点の高さ（開始点からの高さ。メートル）。</summary>
-    [SerializeField(Label = "跳ねる高さ(m)")]
-    private float arcHeight = 3.0f;
-
-    /// <summary>放物線がプレイヤー側へ進む水平距離（メートル）。</summary>
-    [SerializeField(Label = "プレイヤー側へ進む距離(m)")]
-    private float arcHorizontalDistance = 2.5f;
-
-    /// <summary>放物線を端から端まで描くのに掛ける秒数（実時間）。</summary>
-    [SerializeField(Label = "放物線の秒数")]
-    private float arcSeconds = 3.0f;
+    /// <summary>注視点からのカメラの高さの上乗せ（メートル）。0 で注視点と同じ高さ。</summary>
+    [SerializeField(Label = "注視点からの高さ(m)")]
+    private float cameraHeightAboveFocus = 0f;
 
     /// <summary>
-    /// 放物線のどこで釣果パネルへ切り替えるか（0〜1 の比率）。
+    /// 縦幅の収まりを計算するときに使う<b>垂直画角</b>（度）。
+    ///
+    /// 演出中の実際の画角は <see cref="CameraMove"/> が <c>fishingFov</c>（既定 45 度）へ
+    /// 寄せるので、既定はそれに合わせた 45。ここを変えても実画角は変わらない
+    /// （＝あくまで「どれだけ引けば収まるか」の見積もりに使う値）。
+    /// </summary>
+    [SerializeField(Label = "収まり計算に使う画角(度)")]
+    private float verticalFitFovDegrees = 45f;
+
+    /// <summary>
+    /// 縦幅の収まりの余白（倍率）。1.0 でちょうど画面いっぱい、1.2 で 2 割の余白。
+    /// </summary>
+    [SerializeField(Label = "収まりの余白(倍)")]
+    private float verticalFitMargin = 1.25f;
+
+    // ─── 魚の縦跳び（SlowArc）──────────────────────────────────
+
+    /// <summary>魚が跳ね始める深さ（水面からどれだけ下に置くか。メートル）。</summary>
+    [Header("魚の縦跳び"), SerializeField(Label = "水面下の開始深さ(m)")]
+    private float fishSubmergeDepth = 0.25f;
+
+    /// <summary>跳びの頂点の高さ（開始点からの高さ。メートル）。</summary>
+    [SerializeField(Label = "跳ねる高さ(m)")]
+    private float jumpHeight = 3.0f;
+
+    /// <summary>跳びの始めから着水までに掛ける秒数（実時間）。</summary>
+    [SerializeField(Label = "跳ねる秒数")]
+    private float jumpSeconds = 3.0f;
+
+    /// <summary>
+    /// 跳びのどこで釣果パネルへ切り替えるか（0〜1 の比率）。
     /// 0.5＝頂点。既定 0.7 は頂点を過ぎて落ち始めたところ（魚をじっくり見せる）。
     /// </summary>
     [SerializeField(Label = "パネルへ切り替える比率")]
-    private float arcApexRatio = 0.7f;
+    private float jumpApexRatio = 0.7f;
 
-    /// <summary>魚が横軸まわりに回る速さ（度／秒）。0 で回転しない。</summary>
-    [SerializeField(Label = "回転速度(度/秒)")]
-    private float fishSpinDegPerSecond = 150f;
+    /// <summary>
+    /// 頭の向きの微調整（度）。0 で真上。正で頭がカメラ側／奥側へ傾く
+    /// （<see cref="NoseUpPitchDegrees"/> に加算される）。
+    /// </summary>
+    [SerializeField(Label = "頭の傾き(度)")]
+    private float fishNoseTiltDegrees = 0f;
 
-    /// <summary>放物線のあいだのゲーム時間の速さ（0.3＝3 割の速さ＝スロー）。</summary>
+    /// <summary>
+    /// 魚の横向き（ヨー）の微調整（度）。基準は「ウキ→プレイヤー」の水平方向で、
+    /// カメラは<b>そこから真横</b>に居るので、0 なら魚の側面がカメラを向く。
+    /// </summary>
+    [SerializeField(Label = "横向きの微調整(度)")]
+    private float fishYawOffsetDegrees = 0f;
+
+    /// <summary>跳びのあいだのゲーム時間の速さ（0.3＝3 割の速さ＝スロー）。</summary>
     [SerializeField(Label = "スローの速さ")]
     private float slowScale = 0.3f;
 
@@ -314,14 +364,17 @@ public class CatchPresenter : SEEDScript
     /// <summary>釣り上げた瞬間のウキのワールド位置（＝水面の基準点）。<see cref="Begin"/> で受け取る。</summary>
     private SEED.Vector3 floatPosition = SEED.Vector3.Zero;
 
-    /// <summary>魚が跳ね始める点（水面のすこし下）。カットの瞬間に確定する。</summary>
-    private SEED.Vector3 arcStart = SEED.Vector3.Zero;
+    /// <summary>
+    /// 魚が跳ね始める点（ウキの真下・水面のすこし下）。カットの瞬間に確定する。
+    /// 縦跳びなので、魚はこの点の<b>真上</b>だけを行き来する（水平方向へは動かない）。
+    /// </summary>
+    private SEED.Vector3 jumpStart = SEED.Vector3.Zero;
 
-    /// <summary>魚が跳ね終わる点（プレイヤー側・開始点と同じ高さ）。カットの瞬間に確定する。</summary>
-    private SEED.Vector3 arcEnd = SEED.Vector3.Zero;
-
-    /// <summary>魚の進行方向のヨー角（度）。放物線のあいだ固定で、回転はピッチだけが進む。</summary>
-    private float arcYawDegrees = 0f;
+    /// <summary>
+    /// 魚のヨー角（度）。「ウキ→プレイヤー」の水平方向 ＋ <see cref="fishYawOffsetDegrees"/>。
+    /// カメラはこの向きに対して真横（θ=90°）に居るので、既定では魚の側面がカメラを向く。
+    /// </summary>
+    private float fishYawDegrees = 0f;
 
     /// <summary>現在のフェーズに入ってからの経過秒数（実時間）。</summary>
     private float phaseElapsed = 0f;
@@ -489,12 +542,12 @@ public class CatchPresenter : SEEDScript
     }
 
     /// <summary>
-    /// <see cref="CatchPhase.SlowArc"/> の更新（白が晴れる／魚が放物線を描く）。
+    /// <see cref="CatchPhase.SlowArc"/> の更新（白が晴れる／魚が真上へ跳ぶ）。
     ///
     /// - 白: <see cref="whiteoutFadeOutSeconds"/> で 1 → 0
-    /// - 魚: <see cref="arcStart"/> → <see cref="arcEnd"/> の放物線を
-    ///   <see cref="arcSeconds"/> 秒で進み、横軸まわりに <see cref="fishSpinDegPerSecond"/> で回る
-    /// - <see cref="arcSeconds"/> × <see cref="arcApexRatio"/> 秒（既定＝頂点）で次のフェーズへ
+    /// - 魚: <see cref="jumpStart"/> の真上を <see cref="jumpSeconds"/> 秒で往復する
+    ///   （姿勢は頭を真上へ向けたまま固定。回転はしない）
+    /// - <see cref="jumpSeconds"/> × <see cref="jumpApexRatio"/> 秒で次のフェーズへ
     /// </summary>
     private void UpdateSlowArc()
     {
@@ -503,13 +556,13 @@ public class CatchPresenter : SEEDScript
         float alpha = fadeOut <= DivideEpsilon ? 0f : 1f - SEED.Mathf.Clamped01(phaseElapsed / fadeOut);
         SetWhiteoutAlpha(alpha);
 
-        // 放物線上の位置と回転を置き直す
-        float span = SEED.Mathf.Max(arcSeconds, DivideEpsilon);
+        // 跳びの位置と姿勢を置き直す
+        float span = SEED.Mathf.Max(jumpSeconds, DivideEpsilon);
         float t = SEED.Mathf.Clamped01(phaseElapsed / span);
-        PlaceFishOnArc(t);
+        PlaceFishOnJump(t);
 
-        // 頂点（既定）まで来たら魚を隠して釣果パネルへ
-        float switchSeconds = span * SEED.Mathf.Clamped01(arcApexRatio);
+        // 指定の比率まで来たら魚を隠して釣果パネルへ
+        float switchSeconds = span * SEED.Mathf.Clamped01(jumpApexRatio);
         if (phaseElapsed < switchSeconds) { return; }
 
         HideFish();
@@ -579,31 +632,32 @@ public class CatchPresenter : SEEDScript
     /// <summary>
     /// 真っ白の瞬間に行うカット【構図・魚の差し替えの唯一の集約点】。
     ///
-    /// 1. 放物線の始点・終点・向きを決める（水面と「ウキ→プレイヤー」の向きが基準）
+    /// 1. 跳びの始点と魚の向きを決める（水面と「ウキ→プレイヤー」の向きが基準）
     /// 2. 横カメラの目標を置き、<see cref="CameraMove.RequestSnap"/> で補間を飛ばす
     /// 3. 魚をウキから外して始点（水面のすこし下）へ置く
     /// 4. しぶきと水音を出す
     /// </summary>
     private void SwitchToSlowArcComposition()
     {
-        // 1. 放物線の始点・終点・向き
+        // 1. 跳びの始点（ウキの真下・水面のすこし下）と魚の向き
         SEED.Vector3 toPlayer = HorizontalToPlayer();
-        arcStart = floatPosition - SEED.Vector3.Up * SEED.Mathf.Max(fishSubmergeDepth, 0f);
-        arcEnd = arcStart + toPlayer * arcHorizontalDistance;
-        arcYawDegrees = SEED.Mathf.Atan2(toPlayer.x, toPlayer.z) * SEED.Mathf.Rad2Deg;
+        jumpStart = floatPosition - SEED.Vector3.Up * SEED.Mathf.Max(fishSubmergeDepth, 0f);
+        fishYawDegrees = SEED.Mathf.Atan2(toPlayer.x, toPlayer.z) * SEED.Mathf.Rad2Deg
+                       + fishYawOffsetDegrees;
 
         // 2. 横カメラの構図を作ってカット
         ApplySideCameraFraming(toPlayer);
         if (cameraMove is { } cam) { cam.RequestSnap(); }
 
-        // 3. 魚を始点へ（放物線の t=0 の姿勢）
-        PlaceFishOnArc(0f);
+        // 3. 魚を始点へ（跳びの t=0 の姿勢）
+        PlaceFishOnJump(0f);
 
         // 4. しぶき・水音
         SpawnSplash();
         PlaySplashSe();
 
-        SEED.Debug.Log($"[Catch] カット: start={arcStart} end={arcEnd} yaw={arcYawDegrees:F1}");
+        SEED.Debug.Log(
+            $"[Catch] カット: start={jumpStart} 高さ={jumpHeight:F1}m yaw={fishYawDegrees:F1}");
     }
 
     /// <summary>
@@ -631,33 +685,29 @@ public class CatchPresenter : SEEDScript
     // ─── 魚の放物線 ───────────────────────────────────────────
 
     /// <summary>
-    /// 放物線上の位置・姿勢へ魚を置く【魚の見た目を決める唯一の場所】。
+    /// 縦跳びの位置・姿勢へ魚を置く【魚の見た目を決める唯一の場所】。
     ///
-    /// 位置 ＝ <c>lerp(始点, 終点, t) ＋ 上 × 4·h·t·(1−t)</c>
-    /// （<c>4·h·t·(1−t)</c> は t=0.5 でちょうど h になるので、
-    /// 　インスペクタの「跳ねる高さ」がそのまま頂点の高さになる）。
+    /// 位置 ＝ <c>始点 ＋ 上 × 4·h·t·(1−t)</c>（水平方向へは一切動かさない）。
+    /// <c>4·h·t·(1−t)</c> は t=0.5 でちょうど h になるので、
+    /// インスペクタの「跳ねる高さ」がそのまま頂点の高さになる。
     ///
-    /// 姿勢 ＝ ヨーは進行方向（<see cref="arcYawDegrees"/>）で固定、
-    /// ピッチだけが <see cref="fishSpinDegPerSecond"/> で進む。
-    /// カメラは進行方向に対して直角に置いてあるので、この回転は
-    /// 画面内で<b>横軸まわりの一回転</b>（前転）に見える。
+    /// 姿勢 ＝ ピッチ <see cref="NoseUpPitchDegrees"/>（＝頭が真上）＋
+    /// <see cref="fishNoseTiltDegrees"/>、ヨーは <see cref="fishYawDegrees"/> で固定。
+    /// <b>回転させない</b>ので、モデルに付いているアニメーション（泳ぎ・待機）は
+    /// そのまま流れ続け、跳ねながらヒレを動かしているように見える。
     /// </summary>
-    /// <param name="t">放物線の進行度（0〜1）。</param>
-    private void PlaceFishOnArc(float t)
+    /// <param name="t">跳びの進行度（0〜1）。</param>
+    private void PlaceFishOnJump(float t)
     {
         if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
 
         float ratio = SEED.Mathf.Clamped01(t);
-        float height = ParabolaPeakCoefficient * arcHeight * ratio * (1f - ratio);
+        float height = ParabolaPeakCoefficient * jumpHeight * ratio * (1f - ratio);
 
-        var flat = arcStart + (arcEnd - arcStart) * ratio;
         var fishTf = fish.Transform;
-        fishTf.Position = flat + SEED.Vector3.Up * height;
-
-        // 回転は「放物線に入ってからの経過秒数 × 速度」。位置と同じ引数で決まるよう
-        // 経過秒数ではなく進行度から復元する（t=1 で arcSeconds ぶん回った状態になる）。
-        float spunDegrees = fishSpinDegPerSecond * SEED.Mathf.Max(arcSeconds, 0f) * ratio;
-        fishTf.Rotation = new SEED.Vector3(spunDegrees, arcYawDegrees, 0f);
+        fishTf.Position = jumpStart + SEED.Vector3.Up * height;
+        fishTf.Rotation = new SEED.Vector3(
+            NoseUpPitchDegrees + fishNoseTiltDegrees, fishYawDegrees, 0f);
     }
 
     /// <summary>
@@ -699,28 +749,35 @@ public class CatchPresenter : SEEDScript
     // ─── 横カメラの構図 ───────────────────────────────────────
 
     /// <summary>
-    /// 横カメラの目標（<see cref="catchCameraTarget"/>）を放物線に合わせて置く
+    /// 横カメラの目標（<see cref="catchCameraTarget"/>）を縦跳びに合わせて置く
     /// 【この構図の唯一の算出点】。
     ///
     /// <code>
-    /// 注視点   ＝ 弧の中心（始点と終点の中点 ＋ 上 × 跳ねる高さ/2）
+    /// 注視点   ＝ 跳びの真上・中ほどの高さ（始点 ＋ 上 × 跳ねる高さ × 注視点の高さ比率）
     /// 水平方向 ＝ 「ウキ→プレイヤー」を方位角θぶん右へ回した向き（θ=90 で真横）
-    /// 距離     ＝ 基準距離 ＋ ランク段位 × ランクあたりの距離
+    /// 距離     ＝ max(基準距離 ＋ ランク段位 × ランクあたりの距離, 縦幅が収まる距離)
     /// 位置     ＝ (注視点の水平位置 ＋ 水平方向 × 距離·cosφ,
-    ///              水面 ＋ 高さ ＋ 距離·sinφ,
+    ///              注視点の高さ ＋ 注視点からの高さ ＋ 距離·sinφ,
     ///              …)
     /// 向き     ＝ その位置から注視点を見る向き
     /// </code>
-    /// カメラの高さだけは注視点ではなく<b>水面</b>を基準にする（「水面のすこし上から
-    /// 真横に見る」という構図の指定をそのまま数式にするため）。
+    ///
+    /// <b>縦跳びに合わせた変更点</b>
+    /// 放物線だったころは「水面のすこし上から見上げる」構図でよかったが、
+    /// 縦跳びは<b>画面の上下いっぱい</b>を使うので、
+    /// - カメラの高さを<b>注視点と同じ</b>にして（φ=0・上乗せ 0）上下の余白を等しくし、
+    /// - 距離は「跳びの縦幅が画角に収まる距離」を下限にする
+    /// （<see cref="RequiredVerticalFitDistance"/>）。
+    /// これで「跳ねる高さ」を大きくしてもカメラが自動で引き、頭が切れない。
     /// </summary>
     /// <param name="toPlayer">「ウキ→プレイヤー」の水平方向（正規化済み）。</param>
     private void ApplySideCameraFraming(SEED.Vector3 toPlayer)
     {
         if (catchCameraTarget is not { IsValid: true } goal) { return; }
 
-        // 注視点＝弧の中心
-        var focus = (arcStart + arcEnd) * Half + SEED.Vector3.Up * (arcHeight * Half);
+        // 注視点＝跳びの真上・中ほどの高さ（水平位置は跳びの始点＝ウキの真下と同じ）
+        var focus = jumpStart
+                  + SEED.Vector3.Up * (jumpHeight * SEED.Mathf.Clamped01(cameraFocusRatio));
 
         // toPlayer を右へ 90° 回した水平方向（θ=90° の方位に対応）
         var right = new SEED.Vector3(toPlayer.z, 0f, -toPlayer.x);
@@ -729,16 +786,49 @@ public class CatchPresenter : SEEDScript
         float phiRad = sideCameraPhi * SEED.Mathf.Deg2Rad;
         var horizDir = toPlayer * SEED.Mathf.Cos(thetaRad) + right * SEED.Mathf.Sin(thetaRad);
 
-        float distance = SEED.Mathf.Max(
+        // ランクぶんの引きと「縦幅が収まる引き」の大きい方を採る。
+        // ランク指定だけだと、跳ねる高さを上げたときに必ず頭が切れる。
+        float rankDistance = SEED.Mathf.Max(
             sideCameraDistance + sideCameraDistancePerRank * RankStep(), 0f);
+        float distance = SEED.Mathf.Max(rankDistance, RequiredVerticalFitDistance());
 
         var camPos = new SEED.Vector3(
             focus.x + horizDir.x * distance * SEED.Mathf.Cos(phiRad),
-            floatPosition.y + sideCameraHeight + distance * SEED.Mathf.Sin(phiRad),
+            focus.y + cameraHeightAboveFocus + distance * SEED.Mathf.Sin(phiRad),
             focus.z + horizDir.z * distance * SEED.Mathf.Cos(phiRad));
 
         goal.Position = camPos;
         goal.Rotation = LookRotation(focus - camPos);
+    }
+
+    /// <summary>
+    /// 跳びの縦幅が画角に収まる最小のカメラ距離（メートル）
+    /// 【「頭が切れない距離」の唯一の計算式】。
+    ///
+    /// <code>
+    /// 縦幅      ＝ 跳ねる高さ ＋ 水面下の開始深さ（＝水中の始点から頂点まで）
+    /// 半分の幅  ＝ 縦幅 / 2 × 余白（注視点が縦幅の真ん中に来る前提）
+    /// 必要距離  ＝ 半分の幅 / tan(画角 / 2)
+    /// </code>
+    ///
+    /// 既定値（跳ねる高さ 3.0 m・開始深さ 0.25 m・画角 45 度・余白 1.25 倍）なら
+    /// <c>(3.25 / 2 × 1.25) / tan(22.5°) ≒ 4.9 m</c>。
+    /// 既定の基準距離 5.5 m のほうが大きいので、既定値のままでは
+    /// この下限は効かない（＝跳ねる高さを 3.5 m 以上に上げたときに効き始める）。
+    ///
+    /// <b>画角について</b>: 実際の画角は <see cref="CameraMove"/> が決めるので、
+    /// ここでは <see cref="verticalFitFovDegrees"/> を「見積もりに使う値」として使う。
+    /// 実画角と食い違うと余白の量がずれるだけで、破綻はしない。
+    /// </summary>
+    private float RequiredVerticalFitDistance()
+    {
+        float span = SEED.Mathf.Max(jumpHeight, 0f) + SEED.Mathf.Max(fishSubmergeDepth, 0f);
+        float halfSpan = span / HalfDivisor * SEED.Mathf.Max(verticalFitMargin, 0f);
+
+        float halfFovRad = SEED.Mathf.Max(verticalFitFovDegrees, 0f)
+                         / HalfDivisor * SEED.Mathf.Deg2Rad;
+        float tangent = SEED.Mathf.Max(SEED.Mathf.Tan(halfFovRad), MinTangent);
+        return halfSpan / tangent;
     }
 
     /// <summary>

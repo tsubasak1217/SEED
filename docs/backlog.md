@@ -251,3 +251,33 @@
 - [ ] **スロー放物線・横カメラ・しぶきパーティクルが実機未確認** — 2026-09-08。魚を実際に釣り上げないと通らない経路のため、ヘッドレスでは撮れていない。特に (1) `assets://mainGame/actors/FX/Splash.actor` を実行時 `Instantiate` したときに GPU パーティクルが放出されるか（Play 開始時に存在しないエミッタの扱い）、(2) 横カメラの θ/φ/距離の既定値で弧が画面に収まるか、(3) `Time.Scale` を下げているあいだに他システムが破綻しないか、の 3 点は人の目で確認すること。
 - [ ] **旧「釣果テキスト」（FishingUI/catchUIs 配下）が未使用のまま残っている** — 2026-09-08。`CatchPresenter` は `ResultPanel` へ移行したので、`CatchName` / `CatchSize` / `CatchRank` / `CatchBest` / `CatchPrompt` は誰からも参照されない。シーン（MainGame.scene）は AI が触らない約束のため残置。利用者が削除すること。
 - [ ] **Text（`box_width = 0`）の実際の描画位置が指定 y よりわずかに上に出る** — 2026-09-08。`ResultPanel.actor` のレイアウトはヘッドレス撮影を見ながら数値を合わせ込んだ。`vertical_align: middle` の基準がフォントのどの高さなのかを確かめて、指定位置＝視覚的な中心になるようにするか、ずれ幅を仕様として docs へ書くのが望ましい。
+
+## 釣果リザルト演出 — 縦跳び化とデバッグコマンド（2026-09-08 実装時）
+
+正典: `runtime/assets/mainGame/scripts/CatchPresenter.cs` / `ResultPanel.cs`、`docs/editor_mcp.md` 10 章。
+
+- [ ] **チュートリアル中に魚を釣ると釣果パネルを閉じられずソフトロックする** — 2026-09-08（実測）。
+  `ResultPanel.IsConfirmPressed` は `InputGate.Allows(GameAction.UiConfirm)` を要求するが、
+  `TutorialDirector.ApplyMissionGates` は `InputGate.DenyAll()` のあとミッションの
+  `allowUiConfirm` だけを開ける。`allowUiConfirm = false` のミッション中に釣り上げると、
+  Enter も左クリックも効かず `CatchPresenter` が `Result` フェーズから抜けられない
+  （ヘッドレス検証で Enter を 2 回送っても閉じないことを確認済み）。
+  対策候補: (1) 釣果パネルの決定入力を `InputGate` の対象外にする、
+  (2) 釣りが成立しうるミッションの `allowUiConfirm` を必ず true にする、のいずれか。**要判断**。
+- [ ] **釣り上げ演出の横カメラが、魚を画面中央に置けていない** — 2026-09-08（実測）。
+  `CatchPresenter.ApplySideCameraFraming` は「注視点＝跳びの中ほど」を向く姿勢を
+  `CatchCameraTarget` に書いているが、実際の画では魚が中心から左へ 15% ほどずれる。
+  縦の収まり（3 m の跳びが切れない）は満たしているので実害は小さい。
+  `CameraMove` 側が目標姿勢に対して独自のオフセットを掛けている疑いがあるので、
+  そちらを読んで切り分けること。
+- [ ] **しぶきパーティクル（`assets://mainGame/actors/FX/Splash.actor`）の放出が未確認** — 2026-09-08。
+  実行時 `Instantiate` は成功している（生成失敗の警告は出ていない）が、
+  ヘッドレスのスクリーンショットではしぶきを確認できなかった。
+  カット直後はカメラがまだ寄り切っておらず着水点が画面外に近いため、
+  「出ていない」のか「撮れていない」のかを分離できていない。
+  実行時生成のエミッタが放出するかどうかを、Splash 単体のシーンで切り分けること。
+- [ ] **`SEED.Debug.OnCommand` の登録表はシーン遷移で消えない** — 2026-09-08（仕様）。
+  静的な `Dictionary` なので、`OnDestroy` で `OffCommand` を呼ばないハンドラは
+  破棄済みスクリプトを掴んだまま残る。`Play` 停止時に
+  `SEED.Debug.ResetCommandHandlers()` を自動で呼ぶ仕組みを入れるかは要判断
+  （他の静的状態（`PauseMenu` など）も同じ課題を抱えており、まとめて決めるのが筋）。

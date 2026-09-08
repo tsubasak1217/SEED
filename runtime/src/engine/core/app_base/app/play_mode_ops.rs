@@ -95,6 +95,9 @@ impl App {
         // ポインタ状態を捨てる（前回 Play のホバー/押下対象は破棄済みエンティティ）。
         // 二重開始のべき等パスより前に置いて、どの経路でも必ず初期化されるようにする。
         self.pointer.reset();
+        // 前回 Play の取り残しのデバッグコマンド（SCRIPT_DEBUG）を捨てる。
+        // 残すと、Play を開始した瞬間に前回送った指示が突然走ってしまう。
+        self.clear_script_debug_commands();
         // JointAttach 子孫の相対ローカルは Play 開始時点の姿勢から採り直す
         // （Edit で竿先を動かした結果を必ず反映させるため）。
         self.joint_attach_child_locals.clear();
@@ -258,6 +261,8 @@ impl App {
         // JointAttach 子孫の相対ローカルキャッシュを破棄する（Play 専用の揮発状態）。
         // 残すと、次の Play で「前回 Play 終了時の相対関係」が使われてしまう。
         self.joint_attach_child_locals.clear();
+        // 誰にも配られなかったデバッグコマンドを捨てる（次の Play へ持ち越さない）。
+        self.clear_script_debug_commands();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         // 開始状態の記録も必ず捨てる（次の Play へ持ち越さない）。
         if self.mode != RuntimeMode::Play {

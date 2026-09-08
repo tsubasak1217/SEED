@@ -455,6 +455,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // セーブデータはゲームの進行データであってシーンの編集ではないため Undo 対象外
         //（Undo/Redo はシーン編集の履歴。進行データを巻き戻す仕組みではない）。
         | IpcCommand::SaveData(..)
+        // デバッグコマンドは Play 中のスクリプトへの指示であってシーンの編集ではない。
+        | IpcCommand::ScriptDebug { .. }
         | IpcCommand::SetEditPhysics { .. }
         | IpcCommand::SetEditPhysicsAll { .. }
         | IpcCommand::SetEditPhysics2d { .. }

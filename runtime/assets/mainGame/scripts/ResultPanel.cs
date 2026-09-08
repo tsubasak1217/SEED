@@ -346,6 +346,7 @@ public class ResultPanel : SEEDScript
         // 実体があるなら即座に表示へ入れる（同フレームから見た目が変わる）
         if (Current is { } instance && panelRoot.IsValid)
         {
+            SEED.Debug.Log($"[ResultPanel] 表示（既存のインスタンス）: {showData.Name}");
             panelRoot.Visible = true;
             IsActive = true;
             instance.BeginShow(showData);
@@ -371,6 +372,7 @@ public class ResultPanel : SEEDScript
         pendingData = showData;
         hasPendingData = true;
         IsActive = true;
+        SEED.Debug.Log($"[ResultPanel] 表示（生成したプレハブの OnStart 待ち）: {showData.Name}");
     }
 
     /// <summary>
@@ -410,10 +412,15 @@ public class ResultPanel : SEEDScript
         panelRoot.Visible = false;
 
         // 生成フォールバック経由なら、預かっていた内容でそのまま表示へ入る
-        if (!hasPendingData) { return; }
+        if (!hasPendingData)
+        {
+            SEED.Debug.Log("[ResultPanel] OnStart（待機中の内容なし＝シーン配置のインスタンス）");
+            return;
+        }
         hasPendingData = false;
         panelRoot.Visible = true;
         IsActive = true;
+        SEED.Debug.Log($"[ResultPanel] OnStart（待機中の内容を表示）: {pendingData.Name}");
         BeginShow(pendingData);
     }
 
@@ -543,6 +550,7 @@ public class ResultPanel : SEEDScript
         if (panelRoot.IsValid) { panelRoot.Visible = false; }
 
         IsActive = false;
+        SEED.Debug.Log("[ResultPanel] 閉じ終わり");
 
         var notify = OnClosed;
         OnClosed = null;         // 1 回きりの通知（同じ購読が次の釣果へ持ち越されないように）

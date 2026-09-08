@@ -163,6 +163,10 @@ public partial class EditorCommandExecutor
         if (ExecuteSaveDataTool(command, args) is { } saveDataTask)
             return await saveDataTask;
 
+        // デバッグコマンド（script_debug）も別ファイル。
+        if (ExecuteScriptDebugTool(command, args) is { } scriptDebugTask)
+            return await scriptDebugTask;
+
         return command switch
         {
             "screenshot"        => ExecuteScreenshot(args),

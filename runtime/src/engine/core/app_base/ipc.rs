@@ -1107,6 +1107,17 @@ pub enum IpcCommand {
     /// （応答: `SAVE_DATA_OK:{json}` / `SAVE_DATA_ERROR:{message}`）。
     /// AI（MCP）が「所持金 1000 の状態」等を作ってから Play するために使う。
     SaveData(String),
+
+    // ─── デバッグコマンド（SEED.Debug.OnCommand）────────────────────────
+    /// `SCRIPT_DEBUG:{name},{arg}` — 実行中のスクリプトへ名前付きの指示を送る。
+    ///
+    /// 受け取ったコマンドは `scripting::debug_command` の待ち行列へ積まれ、
+    /// 次のフレームの `BeginFrame` で C# の `SEED.Debug.OnCommand` に登録された
+    /// ハンドラへ配られる（応答: `SCRIPT_DEBUG_OK` / `SCRIPT_DEBUG_ERROR:{reason}`）。
+    ///
+    /// AI が「釣り上げ演出をその場で起こす」のような<b>ゲーム内の手順を
+    /// 途中から再現する</b>ために使う（人の操作を真似るより速く・確実）。
+    ScriptDebug { name: String, arg: String },
 }
 
 // ============================================================
@@ -1171,6 +1182,29 @@ const SCREENSHOT_PREFIX: &str = "SCREENSHOT:";
 
 /// セーブデータ操作コマンドの接頭辞（`SAVE_DATA:{json}`）。
 const SAVE_DATA_PREFIX: &str = "SAVE_DATA:";
+
+/// `SCRIPT_DEBUG:{name},{arg}` の接頭辞（デバッグコマンド）。
+const SCRIPT_DEBUG_PREFIX: &str = "SCRIPT_DEBUG:";
+
+/// `SCRIPT_DEBUG:` の name と arg を分ける文字（arg 側の `,` は分割しない）。
+const SCRIPT_DEBUG_SEPARATOR: char = ',';
+
+/// `SCRIPT_DEBUG:{name},{arg}` を分解する【デバッグコマンド書式の唯一の定義】。
+///
+/// - `name` は必須（空なら `None`）。前後の空白は落とす。
+/// - `arg` は省略可（`,` ごと無い場合は空文字）。<b>最初の `,` だけ</b>で切るので、
+///   引数の中に `,` があってもそのまま渡る。
+/// - `name` に空白を含むものは弾く（ハンドラ名の取り違えを防ぐため）。
+fn parse_script_debug(line: &str) -> Option<IpcCommand> {
+    let rest = line.strip_prefix(SCRIPT_DEBUG_PREFIX)?;
+    let (name, arg) = match rest.split_once(SCRIPT_DEBUG_SEPARATOR) {
+        Some((n, a)) => (n, a),
+        None => (rest, ""),
+    };
+    let name = name.trim();
+    if name.is_empty() || name.contains(char::is_whitespace) { return None; }
+    Some(IpcCommand::ScriptDebug { name: name.to_string(), arg: arg.trim().to_string() })
+}
 
 /// `RENDER_ACTOR_THUMBNAIL:` コマンドの接頭辞（図鑑画像の生成）。
 const RENDER_ACTOR_THUMBNAIL_PREFIX: &str = "RENDER_ACTOR_THUMBNAIL:";
@@ -3124,6 +3158,9 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with(SAVE_DATA_PREFIX) => s
                             .strip_prefix(SAVE_DATA_PREFIX)
                             .map(|rest| IpcCommand::SaveData(rest.to_string())),
+                        // デバッグコマンド。名前と引数へ割るだけで、意味づけは
+                        // ゲーム側の C# スクリプト（SEED.Debug.OnCommand）が持つ。
+                        s if s.starts_with(SCRIPT_DEBUG_PREFIX) => parse_script_debug(s),
 
                         _                    => None,
                     }
@@ -3227,6 +3264,48 @@ mod tests {
         assert!(matches!(parse_terrain_command("TERRAIN_REDO"),        Some(IpcCommand::TerrainRedo)));
         assert!(matches!(parse_terrain_command("TERRAIN_STROKE_END"),  Some(IpcCommand::TerrainStrokeEnd)));
         assert!(matches!(parse_terrain_command("TERRAIN_COVER_CLEAR"), Some(IpcCommand::TerrainCoverClear)));
+    }
+
+    /// デバッグコマンド（SCRIPT_DEBUG）の書式が正しく分解されること。
+    ///
+    /// 「最初の `,` だけで切る」「name の空白は落とす」「arg は省略可」
+    /// 「name が空／空白入りは弾く」の 4 点が仕様の全部。
+    #[test]
+    fn parses_script_debug_commands() {
+        assert!(matches!(
+            parse_script_debug("SCRIPT_DEBUG:catch_test,トビウオ"),
+            Some(IpcCommand::ScriptDebug { ref name, ref arg })
+                if name == "catch_test" && arg == "トビウオ"
+        ));
+        // 引数の中の `,` は分割しない（最初の 1 個だけで切る）
+        assert!(matches!(
+            parse_script_debug("SCRIPT_DEBUG:spawn,fish,3"),
+            Some(IpcCommand::ScriptDebug { ref name, ref arg })
+                if name == "spawn" && arg == "fish,3"
+        ));
+        // 引数の省略（`,` ごと無い／`,` の後ろが空）はどちらも空文字
+        assert!(matches!(
+            parse_script_debug("SCRIPT_DEBUG:catch_test"),
+            Some(IpcCommand::ScriptDebug { ref name, ref arg })
+                if name == "catch_test" && arg.is_empty()
+        ));
+        assert!(matches!(
+            parse_script_debug("SCRIPT_DEBUG:catch_test,"),
+            Some(IpcCommand::ScriptDebug { ref name, ref arg })
+                if name == "catch_test" && arg.is_empty()
+        ));
+        // name の前後の空白は落ちる
+        assert!(matches!(
+            parse_script_debug("SCRIPT_DEBUG:  catch_test  , あじ "),
+            Some(IpcCommand::ScriptDebug { ref name, ref arg })
+                if name == "catch_test" && arg == "あじ"
+        ));
+        // name が空／空白入りは拒否
+        assert!(parse_script_debug("SCRIPT_DEBUG:").is_none());
+        assert!(parse_script_debug("SCRIPT_DEBUG: ,arg").is_none());
+        assert!(parse_script_debug("SCRIPT_DEBUG:catch test,arg").is_none());
+        // 接頭辞が違えば None
+        assert!(parse_script_debug("SCRIPT_DEBUGX:a,b").is_none());
     }
 
     /// カバー場（I3.1）のシミュレート系 3 コマンドが正しく解釈されること。

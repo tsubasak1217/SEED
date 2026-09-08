@@ -532,7 +532,7 @@
 </section>
 
 <!-- ════════════════ 3. Time / Debug ════════════════ -->
-<section id="sec-time" data-keywords="Time Debug 時間 ログ 出力 デルタタイム TimeScale 時間スケール ヒットストップ スローモーション ポーズ Unscaled">
+<section id="sec-time" data-keywords="Time Debug 時間 ログ 出力 デルタタイム TimeScale 時間スケール ヒットストップ スローモーション ポーズ Unscaled OnCommand OffCommand デバッグコマンド SCRIPT_DEBUG 外部指示 MCP AI検証 script_debug">
   <h2>3. Time（フレーム時間） / Debug（ログ）</h2>
   <div class="api"><code class="sig">Time.DeltaTime</code><span class="desc">float: 前フレームからの経過秒（Time.Scale 適用後のゲーム時間）</span></div>
   <div class="api"><code class="sig">Time.ElapsedTime</code><span class="desc">float: ゲーム内の累計時間（秒。Time.Scale 適用後）</span></div>
@@ -566,6 +566,30 @@ if (_hitStopLeft &lt;= 0f) SEED.Time.Scale = 1f;</code></pre>
   <div class="api"><code class="sig">Debug.Log("メッセージ")</code><span class="desc">情報ログ（エディタの Output パネルに表示）</span></div>
   <div class="api"><code class="sig">Debug.LogWarning("注意")</code><span class="desc">警告ログ</span></div>
   <div class="api"><code class="sig">Debug.LogError("失敗")</code><span class="desc">エラーログ</span></div>
+
+  <h3 id="debug-oncommand">Debug.OnCommand（外部からのデバッグ指示を受ける）</h3>
+  <p class="section-note">エディタ／MCP から送られた<b>デバッグコマンド</b>（<code>SCRIPT_DEBUG:{name},{arg}</code> IPC）をスクリプトで受け取る仕組みです。「ゲームの奥まった場面だけを、人の操作なしで 1 手で作る」ための開発用の入口で、<b>AI がゲームの流れを検証するときの標準手段</b>です（送り方は <code>docs/editor_mcp.md</code> 10 章）。</p>
+  <div class="api"><code class="sig">Debug.OnCommand(string name, Action&lt;string&gt; handler)</code><span class="desc">ハンドラを登録する。name は大文字小文字を区別しない。同じ名前とハンドラの組は二重登録されない</span></div>
+  <div class="api"><code class="sig">Debug.OffCommand(string name, Action&lt;string&gt;? handler = null)</code><span class="desc">ハンドラを外す。handler 省略でその名前を丸ごと外す。<b>OnDestroy で必ず呼ぶこと</b></span></div>
+  <div class="api"><code class="sig">Debug.ResetCommandHandlers()</code><span class="desc">登録をすべて捨てる（シーン遷移で持ち越さないため）</span></div>
+  <pre><code>public override void OnStart()
+{
+    SEED.Debug.OnCommand("catch_test", arg =&gt; FakeCatch(arg));
+}
+
+public override void OnDestroy()
+{
+    SEED.Debug.OffCommand("catch_test");   // 外さないと破棄済みスクリプトのハンドラが呼ばれ続ける
+}</code></pre>
+  <table>
+    <tr><th>性質</th><th>内容</th></tr>
+    <tr><td>呼ばれるタイミング</td><td>ゲームスレッドのフレーム先頭（<code>BeginFrame</code> フェーズ）。中で ECS を触ってよい</td></tr>
+    <tr><td>arg</td><td>コマンドの引数（無指定なら空文字）。改行は含まれない</td></tr>
+    <tr><td>有効な場面</td><td><b>Play 中のみ</b>。Play の開始・停止で未配信の分は捨てられる</td></tr>
+    <tr><td>例外</td><td>ハンドラが例外を投げても次のハンドラ・次のコマンドへ進む（ログには残る）</td></tr>
+    <tr><td>未登録の名前</td><td><code>[Script:警告] [Debug] 登録されていないデバッグコマンド: xxx</code> が出る</td></tr>
+    <tr><td>シーン遷移</td><td>静的な登録表なので作り直されない。必ず <code>OnDestroy</code> で外す</td></tr>
+  </table>
 </section>
 
 <!-- ════════════════ 4. Mathf ════════════════ -->

@@ -157,13 +157,14 @@ dotnet build editor/SEEDEditor.csproj
 | `game_input_mouse` | `button?`+`down?` / `dx?`,`dy?` / `x?`,`y?` / `scroll?` のいずれか 1 種 | `{ok, sent, reply}` |
 | `game_input_sequence` | `events`（9.3 の JSON 配列）, `wait?`（既定 true） | `{ok, sent, reply}`（wait 時は `INPUT_SEQUENCE_DONE` まで待つ） |
 | `game_input_release_all` | なし | `{ok, sent, reply}` |
+| `seed_script_debug` | `name`（ゲーム側が登録したコマンド名）, `arg?` | `{ok, sent, reply}`（ゲームの途中の状態を 1 手で作る。Play 中のみ。10 章） |
 
 `seed_screenshot` 以外の追加ツールは、内部的には
 `POST /seed-ai/cmd` に `{"cmd":"<コマンド名>", ...}` を投げているだけなので、
 `seed_batch` の `operations` からも同じコマンド名で呼べる
 （`anim_preview` / `anim_preview_stop` / `anim_reload` / `select_actor` / `play_control` /
 `save_scene` / `send_ipc` / `prefab_reapply` / `profile` / `game_input_key` / `game_input_mouse` /
-`game_input_sequence` / `game_input_release_all` / `save_data` / `find_actor`）。
+`game_input_sequence` / `game_input_release_all` / `save_data` / `find_actor` / `script_debug`）。
 `seed_save_*` は 1 つのコマンド `save_data` に `op`（get / set / delete / save）を足したもので、
 `seed_batch` からは `{"cmd":"save_data","op":"set","key":"money","value":1200}` の形で呼ぶ。
 `seed_input` は `game_input_key` / `game_input_mouse` を順に撃つ **MCP サーバー側のラッパ**なので、
@@ -199,6 +200,7 @@ dotnet build editor/SEEDEditor.csproj
 | `game_input_mouse` | `game_input_mouse` | 同上 → `INPUT_MOUSE_BUTTON` / `INPUT_MOUSE_MOVE` / `INPUT_MOUSE_POS` / `INPUT_SCROLL` |
 | `game_input_sequence` | `game_input_sequence` | 同上 → `INPUT_SEQUENCE:{json}`（応答待ちは `IEditorAiHost.InjectGameInputAsync`） |
 | `game_input_release_all` | `game_input_release_all` | 同上 → `INPUT_RELEASE_ALL` |
+| `seed_script_debug` | `script_debug` | `EditorCommandExecutor.ScriptDebug.cs` → IPC `SCRIPT_DEBUG:{name},{arg}` → `SCRIPT_DEBUG_OK` / `SCRIPT_DEBUG_ERROR:{reason}`（実装は `runtime/.../app/script_debug_ops.rs`。応答待ちは `IEditorAiHost.InjectGameInputAsync` に相乗り） |
 
 ---
 
@@ -831,6 +833,100 @@ seed_screenshot(target:"game", max_width:800)
 game_input_release_all()
 seed_play(action:"stop")
 ```
+
+---
+
+## 10. デバッグコマンド（`SCRIPT_DEBUG` IPC / `seed_script_debug`）
+
+AI が**ゲームの奥まった場面だけを 1 手で作って**確認するための IPC。
+ゲーム側の C# スクリプトが `SEED.Debug.OnCommand(name, handler)` で用意した入口を
+そのまま叩くので、入力注入（9 章）で長い手順を踏まなくてよい。
+
+**入力注入との使い分け**
+
+| やりたいこと | 使うもの |
+|---|---|
+| 操作そのものを検証したい（歩ける・投げられる・当たる） | `seed_input` / `game_input_*`（9 章） |
+| 操作の先にある**結果の見た目**を検証したい（釣り上げ演出・リザルト・ゲームオーバー） | `seed_script_debug`（本章） |
+
+前者で釣り上げまで辿り着くには「構える → 投げる → 巻く → アタリを待つ → 合わせる →
+やり取りに勝つ」を全部成功させる必要があり、途中で失敗すると**何が原因で画が出ないのか
+切り分けられない**。デバッグコマンドは本物の入口（ゲーム側の関数）を直接呼ぶので、
+確認したい場面だけを確実に、しかも**本番と同じ経路で**再現できる。
+
+- パース: `runtime/src/engine/core/app_base/ipc.rs`（`parse_script_debug`・単体テスト付き）
+- 待ち行列: `runtime/src/engine/core/scripting/debug_command.rs`（単体テスト付き）
+- アプリ側ハンドラ: `runtime/src/engine/core/app_base/app/script_debug_ops.rs`
+- C# への取り出し: `host_api.rs::ffi_script_debug_take` → `ScriptHost.TryTakeDebugCommand`
+- 配信: `scripting/src/ScriptBridge.cs::DispatchDebugCommandsOncePerFrame` →
+  `SEED.Debug.DispatchPendingCommands`
+- エディタ側: `editor/src/AI/Tools/EditorCommandExecutor.ScriptDebug.cs`
+- MCP ツール: `editor/SeedMcpServer/Program.cs::SeedScriptDebugTool`
+
+### 10.1 コマンドと応答
+
+| コマンド | 意味 |
+|---|---|
+| `SCRIPT_DEBUG:{name},{arg}` | 名前付きのデバッグ指示を 1 件送る（`arg` は省略可） |
+
+- `name` と `arg` は**最初のカンマ 1 個**だけで割る。`arg` の中のカンマはそのまま渡る。
+- `name` の前後の空白は落ちる。`name` が空／空白入り／改行入りは拒否。
+- IPC は 1 行 1 コマンドなので、`name` にも `arg` にも改行は入れられない。
+
+| 応答 | いつ |
+|---|---|
+| `SCRIPT_DEBUG_OK` | 受理して待ち行列へ積んだ |
+| `SCRIPT_DEBUG_ERROR:not_playing` | Play 中でない（Edit 中は一律で拒否） |
+
+**受理＝ハンドラが動いた、ではない**点に注意。ランタイムはコマンドの意味を知らないので、
+未登録の名前でも受理する。実際に動いたかは `seed_log` で
+`[Script:警告] [Debug] 登録されていないデバッグコマンド: xxx` が出ていないか確認する。
+
+### 10.2 ゲーム側の書き方
+
+```csharp
+public override void OnStart()
+{
+    SEED.Debug.OnCommand("catch_test", HandleCatchTest);
+}
+
+public override void OnDestroy()
+{
+    SEED.Debug.OffCommand("catch_test", HandleCatchTest);   // 外し忘れ厳禁
+}
+```
+
+詳細は `docs/scripting_api.md` の「Debug.OnCommand」節が正典。
+
+### 10.3 登録済みのコマンド（mainGame）
+
+| name | arg | 何が起きるか |
+|---|---|---|
+| `catch_test` | 魚の表示名（省略可） | 進行中の釣りを畳み、指定の魚（省略時は竿先に一番近い魚）でその場で釣り上げ演出（ホワイトアウト → 縦跳び → 釣果パネル）を起こす。実装は `FishingController.HandleCatchTestCommand` |
+
+### 10.4 使い方の例（釣り上げ演出の確認）
+
+```
+seed_launch(headless:true, scene:".../mainGame/MainGame.scene")
+seed_play(action:"play", wait_seconds:8)          # 魚が湧くのを待つ
+seed_save_set(key:"catch_count", value:0)         # 図鑑登録の分岐も見たいとき
+seed_script_debug(name:"catch_test")              # ← 演出だけを起こす
+（0.8 秒待つ）seed_screenshot(...)                # 跳んでいるところ
+（3 秒待つ）  seed_screenshot(...)                # 釣果パネル
+seed_input(keys:["Enter"]) → seed_screenshot(...) # 図鑑登録パネル
+seed_input(keys:["Enter"]) → seed_screenshot(...) # 閉じたあと
+seed_shutdown()
+```
+
+### 10.5 制約
+
+- **Play 中のみ有効**。Edit 中はすべて `SCRIPT_DEBUG_ERROR:not_playing`。
+- 待ち行列は Play の開始・停止で空になる（前回 Play の指示が突然走らない）。
+- 溜められるのは 64 件まで。溢れたら**古いものから**捨てる。
+- 配信は**フレーム先頭（BeginFrame フェーズ）に 1 回**。同じフレームの `OnStart` で
+  登録したハンドラは、登録がそれより後になると 1 件取りこぼすことがある
+  （＝コマンドは Play 開始後に送ること）。
+- 変更系コマンドなので、`seed_launch` で起動した束縛済みインスタンスでのみ実行できる。
 
 ---
 

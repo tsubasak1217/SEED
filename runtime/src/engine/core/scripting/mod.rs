@@ -27,6 +27,8 @@ pub mod path_query;
 pub mod camera_project;
 // GameObject.Visible の set を遅延適用するまでの保留値テーブル
 pub mod visible_pending;
+// SCRIPT_DEBUG IPC → SEED.Debug.OnCommand の待ち行列
+pub mod debug_command;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
     publish_input, publish_physics_sender, publish_canvas_mouse_position,

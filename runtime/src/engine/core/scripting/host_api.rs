@@ -31,6 +31,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// SCRIPT_DEBUG IPC で積まれたデバッグコマンドの待ち行列（ffi_script_debug_take が取り出す）
+use crate::engine::core::scripting::debug_command;
+
 use crate::engine::components::{
     AnimClipKind, AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform,
     ComponentKind, ControlPointComponent, InputMapComponent, ScriptComponent,
@@ -2143,6 +2146,31 @@ unsafe extern "system" fn ffi_find_actor_from(
     }
 }
 
+/// 待ち行列の先頭のデバッグコマンドを `name\narg` の形で取り出す
+/// （`SEED.Debug.OnCommand` の供給源）。
+///
+/// 【返り値】
+/// - `-1` … 待ち行列が空（取り出すものが無い）
+/// - `0` 以上 … `name\narg` の UTF-8 バイト数
+///
+/// 【バッファのやり取り】
+/// 返り値が `cap` 以下だったときだけ `out` へ書き込み、そのとき<b>だけ</b>
+/// 待ち行列から取り除く。`cap` に収まらなかった場合は書き込まず取り除きもしないので、
+/// 呼び出し側は返り値ぶんの領域を確保して同じ呼び出しをやり直せばよい
+/// （＝バッファ不足でコマンドを取りこぼさない）。
+unsafe extern "system" fn ffi_script_debug_take(out: *mut u8, cap: i32) -> i32 {
+    let Some(encoded) = debug_command::peek_front_encoded() else { return -1 };
+
+    let bytes = encoded.as_bytes();
+    let len = bytes.len() as i32;
+    // 収まらない（またはバッファ未指定）なら、必要な長さだけ教えて待ち行列は触らない
+    if out.is_null() || cap < len { return len; }
+
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+    debug_command::pop_front();
+    len
+}
+
 /// `ffi_find_actor_from` の scope: 参照フィールド解決（サブツリー優先＋全体フォールバック）。
 const REF_SCOPE_REFERENCE: i32 = 0;
 /// `ffi_find_actor_from` の scope: サブツリー限定（GameObject.FindChild）。
@@ -3390,6 +3418,9 @@ pub struct ScriptHostApi {
     // アクタ参照のパス解決（[SerializeField] の参照解決 / GameObject.FindChild）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     find_actor_from:         unsafe extern "system" fn(u32, u32, i32, *const u8, i32, *mut u32) -> i32,
+    // デバッグコマンドの取り出し（SEED.Debug.OnCommand ／ SCRIPT_DEBUG IPC）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    script_debug_take:       unsafe extern "system" fn(*mut u8, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3433,6 +3464,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     time_scale:              ffi_time_scale,
     camera_world_to_screen:  ffi_camera_world_to_screen,
     find_actor_from:         ffi_find_actor_from,
+    script_debug_take:       ffi_script_debug_take,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

@@ -296,6 +296,12 @@ public partial class MainWindow : IEditorAiHost
                 if (line.StartsWith(RuntimeManager.INPUT_ERROR_PREFIX, StringComparison.Ordinal))
                     return line;
 
+                // デバッグコマンド（SCRIPT_DEBUG）の応答。受理・拒否ともここで確定する
+                //（シーケンスのような後続通知は無いので waitSequenceDone は見ない）。
+                if (line == RuntimeManager.SCRIPT_DEBUG_OK_MESSAGE
+                 || line.StartsWith(RuntimeManager.SCRIPT_DEBUG_ERROR_PREFIX, StringComparison.Ordinal))
+                    return line;
+
                 if (line == RuntimeManager.INPUT_OK_MESSAGE)
                 {
                     if (!waitSequenceDone) return line;

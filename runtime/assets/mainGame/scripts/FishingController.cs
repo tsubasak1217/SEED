@@ -1291,6 +1291,9 @@ public class FishingController : SEEDScript
         ParkReelArrow();
         // 判定画像は 4 枚ともアルファ 0（非表示）から始める。
         HideJudgement();
+
+        // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
+        SEED.Debug.OnCommand(DebugCommandCatchTest, HandleCatchTestCommand);
     }
 
     /// <summary>
@@ -1299,6 +1302,8 @@ public class FishingController : SEEDScript
     /// </summary>
     public override void OnDestroy()
     {
+        // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
+        SEED.Debug.OffCommand(DebugCommandCatchTest, HandleCatchTestCommand);
         AbortBiteTiming();
         ReleaseHook();
         fight?.EndFight();
@@ -3049,6 +3054,110 @@ public class FishingController : SEEDScript
         // 再び振りを読む区間へ戻るのでロックし直す（左クリック押しっぱなしでの連続キャスト対応）。
         UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Aiming（空振り）");
+    }
+
+    // ─── デバッグコマンド（開発・AI 検証用）──────────────────
+
+    /// <summary>
+    /// デバッグコマンド名: 釣り上げ演出をその場で起こす。
+    /// <c>seed_script_debug(name:"catch_test", arg:"<魚のアクタ名>")</c> で叩く。
+    /// </summary>
+    private const string DebugCommandCatchTest = "catch_test";
+
+    /// <summary>
+    /// <see cref="DebugCommandCatchTest"/> のハンドラ
+    /// 【釣り上げ演出を検証するための唯一の近道】。
+    ///
+    /// <b>やること</b>は「本物の釣り上げと同じ入口（<see cref="FinishReeling"/>）へ、
+    /// 掛かった魚とウキの位置を用意して飛び込む」だけ。演出の内容には一切触らないので、
+    /// ここを通した結果は<b>実際に釣ったときと同じ</b>になる
+    /// （＝この経路で確認した見た目は本番でもそのまま出る）。
+    ///
+    /// <b>手順</b>
+    /// 1. 進行中の釣り（キャスト・やり取り）を畳んで待機へ戻す（状態を確定させる）
+    /// 2. 対象の魚を決める（引数が表示名ならその種類、空ならプレイヤーに一番近い魚）
+    /// 3. プレイヤーを釣り姿勢へ入れる（本物の釣り上げと同じ前提を揃える）
+    /// 4. ウキを「魚の真上の水面」へ置く（演出の水面基準点になる）
+    /// 5. 魚を掛かった状態にして <see cref="FinishReeling"/> を呼ぶ
+    ///
+    /// <b>Play 中以外</b>では届かない（ランタイムが受け取り自体を拒否する）。
+    /// </summary>
+    /// <param name="arg">対象の魚の表示名（種類名）。空ならプレイヤーに一番近い魚。</param>
+    private void HandleCatchTestCommand(string arg)
+    {
+        if (SelectDebugCatchTarget(arg) is not { } target)
+        {
+            SEED.Debug.LogWarning($"[Fishing] catch_test: 対象の魚が見つからない（arg=\"{arg}\"）");
+            return;
+        }
+
+        // 1. 進行中の釣りを畳む（ウキ・糸・やり取り・アタリをすべて初期化する）
+        CancelToIdle();
+
+        // 2. プレイヤーを釣り姿勢へ入れる。
+        //    毎フレームの更新は「待機以外なのに釣り姿勢でない」状態を見つけると
+        //    問答無用で畳む（Update の IsPlayerFishing 判定）ので、
+        //    ここを飛ばすと演出が次のフレームで即座にキャンセルされる。
+        if (playerMove is not { } pm || !pm.EnterFishingStance())
+        {
+            SEED.Debug.LogWarning(
+                "[Fishing] catch_test: 釣り姿勢へ入れないため中止（経路移動モードで実行すること）");
+            return;
+        }
+
+        // 3. ウキを魚の真上の水面へ。演出はこの位置を「水面の基準点」に使うので、
+        //    高さは必ず水面へ合わせる（魚の居る深さをそのまま渡すと構図が沈む）。
+        var fishPosition = target.Transform.Position;
+        SetFloatPosition(new SEED.Vector3(fishPosition.x, WaterSurfaceY(), fishPosition.z));
+
+        // 4. 本物の釣り上げと同じ入口へ入る。
+        //    hookedFish を埋めてから呼ぶのが「釣り上げ成立」の条件（FinishReeling 参照）。
+        hookedFish = target;
+        SEED.Debug.Log($"[Fishing] catch_test: {target.DisplayName} で釣り上げ演出を起こす");
+        FinishReeling();
+    }
+
+    /// <summary>
+    /// <see cref="HandleCatchTestCommand"/> の対象になる魚を選ぶ。
+    ///
+    /// 引数が表示名（種類名。例 <c>トビウオ</c>）なら<b>その種類の魚のうち一番近い個体</b>、
+    /// 空ならプレイヤー（竿先）に一番近い魚を返す。1 匹も居なければ null。
+    ///
+    /// アクタ名ではなく表示名で引くのは、魚が実行時に生成されるためアクタ名が
+    /// 一意に決まらない（連番が付く）のに対し、表示名は図鑑・釣果パネルに
+    /// 出る名前そのもので、指定する側が確実に知っているため。
+    /// </summary>
+    /// <param name="displayName">魚の表示名（種類名）。空・空白なら「一番近い魚」。</param>
+    private Fish? SelectDebugCatchTarget(string displayName)
+    {
+        bool byName = !string.IsNullOrWhiteSpace(displayName);
+        string wanted = byName ? displayName.Trim() : string.Empty;
+
+        var origin = RodTipWorldPosition;
+        Fish? nearest = null;
+        float nearestSqr = float.MaxValue;
+
+        foreach (var fish in Fish.All)
+        {
+            // 破棄済みの個体が Fish.All に残っていることがある（前回の演出で消した魚など）。
+            // アクタのハンドルだけでは見分けが付かないので、トランスフォームまで見て弾く。
+            if (fish is null || !fish.Actor.IsValid || !fish.Transform.IsValid) { continue; }
+            // 演出中／演出済みの個体は選ばない（同じ魚で二重に演出を起こさないため）
+            if (fish.State == Fish.BehaviorState.Caught) { continue; }
+
+            // 種類の指定があるときは、名前が違う個体を数えない（近さの比較は同じ式を使う）
+            if (byName
+             && !string.Equals(fish.DisplayName, wanted, System.StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            float sqr = (fish.Transform.Position - origin).SqrMagnitude;
+            if (sqr >= nearestSqr) { continue; }
+            nearestSqr = sqr;
+            nearest = fish;
+        }
+        return nearest;
     }
 
     /// <summary>
