@@ -39,6 +39,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]（衝突しない
 ///   <item>2 つの Text に文字列（「Lv◯ 魚名」「HIT!!!」）を流し込む</item>
 ///   <item>フォント・縁取りのようにアニメーションしない見た目を <see cref="OnStart"/> で整える</item>
 ///   <item><see cref="Play"/> で全 Animator にクリップの再生を依頼する</item>
+///   <item>帯の両端（Lv 文字・HIT 文字の位置）で<b>火花（2D パーティクル）</b>を弾く</item>
 ///   <item>演出ルート（<see cref="bannerRoot"/>＝「HitBannerItems」）の <c>Visible</c> を
 ///       演出中だけ true にし、Play 開始直後や待機中に黒帯・文字が見えないようにする</item>
 /// </list>
@@ -59,6 +60,17 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]（衝突しない
 /// 入退場の向きも角度に依存する: 帯は<b>法線方向</b>（上帯は左上の外へ、下帯は右下の外へ）
 /// に出入りし、文字は<b>帯の方向</b>に流れる（Lv は左から入って右上へ、HIT は右から
 /// 入って左下へ抜ける）。
+///
+/// <b>火花はプレハブを実行時に生成して使う</b>
+/// 演出アイテムは<b>シーン上のアクタ</b>（<c>HitBannerItems</c> の子）なので、
+/// プレハブのように子アクタを足して作り込むことができない。そこで
+/// <c>assets://mainGame/actors/FX/HitSparkle2D.actor</c>（エミッタだけを持つ 2D アクタ）
+/// を <see cref="OnStart"/> で必要な数だけ生成し、<see cref="bannerRoot"/> の子として
+/// ぶら下げる。放出パラメータ（寿命・初速・重力・大きさ・ブレンド）は<b>すべて
+/// そのプレハブが持つ</b>ので、詰めたくなったらエディタでプレハブを開いて触る。
+/// 位置は毎回 <see cref="Play"/> が「Lv 文字／HIT 文字のアクタ」から
+/// アンカーと座標をそのまま写して合わせるため、帯の配置を動かしても追従する。
+/// 色はレベル配色（<see cref="levelColor"/>）を <c>ParticleEmitter.Tint</c> で乗せる。
 ///
 /// <b>担当範囲</b>
 /// 演出の再生だけを担い、いつ再生するかは持たない（<see cref="FishingController"/> が
@@ -85,6 +97,9 @@ public class HitBanner : SEEDScript
 
     /// <summary>レベル不明（<see cref="Fish.UnknownLevel"/>）を配色上どのレベルとして扱うか。</summary>
     private const int UnknownLevelColorStep = 1;
+
+    /// <summary>火花の色に使うアルファ（<c>ParticleEmitter.Tint</c> はアルファを見ないため形だけ）。</summary>
+    private const float SparkleTintAlpha = 1f;
 
     // ─── 参照（シーンで割り当てる） ────────────────────────────
 
@@ -178,6 +193,28 @@ public class HitBanner : SEEDScript
     [Header("帯"), SerializeField(Label = "帯スプライトのアクタ名")]
     private List<string> bandActorNames = new() { "HitBandBlackTop", "HitBandBlackBottom" };
 
+    // ─── 火花（2D パーティクル）────────────────────────────────
+
+    /// <summary>
+    /// 実行時に生成する火花プレハブ（<c>assets://</c> パス）。
+    /// 空にすると火花を出さない（帯と文字の演出だけになる）。
+    /// </summary>
+    [Header("火花"), SerializeField(Label = "火花のプレハブ")]
+    private string sparkleActorPath = "assets://mainGame/actors/FX/HitSparkle2D.actor";
+
+    /// <summary>
+    /// 火花を出す位置の基準にするアクタ名。ここに挙げたアクタの
+    /// <c>CanvasTransform</c>（アンカーと座標）をそのまま写して火花を置く
+    /// ＝<b>帯の両端（Lv 文字側と HIT 文字側）</b>で弾ける。
+    /// 名前 1 つにつき火花アクタを 1 体生成する。
+    /// </summary>
+    [SerializeField(Label = "火花の位置基準アクタ名")]
+    private List<string> sparkleAnchorActorNames = new() { "HitTextLevel", "HitTextHit" };
+
+    /// <summary>1 か所あたりに弾く火花の個数（0 以下なら火花を出さない）。</summary>
+    [SerializeField(Label = "1か所あたりの個数")]
+    private int sparkleBurstCount = 18;
+
     // ─── 表示制御（Play 開始前は完全に非表示にする） ─────────────────
 
     /// <summary>
@@ -201,6 +238,13 @@ public class HitBanner : SEEDScript
     /// <see cref="Play"/> がレベルから決め、<see cref="LateUpdate"/> が毎フレーム塗り直す。
     /// </summary>
     private SEED.Color levelColor = LevelColorFallback;
+
+    /// <summary>
+    /// 生成済みの火花アクタ（<see cref="sparkleAnchorActorNames"/> と同じ並び・同じ個数）。
+    /// <see cref="OnStart"/> で 1 度だけ作り、以降は使い回す
+    /// （毎回 <c>Instantiate</c> / <c>Destroy</c> するとアクタ構築のコストが積み上がる）。
+    /// </summary>
+    private readonly List<SEED.GameObject> sparkleActors = new();
 
     /// <summary>
     /// <see cref="levelColor"/> が決まっているか（＝一度でも <see cref="Play"/> したか）。
@@ -264,6 +308,10 @@ public class HitBanner : SEEDScript
         // 欠けたり黒帯・文字が一瞬透明のまま出たりすることはない。
         if (bannerRoot is { IsValid: true } root) { root.Visible = true; }
 
+        // 火花は帯の両端で弾く。表示 ON の直後に積んでよい（放出要求は非表示の
+        // あいだ消費されないため、最初に描かれるフレームでまとめて弾ける）。
+        PlaySparkles();
+
         // クリップが位置と不透明度（アルファ 1 → 末尾で 0）をすべて駆動する。
         // 4 つのアイテムへ同じクリップ名を同時に流し、1 つの演出として揃える。
         for (int i = 0; i < animators.Count; i++)
@@ -288,6 +336,81 @@ public class HitBanner : SEEDScript
         HideText(levelLabel);
         HideText(hitLabel);
         for (int i = 0; i < bandActorNames.Count; i++) { HideBandByName(bandActorNames[i]); }
+        SpawnSparkleActors();
+    }
+
+    // ─── 火花（2D パーティクル）────────────────────────────────
+
+    /// <summary>
+    /// 火花アクタを位置基準の数だけ生成する【生成の唯一の場所】。
+    ///
+    /// 親は演出ルート（<see cref="bannerRoot"/>）にする。演出ルートは待機中
+    /// <c>Visible = false</c> なので、火花も待機中はまとめて描かれない
+    /// （＝演出が終わったあとに粒だけ残ることがない）。
+    /// 演出ルートが未設定のときは自分（HitBanner アクタ）の子にする。
+    /// </summary>
+    private void SpawnSparkleActors()
+    {
+        sparkleActors.Clear();
+        if (string.IsNullOrWhiteSpace(sparkleActorPath)) { return; }
+        if (sparkleBurstCount <= 0) { return; }
+
+        // 親は演出ルート優先。未設定なら自分の下に置く（座標系はどちらも同じ親キャンバス）。
+        SEED.GameObject parent = bannerRoot is { IsValid: true } root ? root : gameObject;
+        if (!parent.IsValid) { return; }
+
+        for (int i = 0; i < sparkleAnchorActorNames.Count; i++)
+        {
+            SEED.GameObject spawned = SEED.GameObject.Instantiate(sparkleActorPath, parent);
+            if (!spawned.IsValid)
+            {
+                SEED.Debug.LogWarning($"[HitBanner] 火花のプレハブを生成できない: {sparkleActorPath}");
+                return;
+            }
+            sparkleActors.Add(spawned);
+        }
+    }
+
+    /// <summary>
+    /// 火花を位置基準へ合わせ、レベル配色を乗せて弾く【火花を出す唯一の場所】。
+    ///
+    /// 位置基準アクタが見つからない・火花が未生成といった場合はその 1 か所を飛ばす
+    /// （火花は飾りなので、欠けても帯と文字の演出は成立する）。
+    /// </summary>
+    private void PlaySparkles()
+    {
+        if (sparkleBurstCount <= 0) { return; }
+
+        for (int i = 0; i < sparkleActors.Count && i < sparkleAnchorActorNames.Count; i++)
+        {
+            SEED.GameObject sparkle = sparkleActors[i];
+            if (!sparkle.IsValid) { continue; }
+
+            // 位置基準（Lv 文字／HIT 文字）のアンカーと座標をそのまま写す。
+            // 両者は同じ親（HitBannerItems）の下にいるので、写すだけで重なる。
+            MoveSparkleToAnchor(sparkle, sparkleAnchorActorNames[i]);
+
+            if (sparkle.GetComponent<SEED.ParticleEmitter>() is not { } emitter) { continue; }
+            if (!emitter.IsValid) { continue; }
+
+            // レベル配色を粒へ乗せる（アルファは Tint では使われない＝消え方はカーブのまま）。
+            emitter.Tint = new SEED.Color(levelColor.r, levelColor.g, levelColor.b, SparkleTintAlpha);
+            emitter.Burst(sparkleBurstCount);
+        }
+    }
+
+    /// <summary>火花アクタを、名前で引いた基準アクタと同じアンカー・同じ座標へ置く。</summary>
+    /// <param name="sparkle">動かす火花アクタ。</param>
+    /// <param name="anchorActorName">位置基準にするアクタ名（空・不在なら何もしない）。</param>
+    private static void MoveSparkleToAnchor(SEED.GameObject sparkle, string anchorActorName)
+    {
+        if (string.IsNullOrEmpty(anchorActorName)) { return; }
+        var anchorActor = SEED.GameObject.Find(anchorActorName);
+        if (!anchorActor.IsValid) { return; }
+        if (anchorActor.GetComponent<SEED.CanvasTransform>() is not { } from) { return; }
+        if (sparkle.GetComponent<SEED.CanvasTransform>() is not { } to) { return; }
+        to.Anchor = from.Anchor;
+        to.Position = from.Position;
     }
 
     /// <summary>

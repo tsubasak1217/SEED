@@ -1086,6 +1086,13 @@ fn read_floats(
                 "loop_emit"        => put(out, &[
                     if p.emit_mode == crate::engine::components::EmitMode::Loop { 1.0 } else { 0.0 },
                 ]),
+                // 色味（RGBA 4 要素）。色カーブ（HSVA）の寿命先頭を 1 色として返す。
+                // アルファは「消え方」を持つカーブ側の値であって色味ではないため、
+                // ここでは常に不透明（1）を返す（Tint の書き込みでも無視される）。
+                "tint"             => {
+                    let rgb = p.tint_rgb();
+                    put(out, &[rgb[0], rgb[1], rgb[2], PARTICLE_TINT_ALPHA])
+                }
                 _                  => None,
             }
         }
@@ -1501,6 +1508,12 @@ fn write_floats(
                         crate::engine::components::EmitMode::Once
                     };
                 }).is_some(),
+                // 色味（RGBA 4 要素）。全色カーブの H/S/V を定数へ塗り替える。
+                // **アルファは無視する**（消え方＝アルファカーブはエディタで作った
+                // 演出の持ち物であり、色味の差し替えで壊してはいけないため）。
+                "tint"             => take::<4>(v)
+                    .map(|x| p.set_tint_rgb([x[0], x[1], x[2]]))
+                    .is_some(),
                 _                  => false,
             }
         }
@@ -2836,6 +2849,12 @@ unsafe extern "system" fn ffi_animator_component(
         _ => 0,
     }
 }
+
+/// `ParticleEmitter.tint` を読んだときに返すアルファ（常に不透明）。
+///
+/// 色味（Tint）は RGB だけを意味し、アルファは色カーブが持つ「消え方」である。
+/// C# 側の `Color` は RGBA 4 要素なので、読み取りの 4 要素目をこの値で埋める。
+const PARTICLE_TINT_ALPHA: f32 = 1.0;
 
 /// ParticleEmitterComponent 操作の種別（C# 側 ParticleEmitter の定数と一致させる）。
 const PARTICLE_COMPONENT_PLAY: i32  = 0; // playing = true（放出開始）

@@ -96,6 +96,24 @@ public readonly struct ParticleEmitter : IComponentHandle<ParticleEmitter>
     }
 
     /// <summary>
+    /// 粒の色味（RGB）。エディタで作った色カーブ（HSVA）の色相・彩度・明度を
+    /// この 1 色で塗り替える。<b>アルファは無視される</b>（消え方＝アルファの
+    /// 時間変化はカーブの持ち物で、色味の差し替えでは壊さない）。
+    ///
+    /// レベルやランクなど「実行時に決まる色」で放出したいときに使う。
+    /// 取得は色カーブの<b>寿命先頭（t=0）</b>の色を 1 色で返す（アルファは常に 1）。
+    /// 色カーブを複数本持つエミッタでは、取得は先頭の 1 本、設定は<b>全部</b>に効く。
+    ///
+    /// 色カーブを書き換えるため、設定は毎フレーム呼ぶような使い方には向かない
+    /// （放出の直前に 1 回だけ塗る想定）。
+    /// </summary>
+    public Color Tint
+    {
+        get => ScriptHost.TryGetColor(_entity, Comp, "tint", out var v) ? v : Color.White;
+        set => ScriptHost.TrySetColor(_entity, Comp, "tint", value);
+    }
+
+    /// <summary>
     /// 2D キャンバス用の描画優先度（大きいほど手前）。
     /// スプライト／テキストと同じレイヤー空間で比較され、同一 layer 内は
     /// スプライト → プリミティブ → パーティクル → テキストの順で描かれる。

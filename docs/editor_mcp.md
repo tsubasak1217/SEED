@@ -904,6 +904,7 @@ public override void OnDestroy()
 |---|---|---|
 | `catch_test` | 魚の表示名（省略可） | 進行中の釣りを畳み、指定の魚（省略時は竿先に一番近い魚）でその場で釣り上げ演出（ホワイトアウト → 縦跳び → 釣果パネル）を起こす。実装は `FishingController.HandleCatchTestCommand` |
 | `records_reset` | なし | 図鑑の釣果記録（`best_size:` / `best_rank:` / `catch_count:` の全魚種ぶん）だけを消して保存する。進行フラグなど他のセーブデータは触らない。<b>釣りシーンと図鑑シーンの両方</b>から同じ名前で叩ける（実装は `FishingController.HandleRecordsResetCommand` と `Zukan.HandleRecordsResetCommand`）。図鑑シーンで叩くとその場でページを組み直すので、未捕獲のシルエット表示・初捕獲演出をやり直したいときに使う。図鑑シーンでは `F12` の長押し（既定 1.5 秒。`Zukan` のインスペクタで変更可）でも同じことができる |
+| `hit_test` | レベル数値／魚の表示名（省略可） | HIT バナーの演出だけをその場で流す（帯・レベル配色・火花の確認用）。**釣りの状態は一切変えない**（演出の入口 `FishingController.ShowHitBanner` を直接叩くだけ）。`arg` が数値ならそのレベルで流す（魚が 1 匹も湧いていなくても確認できる）、表示名ならその種類のうち一番近い個体、空なら竿先に一番近い魚。実装は `FishingController.HandleHitTestCommand` |
 | `result_confirm` | なし | 釣果パネルの決定入力の代わりに 1 段進める（本体 → 図鑑登録パネル → 登録パネルを畳む → 本体を閉じる）。入力の待ち時間と `InputGate` を飛ばすので、チュートリアル中で決定が塞がれていても開閉を確認できる。実装は `ResultPanel.HandleResultConfirmCommand` |
 
 ### 10.4 使い方の例（釣り上げ演出の確認）

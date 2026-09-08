@@ -30,9 +30,11 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///   FishImage                  … Sprite（図鑑画像。実行時に TexturePath を差し替える）
 ///   FishName / FishSize / FishBest / FishRank / Prompt … Text
 ///   NewRecord                  … Text（新記録のときだけ点滅表示）
+///   NewRecordSparkle           … ParticleEmitter（新記録のあいだ小さくきらめき続ける）
 ///   RegisteredPanel            … 図鑑登録の追加パネル（既定は非表示）
 ///    RegisteredBg              … Sprite
 ///    RegisteredTitle / RegisteredHint … Text
+///    RegisteredConfetti        … ParticleEmitter（登録パネルが開いた瞬間の紙吹雪）
 /// </code>
 /// <b>拡大縮小を <c>ResultBody</c> に掛ける理由</b>: キャンバスのルート
 /// （Canvas を持つアクタ）は 2D 座標系そのものなので、そこへスケールを掛けても
@@ -257,6 +259,23 @@ public class ResultPanel : SEEDScript
     [SerializeField(Label = "図鑑登録パネル")]
     private string registeredPath = "./ResultBody/RegisteredPanel";
 
+    /// <summary>
+    /// 新記録のきらめき（<c>ParticleEmitter</c>）への相対パス。
+    /// 新記録のあいだだけループ放出させる（点滅する文字の周りで小さく光る）。
+    /// 粒の見た目（寿命・初速・大きさ・色・放出間隔）は<b>プレハブのエミッタが持つ</b>ので、
+    /// 詰めたくなったらエディタで <c>NewRecordSparkle</c> を選んで触る。
+    /// </summary>
+    [SerializeField(Label = "新記録のきらめき")]
+    private string newRecordSparklePath = "./ResultBody/NewRecordSparkle|ParticleEmitter";
+
+    /// <summary>
+    /// 図鑑登録の紙吹雪（<c>ParticleEmitter</c>）への相対パス。
+    /// 登録パネルが開く瞬間に一度だけ一括放出する。色は 3 本の色カーブを
+    /// 粒ごとにランダム選択するので、エミッタ 1 つで多色になる。
+    /// </summary>
+    [SerializeField(Label = "図鑑登録の紙吹雪")]
+    private string registeredConfettiPath = "./ResultBody/RegisteredPanel/RegisteredConfetti|ParticleEmitter";
+
     // ─── インスペクタ設定（文言）──────────────────────────────
 
     /// <summary>新記録の文言。</summary>
@@ -340,6 +359,12 @@ public class ResultPanel : SEEDScript
     private float blinkMinAlpha = 0.15f;
 
     /// <summary>
+    /// 図鑑登録パネルが開く瞬間に一括放出する紙吹雪の個数（0 以下なら出さない）。
+    /// </summary>
+    [SerializeField(Label = "紙吹雪の個数")]
+    private int registeredConfettiCount = 48;
+
+    /// <summary>
     /// 各フェーズへ入ってから決定入力を受け付けるまでの待ち（秒・実時間）。
     /// 直前の演出で押していたクリックが、出た瞬間のパネルを閉じてしまうのを防ぐ。
     /// </summary>
@@ -365,6 +390,12 @@ public class ResultPanel : SEEDScript
 
     /// <summary>図鑑登録パネルの <c>CanvasTransform</c>（解決失敗なら <c>IsValid == false</c>）。</summary>
     private SEED.CanvasTransform registeredTransform;
+
+    /// <summary>新記録のきらめき（解決失敗なら null）。</summary>
+    private SEED.ParticleEmitter? newRecordSparkle;
+
+    /// <summary>図鑑登録の紙吹雪（解決失敗なら null）。</summary>
+    private SEED.ParticleEmitter? registeredConfetti;
 
     /// <summary>魚の絵の Sprite（解決失敗なら null）。</summary>
     private SEED.Sprite? fishImage;
@@ -479,6 +510,9 @@ public class ResultPanel : SEEDScript
         SetContent(newRecordText, newRecordLabel);
         // 出すまでは影ごと消しておく（アルファ 0 では影が残るため Visible で消す）
         SetNewRecordVisible(false);
+        // きらめきは新記録のときだけ回す。待機中は必ず止めておく
+        // （プレハブ側が playing=true で保存されていても、ここで確実に止まる）。
+        SetNewRecordSparklePlaying(false);
 
         // 出すまでは隠す（シーン上で visible=true のまま保存されていても必ず隠れる）。
         // スケールはここで 0 にする。プレハブ／シーンには原寸（1）で保存しておき、
@@ -666,16 +700,26 @@ public class ResultPanel : SEEDScript
 
         switch (next)
         {
+            case PanelPhase.Idle:
+                // 本体が開き切ってからきらめかせる（開き途中は入れ物のスケールが
+                // 小さく、粒まで潰れて見えてしまうため）。新記録でなければ出さない。
+                SetNewRecordSparklePlaying(data.NewRecord);
+                break;
+
             case PanelPhase.RegisteredOpening:
                 // 図鑑登録パネルはここで初めて姿を現す（0 スケールから膨らませる）
                 SetRegisteredVisible(true);
                 ApplyRegisteredScale(MinScale);
                 SetContent(promptText, promptAfterRegisteredLabel);
+                // 「登録された」瞬間の紙吹雪は、パネルの出現と同じ瞬間に弾く
+                BurstRegisteredConfetti();
                 break;
 
             case PanelPhase.Closing:
                 // 閉じ始めたら案内は消す（閉じ切るまで押せる文言が残るのを避ける）
                 SetTextAlpha(promptText, AlphaClear);
+                // 閉じ始めたらきらめきも止める（閉じ切ったあとに粒が残らない）
+                SetNewRecordSparklePlaying(false);
                 break;
         }
     }
@@ -689,6 +733,7 @@ public class ResultPanel : SEEDScript
         phase = PanelPhase.Hidden;
         phaseElapsed = 0f;
         ApplyBodyScale(MinScale);
+        SetNewRecordSparklePlaying(false);
         SetRegisteredVisible(false);
         if (panelRoot.IsValid) { panelRoot.Visible = false; }
 
@@ -830,6 +875,57 @@ public class ResultPanel : SEEDScript
         newRecordText = ResolveText(newRecordPath);
         newRecordRoot = ResolveActor(newRecordPath);
         promptText    = ResolveText(promptPath);
+
+        // 粒は「無くても情報は伝わる」飾りなので、解決できなくても警告だけで先へ進む。
+        newRecordSparkle   = ResolveEmitter(newRecordSparklePath);
+        registeredConfetti = ResolveEmitter(registeredConfettiPath);
+    }
+
+    /// <summary>参照文字列から ParticleEmitter を解決する（見つからなければ警告して null）。</summary>
+    /// <param name="reference">参照文字列（例 <c>./ResultBody/NewRecordSparkle|ParticleEmitter</c>）。</param>
+    private SEED.ParticleEmitter? ResolveEmitter(string reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference)) { return null; }
+        SEED.GameObject owner = ResolveActor(reference);
+        if (!owner.IsValid)
+        {
+            SEED.Debug.LogWarning($"[ResultPanel] 粒のアクタを解決できない: {reference}");
+            return null;
+        }
+        SEED.ParticleEmitter? emitter = owner.GetComponent<SEED.ParticleEmitter>();
+        if (emitter is null)
+        {
+            SEED.Debug.LogWarning($"[ResultPanel] ParticleEmitter スロットが見つからない: {reference}");
+        }
+        return emitter;
+    }
+
+    // ─── 粒（パーティクル）の制御 ─────────────────────────────
+
+    /// <summary>
+    /// 新記録のきらめきを出す／止める【きらめきの唯一の切替点】。
+    /// 止めても既に出ている粒は寿命で自然に消える（急に消えない）。
+    /// </summary>
+    /// <param name="playing">出すなら true。</param>
+    private void SetNewRecordSparklePlaying(bool playing)
+    {
+        if (newRecordSparkle is not { } e || !e.IsValid) { return; }
+        if (playing) { e.Play(); } else { e.Stop(); }
+    }
+
+    /// <summary>
+    /// 図鑑登録の紙吹雪を一度だけ弾く。
+    ///
+    /// 放出要求（<c>Burst</c>）は<b>非表示のあいだ消費されない</b>
+    /// （GPU パーティクルは非表示のサブツリーを収集しないため）。
+    /// したがって登録パネルを表示へ切り替えた直後に積んでよく、
+    /// パネルが最初に描かれるフレームでまとめて弾ける。
+    /// </summary>
+    private void BurstRegisteredConfetti()
+    {
+        if (registeredConfettiCount <= 0) { return; }
+        if (registeredConfetti is not { } e || !e.IsValid) { return; }
+        e.Burst(registeredConfettiCount);
     }
 
     /// <summary>参照文字列（<c>./Child/Grand</c> 形式。<c>|スロット名</c> は無視）からアクタを解決する。</summary>

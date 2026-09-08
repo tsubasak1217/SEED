@@ -1301,10 +1301,13 @@ if (gameObject.GetComponent<ParticleEmitter>() is { } ps)   // ParticleEmitter?�
     ps.Drag                // float（get/set。空気抵抗係数。負値は 0 にクランプ）
     ps.SpreadAngle         // float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）
     ps.Layer               // int（get/set。**2D キャンバスアクター専用**の描画優先度）
+    ps.Tint                // Color（get/set。粒の色味。**アルファは無視**）
 }
 ```
 
 - `Burst(n)` の放出リクエストは蓄積され、次フレームで GPU パーティクルシステムが消費します（`emit_rate` による継続放出とは別枠）。`n` が 0 以下なら何もしません。
+- **`Burst(n)` は `playing` / `emit_mode` に関わらず放出されます**（明示要求のため上限を適用しない）。つまり「インスペクタでは `playing = false`／`emit_mode = once` にしておき、スクリプトの `Burst` でだけ弾く」という作り方ができます。ただし**非表示（`Visible = false`）のサブツリーにあるエミッタは収集されない**ので、その間の `Burst` 要求は消費されずに溜まり、**表示に戻した最初のフレームでまとめて放出**されます（＝表示へ切り替えた直後に積んでよい）。
+- `Tint` は色カーブ（HSVA）の**色相・彩度・明度を 1 色で塗り替える**もので、**アルファ（＝消え方）のカーブは残します**。取得は先頭の色カーブの寿命先頭（t=0）の色（アルファは常に 1）。設定は**保持している色カーブすべて**に効きます。レベル色やランク色のように「実行時に決まる色」で放出したいときに使ってください。色カーブそのものを書き換える処理なので、放出の直前に 1 回だけ塗る使い方を想定しています（毎フレーム代入する用途には向きません）。
 
 #### 2D キャンバス（UI）のパーティクル
 
@@ -1697,7 +1700,7 @@ public class FishingLine : SEEDScript
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
 | `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度・フェード + Play/CrossFade/Stop/Pause/Resume |
-| `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
+| `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角・色味(Tint) + Play/Stop/Burst |
 | `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis） |
 | `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3） |
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |

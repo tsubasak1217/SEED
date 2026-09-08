@@ -1333,6 +1333,7 @@ public class FishingController : SEEDScript
         // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
         SEED.Debug.OnCommand(DebugCommandCatchTest, HandleCatchTestCommand);
         SEED.Debug.OnCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+        SEED.Debug.OnCommand(DebugCommandHitTest, HandleHitTestCommand);
     }
 
     /// <summary>
@@ -1344,6 +1345,7 @@ public class FishingController : SEEDScript
         // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
         SEED.Debug.OffCommand(DebugCommandCatchTest, HandleCatchTestCommand);
         SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+        SEED.Debug.OffCommand(DebugCommandHitTest, HandleHitTestCommand);
         AbortBiteTiming();
         ReleaseHook();
         fight?.EndFight();
@@ -3134,10 +3136,13 @@ public class FishingController : SEEDScript
     {
         bool perfect = fight is { } f && f.AllExcellent;
 
+        // 第 4 引数は「完璧かどうか」そのもの。バナー側は判断せず、
+        // 弾ける粒を金（完璧）と白（通常）のどちらにするかにだけ使う。
         FightEvalBanner.Show(
             fightEvalBannerActorPath,
             perfect ? fightEvalPerfectLabel : fightEvalGoodLabel,
-            perfect ? fightEvalPerfectColor : fightEvalGoodColor);
+            perfect ? fightEvalPerfectColor : fightEvalGoodColor,
+            perfect);
     }
 
     /// <summary>
@@ -3168,6 +3173,61 @@ public class FishingController : SEEDScript
     /// 両方が同じ名前で登録している。
     /// </summary>
     private const string DebugCommandRecordsReset = "records_reset";
+
+    /// <summary>
+    /// デバッグコマンド名: HIT バナーの演出だけをその場で流す。
+    /// <c>seed_script_debug(name:"hit_test", arg:"<魚の表示名 もしくは レベル数値>")</c> で叩く。
+    ///
+    /// ヒットは「アタリ → 合わせ成功」を通らないと起きないため、
+    /// バナーの絵（帯・レベル配色・火花）を確認する手段が無かった。
+    /// <b>釣りの状態は一切変えず</b>、演出の入口（<see cref="ShowHitBanner"/>）だけを叩く。
+    /// </summary>
+    private const string DebugCommandHitTest = "hit_test";
+
+    /// <summary>
+    /// レベルを数値で直接指定されたときに、バナーへ渡す魚名（種類が無いことを示す）。
+    /// </summary>
+    private const string DebugHitTestFallbackName = "デバッグ";
+
+    /// <summary>
+    /// <see cref="DebugCommandHitTest"/> のハンドラ【HIT バナーだけを流す近道】。
+    ///
+    /// 引数の解釈は 3 通り:
+    /// <list type="bullet">
+    ///   <item>数値（例 <c>"4"</c>）… そのレベルでバナーを流す（魚が 1 匹も居なくても確認できる）</item>
+    ///   <item>魚の表示名 … その種類のうち一番近い個体のレベル・名前で流す</item>
+    ///   <item>空 … プレイヤー（竿先）に一番近い魚で流す</item>
+    /// </list>
+    /// 対象が見つからないときは警告だけ出して何もしない（状態を壊さない）。
+    /// </summary>
+    /// <param name="arg">魚の表示名、またはレベルの数値。空なら一番近い魚。</param>
+    private void HandleHitTestCommand(string arg)
+    {
+        string wanted = arg is null ? string.Empty : arg.Trim();
+
+        // 数値ならレベル直接指定として扱う（魚が湧いていない場面でも絵を確認できる）
+        if (int.TryParse(wanted, out int level))
+        {
+            if (hitBanner is not { } directBanner)
+            {
+                SEED.Debug.LogWarning("[Fishing] hit_test: HitBanner が未設定のため出せない");
+                return;
+            }
+            SEED.Debug.Log($"[Fishing] hit_test: レベル {level} 指定で HIT バナーを流す");
+            directBanner.Play(level, DebugHitTestFallbackName);
+            return;
+        }
+
+        if (SelectDebugCatchTarget(wanted) is not { } target)
+        {
+            SEED.Debug.LogWarning($"[Fishing] hit_test: 対象の魚が見つからない（arg=\"{wanted}\"）");
+            return;
+        }
+
+        SEED.Debug.Log(
+            $"[Fishing] hit_test: {target.DisplayName}（Lv{target.Level}）で HIT バナーを流す");
+        ShowHitBanner(target);
+    }
 
     /// <summary>
     /// <see cref="DebugCommandRecordsReset"/> のハンドラ。

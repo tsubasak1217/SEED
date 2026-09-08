@@ -30,7 +30,13 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// FightEvalBanner            … このスクリプト（Canvas / auto_scale）
 ///  FightEvalBody             … 拡大縮小の親（ここの CanvasTransform.Scale を動かす）
 ///   FightEvalText            … Text（"Perfect!" / "Good!"）
+///   EvalBurstGold            … ParticleEmitter（完璧のときに弾ける金の粒）
+///   EvalBurstWhite           … ParticleEmitter（通常のときに弾ける白の粒）
 /// </code>
+/// 粒は<b>表示を始めた瞬間に一度だけ</b>一括放出する（<c>Burst</c>）。
+/// どちらを弾くかは <see cref="Show"/> に渡された「完璧かどうか」で決まり、
+/// 見た目（色・寿命・初速・重力・大きさ）は<b>プレハブのエミッタが全部持つ</b>
+/// （このスクリプトは個数しか持たない）。
 /// 拡大縮小を中間の入れ物へ掛ける理由は <see cref="ResultPanel"/> と同じ
 /// （キャンバスのルートへスケールを掛けても子がまとめて拡大縮小されるとは限らない）。
 ///
@@ -95,6 +101,9 @@ public class FightEvalBanner : SEEDScript
     /// <summary>生成フォールバック時に預ける色（16 進カラーコード）。</summary>
     private static string pendingColorHex = "";
 
+    /// <summary>生成フォールバック時に預ける「完璧かどうか」（どちらの粒を弾くか）。</summary>
+    private static bool pendingPerfect;
+
     /// <summary>預かった内容が未消化か。</summary>
     private static bool hasPendingShow;
 
@@ -107,6 +116,18 @@ public class FightEvalBanner : SEEDScript
     /// <summary>評価文字（Text）への相対パス。</summary>
     [SerializeField(Label = "評価の文字")]
     private string labelPath = "./FightEvalBody/FightEvalText|Text";
+
+    /// <summary>
+    /// 完璧（Perfect）のときに弾ける金色の粒（<c>ParticleEmitter</c>）への相対パス。
+    /// 粒の見た目（寿命・初速・重力・大きさ・色）は<b>すべてプレハブ側の
+    /// エミッタが持つ</b>ので、詰めたくなったらエディタでこの子アクタを選んで触る。
+    /// </summary>
+    [SerializeField(Label = "完璧の粒(金)")]
+    private string goldBurstPath = "./FightEvalBody/EvalBurstGold|ParticleEmitter";
+
+    /// <summary>通常（Good）のときに弾ける白い粒（<c>ParticleEmitter</c>）への相対パス。</summary>
+    [SerializeField(Label = "通常の粒(白)")]
+    private string whiteBurstPath = "./FightEvalBody/EvalBurstWhite|ParticleEmitter";
 
     // ─── インスペクタ設定（演出） ────────────────────────────
 
@@ -122,6 +143,13 @@ public class FightEvalBanner : SEEDScript
     [SerializeField(Label = "閉じる秒数")]
     private float closeSeconds = 0.18f;
 
+    /// <summary>
+    /// 表示を始めた瞬間に一括放出する粒の個数（0 以下なら粒を出さない）。
+    /// 金・白のどちらか片方だけに出す（両方が同時に出ることはない）。
+    /// </summary>
+    [SerializeField(Label = "粒の個数")]
+    private int burstCount = 40;
+
     // ─── 実行時の状態 ────────────────────────────────────────
 
     /// <summary>現在の表示段階。</summary>
@@ -135,6 +163,12 @@ public class FightEvalBanner : SEEDScript
 
     /// <summary>評価文字の Text（解決失敗なら null）。</summary>
     private SEED.Text? labelText;
+
+    /// <summary>完璧のときに弾く金の粒（解決失敗なら null）。</summary>
+    private SEED.ParticleEmitter? goldBurst;
+
+    /// <summary>通常のときに弾く白の粒（解決失敗なら null）。</summary>
+    private SEED.ParticleEmitter? whiteBurst;
 
     // ─── 静的 API（呼び出し側の入口）──────────────────────────
 
@@ -151,13 +185,17 @@ public class FightEvalBanner : SEEDScript
     /// <param name="actorPath">バナーのプレハブ（<c>assets://</c> パス）。生成フォールバックにだけ使う。</param>
     /// <param name="label">出す文言（例 "Perfect!"）。</param>
     /// <param name="colorHex">文字の色（16 進カラーコード。空・書式違いならプレハブの色のまま）。</param>
-    public static void Show(string actorPath, string label, string colorHex)
+    /// <param name="perfect">
+    /// 完璧（Perfect）の評価か。<b>判断はしない・受け取るだけ</b>で、
+    /// 弾ける粒を金（true）と白（false）のどちらにするかだけに使う。
+    /// </param>
+    public static void Show(string actorPath, string label, string colorHex, bool perfect)
     {
         // 実体があるなら即座に表示へ入れる（同フレームから見た目が変わる）
         if (Current is { } instance && bannerRoot.IsValid)
         {
             IsActive = true;
-            instance.BeginShow(label, colorHex);
+            instance.BeginShow(label, colorHex, perfect);
             return;
         }
 
@@ -180,6 +218,7 @@ public class FightEvalBanner : SEEDScript
 
         pendingLabel = label;
         pendingColorHex = colorHex;
+        pendingPerfect = perfect;
         hasPendingShow = true;
         IsActive = true;
     }
@@ -196,6 +235,7 @@ public class FightEvalBanner : SEEDScript
         hasPendingShow = false;
         pendingLabel = "";
         pendingColorHex = "";
+        pendingPerfect = false;
     }
 
     // ─── ライフサイクル ──────────────────────────────────────
@@ -220,7 +260,7 @@ public class FightEvalBanner : SEEDScript
         if (!hasPendingShow) { return; }
         hasPendingShow = false;
         SetRootVisible(true);
-        BeginShow(pendingLabel, pendingColorHex);
+        BeginShow(pendingLabel, pendingColorHex, pendingPerfect);
     }
 
     /// <summary>破棄時の後始末。静的アクセサを取り消す。</summary>
@@ -286,7 +326,8 @@ public class FightEvalBanner : SEEDScript
     /// </summary>
     /// <param name="label">出す文言。</param>
     /// <param name="colorHex">文字の色（16 進カラーコード）。</param>
-    private void BeginShow(string label, string colorHex)
+    /// <param name="perfect">完璧の評価か（金と白のどちらの粒を弾くか）。</param>
+    private void BeginShow(string label, string colorHex, bool perfect)
     {
         SetRootVisible(true);
 
@@ -297,8 +338,23 @@ public class FightEvalBanner : SEEDScript
             UiColorUtil.ApplyRgb(t, colorHex);
         }
 
+        // 評価に対応するほうの粒だけを一度だけ弾く。
+        // Burst の要求は非表示のあいだ消費されない（GPU パーティクルは非表示の
+        // サブツリーを収集しない）ので、表示へ切り替えた直後に積んでよい
+        // ＝最初に描かれるフレームでまとめて放出される。
+        BurstOnce(perfect ? goldBurst : whiteBurst);
+
         ApplyBodyScale(MinScale);
         EnterPhase(BannerPhase.Opening);
+    }
+
+    /// <summary>粒を <see cref="burstCount"/> 個だけ一括放出する（未解決・個数 0 以下なら何もしない）。</summary>
+    /// <param name="emitter">放出させるエミッタ（未解決なら null）。</param>
+    private void BurstOnce(SEED.ParticleEmitter? emitter)
+    {
+        if (burstCount <= 0) { return; }
+        if (emitter is not { } e || !e.IsValid) { return; }
+        e.Burst(burstCount);
     }
 
     /// <summary>段階を切り替えて経過秒を 0 に戻す。</summary>
@@ -361,6 +417,28 @@ public class FightEvalBanner : SEEDScript
         {
             SEED.Debug.LogWarning($"[FightEvalBanner] 評価の文字を解決できない: {labelPath}");
         }
+
+        // 粒は「無くても演出は成立する」飾りなので、解決できなくても警告だけで先へ進む。
+        goldBurst = ResolveEmitter(goldBurstPath);
+        if (goldBurst is null)
+        {
+            SEED.Debug.LogWarning($"[FightEvalBanner] 完璧の粒を解決できない: {goldBurstPath}");
+        }
+        whiteBurst = ResolveEmitter(whiteBurstPath);
+        if (whiteBurst is null)
+        {
+            SEED.Debug.LogWarning($"[FightEvalBanner] 通常の粒を解決できない: {whiteBurstPath}");
+        }
+    }
+
+    /// <summary>参照文字列から ParticleEmitter を解決する（見つからなければ null）。</summary>
+    /// <param name="reference">参照文字列（例 <c>./FightEvalBody/EvalBurstGold|ParticleEmitter</c>）。</param>
+    private SEED.ParticleEmitter? ResolveEmitter(string reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference)) { return null; }
+        SEED.GameObject owner = ResolveActor(reference);
+        if (!owner.IsValid) { return null; }
+        return owner.GetComponent<SEED.ParticleEmitter>();
     }
 
     /// <summary>参照文字列（<c>./Child/Grand</c> 形式。<c>|スロット名</c> は無視）からアクタを解決する。</summary>

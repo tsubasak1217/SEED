@@ -1,0 +1,143 @@
+{
+  "name": "HitSparkle2D",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.5,
+      0.5
+    ],
+    "anchor": [
+      0.0,
+      0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "ParticleEmitter",
+      "component": {
+        "type": "ParticleEmitterComponent",
+        "data": {
+          "max_particles": 128,
+          "shape": "plane",
+          "spawn_volume": {
+            "sphere": {
+              "radius": 12.0
+            }
+          },
+          "emit_mode": "once",
+          "initial_delay": 0.0,
+          "prewarm_time": 0.0,
+          "emit_interval": 0.05,
+          "particles_per_emit": 1,
+          "lifetime": [
+            0.35,
+            0.75
+          ],
+          "initial_speed": [
+            180.0,
+            460.0
+          ],
+          "direction_local": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "direction_randomness": 1.0,
+          "gravity": [
+            0.0,
+            900.0,
+            0.0
+          ],
+          "drag": 1.8,
+          "rot_speed_range": [
+            -220.0,
+            220.0
+          ],
+          "initial_rotation_range": [
+            0.0,
+            360.0
+          ],
+          "size_range": [
+            6.0,
+            14.0
+          ],
+          "color_curves": [
+            {
+              "channels": [
+                {
+                  "keys": [
+                    {
+                      "t": 0.0,
+                      "v": 0.0
+                    },
+                    {
+                      "t": 1.0,
+                      "v": 0.0
+                    }
+                  ]
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0.0,
+                      "v": 0.0
+                    },
+                    {
+                      "t": 1.0,
+                      "v": 0.0
+                    }
+                  ]
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0.0,
+                      "v": 1.0
+                    },
+                    {
+                      "t": 1.0,
+                      "v": 1.0
+                    }
+                  ]
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0.0,
+                      "v": 1.0
+                    },
+                    {
+                      "t": 1.0,
+                      "v": 0.0
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "texture_paths": [
+            "assets://mainGame/textures/ui/white.png"
+          ],
+          "blend": "add",
+          "sim_space": "local",
+          "playing": false,
+          "layer": 2600
+        }
+      }
+    }
+  ],
+  "children": []
+}

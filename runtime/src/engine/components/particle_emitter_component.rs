@@ -68,6 +68,29 @@ pub const DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG: f32 = 180.0;
 /// テクスチャリストの最大枚数（texture_2d_array のレイヤ上限。利用側で clamp）。
 pub const MAX_PARTICLE_TEXTURES: usize = 8;
 
+// ─── 色カーブ（HSVA）のチャンネル添字と定数 ───────────────────
+// マジックナンバー禁止のため、色カーブの意味づけを名前で持つ。
+
+/// 色カーブ（HSVA）の色相チャンネルの添字。
+const HSVA_CHANNEL_H: usize = 0;
+/// 色カーブ（HSVA）の彩度チャンネルの添字。
+const HSVA_CHANNEL_S: usize = 1;
+/// 色カーブ（HSVA）の明度チャンネルの添字。
+const HSVA_CHANNEL_V: usize = 2;
+/// 色カーブ（HSVA）のアルファチャンネルの添字。
+const HSVA_CHANNEL_A: usize = 3;
+
+/// 正規化寿命の先頭（t=0）。単色として色カーブを代表評価する時刻。
+const CURVE_START_T: f32 = 0.0;
+
+/// 色成分（RGB / SV / A）の最小値。
+const COLOR_MIN: f32 = 0.0;
+/// 色成分（RGB / SV / A）の最大値。
+const COLOR_MAX: f32 = 1.0;
+
+/// HSV 色相環の分割数（RGB 変換の 6 セクタ）。
+const HSV_SECTOR_COUNT: f32 = 6.0;
+
 // ─── デフォルト値関数 ─────────────────────────────────────────
 // マジックナンバー禁止のため、非ゼロ既定値はすべて関数に切り出す。
 
@@ -671,6 +694,34 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h, s, v)
 }
 
+/// HSV(H:0..1, S:0..1, V:0..1)→RGB(0..1) 変換（[`rgb_to_hsv`] の逆）。
+///
+/// 色相 H は 0..1 正規化（度ではない）。範囲外の H は 1 周期で折り返す。
+/// `Tint` の読み取り（色カーブ → 1 色の RGB）にだけ使う CPU 関数。
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+    // 彩度 0（灰色軸）は色相を見るまでもなく R=G=B=V。
+    if s <= f32::EPSILON {
+        return [v, v, v];
+    }
+    // H を [0,1) へ折り返してから 6 分割のセクタ番号と小数部へ分ける。
+    let h = h - h.floor();
+    let sector = h * HSV_SECTOR_COUNT;
+    let index = sector.floor();
+    let f = sector - index;
+    let p = v * (COLOR_MAX - s);
+    let q = v * (COLOR_MAX - s * f);
+    let t = v * (COLOR_MAX - s * (COLOR_MAX - f));
+    match index as i32 {
+        0 => [v, t, p],
+        1 => [q, v, p],
+        2 => [p, v, t],
+        3 => [p, q, v],
+        4 => [t, p, v],
+        // index == 5（および丸め誤差で 6 になった場合）
+        _ => [v, p, q],
+    }
+}
+
 /// RGBA(0..1) → HSVA 2 キーカーブ（旧 start_color/end_color を色カーブへ変換）。
 fn rgba_pair_to_hsva_curve(start: [f32; 4], end: [f32; 4]) -> ParamCurve {
     let (h0, s0, v0) = rgb_to_hsv(start[0], start[1], start[2]);
@@ -1178,6 +1229,59 @@ impl ParticleEmitterComponent {
     pub fn bump_curve_generation(&mut self) {
         self.curve_generation = self.curve_generation.wrapping_add(1);
     }
+
+    // ─── 色味（Tint）── スクリプトから 1 色で塗り替えるための入口 ──
+    //
+    // 色カーブは HSVA の時系列（寿命 t=0..1）であり、「色相が時間で回る」
+    // ような凝った表現も書ける。一方でゲーム側の演出スクリプトが欲しいのは
+    // たいてい「この放出だけレベル色にしたい」という<b>単色の塗り替え</b>で、
+    // カーブを丸ごと組み立てさせるのは過剰である。そこで
+    // 「H/S/V を定数化し、アルファのカーブ（＝消え方）はそのまま残す」
+    // という一点だけを担う入口を用意する。
+
+    /// 色カーブの色味（RGB）を読む。
+    ///
+    /// <b>寿命の先頭（t=0）</b>の色を、先頭の色カーブから 1 色だけ返す
+    /// （色カーブは複数本持てるが、代表として 0 本目を見る）。
+    /// アルファは色味ではないので返さない（消え方はカーブの持ち物）。
+    pub fn tint_rgb(&self) -> [f32; 3] {
+        let Some(curve) = self.color_curves.first() else {
+            return [1.0, 1.0, 1.0];
+        };
+        let hsva = curve.sample(CURVE_START_T);
+        hsv_to_rgb(hsva[HSVA_CHANNEL_H], hsva[HSVA_CHANNEL_S], hsva[HSVA_CHANNEL_V])
+    }
+
+    /// 全色カーブの色味（RGB）を 1 色へ塗り替える。
+    ///
+    /// H/S/V を定数チャンネルに置き換え、<b>アルファのチャンネルだけは元のまま
+    /// 残す</b>（フェードアウトなど「消え方」の演出を壊さないため）。
+    /// アルファチャンネルを持たないカーブには既定のフェードアウト（1→0）を補う。
+    /// カーブを書き換えるので LUT 再焼き用の世代カウンタも進める。
+    ///
+    /// 入力 RGB は 0..1 前提で、範囲外は 0..1 にクランプする。
+    pub fn set_tint_rgb(&mut self, rgb: [f32; 3]) {
+        let (h, s, v) = rgb_to_hsv(
+            rgb[0].clamp(COLOR_MIN, COLOR_MAX),
+            rgb[1].clamp(COLOR_MIN, COLOR_MAX),
+            rgb[2].clamp(COLOR_MIN, COLOR_MAX),
+        );
+        for curve in self.color_curves.iter_mut() {
+            // 元のアルファチャンネル（4 本目）を退避してから H/S/V を差し替える。
+            let alpha = curve
+                .channels
+                .get(HSVA_CHANNEL_A)
+                .cloned()
+                .unwrap_or_else(|| CurveChannel::linear(COLOR_MAX, COLOR_MIN));
+            curve.channels = vec![
+                CurveChannel::constant(h),
+                CurveChannel::constant(s),
+                CurveChannel::constant(v),
+                alpha,
+            ];
+        }
+        self.bump_curve_generation();
+    }
 }
 
 impl Default for ParticleEmitterComponent {
@@ -1496,5 +1600,64 @@ mod tests {
         assert!((lut[CURVE_LUT_SAMPLES - 1][0] - 1.0).abs() < 1e-6);
         // 未使用チャンネル（y,z,w）は 0。
         assert_eq!(lut[10][1], 0.0);
+    }
+
+    // ── Tint（色味の読み書き）────────────────────────────────
+
+    /// set_tint_rgb → tint_rgb が同じ RGB を返すこと（HSV 往復の丸め込み込み）。
+    #[test]
+    fn tint_roundtrips_through_hsv() {
+        let mut c = ParticleEmitterComponent::default();
+        // 原色・中間色・灰色軸（S=0）・黒（V=0）を通す。
+        for rgb in [
+            [1.0f32, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.835, 0.29],
+            [0.5, 0.5, 0.5],
+            [0.0, 0.0, 0.0],
+        ] {
+            c.set_tint_rgb(rgb);
+            let got = c.tint_rgb();
+            for i in 0..3 {
+                assert!(
+                    (got[i] - rgb[i]).abs() < 1e-4,
+                    "tint 往復がずれた: 入力 {rgb:?} / 出力 {got:?}"
+                );
+            }
+        }
+    }
+
+    /// set_tint_rgb はアルファのカーブ（消え方）を壊さず、世代カウンタを進めること。
+    #[test]
+    fn set_tint_keeps_alpha_curve_and_bumps_generation() {
+        let mut c = ParticleEmitterComponent::default();
+        // 既定は白フェード（A が 1→0）。塗り替え後も A のカーブが残ること。
+        let before_generation = c.curve_generation;
+        c.set_tint_rgb([1.0, 0.0, 0.0]);
+
+        let curve = &c.color_curves[0];
+        assert_eq!(curve.channels.len(), 4, "HSVA の 4 チャンネルが揃っていない");
+        let alpha = &curve.channels[HSVA_CHANNEL_A];
+        assert!((alpha.eval(0.0) - 1.0).abs() < 1e-6, "寿命先頭のアルファが 1 でない");
+        assert!((alpha.eval(1.0) - 0.0).abs() < 1e-6, "寿命末尾のアルファが 0 でない");
+        // H/S/V は定数化されている（t が変わっても同じ色）。
+        assert!((curve.channels[HSVA_CHANNEL_H].eval(0.0)
+            - curve.channels[HSVA_CHANNEL_H].eval(1.0)).abs() < 1e-6);
+        // LUT 再焼きのための世代カウンタが進んでいること。
+        assert_ne!(c.curve_generation, before_generation);
+    }
+
+    /// 色カーブを複数本持つエミッタでは、set_tint_rgb が全部に効くこと。
+    #[test]
+    fn set_tint_applies_to_all_color_curves() {
+        let mut c = ParticleEmitterComponent::default();
+        c.color_curves = vec![white_fade_color_curve(), white_fade_color_curve()];
+        c.set_tint_rgb([0.0, 0.0, 1.0]);
+        for curve in &c.color_curves {
+            let hsva = curve.sample(CURVE_START_T);
+            let rgb = hsv_to_rgb(hsva[HSVA_CHANNEL_H], hsva[HSVA_CHANNEL_S], hsva[HSVA_CHANNEL_V]);
+            assert!((rgb[2] - 1.0).abs() < 1e-4 && rgb[0] < 1e-4 && rgb[1] < 1e-4);
+        }
     }
 }
