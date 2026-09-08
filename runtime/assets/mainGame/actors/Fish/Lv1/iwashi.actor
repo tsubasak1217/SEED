@@ -91,7 +91,8 @@
         "data": {
           "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\Fish.cs",
           "fields": {
-            "size": "1.000",
+            "powerScale": "1.000",
+            "baseSizeCm": "15.000",
             "stamina": "10.000",
             "basePower": "10.000",
             "baitSenseDistance": "5.000",

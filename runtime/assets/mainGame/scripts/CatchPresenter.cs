@@ -969,8 +969,7 @@ public class CatchPresenter : SEEDScript
         if (shownFish is not { } fish) { return; }
 
         string displayName = fish.DisplayName;
-        float displaySize = fish.DisplaySize;
-        string unit = fish.SizeUnitLabel;
+        float displaySize = fish.DisplaySize;   // cm（書式は Fish.FormatSize に一元化）
 
         FishRecords.CatchRecordResult record =
             FishRecords.RecordCatch(displayName, displaySize, fish.SizeRank);
@@ -983,8 +982,8 @@ public class CatchPresenter : SEEDScript
 
         ResultPanel.Show(resultPanelActorPath, new ResultPanel.ResultData(
             name: displayName,
-            sizeText: FormatSize(displaySize, unit),
-            bestText: bestLabelPrefix + FormatSize(best, unit),
+            sizeText: Fish.FormatSize(displaySize),
+            bestText: bestLabelPrefix + Fish.FormatSize(best),
             rankText: rankLabelPrefix + RankLabel(fish.SizeRank),
             // 配色は「見せる文字列」ではなく素のランク文字で引く（書式変更に強くするため）
             rankKey: fish.SizeRank,
@@ -993,10 +992,6 @@ public class CatchPresenter : SEEDScript
             firstCatch: record.FirstCatch));
     }
 
-    /// <summary>サイズ表示の書式（小数第 1 位＋単位ラベル。例「32.5cm」）。</summary>
-    /// <param name="size">表示するサイズ。</param>
-    /// <param name="unit">単位ラベル（例 "cm"）。</param>
-    private static string FormatSize(float size, string unit) => $"{size:F1}{unit}";
 
     /// <summary>
     /// <see cref="Fish.SizeRank"/>（"S" / "A" / "B" / それ以外＝"C"）を表示ラベルへ変換する。

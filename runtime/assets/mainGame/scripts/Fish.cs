@@ -6,7 +6,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///
 /// [共通パラメータ]（仕様書どおり）
 /// - 大きさ / スタミナ / 基礎パワー / 基礎HP / 餌の感知距離 / 好みの魚 / 暴れ度（規定 1）
-/// [戦闘力] = 基礎パワー × 大きさスコア × 暴れ度（<see cref="CombatPower"/>）
+/// [戦闘力] = 基礎パワー × 大きさスコア（算出は <c>FishingFight.SizeScore</c> の 1 か所だけ）
 ///
 /// 泳ぎは「生成地点の周りを気ままに回遊する」最小実装:
 /// 数秒ごとにランダムに向きを変え、行動半径から出そうになったら中心へ向き直す。
@@ -64,6 +64,23 @@ public class Fish : SEEDScript
     /// サイズ倍率の下限クランプ（0 以下や負の倍率でモデルが潰れる／裏返るのを防ぐ番人値）。
     /// </summary>
     private const float MinSizeMultiplier = 0.01f;
+
+    // ─── サイズ表示の単位（docs/units.md: 魚のサイズは cm が正典）──────────
+
+    /// <summary>基準サイズ（cm）の既定値。データ未設定の魚でも破綻しない中庸な体長。</summary>
+    private const float DefaultBaseSizeCm = 20f;
+
+    /// <summary>1 メートルあたりのセンチメートル（cm ⇔ m の換算係数）。</summary>
+    private const float CentimetersPerMeter = 100f;
+
+    /// <summary>この値（cm）以上のサイズは m 表記へ切り替える。</summary>
+    private const float MeterDisplayThresholdCm = 100f;
+
+    /// <summary>センチメートル表記の単位ラベル。</summary>
+    private const string SizeUnitCentimeter = "cm";
+
+    /// <summary>メートル表記の単位ラベル。</summary>
+    private const string SizeUnitMeter = "m";
 
     /// <summary>
     /// 餌（の少し下）へ<b>完全に張り付く</b>距離（メートル）。
@@ -155,9 +172,30 @@ public class Fish : SEEDScript
 
     // ─── 共通パラメータ（釣り仕様）───────────────────────────
 
-    /// <summary>大きさ。戦闘力の「大きさスコア」の元になる値（1 で標準）。</summary>
-    [Header("釣りパラメータ"), SerializeField(Label = "大きさ")]
-    private float size = 1f;
+    /// <summary>
+    /// 戦闘力係数（無次元・1 で標準）【見た目の大きさとは無関係】。
+    ///
+    /// 単位系の統一（docs/units.md）にあたり、旧「大きさ」から
+    /// <b>戦闘力にだけ効く無次元の係数</b>として切り出したもの。
+    /// 表示用の魚体長は <see cref="baseSizeCm"/>（cm）が受け持つので、
+    /// このフィールドは長さの単位を一切持たない。
+    ///
+    /// 実際に戦闘力へ掛かるのは <c>FishingFight.SizeScore</c> の 1 か所だけ
+    /// （＝算出式を魚側に複製しないための約束）。
+    /// </summary>
+    [Header("釣りパラメータ"), SerializeField(Label = "戦闘力係数")]
+    private float powerScale = 1f;
+
+    /// <summary>
+    /// 基準サイズ（cm）＝その魚種の標準的な体長【釣果表示の長さの唯一の元】。
+    ///
+    /// 実際に表示されるサイズは、これに個体差 <see cref="SizeMultiplier"/> を
+    /// 掛けた <see cref="DisplaySize"/>（cm）。
+    /// ワールド座標（1 ユニット ＝ 1 m）とは独立した「見せ方の値」で、
+    /// モデルのスケールには一切影響しない（docs/units.md 参照）。
+    /// </summary>
+    [SerializeField(Label = "基準サイズ(cm)")]
+    private float baseSizeCm = DefaultBaseSizeCm;
 
     /// <summary>基礎パワー。竿パワーと同じ単位で比較される戦闘力の基礎値。</summary>
     [SerializeField(Label = "基礎パワー")]
@@ -283,14 +321,6 @@ public class Fish : SEEDScript
     /// <summary>個体ごとのサイズ倍率の上限。</summary>
     [SerializeField(Label = "サイズ倍率の上限")]
     private float sizeMultiplierMax = 1.3f;
-
-    /// <summary>
-    /// 釣果表示に添える長さの単位ラベル。
-    /// <see cref="size"/> は本来「大きさスコアの元になる無次元の値」なので、
-    /// 表示上の単位はデータ側（prefab / インスペクタ）で決められるようにしてある。
-    /// </summary>
-    [SerializeField(Label = "サイズの単位ラベル")]
-    private string sizeUnitLabel = "cm";
 
     /// <summary>
     /// ランク S になる <see cref="SizeMultiplier"/> の下限【サイズランクの判定閾値の
@@ -519,19 +549,6 @@ public class Fish : SEEDScript
     private bool farLevelCulled = false;
 
     /// <summary>
-    /// 戦闘力 = 基礎パワー × 大きさスコア × 暴れ度（仕様の算出式）。
-    /// 大きさスコアは「大きさ 1 を標準に ±10% 程度」の緩い係数
-    /// （size=0.5 → 0.95 / size=1 → 1.0 / size=2 → 1.1 のような線形）。
-    /// </summary>
-    /// <param name="currentRampage">現在の暴れ度（釣りバトル側が渡す。省略時は規定値）。</param>
-    public float CombatPower(float? currentRampage = null)
-    {
-        // 大きさスコア: 1.0 + (大きさ - 1) * 0.1 を 0.9〜1.1 にクランプ
-        float sizeScore = SEED.Mathf.Clamped(1f + (size - 1f) * 0.1f, 0.9f, 1.1f);
-        return basePower * sizeScore * (currentRampage ?? rampage);
-    }
-
-    /// <summary>
     /// 基礎パワー（釣りバトル側 <see cref="FishingFight"/> が戦闘力の算出に使う）。
     /// 竿パワーと同じ単位。
     /// </summary>
@@ -666,8 +683,11 @@ public class Fish : SEEDScript
         return SEED.Mathf.Max(preferredSenseMultiplier, NeutralSenseMultiplier);
     }
 
-    /// <summary>大きさ（釣果ログ・UI から参照する）。</summary>
-    public float Size => size;
+    /// <summary>戦闘力係数（<c>FishingFight.SizeScore</c> だけが読む）。</summary>
+    public float PowerScale => powerScale;
+
+    /// <summary>基準サイズ（cm）。個体差を掛ける前の、その魚種の標準体長。</summary>
+    public float BaseSizeCm => baseSizeCm;
 
     /// <summary>表示名。未設定なら既定名を返す。</summary>
     public string DisplayName => string.IsNullOrWhiteSpace(fishName) ? DefaultDisplayName : fishName;
@@ -694,11 +714,28 @@ public class Fish : SEEDScript
     /// </summary>
     public float SizeMultiplier { get; private set; } = 1f;
 
-    /// <summary>釣果表示用のサイズ（＝<see cref="Size"/> × <see cref="SizeMultiplier"/>）。</summary>
-    public float DisplaySize => size * SizeMultiplier;
+    /// <summary>
+    /// 釣果表示用のサイズ（<b>cm</b>）＝<see cref="BaseSizeCm"/> × <see cref="SizeMultiplier"/>。
+    /// 文字列にするときは必ず <see cref="FormatSize"/> を通すこと（書式の一元化）。
+    /// </summary>
+    public float DisplaySize => baseSizeCm * SizeMultiplier;
 
-    /// <summary>釣果表示に添える単位ラベル（例: "cm"）。</summary>
-    public string SizeUnitLabel => sizeUnitLabel;
+    /// <summary>
+    /// サイズ（cm）を表示文字列にする【サイズ書式の唯一の実装】。
+    ///
+    /// <see cref="MeterDisplayThresholdCm"/>（100cm）以上は m 表記へ切り替える
+    /// （例: 32.5 → "32.5cm" / 120 → "1.2m" / 5000 → "50.0m"）。
+    /// 釣果パネル・自己ベスト・ログなど、サイズを文字にする箇所はすべてここを通す。
+    /// </summary>
+    /// <param name="sizeCm">表示するサイズ（cm）。</param>
+    /// <returns>単位付きの表示文字列。</returns>
+    public static string FormatSize(float sizeCm)
+    {
+        float clamped = SEED.Mathf.Max(sizeCm, 0f);
+        return clamped >= MeterDisplayThresholdCm
+            ? $"{clamped / CentimetersPerMeter:F1}{SizeUnitMeter}"
+            : $"{clamped:F1}{SizeUnitCentimeter}";
+    }
 
     /// <summary>
     /// 出現時のスケール（＝シーン／prefab のスケール × <see cref="SizeMultiplier"/>）。
@@ -926,8 +963,8 @@ public class Fish : SEEDScript
             if (!fc.BaitActive && fc.HookedFishBait is { } chainPrey)
             {
                 SEED.Debug.Log(
-                    $"[Fish] わらしべ: {DisplayName}（{DisplaySize:F1}）が"
-                  + $" 掛かっている {chainPrey.DisplayName}（{chainPrey.DisplaySize:F1}）へ接近"
+                    $"[Fish] わらしべ: {DisplayName}（{FormatSize(DisplaySize)}）が"
+                  + $" 掛かっている {chainPrey.DisplayName}（{FormatSize(chainPrey.DisplaySize)}）へ接近"
                   + $"（感知 {senseRadius:F1}m / 距離 {distance:F1}m）");
             }
             return;
@@ -972,7 +1009,7 @@ public class Fish : SEEDScript
             {
                 biteWaitStarted = false;
                 chainWaitElapsed = 0f;
-                SEED.Debug.Log($"[Fish] わらしべ: {DisplayName}（{DisplaySize:F1}）が隙を待ちきれず離れた");
+                SEED.Debug.Log($"[Fish] わらしべ: {DisplayName}（{FormatSize(DisplaySize)}）が隙を待ちきれず離れた");
                 BackToRoam(withCooldown: true);
                 return;
             }

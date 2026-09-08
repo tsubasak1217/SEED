@@ -469,9 +469,26 @@ public class FishingFight : SEEDScript
     [Header("ウキの距離制御"), SerializeField(Label = "魚の引き速度(m/秒)")]
     private float fishPullSpeed = 1.5f;
 
-    /// <summary>目標距離が現在より<b>近い</b>とき、ウキが手元へ寄る速度の上限（m/秒）。</summary>
+    /// <summary>
+    /// 目標距離が現在より<b>近い</b>とき、ウキが手元へ寄る速度の上限（m/秒）
+    /// 【巻きの速さの唯一の上限】。
+    ///
+    /// 巻き入力（ホイール）は 1 フレームにまとまって飛び込むので、これを上限として
+    /// <see cref="Tick"/> が 1 フレームの巻き取り量そのものを頭打ちにする
+    /// （<see cref="pendingReelAmount"/> に繰り越すので入力は捨てない）。
+    /// こうすると「魚 HP の減り」「ウキの実移動」「距離表示」が同じ速度で揃う。
+    /// </summary>
     [SerializeField(Label = "寄せ速度の上限(m/秒)")]
     private float reelInSpeedMax = 6f;
+
+    /// <summary>
+    /// 巻き取り量の繰り越し上限（秒）。頭打ちで余った巻き量は
+    /// <see cref="pendingReelAmount"/> へ貯めて次フレーム以降に消化するが、
+    /// 貯めすぎると入力を止めてもしばらく巻け続けてしまうので
+    /// 「<see cref="reelInSpeedMax"/> × この秒数」で頭を押さえる。
+    /// </summary>
+    [SerializeField(Label = "巻き取りの繰り越し上限(秒)")]
+    private float reelCarryOverMaxSeconds = 0.5f;
 
     /// <summary>
     /// 「いま巻いている」とみなし続ける保持時間（秒）【漂流物の巻き込み判定の唯一の猶予】。
@@ -952,6 +969,13 @@ public class FishingFight : SEEDScript
     /// </summary>
     private float leadInStartDistance = 0f;
 
+    /// <summary>
+    /// 1 フレームの上限を超えて余った巻き取り量（メートル）。
+    /// 次フレーム以降に <see cref="reelInSpeedMax"/> の速さで消化する
+    /// （＝入力を捨てずに、巻きの<b>速度</b>だけを一定に保つ）。
+    /// </summary>
+    private float pendingReelAmount = 0f;
+
     /// <summary>バトル開始からの経過秒数（拍時計の唯一の時間源）。</summary>
     private float clockTime = 0f;
 
@@ -1325,6 +1349,27 @@ public class FishingFight : SEEDScript
             return;
         }
 
+        // 巻き取り量は必ずここで 1 フレームの上限へ均す【頭打ちの唯一の適用点】。
+        // これより下（UpdateRest → ApplyReel）は均された量だけを見る。
+        // 隙（Rest）以外のフェーズでは均した量が誰にも使われずに消えるが、
+        // これは従来（生の巻き量をそのまま捨てていた）と同じ挙動である。
+        reelAmount = ThrottleReelAmount(reelAmount, deltaTime);
+
+        // 魚 HP を削り切ったあとは、魚はもう抵抗しない。
+        // 拍時計・出題・糸の消耗をすべて止め、ウキが竿先へ寄り切る
+        // （<see cref="ComputeFloatDistanceStep"/>）のを待つだけの状態にする。
+        // 釣り上げの成立判定はコントローラ側（HP 0 かつ竿先の近傍）が行う。
+        if (FishDefeated)
+        {
+            if (drumPlaying)
+            {
+                StopDrumLoop();
+                drumPausedByFight = true;
+            }
+            ApplyUi();
+            return;
+        }
+
         clockTime += deltaTime;
 
         UpdateDrumLoop();
@@ -1387,6 +1432,14 @@ public class FishingFight : SEEDScript
     public float ComputeFloatDistanceStep(float currentDistance, float deltaTime)
     {
         if (!Active || Paused || target is null) { return 0f; }
+
+        // 力尽きた魚は引かない: フェーズに関わらず、寄せ速度の上限で竿先（距離 0）まで寄せ続ける。
+        // 行き過ぎないよう残り距離でクランプする。
+        if (FishDefeated)
+        {
+            float pull = SEED.Mathf.Max(reelInSpeedMax, 0f) * SEED.Mathf.Max(deltaTime, 0f);
+            return -SEED.Mathf.Min(pull, SEED.Mathf.Max(currentDistance, 0f));
+        }
 
         if (CurrentPhase == Phase.LeadIn)
         {
@@ -2415,6 +2468,33 @@ public class FishingFight : SEEDScript
         fishHp = SEED.Mathf.Max(fishHp - reelAmount * ReelHpPerUnit, FishHpZero);
     }
 
+    /// <summary>
+    /// 1 フレームの巻き取り量を上限（<see cref="reelInSpeedMax"/> × 経過秒）で頭打ちにし、
+    /// 余りを <see cref="pendingReelAmount"/> へ繰り越す【巻き速度を一定に保つ唯一の場所】。
+    ///
+    /// ホイール入力は 1 フレームにまとめて飛び込むので、そのまま HP へ流すと
+    /// 「HP は一気に減ったのにウキ（＝表示距離）は上限速度でしか寄れない」というズレが出る。
+    /// ここで入力を「上限速度ぶんずつ」へ均すことで、HP の減り・ウキの実移動・
+    /// 距離表示の 3 つが同じ速度で進む。
+    /// </summary>
+    /// <param name="rawAmount">このフレームに読んだ生の巻き取り量（メートル）。</param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    /// <returns>このフレームに実際に消化してよい巻き取り量（メートル）。</returns>
+    private float ThrottleReelAmount(float rawAmount, float deltaTime)
+    {
+        float maxPerSecond = SEED.Mathf.Max(reelInSpeedMax, 0f);
+        float carryLimit = maxPerSecond * SEED.Mathf.Max(reelCarryOverMaxSeconds, 0f);
+
+        // 生の入力を繰り越しへ積む（貯めすぎると入力を止めても巻け続けるので上限で切る）
+        pendingReelAmount = SEED.Mathf.Min(
+            pendingReelAmount + SEED.Mathf.Max(rawAmount, 0f), carryLimit);
+
+        float allowed = maxPerSecond * SEED.Mathf.Max(deltaTime, 0f);
+        float spend = SEED.Mathf.Min(pendingReelAmount, allowed);
+        pendingReelAmount -= spend;
+        return spend;
+    }
+
     // ─── 内部処理: 糸の残りと疲労 ─────────────────────────
 
     /// <summary>
@@ -2450,14 +2530,19 @@ public class FishingFight : SEEDScript
         => target is { } fish ? fish.BasePower * SizeScore(fish) : rodPower;
 
     /// <summary>
-    /// 大きさスコア。個体差 <see cref="Fish.SizeMultiplier"/>（既定 0.8〜1.3）を
-    /// <see cref="sizeScoreMin"/>〜<see cref="sizeScoreMax"/>（既定 0.9〜1.1）へ線形写像する。
+    /// 大きさスコア【戦闘力に効く係数の唯一の算出点】。
+    ///
+    /// 個体差 <see cref="Fish.SizeMultiplier"/>（既定 0.8〜1.3）を
+    /// <see cref="sizeScoreMin"/>〜<see cref="sizeScoreMax"/>（既定 0.9〜1.1）へ線形写像し、
+    /// さらに魚種ごとの戦闘力係数 <see cref="Fish.PowerScale"/>（無次元・既定 1）を掛ける。
+    /// 魚側に同じ式を持たせない（旧 <c>Fish.CombatPower</c> は廃止）。
     /// </summary>
     /// <param name="fish">対象の魚。</param>
     private float SizeScore(Fish fish)
     {
         float t = SEED.Mathf.InverseLerp(sizeMultiplierRefMin, sizeMultiplierRefMax, fish.SizeMultiplier);
-        return SEED.Mathf.Lerp(sizeScoreMin, sizeScoreMax, t);
+        float individual = SEED.Mathf.Lerp(sizeScoreMin, sizeScoreMax, t);
+        return individual * SEED.Mathf.Max(fish.PowerScale, 0f);
     }
 
     /// <summary>
@@ -2575,6 +2660,7 @@ public class FishingFight : SEEDScript
         fishHp = 0f;
         fishHpMax = 0f;
         metersPerHp = 0f;
+        pendingReelAmount = 0f;   // 巻き取りの繰り越しは戦いをまたいで持ち越さない
         leadInStartDistance = 0f;
         target = null;
 

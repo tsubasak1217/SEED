@@ -741,6 +741,17 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "巻き取り完了距離(m)")]
     private float reelEndDistance = 1.5f;
 
+    /// <summary>
+    /// 釣り上げが成立するウキ→竿先の水平距離（メートル）【ヒット中の完了距離】。
+    ///
+    /// ヒット中は「魚 HP が 0」かつ「実測距離がこの値以下」の両方が揃って初めて
+    /// 釣り上げになる（<see cref="UpdateFight"/>）。HUD に出している距離は実測値なので、
+    /// <b>表示が 0 に近づいた瞬間に釣れる</b>という見た目と判定の一致がこれで保たれる。
+    /// 逆に距離だけ詰まっても HP が残っていれば釣れない。
+    /// </summary>
+    [SerializeField(Label = "釣り上げ成立距離(m)")]
+    private float catchDistanceMeters = 1.0f;
+
     /// <summary>水面に浮いているウキの上下揺れの振幅（メートル）。0 で揺れなし。</summary>
     [SerializeField(Label = "ウキの揺れ幅(m)")]
     private float bobAmplitude = 0.05f;
@@ -1522,7 +1533,7 @@ public class FishingController : SEEDScript
         // ヒット演出（帯＋「Lv◯ 魚名」「HIT!!!」）を出す。
         // 演出の総尺は余白（LeadIn）より短く作ってあるので、やり取りの進行は妨げない。
         ShowHitBanner(fish);
-        SEED.Debug.Log($"[Fishing] ヒット! {fish.DisplayName}（大きさ {fish.Size:F2}）");
+        SEED.Debug.Log($"[Fishing] ヒット! {fish.DisplayName}（サイズ {Fish.FormatSize(fish.DisplaySize)}）");
         return true;
     }
 
@@ -1583,8 +1594,8 @@ public class FishingController : SEEDScript
         if (hookedFish is not { } eaten) { return; }
 
         SEED.Debug.Log(
-            $"[Fishing] わらしべ成立: {newFish.DisplayName}（{newFish.DisplaySize:F1}）が"
-          + $" {eaten.DisplayName}（{eaten.DisplaySize:F1}）を食べた");
+            $"[Fishing] わらしべ成立: {newFish.DisplayName}（{Fish.FormatSize(newFish.DisplaySize)}）が"
+          + $" {eaten.DisplayName}（{Fish.FormatSize(eaten.DisplaySize)}）を食べた");
 
         // 食われた魚: AI を止め、円環クランプの除外登録を外してから破棄する
         // （登録解除は破棄より前に行う。破棄処理中のシーンアクセスは保証されないため）
@@ -2356,8 +2367,12 @@ public class FishingController : SEEDScript
             return;
         }
 
-        // 魚 HP を削り切ったら釣り上げ成立【新仕様の主たる成功条件】。
-        if (f.FishDefeated) { FinishReeling(); }
+        // 釣り上げ成立【成功条件の唯一の判定点】:
+        //   (1) 魚 HP を削り切っている（＝魚が力尽きた）
+        //   (2) かつウキが竿先の近傍（catchDistanceMeters）まで寄っている
+        // HP が先に 0 になった場合、魚は抵抗を止め（FishingFight 側）、ウキは
+        // 寄せ速度の上限で竿先まで寄り続けるので、必ず (2) に到達する。
+        if (f.FishDefeated && CurrentFloatDistance() <= catchDistanceMeters) { FinishReeling(); }
     }
 
     /// <summary>
@@ -2939,7 +2954,9 @@ public class FishingController : SEEDScript
 
         // 安全策: Reeling に入った時点（または既に）残り距離が完了距離以下なら、
         // 巻く前から手元にあるということなので即座に完了させる（ウキが素通りするのを防ぐ）。
-        if (remaining <= reelEndDistance)
+        // ヒット中はここで完了させない（釣り上げの成否は UpdateFight が
+        // 「HP 0 かつ釣り上げ成立距離」で決める）。
+        if (!IsHooked && remaining <= reelEndDistance)
         {
             FinishReeling();
             return;
@@ -2956,8 +2973,10 @@ public class FishingController : SEEDScript
 
         // 進行方向が基準点への方向から 90 度以上外れている（内積 <= 0）＝
         // これ以上巻いても基準点へ近づけない向きなので、素通りする前に巻き取りを完了させる。
+        // ヒット中はウキの移動を ComputeFloatDistanceStep が支配しており、
+        // 巻く向きは操舵にしか使わないので、この打ち切りは非ヒット時だけに効かせる。
         float approach = toTarget.x * dir.x + toTarget.z * dir.z;
-        if (approach <= 0f)
+        if (!IsHooked && approach <= 0f)
         {
             FinishReeling();
             return;
@@ -3010,7 +3029,8 @@ public class FishingController : SEEDScript
         }
 
         // 移動後の残り距離が完了距離以下になったら 1 回の釣りを終える
-        if (HorizontalDistance(next, target) <= reelEndDistance)
+        // （ヒット中は UpdateFight の釣り上げ判定に一本化しているのでここでは終えない）。
+        if (!IsHooked && HorizontalDistance(next, target) <= reelEndDistance)
         {
             FinishReeling();
         }
@@ -3051,7 +3071,7 @@ public class FishingController : SEEDScript
         // ── 釣り上げ成立 ──
         if (hookedFish is { } caught)
         {
-            SEED.Debug.Log($"[Fishing] 釣り上げ: {caught.DisplayName}（大きさ {caught.DisplaySize:F1} {caught.SizeUnitLabel}）");
+            SEED.Debug.Log($"[Fishing] 釣り上げ: {caught.DisplayName}（サイズ {Fish.FormatSize(caught.DisplaySize)}）");
 
             // 魚の AI を止める（以後の位置・向き・スケールは CatchPresenter が決める）。
             // 円環クランプの除外登録は<b>外さない</b>: 外すと演出中の魚が FishManager に

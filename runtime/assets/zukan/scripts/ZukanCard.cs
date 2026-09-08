@@ -57,9 +57,15 @@ public class ZukanCard : SEEDScript
     [SerializeField(Label = "釣った数の書式")]
     private string countFormat = "つった数: {0}";
 
-    /// <summary>サイズの単位ラベル。</summary>
-    [SerializeField(Label = "サイズの単位")]
-    private string sizeUnit = "cm";
+    /// <summary>
+    /// サイズの単位ラベル【現在は未使用・データ互換のためだけに残している】。
+    ///
+    /// 単位系の統一（docs/units.md）により、サイズの書式は
+    /// <see cref="Fish.FormatSize"/>（cm 基準・100cm 以上は m 表記）へ一元化した。
+    /// 単位はその戻り値に含まれるので、ここでは何も足さない。
+    /// </summary>
+    [SerializeField(Label = "サイズの単位(未使用)")]
+    private string sizeUnit = "";
 
     /// <summary>ベストランクが未記録（旧セーブデータ）のときに出す文字。</summary>
     [SerializeField(Label = "ランク未記録の表示")]
@@ -167,7 +173,10 @@ public class ZukanCard : SEEDScript
 
         string rankLabel = string.IsNullOrWhiteSpace(rank) ? unknownRankLabel : rank;
 
-        SetContent(bestText,  string.Format(bestFormat, best, sizeUnit));
+        // {0} には単位込みの文字列（例「32.5cm」「8.0m」）が入る。
+        // {1} は旧データの書式（"ベスト: {0:F1}{1}"）が単位を差し込んでいた名残なので、
+        // 常に空文字を渡す（＝二重に単位が付かない）。
+        SetContent(bestText,  string.Format(bestFormat, Fish.FormatSize(best), sizeUnit));
         SetContent(rankText,  string.Format(rankFormat, rankLabel));
         SetContent(countText, string.Format(countFormat, count));
 

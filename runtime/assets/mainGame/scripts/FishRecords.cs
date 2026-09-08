@@ -18,7 +18,7 @@
 ///
 /// | キー                        | 型     | 内容                                   |
 /// |-----------------------------|--------|----------------------------------------|
-/// | <c>best_size:&lt;表示名&gt;</c> | float  | その魚種で釣った最大サイズ（表示単位）  |
+/// | <c>best_size:&lt;表示名&gt;</c> | float  | その魚種で釣った最大サイズ（<b>cm</b>）  |
 /// | <c>best_rank:&lt;表示名&gt;</c> | string | 上のベストを釣ったときのサイズランク    |
 /// | <c>catch_count:&lt;表示名&gt;</c>| int   | その魚種を釣り上げた累計回数            |
 ///
@@ -146,7 +146,7 @@ public static class FishRecords
     /// （釣り上げは進行の区切りで、ここで落ちても記録を失わせない）。
     /// </summary>
     /// <param name="displayName">魚の表示名。空白のみなら何もしない。</param>
-    /// <param name="displaySize">釣った個体の表示サイズ。</param>
+    /// <param name="displaySize">釣った個体の表示サイズ（cm。<c>Fish.DisplaySize</c>）。</param>
     /// <param name="sizeRank">釣った個体のサイズランク（<c>Fish.SizeRank</c>）。</param>
     /// <returns>
     /// 初捕獲か・ベスト更新か・更新前のベストサイズ（<see cref="CatchRecordResult"/>）。
