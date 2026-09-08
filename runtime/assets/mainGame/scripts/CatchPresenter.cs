@@ -218,18 +218,18 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>放物線を端から端まで描くのに掛ける秒数（実時間）。</summary>
     [SerializeField(Label = "放物線の秒数")]
-    private float arcSeconds = 1.4f;
+    private float arcSeconds = 3.0f;
 
     /// <summary>
     /// 放物線のどこで釣果パネルへ切り替えるか（0〜1 の比率）。
-    /// 0.5＝頂点。頂点で魚を隠し、そのままパネルが開く。
+    /// 0.5＝頂点。既定 0.7 は頂点を過ぎて落ち始めたところ（魚をじっくり見せる）。
     /// </summary>
     [SerializeField(Label = "パネルへ切り替える比率")]
-    private float arcApexRatio = 0.5f;
+    private float arcApexRatio = 0.7f;
 
     /// <summary>魚が横軸まわりに回る速さ（度／秒）。0 で回転しない。</summary>
     [SerializeField(Label = "回転速度(度/秒)")]
-    private float fishSpinDegPerSecond = 240f;
+    private float fishSpinDegPerSecond = 150f;
 
     /// <summary>放物線のあいだのゲーム時間の速さ（0.3＝3 割の速さ＝スロー）。</summary>
     [SerializeField(Label = "スローの速さ")]
