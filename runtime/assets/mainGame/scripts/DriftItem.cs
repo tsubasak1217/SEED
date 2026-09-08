@@ -146,8 +146,13 @@ public class DriftItem : SEEDScript
 
     /// <summary>
     /// その場に留まるか（漂わず・寿命でも消えない）。
-    /// 生成された瞬間の <see cref="TutorialRules.DriftStationary"/> で 1 度だけ決まる。
-    /// チュートリアルが「巻く方向の一直線上」に並べた個体がずれて拾えなくなるのを防ぐ。
+    /// <see cref="TutorialRules.DriftStationary"/> を<b>毎フレーム引き直す</b>。
+    ///
+    /// 【latch しない理由】
+    /// 生成時に 1 度だけ決めると、(1) Instantiate と OnStart が同フレームとは限らないため
+    /// 台本が置いた個体を留め損ねる、(2) 台本が終わっても留まったままになり、
+    /// 拾われなかった個体が寿命でも消えず海に居座る、の 2 つの取りこぼしが起きる。
+    /// 引き直せば「台本が終わった＝また漂って寿命で消える」まで自動的に戻る。
     /// </summary>
     private bool stationary = false;
 
@@ -179,7 +184,7 @@ public class DriftItem : SEEDScript
         All.Add(this);
 
         // 台本が位置を決めて置いた個体は、その場に留める（漂うと一直線が崩れる）
-        stationary = TutorialRules.Active && TutorialRules.DriftStationary;
+        stationary = IsStationaryNow();
 
         float angle = SEED.Random.Range(0f, FullTurnRadians);
         driftDirX = SEED.Mathf.Sin(angle);
@@ -212,6 +217,9 @@ public class DriftItem : SEEDScript
         if (dt <= 0f) { return; }
 
         elapsed += dt;
+
+        // 「留める」指定は毎フレーム引き直す（stationary フィールドの説明を参照）
+        stationary = IsStationaryNow();
 
         // 寿命切れ: 自分で消える（登録簿からは OnDestroy で外れる）。
         // その場に留める個体は台本が拾わせる前提なので寿命では消さない。
@@ -263,6 +271,15 @@ public class DriftItem : SEEDScript
     }
 
     // ─── 内部処理 ─────────────────────────────────────────
+
+    /// <summary>
+    /// いま「その場に留める」指定が掛かっているか
+    /// 【留め指定の唯一の問い合わせ口】。
+    /// チュートリアルが居なければ必ず false なので、通常プレイの挙動は変わらない。
+    /// </summary>
+    /// <returns>留めるなら true。</returns>
+    private static bool IsStationaryNow()
+        => TutorialRules.Active && TutorialRules.DriftStationary;
 
     /// <summary>種類の文字列が既知のものか（未知なら効果を持たない）。</summary>
     /// <param name="value">検証する種類文字列。</param>

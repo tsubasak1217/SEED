@@ -46,6 +46,13 @@ public static class TutorialRules
     /// <summary>方向指定で漂流物を流すときの既定の距離（メートル。ウキからの水平距離）。</summary>
     public const float DefaultDriftDirectionDistance = 6.0f;
 
+    /// <summary>
+    /// 漂流物の巻き込み半径「上書き無し」を表す値。
+    /// 半径 0 の当たり判定は「絶対に拾えない」＝設定として意味を持たないので、
+    /// 0 以下を「上書きしない（prefab の値をそのまま使う）」の合図に使う。
+    /// </summary>
+    public const float NoDriftPickupRadiusOverride = 0f;
+
     // ─── 全体の有効・無効 ────────────────────────────────────
 
     /// <summary>
@@ -110,8 +117,23 @@ public static class TutorialRules
     /// <summary>
     /// true の間、漂流物を<b>漂わせず・寿命でも消さない</b>（置いた場所に留める）。
     /// 台本が「巻く方向の一直線上」に並べた漂流物がずれて拾えなくなるのを防ぐ。
+    ///
+    /// <b>片付けの抑止も兼ねる</b>: <see cref="DriftItemManager"/> は
+    /// 「出してよい条件」が崩れたフレームで生存中の漂流物を一掃するが、
+    /// このフラグが立っている間は台本が置いた個体を巻き上げ待ちで残す
+    /// （自然出現の停止 <see cref="DriftDisabled"/> と一掃は別の判断である）。
     /// </summary>
     public static bool DriftStationary;
+
+    /// <summary>
+    /// 漂流物の巻き込み判定の半径（メートル）をこの値へ強制的に置き換える。
+    /// <see cref="NoDriftPickupRadiusOverride"/>（0 以下）で上書きなし（prefab の値のまま）。
+    ///
+    /// 台本が一直線上に並べた漂流物でも、巻きの 1 フレームの移動量や
+    /// ウキの微妙な横ぶれで prefab の当たり半径（既定 0.8m）を擦り抜けることがある。
+    /// 説明ミッションの間だけ半径を広げて「巻けば必ず拾える」を保証するために使う。
+    /// </summary>
+    public static float DriftPickupRadiusOverride = NoDriftPickupRadiusOverride;
 
     // ─── やり取り（ビートバトル）の制限 ─────────────────────
 
@@ -190,6 +212,23 @@ public static class TutorialRules
     /// </summary>
     public static bool BiteSuppressed;
 
+    /// <summary>
+    /// true の間、やり取り（ビートバトル）の<b>フェーズ進行そのものを凍結</b>する
+    /// （<see cref="FishingFight.Tick"/> が <c>Paused</c> と同じ扱いで即座に抜ける）。
+    ///
+    /// 【なぜ時間停止と別に必要か】
+    /// 説明の台詞を読ませている間は <c>SEED.Time.Scale = 0</c> で止めるのが基本だが、
+    /// 「時間を止めない」指定の台詞（波や鳥を動かしたまま読ませたい場面）が混ざると、
+    /// <b>魚が掛かった状態から始まるミッションでは余白(LeadIn)が進んで
+    /// 読んでいる最中に出題(Call)が始まってしまう</b>。
+    /// 時間停止が効かない経路が 1 つでもあれば同じ事故が起きるので、
+    /// 「台詞を出している間はやり取りを進めない」を時間軸とは独立に保証する。
+    ///
+    /// <see cref="BiteSuppressed"/>（まだ掛かっていない魚のアタリを止める）の
+    /// 掛かった<b>あと</b>版に当たる。掛けるのは <see cref="TutorialDirector"/> だけ。
+    /// </summary>
+    public static bool FightSuppressed;
+
     // ─── 解除 ────────────────────────────────────────────────
 
     /// <summary>
@@ -206,12 +245,14 @@ public static class TutorialRules
         ChainDisabled        = false;
         DriftDisabled        = false;
         DriftStationary      = false;
+        DriftPickupRadiusOverride = NoDriftPickupRadiusOverride;
         BeatDisabled         = false;
         LineBreakDisabled    = false;
         RestartCycleOnMiss   = false;
         RebiteAfterHookMiss  = false;
         RestartFightOnLineBreak = false;
         BiteSuppressed          = false;
+        FightSuppressed         = false;
         CameraSuspended         = false;
         GaugeRestoreSeconds  = DefaultGaugeRestoreSeconds;
     }

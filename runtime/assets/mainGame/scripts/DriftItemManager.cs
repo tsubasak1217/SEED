@@ -147,8 +147,9 @@ public class DriftItemManager : SEEDScript
 
         if (!ShouldSpawn())
         {
-            // やり取りが終わった（糸切れ・釣り上げ・キャンセル）: 残りを一掃して待機に戻る
-            ClearAll();
+            // やり取りが終わった（糸切れ・釣り上げ・キャンセル）: 残りを一掃して待機に戻る。
+            // ただし台本が位置を決めて置いた個体（ScriptedPlacementActive）は残す。
+            if (!ScriptedPlacementActive()) { ClearAll(); }
             spawnTimer = spawnIntervalSeconds;
             return;
         }
@@ -182,6 +183,26 @@ public class DriftItemManager : SEEDScript
         if (!activeOnlyWhileHooked) { return true; }
         return controller.IsHooked;
     }
+
+    /// <summary>
+    /// いま海に浮いている漂流物が<b>台本（チュートリアル）の置いた個体</b>か
+    /// 【一括片付けを見送る唯一の判断点】。
+    ///
+    /// 【なぜ必要か】
+    /// チュートリアルの「漂流物を拾おう」ミッションは、自然出現を止めたうえで
+    /// （<see cref="TutorialRules.DriftDisabled"/>）自分で位置を決めて並べる。
+    /// ところが自然出現の停止は <see cref="ShouldSpawn"/> を false にするため、
+    /// 何もしないと<b>並べた次のフレームに <see cref="ClearAll"/> が全部消して</b>しまい、
+    /// ミッション側の「海に 1 個も無ければ並べ直す」自己回復と噛み合って
+    /// 「出ては消える」を延々と繰り返す（＝いつまでも拾えない）。
+    ///
+    /// 「自然出現を止める」と「浮いている物を一掃する」は別の判断なので、
+    /// 台本が留めると宣言している間（<see cref="TutorialRules.DriftStationary"/>）は
+    /// 一掃を見送り、片付けはチュートリアル側の解除（<see cref="TutorialRules.Clear"/>）に任せる。
+    /// </summary>
+    /// <returns>台本が置いた個体を残すべきなら true。</returns>
+    private static bool ScriptedPlacementActive()
+        => TutorialRules.Active && TutorialRules.DriftStationary;
 
     // ─── 内部処理: 生成 ─────────────────────────────────────
 

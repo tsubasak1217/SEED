@@ -337,6 +337,12 @@ public class TutorialDirector : SEEDScript
                 break;
         }
 
+        // 台詞を読ませている段階かどうかへ、やり取りの凍結を毎フレーム同期する。
+        // ShowCurrentDialogue で立てた凍結を「読み終えたら必ず戻す」責任をここ 1 か所に集約し、
+        // 台詞の終わり方（決定送り・割り込みの復帰・ミッション切り替え）が増えても
+        // 解除漏れが起きないようにする。
+        SetFightSuppressed(IsDialoguePhase(phase));
+
         // 台詞によるカメラ寄せは段階に関わらず毎フレーム進める（実時間で動かす）
         UpdateDialogueCamera(unscaledDelta);
     }
@@ -799,7 +805,15 @@ public class TutorialDirector : SEEDScript
 
         // 読ませている間は操作を止める（説明中に釣りが進むと台本どおりにならない）
         InputGate.DenyAll();
-        SEED.Time.Scale = line.pauseTime ? TimeScalePaused : TimeScaleNormal;
+
+        // 台詞を出している間はやり取り（ビートバトル）のフェーズ進行を凍結する。
+        // 時間停止が効かない経路（pauseTime = false の台詞など）が残っていても、
+        // 読んでいる最中に余白(LeadIn)から出題(Call)へ進んでしまうのを防ぐ二重の保険。
+        SetFightSuppressed(true);
+
+        // 【時間停止の判断】台詞データの指定が基本だが、魚が掛かっている（やり取り中）の
+        // あいだは指定に関わらず必ず止める（ShouldPauseDialogue を参照）。
+        SEED.Time.Scale = ShouldPauseDialogue(line) ? TimeScalePaused : TimeScaleNormal;
 
         // この台詞がカメラ寄せを指定していれば寄せ始める（指定が無ければ追従へ戻す）
         BeginDialogueCamera(line.cameraTarget);
@@ -897,6 +911,8 @@ public class TutorialDirector : SEEDScript
         TutorialRules.ChainDisabled           = data.chainDisabled;
         TutorialRules.DriftDisabled           = data.driftDisabled;
         TutorialRules.DriftStationary         = data.driftStationary;
+        TutorialRules.DriftPickupRadiusOverride = SEED.Mathf.Max(
+            data.driftPickupRadius, TutorialRules.NoDriftPickupRadiusOverride);
         TutorialRules.BeatDisabled            = data.beatDisabled;
         TutorialRules.LineBreakDisabled       = data.lineBreakDisabled;
         TutorialRules.RestartCycleOnMiss      = data.restartCycleOnMiss;
@@ -944,6 +960,53 @@ public class TutorialDirector : SEEDScript
     {
         if (suppressed) { TutorialRules.Active = true; }
         TutorialRules.BiteSuppressed = suppressed;
+    }
+
+    /// <summary>
+    /// やり取り（ビートバトル）のフェーズ進行を凍結するかを切り替える
+    /// 【やり取り凍結の唯一の入口】。
+    ///
+    /// 台詞を読ませているあいだ（Intro / 割り込み / Outro）は true にして、
+    /// <see cref="FishingFight.Tick"/> の拍時計・フェーズ遷移を丸ごと止める。
+    /// <see cref="SetBiteSuppressed"/> と同じ理由で、ここでも門番の
+    /// <see cref="TutorialRules.Active"/> を先に立てる
+    /// （scriptAfterIntro のミッションでは Intro の時点でまだ上書きが適用されていない）。
+    /// </summary>
+    /// <param name="suppressed">true でやり取りの進行を止める。</param>
+    private void SetFightSuppressed(bool suppressed)
+    {
+        if (suppressed) { TutorialRules.Active = true; }
+        TutorialRules.FightSuppressed = suppressed;
+    }
+
+    /// <summary>
+    /// その段階が「台詞を読ませている最中」か【台詞段階の唯一の判定】。
+    /// </summary>
+    /// <param name="value">判定する段階。</param>
+    /// <returns>吹き出しを出している段階なら true。</returns>
+    private static bool IsDialoguePhase(DirectorPhase value)
+        => value is DirectorPhase.Intro or DirectorPhase.Interjecting or DirectorPhase.Outro;
+
+    /// <summary>
+    /// この台詞を出しているあいだゲーム時間を止めるか
+    /// 【台詞の時間停止の唯一の判断点】。
+    ///
+    /// 基本は台詞データの <see cref="TutorialDialogue.pauseTime"/> に従うが、
+    /// <b>魚が掛かっている（やり取りの最中）なら指定に関わらず必ず止める</b>。
+    ///
+    /// 【なぜ問答無用で止めるのか】
+    /// 「魚で魚を釣ろう」のように<b>掛かった状態から始まるミッション</b>では、
+    /// データ側が「釣りをしていない前提」で pauseTime = false のままだと、
+    /// 読んでいる最中に魚が沖へ走り、糸が減り、余白(LeadIn)が明けて
+    /// ビートバトルが勝手に始まってしまう。釣りの最中に時間を進めながら
+    /// 説明を読ませたい場面は存在しないので、データの設定漏れをここで吸収する。
+    /// </summary>
+    /// <param name="line">これから出す台詞。</param>
+    /// <returns>時間を止めるなら true。</returns>
+    private static bool ShouldPauseDialogue(TutorialDialogue line)
+    {
+        if (line.pauseTime) { return true; }
+        return FishingController.Current is { IsHooked: true };
     }
 
     /// <summary>

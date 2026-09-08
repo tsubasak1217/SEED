@@ -40,10 +40,12 @@ public sealed class DriftPickupMission : MissionBase
     private const float MaxSpacingMeters = 4.0f;
 
     /// <summary>
-    /// 並べるのに必要な「ウキ → 竿先」の最小距離（メートル）。
-    /// これより近いと並べる余地が無いので、投げ直し・巻き戻しを待つ。
+    /// いちばん竿先寄りの漂流物と竿先のあいだに必ず空ける余白（メートル）。
+    ///
+    /// 巻き取りはウキが竿先へ着いた時点で完了するので、竿先ぎりぎりに置いた個体は
+    /// 拾う前に巻き取りが終わってしまう。<b>並べる範囲は「線長 − この余白」まで</b>に限る。
     /// </summary>
-    private const float MinLineLengthMeters = 3.0f;
+    private const float NearRodMarginMeters = 1.0f;
 
     /// <summary>間隔を割り出すときの区間数の加算（残り n 個なら n+1 等分して手前から置く）。</summary>
     private const int SpacingSegmentBias = 1;
@@ -69,6 +71,12 @@ public sealed class DriftPickupMission : MissionBase
 
     /// <summary>拾った種類の数。</summary>
     private int pickedCount;
+
+    /// <summary>
+    /// 片付けのために <see cref="DriftItem.All"/> を写す作業用リスト（毎フレームの確保を避ける）。
+    /// <see cref="DriftItem.Kill"/> は登録簿を書き換えるので、直接列挙しながら消してはいけない。
+    /// </summary>
+    private readonly List<DriftItem> workItems = new();
 
     // ─── IMission ────────────────────────────────────────────
 
@@ -108,6 +116,16 @@ public sealed class DriftPickupMission : MissionBase
     /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
     protected override void OnUpdate(MissionContext ctx, float unscaledDelta)
     {
+        // 掛かっていない間（糸切れ・投げ直しの最中）は、置いた漂流物を一度片付ける。
+        // 次に掛かったときの「ウキ → 竿先」の線はまったく別の場所になるので、
+        // 古い位置に残った個体は拾えないまま居座り、
+        // 「1 個でも浮いていたら並べ直さない」規則と噛み合ってミッションが詰む。
+        if (ctx.Controller is not { IsHooked: true })
+        {
+            ClearAfloatItems();
+            return;
+        }
+
         // 拾い残しが 1 つでも浮いている間は何もしない（並べ直して二重に出さない）
         if (AnyItemAfloat()) { return; }
 
@@ -145,6 +163,20 @@ public sealed class DriftPickupMission : MissionBase
     private static bool AnyItemAfloat() => DriftItem.All.Count > 0;
 
     /// <summary>
+    /// 浮いている漂流物をすべて消す【並べ直しのための片付け】。
+    /// <see cref="DriftItem.Kill"/> が登録簿を書き換えるので、必ず作業用リストへ写してから回す。
+    /// </summary>
+    private void ClearAfloatItems()
+    {
+        if (DriftItem.All.Count == 0) { return; }
+
+        workItems.Clear();
+        foreach (var item in DriftItem.All) { workItems.Add(item); }
+        for (int i = 0; i < workItems.Count; i++) { workItems[i].Kill(); }
+        workItems.Clear();
+    }
+
+    /// <summary>
     /// まだ拾っていない漂流物を<b>巻き方向の一直線上へ等間隔に</b>並べる
     /// 【台本生成の唯一の実装】。
     ///
@@ -154,9 +186,17 @@ public sealed class DriftPickupMission : MissionBase
     /// まっすぐ巻くだけで必ず順番どおり 1 個ずつ拾える。
     ///
     /// 【位置の決め方】
-    /// ウキ → 竿先の水平距離を「残り個数 + 1」で等分し、ウキ側から
-    /// 1 区間目・2 区間目…へ置く。間隔は近すぎ／遠すぎを避けるため
-    /// <see cref="MinSpacingMeters"/> 〜 <see cref="MaxSpacingMeters"/> に丸める。
+    /// 並べられる範囲は「ウキ → 竿先の水平距離 − <see cref="NearRodMarginMeters"/>」。
+    /// これを「残り個数 + 1」で等分し、ウキ側から 1 区間目・2 区間目…へ置く。
+    /// 間隔は近すぎ／遠すぎを避けるため <see cref="MinSpacingMeters"/> 〜
+    /// <see cref="MaxSpacingMeters"/> に丸めたうえで、<b>いちばん遠い個体が必ず
+    /// 範囲内へ収まるように詰める</b>。
+    ///
+    /// 【間隔より「線上に収める」を優先する理由】
+    /// 投げが短いと、丸めた間隔のままでは<b>竿先より奥に置いてしまい</b>、
+    /// 巻き切っても拾えない個体が残る（＝ミッションが詰む）。
+    /// 間隔が最小を下回るのは「解説が 2 つ同時に出る」だけで済むが、
+    /// 範囲外に置くのは「二度と拾えない」ので、収めるほうを常に優先する。
     /// 生成位置は必ず線上なので、拾い判定（DriftItem の当たり半径）に確実に入る。
     /// </summary>
     /// <param name="ctx">周辺への窓口。</param>
@@ -172,19 +212,25 @@ public sealed class DriftPickupMission : MissionBase
         var origin = controller.FloatWorldPosition;
         var rodTip = controller.RodTipWorldPosition;
 
-        // ウキ → 竿先の水平距離。短すぎると並べる余地が無い（投げ直しを待つ）
-        float dx = rodTip.x - origin.x;
-        float dz = rodTip.z - origin.z;
-        float lineLength = SEED.Mathf.Sqrt(dx * dx + dz * dz);
-        if (lineLength < MinLineLengthMeters) { return; }
-
         int remaining = CountUnpicked();
         if (remaining <= 0) { return; }
 
+        // ウキ → 竿先の水平距離から、竿先手前の余白を引いた「並べられる範囲」
+        float dx = rodTip.x - origin.x;
+        float dz = rodTip.z - origin.z;
+        float lineLength = SEED.Mathf.Sqrt(dx * dx + dz * dz);
+        float span = lineLength - NearRodMarginMeters;
+
+        // 余白しか無い（＝ほぼ巻き切っている）ときは並べる余地が無いので投げ直し・巻き戻しを待つ
+        if (span <= 0f) { return; }
+
+        // 見やすい間隔へ丸めたうえで、いちばん遠い個体（span/remaining の位置）が
+        // 必ず範囲内へ収まるように詰める（丸めた間隔が範囲を食い破らないようにする）
         float spacing = SEED.Mathf.Clamped(
-            lineLength / (remaining + SpacingSegmentBias),
+            span / (remaining + SpacingSegmentBias),
             MinSpacingMeters,
             MaxSpacingMeters);
+        spacing = SEED.Mathf.Min(spacing, span / remaining);
 
         float surfaceY = controller.WaterSurfaceY();
 

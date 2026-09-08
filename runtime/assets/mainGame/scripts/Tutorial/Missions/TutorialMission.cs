@@ -145,6 +145,16 @@ public struct TutorialMission
     [SerializeField(Label = "漂流物を固定", Tooltip = "true で漂流物が流れず寿命でも消えない（一直線に並べる台本用）")]
     public bool driftStationary;
 
+    /// <summary>
+    /// このミッションの間だけ、漂流物の巻き込み判定の半径（メートル）をこの値へ置き換える。
+    /// 0（既定）は「上書きしない＝prefab の当たり半径のまま」を表す
+    /// （<see cref="TutorialRules.NoDriftPickupRadiusOverride"/> と同じ約束）。
+    ///
+    /// 台本が一直線上に並べた漂流物を「巻けば必ず拾える」ことにしたい説明ミッション用。
+    /// </summary>
+    [SerializeField(Label = "漂流物の拾い半径(0で無指定)", Tooltip = "0 以外を指定すると、このミッションの間だけ漂流物の巻き込み半径をこのメートル数にする")]
+    public float driftPickupRadius;
+
     /// <summary>true でビートバトルを行わず、魚をずっとひるませたままにする。</summary>
     [SerializeField(Label = "ビートなし", Tooltip = "true で出題・回答を行わず、魚をずっとひるませる（巻くだけ）")]
     public bool beatDisabled;

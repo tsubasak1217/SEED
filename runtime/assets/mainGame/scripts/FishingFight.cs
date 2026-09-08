@@ -1264,8 +1264,14 @@ public class FishingFight : SEEDScript
     {
         if (!Active || target is null) { return; }
 
-        // 一時停止中（わらしべ連鎖のアタリ受付中）は時計も値も一切進めない。
-        if (Paused)
+        // チュートリアルが説明の台詞を読ませているあいだは、時間停止が効いているかに
+        // 関わらずフェーズ進行を凍結する（TutorialRules.FightSuppressed の説明を参照）。
+        // 上書きが無ければこの分岐は素通りし、従来どおり進む。
+        bool suppressedByTutorial = TutorialRules.Active && TutorialRules.FightSuppressed;
+
+        // 一時停止中（わらしべ連鎖のアタリ受付中・チュートリアルの説明中）は
+        // 時計も値も一切進めない。
+        if (Paused || suppressedByTutorial)
         {
             // 拍時計だけが止まってドラムが鳴り続けると位相が壊れるので、ドラムも止める。
             // 再開時は次のループ境界（＝小節頭）へ揃えて鳴らし直す（UpdateDrumLoop 参照）。

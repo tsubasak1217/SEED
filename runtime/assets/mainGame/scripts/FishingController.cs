@@ -2346,7 +2346,7 @@ public class FishingController : SEEDScript
         for (int i = 0; i < driftWorkItems.Count; i++)
         {
             var item = driftWorkItems[i];
-            if (HorizontalDistance(floatPosition, item.Position) > item.HitRadius) { continue; }
+            if (HorizontalDistance(floatPosition, item.Position) > DriftHitRadiusOf(item)) { continue; }
 
             ApplyDriftEffect(f, item);
             // 漂流物を巻き込んだ（引数は種類。効果を適用した直後・破棄する前に流す）
@@ -2390,6 +2390,27 @@ public class FishingController : SEEDScript
                 SEED.Debug.LogWarning($"[FishingController] 未知の漂流物の種類 \"{item.Kind}\" を巻き込みました（効果なし）。");
                 break;
         }
+    }
+
+    /// <summary>
+    /// この漂流物の巻き込み判定に使う半径（メートル）
+    /// 【当たり半径の唯一の問い合わせ口】。
+    ///
+    /// 通常は prefab に設定された <see cref="DriftItem.HitRadius"/> をそのまま使うが、
+    /// チュートリアルが <see cref="TutorialRules.DriftPickupRadiusOverride"/> を
+    /// 指定しているあいだはその値で上書きする（説明ミッションで
+    /// 「巻けば必ず拾える」を保証するため）。上書きが無ければ従来どおり。
+    /// </summary>
+    /// <param name="item">判定する漂流物。</param>
+    /// <returns>使用する当たり半径（メートル）。</returns>
+    private static float DriftHitRadiusOf(DriftItem item)
+    {
+        if (TutorialRules.Active
+            && TutorialRules.DriftPickupRadiusOverride > TutorialRules.NoDriftPickupRadiusOverride)
+        {
+            return TutorialRules.DriftPickupRadiusOverride;
+        }
+        return item.HitRadius;
     }
 
     /// <summary>漂流物の走査用リスト（毎フレームの確保を避けて使い回す）。</summary>
