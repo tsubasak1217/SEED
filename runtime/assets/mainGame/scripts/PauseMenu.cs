@@ -188,7 +188,7 @@ public class PauseMenu : SEEDScript
 
     /// <summary>非選択の行のスケール（シーンに保存されたスケールではなくこの値を正典とする）。</summary>
     [Header("選択の見た目"), SerializeField(Label = "通常スケール")]
-    private float normalScale = 1.0f;
+    private float normalScale = 1.4f;
 
     /// <summary>選択中（キーボード選択 or マウスホバー）の行のスケール。</summary>
     [SerializeField(Label = "選択スケール")]
