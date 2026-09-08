@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -151,8 +151,10 @@ public partial class InspectorPanel : IReferenceDropResolver
             ReferenceKindCatalog.Matches(payload.ToDraggedEntry(), spec.Kind))
         {
             if (string.IsNullOrEmpty(payload.ActorName)) return;
-            if (!ValidateActorName(payload.ActorName)) return;
-            apply(payload.ActorName, spec.WantSlotName
+            // 参照先が「参照の持ち主の子孫」なら相対パス（./Child）で保存する
+            var componentRef = ReferencePathFor(payload.ActorDfsId, payload.ActorName);
+            if (!ValidateActorName(componentRef)) return;
+            apply(componentRef, spec.WantSlotName
                 ? ReferenceKindCatalog.SlotNameToSave(payload.ToDraggedEntry(), spec.Kind)
                 : null);
             return;
@@ -200,7 +202,10 @@ public partial class InspectorPanel : IReferenceDropResolver
                 "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        if (!ValidateActorName(snapshot.ActorName)) return;
+        // 参照先が「参照の持ち主の子孫」なら相対パス（./Child）で保存する。
+        // これにより同じプレハブを複数並べても、各インスタンスの子へ正しく解決される。
+        var actorRef = ReferencePathFor(pending.DroppedActorDfsId, snapshot.ActorName);
+        if (!ValidateActorName(actorRef)) return;
 
         // ── ルート直付け型（GameObject / Transform / CanvasTransform）──
         if (!ReferenceKindCatalog.NeedsSlotSelection(spec.Kind))
@@ -211,7 +216,7 @@ public partial class InspectorPanel : IReferenceDropResolver
                 ShowKindMissingWarning(snapshot.ActorName, kindLabel);
                 return;
             }
-            pending.Apply(snapshot.ActorName, null);
+            pending.Apply(actorRef, null);
             return;
         }
 
@@ -227,13 +232,13 @@ public partial class InspectorPanel : IReferenceDropResolver
         // （ランタイムは先頭スロットへ解決する規約）。
         if (!spec.WantSlotName)
         {
-            pending.Apply(snapshot.ActorName, null);
+            pending.Apply(actorRef, null);
             return;
         }
 
         if (matches.Count == 1)
         {
-            pending.Apply(snapshot.ActorName,
+            pending.Apply(actorRef,
                 ReferenceKindCatalog.SlotNameToSave(matches[0], spec.Kind));
             return;
         }
@@ -260,7 +265,7 @@ public partial class InspectorPanel : IReferenceDropResolver
         if (selected is { Count: > 0 })
         {
             var idx = items.IndexOf(selected[0]);
-            pending.Apply(snapshot.ActorName, idx >= 0 ? saveNames[idx] : selected[0]);
+            pending.Apply(actorRef, idx >= 0 ? saveNames[idx] : selected[0]);
         }
     }
 
@@ -270,8 +275,27 @@ public partial class InspectorPanel : IReferenceDropResolver
             "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
 
     /// <summary>
-    /// 参照値として保存できるアクタ名かを検証する。
-    /// スクリプト参照の書式が "アクタ名|スロット名" のため、区切り文字を含む名前は復元できない。
+    /// 参照フィールドへ保存する参照文字列を決める
+    /// 【インスペクタ側の保存書式決定の唯一の入口】。
+    ///
+    /// Hierarchy のノードモデル（<see cref="ActorRefJump.BuildActorReferencePath"/>）へ
+    /// 「参照の持ち主（インスペクタで選択中のアクタ）」と「参照先」の位置関係を問い合わせ、
+    /// 子孫なら <c>./Child</c>、名前がシーン内で一意なら素の名前、
+    /// それ以外はルートからの絶対パスを得る。
+    /// フックが未接続・解決不能なときは従来どおり素のアクタ名を保存する。
+    /// </summary>
+    /// <param name="targetActorDfsId">参照先アクタの DFS ID。</param>
+    /// <param name="fallbackName">解決できなかったときに使う素のアクタ名。</param>
+    private string ReferencePathFor(int targetActorDfsId, string fallbackName)
+    {
+        if (_currentActorId < 0) return fallbackName;
+        var path = ActorRefJump.BuildActorReferencePath?.Invoke(_currentActorId, targetActorDfsId);
+        return string.IsNullOrEmpty(path) ? fallbackName : path;
+    }
+
+    /// <summary>
+    /// 参照値として保存できる参照文字列（アクタ名または相対／絶対パス）かを検証する。
+    /// スクリプト参照の書式が "アクタ参照|スロット名" のため、区切り文字を含む名前は復元できない。
     /// </summary>
     private static bool ValidateActorName(string actorName)
     {

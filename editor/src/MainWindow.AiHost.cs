@@ -158,6 +158,60 @@ public partial class MainWindow : IEditorAiHost
     }
 
     /// <inheritdoc/>
+    async Task<string?> IEditorAiHost.GetActorComponentsAsync(int dfsId, int timeoutMs)
+    {
+        if (_runtimeManager is null) return null;
+
+        // 応答を取りこぼさないよう、送信より先に購読する
+        // （SelectActorAsync と同じ理由: イベントはパイプ受信スレッドで発火する）。
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnComponents(string json) => tcs.TrySetResult(json);
+        _runtimeManager.ActorComponentsReceived += OnComponents;
+
+        try
+        {
+            // SELECT: は送らない（利用者の選択状態を勝手に動かさないため）。
+            _runtimeManager.SendToRuntime($"GET_ACTOR_COMPONENTS:{dfsId}");
+
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+            return completed == tcs.Task ? await tcs.Task : null;
+        }
+        finally
+        {
+            _runtimeManager.ActorComponentsReceived -= OnComponents;
+        }
+    }
+
+    /// <inheritdoc/>
+    async Task<string?> IEditorAiHost.SendSaveDataAsync(string requestJson, int timeoutMs)
+    {
+        if (_runtimeManager is null) return null;
+        // 未接続なら送っても誰も応答しない。タイムアウトを待たせず即座に返す。
+        if (!_runtimeManager.IsPipeConnected) return null;
+
+        // 応答を取りこぼさないよう、送信より先に購読する
+        // （SelectActorAsync と同じ理由: イベントはパイプ受信スレッドで発火する）。
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnReply(string line) => tcs.TrySetResult(line);
+        _runtimeManager.SaveDataReplyReceived += OnReply;
+
+        try
+        {
+            _runtimeManager.SendToRuntime(AiSaveDataCommandPrefix + requestJson);
+
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+            return completed == tcs.Task ? await tcs.Task : null;
+        }
+        finally
+        {
+            _runtimeManager.SaveDataReplyReceived -= OnReply;
+        }
+    }
+
+    /// <summary>セーブデータ操作 IPC の接頭辞（ランタイム側 ipc.rs の SAVE_DATA_PREFIX と一致）。</summary>
+    private const string AiSaveDataCommandPrefix = "SAVE_DATA:";
+
+    /// <inheritdoc/>
     async Task<string?> IEditorAiHost.ProfileDumpAsync(double seconds, int timeoutMs)
     {
         if (_runtimeManager is null) return null;

@@ -17,6 +17,8 @@ use crate::engine::ecs::Entity;
 
 // C# → Rust のコンポーネントアクセスブリッジ
 pub mod host_api;
+// アクタ参照文字列（"./Child" / "../Sibling" / 絶対パス / 素の名前）のパス解決
+pub mod actor_ref_path;
 // スクリプト入力 API の ID ⇔ winit 型対応表
 pub mod input_bridge;
 // ControlPoint パス評価（時刻 → ワールド位置／進行方向）の純関数層
@@ -140,12 +142,16 @@ type PhysicsEventFn = unsafe extern "system" fn(isize, *const RawPhysicsEvent);
 type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
 /// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
 type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
-/// 保留中の [SerializeField] 参照フィールド（アクター名／スロット名の文字列）を
+/// 保留中の [SerializeField] 参照フィールド（アクタ参照文字列／スロット名）を
 /// 実体ハンドルへ解決してスクリプトインスタンスへ注入する。
+///
+/// 引数は (ハンドル, 所有 entity index, 同 generation)。所有 entity は
+/// 「自分のサブツリー優先」「`./Child` 相対指定」の基準として C# 側へ渡す
+/// （未束縛のときは u32::MAX = C# の Entity.None）。
 ///
 /// 解決には World と Actor ツリーが必要なため、**必ずスクリプトフェーズ実行中**
 /// （`with_world` / `with_actors` でポインタが公開されている間）に呼ぶこと。
-type ResolveRefsFn = unsafe extern "system" fn(isize);
+type ResolveRefsFn = unsafe extern "system" fn(isize, u32, u32);
 /// 指定パスの [SerializeField] フィールドが参照フィールド型かを判定する。
 /// リフレクションのみで World へアクセスしないため、フェーズ外でも呼べる。
 /// 戻り値: 参照フィールドなら 1、それ以外は 0。
@@ -267,7 +273,7 @@ impl ScriptingHost {
             physics_event_fn:  get_fn!(fn(isize, *const RawPhysicsEvent),      pdcstr!("OnPhysicsEvent")),
             compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
-            resolve_refs_fn:   get_fn!(fn(isize),                              pdcstr!("ResolveReferenceFields")),
+            resolve_refs_fn:   get_fn!(fn(isize, u32, u32),                    pdcstr!("ResolveReferenceFields")),
             is_ref_field_fn:   get_fn!(fn(isize, *const u8, i32) -> i32,       pdcstr!("IsReferenceField")),
             read_field_floats_fn: get_fn!(fn(isize, *const u8, i32, *mut f32, i32) -> i32,
                                                                               pdcstr!("ReadFieldFloats")),

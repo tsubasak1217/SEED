@@ -746,20 +746,27 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
     sprite.Color = <span class="t">SEED.Color</span>.Red;
 }</pre>
 
-  <h3>生成・破棄・検索（Instantiate / Destroy / Find）</h3>
+  <h3>生成・破棄・検索（Instantiate / Destroy / Find / FindChild）</h3>
   <div class="api"><code class="sig">GameObject.Instantiate("assets://actors/Bullet.actor")</code><span class="desc">.actor ファイル（プレハブ）からアクターを生成。戻り値に<b>同フレーム中に</b> Position 等を設定でき、その値が優先される</span></div>
   <div class="api"><code class="sig">obj.Destroy() / GameObject.Destroy(obj)</code><span class="desc">アクターを破棄（実際の破棄はフレーム末尾。Unity と同じ遅延モデル）</span></div>
-  <div class="api"><code class="sig">GameObject.Find("Player")</code><span class="desc">アクターを名前で検索（ヒエラルキーの DFS 順で最初の一致）</span></div>
+  <div class="api"><code class="sig">GameObject.Find("Player")</code><span class="desc"><b>シーン全体</b>から名前で検索（ヒエラルキーの DFS 順で最初の一致）</span></div>
+  <div class="api"><code class="sig">obj.FindChild("Image")</code><span class="desc">GameObject: <b>自分の配下だけ</b>を検索（直下の子＝フォルダ透過 → 無ければ子孫を DFS）。シーン全体へフォールバックしない</span></div>
+  <div class="api"><code class="sig">obj.FindChild("Body/Head")</code><span class="desc">GameObject: <code>/</code> 区切りで子をたどる（先頭の <code>./</code> は付けても同じ意味）</span></div>
 <pre><span class="k">var</span> bullet = <span class="t">SEED.GameObject</span>.Instantiate(<span class="s">"assets://actors/Bullet.actor"</span>);
 <span class="k">if</span> (bullet.GetComponent&lt;<span class="t">Transform</span>&gt;() <span class="k">is</span> { } bt)   <span class="c">// 生成直後に位置設定できる</span>
     bt.Position = transform.Position;
 <span class="k">if</span> (!bullet.IsValid) { <span class="c">/* 読み込み失敗 */</span> }
 
 <span class="k">var</span> player = <span class="t">SEED.GameObject</span>.Find(<span class="s">"Player"</span>);
-<span class="k">if</span> (player.GetComponent&lt;<span class="t">Transform</span>&gt;() <span class="k">is</span> { } pt) { pt.Position = <span class="t">SEED.Vector3</span>.Zero; }</pre>
+<span class="k">if</span> (player.GetComponent&lt;<span class="t">Transform</span>&gt;() <span class="k">is</span> { } pt) { pt.Position = <span class="t">SEED.Vector3</span>.Zero; }
+
+<span class="c">// 自分の配下だけを検索する（プレハブを複数並べても自分の子を返す）</span>
+<span class="k">var</span> image = gameObject.FindChild(<span class="s">"Image"</span>);
+<span class="k">var</span> head  = gameObject.FindChild(<span class="s">"Body/Head"</span>);</pre>
   <div class="warn">
     <b>2D アクター（Actor2D）の注意</b>: 構築時に Transform が CanvasTransform へ差し替わるため、生成直後の 3D Position 設定は反映されません。位置は翌フレーム以降に <code>CanvasTransform.Position</code> で設定してください。<br>
     破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。<br>
+    <code>Find</code> は<b>シーン全体</b>が対象なので、同名アクタ（同じプレハブを複数並べた場合など）では意図しないものを引きます。自分の配下を探すときは <code>FindChild</code> を使ってください（パス規則は第 7 節「参照文字列のパス指定」と同じ）。<br>
     現時点の制限: Play 開始後に生成・破棄したアクターの<b>物理コライダーは物理スレッドに反映されません</b>。コライダーの収集は Play 開始時（およびシーン遷移時）の一括処理で、<code>Instantiate</code> / <code>Destroy</code> は物理側の追加・除去を行わないためです。衝突・トリガーの<b>イベント通知</b>自体は実装済みですが（第 2 節）、実行時に生成したアクターはその対象になりません。
   </div>
 
@@ -1282,7 +1289,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
     <b>自作スクリプト参照の重要な注意</b><br>
     ハンドル構造体ではなく<b>実インスタンス（class）</b>なので <code>IsValid</code> は<b>ありません</b>。<br>
     解決できないとき（未設定・アクター不在・そのスクリプトが付いていない・破棄済み）は <code>T</code> 宣言でも <code>T?</code> 宣言でも<b>必ず null</b> になります。<b>毎回 null チェックが必須</b>です。<br>
-    参照先スクリプトの <code>OnStart</code> が自分より先に走っている保証は<b>ありません</b>（初期化済みの値を読むのは <code>Update</code> 以降に）。<br>
+    参照先スクリプトの <code>gameObject</code> / <code>transform</code> は、そのスクリプト自身のライフサイクル呼び出しが 1 度走るまで<b>束縛されません</b>。自分の <code>OnStart</code> から相手のメソッドを呼ぶと、相手の中の <code>gameObject.GetComponent&lt;T&gt;()</code> などが<b>黙って空振り</b>します（相手を触る呼び出しは <code>Update</code> 以降に）。<br>参照先スクリプトの <code>OnStart</code> が自分より先に走っている保証は<b>ありません</b>（初期化済みの値を読むのは <code>Update</code> 以降に）。<br>
     インスタンスは<b>ホットリロードのたびに作り直されて再注入</b>されます。<b>別のフィールドへキャッシュしてはいけません</b>（古いインスタンスを掴み続けます）。<br>
     同じスクリプトが 1 アクターに複数付いている場合はスロット選択ダイアログで指定できます（未指定なら先頭のスロット）。
   </div>
@@ -1295,12 +1302,29 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
     <code>IsValid</code> はライフサイクル関数の中でのみ意味のある値を返します（実行フェーズ外では常に false）。
   </div>
   <p class="section-note"><b>インスペクタでの設定</b>: ① フィールド行の参照ボックスへ <b>Hierarchy パネルからアクタ行を D&amp;D</b> ② その種別のスロットを複数持つアクターならスロット選択ダイアログが出る ③ <code>✕</code> ボタンで参照解除 ④ 参照ボックスの<b>ダブルクリック</b>で Hierarchy の参照先へジャンプ ⑤ 参照先がその種別を持たない場合は警告が出て設定されません。</p>
+  <h3 id="ref-path">参照文字列のパス指定</h3>
+  <p class="section-note">同じプレハブをシーンへ複数並べると子アクタ名が重複します。素のアクタ名だけで保存していると、シーン全体 DFS が常に 1 枚目の子を返すため 2 個目以降の参照が壊れます。これを避けるため、参照文字列は<b>パス形式</b>を受け付けます。</p>
+  <div class="api"><code class="sig">./Child</code><span class="desc"><b>自分（このスクリプトが乗るアクタ）のサブツリー</b>から探す</span></div>
+  <div class="api"><code class="sig">./A/B</code><span class="desc">自分の子 A の子 B（セグメントごとに子をたどる）</span></div>
+  <div class="api"><code class="sig">.</code><span class="desc">自分自身</span></div>
+  <div class="api"><code class="sig">../Sibling</code><span class="desc">親のサブツリーから探す（<code>../../</code> と重ねて祖先へ登れる）</span></div>
+  <div class="api"><code class="sig">Root/Child/Grand</code><span class="desc"><b>シーンのルートから</b>の絶対パス</span></div>
+  <div class="api"><code class="sig">Name</code><span class="desc"><code>/</code> を含まない素の名前。<b>自分のサブツリー優先</b>、無ければシーン全体 DFS</span></div>
+  <div class="warn">
+    <b>解決の優先順（precedence）</b><br>
+    ① <code>./</code> / <code>../</code> で始まる文字列は<b>必ず相対</b>（シーン全体へは広がりません）。<br>
+    ② <code>/</code> を含む文字列は<b>シーンのルートからの絶対パス</b>。<br>
+    ③ <code>/</code> を含まない素の名前は「自分自身とその子孫を DFS → シーン全体を DFS」の順。①②③のうち③の前半（自分のサブツリー優先）が後から入った規則で、既存シーンは従来どおり解決されます。<br>
+    ④ <code>./Child</code> の 1 セグメント指定は「直下の子（フォルダ透過）→ 子孫を DFS」の順で照合します。<br>
+    2D の<b>フォルダノードは階層に存在しないもの</b>として透過します（フォルダ名を明示したパスも通ります）。
+  </div>
+  <p class="section-note"><b>エディタが書く書式</b>: Hierarchy からドロップすると、落としたアクタが<b>参照の持ち主の子孫</b>なら <code>./Child</code>、そうでなく名前が<b>シーン内で一意</b>なら素の名前、同名が複数あるならルートからの絶対パスを自動で選びます。</p>
   <div class="warn">
     <b>保存形式と制約</b><br>
-    参照は<b>アクタ名</b>（コンポーネント参照は加えて<b>スロット名</b>）で保存されます（<code>Player</code> / <code>Player|MainCamera</code>）。未設定は空文字列です。<br>
-    エディタでアクタをリネームした場合、<b>旧名一致の参照は自動で新名に追従します</b>（同名アクタが複数ある場合は旧名一致の参照がすべて書き換わります。コンパイルエラー中のスクリプトの参照は型判定できないため追従しません）。<b>スロット名の変更は追従しない</b>ため再設定が必要です。アクタ名に <code>|</code> は使えません。<br>
-    同名アクタが複数ある場合はヒエラルキーの DFS 順で<b>最初に見つかったもの</b>が使われます。<br>
-    <b>解決は一度きり</b>です。Play 開始時（および <code>Instantiate</code> 時）に、そのスクリプトの <b>OnStart より前</b>に解決・注入されます。実行中のアクタ名変更やアクタ生成には追従しません（実行中に探し直すなら <code>SEED.GameObject.Find(name)</code>）。<br>
+    参照は<b>アクタ参照文字列</b>（コンポーネント参照は加えて<b>スロット名</b>）で保存されます（<code>Player</code> / <code>Player|MainCamera</code> / <code>./Image|Sprite</code>）。未設定は空文字列です。<br>
+    エディタでアクタをリネームした場合、<b>旧名一致の参照は自動で新名に追従します</b>（同名アクタが複数ある場合は旧名一致の参照がすべて書き換わります。コンパイルエラー中のスクリプトの参照は型判定できないため追従しません）。<b>パス形式で保存された参照はリネームに追従しません</b>。<b>スロット名の変更も追従しない</b>ため再設定が必要です。アクタ名に <code>|</code> は使えません。<br>
+    素の名前で同名アクタが複数ある場合は「自分のサブツリー優先 → シーン全体 DFS の最初の一致」が使われます。<br>
+    <b>解決は一度きり</b>です。Play 開始時（および <code>Instantiate</code> 時）に、そのスクリプトの <b>OnStart より前</b>に解決・注入されます。実行中のアクタ名変更やアクタ生成には追従しません（実行中に探し直すなら <code>SEED.GameObject.Find(name)</code> / <code>gameObject.FindChild(name)</code>）。<br>
     解決に失敗しても例外にはならず、Nullable 宣言は <code>null</code>、非 Nullable 宣言は <code>IsValid == false</code> の無効ハンドルになります。
   </div>
 </section>

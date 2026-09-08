@@ -448,6 +448,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::RenderActorThumbnail(..)
         // 入力注入は Play 中の一時的な入力状態であってシーンの編集ではない。
         | IpcCommand::InputInject(..)
+        // セーブデータはゲームの進行データであってシーンの編集ではないため Undo 対象外
+        //（Undo/Redo はシーン編集の履歴。進行データを巻き戻す仕組みではない）。
+        | IpcCommand::SaveData(..)
         | IpcCommand::SetEditPhysics { .. }
         | IpcCommand::SetEditPhysicsAll { .. }
         | IpcCommand::SetEditPhysics2d { .. }

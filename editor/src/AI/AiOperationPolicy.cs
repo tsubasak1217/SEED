@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 
@@ -121,6 +121,9 @@ public static class AiOperationPolicy
         "get_log",
         "screenshot",
         "screenshot_gpu",
+        // アクタを名前で引くだけ（選択も変えない）ので観測系。
+        "find_actor",
+        // 注意: save_data はここに入れない（セーブデータを書き換える変更系）。
         // 注意: game_input_* はここに入れない（変更系。GAME_INPUT_COMMAND_PREFIX 参照）。
     };
 

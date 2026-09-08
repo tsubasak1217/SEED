@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -254,17 +254,22 @@ public static class ScriptReference
     /// - <c>T</c> 宣言            … 無効ハンドル（<c>IsValid == false</c>）
     ///
     /// 対象が参照フィールドでない場合は null を返す（呼び出し側で判定済みの想定）。
+    ///
+    /// <paramref name="owner"/> は参照を持つスクリプトが乗るアクタのエンティティ。
+    /// アクタ参照文字列のパス解決（<c>./Child</c> の相対指定、素の名前の
+    /// 「自分のサブツリー優先」）の基準になる。既定（未束縛）のときは
+    /// 従来どおりシーン全体 DFS で解決する。
     /// </summary>
-    public static object? Resolve(Type fieldType, string? value)
+    public static object? Resolve(Type fieldType, string? value, Entity owner = default)
     {
         if (!TryGetKind(fieldType, out var kind)) return null;
 
         // ── ユーザースクリプト参照: 実インスタンス（class）をそのまま返す ──
         // ハンドル構造体と違い「無効な値」を表現できないため、解決できなければ
         // T / T? のどちらの宣言でも null になる（利用側は必ず null チェックする）。
-        if (IsScriptKind(kind.Kind)) return ResolveScriptInstance(kind, value);
+        if (IsScriptKind(kind.Kind)) return ResolveScriptInstance(kind, value, owner);
 
-        var entity = ResolveEntity(kind, value);
+        var entity = ResolveEntity(kind, value, owner);
 
         // 解決できなかった: Nullable は null（未設定）、非 Nullable は無効ハンドル
         if (!entity.IsValid && kind.IsNullable) return null;
@@ -282,12 +287,12 @@ public static class ScriptReference
     ///
     /// 解決できない（アクター不在・スクリプト未アタッチ・World 非公開）場合は null。
     /// </summary>
-    private static object? ResolveScriptInstance(ReferenceKind kind, string? value)
+    private static object? ResolveScriptInstance(ReferenceKind kind, string? value, Entity owner)
     {
         var typeName = ScriptTypeNameOf(kind.Kind);
         if (typeName is null) return null;
         if (!TryParse(value, out var actorName, out var slotName)) return null;
-        if (!ScriptHost.TryFindActor(actorName, out var actor)) return null;
+        if (!TryFindReferencedActor(actorName, owner, out var actor)) return null;
         if (!ScriptHost.TryResolveScriptInstance(actor, typeName, slotName, out var handle)) return null;
 
         object? instance;
@@ -304,10 +309,10 @@ public static class ScriptReference
     /// GameObject / ルート直付け型（Transform 等）はアクターのルート entity、
     /// スロット格納型はスロット entity。解決失敗時は <see cref="Entity.None"/>。
     /// </summary>
-    private static Entity ResolveEntity(ReferenceKind kind, string? value)
+    private static Entity ResolveEntity(ReferenceKind kind, string? value, Entity owner)
     {
-        if (!TryParse(value, out var actorName, out var slotName)) return Entity.None;
-        if (!ScriptHost.TryFindActor(actorName, out var actor))    return Entity.None;
+        if (!TryParse(value, out var actorName, out var slotName))  return Entity.None;
+        if (!TryFindReferencedActor(actorName, owner, out var actor)) return Entity.None;
 
         // GameObject 参照はアクターのルート entity をそのまま使う
         if (kind.IsGameObject) return actor;
@@ -320,6 +325,30 @@ public static class ScriptReference
                    actor, kind.Kind, slotName, slotName is null ? 0 : -1, out var slot)
             ? slot
             : Entity.None;
+    }
+
+    /// <summary>
+    /// 参照文字列のアクタ部分（パス形式対応）を解決する
+    /// 【参照フィールドのアクタ解決の唯一の入口】。
+    ///
+    /// 解決規則（正典は docs/scripting_api.md「参照フィールドのパス指定」）:
+    /// <list type="bullet">
+    ///   <item><c>./Child</c> … 自分（スクリプトが乗るアクタ）のサブツリー</item>
+    ///   <item><c>../Sibling</c> … 親のサブツリー（<c>../../</c> で祖先へ）</item>
+    ///   <item><c>Root/Child/Grand</c> … シーンのルートからの絶対パス</item>
+    ///   <item>素の名前 … 自分のサブツリー優先 → 見つからなければシーン全体 DFS</item>
+    /// </list>
+    /// 所有者が未束縛のときは従来どおりシーン全体 DFS で解決する。
+    /// </summary>
+    /// <param name="actorPath">参照文字列のアクタ部分。</param>
+    /// <param name="owner">参照を持つスクリプトが乗るアクタのエンティティ。</param>
+    /// <param name="actor">解決できたアクタのルートエンティティ。</param>
+    private static bool TryFindReferencedActor(string actorPath, Entity owner, out Entity actor)
+    {
+        if (ScriptHost.TryFindActorFrom(owner, actorPath, subtreeOnly: false, out actor)) return true;
+        // 保険: ホスト API にパス解決が無い（古いランタイム）場合は名前 DFS へ落とす。
+        // パス形式の文字列はアクタ名として一致しないため、素の名前だけが救われる。
+        return ScriptHost.TryFindActor(actorPath, out actor);
     }
 
     /// <summary>指定ハンドル型のインスタンスを entity から生成する（boxed）。</summary>

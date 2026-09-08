@@ -532,6 +532,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SEEDEditor.Panels.ActorRefJump.ActorExistsByName = PanelHierarchy.ActorExistsByName;
         // ScriptEvent の結線先候補（アクタ名 → DFS ID → GET_ACTOR_COMPONENTS）用の変換も同様に接続する。
         SEEDEditor.Panels.ActorRefJump.ActorDfsIdByName = PanelHierarchy.ActorDfsIdByName;
+        // 参照ドロップの保存書式（"./Child" 相対 / 素の名前 / 絶対パス）の決定も Hierarchy へ接続する。
+        SEEDEditor.Panels.ActorRefJump.BuildActorReferencePath = PanelHierarchy.BuildActorReferencePath;
+        // MCP の seed_find_actor（名前／パス → DFS ID）も Hierarchy のノードモデルへ接続する。
+        SEEDEditor.Panels.ActorRefJump.ActorDfsIdByPath = PanelHierarchy.ActorDfsIdByPath;
         // .anim ファイルのダブルクリックでアニメーションタイムラインパネルを開いて読み込む
         PanelProject.AnimFileOpened     += path =>
         {

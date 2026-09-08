@@ -101,6 +101,32 @@ public interface IEditorAiHost
     Task<string?> InjectGameInputAsync(string command, int timeoutMs, bool waitSequenceDone);
 
     /// <summary>
+    /// セーブデータ操作（<c>SAVE_DATA:{json}</c>）をランタイムへ送り、1 行応答を待つ。
+    ///
+    /// <para>
+    /// ランタイムは <c>SAVE_DATA_OK:{json}</c> / <c>SAVE_DATA_ERROR:{message}</c> を返す。
+    /// 実行中ランタイムのストアを直接触るため、保存先（<c>SEED_SAVE_DIR</c> の有無・
+    /// 実行モード）を呼び出し側が推測する必要がない。書式は
+    /// <c>runtime/src/engine/core/app_base/app/save_data_ops.rs</c> が正典。
+    /// </para>
+    /// </summary>
+    /// <param name="requestJson">操作を表す 1 行 JSON（改行を含めないこと）。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <returns>応答行。タイムアウト・ランタイム未初期化のときは null。</returns>
+    Task<string?> SendSaveDataAsync(string requestJson, int timeoutMs);
+
+    /// <summary>
+    /// 指定 DFS ID のアクターの構成（ACTOR_COMPONENTS）を取得する。
+    ///
+    /// <see cref="SelectActorAsync"/> と違い**選択を変えない**ので、
+    /// 利用者の選択状態を壊さずにアクタ 1 体の中身を覗ける。
+    /// </summary>
+    /// <param name="dfsId">対象アクターの DFS ID。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <returns>ACTOR_COMPONENTS の JSON。タイムアウト時は null。</returns>
+    Task<string?> GetActorComponentsAsync(int dfsId, int timeoutMs);
+
+    /// <summary>
     /// 再生制御（play / pause / resume / stop）を実行する。
     /// エディタのプレイバーのボタンと同じ経路を通る。
     /// </summary>

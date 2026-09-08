@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -271,7 +271,11 @@ internal sealed class ReferencePicker
 
         // 参照先アクタがシーンに見つからない場合は警告表示にする
         // （Hierarchy 未接続＝判定不能のときは警告を出さない）。
-        bool missing = ActorRefJump.ActorExistsByName is { } exists && !exists(ActorName);
+        // パス形式（"./Child" / "../Sibling" / "Root/Child"）の参照は、
+        // 参照の持ち主を基準に解決されるため名前だけでは存在確認できない。
+        // 誤って「見つかりません」を出さないよう、判定不能として扱う。
+        bool missing = !IsPathReference(ActorName)
+                    && ActorRefJump.ActorExistsByName is { } exists && !exists(ActorName);
         _label.Text       = missing ? MissingMarker + display : display;
         _label.Foreground = missing ? BrushWarn : BrushValue;
         _label.ToolTip    = missing
@@ -280,6 +284,24 @@ internal sealed class ReferencePicker
             : null;
         _clearButton.IsEnabled = true;
     }
+
+    /// <summary>
+    /// 参照文字列がパス形式（相対／絶対）かを判定する。
+    ///
+    /// 判定規則はランタイム側 <c>actor_ref_path.rs</c> と揃える:
+    /// <c>.</c> で始まるものは相対、<c>/</c> を含むものは絶対パス。
+    /// どちらでもない素の名前だけがシーン内の名前検索で存在確認できる。
+    /// </summary>
+    /// <param name="value">参照文字列（アクタ部分）。</param>
+    private static bool IsPathReference(string value)
+        => value.StartsWith(RelativeReferencePrefix, System.StringComparison.Ordinal)
+        || value.Contains(ReferencePathSeparator, System.StringComparison.Ordinal);
+
+    /// <summary>相対参照の接頭辞（"." / "./" / "../"）。</summary>
+    private const string RelativeReferencePrefix = ".";
+
+    /// <summary>パスのセグメント区切り。</summary>
+    private const string ReferencePathSeparator = "/";
 
     /// <summary>ドロップゾーンのツールチップ文言を組み立てる。</summary>
     private static string BuildTooltip(ReferenceFieldSpec spec)

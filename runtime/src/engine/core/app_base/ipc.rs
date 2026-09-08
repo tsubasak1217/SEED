@@ -1085,6 +1085,14 @@ pub enum IpcCommand {
     /// **不正な引数もここへ到達する**（`InjectCommand::Invalid`）。IPC 受信スレッドは
     /// 応答を返せないため、エラーもアプリ側まで運んで `INPUT_ERROR` を返させる。
     InputInject(crate::engine::core::input::InjectCommand),
+
+    // ─── セーブデータ（SEED.SaveData）の外部読み書き ──────────────────────
+    /// `SAVE_DATA:{json}` — 実行中ランタイムのセーブストアを読み書きする。
+    ///
+    /// json の書式と応答は `app/save_data_ops.rs` が正典
+    /// （応答: `SAVE_DATA_OK:{json}` / `SAVE_DATA_ERROR:{message}`）。
+    /// AI（MCP）が「所持金 1000 の状態」等を作ってから Play するために使う。
+    SaveData(String),
 }
 
 // ============================================================
@@ -1146,6 +1154,9 @@ impl IpcClient {
 
 /// `SCREENSHOT:` コマンドの接頭辞。
 const SCREENSHOT_PREFIX: &str = "SCREENSHOT:";
+
+/// セーブデータ操作コマンドの接頭辞（`SAVE_DATA:{json}`）。
+const SAVE_DATA_PREFIX: &str = "SAVE_DATA:";
 
 /// `RENDER_ACTOR_THUMBNAIL:` コマンドの接頭辞（図鑑画像の生成）。
 const RENDER_ACTOR_THUMBNAIL_PREFIX: &str = "RENDER_ACTOR_THUMBNAIL:";
@@ -3082,6 +3093,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with(INJECT_COMMAND_PREFIX) => {
                             parse_inject_command(s).map(IpcCommand::InputInject)
                         }
+                        // セーブデータ操作。JSON の解釈はハンドラ側（save_data_ops）に任せ、
+                        // ここでは 1 行をそのまま運ぶ（解釈エラーも応答で返したいため）。
+                        s if s.starts_with(SAVE_DATA_PREFIX) => s
+                            .strip_prefix(SAVE_DATA_PREFIX)
+                            .map(|rest| IpcCommand::SaveData(rest.to_string())),
 
                         _                    => None,
                     }

@@ -586,8 +586,14 @@ impl ScriptComponent {
     ///
     /// ScriptSystem が BeginFrame で OnStart より前に発行するため、
     /// ユーザーの OnStart / Update からは常に解決済みの参照が見える。
-    pub fn resolve_references_raw(host: &ScriptingHost, handle: isize) {
-        unsafe { (host.resolve_refs_fn)(handle); }
+    ///
+    /// `owner`（スクリプトが乗るアクタのルート entity）は参照文字列の解決基準に使う。
+    /// 「自分のサブツリー優先」および `./Child` / `../Sibling` の相対指定は
+    /// これが無いと解決できない（未束縛時は C# 側 Entity.None となり従来どおり
+    /// シーン全体 DFS へフォールバックする）。
+    pub fn resolve_references_raw(host: &ScriptingHost, handle: isize, owner: Option<Entity>) {
+        let (index, generation) = entity_to_raw(owner);
+        unsafe { (host.resolve_refs_fn)(handle, index, generation); }
     }
 
     /// OnStart（初回ライフサイクル直前の 1 回限りの通知）を CLR 側で実行する。

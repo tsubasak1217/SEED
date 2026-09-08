@@ -12,6 +12,49 @@
     "far": 1000.0,
     "speed": 5.0
   },
+  "settings": {
+    "debug_camera": {
+      "fov": 45.0,
+      "far": 1000.0,
+      "speed": 5.0,
+      "ortho_2d": false
+    },
+    "rendering": {
+      "bloom": false,
+      "bloom_intensity": 0.6,
+      "fxaa": false,
+      "transparency": "sort",
+      "deferred": true,
+      "refract_sequential_grab": false,
+      "gi_intensity": 1.0,
+      "reflection_intensity": 1.0,
+      "ao_intensity": 1.0,
+      "features": {
+        "shadow": "shadowmap",
+        "gi": "flat",
+        "reflection": "off",
+        "ao": "off",
+        "translucency": "raster"
+      },
+      "ambient_color": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "ambient_intensity": 0.05
+    },
+    "lod": {
+      "distances": [
+        10.0,
+        30.0,
+        60.0
+      ]
+    },
+    "physics": {
+      "edit_physics": false,
+      "edit_physics_rigidbody": false
+    }
+  },
   "actors": [
     {
       "name": "MainCamera",
@@ -122,15 +165,10 @@
             "data": {
               "type_name": "assets://zukan/scripts/Zukan.cs",
               "fields": {
-                "headerText": "ZukanHeader|Text",
-                "pageText": "ZukanPage|Text",
-                "hintText": "ZukanHint|Text",
                 "cards": "[\"ZukanCard0\", \"ZukanCard1\", \"ZukanCard2\", \"ZukanCard3\"]",
-                "cardImages": "[\"ZukanCard0Image|Sprite\", \"ZukanCard1Image|Sprite\", \"ZukanCard2Image|Sprite\", \"ZukanCard3Image|Sprite\"]",
-                "cardNames": "[\"ZukanCard0Name|Text\", \"ZukanCard1Name|Text\", \"ZukanCard2Name|Text\", \"ZukanCard3Name|Text\"]",
-                "cardBests": "[\"ZukanCard0Best|Text\", \"ZukanCard1Best|Text\", \"ZukanCard2Best|Text\", \"ZukanCard3Best|Text\"]",
-                "cardRanks": "[\"ZukanCard0Rank|Text\", \"ZukanCard1Rank|Text\", \"ZukanCard2Rank|Text\", \"ZukanCard3Rank|Text\"]",
-                "cardCounts": "[\"ZukanCard0Count|Text\", \"ZukanCard1Count|Text\", \"ZukanCard2Count|Text\", \"ZukanCard3Count|Text\"]"
+                "headerText": "ZukanHeader|Text",
+                "hintText": "ZukanHint|Text",
+                "pageText": "ZukanPage|Text"
               }
             }
           }
@@ -169,11 +207,11 @@
               "component": {
                 "type": "SpriteComponent",
                 "data": {
-                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "texture_path": "assets://zukan/textures/bg.png",
                   "color": [
-                    0.04,
-                    0.07,
-                    0.16,
+                    1.0,
+                    1.0,
+                    1.0,
                     1.0
                   ],
                   "width": 1280.0,
@@ -457,10 +495,34 @@
                 "keep_aspect_ratio": false,
                 "aspect_ratio_axis": "width"
               },
-              "components": [],
+              "components": [
+                {
+                  "name": "ZukanCard",
+                  "component": {
+                    "type": "ScriptComponent",
+                    "data": {
+                      "type_name": "assets://zukan/scripts/ZukanCard.cs",
+                      "fields": {
+                        "unknownNameFormat": "Lv{0} ????",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "bestFormat": "ベスト: {0:F1}{1}",
+                        "rankFormat": "ランク: {0}",
+                        "countFormat": "つった数: {0}",
+                        "sizeUnit": "cm",
+                        "unknownRankLabel": "-",
+                        "image": "./Image|Sprite",
+                        "nameText": "./Name|Text",
+                        "bestText": "./Best|Text",
+                        "rankText": "./Rank|Text",
+                        "countText": "./Count|Text"
+                      }
+                    }
+                  }
+                }
+              ],
               "children": [
                 {
-                  "name": "ZukanCard0Image",
+                  "name": "Image",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -510,7 +572,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard0Name",
+                  "name": "Name",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -582,7 +644,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard0Best",
+                  "name": "Best",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -654,7 +716,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard0Rank",
+                  "name": "Rank",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -726,7 +788,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard0Count",
+                  "name": "Count",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -797,7 +859,8 @@
                   ],
                   "children": []
                 }
-              ]
+              ],
+              "prefab_source": "assets://zukan/actors/ZukanCard.actor"
             },
             {
               "name": "ZukanCard1",
@@ -825,10 +888,34 @@
                 "keep_aspect_ratio": false,
                 "aspect_ratio_axis": "width"
               },
-              "components": [],
+              "components": [
+                {
+                  "name": "ZukanCard",
+                  "component": {
+                    "type": "ScriptComponent",
+                    "data": {
+                      "type_name": "assets://zukan/scripts/ZukanCard.cs",
+                      "fields": {
+                        "unknownNameFormat": "Lv{0} ????",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "bestFormat": "ベスト: {0:F1}{1}",
+                        "rankFormat": "ランク: {0}",
+                        "countFormat": "つった数: {0}",
+                        "sizeUnit": "cm",
+                        "unknownRankLabel": "-",
+                        "image": "./Image|Sprite",
+                        "nameText": "./Name|Text",
+                        "bestText": "./Best|Text",
+                        "rankText": "./Rank|Text",
+                        "countText": "./Count|Text"
+                      }
+                    }
+                  }
+                }
+              ],
               "children": [
                 {
-                  "name": "ZukanCard1Image",
+                  "name": "Image",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -878,7 +965,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard1Name",
+                  "name": "Name",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -950,7 +1037,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard1Best",
+                  "name": "Best",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1022,7 +1109,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard1Rank",
+                  "name": "Rank",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1094,7 +1181,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard1Count",
+                  "name": "Count",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1165,7 +1252,8 @@
                   ],
                   "children": []
                 }
-              ]
+              ],
+              "prefab_source": "assets://zukan/actors/ZukanCard.actor"
             },
             {
               "name": "ZukanCard2",
@@ -1193,10 +1281,34 @@
                 "keep_aspect_ratio": false,
                 "aspect_ratio_axis": "width"
               },
-              "components": [],
+              "components": [
+                {
+                  "name": "ZukanCard",
+                  "component": {
+                    "type": "ScriptComponent",
+                    "data": {
+                      "type_name": "assets://zukan/scripts/ZukanCard.cs",
+                      "fields": {
+                        "unknownNameFormat": "Lv{0} ????",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "bestFormat": "ベスト: {0:F1}{1}",
+                        "rankFormat": "ランク: {0}",
+                        "countFormat": "つった数: {0}",
+                        "sizeUnit": "cm",
+                        "unknownRankLabel": "-",
+                        "image": "./Image|Sprite",
+                        "nameText": "./Name|Text",
+                        "bestText": "./Best|Text",
+                        "rankText": "./Rank|Text",
+                        "countText": "./Count|Text"
+                      }
+                    }
+                  }
+                }
+              ],
               "children": [
                 {
-                  "name": "ZukanCard2Image",
+                  "name": "Image",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1246,7 +1358,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard2Name",
+                  "name": "Name",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1318,7 +1430,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard2Best",
+                  "name": "Best",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1390,7 +1502,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard2Rank",
+                  "name": "Rank",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1462,7 +1574,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard2Count",
+                  "name": "Count",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1533,7 +1645,8 @@
                   ],
                   "children": []
                 }
-              ]
+              ],
+              "prefab_source": "assets://zukan/actors/ZukanCard.actor"
             },
             {
               "name": "ZukanCard3",
@@ -1561,10 +1674,34 @@
                 "keep_aspect_ratio": false,
                 "aspect_ratio_axis": "width"
               },
-              "components": [],
+              "components": [
+                {
+                  "name": "ZukanCard",
+                  "component": {
+                    "type": "ScriptComponent",
+                    "data": {
+                      "type_name": "assets://zukan/scripts/ZukanCard.cs",
+                      "fields": {
+                        "unknownNameFormat": "Lv{0} ????",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "bestFormat": "ベスト: {0:F1}{1}",
+                        "rankFormat": "ランク: {0}",
+                        "countFormat": "つった数: {0}",
+                        "sizeUnit": "cm",
+                        "unknownRankLabel": "-",
+                        "image": "./Image|Sprite",
+                        "nameText": "./Name|Text",
+                        "bestText": "./Best|Text",
+                        "rankText": "./Rank|Text",
+                        "countText": "./Count|Text"
+                      }
+                    }
+                  }
+                }
+              ],
               "children": [
                 {
-                  "name": "ZukanCard3Image",
+                  "name": "Image",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1614,7 +1751,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard3Name",
+                  "name": "Name",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1686,7 +1823,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard3Best",
+                  "name": "Best",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1758,7 +1895,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard3Rank",
+                  "name": "Rank",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1830,7 +1967,7 @@
                   "children": []
                 },
                 {
-                  "name": "ZukanCard3Count",
+                  "name": "Count",
                   "actor_kind": "Actor2D",
                   "canvas_transform": {
                     "position": [
@@ -1901,7 +2038,8 @@
                   ],
                   "children": []
                 }
-              ]
+              ],
+              "prefab_source": "assets://zukan/actors/ZukanCard.actor"
             }
           ]
         },
@@ -2091,8 +2229,7 @@
               "component": {
                 "type": "ScriptComponent",
                 "data": {
-                  "type_name": "assets://zukan/scripts/ZukanArrow.cs",
-                  "fields": {}
+                  "type_name": "assets://zukan/scripts/ZukanArrow.cs"
                 }
               }
             }

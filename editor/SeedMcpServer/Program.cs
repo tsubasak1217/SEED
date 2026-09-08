@@ -181,6 +181,18 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
             "seed_save_scene"        => await PostCmdAsync(http, "save_scene",        args),
             "seed_send_ipc"          => await PostCmdAsync(http, "send_ipc",          args),
 
+            // セーブデータ（SEED.SaveData）の読み書き: 実行中ランタイムのストアを直接触る
+            "seed_save_get"          => await PostCmdWithOpAsync(http, "save_data", args, "get"),
+            "seed_save_set"          => await PostCmdWithOpAsync(http, "save_data", args, "set"),
+            "seed_save_delete"       => await PostCmdWithOpAsync(http, "save_data", args, "delete"),
+            "seed_save_flush"        => await PostCmdWithOpAsync(http, "save_data", args, "save"),
+
+            // アクタを名前／パスで引いて DFS ID と構成を返す（観測系）
+            "seed_find_actor"        => await PostCmdAsync(http, "find_actor",       args),
+
+            // 高レベル入力ラッパ: キー列の打鍵・クリックを 1 コールで撃つ
+            "seed_input"             => await ExecInputAsync(args, http),
+
             // ゲーム入力の注入: エディタ側が INPUT_* IPC を送り、1 行応答まで待って返す
             "game_input_key"          => await PostCmdAsync(http, "game_input_key",         args),
             "game_input_mouse"        => await PostCmdAsync(http, "game_input_mouse",       args),
@@ -513,6 +525,131 @@ static async Task<string> PostCmdAsync(HttpClient http, string cmd, JsonElement 
 }
 
 /// <summary>
+/// 引数へ <c>op</c> を足してから単発 POST する（seed_save_* → save_data の橋渡し）。
+///
+/// MCP のツール名を <c>seed_save_get</c> / <c>seed_save_set</c> のように分けておくと
+/// AI 側が用途を取り違えにくい一方、エディタ側は 1 コマンド（save_data）で済ませたい。
+/// その差を埋めるだけの薄いアダプタ。呼び出し側が <c>op</c> を明示していても上書きする。
+/// </summary>
+/// <param name="http">HTTP クライアント。</param>
+/// <param name="cmd">エディタ側のコマンド名（save_data）。</param>
+/// <param name="args">ツール引数。</param>
+/// <param name="op">強制する op（get / set / delete / save）。</param>
+static async Task<string> PostCmdWithOpAsync(HttpClient http, string cmd, JsonElement args, string op)
+{
+    using var mem    = new MemoryStream();
+    using (var writer = new Utf8JsonWriter(mem))
+    {
+        writer.WriteStartObject();
+        writer.WriteString("op", op);
+        if (args.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in args.EnumerateObject())
+            {
+                if (prop.NameEquals("op")) continue;   // 呼び出し側の op は無視する
+                prop.WriteTo(writer);
+            }
+        }
+        writer.WriteEndObject();
+    }
+    using var doc = JsonDocument.Parse(mem.ToArray());
+    return await PostCmdAsync(http, cmd, doc.RootElement);
+}
+
+/// <summary>seed_input: 打鍵 1 回の押しっぱなし時間の既定値（ミリ秒）。</summary>
+const int InputDefaultHoldMs = 80;
+
+/// <summary>seed_input: 1 コールで撃てる操作数の上限（暴走したシーケンスで固まらないため）。</summary>
+const int InputMaxSteps = 32;
+
+/// <summary>
+/// seed_input: キー列の打鍵とクリックを 1 コールで撃つ高レベルラッパ。
+///
+/// <para>
+/// <c>keys</c>（文字列配列）は「押す → hold_ms 待つ → 離す」を順に実行する。
+/// <c>click</c>（{x, y, button?}）はカーソルを移動してから押して離す。
+/// どちらも既存の <c>game_input_key</c> / <c>game_input_mouse</c> をそのまま使うので、
+/// 安全機構（Play 中のみ・変更系判定）は完全に同じ経路を通る。
+/// </para>
+/// <para>
+/// 時間精度が要る（拍に合わせる等）操作は <c>game_input_sequence</c> を使うこと。
+/// こちらは「メニューを 3 つ進めて決定」のような手数の削減が目的。
+/// </para>
+/// </summary>
+/// <param name="args">ツール引数（keys / click / hold_ms）。</param>
+/// <param name="http">HTTP クライアント。</param>
+static async Task<string> ExecInputAsync(JsonElement args, HttpClient http)
+{
+    if (args.ValueKind != JsonValueKind.Object)
+        return "ERROR: 引数が必要です（keys もしくは click）。";
+
+    var holdMs = args.TryGetProperty("hold_ms", out var h) && h.TryGetInt32(out var hv)
+        ? Math.Clamp(hv, 0, 5000)
+        : InputDefaultHoldMs;
+
+    var results = new List<string>();
+
+    // ── キー列: 1 つずつ押して離す ──
+    if (args.TryGetProperty("keys", out var keys) && keys.ValueKind == JsonValueKind.Array)
+    {
+        if (keys.GetArrayLength() > InputMaxSteps)
+            return $"ERROR: keys が多すぎます（上限 {InputMaxSteps}）。分割して呼んでください。";
+
+        foreach (var k in keys.EnumerateArray())
+        {
+            var key = k.ValueKind == JsonValueKind.String ? k.GetString() : null;
+            if (string.IsNullOrWhiteSpace(key))
+                return "ERROR: keys の要素は空でない文字列（InputMap のキー名）で指定してください。";
+
+            results.Add(await PostCmdAsync(http, "game_input_key", KeyArgs(key!, down: true)));
+            if (holdMs > 0) await Task.Delay(holdMs);
+            results.Add(await PostCmdAsync(http, "game_input_key", KeyArgs(key!, down: false)));
+        }
+    }
+
+    // ── クリック: 座標へ移動してから押して離す ──
+    if (args.TryGetProperty("click", out var click) && click.ValueKind == JsonValueKind.Object)
+    {
+        if (!click.TryGetProperty("x", out var cx) || !click.TryGetProperty("y", out var cy))
+            return "ERROR: click には x と y の両方が必要です。";
+        var button = click.TryGetProperty("button", out var b) && b.ValueKind == JsonValueKind.String
+            ? b.GetString()! : "left";
+
+        results.Add(await PostCmdAsync(http, "game_input_mouse",
+            ObjArgs($$"""{"x":{{cx.GetRawText()}},"y":{{cy.GetRawText()}}}""")));
+        results.Add(await PostCmdAsync(http, "game_input_mouse",
+            ObjArgs($$"""{"button":"{{button}}","down":true}""")));
+        if (holdMs > 0) await Task.Delay(holdMs);
+        results.Add(await PostCmdAsync(http, "game_input_mouse",
+            ObjArgs($$"""{"button":"{{button}}","down":false}""")));
+    }
+
+    if (results.Count == 0)
+        return "ERROR: keys（文字列配列）か click（{x,y}）のどちらかを指定してください。";
+
+    return string.Join(Environment.NewLine, results);
+}
+
+/// <summary>seed_input 用: game_input_key の引数オブジェクトを作る。</summary>
+/// <param name="key">キー名。</param>
+/// <param name="down">押す(true) / 離す(false)。</param>
+static JsonElement KeyArgs(string key, bool down)
+    => ObjArgs(JsonSerializer.Serialize(new { key, down }));
+
+/// <summary>
+/// JSON 文字列を JsonElement へ変換する（seed_input が組み立てた引数を渡すため）。
+///
+/// JsonDocument は Dispose すると RootElement が無効になるため、
+/// ここでは <see cref="JsonElement.Clone"/> して寿命から切り離す。
+/// </summary>
+/// <param name="json">オブジェクト形式の JSON 文字列。</param>
+static JsonElement ObjArgs(string json)
+{
+    using var doc = JsonDocument.Parse(json);
+    return doc.RootElement.Clone();
+}
+
+/// <summary>
 /// { "cmd": "...", ...引数... } 形式のリクエスト本文を組み立てる。
 /// 引数が未指定（ValueKind = Undefined / Null）でも cmd だけの本文を返す。
 /// </summary>
@@ -618,6 +755,12 @@ static object[] BuildToolList() => new[]
     SeedSendIpcTool(),
     SeedProfileTool(),
     SeedGenerateFishThumbnailsTool(),
+    SeedSaveGetTool(),
+    SeedSaveSetTool(),
+    SeedSaveDeleteTool(),
+    SeedSaveFlushTool(),
+    SeedFindActorTool(),
+    SeedInputTool(),
     GameInputKeyTool(),
     GameInputMouseTool(),
     GameInputSequenceTool(),
@@ -775,7 +918,11 @@ static object SeedBatchTool() => new
                                 "select_actor", "play_control", "save_scene", "send_ipc",
                                 // ゲーム入力の注入（Play 中のみ有効）
                                 "game_input_key", "game_input_mouse",
-                                "game_input_sequence", "game_input_release_all"
+                                "game_input_sequence", "game_input_release_all",
+                                // セーブデータ（進行状態を作ってから Play する用）
+                                "save_data",
+                                // アクタ検索（名前 → DFS ID。後続操作の宛先を得る）
+                                "find_actor"
                             },
                             description = "コマンド名"
                         },
@@ -793,7 +940,11 @@ static object SeedBatchTool() => new
                         clip_path      = new { type = "string",  description = "anim_preview / anim_reload: .anim のパス（絶対 or seed://）" },
                         time           = new { type = "number",  description = "anim_preview: プレビュー時刻（秒）" },
                         action         = new { type = "string",  description = "play_control: play / pause / resume / stop" },
-                        command        = new { type = "string",  description = "send_ipc: 生 IPC 文字列" }
+                        command        = new { type = "string",  description = "send_ipc: 生 IPC 文字列" },
+                        op             = new { type = "string",  description = "save_data: get / set / delete / save" },
+                        type           = new { type = "string",  description = "save_data(set): int / float / string（省略時は value から推論）" },
+                        flush          = new { type = "boolean", description = "save_data(set): true なら書き込み後にディスクへ書き出す" },
+                        components     = new { type = "boolean", description = "find_actor: コンポーネント一覧も返すか（既定 true）" }
                     }
                 }
             }
@@ -1073,6 +1224,119 @@ static object SeedProfileTool() => new
     }
 };
 
+
+// ── セーブデータ（SEED.SaveData）とアクタ検索 ────────────────────────────────
+//  検証したい進行状態を素早く作り、名前しか知らないアクタの DFS ID を引くための道具。
+//  いずれもエディタ側の save_data / find_actor コマンドへ橋渡しする。
+
+static object SeedSaveGetTool() => new
+{
+    name        = "seed_save_get",
+    description =
+        "実行中ランタイムのセーブデータ（SEED.SaveData）から 1 件読む。"
+      + "保存先はランタイムが決めるため（SEED_SAVE_DIR があればそれ）、"
+      + "呼び出し側がパスを推測する必要はない。"
+      + "戻り値は {ok, result:{op,key,found,type,value}}。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new { key = new { type = "string", description = "セーブキー" } },
+        required   = new[] { "key" }
+    }
+};
+
+static object SeedSaveSetTool() => new
+{
+    name        = "seed_save_set",
+    description =
+        "実行中ランタイムのセーブデータへ 1 件書く（検証したい進行状態を作る用）。"
+      + "type を省略すると value の JSON 型から推論する（整数 → int / 実数 → float / 文字列 → string）。"
+      + "flush:true でディスクにも書き出す（省略時はメモリ上のみ。Play 終了時に自動保存される）。"
+      + "ファイルを手で書く方式と違い、Play 中でもランタイム側の値が正しく更新される。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            key   = new { type = "string",  description = "セーブキー" },
+            value = new { description = "書き込む値（数値または文字列）" },
+            type  = new { type = "string",  description = "int / float / string（省略時は value から推論）" },
+            flush = new { type = "boolean", description = "true なら書き込み後にディスクへ書き出す" }
+        },
+        required = new[] { "key", "value" }
+    }
+};
+
+static object SeedSaveDeleteTool() => new
+{
+    name        = "seed_save_delete",
+    description = "実行中ランタイムのセーブデータからキーを 1 件削除する。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new { key = new { type = "string", description = "セーブキー" } },
+        required   = new[] { "key" }
+    }
+};
+
+static object SeedSaveFlushTool() => new
+{
+    name        = "seed_save_flush",
+    description = "セーブデータをディスクへ書き出す（seed_save_set の flush:true と同じ処理を単体で行う）。",
+    inputSchema = new { type = "object", properties = new { } }
+};
+
+static object SeedFindActorTool() => new
+{
+    name        = "seed_find_actor",
+    description =
+        "アクタを名前またはパスで探し、DFS ID と構成（コンポーネント一覧）を返す。"
+      + "seed_select / seed_batch の宛先はすべて DFS ID なので、"
+      + "「名前しか知らない」状態から 1 コールで橋渡しできる。"
+      + "name は素の名前（ヒエラルキー DFS 順で最初の一致）か "
+      + "\"Root/Child/Grand\" 形式の絶対パス（2D フォルダは透過）。"
+      + "選択状態は変えないので、利用者が開いているエディタでも安全に呼べる。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            name       = new { type = "string",  description = "アクタ名、または \"Root/Child\" 形式のパス" },
+            components = new { type = "boolean", description = "コンポーネント一覧も返すか（既定 true）" }
+        },
+        required = new[] { "name" }
+    }
+};
+
+static object SeedInputTool() => new
+{
+    name        = "seed_input",
+    description =
+        "キー列の打鍵とクリックを 1 コールで撃つ高レベルラッパ（Play 中のみ）。"
+      + "keys は「押す → hold_ms 待つ → 離す」を順に実行する。"
+      + "click は {x,y(,button)} でカーソルを移動してから押して離す。"
+      + "中身は game_input_key / game_input_mouse そのものなので安全機構は同じ。"
+      + "拍に合わせるなど時間精度が要る操作は game_input_sequence を使うこと。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            keys    = new
+            {
+                type        = "array",
+                items       = new { type = "string" },
+                description = "順に打鍵するキー名の配列（InputMap と同じ表記）"
+            },
+            click   = new
+            {
+                type        = "object",
+                description = "クリックする位置 {x, y, button?}（button は left / right / middle）"
+            },
+            hold_ms = new { type = "integer", description = "押してから離すまでの時間（ミリ秒。既定 80、上限 5000）" }
+        }
+    }
+};
 
 // ── ゲーム入力の注入（game_input_*）────────────────────────────────────────────
 //  ランタイムの Input へ直接注入するツール群。スクリプトの SEED.Input.* /

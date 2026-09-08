@@ -334,12 +334,25 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>入力シーケンスの再生完了通知（受理応答とは別に、非同期で後から届く）。</summary>
     public const string INPUT_SEQUENCE_DONE_MESSAGE = "INPUT_SEQUENCE_DONE";
 
+    /// <summary>セーブデータ操作（SAVE_DATA IPC）の成功応答の接頭辞。後ろに結果 JSON が続く。</summary>
+    public const string SAVE_DATA_OK_PREFIX = "SAVE_DATA_OK:";
+
+    /// <summary>セーブデータ操作（SAVE_DATA IPC）の失敗応答の接頭辞。後ろに理由が続く。</summary>
+    public const string SAVE_DATA_ERROR_PREFIX = "SAVE_DATA_ERROR:";
+
     /// <summary>
     /// ゲーム入力注入（INPUT_*）の応答行。
     /// <c>INPUT_OK</c> / <c>INPUT_ERROR:{reason}</c> / <c>INPUT_SEQUENCE_DONE</c> の
     /// いずれかが生文字列のまま渡る。
     /// </summary>
     public event Action<string>? InputInjectReplyReceived;
+
+    /// <summary>
+    /// セーブデータ操作（SAVE_DATA IPC）の応答行。
+    /// <c>SAVE_DATA_OK:{json}</c> / <c>SAVE_DATA_ERROR:{message}</c> が生文字列のまま渡る。
+    /// 解釈と待ち合わせは呼び出し元（MainWindow.AiHost）が行う。
+    /// </summary>
+    public event Action<string>? SaveDataReplyReceived;
 
     /// <summary>
     /// 水面シェーダの <c>@ref</c> パラメータに繋げられるバインド元候補が返ってきたときに発火する
@@ -1921,6 +1934,13 @@ public sealed class RuntimeManager : IDisposable
             // 成否の判定と待ち合わせは呼び出し元（MainWindow.AiHost）が行う。
             EditorLog.Write($"[Runtime→Editor] {msg}");
             InputInjectReplyReceived?.Invoke(msg);
+        }
+        else if (msg.StartsWith(SAVE_DATA_OK_PREFIX, StringComparison.Ordinal)
+              || msg.StartsWith(SAVE_DATA_ERROR_PREFIX, StringComparison.Ordinal))
+        {
+            // セーブデータ操作（SAVE_DATA IPC）の応答。実装は runtime の save_data_ops.rs。
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+            SaveDataReplyReceived?.Invoke(msg);
         }
         else if (msg.StartsWith(SCREENSHOT_DONE_PREFIX, StringComparison.Ordinal)
               || msg.StartsWith(SCREENSHOT_ERROR_PREFIX, StringComparison.Ordinal))

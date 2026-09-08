@@ -1,4 +1,4 @@
-# SEED エディタ MCP サーバー（seed-editor）
+﻿# SEED エディタ MCP サーバー（seed-editor）
 
 Claude Code / Gemini CLI などの外部エージェントから、**動作中の SEED エディタ**を
 ツールとして操作するための MCP サーバー。
@@ -146,6 +146,12 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_send_ipc` | `command` | `{ok, sent}` |
 | `seed_profile` | `seconds?`（既定 3・範囲 0.2〜30）, `top?`（既定 40） | 要約表（テキスト）＋ `{ok, seconds, dump:{profile, merge}}` |
 | `seed_generate_fish_thumbnails` | `size?`（既定 512・範囲 64〜2048） | `{ok, total, succeeded, failed, catalog_path, failures[]}`（図鑑画像の一括生成。11.x 章） |
+| `seed_save_get` | `key` | `{ok, result:{op,key,found,type,value}}`（実行中ランタイムの SEED.SaveData を読む） |
+| `seed_save_set` | `key`, `value`, `type?`（int/float/string）, `flush?` | `{ok, result:{op,key,type,value}(,flushed)}`（進行状態を作ってから Play する用） |
+| `seed_save_delete` | `key` | `{ok, result:{op,key,deleted}}` |
+| `seed_save_flush` | なし | `{ok, result:{op,saved}}`（メモリ上の内容をディスクへ書き出す） |
+| `seed_find_actor` | `name`（名前 or `Root/Child` パス）, `components?`（既定 true） | `{ok, name, found, dfs_id, components}`（選択は変えない） |
+| `seed_input` | `keys?`（キー名の配列）, `click?`（`{x,y,button?}`）, `hold_ms?`（既定 80） | 各操作の `{ok, sent, reply}` を改行区切り（Play 中のみ） |
 | `game_input_key` | `key`（KeyCode 名）, `down`（bool） | `{ok, sent, reply}`（Play 中のみ。9 章） |
 | `game_input_mouse` | `button?`+`down?` / `dx?`,`dy?` / `x?`,`y?` / `scroll?` のいずれか 1 種 | `{ok, sent, reply}` |
 | `game_input_sequence` | `events`（9.3 の JSON 配列）, `wait?`（既定 true） | `{ok, sent, reply}`（wait 時は `INPUT_SEQUENCE_DONE` まで待つ） |
@@ -156,7 +162,11 @@ dotnet build editor/SEEDEditor.csproj
 `seed_batch` の `operations` からも同じコマンド名で呼べる
 （`anim_preview` / `anim_preview_stop` / `anim_reload` / `select_actor` / `play_control` /
 `save_scene` / `send_ipc` / `profile` / `game_input_key` / `game_input_mouse` /
-`game_input_sequence` / `game_input_release_all`）。
+`game_input_sequence` / `game_input_release_all` / `save_data` / `find_actor`）。
+`seed_save_*` は 1 つのコマンド `save_data` に `op`（get / set / delete / save）を足したもので、
+`seed_batch` からは `{"cmd":"save_data","op":"set","key":"money","value":1200}` の形で呼ぶ。
+`seed_input` は `game_input_key` / `game_input_mouse` を順に撃つ **MCP サーバー側のラッパ**なので、
+`seed_batch` からは元のコマンド名を並べること。
 
 ### エディタ側コマンド名との対応
 
@@ -180,6 +190,9 @@ dotnet build editor/SEEDEditor.csproj
 | `seed_send_ipc` | `send_ipc` | `RuntimeManager.SendToRuntime` へ素通し |
 | `seed_profile` | `profile` | `IEditorAiHost.ProfileDumpAsync`（IPC `PROFILE_DUMP:{秒}` → `PROFILE_DUMP_DONE:{パス}`） |
 | `seed_generate_fish_thumbnails` | `generate_fish_thumbnails` | `IEditorAiHost.RenderActorThumbnailAsync`（IPC `RENDER_ACTOR_THUMBNAIL:...` → `RENDER_ACTOR_THUMBNAIL_DONE\|_ERROR`）を魚 prefab ごとに逐次 |
+| `seed_save_get` / `seed_save_set` / `seed_save_delete` / `seed_save_flush` | `save_data`（`op` 違い） | `EditorCommandExecutor.SaveData.cs` → IPC `SAVE_DATA:{json}` → `SAVE_DATA_OK:{json}` / `SAVE_DATA_ERROR:{msg}`（実装は `runtime/.../app/save_data_ops.rs`） |
+| `seed_find_actor` | `find_actor` | 同上 → `HierarchyPanel.ActorDfsIdByPath`（名前／パス → DFS ID）＋ `IEditorAiHost.GetActorComponentsAsync`（`GET_ACTOR_COMPONENTS:` のみ。`SELECT:` は送らない） |
+| `seed_input` | （なし／MCP サーバー内で `game_input_*` を連続実行） | `SeedMcpServer/Program.cs::ExecInputAsync` |
 | `game_input_key` | `game_input_key` | `EditorCommandExecutor.GameInput.cs` → IPC `INPUT_KEY:{key},{down\|up}` |
 | `game_input_mouse` | `game_input_mouse` | 同上 → `INPUT_MOUSE_BUTTON` / `INPUT_MOUSE_MOVE` / `INPUT_MOUSE_POS` / `INPUT_SCROLL` |
 | `game_input_sequence` | `game_input_sequence` | 同上 → `INPUT_SEQUENCE:{json}`（応答待ちは `IEditorAiHost.InjectGameInputAsync`） |

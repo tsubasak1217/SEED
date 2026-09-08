@@ -3,6 +3,7 @@
 //  図鑑シーンの本体（レベルごとに 1 ページ。捕獲状況をカードで並べる）。
 // ============================================================================
 
+using System.Collections.Generic;
 using SEEDEditor.Scripting;
 
 /// <summary>
@@ -10,25 +11,21 @@ using SEEDEditor.Scripting;
 ///
 /// 【責務】
 /// <c>FishCatalog</c>（何の魚がいるか）と <c>FishRecords</c>（何を釣ったか）を
-/// 突き合わせて、シーンに用意されたカード枠へ流し込む。
-/// 魚のデータも釣果の保存方法も知らない（どちらも上記 2 つの責務）。
+/// 突き合わせて、カード（<see cref="ZukanCard"/>）へ「どの魚を出すか」を配る。
+/// カード 1 枚の見た目（シルエット・文言）は <see cref="ZukanCard"/> の責務で、
+/// こちらはページングとカードの配置だけを行う。
 ///
 /// 【ページの単位】
 /// 魚レベル 1 ページ（Lv1 〜 <c>FishCatalog.MaxLevel</c>）。
 /// そのレベルの魚を <c>FishCatalog.ForLevel</c> の順（＝アクタ名順）で左から並べる。
 ///
-/// 【カード枠の持ち方 — なぜプレハブを動的生成しないか】
-/// スクリプトの <c>[SerializeField]</c> 参照は「アクタ名」で解決され、
-/// 探索はシーン全体の DFS で最初に一致したものを返す。
-/// そのためカードをプレハブから複数生成すると、2 枚目以降の参照が
-/// すべて 1 枚目の子アクタへ吸われてしまう。
-/// よってカード枠はシーンへ固定で並べ（名前が一意になる）、
-/// 位置とテキストだけをこのスクリプトが書き換える方式にしてある。
-/// 枠を増やすときはシーンへカードを 1 つ足し、下の各配列へ結線するだけでよい。
-///
-/// 【未捕獲の表示】
-/// 画像は真っ黒（シルエット）、名前は「Lv{N} ????」、
-/// ベスト・ランク・釣った数は空にする。
+/// 【カード枠の持ち方 — プレハブインスタンス】
+/// カードはプレハブ <c>assets://zukan/actors/ZukanCard.actor</c> のインスタンスとして
+/// シーンへ並べてある（ZukanCard0 … ZukanCard3）。
+/// 子アクタ（Image / Name / …）への参照はプレハブ側が
+/// <b>相対パス（<c>./Image</c>）</b>で持つため、名前が重複しても壊れない。
+/// 枠を増やすときは、シーンへプレハブをもう 1 つ置いて
+/// <see cref="cards"/> へ結線するだけでよい（見た目はプレハブ側を直せば全枚に反映される）。
 /// </summary>
 public class Zukan : SEEDScript
 {
@@ -67,39 +64,11 @@ public class Zukan : SEEDScript
     [SerializeField(Label = "ページ表示の書式")]
     private string pageFormat = "{0} / {1}";
 
-    /// <summary>未捕獲の魚の名前の書式（{0} にレベル番号が入る）。</summary>
-    [SerializeField(Label = "未捕獲の名前")]
-    private string unknownNameFormat = "Lv{0} ????";
-
-    /// <summary>捕獲済みの魚の名前の書式（{0} = レベル / {1} = 表示名）。</summary>
-    [SerializeField(Label = "捕獲済みの名前")]
-    private string knownNameFormat = "Lv{0} {1}";
-
-    /// <summary>ベストサイズ行の書式（{0} = サイズ / {1} = 単位）。</summary>
-    [SerializeField(Label = "ベスト行の書式")]
-    private string bestFormat = "ベスト: {0:F1}{1}";
-
-    /// <summary>ランク行の書式（{0} = ランク文字）。</summary>
-    [SerializeField(Label = "ランク行の書式")]
-    private string rankFormat = "ランク: {0}";
-
-    /// <summary>釣った数の行の書式（{0} = 回数）。</summary>
-    [SerializeField(Label = "釣った数の書式")]
-    private string countFormat = "つった数: {0}";
-
-    /// <summary>サイズの単位ラベル。</summary>
-    [SerializeField(Label = "サイズの単位")]
-    private string sizeUnit = "cm";
-
-    /// <summary>ベストランクが未記録（旧セーブデータ）のときに出す文字。</summary>
-    [SerializeField(Label = "ランク未記録の表示")]
-    private string unknownRankLabel = "-";
-
     /// <summary>操作案内の文言。</summary>
     [SerializeField(Label = "操作案内")]
     private string hintLabel = "A / D ・ ← → でページ切り替え     Esc / B でもどる";
 
-    // ─── インスペクタ設定（レイアウト・配色）───────────────────
+    // ─── インスペクタ設定（レイアウト）─────────────────────────
 
     /// <summary>カードの横間隔（キャンバスピクセル）。</summary>
     [Header("レイアウト"), SerializeField(Label = "カードの横間隔")]
@@ -108,14 +77,6 @@ public class Zukan : SEEDScript
     /// <summary>カードを並べる帯の Y 座標（カード枠の親から見た相対）。</summary>
     [SerializeField(Label = "カード列のY")]
     private float cardRowY = 0f;
-
-    /// <summary>未捕獲の魚のシルエット色（RGB。既定は真っ黒）。</summary>
-    [Header("配色"), SerializeField(Label = "シルエット色(RGB)")]
-    private SEED.Vector3 silhouetteColor = new(0f, 0f, 0f);
-
-    /// <summary>捕獲済みの魚の画像色（RGB。既定は素の色）。</summary>
-    [SerializeField(Label = "捕獲済みの画像色(RGB)")]
-    private SEED.Vector3 caughtImageColor = new(1f, 1f, 1f);
 
     // ─── インスペクタ設定（遷移）───────────────────────────────
 
@@ -127,7 +88,7 @@ public class Zukan : SEEDScript
     [SerializeField(Label = "既定の戻り先シーン")]
     private string defaultReturnScene = "title";
 
-    // ─── 参照（シーン内の固定カード枠。インスペクタで結線）───────
+    // ─── 参照（インスペクタで結線）─────────────────────────────
 
     /// <summary>見出しのテキスト。</summary>
     [Header("参照（ヘッダ・フッタ）"), SerializeField(Label = "見出しText")]
@@ -141,34 +102,32 @@ public class Zukan : SEEDScript
     [SerializeField(Label = "操作案内Text")]
     private SEED.Text? hintText;
 
-    /// <summary>カードの根（表示/非表示と位置決めに使う）。</summary>
-    [Header("参照（カード枠。要素数＝枠の数）"), SerializeField(Label = "カードのアクタ")]
-    private SEED.GameObject[] cards = System.Array.Empty<SEED.GameObject>();
-
-    /// <summary>カードの魚画像。</summary>
-    [SerializeField(Label = "カードの画像")]
-    private SEED.Sprite[] cardImages = System.Array.Empty<SEED.Sprite>();
-
-    /// <summary>カードの名前テキスト。</summary>
-    [SerializeField(Label = "カードの名前")]
-    private SEED.Text[] cardNames = System.Array.Empty<SEED.Text>();
-
-    /// <summary>カードのベストサイズテキスト。</summary>
-    [SerializeField(Label = "カードのベスト")]
-    private SEED.Text[] cardBests = System.Array.Empty<SEED.Text>();
-
-    /// <summary>カードのランクテキスト。</summary>
-    [SerializeField(Label = "カードのランク")]
-    private SEED.Text[] cardRanks = System.Array.Empty<SEED.Text>();
-
-    /// <summary>カードの釣った数テキスト。</summary>
-    [SerializeField(Label = "カードの釣った数")]
-    private SEED.Text[] cardCounts = System.Array.Empty<SEED.Text>();
+    /// <summary>
+    /// カード（プレハブインスタンスのスクリプト）。要素数＝枠の数。
+    /// 解決できなかった要素は null になるので、必ず null チェックしてから使う。
+    /// </summary>
+    [Header("参照（カード枠。要素数＝枠の数）"), SerializeField(Label = "カード")]
+    private List<ZukanCard?> cards = new();
 
     // ─── 実行時の状態 ────────────────────────────────────────
 
     /// <summary>いま表示しているページ（＝魚レベル）。</summary>
     private int currentLevel = FirstLevel;
+
+    /// <summary>
+    /// 最初のページ組み立てがまだ済んでいないか。
+    ///
+    /// 【なぜ OnStart で組み立てないか】
+    /// カードは別スクリプト（<see cref="ZukanCard"/>）のインスタンスで、
+    /// そのスクリプトの <c>gameObject</c> / <c>transform</c> は
+    /// **自分のライフサイクル呼び出しが 1 度走るまで束縛されない**。
+    /// スクリプトの OnStart 実行順は保証されないため、Zukan の OnStart から
+    /// カードのメソッドを呼ぶと、カード側は自分のアクタを掴めておらず
+    /// 表示・位置設定がまるごと空振りする（実際にそうなって図鑑が真っ白になった）。
+    /// そこで最初の組み立ては <see cref="Update"/>（＝全スクリプトが 1 度は
+    /// フェーズを通った後）まで遅らせる。
+    /// </summary>
+    private bool pageDirty = true;
 
     // ─── ライフサイクル ──────────────────────────────────────
 
@@ -183,7 +142,8 @@ public class Zukan : SEEDScript
 
         SetContent(hintText, hintLabel);
         currentLevel = FirstLevel;
-        BuildPage();
+        // 実際の組み立ては最初の Update で行う（pageDirty の説明を参照）
+        pageDirty = true;
     }
 
     /// <summary>破棄時の後始末。静的アクセサを取り消す。</summary>
@@ -195,6 +155,13 @@ public class Zukan : SEEDScript
     /// <summary>毎フレームの入力処理（ページ送りと退出）。</summary>
     public override void Update(ref NativeFrameContext ctx)
     {
+        // 最初のページ組み立て（カードのライフサイクルが 1 度走った後に行う）
+        if (pageDirty)
+        {
+            pageDirty = false;
+            BuildPage();
+        }
+
         if (SEED.Input.GetKeyDown(SEED.KeyCode.A) || SEED.Input.GetKeyDown(SEED.KeyCode.LeftArrow))
         {
             ChangePage(PageStepPrev);
@@ -239,11 +206,11 @@ public class Zukan : SEEDScript
     // ─── ページの組み立て ────────────────────────────────────
 
     /// <summary>
-    /// 現在のページ（レベル）ぶんのカードを作り直す
-    /// 【カードの内容と配置を決める唯一の場所】。
+    /// 現在のページ（レベル）ぶんのカードを配り直す
+    /// 【どのカードに何を載せるかを決める唯一の場所】。
     ///
     /// カード枠は使い回し（生成も破棄もしない）。今回のページで使わない枠は
-    /// <c>Visible = false</c> で隠す。
+    /// <see cref="ZukanCard.Hide"/> で隠す。
     /// </summary>
     private void BuildPage()
     {
@@ -251,7 +218,7 @@ public class Zukan : SEEDScript
         SetContent(pageText, string.Format(pageFormat, currentLevel, SafeMaxLevel()));
 
         // 今のページに載る魚を、枠の数を上限に集める
-        int slotCount = cards.Length;
+        int slotCount = cards.Count;
         var entries = new FishCatalogEntry[slotCount];
         int used = 0;
         foreach (FishCatalogEntry entry in FishCatalog.ForLevel(currentLevel))
@@ -269,87 +236,40 @@ public class Zukan : SEEDScript
         // 使う枠だけを中央揃えで並べ、余った枠は隠す
         for (int i = 0; i < slotCount; i++)
         {
-            bool inUse = i < used;
-            SetCardVisible(i, inUse);
-            if (!inUse) { continue; }
+            if (cards[i] is not { } card) { continue; }
 
-            PlaceCard(i, used);
-            FillCard(i, entries[i]);
+            if (i >= used) { card.Hide(); continue; }
+
+            PlaceCard(card, i, used);
+            FillCard(card, entries[i]);
         }
     }
 
     /// <summary>カード 1 枚を、使用枚数に対して中央揃えになる位置へ置く。</summary>
+    /// <param name="card">対象のカード。</param>
     /// <param name="slot">カード枠の添字。</param>
     /// <param name="usedCount">今のページで使う枚数。</param>
-    private void PlaceCard(int slot, int usedCount)
+    private void PlaceCard(ZukanCard card, int slot, int usedCount)
     {
-        if (!IsSlotValid(slot)) { return; }
-        if (cards[slot].GetComponent<SEED.CanvasTransform>() is not { } ct) { return; }
-
         float centerOffset = (usedCount - 1) / CenteringDivisor;
-        ct.Position = new SEED.Vector2((slot - centerOffset) * cardSpacing, cardRowY);
+        card.PlaceAt(new SEED.Vector2((slot - centerOffset) * cardSpacing, cardRowY));
     }
 
-    /// <summary>カード 1 枚へ、1 種ぶんのカタログと釣果を流し込む。</summary>
-    /// <param name="slot">カード枠の添字。</param>
+    /// <summary>カード 1 枚へ、1 種ぶんのカタログと釣果を渡す。</summary>
+    /// <param name="card">対象のカード。</param>
     /// <param name="entry">その枠に載せる魚。</param>
-    private void FillCard(int slot, FishCatalogEntry entry)
+    private static void FillCard(ZukanCard card, FishCatalogEntry entry)
     {
         bool caught = FishRecords.IsCaught(entry.displayName);
-
-        // 画像は捕獲の有無に関わらず同じテクスチャ。未捕獲は真っ黒に塗ってシルエットにする
-        if (GetAt(cardImages, slot) is { } image && image.IsValid)
-        {
-            image.TexturePath = entry.imagePath;
-            SEED.Vector3 rgb = caught ? caughtImageColor : silhouetteColor;
-            image.Color = new SEED.Color(rgb.x, rgb.y, rgb.z, AlphaOpaque);
-        }
-
-        SetContent(GetAt(cardNames, slot), caught
-            ? string.Format(knownNameFormat, entry.level, entry.displayName)
-            : string.Format(unknownNameFormat, entry.level));
-
-        // 未捕獲のときは記録欄を空にする（枠だけ残す）
-        if (!caught)
-        {
-            SetContent(GetAt(cardBests, slot), string.Empty);
-            SetContent(GetAt(cardRanks, slot), string.Empty);
-            SetContent(GetAt(cardCounts, slot), string.Empty);
-            return;
-        }
-
-        string rank = FishRecords.BestRank(entry.displayName);
-        if (string.IsNullOrWhiteSpace(rank)) { rank = unknownRankLabel; }
-
-        SetContent(GetAt(cardBests, slot),
-            string.Format(bestFormat, FishRecords.BestSize(entry.displayName), sizeUnit));
-        SetContent(GetAt(cardRanks, slot), string.Format(rankFormat, rank));
-        SetContent(GetAt(cardCounts, slot),
-            string.Format(countFormat, FishRecords.CatchCount(entry.displayName)));
+        card.Show(
+            entry,
+            caught,
+            caught ? FishRecords.BestSize(entry.displayName) : 0f,
+            caught ? FishRecords.BestRank(entry.displayName) : string.Empty,
+            caught ? FishRecords.CatchCount(entry.displayName) : 0);
     }
 
     // ─── 小さなヘルパー ──────────────────────────────────────
-
-    /// <summary>カード枠まるごとの表示・非表示。</summary>
-    /// <param name="slot">カード枠の添字。</param>
-    /// <param name="visible">表示するか。</param>
-    private void SetCardVisible(int slot, bool visible)
-    {
-        if (!IsSlotValid(slot)) { return; }
-        cards[slot].Visible = visible;
-    }
-
-    /// <summary>その添字のカード枠が使えるか（範囲内かつ生存しているか）。</summary>
-    /// <param name="slot">カード枠の添字。</param>
-    private bool IsSlotValid(int slot)
-        => slot >= 0 && slot < cards.Length && cards[slot].IsValid;
-
-    /// <summary>配列から安全に 1 件取り出す（範囲外は null）。</summary>
-    /// <typeparam name="T">要素の型。</typeparam>
-    /// <param name="array">対象の配列。</param>
-    /// <param name="index">添字。</param>
-    private static T? GetAt<T>(T[] array, int index) where T : struct
-        => index >= 0 && index < array.Length ? array[index] : null;
 
     /// <summary>テキストへ文字列を設定する（未設定・破棄済みなら何もしない）。</summary>
     /// <param name="text">対象のテキスト。</param>

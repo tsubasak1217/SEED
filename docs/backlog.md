@@ -86,6 +86,12 @@
 
 ## エディタ MCP / ヘッドレス（2026-09-07 実装の残件）
 
+- [ ] **2026-09-08 追加の MCP ツールの残件** — `seed_save_get/set/delete/flush`（IPC `SAVE_DATA:`）、`seed_find_actor`、`seed_input` をヘッドレスで実走行して確認済み。残る制限:
+  - `save_data` に「全キー一覧」の op が無い（キー名を知っている前提）。`SaveStore` に列挙 API を足せば `op:"list"` を追加できる。
+  - `seed_find_actor` の名前解決は**エディタ側の Hierarchy ノードモデル**で行う（ランタイムの `actor_ref_path.rs` とは別実装）。検索用途では先頭セグメントをシーン全体 DFS へ緩和しているため、参照フィールドの保存書式（ルート起点の厳密なパス）とは規則が完全一致しない。
+  - `seed_input` は MCP サーバー側で `game_input_*` を順に撃つだけなので、待ち時間は MCP プロセスのタイマー精度に依存する（拍に合わせる用途は `game_input_sequence` を使うこと）。`seed_batch` からは呼べない（元のコマンド名を並べる）。
+  - `save_data` は変更系として扱う（読み取り専用インスタンスでは拒否）。`op:"get"` だけは観測系なので、細分化するなら `AiOperationPolicy` 側でコマンド名を分ける必要がある。
+
 - [ ] **`MessageBox.Show` の大半がまだ `EditorDialogs.Show` を通っていない** — 2026-09-07。ヘッドレスでモーダルが出ると UI スレッドが固まり MCP 呼び出しが全滅するため、AI 経路（Play / シーンロード / シーン保存 / 自動リロード / スクリプトコンパイル / LOAD_ERROR）だけを差し替えた。インスペクタ・地形・プロジェクト設定・スプライトリグ等の 30 箇所以上は素の `MessageBox.Show` のまま。順次 `SEEDEditor.Headless.EditorDialogs.Show` へ寄せる。関連: `editor/src/Headless/EditorDialogs.cs`。
 
 - [ ] **ヘッドレスでの `seed_screenshot(target:"editor")` は真っ黒になる** — 2026-09-07。エディタ UI 全体は画面 DC からしか撮れず、ウィンドウが画面外にあると撮れない。WPF 側を `RenderTargetBitmap` でレンダリングして返す経路を作れば解決できるが、埋め込みランタイム部分は空になる（GPU 子ウィンドウは WPF のビジュアルツリーに無い）。
@@ -212,5 +218,10 @@
 - [ ] **`resolve_dll_path` がカレントディレクトリ基準で SEEDScripting.dll を探す** — 2026-09-08。`runtime/src/engine/core/scripting/mod.rs::resolve_dll_path` は `cwd/../scripting/bin/Debug/net9.0/SEEDScripting.dll` → `cwd/SEEDScripting.dll` の順で探す。ランタイムの作業ディレクトリは `RuntimeManager.ResolveWorkingDirectory` が「exe の 2 階層上が `target` のときだけ」リポジトリ側へ上げるため、`docs/editor_mcp.md §5.5` が推奨する `cargo build --target-dir <別ディレクトリ>` で作った SEED.exe を `SEED_RUNTIME_EXE` で使うと DLL が見つからず、ランタイムが起動しない（エディタ側は「ランタイムが接続しません」としか言わない）。回避策は出力先へ `SEEDScripting.dll` 一式を手でコピーすること。exe の位置からも探すか、環境変数で明示できるようにしたい。
 - [ ] **`seed_launch(scene:)` が `assets://` パスを受け付けない** — 2026-09-08。`editor/SeedMcpServer/Launcher.cs` は `Path.GetFullPath(scenePath)` をそのまま `--scene` へ渡すため、`assets://zukan/zukan.scene` は `…\SEED\assets:\zukan\zukan.scene` という壊れたパスになり、シーンが読めないまま「ランタイムが接続しません」でタイムアウトする（原因が一切表示されない）。絶対パスなら正常に動く。`assets://` を assets ルート基準へ解決するか、少なくともエラーとして弾きたい。
 - [ ] **キャンバスの `auto_scale` がカメラ基準解像度より大きいキャンバスを縮小しない** — 2026-09-08。カメラの `target_width/height` が 1280x720 のとき、`auto_scale: true` の 1920x1080 キャンバスは 1 単位＝描画ターゲット 1px で描かれ、中央 1280x720 の外に置いた要素は画面に出ない（ヘッドレス Play のスクリーンショットで実測）。今回は図鑑・ポーズメニューのキャンバスを 1280x720 にして回避した。既存の `FishingUI` は端をアンカー基準で置いているため実害が出ていないだけなので、`auto_scale` の意図（基準解像度へフィットさせる）どおりに効いているか要確認。
-- [ ] **`[SerializeField]` の参照解決がシーン全体のアクタ名 DFS なので、同じプレハブを複数生成すると参照が 1 個目へ集まる** — 2026-09-08。`ScriptReference.ResolveEntity` → `ScriptHost.TryFindActor(actorName)` は最初に一致したアクタを返すため、子アクタへの参照を持つプレハブを `Instantiate` で複数並べると 2 個目以降が壊れる。そのため図鑑のカードはプレハブ動的生成をやめ、シーンへ固定で 4 枚並べる構成にした。プレハブ内参照を「自分のサブツリー優先」で解決できるようにすると、カードやリスト項目の量産がずっと素直になる。
+- [x] **`[SerializeField]` の参照解決がシーン全体のアクタ名 DFS なので、同じプレハブを複数生成すると参照が 1 個目へ集まる** — 2026-09-08 に解決。参照文字列へパス形式（`./Child` / `../Sibling` / `Root/Child`）を導入し、素の名前は「自分のサブツリー優先 → シーン全体」で解決するようにした（正典: `runtime/src/engine/core/scripting/actor_ref_path.rs`、docs/scripting_api.md「参照文字列のパス指定」）。`GameObject.FindChild(nameOrPath)` も追加。図鑑カードは `assets://zukan/actors/ZukanCard.actor` のプレハブインスタンス 4 枚になった。
+  **残る制限（この項目の続き）**:
+  - パス形式で保存された参照は**アクタのリネームに追従しない**（`rename_refs.rs` は「フィールド値が旧アクタ名そのもの」のときだけ書き換えるため）。素の名前で保存された参照はこれまでどおり追従する。
+  - 参照ボックスの「参照先が見つかりません」警告（`ReferencePicker.RefreshLabel`）は、パス形式のとき**判定を諦めて出さない**。持ち主基準の解決をエディタ側で再現していないため。
+  - 参照ボックスのダブルクリックによる Hierarchy ジャンプ（`ActorRefJump.RevealActorByName`）もパス形式では効かない（名前一致で探すため）。
+  - `ScriptEvent` の結線先アクタ（`ScriptEventBinding`）は従来どおりシーン全体 DFS のまま。プレハブ内のイベント結線は同名インスタンスで壊れうる。
 - [ ] **`runtime/assets/tutorial/scripts` がアクセス拒否でスクリプト収集から毎回スキップされる** — 2026-09-08。エディタのログに `[ScriptCompiler] 読み取れないフォルダをスキップ … Access to the path … is denied.` が再読込のたびに出る。assets が別ドライブへのジャンクションであることに由来する権限の問題と思われる。

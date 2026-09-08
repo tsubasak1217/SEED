@@ -22,4 +22,4 @@ pub use clip::{
 };
 pub use registry::{PropBinding, apply_write, read_binding, resolve_binding};
 pub use sampler::sample_track;
-pub use system::{normalize_time, resolve_actor_path};
+pub use system::{find_child_transparent, normalize_time, resolve_actor_path};

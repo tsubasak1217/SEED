@@ -120,6 +120,7 @@ impl App {
                 // 外部（エディタ／MCP 経由の AI）からのゲーム入力注入。
                 // 受理可否の判定・応答はすべて input_inject_ops.rs に集約する。
                 IpcCommand::InputInject(inject) => self.handle_input_inject(inject),
+                IpcCommand::SaveData(payload) => self.handle_save_data(payload),
                 IpcCommand::Pause => {
                     // Play モード中にメインカメラが存在する場合、
                     // デバッグカメラをその視点に同期してから Pause に入る。

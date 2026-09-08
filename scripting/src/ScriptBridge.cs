@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -379,12 +379,18 @@ public static unsafe class ScriptBridge
     /// 非 Nullable 宣言なら無効ハンドル（IsValid == false）になる。
     /// </summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    public static void ResolveReferenceFields(nint h)
+    public static void ResolveReferenceFields(nint h, uint entityIndex, uint entityGeneration)
     {
         try
         {
             var target = Get(h);
             if (target is null) return;
+
+            // 参照文字列のパス解決基準（"./Child" の相対指定・素の名前のサブツリー優先）
+            // に使う所有エンティティ。Rust 側が未束縛を uint.MaxValue で伝えてくる。
+            var owner = entityIndex == uint.MaxValue
+                ? SEED.Entity.None
+                : new SEED.Entity(entityIndex, entityGeneration);
 
             // 保留エントリを取り出して即座に辞書から外す（解決は一度きり）
             System.Collections.Generic.Dictionary<string, string>? map;
@@ -397,9 +403,9 @@ public static unsafe class ScriptBridge
             foreach (var (path, value) in map)
             {
                 // ネスト途中のオブジェクトは必要なら生成してから末端へ書き込む
-                if (!TryResolveLeafField(target, path, createMissing: true, out var owner, out var leaf))
+                if (!TryResolveLeafField(target, path, createMissing: true, out var fieldOwner, out var leaf))
                     continue;
-                ApplyResolvedReference(owner, leaf, value);
+                ApplyResolvedReference(fieldOwner, leaf, value, owner);
             }
         }
         catch (Exception ex)
@@ -775,7 +781,7 @@ public static unsafe class ScriptBridge
     /// （単体の参照フィールドとまったく同じ規則）。
     /// </summary>
     private static void ApplyResolvedReference(
-        object owner, System.Reflection.FieldInfo leaf, string value)
+        object owner, System.Reflection.FieldInfo leaf, string value, SEED.Entity ownerEntity)
     {
         var leafType = leaf.FieldType;
 
@@ -785,7 +791,8 @@ public static unsafe class ScriptBridge
             SEED.ScriptStructArray.TryGetLayout(structElem, out var structMembers))
         {
             var built = SEED.ScriptStructArray.BuildInstance(
-                structElem, structIsList, value, structMembers, ResolveOrConvert);
+                structElem, structIsList, value, structMembers,
+                (memberType, memberValue) => ResolveOrConvert(memberType, memberValue, ownerEntity));
             leaf.SetValue(owner, built);
             return;
         }
@@ -797,21 +804,21 @@ public static unsafe class ScriptBridge
         {
             var resolved = SEED.ScriptArray.BuildInstance(
                 elementType, isList, value,
-                (elemType, elemValue) => SEED.ScriptReference.Resolve(elemType, elemValue));
+                (elemType, elemValue) => SEED.ScriptReference.Resolve(elemType, elemValue, ownerEntity));
             leaf.SetValue(owner, resolved);
             return;
         }
 
-        leaf.SetValue(owner, SEED.ScriptReference.Resolve(leafType, value));
+        leaf.SetValue(owner, SEED.ScriptReference.Resolve(leafType, value, ownerEntity));
     }
 
     /// <summary>
     /// 参照型なら実体へ解決し、それ以外は通常の型変換を行う（構造体配列のメンバ用）。
     /// World 公開中（<see cref="ResolveReferenceFields"/> 実行中）にのみ呼ぶこと。
     /// </summary>
-    private static object? ResolveOrConvert(Type type, string value)
+    private static object? ResolveOrConvert(Type type, string value, SEED.Entity ownerEntity)
         => SEED.ScriptReference.TryGetKind(type, out _)
-            ? SEED.ScriptReference.Resolve(type, value)
+            ? SEED.ScriptReference.Resolve(type, value, ownerEntity)
             : ConvertValue(type, value);
 
     // ─── スクリプト例外の捕捉とログ抑制 ───────────────────────

@@ -1,0 +1,392 @@
+{
+  "name": "ZukanCard",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.0,
+      0.0
+    ],
+    "anchor": [
+      0.0,
+      0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "ZukanCard",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "assets://zukan/scripts/ZukanCard.cs",
+          "fields": {
+            "unknownNameFormat": "Lv{0} ????",
+            "knownNameFormat": "Lv{0} {1}",
+            "bestFormat": "ベスト: {0:F1}{1}",
+            "rankFormat": "ランク: {0}",
+            "countFormat": "つった数: {0}",
+            "sizeUnit": "cm",
+            "unknownRankLabel": "-",
+            "image": "./Image|Sprite",
+            "nameText": "./Name|Text",
+            "bestText": "./Best|Text",
+            "rankText": "./Rank|Text",
+            "countText": "./Count|Text"
+          }
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "Image",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          -70.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "",
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "width": 190.0,
+              "height": 190.0,
+              "layer": 5,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Name",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          52.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 22.0,
+              "color": [
+                0.94,
+                0.97,
+                1.0,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 6,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 2.5,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.6,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Best",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          96.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 19.0,
+              "color": [
+                0.72,
+                0.84,
+                0.98,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 6,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 2.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.3,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Rank",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          128.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 19.0,
+              "color": [
+                0.72,
+                0.84,
+                0.98,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 6,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 2.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.3,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Count",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          160.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "",
+              "font_size": 19.0,
+              "color": [
+                0.72,
+                0.84,
+                0.98,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 6,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 2.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.3,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

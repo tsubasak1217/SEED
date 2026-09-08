@@ -159,6 +159,10 @@ public partial class EditorCommandExecutor
         if (ExecuteGameInputTool(command, args) is { } gameInputTask)
             return await gameInputTask;
 
+        // セーブデータ操作・アクタ検索（save_data / find_actor）も別ファイル。
+        if (ExecuteSaveDataTool(command, args) is { } saveDataTask)
+            return await saveDataTask;
+
         return command switch
         {
             "screenshot"        => ExecuteScreenshot(args),

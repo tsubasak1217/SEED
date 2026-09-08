@@ -46,6 +46,7 @@ use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::actor::ComponentSlot;
 use crate::engine::structs::objects::Actor;
 
+use super::actor_ref_path;
 use super::input_bridge;
 // GameObject.Visible の set は遅延適用なので、保留値テーブルを併用する
 use super::visible_pending;
@@ -2096,6 +2097,57 @@ unsafe extern "system" fn ffi_find_actor(
     }
 }
 
+/// アクタ参照文字列（パス形式対応）を解決する。見つかった=1 / なし=0。
+///
+/// `owner_*` は参照を持つ側のアクタ（スクリプトが乗るアクタ）のルート entity。
+/// `u32::MAX` は「未束縛」を表し、相対形式（`./` / `../`）は解決できなくなる。
+///
+/// `scope`: 0 = 参照フィールド解決（素の名前はサブツリー優先 → シーン全体。
+/// 絶対パス可）、1 = サブツリー限定（`GameObject.FindChild`）。
+/// 規則の詳細は `actor_ref_path` モジュールのコメントを参照。
+///
+/// out（[index, generation] の 2 要素）へルートエンティティを返す。
+unsafe extern "system" fn ffi_find_actor_from(
+    owner_index: u32, owner_generation: u32,
+    scope: i32,
+    path: *const u8, path_len: i32,
+    out: *mut u32,
+) -> i32 {
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() || out.is_null() { return 0; }
+    let path_str = str_from(path, path_len);
+    if path_str.is_empty() { return 0; }
+
+    let scope = match scope {
+        REF_SCOPE_REFERENCE => actor_ref_path::RefScope::Reference,
+        REF_SCOPE_SUBTREE   => actor_ref_path::RefScope::Subtree,
+        _ => return 0,
+    };
+    let owner = entity_from_raw(owner_index, owner_generation);
+
+    let actors = &*actors_ptr;
+    match actor_ref_path::resolve_actor_ref(actors, owner, path_str, scope) {
+        Some(a) => {
+            *out        = a.entity.index();
+            *out.add(1) = a.entity.generation();
+            1
+        }
+        None => 0,
+    }
+}
+
+/// `ffi_find_actor_from` の scope: 参照フィールド解決（サブツリー優先＋全体フォールバック）。
+const REF_SCOPE_REFERENCE: i32 = 0;
+/// `ffi_find_actor_from` の scope: サブツリー限定（GameObject.FindChild）。
+const REF_SCOPE_SUBTREE: i32 = 1;
+
+/// C# から渡された (index, generation) を `Option<Entity>` へ戻す。
+///
+/// C# の `Entity.None` は index = u32::MAX で表現される（`entity_to_raw` の逆変換）。
+fn entity_from_raw(index: u32, generation: u32) -> Option<Entity> {
+    (index != u32::MAX).then(|| Entity::from_raw(index, generation))
+}
+
 // ─── 入力 FFI（キー・マウス）─────────────────────────────────
 
 /// キー入力判定。押されている(kind に応じた状態)=1 / それ以外・失敗=0。
@@ -3328,6 +3380,9 @@ pub struct ScriptHostApi {
     // カメラ射影（SEED.Camera.WorldToScreen / WorldToCanvas）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     camera_world_to_screen:  unsafe extern "system" fn(u32, u32, *const f32, i32, *mut f32) -> i32,
+    // アクタ参照のパス解決（[SerializeField] の参照解決 / GameObject.FindChild）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    find_actor_from:         unsafe extern "system" fn(u32, u32, i32, *const u8, i32, *mut u32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3370,6 +3425,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     parent_of:               ffi_parent_of,
     time_scale:              ffi_time_scale,
     camera_world_to_screen:  ffi_camera_world_to_screen,
+    find_actor_from:         ffi_find_actor_from,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

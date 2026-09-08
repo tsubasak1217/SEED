@@ -917,6 +917,49 @@ public static unsafe class ScriptHost
         return _api.IsGrounded(e.Index, e.Generation) != 0;
     }
 
+    /// <summary>
+    /// アクタ参照文字列（パス形式対応）を解決する。見つからなければ false。
+    ///
+    /// <paramref name="owner"/> は参照を持つ側（スクリプトが乗るアクタ）のエンティティ。
+    /// <c>Entity.None</c> を渡すと相対形式（<c>./</c> / <c>../</c>）は解決できず、
+    /// 素の名前はシーン全体 DFS になる（従来の挙動）。
+    ///
+    /// <paramref name="subtreeOnly"/> が true のときは <c>GameObject.FindChild</c> 用の
+    /// サブツリー限定解決になり、シーン全体へのフォールバックを行わない。
+    ///
+    /// 解決規則の正典は Rust 側 <c>actor_ref_path.rs</c>（docs/scripting_api.md にも記載）。
+    /// </summary>
+    public static bool TryFindActorFrom(
+        Entity owner, string path, bool subtreeOnly, out Entity entity)
+    {
+        entity = Entity.None;
+        if (!_available || _api.FindActorFrom == null || string.IsNullOrEmpty(path)) return false;
+
+        int nl = Encoding.UTF8.GetByteCount(path);
+        Span<byte> nb = stackalloc byte[nl];
+        Encoding.UTF8.GetBytes(path, nb);
+
+        uint* outBuf = stackalloc uint[2];
+        int ok;
+        fixed (byte* np = nb)
+            // 未束縛（default / None）の所有者は index=uint.MaxValue で「所有者なし」を伝える。
+            // default(Entity) は Index==0（実在しうる値）なので IsValid で判別すること。
+            ok = _api.FindActorFrom(
+                owner.IsValid ? owner.Index : uint.MaxValue, owner.Generation,
+                subtreeOnly ? RefScopeSubtree : RefScopeReference,
+                np, nl, outBuf);
+
+        if (ok == 0) return false;
+        entity = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
+    /// <summary>FindActorFrom の scope: 参照フィールド解決（サブツリー優先＋シーン全体フォールバック）。</summary>
+    private const int RefScopeReference = 0;
+
+    /// <summary>FindActorFrom の scope: サブツリー限定（GameObject.FindChild）。</summary>
+    private const int RefScopeSubtree = 1;
+
     /// <summary>アクターを名前で検索する（DFS 順の最初の一致）。見つからなければ false。</summary>
     public static bool TryFindActor(string name, out Entity entity)
     {
@@ -1022,4 +1065,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, float, float*, int> TimeScale;
     /// <summary>(idx, gen, world float[3], mode, out float[3]) → 書き込んだ要素数（3）/失敗=0。カメラのワールド→スクリーン射影（mode: 0=スクリーン/1=キャンバス）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, float*, int, float*, int> CameraWorldToScreen;
+    /// <summary>(ownerIdx, ownerGen, scope, path, pathLen, out uint[2] entity) → 1/0（アクタ参照のパス解決）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, int, byte*, int, uint*, int> FindActorFrom;
 }

@@ -40,6 +40,8 @@ mod component_reset_ops;
 mod ipc_handler;
 /// 入力注入 IPC（INPUT_*）のハンドラ。
 mod input_inject_ops;
+// セーブデータ（SEED.SaveData）の IPC 読み書き（AI 検証用）
+mod save_data_ops;
 /// 未保存クリップのライブプレビュー（ANIM_PREVIEW_CLIP）
 mod anim_preview_clip_ops;
 mod hierarchy_sync;

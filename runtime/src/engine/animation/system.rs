@@ -64,7 +64,7 @@ pub fn normalize_time(loop_mode: LoopMode, time: f32, duration: f32) -> (f32, bo
 ///
 /// 1 が 2 に優先するため、フォルダ配下と直下に同名が並んでも直下が勝つ
 /// （＝ 既存シーンの解決結果は変わらない）。
-fn find_child_transparent<'a>(parent: &'a Actor, name: &str) -> Option<&'a Actor> {
+pub fn find_child_transparent<'a>(parent: &'a Actor, name: &str) -> Option<&'a Actor> {
     // 1) 直接の子（フォルダ名の明示指定もここで一致する）
     if let Some(c) = parent.children().iter().find(|c| c.name == name) {
         return Some(c);

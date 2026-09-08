@@ -1,4 +1,4 @@
-namespace SEED;
+﻿namespace SEED;
 
 /// <summary>
 /// スクリプトがアタッチされたゲームオブジェクト。所有エンティティを包み、
@@ -151,7 +151,34 @@ public readonly struct GameObject
     /// <summary>
     /// アクターを名前で検索する（ヒエラルキーの DFS 順で最初の一致）。
     /// 見つからなければ IsValid=false の GameObject を返す。
+    ///
+    /// シーン全体が対象なので、同名アクタ（プレハブを複数並べた場合など）では
+    /// 意図しないものを引きうる。自分の配下を探すときは
+    /// <see cref="FindChild(string)"/> を使うこと。
     /// </summary>
     public static GameObject Find(string name)
         => ScriptHost.TryFindActor(name, out var e) ? new GameObject(e) : new GameObject(Entity.None);
+
+    /// <summary>
+    /// <b>この GameObject の配下</b>から子アクターを検索する
+    /// 【プレハブを複数並べても壊れない子参照の入口】。
+    ///
+    /// <paramref name="nameOrPath"/> は名前かパスを指定する:
+    /// <list type="bullet">
+    ///   <item><c>"Image"</c> … 直下の子（フォルダノードは透過）。無ければ子孫を DFS</item>
+    ///   <item><c>"Body/Head"</c> … 子 Body の子 Head（セグメントごとにたどる）</item>
+    ///   <item><c>"./Image"</c> … 先頭の <c>./</c> は付けても同じ意味</item>
+    /// </list>
+    /// 2D のフォルダノードは階層に存在しないものとして扱う（<c>Items/Image</c> の
+    /// Items がフォルダなら <c>"Image"</c> だけで届く）。
+    ///
+    /// <see cref="Find(string)"/> と違い**シーン全体へは広がらない**ため、
+    /// 同じプレハブを複数並べても常に自分の子を返す。
+    /// 見つからなければ IsValid=false の GameObject を返す。
+    /// </summary>
+    /// <param name="nameOrPath">子アクター名、または "/" 区切りの相対パス。</param>
+    public GameObject FindChild(string nameOrPath)
+        => ScriptHost.TryFindActorFrom(_entity, nameOrPath, subtreeOnly: true, out var e)
+            ? new GameObject(e)
+            : new GameObject(Entity.None);
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Input;
 
@@ -55,6 +55,27 @@ internal static class ActorRefJump
     /// （保存値の表示は維持されるので値は壊れない）。
     /// </summary>
     public static Func<string, int?>? ActorDfsIdByName;
+
+    /// <summary>
+    /// 「参照フィールドへ保存するアクタ参照文字列」を組み立てるフック。
+    /// MainWindow が HierarchyPanel.BuildActorReferencePath へ接続する。
+    ///
+    /// 引数は (参照を持つ側のアクタ DFS ID, 参照先アクタの DFS ID)。
+    /// 参照先が持ち主の子孫なら <c>"./Child"</c>、名前が一意なら素の名前、
+    /// それ以外はルートからの絶対パスを返す（規則は HierarchyPanel.ReferencePath.cs）。
+    /// 未接続（null）・該当なしのときは null が返り、呼び出し側は
+    /// 従来どおり素のアクタ名を保存する。
+    /// </summary>
+    public static Func<int, int, string?>? BuildActorReferencePath;
+
+    /// <summary>
+    /// 「名前またはパスからアクタの DFS ID を引く」フック。
+    /// MainWindow が HierarchyPanel.ActorDfsIdByPath へ接続する。
+    ///
+    /// <see cref="ActorDfsIdByName"/> の上位互換で、"Root/Child" の絶対パスも解決できる
+    /// （MCP の seed_find_actor が使う）。未接続・該当なしのときは null。
+    /// </summary>
+    public static Func<string, int?>? ActorDfsIdByPath;
 
     /// <summary>
     /// 指定要素のダブルクリックで「アクタ名によるジャンプ」を行うよう配線する。

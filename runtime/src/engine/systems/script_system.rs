@@ -87,7 +87,7 @@ pub fn register(schedule: &mut Schedule) {
                     // 公開されているこの区間でしか解決できない。OnStart より前に
                     // 発行することで、ユーザーコードからは常に解決済みに見える。
                     if c.needs_resolve {
-                        ScriptComponent::resolve_references_raw(&c.host, c.handle);
+                        ScriptComponent::resolve_references_raw(&c.host, c.handle, c.owner);
                     }
                     // OnStart は必ずこのスクリプトの初回ライフサイクル呼び出しより前に走る
                     if c.needs_start {
