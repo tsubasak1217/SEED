@@ -77,6 +77,18 @@ public class Fish : SEEDScript
     private const float AttachSnapDistance = 0.05f;
 
     /// <summary>
+    /// 掛かっている（<see cref="BehaviorState.Bite"/>）あいだ、この距離（メートル）以内なら
+    /// 寄せずに<b>毎フレーム目標点へ張り付ける</b>閾値。
+    ///
+    /// 魚が引いて逃げる局面ではウキが 1 秒に十数 m 動くため、<see cref="attachSpeed"/>
+    /// （毎秒数 m）で寄せていると魚がウキからはっきり遅れて見える。掛かった魚は
+    /// 糸で繋がっているのだから、ウキの真下に常に居るのが正しい。
+    /// これより離れているとき（わらしべで大きな魚が離れた位置から食いついた直後など）だけ
+    /// <see cref="attachSpeed"/> で寄せ、瞬間移動を避ける。
+    /// </summary>
+    private const float BiteHardAttachDistance = 2.0f;
+
+    /// <summary>
     /// レベル不明時のフォールバック用: 捕食できる最小サイズ比（＝「相手と同じ大きさ以上」）。
     ///
     /// 捕食可否は通常 <see cref="Level"/> の差（<see cref="preyMinLevelGap"/>）だけで決まるが、
@@ -1169,8 +1181,9 @@ public class Fish : SEEDScript
         float toZ = bait.z - pos.z;
         float distance = SEED.Mathf.Sqrt(toX * toX + toY * toY + toZ * toZ);
 
-        // 掛かって巻かれている最中に十分詰められたら、ズレを残さず目標点へ揃える
-        if (State == BehaviorState.Bite && distance <= AttachSnapDistance)
+        // 掛かっている最中は、近くに居る限りズレを残さず目標点へ揃える
+        // （ウキが速く動く逃走中も遅れない。遠い場合だけ下の寄せで近づく）
+        if (State == BehaviorState.Bite && distance <= BiteHardAttachDistance)
         {
             transform.Position = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
             return;
@@ -1403,9 +1416,30 @@ public class Fish : SEEDScript
     {
     }
 
-    /// <summary>Update 後の更新。</summary>
+    /// <summary>
+    /// Update 後の更新。掛かっている魚をウキへ<b>もう一度</b>張り付ける。
+    ///
+    /// スクリプトの Update 順は保証されないため、自分の <see cref="UpdateBite"/> が
+    /// 走ったあとに <see cref="FishingController"/> がウキを動かすと、その 1 フレームぶん
+    /// 魚がウキから遅れて描かれる。全員の Update が終わった LateUpdate で最終位置へ
+    /// 揃え直すことで、描画時には必ずウキの真下に居るようにする。
+    /// （近距離の張り付き条件は <see cref="UpdateBite"/> と同じ。）
+    /// </summary>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
+        if (State != BehaviorState.Bite) { return; }
+        if (FishingController.Current is not { IsHooked: true } fc) { return; }
+
+        var pos = transform.Position;
+        var bait = fc.BaitPosition;
+        float toX = bait.x - pos.x;
+        float toY = (bait.y - hookedDepthOffset) - pos.y;
+        float toZ = bait.z - pos.z;
+        float distance = SEED.Mathf.Sqrt(toX * toX + toY * toY + toZ * toZ);
+        if (distance <= BiteHardAttachDistance)
+        {
+            transform.Position = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
+        }
     }
 
     /// <summary>描画フェーズ。</summary>
