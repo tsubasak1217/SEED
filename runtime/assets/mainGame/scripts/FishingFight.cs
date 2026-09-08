@@ -1923,7 +1923,17 @@ public class FishingFight : SEEDScript
 
         // 隙へ入る瞬間に「直前の回答が完璧だったか」を確定させる。
         // 隙の長さ（PhaseBarsOf）がこの結果を読むので、必ず長さの算出より前に評価する。
-        if (next == Phase.Rest) { lastAnswerPerfect = EvaluateAnswerPerfect(); }
+        if (next == Phase.Rest)
+        {
+            lastAnswerPerfect = EvaluateAnswerPerfect();
+            // 回答を締めた瞬間に、そのフレーズの評価（Perfect! / Good!）を画面に出す。
+            // 出す先は FishingController（文言・色を持つ）。回答フェーズを経ずに
+            // 隙へ入る経路（ビート無効のチュートリアル等）はここを通らないので出ない。
+            if (CurrentPhase == Phase.Answer)
+            {
+                FishingController.Current?.ShowFightEvalBanner(lastAnswerPerfect);
+            }
+        }
 
         // 隙（スタン）の出入りを通知する【スタン通知の唯一の場所】。
         // 実際の切り替え（CurrentPhase への代入）より前に「抜ける」ほうを流し、

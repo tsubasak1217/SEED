@@ -999,9 +999,10 @@ public class FishingController : SEEDScript
 
     // ─── バトル評価バナー（Perfect! / Good!）─────────────────────
     //
-    // 釣り上げが決まった瞬間に「今の戦いがどうだったか」を一言で返す。
-    // 出す・見せる・引っ込めるは FightEvalBanner の責務で、
-    // ここが持つのは「どちらの文言を、どの色で、いつ出すか」だけ。
+    // ビートバトルで「出題に回答し終えた瞬間」（回答 → 隙 の切り替わり）に、
+    // その 1 フレーズの出来を一言で返す。呼ぶのは FishingFight（回答の締め）で、
+    // 出す・見せる・引っ込めるは FightEvalBanner の責務。
+    // ここが持つのは「どちらの文言を、どの色で出すか」だけ（釣り上げ時には出さない）。
 
     /// <summary>
     /// 評価バナーのプレハブ（<c>assets://</c> パス）。
@@ -1039,8 +1040,8 @@ public class FishingController : SEEDScript
     /// この間はゲームの見た目が止まらない（ウキも糸もそのまま）ので、
     /// 実時間（<c>Time.UnscaledDeltaTime</c>）で数える。
     /// </summary>
-    [SerializeField(Label = "評価から演出開始までの秒数")]
-    private float fightEvalLeadSeconds = 0.6f;
+    [SerializeField(Label = "釣り上げ確定から演出開始までの秒数")]
+    private float fightEvalLeadSeconds = 0f;
 
     /// <summary>
     /// 評価バナーを出したあと、釣り上げ演出の開始を待っている魚。
@@ -3092,14 +3093,12 @@ public class FishingController : SEEDScript
             // 演出プレゼンタが未設定なら演出を飛ばす（魚を消して移動へ戻すだけ）
             // ウキの位置は演出側の「水面の基準点」になる（魚の跳ね始め・カメラの高さ・
             // しぶきの位置がすべてここから決まる）ので、この瞬間の値を渡す。
-            // 戦いの評価（Perfect! / Good!）をこの瞬間に出す。
-            // fight.EndFight() は上で済ませてあるが、AllExcellent は次の
-            // BeginFight まで保たれる設計なので、ここで読んでよい。
-            ShowFightEvalBanner();
+            // 評価バナー（Perfect! / Good!）は釣り上げ時ではなく、各フレーズの回答が
+            // 締まった瞬間に FishingFight から出している（ShowFightEvalBanner）。
 
             if (presenter is not null)
             {
-                // 評価を読ませる間だけ演出の開始を待つ（待ち時間は UpdateCatching が数える）。
+                // 必要なら演出の開始を少しだけ待つ（待ち時間は UpdateCatching が数える。既定 0）。
                 // 待っている間もウキ・糸は掛かったときのまま残るので、絵が飛ばない。
                 pendingCatchFish = caught;
                 pendingCatchFloatPosition = FloatWorldPosition;
@@ -3127,14 +3126,14 @@ public class FishingController : SEEDScript
     // ─── バトル評価バナー ────────────────────────────────────
 
     /// <summary>
-    /// 戦いの評価（Perfect! / Good!）を出す【評価表示の唯一の場所】。
+    /// 1 フレーズの評価（Perfect! / Good!）を出す【評価表示の唯一の場所】。
     ///
-    /// 判断材料は <see cref="FishingFight.AllExcellent"/> ただ 1 つ。
-    /// やり取り自体が無かった（<see cref="fight"/> 未設定）ときは通常評価にする。
+    /// <see cref="FishingFight"/> が回答フェーズを締めた瞬間（回答 → 隙）に、
+    /// そのフレーズが完璧だったか（全打点 Excellent かつ余分なクリック無し）を渡して呼ぶ。
     /// </summary>
-    private void ShowFightEvalBanner()
+    /// <param name="perfect">直前のフレーズが完璧だったか。</param>
+    public void ShowFightEvalBanner(bool perfect)
     {
-        bool perfect = fight is { } f && f.AllExcellent;
 
         // 第 4 引数は「完璧かどうか」そのもの。バナー側は判断せず、
         // 弾ける粒を金（完璧）と白（通常）のどちらにするかにだけ使う。
