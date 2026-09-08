@@ -31,9 +31,16 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
+use crate::engine::components::text_slots::{
+    DEFAULT_SLOT_COLOR, SlotValue, TextSlotData, TextSlotKind,
+};
+
+use super::color_runs::ColorRuns;
 use super::icon_set;
 use super::image_meta;
 use super::markup::{self, InlineToken};
+use super::slot_format::{clamp_injected, format_number};
+use super::slot_markup::{self, SlotSpec, SlotToken};
 
 // ─── 定数 ──────────────────────────────────────────────────────
 
@@ -225,26 +232,32 @@ fn may_contain_markup(text: &str) -> bool {
 ///   （以降の行分割・描画は正規化後の文字列を基準にする）
 /// - `icon_set_path` が空でもよい（`[img:...]` の直接指定だけは使える）
 pub fn build_doc(content: &str, icon_set_path: &str) -> InlineDoc {
-    // 改行正規化は行分割と同じ 1 関数（text_wrap::normalize_newlines）に集約する。
-    let normalized = super::super::text_wrap::normalize_newlines(content);
+    // スロットを持たない呼び出し（ギズモ・操作ガイド等）の薄いラッパ。
+    // 実装を 1 本に保つため、必ずスロット版へ委譲する。
+    build_doc_with_slots(content, icon_set_path, &[], &[]).0
+}
 
-    // 記法が無い本文はトークン化せず、そのまま返す（大多数の経路）。
-    if !may_contain_markup(&normalized) {
-        return InlineDoc {
-            text: normalized.into_owned(),
-            images: InlineImages::default(),
-        };
+/// 通常テキスト区間へ角括弧記法（`[icon:]` / `[img:]`）を適用して積む。
+///
+/// プレースホルダ記法（波括弧）で切り出した**通常文字の区間だけ**に適用する。
+/// スロットが差し込んだ値はここを通らない（＝再パースされない）。
+fn append_markup_segment(
+    segment: &str,
+    set: Option<&icon_set::IconSet>,
+    set_path: &str,
+    text: &mut String,
+    entries: &mut Vec<(usize, InlineImage)>,
+) {
+    // 角括弧もエスケープも無い区間は解析せずそのまま積む（大多数の経路）。
+    if !may_contain_markup(segment) {
+        text.push_str(segment);
+        return;
     }
-
-    let set = icon_set::load_cached(icon_set_path);
-    let mut text = String::with_capacity(normalized.len());
-    let mut entries: Vec<(usize, InlineImage)> = Vec::new();
-
-    for token in markup::parse_markup(&normalized) {
+    for token in markup::parse_markup(segment) {
         match token {
             InlineToken::Text(s) => text.push_str(&s),
             InlineToken::Icon { name, height_scale } => {
-                let img = resolve_icon(set.as_deref(), icon_set_path, &name, height_scale);
+                let img = resolve_icon(set, set_path, &name, height_scale);
                 entries.push((text.len(), img));
                 text.push(IMAGE_PLACEHOLDER);
             }
@@ -254,11 +267,6 @@ pub fn build_doc(content: &str, icon_set_path: &str) -> InlineDoc {
                 text.push(IMAGE_PLACEHOLDER);
             }
         }
-    }
-
-    InlineDoc {
-        text,
-        images: InlineImages { entries },
     }
 }
 
@@ -394,5 +402,415 @@ mod tests {
         let second = d.text.rfind(IMAGE_PLACEHOLDER).unwrap();
         let t = d.images.truncated(second);
         assert_eq!(t.len(), 1, "2 つ目の画像は落ちる");
+    }
+}
+
+// ============================================================
+//  プレースホルダ記法（スロット）の展開
+//
+//  【この層の位置づけ】
+//  「記法の解析」（`slot_markup`）と「値の解決」（`app::text_expand` の
+//  ValueProvider）の間に立ち、**解決済みの値を受け取って本文へ焼き込む**
+//  純関数だけを置く。ここは World もスクリプトも一切見ない。
+//
+//  【注入値を再パースしない理由】
+//  差し込む文字列にユーザーデータ（プレイヤー名など）が入る以上、
+//  そこに `[` や `{` が含まれても本文の記法として解釈してはならない
+//  （見た目が壊れるだけでなく、意図しない画像読み込みを誘発する）。
+//  そこで注入値は `InlineDoc.text` へ**そのまま**積み、
+//  角括弧記法は「本文の通常文字区間」にだけ適用する。
+// ============================================================
+
+/// スロットのパスを「画像パス直接指定」と判定するための印。
+///
+/// これを含めば assets:// などのスキーム付きパス、含まなければ
+/// アイコンセットのアイコン名として扱う（`[img:]` / `[icon:]` と同じ規則）。
+pub const PATH_SCHEME_MARK: &str = "://";
+
+/// 記法つき本文をスロットの値で展開し、レイアウト用ドキュメントと色区間表を返す。
+///
+/// # 引数
+/// - `content`       : 本文（プレースホルダ記法と角括弧記法を含みうる）
+/// - `icon_set_path` : アイコンセット（.icons）の assets:// パス。空でもよい
+/// - `slots`         : スロット配列（本文の添字で引く）
+/// - `values`        : スロットごとの**解決済みの値**（`slots` と同じ添字）。
+///                     空でもよい（そのときは各スロットのフォールバック値を使う）
+///
+/// # スロットが足りないとき
+/// 添字に対応するスロットが無い場合は「その種類の既定値」で描く
+/// （色 = 既定色 / 画像 = 未解決（1em の空白） / 文字列 = 空 / 数値 = 0）。
+/// スクリプトが本文だけを差し替えた直後でも描画が壊れないようにするため。
+pub fn build_doc_with_slots(
+    content: &str,
+    icon_set_path: &str,
+    slots: &[TextSlotData],
+    values: &[SlotValue],
+) -> (InlineDoc, ColorRuns) {
+    // 改行正規化は行分割と同じ 1 関数（text_wrap::normalize_newlines）に集約する。
+    let normalized = super::super::text_wrap::normalize_newlines(content);
+    let has_bracket = may_contain_markup(&normalized);
+    let has_brace = slot_markup::may_contain_slot_markup(&normalized);
+
+    // どちらの記法も無い本文は解析せずそのまま返す（大多数の経路）。
+    if !has_bracket && !has_brace {
+        return (
+            InlineDoc {
+                text: normalized.into_owned(),
+                images: InlineImages::default(),
+            },
+            ColorRuns::default(),
+        );
+    }
+
+    let set = icon_set::load_cached(icon_set_path);
+    let mut text = String::with_capacity(normalized.len());
+    let mut entries: Vec<(usize, InlineImage)> = Vec::new();
+
+    // 波括弧が無いなら従来経路（角括弧記法だけ）。色区間は生じない。
+    if !has_brace {
+        append_markup_segment(
+            &normalized,
+            set.as_deref(),
+            icon_set_path,
+            &mut text,
+            &mut entries,
+        );
+        return (
+            InlineDoc {
+                text,
+                images: InlineImages { entries },
+            },
+            ColorRuns::default(),
+        );
+    }
+
+    let mut runs: Vec<(Range<usize>, [f32; 4])> = Vec::new();
+    // 開いている色区間（開始バイト位置, 色）。ネストは持たない（確定仕様）。
+    let mut open: Option<(usize, [f32; 4])> = None;
+
+    for token in slot_markup::parse_slot_markup(&normalized) {
+        match token {
+            SlotToken::Text(s) => append_markup_segment(
+                &s,
+                set.as_deref(),
+                icon_set_path,
+                &mut text,
+                &mut entries,
+            ),
+            // 明示的な閉じタグ。ここだけは行末で切らずに指定位置で閉じる。
+            SlotToken::ColorEnd => {
+                if let Some((start, color)) = open.take() {
+                    runs.push((start..text.len(), color));
+                }
+            }
+            SlotToken::Slot(spec) => {
+                let slot = slots.get(spec.index);
+                match spec.kind {
+                    TextSlotKind::Color => {
+                        // ネスト不可: 内側の {color} は前の区間を打ち切る。
+                        // 閉じ忘れとみなして行末規則を適用する。
+                        if let Some((start, color)) = open.take() {
+                            runs.push((start..line_end_from(&text, start), color));
+                        }
+                        let rgba = slot.map(|s| s.rgba).unwrap_or(DEFAULT_SLOT_COLOR);
+                        open = Some((text.len(), rgba));
+                    }
+                    TextSlotKind::Image => {
+                        let path = slot.map(|s| s.path.as_str()).unwrap_or("");
+                        let img =
+                            resolve_slot_image(set.as_deref(), icon_set_path, path, spec.height_scale);
+                        entries.push((text.len(), img));
+                        text.push(IMAGE_PLACEHOLDER);
+                    }
+                    // 文字列・数値は**そのまま**積む（再パースしない）。
+                    TextSlotKind::String | TextSlotKind::Num => {
+                        text.push_str(&injected_text(&spec, values.get(spec.index), slot));
+                    }
+                }
+            }
+        }
+    }
+
+    // 閉じ忘れの色区間は行末（次の改行の直前）まで。改行が無ければ本文末尾まで。
+    if let Some((start, color)) = open.take() {
+        runs.push((start..line_end_from(&text, start), color));
+    }
+
+    (
+        InlineDoc {
+            text,
+            images: InlineImages { entries },
+        },
+        ColorRuns::from_runs(runs),
+    )
+}
+
+/// `start` から見て「その行の終わり」のバイト位置を返す。
+///
+/// 次の改行の直前、無ければ本文の末尾。閉じ忘れの色区間が次の行まで
+/// 染み出さないようにするための規則（確定仕様）。
+fn line_end_from(text: &str, start: usize) -> usize {
+    match text[start..].find('\n') {
+        Some(rel) => start + rel,
+        None => text.len(),
+    }
+}
+
+/// スロットのパス（アイコン名 or 画像パス）を画像へ解決する。
+///
+/// 空文字は「未解決」（描かないが 1em の場所を取る）。
+/// スキーム印を含めば画像パス直接指定、含まなければアイコン名として引く。
+fn resolve_slot_image(
+    set: Option<&icon_set::IconSet>,
+    set_path: &str,
+    path: &str,
+    height_scale: Option<f32>,
+) -> InlineImage {
+    if path.is_empty() {
+        return unresolved();
+    }
+    if path.contains(PATH_SCHEME_MARK) {
+        resolve_image(path, height_scale)
+    } else {
+        resolve_icon(set, set_path, path, height_scale)
+    }
+}
+
+/// 文字列・数値スロットが差し込む文字列を作る。
+///
+/// 優先順位は「解決済みの値 > スロットのフォールバック値」。
+/// 値の型が種類と食い違う場合も落とさずに変換する
+/// （バインド先の型が後から変わっても表示が消えないようにする）。
+/// 最後に必ず `MAX_SLOT_INJECTED_CHARS` で切り詰める。
+fn injected_text(
+    spec: &SlotSpec,
+    value: Option<&SlotValue>,
+    slot: Option<&TextSlotData>,
+) -> String {
+    // フォールバック（スロット自身が持つ値）。スロットが無ければ空 / 0。
+    let fallback = slot.map(|s| s.fallback_value());
+    let value = value.or(fallback.as_ref());
+
+    let raw = match spec.kind {
+        TextSlotKind::Num => {
+            let n = match value {
+                Some(SlotValue::Num(n)) => *n,
+                // 文字列がバインドされていても数値として読めるなら使う。
+                Some(SlotValue::Str(s)) => s.trim().parse::<f32>().unwrap_or_default(),
+                None => f32::default(),
+            };
+            format_number(n, spec.decimals)
+        }
+        _ => match value {
+            Some(SlotValue::Str(s)) => s.clone(),
+            // 数値がバインドされていれば本文の書式で文字列化する。
+            Some(SlotValue::Num(n)) => format_number(*n, spec.decimals),
+            None => String::new(),
+        },
+    };
+    clamp_injected(&raw).into_owned()
+}
+
+// ============================================================
+//  単体テスト（スロット展開）
+//
+//  実ファイルを置けないため「解決できる画像」は作れない。
+//  ここでは *記法 + スロット値 → 本文・画像位置・色区間* の変換規則を検証する。
+// ============================================================
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    /// 種類と値を指定してスロットを 1 件作るヘルパ。
+    fn slot(kind: TextSlotKind) -> TextSlotData {
+        TextSlotData::new_of_kind(kind)
+    }
+
+    /// 記法もスロットも無い本文は従来どおり（ビット互換の確認）。
+    #[test]
+    fn plain_text_is_unchanged() {
+        let (doc, runs) = build_doc_with_slots("ただの文字列", "", &[], &[]);
+        assert_eq!(doc.text, "ただの文字列");
+        assert!(doc.has_no_image());
+        assert!(runs.is_empty());
+        // ラッパ（build_doc）と完全に一致すること。
+        assert_eq!(build_doc("ただの文字列", "").text, doc.text);
+    }
+
+    /// 既知キーワード以外の波括弧は 1 文字も変えずに残る（既存本文の互換）。
+    #[test]
+    fn unknown_braces_are_preserved() {
+        let src = "JSON は {\"a\": 1} です";
+        let (doc, runs) = build_doc_with_slots(src, "", &[], &[]);
+        assert_eq!(doc.text, src);
+        assert!(runs.is_empty());
+    }
+
+    /// 画像スロットは 1 文字の代替文字になり、位置表へ登録される。
+    #[test]
+    fn image_slot_becomes_placeholder() {
+        let mut s = slot(TextSlotKind::Image);
+        s.path = "assets://__no_such_image__.png".into();
+        let (doc, _) = build_doc_with_slots("押す{image}で移動", "", &[s], &[]);
+        assert_eq!(doc.text.matches(IMAGE_PLACEHOLDER).count(), 1);
+        assert_eq!(doc.images.len(), 1);
+        // 未解決でも 1em の場所は取る（レイアウトが崩れない）。
+        let off = doc.text.find(IMAGE_PLACEHOLDER).unwrap();
+        let img = doc.images.get(off).unwrap();
+        assert!(!img.is_drawable());
+        assert_eq!(img.advance_em, UNRESOLVED_ADVANCE_EM);
+    }
+
+    /// スロットが足りなくても描画は壊れない（画像は 1em の空白になる）。
+    #[test]
+    fn missing_slot_falls_back_safely() {
+        let (doc, runs) = build_doc_with_slots("{image}{num}{color}あ", "", &[], &[]);
+        assert_eq!(doc.images.len(), 1);
+        // 数値スロットが無ければ 0 として描く。
+        assert!(doc.text.contains('0'));
+        // 色スロットが無ければ既定色の区間になる（描画は変わらない）。
+        assert_eq!(runs.len(), 1);
+    }
+
+    /// 数値スロットの書式（整数の四捨五入・小数桁）。
+    #[test]
+    fn num_slot_formats_by_content_spec() {
+        let mut s = slot(TextSlotKind::Num);
+        s.num = 2.5;
+        let (doc, _) = build_doc_with_slots("{num}", "", &[s.clone()], &[]);
+        assert_eq!(doc.text, "3", "half-away-from-zero で丸める");
+
+        s.num = 1.23456;
+        let (doc, _) = build_doc_with_slots("{num.3}", "", &[s], &[]);
+        assert_eq!(doc.text, "1.235");
+    }
+
+    /// NaN / 無限大 / 負のゼロが読める表記になる。
+    #[test]
+    fn num_slot_special_values() {
+        for (v, want) in [
+            (f32::NAN, "NaN"),
+            (f32::INFINITY, "∞"),
+            (f32::NEG_INFINITY, "-∞"),
+            (-0.0f32, "0"),
+        ] {
+            let mut s = slot(TextSlotKind::Num);
+            s.num = v;
+            let (doc, _) = build_doc_with_slots("{num}", "", &[s], &[]);
+            assert_eq!(doc.text, want, "{v} の表示");
+        }
+    }
+
+    /// 解決済みの値はスロットのフォールバックより優先される。
+    #[test]
+    fn resolved_value_overrides_fallback() {
+        let mut s = slot(TextSlotKind::Num);
+        s.num = 1.0;
+        let (doc, _) = build_doc_with_slots("{num}", "", &[s], &[SlotValue::Num(9.0)]);
+        assert_eq!(doc.text, "9");
+    }
+
+    /// 注入した値は再パースされない（記法に見える文字がそのまま出る）。
+    #[test]
+    fn injected_value_is_not_reparsed() {
+        let mut s = slot(TextSlotKind::String);
+        s.text = "[icon:key_w] と {num}".into();
+        let (doc, runs) = build_doc_with_slots("{string}", "", &[s], &[]);
+        assert_eq!(doc.text, "[icon:key_w] と {num}");
+        assert!(doc.has_no_image(), "注入値の角括弧は画像にならない");
+        assert!(runs.is_empty());
+    }
+    /// 注入文字列は上限文字数で切り詰められる。
+    #[test]
+    fn injected_value_is_length_capped() {
+        use super::super::slot_format::MAX_SLOT_INJECTED_CHARS;
+        let mut s = slot(TextSlotKind::String);
+        s.text = std::iter::repeat_n('a', MAX_SLOT_INJECTED_CHARS + 50).collect();
+        let (doc, _) = build_doc_with_slots("{string}", "", &[s], &[]);
+        assert_eq!(doc.text.chars().count(), MAX_SLOT_INJECTED_CHARS);
+    }
+
+    /// 色区間は「{color} の位置から {/color} の直前まで」。
+    #[test]
+    fn color_run_covers_explicit_range() {
+        let mut s = slot(TextSlotKind::Color);
+        s.rgba = [1.0, 0.0, 0.0, 1.0];
+        let (doc, runs) = build_doc_with_slots("あ{color}赤{/color}い", "", &[s], &[]);
+        assert_eq!(doc.text, "あ赤い");
+        assert_eq!(runs.len(), 1);
+        let start = "あ".len();
+        let mut c = 0;
+        assert_eq!(runs.color_at(start, &mut c, [1.0; 4]), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(runs.color_at(start - 1, &mut c, [1.0; 4]), [1.0; 4]);
+        assert_eq!(runs.color_at(start + "赤".len(), &mut c, [1.0; 4]), [1.0; 4]);
+    }
+
+    /// 閉じタグを省いたら行末（次の改行の直前）までで打ち切られる。
+    #[test]
+    fn unclosed_color_run_ends_at_line_end() {
+        let mut s = slot(TextSlotKind::Color);
+        s.rgba = [0.0, 1.0, 0.0, 1.0];
+        let (doc, runs) = build_doc_with_slots("{color}あ
+い", "", &[s], &[]);
+        assert_eq!(doc.text, "あ
+い");
+        assert_eq!(runs.len(), 1);
+        let mut c = 0;
+        assert_eq!(runs.color_at(0, &mut c, [1.0; 4]), [0.0, 1.0, 0.0, 1.0], "1 行目は色付き");
+        let second_line = "あ
+".len();
+        assert_eq!(runs.color_at(second_line, &mut c, [1.0; 4]), [1.0; 4], "2 行目は既定色");
+    }
+
+    /// 改行が無ければ本文末尾まで色が続く。
+    #[test]
+    fn unclosed_color_run_reaches_text_end() {
+        let s = slot(TextSlotKind::Color);
+        let (doc, runs) = build_doc_with_slots("{color}あい", "", &[s], &[]);
+        let mut c = 0;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs.color_at(doc.text.len() - 1, &mut c, [0.0; 4]), DEFAULT_SLOT_COLOR);
+    }
+
+    /// ネストは出来ず、内側の {color} が前の区間を打ち切る。
+    #[test]
+    fn nested_color_terminates_previous_run() {
+        let mut a = slot(TextSlotKind::Color);
+        a.rgba = [1.0, 0.0, 0.0, 1.0];
+        let mut b = slot(TextSlotKind::Color);
+        b.rgba = [0.0, 0.0, 1.0, 1.0];
+        let (doc, runs) = build_doc_with_slots("{color}赤{color}青", "", &[a, b], &[]);
+        assert_eq!(doc.text, "赤青");
+        assert_eq!(runs.len(), 2);
+        let mut c = 0;
+        assert_eq!(runs.color_at(0, &mut c, [1.0; 4]), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(runs.color_at("赤".len(), &mut c, [1.0; 4]), [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    /// 番号指定で同じスロットを複数回参照できる。
+    #[test]
+    fn explicit_index_reuses_the_same_slot() {
+        let mut s = slot(TextSlotKind::Num);
+        s.num = 7.0;
+        // 2 つ目は 0 番を参照する（配列長は 2 だが値は 0 番のもの）。
+        let slots = vec![s, TextSlotData::default()];
+        let (doc, _) = build_doc_with_slots("{num}-{num:0}", "", &slots, &[]);
+        assert_eq!(doc.text, "7-7");
+    }
+
+    /// 既存の角括弧記法（[icon:] / [img:]）はプレースホルダと共存する。
+    #[test]
+    fn bracket_markup_still_works_alongside_slots() {
+        let s = slot(TextSlotKind::String);
+        let (doc, _) = build_doc_with_slots("[img:assets://x.png]{string}", "", &[s], &[]);
+        assert_eq!(doc.images.len(), 1, "角括弧の画像は従来どおり解決される");
+    }
+
+    /// 波括弧のエスケープはリテラルの「{」になる。
+    #[test]
+    fn escaped_brace_is_literal() {
+        let (doc, _) = build_doc_with_slots(r"\{num}", "", &[], &[]);
+        assert_eq!(doc.text, "{num}");
     }
 }

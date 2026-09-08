@@ -22,6 +22,7 @@
 //  ここには一切のロジックを持たせない。
 // ============================================================
 
+use crate::engine::components::text_slots::TextSlotData;
 use crate::engine::ecs::Component;
 use serde::{Deserialize, Serialize};
 
@@ -277,6 +278,13 @@ pub struct TextComponentData {
     /// ドロップシャドウのぼかし幅（キャンバスピクセル。0 = シャープ）。
     #[serde(default)]
     pub shadow_softness: f32,
+    /// 差し込みスロット配列（本文のプレースホルダ記法 1 つにつき 1 件）。
+    ///
+    /// 添字は本文の記法が決める（`text_slots::remap_slots` が本文に合わせて
+    /// 組み直す）。スロットを使わない本文では空配列であり、旧 .scene は
+    /// serde の既定値（空）で読める。
+    #[serde(default)]
+    pub slots: Vec<TextSlotData>,
 }
 
 impl Default for TextComponentData {
@@ -301,6 +309,7 @@ impl Default for TextComponentData {
             shadow_offset_y: 0.0,
             shadow_color: default_shadow_color(),
             shadow_softness: MIN_SHADOW_SOFTNESS,
+            slots: Vec::new(),
         }
     }
 }
@@ -373,6 +382,8 @@ pub struct TextComponent {
     pub shadow_color: [f32; 4],
     /// ドロップシャドウのぼかし幅（キャンバスピクセル。0 = シャープ）。
     pub shadow_softness: f32,
+    /// 差し込みスロット配列（本文のプレースホルダ記法 1 つにつき 1 件）。
+    pub slots: Vec<TextSlotData>,
 }
 
 impl TextComponent {
@@ -398,6 +409,7 @@ impl TextComponent {
             shadow_offset_y: data.shadow_offset_y,
             shadow_color: data.shadow_color,
             shadow_softness: data.shadow_softness,
+            slots: data.slots,
         }
     }
 
@@ -429,6 +441,7 @@ impl TextComponent {
             shadow_offset_y: self.shadow_offset_y,
             shadow_color: self.shadow_color,
             shadow_softness: self.shadow_softness,
+            slots: self.slots.clone(),
         }
     }
 }

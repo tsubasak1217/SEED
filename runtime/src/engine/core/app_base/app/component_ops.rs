@@ -502,11 +502,16 @@ impl App {
                     let font_path_json = serde_json::to_string(&d.font_path).unwrap_or_default();
                     // アイコンセット（.icons）のパスも任意文字列なので同様にエスケープする。
                     let icon_set_json = serde_json::to_string(&d.icon_set).unwrap_or_default();
+                    // 差し込みスロット。**書式（小数桁・高さ倍率）は本文が正典**なので、
+                    // 本文を解析して得た記法列とスロット値を突き合わせて送る。
+                    // 記法より配列が長い（明示番号で空いた穴）場合、その要素の
+                    // format / h は「指定なし」を表す既定値になる。
+                    let text_slots_json = text_slots_json(&d.content, &d.slots);
                     // 【キー名】枠・折り返し・太さ・影は serde 名をそのまま使う。
                     // 影の色だけは縁取り（outline_*）と同じ流儀で "shadow_r".."shadow_a" に
                     // 展開する（同一 JSON オブジェクト内でのキー重複を避けるため）。
                     ("TextComponent", format!(
-                        r#","content":{content_json},"font_size":{:.4},"text_r":{:.4},"text_g":{:.4},"text_b":{:.4},"text_a":{:.4},"align":"{}","vertical_align":"{}","line_spacing":{:.4},"text_layer":{},"font_path":{font_path_json},"icon_set":{icon_set_json},"outline_width":{:.4},"outline_r":{:.4},"outline_g":{:.4},"outline_b":{:.4},"outline_a":{:.4},"box_width":{:.4},"box_height":{:.4},"wrap":{},"weight":{:.4},"shadow_offset_x":{:.4},"shadow_offset_y":{:.4},"shadow_r":{:.4},"shadow_g":{:.4},"shadow_b":{:.4},"shadow_a":{:.4},"shadow_softness":{:.4}"#,
+                        r#","content":{content_json},"font_size":{:.4},"text_r":{:.4},"text_g":{:.4},"text_b":{:.4},"text_a":{:.4},"align":"{}","vertical_align":"{}","line_spacing":{:.4},"text_layer":{},"font_path":{font_path_json},"icon_set":{icon_set_json},"outline_width":{:.4},"outline_r":{:.4},"outline_g":{:.4},"outline_b":{:.4},"outline_a":{:.4},"box_width":{:.4},"box_height":{:.4},"wrap":{},"weight":{:.4},"shadow_offset_x":{:.4},"shadow_offset_y":{:.4},"shadow_r":{:.4},"shadow_g":{:.4},"shadow_b":{:.4},"shadow_a":{:.4},"shadow_softness":{:.4},"text_slots":{text_slots_json}"#,
                         d.font_size,
                         d.color[0], d.color[1], d.color[2], d.color[3],
                         d.align.key(), d.vertical_align.key(),
@@ -1693,4 +1698,67 @@ impl App {
             _ => {}
         }
     }
+}
+
+// ─── Text の差し込みスロット JSON ─────────────────────────────
+
+/// 高さ倍率「指定なし」を表す値（インスペクタ側はこの値を既定表示にする）。
+const TEXT_SLOT_NO_HEIGHT: f32 = 0.0;
+
+/// 小数桁「指定なし」を表す値（記法が付いていないスロット）。
+const TEXT_SLOT_NO_FORMAT: i32 = -1;
+
+/// TextComponent の差し込みスロットをインスペクタ向け JSON 配列にする。
+///
+/// 【なぜ本文を再解析するのか】
+/// 種類（kind）・小数桁（format）・高さ倍率（h）は**本文の記法が正典**であり、
+/// スロットデータ側の `kind` は再マッピングのヒントでしかない。
+/// インスペクタが「何を入力させるべきか」を決めるには本文側の情報が要るため、
+/// ここで 1 度だけ解析して両者を突き合わせる（送出は選択時のみで毎フレームではない）。
+///
+/// 各要素の形:
+///   index    … スロットの添字
+///   kind     … 種類（"image" / "color" / "string" / "num"）
+///   format   … 数値の小数桁（記法が無ければ -1）
+///   h        … 画像の高さ倍率（指定が無ければ 0）
+///   path / rgba / bind / text / num … スロットの値
+///   bind_ok  … バインドが解決できるか（ValueProvider の判定と同一）
+fn text_slots_json(
+    content: &str,
+    slots: &[crate::engine::components::text_slots::TextSlotData],
+) -> String {
+    use crate::engine::core::font::inline::slot_markup::slot_specs;
+
+    let specs = slot_specs(content);
+    let mut out = String::from("[");
+    for (index, slot) in slots.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        // 同じ添字を複数の記法が指す場合は最初のものを採用する
+        // （remap_slots の種類決定とまったく同じ規則）。
+        let spec = specs.iter().find(|s| s.index == index);
+        let kind = spec.map(|s| s.kind).unwrap_or(slot.kind);
+        let format = spec
+            .filter(|s| s.kind == crate::engine::components::text_slots::TextSlotKind::Num)
+            .map(|s| s.decimals as i32)
+            .unwrap_or(TEXT_SLOT_NO_FORMAT);
+        let height = spec
+            .and_then(|s| s.height_scale)
+            .unwrap_or(TEXT_SLOT_NO_HEIGHT);
+        // path / bind / text は任意文字列なので必ず serde_json でエスケープする。
+        let path_json = serde_json::to_string(&slot.path).unwrap_or_default();
+        let bind_json = serde_json::to_string(&slot.bind).unwrap_or_default();
+        let text_json = serde_json::to_string(&slot.text).unwrap_or_default();
+        let bind_ok = super::text_expand::slot_bind_resolves(&slot.bind, kind);
+        out.push_str(&format!(
+            r#"{{"index":{index},"kind":"{}","format":{format},"h":{height:.4},"path":{path_json},"rgba":[{:.4},{:.4},{:.4},{:.4}],"bind":{bind_json},"bind_ok":{},"text":{text_json},"num":{:.4}}}"#,
+            kind.key(),
+            slot.rgba[0], slot.rgba[1], slot.rgba[2], slot.rgba[3],
+            bind_ok as u8,
+            slot.num,
+        ));
+    }
+    out.push(']');
+    out
 }

@@ -70,6 +70,8 @@ mod canvas_gizmo_basis;
 mod gizmo_handler;
 /// TextComponent の表示枠（実測）マップ — ピック・選択枠で共有する
 mod canvas_text_bounds;
+/// TextComponent の展開結果（本文＋スロット値 → 描画用ドキュメント）のフレーム内キャッシュ。
+mod text_expand;
 mod pick_2d;
 /// Play 中のキャンバス UI ポインタイベント（OnPointerEnter/Down/Click 等）の判定と配信。
 mod pointer_events;

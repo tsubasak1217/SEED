@@ -25,12 +25,15 @@
 
 use std::collections::HashMap;
 
+use std::rc::Rc;
+
 use crate::engine::components::{CanvasTransform, ComponentKind, TextComponent};
 use crate::engine::core::font::text_layout::{TextLayoutSpec, TextLocalBox};
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 
 use super::App;
+use super::text_expand::{ExpandedText, expanded_for};
 
 /// 1 つの Text スロットの実測結果。
 #[derive(Clone, Copy, Debug)]
@@ -49,13 +52,12 @@ pub(super) type TextBoundsMap = HashMap<Entity, TextBounds>;
 /// 実測に必要な 1 スロットぶんのパラメータ（シーン借用を閉じるための中間表現）。
 struct TextMeasureReq {
     slot_entity: Entity,
-    content: String,
-    font_path: String,
-    /// アイコンセット（.icons）の assets:// パス。空文字 = 未使用。
+    /// 展開済みの本文（記法・スロットを解決したドキュメント）。
     ///
-    /// 本文の `[icon:名前]` を解決してから測るために必要
-    /// （画像は文字と同じく行幅・境界矩形に効く）。
-    icon_set: String,
+    /// 描画（`canvas_text::append_item`）とまったく同じ実体を使うことで、
+    /// 選択枠・クリック判定が見た目と 1px もズレないことを保証する。
+    expanded: Rc<ExpandedText>,
+    font_path: String,
     /// レイアウト条件（サイズ・整列・縁取り・枠・折り返し）。
     spec: TextLayoutSpec,
     /// 所属アクターの正規化ピボット（枠ありのときだけ効く）。
@@ -83,7 +85,7 @@ impl App {
         };
         for r in reqs {
             let Some((bx, pivot_size)) =
-                renderer.resolve_bounds(&r.content, &r.spec, &r.font_path, &r.icon_set)
+                renderer.resolve_bounds(&r.expanded.doc, &r.spec, &r.font_path)
             else {
                 continue;
             };
@@ -132,9 +134,10 @@ fn collect_text_reqs(
         };
         out.push(TextMeasureReq {
             slot_entity: slot.entity,
-            content: tc.content.clone(),
+            // 展開はフレーム内キャッシュ（app::text_expand）が持つ。
+            // ここで再展開しても結果は同じだが、キャッシュ済みならただの参照になる。
+            expanded: expanded_for(slot.entity, tc),
             font_path: tc.font_path.clone(),
-            icon_set: tc.icon_set.clone(),
             spec: TextLayoutSpec {
                 font_size: tc.font_size,
                 line_spacing: tc.line_spacing,

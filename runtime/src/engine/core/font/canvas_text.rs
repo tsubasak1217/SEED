@@ -19,7 +19,9 @@
 //  行幅・ブロック高さを先に測ってから `align` / `vertical_align` のオフセットを適用する。
 // ============================================================
 
-use super::inline::{IMAGE_PLACEHOLDER, InlineImages, build_doc};
+use super::inline::color_runs::ColorRuns;
+use super::inline::doc::InlineDoc;
+use super::inline::{IMAGE_PLACEHOLDER, InlineImages};
 use super::sdf::{outline_px_to_sdf, px_to_sdf};
 use super::text_layout::{
     ResolvedLayout, TextLayoutSpec, TextLocalBox, resolve_layout_with_images,
@@ -35,8 +37,15 @@ use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign};
 /// **GPU 列優先行列**（列 0..2 = 基底、列 3 = 平行移動）。
 /// 単位は「キャンバスピクセル → ワールド」。
 pub struct CanvasTextItem {
-    /// 表示文字列（改行 `\n` で複数行）。
-    pub text: String,
+    /// **展開済み**の本文（記法・スロットの解決が済んだドキュメント）。
+    ///
+    /// 展開は `app::text_expand` が 1 フレームに 1 回だけ行い、
+    /// 実測・インライン画像収集・ここでの頂点生成がすべて同じ結果を共有する
+    /// （3 経路が別々に展開すると、字の位置と画像の位置が食い違う）。
+    pub doc: InlineDoc,
+    /// 本文の色付き区間表（空 = 単色）。**本体の色だけ**を差し替える
+    /// （縁取り・影・インライン画像には効かせない。確定仕様）。
+    pub color_runs: ColorRuns,
     /// フォントサイズ（キャンバスピクセル）。
     pub font_size: f32,
     /// RGBA カラー。
@@ -55,13 +64,6 @@ pub struct CanvasTextItem {
     pub layer: i32,
     /// 使用フォントの assets:// 仮想パス。空文字 = 組み込みフォント。
     pub font_path: String,
-    /// アイコンセット（.icons）の assets:// 仮想パス。空文字 = 未使用。
-    ///
-    /// 本文の `[icon:名前]` 記法をこの表で解決する。
-    /// **画像そのものはここでは描かない**（SDF アトラスは色を持てないため、
-    /// スプライト経路へ回す。`canvas_collect` を参照）。ここで必要なのは
-    /// 「画像がどれだけ場所を取るか」だけで、文字の送り幅に反映される。
-    pub icon_set: String,
     /// 縁取りの太さ（キャンバスピクセル）。0 = 縁取りなし。
     pub outline_width: f32,
     /// 縁取りの色（RGBA 0..1）。
@@ -240,13 +242,12 @@ impl CanvasTextRenderer {
     /// 戻り値の 2 要素目は pivot を掛ける基準サイズ（枠なしは `[0, 0]` ＝ pivot 無効）。
     pub fn resolve_bounds(
         &mut self,
-        text: &str,
+        doc: &InlineDoc,
         spec: &TextLayoutSpec,
         font_path: &str,
-        icon_set: &str,
     ) -> Option<(TextLocalBox, [f32; 2])> {
-        // 記法を解決してから測る（画像はグリフと同じく行幅・境界に効く）。
-        let doc = build_doc(text, icon_set);
+        // 記法・スロットの解決は呼び出し側（app::text_expand）が済ませている。
+        // ここで再展開すると、描画側の結果とズレる余地が生まれる。
         let font_id = self.font.registry.font_id(font_path);
         let font = self.font.registry.font(font_id);
         resolve_layout_with_images(font, &doc.text, spec, &doc.images)
@@ -291,7 +292,7 @@ impl CanvasTextRenderer {
         // 本体が完全透明でも、影が見えるなら描く必要がある。
         let draw_body = item.color[3] > 0.0;
         let draw_shadow = item.has_shadow();
-        if item.text.is_empty() || item.font_size <= 0.0 || (!draw_body && !draw_shadow) {
+        if item.doc.text.is_empty() || item.font_size <= 0.0 || (!draw_body && !draw_shadow) {
             return;
         }
 
@@ -300,10 +301,10 @@ impl CanvasTextRenderer {
         let font_id = self.font.registry.font_id(&item.font_path);
         let font = self.font.registry.font(font_id).clone();
         let spec = item.layout_spec();
-        // 記法（インライン画像）を解決してからレイアウトする。
+        // 記法・スロットは展開済み（app::text_expand）。
         // 画像は 1 文字ぶんの代替文字として本文に埋まり、送り幅だけが効く
         // （画像の絵そのものはスプライト経路が描く）。
-        let doc = build_doc(&item.text, &item.icon_set);
+        let doc = &item.doc;
         let Some(layout) = resolve_layout_with_images(&font, &doc.text, &spec, &doc.images) else {
             return;
         };
@@ -346,6 +347,8 @@ impl CanvasTextRenderer {
                 ],
                 item.font_size,
                 &shadow,
+                // 影は色区間に追従しない（区間ごとに影の色が変わると読みづらい）。
+                None,
                 &item.model,
                 view_proj,
             );
@@ -367,6 +370,8 @@ impl CanvasTextRenderer {
                 pivot_offset,
                 item.font_size,
                 &body,
+                // 本体だけが色区間に従う。空なら従来どおり単色で描かれる。
+                (!item.color_runs.is_empty()).then_some(&item.color_runs),
                 &item.model,
                 view_proj,
             );
@@ -415,6 +420,7 @@ impl CanvasTextRenderer {
                     glyphs.push(PlacedGlyph {
                         info: None,
                         advance,
+                        byte_off: line_start + rel,
                     });
                     continue;
                 }
@@ -430,7 +436,11 @@ impl CanvasTextRenderer {
                 None => self.font.advance_em(font_path, ch) * font_size,
             };
             width += advance;
-            glyphs.push(PlacedGlyph { info, advance });
+            glyphs.push(PlacedGlyph {
+                info,
+                advance,
+                byte_off: line_start + rel,
+            });
         }
         LineLayout { glyphs, width }
     }
@@ -444,6 +454,11 @@ struct PlacedGlyph {
     info: Option<super::atlas::GlyphInfo>,
     /// 次の文字までの送り幅（px）。
     advance: f32,
+    /// この文字が**展開済み本文の何バイト目**から始まるか。
+    ///
+    /// 色付き区間（`ColorRuns`）を引くための鍵。行分割後も本文全体の
+    /// 位置を保持するので、折り返しの有無に関わらず同じ色が出る。
+    byte_off: usize,
 }
 
 /// 1 行ぶんのレイアウト結果。
@@ -464,6 +479,8 @@ struct LineLayout {
 /// - `offset`  : すべてのグリフへ一様に足すローカル平行移動（px）。
 ///   pivot ぶんの移動と、影のオフセットがここに合流する。
 /// - `shading` : 色・縁取り・太さ・ぼかし（クアッド内で定数）。
+/// - `runs`    : 文字色の区間表。`None` = 単色（`shading.color` のまま）。
+///   影・縁取りには渡さない（本体の色だけが区間に従う。確定仕様）。
 #[allow(clippy::too_many_arguments)]
 fn emit_glyph_quads(
     batch: &mut TextBatch,
@@ -472,9 +489,12 @@ fn emit_glyph_quads(
     offset: [f32; 2],
     font_size: f32,
     shading: &GlyphShading,
+    runs: Option<&ColorRuns>,
     model: &[[f32; 4]; 4],
     view_proj: &[[f32; 4]; 4],
 ) {
+    // 色区間の走査位置。本文を先頭から順に舐めるので償却 O(1) で引ける。
+    let mut run_cursor = 0usize;
     for (row, line) in lines.iter().enumerate() {
         // 水平方向の開始 X（行ごとに幅が違うので行単位で決まっている）。
         let base_x = layout.base_x[row] + offset[0];
@@ -487,6 +507,15 @@ fn emit_glyph_quads(
         for placed in &line.glyphs {
             let advance = placed.advance;
             if let Some(info) = placed.info {
+                // 色区間があれば、この文字だけ本体色を差し替える
+                // （縁取り色・太さ・ぼかしは共通のまま = 見た目の一貫性を保つ）。
+                let shading = match runs {
+                    Some(r) => GlyphShading {
+                        color: r.color_at(placed.byte_off, &mut run_cursor, shading.color),
+                        ..*shading
+                    },
+                    None => *shading,
+                };
                 // キャンバスローカル（px）でのクアッド 4 隅。
                 // メトリクスは em 単位なのでフォントサイズを掛けて px にする。
                 let bearing = info.bearing_px(font_size);
@@ -507,7 +536,7 @@ fn emit_glyph_quads(
                     [p00, p10, p11, p01],
                     [info.uv_min[0], info.uv_min[1]],
                     [info.uv_max[0], info.uv_max[1]],
-                    shading,
+                    &shading,
                 );
             }
             pen_x += advance;

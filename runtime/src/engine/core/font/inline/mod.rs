@@ -27,6 +27,8 @@
 //  ディスクを叩き、未解決時は警告ログが溢れる）。
 // ============================================================
 
+/// 本文の色付き区間表（`{color}` の解決結果）。
+pub mod color_runs;
 /// 記法つき本文の解決結果（レイアウトへ渡す中間表現）。
 pub mod doc;
 /// アイコンセット `.icons`（JSON）の定義とローダ。
@@ -37,10 +39,15 @@ pub mod image_meta;
 pub mod markup;
 /// 解決済みレイアウトから画像の配置矩形を求める。
 pub mod placement;
+/// スロット値の書式（数値の丸め・注入文字列の上限）。
+pub mod slot_format;
+/// プレースホルダ記法（波括弧）のパーサ（純関数）。
+pub mod slot_markup;
 
 // 再エクスポートは「レイアウト側が実際に使うもの」だけに絞る。
 // `InlineDoc` / `InlineImage` 型そのものが要る場合は `doc::` から直接参照する。
-pub use doc::{IMAGE_PLACEHOLDER, InlineImages, build_doc};
+pub use color_runs::ColorRuns;
+pub use doc::{IMAGE_PLACEHOLDER, InlineDoc, InlineImages, build_doc, build_doc_with_slots};
 pub use icon_set::ICON_SET_EXTENSION;
 pub use placement::{InlineImageRect, collect_image_rects};
 

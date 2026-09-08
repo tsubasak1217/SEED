@@ -46,6 +46,7 @@ pub mod control_point_component;
 pub mod line_renderer_component;
 /// キャンバス用テキスト表示（HUD の数値・ラベル。SDF フォント描画を流用）
 pub mod text_component;
+pub mod text_slots;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -90,6 +91,10 @@ pub use control_point_component::{
 };
 pub use line_renderer_component::{
     LineRendererComponent, LineRendererComponentData, MAX_LINE_POINTS,
+};
+pub use text_slots::{
+    SlotValue, TextSlotData, TextSlotKind, remap_slots,
+    DEFAULT_SLOT_COLOR, DEFAULT_SLOT_NUM, SLOT_COLOR_COMPONENTS,
 };
 pub use text_component::{
     TextComponent, TextComponentData, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS,

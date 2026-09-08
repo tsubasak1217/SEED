@@ -6,6 +6,8 @@
 //  Undo は `field_edit.rs` の共通機構が担当するので、ここでは記録しない。
 // ============================================================
 
+use crate::engine::components::text_slots::remap_slots;
+use crate::engine::core::font::inline::slot_markup::slot_specs;
 use crate::engine::components::{
     ComponentKind, TextAlign, TextComponent, TextVerticalAlign, MAX_BOX_SIZE, MAX_OUTLINE_WIDTH,
     MAX_SHADOW_OFFSET, MAX_SHADOW_SOFTNESS, MAX_TEXT_WEIGHT, MIN_BOX_SIZE, MIN_OUTLINE_WIDTH,
@@ -64,10 +66,23 @@ impl App {
             return;
         };
 
+        // ── 差し込みスロット（slot.{添字}.{フィールド}）─────────
+        // 本文の記法とは別系統のキーなので、通常フィールドより先に捌く。
+        if let Some((index, field)) = parse_slot_key(key) {
+            apply_slot_field(tc, index, field, value);
+            return;
+        }
+
         match key {
             // 表示文字列。改行はインスペクタ側で "\n" のリテラル 2 文字に
             // エスケープして送られる（IPC は 1 行 1 コマンドのため生の改行を送れない）。
-            "content" => tc.content = unescape_content(value),
+            //
+            // **本文が正典**なので、更新のたびにスロット配列を記法へ合わせて
+            // 組み直す（種類が一致する既存値だけが引き継がれる）。
+            "content" => {
+                tc.content = unescape_content(value);
+                tc.slots = remap_slots(&tc.slots, &slot_specs(&tc.content));
+            }
             // 使用フォントのアセットパス。パスに改行は入らないので
             // content のようなエスケープ解除は行わず、そのまま格納する。
             // 空文字 = 組み込みフォントへ戻す、という意味を持つ。
@@ -137,6 +152,54 @@ impl App {
                 }
             }
         }
+    }
+}
+
+// ─── 差し込みスロットのフィールド更新 ─────────────────────────
+
+/// スロットフィールドのキー接頭辞（`slot.0.num` の `slot.`）。
+const SLOT_KEY_PREFIX: &str = "slot.";
+
+/// スロットのフィールドキーを `(添字, フィールド名)` へ割る。
+///
+/// 形は `slot.{添字}.{フィールド}` のみ。添字が数字でない・区切りが足りない
+/// といった壊れたキーは `None`（＝通常フィールドとして扱われ、最終的に無視される）。
+fn parse_slot_key(key: &str) -> Option<(usize, &str)> {
+    let rest = key.strip_prefix(SLOT_KEY_PREFIX)?;
+    let (index, field) = rest.split_once('.')?;
+    if field.is_empty() || !index.chars().all(|c| c.is_ascii_digit()) || index.is_empty() {
+        return None;
+    }
+    Some((index.parse::<usize>().ok()?, field))
+}
+
+/// スロット 1 件のフィールドを更新する。
+///
+/// 添字が範囲外・値がパースできない場合は**何もしない**
+/// （インスペクタと本文の同期が一瞬ずれても既存値を壊さない）。
+/// 配列そのものの伸縮は本文（`content`）の更新だけが行う。
+fn apply_slot_field(tc: &mut TextComponent, index: usize, field: &str, value: &str) {
+    let Some(slot) = tc.slots.get_mut(index) else { return };
+    match field {
+        // 画像パス / アイコン名。パスに改行は入らないのでエスケープ解除しない。
+        "path" => slot.path = value.to_string(),
+        // バインド先（"アクタ名|スロット名|変数名"）。同上。
+        "bind" => slot.bind = value.to_string(),
+        // フォールバック文字列だけは改行を含みうるので content と同じ規則で解く。
+        "text" => slot.text = unescape_content(value),
+        "rgba" => {
+            if let Some(rgba) = parse_rgba(value) {
+                slot.rgba = rgba;
+            }
+        }
+        // NaN / 無限大もそのまま受ける（表示側が読める表記へ変換する）。
+        "num" => {
+            if let Ok(v) = value.parse::<f32>() {
+                slot.num = v;
+            }
+        }
+        // 未知のフィールドは無視（typo で値を消さない）。
+        _ => {}
     }
 }
 
@@ -292,5 +355,76 @@ mod tests {
         assert_eq!(clamp_numeric_field("box_width", "abc"), None);
         assert_eq!(clamp_numeric_field("content", "12"), None);
         assert_eq!(clamp_numeric_field("unknown_key", "12"), None);
+    }
+
+    /// スロットキーが (添字, フィールド名) へ割れる。
+    #[test]
+    fn parses_slot_keys() {
+        assert_eq!(parse_slot_key("slot.0.num"), Some((0, "num")));
+        assert_eq!(parse_slot_key("slot.12.rgba"), Some((12, "rgba")));
+        assert_eq!(parse_slot_key("slot.3.bind"), Some((3, "bind")));
+    }
+
+    /// 形が違うキーは None（通常フィールドと衝突しない）。
+    #[test]
+    fn rejects_malformed_slot_keys() {
+        for key in [
+            "slot.", "slot.0", "slot..num", "slot.x.num", "slots.0.num", "content", "font_size",
+        ] {
+            assert_eq!(parse_slot_key(key), None, "{key}");
+        }
+    }
+
+    /// スロットの各フィールドが更新され、不正値は既存値を保つ。
+    #[test]
+    fn applies_slot_fields_and_keeps_existing_on_bad_input() {
+        use crate::engine::components::text_slots::{TextSlotData, TextSlotKind};
+        let mut tc = TextComponent::default();
+        tc.slots = vec![TextSlotData::new_of_kind(TextSlotKind::Num)];
+
+        apply_slot_field(&mut tc, 0, "num", "12.5");
+        assert_eq!(tc.slots[0].num, 12.5);
+        apply_slot_field(&mut tc, 0, "num", "abc");
+        assert_eq!(tc.slots[0].num, 12.5, "数値にできない入力は既存値を保つ");
+
+        apply_slot_field(&mut tc, 0, "rgba", "1,0.5,0,1");
+        assert_eq!(tc.slots[0].rgba, [1.0, 0.5, 0.0, 1.0]);
+        apply_slot_field(&mut tc, 0, "rgba", "1,0,0");
+        assert_eq!(tc.slots[0].rgba, [1.0, 0.5, 0.0, 1.0], "要素数違いは無視");
+
+        apply_slot_field(&mut tc, 0, "path", "assets://ui/coin.png");
+        assert_eq!(tc.slots[0].path, "assets://ui/coin.png");
+        apply_slot_field(&mut tc, 0, "bind", "Player|Status|hp");
+        assert_eq!(tc.slots[0].bind, "Player|Status|hp");
+    }
+
+    /// text フィールドだけは改行エスケープを解く（content と同じ規則）。
+    #[test]
+    fn slot_text_unescapes_newlines() {
+        use crate::engine::components::text_slots::{TextSlotData, TextSlotKind};
+        let mut tc = TextComponent::default();
+        tc.slots = vec![TextSlotData::new_of_kind(TextSlotKind::String)];
+        apply_slot_field(&mut tc, 0, "text", r"1 行目\n2 行目");
+        assert_eq!(tc.slots[0].text, "1 行目\n2 行目");
+    }
+
+    /// 範囲外の添字は何もしない（配列は本文の更新だけが伸縮させる）。
+    #[test]
+    fn out_of_range_index_is_ignored() {
+        let mut tc = TextComponent::default();
+        assert!(tc.slots.is_empty());
+        apply_slot_field(&mut tc, 5, "num", "1");
+        assert!(tc.slots.is_empty(), "配列は伸びない");
+    }
+
+    /// 未知のフィールド名は無視される。
+    #[test]
+    fn unknown_slot_field_is_ignored() {
+        use crate::engine::components::text_slots::{TextSlotData, TextSlotKind};
+        let mut tc = TextComponent::default();
+        tc.slots = vec![TextSlotData::new_of_kind(TextSlotKind::Num)];
+        let before = tc.slots[0].clone();
+        apply_slot_field(&mut tc, 0, "nope", "1");
+        assert_eq!(tc.slots[0], before);
     }
 }

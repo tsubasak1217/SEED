@@ -1611,6 +1611,10 @@ impl App {
         // テキストの選択枠用にブロック寸法を実測する。フォントレジストリの可変借用が
         // 要るため、シーンを不変借用する描画ブロックへ入る前にここで表を作る
         // （ピック側 pick_2d と同じ build_text_bounds_map ＝ 枠とクリック判定が一致する）。
+        // 本文とスロットの展開はエディタ・Play を問わず要る（描画が使う）ので、
+        // 実測より前に必ず 1 回だけ更新する。以降のフレーム内では
+        // canvas_collect / canvas_text がこの結果を表引きするだけになる。
+        self.build_text_expand_map();
         let text_bounds_pre = if in_editor {
             self.build_text_bounds_map()
         } else {

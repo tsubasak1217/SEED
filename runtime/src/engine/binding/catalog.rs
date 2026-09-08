@@ -35,6 +35,12 @@ pub enum BindableValueType {
     F32,
     /// 3 成分ベクタ（WGSL の `vec3<f32>`。色・位置・スケール）。
     Vec3,
+    /// 文字列（WGSL には対応する型が無く、テキスト表示専用）。
+    ///
+    /// 数値と違って `vec4` へ詰められないため、`components()` は 0 を返し、
+    /// `read_builtin` の対象にもならない（組込コンポーネントは文字列を供給しない）。
+    /// テキストの差し込みスロットが要求する型として使う。
+    Str,
 }
 
 /// 供給値・要求値を運ぶ内部表現の成分数（`vec4` 固定）。
@@ -52,6 +58,8 @@ impl BindableValueType {
         match self {
             BindableValueType::F32  => 1,
             BindableValueType::Vec3 => 3,
+            // 文字列は float 成分を持たない（成分数での照合対象外）。
+            BindableValueType::Str  => 0,
         }
     }
 
@@ -60,6 +68,7 @@ impl BindableValueType {
         match self {
             BindableValueType::F32  => "f32",
             BindableValueType::Vec3 => "vec3",
+            BindableValueType::Str  => "str",
         }
     }
 
@@ -68,6 +77,7 @@ impl BindableValueType {
         match text {
             "f32"  => Some(BindableValueType::F32),
             "vec3" => Some(BindableValueType::Vec3),
+            "str"  => Some(BindableValueType::Str),
             _      => None,
         }
     }

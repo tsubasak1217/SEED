@@ -30,7 +30,7 @@
 
 use crate::engine::components::{
     CameraComponent, CanvasComponent, CanvasViewportRef, ComponentKind, ScriptComponent,
-    WaterLinkComponent,
+    TextComponent, WaterLinkComponent,
     WaterVolumeComponent, SkinnedSpriteComponent,
 };
 use crate::engine::binding::resolve::{format_binding, parse_binding};
@@ -218,6 +218,14 @@ fn rewrite_refs_in_slots(
                     }
                 }
             }
+            // ── テキストの差し込みスロットのバインド（値は 3 要素形式）──
+            // シェーダの `@ref` バインドとまったく同じ書式なので、
+            // 書き換え規則も同じ 1 本（rewrite_bindings_actor_name と同流儀）を使う。
+            ComponentKind::Text => {
+                if let Some(t) = world.get_mut::<TextComponent>(slot.entity) {
+                    any |= rewrite_text_slot_binds(t, old_name, new_name);
+                }
+            }
             // ── アクタ名参照を持たない種別（明示列挙） ──────────────
             ComponentKind::Model
             | ComponentKind::Placeholder
@@ -239,12 +247,32 @@ fn rewrite_refs_in_slots(
             | ComponentKind::CoverEmitter
             | ComponentKind::ControlPoint
             // 3D ポリラインは点列と色しか持たず、アクター名参照は無い。
-            | ComponentKind::LineRenderer
-            // テキストは文字列と見た目の設定しか持たず、アクター名参照は無い。
-            | ComponentKind::Text => {}
+            | ComponentKind::LineRenderer => {}
         }
     }
 
+    any
+}
+
+/// TextComponent の差し込みスロットのバインド先を新名へ書き換える。
+///
+/// `rewrite_bindings_actor_name` と同じ規則:
+/// **1 要素目（アクタ名）だけ**を見て、一致したものだけを差し替える
+/// （スロット名・変数名がたまたま旧名と同じでも巻き添えにしない）。
+/// 新しい名前が区切り文字を含む等で組み立てられない場合は書き換えない。
+fn rewrite_text_slot_binds(tc: &mut TextComponent, old_name: &str, new_name: &str) -> bool {
+    let mut any = false;
+    for slot in tc.slots.iter_mut() {
+        let Some(target) = parse_binding(&slot.bind) else { continue };
+        if target.actor != old_name {
+            continue;
+        }
+        let Some(next) = format_binding(new_name, &target.slot, &target.variable) else {
+            continue;
+        };
+        slot.bind = next;
+        any = true;
+    }
     any
 }
 
@@ -436,5 +464,67 @@ mod tests {
         let changed = t.propagate(0, "RiverPath", "NewPath");
 
         assert_eq!(changed, vec![1], "子アクタの DFS ID は 1（preorder）");
+    }
+
+    /// Text の差し込みスロットのバインドがアクタ改名に追従すること。
+    #[test]
+    fn text_slot_binds_follow_rename() {
+        use crate::engine::components::text_slots::{TextSlotData, TextSlotKind};
+
+        let mut t = TestWorld::new();
+        let mut hud = t.make_actor("HUD", 0);
+        let slot_entity = t.world.spawn();
+        let mut tc = TextComponent::default();
+        tc.content = "HP {num} / MP {num}".to_string();
+        tc.slots = vec![
+            // 1 本目: 改名対象を指す（書き換わるべき）
+            TextSlotData {
+                kind: TextSlotKind::Num,
+                bind: "Player|Status|hp".into(),
+                ..Default::default()
+            },
+            // 2 本目: 別アクタを指す（巻き添えにしない）
+            TextSlotData {
+                kind: TextSlotKind::Num,
+                bind: "Enemy|Status|hp".into(),
+                ..Default::default()
+            },
+        ];
+        t.world.insert(slot_entity, tc);
+        hud.add_slot_typed::<TextComponent>("TextComponent", ComponentKind::Text, slot_entity);
+        t.actors.push(hud);
+
+        let changed = t.propagate(0, "Player", "Hero");
+
+        assert_eq!(changed, vec![0]);
+        let tc = t.world.get::<TextComponent>(slot_entity).unwrap();
+        assert_eq!(tc.slots[0].bind, "Hero|Status|hp");
+        assert_eq!(tc.slots[1].bind, "Enemy|Status|hp", "別アクタ参照は変わらない");
+    }
+
+    /// スロット名・変数名がたまたま旧アクタ名と同じでも巻き添えにしないこと。
+    #[test]
+    fn text_slot_binds_only_match_the_actor_element() {
+        use crate::engine::components::text_slots::{TextSlotData, TextSlotKind};
+
+        let mut t = TestWorld::new();
+        let mut hud = t.make_actor("HUD", 0);
+        let slot_entity = t.world.spawn();
+        let mut tc = TextComponent::default();
+        // 2 要素目（スロット名）が旧名と同じ。書き換えてはならない。
+        tc.slots = vec![TextSlotData {
+            kind: TextSlotKind::Num,
+            bind: "Enemy|Player|hp".into(),
+            ..Default::default()
+        }];
+        t.world.insert(slot_entity, tc);
+        hud.add_slot_typed::<TextComponent>("TextComponent", ComponentKind::Text, slot_entity);
+        t.actors.push(hud);
+
+        let changed = t.propagate(0, "Player", "Hero");
+
+        assert!(changed.is_empty());
+        let tc = t.world.get::<TextComponent>(slot_entity).unwrap();
+        assert_eq!(tc.slots[0].bind, "Enemy|Player|hp");
     }
 }

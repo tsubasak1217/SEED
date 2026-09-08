@@ -39,6 +39,7 @@ use crate::engine::components::{
     ComponentKind, ControlPointComponent, InputMapComponent, ScriptComponent,
     LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
     SkyboxComponent, SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform,
+    remap_slots,
     WaterLinkComponent, WaterVolumeComponent, MAX_LINE_POINTS, SKY_ADJUST_MAX, SKY_ADJUST_MIN,
     SKY_HUE_SHIFT_MAX_DEG, SKY_HUE_SHIFT_MIN_DEG,
 };
@@ -956,7 +957,19 @@ fn read_floats(
                 "shadow_softness" => put(out, &[t.shadow_softness]),
                 // 描画優先度レイヤー（i32 → f32 変換して返す。Sprite の layer と同様）
                 "layer"        => put(out, &[t.layer as f32]),
-                _              => None,
+                // 差し込みスロットの件数（本文の記法が決めるので read のみ）
+                "slot_count"   => put(out, &[t.slots.len() as f32]),
+                // 差し込みスロットの数値フィールド（slot.{添字}.rgba / .num）。
+                // 添字が範囲外・未知のフィールドは None（C# 側は既定値へ落ちる）。
+                _ => {
+                    let (index, field) = parse_slot_field_key(field)?;
+                    let slot = t.slots.get(index)?;
+                    match field {
+                        "rgba" => put(out, &slot.rgba),
+                        "num"  => put(out, &[slot.num]),
+                        _      => None,
+                    }
+                }
             }
         }
         // ── メッシュ変形スキニング 2D スプライト（スロット格納型: locate で解決）──
@@ -1352,7 +1365,18 @@ fn write_floats(
                 "shadow_softness" => take::<1>(v).map(|a| t.shadow_softness = a[0]).is_some(),
                 // 描画優先度レイヤー（f32 → i32 変換して格納。Sprite の layer と同様）
                 "layer"        => take::<1>(v).map(|a| t.layer = a[0] as i32).is_some(),
-                _              => false,
+                // 差し込みスロットの数値フィールド（slot.{添字}.rgba / .num）。
+                // 配列の伸縮は本文（content）の更新だけが行うので、
+                // 範囲外の添字は false を返して既存状態を一切変えない。
+                _ => {
+                    let Some((index, field)) = parse_slot_field_key(field) else { return false };
+                    let Some(slot) = t.slots.get_mut(index) else { return false };
+                    match field {
+                        "rgba" => take(v).map(|a| slot.rgba = a).is_some(),
+                        "num"  => take::<1>(v).map(|a| slot.num = a[0]).is_some(),
+                        _      => false,
+                    }
+                }
             }
         }
         // ── メッシュ変形スキニング 2D スプライト（スロット格納型: locate で解決）──
@@ -1613,7 +1637,17 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
                 "font_path"      => Some(t.font_path.clone()),
                 // アイコンセット（.icons）の assets:// パス（空文字 = 未使用）
                 "icon_set"       => Some(t.icon_set.clone()),
-                _                => None,
+                // 差し込みスロットの文字列フィールド（slot.{添字}.path / .text / .bind）
+                _ => {
+                    let (index, field) = parse_slot_field_key(field)?;
+                    let slot = t.slots.get(index)?;
+                    match field {
+                        "path" => Some(slot.path.clone()),
+                        "text" => Some(slot.text.clone()),
+                        "bind" => Some(slot.bind.clone()),
+                        _      => None,
+                    }
+                }
             }
         }
         "SkinnedSprite" => {
@@ -1692,7 +1726,17 @@ fn write_string(
             let Some(e) = locate::<TextComponent>(world, entity) else { return false };
             let Some(t) = world.get_mut::<TextComponent>(e) else { return false };
             match field {
-                "content" => { t.content = value.to_string(); true }
+                // 本文が正典。スクリプトが本文を差し替えたときも、記法に合わせて
+                // スロット配列を組み直す（種類が一致する値だけが引き継がれるので、
+                // 毎フレーム同じ本文を書いても値は安定する）。
+                "content" => {
+                    t.content = value.to_string();
+                    t.slots = remap_slots(
+                        &t.slots,
+                        &crate::engine::core::font::inline::slot_markup::slot_specs(&t.content),
+                    );
+                    true
+                }
                 // 使用フォントの assets:// パス（空文字 = 組み込みフォントへ戻す）
                 "font_path" => { t.font_path = value.to_string(); true }
                 // アイコンセット（.icons）の assets:// パス（空文字 = 未使用へ戻す）
@@ -1706,7 +1750,18 @@ fn write_string(
                     Some(a) => { t.vertical_align = a; true }
                     None    => false,
                 },
-                _ => false,
+                // 差し込みスロットの文字列フィールド（slot.{添字}.path / .text）。
+                // bind は書き込み不可（バインド先の付け替えはエディタの操作であり、
+                // スクリプトから変えると保存されたシーンと実行時が食い違う）。
+                _ => {
+                    let Some((index, field)) = parse_slot_field_key(field) else { return false };
+                    let Some(slot) = t.slots.get_mut(index) else { return false };
+                    match field {
+                        "path" => { slot.path = value.to_string(); true }
+                        "text" => { slot.text = value.to_string(); true }
+                        _      => false,
+                    }
+                }
             }
         }
         "Audio" => {
@@ -3645,4 +3700,49 @@ mod tests {
         });
     }
 
+}
+
+// ─── Text の差し込みスロットのキー解析 ────────────────────────
+
+/// スロットフィールドのキー接頭辞（`slot.0.num` の `slot.`）。
+///
+/// IPC（`text_ops::SLOT_KEY_PREFIX`）とまったく同じ綴りにすること。
+/// スクリプトとインスペクタで別のキーを使うと、docs と実装が乖離する。
+const SCRIPT_SLOT_KEY_PREFIX: &str = "slot.";
+
+/// `slot.{添字}.{フィールド}` を `(添字, フィールド名)` へ割る。
+///
+/// 形が違う・添字が数字でない場合は `None`（＝未知フィールド扱い）。
+fn parse_slot_field_key(field: &str) -> Option<(usize, &str)> {
+    let rest = field.strip_prefix(SCRIPT_SLOT_KEY_PREFIX)?;
+    let (index, name) = rest.split_once('.')?;
+    if index.is_empty() || name.is_empty() || !index.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((index.parse::<usize>().ok()?, name))
+}
+
+// ============================================================
+//  単体テスト（スロットキーの解析は純関数）
+// ============================================================
+
+#[cfg(test)]
+mod slot_key_tests {
+    use super::parse_slot_field_key;
+
+    /// 正しい形のキーが (添字, フィールド名) へ割れる。
+    #[test]
+    fn parses_well_formed_keys() {
+        assert_eq!(parse_slot_field_key("slot.0.num"), Some((0, "num")));
+        assert_eq!(parse_slot_field_key("slot.12.rgba"), Some((12, "rgba")));
+        assert_eq!(parse_slot_field_key("slot.3.path"), Some((3, "path")));
+    }
+
+    /// 形が違うキーは None（既存フィールドと衝突しない）。
+    #[test]
+    fn rejects_malformed_keys() {
+        for key in ["slot.", "slot.0", "slot..num", "slot.x.num", "slots.0.num", "content"] {
+            assert_eq!(parse_slot_field_key(key), None, "{key}");
+        }
+    }
 }

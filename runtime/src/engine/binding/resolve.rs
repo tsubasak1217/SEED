@@ -118,6 +118,12 @@ pub fn resolve_binding(
     target:     &BindingTarget,
     want:       BindableValueType,
 ) -> Option<[f32; BINDING_VALUE_COMPONENTS]> {
+    // 文字列型の供給値はまだ存在しない（組込カタログにも [Bindable] にも無い）。
+    // 先に弾いておかないと、成分数 0 で FFI を叩く無意味な呼び出しが走る。
+    // 文字列バインドの解決は後続タスクでここへ実装を足す。
+    if want == BindableValueType::Str {
+        return None;
+    }
     let actor = find_actor_by_name(actors, world_line, &target.actor)?;
 
     // ── ① アクタのルート直付け（Transform）─────────────────

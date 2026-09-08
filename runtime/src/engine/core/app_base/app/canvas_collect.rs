@@ -19,8 +19,8 @@ use crate::engine::components::{
     SkinnedSpriteComponent, SpriteComponent, TextComponent, Transform as ActorTransform,
 };
 use crate::engine::core::font::canvas_text::CanvasTextItem;
-use crate::engine::core::font::inline::markup::TOKEN_OPEN as INLINE_MARKUP_OPEN;
-use crate::engine::core::font::inline::{build_doc, collect_image_rects};
+use crate::engine::core::font::inline::collect_image_rects;
+use crate::engine::core::font::inline::doc::InlineDoc;
 use crate::engine::core::font::layout_fonts;
 use crate::engine::core::font::text_layout::{TextLayoutSpec, resolve_layout_with_images};
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
@@ -35,6 +35,7 @@ use crate::engine::methods::drawer::{
 use crate::engine::methods::gizmo_interact::mat4x4_mul;
 use crate::engine::structs::objects::Actor;
 use super::canvas_text_bounds::TextBoundsMap;
+use super::text_expand::expanded_for;
 
 /// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
 /// mod.rs の CANVAS_WORLD_SCALE と同値。
@@ -606,6 +607,9 @@ pub(super) fn resolve_sprite_texture(
 pub(super) fn collect_inline_image_sprites(
     draw_ctx: &DrawContext,
     tc: &TextComponent,
+    // 展開済みの本文（app::text_expand が作った、描画とまったく同じ実体）。
+    // ここで再展開しないことで、グリフと画像の位置が構造的にズレない。
+    doc: &InlineDoc,
     text_local_rs: [[f32; 4]; 4],
     pivot: [f32; 2],
     canvas_scale: f32,
@@ -613,12 +617,9 @@ pub(super) fn collect_inline_image_sprites(
     zone: CanvasDrawZone,
     out: &mut Vec<SpriteDrawItem>,
 ) {
-    // 記法の入口（角括弧）を含まない本文は解析すら行わない（大多数の経路）。
-    if tc.font_size <= 0.0 || !tc.content.contains(INLINE_MARKUP_OPEN) {
-        return;
-    }
-    let doc = build_doc(&tc.content, &tc.icon_set);
-    if doc.images.is_empty() {
+    // 画像を 1 つも含まない本文（大多数）はここで終わる。
+    // 展開は呼び出し側のキャッシュ済みなので、この判定に追加コストは無い。
+    if tc.font_size <= 0.0 || doc.images.is_empty() {
         return;
     }
     // レイアウトは描画側とまったく同じ純関数で解く（位置がズレない要）。
@@ -1178,9 +1179,13 @@ pub(super) fn collect_sprite_items(
 
                 // 本文に埋め込まれたインライン画像を**スプライト**として積む
                 // （テキストと同じレイヤー値・同じゾーンで共通ソートに乗る）。
+                // 本文とスロットの展開結果（フレーム内キャッシュ）。
+                // インライン画像の収集とテキスト頂点生成が同じ実体を共有する。
+                let expanded = expanded_for(slot.entity, tc);
                 collect_inline_image_sprites(
                     draw_ctx,
                     tc,
+                    &expanded.doc,
                     text_local_rs,
                     text_pivot,
                     canvas_scale,
@@ -1189,7 +1194,8 @@ pub(super) fn collect_sprite_items(
                     out,
                 );
                 text_out.push(CanvasTextItem {
-                    text: tc.content.clone(),
+                    doc: expanded.doc.clone(),
+                    color_runs: expanded.runs.clone(),
                     // フォントサイズは**素の値**を渡す。キャンバスの拡縮
                     // （size_scale_x/y）は上の to_mesh_mat4 が行列側で効かせるため、
                     // ここで掛けると二重にスケールされる。
@@ -1204,8 +1210,6 @@ pub(super) fn collect_sprite_items(
                     // フォント指定と縁取りはコンポーネントの値をそのまま渡す
                     // （フォントの読み込みは描画側の FontRegistry がキャッシュする）。
                     font_path: tc.font_path.clone(),
-                    // アイコンセット（[icon:名前] の解決表）。
-                    icon_set: tc.icon_set.clone(),
                     outline_width: tc.outline_width,
                     outline_color: tc.outline_color,
                     // 枠・折り返し（0 = 枠なし = 従来レイアウト）
