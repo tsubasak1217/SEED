@@ -405,10 +405,14 @@ public class ResultPanel : SEEDScript
         ResolveReferences();
         SetContent(newRecordText, newRecordLabel);
 
-        // 出すまでは隠す（シーン上で visible=true のまま保存されていても必ず隠れる）
+        // 出すまでは隠す（シーン上で visible=true のまま保存されていても必ず隠れる）。
+        // スケールはここで 0 にする。プレハブ／シーンには原寸（1）で保存しておき、
+        // エディタの編集画面では原寸のまま見えるようにする（保存値 0 だと編集画面で消えて見える）。
         phase = PanelPhase.Hidden;
         phaseElapsed = 0f;
         SetRegisteredVisible(false);
+        ApplyBodyScale(MinScale);
+        ApplyRegisteredScale(MinScale);
         panelRoot.Visible = false;
 
         // 生成フォールバック経由なら、預かっていた内容でそのまま表示へ入る
