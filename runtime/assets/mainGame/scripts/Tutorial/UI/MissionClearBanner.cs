@@ -23,7 +23,15 @@ using SEEDEditor.Scripting;
 ///   MissionClearText        … Text（「ミッションクリア！」）
 ///
 /// 【時間軸】
-/// すべて実時間（Time.UnscaledDeltaTime）。バナー表示中はゲーム時間を止めるため。
+/// スクリプト側のタイマー（timer の加算・IsConfirmPressed の判定）は
+/// すべて実時間（Time.UnscaledDeltaTime）で進む。これはバナー表示中に
+/// ゲーム時間を止める（Time.Scale = 0）ミッションでも決定待ちが機能するようにするため。
+///
+/// ただし Animator（<see cref="useAnimator"/> = true 時）はスケール後の
+/// ゲーム時間で進む別系統のため、Time.Scale = 0 の間は動かない。
+/// そのため <see cref="TutorialDirector"/> は <see cref="WillUseAnimator"/> を見て、
+/// Animator 演出になる見込みのときはバナー表示中も時間を止めない
+/// （決定操作以外の入力は InputGate 側で塞ぐ）。
 /// </summary>
 public class MissionClearBanner : SEEDScript
 {
@@ -46,6 +54,9 @@ public class MissionClearBanner : SEEDScript
 
     /// <summary>バナーに出す既定の文字列。</summary>
     private const string DefaultBannerText = "ミッションクリア！";
+
+    /// <summary>Animator に再生させる既定のクリップ名。</summary>
+    private const string DefaultAnimatorClipName = "mission_clear";
 
     /// <summary>進捗が 1 のときの値。</summary>
     private const float ProgressComplete = 1f;
@@ -106,6 +117,20 @@ public class MissionClearBanner : SEEDScript
     [SerializeField(Label = "退場の秒数", Tooltip = "閉じるときに縮んで消えるまでの秒数")]
     public float disappearSeconds = DefaultDisappearSeconds;
 
+    // ─── Animator 演出 ──────────────────────────────────────
+    // シーン側の MissionClearBanner には AnimatorComponent（クリップ mission_clear）が
+    // 付いている。true のときは Show（Play）で Animator にクリップ演出を任せ、
+    // スクリプトの EaseOutBack 伸縮（ApplyRootScale）は行わない
+    // （同じ CanvasTransform を二重に書き換えて演出が壊れるのを避けるため）。
+
+    /// <summary>true なら Animator にクリップ演出を任せる（false なら常にスクリプト演出）。</summary>
+    [Header("Animator 演出"), SerializeField(Label = "Animator を使う", Tooltip = "true: Animator のクリップで演出（CanvasTransform はスクリプトで触らない） / false: 従来のスクリプト伸縮演出")]
+    public bool useAnimator = true;
+
+    /// <summary>再生する Animator クリップ名（Animator の clips に登録済みの名前）。</summary>
+    [SerializeField(Label = "クリップ名", Tooltip = "Animator に再生させるクリップ名。見つからない場合は従来のスクリプト演出にフォールバックする")]
+    public string clipName = DefaultAnimatorClipName;
+
     // ─── 内部状態 ────────────────────────────────────────────
 
     /// <summary>現在の表示段階。</summary>
@@ -116,6 +141,16 @@ public class MissionClearBanner : SEEDScript
 
     /// <summary>閉じ切ったことを 1 回だけ外へ知らせるためのフラグ。</summary>
     private bool finished;
+
+    /// <summary>
+    /// 今回の表示で Animator による演出が実際に有効になっているか。
+    /// true の間は CanvasTransform を Animator に委ねるため、
+    /// 各段階の更新ではスクリプト側の ApplyRootScale を呼ばない。
+    /// </summary>
+    private bool animatorActive;
+
+    /// <summary>Animator 未検出・クリップ未検出によるフォールバック警告を出し済みか（連投防止）。</summary>
+    private bool animatorFallbackWarned;
 
     /// <summary>シーンで設定された帯の色（初回だけ控える）。</summary>
     private SEED.Color bgBaseColor;
@@ -181,6 +216,20 @@ public class MissionClearBanner : SEEDScript
     public bool IsPlaying => state != BannerState.Hidden;
 
     /// <summary>
+    /// 次に <see cref="Play"/> したとき Animator 演出になる見込みか。
+    ///
+    /// <see cref="TutorialDirector"/> が「バナー表示中にゲーム時間を止めてよいか」を
+    /// 判断するために参照する。Animator の再生位置はスケール後のゲーム時間で進むため
+    /// （engine 側 AnimationSystem は SEED.Time.DeltaTime と同源の delta で駆動する）、
+    /// Time.Scale を 0 にすると Animator ごと止まってしまう。
+    ///
+    /// クリップが実際に見つかるかは Play を呼ぶまで確定しないため、ここでは
+    /// 「Animator コンポーネントが付いていて useAnimator が有効か」だけを見る
+    /// （クリップ未検出時のフォールバックは Play 内で判定する）。
+    /// </summary>
+    public bool WillUseAnimator => useAnimator && ResolveAnimator() is { } anim && anim.IsValid;
+
+    /// <summary>
     /// 閉じ切ったか【進行側が「次へ進んでよい」と判断する唯一の合図】。
     /// 一度 true を返すと自動的に降ろされるので、毎フレーム問い合わせてよい。
     /// </summary>
@@ -206,9 +255,66 @@ public class MissionClearBanner : SEEDScript
         state    = BannerState.Appearing;
         timer    = 0f;
 
+        // Animator 側で隠していた場合（HideImmediate で Visible=false にしたケース）に
+        // 備えて、表示の入口では必ず可視へ戻す。
+        // gameObject はアクセスのたびに struct を new する読み取り専用プロパティなので、
+        // 戻り値へ直接プロパティを書き込めない（CS1612）。ローカル変数に受けてから書く。
+        var selfObject = gameObject;
+        selfObject.Visible = true;
+
         ApplyAlpha(AlphaScaleVisible);
-        ApplyRootScale(ScaleZero);
+
+        animatorActive = TryStartAnimator();
+        if (!animatorActive)
+        {
+            // Animator を使わない・使えない場合は従来どおりスクリプトで畳んだ状態から始める。
+            ApplyRootScale(ScaleZero);
+        }
+        // animatorActive == true の間は CanvasTransform を Animator に委ねるため、
+        // ここでは触らない（Update 側の各段階でも同様にスキップする）。
     }
+
+    /// <summary>
+    /// Animator でのクリップ再生を試みる【Animator 演出の唯一の開始点】。
+    /// </summary>
+    /// <returns>実際に再生を開始できたら true（呼び出し側はスクリプト演出をスキップしてよい）。</returns>
+    private bool TryStartAnimator()
+    {
+        if (!useAnimator) { return false; }
+
+        if (ResolveAnimator() is not { } anim || !anim.IsValid)
+        {
+            WarnAnimatorFallbackOnce("Animator コンポーネントが見つからないため");
+            return false;
+        }
+
+        anim.Play(clipName);
+
+        // Play は未登録・未ロードのクリップ名を渡されると警告ログを出すだけで無視する
+        // （例外は発生しない）ため、実際に再生が始まったかを IsPlaying / CurrentClip で
+        // 確かめてからフォールバックの要否を判定する。
+        if (!anim.IsPlaying || anim.CurrentClip != clipName)
+        {
+            WarnAnimatorFallbackOnce($"クリップ '{clipName}' が見つからないため");
+            return false;
+        }
+
+        animatorFallbackWarned = false; // 次に失敗したときまた警告できるようにリセット
+        return true;
+    }
+
+    /// <summary>Animator が使えずスクリプト演出へフォールバックしたことを 1 回だけログに残す。</summary>
+    /// <param name="reason">フォールバックした理由（ログの前段に付ける）。</param>
+    private void WarnAnimatorFallbackOnce(string reason)
+    {
+        if (animatorFallbackWarned) { return; }
+        animatorFallbackWarned = true;
+        SEED.Debug.LogWarning($"[MissionClearBanner] {reason}、従来のスクリプト演出にフォールバックします。");
+    }
+
+    /// <summary>アタッチされている Animator コンポーネントを解決する（無ければ null）。</summary>
+    private SEED.Animator? ResolveAnimator()
+        => gameObject.GetComponent<SEED.Animator>();
 
     /// <summary>
     /// バナーを演出なしで即座に畳む（チュートリアルの打ち切り・破棄時に使う）。
@@ -224,11 +330,16 @@ public class MissionClearBanner : SEEDScript
     /// <summary>出現演出（勢いよく出て少し行き過ぎてから収まる）。</summary>
     private void UpdateAppearing()
     {
-        ApplyRootScale(Easing.OutBack(Easing.Progress01(timer, appearSeconds)));
+        // animatorActive の間は CanvasTransform を Animator が書き換えているため、
+        // スクリプト側の伸縮（ApplyRootScale）は行わない（二重書き換えの競合防止）。
+        if (!animatorActive)
+        {
+            ApplyRootScale(Easing.OutBack(Easing.Progress01(timer, appearSeconds)));
+        }
 
         if (timer < SEED.Mathf.Max(appearSeconds, 0f)) { return; }
 
-        ApplyRootScale(ProgressComplete);
+        if (!animatorActive) { ApplyRootScale(ProgressComplete); }
         state = BannerState.Holding;
         timer = 0f;
     }
@@ -236,7 +347,8 @@ public class MissionClearBanner : SEEDScript
     /// <summary>一拍置いている最中（決定は受け付けない）。</summary>
     private void UpdateHolding()
     {
-        ApplyRootScale(ProgressComplete);
+        // Animator 使用時はクリップ側（loop_mode=loop）がここも動かし続けるので触らない。
+        if (!animatorActive) { ApplyRootScale(ProgressComplete); }
 
         if (timer < SEED.Mathf.Max(holdSeconds, 0f)) { return; }
 
@@ -247,7 +359,7 @@ public class MissionClearBanner : SEEDScript
     /// <summary>決定待ち（押されたら退場演出へ）。</summary>
     private void UpdateWaiting()
     {
-        ApplyRootScale(ProgressComplete);
+        if (!animatorActive) { ApplyRootScale(ProgressComplete); }
 
         if (!IsConfirmPressed()) { return; }
 
@@ -258,8 +370,14 @@ public class MissionClearBanner : SEEDScript
     /// <summary>退場演出（縮んで消え、閉じ切ったら合図を立てる）。</summary>
     private void UpdateDisappearing()
     {
-        float remain = ProgressComplete - Easing.Progress01(timer, disappearSeconds);
-        ApplyRootScale(Easing.InCubic(remain));
+        // Animator 使用時は退場の縮小演出をスクリプトでは行わない
+        // （mission_clear クリップに退場演出は無いため、disappearSeconds は
+        // 「決定してから実際に消えるまでの間」としてだけ機能する）。
+        if (!animatorActive)
+        {
+            float remain = ProgressComplete - Easing.Progress01(timer, disappearSeconds);
+            ApplyRootScale(Easing.InCubic(remain));
+        }
 
         if (timer < SEED.Mathf.Max(disappearSeconds, 0f)) { return; }
 
@@ -295,7 +413,23 @@ public class MissionClearBanner : SEEDScript
         timer = 0f;
 
         ApplyAlpha(AlphaScaleHidden);
-        ApplyRootScale(ScaleZero);
+
+        if (animatorActive && ResolveAnimator() is { } anim && anim.IsValid)
+        {
+            // Animator を停止して再生位置を先頭（time=0）へ戻す。次回 Play で
+            // 改めて頭から再生されるようにするため。CanvasTransform の値は
+            // Stop 後は書き換えられなくなるが、直後に Visible=false で隠すため問題ない。
+            anim.Stop();
+            var selfObject = gameObject;
+            selfObject.Visible = false;
+        }
+        else
+        {
+            // フォールバック演出（スクリプト伸縮）を使っていた場合は従来どおり畳んでおく。
+            ApplyRootScale(ScaleZero);
+        }
+
+        animatorActive = false;
     }
 
     /// <summary>

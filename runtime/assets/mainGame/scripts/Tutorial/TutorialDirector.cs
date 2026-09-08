@@ -591,7 +591,18 @@ public class TutorialDirector : SEEDScript
         // バナーを読ませるあいだはゲームを止める（背後で釣りが進んで状況が変わらないように）
         // 達成バナー中に時間を止めるかはミッションごとの設定に従う
         // （釣りの最中でないミッションまで止めると画面が固まって見える）
-        SEED.Time.Scale = missions[missionIndex].pauseOnClear ? TimeScalePaused : TimeScaleNormal;
+        //
+        // ただし MissionClearBanner が Animator でクリップ演出をする場合は例外。
+        // Animator の再生位置はスケール後のゲーム時間（engine 側 AnimationSystem が
+        // 使う dt はスクリプトの SEED.Time.DeltaTime と同源）で進むため、
+        // Time.Scale = 0 にすると Animator ごと止まってバナーが動かなくなってしまう。
+        // そのため Animator 演出になる見込みのときは時間を止めず、決定操作以外の
+        // 入力を直後の InputGate.DenyAll() で塞ぐことだけで裏側の進行を抑える
+        // （skipClearBanner でバナー自体を出さない場合はこの配慮は不要）。
+        bool bannerWillPlay      = !missions[missionIndex].skipClearBanner;
+        bool bannerUsesAnimator  = bannerWillPlay && (banner?.WillUseAnimator ?? false);
+        bool shouldPauseForClear = missions[missionIndex].pauseOnClear && !bannerUsesAnimator;
+        SEED.Time.Scale = shouldPauseForClear ? TimeScalePaused : TimeScaleNormal;
         InputGate.DenyAll();
 
         SEED.Debug.Log($"[Tutorial] ミッション {missionIndex + 1}「{missions[missionIndex].title}」を達成");

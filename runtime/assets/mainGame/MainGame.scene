@@ -4792,9 +4792,11 @@
                     "bannerLabel": "ミッションクリア！",
                     "bannerText": "MissionClearText|Text",
                     "bgSprite": "MissionClearBg|Sprite",
+                    "clipName": "mission_clear",
                     "disappearSeconds": "0.180",
                     "holdSeconds": "0.600",
-                    "rootTransform": "MissionClearBanner"
+                    "rootTransform": "MissionClearBanner",
+                    "useAnimator": "true"
                   }
                 }
               }
@@ -4814,7 +4816,7 @@
                     }
                   ],
                   "default_clip": "",
-                  "play_on_start": true,
+                  "play_on_start": false,
                   "speed": 1.0,
                   "default_fade_seconds": 0.0
                 }
