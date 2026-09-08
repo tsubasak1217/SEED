@@ -1710,6 +1710,7 @@ public class CameraMove : SEEDScript
 - **`IsValid` は「参照先が今も生きているか」**を意味します。未解決（アクタが見つからない）・破棄済みのどちらでも `false` になります。
 - 非 Nullable（`T`）で宣言した参照は未設定でも null にならず、**`IsValid == false` の無効ハンドル**になります。
 - `IsValid` はライフサイクル関数の中でのみ意味のある値を返します（コンストラクタ等、エンジンの実行フェーズ外では常に `false`）。
+- **一度も値を入れていないハンドル（`default` / 未初期化の静的フィールド）は `IsValid == false`** です。`SEED.GameObject menuRoot;` のように宣言しただけの変数を「まだ生成していない」判定に使って構いません（`if (!menuRoot.IsValid) { menuRoot = SEED.GameObject.Instantiate(...); }`）。
 
 **インスペクタでの設定方法**
 

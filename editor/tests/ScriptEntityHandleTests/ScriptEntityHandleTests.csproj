@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    スクリプト API のエンティティハンドル（SEED.Entity）の有効判定の単体テスト。
+
+    ComponentCatalogTests / SpriteRigTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート
+         → NuGet の追加取得なしで `dotnet run` だけで回せる
+      2. SEEDScripting 本体（ランタイム FFI に依存）を参照せず、対象ソースをリンクで取り込む
+         → Entity.cs が FFI へ依存し始めた瞬間に本テストがビルドできなくなる
+           （＝識別子の型が実行環境から独立していることの検知器）
+
+    本テストの主目的は「default(Entity) は無効」という不変条件の固定。
+    ランタイムの世代カウンタは 0 始まりのため (index=0, generation=0) は実在しうる
+    エンティティであり、インデックス値だけでは未束縛と区別できない。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ScriptEntityHandle</RootNamespace>
+    <AssemblyName>ScriptEntityHandleTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（スクリプト API のエンティティ識別子） -->
+    <Compile Include="..\..\..\scripting\src\Api\Entity.cs">
+      <Link>Linked\Entity.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>
