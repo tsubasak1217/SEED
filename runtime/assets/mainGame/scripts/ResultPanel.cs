@@ -99,6 +99,16 @@ public class ResultPanel : SEEDScript
         /// <summary>ランクの表示文字列（例「ランク S」。組み立て済み）。</summary>
         public readonly string RankText;
 
+        /// <summary>
+        /// <b>素の</b>サイズランク文字（<c>"S"</c> / <c>"A"</c> / <c>"B"</c> / <c>"C"</c>）。
+        ///
+        /// <see cref="RankText"/> は「ランク S」のように接頭辞やラベルを付けた
+        /// <b>見せるための文字列</b>なので、そこからランクを切り出すのは書式変更に弱い。
+        /// 配色（ランクごとの文字色）は<b>素のランク文字</b>で引くため、
+        /// 見せる文字列とは別にこちらを運ぶ。
+        /// </summary>
+        public readonly string RankKey;
+
         /// <summary>図鑑画像の <c>assets://</c> パス（空なら単色のままにする）。</summary>
         public readonly string ImagePath;
 
@@ -113,17 +123,19 @@ public class ResultPanel : SEEDScript
         /// <param name="sizeText">サイズの表示文字列。</param>
         /// <param name="bestText">自己ベストの表示文字列。</param>
         /// <param name="rankText">ランクの表示文字列。</param>
+        /// <param name="rankKey">素のサイズランク文字（配色に使う）。</param>
         /// <param name="imagePath">図鑑画像の assets:// パス。</param>
         /// <param name="newRecord">ベストを更新したか。</param>
         /// <param name="firstCatch">その魚種の初捕獲か。</param>
         public ResultData(
-            string name, string sizeText, string bestText, string rankText,
+            string name, string sizeText, string bestText, string rankText, string rankKey,
             string imagePath, bool newRecord, bool firstCatch)
         {
             Name = name;
             SizeText = sizeText;
             BestText = bestText;
             RankText = rankText;
+            RankKey = rankKey;
             ImagePath = imagePath;
             NewRecord = newRecord;
             FirstCatch = firstCatch;
@@ -263,6 +275,34 @@ public class ResultPanel : SEEDScript
     [SerializeField(Label = "画像が無いときのテクスチャ")]
     private string fallbackImagePath = "assets://mainGame/textures/ui/white.png";
 
+    // ─── インスペクタ設定（ランク配色）────────────────────────
+    //
+    // ランクの色は図鑑カード（ZukanCard）と揃える必要があるので、
+    // 「ランク文字 → 4 色のどれか」の選択は共通の RankColorTable に任せ、
+    // 色そのもの（16 進カラーコード）だけをここで持つ。
+    // 16 進文字列で持つ理由は UiColorUtil のクラスコメントを参照
+    // （SEED.Color / SEED.Vector3 の [SerializeField] はインスペクタで編集できない）。
+
+    /// <summary>ランク S の文字色（16 進カラーコード）。既定は金。</summary>
+    [Header("ランク配色（図鑑カードと揃える）"), SerializeField(Label = "Sの色(16進)")]
+    private string rankColorS = "#FFD54A";
+
+    /// <summary>ランク A の文字色（16 進カラーコード）。既定は珊瑚色。</summary>
+    [SerializeField(Label = "Aの色(16進)")]
+    private string rankColorA = "#FF7A6B";
+
+    /// <summary>ランク B の文字色（16 進カラーコード）。既定は若草色。</summary>
+    [SerializeField(Label = "Bの色(16進)")]
+    private string rankColorB = "#7CE38B";
+
+    /// <summary>ランク C の文字色（16 進カラーコード）。既定は水色。</summary>
+    [SerializeField(Label = "Cの色(16進)")]
+    private string rankColorC = "#8FD3FF";
+
+    /// <summary>ランクが未記録・想定外だったときの文字色（16 進カラーコード）。既定は生成り。</summary>
+    [SerializeField(Label = "ランク不明の色(16進)")]
+    private string rankColorUnknown = "#FFF5DB";
+
     // ─── インスペクタ設定（演出）──────────────────────────────
 
     /// <summary>本体が 0 → 原寸へ膨らむ秒数（easeOutBack・実時間）。</summary>
@@ -344,6 +384,21 @@ public class ResultPanel : SEEDScript
     /// <summary>新記録の Text（解決失敗なら null）。</summary>
     private SEED.Text? newRecordText;
 
+    /// <summary>
+    /// 新記録テキストを持つ<b>アクタ</b>（解決失敗なら無効ハンドル）。
+    ///
+    /// <b>なぜ Text だけでなくアクタも持つのか</b>: 文字の<b>影</b>（<c>shadow_*</c>）は
+    /// 文字本体の色のアルファとは独立に描かれる。ランタイムの文字描画
+    /// （<c>runtime/src/engine/core/font/canvas_text.rs</c> の <c>append_item</c>）は
+    /// 「本体が完全透明でも、影が見えるなら描く」という設計になっており、
+    /// 影のアルファは <c>shadow_color</c> だけで決まる。
+    /// そのため<b>アルファ 0 で隠したはずの「New Record!!」の影だけが画面に残る</b>。
+    ///
+    /// 隠す正典は<b>アクタの <c>Visible</c></b> にする（描画そのものを止めるので
+    /// 本体も影も確実に消える）。アルファ 0 は保険として併用する。
+    /// </summary>
+    private SEED.GameObject newRecordRoot;
+
     /// <summary>操作案内の Text（解決失敗なら null）。</summary>
     private SEED.Text? promptText;
 
@@ -422,6 +477,8 @@ public class ResultPanel : SEEDScript
 
         ResolveReferences();
         SetContent(newRecordText, newRecordLabel);
+        // 出すまでは影ごと消しておく（アルファ 0 では影が残るため Visible で消す）
+        SetNewRecordVisible(false);
 
         // 出すまでは隠す（シーン上で visible=true のまま保存されていても必ず隠れる）。
         // スケールはここで 0 にする。プレハブ／シーンには原寸（1）で保存しておき、
@@ -655,13 +712,16 @@ public class ResultPanel : SEEDScript
         SetContent(sizeText, data.SizeText);
         SetContent(bestText, data.BestText);
         SetContent(rankText, data.RankText);
+        ApplyRankColor();
         SetContent(promptText, promptLabel);
         SetTextAlpha(promptText, AlphaOpaque);
 
-        // 新記録は「新記録のときだけ」出す。出さないときは完全に透明にする
-        // （点滅の更新もフェーズ側で見送るので、透明のまま残る）。
+        // 新記録は「新記録のときだけ」出す。
+        // 出さないときはアクタごと非表示にする（アルファ 0 だけだと影が残るため。
+        // 詳細は newRecordRoot のコメントを参照）。アルファ 0 も保険として併用する。
         SetContent(newRecordText, newRecordLabel);
         SetTextAlpha(newRecordText, data.NewRecord ? AlphaOpaque : AlphaClear);
+        SetNewRecordVisible(data.NewRecord);
 
         ApplyFishImage();
     }
@@ -768,6 +828,7 @@ public class ResultPanel : SEEDScript
         bestText      = ResolveText(bestPath);
         rankText      = ResolveText(rankPath);
         newRecordText = ResolveText(newRecordPath);
+        newRecordRoot = ResolveActor(newRecordPath);
         promptText    = ResolveText(promptPath);
     }
 
@@ -850,6 +911,36 @@ public class ResultPanel : SEEDScript
     {
         float span = SEED.Mathf.Max(seconds, 0f);
         return span <= DivideEpsilon ? 1f : SEED.Mathf.Clamped01(phaseElapsed / span);
+    }
+
+    /// <summary>
+    /// ランクのテキストを、サイズランクに対応した色で塗る
+    /// 【リザルト側のランク配色の唯一の場所】。
+    ///
+    /// 対応表（ランク文字 → どの色か）は図鑑カードと共有する
+    /// <see cref="RankColorTable"/> に任せ、ここは色の実体（16 進文字列）を渡すだけ。
+    /// アルファは触らない（パネルのフェードが所有しているため）。
+    /// </summary>
+    private void ApplyRankColor()
+    {
+        string hex = RankColorTable.Select(
+            data.RankKey, rankColorS, rankColorA, rankColorB, rankColorC, rankColorUnknown);
+        UiColorUtil.ApplyRgb(rankText, hex);
+    }
+
+    /// <summary>
+    /// 新記録テキストのアクタを表示／非表示にする【影ごと消すための唯一の入口】。
+    /// 解決できていなければ何もしない。
+    /// </summary>
+    /// <param name="visible">表示するなら true。</param>
+    private void SetNewRecordVisible(bool visible)
+    {
+        // GameObject はプロパティ経由だと構造体のコピーへ書くことになる（CS1612）ため
+        // ローカルへ受けてから設定する。Visible の setter は FFI 呼び出しなので
+        // コピー経由でも意味は変わらない。
+        var root = newRecordRoot;
+        if (!root.IsValid) { return; }
+        root.Visible = visible;
     }
 
     /// <summary>テキストへ文言を設定する（未設定・破棄済みなら何もしない）。</summary>

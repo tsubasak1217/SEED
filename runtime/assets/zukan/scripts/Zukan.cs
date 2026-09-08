@@ -49,6 +49,17 @@ public class Zukan : SEEDScript
     /// <summary>カードを左右対称に並べるための中心係数（(n-1)/2 の 2）。</summary>
     private const float CenteringDivisor = 2f;
 
+    /// <summary>
+    /// デバッグコマンド名: 釣果記録（図鑑）を全消しする。
+    /// <c>seed_script_debug(name:"records_reset")</c> で叩く（引数は不要）。
+    /// 釣りシーン側（<c>FishingController</c>）も同じ名前で登録しており、
+    /// どちらのシーンに居ても同じ 1 手で図鑑を初期状態へ戻せる。
+    /// </summary>
+    private const string DebugCommandRecordsReset = "records_reset";
+
+    /// <summary>長押し判定を「押していない」に戻すときの経過秒。</summary>
+    private const float HoldElapsedNone = 0f;
+
     // ─── 静的アクセサ ────────────────────────────────────────
 
     /// <summary>実行中のインスタンス（矢印スプライトのクリックから呼ぶ）。</summary>
@@ -88,6 +99,35 @@ public class Zukan : SEEDScript
     [SerializeField(Label = "既定の戻り先シーン")]
     private string defaultReturnScene = "title";
 
+    // ─── インスペクタ設定（デバッグ）───────────────────────────
+
+    /// <summary>
+    /// 図鑑を初期状態へ戻すデバッグ用のキー【開発中の確認用。製品では無効化する】。
+    ///
+    /// 「未捕獲のシルエット」「初捕獲の演出」は一度釣ると二度と確認できないため、
+    /// 図鑑を見ながらその場で戻せる口を用意する。
+    /// </summary>
+    [Header("デバッグ"), SerializeField(Label = "図鑑リセットのキー")]
+    private SEED.KeyCode debugResetKey = SEED.KeyCode.F12;
+
+    /// <summary>
+    /// <see cref="debugResetKey"/> を消去が実行されるまで押し続ける必要のある秒数。
+    ///
+    /// <b>なぜ長押しなのか</b>: 釣果はやり直しの効かないデータで、
+    /// 単押しだと「図鑑を見ていたら手が滑って全部消えた」が起こり得る。
+    /// 押し続けを必須にすることで、意図しない実行をほぼ確実に防ぐ。
+    /// 0 以下にすると単押しで消える（自己責任）。
+    /// </summary>
+    [SerializeField(Label = "図鑑リセットの長押し秒数")]
+    private float debugResetHoldSeconds = 1.5f;
+
+    /// <summary>
+    /// リセットを実行したあと操作案内へ出す文言（<c>{0}</c> に削除したキーの本数が入る）。
+    /// 空にすると案内を書き換えない。
+    /// </summary>
+    [SerializeField(Label = "リセット後の案内")]
+    private string debugResetDoneLabel = "図鑑をリセットしました（削除 {0} 件）";
+
     // ─── 参照（インスペクタで結線）─────────────────────────────
 
     /// <summary>見出しのテキスト。</summary>
@@ -113,6 +153,12 @@ public class Zukan : SEEDScript
 
     /// <summary>いま表示しているページ（＝魚レベル）。</summary>
     private int currentLevel = FirstLevel;
+
+    /// <summary>
+    /// <see cref="debugResetKey"/> を押し続けている秒数（実時間）。
+    /// 離した瞬間に 0 へ戻すので、断続的に押しても貯まらない。
+    /// </summary>
+    private float debugResetHeldSeconds = HoldElapsedNone;
 
     /// <summary>
     /// 最初のページ組み立てがまだ済んでいないか。
@@ -144,11 +190,16 @@ public class Zukan : SEEDScript
         currentLevel = FirstLevel;
         // 実際の組み立ては最初の Update で行う（pageDirty の説明を参照）
         pageDirty = true;
+
+        // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
+        SEED.Debug.OnCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
     }
 
     /// <summary>破棄時の後始末。静的アクセサを取り消す。</summary>
     public override void OnDestroy()
     {
+        // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
+        SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
         if (ReferenceEquals(Current, this)) { Current = null; }
     }
 
@@ -173,6 +224,61 @@ public class Zukan : SEEDScript
         if (SEED.Input.GetKeyDown(SEED.KeyCode.Escape) || SEED.Input.GetKeyDown(SEED.KeyCode.B))
         {
             LeaveZukan();
+        }
+
+        UpdateDebugReset();
+    }
+
+    // ─── デバッグ（釣果リセット）──────────────────────────────
+
+    /// <summary>
+    /// 図鑑リセットの長押しを進める【キー操作からのリセットの唯一の場所】。
+    ///
+    /// 押し続けている間だけ秒を貯め、<see cref="debugResetHoldSeconds"/> に達した
+    /// <b>その 1 フレームだけ</b>実行する（達したあとは押しっぱなしでも二度実行しない）。
+    /// 途中で離すと貯めた秒は捨てる。時間は実時間（<c>UnscaledDeltaTime</c>）で数える
+    /// （図鑑はゲーム時間を止めていることがあるため）。
+    /// </summary>
+    private void UpdateDebugReset()
+    {
+        if (!SEED.Input.GetKey(debugResetKey))
+        {
+            debugResetHeldSeconds = HoldElapsedNone;
+            return;
+        }
+
+        // 必要秒数に達した瞬間だけ実行したいので、加算の前後で境界をまたいだかを見る
+        float required = SEED.Mathf.Max(debugResetHoldSeconds, HoldElapsedNone);
+        float before = debugResetHeldSeconds;
+        debugResetHeldSeconds += SEED.Time.UnscaledDeltaTime;
+
+        if (before >= required || debugResetHeldSeconds < required) { return; }
+
+        ExecuteRecordsReset();
+    }
+
+    /// <summary>
+    /// <see cref="DebugCommandRecordsReset"/> のハンドラ。
+    /// </summary>
+    /// <param name="arg">引数（使わない）。</param>
+    private void HandleRecordsResetCommand(string arg) => ExecuteRecordsReset();
+
+    /// <summary>
+    /// 釣果記録を消してページを組み直す【リセット実行の唯一の実装】。
+    /// キー長押しとデバッグコマンドの両方がここへ集まる。
+    /// </summary>
+    private void ExecuteRecordsReset()
+    {
+        int deleted = FishRecords.ResetAll();
+        SEED.Debug.Log($"[Zukan] 釣果記録を消去した（削除キー {deleted} 本）");
+
+        // 消したら見えている内容も即座に未捕獲へ戻す（次のページ送りを待たせない）
+        BuildPage();
+
+        // 実行できたことを画面でも分かるようにする（新しいアクタは足さず操作案内を流用する）
+        if (!string.IsNullOrEmpty(debugResetDoneLabel))
+        {
+            SetContent(hintText, string.Format(debugResetDoneLabel, deleted));
         }
     }
 

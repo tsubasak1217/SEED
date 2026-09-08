@@ -180,6 +180,43 @@ public static class FishRecords
         return new CatchRecordResult(firstCatch, isNewRecord, previousBest);
     }
 
+    // ─── 消去（デバッグ・ニューゲーム用）─────────────────────
+
+    /// <summary>
+    /// 図鑑に載る全魚種の釣果を消す【釣果リセットの唯一の入口】。
+    ///
+    /// 消すのは <c>FishCatalog.Entries</c> に載っている魚種の
+    /// <see cref="BestSizeKeyPrefix"/> / <see cref="BestRankKeyPrefix"/> /
+    /// <see cref="CatchCountKeyPrefix"/> の 3 キーだけで、
+    /// <b>他のセーブデータ（進行フラグ・所持金など）は一切触らない</b>。
+    /// <c>SEED.SaveData.DeleteAll</c> を使わないのはこのためで、
+    /// 「図鑑だけ初期状態に戻して確認したい」という開発中の用途に的を絞る。
+    ///
+    /// カタログに載らなくなった旧魚種のキーは残るが、図鑑はカタログ側を正典に
+    /// 走査するので表示には出てこない（消し残しが見えることはない）。
+    ///
+    /// 消したあとは必ず <c>SEED.SaveData.Save</c> を呼ぶので、
+    /// 呼び出し側で保存する必要はない。
+    /// </summary>
+    /// <returns>実際に削除できたキーの本数（元から無かったキーは数えない）。</returns>
+    public static int ResetAll()
+    {
+        int deleted = 0;
+
+        foreach (FishCatalogEntry entry in FishCatalog.Entries)
+        {
+            string displayName = entry.displayName;
+            if (!IsUsableName(displayName)) { continue; }
+
+            if (SEED.SaveData.DeleteKey(BestSizeKeyPrefix + displayName))   { deleted++; }
+            if (SEED.SaveData.DeleteKey(BestRankKeyPrefix + displayName))   { deleted++; }
+            if (SEED.SaveData.DeleteKey(CatchCountKeyPrefix + displayName)) { deleted++; }
+        }
+
+        SEED.SaveData.Save();
+        return deleted;
+    }
+
     // ─── 内部処理 ────────────────────────────────────────────
 
     /// <summary>キーの一部として使える表示名か（空・空白のみを弾く）。</summary>

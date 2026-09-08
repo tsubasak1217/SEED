@@ -77,6 +77,15 @@ public class HitBanner : SEEDScript
     /// <summary>レベル不明（<see cref="Fish.UnknownLevel"/>）のときに出す代替文字。</summary>
     private const string UnknownLevelLabel = "?";
 
+    /// <summary>
+    /// レベル配色の 16 進指定が不正だったときに使う色（白）。
+    /// 「設定ミスで文字が見えなくなる」ことだけは避ける。
+    /// </summary>
+    private static readonly SEED.Color LevelColorFallback = new(1f, 1f, 1f, 1f);
+
+    /// <summary>レベル不明（<see cref="Fish.UnknownLevel"/>）を配色上どのレベルとして扱うか。</summary>
+    private const int UnknownLevelColorStep = 1;
+
     // ─── 参照（シーンで割り当てる） ────────────────────────────
 
     /// <summary>
@@ -107,15 +116,42 @@ public class HitBanner : SEEDScript
     // ─── 文字 ──────────────────────────────────────────────
 
     /// <summary>
-    /// 「Lv◯ 魚名」の書式。<c>{0}</c> がレベル（不明なら
+    /// 「Lv◯ ◯◯」の書式。<c>{0}</c> がレベル（不明なら
     /// <see cref="UnknownLevelLabel"/>）、<c>{1}</c> が魚の表示名。
+    ///
+    /// <b>既定は魚名を出さない</b>（"Lv{0} 生命体"）。掛かった瞬間に何が掛かったかまで
+    /// 分かると、釣り上げるまでの「何だろう」という引きが失われるため。
+    /// 魚名を出したくなったときのために <c>{1}</c> は書式として生かしてあるので、
+    /// インスペクタで <c>"Lv{0} {1}"</c> へ戻せば従来どおり魚名が出る
+    /// （<c>{1}</c> を使わない書式でも <c>string.Format</c> は余った引数を黙って捨てる）。
     /// </summary>
     [Header("文字"), SerializeField(Label = "レベル文字の書式")]
-    private string levelTextFormat = "Lv{0} {1}";
+    private string levelTextFormat = "Lv{0} 生命体";
 
     /// <summary>下のバーに出す固定文字列。</summary>
     [SerializeField(Label = "HITの文言")]
     private string hitText = "HIT!!!";
+
+    // ─── レベル配色（Lv 文字だけをレベルの高さで塗り分ける）───────────
+
+    /// <summary>
+    /// レベル最小（Lv1）のときの Lv 文字の色（16 進カラーコード）。既定は淡い水色。
+    ///
+    /// <b>なぜ 16 進文字列なのか</b>: スクリプトインスペクタは
+    /// <c>SEED.Vector3</c> / <c>SEED.Color</c> 型の <c>[SerializeField]</c> を編集できないため、
+    /// 企画側が触って詰めたい配色は文字列で持つ（<see cref="UiColorUtil"/> が色へ変換する）。
+    /// 書式が不正なときは色を書き換えない（＝クリップの色のまま出る）。
+    /// </summary>
+    [Header("レベル配色（Lv 文字のみ）"), SerializeField(Label = "低レベルの色(16進)")]
+    private string levelColorLow = "#66E0FF";
+
+    /// <summary>レベル中間のときの Lv 文字の色（16 進カラーコード）。既定は黄緑。</summary>
+    [SerializeField(Label = "中レベルの色(16進)")]
+    private string levelColorMid = "#66FF88";
+
+    /// <summary>レベル最大（<see cref="FishCatalog.MaxLevel"/>）のときの Lv 文字の色。既定は赤。</summary>
+    [SerializeField(Label = "高レベルの色(16進)")]
+    private string levelColorHigh = "#FF4D4D";
 
     /// <summary>
     /// 文字に使うフォントの assets:// 仮想パス（空文字＝組み込みフォント）。
@@ -161,6 +197,19 @@ public class HitBanner : SEEDScript
     // ─── 実行時の状態 ────────────────────────────────────────
 
     /// <summary>
+    /// 今回の演出で Lv 文字へ乗せる色味（RGB のみ意味を持つ。アルファは使わない）。
+    /// <see cref="Play"/> がレベルから決め、<see cref="LateUpdate"/> が毎フレーム塗り直す。
+    /// </summary>
+    private SEED.Color levelColor = LevelColorFallback;
+
+    /// <summary>
+    /// <see cref="levelColor"/> が決まっているか（＝一度でも <see cref="Play"/> したか）。
+    /// false のあいだは <see cref="LateUpdate"/> が色を触らない
+    /// （シーン／クリップの色をそのまま尊重する）。
+    /// </summary>
+    private bool hasLevelColor = false;
+
+    /// <summary>
     /// 演出が再生中か。<b>正典は Animator の再生状態</b>（クリップが尺の末尾に達すると
     /// エンジンが自動で false にする）。
     /// 4 つのクリップは同じ尺・同じタイミングで流れるので、
@@ -197,6 +246,15 @@ public class HitBanner : SEEDScript
 
         SetTextContent(levelLabel, string.Format(levelTextFormat, levelPart, fishName));
         SetTextContent(hitLabel, hitText);
+
+        // 今回のレベルに対応する色味を決める（毎フレームの塗り直しは LateUpdate が行う）。
+        // レベル不明は最小レベル扱いにする（"?" が真っ赤に出ると格上に見えてしまうため）。
+        int colorStep = level == Fish.UnknownLevel ? UnknownLevelColorStep : level;
+        levelColor = UiColorUtil.Gradient3(
+            levelColorLow, levelColorMid, levelColorHigh,
+            UiColorUtil.Step01(colorStep, FishCatalog.MaxLevel),
+            LevelColorFallback);
+        hasLevelColor = true;
 
         // 演出ルートを表示状態にする。GameObject.Visible の実際の反映（描画への反映）は
         // フレーム末尾だが、Animator はこの Visible フラグと無関係に毎フレーム自動で
@@ -248,6 +306,31 @@ public class HitBanner : SEEDScript
         if (!root.Visible) { return; }
         if (IsPlaying) { return; }
         root.Visible = false;
+    }
+
+    /// <summary>
+    /// Lv 文字の色味をレベル配色で塗り直す（毎フレーム・Animator の後）。
+    ///
+    /// <b>なぜ LateUpdate なのか</b>: Lv 文字のアルファは演出クリップ
+    /// （<c>hit_banner_text_level.anim</c>）の<b>色トラック</b>が動かしており、
+    /// 色トラックは RGBA を丸ごと書き込む。ランタイムのフレーム順は
+    /// 「アニメーション評価 → スクリプトの LateUpdate」（<c>frame_renderer.rs</c>）なので、
+    /// LateUpdate で塗ればクリップの書き込みを確実に上書きできる。
+    /// Update で塗るとアニメーションに毎フレーム消される。
+    ///
+    /// <b>アルファは触らない</b>: 出入りのフェードはクリップの持ち物なので、
+    /// クリップが今書いたアルファをそのまま残し、RGB だけを差し替える
+    /// （<see cref="UiColorUtil.ApplyRgb(SEED.Text?, string)"/> と同じ約束）。
+    /// </summary>
+    /// <param name="ctx">エンジンから渡されるフレーム情報（本処理では未使用）。</param>
+    public override void LateUpdate(ref NativeFrameContext ctx)
+    {
+        if (!hasLevelColor) { return; }
+        if (!IsPlaying) { return; }
+        if (levelLabel is not { } t || !t.IsValid) { return; }
+
+        // クリップが書いたアルファを保ったまま色味だけ差し替える
+        t.Color = new SEED.Color(levelColor.r, levelColor.g, levelColor.b, t.Color.a);
     }
 
     /// <summary>名前で帯アクタを探し、その Sprite を透明にする（無ければ何もしない）。</summary>

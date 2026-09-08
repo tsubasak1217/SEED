@@ -804,6 +804,18 @@ public class FishingFight : SEEDScript
     public bool FishDefeated => Active && fishHp <= FishHpZero;
 
     /// <summary>
+    /// この 1 戦の判定が<b>すべて Excellent</b> だったか
+    /// 【釣り上げ時の評価（Perfect / Good）を決める唯一の判断材料】。
+    ///
+    /// 1 度も判定が発生していない戦い（叩く前に釣れてしまった等）は false を返す
+    /// （何もしていないのに「Perfect!」と出るのを避けるため）。
+    ///
+    /// <see cref="EndFight"/> のあとでも値は保たれる（<see cref="fightAllExcellent"/> の
+    /// コメント参照）ので、釣り上げ処理の中でやり取りを畳んだあとに読んでよい。
+    /// </summary>
+    public bool AllExcellent => fightJudgedCount > 0 && fightAllExcellent;
+
+    /// <summary>
     /// 巻き取り 1m あたりに削れる魚 HP【巻きの仕様の中核】。
     /// ＝ 巻き効率（竿パワー ÷ (竿パワー ＋ 魚の総合力)）÷ 1HP あたりの距離。
     ///
@@ -1037,6 +1049,29 @@ public class FishingFight : SEEDScript
     private bool lastAnswerPerfect = false;
 
     /// <summary>
+    /// この 1 戦（<see cref="BeginFight"/> から釣り上げまで）で下した判定が
+    /// <b>すべて Excellent</b> だったか【釣り上げ時の評価表示の元データ】。
+    ///
+    /// <see cref="lastAnswerPerfect"/> は<b>直前の 1 フレーズ</b>だけの評価で、
+    /// 隙の長さを決めるために毎フレーズ上書きされる。
+    /// 「戦い全体を通して完璧だったか」はそれとは別の情報なので、
+    /// 1 戦を通して落ちっぱなしになるフラグを別に持つ。
+    ///
+    /// <b>リセットは <see cref="BeginFight"/> だけ</b>で行い、
+    /// <see cref="ResetRuntimeState"/>（＝<see cref="EndFight"/> からも呼ばれる）では触らない。
+    /// 釣り上げの入口（<c>FishingController.FinishReeling</c>）は
+    /// <see cref="EndFight"/> を呼んだ<b>後</b>にこの値を読むため、
+    /// 終了処理で消してしまうと必ず初期値になってしまうからである。
+    /// </summary>
+    private bool fightAllExcellent = true;
+
+    /// <summary>
+    /// この 1 戦で下した判定の数（<see cref="fightAllExcellent"/> と同じ寿命）。
+    /// 1 度も叩かずに終わった戦いを「完璧」と呼ばないための下駄。
+    /// </summary>
+    private int fightJudgedCount = 0;
+
+    /// <summary>
     /// 次の隙（Rest）へ持ち越す延長小節数【漂流物「ひるませ」の持ち越し分】。
     /// 隙以外のフェーズで <see cref="AddRestBars"/> が呼ばれたぶんをここへ貯め、
     /// 次に隙へ入るときの長さへ足して 0 に戻す。
@@ -1164,6 +1199,12 @@ public class FishingFight : SEEDScript
     public void BeginFight(Fish fish, FishingController.HookJudgement judge, float hookDistance)
     {
         ResetRuntimeState();
+
+        // 1 戦を通した評価は BeginFight でだけ初期化する
+        // （ResetRuntimeState は EndFight からも呼ばれるため、そこで消すと
+        //   釣り上げ処理が読む頃には必ず初期値になってしまう）。
+        fightAllExcellent = true;
+        fightJudgedCount = 0;
 
         target = fish;
         Active = true;
@@ -2232,6 +2273,11 @@ public class FishingFight : SEEDScript
     {
         expectedJudged[index] = true;
         expectedResults[index] = judgement;
+
+        // 1 戦を通した評価を更新する。Excellent 以外が 1 つでも混じったら
+        // 二度と true には戻らない（次の BeginFight まで落ちたまま）。
+        fightJudgedCount++;
+        if (judgement != FishingController.HookJudgement.Excellent) { fightAllExcellent = false; }
 
         // 判定した瞬間からポップをやり直す（すでに出ているアイコンが小さく跳ねる）
         ShowIconAtHit(index, clockTime, JudgementIconColor(judgement));

@@ -75,6 +75,34 @@ public class ZukanCard : SEEDScript
     [SerializeField(Label = "捕獲済みの画像色(RGB)")]
     private SEED.Vector3 caughtImageColor = new(1f, 1f, 1f);
 
+    // ─── インスペクタ設定（ランク配色）────────────────────────
+    //
+    // 「ランク文字 → 4 色のどれか」の対応表は共通の RankColorTable に置き、
+    // リザルトパネル（ResultPanel）と必ず同じ対応になるようにしてある。
+    // ここが持つのは色の実体（16 進カラーコード）だけ。
+    // 16 進文字列で持つ理由は UiColorUtil のクラスコメントを参照
+    // （SEED.Color / SEED.Vector3 の [SerializeField] はインスペクタで編集できない）。
+
+    /// <summary>ランク S の文字色（16 進カラーコード）。既定は金。</summary>
+    [Header("ランク配色（リザルトと揃える）"), SerializeField(Label = "Sの色(16進)")]
+    private string rankColorS = "#FFD54A";
+
+    /// <summary>ランク A の文字色（16 進カラーコード）。既定は珊瑚色。</summary>
+    [SerializeField(Label = "Aの色(16進)")]
+    private string rankColorA = "#FF7A6B";
+
+    /// <summary>ランク B の文字色（16 進カラーコード）。既定は若草色。</summary>
+    [SerializeField(Label = "Bの色(16進)")]
+    private string rankColorB = "#7CE38B";
+
+    /// <summary>ランク C の文字色（16 進カラーコード）。既定は水色。</summary>
+    [SerializeField(Label = "Cの色(16進)")]
+    private string rankColorC = "#8FD3FF";
+
+    /// <summary>ランクが未記録・想定外だったときの文字色（16 進カラーコード）。既定は生成り。</summary>
+    [SerializeField(Label = "ランク不明の色(16進)")]
+    private string rankColorUnknown = "#FFF5DB";
+
     // ─── 参照（自分の子アクタ。相対パスで結線）───────────────────
 
     /// <summary>魚の画像。</summary>
@@ -142,6 +170,11 @@ public class ZukanCard : SEEDScript
         SetContent(bestText,  string.Format(bestFormat, best, sizeUnit));
         SetContent(rankText,  string.Format(rankFormat, rankLabel));
         SetContent(countText, string.Format(countFormat, count));
+
+        // ランク行だけをランク色で塗る（SetContent がアルファを決めた後に色味だけ差し替える）。
+        // 配色を引くのは「ランク: S」ではなく素のランク文字（書式変更に強くするため）。
+        UiColorUtil.ApplyRgb(rankText, RankColorTable.Select(
+            rank, rankColorS, rankColorA, rankColorB, rankColorC, rankColorUnknown));
     }
 
     /// <summary>カードまるごとを隠す（このページで使わない枠）。</summary>

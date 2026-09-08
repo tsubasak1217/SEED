@@ -94,6 +94,23 @@ public static class Easing
     }
 
     /// <summary>
+    /// いったん逆方向へ沈み込んでから一気に進む曲線（退場の「シュッ」に使う）。
+    /// <see cref="OutBack"/> の時間反転で、勢いを付けて引っ込む動きになる。
+    /// </summary>
+    /// <param name="t">進捗（0〜1）。</param>
+    /// <returns>0 で 0・1 で 1。序盤で 0 を少し下回る（負の値になる）。</returns>
+    public static float InBack(float t)
+    {
+        float x = SEED.Mathf.Clamped01(t);
+
+        // back 系の標準形（in）: c3·x³ − c1·x²  （c3 = c1 + 1）
+        float c1 = BackOvershoot;
+        float c3 = c1 + ProgressMax;
+
+        return c3 * x * x * x - c1 * x * x;
+    }
+
+    /// <summary>
     /// 勢いよく始まり、なめらかに減速して止まる曲線（回転の収束などに使う）。
     /// </summary>
     /// <param name="t">進捗（0〜1）。</param>

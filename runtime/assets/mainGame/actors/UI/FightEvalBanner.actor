@@ -1,0 +1,163 @@
+{
+  "name": "FightEvalBanner",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.0,
+      0.0
+    ],
+    "anchor": [
+      0.0,
+      0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "Canvas",
+      "component": {
+        "type": "CanvasComponent",
+        "data": {
+          "width": 1280.0,
+          "height": 720.0,
+          "auto_scale": true,
+          "viewport_ref": {
+            "type": "main_camera"
+          },
+          "gravity_mode": "world_down",
+          "draw_zone": "foreground",
+          "pivot": [
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "name": "FightEvalBanner",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "assets://mainGame/scripts/FightEvalBanner.cs",
+          "fields": {}
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "FightEvalBody",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          -40.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [],
+      "children": [
+        {
+          "name": "FightEvalText",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "Perfect!",
+                  "font_size": 120.0,
+                  "color": [
+                    1.0,
+                    0.835,
+                    0.29,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 2500,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 8.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 1.0,
+                  "shadow_offset_x": 0.0,
+                  "shadow_offset_y": 0.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "shadow_softness": 0.0
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    }
+  ]
+}

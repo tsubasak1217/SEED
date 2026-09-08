@@ -986,6 +986,8 @@ public class CatchPresenter : SEEDScript
             sizeText: FormatSize(displaySize, unit),
             bestText: bestLabelPrefix + FormatSize(best, unit),
             rankText: rankLabelPrefix + RankLabel(fish.SizeRank),
+            // 配色は「見せる文字列」ではなく素のランク文字で引く（書式変更に強くするため）
+            rankKey: fish.SizeRank,
             imagePath: imagePath,
             newRecord: record.NewBest,
             firstCatch: record.FirstCatch));
