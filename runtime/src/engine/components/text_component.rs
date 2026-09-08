@@ -60,6 +60,27 @@ pub const MIN_BOX_SIZE: f32 = 0.0;
 /// （巨大な枠で折り返し計算が無意味に走るのを防ぐ）。
 pub const MAX_BOX_SIZE: f32 = 16384.0;
 
+/// **エディタで Text コンポーネントを新規追加したとき**の枠幅（キャンバスピクセル）。
+///
+/// serde の既定値（枠なし = 0）とは**別物**である点に注意。
+/// 0 のまま追加すると枠が存在しないため、シーンビュー上で掴む矩形が
+/// 文字の実測サイズに依存し、空文字や短い文字列だと事実上つまめない。
+/// 追加直後から枠が見えて「選択・リサイズ」ができるよう、
+/// 追加経路（`TextComponentData::new_for_editor_add`）に限りこの値を入れる。
+pub const DEFAULT_TEXT_BOX_WIDTH: f32 = 300.0;
+
+/// **エディタで Text コンポーネントを新規追加したとき**の枠の最小高さ（キャンバスピクセル）。
+///
+/// 既定フォントサイズ（`DEFAULT_FONT_SIZE` = 24px）で 2 行ぶん程度が収まる高さ。
+/// 実際の枠高さは `max(box_height, 内容高さ)` なので、これは下限として働く。
+///
+/// 【挙動の変化】枠幅が 0 でなくなるため、`wrap`（既定 true）が有効になる。
+/// つまり**新規追加した Text は 300px で自動折り返しする**（従来は折り返さず
+/// 1 行が伸び続けた）。折り返したくない場合はインスペクタで `wrap` を off にするか、
+/// 枠幅を 0（= 枠なし・従来レイアウト）に戻す。
+/// フィールドを持たない旧 `.scene` は serde 既定の 0 が入るため、挙動は一切変わらない。
+pub const DEFAULT_TEXT_BOX_HEIGHT: f32 = 60.0;
+
 /// 自動折り返しの既定値（枠を設定したら折り返すのが期待挙動）。
 ///
 /// `box_width = 0`（枠なし）のときは無視されるため、旧シーンの挙動は変わらない。
@@ -284,6 +305,26 @@ impl Default for TextComponentData {
     }
 }
 
+impl TextComponentData {
+    /// **エディタからの新規追加専用**の初期値を作る。
+    ///
+    /// `Default` との違いは枠サイズだけ（`DEFAULT_TEXT_BOX_WIDTH` ×
+    /// `DEFAULT_TEXT_BOX_HEIGHT`）。追加直後に枠が見えて選択・リサイズできるようにする。
+    ///
+    /// `Default` 側を書き換えないのは、`Default` が
+    /// 「インスペクタのリセット既定値」「テストや内部生成の枠なし前提」といった
+    /// 別の意味で使われており、そこに枠を入れると意味が変わってしまうため。
+    /// なお serde はフィールド単位の `#[serde(default)]` しか使わないので、
+    /// この関数も `Default` も **デシリアライズには一切関与しない**。
+    pub fn new_for_editor_add() -> Self {
+        Self {
+            box_width: DEFAULT_TEXT_BOX_WIDTH,
+            box_height: DEFAULT_TEXT_BOX_HEIGHT,
+            ..Self::default()
+        }
+    }
+}
+
 // ─── TextComponent ────────────────────────────────────────────
 
 /// キャンバス用テキスト表示コンポーネント（ECS 実体）。
@@ -360,6 +401,12 @@ impl TextComponent {
         }
     }
 
+    /// **エディタからの新規追加専用**の実体を作る。
+    /// 既定の枠サイズ（`DEFAULT_TEXT_BOX_WIDTH` × `DEFAULT_TEXT_BOX_HEIGHT`）が入る。
+    pub fn new_for_editor_add() -> Self {
+        Self::from_data(TextComponentData::new_for_editor_add())
+    }
+
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> TextComponentData {
         TextComponentData {
@@ -434,6 +481,46 @@ mod tests {
         assert_eq!(d.content, "所持金");
         assert_eq!(d.align, TextAlign::Center);
         assert_eq!(d.vertical_align, TextVerticalAlign::Middle);
+    }
+
+    /// 空の JSON（= 全フィールド欠落の最小ケース）でも枠なし（0）で読める。
+    ///
+    /// エディタ新規追加の既定枠（300×60）が **serde の既定値へ漏れていない**ことの保証。
+    /// ここが 300 になると、旧シーンを開いた瞬間に全テキストが折り返して見た目が壊れる。
+    #[test]
+    fn empty_json_keeps_zero_box_for_legacy_scenes() {
+        let d: TextComponentData = serde_json::from_str("{}").expect("空 JSON が読める");
+        assert_eq!(d.box_width, 0.0, "serde 既定の枠幅は 0（枠なし）のままであること");
+        assert_eq!(d.box_height, 0.0, "serde 既定の枠高さは 0（枠なし）のままであること");
+        assert!(d.wrap, "wrap の既定は true（ただし枠なしなので無視される）");
+    }
+
+    /// エディタからの新規追加では既定の枠（300×60）が入る。
+    #[test]
+    fn editor_add_uses_default_box_size() {
+        let d = TextComponentData::new_for_editor_add();
+        assert_eq!(d.box_width, DEFAULT_TEXT_BOX_WIDTH);
+        assert_eq!(d.box_height, DEFAULT_TEXT_BOX_HEIGHT);
+        // 実体側（World へ insert されるほう）も同じ値になること。
+        let c = TextComponent::new_for_editor_add();
+        assert_eq!(c.box_width, DEFAULT_TEXT_BOX_WIDTH);
+        assert_eq!(c.box_height, DEFAULT_TEXT_BOX_HEIGHT);
+        // 枠以外は Default と同一であること（新規追加で他の既定を変えていない）。
+        let def = TextComponentData::default();
+        assert_eq!(d.content, def.content);
+        assert_eq!(d.font_size, def.font_size);
+        assert_eq!(d.wrap, def.wrap);
+    }
+
+    /// `Default` は枠なし（0）のまま。
+    ///
+    /// `Default` はインスペクタの「リセット」既定値や内部生成にも使われるため、
+    /// ここに枠を入れてはいけない（意味が変わる）。
+    #[test]
+    fn default_keeps_no_box() {
+        let d = TextComponentData::default();
+        assert_eq!(d.box_width, MIN_BOX_SIZE);
+        assert_eq!(d.box_height, MIN_BOX_SIZE);
     }
 
     /// from_data / to_data が新フィールドを往復できる（Undo のスナップショット経路）。

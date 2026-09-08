@@ -1052,7 +1052,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">label.IconSet</code><span class="desc">string（get/set。アイコンセット .icons の assets:// パス。空文字=未使用）</span></div>
   <div class="api"><code class="sig">label.OutlineWidth</code><span class="desc">float（get/set。縁取りの太さ px。0=縁取りなし）</span></div>
   <div class="api"><code class="sig">label.OutlineColor</code><span class="desc">Color（get/set。縁取りの色。既定=不透明な黒）</span></div>
-  <div class="api"><code class="sig">label.BoxWidth</code><span class="desc">float（get/set。枠の幅 px。0=枠なし＝従来レイアウト）</span></div>
+  <div class="api"><code class="sig">label.BoxWidth</code><span class="desc">float（get/set。枠の幅 px。0=枠なし＝従来レイアウト。エディタで新規追加した Text の初期値は 300×60、フィールドを持たない旧シーンは 0＝自動）</span></div>
   <div class="api"><code class="sig">label.BoxHeight</code><span class="desc">float（get/set。枠の最小高さ px。実高さ=max(この値, 内容の高さ)）</span></div>
   <div class="api"><code class="sig">label.Wrap</code><span class="desc">bool（get/set。枠幅で自動折り返し。BoxWidth=0 なら無視）</span></div>
   <div class="api"><code class="sig">label.Weight</code><span class="desc">float（get/set。文字の太さ px。負=細く / 正=太く / 0=フォント本来）</span></div>
@@ -1074,7 +1074,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
     <b>BoxWidth の 0 か正かでレイアウトの意味が変わります</b>。<br>
     <b>BoxWidth = 0（枠なし・既定）</b>: 従来どおり <code>Align</code> / <code>VerticalAlign</code> は「アクターの位置に対してテキストブロックをどう置くか」を意味し、自動折り返しも <code>CanvasTransform.Pivot</code> も効きません。<br>
     <b>BoxWidth &gt; 0（枠あり）</b>: 枠のローカル矩形は Sprite と同じ「左上原点・[0,W]×[0,H]」になり、<code>Align</code> / <code>VerticalAlign</code> は「枠の中での配置」、<code>Pivot</code> は Sprite とまったく同じ意味（枠サイズに対する正規化基準点）で効きます。<br>
-    既存シーンは BoxWidth が 0 のままなので見た目は変わりません。
+    既存シーンは BoxWidth が 0 のままなので見た目は変わりません（フィールドを持たない旧シーンは 0＝自動レイアウト）。ただし<b>エディタから Text を新規追加した場合の初期値は 300×60</b>で、Wrap 既定 true のため 300px で自動折り返しします。
   </div>
   <div class="warn">
     <b>折り返しの規則</b>: 英数字は単語単位（<code>'</code> と <code>-</code> は単語の一部）、日本語などは 1 文字単位で折ります。行末の空白は幅に数えず次の行頭へ送りません。1 単語が枠幅より長い場合は文字単位で強制分割します。<br>

@@ -1188,12 +1188,18 @@ impl App {
             "TextComponent" => {
                 // デフォルト（"Text"・24px・白・左上揃え）の TextComponent を追加する。
                 // キャンバス配下のアクターに置く前提のコンポーネント（HUD の数値・ラベル）。
+                //
+                // 枠サイズだけは `Default`（枠なし = 0）ではなく
+                // `new_for_editor_add`（300×60）を使う。枠が 0 だと追加直後の
+                // 掴める矩形が文字の実測サイズ任せになり、空文字・短文だと
+                // シーンビューでつまめないため。詳細は text_component.rs の
+                // DEFAULT_TEXT_BOX_WIDTH / DEFAULT_TEXT_BOX_HEIGHT のコメント。
                 use crate::engine::components::TextComponent;
                 let name = slot_name.to_string();
                 let found = {
                     let scene = self.scene.as_mut().unwrap();
                     let slot_entity = scene.world.spawn();
-                    scene.world.insert(slot_entity, TextComponent::default());
+                    scene.world.insert(slot_entity, TextComponent::new_for_editor_add());
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<TextComponent>(
