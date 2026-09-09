@@ -99,6 +99,12 @@ public static class TutorialRules
     /// </summary>
     public static string FishPrefabRequired = NoPrefabFilter;
 
+    /// <summary>「必ず含める魚種」を維持する匹数（1 以上）。<see cref="FishPrefabRequired"/> が空なら無意味。</summary>
+    public static int FishPrefabRequiredCount = DefaultRequiredCount;
+
+    /// <summary>必ず含める魚種の維持匹数の既定値（＝最低 1 匹）。</summary>
+    public const int DefaultRequiredCount = 1;
+
     /// <summary>維持数の上書き「上書き無し」を表す値。</summary>
     public const int NoPopulationOverride = 0;
 
@@ -253,6 +259,7 @@ public static class TutorialRules
         FishPrefabFilter     = NoPrefabFilter;
         FishPrefabExclusive  = false;
         FishPrefabRequired   = NoPrefabFilter;
+        FishPrefabRequiredCount = DefaultRequiredCount;
         FishPopulationOverride = NoPopulationOverride;
         ChainDisabled        = false;
         DriftDisabled        = false;

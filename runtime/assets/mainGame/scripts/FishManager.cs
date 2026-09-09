@@ -97,6 +97,13 @@ public class FishManager : SEEDScript
     /// </summary>
     private const float RareFishRate = 0.1f;
 
+    /// <summary>
+    /// 「必ず含める魚種」（<see cref="TutorialRules.FishPrefabRequired"/>）が指定されている間、
+    /// 自然出現の抽選でその魚種を引く確率。維持匹数の補充とは別に、入れ替わりの抽選でも
+    /// 目当ての魚が出やすくする（1/種類数 のままだと「全然出ない」体感になるため）。
+    /// </summary>
+    private const float RequiredPrefabPickRate = 0.5f;
+
     /// <summary>レベル番号（1 始まり）を <see cref="levels"/> の添字（0 始まり）へ直す差分。</summary>
     private const int LevelNumberToIndex = 1;
 
@@ -662,8 +669,10 @@ public class FishManager : SEEDScript
             return;
         }
 
-        // 既に居るなら何もしない（仮想レコードも「居る」に数える）
-        if (CountPrefabMatches(levelIndex, required) > 0) { return; }
+        // 維持匹数（TutorialRules.FishPrefabRequiredCount）ぶん居るなら何もしない
+        // （仮想レコードも「居る」に数える）。1 フレームに 1 匹ずつ補充する。
+        int wantCount = SEED.Mathf.Max(TutorialRules.FishPrefabRequiredCount, TutorialRules.DefaultRequiredCount);
+        if (CountPrefabMatches(levelIndex, required) >= wantCount) { return; }
 
         // 枠が埋まっているなら 1 匹退かして空ける（退かせなければ今回は諦める）
         if (pool.UnpinnedCount(levelIndex) >= maintainCount && !TryDropOneReplaceable(levelIndex, required))
@@ -1183,6 +1192,18 @@ public class FishManager : SEEDScript
         if (string.IsNullOrWhiteSpace(path))
         {
             if (IsExclusivePrefabFilterActive()) { return false; }
+
+            // 「必ず含める魚種」の指定があれば、自然出現の抽選でも RequiredPrefabPickRate の
+            // 確率でその魚種を引く（維持匹数の補充だけでは目当ての魚が少なすぎるため）。
+            string required = RequiredPrefabNeedle();
+            if (required.Length > 0
+                && random.NextDouble() < RequiredPrefabPickRate
+                && (FindPrefabContaining(level.fishPrefabs, required)
+                    ?? FindPrefabContaining(level.rareFishPrefabs, required)) is { } requiredPath)
+            {
+                path = requiredPath;
+                return true;
+            }
 
             // 出現枠の抽選: レア枠は合計 RareFishRate(10%)、残り(90%)は通常枠。
             // 片方の枠しか無いレベルではその枠が 100% になる。枠内は均等割りなので、

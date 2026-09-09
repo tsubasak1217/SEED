@@ -963,6 +963,7 @@ public class TutorialDirector : SEEDScript
         TutorialRules.FishPrefabFilter        = data.fishPrefabFilter ?? TutorialRules.NoPrefabFilter;
         TutorialRules.FishPrefabExclusive     = data.fishPrefabExclusive;
         TutorialRules.FishPrefabRequired      = data.fishPrefabRequired ?? TutorialRules.NoPrefabFilter;
+        TutorialRules.FishPrefabRequiredCount = SEED.Mathf.Max(data.fishPrefabRequiredCount, TutorialRules.DefaultRequiredCount);
         TutorialRules.FishPopulationOverride  = data.fishPopulationOverride;
         TutorialRules.ChainDisabled           = data.chainDisabled;
         TutorialRules.DriftDisabled           = data.driftDisabled;

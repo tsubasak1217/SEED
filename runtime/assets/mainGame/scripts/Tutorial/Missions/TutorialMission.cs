@@ -123,6 +123,14 @@ public struct TutorialMission
     public string fishPrefabRequired;
 
     /// <summary>
+    /// 「必ず含める魚種」を何匹まで維持するか（0 以下は 1 扱い）。
+    /// 1 だと 10 匹中 1 匹しか目当ての魚が居らず、しかも遠くの仮想個体になりやすく
+    /// 「全然出てこない」体感になる。狙い撃ちのミッションでは 3〜4 程度を推奨。
+    /// </summary>
+    [SerializeField(Label = "必ず含める魚種の匹数", Tooltip = "必ず含める魚種を何匹まで維持するか（0 以下は 1）")]
+    public int fishPrefabRequiredCount;
+
+    /// <summary>
     /// このミッションの間、対象レベルの自然出現の維持数をこの値へ強制的に置き換える。
     /// 0（既定）は「上書きしない＝<see cref="FishLevelEntry.maintainCount"/> のまま」を表す
     /// （<see cref="TutorialRules.NoPopulationOverride"/> と同じ約束）。
