@@ -452,6 +452,9 @@ public class TutorialWindow : SEEDScript
         CaptureBaseColors();
         CaptureBaseTransforms();
 
+        // ポーズ中は文字送り・演出を止める（実時間で進む作りなので Time.Scale = 0 では止まらない）
+        if (InputGate.IsSuspended) { return; }
+
         float unscaledDelta = SEED.Time.UnscaledDeltaTime;
         animTimer += unscaledDelta;
         swayTimer += unscaledDelta;

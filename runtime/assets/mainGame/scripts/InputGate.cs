@@ -35,6 +35,16 @@ public enum GameAction
 
     /// <summary>釣果表示など UI の決定（左クリック）。</summary>
     UiConfirm,
+
+    /// <summary>
+    /// 台詞・チュートリアル説明の送り（Enter / Space / 左クリック）【進行系】。
+    ///
+    /// 釣りの操作と違い、手順ごとの制限（<see cref="InputGate.DenyAll"/> /
+    /// <see cref="InputGate.SetAllowed"/>）の対象外にしてある。説明中は釣り操作を
+    /// すべて塞ぐが、説明そのものを送れなくなると先へ進めなくなるため。
+    /// ポーズ中だけは <see cref="InputGate.Suspend"/> によって他の操作と一緒に塞がれる。
+    /// </summary>
+    Advance,
 }
 
 /// <summary>
@@ -68,6 +78,18 @@ public static class InputGate
     /// <summary>既定の受付状態（true = 受け付ける）。</summary>
     private const bool DefaultAllowed = true;
 
+    /// <summary>停止解除の刻の初期値（どのフレームの実時刻とも一致しない値）。</summary>
+    private const float NoResumeStamp = -1f;
+
+    /// <summary>
+    /// 手順ごとの制限の対象外にする操作【進行系の定義表】。
+    ///
+    /// ここに挙げた操作は <see cref="DenyAll"/> / <see cref="SetAllowed"/> では
+    /// 塞がれず、<see cref="Suspend"/>（ポーズ）でだけ塞がる。
+    /// 増減はこの配列を書き換えるだけで済む（判定側に条件を散らさない）。
+    /// </summary>
+    private static readonly GameAction[] UnrestrictableActions = { GameAction.Advance };
+
     // ─── 状態 ────────────────────────────────────────────────
 
     /// <summary>
@@ -76,6 +98,22 @@ public static class InputGate
     /// 件数で確保する（要素数の直書きを避ける）。
     /// </summary>
     private static readonly bool[] Allowed = CreateAllAllowed();
+
+    /// <summary>
+    /// すべての操作を上から塞いでいるか（ポーズ中か）。
+    /// 受付表（<see cref="Allowed"/>）とは独立した「蓋」なので、
+    /// 解除すればチュートリアルが組んだ手順ごとの許可がそのまま戻る。
+    /// </summary>
+    private static bool suspended;
+
+    /// <summary>
+    /// 停止を解除した実時間の刻（<c>SEED.Time.UnscaledElapsedTime</c>）。
+    ///
+    /// ポーズを閉じたのと同じフレームでは、閉じるのに使った Esc / クリック /
+    /// 決定キーがまだ「押された瞬間」として観測される。スクリプトの実行順に
+    /// 依存せずこれを捨てるため、「解除と同じ刻の入力は通さない」形にしてある。
+    /// </summary>
+    private static float resumeStamp = NoResumeStamp;
 
     // ─── 公開 API ────────────────────────────────────────────
 
@@ -86,6 +124,9 @@ public static class InputGate
     /// <returns>受け付けてよければ true。未知の値（列挙外のキャスト）は安全側で true。</returns>
     public static bool Allows(GameAction action)
     {
+        // ポーズ中と、ポーズを閉じたそのフレームは、どの操作も通さない
+        if (IsBlockedGlobally()) { return false; }
+
         int index = (int)action;
         if (index < 0 || index >= Allowed.Length) { return DefaultAllowed; }
         return Allowed[index];
@@ -98,6 +139,10 @@ public static class InputGate
     /// <param name="allowed">true で受け付ける／false で無視する。</param>
     public static void SetAllowed(GameAction action, bool allowed)
     {
+        // 進行系（台詞送りなど）は手順の制限対象外。ここで塞げてしまうと
+        // 「説明中に説明を送れない」状態を作れてしまうため無視する。
+        if (IsUnrestrictable(action)) { return; }
+
         int index = (int)action;
         if (index < 0 || index >= Allowed.Length) { return; }
         Allowed[index] = allowed;
@@ -106,6 +151,9 @@ public static class InputGate
     /// <summary>
     /// すべての操作を受け付ける状態へ戻す【制限解除の唯一の出口】。
     /// 制限を掛けた側は、処理の終了時・破棄時に必ずこれを呼ぶこと。
+    ///
+    /// ポーズによる停止（<see cref="Suspend"/>）は別系統なので、ここでは解けない
+    /// （解いてしまうと、チュートリアルの後始末がポーズを勝手に無効化してしまう）。
     /// </summary>
     public static void AllowAll()
     {
@@ -113,15 +161,73 @@ public static class InputGate
     }
 
     /// <summary>
-    /// すべての操作を受け付けない状態にする（チュートリアルが 1 手順ぶんの
-    /// 許可を組み立てる前の下地として使う）。
+    /// 手順の制限対象になる操作をすべて受け付けない状態にする
+    /// （チュートリアルが 1 手順ぶんの許可を組み立てる前の下地として使う）。
+    ///
+    /// 進行系（<see cref="UnrestrictableActions"/>）は既定の受付状態のまま残す。
     /// </summary>
     public static void DenyAll()
     {
-        for (int i = 0; i < Allowed.Length; i++) { Allowed[i] = !DefaultAllowed; }
+        for (int i = 0; i < Allowed.Length; i++)
+        {
+            Allowed[i] = IsUnrestrictable((GameAction)i) ? DefaultAllowed : !DefaultAllowed;
+        }
+    }
+
+    // ─── 全体停止（ポーズ）──────────────────────────────────
+
+    /// <summary>
+    /// いま全操作を止めているか（＝ポーズ中か）。
+    /// タイマーなど「入力以外の進行」も止めたい側は、これを見て自分の更新を飛ばす。
+    /// </summary>
+    public static bool IsSuspended => suspended;
+
+    /// <summary>
+    /// すべての操作の受付を一時停止する【ポーズ側の入口】。
+    ///
+    /// 受付表は書き換えずに上から蓋をするだけなので、<see cref="Resume"/> すれば
+    /// チュートリアルが組んだ手順ごとの許可がそのまま戻る。
+    /// </summary>
+    public static void Suspend()
+    {
+        suspended   = true;
+        resumeStamp = NoResumeStamp;
+    }
+
+    /// <summary>
+    /// 一時停止を解除する【ポーズ解除側の出口】。
+    /// 解除と同じ刻（同じフレーム）の入力は捨てる（<see cref="resumeStamp"/> 参照）。
+    /// </summary>
+    public static void Resume()
+    {
+        suspended   = false;
+        resumeStamp = SEED.Time.UnscaledElapsedTime;
     }
 
     // ─── 内部処理 ────────────────────────────────────────────
+
+    /// <summary>
+    /// このフレームは操作カテゴリを問わず入力を捨てるべきか
+    /// （停止中、または停止を解除したそのフレーム）。
+    /// </summary>
+    /// <returns>捨てるべきなら true。</returns>
+    private static bool IsBlockedGlobally()
+        => suspended
+        || (resumeStamp > NoResumeStamp && SEED.Time.UnscaledElapsedTime <= resumeStamp);
+
+    /// <summary>
+    /// その操作が手順ごとの制限の対象外（進行系）か。
+    /// </summary>
+    /// <param name="action">判定する操作カテゴリ。</param>
+    /// <returns>対象外なら true。</returns>
+    private static bool IsUnrestrictable(GameAction action)
+    {
+        for (int i = 0; i < UnrestrictableActions.Length; i++)
+        {
+            if (UnrestrictableActions[i] == action) { return true; }
+        }
+        return false;
+    }
 
     /// <summary>
     /// 全許可で初期化した受付表を作る（列挙子の数に自動追従する）。

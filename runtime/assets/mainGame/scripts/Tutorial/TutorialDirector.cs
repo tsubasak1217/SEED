@@ -348,6 +348,12 @@ public class TutorialDirector : SEEDScript
 
         if (phase is DirectorPhase.Idle or DirectorPhase.Finished) { return; }
 
+        // ポーズ中は進行を丸ごと止める。ここは実時間（UnscaledDeltaTime）で進む作りなので、
+        // ゲーム時間の停止（Time.Scale = 0）だけではタイマーも台詞もミッション判定も
+        // 止まらず、メニューの裏でチュートリアルが進んでしまう。
+        // （チュートリアルの合いの手による時間停止はこれとは別系統なので影響しない）
+        if (InputGate.IsSuspended) { return; }
+
         float unscaledDelta = SEED.Time.UnscaledDeltaTime;
         dialogueElapsed += unscaledDelta;
 
@@ -1112,6 +1118,11 @@ public class TutorialDirector : SEEDScript
     private bool IsConfirmAccepted()
     {
         if (dialogueElapsed < SEED.Mathf.Max(inputLockSeconds, 0f)) { return false; }
+
+        // 受け付けてよいかは InputGate（ゲーム入力の唯一の関門）に従う。
+        // ポーズを閉じたそのフレームのクリック／決定キーはここで弾かれる
+        // （閉じる操作がそのまま台詞送りとして二重に効くのを防ぐ）。
+        if (!InputGate.Allows(GameAction.Advance)) { return false; }
 
         bool pressed = SceneFlow.IsConfirmPressed()
                     || SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left);

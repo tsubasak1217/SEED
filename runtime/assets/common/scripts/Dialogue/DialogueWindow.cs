@@ -210,6 +210,10 @@ public class DialogueWindow : SEEDScript
         // 非表示中は何も進めない（隠したまま文字送りが進むのを防ぐ）
         if (!_visible) return;
 
+        // ポーズ中は文字送りも止める。実時間（UnscaledDeltaTime）で進める設定だと
+        // ゲーム時間の停止では止まらず、メニューの裏で本文が流れてしまうため。
+        if (InputGate.IsSuspended) return;
+
         // ゲーム時間か実時間かは useUnscaledTime で切り替える（時間停止中の会話に対応）
         float deltaTime = useUnscaledTime ? SEED.Time.UnscaledDeltaTime : ctx.DeltaTime;
 

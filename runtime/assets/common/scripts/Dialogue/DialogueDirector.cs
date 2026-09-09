@@ -159,11 +159,15 @@ public class DialogueDirector : SEEDScript
     /// 決定キーの判定は SceneFlow.IsConfirmPressed に集約されているのでそれを使い、
     /// 会話送りでだけ有効にしたいマウス左クリックをここで OR する
     /// （SceneFlow 側を変えると他シーンの操作感まで変わってしまうため）。
+    ///
+    /// 受け付けてよいかの判断は InputGate（ゲーム入力の唯一の関門）に任せる。
+    /// ポーズ中とポーズを閉じたそのフレームは、ここで false になる。
     /// </summary>
     /// <returns>このフレームに送り入力があったら true。</returns>
     private static bool IsAdvancePressed()
-        => SceneFlow.IsConfirmPressed()
-        || SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left);
+        => InputGate.Allows(GameAction.Advance)
+        && (SceneFlow.IsConfirmPressed()
+         || SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left));
 
     /// <summary>
     /// 送り入力 1 回ぶんの処理。

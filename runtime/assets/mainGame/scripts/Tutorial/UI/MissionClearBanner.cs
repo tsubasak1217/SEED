@@ -210,6 +210,10 @@ public class MissionClearBanner : SEEDScript
     {
         if (state == BannerState.Hidden) { return; }
 
+        // ポーズ中は帯の表示時間を進めない（実時間で進む作りなので、
+        // メニューを開いている間に勝手に消えてしまうのを防ぐ）
+        if (InputGate.IsSuspended) { return; }
+
         CaptureBase();
         timer += SEED.Time.UnscaledDeltaTime;
 

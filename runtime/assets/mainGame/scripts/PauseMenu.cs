@@ -164,6 +164,15 @@ public class PauseMenu : SEEDScript
     /// </summary>
     private static float inputIgnoreStamp = NoInputIgnoreStamp;
 
+    /// <summary>
+    /// ポーズを開いた時点のゲーム時間の速さ（閉じるときにここへ戻す）。
+    ///
+    /// 単純に <see cref="TimeScaleRunning"/> へ戻すと、チュートリアルの説明中
+    /// （<c>Time.Scale = 0</c>）や釣り上げ演出のスロー中にポーズを開閉したとき、
+    /// その演出が掛けていた時間スケールを踏み潰してしまう。
+    /// </summary>
+    private static float scaleBeforePause = TimeScaleRunning;
+
     // ─── インスペクタ設定（文言）──────────────────────────────
 
     /// <summary>見出しの文言。</summary>
@@ -392,6 +401,13 @@ public class PauseMenu : SEEDScript
 
         IsOpen = true;
         inputIgnoreStamp = SEED.Time.UnscaledElapsedTime;
+
+        // ゲーム側の入力は InputGate（唯一の関門）ごと塞ぐ。
+        // 台詞送り・チュートリアル進行もこれで一括して止まる。
+        InputGate.Suspend();
+
+        // 演出が掛けていた時間スケールを覚えてから止める（閉じるときに戻す）
+        scaleBeforePause = SEED.Time.Scale;
         SEED.Time.Scale = TimeScalePaused;
         SEED.Input.CursorLocked = false;   // メニュー操作にカーソルが要る
         Current?.OnMenuOpened();
@@ -404,7 +420,14 @@ public class PauseMenu : SEEDScript
         IsOpen = false;
         inputIgnoreStamp = SEED.Time.UnscaledElapsedTime;
         if (menuRoot.IsValid) { menuRoot.Visible = false; }
-        SEED.Time.Scale = TimeScaleRunning;
+
+        // 開いた時点の時間スケールへ戻す（説明中の時間停止などを踏み潰さない）
+        SEED.Time.Scale = scaleBeforePause;
+
+        // ゲーム側の入力を再開する。閉じるのに使ったクリック／決定キーが
+        // そのまま台詞の送りとして二重に処理されないよう、
+        // InputGate 側で「解除と同じ刻の入力」は捨てられる。
+        InputGate.Resume();
         // カーソルロックはゲーム側（FishingController.UpdateCursorLock）が
         // 次のフレームで状態に合わせて引き直すので、ここでは触らない。
     }
@@ -422,7 +445,11 @@ public class PauseMenu : SEEDScript
         menuRoot = default;
         Current = null;
         inputIgnoreStamp = NoInputIgnoreStamp;
+        scaleBeforePause = TimeScaleRunning;
         SEED.Time.Scale = TimeScaleRunning;
+
+        // 停止したまま次のシーンへ持ち越さない（静的状態はシーン遷移で消えないため）
+        InputGate.Resume();
     }
 
     // ─── ライフサイクル ──────────────────────────────────────
