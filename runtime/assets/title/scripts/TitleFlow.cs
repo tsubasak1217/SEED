@@ -57,8 +57,10 @@ public class TitleFlow : SEEDScript
         // 遷移演出中の入力は無視する（二重遷移の防止）
         if (sceneFlow.IsTransitioning) return;
 
-        // 決定入力が無ければ何もしない
-        if (!SceneFlow.IsConfirmPressed()) return;
+        // 決定入力（Enter / Space）またはマウス左クリックが無ければ何もしない。
+        // タイトルはマウス操作だけでも進めるようにする。
+        bool clicked = SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left);
+        if (!SceneFlow.IsConfirmPressed() && !clicked) return;
 
         // 【デバッグ】SceneFlow 側のフラグが立っていれば、セーブデータの進行状況を
         // 一切見ずに常にプロローグへ通す（プロローグ→チュートリアルの動作確認用）。
