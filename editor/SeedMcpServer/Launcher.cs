@@ -39,6 +39,12 @@ internal static class Launcher
     /// </summary>
     private const string EDITOR_EXE_ENV_VAR = "SEED_EDITOR_EXE";
 
+    /// <summary>
+    /// run-mcp.cmd（shadow copy 起動）が渡す「コピー元＝ビルド出力フォルダ」。
+    /// 設定されていれば、エディタ exe の相対探索はこのフォルダを基準にする。
+    /// </summary>
+    private const string MCP_SOURCE_DIR_ENV_VAR = "SEED_MCP_SOURCE_DIR";
+
     /// <summary>ヘッドレス起動を指示するコマンドライン引数。</summary>
     private const string ARG_HEADLESS = "--headless";
 
@@ -245,7 +251,12 @@ internal static class Launcher
         if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
             return Path.GetFullPath(overridePath);
 
-        var baseDir = AppContext.BaseDirectory;
+        // run-mcp.cmd（shadow copy 起動）経由なら、コピー元のビルド出力フォルダを基準にする。
+        // コピー先（%LOCALAPPDATA%\SEED\mcp\...）から相対でエディタを探しても見つからないため。
+        var sourceDir = Environment.GetEnvironmentVariable(MCP_SOURCE_DIR_ENV_VAR);
+        var baseDir = !string.IsNullOrWhiteSpace(sourceDir) && Directory.Exists(sourceDir)
+            ? Path.GetFullPath(sourceDir) + Path.DirectorySeparatorChar
+            : AppContext.BaseDirectory;
 
         // 1) エディタと同じフォルダへコピーされている配置
         var sameDir = Path.Combine(baseDir, EDITOR_EXE_NAME);

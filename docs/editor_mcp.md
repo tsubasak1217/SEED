@@ -73,8 +73,16 @@ dotnet build editor/SEEDEditor.csproj
 | MCP サーバー単体ビルド | `editor/SeedMcpServer/bin/Debug/net9.0/SeedMcpServer.exe` |
 | エディタビルド時のコピー先 | `editor/bin/Debug/net9.0-windows/SeedMcpServer.exe` |
 
-`.mcp.json` は前者を指している。`dotnet run` ではなく **ビルド済み exe を直接起動する**
-（`dotnet run` は毎回ビルド判定が走り、MCP のハンドシェイクが遅くなるため）。
+`.mcp.json` は前者を **`run-mcp.cmd` 経由で**起動する（`dotnet run` ではなくビルド済み exe。
+`dotnet run` は毎回ビルド判定が走り、MCP のハンドシェイクが遅くなるため）。
+
+`editor/SeedMcpServer/run-mcp.cmd` は起動のたびにビルド出力を `%LOCALAPPDATA%\SEED\mcp\<乱数>\` へ
+コピーし、コピー側の exe を実行する（shadow copy）。exe を直接起動すると Claude Code が
+MCP サーバーを掴んでいる間ずっと `bin\Debug
+et9.0\SeedMcpServer.exe` がロックされ、
+エディタ本体のビルド（SeedMcpServer も一緒にビルドされる）が
+「別のプロセスが使用中」で失敗するため。コピー元は環境変数 `SEED_MCP_SOURCE_DIR` で
+サーバーへ渡され、エディタ exe の相対探索はそのフォルダを基準に行う。
 
 ---
 
@@ -87,7 +95,8 @@ dotnet build editor/SEEDEditor.csproj
      "mcpServers": {
        "seed-editor": {
          "type": "stdio",
-         "command": "editor/SeedMcpServer/bin/Debug/net9.0/SeedMcpServer.exe",
+         "command": "cmd",
+         "args": ["/c", "editor\SeedMcpServer\run-mcp.cmd"],
          "args": [],
          "env": {}
        }
