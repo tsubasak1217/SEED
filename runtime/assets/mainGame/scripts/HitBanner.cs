@@ -150,23 +150,28 @@ public class HitBanner : SEEDScript
     // ─── レベル配色（Lv 文字だけをレベルの高さで塗り分ける）───────────
 
     /// <summary>
-    /// レベル最小（Lv1）のときの Lv 文字の色（16 進カラーコード）。既定は淡い水色。
+    /// レベルごとの Lv 文字の色止め（16 進カラーコード・先頭が Lv1、末尾が
+    /// <see cref="FishCatalog.MaxLevel"/>）【レベル配色の唯一の置き場】。
+    ///
+    /// 色止めは 0〜1 上に等間隔で並び（5 色なら Lv1 / Lv3.25 / Lv5.5 / Lv7.75 / Lv10）、
+    /// 途中のレベルは隣り合う色止めの補間になる。
+    /// 既定は<b>高彩度</b>の「水色 → 緑 → 黄 → 橙 → 赤」で、最大レベルが最も強い赤
+    /// （<c>#FF1A1A</c>）になるよう組んである。数を増減すれば段階も増減する。
     ///
     /// <b>なぜ 16 進文字列なのか</b>: スクリプトインスペクタは
     /// <c>SEED.Vector3</c> / <c>SEED.Color</c> 型の <c>[SerializeField]</c> を編集できないため、
     /// 企画側が触って詰めたい配色は文字列で持つ（<see cref="UiColorUtil"/> が色へ変換する）。
-    /// 書式が不正なときは色を書き換えない（＝クリップの色のまま出る）。
+    /// 書式が不正なときは差し替え色（<see cref="LevelColorFallback"/>）になる。
     /// </summary>
-    [Header("レベル配色（Lv 文字のみ）"), SerializeField(Label = "低レベルの色(16進)")]
-    private string levelColorLow = "#66E0FF";
-
-    /// <summary>レベル中間のときの Lv 文字の色（16 進カラーコード）。既定は黄緑。</summary>
-    [SerializeField(Label = "中レベルの色(16進)")]
-    private string levelColorMid = "#66FF88";
-
-    /// <summary>レベル最大（<see cref="FishCatalog.MaxLevel"/>）のときの Lv 文字の色。既定は赤。</summary>
-    [SerializeField(Label = "高レベルの色(16進)")]
-    private string levelColorHigh = "#FF4D4D";
+    [Header("レベル配色（Lv 文字のみ）"), SerializeField(Label = "レベルの色止め(16進)")]
+    private List<string> levelColorStops = new()
+    {
+        "#00E5FF",   // Lv 最小: 高彩度の水色
+        "#00FF6A",   // 緑
+        "#FFE800",   // 黄
+        "#FF7A00",   // 橙
+        "#FF1A1A",   // Lv 最大: 高彩度の赤
+    };
 
     /// <summary>
     /// 文字に使うフォントの assets:// 仮想パス（空文字＝組み込みフォント）。
@@ -300,8 +305,8 @@ public class HitBanner : SEEDScript
         // 今回のレベルに対応する色味を決める（毎フレームの塗り直しは LateUpdate が行う）。
         // レベル不明は最小レベル扱いにする（"?" が真っ赤に出ると格上に見えてしまうため）。
         int colorStep = level == Fish.UnknownLevel ? UnknownLevelColorStep : level;
-        levelColor = UiColorUtil.Gradient3(
-            levelColorLow, levelColorMid, levelColorHigh,
+        levelColor = UiColorUtil.GradientStops(
+            levelColorStops,
             UiColorUtil.Step01(colorStep, FishCatalog.MaxLevel),
             LevelColorFallback);
         hasLevelColor = true;

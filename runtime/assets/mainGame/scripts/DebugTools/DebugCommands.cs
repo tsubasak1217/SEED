@@ -14,7 +14,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///
 /// [現在の機能]
 /// <list type="bullet">
-///   <item><see cref="hookKey"/>（既定 F9）… <see cref="fishPrefabPath"/> の魚を即ヒットさせる</item>
+///   <item><see cref="hookKey"/>（既定 F9）… ヒットしていなければ <see cref="fishPrefabPath"/> の魚を
+///         即ヒットさせ、<b>既にヒット中ならその魚をその場で釣り上げる</b></item>
 /// </list>
 ///
 /// [出荷時]
@@ -116,7 +117,33 @@ public class DebugCommands : SEEDScript
             return;
         }
 
-        if (SEED.Input.GetKeyDown(hookKey)) { RequestForceHook(); }
+        if (SEED.Input.GetKeyDown(hookKey)) { RequestForceHookOrCatch(); }
+    }
+
+    // ─── デバッグキーの振り分け ──────────────────────────────────
+
+    /// <summary>
+    /// <see cref="hookKey"/> が押されたときの振り分け【デバッグキーの唯一の入口】。
+    ///
+    /// <code>
+    /// ヒット中     → その魚をその場で釣り上げる（FishingController.DebugForceCatch）
+    /// ヒットしていない → 従来どおり魚を湧かせて強制ヒットさせる（RequestForceHook）
+    /// </code>
+    /// 釣り上げ側は本番と同じ経路（釣り上げ演出・図鑑登録・イベント）を通るので、
+    /// ここには「どちらを呼ぶか」以外の仕様を持たせない。
+    /// </summary>
+    private void RequestForceHookOrCatch()
+    {
+        if (FishingController.Current is { IsHooked: true } hooked)
+        {
+            if (!hooked.DebugForceCatch())
+            {
+                SEED.Debug.LogWarning("[Debug] 強制釣り上げ: 受け付けられなかった");
+            }
+            return;
+        }
+
+        RequestForceHook();
     }
 
     // ─── 強制ヒット ──────────────────────────────────────────────

@@ -83,6 +83,27 @@
           ]
         }
       }
+    },
+    {
+      "name": "Animator",
+      "component": {
+        "type": "AnimatorComponent",
+        "data": {
+          "clips": [
+            {
+              "name": "Swim",
+              "kind": "model",
+              "path": "",
+              "anim": "Swim",
+              "loop_mode": "loop"
+            }
+          ],
+          "default_clip": "Swim",
+          "play_on_start": true,
+          "speed": 1.0,
+          "default_fade_seconds": 0.0
+        }
+      }
     }
   ],
   "children": []

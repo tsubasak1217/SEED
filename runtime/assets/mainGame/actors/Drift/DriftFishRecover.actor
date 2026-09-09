@@ -99,7 +99,10 @@
             "bobFrequency": "0.600",
             "waterHeightOffset": "0.000",
             "hitSePath": "",
-            "hitSeVolume": "1.000"
+            "hitSeVolume": "1.000",
+            "pickupSePath": "assets://mainGame/audios/kosure.mp3",
+            "pickupSeVolume": "1.000",
+            "pickupEffect": "Sparkle"
           }
         }
       }

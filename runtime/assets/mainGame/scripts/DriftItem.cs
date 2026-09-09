@@ -2,6 +2,22 @@ using System.Collections.Generic;
 using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
+/// 漂流物を<b>取得した瞬間</b>に出す演出の種類【取得演出の唯一の選択肢表】。
+/// 実際の見た目は <see cref="DriftItem.PlayPickupEffect"/> が種類ごとに実装する。
+/// </summary>
+public enum DriftPickupEffect
+{
+    /// <summary>演出なし（効果音だけ鳴らす）。</summary>
+    None,
+
+    /// <summary>水しぶき（<see cref="WaterSplashSpawner"/> の波紋＋水柱）。</summary>
+    Splash,
+
+    /// <summary>星の弾け（中心から放射状に伸びて消える光の筋）。</summary>
+    Sparkle,
+}
+
+/// <summary>
 /// 釣りのやり取り中に水面を漂う「漂流物」1 個ぶんの実装【漂流物の見た目と寿命の唯一の担当】。
 ///
 /// <b>漂流物 prefab（<c>runtime/assets/mainGame/actors/Drift/*.actor</c>）の
@@ -56,6 +72,18 @@ public class DriftItem : SEEDScript
 
     /// <summary>当たり半径の下限（メートル）。負値で判定が消えないようにする番人値。</summary>
     private const float MinHitRadius = 0f;
+
+    /// <summary>星の弾けの筋の本数の下限（1 本は無いと演出にならない）。</summary>
+    private const int MinSparkleRayCount = 1;
+
+    /// <summary>星の弾けが始まる内半径の割合（外半径に対する比）。中心を少し空けて筋に見せる。</summary>
+    private const float SparkleInnerRatio = 0.25f;
+
+    /// <summary>不透明度の最大値（星の弾けの出だし）。</summary>
+    private const float FullAlpha = 1f;
+
+    /// <summary>時間の割り算で 0 除算を避けるための下限（秒）。</summary>
+    private const float MinPositiveSeconds = 1e-4f;
 
     /// <summary>スケール（拡大率）の下限。0 未満のスケールを描画に渡さないための番人値。</summary>
     private const float MinScale = 0f;
@@ -196,6 +224,55 @@ public class DriftItem : SEEDScript
     [SerializeField(Label = "巻き込みの音量")]
     private float hitSeVolume = 1f;
 
+    // ─── 取得演出（拾われた瞬間だけ・寿命切れでは出ない）──────────
+
+    /// <summary>
+    /// <b>取得された瞬間</b>に鳴らす効果音（空なら鳴らさない）。
+    /// <see cref="hitSePath"/> と別に持つのは、種類ごとの「拾った音」を
+    /// prefab 側で差し替えられるようにするため（データドリブンの原則）。
+    /// 寿命切れの消滅では鳴らさない。
+    /// </summary>
+    [Header("取得演出"), SerializeField(Label = "取得の効果音"), AssetReference("mp3", "wav", "ogg")]
+    private string pickupSePath = "";
+
+    /// <summary>取得効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "取得の音量")]
+    private float pickupSeVolume = 1f;
+
+    /// <summary>取得した瞬間に出す演出の種類。</summary>
+    [SerializeField(Label = "取得の演出")]
+    private DriftPickupEffect pickupEffect = DriftPickupEffect.Splash;
+
+    /// <summary>
+    /// 水しぶき演出（<see cref="DriftPickupEffect.Splash"/>）の規模（0〜1）。
+    /// 0 で最小（波紋 2・水柱 1 個）、1 で最大。
+    /// </summary>
+    [SerializeField(Label = "水しぶきの規模(0〜1)")]
+    private float splashIntensity01 = 0.35f;
+
+    /// <summary>星の弾け（<see cref="DriftPickupEffect.Sparkle"/>）の筋の色（RGB）。</summary>
+    [SerializeField(Label = "星の弾けの色(RGB)")]
+    private SEED.Vector3 sparkleColor = new(1f, 0.95f, 0.45f);
+
+    /// <summary>星の弾けの筋の本数（放射状に等間隔で並ぶ）。</summary>
+    [SerializeField(Label = "星の弾けの本数")]
+    private int sparkleRayCount = 6;
+
+    /// <summary>星の弾けが最終的に広がる半径（メートル）。</summary>
+    [SerializeField(Label = "星の弾けの半径(m)")]
+    private float sparkleRadiusMeters = 0.7f;
+
+    /// <summary>
+    /// 星の弾けの表示秒数。<b>消滅演出（<see cref="disappearSeconds"/>）が終わると
+    /// アクタごと破棄される</b>ので、実際に見えるのは短い方の秒数になる。
+    /// </summary>
+    [SerializeField(Label = "星の弾けの秒数")]
+    private float sparkleSeconds = 0.3f;
+
+    /// <summary>星の弾けの筋の太さ（画面ピクセル）。</summary>
+    [SerializeField(Label = "星の弾けの太さ(px)")]
+    private float sparkleThicknessPx = 3f;
+
     // ─── 実行時の内部状態 ───────────────────────────────────
 
     /// <summary>
@@ -246,6 +323,24 @@ public class DriftItem : SEEDScript
 
     /// <summary>消滅演出の開始からの経過秒数（<see cref="disappearSeconds"/> と比較する）。</summary>
     private float dyingElapsed = 0f;
+
+    /// <summary>
+    /// 取得演出（効果音・エフェクト）を既に出したか
+    /// 【多重再生を防ぐ唯一の関門】。取得は 1 個につき 1 回しか起きない。
+    /// </summary>
+    private bool pickupPlayed = false;
+
+    /// <summary>星の弾けを描いている最中か（<see cref="DriftPickupEffect.Sparkle"/> のときだけ true）。</summary>
+    private bool sparkleActive = false;
+
+    /// <summary>星の弾けの開始からの経過秒数。</summary>
+    private float sparkleElapsed = 0f;
+
+    /// <summary>
+    /// 星の弾けの中心（取得した瞬間のワールド位置）。
+    /// アクタ自身は消滅演出で縮んでいくので、位置は開始時に控えておく。
+    /// </summary>
+    private SEED.Vector3 sparkleCenter = SEED.Vector3.Zero;
 
     /// <summary>
     /// 消滅演出を開始した瞬間のスケール。ここから 0 へ向けて縮める
@@ -332,6 +427,10 @@ public class DriftItem : SEEDScript
     {
         float dt = ctx.DeltaTime;
 
+        // 星の弾けは「取得 → 消滅演出」の間ずっと描き続ける必要があるので、
+        // 消滅中かどうかの分岐より前で進める
+        UpdateSparkle(dt);
+
         if (isDying)
         {
             UpdateDying(dt);
@@ -380,13 +479,37 @@ public class DriftItem : SEEDScript
     // ─── 公開 API（マネージャ・コントローラから呼ぶ）────────────────
 
     /// <summary>
-    /// 巻き込み効果音を鳴らす（パス未設定なら何もしない）。
-    /// <see cref="Kill"/> より前に呼ぶこと（破棄後はフィールドを読む意味が無くなるため）。
+    /// 巻き込み効果音を鳴らす（＝取得の演出を出す）。
+    /// <see cref="Kill()"/> より前に呼ぶこと（破棄後はフィールドを読む意味が無くなるため）。
+    ///
+    /// 巻き込み＝取得なので、中身は <see cref="Pickup"/>（取得演出の唯一の入口）へ委譲する。
+    /// 呼び出し側の名前を変えずに演出を足せるようにしてある。
     /// </summary>
     public void PlayHitSe()
     {
-        if (string.IsNullOrEmpty(hitSePath)) { return; }
-        SEED.Audio.Play(hitSePath, SEED.Mathf.Clamped01(hitSeVolume));
+        Pickup();
+    }
+
+    /// <summary>
+    /// 取得された（ウキが巻き込んだ）ことをこの漂流物へ伝える
+    /// 【取得演出の唯一の入口】。
+    ///
+    /// 効果音（<see cref="hitSePath"/> ＋ <see cref="pickupSePath"/>）を鳴らし、
+    /// <see cref="pickupEffect"/> の演出を出す。<b>消滅そのものは行わない</b>
+    /// （消すのは <see cref="Kill()"/> の役目）ので、拾った側は
+    /// 「<see cref="Pickup"/> → <see cref="Kill()"/>」または
+    /// 「<c>Kill(pickedUp: true)</c>」のどちらでも良い。
+    ///
+    /// 何度呼んでも演出は 1 回だけ（<see cref="pickupPlayed"/> で番をする）。
+    /// </summary>
+    public void Pickup()
+    {
+        if (pickupPlayed) { return; }
+        pickupPlayed = true;
+
+        PlaySe(hitSePath, hitSeVolume);
+        PlaySe(pickupSePath, pickupSeVolume);
+        PlayPickupEffect();
     }
 
     /// <summary>
@@ -399,8 +522,21 @@ public class DriftItem : SEEDScript
     /// 既に消滅演出中であれば何もしない（多重呼び出しでも 1 回しか演出が走らない）。
     /// <see cref="disappearSeconds"/> が 0 以下なら演出を飛ばして即座に破棄する。
     /// </summary>
-    public void Kill()
+    public void Kill() => Kill(pickedUp: false);
+
+    /// <summary>
+    /// 消滅演出を開始する（取得によるものかどうかを指定できる版）
+    /// 【消滅と取得を区別する唯一の分岐】。
+    ///
+    /// <paramref name="pickedUp"/> が true のときだけ取得演出
+    /// （<see cref="Pickup"/>）を出す。寿命切れ・一括破棄では false のまま呼ばれるので、
+    /// 拾っていないのに取得音が鳴ることはない。
+    /// </summary>
+    /// <param name="pickedUp">取得（巻き込み）による消滅なら true。</param>
+    public void Kill(bool pickedUp)
     {
+        if (pickedUp) { Pickup(); }
+
         if (isDying) { return; }   // 既に消滅中の多重呼び出しは無視する
 
         All.Remove(this);
@@ -422,6 +558,113 @@ public class DriftItem : SEEDScript
     }
 
     // ─── 内部処理 ─────────────────────────────────────────
+
+    /// <summary>
+    /// 効果音を 1 つ鳴らす（パスが空なら何もしない）【効果音再生の唯一の実装】。
+    /// </summary>
+    /// <param name="path">効果音のアセットパス。</param>
+    /// <param name="volume">音量（0〜1 にクランプする）。</param>
+    private static void PlaySe(string path, float volume)
+    {
+        if (string.IsNullOrEmpty(path)) { return; }
+        SEED.Audio.Play(path, SEED.Mathf.Clamped01(volume));
+    }
+
+    /// <summary>
+    /// 取得演出（<see cref="pickupEffect"/>）を 1 回だけ出す
+    /// 【演出の種類と実装の唯一の対応表】。
+    /// </summary>
+    private void PlayPickupEffect()
+    {
+        switch (pickupEffect)
+        {
+            case DriftPickupEffect.Splash:
+                SpawnPickupSplash();
+                break;
+
+            case DriftPickupEffect.Sparkle:
+                BeginSparkle();
+                break;
+
+            // None: 効果音だけで演出は出さない
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 水しぶき（波紋＋水柱）を水面へまく。
+    /// 規模は <see cref="splashIntensity01"/>、水面の高さは
+    /// <see cref="FishingController.WaterSurfaceY"/>（居なければ自分の高さ）を使う。
+    /// </summary>
+    private void SpawnPickupSplash()
+    {
+        SEED.Vector3 position = Position;
+        float surfaceY = FishingController.Current is { } controller
+            ? controller.WaterSurfaceY()
+            : position.y;
+
+        WaterSplashSpawner.Spawn(
+            WaterSplashSettings.Default, position, surfaceY, SEED.Mathf.Clamped01(splashIntensity01));
+    }
+
+    /// <summary>星の弾けを開始する（中心位置を控えて経過をリセットするだけ）。</summary>
+    private void BeginSparkle()
+    {
+        sparkleActive = true;
+        sparkleElapsed = 0f;
+        sparkleCenter = Position;
+    }
+
+    /// <summary>
+    /// 星の弾けを 1 フレームぶん描く【星の弾けの唯一の描画点】。
+    ///
+    /// 中心から放射状に <see cref="sparkleRayCount"/> 本の筋を描き、
+    /// 時間とともに外へ広がりながら薄くなる（<see cref="SEED.Draw3D"/> の
+    /// イミディエイト描画なので、毎フレーム呼ばないと消える）。
+    /// </summary>
+    /// <param name="dt">このフレームのデルタタイム。</param>
+    private void UpdateSparkle(float dt)
+    {
+        if (!sparkleActive) { return; }
+
+        if (dt > 0f) { sparkleElapsed += dt; }
+
+        float duration = SEED.Mathf.Max(sparkleSeconds, MinPositiveSeconds);
+        float progress = SEED.Mathf.Clamped01(sparkleElapsed / duration);
+        if (progress >= 1f)
+        {
+            sparkleActive = false;
+            return;
+        }
+
+        // 外へ広がりながら薄くなる
+        float outerRadius = SEED.Mathf.Max(sparkleRadiusMeters, 0f) * progress;
+        float innerRadius = outerRadius * SparkleInnerRatio;
+        var color = new SEED.Color(
+            sparkleColor.x, sparkleColor.y, sparkleColor.z, FullAlpha - progress);
+
+        int rays = SEED.Mathf.Max(sparkleRayCount, MinSparkleRayCount);
+        float stepRadians = FullTurnRadians / rays;
+
+        for (int i = 0; i < rays; i++)
+        {
+            float angle = stepRadians * i;
+            float dirX = SEED.Mathf.Sin(angle);
+            float dirZ = SEED.Mathf.Cos(angle);
+
+            var from = new SEED.Vector3(
+                sparkleCenter.x + dirX * innerRadius,
+                sparkleCenter.y,
+                sparkleCenter.z + dirZ * innerRadius);
+            var to = new SEED.Vector3(
+                sparkleCenter.x + dirX * outerRadius,
+                sparkleCenter.y,
+                sparkleCenter.z + dirZ * outerRadius);
+
+            SEED.Draw3D.Line(from, to, color, thicknessPx: SEED.Mathf.Max(sparkleThicknessPx, 0f));
+        }
+    }
 
     /// <summary>
     /// 消滅演出専用の毎フレーム更新【<see cref="isDying"/> の間だけ呼ばれる】。

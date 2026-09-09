@@ -12,6 +12,21 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// （<see cref="FishRadar.CatchableColor"/> / <see cref="FishRadar.DriftColorOf"/> など）、
 /// 呼び出し側はそれを読んで詰めるだけ ―― パレットの唯一の置き場をレーダー側に保つ。
 /// </summary>
+public enum RadarDotShape
+{
+    /// <summary>
+    /// 形を指定しない（＝レーダー側の配色表から自動で決める）。
+    /// 呼び出し側が形まで意識しないで済むようにするための既定値。
+    /// </summary>
+    Auto,
+
+    /// <summary>丸い点（魚・既定の漂流物）。</summary>
+    Dot,
+
+    /// <summary>星型（5 芒星。魚 HP 回復の漂流物など「特別なもの」に使う）。</summary>
+    Star,
+}
+
 public readonly struct RadarEntry
 {
     /// <summary>この点のワールド座標（XZ だけ使う。Y は無視される）。</summary>
@@ -23,15 +38,25 @@ public readonly struct RadarEntry
     /// <summary>点の不透明度（0〜1）。魚の「釣れない個体」だけ薄くする使い方をしている。</summary>
     public readonly float alpha;
 
+    /// <summary>
+    /// 点の形（<see cref="RadarDotShape.Auto"/> ならレーダー側が色から自動で決める）。
+    /// 呼び出し側が形まで決めたいときだけ明示すればよい。
+    /// </summary>
+    public readonly RadarDotShape shape;
+
     /// <summary>各値を指定して 1 点ぶんの入力を作る。</summary>
     /// <param name="position">ワールド座標。</param>
     /// <param name="color">点の色（RGB）。</param>
     /// <param name="alpha">点の不透明度（0〜1）。</param>
-    public RadarEntry(SEED.Vector3 position, SEED.Vector3 color, float alpha)
+    /// <param name="shape">点の形（省略時は自動＝レーダー側の配色表で決まる）。</param>
+    public RadarEntry(
+        SEED.Vector3 position, SEED.Vector3 color, float alpha,
+        RadarDotShape shape = RadarDotShape.Auto)
     {
         this.position = position;
         this.color = color;
         this.alpha = alpha;
+        this.shape = shape;
     }
 }
 
@@ -95,6 +120,22 @@ public class FishRadar : SEEDScript
 
     /// <summary>完全に不透明な値（釣れる個体の点に使う）。</summary>
     private const float OpaqueAlpha = 1f;
+
+    /// <summary>星型の頂点数の下限（3 芒星より少ないと星に見えない）。</summary>
+    private const int MinStarPointCount = 3;
+
+    /// <summary>1 周（度）。星の頂点を等間隔に並べるのに使う。</summary>
+    private const float FullCircleDegrees = 360f;
+
+    /// <summary>星の 1 頂点あたりの点数（外側の頂点＋内側のくぼみ＝2 点）。</summary>
+    private const int StarVerticesPerPoint = 2;
+
+    /// <summary>
+    /// 色が「同じ」とみなす許容差（成分ごと）。
+    /// 呼び出し側は <see cref="FishRadar.DriftColorOf"/> が返した値をそのまま詰めるので
+    /// 本来は完全一致するが、浮動小数の往復を考えて幅を持たせる。
+    /// </summary>
+    private const float ColorMatchEpsilon = 1e-3f;
 
     // ─── 参照（インスペクタで割り当てる）───────────────────────
 
@@ -192,13 +233,51 @@ public class FishRadar : SEEDScript
     [SerializeField(Label = "漂流物の色(糸回復)")]
     private SEED.Vector3 driftLineRecoverColor = new(1f, 0.45f, 0.8f);
 
-    /// <summary>漂流物「ひるませ（スタン）」（<see cref="DriftItem.KindStun"/>）の点の色（RGB）。</summary>
+    /// <summary>
+    /// 漂流物「ひるませ（スタン）」（<see cref="DriftItem.KindStun"/>）の点の色（RGB）。
+    /// 既定は<b>茶色</b>（黄色は打点アイコン・マーカーが使うため、役割で色を分ける）。
+    /// </summary>
     [SerializeField(Label = "漂流物の色(ひるませ)")]
-    private SEED.Vector3 driftStunColor = new(1f, 0.95f, 0.3f);
+    private SEED.Vector3 driftStunColor = new(0.55f, 0.33f, 0.16f);
 
-    /// <summary>漂流物「魚HPの回復」（<see cref="DriftItem.KindFishRecover"/>）の点の色（RGB）。</summary>
+    /// <summary>
+    /// 漂流物「魚HPの回復」（<see cref="DriftItem.KindFishRecover"/>）の点の色（RGB）。
+    /// 既定は<b>オレンジ</b>。形も星型（<see cref="driftFishRecoverShape"/>）にして
+    /// 「拾ってはいけないもの」を色と形の両方で区別できるようにしてある。
+    /// </summary>
     [SerializeField(Label = "漂流物の色(魚回復)")]
-    private SEED.Vector3 driftFishRecoverColor = new(1f, 0.6f, 0.2f);
+    private SEED.Vector3 driftFishRecoverColor = new(1f, 0.55f, 0.1f);
+
+    /// <summary>漂流物「糸の回復」の点の形。</summary>
+    [SerializeField(Label = "漂流物の形(糸回復)")]
+    private RadarDotShape driftLineRecoverShape = RadarDotShape.Dot;
+
+    /// <summary>漂流物「ひるませ（スタン）」の点の形。</summary>
+    [SerializeField(Label = "漂流物の形(ひるませ)")]
+    private RadarDotShape driftStunShape = RadarDotShape.Dot;
+
+    /// <summary>漂流物「魚HPの回復」の点の形（既定は星型）。</summary>
+    [SerializeField(Label = "漂流物の形(魚回復)")]
+    private RadarDotShape driftFishRecoverShape = RadarDotShape.Star;
+
+    /// <summary>星型の芒（とがり）の数（5 ＝ 5 芒星。下限 3）。</summary>
+    [SerializeField(Label = "星の芒の数")]
+    private int starPointCount = 5;
+
+    /// <summary>
+    /// 星型のくぼみの深さ（外半径に対する内半径の比・0〜1）。
+    /// 小さいほど細くとがった星になる。0.382 が正五芒星の比。
+    /// </summary>
+    [SerializeField(Label = "星のくぼみ比(0〜1)")]
+    private float starInnerRatio = 0.45f;
+
+    /// <summary>星型の外半径の倍率（<see cref="dotRadiusPx"/> 基準）。丸い点と面積を揃えるため少し大きめ。</summary>
+    [SerializeField(Label = "星の半径倍率")]
+    private float starRadiusScale = 1.6f;
+
+    /// <summary>星型の向き（度・0 ＝ とがりが真上）。</summary>
+    [SerializeField(Label = "星の向き(度)")]
+    private float starRotationDegrees = 0f;
 
     /// <summary>背景の円の不透明度（表示中）。</summary>
     [SerializeField(Label = "背景の不透明度")]
@@ -264,6 +343,19 @@ public class FishRadar : SEEDScript
         DriftItem.KindStun => driftStunColor,
         DriftItem.KindFishRecover => driftFishRecoverColor,
         _ => catchableColor,
+    };
+
+    /// <summary>
+    /// 漂流物の種類に対応する点の形【漂流物のレーダー形状の唯一の対応表】。
+    /// 未知の種類は丸い点で描く。
+    /// </summary>
+    /// <param name="kind">漂流物の種類文字列。</param>
+    public RadarDotShape DriftShapeOf(string kind) => kind switch
+    {
+        DriftItem.KindLineRecover => driftLineRecoverShape,
+        DriftItem.KindStun => driftStunShape,
+        DriftItem.KindFishRecover => driftFishRecoverShape,
+        _ => RadarDotShape.Dot,
     };
 
     // ─── ライフサイクル ───────────────────────────────────────
@@ -501,17 +593,121 @@ public class FishRadar : SEEDScript
                 py *= shrink;
             }
 
-            // 色と不透明度は呼び出し側が決めた値をそのまま描く（レーダーは判断しない）
-            SEED.Draw.Circle(
+            // 色と不透明度は呼び出し側が決めた値をそのまま描く（レーダーは判断しない）。
+            // 形だけは「指定が無ければ配色表から補う」（ResolveShape の説明を参照）。
+            DrawDot(
                 new SEED.Vector2(origin.x + px, origin.y + py),
-                SEED.Mathf.Max(dotRadiusPx, MinPositiveValue),
+                ResolveShape(e),
                 ToColor(e.color, SEED.Mathf.Clamped01(e.alpha) * fade01),
-                layer: dotLayer,
-                space: space);
+                space);
         }
     }
 
     // ─── 内部処理 ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 1 点を指定の形で描く【点の形の唯一の分岐点】。
+    /// </summary>
+    /// <param name="at">点の中心（<paramref name="space"/> のローカル座標）。</param>
+    /// <param name="shape">点の形（<see cref="RadarDotShape.Auto"/> は丸い点として扱う）。</param>
+    /// <param name="color">描画色（不透明度込み）。</param>
+    /// <param name="space">描画する座標空間。</param>
+    private void DrawDot(SEED.Vector2 at, RadarDotShape shape, SEED.Color color, SEED.CanvasTransform space)
+    {
+        float radius = SEED.Mathf.Max(dotRadiusPx, MinPositiveValue);
+
+        if (shape == RadarDotShape.Star)
+        {
+            DrawStar(
+                at,
+                radius * SEED.Mathf.Max(starRadiusScale, MinPositiveValue),
+                SEED.Mathf.Clamped01(starInnerRatio),
+                SEED.Mathf.Max(starPointCount, MinStarPointCount),
+                starRotationDegrees,
+                color,
+                dotLayer,
+                space);
+            return;
+        }
+
+        SEED.Draw.Circle(at, radius, color, layer: dotLayer, space: space);
+    }
+
+    /// <summary>
+    /// 星型（<paramref name="pointCount"/> 芒星）を塗りで描く
+    /// 【星型描画の唯一の実装・他の UI からも使える共通処理】。
+    ///
+    /// 外半径の頂点と内半径のくぼみを交互に並べた 2×芒数 点の多角形として描く
+    /// （<see cref="SEED.Draw.Polygon"/> は凹多角形にも対応しているので、
+    ///   三角形へ手で分割する必要は無い）。
+    /// 角度 0 がとがりの真上で、＋ が右回り（キャンバスの Y は下向き）。
+    /// </summary>
+    /// <param name="center">星の中心（<paramref name="space"/> のローカル座標）。</param>
+    /// <param name="outerRadius">外半径（px・とがりの先までの長さ）。</param>
+    /// <param name="innerRatio">くぼみの深さ（外半径に対する内半径の比・0〜1）。</param>
+    /// <param name="pointCount">芒（とがり）の数。</param>
+    /// <param name="rotationDegrees">星全体の回転（度）。</param>
+    /// <param name="color">描画色（不透明度込み）。</param>
+    /// <param name="layer">描画レイヤー。</param>
+    /// <param name="space">描画する座標空間。</param>
+    private static void DrawStar(
+        SEED.Vector2 center, float outerRadius, float innerRatio, int pointCount,
+        float rotationDegrees, SEED.Color color, int layer, SEED.CanvasTransform space)
+    {
+        int vertexCount = pointCount * StarVerticesPerPoint;
+        var points = new SEED.Vector2[vertexCount];
+
+        // 隣り合う頂点の角度差（外→内→外…と交互に置くので、1 芒あたり 2 点）
+        float stepDegrees = FullCircleDegrees / vertexCount;
+        float innerRadius = outerRadius * innerRatio;
+
+        for (int i = 0; i < vertexCount; i++)
+        {
+            // 偶数番目が外側のとがり、奇数番目が内側のくぼみ
+            float radius = (i % StarVerticesPerPoint == 0) ? outerRadius : innerRadius;
+            float rad = (rotationDegrees + stepDegrees * i) * DegToRad;
+            points[i] = new SEED.Vector2(
+                SEED.Mathf.Sin(rad) * radius,
+                -SEED.Mathf.Cos(rad) * radius);
+        }
+
+        SEED.Draw.Polygon(
+            points,
+            new SEED.Transform2D(center),
+            color,
+            layer: layer,
+            space: space);
+    }
+
+    /// <summary>
+    /// 点の形を決める【形の解決の唯一の点】。
+    ///
+    /// 呼び出し側が形を明示していればそれに従う。
+    /// <see cref="RadarDotShape.Auto"/>（＝形を指定しない既定）のときは、
+    /// 点の色を漂流物の配色表と突き合わせて対応する形を採る
+    /// ―― 呼び出し側は <see cref="DriftColorOf"/> が返した色をそのまま詰めてくるので、
+    /// 色が一致することが「その種類の漂流物である」ことの十分な手掛かりになる。
+    /// どれにも当てはまらない（＝魚の点）なら丸い点。
+    /// </summary>
+    /// <param name="entry">描く点の入力。</param>
+    private RadarDotShape ResolveShape(in RadarEntry entry)
+    {
+        if (entry.shape != RadarDotShape.Auto) { return entry.shape; }
+
+        if (IsSameColor(entry.color, driftFishRecoverColor)) { return driftFishRecoverShape; }
+        if (IsSameColor(entry.color, driftStunColor)) { return driftStunShape; }
+        if (IsSameColor(entry.color, driftLineRecoverColor)) { return driftLineRecoverShape; }
+
+        return RadarDotShape.Dot;
+    }
+
+    /// <summary>2 つの RGB が（誤差の範囲で）同じ色かどうか。</summary>
+    /// <param name="a">色 1（RGB）。</param>
+    /// <param name="b">色 2（RGB）。</param>
+    private static bool IsSameColor(SEED.Vector3 a, SEED.Vector3 b)
+        => SEED.Mathf.Abs(a.x - b.x) <= ColorMatchEpsilon
+        && SEED.Mathf.Abs(a.y - b.y) <= ColorMatchEpsilon
+        && SEED.Mathf.Abs(a.z - b.z) <= ColorMatchEpsilon;
 
     /// <summary>
     /// 指定した座標空間における「レーダー中心」のローカル座標。

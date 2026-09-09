@@ -4,6 +4,7 @@
 // ============================================================================
 
 using System;
+using System.Collections.Generic;
 
 /// <summary>
 /// UI の配色を <b>16 進カラーコードの文字列</b>で持ち回すための純 C# 静的ヘルパー
@@ -235,6 +236,41 @@ public static class UiColorUtil
         const int FirstStep = 1;
         if (maxStep <= FirstStep) { return LerpMin; }
         return SEED.Mathf.Clamped01((float)(step - FirstStep) / (maxStep - FirstStep));
+    }
+
+    /// <summary>
+    /// <b>任意個数の色止め</b>を等間隔に並べたグラデーションから 1 色を取り出す
+    /// 【多段グラデーションの唯一の実装】。
+    ///
+    /// <see cref="Gradient3"/> は色止めが 3 つに固定だが、こちらは
+    /// 「水色 → 緑 → 黄 → 橙 → 赤」のように<b>企画側が色止めを増減できる</b>。
+    /// 色止めは <paramref name="t"/> の 0〜1 上に等間隔で並ぶ
+    /// （5 色なら 0 / 0.25 / 0.5 / 0.75 / 1）。
+    /// </summary>
+    /// <param name="hexStops">色止めの並び（16 進カラーコード。先頭が t=0、末尾が t=1）。</param>
+    /// <param name="t">位置（0〜1 にクランプする）。</param>
+    /// <param name="fallback">色止めが空、または書式が不正なときに使う色。</param>
+    /// <returns>グラデーション上の色。</returns>
+    public static SEED.Color GradientStops(IReadOnlyList<string>? hexStops, float t, SEED.Color fallback)
+    {
+        if (hexStops is null || hexStops.Count == 0) { return fallback; }
+
+        // 色止めが 1 つなら常にその色（補間する相手が居ない）
+        const int SingleStop = 1;
+        if (hexStops.Count == SingleStop) { return ParseOr(hexStops[0], fallback); }
+
+        // 位置を「区間番号 ＋ 区間内の割合」へ分解する（区間数 ＝ 色止め数 − 1）
+        int lastIndex = hexStops.Count - SingleStop;
+        float scaled = SEED.Mathf.Clamped01(t) * lastIndex;
+        int index = SEED.Mathf.FloorToInt(scaled);
+
+        // t = 1 ちょうどのときは最後の区間の終端を指すように 1 つ手前へ寄せる
+        if (index >= lastIndex) { index = lastIndex - SingleStop; }
+
+        return LerpRgb(
+            ParseOr(hexStops[index], fallback),
+            ParseOr(hexStops[index + SingleStop], fallback),
+            scaled - index);
     }
 
     // ─── 内部処理: 桁の読み取り ─────────────────────────────

@@ -341,6 +341,24 @@ public class FishingController : SEEDScript
     /// <summary><see cref="cameraTransform"/> 未設定時にフォールバックで探すアクタ名。</summary>
     private const string MainCameraActorName = "MainCamera";
 
+    /// <summary>1 回転の角度（度）。方位角の最短回り計算に使う。</summary>
+    private const float FullTurnDegrees = 360f;
+
+    /// <summary>半回転の角度（度）。最短回りの折り返しと「真後ろ」の算出に使う。</summary>
+    private const float HalfTurnDegrees = 180f;
+
+    /// <summary>smoothstep（3t² − 2t³）の 2 次項の係数。</summary>
+    private const float SmoothStepSquareCoefficient = 3f;
+
+    /// <summary>smoothstep（3t² − 2t³）の 3 次項の係数。</summary>
+    private const float SmoothStepCubicCoefficient = 2f;
+
+    /// <summary>
+    /// <see cref="DebugForceCatch"/> がウキを寄せる距離の、成立距離に対する割合。
+    /// 1 未満にして「確実に成立距離の内側」へ置く（浮動小数の誤差で外れないように）。
+    /// </summary>
+    private const float DebugCatchDistanceRatio = 0.5f;
+
     // ─── 参照（インスペクタで割り当てる）───────────────────────
 
     /// <summary>
@@ -779,6 +797,129 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "釣り上げ成立距離(m)")]
     private float catchDistanceMeters = 1.0f;
 
+    // ─── 岸際（岸に近づいたときの挙動）【2026-09-09 追加】─────────────
+    //
+    // ウキが竿先（＝プレイヤーが立つ岸）へ近づいたら、次の 3 つを同時に切り替える。
+    //   (a) 漂流物を新規に出さない（DriftItemManager が NearShore を見る）
+    //   (b) 巻きの方向変更（A / D）を殺してウキを竿先へ直進させる
+    //   (c) カメラを「陸側から海を見る」構図（ウキ→竿先の延長線上）へ回り込ませる
+    // 3 つとも同じ 1 つの判定（NearShore）から決まるので、閾値の食い違いが起きない。
+
+    /// <summary>
+    /// 「岸に近づいた」とみなすウキ→竿先の水平距離（メートル）
+    /// 【岸際判定の唯一の閾値】。
+    ///
+    /// この距離<b>以内</b>に入ったら <see cref="NearShore"/> が立つ。
+    /// 立っているあいだの効果は上のコメント (a)〜(c) のとおり。
+    /// </summary>
+    [Header("岸際"), SerializeField(Label = "岸に近い距離(m)")]
+    private float nearShoreDistanceMeters = 6f;
+
+    /// <summary>
+    /// 岸際判定を<b>抜ける</b>ときにだけ上乗せする距離（メートル・ヒステリシス幅）。
+    ///
+    /// 入るのは <see cref="nearShoreDistanceMeters"/> 以内、抜けるのは
+    /// 「<see cref="nearShoreDistanceMeters"/> ＋ この値」を超えたとき。
+    /// 境界付近でウキが前後するたびに漂流物の出現・操舵・カメラ構図が
+    /// パタパタ切り替わるのを防ぐ。0 でヒステリシスなし。
+    /// </summary>
+    [SerializeField(Label = "岸際判定のヒステリシス幅(m)")]
+    private float nearShoreExitMarginMeters = 1.5f;
+
+    /// <summary>
+    /// 岸際のカメラが「陸側」へ回り込む速さ（度/秒）【回り込みの唯一の速度】。
+    ///
+    /// カメラはウキを中心に方位角（<see cref="shoreCamAzimuthDegrees"/>）で回り、
+    /// 目標方位（ウキ→竿先の向き＝陸側）へこの速さで近づく。
+    /// 大きいほど素早く回り込み、0 にすると回り込まない（＝入った時点の方位で固定）。
+    /// </summary>
+    [SerializeField(Label = "岸際カメラの回り込み速度(度/秒)")]
+    private float shoreCamOrbitSpeedDegPerSec = 70f;
+
+    /// <summary>岸際カメラのウキからの水平距離（メートル）。</summary>
+    [SerializeField(Label = "岸際カメラの距離(m)")]
+    private float shoreCamDistance = 7f;
+
+    /// <summary>岸際カメラのウキからの高さ（メートル）。</summary>
+    [SerializeField(Label = "岸際カメラの高さ(m)")]
+    private float shoreCamHeight = 3f;
+
+    // ─── 釣り上げ時のカメラ寄り【2026-09-09 追加】──────────────────
+    //
+    // 「釣れた判定 → カメラがウキ（魚）へ寄る → 釣り上げ演出」の中段。
+    // 演出が始まる<b>前</b>の区間なので、CatchPresenter ではなく本スクリプトが持つ。
+
+    /// <summary>
+    /// 釣れた判定の瞬間からカメラがウキへ寄り切るまでの秒数【寄りの唯一の所要時間】。
+    ///
+    /// この秒数が経ってから <see cref="CatchPresenter.Begin"/> を呼ぶ。
+    /// 0 以下なら寄りを行わず、従来どおり即座に演出へ入る。
+    /// 評価バナーの読ませ時間（<see cref="fightEvalLeadSeconds"/>）とは
+    /// <b>どちらか長いほう</b>が待ち時間になる（両方を足して間延びさせない）。
+    /// </summary>
+    [Header("釣り上げ時のカメラ寄り"), SerializeField(Label = "寄りの秒数")]
+    private float catchZoomSeconds = 0.9f;
+
+    /// <summary>寄り切ったときのカメラのウキからの水平距離（メートル）。</summary>
+    [SerializeField(Label = "寄り切ったときの距離(m)")]
+    private float catchZoomDistance = 3f;
+
+    /// <summary>寄り切ったときのカメラのウキからの高さ（メートル）。</summary>
+    [SerializeField(Label = "寄り切ったときの高さ(m)")]
+    private float catchZoomHeight = 1.4f;
+
+    /// <summary>
+    /// カメラの追従スクリプト【構図を握るための唯一の参照】。
+    ///
+    /// 岸際の回り込みと釣り上げの寄りは、シーンに置いた目標アクタではなく
+    /// <see cref="CameraMove.SetOverrideGoal"/> へ姿勢そのものを渡して実現する
+    /// （目標アクタをシーンへ増やさずに済み、構図の計算がこのスクリプトに閉じる）。
+    /// 未設定ならカメラ演出は一切効かない（判定・演出の進行そのものには影響しない）。
+    /// </summary>
+    [SerializeField(Label = "カメラ(CameraMove)")]
+    private CameraMove? cameraMove = null;
+
+    // ─── 岸際・寄りカメラの実行時状態（インスペクタには出さない）───────
+
+    /// <summary>
+    /// ウキが岸（竿先）の近くに居るか【岸際の効果すべての唯一の判定結果】。
+    /// <see cref="UpdateNearShore"/> がヒステリシス付きで毎フレーム立て直す。
+    /// 漂流物マネージャ（<see cref="DriftItemManager"/>）も外からこれを読む。
+    /// </summary>
+    public bool NearShore { get; private set; } = false;
+
+    /// <summary>
+    /// 岸際カメラの現在の方位角（度）。ウキ<b>から見たカメラの向き</b>で、
+    /// 目標方位（ウキ→竿先＝陸側）へ <see cref="shoreCamOrbitSpeedDegPerSec"/> で近づく。
+    /// </summary>
+    private float shoreCamAzimuthDegrees = 0f;
+
+    /// <summary>
+    /// いま <see cref="CameraMove.SetOverrideGoal"/> で構図を握っているか
+    /// 【上書きの解除を 1 か所に閉じるためのフラグ】。
+    /// 握っていないときに <see cref="CameraMove.ClearOverrideGoal"/> を呼ぶと、
+    /// 釣り上げ演出（CatchPresenter）が握った構図まで外してしまうため。
+    /// </summary>
+    private bool cameraOverrideActive = false;
+
+    /// <summary>釣り上げの寄りを進行中か（<see cref="UpdateCatchZoom"/> が進める）。</summary>
+    private bool catchZoomActive = false;
+
+    /// <summary>釣り上げの寄りの経過秒数（実時間）。</summary>
+    private float catchZoomElapsed = 0f;
+
+    /// <summary>寄りの開始姿勢（判定の瞬間のカメラ位置）。</summary>
+    private SEED.Vector3 catchZoomStartPosition = SEED.Vector3.Zero;
+
+    /// <summary>寄りの開始姿勢（判定の瞬間のカメラ回転・度）。</summary>
+    private SEED.Vector3 catchZoomStartRotation = SEED.Vector3.Zero;
+
+    /// <summary>寄り切ったときのカメラ位置。</summary>
+    private SEED.Vector3 catchZoomGoalPosition = SEED.Vector3.Zero;
+
+    /// <summary>寄り切ったときのカメラ回転（度）。</summary>
+    private SEED.Vector3 catchZoomGoalRotation = SEED.Vector3.Zero;
+
     /// <summary>水面に浮いているウキの上下揺れの振幅（メートル）。0 で揺れなし。</summary>
     [SerializeField(Label = "ウキの揺れ幅(m)")]
     private float bobAmplitude = 0.05f;
@@ -1072,7 +1213,7 @@ public class FishingController : SEEDScript
 
     /// <summary>通常のときの文字色（16 進カラーコード）。既定は白。</summary>
     [SerializeField(Label = "通常のときの色(16進)")]
-    private string fightEvalGoodColor = "#FFFFFF";
+    private string fightEvalGoodColor = "#4CE07A";
 
     /// <summary>完璧のときに鳴らす SE（<c>assets://</c> パス。空で無音）。</summary>
     [SerializeField(Label = "完璧のときのSE")]
@@ -1707,6 +1848,63 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
+    /// 【デバッグ用】ヒット中の魚をその場で釣り上げる【強制釣り上げの唯一の入口】。
+    ///
+    /// <b>やること</b>は「ウキを釣り上げ成立距離の内側へ置いて、通常の釣り上げ経路
+    /// （<see cref="FinishReeling"/>）へ入る」だけ。判定・カメラの寄り・釣り上げ演出・
+    /// 図鑑登録・各種イベントはすべて本番と同じ道を通る（デバッグ専用の分岐を作らない）。
+    ///
+    /// ウキの置き先は「竿先から、いまウキが居る向きへ
+    /// <see cref="catchDistanceMeters"/> × <see cref="DebugCatchDistanceRatio"/>」の水面上。
+    /// 向きが定まらない（ウキが竿先に重なっている）ときはプレイヤーの正面へ置く。
+    ///
+    /// ヒットしていないときは何もせず false を返す
+    /// （呼び出し側＝<c>DebugCommands</c> が従来の強制ヒットへ回す）。
+    /// </summary>
+    /// <returns>釣り上げ処理へ入ったら true。</returns>
+    public bool DebugForceCatch()
+    {
+        if (State != FishState.Hooked || hookedFish is null)
+        {
+            SEED.Debug.LogWarning("[Fishing] DebugForceCatch: ヒット中ではないため何もしない");
+            return false;
+        }
+
+        if (uki is { IsValid: true } floatTf)
+        {
+            var rodTip = ReelTargetPosition();
+            float dx = floatTf.Position.x - rodTip.x;
+            float dz = floatTf.Position.z - rodTip.z;
+            float horizontal = SEED.Mathf.Sqrt(dx * dx + dz * dz);
+
+            float dirX;
+            float dirZ;
+            if (horizontal > DivideEpsilon)
+            {
+                dirX = dx / horizontal;
+                dirZ = dz / horizontal;
+            }
+            else
+            {
+                // ウキが竿先に重なっている: プレイヤーの正面（沖側）を向きとして使う。
+                float yawRadians = transform.Rotation.y * SEED.Mathf.Deg2Rad;
+                dirX = SEED.Mathf.Sin(yawRadians);
+                dirZ = SEED.Mathf.Cos(yawRadians);
+            }
+
+            float goalDistance = SEED.Mathf.Max(catchDistanceMeters, 0f) * DebugCatchDistanceRatio;
+            SetFloatPosition(new SEED.Vector3(
+                rodTip.x + dirX * goalDistance,
+                FloatSurfaceY(),
+                rodTip.z + dirZ * goalDistance));
+        }
+
+        SEED.Debug.Log($"[Fishing] DebugForceCatch: {hookedFish.DisplayName} を強制的に釣り上げる");
+        FinishReeling();
+        return true;
+    }
+
+    /// <summary>
     /// 【デバッグ用】竿先から指定距離だけ前方の水面へ、ウキを強制的に着水させる
     /// 【強制着水の唯一の実装】。
     ///
@@ -2067,6 +2265,7 @@ public class FishingController : SEEDScript
                 UpdateRunCameraTarget();    // 引き演出（LeadIn）中だけカメラ目標を置き直す
                 UpdateCallCameraTarget();   // 出題（Call）中だけカメラ目標を置き直す
                 UpdateReeling(ctx.DeltaTime);
+                UpdateShoreCamera(ctx.DeltaTime);   // 岸際の巻き中だけ「陸側から海を見る」構図へ回り込む
                 break;
 
             case FishState.Nibbling:
@@ -2084,6 +2283,13 @@ public class FishingController : SEEDScript
         // 状態遷移・糸切れ・釣り上げ・キャンセルのどれで抜けても、
         // ここが毎フレーム「今出すべきか」を見て開始／追従／停止を決める。
         UpdateStunEffect();
+
+        // ── カメラ姿勢の上書きを返す唯一の出口 ─────────────────────
+        // 上書きを掛けてよいのは「ヒット中の岸際（巻き）」と
+        // 「釣り上げ（寄り〜演出）」だけ。そのどちらでもない状態へ抜けたら、
+        // どの経路（糸切れ・空振り・キャンセル・姿勢解除）で来ても必ず通常の追従へ返す。
+        // 経路ごとに解除を書き足すと必ず取り残しが出るため、ここ 1 か所に集約する。
+        if (State is not (FishState.Hooked or FishState.Catching)) { ReleaseCameraOverride(); }
 
         // ── 巻き方向インジケータの表示／非表示の唯一の出口 ──────────────
         // このフレームに UpdateReelArrow が走らなかった（＝表示すべき状況ではない、
@@ -2164,6 +2370,9 @@ public class FishingController : SEEDScript
         fight?.EndFight();             // 姿勢解除・中断でもやり取りを畳む
         ClearPendingCatchBegin();      // 評価バナー待ちで演出が始まっていない場合の取り残しも断つ
         presenter?.Abort();            // 釣り上げ演出中なら畳む（魚の破棄・白／テキストの消去も込み）
+        catchZoomActive = false;       // 釣り上げの寄りが途中なら捨てる
+        ReleaseCameraOverride();       // 岸際／寄りでカメラを握っていたら必ず返す
+        NearShore = false;             // 岸際の効果（漂流物停止・直進巻き）も必ず解く
         HideJudgement();               // 判定画像も消す
         // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
         ResetPlayerClipLatch();
@@ -2598,6 +2807,22 @@ public class FishingController : SEEDScript
         // 残り距離（ウキ→竿先の水平距離）の表示。ウキが無ければ 0 を出す。
         f.UpdateDistanceDisplay(CurrentFloatDistance());
 
+        // ── 釣り上げ成立【成功条件の唯一の判定点・2026-09-09 改定】──────────
+        // 条件は「ウキが竿先の近傍（catchDistanceMeters）まで寄っていること」だけで、
+        // <b>魚 HP は一切見ない</b>（＝岸まで寄せ切れたら釣れる）。
+        // 魚 HP 0（FishingFight.FishDefeated）はもはや成立条件ではなく、
+        // 「見た目距離の下限が解除されて竿先まで一気に寄る」という意味だけを持つ。
+        //
+        // 糸切れ判定より<b>先</b>に置いてあるのは、「岸まで寄せ切った」を
+        // 何よりも優先させるため（同じフレームに両方成立したら釣り上げが勝つ）。
+        // FinishReeling が FishingFight.EndFight() を呼ぶので、
+        // これ以降は糸の減りも拍時計も止まる。
+        if (CurrentFloatDistance() <= catchDistanceMeters)
+        {
+            FinishReeling();
+            return;
+        }
+
         if (f.LineBroken)
         {
             // チュートリアルの「釣り上げよう」ミッションでは、糸が切れても投げ直しへ戻さず
@@ -2615,13 +2840,6 @@ public class FishingController : SEEDScript
             BreakLine();
             return;
         }
-
-        // 釣り上げ成立【成功条件の唯一の判定点】:
-        //   (1) 魚 HP を削り切っている（＝魚が力尽きた）
-        //   (2) かつウキが竿先の近傍（catchDistanceMeters）まで寄っている
-        // HP が先に 0 になった場合、魚は抵抗を止め（FishingFight 側）、ウキは
-        // 寄せ速度の上限で竿先まで寄り続けるので、必ず (2) に到達する。
-        if (f.FishDefeated && CurrentFloatDistance() <= catchDistanceMeters) { FinishReeling(); }
     }
 
     /// <summary>
@@ -3175,6 +3393,10 @@ public class FishingController : SEEDScript
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateReeling(float deltaTime)
     {
+        // 岸際判定はここで毎フレーム引き直す【巻きに関わる唯一の常時経路のため】。
+        // Floating / Reeling / Hooked のどの状態でも通るので、判定が古いまま残らない。
+        UpdateNearShore();
+
         if (uki is not { } floatTf || !floatTf.IsValid) { return; }
 
         float amount = ReadReelAmount();
@@ -3254,6 +3476,12 @@ public class FishingController : SEEDScript
         // ComputeReelDirection / UpdateReelArrow の両方へ使い回す（距離計算の重複を避ける）。
         float steerFactor = SEED.Mathf.Clamped01(
             (remaining - straightReelDistance) / SEED.Mathf.Max(straightFadeBand, DivideEpsilon));
+
+        // 岸際（NearShore）に入っているあいだは<b>方向変更入力そのものを殺す</b>
+        // （ウキは竿先へ直進する）。straightReelDistance のフェードと二重に効くが、
+        // どちらも「操舵を弱める」向きの効果なので競合しない
+        // （nearShoreDistanceMeters のほうを広く取れば、こちらが先に効く）。
+        if (NearShore) { steerFactor = 0f; }
 
         // 巻く向き（A / D による左右のずれを含む、基準方向からの水平単位ベクトル）
         var dir = ComputeReelDirection(toTarget, deltaTime, steerFactor);
@@ -3508,7 +3736,14 @@ public class FishingController : SEEDScript
                 // 待っている間もウキ・糸は掛かったときのまま残るので、絵が飛ばない。
                 pendingCatchFish = caught;
                 pendingCatchFloatPosition = FloatWorldPosition;
-                pendingCatchDelaySeconds = SEED.Mathf.Max(fightEvalLeadSeconds, 0f);
+
+                // 「釣れた判定 → カメラが寄る → 釣り上げ演出」の中段をここで始める。
+                // 待ち時間は「評価バナーの読ませ時間」と「寄りの秒数」の<b>長いほう</b>。
+                // 足し合わせると、寄り切ったあとにただ待つ間延びした時間ができるため。
+                BeginCatchZoom(pendingCatchFloatPosition);
+                float zoomWait = catchZoomActive ? SEED.Mathf.Max(catchZoomSeconds, 0f) : 0f;
+                pendingCatchDelaySeconds = SEED.Mathf.Max(
+                    SEED.Mathf.Max(fightEvalLeadSeconds, zoomWait), 0f);
             }
             else
             {
@@ -3527,6 +3762,274 @@ public class FishingController : SEEDScript
         // 再び振りを読む区間へ戻るのでロックし直す（左クリック押しっぱなしでの連続キャスト対応）。
         UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Aiming（空振り）");
+    }
+
+    // ─── 岸際の判定とカメラ【2026-09-09 追加】────────────────────
+
+    /// <summary>
+    /// 「ウキが岸（竿先）の近くに居るか」を毎フレーム立て直す
+    /// 【岸際判定の唯一の実装】。
+    ///
+    /// 入るのは <see cref="nearShoreDistanceMeters"/> 以内、抜けるのは
+    /// 「<see cref="nearShoreDistanceMeters"/> ＋ <see cref="nearShoreExitMarginMeters"/>」超え、
+    /// という<b>ヒステリシス</b>にしてあるので、境界でウキが前後しても
+    /// 漂流物の出現・操舵・カメラ構図がちらつかない。
+    ///
+    /// ウキが出ていない（未生成・破棄済み）ときは必ず false に落とす
+    /// （<see cref="CurrentFloatDistance"/> が 0 を返すため、素通しにすると
+    ///   ウキが無いだけで「岸に居る」と誤判定してしまう）。
+    /// </summary>
+    private void UpdateNearShore()
+    {
+        if (uki is not { IsValid: true } floatTf || !IsFloatOut())
+        {
+            NearShore = false;
+            return;
+        }
+
+        float distance = CurrentFloatDistance();
+        float enterDistance = SEED.Mathf.Max(nearShoreDistanceMeters, 0f);
+        float exitDistance = enterDistance + SEED.Mathf.Max(nearShoreExitMarginMeters, 0f);
+
+        NearShore = NearShore ? distance <= exitDistance : distance <= enterDistance;
+    }
+
+    /// <summary>
+    /// 岸際の巻き中だけ、カメラを「陸側から海を見る」構図へ回り込ませる
+    /// 【岸際カメラの唯一の制御点】。
+    ///
+    /// 構図は<b>プレイヤーの背後</b>ではなく<b>ウキと竿先を結ぶ線の延長上（陸側）</b>で、
+    /// ウキを注視する。ウキが操舵で横へずれていても、必ずその線の上に回り込む。
+    /// <code>
+    /// 注視点   ＝ ウキの位置
+    /// 目標方位 ＝ ウキ → 竿先 の水平方向（＝陸側）
+    /// 位置     ＝ 注視点 ＋ 方位ベクトル × shoreCamDistance ＋ 上 × shoreCamHeight
+    /// </code>
+    /// 方位は瞬間的に切り替えず、<see cref="shoreCamOrbitSpeedDegPerSec"/> の速さで
+    /// 最短回りに近づける（＝ぐるりと回り込んで見える）。
+    ///
+    /// 効かせるのは<b>巻ける区間（隙＝<see cref="FishingFight.Phase.Rest"/>）</b>だけ。
+    /// 出題・回答フェーズには専用の構図（CallCameraTarget / AnswerCameraTarget）が
+    /// あるので、そちらを潰さないよう上書きを返す。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数（回り込み量の算出に使う）。</param>
+    private void UpdateShoreCamera(float deltaTime)
+    {
+        bool wantsShoreView = NearShore
+                           && State == FishState.Hooked
+                           && FightPhase == FishingFight.Phase.Rest;
+
+        if (!wantsShoreView || cameraMove is not { } cam || uki is not { IsValid: true } floatTf)
+        {
+            ReleaseCameraOverride();
+            return;
+        }
+
+        var focus = floatTf.Position;
+        float goalAzimuth = ShoreAzimuthDegrees(focus);
+
+        // 回り込みの開始方位は「いまカメラが居る方位」。こうすると上書きへ切り替えた
+        // 最初のフレームに画が飛ばず、そこから陸側へ回り込む動きになる。
+        if (!cameraOverrideActive)
+        {
+            cameraOverrideActive = true;
+            shoreCamAzimuthDegrees = CurrentCameraAzimuthDegrees(focus, goalAzimuth);
+        }
+
+        // 目標方位へ最短回りで近づく（1 フレームの上限 ＝ 回り込み速度 × dt）
+        float delta = ShortestAngleDelta(shoreCamAzimuthDegrees, goalAzimuth);
+        float maxStep = SEED.Mathf.Max(shoreCamOrbitSpeedDegPerSec, 0f)
+                      * SEED.Mathf.Max(deltaTime, 0f);
+        shoreCamAzimuthDegrees += SEED.Mathf.Clamped(delta, -maxStep, maxStep);
+
+        ComputeShoreSidePose(
+            focus, shoreCamAzimuthDegrees, shoreCamDistance, shoreCamHeight,
+            out var position, out var rotation);
+
+        // 補間は CameraMove 側（positionLerpRate / rotationLerpRate）に任せるので snap は要らない。
+        cam.SetOverrideGoal(position, rotation, snap: false);
+    }
+
+    /// <summary>
+    /// カメラの姿勢上書きを返す【上書き解除の唯一の出口】。
+    ///
+    /// 自分が握っていたときだけ外す。無条件に
+    /// <see cref="CameraMove.ClearOverrideGoal"/> を呼ぶと、
+    /// 釣り上げ演出（<see cref="CatchPresenter"/>）が握っている構図まで外してしまう。
+    /// </summary>
+    private void ReleaseCameraOverride()
+    {
+        if (!cameraOverrideActive) { return; }
+
+        cameraOverrideActive = false;
+        cameraMove?.ClearOverrideGoal();
+    }
+
+    /// <summary>
+    /// 「陸側」の方位角（度）＝ ウキから見た竿先の水平方向を返す
+    /// 【岸際カメラと寄りカメラが共有する唯一の方位】。
+    ///
+    /// ウキと竿先がほぼ重なって方位が定まらないときは、
+    /// プレイヤーの真後ろ（＝向いている方向の逆）を陸側とみなす。
+    /// </summary>
+    /// <param name="focus">注視点（通常はウキの位置）。</param>
+    private float ShoreAzimuthDegrees(SEED.Vector3 focus)
+    {
+        var rodTip = ReelTargetPosition();
+        float dx = rodTip.x - focus.x;
+        float dz = rodTip.z - focus.z;
+        if (dx * dx + dz * dz < SqrEpsilon) { return transform.Rotation.y + HalfTurnDegrees; }
+
+        return SEED.Mathf.Atan2(dx, dz) * SEED.Mathf.Rad2Deg;
+    }
+
+    /// <summary>
+    /// いまカメラが注視点から見てどの方位に居るかを度で返す
+    /// （回り込みの開始方位に使う）。
+    /// カメラが取れない・注視点と重なっているときは <paramref name="fallback"/> を返す。
+    /// </summary>
+    /// <param name="focus">注視点。</param>
+    /// <param name="fallback">方位が定まらないときに返す値（度）。</param>
+    private float CurrentCameraAzimuthDegrees(SEED.Vector3 focus, float fallback)
+    {
+        if (ResolveCameraTransform() is not { } camTf) { return fallback; }
+
+        var position = camTf.Position;
+        float dx = position.x - focus.x;
+        float dz = position.z - focus.z;
+        if (dx * dx + dz * dz < SqrEpsilon) { return fallback; }
+
+        return SEED.Mathf.Atan2(dx, dz) * SEED.Mathf.Rad2Deg;
+    }
+
+    /// <summary>
+    /// 注視点まわりの球面座標からカメラの姿勢（位置・回転）を組み立てる
+    /// 【岸際カメラ／寄りカメラが共有する唯一の構図計算】。
+    /// </summary>
+    /// <param name="focus">注視点（ワールド）。</param>
+    /// <param name="azimuthDegrees">注視点から見たカメラの方位角（度）。</param>
+    /// <param name="horizontalDistance">注視点からの水平距離（メートル）。</param>
+    /// <param name="height">注視点からの高さ（メートル）。</param>
+    /// <param name="position">求まったカメラ位置。</param>
+    /// <param name="rotation">求まったカメラ回転（オイラー角・度）。</param>
+    private static void ComputeShoreSidePose(
+        SEED.Vector3 focus, float azimuthDegrees,
+        float horizontalDistance, float height,
+        out SEED.Vector3 position, out SEED.Vector3 rotation)
+    {
+        float radians = azimuthDegrees * SEED.Mathf.Deg2Rad;
+        position = new SEED.Vector3(
+            focus.x + SEED.Mathf.Sin(radians) * horizontalDistance,
+            focus.y + height,
+            focus.z + SEED.Mathf.Cos(radians) * horizontalDistance);
+
+        rotation = LookRotationTo(position, focus);
+    }
+
+    /// <summary>
+    /// <paramref name="from"/> から <paramref name="to"/> を見る回転（オイラー角・度）を返す。
+    /// エンジンの規約に合わせて pitch は「正で下を向く」符号にする。
+    /// 2 点が重なっているときは無回転を返す。
+    /// </summary>
+    /// <param name="from">視点（カメラ位置）。</param>
+    /// <param name="to">注視点。</param>
+    private static SEED.Vector3 LookRotationTo(SEED.Vector3 from, SEED.Vector3 to)
+    {
+        float dx = to.x - from.x;
+        float dy = to.y - from.y;
+        float dz = to.z - from.z;
+        float length = SEED.Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        if (length < DivideEpsilon) { return SEED.Vector3.Zero; }
+
+        float yaw = SEED.Mathf.Atan2(dx, dz) * SEED.Mathf.Rad2Deg;
+        float pitch = -SEED.Mathf.Asin(SEED.Mathf.Clamped(dy / length, -1f, 1f)) * SEED.Mathf.Rad2Deg;
+        return new SEED.Vector3(pitch, yaw, 0f);
+    }
+
+    /// <summary>
+    /// 角度の最短回りの差（度・−180〜180）を返す。
+    /// 350° → 10° のような巻き戻りで逆回りしないようにするための共通計算。
+    /// </summary>
+    /// <param name="from">現在の角度（度）。</param>
+    /// <param name="to">目標の角度（度）。</param>
+    private static float ShortestAngleDelta(float from, float to)
+    {
+        float delta = (to - from) % FullTurnDegrees;
+        if (delta > HalfTurnDegrees) { delta -= FullTurnDegrees; }
+        if (delta < -HalfTurnDegrees) { delta += FullTurnDegrees; }
+        return delta;
+    }
+
+    // ─── 釣り上げ時のカメラ寄り【2026-09-09 追加】──────────────────
+
+    /// <summary>
+    /// 釣れた判定の瞬間に、カメラの寄りを仕込む【寄りの唯一の開始点】。
+    ///
+    /// 開始姿勢は<b>その瞬間のカメラの実姿勢</b>なので、直前がどの構図でも画が飛ばない。
+    /// 寄り先は岸際カメラと同じ「陸側から海（ウキ）を見る」方位のまま、
+    /// 距離と高さだけを <see cref="catchZoomDistance"/> / <see cref="catchZoomHeight"/> へ詰めたもの。
+    ///
+    /// カメラ参照が無い・寄りの秒数が 0 以下・カメラの実体が取れない場合は
+    /// 何も仕込まない（＝<see cref="catchZoomActive"/> が false のままなので
+    /// 呼び出し側は待たずに演出へ入る）。
+    /// </summary>
+    /// <param name="focus">寄り先の注視点（釣れた瞬間のウキの位置）。</param>
+    private void BeginCatchZoom(SEED.Vector3 focus)
+    {
+        catchZoomActive = false;
+        catchZoomElapsed = 0f;
+
+        if (cameraMove is null) { return; }
+        if (catchZoomSeconds <= 0f) { return; }
+        if (ResolveCameraTransform() is not { } camTf) { return; }
+
+        catchZoomStartPosition = camTf.Position;
+        catchZoomStartRotation = camTf.Rotation;
+
+        ComputeShoreSidePose(
+            focus, ShoreAzimuthDegrees(focus), catchZoomDistance, catchZoomHeight,
+            out catchZoomGoalPosition, out catchZoomGoalRotation);
+
+        catchZoomActive = true;
+    }
+
+    /// <summary>
+    /// 釣り上げの寄りを 1 フレーム進める【寄りの唯一の更新点】。
+    ///
+    /// 開始姿勢から寄り先まで smoothstep（3t² − 2t³）で補間し、
+    /// <see cref="CameraMove.SetOverrideGoal"/> へ<b>カット指定</b>で渡す
+    /// （補間はこちらが持つので、CameraMove 側の追従で二重に鈍らせない）。
+    /// 寄り切ったら進行を止めるが、上書きはそのまま残す ―― 直後に始まる
+    /// <see cref="CatchPresenter"/> が白の裏で自分の構図へ差し替えるため、
+    /// ここで通常の追従へ戻すと 1 フレームだけ画が飛ぶ。
+    /// </summary>
+    /// <param name="unscaledDeltaTime">このフレームの実時間の経過秒数。</param>
+    private void UpdateCatchZoom(float unscaledDeltaTime)
+    {
+        if (!catchZoomActive) { return; }
+        if (cameraMove is not { } cam) { catchZoomActive = false; return; }
+
+        catchZoomElapsed += SEED.Mathf.Max(unscaledDeltaTime, 0f);
+
+        float span = SEED.Mathf.Max(catchZoomSeconds, DivideEpsilon);
+        float t = SEED.Mathf.Clamped01(catchZoomElapsed / span);
+        float eased = t * t * (SmoothStepSquareCoefficient - SmoothStepCubicCoefficient * t);
+
+        var position = new SEED.Vector3(
+            SEED.Mathf.Lerp(catchZoomStartPosition.x, catchZoomGoalPosition.x, eased),
+            SEED.Mathf.Lerp(catchZoomStartPosition.y, catchZoomGoalPosition.y, eased),
+            SEED.Mathf.Lerp(catchZoomStartPosition.z, catchZoomGoalPosition.z, eased));
+
+        // 回転は軸ごとに最短回りで補間する（180 度をまたぐときに逆回りしないように）
+        var rotation = new SEED.Vector3(
+            catchZoomStartRotation.x + ShortestAngleDelta(catchZoomStartRotation.x, catchZoomGoalRotation.x) * eased,
+            catchZoomStartRotation.y + ShortestAngleDelta(catchZoomStartRotation.y, catchZoomGoalRotation.y) * eased,
+            catchZoomStartRotation.z + ShortestAngleDelta(catchZoomStartRotation.z, catchZoomGoalRotation.z) * eased);
+
+        cam.SetOverrideGoal(position, rotation, snap: true);
+        cameraOverrideActive = true;
+
+        if (t >= 1f) { catchZoomActive = false; }
     }
 
     // ─── バトル評価バナー ────────────────────────────────────
@@ -3767,6 +4270,11 @@ public class FishingController : SEEDScript
         // 誤判定されて移動へ戻ってしまうこともない。
         if (pendingCatchFish is not null)
         {
+            // 待っているあいだにカメラをウキ（魚）へ寄せ切る。
+            // 寄り切った時点で待ちも終わるようにしてあるので、
+            // 「寄り切ったら演出開始」の順序がこの 2 行だけで保たれる。
+            UpdateCatchZoom(SEED.Time.UnscaledDeltaTime);
+
             pendingCatchDelaySeconds -= SEED.Time.UnscaledDeltaTime;
             if (pendingCatchDelaySeconds > 0f) { return; }
 

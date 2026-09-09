@@ -499,6 +499,7 @@
               "fields": {
                 "biteDipDepth": "1.000",
                 "callCameraTarget": "CallCameraTarget",
+                "cameraMove": "MainCamera|Script",
                 "cameraTransform": "MainCamera",
                 "castCameraTarget": "CastCameraTarget",
                 "castMarker": "CastMarker",
@@ -570,6 +571,10 @@
                 "beatIconParent": "FishingUI",
                 "distanceText": "DistanceText|Text",
                 "gaugeSpace": "HpText",
+                "judgementExcellentObject": "JudgeExcellent",
+                "judgementGreatObject": "JudgeGreat",
+                "judgementNiceObject": "JudgeNice",
+                "judgementMissObject": "JudgeMiss",
                 "hpText": "HpText|Text",
                 "reelInSpeedMax": "18.000"
               }
@@ -2594,6 +2599,66 @@
         }
       ],
       "children": [
+        {
+          "name": "EscMenuHint",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              24.0,
+              24.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/esc.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                  ],
+                  "width": 98.0,
+                  "height": 73.0,
+                  "layer": 10,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            },
+            {
+              "name": "EscMenuHint",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://mainGame/scripts/EscMenuHint.cs",
+                  "fields": {}
+                }
+              }
+            }
+          ],
+          "children": []
+        },
         {
           "name": "FishRadar",
           "actor_kind": "Actor2D",

@@ -122,7 +122,13 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// </code>
 /// <b>巻けるのは「隙(Rest)」のあいだだけ</b>。出題・回答中は巻き入力を無視し、
 /// ウキも動かさない（拍を読むあいだ画が暴れないようにするため）。
-/// 魚 HP が 0 になった瞬間が釣り上げ成立（<see cref="FishDefeated"/>）。
+///
+/// <b>2026-09-09 改定 ― 釣り上げ成立は「岸まで寄せ切ったか」だけ</b>
+/// 釣り上げの成否を決めるのは <see cref="FishingController"/> 側の
+/// 「ウキ→竿先の実測距離 ≦ catchDistanceMeters」<b>のみ</b>で、魚 HP は見ない。
+/// 魚 HP 0（<see cref="FishDefeated"/>）はもはや成立条件ではなく、
+/// 「魚が抵抗をやめ、見た目距離の下限（<see cref="visibleDistanceMin"/>）を無視して
+/// 竿先まで一気に寄る」という<b>寄せ方の切り替え</b>だけを意味する。
 ///
 /// <b>■ 見た目の距離と目標距離の分離【2026-09-09 改定】</b>
 /// 上の「目標距離」をそのままウキの位置にすると、格上の魚（魚力 ≫ 竿）では
@@ -269,8 +275,23 @@ public class FishingFight : SEEDScript
     /// <summary>マーカー（針）を糸ゲージより手前に出すためのレイヤー差。</summary>
     private const int MarkerLayerOffset = 1;
 
-    /// <summary>マーカーの多角形の頂点数（3 ＝ 三角形の針）。</summary>
+    /// <summary>マーカーの多角形の頂点数の既定値（3 ＝ 三角形の針）。</summary>
     private const int MarkerVertexCount = 3;
+
+    /// <summary>多角形として成立する頂点数の下限（3 ＝ 三角形）。</summary>
+    private const int MinPolygonVertexCount = 3;
+
+    /// <summary>判定リング（打点アイコンの外周）を糸ゲージより手前へ出すためのレイヤー差。</summary>
+    private const int JudgeRingLayerOffset = 3;
+
+    /// <summary>リング・縁取りの太さの下限（px）。0 を渡して図形が消えるのを防ぐ番人値。</summary>
+    private const float MinStrokeThicknessPx = 0.1f;
+
+    /// <summary>判定表示を収める矩形の一辺の下限（px）。0 除算と潰れた矩形を避ける番人値。</summary>
+    private const float MinFitExtentPx = 1f;
+
+    /// <summary>半分の長さから全体の長さへ戻す係数（<see cref="HalfScale"/> の逆数）。</summary>
+    private const float FullFromHalfScale = 2f;
 
     /// <summary>円の分割数の下限（0 除算とゼロ個描画を避ける）。</summary>
     private const int MinSegmentCount = 1;
@@ -592,14 +613,18 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// 巻きで詰められる見た目距離の下限（メートル）【ウキが竿先へめり込むのを防ぐ番人値】。
     ///
-    /// 魚 HP が残っているあいだは、どれだけ巻いてもこれより手前には寄らない。
-    /// 魚が力尽きた後（<see cref="FishDefeated"/>）は専用の枝が竿先まで寄せ切るので、
-    /// 釣り上げ成立の距離条件（コントローラ側の catchDistanceMeters）はこの値に妨げられない。
+    /// どれだけ巻いてもウキはこれより手前へは寄らない（＝竿先を突き抜けない）。
+    ///
+    /// <b>2026-09-09 改定</b>: 釣り上げの成立条件が「岸（竿先）まで寄せ切ったか」だけになり、
+    /// 魚 HP は成立に関与しなくなった。そのためこの値が釣り上げ成立距離
+    /// （<c>FishingController.catchDistanceMeters</c> ＝ 既定 1.0m）より<b>外側</b>にあると、
+    /// HP が残っているあいだは永久に成立できなくなる。
+    /// 役割は「めり込み防止」だけに絞り、必ず成立距離より内側の値にすること。
     /// </summary>
-    /// 既定 1.5m: 釣り上げ成立距離（FishingController.catchDistanceMeters ＝ 1.0m）より
-    /// わずかに外側。HP が残っているうちは成立距離まで詰め切れない。
+    /// 既定 0.5m: 釣り上げ成立距離（1.0m）の内側。巻き切れば必ず成立距離へ到達でき、
+    /// それでもウキが竿先（距離 0）へ重なることはない。
     [SerializeField(Label = "見た目距離の下限(m)")]
-    private float visibleDistanceMin = 1.5f;
+    private float visibleDistanceMin = 0.5f;
 
     // ─── 魚 HP ───────────────────────────────────────────
 
@@ -747,10 +772,49 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// マーカー（針）の大きさ（ピクセル・外接円の半径）。
-    /// 旧マーカースプライトは 14×14 px だったので、その半分の 7 が既定。
+    /// 旧マーカースプライトは 14×14 px（＝半径 7）だったが、
+    /// 「いまどこを指しているか」を見失わないよう既定を一回り大きくしている。
     /// </summary>
     [SerializeField(Label = "マーカーの大きさ(px)")]
-    private float markerSizePx = 7f;
+    private float markerSizePx = 12f;
+
+    /// <summary>マーカーの多角形の頂点数（3 ＝ 三角形の針。下限 3）。</summary>
+    [SerializeField(Label = "マーカーの頂点数")]
+    private int markerVertexCount = MarkerVertexCount;
+
+    /// <summary>
+    /// マーカーの縁取りの太さ（px）。本体より一回り大きい多角形を
+    /// <see cref="markerOutlineColor"/> で先に描いて縁にする。0 以下で縁取りなし。
+    /// </summary>
+    [SerializeField(Label = "マーカーの縁取り太さ(px)")]
+    private float markerOutlineThicknessPx = 2.5f;
+
+    /// <summary>マーカーの縁取りの色（RGB）。セグメントの上でも輪郭が潰れないための暗色。</summary>
+    [SerializeField(Label = "マーカーの縁取り色(RGB)")]
+    private SEED.Vector3 markerOutlineColor = new SEED.Vector3(0.05f, 0.06f, 0.09f);
+
+    /// <summary>
+    /// 拍頭でマーカーが一瞬大きくなる倍率（1 ＝ パルスなし）。
+    /// <see cref="markerPulseSeconds"/> 秒かけて等倍へ戻る。
+    /// </summary>
+    [SerializeField(Label = "マーカーの拍パルス倍率")]
+    private float markerPulseScale = 1.8f;
+
+    /// <summary>拍頭のパルスが等倍へ戻るまでの秒数（0 以下でパルスなし）。</summary>
+    [SerializeField(Label = "マーカーの拍パルス秒数")]
+    private float markerPulseSeconds = 0.12f;
+
+    /// <summary>拍頭の発光（マーカーの後ろに出す円）の半径倍率（マーカーの大きさ基準）。</summary>
+    [SerializeField(Label = "マーカーの発光半径倍率")]
+    private float markerGlowRadiusScale = 2.2f;
+
+    /// <summary>拍頭の発光の色（RGB）。</summary>
+    [SerializeField(Label = "マーカーの発光色(RGB)")]
+    private SEED.Vector3 markerGlowColor = new SEED.Vector3(1f, 1f, 1f);
+
+    /// <summary>拍頭の発光の最大不透明度（0 で発光なし。拍頭が最大で、パルスと同じ速さで消える）。</summary>
+    [SerializeField(Label = "マーカーの発光の不透明度")]
+    private float markerGlowOpacity = 0.45f;
 
     /// <summary>セグメントの幅（ピクセル）。円周方向の長さ。</summary>
     [SerializeField(Label = "セグメントの幅(px)")]
@@ -820,6 +884,49 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "打点アイコンの色(Miss)")]
     private SEED.Vector3 beatIconMissColor = new SEED.Vector3(1f, 0.25f, 0.25f);
 
+    /// <summary>
+    /// プレイヤーが<b>叩いて捉えた</b>打点アイコンの色（RGB・黄色系）
+    /// 【「叩けた」ことを最優先で伝える色】。
+    ///
+    /// 判定（Excellent/Great/Nice）ごとの色分けはアイコン本体では行わず、
+    /// 外周の判定リング（<see cref="judgeRingEnabled"/>）が担う。
+    /// こうすると「叩けたか（黄色く跳ねたか）」と「どれだけ正確だったか（縁の色）」を
+    /// 一目で切り分けられる。打ち逃し（Miss）だけは叩いていないので
+    /// <see cref="beatIconMissColor"/> のままにする。
+    /// </summary>
+    [SerializeField(Label = "打点アイコンの色(叩いた)")]
+    private SEED.Vector3 beatIconHitColor = new SEED.Vector3(1f, 0.85f, 0.2f);
+
+    /// <summary>
+    /// 叩いた瞬間に上乗せする拡大倍率（1 ＝ 上乗せなし）。
+    /// 出現ポップ（<see cref="IconPopScale01"/>）へ<b>掛け算</b>で乗る。
+    /// </summary>
+    [SerializeField(Label = "打点アイコンの叩き拡大率")]
+    private float beatIconHitPopScale = 1.45f;
+
+    /// <summary>叩き拡大が等倍へ戻るまでの秒数（0 以下なら拡大しない）。</summary>
+    [SerializeField(Label = "打点アイコンの叩き拡大秒数")]
+    private float beatIconHitPopSeconds = 0.18f;
+
+    /// <summary>
+    /// 判定色のリングを打点アイコンの外周へ描くか
+    /// （アイコン本体は叩いた色＝黄色のまま、判定は縁の色で示す）。
+    /// </summary>
+    [SerializeField(Label = "判定リングを描く")]
+    private bool judgeRingEnabled = true;
+
+    /// <summary>判定リングの太さ（px・半径方向）。</summary>
+    [SerializeField(Label = "判定リングの太さ(px)")]
+    private float judgeRingThicknessPx = 3f;
+
+    /// <summary>判定リングと打点アイコン本体の隙間（px）。</summary>
+    [SerializeField(Label = "判定リングの隙間(px)")]
+    private float judgeRingGapPx = 3f;
+
+    /// <summary>判定リングの不透明度（アイコンのフェードが別途掛かる）。</summary>
+    [SerializeField(Label = "判定リングの不透明度")]
+    private float judgeRingOpacity = 1f;
+
     /// <summary>打点アイコンの不透明度（バトル中・フェード前）。</summary>
     [SerializeField(Label = "打点アイコンの不透明度")]
     private float beatIconOpacity = 1f;
@@ -851,6 +958,55 @@ public class FishingFight : SEEDScript
     /// <summary>残り距離テキストの不透明度（バトル中）。</summary>
     [SerializeField(Label = "残り距離テキストの不透明度")]
     private float distanceTextOpacity = 1f;
+
+    // ─── 判定表示（Excellent/Great/Nice/Miss）の収まり ──────────────
+
+    /// <summary>
+    /// 判定画像を糸ゲージの矩形（円の外接矩形 − 余白）へ収めるか
+    /// 【判定表示のはみ出し防止の唯一のスイッチ】。
+    ///
+    /// 判定画像（<c>judge_excellent.png</c> ほか）は横 348px あり、
+    /// 糸ゲージの円（直径 ＝ <see cref="arcRadiusPx"/> × 2）から左右へはみ出して
+    /// 打点アイコンの輪に重なってしまう。true なら、対象アクタのハンドルが揃った
+    /// フレームに<b>1 度だけ</b>キャンバススケールを縮めて矩形の内側へ収める。
+    ///
+    /// <b>Size ではなく Scale を書く</b>のは、判定画像の Size を
+    /// <see cref="FishingController"/> のポップ演出が毎フレーム書き換えているためである
+    /// （同じ値を両者で奪い合うと、表示のたびに縮み続ける事故になる）。
+    /// </summary>
+    [Header("判定表示の収まり"), SerializeField(Label = "判定表示をゲージ内に収める")]
+    private bool judgementFitEnabled = true;
+
+    /// <summary>
+    /// 判定表示を収める矩形の余白（px）。
+    /// 矩形の一辺 ＝ <see cref="arcRadiusPx"/> × 2 − この値 × 2。
+    /// </summary>
+    [SerializeField(Label = "判定表示の余白(px)")]
+    private float judgementPaddingPx = 12f;
+
+    /// <summary>
+    /// 判定表示のポップ倍率の見込み（<c>FishingController</c> 側の「判定のポップ倍率」と
+    /// 同じ値にする）。ポップで一瞬大きくなった状態でもはみ出さないよう、
+    /// この倍率を掛けた大きさで収まるところまで縮める。
+    /// </summary>
+    [SerializeField(Label = "判定表示のポップ見込み倍率")]
+    private float judgementPopAllowance = 1.2f;
+
+    /// <summary>収まり調整の対象となる判定画像アクタ（Excellent）。未設定なら調整しない。</summary>
+    [SerializeField(Label = "判定表示のアクタ(Excellent)")]
+    private SEED.GameObject? judgementExcellentObject = null;
+
+    /// <summary>収まり調整の対象となる判定画像アクタ（Great）。未設定なら調整しない。</summary>
+    [SerializeField(Label = "判定表示のアクタ(Great)")]
+    private SEED.GameObject? judgementGreatObject = null;
+
+    /// <summary>収まり調整の対象となる判定画像アクタ（Nice）。未設定なら調整しない。</summary>
+    [SerializeField(Label = "判定表示のアクタ(Nice)")]
+    private SEED.GameObject? judgementNiceObject = null;
+
+    /// <summary>収まり調整の対象となる判定画像アクタ（Miss）。未設定なら調整しない。</summary>
+    [SerializeField(Label = "判定表示のアクタ(Miss)")]
+    private SEED.GameObject? judgementMissObject = null;
 
     // ─── 公開状態 ────────────────────────────────────────
 
@@ -914,7 +1070,12 @@ public class FishingFight : SEEDScript
         : 0f;
 
     /// <summary>
-    /// 魚 HP を削り切ったか（＝釣り上げ成立）。
+    /// 魚 HP を削り切ったか（＝魚が力尽きて抵抗をやめた）。
+    ///
+    /// <b>2026-09-09 改定でこれは釣り上げの成立条件ではなくなった</b>。
+    /// 立っているあいだは <see cref="ComputeFloatDistanceStep"/> が
+    /// 見た目距離の下限を無視して竿先まで寄せ切る、という意味だけを持つ
+    /// （釣り上げの成否は <see cref="FishingController"/> が実測距離だけで決める）。
     /// バトル中だけ true になり得る（<see cref="EndFight"/> で必ず落ちる）。
     /// </summary>
     public bool FishDefeated => Active && fishHp <= FishHpZero;
@@ -1213,6 +1374,13 @@ public class FishingFight : SEEDScript
     /// <summary>期待打点の判定結果（アイコン色の決定に使う）。</summary>
     private readonly List<FishingController.HookJudgement> expectedResults = new();
 
+    /// <summary>
+    /// 判定表示の収まり調整（<see cref="ApplyJudgementFit"/>）が済んだか。
+    /// 対象アクタのハンドルが揃った時点で 1 度だけ調整し、以後は何もしない
+    /// （毎フレーム大きさを測り直すと、ポップ中の大きさを基準にしてしまうため）。
+    /// </summary>
+    private bool judgementFitDone = false;
+
     /// <summary>直前の回答が完璧（期待打点がすべて Excellent）だったか。隙の長さを決める。</summary>
     private bool lastAnswerPerfect = false;
 
@@ -1350,6 +1518,9 @@ public class FishingFight : SEEDScript
         // ビートパターンの更新確認は<b>戦闘中でないときだけ</b>行う。
         // ＝ 読み直しが効くのは必ず次の戦闘からで、進行中の譜面が途中で入れ替わらない。
         if (!Active) { patternLibrary.PollHotReload(SEED.Time.UnscaledElapsedTime); }
+
+        // 判定表示の収まり調整（対象ハンドルが揃うまで毎フレーム試し、揃ったら 1 度だけ実行）
+        ApplyJudgementFit();
 
         // 表示用のゲージは「ゲームが止まっていても動く」演出なので実時間で進める
         UpdateGaugeDisplay(SEED.Time.UnscaledDeltaTime);
@@ -2530,7 +2701,12 @@ public class FishingFight : SEEDScript
         if (judgement != FishingController.HookJudgement.Excellent) { fightAllExcellent = false; }
 
         // 判定した瞬間からポップをやり直す（すでに出ているアイコンが小さく跳ねる）
-        ShowIconAtHit(index, clockTime, JudgementIconColor(judgement));
+        // アイコン本体の色は「叩けたか」だけを示す（判定の細かさは外周の判定リングが担う）。
+        // 打ち逃し（Miss）はそもそも叩いていないので Miss 色のままにする。
+        ShowIconAtHit(
+            index,
+            clockTime,
+            judgement == FishingController.HookJudgement.Miss ? beatIconMissColor : beatIconHitColor);
     }
 
     /// <summary>判定結果に対応する打点アイコンの色（RGB）。</summary>
@@ -2940,7 +3116,52 @@ public class FishingFight : SEEDScript
                 space: space);
         }
 
+        DrawJudgeRings(space, center);
         DrawMarker(space, center);
+    }
+
+    /// <summary>
+    /// 判定済みの打点アイコンの外周へ<b>判定色のリング</b>を描く
+    /// 【判定色の表示の唯一の出口】。
+    ///
+    /// アイコン本体は「叩いた＝黄色（<see cref="beatIconHitColor"/>）」で跳ねるだけにして、
+    /// Excellent / Great / Nice / Miss の違いはこのリングの色で示す。
+    /// リングは本体と同じ拡大（出現ポップ＋叩き拡大）に追従させ、
+    /// アイコンのフェード（<see cref="IconFadeAlpha01"/>）も同じように掛ける。
+    /// </summary>
+    /// <param name="space">描画する座標空間（ゲージと同じ）。</param>
+    /// <param name="center">円の中心（<paramref name="space"/> のローカル座標）。</param>
+    private void DrawJudgeRings(SEED.CanvasTransform space, SEED.Vector2 center)
+    {
+        if (!judgeRingEnabled || !Active) { return; }
+
+        float alpha = SEED.Mathf.Clamped01(judgeRingOpacity)
+                    * SEED.Mathf.Clamped01(beatIconOpacity)
+                    * IconFadeAlpha01();
+        if (alpha <= 0f) { return; }
+
+        // リングはアイコン本体の外周に沿う（内半径 ＝ 本体の半径 ＋ 隙間）
+        float innerRadius = SEED.Mathf.Max(beatIconSizePx * HalfScale + judgeRingGapPx, 0f);
+        float outerRadius = innerRadius + SEED.Mathf.Max(judgeRingThicknessPx, MinStrokeThicknessPx);
+
+        int count = SEED.Mathf.Min(expectedResults.Count, iconDegrees.Count);
+        for (int i = 0; i < count; i++)
+        {
+            if (i >= expectedJudged.Count || !expectedJudged[i]) { continue; }
+            if (i >= iconPopStartTimes.Count || iconPopStartTimes[i] >= IconHidden) { continue; }
+
+            // 本体と同じ拡大率（出現ポップ × 叩き拡大）でリングも大きくする
+            float scale = IconPopScale01(iconPopStartTimes[i]) * IconHitPopScale(i);
+            if (scale <= 0f) { continue; }
+
+            SEED.Draw.Ring(
+                OffsetFrom(center, ArcPointAt(iconDegrees[i], beatIconRadiusPx)),
+                innerRadius * scale,
+                outerRadius * scale,
+                ToColor(JudgementIconColor(expectedResults[i]), alpha),
+                layer: gaugeLayer + JudgeRingLayerOffset,
+                space: space);
+        }
     }
 
     /// <summary>
@@ -2961,14 +3182,72 @@ public class FishingFight : SEEDScript
             _ => markerRestColor,
         };
 
+        SEED.Vector2 at = OffsetFrom(center, ArcPoint(degrees));
+        float alpha = SEED.Mathf.Clamped01(gaugeMarkerOpacity);
+        int layer = gaugeLayer + MarkerLayerOffset;
+        int vertices = SEED.Mathf.Max(markerVertexCount, MinPolygonVertexCount);
+
+        // 拍頭で 1 → 0 へ落ちるパルス値。大きさと発光の両方をこれで駆動する。
+        float pulse01 = BeatPulse01();
+        float size = SEED.Mathf.Max(markerSizePx, 0f)
+                   * SEED.Mathf.Lerp(NormalScale, SEED.Mathf.Max(markerPulseScale, NormalScale), pulse01);
+
+        // 発光: 拍頭だけ一瞬だけ出る円（同じレイヤーの中では先に積んだものが奥になる）
+        float glow = SEED.Mathf.Clamped01(markerGlowOpacity) * pulse01;
+        if (glow > 0f)
+        {
+            SEED.Draw.Circle(
+                at,
+                size * SEED.Mathf.Max(markerGlowRadiusScale, NormalScale),
+                ToColor(markerGlowColor, glow * alpha),
+                layer: layer,
+                space: space);
+        }
+
+        // 縁取り: 本体より太さぶん大きい同じ多角形を先に描いて輪郭にする
+        float outline = SEED.Mathf.Max(markerOutlineThicknessPx, 0f);
+        if (outline > 0f)
+        {
+            SEED.Draw.RegularPolygon(
+                at,
+                size + outline,
+                vertices,
+                ToColor(markerOutlineColor, alpha),
+                rotationDegrees: degrees,
+                layer: layer,
+                space: space);
+        }
+
+        // 本体（針）
         SEED.Draw.RegularPolygon(
-            OffsetFrom(center, ArcPoint(degrees)),
-            SEED.Mathf.Max(markerSizePx, 0f),
-            MarkerVertexCount,
-            ToColor(rgb, SEED.Mathf.Clamped01(gaugeMarkerOpacity)),
+            at,
+            size,
+            vertices,
+            ToColor(rgb, alpha),
             rotationDegrees: degrees,
-            layer: gaugeLayer + MarkerLayerOffset,
+            layer: layer,
             space: space);
+    }
+
+    /// <summary>
+    /// 拍頭からの経過で 1 → 0 へ落ちるパルス値【マーカーの拍演出の唯一の時間源】。
+    ///
+    /// 拍頭（<see cref="BeatPhase01"/> ＝ 0）で 1 になり、
+    /// <see cref="markerPulseSeconds"/> 秒かけて 0 まで落ちる。
+    /// バトル中でない・拍長やパルス秒数が 0 のときは 0（＝パルスなし）。
+    /// </summary>
+    private float BeatPulse01()
+    {
+        if (!Active) { return 0f; }
+
+        float beatSeconds = PhaseBeatSeconds;
+        if (beatSeconds <= DivideEpsilon) { return 0f; }
+
+        float duration = SEED.Mathf.Max(markerPulseSeconds, 0f);
+        if (duration <= DivideEpsilon) { return 0f; }
+
+        float sinceBeat = BeatPhase01 * beatSeconds;
+        return NormalScale - SEED.Mathf.Clamped01(sinceBeat / duration);
     }
 
     /// <summary>
@@ -3229,7 +3508,7 @@ public class FishingFight : SEEDScript
         for (int i = 0; i < slots; i++)
         {
             bool used = Active && i < iconPopStartTimes.Count && iconPopStartTimes[i] < IconHidden;
-            float scale = used ? IconPopScale01(iconPopStartTimes[i]) : 0f;
+            float scale = used ? IconPopScale01(iconPopStartTimes[i]) * IconHitPopScale(i) : 0f;
             float alpha = used ? baseAlpha : 0f;
 
             if (iconTransforms[i] is { IsValid: true } tf)
@@ -3275,6 +3554,30 @@ public class FishingFight : SEEDScript
 
         float t = SEED.Mathf.Clamped01((clockTime - popStartTime) / duration);
         return EaseOutBack(t);
+    }
+
+    /// <summary>
+    /// 叩いた打点に上乗せする拡大率（1 ＝ 上乗せなし）
+    /// 【叩いた手応えの唯一の実装】。
+    ///
+    /// 判定した瞬間（<see cref="MarkHitResult"/> がポップ開始時刻を書き直した時刻）から
+    /// <see cref="beatIconHitPopSeconds"/> 秒かけて <see cref="beatIconHitPopScale"/> → 1 へ戻る。
+    /// 打ち逃し（Miss）は<b>叩いていない</b>ので跳ねない。
+    /// </summary>
+    /// <param name="index">打点の通し番号（アイコンの添字と同じ）。</param>
+    private float IconHitPopScale(int index)
+    {
+        if (index < 0 || index >= expectedJudged.Count) { return NormalScale; }
+        if (!expectedJudged[index]) { return NormalScale; }
+        if (index >= expectedResults.Count) { return NormalScale; }
+        if (expectedResults[index] == FishingController.HookJudgement.Miss) { return NormalScale; }
+        if (index >= iconPopStartTimes.Count || iconPopStartTimes[index] >= IconHidden) { return NormalScale; }
+
+        float duration = SEED.Mathf.Max(beatIconHitPopSeconds, 0f);
+        if (duration <= DivideEpsilon) { return NormalScale; }
+
+        float t = SEED.Mathf.Clamped01((clockTime - iconPopStartTimes[index]) / duration);
+        return SEED.Mathf.Lerp(SEED.Mathf.Max(beatIconHitPopScale, NormalScale), NormalScale, t);
     }
 
     /// <summary>
@@ -3353,6 +3656,78 @@ public class FishingFight : SEEDScript
     /// </summary>
     /// <param name="degrees">頂点からの角度（度。＋ が右回り）。</param>
     private SEED.Vector2 ArcPoint(float degrees) => ArcPointAt(degrees, arcRadiusPx);
+
+    // ─── UI: 判定表示の収まり ──────────────────────────────
+
+    /// <summary>
+    /// 判定画像（Excellent/Great/Nice/Miss）を糸ゲージの矩形へ収める
+    /// 【判定表示のはみ出し防止の唯一の実装】。
+    ///
+    /// 対象アクタのハンドル（Sprite ＋ CanvasTransform）が揃ったフレームに
+    /// <b>1 度だけ</b>実行し、以後は何もしない。毎フレーム測り直すと
+    /// ポップ演出で一時的に大きくなった値を基準にしてしまい、表示のたびに縮んでいくため。
+    /// </summary>
+    private void ApplyJudgementFit()
+    {
+        if (!judgementFitEnabled || judgementFitDone) { return; }
+
+        // 収める矩形の半分の大きさ（＝円の半径 − 余白）。円の外接矩形から余白を引いた形。
+        float halfExtent = SEED.Mathf.Max(
+            SEED.Mathf.Max(arcRadiusPx, 0f) - SEED.Mathf.Max(judgementPaddingPx, 0f),
+            MinFitExtentPx * HalfScale);
+
+        // 矩形の中心はゲージの中心と同じ（判定画像もゲージも画面中央アンカーで置いている）
+        var rectCenter = new SEED.Vector2(gaugeCenterOffsetXPx, gaugeCenterOffsetYPx);
+
+        bool allDone = true;
+        allDone &= FitJudgementObject(judgementExcellentObject, rectCenter, halfExtent);
+        allDone &= FitJudgementObject(judgementGreatObject, rectCenter, halfExtent);
+        allDone &= FitJudgementObject(judgementNiceObject, rectCenter, halfExtent);
+        allDone &= FitJudgementObject(judgementMissObject, rectCenter, halfExtent);
+
+        judgementFitDone = allDone;
+    }
+
+    /// <summary>
+    /// 判定画像 1 枚を矩形へ収める（拡大率を縮め、はみ出す位置を矩形内へ寄せる）。
+    /// </summary>
+    /// <param name="target">判定画像のアクタ（未設定なら「処理済み」として扱う）。</param>
+    /// <param name="rectCenter">矩形の中心（キャンバス px・判定画像と同じ座標系）。</param>
+    /// <param name="halfExtent">矩形の一辺の半分（px）。</param>
+    /// <returns>この 1 枚の処理が確定したか（false ＝ ハンドル待ちで次フレーム再挑戦）。</returns>
+    private bool FitJudgementObject(SEED.GameObject? target, SEED.Vector2 rectCenter, float halfExtent)
+    {
+        // 未設定は「調整しない」意思表示なので、待たずに確定扱いにする
+        if (target is not { IsValid: true } go) { return true; }
+
+        if (go.GetComponent<SEED.Sprite>() is not { IsValid: true } sprite) { return false; }
+        if (go.GetComponent<SEED.CanvasTransform>() is not { IsValid: true } tf) { return false; }
+
+        SEED.Vector2 size = sprite.Size;
+        if (size.x <= DivideEpsilon || size.y <= DivideEpsilon) { return false; }
+
+        // ポップで一瞬大きくなる分を見込んだ大きさで判定する
+        float allowance = SEED.Mathf.Max(judgementPopAllowance, NormalScale);
+        float limit = halfExtent * FullFromHalfScale;
+        float scale = SEED.Mathf.Min(
+            NormalScale,
+            SEED.Mathf.Min(limit / (size.x * allowance), limit / (size.y * allowance)));
+
+        tf.Scale = new SEED.Vector2(scale, scale);
+
+        // 位置も矩形の内側へ寄せる（中心置きなら動かないが、ずらして置いた場合の保険）
+        float halfWidth = size.x * allowance * scale * HalfScale;
+        float halfHeight = size.y * allowance * scale * HalfScale;
+        float limitX = SEED.Mathf.Max(halfExtent - halfWidth, 0f);
+        float limitY = SEED.Mathf.Max(halfExtent - halfHeight, 0f);
+
+        SEED.Vector2 position = tf.Position;
+        tf.Position = new SEED.Vector2(
+            SEED.Mathf.Clamped(position.x, rectCenter.x - limitX, rectCenter.x + limitX),
+            SEED.Mathf.Clamped(position.y, rectCenter.y - limitY, rectCenter.y + limitY));
+
+        return true;
+    }
 
     /// <summary>
     /// 半径を指定して円周上の点（キャンバス座標）を返す

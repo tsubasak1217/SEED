@@ -16,7 +16,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///
 /// [出現の規則]
 /// <code>
-/// ヒット中（FishingController.Current.IsHooked）のあいだだけ
+/// ヒット中（FishingController.Current.IsHooked）で、かつ岸際でない
+/// （FishingController.NearShore が false）のあいだだけ
 ///   spawnIntervalSeconds ごとに 1 個、DriftItem.All.Count が maxItems 未満なら生成する
 ///   位置 = ウキを中心とした spawnRadiusMin〜spawnRadiusMax の円環内のランダムな一点（水面上）
 ///         ただし竿先（＝岸側）から spawnRadiusMin より近い点は捨てて引き直す
@@ -180,6 +181,13 @@ public class DriftItemManager : SEEDScript
         if (TutorialRules.Active && TutorialRules.DriftDisabled) { return false; }
 
         if (FishingController.Current is not { } controller) { return false; }
+
+        // 岸際（ウキが竿先の近く）では新規出現を止める【2026-09-09 追加】。
+        // 拾う余地が無いところに湧かせても、巻き切るまでの数秒で
+        // 画面手前にゴミが増えるだけになるため。既に浮いている個体は残す
+        // （拾える位置に居るものを目の前で消すほうが不自然）。
+        if (controller.NearShore) { return false; }
+
         if (!activeOnlyWhileHooked) { return true; }
         return controller.IsHooked;
     }
