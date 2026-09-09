@@ -1303,6 +1303,36 @@ public class FishingController : SEEDScript
     [Header("ポーズメニュー"), SerializeField(Label = "メニューのprefab")]
     private string pauseMenuActorPath = "assets://mainGame/actors/UI/PauseMenu.actor";
 
+    // ─── 巻き取り音（ループ素材）───────────────────────────
+    //
+    // 竿を巻いている間だけ鳴らす。素材はループ前提なので AudioSource（AudioComponent）で
+    // Play / Stop を切り替える。シーンに音源を置かなくて済むよう、音源だけを持つ
+    // プレハブ（ReelSound.actor）を OnStart で生成して抱える。
+
+    /// <summary>
+    /// 巻き取り音のプレハブ（<c>assets://</c> パス）。ループ設定済みの AudioSource を
+    /// 1 つ持つアクタ。空にすると巻き取り音は鳴らない。
+    /// </summary>
+    [Header("巻き取り音"), SerializeField(Label = "音源のprefab")]
+    private string reelSoundActorPath = "assets://mainGame/actors/FX/ReelSound.actor";
+
+    /// <summary>
+    /// 巻き入力が途切れてから音を止めるまでの猶予（秒）。
+    /// ホイール入力はフレームごとに 0 と正の値が交互に来るため、猶予無しだと
+    /// 音が細かく途切れる。「まだ巻いている」とみなす短い間だけ鳴らし続ける。
+    /// </summary>
+    [SerializeField(Label = "止めるまでの猶予(秒)")]
+    private float reelSoundHoldSeconds = 0.2f;
+
+    /// <summary>巻き取り音のアクタ（OnStart で生成。生成失敗時は無効）。</summary>
+    private SEED.GameObject reelSoundActor;
+
+    /// <summary>巻き取り音の音源（生成の翌フレーム以降に遅延取得する）。</summary>
+    private SEED.AudioSource? reelSoundSource = null;
+
+    /// <summary>最後に巻き入力があってからの経過秒（実時間）。</summary>
+    private float sinceLastReelInput = float.MaxValue;
+
     /// <summary>
     /// 生成直後の初期化。糸をワールド座標系（親子合成なし）で扱う設定にし、初期状態は非表示にする。
     /// 参照フィールドはこの時点で注入済みだが、参照先スクリプトの OnStart 完了は保証されない。
@@ -1315,6 +1345,11 @@ public class FishingController : SEEDScript
         // ポーズの静的状態はシーン遷移で作り直されないので、シーン開始時に必ず戻す
         // （前のシーンでポーズしたまま遷移した場合に、操作不能で始まるのを防ぐ）。
         PauseMenu.ResetStaticState();
+        // 巻き取り音の音源を生成しておく（音源の取得は次フレーム以降に UpdateReelSound が行う）。
+        if (!string.IsNullOrWhiteSpace(reelSoundActorPath))
+        {
+            reelSoundActor = SEED.GameObject.Instantiate(reelSoundActorPath);
+        }
 
         if (line is { } l && l.IsValid)
         {
@@ -1347,6 +1382,7 @@ public class FishingController : SEEDScript
         SEED.Debug.OffCommand(DebugCommandCatchTest, HandleCatchTestCommand);
         SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
         SEED.Debug.OffCommand(DebugCommandHitTest, HandleHitTestCommand);
+        StopReelSound();
         AbortBiteTiming();
         ReleaseHook();
         fight?.EndFight();
@@ -1951,6 +1987,7 @@ public class FishingController : SEEDScript
     /// </summary>
     private void ExitToMovement()
     {
+        StopReelSound();
         CancelToIdle();
         if (playerMove is { } pm) { pm.ExitFishingStance(); }
     }
@@ -2925,6 +2962,7 @@ public class FishingController : SEEDScript
         if (uki is not { } floatTf || !floatTf.IsValid) { return; }
 
         float amount = ReadReelAmount();
+        UpdateReelSound(amount, deltaTime);
 
         // 巻き入力の有無で Floating ⇔ Reeling を往復する。
         // ヒット中（Hooked）は状態もクリップもヒット用のまま固定し、往復させない
@@ -3037,6 +3075,50 @@ public class FishingController : SEEDScript
         {
             FinishReeling();
         }
+    }
+
+    // ─── 巻き取り音 ─────────────────────────────────────
+
+    /// <summary>
+    /// 巻き入力に合わせて巻き取り音（ループ）を出し入れする【巻き取り音の唯一の制御点】。
+    ///
+    /// 入力があった瞬間に鳴らし始め、入力が <see cref="reelSoundHoldSeconds"/> 秒
+    /// 途切れたら止める。音源は生成の翌フレーム以降にしか取れないため、毎回
+    /// 遅延取得を試みる（取れるまでは何もしない）。
+    /// </summary>
+    /// <param name="reelAmount">このフレームの巻き取り量（メートル）。</param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateReelSound(float reelAmount, float deltaTime)
+    {
+        if (reelAmount > ReelInputEpsilon) { sinceLastReelInput = 0f; }
+        else if (sinceLastReelInput < float.MaxValue) { sinceLastReelInput += deltaTime; }
+
+        var source = ResolveReelSoundSource();
+        if (source is not { } s) { return; }
+
+        bool shouldPlay = sinceLastReelInput <= reelSoundHoldSeconds;
+        bool playing = s.IsPlaying;
+        if (shouldPlay && !playing) { s.Play(); }
+        else if (!shouldPlay && playing) { s.Stop(); }
+    }
+
+    /// <summary>巻き取り音を止める（釣りを抜けるとき・破棄時）。未生成なら何もしない。</summary>
+    private void StopReelSound()
+    {
+        sinceLastReelInput = float.MaxValue;
+        if (ResolveReelSoundSource() is { } s && s.IsPlaying) { s.Stop(); }
+    }
+
+    /// <summary>
+    /// 巻き取り音の音源を返す（初回は生成済みアクタから取得して控える）。
+    /// 生成がまだ反映されていない／失敗している場合は null。
+    /// </summary>
+    private SEED.AudioSource? ResolveReelSoundSource()
+    {
+        if (reelSoundSource is { IsValid: true } cached) { return cached; }
+        if (!reelSoundActor.IsValid) { return null; }
+        reelSoundSource = reelSoundActor.GetComponent<SEED.AudioSource>();
+        return reelSoundSource;
     }
 
     /// <summary>

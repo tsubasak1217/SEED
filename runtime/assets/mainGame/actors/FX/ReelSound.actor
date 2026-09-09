@@ -1,0 +1,39 @@
+{
+  "name": "ReelSound",
+  "transform": {
+    "position": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rotation": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "components": [
+    {
+      "name": "Audio",
+      "component": {
+        "type": "AudioComponent",
+        "data": {
+          "audio_path": "assets://mainGame/audios/makitori.mp3",
+          "volume": 0.6,
+          "loop": true,
+          "play_on_start": false,
+          "spatial": false,
+          "min_distance": 2.0,
+          "max_distance": 50.0,
+          "pan": 0.0
+        }
+      }
+    }
+  ],
+  "children": []
+}
