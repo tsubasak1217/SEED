@@ -95,6 +95,20 @@ public class Zukan : SEEDScript
     [Header("遷移"), SerializeField(Label = "戻り先のセーブキー")]
     private string returnSceneKey = "zukan_return";
 
+    // ─── インスペクタ設定（BGM）──────────────────────────────
+
+    /// <summary>
+    /// 図鑑を開いている間ループ再生する BGM（<c>assets://</c> パス）。空なら鳴らさない。
+    /// 開始時に <see cref="SEED.Audio.PlayBgm"/> で流し、図鑑を閉じるときに止める
+    /// （戻り先のシーンは自分の BGM を自分で流す前提）。
+    /// </summary>
+    [Header("BGM"), SerializeField(Label = "BGM(パス)")]
+    private string bgmPath = "assets://mainGame/audios/bgm.mp3";
+
+    /// <summary>BGM の音量（1.0 = 等倍）。</summary>
+    [SerializeField(Label = "BGMの音量")]
+    private float bgmVolume = 0.6f;
+
     /// <summary>戻り先が保存されていないときの既定のシーン名。</summary>
     [SerializeField(Label = "既定の戻り先シーン")]
     private string defaultReturnScene = "title";
@@ -185,6 +199,12 @@ public class Zukan : SEEDScript
         // 図鑑はマウスで矢印を押せる必要があるので、カーソルロックは必ず外す
         // （釣りシーンからロック状態のまま遷移してくる経路があるため）。
         SEED.Input.CursorLocked = false;
+
+        // 図鑑の BGM をループで流す（前のシーンの BGM があれば置き換わる）。
+        if (!string.IsNullOrWhiteSpace(bgmPath))
+        {
+            SEED.Audio.PlayBgm(bgmPath, bgmVolume, loop: true);
+        }
 
         SetContent(hintText, hintLabel);
         currentLevel = FirstLevel;
@@ -306,6 +326,8 @@ public class Zukan : SEEDScript
     {
         string scene = SEED.SaveData.GetString(returnSceneKey, defaultReturnScene);
         if (string.IsNullOrWhiteSpace(scene)) { scene = defaultReturnScene; }
+        // 図鑑の BGM は図鑑の持ち物なので、出ていく前に止める。
+        SEED.Audio.StopBgm();
         SEED.Scene.Transition(scene);
     }
 
