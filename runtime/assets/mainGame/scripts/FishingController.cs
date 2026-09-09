@@ -1031,6 +1031,18 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "通常のときの色(16進)")]
     private string fightEvalGoodColor = "#FFFFFF";
 
+    /// <summary>完璧のときに鳴らす SE（<c>assets://</c> パス。空で無音）。</summary>
+    [SerializeField(Label = "完璧のときのSE")]
+    private string fightEvalPerfectSePath = "assets://mainGame/audios/beat_battle_perfect.mp3";
+
+    /// <summary>通常評価のときに鳴らす SE（<c>assets://</c> パス。空で無音）。</summary>
+    [SerializeField(Label = "通常のときのSE")]
+    private string fightEvalGoodSePath = "assets://mainGame/audios/beat_battle.mp3";
+
+    /// <summary>評価 SE の音量（1.0 = 等倍）。</summary>
+    [SerializeField(Label = "評価SEの音量")]
+    private float fightEvalSeVolume = 0.9f;
+
     /// <summary>
     /// 評価バナーを出してから釣り上げ演出（ホワイトアウト）を始めるまでの秒数。
     ///
@@ -3224,6 +3236,10 @@ public class FishingController : SEEDScript
             perfect ? fightEvalPerfectLabel : fightEvalGoodLabel,
             perfect ? fightEvalPerfectColor : fightEvalGoodColor,
             perfect);
+
+        // 評価に合わせた SE をバナーと同じ瞬間に鳴らす（一発再生。空パスなら無音）。
+        string se = perfect ? fightEvalPerfectSePath : fightEvalGoodSePath;
+        if (!string.IsNullOrWhiteSpace(se)) { SEED.Audio.Play(se, fightEvalSeVolume); }
     }
 
     /// <summary>
