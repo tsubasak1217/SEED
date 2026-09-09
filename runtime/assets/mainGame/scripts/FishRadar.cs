@@ -323,6 +323,17 @@ public class FishRadar : SEEDScript
     /// </summary>
     public float RangeMeters => radarRangeMeters;
 
+    /// <summary>
+    /// いまレーダーを「出す」指示が出ているか【表示状態の唯一の読み取り口】。
+    ///
+    /// 見ているのはフェードの<b>目標値</b>なので、<see cref="Show"/> /
+    /// <see cref="Hide"/> を呼んだ瞬間に切り替わる（フェードし切るのを待たない）。
+    /// レーダーの出現・退場に合わせて位置を動かす UI
+    /// （<see cref="MissionPanel"/>）が、フェードと同時に動き始められるようにするため。
+    /// 描画そのものの有無（<see cref="visible"/>）ではない点に注意。
+    /// </summary>
+    public bool IsShown => fadeTarget > HiddenAlpha;
+
     /// <summary>釣れない個体の点の不透明度（外部から確認できるように公開する）。</summary>
     public float UncatchableAlpha => uncatchableAlpha;
 

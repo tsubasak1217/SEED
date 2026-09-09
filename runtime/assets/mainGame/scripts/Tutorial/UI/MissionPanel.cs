@@ -54,6 +54,26 @@ public class MissionPanel : SEEDScript
     /// <summary>非表示にするときのフェードアウトの既定の秒数。</summary>
     private const float DefaultHideFadeSeconds = 0.30f;
 
+    /// <summary>アンカーの下端とパネル上端のあいだに空ける既定の隙間（px）。</summary>
+    private const float DefaultAnchorGapPx = 8f;
+
+    /// <summary>アンカーの切り替えでパネルが移動しきるまでの既定の秒数。</summary>
+    private const float DefaultMoveSeconds = 0.25f;
+
+    /// <summary>
+    /// アンカー高さの「自動計測」を表す値（この値以下なら Sprite から実寸を読む）。
+    /// </summary>
+    private const float AutoMeasureHeightPx = 0f;
+
+    /// <summary>高さを計測できなかったときに使う値（＝厚みゼロとして扱う）。</summary>
+    private const float UnknownHeightPx = 0f;
+
+    /// <summary>ピボットの下端に対応する正規化値（下端＝1.0）。</summary>
+    private const float PivotBottom = 1f;
+
+    /// <summary>目標位置が「変わった」とみなす最小の差（px）。浮動小数の揺れで再始動しないための幅。</summary>
+    private const float TargetChangeEpsilonPx = 0.01f;
+
     /// <summary>進捗が 1 のときの値（演出の完了判定に使う）。</summary>
     private const float ProgressComplete = 1f;
 
@@ -123,6 +143,43 @@ public class MissionPanel : SEEDScript
     [SerializeField(Label = "非表示の秒数", Tooltip = "隠すときにアルファがフェードアウトするまでの秒数（実時間）")]
     public float hideFadeSeconds = DefaultHideFadeSeconds;
 
+    // ─── 追従配置（アンカーの下へ潜り込む）─────────────────
+
+    /// <summary>レーダーが出ていないときに下へ付くアクタ（Esc メニューヒント）。</summary>
+    [Header("追従配置"), SerializeField(Label = "アンカー(レーダー無)", Tooltip = "レーダー非表示中に、このアクタの下へパネルを置く（Esc メニューヒント）")]
+    public SEED.GameObject? anchorWhenRadarHidden;
+
+    /// <summary>
+    /// <see cref="anchorWhenRadarHidden"/> の高さ（px）。
+    /// 0 なら対象の Sprite から実寸を読む（Sprite を持たない対象のときだけ手で入れる）。
+    /// </summary>
+    [SerializeField(Label = "アンカー高さ(レーダー無/px)", Tooltip = "0 なら対象の Sprite から自動計測。Sprite を持たないアクタのときだけ実寸を入れる")]
+    public float anchorWhenRadarHiddenHeightPx = AutoMeasureHeightPx;
+
+    /// <summary>レーダーが出ているときに下へ付くアクタ（魚レーダー本体）。</summary>
+    [SerializeField(Label = "アンカー(レーダー有)", Tooltip = "レーダー表示中に、このアクタの下へパネルを置く（FishRadar 本体）")]
+    public SEED.GameObject? anchorWhenRadarShown;
+
+    /// <summary>
+    /// <see cref="anchorWhenRadarShown"/> の高さ（px）。
+    /// レーダーはプリミティブ描画で Sprite を持たないため、
+    /// 「背景の円の直径（＝FishRadar の背景の円の半径 × 2）」を手で入れる。
+    /// </summary>
+    [SerializeField(Label = "アンカー高さ(レーダー有/px)", Tooltip = "0 なら対象の Sprite から自動計測。レーダーは Sprite を持たないので背景の円の直径を入れる")]
+    public float anchorWhenRadarShownHeightPx = AutoMeasureHeightPx;
+
+    /// <summary>アンカーの切り替え判断に使う魚レーダー（未設定なら常に「レーダー無」側）。</summary>
+    [SerializeField(Label = "魚レーダー", Tooltip = "表示状態（FishRadar.IsShown）を見てアンカーを切り替える")]
+    public FishRadar? radar;
+
+    /// <summary>アンカーの下端とパネル上端のあいだに空ける隙間（px）。</summary>
+    [SerializeField(Label = "アンカーとの隙間(px)", Tooltip = "アンカーの下端からパネル上端までの距離")]
+    public float anchorGapPx = DefaultAnchorGapPx;
+
+    /// <summary>アンカーが切り替わったときに移動しきるまでの秒数（実時間）。</summary>
+    [SerializeField(Label = "移動の秒数", Tooltip = "アンカーが切り替わったときにパネルが移動しきるまでの秒数（実時間）")]
+    public float moveSeconds = DefaultMoveSeconds;
+
     // ─── 内部状態 ────────────────────────────────────────────
 
     /// <summary>現在の表示段階。</summary>
@@ -170,6 +227,18 @@ public class MissionPanel : SEEDScript
     /// <summary>本体の拡大率を控え済みか。</summary>
     private bool rootScaleCaptured;
 
+    /// <summary>追従移動の開始 Y（親相対のキャンバス座標）。</summary>
+    private float moveFromY;
+
+    /// <summary>追従移動の目標 Y（親相対のキャンバス座標）。</summary>
+    private float moveToY;
+
+    /// <summary>追従移動の経過秒（実時間）。</summary>
+    private float moveTimer;
+
+    /// <summary>追従移動の初期化が済んだか（初回だけ演出なしでその場に置くための判定）。</summary>
+    private bool followInitialized;
+
     // ─── ライフサイクル ──────────────────────────────────────
 
     /// <summary>初期化。元の色・拡大率を控えてから隠す。</summary>
@@ -177,6 +246,9 @@ public class MissionPanel : SEEDScript
     {
         CaptureBaseColors();
         CaptureBaseTransform();
+
+        // 初回は演出なしで、いま選ばれているアンカーの真下へ置く
+        UpdateFollowPosition(0f);
 
         // すでに表示要求が来ている（他スクリプトの OnStart が先に走った）ならそれを尊重する
         if (visible)
@@ -194,6 +266,10 @@ public class MissionPanel : SEEDScript
     /// <param name="ctx">フレーム情報（使わず実時間を使う）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
+        // 追従配置は隠れているあいだも進める
+        // （隠れている間にレーダーが出入りしても、次に出てきたとき正しい位置にいるようにするため）
+        UpdateFollowPosition(SEED.Time.UnscaledDeltaTime);
+
         if (visualState == PanelVisualState.Hidden) { return; }
 
         // 参照が後から有効になった場合に備えて毎フレーム控え直しを試みる（済んでいれば何もしない）
@@ -485,4 +561,109 @@ public class MissionPanel : SEEDScript
         if (gameObject.GetComponent<SEED.CanvasTransform>() is { } own && own.IsValid) { return own; }
         return null;
     }
+
+    // ─── 内部処理: 追従配置 ─────────────────────────────────
+
+    /// <summary>
+    /// アンカーの真下へパネルを移動させる【配置更新の唯一の場所】。
+    ///
+    /// 魚レーダーが出ていなければ <see cref="anchorWhenRadarHidden"/>、
+    /// 出ていれば <see cref="anchorWhenRadarShown"/> の<b>下端</b>を基準にし、
+    /// そこから <see cref="anchorGapPx"/> だけ下がった位置を目標にする。
+    /// 目標が変わったらその場を起点に <see cref="moveSeconds"/> かけて滑らかに移す。
+    ///
+    /// 【前提】アンカーとこのパネルは<b>同じ親（キャンバス）・同じアンカー設定</b>であること。
+    /// <c>CanvasTransform.Position</c> は親相対なので、親が違うと座標が比較できない
+    /// （MainGame.scene ではどちらも FishingUI 直下の兄弟にしてある）。
+    ///
+    /// 【前提】このパネルのピボット Y は 0（上端）であること。
+    /// 目標 Y をそのまま <c>Position.y</c> に書くので、ピボットが上端でないと
+    /// 「上端＋隙間」の意味にならない（出現演出で拡大率が変わっても位置がぶれないよう、
+    ///   パネル自身のサイズは意図的に計算へ入れていない）。
+    /// </summary>
+    /// <param name="unscaledDeltaTime">このフレームの実時間の経過秒（0 なら即座に目標へ置く）。</param>
+    private void UpdateFollowPosition(float unscaledDeltaTime)
+    {
+        if (ResolveRootTransform() is not { } ct || !ct.IsValid) { return; }
+
+        // どちらのアンカーに付くかは「レーダーを出す指示が出ているか」だけで決まる
+        bool radarShown = radar is { } activeRadar && activeRadar.IsShown;
+        SEED.GameObject? anchor = radarShown ? anchorWhenRadarShown : anchorWhenRadarHidden;
+        float anchorHeightPx = radarShown ? anchorWhenRadarShownHeightPx : anchorWhenRadarHiddenHeightPx;
+
+        // アンカーが結線されていない・無効なら、シーンで置いた位置のまま何もしない
+        if (!TryComputeTargetY(anchor, anchorHeightPx, out float targetY)) { return; }
+
+        // 初回はその場へ置いて基準を作る（シーン開始直後に画面を横切らせないため）
+        if (!followInitialized)
+        {
+            followInitialized = true;
+            moveFromY = targetY;
+            moveToY   = targetY;
+            moveTimer = 0f;
+            ApplyPositionY(ct, targetY);
+            return;
+        }
+
+        // 目標が変わったら、いまいる位置を起点に移動をやり直す（切替の連打でも飛ばない）
+        if (SEED.Mathf.Abs(targetY - moveToY) > TargetChangeEpsilonPx)
+        {
+            moveFromY = ct.Position.y;
+            moveToY   = targetY;
+            moveTimer = 0f;
+        }
+
+        moveTimer += unscaledDeltaTime;
+        float rate = Easing.InOutSine(Easing.Progress01(moveTimer, moveSeconds));
+        ApplyPositionY(ct, SEED.Mathf.Lerp(moveFromY, moveToY, rate));
+    }
+
+    /// <summary>
+    /// アンカーの下端から、パネルを置くべき Y 座標を求める。
+    /// </summary>
+    /// <param name="anchor">基準にするアクタ（null・無効なら false を返す）。</param>
+    /// <param name="heightOverridePx">高さの手入力値（<see cref="AutoMeasureHeightPx"/> 以下なら Sprite から計測）。</param>
+    /// <param name="targetY">求まった目標 Y（親相対のキャンバス座標）。</param>
+    /// <returns>求まったら true。</returns>
+    private bool TryComputeTargetY(SEED.GameObject? anchor, float heightOverridePx, out float targetY)
+    {
+        targetY = 0f;
+
+        if (anchor is not { } target || !target.IsValid) { return false; }
+        if (target.GetComponent<SEED.CanvasTransform>() is not { } anchorCt || !anchorCt.IsValid) { return false; }
+
+        float heightPx = heightOverridePx > AutoMeasureHeightPx
+            ? heightOverridePx
+            : MeasureHeightPx(target);
+
+        // 下端 = 位置 +（ピボットから下端までの割合）× 高さ × 拡大率
+        //   ピボット (0,0)   → 位置が上端なので下端は 1.0 個ぶん下
+        //   ピボット (.5,.5) → 位置が中央なので下端は 0.5 個ぶん下（＝レーダーの半径）
+        float bottomY = anchorCt.Position.y
+                      + (PivotBottom - anchorCt.Pivot.y) * heightPx * anchorCt.Scale.y;
+
+        targetY = bottomY + anchorGapPx;
+        return true;
+    }
+
+    /// <summary>
+    /// アクタの高さ（px）を Sprite から計測する。
+    /// Sprite を持たない（＝プリミティブ描画の魚レーダーなど）場合は測れないので
+    /// 厚みゼロを返す。その場合はインスペクタの高さ欄に実寸を入れて補う。
+    /// </summary>
+    /// <param name="anchor">計測するアクタ。</param>
+    /// <returns>計測できた高さ（px）。測れなければ 0。</returns>
+    private static float MeasureHeightPx(SEED.GameObject anchor)
+    {
+        if (anchor.GetComponent<SEED.Sprite>() is { } sprite && sprite.IsValid) { return sprite.Height; }
+        return UnknownHeightPx;
+    }
+
+    /// <summary>
+    /// パネルの Y 座標だけを書き換える（X はシーンで置いた値のまま動かさない）。
+    /// </summary>
+    /// <param name="ct">パネル本体の CanvasTransform。</param>
+    /// <param name="y">書き込む Y 座標。</param>
+    private static void ApplyPositionY(SEED.CanvasTransform ct, float y)
+        => ct.Position = new SEED.Vector2(ct.Position.x, y);
 }

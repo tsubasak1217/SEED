@@ -571,11 +571,11 @@
                 "beatIconParent": "FishingUI",
                 "distanceText": "DistanceText|Text",
                 "gaugeSpace": "HpText",
+                "hpText": "HpText|Text",
                 "judgementExcellentObject": "JudgeExcellent",
                 "judgementGreatObject": "JudgeGreat",
-                "judgementNiceObject": "JudgeNice",
                 "judgementMissObject": "JudgeMiss",
-                "hpText": "HpText|Text",
+                "judgementNiceObject": "JudgeNice",
                 "reelInSpeedMax": "18.000"
               }
             }
@@ -2638,8 +2638,8 @@
                     1.0,
                     1.0
                   ],
-                  "width": 98.0,
-                  "height": 73.0,
+                  "width": 79.0,
+                  "height": 55.9,
                   "layer": 10,
                   "postfx_path": "",
                   "raycast_target": false
@@ -2651,8 +2651,7 @@
               "component": {
                 "type": "ScriptComponent",
                 "data": {
-                  "type_name": "assets://mainGame/scripts/EscMenuHint.cs",
-                  "fields": {}
+                  "type_name": "assets://mainGame/scripts/EscMenuHint.cs"
                 }
               }
             }
@@ -4367,11 +4366,18 @@
                 "data": {
                   "type_name": "assets://mainGame/scripts/Tutorial/UI/MissionPanel.cs",
                   "fields": {
+                    "anchorGapPx": "8.000",
+                    "anchorWhenRadarHidden": "EscMenuHint",
+                    "anchorWhenRadarHiddenHeightPx": "0.000",
+                    "anchorWhenRadarShown": "FishRadar",
+                    "anchorWhenRadarShownHeightPx": "180.000",
                     "appearSeconds": "0.300",
                     "bgSprite": "MissionPanelBg|Sprite",
                     "checksText": "MissionPanelChecks|Text",
+                    "moveSeconds": "0.250",
                     "objectiveText": "MissionPanelObjective|Text",
                     "progressText": "MissionPanelProgress|Text",
+                    "radar": "FishRadar|Script",
                     "rootTransform": "MissionPanel",
                     "titleText": "MissionPanelTitle|Text"
                   }
@@ -5027,14 +5033,14 @@
                 "data": {
                   "type_name": "assets://common/scripts/Dialogue/DialogueWindow.cs",
                   "fields": {
-                    "balloonSprite": "DialogueBalloon|Sprite",
-                    "nameplateSprite": "DialogueNameplate|Sprite",
-                    "speakerText": "DialogueSpeakerText|Text",
-                    "bodyText": "DialogueBodyText|Text",
-                    "nextArrowSprite": "DialogueNextArrow|Sprite",
-                    "charInterval": "0.040",
                     "arrowBlinkPeriod": "0.800",
+                    "balloonSprite": "DialogueBalloon|Sprite",
+                    "bodyText": "DialogueBodyText|Text",
+                    "charInterval": "0.040",
                     "fontPath": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                    "nameplateSprite": "DialogueNameplate|Sprite",
+                    "nextArrowSprite": "DialogueNextArrow|Sprite",
+                    "speakerText": "DialogueSpeakerText|Text",
                     "useUnscaledTime": "true"
                   }
                 }
@@ -5082,7 +5088,7 @@
                         1.0
                       ],
                       "width": 1320.0,
-                      "height": 585.2830188679245,
+                      "height": 585.283,
                       "layer": 1100,
                       "postfx_path": "",
                       "raycast_target": false
@@ -5098,7 +5104,7 @@
               "canvas_transform": {
                 "position": [
                   -420.0,
-                  -540.2830188679245
+                  -540.283
                 ],
                 "rotation": 0.0,
                 "scale": [
@@ -5148,7 +5154,7 @@
               "canvas_transform": {
                 "position": [
                   -420.0,
-                  -540.2830188679245
+                  -540.283
                 ],
                 "rotation": 0.0,
                 "scale": [
@@ -5187,13 +5193,28 @@
                       "line_spacing": 1.35,
                       "layer": 1102,
                       "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "",
                       "outline_width": 0.0,
                       "outline_color": [
                         0.0,
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -5206,7 +5227,7 @@
               "canvas_transform": {
                 "position": [
                   -522.0,
-                  -465.2830188679245
+                  -465.28302
                 ],
                 "rotation": 0.0,
                 "scale": [
@@ -5245,13 +5266,28 @@
                       "line_spacing": 1.35,
                       "layer": 1102,
                       "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "",
                       "outline_width": 0.0,
                       "outline_color": [
                         0.0,
                         0.0,
                         0.0,
                         1.0
-                      ]
+                      ],
+                      "box_width": 0.0,
+                      "box_height": 0.0,
+                      "wrap": true,
+                      "weight": 0.0,
+                      "shadow_offset_x": 0.0,
+                      "shadow_offset_y": 0.0,
+                      "shadow_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -5297,7 +5333,7 @@
                         1.0,
                         1.0
                       ],
-                      "width": 61.949999999999996,
+                      "width": 61.95,
                       "height": 65.1,
                       "layer": 1103,
                       "postfx_path": "",
@@ -16162,10 +16198,10 @@
               "type_name": "assets://common/scripts/Dialogue/DialogueDirector.cs",
               "fields": {
                 "autoStart": "false",
-                "window": "StoryDialogueWindow",
                 "cameraDirector": "MainCamera",
                 "entries": "[{\"speaker\": \"\", \"text\": \"――水面が、ゆっくりと持ち上がっていく。\\r\\n釣り上げたそれは、小屋よりも大きかった。\", \"cameraTarget\": \"StoryCam_Kaiju\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 1.2, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"テバ\", \"text\": \"……マジで釣りやがった。\", \"cameraTarget\": \"\", \"cameraMode\": \"Cut\", \"lerpDuration\": 0.0, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"ササミ\", \"text\": \"はぁ……はぁ……。\\r\\nな、なんですかこれ……！？\", \"cameraTarget\": \"StoryCam_Player\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"テバ\", \"text\": \"俺が唯一釣れなかったアイツを……\\r\\nお前さん、たった今釣り上げやがったんだぞ。\", \"cameraTarget\": \"StoryCam_Owner\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"テバ\", \"text\": \"こいつぁこの島のヌシだ。\\r\\n何十年も、誰にも釣らせやしなかった。\", \"cameraTarget\": \"\", \"cameraMode\": \"Cut\", \"lerpDuration\": 0.0, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"ササミ\", \"text\": \"……ヌシ。\\r\\nじゃあこれ、食べていいんですか？\", \"cameraTarget\": \"StoryCam_Player\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}]",
-                "onDialogueFinished": "[{\"actor\": \"KaijuStory\", \"script\": \"KaijuStoryTrigger\", \"method\": \"OnStoryFinished\", \"argKind\": \"none\", \"arg\": \"\"}]"
+                "onDialogueFinished": "[{\"actor\": \"KaijuStory\", \"script\": \"KaijuStoryTrigger\", \"method\": \"OnStoryFinished\", \"argKind\": \"none\", \"arg\": \"\"}]",
+                "window": "StoryDialogueWindow"
               }
             }
           }
@@ -16177,11 +16213,11 @@
             "data": {
               "type_name": "assets://mainGame/scripts/Story/KaijuStoryTrigger.cs",
               "fields": {
-                "director": "KaijuStory",
                 "controller": "Player",
+                "debugForceStory": "false",
+                "director": "KaijuStory",
                 "fishManager": "fishManager",
-                "kaijuPrefabKey": "kaiju",
-                "debugForceStory": "false"
+                "kaijuPrefabKey": "kaiju"
               }
             }
           }
