@@ -1579,9 +1579,15 @@ public class FishingController : SEEDScript
         HideJudgement();
 
         // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
-        SEED.Debug.OnCommand(DebugCommandCatchTest, HandleCatchTestCommand);
-        SEED.Debug.OnCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
-        SEED.Debug.OnCommand(DebugCommandHitTest, HandleHitTestCommand);
+        // パッケージ版（配布ビルド）では登録そのものを行わない。
+        // ＝ 製品では seed_script_debug で釣果の全消しなどが一切通らない。
+        debugCommandsRegistered = SEED.Application.IsDebugAllowed;
+        if (debugCommandsRegistered)
+        {
+            SEED.Debug.OnCommand(DebugCommandCatchTest, HandleCatchTestCommand);
+            SEED.Debug.OnCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+            SEED.Debug.OnCommand(DebugCommandHitTest, HandleHitTestCommand);
+        }
     }
 
     /// <summary>
@@ -1591,9 +1597,14 @@ public class FishingController : SEEDScript
     public override void OnDestroy()
     {
         // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
-        SEED.Debug.OffCommand(DebugCommandCatchTest, HandleCatchTestCommand);
-        SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
-        SEED.Debug.OffCommand(DebugCommandHitTest, HandleHitTestCommand);
+        // 登録したときだけ外す（登録・解除を対称にして、無登録の解除を呼ばない）。
+        if (debugCommandsRegistered)
+        {
+            debugCommandsRegistered = false;
+            SEED.Debug.OffCommand(DebugCommandCatchTest, HandleCatchTestCommand);
+            SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+            SEED.Debug.OffCommand(DebugCommandHitTest, HandleHitTestCommand);
+        }
         StopReelSound();
         AbortBiteTiming();
         ReleaseHook();
@@ -1811,9 +1822,15 @@ public class FishingController : SEEDScript
     /// ウキが水上に無いときに着水させる、竿先からの水平距離（メートル）。
     /// <see cref="minCastDistance"/>〜<see cref="maxCastDistance"/> にクランプする。
     /// </param>
-    /// <returns>掛かったら true。</returns>
+    /// <returns>
+    /// 掛かったら true。パッケージ版（配布ビルド）では何もせず false を返す
+    /// （＝「掛けられなかった」ときと同じ戻り値なので、呼び出し側の後始末はそのまま働く）。
+    /// </returns>
     public bool DebugForceHook(Fish fish, float distanceMeters)
     {
+        // パッケージ版ではデバッグ入口を塞ぐ（ゲーム状態には一切触れない）
+        if (!SEED.Application.IsDebugAllowed) { return false; }
+
         if (IsHooked)
         {
             SEED.Debug.LogWarning("[Fishing] DebugForceHook: 既にヒット中のため何もしない");
@@ -1861,9 +1878,15 @@ public class FishingController : SEEDScript
     /// ヒットしていないときは何もせず false を返す
     /// （呼び出し側＝<c>DebugCommands</c> が従来の強制ヒットへ回す）。
     /// </summary>
-    /// <returns>釣り上げ処理へ入ったら true。</returns>
+    /// <returns>
+    /// 釣り上げ処理へ入ったら true。パッケージ版（配布ビルド）では何もせず false を返す
+    /// （＝「受け付けられなかった」ときと同じ戻り値で、呼び出し側の分岐は変わらない）。
+    /// </returns>
     public bool DebugForceCatch()
     {
+        // パッケージ版ではデバッグ入口を塞ぐ（ゲーム状態には一切触れない）
+        if (!SEED.Application.IsDebugAllowed) { return false; }
+
         if (State != FishState.Hooked || hookedFish is null)
         {
             SEED.Debug.LogWarning("[Fishing] DebugForceCatch: ヒット中ではないため何もしない");
@@ -4068,6 +4091,12 @@ public class FishingController : SEEDScript
     }
 
     // ─── デバッグコマンド（開発・AI 検証用）──────────────────
+
+    /// <summary>
+    /// デバッグコマンドを登録済みか（パッケージ版では登録しないので常に false）。
+    /// <see cref="OnDestroy"/> の解除を登録と対称にするために持つ。
+    /// </summary>
+    private bool debugCommandsRegistered;
 
     /// <summary>
     /// デバッグコマンド名: 釣り上げ演出をその場で起こす。

@@ -19,7 +19,10 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// </list>
 ///
 /// [出荷時]
-/// <see cref="enabled"/> を false にするか、このアクタごとシーンから外すこと。
+/// パッケージ版（assets.pak から起動した配布ビルド）では
+/// <see cref="SEED.Application.IsDebugAllowed"/> が false になるため、
+/// <see cref="OnStart"/> で自動的に丸ごと無効化される（アクタを外す必要は無い）。
+/// エディタ実行中だけ、さらに手動で止めたいときに <see cref="enabled"/> を false にする。
 /// </summary>
 public class DebugCommands : SEEDScript
 {
@@ -88,12 +91,33 @@ public class DebugCommands : SEEDScript
     /// </summary>
     private int pendingFrames = NoPendingFrames;
 
+    /// <summary>
+    /// このビルドでデバッグ機能を動かしてよいか（<see cref="OnStart"/> で確定する）。
+    ///
+    /// 値は実行中に変化しないので毎フレーム問い合わせず、ここへ 1 度だけ写し取る。
+    /// false（＝パッケージ版）の間は <see cref="Update"/> が即座に戻るため、
+    /// デバッグキーは一切読まれない。
+    /// </summary>
+    private bool debugAllowed;
+
     // ─── ライフサイクル ──────────────────────────────────────────
 
-    /// <summary>初期化。待ち状態を明示的に空にしておく（ホットリロード対策）。</summary>
+    /// <summary>
+    /// 初期化。待ち状態を明示的に空にしておく（ホットリロード対策）。
+    ///
+    /// 併せて、このビルドでデバッグ機能が許されるかを確定する。
+    /// パッケージ版では以降 <see cref="Update"/> が何もしないので、
+    /// 生成待ちの魚が残らないよう待ち状態も必ず空にしてから抜ける。
+    /// </summary>
     public override void OnStart()
     {
+        debugAllowed = SEED.Application.IsDebugAllowed;
         ClearPending();
+
+        if (!debugAllowed)
+        {
+            SEED.Debug.Log("[Debug] パッケージ版のためデバッグキーを無効化した");
+        }
     }
 
     /// <summary>破棄直前の後始末。待ちのまま消えても参照を残さない。</summary>
@@ -108,7 +132,8 @@ public class DebugCommands : SEEDScript
     /// <param name="ctx">フレーム情報（ここでは使わない）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
-        if (!enabled) { return; }
+        // パッケージ版では丸ごと無効（誤爆をここ 1 か所で止める）
+        if (!debugAllowed || !enabled) { return; }
 
         // 生成待ちがある間はキー入力を読まない（多重に魚を湧かせないため）
         if (pendingFrames != NoPendingFrames)

@@ -178,6 +178,12 @@ public class Zukan : SEEDScript
     private int currentLevel = FirstLevel;
 
     /// <summary>
+    /// デバッグコマンドを登録済みか（パッケージ版では登録しないので常に false）。
+    /// <c>OnDestroy</c> の解除を登録と対称にするために持つ。
+    /// </summary>
+    private bool debugCommandsRegistered;
+
+    /// <summary>
     /// <see cref="debugResetKey"/> を押し続けている秒数（実時間）。
     /// 離した瞬間に 0 へ戻すので、断続的に押しても貯まらない。
     /// </summary>
@@ -221,14 +227,24 @@ public class Zukan : SEEDScript
         pageDirty = true;
 
         // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
-        SEED.Debug.OnCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+        // パッケージ版（配布ビルド）では釣果の全消しを外から叩けないよう、登録自体を行わない。
+        debugCommandsRegistered = SEED.Application.IsDebugAllowed;
+        if (debugCommandsRegistered)
+        {
+            SEED.Debug.OnCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+        }
     }
 
     /// <summary>破棄時の後始末。静的アクセサを取り消す。</summary>
     public override void OnDestroy()
     {
-        // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
-        SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+        // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す
+        //（登録したときだけ外して、登録・解除を対称に保つ）。
+        if (debugCommandsRegistered)
+        {
+            debugCommandsRegistered = false;
+            SEED.Debug.OffCommand(DebugCommandRecordsReset, HandleRecordsResetCommand);
+        }
         if (ReferenceEquals(Current, this)) { Current = null; }
     }
 
@@ -273,6 +289,14 @@ public class Zukan : SEEDScript
     /// </summary>
     private void UpdateDebugReset()
     {
+        // パッケージ版（配布ビルド）ではキー入力の判定ごと行わない【ゲートはこの 1 か所】。
+        // 貯めた秒も初期値へ戻して、押しっぱなしのまま許可が変わっても誤爆しないようにする。
+        if (!SEED.Application.IsDebugAllowed)
+        {
+            debugResetHeldSeconds = HoldElapsedNone;
+            return;
+        }
+
         if (!SEED.Input.GetKey(debugResetKey))
         {
             debugResetHeldSeconds = HoldElapsedNone;

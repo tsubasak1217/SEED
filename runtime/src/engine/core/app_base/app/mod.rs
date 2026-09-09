@@ -1426,6 +1426,17 @@ impl App {
         let ipc = args.pipe_name.as_deref()
             .and_then(|name| IpcClient::connect(name).ok());
 
+        // 実行環境フラグを確定させる（スクリプト API SEED.Application の判定源）。
+        // エディタからの Play は「--mode=play かつ --pipe= で IPC 接続あり」でのみ成立する
+        // （配布 exe の単体起動は引数なし → mode=Play・IPC なし、
+        //   エディタの Edit モードは --mode=edit なので Play にならない）。
+        // 判定条件の詳細と Edit モードを false 扱いにする理由は app_env.rs のコメントを参照。
+        // スクリプトホストのロードより前に初期化しておくこと（C# 側が初回アクセスで読む）。
+        crate::engine::app_env::init(crate::engine::app_env::decide_editor_play(
+            matches!(args.mode, RuntimeMode::Play),
+            ipc.is_some(),
+        ));
+
         let host_location = ScriptingHost::resolve_dll_path();
         let scripting_host = if host_location.dll_path.exists() {
             // DLL が存在する場合のみ CLR ロードを試みる（存在しない場合は hostfxr 検索で遅延するため）

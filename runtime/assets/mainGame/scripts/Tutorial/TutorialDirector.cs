@@ -87,6 +87,18 @@ public class TutorialDirector : SEEDScript
     /// <summary>台詞の列が空であることを表す添字。</summary>
     private const int NoQueueIndex = 0;
 
+    /// <summary>
+    /// デバッグ指定の既定値（＝パッケージ版で強制的に戻す値）。
+    /// 「デバッグ指定なし＝本来の進行」を表す。
+    /// </summary>
+    private const bool DefaultDebugForceTutorial = false;
+
+    /// <summary><see cref="debugStartMissionId"/> の既定値（空＝先頭から通常どおり）。</summary>
+    private const string DefaultDebugStartMissionId = "";
+
+    /// <summary><see cref="debugSkipToEnding"/> の既定値（false＝終了演出への飛ばしをしない）。</summary>
+    private const bool DefaultDebugSkipToEnding = false;
+
     // ─── 進行段階 ────────────────────────────────────────────
 
     /// <summary>チュートリアル全体の進行段階。</summary>
@@ -165,8 +177,8 @@ public class TutorialDirector : SEEDScript
     /// 【デバッグ用】true の間、セーブデータの完了フラグを無視して必ずチュートリアルを流す。
     /// 本番出荷時は false のままにしておくこと。
     /// </summary>
-    [SerializeField(Label = "【デバッグ】必ず流す", Tooltip = "true でセーブデータの完了フラグを無視して必ずチュートリアルを実行する")]
-    public bool debugForceTutorial = false;
+    [SerializeField(Label = "【デバッグ】必ず流す", Tooltip = "true でセーブデータの完了フラグを無視して必ずチュートリアルを実行する（パッケージ版では無視される）")]
+    public bool debugForceTutorial = DefaultDebugForceTutorial;
 
     /// <summary>
     /// 【デバッグ用】ここに書いたミッション ID から開始する（空なら先頭から通常どおり）。
@@ -176,8 +188,8 @@ public class TutorialDirector : SEEDScript
     /// 開始ミッション 1 件ぶんだけになる。
     /// 完了済みセーブでも使えるよう、<see cref="debugForceTutorial"/> と併用すること。
     /// </summary>
-    [SerializeField(Label = "【デバッグ】開始ミッションID", Tooltip = "この ID のミッションから開始する（空なら先頭から）")]
-    public string debugStartMissionId = "";
+    [SerializeField(Label = "【デバッグ】開始ミッションID", Tooltip = "この ID のミッションから開始する（空なら先頭から。パッケージ版では無視される）")]
+    public string debugStartMissionId = DefaultDebugStartMissionId;
 
     /// <summary>
     /// 【デバッグ用】true なら開始直後に全ミッションを達成扱いにして、
@@ -188,8 +200,8 @@ public class TutorialDirector : SEEDScript
     /// 完了処理（<c>FinishTutorial</c>）へ直行する。
     /// <see cref="debugStartMissionId"/> より優先される。
     /// </summary>
-    [SerializeField(Label = "【デバッグ】終了演出だけ再生", Tooltip = "true で全ミッションを飛ばし、最後の Cutscene（怪獣）から再生する")]
-    public bool debugSkipToEnding = false;
+    [SerializeField(Label = "【デバッグ】終了演出だけ再生", Tooltip = "true で全ミッションを飛ばし、最後の Cutscene（怪獣）から再生する（パッケージ版では無視される）")]
+    public bool debugSkipToEnding = DefaultDebugSkipToEnding;
 
     /// <summary>台詞の表示開始から決定入力を受け付けないまでの秒数（実時間）。</summary>
     [SerializeField(Label = "送り無効時間(秒)", Tooltip = "台詞の表示直後に決定入力を無視する秒数（二重送りの防止）")]
@@ -298,10 +310,32 @@ public class TutorialDirector : SEEDScript
     // ─── ライフサイクル ──────────────────────────────────────
 
     /// <summary>
+    /// パッケージ版（配布ビルド）ではデバッグ指定を既定値へ戻す
+    /// 【デバッグ指定を無効化する唯一の場所】。
+    ///
+    /// これらはシーンへ保存された値なので、開発中の設定が付いたまま出荷される事故が起こり得る。
+    /// 参照箇所（完了フラグの無視・開始ミッションの上書き・終了演出だけ再生）はいずれも
+    /// <see cref="OnStart"/> 以降でしか読まれないため、初期化の<b>最初</b>でフィールドごと
+    /// 既定値へ戻せば、以降の全経路が自動的に本来の進行になる
+    /// （実効値プロパティを増やさずに 1 か所で断ち切れる）。
+    /// </summary>
+    private void ApplyDebugGate()
+    {
+        if (SEED.Application.IsDebugAllowed) { return; }
+
+        debugForceTutorial  = DefaultDebugForceTutorial;
+        debugStartMissionId = DefaultDebugStartMissionId;
+        debugSkipToEnding   = DefaultDebugSkipToEnding;
+    }
+
+    /// <summary>
     /// 初期化。完了済みなら自分と UI を無効化して何もしない。
     /// </summary>
     public override void OnStart()
     {
+        // パッケージ版ではデバッグ指定を無効化する（完了フラグの無視・開始位置の上書きより前に行う）
+        ApplyDebugGate();
+
         // 制限の焼き付き防止: 前回の Play・ホットリロードの残りがあれば必ず解除してから始める
         ReleaseAllRestrictions();
 

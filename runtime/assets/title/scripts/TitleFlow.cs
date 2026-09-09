@@ -64,7 +64,8 @@ public class TitleFlow : SEEDScript
 
         // 【デバッグ】SceneFlow 側のフラグが立っていれば、セーブデータの進行状況を
         // 一切見ずに常にプロローグへ通す（プロローグ→チュートリアルの動作確認用）。
-        if (sceneFlow.debugForceFromPrologue)
+        // 実効値プロパティ経由なので、パッケージ版では常に false になる。
+        if (sceneFlow.DebugForceFromPrologue)
         {
             sceneFlow.GoTo(SceneNamePrologue);
             return;

@@ -534,7 +534,12 @@ public class ResultPanel : SEEDScript
         panelRoot.Visible = false;
 
         // 開発用のデバッグコマンドを登録する（エディタ／MCP から叩ける）。
-        SEED.Debug.OnCommand(DebugCommandResultConfirm, HandleResultConfirmCommand);
+        // パッケージ版（配布ビルド）では外から演出を送れないよう、登録自体を行わない。
+        debugCommandsRegistered = SEED.Application.IsDebugAllowed;
+        if (debugCommandsRegistered)
+        {
+            SEED.Debug.OnCommand(DebugCommandResultConfirm, HandleResultConfirmCommand);
+        }
 
         // 生成フォールバック経由なら、預かっていた内容でそのまま表示へ入る
         if (!hasPendingData)
@@ -552,12 +557,23 @@ public class ResultPanel : SEEDScript
     /// <summary>破棄時の後始末。自分が現役のときだけ静的状態を戻す。</summary>
     public override void OnDestroy()
     {
-        // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す。
-        SEED.Debug.OffCommand(DebugCommandResultConfirm, HandleResultConfirmCommand);
+        // 破棄したスクリプトのハンドラが呼ばれ続けないよう、必ず外す
+        //（登録したときだけ外して、登録・解除を対称に保つ）。
+        if (debugCommandsRegistered)
+        {
+            debugCommandsRegistered = false;
+            SEED.Debug.OffCommand(DebugCommandResultConfirm, HandleResultConfirmCommand);
+        }
         if (ReferenceEquals(Current, this)) { ResetStaticState(); }
     }
 
     // ─── デバッグコマンド（開発・AI 検証用）──────────────────
+
+    /// <summary>
+    /// デバッグコマンドを登録済みか（パッケージ版では登録しないので常に false）。
+    /// <see cref="OnDestroy"/> の解除を登録と対称にするために持つ。
+    /// </summary>
+    private bool debugCommandsRegistered;
 
     /// <summary>
     /// デバッグコマンド名: 決定入力の代わりにパネルを次へ進める。

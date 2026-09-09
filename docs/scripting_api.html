@@ -229,6 +229,7 @@
     <a href="#sec-draw">Draw（2D 図形）</a>
     <a href="#sec-draw3d">Draw3D（3D 図形）</a>
     <a href="#sec-events">Events（イベント）</a>
+    <a href="#sec-application">Application（実行環境）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -1848,6 +1849,62 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     イベント名は文字列なのでタイプミスをコンパイラが検出できません。名前は
     <code>public const string BiteEvent = "Bite";</code> のように 1 か所へ定数化し、
     発火側・購読側の両方から参照することを推奨します。
+  </div>
+</section>
+
+<!-- ════════════════ 7.11 Application ════════════════ -->
+<section id="sec-application" data-keywords="Application アプリケーション 実行環境 パッケージ 配布 ビルド IsPackaged IsEditorPlay IsDebugAllowed デバッグ ゲート 無効化 pak assets.pak エディタ Play">
+  <h2>7.11 Application（実行環境の判定：デバッグ機能のゲート）</h2>
+  <p class="section-note">
+    「今このゲームがどういう立場で動いているか」を調べる API です。主な用途は
+    <b>デバッグ機能を配布版で自動的に無効化する</b>こと。デバッグ表示・当たり判定の可視化・チートコマンドを
+    <code>Application.IsDebugAllowed</code> で囲っておけば、パッケージ（<code>assets.pak</code> 同梱）の
+    実行ファイルではそれらが動かなくなります。
+  </p>
+  <div class="api"><code class="sig">Application.IsPackaged</code><span class="desc">bool。パッケージ実行（assets.pak 同梱の配布版）なら true</span></div>
+  <div class="api"><code class="sig">Application.IsEditorPlay</code><span class="desc">bool。エディタから Play したゲーム実行中なら true（Edit モードは false）</span></div>
+  <div class="api"><code class="sig">Application.IsDebugAllowed</code><span class="desc">bool。デバッグ機能を有効にしてよいか（現在の定義は !IsPackaged）</span></div>
+<pre><span class="c">// デバッグ HUD は開発中だけ出す</span>
+<span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+{
+    <span class="c">// ゲートは必ず IsDebugAllowed で行う（判定方針を変えるときの修正箇所を 1 つに保つため）</span>
+    <span class="k">if</span> (!<span class="t">SEED.Application</span>.IsDebugAllowed) <span class="k">return</span>;
+
+    <span class="k">if</span> (<span class="t">SEED.Input</span>.GetKeyDown(<span class="t">SEED.KeyCode</span>.F1)) visible = !visible;
+    <span class="k">if</span> (!visible) <span class="k">return</span>;
+
+    <span class="t">SEED.Draw</span>.Rect(<span class="k">new</span> <span class="t">SEED.Vector2</span>(8f, 8f), <span class="k">new</span> <span class="t">SEED.Vector2</span>(120f, 24f),
+        <span class="k">new</span> <span class="t">SEED.Color</span>(0f, 0f, 0f, 0.5f));
+}</pre>
+<pre><span class="c">// デバッグコマンド（チート）も同じゲートで囲う</span>
+<span class="k">public override void</span> OnStart()
+{
+    <span class="k">if</span> (!<span class="t">SEED.Application</span>.IsDebugAllowed) <span class="k">return</span>;
+    <span class="t">SEED.Debug</span>.OnCommand(<span class="s">"giveitem"</span>, arg =&gt; GiveItem(arg));
+}</pre>
+  <table>
+    <tr><th>実行のしかた</th><th>IsPackaged</th><th>IsEditorPlay</th><th>IsDebugAllowed</th></tr>
+    <tr><td>エディタで Play</td><td>false</td><td><b>true</b></td><td><b>true</b></td></tr>
+    <tr><td>エディタの編集中ビュー（Edit モード）</td><td>false</td><td>false</td><td><b>true</b></td></tr>
+    <tr><td>配布版（<code>assets.pak</code> あり）を単体起動</td><td><b>true</b></td><td>false</td><td>false</td></tr>
+    <tr><td>実ファイルの assets を隣に置いた単体起動（pak なし）</td><td>false</td><td>false</td><td><b>true</b></td></tr>
+  </table>
+  <table>
+    <tr><th>項目</th><th>内容</th></tr>
+    <tr><td>値の変化</td><td>すべて<b>起動時に確定し、実行中は変化しない</b>。初回アクセスで 1 度だけランタイムへ問い合わせ、以降はキャッシュを返す</td></tr>
+    <tr><td>呼び出しコスト</td><td>キャッシュ後はフィールド読み出しのみ。毎フレームの <code>if</code> に直接書いてよい</td></tr>
+    <tr><td><code>IsPackaged</code> の判定源</td><td><code>assets.pak</code> を開けているかどうか。実ファイルの <code>assets/</code> を隣に置いた配布形態では <b>false</b></td></tr>
+    <tr><td><code>IsEditorPlay</code> の判定源</td><td>エディタから <code>--mode=play</code> かつ IPC パイプ付きで起動されたか。Edit モードは含まない</td></tr>
+    <tr><td>ホスト API 未登録時</td><td>すべて false（<code>IsDebugAllowed</code> は true）。安全側へ倒す既定</td></tr>
+  </table>
+  <div class="warn">
+    「開発中だけ動かしたい処理」は <code>IsPackaged</code> / <code>IsEditorPlay</code> を直接見ずに、必ず
+    <code>IsDebugAllowed</code> で分岐してください。判定方針を変えたくなったとき（配布版でも隠しコマンドで有効化する、
+    エディタ Play のときだけに絞る、など）に書き換える場所が 1 か所で済みます。
+  </div>
+  <div class="warn">
+    <code>IsDebugAllowed</code> はあくまで<b>分岐の共通ゲート</b>であり、コードそのものを配布版から取り除くわけではありません。
+    チート防止として厳密に守りたい処理は、これに頼らず別途対策してください。
   </div>
 </section>
 

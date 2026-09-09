@@ -1,4 +1,6 @@
 pub mod animation;
+/// 実行環境フラグ（エディタからの Play か）。スクリプト API SEED.Application の判定源
+pub mod app_env;
 pub mod asset_fs;
 /// シーン内コンポーネントの変数を「値の供給元」として公開する仕組み（`@ref` バインド）
 pub mod binding;

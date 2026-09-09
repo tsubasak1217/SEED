@@ -116,8 +116,19 @@ public class SceneFlow : SEEDScript
     /// タイトルから常にプロローグ→チュートリアルの順で遷移させる（TitleFlow が参照）。
     /// 本番出荷時は false のままにしておくこと。
     /// </summary>
-    [SerializeField(Label = "【デバッグ】常にプロローグから通す", Tooltip = "true のときセーブデータのチュートリアル完了フラグを無視し、タイトルから必ずプロローグ→チュートリアルの順で通す（開発用）")]
+    [SerializeField(Label = "【デバッグ】常にプロローグから通す", Tooltip = "true のときセーブデータのチュートリアル完了フラグを無視し、タイトルから必ずプロローグ→チュートリアルの順で通す（開発用。パッケージ版では無視される）")]
     public bool debugForceFromPrologue = DefaultDebugForceFromPrologue;
+
+    /// <summary>
+    /// <see cref="debugForceFromPrologue"/> の実効値【この指定を読む唯一の入口】。
+    ///
+    /// インスペクタのフラグはシーンへ保存されるため、開発中の設定が付いたまま
+    /// 出荷される事故が起こり得る。パッケージ版（配布ビルド）では
+    /// <see cref="SEED.Application.IsDebugAllowed"/> が false になるので、
+    /// 保存値に関わらず必ず false になる。
+    /// フィールドはインスペクタで切り替えたいのでそのまま残す。
+    /// </summary>
+    public bool DebugForceFromPrologue => debugForceFromPrologue && SEED.Application.IsDebugAllowed;
 
     // ── 内部状態 ────────────────────────────────────────────
 

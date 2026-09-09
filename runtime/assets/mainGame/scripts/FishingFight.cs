@@ -750,6 +750,17 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "残り距離のText")]
     private SEED.Text? distanceText = null;
 
+    /// <summary>
+    /// 状態テキストに「魚 ○○%」の行を足すかどうか【デバッグ表示】。
+    ///
+    /// 魚の残り HP は本来プレイヤーへ見せない内部値で、開発中の調整のために出している。
+    /// パッケージ版（配布ビルド）では <see cref="SEED.Application.IsDebugAllowed"/> が
+    /// false になるため、このフラグが true でも表示されない（<see cref="ShowFishHpPercent"/>）。
+    /// フェーズ名と次フェーズの予告はゲーム仕様の表示なので、ここでは消さない。
+    /// </summary>
+    [SerializeField(Label = "【デバッグ】魚HP％を表示", Tooltip = "状態テキストに魚の残り HP ％を足す（パッケージ版では無視される）")]
+    private bool showFishHpDebug = true;
+
     // ─── UI レイアウト ────────────────────────────────────
 
     /// <summary>円の半径（ピクセル）。マーカーとセグメントの配置半径。</summary>
@@ -3606,6 +3617,15 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
+    /// 状態テキストへ魚の HP ％を出してよいか【HP ％表示の唯一の判断】。
+    ///
+    /// インスペクタの <see cref="showFishHpDebug"/> と、ビルド種別による許可
+    /// （<see cref="SEED.Application.IsDebugAllowed"/>）の両方が揃ったときだけ true。
+    /// パッケージ版では設定に関わらず false になる。
+    /// </summary>
+    private bool ShowFishHpPercent => showFishHpDebug && SEED.Application.IsDebugAllowed;
+
+    /// <summary>
     /// 円の中心テキスト（フェーズ名＋予告／魚 HP ％）を更新する。
     /// 余白（<see cref="Phase.LeadIn"/>）中だけは特別扱いで、残り拍数のカウントダウン
     /// （"4" → "3" → "2" → "1"）だけを大きく出す。
@@ -3624,8 +3644,10 @@ public class FishingFight : SEEDScript
         string phaseName = PhaseLabel(CurrentPhase);
         string notice = nextPhaseAnnounced ? $" → {PhaseLabel(NextPhase(CurrentPhase))}" : string.Empty;
 
-        label.Content = $"{phaseName}{notice}\n"
-                      + $"魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%";
+        // 魚の HP ％はデバッグ表示なので、許可されているときだけ 2 行目として足す。
+        label.Content = ShowFishHpPercent
+            ? $"{phaseName}{notice}\n" + $"魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%"
+            : $"{phaseName}{notice}";
         label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
     }
 

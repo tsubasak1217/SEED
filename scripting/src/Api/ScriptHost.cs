@@ -1081,6 +1081,28 @@ public static unsafe class ScriptHost
         value = Encoding.UTF8.GetString(heap, 0, written);
         return true;
     }
+
+    // -- 実行環境の判定（SEED.Application）--------------------------
+
+    /// <summary>AppEnv の kind: パッケージ実行か（Rust 側 APP_ENV_KIND_PACKAGED と一致）。</summary>
+    public const int AppEnvKindPackaged = 0;
+
+    /// <summary>AppEnv の kind: エディタからの Play か（Rust 側 APP_ENV_KIND_EDITOR_PLAY と一致）。</summary>
+    public const int AppEnvKindEditorPlay = 1;
+
+    /// <summary>
+    /// 実行環境の真偽値を 1 つ取得する（<see cref="SEED.Application"/> の実体）。
+    ///
+    /// ホスト API が未登録（エディタ外の単体テスト等）や未知の kind の場合は false を返す。
+    /// 「不明なら開発用機能を有効にしない」安全側の既定にしている。
+    /// </summary>
+    /// <param name="kind">問い合わせる種類（Packaged / EditorPlay）。</param>
+    public static bool AppEnv(int kind)
+    {
+        if (!_available || _api.AppEnv == null) return false;
+        // Rust 側は 真=1 / 偽=0 / 不正 kind=-1 を返す。1 以外はすべて false 扱いにする。
+        return _api.AppEnv(kind) == 1;
+    }
 }
 
 /// <summary>
@@ -1173,4 +1195,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<byte*, int, int> ScriptDebugTake;
     /// <summary>(kind, path, pathLen, out buf, cap) → -1=失敗 / 0以上=必要バイト長（アセットのテキスト読み込み。kind: 0=本文/1=更新時刻）</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, int> AssetText;
+    /// <summary>(kind) → 1=真 / 0=偽 / -1=未知の kind（実行環境の判定。kind: 0=パッケージ実行/1=エディタからの Play）</summary>
+    public delegate* unmanaged[Cdecl]<int, int> AppEnv;
 }

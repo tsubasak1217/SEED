@@ -2352,6 +2352,40 @@ unsafe extern "system" fn ffi_asset_text(
     bytes.len() as i32
 }
 
+// ─── 実行環境の判定 FFI（SEED.Application）───────────────────
+
+/// `ffi_app_env` の kind: パッケージ実行（assets.pak を読んで動いている）か。
+/// C# 側 ScriptHost.AppEnvKindPackaged と同値であること。
+const APP_ENV_KIND_PACKAGED: i32 = 0;
+/// `ffi_app_env` の kind: エディタからの Play 実行か。
+/// C# 側 ScriptHost.AppEnvKindEditorPlay と同値であること。
+const APP_ENV_KIND_EDITOR_PLAY: i32 = 1;
+
+/// 実行環境の真偽値を 1 つ返す（SEED.Application の判定源）。
+///
+/// デバッグ表示・デバッグコマンドといった開発用機能を、配布版でだけ無効化する
+/// といった分岐をスクリプトから書けるようにするための最小 API。
+///
+/// 【返り値】
+/// - `1`  … 真
+/// - `0`  … 偽
+/// - `-1` … 未知の kind（C# 側と Rust 側の定数がずれている場合のみ起こる）
+///
+/// 値は起動時に確定して実行中に変化しないため、C# 側は初回アクセス時に
+/// 1 度だけ呼んでキャッシュする（毎フレーム呼ぶ想定の API ではない）。
+unsafe extern "system" fn ffi_app_env(kind: i32) -> i32 {
+    // 各 kind の判定源は既存のグローバル状態を読むだけ（副作用なし・スレッド安全）。
+    let value = match kind {
+        // パッケージ実行の判定は assets.pak を開けているか（既存の判定源をそのまま使う）
+        APP_ENV_KIND_PACKAGED    => crate::engine::asset_fs::is_packaged(),
+        // エディタからの Play は App::new で確定させたフラグ
+        APP_ENV_KIND_EDITOR_PLAY => crate::engine::app_env::is_editor_play(),
+        // 未知の kind は「偽」と区別できるよう -1 を返す
+        _ => return -1,
+    };
+    if value { 1 } else { 0 }
+}
+
 /// `ffi_find_actor_from` の scope: 参照フィールド解決（サブツリー優先＋全体フォールバック）。
 const REF_SCOPE_REFERENCE: i32 = 0;
 /// `ffi_find_actor_from` の scope: サブツリー限定（GameObject.FindChild）。
@@ -3615,6 +3649,9 @@ pub struct ScriptHostApi {
     // アセットのテキスト読み込み（SEED.Assets.ReadText / GetModifiedTime）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     asset_text:              unsafe extern "system" fn(i32, *const u8, i32, *mut u8, i32) -> i32,
+    // 実行環境の判定（SEED.Application.IsPackaged / IsEditorPlay）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    app_env:                 unsafe extern "system" fn(i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3660,6 +3697,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     find_actor_from:         ffi_find_actor_from,
     script_debug_take:       ffi_script_debug_take,
     asset_text:              ffi_asset_text,
+    app_env:                 ffi_app_env,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

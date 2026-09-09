@@ -76,8 +76,17 @@ public class KaijuStoryTrigger : SEEDScript
     /// デバッグ用。true にすると「怪獣かどうか」も「既読かどうか」も無視して、
     /// 釣果演出が閉じるたびに会話を再生する（台詞やカメラの確認用）。
     /// </summary>
-    [SerializeField(Label = "デバッグ強制再生", Tooltip = "true なら魚種と既読を無視して毎回会話を再生する")]
+    [SerializeField(Label = "デバッグ強制再生", Tooltip = "true なら魚種と既読を無視して毎回会話を再生する（パッケージ版では無視される）")]
     public bool debugForceStory;
+
+    /// <summary>
+    /// <see cref="debugForceStory"/> の実効値【強制再生を読む唯一の入口】。
+    ///
+    /// インスペクタのフラグはシーンへ保存されるため、開発中の設定が付いたまま
+    /// 出荷されると本編で毎回会話が再生されてしまう。パッケージ版（配布ビルド）では
+    /// <see cref="SEED.Application.IsDebugAllowed"/> が false になるので必ず無効になる。
+    /// </summary>
+    private bool DebugForceStory => debugForceStory && SEED.Application.IsDebugAllowed;
 
     // ── 内部状態 ────────────────────────────────────────────
 
@@ -186,8 +195,8 @@ public class KaijuStoryTrigger : SEEDScript
         // （チュートリアルの締めで怪獣を釣る演出はチュートリアル側の責務）。
         if (TutorialRules.Active) { return false; }
 
-        // デバッグ強制再生は魚種も既読も無視する
-        if (debugForceStory) { return true; }
+        // デバッグ強制再生は魚種も既読も無視する（パッケージ版では実効値が false になる）
+        if (DebugForceStory) { return true; }
 
         if (!wasKaiju) { return false; }
 

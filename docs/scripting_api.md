@@ -2533,6 +2533,89 @@ int n = SEED.Events.SubscriberCount("Bite");  // 現在の購読件数（デバ�
 
 ---
 
+## 7.11 Application（実行環境の判定：デバッグ機能のゲート）
+
+「今このゲームがどういう立場で動いているか」を調べる API です。
+主な用途は **デバッグ機能を配布版で自動的に無効化する** こと。
+デバッグ表示・当たり判定の可視化・チートコマンドを `SEED.Application.IsDebugAllowed` で囲っておけば、
+パッケージ（`assets.pak` 同梱）の実行ファイルではそれらが動かなくなります。
+
+```csharp
+public static bool IsPackaged;      // パッケージ実行（assets.pak 同梱の配布版）なら true
+public static bool IsEditorPlay;    // エディタから Play したゲーム実行中なら true
+public static bool IsDebugAllowed;  // デバッグ機能を有効にしてよいか（現在は !IsPackaged）
+```
+
+### 各プロパティの値
+
+| 実行のしかた | `IsPackaged` | `IsEditorPlay` | `IsDebugAllowed` |
+|---|---|---|---|
+| エディタで Play | false | **true** | **true** |
+| エディタの編集中ビュー（Edit モード） | false | false | **true** |
+| ビルドした配布版（`assets.pak` あり）を単体起動 | **true** | false | false |
+| 実ファイルの assets を隣に置いた単体起動（pak なし） | false | false | **true** |
+
+### 例: デバッグ表示・デバッグコマンドを配布版で無効化する
+
+```csharp
+using SEEDEditor.Scripting;
+
+public class DebugHud : SEEDScript
+{
+    /// <summary>デバッグ HUD を表示中か。</summary>
+    private bool visible;
+
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        // ゲートは必ず IsDebugAllowed で行う（判定方針を変えるときの修正箇所を 1 つに保つため）。
+        // 配布版ではここで抜けるので、以降のキー判定も描画も一切走らない。
+        if (!SEED.Application.IsDebugAllowed) return;
+
+        // F1 でデバッグ HUD をトグル
+        if (SEED.Input.GetKeyDown(SEED.KeyCode.F1)) visible = !visible;
+        if (!visible) return;
+
+        // 当たり判定の可視化など、開発中だけ見せたい描画
+        SEED.Draw.Rect(new SEED.Vector2(8f, 8f), new SEED.Vector2(120f, 24f),
+            new SEED.Color(0f, 0f, 0f, 0.5f));
+    }
+}
+```
+
+```csharp
+// デバッグコマンド（チート）も同じゲートで囲う
+public override void OnStart()
+{
+    if (!SEED.Application.IsDebugAllowed) return;
+    SEED.Debug.OnCommand("giveitem", arg => GiveItem(arg));
+}
+```
+
+```csharp
+// エディタの Play でだけ効かせたい処理
+// （実ファイル配布＝pak 無しの単体起動では動かしたくない場合に使う）
+if (SEED.Application.IsEditorPlay)
+{
+    SEED.Debug.Log("エディタから Play 中");
+}
+```
+
+### 制限
+
+| 項目 | 内容 |
+|---|---|
+| 値の変化 | すべて**起動時に確定し、実行中は変化しない**。初回アクセスで 1 度だけランタイムへ問い合わせ、以降はキャッシュを返す |
+| 呼び出しコスト | キャッシュ後はフィールド読み出しのみ。毎フレームの `if` に直接書いてよい |
+| `IsPackaged` の判定源 | `assets.pak` を開けているかどうか。実ファイルの `assets/` を隣に置いた配布形態では **false** になる |
+| `IsEditorPlay` の判定源 | エディタから `--mode=play` かつ IPC パイプ付きで起動されたか。Edit モードは含まない |
+| ホスト API 未登録時 | すべて false（`IsDebugAllowed` は true）。安全側へ倒す既定 |
+
+> **重要**: 「開発中だけ動かしたい処理」は `IsPackaged` / `IsEditorPlay` を直接見ずに、必ず `IsDebugAllowed` で分岐してください。判定方針を変えたくなったとき（配布版でも隠しコマンドで有効化する、エディタ Play のときだけに絞る、など）に書き換える場所が 1 か所で済みます。
+
+> **重要**: `IsDebugAllowed` はあくまで**分岐の共通ゲート**であり、コードそのものを配布版から取り除くわけではありません。チート防止として厳密に守りたい処理は、これに頼らず別途対策してください。
+
+---
+
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
 
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。
