@@ -62,20 +62,7 @@
           "groups": [],
           "next_group_id": 1000000,
           "cast_shadows": true,
-          "material_overrides": [
-            {
-              "slot": 0,
-              "kind": {
-                "kind": "inline",
-                "base_color": [
-                  0.3,
-                  0.5,
-                  1.0,
-                  1.0
-                ]
-              }
-            }
-          ],
+          "material_overrides": [],
           "render_tag": 0,
           "disable_lod": false,
           "offset_position": [
