@@ -1275,9 +1275,61 @@ public class Fish : SEEDScript
 
     /// <summary>
     /// 合わせの成功時にコントローラから呼ばれる。つつき中から食いつき中へ移す
-    /// （位置の追従は同じなので、状態ラベルだけが変わる）。
+    /// 【掛かった状態を作る唯一の入口】。
+    ///
+    /// 通常の経路（回遊 → <see cref="BehaviorState.Approach"/> → 前アタリ → 合わせ）を
+    /// 通った個体は、接近の時点で <see cref="SetEngaged"/> 済み・餌のすぐそばに居るので
+    /// ここでの後始末は<b>いずれも何もしない</b>（見た目は従来どおり）。
+    ///
+    /// 一方、接近を経ずにいきなり掛かる個体（デバッグの強制ヒット・台本による仕込み）は
+    /// <list type="bullet">
+    ///   <item>円環クランプの除外登録が無く、<see cref="FishManager"/> の
+    ///         <c>ClampFishToRings</c>（LateUpdate）に毎フレーム出現円環へ引き戻される</item>
+    ///   <item>餌から遠い生成位置のままなので、<see cref="UpdateBite"/> の寄せが
+    ///         間に合わずウキのそばに現れない</item>
+    /// </list>
+    /// という 2 点で「掛かっているのに魚が見えない」状態になる。
+    /// <see cref="OnCaught"/> が同じ理由で登録を張り直しているのと揃えて、ここでも直す。
     /// </summary>
-    public void OnHooked() => State = BehaviorState.Bite;
+    public void OnHooked()
+    {
+        State = BehaviorState.Bite;
+
+        // 円環クランプの除外登録（冪等。既に登録済みなら何もしない）
+        SetEngaged(FishingController.Current, engaged: true);
+
+        // 餌から離れている個体だけ、掛かった定位置（餌の少し下）へ引き寄せる
+        SnapToHookedPosition();
+    }
+
+    /// <summary>
+    /// 掛かった魚の定位置（餌の <see cref="hookedDepthOffset"/> m 下）へ瞬間的に揃える
+    /// 【接近を経ずに掛かった個体の位置合わせ】。
+    ///
+    /// <see cref="UpdateBite"/> が毎フレーム吸着する距離
+    /// （<see cref="BiteHardAttachDistance"/>）の内側に既に居る個体は<b>何もしない</b>。
+    /// これで通常の経路の見た目は一切変わらず、遠くから掛けられた個体だけが
+    /// 瞬時に定位置へ入る（通常経路では起こり得ない距離なので、瞬間移動は目に付かない）。
+    /// </summary>
+    private void SnapToHookedPosition()
+    {
+        if (FishingController.Current is not { } fc) { return; }
+
+        var bait = fc.BaitPosition;
+        var target = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
+
+        var pos = transform.Position;
+        float dx = target.x - pos.x;
+        float dy = target.y - pos.y;
+        float dz = target.z - pos.z;
+        if (dx * dx + dy * dy + dz * dz <= BiteHardAttachDistance * BiteHardAttachDistance) { return; }
+
+        transform.Position = target;
+
+        // 生成直後で初回 Update を通っていない個体は回遊の中心が未設定なので、
+        // ここで埋めておく（リリース後にこの場所を中心に回遊する）。
+        homePosition ??= target;
+    }
 
     /// <summary>
     /// 釣り上げ成立時にコントローラから呼ばれる。AI を止めて
