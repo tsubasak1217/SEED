@@ -482,7 +482,7 @@ public class TutorialDirector : SEEDScript
 
             // 説明が無いミッションは従来どおりすぐに台本を適用する
             StartCurrentMission();
-            ShowPanelIfSettledPlaying();
+            EnterPlayingPresentation();
             return;
         }
 
@@ -502,23 +502,31 @@ public class TutorialDirector : SEEDScript
         }
         else
         {
-            // 説明が無ければそのまま実践中になるので、ここでパネルを出す
-            panel?.Show();
+            // 説明が無ければそのまま実践中になるので、ここでパネルとヒントを出す
+            EnterPlayingPresentation();
         }
     }
 
     /// <summary>
     /// StartCurrentMission の呼び出し直後に、段階が本当に Playing のまま確定していれば
-    /// パネルを表示する【表示ガードの唯一の実装】。
+    /// パネルとヒントアクタを表示する【実践突入時の表示処理の唯一の入口】。
     ///
     /// StartCurrentMission はミッションが無効だと <see cref="AdvanceToNextMission"/> を
     /// 再帰的に呼んで別の段階（次のミッションの Intro など）へ移ることがある。
-    /// そこを見ずに無条件で Show すると、直後に別の理由で Hide されて
+    /// そこを見ずに無条件で表示すると、直後に別の理由で Hide されて
     /// 「一瞬出て消える」点滅になるため、必ずこのガード越しに呼ぶこと。
+    ///
+    /// 【ここで行うこと】
+    ///  ・常設ミッションパネルの表示（<see cref="MissionPanel.Show"/>）
+    ///  ・ヒントアクタの表示とアニメーション再生開始（<see cref="StartHint"/>）
+    /// ミッションが Playing に確定する経路（説明の有無 × scriptAfterIntro の有無で
+    /// 4 通りある）すべてがこの 1 か所を通るように、呼び出し元を揃えてある。
     /// </summary>
-    private void ShowPanelIfSettledPlaying()
+    private void EnterPlayingPresentation()
     {
-        if (phase == DirectorPhase.Playing) { panel?.Show(); }
+        if (phase != DirectorPhase.Playing) { return; }
+        panel?.Show();
+        StartHint(missions[missionIndex]);
     }
 
     /// <summary>
@@ -546,7 +554,7 @@ public class TutorialDirector : SEEDScript
             // 台本（ルール上書き・入力許可・魚の仕込み等）をここで初めて適用する。
             // StartCurrentMission が SetBiteSuppressed(data.suppressBite) を含めて面倒を見る。
             StartCurrentMission();
-            ShowPanelIfSettledPlaying();    // 説明を読み終えて実践中が確定したのでパネルを出す
+            EnterPlayingPresentation();    // 説明を読み終えて実践中が確定したのでパネルを出す
             return;
         }
 
@@ -558,7 +566,7 @@ public class TutorialDirector : SEEDScript
         SetBiteSuppressed(data.suppressBite);
 
         phase = DirectorPhase.Playing;
-        panel?.Show();
+        EnterPlayingPresentation();
     }
 
     /// <summary>
@@ -763,8 +771,55 @@ public class TutorialDirector : SEEDScript
 
         if (missionIndex >= 0 && missionIndex < missions.Count)
         {
-            missions[missionIndex].onEnd.Invoke();
+            var data = missions[missionIndex];
+            StopHint(data);   // ミッション終了の唯一の出口なので、ここでヒントも必ず止める
+            data.onEnd.Invoke();
         }
+    }
+
+    // ─── 内部処理: ヒントアクタの表示 ───────────────────────
+
+    /// <summary>
+    /// ヒントアクタを表示してアニメーションを再生する【ヒント開始の唯一の入口】。
+    ///
+    /// <see cref="TutorialMission.hintActor"/> が未設定（IsValid == false）の
+    /// ミッションでは何もしない。Animator コンポーネントが付いていない場合、または
+    /// <see cref="TutorialMission.hintClipName"/> が空文字の場合は表示切替だけを行う
+    /// （空文字時にクリップ再生を行わない理由は <see cref="TutorialMission.hintClipName"/>
+    ///  のコメントを参照）。
+    /// </summary>
+    /// <param name="data">Playing に入った現在のミッションのデータ。</param>
+    private void StartHint(TutorialMission data)
+    {
+        if (!data.hintActor.IsValid) { return; }
+
+        // GameObject はアクセスのたびに struct を new する読み取り専用プロパティを
+        // 経由する場合があるため、MissionClearBanner と同様にローカル変数へ受けてから書く。
+        var hint = data.hintActor;
+        hint.Visible = true;
+
+        if (string.IsNullOrEmpty(data.hintClipName)) { return; }
+        if (hint.GetComponent<SEED.Animator>() is { } anim && anim.IsValid)
+        {
+            anim.Play(data.hintClipName);
+        }
+    }
+
+    /// <summary>
+    /// ヒントアクタの表示とアニメーションを止める【ヒント終了の唯一の出口】。
+    /// <see cref="TutorialMission.hintActor"/> が未設定・破棄済みなら何もしない。
+    /// </summary>
+    /// <param name="data">終了する（または終了済みの）ミッションのデータ。</param>
+    private void StopHint(TutorialMission data)
+    {
+        if (!data.hintActor.IsValid) { return; }
+
+        var hint = data.hintActor;
+        if (hint.GetComponent<SEED.Animator>() is { } anim && anim.IsValid)
+        {
+            anim.Stop();
+        }
+        hint.Visible = false;
     }
 
     // ─── 内部処理: 台詞の再生 ───────────────────────────────

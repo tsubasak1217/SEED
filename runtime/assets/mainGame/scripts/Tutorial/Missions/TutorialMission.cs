@@ -257,6 +257,40 @@ public struct TutorialMission
     [SerializeField(Label = "個数パラメータ", Tooltip = "拾う個数 / 連鎖回数 / 釣る匹数。0 以下で既定値")]
     public int paramCount;
 
+    // ─── ヒント演出（実践中だけ出す操作ガイド）───────────────
+
+    /// <summary>
+    /// 実践中（<see cref="TutorialDirector"/> の Playing 段階）だけ表示してアニメーションを
+    /// 再生するヒントアクタ（例: マウス操作の見本を示す TutorialMouse）。未設定
+    /// （<see cref="SEED.GameObject.IsValid"/> == false）のミッションでは何もしない。
+    ///
+    /// 【表示・再生のタイミング】
+    /// ミッションが Playing に入った瞬間（説明＝Intro が無ければ開始と同時、
+    /// あれば読み終えた直後）に <c>Visible = true</c> にして
+    /// <see cref="SEED.Animator.Play(string)"/> を呼ぶ。ミッションが終わる
+    /// （達成バナー開始・チュートリアル終了・<see cref="TutorialDirector.OnDestroy"/> など）
+    /// と同時に停止して <c>Visible = false</c> へ戻す。
+    /// 合いの手（Interjecting）で説明を挟んでいる間は明示的には止めない
+    /// （その間はゲーム時間ごと止まるため、Animator も自然に止まる）。
+    /// </summary>
+    [Header("ヒント演出"), SerializeField(Label = "ヒントアクタ", Tooltip = "実践中だけ表示してアニメーションを再生するアクタ（任意）")]
+    public SEED.GameObject hintActor;
+
+    /// <summary>
+    /// <see cref="hintActor"/> の Animator に再生させるクリップ名。
+    ///
+    /// 【空文字の扱い】
+    /// 本来は「Animator に登録された先頭クリップを再生する」を既定にしたいところだが、
+    /// 現行のスクリプト API（<see cref="SEED.Animator"/>）には登録済みクリップの一覧や
+    /// 先頭クリップ名を取得する手段が無い（公開されているのは Play/CrossFade/Stop 等の
+    /// 操作と IsPlaying/CurrentClip/Time/Speed 等、再生「中」の状態だけ）。そのため
+    /// 空文字のときはクリップの再生を行わず、ヒントアクタの表示切替だけを行う。
+    /// アニメーションを再生させたいミッションでは、このフィールドへ再生したい
+    /// クリップ名を明示的に指定すること。
+    /// </summary>
+    [SerializeField(Label = "ヒントクリップ名", Tooltip = "hintActor の Animator に再生させるクリップ名。空文字は「表示切替のみ・再生なし」を意味する（先頭クリップの自動解決はスクリプト API 未対応のため行わない）")]
+    public string hintClipName;
+
     // ─── 前後で呼ぶイベント ─────────────────────────────────
 
     /// <summary>このミッションを開始した瞬間に呼ぶイベント（カメラ寄せ・SE などの結線用）。</summary>

@@ -2,12 +2,12 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      59.00213,
-      9.964713,
-      -13.92961
+      40.78721,
+      8.237489,
+      -1.8357468
     ],
-    "yaw": -0.19338079,
-    "pitch": 0.020778932,
+    "yaw": -0.23137793,
+    "pitch": -0.025221527,
     "fov_deg": 25.0,
     "far": 1000.0,
     "speed": 5.0
@@ -570,7 +570,8 @@
                 "beatIconParent": "FishingUI",
                 "distanceText": "DistanceText|Text",
                 "gaugeSpace": "HpText",
-                "hpText": "HpText|Text"
+                "hpText": "HpText|Text",
+                "reelInSpeedMax": "18.000"
               }
             }
           }
@@ -2521,6 +2522,28 @@
           "children": []
         }
       ]
+    },
+    {
+      "name": "TutorialMoveTarget",
+      "transform": {
+        "position": [
+          34.272903,
+          1.6099968,
+          16.819063
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [],
+      "children": []
     },
     {
       "name": "FishingUI",
@@ -4829,6 +4852,78 @@
               "children": []
             }
           ]
+        },
+        {
+          "name": "TutorialMouse",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              378.74896,
+              113.46515
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/tutorial/mouse.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 100.0,
+                  "height": 116.8,
+                  "layer": 0,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "mouse",
+                      "kind": "keyframe",
+                      "path": "assets://mainGame/animations/mouse.anim",
+                      "anim": "",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "",
+                  "play_on_start": false,
+                  "speed": 1.0,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "visible": false
         }
       ]
     },
@@ -5605,14 +5700,16 @@
                       }
                     }
                   ],
-                  "children": []
+                  "children": [],
+                  "visible": false
                 }
               ],
               "visible": false
             }
           ]
         }
-      ]
+      ],
+      "visible": false
     },
     {
       "name": "JudgeHint",
@@ -5822,7 +5919,8 @@
               }
             }
           ],
-          "children": []
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/BeachAmbient.actor"
         },
         {
           "name": "DriftItems",
@@ -5904,11 +6002,11 @@
                     "cameraZoomLerpRate": "3.000",
                     "cameraZoomLookHeight": "2.000",
                     "debugForceTutorial": "true",
-                    "dialogues": "[{\"missionId\":\"t1_move\",\"slot\":\"Intro\",\"text\":\"さあ、それじゃ\\n説明を始めるぜ\",\"anchorTarget\":\"AnchorCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"飛べねェ鳥にゃ\\n海が狩り場よ。\\n釣りを教えてやる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t1_move\",\"slot\":\"Intro\",\"text\":\"まずは移動だ。\\n[icon:key_w] で前、\\n[icon:key_s] で後ろに歩く。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"あの光ってる印まで\\n歩いてみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"TutorialMoveTarget\", \"pauseTime\": false},{\"missionId\":\"t1_move\",\"slot\":\"Clear\",\"text\":\"その調子だ。\\n釣りは場所取りが肝心よ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\":\"t1_ready\",\"slot\":\"Intro\",\"text\":\"場所を決めたら\\n[icon:mouse_l] を押しっぱで\\n竿を構えるんだぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"構えてる間は\\n[icon:key_a] [icon:key_d] で向きを\\n変えられるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"右と左、\\n端まで振ってみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t1_ready\", \"slot\": \"Clear\", \"text\": \"そうだ。\\n狙う先は自分で決めな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t1_cast\",\"slot\":\"Intro\",\"text\":\"構えたまま\\nマウスを左に動かせば\\n準備が完了だ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\":\"t1_cast\",\"slot\":\"Intro\",\"text\":\"矢印がマーカーが\\n狙いの位置に来たら\\nマウスを右へ振る！\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"着水したな。\\nウキが大きく沈む\\n瞬間があるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_hook\",\"slot\":\"Intro\",\"text\":\"沈んだ瞬間に\\n[icon:mouse_l] で合わせる。\\n早くても遅くても\\n逃げられるぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"外しても大丈夫だ。\\n今日は魚が\\n何度でも戻ってくる。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_hook\", \"slot\": \"Clear\", \"text\": \"掛かったな！\\nいい合わせだったぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ここからが勝負だ。\\n魚のリズムで印が\\n流れてくるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_beat\",\"slot\":\"Intro\",\"text\":\"重なった瞬間に\\n[icon:mouse_l] でタップだ。\\n外すと糸が傷つくぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ピタリと決まりゃ\\n魚が長くひるむ。\\nそこが狙い目よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"今は糸が切れねェ。\\n一周ミスなしで\\n刻んでみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Clear\", \"text\": \"上出来だ。\\n魚がひるんでるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_reel\",\"slot\":\"Intro\",\"text\":\"ひるんだぞ！\\n今のうちに糸を巻け。\\nホイール[icon:wheel]を回すんだ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\":\"t1_reel\",\"slot\":\"Intro\",\"text\":\"[icon:key_a] [icon:key_d] で\\n巻く方向を調整できる。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_reel\", \"slot\": \"Clear\", \"text\": \"釣り上げたな。\\nこれで一人前の入口よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"さて、本番だ。\\nこの辺りにゃ\\n小魚がうようよいる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"俺が欲しいのは\\nクマノミって魚よ。\\nオレンジの縞々だ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"ほかのが掛かっても\\n気にすんな。\\n粘って釣り当てな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Clear\", \"text\": \"そいつだ！\\n狙って釣るってのは\\nこういうことよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"大事な話だ。\\n釣った魚は\\n次のエサになる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"デケェ魚は\\n小せェ魚を狙う。\\n小魚から順に\\n大物へつなげろ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"掛けたら隙を作りな。\\nひるんでる間に\\n横取りされるのよ。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Clear\", \"text\": \"乗り換わったな。\\nこれがわらしべよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_drift\", \"slot\": \"Intro\", \"text\": \"海にゃ漂流物が\\n流れてくる。\\n巻き寄せて拾いな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t2_drift\",\"slot\":\"Intro\",\"text\":\"今日はきれいに\\n一直線に流れてるな。\\nまっすぐ巻きな。\",\"anchorTarget\":\"AnchorTopLeft\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t2_drift\", \"slot\": \"DriftLineRecover\", \"text\": \"そいつは糸を直す。\\n切れかけを\\n戻せるってわけだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t2_drift\",\"slot\":\"DriftStun\",\"text\":\"そいつで魚がひるむ。\\n巻ける時間が\\n伸びるのよ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\":\"t2_drift\",\"slot\":\"DriftFishRecover\",\"text\":\"これは魚が回復する。\\n沖に逃げてくが、\\n海の奥でより大物を\\n狙えるかもしれねえな。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t2_drift\", \"slot\": \"Clear\", \"text\": \"三つとも覚えたな。\\n拾うかどうかは\\n自分で決めろよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"最後だ。\\n今度は糸が切れる。\\n本番と同じよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"切れても魚は\\n逃がさねェでおく。\\n何度でも巻き直しな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_land\", \"slot\": \"Clear\", \"text\": \"見事だ、ササミ。\\nもう教えることはねェ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"……見たか、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"end_kaiju\",\"slot\":\"Clear\",\"text\":\"俺が唯一釣れなかった\\nアイツを、お前は\\n釣りあげられると\\n信じてるぜ。\",\"anchorTarget\":\"AnchorCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"ま、体で覚えな。\\n行ってきな、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}]",
+                    "dialogues": "[{\"missionId\":\"t1_move\",\"slot\":\"Intro\",\"text\":\"さあ、それじゃ\\n説明を始めるぜ\",\"anchorTarget\":\"AnchorCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"飛べねェ鳥にゃ\\n海が狩り場よ。\\n釣りを教えてやる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t1_move\",\"slot\":\"Intro\",\"text\":\"まずは移動だ。\\n[icon:key_w] で前、\\n[icon:key_s] で後ろに歩く。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_move\", \"slot\": \"Intro\", \"text\": \"あの光ってる印まで\\n歩いてみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"TutorialMoveTarget\", \"pauseTime\": false},{\"missionId\":\"t1_move\",\"slot\":\"Clear\",\"text\":\"その調子だ。\\n釣りは場所取りが肝心よ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\":\"t1_ready\",\"slot\":\"Intro\",\"text\":\"場所を決めたら\\n[icon:mouse_l] を押しっぱで\\n竿を構えるんだぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"構えてる間は\\n[icon:key_a] [icon:key_d] で向きを\\n変えられるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t1_ready\", \"slot\": \"Intro\", \"text\": \"右と左、\\n端まで振ってみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t1_ready\", \"slot\": \"Clear\", \"text\": \"そうだ。\\n狙う先は自分で決めな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t1_cast\",\"slot\":\"Intro\",\"text\":\"構えたまま\\nマウスを左に動かせば\\n準備が完了だ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\":\"t1_cast\",\"slot\":\"Intro\",\"text\":\"矢印がマーカーが\\n狙いの位置に来たら\\nマウスを右へ振る！\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"着水したな。\\nウキが大きく沈む\\n瞬間があるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_hook\",\"slot\":\"Intro\",\"text\":\"沈んだ瞬間に\\n[icon:mouse_l] で合わせる。\\n早くても遅くても\\n逃げられるぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_hook\", \"slot\": \"Intro\", \"text\": \"外しても大丈夫だ。\\n今日は魚が\\n何度でも戻ってくる。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_hook\", \"slot\": \"Clear\", \"text\": \"掛かったな！\\nいい合わせだったぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ここからが勝負だ。\\n魚のリズムで印が\\n流れてくるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_beat\",\"slot\":\"Intro\",\"text\":\"重なった瞬間に\\n[icon:mouse_l] でタップだ。\\n外すと糸が傷つくぜ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"ピタリと決まりゃ\\n魚が長くひるむ。\\nそこが狙い目よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Intro\", \"text\": \"今は糸が切れねェ。\\n一周ミスなしで\\n刻んでみな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t1_beat\", \"slot\": \"Clear\", \"text\": \"上出来だ。\\n魚がひるんでるぜ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t1_reel\",\"slot\":\"Intro\",\"text\":\"今のうちに糸を巻け。\\nホイール[icon:wheel]を回すんだ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\":\"t1_reel\",\"slot\":\"Intro\",\"text\":\"[icon:key_a] [icon:key_d] で\\n巻く方向を調整できる。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t1_reel\", \"slot\": \"Clear\", \"text\": \"釣り上げたな。\\nこれで一人前の入口よ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"さて、本番だ。\\nこの辺りにゃ\\n小魚がうようよいる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"俺が欲しいのは\\nクマノミって魚よ。\\nオレンジの縞々だ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Intro\", \"text\": \"ほかのが掛かっても\\n気にすんな。\\n粘って釣り当てな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"s1_catch\", \"slot\": \"Clear\", \"text\": \"そいつだ！\\n狙って釣るってのは\\nこういうことよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"大事な話だ。\\n釣った魚は\\n次のエサになる。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"デケェ魚は\\n小せェ魚を狙う。\\n小魚から順に\\n大物へつなげろ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Intro\", \"text\": \"掛けたら隙を作りな。\\nひるんでる間に\\n横取りされるのよ。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_chain\", \"slot\": \"Clear\", \"text\": \"乗り換わったな。\\nこれがわらしべよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_drift\", \"slot\": \"Intro\", \"text\": \"海にゃ漂流物が\\n流れてくる。\\n巻き寄せて拾いな。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"t2_drift\",\"slot\":\"Intro\",\"text\":\"今日はきれいに\\n一直線に流れてるな。\\nまっすぐ巻きな。\",\"anchorTarget\":\"AnchorTopLeft\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"t2_drift\", \"slot\": \"DriftLineRecover\", \"text\": \"そいつは糸を直す。\\n切れかけを\\n戻せるってわけだ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\":\"t2_drift\",\"slot\":\"DriftStun\",\"text\":\"そいつで魚がひるむ。\\n巻ける時間が\\n伸びるのよ。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\":\"t2_drift\",\"slot\":\"DriftFishRecover\",\"text\":\"これは魚が回復する。\\n沖に逃げてくが、\\n海の奥でより大物を\\n狙えるかもしれねえな。\",\"anchorTarget\":\"AnchorBottomCenter\",\"cameraTarget\":\"\",\"pauseTime\":true},{\"missionId\": \"t2_drift\", \"slot\": \"Clear\", \"text\": \"三つとも覚えたな。\\n拾うかどうかは\\n自分で決めろよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": true},{\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"最後だ。\\n今度は糸が切れる。\\n本番と同じよ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_land\", \"slot\": \"Intro\", \"text\": \"切れても魚は\\n逃がさねェでおく。\\n何度でも巻き直しな。\", \"anchorTarget\": \"AnchorTopLeft\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"t2_land\", \"slot\": \"Clear\", \"text\": \"見事だ、ササミ。\\nもう教えることはねェ。\", \"anchorTarget\": \"AnchorBottomCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"……見たか、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false},{\"missionId\":\"end_kaiju\",\"slot\":\"Clear\",\"text\":\"俺が唯一釣れなかった\\nアイツを、お前は\\n釣りあげられると\\n信じてるぜ。\",\"anchorTarget\":\"AnchorCenter\",\"cameraTarget\":\"\",\"pauseTime\":false},{\"missionId\": \"end_kaiju\", \"slot\": \"Clear\", \"text\": \"ま、体で覚えな。\\n行ってきな、ササミ。\", \"anchorTarget\": \"AnchorCenter\", \"cameraTarget\": \"\", \"pauseTime\": false}]",
                     "gaugeRestoreSeconds": "0.500",
                     "inputLockSeconds": "0.150",
                     "introDelaySeconds": "1.500",
-                    "missions": "[{\"id\": \"t1_move\", \"kind\": \"Move\", \"title\": \"はじめの一歩\", \"objective\": \"[icon:key_w] [icon:key_s] で目印まで歩こう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"TutorialMoveTarget\", \"paramText\": \"\", \"paramValue\": 3.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_ready\", \"kind\": \"Ready\", \"title\": \"竿を構える\", \"objective\": \"[icon:mouse_l] を押しっぱなしで構えよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_cast\", \"kind\": \"Cast\", \"title\": \"仕掛けを投げる\", \"objective\": \"構えてマウスを左から右へ振ろう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"suppressBite\": true, \"chainDisabled\": true, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_hook\", \"kind\": \"Hook\", \"title\": \"アタリを取る\", \"objective\": \"ウキが沈んだら [icon:mouse_l] で合わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": true, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t1_beat\", \"kind\": \"Beat\", \"title\": \"リズムを刻む\", \"objective\": \"ミスなしで 1 周たたこう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": true, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\":\"t1_reel\",\"kind\":\"Reel\",\"title\":\"巻き上げる\",\"objective\":\"[icon:wheel] ホイールを回して魚を寄せよう\",\"skipClearBanner\":false,\"pauseOnClear\":false,\"scriptAfterIntro\":true,\"fishLevelFilter\":1,\"fishPrefabFilter\":\"nanyouhagi\",\"fishPrefabExclusive\":true,\"fishPopulationOverride\":1,\"suppressBite\":false,\"chainDisabled\":true,\"driftDisabled\":true,\"driftStationary\":false,\"driftPickupRadius\":0,\"beatDisabled\":true,\"lineBreakDisabled\":true,\"restartCycleOnMiss\":false,\"rebiteAfterHookMiss\":false,\"restartFightOnLineBreak\":false,\"allowMove\":false,\"allowReady\":false,\"allowAim\":true,\"allowCast\":false,\"allowReel\":true,\"allowHook\":false,\"allowRhythm\":true,\"allowUiConfirm\":true,\"targetActor\":\"\",\"paramText\":\"\",\"paramValue\":0,\"paramCount\":0,\"onStart\":[],\"onEnd\":[]},{\"id\": \"s1_catch\", \"kind\": \"CatchTarget\", \"title\": \"クマノミを釣ろう！\", \"objective\": \"クマノミを 1 匹釣り上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"fishPrefabRequired\": \"kumanomi\", \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"kumanomi\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []},{\"id\": \"t2_chain\", \"kind\": \"ChainCatch\", \"title\": \"魚で魚を釣ろう！\", \"objective\": \"掛かった魚を大物に食わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []},{\"id\": \"t2_drift\", \"kind\": \"DriftPickup\", \"title\": \"漂流物を拾おう！\", \"objective\": \"まっすぐ巻いて 3 種とも拾おう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": true, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": false, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"t2_land\", \"kind\": \"Land\", \"title\": \"釣り上げよう！\", \"objective\": \"糸が切れても最後まで巻き上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": true, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []},{\"id\": \"end_kaiju\", \"kind\": \"Cutscene\", \"title\": \"海の主\", \"objective\": \"……\", \"skipClearBanner\": true, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"assets://mainGame/actors/Fish/Lv10/kaiju.actor\", \"paramValue\": 3.4, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}]",
+                    "missions": "[{\"id\": \"t1_move\", \"kind\": \"Move\", \"title\": \"はじめの一歩\", \"objective\": \"[icon:key_w] [icon:key_s] で目印まで歩こう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"TutorialMoveTarget\", \"paramText\": \"\", \"paramValue\": 3.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_ready\", \"kind\": \"Ready\", \"title\": \"竿を構える\", \"objective\": \"[icon:mouse_l] を押しっぱなしで構えよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_cast\", \"kind\": \"Cast\", \"title\": \"仕掛けを投げる\", \"objective\": \"構えてマウスを左から右へ振ろう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"suppressBite\": true, \"chainDisabled\": true, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": [], \"hintActor\": \"TutorialMouse\", \"hintClipName\": \"mouse\"}, {\"id\": \"t1_hook\", \"kind\": \"Hook\", \"title\": \"アタリを取る\", \"objective\": \"ウキが沈んだら [icon:mouse_l] で合わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": true, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": false, \"allowHook\": true, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_beat\", \"kind\": \"Beat\", \"title\": \"リズムを刻む\", \"objective\": \"ミスなしで 1 周たたこう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": true, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t1_reel\", \"kind\": \"Reel\", \"title\": \"巻き上げる\", \"objective\": \"[icon:wheel] ホイールを回して魚を寄せよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"nanyouhagi\", \"fishPrefabExclusive\": true, \"fishPopulationOverride\": 1, \"suppressBite\": false, \"chainDisabled\": true, \"driftDisabled\": true, \"driftStationary\": false, \"driftPickupRadius\": 0, \"beatDisabled\": true, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": true, \"allowCast\": false, \"allowReel\": true, \"allowHook\": false, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"s1_catch\", \"kind\": \"CatchTarget\", \"title\": \"クマノミを釣ろう！\", \"objective\": \"クマノミを 1 匹釣り上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"fishPrefabRequired\": \"kumanomi\", \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"kumanomi\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_chain\", \"kind\": \"ChainCatch\", \"title\": \"魚で魚を釣ろう！\", \"objective\": \"掛かった魚を大物に食わせよう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 1, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 1, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_drift\", \"kind\": \"DriftPickup\", \"title\": \"漂流物を拾おう！\", \"objective\": \"まっすぐ巻いて 3 種とも拾おう\", \"skipClearBanner\": false, \"pauseOnClear\": true, \"scriptAfterIntro\": true, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": true, \"driftStationary\": true, \"beatDisabled\": false, \"lineBreakDisabled\": true, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": true, \"allowAim\": false, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"t2_land\", \"kind\": \"Land\", \"title\": \"釣り上げよう！\", \"objective\": \"糸が切れても最後まで巻き上げよう\", \"skipClearBanner\": false, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": true, \"allowMove\": true, \"allowReady\": true, \"allowAim\": true, \"allowCast\": true, \"allowReel\": true, \"allowHook\": true, \"allowRhythm\": true, \"allowUiConfirm\": true, \"targetActor\": \"\", \"paramText\": \"\", \"paramValue\": 0.0, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}, {\"id\": \"end_kaiju\", \"kind\": \"Cutscene\", \"title\": \"海の主\", \"objective\": \"……\", \"skipClearBanner\": true, \"pauseOnClear\": false, \"fishLevelFilter\": 0, \"fishPrefabFilter\": \"\", \"fishPrefabExclusive\": false, \"chainDisabled\": false, \"driftDisabled\": false, \"driftStationary\": false, \"beatDisabled\": false, \"lineBreakDisabled\": false, \"restartCycleOnMiss\": false, \"rebiteAfterHookMiss\": false, \"restartFightOnLineBreak\": false, \"allowMove\": false, \"allowReady\": false, \"allowAim\": false, \"allowCast\": false, \"allowReel\": false, \"allowHook\": false, \"allowRhythm\": false, \"allowUiConfirm\": false, \"targetActor\": \"\", \"paramText\": \"assets://mainGame/actors/Fish/Lv10/kaiju.actor\", \"paramValue\": 3.4, \"paramCount\": 0, \"onStart\": [], \"onEnd\": []}]",
                     "onTutorialFinished": "[]",
                     "panel": "MissionPanel",
                     "playerMove": "Player|Script",
@@ -15569,28 +15667,6 @@
           ]
         }
       ]
-    },
-    {
-      "name": "TutorialMoveTarget",
-      "transform": {
-        "position": [
-          34.272903,
-          1.6099968,
-          16.819063
-        ],
-        "rotation": [
-          -0.0,
-          0.0,
-          0.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "components": [],
-      "children": []
     }
   ]
 }
