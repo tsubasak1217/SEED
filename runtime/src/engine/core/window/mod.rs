@@ -5,13 +5,14 @@ use winit::window::{Window, WindowAttributes};
 /// ウィンドウ生成時に使用するパラメータ。
 ///
 /// # フィールド
-/// - `title`      : ウィンドウタイトルバーに表示する文字列（`'static` 参照）
+/// - `title`      : ウィンドウタイトルバーに表示する文字列（既定はエンジン名。ゲームでは
+///                  プロジェクト設定の `game_name` が入る）
 /// - `width`      : ウィンドウの論理幅（ポイント単位）
 /// - `height`     : ウィンドウの論理高さ（同上）
 /// - `visible`    : 生成直後にウィンドウを表示するか
 /// - `parent_hwnd`: 親ウィンドウの HWND（Some の場合は子ウィンドウとして生成）
 pub struct WindowConfig {
-    pub title: &'static str,
+    pub title: String,
     pub width: f64,
     pub height: f64,
     pub visible: bool,
@@ -24,10 +25,13 @@ pub struct WindowConfig {
     pub physical_size: Option<(u32, u32)>,
 }
 
+/// ウィンドウタイトルの既定値（プロジェクト設定に `game_name` が無い／空のときに使う）。
+pub const DEFAULT_WINDOW_TITLE: &str = "SEED";
+
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            title: "SEED",
+            title: DEFAULT_WINDOW_TITLE.to_string(),
             width: 800.0,
             height: 600.0,
             visible: false,
@@ -58,7 +62,7 @@ pub fn create_window(event_loop: &ActiveEventLoop, config: &WindowConfig) -> Win
 /// Windows の親ウィンドウ設定はプラットフォーム固有の分岐で適用する。
 fn build_attributes(config: &WindowConfig) -> WindowAttributes {
     let mut attrs = Window::default_attributes()
-        .with_title(config.title)
+        .with_title(config.title.as_str())
         .with_visible(config.visible);
 
     // physical_size 指定時は DPI スケールに影響されない実ピクセル数で生成する

@@ -46,7 +46,7 @@ impl App {
         // asset_fs（アセット読み込み層）を最優先で初期化する。
         //
         // 【なぜウィンドウ生成より前か】
-        // 直後の load_window_size_from_settings が assets://project_settings.json を
+        // 直後の read_project_settings_json が assets://project_settings.json を
         // asset_fs 経由で読みに行く（PAK 実行対応のため）。asset_fs 初期化前に呼ぶと、
         // パッケージ実行（exe の隣に assets.pak だけがあり assets/ フォルダが無い構成）で
         // 設定ファイルが読めず、常に既定解像度 1920x1080 にフォールバックしてしまう
@@ -59,7 +59,9 @@ impl App {
 
         // プロジェクト設定のウィンドウ解像度を全モードで一度だけ読み込みキャッシュする。
         // カメラ新規追加時の既定アスペクト比・ルートキャンバスの自動解像度計算に使用する。
-        self.project_resolution = self.load_window_size_from_settings();
+        // project_settings.json は 1 回だけ読み、解像度とゲーム名の両方をここから取る。
+        let settings_json = Self::read_project_settings_json();
+        self.project_resolution = parse_window_size(&settings_json);
         // Play・スタンドアロン時はプロジェクト設定のウィンドウ解像度を初期サイズに使う。
         // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
         let physical_size = if self.mode == RuntimeMode::Play {
@@ -67,9 +69,14 @@ impl App {
         } else {
             None
         };
+        // タイトルバーはプロジェクト設定の「ゲーム名」（無ければエンジン名）。
+        // Edit（子ウィンドウ）ではタイトルバー自体が無いので値は表示されないが同じ値を渡す。
+        let title = parse_game_name(&settings_json)
+            .unwrap_or_else(|| crate::engine::core::window::DEFAULT_WINDOW_TITLE.to_string());
         let window = Arc::new(create_window(
             event_loop,
             &WindowConfig {
+                title,
                 parent_hwnd: self.parent_hwnd,
                 physical_size,
                 ..WindowConfig::default()
@@ -337,12 +344,11 @@ impl App {
     /// ここでは `asset_fs::read_string` 経由にし、PAK 実行・実フォルダ実行の両方に対応する。
     /// JSON の解釈自体は純関数 `parse_window_size` に切り出してあり、
     /// フィールド欠落・範囲外・片方欠け・正常系は単体テストで検証済み（本ファイル末尾）。
-    fn load_window_size_from_settings(&self) -> (u32, u32) {
+    fn read_project_settings_json() -> String {
         use crate::engine::asset_fs;
-        // 読み込み失敗（PAK 未収録・ファイル不在など）は空文字列を渡し、
-        // parse_window_size 側の「JSON パース失敗 → 既定値」経路にそのまま合流させる。
-        let text = asset_fs::read_string("assets://project_settings.json").unwrap_or_default();
-        parse_window_size(&text)
+        // 読み込み失敗（PAK 未収録・ファイル不在など）は空文字列を返し、
+        // parse_window_size / parse_game_name 側の「JSON パース失敗 → 既定値」経路にそのまま合流させる。
+        asset_fs::read_string("assets://project_settings.json").unwrap_or_default()
     }
 
     /// プロジェクトのプラグインフォルダからプラグインをロードする。
@@ -874,7 +880,7 @@ impl App {
 ///   （中途半端な値のままウィンドウ生成へ進んで失敗するのを防ぐため、片方だけの適用はしない）
 /// - 両方とも `[MIN_WINDOW_DIM, MAX_WINDOW_DIM]` の範囲内であればそのペアを採用する
 ///
-/// ファイル I/O を含まない純関数として `load_window_size_from_settings` から切り出してあり、
+/// ファイル I/O を含まない純関数として `read_project_settings_json` の呼び出し側から切り出してあり、
 /// 単体テストで全パターン（欠落・範囲外・片方欠け・正常）を検証する（本ファイル末尾の tests）。
 fn parse_window_size(json: &str) -> (u32, u32) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
@@ -891,6 +897,16 @@ fn parse_window_size(json: &str) -> (u32, u32) {
     } else {
         DEFAULT_WINDOW_SIZE
     }
+}
+
+/// project_settings.json の JSON テキストから「ゲーム名」（`game_name`）を取り出す純関数。
+///
+/// ウィンドウのタイトルバーに使う。JSON が不正・キーが無い・空白のみのときは None
+///（呼び出し側がエンジン名 `DEFAULT_WINDOW_TITLE` へフォールバックする）。
+fn parse_game_name(json: &str) -> Option<String> {
+    let v = serde_json::from_str::<serde_json::Value>(json).ok()?;
+    let name = v["game_name"].as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// アクターツリーに 2D アクターが 1 つでも含まれるかを再帰的に判定する。
@@ -953,7 +969,7 @@ mod tests {
     use super::*;
 
     /// JSON 自体が不正（空文字列・破損データ含む）な場合は既定解像度を返すこと。
-    /// `load_window_size_from_settings` は asset_fs::read_string が失敗した際に
+    /// `read_project_settings_json` は asset_fs::read_string が失敗した際に
     /// 空文字列へフォールバックしてこの関数へ渡すため、その経路の下支えでもある。
     #[test]
     fn parse_window_size_invalid_json_returns_default() {
@@ -994,6 +1010,15 @@ mod tests {
             parse_window_size(r#"{"window_width": 8000, "window_height": 8000}"#),
             DEFAULT_WINDOW_SIZE
         );
+    }
+
+    /// ゲーム名: 正常値はそのまま、欠落・空白のみ・不正 JSON は None。
+    #[test]
+    fn parse_game_name_cases() {
+        assert_eq!(parse_game_name(r#"{"game_name": "4008_わらしべフィッシング"}"#).as_deref(), Some("4008_わらしべフィッシング"));
+        assert_eq!(parse_game_name(r#"{"game_name": "  "}"#), None);
+        assert_eq!(parse_game_name("{}"), None);
+        assert_eq!(parse_game_name("not json"), None);
     }
 
     /// 正常なペアはそのまま採用されること（正常ケース。本バグの主眼＝1280x720 のような非既定値）。
