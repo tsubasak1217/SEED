@@ -16,6 +16,7 @@ using System.IO;
 using System.Linq;
 using SEEDEditor.Packaging.Collect;
 using SEEDEditor.Packaging.Pak;
+using SEEDEditor.Packaging.Runtime;
 using SpriteRigTests;
 
 namespace SEEDEditor.Tests.PackagingCollector;
@@ -46,6 +47,9 @@ public static class Program
     /// <returns>プロセス終了コード（全成功なら 0）。</returns>
     public static int Main(string[] args)
     {
+        // .NET ランタイムの同梱だけを行うモード（アセットルートを必要としないので先に判定する）
+        if (args.Length > 0 && args[0] == BundleDotnetOption) return BundleDotnet(args);
+
         if (args.Length > 0) return DryRun(args);
 
         Console.WriteLine("PackagingCollectorTests");
@@ -55,8 +59,53 @@ public static class Program
         RegisterCollectorTests(h);
         RegisterPakTests(h);
         RegisterRuleTests(h);
+        RegisterDotnetBundlerTests(h);
 
         return h.Run();
+    }
+
+    // ============================================================
+    //  0-b. .NET ランタイムの同梱（UI を使わない実行）
+    // ============================================================
+
+    /// <summary>.NET ランタイムの同梱だけを実行するオプション名。</summary>
+    private const string BundleDotnetOption = "--bundle-dotnet";
+
+    /// <summary>
+    /// パッケージ出力フォルダに対して .NET ランタイムの同梱だけを実行する。
+    ///
+    /// <para>
+    /// エディタ UI を起動せずにパッケージ相当の配置を作るための入口で、
+    /// <c>--write-pak</c> と同じくパッケージ版の実機確認に使う。
+    /// 必要な .NET のバージョンは出力フォルダの
+    /// <c>SEEDScripting.runtimeconfig.json</c> から読むので、
+    /// 先にスクリプト同梱（ScriptPrecompileTests）を済ませておくこと。
+    /// </para>
+    /// </summary>
+    /// <param name="args">コマンドライン引数。args[1] が出力フォルダ。</param>
+    /// <returns>プロセス終了コード。</returns>
+    private static int BundleDotnet(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.WriteLine($"{BundleDotnetOption} には出力フォルダが必要です");
+            return 1;
+        }
+
+        var outDir = args[1];
+        if (!Directory.Exists(outDir))
+        {
+            Console.WriteLine($"出力フォルダが見つかりません: {outDir}");
+            return 1;
+        }
+
+        Console.WriteLine($".NET ランタイムの同梱: {outDir}");
+        var result = DotnetRuntimeBundler.Run(outDir, Console.WriteLine);
+
+        if (result.Bundled) return 0;
+
+        Console.WriteLine($"⚠ {result.SkipReason}");
+        return 1;
     }
 
     // ============================================================
@@ -518,6 +567,130 @@ public static class Program
             var settings = new AssetPackagingSettings { ExcludedExtensions = ["tmp", "BLEND", "blend1", "zip", "psd", "lock", "bak"] };
             var got = IncludedSet(new AssetCollector(fx.Root, settings).Collect());
             Check.True(!got.Contains("junk/scratch.tmp"), "ドット無しの除外拡張子が効いていない");
+        });
+    }
+
+    // ============================================================
+    //  5. .NET ランタイムの同梱（DotnetRuntimeBundler）
+    // ============================================================
+
+    /// <summary>DotnetRuntimeBundler の純関数層（検出・選択・パス組み立て）のテストを登録する。</summary>
+    /// <param name="h">テストランナー。</param>
+    private static void RegisterDotnetBundlerTests(TestHarness h)
+    {
+        h.Add("--list-runtimes の出力から .NET ルートを割り出せる", () =>
+        {
+            // 実際の出力形式（フレームワークが 3 種類並ぶ）をそのまま与える
+            const string output =
+                "Microsoft.AspNetCore.App 9.0.20 [C:\\Program Files\\dotnet\\shared\\Microsoft.AspNetCore.App]\r\n" +
+                "Microsoft.NETCore.App 9.0.19 [C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App]\r\n" +
+                "Microsoft.NETCore.App 9.0.20 [C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App]\r\n" +
+                "Microsoft.WindowsDesktop.App 9.0.20 [C:\\Program Files\\dotnet\\shared\\Microsoft.WindowsDesktop.App]\r\n";
+
+            var listed = DotnetRuntimeBundler.ParseListedRuntimes(output);
+            Check.Equal(4, listed.Count, "解析できた行数が違う");
+            Check.Equal("9.0.19", listed[1].Version, "バージョンの読み取りが違う");
+
+            var roots = DotnetRuntimeBundler.DotnetRootsFrom(listed);
+            Check.Equal(1, roots.Count, "同じルートが重複している");
+            Check.Equal("C:\\Program Files\\dotnet", roots[0], ".NET ルートの割り出しが違う");
+        });
+
+        h.Add("--list-runtimes の壊れた行は読み飛ばす", () =>
+        {
+            const string output =
+                "\r\n" +
+                "何かの警告メッセージ\r\n" +
+                "Microsoft.NETCore.App 9.0.20\r\n" +                       // パスが無い
+                "Microsoft.NETCore.App [C:\\dotnet\\shared\\Microsoft.NETCore.App]\r\n" + // バージョンが無い
+                "Microsoft.NETCore.App 9.0.20 [C:\\dotnet\\shared\\Microsoft.NETCore.App]\r\n";
+
+            var listed = DotnetRuntimeBundler.ParseListedRuntimes(output);
+            Check.Equal(1, listed.Count, "壊れた行を拾ってしまっている");
+            Check.Equal("C:\\dotnet", DotnetRuntimeBundler.DotnetRootsFrom(listed)[0], "ルートの割り出しが違う");
+        });
+
+        h.Add("要求 major.minor の最新パッチを選ぶ", () =>
+        {
+            DotnetRuntimeBundler.TryParseRequiredFrameworkVersion(
+                """{"runtimeOptions":{"framework":{"name":"Microsoft.NETCore.App","version":"9.0.0"}}}""",
+                out var required);
+
+            string[] installed = ["8.0.11", "9.0.3", "9.0.19", "9.0.20", "10.0.0"];
+            Check.Equal("9.0.20", DotnetRuntimeBundler.SelectLatestPatch(installed, required),
+                "最新パッチを選べていない");
+        });
+
+        h.Add("major.minor が違うものは選ばない", () =>
+        {
+            var required = new DotnetVersion(9, 0, 0, "");
+
+            // 9.0.x が 1 つも無ければ、より新しい 10.0 があっても選ばない
+            Check.Equal(null, DotnetRuntimeBundler.SelectLatestPatch(["8.0.20", "10.0.5"], required),
+                "major.minor 不一致を採用してしまっている");
+            // 9.1 も別バンドルなので不可
+            Check.Equal(null, DotnetRuntimeBundler.SelectLatestPatch(["9.1.0"], required),
+                "minor 違いを採用してしまっている");
+            // バージョンとして読めない名前は無視する
+            Check.Equal(null, DotnetRuntimeBundler.SelectLatestPatch(["9.0", "current", ""], required),
+                "バージョンでない名前を採用してしまっている");
+        });
+
+        h.Add("プレビュー版は同じ数値の正式版より下に順位付けされる", () =>
+        {
+            var required = new DotnetVersion(10, 0, 0, "");
+            Check.Equal("10.0.0", DotnetRuntimeBundler.SelectLatestPatch(["10.0.0-preview.5.1", "10.0.0"], required),
+                "プレビュー版を正式版より優先してしまっている");
+            Check.Equal("10.0.0-preview.5.1",
+                DotnetRuntimeBundler.SelectLatestPatch(["10.0.0-preview.5.1"], required),
+                "プレビュー版しか無いときに選べていない");
+        });
+
+        h.Add("hostfxr は同じバージョン優先・無ければそれ以上の最新", () =>
+        {
+            Check.Equal("9.0.20", DotnetRuntimeBundler.SelectHostFxrVersion(["9.0.19", "9.0.20", "10.0.0"], "9.0.20"),
+                "完全一致を優先できていない");
+            Check.Equal("10.0.0", DotnetRuntimeBundler.SelectHostFxrVersion(["9.0.19", "10.0.0"], "9.0.20"),
+                "CLR 以上の最新を選べていない");
+            Check.Equal(null, DotnetRuntimeBundler.SelectHostFxrVersion(["9.0.3", "9.0.19"], "9.0.20"),
+                "CLR より古い hostfxr を選んでしまっている");
+        });
+
+        h.Add("runtimeconfig の framework は単一・配列の両形式を読める", () =>
+        {
+            var single = DotnetRuntimeBundler.TryParseRequiredFrameworkVersion(
+                """{"runtimeOptions":{"tfm":"net9.0","framework":{"name":"Microsoft.NETCore.App","version":"9.0.0"}}}""",
+                out var v1);
+            Check.True(single, "単一形式を読めていない");
+            Check.Equal(9, v1.Major, "major が違う");
+
+            var array = DotnetRuntimeBundler.TryParseRequiredFrameworkVersion(
+                """
+                {"runtimeOptions":{"frameworks":[
+                    {"name":"Microsoft.WindowsDesktop.App","version":"9.0.0"},
+                    {"name":"Microsoft.NETCore.App","version":"10.0.0"}]}}
+                """,
+                out var v2);
+            Check.True(array, "配列形式を読めていない");
+            Check.Equal(10, v2.Major, "配列から Microsoft.NETCore.App を選べていない");
+
+            Check.True(!DotnetRuntimeBundler.TryParseRequiredFrameworkVersion("{}", out _),
+                "空の JSON を読めたことにしてしまっている");
+            Check.True(!DotnetRuntimeBundler.TryParseRequiredFrameworkVersion("壊れた JSON", out _),
+                "壊れた JSON で例外が漏れている");
+        });
+
+        h.Add("出力レイアウトがランタイム側の規約と一致する", () =>
+        {
+            const string outDir = @"D:\Out\MyGame";
+
+            Check.Equal(Path.Combine(outDir, "dotnet", "shared", "Microsoft.NETCore.App", "9.0.20"),
+                DotnetRuntimeBundler.BundledFrameworkDirectory(outDir, "9.0.20"), "CLR の出力先が規約と違う");
+            Check.Equal(Path.Combine(outDir, "dotnet", "host", "fxr", "9.0.20", "hostfxr.dll"),
+                DotnetRuntimeBundler.BundledHostFxrPath(outDir, "9.0.20"), "hostfxr の出力先が規約と違う");
+
+            // ランタイム側 scripting/mod.rs の BUNDLED_DOTNET_ROOT_DIR と同じ名前であること
+            Check.Equal("dotnet", DotnetRuntimeBundler.BundledRootDirName, "同梱フォルダ名が規約と違う");
         });
     }
 

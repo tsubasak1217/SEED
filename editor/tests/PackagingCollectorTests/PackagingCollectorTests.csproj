@@ -8,6 +8,7 @@
       - AssetCollector        : 参照グラフの閉包・同伴ファイル・除外と参照優先・欠落検出
       - PakWriter             : PAK バイナリの往復（pak.rs の PakReader と同じ読み方で検証）
       - AssetPathRewriter     : 絶対パス 4 形式 -> assets:// の書き換え
+      - DotnetRuntimeBundler  : 同梱する .NET の選択（dotnet のランタイム一覧の解析 / 最新パッチ / 出力レイアウト）
 
     AutoReloadPolicyTests と同じ流儀:
       - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
@@ -51,6 +52,9 @@
     </Compile>
     <Compile Include="..\..\src\Packaging\Pak\PakWriter.cs">
       <Link>Linked\Packaging\Pak\PakWriter.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Runtime\DotnetRuntimeBundler.cs">
+      <Link>Linked\Packaging\Runtime\DotnetRuntimeBundler.cs</Link>
     </Compile>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">

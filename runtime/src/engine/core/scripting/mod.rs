@@ -300,7 +300,26 @@ impl ScriptingHost {
         };
         let config_path = load_dll.with_extension("runtimeconfig.json");
 
-        let hostfxr = nethost::load_hostfxr()?;
+        // ── CLR（hostfxr）の探索先を決める ──
+        // 実行ファイルの隣に dotnet/ を同梱していればそこを .NET ルートとして使い、
+        // 無ければ PC にインストール済みの .NET を使う（従来どおり）。
+        // どちらを使ったかは配布先での切り分けに直結するので必ず 1 行残す。
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        let bundled_root = bundled_dotnet_root(exe_dir.as_deref(), &|path| path.is_dir());
+
+        let hostfxr = match &bundled_root {
+            Some(root) => {
+                eprintln!("[SEED] dotnet root: bundled {}", root.display());
+                nethost::load_hostfxr_with_dotnet_root(PdCString::from_os_str(root.as_os_str())?)?
+            }
+            None => {
+                eprintln!("[SEED] dotnet root: global");
+                nethost::load_hostfxr()?
+            }
+        };
+
         let context = hostfxr.initialize_for_runtime_config(
             PdCString::from_os_str(config_path.as_os_str())?,
         )?;
@@ -463,6 +482,59 @@ pub const PRECOMPILED_SCRIPTS_DLL_NAME: &str = "SEEDUserScripts.dll";
 /// 開発時のスクリプトホスト DLL の位置（ワーキングディレクトリ `runtime/` から見た相対）。
 const DEV_SCRIPTING_HOST_RELATIVE_DIR: &str = "../scripting/bin/Debug/net9.0";
 
+/// スクリプトホストが要求する .NET ランタイムの表示名（利用者向けの案内文で使う）。
+///
+/// 正典は `scripting/SEEDScripting.csproj` の `TargetFramework`（= `SEEDScripting.runtimeconfig.json`
+/// の framework version）。ここは案内文に出す文字列でしかないので、
+/// 判定には使わない（判定は hostfxr が runtimeconfig.json を読んで行う）。
+pub const REQUIRED_DOTNET_RUNTIME_LABEL: &str = ".NET 9";
+
+// ============================================================
+//  同梱 .NET ランタイム（self-contained 配布）の探索
+// ============================================================
+
+/// 実行ファイルと同じ階層に置く、同梱 .NET ランタイムのフォルダ名。
+///
+/// エディタ側の `DotnetRuntimeBundler`（`editor/src/Packaging/Runtime/`）が
+/// この名前で書き出す。両者を変えるときは必ず揃えること。
+///
+/// レイアウトは PC にインストールされる .NET と同じ形にする。
+/// ```text
+/// {exe のフォルダ}/dotnet/host/fxr/<ver>/hostfxr.dll
+/// {exe のフォルダ}/dotnet/shared/Microsoft.NETCore.App/<ver>/*
+/// ```
+pub const BUNDLED_DOTNET_ROOT_DIR: &str = "dotnet";
+
+/// 同梱 .NET ルート配下の host フォルダ名（`<root>/host/fxr/<ver>/hostfxr.dll`）。
+const BUNDLED_DOTNET_HOST_DIR: &str = "host";
+
+/// 同梱 .NET ルート配下の fxr フォルダ名（hostfxr のバージョン別フォルダの親）。
+const BUNDLED_DOTNET_FXR_DIR: &str = "fxr";
+
+/// 同梱 .NET ランタイムのルートを決める【純関数】。
+///
+/// 判定は「`{exe のフォルダ}/dotnet/host/fxr` が実在するか」の 1 点だけ。
+/// `dotnet/` があってもバージョン別フォルダが無ければ hostfxr は見つからないので、
+/// フォルダの存在ではなく **hostfxr の置き場**まで見る。
+///
+/// 実際のバージョン選択（`host/fxr/<ver>` のどれを使うか）は hostfxr 側の
+/// 探索に任せる（nethost が同フォルダ内の最新版を選ぶ）。
+///
+/// # 引数
+/// * `exe_dir`    - 実行ファイルのあるフォルダ（取得できなければ None）
+/// * `dir_exists` - ディレクトリの存在判定（テストのために注入する）
+///
+/// # 戻り値
+/// 同梱ランタイムを使うなら、その .NET ルートの絶対パス。使わないなら None。
+pub(crate) fn bundled_dotnet_root(
+    exe_dir:    Option<&Path>,
+    dir_exists: &dyn Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let root = exe_dir?.join(BUNDLED_DOTNET_ROOT_DIR);
+    let fxr  = root.join(BUNDLED_DOTNET_HOST_DIR).join(BUNDLED_DOTNET_FXR_DIR);
+    dir_exists(&fxr).then_some(root)
+}
+
 /// スクリプトホスト DLL の探索結果 1 件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptingHostLocation {
@@ -552,5 +624,48 @@ mod scripting_host_path_tests {
     #[test]
     fn precompiled_dll_name_matches_contract() {
         assert_eq!(PRECOMPILED_SCRIPTS_DLL_NAME, "SEEDUserScripts.dll");
+    }
+
+    // ── 同梱 .NET ランタイムの検出 ──────────────────────────
+
+    /// 存在判定を注入するヘルパ（引数のパスだけを「実在する」とみなす）。
+    fn only_existing(expected: &Path) -> impl Fn(&Path) -> bool + '_ {
+        move |path: &Path| path == expected
+    }
+
+    /// `{exe}/dotnet/host/fxr` があれば、そのひとつ上（`{exe}/dotnet`）を .NET ルートに選ぶこと。
+    #[test]
+    fn bundled_root_is_used_when_host_fxr_exists() {
+        let exe = Path::new("D:/Games/MyGame");
+        let fxr = exe.join("dotnet").join("host").join("fxr");
+
+        let root = bundled_dotnet_root(Some(exe), &only_existing(&fxr));
+        assert_eq!(root, Some(exe.join("dotnet")));
+    }
+
+    /// `dotnet/` があっても `host/fxr` が無ければ同梱扱いにしないこと。
+    /// （空フォルダや作りかけの配布物で hostfxr が見つからず起動失敗するのを避ける）
+    #[test]
+    fn bundled_root_is_ignored_without_host_fxr() {
+        let exe = Path::new("D:/Games/MyGame");
+        // dotnet フォルダだけが実在する状況を作る
+        let dotnet_only = exe.join("dotnet");
+
+        let root = bundled_dotnet_root(Some(exe), &only_existing(&dotnet_only));
+        assert_eq!(root, None, "host/fxr が無いのに同梱ランタイムを使おうとしている");
+    }
+
+    /// exe のフォルダが取得できないときは同梱ランタイムを使わないこと。
+    #[test]
+    fn without_exe_dir_no_bundled_root() {
+        // どのパスでも「実在する」と答える判定でも、exe が無ければ None
+        let root = bundled_dotnet_root(None, &|_| true);
+        assert_eq!(root, None);
+    }
+
+    /// 同梱フォルダ名がエディタ側（DotnetRuntimeBundler）の規約と一致していること。
+    #[test]
+    fn bundled_dotnet_dir_name_matches_contract() {
+        assert_eq!(BUNDLED_DOTNET_ROOT_DIR, "dotnet");
     }
 }

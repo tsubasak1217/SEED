@@ -399,13 +399,29 @@
   （`ScriptingHost::load_precompiled_scripts`）。`.scene` のパスから型を引くための対応表は
   DLL のマニフェストリソースへ埋め込む。実機確認済み: 40 型ロード・`Script type not found` 0 件。
   詳細は `docs/packaging.md` §5。
-- [ ] **配布には対象マシンに .NET 9 ランタイムのインストールが必要（self-contained 未対応）** — 2026-09-09。
-  スクリプトホストは framework-dependent（`SEEDScripting.runtimeconfig.json` が
-  `Microsoft.NETCore.App 9.0` を要求）なので、未インストールの PC では hostfxr の初期化に失敗し、
-  **スクリプト無しでゲームが起動する**（ゲーム自体は落ちないが、ほぼ何も動かない状態になる）。
-  対策案: ①`dotnet publish --self-contained` した一式を同梱する（+60〜70 MB）、
-  ②起動時に .NET の有無を検出して案内ダイアログを出す（最低限これは要る）。
-  関連: `scripting/SEEDScripting.csproj`、`editor/src/Packaging/Scripts/ScriptPackager.cs`。
+- [x] **配布には対象マシンに .NET 9 ランタイムのインストールが必要（self-contained 未対応）** — 2026-09-09 対応。
+  案①（.NET 一式の同梱）を実装。ビルドマシンにインストール済みの .NET を
+  `{出力}/dotnet/{host/fxr/<ver>/hostfxr.dll, shared/Microsoft.NETCore.App/<ver>/*}` へ写し、
+  ランタイムは exe の隣に `dotnet/host/fxr` があれば
+  `nethost::load_hostfxr_with_dotnet_root` でそちらを使う（無ければ従来の探索）。
+  同梱バージョンは `SEEDScripting.runtimeconfig.json` の framework version から決める
+  （9.0 をハードコードしない）。既定 ON・実測 187 ファイル / 74.3 MB。
+  実機確認: hostfxr / hostpolicy / coreclr の 3 つとも同梱 `dotnet/` 配下からロードされ、
+  `precompiled scripts loaded: 40 type(s)`。`dotnet/` を外すと `dotnet root: global` で従来どおり動く。
+  案②（案内ダイアログ）は**実装していない** — ランタイムに MessageBox の共通ヘルパが無く、
+  依存クレートを増やさずに出すには起動経路へ Win32 のモーダルを足す判断が別途要るため。
+  代わりに CLR 初期化失敗時に原因と対処を stderr へ出すようにした（`App::new`）。
+  関連: `editor/src/Packaging/Runtime/DotnetRuntimeBundler.cs`、
+  `runtime/src/engine/core/scripting/mod.rs`、`docs/packaging.md` §5。
+- [ ] **.NET 同梱は Windows 専用** — 2026-09-09。
+  `DotnetRuntimeBundler` は `hostfxr.dll` という Windows のファイル名しか見ないため、
+  macOS / Linux 向けパッケージでは同梱がスキップされる（`libhostfxr.dylib` / `.so` 未対応）。
+  そもそも現状これらのプラットフォームはこのマシンからビルドできないので実害は無い。
+- [ ] **`scripting::debug_command` の単体テストが並列実行だと落ちる** — 2026-09-09 発見（今回の変更とは無関係）。
+  `pushes_and_peeks_in_order` と同モジュールの別テストがグローバルの待ち行列を共有しており、
+  `cargo test scripting::` だと相互に干渉する（`--test-threads=1` なら全通過）。
+  テスト側で行列を分離するか、テストごとにクリアする仕組みが要る。
+  関連: `runtime/src/engine/core/scripting/debug_command.rs`。
 - [ ] **`.scene` / `.actor` から参照される `.cs` は今も PAK に入る（ソースが配布物に残る）** — 2026-09-09。
   常時同梱の既定は空にしたが、`ScriptComponent` の `type_name` が `.cs` のパスなので
   参照グラフの閉包に乗る（実測 34 ファイル / 1.4 MB）。動作には影響しない。

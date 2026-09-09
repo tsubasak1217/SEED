@@ -30,6 +30,7 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using SEEDEditor.Packaging.Collect;
 using SEEDEditor.Packaging.Pak;
+using SEEDEditor.Packaging.Runtime;
 using SEEDEditor.Packaging.Scripts;
 
 namespace SEEDEditor.Packaging;
@@ -325,6 +326,18 @@ public partial class PackagingWindow : Window
         gameNameGrid.Children.Add(gameNameLabel);
         gameNameGrid.Children.Add(_tbGameName);
         SettingsPane.Children.Add(gameNameGrid);
+
+        // ── .NET ランタイムの同梱（実際にパッケージを作れるプラットフォームのみ） ──
+        // 配布先に .NET が入っていないとスクリプトが 1 つも動かないため既定は ON。
+        if (meta.Availability != PlatformAvailability.RequiresLicense)
+        {
+            SettingsPane.Children.Add(BuildCheckRow(
+                ".NET ランタイムを同梱", _data.BundleDotnetRuntime,
+                v => _data.BundleDotnetRuntime = v,
+                "スクリプト実行に必要な .NET を dotnet/ フォルダごと配布物へ入れます（約 75 MB 増）。\n" +
+                "OFF にすると配布先の PC に .NET 9 のインストールが必要になり、\n" +
+                "未インストールの環境ではスクリプトが動かないまま起動します。"));
+        }
 
         // ── アセット収録設定（実際にパッケージを作れるプラットフォームのみ） ──
         if (meta.Availability != PlatformAvailability.RequiresLicense)
@@ -983,6 +996,16 @@ public partial class PackagingWindow : Window
             }
             SetProgress(ProgressAfterScripts);
 
+            // ── .NET ランタイムの同梱 ────────────────────────────
+            //
+            // スクリプトの事前コンパイルの直後に行う。同梱するバージョンは
+            // 直前のフェーズが出力へコピーした SEEDScripting.runtimeconfig.json から読むため、
+            // この順序に依存している（前後を入れ替えるならバージョンの読み取り元も変えること）。
+            //
+            // 検出できなくてもパッケージ化は止めない（.NET が入った PC でなら動く配布物にはなる）。
+            await BundleDotnetRuntimeAsync(gameOutDir, phaseWatch);
+            SetProgress(ProgressAfterDotnetRuntime);
+
             // アセットを PAK ファイルにまとめる
             await PackAssetsAsync(gameOutDir, phaseWatch);
 
@@ -1085,6 +1108,9 @@ public partial class PackagingWindow : Window
     /// <summary>ユーザースクリプトの事前コンパイル完了時の進捗（％）。</summary>
     private const int ProgressAfterScripts = 65;
 
+    /// <summary>.NET ランタイム同梱の完了時の進捗（％）。</summary>
+    private const int ProgressAfterDotnetRuntime = 68;
+
     /// <summary>全工程完了時の進捗（％）。</summary>
     private const int ProgressComplete = 100;
 
@@ -1108,6 +1134,41 @@ public partial class PackagingWindow : Window
     /// </summary>
     /// <param name="outputDir">出力フォルダ（ここに assets.pak を作る）。</param>
     /// <param name="phaseWatch">フェーズ所要時間の計測用ストップウォッチ。</param>
+    /// <summary>
+    /// .NET ランタイムを出力フォルダへ同梱する（設定が ON のときだけ）。
+    ///
+    /// <para>
+    /// 検出に失敗しても中止しない。同梱が無いパッケージは
+    /// 「.NET がインストールされた PC でなら動く」ものなので、
+    /// 作らせない理由にはならない（ログには必ず理由を残す）。
+    /// </para>
+    /// </summary>
+    /// <param name="gameOutDir">パッケージ出力フォルダ。</param>
+    /// <param name="phaseWatch">フェーズ所要時間の計測用ストップウォッチ。</param>
+    private async Task BundleDotnetRuntimeAsync(string gameOutDir, Stopwatch phaseWatch)
+    {
+        if (!_data.BundleDotnetRuntime)
+        {
+            AppendLog("");
+            AppendLog("── .NET ランタイムの同梱: スキップ（設定 OFF）──");
+            AppendLog("  配布先の PC に .NET のインストールが必要なパッケージになります。");
+            return;
+        }
+
+        SetStatus(".NET ランタイムを同梱中...");
+        AppendLog("");
+        AppendLog("── .NET ランタイムの同梱 ──");
+
+        DotnetBundleResult bundle = null!;
+        await Task.Run(() => bundle = DotnetRuntimeBundler.Run(gameOutDir, LogFromWorker));
+        LogPhase(".NET ランタイムの同梱", phaseWatch);
+
+        if (!bundle.Bundled)
+        {
+            AppendLog($"⚠ {bundle.SkipReason}");
+        }
+    }
+
     private async Task PackAssetsAsync(string outputDir, Stopwatch phaseWatch)
     {
         var pakPath = Path.Combine(outputDir, "assets.pak");

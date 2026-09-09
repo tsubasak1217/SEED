@@ -1436,7 +1436,24 @@ impl App {
                     host.install_host_api();
                     Some(host)
                 }
-                Err(_)   => None,
+                Err(err) => {
+                    // CLR の初期化に失敗しても起動自体は続ける（スクリプト無しで動く）。
+                    // ただし黙って落とすと「配布先でだけ何も動かない」の原因が追えないため、
+                    // 原因と対処を必ず stderr に残す。
+                    //
+                    // 実際に一番多いのは「配布先に .NET ランタイムが入っていない」ケース。
+                    // 利用者向けのダイアログは出していない（ランタイムに MessageBox の
+                    // 共通ヘルパが無く、起動経路にモーダルを足す判断は別途必要なため）。
+                    eprintln!("[SEED] scripting host failed to load: {err}");
+                    eprintln!(
+                        "[SEED]   {label} ランタイムが見つからない可能性があります。\
+                         パッケージ化で「.NET ランタイムを同梱」を有効にして dotnet/ フォルダを\
+                         実行ファイルの隣に置くか、実行する PC に {label} をインストールしてください。",
+                        label = crate::engine::core::scripting::REQUIRED_DOTNET_RUNTIME_LABEL,
+                    );
+                    eprintln!("[SEED]   スクリプト無しで起動を続けます。");
+                    None
+                }
             }
         } else {
             None

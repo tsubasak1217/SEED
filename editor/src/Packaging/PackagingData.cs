@@ -140,6 +140,19 @@ public class PackagingData
     [JsonPropertyName("assets")]
     public Collect.AssetPackagingSettings Assets { get; set; } = new();
 
+    /// <summary>
+    /// .NET ランタイムを配布物へ同梱するか（self-contained 配布）。
+    ///
+    /// <para>
+    /// 既定は true。OFF にすると出力サイズは約 75 MB 小さくなるが、
+    /// 配布先の PC に .NET のインストールが必要になり、
+    /// 未インストールだと **スクリプト無しでゲームが起動する**（ほぼ何も動かない）。
+    /// 既定を ON にしているのは、この失敗が配布先でしか再現せず気付きにくいため。
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("bundle_dotnet_runtime")]
+    public bool BundleDotnetRuntime { get; set; } = true;
+
     // ── 永続化 ──────────────────────────────────────────────
 
     private static readonly JsonSerializerOptions SerializeOptions = new()

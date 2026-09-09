@@ -16,6 +16,8 @@
 | `editor/src/Packaging/Pak/PakWriter.cs` | `assets.pak` の書き出し |
 | `editor/src/Packaging/Pak/AssetPathRewriter.cs` | 絶対パス → `assets://` の書き換え |
 | `editor/src/Packaging/Scripts/ScriptPackager.cs` | **ユーザースクリプトの事前コンパイル**とスクリプトホストの同梱 |
+| `editor/src/Packaging/Runtime/DotnetRuntimeBundler.cs` | **.NET ランタイムの同梱**（検出・バージョン選択・コピー） |
+| `runtime/src/engine/core/scripting/mod.rs` | 同梱 `dotnet/` の検出と CLR の初期化（`BUNDLED_DOTNET_ROOT_DIR`） |
 | `scripting/src/Compilation/` | コンパイル共通実装・型マップ規約（`PrecompiledScriptArtifact`） |
 | `runtime/src/engine/pak.rs` | ランタイム側の PAK リーダー（フォーマットの正典） |
 | `editor/tests/PackagingCollectorTests/` | 収録・PAK の単体テストとドライラン |
@@ -33,8 +35,10 @@
 2. **バイナリのコピー** — `SEED.exe` を `{出力先}/{ゲーム名}/{ゲーム名}.exe` へ複製する。
 3. **スクリプトの事前コンパイル** — アセット配下の `.cs` を `SEEDUserScripts.dll` へまとめ、
    スクリプトホスト一式とともに出力フォルダへ置く（§5）。**失敗したらここで中止する**。
-4. **収録アセットの収集** — 参照グラフを辿って `assets.pak` に入れるファイルを決める（§2）。
-5. **PAK 書き出し** — ストリーミングで `assets.pak` を書く（§4）。
+4. **.NET ランタイムの同梱** — スクリプト実行に必要な .NET を `dotnet/` へ写す（§5）。
+   設定 OFF・検出失敗のときはスキップし、**中止はしない**。
+5. **収録アセットの収集** — 参照グラフを辿って `assets.pak` に入れるファイルを決める（§2）。
+6. **PAK 書き出し** — ストリーミングで `assets.pak` を書く（§4）。
 
 各フェーズの所要秒数はログに `[時間] フェーズ名: N.N 秒` の形で出る。
 
@@ -248,6 +252,99 @@ dotnet run --project editor/tests/ScriptPrecompileTests -- "<runtime>" "<アセ�
 
 引数なしで実行すると単体テスト（型マップ・別フォルダ同名ファイルの解決など）が走る。
 
+### .NET ランタイムの同梱（self-contained 配布）
+
+スクリプトホストは framework-dependent なので、CLR の初期化には .NET ランタイムが要る。
+**配布先の PC に .NET が入っていないと、スクリプトが 1 つも動かないまま起動する**
+（ゲーム自体は落ちないので、気付きにくい形で壊れる）。
+これを避けるため、ビルドマシンにインストール済みの .NET を配布物へ丸ごと写す。
+
+担当は `editor/src/Packaging/Runtime/DotnetRuntimeBundler.cs`。
+実行タイミングは**スクリプト事前コンパイルの直後**（PAK 化の前）。
+
+#### 出力レイアウト
+
+インストール版の .NET と同じ形にする。hostfxr が自分自身の DLL パスから
+.NET ルートを逆算し、その下の `shared/` から CLR を解決するため、
+2 つを同じルート配下に揃えて置くことがそのまま動作条件になる。
+
+```
+{ゲーム出力フォルダ}/
+  ├ MyGame.exe
+  ├ SEEDScripting.dll ほか
+  └ dotnet/
+      ├ host/fxr/9.0.20/hostfxr.dll
+      └ shared/Microsoft.NETCore.App/9.0.20/*   （coreclr.dll / hostpolicy.dll / BCL 一式）
+```
+
+フォルダ名 `dotnet` はランタイム側 `runtime/src/engine/core/scripting/mod.rs` の
+`BUNDLED_DOTNET_ROOT_DIR` と一致必須（テストで両側から突き合わせている）。
+
+#### 起動時の切り替え（ランタイム）
+
+`ScriptingHost::load` が `{exe のフォルダ}/dotnet/host/fxr` の有無だけを見て切り替える。
+
+| 条件 | 使う .NET | stderr の 1 行目 |
+|---|---|---|
+| `dotnet/host/fxr` がある | 同梱ランタイム | `[SEED] dotnet root: bundled <path>` |
+| 無い | PC にインストール済みの .NET | `[SEED] dotnet root: global` |
+
+`dotnet/` があっても `host/fxr` が無ければ同梱扱いにしない（作りかけの配布物で
+hostfxr が見つからず起動失敗するのを避けるため）。
+
+CLR の初期化に失敗したときは、黙って落とさず stderr に理由と対処を出してから
+**スクリプト無しで起動を続ける**。
+
+```
+[SEED] scripting host failed to load: One of the dependent libraries is missing.
+[SEED]   .NET 9 ランタイムが見つからない可能性があります。パッケージ化で「.NET ランタイムを同梱」を…
+[SEED]   スクリプト無しで起動を続けます。
+```
+
+#### 同梱する .NET の選び方
+
+必要な major.minor は **`SEEDScripting.runtimeconfig.json` の framework version から読む**
+（配布物が実際に読むファイルそのものを正典にしているので、スクリプトホストの
+ターゲットフレームワークを上げれば自動で追従する）。
+
+.NET ルートの検出順:
+
+1. 環境変数 `DOTNET_ROOT`
+2. `dotnet --list-runtimes` の出力（`Microsoft.NETCore.App 9.0.20 [<共有フォルダ>]` を解析し、2 段上をルートとする）
+3. `%ProgramFiles%\dotnet`
+
+先に見つかった候補から順に「要求 major.minor に一致する最新パッチ」を探し、
+最初に CLR と hostfxr が両方揃ったものを採用する。
+
+- **major.minor が違うものは選ばない**（`9.0` 要求に `10.0` を使わない）。
+  ロールフォワードの判断は hostfxr が `rollForward` に従って行う領分。
+- hostfxr は **CLR と同じバージョンを優先**し、無ければ**それ以上で最新**。
+  CLR より古い hostfxr は選ばない（新しいフレームワークを解決できないため）。
+- 出力先に同じバージョンが既にあり、ファイル数と合計サイズが一致すればコピーを省く。
+
+#### 設定
+
+パッケージ化ウィンドウの「共通設定」→ **`.NET ランタイムを同梱`**（既定 ON）。
+`packaging_settings.json` の `bundle_dotnet_runtime` に保存される。
+
+| | サイズ | 配布先の要件 |
+|---|---|---|
+| ON（既定） | +約 75 MB（実測 187 ファイル / 74.3 MB） | 無し |
+| OFF | — | .NET 9 ランタイムのインストールが必要 |
+
+検出できなかった場合はエラーにせず警告してスキップする（framework-dependent のまま
+パッケージ化は完了する）。「.NET が入った PC でなら動く配布物」にはなるので、
+パッケージ化そのものを止める理由にはしない。
+
+#### UI を使わずに同梱だけを実行する
+
+```
+dotnet run --project editor/tests/PackagingCollectorTests -- --bundle-dotnet "<出力フォルダ>"
+```
+
+出力フォルダの `SEEDScripting.runtimeconfig.json` を読むので、
+先にスクリプト同梱（上記 `ScriptPrecompileTests`）を済ませておくこと。
+
 ---
 
 ## 6. ログの読み方
@@ -296,11 +393,17 @@ dotnet run --project editor/tests/PackagingCollectorTests
 
 ## 8. 既知の制限
 
-- **対象マシンに .NET 9 ランタイムのインストールが必要**。
+- **「.NET ランタイムを同梱」を OFF にすると、対象マシンに .NET 9 のインストールが必要**。
   スクリプトホストは framework-dependent（`SEEDScripting.runtimeconfig.json` が
   `Microsoft.NETCore.App 9.0` を要求する）なので、未インストールの PC では
   CLR の初期化に失敗し、**スクリプト無しでゲームが起動する**（ゲーム自体は落ちない）。
-  self-contained 配布（.NET 一式の同梱）は未対応。
+  既定は同梱 ON なので通常は問題にならない（§5「.NET ランタイムの同梱」）。
+  なお同梱するのは**ビルドマシンにインストール済みの .NET**であり、
+  `dotnet publish --self-contained` は使っていない。
+- **同梱できるのは Windows 版だけ**。`DotnetRuntimeBundler` は `hostfxr.dll` という
+  Windows のファイル名しか見ないため、macOS / Linux 向けに作る場合は
+  `libhostfxr.dylib` / `libhostfxr.so` への対応が要る（現状 Windows 以外は
+  そもそもこのマシンからビルドできないので実害は無い）。
 - **`.scene` / `.actor` から参照されている `.cs` は今も PAK に入る**。
   常時同梱の既定は空にしたが、`type_name` が `.cs` のパスである以上、
   参照グラフの閉包に乗る。動作には影響しないが、配布物にソースが残る。
