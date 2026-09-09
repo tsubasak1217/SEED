@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ユーザースクリプトの「事前コンパイル → DLL 同梱 → 起動時ロード」経路の単体テスト。
+
+    対象:
+      - ScriptAssemblyManager.CompileToFile : DLL 出力と型マップの埋め込み
+      - ScriptAssemblyManager.LoadPrecompiled : DLL からの型マップ復元
+      - ScriptAssemblyManager.Resolve : assets:// 相対パスでの型解決
+        （別フォルダの同名ファイルを取り違えないこと ＝ この経路の一番の危険地帯）
+
+    SpriteRigTests / ScriptEventCatalogTests と同じ方針:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - 判定の正典（SEEDScripting）はミラーせずプロジェクト参照で本物を使う
+
+    実行方法: dotnet run (project=editor/tests/ScriptPrecompileTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ScriptPrecompile</RootNamespace>
+    <AssemblyName>ScriptPrecompileTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象の正典（ScriptAssemblyManager / SEEDScript / 型マップ規約） -->
+    <ProjectReference Include="..\..\..\scripting\SEEDScripting.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      パッケージ化側の入口。リンクで取り込むことで
+      「パッケージ化のスクリプト処理が WPF 非依存であること」も同時に担保する
+      （WPF 型を使い始めた瞬間にこのテストがビルドできなくなる）。
+    -->
+    <Compile Include="..\..\src\Packaging\Scripts\ScriptPackager.cs">
+      <Link>Linked\Packaging\Scripts\ScriptPackager.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

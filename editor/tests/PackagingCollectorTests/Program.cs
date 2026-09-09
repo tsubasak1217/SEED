@@ -38,14 +38,15 @@ public static class Program
     /// <summary>
     /// テストを登録して実行する。
     ///
-    /// 引数に「アセットルート [runtime/src]」を渡すと、テストの代わりに
-    /// 実プロジェクトへのドライラン（収録件数・サイズ・欠落参照の表示）を行う。
+    /// 引数に「アセットルート [runtime/src] [--write-pak &lt;出力先&gt;]」を渡すと、
+    /// テストの代わりに実プロジェクトへのドライラン
+    /// （収録件数・サイズ・欠落参照の表示。--write-pak 指定時は PAK も書き出す）を行う。
     /// </summary>
     /// <param name="args">コマンドライン引数。</param>
     /// <returns>プロセス終了コード（全成功なら 0）。</returns>
     public static int Main(string[] args)
     {
-        if (args.Length > 0) return DryRun(args[0], args.Length > 1 ? args[1] : null);
+        if (args.Length > 0) return DryRun(args);
 
         Console.WriteLine("PackagingCollectorTests");
         var h = new TestHarness();
@@ -62,15 +63,47 @@ public static class Program
     //  0. ドライラン（実プロジェクトの収録内容を確認する）
     // ============================================================
 
+    /// <summary>PAK の書き出し先を指定するオプション名。</summary>
+    private const string WritePakOption = "--write-pak";
+
     /// <summary>
-    /// 実プロジェクトのアセットルートに対して収集だけを行い、結果を表示する。
-    /// PAK は書かないので、パッケージ化の前に「何が入って何が落ちるか」を確認できる。
+    /// 実プロジェクトのアセットルートに対して収集を行い、結果を表示する。
+    /// 既定では PAK を書かないので、パッケージ化の前に
+    /// 「何が入って何が落ちるか」だけを確認できる。
+    ///
+    /// <para>
+    /// <c>--write-pak &lt;出力先&gt;</c> を付けると、収集した内容で本物の assets.pak を書き出す。
+    /// エディタ UI を起動せずにパッケージ相当のアセットを用意するための入口で、
+    /// パッケージ版の動作確認（実機確認）に使う。
+    /// </para>
     /// </summary>
-    /// <param name="assetsRoot">アセットルートの絶対パス。</param>
-    /// <param name="runtimeSourceRoot">runtime/src の絶対パス（省略可）。</param>
+    /// <param name="args">
+    /// コマンドライン引数。args[0] がアセットルート。
+    /// 続く位置引数は runtime/src（省略可）、"--write-pak &lt;パス&gt;" は任意の位置に置ける。
+    /// </param>
     /// <returns>プロセス終了コード。</returns>
-    private static int DryRun(string assetsRoot, string? runtimeSourceRoot)
+    private static int DryRun(string[] args)
     {
+        var assetsRoot = args[0];
+
+        // 位置引数（runtime/src）とオプション（--write-pak）を分けて読む
+        string? runtimeSourceRoot = null;
+        string? pakOutputPath     = null;
+        for (int i = 1; i < args.Length; i++)
+        {
+            if (args[i] == WritePakOption)
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.WriteLine($"{WritePakOption} には出力先パスが必要です");
+                    return 1;
+                }
+                pakOutputPath = args[++i];
+                continue;
+            }
+            runtimeSourceRoot ??= args[i];
+        }
+
         if (!Directory.Exists(assetsRoot))
         {
             Console.WriteLine($"アセットルートが見つかりません: {assetsRoot}");
@@ -131,6 +164,18 @@ public static class Program
             Console.WriteLine($"  {p}");
         if (result.IncludedDespiteExclusion.Count > DryRunFolderListLimit)
             Console.WriteLine($"  ...ほか {result.IncludedDespiteExclusion.Count - DryRunFolderListLimit} 件");
+
+        // PAK の書き出し（指定時のみ）
+        if (pakOutputPath is not null)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"PAK を書き出し: {pakOutputPath}");
+            var stats = PakWriter.Write(pakOutputPath, assetsRoot, result.Included);
+            Console.WriteLine(
+                $"完了: {stats.EntryCount} ファイル / {stats.TotalBytes / BytesPerMegabyte:F1} MB");
+            if (stats.SizeMismatchCount > 0)
+                Console.WriteLine($"警告: 収集後にサイズが変わったファイル {stats.SizeMismatchCount} 件");
+        }
 
         return 0;
     }
@@ -335,11 +380,28 @@ public static class Program
                 "packaging_settings.json は配布物に入れてはいけない");
         });
 
-        h.Add("常時同梱拡張子（.cs）は入れるが除外フォルダ内は入れない", () =>
+        h.Add("常時同梱拡張子の既定は空（.cs は DLL へ事前コンパイルして配るため）", () =>
         {
             using var fx = new AssetFixture();
             var got = IncludedSet(Collect(fx));
-            Check.True(got.Contains("scripts/Hero.cs"), "スクリプトが同梱されていない");
+
+            // 既定設定では「未参照の .cs」は入らない。
+            // （スクリプトは SEEDUserScripts.dll へ事前コンパイルして同梱するので、
+            //   ソースをアセットとして配る必要が無い。ScriptPackager 参照）
+            Check.True(!got.Contains("unused/Unused.cs"),
+                "既定で未参照の .cs が同梱されている（常時同梱の既定が空になっていない）");
+            Check.Equal(0, PackagingRules.DefaultAlwaysIncludedExtensions.Count,
+                "常時同梱拡張子の既定");
+        });
+
+        h.Add("設定で指定した拡張子は参照が無くても入る（除外フォルダ内は除く）", () =>
+        {
+            using var fx = new AssetFixture();
+            var settings = new AssetPackagingSettings();
+            settings.AlwaysIncludedExtensions.Add(".cs");
+
+            var got = IncludedSet(new AssetCollector(fx.Root, settings).Collect());
+            Check.True(got.Contains("unused/Unused.cs"), "常時同梱指定の未参照スクリプトが入っていない");
             Check.True(!got.Contains(".backup/Old.cs"), "除外フォルダ内のスクリプトが入っている");
         });
 

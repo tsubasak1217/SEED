@@ -143,6 +143,9 @@ type InstanceEventFn = unsafe extern "system" fn(isize, u32, u32);
 type PhysicsEventFn = unsafe extern "system" fn(isize, *const RawPhysicsEvent);
 /// アセットルート内の .cs を CLR 側でコンパイルする。戻り値はコンパイルされた型数（負値はエラー）。
 type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
+/// 事前コンパイル済みユーザースクリプト DLL をロードする（パッケージ版の経路）。
+/// 引数は DLL パスの UTF-8 バイト列とその長さ。戻り値は解決可能になった型数（負値はエラー）。
+type LoadPrecompiledFn = unsafe extern "system" fn(*const u8, i32) -> i32;
 /// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
 type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
 /// 保留中の [SerializeField] 参照フィールド（アクタ参照文字列／スロット名）を
@@ -248,6 +251,8 @@ pub struct ScriptingHost {
     /// 物理イベント（衝突・トリガー）通知
     pub physics_event_fn:   PhysicsEventFn,
     pub(crate) compile_fn:   CompileFn,
+    /// 事前コンパイル済みユーザースクリプト DLL のロード（パッケージ版の起動経路）
+    pub(crate) load_precompiled_fn: LoadPrecompiledFn,
     pub(crate) set_field_fn: SetFieldFn,
     /// 保留中の参照フィールドを解決・注入する（OnStart 直前にフェーズ内で呼ぶ）
     pub(crate) resolve_refs_fn: ResolveRefsFn,
@@ -271,16 +276,28 @@ unsafe impl Send for ScriptingHost {}
 unsafe impl Sync for ScriptingHost {}
 
 impl ScriptingHost {
-    /// DLL パスから CLR を初期化して ScriptingHost を構築する。
+    /// 探索結果から CLR を初期化して ScriptingHost を構築する。
     ///
-    /// ビルド出力の DLL を直接ロードするとプロセス実行中ずっとファイルが
-    /// ロックされ、エディタ/VS からの再ビルドが「別プロセスが使用中」で
-    /// 失敗する。これを避けるため、DLL 一式をプロセス専用のテンポラリ
-    /// ディレクトリへシャドウコピーし、そのコピーをロードする。
-    /// これによりビルド出力側は一切ロックされず、実行中でも再ビルドできる。
-    pub fn load(dll_path: &Path) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
-        // シャドウコピー（失敗時は元のパスにフォールバック）
-        let load_dll = Self::shadow_copy(dll_path).unwrap_or_else(|_| dll_path.to_path_buf());
+    /// ## シャドウコピーを掛ける／掛けないの判断
+    /// 開発ビルド出力（`scripting/bin/...`）の DLL を直接ロードすると
+    /// プロセス実行中ずっとファイルがロックされ、エディタ/VS からの再ビルドが
+    /// 「別プロセスが使用中」で失敗する。そのため開発時だけ DLL 一式を
+    /// プロセス専用のテンポラリへコピーし、そのコピーをロードする。
+    ///
+    /// 一方パッケージ版では DLL は実行ファイルと同じフォルダにあり、
+    /// そこには **assets.pak（数百 MB になり得る）や実行ファイル本体も同居する**。
+    /// シャドウコピーはフォルダ直下の全ファイルを写すため、そのまま掛けると
+    /// 起動のたびにゲーム丸ごとをテンポラリへ複製することになる。
+    /// 配布物は再ビルドされないのでロックしても実害が無く、コピーは不要。
+    pub fn load(location: &ScriptingHostLocation) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+        let dll_path = location.dll_path.as_path();
+
+        // 開発ビルド出力のときだけシャドウコピー（失敗時は元のパスにフォールバック）
+        let load_dll = if location.is_dev_build_output {
+            Self::shadow_copy(dll_path).unwrap_or_else(|_| dll_path.to_path_buf())
+        } else {
+            dll_path.to_path_buf()
+        };
         let config_path = load_dll.with_extension("runtimeconfig.json");
 
         let hostfxr = nethost::load_hostfxr()?;
@@ -316,6 +333,7 @@ impl ScriptingHost {
             end_frame_fn:      get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EndFrame")),
             physics_event_fn:  get_fn!(fn(isize, *const RawPhysicsEvent),      pdcstr!("OnPhysicsEvent")),
             compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
+            load_precompiled_fn: get_fn!(fn(*const u8, i32) -> i32,            pdcstr!("LoadPrecompiledScripts")),
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
             resolve_refs_fn:   get_fn!(fn(isize, u32, u32),                    pdcstr!("ResolveReferenceFields")),
             is_ref_field_fn:   get_fn!(fn(isize, *const u8, i32) -> i32,       pdcstr!("IsReferenceField")),
@@ -384,13 +402,155 @@ impl ScriptingHost {
         unsafe { (self.compile_fn)(bytes.as_ptr(), bytes.len() as i32) }
     }
 
-    /// ワーキングディレクトリを基準に DLL を探す。
-    pub fn resolve_dll_path() -> PathBuf {
-        let base = std::env::current_dir().unwrap_or_default();
-        let dev = base.join("../scripting/bin/Debug/net9.0/SEEDScripting.dll");
-        if dev.exists() {
-            return dev.canonicalize().unwrap_or(dev);
+    /// 事前コンパイル済みユーザースクリプト DLL をロードする（パッケージ版の起動経路）。
+    ///
+    /// パッケージ版にはソース（.cs）も Roslyn も同梱しないため、
+    /// `compile_scripts` の代わりにこちらを呼ぶ。型解決に必要な
+    /// 「ソース相対パス → 型名」の対応表は DLL 内に埋め込まれている。
+    ///
+    /// 戻り値は解決可能になったスクリプト型の数（負値はロード失敗）。
+    pub fn load_precompiled_scripts(&self, dll_path: &Path) -> i32 {
+        // C# 側は UTF-8 バイト列として受け取る。パスが UTF-8 で表現できない場合
+        // （不正なサロゲート等）は失敗として扱う。
+        let path_string = dll_path.to_string_lossy();
+        let bytes = path_string.as_bytes();
+        unsafe { (self.load_precompiled_fn)(bytes.as_ptr(), bytes.len() as i32) }
+    }
+
+    /// スクリプトホスト DLL の探索を行い、最初に見つかった候補を返す。
+    ///
+    /// 候補が 1 つも実在しない場合は「最後の候補」（＝パッケージ配置）を
+    /// そのまま返す。呼び出し側は `dll_path.exists()` で存在を確かめること。
+    pub fn resolve_dll_path() -> ScriptingHostLocation {
+        let cwd     = std::env::current_dir().unwrap_or_default();
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
+
+        let candidates = scripting_host_dll_candidates(&cwd, exe_dir.as_deref());
+        for candidate in &candidates {
+            if candidate.dll_path.exists() {
+                // 正規化できるなら正規化する（相対 ".." を含むパスをそのまま
+                // hostfxr へ渡すと、環境によって解決に失敗することがある）
+                let dll_path = candidate.dll_path.canonicalize()
+                    .unwrap_or_else(|_| candidate.dll_path.clone());
+                return ScriptingHostLocation {
+                    dll_path,
+                    is_dev_build_output: candidate.is_dev_build_output,
+                };
+            }
         }
-        base.join("SEEDScripting.dll")
+
+        // 実在候補が無いときは最後の候補を返す（存在チェックは呼び出し側の責務）
+        candidates.into_iter().next_back().unwrap_or_else(|| ScriptingHostLocation {
+            dll_path: PathBuf::from(SCRIPTING_HOST_DLL_NAME),
+            is_dev_build_output: false,
+        })
+    }
+}
+
+// ============================================================
+//  スクリプトホスト DLL の探索（純関数層）
+// ============================================================
+
+/// スクリプトホスト DLL（SEEDScripting.dll）のファイル名。
+pub const SCRIPTING_HOST_DLL_NAME: &str = "SEEDScripting.dll";
+
+/// 事前コンパイル済みユーザースクリプト DLL のファイル名。
+///
+/// C# 側 `PrecompiledScriptArtifact.AssemblyFileName` および
+/// エディタの `ScriptPackager` と同じ名前でなければならない。
+pub const PRECOMPILED_SCRIPTS_DLL_NAME: &str = "SEEDUserScripts.dll";
+
+/// 開発時のスクリプトホスト DLL の位置（ワーキングディレクトリ `runtime/` から見た相対）。
+const DEV_SCRIPTING_HOST_RELATIVE_DIR: &str = "../scripting/bin/Debug/net9.0";
+
+/// スクリプトホスト DLL の探索結果 1 件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptingHostLocation {
+    /// SEEDScripting.dll の位置。
+    pub dll_path: PathBuf,
+    /// 開発ビルド出力（エディタ/VS から再ビルドされうる場所）か。
+    /// true のときだけロード前にテンポラリへシャドウコピーしてロックを避ける。
+    pub is_dev_build_output: bool,
+}
+
+/// スクリプトホスト DLL の探索候補を優先順に列挙する【純関数】。
+///
+/// 1. 開発ビルド出力: `{cwd}/../scripting/bin/Debug/net9.0/SEEDScripting.dll`
+///    （`cargo run` を `runtime/` で実行する開発時の配置）
+/// 2. パッケージ配置: `{exe のフォルダ}/SEEDScripting.dll`
+///    （配布物。cwd はユーザーがどこから起動したかで変わるため exe 基準にする）
+///
+/// exe のフォルダが取得できない場合は 2 を省く（候補は 1 件だけになる）。
+///
+/// # 引数
+/// * `cwd`     - カレントディレクトリ
+/// * `exe_dir` - 実行ファイルのあるフォルダ（取得できなければ None）
+pub(crate) fn scripting_host_dll_candidates(
+    cwd: &Path,
+    exe_dir: Option<&Path>,
+) -> Vec<ScriptingHostLocation> {
+    let mut candidates = Vec::new();
+
+    candidates.push(ScriptingHostLocation {
+        dll_path: cwd.join(DEV_SCRIPTING_HOST_RELATIVE_DIR).join(SCRIPTING_HOST_DLL_NAME),
+        is_dev_build_output: true,
+    });
+
+    if let Some(dir) = exe_dir {
+        candidates.push(ScriptingHostLocation {
+            dll_path: dir.join(SCRIPTING_HOST_DLL_NAME),
+            is_dev_build_output: false,
+        });
+    }
+
+    candidates
+}
+
+#[cfg(test)]
+mod scripting_host_path_tests {
+    use super::*;
+
+    /// 開発ビルド出力が第 1 候補で、シャドウコピー対象として印が付くこと。
+    #[test]
+    fn dev_build_output_comes_first() {
+        let cwd = Path::new("C:/proj/runtime");
+        let exe = Path::new("C:/proj/runtime/target/debug");
+        let candidates = scripting_host_dll_candidates(cwd, Some(exe));
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[0].dll_path,
+            Path::new("C:/proj/runtime/../scripting/bin/Debug/net9.0/SEEDScripting.dll")
+        );
+        assert!(candidates[0].is_dev_build_output, "開発ビルド出力の印が付いていない");
+    }
+
+    /// パッケージ配置の候補は cwd ではなく exe のフォルダ基準になること。
+    /// （配布物はショートカット等から起動され、cwd が別の場所になり得る）
+    #[test]
+    fn package_candidate_is_relative_to_exe_dir() {
+        let cwd = Path::new("C:/somewhere/else");
+        let exe = Path::new("D:/Games/MyGame");
+        let candidates = scripting_host_dll_candidates(cwd, Some(exe));
+
+        assert_eq!(candidates[1].dll_path, Path::new("D:/Games/MyGame/SEEDScripting.dll"));
+        assert!(
+            !candidates[1].is_dev_build_output,
+            "パッケージ配置をシャドウコピー対象にしてはいけない（assets.pak ごと複製されるため）"
+        );
+    }
+
+    /// exe のフォルダが取れないときは開発候補だけになること。
+    #[test]
+    fn without_exe_dir_only_dev_candidate() {
+        let candidates = scripting_host_dll_candidates(Path::new("C:/proj/runtime"), None);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].is_dev_build_output);
+    }
+
+    /// 事前コンパイル DLL の名前が C# 側の規約と一致していること（名前の取り違え防止）。
+    #[test]
+    fn precompiled_dll_name_matches_contract() {
+        assert_eq!(PRECOMPILED_SCRIPTS_DLL_NAME, "SEEDUserScripts.dll");
     }
 }

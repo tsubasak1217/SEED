@@ -15,8 +15,11 @@
 | `editor/src/Packaging/Collect/AssetPackagingSettings.cs` | 収録ルールのユーザー設定 |
 | `editor/src/Packaging/Pak/PakWriter.cs` | `assets.pak` の書き出し |
 | `editor/src/Packaging/Pak/AssetPathRewriter.cs` | 絶対パス → `assets://` の書き換え |
+| `editor/src/Packaging/Scripts/ScriptPackager.cs` | **ユーザースクリプトの事前コンパイル**とスクリプトホストの同梱 |
+| `scripting/src/Compilation/` | コンパイル共通実装・型マップ規約（`PrecompiledScriptArtifact`） |
 | `runtime/src/engine/pak.rs` | ランタイム側の PAK リーダー（フォーマットの正典） |
-| `editor/tests/PackagingCollectorTests/` | 上記の単体テストとドライラン |
+| `editor/tests/PackagingCollectorTests/` | 収録・PAK の単体テストとドライラン |
+| `editor/tests/ScriptPrecompileTests/` | 事前コンパイル・型解決の単体テストとスクリプト同梱の実行 |
 
 ---
 
@@ -28,8 +31,10 @@
    普段の `cargo run` が使う `target/release/` とビルドキャッシュを共有しないため、
    同じコードを 2 回フルビルドすることになる。
 2. **バイナリのコピー** — `SEED.exe` を `{出力先}/{ゲーム名}/{ゲーム名}.exe` へ複製する。
-3. **収録アセットの収集** — 参照グラフを辿って `assets.pak` に入れるファイルを決める（§2）。
-4. **PAK 書き出し** — ストリーミングで `assets.pak` を書く（§4）。
+3. **スクリプトの事前コンパイル** — アセット配下の `.cs` を `SEEDUserScripts.dll` へまとめ、
+   スクリプトホスト一式とともに出力フォルダへ置く（§5）。**失敗したらここで中止する**。
+4. **収録アセットの収集** — 参照グラフを辿って `assets.pak` に入れるファイルを決める（§2）。
+5. **PAK 書き出し** — ストリーミングで `assets.pak` を書く（§4）。
 
 各フェーズの所要秒数はログに `[時間] フェーズ名: N.N 秒` の形で出る。
 
@@ -112,7 +117,11 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 | 除外拡張子 | `excluded_extensions` | `.lock` `.blend` `.blend1` `.zip` `.psd` `.tmp` `.bak` | 未参照なら捨てる拡張子 |
 | 除外ファイル名 | `excluded_file_names` | `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini` | OS が作るゴミファイル（`*` 可） |
 | 追加同梱フォルダ | `additional_folders` | （空） | 参照グラフで辿れないアセットを丸ごと入れる**逃げ道** |
-| 常時同梱拡張子 | `always_included_extensions` | `.cs` | 参照が無くても入れる拡張子（除外ルールには従う） |
+| 常時同梱拡張子 | `always_included_extensions` | （空） | 参照が無くても入れる拡張子（除外ルールには従う） |
+
+> 常時同梱拡張子の既定は 2026-09-09 に `.cs` から**空**へ変えた。
+> スクリプトは §5 のとおり DLL へ事前コンパイルして配るので、ソースを PAK に入れる必要がない。
+> （`.scene` / `.actor` から参照されている `.cs` は参照グラフ経由で今も入る。§8 参照）
 
 ### 除外は参照より弱い
 
@@ -151,13 +160,102 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 
 ---
 
-## 5. ログの読み方
+## 5. スクリプト（事前コンパイル）
+
+パッケージ版でユーザースクリプトを動かすための仕組み。
+**ソース（`.cs`）も Roslyn も配布物には入れない**。ビルド時に 1 回だけコンパイルし、
+できた DLL を実行ファイルの隣に置く。
+
+### 同梱されるもの
+
+| ファイル | 中身 | サイズの目安 |
+|---|---|---|
+| `SEEDUserScripts.dll` | アセット配下の全 `.cs` を 1 つにまとめた事前コンパイル済みアセンブリ | 0.4 MB |
+| `SEEDScripting.dll` | スクリプトホスト（`SEEDScript` 基底クラス・`SEED.*` API・FFI 入口） | 0.2 MB |
+| `SEEDScripting.runtimeconfig.json` / `.deps.json` | hostfxr が CLR を初期化するのに必要 | 数 KB |
+| `Microsoft.CodeAnalysis*.dll` | スクリプトホストの依存（`deps.json` に載っているため同梱する） | 9 MB |
+
+言語別の `resources` サブフォルダ（`cs/` `de/` …）は**コピーしない**。
+中身は Roslyn の診断メッセージのローカライズだけで、実行には要らない
+（開発時のシャドウコピーも同じくフォルダ直下しか写しておらず、その構成で動いている）。
+
+`.pdb` も同梱しない（配布物に開発機のソースパスを載せないため）。
+
+### 起動時の流れ（ランタイム）
+
+`App::new`（`runtime/src/engine/core/app_base/app/mod.rs`）が経路を 2 つに分ける。
+
+| 起動 | 条件 | 動作 |
+|---|---|---|
+| エディタ / Play | `--assets-root` あり | その場で `.cs` をコンパイルする（ホットリロード可） |
+| パッケージ版 | `--assets-root` なし | 実行ファイルの隣の `SEEDUserScripts.dll` を読むだけ |
+
+スクリプトホスト（`SEEDScripting.dll`）の探索順は
+`{cwd}/../scripting/bin/Debug/net9.0/`（開発ビルド出力）→ `{exe のフォルダ}`。
+**開発ビルド出力から読んだときだけ**テンポラリへシャドウコピーする
+（エディタからの再ビルドを妨げないため）。パッケージ配置ではコピーしない
+——実行ファイルと同じフォルダには `assets.pak` も居るので、
+コピーすると起動のたびにゲーム丸ごとを複製することになる。
+
+成功すると stderr に 1 行出る。
+
+```
+[SEED] precompiled scripts loaded: 40 type(s)
+```
+
+DLL が無い場合は 1 行だけ残して**スクリプト無しで起動を続ける**
+（スクリプトを使っていないゲーム、および古いパッケージのため）。
+
+### 型解決の仕組み（`.scene` のパス → 型）
+
+`.scene` にはスクリプトの型名ではなく**ソースのパス**が入っている。
+PAK 化のときに絶対パスは `assets://` 形式へ書き換わるので、
+配布物では次の 2 形式が混在する。
+
+```
+"type_name": "assets://common/scripts/SceneFlow.cs"
+"type_name": "assets://title\scripts\TitleMotion.cs"    ← 区切りが混ざることもある
+```
+
+ソースを配らない以上、パスから型を引く表がどこかに要る。そこで
+**`SEEDUserScripts.dll` のマニフェストリソースへ型マップを焼き込む**
+（`scripting/src/Compilation/PrecompiledScriptArtifact.cs`）。
+1 行 = `アセットルート相対パス(TAB)型の FullName`、パスは `/` 区切り・小文字に正規化する。
+
+解決の優先順（`ScriptAssemblyManager.Resolve`）:
+
+1. **アセット相対キー一致** — `assets://a/Foo.cs` と `assets://b/Foo.cs` を取り違えない
+2. 絶対パス完全一致 — エディタが保存した絶対パス形式
+3. ファイル名一致 — 表記ゆれのフォールバック
+4. 型名一致 — 旧形式（型名で保存されたもの）
+
+### コンパイルに失敗したとき
+
+**パッケージ化そのものを中止する**（スクリプトが動かない配布物を作らない）。
+エラーは `パス(行): 内容` の形でログへ全件出る。
+中途半端な DLL も残さない（古い成果物が配られるのを防ぐため）。
+
+「スクリプトホストが見つかりません」と出た場合はエディタ（ソリューション）が
+未ビルドで、`scripting/bin/Debug/net9.0/` が無い状態。先にビルドすること。
+
+### UI を使わずにスクリプト同梱だけを実行する
+
+パッケージ版の検証用に、エディタを起動せず同じ処理を回せる。
+
+```
+dotnet run --project editor/tests/ScriptPrecompileTests -- "<runtime>" "<アセットルート>" "<出力先>"
+```
+
+引数なしで実行すると単体テスト（型マップ・別フォルダ同名ファイルの解決など）が走る。
+
+---
+
+## 6. ログの読み方
 
 ```
 ── 収録アセットの収集 ──
 ⚠ 登録シーンの実体がありません（スキップ）: assets://demo/scenes/demo_title.scene
 エンジン内蔵参照: 4 ファイルを追加
-常時同梱拡張子（.cs）: 80 ファイルを追加
 参照走査: 146 ファイルを解析
 [時間] 収録アセットの収集: 0.2 秒
 収録: 325 ファイル / 51.5 MB
@@ -176,7 +274,7 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 
 ---
 
-## 6. 収録内容の事前確認（ドライラン）
+## 7. 収録内容の事前確認（ドライラン）
 
 PAK を書かずに「何が入って何が落ちるか」だけを確認できる。
 
@@ -196,10 +294,17 @@ dotnet run --project editor/tests/PackagingCollectorTests
 
 ---
 
-## 7. 既知の制限
+## 8. 既知の制限
 
-- **パッケージ版ではユーザースクリプト（`.cs`）がコンパイルされない**。
-  詳細と対策案は `docs/backlog.md` を参照。`.cs` を PAK に入れる準備だけは済んでいる。
+- **対象マシンに .NET 9 ランタイムのインストールが必要**。
+  スクリプトホストは framework-dependent（`SEEDScripting.runtimeconfig.json` が
+  `Microsoft.NETCore.App 9.0` を要求する）なので、未インストールの PC では
+  CLR の初期化に失敗し、**スクリプト無しでゲームが起動する**（ゲーム自体は落ちない）。
+  self-contained 配布（.NET 一式の同梱）は未対応。
+- **`.scene` / `.actor` から参照されている `.cs` は今も PAK に入る**。
+  常時同梱の既定は空にしたが、`type_name` が `.cs` のパスである以上、
+  参照グラフの閉包に乗る。動作には影響しないが、配布物にソースが残る。
+  完全に外すには「参照されていても入れない拡張子」の仕組みが要る（`docs/backlog.md` 参照）。
 - `app_init.rs` の `project_settings.json` 読み込みは `std::fs` で exe 隣の `assets/` を見るため、
   PAK モードではウィンドウサイズ・プラグイン設定が既定値になる（同じく backlog 参照）。
 - 新しいアセット形式を足したときは、`PackagingRules` の

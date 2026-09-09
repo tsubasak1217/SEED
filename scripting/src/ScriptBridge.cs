@@ -314,6 +314,37 @@ public static unsafe class ScriptBridge
         }
     }
 
+    /// <summary>
+    /// 事前コンパイル済みのユーザースクリプト DLL（SEEDUserScripts.dll）をロードする。
+    ///
+    /// パッケージ版の起動経路。ソースも Roslyn も配布物に含めないため、
+    /// <see cref="CompileScripts"/> の代わりにこちらを呼ぶ。
+    /// 型解決に必要な「ソース相対パス → 型名」の対応は DLL に埋め込まれている
+    /// （PrecompiledScriptArtifact.TypeMapResourceName）。
+    ///
+    /// 戻り値: 解決可能になったスクリプト型数（-1 はロード失敗）。
+    /// </summary>
+    /// <param name="pathPtr">DLL パスの UTF-8 バイト列。</param>
+    /// <param name="pathLen">その長さ。</param>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int LoadPrecompiledScripts(byte* pathPtr, int pathLen)
+    {
+        try
+        {
+            // CompileScripts と同じ前処理。再ロードで全インスタンスが作り直されるため、
+            // 旧インスタンスに紐づく例外抑制状態と名前付きイベント購読をここで全消去する。
+            ClearAllErrorState();
+            SEED.Events.ClearAll();
+            var path = Encoding.UTF8.GetString(pathPtr, pathLen);
+            return ScriptAssemblyManager.LoadPrecompiled(path);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] LoadPrecompiledScripts failed: {ex}");
+            return -1;
+        }
+    }
+
     // ─── フィールド設定 ───────────────────────────────────────
 
     /// <summary>

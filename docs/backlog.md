@@ -391,23 +391,39 @@
 
 正典: `docs/packaging.md`（収録規則・設定項目・ログの読み方・ドライラン）。
 
-- [ ] **パッケージ版ではユーザースクリプト（.cs）が一切コンパイルされない** — 2026-09-09（実測）。
-  `runtime/src/engine/core/app_base/app/mod.rs:1411` の
-  `if let (Some(host), Some(root)) = (&scripting_host, &args.assets_root)` が
-  コンパイルの発火条件で、パッケージ実行では `args.assets_root` が `None` のため
-  `compile_scripts` が呼ばれない。さらに `SEEDScripting.dll` と hostfxr 一式が
-  出力フォルダへコピーされないので、条件を直しても実行時に読めない。
-  <b>現状のパッケージ版はスクリプト無しで動く状態</b>。
-  対策案は 2 つ: ①パッケージ時にスクリプトを事前コンパイルして DLL を同梱する、
-  ②ランタイムが PAK から `.cs` を一時フォルダへ展開して `compile_scripts` に渡す。
-  収録側の準備（`.cs` を常時同梱する規則）は済んでいる。
-  関連: `runtime/src/engine/core/scripting/mod.rs::compile_scripts`、
-  `editor/src/Packaging/Collect/PackagingRules.cs`。
+- [x] **パッケージ版ではユーザースクリプト（.cs）が一切コンパイルされない** — 2026-09-09 記載 / 同日対応。
+  対策案①（事前コンパイル）を採用。パッケージ化時に `ScriptAssemblyManager.CompileToFile` で
+  アセット配下の全 `.cs` を `SEEDUserScripts.dll` へまとめ、スクリプトホスト一式とともに
+  出力フォルダへ同梱するようにした（`editor/src/Packaging/Scripts/ScriptPackager.cs`）。
+  ランタイムは `--assets-root` が無いとき exe の隣の `SEEDUserScripts.dll` を読む
+  （`ScriptingHost::load_precompiled_scripts`）。`.scene` のパスから型を引くための対応表は
+  DLL のマニフェストリソースへ埋め込む。実機確認済み: 40 型ロード・`Script type not found` 0 件。
+  詳細は `docs/packaging.md` §5。
+- [ ] **配布には対象マシンに .NET 9 ランタイムのインストールが必要（self-contained 未対応）** — 2026-09-09。
+  スクリプトホストは framework-dependent（`SEEDScripting.runtimeconfig.json` が
+  `Microsoft.NETCore.App 9.0` を要求）なので、未インストールの PC では hostfxr の初期化に失敗し、
+  **スクリプト無しでゲームが起動する**（ゲーム自体は落ちないが、ほぼ何も動かない状態になる）。
+  対策案: ①`dotnet publish --self-contained` した一式を同梱する（+60〜70 MB）、
+  ②起動時に .NET の有無を検出して案内ダイアログを出す（最低限これは要る）。
+  関連: `scripting/SEEDScripting.csproj`、`editor/src/Packaging/Scripts/ScriptPackager.cs`。
+- [ ] **`.scene` / `.actor` から参照される `.cs` は今も PAK に入る（ソースが配布物に残る）** — 2026-09-09。
+  常時同梱の既定は空にしたが、`ScriptComponent` の `type_name` が `.cs` のパスなので
+  参照グラフの閉包に乗る（実測 34 ファイル / 1.4 MB）。動作には影響しない。
+  完全に外すには「参照されていても入れない拡張子」（`NeverIncludedRelativePaths` の拡張子版）が要る。
+  ただし `.cs` を落とすと欠落参照の検出（シーンが消えたスクリプトを指している）も効かなくなるため、
+  「収録はしないが参照検証はする」扱いが必要。関連: `editor/src/Packaging/Collect/AssetCollector.cs`。
 - [x] **`asset_fs` を通らない `std::fs` 直読みが残っており PAK モードで既定値になる** — 2026-09-09 記載 / 同日対応。
   `app_init.rs` の `project_settings.json` 読み込み（ウィンドウサイズ・プラグイン有効化リスト）を `asset_fs::read_string` 経由に変更し、
   `init_asset_fs` を `handle_resumed` の先頭（ウィンドウ生成前）へ前倒しした。最小 PAK での実機確認で 1280x720 を確認済み。
   パッケージ実行時のプラグインは未対応のまま（`is_packaged()` なら 0 件で続行し 1 行ログ）。DLL 同梱の仕組みが要る。
   関連: `runtime/src/engine/core/app_base/app/app_init.rs`（`parse_window_size` テスト 5 件）。
+- [ ] **`cargo test` の `set_save_int_writes_flag_and_keeps_other_keys` が全体実行では落ちる** — 2026-09-09（別作業中に観測、原因未調査）。
+  単体（`cargo test -- <テスト名>`）では通るが、`cargo test` の全体実行（`--test-threads=1` でも）で失敗する。
+  テスト冒頭のコメントどおり「ストアの初回アクセスより前」に `SAVE_DIR_ENV` を設定する必要があるのに、
+  同一プロセス内の他テストが先にセーブストアへ触れてパスを確定させてしまうためと見られる。
+  セーブ経路をテスト用に注入可能にするか、このテストを別バイナリへ分けるのが素直。
+  <b>今回の変更（スクリプト事前コンパイル）とは無関係で、新規テストを除外しても再現する</b>。
+  関連: `runtime/src/engine/plugin/host.rs:164`。
 - [ ] **ボクセル地形 `.tvox` が空／一様チャンクでも非圧縮のまま保存される（1 チャンク約 0.5 MB）** — 2026-09-09（容量調査で観察、未検証）。
   `terrain/NewScene`（769 個・344 MB）と `templates/terrain/Untitled`（1,087 個・342 MB）は同一サイズ（467,213 バイト）のファイルが大量にあり、
   中身が空または一様なチャンクをそのまま書き出している可能性が高い。空チャンク省略や RLE 等の圧縮で元データを 1/10 以下にできそう。

@@ -30,6 +30,7 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using SEEDEditor.Packaging.Collect;
 using SEEDEditor.Packaging.Pak;
+using SEEDEditor.Packaging.Scripts;
 
 namespace SEEDEditor.Packaging;
 
@@ -702,7 +703,7 @@ public partial class PackagingWindow : Window
             "参照グラフで辿れないアセットを丸ごと入れる逃げ道（アセットルートからの相対パス）"));
         SettingsPane.Children.Add(BuildListRow(
             "常時同梱拡張子", assets.AlwaysIncludedExtensions,
-            "参照の有無に関わらず入れる拡張子。既定の .cs はスクリプトを一括コンパイルするため必要です"));
+            "参照の有無に関わらず入れる拡張子。既定は空です（スクリプトは SEEDUserScripts.dll へ事前コンパイルして同梱するため .cs は不要）"));
     }
 
     /// <summary>
@@ -954,6 +955,34 @@ public partial class PackagingWindow : Window
             }
             LogPhase("バイナリのコピー", phaseWatch);
 
+            // ── ユーザースクリプトの事前コンパイル ──────────────
+            //
+            // cargo build の後・PAK の前に行う。PAK には .cs を入れず、
+            // ここで作った SEEDUserScripts.dll を配布物として同梱するため、
+            // コンパイルに失敗したら「スクリプトが動かないパッケージ」が
+            // できてしまう。それは配ってはいけないので、その場で中止する。
+            SetStatus("ユーザースクリプトを事前コンパイル中...");
+            AppendLog("");
+            AppendLog("── ユーザースクリプトの事前コンパイル ──");
+
+            ScriptPackagingResult scriptResult = null!;
+            await Task.Run(() =>
+            {
+                scriptResult = ScriptPackager.Run(_runtimePath, _assetsPath, gameOutDir, LogFromWorker);
+            });
+            LogPhase("スクリプトの事前コンパイル", phaseWatch);
+
+            if (!scriptResult.Success)
+            {
+                ScriptPackager.LogErrors(scriptResult, AppendLog);
+                AppendLog("");
+                AppendLog("❌ スクリプトが動かないパッケージは作らないため、ここで中止します。");
+                SetStatus("スクリプトのコンパイル失敗");
+                SetProgress(0);
+                return;
+            }
+            SetProgress(ProgressAfterScripts);
+
             // アセットを PAK ファイルにまとめる
             await PackAssetsAsync(gameOutDir, phaseWatch);
 
@@ -1052,6 +1081,9 @@ public partial class PackagingWindow : Window
 
     /// <summary>cargo build 完了時の進捗（％）。</summary>
     private const int ProgressAfterCargo = 60;
+
+    /// <summary>ユーザースクリプトの事前コンパイル完了時の進捗（％）。</summary>
+    private const int ProgressAfterScripts = 65;
 
     /// <summary>全工程完了時の進捗（％）。</summary>
     private const int ProgressComplete = 100;

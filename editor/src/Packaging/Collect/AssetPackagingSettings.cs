@@ -50,8 +50,8 @@ public class AssetPackagingSettings
 
     /// <summary>
     /// 参照の有無に関わらず同梱する拡張子（除外ルールには従う）。
-    /// 既定は .cs（アセットルート配下をまとめてコンパイルする方式のため、
-    /// 参照されている分だけ入れるとコンパイルが通らない）。
+    /// 既定は空。スクリプト（.cs）はパッケージ化時に DLL へ事前コンパイルして
+    /// 同梱するため、ソースを配る必要がない（PackagingRules 側のコメント参照）。
     /// </summary>
     [JsonPropertyName("always_included_extensions")]
     public List<string> AlwaysIncludedExtensions { get; set; } =

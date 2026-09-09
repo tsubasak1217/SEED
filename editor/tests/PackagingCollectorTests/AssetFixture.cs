@@ -78,8 +78,13 @@ public sealed class AssetFixture : IDisposable
         WriteText("scenes/main.scene", scene.ToString());
 
         // ── アクタ -> スクリプト -> テクスチャ（多段の閉包） ────
+        //   実プロジェクトと同じく、スクリプトはアクタから .cs のパスで参照される
+        //   （ScriptComponent の type_name）。したがって参照グラフだけで到達する。
         WriteText("actors/hero.actor", """
-        { "script": "assets://scripts/Hero.cs" }
+        {
+          "script":      "assets://scripts/Hero.cs",
+          "noteScript":  "assets://scripts/Notes.cs"
+        }
         """);
         WriteText("scripts/Hero.cs", """
         namespace Game;
@@ -134,9 +139,10 @@ public sealed class AssetFixture : IDisposable
 
         // ── 除外対象（未参照） ─────────────────────────────────
         WriteText(".backup/old.scene", "{ }");
-        WriteText(".backup/Old.cs", "public class Old { }");   // 常時同梱拡張子だが除外フォルダ
+        WriteText(".backup/Old.cs", "public class Old { }");   // 常時同梱指定でも除外フォルダなので入らない
         WriteBinary("junk/scratch.tmp", 8);                    // 除外拡張子
         WriteBinary("unused/unused.png", 8);                   // 除外ではないが未参照
+        WriteText("unused/Unused.cs", "public class Unused { }"); // 未参照（常時同梱指定の検証用）
 
         // ── 除外フォルダにあるが参照される ──────────────────────
         WriteBinary("templates/fonts/f.ttf", 48);

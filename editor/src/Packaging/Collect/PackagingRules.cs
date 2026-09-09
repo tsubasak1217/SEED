@@ -126,14 +126,22 @@ public static class PackagingRules
     /// <summary>
     /// 参照の有無に関わらず（除外に当たらない限り）同梱する拡張子。
     ///
-    /// .cs はアセットルート配下を**まとめてコンパイル**する方式のため
-    /// （scripting/mod.rs の compile_scripts はルートを渡すだけ）、
-    /// 参照されている分だけを入れるとクラス参照が解決できずコンパイルが丸ごと落ちる。
+    /// <para>
+    /// <b>既定は空</b>である。以前は .cs を入れていたが、これは
+    /// 「パッケージ版が起動時にアセット配下の .cs をまとめてコンパイルする」
+    /// 前提のものだった。現在はパッケージ化の時点で
+    /// <c>SEEDUserScripts.dll</c> へ事前コンパイルして同梱する方式なので
+    /// （editor/src/Packaging/Scripts/ScriptPackager.cs）、ソースを配る必要が無い。
+    /// .cs の**参照走査**（<see cref="ScannableExtensions"/>）は引き続き行う
+    /// ——スクリプトの文字列リテラルに書かれた assets:// 参照を拾うため。
+    /// </para>
+    /// <para>
+    /// ここが空でも、プロジェクトの packaging_settings.json に
+    /// 明示された拡張子（<see cref="AssetPackagingSettings.AlwaysIncludedExtensions"/>）は
+    /// 従来どおり常時同梱される。
+    /// </para>
     /// </summary>
-    public static readonly IReadOnlyList<string> DefaultAlwaysIncludedExtensions =
-    [
-        ".cs",
-    ];
+    public static readonly IReadOnlyList<string> DefaultAlwaysIncludedExtensions = [];
 
     /// <summary>
     /// 参照されていても決して同梱しないファイル（アセットルート相対）。

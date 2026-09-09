@@ -1380,6 +1380,43 @@ pub struct App {
 pub(super) const DEFAULT_PROJECT_RESOLUTION: (u32, u32) = (1920, 1080);
 
 impl App {
+    /// 実行ファイルの隣に置かれた事前コンパイル済みユーザースクリプト DLL を読み込む。
+    ///
+    /// パッケージ版（`--assets-root` 無しで起動された配布物）専用の経路。
+    /// DLL が無いのは「スクリプトを 1 つも使っていないゲーム」や
+    /// 「スクリプト同梱前にビルドされた古いパッケージ」でも起こり得るので、
+    /// 見つからないこと自体はエラーにせず 1 行だけ残して起動を続ける。
+    ///
+    /// # 引数
+    /// * `host` - ロード済みのスクリプティングホスト
+    fn load_precompiled_user_scripts(host: &Arc<ScriptingHost>) {
+        use crate::engine::core::scripting::PRECOMPILED_SCRIPTS_DLL_NAME;
+
+        // 実行ファイルの隣（cwd はショートカット等で変わるため exe 基準で探す）
+        let Some(dll_path) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join(PRECOMPILED_SCRIPTS_DLL_NAME)))
+        else {
+            eprintln!("[SEED] precompiled scripts: 実行ファイルのパスが取得できません");
+            return;
+        };
+
+        if !dll_path.exists() {
+            eprintln!(
+                "[SEED] precompiled scripts not found: {} (スクリプト無しで起動します)",
+                dll_path.display()
+            );
+            return;
+        }
+
+        let count = host.load_precompiled_scripts(&dll_path);
+        if count >= 0 {
+            eprintln!("[SEED] precompiled scripts loaded: {count} type(s)");
+        } else {
+            eprintln!("[SEED] precompiled scripts failed to load (see errors above)");
+        }
+    }
+
     /// App インスタンスを生成する（EventLoop は run() で生成される）。
     pub fn new(args: LaunchArgs) -> Self {
         // 親プロセス（エディタ）の監視を開始する。
@@ -1389,10 +1426,10 @@ impl App {
         let ipc = args.pipe_name.as_deref()
             .and_then(|name| IpcClient::connect(name).ok());
 
-        let dll_path = ScriptingHost::resolve_dll_path();
-        let scripting_host = if dll_path.exists() {
+        let host_location = ScriptingHost::resolve_dll_path();
+        let scripting_host = if host_location.dll_path.exists() {
             // DLL が存在する場合のみ CLR ロードを試みる（存在しない場合は hostfxr 検索で遅延するため）
-            match ScriptingHost::load(&dll_path) {
+            match ScriptingHost::load(&host_location) {
                 Ok(host) => {
                     // コンポーネントアクセス用の関数ポインタ表を C# へ登録する
                     // （これ以降 transform.Position などのスクリプトアクセスが有効になる）
@@ -1405,15 +1442,26 @@ impl App {
             None
         };
 
-        // アセットルート配下のユーザースクリプト (.cs) を CLR 側でコンパイルする。
+        // ユーザースクリプトを CLR 側で使えるようにする。
         // シーンロード時の ScriptComponent 生成（型解決）より前に行う必要がある。
-        // コンパイルエラーは C# 側が stderr に出力し、エディタの Output パネルに表示される。
-        if let (Some(host), Some(root)) = (&scripting_host, &args.assets_root) {
-            let count = host.compile_scripts(root);
-            if count >= 0 {
-                eprintln!("[SEED] user scripts compiled: {count} type(s)");
-            } else {
-                eprintln!("[SEED] user script compilation failed (see errors above)");
+        //
+        // 経路は 2 つあり、アセットルートの有無で切り替える。
+        //   ① assets_root あり（エディタ / Play）… その場で .cs をコンパイルする。
+        //      コンパイルエラーは C# 側が stderr に出し、エディタの Output パネルに載る。
+        //   ② assets_root なし（パッケージ版）  … 実行ファイルの隣に置かれた
+        //      事前コンパイル済み DLL を読むだけにする。配布物にソースと Roslyn を
+        //      同梱しないため、ここでコンパイルすることはできない。
+        if let Some(host) = &scripting_host {
+            match &args.assets_root {
+                Some(root) => {
+                    let count = host.compile_scripts(root);
+                    if count >= 0 {
+                        eprintln!("[SEED] user scripts compiled: {count} type(s)");
+                    } else {
+                        eprintln!("[SEED] user script compilation failed (see errors above)");
+                    }
+                }
+                None => Self::load_precompiled_user_scripts(host),
             }
         }
 
