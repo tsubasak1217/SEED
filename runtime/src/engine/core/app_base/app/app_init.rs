@@ -27,6 +27,13 @@ pub(crate) const CAM_SPEED_MIN: f32 = 0.1;
 /// デバッグカメラ移動速度の上限（IPC `CAM_SPEED:` とシーン設定で共用）。
 pub(crate) const CAM_SPEED_MAX: f32 = 500.0;
 
+/// ウィンドウ初期解像度の既定値（Full HD。エディタのプロジェクト設定の既定値と一致させる）。
+const DEFAULT_WINDOW_SIZE: (u32, u32) = (1920, 1080);
+/// ウィンドウ解像度として受け付ける最小値（あまりに小さい値はウィンドウ生成失敗の原因になるため弾く）。
+const MIN_WINDOW_DIM: u64 = 160;
+/// ウィンドウ解像度として受け付ける最大値（8K 超は現状のプロジェクト設定 UI が想定しないため弾く）。
+const MAX_WINDOW_DIM: u64 = 7680;
+
 impl App {
     /// ApplicationHandler::resumed の実装本体。
     ///
@@ -35,6 +42,21 @@ impl App {
     /// Play モードの場合は続いてシーンを自動ロードする。
     pub(super) fn handle_resumed(&mut self, event_loop: &ActiveEventLoop) {
         eprintln!("[SEED INIT] handle_resumed start  mode={:?}", self.mode);
+
+        // asset_fs（アセット読み込み層）を最優先で初期化する。
+        //
+        // 【なぜウィンドウ生成より前か】
+        // 直後の load_window_size_from_settings が assets://project_settings.json を
+        // asset_fs 経由で読みに行く（PAK 実行対応のため）。asset_fs 初期化前に呼ぶと、
+        // パッケージ実行（exe の隣に assets.pak だけがあり assets/ フォルダが無い構成）で
+        // 設定ファイルが読めず、常に既定解像度 1920x1080 にフォールバックしてしまう
+        // （= 本関数が原因だったウィンドウ解像度バグ）。
+        // init_asset_fs はパス解決と PAK オープンのみで window / GPU に依存しないため、
+        // ここまで前倒ししても安全（旧位置はレンダラー初期化より後だった）。
+        // 契約: アプリ起動時に一度だけ呼ぶ（handle_resumed 内の呼び出し箇所はここ 1 か所のみ）。
+        self.init_asset_fs();
+        eprintln!("[SEED INIT] init_asset_fs done");
+
         // プロジェクト設定のウィンドウ解像度を全モードで一度だけ読み込みキャッシュする。
         // カメラ新規追加時の既定アスペクト比・ルートキャンバスの自動解像度計算に使用する。
         self.project_resolution = self.load_window_size_from_settings();
@@ -179,10 +201,7 @@ impl App {
         self.window = Some(window);
         self.clock = crate::engine::core::clock::Clock::new();
 
-        // asset_fs を初期化する（全モード共通）
-        self.init_asset_fs();
-        eprintln!("[SEED INIT] init_asset_fs done");
-
+        // asset_fs は handle_resumed の先頭（ウィンドウ生成より前）で初期化済み。
         // プラグインをロードする
         self.load_plugins();
         eprintln!(
@@ -309,57 +328,45 @@ impl App {
 
     /// プロジェクト設定（project_settings.json）からゲームウィンドウの初期解像度を読む。
     ///
-    /// asset_fs 初期化前（ウィンドウ生成前）に呼ばれるため、load_plugins と同じ
-    /// アセットルート解決でファイルを直接読む。フィールドが無い・不正な場合は
-    /// 既定の Full HD（エディタのプロジェクト設定の既定値と一致させる）。
+    /// 【asset_fs 経由に変更した理由】
+    /// 以前は assets_root を自前解決して `std::fs::read_to_string` で直接読んでいたが、
+    /// パッケージ実行（exe の隣に assets.pak だけがあり assets/ フォルダが無い構成）では
+    /// このパスが実在せず、常に既定解像度 1920x1080 へフォールバックしていた
+    /// （= 本関数が原因だったウィンドウ解像度バグ）。
+    /// handle_resumed の先頭で asset_fs 初期化を済ませてから呼ばれるようになったため、
+    /// ここでは `asset_fs::read_string` 経由にし、PAK 実行・実フォルダ実行の両方に対応する。
+    /// JSON の解釈自体は純関数 `parse_window_size` に切り出してあり、
+    /// フィールド欠落・範囲外・片方欠け・正常系は単体テストで検証済み（本ファイル末尾）。
     fn load_window_size_from_settings(&self) -> (u32, u32) {
-        /// ウィンドウ初期解像度の既定値（Full HD。エディタ側の既定値と一致させる）
-        const DEFAULT_WINDOW_SIZE: (u32, u32) = (1920, 1080);
-        /// 解像度として受け付ける最小・最大値（異常値による生成失敗を防ぐ）
-        const MIN_WINDOW_DIM: u64 = 160;
-        const MAX_WINDOW_DIM: u64 = 7680;
-
-        // アセットルートを解決する（load_plugins と同一ロジック）
-        let assets_root = if let Some(root) = &self.assets_root {
-            std::path::PathBuf::from(root)
-        } else {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("assets")))
-                .unwrap_or_else(|| std::path::PathBuf::from("assets"))
-        };
-
-        let settings_path = assets_root.join("project_settings.json");
-        let Ok(text) = std::fs::read_to_string(&settings_path) else {
-            return DEFAULT_WINDOW_SIZE;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return DEFAULT_WINDOW_SIZE;
-        };
-
-        // 幅・高さを個別に取り出し、範囲内ならペアで採用する（片方欠けは既定値）
-        let (w, h) = (
-            v["window_width"].as_u64().unwrap_or(0),
-            v["window_height"].as_u64().unwrap_or(0),
-        );
-        if (MIN_WINDOW_DIM..=MAX_WINDOW_DIM).contains(&w)
-            && (MIN_WINDOW_DIM..=MAX_WINDOW_DIM).contains(&h)
-        {
-            (w as u32, h as u32)
-        } else {
-            DEFAULT_WINDOW_SIZE
-        }
+        use crate::engine::asset_fs;
+        // 読み込み失敗（PAK 未収録・ファイル不在など）は空文字列を渡し、
+        // parse_window_size 側の「JSON パース失敗 → 既定値」経路にそのまま合流させる。
+        let text = asset_fs::read_string("assets://project_settings.json").unwrap_or_default();
+        parse_window_size(&text)
     }
 
     /// プロジェクトのプラグインフォルダからプラグインをロードする。
     ///
     /// プラグインフォルダ: `{assets_root}/../plugins/`
     /// 有効化リスト: `{assets_root}/project_settings.json` の plugins フィールド
+    ///
+    /// パッケージ実行（`asset_fs::is_packaged()`）の場合、プラグイン DLL は PAK に
+    /// 同梱する仕組みが無く実フォルダ前提のままでは動作を保証できないため未対応とし、
+    /// 0 件のまま続行する（フォルダ走査を試みてクラッシュ・長時間の失敗を招くのを避ける）。
     fn load_plugins(&mut self) {
+        use crate::engine::asset_fs;
         use crate::engine::plugin::manifest::PluginEntry;
         use crate::engine::plugin::registry::PluginRegistry;
 
-        // アセットルートを解決する
+        // パッケージ実行はプラグイン未対応。1 行だけ通知して 0 件で続行する。
+        if asset_fs::is_packaged() {
+            eprintln!("[App] パッケージ実行のためプラグインは未対応です（0 件で続行）");
+            self.plugin_registry = PluginRegistry::empty();
+            return;
+        }
+
+        // アセットルートを解決する（プラグインフォルダの位置決めに実パスが要る。
+        // plugins/ は PAK に入らない実フォルダ前提のため、ここは asset_fs 化しない）
         let assets_root = if let Some(root) = &self.assets_root {
             std::path::PathBuf::from(root)
         } else {
@@ -375,19 +382,14 @@ impl App {
             .map(|p| p.join("plugins"))
             .unwrap_or_else(|| std::path::PathBuf::from("plugins"));
 
-        // project_settings.json から有効化リストを読み込む
-        let settings_path = assets_root.join("project_settings.json");
-        let enabled_list: Vec<PluginEntry> = if settings_path.exists() {
-            let text = std::fs::read_to_string(&settings_path).unwrap_or_default();
-            // plugins フィールドだけ取り出す
-            serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|v| v.get("plugins").cloned())
-                .and_then(|arr| serde_json::from_value(arr).ok())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // project_settings.json から有効化リストを読み込む（asset_fs 経由。
+        // 上の is_packaged() 早期リターンにより、ここへ来るのは非パッケージ実行時のみ）。
+        let enabled_list: Vec<PluginEntry> = asset_fs::read_string("assets://project_settings.json")
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|v| v.get("plugins").cloned())
+            .and_then(|arr| serde_json::from_value(arr).ok())
+            .unwrap_or_default();
 
         self.plugin_registry = PluginRegistry::load_from_dir(&plugins_dir, &enabled_list);
         eprintln!(
@@ -865,6 +867,32 @@ impl App {
     }
 }
 
+/// project_settings.json の JSON テキストから起動ウィンドウの解像度を決定する純関数。
+///
+/// - JSON としてパースできない場合（空文字列・破損データ含む）は既定値
+/// - `window_width` / `window_height` のどちらか一方でも欠落・範囲外の場合は既定値
+///   （中途半端な値のままウィンドウ生成へ進んで失敗するのを防ぐため、片方だけの適用はしない）
+/// - 両方とも `[MIN_WINDOW_DIM, MAX_WINDOW_DIM]` の範囲内であればそのペアを採用する
+///
+/// ファイル I/O を含まない純関数として `load_window_size_from_settings` から切り出してあり、
+/// 単体テストで全パターン（欠落・範囲外・片方欠け・正常）を検証する（本ファイル末尾の tests）。
+fn parse_window_size(json: &str) -> (u32, u32) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return DEFAULT_WINDOW_SIZE;
+    };
+    // 幅・高さを個別に取り出し、両方とも範囲内ならペアで採用する（片方欠けは既定値）
+    let (w, h) = (
+        v["window_width"].as_u64().unwrap_or(0),
+        v["window_height"].as_u64().unwrap_or(0),
+    );
+    if (MIN_WINDOW_DIM..=MAX_WINDOW_DIM).contains(&w) && (MIN_WINDOW_DIM..=MAX_WINDOW_DIM).contains(&h)
+    {
+        (w as u32, h as u32)
+    } else {
+        DEFAULT_WINDOW_SIZE
+    }
+}
+
 /// アクターツリーに 2D アクターが 1 つでも含まれるかを再帰的に判定する。
 ///
 /// world_line=0 を「2D キャンバスモード」として登録するかどうかの判定に使う。
@@ -914,4 +942,66 @@ pub(super) struct SceneInstallOptions {
     /// `mode == RuntimeMode::Play` を確認しており、従来から無条件で収束させていた。
     /// その挙動をそのまま維持するためのフラグ。
     pub always_converge_terrain_lod: bool,
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// JSON 自体が不正（空文字列・破損データ含む）な場合は既定解像度を返すこと。
+    /// `load_window_size_from_settings` は asset_fs::read_string が失敗した際に
+    /// 空文字列へフォールバックしてこの関数へ渡すため、その経路の下支えでもある。
+    #[test]
+    fn parse_window_size_invalid_json_returns_default() {
+        assert_eq!(parse_window_size(""), DEFAULT_WINDOW_SIZE);
+        assert_eq!(parse_window_size("not json"), DEFAULT_WINDOW_SIZE);
+    }
+
+    /// window_width / window_height が両方とも欠落している場合は既定解像度（欠落ケース）。
+    #[test]
+    fn parse_window_size_missing_fields_returns_default() {
+        assert_eq!(parse_window_size("{}"), DEFAULT_WINDOW_SIZE);
+    }
+
+    /// 片方のフィールドだけ欠けている場合は既定解像度（片方欠けケース）。
+    /// 中途半端な値のままウィンドウ生成に進ませないための仕様。
+    #[test]
+    fn parse_window_size_one_field_missing_returns_default() {
+        assert_eq!(
+            parse_window_size(r#"{"window_width": 1280}"#),
+            DEFAULT_WINDOW_SIZE
+        );
+        assert_eq!(
+            parse_window_size(r#"{"window_height": 720}"#),
+            DEFAULT_WINDOW_SIZE
+        );
+    }
+
+    /// 範囲外の値（下限未満・上限超過）は既定解像度にフォールバックすること（範囲外ケース）。
+    #[test]
+    fn parse_window_size_out_of_range_returns_default() {
+        // MIN_WINDOW_DIM（160）未満
+        assert_eq!(
+            parse_window_size(r#"{"window_width": 100, "window_height": 100}"#),
+            DEFAULT_WINDOW_SIZE
+        );
+        // MAX_WINDOW_DIM（7680）超過
+        assert_eq!(
+            parse_window_size(r#"{"window_width": 8000, "window_height": 8000}"#),
+            DEFAULT_WINDOW_SIZE
+        );
+    }
+
+    /// 正常なペアはそのまま採用されること（正常ケース。本バグの主眼＝1280x720 のような非既定値）。
+    #[test]
+    fn parse_window_size_normal_pair_is_used_as_is() {
+        assert_eq!(
+            parse_window_size(r#"{"window_width": 1280, "window_height": 720}"#),
+            (1280, 720)
+        );
+    }
 }
