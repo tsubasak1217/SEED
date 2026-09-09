@@ -12,7 +12,8 @@
 //  エディタ側 UI のコードは触らなくてよい。
 //
 //  【アクション一覧】
-//  - `delete_save` … セーブデータ（ユーザーデータ）を全削除して即保存する
+//  - `delete_save`        … セーブデータ（ユーザーデータ）を全削除して即保存する
+//  - `complete_tutorial`  … チュートリアル完了フラグを立てて即保存する
 // ============================================================
 
 use seed_plugin_api::{Plugin, PluginFieldDef, PluginHost};
@@ -28,14 +29,41 @@ const PLUGIN_NAME: &str = "GameTools";
 const PLUGIN_VERSION: &str = "0.1.0";
 
 /// エディタのプラグイン一覧に出る説明文。
-const PLUGIN_DESCRIPTION: &str =
-    "ゲーム運用ツール。エディタの「Game」メニューからユーザーデータを削除できます。";
+const PLUGIN_DESCRIPTION: &str = "ゲーム運用ツール。エディタの「Game」メニューからユーザーデータの削除・チュートリアル完了フラグの付与ができます。";
 
 /// アクション ID: セーブデータ削除。plugin.json の `items[].id` と一致させること。
 const ACTION_DELETE_SAVE: &str = "delete_save";
 
+/// アクション ID: チュートリアル完了。plugin.json の `items[].id` と一致させること。
+const ACTION_COMPLETE_TUTORIAL: &str = "complete_tutorial";
+
 /// セーブデータ削除の成功ログ文言。
 const LOG_DELETE_SAVE_OK: &str = "ユーザーデータ（セーブデータ）を削除しました。";
+
+// ── ゲーム固有のセーブキー ──────────────────────────────────
+//
+// 汎用のホスト API（`PluginHost::set_save_int`）に対して、
+// 「どのキーへ何を書くか」というゲーム固有の知識はこのプラグイン側に閉じる。
+
+/// チュートリアル完了フラグのセーブキー。
+///
+/// 【出典（ここを変えるときは必ず両方を揃えること）】
+/// - 定義  : `runtime/assets/common/scripts/GameProgressKeys.cs`
+///           `public const string TutorialDone = "tutorial_done";`
+/// - 読み出し: `runtime/assets/mainGame/scripts/Tutorial/TutorialDirector.cs`
+///           `SEED.SaveData.GetBool(GameProgressKeys.TutorialDone, false)`
+const SAVE_KEY_TUTORIAL_DONE: &str = "tutorial_done";
+
+/// 真偽値 true をセーブデータへ書くときの整数表現。
+///
+/// C# の `SEED.SaveData.SetBool(key, v)` は `SetInt(key, v ? 1 : 0)` であり
+/// （`scripting/src/Api/SaveData.cs`）、読み出す `GetBool` は「0 以外を true」と
+/// 判定する。したがってゲーム側と完全に同じ形式で書くには整数 1 を入れる。
+const SAVE_VALUE_TRUE: i64 = 1;
+
+/// チュートリアル完了の成功ログ文言。
+const LOG_COMPLETE_TUTORIAL_OK: &str =
+    "チュートリアルを完了済みにしました（tutorial_done = 1）。";
 
 // ============================================================
 //  GameToolsPlugin
@@ -85,6 +113,16 @@ impl Plugin for GameToolsPlugin {
             ACTION_DELETE_SAVE => {
                 host.delete_save_data()?;
                 host.log(LOG_DELETE_SAVE_OK);
+                Ok(())
+            }
+            // ── チュートリアル完了 ───────────────────────────────
+            // ゲーム側（TutorialDirector）は SaveData の "tutorial_done" を
+            // GetBool で読むだけなので、同じキーへ整数 1 を書けば完了扱いになる。
+            // ホスト API は「1 キーだけ書き換えて保存」なので、
+            // 図鑑（FishRecords）など他のキーはそのまま残る。
+            ACTION_COMPLETE_TUTORIAL => {
+                host.set_save_int(SAVE_KEY_TUTORIAL_DONE, SAVE_VALUE_TRUE)?;
+                host.log(LOG_COMPLETE_TUTORIAL_OK);
                 Ok(())
             }
             // ── 未知のアクション ─────────────────────────────────

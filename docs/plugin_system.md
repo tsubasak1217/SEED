@@ -128,6 +128,9 @@ pub trait PluginHost {
 
     /// セーブデータを全削除して即座に保存する。
     fn delete_save_data(&mut self) -> Result<(), String>;
+
+    /// セーブデータの整数キーを 1 つ書き換えて即座に保存する（他キーは保持）。
+    fn set_save_int(&mut self, key: &str, value: i64) -> Result<(), String>;
 }
 ```
 
@@ -139,6 +142,26 @@ pub trait PluginHost {
 `save::delete_all()` で **メモリ上のストアを空にしてから** `save::save()` で書き出す。
 ファイルを消すだけだと、プロセス内のストアに値が残っているため Play 停止時の
 自動フラッシュ（`flush_if_dirty`）で復活してしまう。
+
+### `set_save_int` の意味
+
+`save::set_int()` でメモリ上のストアへ 1 キーだけ書き込み、`save::save()` で書き出す。
+ストアは初回アクセス時に既存の `save.json` を読み込むため、**図鑑や所持金など
+他のキーはそのまま残る**。ファイルが無い場合は空のストアから始まり、
+書き出し時に親ディレクトリごと新規作成される。
+
+真偽値の専用 API を用意していないのは、C# 側の `SEED.SaveData.SetBool(key, v)` が
+`SetInt(key, v ? 1 : 0)` の別名であり（`scripting/src/Api/SaveData.cs`）、
+読み出す `GetBool` も「0 以外を true」と判定するため。整数 1 本でゲーム側と
+完全に同じ形式を再現できる。
+
+「どのキーへ何を書くか」というゲーム固有の知識はホスト側には置かず、
+プラグイン側の定数に閉じる（`plugins/game_tools/src/lib.rs` の
+`SAVE_KEY_TUTORIAL_DONE` / `SAVE_VALUE_TRUE`）。
+
+検証: `runtime/src/engine/plugin/host.rs` のユニットテスト
+`set_save_int_writes_flag_and_keeps_other_keys`
+（`SEED_SAVE_DIR` を一時フォルダへ向け、既存キーの保持と JSON の値を確認）。
 
 ### 拡張時の注意
 
@@ -206,4 +229,18 @@ DLL がまだ存在せずコピーされない。もう一度 `cargo build -p <c
 | 名前 | 用途 |
 |---|---|
 | `SamplePlugin` | 全フィールド種別のサンプル（`plugins/sample_plugin/`） |
-| `GameTools` | 「Game」メニュー →「ユーザーデータ削除」（`plugins/game_tools/`） |
+| `GameTools` | 「Game」メニュー（`plugins/game_tools/`）。下表のアクションを持つ |
+
+### `GameTools` のアクション一覧
+
+| id | ラベル | 動作 |
+|---|---|---|
+| `delete_save` | ユーザーデータ削除 | セーブデータを全削除して即保存する |
+| `complete_tutorial` | tutorial を完了済みにする | セーブキー `tutorial_done` に `1` を書いて即保存する（他キーは保持） |
+
+`complete_tutorial` の書き込み先・キー名・形式は、ゲーム側の読み出しと同一である。
+- キー定義: `runtime/assets/common/scripts/GameProgressKeys.cs` の `TutorialDone = "tutorial_done"`
+- 読み出し: `runtime/assets/mainGame/scripts/Tutorial/TutorialDirector.cs`
+  `SEED.SaveData.GetBool(GameProgressKeys.TutorialDone, false)`
+- 保存先ファイル: `save.json`（場所は `runtime/src/engine/core/save/path.rs` の規約に従う。
+  エディタ Play なら `runtime/save/save.json`）

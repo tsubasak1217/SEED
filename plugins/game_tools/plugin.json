@@ -1,7 +1,7 @@
 {
   "name": "GameTools",
   "version": "0.1.0",
-  "description": "ゲーム運用ツール。エディタの「Game」メニューからセーブデータ（ユーザーデータ）を削除できます。",
+  "description": "ゲーム運用ツール。エディタの「Game」メニューからセーブデータ（ユーザーデータ）の削除・チュートリアル完了フラグの付与ができます。",
   "author": "SEED Engine",
   "entry_dll": "game_tools.dll",
   "editor_menus": [
@@ -12,6 +12,11 @@
           "id": "delete_save",
           "label": "ユーザーデータ削除",
           "confirm": "セーブデータ（save.json）を削除します。よろしいですか？"
+        },
+        {
+          "id": "complete_tutorial",
+          "label": "tutorial を完了済みにする",
+          "confirm": "セーブデータの tutorial_done を 1（完了）にします。他のデータ（図鑑など）は保持されます。よろしいですか？"
         }
       ]
     }
