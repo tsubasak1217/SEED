@@ -19,6 +19,9 @@
 mod rt_pool;
 mod post_pass;
 mod bloom;
+// 色パイプライン（sRGB 往復・トーンマップ）の数式検証。GPU 非依存の純関数テスト。
+#[cfg(test)]
+mod tests_color_pipeline;
 
 pub use rt_pool::RtPool;
 pub use post_pass::{PostPipeline, run_post_stage};
