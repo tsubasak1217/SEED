@@ -175,7 +175,9 @@ impl App {
                                 for actor in scene.actors.iter().filter(|a| a.world_line == wl) {
                                     collect_canvas_actors_in_rect(
                                         actor, &scene.world, &mut dfs_counter,
-                                        wx_min, wx_max, wy_min, wy_max, &mut rect_dfs,
+                                        wx_min, wx_max, wy_min, wy_max,
+                                        // ルート呼び出しなので祖先の実効表示は常に true。
+                                        true, &mut rect_dfs,
                                     );
                                 }
                             } else {

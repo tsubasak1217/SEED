@@ -77,24 +77,33 @@ pub(super) struct PickFilter2d {
     /// false: 全スプライトを候補にする（エディタ選択用・従来動作）。
     pub require_raycast_target: bool,
     /// true: 非アクティブアクター・無効スロットを除外する（＝描画されているものだけ）。
-    /// false: 非表示でも選択できる（エディタ選択用・従来動作）。
-    pub respect_visibility: bool,
+    /// false: 非アクティブでも選択できる（エディタ選択用・従来動作）。
+    ///
+    /// 実効非表示（visible=false。自身または祖先が非表示）は、このフラグの値に関わらず
+    /// 常に候補から除外する（`walk_pick_candidates_2d` 本体で無条件チェックする。詳細は
+    /// そちらのコメントを参照）。visible は「スクリプトも物理も動くが描画だけ止める」フラグ
+    /// であり、描画されない以上エディタ選択・ポインタイベントのどちらでもクリックできては
+    /// ならない。これは経路によって挙動を変えたい active／スロット enabled とは意味が違うため、
+    /// フィールド名も「active のみを尊重するか」に絞った `respect_active` にしている
+    /// （旧 `respect_visibility` から改名。3D 側の ID ピックは元々非表示を除外済みで、
+    /// これによって 2D 側もそれに揃う）。
+    pub respect_active: bool,
     /// true: CanvasComponent の矩形も候補に含める（エディタ選択用・従来動作）。
     /// false: スプライトだけを候補にする（ポインタイベント用）。
     pub include_canvas: bool,
 }
 
 impl PickFilter2d {
-    /// エディタの選択ピック用（従来動作を完全に維持する）。
+    /// エディタの選択ピック用（非アクティブでも選べる従来動作を維持。非表示は除外する）。
     pub(super) const EDITOR_SELECT: Self = Self {
         require_raycast_target: false,
-        respect_visibility: false,
+        respect_active: false,
         include_canvas: true,
     };
     /// Play 中のポインタイベント用（オプトインかつ可視のスプライトのみ）。
     pub(super) const POINTER_EVENT: Self = Self {
         require_raycast_target: true,
-        respect_visibility: true,
+        respect_active: true,
         include_canvas: false,
     };
 }
@@ -439,13 +448,25 @@ pub(super) fn walk_pick_candidates_2d(
         let my_dfs = *counter as usize;
         *counter += 1;
 
-        // 非アクティブ／非表示アクター（ポインタイベント時のみ）: 自身と全子孫を候補から外す。
-        // 描画（collect_sprite_items）が同じ条件でサブツリーごと省くため、
-        // 「見えていないものはクリックできない」を描画と一致させられる。
-        // visible=false は「スクリプトも物理も動くが描画だけ止まる」状態だが、
-        // 描画されない以上ポインタにも当たらない（active と同じ扱い）。
+        // 実効非表示アクター（自身または祖先が visible=false）: エディタ選択・ポインタ
+        // イベントの両方で、常に自身と全子孫を候補から外す。
+        // 描画（collect_sprite_items / collect_canvas_id_items 等）が同じ条件で
+        // サブツリーごと省くため、「見えていないものはクリックできない」を描画と一致させる。
+        // 3D 側の ID ピックは元々非表示を除外済みなので、ここで 2D 側もそれに揃える。
+        // visible は「スクリプトも物理も動くが描画だけ止める」フラグであり、経路（filter）に
+        // よらず描画されない以上ピックもされない、という一意の規則にするため filter を見ない
+        // （active は経路で意味が違う＝下の respect_active でエディタのみ無視するのに対し、
+        // visible にそのような使い分けの要求はなく、常に除外が正しい）。
         // DFS 番号だけは正典どおり消費する（番号ズレ = 誤配信の原因）。
-        if filter.respect_visibility && (!actor.active || !actor.visible) {
+        if !actor.visible {
+            skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
+
+        // 非アクティブアクター（ポインタイベント時のみ。エディタ選択では従来どおり
+        // 非アクティブでも選択できる）: 自身と全子孫を候補から外す。
+        // DFS 番号だけは正典どおり消費する（番号ズレ = 誤配信の原因）。
+        if filter.respect_active && !actor.active {
             skip_dfs_subtree(&actor.children, counter);
             continue;
         }
@@ -591,7 +612,9 @@ pub(super) fn walk_pick_candidates_2d(
         // ── Sprite ヒット（最優先候補）────────────────────────────────────────
         for slot in actor.slots() {
             if slot.kind == ComponentKind::Sprite {
-                if filter.respect_visibility && !slot.enabled {
+                // スロット無効（enabled=false）もポインタイベント経路（respect_active=true）
+                // でのみ除外する。エディタ選択は従来どおり無効スロットも選択対象に含める。
+                if filter.respect_active && !slot.enabled {
                     continue;
                 }
                 if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
@@ -663,7 +686,9 @@ pub(super) fn walk_pick_candidates_2d(
                 if slot.kind != ComponentKind::Text {
                     continue;
                 }
-                if filter.respect_visibility && !slot.enabled {
+                // スロット無効（enabled=false）もポインタイベント経路（respect_active=true）
+                // でのみ除外する。エディタ選択は従来どおり無効スロットも選択対象に含める。
+                if filter.respect_active && !slot.enabled {
                     continue;
                 }
                 let Some(bx) = text_boxes.get(&slot.entity) else {
@@ -1084,6 +1109,63 @@ mod tests {
             "フォルダ（dfs=2）が候補に含まれてはならない"
         );
         assert!(hits.iter().any(|c| c.dfs == 3), "スプライト（dfs=3）は候補になる");
+    }
+
+    // ── 非表示（visible=false）アクタのクリック除外テスト ──────────────────
+    //
+    //  エディタのクリック選択（PickFilter2d::EDITOR_SELECT）は従来、非アクティブでも
+    //  選択できる仕様のまま respect_visibility=false を渡していたため、visible=false
+    //  （自身または祖先）のアクタも誤って候補に残ってしまっていた。
+    //  walk_pick_candidates_2d 側で visible だけは filter に関係なく無条件除外するように
+    //  したので、ここでは「自身が非表示」「祖先が非表示」の両パターンを検証する。
+
+    /// スプライト自身が非表示（visible=false）なら、その位置をクリックしても
+    /// 候補に含まれない。
+    #[test]
+    fn invisible_sprite_itself_is_excluded_from_click() {
+        let center = seg_center();
+        let (mut actors, world) = build_ui_scene(false);
+        // DFS: 0=FishingUI / 1=Panel / 2=GaugeSeg00（フォルダなし）
+        actors[0].children_mut()[0].children_mut()[0].visible = false;
+
+        let hits = editor_hits(&actors, &world, center);
+        assert!(
+            hits.iter().all(|c| c.dfs != 2),
+            "自身が非表示のスプライト（dfs=2）はクリック候補に含まれてはならない"
+        );
+    }
+
+    /// 祖先（Panel）が非表示なら、自身の visible が true のままの子孫スプライトも
+    /// クリック候補から外れる（実効表示の伝播）。
+    #[test]
+    fn invisible_ancestor_excludes_descendant_from_click() {
+        let center = seg_center();
+        let (mut actors, world) = build_ui_scene(false);
+        // Panel（dfs=1）を非表示にする。GaugeSeg00 自身の visible は true のまま。
+        actors[0].children_mut()[0].visible = false;
+        assert!(actors[0].children()[0].children()[0].visible, "子自身のフラグは変えていない");
+
+        let hits = editor_hits(&actors, &world, center);
+        assert!(
+            hits.iter().all(|c| c.dfs != 2),
+            "祖先が非表示なら実効表示も false になり、子孫（dfs=2）は候補に含まれてはならない"
+        );
+    }
+
+    /// 表示状態を戻せば通常どおり候補に復帰する（回帰防止）。
+    #[test]
+    fn visible_sprite_is_still_clickable_after_toggle_back() {
+        let center = seg_center();
+        let (mut actors, world) = build_ui_scene(false);
+        actors[0].children_mut()[0].children_mut()[0].visible = false;
+        assert!(editor_hits(&actors, &world, center).iter().all(|c| c.dfs != 2));
+
+        actors[0].children_mut()[0].children_mut()[0].visible = true;
+        let hits = editor_hits(&actors, &world, center);
+        assert!(
+            hits.iter().any(|c| c.dfs == 2),
+            "visible を true に戻せば再びクリック候補になる"
+        );
     }
 
     // ── TextComponent のピック（2D 編集）─────────────────────────────────

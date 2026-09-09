@@ -439,19 +439,33 @@ fn find_canvas_anchor_in_children(
 
 /// 2D キャンバスモードの矩形選択用: CanvasTransform を持つアクタを DFS 順に走査し、
 /// ワールド矩形 [wx_min, wx_max] × [wy_min, wy_max] 内の DFS ID を result に追加する。
+///
+/// `parent_visible` は祖先までの実効表示（ルート呼び出しは true）。実効的に非表示
+/// （自身または祖先が visible=false）のアクタは、矩形に重なっていても選択候補から除外する
+/// （エディタのクリック選択 `PickFilter2d::EDITOR_SELECT` と挙動を揃える。3D 側の ID ピックは
+/// 元々非表示を除外済み）。非アクティブ（active=false）は従来どおり対象のまま変更しない
+/// ——エディタ選択は非アクティブでも選べる仕様のため。
+/// DFS 番号は選択系と整合させるため、非表示でも子孫分を含めて必ず消費する
+/// （収集をスキップしても counter は進める。番号ズレ＝誤選択の原因になる）。
 pub(super) fn collect_canvas_actors_in_rect(
-    actor:   &Actor,
-    world:   &World,
-    counter: &mut u32,
+    actor:          &Actor,
+    world:          &World,
+    counter:        &mut u32,
     wx_min: f32, wx_max: f32,
     wy_min: f32, wy_max: f32,
-    result:  &mut Vec<usize>,
+    parent_visible: bool,
+    result:         &mut Vec<usize>,
 ) {
     let dfs_id = *counter as usize;
     *counter += 1;
+    // 実効表示（自身と全祖先の visible の AND）。規則は actor/visibility.rs に集約。
+    let visible = crate::engine::structs::objects::actor::visibility::effective_visible(
+        parent_visible, actor,
+    );
     // フォルダノードはレイアウト透明（canvas_node_is_transparent）。
     // サイズも位置も持たないため矩形選択のヒット対象にせず、子孫だけを走査する。
-    if !canvas_node_is_transparent(actor) {
+    // 非表示ノードも同様に「候補には追加しない」（ただし子孫の DFS 走査は続ける）。
+    if visible && !canvas_node_is_transparent(actor) {
     if let Some(ct) = world.get::<CanvasTransform>(actor.entity) {
         let [px, py] = ct.position;
         if px >= wx_min && px <= wx_max && py >= wy_min && py <= wy_max {
@@ -460,7 +474,9 @@ pub(super) fn collect_canvas_actors_in_rect(
     }
     }
     for child in actor.children() {
-        collect_canvas_actors_in_rect(child, world, counter, wx_min, wx_max, wy_min, wy_max, result);
+        collect_canvas_actors_in_rect(
+            child, world, counter, wx_min, wx_max, wy_min, wy_max, visible, result,
+        );
     }
 }
 
@@ -2036,5 +2052,70 @@ mod visible_hierarchy_tests {
         collect_actor_nodes(&root, None, &mut counter, false, true, true, &mut nodes);
 
         assert!(nodes.iter().all(|n| n.visible && n.self_visible));
+    }
+}
+
+// ============================================================
+//  テスト — 矩形選択（collect_canvas_actors_in_rect）の非表示除外
+//
+//  非表示（visible=false、祖先が非表示を含む）の 2D アクタは、矩形選択でも
+//  ピック対象から外れなければならない（PickFilter2d::EDITOR_SELECT のクリック選択と
+//  挙動を揃える）。
+// ============================================================
+
+#[cfg(test)]
+mod visible_rect_select_tests {
+    use super::*;
+    use crate::engine::components::CanvasTransform;
+    use crate::engine::ecs::World;
+
+    /// CanvasTransform だけを持つ 2D アクタを 1 体作るテストヘルパ。
+    /// 矩形選択は CanvasTransform.position のみで判定するため、Canvas/Sprite スロットは不要。
+    fn canvas_actor(world: &mut World, name: &str, position: [f32; 2]) -> Actor {
+        let e = world.spawn();
+        world.insert(e, CanvasTransform { position, ..CanvasTransform::default() });
+        Actor::new_2d(e, name)
+    }
+
+    /// root(0,0) の子 child(10,10) を作り、[-5,15]×[-5,15] の矩形（両方を包含）で
+    /// collect_canvas_actors_in_rect を呼ぶ共通セットアップ。
+    fn build_and_collect(hide_root: bool, hide_child: bool) -> Vec<usize> {
+        let mut world = World::new();
+        let mut root  = canvas_actor(&mut world, "root",  [0.0, 0.0]);
+        let mut child = canvas_actor(&mut world, "child", [10.0, 10.0]);
+        root.visible  = !hide_root;
+        child.visible = !hide_child;
+        root.add_child(child);
+
+        let mut counter = 0u32;
+        let mut result  = Vec::new();
+        collect_canvas_actors_in_rect(
+            &root, &world, &mut counter,
+            -5.0, 15.0, -5.0, 15.0,
+            true, &mut result,
+        );
+        result
+    }
+
+    /// 両方表示のときは両方とも矩形選択の候補になる（既定動作の回帰防止）。
+    #[test]
+    fn both_visible_are_selected_in_rect() {
+        let dfs = build_and_collect(false, false);
+        assert_eq!(dfs, vec![0, 1], "root=dfs0 / child=dfs1 の両方が候補になる");
+    }
+
+    /// 自身が非表示（visible=false）なアクタは、矩形に重なっていても候補から外れる。
+    #[test]
+    fn invisible_actor_itself_is_excluded_from_rect_select() {
+        let dfs = build_and_collect(false, true);
+        assert_eq!(dfs, vec![0], "非表示の child（dfs1）は矩形選択に含まれてはならない");
+    }
+
+    /// 祖先（root）が非表示なら、自身の visible が true のままの子孫も矩形選択から外れる
+    /// （実効表示の伝播。DFS 番号は子孫分も含めて消費されるため result は空になる）。
+    #[test]
+    fn invisible_ancestor_excludes_descendant_from_rect_select() {
+        let dfs = build_and_collect(true, false);
+        assert!(dfs.is_empty(), "祖先が非表示なら root・child ともに候補に含まれてはならない");
     }
 }
