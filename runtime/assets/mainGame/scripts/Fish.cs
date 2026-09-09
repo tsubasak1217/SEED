@@ -213,7 +213,7 @@ public class Fish : SEEDScript
 
     /// <summary>餌の感知距離（メートル）。この距離まで餌（浮き）に気づく。</summary>
     [SerializeField(Label = "餌の感知距離")]
-    private float baitSenseDistance = 5f;
+    private float baitSenseDistance = 7.5f;
 
     /// <summary>
     /// 好みの魚（餌として好む魚の名前。空 = 特になし）。

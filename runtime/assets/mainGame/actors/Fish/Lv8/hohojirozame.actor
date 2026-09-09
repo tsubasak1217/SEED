@@ -95,7 +95,7 @@
             "baseSizeCm": "500.000",
             "stamina": "45.000",
             "basePower": "80.000",
-            "baitSenseDistance": "5.000",
+            "baitSenseDistance": "7.500",
             "preferredFish": "",
             "rampage": "1.000",
             "fishName": "ホホジロザメ"

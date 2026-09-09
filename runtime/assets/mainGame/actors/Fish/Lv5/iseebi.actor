@@ -95,7 +95,7 @@
             "baseSizeCm": "35.000",
             "stamina": "30.000",
             "basePower": "50.000",
-            "baitSenseDistance": "5.000",
+            "baitSenseDistance": "7.500",
             "preferredFish": "",
             "rampage": "1.000",
             "fishName": "イセエビ"

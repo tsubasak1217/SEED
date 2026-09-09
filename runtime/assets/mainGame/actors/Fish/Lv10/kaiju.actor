@@ -91,7 +91,7 @@
         "data": {
           "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\Fish.cs",
           "fields": {
-            "baitSenseDistance": "5.000",
+            "baitSenseDistance": "7.500",
             "basePower": "100.000",
             "preferredFish": "",
             "rampage": "1.000",
