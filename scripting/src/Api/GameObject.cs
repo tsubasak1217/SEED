@@ -77,6 +77,31 @@ public readonly struct GameObject
         set => ScriptHost.TrySetBool(_entity, ActorComp, "visible", value);
     }
 
+    /// <summary>
+    /// アクター名（ヒエラルキーに出る名前。<see cref="Find(string)"/> /
+    /// <see cref="FindChild(string)"/> が引くキー）。
+    ///
+    /// get はアクターが無効なら空文字を返す。
+    /// set はフレーム末尾にエンジンへ反映されるが、同フレーム中の get は設定した値を返す
+    /// （<see cref="Visible"/> と同じ遅延の流儀）。空文字は無視される（名前で引けなくなるため）。
+    ///
+    /// <para><b>用途は「動的生成したアクタへ一意な名前を付ける」こと。</b></para>
+    /// <c>Instantiate</c> で同じプレハブを複数生成すると全て同名になり、
+    /// <c>Find</c> / <c>FindChild</c> では区別できない。生成直後に連番名を付けておくと、
+    /// 次に同じスクリプトが走ったときに「既にあるものを見つけて使い回す」ことができる
+    /// （スクリプトのホットリロードで OnStart が再実行されても二重生成しない）。
+    /// この定型は <c>SpawnOnce</c>（assets://common/scripts/UI/SpawnOnce.cs）にまとめてある。
+    ///
+    /// <para><b>シーンに元からあるアクタの改名には使わないこと。</b></para>
+    /// 他アクタが名前で参照している文字列（[SerializeField] のアクタ参照など）は
+    /// 追従して書き換わらないため、参照が切れる。既存アクタの改名はエディタで行う。
+    /// </summary>
+    public string Name
+    {
+        get => ScriptHost.TryGetString(_entity, ActorComp, "name", out var v) ? v : "";
+        set => ScriptHost.TrySetString(_entity, ActorComp, "name", value);
+    }
+
     // ── シーン操作（静的 API）────────────────────────────────
 
     /// <summary>

@@ -188,6 +188,12 @@ public class ResultPanel : SEEDScript
     /// パネル本体（シーン配置済みなら <see cref="OnStart"/> で登録、無ければ
     /// <see cref="Show"/> が生成して登録）。未登録なら <c>IsValid == false</c>。
     /// </summary>
+    /// <summary>
+    /// リザルトパネル本体に付ける目印の名前（<see cref="SpawnOnce"/> の照合キー）。
+    /// プレハブ（ResultPanel.actor）のルート名と同じにしてある。
+    /// </summary>
+    private const string PanelActorName = "ResultPanel";
+
     private static SEED.GameObject panelRoot;
 
     /// <summary>実行中のインスタンス（生成フォールバック時に <c>OnStart</c> が自分を登録する）。</summary>
@@ -465,7 +471,10 @@ public class ResultPanel : SEEDScript
                 SEED.Debug.LogWarning("[ResultPanel] シーンに ResultPanel が無く、プレハブのパスも未設定のため出せない");
                 return;
             }
-            panelRoot = SEED.GameObject.Instantiate(actorPath);
+            // 既に同名のパネルアクタがあれば使い回す（SpawnOnce）。
+            // ホットリロードで静的状態が初期化されると panelRoot は無効へ戻るため、
+            // 素の Instantiate だとリザルトパネルが重なって増えていく。
+            panelRoot = SpawnOnce.GetOrInstantiate(PanelActorName, actorPath);
             if (!panelRoot.IsValid)
             {
                 SEED.Debug.LogWarning($"[ResultPanel] プレハブを生成できない: {actorPath}");

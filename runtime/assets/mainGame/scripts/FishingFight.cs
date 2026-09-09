@@ -310,7 +310,8 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// 隙（巻きに専念できる）フェーズの長さ（小節）― <b>回答が完璧だったとき</b>。
-    /// 完璧 ＝ 期待打点がすべて Excellent かつ余分なクリックが 0（<see cref="EvaluateAnswerPerfect"/>）。
+    /// 完璧 ＝ 期待打点がすべて Excellent（<see cref="EvaluateAnswerPerfect"/>）。
+    /// 受付窓の外のクリックは無反応なので、空打ちの回数は完璧判定に影響しない。
     /// </summary>
     [SerializeField(Label = "隙の小節数(完璧)")]
     private int restBarsPerfect = 2;
@@ -625,6 +626,12 @@ public class FishingFight : SEEDScript
     private string beatIconActorPath = "assets://mainGame/actors/UI/BeatIcon.actor";
 
     /// <summary>
+    /// 生成した打点アイコンに付ける名前の接頭辞（<see cref="SpawnOnce"/> の照合キー）。
+    /// プール添字を 2 桁で足して <c>BeatIcon00</c> のような一意名にする。
+    /// </summary>
+    private const string BeatIconActorNamePrefix = "BeatIcon";
+
+    /// <summary>
     /// 打点アイコンを生成する親アクタ（釣り UI キャンバス＝<c>FishingUI</c>）。
     /// 2D アクタの親は Canvas を持つアクタ（または 2D アクタ）である必要がある。
     /// 未設定なら <see cref="beatIconParentName"/> の名前で実行時に探す。
@@ -897,6 +904,25 @@ public class FishingFight : SEEDScript
         && lastReelInputTime > NoReelInputTime
         && clockTime - lastReelInputTime <= SEED.Mathf.Max(reelHoldSeconds, 0f);
 
+    /// <summary>
+    /// <b>いま巻き取り操作が実際に効くか</b>【巻きが成立する状況の唯一の判定】。
+    ///
+    /// <see cref="Tick"/> が巻き取り量を消化するのは
+    /// 「バトル中／一時停止でない／チュートリアルの説明で凍結していない／
+    ///   魚 HP を削り切っていない／フェーズが隙（<see cref="Phase.Rest"/>）」の
+    /// すべてが成り立つときだけ（<see cref="UpdateRest"/> へ到達する条件）なので、
+    /// ここではその条件をそのまま式にしている。
+    ///
+    /// <see cref="ReelingRecently"/>（＝「直近に巻いた」保持つきの判定）とは目的が違う。
+    /// あちらは漂流物の巻き込み用、こちらは<b>このフレームに巻けるか</b>の判定で、
+    /// 巻き取り音（<c>FishingController.UpdateReelSound</c>）の鳴動可否に使う。
+    /// </summary>
+    public bool CanReelNow
+        => Active && !Paused
+        && !(TutorialRules.Active && TutorialRules.FightSuppressed)
+        && !FishDefeated
+        && CurrentPhase == Phase.Rest;
+
     /// <summary>糸切れの効果音パス（コントローラ側から鳴らす場合の参照用）。</summary>
     public string LineBreakSePath => lineBreakSePath;
 
@@ -1114,13 +1140,7 @@ public class FishingFight : SEEDScript
     /// <summary>期待打点の判定結果（アイコン色の決定に使う）。</summary>
     private readonly List<FishingController.HookJudgement> expectedResults = new();
 
-    /// <summary>
-    /// このサイクルで発生した「どの打点にも結び付かないクリック」の回数。
-    /// 出題フェーズの頭で 0 に戻り、隙の長さ（完璧判定）に使う。
-    /// </summary>
-    private int extraClickCount = 0;
-
-    /// <summary>直前の回答が完璧（全 Excellent ＆ 余分なクリック 0）だったか。隙の長さを決める。</summary>
+    /// <summary>直前の回答が完璧（期待打点がすべて Excellent）だったか。隙の長さを決める。</summary>
     private bool lastAnswerPerfect = false;
 
     /// <summary>
@@ -2017,7 +2037,7 @@ public class FishingFight : SEEDScript
     /// 3. 次に来る回答フェーズの期待打点を先読み生成する
     ///    （回答フェーズ開始を待って生成すると、出題→回答の境界をまたぐ早打ちが
     ///      「出題中のお手つき」として弾かれてしまうため）
-    /// 4. アイコンを全て未出現へ戻し、余分クリックの数を 0 に戻す
+    /// 4. アイコンを全て未出現へ戻す
     /// 5. ドラムループを鳴らし直してループ先頭をフェーズ頭へ揃える
     ///
     /// <b>順序の注意</b>: 3 の <see cref="BuildExpectedHits"/> は前サイクルの取りこぼしを
@@ -2033,7 +2053,6 @@ public class FishingFight : SEEDScript
         BuildExpectedHits(phaseEndTime, nextAnswerBars);
 
         ResetIcons(callHitTimes.Count);
-        extraClickCount = 0;
         missedThisCycle = false;   // 新しい周回の頭でミス記録を畳む
         iconFadeStartTime = NoFadeStart;
 
@@ -2068,20 +2087,42 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// 回答フェーズへ入るときのアイコン更新。
     /// 出題で出したアイコンを消さずに残したまま、未判定色へ落として角度を回答フェーズ基準で引き直す。
+    ///
+    /// <b>ただし既に判定済みの打点は色を書き換えない</b>【判定色を守る唯一の分岐】。
+    /// 出題→回答の境界をまたぐ早打ち（例: 回答 1 打目を出題フェーズ中に叩いた）は
+    /// 回答フェーズへ入る<b>前</b>に判定色が入るため、ここで一律に未判定色へ落とすと
+    /// 「判定は出ているのにアイコンだけ灰色のまま」になってしまう。
+    /// 添字は打点の通し番号で <see cref="expectedJudged"/> と一致するので、
+    /// 特定の打点（1 打目）に限らずすべての添字で同じ扱いになる。
     /// </summary>
     private void BeginAnswerIcons()
     {
         for (int i = 0; i < iconColors.Count; i++)
         {
+            if (IsHitJudged(i)) { continue; }   // 判定済み ＝ 判定色を残す
             iconColors[i] = beatIconPendingColor;
         }
         LayoutIconAngles();
     }
 
     /// <summary>
+    /// 打点 <paramref name="index"/> が既に判定済みかを、範囲外でも安全に答える
+    /// 【判定済みフラグを読む唯一の入口】。
+    ///
+    /// アイコンの枚数（出題打点の数）と期待打点の数は魚のフレーズ次第でずれ得るため、
+    /// アイコン側の添字でそのまま参照できるようにここで範囲を吸収する。
+    /// </summary>
+    /// <param name="index">打点の通し番号。</param>
+    /// <returns>判定済みなら true（範囲外は未判定として false）。</returns>
+    private bool IsHitJudged(int index)
+        => index >= 0 && index < expectedJudged.Count && expectedJudged[index];
+
+    /// <summary>
     /// 直前の回答が<b>完璧</b>だったか【隙の長さを決める唯一の判定点】。
-    /// 完璧 ＝ 期待打点が 1 つ以上あり、その<b>すべてが判定済みかつ Excellent</b>で、
-    /// かつ余分なクリック（どの打点にも結び付かないクリック）が 0 回。
+    /// 完璧 ＝ 期待打点が 1 つ以上あり、その<b>すべてが判定済みかつ Excellent</b>であること。
+    ///
+    /// 受付窓の外のクリックは無反応（判定も Miss も発生しない）仕様なので、
+    /// 空打ちの回数は完璧判定に一切影響しない。
     ///
     /// 隙へ入る瞬間に評価するため、受付窓が隙側へはみ出したまま未判定で残っている打点は
     /// 「完璧ではない」と扱う（そのまま叩けば Excellent になり得るが、隙の長さは
@@ -2090,7 +2131,6 @@ public class FishingFight : SEEDScript
     /// </summary>
     private bool EvaluateAnswerPerfect()
     {
-        if (extraClickCount > 0) { return false; }
         if (expectedTimes.Count == 0) { return false; }
 
         for (int i = 0; i < expectedTimes.Count; i++)
@@ -2195,8 +2235,9 @@ public class FishingFight : SEEDScript
     /// 音を鳴らした打点はその瞬間からアイコンが出現する（＝音より先にアイコンは出ない）。
     ///
     /// 出題中のクリックは、次に来る回答フェーズの最初の打点より <see cref="niceSeconds"/>
-    /// 以内の早打ちであれば回答フェーズと同じ判定（Excellent/Great/Nice）にし、
-    /// どの期待打点の受付窓にも入らないものだけ Miss（お手つき）として扱う。
+    /// 以内の早打ちであれば回答フェーズと同じ判定（Excellent/Great/Nice）にする。
+    /// どの期待打点の受付窓にも入らないクリックは<b>完全に無視</b>する
+    /// （Miss にもせず、効果音も鳴らさず、アイコンも触らない）。
     /// </summary>
     private void UpdateCall()
     {
@@ -2213,17 +2254,12 @@ public class FishingFight : SEEDScript
 
         // 次の回答フェーズぶんの期待打点は出題フェーズ開始時点で既に用意済み（EnterPhase 参照）
         // なので、境界をまたいだ早打ちもここでそのまま回答と同じ判定にできる。
+        // 受付窓の外のクリックは何もしない（Miss にも効果音にもしない）
         int index = FindNearestPendingHit();
-        if (index >= 0)
-        {
-            PlayAnswerClickSe();
-            JudgeHit(index, clockTime - expectedTimes[index]);
-        }
-        else
-        {
-            CountExtraClick();
-            ApplyMiss();
-        }
+        if (index < 0) { return; }
+
+        PlayAnswerClickSe();
+        JudgeHit(index, clockTime - expectedTimes[index]);
     }
 
     // ─── 内部処理: 回答 ───────────────────────────────────
@@ -2287,27 +2323,21 @@ public class FishingFight : SEEDScript
     /// 回答フェーズの更新【判定の唯一の集約点】。
     ///
     /// 1. クリックがあれば、まだ判定していない打点のうち<b>最も近い</b>ものへ結び付ける
-    ///    （<see cref="niceSeconds"/> 以内に無ければ空打ち＝Miss）
-    /// 2. 受付窓（打点 ＋ <see cref="niceSeconds"/>）を過ぎた打点は Miss として締める
+    /// 2. どの打点の受付窓（<see cref="niceSeconds"/>）にも入らないクリックは
+    ///    <b>完全に無視</b>する（Miss にせず、効果音も鳴らさず、アイコンも触らない）
+    /// 3. 受付窓（打点 ＋ <see cref="niceSeconds"/>）を過ぎた打点は Miss として締める
+    ///    （＝打ち逃しだけが Miss になる）
     /// </summary>
     private void UpdateAnswer()
     {
         if (ReadTapDown())
         {
-            // クリックの手応えは判定結果に関わらず毎回鳴らす（空打ち・多重クリックも含む）。
-            PlayAnswerClickSe();
-
             int index = FindNearestPendingHit();
             if (index >= 0)
             {
+                // 効果音は「判定に結び付いたクリック」だけに鳴らす（空打ちは無反応）
+                PlayAnswerClickSe();
                 JudgeHit(index, clockTime - expectedTimes[index]);
-            }
-            else
-            {
-                // 余分なクリックにはアイコンを出さない（打点の並びを汚さないため）。
-                // 回数だけ数えて、隙の長さ（完璧判定）に反映する。
-                CountExtraClick();
-                ApplyMiss();
             }
         }
 
@@ -2389,12 +2419,6 @@ public class FishingFight : SEEDScript
         FishingController.HookJudgement.Nice => beatIconNiceColor,
         _ => beatIconMissColor,
     };
-
-    /// <summary>
-    /// どの打点にも結び付かないクリック（空打ち・お手つき）を 1 回数える
-    /// 【余分クリック計上の唯一の入口】。隙の長さ（完璧判定）にだけ影響する。
-    /// </summary>
-    private void CountExtraClick() => extraClickCount++;
 
     /// <summary>
     /// 受付窓（打点 ＋ <see cref="niceSeconds"/>）を過ぎてもまだ未判定の打点を、
@@ -2718,7 +2742,6 @@ public class FishingFight : SEEDScript
         ClearCallHits();
         ClearExpectedHits();
 
-        extraClickCount = 0;
         lastAnswerPerfect = false;
         pendingExtraRestBars = 0;
         lastReelInputTime = NoReelInputTime;
@@ -2916,7 +2939,12 @@ public class FishingFight : SEEDScript
 
         while (iconPool.Count < want)
         {
-            iconPool.Add(SEED.GameObject.Instantiate(beatIconActorPath, parent));
+            // プール添字ごとに一意な名前（BeatIcon00, BeatIcon01, ...）を付けて、
+            // 親（FishingUI 等）の配下に既に同名アクタがあればそれを使い回す。
+            // スクリプトのホットリロードで OnStart / プール構築が再実行されても
+            // アイコンが二重生成されない（増えると 2D 描画が積み上がって重くなる）。
+            iconPool.Add(SpawnOnce.GetOrInstantiate(
+                $"{BeatIconActorNamePrefix}{iconPool.Count:00}", beatIconActorPath, parent));
             iconSprites.Add(null);       // ハンドルは反映後のフレームで拾う
             iconTransforms.Add(null);
         }

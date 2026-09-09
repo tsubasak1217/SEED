@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Windows.Threading;
+using SEEDEditor.Reload;
 
 namespace SEEDEditor.Scene;
 
@@ -87,7 +88,7 @@ public sealed class SceneAutoReloader : IDisposable
 
     private const string MessageRunning = "シーンを再読込中…";
     private const string MessageSuccess = "シーンを再読込しました";
-    private const string MessagePendingPlay = "Play 停止後にシーンを再読込します";
+    private const string MessagePendingPlay = AutoReloadPolicy.MessageSceneDeferred;
     private const string MessageDirty =
         "シーンがディスク上で変更されましたが未保存の編集があるため再読込しません（メニューから再読込可）";
 
@@ -99,8 +100,8 @@ public sealed class SceneAutoReloader : IDisposable
     /// <summary>エディタ側に未保存の編集があるか。</summary>
     private readonly Func<bool> _isDirty;
 
-    /// <summary>Play 中（埋め込み / 別ウィンドウ）かどうか。</summary>
-    private readonly Func<bool> _isPlaying;
+    /// <summary>現在のエディタ再生状態（埋め込み / 別ウィンドウとも同じ状態で表現される）。</summary>
+    private readonly Func<PlaybackState> _playbackState;
 
     /// <summary>シーンを読み込む（＝ファイルを開いたときと同じ経路）。</summary>
     private readonly Action<string> _loadScene;
@@ -149,21 +150,21 @@ public sealed class SceneAutoReloader : IDisposable
     /// <param name="dispatcher">UI スレッドの Dispatcher（タイマー・コールバックの実行先）。</param>
     /// <param name="isEnabled">自動再読込設定の現在値を返す関数。</param>
     /// <param name="isDirty">エディタ側に未保存の編集があるかを返す関数。</param>
-    /// <param name="isPlaying">Play 中かどうかを返す関数。</param>
+    /// <param name="playbackState">現在のエディタ再生状態を返す関数。</param>
     /// <param name="loadScene">シーン読み込み（ファイルを開くのと同じ経路）。</param>
     /// <param name="report">進行状態の通知先。</param>
     public SceneAutoReloader(
         Dispatcher dispatcher,
         Func<bool> isEnabled,
         Func<bool> isDirty,
-        Func<bool> isPlaying,
+        Func<PlaybackState> playbackState,
         Action<string> loadScene,
         Action<SceneReloadStatus, string> report)
     {
         _dispatcher = dispatcher;
         _isEnabled  = isEnabled;
         _isDirty    = isDirty;
-        _isPlaying  = isPlaying;
+        _playbackState = playbackState;
         _loadScene  = loadScene;
         _report     = report;
 
@@ -231,9 +232,16 @@ public sealed class SceneAutoReloader : IDisposable
     /// </summary>
     public void NotifyReturnedToEdit()
     {
-        if (!_pendingWhilePlaying) return;
+        var decision = AutoReloadPolicy.DecideOnReturnToEdit(
+            hasPending: _pendingWhilePlaying,
+            autoReloadEnabled: _isEnabled());
+
+        // 保留は消化の可否に関わらずここで落とす（次の Play 停止まで持ち越さない）。
         _pendingWhilePlaying = false;
-        Schedule();
+
+        // Schedule → Fire を通るため、未保存の編集がある場合の見送り判定
+        // （Fire の 5 番）はここでも従来どおり効く。
+        if (decision == AutoReloadDecision.ApplyNow) Schedule();
     }
 
     /// <summary>
@@ -245,7 +253,9 @@ public sealed class SceneAutoReloader : IDisposable
     {
         if (_scenePath is null) return;
 
-        if (_isPlaying())
+        // Play 中はランタイムの状態を壊さないため、手動要求でも予約に回す
+        //（シーン再読込は設定に関わらず Play 中には行わない）。
+        if (AutoReloadPolicy.IsPlaying(_playbackState()))
         {
             _pendingWhilePlaying = true;
             _report(SceneReloadStatus.Skipped, MessagePendingPlay);
@@ -372,7 +382,18 @@ public sealed class SceneAutoReloader : IDisposable
 
         // 4. Play 中はランタイムの実行状態を壊さないため読み込まない。
         //    予約だけしておき、Edit 復帰時に再判定する（ハッシュは未確定のまま残す）。
-        if (_isPlaying())
+        //    判定表は AutoReloadPolicy に一元化してある（シーンは設定に関わらず必ず保留）。
+        var decision = AutoReloadPolicy.Decide(
+            AutoReloadKind.Scene,
+            _playbackState(),
+            autoReloadEnabled: _isEnabled(),
+            // シーンでは参照されない引数。スクリプト用の設定がシーンへ波及しないことは
+            // AutoReloadPolicyTests で固定している。
+            applyScriptsDuringPlay: false);
+
+        if (decision == AutoReloadDecision.Drop) return;
+
+        if (decision == AutoReloadDecision.Defer)
         {
             _pendingWhilePlaying = true;
             _report(SceneReloadStatus.Skipped, MessagePendingPlay);

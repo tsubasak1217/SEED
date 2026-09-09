@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Windows.Threading;
+using SEEDEditor.Reload;
 
 namespace SEEDEditor.Scripting;
 
@@ -18,6 +19,11 @@ public enum ScriptReloadStatus
     CompileError,
     /// <summary>送信できなかった、またはランタイム側で失敗した（サイレント故障を含む）。</summary>
     Failed,
+    /// <summary>
+    /// 変更は検出したが、Play 中のため適用を見送って保留した。
+    /// Play 停止（Edit 復帰）時に 1 回だけまとめて適用される。警告色で表示する。
+    /// </summary>
+    Deferred,
 }
 
 /// <summary>
@@ -92,6 +98,16 @@ public sealed class ScriptAutoReloader : IDisposable
     /// </summary>
     private readonly Func<bool> _sendReload;
 
+    /// <summary>現在のエディタ再生状態（Play 中かどうかの判定に使う）。</summary>
+    private readonly Func<PlaybackState> _playbackState;
+
+    /// <summary>
+    /// 設定「Play 中もスクリプトを即時反映する」の現在値。
+    /// 既定はオフで、Play 中の変更は保留される（OnStart 再実行による進行リセット・
+    /// 補助アクタの二重生成を避けるため）。
+    /// </summary>
+    private readonly Func<bool> _applyDuringPlay;
+
     /// <summary>進行状態を UI（ステータス表示・ログ）へ伝える。</summary>
     private readonly Action<ScriptReloadStatus, string> _report;
 
@@ -106,6 +122,12 @@ public sealed class ScriptAutoReloader : IDisposable
 
     /// <summary>応答待ちの間に来た変更があるか（完了後にもう 1 回だけ再読込する）。</summary>
     private bool _pending;
+
+    /// <summary>
+    /// Play 中に検出した変更があるか（Edit 復帰時に 1 回だけ再読込する）。
+    /// 変更が何件来ても「最後の状態を 1 回反映する」だけで足りるため、真偽値で持つ。
+    /// </summary>
+    private bool _pendingWhilePlaying;
 
     /// <summary>監視対象のアセットルート（絶対パス）。</summary>
     private readonly string _assetsRoot;
@@ -123,6 +145,8 @@ public sealed class ScriptAutoReloader : IDisposable
     /// <param name="isEnabled">自動再読込設定の現在値を返す関数。</param>
     /// <param name="runCompileCheck">全体コンパイル検証（エラーメッセージ一覧を返す）。</param>
     /// <param name="sendReload">ランタイムへ RELOAD_SCRIPTS を送る（送れたら true）。</param>
+    /// <param name="playbackState">現在のエディタ再生状態を返す関数。</param>
+    /// <param name="applyDuringPlay">「Play 中もスクリプトを即時反映する」設定の現在値。</param>
     /// <param name="report">進行状態の通知先。</param>
     public ScriptAutoReloader(
         string assetsRoot,
@@ -130,12 +154,16 @@ public sealed class ScriptAutoReloader : IDisposable
         Func<bool> isEnabled,
         Func<IReadOnlyList<string>> runCompileCheck,
         Func<bool> sendReload,
+        Func<PlaybackState> playbackState,
+        Func<bool> applyDuringPlay,
         Action<ScriptReloadStatus, string> report)
     {
         _assetsRoot      = assetsRoot;
         _isEnabled       = isEnabled;
         _runCompileCheck = runCompileCheck;
         _sendReload      = sendReload;
+        _playbackState   = playbackState;
+        _applyDuringPlay = applyDuringPlay;
         _report          = report;
 
         // デバウンス用タイマー（UI スレッド）。イベントが来るたびに Stop→Start で
@@ -208,6 +236,24 @@ public sealed class ScriptAutoReloader : IDisposable
         => FinishInFlight(ScriptReloadStatus.Failed, reason);
 
     /// <summary>
+    /// Play が終了して Edit へ戻ったことを通知する。
+    /// Play 中に検出して保留していた変更があれば、ここで初めて再読込する。
+    /// （保留中に設定をオフにしていた場合は反映しない。）
+    /// </summary>
+    public void NotifyReturnedToEdit()
+    {
+        var decision = AutoReloadPolicy.DecideOnReturnToEdit(
+            hasPending: _pendingWhilePlaying,
+            autoReloadEnabled: _isEnabled());
+
+        // 保留は「消化した／しない」に関わらずここで必ず落とす。
+        // 残すと次の Play 停止で古い変更をもう一度反映してしまう。
+        _pendingWhilePlaying = false;
+
+        if (decision == AutoReloadDecision.ApplyNow) Schedule();
+    }
+
+    /// <summary>
     /// 外部から再読込を要求する（手動トリガー用）。デバウンス経路に載せるため、
     /// 直後にファイル監視イベントが来ても二重に発火しない。
     /// </summary>
@@ -253,6 +299,25 @@ public sealed class ScriptAutoReloader : IDisposable
     {
         if (!IsEnabled) return;
         if (_inFlight) { _pending = true; return; }
+
+        // Play 中の適用可否を判定する（判定表は AutoReloadPolicy 側で一元管理）。
+        // Play 中にホットリロードすると全スクリプトインスタンスが作り直され、
+        // OnStart の再実行で進行が最初へ戻り、OnStart で Instantiate している
+        // 補助アクタが二重生成されて重くなる。既定では Play 停止まで保留する。
+        var decision = AutoReloadPolicy.Decide(
+            AutoReloadKind.Script,
+            _playbackState(),
+            autoReloadEnabled: _isEnabled(),
+            applyScriptsDuringPlay: _applyDuringPlay());
+
+        if (decision == AutoReloadDecision.Drop) return;
+
+        if (decision == AutoReloadDecision.Defer)
+        {
+            _pendingWhilePlaying = true;
+            _report(ScriptReloadStatus.Deferred, AutoReloadPolicy.MessageScriptDeferred);
+            return;
+        }
 
         _report(ScriptReloadStatus.Running, "スクリプト再読込中…");
 

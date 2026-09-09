@@ -16,6 +16,7 @@
 using System;
 using System.Windows;
 using System.Windows.Media;
+using SEEDEditor.Reload;
 using SEEDEditor.Runtime;
 using SEEDEditor.Scene;
 
@@ -43,8 +44,8 @@ public partial class MainWindow
             isEnabled: () => EditorPreferences.Instance.AutoReloadScene,
             // 未保存の編集があるか（あるときは破棄になるため再読込しない）
             isDirty: () => _isDirty,
-            // Play 中（埋め込み・別ウィンドウとも State で表現される）
-            isPlaying: () => _runtimeManager?.State is EditorState.Play or EditorState.Pause,
+            // 再生状態（埋め込み・別ウィンドウとも State で表現される）
+            playbackState: () => CurrentPlaybackState,
             // 読み込みはファイルを開いたときと同じ経路
             loadScene: LoadScene,
             report: SetSceneReloadStatus);
@@ -52,6 +53,21 @@ public partial class MainWindow
         // 既に開いているシーンがあれば、その時点から監視を始める
         _sceneAutoReloader.SetScenePath(_currentScenePath);
     }
+
+    /// <summary>
+    /// 自動再読込の判定に渡す再生状態。ランタイムの <see cref="EditorState"/> を、
+    /// 判定に必要な 3 状態（Edit / Play / Pause）へ畳む。
+    ///
+    /// Idle / Building / Launching は「まだワールドが動いていない」ため Edit として扱う
+    /// （この状態で再読込しても壊れるものが無い）。スクリプト側・シーン側の
+    /// 両方の自動再読込がこの 1 箇所を共有する。
+    /// </summary>
+    internal PlaybackState CurrentPlaybackState => _runtimeManager?.State switch
+    {
+        EditorState.Play  => PlaybackState.Play,
+        EditorState.Pause => PlaybackState.Pause,
+        _                 => PlaybackState.Edit,
+    };
 
     /// <summary>
     /// 監視対象シーンを現在のパスへ張り替える。

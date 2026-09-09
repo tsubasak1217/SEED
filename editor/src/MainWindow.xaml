@@ -862,6 +862,15 @@
                               Header="スクリプトを自動再読込"
                               IsCheckable="True"
                               Click="OnToggleAutoReloadScripts"/>
+                    <!-- Play 中の扱い。既定（オフ）では Play 中の変更は保留され、
+                         Play を止めた直後に 1 回だけ反映される。Play 中のホット
+                         リロードは全スクリプトインスタンスの作り直し＝OnStart の
+                         再実行を意味し、進行のリセットや補助アクタの二重生成を招く。
+                         設定は EditorPreferences.PlayScriptHotReload に永続化される。 -->
+                    <MenuItem x:Name="MenuItemPlayScriptHotReload"
+                              Header="Play 中もスクリプトを即時反映する"
+                              IsCheckable="True"
+                              Click="OnTogglePlayScriptHotReload"/>
                 </MenuItem>
 
                 <!-- シーン: ディスク上のシーンファイル変更の取り込み設定。

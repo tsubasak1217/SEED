@@ -1,0 +1,39 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    自動再読込ポリシー（AutoReloadPolicy）の単体テスト。
+
+    対象:
+      - Decide                : 状態 × 種別 × 設定 → 適用 / 保留 / 破棄
+      - DecideOnReturnToEdit  : Play 停止時に保留分を適用してよいか
+      - IsPlaying             : Play / Pause を「実行中」として扱うこと
+
+    AiSafetyTests / ScriptEntityHandleTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （AutoReloadPolicy が WPF・ランタイム型を使い始めたらビルドが壊れ、
+          それが「判定ロジックが純粋であること」の検知器になる）
+
+    実行方法: dotnet run (project=editor/tests/AutoReloadPolicyTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AutoReloadPolicy</RootNamespace>
+    <AssemblyName>AutoReloadPolicyTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存の純粋な判定ロジック） -->
+    <Compile Include="..\..\src\Reload\AutoReloadPolicy.cs">
+      <Link>Linked\Reload\AutoReloadPolicy.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

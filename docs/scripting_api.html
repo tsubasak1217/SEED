@@ -758,7 +758,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7. GameObject ════════════════ -->
-<section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ HasComponent 親 子 親子 階層 ヒエラルキー SetParent Parent 付け替え リペアレント reparent プーリング プール pool 使い回し 再利用">
+<section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ Name 名前 アクター名 リネーム 改名 命名 SpawnOnce GetOrInstantiate 二重生成 重複生成 使い回し ホットリロード HasComponent 親 子 親子 階層 ヒエラルキー SetParent Parent 付け替え リペアレント reparent プーリング プール pool 使い回し 再利用">
   <h2>7. GameObject</h2>
   <p class="section-note">スクリプトは自分がアタッチされた GameObject を <code>gameObject</code>、その Transform を <code>transform</code>（短縮）で参照できます。コンポーネントは <code>gameObject.GetComponent&lt;T&gt;()</code> で取得します。戻り値は <code>T?</code>（Nullable）で、<b>未アタッチ・該当なしは null</b>。SEED のアクターは同種を複数スロット持て、スロットには名前があります。</p>
   <div class="api"><code class="sig">gameObject</code><span class="desc">GameObject: このスクリプトが乗るオブジェクト</span></div>
@@ -774,6 +774,30 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 {
     sprite.Color = <span class="t">SEED.Color</span>.Red;
 }</pre>
+
+  <h3 id="go-name">アクター名（GameObject.Name）</h3>
+  <div class="api"><code class="sig">gameObject.Name</code><span class="desc">string（get/set）。アクター名（ヒエラルキーに出る名前＝<code>Find</code> / <code>FindChild</code> の照合キー）。無効なアクターの get は空文字</span></div>
+<pre><span class="k">var</span> spawned = <span class="t">SEED.GameObject</span>.Instantiate(iconActorPath, parent);
+spawned.Name = <span class="s">$"BeatIcon{i:00}"</span>;   <span class="c">// 動的生成物に一意な名前を付ける</span></pre>
+  <p class="section-note">set の実反映はフレーム末尾（<code>Visible</code> と同じ遅延モデル）ですが、同フレームの get は設定した値を返します。空文字の set は無視されます（名前で引けないアクターを作らないため）。</p>
+  <div class="warn">
+    <b>用途は「動的生成したアクターへ一意な名前を付ける」ことです。</b> <code>Instantiate</code> で同じプレハブを複数生成すると全て同名（<code>.actor</code> のルート名）になり、<code>Find</code> / <code>FindChild</code> では区別できません。生成直後に連番名を付けておくと、次に同じスクリプトが走ったときに「既にあるものを見つけて使い回す」ことができます（この定型は <code>SpawnOnce</code> にまとまっています）。<br>
+    <b>シーンに元からあるアクターの改名には使わないでください。</b> 名前でこのアクターを指している参照文字列（<code>[SerializeField]</code> のアクタ参照など）は<b>追従して書き換わりません</b>。既存アクターの改名はエディタのヒエラルキーで行ってください（そちらは参照も書き換えます）。
+  </div>
+
+  <h3 id="go-spawnonce">二重生成を防ぐ（SpawnOnce）</h3>
+  <div class="api"><code class="sig">SpawnOnce.GetOrInstantiate(actorName, prefabPath, parent = null)</code><span class="desc">GameObject: 名前で既存アクターを探し、<b>無いときだけ</b>プレハブから生成してその名前を付けて返す（<code>assets://common/scripts/UI/SpawnOnce.cs</code>）</span></div>
+<pre><span class="c">// 親を指定しない（シーン全体から探し、無ければ生成して命名する）</span>
+reelSoundActor = <span class="t">SpawnOnce</span>.GetOrInstantiate(<span class="s">"ReelSound"</span>, reelSoundActorPath);
+
+<span class="c">// 親の配下から探して、無ければその親の下に作る（プールは連番で一意名にする）</span>
+<span class="k">var</span> icon = <span class="t">SpawnOnce</span>.GetOrInstantiate(<span class="s">$"BeatIcon{i:00}"</span>, beatIconActorPath, parent);</pre>
+  <p class="section-note"><b>なぜ要るか</b>: エディタで <code>.cs</code> を保存するとランタイムは全スクリプトインスタンスを作り直すため、<code>OnStart</code> が改めて呼ばれます。<code>OnStart</code> の中で素の <code>Instantiate</code> をしていると、呼ばれた回数だけアクターが増えていきます。エディタ側は既定で「Play 中はホットリロードを保留する」ようになっていますが（<code>docs/editor_auto_reload.md</code>）、その設定を切った場合のための多重防御です。</p>
+  <div class="warn">
+    <b>同一フレーム内で同じ名前を 2 回要求すると 2 つ作られます</b>（生成も改名もフレーム末尾に反映されるため）。プールなら添字で一意名を振ってください。<br>
+    親を渡せる場合は必ず渡してください。探索範囲が配下に限定され、同じプレハブを複数並べても他人のアクターを掴みません。<br>
+    見つけた既存アクターは<b>そのままの状態</b>（表示・位置・アニメの進行）で返ります。初期化が必要なら呼び出し側で行ってください。
+  </div>
 
   <h3>生成・破棄・検索（Instantiate / Destroy / Find / FindChild）</h3>
   <div class="api"><code class="sig">GameObject.Instantiate("assets://actors/Bullet.actor")</code><span class="desc">.actor ファイル（プレハブ）からアクターを生成。戻り値に<b>同フレーム中に</b> Position 等を設定でき、その値が優先される</span></div>
@@ -1347,6 +1371,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <table>
     <tr><th>コンポーネント名</th><th>取得</th><th>内容</th></tr>
     <tr><td>（アクター自身）</td><td><code>gameObject.Visible</code></td><td>アクターと全子孫の<b>描画だけ</b>を止める表示フラグ。スクリプト・物理は動き続ける</td></tr>
+    <tr><td>（アクター自身）</td><td><code>gameObject.Name</code></td><td>アクター名（<code>Find</code> / <code>FindChild</code> の照合キー）。動的生成物へ一意な名前を付ける用途。既存アクターの改名は参照が追従しない</td></tr>
     <tr><td><code>Transform</code></td><td><code>gameObject.GetComponent&lt;Transform&gt;()</code> / <code>transform</code></td><td>3D 位置・回転・スケール</td></tr>
     <tr><td><code>CanvasTransform</code></td><td><code>gameObject.GetComponent&lt;CanvasTransform&gt;()</code></td><td>2D キャンバス上の位置・回転・スケール・ピボット・アンカー</td></tr>
     <tr><td><code>Model</code></td><td><code>gameObject.GetComponent&lt;Model&gt;()</code></td><td>3D モデルの表示切替（<code>Visible</code>）・レイトレ除外（<code>RayTracingExcluded</code>）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない</td></tr>

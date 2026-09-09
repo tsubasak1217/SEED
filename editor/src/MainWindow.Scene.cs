@@ -190,6 +190,8 @@ public partial class MainWindow
         MenuItemScriptEditor.IsChecked  = IsScriptEditorVisible();
         // スクリプト自動再読込の設定値をチェック状態へ反映する（設定ファイルが正）。
         MenuItemAutoReloadScripts.IsChecked = EditorPreferences.Instance.AutoReloadScripts;
+        // Play 中の即時反映（既定オフ）の設定値も同様に反映する。
+        MenuItemPlayScriptHotReload.IsChecked = EditorPreferences.Instance.PlayScriptHotReload;
         // シーン自動再読込の設定値も同様にチェック状態へ反映する（設定ファイルが正）。
         MenuItemAutoReloadScene.IsChecked = EditorPreferences.Instance.AutoReloadScene;
         // プレハブ保存時の自動反映の設定値も同様（設定ファイルが正）。

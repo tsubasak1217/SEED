@@ -56,7 +56,7 @@
 
 - [ ] **`GameObject.Parent` が O(N)** — DFS 走査で親を探す実装。毎フレーム大量に呼ぶ用途には向かない。
 
-- [ ] **スクリプトのホットリロードでプールが二重生成される可能性** — 2026-09-07。`.cs` 保存でインスタンスが作り直されると `OnStart` が再実行される。旧インスタンスの `OnDestroy` が呼ばれる保証を未確認（FishingFight のビートアイコンプールで 16 個ずつ増える恐れ。Play 再開始で解消）。
+- [ ] **ホットリロードで `OnDestroy` が呼ばれる保証が未確認** — 2026-09-09（2026-09-07 の「プールが二重生成される」から残った部分）。二重生成そのものは解消済み: エディタが既定で Play 中のホットリロードを保留するようになり（`docs/editor_auto_reload.md`）、あわせて `OnStart` で `Instantiate` していた箇所を `SpawnOnce.GetOrInstantiate` へ寄せた（FishingController / PauseMenu / ResultPanel / FightEvalBanner / HitBanner / FishingFight）。**未確認のまま残るのは「作り直し時に旧インスタンスの `OnDestroy` が呼ばれるか」**で、`OnDestroy` で解除しているイベント購読・静的登録が残留しないかは実機で見ていない。関連: `runtime/src/engine/core/scripting/mod.rs`、`runtime/assets/common/scripts/UI/SpawnOnce.cs`。
 
 - [ ] **`OnStart` 内 `Instantiate` の成否が未検証** — FishingFight のビートアイコンプールが初例。失敗するとリトライせず無効ハンドルが残る。関連: `runtime/assets/mainGame/scripts/FishingFight.cs::EnsureIconPool`。
 

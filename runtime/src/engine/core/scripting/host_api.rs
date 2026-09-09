@@ -52,7 +52,8 @@ use crate::engine::structs::objects::Actor;
 
 use super::actor_ref_path;
 use super::input_bridge;
-// GameObject.Visible の set は遅延適用なので、保留値テーブルを併用する
+// GameObject.Visible / GameObject.Name の set は遅延適用なので、保留値テーブルを併用する
+use super::name_pending;
 use super::visible_pending;
 use super::path_query::{path_position_at, path_tangent_at};
 
@@ -399,6 +400,15 @@ pub enum ScriptSceneCommand {
     /// Actor ツリーがスクリプトフェーズ中は読み取り専用のため、ここで遅延させる。
     /// 描画だけが止まり、スクリプト・アニメ・物理は動き続ける。
     SetVisible { entity: Entity, visible: bool },
+    /// 指定ルートエンティティの Actor の名前を変更する（GameObject.Name の set）。
+    /// SetVisible と同じく Actor ツリーがスクリプトフェーズ中は読み取り専用のため遅延させる。
+    ///
+    /// 主用途は「動的生成したアクタへ一意な名前を付け、次回以降 Find/FindChild で
+    /// 見つけて使い回す」こと（スクリプトのホットリロードで OnStart が再実行されても
+    /// 補助アクタを二重生成しないための土台）。
+    /// 名前で他アクタを参照している側（参照フィールド等）の文字列は書き換えないので、
+    /// **シーンに元からあるアクタの改名には使わない**こと。
+    SetName { entity: Entity, name: String },
     /// シーンを事前読み込みする（遷移はしない）。
     /// Transition 前に呼んでおくことで、遷移時のロード時間をなくせる。
     /// name_or_path はシーンマネージャ登録名または assets:// パス。
@@ -416,6 +426,8 @@ pub fn take_scene_commands() -> Vec<ScriptSceneCommand> {
     // 表示フラグの保留値も同時に捨てる。ここから先は実ツリーが正となるため、
     // 保留値を残すと「反映済みの古い値」を返し続けてしまう。
     visible_pending::clear();
+    // 名前の保留値も同様に捨てる（ここから先は実ツリーが正）。
+    name_pending::clear();
     SCENE_COMMANDS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
@@ -1621,6 +1633,21 @@ fn write_floats(
 /// コンポーネントの文字列フィールドを読む。未対応は None。
 fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> Option<String> {
     match component {
+        // ── アクター自身の属性（ECS コンポーネントではなく Actor ツリーの値）──
+        // GameObject.Name 用の疑似コンポーネント。World ではなく Actor ツリーを引く。
+        "GameObject" => {
+            match field {
+                "name" => {
+                    // 同フレーム中に set 済みなら保留値を優先する（set 直後の get が
+                    // 古い名前を返さないようにするため。実ツリーへはフレーム末尾で反映）。
+                    match name_pending::get(entity) {
+                        Some(n) => Some(n),
+                        None    => Some(actor_of_entity(entity)?.name.clone()),
+                    }
+                }
+                _ => None,
+            }
+        }
         "Sprite" => {
             let e = locate::<SpriteComponent>(world, entity)?;
             let s = world.get::<SpriteComponent>(e)?;
@@ -1708,6 +1735,35 @@ fn write_string(
     world: &mut World, entity: Entity, component: &str, field: &str, value: &str,
 ) -> bool {
     match component {
+        // ── アクター自身の属性（Actor ツリーの値。read_string と対）──
+        // Actor ツリーはスクリプトフェーズ中に可変参照できないため、保留値を記録して
+        // 遅延コマンドを積み、フレーム末尾に App が実ツリーへ反映する（visible と同じ流儀）。
+        "GameObject" => {
+            match field {
+                "name" => {
+                    // 空名は拒否する。Find / FindChild が名前で引く以上、空名の
+                    // アクタは「見つけられないのに存在する」状態になり事故のもとになる。
+                    if value.is_empty() { return false; }
+                    // visible と違い「アクターのルートか」をここで検査しない。
+                    // 最大の用途が Instantiate 直後の命名であり、そのエンティティは
+                    // まだ Actor ツリーに載っていない（予約済みで、実体の構築は
+                    // フレーム末尾の Instantiate コマンド適用時）。ここで弾くと
+                    // 本来やりたい「生成直後に一意な名前を付ける」が丸ごと落ちる。
+                    // コマンドは発行順に適用されるため、Instantiate → SetName の順で
+                    // 積まれていれば適用時には必ず実体がある。実体が無いまま適用された
+                    // 場合（無効ハンドル等）は apply_script_set_name が何もしない。
+                    name_pending::set(entity, value);
+                    SCENE_COMMANDS.with(|q| {
+                        q.borrow_mut().push(ScriptSceneCommand::SetName {
+                            entity,
+                            name: value.to_string(),
+                        })
+                    });
+                    true
+                }
+                _ => false,
+            }
+        }
         "Sprite" => {
             let Some(e) = locate::<SpriteComponent>(world, entity) else { return false };
             let Some(s) = world.get_mut::<SpriteComponent>(e) else { return false };

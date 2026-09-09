@@ -912,6 +912,52 @@ bool v = gameObject.Visible;  // bool（get/set。自分自身のフラグ）
 
 > **重要**: `Visible` はシーン／`.actor` ファイルへ `"visible": false` として保存されます（`true` は省略）。エディタのヒエラルキー各行の目アイコン、およびインスペクタのアクタ名の横のトグルと同じフラグです。
 
+### アクター名（GameObject.Name）
+
+```csharp
+string n = gameObject.Name;    // アクター名（ヒエラルキーに出る名前）
+spawned.Name = "BeatIcon00";   // 動的生成したアクターに一意な名前を付ける
+```
+
+| 項目 | 挙動 |
+| --- | --- |
+| get | アクター名。アクターが無効なら空文字を返します |
+| set の反映 | 実際の反映はフレーム末尾（`Visible` と同じ遅延モデル）。ただし同フレーム中の get は設定した値を返します |
+| 空文字の set | **無視されます**（名前で引けないアクターを作らないため） |
+| 参照の追従 | **しません**。名前でこのアクターを指している参照文字列（`[SerializeField]` のアクタ参照など）は書き換わりません |
+
+> **用途は「動的生成したアクターへ一意な名前を付ける」ことです。** `Instantiate` で同じプレハブを複数生成すると全て同名（`.actor` のルート名）になり、`Find` / `FindChild` では区別できません。生成直後に連番名を付けておくと、次に同じスクリプトが走ったときに「既にあるものを見つけて使い回す」ことができます（この定型は後述の `SpawnOnce` にまとまっています）。
+
+> **シーンに元からあるアクターの改名には使わないでください。** 参照が追従しないため、名前で参照している側が切れます。既存アクターの改名はエディタのヒエラルキーで行ってください（そちらは参照も書き換えます）。
+
+### 二重生成を防ぐ（SpawnOnce）
+
+`assets://common/scripts/UI/SpawnOnce.cs`
+
+```csharp
+// 親を指定しない（シーン全体から "ReelSound" を探し、無ければ生成して命名する）
+reelSoundActor = SpawnOnce.GetOrInstantiate("ReelSound", reelSoundActorPath);
+
+// 親の配下から探して、無ければその親の下に作る（プールは連番で一意名にする）
+var icon = SpawnOnce.GetOrInstantiate($"BeatIcon{i:00}", beatIconActorPath, parent);
+```
+
+`static GameObject GetOrInstantiate(string actorName, string prefabPath, GameObject? parent = null)`
+
+名前で既存アクターを探し、**無いときだけ**プレハブから生成して、その名前を付けて返します。
+
+**なぜ要るか**: エディタで `.cs` を保存するとランタイムは全スクリプトインスタンスを作り直すため、`OnStart` が改めて呼ばれます。`OnStart` の中で素の `Instantiate` をしていると、呼ばれた回数だけアクターが増えていきます（Play しながら編集していると補助アクタが二重三重になり、重くなる／古い方が前面に残る）。エディタ側は既定で「Play 中はホットリロードを保留する」ようになっていますが（`docs/editor_auto_reload.md`）、その設定を切った場合のための多重防御です。
+
+| 引数 | 意味 |
+| --- | --- |
+| `actorName` | 照合キー。生成した場合はこの名前が `GameObject.Name` に設定されます。空文字なら照合せず常に新規生成します |
+| `prefabPath` | 生成元の `.actor`（`assets://...`）。空なら生成せず、既存が見つかればそれを返します |
+| `parent` | 探索と生成の親。指定すると**その配下だけ**を探し、生成もその子として行います。`null` ならシーン全体から探し、ルートへ生成します |
+
+- **同一フレーム内で同じ名前を 2 回要求すると 2 つ作られます**（生成も改名もフレーム末尾に反映されるため）。プールなら添字で一意名を振ってください。
+- 親を渡せる場合は必ず渡してください。探索範囲が配下に限定され、同じプレハブを複数並べても他人のアクターを掴みません。
+- 見つけた既存アクターは**そのままの状態**（表示・位置・アニメの進行）で返ります。初期化が必要なら呼び出し側で行ってください。
+
 ### 生成・破棄・検索（Instantiate / Destroy / Find / FindChild）
 
 ```csharp
@@ -1810,6 +1856,7 @@ public class FishingLine : SEEDScript
 | コンポーネント名 | 取得 | 内容 |
 |---|---|---|
 | （アクター自身） | `gameObject.Visible` | アクターと全子孫の**描画だけ**を止める表示フラグ。スクリプト・物理は動き続ける |
+| （アクター自身） | `gameObject.Name` | アクター名（`Find` / `FindChild` の照合キー）。動的生成物へ一意な名前を付ける用途。既存アクターの改名は参照が追従しない |
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
 | `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）・レイトレ除外（`RayTracingExcluded`）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |

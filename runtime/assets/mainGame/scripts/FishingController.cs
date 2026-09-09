@@ -1336,7 +1336,14 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "止めるまでの猶予(秒)")]
     private float reelSoundHoldSeconds = 0.2f;
 
-    /// <summary>巻き取り音のアクタ（OnStart で生成。生成失敗時は無効）。</summary>
+    /// <summary>
+    /// 巻き取り音アクタに付ける目印の名前（<see cref="SpawnOnce"/> の照合キー）。
+    /// プレハブ（ReelSound.actor）のルート名と同じにしてあるので、
+    /// 既存の生成物・シーンへ手で置いたものも同じ名前で拾える。
+    /// </summary>
+    private const string ReelSoundActorName = "ReelSound";
+
+    /// <summary>巻き取り音のアクタ（OnStart で用意。取得失敗時は無効）。</summary>
     private SEED.GameObject reelSoundActor;
 
     /// <summary>巻き取り音の音源（生成の翌フレーム以降に遅延取得する）。</summary>
@@ -1357,10 +1364,13 @@ public class FishingController : SEEDScript
         // ポーズの静的状態はシーン遷移で作り直されないので、シーン開始時に必ず戻す
         // （前のシーンでポーズしたまま遷移した場合に、操作不能で始まるのを防ぐ）。
         PauseMenu.ResetStaticState();
-        // 巻き取り音の音源を生成しておく（音源の取得は次フレーム以降に UpdateReelSound が行う）。
+        // 巻き取り音の音源を用意しておく（音源の取得は次フレーム以降に UpdateReelSound が行う）。
+        // SpawnOnce 経由にして、既に同名の音源アクタがあれば使い回す。
+        // スクリプトのホットリロードで OnStart が再実行されても音源が増えない
+        //（増えると同じループ音が重なって鳴り、フレーム時間も伸びる）。
         if (!string.IsNullOrWhiteSpace(reelSoundActorPath))
         {
-            reelSoundActor = SEED.GameObject.Instantiate(reelSoundActorPath);
+            reelSoundActor = SpawnOnce.GetOrInstantiate(ReelSoundActorName, reelSoundActorPath);
         }
 
         if (line is { } l && l.IsValid)
@@ -2976,7 +2986,14 @@ public class FishingController : SEEDScript
         if (uki is not { } floatTf || !floatTf.IsValid) { return; }
 
         float amount = ReadReelAmount();
-        UpdateReelSound(amount, deltaTime);
+
+        // 巻き取り音は<b>実際に巻けているときだけ</b>鳴らす。
+        // ヒット中の巻きが効くのは隙（Rest）フェーズだけなので、やり取り側の
+        // 判定（FishingFight.CanReelNow）をそのまま使う（同じ条件を二重に持たない）。
+        // ヒットしていないときは従来どおり「巻き入力があること」だけが条件。
+        bool reelingEffective = amount > ReelInputEpsilon
+                             && (!IsHooked || (fight is { } reelGate && reelGate.CanReelNow));
+        UpdateReelSound(reelingEffective, deltaTime);
 
         // 巻き入力の有無で Floating ⇔ Reeling を往復する。
         // ヒット中（Hooked）は状態もクリップもヒット用のまま固定し、往復させない
@@ -3096,15 +3113,21 @@ public class FishingController : SEEDScript
     /// <summary>
     /// 巻き入力に合わせて巻き取り音（ループ）を出し入れする【巻き取り音の唯一の制御点】。
     ///
-    /// 入力があった瞬間に鳴らし始め、入力が <see cref="reelSoundHoldSeconds"/> 秒
-    /// 途切れたら止める。音源は生成の翌フレーム以降にしか取れないため、毎回
-    /// 遅延取得を試みる（取れるまでは何もしない）。
+    /// 「実際に巻けている」フレームがあった瞬間に鳴らし始め、それが
+    /// <see cref="reelSoundHoldSeconds"/> 秒途切れたら止める。音源は生成の翌フレーム
+    /// 以降にしか取れないため、毎回遅延取得を試みる（取れるまでは何もしない）。
+    ///
+    /// 判定材料を「巻き取り量」ではなく<b>巻けているか</b>にしているのは、
+    /// ヒット中に隙（Rest）以外でホイールを回しても魚 HP は削れず（＝巻けていない）、
+    /// そこで音だけ鳴ると操作が通っているように誤解させるため。
     /// </summary>
-    /// <param name="reelAmount">このフレームの巻き取り量（メートル）。</param>
+    /// <param name="reelingEffective">
+    /// このフレームに巻き取りが<b>実際に効いた</b>か（呼び出し側が判定して渡す）。
+    /// </param>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateReelSound(float reelAmount, float deltaTime)
+    private void UpdateReelSound(bool reelingEffective, float deltaTime)
     {
-        if (reelAmount > ReelInputEpsilon) { sinceLastReelInput = 0f; }
+        if (reelingEffective) { sinceLastReelInput = 0f; }
         else if (sinceLastReelInput < float.MaxValue) { sinceLastReelInput += deltaTime; }
 
         var source = ResolveReelSoundSource();

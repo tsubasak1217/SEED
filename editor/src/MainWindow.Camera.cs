@@ -846,6 +846,14 @@ public partial class MainWindow
             if (state == EditorState.Edit)
                 _sceneAutoReloader?.NotifyReturnedToEdit();
 
+            // Play 中に検出した .cs の変更も同様にここで反映する。
+            // Play 中のホットリロードは全スクリプトインスタンスの作り直し
+            //（＝OnStart 再実行）になるため、既定では保留してある。
+            // シーン再読込より後に呼ぶ: シーンを読み直す場合は新しいワールドに対して
+            // スクリプトを組み直すことになり、順序が逆だと無駄な 1 往復が増える。
+            if (state == EditorState.Edit)
+                _scriptAutoReloader?.NotifyReturnedToEdit();
+
             // 埋め込みインプレース Play の入力フォーカス制御。
             // 埋め込み Play では同じ子 HWND がゲーム描画も担うため、キーボード入力を
             // ランタイム側へ流すには OS フォーカスを子 HWND へ移す必要がある。

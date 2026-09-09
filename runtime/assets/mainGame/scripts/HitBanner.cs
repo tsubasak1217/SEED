@@ -203,6 +203,12 @@ public class HitBanner : SEEDScript
     private string sparkleActorPath = "assets://mainGame/actors/FX/HitSparkle2D.actor";
 
     /// <summary>
+    /// 生成した火花アクタに付ける名前の接頭辞（<see cref="SpawnOnce"/> の照合キー）。
+    /// 位置基準の添字を 2 桁で足して <c>HitSparkle00</c> のような一意名にする。
+    /// </summary>
+    private const string SparkleActorNamePrefix = "HitSparkle";
+
+    /// <summary>
     /// 火花を出す位置の基準にするアクタ名。ここに挙げたアクタの
     /// <c>CanvasTransform</c>（アンカーと座標）をそのまま写して火花を置く
     /// ＝<b>帯の両端（Lv 文字側と HIT 文字側）</b>で弾ける。
@@ -361,7 +367,12 @@ public class HitBanner : SEEDScript
 
         for (int i = 0; i < sparkleAnchorActorNames.Count; i++)
         {
-            SEED.GameObject spawned = SEED.GameObject.Instantiate(sparkleActorPath, parent);
+            // 位置基準ごとに一意な名前（HitSparkle00, HitSparkle01, ...）を付けて生成する。
+            // 同じプレハブから複数作るため、名前を分けないと使い回しの照合ができない。
+            // SpawnOnce 経由なので、スクリプトのホットリロードで OnStart が再実行されても
+            // 既にある火花を拾い直すだけで済む（＝粒が二重三重に増えない）。
+            SEED.GameObject spawned = SpawnOnce.GetOrInstantiate(
+                $"{SparkleActorNamePrefix}{i:00}", sparkleActorPath, parent);
             if (!spawned.IsValid)
             {
                 SEED.Debug.LogWarning($"[HitBanner] 火花のプレハブを生成できない: {sparkleActorPath}");

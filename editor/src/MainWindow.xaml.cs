@@ -1190,6 +1190,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                 _runtimeManager.SendToRuntime("RELOAD_SCRIPTS");
                 return true;
             },
+            // 現在の再生状態（Idle / Building / Launching は Edit へ畳む。
+            // 畳み方はシーン側と共有するため CurrentPlaybackState 1 箇所に置いてある）
+            playbackState: () => CurrentPlaybackState,
+            // 設定「Play 中もスクリプトを即時反映する」（既定オフ）
+            applyDuringPlay: () => EditorPreferences.Instance.PlayScriptHotReload,
             report: SetScriptReloadStatus);
 
         // ランタイムからの結果を自動再読込へ橋渡しする（どちらもパイプ受信スレッドで
@@ -1216,6 +1221,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             ScriptReloadStatus.Running      => (ScriptStatusBrushRunning, message),
             ScriptReloadStatus.Success      => (ScriptStatusBrushSuccess, message),
             ScriptReloadStatus.CompileError => (ScriptStatusBrushError,   $"コンパイルエラー: {message}"),
+            ScriptReloadStatus.Deferred     => (ScriptStatusBrushWarn,    message),
             _                               => (ScriptStatusBrushWarn,    message),
         };
 
@@ -1270,6 +1276,22 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EditorPreferences.Instance.AutoReloadScripts = on;
         EditorPreferences.Save();
         EditorLog.Write($"AutoReloadScripts = {on}");
+    }
+
+    /// <summary>
+    /// 「表示 > スクリプト > Play 中もスクリプトを即時反映する」トグル。
+    /// EditorPreferences.PlayScriptHotReload へ永続化する。
+    ///
+    /// 既定はオフ。オフのときは Play 中に検出した .cs の変更を保留し、
+    /// Play を止めた直後に 1 回だけ反映する（Play 中のホットリロードは
+    /// 全スクリプトインスタンスの作り直し＝OnStart 再実行になるため）。
+    /// </summary>
+    private void OnTogglePlayScriptHotReload(object sender, RoutedEventArgs e)
+    {
+        bool on = MenuItemPlayScriptHotReload.IsChecked;
+        EditorPreferences.Instance.PlayScriptHotReload = on;
+        EditorPreferences.Save();
+        EditorLog.Write($"PlayScriptHotReload = {on}");
     }
 
     /// <summary>

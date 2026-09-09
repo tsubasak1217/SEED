@@ -116,6 +116,13 @@ public class PauseMenu : SEEDScript
     /// メニュー本体（シーン配置済みなら <see cref="OnStart"/> で登録、無ければ
     /// <see cref="Open"/> が生成して登録。未登録なら <c>IsValid == false</c>）。
     /// </summary>
+    /// <summary>
+    /// ポーズメニュー本体に付ける目印の名前（<see cref="SpawnOnce"/> の照合キー）。
+    /// プレハブ（PauseMenu.actor）のルート名と同じにしてあるので、
+    /// シーンへ手で置いたメニューも、過去に生成したメニューも同じ名前で拾える。
+    /// </summary>
+    private const string MenuActorName = "PauseMenu";
+
     private static SEED.GameObject menuRoot;
 
     /// <summary>いまポーズ中か。ゲーム側はこれを見て入力を止める。</summary>
@@ -284,7 +291,10 @@ public class PauseMenu : SEEDScript
                 SEED.Debug.LogWarning("[PauseMenu] シーンに PauseMenu が無く、プレハブのパスも未設定のため開けない");
                 return;
             }
-            menuRoot = SEED.GameObject.Instantiate(actorPath);
+            // 既に同名のメニューアクタがあれば使い回す（SpawnOnce）。
+            // スクリプトのホットリロードで静的状態が初期化されると menuRoot は無効へ戻るため、
+            // 素の Instantiate だとメニューが増え続ける。
+            menuRoot = SpawnOnce.GetOrInstantiate(MenuActorName, actorPath);
             if (!menuRoot.IsValid)
             {
                 SEED.Debug.LogWarning($"[PauseMenu] プレハブを生成できない: {actorPath}");

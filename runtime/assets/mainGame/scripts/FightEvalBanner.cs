@@ -93,6 +93,12 @@ public class FightEvalBanner : SEEDScript
     private static FightEvalBanner? Current;
 
     /// <summary>本体のアクタ（生成フォールバックで作った場合もここに入る）。</summary>
+    /// <summary>
+    /// 評価バナー本体に付ける目印の名前（<see cref="SpawnOnce"/> の照合キー）。
+    /// プレハブ（FightEvalBanner.actor）のルート名と同じにしてある。
+    /// </summary>
+    private const string BannerActorName = "FightEvalBanner";
+
     private static SEED.GameObject bannerRoot;
 
     /// <summary>生成フォールバック時に預ける文言（実体の <c>OnStart</c> が拾う）。</summary>
@@ -208,7 +214,10 @@ public class FightEvalBanner : SEEDScript
                     "[FightEvalBanner] シーンに本体が無く、プレハブのパスも未設定のため出せない");
                 return;
             }
-            bannerRoot = SEED.GameObject.Instantiate(actorPath);
+            // 既に同名のバナーアクタがあれば使い回す（SpawnOnce）。
+            // ホットリロードで静的状態が初期化されると bannerRoot は無効へ戻るため、
+            // 素の Instantiate だと評価バナーが増えていく。
+            bannerRoot = SpawnOnce.GetOrInstantiate(BannerActorName, actorPath);
             if (!bannerRoot.IsValid)
             {
                 SEED.Debug.LogWarning($"[FightEvalBanner] プレハブを生成できない: {actorPath}");

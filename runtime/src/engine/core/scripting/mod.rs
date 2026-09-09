@@ -26,6 +26,7 @@ pub mod path_query;
 // カメラのワールド→スクリーン射影（Camera.WorldToScreen / WorldToCanvas）の純関数層
 pub mod camera_project;
 // GameObject.Visible の set を遅延適用するまでの保留値テーブル
+pub mod name_pending;
 pub mod visible_pending;
 // SCRIPT_DEBUG IPC → SEED.Debug.OnCommand の待ち行列
 pub mod debug_command;

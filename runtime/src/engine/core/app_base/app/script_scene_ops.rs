@@ -76,6 +76,9 @@ impl App {
                 ScriptSceneCommand::SetVisible { entity, visible } => {
                     self.apply_script_set_visible(entity, visible);
                 }
+                ScriptSceneCommand::SetName { entity, name } => {
+                    self.apply_script_set_name(entity, &name);
+                }
                 ScriptSceneCommand::PreloadScene { name_or_path } => {
                     self.apply_script_preload_scene(&name_or_path);
                 }
@@ -420,6 +423,25 @@ impl App {
         let Some(scene) = self.scene.as_mut() else { return };
         if let Some(actor) = find_actor_by_entity_mut(&mut scene.actors, entity) {
             actor.visible = visible;
+        }
+    }
+
+    /// SetName コマンドを適用する: 対象アクターの名前を書き換える。
+    ///
+    /// `GameObject.Name` の set も Visible と同じ理由（スクリプトフェーズ中は Actor ツリーを
+    /// 可変参照できない）で遅延コマンド化されている。`host_api::name_pending` が
+    /// 同フレームの読み戻しを担い、ここで実ツリーへ反映する。
+    ///
+    /// 名前で他アクタを指している参照文字列（[SerializeField] のアクタ参照など）は
+    /// **書き換えない**。この API は「動的生成したアクタへ一意な名前を付ける」用途に
+    /// 限定しており、既存アクタの改名（＝参照の追従が必要な操作）はエディタ側の
+    /// リネーム経路（rename_refs を伴う）が担当する。
+    ///
+    /// 対象が既に破棄されている場合は何もしない（スクリプト側の無効ハンドルは無視する規約）。
+    fn apply_script_set_name(&mut self, entity: Entity, name: &str) {
+        let Some(scene) = self.scene.as_mut() else { return };
+        if let Some(actor) = find_actor_by_entity_mut(&mut scene.actors, entity) {
+            actor.name = name.to_string();
         }
     }
 
