@@ -452,7 +452,7 @@ public class FishingFight : SEEDScript
 
     /// <summary>Miss（打ち逃し・空打ち）1 回で減る糸の残り（糸パワー補正が掛かる）。</summary>
     [SerializeField(Label = "Missの糸の減り")]
-    private float missLoss = 0.12f;
+    private float missLoss = 0.06f;
 
     /// <summary>
     /// 戦闘力差が糸の減り方へ効く強さ。
