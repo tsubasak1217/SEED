@@ -1,0 +1,152 @@
+{
+  "name": "new_clip",
+  "duration": 1,
+  "fps": 30,
+  "loop_mode": "loop",
+  "tracks": [
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "position"
+      },
+      "value_type": "vec2",
+      "keys": [
+        {
+          "time": 0,
+          "value": [
+            226.9302,
+            113.4651
+          ],
+          "interp": "bezier"
+        },
+        {
+          "time": 0.33333334,
+          "value": [
+            -22.7904,
+            113.4651
+          ],
+          "interp": "bezier"
+        },
+        {
+          "time": 0.6666667,
+          "value": [
+            378.749,
+            113.4651
+          ],
+          "interp": "bezier"
+        }
+      ]
+    },
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "rotation"
+      },
+      "value_type": "float",
+      "keys": [
+        {
+          "time": 0,
+          "value": 0,
+          "interp": "bezier"
+        },
+        {
+          "time": 0.33333334,
+          "value": 0,
+          "interp": "bezier"
+        },
+        {
+          "time": 0.6666667,
+          "value": 0,
+          "interp": "bezier"
+        }
+      ]
+    },
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "scale"
+      },
+      "value_type": "vec2",
+      "keys": [
+        {
+          "time": 0,
+          "value": [
+            1,
+            1
+          ],
+          "interp": "bezier"
+        },
+        {
+          "time": 0.33333334,
+          "value": [
+            1,
+            1
+          ],
+          "interp": "bezier"
+        },
+        {
+          "time": 0.6666667,
+          "value": [
+            1,
+            1
+          ],
+          "interp": "bezier"
+        }
+      ]
+    },
+    {
+      "target": {
+        "actor_path": "",
+        "component": "sprite",
+        "property": "color"
+      },
+      "value_type": "color",
+      "keys": [
+        {
+          "time": 0,
+          "value": [
+            1,
+            1,
+            1,
+            0
+          ],
+          "interp": "linear"
+        },
+        {
+          "time": 0.13333334,
+          "value": [
+            1,
+            1,
+            1,
+            0.9858
+          ],
+          "interp": "linear"
+        },
+        {
+          "time": 0.6666667,
+          "value": [
+            1,
+            1,
+            1,
+            0.9858
+          ],
+          "interp": "linear"
+        },
+        {
+          "time": 1,
+          "value": [
+            1,
+            1,
+            1,
+            0
+          ],
+          "interp": "linear"
+        }
+      ]
+    }
+  ],
+  "events": []
+}
