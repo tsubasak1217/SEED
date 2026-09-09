@@ -9,7 +9,8 @@
 //  1. ディスク上の全ファイルを 1 度だけ列挙してインデックス化する
 //     （以降の実在チェックはハッシュ参照だけで済み、I/O が起きない）。
 //  2. 起点を積む: project_settings.json / start_scene / scenes[].path /
-//     ランタイムに焼き込まれた assets:// パス / 追加フォルダ / 常時同梱拡張子。
+//     ランタイムに焼き込まれた assets:// パス / 追加フォルダ / 常時同梱拡張子 /
+//     除外ルールに当たらない全 .cs（走査専用。同梱はしない。下記【型参照対策】参照）。
 //  3. ワークリスト方式で閉包を取る。テキスト系ファイルは中身を走査して
 //     参照を取り出し（AssetReferenceScanner）、実在するものをキューへ積む。
 //  4. 収録が決まったファイルには「暗黙の同伴ファイル」を足す
@@ -18,6 +19,16 @@
 //  【除外の位置づけ】
 //  除外ルールは「未参照ファイルの掃除」であって、参照より優先しない。
 //  参照されていれば除外設定に当たっていても同梱し、警告として報告する。
+//
+//  【型参照対策（.cs の走査専用起点）】
+//  参照グラフは「パス文字列で参照されたファイルだけ」を辿るため、
+//  C# の**型名**だけで使われるスクリプト（例: ファクトリの `new MoveMission()`、
+//  静的クラスの `FishCatalog.ForLevel(...)`）は永遠に到達できない。
+//  アセット配下の全 .cs は SEEDUserScripts.dll へ一括コンパイルされる方式
+//  （どの .cs の文字列リテラルも実行時に使われ得る）なので、除外ルールに
+//  当たらない全 .cs を「走査専用」の起点として積み、中の assets:// 参照だけを拾う
+//  （AddScriptScanSeeds）。.cs 自体は同梱しない — 収録集合に足すのは
+//  EnqueueScan ではなく Include を呼んだときだけ。
 // ============================================================
 
 using System;
@@ -68,6 +79,14 @@ public sealed class AssetCollector
     /// <summary>参照抽出待ちのファイル（相対パス）。</summary>
     private readonly Queue<string> _scanQueue;
 
+    /// <summary>
+    /// 参照抽出の走査キューへ積み済みのファイル（多重登録防止用）。
+    /// 収録集合（<see cref="_included"/>）とは別に持つ。「同梱される」と「走査される」は
+    /// 別の概念で、型参照対策（<see cref="AddScriptScanSeeds"/>）が積む .cs は
+    /// 走査はするが同梱はしないため、1 つの集合で両方を兼ねると意味が壊れる。
+    /// </summary>
+    private readonly HashSet<string> _scanQueued;
+
     /// <summary>丸ごと取り込み済みのフォルダ（同じフォルダを何度も舐めないため）。</summary>
     private readonly HashSet<string> _expandedFolders;
 
@@ -114,6 +133,7 @@ public sealed class AssetCollector
         _dirsOnDisk      = new HashSet<string>(AssetPathUtil.PathComparer);
         _included        = new HashSet<string>(AssetPathUtil.PathComparer);
         _scanQueue       = new Queue<string>();
+        _scanQueued      = new HashSet<string>(AssetPathUtil.PathComparer);
         _expandedFolders = new HashSet<string>(AssetPathUtil.PathComparer);
         _missing         = [];
         _missingKeys     = new HashSet<string>(AssetPathUtil.PathComparer);
@@ -274,6 +294,59 @@ public sealed class AssetCollector
             if (added > 0)
                 Log($"常時同梱拡張子（{string.Join(" ", alwaysExts)}）: {added} ファイルを追加");
         }
+
+        // ── 6. 型参照対策（走査専用の起点） ──────────────────────
+        AddScriptScanSeeds();
+    }
+
+    /// <summary>C# スクリプトの拡張子。走査専用の起点判定に使う。</summary>
+    private const string ScriptExtension = ".cs";
+
+    /// <summary>
+    /// 除外ルールに当たらない全 .cs を「走査専用」の起点として積む。
+    ///
+    /// <para>
+    /// 【なぜ要るか】アセット配下の全 .cs は <c>SEEDUserScripts.dll</c> へ一括コンパイルされる
+    /// 方式なので、どの .cs の文字列リテラルも実行時に使われ得る。ところが C# の**型名**だけで
+    /// 参照されるスクリプト（例: ファクトリの <c>new MoveMission()</c>、
+    /// 静的クラスの <c>FishCatalog.ForLevel(...)</c>）はパスの参照グラフに一切現れない。
+    /// 通常の閉包探索（<see cref="ScanFile"/> → <see cref="Resolve"/>）は
+    /// 「パス文字列で参照されたファイルだけ」を辿るので、辿り着く手段が無いスクリプトは
+    /// 中に書かれた assets:// 参照（自動生成された画像パスなど）ごと永遠に見つからず、
+    /// パッケージ版でだけ読み込みに失敗する（実機でしか気付けない）。
+    /// </para>
+    /// <para>
+    /// 【同梱はしない】ここで積むのは走査だけ。<see cref="EnqueueScan"/> は
+    /// <see cref="Include"/> と違って収録集合（<see cref="_included"/>）に触らないので、
+    /// .cs 自体が PAK に入ることはない。スクリプトのソースは事前コンパイル済み DLL
+    /// （<c>ScriptPackager</c>）で配るので、PAK に入れる必要が無い
+    /// （既定の常時同梱拡張子を空にした理由と同じ。<see cref="PackagingRules.DefaultAlwaysIncludedExtensions"/>）。
+    /// パスで実際に参照されている .cs は、これとは別に通常の閉包経由で今も同梱される
+    /// （docs/packaging.md §8 の既知の制限。型参照対策とは独立した挙動）。
+    /// </para>
+    /// <para>
+    /// 【除外フォルダは走査もしない】<c>templates</c> のような「使われないスクリプト置き場」の
+    /// .cs まで無条件に走査すると、サンプルコードに書いた assets:// 参照だけでそのフォルダの
+    /// 資産が丸ごと収録される事故になる。除外ルール（フォルダ・拡張子・ファイル名。
+    /// <see cref="IsExcludedByRule"/>）に当たる .cs は起点から外す。ただし「除外は参照より弱い」
+    /// 原則は変えないので、そういう .cs が実際にパスで参照されていれば
+    /// 通常の閉包経由で従来どおり同梱・走査される。
+    /// </para>
+    /// </summary>
+    private void AddScriptScanSeeds()
+    {
+        int added = 0;
+        foreach (var rel in _filesOnDisk.Keys.ToList())
+        {
+            if (!string.Equals(AssetPathUtil.GetExtensionLower(rel), ScriptExtension, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (IsExcludedByRule(rel)) continue;    // 使われないスクリプト置き場（templates 等）は走査しない
+            if (_included.Contains(rel)) continue;  // 既に通常の経路で走査予約済み（二重走査防止）
+
+            EnqueueScan(rel, ScriptExtension);
+            added++;
+        }
+        if (added > 0) Log($"スクリプト走査（型参照対策）: {added} ファイル");
     }
 
     /// <summary>project_settings.json から start_scene と scenes[].path を読み出す。</summary>
@@ -472,12 +545,28 @@ public sealed class AssetCollector
         if (IsNeverIncluded(rel)) return;   // 配布物に入れてはいけないもの（参照より優先する唯一の規則）
         if (!_included.Add(rel)) return;
 
-        // テキスト系なら参照抽出の対象にする
         var ext = AssetPathUtil.GetExtensionLower(rel);
-        if (PackagingRules.ScannableExtensions.Contains(ext))
-            _scanQueue.Enqueue(rel);
-
+        EnqueueScan(rel, ext);
         AddCompanions(rel, ext);
+    }
+
+    /// <summary>
+    /// テキスト系ファイルを参照抽出の走査キューへ積む（<see cref="_scanQueued"/> で多重登録を防ぐ）。
+    ///
+    /// <para>
+    /// 収録するかどうか（<see cref="_included"/>）とは独立に「走査を予約したか」だけを管理する。
+    /// これにより、<see cref="AddScriptScanSeeds"/> が「走査専用」で積んだ .cs が
+    /// あとから通常の参照経由で <see cref="Include"/> されても（またはその逆の順でも）、
+    /// 同じファイルを 2 回走査することがない。
+    /// </para>
+    /// </summary>
+    /// <param name="rel">走査対象候補のルート相対パス。</param>
+    /// <param name="ext">そのファイルの小文字拡張子（呼び出し側で算出済みのものを渡す）。</param>
+    private void EnqueueScan(string rel, string ext)
+    {
+        if (!PackagingRules.ScannableExtensions.Contains(ext)) return;
+        if (!_scanQueued.Add(rel)) return;
+        _scanQueue.Enqueue(rel);
     }
 
     /// <summary>

@@ -443,6 +443,60 @@ public static class Program
                 "常時同梱拡張子の既定");
         });
 
+        // ── 型参照対策（走査専用の起点。AssetCollector.AddScriptScanSeeds） ──
+        //
+        //  実プロジェクトの FishCatalog.cs（Zukan.cs から型 FishCatalog として使われる）
+        //  や MoveMission.cs（MissionFactory.cs から new MoveMission() で使われる）のように、
+        //  C# の型名だけで参照されるスクリプトはパスの参照グラフに一切現れない。
+        //  この 3 件でそのスクリプトを「走査だけして同梱はしない」挙動を検証する。
+
+        h.Add("どのシーンからも辿られない .cs 内の assets:// 参照が収録される（型参照対策）", () =>
+        {
+            using var fx = new AssetFixture();
+            AddTypeOnlyScriptFixture(fx);
+
+            var got = IncludedSet(Collect(fx));
+            Check.True(got.Contains("icons/type_only.png"),
+                "型名でしか参照されないスクリプト（走査専用の起点）内の assets:// 参照が拾えていない");
+        });
+
+        h.Add("除外フォルダ配下の .cs は走査専用の起点にしない（フォルダの資産を丸ごと引き込まない）", () =>
+        {
+            using var fx = new AssetFixture();
+            // templates は既定の除外フォルダ。ここに置いた .cs はどこからも参照されないので、
+            // 走査専用の起点として拾ってしまうと templates 配下の資産が丸ごと収録されてしまう。
+            fx.WriteText("templates/scripts/SampleOnly.cs", """
+            public static class SampleOnly
+            {
+                public const string SampleIcon = "assets://templates/icons/should_not_appear.png";
+            }
+            """);
+            fx.WriteBinary("templates/icons/should_not_appear.png", 8);
+
+            var got = IncludedSet(Collect(fx));
+            Check.True(!got.Contains("templates/icons/should_not_appear.png"),
+                "除外フォルダ内の .cs まで走査してしまい、参照先が同梱されている");
+            Check.True(!got.Contains("templates/scripts/SampleOnly.cs"),
+                "除外フォルダ内の .cs 自身が同梱されている");
+        });
+
+        h.Add("型参照対策で走査した .cs 自身は同梱しない（走査と同梱は別の判断）", () =>
+        {
+            using var fx = new AssetFixture();
+            AddTypeOnlyScriptFixture(fx);
+
+            var result = Collect(fx);
+            var got    = IncludedSet(result);
+
+            // 参照先（icons/type_only.png）は入るのに、走査元の .cs 自身は入らないこと。
+            // （前段のテストと合わせて確認することで、「そもそも走査されていない」ケースと
+            //   「走査はしたが同梱していない」ケースを区別する）
+            Check.True(got.Contains("icons/type_only.png"),
+                "前提が崩れている: 走査自体が行われていない");
+            Check.True(!got.Contains("scripts/TypeOnly.cs"),
+                "走査専用のはずの .cs がそのまま PAK の収録集合に入っている");
+        });
+
         h.Add("設定で指定した拡張子は参照が無くても入る（除外フォルダ内は除く）", () =>
         {
             using var fx = new AssetFixture();
@@ -703,6 +757,28 @@ public static class Program
     /// <returns>収集結果。</returns>
     private static AssetCollectionResult Collect(AssetFixture fx) =>
         new AssetCollector(fx.Root, new AssetPackagingSettings()).Collect();
+
+    /// <summary>
+    /// 「C# の型名だけで参照されるスクリプト」を模したファイル一式をフィクスチャへ書き足す。
+    ///
+    /// <para>
+    /// 実プロジェクトの <c>FishCatalog.cs</c>（<c>Zukan.cs</c> から型 <c>FishCatalog</c> として
+    /// 使われるだけで、パスとしては一切参照されない）と同じ形。<c>scripts/TypeOnly.cs</c> は
+    /// どのシーン・アクタからも辿られないが、中に <c>assets://icons/type_only.png</c> を持つ。
+    /// </para>
+    /// </summary>
+    /// <param name="fx">書き足す対象のフィクスチャ。</param>
+    private static void AddTypeOnlyScriptFixture(AssetFixture fx)
+    {
+        fx.WriteText("scripts/TypeOnly.cs", """
+        public static class TypeOnly
+        {
+            // 型名だけで参照されるスクリプトの assets:// 参照（生成された画像パスなどの想定）。
+            public const string IconPath = "assets://icons/type_only.png";
+        }
+        """);
+        fx.WriteBinary("icons/type_only.png", 8);
+    }
 
     /// <summary>収録された相対パスの集合を作る（大文字小文字は無視）。</summary>
     /// <param name="result">収集結果。</param>
