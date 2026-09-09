@@ -168,7 +168,8 @@
                 "cards": "[\"ZukanCard0\", \"ZukanCard1\", \"ZukanCard2\", \"ZukanCard3\"]",
                 "headerText": "ZukanHeader|Text",
                 "hintText": "ZukanHint|Text",
-                "pageText": "ZukanPage|Text"
+                "pageText": "ZukanPage|Text",
+                "sceneFlow": "Flow"
               }
             }
           }
@@ -239,8 +240,8 @@
               1.0
             ],
             "pivot": [
-              0.0,
-              0.0
+              0.5,
+              0.5
             ],
             "anchor": [
               0.5,
@@ -278,8 +279,8 @@
                     0.06,
                     1.0
                   ],
-                  "box_width": 0.0,
-                  "box_height": 0.0,
+                  "box_width": 291.5,
+                  "box_height": 80.6,
                   "wrap": false,
                   "weight": 0.8,
                   "shadow_offset_x": 2.0,
@@ -503,18 +504,18 @@
                     "data": {
                       "type_name": "assets://zukan/scripts/ZukanCard.cs",
                       "fields": {
-                        "unknownNameFormat": "Lv{0} ????",
-                        "knownNameFormat": "Lv{0} {1}",
                         "bestFormat": "ベスト: {0:F1}{1}",
-                        "rankFormat": "ランク: {0}",
-                        "countFormat": "つった数: {0}",
-                        "sizeUnit": "cm",
-                        "unknownRankLabel": "-",
-                        "image": "./Image|Sprite",
-                        "nameText": "./Name|Text",
                         "bestText": "./Best|Text",
+                        "countFormat": "つった数: {0}",
+                        "countText": "./Count|Text",
+                        "image": "./Image|Sprite",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "nameText": "./Name|Text",
+                        "rankFormat": "ランク: {0}",
                         "rankText": "./Rank|Text",
-                        "countText": "./Count|Text"
+                        "sizeUnit": "cm",
+                        "unknownNameFormat": "Lv{0} ????",
+                        "unknownRankLabel": "-"
                       }
                     }
                   }
@@ -585,8 +586,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -603,8 +604,8 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
-                          "font_size": 22.0,
+                          "content": "サカバンバスピス",
+                          "font_size": 20.0,
                           "color": [
                             0.94,
                             0.97,
@@ -617,7 +618,7 @@
                           "layer": 6,
                           "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
                           "icon_set": "",
-                          "outline_width": 2.5,
+                          "outline_width": 2.1,
                           "outline_color": [
                             0.02,
                             0.03,
@@ -627,7 +628,7 @@
                           "box_width": 0.0,
                           "box_height": 0.0,
                           "wrap": false,
-                          "weight": 0.6,
+                          "weight": 0.3,
                           "shadow_offset_x": 2.0,
                           "shadow_offset_y": 2.0,
                           "shadow_color": [
@@ -641,7 +642,58 @@
                       }
                     }
                   ],
-                  "children": []
+                  "children": [
+                    {
+                      "name": "Sprite",
+                      "actor_kind": "Actor2D",
+                      "canvas_transform": {
+                        "position": [
+                          0.0,
+                          -15.59818
+                        ],
+                        "rotation": 0.0,
+                        "scale": [
+                          1.0,
+                          1.0
+                        ],
+                        "pivot": [
+                          0.5,
+                          0.5
+                        ],
+                        "anchor": [
+                          0.0,
+                          0.0
+                        ],
+                        "scale_transform": true,
+                        "scale_size": true,
+                        "keep_aspect_ratio": false,
+                        "aspect_ratio_axis": "width"
+                      },
+                      "components": [
+                        {
+                          "name": "Sprite",
+                          "component": {
+                            "type": "SpriteComponent",
+                            "data": {
+                              "texture_path": "assets://zukan/textures/label.png",
+                              "color": [
+                                1.0,
+                                0.69068843,
+                                0.0,
+                                1.0
+                              ],
+                              "width": 196.4,
+                              "height": 44.2,
+                              "layer": 0,
+                              "postfx_path": "",
+                              "raycast_target": false
+                            }
+                          }
+                        }
+                      ],
+                      "children": []
+                    }
+                  ]
                 },
                 {
                   "name": "Best",
@@ -649,7 +701,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      96.0
+                      66.94111
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -657,8 +709,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -675,7 +727,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "10.0cm",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -696,8 +748,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 67.6,
+                          "box_height": 23.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -721,7 +773,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      128.0
+                      89.586
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -729,8 +781,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -747,7 +799,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "S",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -768,8 +820,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 34.7,
+                          "box_height": 39.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -793,7 +845,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      160.0
+                      110.36658
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -801,8 +853,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -819,7 +871,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "24匹",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -840,8 +892,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 105.2,
+                          "box_height": 23.9,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -896,18 +948,18 @@
                     "data": {
                       "type_name": "assets://zukan/scripts/ZukanCard.cs",
                       "fields": {
-                        "unknownNameFormat": "Lv{0} ????",
-                        "knownNameFormat": "Lv{0} {1}",
                         "bestFormat": "ベスト: {0:F1}{1}",
-                        "rankFormat": "ランク: {0}",
-                        "countFormat": "つった数: {0}",
-                        "sizeUnit": "cm",
-                        "unknownRankLabel": "-",
-                        "image": "./Image|Sprite",
-                        "nameText": "./Name|Text",
                         "bestText": "./Best|Text",
+                        "countFormat": "つった数: {0}",
+                        "countText": "./Count|Text",
+                        "image": "./Image|Sprite",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "nameText": "./Name|Text",
+                        "rankFormat": "ランク: {0}",
                         "rankText": "./Rank|Text",
-                        "countText": "./Count|Text"
+                        "sizeUnit": "cm",
+                        "unknownNameFormat": "Lv{0} ????",
+                        "unknownRankLabel": "-"
                       }
                     }
                   }
@@ -978,8 +1030,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -996,8 +1048,8 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
-                          "font_size": 22.0,
+                          "content": "サカバンバスピス",
+                          "font_size": 20.0,
                           "color": [
                             0.94,
                             0.97,
@@ -1010,7 +1062,7 @@
                           "layer": 6,
                           "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
                           "icon_set": "",
-                          "outline_width": 2.5,
+                          "outline_width": 2.1,
                           "outline_color": [
                             0.02,
                             0.03,
@@ -1020,7 +1072,7 @@
                           "box_width": 0.0,
                           "box_height": 0.0,
                           "wrap": false,
-                          "weight": 0.6,
+                          "weight": 0.3,
                           "shadow_offset_x": 2.0,
                           "shadow_offset_y": 2.0,
                           "shadow_color": [
@@ -1034,7 +1086,58 @@
                       }
                     }
                   ],
-                  "children": []
+                  "children": [
+                    {
+                      "name": "Sprite",
+                      "actor_kind": "Actor2D",
+                      "canvas_transform": {
+                        "position": [
+                          0.0,
+                          -15.59818
+                        ],
+                        "rotation": 0.0,
+                        "scale": [
+                          1.0,
+                          1.0
+                        ],
+                        "pivot": [
+                          0.5,
+                          0.5
+                        ],
+                        "anchor": [
+                          0.0,
+                          0.0
+                        ],
+                        "scale_transform": true,
+                        "scale_size": true,
+                        "keep_aspect_ratio": false,
+                        "aspect_ratio_axis": "width"
+                      },
+                      "components": [
+                        {
+                          "name": "Sprite",
+                          "component": {
+                            "type": "SpriteComponent",
+                            "data": {
+                              "texture_path": "assets://zukan/textures/label.png",
+                              "color": [
+                                1.0,
+                                0.69068843,
+                                0.0,
+                                1.0
+                              ],
+                              "width": 196.4,
+                              "height": 44.2,
+                              "layer": 0,
+                              "postfx_path": "",
+                              "raycast_target": false
+                            }
+                          }
+                        }
+                      ],
+                      "children": []
+                    }
+                  ]
                 },
                 {
                   "name": "Best",
@@ -1042,7 +1145,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      96.0
+                      66.94111
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1050,8 +1153,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1068,7 +1171,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "10.0cm",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1089,8 +1192,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 67.6,
+                          "box_height": 23.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1114,7 +1217,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      128.0
+                      89.586
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1122,8 +1225,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1140,7 +1243,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "S",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1161,8 +1264,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 34.7,
+                          "box_height": 39.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1186,7 +1289,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      160.0
+                      110.36658
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1194,8 +1297,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1212,7 +1315,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "24匹",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1233,8 +1336,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 105.2,
+                          "box_height": 23.9,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1289,18 +1392,18 @@
                     "data": {
                       "type_name": "assets://zukan/scripts/ZukanCard.cs",
                       "fields": {
-                        "unknownNameFormat": "Lv{0} ????",
-                        "knownNameFormat": "Lv{0} {1}",
                         "bestFormat": "ベスト: {0:F1}{1}",
-                        "rankFormat": "ランク: {0}",
-                        "countFormat": "つった数: {0}",
-                        "sizeUnit": "cm",
-                        "unknownRankLabel": "-",
-                        "image": "./Image|Sprite",
-                        "nameText": "./Name|Text",
                         "bestText": "./Best|Text",
+                        "countFormat": "つった数: {0}",
+                        "countText": "./Count|Text",
+                        "image": "./Image|Sprite",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "nameText": "./Name|Text",
+                        "rankFormat": "ランク: {0}",
                         "rankText": "./Rank|Text",
-                        "countText": "./Count|Text"
+                        "sizeUnit": "cm",
+                        "unknownNameFormat": "Lv{0} ????",
+                        "unknownRankLabel": "-"
                       }
                     }
                   }
@@ -1371,8 +1474,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1389,8 +1492,8 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
-                          "font_size": 22.0,
+                          "content": "サカバンバスピス",
+                          "font_size": 20.0,
                           "color": [
                             0.94,
                             0.97,
@@ -1403,7 +1506,7 @@
                           "layer": 6,
                           "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
                           "icon_set": "",
-                          "outline_width": 2.5,
+                          "outline_width": 2.1,
                           "outline_color": [
                             0.02,
                             0.03,
@@ -1413,7 +1516,7 @@
                           "box_width": 0.0,
                           "box_height": 0.0,
                           "wrap": false,
-                          "weight": 0.6,
+                          "weight": 0.3,
                           "shadow_offset_x": 2.0,
                           "shadow_offset_y": 2.0,
                           "shadow_color": [
@@ -1427,7 +1530,58 @@
                       }
                     }
                   ],
-                  "children": []
+                  "children": [
+                    {
+                      "name": "Sprite",
+                      "actor_kind": "Actor2D",
+                      "canvas_transform": {
+                        "position": [
+                          0.0,
+                          -15.59818
+                        ],
+                        "rotation": 0.0,
+                        "scale": [
+                          1.0,
+                          1.0
+                        ],
+                        "pivot": [
+                          0.5,
+                          0.5
+                        ],
+                        "anchor": [
+                          0.0,
+                          0.0
+                        ],
+                        "scale_transform": true,
+                        "scale_size": true,
+                        "keep_aspect_ratio": false,
+                        "aspect_ratio_axis": "width"
+                      },
+                      "components": [
+                        {
+                          "name": "Sprite",
+                          "component": {
+                            "type": "SpriteComponent",
+                            "data": {
+                              "texture_path": "assets://zukan/textures/label.png",
+                              "color": [
+                                1.0,
+                                0.69068843,
+                                0.0,
+                                1.0
+                              ],
+                              "width": 196.4,
+                              "height": 44.2,
+                              "layer": 0,
+                              "postfx_path": "",
+                              "raycast_target": false
+                            }
+                          }
+                        }
+                      ],
+                      "children": []
+                    }
+                  ]
                 },
                 {
                   "name": "Best",
@@ -1435,7 +1589,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      96.0
+                      66.94111
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1443,8 +1597,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1461,7 +1615,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "10.0cm",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1482,8 +1636,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 67.6,
+                          "box_height": 23.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1507,7 +1661,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      128.0
+                      89.586
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1515,8 +1669,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1533,7 +1687,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "S",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1554,8 +1708,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 34.7,
+                          "box_height": 39.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1579,7 +1733,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      160.0
+                      110.36658
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1587,8 +1741,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1605,7 +1759,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "24匹",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1626,8 +1780,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 105.2,
+                          "box_height": 23.9,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1682,18 +1836,18 @@
                     "data": {
                       "type_name": "assets://zukan/scripts/ZukanCard.cs",
                       "fields": {
-                        "unknownNameFormat": "Lv{0} ????",
-                        "knownNameFormat": "Lv{0} {1}",
                         "bestFormat": "ベスト: {0:F1}{1}",
-                        "rankFormat": "ランク: {0}",
-                        "countFormat": "つった数: {0}",
-                        "sizeUnit": "cm",
-                        "unknownRankLabel": "-",
-                        "image": "./Image|Sprite",
-                        "nameText": "./Name|Text",
                         "bestText": "./Best|Text",
+                        "countFormat": "つった数: {0}",
+                        "countText": "./Count|Text",
+                        "image": "./Image|Sprite",
+                        "knownNameFormat": "Lv{0} {1}",
+                        "nameText": "./Name|Text",
+                        "rankFormat": "ランク: {0}",
                         "rankText": "./Rank|Text",
-                        "countText": "./Count|Text"
+                        "sizeUnit": "cm",
+                        "unknownNameFormat": "Lv{0} ????",
+                        "unknownRankLabel": "-"
                       }
                     }
                   }
@@ -1764,8 +1918,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1782,8 +1936,8 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
-                          "font_size": 22.0,
+                          "content": "サカバンバスピス",
+                          "font_size": 20.0,
                           "color": [
                             0.94,
                             0.97,
@@ -1796,7 +1950,7 @@
                           "layer": 6,
                           "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
                           "icon_set": "",
-                          "outline_width": 2.5,
+                          "outline_width": 2.1,
                           "outline_color": [
                             0.02,
                             0.03,
@@ -1806,7 +1960,7 @@
                           "box_width": 0.0,
                           "box_height": 0.0,
                           "wrap": false,
-                          "weight": 0.6,
+                          "weight": 0.3,
                           "shadow_offset_x": 2.0,
                           "shadow_offset_y": 2.0,
                           "shadow_color": [
@@ -1820,7 +1974,58 @@
                       }
                     }
                   ],
-                  "children": []
+                  "children": [
+                    {
+                      "name": "Sprite",
+                      "actor_kind": "Actor2D",
+                      "canvas_transform": {
+                        "position": [
+                          0.0,
+                          -15.59818
+                        ],
+                        "rotation": 0.0,
+                        "scale": [
+                          1.0,
+                          1.0
+                        ],
+                        "pivot": [
+                          0.5,
+                          0.5
+                        ],
+                        "anchor": [
+                          0.0,
+                          0.0
+                        ],
+                        "scale_transform": true,
+                        "scale_size": true,
+                        "keep_aspect_ratio": false,
+                        "aspect_ratio_axis": "width"
+                      },
+                      "components": [
+                        {
+                          "name": "Sprite",
+                          "component": {
+                            "type": "SpriteComponent",
+                            "data": {
+                              "texture_path": "assets://zukan/textures/label.png",
+                              "color": [
+                                1.0,
+                                0.69068843,
+                                0.0,
+                                1.0
+                              ],
+                              "width": 196.4,
+                              "height": 44.2,
+                              "layer": 0,
+                              "postfx_path": "",
+                              "raycast_target": false
+                            }
+                          }
+                        }
+                      ],
+                      "children": []
+                    }
+                  ]
                 },
                 {
                   "name": "Best",
@@ -1828,7 +2033,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      96.0
+                      66.94111
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1836,8 +2041,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1854,7 +2059,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "10.0cm",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1875,8 +2080,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 67.6,
+                          "box_height": 23.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1900,7 +2105,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      128.0
+                      89.586
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1908,8 +2113,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1926,7 +2131,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "S",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -1947,8 +2152,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 34.7,
+                          "box_height": 39.8,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -1972,7 +2177,7 @@
                   "canvas_transform": {
                     "position": [
                       0.0,
-                      160.0
+                      110.36658
                     ],
                     "rotation": 0.0,
                     "scale": [
@@ -1980,8 +2185,8 @@
                       1.0
                     ],
                     "pivot": [
-                      0.0,
-                      0.0
+                      0.5,
+                      0.5
                     ],
                     "anchor": [
                       0.0,
@@ -1998,7 +2203,7 @@
                       "component": {
                         "type": "TextComponent",
                         "data": {
-                          "content": "",
+                          "content": "24匹",
                           "font_size": 19.0,
                           "color": [
                             0.72,
@@ -2019,8 +2224,8 @@
                             0.06,
                             1.0
                           ],
-                          "box_width": 0.0,
-                          "box_height": 0.0,
+                          "box_width": 105.2,
+                          "box_height": 23.9,
                           "wrap": false,
                           "weight": 0.3,
                           "shadow_offset_x": 2.0,
@@ -2309,6 +2514,47 @@
           "children": []
         }
       ]
+    },
+    {
+      "name": "Flow",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "SceneFlow",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://common/scripts/SceneFlow.cs",
+              "fields": {
+                "debugForceFromPrologue": "false",
+                "fadeColorB": "0.000",
+                "fadeColorG": "0.000",
+                "fadeColorR": "0.000",
+                "fadeDuration": "0.500",
+                "fadeInOnStart": "true",
+                "nextScene": ""
+              }
+            }
+          }
+        }
+      ],
+      "children": []
     }
   ]
 }

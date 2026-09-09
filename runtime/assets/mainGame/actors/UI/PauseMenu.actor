@@ -51,7 +51,9 @@
         "type": "ScriptComponent",
         "data": {
           "type_name": "assets://mainGame/scripts/PauseMenu.cs",
-          "fields": {}
+          "fields": {
+            "sceneFlow": "Flow"
+          }
         }
       }
     }

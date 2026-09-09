@@ -179,8 +179,13 @@ public class SceneFlow : SEEDScript
     /// <summary>
     /// 毎フレーム、フェードの進行と描画を行う。
     /// フェードアウト完了の「次のフレーム」でシーン切替を発行する。
+    ///
+    /// 【時間軸】フェードは必ず実時間（<c>SEED.Time.UnscaledDeltaTime</c>）で進める。
+    /// ポーズメニューからの遷移はゲーム時間が止まった状態（<c>Time.Scale = 0</c>）で
+    /// 始まることがあり、<c>ctx.DeltaTime</c>（スケール適用後）で進めると
+    /// α が 1 フレームも動かず「暗転したまま固まる」ため。
     /// </summary>
-    /// <param name="ctx">フレーム情報（DeltaTime を使う）。</param>
+    /// <param name="ctx">フレーム情報（時間はスケール未適用の実時間を使うので参照しない）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
         // 1) 暗転完了の次フレーム: シーン切替を発行する。
@@ -194,8 +199,8 @@ public class SceneFlow : SEEDScript
             return;
         }
 
-        // 2) フェードの進行（α を時間で動かす）
-        UpdateFadeAlpha(ctx.DeltaTime);
+        // 2) フェードの進行（α を実時間で動かす。ポーズ中でも必ず進む）
+        UpdateFadeAlpha(SEED.Time.UnscaledDeltaTime);
 
         // 3) 今フレームの α で全画面を覆う（α が 0 のときは描画しない）
         DrawFadeOverlay();
@@ -249,7 +254,7 @@ public class SceneFlow : SEEDScript
     /// <summary>
     /// 進行段階に応じて α を時間で更新し、完了したら次の段階へ進める。
     /// </summary>
-    /// <param name="deltaTime">前フレームからの経過秒。</param>
+    /// <param name="deltaTime">前フレームからの経過秒（実時間）。</param>
     private void UpdateFadeAlpha(float deltaTime)
     {
         // フェード時間が実質 0 のときは 1 フレームで完了させる（0 除算回避）

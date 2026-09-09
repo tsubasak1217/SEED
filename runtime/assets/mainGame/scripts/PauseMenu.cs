@@ -68,6 +68,15 @@ public class PauseMenu : SEEDScript
     /// <summary>「タイトルへ」行の添字。</summary>
     private const int IndexTitle = 2;
 
+    /// <summary>確認モードで「はい」に割り当てる行の添字。</summary>
+    private const int IndexConfirmYes = 0;
+
+    /// <summary>確認モードで「いいえ」に割り当てる行の添字。</summary>
+    private const int IndexConfirmNo = 1;
+
+    /// <summary>確認モードに必要な行数（「はい」「いいえ」の 2 行）。</summary>
+    private const int ConfirmRowCount = 2;
+
     /// <summary>ポーズ中のゲーム時間の速さ（＝停止）。</summary>
     private const float TimeScalePaused = 0f;
 
@@ -108,6 +117,21 @@ public class PauseMenu : SEEDScript
 
         /// <summary>タイトルシーンへ遷移する。</summary>
         BackToTitle,
+    }
+
+    /// <summary>
+    /// メニューの表示モード【行の意味を切り替える唯一のスイッチ】。
+    ///
+    /// 確認 UI 専用のアクタは足さず、<b>既存の行（Sprite + Text）を「はい」「いいえ」へ
+    /// 貼り替える</b>ことで実現する（プレハブを増やさない＝レイアウトの二重管理を避ける）。
+    /// </summary>
+    private enum MenuMode
+    {
+        /// <summary>通常のメニュー（ゲームにもどる／図鑑／タイトルへ）。</summary>
+        Normal,
+
+        /// <summary>「チュートリアルが中断されますが…」の 2 択を出している。</summary>
+        Confirm,
     }
 
     // ─── 静的状態（ポーズの単一の真実）───────────────────────
@@ -234,10 +258,43 @@ public class PauseMenu : SEEDScript
     [SerializeField(Label = "図鑑の戻り先シーン名")]
     private string zukanReturnScene = "mainGame";
 
+    /// <summary>
+    /// フェード演出つきのシーン遷移を担う <see cref="SceneFlow"/>（シーンに置いた "Flow" アクタ）。
+    ///
+    /// 設定されていれば <see cref="SceneFlow.GoTo"/>（フェードアウト → 切替）を通す。
+    /// 未設定・解決失敗のときは従来どおり <c>SEED.Scene.Transition</c> で即座に切り替える
+    /// （演出は落ちるが遷移そのものは必ず成立させる）。
+    /// </summary>
+    [SerializeField(Label = "シーン遷移(SceneFlow)", Tooltip = "シーンに置いた Flow アクタを指定する。未設定ならフェード無しの即時遷移になる")]
+    private SceneFlow? sceneFlow;
+
+    // ─── インスペクタ設定（チュートリアル中断の確認）───────────
+
+    /// <summary>
+    /// チュートリアル進行中にシーンを離れようとしたときに出す確認文（見出し行へ表示する）。
+    /// 空にすると確認を出さず、そのまま遷移する。
+    /// </summary>
+    [Header("チュートリアル中断の確認"), SerializeField(Label = "確認メッセージ"), TextArea(2)]
+    private string tutorialConfirmMessage = "チュートリアルが中断されますがよろしいですか？";
+
+    /// <summary>確認モードで 1 行目（<see cref="IndexConfirmYes"/>）に出す文言。</summary>
+    [SerializeField(Label = "確認「はい」の文言")]
+    private string confirmYesLabel = "はい";
+
+    /// <summary>確認モードで 2 行目（<see cref="IndexConfirmNo"/>）に出す文言。</summary>
+    [SerializeField(Label = "確認「いいえ」の文言")]
+    private string confirmNoLabel = "いいえ";
+
     // ─── 実行時の状態（解決済みの参照とアニメーションの現在値）─────
 
     /// <summary>行アクタの CanvasTransform（<see cref="itemActorPaths"/> と同じ並び・同じ件数）。</summary>
     private readonly List<SEED.CanvasTransform> itemTransforms = new();
+
+    /// <summary>
+    /// 行アクタ本体（<see cref="itemActorPaths"/> と同じ並び・同じ件数）。
+    /// 確認モードで余った行を丸ごと隠す（<c>Visible</c>）ために保持する。
+    /// </summary>
+    private readonly List<SEED.GameObject> itemObjects = new();
 
     /// <summary>行ラベルの Text（<see cref="itemActorPaths"/> と同じ並び・同じ件数。解決失敗は null）。</summary>
     private readonly List<SEED.Text?> itemTexts = new();
@@ -256,6 +313,33 @@ public class PauseMenu : SEEDScript
 
     /// <summary>行数（＝解決した行の件数）。行が 1 つも無ければ 0。</summary>
     private int ItemCount => itemTransforms.Count;
+
+    /// <summary>
+    /// いま操作対象になっている行数【選択範囲の唯一の定義】。
+    /// 確認モードでは 3 行目以降を隠しているので、選択も先頭 2 行に閉じる
+    /// （隠れた行が選ばれて「何も光っていないメニュー」になるのを防ぐ）。
+    /// </summary>
+    private int ActiveItemCount => (mode == MenuMode.Confirm && ItemCount > ConfirmRowCount)
+        ? ConfirmRowCount
+        : ItemCount;
+
+    /// <summary>いまの表示モード（通常メニュー／中断確認）。</summary>
+    private MenuMode mode = MenuMode.Normal;
+
+    /// <summary>確認モードで「はい」が選ばれたときに実行する動作。</summary>
+    private MenuAction pendingAction = MenuAction.Resume;
+
+    /// <summary>確認モードへ入る直前に選んでいた行（「いいえ」で戻すときの復帰先）。</summary>
+    private int indexBeforeConfirm = IndexResume;
+
+    /// <summary>
+    /// フェードアウト中（＝遷移を発行済み）か。
+    ///
+    /// true の間はメニューの入力を一切受け付けない（フェード中の二重遷移・
+    /// 「もどる」でポーズだけ解けて暗転が残る、といった事故を防ぐ）。
+    /// ポーズ状態は畳まずに保つので、ゲーム側の入力も止まったままになる。
+    /// </summary>
+    private bool isLeaving;
 
     // ─── 静的 API（ゲーム側から呼ぶ入口）───────────────────────
 
@@ -354,6 +438,8 @@ public class PauseMenu : SEEDScript
     {
         Current = this;
         selectedIndex = IndexResume;
+        mode = MenuMode.Normal;
+        isLeaving = false;
 
         // シーン配置済みの本体を採用する。まだ開いていなければ隠しておく
         // （シーン上で visible=true のまま保存されていても Play 開始時に必ず隠れる）。
@@ -381,6 +467,10 @@ public class PauseMenu : SEEDScript
     {
         if (!IsOpen) { return; }
 
+        // フェードアウト中は一切の操作を受け付けない（二重遷移・遷移の取り消しを防ぐ）。
+        // 画面は SceneFlow のフェード矩形が覆っているので、見た目の補間も止めてよい。
+        if (isLeaving) { return; }
+
         // 見た目の補間は「開閉と同じ刻の入力を無視する」フレームでも進める
         // （開いた最初の 1 フレームだけアニメが止まるのを避ける）。
         UpdateItemScales();
@@ -406,8 +496,14 @@ public class PauseMenu : SEEDScript
             return;
         }
 
-        // Esc で閉じる（＝「ゲームにもどる」と同じ）
-        if (SEED.Input.GetKeyDown(SEED.KeyCode.Escape)) { Close(); }
+        // Esc の意味はモードで変わる。
+        //  - 確認モード: 「いいえ」と同じ（メニューへ戻る。ここで閉じると中断確認の意味が無い）
+        //  - 通常モード: 閉じる（＝「ゲームにもどる」と同じ）
+        if (SEED.Input.GetKeyDown(SEED.KeyCode.Escape))
+        {
+            if (mode == MenuMode.Confirm) { ExitConfirmMode(); }
+            else { Close(); }
+        }
     }
 
     // ─── 選択・決定 ──────────────────────────────────────────
@@ -418,7 +514,7 @@ public class PauseMenu : SEEDScript
     /// <param name="index">選択する行の添字。範囲外は無視する。</param>
     public void Select(int index)
     {
-        if (index < 0 || index >= ItemCount) { return; }
+        if (index < 0 || index >= ActiveItemCount) { return; }
         if (selectedIndex == index) { return; }
         selectedIndex = index;
         RefreshVisual();
@@ -427,22 +523,142 @@ public class PauseMenu : SEEDScript
     /// <summary>いま選択している行を決定する【決定処理の唯一の集約点】。</summary>
     public void Confirm()
     {
-        switch (ActionOf(selectedIndex))
+        // フェードアウト中の決定は無視する（遷移は既に確定している）
+        if (isLeaving) { return; }
+
+        // 確認モードでは行の意味が「はい／いいえ」に変わる
+        if (mode == MenuMode.Confirm)
         {
-            case MenuAction.Resume:
-                Close();
-                break;
+            if (selectedIndex == IndexConfirmYes)
+            {
+                // 中断を承諾した。確認前に保留していた遷移を実行する
+                MenuAction action = pendingAction;
+                ExitConfirmMode();
+                ExecuteSceneChange(action);
+            }
+            else
+            {
+                // 中断しない。通常メニューへ戻す
+                ExitConfirmMode();
+            }
+            return;
+        }
 
-            case MenuAction.OpenZukan:
-                // 図鑑から「どこへ戻るか」を渡してから遷移する
-                SEED.SaveData.SetString(zukanReturnKey, zukanReturnScene);
-                SEED.SaveData.Save();
-                TransitionTo(zukanSceneName);
-                break;
+        MenuAction selected = ActionOf(selectedIndex);
+        if (selected == MenuAction.Resume)
+        {
+            Close();
+            return;
+        }
 
-            case MenuAction.BackToTitle:
-                TransitionTo(titleSceneName);
-                break;
+        // シーンを離れる項目。チュートリアル中なら中断確認を挟む
+        if (NeedsTutorialConfirm())
+        {
+            EnterConfirmMode(selected);
+            return;
+        }
+        ExecuteSceneChange(selected);
+    }
+
+    /// <summary>
+    /// 行の動作に対応する遷移先シーン名（<see cref="MenuAction.Resume"/> は遷移しないので空）。
+    /// </summary>
+    /// <param name="action">行の動作。</param>
+    private string SceneNameOf(MenuAction action) => action switch
+    {
+        MenuAction.OpenZukan   => zukanSceneName,
+        MenuAction.BackToTitle => titleSceneName,
+        _ => string.Empty,
+    };
+
+    /// <summary>
+    /// シーンを離れる動作を実行する【遷移に伴う前処理の唯一の置き場】。
+    /// </summary>
+    /// <param name="action">実行する動作（<see cref="MenuAction.Resume"/> は何もしない）。</param>
+    private void ExecuteSceneChange(MenuAction action)
+    {
+        if (action == MenuAction.OpenZukan)
+        {
+            // 図鑑から「どこへ戻るか」を渡してから遷移する
+            SEED.SaveData.SetString(zukanReturnKey, zukanReturnScene);
+            SEED.SaveData.Save();
+        }
+        TransitionTo(SceneNameOf(action));
+    }
+
+    // ─── チュートリアル中断の確認 ────────────────────────────
+
+    /// <summary>
+    /// 中断確認を出すべきか。
+    ///
+    /// チュートリアル進行中（<c>TutorialRules.Active</c>）で、文言が設定されていて、
+    /// かつ「はい」「いいえ」を出せるだけの行があるときだけ確認する。
+    /// 条件を満たさないときは確認できないので、そのまま遷移させる（遷移不能にはしない）。
+    /// </summary>
+    private bool NeedsTutorialConfirm()
+        => TutorialRules.Active
+        && !string.IsNullOrWhiteSpace(tutorialConfirmMessage)
+        && ItemCount >= ConfirmRowCount;
+
+    /// <summary>
+    /// 確認モードへ入る（既存の行を「はい」「いいえ」に貼り替える）。
+    /// </summary>
+    /// <param name="action">「はい」で実行する動作。</param>
+    private void EnterConfirmMode(MenuAction action)
+    {
+        mode = MenuMode.Confirm;
+        pendingAction = action;
+        indexBeforeConfirm = selectedIndex;
+
+        // 見出しへ確認文、先頭 2 行へ「はい」「いいえ」、残りの行は隠す
+        SetContent(resolvedTitleText, tutorialConfirmMessage);
+        SetContent(ItemTextAt(IndexConfirmYes), confirmYesLabel);
+        SetContent(ItemTextAt(IndexConfirmNo), confirmNoLabel);
+        SetRowsVisibleFrom(ConfirmRowCount, false);
+
+        // 既定は「いいえ」。決定キーの連打で誤って中断してしまうのを防ぐ
+        selectedIndex = IndexConfirmNo;
+        SnapItemScales();
+        RefreshVisual();
+
+        // このフレームに残っている決定入力を確認側で拾わない
+        inputIgnoreStamp = SEED.Time.UnscaledElapsedTime;
+    }
+
+    /// <summary>確認モードを抜けて通常メニューの表示へ戻す。</summary>
+    private void ExitConfirmMode()
+    {
+        mode = MenuMode.Normal;
+
+        // 文言はインスペクタの値が正典なので、まとめて貼り直す
+        ApplyLabels();
+        SetRowsVisibleFrom(ConfirmRowCount, true);
+
+        selectedIndex = indexBeforeConfirm;
+        SnapItemScales();
+        RefreshVisual();
+
+        inputIgnoreStamp = SEED.Time.UnscaledElapsedTime;
+    }
+
+    /// <summary>行ラベルの Text を安全に取り出す（範囲外なら null）。</summary>
+    /// <param name="index">行の添字。</param>
+    private SEED.Text? ItemTextAt(int index)
+        => (index >= 0 && index < itemTexts.Count) ? itemTexts[index] : null;
+
+    /// <summary>
+    /// <paramref name="from"/> 番目以降の行アクタの表示・非表示をまとめて切り替える。
+    /// ルートを隠すと子（ラベル）もまとめて描画・ピック対象外になる。
+    /// </summary>
+    /// <param name="from">切り替えを始める行の添字。</param>
+    /// <param name="visible">表示するなら true。</param>
+    private void SetRowsVisibleFrom(int from, bool visible)
+    {
+        for (int i = from; i < itemObjects.Count; i++)
+        {
+            SEED.GameObject row = itemObjects[i];
+            if (!row.IsValid) { continue; }
+            row.Visible = visible;
         }
     }
 
@@ -456,9 +672,17 @@ public class PauseMenu : SEEDScript
     };
 
     /// <summary>
-    /// ポーズ状態を畳んでからシーンを切り替える。
-    /// ゲーム時間・カーソル・静的状態を戻してから遷移するので、
-    /// 遷移先が「止まったまま・カーソルが無いまま」になることはない。
+    /// シーンを切り替える【遷移の唯一の出口】。
+    ///
+    /// <see cref="sceneFlow"/> が結線されていれば <see cref="SceneFlow.GoTo"/> に任せ、
+    /// フェードアウトしてから切り替える。フェード中は：
+    ///  - <see cref="isLeaving"/> でメニューの入力を止める
+    ///  - <see cref="IsOpen"/> は true のまま（ゲーム側の入力も止まったまま）
+    ///  - ゲーム時間も止めたまま（フェードは SceneFlow が実時間で進める）
+    /// にしておき、静的状態とゲーム時間の復帰は <see cref="OnDestroy"/>
+    /// （＝シーン破棄時に必ず走る）の <see cref="ResetStaticState"/> に任せる。
+    ///
+    /// SceneFlow が無い場合は従来どおり、ポーズ状態を自分で畳んでから即座に切り替える。
     /// </summary>
     /// <param name="sceneName">遷移先のシーン名（シーンマネージャ登録名）。</param>
     private void TransitionTo(string sceneName)
@@ -468,6 +692,20 @@ public class PauseMenu : SEEDScript
             SEED.Debug.LogWarning("[PauseMenu] 遷移先のシーン名が未設定");
             return;
         }
+
+        // フェードつき遷移（SceneFlow が結線されている場合）
+        if (sceneFlow is { } flow)
+        {
+            if (flow.IsTransitioning) { return; }   // 既に遷移中（二重遷移の防止）
+            if (flow.GoTo(sceneName))
+            {
+                isLeaving = true;
+                return;
+            }
+            // GoTo が受け付けなかった場合は下の即時遷移へ落ちる（遷移不能にはしない）
+        }
+
+        // フォールバック: 演出なしの即時遷移（従来の挙動）
         ResetStaticState();
         SEED.Input.CursorLocked = false;
         SEED.Scene.Transition(sceneName);
@@ -477,7 +715,7 @@ public class PauseMenu : SEEDScript
     /// <param name="step">移動量（-1 = 上 / +1 = 下）。</param>
     private void MoveSelection(int step)
     {
-        int count = ItemCount;
+        int count = ActiveItemCount;
         if (count <= 0) { return; }   // 行が 1 つも解決できていない（剰余の 0 除算を防ぐ）
         Select((selectedIndex + step + count) % count);
     }
@@ -494,6 +732,7 @@ public class PauseMenu : SEEDScript
     private void ResolveReferences()
     {
         itemTransforms.Clear();
+        itemObjects.Clear();
         itemTexts.Clear();
         itemScales.Clear();
 
@@ -509,6 +748,7 @@ public class PauseMenu : SEEDScript
             }
 
             itemTransforms.Add(rowTransform);
+            itemObjects.Add(row);
             itemTexts.Add(i < itemLabelPaths.Count ? ResolveText(itemLabelPaths[i]) : null);
             itemScales.Add(normalScale);
         }
@@ -595,6 +835,12 @@ public class PauseMenu : SEEDScript
     /// </summary>
     private void OnMenuOpened()
     {
+        // 前回の開閉で確認モードのまま閉じていても、必ず通常メニューから始める
+        mode = MenuMode.Normal;
+        isLeaving = false;
+        ApplyLabels();
+        SetRowsVisibleFrom(ConfirmRowCount, true);
+
         selectedIndex = IndexResume;
         SnapItemScales();
         RefreshVisual();

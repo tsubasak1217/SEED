@@ -95,6 +95,15 @@ public class Zukan : SEEDScript
     [Header("遷移"), SerializeField(Label = "戻り先のセーブキー")]
     private string returnSceneKey = "zukan_return";
 
+    /// <summary>
+    /// フェード演出つきのシーン遷移を担う <see cref="SceneFlow"/>（シーンに置いた "Flow" アクタ）。
+    ///
+    /// 結線されていれば <see cref="SceneFlow.GoTo"/>（フェードアウト → 切替）を通す。
+    /// 未設定・解決失敗のときは従来どおり即座に切り替える（演出は落ちるが退出はできる）。
+    /// </summary>
+    [SerializeField(Label = "シーン遷移(SceneFlow)", Tooltip = "シーンに置いた Flow アクタを指定する。未設定ならフェード無しの即時遷移になる")]
+    private SceneFlow? sceneFlow;
+
     // ─── インスペクタ設定（BGM）──────────────────────────────
 
     /// <summary>
@@ -102,8 +111,8 @@ public class Zukan : SEEDScript
     /// 開始時に <see cref="SEED.Audio.PlayBgm"/> で流し、図鑑を閉じるときに止める
     /// （戻り先のシーンは自分の BGM を自分で流す前提）。
     /// </summary>
-    [Header("BGM"), SerializeField(Label = "BGM(パス)")]
-    private string bgmPath = "assets://mainGame/audios/bgm.mp3";
+    [Header("BGM"), SerializeField(Label = "BGM(パス)"), AssetReference("mp3", "wav", "ogg")]
+    private string bgmPath = "assets://zukan/audios/bgm.mp3";
 
     /// <summary>BGM の音量（1.0 = 等倍）。</summary>
     [SerializeField(Label = "BGMの音量")]
@@ -233,6 +242,9 @@ public class Zukan : SEEDScript
             BuildPage();
         }
 
+        // 退出のフェード中は一切の操作を受け付けない（二重遷移・暗転中のページ送りを防ぐ）
+        if (sceneFlow is { } flow && flow.IsTransitioning) { return; }
+
         if (SEED.Input.GetKeyDown(SEED.KeyCode.A) || SEED.Input.GetKeyDown(SEED.KeyCode.LeftArrow))
         {
             ChangePage(PageStepPrev);
@@ -321,13 +333,29 @@ public class Zukan : SEEDScript
         BuildPage();
     }
 
-    /// <summary>図鑑を閉じて、開く前のシーンへ戻る。</summary>
+    /// <summary>
+    /// 図鑑を閉じて、開く前のシーンへ戻る【退出の唯一の出口】。
+    ///
+    /// <see cref="sceneFlow"/> が結線されていればフェードアウトしてから切り替える。
+    /// 無ければ従来どおり即座に切り替える（演出だけが落ちる）。
+    /// </summary>
     private void LeaveZukan()
     {
         string scene = SEED.SaveData.GetString(returnSceneKey, defaultReturnScene);
         if (string.IsNullOrWhiteSpace(scene)) { scene = defaultReturnScene; }
-        // 図鑑の BGM は図鑑の持ち物なので、出ていく前に止める。
+
+        // 図鑑の BGM は図鑑の持ち物なので、出ていく前に止める
+        // （戻り先のシーンは自分の BGM を自分で流す前提）。
         SEED.Audio.StopBgm();
+
+        // フェードつき退出
+        if (sceneFlow is { } flow)
+        {
+            if (flow.IsTransitioning) { return; }   // 既にフェード中（二重遷移の防止）
+            if (flow.GoTo(scene)) { return; }
+            // 受け付けられなかった場合だけ即時遷移へ落ちる
+        }
+
         SEED.Scene.Transition(scene);
     }
 
