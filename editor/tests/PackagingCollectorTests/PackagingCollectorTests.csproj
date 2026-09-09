@@ -1,0 +1,61 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    パッケージ化のアセット収集（AssetCollector）と PAK 書き出し（PakWriter）の単体テスト。
+
+    対象:
+      - AssetReferenceScanner : 参照抽出（assets:// / 絶対パス 4 形式 / glTF uri / ルート相対 / .cs 文字列）
+      - AssetCollector        : 参照グラフの閉包・同伴ファイル・除外と参照優先・欠落検出
+      - PakWriter             : PAK バイナリの往復（pak.rs の PakReader と同じ読み方で検証）
+      - AssetPathRewriter     : 絶対パス 4 形式 -> assets:// の書き換え
+
+    AutoReloadPolicyTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （収集ロジックが WPF 型を使い始めたらビルドが壊れ、
+          それが「収集ロジックが UI から独立していること」の検知器になる）
+
+    実行方法: dotnet run (project=editor/tests/PackagingCollectorTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.PackagingCollector</RootNamespace>
+    <AssemblyName>PackagingCollectorTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
+      <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
+      <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\Collect\AssetCollector.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\AssetPathRewriter.cs">
+      <Link>Linked\Packaging\Pak\AssetPathRewriter.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\PakWriter.cs">
+      <Link>Linked\Packaging\Pak\PakWriter.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

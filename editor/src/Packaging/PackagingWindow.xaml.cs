@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
@@ -27,6 +28,8 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using Microsoft.Win32;
+using SEEDEditor.Packaging.Collect;
+using SEEDEditor.Packaging.Pak;
 
 namespace SEEDEditor.Packaging;
 
@@ -48,6 +51,12 @@ public partial class PackagingWindow : Window
 
     /// <summary>runtime フォルダパス（cargo build の実行ディレクトリ）。</summary>
     private readonly string _runtimePath;
+
+    /// <summary>
+    /// runtime/src パス。エンジンに焼き込まれた assets:// 参照を拾って
+    /// 収録の起点に加えるために AssetCollector へ渡す。
+    /// </summary>
+    private readonly string _runtimeSrcPath;
 
     private PackagingData  _data;
     private TargetPlatform _selectedPlatform = TargetPlatform.Windows;
@@ -96,6 +105,15 @@ public partial class PackagingWindow : Window
     /// <summary>設定ペイン見出しのアイコン一辺サイズ（px）。</summary>
     private const double SectionHeaderIconSize = 20.0;
 
+    /// <summary>設定行のラベル列の幅（px）。</summary>
+    private const double SettingLabelColumnWidth = 110.0;
+
+    /// <summary>文字列リストを 1 行で表示するときの区切り。</summary>
+    private const string ListSeparatorForDisplay = ", ";
+
+    /// <summary>文字列リストの入力を分解するときの区切り文字。</summary>
+    private static readonly char[] ListSeparatorChars = [',', ';', '\n', '\r'];
+
     private static readonly SolidColorBrush BrushSelected  = new(Color.FromRgb(0x1A, 0x2A, 0x3A));
     private static readonly SolidColorBrush BrushAvailable = new(Color.FromRgb(0x33, 0x99, 0x55));
     private static readonly SolidColorBrush BrushWarn      = new(Color.FromRgb(0xAA, 0x88, 0x22));
@@ -108,7 +126,8 @@ public partial class PackagingWindow : Window
         InitializeComponent();
         _assetsPath  = assetsPath;
         // runtime フォルダはプロジェクトルート直下にある想定
-        _runtimePath = Path.GetFullPath(Path.Combine(assetsPath, "..", "..", "runtime"));
+        _runtimePath    = Path.GetFullPath(Path.Combine(assetsPath, "..", "..", "runtime"));
+        _runtimeSrcPath = Path.Combine(_runtimePath, "src");
 
         var settingsPath = Path.Combine(assetsPath, "packaging_settings.json");
         _data = PackagingData.LoadFrom(settingsPath);
@@ -305,6 +324,10 @@ public partial class PackagingWindow : Window
         gameNameGrid.Children.Add(gameNameLabel);
         gameNameGrid.Children.Add(_tbGameName);
         SettingsPane.Children.Add(gameNameGrid);
+
+        // ── アセット収録設定（実際にパッケージを作れるプラットフォームのみ） ──
+        if (meta.Availability != PlatformAvailability.RequiresLicense)
+            BuildAssetCollectionSettings();
 
         // 各プラットフォームの設定 UI
         switch (platform)
@@ -638,6 +661,125 @@ public partial class PackagingWindow : Window
         return grid;
     }
 
+    // ── アセット収録設定 ─────────────────────────────────────
+
+    /// <summary>
+    /// 収録アセットの絞り込み設定 UI を構築する（全プラットフォーム共通）。
+    ///
+    /// 参照グラフから外れるアセットを救う「追加同梱フォルダ」と、
+    /// 参照解決を捨てて従来どおり全部入れる「全ファイル同梱」が逃げ道になる。
+    /// </summary>
+    private void BuildAssetCollectionSettings()
+    {
+        var assets = _data.Assets;
+
+        SettingsPane.Children.Add(BuildSectionSubHeader("アセット収録"));
+
+        SettingsPane.Children.Add(BuildInfoBlock(
+            "既定では project_settings.json のシーンから参照を辿り、\n" +
+            "到達したアセットだけを assets.pak へ入れます。\n" +
+            "除外は「参照されていないものの掃除」であり、参照されていれば\n" +
+            "除外設定に当たっていても同梱されます（ログに警告が出ます）。"));
+
+        // 全ファイル同梱トグル（従来の挙動へ戻す緊急避難）
+        SettingsPane.Children.Add(BuildCheckRow(
+            "全ファイル同梱", assets.IncludeAllFiles,
+            v => assets.IncludeAllFiles = v,
+            "参照解決を行わず、アセットフォルダの全ファイルを入れます（サイズは大きくなります）"));
+
+        // 除外・追加の各リスト（カンマ区切り）
+        SettingsPane.Children.Add(BuildListRow(
+            "除外フォルダ", assets.ExcludedFolders,
+            "パスのどこかの階層名が一致したら除外します（* が使えます）"));
+        SettingsPane.Children.Add(BuildListRow(
+            "除外拡張子", assets.ExcludedExtensions,
+            "この拡張子のファイルは、参照されていなければ除外します"));
+        SettingsPane.Children.Add(BuildListRow(
+            "除外ファイル名", assets.ExcludedFileNames,
+            "OS が作るゴミファイルなどの除外（* が使えます）"));
+        SettingsPane.Children.Add(BuildListRow(
+            "追加同梱フォルダ", assets.AdditionalFolders,
+            "参照グラフで辿れないアセットを丸ごと入れる逃げ道（アセットルートからの相対パス）"));
+        SettingsPane.Children.Add(BuildListRow(
+            "常時同梱拡張子", assets.AlwaysIncludedExtensions,
+            "参照の有無に関わらず入れる拡張子。既定の .cs はスクリプトを一括コンパイルするため必要です"));
+    }
+
+    /// <summary>
+    /// 文字列リストをカンマ区切りで編集する行を構築する。
+    /// 編集内容はその場でリストへ書き戻す（保存はビルド実行時にまとめて行う）。
+    /// </summary>
+    /// <param name="label">行のラベル。</param>
+    /// <param name="target">編集対象のリスト（この場で中身を差し替える）。</param>
+    /// <param name="tooltip">ホバー時の説明。</param>
+    /// <returns>構築した行。</returns>
+    private UIElement BuildListRow(string label, List<string> target, string tooltip)
+    {
+        var tb = new TextBox
+        {
+            Style      = (Style)Resources["SettingTextBox"],
+            Text       = string.Join(ListSeparatorForDisplay, target),
+            ToolTip    = tooltip,
+        };
+        tb.TextChanged += (_, _) =>
+        {
+            // カンマ区切りを分解し、空要素を落としてリストへ書き戻す
+            var items = tb.Text
+                .Split(ListSeparatorChars, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0)
+                .ToList();
+            target.Clear();
+            target.AddRange(items);
+        };
+
+        return BuildLabeledRow(label, tb, tooltip);
+    }
+
+    /// <summary>真偽値をチェックボックスで編集する行を構築する。</summary>
+    /// <param name="label">行のラベル。</param>
+    /// <param name="current">初期値。</param>
+    /// <param name="onChanged">変更時のコールバック。</param>
+    /// <param name="tooltip">ホバー時の説明。</param>
+    /// <returns>構築した行。</returns>
+    private UIElement BuildCheckRow(string label, bool current, Action<bool> onChanged, string tooltip)
+    {
+        var cb = new CheckBox
+        {
+            IsChecked         = current,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            ToolTip           = tooltip,
+        };
+        cb.Checked   += (_, _) => onChanged(true);
+        cb.Unchecked += (_, _) => onChanged(false);
+        return BuildLabeledRow(label, cb, tooltip);
+    }
+
+    /// <summary>ラベル + 任意コントロールの 2 列行を作る（設定行の共通レイアウト）。</summary>
+    /// <param name="label">左のラベル文字列。</param>
+    /// <param name="content">右に置くコントロール。</param>
+    /// <param name="tooltip">ラベルにも付ける説明。</param>
+    /// <returns>構築した行。</returns>
+    private UIElement BuildLabeledRow(string label, UIElement content, string tooltip)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 4) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(SettingLabelColumnWidth) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var lbl = new TextBlock
+        {
+            Style   = (Style)Resources["SettingLabel"],
+            Text    = label,
+            ToolTip = tooltip,
+        };
+        Grid.SetColumn(lbl, 0);
+        Grid.SetColumn(content, 1);
+        grid.Children.Add(lbl);
+        grid.Children.Add(content);
+        return grid;
+    }
+
     /// <summary>コンボボックス選択行を構築する。</summary>
     private UIElement BuildComboRow(string label, string[] options, string current, Action<string> onChanged)
     {
@@ -712,7 +854,7 @@ public partial class PackagingWindow : Window
         AppendLog("");
 
         SetStatus("cargo build を実行中...");
-        SetProgress(10);
+        SetProgress(ProgressCargoStart);
 
         // cargo ターゲットとバイナリ名を決定する
         var (cargoTarget, binaryName, buildArgs) = platform switch
@@ -720,6 +862,12 @@ public partial class PackagingWindow : Window
             TargetPlatform.Windows when _data.Windows.Arch == WindowsArch.Arm64 =>
                 ("aarch64-pc-windows-msvc", "SEED.exe",
                  BuildArgs(_data.Windows.BuildType, "aarch64-pc-windows-msvc")),
+            // x64 Windows をホストが x64 Windows のときにビルドする場合だけ --target を付けない。
+            // --target を付けると cargo は target/<triple>/release/ を使い、
+            // 普段の `cargo run` が使う target/release/ とビルドキャッシュを共有しない
+            // （同じコードを 2 回フルビルドすることになる）。
+            TargetPlatform.Windows when IsHostWindowsX64() =>
+                ("", "SEED.exe", BuildArgs(_data.Windows.BuildType, target: null)),
             TargetPlatform.Windows =>
                 ("x86_64-pc-windows-msvc", "SEED.exe",
                  BuildArgs(_data.Windows.BuildType, "x86_64-pc-windows-msvc")),
@@ -754,6 +902,10 @@ public partial class PackagingWindow : Window
             _ => profileDir,
         };
 
+        // 各フェーズの所要時間を測る（どこが遅いのかを毎回ログに残す）
+        var phaseWatch = Stopwatch.StartNew();
+        var totalWatch = Stopwatch.StartNew();
+
         var exitCode = await RunCargoAsync(buildArgs);
         if (exitCode != 0)
         {
@@ -762,8 +914,9 @@ public partial class PackagingWindow : Window
             SetProgress(0);
             return;
         }
+        LogPhase("cargo build", phaseWatch);
 
-        SetProgress(70);
+        SetProgress(ProgressAfterCargo);
         SetStatus("ファイルをコピー中...");
 
         // ゲーム名サブフォルダを作成する（出力先は {outputPath}/{gameName}/）
@@ -799,13 +952,14 @@ public partial class PackagingWindow : Window
             {
                 AppendLog($"⚠ バイナリが見つかりません: {binarySource}");
             }
+            LogPhase("バイナリのコピー", phaseWatch);
 
             // アセットを PAK ファイルにまとめる
-            await PackAssetsAsync(gameOutDir);
+            await PackAssetsAsync(gameOutDir, phaseWatch);
 
-            SetProgress(100);
+            SetProgress(ProgressComplete);
             AppendLog("");
-            AppendLog($"✅ ビルド完了: {gameOutDir}");
+            AppendLog($"✅ ビルド完了: {gameOutDir}（合計 {totalWatch.Elapsed.TotalSeconds:F1} 秒）");
             SetStatus($"ビルド完了 → {gameOutDir}");
 
             // エクスプローラーでビルド出力フォルダを開く
@@ -818,10 +972,33 @@ public partial class PackagingWindow : Window
         }
     }
 
-    private static string BuildArgs(BuildType buildType, string target) =>
-        buildType == BuildType.Release
-            ? $"build --release --target {target}"
-            : $"build --target {target}";
+    /// <summary>
+    /// cargo build の引数を組み立てる。
+    /// </summary>
+    /// <param name="buildType">Release / Debug。</param>
+    /// <param name="target">
+    /// ターゲットトリプル。null / 空なら --target を付けない
+    /// （ホストと同じターゲット。通常の target/&lt;profile&gt;/ を使うのでキャッシュを共有できる）。
+    /// </param>
+    /// <returns>cargo へ渡す引数文字列。</returns>
+    private static string BuildArgs(BuildType buildType, string? target)
+    {
+        var profile   = buildType == BuildType.Release ? " --release" : "";
+        var targetArg = string.IsNullOrEmpty(target) ? "" : $" --target {target}";
+        return $"build{profile}{targetArg}";
+    }
+
+    /// <summary>
+    /// ホスト環境が x64 Windows かを判定する。
+    ///
+    /// 真なら x64 Windows 向けビルドは --target 無しで通常のビルドキャッシュを使える。
+    /// 注意: 既定ツールチェインが *-pc-windows-gnu の場合は ABI が変わるが、
+    /// このプロジェクトは msvc 前提のため判定はアーキテクチャのみで行う。
+    /// </summary>
+    /// <returns>x64 Windows なら true。</returns>
+    private static bool IsHostWindowsX64() =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) &&
+        RuntimeInformation.OSArchitecture == Architecture.X64;
 
     /// <summary>cargo コマンドを非同期実行し、ログに出力しながら終了コードを返す。</summary>
     private async Task<int> RunCargoAsync(string args)
@@ -863,127 +1040,148 @@ public partial class PackagingWindow : Window
     }
 
     // ────────────────────────────────────────────────────────────
-    //  PAK パッカー
+    //  アセット収集と PAK 書き出し
     //
-    //  【バイナリ形式】
-    //  [Header - 12 bytes]
-    //    magic:       "SEED" (4 bytes)
-    //    version:     1      (u32 LE)
-    //    entry_count: N      (u32 LE)
-    //
-    //  [Entry Table - N entries]
-    //    path_len: u32 LE
-    //    path:     UTF-8 bytes (assets ルートからの相対パス、'/' 区切り)
-    //    offset:   u64 LE (ファイル先頭からのバイト位置)
-    //    size:     u64 LE
-    //
-    //  [Data Section]
-    //    各ファイルの生バイトを連結
+    //  収録ファイルの決定は AssetCollector（参照グラフの閉包）、
+    //  バイナリの書き出しは PakWriter（ストリーミング）に委譲する。
+    //  ここは「進捗と結果を UI へ流す」だけを担当する。
     // ────────────────────────────────────────────────────────────
 
+    /// <summary>cargo build 開始時に表示する進捗（％）。</summary>
+    private const int ProgressCargoStart = 10;
+
+    /// <summary>cargo build 完了時の進捗（％）。</summary>
+    private const int ProgressAfterCargo = 60;
+
+    /// <summary>全工程完了時の進捗（％）。</summary>
+    private const int ProgressComplete = 100;
+
+    /// <summary>PAK 書き出し中に割り当てる進捗の下限値（％）。</summary>
+    private const int ProgressPakStart = 70;
+
+    /// <summary>PAK 書き出し中に割り当てる進捗の上限値（％）。</summary>
+    private const int ProgressPakEnd = 95;
+
+    /// <summary>欠落参照をログへ列挙する最大件数（多すぎるとログが読めなくなる）。</summary>
+    private const int MaxLoggedMissingReferences = 50;
+
+    /// <summary>除外ルールに当たったまま同梱したファイルをログへ列挙する最大件数。</summary>
+    private const int MaxLoggedExcludedButIncluded = 20;
+
+    /// <summary>バイト数を MB 表記へ直すための除数。</summary>
+    private const double BytesPerMegabyte = 1024.0 * 1024.0;
+
     /// <summary>
-    /// アセットフォルダを assets.pak にまとめて出力先に書き出す。
-    /// テキストファイル（.json, .scene, .actor, .inputmap）内の絶対パスを
-    /// 仮想パス（assets://...）に変換してから格納する。
+    /// 収録アセットを決定し、assets.pak にまとめて出力先へ書き出す。
     /// </summary>
-    private async Task PackAssetsAsync(string outputDir)
+    /// <param name="outputDir">出力フォルダ（ここに assets.pak を作る）。</param>
+    /// <param name="phaseWatch">フェーズ所要時間の計測用ストップウォッチ。</param>
+    private async Task PackAssetsAsync(string outputDir, Stopwatch phaseWatch)
     {
         var pakPath = Path.Combine(outputDir, "assets.pak");
+
+        // ── フェーズ: 収録ファイルの決定 ────────────────────────
+        SetStatus("収録アセットを収集中...");
+        AppendLog("");
+        AppendLog("── 収録アセットの収集 ──");
+
+        AssetCollectionResult result = null!;
+        await Task.Run(() =>
+        {
+            var collector = new AssetCollector(_assetsPath, _data.Assets, _runtimeSrcPath, LogFromWorker);
+            result = collector.Collect();
+        });
+        LogPhase("収録アセットの収集", phaseWatch);
+        ReportCollection(result);
+        SetProgress(ProgressPakStart);
+
+        if (result.Included.Count == 0)
+        {
+            AppendLog("❌ 収録対象が 0 件です。project_settings.json の start_scene / scenes を確認してください。");
+            return;
+        }
+
+        // ── フェーズ: PAK 書き出し ──────────────────────────────
+        SetStatus("assets.pak を書き出し中...");
+        AppendLog("");
         AppendLog($"PAK 作成: {pakPath}");
 
-        await Task.Run(() => WritePak(pakPath));
-        AppendLog("✓ assets.pak 作成完了");
+        PakWriteStats stats = default;
+        await Task.Run(() =>
+        {
+            stats = PakWriter.Write(pakPath, _assetsPath, result.Included, LogFromWorker, ReportPakProgress);
+        });
+        LogPhase("PAK 書き出し", phaseWatch);
+
+        AppendLog($"✓ assets.pak 作成完了: {stats.EntryCount} ファイル / {ToMegabytes(stats.TotalBytes):F1} MB");
+        if (stats.SizeMismatchCount > 0)
+            AppendLog($"⚠ 収集後にサイズが変わったファイル: {stats.SizeMismatchCount} 件（0 埋め / 切り捨てで整合させました）");
     }
 
-    /// <summary>PAK ファイルを同期的に書き出す（Task.Run 内から呼ぶ）。</summary>
-    private void WritePak(string pakPath)
+    /// <summary>収集結果（件数・サイズ・欠落・警告）をログへ書き出す。</summary>
+    /// <param name="result">AssetCollector の結果。</param>
+    private void ReportCollection(AssetCollectionResult result)
     {
-        // アセットフォルダ内の全ファイルを列挙する
-        var allFiles = Directory.GetFiles(_assetsPath, "*", SearchOption.AllDirectories);
+        AppendLog($"収録: {result.Included.Count} ファイル / {ToMegabytes(result.IncludedBytes):F1} MB");
+        AppendLog($"除外: {result.ExcludedFileCount} ファイル / {ToMegabytes(result.ExcludedBytes):F1} MB " +
+                  $"（アセット全体 {result.TotalFileCount} ファイル / {ToMegabytes(result.TotalBytes):F1} MB）");
 
-        // アセットルートのパスプレフィックス（末尾 '/'）
-        var assetsPrefix = _assetsPath.TrimEnd('/', '\\') + Path.DirectorySeparatorChar;
+        // 実体の無いシーン登録
+        foreach (var scene in result.MissingScenes)
+            AppendLog($"⚠ 登録シーンの実体がありません: {scene}");
 
-        // 各エントリの (相対パス, バイトデータ) を収集する
-        var entries = new List<(string RelPath, byte[] Data)>(allFiles.Length);
-        foreach (var file in allFiles)
+        // 除外ルールに当たっているが参照されたので入れたもの（設定見直しの材料）
+        if (result.IncludedDespiteExclusion.Count > 0)
         {
-            // 相対パスを '/' 区切りで取得する
-            var relPath = file.StartsWith(assetsPrefix, StringComparison.OrdinalIgnoreCase)
-                ? file[assetsPrefix.Length..].Replace('\\', '/')
-                : Path.GetFileName(file);
-
-            byte[] data;
-            var ext = Path.GetExtension(file).ToLowerInvariant();
-            if (ext is ".json" or ".scene" or ".actor" or ".inputmap")
-            {
-                // テキストファイルは絶対パスを仮想パスへ書き換えてから格納する
-                var text = File.ReadAllText(file, System.Text.Encoding.UTF8);
-                text = RewritePathsToVirtual(text);
-                data = System.Text.Encoding.UTF8.GetBytes(text);
-            }
-            else
-            {
-                data = File.ReadAllBytes(file);
-            }
-
-            entries.Add((relPath, data));
+            AppendLog($"⚠ 除外ルールに一致するが参照されているため同梱: {result.IncludedDespiteExclusion.Count} ファイル");
+            foreach (var path in result.IncludedDespiteExclusion.Take(MaxLoggedExcludedButIncluded))
+                AppendLog($"    {path}");
+            if (result.IncludedDespiteExclusion.Count > MaxLoggedExcludedButIncluded)
+                AppendLog($"    …ほか {result.IncludedDespiteExclusion.Count - MaxLoggedExcludedButIncluded} ファイル");
         }
 
-        // オフセット計算: ヘッダー + エントリテーブルの合計サイズ
-        // Header: 4 + 4 + 4 = 12 bytes
-        // Per entry: 4 (path_len) + pathBytes + 8 (offset) + 8 (size) = 20 + pathBytes
-        long dataOffset = 12; // ヘッダー
-        foreach (var (relPath, _) in entries)
-            dataOffset += 4 + System.Text.Encoding.UTF8.GetByteCount(relPath) + 8 + 8;
-
-        using var fs = new FileStream(pakPath, FileMode.Create, FileAccess.Write);
-        using var bw = new BinaryWriter(fs, System.Text.Encoding.UTF8, leaveOpen: false);
-
-        // ── ヘッダー書き込み ─────────────────────────────────
-        bw.Write((byte)'S'); bw.Write((byte)'E'); bw.Write((byte)'E'); bw.Write((byte)'D');
-        bw.Write((uint)1);                           // version
-        bw.Write((uint)entries.Count);               // entry_count
-
-        // ── エントリテーブル書き込み ─────────────────────────
-        long currentOffset = dataOffset;
-        foreach (var (relPath, data) in entries)
+        // 参照はあるが実体が無いパス（パッケージ版で読み込み失敗になる箇所）
+        if (result.MissingReferences.Count > 0)
         {
-            var pathBytes = System.Text.Encoding.UTF8.GetBytes(relPath);
-            bw.Write((uint)pathBytes.Length);
-            bw.Write(pathBytes);
-            bw.Write((ulong)currentOffset);
-            bw.Write((ulong)data.Length);
-            currentOffset += data.Length;
+            AppendLog($"❌ 参照先が見つからないパス: {result.MissingReferences.Count} 件");
+            foreach (var m in result.MissingReferences.Take(MaxLoggedMissingReferences))
+                AppendLog($"    {m.ReferencePath}  ← {m.SourceRelPath}");
+            if (result.MissingReferences.Count > MaxLoggedMissingReferences)
+                AppendLog($"    …ほか {result.MissingReferences.Count - MaxLoggedMissingReferences} 件");
         }
-
-        // ── データセクション書き込み ─────────────────────────
-        foreach (var (_, data) in entries)
-            bw.Write(data);
-
-        Dispatcher.Invoke(() => AppendLog($"  → {entries.Count} ファイルを格納"));
     }
 
-    /// <summary>
-    /// テキスト内のアセット絶対パスを仮想パス（assets://...）へ書き換える。
-    /// JSON 文字列リテラル内の絶対パスが対象。
-    /// </summary>
-    private string RewritePathsToVirtual(string text)
+    /// <summary>PAK 書き出しの進捗を UI へ反映する（ワーカースレッドから呼ばれる）。</summary>
+    /// <param name="p">書き出し進捗。</param>
+    private void ReportPakProgress(PakWriteProgress p)
     {
-        // アセットルートの正規化（'\\' → '/'）
-        var root = _assetsPath.TrimEnd('/', '\\').Replace('\\', '/') + "/";
-        // JSON では '\' が '\\' にエスケープされているため両方置換する
-        var rootEscaped = root.Replace("/", "\\/");
-
-        text = text.Replace(root,        VirtualPath.Scheme);
-        text = text.Replace(rootEscaped, VirtualPath.Scheme);
-        // バックスラッシュ区切りの絶対パスも対応する
-        var rootBs        = _assetsPath.TrimEnd('/', '\\') + "\\";
-        var rootBsEscaped = rootBs.Replace("\\", "\\\\");
-        text = text.Replace(rootBs,        VirtualPath.Scheme);
-        text = text.Replace(rootBsEscaped, VirtualPath.Scheme);
-        return text;
+        var ratio   = p.TotalBytes > 0 ? (double)p.BytesWritten / p.TotalBytes : 1.0;
+        var percent = ProgressPakStart + (int)((ProgressPakEnd - ProgressPakStart) * ratio);
+        Dispatcher.BeginInvoke(() =>
+        {
+            SetProgress(percent);
+            SetStatus($"assets.pak 書き出し中 {p.FilesWritten}/{p.TotalFiles} ファイル " +
+                      $"({ToMegabytes(p.BytesWritten):F0}/{ToMegabytes(p.TotalBytes):F0} MB)");
+        });
     }
+
+    /// <summary>ワーカースレッドからのログを UI スレッドへ流す。</summary>
+    /// <param name="line">ログ 1 行。</param>
+    private void LogFromWorker(string line) => Dispatcher.Invoke(() => AppendLog(line));
+
+    /// <summary>フェーズの所要秒数をログへ書き、ストップウォッチを次のフェーズ用に測り直す。</summary>
+    /// <param name="phaseName">フェーズ名。</param>
+    /// <param name="watch">計測用ストップウォッチ（呼び出し後に再スタートする）。</param>
+    private void LogPhase(string phaseName, Stopwatch watch)
+    {
+        AppendLog($"[時間] {phaseName}: {watch.Elapsed.TotalSeconds:F1} 秒");
+        watch.Restart();
+    }
+
+    /// <summary>バイト数を MB へ変換する。</summary>
+    /// <param name="bytes">バイト数。</param>
+    /// <returns>MB 単位の値。</returns>
+    private static double ToMegabytes(long bytes) => bytes / BytesPerMegabyte;
 
     // ── 設定の保存 ───────────────────────────────────────────
 

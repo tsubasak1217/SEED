@@ -386,3 +386,42 @@
   遷移（title → prologue → mainGame）をヘッドレスで再現できなかった。
   シーン遷移まわりの回帰確認を自動化するには、遷移を直接起こすデバッグ手段
   （`seed_send_ipc` 相当のスクリプトコマンド、または SceneFlow のデバッグフラグ）が要る。
+
+## パッケージ化（2026-09-09 の収録ルール改修時）
+
+正典: `docs/packaging.md`（収録規則・設定項目・ログの読み方・ドライラン）。
+
+- [ ] **パッケージ版ではユーザースクリプト（.cs）が一切コンパイルされない** — 2026-09-09（実測）。
+  `runtime/src/engine/core/app_base/app/mod.rs:1411` の
+  `if let (Some(host), Some(root)) = (&scripting_host, &args.assets_root)` が
+  コンパイルの発火条件で、パッケージ実行では `args.assets_root` が `None` のため
+  `compile_scripts` が呼ばれない。さらに `SEEDScripting.dll` と hostfxr 一式が
+  出力フォルダへコピーされないので、条件を直しても実行時に読めない。
+  <b>現状のパッケージ版はスクリプト無しで動く状態</b>。
+  対策案は 2 つ: ①パッケージ時にスクリプトを事前コンパイルして DLL を同梱する、
+  ②ランタイムが PAK から `.cs` を一時フォルダへ展開して `compile_scripts` に渡す。
+  収録側の準備（`.cs` を常時同梱する規則）は済んでいる。
+  関連: `runtime/src/engine/core/scripting/mod.rs::compile_scripts`、
+  `editor/src/Packaging/Collect/PackagingRules.cs`。
+- [x] **`asset_fs` を通らない `std::fs` 直読みが残っており PAK モードで既定値になる** — 2026-09-09 記載 / 同日対応。
+  `app_init.rs` の `project_settings.json` 読み込み（ウィンドウサイズ・プラグイン有効化リスト）を `asset_fs::read_string` 経由に変更し、
+  `init_asset_fs` を `handle_resumed` の先頭（ウィンドウ生成前）へ前倒しした。最小 PAK での実機確認で 1280x720 を確認済み。
+  パッケージ実行時のプラグインは未対応のまま（`is_packaged()` なら 0 件で続行し 1 行ログ）。DLL 同梱の仕組みが要る。
+  関連: `runtime/src/engine/core/app_base/app/app_init.rs`（`parse_window_size` テスト 5 件）。
+- [ ] **ボクセル地形 `.tvox` が空／一様チャンクでも非圧縮のまま保存される（1 チャンク約 0.5 MB）** — 2026-09-09（容量調査で観察、未検証）。
+  `terrain/NewScene`（769 個・344 MB）と `templates/terrain/Untitled`（1,087 個・342 MB）は同一サイズ（467,213 バイト）のファイルが大量にあり、
+  中身が空または一様なチャンクをそのまま書き出している可能性が高い。空チャンク省略や RLE 等の圧縮で元データを 1/10 以下にできそう。
+  なお `terrain/NewScene` はどのシーンからも参照されていない（削除可否は利用者判断）。関連: `runtime/src/engine/core/app_base/app/terrain_ops.rs`。
+- [ ] **`KamomeManager.cs` の既定プレハブパスが実在しない** — 2026-09-09（収録ドライランで検出）。
+  `mainGame/scripts/KamomeManager.cs:63` の `kamomePrefabPath` 既定値が
+  `"assets://actors/kamome.actor"` だが、その実体は無い（正しくは `mainGame/actors/` 配下のはず）。
+  インスペクタで上書きされていれば動くが、既定値のままのインスタンスがあると生成に失敗する。
+  <b>アセット・スクリプトの内容変更なので要利用者判断</b>。
+- [ ] **`project_settings.json` に実体の無い `demo_*` シーンが 3 件登録されたまま** — 2026-09-09。
+  `demo/scenes/demo_title.scene` / `demo_game.scene` / `demo_result.scene` は実体が無い。
+  パッケージ化のたびに警告が出る。登録を消すのが素直（シーン設定なので要利用者判断）。
+- [ ] **`mainGame/terrain/Island/chunk_3_1_3.tvox` がシーンから参照されていない** — 2026-09-09。
+  ディスクには 48 チャンクあるが `MainGame.scene` の `TerrainChunkComponent` は 47 個。
+  地形の読み込みはシーンのコンポーネント一覧だけを見る（`terrain_ops.rs` の `walk`）ため、
+  このチャンクはエディタでもゲームでも読まれておらず、収録もされない。
+  地形の一部が欠けているのか、単なる残骸なのかは要確認。

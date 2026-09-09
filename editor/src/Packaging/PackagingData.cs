@@ -133,6 +133,13 @@ public class PackagingData
     [JsonPropertyName("ios")]
     public IosSettings Ios { get; set; } = new();
 
+    /// <summary>
+    /// アセット収録ルール（参照グラフによる絞り込みと除外設定）。
+    /// 全プラットフォーム共通で、PAK に何を入れるかを決める。
+    /// </summary>
+    [JsonPropertyName("assets")]
+    public Collect.AssetPackagingSettings Assets { get; set; } = new();
+
     // ── 永続化 ──────────────────────────────────────────────
 
     private static readonly JsonSerializerOptions SerializeOptions = new()
