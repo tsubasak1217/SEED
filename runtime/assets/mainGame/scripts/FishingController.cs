@@ -2028,7 +2028,9 @@ public class FishingController : SEEDScript
                  or FishState.Hooked
         || (State == FishState.Catching
             && (IsWaitingCatchStart
-                || CatchPhase is CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc));
+                || CatchPhase is CatchPresenter.CatchPhase.Fade
+                              or CatchPresenter.CatchPhase.LowAngle
+                              or CatchPresenter.CatchPhase.SlowArc));
 
     /// <summary>
     /// 釣り上げは決まったが、評価バナーを読ませるために演出の開始をまだ待っているか。
@@ -3475,7 +3477,9 @@ public class FishingController : SEEDScript
         // ここでウキを動かすだけで糸も一緒に跳ね上がる（追加の制御は要らない）。
         // 跳びの区間を抜けたら従来どおり手元へ畳む
         // （ParkFloatHidden は表示フラグと位置を引き直すだけなので毎フレーム呼んで安全）。
-        if (p.Phase is CatchPresenter.CatchPhase.Fade or CatchPresenter.CatchPhase.SlowArc)
+        if (p.Phase is CatchPresenter.CatchPhase.Fade
+                    or CatchPresenter.CatchPhase.LowAngle
+                    or CatchPresenter.CatchPhase.SlowArc)
         {
             if (p.FloatFollowPosition is { } floatGoal)
             {

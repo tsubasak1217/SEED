@@ -26,19 +26,28 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///
 /// <b>フェーズ（<see cref="CatchPhase"/>）と時間</b>
 /// <code>
-/// Fade    … whiteoutFadeInSeconds 秒で白へ沈み、
-///           whiteoutHoldSeconds 秒の真っ白を保持する。
-///           真っ白になった最初のフレームでカット（SwitchToSlowArcComposition）。
-/// SlowArc … 白が whiteoutFadeOutSeconds 秒で晴れ、水面を真横から見る構図で
-///           魚がウキの位置から<b>真上へ</b>跳ね上がる（Time.Scale = slowScale）。
-///           水平移動はしない（＝ウキの真上を上下するだけ）。
-///           jumpSeconds × jumpApexRatio 秒で魚を隠し、次へ。
-/// Result  … Time.Scale を戻し、ResultPanel を開く。
-///           パネルが閉じ切る（ResultPanel.IsActive が false になる）まで待つ。
-/// Close   … closeSeconds 秒の間を置いてから後始末（魚の破棄・カメラ復帰）。
+/// Fade     … whiteoutFadeInSeconds 秒で白へ沈み、
+///            whiteoutHoldSeconds 秒の真っ白を保持する。
+///            真っ白になった最初のフレームでカット（SwitchToJumpComposition）。
+/// LowAngle … 水面すれすれの低アングルで、魚が飛び出す区間（repeatWindowSeconds）
+///            だけを repeatTimeScale のスローで repeatCount 回リピートする。
+///            リピートの切れ目には白フラッシュ（repeatFlashSeconds）を挟む。
+///            repeatCount = 0 なら<b>この段階を通らない</b>（従来どおり）。
+/// SlowArc  … 横から見る構図へ toSideSeconds かけて移りつつ、魚が跳び切るまでを見せる
+///            （Time.Scale = slowScale）。水平移動はしない（＝ウキの真上を上下するだけ）。
+///            jumpSeconds × jumpApexRatio 秒で魚を隠し、次へ。
+/// Result   … Time.Scale を戻し、ResultPanel を開く。
+///            パネルが閉じ切る（ResultPanel.IsActive が false になる）まで待つ。
+/// Close    … closeSeconds 秒の間を置いてから後始末（魚の破棄・カメラ復帰）。
 /// </code>
 ///
-/// <b>カット（<see cref="SwitchToSlowArcComposition"/>）</b>
+/// <b>演出時刻（跳びの時刻）</b>
+/// 魚の位置は「跳びの時刻」<see cref="jumpTime"/> だけから決まる純関数
+/// （<see cref="PlaceFishOnJump"/>）なので、時刻を巻き戻せば同じ跳びを何度でも見せられる。
+/// リピートのスローは <b>この時刻の進み方</b>（<see cref="repeatTimeScale"/>）で表現し、
+/// <c>Time.Scale</c> は触らない（チュートリアルなど他の演出と競合させないため）。
+///
+/// <b>カット（<see cref="SwitchToJumpComposition"/>）</b>
 /// 画面が完全に白いあいだに構図を切り替えるので、視点の飛びが見えない。
 /// - 「ウキ→プレイヤーの向きに対して直角・跳びの中ほどの高さ」の姿勢を計算し、
 ///   <see cref="CameraMove.SetOverrideGoal"/> に<b>姿勢そのもの</b>と画角を渡して
@@ -82,6 +91,13 @@ public class CatchPresenter : SEEDScript
         /// <summary>白へフェードイン＋真っ白の保持。保持へ入る瞬間に構図と魚を差し替える。</summary>
         Fade,
 
+        /// <summary>
+        /// 白が晴れ、水面すれすれの低アングルで「飛び出しの瞬間」だけをスローで繰り返す。
+        /// <see cref="repeatCount"/> が 0 のときはこの段階を飛ばして
+        /// <see cref="SlowArc"/> へ直行する（従来どおりの流れ）。
+        /// </summary>
+        LowAngle,
+
         /// <summary>白が晴れ、魚が水面から真上へ跳ね上がる（スロー）。</summary>
         SlowArc,
 
@@ -108,6 +124,21 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>通常時のゲーム時間の速さ（スローから戻すときの値）。</summary>
     private const float TimeScaleNormal = 1f;
+
+    /// <summary>演出時刻（跳びの時刻）の通常の進み方（等速）。</summary>
+    private const float PresentationSpeedNormal = 1f;
+
+    /// <summary>リピート回数の下限（0＝リピートしない）。</summary>
+    private const int MinRepeatCount = 0;
+
+    /// <summary>
+    /// リピート中の速さの下限。0 を指定されると跳びの時刻が進まず
+    /// 演出が永久に終わらなくなるので、必ずこの値以上で進める。
+    /// </summary>
+    private const float MinRepeatTimeScale = 0.01f;
+
+    /// <summary>着水しぶきの強度倍率の上限（1＝飛び出しと同じ規模）。</summary>
+    private const float MaxIntensityScale = 1f;
 
     /// <summary>サイズランク S の段位（カメラ距離の加算段数。C=0 から数える）。</summary>
     private const int RankStepS = 3;
@@ -136,6 +167,12 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>画角の半分を出すための除数。</summary>
     private const float HalfDivisor = 2f;
+
+    /// <summary>半回転（度）。角度の最短回りの差分を求めるのに使う。</summary>
+    private const float HalfTurnDegrees = 180f;
+
+    /// <summary>1 回転（度）。角度を周期に畳み込むのに使う。</summary>
+    private const float FullTurnDegrees = 360f;
 
     // ベストサイズ・ベストランク・釣った数の保存キーは FishRecords が一元管理する。
 
@@ -324,6 +361,162 @@ public class CatchPresenter : SEEDScript
     [SerializeField(Label = "水音の音量")]
     private float splashSeVolume = 0.9f;
 
+    // ─── 水しぶき（波紋＋水柱。全魚共通・規模は大きさで変わる）───
+    //
+    // 生成そのものは WaterSplashSpawner（静的クラス）が担うので、シーンへの配置・
+    // 結線は要らない。ここに並ぶのは「どれくらいの規模で出すか」の調整値だけで、
+    // BuildSplashSettings() が WaterSplashSettings へ詰め替えて渡す。
+    // 初期値は WaterSplashSettings の定数を参照しているので、
+    // 「コード側の既定」と「インスペクタの既定」が食い違わない。
+
+    /// <summary>波紋アクタのパス（空なら波紋を出さない）。</summary>
+    [Header("水しぶき"), SerializeField(Label = "波紋のアクタ")]
+    private string rippleActorPath = WaterSplashSettings.DefaultRippleActorPath;
+
+    /// <summary>水柱アクタのパス（空なら水柱を出さない）。</summary>
+    [SerializeField(Label = "水柱のアクタ")]
+    private string columnActorPath = WaterSplashSettings.DefaultColumnActorPath;
+
+    /// <summary>しぶきの強度が 0 になる魚の基準サイズ（cm）。</summary>
+    [SerializeField(Label = "強度0のサイズ(cm)")]
+    private float splashMinSizeCm = 10f;
+
+    /// <summary>しぶきの強度が 1 になる魚の基準サイズ（cm）。</summary>
+    [SerializeField(Label = "強度1のサイズ(cm)")]
+    private float splashMaxSizeCm = 120f;
+
+    /// <summary>波紋の個数（強度 0）。</summary>
+    [SerializeField(Label = "波紋の個数(小)")]
+    private int splashRippleCountMin = WaterSplashSettings.DefaultRippleCountMin;
+
+    /// <summary>波紋の個数（強度 1）。</summary>
+    [SerializeField(Label = "波紋の個数(大)")]
+    private int splashRippleCountMax = WaterSplashSettings.DefaultRippleCountMax;
+
+    /// <summary>波紋を散らす半径（強度 0・メートル）。</summary>
+    [SerializeField(Label = "波紋の半径(小・m)")]
+    private float splashRippleRadiusMin = WaterSplashSettings.DefaultRippleRadiusMin;
+
+    /// <summary>波紋を散らす半径（強度 1・メートル）。</summary>
+    [SerializeField(Label = "波紋の半径(大・m)")]
+    private float splashRippleRadiusMax = WaterSplashSettings.DefaultRippleRadiusMax;
+
+    /// <summary>波紋のスケール倍率（強度 0）。</summary>
+    [SerializeField(Label = "波紋のスケール(小)")]
+    private float splashRippleScaleMin = WaterSplashSettings.DefaultRippleScaleMin;
+
+    /// <summary>波紋のスケール倍率（強度 1）。</summary>
+    [SerializeField(Label = "波紋のスケール(大)")]
+    private float splashRippleScaleMax = WaterSplashSettings.DefaultRippleScaleMax;
+
+    /// <summary>水柱の本数（強度 0。中心の 1 本を含む）。</summary>
+    [SerializeField(Label = "水柱の本数(小)")]
+    private int splashColumnCountMin = WaterSplashSettings.DefaultColumnCountMin;
+
+    /// <summary>水柱の本数（強度 1。中心の 1 本を含む）。</summary>
+    [SerializeField(Label = "水柱の本数(大)")]
+    private int splashColumnCountMax = WaterSplashSettings.DefaultColumnCountMax;
+
+    /// <summary>水柱を散らす半径（強度 0・メートル）。</summary>
+    [SerializeField(Label = "水柱の半径(小・m)")]
+    private float splashColumnRadiusMin = WaterSplashSettings.DefaultColumnRadiusMin;
+
+    /// <summary>水柱を散らす半径（強度 1・メートル）。</summary>
+    [SerializeField(Label = "水柱の半径(大・m)")]
+    private float splashColumnRadiusMax = WaterSplashSettings.DefaultColumnRadiusMax;
+
+    /// <summary>水柱のスケール倍率（強度 0）。</summary>
+    [SerializeField(Label = "水柱のスケール(小)")]
+    private float splashColumnScaleMin = WaterSplashSettings.DefaultColumnScaleMin;
+
+    /// <summary>水柱のスケール倍率（強度 1）。</summary>
+    [SerializeField(Label = "水柱のスケール(大)")]
+    private float splashColumnScaleMax = WaterSplashSettings.DefaultColumnScaleMax;
+
+    /// <summary>1 個ごとのスケールのばらつき（±の割合。0 で揃う）。</summary>
+    [SerializeField(Label = "スケールのばらつき")]
+    private float splashScaleJitter = WaterSplashSettings.DefaultScaleJitter;
+
+    /// <summary>水面から浮かせる高さ（メートル。水面とのちらつき避け）。</summary>
+    [SerializeField(Label = "水面から浮かせる高さ(m)")]
+    private float splashSurfaceOffsetY = WaterSplashSettings.DefaultSurfaceOffsetY;
+
+    /// <summary>
+    /// 着水（跳びの終端で魚が水面へ戻る瞬間）にも小さめのしぶきを出すか。
+    ///
+    /// <b>注意</b>: 跳びは <see cref="jumpApexRatio"/> の時点で釣果パネルへ切り替わるため、
+    /// 既定（0.7）のままでは<b>終端まで進まない＝この着水しぶきは出ない</b>。
+    /// 出したい場合は <see cref="jumpApexRatio"/> を 1.0 に近づけること。
+    /// </summary>
+    [SerializeField(Label = "着水にもしぶきを出す")]
+    private bool splashOnLanding = true;
+
+    /// <summary>着水しぶきの強度倍率（飛び出しに対する割合。0.5 で半分の規模）。</summary>
+    [SerializeField(Label = "着水しぶきの強度倍率")]
+    private float splashLandingIntensityScale = 0.5f;
+
+    // ─── 飛び出しリピート（低アングル）───────────────────────
+    //
+    // 白フェード明けに「水面すれすれの低い視点」で飛び出しの瞬間だけを繰り返す。
+    // 巻き戻すのは<b>跳びの時刻</b>（jumpTime）だけなので、魚の位置・姿勢を決める式
+    // （PlaceFishOnJump）は 1 つのまま使い回せる。
+
+    /// <summary>
+    /// 飛び出しを繰り返す回数。<b>0 で従来どおり</b>（低アングル段階を通らず、
+    /// 白フェード明けにいきなり横カメラの跳びが始まる）。
+    /// </summary>
+    [Header("飛び出しリピート"), SerializeField(Label = "リピート回数(0で無効)")]
+    private int repeatCount = 3;
+
+    /// <summary>
+    /// 1 回のリピートで見せる区間（跳びの時刻で何秒ぶんか）。
+    /// 跳びの先頭からこの秒数だけを繰り返す（＝水面から飛び出すところ）。
+    /// </summary>
+    [SerializeField(Label = "リピートする区間(秒)")]
+    private float repeatWindowSeconds = 0.5f;
+
+    /// <summary>
+    /// リピート中の演出時刻の進み方（0.3＝3 割の速さ＝スロー）。
+    /// <c>Time.Scale</c> は使わないので、チュートリアル等の他演出と競合しない。
+    /// </summary>
+    [SerializeField(Label = "リピート中の速さ")]
+    private float repeatTimeScale = 0.3f;
+
+    /// <summary>リピートの切れ目に入れる白フラッシュの秒数（0 で入れない）。</summary>
+    [SerializeField(Label = "切替の白フラッシュ(秒)")]
+    private float repeatFlashSeconds = 0.12f;
+
+    /// <summary>白フラッシュの強さ（0〜1。1 で真っ白）。</summary>
+    [SerializeField(Label = "白フラッシュの強さ")]
+    private float repeatFlashStrength = 0.7f;
+
+    /// <summary>低アングルのカメラ高さ（水面からの高さ・メートル）。</summary>
+    [SerializeField(Label = "低アングルの高さ(m)")]
+    private float lowAngleHeight = 0.3f;
+
+    /// <summary>低アングルのカメラ距離（飛び出し点からの水平距離・メートル）。</summary>
+    [SerializeField(Label = "低アングルの距離(m)")]
+    private float lowAngleDistance = 3.0f;
+
+    /// <summary>
+    /// 低アングルの方位角（度）。基準は「ウキ→プレイヤー」の水平方向で、
+    /// 90 度＝真横（横カメラと同じ側）。
+    /// </summary>
+    [SerializeField(Label = "低アングルの方位角θ(度)")]
+    private float lowAngleTheta = 90f;
+
+    /// <summary>低アングルの注視点の高さ（水面からの高さ・メートル）。</summary>
+    [SerializeField(Label = "低アングルの注視点の高さ(m)")]
+    private float lowAngleFocusHeight = 0.8f;
+
+    /// <summary>低アングル中の画角（度）。小さいほど寄って見える。</summary>
+    [SerializeField(Label = "低アングルの画角(度)")]
+    private float lowAngleFovDegrees = 40f;
+
+    /// <summary>低アングルから横カメラへ移るのに掛ける秒数（実時間）。0 で即座に切り替わる。</summary>
+    [SerializeField(Label = "横カメラへ移る秒数")]
+    private float toSideSeconds = 0.6f;
+
     // ─── 釣果パネル（Result）───────────────────────────────────
 
     /// <summary>
@@ -418,6 +611,44 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>スロー（<see cref="slowScale"/>）を掛けているか。戻し忘れを防ぐためのガード。</summary>
     private bool slowApplied = false;
+
+    /// <summary>
+    /// 跳びの時刻（秒）【魚の位置・姿勢を決める唯一の時間軸】。
+    /// 0 で水面、<see cref="jumpSeconds"/> で着水。リピートはこの値を 0 へ巻き戻すだけ。
+    /// フェーズの経過秒（<see cref="phaseElapsed"/>）とは別に持つので、
+    /// 巻き戻してもフェーズの進行（＝いつ次へ行くか）は壊れない。
+    /// </summary>
+    private float jumpTime = 0f;
+
+    /// <summary>これまでに見せたリピートの回数（<see cref="repeatCount"/> に達したら横カメラへ）。</summary>
+    private int repeatIndex = 0;
+
+    /// <summary>白フラッシュの残り秒数（0 で消灯）。</summary>
+    private float flashRemaining = 0f;
+
+    /// <summary>白が晴れ始めてからの経過秒数（実時間）。フェーズをまたいで数える。</summary>
+    private float fadeOutElapsed = 0f;
+
+    /// <summary>低アングルのカメラ位置（カット時に確定し、以後は固定）。</summary>
+    private SEED.Vector3 lowAngleCameraPosition = SEED.Vector3.Zero;
+
+    /// <summary>低アングルのカメラ回転（オイラー角・度）。</summary>
+    private SEED.Vector3 lowAngleCameraRotation = SEED.Vector3.Zero;
+
+    /// <summary>横カメラの位置（カット時に確定し、以後は固定）。</summary>
+    private SEED.Vector3 sideCameraPosition = SEED.Vector3.Zero;
+
+    /// <summary>横カメラの回転（オイラー角・度）。</summary>
+    private SEED.Vector3 sideCameraRotation = SEED.Vector3.Zero;
+
+    /// <summary>低アングル→横カメラの移行中か。</summary>
+    private bool cameraBlending = false;
+
+    /// <summary>移行を始めてからの経過秒数（実時間）。</summary>
+    private float cameraBlendElapsed = 0f;
+
+    /// <summary>着水しぶきを出したか（1 回の跳びにつき 1 回だけ出すためのガード）。</summary>
+    private bool landingSplashDone = false;
 
     // ─── ライフサイクル ───────────────────────────────────────
 
@@ -527,10 +758,11 @@ public class CatchPresenter : SEEDScript
 
         switch (Phase)
         {
-            case CatchPhase.Fade:    UpdateFade();    break;
-            case CatchPhase.SlowArc: UpdateSlowArc(); break;
-            case CatchPhase.Result:  UpdateResult();  break;
-            case CatchPhase.Close:   UpdateClose();   break;
+            case CatchPhase.Fade:     UpdateFade();          break;
+            case CatchPhase.LowAngle: UpdateLowAngle(dt);    break;
+            case CatchPhase.SlowArc:  UpdateSlowArc(dt);     break;
+            case CatchPhase.Result:   UpdateResult();        break;
+            case CatchPhase.Close:    UpdateClose();         break;
         }
     }
 
@@ -549,7 +781,7 @@ public class CatchPresenter : SEEDScript
     /// <summary>
     /// <see cref="CatchPhase.Fade"/> の更新（白へフェードイン → 真っ白を保持）。
     ///
-    /// アルファが 1 に達した最初のフレームで <see cref="SwitchToSlowArcComposition"/> を呼び、
+    /// アルファが 1 に達した最初のフレームで <see cref="SwitchToJumpComposition"/> を呼び、
     /// 構図と魚の差し替えを<b>白の裏で</b>済ませる。保持時間が過ぎたら
     /// <see cref="CatchPhase.SlowArc"/> へ移り、そこで白が晴れる。
     /// </summary>
@@ -563,10 +795,50 @@ public class CatchPresenter : SEEDScript
         SetWhiteoutAlpha(alpha);
 
         // 真っ白になった最初のフレームでカット（構図と魚の差し替え）を済ませる
-        if (reachedFullWhite) { SwitchToSlowArcComposition(); }
+        if (reachedFullWhite) { SwitchToJumpComposition(); }
 
         if (phaseElapsed < fadeIn + SEED.Mathf.Max(whiteoutHoldSeconds, 0f)) { return; }
-        EnterPhase(CatchPhase.SlowArc);
+
+        // 白はここから晴れ始める（LowAngle / SlowArc をまたいで数える）
+        fadeOutElapsed = 0f;
+        EnterPhase(UseJumpRepeat ? CatchPhase.LowAngle : CatchPhase.SlowArc);
+    }
+
+    /// <summary>
+    /// <see cref="CatchPhase.LowAngle"/> の更新（低アングルで飛び出しをリピート）。
+    ///
+    /// - 白: <see cref="whiteoutFadeOutSeconds"/> で晴れる（フラッシュがあればそちらが優先）
+    /// - 魚: 跳びの時刻を <see cref="repeatTimeScale"/> 倍の速さで進める（スロー）
+    /// - 時刻が <see cref="repeatWindowSeconds"/> を越えたら 0 へ巻き戻して撮り直す
+    ///   （＝同じ飛び出しをもう一度見せる）。巻き戻しのたびに白フラッシュとしぶきを出す。
+    /// - <see cref="repeatCount"/> 回ぶん見せ切ったら <see cref="CatchPhase.SlowArc"/> へ。
+    ///
+    /// <b>Time.Scale は触らない</b>。スローは跳びの時刻の進み方だけで表現するので、
+    /// チュートリアルなど他の演出が Time.Scale を使っていても喧嘩しない。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの実時間の経過秒数。</param>
+    private void UpdateLowAngle(float deltaTime)
+    {
+        UpdateWhiteout(deltaTime);
+
+        float span = SEED.Mathf.Max(jumpSeconds, DivideEpsilon);
+        jumpTime += deltaTime * SEED.Mathf.Max(repeatTimeScale, MinRepeatTimeScale);
+        PlaceFishOnJump(jumpTime / span);
+
+        // リピートの区間は跳び全体を超えない（超えると着水後まで映してしまう）
+        float window = SEED.Mathf.Clamped(repeatWindowSeconds, DivideEpsilon, span);
+        if (jumpTime < window) { return; }
+
+        repeatIndex++;
+        if (repeatIndex >= SEED.Mathf.Max(repeatCount, MinRepeatCount))
+        {
+            EnterPhase(CatchPhase.SlowArc);
+            return;
+        }
+
+        // まだ繰り返す: 時刻を巻き戻し、切り替わりが分かるよう白を一瞬入れる
+        BeginJump(spawnSplash: true);
+        flashRemaining = SEED.Mathf.Max(repeatFlashSeconds, 0f);
     }
 
     /// <summary>
@@ -576,25 +848,113 @@ public class CatchPresenter : SEEDScript
     /// - 魚: <see cref="jumpStart"/> の真上を <see cref="jumpSeconds"/> 秒で往復する
     ///   （姿勢は頭を真上へ向けたまま固定。回転はしない）
     /// - <see cref="jumpSeconds"/> × <see cref="jumpApexRatio"/> 秒で次のフェーズへ
+    /// - 低アングルのリピートから来た場合は、<see cref="toSideSeconds"/> かけて
+    ///   カメラを横の構図へ移す（<see cref="UpdateCameraBlend"/>）
     /// </summary>
-    private void UpdateSlowArc()
+    /// <param name="deltaTime">このフレームの実時間の経過秒数。</param>
+    private void UpdateSlowArc(float deltaTime)
     {
-        // 白を晴らす
-        float fadeOut = SEED.Mathf.Max(whiteoutFadeOutSeconds, 0f);
-        float alpha = fadeOut <= DivideEpsilon ? 0f : 1f - SEED.Mathf.Clamped01(phaseElapsed / fadeOut);
-        SetWhiteoutAlpha(alpha);
+        // 白を晴らす（LowAngle から来た場合は既に晴れているので変化しない）
+        UpdateWhiteout(deltaTime);
 
-        // 跳びの位置と姿勢を置き直す
+        // 低アングルから来たときは、ここで横カメラへ滑らかに移る
+        UpdateCameraBlend(deltaTime);
+
+        // 跳びの位置と姿勢を置き直す（この段階の時刻は等速で進む）
         float span = SEED.Mathf.Max(jumpSeconds, DivideEpsilon);
-        float t = SEED.Mathf.Clamped01(phaseElapsed / span);
-        PlaceFishOnJump(t);
+        jumpTime += deltaTime * PresentationSpeedNormal;
+        PlaceFishOnJump(jumpTime / span);
+
+        // 着水（跳びの終端）に達したら、小さめのしぶきをもう一度
+        UpdateLandingSplash(span);
 
         // 指定の比率まで来たら魚を隠して釣果パネルへ
         float switchSeconds = span * SEED.Mathf.Clamped01(jumpApexRatio);
-        if (phaseElapsed < switchSeconds) { return; }
+        if (jumpTime < switchSeconds) { return; }
 
         HideFish();
         EnterPhase(CatchPhase.Result);
+    }
+
+    /// <summary>
+    /// 着水しぶきの判定【着水を検出する唯一の場所】。
+    ///
+    /// 跳びの時刻が終端（<see cref="jumpSeconds"/>）に達した最初のフレームで
+    /// 小さめのしぶきを出す。<see cref="jumpApexRatio"/> が 1 未満のときは
+    /// その前に釣果パネルへ切り替わるため、実際には出ない（仕様どおり）。
+    /// </summary>
+    /// <param name="span">跳び 1 回ぶんの秒数（0 除算よけ済み）。</param>
+    private void UpdateLandingSplash(float span)
+    {
+        if (!splashOnLanding || landingSplashDone) { return; }
+        if (jumpTime < span) { return; }
+
+        landingSplashDone = true;
+        SpawnWaterSplash(splashLandingIntensityScale);
+        PlaySplashSe();
+    }
+
+    /// <summary>
+    /// ホワイトアウトの更新【白のアルファを決める唯一の場所】。
+    ///
+    /// 白は 2 つの源を持ち、<b>濃いほうを採る</b>:
+    /// <list type="bullet">
+    ///   <item>フェードアウト … <see cref="whiteoutFadeOutSeconds"/> で 1 → 0（1 回だけ）</item>
+    ///   <item>フラッシュ     … リピートの切れ目に <see cref="repeatFlashSeconds"/> で減衰</item>
+    /// </list>
+    /// フェードアウトの経過は <see cref="fadeOutElapsed"/> でフェーズをまたいで数えるので、
+    /// <see cref="CatchPhase.LowAngle"/> → <see cref="CatchPhase.SlowArc"/> と進んでも
+    /// 白が戻ったりしない。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの実時間の経過秒数。</param>
+    private void UpdateWhiteout(float deltaTime)
+    {
+        fadeOutElapsed += deltaTime;
+
+        float fadeOut = SEED.Mathf.Max(whiteoutFadeOutSeconds, 0f);
+        float alpha = fadeOut <= DivideEpsilon
+            ? 0f
+            : 1f - SEED.Mathf.Clamped01(fadeOutElapsed / fadeOut);
+
+        if (flashRemaining > 0f)
+        {
+            flashRemaining = SEED.Mathf.Max(flashRemaining - deltaTime, 0f);
+            float flashSpan = SEED.Mathf.Max(repeatFlashSeconds, DivideEpsilon);
+            float flash = SEED.Mathf.Clamped01(flashRemaining / flashSpan)
+                        * SEED.Mathf.Clamped01(repeatFlashStrength);
+            alpha = SEED.Mathf.Max(alpha, flash);
+        }
+
+        SetWhiteoutAlpha(alpha);
+    }
+
+    /// <summary>
+    /// 低アングル → 横カメラの移行【カメラ移行の唯一の実装】。
+    ///
+    /// 位置・回転・画角を <see cref="Easing.InOutSine"/> で補間し、毎フレーム
+    /// <see cref="CameraMove.SetOverrideGoal"/> へ<b>カット指定で</b>渡す。
+    /// カメラ側の指数補間に任せず、こちらの曲線どおりに動かすためで、
+    /// これにより「移行の秒数」がそのまま画に出る。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの実時間の経過秒数。</param>
+    private void UpdateCameraBlend(float deltaTime)
+    {
+        if (!cameraBlending) { return; }
+
+        cameraBlendElapsed += deltaTime;
+        float duration = SEED.Mathf.Max(toSideSeconds, 0f);
+        float t = Easing.InOutSine(Easing.Progress01(cameraBlendElapsed, duration));
+
+        ApplyCameraPose(
+            SEED.Vector3.Lerp(lowAngleCameraPosition, sideCameraPosition, t),
+            LerpAngles(lowAngleCameraRotation, sideCameraRotation, t),
+            SEED.Mathf.Lerp(lowAngleFovDegrees, verticalFitFovDegrees, t));
+
+        if (cameraBlendElapsed < duration) { return; }
+
+        // 端数で微妙にずれた姿勢が残らないよう、最後は目標そのものを入れて締める
+        cameraBlending = false;
+        ApplyCameraPose(sideCameraPosition, sideCameraRotation, verticalFitFovDegrees);
     }
 
     /// <summary>
@@ -639,14 +999,31 @@ public class CatchPresenter : SEEDScript
     /// <param name="next">次のフェーズ。</param>
     private void EnterPhase(CatchPhase next)
     {
+        CatchPhase previous = Phase;
         Phase = next;
         phaseElapsed = 0f;
 
         switch (next)
         {
+            case CatchPhase.LowAngle:
+                // 跳びそのものは白の裏（SwitchToJumpComposition）で始めてあるので、
+                // ここではリピートの数え直しだけ。Time.Scale は<b>触らない</b>
+                // （スローは跳びの時刻の進み方で表現する）。
+                repeatIndex = 0;
+                break;
+
             case CatchPhase.SlowArc:
                 // 弧を見せているあいだだけゲーム時間を遅くする（戻しは Result / Finish）
                 ApplySlow(true);
+
+                // 低アングルのリピートから来たときは、もう一度頭から跳ばせながら
+                // カメラを横の構図へ移す（＝最後の 1 回だけを横から見せ切る）。
+                if (previous == CatchPhase.LowAngle)
+                {
+                    BeginJump(spawnSplash: true);
+                    cameraBlending = true;
+                    cameraBlendElapsed = 0f;
+                }
                 break;
 
             case CatchPhase.Result:
@@ -661,11 +1038,13 @@ public class CatchPresenter : SEEDScript
     /// 真っ白の瞬間に行うカット【構図・魚の差し替えの唯一の集約点】。
     ///
     /// 1. 跳びの始点と魚の向きを決める（水面と「ウキ→プレイヤー」の向きが基準）
-    /// 2. 横カメラの姿勢を計算し、<see cref="CameraMove.SetOverrideGoal"/> へ渡してカットする
+    /// 2. 低アングルと横カメラの姿勢を<b>両方</b>計算し、
+    ///    いま使うほう（リピートするなら低アングル）を
+    ///    <see cref="CameraMove.SetOverrideGoal"/> へ渡してカットする
     /// 3. 魚をウキから外して始点（水面のすこし下）へ置く
-    /// 4. しぶきと水音を出す
+    /// 4. しぶき（パーティクル・波紋・水柱）と水音を出す
     /// </summary>
-    private void SwitchToSlowArcComposition()
+    private void SwitchToJumpComposition()
     {
         // 1. 跳びの始点（ウキの真下・水面のすこし下）と魚の向き
         SEED.Vector3 toPlayer = HorizontalToPlayer();
@@ -673,19 +1052,28 @@ public class CatchPresenter : SEEDScript
         fishYawDegrees = SEED.Mathf.Atan2(toPlayer.x, toPlayer.z) * SEED.Mathf.Rad2Deg
                        + fishYawOffsetDegrees;
 
-        // 2. 横カメラの構図を作ってカット（構図の受け渡しとカットは
-        //    ApplySideCameraFraming が CameraMove.SetOverrideGoal で同時に行う）
-        ApplySideCameraFraming(toPlayer);
+        // 2. カメラの構図を<b>2 つとも</b>先に計算しておく
+        //    （低アングル → 横カメラの移行で両方の姿勢が要るため、
+        //      計算はここ 1 回だけ・以後は補間するだけにする）
+        ComputeSideCameraPose(toPlayer);
+        ComputeLowAnglePose(toPlayer);
 
-        // 3. 魚を始点へ（跳びの t=0 の姿勢）
-        PlaceFishOnJump(0f);
+        // いま使うほうへカット（白の裏なので視点の飛びは見えない）
+        if (UseJumpRepeat)
+        {
+            ApplyCameraPose(lowAngleCameraPosition, lowAngleCameraRotation, lowAngleFovDegrees);
+        }
+        else
+        {
+            ApplyCameraPose(sideCameraPosition, sideCameraRotation, verticalFitFovDegrees);
+        }
 
-        // 4. しぶき・水音
-        SpawnSplash();
-        PlaySplashSe();
+        // 3. 跳びを頭から始める（魚を始点へ・しぶき・水音）
+        BeginJump(spawnSplash: true);
 
         SEED.Debug.Log(
-            $"[Catch] カット: start={jumpStart} 高さ={jumpHeight:F1}m yaw={fishYawDegrees:F1}");
+            $"[Catch] カット: start={jumpStart} 高さ={jumpHeight:F1}m yaw={fishYawDegrees:F1}"
+          + $" リピート={(UseJumpRepeat ? repeatCount : 0)}");
     }
 
     /// <summary>
@@ -714,6 +1102,17 @@ public class CatchPresenter : SEEDScript
 
         Phase = CatchPhase.None;
         phaseElapsed = 0f;
+
+        // リピート・カメラ移行の状態も必ず初期化する
+        // （次の釣り上げが前回の途中状態を引き継がないように）
+        jumpTime = 0f;
+        repeatIndex = 0;
+        flashRemaining = 0f;
+        fadeOutElapsed = 0f;
+        cameraBlending = false;
+        cameraBlendElapsed = 0f;
+        landingSplashDone = false;
+
         SetWhiteoutAlpha(0f);
     }
 
@@ -809,9 +1208,14 @@ public class CatchPresenter : SEEDScript
     /// - 距離は「跳びの縦幅が画角に収まる距離」を下限にする
     /// （<see cref="RequiredVerticalFitDistance"/>）。
     /// これで「跳ねる高さ」を大きくしてもカメラが自動で引き、頭が切れない。
+    ///
+    /// <b>計算だけ</b>を行い、結果は <see cref="sideCameraPosition"/> /
+    /// <see cref="sideCameraRotation"/> に控える（カメラへ渡すのは
+    /// <see cref="ApplyCameraPose"/> の役目）。低アングルからの移行で
+    /// 「移行先の姿勢」として補間に使うため、計算と適用を分けてある。
     /// </summary>
     /// <param name="toPlayer">「ウキ→プレイヤー」の水平方向（正規化済み）。</param>
-    private void ApplySideCameraFraming(SEED.Vector3 toPlayer)
+    private void ComputeSideCameraPose(SEED.Vector3 toPlayer)
     {
         // 注視点＝跳びの真上・中ほどの高さ（水平位置は跳びの始点＝ウキの真下と同じ）
         var focus = jumpStart
@@ -835,23 +1239,75 @@ public class CatchPresenter : SEEDScript
             focus.y + cameraHeightAboveFocus + distance * SEED.Mathf.Sin(phiRad),
             focus.z + horizDir.z * distance * SEED.Mathf.Cos(phiRad));
 
-        var camRot = LookRotation(focus - camPos);
+        sideCameraPosition = camPos;
+        sideCameraRotation = LookRotation(focus - camPos);
+    }
 
+    /// <summary>
+    /// 低アングル（水面すれすれ）の構図を計算する【この構図の唯一の算出点】。
+    ///
+    /// <code>
+    /// 注視点   ＝ 飛び出し点の真上・水面から lowAngleFocusHeight
+    /// 水平方向 ＝ 「ウキ→プレイヤー」を方位角 lowAngleTheta ぶん右へ回した向き
+    /// 位置     ＝ 飛び出し点 ＋ 水平方向 × lowAngleDistance、高さは水面 ＋ lowAngleHeight
+    /// 向き     ＝ その位置から注視点を見上げる向き
+    /// </code>
+    ///
+    /// 水面（<see cref="floatPosition"/> の高さ）を基準にするので、
+    /// 魚の潜り深さ（<see cref="fishSubmergeDepth"/>）を変えてもカメラは水面に貼り付く。
+    /// </summary>
+    /// <param name="toPlayer">「ウキ→プレイヤー」の水平方向（正規化済み）。</param>
+    private void ComputeLowAnglePose(SEED.Vector3 toPlayer)
+    {
+        float surfaceY = floatPosition.y;
+
+        // 注視点は飛び出し点のすこし上（飛び出す魚が画面の中ほどへ抜けていく）
+        var focus = new SEED.Vector3(
+            jumpStart.x, surfaceY + SEED.Mathf.Max(lowAngleFocusHeight, 0f), jumpStart.z);
+
+        // toPlayer を右へ 90° 回した水平方向（θ=90° の方位に対応）
+        var right = new SEED.Vector3(toPlayer.z, 0f, -toPlayer.x);
+        float thetaRad = lowAngleTheta * SEED.Mathf.Deg2Rad;
+        var horizDir = toPlayer * SEED.Mathf.Cos(thetaRad) + right * SEED.Mathf.Sin(thetaRad);
+
+        float distance = SEED.Mathf.Max(lowAngleDistance, 0f);
+        var camPos = new SEED.Vector3(
+            jumpStart.x + horizDir.x * distance,
+            surfaceY + lowAngleHeight,
+            jumpStart.z + horizDir.z * distance);
+
+        lowAngleCameraPosition = camPos;
+        lowAngleCameraRotation = LookRotation(focus - camPos);
+    }
+
+    /// <summary>
+    /// 計算した姿勢をカメラへ渡す【カメラへ触る唯一の場所】。
+    ///
+    /// カメラへは<b>姿勢そのもの</b>を渡してカットする。
+    /// シーンで結線した目標アクタ（CameraMove.catchTarget）に依存しないので、
+    /// 結線の有無・取り違えで構図が変わらない。画角も同時に固定して、
+    /// 位置・回転だけが飛んで FOV が補間で寄る（＝止まっているのに画が動く）のを防ぐ。
+    ///
+    /// 移行中（<see cref="UpdateCameraBlend"/>）も毎フレームここを通す。
+    /// 補間の曲線はこちらが持ち、カメラ側の追従は挟まない（＝指定した秒数どおりに動く）。
+    /// </summary>
+    /// <param name="position">カメラの位置（ワールド）。</param>
+    /// <param name="rotationDegrees">カメラの回転（オイラー角・度）。</param>
+    /// <param name="fovDegrees">画角（度）。</param>
+    private void ApplyCameraPose(
+        SEED.Vector3 position, SEED.Vector3 rotationDegrees, float fovDegrees)
+    {
         // 目印アクタが割り当ててあれば同じ姿勢を書いておく（エディタで構図を確認するため。
         // カメラの追従先としては使わないので、未設定でも構図は成立する）。
         if (catchCameraTarget is { IsValid: true } goal)
         {
-            goal.Position = camPos;
-            goal.Rotation = camRot;
+            goal.Position = position;
+            goal.Rotation = rotationDegrees;
         }
 
-        // カメラへは<b>姿勢そのもの</b>を渡してカットする。
-        // シーンで結線した目標アクタ（CameraMove.catchTarget）に依存しないので、
-        // 結線の有無・取り違えで構図が変わらない。画角も同時に固定して、
-        // 位置・回転だけが飛んで FOV が補間で寄る（＝止まっているのに画が動く）のを防ぐ。
         if (cameraMove is { } cam)
         {
-            cam.SetOverrideGoal(camPos, camRot, snap: true, fovDegrees: verticalFitFovDegrees);
+            cam.SetOverrideGoal(position, rotationDegrees, snap: true, fovDegrees: fovDegrees);
         }
     }
 
@@ -905,7 +1361,83 @@ public class CatchPresenter : SEEDScript
         };
     }
 
+    // ─── 跳びの開始 ───────────────────────────────────────────
+
+    /// <summary>
+    /// 跳びを頭から始める【跳びの時刻を 0 にする唯一の場所】。
+    ///
+    /// 初回のカット（<see cref="SwitchToJumpComposition"/>）でも、リピートの
+    /// 巻き戻しでも、最後の 1 回（<see cref="CatchPhase.SlowArc"/> の頭）でも、
+    /// 「水面から飛び出す瞬間」はすべてここを通る。したがって
+    /// <b>しぶきを出す瞬間もここ 1 か所</b>に集約できる。
+    /// </summary>
+    /// <param name="spawnSplash">true でしぶき（パーティクル・波紋・水柱）と水音を出す。</param>
+    private void BeginJump(bool spawnSplash)
+    {
+        jumpTime = 0f;
+        landingSplashDone = false;
+        PlaceFishOnJump(0f);
+
+        if (!spawnSplash) { return; }
+
+        SpawnSplash();                          // 既存のパーティクル（プレハブ）
+        SpawnWaterSplash(MaxIntensityScale);    // 波紋＋水柱（魚の大きさで規模が変わる）
+        PlaySplashSe();
+    }
+
+    /// <summary>
+    /// 現在の演出設定でリピートを行うか（<see cref="repeatCount"/> が 1 以上）。
+    /// 0 なら <see cref="CatchPhase.LowAngle"/> を通らず、従来どおりの流れになる。
+    /// </summary>
+    private bool UseJumpRepeat => repeatCount > MinRepeatCount;
+
     // ─── しぶき ───────────────────────────────────────────────
+
+    /// <summary>
+    /// 波紋＋水柱のしぶきをまく【新しいしぶきの唯一の発火点】。
+    ///
+    /// 規模は魚の基準サイズ（<see cref="Fish.BaseSizeCm"/>）を
+    /// <see cref="splashMinSizeCm"/>〜<see cref="splashMaxSizeCm"/> で 0〜1 に正規化した
+    /// 強度で決まる（個数・半径・スケールをその強度で線形補間する）。
+    /// 演出中の魚が居なければ強度 0（＝いちばん小さい規模）で出す。
+    /// </summary>
+    /// <param name="intensityScale">強度に掛ける倍率（着水では小さくする）。</param>
+    private void SpawnWaterSplash(float intensityScale)
+    {
+        float sizeCm = shownFish is { } fish ? fish.BaseSizeCm : 0f;
+        float intensity = WaterSplashSpawner.Intensity01(sizeCm, splashMinSizeCm, splashMaxSizeCm)
+                        * SEED.Mathf.Clamped(intensityScale, 0f, MaxIntensityScale);
+
+        // 中心は跳びの真上（＝ウキの真下）、水面の高さはウキの高さで代表する
+        var center = new SEED.Vector3(jumpStart.x, floatPosition.y, jumpStart.z);
+        WaterSplashSpawner.Spawn(BuildSplashSettings(), center, floatPosition.y, intensity);
+    }
+
+    /// <summary>
+    /// インスペクタの調整値から <see cref="WaterSplashSettings"/> を組み立てる
+    /// 【設定の詰め替えの唯一の場所】。
+    /// 生成側（<see cref="WaterSplashSpawner"/>）はシーンに置かない静的クラスなので、
+    /// 調整値の持ち主はこのスクリプトになる。
+    /// </summary>
+    private WaterSplashSettings BuildSplashSettings() => new()
+    {
+        rippleActorPath = rippleActorPath,
+        columnActorPath = columnActorPath,
+        rippleCountMin  = splashRippleCountMin,
+        rippleCountMax  = splashRippleCountMax,
+        rippleRadiusMin = splashRippleRadiusMin,
+        rippleRadiusMax = splashRippleRadiusMax,
+        rippleScaleMin  = splashRippleScaleMin,
+        rippleScaleMax  = splashRippleScaleMax,
+        columnCountMin  = splashColumnCountMin,
+        columnCountMax  = splashColumnCountMax,
+        columnRadiusMin = splashColumnRadiusMin,
+        columnRadiusMax = splashColumnRadiusMax,
+        columnScaleMin  = splashColumnScaleMin,
+        columnScaleMax  = splashColumnScaleMax,
+        scaleJitter     = splashScaleJitter,
+        surfaceOffsetY  = splashSurfaceOffsetY,
+    };
 
     /// <summary>
     /// しぶきのパーティクルを水面へ置く【しぶき生成の唯一の場所】。
@@ -1043,6 +1575,29 @@ public class CatchPresenter : SEEDScript
         if (whiteoutSprite is not { } sprite || !sprite.IsValid) { return; }
         sprite.Color = sprite.Color.WithAlpha(whiteoutAlpha);
     }
+
+    /// <summary>
+    /// オイラー角（度）を軸ごとの<b>最短回り</b>で補間する
+    /// 【カメラ移行の回転補間の唯一の実装】。
+    /// 350°→10° のような巻き戻りでも逆回りしない。
+    /// </summary>
+    /// <param name="from">開始の回転（度）。</param>
+    /// <param name="to">終了の回転（度）。</param>
+    /// <param name="t">補間係数（0〜1）。</param>
+    private static SEED.Vector3 LerpAngles(SEED.Vector3 from, SEED.Vector3 to, float t)
+    {
+        float k = SEED.Mathf.Clamped01(t);
+        return new SEED.Vector3(
+            from.x + ShortestAngleDelta(from.x, to.x) * k,
+            from.y + ShortestAngleDelta(from.y, to.y) * k,
+            from.z + ShortestAngleDelta(from.z, to.z) * k);
+    }
+
+    /// <summary>角度 from→to の最短回りの差分（度、-180〜+180）。</summary>
+    /// <param name="from">開始角（度）。</param>
+    /// <param name="to">終了角（度）。</param>
+    private static float ShortestAngleDelta(float from, float to)
+        => SEED.Mathf.Repeat(to - from + HalfTurnDegrees, FullTurnDegrees) - HalfTurnDegrees;
 
     /// <summary>
     /// 方向ベクトルから「その向きを見る」オイラー角（度）を作る。
