@@ -387,7 +387,11 @@ impl App {
         let physics_ms = t_phys.elapsed().as_secs_f64() * 1000.0;
 
         self.send_selected();
-        self.send_hierarchy();
+        // 復元後のツリーは Play 中の木とは別物（生成分が消え、遷移していれば
+        // シーンごと別）なので、スロットリングで潰されない即時送信＋
+        // 「入れ替わった」通知を使う。ここを取りこぼすと、Stop 後の
+        // ヒエラルキーが Play 中の木のまま残り、クリックすると別アクターが出る。
+        self.send_hierarchy_reset();
 
         // ── 復帰所要時間の内訳ログ（常時 ON・Stop 1 回につき 1 行）──
         //   total   : exit_play 全体（EXIT_PLAY 受信からアクター/物理復元完了まで）。

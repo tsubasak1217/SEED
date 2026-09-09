@@ -73,6 +73,32 @@ impl App {
         self.do_send_hierarchy();
     }
 
+    /// ヒエラルキーをスロットリングを無視して即座に送信する。
+    ///
+    /// 【いつ使うか】アクターツリーが**丸ごと入れ替わった**とき
+    /// （シーン遷移・Play 停止による編集状態の復元・LOAD_SCENE）。
+    /// この 3 経路では DFS ID の意味そのものが変わるため、1 通でも取りこぼすと
+    /// エディタのヒエラルキーが古い木のまま残り、行をクリックすると
+    /// 別のアクターが選択される（インスペクタに別アクターが出る）。
+    /// 通常の編集・生成・破棄は従来どおり `send_hierarchy`（スロットリング付き）を使う。
+    pub(super) fn send_hierarchy_now(&mut self) {
+        self.last_hierarchy_send = Some(std::time::Instant::now());
+        self.hierarchy_dirty = false;
+        self.do_send_hierarchy();
+    }
+
+    /// 「アクターツリーが丸ごと入れ替わった」ことをエディタへ通知し、
+    /// 続けて新しいヒエラルキーを即時送信する。
+    ///
+    /// エディタ側は `HIERARCHY_RESET` を受けると次のヒエラルキー反映で差分更新を捨てて
+    /// 全再構築する。差分更新は安定キー（名前パス）で突き合わせるため、別シーンでも
+    /// ルート名が似ていると 2 つのシーンの木が混ざったまま更新されてしまう。
+    /// 「入れ替わった」ことはランタイムしか知らないので、推測させずに明示的に伝える。
+    pub(super) fn send_hierarchy_reset(&mut self) {
+        if let Some(ipc) = &self.ipc { ipc.send("HIERARCHY_RESET"); }
+        self.send_hierarchy_now();
+    }
+
     /// アクターデータを JSON でエディタへ送信する。
     pub(super) fn send_actor_data(&self, idx: u32) {
         let Some(ipc) = &self.ipc else { return };

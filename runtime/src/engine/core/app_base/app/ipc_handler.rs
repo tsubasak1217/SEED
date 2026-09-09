@@ -920,7 +920,9 @@ impl App {
                                 },
                             );
                             self.send_selected();
-                            self.send_hierarchy();
+                            // シーンが丸ごと入れ替わるので「差分更新を捨てて全再構築せよ」を
+                            // 明示して即時送信する（DFS ID の意味が変わるため）。
+                            self.send_hierarchy_reset();
                             // 有効な物理スレッドをシーン初期状態で再起動する
                             if self.edit_physics_enabled {
                                 self.stop_physics();
@@ -1621,13 +1623,13 @@ impl App {
                 IpcCommand::GetPluginList => {
                     self.send_plugin_list();
                 }
-
-                // ── AI アシスタント用コマンド ─────────────────────────────────
                 IpcCommand::PluginAction { plugin, id } => {
                     let p = plugin.clone();
                     let i = id.clone();
                     self.handle_plugin_action(&p, &i);
                 }
+
+                // ── AI アシスタント用コマンド ─────────────────────────────────
                 IpcCommand::GetSceneInfo => {
                     self.send_scene_info();
                 }
@@ -2063,8 +2065,6 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
-    /// ロード済みプラグイン一覧をエディタへ送信する。
-    fn send_plugin_list(&self) {
     /// IPC は 1 行 1 コマンドのテキストプロトコルのため、エラー理由に改行が
     /// 混ざるとメッセージが分断される。改行を潰して 1 行に畳むときの連結文字。
     const REASON_LINE_JOINER: &str = " ";
@@ -2099,6 +2099,8 @@ impl App {
         }
     }
 
+    /// ロード済みプラグイン一覧をエディタへ送信する。
+    fn send_plugin_list(&self) {
         if let Some(ipc) = &self.ipc {
             let json = self.plugin_registry.to_json();
             ipc.send(&format!("PLUGIN_LIST:{json}"));

@@ -294,6 +294,22 @@ impl App {
         // 物理を新シーンの内容で再起動する
         if had_physics    { self.start_physics(); }
         if had_physics_2d { self.start_physics_2d(); }
+
+        // ── エディタへ「アクターツリーが丸ごと入れ替わった」ことを通知する ──────
+        // ここを送らないと、エディタのヒエラルキーは遷移前のシーンの木を表示したまま
+        // になる。DFS ID は「シーン内の何番目か」でしかないので、その状態で行を
+        // クリックすると遷移後シーンの別アクターが選択され、インスペクタに
+        // まったく違うアクターが出る（LOAD_SCENE 経路は元から通知していた。
+        // スクリプト遷移だけが通知を持っていなかった）。
+        //
+        // 選択も必ず捨てる。旧シーンのアクターを指す DFS ID を持ち越すと、
+        // 次のインスペクタ更新で無関係なアクターを掴む。
+        self.selected_instances.clear();
+        self.selected_actor_dfs_ids.clear();
+        self.actor_virtual_selected_idx = None;
+        self.actor_virtual_selected_slot_idx = 0;
+        self.send_selected();
+        self.send_hierarchy_reset();
     }
 
     /// 物理イベント（衝突・トリガー）をスクリプトのコールバックへ配信する。

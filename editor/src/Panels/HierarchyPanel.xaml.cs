@@ -9,6 +9,7 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using SEEDEditor.Panels.Hierarchy;
 using SEEDEditor.Runtime;
 
 namespace SEEDEditor.Panels;
@@ -21,7 +22,7 @@ namespace SEEDEditor.Panels;
 /// Hierarchy パネルのツリー表示用ノード。Rust 側から届く JSON（id/name/parent/is_group 等）を
 /// ParseHierarchy で変換して保持し、アイコン色分け・ドラッグ&amp;ドロップ可否判定・選択種別判定に使う。
 /// </summary>
-public class ActorNode
+public class ActorNode : IHierarchySyncNode
 {
     public int             Id       { get; set; }
     public string          Name     { get; set; } = "";
@@ -74,6 +75,12 @@ public class ActorNode
     /// </summary>
     public string          StableKey { get; set; } = "";
     public List<ActorNode> Children { get; } = new();
+
+    /// <summary>
+    /// 差分更新アルゴリズム（<see cref="HierarchyTreeSync"/>）へ子ノードを見せるための実装。
+    /// <see cref="Children"/> をそのまま抽象型として返すだけで、別のリストは作らない。
+    /// </summary>
+    IReadOnlyList<IHierarchySyncNode> IHierarchySyncNode.SyncChildren => Children;
 }
 
 // ============================================================
@@ -328,16 +335,38 @@ public partial class HierarchyPanel : UserControl
         if (_runtime is not null)
         {
             _runtime.HierarchyUpdated      -= OnHierarchyUpdated;
+            _runtime.HierarchyReset        -= OnHierarchyReset;
             _runtime.SelectionChanged      -= OnSelectionChanged;
             _runtime.SelectionMultiChanged -= OnSelectionMultiChanged;
         }
         _runtime = runtime;
         _runtime.HierarchyUpdated      += OnHierarchyUpdated;
+        _runtime.HierarchyReset        += OnHierarchyReset;
         _runtime.SelectionChanged      += OnSelectionChanged;
         _runtime.SelectionMultiChanged += OnSelectionMultiChanged;
     }
 
     // ── Runtime イベント ──────────────────────────────────────
+
+    /// <summary>
+    /// アクターツリーが丸ごと入れ替わったという通知（HIERARCHY_RESET）。
+    ///
+    /// 差分更新は安定キー（ルートからの名前パス）で既存項目を突き合わせるため、
+    /// 別シーンでもルート名が似ていると 2 つのシーンの木が混ざったまま更新され、
+    /// 「行の DFS ID だけが古いまま」の項目が残り得る。入れ替わりが起きたことは
+    /// ランタイムしか知らないので、通知を受けたら次の反映を必ず全再構築にする。
+    /// 選択も捨てる（旧シーンの DFS ID で別アクターを掴まないため）。
+    /// </summary>
+    private void OnHierarchyReset()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _forceFullTreeRebuild = true;
+            _selectedId = -1;
+            _selectedIds.Clear();
+            _anchorId   = -1;
+        });
+    }
 
     private void OnHierarchyUpdated(string json)
     {
@@ -566,10 +595,30 @@ public partial class HierarchyPanel : UserControl
             incremental = RootKeysMostlyMatch(roots);
         }
 
+        // 同期の前に「いま選択しているアクターの安定キー」を控える。
+        // 同期後は TreeViewItem の Tag が新しいノードへ差し替わるため、
+        // ここで取らないと「どのアクターを選んでいたか」が失われる。
+        var selectedKeyBeforeSync =
+            ActorTree.SelectedItem is TreeViewItem { Tag: ActorNode selNode } ? selNode.StableKey : "";
+
         if (incremental)
         {
-            SyncLevel(ActorTree.Items, roots);
-            RestoreSelectionAfterSync();
+            // 差分更新が途中で失敗した場合、ツリーには「古いノードを束ねたままの項目」が
+            // 残る。その状態で放置すると、行をクリックしても古い DFS ID が送られ、
+            // インスペクタに別のアクターが出続ける（復旧手段がユーザー側に無い）。
+            // 失敗はログに残したうえで、必ず全再構築で正しい状態へ引き戻す。
+            try
+            {
+                SyncLevel(ActorTree.Items, roots);
+                RestoreSelectionAfterSync(selectedKeyBeforeSync);
+            }
+            catch (Exception ex)
+            {
+                SEEDEditor.EditorLog.Write(
+                    $"[Hierarchy.TreeUpdate] 差分更新に失敗したため全再構築へフォールバック: {ex.Message}");
+                incremental = false;
+                RebuildTree(roots);
+            }
         }
         else
         {
@@ -599,52 +648,6 @@ public partial class HierarchyPanel : UserControl
 
         int matched = roots.Count(r => existingKeys.Contains(r.StableKey));
         return matched >= roots.Count * IncrementalRootMatchRatio;
-    }
-
-    /// <summary>
-    /// 1 階層分の TreeViewItem 群を新しいノード列へ合わせ込む（再帰）。
-    ///
-    /// 手順:
-    ///  1. 既存項目を安定キーで引ける辞書にする（同一階層内でキーは一意）。
-    ///  2. 新ノードを先頭から順に見て、一致する既存項目があれば所定の位置へ移動して再利用、
-    ///     無ければ新規に作って挿入する。
-    ///  3. ループ後、末尾に押し出された未使用の既存項目（＝消えたノード）を削除する。
-    /// </summary>
-    private void SyncLevel(ItemCollection items, List<ActorNode> nodes)
-    {
-        // 1. 既存項目のキー索引
-        var existing = new Dictionary<string, TreeViewItem>(StringComparer.Ordinal);
-        foreach (TreeViewItem item in items)
-            if (item.Tag is ActorNode n && !existing.ContainsKey(n.StableKey))
-                existing[n.StableKey] = item;
-
-        // 2. 新ノード順に整列させる
-        for (int i = 0; i < nodes.Count; i++)
-        {
-            var node = nodes[i];
-            if (existing.TryGetValue(node.StableKey, out var item))
-            {
-                // 位置がずれていれば移動（同じインスタンスなので展開・選択状態は保たれる）
-                int current = items.IndexOf(item);
-                if (current != i)
-                {
-                    items.RemoveAt(current);
-                    items.Insert(i, item);
-                }
-                UpdateItemForNode(item, node);
-                SyncLevel(item.Items, node.Children);
-            }
-            else
-            {
-                // 新規ノード: フィルタ無しの通常構築（差分更新はフィルタ非適用時のみ動く）
-                var created = BuildTreeItem(node, "");
-                if (created != null) items.Insert(i, created);
-            }
-        }
-
-        // 3. 余った末尾（＝今回のツリーに存在しないノード）を削除する
-        while (items.Count > nodes.Count)
-            items.RemoveAt(items.Count - 1);
     }
 
     /// <summary>
@@ -679,15 +682,84 @@ public partial class HierarchyPanel : UserControl
         || a.SelfVisible != b.SelfVisible;
 
     /// <summary>
-    /// 差分更新後の選択復元。既に同じ DFS ID の項目が選択済みなら何もしない
-    /// （毎回 BringIntoView するとヒエラルキー受信のたびに勝手にスクロールしてしまう）。
+    /// 差分更新後の選択復元。
+    ///
+    /// <para>
+    /// DFS ID は「シーン内の何番目か」でしかないので、アクターが増減すると
+    /// 同じ ID が別のアクターを指す。ID だけで選択し直すと、選択が黙って
+    /// 別アクターへ飛び、インスペクタもそれに追随してしまう。そこで
+    /// 「選択していたアクターの安定キー」を優先して追跡し、ID は
+    /// キーが取れないときの保険としてのみ使う。
+    /// </para>
+    /// <para>
+    /// 既に同じアクターが選択済みなら何もしない（毎回 BringIntoView すると
+    /// ヒエラルキー受信のたびに勝手にスクロールしてしまう）。
+    /// </para>
     /// </summary>
-    private void RestoreSelectionAfterSync()
+    /// <param name="selectedKeyBeforeSync">
+    /// 同期直前に選択していたアクターの安定キー（取得できなければ空文字）。
+    /// </param>
+    private void RestoreSelectionAfterSync(string selectedKeyBeforeSync)
     {
         if (_selectedId < 0) return;
+
+        // 同期後のツリーから「選択中だったアクター」を安定キーで引き直す。
+        var node = selectedKeyBeforeSync.Length > 0
+            ? FindNodeByStableKey(_roots, selectedKeyBeforeSync)
+            : null;
+
+        if (node != null)
+        {
+            // ID がズレていた場合は、選択の実体（同じアクター）を保ったまま ID を更新する。
+            if (node.Id != _selectedId)
+            {
+                UpdateSelectedId(node.Id);
+                SEEDEditor.EditorLog.Write(
+                    $"[Hierarchy.RestoreSelection] DFS ID 変化を安定キーで追跡 key={selectedKeyBeforeSync} id={node.Id}");
+            }
+        }
+        else if (selectedKeyBeforeSync.Length > 0)
+        {
+            // 選択していたアクターが消えた（Destroy・シーン差し替え）。
+            // 古い ID で別アクターを掴まないよう、選択を解除する。
+            _selectedId = -1;
+            _selectedIds.Clear();
+            _anchorId = -1;
+            DeselectAll();
+            UpdateMultiSelectVisuals();
+            return;
+        }
+
         if (ActorTree.SelectedItem is TreeViewItem { Tag: ActorNode sel } && sel.Id == _selectedId)
             return;
         SelectTreeItem(_selectedId);
+    }
+
+    /// <summary>
+    /// プライマリ選択 ID を差し替える（複数選択集合とアンカーも合わせる）。
+    /// 安定キーによる追跡で ID だけがズレた場合に使う。
+    /// </summary>
+    /// <param name="newId">新しい DFS ID。</param>
+    private void UpdateSelectedId(int newId)
+    {
+        _selectedIds.Remove(_selectedId);
+        _selectedIds.Add(newId);
+        if (_anchorId == _selectedId) _anchorId = newId;
+        _selectedId = newId;
+    }
+
+    /// <summary>安定キーでノードを再帰的に探す（見つからなければ null）。</summary>
+    /// <param name="nodes">探索対象の階層。</param>
+    /// <param name="key">安定キー。</param>
+    private static ActorNode? FindNodeByStableKey(List<ActorNode> nodes, string key)
+    {
+        foreach (var n in nodes)
+        {
+            if (string.Equals(n.StableKey, key, StringComparison.Ordinal)) return n;
+            var found = FindNodeByStableKey(n.Children, key);
+            if (found != null) return found;
+        }
+        return null;
     }
 
     private TreeViewItem? BuildTreeItem(ActorNode node, string filter)
