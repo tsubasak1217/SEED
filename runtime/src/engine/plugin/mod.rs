@@ -13,6 +13,8 @@
 //    pub extern "C" fn seed_create_plugin() -> *mut std::ffi::c_void
 // ============================================================
 
+pub mod editor_menu;
+pub mod host;
 pub mod manifest;
 pub mod registry;
 
@@ -32,3 +34,12 @@ pub use seed_plugin_api::PluginCreateFn;
 
 /// プラグイン DLL のエントリ関数名（null 終端バイト列）。
 pub use seed_plugin_api::PLUGIN_ENTRY_FN;
+
+/// プラグインからエンジン機能を呼ぶためのホスト API トレイト。
+pub use seed_plugin_api::PluginHost;
+
+/// plugin.json の editor_menus 定義（トップレベルメニュー / 項目）。
+pub use editor_menu::{EditorMenuDef, EditorMenuItemDef};
+
+/// ランタイム側の PluginHost 実装。
+pub use host::RuntimePluginHost;

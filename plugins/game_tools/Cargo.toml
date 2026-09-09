@@ -1,0 +1,20 @@
+# ============================================================
+#  game_tools — ゲーム運用ツール専用プラグイン DLL
+#
+#  ECS コンポーネントは提供せず、エディタのメニューから実行する
+#  「開発中のユーティリティ」だけを持つ（フィールド定義は空）。
+#  crate-type = ["cdylib"] で Windows DLL（.dll）としてビルドされる。
+# ============================================================
+
+[package]
+name    = "game_tools"
+version = "0.1.0"
+edition = "2024"
+
+# cdylib = 他言語から呼び出せるダイナミックライブラリ（.dll / .so）
+[lib]
+name       = "game_tools"
+crate-type = ["cdylib"]
+
+[dependencies]
+seed-plugin-api = { path = "../../plugin_api" }

@@ -1,0 +1,19 @@
+{
+  "name": "GameTools",
+  "version": "0.1.0",
+  "description": "ゲーム運用ツール。エディタの「Game」メニューからセーブデータ（ユーザーデータ）を削除できます。",
+  "author": "SEED Engine",
+  "entry_dll": "game_tools.dll",
+  "editor_menus": [
+    {
+      "menu": "Game",
+      "items": [
+        {
+          "id": "delete_save",
+          "label": "ユーザーデータ削除",
+          "confirm": "セーブデータ（save.json）を削除します。よろしいですか？"
+        }
+      ]
+    }
+  ]
+}

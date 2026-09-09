@@ -1623,6 +1623,11 @@ impl App {
                 }
 
                 // ── AI アシスタント用コマンド ─────────────────────────────────
+                IpcCommand::PluginAction { plugin, id } => {
+                    let p = plugin.clone();
+                    let i = id.clone();
+                    self.handle_plugin_action(&p, &i);
+                }
                 IpcCommand::GetSceneInfo => {
                     self.send_scene_info();
                 }
@@ -2060,6 +2065,40 @@ impl App {
 
     /// ロード済みプラグイン一覧をエディタへ送信する。
     fn send_plugin_list(&self) {
+    /// IPC は 1 行 1 コマンドのテキストプロトコルのため、エラー理由に改行が
+    /// 混ざるとメッセージが分断される。改行を潰して 1 行に畳むときの連結文字。
+    const REASON_LINE_JOINER: &str = " ";
+
+    /// エディタメニューから要求されたプラグインアクションを実行し、結果を返す。
+    ///
+    /// 実行そのものは PluginRegistry へ委譲し、ここは
+    /// 「ホストを用意する」「結果を IPC 応答へ変換する」だけを担当する。
+    fn handle_plugin_action(&mut self, plugin_name: &str, action_id: &str) {
+        // プラグインへ貸し出すホスト（状態を持たないので都度生成でよい）
+        let mut host = crate::engine::plugin::RuntimePluginHost::new();
+
+        let result = self
+            .plugin_registry
+            .invoke_editor_action(plugin_name, action_id, &mut host);
+
+        let Some(ipc) = &self.ipc else { return };
+        match result {
+            Ok(()) => {
+                eprintln!("[PluginAction] 成功: {plugin_name}/{action_id}");
+                ipc.send(&format!("PLUGIN_ACTION_OK:{plugin_name},{action_id}"));
+            }
+            Err(reason) => {
+                eprintln!("[PluginAction] 失敗: {plugin_name}/{action_id} — {reason}");
+                // 理由にカンマが含まれてもエディタ側は 3 つ目以降を全部理由として扱うため、
+                // 改行だけ潰して 1 行の IPC メッセージに収める。
+                let reason = reason.lines().collect::<Vec<_>>().join(Self::REASON_LINE_JOINER);
+                ipc.send(&format!(
+                    "PLUGIN_ACTION_ERROR:{plugin_name},{action_id},{reason}"
+                ));
+            }
+        }
+    }
+
         if let Some(ipc) = &self.ipc {
             let json = self.plugin_registry.to_json();
             ipc.send(&format!("PLUGIN_LIST:{json}"));

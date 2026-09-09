@@ -917,6 +917,11 @@ pub enum IpcCommand {
     /// ロード済みプラグイン一覧の要求
     /// フォーマット: GET_PLUGIN_LIST
     GetPluginList,
+    /// プラグインがエディタメニューへ登録したアクションの実行要求。
+    /// フォーマット: PLUGIN_ACTION:{plugin_name},{item_id}
+    /// ※ plugin_name / item_id ともカンマを含まない前提（最初の 1 個で分割する）
+    /// 応答: PLUGIN_ACTION_OK:{plugin},{id} / PLUGIN_ACTION_ERROR:{plugin},{id},{reason}
+    PluginAction { plugin: String, id: String },
 
     // ── AI アシスタント用コマンド ─────────────────────────────────────────────
 
@@ -1188,6 +1193,31 @@ const SCRIPT_DEBUG_PREFIX: &str = "SCRIPT_DEBUG:";
 
 /// `SCRIPT_DEBUG:` の name と arg を分ける文字（arg 側の `,` は分割しない）。
 const SCRIPT_DEBUG_SEPARATOR: char = ',';
+
+/// エディタメニューのプラグインアクション要求の接頭辞。
+pub const PLUGIN_ACTION_PREFIX: &str = "PLUGIN_ACTION:";
+
+/// `PLUGIN_ACTION:{plugin_name},{item_id}` をパースする。
+///
+/// プラグイン名・アクション id はどちらも識別子であり、カンマを含まない。
+/// そのため最初のカンマだけで 2 分割し、両側の前後空白を落として使う。
+/// どちらかが空、またはカンマが無い場合は不正としてコマンドを捨てる
+/// （空文字で呼ぶとレジストリ側で必ず失敗するため、ここで弾いたほうが原因が分かりやすい）。
+fn parse_plugin_action(line: &str) -> Option<IpcCommand> {
+    let rest = line.strip_prefix(PLUGIN_ACTION_PREFIX)?;
+    let (plugin, id) = rest.split_once(',')?;
+
+    let plugin = plugin.trim();
+    let id = id.trim();
+    if plugin.is_empty() || id.is_empty() {
+        return None;
+    }
+
+    Some(IpcCommand::PluginAction {
+        plugin: plugin.to_string(),
+        id:     id.to_string(),
+    })
+}
 
 /// `SCRIPT_DEBUG:{name},{arg}` を分解する【デバッグコマンド書式の唯一の定義】。
 ///
@@ -2946,6 +2976,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             } else { None }
                         }
                         "GET_PLUGIN_LIST"  => Some(IpcCommand::GetPluginList),
+                        s if s.starts_with(PLUGIN_ACTION_PREFIX) => parse_plugin_action(s),
                         "GET_SCENE_INFO"   => Some(IpcCommand::GetSceneInfo),
                         "GET_SCENE_SHADING_PARAMS" => Some(IpcCommand::GetSceneShadingParams),
                         "PAUSE_RENDER"     => Some(IpcCommand::PauseRender),
@@ -3240,6 +3271,34 @@ fn try_open(path: &str) -> std::io::Result<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// プラグインのエディタメニューアクションが正しく分解されること。
+    ///
+    /// 「最初の `,` で 2 分割」「前後の空白は落とす」「片側でも空なら弾く」
+    /// 「`,` が無ければ弾く」の 4 点が仕様の全部。
+    #[test]
+    fn parses_plugin_action_command() {
+        // 正常系
+        assert!(matches!(
+            parse_plugin_action("PLUGIN_ACTION:GameTools,delete_save"),
+            Some(IpcCommand::PluginAction { ref plugin, ref id })
+                if plugin == "GameTools" && id == "delete_save"
+        ));
+
+        // 前後の空白は落とす（エディタ側の書式ゆれに耐える）
+        assert!(matches!(
+            parse_plugin_action("PLUGIN_ACTION: GameTools , delete_save "),
+            Some(IpcCommand::PluginAction { ref plugin, ref id })
+                if plugin == "GameTools" && id == "delete_save"
+        ));
+
+        // 異常系: 区切りなし / 片側が空 / 接頭辞違い
+        assert!(parse_plugin_action("PLUGIN_ACTION:GameTools").is_none());
+        assert!(parse_plugin_action("PLUGIN_ACTION:,delete_save").is_none());
+        assert!(parse_plugin_action("PLUGIN_ACTION:GameTools,").is_none());
+        assert!(parse_plugin_action("PLUGIN_ACTION:  ,  ").is_none());
+        assert!(parse_plugin_action("OTHER:GameTools,delete_save").is_none());
+    }
 
     /// レイヤ再読込コマンドが専用 variant へパースされること（本機能の追加分）。
     #[test]

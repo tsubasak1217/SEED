@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use super::manifest::{PluginEntry, PluginManifest};
-use super::{PLUGIN_ENTRY_FN, Plugin, PluginCreateFn};
+use super::{PLUGIN_ENTRY_FN, Plugin, PluginCreateFn, PluginHost};
 
 // ============================================================
 //  LoadedPlugin — ロード済みプラグインの保持単位
@@ -25,6 +25,8 @@ use super::{PLUGIN_ENTRY_FN, Plugin, PluginCreateFn};
 pub struct LoadedPlugin {
     /// プラグイン実装（DLL 内のオブジェクト）
     pub plugin: Box<dyn Plugin>,
+    /// plugin.json の内容（editor_menus など、トレイトに現れないデータの供給源）
+    pub manifest: PluginManifest,
     /// フィールド定義キャッシュ（初回 field_defs() 呼び出し時に生成）
     field_defs_cache: Option<Vec<super::PluginFieldDef>>,
     /// DLL ライブラリハンドル（生存期間を plugin より長くする必要がある）
@@ -38,6 +40,12 @@ impl LoadedPlugin {
             self.field_defs_cache = Some(self.plugin.field_defs());
         }
         self.field_defs_cache.as_deref().unwrap()
+    }
+
+    /// エディタメニュー定義（plugin.json の editor_menus）を返す。
+    /// 空配列＝メニューを提供しないプラグイン。
+    pub fn editor_menus(&self) -> &[super::EditorMenuDef] {
+        &self.manifest.editor_menus
     }
 
     /// フィールド定義を不変参照で返す（キャッシュがなければ空スライスを返す）。
@@ -126,12 +134,13 @@ impl PluginRegistry {
             }
 
             let dll_path = manifest.dll_path(&dir);
-            match registry.load_dll(&dll_path, manifest.name.clone()) {
+            let plugin_name = manifest.name.clone();
+            match registry.load_dll(&dll_path, manifest) {
                 Ok(()) => {
-                    eprintln!("[PluginRegistry] ロード成功: {}", manifest.name);
+                    eprintln!("[PluginRegistry] ロード成功: {plugin_name}");
                 }
                 Err(e) => {
-                    eprintln!("[PluginRegistry] ロード失敗 ({}): {e}", manifest.name);
+                    eprintln!("[PluginRegistry] ロード失敗 ({plugin_name}): {e}");
                 }
             }
         }
@@ -143,7 +152,7 @@ impl PluginRegistry {
     fn load_dll(
         &mut self,
         dll_path: &Path,
-        expected_name: String,
+        manifest: PluginManifest,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Safety: DLL のエクスポート関数を呼び出す。
         // Plugin トレイトの実装が engine と同一ツールチェーンでコンパイルされている前提。
@@ -160,16 +169,17 @@ impl PluginRegistry {
         let plugin: Box<dyn Plugin> = unsafe { *Box::from_raw(raw as *mut Box<dyn Plugin>) };
 
         // プラグイン名の整合性チェック（警告のみ）
-        if plugin.name() != expected_name {
+        if plugin.name() != manifest.name {
             eprintln!(
                 "[PluginRegistry] 警告: manifest の name ({}) と Plugin::name() ({}) が一致しません",
-                expected_name,
+                manifest.name,
                 plugin.name()
             );
         }
 
         self.plugins.push(LoadedPlugin {
             plugin,
+            manifest,
             field_defs_cache: None,
             _lib: lib,
         });
@@ -217,7 +227,11 @@ impl PluginRegistry {
     /// エディタ送信用のプラグイン情報 JSON を生成する。
     ///
     /// フォーマット:
-    /// [{"name":"PhysicsPlugin","version":"0.1.0","description":"..."},...]
+    /// [{"name":"PhysicsPlugin","version":"0.1.0","description":"...",
+    ///   "editor_menus":[{"menu":"Game","items":[...]}]},...]
+    ///
+    /// `editor_menus` は plugin.json の宣言をそのまま載せる
+    /// （エディタはこれだけを見てメニューを構築する＝データドリブン）。
     pub fn to_json(&self) -> String {
         let entries: Vec<String> = self
             .plugins
@@ -226,9 +240,58 @@ impl PluginRegistry {
                 let name = p.plugin.name().replace('"', "\\\"");
                 let version = p.plugin.version().replace('"', "\\\"");
                 let desc = p.plugin.description().replace('"', "\\\"");
-                format!(r#"{{"name":"{name}","version":"{version}","description":"{desc}"}}"#)
+                // メニュー定義はラベル・確認文にカンマや引用符・日本語が入るため、
+                // 手組みせず serde_json に任せる（エスケープ漏れを構造的に防ぐ）。
+                let menus = serde_json::to_string(&p.manifest.editor_menus)
+                    .unwrap_or_else(|_| EMPTY_JSON_ARRAY.to_string());
+                format!(
+                    r#"{{"name":"{name}","version":"{version}","description":"{desc}","editor_menus":{menus}}}"#
+                )
             })
             .collect();
         format!("[{}]", entries.join(","))
     }
+
+    // ── エディタメニューアクションの実行 ─────────────────────────
+
+    /// エディタのメニュー項目から要求されたアクションを、該当プラグインへ委譲する。
+    ///
+    /// - `plugin_name`: `plugin.json` の name（＝ PLUGIN_LIST で送った名前）
+    /// - `action_id`:   `editor_menus[].items[].id`
+    /// - `host`:        プラグインへ貸し出すホスト API
+    ///
+    /// 【マニフェストとの突き合わせを行う理由】
+    /// IPC で来た任意の id をそのままプラグインへ渡すと、宣言していない
+    /// アクションまで実行できてしまう。plugin.json に宣言された項目だけを
+    /// 通すことで、UI に出ていない操作が外から叩かれるのを防ぐ。
+    pub fn invoke_editor_action(
+        &mut self,
+        plugin_name: &str,
+        action_id: &str,
+        host: &mut dyn PluginHost,
+    ) -> Result<(), String> {
+        let Some(lp) = self.get_mut(plugin_name) else {
+            return Err(format!("プラグインが見つかりません: {plugin_name}"));
+        };
+
+        // 宣言済みのアクションかを確認する（区切り線・id 空は対象外）
+        let declared = lp
+            .manifest
+            .editor_menus
+            .iter()
+            .flat_map(|m| m.items.iter())
+            .any(|it| it.is_actionable() && it.id == action_id);
+
+        if !declared {
+            return Err(format!(
+                "plugin.json の editor_menus に宣言されていないアクションです: {action_id}"
+            ));
+        }
+
+        lp.plugin.on_editor_action(action_id, host)
+    }
 }
+
+/// serde_json のシリアライズに失敗した場合の代替値（空配列）。
+/// 実際には失敗しないが、`unwrap` でプロセスを落とさないための定数。
+const EMPTY_JSON_ARRAY: &str = "[]";

@@ -274,6 +274,12 @@ public sealed class RuntimeManager : IDisposable
     public event Action<string>? ActorDataReceived;
 
     /// <summary>アクター編集モードでコンポーネント一覧が返ってきたときに発火する（JSON 文字列）。</summary>
+    /// <summary>
+    /// アクターツリーが丸ごと入れ替わったときに発火する（HIERARCHY_RESET）。
+    /// 直後に届く HIERARCHY は差分更新ではなく全再構築で反映する必要がある。
+    /// </summary>
+    public event Action? HierarchyReset;
+
     public event Action<string>? ActorComponentsReceived;
 
     // ── GPU 読み戻しスクリーンショット（SCREENSHOT: の応答）────────────────
@@ -485,9 +491,28 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>
     /// ロード済みプラグイン一覧が返ってきたときに発火する（JSON 文字列）。
-    /// フォーマット: [{"name":"...","version":"...","description":"..."},...]
+    /// フォーマット: [{"name":"...","version":"...","description":"...","editor_menus":[...]},...]
     /// </summary>
     public event Action<string>? PluginListReceived;
+
+    /// <summary>
+    /// ロード済みプラグイン一覧を型付きモデルへパースした結果が届いたときに発火する。
+    /// JSON 文字列版（<see cref="PluginListReceived"/>）と同じタイミングで呼ばれる。
+    /// メニュー構築のようにプラグインの構造（editor_menus）を使う購読者はこちらを使う。
+    /// </summary>
+    public event Action<IReadOnlyList<PluginInfo>>? PluginListParsed;
+
+    /// <summary>
+    /// プラグインのエディタメニューアクションが成功したときに発火する。
+    /// 引数: (プラグイン名, アクション id)
+    /// </summary>
+    public event Action<string, string>? PluginActionSucceeded;
+
+    /// <summary>
+    /// プラグインのエディタメニューアクションが失敗したときに発火する。
+    /// 引数: (プラグイン名, アクション id, 失敗理由)
+    /// </summary>
+    public event Action<string, string, string>? PluginActionFailed;
 
     /// <summary>
     /// シーン情報が返ってきたときに発火する（JSON 文字列）。
@@ -893,6 +918,43 @@ public sealed class RuntimeManager : IDisposable
         if (!noisy)
             EditorLog.Write($"[Editor→Runtime] {message[..Math.Min(80, message.Length)]}");
         _pipe?.Send(message);
+    }
+
+    // ── プラグインのエディタメニューアクション ──────────────────────
+
+    /// <summary>Editor→Runtime のアクション実行要求の接頭辞。</summary>
+    private const string PluginActionPrefix = "PLUGIN_ACTION:";
+
+    /// <summary>Runtime→Editor の成功通知の接頭辞。</summary>
+    private const string PluginActionOkPrefix = "PLUGIN_ACTION_OK:";
+
+    /// <summary>Runtime→Editor の失敗通知の接頭辞。</summary>
+    private const string PluginActionErrorPrefix = "PLUGIN_ACTION_ERROR:";
+
+    /// <summary>成功通知の本文フィールド数（plugin, id）。</summary>
+    private const int PluginActionOkFieldCount = 2;
+
+    /// <summary>失敗通知の本文フィールド数（plugin, id, reason）。reason は残り全部。</summary>
+    private const int PluginActionErrorFieldCount = 3;
+
+    /// <summary>
+    /// プラグインのエディタメニューアクションの実行をランタイムへ要求する。
+    /// 応答は <see cref="PluginActionSucceeded"/> / <see cref="PluginActionFailed"/> で返る。
+    /// </summary>
+    /// <param name="pluginName">プラグイン識別名（PLUGIN_LIST の name）。</param>
+    /// <param name="actionId">アクション識別子（editor_menus の items[].id）。</param>
+    /// <returns>送信できたら true。ランタイム未接続なら false。</returns>
+    public bool SendPluginAction(string pluginName, string actionId)
+    {
+        // 未接続時は送っても捨てられるだけなので、呼び出し側が UI へ反映できるよう false を返す。
+        if (_pipe is null || !_pipe.IsConnected)
+        {
+            EditorLog.Write($"[Editor→Runtime] PLUGIN_ACTION 送信不可（ランタイム未接続）: {pluginName}/{actionId}");
+            return false;
+        }
+
+        SendToRuntime($"{PluginActionPrefix}{pluginName},{actionId}");
+        return true;
     }
 
     /// <summary>
@@ -1582,6 +1644,13 @@ public sealed class RuntimeManager : IDisposable
                 EditorLog.Write($"[Runtime→Editor] WGSL_DIAG 書式不正: {payload[..Math.Min(80, payload.Length)]}");
             }
         }
+        else if (msg.Equals("HIERARCHY_RESET", StringComparison.Ordinal))
+        {
+            // アクターツリーが丸ごと入れ替わった（シーン遷移 / Play 停止の復元 / LOAD_SCENE）。
+            // 直後に届く HIERARCHY は差分更新ではなく全再構築で反映しなければならない。
+            EditorLog.Write("[Runtime→Editor] HIERARCHY_RESET");
+            HierarchyReset?.Invoke();
+        }
         else if (msg.StartsWith("HIERARCHY:", StringComparison.Ordinal))
         {
             var json = msg["HIERARCHY:".Length..];
@@ -2042,6 +2111,43 @@ public sealed class RuntimeManager : IDisposable
             var json = msg["PLUGIN_LIST:".Length..];
             EditorLog.Write($"[Runtime→Editor] PLUGIN_LIST ({json.Length} chars)");
             PluginListReceived?.Invoke(json);
+
+            // メニュー構築用に型付きモデルへも落として通知する。
+            // パースは失敗しても例外を投げない（読めた分だけ返る）。
+            PluginListParsed?.Invoke(PluginListParser.Parse(json));
+        }
+        // ── プラグインのエディタメニューアクションの実行結果 ──
+        //   成功: PLUGIN_ACTION_OK:{plugin},{id}
+        //   失敗: PLUGIN_ACTION_ERROR:{plugin},{id},{reason}
+        //   どちらもユーザー操作 1 回につき 1 回だけ来る低頻度メッセージなのでログに残す。
+        else if (msg.StartsWith(PluginActionOkPrefix, StringComparison.Ordinal))
+        {
+            var body  = msg[PluginActionOkPrefix.Length..];
+            var parts = body.Split(',', PluginActionOkFieldCount);
+            if (parts.Length == PluginActionOkFieldCount)
+            {
+                EditorLog.Write($"[Runtime→Editor] PLUGIN_ACTION_OK {body}");
+                PluginActionSucceeded?.Invoke(parts[0], parts[1]);
+            }
+            else
+            {
+                EditorLog.Write($"[Runtime→Editor] PLUGIN_ACTION_OK の形式が不正です: {body}");
+            }
+        }
+        else if (msg.StartsWith(PluginActionErrorPrefix, StringComparison.Ordinal))
+        {
+            // 理由（3 つ目）にはカンマが含まれうるため、分割数を上限にして残りを全部理由にする。
+            var body  = msg[PluginActionErrorPrefix.Length..];
+            var parts = body.Split(',', PluginActionErrorFieldCount);
+            if (parts.Length == PluginActionErrorFieldCount)
+            {
+                EditorLog.Write($"[Runtime→Editor] PLUGIN_ACTION_ERROR {body}");
+                PluginActionFailed?.Invoke(parts[0], parts[1], parts[2]);
+            }
+            else
+            {
+                EditorLog.Write($"[Runtime→Editor] PLUGIN_ACTION_ERROR の形式が不正です: {body}");
+            }
         }
         else if (msg.StartsWith("SCENE_INFO:", StringComparison.Ordinal))
         {

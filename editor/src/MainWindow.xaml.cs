@@ -489,6 +489,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 最初の push を取りこぼさないよう他パネルの購読と同じタイミングで行う。
         InitAiHost();
 
+        // プラグインが plugin.json の editor_menus で宣言したメニューの購読を開始する。
+        // PLUGIN_LIST はランタイム起動直後に push されるため、
+        // ランタイム生成〜イベント購読と同じタイミングで張っておく必要がある。
+        InitPluginMenus();
+
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);

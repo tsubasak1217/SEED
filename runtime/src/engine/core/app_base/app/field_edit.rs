@@ -483,6 +483,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::GetCamState
         | IpcCommand::GetSceneInfo
         | IpcCommand::GetPluginList
+        // プラグインのエディタメニューアクション。シーンではなくプラグイン側の
+        // 資源（セーブデータなど）を操作するため、シーンの Undo 履歴には載せない。
+        | IpcCommand::PluginAction { .. }
         // バインド元候補の問い合わせ（W8.3）。読み取りのみでシーンを変えない。
         | IpcCommand::GetBindableSources { .. }
         // シーン既定のパラメータ一覧の問い合わせ。読み取りのみでシーンを変えない。
