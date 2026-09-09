@@ -250,6 +250,17 @@ public class TutorialDirector : SEEDScript
     /// </summary>
     private bool autoStartPending;
 
+    /// <summary>
+    /// ヒントの「開始イベント」の購読（<see cref="TutorialMission.hintStartEvent"/> 指定時のみ）。
+    /// 張った購読は <see cref="StopHint"/> で必ず解除する（ミッション終了の唯一の出口を通る）。
+    /// </summary>
+    private SEED.EventSubscription? hintStartSubscription;
+
+    /// <summary>
+    /// ヒントの「停止イベント」の購読（<see cref="TutorialMission.hintStopEvent"/> 指定時のみ）。
+    /// </summary>
+    private SEED.EventSubscription? hintStopSubscription;
+
     // ─── 公開プロパティ ──────────────────────────────────────
 
     /// <summary>プレイヤーの移動スクリプト（ミッションが位置を読むための窓口）。</summary>
@@ -289,6 +300,7 @@ public class TutorialDirector : SEEDScript
     public override void OnDestroy()
     {
         EndCurrentMission();
+        ClearHintSubscriptions();   // ミッションが無い状態で破棄されても購読を残さない
         ReleaseAllRestrictions();
     }
 
@@ -639,6 +651,12 @@ public class TutorialDirector : SEEDScript
         // アタリを進めたくないのであらためて抑止を掛け直す
         SetBiteSuppressed(true);
 
+        // 連鎖の回数に上限があるミッション（例「魚で魚を釣ろう」）では、
+        // 達成演出のあいだも連鎖を止めたままにする。バナー中は時間が止まらない場合が
+        // あり（Animator 演出のときは Time.Scale を落とせない）、放っておくと
+        // 「1 回体験させる」はずの連鎖が演出の裏で 2 段目・3 段目まで進んでしまう。
+        SetChainSuppressedForClear(missions[missionIndex]);
+
         // 指示（達成バナー・この後の Outro）が無い間はパネルを隠す
         panel?.Hide();
 
@@ -787,9 +805,53 @@ public class TutorialDirector : SEEDScript
     /// <see cref="TutorialMission.hintClipName"/> が空文字の場合は表示切替だけを行う
     /// （空文字時にクリップ再生を行わない理由は <see cref="TutorialMission.hintClipName"/>
     ///  のコメントを参照）。
+    ///
+    /// 【出すタイミングはデータで切り替えられる】
+    /// <see cref="TutorialMission.hintStartEvent"/> が指定されていれば、実践に入っても
+    /// すぐには出さず<b>そのイベントを受けてから</b>出す（例: 竿を構えた瞬間
+    /// <c>fishing.ready_begin</c>）。<see cref="TutorialMission.hintStopEvent"/> が
+    /// 指定されていれば、そのイベントで一旦引っ込めて再び開始イベントを待つ
+    /// （例: 構えを解いた瞬間 <c>fishing.ready_end</c>）。
     /// </summary>
     /// <param name="data">Playing に入った現在のミッションのデータ。</param>
     private void StartHint(TutorialMission data)
+    {
+        if (!data.hintActor.IsValid) { return; }
+
+        // 【開始イベントの指定が無い場合】従来どおり、実践に入った瞬間から見本を出す。
+        if (string.IsNullOrEmpty(data.hintStartEvent))
+        {
+            ShowHint(data);
+            return;
+        }
+
+        // 【開始イベントの指定がある場合】その瞬間が来るまで見本は出さずに待つ。
+        // 例: 投げの説明では「左クリックで構える」が先なので、構えた瞬間
+        // （fishing.ready_begin）を受けてから振りの見本を動かし始める。
+        HideHint(data);
+
+        // 直前のミッションの購読が残っていることは無い想定だが、
+        // 二重購読は「1 回のイベントで 2 回再生」になるので念のため畳んでから張る。
+        ClearHintSubscriptions();
+
+        // ラムダはミッションのデータ（struct）をコピーで捕まえるので、
+        // このあとリストが差し替わっても参照は壊れない。
+        var captured = data;
+        hintStartSubscription = SEED.Events.Subscribe(data.hintStartEvent, () => ShowHint(captured));
+
+        if (!string.IsNullOrEmpty(data.hintStopEvent))
+        {
+            // 停止イベントで一旦引っ込め、そのまま開始イベントの待ち受けへ戻る
+            // （構え直せばまた見本が出る）。
+            hintStopSubscription = SEED.Events.Subscribe(data.hintStopEvent, () => HideHint(captured));
+        }
+    }
+
+    /// <summary>
+    /// ヒントアクタを実際に表示してクリップを再生する【ヒント表示の唯一の実装】。
+    /// </summary>
+    /// <param name="data">表示するヒントを持つミッションのデータ。</param>
+    private void ShowHint(TutorialMission data)
     {
         if (!data.hintActor.IsValid) { return; }
 
@@ -806,11 +868,11 @@ public class TutorialDirector : SEEDScript
     }
 
     /// <summary>
-    /// ヒントアクタの表示とアニメーションを止める【ヒント終了の唯一の出口】。
-    /// <see cref="TutorialMission.hintActor"/> が未設定・破棄済みなら何もしない。
+    /// ヒントアクタを隠してクリップを止める【ヒント非表示の唯一の実装】。
+    /// 購読は畳まないので、停止イベントで隠したあとも開始イベントの待ち受けは続く。
     /// </summary>
-    /// <param name="data">終了する（または終了済みの）ミッションのデータ。</param>
-    private void StopHint(TutorialMission data)
+    /// <param name="data">隠すヒントを持つミッションのデータ。</param>
+    private void HideHint(TutorialMission data)
     {
         if (!data.hintActor.IsValid) { return; }
 
@@ -820,6 +882,30 @@ public class TutorialDirector : SEEDScript
             anim.Stop();
         }
         hint.Visible = false;
+    }
+
+    /// <summary>
+    /// ヒントの開始／停止イベントの購読を解除する【購読解除の唯一の出口】。
+    /// </summary>
+    private void ClearHintSubscriptions()
+    {
+        hintStartSubscription?.Dispose();
+        hintStartSubscription = null;
+        hintStopSubscription?.Dispose();
+        hintStopSubscription = null;
+    }
+
+    /// <summary>
+    /// ヒントアクタの表示とアニメーションを止める【ヒント終了の唯一の出口】。
+    /// <see cref="TutorialMission.hintActor"/> が未設定・破棄済みなら何もしない。
+    /// </summary>
+    /// <param name="data">終了する（または終了済みの）ミッションのデータ。</param>
+    private void StopHint(TutorialMission data)
+    {
+        // 待ち受けの購読は、ヒントアクタの有無に関わらず必ず畳む
+        // （ミッションが終わったあとにイベントを拾って見本が出てしまうのを防ぐ）。
+        ClearHintSubscriptions();
+        HideHint(data);
     }
 
     // ─── 内部処理: 台詞の再生 ───────────────────────────────
@@ -966,6 +1052,7 @@ public class TutorialDirector : SEEDScript
         TutorialRules.FishPrefabRequiredCount = SEED.Mathf.Max(data.fishPrefabRequiredCount, TutorialRules.DefaultRequiredCount);
         TutorialRules.FishPopulationOverride  = data.fishPopulationOverride;
         TutorialRules.ChainDisabled           = data.chainDisabled;
+        TutorialRules.ChainLimit              = SEED.Mathf.Max(data.chainLimit, TutorialRules.NoChainLimit);
         TutorialRules.DriftDisabled           = data.driftDisabled;
         TutorialRules.DriftStationary         = data.driftStationary;
         TutorialRules.DriftPickupRadiusOverride = SEED.Mathf.Max(
@@ -1017,6 +1104,23 @@ public class TutorialDirector : SEEDScript
     {
         if (suppressed) { TutorialRules.Active = true; }
         TutorialRules.BiteSuppressed = suppressed;
+    }
+
+    /// <summary>
+    /// 達成演出のあいだのわらしべ連鎖の可否を決める
+    /// 【バナー表示中の連鎖抑止の唯一の入口】。
+    ///
+    /// 連鎖回数の上限（<see cref="TutorialMission.chainLimit"/>）があるミッションは、
+    /// 上限に達したからこそ達成しているので、演出中も連鎖させない。
+    /// 上限が無いミッションはデータ本来の指定（<see cref="TutorialMission.chainDisabled"/>）に従う。
+    /// 次のミッションへ進むときに <see cref="ApplyMissionRules"/> が上書きし直す。
+    /// </summary>
+    /// <param name="data">達成したミッションのデータ。</param>
+    private static void SetChainSuppressedForClear(TutorialMission data)
+    {
+        // 上書きの門番（Active）が閉じていると読む側が素通りするので必ず開ける
+        TutorialRules.Active        = true;
+        TutorialRules.ChainDisabled = data.chainDisabled || data.chainLimit > TutorialRules.NoChainLimit;
     }
 
     /// <summary>

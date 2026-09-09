@@ -53,6 +53,9 @@ public static class TutorialRules
     /// </summary>
     public const float NoDriftPickupRadiusOverride = 0f;
 
+    /// <summary>連鎖回数の上限「無制限」を表す値（回数指定は 1 以上なので 0 は無効値）。</summary>
+    public const int NoChainLimit = 0;
+
     // ─── 全体の有効・無効 ────────────────────────────────────
 
     /// <summary>
@@ -125,6 +128,17 @@ public static class TutorialRules
     /// （<c>FishingController.TryEatHookedFish</c> が早期 return する）。
     /// </summary>
     public static bool ChainDisabled;
+
+    /// <summary>
+    /// このミッションの間に許すわらしべ連鎖の回数の上限。<see cref="NoChainLimit"/>（0）で無制限。
+    ///
+    /// 【誰が読むか】
+    /// 上限そのものを釣り本体は見ない（連鎖の可否は <see cref="ChainDisabled"/> 1 本に集約する）。
+    /// 回数を数えて上限に達したら <see cref="ChainDisabled"/> を立てるのは
+    /// <see cref="ChainCatchMission"/> の責務で、この値はその「何回まで許すか」を
+    /// データ（<see cref="TutorialMission.chainLimit"/>）から運ぶための置き場である。
+    /// </summary>
+    public static int ChainLimit = NoChainLimit;
 
     // ─── 漂流物の制限 ────────────────────────────────────────
 
@@ -262,6 +276,7 @@ public static class TutorialRules
         FishPrefabRequiredCount = DefaultRequiredCount;
         FishPopulationOverride = NoPopulationOverride;
         ChainDisabled        = false;
+        ChainLimit           = NoChainLimit;
         DriftDisabled        = false;
         DriftStationary      = false;
         DriftPickupRadiusOverride = NoDriftPickupRadiusOverride;

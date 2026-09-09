@@ -162,6 +162,20 @@ public struct TutorialMission
     [SerializeField(Label = "連鎖なし", Tooltip = "true で掛かった魚を他の魚が食う連鎖を起こさない")]
     public bool chainDisabled;
 
+    /// <summary>
+    /// このミッションの間に許す<b>わらしべ連鎖の回数の上限</b>。
+    /// <see cref="TutorialRules.NoChainLimit"/>（0・既定）で無制限。
+    ///
+    /// 【何のためにあるか】
+    /// 「魚で魚を釣る」を 1 回だけ体験させたいミッション（t2_chain）では、上限が無いと
+    /// 1 回連鎖したあとも大物が寄り続けて 2 段目・3 段目の連鎖が起きてしまい、
+    /// 達成演出の最中に状況がどんどん変わってしまう。上限に達した時点で
+    /// <see cref="TutorialRules.ChainDisabled"/> による抑止を掛け、そのミッションの間は
+    /// もう連鎖させない（回数を数えて抑止を掛けるのは <see cref="ChainCatchMission"/> の責務）。
+    /// </summary>
+    [SerializeField(Label = "連鎖回数の上限(0で無制限)", Tooltip = "この回数だけ連鎖したら以降の連鎖を止める。0 で無制限")]
+    public int chainLimit;
+
     /// <summary>true の間、漂流物を自然出現させない。</summary>
     [SerializeField(Label = "漂流物なし", Tooltip = "true で漂流物を自然出現させない（台本での生成は別）")]
     public bool driftDisabled;
@@ -298,6 +312,30 @@ public struct TutorialMission
     /// </summary>
     [SerializeField(Label = "ヒントクリップ名", Tooltip = "hintActor の Animator に再生させるクリップ名。空文字は「表示切替のみ・再生なし」を意味する（先頭クリップの自動解決はスクリプト API 未対応のため行わない）")]
     public string hintClipName;
+
+    /// <summary>
+    /// ヒントを出し始める<b>きっかけのイベント名</b>（<see cref="FishingEvents"/> の定数）。
+    /// 空文字（既定）なら実践（Playing）に入った瞬間に出す。
+    ///
+    /// 【何のためにあるか】
+    /// 投げの説明（t1_cast）では「左クリックで構える → マウスを振る」の 2 段構えなので、
+    /// 実践に入った瞬間から振りの見本を出すと、まだ構えてもいないのに
+    /// 「振れ」と言われることになる。ここに <c>fishing.ready_begin</c>（構えた瞬間）を
+    /// 指定すると、竿を構えてから初めて見本が動き出す。
+    /// </summary>
+    [SerializeField(Label = "ヒント開始イベント", Tooltip = "このイベントを受けてからヒントを出す（例 fishing.ready_begin）。空で実践開始と同時")]
+    public string hintStartEvent;
+
+    /// <summary>
+    /// ヒントを<b>一旦引っ込める</b>きっかけのイベント名（<see cref="FishingEvents"/> の定数）。
+    /// 空文字（既定）なら、ミッションが終わるまで出しっぱなしにする。
+    ///
+    /// 受け取ると <see cref="hintStartEvent"/> の待ち受けへ戻るので、
+    /// 「構える → 見本が出る → 構えを解く → 消える → もう一度構える → また出る」を繰り返せる。
+    /// <see cref="hintStartEvent"/> が空のときは意味を持たない（開始待ちが無いため）。
+    /// </summary>
+    [SerializeField(Label = "ヒント停止イベント", Tooltip = "このイベントでヒントを一旦止め、再び開始イベントを待つ（例 fishing.ready_end）。空で止めない")]
+    public string hintStopEvent;
 
     // ─── 前後で呼ぶイベント ─────────────────────────────────
 

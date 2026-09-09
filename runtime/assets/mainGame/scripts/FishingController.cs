@@ -291,6 +291,9 @@ public class FishingController : SEEDScript
     /// <summary>この値以下のリール入力量（メートル）は「入力なし」とみなす。</summary>
     private const float ReelInputEpsilon = 1e-4f;
 
+    /// <summary>着水直後に自動回収の判定を行わない猶予秒数の既定値（<see cref="landingGraceSeconds"/> の初期値）。</summary>
+    private const float DefaultLandingGraceSeconds = 1.0f;
+
     /// <summary>糸の点列の最小分割数（1 ＝ 直線）。</summary>
     private const int MinLineSegments = 1;
 
@@ -742,6 +745,24 @@ public class FishingController : SEEDScript
     private float reelEndDistance = 1.5f;
 
     /// <summary>
+    /// 着水してからこの秒数のあいだは<b>自動回収（巻き取り完了）の判定を一切行わない</b>猶予（秒）
+    /// 【短いキャストが着水と同時に回収される事故の防止】。
+    ///
+    /// 【なぜ必要か】
+    /// <see cref="UpdateReeling"/> は <see cref="FishState.Floating"/> の間も毎フレーム走り、
+    /// 「ウキ→竿先の残り距離が <see cref="reelEndDistance"/> 以下」または
+    /// 「巻く向きが竿先の方向から 90 度以上外れた」時点で <see cref="FinishReeling"/> を呼ぶ。
+    /// 短いキャスト・竿先の真横への着水・着水と同時にプレイヤーが動いた場合など、
+    /// <b>着水した瞬間に既に条件を満たしている</b>と、プレイヤーが一度も巻かないまま
+    /// その場で回収されて狙い（<see cref="FishState.Aiming"/>）へ戻ってしまう。
+    /// 着水直後だけ判定を止めれば、少なくともウキが浮いているところを見せられる。
+    ///
+    /// 0 以下で猶予なし（＝着水した次のフレームから判定する）。
+    /// </summary>
+    [SerializeField(Label = "着水後の回収猶予(秒)")]
+    private float landingGraceSeconds = DefaultLandingGraceSeconds;
+
+    /// <summary>
     /// 釣り上げが成立するウキ→竿先の水平距離（メートル）【ヒット中の完了距離】。
     ///
     /// ヒット中は「魚 HP が 0」かつ「実測距離がこの値以下」の両方が揃って初めて
@@ -817,6 +838,22 @@ public class FishingController : SEEDScript
 
     /// <summary>最後に巻き入力があってからの経過秒数（Floating へ戻す判定用）。</summary>
     private float reelIdleElapsed = 0f;
+
+    /// <summary>
+    /// 着水してからの経過秒数（<see cref="landingGraceSeconds"/> の判定用）。
+    /// キャスト開始で 0 に戻し、掛かっていない間（Floating / Reeling）だけ進める。
+    /// </summary>
+    private float landingElapsed = 0f;
+
+    /// <summary>
+    /// 着水してから<b>一度でも巻き入力があったか</b>
+    /// 【自動回収を「実際に巻いた結果」に限定するための控え】。
+    ///
+    /// 着水時点で既にウキが手元に近い場合でも、巻いていないうちは回収しない
+    /// （＝回収の判定がキャスト直後の距離に依存しなくなる）。
+    /// キャスト開始で false に戻す。
+    /// </summary>
+    private bool reeledSinceLanding = false;
 
     /// <summary>ウキの上下揺れの位相用に積算した秒数。</summary>
     private float bobElapsed = 0f;
@@ -2333,6 +2370,9 @@ public class FishingController : SEEDScript
         flightElapsed = 0f;
         reelAngleOffsetDegrees = 0f;
         reelIdleElapsed = 0f;
+        // 自動回収の猶予はキャストのたびに仕切り直す（飛翔中も判定させない）
+        landingElapsed = 0f;
+        reeledSinceLanding = false;
 
         State = FishState.Casting;
         HideCastPreview();
@@ -2376,6 +2416,9 @@ public class FishingController : SEEDScript
         if (t >= 1f)
         {
             State = FishState.Floating;
+            // 着水の瞬間を基点に自動回収の猶予を数え直す（飛翔中の経過は数えない）。
+            landingElapsed = 0f;
+            reeledSinceLanding = false;
             CrossFadeBoth(floatClip, playerFloatClip);
             PlaySe(splashSePath, splashSeVolume);
             // 着水した
@@ -2978,7 +3021,13 @@ public class FishingController : SEEDScript
     /// 基準を「ウキ→竿先」へ変更したうえで、
     /// (1) 毎フレームの移動量を「竿先までの残り水平距離」でクランプして行き過ぎを防ぎ、
     /// (2) 残り距離が完了距離以下、または進行方向が竿先への方向から 90 度以上外れた
-    ///     （＝内積が 0 以下＝もう竿先へ近づけない）場合は即座に巻き取りを完了させる。
+    ///     （＝内積が 0 以下＝もう竿先へ近づけない）場合は巻き取りを完了させる。
+    ///
+    /// <b>着水直後は回収しない（短いキャスト対策）</b>
+    /// (2) の完了判定は「着水から <see cref="landingGraceSeconds"/> 秒が過ぎ」かつ
+    /// 「着水後に一度でも巻き入力があった」ときだけ通す（内部の canAutoFinish）。
+    /// これが無いと、短いキャストや竿先の脇への着水では<b>着水した瞬間に条件が成立</b>し、
+    /// 一度も巻いていないのにその場で回収されて狙いへ戻ってしまう。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateReeling(float deltaTime)
@@ -2986,6 +3035,25 @@ public class FishingController : SEEDScript
         if (uki is not { } floatTf || !floatTf.IsValid) { return; }
 
         float amount = ReadReelAmount();
+
+        // ── 自動回収を許してよいかの前提を更新する ───────────────
+        // 掛かっていない間（Floating / Reeling）だけ着水後の経過を数え、
+        // 巻き入力があったフレームで「巻いた実績」を立てる。
+        // 掛かっている間は釣り上げの成否を UpdateFight が持つので数えない。
+        if (!IsHooked)
+        {
+            landingElapsed += deltaTime;
+            if (amount > ReelInputEpsilon) { reeledSinceLanding = true; }
+        }
+
+        // 自動回収（巻き取り完了）の判定を行ってよいか【回収を許す唯一の判断点】。
+        //  (1) 着水直後の猶予（landingGraceSeconds）を過ぎていること
+        //  (2) 着水後に一度でも巻いていること
+        //      ＝「キャスト直後から近かった」だけでは回収しない。距離が閾値以内でも
+        //        プレイヤーが巻いて初めて回収される。
+        bool canAutoFinish = !IsHooked
+                          && landingElapsed >= SEED.Mathf.Max(landingGraceSeconds, 0f)
+                          && reeledSinceLanding;
 
         // 巻き取り音は<b>実際に巻けているときだけ</b>鳴らす。
         // ヒット中の巻きが効くのは隙（Rest）フェーズだけなので、やり取り側の
@@ -3024,11 +3092,15 @@ public class FishingController : SEEDScript
         var toTarget = new SEED.Vector3(target.x - floatTf.Position.x, 0f, target.z - floatTf.Position.z);
         float remaining = SEED.Mathf.Sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
 
-        // 安全策: Reeling に入った時点（または既に）残り距離が完了距離以下なら、
-        // 巻く前から手元にあるということなので即座に完了させる（ウキが素通りするのを防ぐ）。
+        // 安全策: 残り距離が完了距離以下になっていれば、これ以上巻いても意味が無いので
+        // 完了させる（ウキが竿先を素通りするのを防ぐ）。
+        //
+        // 【着水直後は通さない】canAutoFinish に「猶予経過」と「巻いた実績」を
+        // 含めているため、短いキャストで着水した瞬間から近くても回収されない。
+        // 巻き始めて初めてここに到達する（＝回収はキャスト直後の距離に依存しない）。
         // ヒット中はここで完了させない（釣り上げの成否は UpdateFight が
         // 「HP 0 かつ釣り上げ成立距離」で決める）。
-        if (!IsHooked && remaining <= reelEndDistance)
+        if (canAutoFinish && remaining <= reelEndDistance)
         {
             FinishReeling();
             return;
@@ -3047,8 +3119,10 @@ public class FishingController : SEEDScript
         // これ以上巻いても基準点へ近づけない向きなので、素通りする前に巻き取りを完了させる。
         // ヒット中はウキの移動を ComputeFloatDistanceStep が支配しており、
         // 巻く向きは操舵にしか使わないので、この打ち切りは非ヒット時だけに効かせる。
+        // 【着水直後は通さない】着水の瞬間だけ向きが縮退している（ウキが竿先の
+        // 真横・真上に来ている）場合に、巻いてもいないのに回収されるのを防ぐ。
         float approach = toTarget.x * dir.x + toTarget.z * dir.z;
-        if (!IsHooked && approach <= 0f)
+        if (canAutoFinish && approach <= 0f)
         {
             FinishReeling();
             return;
@@ -3101,8 +3175,9 @@ public class FishingController : SEEDScript
         }
 
         // 移動後の残り距離が完了距離以下になったら 1 回の釣りを終える
+        // ＝「巻き取りで実際に距離が縮んで閾値以内に入った」ときの回収経路。
         // （ヒット中は UpdateFight の釣り上げ判定に一本化しているのでここでは終えない）。
-        if (!IsHooked && HorizontalDistance(next, target) <= reelEndDistance)
+        if (canAutoFinish && HorizontalDistance(next, target) <= reelEndDistance)
         {
             FinishReeling();
         }

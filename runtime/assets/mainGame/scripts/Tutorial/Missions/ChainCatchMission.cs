@@ -68,6 +68,16 @@ public sealed class ChainCatchMission : MissionBase
     /// <summary>これまでに相手を出した回数。</summary>
     private int spawnCount;
 
+    /// <summary>
+    /// このミッションで許す連鎖回数の上限（<see cref="TutorialRules.NoChainLimit"/> で無制限）。
+    /// データ（<see cref="TutorialMission.chainLimit"/>）から <see cref="TutorialRules.ChainLimit"/>
+    /// 経由で受け取る。
+    /// </summary>
+    private int chainLimit = TutorialRules.NoChainLimit;
+
+    /// <summary>上限に達して連鎖の抑止を掛けたか（多重に掛けない・終了時に必ず戻すための控え）。</summary>
+    private bool chainSuppressed;
+
     // ─── IMission ────────────────────────────────────────────
 
     /// <summary>このミッションの種類。</summary>
@@ -91,6 +101,10 @@ public sealed class ChainCatchMission : MissionBase
         spawnCooldown = 0f;
         spawnCount    = 0;
 
+        // 連鎖回数の上限はルール表経由で受け取る（ApplyMissionRules が Begin より先に走る）。
+        chainLimit      = SEED.Mathf.Max(TutorialRules.ChainLimit, TutorialRules.NoChainLimit);
+        chainSuppressed = false;
+
         Subscribe(FishingEvents.LevelUp, OnChained);
     }
 
@@ -101,6 +115,15 @@ public sealed class ChainCatchMission : MissionBase
     /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
     protected override void OnUpdate(MissionContext ctx, float unscaledDelta)
     {
+        // 抑止を掛けたあとも毎フレーム張り直す【消えた抑止を取り戻す唯一の場所】。
+        // 合いの手（Interjecting）を挟むと TutorialDirector.OnInterjectionFinished が
+        // ルール上書きをデータの値で入れ直すため、掛けたはずの抑止が落ちてしまう。
+        // ここで張り直せば、落ちても 1 フレームで元に戻る。
+        if (chainSuppressed) { ApplyChainSuppression(); }
+
+        // 上限に達したら相手を出す必要も無い（出しても食えないので海が埋まるだけ）
+        if (chainSuppressed) { return; }
+
         if (spawnCount >= MaxSpawnCount) { return; }
 
         spawnCooldown -= unscaledDelta;
@@ -112,11 +135,48 @@ public sealed class ChainCatchMission : MissionBase
 
     // ─── 内部処理 ────────────────────────────────────────────
 
-    /// <summary>連鎖が成立したときの処理。</summary>
+    /// <summary>
+    /// 連鎖が成立したときの処理。
+    ///
+    /// 体験させたい回数（<see cref="chainLimit"/>）に達したら、そこで<b>以降の連鎖を止める</b>。
+    /// 止めないと達成演出（バナー・締めの台詞）の最中にも大物が寄って 2 段目・3 段目の
+    /// 連鎖が起き、プレイヤーが何を達成したのか分からないまま状況が変わってしまう。
+    /// </summary>
     private void OnChained()
     {
         chainCount++;
+
+        if (chainLimit > TutorialRules.NoChainLimit && chainCount >= chainLimit)
+        {
+            chainSuppressed = true;
+            ApplyChainSuppression();
+        }
+
         if (chainCount >= requiredCount) { MarkCleared(); }
+    }
+
+    /// <summary>
+    /// 連鎖の抑止を釣り本体へ掛ける【抑止を掛ける唯一の実装】。
+    /// 上書きの門番（<see cref="TutorialRules.Active"/>）も併せて開けておく
+    /// （読む側は Active が false の間フィールドを一切見ないため）。
+    /// </summary>
+    private static void ApplyChainSuppression()
+    {
+        TutorialRules.Active        = true;
+        TutorialRules.ChainDisabled = true;
+    }
+
+    /// <summary>
+    /// ミッション終了時の後始末。掛けた連鎖の抑止をデータ本来の指定へ必ず戻す
+    /// （掛けた側が戻す責任を持つ。TutorialDirector 側の解除に頼らない）。
+    /// </summary>
+    /// <param name="ctx">周辺への窓口。</param>
+    protected override void OnEnd(MissionContext ctx)
+    {
+        if (!chainSuppressed) { return; }
+
+        chainSuppressed = false;
+        TutorialRules.ChainDisabled = ctx.Data.chainDisabled;
     }
 
     /// <summary>

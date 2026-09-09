@@ -130,7 +130,7 @@ public class DriftItem : SEEDScript
     /// モデルの元の大きさが用途に合わないときの一括調整用（1.0 で等倍）。
     /// </summary>
     [Header("見た目（出現・消滅・回転）"), SerializeField(Label = "表示スケール")]
-    private float modelScale = 1.0f;
+    private float modelScale = 0.7f;
 
     /// <summary>
     /// 出現演出の所要秒数。生成直後、スケール 0 からこの秒数かけて
