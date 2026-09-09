@@ -4697,8 +4697,11 @@
                     "bannerLabel": "ミッションクリア！",
                     "bannerText": "MissionClearText|Text",
                     "bgSprite": "MissionClearBg|Sprite",
+                    "clearSePath": "assets://mainGame/audios/mission_clear.mp3",
+                    "clearSeVolume": "1.000",
                     "clipName": "mission_clear",
-                    "holdSeconds": "0.600",
+                    "fadeOutSeconds": "0.400",
+                    "holdSeconds": "1.200",
                     "rootTransform": "MissionClearBanner",
                     "useAnimator": "true"
                   }
