@@ -291,6 +291,12 @@ public class FishingController : SEEDScript
     /// <summary>この値以下のリール入力量（メートル）は「入力なし」とみなす。</summary>
     private const float ReelInputEpsilon = 1e-4f;
 
+    /// <summary>
+    /// <see cref="DebugForceHook"/> が名乗る合わせ判定。
+    /// デバッグは「最良の合わせ」から始めたいので Excellent 固定。
+    /// </summary>
+    private const HookJudgement DebugForceHookJudgement = HookJudgement.Excellent;
+
     /// <summary>着水直後に自動回収の判定を行わない猶予秒数の既定値（<see cref="landingGraceSeconds"/> の初期値）。</summary>
     private const float DefaultLandingGraceSeconds = 1.0f;
 
@@ -1380,6 +1386,12 @@ public class FishingController : SEEDScript
     /// </summary>
     private const string ReelSoundActorName = "ReelSound";
 
+    /// <summary>
+    /// 「ゲーム時間が止まっている」とみなす <see cref="SEED.Time.Scale"/> の閾値。
+    /// スロー演出（0 より大きい Scale）では音を止めたくないので、完全停止だけを拾う。
+    /// </summary>
+    private const float TimeStoppedScaleEpsilon = 0.0001f;
+
     /// <summary>巻き取り音のアクタ（OnStart で用意。取得失敗時は無効）。</summary>
     private SEED.GameObject reelSoundActor;
 
@@ -1635,6 +1647,130 @@ public class FishingController : SEEDScript
         return true;
     }
 
+    // ─── デバッグ用の強制ヒット ───────────────────────────────
+
+    /// <summary>
+    /// 【デバッグ用】いまの状態に関わらず、指定の魚を強制的に掛ける
+    /// 【デバッグからのヒットの唯一の入口】。
+    ///
+    /// <b>手順</b>
+    /// <list type="number">
+    ///   <item>ウキが水上に無ければ（<see cref="BaitActive"/> が false なら）
+    ///         竿先から <paramref name="distanceMeters"/> 前方の水面へ強制着水させる
+    ///         （<see cref="DebugForceLanding"/>）</item>
+    ///   <item>合わせ成立（<see cref="JudgeHook"/> のヒット側）とまったく同じ外形で掛ける</item>
+    /// </list>
+    /// ＝ここを通した結果は本番のヒットと同じになる（バナー・SE・イベント・やり取りの開始）。
+    ///
+    /// 既にヒット中なら何もしない（掛かっている魚の乗り換えは
+    /// <see cref="TryEatHookedFish"/> の仕事なので、ここでは扱わない）。
+    /// </summary>
+    /// <param name="fish">掛ける魚。</param>
+    /// <param name="distanceMeters">
+    /// ウキが水上に無いときに着水させる、竿先からの水平距離（メートル）。
+    /// <see cref="minCastDistance"/>〜<see cref="maxCastDistance"/> にクランプする。
+    /// </param>
+    /// <returns>掛かったら true。</returns>
+    public bool DebugForceHook(Fish fish, float distanceMeters)
+    {
+        if (IsHooked)
+        {
+            SEED.Debug.LogWarning("[Fishing] DebugForceHook: 既にヒット中のため何もしない");
+            return false;
+        }
+
+        // 1) ウキが水上に無ければ「着水済み（Floating）」を作ってから掛ける
+        if (!BaitActive && !DebugForceLanding(distanceMeters)) { return false; }
+
+        // 2) 合わせ成立と同じ外形（JudgeHook のヒット側）を再現する。
+        //    判定イベント → 内部判定の確定 → 判定画像 → ヒット SE の順は本物と同じ。
+        SEED.Events.Raise(FishingEvents.HookJudged, DebugForceHookJudgement.ToString());
+        ClearBiteTiming();
+        LastJudgement = DebugForceHookJudgement;
+        ShowJudgement(DebugForceHookJudgement);
+        PlaySe(hookSePath, hookSeVolume);
+
+        if (!TryHook(fish))
+        {
+            // 餌が無効化された等の例外。魚を逃がして待機へ戻す（JudgeHook と同じ後始末）。
+            SEED.Debug.LogWarning("[Fishing] DebugForceHook: TryHook が拒否したため中止した");
+            State = FishState.Floating;
+            fish.ReleaseFromHook();
+            return false;
+        }
+
+        fish.OnHooked();
+        SEED.Debug.Log(
+            $"[Fishing] DebugForceHook: {fish.DisplayName}（Lv{fish.Level}）を強制的に掛けた"
+          + $"（判定 {DebugForceHookJudgement}）");
+        return true;
+    }
+
+    /// <summary>
+    /// 【デバッグ用】竿先から指定距離だけ前方の水面へ、ウキを強制的に着水させる
+    /// 【強制着水の唯一の実装】。
+    ///
+    /// 進行中の釣り（飛翔・アタリ・やり取り）を <see cref="CancelToIdle"/> で畳んでから
+    /// 釣り姿勢へ入れ直し、<see cref="UpdateFlight"/> の着水処理と同じ後始末を行って
+    /// <see cref="FishState.Floating"/> を作る。
+    ///
+    /// 釣り姿勢へ入れない（＝経路移動モードでない）ときは、毎フレームの更新が
+    /// 「待機以外なのに釣り姿勢でない」状態を見つけて問答無用で畳んでしまうため、
+    /// 何もせず false を返す。
+    /// </summary>
+    /// <param name="distanceMeters">竿先からの水平距離（メートル）。キャスト距離の範囲へクランプする。</param>
+    /// <returns>着水させられたら true。</returns>
+    private bool DebugForceLanding(float distanceMeters)
+    {
+        // 進行中の釣りをすべて畳む（ウキ・糸・やり取り・アタリ・巻き取り音を初期化する）
+        CancelToIdle();
+
+        // 釣り姿勢へ入れ直す（catch_test と同じ前提。ここを飛ばすと次のフレームで畳まれる）
+        if (playerMove is not { } pm || !pm.EnterFishingStance())
+        {
+            SEED.Debug.LogWarning(
+                "[Fishing] DebugForceHook: 釣り姿勢へ入れないため中止（経路移動モードで実行すること）");
+            return false;
+        }
+
+        // 着水点＝竿先からプレイヤーの向き（Yaw）へ distance だけ進んだ水面上の一点。
+        // 距離は通常のキャストと同じ範囲へクランプして、糸・カメラの前提を崩さない。
+        float yaw = transform.Rotation.y;
+        float distance = SEED.Mathf.Clamped(distanceMeters, minCastDistance, maxCastDistance);
+        var landing = LandingPoint(distance, yaw);
+
+        // ウキを出して着水点へ置く。向きは StartCast と同じく沖側へ揃える
+        // （ウキの子アクタ CastCameraTarget が親の回転を継承してカメラの向きを決めるため）。
+        ShowFloat();
+        SetFloatPosition(landing);
+        if (uki is { IsValid: true } floatTf)
+        {
+            floatTf.Rotation = new SEED.Vector3(0f, yaw + floatYawOffsetDegrees, 0f);
+        }
+
+        // UpdateFlight の着水処理と同じ後始末（自動回収の猶予・巻き取りの操舵・レーダーの待ち）
+        castDistance = distance;
+        flightElapsed = 0f;
+        reelAngleOffsetDegrees = 0f;
+        reelIdleElapsed = 0f;
+        landingElapsed = 0f;
+        reeledSinceLanding = false;
+        radarVisibleElapsed = 0f;
+
+        State = FishState.Floating;
+        HideCastPreview();
+        // 直前に PlayerMove.EnterFishingStance が本体アニメを触っているのでラッチを捨てる
+        ResetPlayerClipLatch();
+        CrossFadeBoth(floatClip, playerFloatClip);
+        PlaySe(splashSePath, splashSeVolume);
+        // マウスの振りを読まない区間なのでカーソルロックを引き直す
+        UpdateCursorLock();
+        // 着水した（通常のキャストと同じくチュートリアル等が購読する）
+        SEED.Events.Raise(FishingEvents.Land);
+        SEED.Debug.Log($"[Fishing] DebugForceHook: 竿先から {distance:F1}m 前方へ強制着水");
+        return true;
+    }
+
     /// <summary>
     /// 魚が餌をつつき始めた（前アタリ開始）ときに呼ぶ。受け付けたら true。
     ///
@@ -1842,6 +1978,11 @@ public class FishingController : SEEDScript
             PauseMenu.Toggle(pauseMenuActorPath);
         }
 
+        // 巻き演出（音・アニメ）の停止判定は<b>どの早期 return よりも前</b>で必ず通す。
+        // ここより下の return（ポーズ・プレイヤー未設定・状態別 switch）を通ると
+        // UpdateReeling → UpdateReelSound が呼ばれず、ループ音が鳴りっぱなしになる。
+        UpdateReelFeedbackGate();
+
         // ポーズ中はゲーム側の更新も入力も止める。
         // カーソルロックの再適用（UpdateCursorLock）より前に抜けることが重要で、
         // ここを通してしまうとメニュー操作中にカーソルが消える。
@@ -2016,6 +2157,7 @@ public class FishingController : SEEDScript
         bool wasFishing = State != FishState.Idle;
 
         State = FishState.Idle;
+        StopReelSound();               // 姿勢解除・中断でも巻き取り音を必ず止める
         ResetGesture();
         AbortBiteTiming();             // 姿勢解除・中断でもアタリ進行を打ち切る
         ReleaseHook();                 // 姿勢解除・中断でも必ず魚を逃がす
@@ -2989,6 +3131,7 @@ public class FishingController : SEEDScript
     /// </summary>
     private void BreakLine()
     {
+        StopReelSound();               // 糸切れ＝もう巻けないので巻き取り音を必ず止める
         fight?.EndFight();             // Paused も EndFight で必ず解除される
         nibbleDipElapsed = NoDipElapsed;   // 出題の沈みアニメが途中なら必ず戻す
         ReleaseHook();                 // 掛かっていた魚を逃がす（Escape → 退場）
@@ -3061,7 +3204,7 @@ public class FishingController : SEEDScript
         // ヒットしていないときは従来どおり「巻き入力があること」だけが条件。
         bool reelingEffective = amount > ReelInputEpsilon
                              && (!IsHooked || (fight is { } reelGate && reelGate.CanReelNow));
-        UpdateReelSound(reelingEffective, deltaTime);
+        UpdateReelSound(reelingEffective);
 
         // 巻き入力の有無で Floating ⇔ Reeling を往復する。
         // ヒット中（Hooked）は状態もクリップもヒット用のまま固定し、往復させない
@@ -3196,14 +3339,26 @@ public class FishingController : SEEDScript
     /// ヒット中に隙（Rest）以外でホイールを回しても魚 HP は削れず（＝巻けていない）、
     /// そこで音だけ鳴ると操作が通っているように誤解させるため。
     /// </summary>
+    /// <b>猶予は必ず実時間（<see cref="SEED.Time.UnscaledDeltaTime"/>）で数える</b>。
+    /// ゲーム時間（ctx.DeltaTime）で数えると、チュートリアルの合いの手などで
+    /// <c>Time.Scale = 0</c> が掛かった瞬間に猶予が 1 秒も進まなくなり、
+    /// 「巻いている」判定のまま音が鳴り続けてしまう（実際に起きていた不具合）。
+    ///
     /// <param name="reelingEffective">
     /// このフレームに巻き取りが<b>実際に効いた</b>か（呼び出し側が判定して渡す）。
     /// </param>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateReelSound(bool reelingEffective, float deltaTime)
+    private void UpdateReelSound(bool reelingEffective)
     {
+        // 停止条件（ポーズ・時間停止・巻き入力の遮断）が立っているあいだは
+        // 何があっても鳴らさない。門（UpdateReelFeedbackGate）と同じ判断を
+        // ここでも見ることで、同じフレームに鳴らし直されるのを防ぐ。
+        if (IsReelFeedbackSuspended) { StopReelSound(); return; }
+
         if (reelingEffective) { sinceLastReelInput = 0f; }
-        else if (sinceLastReelInput < float.MaxValue) { sinceLastReelInput += deltaTime; }
+        else if (sinceLastReelInput < float.MaxValue)
+        {
+            sinceLastReelInput += SEED.Time.UnscaledDeltaTime;
+        }
 
         var source = ResolveReelSoundSource();
         if (source is not { } s) { return; }
@@ -3214,7 +3369,60 @@ public class FishingController : SEEDScript
         else if (!shouldPlay && playing) { s.Stop(); }
     }
 
-    /// <summary>巻き取り音を止める（釣りを抜けるとき・破棄時）。未生成なら何もしない。</summary>
+    /// <summary>
+    /// 巻き演出（ループ音・巻きアニメ）を止めるべき状況か
+    /// 【「今は巻いていない」とみなす条件の唯一の定義】。
+    ///
+    /// <list type="bullet">
+    ///   <item>ポーズメニューが開いている（<see cref="PauseMenu.IsOpen"/>）</item>
+    ///   <item>ゲーム時間が止まっている（<c>Time.Scale == 0</c>。チュートリアルの合いの手）</item>
+    ///   <item>巻き入力そのものが遮断されている（<see cref="InputGate"/> の Reel が閉じている）</item>
+    /// </list>
+    /// いずれも「Update が回らない／入力が来ない」ため、
+    /// 猶予を数える通常経路だけでは音を止められない状況である。
+    /// </summary>
+    private bool IsReelFeedbackSuspended
+        => PauseMenu.IsOpen
+        || SEED.Time.Scale <= TimeStoppedScaleEpsilon
+        || !InputGate.Allows(GameAction.Reel);
+
+    /// <summary>
+    /// 巻き演出（ループ音・巻きアニメ）の停止判定を毎フレーム必ず通す門
+    /// 【鳴りっぱなしを防ぐ唯一の保険】。
+    ///
+    /// <see cref="Update"/> の<b>いちばん最初</b>（ポーズの早期 return より前）で呼ぶ。
+    /// 次のどちらかなら巻き演出をたたむ。
+    /// <list type="number">
+    ///   <item>停止条件が立っている（<see cref="IsReelFeedbackSuspended"/>）</item>
+    ///   <item>そもそも巻ける状態ではない（Floating / Reeling / Hooked 以外。
+    ///         ＝ 釣り上げ演出中 Catching・狙い Aiming・待機 Idle など）</item>
+    /// </list>
+    /// 巻きアニメは<b>掛かっていない Reeling 状態のときだけ</b>待機クリップへ戻す
+    /// （ヒット中はヒット用クリップ固定・釣り上げ演出中は演出側がアニメを持つため）。
+    ///
+    /// 時間停止から復帰したときは条件が外れるので、巻き入力があれば
+    /// <see cref="UpdateReelSound"/> の通常経路がそのまま鳴らし直す（専用の復帰処理は不要）。
+    /// </summary>
+    private void UpdateReelFeedbackGate()
+    {
+        bool reelableState = State == FishState.Floating
+                          || State == FishState.Reeling
+                          || State == FishState.Hooked;
+
+        if (!IsReelFeedbackSuspended && reelableState) { return; }
+
+        StopReelSound();
+
+        // 掛かっていない巻き取り中だけ、見た目も待機へ戻す（巻きアニメの止め忘れ対策）。
+        if (State == FishState.Reeling)
+        {
+            State = FishState.Floating;
+            reelIdleElapsed = 0f;
+            CrossFadeBoth(floatClip, playerFloatClip);
+        }
+    }
+
+    /// <summary>巻き取り音を止める【巻き取り音を止める唯一の入口】。未生成なら何もしない。</summary>
     private void StopReelSound()
     {
         sinceLastReelInput = float.MaxValue;
@@ -3262,6 +3470,10 @@ public class FishingController : SEEDScript
     /// </summary>
     private void FinishReeling()
     {
+        // 釣り上げ成立でも空振りでも、この先は巻ける状態ではない。
+        // 釣り上げ側は State が Catching になり UpdateReeling が二度と走らないので、
+        // ここで止めないとループ音が演出中ずっと鳴り続ける（実際に起きていた不具合）。
+        StopReelSound();
         fight?.EndFight();             // やり取り（テンション・魚HP）は成否にかかわらずここで畳む
         nibbleDipElapsed = NoDipElapsed;   // 出題の沈みアニメが途中なら必ず戻す（ウキが沈んだまま残らないように）
 

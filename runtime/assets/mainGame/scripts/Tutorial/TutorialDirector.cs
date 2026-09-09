@@ -60,6 +60,12 @@ public class TutorialDirector : SEEDScript
     /// <summary>ミッションが 1 件も無いことを表す添字。</summary>
     private const int NoMissionIndex = -1;
 
+    /// <summary>ミッションの添字を 1 つ進める／戻すときの歩幅。</summary>
+    private const int MissionIndexStep = 1;
+
+    /// <summary>ミッションを見つけられなかったことを表す添字。</summary>
+    private const int NotFoundIndex = -1;
+
     /// <summary>チュートリアル開始から最初の台詞までに置く既定の待ち時間（秒・実時間）。</summary>
     private const float DefaultIntroDelaySeconds = 1.5f;
 
@@ -161,6 +167,29 @@ public class TutorialDirector : SEEDScript
     /// </summary>
     [SerializeField(Label = "【デバッグ】必ず流す", Tooltip = "true でセーブデータの完了フラグを無視して必ずチュートリアルを実行する")]
     public bool debugForceTutorial = false;
+
+    /// <summary>
+    /// 【デバッグ用】ここに書いたミッション ID から開始する（空なら先頭から通常どおり）。
+    ///
+    /// それより前のミッションは<b>達成済み扱い</b>で丸ごと飛ばす。飛ばしたミッションの
+    /// ルール上書き・ヒント・開始イベントは一切適用されないので、適用されるのは
+    /// 開始ミッション 1 件ぶんだけになる。
+    /// 完了済みセーブでも使えるよう、<see cref="debugForceTutorial"/> と併用すること。
+    /// </summary>
+    [SerializeField(Label = "【デバッグ】開始ミッションID", Tooltip = "この ID のミッションから開始する（空なら先頭から）")]
+    public string debugStartMissionId = "";
+
+    /// <summary>
+    /// 【デバッグ用】true なら開始直後に全ミッションを達成扱いにして、
+    /// <b>チュートリアルの終わり（怪獣の登場演出以降）だけ</b>を再生する。
+    ///
+    /// 演出そのものは最後の <see cref="MissionKind.Cutscene"/> ミッションが持っているので、
+    /// そのミッションまで飛ばして通常どおり再生する。Cutscene ミッションが 1 件も無ければ
+    /// 完了処理（<c>FinishTutorial</c>）へ直行する。
+    /// <see cref="debugStartMissionId"/> より優先される。
+    /// </summary>
+    [SerializeField(Label = "【デバッグ】終了演出だけ再生", Tooltip = "true で全ミッションを飛ばし、最後の Cutscene（怪獣）から再生する")]
+    public bool debugSkipToEnding = false;
 
     /// <summary>台詞の表示開始から決定入力を受け付けないまでの秒数（実時間）。</summary>
     [SerializeField(Label = "送り無効時間(秒)", Tooltip = "台詞の表示直後に決定入力を無視する秒数（二重送りの防止）")]
@@ -375,7 +404,9 @@ public class TutorialDirector : SEEDScript
             return;
         }
 
-        missionIndex = NoMissionIndex;
+        // 通常は先頭（NoMissionIndex）から。デバッグ指定があればその手前から始める
+        // （直後の AdvanceToNextMission が 1 進めるので、ここでは「開始したい添字 - 1」を入れる）。
+        missionIndex = ResolveDebugStartIndex();
 
         // 猶予が設定されていれば、フェードインを見せてから喋り出す。
         // ここでは入力だけ止める（時間は止めない＝波や鳥はそのまま動く）。
@@ -390,6 +421,83 @@ public class TutorialDirector : SEEDScript
         }
 
         AdvanceToNextMission();
+    }
+
+    /// <summary>
+    /// デバッグ指定から「開始するミッションの 1 つ手前の添字」を決める
+    /// 【開始位置の上書きの唯一の判断】。
+    ///
+    /// 戻り値をそのまま <see cref="missionIndex"/> へ入れると、直後の
+    /// <see cref="AdvanceToNextMission"/> が 1 進めて狙ったミッションから始まる。
+    /// 指定が無い・解決できないときは <see cref="NoMissionIndex"/>（＝先頭から）を返す。
+    /// </summary>
+    /// <returns>開始したいミッションの添字から 1 を引いた値。</returns>
+    private int ResolveDebugStartIndex()
+    {
+        // 終了演出だけ再生する指定が最優先（開始 ID の指定があっても、こちらが勝つ）
+        if (debugSkipToEnding)
+        {
+            int endingIndex = FindLastCutsceneMissionIndex();
+            if (endingIndex >= 0)
+            {
+                SEED.Debug.Log(
+                    $"[Tutorial] 【デバッグ】終了演出だけ再生: ミッション {endingIndex}"
+                  + $"（{missions[endingIndex].id}）から始めます。");
+                return endingIndex - MissionIndexStep;
+            }
+
+            // 演出ミッションが無いなら、次の 1 歩で完了処理へ落ちる位置を返す
+            SEED.Debug.LogWarning(
+                "[Tutorial] 【デバッグ】終了演出だけ再生: Cutscene ミッションが無いため完了処理へ直行します。");
+            return missions.Count - MissionIndexStep;
+        }
+
+        if (string.IsNullOrWhiteSpace(debugStartMissionId)) { return NoMissionIndex; }
+
+        int startIndex = FindMissionIndexById(debugStartMissionId);
+        if (startIndex < 0)
+        {
+            SEED.Debug.LogWarning(
+                $"[Tutorial] 【デバッグ】開始ミッションID \"{debugStartMissionId}\" が見つかりません。先頭から始めます。");
+            return NoMissionIndex;
+        }
+
+        SEED.Debug.Log(
+            $"[Tutorial] 【デバッグ】ミッション {startIndex}（{debugStartMissionId}）から始めます"
+          + "（それ以前は達成済み扱い）。");
+        return startIndex - MissionIndexStep;
+    }
+
+    /// <summary>
+    /// ミッション ID から添字を引く（大文字小文字は区別しない）。
+    /// </summary>
+    /// <param name="id">探すミッション ID。</param>
+    /// <returns>見つかった添字。無ければ <see cref="NotFoundIndex"/>。</returns>
+    private int FindMissionIndexById(string id)
+    {
+        for (int i = 0; i < missions.Count; i++)
+        {
+            // TutorialMission は構造体なので null 判定は不要（要素は必ず存在する）
+            if (string.Equals(missions[i].id, id, System.StringComparison.OrdinalIgnoreCase)) { return i; }
+        }
+        return NotFoundIndex;
+    }
+
+    /// <summary>
+    /// 最後の <see cref="MissionKind.Cutscene"/> ミッションの添字を探す
+    /// 【「終了演出の入口」の唯一の判断】。
+    ///
+    /// 演出（怪獣の登場）は Cutscene ミッションが持っているデータなので、
+    /// 「終わりの演出」＝リストの最後にある Cutscene と定義する。
+    /// </summary>
+    /// <returns>見つかった添字。無ければ <see cref="NotFoundIndex"/>。</returns>
+    private int FindLastCutsceneMissionIndex()
+    {
+        for (int i = missions.Count - MissionIndexStep; i >= 0; i--)
+        {
+            if (missions[i] is { kind: MissionKind.Cutscene }) { return i; }
+        }
+        return NotFoundIndex;
     }
 
     /// <summary>

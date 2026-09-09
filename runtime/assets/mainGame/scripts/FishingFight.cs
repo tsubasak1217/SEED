@@ -124,6 +124,19 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ウキも動かさない（拍を読むあいだ画が暴れないようにするため）。
 /// 魚 HP が 0 になった瞬間が釣り上げ成立（<see cref="FishDefeated"/>）。
 ///
+/// <b>■ 見た目の距離と目標距離の分離【2026-09-09 改定】</b>
+/// 上の「目標距離」をそのままウキの位置にすると、格上の魚（魚力 ≫ 竿）では
+/// 巻き効率が小さいぶん目標距離がほとんど縮まず、<b>巻いてもウキが動かない</b>。
+/// そこで<b>見た目の距離だけ</b>を目標距離から切り離す（HP の減り＝難度は不変）。
+/// <code>
+/// 巻いている間      : 必ず reelVisibleSpeed（m/秒）で手元へ寄る
+/// 手を止めている間  : 魚が fishPullSpeed × 戦闘力比 で沖へ引き返す
+/// 目標距離とのズレ  : 差 × visibleDistanceReturnRate でバネ的に戻す（＝平均は目標距離へ収束）
+/// 下限              : visibleDistanceMin（HP が残るうちは竿先へめり込まない）
+/// </code>
+/// 距離表示・魚モデルの位置はどちらも<b>ウキの実位置</b>を見ているので自動的に追従する
+/// （表示は <see cref="UpdateDistanceDisplay"/>、魚は <c>Fish.UpdateBite</c>）。
+///
 /// ■ 合わせランクの影響
 /// 合わせが悪いほど初期の糸の残りが少ない（＝危険側から始まる）。
 /// ────────────────────────────────────────────────────────
@@ -537,6 +550,56 @@ public class FishingFight : SEEDScript
     /// <summary>引きの速度倍率（魚 ÷ 竿）の上限。</summary>
     [SerializeField(Label = "引きの速度倍率の上限")]
     private float pullRateMultiplierMax = 2f;
+
+    // ─── 見た目距離の分離（手応えの調整）【2026-09-09 追加】─────────
+    //
+    // 「巻いているのにウキが動かない」を無くすため、<b>見た目の距離</b>を
+    // 魚 HP から決まる目標距離（DesiredFloatDistance）から切り離す。
+    // 難度（ReelHpPerUnit ＝ 巻き 1m あたりに削れる HP）は一切変えていない。
+
+    /// <summary>
+    /// 巻き入力中にウキが手元へ寄る速度（m/秒）【「巻けば必ず寄る」の唯一の速度】。
+    ///
+    /// 魚がどれだけ強くても、隙（<see cref="Phase.Rest"/>）で巻いているあいだは
+    /// 必ずこの速さぶんが手元向きに加算される（魚の引き戻しと足し合わせる）。
+    ///
+    /// <b>設計上の不変条件</b>: この値は「魚の引き戻し速度の最大値」
+    /// （<see cref="fishPullSpeed"/> × <see cref="pullRateMultiplierMax"/>）より大きくすること。
+    /// そうでないと格上の魚に対して巻いても正味で寄らなくなり、この修正の意味が消える。
+    /// </summary>
+    /// 既定 6.0 m/秒: 引き戻しの最大（1.5 × 2 ＝ 3.0 m/秒）の 2 倍。
+    /// 巻いているあいだは正味 3.0 m/秒以上で必ず寄る。
+    [SerializeField(Label = "巻きの見た目寄せ速度(m/秒)")]
+    private float reelVisibleSpeed = 6f;
+
+    /// <summary>
+    /// 見た目距離が目標距離（<see cref="DesiredFloatDistance"/>）から離れているとき、
+    /// その差を詰め戻すバネの強さ（1/秒）【見た目と実値を繋ぎ止める唯一の係数】。
+    ///
+    /// 「目標より手前へ寄せすぎた」ぶんは魚が沖へ引き返し、
+    /// 「目標より沖に居る」ぶんは糸のテンションで手元へ戻る ―― どちらも
+    /// <c>差 × この値</c> の速度で戻す（＝指数的に収束する 1 次のバネ）。
+    /// これにより<b>長期的な平均距離は従来どおり <see cref="DesiredFloatDistance"/>
+    /// （＝魚 HP × 1HP あたりの距離）へ収束する</b>。
+    /// 巻き続けたときの釣り合いは「目標距離 −（見た目寄せ速度 ÷ この値）」で、
+    /// 既定値では目標より約 4m 手前で拮抗する（＝巻けば 4m ぶんの手応えが得られ、
+    /// 手を止めればそのぶん取り返される）。
+    /// </summary>
+    /// 既定 1.5 /秒: 拮抗点が目標の 4m 手前になる値（6.0 ÷ 1.5 ＝ 4.0m）。
+    [SerializeField(Label = "見た目距離の復帰レート(1/秒)")]
+    private float visibleDistanceReturnRate = 1.5f;
+
+    /// <summary>
+    /// 巻きで詰められる見た目距離の下限（メートル）【ウキが竿先へめり込むのを防ぐ番人値】。
+    ///
+    /// 魚 HP が残っているあいだは、どれだけ巻いてもこれより手前には寄らない。
+    /// 魚が力尽きた後（<see cref="FishDefeated"/>）は専用の枝が竿先まで寄せ切るので、
+    /// 釣り上げ成立の距離条件（コントローラ側の catchDistanceMeters）はこの値に妨げられない。
+    /// </summary>
+    /// 既定 1.5m: 釣り上げ成立距離（FishingController.catchDistanceMeters ＝ 1.0m）より
+    /// わずかに外側。HP が残っているうちは成立距離まで詰め切れない。
+    [SerializeField(Label = "見た目距離の下限(m)")]
+    private float visibleDistanceMin = 1.5f;
 
     // ─── 魚 HP ───────────────────────────────────────────
 
@@ -1051,6 +1114,16 @@ public class FishingFight : SEEDScript
     /// </summary>
     private float pendingReelAmount = 0f;
 
+    /// <summary>
+    /// このフレームに<b>実際に巻けたか</b>（隙フェーズで有効な巻き入力があったか）。
+    /// <see cref="UpdateRest"/> が毎フレーム立て直し、<see cref="ComputeFloatDistanceStep"/> が
+    /// 「巻けば必ず寄る」ぶん（<see cref="reelVisibleSpeed"/>）を足すかどうかの判断に使う。
+    ///
+    /// <see cref="reelInputHeld"/>（巻き始めイベントの立ち上がり検出）とは目的が違うので
+    /// 別の状態として持つ（あちらは通知の間引き専用）。
+    /// </summary>
+    private bool reelEffectiveThisFrame = false;
+
     /// <summary>バトル開始からの経過秒数（拍時計の唯一の時間源）。</summary>
     private float clockTime = 0f;
 
@@ -1408,6 +1481,12 @@ public class FishingFight : SEEDScript
     {
         if (!Active || target is null) { return; }
 
+        // 「このフレームに巻けたか」は毎フレームここで必ず落とし、
+        // 実際に巻けたとき（UpdateRest）だけ立て直す。こうしておかないと
+        // 一時停止・チュートリアル凍結・力尽きで早期 return したときに、
+        // 前フレームの値が残ってウキが勝手に寄り続ける。
+        reelEffectiveThisFrame = false;
+
         // チュートリアルが説明の台詞を読ませているあいだは、時間停止が効いているかに
         // 関わらずフェーズ進行を凍結する（TutorialRules.FightSuppressed の説明を参照）。
         // 上書きが無ければこの分岐は素通りし、従来どおり進む。
@@ -1491,8 +1570,20 @@ public class FishingFight : SEEDScript
     /// 【ウキの移動量の唯一の算出点】。
     ///
     /// ＋ ＝ 沖へ（距離が増える） / − ＝ 手元へ（距離が減る）。
-    /// <b>隙（Rest）のあいだ</b>は魚 HP に応じた目標距離へ寄る／引かれる。
     /// 出題・回答中はウキを止めておき、拍を読む画面が揺れないようにする。
+    ///
+    /// <b>隙（Rest）のあいだ【2026-09-09 改定・見た目距離の分離】</b>
+    /// 見た目の距離は「魚 HP から決まる目標距離（<see cref="DesiredFloatDistance"/>）」
+    /// そのものではなく、次の 2 項の和で毎フレーム動かす。
+    /// <code>
+    /// 第1項（復帰） 目標が沖側 → max(fishPullSpeed × 戦闘力比, |差| × visibleDistanceReturnRate)
+    ///               目標が手前 → min(|差| × visibleDistanceReturnRate, reelInSpeedMax)
+    /// 第2項（巻き） 巻き入力中は必ず −reelVisibleSpeed（魚の強さに一切依存しない）
+    /// 下限クランプ  見た目距離は visibleDistanceMin より手前へは詰まらない
+    /// </code>
+    /// ＝「巻けば必ず寄り、手を止めれば魚が引き返す」を作りつつ、
+    /// 第 1 項のバネによって長期的な平均距離は従来どおり目標距離へ収束する。
+    /// <b>魚 HP の減り方（<see cref="ReelHpPerUnit"/>）は一切変えていない</b>ので難度は不変。
     /// <b>余白（<see cref="Phase.LeadIn"/>）中だけは例外</b>で、掛かった直後に沖へ走る演出として
     /// <see cref="leadInStartDistance"/> から <see cref="DesiredFloatDistance"/>（＝この時点では
     /// 魚 HP が満タンなので「掛かった距離 ＋ 引き距離」と一致する）まで、
@@ -1524,18 +1615,50 @@ public class FishingFight : SEEDScript
 
         if (CurrentPhase != Phase.Rest) { return 0f; }
 
-        float difference = DesiredFloatDistance - currentDistance;
+        float dt = SEED.Mathf.Max(deltaTime, 0f);
 
-        // 目標のほうが遠い: 魚が沖へ引く（戦闘力比ぶん速い）
-        if (difference > 0f)
+        // ── 第 1 項: 目標距離への復帰（バネ）──────────────────────
+        // 見た目距離を魚 HP から決まる目標距離（DesiredFloatDistance）へ引き戻す項。
+        // これがあるおかげで、見た目をいくら分離しても長期的な平均は目標距離へ収束する。
+        float gap = DesiredFloatDistance - currentDistance;          // ＋ ＝ 目標が沖側
+        float springSpeed = SEED.Mathf.Abs(gap)
+                          * SEED.Mathf.Max(visibleDistanceReturnRate, 0f);
+
+        float step = 0f;
+        if (gap > 0f)
         {
-            float outward = fishPullSpeed * PullRateClamped() * deltaTime;
-            return SEED.Mathf.Min(outward, difference);
+            // 目標のほうが遠い ＝ 魚が沖へ引き返す局面。
+            // 従来の「引き速度（fishPullSpeed × 戦闘力比）」を<b>下限</b>として保証しつつ、
+            // 目標から大きく手前へ寄せすぎているときはバネのぶんだけ強く引き返す。
+            float outwardSpeed = SEED.Mathf.Max(
+                fishPullSpeed * PullRateClamped(), springSpeed);
+            step += SEED.Mathf.Min(outwardSpeed * dt, gap);          // 目標は追い越さない
+        }
+        else if (gap < 0f)
+        {
+            // 目標のほうが近い ＝ 糸のテンションで手元側へ戻る局面。
+            // 寄せ速度の上限（reelInSpeedMax）でクランプし、目標は追い越さない。
+            float inwardSpeed = SEED.Mathf.Min(springSpeed, SEED.Mathf.Max(reelInSpeedMax, 0f));
+            step -= SEED.Mathf.Min(inwardSpeed * dt, -gap);
         }
 
-        // 目標のほうが近い: 手元へ寄せる（上限速度でクランプ・目標は追い越さない）
-        float inward = reelInSpeedMax * deltaTime;
-        return -SEED.Mathf.Min(inward, -difference);
+        // ── 第 2 項: 巻き入力（「巻けば必ず寄る」の唯一の加算点）──────────
+        // 魚 HP の減り方（ReelHpPerUnit）とは無関係に、巻いているあいだは必ず
+        // reelVisibleSpeed ぶん手元へ寄せる。格上の魚（魚力 ≫ 竿）でも
+        // 「巻いているのにウキが動かない」が起きないのはこの 1 行のため。
+        if (reelEffectiveThisFrame)
+        {
+            step -= SEED.Mathf.Max(reelVisibleSpeed, 0f) * dt;
+        }
+
+        // ── 見た目距離の下限クランプ ─────────────────────────
+        // 魚 HP が残っているあいだはウキを竿先へめり込ませない
+        // （魚が力尽きた後は関数冒頭の FishDefeated の枝が竿先まで寄せ切る）。
+        float floorDistance = SEED.Mathf.Max(visibleDistanceMin, 0f);
+        float allowedInward = SEED.Mathf.Max(currentDistance - floorDistance, 0f);
+        if (step < -allowedInward) { step = -allowedInward; }
+
+        return step;
     }
 
     // ─── 公開 API: 漂流物の効果 ─────────────────────────────
@@ -2523,6 +2646,9 @@ public class FishingFight : SEEDScript
             return;
         }
 
+        // 見た目の距離を寄せてよいフレーム（ここへ到達＝隙フェーズで有効な巻き入力がある）
+        reelEffectiveThisFrame = true;
+
         // 巻き始めの 1 回だけ通知する（巻いている間ずっと流すと購読側が毎フレーム走るため）。
         // 直前フレームに巻き入力が無かったときだけ「巻き始め」とみなす。
         if (!reelInputHeld)
@@ -2746,6 +2872,7 @@ public class FishingFight : SEEDScript
         pendingExtraRestBars = 0;
         lastReelInputTime = NoReelInputTime;
         reelInputHeld = false;
+        reelEffectiveThisFrame = false;
         ResetIcons(0);
         iconFadeStartTime = NoFadeStart;
     }
