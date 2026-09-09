@@ -120,6 +120,18 @@ public class DialogueWindow : SEEDScript
     public float messageSeLength = TypewriterText.DefaultSeLengthSeconds;
 
     /// <summary>
+    /// 文字送り・送りマークの点滅を<b>実時間</b>（<see cref="SEED.Time.UnscaledDeltaTime"/>）で
+    /// 進めるか。
+    ///
+    /// 既定は false（ゲーム時間）。プロローグのように時間停止を掛けないシーンでは
+    /// これで問題ない。一方、本編のストーリー会話は <c>Time.Scale = 0</c> で
+    /// ゲームを止めたまま流すため、false のままだと文字送りが 1 文字も進まない。
+    /// そういうシーンでは true にすること。
+    /// </summary>
+    [SerializeField(Label = "実時間で進める", Tooltip = "Time.Scale = 0 で止めたまま会話を流すシーンでは true にする")]
+    public bool useUnscaledTime;
+
+    /// <summary>
     /// 話者名・本文に共通で使うフォントファイル（.ttf / .otf）の assets:// 参照。
     /// 空文字なら各 Text コンポーネント側の設定をそのまま使う（＝この機能を使わない）。
     /// </summary>
@@ -198,8 +210,11 @@ public class DialogueWindow : SEEDScript
         // 非表示中は何も進めない（隠したまま文字送りが進むのを防ぐ）
         if (!_visible) return;
 
-        AdvanceText(ctx.DeltaTime);
-        UpdateArrow(ctx.DeltaTime);
+        // ゲーム時間か実時間かは useUnscaledTime で切り替える（時間停止中の会話に対応）
+        float deltaTime = useUnscaledTime ? SEED.Time.UnscaledDeltaTime : ctx.DeltaTime;
+
+        AdvanceText(deltaTime);
+        UpdateArrow(deltaTime);
     }
 
     // ── 公開メソッド ────────────────────────────────────────

@@ -320,7 +320,7 @@
           "component": {
             "type": "ScriptComponent",
             "data": {
-              "type_name": "assets://prologue/scripts/Dialogue/DialogueCameraDirector.cs"
+              "type_name": "assets://common/scripts/Dialogue/DialogueCameraDirector.cs"
             }
           }
         }
@@ -406,6 +406,7 @@
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
+              "rt_exclude": false,
               "offset_position": [
                 0.0,
                 0.0,
@@ -578,6 +579,7 @@
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
+              "rt_exclude": false,
               "offset_position": [
                 0.0,
                 0.0,
@@ -709,6 +711,7 @@
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": false,
+              "rt_exclude": false,
               "offset_position": [
                 0.0,
                 0.0,
@@ -832,6 +835,81 @@
       ]
     },
     {
+      "name": "BeachAmbient",
+      "transform": {
+        "position": [
+          35.799538,
+          4.1006246,
+          26.050783
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "A",
+          "component": {
+            "type": "AudioComponent",
+            "data": {
+              "audio_path": "assets://mainGame/audios/beach.mp3",
+              "volume": 0.4,
+              "loop": false,
+              "play_on_start": false,
+              "spatial": false,
+              "min_distance": 2.0,
+              "max_distance": 50.0,
+              "pan": 0.0
+            }
+          }
+        },
+        {
+          "name": "B",
+          "component": {
+            "type": "AudioComponent",
+            "data": {
+              "audio_path": "assets://mainGame/audios/beach.mp3",
+              "volume": 0.0,
+              "loop": false,
+              "play_on_start": false,
+              "spatial": false,
+              "min_distance": 2.0,
+              "max_distance": 50.0,
+              "pan": 0.0
+            }
+          }
+        },
+        {
+          "name": "Script",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\AmbientLoop.cs",
+              "fields": {
+                "audioPath": "",
+                "clipSeconds": "75.480",
+                "crossfadeSeconds": "1.000",
+                "playOnStart": "true",
+                "sourceA": "BeachAmbient|A",
+                "sourceB": "BeachAmbient|B",
+                "volume": "0.400"
+              }
+            }
+          }
+        }
+      ],
+      "children": [],
+      "prefab_source": "assets://mainGame/actors/BeachAmbient.actor",
+      "prefab_hash": "eeb4cebb1b1338b0"
+    },
+    {
       "name": "DialogueWindow",
       "actor_kind": "Actor2D",
       "canvas_transform": {
@@ -883,7 +961,7 @@
           "component": {
             "type": "ScriptComponent",
             "data": {
-              "type_name": "assets://prologue/scripts/Dialogue/DialogueWindow.cs",
+              "type_name": "assets://common/scripts/Dialogue/DialogueWindow.cs",
               "fields": {
                 "arrowBlinkPeriod": "0.800",
                 "balloonSprite": "DialogueBalloon|Sprite",
@@ -1043,6 +1121,7 @@
                       "line_spacing": 1.35,
                       "layer": 102,
                       "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "icon_set": "",
                       "outline_width": 0.0,
                       "outline_color": [
                         0.0,
@@ -1062,7 +1141,8 @@
                         0.0,
                         0.5
                       ],
-                      "shadow_softness": 0.0
+                      "shadow_softness": 0.0,
+                      "slots": []
                     }
                   }
                 }
@@ -1116,6 +1196,7 @@
                   "line_spacing": 1.3,
                   "layer": 102,
                   "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Bold.ttf",
+                  "icon_set": "",
                   "outline_width": 0.0,
                   "outline_color": [
                     0.0,
@@ -1135,7 +1216,8 @@
                     0.0,
                     0.6691792
                   ],
-                  "shadow_softness": 3.0
+                  "shadow_softness": 3.0,
+                  "slots": []
                 }
               }
             }
@@ -1246,7 +1328,7 @@
               "component": {
                 "type": "ScriptComponent",
                 "data": {
-                  "type_name": "assets://prologue/scripts/Dialogue/DialogueDirector.cs",
+                  "type_name": "assets://common/scripts/Dialogue/DialogueDirector.cs",
                   "fields": {
                     "autoStart": "true",
                     "cameraDirector": "MainCamera",
@@ -1697,6 +1779,7 @@
                   ],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -1887,6 +1970,7 @@
                   ],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2077,6 +2161,7 @@
                   ],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2246,6 +2331,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2335,6 +2421,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2424,6 +2511,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2513,6 +2601,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2602,6 +2691,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2691,6 +2781,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2787,6 +2878,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -2952,6 +3044,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -3117,6 +3210,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -3282,6 +3376,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -3447,6 +3542,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -3612,6 +3708,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -3784,6 +3881,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -3925,6 +4023,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -4073,6 +4172,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -4163,6 +4263,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -4253,6 +4354,7 @@
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
+                  "rt_exclude": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -4355,6 +4457,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4463,6 +4566,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4571,6 +4675,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4679,6 +4784,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4787,6 +4893,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4895,6 +5002,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5003,6 +5111,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5111,6 +5220,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5219,6 +5329,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5327,6 +5438,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5435,6 +5547,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5543,6 +5656,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5651,6 +5765,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5759,6 +5874,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5867,6 +5983,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5975,6 +6092,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6083,6 +6201,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6191,6 +6310,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6299,6 +6419,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6407,6 +6528,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6515,6 +6637,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6623,6 +6746,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6731,6 +6855,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6839,6 +6964,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6947,6 +7073,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7055,6 +7182,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7163,6 +7291,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7271,6 +7400,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7379,6 +7509,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7487,6 +7618,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7595,6 +7727,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7703,6 +7836,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7811,6 +7945,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -7919,6 +8054,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8027,6 +8163,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8135,6 +8272,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8243,6 +8381,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8351,6 +8490,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8459,6 +8599,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8567,6 +8708,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8675,6 +8817,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8783,6 +8926,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8891,6 +9035,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -8999,6 +9144,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9107,6 +9253,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9215,6 +9362,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -9323,6 +9471,7 @@
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
+                      "rt_exclude": false,
                       "offset_position": [
                         0.0,
                         0.0,

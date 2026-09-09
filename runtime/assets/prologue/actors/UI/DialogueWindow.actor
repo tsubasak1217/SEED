@@ -50,7 +50,7 @@
       "component": {
         "type": "ScriptComponent",
         "data": {
-          "type_name": "assets://prologue/scripts/Dialogue/DialogueWindow.cs",
+          "type_name": "assets://common/scripts/Dialogue/DialogueWindow.cs",
           "fields": {
             "balloonSprite": "DialogueBalloon|Sprite",
             "nameplateSprite": "DialogueNameplate|Sprite",

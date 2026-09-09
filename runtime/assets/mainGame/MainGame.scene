@@ -2,12 +2,12 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      40.78721,
-      8.237489,
-      -1.8357468
+      46.9569,
+      13.278147,
+      -22.481924
     ],
-    "yaw": -0.23137793,
-    "pitch": -0.025221527,
+    "yaw": -0.25937796,
+    "pitch": 0.17477848,
     "fov_deg": 25.0,
     "far": 1000.0,
     "speed": 5.0
@@ -1386,7 +1386,7 @@
         "rotation": [
           1.1905385,
           267.66238,
-          -0.000006509732
+          -6.509732e-06
         ],
         "scale": [
           1.0,
@@ -1451,6 +1451,18 @@
                 "runTarget": "RunCameraTarget",
                 "snapOnStart": "true",
                 "target": "CammeraTarget"
+              }
+            }
+          }
+        },
+        {
+          "name": "DialogueCameraDirector",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://common/scripts/Dialogue/DialogueCameraDirector.cs",
+              "fields": {
+                "useUnscaledTime": "true"
               }
             }
           }
@@ -4927,6 +4939,323 @@
           ],
           "children": [],
           "visible": false
+        },
+        {
+          "name": "StoryDialogueWindow",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "DialogueWindow",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://common/scripts/Dialogue/DialogueWindow.cs",
+                  "fields": {
+                    "balloonSprite": "DialogueBalloon|Sprite",
+                    "nameplateSprite": "DialogueNameplate|Sprite",
+                    "speakerText": "DialogueSpeakerText|Text",
+                    "bodyText": "DialogueBodyText|Text",
+                    "nextArrowSprite": "DialogueNextArrow|Sprite",
+                    "charInterval": "0.040",
+                    "arrowBlinkPeriod": "0.800",
+                    "fontPath": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                    "useUnscaledTime": "true"
+                  }
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "DialogueBalloon",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -24.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  1.0
+                ],
+                "anchor": [
+                  0.5,
+                  1.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://prologue/textures/hukidashi.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 1320.0,
+                      "height": 585.2830188679245,
+                      "layer": 1100,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "DialogueNameplate",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -420.0,
+                  -540.2830188679245
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  1.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://prologue/textures/nameplate.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 328.5,
+                      "height": 98.1,
+                      "layer": 1101,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "DialogueSpeakerText",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -420.0,
+                  -540.2830188679245
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  1.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "",
+                      "font_size": 39.0,
+                      "color": [
+                        1.0,
+                        0.96,
+                        0.9,
+                        1.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.35,
+                      "layer": 1102,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "outline_width": 0.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "DialogueBodyText",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -522.0,
+                  -465.2830188679245
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.5,
+                  1.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "",
+                      "font_size": 42.0,
+                      "color": [
+                        0.29,
+                        0.19,
+                        0.16,
+                        1.0
+                      ],
+                      "align": "left",
+                      "vertical_align": "top",
+                      "line_spacing": 1.35,
+                      "layer": 1102,
+                      "font_path": "assets://prologue/fonts/YuzuPopAM_ver060/ゆず ポップ A ver.0.6/ゆず ポップ A [M] Regular.ttf",
+                      "outline_width": 0.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "DialogueNextArrow",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  516.0,
+                  -117.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  1.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://prologue/textures/nextArrow.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 61.949999999999996,
+                      "height": 65.1,
+                      "layer": 1103,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
         }
       ]
     },
@@ -15668,6 +15997,134 @@
               "children": []
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "KaijuStory",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "DialogueDirector",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://common/scripts/Dialogue/DialogueDirector.cs",
+              "fields": {
+                "autoStart": "false",
+                "window": "StoryDialogueWindow",
+                "cameraDirector": "MainCamera",
+                "entries": "[{\"speaker\": \"\", \"text\": \"――水面が、ゆっくりと持ち上がっていく。\\r\\n釣り上げたそれは、小屋よりも大きかった。\", \"cameraTarget\": \"StoryCam_Kaiju\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 1.2, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"テバ\", \"text\": \"……マジで釣りやがった。\", \"cameraTarget\": \"\", \"cameraMode\": \"Cut\", \"lerpDuration\": 0.0, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"ササミ\", \"text\": \"はぁ……はぁ……。\\r\\nな、なんですかこれ……！？\", \"cameraTarget\": \"StoryCam_Player\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"テバ\", \"text\": \"俺が唯一釣れなかったアイツを……\\r\\nお前さん、たった今釣り上げやがったんだぞ。\", \"cameraTarget\": \"StoryCam_Owner\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"テバ\", \"text\": \"こいつぁこの島のヌシだ。\\r\\n何十年も、誰にも釣らせやしなかった。\", \"cameraTarget\": \"\", \"cameraMode\": \"Cut\", \"lerpDuration\": 0.0, \"onStart\": [], \"onEnd\": []}, {\"speaker\": \"ササミ\", \"text\": \"……ヌシ。\\r\\nじゃあこれ、食べていいんですか？\", \"cameraTarget\": \"StoryCam_Player\", \"cameraMode\": \"Lerp\", \"lerpDuration\": 0.9, \"onStart\": [], \"onEnd\": []}]",
+                "onDialogueFinished": "[{\"actor\": \"KaijuStory\", \"script\": \"KaijuStoryTrigger\", \"method\": \"OnStoryFinished\", \"argKind\": \"none\", \"arg\": \"\"}]"
+              }
+            }
+          }
+        },
+        {
+          "name": "KaijuStoryTrigger",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://mainGame/scripts/Story/KaijuStoryTrigger.cs",
+              "fields": {
+                "director": "KaijuStory",
+                "controller": "Player",
+                "fishManager": "fishManager",
+                "kaijuPrefabKey": "kaiju",
+                "debugForceStory": "false"
+              }
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "StoryCameraPoints",
+      "is_folder": true,
+      "components": [],
+      "children": [
+        {
+          "name": "StoryCam_Kaiju",
+          "transform": {
+            "position": [
+              30.2,
+              5.0,
+              43.5
+            ],
+            "rotation": [
+              25.0,
+              -8.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [],
+          "children": []
+        },
+        {
+          "name": "StoryCam_Player",
+          "transform": {
+            "position": [
+              33.7,
+              3.5,
+              49.8
+            ],
+            "rotation": [
+              8.0,
+              168.35,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [],
+          "children": []
+        },
+        {
+          "name": "StoryCam_Owner",
+          "transform": {
+            "position": [
+              33.87376,
+              7.351285,
+              25.509882
+            ],
+            "rotation": [
+              6.962823,
+              -2.6161458,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [],
+          "children": []
         }
       ]
     }

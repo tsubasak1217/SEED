@@ -32,6 +32,18 @@ public class DialogueCameraDirector : SEEDScript
     /// <summary>進捗の完了値。</summary>
     private const float ProgressComplete = 1f;
 
+    // ── インスペクタ公開フィールド ──────────────────────────
+
+    /// <summary>
+    /// カメラの補間移動を<b>実時間</b>（<see cref="SEED.Time.UnscaledDeltaTime"/>）で
+    /// 進めるか。
+    ///
+    /// 既定は false（ゲーム時間）。<c>Time.Scale = 0</c> でゲームを止めたまま
+    /// 会話を流すシーンでは true にしないと、カメラが動き出さずに固まる。
+    /// </summary>
+    [SerializeField(Label = "実時間で進める", Tooltip = "Time.Scale = 0 で止めたままカメラを動かすシーンでは true にする")]
+    public bool useUnscaledTime;
+
     // ── 内部状態 ────────────────────────────────────────────
 
     /// <summary>補間移動の最中か。</summary>
@@ -74,7 +86,8 @@ public class DialogueCameraDirector : SEEDScript
     {
         if (!_moving) return;
 
-        _elapsed += ctx.DeltaTime;
+        // ゲーム時間か実時間かは useUnscaledTime で切り替える（時間停止中の演出に対応）
+        _elapsed += useUnscaledTime ? SEED.Time.UnscaledDeltaTime : ctx.DeltaTime;
 
         // 生の進捗 → イージング済みの進捗
         float rawProgress = SEED.Mathf.Clamped01(_elapsed / _duration);

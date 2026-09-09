@@ -22,4 +22,12 @@ public static class GameProgressKeys
 {
     /// <summary>チュートリアルを完了済みか（bool）。true ならタイトルから本編へ直行する。</summary>
     public const string TutorialDone = "tutorial_done";
+
+    /// <summary>
+    /// 怪獣（Lv10 の kaiju）を初めて釣り上げたときのストーリー会話を再生済みか（bool）。
+    /// true なら 2 匹目以降の怪獣では会話を流さない。
+    /// 書く側は <c>KaijuStoryTrigger</c>、読む側も同じスクリプトだけだが、
+    /// 「進行フラグはここに集約する」という規約に従って定数化する。
+    /// </summary>
+    public const string KaijuStorySeen = "kaiju_story_seen";
 }
