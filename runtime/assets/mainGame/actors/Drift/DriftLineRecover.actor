@@ -23,7 +23,7 @@
       "component": {
         "type": "ModelComponent",
         "data": {
-          "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\cast_marker.glb",
+          "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\drift_object\\heart.glb",
           "instances": [
             [
               [
