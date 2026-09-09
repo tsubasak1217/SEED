@@ -448,7 +448,7 @@ public class FishingFight : SEEDScript
 
     /// <summary>時間差 1 秒あたりに減る糸の残り（レベル補正・糸パワー補正が掛かる）。</summary>
     [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
-    private float linePerSecondOfOffset = 0.6f;
+    private float linePerSecondOfOffset = 0.3f;
 
     /// <summary>Miss（打ち逃し・空打ち）1 回で減る糸の残り（糸パワー補正が掛かる）。</summary>
     [SerializeField(Label = "Missの糸の減り")]
