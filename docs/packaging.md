@@ -8,6 +8,8 @@
 | ファイル | 役割 |
 |---|---|
 | `editor/src/Packaging/PackagingWindow.xaml.cs` | UI・cargo build 実行・進捗表示 |
+| `editor/src/Packaging/PackageLayout.cs` | **配布物のフォルダ構成の正典（エディタ側）**。`bin` / `caches` / `logs` / `saved` の名前と旧レイアウトの後始末 |
+| `runtime/src/engine/core/package_layout.rs` | **同（ランタイム側）**。両者のフォルダ名は一致必須（双方のテストで文字列固定） |
 | `editor/src/Packaging/PackagingData.cs` | 設定の永続化（`{assets}/packaging_settings.json`） |
 | `editor/src/Packaging/Collect/PackagingRules.cs` | **収録規則の正典**（走査拡張子・同伴ファイル・既定の除外） |
 | `editor/src/Packaging/Collect/AssetReferenceScanner.cs` | テキスト 1 本からの参照抽出 |
@@ -32,15 +34,66 @@
    `--target` を付けると cargo は `target/<triple>/release/` を使い、
    普段の `cargo run` が使う `target/release/` とビルドキャッシュを共有しないため、
    同じコードを 2 回フルビルドすることになる。
-2. **バイナリのコピー** — `SEED.exe` を `{出力先}/{ゲーム名}/{ゲーム名}.exe` へ複製する。
-3. **スクリプトの事前コンパイル** — アセット配下の `.cs` を `SEEDUserScripts.dll` へまとめ、
-   スクリプトホスト一式とともに出力フォルダへ置く（§5）。**失敗したらここで中止する**。
-4. **.NET ランタイムの同梱** — スクリプト実行に必要な .NET を `dotnet/` へ写す（§5）。
+2. **旧レイアウトの後始末** — 出力フォルダ**直下**に残っている旧配置の成果物
+   （`*.dll` / `*.deps.json` / `*.runtimeconfig.json` / `dotnet/`）を削除する。
+   `caches` / `logs` / `saved` は利用者データなので**触らない**。
+3. **バイナリのコピー** — `SEED.exe` を `{出力先}/{ゲーム名}/{ゲーム名}.exe` へ複製する。
+4. **スクリプトの事前コンパイル** — アセット配下の `.cs` を `SEEDUserScripts.dll` へまとめ、
+   スクリプトホスト一式とともに `bin/` へ置く（§5）。**失敗したらここで中止する**。
+5. **.NET ランタイムの同梱** — スクリプト実行に必要な .NET を `bin/dotnet/` へ写す（§5）。
    設定 OFF・検出失敗のときはスキップし、**中止はしない**。
-5. **収録アセットの収集** — 参照グラフを辿って `assets.pak` に入れるファイルを決める（§2）。
-6. **PAK 書き出し** — ストリーミングで `assets.pak` を書く（§4）。
+6. **収録アセットの収集** — 参照グラフを辿って `assets.pak` に入れるファイルを決める（§2）。
+7. **PAK 書き出し** — ストリーミングで `assets.pak` を書く（§4）。
 
 各フェーズの所要秒数はログに `[時間] フェーズ名: N.N 秒` の形で出る。
+
+### 出力フォルダの構成
+
+配布物は「実行ファイル・アセット・副次ファイル・実行時生成物」が一目で分かる形に揃える。
+以前は DLL が数十個 exe の隣に並んでいて、利用者から見て
+「どれが本体でどれを消してよいか」がまったく分からなかった。
+
+```text
+{ゲーム名}/
+  {ゲーム名}.exe          … 実行ファイル
+  assets.pak              … アセット（§4）
+  bin/                    … 実行に必要な副次ファイル（パッケージ化が作る）
+    SEEDScripting.dll / SEEDScripting.runtimeconfig.json / SEEDScripting.deps.json
+    Microsoft.CodeAnalysis*.dll / SEEDUserScripts.dll
+    dotnet/               … 同梱 .NET ランタイム（§5）
+  caches/                 … 実行時生成（`pipeline_cache.bin`。モデル派生キャッシュ `*.smdl` の
+                             置き場でもあるが、PAK 実行では現状これが効かない → §8）
+  logs/                   … 実行時生成（起動ログ `seed_*.log`。§9）
+  saved/                  … 実行時生成（セーブデータ `save.json`）
+```
+
+フォルダ名の正典は 2 か所にあり、**名前は一致必須**である。
+
+| 側 | ファイル |
+|---|---|
+| エディタ | `editor/src/Packaging/PackageLayout.cs` |
+| ランタイム | `runtime/src/engine/core/package_layout.rs` |
+
+ずれてもビルドは通り、**配布物だけが壊れる**ため、両側のテストで文字列を固定してある。
+
+- `caches` / `logs` / `saved` は **パッケージ化では作らない**。空フォルダは zip 化・展開で
+  落ちることが多く、「あるはず」を前提にすると配布先でだけ壊れる。
+  必要になった時点でランタイムが `create_dir_all` する。
+- 同じ理由でこの 3 つは**削除もしない**（利用者のセーブ・ログが入っている）。
+- 消してよいのは `caches` だけ（消せば次回起動で作り直される）。
+
+### 配布先に必要なもの
+
+**何も要らない**（Windows 10 以降であれば）。
+
+- **C ランタイム**は exe に静的リンクしてある（`runtime/.cargo/config.toml` の
+  `target-feature=+crt-static`）。以前は `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll` を
+  import しており、「Microsoft Visual C++ 再頒布可能パッケージ」が入っていない PC では
+  **ダブルクリックしても何も起きなかった**（プロセス生成前にローダーが失敗するため、
+  §9 の起動ログ機構すら動かない）。静的リンク後の依存 DLL は
+  `kernel32` / `user32` / `gdi32` / `ole32` / `d3dcompiler_47` など Windows 標準のものだけになる。
+  確認方法: `dumpbin /dependents SEED.exe` に `VCRUNTIME140*` が出ないこと。
+- **.NET ランタイム**は `bin/dotnet/` へ同梱する（既定 ON。§5）。
 
 ---
 
@@ -179,9 +232,11 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 
 パッケージ版でユーザースクリプトを動かすための仕組み。
 **ソース（`.cs`）も Roslyn も配布物には入れない**。ビルド時に 1 回だけコンパイルし、
-できた DLL を実行ファイルの隣に置く。
+できた DLL を実行ファイルの隣の **`bin/`** へ置く。
 
 ### 同梱されるもの
+
+いずれも `{ゲーム名}/bin/` 直下（出力フォルダ直下ではない）。
 
 | ファイル | 中身 | サイズの目安 |
 |---|---|---|
@@ -203,14 +258,16 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 | 起動 | 条件 | 動作 |
 |---|---|---|
 | エディタ / Play | `--assets-root` あり | その場で `.cs` をコンパイルする（ホットリロード可） |
-| パッケージ版 | `--assets-root` なし | 実行ファイルの隣の `SEEDUserScripts.dll` を読むだけ |
+| パッケージ版 | `--assets-root` なし | `{exe のフォルダ}/bin/SEEDUserScripts.dll` を読むだけ |
 
 スクリプトホスト（`SEEDScripting.dll`）の探索順は
-`{cwd}/../scripting/bin/Debug/net9.0/`（開発ビルド出力）→ `{exe のフォルダ}`。
+`{cwd}/../scripting/bin/Debug/net9.0/`（開発ビルド出力）→ `{exe のフォルダ}/bin/`。
+**exe 直下は候補にしない**（旧配置の残骸を拾って新旧のホストが混ざるのを防ぐため）。
+
 **開発ビルド出力から読んだときだけ**テンポラリへシャドウコピーする
 （エディタからの再ビルドを妨げないため）。パッケージ配置ではコピーしない
-——実行ファイルと同じフォルダには `assets.pak` も居るので、
-コピーすると起動のたびにゲーム丸ごとを複製することになる。
+——`bin/` には同梱 .NET（75 MB 超）も居るので、
+コピーすると起動のたびに副次ファイルを丸ごと複製することになる。
 
 成功すると stderr に 1 行出る。
 
@@ -282,26 +339,30 @@ dotnet run --project editor/tests/ScriptPrecompileTests -- "<runtime>" "<アセ�
 ```
 {ゲーム出力フォルダ}/
   ├ MyGame.exe
-  ├ SEEDScripting.dll ほか
-  └ dotnet/
-      ├ host/fxr/9.0.20/hostfxr.dll
-      └ shared/Microsoft.NETCore.App/9.0.20/*   （coreclr.dll / hostpolicy.dll / BCL 一式）
+  ├ assets.pak
+  └ bin/
+      ├ SEEDScripting.dll ほか
+      └ dotnet/
+          ├ host/fxr/9.0.20/hostfxr.dll
+          └ shared/Microsoft.NETCore.App/9.0.20/*   （coreclr.dll / hostpolicy.dll / BCL 一式）
 ```
 
 フォルダ名 `dotnet` はランタイム側 `runtime/src/engine/core/scripting/mod.rs` の
 `BUNDLED_DOTNET_ROOT_DIR` と一致必須（テストで両側から突き合わせている）。
+手前の `bin/` 1 段は `PackageLayout.BinDirName` / `package_layout::BIN_DIR_NAME`。
 
 #### 起動時の切り替え（ランタイム）
 
-`ScriptingHost::load` が `{exe のフォルダ}/dotnet/host/fxr` の有無だけを見て切り替える。
+`ScriptingHost::load` が `{exe のフォルダ}/bin/dotnet/host/fxr` の有無だけを見て切り替える。
 
 | 条件 | 使う .NET | stderr の 1 行目 |
 |---|---|---|
-| `dotnet/host/fxr` がある | 同梱ランタイム | `[SEED] dotnet root: bundled <path>` |
+| `bin/dotnet/host/fxr` がある | 同梱ランタイム | `[SEED] dotnet root: bundled <path>` |
 | 無い | PC にインストール済みの .NET | `[SEED] dotnet root: global` |
 
-`dotnet/` があっても `host/fxr` が無ければ同梱扱いにしない（作りかけの配布物で
+`bin/dotnet/` があっても `host/fxr` が無ければ同梱扱いにしない（作りかけの配布物で
 hostfxr が見つからず起動失敗するのを避けるため）。
+旧配置（exe 直下の `dotnet/`）も同梱扱いにしない。
 
 CLR の初期化に失敗したときは、黙って落とさず stderr に理由と対処を出してから
 **スクリプト無しで起動を続ける**。
@@ -314,7 +375,7 @@ CLR の初期化に失敗したときは、黙って落とさず stderr に理�
 
 #### 同梱する .NET の選び方
 
-必要な major.minor は **`SEEDScripting.runtimeconfig.json` の framework version から読む**
+必要な major.minor は **`bin/SEEDScripting.runtimeconfig.json` の framework version から読む**
 （配布物が実際に読むファイルそのものを正典にしているので、スクリプトホストの
 ターゲットフレームワークを上げれば自動で追従する）。
 
@@ -353,7 +414,8 @@ CLR の初期化に失敗したときは、黙って落とさず stderr に理�
 dotnet run --project editor/tests/PackagingCollectorTests -- --bundle-dotnet "<出力フォルダ>"
 ```
 
-出力フォルダの `SEEDScripting.runtimeconfig.json` を読むので、
+引数は**ゲーム出力フォルダ**（exe と同じ場所）で、同梱先はその下の `bin/dotnet/` になる。
+`bin/SEEDScripting.runtimeconfig.json` を読むので、
 先にスクリプト同梱（上記 `ScriptPrecompileTests`）を済ませておくこと。
 
 ---
@@ -419,8 +481,15 @@ dotnet run --project editor/tests/PackagingCollectorTests
   常時同梱の既定は空にしたが、`type_name` が `.cs` のパスである以上、
   参照グラフの閉包に乗る。動作には影響しないが、配布物にソースが残る。
   完全に外すには「参照されていても入れない拡張子」の仕組みが要る（`docs/backlog.md` 参照）。
-- `app_init.rs` の `project_settings.json` 読み込みは `std::fs` で exe 隣の `assets/` を見るため、
-  PAK モードではウィンドウサイズ・プラグイン設定が既定値になる（同じく backlog 参照）。
+- **PAK 実行ではモデルの派生キャッシュ（`*.smdl`）が一切効かない**。
+  キャッシュの有効性判定に元ファイルの mtime + サイズを使っており
+  （`asset_cache::source_stamp`）、PAK モードでは元ファイルがディスク上に存在しないため
+  読み込みも書き出しも即座に打ち切られる。したがって配布版の `caches/` に入るのは
+  今のところ `pipeline_cache.bin` だけで、モデルは毎回パースし直している
+  （起動が遅くなるだけで動作はする）。`docs/backlog.md` 参照。
+- `project_settings.json` の読み込み（ウィンドウサイズ・ゲーム名・プラグイン設定）は 2026-09-09 に
+  `asset_fs` 経由へ直したので PAK モードでも効く。ただしプラグイン DLL 自体は同梱されないため、
+  パッケージ実行ではプラグインは常に 0 件で続行する（backlog 参照）。
 - 新しいアセット形式を足したときは、`PackagingRules` の
   `ScannableExtensions` / `SiblingExtensions` / `FolderCompanions` の追従を忘れないこと。
   登録漏れは**ビルドエラーにならず**、パッケージ版だけが壊れる形で出る。
@@ -442,8 +511,9 @@ dotnet run --project editor/tests/PackagingCollectorTests
 {exe と同じフォルダ}\logs\seed_YYYYMMDD_HHMMSS.log
 ```
 
-- 配布フォルダの中に置く方針（exe / `assets.pak` / DLL をまとめたフォルダ / 実行時生成の
-  `caches`・`logs`・`saved` という構成）。ユーザーが自分で見つけてそのまま送れる。
+- 配布フォルダの中に置く方針（exe / `assets.pak` / 副次ファイルの `bin` / 実行時生成の
+  `caches`・`logs`・`saved` という構成。§1「出力フォルダの構成」）。
+  ユーザーが自分で見つけてそのまま送れる。
 - exe の隣に**書けない**場合（読み取り専用メディア、Program Files 配下へ展開したなど）は
   `%LOCALAPPDATA%\{exe名}\logs\` へ退避する。どちらにも書けないときはログ無しで起動する
   （ゲームは必ず起動する — ログが作れないことを理由に落とすことはしない）。
@@ -473,12 +543,13 @@ dotnet run --project editor/tests/PackagingCollectorTests
 [SEED ENV] ログファイル: D:\dist\MyGame\logs\seed_20260910_143059.log
 [SEED ENV] exe フォルダの内容（直下＋1 階層下）: D:\dist\MyGame
 [SEED ENV]   assets.pak  (53612544 バイト / 51.1 MiB)
-[SEED ENV]   dotnet/  (フォルダ)
-[SEED ENV]   dotnet/host/  (フォルダ)
+[SEED ENV]   bin/  (フォルダ)
+[SEED ENV]   bin/SEEDScripting.dll  (168448 バイト / 164.5 KiB)
+[SEED ENV]   bin/dotnet/  (フォルダ)
 [SEED ENV]   …
 ```
 
-フォルダ一覧は**特定のファイル名を決め打ちで判定していない**（`dotnet/` や
+フォルダ一覧は**特定のファイル名を決め打ちで判定していない**（`bin/dotnet/` や
 `SEEDScripting.dll` の置き場所が変わっても追従不要）。直下と 1 階層下だけを、
 1 フォルダあたり最大 40 件・全体で最大 300 件まで載せ、超えた分は
 `… 他 N 件を省略` に畳む。
@@ -512,7 +583,8 @@ panic すると、ログにメッセージ・位置・バックトレースが�
 | 症状 | ログの見どころ | 原因と対処 |
 |---|---|---|
 | ダイアログ「利用できる GPU アダプタが見つかりません」 | `[SEED INIT] GPU アダプタ候補: 0 件` | DirectX 12 / Vulkan 非対応の GPU、またはドライバが古い。候補が 1 件以上あるのに落ちる場合は `surface対応=false` の行を見る（マルチ GPU で表示側と描画側が食い違っている） |
-| スクリプトが何も動かない | `[SEED] dotnet root:` と `precompiled scripts loaded:` の有無 | `dotnet/` フォルダが展開時に落ちている／`SEEDUserScripts.dll` が exe の隣に無い。`[SEED ENV]` のフォルダ一覧で実際の配置を確認する |
+| スクリプトが何も動かない | `[SEED] dotnet root:` と `precompiled scripts loaded:` の有無 | `bin/dotnet/` が展開時に落ちている／`SEEDUserScripts.dll` が `bin/` に無い。`[SEED ENV]` のフォルダ一覧で実際の配置を確認する |
+| ダブルクリックしても何も起きず、ログも作られない | — | 起動ログ機構より前にローダーが失敗している。DLL 不足なら `dumpbin /dependents` で確認する（C ランタイムは静的リンク済みなので `VCRUNTIME140*` は出ないはず。§1「配布先に必要なもの」） |
 | モデル・画像が出ない、真っ黒 | `[SEED ENV]` の `assets.pak` のサイズ | `assets.pak` が無い／0 バイト／展開に失敗している。パッケージ化ログの `参照先が見つからないパス`（§6）も確認する |
 | ウィンドウが既定解像度になる | `[SEED INIT] init_asset_fs done` の後 | `project_settings.json` が PAK に入っていない（§2 の起点） |
 | そもそもログが出ない | — | exe の隣にも `%LOCALAPPDATA%` にも書けていない。ZIP をデスクトップなど書き込み可能な場所へ展開し直す |

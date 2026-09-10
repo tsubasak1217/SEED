@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use netcorehost::{nethost, pdcstr, pdcstring::PdCString};
 
+use crate::engine::core::package_layout;
 use crate::engine::ecs::Entity;
 
 // C# → Rust のコンポーネントアクセスブリッジ
@@ -284,10 +285,10 @@ impl ScriptingHost {
     /// 「別プロセスが使用中」で失敗する。そのため開発時だけ DLL 一式を
     /// プロセス専用のテンポラリへコピーし、そのコピーをロードする。
     ///
-    /// 一方パッケージ版では DLL は実行ファイルと同じフォルダにあり、
-    /// そこには **assets.pak（数百 MB になり得る）や実行ファイル本体も同居する**。
+    /// 一方パッケージ版では DLL は `{exe のフォルダ}/bin/` にあり、そこには
+    /// 同梱 .NET ランタイム（`bin/dotnet/`。実測 75 MB 超）も同居する。
     /// シャドウコピーはフォルダ直下の全ファイルを写すため、そのまま掛けると
-    /// 起動のたびにゲーム丸ごとをテンポラリへ複製することになる。
+    /// 起動のたびに配布物の副次ファイルをテンポラリへ複製することになる。
     /// 配布物は再ビルドされないのでロックしても実害が無く、コピーは不要。
     pub fn load(location: &ScriptingHostLocation) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         let dll_path = location.dll_path.as_path();
@@ -301,7 +302,7 @@ impl ScriptingHost {
         let config_path = load_dll.with_extension("runtimeconfig.json");
 
         // ── CLR（hostfxr）の探索先を決める ──
-        // 実行ファイルの隣に dotnet/ を同梱していればそこを .NET ルートとして使い、
+        // 実行ファイルの bin/ に dotnet/ を同梱していればそこを .NET ルートとして使い、
         // 無ければ PC にインストール済みの .NET を使う（従来どおり）。
         // どちらを使ったかは配布先での切り分けに直結するので必ず 1 行残す。
         let exe_dir = std::env::current_exe()
@@ -493,16 +494,19 @@ pub const REQUIRED_DOTNET_RUNTIME_LABEL: &str = ".NET 9";
 //  同梱 .NET ランタイム（self-contained 配布）の探索
 // ============================================================
 
-/// 実行ファイルと同じ階層に置く、同梱 .NET ランタイムのフォルダ名。
+/// 配布物の `bin/` 直下に置く、同梱 .NET ランタイムのフォルダ名。
 ///
 /// エディタ側の `DotnetRuntimeBundler`（`editor/src/Packaging/Runtime/`）が
 /// この名前で書き出す。両者を変えるときは必ず揃えること。
 ///
 /// レイアウトは PC にインストールされる .NET と同じ形にする。
 /// ```text
-/// {exe のフォルダ}/dotnet/host/fxr/<ver>/hostfxr.dll
-/// {exe のフォルダ}/dotnet/shared/Microsoft.NETCore.App/<ver>/*
+/// {exe のフォルダ}/bin/dotnet/host/fxr/<ver>/hostfxr.dll
+/// {exe のフォルダ}/bin/dotnet/shared/Microsoft.NETCore.App/<ver>/*
 /// ```
+///
+/// 手前の `bin/` 1 段は `core::package_layout::BIN_DIR_NAME` が持つ
+/// （配布物のフォルダ構成の正典はそちら）。
 pub const BUNDLED_DOTNET_ROOT_DIR: &str = "dotnet";
 
 /// 同梱 .NET ルート配下の host フォルダ名（`<root>/host/fxr/<ver>/hostfxr.dll`）。
@@ -513,7 +517,7 @@ const BUNDLED_DOTNET_FXR_DIR: &str = "fxr";
 
 /// 同梱 .NET ランタイムのルートを決める【純関数】。
 ///
-/// 判定は「`{exe のフォルダ}/dotnet/host/fxr` が実在するか」の 1 点だけ。
+/// 判定は「`{exe のフォルダ}/bin/dotnet/host/fxr` が実在するか」の 1 点だけ。
 /// `dotnet/` があってもバージョン別フォルダが無ければ hostfxr は見つからないので、
 /// フォルダの存在ではなく **hostfxr の置き場**まで見る。
 ///
@@ -530,7 +534,8 @@ pub(crate) fn bundled_dotnet_root(
     exe_dir:    Option<&Path>,
     dir_exists: &dyn Fn(&Path) -> bool,
 ) -> Option<PathBuf> {
-    let root = exe_dir?.join(BUNDLED_DOTNET_ROOT_DIR);
+    // 配布物の副次ファイルは exe 直下ではなく bin/ にまとめる（package_layout の構成）。
+    let root = package_layout::bin_dir(exe_dir?).join(BUNDLED_DOTNET_ROOT_DIR);
     let fxr  = root.join(BUNDLED_DOTNET_HOST_DIR).join(BUNDLED_DOTNET_FXR_DIR);
     dir_exists(&fxr).then_some(root)
 }
@@ -549,10 +554,15 @@ pub struct ScriptingHostLocation {
 ///
 /// 1. 開発ビルド出力: `{cwd}/../scripting/bin/Debug/net9.0/SEEDScripting.dll`
 ///    （`cargo run` を `runtime/` で実行する開発時の配置）
-/// 2. パッケージ配置: `{exe のフォルダ}/SEEDScripting.dll`
+/// 2. パッケージ配置: `{exe のフォルダ}/bin/SEEDScripting.dll`
 ///    （配布物。cwd はユーザーがどこから起動したかで変わるため exe 基準にする）
 ///
 /// exe のフォルダが取得できない場合は 2 を省く（候補は 1 件だけになる）。
+///
+/// ## exe 直下を候補にしない理由
+/// 配布物は「exe / assets.pak / bin / caches / logs / saved」だけが並ぶ構成に
+/// 統一してある（`core::package_layout`）。exe 直下にも DLL を探しに行くと
+/// 古い配置の残骸を拾って新旧のホストが混ざるため、候補から外す。
 ///
 /// # 引数
 /// * `cwd`     - カレントディレクトリ
@@ -570,7 +580,7 @@ pub(crate) fn scripting_host_dll_candidates(
 
     if let Some(dir) = exe_dir {
         candidates.push(ScriptingHostLocation {
-            dll_path: dir.join(SCRIPTING_HOST_DLL_NAME),
+            dll_path: package_layout::bin_dir(dir).join(SCRIPTING_HOST_DLL_NAME),
             is_dev_build_output: false,
         });
     }
@@ -597,18 +607,30 @@ mod scripting_host_path_tests {
         assert!(candidates[0].is_dev_build_output, "開発ビルド出力の印が付いていない");
     }
 
-    /// パッケージ配置の候補は cwd ではなく exe のフォルダ基準になること。
+    /// パッケージ配置の候補は cwd ではなく exe のフォルダの `bin/` になること。
     /// （配布物はショートカット等から起動され、cwd が別の場所になり得る）
     #[test]
-    fn package_candidate_is_relative_to_exe_dir() {
+    fn package_candidate_is_under_exe_bin_dir() {
         let cwd = Path::new("C:/somewhere/else");
         let exe = Path::new("D:/Games/MyGame");
         let candidates = scripting_host_dll_candidates(cwd, Some(exe));
 
-        assert_eq!(candidates[1].dll_path, Path::new("D:/Games/MyGame/SEEDScripting.dll"));
+        assert_eq!(candidates[1].dll_path, Path::new("D:/Games/MyGame/bin/SEEDScripting.dll"));
         assert!(
             !candidates[1].is_dev_build_output,
-            "パッケージ配置をシャドウコピー対象にしてはいけない（assets.pak ごと複製されるため）"
+            "パッケージ配置をシャドウコピー対象にしてはいけない（同梱 .NET ごと複製されるため）"
+        );
+    }
+
+    /// exe 直下は候補に入らないこと（古い配置の残骸を拾わないための回帰防止）。
+    #[test]
+    fn exe_dir_root_is_not_a_candidate() {
+        let exe = Path::new("D:/Games/MyGame");
+        let candidates = scripting_host_dll_candidates(Path::new("C:/somewhere/else"), Some(exe));
+
+        assert!(
+            !candidates.iter().any(|c| c.dll_path == exe.join(SCRIPTING_HOST_DLL_NAME)),
+            "exe 直下が候補に残っている（bin/ へ一元化した意味が無くなる）"
         );
     }
 
@@ -633,26 +655,38 @@ mod scripting_host_path_tests {
         move |path: &Path| path == expected
     }
 
-    /// `{exe}/dotnet/host/fxr` があれば、そのひとつ上（`{exe}/dotnet`）を .NET ルートに選ぶこと。
+    /// `{exe}/bin/dotnet/host/fxr` があれば、そのひとつ上（`{exe}/bin/dotnet`）を
+    /// .NET ルートに選ぶこと。
     #[test]
     fn bundled_root_is_used_when_host_fxr_exists() {
         let exe = Path::new("D:/Games/MyGame");
-        let fxr = exe.join("dotnet").join("host").join("fxr");
+        let fxr = exe.join("bin").join("dotnet").join("host").join("fxr");
 
         let root = bundled_dotnet_root(Some(exe), &only_existing(&fxr));
-        assert_eq!(root, Some(exe.join("dotnet")));
+        assert_eq!(root, Some(exe.join("bin").join("dotnet")));
     }
 
-    /// `dotnet/` があっても `host/fxr` が無ければ同梱扱いにしないこと。
+    /// `bin/dotnet/` があっても `host/fxr` が無ければ同梱扱いにしないこと。
     /// （空フォルダや作りかけの配布物で hostfxr が見つからず起動失敗するのを避ける）
     #[test]
     fn bundled_root_is_ignored_without_host_fxr() {
         let exe = Path::new("D:/Games/MyGame");
-        // dotnet フォルダだけが実在する状況を作る
-        let dotnet_only = exe.join("dotnet");
+        // bin/dotnet フォルダだけが実在する状況を作る
+        let dotnet_only = exe.join("bin").join("dotnet");
 
         let root = bundled_dotnet_root(Some(exe), &only_existing(&dotnet_only));
         assert_eq!(root, None, "host/fxr が無いのに同梱ランタイムを使おうとしている");
+    }
+
+    /// 旧配置（`{exe}/dotnet/host/fxr`）は同梱扱いにしないこと。
+    /// 古い配布物の残骸を新レイアウトの起動が拾わないための回帰防止。
+    #[test]
+    fn legacy_root_directly_under_exe_is_ignored() {
+        let exe = Path::new("D:/Games/MyGame");
+        let legacy_fxr = exe.join("dotnet").join("host").join("fxr");
+
+        let root = bundled_dotnet_root(Some(exe), &only_existing(&legacy_fxr));
+        assert_eq!(root, None, "exe 直下の旧 dotnet/ を拾っている");
     }
 
     /// exe のフォルダが取得できないときは同梱ランタイムを使わないこと。

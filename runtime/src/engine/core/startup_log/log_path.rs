@@ -14,14 +14,15 @@
 use std::path::{Path, PathBuf};
 
 use super::timestamp::Timestamp;
+use crate::engine::core::package_layout::{self, LOGS_DIR_NAME};
 
 // ── 命名規則 ────────────────────────────────────────────────
 /// ログファイル名の接頭辞。
 const LOG_FILE_PREFIX: &str = "seed_";
 /// ログファイルの拡張子（ドット込み）。
 const LOG_FILE_EXTENSION: &str = ".log";
-/// ログを格納するサブフォルダ名。
-const LOG_DIR_NAME: &str = "logs";
+// ログを格納するサブフォルダ名（`logs`）は配布物の構成の一部なので
+// `core::package_layout` を唯一の定義箇所とし、ここでは定義しない。
 
 // ── 世代管理 ────────────────────────────────────────────────
 /// 残す起動ログの最大件数。これを超えた古いログは起動時に削除する。
@@ -51,10 +52,13 @@ pub fn log_dir_candidates(
 ) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(dir) = exe_dir {
-        candidates.push(dir.join(LOG_DIR_NAME));
+        // 配布フォルダの中（`{exe}/logs`）。構成の正典は package_layout。
+        candidates.push(package_layout::logs_dir(dir));
     }
     if let Some(local) = local_app_data {
-        candidates.push(local.join(app_name).join(LOG_DIR_NAME));
+        // 退避先はアプリ名で 1 段掘るため package_layout のヘルパは使えないが、
+        // フォルダ名だけは同じ定数を参照して食い違いを防ぐ。
+        candidates.push(local.join(app_name).join(LOGS_DIR_NAME));
     }
     candidates
 }

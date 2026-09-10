@@ -943,6 +943,19 @@ public partial class PackagingWindow : Window
             Directory.CreateDirectory(gameOutDir);
             AppendLog($"出力フォルダ: {gameOutDir}");
 
+            // ── 旧レイアウトの残骸を掃除する ──────────────────────
+            //
+            // 以前は SEEDScripting.dll / Microsoft.CodeAnalysis*.dll /
+            // SEEDUserScripts.dll / *.deps.json / dotnet/ を **出力フォルダ直下** へ
+            // 置いていた。同じフォルダへ再パッケージすると、それらが直下に残ったまま
+            // bin/ にも同じものが並ぶ。ランタイムは bin/ しか見ないので実行はできるが、
+            // 「exe の隣に DLL が散らかる」状態が消えず、利用者から見て新旧の区別が
+            // 付かなくなるため、bin/ を作る前にここで消す。
+            //
+            // caches / logs / saved は利用者データ（セーブ・ログ）なので対象外
+            // （判定は PackageLayout.IsLegacyLeftover* に閉じてある）。
+            PackageLayout.RemoveLegacyLayout(gameOutDir, AppendLog);
+
             // バイナリのコピー
             var targetDir    = string.IsNullOrEmpty(cargoTarget) ? profileDir : $"{cargoTarget}/{profileDir}";
             var binarySource = Path.Combine(_runtimePath, "target", targetDir, binaryName);

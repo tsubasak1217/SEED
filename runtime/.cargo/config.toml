@@ -10,3 +10,39 @@
 [build]
 # ビルド成果物を runtime/target/ に配置する（ワークスペースターゲットではなく）
 target-dir = "target"
+
+# ============================================================
+#  C ランタイム（CRT）の静的リンク
+#
+#  【なぜ静的リンクするのか】
+#  既定（動的 CRT）でビルドした SEED.exe は VCRUNTIME140.dll /
+#  VCRUNTIME140_1.dll を import する。これらは Windows に標準搭載されておらず、
+#  「Microsoft Visual C++ 再頒布可能パッケージ」を入れていない PC では
+#  **ダブルクリックしても何も起きない**（プロセス生成前にローダーが失敗するため、
+#  こちらの起動ログ機構すら動かず原因が一切残らない）。
+#  配布物を単体で成立させるため、CRT を exe に埋め込む。
+#
+#  【副次的な整合】
+#  netcorehost が使う nethost.lib は /MT（静的 CRT）でビルドされたものを
+#  同梱している（runtime/Cargo.toml のコメント参照）。動的 CRT のままだと
+#  リンク時に CRT が二重になる警告（LNK4098）が出る組み合わせで、
+#  静的 CRT へ揃えるほうが構成として素直。
+#
+#  【代償】
+#  exe のサイズが増える（CRT 分）。CRT のセキュリティ修正を OS 更新で
+#  受け取れなくなるため、更新時は SEED 自体を再ビルドして配り直す必要がある。
+#
+#  【注意】
+#  ・環境変数 RUSTFLAGS を設定するとこの設定は無視される（Cargo の仕様）。
+#  ・ビルドスクリプト・proc macro もこのフラグでビルドされる
+#    （--target を付けずにホスト向けビルドする運用のため）。
+#  ・ターゲットごとに書く必要がある。MSVC 以外（macOS / Linux / Android / iOS）は
+#    そもそも C ランタイムが OS 同梱なので不要。
+# ============================================================
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# ARM64 Windows 版（パッケージ化ウィンドウの Windows/Arm64）も同じ理由で静的リンクする。
+# x64 側だけ書くと、ARM64 でビルドしたときだけ VC++ 再頒布パッケージが必要な配布物になる。
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

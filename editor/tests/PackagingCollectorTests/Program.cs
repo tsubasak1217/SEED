@@ -8,12 +8,15 @@
 //   2. AssetCollector        : 閉包 / 同伴ファイル / 除外と参照優先 / 欠落検出
 //   3. PakWriter             : PAK バイナリの往復（pak.rs と同じ読み方で確認）
 //   4. AssetPathRewriter     : 絶対パス 4 形式の書き換え
+//   5. DotnetRuntimeBundler  : 同梱する .NET の選択と出力先レイアウト
+//   6. PackageLayout         : 配布物のフォルダ構成と旧レイアウトの後始末の判定
 // ============================================================
 
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using SEEDEditor.Packaging;
 using SEEDEditor.Packaging.Collect;
 using SEEDEditor.Packaging.Pak;
 using SEEDEditor.Packaging.Runtime;
@@ -78,8 +81,10 @@ public static class Program
     /// エディタ UI を起動せずにパッケージ相当の配置を作るための入口で、
     /// <c>--write-pak</c> と同じくパッケージ版の実機確認に使う。
     /// 必要な .NET のバージョンは出力フォルダの
-    /// <c>SEEDScripting.runtimeconfig.json</c> から読むので、
+    /// <c>bin/SEEDScripting.runtimeconfig.json</c> から読むので、
     /// 先にスクリプト同梱（ScriptPrecompileTests）を済ませておくこと。
+    /// 引数はゲーム出力フォルダ（exe と同じ場所）で、同梱先は
+    /// その下の <c>bin/dotnet/</c> になる。
     /// </para>
     /// </summary>
     /// <param name="args">コマンドライン引数。args[1] が出力フォルダ。</param>
@@ -738,13 +743,83 @@ public static class Program
         {
             const string outDir = @"D:\Out\MyGame";
 
-            Check.Equal(Path.Combine(outDir, "dotnet", "shared", "Microsoft.NETCore.App", "9.0.20"),
+            // 同梱先は出力フォルダ直下ではなく bin/ の下（package_layout.rs と同じ構成）
+            Check.Equal(Path.Combine(outDir, "bin", "dotnet"),
+                DotnetRuntimeBundler.BundledRootDirectory(outDir), ".NET ルートの出力先が規約と違う");
+            Check.Equal(Path.Combine(outDir, "bin", "dotnet", "shared", "Microsoft.NETCore.App", "9.0.20"),
                 DotnetRuntimeBundler.BundledFrameworkDirectory(outDir, "9.0.20"), "CLR の出力先が規約と違う");
-            Check.Equal(Path.Combine(outDir, "dotnet", "host", "fxr", "9.0.20", "hostfxr.dll"),
+            Check.Equal(Path.Combine(outDir, "bin", "dotnet", "host", "fxr", "9.0.20", "hostfxr.dll"),
                 DotnetRuntimeBundler.BundledHostFxrPath(outDir, "9.0.20"), "hostfxr の出力先が規約と違う");
 
             // ランタイム側 scripting/mod.rs の BUNDLED_DOTNET_ROOT_DIR と同じ名前であること
             Check.Equal("dotnet", DotnetRuntimeBundler.BundledRootDirName, "同梱フォルダ名が規約と違う");
+        });
+
+        RegisterPackageLayoutTests(h);
+    }
+
+    // ============================================================
+    //  6. 配布物のフォルダ構成（PackageLayout）
+    // ============================================================
+
+    /// <summary>PackageLayout（フォルダ名の規約と旧レイアウトの後始末）のテストを登録する。</summary>
+    /// <param name="h">テストランナー。</param>
+    private static void RegisterPackageLayoutTests(TestHarness h)
+    {
+        h.Add("フォルダ名がランタイム側 package_layout.rs の規約と一致する", () =>
+        {
+            // 名前がずれるとビルドは通るのに配布物だけが壊れるため、文字列で固定する
+            Check.Equal("bin",    PackageLayout.BinDirName,    "bin の名前が規約と違う");
+            Check.Equal("caches", PackageLayout.CachesDirName, "caches の名前が規約と違う");
+            Check.Equal("logs",   PackageLayout.LogsDirName,   "logs の名前が規約と違う");
+            Check.Equal("saved",  PackageLayout.SavedDirName,  "saved の名前が規約と違う");
+
+            Check.Equal(Path.Combine(@"D:\Out\MyGame", "bin"),
+                PackageLayout.BinDirectory(@"D:\Out\MyGame"), "bin フォルダのパス組み立てが違う");
+        });
+
+        h.Add("旧レイアウトの残骸だけを削除対象に選ぶ", () =>
+        {
+            string[] files =
+            [
+                "MyGame.exe",                       // 実行ファイル（残す）
+                "assets.pak",                       // アセット（残す）
+                "SEEDScripting.dll",                // 旧配置の残骸
+                "SEEDUserScripts.dll",              // 旧配置の残骸
+                "Microsoft.CodeAnalysis.CSharp.dll",// 旧配置の残骸
+                "SEEDScripting.runtimeconfig.json", // 旧配置の残骸
+                "SEEDScripting.deps.json",          // 旧配置の残骸
+                "pipeline_cache.bin",               // 実行時生成（残す）
+                "readme.txt",                       // 利用者が置いたもの（残す）
+                "settings.json",                    // 無関係な JSON（残す）
+            ];
+            string[] dirs = ["dotnet", "bin", "caches", "logs", "saved", "save"];
+
+            var targets = PackageLayout.SelectLegacyLeftovers(files, dirs);
+
+            Check.Equal(6, targets.Count, "削除対象の件数が違う: " + string.Join(" / ", targets));
+            foreach (var expected in new[]
+                     {
+                         "SEEDScripting.dll", "SEEDUserScripts.dll", "Microsoft.CodeAnalysis.CSharp.dll",
+                         "SEEDScripting.runtimeconfig.json", "SEEDScripting.deps.json", "dotnet",
+                     })
+            {
+                Check.True(targets.Contains(expected), $"{expected} が削除対象に入っていない");
+            }
+        });
+
+        h.Add("実行時生成フォルダと利用者データは削除対象にしない", () =>
+        {
+            // caches / logs / saved は利用者のキャッシュ・ログ・セーブ。
+            // 旧レイアウトの save/ も同じくセーブなので消さない。
+            foreach (var name in new[] { "caches", "logs", "saved", "save", "bin" })
+                Check.True(!PackageLayout.IsLegacyLeftoverDirectory(name), $"{name} を消そうとしている");
+
+            foreach (var name in new[] { "MyGame.exe", "assets.pak", "pipeline_cache.bin", "save.json" })
+                Check.True(!PackageLayout.IsLegacyLeftoverFile(name), $"{name} を消そうとしている");
+
+            // 実行時生成フォルダの一覧が 3 つ揃っていること（後始末の除外リストの正典）
+            Check.Equal(3, PackageLayout.RuntimeGeneratedDirNames.Count, "実行時生成フォルダの件数が違う");
         });
     }
 

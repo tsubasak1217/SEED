@@ -16,11 +16,13 @@
 //
 //  【出力レイアウト】
 //  ランタイム側（runtime/src/engine/core/scripting/mod.rs の BUNDLED_DOTNET_ROOT_DIR）が
-//  実行ファイルの隣の dotnet/ を .NET ルートとして使う。中身は
+//  実行ファイルの bin/dotnet/ を .NET ルートとして使う。中身は
 //  インストール版の .NET と同じ形にしておく必要がある。
+//  bin/ の 1 段は配布物のフォルダ構成（PackageLayout.BinDirName）に由来する
+//  ——数百ファイルの CLR を実行ファイルの隣に直接ぶちまけないため。
 //
-//    {gameOutDir}/dotnet/host/fxr/<ver>/hostfxr.dll
-//    {gameOutDir}/dotnet/shared/Microsoft.NETCore.App/<ver>/*   （CLR 一式）
+//    {gameOutDir}/bin/dotnet/host/fxr/<ver>/hostfxr.dll
+//    {gameOutDir}/bin/dotnet/shared/Microsoft.NETCore.App/<ver>/*   （CLR 一式）
 //
 //  hostfxr は「自分自身の DLL パス」から .NET ルートを逆算し、その下の
 //  shared/Microsoft.NETCore.App から CLR（hostpolicy.dll / coreclr.dll）を解決する。
@@ -168,8 +170,9 @@ public static class DotnetRuntimeBundler
     // ── 規約（ランタイム側と揃える必要がある名前） ───────────
 
     /// <summary>
-    /// 出力先に作る .NET ルートのフォルダ名。
+    /// 出力先の <c>bin/</c> 直下に作る .NET ルートのフォルダ名。
     /// ランタイム側 <c>scripting/mod.rs</c> の <c>BUNDLED_DOTNET_ROOT_DIR</c> と一致必須。
+    /// 手前の <c>bin/</c> 1 段は <see cref="PackageLayout.BinDirName"/> が持つ。
     /// </summary>
     public const string BundledRootDirName = "dotnet";
 
@@ -188,7 +191,11 @@ public static class DotnetRuntimeBundler
     /// <summary>hostfxr 本体のファイル名（Windows）。</summary>
     private const string HostFxrFileName = "hostfxr.dll";
 
-    /// <summary>必要バージョンの読み取り元（出力フォルダにコピー済みの runtimeconfig）。</summary>
+    /// <summary>
+    /// 必要バージョンの読み取り元（<c>{gameOutDir}/bin/</c> にコピー済みの runtimeconfig）。
+    /// 置き場は <c>ScriptPackager</c>（Packaging/Scripts/）がコピーした先＝<c>bin/</c> と
+    /// 一致させること。
+    /// </summary>
     private const string RuntimeConfigFileName = "SEEDScripting.runtimeconfig.json";
 
     // ── runtimeconfig.json の構造 ────────────────────────────
@@ -250,7 +257,7 @@ public static class DotnetRuntimeBundler
     /// 出力フォルダへ .NET ランタイムを同梱する。
     ///
     /// <para>
-    /// 必要バージョンは <c>{gameOutDir}/SEEDScripting.runtimeconfig.json</c> から読む。
+    /// 必要バージョンは <c>{gameOutDir}/bin/SEEDScripting.runtimeconfig.json</c> から読む。
     /// これは **配布物が実際に読む** ファイルそのものなので、ここを正典にしておけば
     /// スクリプトホストのターゲットフレームワークを上げたときに自動で追従する
     /// （バージョンをこのコードへ書かない理由）。
@@ -261,16 +268,22 @@ public static class DotnetRuntimeBundler
     /// パッケージ化そのものを止めるほどの失敗ではない。
     /// </para>
     /// </summary>
-    /// <param name="gameOutDir">パッケージ出力フォルダ（実行ファイルと同じ場所）。</param>
+    /// <param name="gameOutDir">
+    /// パッケージ出力フォルダ（実行ファイルと同じ場所）。
+    /// 同梱先はこの直下ではなく <c>{gameOutDir}/bin/dotnet/</c>。
+    /// </param>
     /// <param name="log">ログ出力（UI へ 1 行ずつ流す）。</param>
     /// <returns>結果。<c>Bundled == false</c> でもパッケージ化は続行してよい。</returns>
     public static DotnetBundleResult Run(string gameOutDir, Action<string> log)
     {
         // ── ① 必要な major.minor を runtimeconfig.json から読む ──
-        var configPath = Path.Combine(gameOutDir, RuntimeConfigFileName);
+        // 読み取り元は ScriptPackager がコピーした bin/ 側（配置を変えたら両方直すこと）。
+        var configPath = Path.Combine(PackageLayout.BinDirectory(gameOutDir), RuntimeConfigFileName);
         if (!File.Exists(configPath))
         {
-            return Skip($"{RuntimeConfigFileName} が出力に無いため、必要な .NET バージョンが判定できません");
+            return Skip(
+                $"{PackageLayout.BinDirName}/{RuntimeConfigFileName} が出力に無いため、" +
+                "必要な .NET バージョンが判定できません");
         }
 
         DotnetVersion required;
@@ -564,23 +577,26 @@ public static class DotnetRuntimeBundler
     //  出力パスの組み立て（純関数）
     // ============================================================
 
-    /// <summary>同梱 .NET ルートのパスを作る【純関数】。</summary>
+    /// <summary>
+    /// 同梱 .NET ルートのパスを作る【純関数】。
+    /// 配布物の副次ファイルは <c>bin/</c> に畳むため、その 1 段下になる。
+    /// </summary>
     /// <param name="gameOutDir">パッケージ出力フォルダ。</param>
-    /// <returns><c>{gameOutDir}/dotnet</c>。</returns>
+    /// <returns><c>{gameOutDir}/bin/dotnet</c>。</returns>
     public static string BundledRootDirectory(string gameOutDir) =>
-        Path.Combine(gameOutDir, BundledRootDirName);
+        Path.Combine(PackageLayout.BinDirectory(gameOutDir), BundledRootDirName);
 
     /// <summary>同梱 CLR の置き場を作る【純関数】。</summary>
     /// <param name="gameOutDir">パッケージ出力フォルダ。</param>
     /// <param name="frameworkVersionName">CLR のバージョンフォルダ名。</param>
-    /// <returns><c>{gameOutDir}/dotnet/shared/Microsoft.NETCore.App/&lt;ver&gt;</c>。</returns>
+    /// <returns><c>{gameOutDir}/bin/dotnet/shared/Microsoft.NETCore.App/&lt;ver&gt;</c>。</returns>
     public static string BundledFrameworkDirectory(string gameOutDir, string frameworkVersionName) =>
         Path.Combine(BundledRootDirectory(gameOutDir), SharedDirName, FrameworkName, frameworkVersionName);
 
     /// <summary>同梱 hostfxr のパスを作る【純関数】。</summary>
     /// <param name="gameOutDir">パッケージ出力フォルダ。</param>
     /// <param name="hostFxrVersionName">hostfxr のバージョンフォルダ名。</param>
-    /// <returns><c>{gameOutDir}/dotnet/host/fxr/&lt;ver&gt;/hostfxr.dll</c>。</returns>
+    /// <returns><c>{gameOutDir}/bin/dotnet/host/fxr/&lt;ver&gt;/hostfxr.dll</c>。</returns>
     public static string BundledHostFxrPath(string gameOutDir, string hostFxrVersionName) =>
         Path.Combine(BundledRootDirectory(gameOutDir), HostDirName, FxrDirName, hostFxrVersionName, HostFxrFileName);
 

@@ -14,6 +14,7 @@
 using System;
 using System.IO;
 using System.Text;
+using SEEDEditor.Scripting;
 
 namespace SEEDEditor.Tests.ScriptPrecompile;
 
@@ -98,6 +99,51 @@ public sealed class ScriptFixture : IDisposable
     /// <param name="fileName">DLL のファイル名。</param>
     /// <returns>絶対パス。</returns>
     public string OutputPath(string fileName) => Path.Combine(OutputDir, fileName);
+
+    // ── スクリプトホストのビルド出力（ScriptPackager の入力）────
+
+    /// <summary>ホスト出力に置くダミーのデバッグシンボル名（同梱されないことの確認用）。</summary>
+    private const string HostSymbolFileName = "SEEDScripting.pdb";
+
+    /// <summary>ホスト出力に置く runtimeconfig の名前（.NET 同梱の入力になるファイル）。</summary>
+    private const string HostRuntimeConfigFileName = "SEEDScripting.runtimeconfig.json";
+
+    /// <summary>
+    /// <see cref="SEEDEditor.Packaging.Scripts.ScriptPackager"/> が探す
+    /// 「スクリプトホストのビルド出力」を模したフォルダを作る。
+    ///
+    /// <para>
+    /// パッケージャは <c>{runtimePath}/../scripting/bin/Debug/net9.0/</c> を見るため、
+    /// 一時フォルダにその形を作り、テストプロセスが実際に読み込んでいる本物の
+    /// <c>SEEDScripting.dll</c> を置く（参照アセンブリとしても使われるので本物が要る）。
+    /// あわせて runtimeconfig（同梱の入力）とダミーの <c>.pdb</c>
+    /// （除外されることの確認用）を置く。
+    /// </para>
+    /// </summary>
+    /// <returns>パッケージャへ渡す runtime フォルダの絶対パス。</returns>
+    public string BuildHostBuildOutput()
+    {
+        var baseDir    = Path.GetDirectoryName(Root)!;
+        var runtimeDir = Path.Combine(baseDir, "runtime");
+        var hostDir    = Path.Combine(baseDir, "scripting", "bin", "Debug", "net9.0");
+        Directory.CreateDirectory(runtimeDir);
+        Directory.CreateDirectory(hostDir);
+
+        // 本物の SEEDScripting.dll（テストプロセスがロード済みのもの）を写す
+        var hostSource = typeof(SEEDScript).Assembly.Location;
+        File.Copy(hostSource, Path.Combine(hostDir, Path.GetFileName(hostSource)), overwrite: true);
+
+        // .NET 同梱フェーズが読む runtimeconfig（中身は最小限で十分）
+        File.WriteAllText(
+            Path.Combine(hostDir, HostRuntimeConfigFileName),
+            """{"runtimeOptions":{"tfm":"net9.0","framework":{"name":"Microsoft.NETCore.App","version":"9.0.0"}}}""",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        // 配布物に含めてはいけないデバッグシンボル（除外されることの確認用）
+        File.WriteAllText(Path.Combine(hostDir, HostSymbolFileName), "dummy");
+
+        return runtimeDir;
+    }
 
     /// <summary>一時フォルダごと削除する。</summary>
     public void Dispose()

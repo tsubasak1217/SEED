@@ -38,6 +38,10 @@
     <Compile Include="..\..\src\Packaging\Scripts\ScriptPackager.cs">
       <Link>Linked\Packaging\Scripts\ScriptPackager.cs</Link>
     </Compile>
+    <!-- 配布物のフォルダ構成（bin / caches / logs / saved）の正典。同梱先が依存する -->
+    <Compile Include="..\..\src\Packaging\PackageLayout.cs">
+      <Link>Linked\Packaging\PackageLayout.cs</Link>
+    </Compile>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

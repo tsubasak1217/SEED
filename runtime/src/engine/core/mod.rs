@@ -4,6 +4,8 @@ pub mod clock;
 pub mod font;
 pub mod input;
 pub mod loader;
+/// 配布パッケージのフォルダ構成（bin / caches / logs / saved）の正典。
+pub mod package_layout;
 pub mod parent_guard;
 /// フレーム内セクション別 CPU 時間プロファイラ（エディタのプロファイラパネル用）。
 pub mod profiling;

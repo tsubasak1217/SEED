@@ -23,6 +23,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using SEEDEditor.Packaging;
 using SEEDEditor.Packaging.Scripts;
 using SEEDEditor.Scripting;
 using SEEDEditor.Scripting.Compilation;
@@ -44,6 +45,15 @@ public static class Program
 
     /// <summary>標準構成に含まれる .cs の数（スクリプト 3 本 + 普通のクラス 1 本）。</summary>
     private const int StandardTreeSourceFileCount = 4;
+
+    /// <summary>スクリプトホスト本体の DLL 名（同梱先の確認に使う）。</summary>
+    private const string HostAssemblyFileName = "SEEDScripting.dll";
+
+    /// <summary>スクリプトホストの runtimeconfig 名（.NET 同梱フェーズの読み取り元）。</summary>
+    private const string HostRuntimeConfigFileName = "SEEDScripting.runtimeconfig.json";
+
+    /// <summary>スクリプトホストのデバッグシンボル名（同梱されないことの確認に使う）。</summary>
+    private const string HostSymbolFileName = "SEEDScripting.pdb";
 
     /// <summary>
     /// テストを登録して実行する。
@@ -247,6 +257,39 @@ public static class Program
             Check.True(!result.Success, "ホスト不在でも成功してしまっている");
             Check.True(result.FailureSummary.Contains("SEEDScripting.dll", StringComparison.Ordinal),
                 "失敗理由に不足しているファイル名が入っていない: " + result.FailureSummary);
+        });
+
+        h.Add("成果物とホスト一式は出力フォルダ直下ではなく bin/ へ置かれる", () =>
+        {
+            using var fx = new ScriptFixture();
+            fx.BuildStandardTree();
+            var runtimeDir = fx.BuildHostBuildOutput();
+
+            var result = ScriptPackager.Run(runtimeDir, fx.Root, fx.OutputDir, _ => { });
+            Check.True(result.Success, "パッケージ化に失敗した: " + result.FailureSummary
+                + string.Join(" / ", result.Errors));
+
+            var binDir = PackageLayout.BinDirectory(fx.OutputDir);
+
+            // bin/ に揃っていること（ランタイムはここしか見ない）
+            Check.True(File.Exists(Path.Combine(binDir, PrecompiledScriptArtifact.AssemblyFileName)),
+                "事前コンパイル DLL が bin/ に無い");
+            Check.True(File.Exists(Path.Combine(binDir, HostAssemblyFileName)),
+                "スクリプトホストが bin/ に無い");
+            Check.True(File.Exists(Path.Combine(binDir, HostRuntimeConfigFileName)),
+                "runtimeconfig が bin/ に無い（.NET 同梱フェーズがバージョンを読めなくなる）");
+
+            // 直下には 1 つも置かないこと（「exe の隣に DLL が散らかる」状態の回帰防止）
+            Check.True(!File.Exists(Path.Combine(fx.OutputDir, PrecompiledScriptArtifact.AssemblyFileName)),
+                "事前コンパイル DLL が出力フォルダ直下に残っている");
+            Check.True(!File.Exists(Path.Combine(fx.OutputDir, HostAssemblyFileName)),
+                "スクリプトホストが出力フォルダ直下に残っている");
+            Check.True(!File.Exists(Path.Combine(fx.OutputDir, HostRuntimeConfigFileName)),
+                "runtimeconfig が出力フォルダ直下に残っている");
+
+            // デバッグシンボルは同梱しない（配布物に開発機のソースパスを載せないため）
+            Check.True(!File.Exists(Path.Combine(binDir, HostSymbolFileName)),
+                "デバッグシンボル（.pdb）を同梱してしまっている");
         });
     }
 

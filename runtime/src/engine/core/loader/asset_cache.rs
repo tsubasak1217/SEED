@@ -10,7 +10,12 @@
 //  ・2 回目以降:   キャッシュ（bincode）を読むだけ。デコード・パース・LOD 生成を全てスキップ。
 //
 //  【キャッシュ配置】
-//  `{assets_root}/../cache/`（assets 外。プロジェクト設定・PAK には含めない）
+//  ・開発 / エディタ実行: `{assets_root}/../cache/`
+//    （assets 外。プロジェクト設定・PAK には含めない）
+//  ・パッケージ実行:      `{exe のフォルダ}/caches/`
+//    （配布物の実行時生成フォルダ。構成の正典は `core::package_layout`。
+//      PAK 実行では assets_root が実在しないフォルダを指すため、
+//      そのまま `../cache` を使うと exe 直下にキャッシュが散る）
 //
 //  【検証】
 //  ヘッダに元ファイルの mtime + サイズ + フォーマットバージョン + BC 使用フラグを格納。
@@ -110,7 +115,9 @@ pub const CACHE_FORMAT_VERSION: u32 = 16;
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
 
-/// キャッシュ用サブディレクトリ名（`{assets_root}/../cache`）。
+/// 開発 / エディタ実行でのキャッシュ用サブディレクトリ名（`{assets_root}/../cache`）。
+///
+/// パッケージ実行では使わない（そちらは `package_layout::CACHES_DIR_NAME`）。
 const CACHE_DIR_NAME: &str = "cache";
 
 /// GPU が BC 圧縮（TEXTURE_COMPRESSION_BC）に対応しているか。
@@ -131,11 +138,27 @@ pub fn bc_supported() -> bool {
 //  キャッシュパス解決
 // ============================================================
 
-/// キャッシュディレクトリ `{assets_root}/../cache` を返す（未初期化なら None）。
+/// キャッシュディレクトリを返す（決められないなら None）。
+///
+/// 環境（パッケージ判定・実行ファイル位置・アセットルート）を集めて
+/// `package_layout::decide_cache_dir` へ渡すだけの薄い層。
+/// 判定そのものは純関数側にあるのでユニットテストできる。
 fn cache_dir() -> Option<PathBuf> {
-    let root = crate::engine::asset_fs::root()?;
-    let parent = root.parent()?;
-    Some(parent.join(CACHE_DIR_NAME))
+    // 開発 / エディタ実行での置き場（アセットルートの親の `cache/`）。
+    // アセットルートが未初期化・親が無い場合は None になる。
+    let dev_dir = crate::engine::asset_fs::root()
+        .and_then(|root| root.parent())
+        .map(|parent| parent.join(CACHE_DIR_NAME));
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+
+    crate::engine::core::package_layout::decide_cache_dir(
+        crate::engine::asset_fs::is_packaged(),
+        exe_dir.as_deref(),
+        dev_dir,
+    )
 }
 
 /// 元アセットの解決済み絶対パスから、モデルキャッシュファイルのパスを求める。

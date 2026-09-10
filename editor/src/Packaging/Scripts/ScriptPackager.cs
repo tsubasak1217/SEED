@@ -5,7 +5,10 @@
 //  パッケージ版でユーザースクリプトを動かすために必要な 2 つの成果物を作る。
 //    ① SEEDUserScripts.dll … アセット配下の .cs を事前コンパイルした DLL
 //    ② スクリプトホスト一式 … SEEDScripting.dll とその依存（CLR から読ませるもの）
-//  どちらも出力フォルダ（実行ファイルと同じ場所）へ置く。
+//  どちらも出力フォルダ直下ではなく **bin/**（PackageLayout.BinDirName）へ置く。
+//  実行ファイルの隣に DLL が数十個並ぶと、利用者から見て「どれが本体で
+//  どれが消してよいのか」が判別できないため、副次ファイルは 1 フォルダへ畳む。
+//  ランタイム側の探索先も同じ規約（runtime/src/engine/core/package_layout.rs）。
 //
 //  【なぜ事前コンパイルするのか】
 //  従来はアセットに .cs を同梱し、起動時に Roslyn でコンパイルしていた
@@ -98,7 +101,10 @@ public static class ScriptPackager
     /// </summary>
     /// <param name="runtimePath">runtime フォルダの絶対パス（ホスト出力の基準）。</param>
     /// <param name="assetsPath">アセットルートの絶対パス（.cs の収集元）。</param>
-    /// <param name="gameOutDir">パッケージ出力フォルダ（実行ファイルと同じ場所）。</param>
+    /// <param name="gameOutDir">
+    /// パッケージ出力フォルダ（実行ファイルと同じ場所）。
+    /// 成果物はこの直下ではなく <c>{gameOutDir}/bin/</c> へ置く。
+    /// </param>
     /// <param name="log">ログ出力（UI へ 1 行ずつ流す）。</param>
     /// <returns>結果。Success が false ならパッケージ化を中止すること。</returns>
     public static ScriptPackagingResult Run(
@@ -122,7 +128,12 @@ public static class ScriptPackager
         }
 
         // ── ② ユーザースクリプトを DLL へ事前コンパイルする ──
-        var outputDll = Path.Combine(gameOutDir, PrecompiledScriptArtifact.AssemblyFileName);
+        // 出力先は bin/（配布物の副次ファイル置き場）。コンパイル前に必ず作る
+        // ——CompileToFile は書き出し先フォルダの存在を前提にしている。
+        var binDir = PackageLayout.BinDirectory(gameOutDir);
+        Directory.CreateDirectory(binDir);
+
+        var outputDll = Path.Combine(binDir, PrecompiledScriptArtifact.AssemblyFileName);
         log($"スクリプトを事前コンパイル: {assetsPath}");
 
         var compile = ScriptAssemblyManager.CompileToFile(assetsPath, outputDll, BuildReferences(hostDll));
@@ -141,8 +152,8 @@ public static class ScriptPackager
             $"{compile.ScriptTypeCount} 型 / {compile.SourceFileCount} ファイル" +
             (compile.WarningCount > 0 ? $"（警告 {compile.WarningCount} 件）" : ""));
 
-        // ── ③ スクリプトホスト一式を出力へコピーする ──
-        var (copied, bytes) = CopyHostFiles(hostDir, gameOutDir, log);
+        // ── ③ スクリプトホスト一式を出力（bin/）へコピーする ──
+        var (copied, bytes) = CopyHostFiles(hostDir, binDir, log);
 
         // DLL 本体もコピー物として計上する（同梱サイズの見積もりに使うため）
         var dllBytes = new FileInfo(outputDll).Length;
@@ -216,10 +227,10 @@ public static class ScriptPackager
     /// </para>
     /// </summary>
     /// <param name="hostDir">スクリプトホストのビルド出力フォルダ。</param>
-    /// <param name="gameOutDir">パッケージ出力フォルダ。</param>
+    /// <param name="destDir">コピー先（パッケージ出力フォルダの <c>bin/</c>）。</param>
     /// <param name="log">ログ出力。</param>
     /// <returns>コピーしたファイル数と合計バイト数。</returns>
-    private static (int Count, long Bytes) CopyHostFiles(string hostDir, string gameOutDir, Action<string> log)
+    private static (int Count, long Bytes) CopyHostFiles(string hostDir, string destDir, Action<string> log)
     {
         int  count = 0;
         long bytes = 0;
@@ -230,7 +241,7 @@ public static class ScriptPackager
             if (ExcludedHostExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)) continue;
 
             var fileName = Path.GetFileName(source);
-            var dest     = Path.Combine(gameOutDir, fileName);
+            var dest     = Path.Combine(destDir, fileName);
             File.Copy(source, dest, overwrite: true);
 
             count++;

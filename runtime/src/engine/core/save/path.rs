@@ -8,18 +8,29 @@
 //
 //  【保存先の規約】
 //  1. 環境変数 `SEED_SAVE_DIR` があれば最優先（CI・テスト・多重起動の切り分け用）
-//  2. パッケージ実行（assets.pak あり = 配布ビルド）: 実行ファイル隣の `save/`
+//  2. パッケージ実行（assets.pak あり = 配布ビルド）: 実行ファイル隣の `saved/`
+//     → 配布物のフォルダ構成（`core::package_layout`）の一部。
 //  3. エディタ Play（アセットルートあり = リポジトリ内実行）:
 //     アセットルートの親 = `runtime/` 直下の `save/`
 //     → Git 追跡外（.gitignore に `runtime/save/` を追加済み）。
 //        アセットフォルダの中には**置かない**（パッケージングに巻き込まれ、
 //        開発者のセーブが配布物へ同梱されてしまうため）。
 //  4. いずれも解決できない場合（単体テスト等）: カレントディレクトリの `save/`
+//
+//  【なぜ配布版とリポジトリ内でフォルダ名が違うのか】
+//  配布物側は `caches` / `logs` / `saved` と名前を揃えて「実行時生成物」だと
+//  一目で分かる構成にしている。一方リポジトリ内の `runtime/save/` は
+//  .gitignore の記述・既存の開発者環境がその名前に依存しているため据え置く。
+//  混同を防ぐため定数も 2 本に分けてある。
 // ============================================================
 
 use std::path::{Path, PathBuf};
 
-/// セーブディレクトリ名（上記いずれの経路でも共通）。
+use crate::engine::core::package_layout;
+
+/// 開発時（エディタ Play・単体テスト）のセーブディレクトリ名。
+///
+/// パッケージ実行では使わない（そちらは `package_layout::SAVED_DIR_NAME`）。
 pub const SAVE_DIR_NAME: &str = "save";
 
 /// セーブファイル名（JSON 1 ファイル）。
@@ -51,11 +62,12 @@ pub fn decide_save_dir(
         return PathBuf::from(dir);
     }
 
-    // 2) パッケージ実行: 実行ファイル隣の save/
+    // 2) パッケージ実行: 実行ファイル隣の saved/
     //    （配布物はユーザーの任意フォルダへ展開されるため、実行ファイル相対が最も予測しやすい）
+    //    フォルダ名は配布物の構成の一部なので package_layout を参照する。
     if packaged {
         if let Some(dir) = exe_dir {
-            return dir.join(SAVE_DIR_NAME);
+            return package_layout::saved_dir(dir);
         }
     }
 
@@ -128,10 +140,10 @@ mod tests {
             None,
             Path::new("C:/cwd"),
         );
-        assert_eq!(dir, Path::new("C:/game").join(SAVE_DIR_NAME));
+        assert_eq!(dir, Path::new("C:/game").join(package_layout::SAVED_DIR_NAME));
     }
 
-    /// パッケージ実行では実行ファイル隣の save/ を使う（アセットルートより優先）。
+    /// パッケージ実行では実行ファイル隣の saved/ を使う（アセットルートより優先）。
     #[test]
     fn packaged_uses_exe_dir() {
         let dir = decide_save_dir(
@@ -141,7 +153,16 @@ mod tests {
             Some(Path::new("C:/game/assets")),
             Path::new("C:/cwd"),
         );
-        assert_eq!(dir, Path::new("C:/game").join(SAVE_DIR_NAME));
+        assert_eq!(dir, PathBuf::from("C:/game/saved"));
+    }
+
+    /// パッケージ実行のフォルダ名が配布物の構成（package_layout）と一致していること。
+    /// 開発時の `save/` と取り違えると、配布物のセーブが別フォルダに散る。
+    #[test]
+    fn packaged_dir_name_comes_from_package_layout() {
+        let dir = decide_save_dir(None, true, Some(Path::new("C:/game")), None, Path::new("C:/cwd"));
+        assert!(dir.ends_with(package_layout::SAVED_DIR_NAME));
+        assert!(!dir.ends_with(SAVE_DIR_NAME), "開発時の save/ を配布版で使っている");
     }
 
     /// エディタ Play（非パッケージ）ではアセットルートの**親**直下へ置く。

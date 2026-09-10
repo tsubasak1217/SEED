@@ -1390,12 +1390,15 @@ impl App {
     /// # 引数
     /// * `host` - ロード済みのスクリプティングホスト
     fn load_precompiled_user_scripts(host: &Arc<ScriptingHost>) {
+        use crate::engine::core::package_layout;
         use crate::engine::core::scripting::PRECOMPILED_SCRIPTS_DLL_NAME;
 
-        // 実行ファイルの隣（cwd はショートカット等で変わるため exe 基準で探す）
+        // 実行ファイルの bin/ 直下（cwd はショートカット等で変わるため exe 基準で探す）。
+        // 配布物のフォルダ構成の正典は core::package_layout。
         let Some(dll_path) = std::env::current_exe()
             .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join(PRECOMPILED_SCRIPTS_DLL_NAME)))
+            .and_then(|exe| exe.parent().map(package_layout::bin_dir))
+            .map(|bin| bin.join(PRECOMPILED_SCRIPTS_DLL_NAME))
         else {
             eprintln!("[SEED] precompiled scripts: 実行ファイルのパスが取得できません");
             return;

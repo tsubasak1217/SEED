@@ -253,7 +253,7 @@
 - [ ] **ポーズメニューのスプライトが FishingUI のダイアログより奥に描かれる** — 2026-09-08。動的生成した PauseMenu キャンバスは root の末尾に付くのに、暗幕（PauseOverlay）と選択の下敷き（PauseHighlight）が FishingUI のダイアログ枠より奥に出る。選択行の下敷きは 2 行目・3 行目ではダイアログ枠に完全に隠れて見えない。**「文字だけダイアログの上に浮く」半分は 2026-09-08 に解決済み**（UI 描画順をゾーン → レイヤー → 種別で統合。`renderer/ui_draw_order.rs` / `ui_draw_pass.rs`）。残るスプライト同士の前後は純粋に `layer` 値の設計問題（PauseOverlay / PauseHighlight のレイヤーが FishingUI のダイアログ枠より小さい）と思われるので、両者のレイヤー帯を決め直すこと。
 - [ ] **`GameObject.IsValid` は「破棄済みか」を見ていない** — 2026-09-08。`SEED.Entity.IsValid` は「未束縛でない」かどうかだけを見るので、`Destroy` 済みのアクタを指すハンドルも `true` を返す（ランタイムへ生存を問い合わせていない）。`docs/scripting_api.md` は「参照先が今も生きているか」と説明しており、実装と食い違っている。生存問い合わせの FFI を足すか、ドキュメントの表現を実装に合わせるかの判断が要る。
 - [ ] **旧セーブキー `best_size:魚` が孤立している** — 2026-09-08。魚 prefab に日本語の表示名を入れる前は `Fish.DisplayName` が全種で既定名 `魚` を返していたため、既存の `runtime/save/save.json` には全魚種ぶんが混ざった `best_size:魚` が 1 件だけある。今後は `best_size:<日本語名>` で記録されるので、この旧キーはどこからも読まれない。移行するか消すかは要判断（移行先が特定できないので削除が妥当）。
-- [ ] **`resolve_dll_path` がカレントディレクトリ基準で SEEDScripting.dll を探す** — 2026-09-08。`runtime/src/engine/core/scripting/mod.rs::resolve_dll_path` は `cwd/../scripting/bin/Debug/net9.0/SEEDScripting.dll` → `cwd/SEEDScripting.dll` の順で探す。ランタイムの作業ディレクトリは `RuntimeManager.ResolveWorkingDirectory` が「exe の 2 階層上が `target` のときだけ」リポジトリ側へ上げるため、`docs/editor_mcp.md §5.5` が推奨する `cargo build --target-dir <別ディレクトリ>` で作った SEED.exe を `SEED_RUNTIME_EXE` で使うと DLL が見つからず、ランタイムが起動しない（エディタ側は「ランタイムが接続しません」としか言わない）。回避策は出力先へ `SEEDScripting.dll` 一式を手でコピーすること。exe の位置からも探すか、環境変数で明示できるようにしたい。
+- [ ] **`resolve_dll_path` の開発時候補がカレントディレクトリ基準** — 2026-09-08 記載 / 2026-09-10 に候補パスのみ更新。`runtime/src/engine/core/scripting/mod.rs::resolve_dll_path` は `cwd/../scripting/bin/Debug/net9.0/SEEDScripting.dll`（開発ビルド出力）→ `{exe のフォルダ}/bin/SEEDScripting.dll`（配布配置）の順で探す。ランタイムの作業ディレクトリは `RuntimeManager.ResolveWorkingDirectory` が「exe の 2 階層上が `target` のときだけ」リポジトリ側へ上げるため、`docs/editor_mcp.md §5.5` が推奨する `cargo build --target-dir <別ディレクトリ>` で作った SEED.exe を `SEED_RUNTIME_EXE` で使うと DLL が見つからず、ランタイムが起動しない（エディタ側は「ランタイムが接続しません」としか言わない）。回避策は出力先の **`bin/` サブフォルダ**へ `SEEDScripting.dll` 一式を手でコピーすること（2026-09-10 のレイアウト移行で exe 直下は候補から外れた）。開発ビルド出力を exe の位置からも探すか、環境変数で明示できるようにしたい。
 - [ ] **`seed_launch(scene:)` が `assets://` パスを受け付けない** — 2026-09-08。`editor/SeedMcpServer/Launcher.cs` は `Path.GetFullPath(scenePath)` をそのまま `--scene` へ渡すため、`assets://zukan/zukan.scene` は `…\SEED\assets:\zukan\zukan.scene` という壊れたパスになり、シーンが読めないまま「ランタイムが接続しません」でタイムアウトする（原因が一切表示されない）。絶対パスなら正常に動く。`assets://` を assets ルート基準へ解決するか、少なくともエラーとして弾きたい。
 - [ ] **キャンバスの `auto_scale` がカメラ基準解像度より大きいキャンバスを縮小しない** — 2026-09-08。カメラの `target_width/height` が 1280x720 のとき、`auto_scale: true` の 1920x1080 キャンバスは 1 単位＝描画ターゲット 1px で描かれ、中央 1280x720 の外に置いた要素は画面に出ない（ヘッドレス Play のスクリーンショットで実測）。今回は図鑑・ポーズメニューのキャンバスを 1280x720 にして回避した。既存の `FishingUI` は端をアンカー基準で置いているため実害が出ていないだけなので、`auto_scale` の意図（基準解像度へフィットさせる）どおりに効いているか要確認。
 - [x] **`[SerializeField]` の参照解決がシーン全体のアクタ名 DFS なので、同じプレハブを複数生成すると参照が 1 個目へ集まる** — 2026-09-08 に解決。参照文字列へパス形式（`./Child` / `../Sibling` / `Root/Child`）を導入し、素の名前は「自分のサブツリー優先 → シーン全体」で解決するようにした（正典: `runtime/src/engine/core/scripting/actor_ref_path.rs`、docs/scripting_api.md「参照文字列のパス指定」）。`GameObject.FindChild(nameOrPath)` も追加。図鑑カードは `assets://zukan/actors/ZukanCard.actor` のプレハブインスタンス 4 枚になった。
@@ -427,6 +427,43 @@
   実機確認済み: Rust の `[SEED]` 系と C# の `[SEEDScripting] loaded 40 precompiled …` が同じ 1 本に入ること、
   panic ダイアログが出てログにバックトレースが残ること、エディタ経路でログが作られないこと、
   10 件で世代管理されること。詳細は `docs/packaging.md` §9。
+- [x] **配布物の exe の隣に DLL が数十個散らかる／どれが実行時生成物か分からない** — 2026-09-10 記載 / 同日対応。
+  配布フォルダの構成を「`{ゲーム名}.exe` / `assets.pak` / `bin/`（副次ファイル）/
+  `caches`・`logs`・`saved`（実行時生成）」に一元化した。
+  フォルダ名の正典を 2 か所（`runtime/src/engine/core/package_layout.rs` と
+  `editor/src/Packaging/PackageLayout.cs`）に置き、両側のテストで文字列を突き合わせている。
+  スクリプトホスト／事前コンパイル DLL／同梱 .NET は `bin/`（`bin/dotnet/`）へ、
+  セーブは `saved/`、モデル派生キャッシュと `pipeline_cache.bin` は `caches/` へ移した。
+  `caches`・`logs`・`saved` は**パッケージ化では作らない**（空フォルダは zip で落ちるため、
+  必要になった時点でランタイムが作る）。同じフォルダへ再パッケージすると旧配置の残骸が
+  直下に残るため、ビルド開始時に `PackageLayout.RemoveLegacyLayout` で掃除する
+  （利用者データの `caches`・`logs`・`saved`・`save` は対象外）。
+  実機確認済み: 手組みした新レイアウトで `dotnet root: bundled …\bin\dotnet` /
+  `precompiled scripts loaded: 40 type(s)` / 終了時に `caches/pipeline_cache.bin` 生成 /
+  直下に DLL ゼロ、エディタ経路は `user scripts compiled: 40` と `runtime/cache` のまま。
+  詳細は `docs/packaging.md` §1「出力フォルダの構成」。
+  **非互換の注意**: 旧配布物のセーブは `{exe}/save/save.json` にあり、新しい `{exe}/saved/` は
+  それを読まない（移行処理は入れていない）。未リリースなので実害は無いが、
+  既存インストールへ上書き配布する運用を始める前に移行の要否を判断すること。
+- [x] **配布物が VC++ 再頒布可能パッケージ未導入の PC で起動しない** — 2026-09-10 記載 / 同日対応。
+  `SEED.exe` が `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll` を import しており、
+  未導入の PC では**ダブルクリックしても何も起きない**（プロセス生成前にローダーが失敗するため、
+  起動ログ機構すら動かず原因が残らない）。`runtime/.cargo/config.toml` に
+  `[target.x86_64-pc-windows-msvc] rustflags = ["-C", "target-feature=+crt-static"]` を追加して
+  C ランタイムを静的リンクした。debug / release とも追加のリンクエラーなくビルドでき、
+  `dumpbin /dependents` の依存は Windows 標準 DLL のみになった
+  （`VCRUNTIME140*` と `api-ms-win-crt-*` が消滅）。代償は exe サイズ増（28.5 MB → 28.9 MB）と、
+  CRT のセキュリティ修正を受けるには SEED 自体の再ビルド・再配布が要ること。
+- [ ] **PAK 実行ではモデルの派生キャッシュ（`*.smdl`）が一切効かない** — 2026-09-10 発見（今回のレイアウト移行時）。
+  `asset_cache::try_load_model` / `store_model` はどちらも先頭で `source_stamp`
+  （元ファイルの mtime + サイズ）を取るが、PAK モードのアセットルートは
+  `{exe}/assets`（実在しないフォルダ）なので `std::fs::metadata` が必ず失敗し、
+  読み込みも書き出しも即 return する（エラーログも出ないので気付きにくい）。
+  結果、配布版は毎回モデルをパース＋テクスチャ変換し直している（起動が遅いだけで動作はする）。
+  実測: `caches/` に生成されるのは `pipeline_cache.bin` だけで `*.smdl` は 0 件。
+  直すなら検証子を「mtime + サイズ」から **PAK エントリのサイズ + PAK 自体の mtime**、
+  あるいは PAK ビルド時に焼くコンテンツハッシュへ替える必要がある。
+  関連: `runtime/src/engine/core/loader/asset_cache.rs`、`runtime/src/engine/asset_fs.rs`。
 - [ ] **panic のバックトレースが配布版では `<unknown>` になる（PDB を同梱していない）** — 2026-09-10。
   上の起動ログでバックトレース自体は出るようになったが、パッケージ化は `SEED.exe` しかコピーしないため
   `SEED.pdb`（release でも 10 MB 生成される）が配布先に無く、フレームがすべて `<unknown>` になる。

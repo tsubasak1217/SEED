@@ -220,9 +220,43 @@ pub use render_features::{RenderFeatures, ResolvedFeatures, ShadowMode, GiMode,
 //  Renderer 本体
 // ============================================================
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
+
+// ============================================================
+//  パイプラインキャッシュ（コンパイル済みシェーダの永続化）
+// ============================================================
+
+/// パイプラインキャッシュのファイル名。
+///
+/// GPU ドライバがコンパイルしたパイプラインのバイナリで、次回起動時の
+/// シェーダコンパイル時間を短縮するためだけに使う（消しても再生成される）。
+const PIPELINE_CACHE_FILE_NAME: &str = "pipeline_cache.bin";
+
+/// パイプラインキャッシュファイルの置き場を決める。
+///
+/// - パッケージ実行: `{exe のフォルダ}/caches/pipeline_cache.bin`
+///   （配布物の実行時生成物は `caches/` に集約する。構成の正典は `core::package_layout`）
+/// - 開発 / エディタ実行: 従来どおり実行ファイルの隣
+///   （`target/debug` などビルド出力の中なので、掃除は `cargo clean` に任せられる）
+///
+/// 実行ファイルの位置が取れない場合は `None`（キャッシュ無しで動く）。
+fn pipeline_cache_path() -> Option<PathBuf> {
+    use crate::engine::core::package_layout;
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))?;
+
+    let dir = package_layout::decide_cache_dir(
+        crate::engine::asset_fs::is_packaged(),
+        Some(&exe_dir),
+        Some(exe_dir.clone()),
+    )?;
+    Some(dir.join(PIPELINE_CACHE_FILE_NAME))
+}
 
 // ============================================================
 //  深度テクスチャ
@@ -550,13 +584,11 @@ impl Renderer {
         let queue  = Arc::new(queue);
 
         // GPU が PIPELINE_CACHE をサポートする場合のみキャッシュを生成する。
-        // exe 隣の pipeline_cache.bin からデータを読み込み、
+        // `pipeline_cache_path()` が決めた場所からデータを読み込み、
         // ファイルが存在しない場合・不正データの場合は fallback=true により
         // 通常コンパイルにフォールバックする。
         let pipeline_cache = if supports_pipeline_cache {
-            let cache_path = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("pipeline_cache.bin")));
+            let cache_path = pipeline_cache_path();
             let cache_data = cache_path.as_ref().and_then(|p| std::fs::read(p).ok());
 
             // Safety: cache_data は自分のプロセスが書き出したものを読み込む。
@@ -736,15 +768,23 @@ impl Renderer {
 
     /// パイプラインキャッシュをディスクへ書き出す。
     ///
-    /// exe 隣の `pipeline_cache.bin` に保存する。
+    /// 置き場は `pipeline_cache_path()`（パッケージ実行なら `{exe}/caches/`）。
     /// キャッシュが None（GPU 非対応）または `get_data()` が None の場合は何もしない。
+    ///
+    /// 保存先フォルダはパッケージ化では作らない方針（空フォルダは zip で落ちる）ため、
+    /// 書き込み直前にここで作る。作成・書き込みの失敗はいずれも警告 1 行で済ませる
+    /// （キャッシュが無くても起動時間が伸びるだけで、動作には影響しない）。
     pub fn save_pipeline_cache(&self) {
         let Some(cache) = &self.pipeline_cache else { return; };
         let Some(data)  = cache.get_data() else { return; };
-        let Some(path)  = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("pipeline_cache.bin")))
-        else { return; };
+        let Some(path)  = pipeline_cache_path() else { return; };
+
+        if let Some(dir) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("[SEED] pipeline cache dir create failed: {dir:?} err={e}");
+                return;
+            }
+        }
         if let Err(e) = std::fs::write(&path, &data) {
             eprintln!("[SEED] pipeline cache save failed: {e}");
         }
