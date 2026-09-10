@@ -63,7 +63,10 @@
 /// 食いつき距離（<see cref="BiteDistance"/>）まで詰めた瞬間に <see cref="TryEatHookedFish"/> を
 /// 試み、<b>やり取りの「隙（<see cref="FishingFight.Phase.Rest"/>）」中だけ</b>即座に食い付いて成立する
 /// （<see cref="SwapHookedFish"/> で乗り換わり、前の魚は食われて消滅。新しい魚で
-/// <see cref="FishingFight.BeginFight"/> からやり取りをやり直す＝通常のヒットと同じ入り口）。
+/// <see cref="FishingFight.BeginFightAfterSwap"/> からやり取りを組み直す
+/// ＝<b>直前の隙の残りを引き継いでから走り（Run）で沖へ逃げる</b>）。
+/// 食われた魚は値（<see cref="ChainCatchEntry"/>）で控えておき、釣り上げたときに
+/// 掛かった順で全部リザルトへ出して図鑑へ登録する（<see cref="ChainCatchHistory"/>）。
 /// 隙以外（出題・回答中）に届いた場合は失敗を返すだけで、魚は興味を失わず
 /// 食いつき距離付近でホーミングしながら隙が来るのを待つ（<see cref="Fish"/> 側の実装）。
 /// 乗り換えた後の魚がまた餌になるので、連鎖は何段でも続く。
@@ -693,6 +696,26 @@ public class FishingController : SEEDScript
     private float maxCastDistance = 25f;
 
     /// <summary>
+    /// 最短飛距離が釣り上げ成立距離（<see cref="catchDistanceMeters"/>）より内側に
+    /// ならないようにする余裕（メートル）。
+    ///
+    /// 釣り上げは<b>距離だけ</b>で成立する（<see cref="UpdateFight"/>）ため、成立距離より
+    /// 近くに着水した状態でヒットすると、やり取りを 1 度もせずに次のフレームで釣れてしまう。
+    /// 成立距離を海側へ広げた（4 m）ことで最短飛距離 3 m と逆転したので、
+    /// 実効の最短飛距離を「成立距離＋この余裕」で下支えする（<see cref="EffectiveMinCastDistance"/>）。
+    /// </summary>
+    private const float MinCastMarginBeyondCatch = 2f;
+
+    /// <summary>
+    /// 実効の最短飛距離（メートル）。Inspector の <see cref="minCastDistance"/> と
+    /// 「釣り上げ成立距離＋<see cref="MinCastMarginBeyondCatch"/>」の大きい方。
+    /// 着水点マーカーの往復・キャストのクランプ・デバッグ投擲のすべてがこれを使う
+    /// （<see cref="minCastDistance"/> を直接読む箇所を残さないこと）。
+    /// </summary>
+    private float EffectiveMinCastDistance
+        => SEED.Mathf.Max(minCastDistance, catchDistanceMeters + MinCastMarginBeyondCatch);
+
+    /// <summary>
     /// 着水点マーカーが最短⇔最長を 1 往復する秒数（往路＋復路で 1 周）。
     /// 短いほど狙いがシビアになる。
     /// </summary>
@@ -789,13 +812,26 @@ public class FishingController : SEEDScript
     /// <summary>
     /// 釣り上げが成立するウキ→竿先の水平距離（メートル）【ヒット中の完了距離】。
     ///
-    /// ヒット中は「魚 HP が 0」かつ「実測距離がこの値以下」の両方が揃って初めて
-    /// 釣り上げになる（<see cref="UpdateFight"/>）。HUD に出している距離は実測値なので、
-    /// <b>表示が 0 に近づいた瞬間に釣れる</b>という見た目と判定の一致がこれで保たれる。
-    /// 逆に距離だけ詰まっても HP が残っていれば釣れない。
+    /// ヒット中は<b>実測距離がこの値以下になった瞬間</b>に釣り上げが成立する
+    /// （<see cref="UpdateFight"/>）。<b>魚 HP は成立条件に入らない</b>
+    /// （2026-09-09 改定。HP 0 は「見た目距離の下限が外れて竿先まで一気に寄る」という
+    ///  意味だけを持つ）。HUD に出している距離は実測値なので、
+    /// <b>表示がこの値に近づいた瞬間に釣れる</b>という見た目と判定の一致が保たれる。
+    ///
+    /// <b>値を上げるときの注意</b>: 成立が「距離だけ」なので、この値を大きくするほど
+    /// 巻き切るまでの距離が短くなる（＝やり取りがそのぶん短くなる）。
+    /// また <see cref="hookDistanceMin"/> 相当の至近距離で掛かった場合、
+    /// 掛かった次のフレームに成立してしまうので、上げ過ぎないこと。
+    ///
+    /// <b>既定を 4.0m にしている理由【2026-09-10 改定】</b>:
+    /// 岸のすぐ際（1m）まで寄せ切ってから釣り上げると、釣り上げ演出の側面固定カメラ
+    /// （<see cref="CatchPresenter"/>）の画に<b>海がほとんど映らず</b>、魚が砂浜から
+    /// 跳ね上がったように見えてしまう。成立距離を海側へ寄せると、跳ねる魚の背景に
+    /// 必ず海面が入る。<see cref="FishingFight"/> 側の「見た目距離の下限」
+    /// （既定 0.5m）より外側であれば、巻き切れば必ずこの距離へ到達できる。
     /// </summary>
     [SerializeField(Label = "釣り上げ成立距離(m)")]
-    private float catchDistanceMeters = 1.0f;
+    private float catchDistanceMeters = 4.0f;
 
     // ─── 岸際（岸に近づいたときの挙動）【2026-09-09 追加】─────────────
     //
@@ -1057,9 +1093,12 @@ public class FishingController : SEEDScript
     ///
     /// 待っている魚は弾かれても回遊へは戻らず、<c>Fish.chainWaitTimeoutSeconds</c> の
     /// 上限まで待ち続けるので、猶予が明けた次のフレームに改めて成立し得る。
-    /// 乗り換え直後は新しいやり取りが余白（<see cref="FishingFight.Phase.LeadIn"/>）から
-    /// 始まるため、そもそも隙ではなく、この猶予は自動的に効く。
-    /// 0 以下にすると猶予なし（従来どおり隙の頭から成立する）。
+    /// 乗り換え直後は<b>直前の隙をそのまま引き継いで</b>始まる
+    /// （<see cref="FishingFight.BeginFightAfterSwap"/>）ので、そのままでは
+    /// 「もう猶予は明けている」ことになってしまう。やり取り側は
+    /// <c>SecondsSincePhaseStart</c> の基準を<b>実際に入った時刻</b>に取っているため、
+    /// 引き継ぎ隙でもこの猶予は乗り換えの瞬間から数え直される。
+    /// 0 以下にすると猶予なし（隙の頭から成立する）。
     /// </summary>
     [SerializeField(Label = "わらしべ連鎖の猶予(秒)")]
     private float chainEatGraceSeconds = 1.5f;
@@ -1434,6 +1473,20 @@ public class FishingController : SEEDScript
     /// </summary>
     private Fish? hookedFish = null;
 
+    /// <summary>
+    /// <b>わらしべ連鎖で餌になった魚</b>の控え（最初に掛かった魚から順）
+    /// 【連鎖履歴の唯一の置き場】。
+    ///
+    /// 乗り換え（<see cref="SwapHookedFish"/>）のたびに、食べられる<b>前</b>の魚を
+    /// 値（<see cref="ChainCatchEntry"/>）で積む。魚の実体はその直後に破棄されるので、
+    /// 参照ではなく値でなければ釣り上げ演出まで残らない。
+    ///
+    /// 釣り上げると、この履歴＋最後の 1 匹が順番に釣果パネルへ出て、
+    /// それぞれ図鑑へ登録される（<see cref="CatchPresenter.Begin"/>）。
+    /// 新しく魚を掛けた瞬間と、逃げられた（<see cref="ReleaseHook"/>）瞬間に空になる。
+    /// </summary>
+    private readonly System.Collections.Generic.List<ChainCatchEntry> chainCatchHistory = new();
+
     // ─── アタリ／合わせの内部状態 ─────────────────────────────
 
     /// <summary>いま前アタリ〜本アタリを起こしている魚（null = アタリ進行中でない）。</summary>
@@ -1664,6 +1717,13 @@ public class FishingController : SEEDScript
     public Fish? HookedFish => hookedFish;
 
     /// <summary>
+    /// わらしべ連鎖で餌になった魚の控え（最初に掛かった順・読み取り専用）。
+    /// いま掛かっている魚は<b>含まない</b>（あちらは <see cref="HookedFish"/>）。
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyList<ChainCatchEntry> ChainCatchHistory
+        => chainCatchHistory;
+
+    /// <summary>
     /// やり取り（リズム勝負）の本体。UI やチュートリアルが状態を読むための参照。
     /// シーンで未設定なら null。
     /// </summary>
@@ -1785,6 +1845,11 @@ public class FishingController : SEEDScript
 
         hookedFish = fish;
         State = FishState.Hooked;
+
+        // 新しい 1 匹が掛かった ＝ 連鎖はここから数え直す【履歴を捨てる場所 その2】。
+        // 前回の釣り上げ・糸切れで消し損ねた控えが残っていても、ここで必ず断ち切れる。
+        chainCatchHistory.Clear();
+
         // ヒット中はマウスの振りを読まないのでカーソルロックを引き直す（解除される）。
         UpdateCursorLock();
         CrossFadeBoth(hookedClip, playerHookedClip);
@@ -1957,7 +2022,7 @@ public class FishingController : SEEDScript
         // 着水点＝竿先からプレイヤーの向き（Yaw）へ distance だけ進んだ水面上の一点。
         // 距離は通常のキャストと同じ範囲へクランプして、糸・カメラの前提を崩さない。
         float yaw = transform.Rotation.y;
-        float distance = SEED.Mathf.Clamped(distanceMeters, minCastDistance, maxCastDistance);
+        float distance = SEED.Mathf.Clamped(distanceMeters, EffectiveMinCastDistance, maxCastDistance);
         var landing = LandingPoint(distance, yaw);
 
         // ウキを出して着水点へ置く。向きは StartCast と同じく沖側へ揃える
@@ -2052,6 +2117,11 @@ public class FishingController : SEEDScript
             $"[Fishing] わらしべ成立: {newFish.DisplayName}（{Fish.FormatSize(newFish.DisplaySize)}）が"
           + $" {eaten.DisplayName}（{Fish.FormatSize(eaten.DisplaySize)}）を食べた");
 
+        // 連鎖の履歴へ「餌になった魚」を積む【履歴を積む唯一の場所】。
+        // 実体はこの直後に破棄されるので、必ず<b>破棄より前</b>に値で控える。
+        // 釣り上げたときに、この順（最初に掛かった魚 → … → 最後の魚）で釣果を見せる。
+        chainCatchHistory.Add(ChainCatchEntry.From(eaten));
+
         // 食われた魚: AI を止め、円環クランプの除外登録を外してから破棄する
         // （登録解除は破棄より前に行う。破棄処理中のシーンアクセスは保証されないため）
         eaten.OnCaught();
@@ -2063,11 +2133,18 @@ public class FishingController : SEEDScript
         newFish.OnHooked();
         State = FishState.Hooked;
 
-        // やり取りを畳んでから、新しい魚で開始し直す（通常のヒットと同じ入口: LeadIn からやり直す）
+        // やり取りを新しい魚で作り直す【乗り換え専用の入口】。
+        //
+        // 【なぜ EndFight + BeginFight ではないのか】2026-09-10 改定
+        // 従来は通常のヒットと同じ入口（EndFight → BeginFight）で余白（LeadIn）から
+        // やり直していたが、乗り換えは必ず<b>隙（Rest）の最中</b>に成立するため、
+        // 巻けるはずだった隙がその場で打ち切られ、ウキがいきなり沖へ持って行かれていた。
+        // BeginFightAfterSwap は「残っている隙をそのまま引き継ぎ → 隙が終わってから
+        // 走り（Run）で沖へ逃げる」順序で掛け直すので、隙が乗り換えで消えない。
+        // 魚 HP・糸の残り・リズムの作り直しは通常のヒットとまったく同じ。
         if (fight is { } f)
         {
-            f.EndFight();
-            f.BeginFight(newFish, judgement, CurrentFloatDistance());
+            f.BeginFightAfterSwap(newFish, judgement, CurrentFloatDistance());
         }
 
         // ヒット用クリップを引き直し（既に同じクリップならラッチで間引かれる）、カーソルロックも同期
@@ -2142,6 +2219,10 @@ public class FishingController : SEEDScript
 
         hookedFish = null;
         fish.ReleaseFromHook();
+
+        // 釣り上げずに終わった（糸切れ・キャンセル・逃走）ので、
+        // 連鎖の途中で食べさせた魚も成果にはならない【履歴を捨てる場所 その1】。
+        chainCatchHistory.Clear();
     }
 
     /// <summary>
@@ -2667,7 +2748,7 @@ public class FishingController : SEEDScript
 
         // PingPong(u, 1) は u が 2 進むと 1 往復するので、1 周期ぶんを 2 単位に伸ばす
         float ratio = SEED.Mathf.PingPong(previewElapsed / period * PingPongCycleUnits, 1f);
-        return SEED.Mathf.Lerp(minCastDistance, maxCastDistance, ratio);
+        return SEED.Mathf.Lerp(EffectiveMinCastDistance, maxCastDistance, ratio);
     }
 
     /// <summary>
@@ -2717,7 +2798,7 @@ public class FishingController : SEEDScript
     {
         if (yawDegrees is not { } yaw) { return; }   // 真上／真下を向く縮退（起こらない想定の保険）
 
-        float clamped = SEED.Mathf.Clamped(distance, minCastDistance, maxCastDistance);
+        float clamped = SEED.Mathf.Clamped(distance, EffectiveMinCastDistance, maxCastDistance);
 
         flightStart = RodTipPosition();
         flightEnd = LandingPoint(clamped, yaw);
@@ -3246,7 +3327,8 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// ヒット直後の「引き」演出中（<see cref="FishingFight.Phase.LeadIn"/>）のカメラ目標
+    /// 魚が沖へ走っているあいだ（<see cref="FishingFight.Phase.LeadIn"/> ＝ 初回ヒット直後／
+    /// <see cref="FishingFight.Phase.Run"/> ＝ わらしべ乗り換え直後）のカメラ目標
     /// （<see cref="runCameraTarget"/>）を毎フレーム置き直す【この構図の唯一の算出点】。
     ///
     /// プレイヤーとウキの<b>中点</b>を中心に、<see cref="runCamThetaDegrees"/>（方位角）・
@@ -3255,14 +3337,14 @@ public class FishingController : SEEDScript
     /// <see cref="runCamDistancePerSeparation"/> ぶん距離も伸びるので、両者が画面に収まりやすくなる。
     ///
     /// <c>this.transform</c> がそのままプレイヤー位置になる（本スクリプトはプレイヤーアクタに
-    /// 付ける前提のため）。LeadIn 以外・参照未設定・ウキ未配置では何もしない
-    /// （<see cref="CameraMove"/> 側もこの構図を LeadIn 以外では選ばないので、
+    /// 付ける前提のため）。走りのフェーズ以外・参照未設定・ウキ未配置では何もしない
+    /// （<see cref="CameraMove"/> 側も同じ判定（<see cref="IsRunCameraPhase"/>）で構図を選ぶので、
     /// 古い値のまま放置しても実害は無い）。
     /// </summary>
     private void UpdateRunCameraTarget()
     {
         if (runCameraTarget is not { IsValid: true } camTf) { return; }
-        if (FightPhase != FishingFight.Phase.LeadIn) { return; }
+        if (!IsRunCameraPhase(FightPhase)) { return; }
         if (uki is not { IsValid: true } floatTf) { return; }
 
         var playerPos = transform.Position;
@@ -3329,6 +3411,21 @@ public class FishingController : SEEDScript
         camTf.Position = camPos;
         camTf.Rotation = new SEED.Vector3(pitchDeg, yawDeg, 0f);
     }
+
+    /// <summary>
+    /// 「引き（沖へ走る）」のカメラ構図を使うフェーズか
+    /// 【<see cref="runCameraTarget"/> を選ぶ条件の唯一の定義】。
+    ///
+    /// 初回ヒット直後の余白（<see cref="FishingFight.Phase.LeadIn"/>）と、
+    /// わらしべ連鎖で乗り換えた直後の走り（<see cref="FishingFight.Phase.Run"/>）は
+    /// どちらも「掛かった魚が沖へ逃げていくのを見せる」区間なので、同じ構図で撮る。
+    /// カメラ側（<see cref="CameraMove"/>）もこの判定を呼ぶので、
+    /// 目標の置き直しと構図の選択が食い違うことがない。
+    /// </summary>
+    /// <param name="phase">判定するやり取りのフェーズ。</param>
+    /// <returns>引きの構図を使うなら true。</returns>
+    public static bool IsRunCameraPhase(FishingFight.Phase phase)
+        => phase is FishingFight.Phase.LeadIn or FishingFight.Phase.Run;
 
     /// <summary>
     /// 出題（<see cref="FishingFight.Phase.Call"/>）中のカメラ目標を毎フレーム置き直す
@@ -4229,6 +4326,8 @@ public class FishingController : SEEDScript
 
         // 4. 本物の釣り上げと同じ入口へ入る。
         //    hookedFish を埋めてから呼ぶのが「釣り上げ成立」の条件（FinishReeling 参照）。
+        //    連鎖を経ていない 1 匹なので、履歴は空にしてから入る。
+        chainCatchHistory.Clear();
         hookedFish = target;
         SEED.Debug.Log($"[Fishing] catch_test: {target.DisplayName} で釣り上げ演出を起こす");
         FinishReeling();
@@ -4309,7 +4408,12 @@ public class FishingController : SEEDScript
 
             Fish start = pendingCatchFish;
             ClearPendingCatchBegin();
-            p.Begin(start, pendingCatchFloatPosition);
+
+            // 連鎖の履歴（最初に掛かった魚 → … → 直前の魚）をそのまま渡す。
+            // 演出側はこれに「最後に釣り上げた 1 匹」を足した順で釣果を見せ、
+            // 1 匹ずつ図鑑へ登録する。渡した控えは演出側が写し取るので、
+            // ここで持ち続ける必要はない（次のヒットで TryHook が空にする）。
+            p.Begin(start, pendingCatchFloatPosition, chainCatchHistory);
             return;   // 開始したフレームは進めない（従来も Begin の次フレームから Tick していた）
         }
 

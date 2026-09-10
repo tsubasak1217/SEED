@@ -76,6 +76,7 @@
 ## ゲーム（わらしべフィッシング）
 
 - [ ] **ルートキャンバスの `auto_scale` が実質無効（設計解像度が効かない）** — 2026-09-07 に HIT 帯演出の位置ズレを追って判明。ビューポート所属のルートキャンバス（`CanvasViewportRef::Camera / MainCamera`）は `build_root_canvas_auto_size_map` により width/height が**実描画解像度で上書き**される。その後 `auto_scale_factor = eff_viewport / my_eff_w` を計算するが、`my_eff_w` は上書き後（＝ eff_viewport 自身）なので**係数は常に 1.0** になる。結果として `CanvasComponent.width/height`（例: 1920x1080）は完全に無視され、子の座標・アンカー基準・スプライト寸法はすべて**ウィンドウの実ピクセル**になる。UI をウィンドウサイズ非依存に組めないうえ、`auto_scale` チェックが何もしない。直すなら基準サイズ（`cc.width/height`）と実解像度を分け、アンカー基準サイズは設計解像度・スケール係数は 実解像度/設計解像度 とする。影響範囲が広い（既存 UI の座標が全部変わる）ため要判断。関連: `runtime/src/engine/core/app_base/app/canvas_collect.rs`（`build_root_canvas_auto_size_map` / `auto_scale_factor` / `my_eff_w`）。
+  **2026-09-10 追記（回避策あり・項目は残す）**: プロジェクト設定 `render_resolution_mode: "fixed"` を使うと、描画解像度が `window_width × window_height` に固定されるため `eff_viewport` と `my_eff_w` が常に一致し、**ウィンドウをどうリサイズしても UI の見た目が変わらなくなる**（実用上はこれで回避できる）。ただし根本原因（設計解像度 `cc.width/height` が無視されること）は直っていないので、`CanvasComponent` の設計解像度と `window_width/height` を食い違わせると相変わらず無視される。正典: `docs/rendering_flow.md` §2.21 / §4.5。
 
 - [ ] **Edit の 2D シーンビュー（EDIT_VIEW:2d）はカメラのパン・ズームを IPC から動かせない** — 2026-09-07。`canvas_cameras[0]`（pan_x/pan_y/ortho_half_h）はマウス入力（MMB ドラッグ・ホイール）でしか変化せず、初期状態は「キャンバス左上がビュー中央・1 キャンバス px = 1 画面 px」。ヘッドレス（MCP）ではマウスを送れないため、キャンバス全体を映した設計ビューのスクリーンショットが撮れない（今回は Play + `seed_screenshot(game)` で代用した）。`CAM2D_SET:{pan_x},{pan_y},{half_h}` のような IPC か「選択物にフィット」コマンドがあると AI からの目視確認が回る。関連: `runtime/src/engine/core/app_base/app/frame_renderer.rs`（use_ortho_2d_camera 付近）、`app/ipc_handler.rs`（EDIT_VIEW）。
 
@@ -256,6 +257,7 @@
 - [ ] **`resolve_dll_path` の開発時候補がカレントディレクトリ基準** — 2026-09-08 記載 / 2026-09-10 に候補パスのみ更新。`runtime/src/engine/core/scripting/mod.rs::resolve_dll_path` は `cwd/../scripting/bin/Debug/net9.0/SEEDScripting.dll`（開発ビルド出力）→ `{exe のフォルダ}/bin/SEEDScripting.dll`（配布配置）の順で探す。ランタイムの作業ディレクトリは `RuntimeManager.ResolveWorkingDirectory` が「exe の 2 階層上が `target` のときだけ」リポジトリ側へ上げるため、`docs/editor_mcp.md §5.5` が推奨する `cargo build --target-dir <別ディレクトリ>` で作った SEED.exe を `SEED_RUNTIME_EXE` で使うと DLL が見つからず、ランタイムが起動しない（エディタ側は「ランタイムが接続しません」としか言わない）。回避策は出力先の **`bin/` サブフォルダ**へ `SEEDScripting.dll` 一式を手でコピーすること（2026-09-10 のレイアウト移行で exe 直下は候補から外れた）。開発ビルド出力を exe の位置からも探すか、環境変数で明示できるようにしたい。
 - [ ] **`seed_launch(scene:)` が `assets://` パスを受け付けない** — 2026-09-08。`editor/SeedMcpServer/Launcher.cs` は `Path.GetFullPath(scenePath)` をそのまま `--scene` へ渡すため、`assets://zukan/zukan.scene` は `…\SEED\assets:\zukan\zukan.scene` という壊れたパスになり、シーンが読めないまま「ランタイムが接続しません」でタイムアウトする（原因が一切表示されない）。絶対パスなら正常に動く。`assets://` を assets ルート基準へ解決するか、少なくともエラーとして弾きたい。
 - [ ] **キャンバスの `auto_scale` がカメラ基準解像度より大きいキャンバスを縮小しない** — 2026-09-08。カメラの `target_width/height` が 1280x720 のとき、`auto_scale: true` の 1920x1080 キャンバスは 1 単位＝描画ターゲット 1px で描かれ、中央 1280x720 の外に置いた要素は画面に出ない（ヘッドレス Play のスクリーンショットで実測）。今回は図鑑・ポーズメニューのキャンバスを 1280x720 にして回避した。既存の `FishingUI` は端をアンカー基準で置いているため実害が出ていないだけなので、`auto_scale` の意図（基準解像度へフィットさせる）どおりに効いているか要確認。
+  **2026-09-10 追記**: `render_resolution_mode: "fixed"` では描画ターゲットが `window_width × window_height`（例 1280x720）に固定されるので、キャンバスもその解像度に合わせておけば「1 単位＝描画ターゲット 1px」の前提が崩れず、ウィンドウサイズによらず同じ見た目になる。上の項目と同じく回避策であって根本解決ではない。
 - [x] **`[SerializeField]` の参照解決がシーン全体のアクタ名 DFS なので、同じプレハブを複数生成すると参照が 1 個目へ集まる** — 2026-09-08 に解決。参照文字列へパス形式（`./Child` / `../Sibling` / `Root/Child`）を導入し、素の名前は「自分のサブツリー優先 → シーン全体」で解決するようにした（正典: `runtime/src/engine/core/scripting/actor_ref_path.rs`、docs/scripting_api.md「参照文字列のパス指定」）。`GameObject.FindChild(nameOrPath)` も追加。図鑑カードは `assets://zukan/actors/ZukanCard.actor` のプレハブインスタンス 4 枚になった。
   **残る制限（この項目の続き）**:
   - パス形式で保存された参照は**アクタのリネームに追従しない**（`rename_refs.rs` は「フィールド値が旧アクタ名そのもの」のときだけ書き換えるため）。素の名前で保存された参照はこれまでどおり追従する。
@@ -521,3 +523,25 @@
   地形の読み込みはシーンのコンポーネント一覧だけを見る（`terrain_ops.rs` の `walk`）ため、
   このチャンクはエディタでもゲームでも読まれておらず、収録もされない。
   地形の一部が欠けているのか、単なる残骸なのかは要確認。
+- [ ] **釣り上げ成立距離 4.0m と最小飛距離 3.0m が逆転しており「投げた瞬間に釣れる」経路がある** — 2026-09-10（成立距離の変更に伴い発見・未着手）。
+  釣り上げの成立条件は距離だけ（`FishingController.UpdateFight`: `CurrentFloatDistance() <= catchDistanceMeters`）で、
+  魚 HP は見ていない（2026-09-09 改定）。今回 `catchDistanceMeters` を 1.0 → **4.0m** にしたため、
+  `minCastDistance = 3.0m`（最小パワーのキャスト）や `reelEndDistance = 1.5m`（未ヒット時の回収完了距離）と逆転し、
+  **竿先から 4m 以内でヒットが成立すると、その次のフレームにやり取り無しで釣り上がる**。
+  対処案は (a) `minCastDistance` を `catchDistanceMeters` より大きくする、
+  (b) 成立条件に「やり取りを 1 サイクル以上こなした」等の下限を戻す、のいずれか。どちらも要利用者判断。
+  関連: `runtime/assets/mainGame/scripts/FishingController.cs`（`catchDistanceMeters` / `minCastDistance` / `UpdateFight`）。
+- [ ] **わらしべ連鎖の途中で食べられた魚は `LastCaughtFish` とチュートリアル判定に乗らない** — 2026-09-10（連鎖リザルト対応で確認・未着手）。
+  釣り上げ時のリザルト表示と図鑑登録は連鎖の全匹ぶん行うようにしたが、
+  `FishingEvents.Catch` / `CatchPresented` は従来どおり「1 回の釣り上げにつき 1 回」のままで、
+  引数も `FishingController.LastCaughtFish` も**最後の 1 匹**しか運ばない。
+  そのため `Tutorial/Missions/CatchTargetMission.cs`（狙った魚種を釣ったか）と
+  `Story/KaijuStoryTrigger.cs` は、連鎖の踏み台になった魚を「釣った」とは数えない。
+  イベントの粒度を上げると上記 2 つの購読側（単一フラグ運用）が壊れるため、
+  必要になったら連鎖用の別イベント（例 `fishing.chain_catch`）を足すのが素直。
+  関連: `runtime/assets/mainGame/scripts/CatchPresenter.cs`、`FishingController.cs`（`ChainCatchHistory`）。
+- [ ] **`MainGame.scene` に `DriftItemManager` の消えたフィールド（`spawnRadiusMin` / `spawnRadiusMax`）が残っている** — 2026-09-10。
+  漂流物の出現位置を「ウキ中心の円環」から「竿先〜ウキの線分上」へ変えた際にこの 2 フィールドを削除したが、
+  シーンには値（4.0 / 14.0）が保存されたまま残る（読まれないので実害は無い）。
+  エディタでこのアクタを開いて保存し直せば消える。
+  関連: `runtime/assets/mainGame/MainGame.scene`、`mainGame/scripts/DriftItemManager.cs`。

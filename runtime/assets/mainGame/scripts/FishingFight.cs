@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
@@ -63,6 +63,12 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 「余白が終わって最初の Call の小節頭になる瞬間」に置き、余白中は clockTime を
 /// 負の値として扱うことで、余白の長さが拍子の倍数でなくても Call 側の小節頭と
 /// ズレずに接続できる（詳細は <see cref="EnterLeadInOrCall"/>）。
+/// <see cref="Phase.Run"/> は<b>わらしべ連鎖で乗り換えた直後</b>にだけ 1 度通る区間で、
+/// 中身は <see cref="Phase.LeadIn"/> とほぼ同じ（<see cref="swapRunBeats"/> 拍ぶん沖へ逃げるだけ）。
+/// 乗り換えは必ず隙の最中に起きるので、<b>その隙の残り時間をそのまま引き継いでから</b>走る
+/// （引き継ぎ中は「乗り換え時の距離」より沖へは行かない）。
+/// ＝ 巻けるはずだった隙が乗り換えで消えない。
+/// 詳細は <see cref="BeginFightAfterSwap"/>。
 /// 次のフェーズは<b>1 拍前</b>に中央テキストで予告する（LeadIn を除く）。
 ///
 /// ■ ビートパターン（出題・回答で共有する打点の並び）【2026-09-09 改定】
@@ -211,6 +217,21 @@ public class FishingFight : SEEDScript
 
     /// <summary>フェーズの長さ（小節数）の下限。</summary>
     private const int MinPhaseBars = 1;
+
+    /// <summary>走り（<see cref="Phase.Run"/>）の長さの下限（拍）。0 拍のフェーズを作らせない。</summary>
+    private const int MinRunBeats = 1;
+
+    /// <summary>
+    /// 走り（<see cref="Phase.Run"/>）の開始距離が<b>まだ確定していない</b>ことを表す番人値。
+    /// 距離は 0 以上なので、負の値なら未確定と判別できる。
+    /// </summary>
+    private const float NoRunDistanceCaptured = -1f;
+
+    /// <summary>開始ログの種別（初回ヒット）。</summary>
+    private const string BeginLabelHook = "開始";
+
+    /// <summary>開始ログの種別（わらしべ連鎖での乗り換え）。</summary>
+    private const string BeginLabelSwap = "乗り換え";
 
     /// <summary>
     /// フォールバックのビートパターンに付ける行番号（ファイル由来でないことを表す）。
@@ -617,11 +638,11 @@ public class FishingFight : SEEDScript
     ///
     /// <b>2026-09-09 改定</b>: 釣り上げの成立条件が「岸（竿先）まで寄せ切ったか」だけになり、
     /// 魚 HP は成立に関与しなくなった。そのためこの値が釣り上げ成立距離
-    /// （<c>FishingController.catchDistanceMeters</c> ＝ 既定 1.0m）より<b>外側</b>にあると、
+    /// （<c>FishingController.catchDistanceMeters</c> ＝ 既定 4.0m）より<b>外側</b>にあると、
     /// HP が残っているあいだは永久に成立できなくなる。
     /// 役割は「めり込み防止」だけに絞り、必ず成立距離より内側の値にすること。
     /// </summary>
-    /// 既定 0.5m: 釣り上げ成立距離（1.0m）の内側。巻き切れば必ず成立距離へ到達でき、
+    /// 既定 0.5m: 釣り上げ成立距離（4.0m）の内側。巻き切れば必ず成立距離へ到達でき、
     /// それでもウキが竿先（距離 0）へ重なることはない。
     [SerializeField(Label = "見た目距離の下限(m)")]
     private float visibleDistanceMin = 0.5f;
@@ -663,6 +684,38 @@ public class FishingFight : SEEDScript
     /// <summary>Fish.SizeRank が C（それ以外）のときの倍率。</summary>
     [SerializeField(Label = "引き距離倍率(Cランク)")]
     private float runDistanceRankC = 0.8f;
+
+    // ─── 乗り換え後の走り（Run）【2026-09-10 追加】────────────────
+    //
+    // わらしべ連鎖で乗り換えると、これまでは<b>その場で</b>やり取りを畳んで
+    // 新しい魚の余白（LeadIn）から始め直していた。そのため「巻けるはずの隙」の
+    // 途中でウキが沖へ持って行かれ、隙が実質潰れていた。
+    // 改めて「引き継いだ隙を最後まで使わせ → そのあと走り（Run）でまとめて逃げる」
+    // という順序にし、走りの長さと距離をここで調整できるようにする。
+
+    /// <summary>
+    /// 乗り換え直後に挟む走り（<see cref="Phase.Run"/>）の長さ（拍）。
+    /// 秒ではなく<b>掛かり直した魚の BPM で数える拍数</b>なので、
+    /// 乗り換えでテンポが変わってもリズムから外れない
+    /// （初回ヒットの <see cref="leadInBeats"/> と同じ考え方）。
+    /// </summary>
+    [SerializeField(Label = "乗り換え後の走り(拍)")]
+    private int swapRunBeats = 4;
+
+    /// <summary>
+    /// 乗り換え直後の走りで沖へ引かれる距離の倍率【走る距離の唯一の調整点】。
+    ///
+    /// 基準となる距離は初回ヒットとまったく同じ仕組み
+    /// （<see cref="HookRunDistanceFor"/> ＝ 魚種ごとの <see cref="Fish.HookRunDistance"/>
+    ///  × サイズランク倍率）で、この値はそこへ掛けるだけ。
+    /// 1 で初回ヒットと同じ距離、0.5 で半分、0 なら走っても距離が伸びない。
+    ///
+    /// この倍率は「魚 HP 1 あたりの距離」（<see cref="metersPerHp"/>）にも同じだけ効くので、
+    /// 大きくすると走る距離と同時に<b>巻き切るまでの長さ</b>も伸びる
+    /// （＝魚データの引き距離を大きくしたときとまったく同じ挙動）。
+    /// </summary>
+    [SerializeField(Label = "乗り換え後の走り距離倍率")]
+    private float swapRunDistanceScale = 1f;
 
     // ─── 効果音 ──────────────────────────────────────────
 
@@ -1037,6 +1090,14 @@ public class FishingFight : SEEDScript
         /// </summary>
         LeadIn,
 
+        /// <summary>
+        /// 走り（わらしべ連鎖で<b>乗り換えた直後</b>に 1 度だけ通る区間）。
+        /// <see cref="swapRunBeats"/> 拍ぶん、掛かり直した魚が沖へ逃げる演出だけを行う
+        /// （出題・回答・巻きは行わない＝<see cref="LeadIn"/> と同じ扱い）。
+        /// カメラも初回ヒット（<see cref="LeadIn"/>）と同じ「引き」の構図になる。
+        /// </summary>
+        Run,
+
         /// <summary>出題中（魚がリズムを叩く）。</summary>
         Call,
 
@@ -1127,6 +1188,29 @@ public class FishingFight : SEEDScript
     public float DesiredFloatDistance => SEED.Mathf.Max(fishHp, FishHpZero) * metersPerHp;
 
     /// <summary>
+    /// 隙（<see cref="Phase.Rest"/>）でウキを引き戻す先の距離（メートル）
+    /// 【距離制御が実際に見る目標の唯一の問い合わせ点】。
+    ///
+    /// 通常は <see cref="DesiredFloatDistance"/> そのもの。
+    /// <b>乗り換え直後の引き継ぎ隙（<see cref="pendingSwapRun"/>）のあいだだけ</b>、
+    /// 「乗り換えた瞬間にウキが居た距離」（<see cref="leadInStartDistance"/>）を上限にする。
+    ///
+    /// 【なぜ上限を掛けるのか】
+    /// 乗り換えると目標距離は一気に「乗り換え時の距離 ＋ 走る距離」へ伸びる。
+    /// これをそのまま隙の目標にすると、巻いている最中にウキが沖へ持って行かれ、
+    /// 引き継いだ隙が実質潰れる（この改定で無くしたかった挙動そのもの）。
+    /// かといって引き戻しを丸ごと止めると<b>抵抗がゼロ</b>になり、
+    /// 隙のあいだに一気に巻き切れてしまう（釣り上げ成立距離まで詰められる）。
+    /// 上限を掛けるだけなら、通常の隙とまったく同じ手応え（巻けば寄る／止めれば戻される）を
+    /// 保ったまま、<b>乗り換え時の位置より沖へは行かない</b>が成り立つ。
+    /// 伸びたぶんの取り返しは、隙のあとの走り（<see cref="Phase.Run"/>）でまとめて見せる。
+    /// </summary>
+    public float RestTargetDistance
+        => pendingSwapRun
+            ? SEED.Mathf.Min(DesiredFloatDistance, leadInStartDistance)
+            : DesiredFloatDistance;
+
+    /// <summary>
     /// <b>いま巻き取っている最中か</b>【漂流物の巻き込み判定の唯一の条件】。
     ///
     /// 隙（<see cref="Phase.Rest"/>）のあいだだけ巻けるので、次の 3 つがすべて成り立つときに true:
@@ -1178,7 +1262,7 @@ public class FishingFight : SEEDScript
     /// 拍時計は <see cref="Paused"/> 中は進まないので、この経過秒数も止まる。
     /// </summary>
     public float SecondsSincePhaseStart
-        => Active ? SEED.Mathf.Max(clockTime - phaseStartTime, 0f) : 0f;
+        => Active ? SEED.Mathf.Max(clockTime - phaseEnteredTime, 0f) : 0f;
 
     /// <summary>魚のテンポでの 1 拍の秒数（＝ 60 ÷ 魚の BPM）。</summary>
     public float SecondsPerBeat => secondsPerBeat;
@@ -1280,6 +1364,30 @@ public class FishingFight : SEEDScript
     private float leadInStartDistance = 0f;
 
     /// <summary>
+    /// <b>乗り換え直後の隙を消化している最中か</b>【走りを挟むかどうかの唯一の状態】。
+    ///
+    /// true のあいだは次の 2 つが同時に成り立つ:
+    /// ・この隙（<see cref="Phase.Rest"/>）を抜けたら <see cref="Phase.Run"/> を 1 度だけ挟む
+    ///   （<see cref="NextPhase"/>）
+    /// ・この隙のあいだ、魚は沖へ引き返さない（<see cref="ComputeFloatDistanceStep"/>）。
+    ///   乗り換えで目標距離は一気に伸びているが、その取り返しは走りでまとめて見せる。
+    ///
+    /// 隙を抜けた時点で必ず落ちる（<see cref="EnterPhase"/>）。
+    /// </summary>
+    private bool pendingSwapRun = false;
+
+    /// <summary>
+    /// 走り（<see cref="Phase.Run"/>）の開始距離（メートル）。
+    /// フェーズへ入った時点ではウキの実距離を知らない（持ち主はコントローラ）ので、
+    /// 走りに入って最初に <see cref="ComputeFloatDistanceStep"/> が呼ばれたフレームで確定させる。
+    /// <see cref="NoRunDistanceCaptured"/> ＝ 未確定。
+    /// </summary>
+    private float runStartDistance = NoRunDistanceCaptured;
+
+    /// <summary>走り（<see cref="Phase.Run"/>）で到達する距離（メートル）。開始距離と同時に確定する。</summary>
+    private float runTargetDistance = 0f;
+
+    /// <summary>
     /// 1 フレームの上限を超えて余った巻き取り量（メートル）。
     /// 次フレーム以降に <see cref="reelInSpeedMax"/> の速さで消化する
     /// （＝入力を捨てずに、巻きの<b>速度</b>だけを一定に保つ）。
@@ -1338,6 +1446,18 @@ public class FishingFight : SEEDScript
 
     /// <summary>現在のフェーズが始まった時刻（秒・必ず小節頭）。</summary>
     private float phaseStartTime = 0f;
+
+    /// <summary>
+    /// いまのフェーズへ<b>実際に入った</b>時刻（秒）
+    /// 【<see cref="SecondsSincePhaseStart"/> の唯一の基準】。
+    ///
+    /// 通常は <see cref="phaseStartTime"/> と同じ値。違うのは
+    /// <b>乗り換えで隙を引き継いだとき</b>だけで、そちらの <see cref="phaseStartTime"/> は
+    /// 「終了時刻 ＝ 開始時刻 ＋ 小節数 × 1 小節の秒数」という等式を保つために
+    /// 過去へ逆算した値（＝実際に入った時刻より前）になっている。
+    /// 「入ってから何秒経ったか」を問う側（わらしべ連鎖の猶予）は必ずこちらを見る。
+    /// </summary>
+    private float phaseEnteredTime = 0f;
 
     /// <summary>現在のフェーズが終わる時刻（秒・必ず小節頭）。</summary>
     private float phaseEndTime = 0f;
@@ -1544,7 +1664,8 @@ public class FishingFight : SEEDScript
     /// バトルを開始する（コントローラが合わせ成功で魚を掛けた瞬間に呼ぶ）。
     ///
     /// 魚のリズムデータ（BPM・拍子・パターン・フェーズ長）を取り込み、
-    /// 拍時計を 0 から回し始めて<b>出題フェーズ</b>へ入る。
+    /// 拍時計を仕込んで<b>余白（<see cref="Phase.LeadIn"/>）</b>へ入る
+    /// （余白が 0 拍なら即座に出題へ）。
     /// 初期の糸の残りは<b>合わせランク</b>から決める（ランクが悪いほど少ない＝危険側）。
     /// </summary>
     /// <param name="fish">掛かった魚（パラメータを読むだけで一切動かさない）。</param>
@@ -1554,6 +1675,62 @@ public class FishingFight : SEEDScript
     /// 「魚 HP 1 あたりの距離」の基準になる（<see cref="hookDistanceMin"/> で下限クランプ）。
     /// </param>
     public void BeginFight(Fish fish, FishingController.HookJudgement judge, float hookDistance)
+    {
+        // 初回ヒットは魚データの引き距離をそのまま（倍率 1）使い、余白（LeadIn）から始める
+        SetupFight(fish, judge, hookDistance, NeutralMultiplier);
+        EnterLeadInOrCall();
+        FinishFightSetup(fish, hookDistance, BeginLabelHook);
+    }
+
+    /// <summary>
+    /// <b>わらしべ連鎖で乗り換えたとき</b>にバトルを掛け直す【乗り換えの唯一の入口】。
+    ///
+    /// <see cref="BeginFight"/> との違いは<b>最初に入るフェーズだけ</b>で、
+    /// 魚 HP・糸の残り・リズムの作り直しはまったく同じ（<see cref="SetupFight"/> を共有）。
+    ///
+    /// <code>
+    /// BeginFight          … 余白(LeadIn) → 出題 → 回答 → 隙 → …
+    /// BeginFightAfterSwap … 隙(引き継ぎ) → 走り(Run) → 出題 → 回答 → 隙 → …
+    /// </code>
+    ///
+    /// 乗り換えは必ず隙（<see cref="Phase.Rest"/>）の最中に成立するので、
+    /// <b>その隙の残り時間をそのまま引き継いで</b>巻ける区間を潰さない。
+    /// 引き継いだ隙のあいだは、引き戻しの目標が「乗り換えた瞬間の距離」で頭打ちになり
+    /// （<see cref="RestTargetDistance"/>）、そこより沖へは行かない。
+    /// 隙が終わった瞬間に走り（<see cref="Phase.Run"/>）でまとめて沖へ逃げる。
+    /// </summary>
+    /// <param name="fish">新しく掛かった魚（掛かっていた魚を食べた魚）。</param>
+    /// <param name="judge">初期の糸の残りに使う判定（わらしべは常に Excellent）。</param>
+    /// <param name="hookDistance">乗り換えた瞬間のウキ→竿先の水平距離（メートル）。</param>
+    public void BeginFightAfterSwap(
+        Fish fish, FishingController.HookJudgement judge, float hookDistance)
+    {
+        // 引き継ぐ隙の残り時間は、状態を作り直す<b>前</b>に読む（ResetRuntimeState で消えるため）。
+        // 隙以外で呼ばれた場合（想定外）は 0 秒＝そのまま走りへ入る。
+        float carryRestSeconds = Active && CurrentPhase == Phase.Rest
+            ? SEED.Mathf.Max(phaseEndTime - clockTime, 0f)
+            : 0f;
+
+        SetupFight(fish, judge, hookDistance, swapRunDistanceScale);
+        EnterCarriedRest(carryRestSeconds);
+        FinishFightSetup(fish, hookDistance, BeginLabelSwap);
+    }
+
+    /// <summary>
+    /// バトルの値（魚 HP・糸の残り・距離との対応・リズム）を作り直す
+    /// 【開始処理のうち<b>フェーズに依らない</b>部分の唯一の実装】。
+    ///
+    /// 最初に入るフェーズだけは呼び出し側が決める（初回ヒット＝余白／乗り換え＝隙の引き継ぎ）。
+    /// </summary>
+    /// <param name="fish">掛かった魚（パラメータを読むだけで一切動かさない）。</param>
+    /// <param name="judge">合わせ判定（初期の糸の残りの決定に使う）。</param>
+    /// <param name="hookDistance">掛かった瞬間のウキ→竿先の水平距離（メートル）。</param>
+    /// <param name="runDistanceScale">
+    /// 沖へ引かれる距離に掛ける倍率。初回ヒットは 1、乗り換えは
+    /// <see cref="swapRunDistanceScale"/>。
+    /// </param>
+    private void SetupFight(
+        Fish fish, FishingController.HookJudgement judge, float hookDistance, float runDistanceScale)
     {
         ResetRuntimeState();
 
@@ -1568,9 +1745,7 @@ public class FishingFight : SEEDScript
         Line01 = SEED.Mathf.Clamped(InitialLine(judge), Line01Min, Line01Max);
 
         // 魚 HP: 掛かった瞬間の総合力で「魚の取り分」を出し、その割合ぶんだけ基礎HP へ乗せる
-        float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);
-        float hookPower = SEED.Mathf.Max(fish.BasePower * SizeScore(fish), 0f);
-        float fishShare = hookPower / SEED.Mathf.Max(rod + hookPower, DivideEpsilon);
+        float fishShare = FishHpShareOf(fish);
         float baseHp = SEED.Mathf.Max(fish.BaseHp, DivideEpsilon);
         fishHpMax = baseHp + baseHp * fishShare;
         fishHp = fishHpMax;
@@ -1578,25 +1753,43 @@ public class FishingFight : SEEDScript
         // 距離との対応付け: 「掛かった瞬間の距離 ＋ ヒット直後に沖へ引かれる距離」を
         // 魚 HP 最大値ぶんの距離とみなす（＝余白(LeadIn)終了時点で距離とHPがちょうど対応する）。
         leadInStartDistance = SEED.Mathf.Max(hookDistance, hookDistanceMin);
-        float runDistance = HookRunDistanceFor(fish);
+        // 沖へ引かれる距離は魚データ基準（HookRunDistanceFor）に、開始の種別ごとの倍率を掛ける。
+        // 初回ヒットは 1 倍（＝従来どおり）、乗り換えは swapRunDistanceScale 倍。
+        float runDistance = HookRunDistanceFor(fish) * SEED.Mathf.Max(runDistanceScale, 0f);
         metersPerHp = (leadInStartDistance + runDistance) / SEED.Mathf.Max(fishHpMax, DivideEpsilon);
 
         // 拍時計とパターンを魚データから作る（この魚の BPM で secondsPerBeat が決まる）
         SetupRhythm(fish);
+    }
 
-        // 最初のフェーズへ入る。
+    /// <summary>
+    /// 開始処理の締め【ドラム・UI・開始イベントの唯一の適用点】。
+    /// 最初のフェーズへ入り終えた<b>後</b>に呼ぶこと
+    /// （ドラムの開始時刻は拍時計の原点が決まっていないと計算できない）。
+    /// </summary>
+    /// <param name="fish">掛かった魚（ログ用）。</param>
+    /// <param name="hookDistance">掛かった瞬間の距離（ログ用）。</param>
+    /// <param name="label">ログに出す開始の種別（初回ヒットか乗り換えか）。</param>
+    /// <summary>
+    /// 掛かった瞬間の「魚の取り分」（0〜1）【魚 HP のボーナス割合の唯一の算出点】。
+    /// ＝ 魚の総合力 ÷（竿パワー ＋ 魚の総合力）。
+    /// 格上ほど 1 に近づき、そのぶん基礎 HP へ上乗せされる。
+    /// </summary>
+    /// <param name="fish">掛かった魚。</param>
+    private float FishHpShareOf(Fish fish)
+    {
+        float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);
+        float hookPower = SEED.Mathf.Max(fish.BasePower * SizeScore(fish), 0f);
+        return hookPower / SEED.Mathf.Max(rod + hookPower, DivideEpsilon);
+    }
+
+    private void FinishFightSetup(Fish fish, float hookDistance, string label)
+    {
+        // 【この関数は SetupFight ＋ 最初のフェーズへの入場が済んだ後に呼ぶ前提】
+        // 元の BeginFight のコメント（余白の実装方針）は EnterLeadInOrCall 側に残してある。
         //
-        // 余白（LeadIn）の実装方針: 時計の原点（clockTime == 0）を「余白が終わって
-        // 最初の Call の小節頭になる瞬間」に固定し、余白のあいだは clockTime を
-        // 負の値（-leadInBeats 拍ぶん）から 0 へ向けて進める。
-        // BeatIndex / BarPhase01 などの拍時計はすべて clockTime の単純な割り算・floor で
-        // できているので、負の時刻でも「0 を跨ぐと拍・小節が変わる」という性質はそのまま保たれる。
-        // ＝ 0 に達した瞬間が必ず小節頭になり、Call 側の EnterPhase(CurrentBarStartTime()) と
-        // 完全に一致する（余白の拍数が拍子の倍数でなくてもズレない）。
-        EnterLeadInOrCall();
-
         // ドラムループは拍時計の原点が決まってから仕込む
-        //（開始時刻を余白の開始＝いまの clockTime から算出するため、必ずこの順序で呼ぶ）
+        //（開始時刻をフェーズの開始＝いまの clockTime から算出するため、必ずこの順序で呼ぶ）
         SetupDrumLoop();
 
         InvalidateIconCache();
@@ -1605,8 +1798,8 @@ public class FishingFight : SEEDScript
         // やり取り（リズム勝負）が始まった
         SEED.Events.Raise(FishingEvents.FightBegin);
 
-        SEED.Debug.Log($"[Fight] 開始: {fish.DisplayName} / 総合力 {CurrentFishPower():F2} vs 竿 {rodPower:F2}"
-                     + $" / 魚HP {fishHpMax:F1}（取り分 {fishShare:P0}）"
+        SEED.Debug.Log($"[Fight] {label}: {fish.DisplayName} / 総合力 {CurrentFishPower():F2} vs 竿 {rodPower:F2}"
+                     + $" / 魚HP {fishHpMax:F1}（取り分 {FishHpShareOf(fish):P0}）"
                      + $" / 掛かった距離 {hookDistance:F1}m → 目標 {DesiredFloatDistance:F1}m"
                      + $" / {BpmOf(fish):F0}BPM {beatsPerBar}拍子 / 隙 {restBpm:F0}BPM"
                      + $" / パターン {patternLibrary.Count} 行"
@@ -1770,6 +1963,14 @@ public class FishingFight : SEEDScript
     /// <see cref="leadInStartDistance"/> から <see cref="DesiredFloatDistance"/>（＝この時点では
     /// 魚 HP が満タンなので「掛かった距離 ＋ 引き距離」と一致する）まで、
     /// <see cref="PhaseProgress01"/> を easeOut で使い滑らかに引き伸ばす。
+    ///
+    /// <b>走り（<see cref="Phase.Run"/>）</b>も同じ easeOut で沖へ引き伸ばす
+    /// （乗り換え直後に 1 度だけ通る区間）。開始距離だけはフェーズ遷移の時点で分からないので、
+    /// 走りに入って最初にこの関数が呼ばれたフレームで確定させる。
+    /// また、<b>走りを待っている引き継ぎ隙（<see cref="pendingSwapRun"/>）のあいだ</b>は
+    /// 第 1 項の目標を <see cref="RestTargetDistance"/>（＝乗り換え時の距離で頭打ち）に
+    /// 差し替える ―― 抵抗の手応えはそのままに、沖へは行かせない。
+    /// 伸びたぶんの取り返しは走りでまとめて見せる。
     /// </summary>
     /// <param name="currentDistance">現在のウキ→竿先の水平距離（メートル）。</param>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
@@ -1795,6 +1996,28 @@ public class FishingFight : SEEDScript
             return leadInTarget - currentDistance;
         }
 
+        if (CurrentPhase == Phase.Run)
+        {
+            // 乗り換え直後の走り。余白（LeadIn）とまったく同じ easeOut で沖へ引き伸ばす。
+            // 違いは開始距離の決め方だけで、こちらはフェーズへ入った時点では分からない
+            // （ウキの実距離を持っているのはコントローラ側）ため、走りに入って最初に
+            // この関数が呼ばれたフレームで確定させる。
+            if (runStartDistance <= NoRunDistanceCaptured)
+            {
+                runStartDistance = SEED.Mathf.Max(currentDistance, 0f);
+
+                // 到達距離は「魚 HP から決まる距離」（＝乗り換え時の距離 ＋ 走る距離）。
+                // 引き継いだ隙で巻かれていればそのぶん目標も手前へ来ているので、
+                // 走りが<b>手前へ戻る</b>動きにならないよう開始距離を下限に取る
+                // （＝走りでウキが寄ることは無い。取り返しはこのあとの隙のバネが行う）。
+                runTargetDistance = SEED.Mathf.Max(DesiredFloatDistance, runStartDistance);
+            }
+
+            float runT = SEED.Mathf.Clamped01(PhaseProgress01);
+            float runEased = 1f - (1f - runT) * (1f - runT);
+            return SEED.Mathf.Lerp(runStartDistance, runTargetDistance, runEased) - currentDistance;
+        }
+
         if (CurrentPhase != Phase.Rest) { return 0f; }
 
         float dt = SEED.Mathf.Max(deltaTime, 0f);
@@ -1802,7 +2025,9 @@ public class FishingFight : SEEDScript
         // ── 第 1 項: 目標距離への復帰（バネ）──────────────────────
         // 見た目距離を魚 HP から決まる目標距離（DesiredFloatDistance）へ引き戻す項。
         // これがあるおかげで、見た目をいくら分離しても長期的な平均は目標距離へ収束する。
-        float gap = DesiredFloatDistance - currentDistance;          // ＋ ＝ 目標が沖側
+        // 目標は RestTargetDistance（＝通常は DesiredFloatDistance、乗り換え直後の
+        // 引き継ぎ隙だけ「乗り換え時の距離」で頭打ち）。詳細はそのプロパティのコメント。
+        float gap = RestTargetDistance - currentDistance;            // ＋ ＝ 目標が沖側
         float springSpeed = SEED.Mathf.Abs(gap)
                           * SEED.Mathf.Max(visibleDistanceReturnRate, 0f);
 
@@ -2184,6 +2409,10 @@ public class FishingFight : SEEDScript
     {
         if (!TutorialRules.Active) { return natural; }
 
+        // 走り（乗り換え直後の演出）は上書きしない。ここを隙へ潰すと
+        // pendingSwapRun を消費し損ねて「いつまでも走らない」状態が残るため。
+        if (natural == Phase.Run) { return natural; }
+
         // ビート無効: 出題・回答を行わず、ずっと隙（＝巻けるだけ）にする
         if (TutorialRules.BeatDisabled) { return Phase.Rest; }
 
@@ -2224,6 +2453,7 @@ public class FishingFight : SEEDScript
         clockTime = -leadInSeconds;
         phaseBarSeconds = SecondsPerBar;   // 余白は魚のテンポで数える
         phaseStartTime = clockTime;
+        phaseEnteredTime = phaseStartTime;
         phaseEndTime = 0f;               // 0 に達した瞬間＝最初の小節頭で Call へ
         phaseBars = MinPhaseBars;        // 小節単位のフェーズではないので参照はされない
         nextPhaseAnnounced = false;
@@ -2236,15 +2466,73 @@ public class FishingFight : SEEDScript
         SEED.Debug.Log($"[Fight] {PhaseLabel(Phase.LeadIn)}（{beats}拍）");
     }
 
-    /// <summary>フェーズの巡回順（余白 → 出題 → 回答 → 隙 → 出題 …）。</summary>
-    /// <param name="phase">現在のフェーズ。</param>
-    private static Phase NextPhase(Phase phase) => phase switch
+    /// <summary>
+    /// <b>乗り換え直前の隙の残りを引き継いで</b>隙（<see cref="Phase.Rest"/>）へ入る
+    /// 【乗り換え時の最初のフェーズの唯一の入口】。
+    ///
+    /// 隙（スタン）は<b>途切れていない</b>という扱いなので、
+    /// <see cref="FishingEvents.StunBegin"/> はここでは流さない
+    /// （乗り換え前の隙へ入った時点で既に 1 度流れており、
+    ///   対になる <see cref="FishingEvents.StunEnd"/> は走りへ移るときに流れる）。
+    ///
+    /// 【小節数と開始時刻の逆算について】
+    /// 漂流物「ひるませ」の延長（<see cref="AddRestBars"/>）は
+    /// 「終了時刻 ＝ 開始時刻 ＋ 小節数 × 1 小節の秒数」という等式を前提に伸ばす。
+    /// 引き継ぎでは終了時刻（＝残り秒数）のほうが先に決まるので、
+    /// 残り秒数を小節数へ切り上げたうえで<b>開始時刻を逆算</b>して等式を保つ。
+    /// </summary>
+    /// <param name="seconds">引き継ぐ隙の残り秒数（0 以下なら即座に走りへ移る）。</param>
+    private void EnterCarriedRest(float seconds)
     {
-        Phase.LeadIn => Phase.Call,
-        Phase.Call => Phase.Answer,
-        Phase.Answer => Phase.Rest,
-        _ => Phase.Call,
-    };
+        float carry = SEED.Mathf.Max(seconds, 0f);
+
+        // 隙は隙専用の BPM（restBpm）で数える
+        phaseBarSeconds = RestSecondsPerBar;
+
+        int bars = SEED.Mathf.Max(
+            SEED.Mathf.CeilToInt(carry / SEED.Mathf.Max(phaseBarSeconds, DivideEpsilon)),
+            MinPhaseBars);
+
+        CurrentPhase   = Phase.Rest;
+        clockTime      = 0f;
+        phaseEndTime   = carry;
+        phaseStartTime = phaseEndTime - bars * phaseBarSeconds;   // 小節の等式を保つ逆算値
+        phaseEnteredTime = clockTime;                             // 実際に入ったのは「いま」
+        phaseBars      = bars;
+        nextPhaseAnnounced = false;
+        lastBeatPlayed = NoBeatPlayed;
+        ClearCallHits();
+
+        // この隙を抜けたら走り（Run）を 1 度だけ挟む。
+        // 同時に、この隙のあいだは魚を沖へ引かせない（ComputeFloatDistanceStep）。
+        pendingSwapRun = true;
+
+        SEED.Debug.Log(
+            $"[Fight] {PhaseLabel(Phase.Rest)}を引き継ぐ（残り {carry:F2} 秒）"
+          + $" → このあと{PhaseLabel(Phase.Run)}");
+    }
+
+    /// <summary>
+    /// フェーズの巡回順（余白 → 出題 → 回答 → 隙 → 出題 …）。
+    ///
+    /// 例外は<b>乗り換え直後の隙</b>だけで、そこを抜けるときは
+    /// 走り（<see cref="Phase.Run"/>）を 1 度だけ挟んでから出題へ戻る
+    /// （<see cref="pendingSwapRun"/>）。この分岐があるため静的メソッドにはできない。
+    /// </summary>
+    /// <param name="phase">現在のフェーズ。</param>
+    private Phase NextPhase(Phase phase)
+    {
+        if (phase == Phase.Rest && pendingSwapRun) { return Phase.Run; }
+
+        return phase switch
+        {
+            Phase.LeadIn => Phase.Call,
+            Phase.Run => Phase.Call,
+            Phase.Call => Phase.Answer,
+            Phase.Answer => Phase.Rest,
+            _ => Phase.Call,
+        };
+    }
 
     /// <summary>
     /// フェーズへ入る【フェーズ開始処理の唯一の入口】。
@@ -2277,6 +2565,11 @@ public class FishingFight : SEEDScript
         // フェーズ確定後に「入る」ほうを流すので、購読側から見た順序が入れ替わらない。
         bool leavingRest = CurrentPhase == Phase.Rest && next != Phase.Rest;
 
+        // 乗り換え直後の「走り待ち」は、隙を抜けた時点で必ず 1 度だけ消費する。
+        // 走りへ入れなかった経路（チュートリアルの上書きなど）でもフラグを残さないよう、
+        // 遷移先が走りかどうかに関わらずここで落とす【消費の唯一の場所】。
+        if (leavingRest) { pendingSwapRun = false; }
+
         // フェーズの開始時刻は<b>直前のフェーズの終了時刻そのもの</b>【時刻を連結する唯一の場所】。
         // 隙だけテンポ（1 小節の秒数）が変わるため、全フェーズを 1 本の小節グリッドへ
         // 丸めることはもうできない。連結にすれば切れ目は必ず一致し、丸め誤差も入らない。
@@ -2304,6 +2597,7 @@ public class FishingFight : SEEDScript
         }
 
         phaseStartTime = start;
+        phaseEnteredTime = phaseStartTime;   // 通常のフェーズは開始時刻＝入った時刻
         phaseEndTime = phaseStartTime + phaseBars * phaseBarSeconds;
         nextPhaseAnnounced = false;
         lastBeatPlayed = NoBeatPlayed;   // 拍はフェーズ内で数え直す（強拍を頭に合わせるため）
@@ -2325,12 +2619,49 @@ public class FishingFight : SEEDScript
                 // 受付窓が閉じ切ってからアイコンを消し始める（隙頭より窓のほうが後ろへはみ出す場合がある）
                 iconFadeStartTime = SEED.Mathf.Max(phaseStartTime, LastExpectedWindowCloseTime());
                 break;
+
+            case Phase.Run:
+                EnterRunPhase();
+                break;
         }
 
-        SEED.Debug.Log($"[Fight] {PhaseLabel(next)}（{phaseBars}小節"
+        // 走り（Run）だけは長さの単位が「拍」なので、ログの表記もそちらへ合わせる
+        string lengthText = next == Phase.Run
+            ? $"{SEED.Mathf.Max(swapRunBeats, MinRunBeats)}拍"
+            : $"{phaseBars}小節";
+
+        SEED.Debug.Log($"[Fight] {PhaseLabel(next)}（{lengthText}"
                      + $"{(next == Phase.Rest ? (lastAnswerPerfect ? "・完璧" : "・通常") : "")}）"
                      + $" / 糸の残り {Line01:P0}"
                      + $" / 魚HP {FishHp01:P0}");
+    }
+
+    /// <summary>
+    /// 走り（<see cref="Phase.Run"/>）へ入るときの準備
+    /// 【乗り換え後に沖へ逃げる区間の唯一の入場処理】。
+    ///
+    /// 1. 長さを「拍」で決め直す（<see cref="swapRunBeats"/> × 魚の 1 拍の秒数）。
+    ///    フェーズ長は本来すべて小節単位なので、<see cref="EnterPhase"/> が計算済みの
+    ///    終了時刻をここで上書きする（余白＝<see cref="Phase.LeadIn"/> と同じ扱い）。
+    /// 2. 走りの開始距離・到達距離を「未確定」へ戻す
+    ///    （実際の値は <see cref="ComputeFloatDistanceStep"/> が最初の 1 フレームで確定させる）。
+    /// 3. 初回ヒットと同じく <see cref="FishingEvents.FishRun"/> を流す。
+    /// </summary>
+    private void EnterRunPhase()
+    {
+        // 走りの長さは<b>拍</b>で決めるので、小節ベースで計算済みの終了時刻をここで上書きする
+        // （余白＝LeadIn と同じ考え方。掛かり直した魚の BPM で数える）。
+        int beats = SEED.Mathf.Max(swapRunBeats, MinRunBeats);
+        phaseEndTime = phaseStartTime + beats * secondsPerBeat;
+
+        // 開始距離・到達距離は「走りに入って最初に距離を問われたフレーム」で確定させる
+        // （フェーズ遷移の時点ではウキの実距離を知らないため。ComputeFloatDistanceStep 参照）
+        runStartDistance = NoRunDistanceCaptured;
+        runTargetDistance = 0f;
+
+        // 初回ヒットの余白（EnterLeadInOrCall）と同じく「魚が沖へ走り出した」を通知する。
+        // 購読側から見ると「掛かった魚が沖へ逃げ始めた瞬間」という意味は完全に同じ。
+        SEED.Events.Raise(FishingEvents.FishRun);
     }
 
     /// <summary>
@@ -2490,6 +2821,10 @@ public class FishingFight : SEEDScript
     /// <param name="phase">対象のフェーズ。</param>
     private int PhaseBarsOf(Phase phase)
     {
+        // 余白（LeadIn）と走り（Run）は「拍」で長さを決めるので小節数は持たない。
+        // 終了時刻はそれぞれの入場処理が直接書き換えるため、この値は参照されない。
+        if (phase is Phase.LeadIn or Phase.Run) { return MinPhaseBars; }
+
         if (phase == Phase.Rest)
         {
             // チュートリアルで「ビートバトルなし」のときは隙から出さない
@@ -2522,6 +2857,7 @@ public class FishingFight : SEEDScript
     private static string PhaseLabel(Phase phase) => phase switch
     {
         Phase.LeadIn => "余白",
+        Phase.Run => "走り",
         Phase.Call => "出題",
         Phase.Answer => "回答",
         Phase.Rest => "隙",
@@ -3041,11 +3377,15 @@ public class FishingFight : SEEDScript
         metersPerHp = 0f;
         pendingReelAmount = 0f;   // 巻き取りの繰り越しは戦いをまたいで持ち越さない
         leadInStartDistance = 0f;
+        pendingSwapRun = false;
+        runStartDistance = NoRunDistanceCaptured;
+        runTargetDistance = 0f;
         target = null;
 
         clockTime = 0f;
         lastBeatPlayed = NoBeatPlayed;
         phaseStartTime = 0f;
+        phaseEnteredTime = 0f;
         phaseEndTime = 0f;
         phaseBars = MinPhaseBars;
         nextPhaseAnnounced = false;

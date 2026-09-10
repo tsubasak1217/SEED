@@ -1,4 +1,4 @@
-using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
+﻿using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
 /// 追従カメラ（ターゲットトランスフォーム方式）。
@@ -90,7 +90,9 @@ public class CameraMove : SEEDScript
     private SEED.Transform? answerTarget = null;
 
     /// <summary>
-    /// ヒット直後の「引き」フェーズ（<see cref="FishingFight.Phase.LeadIn"/>）で使う
+    /// 魚が沖へ走っている「引き」のフェーズ（初回ヒット直後の
+    /// <see cref="FishingFight.Phase.LeadIn"/> と、乗り換え直後の
+    /// <see cref="FishingFight.Phase.Run"/>）で使う
     /// 目標トランスフォーム（トップレベルの空アクタ「RunCameraTarget」を割り当てる想定）。
     ///
     /// プレイヤーとウキの両方が画面に収まる斜め上からの構図にしたいため、位置・向きは
@@ -472,13 +474,19 @@ public class CameraMove : SEEDScript
         && f.FightPhase == FishingFight.Phase.Call;
 
     /// <summary>
-    /// ヒット直後の「引き」フェーズ（<see cref="FishingFight.Phase.LeadIn"/>）中かを返す
-    /// （構図切替の唯一の判定点）。<see cref="fishing"/> 未設定なら常に false。
+    /// 魚が沖へ走っている「引き」のフェーズ中かを返す（構図切替の唯一の判定点）。
+    ///
+    /// 対象は初回ヒット直後の余白（<see cref="FishingFight.Phase.LeadIn"/>）と、
+    /// わらしべ連鎖で乗り換えた直後の走り（<see cref="FishingFight.Phase.Run"/>）の 2 つ。
+    /// どのフェーズが該当するかは <see cref="FishingController.IsRunCameraPhase"/> に
+    /// 一元化してあり（目標の置き直しも同じ判定を使う）、ここでは
+    /// 「魚が掛かっているか」だけを重ねて見る。
+    /// <see cref="fishing"/> 未設定なら常に false。
     /// </summary>
     private bool IsLeadInPhase()
         => fishing is { } f
         && f.State == FishingController.FishState.Hooked
-        && f.FightPhase == FishingFight.Phase.LeadIn;
+        && FishingController.IsRunCameraPhase(f.FightPhase);
 
     /// <summary>
     /// ウキが外に出ている（飛翔中・浮遊中・巻き取り中）かを返す。
