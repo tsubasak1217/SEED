@@ -101,11 +101,12 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ■ 糸の残り（1〜0。<b>糸HPは固定値で、強化は無い</b>）
 /// <code>
 /// 開始値       : 合わせランクで決まる（Excellent 1.0 / Great 0.9 / Nice 0.8）
-/// 判定ごと     : 糸の残り -= |Δt| × linePerSecondOfOffset × レベル補正
+/// 判定ごと     : 糸の残り -= |Δt| × linePerSecondOfOffset
 ///                Excellent は減らない
 /// Miss・空打ち : 糸の残り -= missLoss
 /// 回復手段     : 漂流物「糸の回復」を巻き込んだときだけ（<see cref="RecoverLine"/>）
-/// レベル補正   = 1 + tensionLevelScale × (魚の総合力 ÷ 竿パワー − 1)（下限 0.5）
+/// <b>2026-09-10 改定</b>: 判定ズレ・Miss による糸の減りは<b>全レベル・全魚種で共通</b>
+///                （以前あった「戦闘力差のレベル補正」は廃止。難度差は魚の引き（距離）側で付ける）
 /// 糸の残り ≦ 0 → 糸が切れる（<see cref="LineBroken"/>）
 /// </code>
 /// <b>2026-09-06 改定</b>: 「糸パワー」による減り軽減（linePower / linePowerLossReduction）は廃止した。
@@ -248,7 +249,6 @@ public class FishingFight : SEEDScript
     private const int UseFightDefaultBars = 0;
 
     /// <summary>レベル補正（テンションの効き）の下限。</summary>
-    private const float LevelScaleMin = 0.5f;
 
     /// <summary>まだ 1 度も拍を鳴らしていないことを表す番兵値。</summary>
     private const int NoBeatPlayed = -1;
@@ -479,21 +479,13 @@ public class FishingFight : SEEDScript
 
     // ─── 糸の残り ────────────────────────────────────────
 
-    /// <summary>時間差 1 秒あたりに減る糸の残り（レベル補正・糸パワー補正が掛かる）。</summary>
+    /// <summary>時間差 1 秒あたりに減る糸の残り（全レベル・全魚種で共通。補正は掛からない）。</summary>
     [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
     private float linePerSecondOfOffset = 0.3f;
 
-    /// <summary>Miss（打ち逃し・空打ち）1 回で減る糸の残り（糸パワー補正が掛かる）。</summary>
+    /// <summary>Miss（打ち逃し・空打ち）1 回で減る糸の残り（全レベル・全魚種で共通）。</summary>
     [SerializeField(Label = "Missの糸の減り")]
     private float missLoss = 0.06f;
-
-    /// <summary>
-    /// 戦闘力差が糸の減り方へ効く強さ。
-    /// レベル補正 ＝ 1 + 本値 × (魚の総合力 ÷ 竿パワー − 1)（下限 <see cref="LevelScaleMin"/>）。
-    /// 0 なら戦闘力差を無視する。
-    /// </summary>
-    [SerializeField(Label = "戦闘力差の効き")]
-    private float tensionLevelScale = 1f;
 
     // ─── 合わせランクによる初期の糸の残り ─────────────────────
 
@@ -2901,10 +2893,11 @@ public class FishingFight : SEEDScript
 
         MarkHitResult(index, judgement);
 
-        // 糸の残り: Excellent は減らず、それ以外は「ズレの大きさ × 効き ÷ 糸パワー補正」だけ減る
+        // 糸の残り: Excellent は減らず、それ以外は「ズレの大きさ × 効き」だけ減る。
+        // 魚のレベル・種類・戦闘力による補正は掛けない（全レベル・全魚種で共通の減り）。
         if (judgement != FishingController.HookJudgement.Excellent)
         {
-            SubtractLine(offset * linePerSecondOfOffset * LevelScale());
+            SubtractLine(offset * linePerSecondOfOffset);
         }
 
         FishingController.Current?.ShowFightJudgement(judgement, signedOffset);
@@ -3164,17 +3157,6 @@ public class FishingFight : SEEDScript
         "B" => runDistanceRankB,
         _ => runDistanceRankC,
     };
-
-    /// <summary>
-    /// テンションのレベル補正 ＝ 1 + <see cref="tensionLevelScale"/> × (魚 ÷ 竿 − 1)。
-    /// 下限は <see cref="LevelScaleMin"/>（格下の魚でも判定が無意味にならないように）。
-    /// </summary>
-    private float LevelScale()
-    {
-        float ratio = CurrentFishPower() / SEED.Mathf.Max(rodPower, DivideEpsilon);
-        float scaled = NeutralMultiplier + tensionLevelScale * (ratio - EquivalentPowerRatio);
-        return SEED.Mathf.Max(scaled, LevelScaleMin);
-    }
 
     /// <summary>
     /// ウキを沖へ引く速度の倍率（魚 ÷ 竿）。上下限でクランプする。
