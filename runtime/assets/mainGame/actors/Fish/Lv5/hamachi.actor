@@ -91,7 +91,7 @@
         "data": {
           "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\Fish.cs",
           "fields": {
-            "rhythmBpm": "130.000",
+            "rhythmBpm": "136.000",
             "powerScale": "1.000",
             "baseSizeCm": "60.000",
             "stamina": "30.000",
