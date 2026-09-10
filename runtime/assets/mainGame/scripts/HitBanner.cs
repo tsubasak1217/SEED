@@ -134,14 +134,14 @@ public class HitBanner : SEEDScript
     /// 「Lv◯ ◯◯」の書式。<c>{0}</c> がレベル（不明なら
     /// <see cref="UnknownLevelLabel"/>）、<c>{1}</c> が魚の表示名。
     ///
-    /// <b>既定は魚名を出さない</b>（"Lv{0} 生命体"）。掛かった瞬間に何が掛かったかまで
+    /// <b>既定は魚名を出さない</b>（"Lv{0} 魚"）。掛かった瞬間に何が掛かったかまで
     /// 分かると、釣り上げるまでの「何だろう」という引きが失われるため。
     /// 魚名を出したくなったときのために <c>{1}</c> は書式として生かしてあるので、
     /// インスペクタで <c>"Lv{0} {1}"</c> へ戻せば従来どおり魚名が出る
     /// （<c>{1}</c> を使わない書式でも <c>string.Format</c> は余った引数を黙って捨てる）。
     /// </summary>
     [Header("文字"), SerializeField(Label = "レベル文字の書式")]
-    private string levelTextFormat = "Lv{0} 生命体";
+    private string levelTextFormat = "Lv{0} 魚";
 
     /// <summary>下のバーに出す固定文字列。</summary>
     [SerializeField(Label = "HITの文言")]
