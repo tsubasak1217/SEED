@@ -109,11 +109,13 @@
   `runtime/src/engine/core/app_base/app/app_init.rs`、`app/frame_pacing.rs`、`renderer/present_mode.rs`。
 
 - [ ] **fps 表示に即時テキスト描画 API が無い** — 2026-09-10。`SEED.Draw` は矩形・円などの図形だけで
-  文字を出せないため、`DebugCommands` の fps 表示は `SEED.Text` コンポーネント参照
-  （インスペクタの「fps 表示のText」）へ書き込む方式にした。未設定のときは 1 秒ごとのログへ落ちる。
-  デバッグ HUD 全般のために `Draw.Text`（スクリーン座標の即時テキスト）があると、
-  アクタを用意せずに数値を出せる。関連: `scripting/src/Api/Draw.cs`、
-  `runtime/assets/mainGame/scripts/DebugTools/DebugCommands.cs`。
+  文字を出せないため、`DebugCommands` の fps 表示は `SEED.Text` コンポーネントへ書き込む方式にした。
+  シーンへの結線を不要にするため、初回 F3 で `mainGame/actors/UI/FpsLabel.actor`（自前のキャンバス＋
+  左上アンカーの Text）を `SpawnOnce.GetOrInstantiate` で自動生成している。
+  デバッグ HUD 全般のために `Draw.Text`（スクリーン座標の即時テキスト）があれば、
+  この専用アクタ自体が不要になる。関連: `scripting/src/Api/Draw.cs`、
+  `runtime/assets/mainGame/scripts/DebugTools/DebugCommands.cs`、
+  `runtime/assets/mainGame/actors/UI/FpsLabel.actor`。
 
 - [ ] **フレーム制限の実機検証が未実施** — 2026-09-10。純関数（待ち時間計算・present mode 選択）は
   単体テスト済みだが、実際に 60fps へ張り付くか・`timeBeginPeriod(1)` でスリープ粒度が
@@ -609,3 +611,43 @@ FishImage 自身の `Animator` がクリップで倍率を動かす方式へ置�
   （`PauseMenu` は `Time.Scale = 0`）。そのため保持中にポーズすると、
   ポーズ中に退場クリップの再生要求だけが出て、絵は等倍のまま固まる（解除で動き出す）。
   パネルの待ちもゲーム時間へ寄せると直るが、スロー中に開いた場合の秒数が変わるため据え置く。
+
+## ビートバトル連打の重さ調査で見つかった残件（2026-09-10）
+
+「ビートバトル中に速い譜面で連打すると重くなる」の実測調査で判明したもの。
+本題（SE を毎回デコードし直していた件）は `runtime/src/engine/core/audio/mod.rs` の
+PCM キャッシュ化＋同時発音数の上限で解決済み。以下はその過程で見つかった**別件**。
+
+- [ ] **`地形/LOD 再メッシュ` が単発 70〜140 ms のスパイクを出す【フレーム最大値の最大の犯人】** — 2026-09-10。
+  MainGame を Play しているあいだ、クリックの有無に関係なく `frame_max_ms` が常時 90〜140 ms に達し、
+  その内訳はほぼ `地形/LOD 再メッシュ`（`self_ms` の窓内最大が 70〜93 ms）だった。
+  カメラ・ウキが動くほど頻度が上がるので、釣りのやり取り中はとくに目立つ。
+  体感としては「マウス入力にラグ」「たまにガクッと止まる」として出るはずで、
+  オーディオ側を直した後もこれは残っている（＝連打が原因ではない、前からある別問題）。
+  分割適用（1 フレームあたりのチャンク数を制限する）か、GPU 転送だけを非同期にするのが素直。
+  計測手順は docs/editor_mcp.md 5.4（`seed_profile`）。関連: 地形 LOD の再メッシュ適用箇所。
+- [ ] **回答クリック SE `Motion-Swish07-1.mp3` が 1.75 秒もある** — 2026-09-10（アセット側の課題）。
+  実測で 44.1kHz ステレオ 154,368 サンプル＝**1.750 秒**。連打すると 1 つの音が鳴り終わる前に
+  次が始まるので、同じ波形が何重にも重なる（＝振幅が足し合わさって歪む）。
+  ランタイム側は同一 SE の同時発音を 4 声に制限したが、**素材自体を短く（末尾の無音を落として
+  0.2〜0.3 秒程度に）トリミングすれば重なり自体が起きなくなる**。
+  他の SE も同様に「無音の尻尾」が付いていないか確認するとよい。
+  関連: `runtime/assets/mainGame/audios/`、`FishingFight.answerClickSePath`。
+- [ ] **`engine::plugin::host::tests::set_save_int_writes_flag_and_keeps_other_keys` がスイート全体では落ちる** — 2026-09-10（既存不具合・オーディオ改修とは無関係）。
+  単体（`cargo test --bin SEED set_save_int_writes_flag_and_keeps_other_keys`）では通るが、
+  `cargo test --bin SEED` では `save.json を読めない` で落ちる。`--test-threads=1` でも落ちる。
+  原因はセーブ先パスがプロセス共有（`OnceLock`）で、先に走った別テストが確定させてしまうため。
+  テスト冒頭の `SEED_SAVE_DIR` 設定が効かない。保存先の解決をテストから差し替えられる形にするか、
+  このテストを別プロセス（`#[ignore]` ＋ 専用実行）へ隔離するのが素直。
+  関連: `runtime/src/engine/plugin/host.rs` の `mod tests`、`runtime/src/engine/core/save/path.rs`。
+- [ ] **`runtime/Cargo.lock` が実態を反映していない「死んだ」ファイル** — 2026-09-10。
+  ワークスペース構成のため実際に使われるのはリポジトリ直下の `Cargo.lock` で、
+  `runtime/Cargo.lock` には rodio / gilrs / rapier など現行の依存が丸ごと欠けている。
+  バージョン調査の際にこちらを読むと誤る。消してよいか要判断。
+- [ ] **`<何か>/target/debug` 以外の場所へビルドしたランタイムを `SEED_RUNTIME_EXE` で起動すると、標準出力がエディタログに出ない** — 2026-09-10（未確定・再現条件のみ記録）。
+  計測のため `--target-dir` を `tmp/rt_target` にしてビルドし、そのランタイムをヘッドレスエディタから
+  起動したところ、`[STDERR]` は出るのに `[STDOUT]`（＝`SEED.Debug.Log` の `[Script]` 行）が
+  ログに 1 行も出ず、ゲームの状態確認ができなかった。通常の `runtime/target/debug/SEED.exe` では出る。
+  併せてエディタのアセットルート判定も `<exe の 2 階層上>/assets` になるため（`ResolveAssetsPath` は
+  親ディレクトリ名が `target` かどうかを見る）、AI の計測用に別出力でビルドする運用は現状かなり脆い。
+  docs/editor_mcp.md 5.5 の手順を使うときの注意点として、原因を特定して直すか手順に注記したい。
