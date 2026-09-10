@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace SEEDEditor.Scripting;
 
@@ -25,4 +25,13 @@ public struct NativeFrameContext
     public float UnscaledDeltaTime;
     /// <summary>時間スケール未適用のゲーム内累計秒（SEED.Time.UnscaledElapsedTime）。</summary>
     public float UnscaledElapsedTime;
+
+    // ── フレーム実測値（Rust 側 RawFrameContext の末尾と同順）──
+    // 上と同じ理由で必ず末尾へ追加すること。
+    // これらは Clock（ゲーム時間）ではなくフレーム制御（frame_pacing）が集計した実測値。
+
+    /// <summary>直近 1 秒の平均フレームレート（SEED.Time.Fps）。</summary>
+    public float Fps;
+    /// <summary>直近フレームの実時間（ミリ秒。SEED.Time.FrameTimeMs）。</summary>
+    public float FrameTimeMs;
 }

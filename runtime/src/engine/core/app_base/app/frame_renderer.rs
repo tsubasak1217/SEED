@@ -431,28 +431,6 @@ impl App {
         )
     }
 
-    /// フォーカスが無い間はフレームレートを抑える。
-    ///
-    /// ゲームウィンドウが非アクティブ／遮蔽されると present_mode=Mailbox の present() が
-    /// VSync を待たず即座に返るため、`ControlFlow::Poll` + `request_redraw` のループが
-    /// 毎秒数千フレームで暴走する。毎フレーム `Debug.Log` するスクリプトでは、これが
-    /// エディタの Output を溢れさせ極端に重くする原因になる。フォーカスが無い間だけ
-    /// `UNFOCUSED_MAX_FPS` に制限してこの暴走を防ぐ（バックグラウンド描画なので実害はない）。
-    /// フォーカス時は present／DWM の VSync に任せて何もしない。
-    fn pace_frame_if_unfocused(&self, frame_start: std::time::Instant) {
-        // Edit モード（エディタ埋め込みビューポート）は、フォーカスが外れても
-        // 編集操作の滑らかさを保ちたいので制限しない。制限対象は Play／スタンドアロン
-        // 実行のウィンドウのみ（フラッドが問題になるのはこちら）。
-        if self.window_focused || self.mode == RuntimeMode::Edit { return; }
-        /// 非フォーカス時のフレームレート上限。
-        const UNFOCUSED_MAX_FPS: u64 = 30;
-        let target  = std::time::Duration::from_micros(1_000_000 / UNFOCUSED_MAX_FPS);
-        let elapsed = frame_start.elapsed();
-        if elapsed < target {
-            std::thread::sleep(target - elapsed);
-        }
-    }
-
     /// RedrawRequested イベント処理: 1 フレーム分のレンダリング全体を担う。
     ///
     /// render.rs の window_event から委譲される。
@@ -638,7 +616,7 @@ impl App {
         if self.render_paused
             && !crate::engine::core::renderer::screenshot::has_pending_request()
         {
-            self.pace_frame_if_unfocused(perf_t_total);
+            self.pace_frame(perf_t_total);
             if let Some(w) = &self.window { w.request_redraw(); }
             return;
         }
@@ -656,7 +634,10 @@ impl App {
         // request_redraw() でポーリングだけ継続して復帰に備える。
         // サーフェスは resize しない（resize() 側も 0 サイズを無視する）ため、
         // 復元時は既存のスワップチェーンでそのまま描画を再開できる。
-        if let Some(w) = &self.window {
+        // pace_frame は &mut self を取るので、self.window の参照を保持したままでは呼べない。
+        // Arc をクローンして借用を切る（参照カウント +1 だけなので実質ノーコスト）。
+        let window_arc = self.window.clone();
+        if let Some(w) = window_arc {
             let sz = w.inner_size();
             if sz.width == 0 || sz.height == 0 {
                 // このフレームは描けない＝提示テクスチャが更新されないため、
@@ -665,7 +646,7 @@ impl App {
                 crate::engine::core::renderer::screenshot::fail_pending_requests(
                     "ウィンドウが最小化（サイズ 0）のため撮影できません",
                 );
-                self.pace_frame_if_unfocused(perf_t_total);
+                self.pace_frame(perf_t_total);
                 w.request_redraw();
                 return;
             }
@@ -9609,7 +9590,7 @@ impl App {
 
         // ── プロファイラ: フレーム記録を確定し、集計窓が満了していればエディタへ送る ──
         //   毎フレーム送るのではなく集計窓（既定 0.5 秒）ごとに 1 回だけ送る。
-        //   フレームレート抑制（pace_frame_if_unfocused）の待ちを計測へ含めないため、
+        //   フレームレート制限（pace_frame）の待ちを計測へ含めないため、
         //   その直前で閉じる。
         if let Some(report_json) = profiling::end_frame() {
             if let Some(ipc) = &self.ipc {
@@ -9634,9 +9615,12 @@ impl App {
             }
         }
 
-        // フォーカスが無い間はフレームレートを抑える（遮蔽時の present 即時リターンによる
-        // 暴走ループと、それに伴う毎フレーム Debug.Log の氾濫を防ぐ）。
-        self.pace_frame_if_unfocused(perf_t_total);
+        // 目標フレームレート（project_settings.json の target_fps）まで待ち、
+        // フレーム統計（fps / フレーム時間）を更新する。
+        // フォーカスが無い間はさらに UNFOCUSED_MAX_FPS を上限に重ねて、
+        // 遮蔽時の present 即時リターンによる暴走ループを防ぐ。
+        // 判定・待ち方の詳細はすべて frame_pacing.rs に集約してある。
+        self.pace_frame(perf_t_total);
         if let Some(window) = &self.window { window.request_redraw(); }
     }
 }

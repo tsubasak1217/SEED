@@ -43,6 +43,18 @@ public static class Application
     /// <summary>エディタからの Play かどうかのキャッシュ（null = 未取得）。</summary>
     private static bool? _isEditorPlay;
 
+    /// <summary>目標フレームレートのキャッシュ（null = 未取得）。</summary>
+    private static int? _targetFps;
+
+    /// <summary>解決後の垂直同期が有効かのキャッシュ（null = 未取得）。</summary>
+    private static bool? _vsyncEnabled;
+
+    /// <summary>
+    /// 目標フレームレートが取得できなかったときに返す値。
+    /// エンジン側の既定（frame_pacing.rs の DEFAULT_TARGET_FPS）と一致させること。
+    /// </summary>
+    private const int DefaultTargetFps = 60;
+
     /// <summary>
     /// パッケージ実行（assets.pak を同梱した配布版として動いている）なら true。
     ///
@@ -71,4 +83,27 @@ public static class Application
     /// </para>
     /// </summary>
     public static bool IsDebugAllowed => !IsPackaged;
+
+    /// <summary>
+    /// プロジェクト設定の目標フレームレート（フレーム／秒）。<c>0</c> なら無制限。
+    ///
+    /// <para>
+    /// 実測値ではなく<b>設定値</b>である（実測は <see cref="Time.Fps"/>）。
+    /// fps 表示で「目標 60 に対して実測 42」のように並べて出すために使う。
+    /// エディタ埋め込みのシーンビューでは制限自体が掛からないが、値はそのまま設定値を返す。
+    /// </para>
+    /// </summary>
+    public static int TargetFps
+        => _targetFps ??= ScriptHost.AppEnvValue(ScriptHost.AppEnvKindTargetFps, DefaultTargetFps);
+
+    /// <summary>
+    /// 垂直同期（VSync）が実際に有効かどうか。
+    ///
+    /// <para>
+    /// プロジェクト設定が <c>"auto"</c> のときの解決結果まで含んだ<b>実際の値</b>を返す
+    /// （エディタ埋め込みなら無効、単体ウィンドウ・パッケージ版なら有効）。
+    /// </para>
+    /// </summary>
+    public static bool VsyncEnabled
+        => _vsyncEnabled ??= ScriptHost.AppEnv(ScriptHost.AppEnvKindVsyncEnabled);
 }

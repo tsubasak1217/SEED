@@ -808,6 +808,47 @@ RT 半透明パイプラインの構築条件は `transparency.rs:378`:
 - Edit との差: `game_viewport` の初期値は `(0, 0, win_w, win_h)`（`:636`）で、Edit では書き換えられず、
   かつ全ての適用箇所が `self.mode == RuntimeMode::Play` で弾かれるため常に全画面。
 
+### 4.5.2 目標フレームレート（`target_fps`）と垂直同期（`vsync`）
+
+`project_settings.json` に **`target_fps`**（整数・既定 `60`・`0` で無制限）と
+**`vsync`**（`"auto"`（既定） / `"on"` / `"off"`）を追加した（2026-09-10）。
+どちらも `App::handle_resumed` で **起動時に 1 回だけ** 読み、実行中には再読込しない。
+
+**目標フレームレート** — 正典は `app/frame_pacing.rs`。
+
+- `parse_target_fps` が JSON を読み、`effective_target_fps(configured, focused, is_edit)` が
+  そのフレームで実際に守る値を決める（この 1 関数が唯一の判定点。すべて純関数で単体テスト済み）。
+- `RuntimeMode::Edit`（エディタ埋め込みビューポート）は**常に無制限**（従来動作）。
+  制限が掛かるのは Play・スタンドアロン実行のウィンドウだけ。
+- 非フォーカス時は `UNFOCUSED_MAX_FPS`（30）を上限として重ねる。
+  旧 `pace_frame_if_unfocused`（非フォーカスのみ 30fps）はこの仕組みへ統合され、
+  フレーム末尾の待ちは `App::pace_frame` の 1 か所だけになった。
+- 待ち方は 2 段構え。目標の `SPIN_MARGIN`（2ms）手前までを `thread::sleep`、
+  残りを `std::hint::spin_loop` のビジースピンで詰める。加えて Windows では
+  `timeBeginPeriod(1)`（`ensure_high_resolution_timer`、プロセスで 1 回・解除しない）で
+  スリープ粒度を 1ms へ上げる。これをしないと既定粒度 15.6ms に丸められ、
+  60fps 狙いが 32fps に落ちる。
+- 副産物として `FrameStats` が「直近 1 秒の平均 fps」「直近フレームの実時間（ms）」を集計し、
+  静的スナップショットへ発行する。スクリプト API の `SEED.Time.Fps` / `SEED.Time.FrameTimeMs` は
+  `RawFrameContext` 経由でこの値を読む（`Clock` は関与しない）。
+
+**垂直同期** — 正典は `renderer/present_mode.rs`。
+
+- `select_present_mode(vsync, embedded, available)` が `wgpu::PresentMode` を決め、
+  `Renderer::new` の `SurfaceConfiguration` に渡す。埋め込みかどうかの唯一の判定源は
+  起動引数 `--parent-hwnd` の有無（`RuntimeArgs::parent_hwnd` → `App::is_embedded()`）。
+- `"auto"` は **埋め込み → VSync なし（Mailbox → Immediate → Fifo。従来動作）**、
+  **単体ウィンドウ → VSync あり（Fifo → FifoRelaxed → …）**。
+  埋め込みで Fifo を避けるのは DWM と二重 VSync になりカクつくため、
+  単体ウィンドウで Fifo を選ぶのは、Mailbox / Immediate だと GPU が上限なく回り続けて
+  発熱・ファン全開を招くため。
+- `"on"` / `"off"` は形態によらず固定。どの候補も報告されない異常時は `Fifo` へ倒す
+  （対応外モードを `configure` に渡してクラッシュさせない）。
+- 実行中の切り替えは行わない（スワップチェーンの再構成が要る）。変更は次回起動から反映。
+- 起動ログに `[SEED INIT] target_fps=… vsync=… embedded=…` と
+  `[SEED INIT] vsync=… embedded=… present_mode=…` を出す。「fps が出ない」「PC が熱い」
+  の相談ではまずこの 2 行を見る。
+
 ---
 
 ## 5. レンダリングの3層モデル（設計判断の基準）

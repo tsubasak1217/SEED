@@ -73,6 +73,21 @@ impl App {
             self.render_resolution_mode.as_str(),
             self.project_resolution,
         );
+        // 目標フレームレート（0 = 無制限）と垂直同期モードも同じ JSON から読む。
+        // どちらも起動時に一度だけ決まり、実行中に変わらない
+        //（vsync はスワップチェーン再構成が必要なため、切り替えには再起動が要る）。
+        self.target_fps = super::frame_pacing::parse_target_fps(&settings_json);
+        // スクリプト（SEED.Application.TargetFps）が読めるようグローバルへも写す。
+        super::frame_pacing::publish_configured_target_fps(self.target_fps);
+        self.vsync_mode =
+            crate::engine::core::renderer::parse_vsync_mode(&settings_json);
+        // 「fps が出ない」「熱い」の相談で最初に見る値なので起動ログへ残す。
+        eprintln!(
+            "[SEED INIT] target_fps={} vsync={} embedded={}",
+            self.target_fps,
+            self.vsync_mode.as_str(),
+            self.is_embedded(),
+        );
         // Play・スタンドアロン時はプロジェクト設定のウィンドウ解像度を初期サイズに使う。
         // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
         let physical_size = if self.mode == RuntimeMode::Play {
@@ -99,7 +114,9 @@ impl App {
         // Windows に「応答なし」と判定される。
         // → 初期化完了後に表示することで "Not Responding" を回避する。
         eprintln!("[SEED INIT] Renderer::new() start");
-        let mut renderer = Renderer::new(window.clone());
+        // 垂直同期モードの解決に必要な「埋め込みかどうか」は起動引数 --parent-hwnd の
+        // 有無（is_embedded）が唯一の判定源。Renderer 側はこの 2 値だけを見る。
+        let mut renderer = Renderer::new(window.clone(), self.vsync_mode, self.is_embedded());
         eprintln!("[SEED INIT] Renderer::new() done");
 
         // 内部解像度固定（fixed）モードの適用。window モード（既定）では None を渡すため

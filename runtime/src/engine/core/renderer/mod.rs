@@ -131,6 +131,10 @@ pub(crate) mod bindless;
 /// 内部解像度固定（fixed）モードのレターボックス写像（描画ビューポート＋入力座標変換の共通式）
 pub mod letterbox;
 
+/// 垂直同期（VSync）モードとプレゼントモード選択（純関数＋単体テスト）。
+pub mod present_mode;
+pub use present_mode::{VsyncMode, parse_vsync_mode};
+
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, GizmoVertex};
 pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel, InlineUpdateResult,
@@ -349,7 +353,12 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Self {
+    /// レンダラーを生成する。
+    ///
+    /// * `vsync`    - プロジェクト設定の垂直同期モード（auto / on / off）。
+    /// * `embedded` - エディタ埋め込み（起動引数 --parent-hwnd あり）かどうか。
+    ///                `vsync` が `Auto` のときの解決先を決める唯一の判定源。
+    pub fn new(window: Arc<Window>, vsync: VsyncMode, embedded: bool) -> Self {
         let size = window.inner_size();
 
         // Windows は Vulkan を優先使用する。
@@ -626,23 +635,18 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
-        // Mailbox → Immediate → Fifo の優先順で選択する。
-        //
-        // このランタイムは WPF の子ウィンドウとして DWM に埋め込まれるケースが多い。
-        // DWM 自体が OS レベルの VSync を担当するため、Vulkan 側に独自の VSync（Fifo）を
-        // 加えると「二重 VSync 待ち」になり、フレームが DWM タイミングとズレるたびに
-        // 1 サイクル余計に待機してカクつきが発生する。
-        //
-        // Mailbox: GPU が終わり次第フレームを上書き → DWM の次コンポジットで最新フレームが映る
-        // Immediate: 即時表示（DWM が VSync を管理するので実用上問題なし）
-        // Fifo: 埋め込みモードでは二重 VSync でカクつくため最後の手段とする
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-            wgpu::PresentMode::Mailbox
-        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
-            wgpu::PresentMode::Immediate
-        } else {
-            wgpu::PresentMode::Fifo
-        };
+        // プレゼントモード（＝垂直同期の有無）はプロジェクト設定の `vsync` と
+        // 「エディタ埋め込みかどうか」から決める。優先順・フォールバック・
+        // 「なぜ埋め込みでは Fifo を避けるのか」の根拠はすべて present_mode.rs 側に
+        // まとめてあり（単体テスト付き）、ここでは結果を受け取るだけにする。
+        let present_mode =
+            present_mode::select_present_mode(vsync, embedded, &surface_caps.present_modes);
+        // 解決結果をスクリプト公開用に写し取る（SEED.Application.VsyncEnabled の判定源）。
+        present_mode::publish_effective_vsync(vsync.resolve(embedded));
+        eprintln!(
+            "[SEED INIT] vsync={} embedded={} present_mode={:?}",
+            vsync.as_str(), embedded, present_mode,
+        );
 
         // COPY_SRC は常時付ける。
         // サーフェスからの読み戻し（copy_texture_to_buffer）に必須で、これが無いと

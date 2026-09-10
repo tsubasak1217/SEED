@@ -224,7 +224,8 @@ public static unsafe class ScriptBridge
     /// </summary>
     private static IScriptComponent? Prepare(nint h, NativeFrameContext* ctx)
     {
-        SEED.Time.Sync(ctx->DeltaTime, ctx->AnimTime, ctx->UnscaledDeltaTime, ctx->UnscaledElapsedTime);
+        SEED.Time.Sync(ctx->DeltaTime, ctx->AnimTime, ctx->UnscaledDeltaTime, ctx->UnscaledElapsedTime,
+                       ctx->Fps, ctx->FrameTimeMs);
         var s = Get(h);
         if (s is SEEDScript ss) ss.BindEntity(ctx->EntityIndex, ctx->EntityGeneration);
         return s;

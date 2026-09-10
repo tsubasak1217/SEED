@@ -487,12 +487,31 @@ dotnet run --project editor/tests/PackagingCollectorTests
   読み込みも書き出しも即座に打ち切られる。したがって配布版の `caches/` に入るのは
   今のところ `pipeline_cache.bin` だけで、モデルは毎回パースし直している
   （起動が遅くなるだけで動作はする）。`docs/backlog.md` 参照。
-- `project_settings.json` の読み込み（ウィンドウサイズ・ゲーム名・プラグイン設定）は 2026-09-09 に
+- `project_settings.json` の読み込み（ウィンドウサイズ・ゲーム名・描画解像度モード・
+  目標フレームレート・垂直同期・プラグイン設定）は 2026-09-09 に
   `asset_fs` 経由へ直したので PAK モードでも効く。ただしプラグイン DLL 自体は同梱されないため、
   パッケージ実行ではプラグインは常に 0 件で続行する（backlog 参照）。
 - 新しいアセット形式を足したときは、`PackagingRules` の
   `ScannableExtensions` / `SiblingExtensions` / `FolderCompanions` の追従を忘れないこと。
   登録漏れは**ビルドエラーにならず**、パッケージ版だけが壊れる形で出る。
+
+### 8.1 配布版の動作に効くプロジェクト設定
+
+エディタの「プロジェクト設定 → 解像度設定」で編集し、`project_settings.json` に保存される。
+パッケージ版は起動時にこの JSON を読むだけなので、**再パッケージせずに JSON を直接書き換えても効く**
+（配布先で「重い」と言われたときに、その場で値を変えて試せる）。
+
+| キー | 既定 | 意味 |
+|---|---|---|
+| `window_width` / `window_height` | 1920 / 1080 | ゲームウィンドウの初期解像度（物理ピクセル） |
+| `render_resolution_mode` | `"window"` | `"fixed"` でウィンドウを拡縮しても内部解像度で描き、最終出力をレターボックスする |
+| `target_fps` | `60` | フレームレート上限（`0` で無制限）。CPU・GPU の空回りを止めて発熱を抑える |
+| `vsync` | `"auto"` | 垂直同期。`"auto"` はパッケージ版＝有効／エディタ埋め込み＝無効。`"on"` / `"off"` で固定 |
+| `game_name` | 空 | ウィンドウタイトル（未設定なら `"SEED"`） |
+
+`target_fps` と `vsync` は起動ログの `[SEED INIT] target_fps=… vsync=… embedded=…` と
+`[SEED INIT] vsync=… embedded=… present_mode=…` に解決結果が出る（§9 のログ）。
+ゲーム内では `SEED.Time.Fps` / `SEED.Time.FrameTimeMs` で実測値を取れる。
 
 ---
 

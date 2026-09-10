@@ -1,4 +1,4 @@
-using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
+﻿using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
 /// 開発中の動作確認だけを目的とした<b>デバッグキー</b>をまとめたスクリプト
@@ -16,6 +16,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <list type="bullet">
 ///   <item><see cref="hookKey"/>（既定 F9）… ヒットしていなければ <see cref="fishPrefabPath"/> の魚を
 ///         即ヒットさせ、<b>既にヒット中ならその魚をその場で釣り上げる</b></item>
+///   <item><see cref="fpsKey"/>（既定 F3）… fps 表示の ON / OFF を切り替える</item>
 /// </list>
 ///
 /// [出荷時]
@@ -23,6 +24,11 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <see cref="SEED.Application.IsDebugAllowed"/> が false になるため、
 /// <see cref="OnStart"/> で自動的に丸ごと無効化される（アクタを外す必要は無い）。
 /// エディタ実行中だけ、さらに手動で止めたいときに <see cref="enabled"/> を false にする。
+///
+/// <b>ただし fps 表示だけは例外で、パッケージ版でも動く</b>。
+/// 他の人の環境で「何 fps 出ているか」を数字で報告してもらうための機能なので、
+/// ここをデバッグゲートで閉じると目的を果たせない。表示は既定で OFF なので、
+/// キーを押さない限り通常のプレイには一切出てこない。
 /// </summary>
 public class DebugCommands : SEEDScript
 {
@@ -46,6 +52,24 @@ public class DebugCommands : SEEDScript
 
     /// <summary>レベル添字の走査開始位置（levels は 0 始まり）。</summary>
     private const int FirstLevelIndex = 0;
+
+    // ─── fps 表示用の定数 ───────────────────────────────────────
+
+    /// <summary>目標フレームレートが「無制限」であることを表す値（エンジン側と同じ規約）。</summary>
+    private const int TargetFpsUnlimited = 0;
+
+    /// <summary>目標フレームレートが無制限のときに表示する文字列。</summary>
+    private const string TargetFpsUnlimitedLabel = "無制限";
+
+    /// <summary>垂直同期が有効／無効のときに表示する文字列。</summary>
+    private const string VsyncOnLabel  = "on";
+    private const string VsyncOffLabel = "off";
+
+    /// <summary>fps 表示の小数桁数（"58.3 fps" のように 1 桁）。</summary>
+    private const string FpsFormat = "F1";
+
+    /// <summary>フレーム時間の小数桁数（"16.72 ms" のように 2 桁）。</summary>
+    private const string FrameTimeFormat = "F2";
 
     // ─── インスペクタ公開フィールド ──────────────────────────────
 
@@ -78,6 +102,24 @@ public class DebugCommands : SEEDScript
     [SerializeField(Label = "着水距離(m)", Tooltip = "ウキが水上に無いとき、竿先から何 m 前方へ着水させるか")]
     public float hookDistanceMeters = DefaultHookDistanceMeters;
 
+    /// <summary>
+    /// fps 表示の ON / OFF を切り替えるキー。
+    ///
+    /// <b>このキーだけはパッケージ版でも効く</b>（<see cref="debugAllowed"/> でゲートしない）。
+    /// 配布先の環境で実測フレームレートを報告してもらうための機能のため。
+    /// </summary>
+    [Header("fps 表示"), SerializeField(Label = "fps 表示キー", Tooltip = "押すたびに fps 表示の ON / OFF が切り替わる（パッケージ版でも有効）")]
+    public SEED.KeyCode fpsKey = SEED.KeyCode.F3;
+
+    /// <summary>
+    /// fps を書き出す Text コンポーネント。画面左上に置いたテキストを割り当てる。
+    ///
+    /// 未設定でもキー操作は動き、その場合は代わりに 1 秒ごとのログ出力になる
+    /// （パッケージ版は exe 隣の <c>logs/seed_*.log</c> に残るので、そこから数字を拾える）。
+    /// </summary>
+    [SerializeField(Label = "fps 表示のText", Tooltip = "画面左上に置いた Text を割り当てる。未設定ならログへ出力する")]
+    public SEED.Text? fpsLabel = null;
+
     // ─── 内部状態 ────────────────────────────────────────────────
 
     /// <summary>
@@ -99,6 +141,18 @@ public class DebugCommands : SEEDScript
     /// デバッグキーは一切読まれない。
     /// </summary>
     private bool debugAllowed;
+
+    /// <summary>fps 表示が今 ON かどうか（<see cref="fpsKey"/> で切り替える）。既定は OFF。</summary>
+    private bool fpsVisible;
+
+    /// <summary>
+    /// Text 未設定時にログへ出すまでの残り秒。
+    /// 毎フレーム出すとログが溢れるので <see cref="FpsLogIntervalSeconds"/> 間隔へ間引く。
+    /// </summary>
+    private float fpsLogCooldown;
+
+    /// <summary>Text 未設定時に fps をログへ出す間隔（秒）。</summary>
+    private const float FpsLogIntervalSeconds = 1.0f;
 
     // ─── ライフサイクル ──────────────────────────────────────────
 
@@ -132,8 +186,16 @@ public class DebugCommands : SEEDScript
     /// <param name="ctx">フレーム情報（ここでは使わない）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
-        // パッケージ版では丸ごと無効（誤爆をここ 1 か所で止める）
-        if (!debugAllowed || !enabled) { return; }
+        // 手動で止めているときは何もしない（fps 表示も含めて全停止する唯一のスイッチ）
+        if (!enabled) { return; }
+
+        // fps 表示は debugAllowed のゲートより前に処理する。
+        // 配布先の環境で実測フレームレートを報告してもらうための機能なので、
+        // パッケージ版でも動かす必要がある（クラスコメントの [出荷時] 参照）。
+        UpdateFpsDisplay();
+
+        // ここから下はパッケージ版では丸ごと無効（誤爆をここ 1 か所で止める）
+        if (!debugAllowed) { return; }
 
         // 生成待ちがある間はキー入力を読まない（多重に魚を湧かせないため）
         if (pendingFrames != NoPendingFrames)
@@ -363,5 +425,66 @@ public class DebugCommands : SEEDScript
     {
         pendingFish   = default;
         pendingFrames = NoPendingFrames;
+    }
+
+    // ─── fps 表示 ────────────────────────────────────────────────
+
+    /// <summary>
+    /// fps 表示のキー入力と描画を毎フレーム処理する【fps 表示の唯一の入口】。
+    ///
+    /// <see cref="fpsKey"/> で ON / OFF を切り替え、ON の間だけ
+    /// 「実測 fps ／ フレーム時間 ／ 目標 fps ／ 垂直同期」を出す。
+    /// 出力先は <see cref="fpsLabel"/>（未設定なら 1 秒ごとのログ）。
+    /// </summary>
+    private void UpdateFpsDisplay()
+    {
+        if (SEED.Input.GetKeyDown(fpsKey))
+        {
+            fpsVisible = !fpsVisible;
+            // OFF にした瞬間にラベルを空へ戻す（消し忘れて文字が残らないように）
+            if (!fpsVisible && fpsLabel is { IsValid: true } label) { label.Content = string.Empty; }
+            // 次に ON にしたとき即座に 1 回ログが出るようにクールダウンを空にしておく
+            fpsLogCooldown = 0.0f;
+        }
+
+        if (!fpsVisible) { return; }
+
+        string text = BuildFpsText();
+
+        // Text が割り当ててあれば画面へ、無ければログへ（配布版のログファイルから拾える）
+        if (fpsLabel is { IsValid: true } target)
+        {
+            target.Content = text;
+            return;
+        }
+
+        // ゲーム時間ではなく実時間で数える（Time.Scale = 0 のヒットストップ中でも進むように）
+        fpsLogCooldown -= SEED.Time.UnscaledDeltaTime;
+        if (fpsLogCooldown <= 0.0f)
+        {
+            fpsLogCooldown = FpsLogIntervalSeconds;
+            SEED.Debug.Log($"[fps] {text}");
+        }
+    }
+
+    /// <summary>
+    /// fps 表示に出す 1 行を組み立てる。
+    ///
+    /// 目標 fps と垂直同期はプロジェクト設定由来の<b>設定値</b>で、実行中に変わらない。
+    /// 実測（<see cref="SEED.Time.Fps"/>）と並べることで「設定どおり出ているか」が判る。
+    /// </summary>
+    /// <returns>"58.3 fps / 17.15 ms / 目標 60 / vsync on" の形式。</returns>
+    private static string BuildFpsText()
+    {
+        int targetFps = SEED.Application.TargetFps;
+        string target = targetFps == TargetFpsUnlimited
+            ? TargetFpsUnlimitedLabel
+            : targetFps.ToString();
+        string vsync = SEED.Application.VsyncEnabled ? VsyncOnLabel : VsyncOffLabel;
+
+        return $"{SEED.Time.Fps.ToString(FpsFormat)} fps"
+             + $" / {SEED.Time.FrameTimeMs.ToString(FrameTimeFormat)} ms"
+             + $" / 目標 {target}"
+             + $" / vsync {vsync}";
     }
 }

@@ -519,6 +519,23 @@ Time.ElapsedTime          // float: ゲーム内の累計時間（秒。Time.Sca
 Time.UnscaledDeltaTime    // float: 前フレームからの経過秒（Time.Scale 未適用の実時間）
 Time.UnscaledElapsedTime  // float: ゲーム内の累計時間（秒。Time.Scale 未適用）
 Time.Scale                // float（get/set）: ゲーム時間の進む速さ。既定 1.0 / 0 で停止 / 上限 100
+Time.Fps                  // float: 直近 1 秒の平均フレームレート（実測値。1 秒ごとに更新）
+Time.FrameTimeMs          // float: 直近フレームの実時間（ミリ秒。フレームレート制限の待ちを含む実測周期）
+```
+
+### Time.Fps / Time.FrameTimeMs（実測フレームレート）
+
+実測値であり、プロジェクト設定の目標フレームレート（`target_fps`）とは別物です。
+`Time.Fps` は移動平均ではなく**1 秒ごとの窓**で確定するため、そのまま画面に出しても数値が跳ねません
+（起動直後の 1 秒間は `0`）。`Time.FrameTimeMs` はフレーム制限の待ち時間も含む実測周期なので、
+60fps に制限中はおよそ `16.7` になり、`Time.UnscaledDeltaTime * 1000` とは一致しません。
+
+```csharp
+// 画面に fps を出す（Text コンポーネントへ毎フレーム書き込む）
+if (gameObject.GetComponent<SEED.Text>() is { } label)
+{
+    label.Content = $"{SEED.Time.Fps:F1} fps / {SEED.Time.FrameTimeMs:F2} ms";
+}
 ```
 
 ### Time.Scale（ヒットストップ・スローモーション）
@@ -2544,6 +2561,8 @@ int n = SEED.Events.SubscriberCount("Bite");  // 現在の購読件数（デバ�
 public static bool IsPackaged;      // パッケージ実行（assets.pak 同梱の配布版）なら true
 public static bool IsEditorPlay;    // エディタから Play したゲーム実行中なら true
 public static bool IsDebugAllowed;  // デバッグ機能を有効にしてよいか（現在は !IsPackaged）
+public static int  TargetFps;       // プロジェクト設定の目標フレームレート（0 = 無制限）。設定値であって実測ではない
+public static bool VsyncEnabled;    // 垂直同期が実際に有効か（設定 "auto" の解決結果を含む）
 ```
 
 ### 各プロパティの値

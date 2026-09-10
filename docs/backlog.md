@@ -100,6 +100,25 @@
   直すなら「テスト用にストアをリセットする API を足す」か「`SaveStore` が毎回 `resolve_save_path()` を引き直す」かの判断が要る。
   関連: `runtime/src/engine/plugin/host.rs:133`、`runtime/src/engine/core/save/mod.rs:41`、`runtime/src/engine/core/save/store.rs:269`。
 
+## フレームレート上限・垂直同期・fps 表示（2026-09-10 実装時の残件）
+
+- [ ] **設定の反映に再起動が要る** — 2026-09-10。`target_fps` / `vsync` は `App::handle_resumed` で
+  起動時に 1 回だけ読む。エディタのプロジェクト設定で変えても、実行中の Play には反映されない。
+  `target_fps` は `App` のフィールドを差し替えるだけなので IPC で live 反映できる余地がある
+  （`vsync` はスワップチェーン再構成が要るので別問題）。関連:
+  `runtime/src/engine/core/app_base/app/app_init.rs`、`app/frame_pacing.rs`、`renderer/present_mode.rs`。
+
+- [ ] **fps 表示に即時テキスト描画 API が無い** — 2026-09-10。`SEED.Draw` は矩形・円などの図形だけで
+  文字を出せないため、`DebugCommands` の fps 表示は `SEED.Text` コンポーネント参照
+  （インスペクタの「fps 表示のText」）へ書き込む方式にした。未設定のときは 1 秒ごとのログへ落ちる。
+  デバッグ HUD 全般のために `Draw.Text`（スクリーン座標の即時テキスト）があると、
+  アクタを用意せずに数値を出せる。関連: `scripting/src/Api/Draw.cs`、
+  `runtime/assets/mainGame/scripts/DebugTools/DebugCommands.cs`。
+
+- [ ] **フレーム制限の実機検証が未実施** — 2026-09-10。純関数（待ち時間計算・present mode 選択）は
+  単体テスト済みだが、実際に 60fps へ張り付くか・`timeBeginPeriod(1)` でスリープ粒度が
+  期待どおりになるか・`vsync: on` でティアリングが消えるかは未確認。関連: `app/frame_pacing.rs`。
+
 ## 未コミットの他セッション差分（要確認）
 
 - [ ] **`app_init.rs` / `ipc_handler.rs` / `script_scene_ops.rs` / `play_mode_ops.rs` に別セッションの未コミット変更** — 2026-09-07 時点。Play 開始時のシーン登録表再読込など。作業ツリーに残っているので、そのセッション側でコミットするか破棄するか判断する。

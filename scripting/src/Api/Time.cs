@@ -80,16 +80,49 @@ public static class Time
     }
 
     /// <summary>
+    /// 直近 1 秒間の平均フレームレート（フレーム／秒）。
+    ///
+    /// <para>
+    /// 実測値であり、プロジェクト設定の目標フレームレート（target_fps）とは別物。
+    /// 「目標 60 に対して実測 42」のように、目標に届いているかを見るために使う。
+    /// </para>
+    /// <para>
+    /// 平均は移動平均ではなく<b>1 秒ごとの窓</b>で確定するため、表示値は 1 秒に 1 回だけ動く
+    /// （毎フレーム跳ねないので、そのまま画面に出して読める）。起動直後の 1 秒間は 0。
+    /// </para>
+    /// </summary>
+    public static float Fps { get; private set; }
+
+    /// <summary>
+    /// 直近フレームの実時間（ミリ秒）。
+    ///
+    /// <para>
+    /// フレーム開始から次フレーム開始までの<b>実測周期</b>で、フレームレート制限による
+    /// 待ち時間も含む（60fps に制限中はおよそ 16.7）。したがって
+    /// <see cref="UnscaledDeltaTime"/> × 1000 とは一致しない
+    /// （あちらはポーズ・Edit モードで止まるゲーム時間側の値）。
+    /// </para>
+    /// <para>
+    /// 描画そのものに掛かった時間の内訳を見たいときは、この値ではなく
+    /// エディタのプロファイラを使うこと。
+    /// </para>
+    /// </summary>
+    public static float FrameTimeMs { get; private set; }
+
+    /// <summary>
     /// エンジン内部用: 現在フレームの時間を反映する。
     /// ScriptBridge が各ライフサイクル呼び出しの直前に呼ぶ。ユーザーは使わない。
     /// </summary>
     internal static void Sync(
         float deltaTime, float elapsedTime,
-        float unscaledDeltaTime, float unscaledElapsedTime)
+        float unscaledDeltaTime, float unscaledElapsedTime,
+        float fps, float frameTimeMs)
     {
         DeltaTime           = deltaTime;
         ElapsedTime         = elapsedTime;
         UnscaledDeltaTime   = unscaledDeltaTime;
         UnscaledElapsedTime = unscaledElapsedTime;
+        Fps                 = fps;
+        FrameTimeMs         = frameTimeMs;
     }
 }

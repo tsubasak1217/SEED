@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -695,6 +695,25 @@ public partial class ProjectSettingsWindow : Window
     /// <summary>描画解像度モードのコンボボックス（「ウィンドウに合わせる」/「解像度を固定」）。</summary>
     private ComboBox? _cmbRenderResMode;
 
+    /// <summary>目標フレームレートとして受け付ける最小・最大値
+    /// （Rust 側 frame_pacing.rs の TARGET_FPS_MIN / TARGET_FPS_MAX と一致させること）。</summary>
+    private const int TargetFpsMin = 1;
+    private const int TargetFpsMax = 1000;
+
+    /// <summary>「無制限」を表す目標フレームレート値（Rust 側 TARGET_FPS_UNLIMITED と一致）。</summary>
+    private const int TargetFpsUnlimited = 0;
+
+    /// <summary>垂直同期モードの JSON 値（Rust 側 present_mode.rs の VsyncMode と一致させること）。</summary>
+    private const string VsyncModeAuto = "auto";
+    private const string VsyncModeOn   = "on";
+    private const string VsyncModeOff  = "off";
+
+    /// <summary>目標フレームレートの入力フィールド（整数。0 で無制限）。</summary>
+    private TextBox? _tbTargetFps;
+
+    /// <summary>垂直同期モードのコンボボックス（自動 / 有効 / 無効）。</summary>
+    private ComboBox? _cmbVsync;
+
     /// <summary>「解像度設定」パネルを構築して返す。</summary>
     ///
     /// よくある解像度のプリセット＋「カスタム...」のコンボボックス。
@@ -858,6 +877,113 @@ public partial class ProjectSettingsWindow : Window
             FontSize     = 11,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(120, 8, 0, 0),
+        });
+
+        // ── フレームレート・垂直同期 ─────────────────────────────
+        // 解像度と同じ「ゲームウィンドウの出し方」の設定なので同じパネルに置く
+        //（保存経路も同じ ProjectSettingsData → project_settings.json）。
+        panel.Children.Add(BuildFrameRatePanel());
+
+        return panel;
+    }
+
+    /// <summary>
+    /// 「フレームレート」小節（目標 fps ＋ 垂直同期）を構築して返す。
+    ///
+    /// どちらも project_settings.json へ保存され、ランタイムは<b>起動時に 1 回だけ</b>読む
+    /// （実行中の反映はしない。特に垂直同期はスワップチェーンの再構成が必要なため）。
+    /// </summary>
+    private UIElement BuildFrameRatePanel()
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text       = "フレームレート",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
+            FontSize   = 13,
+            FontWeight = FontWeights.Bold,
+            Margin     = new Thickness(0, 0, 0, 8),
+        });
+
+        // ── 目標フレームレート入力行 ──
+        var fpsRow = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        fpsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        fpsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var fpsLabel = new TextBlock
+        {
+            Text              = "目標 fps",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(fpsLabel, 0);
+        fpsRow.Children.Add(fpsLabel);
+
+        _tbTargetFps = new TextBox
+        {
+            Text     = _data.TargetFps.ToString(),
+            FontSize = 12,
+            Width    = 80,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        Grid.SetColumn(_tbTargetFps, 1);
+        fpsRow.Children.Add(_tbTargetFps);
+        panel.Children.Add(fpsRow);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text         = "Play・パッケージ版のフレームレート上限です（0 で無制限）。\n" +
+                           "上限を掛けると、必要以上に CPU・GPU が回り続けるのを防げます（発熱・ファン音の対策）。\n" +
+                           "エディタのシーンビューには影響しません。ウィンドウが非アクティブの間は自動的に 30fps まで下がります。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(120, 4, 0, 0),
+        });
+
+        // ── 垂直同期コンボボックス行 ──
+        var vsyncRow = new Grid { Margin = new Thickness(0, 10, 0, 6) };
+        vsyncRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        vsyncRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var vsyncLabel = new TextBlock
+        {
+            Text              = "垂直同期",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(vsyncLabel, 0);
+        vsyncRow.Children.Add(vsyncLabel);
+
+        // 配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる
+        _cmbVsync = new ComboBox { FontSize = 12 };
+        _cmbVsync.Items.Add(new ComboBoxItem { Content = "自動（推奨）", Tag = VsyncModeAuto });
+        _cmbVsync.Items.Add(new ComboBoxItem { Content = "有効",         Tag = VsyncModeOn });
+        _cmbVsync.Items.Add(new ComboBoxItem { Content = "無効",         Tag = VsyncModeOff });
+        // 初期選択: 現在値（前後空白除去・大文字小文字無視）に対応する項目。未知の値は「自動」。
+        _cmbVsync.SelectedIndex = (_data.Vsync?.Trim().ToLowerInvariant()) switch
+        {
+            VsyncModeOn  => 1,
+            VsyncModeOff => 2,
+            _            => 0,
+        };
+        Grid.SetColumn(_cmbVsync, 1);
+        vsyncRow.Children.Add(_cmbVsync);
+        panel.Children.Add(vsyncRow);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text         = "「自動」は、エディタに埋め込まれた画面では垂直同期を切り（Windows の合成側が同期するため二重待ちになる）、\n" +
+                           "単体ウィンドウ（別ウィンドウ Play・パッケージ版）では垂直同期を入れます。\n" +
+                           "「有効」にすると画面のちらつき（ティアリング）が消え、GPU 負荷も下がります。「無効」は入力遅延を最小にしたいとき用です。\n" +
+                           "この設定はゲームの起動時にだけ読まれます（実行中に変えても次回起動から反映）。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(120, 4, 0, 0),
         });
 
         return panel;
@@ -1026,6 +1152,23 @@ public partial class ProjectSettingsWindow : Window
             && (_cmbRenderResMode.SelectedItem as ComboBoxItem)?.Tag is string mode)
         {
             _data.RenderResolutionMode = mode;
+        }
+
+        // 「目標 fps」を収集する。
+        // 0 は「無制限」なのでクランプ対象から外し、それ以外は有効範囲へ丸める。
+        // パース不能（空欄・文字列）のときは現在値を維持する。
+        if (_tbTargetFps is not null && int.TryParse(_tbTargetFps.Text.Trim(), out var fps))
+        {
+            _data.TargetFps = fps <= TargetFpsUnlimited
+                ? TargetFpsUnlimited
+                : Math.Clamp(fps, TargetFpsMin, TargetFpsMax);
+        }
+
+        // 「垂直同期」の選択値を収集する（Tag に JSON 値が入っている）
+        if (_cmbVsync is not null
+            && (_cmbVsync.SelectedItem as ComboBoxItem)?.Tag is string vsync)
+        {
+            _data.Vsync = vsync;
         }
 
         // 「RTシャドウ」パネルのチェック状態を収集する

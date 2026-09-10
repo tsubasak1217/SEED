@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -75,6 +75,34 @@ public class ProjectSettingsData
     /// </summary>
     [JsonPropertyName("render_resolution_mode")]
     public string RenderResolutionMode { get; set; } = "window";
+
+    /// <summary>
+    /// 目標フレームレート（フレーム／秒）。0 = 無制限。
+    ///
+    /// <para>
+    /// Play・パッケージ版では、フォーカスの有無にかかわらずフレーム間隔を
+    /// 1/target_fps 以上に保つ（＝上限を掛けて CPU・GPU の空回りを止める）。
+    /// エディタ埋め込みのシーンビューには影響しない。
+    /// </para>
+    /// <para>
+    /// Rust 側 <c>runtime/src/engine/core/app_base/app/frame_pacing.rs</c> の
+    /// DEFAULT_TARGET_FPS / TARGET_FPS_MIN / TARGET_FPS_MAX と値域を一致させること。
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("target_fps")]
+    public int TargetFps { get; set; } = 60;
+
+    /// <summary>
+    /// 垂直同期（VSync）の切り替え。
+    /// "auto"（既定）= エディタ埋め込みなら VSync なし（DWM に任せる）、
+    ///                 単体ウィンドウ（パッケージ版・別ウィンドウ Play）なら VSync あり。
+    /// "on"          = 常に VSync あり（Fifo）。
+    /// "off"         = 常に VSync なし（Mailbox / Immediate）。
+    /// Rust 側 <c>runtime/src/engine/core/renderer/present_mode.rs</c> の
+    /// VsyncMode と文字列表現を一致させること。
+    /// </summary>
+    [JsonPropertyName("vsync")]
+    public string Vsync { get; set; } = "auto";
 
     // ── シーンマネージャ ─────────────────────────────────────
 

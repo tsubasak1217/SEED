@@ -538,13 +538,15 @@
 </section>
 
 <!-- ════════════════ 3. Time / Debug ════════════════ -->
-<section id="sec-time" data-keywords="Time Debug 時間 ログ 出力 デルタタイム TimeScale 時間スケール ヒットストップ スローモーション ポーズ Unscaled OnCommand OffCommand デバッグコマンド SCRIPT_DEBUG 外部指示 MCP AI検証 script_debug">
+<section id="sec-time" data-keywords="Time Debug 時間 ログ 出力 デルタタイム TimeScale 時間スケール ヒットストップ スローモーション ポーズ Unscaled OnCommand OffCommand デバッグコマンド SCRIPT_DEBUG 外部指示 MCP AI検証 script_debug fps フレームレート FrameTime フレーム時間 Fps 計測 パフォーマンス">
   <h2>3. Time（フレーム時間） / Debug（ログ）</h2>
   <div class="api"><code class="sig">Time.DeltaTime</code><span class="desc">float: 前フレームからの経過秒（Time.Scale 適用後のゲーム時間）</span></div>
   <div class="api"><code class="sig">Time.ElapsedTime</code><span class="desc">float: ゲーム内の累計時間（秒。Time.Scale 適用後）</span></div>
   <div class="api"><code class="sig">Time.UnscaledDeltaTime</code><span class="desc">float: 前フレームからの経過秒（Time.Scale 未適用の実時間）。UI・演出・ポーズメニューはこちらを使う</span></div>
   <div class="api"><code class="sig">Time.UnscaledElapsedTime</code><span class="desc">float: ゲーム内の累計時間（秒。Time.Scale 未適用）</span></div>
   <div class="api"><code class="sig">Time.Scale</code><span class="desc">float（get/set）: ゲーム時間の進む速さ。既定 1.0 / 0 で完全停止 / 負値は 0 に丸め / 上限 100。ヒットストップ・スローモーション用</span></div>
+  <div class="api"><code class="sig">Time.Fps</code><span class="desc">float: 直近 1 秒の平均フレームレート（実測値。移動平均ではなく 1 秒ごとの窓で確定するので数値が跳ねない。起動直後の 1 秒間は 0）</span></div>
+  <div class="api"><code class="sig">Time.FrameTimeMs</code><span class="desc">float: 直近フレームの実時間（ミリ秒）。フレームレート制限の待ちを含む実測周期なので 60fps 制限中は約 16.7。Time.UnscaledDeltaTime × 1000 とは一致しない</span></div>
 
   <h3 id="time-scale">Time.Scale（ヒットストップ・スローモーション）</h3>
   <p class="section-note">Play 開始時・Play 停止時・シーン遷移時に自動で 1.0 へ戻りますが、それ以外では戻りません。<b>必ず自分で 1.0 に戻すこと</b>。戻すためのタイマーは必ず <code>Time.UnscaledDeltaTime</code> で減らしてください（<code>DeltaTime</code> は Scale = 0 のとき 0 になり、永久に復帰できなくなります）。Play の一時停止（エディタのポーズ）とは独立で、Edit モードには影響しません。</p>
@@ -1853,7 +1855,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 </section>
 
 <!-- ════════════════ 7.11 Application ════════════════ -->
-<section id="sec-application" data-keywords="Application アプリケーション 実行環境 パッケージ 配布 ビルド IsPackaged IsEditorPlay IsDebugAllowed デバッグ ゲート 無効化 pak assets.pak エディタ Play">
+<section id="sec-application" data-keywords="Application アプリケーション 実行環境 パッケージ 配布 ビルド IsPackaged IsEditorPlay IsDebugAllowed デバッグ ゲート 無効化 pak assets.pak エディタ Play TargetFps 目標fps フレームレート VsyncEnabled 垂直同期 vsync">
   <h2>7.11 Application（実行環境の判定：デバッグ機能のゲート）</h2>
   <p class="section-note">
     「今このゲームがどういう立場で動いているか」を調べる API です。主な用途は
@@ -1864,6 +1866,8 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="api"><code class="sig">Application.IsPackaged</code><span class="desc">bool。パッケージ実行（assets.pak 同梱の配布版）なら true</span></div>
   <div class="api"><code class="sig">Application.IsEditorPlay</code><span class="desc">bool。エディタから Play したゲーム実行中なら true（Edit モードは false）</span></div>
   <div class="api"><code class="sig">Application.IsDebugAllowed</code><span class="desc">bool。デバッグ機能を有効にしてよいか（現在の定義は !IsPackaged）</span></div>
+  <div class="api"><code class="sig">Application.TargetFps</code><span class="desc">int。プロジェクト設定の目標フレームレート（0 = 無制限）。設定値であって実測ではない（実測は Time.Fps）</span></div>
+  <div class="api"><code class="sig">Application.VsyncEnabled</code><span class="desc">bool。垂直同期が実際に有効か（プロジェクト設定 "auto" の解決結果まで含んだ実際の値）</span></div>
 <pre><span class="c">// デバッグ HUD は開発中だけ出す</span>
 <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
 {

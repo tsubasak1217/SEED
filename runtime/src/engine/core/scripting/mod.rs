@@ -70,6 +70,17 @@ pub(crate) struct RawFrameContext {
     pub unscaled_delta_time: f32,
     /// 時間スケール**未適用**のゲーム内累計時間（秒）。C# の `Time.UnscaledElapsedTime`。
     pub unscaled_elapsed_time: f32,
+    /// 直近 1 秒の平均フレームレート。C# の `Time.Fps`。
+    ///
+    /// 時間系フィールドと違い、これは `FrameContext`（Clock）ではなく
+    /// フレーム制御（`app::frame_pacing`）が集計した実測値である。
+    /// 起動直後（最初の集計窓が閉じる前）は 0.0。
+    pub fps: f32,
+    /// 直近フレームの実時間（ミリ秒）。C# の `Time.FrameTimeMs`。
+    ///
+    /// フレーム制限の待ち時間を含む実測周期であり、`unscaled_delta_time * 1000`
+    /// とは一致しない（あちらはポーズ・Edit で止まるゲーム時間側の delta）。
+    pub frame_time_ms: f32,
 }
 
 impl RawFrameContext {
@@ -86,6 +97,10 @@ impl RawFrameContext {
             entity_generation,
             unscaled_delta_time:   ctx.unscaled_delta_time,
             unscaled_elapsed_time: ctx.unscaled_anim_time,
+            // フレーム実測値はグローバルな最新スナップショットから読む
+            //（FrameContext はゲーム時間の器であり、実測 fps の持ち主ではないため）。
+            fps:           crate::engine::core::app_base::app::frame_pacing::latest_fps(),
+            frame_time_ms: crate::engine::core::app_base::app::frame_pacing::latest_frame_time_ms(),
         }
     }
 }

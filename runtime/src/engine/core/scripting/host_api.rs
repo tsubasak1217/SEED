@@ -2360,6 +2360,13 @@ const APP_ENV_KIND_PACKAGED: i32 = 0;
 /// `ffi_app_env` の kind: エディタからの Play 実行か。
 /// C# 側 ScriptHost.AppEnvKindEditorPlay と同値であること。
 const APP_ENV_KIND_EDITOR_PLAY: i32 = 1;
+/// `ffi_app_env` の kind: プロジェクト設定の目標フレームレート（0 = 無制限）。
+/// 真偽値ではなく**整数値**をそのまま返す kind（C# 側は AppEnvValue で受ける）。
+/// C# 側 ScriptHost.AppEnvKindTargetFps と同値であること。
+const APP_ENV_KIND_TARGET_FPS: i32 = 2;
+/// `ffi_app_env` の kind: 解決後の垂直同期が有効か（auto の解決結果を含む）。
+/// C# 側 ScriptHost.AppEnvKindVsyncEnabled と同値であること。
+const APP_ENV_KIND_VSYNC_ENABLED: i32 = 3;
 
 /// 実行環境の真偽値を 1 つ返す（SEED.Application の判定源）。
 ///
@@ -2374,12 +2381,25 @@ const APP_ENV_KIND_EDITOR_PLAY: i32 = 1;
 /// 値は起動時に確定して実行中に変化しないため、C# 側は初回アクセス時に
 /// 1 度だけ呼んでキャッシュする（毎フレーム呼ぶ想定の API ではない）。
 unsafe extern "system" fn ffi_app_env(kind: i32) -> i32 {
+    // 整数値をそのまま返す kind は真偽値変換の前に処理する
+    //（1/0 へ潰してしまうと目標 fps の値が失われるため）。
+    match kind {
+        // 目標フレームレート（0 = 無制限）。上限 TARGET_FPS_MAX なので i32 に収まる。
+        APP_ENV_KIND_TARGET_FPS => {
+            return crate::engine::core::app_base::app::frame_pacing::configured_target_fps() as i32;
+        }
+        _ => {}
+    }
+
     // 各 kind の判定源は既存のグローバル状態を読むだけ（副作用なし・スレッド安全）。
     let value = match kind {
         // パッケージ実行の判定は assets.pak を開けているか（既存の判定源をそのまま使う）
         APP_ENV_KIND_PACKAGED    => crate::engine::asset_fs::is_packaged(),
         // エディタからの Play は App::new で確定させたフラグ
         APP_ENV_KIND_EDITOR_PLAY => crate::engine::app_env::is_editor_play(),
+        // 解決後の VSync 有無は Renderer::new が確定させたグローバルを読む
+        APP_ENV_KIND_VSYNC_ENABLED =>
+            crate::engine::core::renderer::present_mode::effective_vsync_on(),
         // 未知の kind は「偽」と区別できるよう -1 を返す
         _ => return -1,
     };

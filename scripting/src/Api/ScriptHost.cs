@@ -1090,6 +1090,13 @@ public static unsafe class ScriptHost
     /// <summary>AppEnv の kind: エディタからの Play か（Rust 側 APP_ENV_KIND_EDITOR_PLAY と一致）。</summary>
     public const int AppEnvKindEditorPlay = 1;
 
+    /// <summary>AppEnv の kind: 目標フレームレート（Rust 側 APP_ENV_KIND_TARGET_FPS と一致）。
+    /// 真偽値ではなく整数値を返すので <see cref="AppEnvValue"/> で受けること。</summary>
+    public const int AppEnvKindTargetFps = 2;
+
+    /// <summary>AppEnv の kind: 解決後の垂直同期が有効か（Rust 側 APP_ENV_KIND_VSYNC_ENABLED と一致）。</summary>
+    public const int AppEnvKindVsyncEnabled = 3;
+
     /// <summary>
     /// 実行環境の真偽値を 1 つ取得する（<see cref="SEED.Application"/> の実体）。
     ///
@@ -1102,6 +1109,21 @@ public static unsafe class ScriptHost
         if (!_available || _api.AppEnv == null) return false;
         // Rust 側は 真=1 / 偽=0 / 不正 kind=-1 を返す。1 以外はすべて false 扱いにする。
         return _api.AppEnv(kind) == 1;
+    }
+
+    /// <summary>
+    /// 実行環境の<b>整数値</b>を 1 つ取得する（目標フレームレートなど、真偽に潰せない値用）。
+    ///
+    /// ホスト API が未登録・未知の kind の場合は <paramref name="fallback"/> を返す
+    /// （Rust 側は不正 kind に -1 を返す契約なので、負値はすべて未取得とみなす）。
+    /// </summary>
+    /// <param name="kind">問い合わせる種類（TargetFps など）。</param>
+    /// <param name="fallback">取得できなかったときに返す値。</param>
+    public static int AppEnvValue(int kind, int fallback)
+    {
+        if (!_available || _api.AppEnv == null) return fallback;
+        int v = _api.AppEnv(kind);
+        return v < 0 ? fallback : v;
     }
 }
 

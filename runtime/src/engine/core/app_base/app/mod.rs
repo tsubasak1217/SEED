@@ -94,6 +94,8 @@ mod collider3d_pick;
 mod app_init;
 /// 描画解像度モード（window / fixed）の定義・パースと、fixed の有効判定
 mod render_resolution;
+/// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）
+pub(crate) mod frame_pacing;
 mod event_handler;
 mod drag_handler;
 mod physics_ops;
@@ -1309,6 +1311,23 @@ pub struct App {
     ///（有効条件の判定は `App::fixed_render_resolution` に集約）。
     pub(super) render_resolution_mode: render_resolution::RenderResolutionMode,
 
+    /// 目標フレームレート（project_settings.json の `target_fps`。0 = 無制限）。
+    /// `handle_resumed` で一度だけ読み込み、以降は再読込しない。
+    ///
+    /// このフレームで実際に守る値は `frame_pacing::effective_target_fps` が
+    /// フォーカス・実行モードを加味して決める（Edit は常に無制限）。
+    pub(super) target_fps: u32,
+
+    /// 垂直同期モード（project_settings.json の `vsync`）。
+    /// `handle_resumed` で一度だけ読み込み、`Renderer::new` のサーフェス設定に渡す。
+    /// 実行中の切り替えは行わない（スワップチェーン再構成が必要なため）。
+    pub(super) vsync_mode: crate::engine::core::renderer::VsyncMode,
+
+    /// フレーム統計（直近 1 秒の平均 fps・直近フレームの実時間）。
+    /// `pace_frame` が毎フレーム更新し、スクリプト API（SEED.Time.Fps /
+    /// FrameTimeMs）へ静的値として発行される。
+    pub(super) frame_stats: frame_pacing::FrameStats,
+
     // ── アニメーション Edit プレビュー ───────────────────────────────
     /// Edit モードのアニメーションプレビュー（ANIM_PREVIEW）用クリップキャッシュ。
     /// キー = .anim アセットパス。ANIM_RELOAD 受信時にエントリを破棄し、
@@ -1694,6 +1713,10 @@ impl App {
             project_resolution: DEFAULT_PROJECT_RESOLUTION,
             // 同上。既定は Window（従来動作）。
             render_resolution_mode: render_resolution::RenderResolutionMode::default(),
+            // 同上。handle_resumed で project_settings.json から上書きされる。
+            target_fps:  frame_pacing::DEFAULT_TARGET_FPS,
+            vsync_mode:  crate::engine::core::renderer::VsyncMode::default(),
+            frame_stats: frame_pacing::FrameStats::default(),
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
