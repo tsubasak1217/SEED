@@ -71,6 +71,19 @@ public class DebugCommands : SEEDScript
     /// <summary>フレーム時間の小数桁数（"16.72 ms" のように 2 桁）。</summary>
     private const string FrameTimeFormat = "F2";
 
+    /// <summary>
+    /// fps 表示アクタの既定プレハブパス。
+    /// シーンへ結線しなくても表示できるよう、初回表示時にこれを生成する。
+    /// </summary>
+    private const string DefaultFpsLabelPrefabPath = "assets://mainGame/actors/UI/FpsLabel.actor";
+
+    /// <summary>生成した fps 表示アクタに付ける名前（プレハブのルート名と一致させること）。
+    /// <see cref="SpawnOnce"/> はこの名前で既存を探して二重生成を防ぐ。</summary>
+    private const string FpsLabelActorName = "FpsLabel";
+
+    /// <summary>fps 表示アクタの中で Text を持つ子アクタ名（プレハブの構造と一致させること）。</summary>
+    private const string FpsLabelTextChildName = "FpsLabelText";
+
     // ─── インスペクタ公開フィールド ──────────────────────────────
 
     /// <summary>
@@ -117,8 +130,18 @@ public class DebugCommands : SEEDScript
     /// 未設定でもキー操作は動き、その場合は代わりに 1 秒ごとのログ出力になる
     /// （パッケージ版は exe 隣の <c>logs/seed_*.log</c> に残るので、そこから数字を拾える）。
     /// </summary>
-    [SerializeField(Label = "fps 表示のText", Tooltip = "画面左上に置いた Text を割り当てる。未設定ならログへ出力する")]
+    [SerializeField(Label = "fps 表示のText", Tooltip = "画面左上に置いた Text を割り当てる。未設定なら下のプレハブを自動生成する")]
     public SEED.Text? fpsLabel = null;
+
+    /// <summary>
+    /// <see cref="fpsLabel"/> が未設定のときに自動生成する fps 表示アクタの .actor パス。
+    ///
+    /// これがあるため、シーン側に何も結線しなくても F3 だけで fps が出る。
+    /// 空文字にすると自動生成を行わず、ログ出力へフォールバックする。
+    /// </summary>
+    [SerializeField(Label = "fps 表示のプレハブ", Tooltip = "Text 未設定のとき自動生成する fps 表示アクタ。空にすると生成せずログへ出力する"),
+     AssetReference("actor")]
+    public string fpsLabelPrefabPath = DefaultFpsLabelPrefabPath;
 
     // ─── 内部状態 ────────────────────────────────────────────────
 
@@ -154,6 +177,21 @@ public class DebugCommands : SEEDScript
     /// <summary>Text 未設定時に fps をログへ出す間隔（秒）。</summary>
     private const float FpsLogIntervalSeconds = 1.0f;
 
+    /// <summary>
+    /// 自動生成した fps 表示アクタのルート。<see cref="fpsLabel"/> が結線されている場合は無効ハンドル。
+    /// 表示の ON / OFF は<b>このルートの Visible</b> で切り替える（Visible は全子孫に効く）。
+    /// </summary>
+    private SEED.GameObject spawnedFpsLabel;
+
+    /// <summary>自動生成したアクタから解決した Text。結線済みならそちらを優先する。</summary>
+    private SEED.Text? spawnedFpsText;
+
+    /// <summary>
+    /// 自動生成に失敗したか（プレハブパスが空・アセットが無い等）。
+    /// 一度失敗したら毎フレーム生成を試みず、ログ出力へ静かに切り替える。
+    /// </summary>
+    private bool fpsLabelSpawnFailed;
+
     // ─── ライフサイクル ──────────────────────────────────────────
 
     /// <summary>
@@ -168,16 +206,27 @@ public class DebugCommands : SEEDScript
         debugAllowed = SEED.Application.IsDebugAllowed;
         ClearPending();
 
+        // fps 表示はホットリロードのたびに OFF から始める
+        //（生成物は OnDestroy で畳まれているので、参照も必ず空へ戻す）。
+        fpsVisible          = false;
+        fpsLabelSpawnFailed = false;
+        spawnedFpsLabel     = default;
+        spawnedFpsText      = null;
+
         if (!debugAllowed)
         {
             SEED.Debug.Log("[Debug] パッケージ版のためデバッグキーを無効化した");
         }
     }
 
-    /// <summary>破棄直前の後始末。待ちのまま消えても参照を残さない。</summary>
+    /// <summary>
+    /// 破棄直前の後始末。待ちのまま消えても参照を残さない。
+    /// 自動生成した fps 表示アクタもここで畳む（シーンに置き去りにしない）。
+    /// </summary>
     public override void OnDestroy()
     {
         ClearPending();
+        DestroySpawnedFpsLabel();
     }
 
     /// <summary>
@@ -441,8 +490,10 @@ public class DebugCommands : SEEDScript
         if (SEED.Input.GetKeyDown(fpsKey))
         {
             fpsVisible = !fpsVisible;
-            // OFF にした瞬間にラベルを空へ戻す（消し忘れて文字が残らないように）
-            if (!fpsVisible && fpsLabel is { IsValid: true } label) { label.Content = string.Empty; }
+            // ON にした瞬間に表示先を用意する（初回はここでプレハブを生成する）。
+            // OFF にした瞬間は文字を消し、生成したアクタを非表示へ倒す。
+            if (fpsVisible) { EnsureFpsLabel(); }
+            else            { HideFpsLabel(); }
             // 次に ON にしたとき即座に 1 回ログが出るようにクールダウンを空にしておく
             fpsLogCooldown = 0.0f;
         }
@@ -451,8 +502,8 @@ public class DebugCommands : SEEDScript
 
         string text = BuildFpsText();
 
-        // Text が割り当ててあれば画面へ、無ければログへ（配布版のログファイルから拾える）
-        if (fpsLabel is { IsValid: true } target)
+        // Text が使えれば画面へ、無ければログへ（配布版のログファイルから拾える）
+        if (ResolveFpsText() is { } target)
         {
             target.Content = text;
             return;
@@ -465,6 +516,110 @@ public class DebugCommands : SEEDScript
             fpsLogCooldown = FpsLogIntervalSeconds;
             SEED.Debug.Log($"[fps] {text}");
         }
+    }
+
+    /// <summary>
+    /// 今フレームで文字を書き込む Text を返す【表示先の優先順位を決める唯一の場所】。
+    ///
+    /// <list type="number">
+    ///   <item>インスペクタで結線された <see cref="fpsLabel"/>（手動配置を最優先）</item>
+    ///   <item>自動生成したアクタから解決した Text</item>
+    ///   <item>どちらも無ければ null（呼び出し側がログ出力へフォールバックする）</item>
+    /// </list>
+    /// </summary>
+    private SEED.Text? ResolveFpsText()
+    {
+        if (fpsLabel is { IsValid: true } assigned) { return assigned; }
+        if (spawnedFpsText is { IsValid: true } spawned) { return spawned; }
+        return null;
+    }
+
+    /// <summary>
+    /// fps 表示先を用意する【自動生成の唯一の入口】。
+    ///
+    /// <see cref="fpsLabel"/> が結線されていれば何もしない。未設定のときだけ
+    /// <see cref="fpsLabelPrefabPath"/> のアクタを生成し、その中の
+    /// <see cref="FpsLabelTextChildName"/> から Text を取り出して保持する。
+    ///
+    /// 生成には <see cref="SpawnOnce"/> を使う。スクリプトのホットリロードで
+    /// <c>OnStart</c> が何度も走っても同名アクタを使い回すため、多重生成にならない。
+    /// 生成に失敗した場合は <see cref="fpsLabelSpawnFailed"/> を立て、以降は試行しない
+    /// （毎フレーム失敗ログを出さないため）。
+    /// </summary>
+    private void EnsureFpsLabel()
+    {
+        // 手動結線が最優先。自動生成は一切行わない。
+        if (fpsLabel is { IsValid: true }) { return; }
+
+        // 既に生成済みなら表示へ戻すだけ
+        if (spawnedFpsLabel.IsValid)
+        {
+            spawnedFpsLabel.Visible = true;
+            return;
+        }
+
+        // 一度失敗している／パス未設定なら、静かにログ出力へフォールバックする
+        if (fpsLabelSpawnFailed) { return; }
+        if (string.IsNullOrWhiteSpace(fpsLabelPrefabPath))
+        {
+            fpsLabelSpawnFailed = true;
+            SEED.Debug.Log("[fps] 表示プレハブが未設定のためログへ出力する");
+            return;
+        }
+
+        var actor = SpawnOnce.GetOrInstantiate(FpsLabelActorName, fpsLabelPrefabPath);
+        if (!actor.IsValid)
+        {
+            fpsLabelSpawnFailed = true;
+            SEED.Debug.LogWarning($"[fps] 表示アクタを生成できなかった: {fpsLabelPrefabPath}");
+            return;
+        }
+
+        // Text はルートではなく子アクタに付いている（プレハブの構造）。
+        // 構造が変わっても壊れないよう、子が見つからなければルートも見る。
+        var textOwner = actor.FindChild(FpsLabelTextChildName);
+        if (!textOwner.IsValid) { textOwner = actor; }
+
+        spawnedFpsText = textOwner.GetComponent<SEED.Text>();
+        if (spawnedFpsText is not { IsValid: true })
+        {
+            // アクタは出来たが Text が無い＝プレハブが壊れている。
+            // 中身の無いアクタを残さないよう畳んでからログ出力へ倒す。
+            actor.Destroy();
+            spawnedFpsText      = null;
+            fpsLabelSpawnFailed = true;
+            SEED.Debug.LogWarning(
+                $"[fps] 表示アクタに Text が無い（{FpsLabelTextChildName}）: {fpsLabelPrefabPath}");
+            return;
+        }
+
+        spawnedFpsLabel         = actor;
+        spawnedFpsLabel.Visible = true;
+    }
+
+    /// <summary>
+    /// fps 表示を隠す【表示 OFF の唯一の出口】。
+    ///
+    /// 自動生成したアクタは <c>Visible = false</c> で描画だけ止める（破棄しない ——
+    /// 再表示のたびに生成し直すとその瞬間だけカクつくため）。
+    /// 手動結線の Text は Visible を勝手に触らず、文字を空にするだけに留める
+    /// （そのアクタが他の用途と共用されている可能性があるため）。
+    /// </summary>
+    private void HideFpsLabel()
+    {
+        if (spawnedFpsLabel.IsValid) { spawnedFpsLabel.Visible = false; }
+        if (fpsLabel is { IsValid: true } assigned) { assigned.Content = string.Empty; }
+    }
+
+    /// <summary>
+    /// 自動生成した fps 表示アクタを破棄する【生成物の後始末の唯一の出口】。
+    /// 手動結線の Text はシーンの持ち物なので触らない。
+    /// </summary>
+    private void DestroySpawnedFpsLabel()
+    {
+        if (spawnedFpsLabel.IsValid) { spawnedFpsLabel.Destroy(); }
+        spawnedFpsLabel = default;
+        spawnedFpsText  = null;
     }
 
     /// <summary>
