@@ -63,8 +63,7 @@
 /// 食いつき距離（<see cref="BiteDistance"/>）まで詰めた瞬間に <see cref="TryEatHookedFish"/> を
 /// 試み、<b>やり取りの「隙（<see cref="FishingFight.Phase.Rest"/>）」中だけ</b>即座に食い付いて成立する
 /// （<see cref="SwapHookedFish"/> で乗り換わり、前の魚は食われて消滅。新しい魚で
-/// <see cref="FishingFight.BeginFightAfterSwap"/> からやり取りを組み直す
-/// ＝<b>直前の隙の残りを引き継いでから走り（Run）で沖へ逃げる</b>）。
+/// <see cref="FishingFight.BeginFight"/> からやり取りをやり直す＝通常のヒットと同じ入り口）。
 /// 食われた魚は値（<see cref="ChainCatchEntry"/>）で控えておき、釣り上げたときに
 /// 掛かった順で全部リザルトへ出して図鑑へ登録する（<see cref="ChainCatchHistory"/>）。
 /// 隙以外（出題・回答中）に届いた場合は失敗を返すだけで、魚は興味を失わず
@@ -687,33 +686,33 @@ public class FishingController : SEEDScript
 
     // ─── キャストの飛距離・方向 ───────────────────────────────
 
-    /// <summary>飛距離の下限（メートル）。着水点マーカーの往復の下端でもある。</summary>
-    [Header("キャスト"), SerializeField(Label = "最短飛距離(m)")]
-    private float minCastDistance = 3f;
-
     /// <summary>飛距離の上限（メートル）。着水点マーカーの往復の上端でもある。</summary>
-    [SerializeField(Label = "最長飛距離(m)")]
+    [Header("キャスト"), SerializeField(Label = "最長飛距離(m)")]
     private float maxCastDistance = 25f;
 
     /// <summary>
-    /// 最短飛距離が釣り上げ成立距離（<see cref="catchDistanceMeters"/>）より内側に
-    /// ならないようにする余裕（メートル）。
+    /// 最短飛距離を釣り上げ成立距離（<see cref="catchDistanceMeters"/>）から
+    /// どれだけ沖へ離すかの余裕（メートル）【最短飛距離を決める唯一のパラメータ】。
     ///
+    /// 【なぜ最短飛距離そのものを持たないのか】2026-09-10 改定
     /// 釣り上げは<b>距離だけ</b>で成立する（<see cref="UpdateFight"/>）ため、成立距離より
     /// 近くに着水した状態でヒットすると、やり取りを 1 度もせずに次のフレームで釣れてしまう。
-    /// 成立距離を海側へ広げた（4 m）ことで最短飛距離 3 m と逆転したので、
-    /// 実効の最短飛距離を「成立距離＋この余裕」で下支えする（<see cref="EffectiveMinCastDistance"/>）。
+    /// つまり最短飛距離は「成立距離より必ず外側」でなければならず、独立した値として
+    /// 置くと成立距離を調整するたびに両方を直す必要がある（＝片方だけ直して破綻する）。
+    /// そこで<b>最短飛距離 ＝ 成立距離 ＋ この余裕</b>に一本化した
+    /// （<see cref="EffectiveMinCastDistance"/>）。
     /// </summary>
-    private const float MinCastMarginBeyondCatch = 2f;
+    /// 既定 5.0m: 成立距離 4.0m と合わせて最短 9.0m。最短で投げてもやり取りが数往復は入る。
+    [SerializeField(Label = "最短飛距離の余裕(m)")]
+    private float minCastMarginBeyondCatch = 5.0f;
 
     /// <summary>
-    /// 実効の最短飛距離（メートル）。Inspector の <see cref="minCastDistance"/> と
-    /// 「釣り上げ成立距離＋<see cref="MinCastMarginBeyondCatch"/>」の大きい方。
-    /// 着水点マーカーの往復・キャストのクランプ・デバッグ投擲のすべてがこれを使う
-    /// （<see cref="minCastDistance"/> を直接読む箇所を残さないこと）。
+    /// 実効の最短飛距離（メートル）＝「釣り上げ成立距離（<see cref="catchDistanceMeters"/>）
+    /// ＋ <see cref="minCastMarginBeyondCatch"/>」【最短飛距離の唯一の算出点】。
+    /// 着水点マーカーの往復・キャストのクランプ・デバッグ投擲のすべてがこれを使う。
     /// </summary>
     private float EffectiveMinCastDistance
-        => SEED.Mathf.Max(minCastDistance, catchDistanceMeters + MinCastMarginBeyondCatch);
+        => SEED.Mathf.Max(catchDistanceMeters, 0f) + SEED.Mathf.Max(minCastMarginBeyondCatch, 0f);
 
     /// <summary>
     /// 着水点マーカーが最短⇔最長を 1 往復する秒数（往路＋復路で 1 周）。
@@ -1093,12 +1092,9 @@ public class FishingController : SEEDScript
     ///
     /// 待っている魚は弾かれても回遊へは戻らず、<c>Fish.chainWaitTimeoutSeconds</c> の
     /// 上限まで待ち続けるので、猶予が明けた次のフレームに改めて成立し得る。
-    /// 乗り換え直後は<b>直前の隙をそのまま引き継いで</b>始まる
-    /// （<see cref="FishingFight.BeginFightAfterSwap"/>）ので、そのままでは
-    /// 「もう猶予は明けている」ことになってしまう。やり取り側は
-    /// <c>SecondsSincePhaseStart</c> の基準を<b>実際に入った時刻</b>に取っているため、
-    /// 引き継ぎ隙でもこの猶予は乗り換えの瞬間から数え直される。
-    /// 0 以下にすると猶予なし（隙の頭から成立する）。
+    /// 乗り換え直後は新しいやり取りが余白（<see cref="FishingFight.Phase.LeadIn"/>）から
+    /// 始まるため、そもそも隙ではなく、この猶予は自動的に効く。
+    /// 0 以下にすると猶予なし（従来どおり隙の頭から成立する）。
     /// </summary>
     [SerializeField(Label = "わらしべ連鎖の猶予(秒)")]
     private float chainEatGraceSeconds = 1.5f;
@@ -1885,7 +1881,7 @@ public class FishingController : SEEDScript
     /// <param name="fish">掛ける魚。</param>
     /// <param name="distanceMeters">
     /// ウキが水上に無いときに着水させる、竿先からの水平距離（メートル）。
-    /// <see cref="minCastDistance"/>〜<see cref="maxCastDistance"/> にクランプする。
+    /// <see cref="EffectiveMinCastDistance"/>〜<see cref="maxCastDistance"/> にクランプする。
     /// </param>
     /// <returns>
     /// 掛かったら true。パッケージ版（配布ビルド）では何もせず false を返す
@@ -2133,18 +2129,11 @@ public class FishingController : SEEDScript
         newFish.OnHooked();
         State = FishState.Hooked;
 
-        // やり取りを新しい魚で作り直す【乗り換え専用の入口】。
-        //
-        // 【なぜ EndFight + BeginFight ではないのか】2026-09-10 改定
-        // 従来は通常のヒットと同じ入口（EndFight → BeginFight）で余白（LeadIn）から
-        // やり直していたが、乗り換えは必ず<b>隙（Rest）の最中</b>に成立するため、
-        // 巻けるはずだった隙がその場で打ち切られ、ウキがいきなり沖へ持って行かれていた。
-        // BeginFightAfterSwap は「残っている隙をそのまま引き継ぎ → 隙が終わってから
-        // 走り（Run）で沖へ逃げる」順序で掛け直すので、隙が乗り換えで消えない。
-        // 魚 HP・糸の残り・リズムの作り直しは通常のヒットとまったく同じ。
+        // やり取りを畳んでから、新しい魚で開始し直す（通常のヒットと同じ入口: LeadIn からやり直す）
         if (fight is { } f)
         {
-            f.BeginFightAfterSwap(newFish, judgement, CurrentFloatDistance());
+            f.EndFight();
+            f.BeginFight(newFish, judgement, CurrentFloatDistance());
         }
 
         // ヒット用クリップを引き直し（既に同じクリップならラッチで間引かれる）、カーソルロックも同期
@@ -2366,7 +2355,7 @@ public class FishingController : SEEDScript
                 // 糸が切れたらこのフレームは巻き取りへ進まず、糸切れ処理で締める。
                 UpdateFight(ctx.DeltaTime);
                 if (State != FishState.Hooked) { break; }
-                UpdateRunCameraTarget();    // 引き演出（LeadIn）中だけカメラ目標を置き直す
+                UpdateRunCameraTarget();    // 引き演出（LeadIn / 回復後の走り Run）中だけカメラ目標を置き直す
                 UpdateCallCameraTarget();   // 出題（Call）中だけカメラ目標を置き直す
                 UpdateReeling(ctx.DeltaTime);
                 UpdateShoreCamera(ctx.DeltaTime);   // 岸際の巻き中だけ「陸側から海を見る」構図へ回り込む
@@ -2740,7 +2729,7 @@ public class FishingController : SEEDScript
     /// <summary>
     /// いまキャストしたときの飛距離（メートル）。
     /// <see cref="previewCycleSeconds"/> を 1 周期として
-    /// <see cref="minCastDistance"/>⇔<see cref="maxCastDistance"/> をピンポン往復する。
+    /// <see cref="EffectiveMinCastDistance"/>⇔<see cref="maxCastDistance"/> をピンポン往復する。
     /// </summary>
     private float PreviewDistance()
     {
@@ -2792,7 +2781,7 @@ public class FishingController : SEEDScript
     /// 飛距離・方向は <see cref="FishState.Windup"/> のプレビューが示していた値をそのまま受け取る
     /// （＝見えていた着弾点に必ず落ちる）。方向が縮退している場合は何もしない。
     /// </summary>
-    /// <param name="distance">飛距離（メートル）。<see cref="minCastDistance"/>〜<see cref="maxCastDistance"/> にクランプする。</param>
+    /// <param name="distance">飛距離（メートル）。<see cref="EffectiveMinCastDistance"/>〜<see cref="maxCastDistance"/> にクランプする。</param>
     /// <param name="yawDegrees">キャスト方向のヨー角（度）。null なら縮退のためキャストしない。</param>
     private void StartCast(float distance, float? yawDegrees)
     {
@@ -3328,7 +3317,7 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 魚が沖へ走っているあいだ（<see cref="FishingFight.Phase.LeadIn"/> ＝ 初回ヒット直後／
-    /// <see cref="FishingFight.Phase.Run"/> ＝ わらしべ乗り換え直後）のカメラ目標
+    /// <see cref="FishingFight.Phase.Run"/> ＝ 隙中に魚回復を拾った直後）のカメラ目標
     /// （<see cref="runCameraTarget"/>）を毎フレーム置き直す【この構図の唯一の算出点】。
     ///
     /// プレイヤーとウキの<b>中点</b>を中心に、<see cref="runCamThetaDegrees"/>（方位角）・
@@ -3417,7 +3406,7 @@ public class FishingController : SEEDScript
     /// 【<see cref="runCameraTarget"/> を選ぶ条件の唯一の定義】。
     ///
     /// 初回ヒット直後の余白（<see cref="FishingFight.Phase.LeadIn"/>）と、
-    /// わらしべ連鎖で乗り換えた直後の走り（<see cref="FishingFight.Phase.Run"/>）は
+    /// 隙の間に「魚回復」の漂流物を拾ったあとの走り（<see cref="FishingFight.Phase.Run"/>）は
     /// どちらも「掛かった魚が沖へ逃げていくのを見せる」区間なので、同じ構図で撮る。
     /// カメラ側（<see cref="CameraMove"/>）もこの判定を呼ぶので、
     /// 目標の置き直しと構図の選択が食い違うことがない。

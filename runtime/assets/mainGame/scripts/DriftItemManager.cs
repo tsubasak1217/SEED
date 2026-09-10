@@ -19,10 +19,9 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ヒット中（FishingController.Current.IsHooked）で、かつ岸際でない
 /// （FishingController.NearShore が false）のあいだだけ
 ///   spawnIntervalSeconds ごとに 1 個、DriftItem.All.Count が maxItems 未満なら生成する
-///   位置 = 竿先→ウキを結ぶ線分（＝これから巻き取ってウキが通る道筋）上の比率
-///         spawnSegmentTMin〜spawnSegmentTMax の一点に、道筋と直交する横ずれ
-///         （±spawnLateralMaxMeters）を足した水面上の一点
-///         竿先〜ウキの距離が spawnMinSegmentMeters 未満（ウキが岸に近い）なら出さない
+///   位置 = 「ウキから竿先の方向へ shoreShiftMeters だけ寄せた点」を中心とした
+///         spawnRadiusMin〜spawnRadiusMax の円環内のランダムな一点（水面上）
+///         ただし竿先（＝岸側）から spawnRadiusMin より近い点は捨てて引き直す
 ///   種類 = spawnWeights（ひるませ／魚回復／糸回復）の重み付き抽選
 /// ヒットしていないあいだは、残っている漂流物をすべて消す
 /// </code>
@@ -34,11 +33,14 @@ public class DriftItemManager : SEEDScript
 {
     // ─── 定数（マジックナンバー禁止）─────────────────────────────
 
-    /// <summary>竿先→ウキの線分上の比率（<c>t</c>）が取り得る下限（＝竿先そのもの）。</summary>
-    private const float MinSegmentRatio = 0f;
+    /// <summary>1 回転（ラジアン）。出現方位のランダム抽選に使う。</summary>
+    private const float FullTurnRadians = 6.2831853f;
 
-    /// <summary>竿先→ウキの線分上の比率（<c>t</c>）が取り得る上限（＝ウキそのもの）。</summary>
-    private const float MaxSegmentRatio = 1f;
+    /// <summary>出現位置の抽選をやり直す最大回数（竿先に近すぎる点を弾くため）。</summary>
+    private const int SpawnPositionRetryCount = 8;
+
+    /// <summary>0 除算を避けるための「実質 0 メートル」しきい値（向きが定まらない判定に使う）。</summary>
+    private const float DivideEpsilon = 1e-4f;
 
     /// <summary>重みの合計がこれ以下なら抽選できない（＝生成しない）。</summary>
     private const float MinTotalWeight = 1e-4f;
@@ -73,41 +75,26 @@ public class DriftItemManager : SEEDScript
     [SerializeField(Label = "生成間隔(秒)")]
     private float spawnIntervalSeconds = 2.5f;
 
+    /// <summary>出現距離の下限（メートル）。円環の中心に近すぎる位置には湧かせない。</summary>
+    [SerializeField(Label = "出現距離の下限(m)")]
+    private float spawnRadiusMin = 4f;
+
+    /// <summary>出現距離の上限（メートル）。</summary>
+    [SerializeField(Label = "出現距離の上限(m)")]
+    private float spawnRadiusMax = 14f;
+
     /// <summary>
-    /// 出現位置の比率（<c>t</c>）の<b>下限</b>【竿先を 0・ウキを 1 とした線分上の位置】。
+    /// 円環の中心を<b>ウキから竿先（岸）の方向へ寄せる量</b>（メートル）
+    /// 【漂流物を「少し岸側」に寄せる唯一のパラメータ】。
     ///
-    /// 漂流物は<b>ウキが巻かれて通る道筋の上</b>にしか置かない
-    /// （拾えるのはウキとの接触だけなので、ウキより沖に湧かせても拾いようがない）。
-    /// 0 に近いほど岸寄り（＝拾えるまでが長い）、1 に近いほどウキの手前に湧く。
-    /// 既定 0.35: 竿先のすぐそばは絵として窮屈なので、少し沖から出す。
+    /// 拾えるのはウキとの接触だけ（<c>FishingController.UpdateDriftPickup</c>）なので、
+    /// ウキを中心に湧かせると半分は「これから巻く側」ではなく沖側に出てしまい、
+    /// 巻いても近づかないぶんが無駄になる。中心を岸側へ寄せると
+    /// 「これから通る側」に出る割合が増える。
+    /// 0 にすると従来どおりウキ中心の円環になる。
     /// </summary>
-    [SerializeField(Label = "出現位置の比率(下限)")]
-    private float spawnSegmentTMin = 0.35f;
-
-    /// <summary>
-    /// 出現位置の比率（<c>t</c>）の<b>上限</b>（<see cref="spawnSegmentTMin"/> と同じ座標系）。
-    /// 既定 0.9: ウキに重ねて湧かせない（湧いた瞬間に拾えてしまうのを避ける）。
-    /// </summary>
-    [SerializeField(Label = "出現位置の比率(上限)")]
-    private float spawnSegmentTMax = 0.9f;
-
-    /// <summary>
-    /// 道筋（竿先→ウキ）と直交する向きへの<b>最大横ずれ</b>（メートル）。
-    /// ±この値のあいだで一様に抽選する。0 にすると必ず道筋の真上に並ぶ。
-    /// 巻きながら A / D で左右へ寄せれば拾える幅なので、大きくするほど操作が要る。
-    /// </summary>
-    [SerializeField(Label = "横方向の最大ずれ(m)")]
-    private float spawnLateralMaxMeters = 3f;
-
-    /// <summary>
-    /// 出現に必要な竿先〜ウキの水平距離（メートル）【区間が短すぎるときの棄却しきい値】。
-    ///
-    /// ウキが岸に近いと「竿先とウキの間」がほとんど無くなり、湧かせても
-    /// 拾う間もなく巻き切ってしまう。その場合はこのフレームの生成を諦める
-    /// （次の生成間隔でまた試す）。
-    /// </summary>
-    [SerializeField(Label = "出現に必要な竿先〜ウキの距離(m)")]
-    private float spawnMinSegmentMeters = 4f;
+    [SerializeField(Label = "岸側へのずらし(m)")]
+    private float shoreShiftMeters = 4.0f;
 
     /// <summary>抽選の重み（ひるませ）。0 なら出現しない。</summary>
     [SerializeField(Label = "抽選の重み(ひるませ)")]
@@ -245,7 +232,7 @@ public class DriftItemManager : SEEDScript
     // ─── 内部処理: 生成 ─────────────────────────────────────
 
     /// <summary>
-    /// 漂流物を 1 個生成する。種類は重み付き抽選、位置は竿先〜ウキの線分上のランダムな一点。
+    /// 漂流物を 1 個生成する。種類は重み付き抽選、位置は「少し岸側へ寄せた円環」内のランダムな一点。
     /// prefab が読めない・位置が決まらないときは静かに諦める（次の間隔でまた試す）。
     /// </summary>
     private void SpawnOne()
@@ -310,7 +297,7 @@ public class DriftItemManager : SEEDScript
     }
 
     /// <summary>
-    /// 種類を指定して漂流物を 1 個、通常の出現範囲（竿先〜ウキの線分上）に生成する。
+    /// 種類を指定して漂流物を 1 個、通常の出現範囲（少し岸側へ寄せた円環内）に生成する。
     /// 位置を自分で決められない呼び出し側（チュートリアル）はこちらを使う。
     /// </summary>
     /// <param name="kind">漂流物の種類（<see cref="DriftItem.KindStun"/> など）。</param>
@@ -358,22 +345,22 @@ public class DriftItemManager : SEEDScript
     /// <summary>
     /// 出現位置（水面上の一点）を抽選する【出現位置の唯一の算出点】。
     ///
-    /// <b>竿先 → ウキを結ぶ線分＝これから巻き取ってウキが通る道筋</b>の上に置く。
-    /// 拾得判定はウキとの接触だけ（<c>FishingController.UpdateDriftPickup</c>）なので、
-    /// ウキより沖や真横に湧かせても拾いようがない ―― だから道筋の上に限定する。
+    /// <b>ウキを少しだけ岸側（竿先の方向）へ寄せた点</b>を中心に、
+    /// <see cref="spawnRadiusMin"/>〜<see cref="spawnRadiusMax"/> の円環内でランダムな一点を取り、
+    /// <b>竿先（＝プレイヤーが立つ岸側）から <see cref="spawnRadiusMin"/> より近い点は
+    /// 捨てて引き直す</b>（岸際に湧いて「拾いようがない／不自然に足元へ流れてくる」のを防ぐため）。
     ///
     /// <code>
-    /// t        = Random(spawnSegmentTMin, spawnSegmentTMax)   // 竿先 0 〜 ウキ 1
-    /// lateral  = Random(-spawnLateralMaxMeters, +spawnLateralMaxMeters)
-    /// 位置     = 竿先 + 道筋方向 × (区間長 × t) + 道筋の直交方向 × lateral（高さは水面）
+    /// 中心   = ウキ + (竿先 − ウキ) の向き × shoreShiftMeters
+    ///          ただし中心と竿先の距離は spawnRadiusMin 以上になるようクランプ
+    ///          （＝寄せすぎて円環が岸へめり込まないようにする）
+    /// 角度   = Random(0, 2π) / 距離 = Random(spawnRadiusMin, spawnRadiusMax)
+    /// 位置   = 中心 + (sinθ, cosθ) × 距離（高さは水面）
     /// </code>
-    ///
-    /// 竿先〜ウキの水平距離が <see cref="spawnMinSegmentMeters"/> 未満のときは
-    /// 「置ける区間が無い」として false を返す（＝このフレームは出さない）。
     /// </summary>
     /// <param name="controller">位置の基準（ウキ・竿先・水面）を読むコントローラ。</param>
     /// <param name="position">決まった出現位置（ワールド）。</param>
-    /// <returns>位置が決まったか（区間が短すぎるときは false）。</returns>
+    /// <returns>位置が決まったか（規定回数引き直しても決まらなければ false）。</returns>
     private bool TryPickSpawnPosition(FishingController controller, out SEED.Vector3 position)
     {
         position = SEED.Vector3.Zero;
@@ -382,35 +369,46 @@ public class DriftItemManager : SEEDScript
         var rodTip        = controller.RodTipWorldPosition;
         float surface     = controller.WaterSurfaceY();
 
-        // 道筋（竿先 → ウキ）の水平ベクトルと、その長さ＝置ける区間の長さ
-        float axisX = floatPosition.x - rodTip.x;
-        float axisZ = floatPosition.z - rodTip.z;
-        float segmentLength = SEED.Mathf.Sqrt(axisX * axisX + axisZ * axisZ);
+        float radiusMin = SEED.Mathf.Max(spawnRadiusMin, 0f);
+        float radiusMax = SEED.Mathf.Max(spawnRadiusMax, radiusMin);
 
-        // 区間が短すぎる（ウキが岸のすぐそば）なら出さない
-        if (segmentLength < SEED.Mathf.Max(spawnMinSegmentMeters, 0f)) { return false; }
+        // 円環の中心 ＝ ウキから竿先の方向へ shoreShiftMeters だけ寄せた点。
+        // ウキと竿先が重なっていて向きが決まらない場合は、ずらさずウキ中心のままにする。
+        float toRodX = rodTip.x - floatPosition.x;
+        float toRodZ = rodTip.z - floatPosition.z;
+        float floatToRod = SEED.Mathf.Sqrt(toRodX * toRodX + toRodZ * toRodZ);
 
-        float dirX = axisX / segmentLength;
-        float dirZ = axisZ / segmentLength;
+        float centerX = floatPosition.x;
+        float centerZ = floatPosition.z;
+        if (floatToRod > DivideEpsilon)
+        {
+            // 寄せる量は「岸へめり込まない範囲」に抑える。
+            // 中心と竿先の距離を radiusMin 以上に保ちたいので、ずらせるのは
+            // (ウキ〜竿先の距離 − radiusMin) まで。ウキ自身が既に岸へ近い場合は 0（ずらさない）。
+            float shiftLimit = SEED.Mathf.Max(floatToRod - radiusMin, 0f);
+            float shift      = SEED.Mathf.Min(SEED.Mathf.Max(shoreShiftMeters, 0f), shiftLimit);
+            centerX += toRodX / floatToRod * shift;
+            centerZ += toRodZ / floatToRod * shift;
+        }
 
-        // 比率は 0〜1 に丸めたうえで、下限 ≦ 上限 を必ず満たすように整える
-        // （インスペクタで逆に入れても抽選が壊れないようにするため）
-        float ratioMin = SEED.Mathf.Clamped(spawnSegmentTMin, MinSegmentRatio, MaxSegmentRatio);
-        float ratioMax = SEED.Mathf.Clamped(spawnSegmentTMax, ratioMin, MaxSegmentRatio);
-        float ratio    = SEED.Random.Range(ratioMin, ratioMax);
+        for (int i = 0; i < SpawnPositionRetryCount; i++)
+        {
+            float angle    = SEED.Random.Range(0f, FullTurnRadians);
+            float distance = SEED.Random.Range(radiusMin, radiusMax);
 
-        // 横ずれ: 道筋を右へ 90° 回した水平方向（正規化済み）へ ±lateralMax
-        float lateralMax = SEED.Mathf.Max(spawnLateralMaxMeters, 0f);
-        float lateral    = SEED.Random.Range(-lateralMax, lateralMax);
-        float rightX     = dirZ;
-        float rightZ     = -dirX;
+            float x = centerX + SEED.Mathf.Sin(angle) * distance;
+            float z = centerZ + SEED.Mathf.Cos(angle) * distance;
 
-        float along = segmentLength * ratio;
-        position = new SEED.Vector3(
-            rodTip.x + dirX * along + rightX * lateral,
-            surface,
-            rodTip.z + dirZ * along + rightZ * lateral);
-        return true;
+            // 岸（竿先）に近すぎる点は捨てる
+            float dx = x - rodTip.x;
+            float dz = z - rodTip.z;
+            if (dx * dx + dz * dz < radiusMin * radiusMin) { continue; }
+
+            position = new SEED.Vector3(x, surface, z);
+            return true;
+        }
+
+        return false;
     }
 
     // ─── 内部処理: 片付け ────────────────────────────────────

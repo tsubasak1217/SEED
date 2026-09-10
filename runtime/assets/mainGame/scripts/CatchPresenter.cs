@@ -88,8 +88,9 @@ public struct RepeatCameraAngle
 /// SlowArc  … 横から見る構図へ toSideSeconds かけて移りつつ、魚が跳び切るまでを見せる
 ///            （Time.Scale = slowScale）。水平移動はしない（＝ウキの真上を上下するだけ）。
 ///            jumpSeconds × jumpApexRatio 秒で魚を隠し、次へ。
-/// Result   … Time.Scale を戻し、ResultPanel を開く。
-///            パネルが閉じ切る（ResultPanel.IsActive が false になる）まで待つ。
+/// Result   … Time.Scale を戻し、釣果の一覧（連鎖した魚を掛かった順に並べたもの）を
+///            ResultPanel へ渡して開く。何匹をどう送るかはパネル側の責務で、
+///            ここはパネルが閉じ切る（ResultPanel.IsActive が false になる）まで待つ。
 /// Close    … closeSeconds 秒の間を置いてから後始末（魚の破棄・カメラ復帰）。
 /// </code>
 ///
@@ -674,6 +675,13 @@ public class CatchPresenter : SEEDScript
     [SerializeField(Label = "ベスト行の見出し")]
     private string bestLabelPrefix = "自己ベスト: ";
 
+    /// <summary>
+    /// 名前行の書式（<c>{0}</c> ＝ 魚レベル / <c>{1}</c> ＝ 表示名）。
+    /// 図鑑カード（<c>ZukanCard</c> の「既知の名前の書式」）と同じ表記に揃えてある。
+    /// </summary>
+    [SerializeField(Label = "名前行の書式")]
+    private string nameFormat = "Lv{0} {1}";
+
     // ─── 公開状態 ─────────────────────────────────────────────
 
     /// <summary>現在のフェーズ（<see cref="CameraMove"/> がカメラ目標の選択に使う読み取り専用値）。</summary>
@@ -692,9 +700,6 @@ public class CatchPresenter : SEEDScript
 
     // ─── 内部状態 ─────────────────────────────────────────────
 
-    /// <summary>釣果パネルで最初に見せるエントリの添字（＝連鎖の最初に掛かった魚）。</summary>
-    private const int FirstResultEntryIndex = 0;
-
     /// <summary>演出中の魚（null = 演出していない）。<see cref="Begin"/> で束縛し、<see cref="Finish"/> で破棄する。</summary>
     private Fish? shownFish = null;
 
@@ -709,14 +714,13 @@ public class CatchPresenter : SEEDScript
     private readonly List<ChainCatchEntry> chainEntries = new();
 
     /// <summary>
-    /// いま釣果パネルに出しているエントリの添字
-    /// 【<see cref="CatchPhase.Result"/> の進行の唯一の状態】。
+    /// 釣果パネルへ渡す表示内容の一覧（見せる順）【パネルへの受け渡しの唯一の器】。
     ///
-    /// <c>0 〜 chainEntries.Count - 1</c> ＝ 連鎖の途中で餌になった魚、
-    /// <c>chainEntries.Count</c> ＝ 最後に釣り上げた魚（<see cref="shownFish"/>）。
-    /// ＝ 全部で <c>chainEntries.Count + 1</c> 枚のパネルを順に見せる。
+    /// <see cref="chainEntries"/>（餌になった魚）＋ <see cref="shownFish"/>（最後の 1 匹）を
+    /// この順に詰めて <see cref="ResultPanel.ShowChain"/> へ渡す。
+    /// パネル側が値を写し取るので、こちらは毎回使い回してよい（確保を繰り返さない）。
     /// </summary>
-    private int resultEntryIndex = 0;
+    private readonly List<ResultPanel.ResultData> resultEntries = new();
 
     /// <summary>釣り上げた瞬間のウキのワールド位置（＝水面の基準点）。<see cref="Begin"/> で受け取る。</summary>
     private SEED.Vector3 floatPosition = SEED.Vector3.Zero;
@@ -872,8 +876,8 @@ public class CatchPresenter : SEEDScript
     /// </param>
     /// <param name="chain">
     /// わらしべ連鎖で餌になった魚の控え（<b>最初に掛かった順</b>）。null／空なら連鎖なし。
-    /// 釣果パネルはこの順に 1 枚ずつ出し、最後に <paramref name="fish"/> のパネルで締める
-    /// （＝掛かった順に見せる）。跳ねる演出は実体のある <paramref name="fish"/> だけ。
+    /// 釣果パネルは「この順 ＋ 最後に <paramref name="fish"/>」の一覧を 1 枚のパネルの中で
+    /// 順に見せる（＝掛かった順に見せる）。跳ねる演出は実体のある <paramref name="fish"/> だけ。
     /// </param>
     public void Begin(
         Fish fish,
@@ -892,7 +896,6 @@ public class CatchPresenter : SEEDScript
         {
             for (int i = 0; i < chain.Count; i++) { chainEntries.Add(chain[i]); }
         }
-        resultEntryIndex = FirstResultEntryIndex;
 
         floatPosition = floatWorldPosition;
         whiteoutAlpha = 0f;
@@ -1173,29 +1176,16 @@ public class CatchPresenter : SEEDScript
     }
 
     /// <summary>
-    /// <see cref="CatchPhase.Result"/> の更新
-    /// 【釣果を<b>連鎖の順に 1 枚ずつ</b>送る唯一の場所】。
+    /// <see cref="CatchPhase.Result"/> の更新【パネルが閉じ切るのを待つだけの場所】。
     ///
-    /// パネルの開閉・図鑑登録の追加表示・決定入力の受付はすべて
-    /// <see cref="ResultPanel"/> の責務。ここは「いま出ているパネルが閉じ切ったか」
-    /// （<see cref="ResultPanel.IsActive"/>）だけを見て、
-    /// ・まだ見せていない魚が残っていれば次のパネルへ差し替える
-    /// ・全部見せ終えたら閉じる演出（<see cref="CatchPhase.Close"/>）へ移る。
-    ///
-    /// ＝ 閉じる演出（白の後始末・魚の破棄）は<b>最後の 1 枚のあとだけ</b>通る。
+    /// 連鎖した魚を何匹どう見せるか・図鑑登録の追加表示・決定入力の受付はすべて
+    /// <see cref="ResultPanel"/> の責務（<see cref="ResultPanel.ShowChain"/> に一覧ごと
+    /// 預けてある）。ここは「パネルが閉じ切ったか」（<see cref="ResultPanel.IsActive"/>）
+    /// だけを見て、閉じたら後始末（<see cref="CatchPhase.Close"/>）へ移る。
     /// </summary>
     private void UpdateResult()
     {
         if (ResultPanel.IsActive) { return; }
-
-        // 添字 chainEntries.Count が「最後に釣り上げた魚」なので、そこまでは次を出す
-        int next = resultEntryIndex + 1;
-        if (next <= chainEntries.Count)
-        {
-            resultEntryIndex = next;
-            ShowResultEntry(resultEntryIndex);
-            return;
-        }
 
         EnterPhase(CatchPhase.Close);
     }
@@ -1260,8 +1250,8 @@ public class CatchPresenter : SEEDScript
             case CatchPhase.Result:
                 // スローは必ずここで戻す（パネル表示中は等倍）
                 ApplySlow(false);
-                // 1 枚目＝連鎖の最初に掛かった魚（連鎖なしなら釣り上げた魚そのもの）
-                ShowResultEntry(resultEntryIndex);
+                // 釣果は「掛かった順の一覧」としてパネルへ丸ごと預ける（送りはパネル側の仕事）
+                ShowChainResult();
                 break;
         }
     }
@@ -1343,7 +1333,7 @@ public class CatchPresenter : SEEDScript
 
         // 連鎖の控えも必ず捨てる（次の釣り上げへ前回の魚が混ざらないように）
         chainEntries.Clear();
-        resultEntryIndex = FirstResultEntryIndex;
+        resultEntries.Clear();
 
         // リピート・カメラ移行の状態も必ず初期化する
         // （次の釣り上げが前回の途中状態を引き継がないように）
@@ -1810,45 +1800,59 @@ public class CatchPresenter : SEEDScript
     // ─── 釣果パネル ───────────────────────────────────────────
 
     /// <summary>
-    /// 添字で指定したエントリの釣果パネルを開く
-    /// 【どの魚を見せるかを決める唯一の場所】。
+    /// 連鎖した魚を<b>掛かった順に並べた一覧</b>を組み立てて釣果パネルへ渡す
+    /// 【釣果パネルを開く唯一の場所】。
     ///
-    /// <paramref name="index"/> が連鎖の控え（<see cref="chainEntries"/>）の範囲内なら
-    /// その控えの値を、範囲外（＝末尾の 1 つ先）なら<b>実体のある最後の魚</b>
-    /// （<see cref="shownFish"/>）の値を使う。どちらも「表示名・大きさ・ランク」の
-    /// 3 つしか要らないので、実体の有無で表示内容が変わることはない。
+    /// 並びは「連鎖の控え（<see cref="chainEntries"/>＝餌になった魚）→ 最後に釣り上げた魚
+    /// （<see cref="shownFish"/>）」。連鎖が無ければ最後の 1 匹だけの一覧になる。
+    /// 送り（絵が覆いかぶさって次の魚へ切り替わる演出）はパネル側の責務なので、
+    /// こちらは<b>1 度渡して閉じるのを待つだけ</b>。
     /// </summary>
-    /// <param name="index">見せるエントリの添字（0 ＝ 連鎖の最初に掛かった魚）。</param>
-    private void ShowResultEntry(int index)
+    private void ShowChainResult()
     {
-        if (index >= FirstResultEntryIndex && index < chainEntries.Count)
+        resultEntries.Clear();
+
+        // 餌になった魚（実体はもう無いので控えの値だけで作る）
+        for (int i = 0; i < chainEntries.Count; i++)
         {
-            ChainCatchEntry entry = chainEntries[index];
-            ShowResultPanelFor(entry.DisplayName, entry.DisplaySize, entry.SizeRank);
-            return;
+            ChainCatchEntry entry = chainEntries[i];
+            resultEntries.Add(BuildResultData(
+                entry.DisplayName, entry.DisplaySize, entry.SizeRank, entry.Level));
         }
 
-        // 最後の 1 匹（実体が残っている魚）。連鎖が無ければ最初からここへ来る。
+        // 最後の 1 匹（実体が残っている魚）
         if (shownFish is { } fish)
         {
-            ShowResultPanelFor(fish.DisplayName, fish.DisplaySize, fish.SizeRank);
+            resultEntries.Add(BuildResultData(
+                fish.DisplayName, fish.DisplaySize, fish.SizeRank, fish.Level));
         }
+
+        ResultPanel.ShowChain(resultPanelActorPath, resultEntries);
     }
 
     /// <summary>
-    /// 釣果を記録して釣果パネルを開く【表示内容を組み立てる唯一の場所】。
+    /// 釣果を記録して、パネルへ渡す 1 匹ぶんの表示内容を組み立てる
+    /// 【表示内容を組み立てる唯一の場所】。
     ///
     /// 記録（ベスト・釣った数）は <see cref="FishRecords.RecordCatch"/> に任せ、
     /// その戻り値（初捕獲か・新記録か）をそのままパネルへ渡す。
-    /// <b>1 匹につき 1 回だけ</b>呼ばれる（<see cref="ShowResultEntry"/> がエントリを
-    /// 1 つずつ送る）ので、ここで釣った数を 1 増やしても二重加算にはならない。
-    /// ＝ 連鎖した魚も 1 匹ずつ図鑑へ登録され、初ゲットならその魚のパネルで
-    /// 「図鑑に登録されました」が出る。
+    /// <b>1 匹につき 1 回だけ</b>呼ばれる（<see cref="ShowChainResult"/> が一覧を
+    /// 1 度だけ組み立てる）ので、ここで釣った数を 1 増やしても二重加算にはならない。
+    /// ＝ 連鎖した魚も 1 匹ずつ図鑑へ登録される（「図鑑に登録されました」の演出は
+    /// パネル側が最後にまとめて 1 回だけ出す）。
+    ///
+    /// <b>記録するタイミング</b>: 一覧を組み立てるこの瞬間（＝パネルを開く瞬間）に
+    /// 全匹ぶん記録する。<b>掛かった順に</b>組み立てるので、自己ベスト・新記録の判定は
+    /// 1 匹ずつ順送りで記録した場合とまったく同じ値になる
+    /// （パネル表示中に記録を読む他の画面は無いため、見え方にも差は出ない）。
     /// </summary>
     /// <param name="displayName">魚の表示名（記録キー・図鑑画像の引き当てキー）。</param>
     /// <param name="displaySize">個体の大きさ（cm。書式は <see cref="Fish.FormatSize"/> に一元化）。</param>
     /// <param name="sizeRank">サイズランク（"S" / "A" / "B" / "C"）。</param>
-    private void ShowResultPanelFor(string displayName, float displaySize, string sizeRank)
+    /// <param name="level">魚レベル（名前の頭に付ける「Lv◯」に使う）。</param>
+    /// <returns>パネルへ渡す表示内容。</returns>
+    private ResultPanel.ResultData BuildResultData(
+        string displayName, float displaySize, string sizeRank, int level)
     {
         FishRecords.CatchRecordResult record =
             FishRecords.RecordCatch(displayName, displaySize, sizeRank);
@@ -1859,8 +1863,9 @@ public class CatchPresenter : SEEDScript
             ? entry.imagePath
             : string.Empty;
 
-        ResultPanel.Show(resultPanelActorPath, new ResultPanel.ResultData(
-            name: displayName,
+        return new ResultPanel.ResultData(
+            // 名前は図鑑カード（ZukanCard）と同じ「Lv◯ 魚名」の書式で出す
+            name: string.Format(nameFormat, level, displayName),
             sizeText: Fish.FormatSize(displaySize),
             bestText: bestLabelPrefix + Fish.FormatSize(best),
             rankText: rankLabelPrefix + RankLabel(sizeRank),
@@ -1868,7 +1873,7 @@ public class CatchPresenter : SEEDScript
             rankKey: sizeRank,
             imagePath: imagePath,
             newRecord: record.NewBest,
-            firstCatch: record.FirstCatch));
+            firstCatch: record.FirstCatch);
     }
 
 

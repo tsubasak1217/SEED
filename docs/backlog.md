@@ -535,14 +535,19 @@
   地形の読み込みはシーンのコンポーネント一覧だけを見る（`terrain_ops.rs` の `walk`）ため、
   このチャンクはエディタでもゲームでも読まれておらず、収録もされない。
   地形の一部が欠けているのか、単なる残骸なのかは要確認。
-- [ ] **釣り上げ成立距離 4.0m と最小飛距離 3.0m が逆転しており「投げた瞬間に釣れる」経路がある** — 2026-09-10（成立距離の変更に伴い発見・未着手）。
+- [ ] **竿先の近く（成立距離 4.0m 以内）でヒットすると、やり取り無しで釣り上がる経路が残っている** — 2026-09-10 記載 / 同日にキャスト側だけ対応。
   釣り上げの成立条件は距離だけ（`FishingController.UpdateFight`: `CurrentFloatDistance() <= catchDistanceMeters`）で、
-  魚 HP は見ていない（2026-09-09 改定）。今回 `catchDistanceMeters` を 1.0 → **4.0m** にしたため、
-  `minCastDistance = 3.0m`（最小パワーのキャスト）や `reelEndDistance = 1.5m`（未ヒット時の回収完了距離）と逆転し、
-  **竿先から 4m 以内でヒットが成立すると、その次のフレームにやり取り無しで釣り上がる**。
-  対処案は (a) `minCastDistance` を `catchDistanceMeters` より大きくする、
-  (b) 成立条件に「やり取りを 1 サイクル以上こなした」等の下限を戻す、のいずれか。どちらも要利用者判断。
-  関連: `runtime/assets/mainGame/scripts/FishingController.cs`（`catchDistanceMeters` / `minCastDistance` / `UpdateFight`）。
+  魚 HP は見ていない（2026-09-09 改定）。`catchDistanceMeters` を 4.0m にしたことで、
+  4m 以内でヒットが成立すると<b>次のフレームにやり取り無しで釣り上がる</b>。
+  <b>対応済み</b>: Inspector の「最短飛距離(m)」（`minCastDistance`）を廃止し、
+  最短飛距離を「成立距離 ＋ 最短飛距離の余裕（既定 5.0m）」＝ 既定 9.0m の算出値に一本化した
+  （`EffectiveMinCastDistance`）。＝ どんなに弱く投げても成立距離の外に着水する。
+  <b>残っている経路</b>: 未ヒットの巻き取り中（`reelEndDistance = 1.5m` まで寄る）に
+  アタリ→合わせが成立した場合は、掛かった瞬間の距離が 4m 以内になり得る。
+  対処するなら「掛かった直後の数拍は成立判定を止める」等が要る（要利用者判断）。
+  なお `MainGame.scene` には旧 `minCastDistance`（10.000）の保存値が残るが、読まれないので実害は無い
+  （実効値は 9.0m へ変わる）。
+  関連: `runtime/assets/mainGame/scripts/FishingController.cs`（`catchDistanceMeters` / `minCastMarginBeyondCatch` / `UpdateFight`）。
 - [ ] **わらしべ連鎖の途中で食べられた魚は `LastCaughtFish` とチュートリアル判定に乗らない** — 2026-09-10（連鎖リザルト対応で確認・未着手）。
   釣り上げ時のリザルト表示と図鑑登録は連鎖の全匹ぶん行うようにしたが、
   `FishingEvents.Catch` / `CatchPresented` は従来どおり「1 回の釣り上げにつき 1 回」のままで、
@@ -552,8 +557,3 @@
   イベントの粒度を上げると上記 2 つの購読側（単一フラグ運用）が壊れるため、
   必要になったら連鎖用の別イベント（例 `fishing.chain_catch`）を足すのが素直。
   関連: `runtime/assets/mainGame/scripts/CatchPresenter.cs`、`FishingController.cs`（`ChainCatchHistory`）。
-- [ ] **`MainGame.scene` に `DriftItemManager` の消えたフィールド（`spawnRadiusMin` / `spawnRadiusMax`）が残っている** — 2026-09-10。
-  漂流物の出現位置を「ウキ中心の円環」から「竿先〜ウキの線分上」へ変えた際にこの 2 フィールドを削除したが、
-  シーンには値（4.0 / 14.0）が保存されたまま残る（読まれないので実害は無い）。
-  エディタでこのアクタを開いて保存し直せば消える。
-  関連: `runtime/assets/mainGame/MainGame.scene`、`mainGame/scripts/DriftItemManager.cs`。

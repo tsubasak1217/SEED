@@ -1,4 +1,4 @@
-﻿using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
+using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
 /// 追従カメラ（ターゲットトランスフォーム方式）。
@@ -90,9 +90,8 @@ public class CameraMove : SEEDScript
     private SEED.Transform? answerTarget = null;
 
     /// <summary>
-    /// 魚が沖へ走っている「引き」のフェーズ（初回ヒット直後の
-    /// <see cref="FishingFight.Phase.LeadIn"/> と、乗り換え直後の
-    /// <see cref="FishingFight.Phase.Run"/>）で使う
+    /// 魚が沖へ走っているフェーズ（<see cref="FishingFight.Phase.LeadIn"/> ＝ ヒット直後の余白／
+    /// <see cref="FishingFight.Phase.Run"/> ＝ 隙中に魚回復を拾ったあとの走り）で使う
     /// 目標トランスフォーム（トップレベルの空アクタ「RunCameraTarget」を割り当てる想定）。
     ///
     /// プレイヤーとウキの両方が画面に収まる斜め上からの構図にしたいため、位置・向きは
@@ -401,8 +400,9 @@ public class CameraMove : SEEDScript
         // ApproachCamera = 水面の魚へ寄る / WhiteOut 以降 = プレイヤーを振り返って見る。
         if (SelectCatchGoal() is { } catchGoal) { return catchGoal; }
 
-        // ヒット直後の「引き」中はプレイヤー・ウキの両方を映す構図（回答中の構図より優先。
-        // LeadIn は必ず Answer より前に来るので、実際に競合することは無い）。
+        // 魚が沖へ走っているあいだ（ヒット直後の余白 LeadIn ／ 隙のあとの走り Run）は
+        // プレイヤー・ウキの両方を映す構図（回答中の構図より優先。走りのフェーズは
+        // Answer と同時には起こり得ないので、実際に競合することは無い）。
         if (IsLeadInPhase() && runTarget is { } rt && rt.IsValid) { return rt; }
 
         // リズムの回答中はプレイヤーを見る構図へ切り替える（叩くタイミングに集中させる）
@@ -474,14 +474,14 @@ public class CameraMove : SEEDScript
         && f.FightPhase == FishingFight.Phase.Call;
 
     /// <summary>
-    /// 魚が沖へ走っている「引き」のフェーズ中かを返す（構図切替の唯一の判定点）。
+    /// 魚が沖へ走っているフェーズ（ヒット直後の余白 <see cref="FishingFight.Phase.LeadIn"/> と、
+    /// 隙中に魚回復を拾ったあとの走り <see cref="FishingFight.Phase.Run"/>）中かを返す
+    /// （構図切替の唯一の判定点）。
     ///
-    /// 対象は初回ヒット直後の余白（<see cref="FishingFight.Phase.LeadIn"/>）と、
-    /// わらしべ連鎖で乗り換えた直後の走り（<see cref="FishingFight.Phase.Run"/>）の 2 つ。
-    /// どのフェーズが該当するかは <see cref="FishingController.IsRunCameraPhase"/> に
-    /// 一元化してあり（目標の置き直しも同じ判定を使う）、ここでは
-    /// 「魚が掛かっているか」だけを重ねて見る。
-    /// <see cref="fishing"/> 未設定なら常に false。
+    /// どのフェーズを「引きの構図」で撮るかの定義は
+    /// <see cref="FishingController.IsRunCameraPhase"/> に一元化してある
+    /// （目標トランスフォームを置き直す側と同じ判定を使うので、構図の選択と目標の更新が
+    /// 食い違うことがない）。<see cref="fishing"/> 未設定なら常に false。
     /// </summary>
     private bool IsLeadInPhase()
         => fishing is { } f

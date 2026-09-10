@@ -9,9 +9,21 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 釣果リザルトパネル本体【釣果 UI の唯一の持ち主】。
 ///
 /// 【責務】
-/// 「1 匹ぶんの釣果（<see cref="ResultData"/>）を受け取って出し、閉じ終わったことを
+/// 「釣果（<see cref="ResultData"/>）を<b>受け取った順に</b>出し、閉じ終わったことを
 /// 知らせる」だけ。<b>何を釣ったか・記録がどうなったかは一切知らない</b>
 /// （それを決めるのは <see cref="CatchPresenter"/> と <see cref="FishRecords"/>）。
+///
+/// 【連鎖（わらしべで複数匹まとめて釣り上げたとき）】
+/// パネルは<b>1 枚だけ</b>で、中身を差し替えながら順に見せる（<see cref="ShowChain"/>）。
+/// <code>
+/// 1 匹目を開く → chainHoldSeconds 秒見せる
+///   → 次の魚の絵が「大きく・透明」から「原寸・不透明」へ覆いかぶさる（chainOverlaySeconds 秒）
+///   → 覆い切った瞬間に文字（名前・サイズ・自己ベスト・New Record・ランク）も次の魚へ
+///   → 最後の 1 匹まで繰り返し、そこで決定入力を待つ
+/// 「図鑑に登録されました」は、一覧に初捕獲が 1 匹でも居れば<b>最後に 1 回だけ</b>出す
+/// </code>
+/// 覆いかぶせる絵は <c>FishImage</c> の兄弟として実行時に 1 個だけ生成する
+/// （<see cref="overlayActorPath"/>。用意できない場合は演出を省いて即時に切り替える）。
 ///
 /// 【配置方式】<see cref="PauseMenu"/> と同じ。
 /// このスクリプトはプレハブ <c>assets://mainGame/actors/UI/ResultPanel.actor</c> の
@@ -20,7 +32,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 出すまで非表示にする。シーンに置かれていない場合に限り <see cref="Show"/> が
 /// プレハブを <c>Instantiate</c> する（フォールバック。生成したアクタの
 /// <c>OnStart</c> は<b>次のフレーム</b>に走るので、渡された内容は
-/// <see cref="pendingData"/> にいったん預け、<c>OnStart</c> が拾って表示する）。
+/// <see cref="chainEntries"/> にいったん預け、<c>OnStart</c> が拾って表示する）。
 ///
 /// 【構成（プレハブ側）】
 /// <code>
@@ -28,6 +40,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///  ResultBody                  … 拡大縮小の親（ここの CanvasTransform.Scale を動かす）
 ///   ResultBg                   … Sprite（下敷き）
 ///   FishImage                  … Sprite（図鑑画像。実行時に TexturePath を差し替える）
+///   ResultFishOverlay          … Sprite（連鎖の切り替えで覆いかぶさる絵。実行時に生成）
 ///   FishName / FishSize / FishBest / FishRank / Prompt … Text
 ///   NewRecord                  … Text（新記録のときだけ点滅表示）
 ///   NewRecordSparkle           … ParticleEmitter（新記録のあいだ小さくきらめき続ける）
@@ -77,6 +90,24 @@ public class ResultPanel : SEEDScript
 
     /// <summary>点滅の明滅比（<c>PingPong</c> の振幅。0〜1 の全域を使う）。</summary>
     private const float BlinkAmplitude = 1f;
+
+    /// <summary>連鎖の一覧で最初に見せるエントリの添字（＝最初に掛かった魚）。</summary>
+    private const int ChainFirstEntryIndex = 0;
+
+    /// <summary>重ね表示（オーバーレイ）が最後に落ち着く倍率（＝原寸）。</summary>
+    private const float OverlayEndScale = 1f;
+
+    /// <summary>
+    /// 重ね表示のスプライトを <see cref="fishImage"/> より何段手前に描くか
+    /// （レイヤーは FishImage の値から算出するので、プレハブ側の指定に依存しない）。
+    /// </summary>
+    private const int OverlayLayerOffset = 1;
+
+    /// <summary>
+    /// 実行時に生成する重ね表示アクタに付ける目印の名前（<see cref="SpawnOnce"/> の照合キー）。
+    /// プレハブ（ResultFishOverlay.actor）のルート名と同じにしてある。
+    /// </summary>
+    private const string OverlayActorName = "ResultFishOverlay";
 
     // ─── 表示内容（呼び出し側が組み立てて渡す）─────────────────
 
@@ -158,6 +189,19 @@ public class ResultPanel : SEEDScript
         /// <summary>本体が easeOutBack で 0 → 原寸へ膨らんでいる。</summary>
         Opening,
 
+        /// <summary>
+        /// <b>連鎖の途中</b>: いま出している魚をそのまま見せて次の切り替えを待っている
+        /// （<see cref="chainHoldSeconds"/> 秒）。連鎖が 1 匹だけならこのフェーズは通らない。
+        /// </summary>
+        ChainHolding,
+
+        /// <summary>
+        /// <b>連鎖の途中</b>: 次の魚の絵が「大きく・透明」から「原寸・不透明」へ
+        /// 覆いかぶさっている（<see cref="chainOverlaySeconds"/> 秒）。
+        /// 覆い切った瞬間に文字（名前・サイズ・自己ベスト・New Record・ランク）も次の魚へ変わる。
+        /// </summary>
+        ChainSwitching,
+
         /// <summary>本体が出きって、決定入力を待っている。</summary>
         Idle,
 
@@ -219,12 +263,20 @@ public class ResultPanel : SEEDScript
     public static System.Action? OnClosed { get; set; }
 
     /// <summary>
-    /// 生成フォールバック時に預ける表示内容（実体の <c>OnStart</c> が拾う）。
-    /// <see cref="hasPendingData"/> が true のときだけ意味を持つ。
+    /// これから見せる釣果の一覧（先頭 ＝ 最初に見せる魚）
+    /// 【パネルが「何匹ぶん出すか」の唯一の元データ】。
+    ///
+    /// わらしべ連鎖で複数匹まとめて釣り上げたときは、この順に
+    /// <b>1 枚のパネルの中で</b>絵と文字を差し替えて見せていく
+    /// （<see cref="PanelPhase.ChainHolding"/> → <see cref="PanelPhase.ChainSwitching"/>）。
+    /// 連鎖なし（1 匹）のときは要素 1 つだけの一覧になり、従来とまったく同じ見え方になる。
+    ///
+    /// 静的に持つのは、実体がまだ無い（プレハブ生成待ち）ときも呼び出し側から
+    /// 内容を預けられるようにするため（<see cref="hasPendingData"/>）。
     /// </summary>
-    private static ResultData pendingData;
+    private static readonly System.Collections.Generic.List<ResultData> chainEntries = new();
 
-    /// <summary><see cref="pendingData"/> に未消化の内容が入っているか。</summary>
+    /// <summary><see cref="chainEntries"/> に未消化の内容が入っているか（実体の <c>OnStart</c> 待ち）。</summary>
     private static bool hasPendingData;
 
     // ─── インスペクタ設定（子アクタへの参照文字列）─────────────
@@ -377,6 +429,40 @@ public class ResultPanel : SEEDScript
     [SerializeField(Label = "入力を受け付けるまでの待ち(秒)")]
     private float inputDelaySeconds = 0.25f;
 
+    // ─── 連鎖（わらしべで複数匹まとめて釣り上げたときの見せ方）─────────
+
+    /// <summary>
+    /// 連鎖の途中で、1 匹ぶんの釣果を見せたままにする秒数（実時間）。
+    /// この秒数が過ぎると、次の魚の絵が覆いかぶさり始める。
+    /// </summary>
+    [Header("連鎖"), SerializeField(Label = "連鎖の表示保持(秒)")]
+    private float chainHoldSeconds = 1.0f;
+
+    /// <summary>
+    /// 次の魚の絵が「大きく・透明」から「原寸・不透明」へ覆いかぶさるまでの秒数（実時間）。
+    /// 覆い切った瞬間に文字も次の魚へ切り替わる。
+    /// </summary>
+    [SerializeField(Label = "連鎖の重ね表示(秒)")]
+    private float chainOverlaySeconds = 0.4f;
+
+    /// <summary>
+    /// 重ね表示の<b>始まりの倍率</b>（1 で原寸のまま出る＝拡大感が無い）。
+    /// 既定 2.0 ＝ 2 倍の大きさから縮みながら覆いかぶさる。
+    /// </summary>
+    [SerializeField(Label = "重ね表示の開始倍率")]
+    private float chainOverlayStartScale = 2.0f;
+
+    /// <summary>
+    /// 重ね表示に使うスプライトのプレハブ（<c>assets://</c> パス）
+    /// 【重ね表示アクタの唯一の供給元】。
+    ///
+    /// <see cref="fishImagePath"/> の<b>兄弟</b>として実行時に 1 個だけ生成し、
+    /// 位置・ピボット・アンカー・大きさは FishImage から写す（＝レイアウトの二重管理をしない）。
+    /// 空にする／読み込めない場合は重ね表示を諦め、連鎖の切り替えを即時に行う。
+    /// </summary>
+    [SerializeField(Label = "重ね表示のプレハブ")]
+    private string overlayActorPath = "assets://mainGame/actors/UI/ResultFishOverlay.actor";
+
     // ─── 実行時の状態 ────────────────────────────────────────
 
     /// <summary>いまのフェーズ。</summary>
@@ -388,8 +474,48 @@ public class ResultPanel : SEEDScript
     /// <summary>表示中の内容（<see cref="Hidden"/> のときの値は無意味）。</summary>
     private ResultData data;
 
+    /// <summary>
+    /// いま見せている釣果の添字（<see cref="chainEntries"/> の中の位置）
+    /// 【連鎖の進行の唯一の状態】。<c>chainEntries.Count - 1</c> が最後の 1 匹。
+    /// </summary>
+    private int chainIndex = ChainFirstEntryIndex;
+
+    /// <summary>
+    /// これまでに見せた魚のうち<b>1 匹でも初捕獲が居たか</b>
+    /// 【「図鑑に登録されました」を出すかどうかの唯一の判断材料】。
+    ///
+    /// 連鎖の魚 1 匹ごとに登録演出を挟むと決定入力が何度も要る（テンポが悪い）ので、
+    /// 演出は最後にまとめて 1 回だけ出す。1 匹ずつの初捕獲フラグは
+    /// <see cref="ApplyEntry"/> でここへ畳み込む。
+    /// </summary>
+    private bool chainAnyFirstCatch = false;
+
     /// <summary>本体の入れ物の <c>CanvasTransform</c>（解決失敗なら <c>IsValid == false</c>）。</summary>
     private SEED.CanvasTransform bodyTransform;
+
+    /// <summary>本体の入れ物の<b>アクタ</b>（重ね表示アクタの生成先＝親。解決失敗なら無効ハンドル）。</summary>
+    private SEED.GameObject bodyRoot;
+
+    /// <summary>魚の絵の <c>CanvasTransform</c>（重ね表示の位置・ピボット・アンカーの写し元）。</summary>
+    private SEED.CanvasTransform fishImageTransform;
+
+    /// <summary>実行時に生成した重ね表示アクタ（生成失敗なら無効ハンドル）。</summary>
+    private SEED.GameObject overlayRoot;
+
+    /// <summary>重ね表示の <c>CanvasTransform</c>（<see cref="overlayReady"/> が true のときだけ有効）。</summary>
+    private SEED.CanvasTransform overlayTransform;
+
+    /// <summary>重ね表示の Sprite（<see cref="overlayReady"/> が true のときだけ非 null）。</summary>
+    private SEED.Sprite? overlaySprite;
+
+    /// <summary>
+    /// 重ね表示の準備（生成 → コンポーネント解決 → FishImage からの写し取り）が済んだか。
+    ///
+    /// 2D アクタは<b>生成した次のフレーム</b>にならないと <c>CanvasTransform</c> が
+    /// 取れない（docs/scripting_api.md「生成・破棄・検索」）ため、
+    /// 準備は <see cref="EnsureOverlayReady"/> で<b>必要になった時点</b>に遅延して行う。
+    /// </summary>
+    private bool overlayReady = false;
 
     /// <summary>図鑑登録パネルのアクタ（解決失敗なら <c>IsValid == false</c>）。</summary>
     private SEED.GameObject registeredRoot;
@@ -442,24 +568,63 @@ public class ResultPanel : SEEDScript
     // ─── 静的 API（呼び出し側の入口）──────────────────────────
 
     /// <summary>
-    /// 釣果パネルを出す【表示の唯一の入口】。
-    ///
-    /// シーンに配置済みのインスタンスがあればそれを表示し、無ければ
-    /// <paramref name="actorPath"/> のプレハブを生成する（生成した実体の
-    /// <c>OnStart</c> は次フレームなので、内容は <see cref="pendingData"/> へ預ける）。
+    /// 釣果パネルを<b>1 匹ぶん</b>出す【1 匹だけ見せたいときの入口】。
+    /// 中身は「要素 1 つの一覧」として <see cref="ShowChain"/> と同じ経路を通る。
     /// すでに出ているときは内容だけ差し替えて頭から出し直す。
     /// </summary>
     /// <param name="actorPath">パネルのプレハブ（<c>assets://</c> パス）。生成フォールバックにだけ使う。</param>
     /// <param name="showData">表示する内容。</param>
     public static void Show(string actorPath, ResultData showData)
     {
+        chainEntries.Clear();
+        chainEntries.Add(showData);
+        ShowEntries(actorPath);
+    }
+
+    /// <summary>
+    /// 釣果パネルを<b>複数匹ぶん</b>出す【わらしべ連鎖の表示の唯一の入口】。
+    ///
+    /// パネルは 1 枚のまま、<paramref name="chain"/> の順に
+    /// 「見せる → 次の魚の絵が覆いかぶさる → 文字も次の魚へ」を自動で繰り返し、
+    /// <b>最後の 1 匹まで出し終えてから</b>決定入力を待つ。
+    /// 「図鑑に登録されました」は、一覧の中に初捕獲が 1 匹でも居れば最後に 1 回だけ出す。
+    /// </summary>
+    /// <param name="actorPath">パネルのプレハブ（<c>assets://</c> パス）。生成フォールバックにだけ使う。</param>
+    /// <param name="chain">
+    /// 表示する釣果の一覧（<b>見せる順</b>＝連鎖の最初に掛かった魚から）。
+    /// 値はここで写し取るので、呼び出し側は渡したリストをそのまま使い回してよい。
+    /// null／空のときは何もしない（出す中身が無いのにパネルを開かない）。
+    /// </param>
+    public static void ShowChain(string actorPath, System.Collections.Generic.IReadOnlyList<ResultData> chain)
+    {
+        if (chain is null || chain.Count == 0)
+        {
+            SEED.Debug.LogWarning("[ResultPanel] 表示する釣果が 1 件も無いため開かない");
+            return;
+        }
+
+        chainEntries.Clear();
+        for (int i = 0; i < chain.Count; i++) { chainEntries.Add(chain[i]); }
+        ShowEntries(actorPath);
+    }
+
+    /// <summary>
+    /// <see cref="chainEntries"/> に積んだ内容でパネルを開く【表示開始の実体】。
+    ///
+    /// 実体がシーンにあれば即座に表示へ入れ、無ければプレハブを生成して
+    /// 内容は次フレームの <see cref="OnStart"/> へ預ける（<see cref="hasPendingData"/>）。
+    /// </summary>
+    /// <param name="actorPath">パネルのプレハブ（<c>assets://</c> パス）。生成フォールバックにだけ使う。</param>
+    private static void ShowEntries(string actorPath)
+    {
         // 実体があるなら即座に表示へ入れる（同フレームから見た目が変わる）
         if (Current is { } instance && panelRoot.IsValid)
         {
-            SEED.Debug.Log($"[ResultPanel] 表示（既存のインスタンス）: {showData.Name}");
+            SEED.Debug.Log($"[ResultPanel] 表示（既存のインスタンス）: {chainEntries[ChainFirstEntryIndex].Name}"
+                         + $" 他 {chainEntries.Count - 1} 匹");
             panelRoot.Visible = true;
             IsActive = true;
-            instance.BeginShow(showData);
+            instance.BeginShow();
             return;
         }
 
@@ -482,10 +647,10 @@ public class ResultPanel : SEEDScript
             }
         }
 
-        pendingData = showData;
         hasPendingData = true;
         IsActive = true;
-        SEED.Debug.Log($"[ResultPanel] 表示（生成したプレハブの OnStart 待ち）: {showData.Name}");
+        SEED.Debug.Log("[ResultPanel] 表示（生成したプレハブの OnStart 待ち）: "
+                     + $"{chainEntries[ChainFirstEntryIndex].Name} 他 {chainEntries.Count - 1} 匹");
     }
 
     /// <summary>
@@ -501,6 +666,7 @@ public class ResultPanel : SEEDScript
         panelRoot = default;
         Current = null;
         hasPendingData = false;
+        chainEntries.Clear();
         OnClosed = null;
     }
 
@@ -516,6 +682,11 @@ public class ResultPanel : SEEDScript
         panelRoot = gameObject;
 
         ResolveReferences();
+
+        // 連鎖の重ね表示に使うスプライトを先に用意しておく
+        //（2D アクタはコンポーネントが揃うのが次フレームなので、実際に使う直前ではなく
+        //  ここで生成だけ済ませる。写し取り・解決は EnsureOverlayReady が遅延して行う）。
+        EnsureOverlaySpawned();
         SetContent(newRecordText, newRecordLabel);
         // 出すまでは影ごと消しておく（アルファ 0 では影が残るため Visible で消す）
         SetNewRecordVisible(false);
@@ -550,8 +721,8 @@ public class ResultPanel : SEEDScript
         hasPendingData = false;
         panelRoot.Visible = true;
         IsActive = true;
-        SEED.Debug.Log($"[ResultPanel] OnStart（待機中の内容を表示）: {pendingData.Name}");
-        BeginShow(pendingData);
+        SEED.Debug.Log($"[ResultPanel] OnStart（待機中の内容を表示）: {chainEntries.Count} 匹");
+        BeginShow();
     }
 
     /// <summary>破棄時の後始末。自分が現役のときだけ静的状態を戻す。</summary>
@@ -611,6 +782,8 @@ public class ResultPanel : SEEDScript
         switch (phase)
         {
             case PanelPhase.Opening:           UpdateOpening();           break;
+            case PanelPhase.ChainHolding:      UpdateChainHolding();      break;
+            case PanelPhase.ChainSwitching:    UpdateChainSwitching();    break;
             case PanelPhase.Idle:              UpdateIdle();              break;
             case PanelPhase.RegisteredOpening: UpdateRegisteredOpening(); break;
             case PanelPhase.RegisteredIdle:    UpdateIdle();              break;
@@ -621,13 +794,50 @@ public class ResultPanel : SEEDScript
 
     // ─── フェーズごとの更新 ──────────────────────────────────
 
-    /// <summary>本体の拡大（easeOutBack で 0 → 原寸）。出きったら決定待ちへ。</summary>
+    /// <summary>
+    /// 本体の拡大（easeOutBack で 0 → 原寸）。
+    /// 出きったら、連鎖が残っていれば次の魚への切り替えへ、無ければ決定待ちへ。
+    /// </summary>
     private void UpdateOpening()
     {
         float ratio = Progress(openSeconds);
         ApplyBodyScale(EaseOutBack(ratio));
         if (ratio < 1f) { return; }
-        EnterPhase(PanelPhase.Idle);
+        EnterPhase(NextPhaseAfterEntry());
+    }
+
+    /// <summary>
+    /// 連鎖の「見せたまま待つ」区間。<see cref="chainHoldSeconds"/> 秒たったら
+    /// 次の魚の絵を覆いかぶせ始める。
+    ///
+    /// 重ね表示のスプライトが用意できないとき（プレハブ未設定・生成失敗・
+    /// 生成直後でまだコンポーネントが揃っていない）は、演出を諦めて<b>即座に</b>
+    /// 次の魚へ切り替える（＝連鎖の表示そのものは必ず最後まで進む）。
+    /// </summary>
+    private void UpdateChainHolding()
+    {
+        if (phaseElapsed < SEED.Mathf.Max(chainHoldSeconds, 0f)) { return; }
+
+        if (!EnsureOverlayReady())
+        {
+            SEED.Debug.LogWarning("[ResultPanel] 重ね表示を用意できないため、連鎖の切り替えを即時に行う");
+            CommitChainEntry();
+            return;
+        }
+
+        EnterPhase(PanelPhase.ChainSwitching);
+    }
+
+    /// <summary>
+    /// 連鎖の「次の魚が覆いかぶさる」区間。
+    /// 覆い切った（<see cref="chainOverlaySeconds"/> 秒たった）瞬間に文字も次の魚へ切り替える。
+    /// </summary>
+    private void UpdateChainSwitching()
+    {
+        float ratio = Progress(chainOverlaySeconds);
+        ApplyOverlayProgress(ratio);
+        if (ratio < 1f) { return; }
+        CommitChainEntry();
     }
 
     /// <summary>図鑑登録パネルの拡大（easeOutBack で 0 → 原寸）。出きったら決定待ちへ。</summary>
@@ -661,7 +871,9 @@ public class ResultPanel : SEEDScript
         switch (phase)
         {
             case PanelPhase.Idle:
-                EnterPhase(data.FirstCatch ? PanelPhase.RegisteredOpening : PanelPhase.Closing);
+                // 図鑑登録は「連鎖の中に初捕獲が 1 匹でも居たか」で決める
+                //（1 匹ずつ演出を挟まず、最後にまとめて 1 回だけ出す）
+                EnterPhase(chainAnyFirstCatch ? PanelPhase.RegisteredOpening : PanelPhase.Closing);
                 break;
 
             case PanelPhase.RegisteredIdle:
@@ -700,17 +912,85 @@ public class ResultPanel : SEEDScript
 
     /// <summary>
     /// 表示を頭から始める【内容差し替えの唯一の入口】。
+    /// 見せる中身は <see cref="chainEntries"/>（先頭から順に見せる）。
     /// すでに出ている最中に呼ばれても、内容を差し替えて開き直す。
     /// </summary>
-    /// <param name="showData">表示する内容。</param>
-    private void BeginShow(ResultData showData)
+    private void BeginShow()
     {
-        data = showData;
-        ApplyData();
+        if (chainEntries.Count == 0)
+        {
+            // 呼び出し側の組み立て漏れ。開かずに「閉じ終わった」ことにして進行を止めない。
+            SEED.Debug.LogWarning("[ResultPanel] 見せる釣果が空のまま開こうとした（何も出さずに閉じる）");
+            FinishClose();
+            return;
+        }
+
+        chainIndex = ChainFirstEntryIndex;
+        chainAnyFirstCatch = false;
+        ApplyEntry(chainEntries[ChainFirstEntryIndex]);
+
         SetRegisteredVisible(false);
         ApplyRegisteredScale(MinScale);
+        HideOverlay();
         EnterPhase(PanelPhase.Opening);
         ApplyBodyScale(MinScale);   // 開きの初期値（1 フレーム目に原寸で見えるのを防ぐ）
+    }
+
+    // ─── 連鎖（複数匹を 1 枚のパネルで見せる）────────────────────
+
+    /// <summary>
+    /// いま見せている魚を見せ終えたあとに入るフェーズ
+    /// 【連鎖を続けるか決定待ちにするかの唯一の分岐】。
+    /// </summary>
+    /// <returns>まだ次の魚が残っていれば <see cref="PanelPhase.ChainHolding"/>、無ければ <see cref="PanelPhase.Idle"/>。</returns>
+    private PanelPhase NextPhaseAfterEntry()
+        => chainIndex + 1 < chainEntries.Count ? PanelPhase.ChainHolding : PanelPhase.Idle;
+
+    /// <summary>
+    /// 次に見せる魚（<see cref="chainIndex"/> の 1 つ先）。
+    /// 残りが無い異常時は<b>いま見せている内容</b>を返す（重ねても絵が変わらないだけで済む）。
+    /// </summary>
+    private ResultData NextEntry()
+        => chainIndex + 1 < chainEntries.Count ? chainEntries[chainIndex + 1] : data;
+
+    /// <summary>
+    /// 表示中の内容を 1 匹ぶん差し替える【表示中の魚を切り替える唯一の場所】。
+    /// 初捕獲フラグはここで <see cref="chainAnyFirstCatch"/> へ畳み込む。
+    /// </summary>
+    /// <param name="entry">見せる内容。</param>
+    private void ApplyEntry(ResultData entry)
+    {
+        data = entry;
+        chainAnyFirstCatch = chainAnyFirstCatch || entry.FirstCatch;
+        ApplyData();
+    }
+
+    /// <summary>
+    /// 覆いかぶせ終えた（または重ね表示を諦めた）瞬間に、表示を次の魚へ確定させる
+    /// 【連鎖を 1 つ進める唯一の場所】。
+    ///
+    /// 絵（<see cref="fishImage"/>）は <see cref="ApplyData"/> の中で差し替わるので、
+    /// 重ね表示はここで透明へ戻して次の切り替えのために取っておく。
+    /// </summary>
+    private void CommitChainEntry()
+    {
+        // 一覧が途中で作り直された（ホットリロード・シーン遷移）などの異常時の番人。
+        // 添字が範囲を越えることは通常あり得ないが、越えたら決定待ちへ落として進行を止めない。
+        if (chainIndex + 1 >= chainEntries.Count)
+        {
+            EnterPhase(PanelPhase.Idle);
+            return;
+        }
+
+        chainIndex++;
+        ApplyEntry(chainEntries[chainIndex]);
+        HideOverlay();
+
+        // 本体はもう原寸なので、きらめきはこの瞬間から出してよい
+        //（開き途中に出さない理由は EnterPhase の Idle を参照）
+        SetNewRecordSparklePlaying(data.NewRecord);
+
+        EnterPhase(NextPhaseAfterEntry());
     }
 
     /// <summary>
@@ -725,6 +1005,13 @@ public class ResultPanel : SEEDScript
 
         switch (next)
         {
+            case PanelPhase.ChainSwitching:
+                // 次の魚の絵を重ね表示へ載せ、「大きく・透明」の状態から始める
+                //（ここへ来る前に UpdateChainHolding が EnsureOverlayReady を通している）。
+                ApplyOverlayTexture(NextEntry().ImagePath);
+                ApplyOverlayProgress(0f);
+                break;
+
             case PanelPhase.Idle:
                 // 本体が開き切ってからきらめかせる（開き途中は入れ物のスケールが
                 // 小さく、粒まで潰れて見えてしまうため）。新記録でなければ出さない。
@@ -760,6 +1047,7 @@ public class ResultPanel : SEEDScript
         ApplyBodyScale(MinScale);
         SetNewRecordSparklePlaying(false);
         SetRegisteredVisible(false);
+        HideOverlay();
         if (panelRoot.IsValid) { panelRoot.Visible = false; }
 
         IsActive = false;
@@ -853,6 +1141,119 @@ public class ResultPanel : SEEDScript
         registeredRoot.Visible = visible;
     }
 
+    // ─── 重ね表示（連鎖の切り替えで次の魚の絵を覆いかぶせるスプライト）─────
+
+    /// <summary>
+    /// 重ね表示のアクタを<b>1 個だけ</b>用意する【重ね表示アクタの唯一の生成点】。
+    ///
+    /// 生成先は <see cref="fishImage"/> と同じ親（＝本体の入れ物）で、FishImage の<b>兄弟</b>。
+    /// <see cref="SpawnOnce"/> を使うので、ホットリロードで <c>OnStart</c> が
+    /// 何度呼ばれても増えない。生成の反映はフレーム末尾なので、ここでは
+    /// コンポーネントには一切触らない（触るのは <see cref="EnsureOverlayReady"/>）。
+    /// </summary>
+    private void EnsureOverlaySpawned()
+    {
+        if (overlayRoot.IsValid) { return; }
+        if (string.IsNullOrWhiteSpace(overlayActorPath)) { return; }   // 未設定 ＝ 重ね表示を使わない
+        if (!bodyRoot.IsValid)
+        {
+            SEED.Debug.LogWarning($"[ResultPanel] 重ね表示の親（{bodyPath}）を解決できないため生成しない");
+            return;
+        }
+
+        overlayRoot = SpawnOnce.GetOrInstantiate(OverlayActorName, overlayActorPath, bodyRoot);
+        if (!overlayRoot.IsValid)
+        {
+            SEED.Debug.LogWarning($"[ResultPanel] 重ね表示のプレハブを生成できない: {overlayActorPath}");
+        }
+    }
+
+    /// <summary>
+    /// 重ね表示が使える状態か確かめ、まだなら準備する
+    /// 【重ね表示の見た目を FishImage へ合わせる唯一の場所】。
+    ///
+    /// 2D アクタは生成した次のフレームにならないと <c>CanvasTransform</c> /
+    /// <c>Sprite</c> が取れないので、準備は「使う直前に試す」形にしてある。
+    /// 位置・ピボット・アンカー・大きさ・描画順は <see cref="fishImage"/> から写すので、
+    /// プレハブ側にレイアウトを二重に持たない（FishImage を動かせば重ねもついてくる）。
+    /// </summary>
+    /// <returns>準備できていれば true（false のとき呼び出し側は即時切り替えへ倒す）。</returns>
+    private bool EnsureOverlayReady()
+    {
+        if (overlayReady) { return true; }
+
+        EnsureOverlaySpawned();
+        if (!overlayRoot.IsValid) { return false; }
+
+        if (overlayRoot.GetComponent<SEED.CanvasTransform>() is not { IsValid: true } ct) { return false; }
+        if (overlayRoot.GetComponent<SEED.Sprite>() is not { } sprite || !sprite.IsValid) { return false; }
+
+        // 位置の基準は FishImage と完全に同じにする（＝ぴったり重なる）
+        if (fishImageTransform.IsValid)
+        {
+            ct.Position = fishImageTransform.Position;
+            ct.Pivot    = fishImageTransform.Pivot;
+            ct.Anchor   = fishImageTransform.Anchor;
+            ct.Rotation = fishImageTransform.Rotation;
+        }
+
+        if (fishImage is { IsValid: true } source)
+        {
+            sprite.Size  = source.Size;
+            sprite.Layer = source.Layer + OverlayLayerOffset;   // 必ず元の絵より手前
+        }
+        sprite.RaycastTarget = false;                            // 飾りなのでポインタは拾わない
+
+        overlayTransform = ct;
+        overlaySprite = sprite;
+        overlayReady = true;
+
+        HideOverlay();
+        return true;
+    }
+
+    /// <summary>重ね表示のテクスチャを差し替える（空なら <see cref="fallbackImagePath"/>）。</summary>
+    /// <param name="imagePath">載せる図鑑画像の <c>assets://</c> パス。</param>
+    private void ApplyOverlayTexture(string imagePath)
+    {
+        if (overlaySprite is not { IsValid: true } sprite) { return; }
+        sprite.TexturePath = string.IsNullOrWhiteSpace(imagePath) ? fallbackImagePath : imagePath;
+    }
+
+    /// <summary>
+    /// 重ね表示の進行（0＝大きく透明 → 1＝原寸・不透明）を反映する
+    /// 【覆いかぶさる動きの唯一の算出点】。
+    ///
+    /// 倍率もアルファも同じ easeOutCubic（立ち上がりが速く、最後に静かに収まる）で動かす。
+    /// </summary>
+    /// <param name="ratio">進行（0〜1）。</param>
+    private void ApplyOverlayProgress(float ratio)
+    {
+        float eased = Easing.OutCubic(ratio);
+
+        if (overlayTransform.IsValid)
+        {
+            float scale = SEED.Mathf.Lerp(
+                SEED.Mathf.Max(chainOverlayStartScale, MinScale), OverlayEndScale, eased);
+            overlayTransform.Scale = new SEED.Vector2(scale, scale);
+        }
+
+        if (overlaySprite is { IsValid: true } sprite)
+        {
+            sprite.Color = sprite.Color.WithAlpha(SEED.Mathf.Clamped01(eased));
+        }
+    }
+
+    /// <summary>
+    /// 重ね表示を消す（アルファ 0）。破棄はせず、次の切り替えのために取っておく
+    /// （<c>Instantiate</c> / <c>Destroy</c> を繰り返さないための定型）。
+    /// </summary>
+    private void HideOverlay()
+    {
+        if (overlaySprite is not { IsValid: true } sprite) { return; }
+        sprite.Color = sprite.Color.WithAlpha(AlphaClear);
+    }
+
     // ─── 入力 ────────────────────────────────────────────────
 
     /// <summary>
@@ -878,9 +1279,9 @@ public class ResultPanel : SEEDScript
     /// </summary>
     private void ResolveReferences()
     {
-        SEED.GameObject body = ResolveActor(bodyPath);
-        bodyTransform = body.IsValid
-            ? body.GetComponent<SEED.CanvasTransform>() ?? default
+        bodyRoot = ResolveActor(bodyPath);
+        bodyTransform = bodyRoot.IsValid
+            ? bodyRoot.GetComponent<SEED.CanvasTransform>() ?? default
             : default;
         if (!bodyTransform.IsValid)
         {
@@ -890,6 +1291,12 @@ public class ResultPanel : SEEDScript
         registeredRoot = ResolveActor(registeredPath);
         registeredTransform = registeredRoot.IsValid
             ? registeredRoot.GetComponent<SEED.CanvasTransform>() ?? default
+            : default;
+
+        // 重ね表示は魚の絵とまったく同じ場所・大きさに置くので、その基準も取っておく
+        SEED.GameObject fishImageActor = ResolveActor(fishImagePath);
+        fishImageTransform = fishImageActor.IsValid
+            ? fishImageActor.GetComponent<SEED.CanvasTransform>() ?? default
             : default;
 
         fishImage     = ResolveSprite(fishImagePath);
