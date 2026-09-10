@@ -408,11 +408,38 @@
   （9.0 をハードコードしない）。既定 ON・実測 187 ファイル / 74.3 MB。
   実機確認: hostfxr / hostpolicy / coreclr の 3 つとも同梱 `dotnet/` 配下からロードされ、
   `precompiled scripts loaded: 40 type(s)`。`dotnet/` を外すと `dotnet root: global` で従来どおり動く。
-  案②（案内ダイアログ）は**実装していない** — ランタイムに MessageBox の共通ヘルパが無く、
-  依存クレートを増やさずに出すには起動経路へ Win32 のモーダルを足す判断が別途要るため。
-  代わりに CLR 初期化失敗時に原因と対処を stderr へ出すようにした（`App::new`）。
+  案②（案内ダイアログ）は 2026-09-10 に**実装済み**（下の「起動ログと panic 通知」を参照）。
+  panic 時に `MessageBoxW` で「起動に失敗しました＋ログのパス」を出す。
+  なお CLR 初期化失敗（`dotnet/` 欠落など）は panic ではなく続行なのでダイアログは出ず、
+  従来どおり原因と対処を stderr（＝起動ログ）へ出す（`App::new`）。
   関連: `editor/src/Packaging/Runtime/DotnetRuntimeBundler.cs`、
   `runtime/src/engine/core/scripting/mod.rs`、`docs/packaging.md` §5。
+- [x] **パッケージ版は起動ログが一切残らず、起動失敗が「何も起きない」にしか見えない** — 2026-09-10 記載 / 同日対応。
+  リリースビルドは `windows_subsystem = "windows"` でコンソールを持たないため、
+  ランタイムの `eprintln!` も C# の `Console.Error` も捨てられていた。
+  パッケージ実行（`--assets-root=` / `--pipe=` が無く exe の隣に `assets.pak` がある）のときだけ
+  `CreateFileW` + `SetStdHandle` で標準出力／標準エラーを
+  `{exe と同じフォルダ}\logs\seed_YYYYMMDD_HHMMSS.log` へ差し替える機構を追加
+  （`runtime/src/engine/core/startup_log/`）。exe の隣に書けないときは `%LOCALAPPDATA%\{exe名}\logs`。
+  最新 10 件だけ残す。ログ先頭に環境情報（実行ファイル・OS・exe フォルダの中身一覧）を 1 回記録し、
+  panic はメッセージ・位置・バックトレースをログに残したうえで `MessageBoxW` で案内する。
+  エディタ実行では標準ハンドルに触れない（Output パネルへの出力は従来どおり・ログファイルも作らない）。
+  実機確認済み: Rust の `[SEED]` 系と C# の `[SEEDScripting] loaded 40 precompiled …` が同じ 1 本に入ること、
+  panic ダイアログが出てログにバックトレースが残ること、エディタ経路でログが作られないこと、
+  10 件で世代管理されること。詳細は `docs/packaging.md` §9。
+- [ ] **panic のバックトレースが配布版では `<unknown>` になる（PDB を同梱していない）** — 2026-09-10。
+  上の起動ログでバックトレース自体は出るようになったが、パッケージ化は `SEED.exe` しかコピーしないため
+  `SEED.pdb`（release でも 10 MB 生成される）が配布先に無く、フレームがすべて `<unknown>` になる。
+  panic の**メッセージと発生位置（file:line:col）は出る**ので一次切り分けには足りるが、
+  スタックまで欲しい場合は (a) PDB を同梱する（配布サイズ +10 MB・ソースパスが露出）か、
+  (b) PDB をビルド側で保管してアドレスから後付けで解決する、のどちらかが要る。
+  関連: `editor/src/Packaging/PackagingWindow.xaml.cs`（バイナリのコピー）。
+- [ ] **同じ秒に 2 つ目のインスタンスを起動するとログが作られない** — 2026-09-10。
+  ログファイル名は秒単位（`seed_YYYYMMDD_HHMMSS.log`）で、ログ混線を防ぐため
+  書き込み共有を許していない（`FILE_SHARE_READ | FILE_SHARE_DELETE`）。
+  そのため同一秒に起動した 2 つ目はファイルを開けず、**ログ無しで起動する**（ゲームは動く）。
+  多重起動が実際に問題になるなら、ファイル名に連番か PID を足すのが素直。
+  関連: `runtime/src/engine/core/startup_log/redirect.rs`、`log_path.rs`。
 - [ ] **.NET 同梱は Windows 専用** — 2026-09-09。
   `DotnetRuntimeBundler` は `hostfxr.dll` という Windows のファイル名しか見ないため、
   macOS / Linux 向けパッケージでは同梱がスキップされる（`libhostfxr.dylib` / `.so` 未対応）。

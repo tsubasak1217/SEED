@@ -653,6 +653,30 @@ impl Renderer {
 
         let mut adapters: Vec<wgpu::Adapter> = instance.enumerate_adapters(backends);
 
+        // ── 候補一覧を「絞り込む前に」必ずログへ出す ─────────────────────────
+        // 候補が 0 件だとこの関数は最後の expect で panic する（＝配布版では
+        // 「ダブルクリックしても何も起きない」に見える最大の原因）。
+        // そのとき「そもそも GPU が 1 つも見えていないのか」「見えているが
+        // サーフェス互換で全部落ちたのか」を切り分けられるよう、
+        // 除外の前に候補と互換判定の結果を残しておく。
+        eprintln!(
+            "[SEED INIT] GPU アダプタ候補: {} 件（要求バックエンド: {:?}）",
+            adapters.len(),
+            backends
+        );
+        for (index, candidate) in adapters.iter().enumerate() {
+            let info = candidate.get_info();
+            eprintln!(
+                "[SEED INIT]   候補[{index}] name={} type={:?} backend={:?} driver={} driver_info={} surface対応={}",
+                info.name,
+                info.device_type,
+                info.backend,
+                info.driver,
+                info.driver_info,
+                candidate.is_surface_supported(surface),
+            );
+        }
+
         // サーフェスと互換性のないアダプターを除外してからスコア順に並べる。
         // 除外しないとマルチ GPU 環境で対応外 GPU が選ばれ初期化エラーになる場合がある。
         adapters.retain(|a| a.is_surface_supported(surface));
@@ -661,12 +685,19 @@ impl Renderer {
         let adapter = adapters.into_iter().next().unwrap_or_else(|| {
             // enumerate_adapters が空（環境依存でまれに発生）の場合のフォールバック。
             // HighPerformance を明示して dGPU を優先させる（iGPU への揺れを防ぐ）。
+            eprintln!(
+                "[SEED INIT][ERROR] サーフェス互換の GPU アダプタが 0 件です。request_adapter で再探索します。"
+            );
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
                 compatible_surface:     Some(surface),
                 force_fallback_adapter: false,
             }))
-            .expect("Failed to find a suitable GPU adapter")
+            // ここで落ちた場合、panic フック（core/startup_log）がログとダイアログで通知する。
+            // ユーザーが自力で判断できるよう、原因になり得る条件をメッセージに含める。
+            .expect(
+                "利用できる GPU アダプタが見つかりませんでした（DirectX 12 / Vulkan に対応した GPU とグラフィックスドライバが必要です）",
+            )
         });
 
         // ── 選択アダプターを起動ログに必ず出力する ─────────────────────────

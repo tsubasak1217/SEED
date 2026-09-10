@@ -16,6 +16,18 @@ pub static NvOptimusEnablement: u32 = 1;
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
 fn main() {
+    // 起動ログ機構の初期化。**必ず main の最初**に置く。
+    //
+    // 【理由】リリースビルドはコンソールを持たない（上の windows_subsystem）ため、
+    //   配布物では `eprintln!` も C# の `Console.Error` も行き先が無く捨てられる。
+    //   パッケージ実行（exe の隣に assets.pak があり、エディタ引数が無い）のときだけ
+    //   標準出力／標準エラーを `{exe のあるフォルダ}\logs\seed_*.log` へ差し替え、
+    //   環境情報を記録し、panic をログとダイアログで知らせる。
+    //   ここより後のログを 1 行も落とさないため、また GPU 初期化のような
+    //   「最も失敗しやすい処理」の panic を確実に捕まえるため、他の何よりも先に呼ぶ。
+    //   エディタ起動・開発ビルドでは標準ハンドルに触れないので従来どおり。
+    engine::core::startup_log::init();
+
     // Windows のシステムタイマ分解能を 1ms に引き上げる（既定は約 15.6ms）。
     //
     // 【理由】実測 [PERF] ログで、物理更新（3d/snap/2d の各同期セクション）のフレーム時間が

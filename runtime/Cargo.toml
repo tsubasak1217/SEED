@@ -51,4 +51,11 @@ rodio              = "0.20"
 gilrs              = "0.11"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media"] }
+# 追加 feature の用途（起動ログ機構 core/startup_log/）:
+#   Win32_System_Console          … SetStdHandle / STD_OUTPUT_HANDLE・STD_ERROR_HANDLE（標準ハンドルの差し替え）
+#   Win32_Storage_FileSystem      … CreateFileW / GetFileAttributesExW / FileTimeToLocalFileTime（ログファイル作成・exe 更新日時）
+#   Win32_Security                … CreateFileW の SECURITY_ATTRIBUTES 引数（FileSystem が要求する）
+#   Win32_System_SystemInformation… GetLocalTime / OSVERSIONINFOW（ログの日時・OS バージョン）
+#   Win32_System_Time             … FileTimeToSystemTime（exe 更新日時の変換）
+#   Wdk_System_SystemServices     … RtlGetVersion（マニフェストの影響を受けない実 OS バージョン）
+windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Time", "Wdk_System_SystemServices"] }

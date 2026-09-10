@@ -11,6 +11,8 @@ pub mod renderer;
 /// セーブデータ（スクリプト API `SEED.SaveData` の実体・JSON 永続化）。
 pub mod save;
 pub mod scripting;
+/// 配布パッケージ版の起動ログ（標準出力のファイル化）と panic 通知。
+pub mod startup_log;
 pub mod transform_sync;
 pub mod window;
 
