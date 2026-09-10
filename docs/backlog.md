@@ -548,6 +548,17 @@
   なお `MainGame.scene` には旧 `minCastDistance`（10.000）の保存値が残るが、読まれないので実害は無い
   （実効値は 9.0m へ変わる）。
   関連: `runtime/assets/mainGame/scripts/FishingController.cs`（`catchDistanceMeters` / `minCastMarginBeyondCatch` / `UpdateFight`）。
+- [ ] **「魚回復」の走り（Run）は世界端クランプで頭打ちになり、予約が捨てられる経路がある** — 2026-09-10（回復の予約化に伴う既知の制限）。
+  隙（Rest）中に拾った「魚回復」は<b>その場では効かせず貯めて</b>、隙が終わる瞬間にまとめて魚 HP へ入れ、
+  続く走り（`FishingFight.Phase.Run`）で「新しい魚 HP に対応する目標距離」まで沖へ走る仕様にした。
+  魚 HP に上限クランプは無いので、たくさん拾えば最大値の 100% を超え、目標距離もそのぶん線形に伸びる。
+  ただしウキが実際に出られるのは `FishingController` の世界端クランプ
+  （`maxCastDistance` ＋ `floatDragMarginDistance`）までなので、
+  <b>目標距離がそれを超えると走る距離が頭打ちになる</b>（HP だけが増えて画に出ない）。
+  また、<b>肉を拾った隙の中で魚 HP を削り切った</b>場合は `Tick` がフェーズ遷移ごと止まるため
+  予約が適用されないまま釣り上がる（プレイヤーに不利にはならないので現状は許容）。
+  数値バランスを詰めるときは「肉 1 個の効果量 × 1HP あたりの距離」と最長飛距離の関係を見ること。
+  関連: `runtime/assets/mainGame/scripts/FishingFight.cs`（`RecoverFishHp` / `CommitPendingFishHpRecovery` / `ComputeFloatDistanceStep`）。
 - [ ] **わらしべ連鎖の途中で食べられた魚は `LastCaughtFish` とチュートリアル判定に乗らない** — 2026-09-10（連鎖リザルト対応で確認・未着手）。
   釣り上げ時のリザルト表示と図鑑登録は連鎖の全匹ぶん行うようにしたが、
   `FishingEvents.Catch` / `CatchPresented` は従来どおり「1 回の釣り上げにつき 1 回」のままで、

@@ -682,23 +682,20 @@ public class FishingFight : SEEDScript
     /// 走り（<see cref="Phase.Run"/>）の長さ（拍）【走りを入れるかどうかの唯一のスイッチ】。
     ///
     /// 隙（<see cref="Phase.Rest"/>）の最中に「魚回復」の漂流物を巻き込むと
-    /// （<see cref="RecoverFishHp"/>）、その<b>隙が終わったタイミング</b>で
-    /// この拍数ぶんの走りが 1 度だけ挟まる。数え方は余白（<see cref="leadInBeats"/>）と同じで、
-    /// 魚の BPM（<see cref="secondsPerBeat"/>）で数える。
-    /// <b>0 以下にすると走りを一切挟まない</b>（＝従来どおり隙の次はそのまま出題）。
+    /// （<see cref="RecoverFishHp"/>）、回復ぶんは<b>その場では効かせずに貯めておき</b>、
+    /// <b>隙が終わったタイミング</b>でまとめて魚 HP へ入れて、この拍数ぶんの走りで
+    /// 「新しい魚 HP に対応する距離」まで沖へ持って行く。
+    /// 数え方は余白（<see cref="leadInBeats"/>）と同じで、魚の BPM（<see cref="secondsPerBeat"/>）で数える。
+    ///
+    /// <b>0 以下にすると走りを一切挟まない</b>。このとき回復は貯めずに<b>その場で即時</b>効く
+    /// （＝2026-09-10 以前の挙動に戻る）。
+    ///
+    /// 走る距離そのものに倍率は掛けない ―― 距離は「回復した魚 HP × 1HP あたりの距離」で
+    /// 決まる（＝肉を 2 個拾えば 2 個ぶん走る）ので、倍率を挟むと HP と距離の対応が壊れる。
+    /// 走る距離を変えたいときは漂流物側の効果量（<c>DriftItem.EffectAmount</c>）を調整すること。
     /// </summary>
     [SerializeField(Label = "回復後の走り(拍)")]
     private int recoverRunBeats = 4;
-
-    /// <summary>
-    /// 走り（<see cref="Phase.Run"/>）で沖へ持って行かれる距離の倍率。
-    ///
-    /// 実距離 ＝ <see cref="HookRunDistanceFor"/>（魚データの引き距離 × サイズランク倍率）
-    /// × この値。1.0 で「ヒット直後の引き」とまったく同じ距離を走る。
-    /// 0 以下にすると距離は動かない（拍だけ進む）。
-    /// </summary>
-    [SerializeField(Label = "回復後の走り距離倍率")]
-    private float recoverRunDistanceScale = 1.0f;
 
     // ─── 効果音 ──────────────────────────────────────────
 
@@ -1076,8 +1073,11 @@ public class FishingFight : SEEDScript
         /// <summary>
         /// 走り（隙の間に「魚回復」の漂流物を拾ったときだけ、その隙の直後に 1 度だけ挟まる区間）。
         ///
-        /// <see cref="recoverRunBeats"/> 拍ぶん、魚が沖へ走ってウキを引き伸ばす
-        /// （＝拾った回復ぶんの手応えを「走られた」という画で見せる）。
+        /// 隙のあいだ貯めておいた回復（<see cref="pendingFishHpRecovery"/>）を入り口で
+        /// まとめて魚 HP へ入れ、<see cref="recoverRunBeats"/> 拍かけて
+        /// <b>新しい魚 HP に対応する距離</b>（<see cref="DesiredFloatDistance"/>）まで
+        /// 魚が沖へ走ってウキを引き伸ばす（＝肉 2 個ぶんなら 2 個ぶん走る）。
+        /// ＝ 拾った瞬間ではなく<b>この区間で</b>取り返される。
         /// 中身は <see cref="LeadIn"/> とまったく同じ扱いで、出題・回答・巻きは一切行わず、
         /// 糸も減らない。カメラも <c>FishingController.IsRunCameraPhase</c> によって
         /// ヒット直後（<see cref="LeadIn"/>）と同じ構図になる。
@@ -1123,7 +1123,11 @@ public class FishingFight : SEEDScript
     /// </summary>
     public bool LineBroken { get; private set; } = false;
 
-    /// <summary>現在の魚 HP の割合（0〜1）。UI 表示用。</summary>
+    /// <summary>
+    /// 現在の魚 HP の割合（0〜1）。UI 表示用。
+    /// 漂流物「魚回復」で実値が最大値を超えることがあるので、表示は 1（100%）で頭打ちにする
+    /// （超過ぶんは <see cref="DesiredFloatDistance"/> ＝ 走る距離として表に出る）。
+    /// </summary>
     public float FishHp01 => fishHpMax > DivideEpsilon
         ? SEED.Mathf.Clamped01(fishHp / fishHpMax)
         : 0f;
@@ -1171,6 +1175,13 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// いまウキが居るべき距離（ウキ→竿先の水平距離、メートル）
     /// ＝ 現在の魚 HP × 1HP あたりの距離。
+    ///
+    /// 対応は<b>線形のまま上限を持たない</b>。漂流物「魚回復」（<see cref="RecoverFishHp"/>）は
+    /// 魚 HP を最大値より上へも積めるので、その場合この距離も
+    /// 「掛かった距離 ＋ ヒット直後の引き距離」より外側へそのまま外挿される
+    /// （＝肉を拾った数だけ遠くへ持って行かれる）。
+    /// 実際にウキが出られる上限は <c>FishingController</c> 側の世界端クランプ
+    /// （最長飛距離 ＋ 余裕）が決める。
     /// </summary>
     public float DesiredFloatDistance => SEED.Mathf.Max(fishHp, FishHpZero) * metersPerHp;
 
@@ -1398,11 +1409,21 @@ public class FishingFight : SEEDScript
     /// 【走りを挿し込むかどうかの唯一の状態】。
     ///
     /// 隙（<see cref="Phase.Rest"/>）の最中に魚 HP の回復（<see cref="RecoverFishHp"/>）が
-    /// 適用されたときだけ立ち、その隙が終わる瞬間に消費される（<see cref="PeekNextPhase"/>）。
+    /// 要求されたときだけ立ち、その隙が終わる瞬間に消費される（<see cref="PeekNextPhase"/>）。
     /// <b>隙の外で回復が起きた場合は立てない</b>（走りは「巻いている最中に取り返された」ことを
     /// 見せるための演出なので、巻けない区間で拾った場合まで走らせる意味がないため）。
     /// </summary>
     private bool recoverRunPending = false;
+
+    /// <summary>
+    /// 隙の最中に拾った「魚回復」を貯めておく量（魚 HP の実値・複数個ぶん累積）
+    /// 【予約回復の唯一の置き場】。
+    ///
+    /// 隙のあいだは魚 HP を動かさない（＝目標距離も動かない）ため、拾った瞬間は
+    /// ここへ足すだけにして、隙を抜ける瞬間に <see cref="CommitPendingFishHpRecovery"/> が
+    /// まとめて魚 HP へ入れる。
+    /// </summary>
+    private float pendingFishHpRecovery = 0f;
 
     /// <summary>
     /// 走り（<see cref="Phase.Run"/>）を始めた瞬間のウキ→竿先の距離（メートル）。
@@ -1836,7 +1857,7 @@ public class FishingFight : SEEDScript
     /// 魚 HP が満タンなので「掛かった距離 ＋ 引き距離」と一致する）まで、
     /// <see cref="PhaseProgress01"/> を easeOut で使い滑らかに引き伸ばす。
     /// <b>走り（<see cref="Phase.Run"/>）も同じ扱い</b>で、
-    /// 「走り始めた距離 → ＋<see cref="RecoverRunDistance"/>」まで easeOut で引き伸ばす。
+    /// 「走り始めた距離 → 回復後の <see cref="DesiredFloatDistance"/>」まで easeOut で引き伸ばす。
     /// </summary>
     /// <param name="currentDistance">現在のウキ→竿先の水平距離（メートル）。</param>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
@@ -1864,19 +1885,24 @@ public class FishingFight : SEEDScript
 
         if (CurrentPhase == Phase.Run)
         {
-            // 走り（隙中に魚回復を拾ったときだけ挟まる区間）。
-            // 余白と同じ easeOut(2 次) で「いま居る距離 → いま居る距離 ＋ 走り距離」まで引き伸ばす。
-            // 目標を魚 HP から引き直さない（＝DesiredFloatDistance を使わない）のは、
-            // 走りは「回復で伸びた目標距離」とは別に、その場から沖へ引かれる画を作るため。
-            // 走った先は目標距離より沖になるので、次の隙で通常のバネがそのぶん手元へ戻す。
+            // 走り（隙中に拾った「魚回復」を、隙が終わってからまとめて効かせる区間）。
+            //
+            // 行き先は<b>回復後の魚 HP に対応する目標距離</b>（DesiredFloatDistance）そのもの。
+            // 目標距離は「魚 HP × 1HP あたりの距離」の線形なので、肉を 2 個拾っていれば
+            // 2 個ぶん遠くなる（魚 HP が最大値を超えていてもそのまま外挿される）。
+            // 余白（LeadIn）と同じ easeOut(2 次) で、いま居る距離からそこまで引き伸ばす。
+            //
+            // 目標が手前にある（＝既に目標より沖に居る）場合は走らない。
+            // 「走り」で岸側へ戻ると画として逆になるので、開始距離で下支えする。
             if (runStartDistance <= RunStartDistanceUnset)
             {
                 runStartDistance = SEED.Mathf.Max(currentDistance, 0f);
             }
 
+            float runGoal = SEED.Mathf.Max(runStartDistance, DesiredFloatDistance);
             float t = SEED.Mathf.Clamped01(PhaseProgress01);
             float eased = 1f - (1f - t) * (1f - t);
-            float runTarget = SEED.Mathf.Lerp(runStartDistance, runStartDistance + RecoverRunDistance, eased);
+            float runTarget = SEED.Mathf.Lerp(runStartDistance, runGoal, eased);
             return runTarget - currentDistance;
         }
 
@@ -1967,30 +1993,68 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// 魚 HP を割合ぶん回復する【漂流物「魚HPの回復」の効果】。
     ///
-    /// 魚 HP ＝ min(魚HP最大値, 魚HP ＋ 魚HP最大値 × <paramref name="fraction"/>)。
-    /// 魚 HP が増えると <see cref="DesiredFloatDistance"/>（＝いま居るべき距離）も伸びるので、
-    /// 隙のあいだの距離制御（<see cref="ComputeFloatDistanceStep"/> の
-    /// 「目標のほうが遠い」枝）が <see cref="fishPullSpeed"/> でウキを沖へ引き戻す
-    /// ＝ <b>巻いた距離をそのぶん取り返される</b>。
+    /// 回復量 ＝ 魚HP最大値 × <paramref name="fraction"/>。<b>上限クランプはしない</b>
+    /// （＝肉をたくさん拾えば魚 HP は最大値の 100% を超える。ゲージ表示 <see cref="FishHp01"/>
+    /// は 100% で頭打ちになるが、目標距離 <see cref="DesiredFloatDistance"/> は
+    /// 「魚 HP × 1HP あたりの距離」の線形のまま外挿される）。
+    ///
+    /// <b>効かせるタイミング【2026-09-10 改定】</b>
+    /// <code>
+    /// 隙（Rest）中 かつ 走りが有効（recoverRunBeats ≧ 1）
+    ///     … その場では一切効かせず recoverRunPending へ<b>足して貯める</b>（複数個ぶん累積）。
+    ///       隙の間は魚 HP も目標距離も動かないので、ウキが巻いている最中に
+    ///       いきなり沖へ引かれることはない。貯めたぶんは隙を抜ける瞬間に
+    ///       まとめて入り（CommitPendingFishHpRecovery）、続く走り（Run）で
+    ///       「新しい魚 HP に対応する距離」まで一気に持って行かれる。
+    /// それ以外（出題・回答・余白・走り中／走りが無効）
+    ///     … 貯めずに<b>その場で即時</b>加算する。巻けない区間なので画としての走りは要らず、
+    ///       次の隙で通常の距離制御（バネ）が伸びた目標距離へ引き戻す（従来どおり）。
+    /// </code>
     /// </summary>
     /// <param name="fraction">魚 HP 最大値に対する回復割合（0 以下なら何もしない）。</param>
     public void RecoverFishHp(float fraction)
     {
         if (!Active || fraction <= 0f) { return; }
 
-        float before = fishHp;
-        fishHp = SEED.Mathf.Min(fishHp + fishHpMax * fraction, fishHpMax);
-        SEED.Debug.Log($"[Fight] 漂流物: 魚HP回復 {before:F2} → {fishHp:F2}（{FishHp01:P0}）");
+        float amount = fishHpMax * fraction;
 
-        // 【走りの予約】隙の最中に回復されたときだけ、その隙の直後に走り（Run）を挟む。
-        // 漂流物は巻いている最中（＝隙）にしか拾えないので通常は必ずここを通るが、
-        // 台本生成・デバッグなど隙の外から回復させた場合は走りを入れない
-        // （巻けない区間で拾ったぶんまで沖へ走らせても、取り返された実感にならないため）。
+        // 隙の最中は「予約」だけ。走りが無効なら貯めても出せないので即時へ倒す。
         if (CurrentPhase == Phase.Rest && recoverRunBeats > NoRecoverRunBeats)
         {
+            pendingFishHpRecovery += amount;
             recoverRunPending = true;
-            SEED.Debug.Log($"[Fight] 漂流物: 隙のあとに走り（{recoverRunBeats}拍）を挟む");
+            SEED.Debug.Log($"[Fight] 漂流物: 魚HP回復 {amount:F2} を予約（合計 {pendingFishHpRecovery:F2}）"
+                         + $" ／ 隙のあとに走り（{recoverRunBeats}拍）");
+            return;
         }
+
+        float before = fishHp;
+        fishHp += amount;
+        SEED.Debug.Log($"[Fight] 漂流物: 魚HP回復（即時） {before:F2} → {fishHp:F2}"
+                     + $" ／ 目標距離 {DesiredFloatDistance:F1}m");
+    }
+
+    /// <summary>
+    /// 貯めておいた魚 HP の回復をまとめて効かせる【予約回復の唯一の適用点】。
+    ///
+    /// 呼ぶのは<b>隙を抜ける瞬間</b>（<see cref="UpdatePhaseTransition"/>）だけ。
+    /// 走り（<see cref="Phase.Run"/>）が実際に挟まらない経路（チュートリアルの上書き等）でも
+    /// ここを通すので、貯めた回復が黙って消えることはない。
+    /// 上限クランプはしない（<see cref="RecoverFishHp"/> の説明を参照）。
+    ///
+    /// 隙の途中で魚を削り切った（<see cref="FishDefeated"/>）場合は
+    /// <see cref="Tick"/> がフェーズ遷移ごと止まるためここへ来ず、予約は
+    /// <see cref="ResetRuntimeState"/> で捨てられる（＝倒し切ったあとに生き返らない）。
+    /// </summary>
+    private void CommitPendingFishHpRecovery()
+    {
+        if (pendingFishHpRecovery <= 0f) { return; }
+
+        float before = fishHp;
+        fishHp += pendingFishHpRecovery;
+        SEED.Debug.Log($"[Fight] 漂流物: 予約していた魚HP回復 {pendingFishHpRecovery:F2} を適用"
+                     + $"（{before:F2} → {fishHp:F2} ／ 目標距離 {DesiredFloatDistance:F1}m）");
+        pendingFishHpRecovery = 0f;
     }
 
     /// <summary>
@@ -2269,6 +2333,11 @@ public class FishingFight : SEEDScript
         // ずっと後のフェーズで唐突に走り出すことはない。
         Phase next = PeekNextPhase();
         if (next == Phase.Run) { recoverRunPending = false; }
+
+        // 貯めておいた魚 HP の回復は、隙を抜ける<b>この瞬間</b>にまとめて効かせる。
+        // 必ずフェーズを切り替える前に行うこと ―― 走り（Run）は「新しい魚 HP に
+        // 対応する目標距離」へ走るので、先に HP が入っていないと走る距離が足りない。
+        if (CurrentPhase == Phase.Rest) { CommitPendingFishHpRecovery(); }
 
         EnterPhase(ResolveNextPhase(next));
     }
@@ -3085,16 +3154,6 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// 走り（<see cref="Phase.Run"/>）で沖へ引かれる距離（メートル）
-    /// 【走り距離の唯一の算出点】＝ <see cref="HookRunDistanceFor"/> × <see cref="recoverRunDistanceScale"/>。
-    /// 掛かっている魚が居ない（データ異常）ときは 0（＝距離を動かさない）。
-    /// </summary>
-    private float RecoverRunDistance
-        => target is { } fish
-            ? HookRunDistanceFor(fish) * SEED.Mathf.Max(recoverRunDistanceScale, 0f)
-            : 0f;
-
-    /// <summary>
     /// <see cref="Fish.SizeRank"/>（"S" / "A" / "B" / それ以外＝"C"）に対応する引き距離の倍率。
     /// </summary>
     /// <param name="rank">魚のサイズランク。</param>
@@ -3213,6 +3272,7 @@ public class FishingFight : SEEDScript
         lastAnswerPerfect = false;
         pendingExtraRestBars = 0;
         recoverRunPending = false;              // 走りの予約は戦いをまたいで持ち越さない
+        pendingFishHpRecovery = 0f;             // 貯めたままの回復も持ち越さない（倒し切った直後も含む）
         runStartDistance = RunStartDistanceUnset;
         lastReelInputTime = NoReelInputTime;
         reelInputHeld = false;

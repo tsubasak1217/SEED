@@ -2980,7 +2980,8 @@ public class FishingController : SEEDScript
     ///
     /// <code>
     /// ひるませ  … 隙（Rest）を効果量ぶんの小節数だけ延長する（FishingFight.AddRestBars）
-    /// 魚回復    … 魚 HP を「最大値 × 効果量」だけ戻す（＝ウキが沖へ引き戻される）
+    /// 魚回復    … 魚 HP を「最大値 × 効果量」だけ戻す。<b>隙の最中に拾ったぶんはその場では効かず</b>、
+    ///             隙が終わってから走り（Phase.Run）でまとめて取り返される（FishingFight.RecoverFishHp）
     /// 糸回復    … 糸の残りへ効果量ぶんを足す（上限 1）
     /// </code>
     /// 未知の種類は警告だけ出して何もしない（prefab の設定ミスを黙って握り潰さない）。
