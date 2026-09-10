@@ -13,17 +13,30 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 知らせる」だけ。<b>何を釣ったか・記録がどうなったかは一切知らない</b>
 /// （それを決めるのは <see cref="CatchPresenter"/> と <see cref="FishRecords"/>）。
 ///
+/// 【魚の絵の出入り（動きは Animator のキーフレームクリップが持つ）】
+/// 絵の拡大縮小を<b>スクリプトが数値で作ることはしない</b>。<c>FishImage</c> 自身に
+/// 付けた <c>Animator</c> の 2 本のクリップが <c>canvas_transform.scale</c> を動かす。
+/// <code>
+/// result_fish_in  … 画面いっぱい相当の倍率 → 表示サイズ（等倍）。easeOutCubic
+/// result_fish_out … 表示サイズ → 0 倍（消える）。easeInCubic
+/// </code>
+/// クリップは <c>tools/gen_result_fish_clips.py</c> が生成する（開始倍率はキャンバスの
+/// 設計解像度と絵の実寸から逆算するので、絵の大きさを変えたら流し直す）。
+/// このスクリプトが持つのは「いつどちらを再生するか」だけで、倍率も秒数も持たない。
+/// Animator が無い／クリップが未登録のときは<b>警告 1 行</b>を出し、絵を表示サイズで
+/// 出したまま即時に切り替える（＝連鎖の進行は必ず最後まで通る）。
+///
 /// 【連鎖（わらしべで複数匹まとめて釣り上げたとき）】
 /// パネルは<b>1 枚だけ</b>で、中身を差し替えながら順に見せる（<see cref="ShowChain"/>）。
 /// <code>
-/// 1 匹目を開く → chainHoldSeconds 秒見せる
-///   → 次の魚の絵が「大きく・透明」から「原寸・不透明」へ覆いかぶさる（chainOverlaySeconds 秒）
-///   → 覆い切った瞬間に文字（名前・サイズ・自己ベスト・New Record・ランク）も次の魚へ
-///   → 最後の 1 匹まで繰り返し、そこで決定入力を待つ
+/// 1 匹目を開く → 絵が登場（result_fish_in）
+///   → chainHoldSeconds 秒見せる
+///   → 絵が縮んで消える（result_fish_out）→ 消えている裏で絵を次の魚へ差し替える
+///   → 次の魚の絵が登場（result_fish_in）
+///   → 登場し切った瞬間に文字（名前・サイズ・自己ベスト・New Record・ランク）も次の魚へ
+///   → 最後の 1 匹まで繰り返し、そこで決定入力を待つ（最後の絵は消さずに残す）
 /// 「図鑑に登録されました」は、一覧に初捕獲が 1 匹でも居れば<b>最後に 1 回だけ</b>出す
 /// </code>
-/// 覆いかぶせる絵は <c>FishImage</c> の兄弟として実行時に 1 個だけ生成する
-/// （<see cref="overlayActorPath"/>。用意できない場合は演出を省いて即時に切り替える）。
 ///
 /// 【配置方式】<see cref="PauseMenu"/> と同じ。
 /// このスクリプトはプレハブ <c>assets://mainGame/actors/UI/ResultPanel.actor</c> の
@@ -40,7 +53,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///  ResultBody                  … 拡大縮小の親（ここの CanvasTransform.Scale を動かす）
 ///   ResultBg                   … Sprite（下敷き）
 ///   FishImage                  … Sprite（図鑑画像。実行時に TexturePath を差し替える）
-///   ResultFishOverlay          … Sprite（連鎖の切り替えで覆いかぶさる絵。実行時に生成）
+///                                 ＋ Animator（登場・退場クリップ。倍率だけを動かす）
 ///   FishName / FishSize / FishBest / FishRank / Prompt … Text
 ///   NewRecord                  … Text（新記録のときだけ点滅表示）
 ///   NewRecordSparkle           … ParticleEmitter（新記録のあいだ小さくきらめき続ける）
@@ -65,6 +78,13 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 【時間軸】
 /// 釣り上げ演出はスロー（<c>Time.Scale</c> を下げる）区間を含むので、
 /// パネルの拡大縮小・点滅・入力受付はすべて<b>実時間</b>（<c>Time.Unscaled*</c>）で行う。
+///
+/// 例外は <c>Animator</c> で、エンジンの AnimationSystem は<b>ゲーム時間</b>
+/// （<c>Time.Scale</c> 適用後）でクリップを進める。パネルを開くのはスローを戻した後
+/// （<see cref="CatchPresenter"/> が <c>Time.Scale</c> を 1 に戻してから開く）なので
+/// 実時間と一致し、ポーズ中（<c>Time.Scale</c> = 0）はクリップも待ちの安全網も
+/// 一緒に止まる（安全網の時計だけは<b>ゲーム時間</b>で数える。理由は
+/// <see cref="IsFishClipFinished"/>）。
 /// </summary>
 public class ResultPanel : SEEDScript
 {
@@ -94,20 +114,23 @@ public class ResultPanel : SEEDScript
     /// <summary>連鎖の一覧で最初に見せるエントリの添字（＝最初に掛かった魚）。</summary>
     private const int ChainFirstEntryIndex = 0;
 
-    /// <summary>重ね表示（オーバーレイ）が最後に落ち着く倍率（＝原寸）。</summary>
-    private const float OverlayEndScale = 1f;
+    /// <summary>
+    /// 魚の絵の表示サイズの倍率（＝プレハブの実寸そのまま。登場クリップの終端値と同じ）。
+    /// Animator が使えないときのフォールバックでだけ書き込む。
+    /// </summary>
+    private const float FishShownScale = 1f;
 
     /// <summary>
-    /// 重ね表示のスプライトを <see cref="fishImage"/> より何段手前に描くか
-    /// （レイヤーは FishImage の値から算出するので、プレハブ側の指定に依存しない）。
+    /// 魚の絵のクリップ待ちの安全網: クリップの尺の何倍まで待つか
+    /// （<see cref="IsFishClipFinished"/>。1 未満にすると正常な再生を切ってしまう）。
     /// </summary>
-    private const int OverlayLayerOffset = 1;
+    private const float FishAnimWaitFactor = 3f;
 
     /// <summary>
-    /// 実行時に生成する重ね表示アクタに付ける目印の名前（<see cref="SpawnOnce"/> の照合キー）。
-    /// プレハブ（ResultFishOverlay.actor）のルート名と同じにしてある。
+    /// 魚の絵のクリップ待ちの安全網: 尺の何倍かに加えて足す余裕（秒・ゲーム時間）。
+    /// 尺 0 のクリップでも必ず 1 度は評価される長さを確保するために足す。
     /// </summary>
-    private const string OverlayActorName = "ResultFishOverlay";
+    private const float FishAnimWaitMarginSeconds = 1f;
 
     // ─── 表示内容（呼び出し側が組み立てて渡す）─────────────────
 
@@ -190,17 +213,24 @@ public class ResultPanel : SEEDScript
         Opening,
 
         /// <summary>
+        /// 魚の絵が登場している（<c>result_fish_in</c> の再生中）。
+        /// <b>どの魚でも必ず通る</b>（1 匹目も含む）。再生し切った瞬間に文字
+        /// （名前・サイズ・自己ベスト・New Record・ランク）をその魚のものへ確定させる。
+        /// </summary>
+        FishIn,
+
+        /// <summary>
         /// <b>連鎖の途中</b>: いま出している魚をそのまま見せて次の切り替えを待っている
         /// （<see cref="chainHoldSeconds"/> 秒）。連鎖が 1 匹だけならこのフェーズは通らない。
         /// </summary>
         ChainHolding,
 
         /// <summary>
-        /// <b>連鎖の途中</b>: 次の魚の絵が「大きく・透明」から「原寸・不透明」へ
-        /// 覆いかぶさっている（<see cref="chainOverlaySeconds"/> 秒）。
-        /// 覆い切った瞬間に文字（名前・サイズ・自己ベスト・New Record・ランク）も次の魚へ変わる。
+        /// <b>連鎖の途中</b>: いま出している魚の絵が縮んで消えている
+        /// （<c>result_fish_out</c> の再生中）。消え切ったら絵だけを次の魚へ差し替え、
+        /// <see cref="FishIn"/> へ戻る。<b>最後の魚は消さない</b>ので通らない。
         /// </summary>
-        ChainSwitching,
+        FishOut,
 
         /// <summary>本体が出きって、決定入力を待っている。</summary>
         Idle,
@@ -268,8 +298,9 @@ public class ResultPanel : SEEDScript
     ///
     /// わらしべ連鎖で複数匹まとめて釣り上げたときは、この順に
     /// <b>1 枚のパネルの中で</b>絵と文字を差し替えて見せていく
-    /// （<see cref="PanelPhase.ChainHolding"/> → <see cref="PanelPhase.ChainSwitching"/>）。
-    /// 連鎖なし（1 匹）のときは要素 1 つだけの一覧になり、従来とまったく同じ見え方になる。
+    /// （<see cref="PanelPhase.ChainHolding"/> → <see cref="PanelPhase.FishOut"/>
+    /// 　→ <see cref="PanelPhase.FishIn"/>）。
+    /// 連鎖なし（1 匹）のときは要素 1 つだけの一覧になり、登場アニメのあとそのまま決定待ちになる。
     ///
     /// 静的に持つのは、実体がまだ無い（プレハブ生成待ち）ときも呼び出し側から
     /// 内容を預けられるようにするため（<see cref="hasPendingData"/>）。
@@ -433,35 +464,43 @@ public class ResultPanel : SEEDScript
 
     /// <summary>
     /// 連鎖の途中で、1 匹ぶんの釣果を見せたままにする秒数（実時間）。
-    /// この秒数が過ぎると、次の魚の絵が覆いかぶさり始める。
+    /// この秒数が過ぎると、いまの魚の絵が縮んで消え始める（退場クリップ）。
     /// </summary>
     [Header("連鎖"), SerializeField(Label = "連鎖の表示保持(秒)")]
     private float chainHoldSeconds = 1.0f;
 
-    /// <summary>
-    /// 次の魚の絵が「大きく・透明」から「原寸・不透明」へ覆いかぶさるまでの秒数（実時間）。
-    /// 覆い切った瞬間に文字も次の魚へ切り替わる。
-    /// </summary>
-    [SerializeField(Label = "連鎖の重ね表示(秒)")]
-    private float chainOverlaySeconds = 0.4f;
+    // ─── 魚の絵のアニメ（FishImage の Animator に登録したクリップ）──────
+    //
+    // 動き（倍率・秒数・カーブ）は<b>クリップが持つ</b>。ここで指定するのは
+    // 「どの名前のクリップを流すか」と、待ちの安全網に使う目安の尺だけ。
+    // クリップは tools/gen_result_fish_clips.py が生成する。
 
     /// <summary>
-    /// 重ね表示の<b>始まりの倍率</b>（1 で原寸のまま出る＝拡大感が無い）。
-    /// 既定 2.0 ＝ 2 倍の大きさから縮みながら覆いかぶさる。
+    /// 登場クリップの名前（FishImage の Animator の <c>clips</c> に登録した名前と一致させる）。
+    /// 空にすると登場アニメを使わず、絵は即座に表示サイズで出る。
     /// </summary>
-    [SerializeField(Label = "重ね表示の開始倍率")]
-    private float chainOverlayStartScale = 2.0f;
+    [Header("魚の絵のアニメ"), SerializeField(Label = "登場クリップ名")]
+    private string fishInClipName = "result_fish_in";
 
     /// <summary>
-    /// 重ね表示に使うスプライトのプレハブ（<c>assets://</c> パス）
-    /// 【重ね表示アクタの唯一の供給元】。
+    /// 退場クリップの名前（同上）。空にすると退場アニメを使わず、絵は即座に切り替わる。
+    /// </summary>
+    [SerializeField(Label = "退場クリップ名")]
+    private string fishOutClipName = "result_fish_out";
+
+    /// <summary>
+    /// 登場クリップの尺の目安（秒）【待ちの安全網にだけ使う】。
     ///
-    /// <see cref="fishImagePath"/> の<b>兄弟</b>として実行時に 1 個だけ生成し、
-    /// 位置・ピボット・アンカー・大きさは FishImage から写す（＝レイアウトの二重管理をしない）。
-    /// 空にする／読み込めない場合は重ね表示を諦め、連鎖の切り替えを即時に行う。
+    /// 実際の切り替わりは<b>Animator の再生終了</b>で判定するので、ここが多少ズレても
+    /// 見た目は変わらない。クリップが読めない等で再生が終わらなくなったときに
+    /// 進行を止めないための上限（<see cref="FishAnimWaitFactor"/> 倍まで待つ）。
     /// </summary>
-    [SerializeField(Label = "重ね表示のプレハブ")]
-    private string overlayActorPath = "assets://mainGame/actors/UI/ResultFishOverlay.actor";
+    [SerializeField(Label = "登場クリップの尺(秒)")]
+    private float fishInSeconds = 0.4f;
+
+    /// <summary>退場クリップの尺の目安（秒）【待ちの安全網にだけ使う】。</summary>
+    [SerializeField(Label = "退場クリップの尺(秒)")]
+    private float fishOutSeconds = 0.27f;
 
     // ─── 実行時の状態 ────────────────────────────────────────
 
@@ -470,6 +509,13 @@ public class ResultPanel : SEEDScript
 
     /// <summary>いまのフェーズに入ってからの経過秒数（実時間）。</summary>
     private float phaseElapsed = 0f;
+
+    /// <summary>
+    /// いまのフェーズに入ってからの経過秒数（<b>ゲーム時間</b>＝<c>Time.Scale</c> 適用後）。
+    /// Animator と同じ時計なので、クリップ待ちの安全網だけがこちらを使う
+    /// （理由は <see cref="IsFishClipFinished"/>）。
+    /// </summary>
+    private float phaseGameElapsed = 0f;
 
     /// <summary>表示中の内容（<see cref="Hidden"/> のときの値は無意味）。</summary>
     private ResultData data;
@@ -493,29 +539,38 @@ public class ResultPanel : SEEDScript
     /// <summary>本体の入れ物の <c>CanvasTransform</c>（解決失敗なら <c>IsValid == false</c>）。</summary>
     private SEED.CanvasTransform bodyTransform;
 
-    /// <summary>本体の入れ物の<b>アクタ</b>（重ね表示アクタの生成先＝親。解決失敗なら無効ハンドル）。</summary>
-    private SEED.GameObject bodyRoot;
-
-    /// <summary>魚の絵の <c>CanvasTransform</c>（重ね表示の位置・ピボット・アンカーの写し元）。</summary>
+    /// <summary>
+    /// 魚の絵の <c>CanvasTransform</c>
+    /// （Animator が使えないときに表示サイズを書き込む先。解決失敗なら <c>IsValid == false</c>）。
+    /// </summary>
     private SEED.CanvasTransform fishImageTransform;
 
-    /// <summary>実行時に生成した重ね表示アクタ（生成失敗なら無効ハンドル）。</summary>
-    private SEED.GameObject overlayRoot;
+    /// <summary>
+    /// 魚の絵の<b>アクタ</b>（登場するまで隠すために <c>Visible</c> を触る。
+    /// 解決失敗なら無効ハンドル）。倍率で隠さない理由は <see cref="SetFishImageVisible"/>。
+    /// </summary>
+    private SEED.GameObject fishImageRoot;
 
-    /// <summary>重ね表示の <c>CanvasTransform</c>（<see cref="overlayReady"/> が true のときだけ有効）。</summary>
-    private SEED.CanvasTransform overlayTransform;
-
-    /// <summary>重ね表示の Sprite（<see cref="overlayReady"/> が true のときだけ非 null）。</summary>
-    private SEED.Sprite? overlaySprite;
+    /// <summary>魚の絵の Animator（未アタッチ・解決失敗なら null）。</summary>
+    private SEED.Animator? fishAnimator;
 
     /// <summary>
-    /// 重ね表示の準備（生成 → コンポーネント解決 → FishImage からの写し取り）が済んだか。
-    ///
-    /// 2D アクタは<b>生成した次のフレーム</b>にならないと <c>CanvasTransform</c> が
-    /// 取れない（docs/scripting_api.md「生成・破棄・検索」）ため、
-    /// 準備は <see cref="EnsureOverlayReady"/> で<b>必要になった時点</b>に遅延して行う。
+    /// いま魚の絵のクリップが流れているか
+    /// （false ＝ 再生できなかったので、待たずに次へ進める）。
     /// </summary>
-    private bool overlayReady = false;
+    private bool fishClipPlaying = false;
+
+    /// <summary>
+    /// 登場クリップを流したあと、まだ絵を表示状態へ戻していないか
+    /// （1 フレーム遅らせて戻す理由は <see cref="UpdateFishIn"/>）。
+    /// </summary>
+    private bool fishRevealPending = false;
+
+    /// <summary>
+    /// 魚の絵のアニメが使えない旨の警告をもう出したか
+    /// 【同じ警告でログを埋めないための番人】。連鎖の切り替えごとに出すと大量に出る。
+    /// </summary>
+    private bool fishAnimWarned = false;
 
     /// <summary>図鑑登録パネルのアクタ（解決失敗なら <c>IsValid == false</c>）。</summary>
     private SEED.GameObject registeredRoot;
@@ -585,7 +640,7 @@ public class ResultPanel : SEEDScript
     /// 釣果パネルを<b>複数匹ぶん</b>出す【わらしべ連鎖の表示の唯一の入口】。
     ///
     /// パネルは 1 枚のまま、<paramref name="chain"/> の順に
-    /// 「見せる → 次の魚の絵が覆いかぶさる → 文字も次の魚へ」を自動で繰り返し、
+    /// 「見せる → 絵が縮んで消える → 次の魚の絵が登場 → 文字も次の魚へ」を自動で繰り返し、
     /// <b>最後の 1 匹まで出し終えてから</b>決定入力を待つ。
     /// 「図鑑に登録されました」は、一覧の中に初捕獲が 1 匹でも居れば最後に 1 回だけ出す。
     /// </summary>
@@ -683,10 +738,6 @@ public class ResultPanel : SEEDScript
 
         ResolveReferences();
 
-        // 連鎖の重ね表示に使うスプライトを先に用意しておく
-        //（2D アクタはコンポーネントが揃うのが次フレームなので、実際に使う直前ではなく
-        //  ここで生成だけ済ませる。写し取り・解決は EnsureOverlayReady が遅延して行う）。
-        EnsureOverlaySpawned();
         SetContent(newRecordText, newRecordLabel);
         // 出すまでは影ごと消しておく（アルファ 0 では影が残るため Visible で消す）
         SetNewRecordVisible(false);
@@ -777,13 +828,15 @@ public class ResultPanel : SEEDScript
         if (phase == PanelPhase.Hidden) { return; }
 
         phaseElapsed += SEED.Time.UnscaledDeltaTime;
+        phaseGameElapsed += SEED.Time.DeltaTime;
         UpdateBlink();
 
         switch (phase)
         {
             case PanelPhase.Opening:           UpdateOpening();           break;
+            case PanelPhase.FishIn:            UpdateFishIn();            break;
             case PanelPhase.ChainHolding:      UpdateChainHolding();      break;
-            case PanelPhase.ChainSwitching:    UpdateChainSwitching();    break;
+            case PanelPhase.FishOut:           UpdateFishOut();           break;
             case PanelPhase.Idle:              UpdateIdle();              break;
             case PanelPhase.RegisteredOpening: UpdateRegisteredOpening(); break;
             case PanelPhase.RegisteredIdle:    UpdateIdle();              break;
@@ -796,47 +849,50 @@ public class ResultPanel : SEEDScript
 
     /// <summary>
     /// 本体の拡大（easeOutBack で 0 → 原寸）。
-    /// 出きったら、連鎖が残っていれば次の魚への切り替えへ、無ければ決定待ちへ。
+    /// 出きったら、いま見せる魚の絵を登場させる（1 匹目も必ず登場アニメを通る）。
     /// </summary>
     private void UpdateOpening()
     {
         float ratio = Progress(openSeconds);
         ApplyBodyScale(EaseOutBack(ratio));
         if (ratio < 1f) { return; }
-        EnterPhase(NextPhaseAfterEntry());
+        EnterPhase(PanelPhase.FishIn);
+    }
+
+    /// <summary>
+    /// 魚の絵の登場（<c>result_fish_in</c> の再生中）。再生し切ったら
+    /// <see cref="FinishFishIn"/> が文字をこの魚のものへ確定させて次へ進む。
+    ///
+    /// <b>絵を表示へ戻すのがここ（＝再生を始めた次のフレーム）である理由</b>:
+    /// エンジンの AnimationSystem はスクリプトより<b>前</b>に走るので、
+    /// <see cref="EnterPhase"/> で <c>Play</c> した瞬間はまだクリップの 1 コマ目
+    /// （画面いっぱいの倍率）が書かれていない。そこで表示へ戻すと、
+    /// <b>前の魚が残した倍率のまま 1 フレームだけ絵が見えてしまう</b>。
+    /// </summary>
+    private void UpdateFishIn()
+    {
+        RevealFishIfPending();
+        if (!IsFishClipFinished(fishInSeconds)) { return; }
+        FinishFishIn();
     }
 
     /// <summary>
     /// 連鎖の「見せたまま待つ」区間。<see cref="chainHoldSeconds"/> 秒たったら
-    /// 次の魚の絵を覆いかぶせ始める。
-    ///
-    /// 重ね表示のスプライトが用意できないとき（プレハブ未設定・生成失敗・
-    /// 生成直後でまだコンポーネントが揃っていない）は、演出を諦めて<b>即座に</b>
-    /// 次の魚へ切り替える（＝連鎖の表示そのものは必ず最後まで進む）。
+    /// いまの絵を縮めて消し始める。
     /// </summary>
     private void UpdateChainHolding()
     {
         if (phaseElapsed < SEED.Mathf.Max(chainHoldSeconds, 0f)) { return; }
-
-        if (!EnsureOverlayReady())
-        {
-            SEED.Debug.LogWarning("[ResultPanel] 重ね表示を用意できないため、連鎖の切り替えを即時に行う");
-            CommitChainEntry();
-            return;
-        }
-
-        EnterPhase(PanelPhase.ChainSwitching);
+        EnterPhase(PanelPhase.FishOut);
     }
 
     /// <summary>
-    /// 連鎖の「次の魚が覆いかぶさる」区間。
-    /// 覆い切った（<see cref="chainOverlaySeconds"/> 秒たった）瞬間に文字も次の魚へ切り替える。
+    /// 魚の絵の退場（<c>result_fish_out</c> の再生中）。消え切ったら
+    /// <see cref="CommitChainEntry"/> が絵だけを次の魚へ差し替える（＝見えない裏で入れ替わる）。
     /// </summary>
-    private void UpdateChainSwitching()
+    private void UpdateFishOut()
     {
-        float ratio = Progress(chainOverlaySeconds);
-        ApplyOverlayProgress(ratio);
-        if (ratio < 1f) { return; }
+        if (!IsFishClipFinished(fishOutSeconds)) { return; }
         CommitChainEntry();
     }
 
@@ -931,7 +987,8 @@ public class ResultPanel : SEEDScript
 
         SetRegisteredVisible(false);
         ApplyRegisteredScale(MinScale);
-        HideOverlay();
+        // 絵は「開き切ってから登場アニメで出す」ので、開いているあいだは隠しておく
+        HideFishImageUntilEntrance();
         EnterPhase(PanelPhase.Opening);
         ApplyBodyScale(MinScale);   // 開きの初期値（1 フレーム目に原寸で見えるのを防ぐ）
     }
@@ -947,13 +1004,6 @@ public class ResultPanel : SEEDScript
         => chainIndex + 1 < chainEntries.Count ? PanelPhase.ChainHolding : PanelPhase.Idle;
 
     /// <summary>
-    /// 次に見せる魚（<see cref="chainIndex"/> の 1 つ先）。
-    /// 残りが無い異常時は<b>いま見せている内容</b>を返す（重ねても絵が変わらないだけで済む）。
-    /// </summary>
-    private ResultData NextEntry()
-        => chainIndex + 1 < chainEntries.Count ? chainEntries[chainIndex + 1] : data;
-
-    /// <summary>
     /// 表示中の内容を 1 匹ぶん差し替える【表示中の魚を切り替える唯一の場所】。
     /// 初捕獲フラグはここで <see cref="chainAnyFirstCatch"/> へ畳み込む。
     /// </summary>
@@ -966,11 +1016,10 @@ public class ResultPanel : SEEDScript
     }
 
     /// <summary>
-    /// 覆いかぶせ終えた（または重ね表示を諦めた）瞬間に、表示を次の魚へ確定させる
-    /// 【連鎖を 1 つ進める唯一の場所】。
+    /// 絵が消え切った瞬間に、<b>絵だけ</b>を次の魚へ差し替える【連鎖を 1 つ進める唯一の場所】。
     ///
-    /// 絵（<see cref="fishImage"/>）は <see cref="ApplyData"/> の中で差し替わるので、
-    /// 重ね表示はここで透明へ戻して次の切り替えのために取っておく。
+    /// 文字（名前・サイズ・自己ベスト・New Record・ランク）はまだ前の魚のままにしておき、
+    /// 次の登場アニメが終わった瞬間（<see cref="FinishFishIn"/>）にまとめて切り替える。
     /// </summary>
     private void CommitChainEntry()
     {
@@ -983,8 +1032,26 @@ public class ResultPanel : SEEDScript
         }
 
         chainIndex++;
-        ApplyEntry(chainEntries[chainIndex]);
-        HideOverlay();
+        // 絵は消えている（倍率 0）ので、ここで差し替えても入れ替わりは見えない
+        ApplyFishImage(chainEntries[chainIndex].ImagePath);
+        EnterPhase(PanelPhase.FishIn);
+    }
+
+    /// <summary>
+    /// 登場アニメが終わった瞬間の確定処理
+    /// 【文字（名前・サイズ・自己ベスト・New Record・ランク）を切り替える唯一の場所】。
+    ///
+    /// 絵は登場アニメが始まる前に差し替え済みなので、ここで変わるのは文字と
+    /// 新記録まわり（点滅・きらめき）だけ。1 匹目はすでに同じ内容が入っているため
+    /// 見た目は変わらない（同じ経路を通すことで分岐を増やさない）。
+    /// </summary>
+    private void FinishFishIn()
+    {
+        // 一覧が途中で作り直された（ホットリロード・シーン遷移）などの異常時の番人。
+        if (chainIndex >= ChainFirstEntryIndex && chainIndex < chainEntries.Count)
+        {
+            ApplyEntry(chainEntries[chainIndex]);
+        }
 
         // 本体はもう原寸なので、きらめきはこの瞬間から出してよい
         //（開き途中に出さない理由は EnterPhase の Idle を参照）
@@ -1002,14 +1069,22 @@ public class ResultPanel : SEEDScript
     {
         phase = next;
         phaseElapsed = 0f;
+        phaseGameElapsed = 0f;
 
         switch (next)
         {
-            case PanelPhase.ChainSwitching:
-                // 次の魚の絵を重ね表示へ載せ、「大きく・透明」の状態から始める
-                //（ここへ来る前に UpdateChainHolding が EnsureOverlayReady を通している）。
-                ApplyOverlayTexture(NextEntry().ImagePath);
-                ApplyOverlayProgress(0f);
+            case PanelPhase.FishIn:
+                // 絵の登場はクリップが作る（倍率・秒数・カーブはすべてクリップが持つ）。
+                // 表示へ戻すのは次のフレーム（理由は UpdateFishIn）。
+                // 流せなかったときはアニメを諦め、そのまま表示サイズで出す。
+                fishRevealPending = TryPlayFishClip(fishInClipName);
+                if (!fishRevealPending) { ShowFishImmediately(); }
+                break;
+
+            case PanelPhase.FishOut:
+                // 絵の退場もクリップが作る。流せなければ待たずに次の魚へ進む
+                //（IsFishClipFinished が fishClipPlaying を見て即座に true を返す）。
+                TryPlayFishClip(fishOutClipName);
                 break;
 
             case PanelPhase.Idle:
@@ -1044,10 +1119,10 @@ public class ResultPanel : SEEDScript
     {
         phase = PanelPhase.Hidden;
         phaseElapsed = 0f;
+        phaseGameElapsed = 0f;
         ApplyBodyScale(MinScale);
         SetNewRecordSparklePlaying(false);
         SetRegisteredVisible(false);
-        HideOverlay();
         if (panelRoot.IsValid) { panelRoot.Visible = false; }
 
         IsActive = false;
@@ -1081,18 +1156,19 @@ public class ResultPanel : SEEDScript
         SetTextAlpha(newRecordText, data.NewRecord ? AlphaOpaque : AlphaClear);
         SetNewRecordVisible(data.NewRecord);
 
-        ApplyFishImage();
+        ApplyFishImage(data.ImagePath);
     }
 
     /// <summary>
-    /// 魚の絵のテクスチャを差し替える。
+    /// 魚の絵のテクスチャを差し替える【絵を載せ替える唯一の場所】。
     /// 図鑑画像のパスが空なら <see cref="fallbackImagePath"/>（既定は白）を使う
     /// （テクスチャを空文字にすると単色表示になり、絵の枠が消えて見えるため）。
     /// </summary>
-    private void ApplyFishImage()
+    /// <param name="imagePath">載せる図鑑画像の <c>assets://</c> パス。</param>
+    private void ApplyFishImage(string imagePath)
     {
         if (fishImage is not { } sprite || !sprite.IsValid) { return; }
-        sprite.TexturePath = string.IsNullOrWhiteSpace(data.ImagePath) ? fallbackImagePath : data.ImagePath;
+        sprite.TexturePath = string.IsNullOrWhiteSpace(imagePath) ? fallbackImagePath : imagePath;
     }
 
     /// <summary>
@@ -1141,117 +1217,166 @@ public class ResultPanel : SEEDScript
         registeredRoot.Visible = visible;
     }
 
-    // ─── 重ね表示（連鎖の切り替えで次の魚の絵を覆いかぶせるスプライト）─────
+    // ─── 魚の絵のアニメ（Animator に登録したクリップを流すだけ）─────────
+    //
+    // 動き（倍率・秒数・カーブ）は .anim クリップが持ち、ここには一切書かない。
+    // このスクリプトの仕事は「いつどちらのクリップを流すか」「終わったか」だけ。
+
+    /// <summary>魚の絵のアニメが使えるか（Animator を解決できていて生きているか）。</summary>
+    private bool HasFishAnimator() => fishAnimator is { IsValid: true };
 
     /// <summary>
-    /// 重ね表示のアクタを<b>1 個だけ</b>用意する【重ね表示アクタの唯一の生成点】。
+    /// 魚の絵のクリップを流す【再生を頼む唯一の場所】。
     ///
-    /// 生成先は <see cref="fishImage"/> と同じ親（＝本体の入れ物）で、FishImage の<b>兄弟</b>。
-    /// <see cref="SpawnOnce"/> を使うので、ホットリロードで <c>OnStart</c> が
-    /// 何度呼ばれても増えない。生成の反映はフレーム末尾なので、ここでは
-    /// コンポーネントには一切触らない（触るのは <see cref="EnsureOverlayReady"/>）。
+    /// 流せたかは<b>その場で</b>確かめる。Animator は未登録・未ロードのクリップ名を
+    /// 渡されても（警告を出して）何もしないので、頼んだ直後に「そのクリップが
+    /// 現在クリップになったか」を見れば分かる。流せなければ
+    /// <see cref="fishClipPlaying"/> を下ろし、呼び出し側は待たずに次へ進む
+    /// （＝演出は省かれるが、連鎖の進行は必ず最後まで通る）。
     /// </summary>
-    private void EnsureOverlaySpawned()
+    /// <param name="clipName">流すクリップ名（空なら演出を使わない）。</param>
+    /// <returns>再生を始められたら true。</returns>
+    private bool TryPlayFishClip(string clipName)
     {
-        if (overlayRoot.IsValid) { return; }
-        if (string.IsNullOrWhiteSpace(overlayActorPath)) { return; }   // 未設定 ＝ 重ね表示を使わない
-        if (!bodyRoot.IsValid)
+        fishClipPlaying = false;
+
+        if (string.IsNullOrWhiteSpace(clipName)) { return false; }   // 未設定 ＝ 演出を使わない
+        if (fishAnimator is not { IsValid: true } animator)
         {
-            SEED.Debug.LogWarning($"[ResultPanel] 重ね表示の親（{bodyPath}）を解決できないため生成しない");
-            return;
+            WarnFishAnimOnce($"魚の絵に Animator が無い（{fishImagePath}）ため、絵のアニメを省く");
+            return false;
         }
 
-        overlayRoot = SpawnOnce.GetOrInstantiate(OverlayActorName, overlayActorPath, bodyRoot);
-        if (!overlayRoot.IsValid)
+        animator.Play(clipName);
+
+        // Play が弾かれた（clips 未登録・.anim 未ロード）ときは現在クリップが変わらない
+        if (animator.CurrentClip != clipName || !animator.IsPlaying)
         {
-            SEED.Debug.LogWarning($"[ResultPanel] 重ね表示のプレハブを生成できない: {overlayActorPath}");
-        }
-    }
-
-    /// <summary>
-    /// 重ね表示が使える状態か確かめ、まだなら準備する
-    /// 【重ね表示の見た目を FishImage へ合わせる唯一の場所】。
-    ///
-    /// 2D アクタは生成した次のフレームにならないと <c>CanvasTransform</c> /
-    /// <c>Sprite</c> が取れないので、準備は「使う直前に試す」形にしてある。
-    /// 位置・ピボット・アンカー・大きさ・描画順は <see cref="fishImage"/> から写すので、
-    /// プレハブ側にレイアウトを二重に持たない（FishImage を動かせば重ねもついてくる）。
-    /// </summary>
-    /// <returns>準備できていれば true（false のとき呼び出し側は即時切り替えへ倒す）。</returns>
-    private bool EnsureOverlayReady()
-    {
-        if (overlayReady) { return true; }
-
-        EnsureOverlaySpawned();
-        if (!overlayRoot.IsValid) { return false; }
-
-        if (overlayRoot.GetComponent<SEED.CanvasTransform>() is not { IsValid: true } ct) { return false; }
-        if (overlayRoot.GetComponent<SEED.Sprite>() is not { } sprite || !sprite.IsValid) { return false; }
-
-        // 位置の基準は FishImage と完全に同じにする（＝ぴったり重なる）
-        if (fishImageTransform.IsValid)
-        {
-            ct.Position = fishImageTransform.Position;
-            ct.Pivot    = fishImageTransform.Pivot;
-            ct.Anchor   = fishImageTransform.Anchor;
-            ct.Rotation = fishImageTransform.Rotation;
+            WarnFishAnimOnce($"クリップ '{clipName}' を再生できないため、絵のアニメを省く");
+            return false;
         }
 
-        if (fishImage is { IsValid: true } source)
-        {
-            sprite.Size  = source.Size;
-            sprite.Layer = source.Layer + OverlayLayerOffset;   // 必ず元の絵より手前
-        }
-        sprite.RaycastTarget = false;                            // 飾りなのでポインタは拾わない
-
-        overlayTransform = ct;
-        overlaySprite = sprite;
-        overlayReady = true;
-
-        HideOverlay();
+        fishClipPlaying = true;
         return true;
     }
 
-    /// <summary>重ね表示のテクスチャを差し替える（空なら <see cref="fallbackImagePath"/>）。</summary>
-    /// <param name="imagePath">載せる図鑑画像の <c>assets://</c> パス。</param>
-    private void ApplyOverlayTexture(string imagePath)
-    {
-        if (overlaySprite is not { IsValid: true } sprite) { return; }
-        sprite.TexturePath = string.IsNullOrWhiteSpace(imagePath) ? fallbackImagePath : imagePath;
-    }
-
     /// <summary>
-    /// 重ね表示の進行（0＝大きく透明 → 1＝原寸・不透明）を反映する
-    /// 【覆いかぶさる動きの唯一の算出点】。
+    /// 流している魚の絵のクリップが終わったか【アニメ待ちの唯一の判定】。
     ///
-    /// 倍率もアルファも同じ easeOutCubic（立ち上がりが速く、最後に静かに収まる）で動かす。
+    /// 正典は<b>Animator の再生状態</b>（尺の末尾に達するとエンジンが自動で下ろす）。
+    /// ただし .anim が読めない等で「再生中のまま終わらない」状況もあり得るので、
+    /// 上限を設けて必ず先へ進めるようにする。
+    ///
+    /// 上限を<b>ゲーム時間</b>（<see cref="phaseGameElapsed"/>）で数えるのは、
+    /// Animator がゲーム時間で進むため。実時間で数えると、ポーズ中
+    /// （<c>Time.Scale</c> = 0 でクリップも止まっている間）に上限へ達してしまい、
+    /// 「止まっているのに次へ進む」ことになる。
     /// </summary>
-    /// <param name="ratio">進行（0〜1）。</param>
-    private void ApplyOverlayProgress(float ratio)
+    /// <param name="clipSeconds">そのクリップの尺の目安（秒）。</param>
+    /// <returns>次へ進んでよいなら true。</returns>
+    private bool IsFishClipFinished(float clipSeconds)
     {
-        float eased = Easing.OutCubic(ratio);
+        if (!fishClipPlaying) { return true; }                          // 流せなかった ＝ 待たない
+        if (fishAnimator is not { IsValid: true } animator) { return true; }
+        if (!animator.IsPlaying) { return true; }                       // 通常の終了
 
-        if (overlayTransform.IsValid)
-        {
-            float scale = SEED.Mathf.Lerp(
-                SEED.Mathf.Max(chainOverlayStartScale, MinScale), OverlayEndScale, eased);
-            overlayTransform.Scale = new SEED.Vector2(scale, scale);
-        }
+        float limit = SEED.Mathf.Max(clipSeconds, 0f) * FishAnimWaitFactor + FishAnimWaitMarginSeconds;
+        if (phaseGameElapsed < limit) { return false; }
 
-        if (overlaySprite is { IsValid: true } sprite)
-        {
-            sprite.Color = sprite.Color.WithAlpha(SEED.Mathf.Clamped01(eased));
-        }
+        WarnFishAnimOnce($"クリップ '{animator.CurrentClip}' が {limit} 秒たっても終わらないため、待たずに次へ進む");
+        return true;
     }
 
     /// <summary>
-    /// 重ね表示を消す（アルファ 0）。破棄はせず、次の切り替えのために取っておく
-    /// （<c>Instantiate</c> / <c>Destroy</c> を繰り返さないための定型）。
+    /// 登場アニメを始めた<b>次の</b>フレームで魚の絵を表示へ戻す
+    /// （1 フレーム遅らせる理由は <see cref="UpdateFishIn"/>）。
     /// </summary>
-    private void HideOverlay()
+    private void RevealFishIfPending()
     {
-        if (overlaySprite is not { IsValid: true } sprite) { return; }
-        sprite.Color = sprite.Color.WithAlpha(AlphaClear);
+        if (!fishRevealPending) { return; }
+        fishRevealPending = false;
+        SetFishImageVisible(true);
+    }
+
+    /// <summary>
+    /// 登場アニメが始まるまで魚の絵を隠す
+    /// 【開いた瞬間に絵が出てしまわないようにする唯一の場所】。
+    ///
+    /// アニメが使えないときは<b>隠さない</b>。隠すと登場アニメが無いぶん
+    /// 絵が二度と出てこなくなるため、その場合は表示サイズで出しっぱなしにする。
+    /// </summary>
+    private void HideFishImageUntilEntrance()
+    {
+        if (!HasFishAnimator())
+        {
+            ShowFishImmediately();
+            return;
+        }
+
+        fishRevealPending = false;
+        SetFishImageVisible(false);
+    }
+
+    /// <summary>
+    /// アニメを使わずに、いますぐ絵を出す【フォールバックの唯一の出口】。
+    /// Animator が無い／クリップを流せないときに呼ぶ。
+    ///
+    /// <b>Animator が居るなら先に止める</b>: 退場クリップだけが流せる（登場だけ名前が違う等の）
+    /// 半端な設定だと、直前の退場で倍率 0 のまま毎フレーム書かれ続け、
+    /// ここで書いた表示サイズが上書きされて<b>絵が二度と出てこない</b>。
+    /// <c>Stop</c> は再生位置を先頭へ戻すので、以後はそのクリップの<b>1 コマ目</b>
+    /// （退場クリップなら表示サイズ）が書かれ、絵は必ず見える状態に落ち着く。
+    /// </summary>
+    private void ShowFishImmediately()
+    {
+        fishRevealPending = false;
+        if (fishAnimator is { IsValid: true } animator) { animator.Stop(); }
+        ApplyFishScale(FishShownScale);
+        SetFishImageVisible(true);
+    }
+
+    /// <summary>
+    /// 魚の絵の表示・非表示を切り替える【絵を隠す唯一の手段】。
+    ///
+    /// <b>倍率で隠さない理由</b>: エンジンはクリップが終わっても
+    /// 「最後のコマの値」を毎フレーム書き続ける（現在クリップがある限り評価するため）。
+    /// したがってスクリプトが 1 回書いた倍率は次のフレームで上書きされてしまう。
+    /// クリップが触らない <c>Visible</c> なら確実に隠せる。
+    /// </summary>
+    /// <param name="visible">表示するなら true。</param>
+    private void SetFishImageVisible(bool visible)
+    {
+        // GameObject はプロパティ経由だと構造体のコピーへ書くことになる（CS1612）ため
+        // ローカルへ受けてから設定する（<see cref="SetNewRecordVisible"/> と同じ理由）。
+        var root = fishImageRoot;
+        if (!root.IsValid) { return; }
+        root.Visible = visible;
+    }
+
+    /// <summary>
+    /// 魚の絵の倍率を直接書き込む【Animator が使えないときだけ通る道】。
+    /// クリップが流れているあいだに呼ぶと次のフレームで上書きされる
+    /// （理由は <see cref="SetFishImageVisible"/>）。
+    /// </summary>
+    /// <param name="scale">適用する倍率（0＝消える / 1＝表示サイズ）。</param>
+    private void ApplyFishScale(float scale)
+    {
+        if (!fishImageTransform.IsValid) { return; }
+        float safe = SEED.Mathf.Max(scale, MinScale);
+        fishImageTransform.Scale = new SEED.Vector2(safe, safe);
+    }
+
+    /// <summary>
+    /// 魚の絵のアニメについての警告を<b>1 回だけ</b>出す
+    /// 【同じ警告でログを埋めないための番人】。
+    /// 連鎖の切り替えごとに出すと、1 回の釣果で何行も同じ警告が並ぶため。
+    /// </summary>
+    /// <param name="message">出す文言（接頭辞はここで付ける）。</param>
+    private void WarnFishAnimOnce(string message)
+    {
+        if (fishAnimWarned) { return; }
+        fishAnimWarned = true;
+        SEED.Debug.LogWarning($"[ResultPanel] {message}");
     }
 
     // ─── 入力 ────────────────────────────────────────────────
@@ -1279,9 +1404,9 @@ public class ResultPanel : SEEDScript
     /// </summary>
     private void ResolveReferences()
     {
-        bodyRoot = ResolveActor(bodyPath);
-        bodyTransform = bodyRoot.IsValid
-            ? bodyRoot.GetComponent<SEED.CanvasTransform>() ?? default
+        SEED.GameObject bodyActor = ResolveActor(bodyPath);
+        bodyTransform = bodyActor.IsValid
+            ? bodyActor.GetComponent<SEED.CanvasTransform>() ?? default
             : default;
         if (!bodyTransform.IsValid)
         {
@@ -1293,11 +1418,18 @@ public class ResultPanel : SEEDScript
             ? registeredRoot.GetComponent<SEED.CanvasTransform>() ?? default
             : default;
 
-        // 重ね表示は魚の絵とまったく同じ場所・大きさに置くので、その基準も取っておく
-        SEED.GameObject fishImageActor = ResolveActor(fishImagePath);
-        fishImageTransform = fishImageActor.IsValid
-            ? fishImageActor.GetComponent<SEED.CanvasTransform>() ?? default
+        // 魚の絵は「隠す（Visible）」「アニメを流す（Animator）」「アニメが使えないときに
+        // 倍率を書く（CanvasTransform）」の 3 つを触るので、アクタごと持っておく。
+        fishImageRoot = ResolveActor(fishImagePath);
+        fishImageTransform = fishImageRoot.IsValid
+            ? fishImageRoot.GetComponent<SEED.CanvasTransform>() ?? default
             : default;
+        fishAnimator = fishImageRoot.IsValid ? fishImageRoot.GetComponent<SEED.Animator>() : null;
+        if (!HasFishAnimator())
+        {
+            // 出す前（OnStart）に気づけるよう、ここでも 1 回だけ知らせる
+            WarnFishAnimOnce($"魚の絵に Animator が無い（{fishImagePath}）ため、絵のアニメを省く");
+        }
 
         fishImage     = ResolveSprite(fishImagePath);
         nameText      = ResolveText(namePath);

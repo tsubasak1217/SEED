@@ -568,3 +568,25 @@
   イベントの粒度を上げると上記 2 つの購読側（単一フラグ運用）が壊れるため、
   必要になったら連鎖用の別イベント（例 `fishing.chain_catch`）を足すのが素直。
   関連: `runtime/assets/mainGame/scripts/CatchPresenter.cs`、`FishingController.cs`（`ChainCatchHistory`）。
+
+## 釣果リザルトの魚画像アニメ（2026-09-10 Animator 化時）
+
+正典: `runtime/assets/mainGame/scripts/ResultPanel.cs`、
+クリップ生成は `tools/gen_result_fish_clips.py`
+（`mainGame/animations/result_fish_in.anim` / `result_fish_out.anim`）。
+実行時生成の重ねスプライト方式（`ResultFishOverlay.actor` ＋ `SpawnOnce`）は撤去し、
+FishImage 自身の `Animator` がクリップで倍率を動かす方式へ置き換えた。
+
+- [ ] **シーン上の `ResultPanel/ResultBody/FishImage` のスケールが `[0, 0]` のまま保存されている** — 2026-09-10。
+  クリップ作成中の値がそのまま残っている（`ResultBody` の同種の残件は 2026-09-08 の項を参照）。
+  ゲーム中は登場クリップが必ず倍率を書くので<b>見た目には影響しない</b>が、
+  エディタの編集画面ではリザルトの魚の絵が見えない。インスペクタで 1 に戻して保存するか、
+  プレハブを再適用すること（シーン編集なので要利用者判断）。
+- [ ] **`mainGame/animations/resultFishImage.anim` が未参照のまま残っている** — 2026-09-10。
+  Animator 化の前に作られた仮クリップ（`new_clip`・位置と回転を動かさないキーだけ）で、
+  シーンの `clips` からは外したのでどこからも読まれない。消すかどうかは要利用者判断。
+- [ ] **ポーズ中に「表示保持」が進み、絵の出入りだけが止まる** — 2026-09-10（軽微・仕様として許容）。
+  パネルの待ち時間は実時間（`Time.Unscaled*`）で数えるが、`Animator` はゲーム時間で進む
+  （`PauseMenu` は `Time.Scale = 0`）。そのため保持中にポーズすると、
+  ポーズ中に退場クリップの再生要求だけが出て、絵は等倍のまま固まる（解除で動き出す）。
+  パネルの待ちもゲーム時間へ寄せると直るが、スロー中に開いた場合の秒数が変わるため据え置く。

@@ -1,0 +1,43 @@
+{
+  "name": "result_fish_in",
+  "duration": 0.4,
+  "fps": 30,
+  "loop_mode": "once",
+  "tracks": [
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "scale"
+      },
+      "value_type": "vec2",
+      "keys": [
+        {
+          "time": 0.0,
+          "value": [
+            5.9733,
+            5.9733
+          ],
+          "interp": "bezier",
+          "out_tan": [
+            -37.3,
+            -37.3
+          ]
+        },
+        {
+          "time": 0.4,
+          "value": [
+            1.0,
+            1.0
+          ],
+          "interp": "linear",
+          "in_tan": [
+            0.0,
+            0.0
+          ]
+        }
+      ]
+    }
+  ],
+  "events": []
+}

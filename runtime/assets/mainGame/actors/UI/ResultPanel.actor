@@ -181,6 +181,34 @@
                   "raycast_target": false
                 }
               }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "result_fish_in",
+                      "kind": "keyframe",
+                      "path": "assets://mainGame/animations/result_fish_in.anim",
+                      "anim": "",
+                      "loop_mode": "once"
+                    },
+                    {
+                      "name": "result_fish_out",
+                      "kind": "keyframe",
+                      "path": "assets://mainGame/animations/result_fish_out.anim",
+                      "anim": "",
+                      "loop_mode": "once"
+                    }
+                  ],
+                  "default_clip": "",
+                  "play_on_start": false,
+                  "speed": 1.0,
+                  "default_fade_seconds": 0.0
+                }
+              }
             }
           ],
           "children": []
