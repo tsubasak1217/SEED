@@ -487,6 +487,14 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "Missの糸の減り")]
     private float missLoss = 0.06f;
 
+    /// <summary>
+    /// 回答フレーズを Perfect（全打点 Excellent）で締めたときに回復する糸の残りを、
+    /// 「Great 判定 1 個ぶんの減り（<see cref="greatSeconds"/> × <see cref="linePerSecondOfOffset"/>）」
+    /// の何個分にするか。0 で回復しない。回復は隙（Rest）へ入る瞬間に 1 回だけ行う。
+    /// </summary>
+    [SerializeField(Label = "Perfectの糸回復(Great何個分)")]
+    private float perfectRecoverGreatCount = 1f;
+
     // ─── 合わせランクによる初期の糸の残り ─────────────────────
 
     /// <summary>Excellent で合わせたときの初期の糸の残り。</summary>
@@ -2055,13 +2063,33 @@ public class FishingFight : SEEDScript
     /// <b>既に切れている糸は戻せない</b>（切れた瞬間にバトルは終わるため）。
     /// </summary>
     /// <param name="fraction">足す割合（0 以下なら何もしない）。</param>
-    public void RecoverLine(float fraction)
+    public void RecoverLine(float fraction) => RecoverLine(fraction, "漂流物");
+
+    /// <summary>
+    /// 糸の残りを <paramref name="fraction"/>（1.0 ＝ 満タン）だけ回復する【回復の唯一の実装】。
+    /// 漂流物（<see cref="RecoverLine(float)"/>）と Perfect 評価の回復（<see cref="RecoverLineForPerfect"/>）が共用する。
+    /// </summary>
+    /// <param name="fraction">回復量（糸の残りの割合）。</param>
+    /// <param name="reason">ログに出す回復の理由。</param>
+    private void RecoverLine(float fraction, string reason)
     {
         if (!Active || LineBroken || fraction <= 0f) { return; }
 
         float before = Line01;
         Line01 = SEED.Mathf.Min(Line01 + fraction, Line01Max);
-        SEED.Debug.Log($"[Fight] 漂流物: 糸の残り回復 {before:P0} → {Line01:P0}");
+        SEED.Debug.Log($"[Fight] {reason}: 糸の残り回復 {before:P0} → {Line01:P0}");
+    }
+
+    /// <summary>
+    /// 回答フレーズを Perfect で締めたときの糸回復。
+    /// 回復量 ＝ Great 判定 1 個ぶんの減り（<see cref="greatSeconds"/> × <see cref="linePerSecondOfOffset"/>）
+    /// × <see cref="perfectRecoverGreatCount"/>。減りと同じ式から作るので、判定の設定を変えても
+    /// 「Great 何個分」という関係が保たれる。
+    /// </summary>
+    private void RecoverLineForPerfect()
+    {
+        float greatLoss = SEED.Mathf.Max(greatSeconds, 0f) * SEED.Mathf.Max(linePerSecondOfOffset, 0f);
+        RecoverLine(greatLoss * SEED.Mathf.Max(perfectRecoverGreatCount, 0f), "Perfect");
     }
 
     // ─── 内部処理: リズムデータの取り込み ───────────────────
@@ -2452,6 +2480,8 @@ public class FishingFight : SEEDScript
             if (CurrentPhase == Phase.Answer)
             {
                 FishingController.Current?.ShowFightEvalBanner(lastAnswerPerfect);
+                // Perfect のご褒美: Great 1 個ぶん（Inspector で個数調整）の糸を回復する。
+                if (lastAnswerPerfect) { RecoverLineForPerfect(); }
             }
         }
 
