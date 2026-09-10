@@ -242,21 +242,25 @@ public class FishRadar : SEEDScript
 
     /// <summary>
     /// 漂流物「魚HPの回復」（<see cref="DriftItem.KindFishRecover"/>）の点の色（RGB）。
-    /// 既定は<b>オレンジ</b>。形も星型（<see cref="driftFishRecoverShape"/>）にして
-    /// 「拾ってはいけないもの」を色と形の両方で区別できるようにしてある。
+    /// 既定は<b>オレンジ</b>。形は 3 種とも星型なので（<see cref="driftFishRecoverShape"/>）、
+    /// 漂流物どうしの区別は<b>色だけ</b>が担う。
     /// </summary>
     [SerializeField(Label = "漂流物の色(魚回復)")]
     private SEED.Vector3 driftFishRecoverColor = new(1f, 0.55f, 0.1f);
 
-    /// <summary>漂流物「糸の回復」の点の形。</summary>
+    /// <summary>
+    /// 漂流物「糸の回復」の点の形（既定は<b>星型</b>）。
+    /// 【2026-09-11】漂流物は 3 種とも星型に統一した（魚・打点など漂流物以外の点＝丸と
+    /// 一目で区別でき、種類の違いは色で読み分けるほうが分かりやすいため）。
+    /// </summary>
     [SerializeField(Label = "漂流物の形(糸回復)")]
-    private RadarDotShape driftLineRecoverShape = RadarDotShape.Dot;
+    private RadarDotShape driftLineRecoverShape = RadarDotShape.Star;
 
-    /// <summary>漂流物「ひるませ（スタン）」の点の形。</summary>
+    /// <summary>漂流物「ひるませ（スタン）」の点の形（既定は<b>星型</b>。上の注記を参照）。</summary>
     [SerializeField(Label = "漂流物の形(ひるませ)")]
-    private RadarDotShape driftStunShape = RadarDotShape.Dot;
+    private RadarDotShape driftStunShape = RadarDotShape.Star;
 
-    /// <summary>漂流物「魚HPの回復」の点の形（既定は星型）。</summary>
+    /// <summary>漂流物「魚HPの回復」の点の形（既定は<b>星型</b>。上の注記を参照）。</summary>
     [SerializeField(Label = "漂流物の形(魚回復)")]
     private RadarDotShape driftFishRecoverShape = RadarDotShape.Star;
 

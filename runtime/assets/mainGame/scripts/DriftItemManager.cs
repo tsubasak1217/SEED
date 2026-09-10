@@ -22,7 +22,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///   位置 = 「ウキから竿先の方向へ shoreShiftMeters だけ寄せた点」を中心とした
 ///         spawnRadiusMin〜spawnRadiusMax の円環内のランダムな一点（水面上）
 ///         ただし竿先（＝岸側）から spawnRadiusMin より近い点は捨てて引き直す
-///   種類 = spawnWeights（ひるませ／魚回復／糸回復）の重み付き抽選
+///   種類 = spawnOrder（出現順）を先頭から 1 個ずつ順に巡回（ランダムなのは位置だけ）
 /// ヒットしていないあいだは、残っている漂流物をすべて消す
 /// </code>
 ///
@@ -41,9 +41,6 @@ public class DriftItemManager : SEEDScript
 
     /// <summary>0 除算を避けるための「実質 0 メートル」しきい値（向きが定まらない判定に使う）。</summary>
     private const float DivideEpsilon = 1e-4f;
-
-    /// <summary>重みの合計がこれ以下なら抽選できない（＝生成しない）。</summary>
-    private const float MinTotalWeight = 1e-4f;
 
     /// <summary>1 フレームに生成する個数の上限（生成が一気に固まらないようにする）。</summary>
     private const int SpawnPerTick = 1;
@@ -96,17 +93,29 @@ public class DriftItemManager : SEEDScript
     [SerializeField(Label = "岸側へのずらし(m)")]
     private float shoreShiftMeters = 4.0f;
 
-    /// <summary>抽選の重み（ひるませ）。0 なら出現しない。</summary>
-    [SerializeField(Label = "抽選の重み(ひるませ)")]
-    private float stunWeight = 1f;
-
-    /// <summary>抽選の重み（魚回復）。0 なら出現しない。</summary>
-    [SerializeField(Label = "抽選の重み(魚回復)")]
-    private float fishRecoverWeight = 1f;
-
-    /// <summary>抽選の重み（糸回復）。0 なら出現しない。</summary>
-    [SerializeField(Label = "抽選の重み(糸回復)")]
-    private float lineRecoverWeight = 1f;
+    /// <summary>
+    /// 出現する種類の<b>順番</b>【種類決定の唯一のデータ】。
+    /// 先頭から 1 個ずつ順に出し、末尾まで行ったら先頭へ戻る（＝固定順の巡回）。
+    ///
+    /// 【2026-09-11 変更】以前は重み付きのランダム抽選（stunWeight ほか 2 つ）だったが、
+    /// 「ひるませばかり続いて回復が来ない」といった偏りが体験を壊すため、
+    /// <b>種類はデータで決めた固定順・ランダムなのは出現位置だけ</b>に変えた。
+    /// 旧フィールドは削除済みなので、シーン（.scene）に stunWeight などの保存値が
+    /// 残っていても<b>読まれない</b>（害は無いので放置してよい）。
+    ///
+    /// 入れられる文字列は <see cref="DriftItem.KindStun"/> /
+    /// <see cref="DriftItem.KindFishRecover"/> / <see cref="DriftItem.KindLineRecover"/>
+    /// （＝ "stun" / "fish_recover" / "line_recover"）。未知の文字列は警告を出して読み飛ばす。
+    /// 同じ種類を複数回並べれば「ひるませ 2 回につき回復 1 回」のような比率も
+    /// データを並べ替えるだけで作れる。
+    /// </summary>
+    [SerializeField(Label = "出現順")]
+    private string[] spawnOrder =
+    {
+        DriftItem.KindStun,
+        DriftItem.KindFishRecover,
+        DriftItem.KindLineRecover,
+    };
 
     /// <summary>
     /// ヒット中だけ漂流物を出すか。
@@ -120,6 +129,19 @@ public class DriftItemManager : SEEDScript
 
     /// <summary>次の生成までの残り秒数。</summary>
     private float spawnTimer = 0f;
+
+    /// <summary>
+    /// 次に出す <see cref="spawnOrder"/> の添字（＝固定順のどこまで進んだか）。
+    ///
+    /// 【リセットの規則】<see cref="spawnTimer"/> と<b>まったく同じ場所</b>で 0 に戻す。
+    /// つまり「出せない状態」（＝<see cref="ShouldSpawn"/> が false ＝ 既定設定では
+    /// ヒットしていない／岸際）になったフレームで先頭に戻る。
+    /// その結果、既定の「ヒット中だけ出す」設定では<b>1 回のやり取りごとに
+    /// 必ず出現順の先頭から始まる</b>（毎回同じ順序で出るので調整しやすい）。
+    /// 「ヒット中だけ出す」を false にした常時出現モードでは戻る機会が無いため、
+    /// マネージャの生存期間を通してひたすら巡回し続ける。
+    /// </summary>
+    private int spawnOrderIndex = 0;
 
     /// <summary>片付けのために <see cref="DriftItem.All"/> を写す作業用リスト（毎フレームの確保を避ける）。</summary>
     private readonly List<DriftItem> workItems = new();
@@ -139,11 +161,15 @@ public class DriftItemManager : SEEDScript
 
     // ─── ライフサイクル ────────────────────────────────────
 
-    /// <summary>最初の生成をすぐ行わないよう、生成間隔ぶん待ってから始める。</summary>
+    /// <summary>
+    /// 最初の生成をすぐ行わないよう、生成間隔ぶん待ってから始める。
+    /// 出現順の位置も先頭に戻す（ホットリロード後も必ず同じ順で出る）。
+    /// </summary>
     public override void OnStart()
     {
         Current = this;
         spawnTimer = spawnIntervalSeconds;
+        spawnOrderIndex = 0;
     }
 
     /// <summary>破棄されるときは残った漂流物も片付ける（シーン遷移で置き去りにしない）。</summary>
@@ -169,6 +195,11 @@ public class DriftItemManager : SEEDScript
             // ただし台本が位置を決めて置いた個体（ScriptedPlacementActive）は残す。
             if (!ScriptedPlacementActive()) { ClearAll(); }
             spawnTimer = spawnIntervalSeconds;
+
+            // 出現順もここで先頭に戻す（次のやり取りは必ず spawnOrder[0] から始まる）。
+            // 待機に戻ったら次の 1 個目まで満タンの間隔を空ける spawnTimer と足並みを揃えて
+            // おきたいので、2 つの状態は必ず同じ場所でリセットする。
+            spawnOrderIndex = 0;
             return;
         }
 
@@ -232,7 +263,8 @@ public class DriftItemManager : SEEDScript
     // ─── 内部処理: 生成 ─────────────────────────────────────
 
     /// <summary>
-    /// 漂流物を 1 個生成する。種類は重み付き抽選、位置は「少し岸側へ寄せた円環」内のランダムな一点。
+    /// 漂流物を 1 個生成する。種類は <see cref="spawnOrder"/> の固定順、
+    /// 位置は「少し岸側へ寄せた円環」内のランダムな一点。
     /// prefab が読めない・位置が決まらないときは静かに諦める（次の間隔でまた試す）。
     /// </summary>
     private void SpawnOne()
@@ -277,7 +309,8 @@ public class DriftItemManager : SEEDScript
     /// <summary>
     /// 種類を指定して漂流物を 1 個、指定位置に生成する【台本生成の唯一の入口】。
     ///
-    /// 抽選（<see cref="PickPrefabPath"/>）を通さず種類を直接指定するので、
+    /// 固定順の巡回（<see cref="PickPrefabPath"/>）を通さず種類を直接指定するので、
+    /// 出現順の進み具合（<see cref="spawnOrderIndex"/>）にも一切影響しない。
     /// チュートリアルで「必ずこの種類の漂流物を出す」ことができる。
     /// 出現間隔・同時出現数の上限も見ない（説明の手順を確実に進めるため）。
     /// </summary>
@@ -325,21 +358,40 @@ public class DriftItemManager : SEEDScript
     };
 
     /// <summary>
-    /// 重み付き抽選で prefab のパスを 1 つ選ぶ【種類の抽選の唯一の実装】。
-    /// 重みの合計が 0 なら空文字（＝生成しない）を返す。
+    /// <see cref="spawnOrder"/> を先頭から順に巡回して、次に出す prefab のパスを 1 つ返す
+    /// 【種類決定の唯一の実装】。
+    ///
+    /// 呼ぶたびに添字が 1 つ進み、末尾まで行ったら先頭へ戻る。
+    /// 未知の種類名や prefab パス未設定の要素は警告を出して読み飛ばし、次の要素を試す。
+    /// 「1 周まわしても出せる要素が 1 つも無い」ときだけ空文字（＝今回は生成しない）を返す。
+    /// 試行回数を配列 1 周ぶんで必ず打ち切るので、全要素が不正でも無限ループにはならない。
     /// </summary>
+    /// <returns>生成する prefab のパス（出せる種類が 1 つも無ければ空文字）。</returns>
     private string PickPrefabPath()
     {
-        float stun = SEED.Mathf.Max(stunWeight, 0f);
-        float fish = SEED.Mathf.Max(fishRecoverWeight, 0f);
-        float line = SEED.Mathf.Max(lineRecoverWeight, 0f);
-        float total = stun + fish + line;
-        if (total <= MinTotalWeight) { return ""; }
+        var order = spawnOrder;
+        int count = order is null ? 0 : order.Length;
+        if (count <= 0) { return ""; }
 
-        float roll = SEED.Random.Range(0f, total);
-        if (roll < stun) { return stunPrefabPath; }
-        if (roll < stun + fish) { return fishRecoverPrefabPath; }
-        return lineRecoverPrefabPath;
+        // インスペクタで配列を短くされた直後でも安全に読めるよう、添字を範囲内へ丸めておく。
+        if (spawnOrderIndex < 0 || spawnOrderIndex >= count) { spawnOrderIndex = 0; }
+
+        for (int tried = 0; tried < count; tried++)
+        {
+            int index = spawnOrderIndex;
+            spawnOrderIndex = (spawnOrderIndex + 1) % count;   // 次回はこの続きから
+
+            string kind = (order[index] ?? "").Trim();
+            string path = PrefabPathOf(kind);
+            if (!string.IsNullOrEmpty(path)) { return path; }
+
+            SEED.Debug.LogWarning(
+                $"[DriftItemManager] 出現順の {index} 番目 \"{kind}\" は未知の種類か prefab パスが未設定です"
+                + $"（{DriftItem.KindStun} / {DriftItem.KindFishRecover} / {DriftItem.KindLineRecover}"
+                + " のいずれかを指定してください。この要素は読み飛ばします）。");
+        }
+
+        return "";
     }
 
     /// <summary>

@@ -454,24 +454,25 @@ public class FishingController : SEEDScript
     ///
     /// これ自体は <see cref="CameraMove"/> がキャスト中の構図として直接追うもので、
     /// 本スクリプトは<b>読むだけ</b>（位置・向きは一切書き換えない）。
-    /// 出題（<see cref="FishingFight.Phase.Call"/>）中の構図
-    /// （<see cref="callCameraTarget"/>）を「同じ向きのままウキへ寄せた位置」として
-    /// 算出するための基準に使う。
+    /// 出題（<see cref="FishingFight.Phase.Call"/>）と巻き取り（<see cref="FishingFight.Phase.Rest"/>）
+    /// の構図（<see cref="callCameraTarget"/>）を「同じ向きのままウキからの距離だけ変えた位置」
+    /// として算出するための<b>基準</b>に使う。
     /// </summary>
     [SerializeField(Label = "キャスト中のカメラ目標(CastCameraTarget)")]
     private SEED.Transform? castCameraTarget = null;
 
     /// <summary>
-    /// 出題（<see cref="FishingFight.Phase.Call"/>）中のカメラ目標トランスフォーム
+    /// <b>出題（<see cref="FishingFight.Phase.Call"/>）と巻き取り（<see cref="FishingFight.Phase.Rest"/>）</b>
+    /// で使うカメラ目標トランスフォーム
     /// （トップレベルの空アクタ「CallCameraTarget」を割り当てる想定）。
     ///
-    /// 位置・向きは毎フレーム <see cref="UpdateCallCameraTarget"/> が
+    /// 位置・向きは毎フレーム <see cref="UpdateCallRestCameraTarget"/> が
     /// 「<see cref="castCameraTarget"/> と同じ向きのまま、ウキからの距離だけを
-    /// <see cref="callCameraDistanceScale"/> 倍へ縮めた位置」へ置き直す
-    /// （＝ウキ＝魚の出す合図に寄って見せる）。
+    /// フェーズごとの倍率（<see cref="callCameraDistanceScale"/> ／
+    /// <see cref="restCameraDistanceScale"/>）へ変えた位置」へ置き直す。
     /// 未設定ならこの構図は効かない（<see cref="CameraMove"/> 側が従来の目標へフォールバックする）。
     /// </summary>
-    [SerializeField(Label = "出題中のカメラ目標(CallCameraTarget)")]
+    [SerializeField(Label = "出題/巻き取り中のカメラ目標(CallCameraTarget)")]
     private SEED.Transform? callCameraTarget = null;
 
     /// <summary>
@@ -480,6 +481,23 @@ public class FishingController : SEEDScript
     /// </summary>
     [SerializeField(Label = "出題中のカメラ距離倍率")]
     private float callCameraDistanceScale = 0.5f;
+
+    /// <summary>
+    /// <b>巻き取り中（隙＝<see cref="FishingFight.Phase.Rest"/>）のカメラ距離倍率</b>
+    /// 【巻き取り中の画の広さを決める唯一のパラメータ】。
+    /// <see cref="callCameraDistanceScale"/> と同じく、ウキから
+    /// <see cref="castCameraTarget"/> までの距離へ掛ける（向きは変えない）。
+    /// 1 でキャスト中とまったく同じ構図、1.5 で「向きは同じまま距離が 1.5 倍」＝引いて広く見せる。
+    ///
+    /// 【2026-09-11 追加】それまで巻き取り中は
+    /// <see cref="castCameraTarget"/>（ウキの子アクタ）をそのまま追っていたため、
+    /// 距離を触るには<b>キャスト中・浮遊中・未ヒットの巻き取り中と共有のアクタ</b>を
+    /// 動かすしかなく、巻き取りだけを調整できなかった。出題中の寄り
+    /// （<see cref="callCameraDistanceScale"/>）と同じ仕組みに乗せることで、
+    /// 巻き取りの距離だけをインスペクタから独立に調整できるようにした。
+    /// </summary>
+    [SerializeField(Label = "巻き取り中のカメラ距離倍率")]
+    private float restCameraDistanceScale = 1.5f;
 
     /// <summary>
     /// 巻き方向インジケータのトランスフォーム（3D キャンバス「ReelArrow」に付ける想定）。
@@ -1307,9 +1325,17 @@ public class FishingController : SEEDScript
     private HitBanner? hitBanner = null;
 
     /// <summary>
-    /// 魚がウキを沖へ引ける限界の、最長飛距離からの余裕（メートル）。
-    /// 竿先からの水平距離が <see cref="maxCastDistance"/> ＋ この値を超えないようにする
+    /// 魚がウキを沖へ引ける限界の余裕（メートル）。
+    ///
+    /// 竿先からの水平距離の上限を
+    /// <c>max(いま目指している距離, <see cref="maxCastDistance"/>) ＋ この値</c> とする
     /// （魚に無限に引かれてウキが世界の外へ行かないための安全弁）。
+    ///
+    /// 【2026-09-11 改定】以前は <see cref="maxCastDistance"/> ＋ この値の<b>固定上限</b>だったが、
+    /// 漂流物「魚回復」で魚 HP が最大値を超えたときの目標距離
+    /// （<c>FishingFight.DesiredFloatDistance</c>・上限なしで線形に伸びる）に届かず、
+    /// 拾っても距離が HP 100% の位置で止まっていた。目標距離のほうが大きいときは
+    /// そちらを基準にするので、この値は「目標より行き過ぎてよい量」という意味になった。
     /// </summary>
     [SerializeField(Label = "引きの限界余裕(m)")]
     private float floatDragMarginDistance = 30f;
@@ -2356,7 +2382,7 @@ public class FishingController : SEEDScript
                 UpdateFight(ctx.DeltaTime);
                 if (State != FishState.Hooked) { break; }
                 UpdateRunCameraTarget();    // 引き演出（LeadIn / 回復後の走り Run）中だけカメラ目標を置き直す
-                UpdateCallCameraTarget();   // 出題（Call）中だけカメラ目標を置き直す
+                UpdateCallRestCameraTarget();   // 出題（Call）／巻き取り（Rest）中だけカメラ目標を置き直す
                 UpdateReeling(ctx.DeltaTime);
                 UpdateShoreCamera(ctx.DeltaTime);   // 岸際の巻き中だけ「陸側から海を見る」構図へ回り込む
                 break;
@@ -3418,39 +3444,71 @@ public class FishingController : SEEDScript
         => phase is FishingFight.Phase.LeadIn or FishingFight.Phase.Run;
 
     /// <summary>
-    /// 出題（<see cref="FishingFight.Phase.Call"/>）中のカメラ目標を毎フレーム置き直す
-    /// 【出題構図の唯一の算出点】。
+    /// 出題（<see cref="FishingFight.Phase.Call"/>）と巻き取り（<see cref="FishingFight.Phase.Rest"/>）の
+    /// カメラ目標を毎フレーム置き直す【この 2 つの構図の唯一の算出点】。
     ///
     /// 構図はキャスト中（<see cref="castCameraTarget"/>）と<b>同じ視線方向のまま</b>、
-    /// ウキからの距離だけを <see cref="callCameraDistanceScale"/> 倍へ縮めたもの。
+    /// ウキからの距離だけをフェーズごとの倍率へ変えたもの。
     /// <code>
     /// 位置 ＝ ウキ位置 ＋ (キャスト目標位置 − ウキ位置) × 距離倍率
     /// 向き ＝ キャスト目標の向き（そのまま）
+    /// 距離倍率 … 出題 = callCameraDistanceScale（既定 0.5 ＝ 寄る）
+    ///            巻き取り = restCameraDistanceScale（既定 1.5 ＝ 引く）
     /// </code>
-    /// ＝ 魚が出す合図（ウキの沈み）が大きく見えるよう寄る、という 1 点だけの効果になる。
+    /// 出題は「魚が出す合図（ウキの沈み）を大きく見せる」、
+    /// 巻き取りは「漂流物とウキの位置関係を広く見せる」という狙いの違いがそのまま倍率の差になる。
     ///
-    /// 参照（ウキ／キャスト目標／出題目標）のいずれかが欠けていれば何もしない。
-    /// 出題フェーズ以外でも何もしない（フェーズ外で目標を動かすと、
+    /// 参照（ウキ／キャスト目標／この目標）のいずれかが欠けていれば何もしない。
+    /// 対象フェーズ以外でも何もしない（フェーズ外で目標を動かすと、
     /// <see cref="CameraMove"/> が構図を切り替えた瞬間に飛んで見えるため）。
+    /// なお岸際（<see cref="NearShore"/>）の巻き取り中は
+    /// <see cref="UpdateShoreCamera"/> の姿勢上書きが優先されるので、ここの結果は使われない。
     /// </summary>
-    private void UpdateCallCameraTarget()
+    private void UpdateCallRestCameraTarget()
     {
         if (callCameraTarget is not { IsValid: true } camTf) { return; }
-        if (FightPhase != FishingFight.Phase.Call) { return; }
+        if (!TryPhaseCameraDistanceScale(FightPhase, out float scale)) { return; }
         if (uki is not { IsValid: true } floatTf) { return; }
         if (castCameraTarget is not { IsValid: true } castTf) { return; }
 
         var floatPos = floatTf.Position;
         var castPos = castTf.Position;
-        float scale = callCameraDistanceScale;
 
         camTf.Position = new SEED.Vector3(
             floatPos.x + (castPos.x - floatPos.x) * scale,
             floatPos.y + (castPos.y - floatPos.y) * scale,
             floatPos.z + (castPos.z - floatPos.z) * scale);
 
-        // 向きはキャスト中の構図をそのまま流用する（視線方向を変えず距離だけ詰めるため）
+        // 向きはキャスト中の構図をそのまま流用する（視線方向を変えず距離だけ変えるため）
         camTf.Rotation = castTf.Rotation;
+    }
+
+    /// <summary>
+    /// フェーズに対応する「ウキからのカメラ距離倍率」を引く
+    /// 【フェーズと倍率の唯一の対応表】。
+    ///
+    /// 対応表に無いフェーズ（余白・走り・回答）は専用の構図を持つので false を返し、
+    /// <see cref="UpdateCallRestCameraTarget"/> は何もしない。
+    /// </summary>
+    /// <param name="phase">いまのやり取りのフェーズ。</param>
+    /// <param name="scale">見つかった距離倍率（見つからなければ 1）。</param>
+    /// <returns>この構図を使うフェーズなら true。</returns>
+    private bool TryPhaseCameraDistanceScale(FishingFight.Phase phase, out float scale)
+    {
+        switch (phase)
+        {
+            case FishingFight.Phase.Call:
+                scale = callCameraDistanceScale;
+                return true;
+
+            case FishingFight.Phase.Rest:
+                scale = restCameraDistanceScale;
+                return true;
+
+            default:
+                scale = 1f;
+                return false;
+        }
     }
 
     /// <summary>
@@ -3628,11 +3686,21 @@ public class FishingController : SEEDScript
         {
             float signedStep = activeFight.ComputeFloatDistanceStep(remaining, deltaTime);
 
-            // 沖へ出る向きだけは「最長飛距離 ＋ 余裕」でクランプし、
-            // 引かれ続けてウキが世界の外へ出るのを防ぐ。
+            // 沖へ出る向きだけは安全弁のクランプを掛け、引かれ続けてウキが世界の外へ出るのを防ぐ。
+            //
+            // 【2026-09-11 修正】上限を「最長飛距離 ＋ 余裕」の固定値にしていたため、
+            // 漂流物「魚回復」で魚 HP が最大値を超えても<b>ウキがそれ以上沖へ出られなかった</b>
+            // （＝拾っても距離が HP 100% の位置で止まる不具合）。
+            // 遠投気味に掛けると「HP 100% の距離 ＝ 掛かった距離 ＋ ヒット直後の引き距離」が
+            // ちょうどこの固定上限に達してしまい、回復ぶんがまるごと画に出なかった。
+            //
+            // 上限は<b>「いま目指している距離 ＋ 余裕」と「最長飛距離 ＋ 余裕」の大きいほう</b>に変える。
+            // こうすると安全弁としての役割（目標より余裕ぶん以上は行き過ぎない）は残したまま、
+            // 魚 HP の超過ぶんだけ素直に沖へ出られる。
             if (signedStep > 0f)
             {
-                float dragLimit = maxCastDistance + floatDragMarginDistance;
+                float dragLimit = SEED.Mathf.Max(activeFight.DesiredFloatDistance, maxCastDistance)
+                                + floatDragMarginDistance;
                 signedStep = SEED.Mathf.Min(signedStep, SEED.Mathf.Max(dragLimit - remaining, 0f));
             }
 

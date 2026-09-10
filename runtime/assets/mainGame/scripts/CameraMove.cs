@@ -103,15 +103,16 @@ public class CameraMove : SEEDScript
     private SEED.Transform? runTarget = null;
 
     /// <summary>
-    /// リズムのやり取りの<b>出題フェーズ</b>（<see cref="FishingFight.Phase.Call"/>）で使う
+    /// リズムのやり取りの<b>出題フェーズ</b>（<see cref="FishingFight.Phase.Call"/>）と
+    /// <b>巻き取り（隙）フェーズ</b>（<see cref="FishingFight.Phase.Rest"/>）で使う
     /// 目標トランスフォーム（トップレベルの空アクタ「CallCameraTarget」を割り当てる想定）。
     ///
-    /// 位置・向きは <see cref="FishingController.UpdateCallCameraTarget"/> が毎フレーム
-    /// 「<see cref="castTarget"/> と同じ向きのまま、ウキからの距離を縮めた位置」へ置き直す
-    /// （＝魚が出す合図に寄って見せる）。
-    /// 未設定・無効なら出題中も従来どおり <see cref="castTarget"/> を追う。
+    /// 位置・向きは FishingController が毎フレーム
+    /// 「<see cref="castTarget"/> と同じ向きのまま、ウキからの距離だけをフェーズごとの倍率へ
+    /// 変えた位置」へ置き直す（出題＝寄る／巻き取り＝引く）。
+    /// 未設定・無効ならどちらのフェーズでも従来どおり <see cref="castTarget"/> を追う。
     /// </summary>
-    [SerializeField(Label = "出題中の目標トランスフォーム")]
+    [SerializeField(Label = "出題/巻き取り中の目標トランスフォーム")]
     private SEED.Transform? callTarget = null;
 
     /// <summary>
@@ -408,8 +409,10 @@ public class CameraMove : SEEDScript
         // リズムの回答中はプレイヤーを見る構図へ切り替える（叩くタイミングに集中させる）
         if (IsAnswerPhase() && answerTarget is { } at && at.IsValid) { return at; }
 
-        // リズムの出題中はウキへ寄った構図（キャスト中と同じ向き・距離だけ縮める）
-        if (IsCallPhase() && callTarget is { } clt && clt.IsValid) { return clt; }
+        // リズムの出題中と巻き取り（隙）中は、キャスト中と同じ向きのまま距離だけを変えた構図。
+        // 出題は寄って合図を大きく、巻き取りは引いて漂流物との位置関係を広く見せる
+        // （倍率はどちらも FishingController 側のインスペクタ値で決まる）。
+        if ((IsCallPhase() || IsRestPhase()) && callTarget is { } clt && clt.IsValid) { return clt; }
 
         // ウキが外に出ているあいだはウキ側の目標を最優先で追う（キャスト先が画面に入る）
         if (IsFloatOut() && castTarget is { } ct && ct.IsValid) { return ct; }
@@ -472,6 +475,19 @@ public class CameraMove : SEEDScript
         => fishing is { } f
         && f.State == FishingController.FishState.Hooked
         && f.FightPhase == FishingFight.Phase.Call;
+
+    /// <summary>
+    /// リズムのやり取りが<b>巻き取り（隙）フェーズ</b>かを返す（構図切替の唯一の判定点）。
+    ///
+    /// 魚が掛かっている（<see cref="FishingController.FishState.Hooked"/>）ときだけ見る。
+    /// <see cref="fishing"/> 未設定なら常に false。
+    /// なお岸際まで寄せたときは FishingController が姿勢を直接上書きするので、
+    /// この判定より上書きのほうが優先される。
+    /// </summary>
+    private bool IsRestPhase()
+        => fishing is { } f
+        && f.State == FishingController.FishState.Hooked
+        && f.FightPhase == FishingFight.Phase.Rest;
 
     /// <summary>
     /// 魚が沖へ走っているフェーズ（ヒット直後の余白 <see cref="FishingFight.Phase.LeadIn"/> と、

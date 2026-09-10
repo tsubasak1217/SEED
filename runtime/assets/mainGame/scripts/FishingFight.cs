@@ -479,13 +479,21 @@ public class FishingFight : SEEDScript
 
     // ─── 糸の残り ────────────────────────────────────────
 
-    /// <summary>時間差 1 秒あたりに減る糸の残り（全レベル・全魚種で共通。補正は掛からない）。</summary>
+    /// <summary>
+    /// 時間差 1 秒あたりに減る糸の残り（全レベル・全魚種で共通。補正は掛からない）。
+    /// 【2026-09-11 調整】判定ミスの痛みを強めるため 0.3 → 0.6 へ倍増。
+    /// Perfect の回復量はこの値から算出する（<see cref="perfectRecoverGreatCount"/> の式）ので、
+    /// ここを変えると回復量も同じ倍率で自動的に追随する。
+    /// </summary>
     [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
-    private float linePerSecondOfOffset = 0.3f;
+    private float linePerSecondOfOffset = 0.6f;
 
-    /// <summary>Miss（打ち逃し・空打ち）1 回で減る糸の残り（全レベル・全魚種で共通）。</summary>
+    /// <summary>
+    /// Miss（打ち逃し・空打ち）1 回で減る糸の残り（全レベル・全魚種で共通）。
+    /// 【2026-09-11 調整】上の時間差の減りと足並みを揃えて 0.06 → 0.12 へ倍増。
+    /// </summary>
     [SerializeField(Label = "Missの糸の減り")]
-    private float missLoss = 0.06f;
+    private float missLoss = 0.12f;
 
     /// <summary>
     /// 回答フレーズを Perfect（全打点 Excellent）で締めたときに回復する糸の残りを、

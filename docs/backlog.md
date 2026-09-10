@@ -651,3 +651,48 @@ PCM キャッシュ化＋同時発音数の上限で解決済み。以下はそ�
   併せてエディタのアセットルート判定も `<exe の 2 階層上>/assets` になるため（`ResolveAssetsPath` は
   親ディレクトリ名が `target` かどうかを見る）、AI の計測用に別出力でビルドする運用は現状かなり脆い。
   docs/editor_mcp.md 5.5 の手順を使うときの注意点として、原因を特定して直すか手順に注記したい。
+
+## 釣りの調整 5 件（2026-09-11）
+
+糸の減り 2 倍／漂流物の固定順化／レーダー星型化／魚回復の距離頭打ち修正／
+巻き取り中カメラ距離 1.5 倍、の 5 件を入れたときに判明したもの。
+
+**先に解消したもの**: 上の「**「魚回復」の走り（Run）は世界端クランプで頭打ちになり、予約が捨てられる経路がある**」
+（2026-09-10）のうち、<b>前半（世界端クランプで走る距離が頭打ちになる）は本日の修正で解消済み</b>。
+`FishingController.UpdateReeling` の上限を `maxCastDistance + floatDragMarginDistance` の固定値から
+`max(FishingFight.DesiredFloatDistance, maxCastDistance) + floatDragMarginDistance` へ変えた。
+同項の後半（肉を拾った隙の中で魚 HP を削り切ると予約が適用されないまま釣り上がる）は<b>未対応のまま残る</b>。
+
+- [ ] **`catchDistanceMeters` のシーン上書き（10.0）がコード既定（4.0）を潰している** — 2026-09-11（今回の調査で発見・未対応）。
+  `FishingController.cs` の宣言は `catchDistanceMeters = 4.0f` だが、`MainGame.scene` の
+  `Player|Fishing` に `"catchDistanceMeters": "10.000"` の保存値が残っているため、
+  実機で効いているのは<b>10 m</b>。直近のコミット「釣り上げ成立距離 4 m」の意図が反映されていない。
+  シーン側の保存値を 4.000 にするか消すかは要利用者判断（シーン編集のため今回は触っていない）。
+- [ ] **岸際カメラ（`shoreCamDistance`）が実戦で一度も発動しない** — 2026-09-11（上の項の副作用・未対応）。
+  `MainGame.scene` は `catchDistanceMeters` も `nearShoreDistanceMeters` も 10.000 で同値。
+  `FishState.Hooked` の毎フレーム処理は `UpdateFight`（釣り上げ判定）→ `UpdateReeling`（`UpdateNearShore`）
+  → `UpdateShoreCamera` の順で、距離が 10 m 以下になった瞬間に `UpdateFight` が先に
+  `FinishReeling()` して `Hooked` を抜けるため、`NearShore` が `Hooked` のまま true になる隙が無い。
+  結果 `UpdateShoreCamera` の `wantsShoreView` が真にならず、`shoreCamDistance`（既定 7 / シーン 15）は
+  読まれない。上の `catchDistanceMeters` を 4 m へ直せば自然に生き返る。
+  関連: `runtime/assets/mainGame/scripts/FishingController.cs`（`UpdateNearShore` / `UpdateShoreCamera`）。
+- [ ] **`MainGame.scene` に漂流物の旧「抽選の重み」の保存値が残っている** — 2026-09-11（実害なし）。
+  種類の決定を固定順（`DriftItemManager.spawnOrder`）へ変えたので
+  `stunWeight` / `fishRecoverWeight` / `lineRecoverWeight` は削除済みだが、
+  シーンには 3 つとも `"1.000"` が残る。読まれないので害は無い。掃除するかは要利用者判断。
+- [ ] **糸ゲージ・カメラ・走る距離の各変更が実機未検証** — 2026-09-11。
+  今回の 5 件はスクリプトのコンパイル（`ScriptPrecompileTests`）と机上計算だけで確認しており、
+  Play での目視をしていない。とくに次の 3 点は実機で見ること。
+  (1) 糸の減り 2 倍（`linePerSecondOfOffset` 0.6 / `missLoss` 0.12）で難度が上がりすぎていないか。
+  (2) 巻き取り中のカメラ距離 1.5 倍（`FishingController.restCameraDistanceScale`）で、
+      出題（0.5 倍）↔ 巻き取り（1.5 倍）の切り替わりが飛んで見えないか。
+  (3) 魚回復を複数拾ったときにウキが出る距離（HP 超過ぶんの外挿）で、
+      糸のたるみ（`UpdateLine` の `slack` は<b>キャスト時点</b>の飛距離から決まり、
+      引かれて伸びても更新されない）が不自然に張って見えないか。
+- [ ] **ランク A / S の魚は以前からヒット直後の走りが切り詰められていた** — 2026-09-11（今回の修正で解消・要目視）。
+  `HP100% の距離 ＝ 掛かった距離 ＋ ヒット直後の引き距離`（引き距離は既定 30 m × ランク倍率
+  S:1.5 / A:1.25）なので、最長飛距離付近で A・S を掛けると 85〜100 m になり、
+  旧クランプ（40 ＋ 30 ＝ 70 m）に当たって<b>魚回復を拾う前から</b>頭打ちだった。
+  本日の修正でこの切り詰めも消えるため、A・S の魚は以前より遠くまで走る。
+  演出として遠すぎないかは実機で確認すること（遠すぎるなら `hookRunDistanceDefault` か
+  ランク倍率を下げる。海面は半径 1000 m あるので世界の外へ出る心配は無い）。
