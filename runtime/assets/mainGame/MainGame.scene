@@ -1460,6 +1460,18 @@
               }
             }
           }
+        },
+        {
+          "name": "DialogueCameraDirector",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://common/scripts/Dialogue/DialogueCameraDirector.cs",
+              "fields": {
+                "useUnscaledTime": "true"
+              }
+            }
+          }
         }
       ],
       "children": []
