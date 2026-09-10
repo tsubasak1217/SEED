@@ -312,6 +312,13 @@ impl App {
         use crate::engine::core::scripting::camera_project::{
             FALLBACK_TARGET_HEIGHT, FALLBACK_TARGET_WIDTH,
         };
+        // 内部解像度固定（fixed）モードでは、レンダーターゲットはウィンドウ実サイズに
+        // 一切依存しない。ここを最初に返すことで、ゲームビューポート・レターボックス帯・
+        // キャンバス基準・スクリプトの publish_render_target_size が一括で内部解像度基準になる。
+        // window モード（既定）では None なので下の従来経路がそのまま走る。
+        if let Some((w, h)) = self.fixed_render_resolution() {
+            return [w as f32, h as f32];
+        }
         let size = self
             .get_parent_client_size()
             .or_else(|| self.window.as_ref().map(|w| w.inner_size()));
@@ -983,7 +990,19 @@ impl App {
         }
 
         // ── GPU カメラ・インスタンスバッファ更新 ──────
-        let window_size = self.window.as_ref().map(|w| w.inner_size());
+        // ウィンドウ（クライアント領域）の実ピクセルサイズ。
+        // **スワップチェーンの再構成にだけ**使う（実寸でなければならない）。
+        let real_window_size = self.window.as_ref().map(|w| w.inner_size());
+        // 描画・UI 計算の基準サイズ。
+        // 内部解像度固定（fixed）モードでは、この関数中で `window_size` を基準にしている
+        // 全計算（2D オーバーレイカメラの ortho・カメラ resolution ユニフォーム・
+        // 速度バッファの連続性キー・各種プレビュー矩形）を一括で内部解像度へ倒すため、
+        // ここ 1 か所で差し替える。window モード（既定）では fixed_render_resolution() が
+        // None なので real_window_size と完全に同一の値になる（後退なし）。
+        let window_size = self
+            .fixed_render_resolution()
+            .map(|(w, h)| winit::dpi::PhysicalSize::new(w, h))
+            .or(real_window_size);
         // Outdated ハンドラ用: &mut self.renderer を借用するブロック内では
         // self メソッドが呼べないため、HWND を事前にコピーしておく。
         // Outdated 発生時（SetParent 後）に GetParent(my_hwnd) で
@@ -1244,7 +1263,7 @@ impl App {
                 // ビューポート矩形（深度→ワールド復元の正規化に使う。resolution とは別物）。
                 // Play（非ポーズ）は set_viewport するゲーム領域、それ以外は RT 全面。
                 // ここで入れるのは**クランプ前**の値で、実サーフェスへのクランプ確定後に
-                // update_viewport で上書きする（クランプは frame.surface_size() が要るため）。
+                // update_viewport で上書きする（クランプは frame.render_size() が要るため）。
                 viewport:       if self.mode == RuntimeMode::Play && !self.paused {
                     [game_viewport.0, game_viewport.1, game_viewport.2, game_viewport.3]
                 } else {
@@ -5205,7 +5224,11 @@ impl App {
                     // ※ ensure（&mut rt_pool）を view 取得（&rt_pool）より前に済ませ、ビュー借用が
                     //   メインパス〜キャンバスオーバーレイ〜トーンマップの全区間で安定するようにする。
                     //   hdr_view/inter_view はメインパスのブロック外でも参照するため、ここで宣言する。
-                    let (surf_w, surf_h) = frame.surface_size();
+                    // ※ 変数名は歴史的に surf_* だが、値は **描画解像度**（RenderFrame::render_size）。
+                    //   内部解像度固定（fixed）モードではスワップチェーン実サイズと一致しない。
+                    //   以降の全 RT（G-Buffer / AO / SSGI / 反射 / WBOIT / 屈折ピラミッド）は
+                    //   この解像度で確保するのが正しい（深度テクスチャと必ず一致させるため）。
+                    let (surf_w, surf_h) = frame.render_size();
 
                     // ── G-Buffer デバッグ表示（シーンビュー表示モード「G-Buffer: 〜」）──────
                     //
@@ -5870,21 +5893,21 @@ impl App {
                             }
                         }
 
-                        // ── Play ビューポートの実サーフェスへの集約クランプ（set_viewport 安全化）──
+                        // ── Play ビューポートの描画ターゲットへの集約クランプ（set_viewport 安全化）──
                         // ここまでの game_viewport は win_w_f/win_h_f（＝on_resize が surface を
                         // configure した基準サイズ＝親クライアント矩形）から計算している。
                         // ただしスワップチェーンは configure の要求サイズを実ウィンドウの
                         // currentExtent へクランプすることがあり（mod.rs begin_frame 参照）、
-                        // リサイズ直後の 1 フレームは実サーフェス（frame.surface_size()）と食い違う。
+                        // リサイズ直後の 1 フレームは実際の描画ターゲット（frame.render_size()）と食い違う。
                         // この食い違いのまま set_viewport すると wgpu バリデーションがパニックし、
                         // 続けて未 present の SurfaceTexture 破棄で二次パニック→プロセス abort する。
-                        // そこで実サーフェスサイズへ **一度だけ** クランプし、以降の全 set_viewport
+                        // そこで描画ターゲットのサイズへ **一度だけ** クランプし、以降の全 set_viewport
                         // 箇所（G-Buffer/ライティング/反射/メイン/逐次屈折）を一括で安全化する
                         // （対症の if 散乱ではなくこの 1 点に集約）。
                         // 縮退（幅/高さ 1px 未満）時は play_viewport_ok=false とし、各 Play 描画で
                         // set_viewport をスキップさせる（そのフレームはターゲット全面のデフォルト
                         // ビューポートで描く。リサイズ最中の一過性フレームのため実害はない）。
-                        let (rt_surf_w, rt_surf_h) = frame.surface_size();
+                        let (rt_surf_w, rt_surf_h) = frame.render_size();
                         let play_viewport_ok = if self.mode == RuntimeMode::Play && !self.paused {
                             match clamp_viewport_to_target(
                                 game_viewport, rt_surf_w as f32, rt_surf_h as f32,
@@ -6251,7 +6274,7 @@ impl App {
                             //   （マップ中 staging への二重 COPY / 二重 map を防ぐ）。deferred のみ。
                             if *super::terrain_scatter_ops::HIZ_OCCLUSION_ENABLED {
                                 crate::profile_scope!("描画/Hi-Z オクルージョン");
-                                let (sw, sh) = frame.surface_size();
+                                let (sw, sh) = frame.render_size();
                                 // レイジー構築（初回のみ）。以降は ensure_size でサイズ追従する。
                                 if self.hiz.is_none() {
                                     self.hiz = Some(crate::engine::core::renderer::hiz::HiZSystem::new(
@@ -7484,7 +7507,7 @@ impl App {
                                 {
                                     let mut wpass = frame.begin_wboit_pass_to(accum_view, reveal_view);
                                     // ── Play レターボックス時のビューポート適用（半透明ズレ修正）──
-                                    // accum/reveal RT は hdr と同じ実サーフェス全面サイズ（surf_w×surf_h）。
+                                    // accum/reveal RT は hdr と同じ描画ターゲット全面サイズ（surf_w×surf_h）。
                                     // 不透明メインパスは game_viewport（ゲーム領域）へ set_viewport して描くため、
                                     // 同一の射影行列でも幾何がレターボックス領域に収まる。ところが WBOIT の
                                     // 蓄積パスはこれまでビューポート未適用で、透明幾何が accum 全面（ウィンドウ
@@ -8067,16 +8090,16 @@ impl App {
                     if self.particle_system.has_emitters() && !gbuffer_debug_active {
                         crate::profile_scope!("描画/GPU パーティクル");
                         // ── Play レターボックス時のビューポート適用（半透明/不透明と一致させる）──
-                        // GPU パーティクルは 3D メインカメラ（camera_buf）で hdr_view（実サーフェス全面）
+                        // GPU パーティクルは 3D メインカメラ（camera_buf）で hdr_view（描画ターゲット全面）
                         // へ直接描くため、ビューポート未適用だとレターボックス時に全面基準へズレる
                         //（WBOIT 半透明メッシュと同一症状）。不透明メインパスと同じ game_viewport を適用する。
                         // ここは play_viewport_ok を宣言した内側ブロック（メインパス）を抜けた外側スコープで、
                         // play_viewport_ok は参照できない。そこでクランプ済みの game_viewport（外側可変変数に
-                        // 永続）を実サーフェスへ再クランプして安全性を再確認する（clamp は冪等で、
+                        // 永続）を描画ターゲットへ再クランプして安全性を再確認する（clamp は冪等で、
                         // 元が縮退なら None を返し当該フレームはスキップ＝メインパスの挙動と一致）。
-                        // 借用順の都合上、ppass が frame を可変借用する前に surface_size を取得しておく。
+                        // 借用順の都合上、ppass が frame を可変借用する前に render_size を取得しておく。
                         let particle_vp = if self.mode == RuntimeMode::Play && !self.paused {
-                            let (psw, psh) = frame.surface_size();
+                            let (psw, psh) = frame.render_size();
                             clamp_viewport_to_target(game_viewport, psw as f32, psh as f32)
                         } else {
                             // Edit モードは常にターゲット全面（ビューポート非適用）。エディタ描画へ影響なし。
@@ -9090,10 +9113,12 @@ impl App {
                                 }
                             }
                         }
-                        sz.or(window_size)
+                        // スワップチェーンの再構成は必ず**ウィンドウ実サイズ**で行う
+                        //（内部解像度固定モードでも present 先の実寸は変わらないため）。
+                        sz.or(real_window_size)
                     };
                     #[cfg(not(target_os = "windows"))]
-                    let resize_to = window_size;
+                    let resize_to = real_window_size;
                     // 0x0 は最小化中に発生するケース。サイズ変更不要なのでスキップ。
                     let is_zero = resize_to.map_or(true, |s| s.width == 0 || s.height == 0);
                     if let Some(size) = resize_to {

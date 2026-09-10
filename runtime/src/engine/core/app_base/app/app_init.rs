@@ -62,6 +62,17 @@ impl App {
         // project_settings.json は 1 回だけ読み、解像度とゲーム名の両方をここから取る。
         let settings_json = Self::read_project_settings_json();
         self.project_resolution = parse_window_size(&settings_json);
+        // 描画解像度モード（window / fixed）も同じ JSON から読む。
+        // fixed のときだけ「内部解像度で描いて最終段でレターボックス」経路に入る
+        //（実際に効くかどうかの判定は fixed_render_resolution に集約）。
+        self.render_resolution_mode =
+            super::render_resolution::parse_render_resolution_mode(&settings_json);
+        // 解決した描画解像度設定を起動ログへ残す（黒帯・座標ズレの調査で最初に見る値）。
+        eprintln!(
+            "[SEED INIT] render_resolution_mode={} project_resolution={:?}",
+            self.render_resolution_mode.as_str(),
+            self.project_resolution,
+        );
         // Play・スタンドアロン時はプロジェクト設定のウィンドウ解像度を初期サイズに使う。
         // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
         let physical_size = if self.mode == RuntimeMode::Play {
@@ -88,10 +99,24 @@ impl App {
         // Windows に「応答なし」と判定される。
         // → 初期化完了後に表示することで "Not Responding" を回避する。
         eprintln!("[SEED INIT] Renderer::new() start");
-        let renderer = Renderer::new(window.clone());
+        let mut renderer = Renderer::new(window.clone());
         eprintln!("[SEED INIT] Renderer::new() done");
 
-        let size = window.inner_size();
+        // 内部解像度固定（fixed）モードの適用。window モード（既定）では None を渡すため
+        // Renderer 側は生成時と同じ状態（従来動作）のままになる。
+        // ここで先に確定させておく必要があるのは、直後の深度テクスチャ・IdBuffer・
+        // カメラアスペクトがすべて「描画解像度」基準でなければならないため。
+        // （fixed_render_resolution は mode / parent_hwnd / project_resolution だけを見るので
+        //   self.window の代入前でも判定できる。）
+        let fixed_size = self.fixed_render_resolution();
+        renderer.set_fixed_render_size(
+            fixed_size.map(|(w, h)| winit::dpi::PhysicalSize::new(w, h)),
+        );
+
+        // 以降の初期化基準サイズ。fixed なら内部解像度、既定はウィンドウ実サイズ。
+        let size = fixed_size
+            .map(|(w, h)| winit::dpi::PhysicalSize::new(w, h))
+            .unwrap_or_else(|| window.inner_size());
         self.camera.set_aspect_ratio(size.width, size.height);
 
         // デバッグカメラを既定位置に配置する
@@ -206,6 +231,10 @@ impl App {
 
         self.renderer = Some(renderer);
         self.window = Some(window);
+        // 入力（ウィンドウ座標 → 描画解像度）の写像を初期設定する。
+        // self.window の代入後でなければウィンドウ実サイズが取れないためこの位置。
+        // window モード（既定）では None が設定され、Input は一切変換しない。
+        self.sync_input_view_map();
         self.clock = crate::engine::core::clock::Clock::new();
 
         // asset_fs は handle_resumed の先頭（ウィンドウ生成より前）で初期化済み。

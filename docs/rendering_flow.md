@@ -540,6 +540,7 @@ CPU 側には同じ式のミラー `renderer/sky_color_adjust.rs::apply` があ�
 | 実装 | ブルーム `frame_renderer.rs:5559`（`post.run_bloom`）、トーンマップ `:5581`（`frame.tonemap_to_ldr`）、キャンバスオーバーレイ `:5595`（`begin_canvas_overlay_pass_to`）、present `:5683`（`present_to_swapchain`、`renderer/mod.rs:1383`） |
 | ゲート | `bloom_on = post_fx.bloom_enabled`、`fxaa_on = post_fx.fxaa_enabled`、`vignette_on = post_vignette_enabled`（`:3704-3707`）。ビネット有効時のチェーンは `hdr → vignette → tonemap`。ビネット強度は現状ハードコード定数 `VIGNETTE_INTENSITY = 0.4`（`:5570`。将来プロジェクト設定へデータ駆動化予定とコメント） |
 | Edit / Play | キャンバスオーバーレイは `scene_canvas_ss = ss_layout && !edit_view_2d`（`:495`）のときのみ。UI をトーンマップ後の LDR へ描くことで UI が暗化しない |
+| 描画解像度固定（fixed） | `render_resolution_mode: "fixed"` かつ非埋め込み Play のとき、**present だけがサーフェス実サイズを見る唯一のパス**になる。`RenderFrame::render_size()`（＝内部解像度）と `swapchain_px()`（＝ウィンドウ実サイズ）が食い違うので、`present_to_swapchain` が `letterbox::letterbox_rect` でアスペクト維持の内接矩形を求め、`clamp_rect_to_target` でサーフェス範囲へ丸めてから `set_viewport` に渡す。`run_post_stage` の `LoadOp::Clear(BLACK)` はアタッチメント全面に効くので、**帯は追加パスなしで黒く塗られる**（`set_scissor_rect` は入れない。入れると帯がクリアされなくなる）。拡大縮小は Post 共通サンプラー（`FilterMode::Linear`）が担う。FXAA の `inv_res` は入力側＝内部解像度を渡す |
 
 ### 2.22 ID パス（ピッキング）
 
@@ -771,8 +772,34 @@ RT 半透明パイプラインの構築条件は `transparency.rs:378`:
   `(vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad)` を返す。クランプは `clamp_viewport_to_target`（`:1313-1332`）。
 - 適用判定: `frame_renderer.rs:678-725` で Play かつ非 Pause のとき `is_main=true` の `CameraComponent` を探し、
   その `scaling_mode` から `game_viewport` を再計算する（見つからなければデバッグカメラへフォールバック、`:726-739`）。
-- **RT サイズは変わらない**。`scene_hdr` / accum / reveal / G-Buffer はすべて実サーフェス全面（`frame.surface_size()`）で確保され、
+- **RT サイズは変わらない**。`scene_hdr` / accum / reveal / G-Buffer はすべて描画解像度全面（`frame.render_size()`）で確保され、
   `game_viewport` は「その全面 RT 内のどの矩形へ描くか」を `set_viewport` / `set_scissor_rect` で制御するだけ（ブリットはしない）。
+
+### 4.5.1 描画解像度モード（`render_resolution_mode`）と `ScalingMode` の関係
+
+- `project_settings.json` の `render_resolution_mode` は `"window"`（既定・従来）と `"fixed"` の 2 値。
+  正典は `app/render_resolution.rs`（`RenderResolutionMode` / `parse_render_resolution_mode` / `App::fixed_render_resolution`）。
+- `"fixed"` が実際に効くのは **`RuntimeMode::Play` かつ非埋め込み（親 HWND なし）** のときだけ。
+  Edit のシーンビューは WPF がサイズを支配するため常に従来動作。
+- 有効時、`App::render_target_size_px()` と `RenderFrame::render_size()` がどちらも
+  **内部解像度（`window_width` × `window_height`）** を返すようになる。ここが 1 か所の絞り込み点で、
+  RT 確保・`game_viewport`・レターボックス帯・キャンバス基準サイズ・
+  スクリプトの `publish_render_target_size` が一斉に内部解像度基準へ移る。
+  併せて `App::compute_viewport_size_2d()`（2D 物理・ポインタイベント・`Input.MousePositionCanvas` の正典）と
+  `on_resize` の `IdBuffer` / デバッグカメラのアスペクトも内部解像度になる。
+- **`ScalingMode` は「描画ターゲットのアスペクトに対してカメラをどう収めるか」**であり、
+  `"fixed"` ではその基準がウィンドウではなく**内部解像度のアスペクト**になる。
+  内部解像度とカメラの `target_width/height` を同アスペクトにしておけば `ScalingMode` 側の帯は出ず、
+  present 段のレターボックス帯だけが出る。食い違わせると帯が二重に出る。
+- **入力**: `Input` が `ViewMap`（ウィンドウ実サイズ → 内部解像度）を唯一の所有者として持ち、
+  `process_cursor_moved` で `letterbox::window_to_internal` を通す。帯の上の座標はクランプせず
+  負値・内部解像度超えのまま流すので、UI の矩形判定が自然に外れる（＝枠外扱い）。
+  カーソルロックのワープは「`set_cursor_position` へはウィンドウ座標」「`lock_center` へは写像後の座標」を
+  必ず区別する（混ぜると `position_delta()` が壊れる）。
+  エディタ／MCP の**注入座標は既に描画ターゲット座標系なので変換しない**。
+- **スクリーンショット**（`SCREENSHOT:` / `SEED_SCREENSHOT_*`）は従来どおりスワップチェーン
+  （`self.output.texture`）から読むので、`"fixed"` では**ウィンドウ実サイズ・黒帯込み**の絵が出る。
+  解像度を指定する仕組みは無く、撮りたい解像度にウィンドウを合わせてから撮る運用は変わらない。
 - リサイズ直後の 1 フレーム対策として、実サーフェスへ **一度だけ** クランプする集約点がある（`:4101-4117`、`play_viewport_ok`）。
   これで G-Buffer / ライティング / 反射 / メイン / 逐次屈折の全 `set_viewport` 箇所が一括で安全化される。
 - 適用箇所: G-Buffer（`:4225`）、Deferred ライティング（`:4539`）、反射・反射合成（`:4708` / `:4730`）、

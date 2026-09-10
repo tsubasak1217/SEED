@@ -128,6 +128,8 @@ pub(crate) mod refract_pyramid;
 /// バインドレス基盤（フェーズ B1）: テクスチャ配列レジストリ・UV/index メガバッファ・
 /// インスタンステーブル。RT ヒットシェーディングの土台（消費は B2/B3）。
 pub(crate) mod bindless;
+/// 内部解像度固定（fixed）モードのレターボックス写像（描画ビューポート＋入力座標変換の共通式）
+pub mod letterbox;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, GizmoVertex};
@@ -333,6 +335,14 @@ pub struct Renderer {
     config:         wgpu::SurfaceConfiguration,
     size:           PhysicalSize<u32>,
     depth_texture:  DepthTexture,
+    /// 内部解像度固定（`RenderResolutionMode::Fixed`）のときの描画解像度。
+    ///
+    /// `None` = 従来動作（描画解像度＝スワップチェーン実サイズ＝`size`）。
+    /// `Some` のときは深度テクスチャ・各種レンダーターゲット・ビューポートを
+    /// この解像度で確保し、最終プレゼントパスだけがウィンドウ実サイズへ
+    /// アスペクト維持で引き伸ばす（余白は黒帯）。
+    /// スワップチェーンの configure は常にウィンドウ実サイズのまま（ここでは触らない）。
+    fixed_render_size: Option<PhysicalSize<u32>>,
     /// コンパイル済みパイプライン状態のキャッシュ。
     /// GPU が PIPELINE_CACHE フィーチャーをサポートする場合のみ Some になる。
     pipeline_cache: Option<wgpu::PipelineCache>,
@@ -657,7 +667,13 @@ impl Renderer {
 
         let depth_texture = DepthTexture::new(&device, size.width, size.height);
 
-        Self { surface, device, queue, config, size, depth_texture, pipeline_cache }
+        // fixed_render_size は既定 None（= 従来どおり描画解像度はスワップチェーン実サイズ）。
+        // 内部解像度固定を使う場合は生成直後に set_fixed_render_size で明示的に設定する。
+        Self {
+            surface, device, queue, config, size, depth_texture,
+            fixed_render_size: None,
+            pipeline_cache,
+        }
     }
 
     // ── アダプター選択 ──────────────────────────────────────────
@@ -792,13 +808,43 @@ impl Renderer {
 
     // ── リサイズ ────────────────────────────────────────────────
 
+    /// 内部解像度固定（fixed）モードの描画解像度を設定する。
+    ///
+    /// `None` を渡すと従来動作（描画解像度＝スワップチェーン実サイズ）へ戻る。
+    /// 深度テクスチャは新しい描画解像度で作り直す（他の RT は次フレームの
+    /// `RenderFrame::render_size()` 基準の ensure で自動追従する）。
+    ///
+    /// 幅・高さ 0 は wgpu のテクスチャ生成が失敗するため `None` と同義に落とす
+    /// （設定ファイルの値をそのまま渡してもクラッシュしないようにするための防御）。
+    pub fn set_fixed_render_size(&mut self, size: Option<PhysicalSize<u32>>) {
+        let sanitized = size.filter(|s| s.width > 0 && s.height > 0);
+        if self.fixed_render_size == sanitized {
+            // 変化なし。深度テクスチャは既に現在の描画解像度で作られているので何もしない。
+            return;
+        }
+        self.fixed_render_size = sanitized;
+        let rs = self.render_size();
+        self.depth_texture = DepthTexture::new(&self.device, rs.width, rs.height);
+    }
+
+    /// 描画ターゲットを確保すべき解像度を返す。
+    ///
+    /// fixed なら内部解像度、それ以外（既定）はスワップチェーン実サイズ（＝従来の `size`）。
+    #[inline]
+    pub fn render_size(&self) -> PhysicalSize<u32> {
+        self.fixed_render_size.unwrap_or(self.size)
+    }
+
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
             self.config.width  = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            self.depth_texture = DepthTexture::new(&self.device, new_size.width, new_size.height);
+            // 深度は「描画解像度」で確保する。fixed 無効（None）のときは
+            // render_size() == new_size なので従来と完全に同一の呼び出しになる。
+            let rs = self.render_size();
+            self.depth_texture = DepthTexture::new(&self.device, rs.width, rs.height);
         }
     }
 
@@ -831,21 +877,31 @@ impl Renderer {
         // Vulkan の swapchain は surface.configure() の要求サイズを
         // current_extent（実際のウィンドウサイズ）にクランプする場合がある。
         // その際、depth_texture は要求サイズで作成済みのためサイズ不一致が発生し
-        // レンダーパス検証でパニックする。フレーム開始時に実際のサーフェステクスチャ
-        // サイズと depth_texture を同期させることで問題を防ぐ。
+        // レンダーパス検証でパニックする。フレーム開始時に同期させることで問題を防ぐ。
+        //
+        // 【2 段に分ける理由】fixed（内部解像度固定）では「スワップチェーン実サイズ」と
+        // 「描画解像度」が別物になる。①はサーフェス側の事実（config / size）を、
+        // ②は描画側の要求（depth_texture）を、それぞれ独立に追従させる。
+        //
+        // 【window モード（fixed=None）では従来と完全に同一】
+        //   window モードでは depth_texture は必ず size と同じ値で作られる
+        //   （resize() も本関数の②も render_size()==size を渡すため）。よって
+        //   「depth != surf」⇔「size != surf」⇔「config != surf」が常に成り立ち、
+        //   旧コードの単一条件分岐と①②の 2 段分岐は同じフレームで同じ結果になる。
         let surf_extent = output.texture.size();
-        if surf_extent.width  != self.depth_texture.width
-        || surf_extent.height != self.depth_texture.height
-        {
+        // ① サーフェス実 extent は常に config / size へ反映する（スワップチェーンの事実）。
+        if self.config.width != surf_extent.width || self.config.height != surf_extent.height {
             self.config.width  = surf_extent.width;
             self.config.height = surf_extent.height;
             self.size = winit::dpi::PhysicalSize {
                 width:  surf_extent.width,
                 height: surf_extent.height,
             };
-            self.depth_texture = DepthTexture::new(
-                &self.device, surf_extent.width, surf_extent.height,
-            );
+        }
+        // ② 深度テクスチャは描画解像度（fixed なら内部解像度）に追従させる。
+        let rs = self.render_size();
+        if rs.width != self.depth_texture.width || rs.height != self.depth_texture.height {
+            self.depth_texture = DepthTexture::new(&self.device, rs.width, rs.height);
         }
 
         let color_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -858,6 +914,8 @@ impl Renderer {
             color_view,
             depth_view:      &self.depth_texture.view,
             depth_only_view: &self.depth_texture.depth_only_view,
+            // 描画解像度をフレームへ焼き込む（フレーム中に変わらないことを保証するため）。
+            render_px:       (rs.width, rs.height),
             queue:           &self.queue,
             device:          &self.device,
         })
@@ -891,6 +949,9 @@ pub struct RenderFrame<'r> {
     depth_view:      &'r wgpu::TextureView,
     /// DepthOnly aspect: Hi-Z テクスチャサンプリング用
     depth_only_view: &'r wgpu::TextureView,
+    /// このフレームの描画解像度（px）。fixed なら内部解像度、既定はスワップチェーン実サイズ。
+    /// `Renderer::render_size()` の値をフレーム開始時に固定したもの。
+    render_px:       (u32, u32),
     queue:           &'r wgpu::Queue,
     /// スクリーンショットの読み戻し（バッファ生成 + マップ完了待ち）に使う。
     device:          &'r wgpu::Device,
@@ -1021,10 +1082,22 @@ impl<'r> RenderFrame<'r> {
         })
     }
 
+    /// 描画ターゲットを確保すべき解像度（ピクセル）を返す。
+    ///
+    /// - 既定（window モード）: スワップチェーン実サイズ（従来の `surface_size` と同値）
+    /// - fixed（内部解像度固定）: project_settings.json の内部解像度
+    ///
+    /// HDR オフスクリーン・G-Buffer・Hi-Z・ビューポートのクランプ基準はすべてこの値。
+    /// **スワップチェーンの実サイズが要る用途には使わない**（そちらは `swapchain_px`）。
+    pub fn render_size(&self) -> (u32, u32) {
+        self.render_px
+    }
+
     /// スワップチェーンの実サーフェスサイズ（ピクセル）を返す。
     ///
-    /// HDR オフスクリーンをスワップチェーンと 1:1 で確保するために使う。
-    pub fn surface_size(&self) -> (u32, u32) {
+    /// 最終プレゼント先の実寸。fixed では `render_size()` と一致しないため、
+    /// レターボックス矩形の計算にだけ使う。
+    pub fn swapchain_px(&self) -> (u32, u32) {
         let s = self.output.texture.size();
         (s.width, s.height)
     }
@@ -1738,6 +1811,10 @@ impl<'r> RenderFrame<'r> {
     }
 
     /// LDR 中間（＋オーバーレイ）をスワップチェーンへ書き出す最終段（FXAA or コピー, Phase R4）。
+    ///
+    /// 描画解像度とスワップチェーン実サイズが食い違う場合（fixed モード）だけ、
+    /// アスペクト維持のレターボックス矩形をビューポートとして渡す。
+    /// 余白はこのパスの `LoadOp::Clear(BLACK)` がアタッチメント全面に効くため自動で黒帯になる。
     pub fn present_to_swapchain(
         &mut self,
         post:         &PostContext,
@@ -1745,9 +1822,33 @@ impl<'r> RenderFrame<'r> {
         ldr_view:     &wgpu::TextureView,
         fxaa_enabled: bool,
     ) {
-        let (w, h) = self.surface_size();
+        // FXAA の inv_res は「入力 LDR の解像度」＝描画解像度でなければならない
+        //（サーフェス実サイズを渡すと fixed 時にテクセル歩幅がズレてボケる）。
+        let (w, h) = self.render_size();
+        let (sw, sh) = self.swapchain_px();
+        // window モードでは両者が必ず一致するので None ＝ 従来と同じ「ビューポート未指定」経路。
+        //
+        // 矩形は必ずサーフェス実サイズへクランプしてから渡す。letterbox_rect の
+        // scale は f32 の除算なので、`internal * (surface / internal)` が surface を
+        // 1px 未満だけ超え、x がわずかに負になることがある。set_viewport は
+        // `x >= 0 && x + w <= 出力幅` を厳密に要求するため、この誤差だけで
+        // バリデーションがパニックし、未 present の SurfaceTexture 破棄で
+        // 二次パニック → プロセス abort する（詳細は clamp_rect_to_target の doc）。
+        // クランプ後に縮退（1px 未満）した場合は None ＝ ビューポート未指定にして、
+        // そのフレームは全面へ描く（最小化・リサイズ最中の一過性フレームのみ）。
+        let viewport = if w != sw || h != sh {
+            letterbox::clamp_rect_to_target(
+                letterbox::letterbox_rect(sw, sh, w, h),
+                sw as f32,
+                sh as f32,
+            )
+        } else {
+            None
+        };
         // self.encoder（可変）と self.color_view（不変）は別フィールドのため同時借用可。
-        post.present(device, &mut self.encoder, ldr_view, &self.color_view, w, h, fxaa_enabled);
+        post.present(
+            device, &mut self.encoder, ldr_view, &self.color_view, w, h, fxaa_enabled, viewport,
+        );
     }
 
     /// キャンバスオーバーレイパスを開始する。

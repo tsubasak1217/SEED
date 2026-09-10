@@ -15,6 +15,7 @@
 //  リフレクションが BGL を生成するため、本ランナーを拡張して対応する（R4 のブルーム合成等）。
 // ============================================================
 
+use super::super::letterbox::LetterboxRect;
 use super::super::pipeline_config::RenderPipelineBuilder;
 
 /// ポストパスパイプライン（TOML + WGSL リフレクションから構築）。
@@ -81,9 +82,33 @@ pub fn run_post_stage(
     output: &wgpu::TextureView,
     label: &str,
 ) {
-    // 既存の呼び出し互換のため Clear（全面上書き）で委譲する。
-    run_post_stage_load(
+    // 既存の呼び出し互換のため Clear（全面上書き）・ビューポート未指定で委譲する。
+    run_post_stage_impl(
+        device, encoder, pipe, input, mask, white_mask, sampler, params, output, label, false, None,
+    );
+}
+
+/// `run_post_stage` の派生版。出力の一部矩形（ビューポート）にだけフルスクリーン三角形を描く。
+///
+/// 内部解像度固定（fixed）モードの最終プレゼント段で使う。
+/// `viewport` が `None` のときは `run_post_stage` と完全に同一の動作。
+#[allow(clippy::too_many_arguments)]
+pub fn run_post_stage_viewport(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PostPipeline,
+    input: &wgpu::TextureView,
+    mask: Option<&wgpu::TextureView>,
+    white_mask: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    params: &[u8],
+    output: &wgpu::TextureView,
+    label: &str,
+    viewport: Option<LetterboxRect>,
+) {
+    run_post_stage_impl(
         device, encoder, pipe, input, mask, white_mask, sampler, params, output, label, false,
+        viewport,
     );
 }
 
@@ -105,6 +130,39 @@ pub fn run_post_stage_load(
     output: &wgpu::TextureView,
     label: &str,
     load: bool,
+) {
+    // ビューポート未指定（＝出力全面）で委譲する。既存呼び出し元の動作は不変。
+    run_post_stage_impl(
+        device, encoder, pipe, input, mask, white_mask, sampler, params, output, label, load, None,
+    );
+}
+
+/// ポストパス実行の実体。`load`（LoadOp）と `viewport`（描画矩形）で挙動を切り替える。
+///
+/// - `viewport = None` : 出力アタッチメント全面へ描く（従来動作）
+/// - `viewport = Some` : 指定矩形にだけ描く。矩形外はクリア色（黒）が残る＝黒帯
+///
+/// 【`set_scissor_rect` を張らない理由】
+/// レターボックスの黒帯は「クリアが全面に効き、描画だけが矩形内に閉じる」ことで生まれる。
+/// wgpu の `LoadOp::Clear` はビューポート／シザーに影響されずアタッチメント全面へ効くが、
+/// シザー矩形を張ってしまうと**フラグメントの書き込みが矩形内へ制限されるだけ**で
+/// クリア自体は変わらない ―― つまりシザーは黒帯生成には不要な上、
+/// 前フレームの残像が帯に出るような別バックエンド差を持ち込む余地を作る。
+/// 「ビューポートだけを絞る」のが最小かつ意図の明確な実装なので、あえて張らない。
+#[allow(clippy::too_many_arguments)]
+fn run_post_stage_impl(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PostPipeline,
+    input: &wgpu::TextureView,
+    mask: Option<&wgpu::TextureView>,
+    white_mask: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    params: &[u8],
+    output: &wgpu::TextureView,
+    label: &str,
+    load: bool,
+    viewport: Option<LetterboxRect>,
 ) {
     use wgpu::util::DeviceExt;
 
@@ -180,6 +238,10 @@ pub fn run_post_stage_load(
         occlusion_query_set: None,
         timestamp_writes: None,
     });
+    // レターボックス時のみ描画矩形を絞る（矩形外はクリア色のまま＝黒帯）。
+    if let Some(vp) = viewport {
+        pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+    }
     pass.set_pipeline(&pipe.pipeline);
     pass.set_bind_group(0, &bg0, &[]);
     pass.set_bind_group(1, &bg1, &[]);

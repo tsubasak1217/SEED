@@ -88,6 +88,18 @@
 
 - [ ] **レーダーの点・ビートアイコンの見た目確認** — 2026-09-07。`Draw.Circle` の点の位置・サイズ（`radarSpace` 相対のスケール一致）、`BeatIcon.actor` プールの出現位置は未目視。関連: `scripts/FishRadar.cs`、`scripts/FishingFight.cs`。
 
+- [ ] **`cargo test` の並列実行で落ちる順序依存テストが 2 件ある** — 2026-09-10 に描画解像度モードの作業中に発見（この作業とは無関係で、既存の問題）。
+  `engine::plugin::host::tests::set_save_int_writes_flag_and_keeps_other_keys` と
+  `engine::core::font::inline::icon_set::tests::poll_*` が、**全体実行では落ちるのに単体実行では通る**。
+  新規追加テストを `--skip` して変更前と同じテスト集合にしても落ちるので、今回の変更が原因ではないことは確認済み
+  （そのときは icon_set 側も一緒に落ちた＝どちらが落ちるかは実行ごとに変わる）。
+  前者の機序: `save::SAVE_STORE` は `OnceLock` で、**初回アクセス時に解決した保存先パスを `SaveStore.path` に焼き込む**
+  （`save/store.rs::flush` は `self.path` へ書く）。テストは `SEED_SAVE_DIR` を設定してから `save()` するが、
+  他のテストが先にストアを初期化していると `flush()` は旧パスへ書き、直後の `resolve_save_path()`（毎回環境から再解決）は
+  テスト用の一時ディレクトリを返すため「書いたはずのファイルが無い」になる。
+  直すなら「テスト用にストアをリセットする API を足す」か「`SaveStore` が毎回 `resolve_save_path()` を引き直す」かの判断が要る。
+  関連: `runtime/src/engine/plugin/host.rs:133`、`runtime/src/engine/core/save/mod.rs:41`、`runtime/src/engine/core/save/store.rs:269`。
+
 ## 未コミットの他セッション差分（要確認）
 
 - [ ] **`app_init.rs` / `ipc_handler.rs` / `script_scene_ops.rs` / `play_mode_ops.rs` に別セッションの未コミット変更** — 2026-09-07 時点。Play 開始時のシーン登録表再読込など。作業ツリーに残っているので、そのセッション側でコミットするか破棄するか判断する。

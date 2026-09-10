@@ -34,20 +34,37 @@ impl App {
     /// depth と color attachment の不一致が起こるため、親がいる場合は GetClientRect(parent) を優先する。
     pub(super) fn on_resize(&mut self, size: PhysicalSize<u32>) {
         let effective_size = self.get_parent_client_size().unwrap_or(size);
+        // スワップチェーンは常にウィンドウ（親クライアント）実サイズで再構成する。
+        // 内部解像度固定モードでも「最終的に映す先」は実サイズなので、ここは変えない。
         if let Some(r) = &mut self.renderer {
             r.resize(effective_size);
         }
+
+        // カメラのアスペクトと ID バッファは「描画解像度」で揃える。
+        // 【IdBuffer が必須な理由】ID パスは共有深度テクスチャ（Renderer が描画解像度で
+        // 確保する）と同じレンダーパスに入るため、サイズが 1px でも食い違うと
+        // wgpu のアタッチメントサイズ検証でパニックする。
+        // window モード（既定）では fixed_render_resolution() が None なので
+        // target == effective_size となり、従来と完全に同一の呼び出しになる。
+        let target = self
+            .fixed_render_resolution()
+            .map(|(w, h)| PhysicalSize::new(w, h))
+            .unwrap_or(effective_size);
         self.camera
-            .set_aspect_ratio(effective_size.width, effective_size.height);
-        if effective_size.width > 0 && effective_size.height > 0 {
+            .set_aspect_ratio(target.width, target.height);
+        if target.width > 0 && target.height > 0 {
             if let Some(dc) = &self.draw_ctx {
                 self.id_buffer = Some(IdBuffer::new(
                     &dc.device,
-                    effective_size.width,
-                    effective_size.height,
+                    target.width,
+                    target.height,
                 ));
             }
         }
+
+        // ウィンドウ実サイズが変わったので、入力のレターボックス写像を張り直す。
+        // window モードでは None のままなので実質何もしない。
+        self.sync_input_view_map();
     }
 
     // ============================================================

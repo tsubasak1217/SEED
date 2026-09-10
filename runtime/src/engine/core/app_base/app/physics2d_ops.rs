@@ -604,6 +604,21 @@ impl App {
             return None;
         }
 
+        // 内部解像度固定（fixed・Play のみ）では、2D の基準サイズはウィンドウ実サイズではなく
+        // 内部解像度にする。カーソル座標（Input が内部解像度へ写像済み）・描画・2D 物理・
+        // スクリプトの Input.MousePositionCanvas が同じ座標系を共有するための「正典」が
+        // この関数だからである。ここを実サイズのままにすると、
+        // 「内部解像度のカーソル − ウィンドウサイズ / 2」という座標系の混在が起き、
+        // UI のクリック判定が丸ごとズレる（pointer_events::update_pointer_events）。
+        //
+        // 【順序が重要】上の `!scene_canvas_ss` ガードより **後** に置くこと。
+        // 逆にすると SS レイアウトでない世界線（ワールドスペース・アクター編集タブ）まで
+        // Some を返してしまい、従来 None 前提の分岐が壊れる。
+        // window モード（既定）では None なので、以降の従来経路がそのまま走る。
+        if let Some((w, h)) = self.fixed_render_resolution() {
+            return Some([w as f32, h as f32]);
+        }
+
         self.window
             .as_ref()
             .map(|w| {

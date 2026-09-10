@@ -78,6 +78,14 @@ impl CameraProjection {
 ///
 /// ウィンドウサイズとゲーム解像度が異なる場合に、
 /// ゲーム画面をウィンドウへどう収めるかを指定する。
+///
+/// 【描画解像度モード（`RenderResolutionMode`）との関係】
+/// ここでいう「ウィンドウ」とは正確には **描画ターゲット** のことである。
+/// 描画解像度モードが `fixed`（内部解像度固定）のとき、その基準はウィンドウのアスペクトではなく
+/// **内部解像度のアスペクト**になる（ウィンドウへの引き伸ばしは最終段が別途行う）。
+/// したがって内部解像度と `target_width` / `target_height` を一致させれば、
+/// `ScalingMode` 側の帯は出ず、ウィンドウ側のレターボックス帯だけが出る。
+/// 両者を食い違わせると帯が二重に出るので、通常は一致させること。
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScalingMode {

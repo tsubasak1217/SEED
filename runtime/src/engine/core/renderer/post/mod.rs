@@ -25,6 +25,8 @@ mod tests_color_pipeline;
 
 pub use rt_pool::RtPool;
 pub use post_pass::{PostPipeline, run_post_stage};
+// レターボックス（内部解像度固定）用のビューポート付き実行。最終プレゼント段のみが使う。
+use post_pass::run_post_stage_viewport;
 pub use bloom::{BloomPipelines, BloomParams};
 // run_post_stage_load / MAX_BLOOM_MIPS は post 配下（bloom.rs）でのみ使うため再公開しない。
 // PostFxSettings とそのデフォルト定数は本ファイル下部で定義・公開する。
@@ -368,6 +370,11 @@ impl PostContext {
     ///
     /// `fxaa_enabled` が真なら FXAA、偽なら中央 1 タップのコピー。いずれもこの 1 パスが
     /// トーンマップ後 LDR → スワップチェーンの橋渡しを担う（常に実行）。
+    ///
+    /// - `width` / `height`: **入力 LDR の解像度**（FXAA のテクセル歩幅 `inv_res` の基準）。
+    ///   スワップチェーン実サイズではないことに注意（fixed モードでは両者が異なる）。
+    /// - `viewport`: 内部解像度固定（fixed）モードのレターボックス矩形。`None` で全面（従来動作）。
+    ///   矩形外はこのパスの `LoadOp::Clear(BLACK)` が残るので黒帯になる。
     #[allow(clippy::too_many_arguments)]
     pub fn present(
         &self,
@@ -378,16 +385,18 @@ impl PostContext {
         width:        u32,
         height:       u32,
         fxaa_enabled: bool,
+        viewport:     Option<crate::engine::core::renderer::letterbox::LetterboxRect>,
     ) {
         let p = FxaaParams {
             inv_res: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
             enabled: if fxaa_enabled { 1 } else { 0 },
             _pad:    0,
         };
-        run_post_stage(
+        run_post_stage_viewport(
             device, encoder, &self.fxaa,
             ldr_view, None, &self.white_view, &self.sampler,
             bytemuck::bytes_of(&p), swapchain, "Post FXAA/Present",
+            viewport,
         );
     }
 

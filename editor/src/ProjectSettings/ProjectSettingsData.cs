@@ -65,6 +65,17 @@ public class ProjectSettingsData
     [JsonPropertyName("window_height")]
     public int WindowHeight { get; set; } = 1080;
 
+    /// <summary>
+    /// ゲーム画面の描画解像度の決め方。
+    /// "window"（既定）= ウィンドウの実ピクセルで描画する（従来動作）。
+    /// "fixed"        = 常に window_width × window_height の内部解像度で描画し、
+    ///                  最終出力でウィンドウへアスペクト比を保ったまま拡大縮小する（余白は黒帯）。
+    /// Rust 側 `runtime/src/engine/core/app_base/app/render_resolution.rs` の
+    /// RenderResolutionMode と文字列表現を一致させること。
+    /// </summary>
+    [JsonPropertyName("render_resolution_mode")]
+    public string RenderResolutionMode { get; set; } = "window";
+
     // ── シーンマネージャ ─────────────────────────────────────
 
     /// <summary>

@@ -683,11 +683,17 @@ public partial class ProjectSettingsWindow : Window
     private const int ResolutionMin = 160;
     private const int ResolutionMax = 7680;
 
+    /// <summary>描画解像度モードの JSON 値（Rust 側と一致させること）。</summary>
+    private const string RenderResModeWindow = "window";
+    private const string RenderResModeFixed  = "fixed";
+
     /// <summary>解像度コンボボックス（最後の項目が「カスタム...」）。</summary>
     private ComboBox? _cmbResolution;
     /// <summary>カスタム解像度の幅・高さ入力フィールド。</summary>
     private TextBox? _tbResWidth;
     private TextBox? _tbResHeight;
+    /// <summary>描画解像度モードのコンボボックス（「ウィンドウに合わせる」/「解像度を固定」）。</summary>
+    private ComboBox? _cmbRenderResMode;
 
     /// <summary>「解像度設定」パネルを構築して返す。</summary>
     ///
@@ -797,10 +803,57 @@ public partial class ProjectSettingsWindow : Window
             customPanel.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
         };
 
+        // ── 描画モードコンボボックス行 ──
+        var renderModeRow = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        renderModeRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        renderModeRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var renderModeLabel = new TextBlock
+        {
+            Text              = "描画モード",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(renderModeLabel, 0);
+        renderModeRow.Children.Add(renderModeLabel);
+
+        // 配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる
+        _cmbRenderResMode = new ComboBox { FontSize = 12 };
+        _cmbRenderResMode.Items.Add(new ComboBoxItem
+        {
+            Content = "ウィンドウに合わせる（従来）",
+            Tag     = RenderResModeWindow,
+        });
+        _cmbRenderResMode.Items.Add(new ComboBoxItem
+        {
+            Content = "解像度を固定して拡大縮小",
+            Tag     = RenderResModeFixed,
+        });
+        // 初期選択: 現在値が "fixed"（前後空白除去・大文字小文字無視）なら 2 番目、それ以外は 1 番目を選ぶ
+        bool isFixedRenderMode = string.Equals(
+            _data.RenderResolutionMode?.Trim(), RenderResModeFixed, StringComparison.OrdinalIgnoreCase);
+        _cmbRenderResMode.SelectedIndex = isFixedRenderMode ? 1 : 0;
+        Grid.SetColumn(_cmbRenderResMode, 1);
+        renderModeRow.Children.Add(_cmbRenderResMode);
+        panel.Children.Add(renderModeRow);
+
         panel.Children.Add(new TextBlock
         {
-            Text         = "実行中のウィンドウは手動でリサイズできます。ゲーム画面の収め方（レターボックス等）は\n" +
-                           "カメラコンポーネントのスケーリングモードで設定します。",
+            Text         = "解像度を固定すると、ウィンドウを拡大縮小・最大化しても上の解像度で描いた画面をそのまま拡大縮小して表示します（UI も 3D もウィンドウサイズに依存しません）。\n" +
+                           "余った部分は黒帯になります。\n" +
+                           "エディタのシーンビューには影響しません。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(120, 4, 0, 0),
+        });
+
+        panel.Children.Add(new TextBlock
+        {
+            Text         = "実行中のウィンドウは手動でリサイズできます。\n" +
+                           "「ウィンドウに合わせる」のときのゲーム画面の収め方（レターボックス等）はカメラコンポーネントのスケーリングモードで設定します。\n" +
+                           "「解像度を固定」のときは上の解像度のアスペクト比がそのまま基準になります。",
             Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
             FontSize     = 11,
             TextWrapping = TextWrapping.Wrap,
@@ -966,6 +1019,13 @@ public partial class ProjectSettingsWindow : Window
                 if (int.TryParse(_tbResHeight.Text.Trim(), out var h))
                     _data.WindowHeight = Math.Clamp(h, ResolutionMin, ResolutionMax);
             }
+        }
+
+        // 「描画モード」の選択値を収集する（Tag に JSON 値が入っている）
+        if (_cmbRenderResMode is not null
+            && (_cmbRenderResMode.SelectedItem as ComboBoxItem)?.Tag is string mode)
+        {
+            _data.RenderResolutionMode = mode;
         }
 
         // 「RTシャドウ」パネルのチェック状態を収集する

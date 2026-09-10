@@ -2100,3 +2100,30 @@ RT スキン BLAS は「頂点バッファを掴んだ BindGroup」「頂点数�
     毎フレーム再構築回避と両立させる工夫が必要（コスト／誤棄却リスクを見て別タスク）。
   - 既定 ON 化はカメラ移動時の 1 フレーム reveal ホール（高速回転時）を実機で許容できるか確認してから。
   - 検証用スモークカメラ knob: `SEED_SMOKE_FPV_YAW=<deg>` / `SEED_SMOKE_FPV_EYE=<m>`（既定は従来値）。
+
+---
+
+## 描画解像度モード `render_resolution_mode`（2026-09-10 追加）
+
+`project_settings.json` に **`render_resolution_mode`** キーを追加した。値は `"window"`（既定・従来動作）と `"fixed"`。
+「ウィンドウを拡大縮小・最大化しても、プロジェクト設定の解像度で描いた絵をそのまま拡大縮小したものにしたい」という要求への対応。
+
+- **正典**: `runtime/src/engine/core/app_base/app/render_resolution.rs`（モードの定義・パース・有効判定）と
+  `runtime/src/engine/core/renderer/letterbox.rs`（レターボックス矩形と座標写像の純関数＋ユニットテスト）。
+  1 フレームの流れの中でどこがどう変わるかは **`docs/rendering_flow.md` §2.21 / §4.5.1** が正典。
+- **読み方**: `handle_resumed` が `project_settings.json` を 1 回読む既存経路（`parse_window_size` / `parse_game_name` と同じ場所）で
+  `parse_render_resolution_mode` を通す。キー欠落・不正値・JSON 破損はすべて `"window"`（従来動作）へ倒す。
+  `rt_shadows` 等と同じく**ファイルは不変**で、読み側だけが解釈する（`rendering_roadmap.md` の既存方針と同じ）。
+- **設計判断**: 「内部解像度で確保 → 既存の最終段 `present_to_swapchain` にビューポートを渡すだけ」で済ませた。
+  トーンマップ後の `RT_LDR` に UI まで合成してからスワップチェーンへ書き出す構成（Phase R4）が既にあったため、
+  **アップスケール専用パスを新設せずに済む**（新規 WGSL / パイプライン TOML はゼロ）。
+  黒帯は `run_post_stage` の `LoadOp::Clear(BLACK)` がアタッチメント全面に効くことを利用し、追加の帯塗りパスを持たない。
+- **`ScalingMode` との関係**: `ScalingMode` は「描画ターゲットのアスペクトに対してカメラをどう収めるか」であり、
+  `"fixed"` ではその基準が内部解像度のアスペクトになる。内部解像度とカメラの `target_width/height` を同アスペクトにすれば
+  帯は present 段の 1 段だけになる。食い違わせると帯が二重に出る。
+- **エディタ UI**: プロジェクト設定 →「グラフィックス」→「解像度設定」パネルに「描画モード」ドロップダウンを追加
+  （`editor/src/ProjectSettings/ProjectSettingsWindow.xaml.cs` の `BuildResolutionPanel`）。
+- **既知の割り切り**:
+  - `"fixed"` の帯は常に黒。カメラの `bar_color` は `ScalingMode` 側の帯にしか効かない。
+  - スクリーンショットは従来どおりスワップチェーンから撮るので、`"fixed"` では黒帯込み・ウィンドウ実サイズで出る。
+  - Edit のシーンビューと埋め込み Play（親 HWND あり）には効かない。

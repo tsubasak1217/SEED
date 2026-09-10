@@ -34,6 +34,23 @@ pub enum InputState {
     Previous,
 }
 
+// ─── ViewMap ───────────────────────────────────────────────────────────────
+
+/// ウィンドウ実サイズ → 描画解像度 の写像パラメータ。
+///
+/// 内部解像度固定（`RenderResolutionMode::Fixed`）のときだけ `Input` に設定される。
+/// これがあると `CursorMoved` のウィンドウ座標は、描画と同じレターボックス写像を
+/// 通してから `MouseState` へ入る。結果として `Input::mouse_position` は
+/// **常に描画ターゲット座標系**を返す（UI のヒット判定・スクリプトの
+/// `Input.MousePos` が見た目と一致する）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewMap {
+    /// ウィンドウ（クライアント領域）の実ピクセルサイズ。
+    pub window: (u32, u32),
+    /// 描画に使う内部解像度。
+    pub internal: (u32, u32),
+}
+
 // ─── Input ─────────────────────────────────────────────────────────────────
 
 /// キーボード・マウス入力を一元管理するラッパー。
@@ -78,6 +95,11 @@ pub struct Input {
     /// 「実入力の挙動をひとつも変えない」ことと「注入だけを一括解放できる」ことを
     /// 同時に満たすため（詳細は inject モジュール）。
     injection: InputInjection,
+    /// ウィンドウ実サイズ → 描画解像度 の写像。`None` = 等倍（従来動作）。
+    ///
+    /// 写像の**唯一の所有者**がここであることが重要。App 側にも同じ情報を持たせると、
+    /// 片方だけ更新し忘れた瞬間に「見た目とクリック位置がズレる」不具合になる。
+    view_map: Option<ViewMap>,
     is_active: bool,
 }
 
@@ -88,7 +110,33 @@ impl Input {
             mouse: MouseState::new(),
             gamepad: GamepadState::new(),
             injection: InputInjection::new(),
+            view_map: None,
             is_active: true,
+        }
+    }
+
+    // ─── 座標系の写像（内部解像度固定モード）──────────────────
+
+    /// ウィンドウ実サイズ → 描画解像度 の写像を設定する。
+    ///
+    /// `None` で従来動作（等倍）。ウィンドウサイズが変わるたびに設定し直すこと
+    /// （App 側は `sync_input_view_map` が唯一の呼び出し口）。
+    pub fn set_view_map(&mut self, map: Option<ViewMap>) {
+        self.view_map = map;
+    }
+
+    /// ウィンドウ座標を入力座標（＝描画ターゲット座標）へ写す。
+    ///
+    /// 戻り値 `.1` は「レターボックスの映像部分の内側か」。写像が無いときは常に true。
+    /// 座標はクランプしない（黒帯の上は枠外の値のまま返る）。
+    fn window_pos_to_input(&self, pos: [f32; 2]) -> ([f32; 2], bool) {
+        match self.view_map {
+            Some(m) => {
+                crate::engine::core::renderer::letterbox::window_to_internal(
+                    pos, m.window, m.internal,
+                )
+            }
+            None => (pos, true),
         }
     }
 
@@ -128,10 +176,16 @@ impl Input {
         }
     }
 
-    /// `WindowEvent::CursorMoved` を処理する（スクリーン座標）。
+    /// `WindowEvent::CursorMoved` を処理する（ウィンドウのクライアント座標）。
+    ///
+    /// 内部解像度固定モード（`view_map` が Some）では、ここで描画解像度座標へ写す。
+    /// **この 1 か所で変換を済ませる**ことで、`MouseState` 以降（`mouse_position` /
+    /// `position_delta` / UI ヒット判定 / スクリプト API）はすべて描画ターゲット座標系で
+    /// 統一される。`view_map` が None のときは恒等写像なので従来と完全に同一。
     pub fn process_cursor_moved(&mut self, x: f32, y: f32) {
         if self.is_active {
-            self.mouse.process_cursor_moved(x, y);
+            let ([mx, my], _inside) = self.window_pos_to_input([x, y]);
+            self.mouse.process_cursor_moved(mx, my);
         }
     }
 
@@ -363,8 +417,8 @@ impl Input {
     /// ロック中は `mouse_position` は中央付近に張り付くため意味を持たない。
     pub fn set_cursor_lock(&mut self, locked: bool, window: &Window) {
         let was = self.mouse.cursor_locked();
-        let center = viewport_center(window);
-        self.mouse.set_cursor_lock(locked, center);
+        let (win_center, input_center) = self.lock_centers(window);
+        self.mouse.set_cursor_lock(locked, input_center);
 
         // 可視状態は OS へも反映する（ロック中は隠す / 解除で必ず戻す）。
         self.mouse.set_cursor_visible(!locked);
@@ -372,8 +426,29 @@ impl Input {
 
         // ロックし始めたフレームで一度中央へ寄せておく（以降は update_cursor_lock）。
         if locked && !was {
-            self.warp_to_lock_center(window, center);
+            self.warp_to_lock_center(window, win_center, input_center);
         }
+    }
+
+    /// カーソルロックの基準点を「ウィンドウ座標」と「入力座標」の 2 系統で返す。
+    ///
+    /// 【なぜ 2 つの座標系が要るのか】
+    /// - `Window::set_cursor_position` は **OS のウィンドウ座標**（クライアント領域の
+    ///   実ピクセル）を要求する。ここへ内部解像度の値を渡すと、実際のカーソルが
+    ///   画面の意図しない位置へ飛ぶ。
+    /// - 一方 `MouseState` の `lock_center` は `position_delta()`（ロック中は
+    ///   `position - lock_center`）の基準であり、`position` は
+    ///   `process_cursor_moved` が写像済み＝**入力座標（描画解像度）**で入っている。
+    ///   ここへウィンドウ座標を渡すと 2 項が別座標系になり、fixed モードで
+    ///   カーソルロック中の視点回転が定常的にドリフトする。
+    ///
+    /// 3 か所（`set_cursor_lock` / `update_cursor_lock` / `warp_to_lock_center`）で
+    /// 基準がズレないよう、導出はこのヘルパー 1 つに集約する。
+    /// window モード（`view_map` = None）では両者は完全に同じ値になる。
+    fn lock_centers(&self, window: &Window) -> (Vector2<f32>, Vector2<f32>) {
+        let win_center = viewport_center(window);
+        let ([ix, iy], _inside) = self.window_pos_to_input([win_center.x, win_center.y]);
+        (win_center, Vector2::new(ix, iy))
     }
 
     /// フレーム末に呼ぶ。ロック中ならカーソルをビューポート中央へ戻す。
@@ -384,17 +459,25 @@ impl Input {
         if !self.mouse.cursor_locked() {
             return;
         }
-        let center = viewport_center(window);
-        self.warp_to_lock_center(window, center);
+        let (win_center, input_center) = self.lock_centers(window);
+        self.warp_to_lock_center(window, win_center, input_center);
     }
 
     /// カーソルを中央へワープさせ、成功したときだけ入力状態へ反映する。
     ///
+    /// `win_center` は OS へ渡すウィンドウ座標、`input_center` は入力状態へ記録する
+    /// 入力座標（＝描画解像度座標）。2 つに分ける理由は `lock_centers` の説明を参照。
+    ///
     /// 失敗（プラットフォーム未対応など）しても機能を落とすだけなので握り潰すが、
     /// 原因調査のために初回だけ警告を出す。
-    fn warp_to_lock_center(&mut self, window: &Window, center: Vector2<f32>) {
-        match window.set_cursor_position(PhysicalPosition::new(center.x, center.y)) {
-            Ok(()) => self.mouse.notify_warped_to_center(center),
+    fn warp_to_lock_center(
+        &mut self,
+        window: &Window,
+        win_center: Vector2<f32>,
+        input_center: Vector2<f32>,
+    ) {
+        match window.set_cursor_position(PhysicalPosition::new(win_center.x, win_center.y)) {
+            Ok(()) => self.mouse.notify_warped_to_center(input_center),
             Err(e) => {
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {

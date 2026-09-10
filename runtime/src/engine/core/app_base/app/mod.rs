@@ -92,6 +92,8 @@ pub(crate) mod canvas_collect;
 mod collider2d_wireframe;
 mod collider3d_pick;
 mod app_init;
+/// 描画解像度モード（window / fixed）の定義・パースと、fixed の有効判定
+mod render_resolution;
 mod event_handler;
 mod drag_handler;
 mod physics_ops;
@@ -1300,6 +1302,13 @@ pub struct App {
     ///   - ビューポート・ルートキャンバスの自動解像度計算（effective_root_canvas_size）
     pub(super) project_resolution: (u32, u32),
 
+    /// 描画解像度モード（project_settings.json の `render_resolution_mode`）。
+    /// `handle_resumed` で一度だけ読み込み、以降は再読込しない。
+    /// 既定は `Window`＝従来動作（ウィンドウ実サイズで描画）。
+    /// `Fixed` のときだけ「内部解像度で描いて最終段でレターボックス」経路へ入る
+    ///（有効条件の判定は `App::fixed_render_resolution` に集約）。
+    pub(super) render_resolution_mode: render_resolution::RenderResolutionMode,
+
     // ── アニメーション Edit プレビュー ───────────────────────────────
     /// Edit モードのアニメーションプレビュー（ANIM_PREVIEW）用クリップキャッシュ。
     /// キー = .anim アセットパス。ANIM_RELOAD 受信時にエントリを破棄し、
@@ -1683,6 +1692,8 @@ impl App {
             pending_restore_vel_2d: None,
             // handle_resumed で project_settings.json から上書きされる
             project_resolution: DEFAULT_PROJECT_RESOLUTION,
+            // 同上。既定は Window（従来動作）。
+            render_resolution_mode: render_resolution::RenderResolutionMode::default(),
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
