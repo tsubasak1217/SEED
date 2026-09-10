@@ -533,6 +533,7 @@
                 "runCamPhiDegrees": "35.000",
                 "runCamThetaDegrees": "120.000",
                 "runCameraTarget": "RunCameraTarget",
+                "shoreCamDistance": "20.000",
                 "stunEffect": "StunEffect|Script",
                 "uki": "Uki",
                 "ukiModel": "Uki|Model",

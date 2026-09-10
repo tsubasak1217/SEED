@@ -891,7 +891,7 @@ public class FishingController : SEEDScript
 
     /// <summary>岸際カメラのウキからの水平距離（メートル）。</summary>
     [SerializeField(Label = "岸際カメラの距離(m)")]
-    private float shoreCamDistance = 7f;
+    private float shoreCamDistance = 20f;
 
     /// <summary>岸際カメラのウキからの高さ（メートル）。</summary>
     [SerializeField(Label = "岸際カメラの高さ(m)")]
@@ -2923,8 +2923,9 @@ public class FishingController : SEEDScript
         // 巻いているあいだだけ、ウキが漂流物を巻き込んだかを見る（詳細は UpdateDriftPickup）
         UpdateDriftPickup(f);
 
-        // 残り距離（ウキ→竿先の水平距離）の表示。ウキが無ければ 0 を出す。
-        f.UpdateDistanceDisplay(CurrentFloatDistance());
+        // 残り距離の表示。「釣り上げ成立距離までの残り」＝ 実測距離 − 成立距離 を出す
+        // （0 になった瞬間に釣れる、という見た目と判定の一致を保つ。負値は表示側で 0 に丸める）。
+        f.UpdateDistanceDisplay(CurrentFloatDistance() - catchDistanceMeters);
 
         // ── 釣り上げ成立【成功条件の唯一の判定点・2026-09-09 改定】──────────
         // 条件は「ウキが竿先の近傍（catchDistanceMeters）まで寄っていること」だけで、
