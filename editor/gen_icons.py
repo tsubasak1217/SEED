@@ -142,6 +142,7 @@ CATALOG = [
     ("Icon.Component.Collider", "shape-outline"),
     ("Icon.Component.Collider2d", "vector-rectangle"),
     ("Icon.Component.Audio", "volume-high"),
+    ("Icon.Component.AudioDictionary", "book-music"),
     ("Icon.Component.Animator", "animation-play-outline"),
     ("Icon.Component.InputMap", "gamepad-variant-outline"),
     ("Icon.Component.Script", "script-text-outline"),

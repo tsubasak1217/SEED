@@ -59,7 +59,19 @@ public readonly struct AudioSource : IComponentHandle<AudioSource>
         set => ScriptHost.TrySetString(_entity, Comp, "audio_path", value);
     }
 
-    /// <summary>音量（1.0 = 等倍）。再生中でも即座に反映される。</summary>
+    /// <summary>
+    /// 音声辞書のキー（<c>グループ名/用途名</c>）。空文字列 = 使わない（<see cref="Path"/> を直接使う）。
+    ///
+    /// 非空にすると、再生時にシーン内の AudioDictionary から
+    /// <b>パスと音量の両方</b>を解決する（<see cref="Path"/> と <see cref="Volume"/> は無視される）。
+    /// </summary>
+    public string DictionaryKey
+    {
+        get => ScriptHost.TryGetString(_entity, Comp, "dictionary_key", out var s) ? s : "";
+        set => ScriptHost.TrySetString(_entity, Comp, "dictionary_key", value);
+    }
+
+    /// <summary>音量（1.0 = 等倍）。再生中でも即座に反映される。辞書モードでは辞書の既定音量が優先される。</summary>
     public float Volume
     {
         get => ScriptHost.TryGetFloat(_entity, Comp, "volume", out var v) ? v : 0f;

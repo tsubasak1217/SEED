@@ -426,6 +426,15 @@ public partial class InspectorPanel : UserControl
             // 掃き出しても後段の処理は続ける（この応答は選択中アクタの更新も兼ね得るため）。
             CompletePendingScriptEventQueries(incomingId, parsed);
 
+            // 音声辞書のキー選択待ちなら、ドロップされたアクタの辞書からキーを選ばせる。
+            // 参照ドロップ（_pendingReference）とは別の入れ物なので互いに影響しない。
+            if (_pendingAudioDictKey is { } pendingDictKey &&
+                incomingId == pendingDictKey.DroppedActorDfsId)
+            {
+                ResolvePendingAudioDictKeyPick(json);
+                return;
+            }
+
             // 参照ドロップの解決待ちなら、ドロップされたアクタの構成を参照設定処理へ転用する。
             // ドロップとは無関係な ACTOR_COMPONENTS（選択更新など）を取り違えないよう、
             // 応答の id が問い合わせた DFS ID と一致する場合に限る。
@@ -854,12 +863,18 @@ public partial class InspectorPanel : UserControl
         string RigidbodyDataJson = "{}",
         // ScriptComponent 用フィールド（[SerializeField] 現在値の JSON オブジェクト）
         string ScriptFieldsJson = "{}",
-        // AudioComponent 用フィールド（音声パス・音量・ループ・自動再生・3D空間再生・減衰距離・パン）
+        // AudioComponent 用フィールド（音声パス・辞書キー・音量・ループ・自動再生・3D空間再生・減衰距離・パン）
         string AudioPath = "",
+        // AudioComponent 用: 音声辞書のキー（"グループ/用途"）。空 = ファイルパス直接モード
+        string AudioDictKey = "",
         float AudioVolume = 1f,
         bool AudioLoop = false, bool AudioPlayOnStart = false, bool AudioSpatial = false,
         float AudioMinDistance = 2f, float AudioMaxDistance = 50f,
         float AudioPan = 0f,
+        // AudioDictionaryComponent 用: グループ配列の JSON
+        // （[{"name":..,"entries":[{"usage":..,"path":..,"volume":..},...]},...]）。
+        // 解析は InspectorPanel.AudioDictionary.cs 側で行うので生 JSON のまま運ぶ。
+        string AudioDictGroupsJson = AudioDictionaryCatalog.EmptyGroupsJson,
         // LineRendererComponent 用フィールド
         // （幅・色 RGBA・座標系フラグ・深度テスト・表示・点数。点列そのものはスクリプト駆動なので
         //   件数だけを受け取り、インスペクタでは編集しない）
@@ -1465,6 +1480,8 @@ public partial class InspectorPanel : UserControl
             // AudioComponent 用: 音声パス・音量・ループ・自動再生・3D空間再生・減衰距離・パン
             // loop / play_on_start / spatial はランタイムから 0/1 の数値で送られるため ReadJsonBool で判定する
             var audioPath        = comp.TryGetProperty("audio_path",    out var aup) ? aup.GetString() ?? "" : "";
+            // 辞書キー（空 = ファイルパス直接モード。旧シーンにはこのキーが無いので既定は空）
+            var audioDictKey     = comp.TryGetProperty("dictionary_key", out var adk) ? adk.GetString() ?? "" : "";
             var audioVolume      = comp.TryGetProperty("volume",        out var avo) ? avo.GetSingle() : 1f;
             var audioLoop        = comp.TryGetProperty("loop",          out var alp) ? ReadJsonBool(alp, false) : false;
             var audioPlayOnStart = comp.TryGetProperty("play_on_start", out var aps) ? ReadJsonBool(aps, false) : false;
@@ -1472,6 +1489,9 @@ public partial class InspectorPanel : UserControl
             var audioMinDistance = comp.TryGetProperty("min_distance",  out var amn) ? amn.GetSingle() : 2f;
             var audioMaxDistance = comp.TryGetProperty("max_distance",  out var amx) ? amx.GetSingle() : 50f;
             var audioPan         = comp.TryGetProperty("pan",           out var apn) ? apn.GetSingle() : 0f;
+            // AudioDictionaryComponent 用: グループ配列（生 JSON のまま運ぶ）
+            var audioDictGroups  = comp.TryGetProperty("groups",        out var adg)
+                ? adg.GetRawText() : AudioDictionaryCatalog.EmptyGroupsJson;
             // LineRendererComponent 用: 幅・色 RGBA・座標系・深度テスト・表示・点数。
             // 色キーは "lr_r".."lr_a"（ライトの "lr" 等と衝突しない専用の綴り）。
             // 表示フラグは "line_visible"（スロット共通ラッパの "enabled"/"visible" と重複させない）。
@@ -1752,10 +1772,11 @@ public partial class InspectorPanel : UserControl
                 PluginName: pluginName, PluginFieldsJson: pluginFieldsJson,
                 ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson,
                 ScriptFieldsJson: scriptFieldsJson,
-                AudioPath: audioPath, AudioVolume: audioVolume,
+                AudioPath: audioPath, AudioDictKey: audioDictKey, AudioVolume: audioVolume,
                 AudioLoop: audioLoop, AudioPlayOnStart: audioPlayOnStart, AudioSpatial: audioSpatial,
                 AudioMinDistance: audioMinDistance, AudioMaxDistance: audioMaxDistance,
                 AudioPan: audioPan,
+                AudioDictGroupsJson: audioDictGroups,
                 LineWidth: lineWidth,
                 LineR: lineR, LineG: lineG, LineB: lineB, LineA: lineA,
                 LineLocalSpace: lineLocalSpace, LineDepthTest: lineDepthTest,
@@ -1996,6 +2017,7 @@ public partial class InspectorPanel : UserControl
         "Collider2dComponent" => Color.FromRgb(0x38, 0x16, 0x16), // 暗赤
         "ScriptComponent"     => Color.FromRgb(0x20, 0x34, 0x20), // 暗緑（スクリプト）
         "AudioComponent"      => Color.FromRgb(0x12, 0x2C, 0x34), // 暗青緑（オーディオ）
+        "AudioDictionaryComponent" => Color.FromRgb(0x12, 0x2C, 0x34), // 暗青緑（オーディオ系で統一）
         "AnimatorComponent"   => Color.FromRgb(0x2C, 0x20, 0x38), // 暗紫（アニメーション）
         "LightComponent"      => Color.FromRgb(0x3A, 0x32, 0x10), // 暗黄橙（ライト）
         "JointAttachComponent" => Color.FromRgb(0x30, 0x10, 0x2C), // 暗マゼンタ（ジョイントアタッチ。ライトと区別しやすい色）
@@ -2024,6 +2046,7 @@ public partial class InspectorPanel : UserControl
         "Collider2dComponent" => "Collider 2D",
         "ScriptComponent"     => "Script",
         "AudioComponent"      => "Audio Source",
+        "AudioDictionaryComponent" => "Audio Dictionary",
         "AnimatorComponent"   => "Animator",
         "LightComponent"      => "Light",
         "JointAttachComponent" => "JointAttach",
@@ -2291,6 +2314,7 @@ public partial class InspectorPanel : UserControl
             "InputMapComponent"  => BuildInputMapSlotContent(info),
             "CameraComponent"    => BuildCameraSlotContent(info),
             "AudioComponent"     => BuildAudioSlotContent(info),
+            "AudioDictionaryComponent" => BuildAudioDictionarySlotContent(info),
             "AnimatorComponent"  => BuildAnimatorSlotContent(info),
             "LightComponent"     => BuildLightSlotContent(info),
             "JointAttachComponent" => BuildJointAttachSlotContent(info),
@@ -9373,36 +9397,39 @@ public partial class InspectorPanel : UserControl
             _runtime?.SendToRuntime($"SET_AUDIO_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
         }
 
-        // ── 音声ファイル選択行 ─────────────────────────────────
-        sp.Children.Add(FileRefBuilder.Build(
-            "音声",
-            info.AudioPath,
-            [".wav", ".ogg", ".mp3", ".flac"],
-            () =>
-            {
-                var dlg = new OpenFileDialog
-                {
-                    Title  = "音声ファイルを選択",
-                    Filter = "音声ファイル|*.wav;*.ogg;*.mp3;*.flac|すべてのファイル|*.*",
-                };
-                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
-            },
-            path =>
-            {
-                if (_currentActorId < 0) return;
-                // 絶対パスを assets:// 仮想パスに変換してからランタイムへ送信する
-                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
-                SendField("path", virtualPath);
-            }));
-
         // ── 音量フィールド ─────────────────────────────────────
         // 行の作りと「⟲ 既定値に戻す」は共通入口へ一任する（SET キー "volume" は serde 名と一致）。
         // 音量は上限クランプが無い（1.0 超の増幅を許す）ため値域表には無く、数値入力行になる。
-        sp.Children.Add(BuildResettableFloatRow(
+        // ※ 音源が「辞書のキー」モードのときは音量も辞書から解決されるため、この行は隠す。
+        var audioVolumeRow = BuildResettableFloatRow(
             info.SlotIdx, AudioComponentType, "音量", info.AudioVolume, "volume",
             AudioLevelNumberFormat,
             // 負値は無効なため下限でクランプしてから送信する。
-            v => SendField("volume", MathF.Max(AudioVolumeMin, v).ToString(CultureInfo.InvariantCulture))));
+            v => SendField("volume", MathF.Max(AudioVolumeMin, v).ToString(CultureInfo.InvariantCulture)));
+
+        // 辞書モードのときだけ出す補足（「音量欄が消えた」を迷子にしないため）
+        var audioDictVolumeHint = new TextBlock
+        {
+            Text         = "音量は音声辞書の既定値が使われます（辞書側を直すと全参照に反映されます）",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 2, 0, 2),
+        };
+
+        // 音源モードに応じて「辞書モードでは無関係になる行」の表示を切り替える
+        void ApplyAudioSourceMode(bool useDictionary)
+        {
+            audioVolumeRow.Visibility      = useDictionary ? Visibility.Collapsed : Visibility.Visible;
+            audioDictVolumeHint.Visibility = useDictionary ? Visibility.Visible   : Visibility.Collapsed;
+        }
+
+        // ── 音源（ファイルパス直接 / 辞書のキー の 2 択）─────────
+        // 実装は InspectorPanel.AudioDictionary.cs（辞書まわりを 1 ファイルに閉じるため）。
+        sp.Children.Add(BuildAudioSourceSection(info, SendField, ApplyAudioSourceMode));
+        sp.Children.Add(audioVolumeRow);
+        sp.Children.Add(audioDictVolumeHint);
+        ApplyAudioSourceMode(!string.IsNullOrEmpty(info.AudioDictKey));
 
         // ── チェックボックス行（ループ・自動再生・3D空間再生）────
         // ラベル + CheckBox の横並び行を生成して SET_AUDIO_FIELD を送信するローカル関数

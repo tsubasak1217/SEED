@@ -433,6 +433,9 @@ impl App {
 
     /// コンポーネントスロットを削除する。
     pub(super) fn handle_remove_component_slot(&mut self, actor_dfs_id: u32, slot_idx: u32) {
+        // 辞書を含むコンポーネント構成が変わり得るので、キー索引を作り直す
+        //（取りこぼしても次の変更で追いつくよう、早期 return より前で印を付ける）。
+        self.mark_audio_dictionary_dirty();
         let Some(_scene) = &self.scene else { return };
         let wl = self.active_world_line;
 
@@ -487,6 +490,10 @@ impl App {
                     ComponentKind::Audio => {
                         use crate::engine::components::AudioComponent;
                         scene.world.remove::<AudioComponent>(slot_entity);
+                    }
+                    ComponentKind::AudioDictionary => {
+                        use crate::engine::components::AudioDictionaryComponent;
+                        scene.world.remove::<AudioDictionaryComponent>(slot_entity);
                     }
                     ComponentKind::LineRenderer => {
                         use crate::engine::components::LineRendererComponent;
@@ -592,6 +599,9 @@ impl App {
 
     /// コンポーネントを複製する（DUPLICATE_COMPONENT）。
     pub(super) fn handle_duplicate_component(&mut self, actor_dfs_id: u32, slot_idx: u32) {
+        // 辞書を含むコンポーネント構成が変わり得るので、キー索引を作り直す
+        //（取りこぼしても次の変更で追いつくよう、早期 return より前で印を付ける）。
+        self.mark_audio_dictionary_dirty();
         if self.draw_ctx.is_none() {
             return;
         }
@@ -983,6 +993,27 @@ impl App {
                 }
                 true
             }
+            ComponentData::AudioDictionaryComponent(ad_data) => {
+                // 音声辞書を複製する（新しいスロット専用エンティティへ挿入）
+                use crate::engine::components::AudioDictionaryComponent;
+                let slot_entity = scene.world.spawn();
+                scene
+                    .world
+                    .insert(slot_entity, AudioDictionaryComponent::from_data(ad_data));
+                let mut c = 0u32;
+                if let Some(actor) =
+                    find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
+                {
+                    actor.add_slot_typed::<AudioDictionaryComponent>(
+                        slot_data.name,
+                        ComponentKind::AudioDictionary,
+                        slot_entity,
+                    );
+                } else {
+                    scene.world.despawn(slot_entity);
+                }
+                true
+            }
             ComponentData::LineRendererComponent(lr_data) => {
                 // 3D ポリラインを複製する（新しいスロット専用エンティティへ挿入）
                 use crate::engine::components::LineRendererComponent;
@@ -1255,6 +1286,10 @@ impl App {
     ) {
         use crate::engine::core::loader::load_model;
 
+        // 辞書を含むコンポーネント構成が変わり得るので、キー索引を作り直す
+        //（取りこぼしても次の変更で追いつくよう、早期 return より前で印を付ける）。
+        self.mark_audio_dictionary_dirty();
+
         if self.draw_ctx.is_none() {
             return;
         }
@@ -1504,6 +1539,18 @@ impl App {
                     new_slots.push(ComponentSlot::new::<AudioComponent>(
                         slot_data.name,
                         ComponentKind::Audio,
+                        slot_entity,
+                    ));
+                }
+                ComponentData::AudioDictionaryComponent(ad_data) => {
+                    // 音声辞書をスロット専用エンティティへ復元する
+                    use crate::engine::components::AudioDictionaryComponent;
+                    scene
+                        .world
+                        .insert(slot_entity, AudioDictionaryComponent::from_data(ad_data));
+                    new_slots.push(ComponentSlot::new::<AudioDictionaryComponent>(
+                        slot_data.name,
+                        ComponentKind::AudioDictionary,
                         slot_entity,
                     ));
                 }

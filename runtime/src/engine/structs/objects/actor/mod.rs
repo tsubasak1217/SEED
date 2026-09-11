@@ -481,6 +481,11 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
             world.get::<crate::engine::components::AudioComponent>(slot.entity)
                 .map(|ac| ComponentData::AudioComponent(ac.to_data()))
         }
+        ComponentKind::AudioDictionary => {
+            // 音声辞書（グループ/用途 → パス・既定音量）をシリアライズ用データに変換する
+            world.get::<crate::engine::components::AudioDictionaryComponent>(slot.entity)
+                .map(|ad| ComponentData::AudioDictionaryComponent(ad.to_data()))
+        }
         ComponentKind::LineRenderer => {
             // 3D ポリライン（釣り糸・ロープ）をシリアライズ用データに変換する
             world.get::<crate::engine::components::LineRendererComponent>(slot.entity)

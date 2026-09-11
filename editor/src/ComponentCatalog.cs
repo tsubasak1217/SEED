@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -116,6 +116,7 @@ public static class ComponentCatalog
         ("サウンド", new List<ComponentEntry>
         {
             new("AudioComponent", "Audio Source", "Audio", "BGM/SE の再生。3D 距離減衰・パン対応", ComponentActorTarget.Common),
+            new("AudioDictionaryComponent", "Audio Dictionary", "AudioDictionary", "「グループ/用途」キー → 音声ファイル・既定音量の対応表", ComponentActorTarget.Common),
         }),
         ("アニメーション", new List<ComponentEntry>
         {

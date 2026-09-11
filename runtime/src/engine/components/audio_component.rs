@@ -4,6 +4,14 @@
 //  Actor に音源を持たせるコンポーネント。エディタのインスペクタで
 //  設定でき、スクリプトからは gameObject.AudioSource で操作する。
 //
+//  【音源の指定方法（2 択）】
+//    1. ファイルパス直接 … audio_path に assets:// 仮想パスを入れる（従来方式）
+//    2. 辞書のキー       … dictionary_key に `グループ/用途`（例 `Player/attack`）
+//                          を入れる。再生時にシーン内の AudioDictionary から
+//                          パスと既定音量を解決する（素材の差し替えが辞書側で完結）。
+//  dictionary_key が空でないときは 2 が優先され、audio_path は無視される。
+//  解決できないキーは警告して鳴らさない（無言で無音にしない）。
+//
 //  【再生モード】
 //    spatial = false: 2D 再生（pan で左右バランスを手動指定）
 //    spatial = true : 3D 再生（メインカメラとの距離で減衰し、
@@ -39,6 +47,12 @@ pub struct AudioComponentData {
     /// 音声ファイルパス（assets:// 仮想パス。空 = 未設定）
     #[serde(default)]
     pub audio_path: String,
+    /// 音声辞書のキー（`グループ/用途`。空 = 使わない ＝ audio_path を直接使う）
+    ///
+    /// 非空のときは再生時にシーン内の AudioDictionary から
+    /// パスと既定音量を解決する（audio_path は無視される）。
+    #[serde(default)]
+    pub dictionary_key: String,
     /// 音量（1.0 = 等倍）
     #[serde(default = "default_volume")]
     pub volume: f32,
@@ -66,6 +80,7 @@ impl Default for AudioComponentData {
     fn default() -> Self {
         Self {
             audio_path: String::new(),
+            dictionary_key: String::new(),
             volume: default_volume(),
             looped: false,
             play_on_start: false,
@@ -85,6 +100,8 @@ impl Default for AudioComponentData {
 pub struct AudioComponent {
     /// 音声ファイルパス（assets:// 仮想パス。空 = 未設定）
     pub audio_path: String,
+    /// 音声辞書のキー（`グループ/用途`。空 = 使わない ＝ audio_path を直接使う）
+    pub dictionary_key: String,
     /// 音量（1.0 = 等倍）
     pub volume: f32,
     /// ループ再生するか
@@ -106,6 +123,7 @@ impl AudioComponent {
     pub fn from_data(data: AudioComponentData) -> Self {
         Self {
             audio_path: data.audio_path,
+            dictionary_key: data.dictionary_key,
             volume: data.volume,
             looped: data.looped,
             play_on_start: data.play_on_start,
@@ -120,6 +138,7 @@ impl AudioComponent {
     pub fn to_data(&self) -> AudioComponentData {
         AudioComponentData {
             audio_path: self.audio_path.clone(),
+            dictionary_key: self.dictionary_key.clone(),
             volume: self.volume,
             looped: self.looped,
             play_on_start: self.play_on_start,
@@ -138,3 +157,34 @@ impl Default for AudioComponent {
 }
 
 impl Component for AudioComponent {}
+
+// ─── テスト ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧 `.scene` 互換: `dictionary_key` が無い JSON でも読め、空文字（＝従来動作）になる。
+    /// これが落ちると、辞書機能の追加だけで既存シーンが丸ごと読めなくなる。
+    #[test]
+    fn deserializes_scene_without_dictionary_key() {
+        let json = r#"{"audio_path":"assets://se/old.wav","volume":0.5,"loop":true}"#;
+        let d: AudioComponentData = serde_json::from_str(json).expect("旧シーンが読めるはず");
+        assert_eq!(d.audio_path, "assets://se/old.wav");
+        assert_eq!(d.dictionary_key, "");
+        assert_eq!(d.volume, 0.5);
+        assert!(d.looped);
+    }
+
+    /// 辞書キーを持つ新形式も読め、from_data / to_data で往復しても落ちない。
+    #[test]
+    fn dictionary_key_roundtrip() {
+        let json = r#"{"dictionary_key":"Player/attack"}"#;
+        let d: AudioComponentData = serde_json::from_str(json).expect("読めるはず");
+        assert_eq!(d.dictionary_key, "Player/attack");
+        let back = AudioComponent::from_data(d).to_data();
+        assert_eq!(back.dictionary_key, "Player/attack");
+        // 音量は既定値で補完される
+        assert_eq!(back.volume, default_volume());
+    }
+}

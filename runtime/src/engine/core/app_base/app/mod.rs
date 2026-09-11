@@ -111,6 +111,8 @@ mod play_snapshot;
 /// 【一時】埋め込み Play の凍結/黒画面 診断計器（ウォッチドッグ・ステージ印・イベントトレース）。原因確定後に撤去。
 mod play_diag;
 mod audio_ops;
+/// 音声辞書（AudioDictionaryComponent）のキー索引構築とインスペクタ編集 IPC
+mod audio_dictionary_ops;
 /// SkinnedSpriteComponent のフィールド編集（Phase A1）
 mod skinned_sprite_ops;
 pub(crate) mod sprite_bone_ops;
@@ -635,6 +637,15 @@ pub struct App {
     input:          Input,
     /// スクリプト Audio API 用のオーディオマネージャ（初回コマンド時に遅延初期化）
     audio:          Option<crate::engine::core::audio::AudioManager>,
+    /// 音声辞書のキー索引（`グループ/用途` → パス・既定音量）。
+    /// シーンロード・コンポーネント変更のたびに作り直す（audio_dictionary_ops.rs）。
+    audio_dict_index: crate::engine::core::audio::dictionary_index::AudioDictionaryIndex,
+    /// 索引の再構築が必要か（true = 次に索引を使うときに作り直す）。
+    /// 初期値 true = 「まだ 1 度も作っていない」。
+    audio_dict_dirty: bool,
+    /// 重複キー警告を既に出したか（同じ警告をフレームごとに繰り返さないための記憶）。
+    /// 索引を作り直すたびにリセットされ、重複が残っていれば 1 度だけ再警告する。
+    audio_dict_warned: bool,
     /// シーンレジストリ: シーンマネージャ登録名 → assets:// パス
     /// （project_settings.json の "scenes" 配列から起動時に読み込む）。
     /// スクリプトの SEED.Scene.Load / Transition が名前解決に使う。
@@ -1529,6 +1540,10 @@ impl App {
             renderer:       None,
             input:          Input::new(),
             audio:          None,
+            audio_dict_index: Default::default(),
+            // まだ索引を作っていないので「要再構築」から始める
+            audio_dict_dirty: true,
+            audio_dict_warned: false,
             scene_registry: HashMap::new(),
             preloaded_scene: None,
             cam_input:      CameraInput::default(),

@@ -1343,6 +1343,9 @@ impl App {
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetAudioDict { actor_dfs_id, slot_idx, json } => {
+                    self.handle_set_audio_dict(actor_dfs_id, slot_idx, &json);
+                }
                 IpcCommand::SetLineRendererField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_line_renderer_field(actor_dfs_id, slot_idx, &key, &value);
                 }

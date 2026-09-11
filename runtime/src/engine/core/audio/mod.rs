@@ -42,6 +42,10 @@
 //    「長すぎる」と分かった結果もキャッシュに残す（毎回デコードし直さないため）。
 // ============================================================
 
+/// 音声辞書のキー索引（`グループ/用途` → パス・既定音量）。
+/// AudioManager とは独立した純粋ロジックなので、サブモジュールとして分離している。
+pub mod dictionary_index;
+
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::Arc;
@@ -557,6 +561,15 @@ impl AudioManager {
     /// （非ループ SE の再生終了後に再発火しないための判定）。
     pub fn component_needs_autostart(&self, slot: Entity) -> bool {
         !self.component_started.contains(&slot)
+    }
+
+    /// 実際には鳴らさずに「自動再生を発火済み」と記録する。
+    ///
+    /// 音源が解決できなかった（音声辞書のキーを引けない等）ときに呼ぶ。
+    /// これを呼ばないと `component_needs_autostart` が毎フレーム true を返し続け、
+    /// 警告が毎フレーム出る（＝ログが埋まって他の問題が見えなくなる）。
+    pub fn mark_component_autostart_consumed(&mut self, slot: Entity) {
+        self.component_started.insert(slot);
     }
 
     /// コンポーネント音源の減衰・パンを更新する（毎フレーム呼ばれる）。

@@ -872,6 +872,23 @@ SEED.Audio.SetBgmSpeed(1.25f);   // BGM 再生速度を変更（1.0 = 等倍）
 SEED.Audio.StopBgm();            // BGM を停止
 ```
 
+音声辞書（**AudioDictionary** コンポーネント）を使うと、パスの代わりに `グループ名/用途名` のキーで鳴らせます。素材を差し替えるときは辞書の行を直すだけで、呼び出し側のコードは変えなくて済みます。
+
+```csharp
+// 辞書のキーで鳴らす（パス指定の Play / PlayBgm とは別名。混同防止）
+SEED.Audio.PlayDict("Player/attack");            // 音量は辞書の既定値
+SEED.Audio.PlayDict("Player/attack", 0.5f);      // 音量を明示（辞書の既定値より優先）
+
+SEED.Audio.PlayBgmDict("Bgm/stage1");            // 音量は辞書の既定値・ループあり
+SEED.Audio.PlayBgmDict("Bgm/jingle", false);     // ループなし
+SEED.Audio.PlayBgmDict("Bgm/stage1", 0.8f, loop: true);
+```
+
+- キーは **シーン内の全 AudioDictionary を横断**して引きます（完全一致・DFS 順で先勝ち）。同名キーが複数の辞書にあるときは起動時に 1 度だけ警告が出ます。
+- 解決できないキーは**警告を出して何も鳴らしません**（無音で握りつぶしません）。
+- `PlayDict` / `PlayBgmDict` の `volume` に**負の値**を渡す（既定）と辞書の既定音量を使います。0 以上を渡すとその値が優先されます。
+- 辞書の作り方・インスペクタ操作・キー解決規則は **docs/audio_dictionary.md** を参照してください。
+
 - `PauseBgm` / `ResumeBgm` は **Sink を破棄せずに止める／続ける**ので、再生位置（＝ループの途中位置）がそのまま保たれます。`StopBgm` → `PlayBgm` は必ず先頭からの再生になるため、位相を保ったまま止めたい場面（`Time.Scale = 0` に合わせてリズムのループを凍結するなど）では `PauseBgm` を使ってください。BGM が無い／既に同じ状態のときは何も起きません（多重呼び出し安全）。**`Time.Scale` は BGM を自動では止めません**（下表のとおりオーディオは dt 駆動ではありません）。止めたいときは明示的に `PauseBgm` を呼びます。
 - `SetBgmSpeed` は早送り／スロー再生なので、**速度に比例してピッチも変わります**（テンポだけを変える機能ではありません）。値は 0.25〜4.0 にクランプされ、BGM を差し替えても保持されます（`PlayBgm` の前後どちらで指定しても同じ結果）。等倍へ戻すときは明示的に `1.0` を渡してください。素材の BPM が分かっていれば `SetBgmSpeed(目標BPM / 素材BPM)` で任意のテンポに合わせられます。
 - 同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。
@@ -908,7 +925,7 @@ if (gameObject.GetComponent<Sprite>() is { } sprite)
 
 > **重要**: `GetComponent<T>()` は未アタッチ時に `null` を返します。`is { } x` パターンか `?.` / `??` で受けてください（Unity と違い戻り値は `Nullable<T>` です）。`Transform` / `CanvasTransform` はアクターのルートに 1 つだけ存在し、`index` / `name` は無視されます。
 
-> **`HasComponent(name)` の名前**: 受け付ける文字列は `Transform` / `CanvasTransform` / `Sprite` / `Camera` / **`Audio`**（AudioSource ではなく `Audio`）/ `Animator` / `ParticleEmitter` / `InputMap` の 8 つで、それ以外は常に false です。型で判定できる場面では `GetComponent<T>() is { }` のほうが安全です。
+> **`HasComponent(name)` の名前**: 受け付ける文字列は `Transform` / `CanvasTransform` / `Sprite` / `Camera` / **`Audio`**（AudioSource ではなく `Audio`）/ **`AudioDictionary`** / `Animator` / `ParticleEmitter` / `InputMap` など（正典は `host_api.rs` の `has_component`）で、登録が無い名前は常に false です。型で判定できる場面では `GetComponent<T>() is { }` のほうが安全です。
 
 ### 表示 / 非表示（GameObject.Visible）
 
@@ -1311,6 +1328,7 @@ if (gameObject.GetComponent<AudioSource>() is { } audio)   // AudioSource?（未
     audio.IsPlaying        // bool: 再生中か
 
     audio.Path             // string（get/set。assets:// 仮想パス）
+    audio.DictionaryKey    // string（get/set。"グループ/用途"。空=Path を直接使う）
     audio.Volume           // float（get/set。1.0=等倍。再生中も即反映）
     audio.Loop             // bool（get/set。次回 Play 時に反映）
     audio.PlayOnStart      // bool（get/set。Play 開始時に自動再生）
@@ -1323,6 +1341,28 @@ if (gameObject.GetComponent<AudioSource>() is { } audio)   // AudioSource?（未
 
 - 距離減衰は線形（MinDistance 以内 100% → MaxDistance で 0%）。リスナーは `is_main` のメインカメラ。
 - `Spatial = true` では音源方向に応じて左右パンが自動で振られます（手動 `Pan` は無効）。
+- `DictionaryKey` が空でないときは**パスも音量も音声辞書から解決**されます（`Path` と `Volume` は無視）。インスペクタでは音源欄を「辞書のキー」に切り替え、AudioDictionary を持つアクターをドロップしてキーを選びます。
+
+### AudioDictionary（音声辞書：グループ/用途キーで音を引く）
+
+エディタの「コンポーネント追加 → サウンド → Audio Dictionary」で追加し、インスペクタで「グループ名 → 用途名 → 音声ファイル・既定音量」を登録します。**特定の辞書だけ**を名指しで引くときにこのハンドルを使います（シーン全体から引くなら `SEED.Audio.PlayDict`）。
+
+```csharp
+if (gameObject.GetComponent<AudioDictionary>() is { } dict)   // AudioDictionary?（未アタッチは null）
+{
+    dict.TryGetPath("Player/attack", out var path)  // bool: この辞書にキーがあり、パスが設定済みか
+    dict.DefaultVolume("Player/attack")             // float: 行の既定音量（引けなければ 1.0）
+    dict.Play("Player/attack");                     // 引いて再生（音量は辞書の既定値）
+    dict.Play("Player/attack", 0.5f);               // 音量を明示して再生
+}
+
+// [SerializeField] で別アクターの辞書を差し込むこともできる
+[SEEDEditor.Scripting.SerializeField] SEED.AudioDictionary? bank;
+void Update() { if (bank is { IsValid: true } b) b.Play("UI/click"); }
+```
+
+- キーは `グループ名/用途名`（区切りは `/`）。グループ名・用途名・音声ファイルのどれかが空の行は**引けません**（作りかけの行を誤って鳴らさないため）。
+- このハンドルは**その辞書 1 つだけ**を見ます。シーン内の他の辞書は引きません。
 
 ### Animator（キーフレーム / モデル内蔵アニメ再生・クロスフェード）
 
@@ -1885,7 +1925,8 @@ public class FishingLine : SEEDScript
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
-| `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
+| `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・**音声辞書のキー**・音量・ループ・3D 減衰・パン + Play/Stop |
+| `AudioDictionary` | `gameObject.GetComponent<AudioDictionary>()` | 音声辞書（`グループ/用途` → 音声ファイル・既定音量）。TryGetPath / DefaultVolume / Play |
 | `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度・フェード + Play/CrossFade/Stop/Pause/Resume |
 | `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角・色味(Tint) + Play/Stop/Burst |
 | `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis） |

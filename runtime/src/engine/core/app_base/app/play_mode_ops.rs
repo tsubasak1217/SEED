@@ -101,6 +101,9 @@ impl App {
         // JointAttach 子孫の相対ローカルは Play 開始時点の姿勢から採り直す
         // （Edit で竿先を動かした結果を必ず反映させるため）。
         self.joint_attach_child_locals.clear();
+        // Play 開始時は音声辞書のキー索引を必ず作り直す。
+        // Edit 中の編集経路を 1 つ取りこぼしていても、ここで確実に現状へ追いつく。
+        self.mark_audio_dictionary_dirty();
         // 二重開始防止: 既に Play なら応答だけ返す（べき等）。
         if self.mode == RuntimeMode::Play {
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_ENTERED"); }

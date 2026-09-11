@@ -35,7 +35,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::engine::core::scripting::debug_command;
 
 use crate::engine::components::{
-    AnimClipKind, AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform,
+    AnimClipKind, AnimatorComponent, AudioComponent, AudioDictionaryComponent, CameraComponent,
+    CanvasTransform,
     ComponentKind, ControlPointComponent, InputMapComponent, ScriptComponent,
     LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
     SkyboxComponent, SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform,
@@ -46,6 +47,9 @@ use crate::engine::components::{
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
 use crate::engine::path::PathEval;
 use crate::engine::core::input::{Input, InputState};
+/// 音声辞書のキー索引（`グループ/用途` → パス・既定音量）。
+/// PlayDict 系コマンドと AudioDictionary ハンドルの引き当てに使う。
+use crate::engine::core::audio::dictionary_index::AudioDictionaryIndex;
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::actor::ComponentSlot;
 use crate::engine::structs::objects::Actor;
@@ -530,6 +534,13 @@ const KIND_SPRITE: &str = "Sprite";
 const KIND_SKINNED_SPRITE: &str = "SkinnedSprite";
 const KIND_CAMERA: &str = "Camera";
 const KIND_AUDIO: &str = "Audio";
+/// 音声辞書（スロット格納型）。C# `SEED.AudioDictionary` の ComponentKindName と一致。
+const KIND_AUDIO_DICTIONARY: &str = "AudioDictionary";
+/// 音声辞書の文字列フィールド接頭辞。`"path:<グループ>/<用途>"` でパスを引く。
+/// 辞書のキー自体が任意文字列なので、固定フィールド名との衝突を接頭辞で構造的に防ぐ。
+const AUDIO_DICT_FIELD_PATH_PREFIX: &str = "path:";
+/// 音声辞書の数値フィールド接頭辞。`"volume:<グループ>/<用途>"` で既定音量を引く。
+const AUDIO_DICT_FIELD_VOLUME_PREFIX: &str = "volume:";
 const KIND_ANIMATOR: &str = "Animator";
 const KIND_PARTICLE: &str = "ParticleEmitter";
 const KIND_INPUT_MAP: &str = "InputMap";
@@ -572,6 +583,7 @@ fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
         KIND_SKINNED_SPRITE => world.get::<SkinnedSpriteComponent>(slot.entity).is_some(),
         KIND_CAMERA => world.get::<CameraComponent>(slot.entity).is_some(),
         KIND_AUDIO => world.get::<AudioComponent>(slot.entity).is_some(),
+        KIND_AUDIO_DICTIONARY => world.get::<AudioDictionaryComponent>(slot.entity).is_some(),
         KIND_ANIMATOR => world.get::<AnimatorComponent>(slot.entity).is_some(),
         KIND_PARTICLE => world.get::<ParticleEmitterComponent>(slot.entity).is_some(),
         KIND_INPUT_MAP => world.get::<InputMapComponent>(slot.entity).is_some(),
@@ -1015,6 +1027,16 @@ fn read_floats(
                 "max_distance"  => put(out, &[a.max_distance]),
                 _               => None,
             }
+        }
+        // ── 音声辞書（スロット格納型: locate で解決）──
+        // field は `"volume:<グループ>/<用途>"`。その行の既定音量を 1 要素で返す。
+        // 引けない（キー未登録・パス未設定）ときは None を返し、C# 側が既定値を使う。
+        "AudioDictionary" => {
+            let key = field.strip_prefix(AUDIO_DICT_FIELD_VOLUME_PREFIX)?;
+            let e = locate::<AudioDictionaryComponent>(world, entity)?;
+            let d = world.get::<AudioDictionaryComponent>(e)?;
+            let hit = crate::engine::core::audio::dictionary_index::lookup_in_component(d, key)?;
+            put(out, &[hit.volume])
         }
         // ── スカイボックス（スロット格納型: locate で解決）──
         // 空の色調整（色相/彩度/明度/コントラスト）を実行時に動かすための公開。
@@ -1695,8 +1717,18 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
             let a = world.get::<AudioComponent>(e)?;
             match field {
                 "audio_path" => Some(a.audio_path.clone()),
+                // 辞書キー（空 = ファイルパス直接モード）
+                "dictionary_key" => Some(a.dictionary_key.clone()),
                 _            => None,
             }
+        }
+        // 音声辞書: field は `"path:<グループ>/<用途>"`。その行のパスを返す。
+        "AudioDictionary" => {
+            let key = field.strip_prefix(AUDIO_DICT_FIELD_PATH_PREFIX)?;
+            let e = locate::<AudioDictionaryComponent>(world, entity)?;
+            let d = world.get::<AudioDictionaryComponent>(e)?;
+            crate::engine::core::audio::dictionary_index::lookup_in_component(d, key)
+                .map(|hit| hit.path)
         }
         // スカイボックス: equirectangular 画像の差し替え（昼夜の天球切替など）。
         "Skybox" => {
@@ -1829,6 +1861,8 @@ fn write_string(
             let Some(a) = world.get_mut::<AudioComponent>(e) else { return false };
             match field {
                 "audio_path" => { a.audio_path = value.to_string(); true }
+                // 空文字を書くと辞書モードを解除してファイルパス直接へ戻る
+                "dictionary_key" => { a.dictionary_key = value.to_string(); true }
                 _            => false,
             }
         }
@@ -1866,6 +1900,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "SkinnedSprite"   => locate::<SkinnedSpriteComponent>(world, entity).is_some(),
         "Camera"          => locate::<CameraComponent>(world, entity).is_some(),
         "Audio"           => locate::<AudioComponent>(world, entity).is_some(),
+        "AudioDictionary" => locate::<AudioDictionaryComponent>(world, entity).is_some(),
         "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),
         "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
         "InputMap"        => locate::<InputMapComponent>(world, entity).is_some(),
@@ -2885,6 +2920,51 @@ const AUDIO_CMD_SET_BGM_VOLUME: i32 = 3; // BGM 音量変更（volume）
 const AUDIO_CMD_SET_BGM_SPEED: i32 = 4;  // BGM 再生速度変更（volume 引数を速度として使う）
 const AUDIO_CMD_PAUSE_BGM: i32 = 5;      // BGM 一時停止（再生位置を保持）
 const AUDIO_CMD_RESUME_BGM: i32 = 6;     // BGM 再開（一時停止した位置から）
+const AUDIO_CMD_PLAY_SE_DICT: i32 = 7;   // SE 再生（path 引数に辞書キー。volume<0 = 辞書の既定音量）
+const AUDIO_CMD_PLAY_BGM_DICT: i32 = 8;  // BGM 再生（path 引数に辞書キー。volume<0 = 辞書の既定音量）
+
+/// 音量引数が「未指定（＝辞書の既定音量を使う）」を意味する境界値。
+/// 負の音量は物理的に意味を持たないので、追加の FFI 引数を増やさずに
+/// 「省略」を表現できる（C# 側の既定引数 -1 と対になる）。
+const AUDIO_DICT_VOLUME_UNSPECIFIED: f32 = 0.0;
+
+thread_local! {
+    /// シーン全体の音声辞書索引（キー → パス・既定音量）のスナップショット。
+    /// App がシーンロード・辞書変更のたびに再構築して公開する
+    /// （`publish_audio_dictionary_index`）。スクリプトの PlayDict 系はこれだけを見る。
+    static AUDIO_DICT_INDEX: RefCell<AudioDictionaryIndex> =
+        RefCell::new(AudioDictionaryIndex::default());
+}
+
+/// 音声辞書のキー索引を公開する（シーンロード・辞書変更のたびに更新）。
+pub fn publish_audio_dictionary_index(index: AudioDictionaryIndex) {
+    AUDIO_DICT_INDEX.with(|i| *i.borrow_mut() = index);
+}
+
+/// 辞書キーを (パス, 音量) へ解決する。
+///
+/// `requested_volume` が負なら辞書の既定音量を使い、0 以上ならその値を使う。
+/// 解決できないキーは警告して None を返す（無音で握りつぶさない）。
+fn resolve_audio_dict_key(key: &str, requested_volume: f32) -> Option<(String, f32)> {
+    AUDIO_DICT_INDEX.with(|i| {
+        match i.borrow().get(key) {
+            Some(hit) => Some((
+                hit.path.clone(),
+                if requested_volume < AUDIO_DICT_VOLUME_UNSPECIFIED {
+                    hit.volume
+                } else {
+                    requested_volume
+                },
+            )),
+            None => {
+                eprintln!(
+                    "[Script] Audio: 音声辞書のキー '{key}' を解決できません（再生しません）"
+                );
+                None
+            }
+        }
+    })
+}
 
 /// オーディオコマンドを発行する。受理=1 / 失敗=0。
 ///
@@ -2907,6 +2987,20 @@ unsafe extern "system" fn ffi_audio(
             let p = str_from(path, path_len);
             if p.is_empty() { return 0; }
             ScriptAudioCommand::PlayBgm { path: p.to_string(), volume, looped: flag != 0 }
+        }
+        // 辞書キー版: ここで (パス, 音量) へ解決してから通常の再生コマンドに積み替える。
+        // こうすることで再生側（audio_ops.rs）は従来どおりパスだけを扱えばよい。
+        AUDIO_CMD_PLAY_SE_DICT => {
+            let key = str_from(path, path_len);
+            if key.is_empty() { return 0; }
+            let Some((p, v)) = resolve_audio_dict_key(key, volume) else { return 0 };
+            ScriptAudioCommand::PlaySe { path: p, volume: v }
+        }
+        AUDIO_CMD_PLAY_BGM_DICT => {
+            let key = str_from(path, path_len);
+            if key.is_empty() { return 0; }
+            let Some((p, v)) = resolve_audio_dict_key(key, volume) else { return 0 };
+            ScriptAudioCommand::PlayBgm { path: p, volume: v, looped: flag != 0 }
         }
         AUDIO_CMD_STOP_BGM       => ScriptAudioCommand::StopBgm,
         AUDIO_CMD_SET_BGM_VOLUME => ScriptAudioCommand::SetBgmVolume { volume },

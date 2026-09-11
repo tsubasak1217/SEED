@@ -8,6 +8,11 @@
 //
 //  update_component_audio は AudioComponent の play_on_start 発火と、
 //  spatial（3D 距離減衰・方向パン）/ pan（手動パン）の毎フレーム反映を行う。
+//
+//  【音源の 2 択（ファイルパス直接 / 辞書のキー）】
+//  AudioComponent の実際の (パス, 音量) は必ず
+//  `App::resolve_audio_component_source`（audio_dictionary_ops.rs）で解決する。
+//  ここで直接 `audio_path` を読んではいけない（辞書モードが無視されるため）。
 // ============================================================
 
 use crate::engine::components::{AudioComponent, CameraComponent, ComponentKind, Transform};
@@ -87,17 +92,29 @@ impl App {
                 }
                 ScriptAudioCommand::PlayComponent { entity } => {
                     // コンポーネントデータを読み取ってから再生する
-                    //（scene と audio の借用を分離するため 2 段階で行う）
-                    let params = self
+                    //（scene と audio の借用を分離するため 2 段階で行う）。
+                    // 音源（パス・音量）は辞書モードを含めて一元解決する。
+                    let comp = self
                         .scene
                         .as_ref()
                         .and_then(|s| s.world.get::<AudioComponent>(entity))
-                        .map(|a| (a.audio_path.clone(), a.volume, a.looped));
-                    if let (Some((path, volume, looped)), Some(audio)) =
-                        (params, self.audio.as_mut())
-                    {
-                        if !path.is_empty() {
-                            audio.play_component(entity, &path, volume, looped);
+                        .cloned();
+                    let params = comp.as_ref().map(|a| {
+                        (self.resolve_audio_component_source(a), a.dictionary_key.clone(), a.looped)
+                    });
+                    if let Some((resolved, dict_key, looped)) = params {
+                        match resolved {
+                            Some((path, volume)) => {
+                                if let Some(audio) = self.audio.as_mut() {
+                                    audio.play_component(entity, &path, volume, looped);
+                                }
+                            }
+                            // 辞書キーを指定しているのに引けない = 設定ミス。
+                            // 無音で握りつぶすと原因が分からないので必ず知らせる。
+                            None if !dict_key.is_empty() => eprintln!(
+                                "[SEED audio] AudioComponent: 辞書キー '{dict_key}' を解決できません（再生しません）"
+                            ),
+                            None => {}
                         }
                     }
                 }
@@ -143,10 +160,19 @@ impl App {
             return;
         }
 
+        // 音源（パス・音量）を先に解決しておく。
+        // この後 `&mut self.audio` を取ると `&self`（= 索引）を借りられなくなるため、
+        // 借用が衝突しないこの時点でまとめて解決する。
+        let resolved: Vec<Option<(String, f32)>> = sources
+            .iter()
+            .map(|(_, comp, _)| self.resolve_audio_component_source(comp))
+            .collect();
+
         // 自動再生が必要なものがあれば AudioManager を初期化する
         let needs_autostart = sources
             .iter()
-            .any(|(_, a, _)| a.play_on_start && !a.audio_path.is_empty());
+            .zip(resolved.iter())
+            .any(|((_, a, _), r)| a.play_on_start && r.is_some());
         if needs_autostart {
             self.ensure_audio_manager();
         }
@@ -156,17 +182,33 @@ impl App {
         );
         let Some(audio) = &mut self.audio else { return };
 
-        for (slot, comp, pos) in sources {
+        for ((slot, comp, pos), source) in sources.into_iter().zip(resolved.into_iter()) {
             // 1. play_on_start の自動再生（一度だけ発火する）
-            if comp.play_on_start
-                && !comp.audio_path.is_empty()
-                && audio.component_needs_autostart(slot)
-            {
-                audio.play_component(slot, &comp.audio_path, comp.volume, comp.looped);
+            if comp.play_on_start && audio.component_needs_autostart(slot) {
+                match &source {
+                    Some((path, volume)) => audio.play_component(slot, path, *volume, comp.looped),
+                    // 音源を解決できなかった場合は「発火済み」として記録する。
+                    // これを忘れると component_needs_autostart が毎フレーム true を返し、
+                    // 下の警告がフレームごとに出続けてログが埋まる。
+                    None => {
+                        audio.mark_component_autostart_consumed(slot);
+                        // 辞書キーを指定しているのに引けないのは設定ミスなので必ず知らせる
+                        //（パス未設定は「まだ設定していないだけ」なので黙って無視する）。
+                        if !comp.dictionary_key.is_empty() {
+                            eprintln!(
+                                "[SEED audio] AudioComponent(自動再生): 辞書キー '{}' を解決できません（再生しません）",
+                                comp.dictionary_key
+                            );
+                        }
+                    }
+                }
             }
             if !audio.is_component_playing(slot) {
                 continue;
             }
+
+            // 実効音量（辞書モードなら辞書の既定音量、そうでなければコンポーネントの音量）
+            let effective_volume = source.as_ref().map(|(_, v)| *v).unwrap_or(comp.volume);
 
             // 2. 減衰・パンの反映
             if comp.spatial {
@@ -197,19 +239,20 @@ impl App {
                     // メインカメラが無い場合: 減衰なし・正面
                     None => ([0.0, 0.0, 1.0], 1.0),
                 };
-                audio.update_component_voice(slot, direction, comp.volume * attenuation);
+                audio.update_component_voice(slot, direction, effective_volume * attenuation);
             } else {
                 // ── 2D 再生: pan（-1..1）でエミッタ方向を左右に振る ──
                 let pan = comp.pan.clamp(-1.0, 1.0);
                 let forward = (1.0 - pan * pan).sqrt().max(PAN_FORWARD_MIN);
-                audio.update_component_voice(slot, [pan, 0.0, forward], comp.volume);
+                audio.update_component_voice(slot, [pan, 0.0, forward], effective_volume);
             }
         }
     }
 
     /// インスペクターからの AudioComponent フィールド更新（SET_AUDIO_FIELD IPC）。
     ///
-    /// key: path / volume / loop / play_on_start / spatial / min_distance / max_distance / pan。
+    /// key: path / dictionary_key / volume / loop / play_on_start / spatial /
+    ///      min_distance / max_distance / pan。
     /// 不正な key・value は無視される。更新後はインスペクターへ再送信する。
     pub(super) fn handle_set_audio_field(
         &mut self,
@@ -239,6 +282,8 @@ impl App {
         // key ごとに値を解釈して反映する（数値・真偽値のパース失敗は無視）
         match key {
             "path" => a.audio_path = value.to_string(),
+            // 辞書キー（空文字 = 辞書モードを解除してファイルパス直接に戻す）
+            "dictionary_key" => a.dictionary_key = value.to_string(),
             "volume" => {
                 if let Ok(v) = value.parse::<f32>() {
                     a.volume = v.max(0.0);

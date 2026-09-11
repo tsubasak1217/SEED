@@ -23,6 +23,8 @@ pub mod collider_component;
 pub mod collider2d_component;
 pub mod rigidbody_component;
 pub mod audio_component;
+/// 音声辞書（「グループ/用途」キー → 音声ファイル・既定音量の対応表）
+pub mod audio_dictionary_component;
 pub mod animator_component;
 pub mod light_component;
 pub mod jointattach_component;
@@ -71,6 +73,11 @@ pub use collider2d_component::{
 // RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
 pub use rigidbody_component::RigidbodyComponentData;
 pub use audio_component::{AudioComponent, AudioComponentData};
+pub use audio_dictionary_component::{
+    AudioDictEntry, AudioDictGroup, AudioDictionaryComponent, AudioDictionaryComponentData,
+    AUDIO_DICT_KEY_SEPARATOR, DEFAULT_AUDIO_DICT_VOLUME,
+    MAX_AUDIO_DICT_ENTRIES_PER_GROUP, MAX_AUDIO_DICT_GROUPS,
+};
 pub use terrain_component::{TerrainChunkComponent, TerrainChunkComponentData, TERRAIN_SOURCE_SCHEME};
 pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
 pub use light_component::{LightComponent, LightComponentData, LightKind};
@@ -146,6 +153,8 @@ pub enum ComponentKind {
     Collider2d,
     /// オーディオソース（BGM/SE 再生、3D 距離減衰・パン対応）
     Audio,
+    /// 音声辞書（「グループ/用途」キー → 音声ファイル・既定音量の対応表）
+    AudioDictionary,
     /// アニメーター（キーフレームアニメーションクリップの再生）
     Animator,
     /// ライト（光源：directional / point / spot / rect）
@@ -190,6 +199,7 @@ impl ComponentKind {
             Self::Collider    => "ColliderComponent",
             Self::Collider2d  => "Collider2dComponent",
             Self::Audio       => "AudioComponent",
+            Self::AudioDictionary => "AudioDictionaryComponent",
             Self::Animator    => "AnimatorComponent",
             Self::Light       => "LightComponent",
             Self::JointAttach => "JointAttachComponent",
@@ -233,6 +243,8 @@ pub enum ComponentData {
     LegacyRigidbodyComponent(RigidbodyComponentData),
     /// オーディオソース（BGM/SE 再生、3D 距離減衰・パン対応）
     AudioComponent(AudioComponentData),
+    /// 音声辞書（「グループ/用途」キー → 音声ファイル・既定音量の対応表）
+    AudioDictionaryComponent(AudioDictionaryComponentData),
     /// アニメーター（キーフレームアニメーションクリップの再生）
     AnimatorComponent(AnimatorComponentData),
     /// ライト（光源：directional / point / spot / rect）

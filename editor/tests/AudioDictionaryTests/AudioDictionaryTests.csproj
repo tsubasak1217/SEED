@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    音声辞書（AudioDictionaryComponent）のワイヤ表現まわりの単体テスト。
+
+    ComponentCatalogTests / SpriteRigTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート
+         → NuGet の追加取得なしで `dotnet run` だけで回せる
+      2. SEEDEditor 本体（WPF / WinExe）を参照せず、対象ソースをリンクで取り込む
+         → AudioDictionaryCatalog.cs が WPF 型を使った瞬間に本テストがビルドできなくなる
+           （＝「一覧整形ロジックと UI を癒着させない」ことの検知器）
+
+    本テストの主目的:
+      ・ACTOR_COMPONENTS の groups 配列 ⇔ SET_AUDIO_DICT のペイロードのラウンドトリップ
+      ・キー一覧整形（未完成行を出さない／グループごとにまとまる）の固定
+      ・ACTOR_COMPONENTS 応答からの groups 抽出（辞書キー選択ウィンドウの入力）
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AudioDictionary</RootNamespace>
+    <AssemblyName>AudioDictionaryTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存の音声辞書ワイヤ表現・キー一覧整形） -->
+    <Compile Include="..\..\src\Controls\AudioDictionaryCatalog.cs">
+      <Link>Linked\AudioDictionaryCatalog.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

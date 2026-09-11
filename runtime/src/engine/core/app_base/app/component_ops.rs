@@ -469,13 +469,26 @@ impl App {
                     ("InputMapComponent", format!(r#","asset_path":{path_json}"#))
                 }
                 ComponentData::AudioComponent(d) => {
-                    // 音声パス・音量・ループ等の全フィールドをインスペクター用に送信する
+                    // 音声パス・辞書キー・音量・ループ等の全フィールドをインスペクター用に送信する。
+                    // パスと辞書キーは任意文字列（区切り文字・日本語を含みうる）なので
+                    // 必ず serde_json でエスケープしてから埋め込む。
                     let path_json = serde_json::to_string(&d.audio_path).unwrap_or_default();
+                    let dict_key_json = serde_json::to_string(&d.dictionary_key).unwrap_or_default();
                     ("AudioComponent", format!(
-                        r#","audio_path":{path_json},"volume":{:.4},"loop":{},"play_on_start":{},"spatial":{},"min_distance":{:.4},"max_distance":{:.4},"pan":{:.4}"#,
+                        r#","audio_path":{path_json},"dictionary_key":{dict_key_json},"volume":{:.4},"loop":{},"play_on_start":{},"spatial":{},"min_distance":{:.4},"max_distance":{:.4},"pan":{:.4}"#,
                         d.volume, d.looped as u8, d.play_on_start as u8, d.spatial as u8,
                         d.min_distance, d.max_distance, d.pan,
                     ))
+                }
+                ComponentData::AudioDictionaryComponent(d) => {
+                    // 音声辞書はグループ配列をそのまま JSON で送る
+                    //（インスペクタ側はこの配列を行 UI へ落とし、編集後は
+                    //  SET_AUDIO_DICT で同じ形の JSON を返す = 完全なラウンドトリップ）。
+                    // シリアライズに失敗することは無い（純粋な値の集まり）が、
+                    // 念のため失敗時は空配列にフォールバックして JSON を壊さない。
+                    let groups_json = serde_json::to_string(&d.groups)
+                        .unwrap_or_else(|_| "[]".to_string());
+                    ("AudioDictionaryComponent", format!(r#","groups":{groups_json}"#))
                 }
                 ComponentData::LineRendererComponent(d) => {
                     // 3D ポリライン: 幅・色・フラグに加え、点列は **件数だけ** を送る。
@@ -1161,6 +1174,39 @@ impl App {
                     }));
                     self.actor_virtual_selected_slot_idx = 0;
                     self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "AudioDictionaryComponent" => {
+                // 空（グループ 0 件）の AudioDictionaryComponent をアクターに追加する。
+                // グループ・行はインスペクターから後で追加する。
+                use crate::engine::components::AudioDictionaryComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, AudioDictionaryComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<AudioDictionaryComponent>(
+                            name, ComponentKind::AudioDictionary, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    // 辞書が増えた = キー索引が変わる
+                    self.mark_audio_dictionary_dirty();
                     self.send_hierarchy();
                     self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
                     if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }

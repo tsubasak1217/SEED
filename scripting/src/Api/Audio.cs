@@ -17,6 +17,18 @@ public static class Audio
     private const int CmdSetBgmSpeed = 4;
     private const int CmdPauseBgm = 5;
     private const int CmdResumeBgm = 6;
+    private const int CmdPlaySeDict = 7;
+    private const int CmdPlayBgmDict = 8;
+
+    /// <summary>
+    /// PlayDict 系の volume 引数が「未指定（＝辞書の既定音量を使う）」を意味する値。
+    /// 負の音量は物理的に意味がないので、追加の引数なしで「省略」を表現できる
+    /// （Rust 側 host_api.rs の AUDIO_DICT_VOLUME_UNSPECIFIED と対）。
+    /// </summary>
+    private const float VolumeUnspecified = -1f;
+
+    /// <summary>PlayBgmDict の loop 引数の既定値（BGM はループが既定）。</summary>
+    private const bool DefaultBgmLoop = true;
 
     /// <summary>
     /// 効果音を再生する（多重再生可）。
@@ -34,6 +46,41 @@ public static class Audio
     /// <param name="loop">ループ再生するか（既定 true）</param>
     public static void PlayBgm(string path, float volume = 1f, bool loop = true)
         => ScriptHost.AudioCommand(CmdPlayBgm, path, volume, loop ? 1 : 0);
+
+    // ── 音声辞書のキーで鳴らす（PlayDict 系）────────────────────
+    //
+    // パス指定の Play / PlayBgm とは **別名** にしてある。
+    // 同じ名前のオーバーロードにすると「パスのつもりでキーを渡した／その逆」を
+    // コンパイラが見抜けず、無音という分かりにくい形で失敗するため。
+
+    /// <summary>
+    /// 音声辞書のキー（<c>グループ名/用途名</c>）で効果音を再生する（多重再生可）。
+    ///
+    /// キーはシーン内の全 AudioDictionary を横断して引く（完全一致・先勝ち）。
+    /// 解決できないキーはランタイムが警告を出し、何も鳴らさない。
+    /// </summary>
+    /// <param name="key">辞書のキー（例 <c>"Player/attack"</c>）</param>
+    /// <param name="volume">音量（1.0 = 等倍）。負の値なら辞書の既定音量を使う</param>
+    public static void PlayDict(string key, float volume = VolumeUnspecified)
+        => ScriptHost.AudioCommand(CmdPlaySeDict, key, volume, 0);
+
+    /// <summary>
+    /// 音声辞書のキーで BGM を再生する（既存 BGM は停止して置き換え）。
+    /// </summary>
+    /// <param name="key">辞書のキー（例 <c>"Bgm/stage1"</c>）</param>
+    /// <param name="volume">音量（1.0 = 等倍）。負の値なら辞書の既定音量を使う</param>
+    /// <param name="loop">ループ再生するか（既定 true）</param>
+    public static void PlayBgmDict(string key, float volume = VolumeUnspecified, bool loop = DefaultBgmLoop)
+        => ScriptHost.AudioCommand(CmdPlayBgmDict, key, volume, loop ? 1 : 0);
+
+    /// <summary>
+    /// 音声辞書のキーで BGM を再生する（音量は辞書の既定値）。
+    /// <c>PlayBgmDict("Bgm/jingle", false)</c> のように書けるようにするための短縮形。
+    /// </summary>
+    /// <param name="key">辞書のキー（例 <c>"Bgm/jingle"</c>）</param>
+    /// <param name="loop">ループ再生するか</param>
+    public static void PlayBgmDict(string key, bool loop)
+        => ScriptHost.AudioCommand(CmdPlayBgmDict, key, VolumeUnspecified, loop ? 1 : 0);
 
     /// <summary>BGM を停止する。</summary>
     public static void StopBgm()

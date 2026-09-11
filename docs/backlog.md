@@ -42,6 +42,22 @@
 
 - [ ] **MCP ツールの実機未検証** — 2026-09-07。エディタを起動した状態での `seed_screenshot` / `seed_select` / `seed_play` / `seed_anim_preview` の往復は未確認（実装時にエディタが起動していなかった）。特に `SELECT:` 送信でインスペクタ表示が追従するか、`play_control` の状態遷移待ちが実測でどれくらいかかるかは要確認。関連: `docs/editor_mcp.md` の「代表的なループ」。
 
+## 音声辞書（AudioDictionary）の残件（2026-09-11 実装時）
+
+- [x] ~~実機でのランタイム経路の確認~~ — 2026-09-11 に一時アセットルート（`%TEMP%` 配下・`D:\SEED_assets` は不使用）でランタイム単体起動（`SEED.exe --mode=play --assets-root=... --scene=...`）して確認済み。`AudioDictionary` ハンドルの `TryGetPath` / `DefaultVolume`、`PlayDict` の解決、辞書モード AudioComponent の `play_on_start`（`IsPlaying=True` を frame 5/30/120 で確認）、解決できないキーの警告が 1 度だけ出ること、までを実測した。**この検証で 2 件の不具合を見つけて修正済み**（`slot_is_kind` への登録漏れ＝`GetComponent<AudioDictionary>()` が常に null／音源を解決できない `play_on_start` の警告が毎フレーム出る）。**残るのはエディタ UI 経路のみ**（下記 2 項目）。
+
+- [ ] **プラグインホストのセーブテストが並列実行で落ちることがある（本件と無関係の既存問題）** — 2026-09-11 に `cargo test` 全体実行で発見。`engine::plugin::host::tests::set_save_int_writes_flag_and_keeps_other_keys` はプロセス共通の環境変数 `SEED_SAVE_DIR` を書き換えるため、他のセーブ系テストと並列に走ると保存先が入れ替わって `save.json を読めない` で落ちる（単独実行では通る）。テスト側でグローバル状態を直列化するか、環境変数に頼らない注入へ変える必要がある。関連: `runtime/src/engine/plugin/host.rs:117` 付近、`runtime/src/engine/core/save/path.rs`。
+
+- [ ] **インスペクタの辞書編集 UI が未操作確認** — 2026-09-11。グループ追加・行追加・用途名編集・音声ファイルのドロップ・グループ削除の往復（`SET_AUDIO_DICT` → `ACTOR_COMPONENTS` 再送）はビルドと純ロジックのテストのみ。特に「テキスト欄を編集して Enter → インスペクタ再構築でフォーカスが飛ぶ」体感と、行数が多いときのスクロールは実機で見たい。関連: `editor/src/Panels/InspectorPanel.AudioDictionary.cs`。
+
+- [ ] **辞書キー選択ウィンドウのドロップ経路が未操作確認** — 2026-09-11。AudioComponent の音源欄へ Hierarchy からアクタをドロップ →`GET_ACTOR_COMPONENTS` →キー選択ウィンドウ→`SET_AUDIO_FIELD:dictionary_key` の一連。シーンビューからのドラッグ（`SceneViewActorDfsId`）も同じ経路を通るはずだが未確認。関連: `editor/src/Controls/AudioDictionaryKeyWindow.cs`、`InspectorPanel.AudioDictionary.cs::ResolvePendingAudioDictKeyPick`。
+
+- [ ] **辞書モードの AudioComponent は音量欄が出ない（仕様）が、`volume` の値自体は保持される** — 2026-09-11。辞書モードでは音量も辞書から解決するため、インスペクタの音量行を隠している。ファイルパスモードへ戻すと以前の値が復活する。1 インスタンスだけ音量を変えたいという要望が出たら「辞書の既定値 × コンポーネント倍率」への変更を検討する（現状は置換）。関連: `app/audio_dictionary_ops.rs::resolve_audio_component_source`。
+
+- [ ] **`docs/scripting_api.md` の `HasComponent(name)` 一覧が `has_component` の実装より少ない** — 2026-09-11 に気付いた既存のズレ（今回 `AudioDictionary` を追記し「など」に緩めただけ）。実装は `Model` / `SkinnedSprite` / `LineRenderer` / `Skybox` / `Text` / `WaterVolume` / `WaterLink` / `ControlPoint` なども受け付ける。正典側（docs）を実装に合わせて洗い直すのは別作業。関連: `runtime/src/engine/core/scripting/host_api.rs::has_component`。
+
+- [ ] **アセット側（シーン・アクタ・ゲームスクリプト）への適用は次フェーズ** — 2026-09-11。今回の作業ではエンジン・エディタ・スクリプト API のみを実装し、`runtime/assets` 配下は一切変更していない。既存のパス直書き（`SEED.Audio.Play("assets://...")`）を辞書キーへ移行する作業が残っている。
+
 ## ランタイム / スクリプト API
 
 - [ ] **`SEED.Draw`（2D プリミティブ）の未検証項目** — 2026-09-07。GPU の実描画（位置・重なり・アンチエイリアス、3D キャンバス上の深度）は目視未確認。同一 layer の並びは「スプライト → プリミティブ → テキスト」固定（2026-09-08 に 3 種の描画順を統合したので、テキストを覆いたいときはプリミティブの `layer` をテキストより大きくすればよい）。`Arc` の Fill=リング / Outline=線 の意味は直感に反する可能性あり（`Ring` あり）。フェザー 1px 固定なので 3D キャンバス上では遠いと太く見える（解析 SDF 化は図形別シェーダが必要）。関連: `runtime/src/engine/core/renderer/primitive2d/`。

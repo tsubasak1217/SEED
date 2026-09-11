@@ -546,7 +546,11 @@ pub enum IpcCommand {
     /// 専用コマンド（PATH/COLOR/SIZE/LAYER）が無い単純フィールドはこちらを使う。
     /// フォーマット: SET_SPRITE_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     SetSpriteField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
-    /// AudioComponent のフィールドを更新する（key: path/volume/loop/play_on_start/spatial/min_distance/max_distance/pan）
+    /// AudioDictionaryComponent のグループ配列をまとめて設定する。
+    /// フォーマット: SET_AUDIO_DICT:{actor_dfs_id},{slot_idx},{json}
+    /// json は AudioDictionaryComponentData の serde_json シリアライズ結果（カンマ含む）。
+    SetAudioDict { actor_dfs_id: u32, slot_idx: u32, json: String },
+    /// AudioComponent のフィールドを更新する（key: path/dictionary_key/volume/loop/play_on_start/spatial/min_distance/max_distance/pan）
     SetAudioField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// LineRendererComponent のフィールドを更新する
     /// （key: width / color / local_space / depth_test / visible）。
@@ -2303,6 +2307,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     key: key.to_string(), value: value.to_string(),
                                 })
                             })
+                        }
+                        s if s.starts_with("SET_AUDIO_DICT:") => {
+                            // フォーマット: SET_AUDIO_DICT:{actor_dfs_id},{slot_idx},{json}
+                            // json は AudioDictionaryComponentData の serde_json シリアライズ結果（カンマ含む）。
+                            // SET_AUDIO_FIELD より **先に** 判定する必要は無い（接頭辞が異なる）が、
+                            // 音声系コマンドを隣接させて読みやすくするためここに置く。
+                            parse2u_tail(&s["SET_AUDIO_DICT:".len()..])
+                                .map(|(a, sl, json)| IpcCommand::SetAudioDict {
+                                    actor_dfs_id: a, slot_idx: sl, json: json.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_AUDIO_FIELD:") => {
                             // フォーマット: SET_AUDIO_FIELD:{actor_dfs_id},{slot_idx},{key},{value}

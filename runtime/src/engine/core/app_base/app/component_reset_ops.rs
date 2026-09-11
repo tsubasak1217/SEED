@@ -133,6 +133,9 @@ pub fn default_component_data(current: &ComponentData) -> Option<ComponentData> 
                 Collider2dComponentData::from(&Collider2dComponent::default())),
         ComponentData::AudioComponent(_) =>
             ComponentData::AudioComponent(AudioComponent::default().to_data()),
+        ComponentData::AudioDictionaryComponent(_) =>
+            ComponentData::AudioDictionaryComponent(
+                AudioDictionaryComponent::default().to_data()),
         ComponentData::LineRendererComponent(_) =>
             ComponentData::LineRendererComponent(LineRendererComponent::default().to_data()),
         ComponentData::TextComponent(_) =>
@@ -567,6 +570,8 @@ mod tests {
             ComponentData::Collider2dComponent(
                 Collider2dComponentData::from(&Collider2dComponent::default())),
             ComponentData::AudioComponent(AudioComponent::default().to_data()),
+            ComponentData::AudioDictionaryComponent(
+                AudioDictionaryComponent::default().to_data()),
             ComponentData::LineRendererComponent(LineRendererComponent::default().to_data()),
             ComponentData::TextComponent(TextComponent::default().to_data()),
             ComponentData::AnimatorComponent(AnimatorComponent::default().to_data()),

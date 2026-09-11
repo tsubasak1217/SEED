@@ -235,6 +235,9 @@ fn rewrite_refs_in_slots(
             | ComponentKind::Collider
             | ComponentKind::Collider2d
             | ComponentKind::Audio
+            // 音声辞書はグループ名・用途名・アセットパスだけを持ち、アクタ名参照は無い
+            //（AudioComponent の dictionary_key も「辞書のキー」でアクタ名ではない）。
+            | ComponentKind::AudioDictionary
             | ComponentKind::Animator
             | ComponentKind::Light
             | ComponentKind::JointAttach

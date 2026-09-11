@@ -164,6 +164,8 @@ impl App {
 
         self.draw_ctx = Some(ctx);
         self.scene = Some(scene);
+        // 新しいシーンの音声辞書でキー索引を作り直す
+        self.mark_audio_dictionary_dirty();
         self.camera_buf = Some(camera_buf);
         self.canvas_overlay_camera_buf = Some(canvas_overlay_camera_buf);
         self.id_buffer = Some(id_buffer);
@@ -765,6 +767,8 @@ impl App {
         // これ以降 `self.scene` は新シーン。地形復元・シーン設定の適用は
         // 差し替え後でなければ新シーンの内容を見られない。
         self.scene = Some(new_scene);
+        // 新しいシーンの音声辞書でキー索引を作り直す（シーン遷移・再読み込み共通）
+        self.mark_audio_dictionary_dirty();
 
         // ── 4. デバッグカメラ → シーン設定 の順で適用する（順序必須）────────────
         // `apply_camera_data` はシーンに保存されたデバッグカメラ位置を適用する

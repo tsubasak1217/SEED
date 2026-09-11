@@ -866,6 +866,13 @@ impl App {
             // スクリプトの Physics.Raycast 用に物理スレッドへの送信チャンネルを公開する
             publish_physics_sender(self.physics_thread.as_ref().map(|t| t.command_sender()));
             {
+                // 音声辞書のキー索引を確定させ、スクリプトへ公開する。
+                // スクリプトフェーズ（SEED.Audio.PlayDict）より **前** に必ず行うこと。
+                // dirty でなければ即 return するので、通常フレームのコストはほぼ 0。
+                crate::profile_scope!("オーディオ/辞書索引更新");
+                self.ensure_audio_dictionary_index();
+            }
+            {
                 // AudioSource.IsPlaying 判定用に再生中スロット一覧を公開する
                 crate::profile_scope!("オーディオ/再生スロット公開");
                 crate::engine::core::scripting::host_api::publish_playing_audio_slots(

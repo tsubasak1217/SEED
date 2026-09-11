@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace SEEDEditor.Controls;
@@ -57,6 +57,7 @@ internal static class ComponentIcons
         ["Collider2dComponent"]         = "Icon.Component.Collider2d",
         // サウンド
         ["AudioComponent"]              = "Icon.Component.Audio",
+        ["AudioDictionaryComponent"]    = "Icon.Component.AudioDictionary",
         ["LineRendererComponent"]       = "Icon.Component.LineRenderer",
         // アニメーション
         ["AnimatorComponent"]           = "Icon.Component.Animator",

@@ -126,6 +126,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetLightField", key),
         IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetAudioField", key),
+        // 音声辞書はグループ配列まるごとの置換なので、マージキーは付けない
+        //（1 行の編集ごとに 1 手の Undo になる）。
+        IpcCommand::SetAudioDict { actor_dfs_id, slot_idx, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetAudioDict", ""),
         IpcCommand::SetLineRendererField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetLineRendererField", key),
         // テキスト（内容・サイズ・色・整列・行送り・レイヤー）。
@@ -728,6 +732,11 @@ pub(super) fn apply_component_data_in_place(
             world.insert(entity, AudioComponent::from_data(d.clone()));
             SlotApply::Applied
         }
+        // 音声辞書は純粋な値（グループ・行の配列）のみなので詰め替えで復元できる。
+        ComponentData::AudioDictionaryComponent(d) => {
+            world.insert(entity, AudioDictionaryComponent::from_data(d.clone()));
+            SlotApply::Applied
+        }
         // 3D ポリラインは純粋な値（点列・幅・色・フラグ）のみなので詰め替えで復元できる。
         ComponentData::LineRendererComponent(d) => {
             world.insert(entity, LineRendererComponent::from_data(d.clone()));
@@ -1008,6 +1017,9 @@ impl App {
             restore_stripped_fields(&scene.world, entity, &mut data);
         }
 
+        // Undo/Redo で辞書の内容が巻き戻る可能性があるため、キー索引を作り直す。
+        self.mark_audio_dictionary_dirty();
+
         // その場適用を試みる。
         let outcome = {
             let Some(scene) = &mut self.scene else { return };
@@ -1065,6 +1077,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::Collider2dComponent(_) => ComponentKind::Collider2d,
         ComponentData::LegacyRigidbodyComponent(_) => ComponentKind::Collider,
         ComponentData::AudioComponent(_) => ComponentKind::Audio,
+        ComponentData::AudioDictionaryComponent(_) => ComponentKind::AudioDictionary,
         ComponentData::AnimatorComponent(_) => ComponentKind::Animator,
         ComponentData::LightComponent(_) => ComponentKind::Light,
         ComponentData::JointAttachComponent(_) => ComponentKind::JointAttach,

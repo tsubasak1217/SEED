@@ -40,6 +40,10 @@ impl App {
         let commands = take_scene_commands();
         if commands.is_empty() { return; }
 
+        // Instantiate / Destroy / シーン遷移でアクタ構成（＝辞書の集合）が変わるため、
+        // 音声辞書のキー索引を作り直す印を付ける。
+        self.mark_audio_dictionary_dirty();
+
         // TransitionScene が含まれる場合はシーン遷移のみを実行し、他のコマンドは破棄する。
         // 旧ワールドで予約されたエンティティ (index, generation) が新ワールドの
         // 別実体を指してしまう危険を防ぐため（Instantiate の予約エンティティ等）。
