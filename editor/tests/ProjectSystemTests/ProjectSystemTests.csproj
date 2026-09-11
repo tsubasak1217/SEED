@@ -44,6 +44,10 @@
     <Compile Include="..\..\src\Project\FileAssociationValues.cs">
       <Link>Linked\Project\FileAssociationValues.cs</Link>
     </Compile>
+    <!-- タスクバーのジャンプリスト項目の組み立て（WPF 非依存の純粋ロジック） -->
+    <Compile Include="..\..\src\Project\JumpListSpec.cs">
+      <Link>Linked\Project\JumpListSpec.cs</Link>
+    </Compile>
 
     <!-- 起動引数の解析（プロジェクト指定オプション / 位置引数 / 環境変数の優先順位） -->
     <Compile Include="..\..\src\Headless\EditorStartupOptions.cs">

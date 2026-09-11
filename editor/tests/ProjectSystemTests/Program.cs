@@ -73,6 +73,11 @@ public static class Program
         harness.Add("旧 recent_projects.json（.scene 配列）は移行される", RecentStoreMigratesLegacy);
         harness.Add("新形式の recent_projects.json は移行されない",       RecentStoreDoesNotMigrateNewFormat);
 
+        // ── タスクバーのジャンプリスト ─────────────────────
+        harness.Add("ジャンプリストは実在する .seedproj だけを順序通りに並べる", JumpListKeepsOnlyExistingInOrder);
+        harness.Add("ジャンプリストは重複パスを除き最大件数で打ち切る",        JumpListDedupesAndCaps);
+        harness.Add("ジャンプリストの引数は引用符で囲まれる",                  JumpListQuotesArguments);
+
         // ── 関連付けの値 ────────────────────────────────────
         harness.Add("FileAssociation の値が HKCU 配下で組み立てられる",   AssociationValues);
         harness.Add("空白を含む exe パスは引用符で囲まれる",              AssociationValuesQuotesSpaces);
@@ -744,4 +749,52 @@ public static class Program
         }
         throw new AssertionException($"{what}: {typeof(TException).Name} が投げられなかった");
     }
+
+    // ── タスクバーのジャンプリスト ────────────────────────
+
+    /// <summary>実在するものだけを、最近の順序を保って並べ、表示名が空ならファイル名を使う。</summary>
+    private static void JumpListKeepsOnlyExistingInOrder()
+    {
+        var entries = new List<RecentProjectEntry>
+        {
+            new() { Path = @"C:\p\A.seedproj",       Name = "ゲーム A" },
+            new() { Path = @"C:\p\Missing.seedproj", Name = "消えた" },
+            new() { Path = @"C:\p\B.seedproj",       Name = "" },
+        };
+        var items = ProjectJumpListBuilder.Build(entries, path => !path.Contains("Missing"));
+        Check.Equal(2, items.Count, "実在する 2 件だけ");
+        Check.Equal("ゲーム A", items[0].Title, "順序 1");
+        Check.Equal("B", items[1].Title, "表示名が空ならファイル名");
+        Check.Equal(@"C:\p\B.seedproj", items[1].Description, "ツールチップはパス");
+        Check.Equal(@"C:\p\B.seedproj", items[1].ProjectFilePath, "開くパス");
+    }
+
+    /// <summary>同じパス（大文字小文字違い含む）は 1 回だけ、最大件数で打ち切る。</summary>
+    private static void JumpListDedupesAndCaps()
+    {
+        var entries = new List<RecentProjectEntry>();
+        for (int i = 0; i < 15; i++)
+        {
+            var stem = "G" + (i % 12);
+            // 偶数番は小文字パスにして、大文字小文字違いの重複も 1 件に畳まれることを見る
+            var path = i % 2 == 0 ? @"c:\p\" + stem + ".seedproj" : @"C:\P\" + stem + ".seedproj";
+            entries.Add(new RecentProjectEntry { Path = path, Name = stem });
+        }
+        var items = ProjectJumpListBuilder.Build(entries, _ => true);
+        Check.Equal(ProjectJumpListBuilder.MAX_RECENT_ITEMS, items.Count, "最大件数で打ち切り");
+        var distinct = items.Select(i => i.ProjectFilePath.ToLowerInvariant()).Distinct().Count();
+        Check.Equal(items.Count, distinct, "重複なし");
+    }
+
+    /// <summary>空白や日本語を含むパスは二重引用符で囲んで 1 引数にする。</summary>
+    private static void JumpListQuotesArguments()
+    {
+        var entries = new List<RecentProjectEntry>
+        {
+            new() { Path = @"D:\SEED projects\わらしべ.seedproj", Name = "わらしべ" },
+        };
+        var items = ProjectJumpListBuilder.Build(entries, _ => true);
+        Check.Equal("\"" + @"D:\SEED projects\わらしべ.seedproj" + "\"", items[0].Arguments, "引用符付き");
+    }
+
 }

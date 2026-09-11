@@ -175,6 +175,19 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 
 ---
 
+### 5.1 タスクバーのジャンプリスト（右クリックの「最近」欄）
+
+タスクバーの SEED アイコン（起動中でもピン留めでも）を右クリックすると、「最近」欄に最近開いたプロジェクトが
+並ぶ（Visual Studio の「最近使ったもの」相当）。項目をクリックすると `.seedproj` を引数に SEEDEditor.exe が
+起動し、そのままエディタが開く。「タスク」欄の「スタート画面を開く」は引数なし起動。
+
+- 元データはスタート画面と同じ `recent_projects.json`。実在する `.seedproj` だけを最大 10 件並べる。
+- 更新はプロジェクトを開いたとき・一覧から外したとき・スタート画面を出したとき（`ProjectJumpList.Refresh`）。
+  ヘッドレス起動では OS のジャンプリストを触らない。
+- 項目の組み立て（`ProjectJumpListBuilder`）は WPF 非依存で、`ProjectSystemTests` で検証している。
+- 一覧は exe のパス単位で OS が保持する（`%APPDATA%\Microsoft\Windows\Recent\CustomDestinations`）。
+  別の場所にビルドしたエディタは別の一覧になる。
+
 ## 6. パッケージ化の出力先
 
 `packaging_settings.json` の `output_path` が **空のときの既定**は

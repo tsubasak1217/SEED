@@ -110,6 +110,8 @@ public partial class App : Application
                 EditorLog.Write(result.ErrorMessage is null
                     ? "スタート画面を表示します（プロジェクト指定なし）"
                     : $"スタート画面を表示します — {result.ErrorMessage}");
+                // スタート画面でもジャンプリストを最新にしておく（前回消えたプロジェクトを落とす）。
+                ProjectJumpList.Refresh(recentStore);
                 new StartWindow(result.ErrorMessage).Show();
                 return;
 
@@ -150,6 +152,8 @@ public partial class App : Application
         // 開けたものだけを最近の一覧へ記録する（壊れたパスを積み上げない）。
         try { recentStore.Add(paths.ProjectFilePath, paths.DisplayName); }
         catch (Exception ex) { EditorLog.Write($"最近のプロジェクトを更新できませんでした: {ex.Message}"); }
+        // タスクバーのジャンプリスト（右クリックの「最近」欄）にも同じ一覧を反映する。
+        ProjectJumpList.Refresh(recentStore);
 
         // 型名 MainWindow と Application.MainWindow プロパティが同名なので、
         // どちらを指しているかが読んで分かるよう明示的に書き分ける。

@@ -248,6 +248,8 @@ public partial class StartWindow : Window
         if (item is null) return;
 
         _recentStore.Remove(item.ProjectFilePath);
+        // タスクバーの「最近」欄からも外す。
+        ProjectJumpList.Refresh(_recentStore);
         RefreshRecentList();
     }
 
