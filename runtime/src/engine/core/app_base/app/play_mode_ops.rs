@@ -227,12 +227,13 @@ impl App {
     pub(super) fn release_script_cursor_lock(&mut self) {
         crate::engine::core::scripting::clear_cursor_lock_request();
         if let Some(window) = self.window.clone() {
-            let was_locked = self.input.is_cursor_locked();
+            // set_cursor_lock(false) が OS の表示カウンタも 0 以上へ戻すので、
+            // ここで追加の後始末は要らない（ClipCursor はロックでは使っていない）。
             self.input.set_cursor_lock(false, &window);
-            // ロック用の ClipCursor も外す（エディタの PLAY_CLAMP は別管理なので触らない）。
-            if was_locked && !self.play_clamp {
-                super::platform_utils::release_window_clamp();
-            }
+        } else {
+            // ウィンドウがまだ／もう無い経路でも、表示カウンタだけは必ず戻す
+            //（隠れたままプロセスが残ると OS のカーソルが消えたままになる）。
+            crate::engine::core::input::cursor_visibility::force_shown();
         }
     }
 

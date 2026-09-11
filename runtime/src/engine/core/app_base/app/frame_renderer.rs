@@ -95,8 +95,6 @@ use super::{
     get_3d_canvas_world_mat,
     world_to_screen,
     apply_window_clamp,
-    apply_cursor_lock_clamp,
-    release_window_clamp,
     camera_scene_gizmo,
     CameraPreviewResources,
     CameraGizmoResources,
@@ -672,13 +670,16 @@ impl App {
             }
         }
 
-        // Play クランプが有効な間は毎フレーム ClipCursor を再適用する。
-        // エディタのクランプが無いとき（スタンドアロン／パッケージ版）でも、スクリプトの
-        // カーソルロック中はウィンドウへ閉じ込める（中央ワープだけでは激しい動きで外へ出るため）。
+        // Play クランプ（エディタ埋め込み Play）が有効な間は毎フレーム ClipCursor を再適用する。
+        //
+        // 【スクリプトのカーソルロックでは ClipCursor を使わない】
+        // ロック中は `Input::update_cursor_lock` が毎フレームカーソルを中央へ戻すので、
+        // そもそも画面外へ出ない。加えて winit は「GRABBED フラグを立てていないのに
+        // ClipCursor が掛かっている」状態を見つけると自分で ClipCursor(NULL) を呼んで
+        // 解除するため、手動クランプと毎フレーム取り合いになり WM_MOUSEMOVE が
+        // 洪水のように発生する（winit 自身がコメントで警告している挙動）。
         if self.play_clamp {
             apply_window_clamp(self.window_hwnd());
-        } else if self.input.is_cursor_locked() {
-            apply_cursor_lock_clamp(self.window_hwnd());
         }
 
         // ── 物理同期（Play フレームまたは編集時物理シミュレーション再生中）────────────
@@ -9544,13 +9545,12 @@ impl App {
         // 「中央からの実移動量」になり、ウィンドウ端クランプで 0 に潰れなくなる。
         if let Some(window) = self.window.clone() {
             if let Some(request) = crate::engine::core::scripting::take_cursor_lock_request() {
-                let was_locked = self.input.is_cursor_locked();
-                self.input.set_cursor_lock(request, &window);
-                // ロック解除（ポーズメニュー・釣り終了など）では、ロック用に張っていた
-                // ClipCursor も外す（エディタの PLAY_CLAMP が有効なら、そちらは次フレームで張り直る）。
-                if was_locked && !request && !self.play_clamp {
-                    release_window_clamp();
+                // 状態が切り替わるときだけ 1 行残す（不具合報告時にログだけで
+                // 「スクリプトの要求がランタイムへ届いていたか」を判別できるようにする）。
+                if request != self.input.is_cursor_locked() {
+                    eprintln!("[SEED cursor] スクリプトのカーソルロック要求: {request}");
                 }
+                self.input.set_cursor_lock(request, &window);
             }
             self.input.update_cursor_lock(&window);
         }

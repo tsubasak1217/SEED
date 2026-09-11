@@ -1,4 +1,5 @@
 pub mod action_map;
+pub mod cursor_visibility;
 pub mod gamepad;
 pub mod inject;
 pub mod keyboard;
@@ -415,6 +416,13 @@ impl Input {
     /// 0 になる」問題（エディタ埋め込み Play の ClipCursor 下で顕著）を回避できる。
     ///
     /// ロック中は `mouse_position` は中央付近に張り付くため意味を持たない。
+    ///
+    /// 【非表示の掛け方】
+    /// winit の `set_cursor_visible` だけでは、カーソルがクライアント領域外だと
+    /// winit 自身が `ShowCursor(TRUE)` を呼んで表示へ戻してしまう（`cursor_visibility`
+    /// のコメント参照）。そこで winit へフラグを伝えたうえで、OS の表示カウンタも
+    /// `cursor_visibility` で直接「確実に負」へ押し下げる。
+    /// 解除時は必ずカウンタを 0 以上へ戻す（隠れたまま操作不能になるのを防ぐ）。
     pub fn set_cursor_lock(&mut self, locked: bool, window: &Window) {
         let was = self.mouse.cursor_locked();
         let (win_center, input_center) = self.lock_centers(window);
@@ -424,9 +432,17 @@ impl Input {
         self.mouse.set_cursor_visible(!locked);
         window.set_cursor_visible(!locked);
 
-        // ロックし始めたフレームで一度中央へ寄せておく（以降は update_cursor_lock）。
-        if locked && !was {
-            self.warp_to_lock_center(window, win_center, input_center);
+        if locked {
+            // ロックし始めたフレームで一度中央へ寄せておく（以降は update_cursor_lock）。
+            if !was {
+                self.warp_to_lock_center(window, win_center, input_center);
+            }
+            cursor_visibility::force_hidden();
+        } else {
+            // 解除は「ロック中だったか」に関わらず必ず表示へ戻す。
+            // 直前の状態を信用して分岐すると、フラグの取りこぼしで
+            // カーソルが消えたまま残る事故（＝操作不能）になるため。
+            cursor_visibility::force_shown();
         }
     }
 
@@ -451,14 +467,26 @@ impl Input {
         (win_center, Vector2::new(ix, iy))
     }
 
-    /// フレーム末に呼ぶ。ロック中ならカーソルをビューポート中央へ戻す。
+    /// フレーム末に呼ぶ。ロック中ならカーソルを隠し直し、ビューポート中央へ戻す。
     ///
     /// 「スクリプトが今フレームの差分を読み終えたあと」に呼ぶこと。
     /// 呼ぶ順序を誤ると、戻した直後の中央座標を差分計算に使ってしまう。
+    ///
+    /// 【毎フレーム掛け直す理由】
+    /// カーソルの表示状態は winit / DefWindowProc / 他プロセスなど複数の主体が触る
+    /// 共有リソースで、「1 回隠したら隠れたまま」という前提が成り立たない
+    /// （フォーカス変化・WM_SETCURSOR・領域外判定などで表示へ戻される）。
+    /// ロック中は状態を観測せず毎フレーム無条件に掛け直し、収束させる。
+    /// 冪等なので追加コストは実質ゼロ（すでに隠れていれば OS 呼び出しは発生しない）。
     pub fn update_cursor_lock(&mut self, window: &Window) {
         if !self.mouse.cursor_locked() {
             return;
         }
+        // winit の内部フラグも毎フレーム押し直す（先に winit → 後から OS カウンタ）。
+        // 逆順にすると、winit が領域外判定で表示へ戻した結果が最後に残ってしまう。
+        window.set_cursor_visible(false);
+        cursor_visibility::force_hidden();
+
         let (win_center, input_center) = self.lock_centers(window);
         self.warp_to_lock_center(window, win_center, input_center);
     }
