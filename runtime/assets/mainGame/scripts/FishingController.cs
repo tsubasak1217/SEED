@@ -749,6 +749,19 @@ public class FishingController : SEEDScript
     private float floatYawOffsetDegrees = 0f;
 
     /// <summary>
+    /// 着水後、ウキの向き（＝子の CastCameraTarget の向き）を<b>竿先→ウキの糸の向き</b>に
+    /// 毎フレーム追従させる（2026-09-11 追加）。
+    /// 巻きの操舵やわらしべの連鎖で糸の向きがキャスト方向からずれていくと、キャスト時の向きの
+    /// ままではカメラが糸の左右へ回り込んで「横から見る」構図になってしまうため。
+    /// </summary>
+    [SerializeField(Label = "ウキの向きを糸の向きに追従")]
+    private bool followLineYaw = true;
+
+    /// <summary>糸の向きへ追従する速さ（1 秒あたりの収束率）。大きいほど素早く向き直す。</summary>
+    [SerializeField(Label = "糸の向きへの追従速度")]
+    private float followLineYawRate = 6f;
+
+    /// <summary>
     /// 水面が未設定のときに使う「竿先からの落差」（メートル）。
     /// この値だけ竿先より下を仮の水面とみなす。
     /// </summary>
@@ -2489,6 +2502,9 @@ public class FishingController : SEEDScript
         // 魚レーダーも釣り状態に依らず毎フレーム引き直す（早期 return の経路でも必ず消える）。
         UpdateFishRadar(ctx.DeltaTime);
 
+        // ウキの向きを糸の向きへ追従させる（着水後のみ。カメラ構図が糸に沿うようにする）
+        UpdateFloatHeading(ctx.DeltaTime);
+
         // レーダーが空（食いついてくれる魚が 1 匹も居ない）なら 1 匹だけ補充する。
         // レーダーの更新と同じ射程・同じ中心（ウキ）を見るので、必ずこの直後で行う。
         UpdateFishRestock(ctx.DeltaTime);
@@ -3481,6 +3497,31 @@ public class FishingController : SEEDScript
     /// （チュートリアルのレベル制限・魚種の許可リストもそちらの既存規則を通る）。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数（クールタイムの消化に使う）。</param>
+    /// <summary>
+    /// ウキの Y 回転を「竿先→ウキ」の糸の向き（＋<see cref="floatYawOffsetDegrees"/>）へ
+    /// 指数補間で追従させる【着水後のウキの向きの唯一の更新点】。
+    /// キャスト中（飛翔中）はキャスト時に設定した向きのままにする。
+    /// </summary>
+    /// <param name="deltaTime">フレームの経過秒。</param>
+    private void UpdateFloatHeading(float deltaTime)
+    {
+        if (!followLineYaw) { return; }
+        if (State is FishState.Idle or FishState.Aiming or FishState.Windup or FishState.Casting) { return; }
+        if (uki is not { IsValid: true } floatTf) { return; }
+
+        var tip = RodTipPosition();
+        var pos = floatTf.Position;
+        float dx = pos.x - tip.x;
+        float dz = pos.z - tip.z;
+        if (dx * dx + dz * dz <= DivideEpsilon * DivideEpsilon) { return; }   // 竿先と重なっている（向きが定まらない）
+
+        float goalYaw = SEED.Mathf.Atan2(dx, dz) * SEED.Mathf.Rad2Deg + floatYawOffsetDegrees;
+        var rot = floatTf.Rotation;
+        float k = ExponentialBlend(followLineYawRate, deltaTime);
+        float yaw = rot.y + SEED.Mathf.DeltaAngle(rot.y, goalYaw) * k;
+        floatTf.Rotation = new SEED.Vector3(rot.x, yaw, rot.z);
+    }
+
     private void UpdateFishRestock(float deltaTime)
     {
         if (!fishRestockEnabled) { return; }
