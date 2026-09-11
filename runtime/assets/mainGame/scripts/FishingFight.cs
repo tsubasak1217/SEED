@@ -500,14 +500,14 @@ public class FishingFight : SEEDScript
     /// ここを変えると回復量も同じ倍率で自動的に追随する。
     /// </summary>
     [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
-    private float linePerSecondOfOffset = 0.6f;
+    private float linePerSecondOfOffset = 0.45f;
 
     /// <summary>
     /// Miss（打ち逃し・空打ち）1 回で減る糸の残り（全レベル・全魚種で共通）。
     /// 【2026-09-11 調整】上の時間差の減りと足並みを揃えて 0.06 → 0.12 へ倍増。
     /// </summary>
     [SerializeField(Label = "Missの糸の減り")]
-    private float missLoss = 0.12f;
+    private float missLoss = 0.09f;
 
     /// <summary>
     /// 回答フレーズを Perfect（全打点 Excellent）で締めたときに回復する糸の残りを、
@@ -533,6 +533,15 @@ public class FishingFight : SEEDScript
     /// </summary>
     [SerializeField(Label = "初期の糸の残り(Nice)")]
     private float initialLineNice = 0.8f;
+
+    /// <summary>
+    /// わらしべで乗り換えたときに<b>回復する</b>糸の残り（最大 1.0 に対する割合）。
+    /// 乗り換え前の残りにこの値を足した値（上限 1.0）で新しいやり取りを始める
+    /// （合わせランクによる初期値は使わない）。完全回復にしないのは、連鎖を重ねるほど
+    /// 糸が消耗していく緊張感を残すため。
+    /// </summary>
+    [SerializeField(Label = "乗り換え時の糸回復(最大比)")]
+    private float chainSwapLineRecover = 1f / 3f;
 
     // ─── 戦闘力（魚側）─────────────────────────────────────
 
@@ -1720,6 +1729,29 @@ public class FishingFight : SEEDScript
     /// 「魚 HP 1 あたりの距離」の基準になる（<see cref="hookDistanceMin"/> で下限クランプ）。
     /// </param>
     public void BeginFight(Fish fish, FishingController.HookJudgement judge, float hookDistance)
+        => BeginFight(fish, judge, hookDistance, InitialLine(judge));
+
+    /// <summary>
+    /// わらしべで乗り換えたときのやり取り開始【乗り換え専用の入口】。
+    /// 初期の糸の残りを合わせランクからではなく
+    /// 「乗り換え前の残り ＋ <see cref="chainSwapLineRecover"/>」（上限 1.0）にする。
+    /// </summary>
+    /// <param name="fish">乗り換え先の魚。</param>
+    /// <param name="judge">合わせ判定（乗り換えでは Excellent 扱い。評価の初期化にのみ使う）。</param>
+    /// <param name="hookDistance">乗り換えた瞬間のウキ→竿先の水平距離（メートル）。</param>
+    /// <param name="lineBeforeSwap">乗り換え前の糸の残り（0〜1）。</param>
+    public void BeginFightAfterChainSwap(
+        Fish fish, FishingController.HookJudgement judge, float hookDistance, float lineBeforeSwap)
+        => BeginFight(fish, judge, hookDistance,
+                      lineBeforeSwap + SEED.Mathf.Max(chainSwapLineRecover, 0f));
+
+    /// <summary>
+    /// やり取り開始の共通実装。初期の糸の残りを引数で受ける
+    /// （通常のヒットは合わせランク由来、乗り換えは回復量込みの値）。
+    /// </summary>
+    /// <param name="initialLine01">初期の糸の残り（<see cref="Line01Min"/>〜<see cref="Line01Max"/> にクランプする）。</param>
+    private void BeginFight(
+        Fish fish, FishingController.HookJudgement judge, float hookDistance, float initialLine01)
     {
         ResetRuntimeState();
 
@@ -1731,7 +1763,7 @@ public class FishingFight : SEEDScript
 
         target = fish;
         Active = true;
-        Line01 = SEED.Mathf.Clamped(InitialLine(judge), Line01Min, Line01Max);
+        Line01 = SEED.Mathf.Clamped(initialLine01, Line01Min, Line01Max);
 
         // 魚 HP: 掛かった瞬間の総合力で「魚の取り分」を出し、その割合ぶんだけ基礎HP へ乗せる
         float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);

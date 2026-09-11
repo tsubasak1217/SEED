@@ -2211,11 +2211,13 @@ public class FishingController : SEEDScript
         newFish.OnHooked();
         State = FishState.Hooked;
 
-        // やり取りを畳んでから、新しい魚で開始し直す（通常のヒットと同じ入口: LeadIn からやり直す）
+        // やり取りを畳んでから、新しい魚で開始し直す（LeadIn からやり直す）。
+        // 糸は完全回復させず「乗り換え前の残り ＋ 回復量（FishingFight の設定）」で始める。
         if (fight is { } f)
         {
+            float lineBeforeSwap = f.Line01;
             f.EndFight();
-            f.BeginFight(newFish, judgement, CurrentFloatDistance());
+            f.BeginFightAfterChainSwap(newFish, judgement, CurrentFloatDistance(), lineBeforeSwap);
         }
 
         // ヒット用クリップを引き直し（既に同じクリップならラッチで間引かれる）、カーソルロックも同期
