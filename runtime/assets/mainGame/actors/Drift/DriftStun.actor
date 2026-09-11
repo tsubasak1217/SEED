@@ -92,7 +92,7 @@
           "fields": {
             "kind": "stun",
             "effectAmount": "1.000",
-            "hitRadius": "0.800",
+            "hitRadius": "1.200",
             "driftSpeed": "0.300",
             "lifetimeSeconds": "25.000",
             "bobAmplitude": "0.060",

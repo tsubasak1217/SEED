@@ -149,7 +149,7 @@ public class DriftItem : SEEDScript
     /// ウキとの水平距離がこの値以下になったフレームで効果が発動する。
     /// </summary>
     [SerializeField(Label = "当たり半径(m)")]
-    private float hitRadius = 0.8f;
+    private float hitRadius = 1.2f;
 
     // ─── 見た目（出現・消滅・回転）───────────────────────────
 

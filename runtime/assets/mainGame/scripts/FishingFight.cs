@@ -374,11 +374,11 @@ public class FishingFight : SEEDScript
     /// 受付窓の外のクリックは無反応なので、空打ちの回数は完璧判定に影響しない。
     /// </summary>
     [SerializeField(Label = "隙の小節数(完璧)")]
-    private int restBarsPerfect = 2;
+    private int restBarsPerfect = 3;
 
     /// <summary>隙フェーズの長さ（小節）― <b>完璧でなかったとき</b>（既定の隙）。</summary>
     [SerializeField(Label = "隙の小節数(通常)")]
-    private int restBarsNormal = 1;
+    private int restBarsNormal = 2;
 
     /// <summary>
     /// バトル開始直後に置く「余白」の長さ（拍）。<see cref="Phase.LeadIn"/> の長さそのもの。
@@ -529,14 +529,14 @@ public class FishingFight : SEEDScript
     private static bool DebugIsolationAllowed => SEED.Application.IsDebugAllowed;
 
     [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
-    private float linePerSecondOfOffset = 0.45f;
+    private float linePerSecondOfOffset = 0.3375f;
 
     /// <summary>
     /// Miss（打ち逃し・空打ち）1 回で減る糸の残り（全レベル・全魚種で共通）。
     /// 【2026-09-11 調整】上の時間差の減りと足並みを揃えて 0.06 → 0.12 へ倍増。
     /// </summary>
     [SerializeField(Label = "Missの糸の減り")]
-    private float missLoss = 0.09f;
+    private float missLoss = 0.0675f;
 
     /// <summary>
     /// 回答フレーズを Perfect（全打点 Excellent）で締めたときに回復する糸の残りを、
@@ -4067,13 +4067,12 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// 円の中心テキスト（フェーズ名＋予告／魚 HP ％）を更新する。
-    /// 余白（<see cref="Phase.LeadIn"/>）中だけは特別扱いで、残り拍数のカウントダウン
-    /// （"4" → "3" → "2" → "1"）だけを大きく出す。
+    /// 余白（<see cref="Phase.LeadIn"/>）中は何も出さない（2026-09-11 変更。以前は残り拍数の
+    /// カウントダウン "4"→"1" を出していたが、開始時の文字は不要という判断で消した。
+    /// メトロノーム音で拍は伝わる）。
     ///
     /// フェーズ名・予告・魚 HP ％は<b>デバッグ表示</b>なので
     /// <see cref="ShowDebugHud"/> が false（パッケージ版など）ならアルファ 0 で伏せる。
-    /// 開始カウントダウンだけは「いつ最初の出題が来るか」を伝えるゲーム UI なので、
-    /// デバッグ表示の可否に関わらず常に出す。
     /// </summary>
     private void ApplyStatusText()
     {
@@ -4081,8 +4080,7 @@ public class FishingFight : SEEDScript
 
         if (CurrentPhase == Phase.LeadIn)
         {
-            label.Content = $"{LeadInRemainingBeats()}";
-            label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
+            label.Color = label.Color.WithAlpha(0f);
             return;
         }
 

@@ -92,7 +92,7 @@
           "fields": {
             "kind": "fish_recover",
             "effectAmount": "0.300",
-            "hitRadius": "0.800",
+            "hitRadius": "1.200",
             "driftSpeed": "0.300",
             "lifetimeSeconds": "25.000",
             "bobAmplitude": "0.060",
