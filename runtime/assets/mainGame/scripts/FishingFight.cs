@@ -133,16 +133,29 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 「魚が抵抗をやめ、見た目距離の下限（<see cref="visibleDistanceMin"/>）を無視して
 /// 竿先まで一気に寄る」という<b>寄せ方の切り替え</b>だけを意味する。
 ///
-/// <b>■ 見た目の距離と目標距離の分離【2026-09-09 改定】</b>
+/// <b>■ 見た目の距離と目標距離の分離【2026-09-09 改定 / 2026-09-11 再改定】</b>
 /// 上の「目標距離」をそのままウキの位置にすると、格上の魚（魚力 ≫ 竿）では
 /// 巻き効率が小さいぶん目標距離がほとんど縮まず、<b>巻いてもウキが動かない</b>。
 /// そこで<b>見た目の距離だけ</b>を目標距離から切り離す（HP の減り＝難度は不変）。
 /// <code>
-/// 巻いている間      : 必ず reelVisibleSpeed（m/秒）で手元へ寄る
-/// 手を止めている間  : 魚が fishPullSpeed × 戦闘力比 で沖へ引き返す
-/// 目標距離とのズレ  : 差 × visibleDistanceReturnRate でバネ的に戻す（＝平均は目標距離へ収束）
+/// 巻いている間      : 巻き量を消化したフレームは reelVisibleSpeed（m/秒）で手元へ寄る。
+///                     引き返しは reelPullbackScale 倍に弱まる（既定 0 ＝ 引き返さない）。
+///                     「巻いている間」＝最後の巻き入力から reelHoldSeconds 秒以内
+///                     （ReelingRecently）。ホイールのこま切れ入力で途切れさせない
+/// 手を止めている間  : 魚が fishPullSpeed × 戦闘力比（上限つき）で沖へ引き返す。
+///                     ただし目標距離は追い越さない（＝残り HP が「引き返せる余力」になる）
+/// 目標より沖に居る  : 差 × visibleDistanceReturnRate で手元へ戻る（糸のテンション）
 /// 下限              : visibleDistanceMin（HP が残るうちは竿先へめり込まない）
 /// </code>
+/// <b>2026-09-11 改定の理由</b>: 「目標が沖側」の引き返し速度に
+/// <c>差 × visibleDistanceReturnRate</c>（＝上限の無いバネ）が混ざっていたため、
+/// 差が <c>reelVisibleSpeed ÷ visibleDistanceReturnRate</c>（既定 4m）を超えた時点で
+/// 引き返しが巻きの寄せを上回り、<b>巻いても正味で寄らなくなっていた</b>
+/// （寄る速さが「巻いた距離 × 巻き効率」＝格上ほど 0 に近い値へ落ちていた）。
+/// 引き返しを「fishPullSpeed × 戦闘力比」の一定速度だけに戻し、
+/// 巻き中は <see cref="reelPullbackScale"/> 倍に弱めることで
+/// <b>巻いているあいだは必ず寄る</b>を保証する。難度は「巻いていない間の引き返し」と
+/// 「HP の減り（＝引き返せる余力の減り）」で担保する。
 /// 距離表示・魚モデルの位置はどちらも<b>ウキの実位置</b>を見ているので自動的に追従する
 /// （表示は <see cref="UpdateDistanceDisplay"/>、魚は <c>Fish.UpdateBite</c>）。
 ///
@@ -178,8 +191,9 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///       Nice 黄 / Miss 赤）で小さく跳ねる。余分なクリックにはアイコンを出さない
 /// 隙  : 受付窓が閉じたところから beatIconFadeSeconds 秒でフェードアウト
 /// </code>
-/// - 中央テキスト … フェーズ名（＋予告）／魚 HP ％
-/// - 右下テキスト … 残り距離（従来どおり）
+/// - 中央テキスト … 余白中は開始カウントダウン（常時）／それ以外はフェーズ名（＋予告）と
+///   魚 HP ％。後者は<b>デバッグ表示</b>で、パッケージ版では出さない（<see cref="showDebugHud"/>）
+/// - 右下テキスト … 残り距離（従来どおり・ゲーム UI なので常時表示）
 /// </summary>
 public class FishingFight : SEEDScript
 {
@@ -544,8 +558,18 @@ public class FishingFight : SEEDScript
     // ─── ウキの距離制御（目標距離への追従）─────────────────────
 
     /// <summary>
-    /// 目標距離が現在より<b>遠い</b>とき、魚がウキを沖へ引く速度の基準値（m/秒）。
-    /// 実際の速度は「魚の総合力 ÷ 竿パワー」を掛けた値になる。
+    /// 目標距離が現在より<b>遠い</b>とき、魚がウキを沖へ引く速度の基準値（m/秒）
+    /// 【引き返し速度の唯一の基準値・2026-09-11 改定】。
+    ///
+    /// 実際の速度は「魚の総合力 ÷ 竿パワー」（<see cref="PullRateClamped"/>・
+    /// <see cref="pullRateMultiplierMin"/>〜<see cref="pullRateMultiplierMax"/> でクランプ）を
+    /// 掛けた値で、上限は <c>この値 × pullRateMultiplierMax</c>（既定 3.0 m/秒）。
+    /// 巻いているあいだはさらに <see cref="reelPullbackScale"/> 倍に弱める。
+    ///
+    /// <b>2026-09-11 改定</b>: 以前はここに「目標距離とのズレ × <see cref="visibleDistanceReturnRate"/>」
+    /// という<b>上限の無いバネ</b>が max で混ざっており、ズレが広がるほど引き返しが強くなって
+    /// 巻きの寄せ（<see cref="reelVisibleSpeed"/>）を打ち消していた。引き返しは
+    /// この一定速度だけに戻し、バネは「目標より沖に居るとき」専用にした。
     /// </summary>
     [Header("ウキの距離制御"), SerializeField(Label = "魚の引き速度(m/秒)")]
     private float fishPullSpeed = 1.5f;
@@ -592,7 +616,7 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "引きの速度倍率の上限")]
     private float pullRateMultiplierMax = 2f;
 
-    // ─── 見た目距離の分離（手応えの調整）【2026-09-09 追加】─────────
+    // ─── 見た目距離の分離（手応えの調整）【2026-09-09 追加 / 2026-09-11 改定】─────────
     //
     // 「巻いているのにウキが動かない」を無くすため、<b>見た目の距離</b>を
     // 魚 HP から決まる目標距離（DesiredFloatDistance）から切り離す。
@@ -602,32 +626,59 @@ public class FishingFight : SEEDScript
     /// 巻き入力中にウキが手元へ寄る速度（m/秒）【「巻けば必ず寄る」の唯一の速度】。
     ///
     /// 魚がどれだけ強くても、隙（<see cref="Phase.Rest"/>）で巻いているあいだは
-    /// 必ずこの速さぶんが手元向きに加算される（魚の引き戻しと足し合わせる）。
+    /// 必ずこの速さぶんが手元向きに加算される。
     ///
-    /// <b>設計上の不変条件</b>: この値は「魚の引き戻し速度の最大値」
-    /// （<see cref="fishPullSpeed"/> × <see cref="pullRateMultiplierMax"/>）より大きくすること。
+    /// <b>設計上の不変条件</b>: この値は「巻き中に残る引き返し速度の最大値」
+    /// （<see cref="fishPullSpeed"/> × <see cref="pullRateMultiplierMax"/>
+    /// × <see cref="reelPullbackScale"/>）より大きくすること。
     /// そうでないと格上の魚に対して巻いても正味で寄らなくなり、この修正の意味が消える。
+    /// <see cref="reelPullbackScale"/> が既定の 0 なら、この条件は自動的に満たされる。
+    ///
+    /// なお実際にウキが寄る速さは「この値 × 巻き入力が続いているフレームの割合」になる。
+    /// ホイール入力は <see cref="ThrottleReelAmount"/> が
+    /// <see cref="reelInSpeedMax"/> の速さへ均してから消化するので、
+    /// ホイールをゆっくり回すと巻き入力のあるフレームが飛び飛びになり、そのぶん寄りも遅くなる
+    /// （＝「速く回すほど速く寄る」は保たれる）。
     /// </summary>
     /// 既定 6.0 m/秒: 引き戻しの最大（1.5 × 2 ＝ 3.0 m/秒）の 2 倍。
-    /// 巻いているあいだは正味 3.0 m/秒以上で必ず寄る。
     [SerializeField(Label = "巻きの見た目寄せ速度(m/秒)")]
     private float reelVisibleSpeed = 6f;
 
     /// <summary>
-    /// 見た目距離が目標距離（<see cref="DesiredFloatDistance"/>）から離れているとき、
-    /// その差を詰め戻すバネの強さ（1/秒）【見た目と実値を繋ぎ止める唯一の係数】。
+    /// 巻いているあいだに残す「魚の引き返し」の倍率（0〜1）
+    /// 【「巻けば必ず寄る」を壊さないための唯一のつまみ・2026-09-11 追加】。
     ///
-    /// 「目標より手前へ寄せすぎた」ぶんは魚が沖へ引き返し、
-    /// 「目標より沖に居る」ぶんは糸のテンションで手元へ戻る ―― どちらも
-    /// <c>差 × この値</c> の速度で戻す（＝指数的に収束する 1 次のバネ）。
-    /// これにより<b>長期的な平均距離は従来どおり <see cref="DesiredFloatDistance"/>
-    /// （＝魚 HP × 1HP あたりの距離）へ収束する</b>。
-    /// 巻き続けたときの釣り合いは「目標距離 −（見た目寄せ速度 ÷ この値）」で、
-    /// 既定値では目標より約 4m 手前で拮抗する（＝巻けば 4m ぶんの手応えが得られ、
-    /// 手を止めればそのぶん取り返される）。
+    /// 隙（<see cref="Phase.Rest"/>）で<b>巻き入力が続いている間</b>
+    /// （<see cref="ReelingRecently"/> ＝ 最後の巻き入力から <see cref="reelHoldSeconds"/> 秒以内）は、
+    /// 魚の引き返し速度（<see cref="fishPullSpeed"/> × 戦闘力比）をこの倍率で弱める。
+    /// <code>
+    /// 0   … 巻いているあいだは一切引き返さない（＝ reelVisibleSpeed がそのまま寄る速さ）
+    /// 0.5 … 半分だけ抵抗する（正味の寄せ ＝ reelVisibleSpeed − 引き返し × 0.5）
+    /// 1   … 従来どおり巻き中も全力で引き返す
+    /// </code>
+    /// 1 に近づけるほど格上の魚で寄りが鈍くなるので、
+    /// <see cref="reelVisibleSpeed"/> の不変条件（上記）を必ず確認すること。
     /// </summary>
-    /// 既定 1.5 /秒: 拮抗点が目標の 4m 手前になる値（6.0 ÷ 1.5 ＝ 4.0m）。
-    [SerializeField(Label = "見た目距離の復帰レート(1/秒)")]
+    /// 既定 0: 「巻いている間は HP がどれだけ高くても必ず寄る」を既定の手触りにする。
+    [SerializeField(Label = "巻き中の引き返し倍率(0=引き返さない)")]
+    private float reelPullbackScale = 0f;
+
+    /// <summary>
+    /// ウキが<b>目標距離より沖に居る</b>とき、糸のテンションで手元へ戻す強さ（1/秒）
+    /// 【目標より沖に出たぶんを詰め戻す唯一の係数】。
+    ///
+    /// 戻す速度は <c>(見た目距離 − 目標距離) × この値</c>（上限は <see cref="reelInSpeedMax"/>、
+    /// 目標距離は追い越さない）。巻き効率の高い格下の魚では、巻くほど目標距離が
+    /// 速く縮んでウキが目標より沖に取り残されるので、この項が効いて<b>一気に寄る</b>
+    /// （＝格下ほど速く寄る、という差はここで付く）。
+    ///
+    /// <b>2026-09-11 改定</b>: 以前は逆向き（目標のほうが沖側＝魚が引き返す局面）にも
+    /// 同じバネを効かせていたが、上限が無いため差が
+    /// <c>reelVisibleSpeed ÷ この値</c>（既定 4m）を超えると引き返しが巻きに打ち勝ち、
+    /// 「巻いても寄らない」の直接の原因になっていた。逆向きには使わない。
+    /// </summary>
+    /// 既定 1.5 /秒: 4m 沖に取り残されていたら 6 m/秒で戻る強さ。
+    [SerializeField(Label = "沖に出たぶんの復帰レート(1/秒)")]
     private float visibleDistanceReturnRate = 1.5f;
 
     /// <summary>
@@ -637,11 +688,11 @@ public class FishingFight : SEEDScript
     ///
     /// <b>2026-09-09 改定</b>: 釣り上げの成立条件が「岸（竿先）まで寄せ切ったか」だけになり、
     /// 魚 HP は成立に関与しなくなった。そのためこの値が釣り上げ成立距離
-    /// （<c>FishingController.catchDistanceMeters</c> ＝ 既定 1.0m）より<b>外側</b>にあると、
+    /// （<c>FishingController.catchDistanceMeters</c> ＝ 既定 4.0m）より<b>外側</b>にあると、
     /// HP が残っているあいだは永久に成立できなくなる。
     /// 役割は「めり込み防止」だけに絞り、必ず成立距離より内側の値にすること。
     /// </summary>
-    /// 既定 0.5m: 釣り上げ成立距離（1.0m）の内側。巻き切れば必ず成立距離へ到達でき、
+    /// 既定 0.5m: 釣り上げ成立距離（4.0m）の内側。巻き切れば必ず成立距離へ到達でき、
     /// それでもウキが竿先（距離 0）へ重なることはない。
     [SerializeField(Label = "見た目距離の下限(m)")]
     private float visibleDistanceMin = 0.5f;
@@ -783,7 +834,11 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "打点アイコンの初期プール数")]
     private int initialBeatIconPool = 16;
 
-    /// <summary>円の中心に出す状態テキスト（フェーズ名／魚 HP ％／疲労 ％）。</summary>
+    /// <summary>
+    /// 円の中心に出す状態テキスト。
+    /// 余白（<see cref="Phase.LeadIn"/>）中は開始カウントダウン（常時表示）、
+    /// それ以外はフェーズ名（＋予告）と魚 HP ％（<see cref="showDebugHud"/> のデバッグ表示）。
+    /// </summary>
     [SerializeField(Label = "状態のText")]
     private SEED.Text? hpText = null;
 
@@ -792,15 +847,25 @@ public class FishingFight : SEEDScript
     private SEED.Text? distanceText = null;
 
     /// <summary>
-    /// 状態テキストに「魚 ○○%」の行を足すかどうか【デバッグ表示】。
+    /// 状態テキスト（<see cref="hpText"/>）へ「フェーズ名 → 次フェーズの予告」と
+    /// 「魚 ○○%」を出すかどうか【デバッグ HUD の唯一のつまみ・2026-09-11 改定】。
     ///
-    /// 魚の残り HP は本来プレイヤーへ見せない内部値で、開発中の調整のために出している。
-    /// パッケージ版（配布ビルド）では <see cref="SEED.Application.IsDebugAllowed"/> が
-    /// false になるため、このフラグが true でも表示されない（<see cref="ShowFishHpPercent"/>）。
-    /// フェーズ名と次フェーズの予告はゲーム仕様の表示なので、ここでは消さない。
+    /// どちらも本来はプレイヤーへ見せない内部状態（魚の残り HP ／ 拍時計がいまどの区間か）で、
+    /// 開発中の調整のために出している。パッケージ版（配布ビルド）では
+    /// <see cref="SEED.Application.IsDebugAllowed"/> が false になるため、
+    /// このフラグが true でも表示されない（<see cref="ShowDebugHud"/>）。
+    /// エディタからの Play では従来どおり見える。
+    ///
+    /// <b>これで消えるのは上の 2 つだけ</b>で、次のゲーム UI は常に出る:
+    /// 余白（<see cref="Phase.LeadIn"/>）の開始カウントダウン／
+    /// 右下の残り距離（<see cref="UpdateDistanceDisplay"/>）／糸ゲージ・マーカー・打点アイコン／
+    /// 判定表示と Perfect などのバナー（<c>FightEvalBanner</c>・<c>HitBanner</c>）。
+    ///
+    /// <b>2026-09-11 改定</b>: 旧 <c>showFishHpDebug</c>（魚 HP ％だけのつまみ）を置き換えた。
+    /// フェーズ名・予告も内部状態の可視化なので、まとめて 1 つのつまみで扱う。
     /// </summary>
-    [SerializeField(Label = "【デバッグ】魚HP％を表示", Tooltip = "状態テキストに魚の残り HP ％を足す（パッケージ版では無視される）")]
-    private bool showFishHpDebug = true;
+    [SerializeField(Label = "デバッグ表示（パッケージ版では常に非表示）", Tooltip = "状態テキストにフェーズ名・次フェーズ予告・魚の残り HP ％を出す（パッケージ版では無視される）")]
+    private bool showDebugHud = true;
 
     // ─── UI レイアウト ────────────────────────────────────
 
@@ -1194,12 +1259,19 @@ public class FishingFight : SEEDScript
     public float DesiredFloatDistance => SEED.Mathf.Max(fishHp, FishHpZero) * metersPerHp;
 
     /// <summary>
-    /// <b>いま巻き取っている最中か</b>【漂流物の巻き込み判定の唯一の条件】。
+    /// <b>いま巻き取っている最中か</b>【「巻き入力が続いている」の唯一の判定】。
     ///
     /// 隙（<see cref="Phase.Rest"/>）のあいだだけ巻けるので、次の 3 つがすべて成り立つときに true:
     /// バトル中で一時停止していない／フェーズが隙／最後の巻き入力から
     /// <see cref="reelHoldSeconds"/> 秒以内。
-    /// 「巻いていないときに漂流物のそばを漂っているだけ」ではすり抜けさせるための判定。
+    ///
+    /// 用途は 2 つ。
+    /// - 漂流物の巻き込み判定（「巻いていないときにそばを漂っているだけ」ではすり抜けさせる）
+    /// - 魚の引き返しを止めるかどうか（<see cref="ComputeFloatDistanceStep"/>・2026-09-11 追加）。
+    ///   ホイールはこま切れに入るので、1 フレームごとの
+    ///   <see cref="reelEffectiveThisFrame"/> で引き返しを判断すると、
+    ///   目盛と目盛の合間（巻き量を消化していないフレーム）に魚が引き返してしまい、
+    ///   ゆっくり回したときに正味で寄らなくなる。保持つきのこちらを使う。
     /// </summary>
     public bool ReelingRecently
         => Active && !Paused && CurrentPhase == Phase.Rest
@@ -1848,18 +1920,30 @@ public class FishingFight : SEEDScript
     /// ＋ ＝ 沖へ（距離が増える） / − ＝ 手元へ（距離が減る）。
     /// 出題・回答中はウキを止めておき、拍を読む画面が揺れないようにする。
     ///
-    /// <b>隙（Rest）のあいだ【2026-09-09 改定・見た目距離の分離】</b>
+    /// <b>隙（Rest）のあいだ【2026-09-09 改定・見た目距離の分離 / 2026-09-11 引き返しの見直し】</b>
     /// 見た目の距離は「魚 HP から決まる目標距離（<see cref="DesiredFloatDistance"/>）」
     /// そのものではなく、次の 2 項の和で毎フレーム動かす。
     /// <code>
-    /// 第1項（復帰） 目標が沖側 → max(fishPullSpeed × 戦闘力比, |差| × visibleDistanceReturnRate)
-    ///               目標が手前 → min(|差| × visibleDistanceReturnRate, reelInSpeedMax)
+    /// 第1項（ズレ） 目標が沖側 → ＋min(fishPullSpeed × 戦闘力比 × 巻き中係数, 差)
+    ///                            （巻き中係数 ＝ 巻いていれば reelPullbackScale／既定 0、
+    ///                              巻いていなければ 1。目標距離は追い越さない）
+    ///               目標が手前 → −min(|差| × visibleDistanceReturnRate, reelInSpeedMax, |差|)
     /// 第2項（巻き） 巻き入力中は必ず −reelVisibleSpeed（魚の強さに一切依存しない）
     /// 下限クランプ  見た目距離は visibleDistanceMin より手前へは詰まらない
     /// </code>
-    /// ＝「巻けば必ず寄り、手を止めれば魚が引き返す」を作りつつ、
-    /// 第 1 項のバネによって長期的な平均距離は従来どおり目標距離へ収束する。
-    /// <b>魚 HP の減り方（<see cref="ReelHpPerUnit"/>）は一切変えていない</b>ので難度は不変。
+    /// ＝<b>巻いているあいだは必ず寄り（正味 −reelVisibleSpeed 以下）、
+    /// 手を止めたときだけ魚が引き返す</b>。
+    /// 引き返しは「目標距離 − 見た目距離」を超えられないので、
+    /// <b>残りの魚 HP がそのまま「引き返せる余力」</b>になる（＝HP を削る意味はここに残る）。
+    /// <b>魚 HP の減り方（<see cref="ReelHpPerUnit"/>）は一切変えていない</b>ので
+    /// 「巻いた距離 × 巻き効率」で HP が減る点は不変。
+    ///
+    /// <b>2026-09-11 の修正内容</b>: 第 1 項の「目標が沖側」に
+    /// <c>|差| × visibleDistanceReturnRate</c> の上限無しバネが max で混ざっていたため、
+    /// 差が <c>reelVisibleSpeed ÷ visibleDistanceReturnRate</c>（既定 4m）を超えると
+    /// 引き返しが巻きを上回り、正味の寄り速度が
+    /// <c>目標距離の縮む速さ ＝ 巻いた距離 × 巻き効率</c>（格上ほど 0 に近い）まで落ちていた。
+    /// これが「HP が高いと巻いても寄ってこない」の正体。
     /// <b>余白（<see cref="Phase.LeadIn"/>）中だけは例外</b>で、掛かった直後に沖へ走る演出として
     /// <see cref="leadInStartDistance"/> から <see cref="DesiredFloatDistance"/>（＝この時点では
     /// 魚 HP が満タンなので「掛かった距離 ＋ 引き距離」と一致する）まで、
@@ -1918,27 +2002,47 @@ public class FishingFight : SEEDScript
 
         float dt = SEED.Mathf.Max(deltaTime, 0f);
 
-        // ── 第 1 項: 目標距離への復帰（バネ）──────────────────────
-        // 見た目距離を魚 HP から決まる目標距離（DesiredFloatDistance）へ引き戻す項。
-        // これがあるおかげで、見た目をいくら分離しても長期的な平均は目標距離へ収束する。
+        // ── 第 1 項: 目標距離とのズレを詰める項 ──────────────────────
+        // 見た目距離（currentDistance）と、魚 HP から決まる目標距離（DesiredFloatDistance）の
+        // ズレをどちら向きに詰めるかを決める。向きによって速度の決め方が違う。
         float gap = DesiredFloatDistance - currentDistance;          // ＋ ＝ 目標が沖側
-        float springSpeed = SEED.Mathf.Abs(gap)
-                          * SEED.Mathf.Max(visibleDistanceReturnRate, 0f);
 
         float step = 0f;
         if (gap > 0f)
         {
             // 目標のほうが遠い ＝ 魚が沖へ引き返す局面。
-            // 従来の「引き速度（fishPullSpeed × 戦闘力比）」を<b>下限</b>として保証しつつ、
-            // 目標から大きく手前へ寄せすぎているときはバネのぶんだけ強く引き返す。
-            float outwardSpeed = SEED.Mathf.Max(
-                fishPullSpeed * PullRateClamped(), springSpeed);
+            //
+            // 速度は「引き速度（fishPullSpeed × 戦闘力比）」だけで決める【上限つきの一定速度】。
+            // 【2026-09-11 修正】以前はここに「ズレ × visibleDistanceReturnRate」という
+            // 上限の無いバネを max で混ぜていた。そのためウキを目標より手前へ寄せるほど
+            // 引き返しが強くなり、ズレが reelVisibleSpeed ÷ visibleDistanceReturnRate
+            // （既定 4m）を超えた時点で第 2 項（巻き）を食い切ってしまい、
+            // 正味の寄り速度が「巻いた距離 × 巻き効率」＝格上ほど 0 に近い値まで落ちていた。
+            // ＝「魚 HP が高いと巻いてもウキが寄ってこない」の直接の原因。
+            //
+            // さらに巻いているあいだは reelPullbackScale 倍（既定 0 ＝ 引き返さない）へ弱め、
+            // 「巻いている間は必ず寄る」を保証する。
+            //
+            // 「巻いている間」の判定に ReelingRecently（reelHoldSeconds の保持つき）を使うのは、
+            // ホイール入力がこま切れだから。巻き量は ThrottleReelAmount が
+            // reelInSpeedMax の速さで均して消化するので、ゆっくり回すと
+            // 「消化しているフレーム」が飛び飛びになる。ここで reelEffectiveThisFrame
+            // （そのフレームに消化したか）を使うと、目盛と目盛の合間に魚が引き返してしまい、
+            // 回す速さが reelInSpeedMax の 1/3 ほどに届かないと正味で寄らなくなる。
+            float pullbackScale = ReelingRecently
+                                ? SEED.Mathf.Max(reelPullbackScale, 0f)
+                                : 1f;
+            float outwardSpeed = fishPullSpeed * PullRateClamped() * pullbackScale;
             step += SEED.Mathf.Min(outwardSpeed * dt, gap);          // 目標は追い越さない
         }
         else if (gap < 0f)
         {
             // 目標のほうが近い ＝ 糸のテンションで手元側へ戻る局面。
+            // ズレに比例したバネ（visibleDistanceReturnRate）で戻す。
             // 寄せ速度の上限（reelInSpeedMax）でクランプし、目標は追い越さない。
+            // 巻き効率の高い格下の魚ほど目標距離が速く縮んでこの局面になりやすく、
+            // そのぶん一気に寄る（＝魚の強さによる寄りやすさの差はここで付く）。
+            float springSpeed = -gap * SEED.Mathf.Max(visibleDistanceReturnRate, 0f);
             float inwardSpeed = SEED.Mathf.Min(springSpeed, SEED.Mathf.Max(reelInSpeedMax, 0f));
             step -= SEED.Mathf.Min(inwardSpeed * dt, -gap);
         }
@@ -1946,7 +2050,8 @@ public class FishingFight : SEEDScript
         // ── 第 2 項: 巻き入力（「巻けば必ず寄る」の唯一の加算点）──────────
         // 魚 HP の減り方（ReelHpPerUnit）とは無関係に、巻いているあいだは必ず
         // reelVisibleSpeed ぶん手元へ寄せる。格上の魚（魚力 ≫ 竿）でも
-        // 「巻いているのにウキが動かない」が起きないのはこの 1 行のため。
+        // 「巻いているのにウキが動かない」が起きないのは、この 1 行と
+        // 第 1 項の巻き中係数（reelPullbackScale・既定 0）の組み合わせによる。
         if (reelEffectiveThisFrame)
         {
             step -= SEED.Mathf.Max(reelVisibleSpeed, 0f) * dt;
@@ -3854,18 +3959,24 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// 状態テキストへ魚の HP ％を出してよいか【HP ％表示の唯一の判断】。
+    /// デバッグ HUD（フェーズ名・次フェーズ予告・魚 HP ％）を出してよいか
+    /// 【デバッグ表示の可否の唯一の判断】。
     ///
-    /// インスペクタの <see cref="showFishHpDebug"/> と、ビルド種別による許可
-    /// （<see cref="SEED.Application.IsDebugAllowed"/>）の両方が揃ったときだけ true。
-    /// パッケージ版では設定に関わらず false になる。
+    /// インスペクタの <see cref="showDebugHud"/> と、ビルド種別による許可
+    /// （<see cref="SEED.Application.IsDebugAllowed"/> ＝ パッケージ版だけ false）の
+    /// 両方が揃ったときだけ true。パッケージ版では設定に関わらず false になる。
     /// </summary>
-    private bool ShowFishHpPercent => showFishHpDebug && SEED.Application.IsDebugAllowed;
+    private bool ShowDebugHud => showDebugHud && SEED.Application.IsDebugAllowed;
 
     /// <summary>
     /// 円の中心テキスト（フェーズ名＋予告／魚 HP ％）を更新する。
     /// 余白（<see cref="Phase.LeadIn"/>）中だけは特別扱いで、残り拍数のカウントダウン
     /// （"4" → "3" → "2" → "1"）だけを大きく出す。
+    ///
+    /// フェーズ名・予告・魚 HP ％は<b>デバッグ表示</b>なので
+    /// <see cref="ShowDebugHud"/> が false（パッケージ版など）ならアルファ 0 で伏せる。
+    /// 開始カウントダウンだけは「いつ最初の出題が来るか」を伝えるゲーム UI なので、
+    /// デバッグ表示の可否に関わらず常に出す。
     /// </summary>
     private void ApplyStatusText()
     {
@@ -3878,15 +3989,22 @@ public class FishingFight : SEEDScript
             return;
         }
 
+        // デバッグ表示が許可されていないときは、文字を書き換えずアルファだけ 0 にする
+        // （このスクリプトの非表示の流儀は <see cref="HideUi"/> と同じくアルファ 0）。
+        if (!ShowDebugHud)
+        {
+            label.Color = label.Color.WithAlpha(0f);
+            return;
+        }
+
         string phaseName = PhaseLabel(CurrentPhase);
         // 予告は実際の遷移先と同じ答え（PeekNextPhase）で出す
         // ＝ 隙の直後に走りが挟まる場合は「→ 走り」と予告される。
         string notice = nextPhaseAnnounced ? $" → {PhaseLabel(PeekNextPhase())}" : string.Empty;
 
-        // 魚の HP ％はデバッグ表示なので、許可されているときだけ 2 行目として足す。
-        label.Content = ShowFishHpPercent
-            ? $"{phaseName}{notice}\n" + $"魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%"
-            : $"{phaseName}{notice}";
+        // 2 行目に魚の HP ％を足す（ここへ来ている時点でデバッグ表示は許可済み）。
+        label.Content = $"{phaseName}{notice}\n"
+                      + $"魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%";
         label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
     }
 
