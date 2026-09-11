@@ -3119,7 +3119,12 @@ public class FishingController : SEEDScript
         // 何よりも優先させるため（同じフレームに両方成立したら釣り上げが勝つ）。
         // FinishReeling が FishingFight.EndFight() を呼ぶので、
         // これ以降は糸の減りも拍時計も止まる。
-        if (CurrentFloatDistance() <= catchDistanceMeters)
+        // ただし<b>隙（Rest）で巻いて寄せ切ったときだけ</b>成立させる（2026-09-11 追加）。
+        // 近場に投げて掛かった直後は、まだ魚が沖へ走る前（LeadIn）で距離が成立距離以下に
+        // なっていることがあり、やり取りを 1 度もせずにそのまま釣り上がってしまっていた。
+        // 余白・走り・出題・回答の間は距離が縮んでいても成立させない（縮むのは巻いたときだけ）。
+        if (CurrentFloatDistance() <= catchDistanceMeters
+            && f.CurrentPhase == FishingFight.Phase.Rest)
         {
             FinishReeling();
             return;
