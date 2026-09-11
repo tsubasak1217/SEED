@@ -3307,6 +3307,9 @@ public class FishingController : SEEDScript
                     float vdz = virtualPos.z - center.z;
                     float virtualSqrDistance = vdx * vdx + vdz * vdz;
                     if (virtualSqrDistance > sqrRange) { continue; }   // 射程外は載せない
+                    // 近づいても実体化されない個体（レベル帯の外・実体化半径の外）は載せない。
+                    // これを載せると「魚影はあるのに海には居ない」状態になる（2026-09-11 修正）。
+                    if (!fishManager.CanMaterializeNow(record, virtualSqrDistance)) { continue; }
 
                     // 未実体化の個体は実体化レベル帯の外＝掛かっている魚より確実に格上なので、
                     // 実体の魚と同じく「捕食できる（＝不透明）」扱いで描く。
