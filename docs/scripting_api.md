@@ -1090,6 +1090,7 @@ transform.WorldPosition    // Vector3（get のみ。ワールド絶対座標 = 
 transform.Rotation         // Vector3（get/set。YXZ オイラー角・度）
 transform.Scale            // Vector3（get/set）
 transform.Teleport(pos)    // void: 衝突を無視して pos へ瞬間移動（キャラクターコントローラー用）
+transform.GameObject       // GameObject（この Transform を持つアクタ。参照フィールドで受けた Transform から他のコンポーネントを辿るときに使う）
 
 // 方向ベクトル（すべて get のみ・ワールド空間・正規化済み）
 transform.Forward          // Vector3（回転 0 のとき (0,0,1)）
@@ -1105,6 +1106,9 @@ transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
 
 // 例: 自分の向いている方向へ前進する
 transform.Position += transform.Forward * 5f * SEED.Time.DeltaTime;
+
+// 例: [SerializeField] で受けた Transform 参照から、そのアクタの別コンポーネントを辿る
+if (target.GameObject.GetComponent<SEED.Camera>() is { } cam) { float fov = cam.FieldOfView; }
 ```
 
 > **重要 — エンジンの前方向は +Z**（左手系）です。`Transform.Rotation` が 0 のとき
@@ -1135,6 +1139,7 @@ if (gameObject.GetComponent<CanvasTransform>() is { } ct)   // CanvasTransform?�
                            //   ※ Text へは Text.BoxWidth > 0（枠あり）のときだけ効く
     ct.Anchor              // Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）
     ct.ScreenPosition      // Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル）
+    ct.GameObject          // GameObject（この CanvasTransform を持つアクタ。参照フィールドで受けた CanvasTransform から他のコンポーネントを辿るときに使う）
 }
 ```
 

@@ -39,6 +39,35 @@ public readonly struct CanvasTransform : IComponentHandle<CanvasTransform>
     /// </summary>
     public bool IsValid => ScriptHost.HasComponent(_entity, Comp);
 
+    // ── 所有アクタへの橋渡し ───────────────────────────────
+
+    /// <summary>
+    /// この CanvasTransform を持つアクタ（GameObject）。
+    ///
+    /// <para><b>なぜそのまま GameObject になるのか</b>：
+    /// CanvasTransform / Transform だけは<b>アクタのルート entity へ直付け</b>されており
+    /// （それ以外のコンポーネントはスロット entity 格納型。正典は
+    /// <c>runtime/src/engine/core/scripting/host_api.rs</c> の <c>resolve_component_slot</c>）、
+    /// この CanvasTransform が指す entity はアクタのルート entity そのものだからである。
+    /// </para>
+    ///
+    /// <para><b>用途</b>：<c>[SerializeField]</c> の CanvasTransform 参照フィールドから、
+    /// その<b>アクタの他コンポーネント</b>（Sprite / Text など）へ辿るための入口。
+    /// <code>
+    /// if (target.GameObject.GetComponent&lt;Sprite&gt;() is { } sprite) { sprite.Color = c; }
+    /// </code>
+    /// </para>
+    ///
+    /// <para><b><see cref="IsValid"/> が false のとき</b>：
+    /// 参照が<b>未解決</b>なら entity は <see cref="Entity.None"/> なので
+    /// <c>GameObject.IsValid</c> も false になる。参照先が<b>破棄済み</b>の場合は
+    /// entity の世代が古いだけなので <c>GameObject.IsValid</c> は true を返しうるが、
+    /// その場合も <c>GetComponent&lt;T&gt;()</c> は世代不一致で解決に失敗して null を返す。
+    /// どちらの場合も例外にはならない。
+    /// </para>
+    /// </summary>
+    public GameObject GameObject => new(_entity);
+
     /// <summary>XY 平面上の位置（親 Canvas 基準の相対座標・ワールドユニット）。</summary>
     public Vector2 Position
     {

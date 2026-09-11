@@ -13,6 +13,8 @@ using SEEDEditor.Scripting;
 ///  1. 会話データ（DialogueEntry のリスト）を先頭から順に進める。
 ///  2. 送り入力を判定する（決定キー／マウス左クリック）。
 ///  3. 各行の開始・終了イベントと、全会話終了イベントを発火する。
+///  4. 会話前のカメラ姿勢を控えさせ、会話終了時にそこへ戻させる
+///     （控える／戻すの実装は DialogueCameraDirector 側）。
 ///
 /// 表示（文字送り・名札）は DialogueWindow、カメラ移動は DialogueCameraDirector が
 /// 担当し、このクラスはそれらへ指示を出すだけ（単一責任）。
@@ -25,6 +27,12 @@ using SEEDEditor.Scripting;
 /// 【シーン側の設定】
 ///  - window / cameraDirector に、それぞれ会話窓アクターと MainCamera を指定する。
 ///  - onDialogueFinished に「会話後にやること」（例: PrologueFlow.GoToMainGame）を結線する。
+///  - 「終了時にカメラを戻す」を切ると、会話終了後もカメラは最後の台詞の構図のまま残る。
+///    会話の直後にシーン遷移する構成（プロローグ）では、戻す動きが見えるので切ってよい。
+///
+/// 【終了イベントのタイミング】
+///  「終了時にカメラを戻す」かつ戻り方が Lerp のときだけ、onDialogueFinished は
+///  <b>カメラが戻り終わってから</b>発火する（それ以外は従来どおり即時発火）。
 /// </summary>
 public class DialogueDirector : SEEDScript
 {
@@ -32,6 +40,20 @@ public class DialogueDirector : SEEDScript
 
     /// <summary>会話データの先頭インデックス。</summary>
     private const int FirstEntryIndex = 0;
+
+    /// <summary>「終了時の補間時間(秒)」の既定値。</summary>
+    private const float DefaultFinishReturnDuration = 1f;
+
+    /// <summary>
+    /// カメラ戻しの完了を待つ上限に足す余裕（秒）。
+    ///
+    /// 待ちの上限は「終了時の補間時間 + この値」。カメラ側が何らかの理由で
+    /// 進まなくなっても（Time.Scale = 0 のまま実時間 off、スクリプトの差し替え等）、
+    /// ここで必ず打ち切って終了イベントを発火する。
+    /// 終了イベントの先で入力制限の解除やシーン遷移が行われるため、
+    /// 待ち続けると操作不能のまま詰んでしまう。
+    /// </summary>
+    private const float ReturnWaitGraceSeconds = 1f;
 
     // ── 進行段階 ────────────────────────────────────────────
 
@@ -42,6 +64,13 @@ public class DialogueDirector : SEEDScript
         Idle,
         /// <summary>会話中。</summary>
         Playing,
+        /// <summary>
+        /// 台詞は全て終わり、カメラを会話開始前の姿勢へ戻している最中。
+        /// 戻り終わってから <see cref="onDialogueFinished"/> を発火する
+        /// （終了イベントでカメラ追従の再開やシーン遷移が走るため、
+        ///  戻り切る前に渡すと画が飛ぶ）。
+        /// </summary>
+        ReturningCamera,
         /// <summary>全会話が終わった（以降は入力を受け付けない）。</summary>
         Finished,
     }
@@ -64,6 +93,24 @@ public class DialogueDirector : SEEDScript
     [SerializeField(Label = "自動開始", Tooltip = "シーン開始と同時に会話を始める")]
     public bool autoStart = true;
 
+    /// <summary>
+    /// 会話が終わったとき、カメラを<b>会話開始前の姿勢（位置・回転・画角）</b>へ戻すか。
+    ///
+    /// 戻し先は会話開始時（最初のカメラ移動より前）に控える。
+    /// 会話の直後にシーン遷移するような構成（プロローグなど）では、
+    /// 戻す動きが見えてしまうので false にする。
+    /// </summary>
+    [SerializeField(Label = "終了時にカメラを戻す", Tooltip = "会話開始前の位置・回転・画角へカメラを戻す（直後にシーン遷移する会話では false 推奨）")]
+    public bool restoreCameraOnFinish = true;
+
+    /// <summary>終了時にカメラを戻す方法（Cut = 即座に / Lerp = 補間して）。</summary>
+    [SerializeField(Label = "終了時の戻り方", Tooltip = "Cut = 即座に戻す / Lerp = 補間しながら戻す")]
+    public DialogueCameraMode finishReturnMode = DialogueCameraMode.Lerp;
+
+    /// <summary>終了時に Lerp で戻すときの時間（秒）。Cut のときは使われない。</summary>
+    [SerializeField(Label = "終了時の補間時間(秒)", Tooltip = "終了時の戻り方が Lerp のときの戻し時間")]
+    public float finishReturnDuration = DefaultFinishReturnDuration;
+
     /// <summary>全会話が終わった瞬間に呼ぶイベント（シーン遷移などを結線する）。</summary>
     [SerializeField(Label = "会話終了時", Tooltip = "最後の台詞を送り終えた瞬間に呼ばれる")]
     public SEED.ScriptEvent onDialogueFinished;
@@ -79,13 +126,23 @@ public class DialogueDirector : SEEDScript
     /// <summary>初期化（窓を閉じる・自動開始）を済ませたか。</summary>
     private bool _bootstrapped;
 
+    /// <summary>
+    /// 終了後のカメラ戻しを待っている時間（秒・実時間）。
+    /// <see cref="ReturnWaitGraceSeconds"/> の打ち切り判定に使う。
+    /// </summary>
+    private float _returnWaitElapsed;
+
     // ── 公開プロパティ ──────────────────────────────────────
 
     /// <summary>会話中か。</summary>
     public bool IsPlaying => _state == DialogueState.Playing;
 
-    /// <summary>全会話が終わっているか。</summary>
-    public bool IsFinished => _state == DialogueState.Finished;
+    /// <summary>
+    /// 全会話が終わっているか。
+    /// 終了後のカメラ戻し（<see cref="DialogueState.ReturningCamera"/>）の最中も
+    /// 台詞自体は終わっているため true を返す。
+    /// </summary>
+    public bool IsFinished => _state is DialogueState.ReturningCamera or DialogueState.Finished;
 
     // ── ライフサイクル ──────────────────────────────────────
 
@@ -108,6 +165,22 @@ public class DialogueDirector : SEEDScript
             window?.Hide();
             if (autoStart) StartDialogue();
             return;   // 開始フレームの入力は送りに使わない（開幕即送りを防ぐ）
+        }
+
+        // 終了後のカメラ戻しの最中は、戻り終わりを待ってから終了イベントを発火する
+        if (_state == DialogueState.ReturningCamera)
+        {
+            // 待ちの計測は必ず実時間で行う（カメラ側がゲーム時間で止まっていても打ち切れるように）
+            _returnWaitElapsed += SEED.Time.UnscaledDeltaTime;
+            bool waitExpired = _returnWaitElapsed >= finishReturnDuration + ReturnWaitGraceSeconds;
+
+            if (!waitExpired && cameraDirector is { IsMoving: true }) return;
+
+            // 打ち切る場合は中途半端な姿勢で残さず、戻り先へ合わせてから終わる
+            if (waitExpired) { cameraDirector?.SnapToTarget(); }
+
+            FireFinished();
+            return;
         }
 
         if (_state != DialogueState.Playing) return;
@@ -134,6 +207,12 @@ public class DialogueDirector : SEEDScript
         }
 
         _state = DialogueState.Playing;
+
+        // 会話前のカメラ姿勢（位置・回転・画角）を控える。
+        // 最初のカメラ移動（BeginEntry → MoveTo）より前に行わないと、
+        // 1 行目の目標姿勢を「会話前の姿勢」として控えてしまう。
+        if (restoreCameraOnFinish) { cameraDirector?.CaptureReturnPoint(); }
+
         window?.Show();
         BeginEntry(_index);
     }
@@ -213,12 +292,40 @@ public class DialogueDirector : SEEDScript
     }
 
     /// <summary>
-    /// 会話を終了する（窓を閉じ、終了イベントを発火する）。
+    /// 会話を終了する（窓を閉じ、カメラを戻し、終了イベントを発火する）。
+    ///
+    /// カメラを<b>補間で</b>戻す場合だけは、戻り終わるまで終了イベントを遅らせる
+    /// （<see cref="DialogueState.ReturningCamera"/>）。終了イベントの先では
+    /// カメラ追従の再開（MainGame）やシーン遷移（プロローグ）が走るため、
+    /// 戻り切る前に渡すと画が飛ぶ。
+    /// 即時（Cut）で戻した場合・戻さない場合・戻り先が無い場合は、
+    /// 従来どおり<b>その場で同期的に</b>発火する
+    /// （会話データが空のときに同期発火する前提へ依存している呼び出し側がある）。
+    /// 遅らせる場合でも待ちには上限があり（<see cref="ReturnWaitGraceSeconds"/>）、
+    /// 必ず終了イベントへ到達する。
     /// </summary>
     private void Finish()
     {
-        _state = DialogueState.Finished;
         window?.Hide();
+
+        if (restoreCameraOnFinish
+            && cameraDirector is { } camera
+            && camera.ReturnToCapturedPoint(finishReturnMode, finishReturnDuration))
+        {
+            _state             = DialogueState.ReturningCamera;
+            _returnWaitElapsed = 0f;
+            return;
+        }
+
+        FireFinished();
+    }
+
+    /// <summary>
+    /// 会話終了イベントを発火して完全に終わる【終了の唯一の出口】。
+    /// </summary>
+    private void FireFinished()
+    {
+        _state = DialogueState.Finished;
         InvokeSafely(onDialogueFinished);
     }
 
