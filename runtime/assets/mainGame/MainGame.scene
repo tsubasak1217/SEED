@@ -5030,8 +5030,8 @@
               0.0
             ],
             "anchor": [
-              0.0,
-              0.0
+              0.5,
+              1.0
             ],
             "scale_transform": true,
             "scale_size": true,
