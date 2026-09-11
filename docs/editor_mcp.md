@@ -351,7 +351,7 @@ IPC ではそのパスだけを返す（`PROFILE_DUMP_DONE:{パス}`）。
 | 環境変数 | 何を差し替えるか | 解決箇所 |
 |---|---|---|
 | `SEED_EDITOR_EXE` | `seed_launch` が起動する `SEEDEditor.exe` | `SeedMcpServer/Launcher.cs::ResolveEditorExePath` |
-| `SEED_RUNTIME_EXE` | エディタが起動する `SEED.exe` | `editor/src/MainWindow.xaml.cs::ResolveRuntimePath` |
+| `SEED_RUNTIME_EXE` | エディタが起動する `SEED.exe` | `editor/src/Runtime/BuildConfig/RuntimeExeLocator.cs::Resolve` |
 | `SEED_PROJECT` | `seed_launch` が `--project` で渡すプロジェクト（引数 `project` 省略時の既定） | `SeedMcpServer/Launcher.cs::LaunchAsync` / `editor/src/Headless/EditorStartupOptions.cs` |
 
 どちらも「実在するファイルを指しているときだけ」採用され、未設定・不在なら
@@ -368,6 +368,11 @@ SEED_RUNTIME_EXE=/tmp/rt_target/debug/SEED.exe SEED_EDITOR_EXE=/tmp/ed_out/SEEDE
 なお `SEED_RUNTIME_EXE` を使うと、エディタの「ソース変更を検知して cargo build」
 （`RuntimeSourceWatcher`）は自動的に無効になる（指定先の 2 階層上に `Cargo.toml` が
 無いため）。**ランタイムのビルドは自分で回すこと。**
+
+ヘッドレス起動でも、未指定なら通常どおりビルド構成（既定 Develop、
+`runtime/target/develop/SEED.exe`）が使われる。検証で構成を固定したいときは
+`SEED_RUNTIME_EXE` に絶対パスを入れれば構成の選択より優先される
+（docs/runtime_build_configs.md）。
 
 ---
 

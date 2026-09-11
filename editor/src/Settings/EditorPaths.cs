@@ -29,6 +29,14 @@ public static class EditorPaths
     private const string SETTINGS_DIR_NAME = "settings";
 
     /// <summary>
+    /// 構成フォルダ名（エディタルート直下）。
+    /// 「利用者が書き換える設定」ではなく「リポジトリに入れて配る定義」の置き場。
+    /// settings/ と分ける理由: settings/ は実行中に書き換わり git 管理外の値も混ざるが、
+    /// config/ は読み取り専用の定義でレビュー対象（例: ランタイムのビルド構成一覧）。
+    /// </summary>
+    private const string CONFIG_DIR_NAME = "config";
+
+    /// <summary>
     /// 実行ファイルの置き場からエディタルートまで遡る相対パス。
     /// 開発ビルドは editor/bin/&lt;Cfg&gt;/net9.0-windows/ に出るため 3 階層。
     /// </summary>
@@ -51,5 +59,40 @@ public static class EditorPaths
         try { Directory.CreateDirectory(dir); }
         catch { /* 作れなくても読み書き時に再度失敗するだけ。起動は止めない */ }
         return dir;
+    }
+
+    /// <summary>解決済みの構成フォルダ（存在しなければ null）。</summary>
+    private static readonly Lazy<string?> _configDir = new(ResolveConfigDir);
+
+    /// <summary>
+    /// エディタ構成フォルダ（editor/config）の絶対パス。
+    /// リポジトリに入っている読み取り専用の定義ファイルの置き場
+    /// （現在はランタイムのビルド構成一覧 runtime_build_configs.json）。
+    ///
+    /// <para>
+    /// 見つからない場合は null を返す（settings/ と違って作らない）。
+    /// 中身はリポジトリから配られるものなので、空のフォルダを作っても意味が無く、
+    /// 読み手はそれぞれの組み込み既定へフォールバックすべきだから。
+    /// </para>
+    /// </summary>
+    public static string? ConfigDir => _configDir.Value;
+
+    /// <summary>
+    /// 構成フォルダを解決する。
+    ///   ① 開発配置: editor/bin/&lt;Cfg&gt;/&lt;tfm&gt;/ から 3 階層上の editor/config
+    ///   ② 配布配置: exe の隣の config/
+    /// どちらも無ければ null。
+    /// </summary>
+    private static string? ResolveConfigDir()
+    {
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+        var devDir = Path.GetFullPath(Path.Combine(baseDir, EDITOR_ROOT_RELATIVE, CONFIG_DIR_NAME));
+        if (Directory.Exists(devDir)) return devDir;
+
+        var distDir = Path.GetFullPath(Path.Combine(baseDir, CONFIG_DIR_NAME));
+        if (Directory.Exists(distDir)) return distDir;
+
+        return null;
     }
 }

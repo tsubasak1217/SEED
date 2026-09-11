@@ -39,7 +39,8 @@
 | 1 | exe から `..\..\..\..\templates`（= リポジトリ直下） | 開発時 |
 | 2 | exe の隣の `templates/` | リリース時（配布物に同梱する場合） |
 
-`MainWindow.ResolveRuntimePath()` と同じ流儀。どれも見つからなければ `Resolve()` は
+ランタイム exe の探索（`Runtime/BuildConfig/RuntimeExeLocator`）と同じ流儀。
+どれも見つからなければ `Resolve()` は
 `null` を返すので、呼び出し側はメニューを無効化するなどの扱いができる。
 
 ---

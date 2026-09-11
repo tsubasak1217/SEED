@@ -2026,8 +2026,9 @@ wgpu 検証エラーで panic する。原因は、草バッファがプロッ�
 ### 15.11 ルール散布のボトルネックと高速化（`fast_density_at`）
 
 **症状**: `TERRAIN_SCATTER_RULES`（全チャンクをルールで敷き直す）が CPU 100% 張り付きで
-数十秒かかり、その間エディタが固まる。**エディタは既定で debug ビルドの `SEED.exe` を起動する**
-（`MainWindow.xaml.cs` の `ResolveRuntimePath`）ため、体感するのは debug の遅い方の数値である。
+数十秒かかり、その間エディタが固まる。計測当時の**エディタは既定で debug ビルドの `SEED.exe` を起動していた**
+ため、体感するのは debug の遅い方の数値である。（現在の既定は Develop 構成＝最適化 1 で、
+ツールバーのコンボから Debug / Develop / Release を選べる。docs/runtime_build_configs.md）
 
 **計測（`terrain_scatter_ops::tests::bench_scatter_rules_realistic`。48 チャンク・出荷 props.json の
 密度・地表を全チャンクが含む起伏地形）**:

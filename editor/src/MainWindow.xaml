@@ -294,6 +294,10 @@
             </Setter>
         </Style>
 
+        <!-- ランタイムのビルド構成コンボの幅。
+             最長ラベル "Develop" ＋ ドロップダウン矢印が収まる最小幅。 -->
+        <sys:Double x:Key="RuntimeBuildConfigComboWidth">96</sys:Double>
+
         <!-- Playbar ボタンスタイル -->
         <Style x:Key="PlayBarBtnStyle" TargetType="Button">
             <Setter Property="Width"           Value="36"/>
@@ -988,6 +992,29 @@
                                Width="18" Height="18"
                                RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Button>
+
+                    <!-- ランタイム（SEED.exe）のビルド構成: Debug / Develop / Release。
+                         項目はデータ側（editor/config/runtime_build_configs.json）から読み、
+                         コードビハインドで ItemsSource / SelectedItem を差し込む
+                         （MainWindow.RuntimeBuildConfig.cs）。
+                         配色はアプリ共通のダーク ComboBox 暗黙スタイルを継承し、ここでは寸法のみ指定する。
+                         Play 中はランタイムを差し替えられないため IsEnabled=False になる。 -->
+                    <ComboBox x:Name="CmbRuntimeBuildConfig"
+                              Width="{StaticResource RuntimeBuildConfigComboWidth}"
+                              Height="24" Margin="8,0,0,0"
+                              FontSize="11"
+                              VerticalAlignment="Center"
+                              VerticalContentAlignment="Center"
+                              DisplayMemberPath="Label"
+                              ToolTip="{Binding SelectedItem.Description, RelativeSource={RelativeSource Self}}"
+                              SelectionChanged="OnRuntimeBuildConfigChanged">
+                        <ComboBox.ItemContainerStyle>
+                            <!-- 各項目のツールチップに構成の説明（初回ビルドの所要など）を出す -->
+                            <Style TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+                                <Setter Property="ToolTip" Value="{Binding Description}"/>
+                            </Style>
+                        </ComboBox.ItemContainerStyle>
+                    </ComboBox>
 
                     <!-- デバッグ操作（ブレークポイント停止中のみ表示）:
                          継続(F5) / ステップオーバー(F10) / ステップイン(F11) / ステップアウト(Shift+F11) -->

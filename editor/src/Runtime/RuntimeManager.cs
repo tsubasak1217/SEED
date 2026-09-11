@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using SEEDEditor.Ipc;
+using SEEDEditor.Runtime.BuildConfig;
 
 namespace SEEDEditor.Runtime;
 
@@ -78,7 +79,18 @@ public sealed class RuntimeManager : IDisposable
     private const uint SWP_FRAMECHANGED           = 0x0020;
 
     // ── フィールド ─────────────────────────────────────────────
-    private readonly string               _runtimeExePath;
+    /// <summary>
+    /// 起動対象のランタイム exe の絶対パス。
+    /// ビルド構成の切り替え（<see cref="SwitchBuildConfigAsync"/>）で差し替わるため readonly ではない。
+    /// UI スレッドからのみ書き換える。
+    /// </summary>
+    private string                        _runtimeExePath;
+
+    /// <summary>
+    /// 現在のビルド構成（cargo のプロファイルと target 出力フォルダ）。
+    /// cargo build の引数と、切り替え時のログ・UI 表示に使う。
+    /// </summary>
+    public RuntimeBuildConfig BuildConfig { get; private set; }
     /// <summary>Playモードで --assets-root として渡すアセットルートパス。</summary>
     public string? AssetsPath { get; set; }
 
@@ -106,7 +118,11 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public bool ProfilerEnabled { get; private set; }
 
-    private readonly RuntimeSourceWatcher? _sourceWatcher;
+    /// <summary>
+    /// ランタイムソースの変更監視。構成を切り替えると比較対象の exe が変わるため、
+    /// 切り替え時に作り直す（readonly ではない）。
+    /// </summary>
+    private RuntimeSourceWatcher?         _sourceWatcher;
     private Process?                      _process;
     private PipeServer?                   _pipe;
     private IntPtr                        _runtimeHwnd;
@@ -618,19 +634,43 @@ public sealed class RuntimeManager : IDisposable
 
     // ── コンストラクタ ─────────────────────────────────────────
 
-    public RuntimeManager(string runtimeExePath)
+    /// <param name="runtimeExePath">起動するランタイム exe の絶対パス（構成から解決済み）。</param>
+    /// <param name="buildConfig">
+    /// そのパスに対応するビルド構成。cargo build のプロファイル指定に使う。
+    /// exe パスと構成は必ず対で渡す（片方だけ差し替えると「debug をビルドして
+    /// develop を起動する」ような静かな不整合になる）。
+    /// </param>
+    public RuntimeManager(string runtimeExePath, RuntimeBuildConfig buildConfig)
     {
         _runtimeExePath = runtimeExePath;
+        BuildConfig     = buildConfig;
 
-        var sourceDir = ResolveRuntimeSourceDir(runtimeExePath);
+        EditorLog.Write($"RuntimeManager 生成 — 構成={BuildConfig}  exe={runtimeExePath}");
+        CreateSourceWatcher();
+    }
+
+    /// <summary>
+    /// ランタイムソース監視を作り直す（生成時とビルド構成の切り替え時）。
+    ///
+    /// exe の場所が変わると「ソースが exe より新しいか」の比較対象も変わるため、
+    /// 監視は必ず現在の <see cref="_runtimeExePath"/> に対して張り直す。
+    /// 未ビルドの構成へ切り替えた直後は exe が存在せず IsDirty=true になり、
+    /// 次の StartEditAsync がその構成で cargo build を回す。
+    /// </summary>
+    private void CreateSourceWatcher()
+    {
+        _sourceWatcher?.Dispose();
+        _sourceWatcher = null;
+
+        var sourceDir = ResolveRuntimeSourceDir(_runtimeExePath);
         if (sourceDir is not null)
         {
-            _sourceWatcher = new RuntimeSourceWatcher(sourceDir, runtimeExePath);
+            _sourceWatcher = new RuntimeSourceWatcher(sourceDir, _runtimeExePath);
             EditorLog.Write($"RuntimeSourceWatcher 開始 — dir={sourceDir}  isDirty={_sourceWatcher.IsDirty}");
         }
         else
         {
-            EditorLog.Write($"RuntimeSourceWatcher: Cargo.toml が見つからないためスキップ (exe={runtimeExePath})");
+            EditorLog.Write($"RuntimeSourceWatcher: Cargo.toml が見つからないためスキップ (exe={_runtimeExePath})");
         }
     }
 
@@ -649,7 +689,7 @@ public sealed class RuntimeManager : IDisposable
 
             ChangeState(EditorState.Building);
             var sourceDir = ResolveRuntimeSourceDir(_runtimeExePath)!;
-            var ok = await BuildAsync(sourceDir);
+            var ok = await BuildAsync(sourceDir, BuildConfig);
             if (!ok)
             {
                 ChangeState(EditorState.Idle);
@@ -665,6 +705,84 @@ public sealed class RuntimeManager : IDisposable
         }
 
         await LaunchAsync(editMode: true);
+    }
+
+    /// <summary>
+    /// ランタイムのビルド構成を切り替える（Debug / Develop / Release）。
+    ///
+    /// <para>手順:</para>
+    /// <list type="number">
+    ///   <item>Play 中（起動シーケンス中を含む）は拒否する。Play 中に exe を差し替えると
+    ///         実行中のゲームと次に起動する exe が食い違い、原因の追いにくい状態になるため。</item>
+    ///   <item>旧構成のランタイムをすべて終了する。現在の Edit ランタイムだけでなく、
+    ///         Stop 後も常駐保持している Play ランタイムも終了する
+    ///         （残すと次の Play が旧構成の exe をそのまま再利用してしまう）。</item>
+    ///   <item>起動対象 exe と監視を新構成へ張り替える。</item>
+    ///   <item>Edit モードで起動し直す。未ビルド（exe が無い）なら
+    ///         <see cref="StartEditAsync"/> がその構成で cargo build を回してから起動する。</item>
+    /// </list>
+    /// <para>
+    /// UI スレッドから呼ぶこと（プロセス・状態の操作を伴うため）。
+    /// 切り替え後の再起動はウィンドウ再埋め込みまで既存の Edit 起動経路に乗る。
+    /// </para>
+    /// </summary>
+    /// <param name="next">切り替え先のビルド構成。</param>
+    /// <returns>
+    /// 切り替えを受け付けたら true。Play 中で拒否した場合は false
+    /// （呼び出し側はトーストなどで理由を知らせる）。
+    /// 同じ構成が指定された場合は何もせず true を返す。
+    /// </returns>
+    public async Task<bool> SwitchBuildConfigAsync(RuntimeBuildConfig next)
+    {
+        ArgumentNullException.ThrowIfNull(next);
+
+        // ① Play 中・起動中は拒否する
+        if (_isLaunching || _inEmbeddedPlay
+            || _state == EditorState.Play || _state == EditorState.Pause)
+        {
+            EditorLog.Write(
+                $"SwitchBuildConfigAsync — Play 中のため拒否  state={_state}  launching={_isLaunching}  embedded={_inEmbeddedPlay}");
+            return false;
+        }
+
+        // ② 同じ構成なら何もしない（無駄な再起動を避ける）
+        if (string.Equals(BuildConfig.Id, next.Id, RuntimeBuildConfig.IdComparison))
+        {
+            EditorLog.Write($"SwitchBuildConfigAsync — 既に構成 {next.Id} のため何もしない");
+            return true;
+        }
+
+        var nextExePath = RuntimeExeLocator.Resolve(next);
+        var needsBuild  = RuntimeExeLocator.NeedsBuild(nextExePath);
+        EditorLog.Write(
+            $"SwitchBuildConfigAsync — 構成切り替え {BuildConfig.Id} → {next.Id}  " +
+            $"exe={nextExePath}  要ビルド={needsBuild}");
+
+        // ③ 旧構成のランタイムをすべて終了する（exe のロック解除も兼ねる）
+        KillRuntime(sendStop: true);
+        DisposePersistentPlayRuntime(killProcess: true);
+        ChangeState(EditorState.Idle);
+
+        // ④ 起動対象とソース監視を新構成へ張り替える
+        _runtimeExePath = nextExePath;
+        BuildConfig     = next;
+        CreateSourceWatcher();
+
+        // ⑤ Edit モードで起動し直す（未ビルドならここで cargo build が走る）。
+        //    ただしランタイムを一度も埋め込んでいない場合（アセット不在で起動を見送っている等)は
+        //    起動しない。コンテナ HWND が未確定のまま起動すると親無しウィンドウが出てしまう。
+        //    その場合は構成の差し替えだけ行い、次にエディタが起動を試みたときに新構成が使われる。
+        if (_viewportContainerHwnd == IntPtr.Zero)
+        {
+            EditorLog.Write(
+                $"SwitchBuildConfigAsync — ビューポート未確定のため起動はしない（構成のみ差し替え）  構成={BuildConfig}");
+            return true;
+        }
+
+        await StartEditAsync(_viewportContainerHwnd);
+
+        EditorLog.Write($"SwitchBuildConfigAsync — 完了  構成={BuildConfig}");
+        return true;
     }
 
     /// <summary>
@@ -1311,28 +1429,27 @@ public sealed class RuntimeManager : IDisposable
     // ── プライベート: ビルド ───────────────────────────────────
 
     /// <summary>
-    /// exe パスから runtime/ ソースディレクトリを解決する。
-    /// target/debug または target/release の 2 階層上が runtime/。
-    /// Cargo.toml が存在しない（配布時 etc）場合は null を返す。
+    /// exe パスから runtime/ ソースディレクトリ（cargo の作業ディレクトリ）を解決する。
+    /// 判定は <see cref="RuntimeSourceDirLocator"/> に一本化してある
+    /// （出力フォルダ名を "debug"/"release" で決め打ちしないため）。
+    /// Cargo.toml が存在しない（配布形態 etc）場合は null を返す。
     /// </summary>
     private static string? ResolveRuntimeSourceDir(string exePath)
-    {
-        // runtime/target/debug/SEED.exe
-        //          ↑ ↑ ↑ 3 つ上
-        var exeDir     = Path.GetDirectoryName(exePath) ?? "";        // target/debug
-        var targetDir  = Path.GetDirectoryName(exeDir)  ?? "";        // target
-        var runtimeDir = Path.GetDirectoryName(targetDir) ?? "";      // runtime
-        var cargoToml  = Path.Combine(runtimeDir, "Cargo.toml");
-        return File.Exists(cargoToml) ? runtimeDir : null;
-    }
+        => RuntimeSourceDirLocator.FromExePath(exePath);
 
     /// <summary>
-    /// 指定ディレクトリで <c>cargo build</c> を実行し、完了を待つ。
+    /// 指定ディレクトリで <c>cargo build --profile &lt;構成&gt;</c> を実行し、完了を待つ。
     /// 標準エラー出力（cargo の進捗表示）をログに書き出す。
     /// </summary>
-    private static async Task<bool> BuildAsync(string workingDir)
+    /// <param name="workingDir">cargo を起動する作業ディレクトリ（runtime/）。</param>
+    /// <param name="config">
+    /// ビルド構成。プロファイルを明示しないと、構成を切り替えても dev だけが
+    /// ビルドされて「起動する exe が永遠に生成されない」状態になる。
+    /// </param>
+    private static async Task<bool> BuildAsync(string workingDir, RuntimeBuildConfig config)
     {
-        EditorLog.Write($"BuildAsync — cargo build  dir={workingDir}");
+        var arguments = CargoBuildCommand.BuildArguments(config);
+        EditorLog.Write($"BuildAsync — {CargoBuildCommand.Executable} {arguments}  dir={workingDir}  構成={config}");
 
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1340,8 +1457,8 @@ public sealed class RuntimeManager : IDisposable
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName               = "cargo",
-                Arguments              = "build",
+                FileName               = CargoBuildCommand.Executable,
+                Arguments              = arguments,
                 WorkingDirectory       = workingDir,
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
@@ -1373,7 +1490,7 @@ public sealed class RuntimeManager : IDisposable
         var exitCode = await tcs.Task;
         proc.Dispose();
 
-        EditorLog.Write($"BuildAsync — cargo build 終了  exitCode={exitCode}");
+        EditorLog.Write($"BuildAsync — cargo build 終了  構成={config.Id}  exitCode={exitCode}");
         return exitCode == 0;
     }
 

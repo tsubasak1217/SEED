@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ランタイムのビルド構成（Debug / Develop / Release）の単体テスト。
+
+    ProjectSystemTests / AssetsRootProbeTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （構成カタログ・パス解決・cargo 引数が UI から独立していることの検知器になる）
+
+    検証の柱:
+      1. runtime_build_configs.json の読み込み（既定 / 一覧 / 破損時のフォールバック）
+      2. RuntimeExeLocator のパス解決（環境変数 → exe の隣 → target/<構成>）
+      3. CargoBuildCommand の引数組み立て
+      4. 環境設定の id が無効なときに既定へ丸められること
+
+    実行方法: dotnet run (project=editor/tests/RuntimeBuildConfigTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.RuntimeBuildConfig</RootNamespace>
+    <AssemblyName>RuntimeBuildConfigTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: ビルド構成まわり（いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfig.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeBuildConfig.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfigCatalog.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeBuildConfigCatalog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeExeLocator.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeExeLocator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeSourceDirLocator.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeSourceDirLocator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\BuildConfig\CargoBuildCommand.cs">
+      <Link>Linked\Runtime\BuildConfig\CargoBuildCommand.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+
+    <!--
+      リポジトリに入っている実物のカタログ。
+      「コードの既定」と「配られる JSON」がズレていないことを実ファイルで検証する
+      （出力へコピーせず、テスト内でソースツリーのパスを解決して読む方針もあるが、
+       出力へ置いたほうが実行ディレクトリに依存せず安定する）。
+    -->
+    <None Include="..\..\config\runtime_build_configs.json">
+      <Link>runtime_build_configs.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

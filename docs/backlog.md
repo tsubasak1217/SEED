@@ -12,6 +12,10 @@
 
 ## エディタ
 
+- [ ] **ビルド構成の切り替えで未保存のシーン編集は失われる** — 2026-09-12。ツールバーのビルド構成コンボ（Debug / Develop / Release）は Edit ランタイムを終了して建て直すため、ランタイム側にしか無い未保存の編集は消える。現状は `_isDirty` のときに確認ダイアログを出して同意を取るだけで、保存してから切り替える導線は無い。Play の「保存 → 切り替え → 復元」と同じ仕組み（`SaveCurrentSceneToTempAsync`）で退避・復元できるはず。関連: `editor/src/MainWindow.RuntimeBuildConfig.cs::OnRuntimeBuildConfigChanged`、`editor/src/Runtime/RuntimeManager.cs::SwitchBuildConfigAsync`、docs/runtime_build_configs.md。
+
+- [ ] **構成ごとに `runtime/target/<構成>/` が増えてディスクを食う** — 2026-09-12。Debug / Develop / Release はビルドキャッシュを共有しないため、3 構成すべてを使うと target が 3 セット（各数 GB）できる。エディタからは掃除できず、利用者が手で消すしかない。使っていない構成の target を消す導線（またはサイズ表示）があってもよい。関連: docs/runtime_build_configs.md。
+
 - [ ] **SkinnedSprite ノードの pivot が事実上効いていない** — 2026-09-07。`CanvasTransform::to_mesh_mat4(sx, sy)` が `to_sprite_mat4` に委譲しており、pivot オフセットが `pivot × size_scale`（≒0.5px）にしかならない。描画と枠は同じ行列なので位置ズレは無いが、Inspector の pivot を変えても回転中心が動かない。**Text は解決済み**（2026-09-07。枠あり = `box_width > 0` のときのみ、`to_mesh_mat4_no_pivot` + レイアウト側の平行移動で Sprite と同じ正規化 pivot が効くようにした。枠なしは従来どおり pivot 無効）。SkinnedSprite は未対応（メッシュ寸法を pivot の基準サイズとして採るか、実寸 px を直に採るかの規約を決めるところから）。
   対処には「Text は実測枠のサイズを pivot の基準にする」設計判断が要る。関連: `runtime/src/engine/components/canvas_transform.rs`、`font/canvas_text.rs`、`app/canvas_text_bounds.rs`。
 

@@ -921,6 +921,10 @@ public partial class MainWindow
         // （Play 中はランタイムが EDIT_VIEW を無視するため UI 側も無効化する）
         ActorTabBar.IsEnabled = state == EditorState.Edit;
 
+        // ランタイムのビルド構成コンボは Edit / Idle のときだけ操作できる
+        // （Play・起動中・ビルド中はランタイムを差し替えられない）。
+        UpdateRuntimeBuildConfigEnabled(state);
+
         switch (state)
         {
             case EditorState.Edit:

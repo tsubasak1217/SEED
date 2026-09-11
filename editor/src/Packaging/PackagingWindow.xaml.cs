@@ -142,22 +142,28 @@ public partial class PackagingWindow : Window
     ///
     /// <para>
     /// 判定はランタイム exe の場所から行う。開発配置では
-    /// <c>runtime/target/&lt;debug|release&gt;/SEED.exe</c> なので 2 階層上が runtime/。
+    /// <c>runtime/target/&lt;構成&gt;/SEED.exe</c> なので 2 階層上が runtime/。
     /// それ以外（exe の隣に配置されたリリース形態など）は exe のフォルダを返す
     /// （その形態では cargo build 自体が動かないが、ここで例外にはしない）。
+    /// </para>
+    /// <para>
+    /// 出力フォルダ名は以前 "debug" / "release" で決め打ちしていたが、
+    /// ランタイムのビルド構成に develop が加わって決め打ちが外れるようになったため、
+    /// Cargo.toml の実在で判定する <see cref="SEEDEditor.Runtime.BuildConfig.RuntimeSourceDirLocator"/>
+    /// へ一本化した。
     /// </para>
     /// </summary>
     private static string ResolveRuntimeDir()
     {
-        var exeDir = Path.GetDirectoryName(MainWindow.RuntimeExePath);
-        if (string.IsNullOrEmpty(exeDir)) return Directory.GetCurrentDirectory();
+        var exePath = MainWindow.RuntimeExePath;
 
-        var buildType = Path.GetFileName(exeDir);
-        var targetDir = Path.GetFileName(Path.GetDirectoryName(exeDir) ?? "");
+        // runtime/target/<構成>/SEED.exe の形なら runtime/ が返る
+        var sourceDir = SEEDEditor.Runtime.BuildConfig.RuntimeSourceDirLocator.FromExePath(exePath);
+        if (sourceDir is not null) return sourceDir;
 
-        return (buildType is "debug" or "release") && targetDir == "target"
-            ? Path.GetFullPath(Path.Combine(exeDir, "..", ".."))
-            : exeDir;
+        // 配布形態（exe の隣に SEED.exe）: exe のフォルダ。パスが取れなければカレント。
+        var exeDir = Path.GetDirectoryName(exePath);
+        return string.IsNullOrEmpty(exeDir) ? Directory.GetCurrentDirectory() : exeDir;
     }
 
     /// <summary>

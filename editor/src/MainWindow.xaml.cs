@@ -184,7 +184,60 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         { 0x10, "SHIFT" }, // VK_SHIFT
     };
 
-    public static string RuntimeExePath      = ResolveRuntimePath();
+    // ── ランタイムのビルド構成 ──────────────────────────────────
+    // 「Play が起動する SEED.exe を Debug / Develop / Release のどれでビルドするか」。
+    // 構成の一覧は editor/config/runtime_build_configs.json（データドリブン）、
+    // 選択は環境設定（editor_preferences.json）に保存される。
+
+    /// <summary>
+    /// 選べるビルド構成のカタログ。初回アクセス時に 1 度だけ読み込む。
+    /// JSON が無い／壊れている場合も組み込み既定へフォールバックするため、必ず使える。
+    /// </summary>
+    private static readonly Lazy<SEEDEditor.Runtime.BuildConfig.RuntimeBuildConfigCatalog>
+        _runtimeBuildCatalog = new(LoadRuntimeBuildConfigCatalog);
+
+    /// <summary>選べるビルド構成のカタログ（ツールバーのコンボボックスの項目元）。</summary>
+    public static SEEDEditor.Runtime.BuildConfig.RuntimeBuildConfigCatalog RuntimeBuildCatalog
+        => _runtimeBuildCatalog.Value;
+
+    /// <summary>
+    /// いま選ばれているビルド構成。
+    /// 環境設定の id がカタログに無ければ（カタログ編集・ダウングレード）既定へ丸める。
+    /// </summary>
+    public static SEEDEditor.Runtime.BuildConfig.RuntimeBuildConfig CurrentRuntimeBuildConfig
+        => RuntimeBuildCatalog.Resolve(EditorPreferences.Instance.RuntimeBuildConfigId);
+
+    /// <summary>
+    /// 起動対象のランタイム exe の絶対パス。
+    ///
+    /// <para>
+    /// かつては起動時に 1 度だけ解決した静的フィールドだったが、ビルド構成を
+    /// 実行中に切り替えられるようになったため、選択から毎回導出するプロパティにした。
+    /// 解決順（環境変数 → エディタ exe の隣 → リポジトリの target/&lt;構成&gt;）は
+    /// <see cref="SEEDEditor.Runtime.BuildConfig.RuntimeExeLocator"/> が持つ。
+    /// ファイルが存在しない場合もパスは返る（その後 cargo build が作る）。
+    /// </para>
+    /// </summary>
+    public static string RuntimeExePath
+        => SEEDEditor.Runtime.BuildConfig.RuntimeExeLocator.Resolve(CurrentRuntimeBuildConfig);
+
+    /// <summary>
+    /// ビルド構成カタログを editor/config から読み込み、問題があればログへ出す。
+    /// 読み込み自体は失敗しない（必ず組み込み既定へフォールバックする）。
+    /// </summary>
+    private static SEEDEditor.Runtime.BuildConfig.RuntimeBuildConfigCatalog LoadRuntimeBuildConfigCatalog()
+    {
+        var catalog = SEEDEditor.Runtime.BuildConfig.RuntimeBuildConfigCatalog
+            .LoadFromDir(SEEDEditor.Settings.EditorPaths.ConfigDir);
+
+        foreach (var w in catalog.Warnings)
+            EditorLog.Write($"[BuildConfig] {w}");
+
+        EditorLog.Write(
+            $"[BuildConfig] カタログ読み込み完了 — source={catalog.SourcePath ?? "(組み込み既定)"}  " +
+            $"既定={catalog.Default.Id}  件数={catalog.Configs.Count}");
+        return catalog;
+    }
 
     /// <summary>
     /// 現在のプロジェクトのアセットルート（assets:// の実体）。
@@ -244,45 +297,6 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var relPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins");
         Directory.CreateDirectory(relPath);
         return relPath;
-    }
-
-    /// <summary>
-    /// ランタイム exe の探索先を上書きする環境変数名。
-    ///
-    /// 利用者のエディタが起動していると <c>runtime/target/debug/SEED.exe</c> は
-    /// ロックされていて上書きできない。開発・計測時に別の target-dir へビルドした
-    /// SEED.exe を使いたい場合に、この環境変数へ絶対パスを入れて起動する。
-    /// （docs/editor_mcp.md「自前ビルドで起動する」を参照）
-    /// </summary>
-    private const string RuntimeExeEnvVar = "SEED_RUNTIME_EXE";
-
-    private static string ResolveRuntimePath()
-    {
-        // 0) 環境変数による明示指定を最優先する（実在するファイルのときだけ採用）。
-        var overridePath = Environment.GetEnvironmentVariable(RuntimeExeEnvVar);
-        if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
-            return Path.GetFullPath(overridePath);
-
-        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        var sameDir = Path.Combine(baseDir, "SEED.exe");
-        if (File.Exists(sameDir)) return sameDir;
-
-        var devPath = Path.GetFullPath(
-            Path.Combine(baseDir, @"..\..\..\..\runtime\target\debug\SEED.exe"));
-        if (File.Exists(devPath)) return devPath;
-
-        var relPath = Path.GetFullPath(
-            Path.Combine(baseDir, @"..\..\..\..\runtime\target\release\SEED.exe"));
-        if (File.Exists(relPath)) return relPath;
-
-        // debug / release どちらの成果物もまだ存在しない（クリーンな初回起動など）。
-        // このあと RuntimeManager が RuntimeSourceWatcher の指示で `cargo build`
-        // （＝ debug 出力）を実行して SEED.exe を生成する。
-        // ここで release パスを返すと、debug がビルドされても起動時に
-        // target/release/SEED.exe を探して「指定されたファイルが見つかりません」
-        // (Win32Exception 2) で失敗するため、ビルド後に生成される debug パスを
-        // デフォルトのフォールバックとして返す。
-        return devPath;
     }
 
     // ── 実行バーのボタン画像（ユーザー設定の PNG アイコン）────────────
@@ -411,7 +425,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         if (SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
             SEEDEditor.Headless.HeadlessWindow.Reapply(this);
 
-        EditorLog.Write($"OnWindowLoaded — RuntimeExePath={RuntimeExePath}");
+        // エディタ全体の環境設定（タッチパッドスクロール係数・ランタイムのビルド構成など）を読み込む。
+        // ランタイムのビルド構成の選択（RuntimeBuildConfigId）もここに入っているため、
+        // RuntimeManager を生成する前に読み終えている必要がある
+        // （後で読むと、保存した構成を無視して常に既定の構成で起動してしまう）。
+        EditorPreferences.Init(SettingsDir);
+
+        EditorLog.Write(
+            $"OnWindowLoaded — RuntimeExePath={RuntimeExePath}  構成={CurrentRuntimeBuildConfig}");
 
         // シーン設定（デバッグカメラ・レンダリング・編集時物理）を読み込む。
         // 起動直後はまだシーンを開いていないため、旧保存先である project_settings.json から
@@ -426,11 +447,18 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         UpdateAxisGizmoToggleVisual();
         UpdateSpriteBoneToggleVisual();
 
-        _runtimeManager = new RuntimeManager(RuntimeExePath)
+        // ランタイムの起動構成（Debug / Develop / Release）。構成と exe パスは必ず対で渡す。
+        var buildConfig  = CurrentRuntimeBuildConfig;
+        var runtimeExe   = SEEDEditor.Runtime.BuildConfig.RuntimeExeLocator.Resolve(buildConfig);
+        _runtimeManager = new RuntimeManager(runtimeExe, buildConfig)
         {
             AssetsPath          = AssetsPath,
             EditorResourcesPath = EditorResourcesPath,
         };
+        // ツールバーのビルド構成コンボへカタログと現在の選択を流し込む
+        // （MainWindow.RuntimeBuildConfig.cs）。
+        InitRuntimeBuildConfigCombo();
+
         _runtimeManager.StateChanged         += OnStateChanged;
         _runtimeManager.RuntimeHwndAvailable += OnRuntimeHwndAvailable;
         _runtimeManager.RuntimeMoveStart     += () => { _isDragging = true;  Dispatcher.BeginInvoke(ReleasePlayClamp); };
@@ -582,8 +610,6 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.SetAssetsPath(AssetsPath);
         // スクリプトエディタ: 書式・配色設定を読み込む
         PanelScriptEditor.InitSettings(SettingsDir);
-        // エディタ全体の環境設定（タッチパッドスクロール係数など）を読み込む
-        EditorPreferences.Init(SettingsDir);
         // シーンごとのビュー状態（Hierarchy の展開状態・上部トグル）を読み込む。
         // 実際の適用はシーン読み込み時（LoadScene）とランタイム接続時に行う。
         SEEDEditor.Settings.EditorViewState.Init(SettingsDir);

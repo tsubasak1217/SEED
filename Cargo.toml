@@ -111,3 +111,27 @@ opt-level = 2
 # 添字アクセスの境界チェックがそのまま QBVH 走査のホットパスに乗る。
 [profile.dev.package.arrayvec]
 opt-level = 2
+
+# ── Develop プロファイル（エディタの既定のランタイム構成）────────────────
+# エディタの Play が起動する SEED.exe のビルド構成。
+#
+# 【目的】
+#   dev（= Debug）は自前コードが完全に unoptimized なため、同じシーンでも
+#   release の約 2.5 倍のフレーム時間になる（実測 18 ms 対 7 ms）。
+#   一方 release はデバッグ情報が乏しくビルドも長い。
+#   その中間として「最適化はそこそこ効いていて、デバッグ情報は残る」構成を用意し、
+#   普段の Play の既定にする。
+#
+# 【設定の意図】
+#   inherits = "dev"  … 上記の [profile.dev.package.*] の個別最適化
+#                        （wgpu / rapier / asset_cache 依存など）をそのまま引き継ぐ。
+#                        debug = true / debug-assertions = true も dev 由来で維持される。
+#   opt-level = 1     … 自前コード（SEED クレート）に軽い最適化をかける。
+#                        2 以上と違いインライン展開が控えめなので、
+#                        ブレークポイントと変数表示が実用的な精度で残る。
+#
+# 出力先: runtime/target/develop/SEED.exe
+# 構成の一覧と切り替え UI は editor/config/runtime_build_configs.json を参照。
+[profile.develop]
+inherits  = "dev"
+opt-level = 1

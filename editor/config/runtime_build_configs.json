@@ -1,0 +1,27 @@
+{
+  "format_version": 1,
+  "default": "develop",
+  "configs": [
+    {
+      "id": "debug",
+      "label": "Debug",
+      "cargo_profile": "dev",
+      "target_dir": "debug",
+      "description": "最適化なし。フルデバッグ向け（最も遅い）"
+    },
+    {
+      "id": "develop",
+      "label": "Develop",
+      "cargo_profile": "develop",
+      "target_dir": "develop",
+      "description": "最適化 1 ＋ デバッグ情報。普段の Play 向け（既定）"
+    },
+    {
+      "id": "release",
+      "label": "Release",
+      "cargo_profile": "release",
+      "target_dir": "release",
+      "description": "配布相当の最適化（初回ビルドに時間がかかる）"
+    }
+  ]
+}

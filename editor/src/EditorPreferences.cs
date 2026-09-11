@@ -146,6 +146,24 @@ public sealed class EditorPreferences
     [JsonPropertyName("logic_placement_ground")]
     public bool LogicPlacementGround { get; set; }
 
+    /// <summary>
+    /// エディタが起動するランタイム（SEED.exe）のビルド構成 id。
+    ///
+    /// <para>
+    /// 値は editor/config/runtime_build_configs.json の "configs[].id"
+    /// （"debug" / "develop" / "release"）。null＝未選択で、カタログの
+    /// "default"（既定は develop）が使われる。
+    /// </para>
+    /// <para>
+    /// カタログから消えた id が残っていても落ちないよう、参照側は必ず
+    /// <see cref="Runtime.BuildConfig.RuntimeBuildConfigCatalog.Resolve"/> を
+    /// 通して解決する（未知なら既定へ丸められる）。
+    /// UI 上はツールバーの Play ボタン隣のコンボボックスと 1 対 1 に対応する。
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("runtime_build_config_id")]
+    public string? RuntimeBuildConfigId { get; set; }
+
     // ── シングルトン・永続化 ──────────────────────────────────
 
     /// <summary>読み込み済みの環境設定（Init 前は既定値）。</summary>
