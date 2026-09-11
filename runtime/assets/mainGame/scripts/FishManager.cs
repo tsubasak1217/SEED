@@ -408,6 +408,25 @@ public class FishManager : SEEDScript
     /// <returns>そのレベルのレコード一覧（範囲外なら空）。</returns>
     public IReadOnlyList<VirtualFish> PooledFishOf(int levelIndex) => pool.RecordsOf(levelIndex);
 
+    /// <summary>
+    /// 仮想（未実体化）の個体が、<b>いまの条件で近づけば実体化され得るか</b>【レーダー用】。
+    ///
+    /// 実体化は「レベル帯（基準レベル±段数）に入っている」かつ「実体化半径の内側」の個体にしか
+    /// 起きない（<see cref="UpdateMaterialization"/>）。レーダーがこの条件を無視して仮想個体を
+    /// 描くと、「魚影はあるのに海には居ない」個体（レベル帯の外の個体）を映してしまうため、
+    /// 描く前に実体化と<b>同じ判定</b>をここで引く。台本で固定した個体（Pinned）は無条件。
+    /// </summary>
+    /// <param name="record">仮想個体。</param>
+    /// <param name="sqrDistanceFromOrigin">実体化の判定原点（ウキ）からの水平距離の 2 乗。</param>
+    /// <returns>近づけば実体化される個体なら true。</returns>
+    public bool CanMaterializeNow(VirtualFish record, float sqrDistanceFromOrigin)
+    {
+        if (record.Pinned) { return true; }
+        RefreshPolicy();
+        return IsActiveLevel(record.LevelIndex, BaseLevelIndex())
+            && policy.IsWithinMaterializeRadius(sqrDistanceFromOrigin);
+    }
+
     /// <summary>いま実体（アクタ）として存在している魚の数（負荷の目安）。</summary>
     public int MaterializedFishCount => pool.MaterializedCount;
 
