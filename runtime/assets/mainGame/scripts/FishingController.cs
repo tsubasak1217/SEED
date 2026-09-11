@@ -3518,7 +3518,7 @@ public class FishingController : SEEDScript
         float goalYaw = SEED.Mathf.Atan2(dx, dz) * SEED.Mathf.Rad2Deg + floatYawOffsetDegrees;
         var rot = floatTf.Rotation;
         float k = ExponentialBlend(followLineYawRate, deltaTime);
-        float yaw = rot.y + SEED.Mathf.DeltaAngle(rot.y, goalYaw) * k;
+        float yaw = rot.y + ShortestAngleDelta(rot.y, goalYaw) * k;
         floatTf.Rotation = new SEED.Vector3(rot.x, yaw, rot.z);
     }
 
