@@ -989,13 +989,13 @@ public class FishingController : SEEDScript
     /// ロックしないと端に当たった瞬間 <see cref="SEED.Input.MouseDelta"/> が 0 に潰れ、
     /// 引く／振るのジェスチャが取れなくなる。
     ///
-    /// <b>ロックするのは <see cref="FishState.Aiming"/> と <see cref="FishState.Windup"/> だけ</b>。
-    /// 着水後（Floating / Reeling / Nibbling / HookWindow）は合わせが左クリック 1 回になり
-    /// マウスの移動量を読まなくなったため、ロックする理由が無い（カーソルは出したまま）。
-    /// 詳細は <see cref="UpdateCursorLock"/>。
+    /// <b>釣り姿勢に入っている間（<see cref="FishState.Idle"/> 以外）はずっとロックする</b>
+    /// （2026-09-11 変更。以前は Aiming / Windup だけだった）。着水後もカーソルが画面上をさまよって
+    /// 邪魔にならないよう隠し、ウィンドウの外へ出ないようにするため。ポーズメニューは自分で
+    /// ロックを解除してカーソルを出す（<see cref="PauseMenu"/>）。詳細は <see cref="UpdateCursorLock"/>。
     /// UI をマウスで操作したい場面が出たらここをオフにする。
     /// </summary>
-    [Header("操作"), SerializeField(Label = "狙い/振りかぶり中はカーソルをロック")]
+    [Header("操作"), SerializeField(Label = "釣り中はカーソルをロック")]
     private bool lockCursorWhileFishing = true;
 
     /// <summary>
@@ -2386,7 +2386,9 @@ public class FishingController : SEEDScript
         // ポーズ中はゲーム側の更新も入力も止める。
         // カーソルロックの再適用（UpdateCursorLock）より前に抜けることが重要で、
         // ここを通してしまうとメニュー操作中にカーソルが消える。
-        if (PauseMenu.IsOpen) { return; }
+        // メニューは開くときに自分でロックを解除する（PauseMenu.Open）ので、こちらの
+        // 適用済みフラグも落としておき、閉じた次のフレームで釣り中なら掛け直す。
+        if (PauseMenu.IsOpen) { cursorLockApplied = false; return; }
 
         // カーソルロックを状態へ同期する。ここで毎フレーム引き直しておけば、
         // 途中で return する経路（プレイヤー未設定・待機中など）でもロックが残らない。
@@ -2652,16 +2654,12 @@ public class FishingController : SEEDScript
     /// <summary>
     /// カーソルロックの望ましい状態。
     ///
-    /// 既定でロックするのは、マウスの左右の振りでキャストを組み立てる区間＝
-    /// <see cref="FishState.Aiming"/>（振りかぶり待ち）と <see cref="FishState.Windup"/>（振り抜き待ち）
-    /// だけ（<see cref="lockCursorWhileFishing"/> がオフなら常に false ＝解除は必ず通る）。
-    ///
-    /// 着水後（Floating / Reeling / Nibbling / HookWindow）は合わせが左クリック 1 回になり
-    /// マウスの移動量を一切読まないので、ロックしない（カーソルは出したままにする）。
+    /// 釣り姿勢に入っている間（<see cref="FishState.Idle"/> 以外）はロックする
+    /// （<see cref="lockCursorWhileFishing"/> がオフなら常に false ＝解除は必ず通る）。
+    /// 合わせ・リズム回答は左クリック、巻きはホイールなので、カーソルの位置を読む操作は無い。
     /// </summary>
     private bool WantsCursorLock()
-        // キャストのジェスチャ区間（ロックする唯一の区間）
-        => lockCursorWhileFishing && (State == FishState.Aiming || State == FishState.Windup);
+        => lockCursorWhileFishing && State != FishState.Idle;
 
     /// <summary>
     /// カーソルロックを現在の状態へ合わせる【適用の唯一の集約点】。
