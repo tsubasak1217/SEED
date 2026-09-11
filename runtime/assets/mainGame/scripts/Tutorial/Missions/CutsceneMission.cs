@@ -15,7 +15,18 @@
 /// 【カメラの扱い】
 /// 会話のカメラ演出（DialogueCameraDirector）と同じ流儀で、
 /// <b>目標の姿勢を毎フレーム求め、そこへ指数補間で寄る</b>。
-/// 演出が終わったらカメラには何もしない（CameraMove が通常の構図へ自然に戻す）。
+/// 目標は 2 通りあり、ミッションデータで切り替わる。
+/// <list type="bullet">
+///   <item>既定 … 怪獣の進行方向を基準に「距離・高さ・方位角」で回り込んだ位置から怪獣を注視する</item>
+///   <item>カメラ目標アクタを指定 … そのアクタの位置・回転（＋Camera があれば画角）へ寄る</item>
+/// </list>
+/// 画角を指定した場合は演出中だけ MainCamera の視野角を上書きし、終了時に必ず元へ戻す。
+/// 姿勢そのものは終了時に戻さない（CameraMove が通常の構図へ自然に戻す）。
+///
+/// 【調整値の出どころ】
+/// 怪獣の跳ね方・カメラの構図はすべてミッションデータ（インスペクタの「演出:〜」）で
+/// 決まる。読み出しと既定値の補正は <see cref="CutsceneSettings"/> が引き受けるので、
+/// このクラスは「補正済みの値をどう使うか」だけを持つ。
 ///
 /// 【時間軸】
 /// 演出は実時間で進める。締めの間はゲーム時間を止めておきたいため。
@@ -30,35 +41,14 @@ public sealed class CutsceneMission : MissionBase
     /// <summary>ジャンプ全体の既定の所要秒数。</summary>
     private const float DefaultJumpSeconds = 3.2f;
 
-    /// <summary>跳ね上がる高さ（メートル）。</summary>
-    private const float JumpApexHeight = 14f;
-
-    /// <summary>助走で進む水平距離（メートル。手前へ向かって跳ぶ）。</summary>
-    private const float JumpTravelDistance = 26f;
-
-    /// <summary>待機中に怪獣を沈めておく深さ（メートル。水面より下）。</summary>
-    private const float SubmergedDepth = -8f;
-
-    /// <summary>カメラが怪獣から離れて構える距離（メートル）。</summary>
-    private const float CameraDistance = 34f;
-
-    /// <summary>カメラの高さ（怪獣の中心からの相対。メートル）。</summary>
-    private const float CameraHeight = 8f;
-
-    /// <summary>カメラ補間の速さ（1 秒あたりの収束率。大きいほど速く寄る）。</summary>
-    private const float CameraLerpRate = 3.0f;
+    // 怪獣の跳ね方とカメラの構図の既定値は CutsceneSettings が持つ
+    // （インスペクタの「演出:〜」と同じ値をここで二重に定義しない）。
 
     /// <summary>放物線の頂点を表す進捗（0〜1 の中央）。</summary>
     private const float ParabolaApex = 0.5f;
 
     /// <summary>放物線の係数（4 * t * (1 - t) が 0〜1 の山になる）。</summary>
     private const float ParabolaScale = 4f;
-
-    /// <summary>回転を 1 周させるための度数。</summary>
-    private const float FullTurnDegrees = 360f;
-
-    /// <summary>ラジアンから度への変換で使う半周の度数。</summary>
-    private const float HalfTurnDegrees = 180f;
 
     /// <summary>ゼロ除算を避けるための微小値。</summary>
     private const float DivideEpsilon = 1e-4f;
@@ -76,6 +66,27 @@ public sealed class CutsceneMission : MissionBase
 
     /// <summary>カメラの Transform（毎フレーム寄せる）。</summary>
     private SEED.Transform? cameraTransform;
+
+    /// <summary>カメラの Camera コンポーネント（画角を触るときだけ使う。無ければ null）。</summary>
+    private SEED.Camera? cameraComponent;
+
+    /// <summary>
+    /// このミッションの調整値（データから読んで既定値で補正済み）。
+    /// OnBegin で差し替わるまでは全項目が既定値。
+    /// </summary>
+    private CutsceneSettings settings = new();
+
+    /// <summary>
+    /// 演出中に使う画角（度）。<see cref="CutsceneSettings.FieldOfViewUnspecified"/> なら画角を触らない。
+    /// カメラ目標アクタの Camera があればその値、無ければデータの「演出:カメラ画角(度)」。
+    /// </summary>
+    private float desiredFieldOfView = CutsceneSettings.FieldOfViewUnspecified;
+
+    /// <summary>
+    /// 演出前のカメラの画角（度）。<see cref="CutsceneSettings.FieldOfViewUnspecified"/> なら
+    /// 「預かっていない＝戻す必要が無い」を表す。
+    /// </summary>
+    private float originalFieldOfView = CutsceneSettings.FieldOfViewUnspecified;
 
     /// <summary>演出の開始地点（水面下の待機位置）。</summary>
     private SEED.Vector3 startPosition;
@@ -107,6 +118,9 @@ public sealed class CutsceneMission : MissionBase
         elapsed     = 0f;
         jumpSeconds = ctx.Data.paramValue > 0f ? ctx.Data.paramValue : DefaultJumpSeconds;
 
+        // 以降の計算はすべてこの調整値を見る（データの読み取りはここ 1 箇所だけ）
+        settings = CutsceneSettings.FromMission(ctx.Data);
+
         ResolveStartPosition(ctx);
         SpawnKaiju(ctx);
         ResolveCamera();
@@ -134,17 +148,21 @@ public sealed class CutsceneMission : MissionBase
         if (progress >= 1f) { MarkCleared(); }
     }
 
-    /// <summary>怪獣を片付ける【生成物の後始末の唯一の出口】。</summary>
+    /// <summary>怪獣を片付け、預かったカメラの画角を戻す【後始末の唯一の出口】。</summary>
     /// <param name="ctx">周辺への窓口（未使用）。</param>
     protected override void OnEnd(MissionContext ctx)
     {
         // カメラは必ず通常の追従へ返す【預かったものを返す唯一の出口】
         TutorialRules.CameraSuspended = false;
 
+        RestoreFieldOfView();
+
         if (kaiju.IsValid) { kaiju.Destroy(); }
-        kaiju           = default;
-        kaijuTransform  = null;
-        cameraTransform = null;
+        kaiju              = default;
+        kaijuTransform     = null;
+        cameraTransform    = null;
+        cameraComponent    = null;
+        desiredFieldOfView = CutsceneSettings.FieldOfViewUnspecified;
     }
 
     // ─── 内部処理: 準備 ─────────────────────────────────────
@@ -161,7 +179,7 @@ public sealed class CutsceneMission : MissionBase
         if (ctx.Data.targetActor is { IsValid: true } target)
         {
             var center = target.Position;
-            startPosition = new SEED.Vector3(center.x, center.y + SubmergedDepth, center.z);
+            startPosition = new SEED.Vector3(center.x, center.y + settings.SubmergedOffsetY, center.z);
             travelDirection = NormalizeHorizontal(target.Forward);
             return;
         }
@@ -174,9 +192,9 @@ public sealed class CutsceneMission : MissionBase
             // 岸（竿先）へ向かって跳ねてくると、手前へ迫る絵になって迫力が出る
             travelDirection = NormalizeHorizontal(new SEED.Vector3(rod.x - bob.x, 0f, rod.z - bob.z));
             startPosition = new SEED.Vector3(
-                bob.x - travelDirection.x * JumpTravelDistance,
-                controller.WaterSurfaceY() + SubmergedDepth,
-                bob.z - travelDirection.z * JumpTravelDistance);
+                bob.x - travelDirection.x * settings.JumpTravelDistance,
+                controller.WaterSurfaceY() + settings.SubmergedOffsetY,
+                bob.z - travelDirection.z * settings.JumpTravelDistance);
             return;
         }
 
@@ -209,12 +227,47 @@ public sealed class CutsceneMission : MissionBase
         }
     }
 
-    /// <summary>メインカメラの Transform を掴む（見つからなければカメラは動かさない）。</summary>
+    /// <summary>
+    /// メインカメラの Transform と Camera を掴み、画角を使うなら元の値を預かる
+    /// （見つからなければカメラは動かさない）。
+    /// </summary>
     private void ResolveCamera()
     {
         var camera = SEED.GameObject.Find(MainCameraActorName);
         if (!camera.IsValid) { return; }
         if (camera.GetComponent<SEED.Transform>() is { } t && t.IsValid) { cameraTransform = t; }
+        if (camera.GetComponent<SEED.Camera>() is { } c && c.IsValid) { cameraComponent = c; }
+
+        desiredFieldOfView = ResolveDesiredFieldOfView();
+
+        // 画角を動かすときだけ元の値を預かる（戻す必要が無いなら預からない）
+        if (desiredFieldOfView > CutsceneSettings.FieldOfViewUnspecified && cameraComponent is { } cam)
+        {
+            originalFieldOfView = cam.FieldOfView;
+        }
+    }
+
+    /// <summary>
+    /// 演出中に使う画角を決める【画角の指定をどこから読むかの唯一の判断】。
+    ///
+    /// カメラ目標アクタに Camera が付いていればその視野角を使い（会話カメラと同じ流儀）、
+    /// 無ければデータの「演出:カメラ画角(度)」を使う。どちらも無ければ
+    /// <see cref="CutsceneSettings.FieldOfViewUnspecified"/>（＝画角を触らない）。
+    /// </summary>
+    /// <returns>演出中に使う画角（度）。</returns>
+    private float ResolveDesiredFieldOfView()
+    {
+        // 目標アクタの Camera が読めて、かつ実在する画角（正の度数）ならそれを使う。
+        // 0 のときは「読めなかった」と同じ扱いにしてデータの指定へ落とす。
+        if (settings.HasCameraTarget
+            && settings.CameraTarget.GameObject.GetComponent<SEED.Camera>() is { } targetCam
+            && targetCam.IsValid
+            && targetCam.FieldOfView > CutsceneSettings.FieldOfViewUnspecified)
+        {
+            return targetCam.FieldOfView;
+        }
+
+        return settings.FieldOfViewDegrees;
     }
 
     // ─── 内部処理: 演出 ─────────────────────────────────────
@@ -227,8 +280,8 @@ public sealed class CutsceneMission : MissionBase
     /// <returns>そのフレームのワールド位置。</returns>
     private SEED.Vector3 ComputeJumpPosition(float progress)
     {
-        float horizontal = JumpTravelDistance * progress;
-        float height = ParabolaScale * progress * (1f - progress) * (JumpApexHeight - SubmergedDepth);
+        float horizontal = settings.JumpTravelDistance * progress;
+        float height = ParabolaScale * progress * (1f - progress) * settings.JumpHeightAmplitude;
 
         return new SEED.Vector3(
             startPosition.x + travelDirection.x * horizontal,
@@ -249,11 +302,12 @@ public sealed class CutsceneMission : MissionBase
         t.Position = position;
 
         // 進行方向のヨー角。エンジンの前方向は +Z なので Atan2(x, z)。
-        float yaw = SEED.Mathf.Atan2(travelDirection.x, travelDirection.z) * SEED.Mathf.Rad2Deg;
+        // モデルの前方向がズレている .actor 向けに、データの補正角をそのまま足す。
+        float yaw = TravelYawDegrees() + settings.YawOffsetDegrees;
 
         // 上昇中は頭を上げ、下降中は頭を下げる（頂点で 0 度）。
-        // エンジン規約では pitch の正が「下を向く」なので、上昇側を負にする。
-        float pitch = (progress - ParabolaApex) * HalfTurnDegrees * ParabolaApex;
+        // エンジン規約では pitch の正が「下を向く」ので、進捗 0 で −半分、1 で +半分になる。
+        float pitch = (progress - ParabolaApex) * settings.PitchSweepDegrees;
 
         t.Rotation = new SEED.Vector3(pitch, yaw, 0f);
     }
@@ -264,22 +318,66 @@ public sealed class CutsceneMission : MissionBase
     /// 目標の姿勢（位置と向き）を毎フレーム求め、指数補間でそこへ寄る。
     /// 会話のカメラ演出と同じ流儀なので、動きの手触りが他の演出と揃う。
     /// </summary>
-    /// <param name="lookAt">注視したい点（怪獣の位置）。</param>
+    /// <param name="kaijuPosition">このフレームの怪獣の位置。</param>
     /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
-    private void ApplyCamera(SEED.Vector3 lookAt, float unscaledDelta)
+    private void ApplyCamera(SEED.Vector3 kaijuPosition, float unscaledDelta)
     {
         if (cameraTransform is not { } cam || !cam.IsValid) { return; }
 
-        // 怪獣の進行方向の正面へ回り込み、少し高い位置から見下ろす構図を作る
-        var desired = new SEED.Vector3(
-            lookAt.x + travelDirection.x * CameraDistance,
-            lookAt.y + CameraHeight,
-            lookAt.z + travelDirection.z * CameraDistance);
+        float blend = ExponentialBlend(settings.CameraLerpRate, unscaledDelta);
 
-        float blend = ExponentialBlend(CameraLerpRate, unscaledDelta);
+        ApplyFieldOfView(blend);
+
+        // カメラ目標アクタがあれば構図の計算はせず、そのアクタの姿勢へ寄る
+        if (settings.HasCameraTarget) { ApplyCameraTargetPose(cam, blend); return; }
+
+        ApplyCameraOrbitPose(cam, kaijuPosition, blend);
+    }
+
+    /// <summary>
+    /// カメラ目標アクタの姿勢へ寄せる（会話カメラと同じ流儀）。
+    ///
+    /// 回転は成分ごとに最短回りで補間する（350 度 → 10 度 が逆回りしないように）。
+    /// </summary>
+    /// <param name="cam">カメラの Transform。</param>
+    /// <param name="blend">このフレームの補間係数（0〜1）。</param>
+    private void ApplyCameraTargetPose(SEED.Transform cam, float blend)
+    {
+        var target = settings.CameraTarget;
+        if (!target.IsValid) { return; }
+
+        cam.Position = SEED.Vector3.Lerp(cam.Position, target.Position, blend);
+        cam.Rotation = AngleMath.LerpEuler(cam.Rotation, target.Rotation, blend);
+    }
+
+    /// <summary>
+    /// 怪獣のまわりを回り込んだ位置へ寄せ、怪獣を注視する
+    /// 【距離・高さ・方位角から構図を作る唯一の計算点】。
+    /// </summary>
+    /// <param name="cam">カメラの Transform。</param>
+    /// <param name="kaijuPosition">このフレームの怪獣の位置。</param>
+    /// <param name="blend">このフレームの補間係数（0〜1）。</param>
+    private void ApplyCameraOrbitPose(SEED.Transform cam, SEED.Vector3 kaijuPosition, float blend)
+    {
+        // 進行方向から方位角だけ水平に回した向き（0 度なら進行方向側＝怪獣の正面）
+        float offsetYaw = (TravelYawDegrees() + settings.CameraAzimuthDegrees) * SEED.Mathf.Deg2Rad;
+        var   offsetDir = new SEED.Vector3(SEED.Mathf.Sin(offsetYaw), 0f, SEED.Mathf.Cos(offsetYaw));
+
+        // カメラ位置は怪獣の中心を基準に「方位角の向きへ距離ぶん・高さぶん」ずらした点
+        var desired = new SEED.Vector3(
+            kaijuPosition.x + offsetDir.x * settings.CameraDistance,
+            kaijuPosition.y + settings.CameraHeight,
+            kaijuPosition.z + offsetDir.z * settings.CameraDistance);
+
         cam.Position = SEED.Vector3.Lerp(cam.Position, desired, blend);
 
-        // 注視: カメラから怪獣へのベクトルからヨー・ピッチを作る
+        // 注視点は怪獣の中心から指定ぶん上（0 なら中心そのもの）
+        var lookAt = new SEED.Vector3(
+            kaijuPosition.x,
+            kaijuPosition.y + settings.CameraLookAtHeight,
+            kaijuPosition.z);
+
+        // 注視: カメラから注視点へのベクトルからヨー・ピッチを作る
         var toTarget = lookAt - cam.Position;
         float distance = toTarget.Magnitude;
         if (distance <= DivideEpsilon) { return; }
@@ -290,7 +388,40 @@ public sealed class CutsceneMission : MissionBase
         cam.Rotation = new SEED.Vector3(pitch, yaw, 0f);
     }
 
+    /// <summary>
+    /// 演出中の画角を目標値へ寄せる（指定が無ければ何もしない）。
+    /// 位置・回転と同じ補間係数を使うので、構図と画角がちぐはぐに動かない。
+    /// </summary>
+    /// <param name="blend">このフレームの補間係数（0〜1）。</param>
+    private void ApplyFieldOfView(float blend)
+    {
+        if (desiredFieldOfView <= CutsceneSettings.FieldOfViewUnspecified) { return; }
+        if (cameraComponent is not { } cam || !cam.IsValid) { return; }
+
+        cam.FieldOfView = SEED.Mathf.Lerp(cam.FieldOfView, desiredFieldOfView, blend);
+    }
+
+    /// <summary>
+    /// 預かっていた画角をカメラへ戻す【画角を返す唯一の出口】。
+    /// 預かっていなければ（画角を触っていなければ）何もしない。
+    /// </summary>
+    private void RestoreFieldOfView()
+    {
+        if (originalFieldOfView <= CutsceneSettings.FieldOfViewUnspecified) { return; }
+
+        if (cameraComponent is { } cam && cam.IsValid) { cam.FieldOfView = originalFieldOfView; }
+        originalFieldOfView = CutsceneSettings.FieldOfViewUnspecified;
+    }
+
     // ─── 内部処理: 小道具 ───────────────────────────────────
+
+    /// <summary>
+    /// 怪獣が進む向きのヨー角（度）を返す【進行方向 → 角度の唯一の変換】。
+    /// エンジンの前方向は +Z なので Atan2(x, z) で求める。
+    /// </summary>
+    /// <returns>進行方向のヨー角（度）。</returns>
+    private float TravelYawDegrees()
+        => SEED.Mathf.Atan2(travelDirection.x, travelDirection.z) * SEED.Mathf.Rad2Deg;
 
     /// <summary>
     /// フレームレートに依存しない指数補間の係数を返す。

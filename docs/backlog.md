@@ -741,3 +741,10 @@ PCM キャッシュ化＋同時発音数の上限で解決済み。以下はそ�
   `StoryCam_*` / `CamTarget_*` は現在すべて 25（＝ MainCamera と同値）なので、
   画角補間を入れても見た目は変わらない。寄り・引きを画角でも表現したい場合は
   各目標アクターの Camera の「垂直視野角」を変える（そこへ補間される）。
+
+## チュートリアル締め演出のデータ駆動化（2026-09-11）
+
+- [ ] **構造体配列の要素型に入れ子の `[Serializable]` 構造体を持てない** — 2026-09-11。`SEED.ScriptStructArray.TryGetLayout` はメンバがスカラ／参照／1 段配列以外だと false を返し、配列フィールド全体が非対応に落ちる（インスペクタからミッション一覧が消え、実行時にシーンの保存値も注入されない）。`TutorialMission` に `CutsceneSettings` をネストできず、平坦なメンバ 12 個（ラベル「演出:〜」）で実装した。関連: `scripting/src/Api/ScriptStructArray.cs`（`BuildMemberInfo`）。
+- [ ] **構造体配列のメンバ行では `[Header]` が描画されない** — 2026-09-11。`ScriptStructElementBuilder` は `BuildValueRow` を直接呼ぶため。ラベル接頭辞で代用。関連: `editor/src/Scripting/ScriptStructElementBuilder.cs`。
+- [ ] **ミッション 1 件のインスペクタが 54 行になり、Cutscene 以外でも「演出:〜」が出る** — 2026-09-11。「無関係パラメータは非表示」の方針とずれるが、構造体配列メンバの条件付き表示はエンジン側対応が要る。
+- [ ] **締め演出のカメラ目標アクタ指定・画角上書きは実機未確認** — 2026-09-11。コードパスと型の検証まで。関連: `mainGame/scripts/Tutorial/Missions/CutsceneMission.cs`。

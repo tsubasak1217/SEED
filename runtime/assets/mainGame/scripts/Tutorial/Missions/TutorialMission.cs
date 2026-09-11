@@ -21,6 +21,20 @@ using SEEDEditor.Scripting;
 /// 「1 ミッションに複数枚の説明」を構造体の中のリストでは表現できないため
 /// （TextArea 属性はリストの要素に効かず、複数行の台詞が書けなくなる）。
 ///
+/// 【締め演出(Cutscene)の調整】
+/// 種類が Cutscene のミッションでは、怪獣の跳ね方とカメラの構図を「演出:〜」の
+/// 各項目で調整できる（既定値のままなら従来どおりの演出になる）。
+/// <list type="bullet">
+///   <item>怪獣の動き … 跳ねる高さ / 助走の水平距離 / 待機の深さ / 向きの補正 / 着水までの回転量</item>
+///   <item>カメラ …… 距離 / 高さ / 方位角（0＝正面・90＝真横・180＝背後）/ 注視点の高さ /
+///                    補間の速さ / 画角（0 で変更しない）</item>
+///   <item>カメラ目標アクタ … 指定するとカメラの構図計算をやめ、そのアクタの
+///         位置・回転（＋Camera があれば画角）へ寄る</item>
+/// </list>
+/// 演出の秒数は「数値パラメータ」、怪獣の .actor は「文字列パラメータ」、
+/// 跳ねる位置の基準は「目標アクタ」で指定する（従来どおり）。
+/// 値の読み出しと既定値の補正は <see cref="CutsceneSettings"/> が一手に引き受ける。
+///
 /// 【使い方（シーン側）】
 /// TutorialDirector の「ミッション」リストへ 1 件ずつ追加し、
 /// 「台詞」リストへ同じ <see cref="id"/> の説明を必要な枚数だけ足す。
@@ -28,6 +42,25 @@ using SEEDEditor.Scripting;
 [System.Serializable]
 public struct TutorialMission
 {
+    // ─── 既定値の与え方 ─────────────────────────────────────
+
+    /// <summary>
+    /// 何も指定しないミッション 1 件を作る（フィールド初期化子の既定値がそのまま入る）。
+    ///
+    /// 【なぜ空のコンストラクタが要るか】
+    /// C# では<b>構造体にフィールド初期化子を書くにはパラメータ無しコンストラクタの
+    /// 明示宣言が必要</b>で、これが無いと下の「= 既定値」が書けない。
+    /// エンジンのインスペクタ／実行時注入（SEED.ScriptStructArray）は
+    /// <c>Activator.CreateInstance</c> でこの型の見本を作り、そこから
+    /// 「各メンバの既定値」を読む。つまりここで初期化した値が
+    /// <b>インスペクタの初期表示と、シーンに保存値が無いメンバの実行時の値</b>になる。
+    /// （<c>default(TutorialMission)</c> はコンストラクタを通らず全 0 になるので、
+    ///   ミッションデータを自前で作る場合は必ず <c>new TutorialMission()</c> を使うこと。）
+    ///
+    /// 未代入のフィールドは C# 11 以降の規則で自動的に既定値（0 / false / null）になる。
+    /// </summary>
+    public TutorialMission() { }
+
     // ─── 識別と種類 ─────────────────────────────────────────
 
     /// <summary>
@@ -278,6 +311,113 @@ public struct TutorialMission
     /// </summary>
     [SerializeField(Label = "個数パラメータ", Tooltip = "拾う個数 / 連鎖回数 / 釣る匹数。0 以下で既定値")]
     public int paramCount;
+
+    // ─── 締め演出(Cutscene)の調整値 ─────────────────────────
+    //
+    // 【なぜ入れ子の構造体にまとめていないか】
+    // このミッションデータは TutorialDirector の「ミッション」リスト
+    // （List<TutorialMission>）の要素としてインスペクタに並ぶ。構造体配列の要素は
+    // エンジン側（SEED.ScriptStructArray）が「メンバはスカラ／参照／1 段の配列だけ」と
+    // 決めており、入れ子の構造体メンバが 1 つでもあると配列フィールド全体が
+    // 非対応になってしまう（ミッション一覧がインスペクタから消え、実行時にも
+    // シーンの保存値が流し込まれなくなる）。そのため平坦なメンバとして並べ、
+    // 読み出しと既定値の補正は CutsceneSettings.FromMission が引き受ける。
+    //
+    // 既定値は下のフィールド初期化子が持つ（＝インスペクタにも実行時にもこの値が出る）。
+    // 加えて CutsceneSettings 側で「0 以下なら既定値」の補正も掛かるため、
+    // 保存値が無いミッションでも従来どおりの演出になる。
+
+    /// <summary>
+    /// 【Cutscene】怪獣が跳ね上がる高さ（メートル。水面から頂点まで）。
+    /// 0 以下なら <see cref="CutsceneSettings.DefaultJumpApexHeight"/> が使われる。
+    /// </summary>
+    [SerializeField(Label = "演出:跳ねる高さ(m)", Tooltip = "怪獣が水面から跳ね上がる頂点の高さ。0 以下で既定値")]
+    public float cutsceneJumpApexHeight = CutsceneSettings.DefaultJumpApexHeight;
+
+    /// <summary>
+    /// 【Cutscene】怪獣が助走で進む水平距離（メートル。開始地点から着水地点まで）。
+    /// 0 以下なら <see cref="CutsceneSettings.DefaultJumpTravelDistance"/> が使われる。
+    /// </summary>
+    [SerializeField(Label = "演出:助走の水平距離(m)", Tooltip = "跳び始めから着水までに進む水平距離。0 以下で既定値")]
+    public float cutsceneJumpTravelDistance = CutsceneSettings.DefaultJumpTravelDistance;
+
+    /// <summary>
+    /// 【Cutscene】跳ぶ前に怪獣を沈めておく深さ（メートル・<b>正値で指定</b>し、内部で下向きに使う）。
+    /// 0 以下なら <see cref="CutsceneSettings.DefaultSubmergedDepth"/> が使われる。
+    /// </summary>
+    [SerializeField(Label = "演出:待機の深さ(m)", Tooltip = "跳ぶ前に怪獣を沈めておく深さ。正の値で指定する。0 以下で既定値")]
+    public float cutsceneSubmergedDepth = CutsceneSettings.DefaultSubmergedDepth;
+
+    /// <summary>
+    /// 【Cutscene】怪獣モデルの向きの補正角（度）。進行方向へ向けた上からさらに水平に回す。
+    /// モデルの前方向が +Z でない .actor を使うときにここで直す。0 で補正なし。
+    /// </summary>
+    [SerializeField(Label = "演出:向きの補正(度)", Tooltip = "進行方向を向けたあと、さらに水平に回す角度。モデルの前方向のズレを直す用。0 で補正なし")]
+    public float cutsceneYawOffsetDegrees = CutsceneSettings.DefaultYawOffsetDegrees;
+
+    /// <summary>
+    /// 【Cutscene】着水までに掛けるピッチ回転量（度）。
+    /// 跳び始めで −半分（頭を上げる）、頂点で 0、着水で +半分（頭を下げる）になる。
+    /// 既定の 90 は従来の実装（±45 度）と同じ。0 で回転させない、負値で逆回り。
+    /// </summary>
+    [SerializeField(Label = "演出:着水までの回転量(度)", Tooltip = "跳び始め〜着水で頭を上げ下げする角度の合計。既定 90（±45）。0 で回転なし")]
+    public float cutscenePitchSweepDegrees = CutsceneSettings.DefaultPitchSweepDegrees;
+
+    /// <summary>
+    /// 【Cutscene】カメラが怪獣から離れて構える距離（メートル）。
+    /// 0 以下なら <see cref="CutsceneSettings.DefaultCameraDistance"/> が使われる。
+    /// 「演出:カメラ目標アクタ」を設定した場合は使われない。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラ距離(m)", Tooltip = "カメラが怪獣から離れて構える距離。0 以下で既定値。カメラ目標アクタ指定時は無視")]
+    public float cutsceneCameraDistance = CutsceneSettings.DefaultCameraDistance;
+
+    /// <summary>
+    /// 【Cutscene】カメラの高さ（怪獣の中心からの相対。メートル）。
+    /// 0 で怪獣と同じ高さ、負値で見上げる構図になる（0 も有効な指定なので補正しない）。
+    /// 「演出:カメラ目標アクタ」を設定した場合は使われない。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラ高さ(m)", Tooltip = "怪獣の中心から何 m 上にカメラを置くか。負値で見上げる。カメラ目標アクタ指定時は無視")]
+    public float cutsceneCameraHeight = CutsceneSettings.DefaultCameraHeight;
+
+    /// <summary>
+    /// 【Cutscene】カメラの方位角（度）。怪獣の<b>進行方向</b>を基準に水平へ回り込ませる。
+    /// 0＝進行方向側（正面から迫ってくる絵。従来の構図）、90＝真横、180＝背後、
+    /// 負値で 90 とは反対側の真横。
+    /// 「演出:カメラ目標アクタ」を設定した場合は使われない。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラ方位角(度)", Tooltip = "0=進行方向側(正面) / 90=真横 / 180=背後 / 負値で反対側の真横。カメラ目標アクタ指定時は無視")]
+    public float cutsceneCameraAzimuthDegrees = CutsceneSettings.DefaultCameraAzimuthDegrees;
+
+    /// <summary>
+    /// 【Cutscene】カメラが見る点を怪獣の中心から何メートル上へずらすか。
+    /// 0（既定）で中心をそのまま見る。大きくすると画面の下寄りに怪獣が入る。
+    /// 「演出:カメラ目標アクタ」を設定した場合は使われない。
+    /// </summary>
+    [SerializeField(Label = "演出:注視点の高さ(m)", Tooltip = "カメラが見る点を怪獣の中心から何 m 上へずらすか。カメラ目標アクタ指定時は無視")]
+    public float cutsceneCameraLookAtHeight = CutsceneSettings.DefaultCameraLookAtHeight;
+
+    /// <summary>
+    /// 【Cutscene】カメラ補間の速さ（1 秒あたりの収束率。大きいほど速く寄る）。
+    /// 0 以下なら <see cref="CutsceneSettings.DefaultCameraLerpRate"/> が使われる。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラ補間の速さ", Tooltip = "カメラが目標の構図へ寄る速さ。大きいほど速い。0 以下で既定値")]
+    public float cutsceneCameraLerpRate = CutsceneSettings.DefaultCameraLerpRate;
+
+    /// <summary>
+    /// 【Cutscene】演出中だけ使うカメラの画角（度）。0 で画角を変えない。
+    /// 指定すると演出の間だけ MainCamera の視野角をこの値へ寄せ、演出が終わると元へ戻す。
+    /// 「演出:カメラ目標アクタ」に Camera が付いていれば、そちらの画角が優先される。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラ画角(度)", Tooltip = "演出中だけ使う垂直視野角。0 で変更しない。終了時は元の画角へ戻す")]
+    public float cutsceneCameraFieldOfView = CutsceneSettings.FieldOfViewUnspecified;
+
+    /// <summary>
+    /// 【Cutscene】カメラ目標アクタ（任意）。
+    /// 設定すると距離・高さ・方位角からの構図計算をやめ、このアクタの位置・回転へ補間する
+    /// （そのアクタに Camera が付いていれば画角も合わせる）。会話カメラの目標アクタと同じ流儀。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラ目標アクタ", Tooltip = "指定するとカメラはこのアクタの位置・回転（Camera があれば画角も）へ寄る。距離・高さ・方位角は無視")]
+    public SEED.Transform cutsceneCameraTarget;
 
     // ─── ヒント演出（実践中だけ出す操作ガイド）───────────────
 
