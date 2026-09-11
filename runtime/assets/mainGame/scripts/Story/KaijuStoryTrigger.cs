@@ -12,7 +12,7 @@ using SEEDEditor.Scripting;
 /// 【責務】
 ///  1. 釣果が怪獣だったかを判定して控える。
 ///  2. 釣果演出（リザルト）が閉じた瞬間に、条件を満たしていれば会話を開始する。
-///  3. 会話中はゲーム時間と入力を止め、会話が終わったら元へ戻して既読フラグを保存する。
+///  3. 会話中は入力とカメラ追従を止め（ゲーム時間は止めない）、会話が終わったら元へ戻して既読フラグを保存する。
 ///
 /// 会話の中身（台詞・カメラ・送り）は <see cref="DialogueDirector"/> の責務であり、
 /// このクラスは「いつ始めていつ後始末するか」だけを持つ（単一責任）。
@@ -42,12 +42,6 @@ public class KaijuStoryTrigger : SEEDScript
     /// （assets://mainGame/actors/Fish/Lv10/kaiju.actor）との部分一致で判定する。
     /// </summary>
     private const string DefaultKaijuPrefabKey = "kaiju";
-
-    /// <summary>ゲーム時間を完全に止めるときの <c>Time.Scale</c>。</summary>
-    private const float TimeScalePaused = 0f;
-
-    /// <summary>ゲーム時間を通常速度へ戻すときの <c>Time.Scale</c>。</summary>
-    private const float TimeScaleNormal = 1f;
 
     /// <summary>既読フラグの既定値（未保存なら「まだ見ていない」）。</summary>
     private const bool DefaultStorySeen = false;
@@ -96,7 +90,7 @@ public class KaijuStoryTrigger : SEEDScript
     /// <summary>釣果の控えが有効か（演出の開始を受け取っていれば true）。</summary>
     private bool _hasPendingCatch;
 
-    /// <summary>ストーリー会話を再生中か（時間・入力を戻す責任があるか）。</summary>
+    /// <summary>ストーリー会話を再生中か（入力・カメラ追従を戻す責任があるか）。</summary>
     private bool _storyPlaying;
 
     // ── 公開プロパティ ──────────────────────────────────────
@@ -121,7 +115,7 @@ public class KaijuStoryTrigger : SEEDScript
 
     /// <summary>
     /// 破棄時の後始末。会話の途中でシーンが切り替わっても、
-    /// 時間停止と入力制限が焼き付いたまま残らないようにする。
+    /// 入力制限とカメラ追従の停止が焼き付いたまま残らないようにする。
     /// </summary>
     public override void OnDestroy()
     {
@@ -136,7 +130,7 @@ public class KaijuStoryTrigger : SEEDScript
     /// ストーリー会話が終わった瞬間の処理【後始末の唯一の出口】。
     /// <see cref="DialogueDirector.onDialogueFinished"/> から結線して呼ばせる。
     ///
-    /// 時間と入力を戻し、既読フラグを保存する。
+    /// 入力とカメラ追従を戻し、既読フラグを保存する。
     /// 保存はここでしか行わないので、途中でシーンを抜けた場合は既読にならない
     /// （＝次回また最初から見られる）。
     /// </summary>
@@ -204,7 +198,7 @@ public class KaijuStoryTrigger : SEEDScript
     }
 
     /// <summary>
-    /// ストーリー会話を開始し、ゲーム側（時間・入力・カメラ追従）を止める。
+    /// ストーリー会話を開始し、ゲーム側（入力・カメラ追従）を止める。
     /// </summary>
     private void StartStory()
     {
@@ -224,13 +218,14 @@ public class KaijuStoryTrigger : SEEDScript
     }
 
     /// <summary>
-    /// 会話中のあいだゲームを止める（時間・入力・カメラ追従）。
+    /// 会話中のあいだゲームの操作を止める（入力・カメラ追従）。
+    ///
+    /// <b>ゲーム時間（<c>Time.Scale</c>）は止めない</b>（2026-09-11 変更）。
+    /// 会話の裏で魚の泳ぎ・水面・キャラクターのアニメーションが動き続けるようにするため。
+    /// 入力を遮断しているので釣り・移動は進まず、時間が流れても進行に影響しない。
     /// </summary>
     private void SuspendGameplay()
     {
-        // 魚も漂流物もアニメーションも止める（明転のまま世界だけ静止させる）
-        SEED.Time.Scale = TimeScalePaused;
-
         // 釣り操作を全面的に遮断する。会話送り（決定キー／左クリック）は
         // DialogueDirector が InputGate を通さず直接読むので影響を受けない。
         InputGate.DenyAll();
@@ -249,7 +244,6 @@ public class KaijuStoryTrigger : SEEDScript
     /// </summary>
     private void RestoreGameplay()
     {
-        SEED.Time.Scale = TimeScaleNormal;
         InputGate.AllowAll();
 
         TutorialRules.CameraSuspended = false;
