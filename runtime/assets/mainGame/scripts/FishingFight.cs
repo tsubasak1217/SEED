@@ -789,6 +789,16 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "回復後の走り(拍)")]
     private int recoverRunBeats = 4;
 
+    /// <summary>
+    /// 魚回復（肉）1 個あたりに魚が沖へ走る距離（メートル）。
+    /// 2026-09-11 変更: 以前は「最大 HP × 効果量」を HP に足していたため、掛かった距離と
+    /// ヒット直後の引き距離が大きい高レベルの魚ほど走る距離が極端に伸びていた。
+    /// 走る距離は魚のレベルに依らず一定にし、HP 側はこの距離に対応する量だけ増やす
+    /// （HP と目標距離の線形対応は保つ。漂流物側の「効果量」は距離に影響しない）。
+    /// </summary>
+    [SerializeField(Label = "魚回復1個あたりの走り距離(m)")]
+    private float recoverRunMetersPerPickup = 10f;
+
     // ─── 効果音 ──────────────────────────────────────────
 
     /// <summary>
@@ -2178,7 +2188,9 @@ public class FishingFight : SEEDScript
     {
         if (!Active || fraction <= 0f) { return; }
 
-        float amount = fishHpMax * fraction;
+        // 走る距離を一定（recoverRunMetersPerPickup）にするため、HP の増分は
+        // 「その距離に対応する HP」で決める（fraction は「回復した」という事実の判定にだけ使う）。
+        float amount = SEED.Mathf.Max(recoverRunMetersPerPickup, 0f) / SEED.Mathf.Max(metersPerHp, DivideEpsilon);
 
         // 隙の最中は「予約」だけ。走りが無効なら貯めても出せないので即時へ倒す。
         if (CurrentPhase == Phase.Rest && recoverRunBeats > NoRecoverRunBeats)

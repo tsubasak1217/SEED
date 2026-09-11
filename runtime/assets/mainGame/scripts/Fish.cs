@@ -1606,13 +1606,11 @@ public class Fish : SEEDScript
         if (State != BehaviorState.Bite) { return; }
         if (FishingController.Current is not { IsHooked: true } fc) { return; }
 
-        var pos = transform.Position;
         var bait = fc.BaitPosition;
         // 掛かっている間は距離に関係なく毎フレーム餌の定位置へ揃える（2026-09-11 変更）。
         // 以前は BiteHardAttachDistance（2 m）以内のときだけ揃えていたため、ウキが速く動く
         // 走り・巻き取りで魚が 2 m 以上遅れると、追いつくまで泳いで寄る（＝ぴったり付いてこない）
         // 見た目になっていた。掛かっている魚はウキと一体なので無条件に揃える。
-        _ = pos;
         transform.Position = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
     }
 
