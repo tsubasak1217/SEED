@@ -499,6 +499,35 @@ public class FishingFight : SEEDScript
     /// Perfect の回復量はこの値から算出する（<see cref="perfectRecoverGreatCount"/> の式）ので、
     /// ここを変えると回復量も同じ倍率で自動的に追随する。
     /// </summary>
+    // ─── 【デバッグ】クリック処理の切り分け ─────────────────────
+    //  「ビートバトルでクリックすると重い」原因を切り分けるためのスイッチ。
+    //  クリック 1 回の処理は「効果音 → 判定（打点アイコン・糸の減り）→ 判定 UI（画像・ヒント文）」の
+    //  3 段なので、それぞれを個別に止められるようにする。パッケージ版では全て無効
+    //  （SEED.Application.IsDebugAllowed が false）。
+
+    /// <summary>クリック時の効果音を鳴らさない（音以外はそのまま）。</summary>
+    [Header("【デバッグ】クリック処理の切り分け"), SerializeField(Label = "効果音を鳴らさない")]
+    private bool debugMuteClickSe = false;
+
+    /// <summary>クリックの判定を行わない（効果音だけ鳴る。打点は打ち逃し扱いになる）。</summary>
+    [SerializeField(Label = "判定を行わない(音のみ)")]
+    private bool debugSkipJudgement = false;
+
+    /// <summary>判定結果の画像・ヒント文（<see cref="FishingController.ShowFightJudgement"/>）を出さない。</summary>
+    [SerializeField(Label = "判定UIを出さない")]
+    private bool debugHideJudgementUi = false;
+
+    /// <summary>打点アイコンの色替え・跳ね（<see cref="ShowIconAtHit"/>）をしない。</summary>
+    [SerializeField(Label = "打点アイコンの反応を出さない")]
+    private bool debugNoBeatIconFeedback = false;
+
+    /// <summary>判定による糸の減りを行わない。</summary>
+    [SerializeField(Label = "糸を減らさない")]
+    private bool debugNoLineLoss = false;
+
+    /// <summary>デバッグ切り分けが有効か（エディタ実行のみ。パッケージ版では常に false）。</summary>
+    private static bool DebugIsolationAllowed => SEED.Application.IsDebugAllowed;
+
     [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
     private float linePerSecondOfOffset = 0.45f;
 
@@ -2944,8 +2973,7 @@ public class FishingFight : SEEDScript
         int index = FindNearestPendingHit();
         if (index < 0) { return; }
 
-        PlayAnswerClickSe();
-        JudgeHit(index, clockTime - expectedTimes[index]);
+        HandleTimedClick(index);
     }
 
     // ─── 内部処理: 回答 ───────────────────────────────────
@@ -3021,9 +3049,7 @@ public class FishingFight : SEEDScript
             int index = FindNearestPendingHit();
             if (index >= 0)
             {
-                // 効果音は「判定に結び付いたクリック」だけに鳴らす（空打ちは無反応）
-                PlayAnswerClickSe();
-                JudgeHit(index, clockTime - expectedTimes[index]);
+                HandleTimedClick(index);
             }
         }
 
@@ -3066,16 +3092,52 @@ public class FishingFight : SEEDScript
             offset <= greatSeconds ? FishingController.HookJudgement.Great :
             FishingController.HookJudgement.Nice;
 
-        MarkHitResult(index, judgement);
+        using (SEED.Profiler.Scope("Fight/判定の記録"))
+        {
+            MarkHitResult(index, judgement);
+        }
 
         // 糸の残り: Excellent は減らず、それ以外は「ズレの大きさ × 効き」だけ減る。
         // 魚のレベル・種類・戦闘力による補正は掛けない（全レベル・全魚種で共通の減り）。
-        if (judgement != FishingController.HookJudgement.Excellent)
+        if (judgement != FishingController.HookJudgement.Excellent
+            && !(DebugIsolationAllowed && debugNoLineLoss))
         {
             SubtractLine(offset * linePerSecondOfOffset);
         }
 
-        FishingController.Current?.ShowFightJudgement(judgement, signedOffset);
+        if (!(DebugIsolationAllowed && debugHideJudgementUi))
+        {
+            using (SEED.Profiler.Scope("Fight/判定UI"))
+            {
+                FishingController.Current?.ShowFightJudgement(judgement, signedOffset);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 受付窓内のクリック 1 回を処理する【出題・回答フェーズ共通のクリックの入口】。
+    /// 「効果音 → 判定」の順。デバッグの切り分けスイッチはここと <see cref="JudgeHit"/> で効く。
+    /// プロファイラには <c>Fight/クリック</c> 配下として出る。
+    /// </summary>
+    /// <param name="index">判定対象の打点の添字。</param>
+    private void HandleTimedClick(int index)
+    {
+        using (SEED.Profiler.Scope("Fight/クリック"))
+        {
+            // 効果音は「判定に結び付いたクリック」だけに鳴らす（空打ちは無反応）
+            if (!(DebugIsolationAllowed && debugMuteClickSe))
+            {
+                using (SEED.Profiler.Scope("Fight/効果音"))
+                {
+                    PlayAnswerClickSe();
+                }
+            }
+            if (DebugIsolationAllowed && debugSkipJudgement) { return; }
+            using (SEED.Profiler.Scope("Fight/判定"))
+            {
+                JudgeHit(index, clockTime - expectedTimes[index]);
+            }
+        }
     }
 
     /// <summary>
@@ -3092,6 +3154,9 @@ public class FishingFight : SEEDScript
         // 二度と true には戻らない（次の BeginFight まで落ちたまま）。
         fightJudgedCount++;
         if (judgement != FishingController.HookJudgement.Excellent) { fightAllExcellent = false; }
+
+        // 【デバッグ】打点アイコンの反応を切り分けたいときはここで抜ける（記録は済んでいる）
+        if (DebugIsolationAllowed && debugNoBeatIconFeedback) { return; }
 
         // 判定した瞬間からポップをやり直す（すでに出ているアイコンが小さく跳ねる）
         // アイコン本体の色は「叩けたか」だけを示す（判定の細かさは外周の判定リングが担う）。
