@@ -524,14 +524,14 @@ public class FishingFight : SEEDScript
     private static bool DebugIsolationAllowed => SEED.Application.IsDebugAllowed;
 
     [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
-    private float linePerSecondOfOffset = 0.3375f;
+    private float linePerSecondOfOffset = 0.5f;
 
     /// <summary>
     /// Miss（打ち逃し・空打ち）1 回で減る糸の残り（全レベル・全魚種で共通）。
     /// 【2026-09-11 調整】上の時間差の減りと足並みを揃えて 0.06 → 0.12 へ倍増。
     /// </summary>
     [SerializeField(Label = "Missの糸の減り")]
-    private float missLoss = 0.0675f;
+    private float missLoss = 0.1f;
 
     /// <summary>
     /// 回答フレーズを Perfect（全打点 Excellent）で締めたときに回復する糸の残りを、

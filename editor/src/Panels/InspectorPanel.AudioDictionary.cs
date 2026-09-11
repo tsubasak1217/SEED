@@ -372,7 +372,7 @@ public partial class InspectorPanel
         // ── グループごとのブロック ────────────────────────────
         for (var gi = 0; gi < groups.Count; gi++)
         {
-            sp.Children.Add(BuildAudioDictGroupBlock(groups, gi, Commit));
+            sp.Children.Add(BuildAudioDictGroupBlock(groups, gi, info.SlotIdx, Commit));
         }
 
         if (groups.Count == 0)
@@ -428,9 +428,15 @@ public partial class InspectorPanel
         }
     }
 
-    /// <summary>グループ 1 つ分（見出し行 + 行一覧 + 行追加ボタン）を構築する。</summary>
+    /// <summary>
+    /// グループ 1 つ分（見出し行 + 行一覧 + 行追加ボタン）を構築する。
+    /// グループは <see cref="Expander"/> で開閉できる。開閉状態は編集のたびに起きる
+    /// インスペクタ全再構築をまたいで保持する（<see cref="_expandStates"/>。キーは
+    /// 「スロット添字 + グループの並び順」）。既定は「開」。
+    /// </summary>
+    /// <param name="slotIdx">この辞書コンポーネントのスロット添字（開閉状態のキーに使う）。</param>
     private UIElement BuildAudioDictGroupBlock(
-        List<AudioDictionaryCatalog.Group> groups, int groupIndex, Action commit)
+        List<AudioDictionaryCatalog.Group> groups, int groupIndex, int slotIdx, Action commit)
     {
         var group = groups[groupIndex];
         var block = new StackPanel { Margin = new Thickness(0, 4, 0, 6) };
@@ -501,7 +507,6 @@ public partial class InspectorPanel
             commit();
         };
         header.Children.Add(delGroupBtn);
-        block.Children.Add(header);
 
         // ── 行一覧 ────────────────────────────────────────────
         var rows = new StackPanel { Margin = new Thickness(DictGroupIndent, 0, 0, 0) };
@@ -519,10 +524,27 @@ public partial class InspectorPanel
                 Margin     = new Thickness(0, 2, 0, 2),
             });
         }
-        block.Children.Add(rows);
+        // 見出し行をヘッダー、行一覧を中身にした開閉ブロックにまとめる。
+        // ヘッダー内のテキストボックス・ボタンは Expander の開閉トグルより先にイベントを
+        // 受け取るので、そのまま操作できる（クリックが開閉に化けない）。
+        var expander = new Expander
+        {
+            Header     = header,
+            Content    = rows,
+            Foreground = DictBrushGroup,
+        };
+        _expandStates.Track(expander,
+            $"{ExpandKeyAudioDictGroupPrefix}{slotIdx}:{groupIndex}", defaultExpanded: true);
+        block.Children.Add(expander);
 
         return block;
     }
+
+    /// <summary>
+    /// 音声辞書のグループ Expander の開閉状態キーの接頭辞。後続は「スロット添字:グループ添字」。
+    /// グループ名は編集で変わるため、並び順（添字）を識別子にする。
+    /// </summary>
+    private const string ExpandKeyAudioDictGroupPrefix = "audio_dict_group:";
 
     /// <summary>辞書の 1 行（用途名・音声ファイル・音量・削除）を構築する。</summary>
     private UIElement BuildAudioDictEntryRow(
