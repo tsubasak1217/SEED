@@ -12,7 +12,7 @@
 - 呼び出し側: `runtime/src/engine/core/renderer/shaders/water_surface.wgsl`（`fs_water`）
 - 連結順の正典: `runtime/src/engine/core/renderer/pipelines/water_surface.toml`
 - バケット分割と描画: `runtime/src/engine/core/renderer/water/mod.rs`（`WaterRenderer`）
-- 同梱サンプル: `runtime/assets/shaders/magma.wgsl` / `runtime/assets/shaders/poison.wgsl`
+- 同梱サンプル: `templates/shaders/magma.wgsl` / `templates/shaders/poison.wgsl`
 
 > 表記ルール: 本ドキュメントは実装から確認した事実のみを書く。記載の関数名・定数名・既定挙動は
 > すべて上記ソースが正典であり、食い違ったらソース側が正しい。
@@ -728,7 +728,7 @@ L3-a のシェーディングアセットと**同一の流儀**である。
 3. 種別を **Region** にし、`region_half_extents` を池の大きさに合わせる
    （例: 8, 2, 8）。`surface_height` で水面の高さを調整する。
 4. インスペクタ「色と透明度」の先頭にある **「水面シェーダ」** の「参照」から
-   `runtime/assets/shaders/magma.wgsl` を選ぶ（または `.wgsl` を D&D）。
+   `templates/shaders/magma.wgsl` を選ぶ（または `.wgsl` を D&D）。
    → その瞬間に水面がマグマになる。
 5. 5.1 節の表に従って粘度・波・吸収距離・色・反射を設定する
    （**色そのものはアセットが決めるが、`deep_color` / `shallow_color` は
@@ -771,6 +771,6 @@ L3-a のシェーディングアセットと**同一の流儀**である。
 - **パラメータ値はアセットのファイルへ書き戻さない。** 値はシーン側
   （`WaterVolumeComponent.shader_params`）に持つ。アセットに書いた値は
   あくまで「新しく差したときの既定値」である。
-- サンプル 2 点は `runtime/assets/shaders/` にあり、
+- サンプル 2 点は `templates/shaders/` にあり、
   ユニットテスト `bundled_sample_assets_pass_naga_validation` が naga 検証を、
   `bundled_samples_declare_inspector_params` がパラメータ宣言の存在を固定している。

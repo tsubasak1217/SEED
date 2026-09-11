@@ -1,0 +1,80 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    テンプレートライブラリ（editor/src/Templates/）の単体テスト。
+
+    対象:
+      - TemplateLibrary        : カテゴリ / エントリの列挙（粒度・表示名・サイズ・隠し要素）
+      - AssetCollector.CollectFrom : 指定した起点だけからの参照閉包（既定の起点を積まないこと）
+      - TemplateImporter       : コピー計画（衝突検出）と実行（スキップ / 上書き）
+      - TemplateLibraryLocator : 環境変数による置き場所の上書き
+      - ByteSizeText           : 表示用のバイト数整形
+
+    PackagingCollectorTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （インポートのロジックが WPF 型を使い始めたらビルドが壊れ、
+          それが「ロジックが UI から独立していること」の検知器になる）
+
+    実行方法: dotnet run (project=editor/tests/TemplateImportTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.TemplateImport</RootNamespace>
+    <AssemblyName>TemplateImportTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 参照の閉包計算（テンプレートのインポートが依存解決に使う） -->
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
+      <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
+      <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\Collect\AssetCollector.cs</Link>
+    </Compile>
+
+    <!-- テンプレートライブラリ本体（UI 非依存のものだけ。TreeNode / Window は UI 層） -->
+    <Compile Include="..\..\src\Templates\ByteSizeText.cs">
+      <Link>Linked\Templates\ByteSizeText.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateCategoryNames.cs">
+      <Link>Linked\Templates\TemplateCategoryNames.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateEntry.cs">
+      <Link>Linked\Templates\TemplateEntry.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateLibrary.cs">
+      <Link>Linked\Templates\TemplateLibrary.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateLibraryLocator.cs">
+      <Link>Linked\Templates\TemplateLibraryLocator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateImportPlan.cs">
+      <Link>Linked\Templates\TemplateImportPlan.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateImporter.cs">
+      <Link>Linked\Templates\TemplateImporter.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

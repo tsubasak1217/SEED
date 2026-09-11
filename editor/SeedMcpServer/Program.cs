@@ -421,6 +421,7 @@ static async Task<string> HandleLaunchAsync(JsonElement args)
 {
     var headless = true;
     string? scene = null;
+    string? project = null;
     var waitSeconds = SeedMcpServer.Launcher.DEFAULT_WAIT_SECONDS;
 
     if (args.ValueKind == JsonValueKind.Object)
@@ -432,11 +433,14 @@ static async Task<string> HandleLaunchAsync(JsonElement args)
         if (args.TryGetProperty("scene", out var sEl) && sEl.ValueKind == JsonValueKind.String)
             scene = sEl.GetString();
 
+        if (args.TryGetProperty("project", out var pEl) && pEl.ValueKind == JsonValueKind.String)
+            project = pEl.GetString();
+
         if (args.TryGetProperty("wait_seconds", out var wEl) && wEl.ValueKind == JsonValueKind.Number)
             waitSeconds = wEl.GetDouble();
     }
 
-    return await SeedMcpServer.Launcher.LaunchAsync(headless, scene, waitSeconds);
+    return await SeedMcpServer.Launcher.LaunchAsync(headless, scene, waitSeconds, project);
 }
 
 /// <summary>
@@ -804,6 +808,13 @@ static object SeedLaunchTool() => new
             {
                 type        = "string",
                 description = "起動時に開く .scene の絶対パス。省略時は前回開いていたシーンを復元する。"
+            },
+            project = new
+            {
+                type        = "string",
+                description = "開くプロジェクト（.seedproj の絶対パス、またはプロジェクトフォルダ）。"
+                            + "省略時は環境変数 SEED_PROJECT、それも無ければエディタ側が"
+                            + "「最近開いたプロジェクトの先頭」を使う（見つからなければ起動は失敗する）。"
             },
             wait_seconds = new
             {

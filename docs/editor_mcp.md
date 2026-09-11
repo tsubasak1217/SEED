@@ -108,9 +108,14 @@ et9.0\SeedMcpServer.exe` がロックされ、
    別ディレクトリから起動する場合は絶対パスに書き換える。
 
 2. **操作対象のエディタを用意する**。
-   - 基本は `seed_launch(headless:true, scene:"...")`。MCP が空きポートとトークンを決めて
+   - 基本は `seed_launch(headless:true, project:"...", scene:"...")`。MCP が空きポートとトークンを決めて
      エディタを起動し、pid とトークンの一致を確認してから成功を返す。
      **エディタが起動していなくても他ツールが勝手に起動することはない**。
+   - `project` は開くプロジェクト（`.seedproj` の絶対パス、またはプロジェクトフォルダ）。
+     エディタへは `--project <path>` として渡る。省略時は環境変数 `SEED_PROJECT`、
+     それも無ければエディタが「最近開いたプロジェクトの先頭」を使う。
+     **ヘッドレスでプロジェクトを 1 つも決められないとエディタは終了コード 2 で終了する**
+     （画面が出せないため、スタート画面へは落とさない）。詳細は `docs/project_system.md`。
    - 利用者が開いているエディタを操作したい場合だけ `seed_attach(port, token)`
      （7 章「明示的な接続（seed_attach）」）。
 
@@ -136,7 +141,7 @@ et9.0\SeedMcpServer.exe` がロックされ、
 
 | ツール | 引数 | 返り値 |
 |---|---|---|
-| `seed_launch` | `headless?`（既定 true）, `scene?`, `wait_seconds?`（既定 60） | `{ok, already_running, pid, port, exe, headless, state}` |
+| `seed_launch` | `headless?`（既定 true）, `project?`, `scene?`, `wait_seconds?`（既定 60） | `{ok, already_running, pid, port, exe, headless, state}` |
 | `seed_attach` | `port`, `token` | `{ok, instance, state}`（利用者の明示同意が必要） |
 | `seed_instance` | なし | `{ok, bound, port, pid, headless, attached, has_token}` |
 | `seed_shutdown` | なし | `{ok, shutting_down}`（束縛中インスタンスのみ） |
@@ -347,6 +352,7 @@ IPC ではそのパスだけを返す（`PROFILE_DUMP_DONE:{パス}`）。
 |---|---|---|
 | `SEED_EDITOR_EXE` | `seed_launch` が起動する `SEEDEditor.exe` | `SeedMcpServer/Launcher.cs::ResolveEditorExePath` |
 | `SEED_RUNTIME_EXE` | エディタが起動する `SEED.exe` | `editor/src/MainWindow.xaml.cs::ResolveRuntimePath` |
+| `SEED_PROJECT` | `seed_launch` が `--project` で渡すプロジェクト（引数 `project` 省略時の既定） | `SeedMcpServer/Launcher.cs::LaunchAsync` / `editor/src/Headless/EditorStartupOptions.cs` |
 
 どちらも「実在するファイルを指しているときだけ」採用され、未設定・不在なら
 従来の探索順にそのまま落ちる。環境変数はエディタへ継承されるので、

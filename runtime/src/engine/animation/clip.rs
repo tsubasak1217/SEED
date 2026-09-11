@@ -429,7 +429,7 @@ mod tests {
     use crate::engine::animation::sampler::sample_track;
 
     // ─── フィクスチャ ──────────────────────────────────────────
-    //  実アセット（runtime/assets/mainGame/animations/*.anim）はユーザーがエディタで
+    //  実アセット（projects/WarashibeFishing/assets/mainGame/animations/*.anim）はユーザーがエディタで
     //  自由に編集するため、テストはアセットに依存せず、ここに埋め込んだクリップで
     //  「.anim フォーマットの解釈」と「明示タンジェントによるイージング再現」を検証する。
 

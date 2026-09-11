@@ -113,6 +113,79 @@ runtime/assets/**/*.blend
 runtime/assets/**/*.zip
 
 # =========================
+# プロジェクト（projects/<Name>/）とテンプレートライブラリ（templates/）
+#   テキスト系（.seedproj / scene / actor / anim / json / cs / wgsl 等）は追跡する。
+#   重いバイナリ（画像/モデル/音声/地形ボクセル/フォント/アーカイブ）は除外（実体はローカルのみ）。
+#   実行時・パッケージ化の生成物（cache/ save/ logs/ build/）は追跡しない。
+# =========================
+projects/**/*.png
+projects/**/*.jpg
+projects/**/*.jpeg
+projects/**/*.tga
+projects/**/*.bmp
+projects/**/*.gif
+projects/**/*.hdr
+projects/**/*.exr
+projects/**/*.webp
+projects/**/*.dds
+projects/**/*.ktx2
+projects/**/*.glb
+projects/**/*.gltf
+projects/**/*.bin
+projects/**/*.fbx
+projects/**/*.obj
+projects/**/*.max
+projects/**/*.usda
+projects/**/*.smd1
+projects/**/*.smdl
+projects/**/*.wav
+projects/**/*.mp3
+projects/**/*.ogg
+projects/**/*.flac
+projects/**/*.tcover
+projects/**/*.tvox
+projects/**/*.blend
+projects/**/*.blend1
+projects/**/*.zip
+projects/**/*.ttf
+projects/**/*.otf
+templates/**/*.png
+templates/**/*.jpg
+templates/**/*.jpeg
+templates/**/*.tga
+templates/**/*.bmp
+templates/**/*.gif
+templates/**/*.hdr
+templates/**/*.exr
+templates/**/*.webp
+templates/**/*.dds
+templates/**/*.ktx2
+templates/**/*.glb
+templates/**/*.gltf
+templates/**/*.bin
+templates/**/*.fbx
+templates/**/*.obj
+templates/**/*.max
+templates/**/*.usda
+templates/**/*.smd1
+templates/**/*.smdl
+templates/**/*.wav
+templates/**/*.mp3
+templates/**/*.ogg
+templates/**/*.flac
+templates/**/*.tcover
+templates/**/*.tvox
+templates/**/*.blend
+templates/**/*.blend1
+templates/**/*.zip
+templates/**/*.ttf
+templates/**/*.otf
+projects/*/cache/
+projects/*/save/
+projects/*/logs/
+projects/*/build/
+
+# =========================
 # セーブデータ（ゲーム進行の永続化。開発者ごとのローカル状態なので追跡しない）
 # エディタ Play 時の保存先は runtime/save/save.json（save/path.rs の規約）
 # =========================

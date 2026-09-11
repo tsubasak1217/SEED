@@ -1,0 +1,151 @@
+<Window x:Class="SEEDEditor.Startup.NewProjectDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="新規プロジェクトの作成"
+        Width="620" SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#1E1E1E"
+        Loaded="OnLoaded">
+
+    <!--
+        新規プロジェクト作成ダイアログ。
+        入力は「プロジェクト名」と「作成先フォルダ」の 2 つだけで、
+        生成そのものは ProjectCreator が行う（このファイルは入力と検証の提示に徹する）。
+    -->
+
+    <Window.Resources>
+
+        <!-- ── 入力ラベル ───────────────────────────────────── -->
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="Foreground"        Value="#AAAAAA"/>
+            <Setter Property="FontSize"          Value="12"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- ── 入力欄 ───────────────────────────────────────── -->
+        <Style x:Key="FieldTextBox" TargetType="TextBox">
+            <Setter Property="Background"      Value="#2A2A2A"/>
+            <Setter Property="Foreground"      Value="#DCDCDC"/>
+            <Setter Property="CaretBrush"      Value="White"/>
+            <Setter Property="BorderBrush"     Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="6,5"/>
+            <Setter Property="FontSize"        Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="RootBd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2"
+                                Padding="{TemplateBinding Padding}">
+                            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="RootBd" Property="BorderBrush" Value="#3399FF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ── ボタン ───────────────────────────────────────── -->
+        <Style x:Key="DialogButton" TargetType="Button">
+            <Setter Property="Background"      Value="#2D2D30"/>
+            <Setter Property="Foreground"      Value="#DCDCDC"/>
+            <Setter Property="BorderBrush"     Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="16,6"/>
+            <Setter Property="FontSize"        Value="12"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#3A3A3D"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#094D80"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Window.Resources>
+
+    <StackPanel Margin="20">
+
+        <TextBlock Text="新規プロジェクトの作成"
+                   Foreground="#FFFFFF" FontSize="16" Margin="0,0,0,4"/>
+        <TextBlock Text="プロジェクトフォルダ・assets・plugins・開始シーンを作ります。"
+                   Foreground="#8A8A8A" FontSize="11" Margin="0,0,0,16"/>
+
+        <!-- プロジェクト名 -->
+        <Grid Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="プロジェクト名"/>
+            <TextBox   Grid.Column="1" x:Name="TxtName" Style="{StaticResource FieldTextBox}"
+                       TextChanged="OnInputChanged"/>
+        </Grid>
+
+        <!-- 作成先 -->
+        <Grid Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="作成先フォルダ"/>
+            <TextBox   Grid.Column="1" x:Name="TxtParentDir" Style="{StaticResource FieldTextBox}"
+                       TextChanged="OnInputChanged"/>
+            <Button    Grid.Column="2" Style="{StaticResource DialogButton}"
+                       Content="参照..." Margin="8,0,0,0" Click="OnBrowseClick"/>
+        </Grid>
+
+        <!-- 生成先プレビュー -->
+        <Border Background="#252526" BorderBrush="#3F3F46" BorderThickness="1"
+                CornerRadius="3" Padding="10,8" Margin="0,4,0,0">
+            <StackPanel>
+                <TextBlock Text="作成される内容" Foreground="#8A8A8A" FontSize="11" Margin="0,0,0,4"/>
+                <TextBlock x:Name="TxtPreview" Foreground="#BBBBBB" FontSize="11"
+                           TextWrapping="Wrap" FontFamily="Consolas"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 検証メッセージ -->
+        <TextBlock x:Name="TxtValidation" Foreground="#FFB0B0" FontSize="11"
+                   TextWrapping="Wrap" Margin="2,10,0,0"/>
+
+        <!-- ボタン行 -->
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="BtnCreate" Style="{StaticResource DialogButton}"
+                    Content="作成" MinWidth="90" Click="OnCreateClick" IsDefault="True"/>
+            <Button Style="{StaticResource DialogButton}"
+                    Content="キャンセル" MinWidth="90" Margin="8,0,0,0"
+                    Click="OnCancelClick" IsCancel="True"/>
+        </StackPanel>
+
+    </StackPanel>
+</Window>

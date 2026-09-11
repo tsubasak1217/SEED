@@ -2201,7 +2201,7 @@ long stamp = SEED.Assets.GetModifiedTime("assets://mainGame/rhythm/beat_patterns
 **注意**
 
 - 呼ぶたびにディスク（または PAK）から読み直します。**毎フレーム呼ばないこと**。起動時や場面の切り替えで 1 度だけ読み、結果はスクリプト側で保持します。
-- ホットリロードしたいときは `GetModifiedTime` を数秒に 1 度だけ調べ、値が変わったときだけ読み直すのが安上がりです（実例: `runtime/assets/mainGame/scripts/Rhythm/BeatPatternLibrary.cs`）。
+- ホットリロードしたいときは `GetModifiedTime` を数秒に 1 度だけ調べ、値が変わったときだけ読み直すのが安上がりです（実例: `projects/WarashibeFishing/assets/mainGame/scripts/Rhythm/BeatPatternLibrary.cs`）。
 - 書き込み API はありません。永続化したい値は `SaveData`（7.7）を使ってください。
 
 ---

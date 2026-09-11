@@ -2,11 +2,16 @@
 //  build.rs — ビルド後に DLL を自動デプロイするスクリプト
 //
 //  cargo build -p sample_plugin 実行後、ビルド成果物を
-//  runtime/plugins/SamplePlugin/ に自動コピーする。
+//  runtime/plugins/SamplePlugin/（または SEED_PLUGIN_DEPLOY_ROOT/SamplePlugin/）に自動コピーする。
 //  plugin.json も同フォルダに配置する。
 // ============================================================
 
 use std::{env, fs, path::PathBuf};
+
+/// デプロイ先の plugins/ フォルダを指定する環境変数名。
+const DEPLOY_ROOT_ENV: &str = "SEED_PLUGIN_DEPLOY_ROOT";
+/// この DLL を置くフォルダ名（plugin.json の name と一致させる）。
+const PLUGIN_DIR_NAME: &str = "SamplePlugin";
 
 fn main() {
     // Cargo が教えてくれるビルド成果物ディレクトリ（target/debug/ または target/release/）
@@ -29,14 +34,22 @@ fn main() {
 
     let dll_src = target_dir.join(dll_name);
 
-    // デプロイ先: runtime/plugins/SamplePlugin/
-    // __FILE__ から相対パスで workspace ルートを求める
+    // デプロイ先の決定（データドリブン）:
+    //   1. 環境変数 SEED_PLUGIN_DEPLOY_ROOT（プロジェクトの plugins/ フォルダ）が設定されていれば
+    //      その配下の SamplePlugin/ へ配置する。
+    //   2. 未設定なら既定の配置先（エンジン付属サンプルなので runtime/plugins/。プロジェクトへは手でコピーするか環境変数で指定）。
+    // CARGO_MANIFEST_DIR（plugins/<crate>/）の 2 階層上が SEED リポジトリのルート。
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let plugin_dir = manifest_dir
+    let repo_root = manifest_dir
         .ancestors()
-        .nth(2) // plugins/ → SEED root
-        .map(|p| p.join("runtime").join("plugins").join("SamplePlugin"))
-        .unwrap_or_else(|| PathBuf::from("runtime/plugins/SamplePlugin"));
+        .nth(2) // plugins/<crate>/ → plugins/ → SEED root
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    println!("cargo:rerun-if-env-changed={DEPLOY_ROOT_ENV}");
+    let plugin_dir = match env::var(DEPLOY_ROOT_ENV) {
+        Ok(root) if !root.trim().is_empty() => PathBuf::from(root).join(PLUGIN_DIR_NAME),
+        _ => repo_root.join("runtime").join("plugins").join(PLUGIN_DIR_NAME),
+    };
 
     // デプロイ先フォルダを作成する
     if let Err(e) = fs::create_dir_all(&plugin_dir) {

@@ -24,7 +24,20 @@ internal static class EditorLog
     /// パイプのバックプレッシャでゲーム本体まで遅くする。開きっぱなしにして
     /// open/close コストを排除する。FileShare.Read で他プロセスからの読み取りは許可する。
     /// </summary>
-    private static readonly StreamWriter? _writer = OpenWriter();
+    private static StreamWriter? _writer = OpenWriter();
+
+    /// <summary>
+    /// ライタを開き直すまでの待ち時間。
+    ///
+    /// 「別のプロジェクトを開く」は新しいプロセスを起こしてから今のプロセスを閉じるため、
+    /// 起動した瞬間は前のプロセスがまだログファイルを掴んでいる（FileShare.Read なので
+    /// 書き込みで開けない）。そこで開けなかった場合だけ、次の Write で開き直しを試みる。
+    /// 毎回試すと失敗時に I/O が重くなるので、この間隔を空ける。
+    /// </summary>
+    private static readonly TimeSpan ReopenInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>最後に開き直しを試みた時刻（開けている間は使わない）。</summary>
+    private static DateTime _lastReopenAttempt = DateTime.MinValue;
 
     /// <summary>新しいログ行が追加されたときに発火する（任意スレッドから呼ばれる）。</summary>
     public static event Action<string>? LogWritten;
@@ -60,6 +73,22 @@ internal static class EditorLog
         }
     }
 
+    /// <summary>
+    /// ライタを開き直す（<see cref="ReopenInterval"/> の間隔を空けて 1 回だけ試す）。
+    /// 呼び出し元で <see cref="_fileLock"/> を取っていること。
+    /// </summary>
+    private static void TryReopenWriter()
+    {
+        var now = DateTime.UtcNow;
+        if (now - _lastReopenAttempt < ReopenInterval) return;
+        _lastReopenAttempt = now;
+
+        _writer = OpenWriter();
+        // 開き直せたら、ファイル冒頭の見出しをここで書く（静的コンストラクタでは書けていない）。
+        try { _writer?.WriteLine($"=== SEEDEditor started {DateTime.Now:HH:mm:ss.fff} ==="); }
+        catch { /* ignore */ }
+    }
+
     public static void Write(string message)
     {
         var line = $"{DateTime.Now:HH:mm:ss.fff}  {message}";
@@ -68,6 +97,11 @@ internal static class EditorLog
         // スレッドセーフではないためロックで直列化する。
         lock (_fileLock)
         {
+            // 起動時に開けなかった場合（前のプロセスがまだ掴んでいる等）は開き直しを試みる。
+            // これが無いと、プロセスを起こし直す「別のプロジェクトを開く」の直後に
+            // 起動したエディタは、そのセッション中ずっとログを一切残せなくなる。
+            if (_writer is null) TryReopenWriter();
+
             try { _writer?.WriteLine(line); } catch { /* ignore */ }
         }
         try { LogWritten?.Invoke(line); } catch { /* ignore */ }

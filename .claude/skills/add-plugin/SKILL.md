@@ -13,7 +13,7 @@ Rust cdylib。`plugins/sample_plugin/` を丸ごとコピーして名前を書�
 - `plugin_api/` — trait 定義クレート（プラグイン作者はここにのみ依存）
 - `plugins/<crate名>/` — 各プラグインのソース（Cargo crate）
 - ビルド後、`build.rs` が DLL と `plugin.json` を **`runtime/plugins/<Name>/`** に自動コピー
-  （このリポジトリ自身が1つの SEED プロジェクトであり、`runtime/assets` が assets_root、
+  （ゲームは `projects/<Name>/` のプロジェクトフォルダで、`projects/<Name>/assets` が assets_root、
   その隣の `runtime/plugins/` をランタイムが走査するため）
 - `editor/plugins/<Name>/` は**エディタに同梱される別プロジェクト用のプラグインライブラリ**。
   プロジェクト設定ウィンドウの「プラグイン管理」→ライブラリ一覧はここを読み、
@@ -147,7 +147,7 @@ cargo build -p new_plugin
 
 ### 5. project_settings.json に有効化エントリを追加する
 
-`runtime/assets/project_settings.json` の `"plugins"` 配列（`PluginEntry`）に追記
+`projects/WarashibeFishing/assets/project_settings.json` の `"plugins"` 配列（`PluginEntry`）に追記
 （未記載でもデフォルトで有効扱いだが、明示登録を推奨）:
 
 ```json

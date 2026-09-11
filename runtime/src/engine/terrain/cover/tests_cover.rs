@@ -811,13 +811,13 @@ fn default_material_ids_match_sample_asset_ids() {
 /// 実行して初めて「既定セットへ落ちて見た目が変わった」と気付くのを防ぐ。
 ///
 /// **取り込み元は `runtime/tests/fixtures/terrain/cover_materials.json` の
-/// テスト専用コピー**である。`runtime/assets/` 直下はユーザーがファイルを自由に
+/// テスト専用コピー**である。プロジェクトの `assets/` 直下はユーザーがファイルを自由に
 /// 移動・改名・削除できる作業領域で、そこを `include_str!` すると
 /// アセットを動かした瞬間にクレートがコンパイル不能になる（実際に一度起きている）。
 /// したがってフィクスチャは**正本のスナップショット**であり、担保するのは
 /// 「スナップショット時点の出荷サンプルが壊れていないこと」である。
 ///
-/// 正本（コピー元）: `runtime/assets/templates/terrain/cover_materials.json`
+/// 正本（コピー元）: `templates/terrain/cover_materials.json`（テンプレートライブラリ）
 /// **正本を更新したらフィクスチャも同じ内容へコピーし直すこと。**
 #[test]
 fn bundled_sample_asset_parses() {

@@ -1,9 +1,10 @@
-<Application x:Class="SEEDEditor.App"
+﻿<Application x:Class="SEEDEditor.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:SEEDEditor"
-             xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
-             StartupUri="MainWindow.xaml">
+             xmlns:ctrl="clr-namespace:SEEDEditor.Controls">
+    <!-- StartupUri は使わない。起動時にどのウィンドウを出すかは App.OnStartup が決める
+         （プロジェクトが確定していれば MainWindow、していなければスタート画面）。 -->
     <Application.Resources>
         <ResourceDictionary>
 

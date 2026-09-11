@@ -206,15 +206,19 @@ pub trait PluginHost {
 cargo build -p game_tools
 ```
 
-`build.rs` がビルド成果物を自動デプロイする:
+`build.rs` がビルド成果物を自動デプロイする。配置先は環境変数 `SEED_PLUGIN_DEPLOY_ROOT`
+（プロジェクトの `plugins/` フォルダ）で指定でき、未設定なら既定の場所へ置く:
 
-- `runtime/plugins/GameTools/game_tools.dll`
-- `runtime/plugins/GameTools/plugin.json`
+- `game_tools`（このゲーム専用）: `projects/WarashibeFishing/plugins/GameTools/{game_tools.dll, plugin.json}`
+- `sample_plugin`（エンジン付属サンプル）: `runtime/plugins/SamplePlugin/`（プロジェクトで使うときは
+  `projects/<Name>/plugins/SamplePlugin/` へコピーするか、`SEED_PLUGIN_DEPLOY_ROOT` を指定してビルドする）
+
+ランタイムはプロジェクトの `plugins/`（= `assets/` の隣）だけを読む。
 
 **注意**: `build.rs` はリンク前に走るため、まっさらな状態からの初回ビルドでは
 DLL がまだ存在せずコピーされない。もう一度 `cargo build -p <crate>` を実行すること。
 
-有効化は `runtime/assets/project_settings.json` の `plugins` 配列:
+有効化は `projects/WarashibeFishing/assets/project_settings.json` の `plugins` 配列:
 
 ```json
 { "name": "GameTools", "enabled": true }
@@ -239,8 +243,8 @@ DLL がまだ存在せずコピーされない。もう一度 `cargo build -p <c
 | `complete_tutorial` | tutorial を完了済みにする | セーブキー `tutorial_done` に `1` を書いて即保存する（他キーは保持） |
 
 `complete_tutorial` の書き込み先・キー名・形式は、ゲーム側の読み出しと同一である。
-- キー定義: `runtime/assets/common/scripts/GameProgressKeys.cs` の `TutorialDone = "tutorial_done"`
-- 読み出し: `runtime/assets/mainGame/scripts/Tutorial/TutorialDirector.cs`
+- キー定義: `projects/WarashibeFishing/assets/common/scripts/GameProgressKeys.cs` の `TutorialDone = "tutorial_done"`
+- 読み出し: `projects/WarashibeFishing/assets/mainGame/scripts/Tutorial/TutorialDirector.cs`
   `SEED.SaveData.GetBool(GameProgressKeys.TutorialDone, false)`
 - 保存先ファイル: `save.json`（場所は `runtime/src/engine/core/save/path.rs` の規約に従う。
   エディタ Play なら `runtime/save/save.json`）

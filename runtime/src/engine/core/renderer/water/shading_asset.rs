@@ -998,16 +998,16 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// ユーザーが差した瞬間に LOAD_ERROR が出る、という意味なので必ず固定しておく。
     ///
     /// **取り込み元は `runtime/tests/fixtures/shaders/` のテスト専用コピー**である。
-    /// `runtime/assets/` 直下はユーザーがファイルを自由に移動・改名・削除できる作業領域で、
+    /// プロジェクトの `assets/` 直下はユーザーがファイルを自由に移動・改名・削除できる作業領域で、
     /// そこを `include_str!` するとアセットを動かした瞬間にクレートがコンパイル不能になる
     /// （実際に一度起きている）。そのためフィクスチャは**正本のスナップショット**であり、
     /// 「出荷サンプルが今この瞬間も壊れていないこと」ではなく
     /// 「スナップショット時点の出荷サンプルが壊れていないこと」を担保する。
     ///
     /// 正本（コピー元）:
-    /// - `runtime/assets/templates/shaders/magma.wgsl`
-    /// - `runtime/assets/templates/shaders/poison.wgsl`
-    /// - `runtime/assets/mainGame/shaders/pop_ocean.wgsl`
+    /// - `templates/shaders/magma.wgsl`（テンプレートライブラリ）
+    /// - `templates/shaders/poison.wgsl`（同）
+    /// - `projects/WarashibeFishing/assets/mainGame/shaders/pop_ocean.wgsl`
     ///
     /// **正本を更新したらフィクスチャも同じ内容へコピーし直すこと**（バイト一致が前提）。
     #[test]

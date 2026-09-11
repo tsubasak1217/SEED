@@ -6,6 +6,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!-- エディタ（エンジン）のバージョン。新規プロジェクトの .seedproj へ engine_version として
+         記録され、スタート画面のタイトル横にも出る。取得は SEEDEditor.Project.EditorVersion。 -->
+    <Version>0.1.0</Version>
+    <!-- exe のアイコン（スタート画面・.seedproj 関連付けでも同じアイコンを使う。仮: templates/textures/symmetryORE1.png 由来） -->
+    <ApplicationIcon>resources/app.ico</ApplicationIcon>
     <!-- SDK のデフォルト Page グロブを無効化し、src/ を明示指定する -->
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
   </PropertyGroup>

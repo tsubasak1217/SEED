@@ -1,0 +1,78 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    プロジェクト概念（.seedproj / ProjectPaths / 起動引数 / 最近の一覧 / 関連付け値 /
+    プロジェクト生成）の単体テスト。
+
+    AssetsRootProbeTests / PackagingCollectorTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （プロジェクト解決ロジックが WPF 型を使い始めたらビルドが壊れ、
+          それが「起動時の判断が UI から独立していること」の検知器になる）
+
+    レジストリ操作（FileAssociation.cs）とログ出力（ProjectContext.cs）は
+    環境に副作用を持つのでリンクしない。値の組み立て（FileAssociationValues.cs）だけを検証する。
+
+    実行方法: dotnet run (project=editor/tests/ProjectSystemTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ProjectSystem</RootNamespace>
+    <AssemblyName>ProjectSystemTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: プロジェクト概念の中核（いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\Project\EditorVersion.cs">
+      <Link>Linked\Project\EditorVersion.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\SeedProjectFile.cs">
+      <Link>Linked\Project\SeedProjectFile.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\ProjectPaths.cs">
+      <Link>Linked\Project\ProjectPaths.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\ProjectCreator.cs">
+      <Link>Linked\Project\ProjectCreator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\RecentProjectsStore.cs">
+      <Link>Linked\Project\RecentProjectsStore.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\FileAssociationValues.cs">
+      <Link>Linked\Project\FileAssociationValues.cs</Link>
+    </Compile>
+
+    <!-- 起動引数の解析（プロジェクト指定オプション / 位置引数 / 環境変数の優先順位） -->
+    <Compile Include="..\..\src\Headless\EditorStartupOptions.cs">
+      <Link>Linked\Headless\EditorStartupOptions.cs</Link>
+    </Compile>
+
+    <!-- 起動時のプロジェクト解決（どのウィンドウを出すかの判断） -->
+    <Compile Include="..\..\src\Startup\ProjectStartupResolver.cs">
+      <Link>Linked\Startup\ProjectStartupResolver.cs</Link>
+    </Compile>
+
+    <!-- ProjectCreator が書き出す設定ファイルのモデル -->
+    <Compile Include="..\..\src\ProjectSettings\ProjectSettingsData.cs">
+      <Link>Linked\ProjectSettings\ProjectSettingsData.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\PackagingData.cs">
+      <Link>Linked\Packaging\PackagingData.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

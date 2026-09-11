@@ -838,7 +838,7 @@ Play しただけでシーンが「変更済み」にはならない。
 | シェーダ合成 | `renderer/shaders/terrain_gbuffer_write.wgsl`（`fs_terrain_gbuffer` 末尾） |
 | インスペクタ UI（降らせる） | `editor/src/Panels/InspectorPanel.xaml.cs::BuildCoverEmitterSlotContent` |
 | インスペクタ UI（轍） | 同 `BuildInteractionSourceSlotContent`（「轍」セクション。I3.2） |
-| サンプルアセット | `runtime/assets/terrain/cover_materials.json` |
+| サンプルアセット | `templates/terrain/cover_materials.json` |
 
 ### IPC コマンド
 
@@ -1115,4 +1115,4 @@ Play しただけでシーンが「変更済み」にはならない。
 9. **保存の確認**: Ctrl+S でシーンを保存し、シーンを開き直す
    - → 消した／敷いた結果がそのまま復元される
    - チャンクの雪を全部消してから保存すると、そのチャンクの `.tcover` が**削除**される
-     （`runtime/assets/terrain/<scene>/` を確認。消したはずの雪が復活しない）
+     （`projects/WarashibeFishing/assets/terrain/<scene>/` を確認。消したはずの雪が復活しない）

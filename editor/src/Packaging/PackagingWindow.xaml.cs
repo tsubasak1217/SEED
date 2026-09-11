@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  PackagingWindow.xaml.cs — パッケージ化ウィンドウ
 //
 //  【概要】
@@ -127,12 +127,37 @@ public partial class PackagingWindow : Window
     {
         InitializeComponent();
         _assetsPath  = assetsPath;
-        // runtime フォルダはプロジェクトルート直下にある想定
-        _runtimePath    = Path.GetFullPath(Path.Combine(assetsPath, "..", "..", "runtime"));
+        // runtime フォルダ（cargo のワークスペース）はエンジン側の資産であり、
+        // プロジェクト（assets）とは別の場所にある。プロジェクト概念の導入で
+        // assets からの相対では辿れなくなったため、ランタイム exe の位置から求める。
+        _runtimePath    = ResolveRuntimeDir();
         _runtimeSrcPath = Path.Combine(_runtimePath, "src");
 
         var settingsPath = Path.Combine(assetsPath, "packaging_settings.json");
         _data = PackagingData.LoadFrom(settingsPath);
+    }
+
+    /// <summary>
+    /// cargo build を実行する runtime フォルダ（エンジンのワークスペース）を解決する。
+    ///
+    /// <para>
+    /// 判定はランタイム exe の場所から行う。開発配置では
+    /// <c>runtime/target/&lt;debug|release&gt;/SEED.exe</c> なので 2 階層上が runtime/。
+    /// それ以外（exe の隣に配置されたリリース形態など）は exe のフォルダを返す
+    /// （その形態では cargo build 自体が動かないが、ここで例外にはしない）。
+    /// </para>
+    /// </summary>
+    private static string ResolveRuntimeDir()
+    {
+        var exeDir = Path.GetDirectoryName(MainWindow.RuntimeExePath);
+        if (string.IsNullOrEmpty(exeDir)) return Directory.GetCurrentDirectory();
+
+        var buildType = Path.GetFileName(exeDir);
+        var targetDir = Path.GetFileName(Path.GetDirectoryName(exeDir) ?? "");
+
+        return (buildType is "debug" or "release") && targetDir == "target"
+            ? Path.GetFullPath(Path.Combine(exeDir, "..", ".."))
+            : exeDir;
     }
 
     /// <summary>
@@ -372,8 +397,8 @@ public partial class PackagingWindow : Window
         SettingsPane.Children.Add(BuildSectionSubHeader("出力設定"));
 
         // 出力フォルダ
-        SettingsPane.Children.Add(BuildFolderRow("出力フォルダ", _data.Windows.OutputPath,
-            path => _data.Windows.OutputPath = path));
+        AddOutputFolderRows(TargetPlatform.Windows, _data.Windows.OutputPath,
+            path => _data.Windows.OutputPath = path);
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
 
@@ -401,8 +426,8 @@ public partial class PackagingWindow : Window
     private void BuildMacOsSettings()
     {
         SettingsPane.Children.Add(BuildSectionSubHeader("出力設定"));
-        SettingsPane.Children.Add(BuildFolderRow("出力フォルダ", _data.MacOs.OutputPath,
-            path => _data.MacOs.OutputPath = path));
+        AddOutputFolderRows(TargetPlatform.macOS, _data.MacOs.OutputPath,
+            path => _data.MacOs.OutputPath = path);
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
         SettingsPane.Children.Add(BuildComboRow("ビルド種別",
@@ -438,8 +463,8 @@ public partial class PackagingWindow : Window
     private void BuildAndroidSettings()
     {
         SettingsPane.Children.Add(BuildSectionSubHeader("出力設定"));
-        SettingsPane.Children.Add(BuildFolderRow("出力フォルダ", _data.Android.OutputPath,
-            path => _data.Android.OutputPath = path));
+        AddOutputFolderRows(TargetPlatform.Android, _data.Android.OutputPath,
+            path => _data.Android.OutputPath = path);
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
         SettingsPane.Children.Add(BuildComboRow("ビルド種別",
@@ -470,8 +495,8 @@ public partial class PackagingWindow : Window
     private void BuildIosSettings()
     {
         SettingsPane.Children.Add(BuildSectionSubHeader("出力設定"));
-        SettingsPane.Children.Add(BuildFolderRow("出力フォルダ", _data.Ios.OutputPath,
-            path => _data.Ios.OutputPath = path));
+        AddOutputFolderRows(TargetPlatform.iOS, _data.Ios.OutputPath,
+            path => _data.Ios.OutputPath = path);
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
         SettingsPane.Children.Add(BuildComboRow("ビルド種別",
@@ -635,6 +660,23 @@ public partial class PackagingWindow : Window
     }
 
     /// <summary>フォルダパス入力行（テキストボックス＋参照ボタン）を構築する。</summary>
+    /// <summary>
+    /// 「出力フォルダ」行と、未設定時の既定出力先ヒントをまとめて設定ペインへ追加する。
+    ///
+    /// 出力先が空でもビルドできる（<see cref="PackagingOutputDefaults"/> が
+    /// &lt;ProjectRoot&gt;/build/&lt;platform&gt; を既定にする）ことを、
+    /// 実際のパスとともに利用者へ見せる。
+    /// </summary>
+    /// <param name="platform">対象プラットフォーム。</param>
+    /// <param name="currentPath">現在設定されている出力先（空なら未設定）。</param>
+    /// <param name="onChanged">入力が変わったときに設定へ書き戻すコールバック。</param>
+    private void AddOutputFolderRows(
+        TargetPlatform platform, string currentPath, Action<string> onChanged)
+    {
+        SettingsPane.Children.Add(BuildFolderRow("出力フォルダ", currentPath, onChanged));
+        SettingsPane.Children.Add(BuildInfoBlock(PackagingOutputDefaults.HintFor(platform)));
+    }
+
     private UIElement BuildFolderRow(string label, string currentPath, Action<string> onChanged)
     {
         var tb = new TextBox
@@ -850,15 +892,24 @@ public partial class PackagingWindow : Window
         }
     }
 
-    /// <summary>現在選択中のプラットフォームの出力パスを返す。</summary>
-    private string GetCurrentOutputPath() => _selectedPlatform switch
+    /// <summary>
+    /// 現在選択中のプラットフォームの出力パスを返す。
+    ///
+    /// 設定が空のときは <c>&lt;ProjectRoot&gt;/build/&lt;platform&gt;</c> を既定として使う
+    /// （既定値の決定は <see cref="PackagingOutputDefaults"/> が一手に担う）。
+    /// </summary>
+    private string GetCurrentOutputPath()
     {
-        TargetPlatform.Windows => _data.Windows.OutputPath,
-        TargetPlatform.macOS   => _data.MacOs.OutputPath,
-        TargetPlatform.Android => _data.Android.OutputPath,
-        TargetPlatform.iOS     => _data.Ios.OutputPath,
-        _ => "",
-    };
+        var configured = _selectedPlatform switch
+        {
+            TargetPlatform.Windows => _data.Windows.OutputPath,
+            TargetPlatform.macOS   => _data.MacOs.OutputPath,
+            TargetPlatform.Android => _data.Android.OutputPath,
+            TargetPlatform.iOS     => _data.Ios.OutputPath,
+            _ => "",
+        };
+        return PackagingOutputDefaults.ResolveForCurrentProject(configured, _selectedPlatform);
+    }
 
     /// <summary>非同期でビルドを実行する。</summary>
     private async Task RunBuildAsync(TargetPlatform platform, string outputPath)

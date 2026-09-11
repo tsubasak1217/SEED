@@ -623,7 +623,7 @@ mod tests {
     use super::*;
 
     /// 実測・検証に使う実在の SE（ビートバトルの回答クリック音）。
-    /// `runtime/assets` は環境によっては別ドライブへのジャンクションなので、
+    /// アセットルートは環境によっては別ドライブにあるので、
     /// 無い環境ではテストを飛ばす（CI を落とさないため）。
     fn sample_se_path() -> Option<String> {
         let path = format!(

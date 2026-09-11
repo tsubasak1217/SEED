@@ -1,7 +1,7 @@
 // ============================================================
 //  FishCatalogGenerator.cs — 魚図鑑カタログ（FishCatalog.cs）の生成器
 //
-//  魚の prefab（runtime/assets/mainGame/actors/Fish/Lv<N>/*.actor）を走査し、
+//  魚の prefab（projects/WarashibeFishing/assets/mainGame/actors/Fish/Lv<N>/*.actor）を走査し、
 //  スクリプトから参照できる静的データ表 `FishCatalog.cs` のソース全文を組み立てる。
 //  エディタの「ツール → 図鑑画像を生成」（cmd: generate_fish_thumbnails）が、
 //  全魚のサムネイル PNG を描き終えた最後に呼ぶ。
@@ -114,7 +114,7 @@ public static class FishCatalogGenerator
           "// 自動生成 — 編集しないで「図鑑画像を生成」で再生成" + LINE_SEPARATOR
         + "// （エディタ: Tools > 図鑑画像を生成 / cmd: generate_fish_thumbnails /" + LINE_SEPARATOR
         + "//   エディタ無し: python tools/gen_fish_catalog.py）" + LINE_SEPARATOR
-        + "// 生成元: runtime/assets/mainGame/actors/Fish/Lv<N>/*.actor";
+        + "// 生成元: projects/WarashibeFishing/assets/mainGame/actors/Fish/Lv<N>/*.actor";
 
     // ── データ構造 ───────────────────────────────────────────────
 

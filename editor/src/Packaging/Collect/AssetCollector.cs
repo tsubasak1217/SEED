@@ -20,6 +20,13 @@
 //  除外ルールは「未参照ファイルの掃除」であって、参照より優先しない。
 //  参照されていれば除外設定に当たっていても同梱し、警告として報告する。
 //
+//  【2 つの入口】
+//  ・Collect()     … パッケージ化用。上記の既定の起点（project_settings.json ほか）から辿る。
+//  ・CollectFrom() … 任意の起点から辿る汎用版。呼び出し側が渡したパスだけを起点にし、
+//                    project_settings.json も登録シーンもスクリプト全走査も行わない。
+//                    テンプレートライブラリのインポート（editor/src/Templates/）が使う。
+//                    閉包の探索・同伴ファイル・欠落検出は Collect() と完全に同じ処理を通る。
+//
 //  【型参照対策（.cs の走査専用起点）】
 //  参照グラフは「パス文字列で参照されたファイルだけ」を辿るため、
 //  C# の**型名**だけで使われるスクリプト（例: ファクトリの `new MoveMission()`、
@@ -168,14 +175,13 @@ public sealed class AssetCollector
     /// <returns>収録一覧・欠落一覧・除外統計を含む結果。</returns>
     public AssetCollectionResult Collect()
     {
-        long totalBytes = _filesOnDisk.Values.Sum();
-        int  totalCount = _filesOnDisk.Count;
-        var  missingScenes = new List<string>();
+        var missingScenes = new List<string>();
 
         // ── 全ファイル同梱モード（従来の挙動） ──────────────────
         if (_settings.IncludeAllFiles)
         {
-            Log($"収録モード: 全ファイル同梱（参照解決なし） {totalCount} 件");
+            long allBytes = _filesOnDisk.Values.Sum();
+            Log($"収録モード: 全ファイル同梱（参照解決なし） {_filesOnDisk.Count} 件");
             var all = _filesOnDisk
                 .Select(kv => new CollectedAsset(kv.Key, kv.Value))
                 .OrderBy(a => a.RelPath, AssetPathUtil.PathComparer)
@@ -183,15 +189,83 @@ public sealed class AssetCollector
             return new AssetCollectionResult
             {
                 Included       = all,
-                IncludedBytes  = totalBytes,
-                TotalFileCount = totalCount,
-                TotalBytes     = totalBytes,
+                IncludedBytes  = allBytes,
+                TotalFileCount = _filesOnDisk.Count,
+                TotalBytes     = allBytes,
             };
         }
 
         // ── 起点を積む ─────────────────────────────────────────
         AddSeeds(missingScenes);
 
+        // ── 閉包を取って結果にする ─────────────────────────────
+        return RunClosureAndBuildResult(missingScenes);
+    }
+
+    /// <summary>
+    /// 起点として渡されたパスが実在しなかったときに、欠落報告の「参照元」欄へ入れるラベル。
+    /// 実ファイルの相対パスと取り違えようがない形にしてある。
+    /// </summary>
+    public const string SeedSourceLabel = "(指定された起点)";
+
+    /// <summary>
+    /// 呼び出し側が指定した起点だけから参照の閉包を取る汎用版。
+    ///
+    /// <para>
+    /// <see cref="Collect"/> と違い、<c>project_settings.json</c>・登録シーン・
+    /// ランタイム内蔵参照・追加同梱フォルダ・常時同梱拡張子・全 .cs の走査といった
+    /// 「パッケージ化のための既定の起点」（<see cref="AddSeeds"/>）を **一切積まない**。
+    /// 渡されたパスから辿れるものだけが結果に入る。
+    /// </para>
+    /// <para>
+    /// 用途はテンプレートライブラリのインポート（editor/src/Templates/）。
+    /// ライブラリはフォルダ構成がアセットルートと同じ形（<c>shaders/toon.wgsl</c> が
+    /// プロジェクトの <c>assets/shaders/toon.wgsl</c> になる）なので、
+    /// ライブラリのルートをアセットルートとみなしてこのメソッドを呼べば、
+    /// 「選んだテンプレートが必要とするライブラリ内ファイル一式」がそのまま求まる。
+    /// </para>
+    /// <para>
+    /// <see cref="AssetPackagingSettings.IncludeAllFiles"/> は参照しない
+    /// （「起点から辿る」ことがこのメソッドの存在理由なので、全件モードには意味が無い）。
+    /// </para>
+    /// </summary>
+    /// <param name="seedRelPaths">
+    /// 起点のルート相対パス。ファイルならそれ自身を、フォルダならその配下の全ファイルを起点にする。
+    /// 実在しないパスは欠落参照（参照元 = <see cref="SeedSourceLabel"/>）として報告する。
+    /// </param>
+    /// <returns>収録一覧・欠落一覧・除外統計を含む結果。</returns>
+    public AssetCollectionResult CollectFrom(IEnumerable<string> seedRelPaths)
+    {
+        // ── 指定された起点を積む（ファイル / フォルダのどちらでも受ける） ──
+        int seedCount = 0;
+        foreach (var raw in seedRelPaths)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+
+            var rel = AssetPathUtil.NormalizeRelative(raw);
+            if (rel.Length == 0) continue;
+
+            if (_filesOnDisk.ContainsKey(rel))      { Include(rel);        seedCount++; continue; }
+            if (_dirsOnDisk.Contains(rel))          { IncludeFolder(rel);  seedCount++; continue; }
+
+            // 実在しない起点は黙って捨てず欠落として残す（呼び出し側の指定ミスを可視化する）
+            AddMissing(rel, raw, SeedSourceLabel);
+            Log($"⚠ 起点の実体がありません（スキップ）: {rel}");
+        }
+        Log($"指定された起点: {seedCount} 件");
+
+        // ── 閉包を取って結果にする（Collect と同じ処理を通る） ──
+        return RunClosureAndBuildResult(missingScenes: []);
+    }
+
+    /// <summary>
+    /// 積まれた起点から参照の閉包を取り、結果オブジェクトを組み立てる。
+    /// <see cref="Collect"/> と <see cref="CollectFrom"/> の共通後半部分。
+    /// </summary>
+    /// <param name="missingScenes">実体の無い登録シーン（<see cref="CollectFrom"/> では常に空）。</param>
+    /// <returns>収録一覧・欠落一覧・除外統計を含む結果。</returns>
+    private AssetCollectionResult RunClosureAndBuildResult(List<string> missingScenes)
+    {
         // ── 閉包を取る ─────────────────────────────────────────
         int scanned = 0;
         while (_scanQueue.Count > 0)
@@ -219,8 +293,8 @@ public sealed class AssetCollector
         {
             Included                = included,
             IncludedBytes           = included.Sum(a => a.SizeBytes),
-            TotalFileCount          = totalCount,
-            TotalBytes              = totalBytes,
+            TotalFileCount          = _filesOnDisk.Count,
+            TotalBytes              = _filesOnDisk.Values.Sum(),
             MissingReferences       = _missing,
             IncludedDespiteExclusion = despite,
             MissingScenes           = missingScenes,
@@ -512,9 +586,20 @@ public sealed class AssetCollector
         if (!AssetPathUtil.IsLikelyExtension(AssetPathUtil.GetExtensionLower(primary))) return;
 
         // ⑤ 拡張子付きなのに実体が無い = 本物の欠落
-        var key = primary + "|" + sourceRel;
-        if (_missingKeys.Add(key))
-            _missing.Add(new MissingReference(primary, candidate.Raw, sourceRel));
+        AddMissing(primary, candidate.Raw, sourceRel);
+    }
+
+    /// <summary>
+    /// 欠落参照を 1 件記録する（同じ「参照先 + 参照元」の重複報告は落とす）。
+    /// </summary>
+    /// <param name="referencePath">解決を試みたルート相対パス。</param>
+    /// <param name="rawText">元テキストに書かれていた生の文字列。</param>
+    /// <param name="sourceRel">参照元ファイルのルート相対パス（起点指定なら <see cref="SeedSourceLabel"/>）。</param>
+    private void AddMissing(string referencePath, string rawText, string sourceRel)
+    {
+        var key = referencePath + "|" + sourceRel;
+        if (!_missingKeys.Add(key)) return;
+        _missing.Add(new MissingReference(referencePath, rawText, sourceRel));
     }
 
     /// <summary>

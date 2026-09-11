@@ -751,6 +751,14 @@
                     </MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
+                <!-- プロジェクト操作（プロジェクト概念は docs/project_system.md が正典）。
+                     プロジェクトの切り替えは新しいプロセスのスタート画面で行う。 -->
+                <MenuItem Header="プロジェクトフォルダを開く" Click="OnOpenProjectFolder"/>
+                <MenuItem Header="別のプロジェクトを開く..." Click="OnSwitchProject"/>
+                <!-- エンジン付属のテンプレートライブラリ（docs/template_library.md）から
+                     シーン・モデル・地形などを依存ごとプロジェクトへコピーする。 -->
+                <MenuItem Header="テンプレートをインポート..." Click="OnImportTemplates"/>
+                <Separator/>
                 <MenuItem Header="パッケージ化..." Click="OnOpenPackaging">
                     <MenuItem.Icon>
                         <ctrl:AppIcon IconKey="Icon.Build" Width="14" Height="14" Foreground="#CCCCCC"/>

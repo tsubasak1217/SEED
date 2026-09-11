@@ -51,6 +51,9 @@ internal static class Launcher
     /// <summary>起動時に開くシーンを指示するコマンドライン引数。</summary>
     private const string ARG_SCENE = "--scene";
 
+    /// <summary>開くプロジェクト（.seedproj / プロジェクトフォルダ）を指示するコマンドライン引数。</summary>
+    private const string ARG_PROJECT = "--project";
+
     /// <summary>AI ブリッジの待ち受けポートを指示するコマンドライン引数。</summary>
     private const string ARG_AI_PORT = "--ai-port";
 
@@ -59,6 +62,15 @@ internal static class Launcher
 
     /// <summary>ヘッドレス起動を指示する環境変数（引数の保険）。</summary>
     private const string ENV_HEADLESS = "SEED_HEADLESS";
+
+    /// <summary>
+    /// 開くプロジェクトを指示する環境変数。
+    ///
+    /// ツール引数 <c>project</c> が省略されたときの既定値として使う。
+    /// どちらも無ければ <c>--project</c> を渡さない（= エディタ側が
+    /// 「最近のプロジェクトの先頭」を使う。それも無ければ起動は失敗する）。
+    /// </summary>
+    private const string ENV_PROJECT = "SEED_PROJECT";
 
     /// <summary>AI ブリッジのポートを渡す環境変数（引数の保険）。</summary>
     private const string ENV_AI_PORT = "SEED_AI_PORT";
@@ -292,9 +304,14 @@ internal static class Launcher
     /// <param name="headless">true なら --headless（画面に出さない）で起動する。</param>
     /// <param name="scenePath">起動時に開く .scene の絶対パス。null なら前回シーンを復元する。</param>
     /// <param name="waitSeconds">応答を待つ上限（秒）。</param>
+    /// <param name="projectPath">
+    /// 開くプロジェクト（.seedproj またはプロジェクトフォルダ）。
+    /// null なら環境変数 <c>SEED_PROJECT</c> を見る。それも無ければ <c>--project</c> を
+    /// 渡さず、エディタ側の解決（最近のプロジェクトの先頭）に委ねる。
+    /// </param>
     /// <returns>結果の JSON 文字列（ok / pid / port / state など）。</returns>
     public static async Task<string> LaunchAsync(
-        bool headless, string? scenePath, double waitSeconds)
+        bool headless, string? scenePath, double waitSeconds, string? projectPath = null)
     {
         // すでにこの MCP サーバーがインスタンスを束縛しているなら、二重起動しない。
         // 「ポートに誰か居るか」ではなく「自分が起動した相手が生きているか」で判断する。
@@ -323,8 +340,19 @@ internal static class Launcher
         }
         var token = GenerateToken();
 
+        // 開くプロジェクト: ツール引数 > 環境変数。どちらも無ければ渡さない。
+        var effectiveProject = !string.IsNullOrWhiteSpace(projectPath)
+            ? projectPath
+            : Environment.GetEnvironmentVariable(ENV_PROJECT);
+
         var args = new StringBuilder();
         if (headless) args.Append(ARG_HEADLESS);
+        if (!string.IsNullOrWhiteSpace(effectiveProject))
+        {
+            if (args.Length > 0) args.Append(' ');
+            args.Append(ARG_PROJECT).Append(" \"")
+                .Append(Path.GetFullPath(effectiveProject!)).Append('"');
+        }
         if (!string.IsNullOrWhiteSpace(scenePath))
         {
             if (args.Length > 0) args.Append(' ');

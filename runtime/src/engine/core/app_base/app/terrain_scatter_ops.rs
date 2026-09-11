@@ -1954,8 +1954,8 @@ mod tests {
     ///  実行時には気付けない＝テストでしか守れない）。
     ///
     /// 取り込み元は `runtime/tests/fixtures/terrain/` のテスト専用コピー
-    /// （正本 = `runtime/assets/templates/terrain/props.json` / `layers.json`）。
-    /// `runtime/assets/` はユーザーがファイルを移動・改名・削除できる作業領域なので、
+    /// （正本 = `templates/terrain/props.json`（テンプレートライブラリ） / `layers.json`）。
+    /// プロジェクトの `assets/` はユーザーがファイルを移動・改名・削除できる作業領域なので、
     /// 直接 `include_str!` するとアセットを動かした瞬間にビルドが落ちる。
     /// **フィクスチャは正本のスナップショット**であり、正本を更新したら
     /// 同じ内容へコピーし直すこと。

@@ -1,0 +1,220 @@
+<Window x:Class="SEEDEditor.Startup.StartWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SEED Editor"
+        Width="900" Height="560" MinWidth="720" MinHeight="440"
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1E1E"
+        Loaded="OnLoaded">
+
+    <!--
+        スタート画面（Visual Studio のスタートウィンドウ相当）。
+        左 = 最近開いたプロジェクト、右 = 開く / 新規作成 / 関連付け。
+        配色はエディタ本体（ProjectSettingsWindow / PackagingWindow）に合わせている。
+    -->
+
+    <Window.Resources>
+
+        <!-- ── 見出し ───────────────────────────────────────── -->
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#DCDCDC"/>
+            <Setter Property="FontSize"   Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin"     Value="0,0,0,10"/>
+        </Style>
+
+        <!-- ── 右ペインの大きめアクションボタン ─────────────── -->
+        <Style x:Key="ActionButton" TargetType="Button">
+            <Setter Property="Background"      Value="#2D2D30"/>
+            <Setter Property="Foreground"      Value="#DCDCDC"/>
+            <Setter Property="BorderBrush"     Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="14,10"/>
+            <Setter Property="Margin"          Value="0,0,0,10"/>
+            <Setter Property="FontSize"        Value="12"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#3A3A3D"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#5A5A60"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#094D80"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ── 最近のプロジェクト 1 行 ──────────────────────── -->
+        <Style x:Key="RecentItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Padding"    Value="10,8"/>
+            <Setter Property="Margin"     Value="0,0,0,2"/>
+            <Setter Property="Foreground" Value="#DCDCDC"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd"
+                                Background="Transparent"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#2E2E30"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#094D80"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- タイトル -->
+            <RowDefinition Height="Auto"/>   <!-- エラー表示 -->
+            <RowDefinition Height="*"/>      <!-- 本体 -->
+        </Grid.RowDefinitions>
+
+        <!-- ── タイトル ─────────────────────────────────────── -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,18">
+            <TextBlock Text="SEED Editor"
+                       Foreground="#FFFFFF" FontSize="24" FontWeight="Light"/>
+            <TextBlock x:Name="TxtVersion"
+                       Foreground="#8A8A8A" FontSize="12"
+                       VerticalAlignment="Bottom" Margin="10,0,0,4"/>
+        </StackPanel>
+
+        <!-- ── エラー表示（開けなかったプロジェクトがあるとき）── -->
+        <Border x:Name="ErrorBanner" Grid.Row="1"
+                Background="#3A1E1E" BorderBrush="#7A3030" BorderThickness="1"
+                CornerRadius="3" Padding="10,8" Margin="0,0,0,14"
+                Visibility="Collapsed">
+            <TextBlock x:Name="TxtError" Foreground="#FFB0B0" FontSize="12"
+                       TextWrapping="Wrap"/>
+        </Border>
+
+        <!-- ── 本体（左: 最近 / 右: 操作）────────────────────── -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="24"/>
+                <ColumnDefinition Width="300"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 左: 最近のプロジェクト -->
+            <DockPanel Grid.Column="0">
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionHeader}"
+                           Text="最近開いたプロジェクト"/>
+
+                <TextBlock x:Name="TxtNoRecent" DockPanel.Dock="Top"
+                           Foreground="#8A8A8A" FontSize="12" TextWrapping="Wrap"
+                           Visibility="Collapsed"
+                           Text="まだ何も開いていません。右の「新規プロジェクトを作成...」から始めてください。"/>
+
+                <Border x:Name="RecentBox"
+                        Background="#252526" BorderBrush="#3F3F46" BorderThickness="1"
+                        CornerRadius="3">
+                    <ListBox x:Name="ListRecent"
+                             Background="Transparent" BorderThickness="0"
+                             ItemContainerStyle="{StaticResource RecentItemStyle}"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             MouseDoubleClick="OnRecentDoubleClick"
+                             PreviewMouseRightButtonDown="OnRecentRightButtonDown"
+                             KeyDown="OnRecentKeyDown">
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="開く"             Click="OnRecentOpenClick"/>
+                                <MenuItem Header="フォルダを開く"   Click="OnRecentRevealClick"/>
+                                <Separator/>
+                                <MenuItem Header="一覧から外す"     Click="OnRecentRemoveClick"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding DisplayName}"
+                                                   Foreground="{Binding NameBrush}"
+                                                   FontSize="13"/>
+                                        <TextBlock Text="{Binding MissingNote}"
+                                                   Foreground="#C08080" FontSize="11"
+                                                   VerticalAlignment="Center" Margin="8,1,0,0"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding ProjectFilePath}"
+                                               Foreground="{Binding SubBrush}" FontSize="11"
+                                               TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                                    <TextBlock Text="{Binding LastOpenedText}"
+                                               Foreground="{Binding SubBrush}" FontSize="11"
+                                               Margin="0,1,0,0"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Border>
+            </DockPanel>
+
+            <!-- 右: 操作 -->
+            <StackPanel Grid.Column="2">
+                <TextBlock Style="{StaticResource SectionHeader}" Text="はじめる"/>
+
+                <Button Style="{StaticResource ActionButton}" Click="OnOpenProjectClick">
+                    <StackPanel>
+                        <TextBlock Text="プロジェクトを開く..." FontSize="13"/>
+                        <TextBlock Text=".seedproj ファイルを選びます"
+                                   Foreground="#8A8A8A" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Style="{StaticResource ActionButton}" Click="OnNewProjectClick">
+                    <StackPanel>
+                        <TextBlock Text="新規プロジェクトを作成..." FontSize="13"/>
+                        <TextBlock Text="フォルダ・assets・開始シーンまで作ります"
+                                   Foreground="#8A8A8A" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </Button>
+
+                <Border Height="1" Background="#3F3F46" Margin="0,8,0,14"/>
+
+                <Button x:Name="BtnAssociate" Style="{StaticResource ActionButton}"
+                        Click="OnAssociateClick">
+                    <StackPanel>
+                        <TextBlock x:Name="TxtAssociateTitle"
+                                   Text=".seedproj をこのエディタに関連付ける" FontSize="13"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock x:Name="TxtAssociateNote"
+                                   Foreground="#8A8A8A" FontSize="11" Margin="0,3,0,0"
+                                   TextWrapping="Wrap"
+                                   Text="ダブルクリックで開けるようになります（管理者権限は不要）"/>
+                    </StackPanel>
+                </Button>
+
+                <TextBlock x:Name="TxtStatus" Foreground="#8ACB8A" FontSize="11"
+                           TextWrapping="Wrap" Margin="2,4,0,0"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

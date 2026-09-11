@@ -1322,7 +1322,7 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   | IPC（設定） | `app/water_ops.rs`（`SET_WATER_FIELD ... surface_shader`） |
   | IPC（検証の振り分け） | `app/shading_validate_ops.rs` |
   | インスペクタ UI | `editor/src/Panels/InspectorPanel.xaml.cs`（`BuildWaterVolumeSlotContent`） |
-  | サンプルアセット | `runtime/assets/shaders/magma.wgsl` / `poison.wgsl` |
+  | サンプルアセット | `templates/shaders/magma.wgsl` / `poison.wgsl` |
 
   **W8 の既知の制限**（`docs/water_shading_asset.md` 8 章に詳細）
 

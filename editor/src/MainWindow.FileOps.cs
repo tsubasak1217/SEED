@@ -525,7 +525,7 @@ public partial class MainWindow
     private void LoadScene(string path)
     {
         _isDirty = false;
-        SEEDEditor.ProjectSettings.RecentProjectsManager.AddProject(path);
+        SEEDEditor.ProjectSettings.RecentScenesManager.AddScene(path);
         // LOAD_SCENE はランタイムへ非同期に届くが IPC の順序は保たれるため、
         // 後続のシーン設定送信はシーン側の初期値を必ず上書きできる。
         SendNavCommand($"LOAD_SCENE:{path}");
@@ -540,7 +540,7 @@ public partial class MainWindow
 
     /// <summary>
     /// 起動時に前回最後に開いていたシーンを復元する。
-    /// 最近開いたシーン一覧（RecentProjectsManager）の先頭にある、実在する .scene を読み込む。
+    /// 最近開いたシーン一覧（RecentScenesManager）の先頭にある、実在する .scene を読み込む。
     /// 無ければ何もしない（ランタイム側の既定シーンのまま）。
     /// </summary>
     private void TryLoadLastScene()
@@ -558,7 +558,7 @@ public partial class MainWindow
                 return;
             }
 
-            var last = SEEDEditor.ProjectSettings.RecentProjectsManager.LoadRecentProjects()
+            var last = SEEDEditor.ProjectSettings.RecentScenesManager.LoadRecentScenes()
                 .FirstOrDefault(p =>
                     !string.IsNullOrEmpty(p)
                     && p.EndsWith(".scene", StringComparison.OrdinalIgnoreCase)

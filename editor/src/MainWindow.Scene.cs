@@ -87,6 +87,99 @@ public partial class MainWindow
         win.ShowDialog();
     }
 
+    // ── プロジェクト操作 ─────────────────────────────────────────
+
+    /// <summary>
+    /// 「ファイル → プロジェクトフォルダを開く」:
+    /// 現在のプロジェクトルートをエクスプローラーで開く。
+    /// </summary>
+    private void OnOpenProjectFolder(object sender, RoutedEventArgs e)
+    {
+        var root = SEEDEditor.Project.ProjectContext.RootDir;
+        if (string.IsNullOrEmpty(root) || !System.IO.Directory.Exists(root))
+        {
+            ShowToast("プロジェクトフォルダが見つかりません");
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(root) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"プロジェクトフォルダを開けませんでした: {ex.Message}");
+            ShowToast("プロジェクトフォルダを開けませんでした");
+        }
+    }
+
+    /// <summary>
+    /// 「ファイル → テンプレートをインポート...」:
+    /// エンジン付属のテンプレートライブラリ（docs/template_library.md）を開き、
+    /// 選んだエントリを依存ファイルごと現在のプロジェクトの assets/ へコピーする。
+    /// 1 件でもコピーしたらプロジェクトパネルを再読み込みして新しいファイルを見せる。
+    /// </summary>
+    private void OnImportTemplates(object sender, RoutedEventArgs e)
+    {
+        // ライブラリの場所はエディタ exe から解決する（環境変数 SEED_TEMPLATE_LIBRARY で上書き可）。
+        var libraryRoot = SEEDEditor.Templates.TemplateLibraryLocator.Resolve();
+        if (libraryRoot is null)
+        {
+            EditorLog.Write("テンプレートライブラリが見つかりません（<repo>/templates または SEED_TEMPLATE_LIBRARY）");
+            ShowToast("テンプレートライブラリが見つかりません");
+            return;
+        }
+
+        var result = SEEDEditor.Templates.TemplateImportWindow.ShowFor(this, libraryRoot, AssetsPath);
+        if (result is { HasCopied: true })
+        {
+            // コピー先はアセットルート配下なので、ツリーを作り直して反映する。
+            PanelProject.SetAssetsPath(AssetsPath);
+            ShowToast($"テンプレートを {result.CopiedCount} ファイル取り込みました");
+        }
+    }
+
+    /// <summary>
+    /// 「ファイル → 別のプロジェクトを開く...」:
+    /// 新しいプロセスをスタート画面（引数なし）で起動し、このウィンドウを閉じる。
+    ///
+    /// <para>
+    /// 同じプロセスでプロジェクトを差し替えないのは、各パネル・RuntimeManager・
+    /// ランタイム子プロセスが起動時のアセットルートを前提に状態を持っているため。
+    /// プロセスを分ければ「古いプロジェクトの状態が残る」事故が原理的に起きない。
+    /// </para>
+    /// </summary>
+    private void OnSwitchProject(object sender, RoutedEventArgs e)
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exePath))
+        {
+            ShowToast("エディタの実行ファイルパスを取得できませんでした");
+            return;
+        }
+
+        try
+        {
+            // 引数なし起動 = スタート画面。新しいプロセスが立ってから自分を閉じる。
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName         = exePath,
+                WorkingDirectory = System.IO.Path.GetDirectoryName(exePath)!,
+                UseShellExecute  = false,
+            });
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"スタート画面の起動に失敗しました: {ex.Message}");
+            ShowToast("スタート画面を起動できませんでした");
+            return;
+        }
+
+        // 未保存の変更があれば OnWindowClosing が確認ダイアログを出す。
+        Close();
+    }
+
     private void OnMenuUndo(object sender, RoutedEventArgs e)
         => _runtimeManager?.SendToRuntime("UNDO");
 

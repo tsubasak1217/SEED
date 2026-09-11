@@ -310,7 +310,7 @@ dotnet build scripting/SEEDScripting.csproj
 
 - Rust⇔C# の FFI 構造体（`ScriptHostApi`）はフィールド追加では不変なので、片側だけの再ビルドで足りるが、両方通すのが安全。
 - エディタ実行中でも `dotnet build` は可能（シャドウコピー方式で再ビルドできる）。
-- **手動確認の指針**（可能なら）: 実機で確認する場合、テスト用スクリプト（例 `runtime/assets/scripts/Test.cs`）で
+- **手動確認の指針**（可能なら）: 実機で確認する場合、テスト用スクリプト（例 `projects/<Name>/assets/scripts/Test.cs`）で
   `gameObject.HasComponent("Rigidbody")` と get/set 往復を `SEED.Debug.Log` で出力し、Play モードで期待値が出るか見る。
   set した値が反映されない → コンポーネント名不一致 or `has_component` 漏れ or スロット型を `locate` せず `world.get` した、を疑う。
 

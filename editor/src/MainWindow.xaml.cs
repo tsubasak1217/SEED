@@ -185,18 +185,32 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     };
 
     public static string RuntimeExePath      = ResolveRuntimePath();
-    public static string AssetsPath          = ResolveAssetsPath();
-    public static string SettingsDir         = ResolveSettingsDir();
+
+    /// <summary>
+    /// 現在のプロジェクトのアセットルート（assets:// の実体）。
+    ///
+    /// <para>
+    /// かつてはランタイム exe の位置からリポジトリ相対で <c>runtime/assets</c> を
+    /// 決め打ちしていたが、プロジェクト概念の導入で「起動時に確定した .seedproj」が
+    /// 唯一の正になった。値の保持は <see cref="SEEDEditor.Project.ProjectContext"/>
+    /// にあり、ここはその読み取り窓口（従来の参照箇所をそのまま動かすためのエイリアス）。
+    /// </para>
+    /// <para>
+    /// プロジェクト未確定のときは空文字を返す。空文字は
+    /// <see cref="SEEDEditor.Assets.AssetsRootProbe"/> が Invalid と判定するため、
+    /// エディタは「アセットフォルダが使えません」の表示で起動を続けられる。
+    /// </para>
+    /// </summary>
+    public static string AssetsPath => SEEDEditor.Project.ProjectContext.AssetsDir;
+
+    /// <summary>
+    /// エディタ本体の設定フォルダ（editor/settings）。
+    /// プロジェクトを跨いで共有する設定（レイアウト・環境設定・最近のプロジェクト）の置き場。
+    /// 実体の解決は <see cref="SEEDEditor.Settings.EditorPaths"/>（プロジェクト確定前にも使える）。
+    /// </summary>
+    public static string SettingsDir         = SEEDEditor.Settings.EditorPaths.SettingsDir;
     public static string EditorResourcesPath = ResolveEditorResourcesPath();
     public static string EditorPluginsPath   = ResolveEditorPluginsPath();
-
-    private static string ResolveSettingsDir()
-    {
-        var dir = Path.GetFullPath(
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\settings"));
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
 
     /// <summary>
     /// エディタに同梱するリソースディレクトリを解決する。
@@ -269,31 +283,6 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // (Win32Exception 2) で失敗するため、ビルド後に生成される debug パスを
         // デフォルトのフォールバックとして返す。
         return devPath;
-    }
-
-    private static string ResolveAssetsPath()
-    {
-        var exeDir    = Path.GetDirectoryName(RuntimeExePath)!;
-        var buildType = Path.GetFileName(exeDir);
-        var targetDir = Path.GetFileName(Path.GetDirectoryName(exeDir)!);
-
-        // dev: runtime/target/debug → runtime/
-        string runtimeRoot = (buildType is "debug" or "release") && targetDir == "target"
-            ? Path.GetFullPath(Path.Combine(exeDir, @"..\..\"))
-            : exeDir;
-
-        var assetsDir = Path.Combine(runtimeRoot, "assets");
-        // フォルダが無ければ作る。ただしここで失敗しても起動は続ける。
-        // assets が別ドライブへのジャンクションで、そのドライブが未接続の場合、
-        // CreateDirectory は「既に存在する」と判断できずに例外を投げる。
-        // 静的フィールド初期化子から呼ばれるため、投げると TypeInitializationException で
-        // エディタが起動すらできなくなる。可用性の判定は AssetsRootProbe が行う。
-        try { Directory.CreateDirectory(assetsDir); }
-        catch (Exception ex)
-        {
-            EditorLog.Write($"アセットフォルダを作成/確認できませんでした: {assetsDir} — {ex.Message}");
-        }
-        return assetsDir;
     }
 
     // ── 実行バーのボタン画像（ユーザー設定の PNG アイコン）────────────
@@ -369,10 +358,20 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// <summary>「エラー一覧」パネル。LoadLayout で復元。</summary>
     private ErrorListPanel?        _errorListPanel;
 
+    /// <summary>
+    /// ウィンドウタイトルの書式（{0} = プロジェクト表示名）。
+    /// Visual Studio と同じく「開いている物 - アプリ名」の順にする。
+    /// </summary>
+    private const string WindowTitleFormat = "{0} - SEED Editor";
+
     public MainWindow()
     {
         InitializeComponent();
         ApplyDockTheme();
+
+        // 開いているプロジェクトがタイトルバーで分かるようにする
+        // （別プロジェクトを別プロセスで開いたとき、タスクバーで見分けるのに要る）。
+        Title = string.Format(WindowTitleFormat, SEEDEditor.Project.ProjectContext.DisplayName);
 
         // ヘッドレス起動: 画面に出さないまま HWND とレイアウトだけ生かす。
         // ShowActivated は表示後に変えても効かないため、必ず Show() 前（＝ここ）で設定する。

@@ -56,7 +56,7 @@
 
 - [ ] **`docs/scripting_api.md` の `HasComponent(name)` 一覧が `has_component` の実装より少ない** — 2026-09-11 に気付いた既存のズレ（今回 `AudioDictionary` を追記し「など」に緩めただけ）。実装は `Model` / `SkinnedSprite` / `LineRenderer` / `Skybox` / `Text` / `WaterVolume` / `WaterLink` / `ControlPoint` なども受け付ける。正典側（docs）を実装に合わせて洗い直すのは別作業。関連: `runtime/src/engine/core/scripting/host_api.rs::has_component`。
 
-- [ ] **アセット側（シーン・アクタ・ゲームスクリプト）への適用は次フェーズ** — 2026-09-11。今回の作業ではエンジン・エディタ・スクリプト API のみを実装し、`runtime/assets` 配下は一切変更していない。既存のパス直書き（`SEED.Audio.Play("assets://...")`）を辞書キーへ移行する作業が残っている。
+- [ ] **アセット側（シーン・アクタ・ゲームスクリプト）への適用は次フェーズ** — 2026-09-11。今回の作業ではエンジン・エディタ・スクリプト API のみを実装し、`projects/WarashibeFishing/assets` 配下は一切変更していない。既存のパス直書き（`SEED.Audio.Play("assets://...")`）を辞書キーへ移行する作業が残っている。
 
 ## ランタイム / スクリプト API
 
@@ -72,9 +72,9 @@
 
 - [ ] **`GameObject.Parent` が O(N)** — DFS 走査で親を探す実装。毎フレーム大量に呼ぶ用途には向かない。
 
-- [ ] **ホットリロードで `OnDestroy` が呼ばれる保証が未確認** — 2026-09-09（2026-09-07 の「プールが二重生成される」から残った部分）。二重生成そのものは解消済み: エディタが既定で Play 中のホットリロードを保留するようになり（`docs/editor_auto_reload.md`）、あわせて `OnStart` で `Instantiate` していた箇所を `SpawnOnce.GetOrInstantiate` へ寄せた（FishingController / PauseMenu / ResultPanel / FightEvalBanner / HitBanner / FishingFight）。**未確認のまま残るのは「作り直し時に旧インスタンスの `OnDestroy` が呼ばれるか」**で、`OnDestroy` で解除しているイベント購読・静的登録が残留しないかは実機で見ていない。関連: `runtime/src/engine/core/scripting/mod.rs`、`runtime/assets/common/scripts/UI/SpawnOnce.cs`。
+- [ ] **ホットリロードで `OnDestroy` が呼ばれる保証が未確認** — 2026-09-09（2026-09-07 の「プールが二重生成される」から残った部分）。二重生成そのものは解消済み: エディタが既定で Play 中のホットリロードを保留するようになり（`docs/editor_auto_reload.md`）、あわせて `OnStart` で `Instantiate` していた箇所を `SpawnOnce.GetOrInstantiate` へ寄せた（FishingController / PauseMenu / ResultPanel / FightEvalBanner / HitBanner / FishingFight）。**未確認のまま残るのは「作り直し時に旧インスタンスの `OnDestroy` が呼ばれるか」**で、`OnDestroy` で解除しているイベント購読・静的登録が残留しないかは実機で見ていない。関連: `runtime/src/engine/core/scripting/mod.rs`、`projects/WarashibeFishing/assets/common/scripts/UI/SpawnOnce.cs`。
 
-- [ ] **`OnStart` 内 `Instantiate` の成否が未検証** — FishingFight のビートアイコンプールが初例。失敗するとリトライせず無効ハンドルが残る。関連: `runtime/assets/mainGame/scripts/FishingFight.cs::EnsureIconPool`。
+- [ ] **`OnStart` 内 `Instantiate` の成否が未検証** — FishingFight のビートアイコンプールが初例。失敗するとリトライせず無効ハンドルが残る。関連: `projects/WarashibeFishing/assets/mainGame/scripts/FishingFight.cs::EnsureIconPool`。
 
 - [ ] **docs の `Mathf.Clamp01(v)` が実装と食い違う** — 2026-09-07。実装は `Clamp01(ref float)`（void）で、値を返すのは `Clamped01(v)`。docs 4 章の記述を実装に合わせるか、値返し版を `Clamp01` として追加するかの判断が要る。関連: `docs/scripting_api.md` 4 章、`scripting/src/Api/Mathf.cs`。
 
@@ -85,7 +85,7 @@
 - [ ] **LOAD_SCENE（常駐 Play プロセス再利用）で `pointer.reset()` が呼ばれない** — 2026-09-07。旧シーンのホバー/押下エンティティを持ち越す可能性。スクリプト遷移経路と同じ理由でリセットすべきに見えるが、挙動維持のため `SceneInstallOptions.reset_pointer=false` のまま。関連: `app/ipc_handler.rs` の LOAD_SCENE。
 
 - [ ] **プロローグ会話システムの実機未検証項目** — 2026-09-07。文字送り・送りマーク点滅・カメラ補間の見た目、日本語＋空白＋角括弧を含むフォントパス（ゆずポップ Regular）の実読み込み、CamTarget_* の高さ（目線位置は推定値）、CamTarget_Owner が Hut に埋まる可能性、Text の自動折り返し無し（`
-` 手動改行）。関連: `runtime/assets/prologue/scripts/Dialogue/`、`proLogue.scene`。
+` 手動改行）。関連: `projects/WarashibeFishing/assets/prologue/scripts/Dialogue/`、`proLogue.scene`。
 
 - [ ] **Animator のクリップ設定 `loop_mode` がキーフレーム .anim では無視される** — 2026-09-09。`animation_ops.rs` のキーフレーム経路は `.anim` ファイルの `loop_mode` を使い、Animator 側の設定はモデル内蔵アニメ（`normalize_model_time`）でしか参照されない。インスペクタで「ループ」にしても .anim が once なら 1 回で止まる（TutorialMouse で発生）。Animator 側の設定を上書きとして優先させるのが自然。関連: `runtime/src/engine/core/app_base/app/animation_ops.rs:109,172`。
 
@@ -96,11 +96,11 @@
 
 - [ ] **Edit の 2D シーンビュー（EDIT_VIEW:2d）はカメラのパン・ズームを IPC から動かせない** — 2026-09-07。`canvas_cameras[0]`（pan_x/pan_y/ortho_half_h）はマウス入力（MMB ドラッグ・ホイール）でしか変化せず、初期状態は「キャンバス左上がビュー中央・1 キャンバス px = 1 画面 px」。ヘッドレス（MCP）ではマウスを送れないため、キャンバス全体を映した設計ビューのスクリーンショットが撮れない（今回は Play + `seed_screenshot(game)` で代用した）。`CAM2D_SET:{pan_x},{pan_y},{half_h}` のような IPC か「選択物にフィット」コマンドがあると AI からの目視確認が回る。関連: `runtime/src/engine/core/app_base/app/frame_renderer.rs`（use_ortho_2d_camera 付近）、`app/ipc_handler.rs`（EDIT_VIEW）。
 
-- [ ] **HIT 演出の帯の角度を変えるにはクリップの作り直しが必要** — 位置キーは θ=−12° を展開した実座標。回転トラックだけ変えても位置は追従しない。2026-09-07 にアイテムごとの 4 クリップへ分割（位置キーが各アイテムのローカル座標のため）。同日、4 アイテムのアンカーを画面中心 (0.5,0.5) へ統一し、静止位置・入退場のキーを再生成した。関連: `runtime/assets/mainGame/animations/hit_banner_band_top.anim` ほか 3 本、`scripts/HitBanner.cs`。
+- [ ] **HIT 演出の帯の角度を変えるにはクリップの作り直しが必要** — 位置キーは θ=−12° を展開した実座標。回転トラックだけ変えても位置は追従しない。2026-09-07 にアイテムごとの 4 クリップへ分割（位置キーが各アイテムのローカル座標のため）。同日、4 アイテムのアンカーを画面中心 (0.5,0.5) へ統一し、静止位置・入退場のキーを再生成した。関連: `projects/WarashibeFishing/assets/mainGame/animations/hit_banner_band_top.anim` ほか 3 本、`scripts/HitBanner.cs`。
 
 - [ ] **糸ゲージ・レーダーの見た目が未目視** — 2026-09-07。HIT 帯演出（帯 2 本＋文字 2 つの同期・入退場）は 2026-09-07 にヘッドレス Play で目視確認・修正済み。残るのは、`Draw.Rect` の回転小片で描く糸ゲージ（旧 48 スプライトとの一致）、`Draw.RegularPolygon` の三角マーカー、プリミティブ化したレーダー背景円・中心点の大きさと色で、どちらも「ウキを投げて魚と勝負している間」しか描かれないため待機状態のスクリーンショットでは確認できない（実プレイが要る）。関連: `scripts/HitBanner.cs`、`scripts/FishingFight.cs`、`scripts/FishRadar.cs`。
 
-- [ ] **未参照になったテクスチャ** — 2026-09-07 のレーダーのプリミティブ化で `radar_bg.png` / `radar_dot.png` がどのアクタからも参照されなくなった。他で使わないなら削除してよい。関連: `runtime/assets/mainGame/textures/ui/`。
+- [ ] **未参照になったテクスチャ** — 2026-09-07 のレーダーのプリミティブ化で `radar_bg.png` / `radar_dot.png` がどのアクタからも参照されなくなった。他で使わないなら削除してよい。関連: `projects/WarashibeFishing/assets/mainGame/textures/ui/`。
 
 - [ ] **レーダーの点・ビートアイコンの見た目確認** — 2026-09-07。`Draw.Circle` の点の位置・サイズ（`radarSpace` 相対のスケール一致）、`BeatIcon.actor` プールの出現位置は未目視。関連: `scripts/FishRadar.cs`、`scripts/FishingFight.cs`。
 
@@ -130,8 +130,8 @@
   左上アンカーの Text）を `SpawnOnce.GetOrInstantiate` で自動生成している。
   デバッグ HUD 全般のために `Draw.Text`（スクリーン座標の即時テキスト）があれば、
   この専用アクタ自体が不要になる。関連: `scripting/src/Api/Draw.cs`、
-  `runtime/assets/mainGame/scripts/DebugTools/DebugCommands.cs`、
-  `runtime/assets/mainGame/actors/UI/FpsLabel.actor`。
+  `projects/WarashibeFishing/assets/mainGame/scripts/DebugTools/DebugCommands.cs`、
+  `projects/WarashibeFishing/assets/mainGame/actors/UI/FpsLabel.actor`。
 
 - [ ] **フレーム制限の実機検証が未実施** — 2026-09-10。純関数（待ち時間計算・present mode 選択）は
   単体テスト済みだが、実際に 60fps へ張り付くか・`timeBeginPeriod(1)` でスリープ粒度が
@@ -270,10 +270,10 @@
 
 ## わらしべフィッシングのチュートリアルモード（2026-09-07 実装時）
 
-- [ ] **説明窓の素材が未着（仮素材で実装済み）** — 2026-09-07。`runtime/assets/mainGame/actors/UI/TutorialWindow.actor` のミニキャラと吹き出しは `assets://mainGame/textures/ui/white.png` を着色した矩形、送りマークは prologue の `nextArrow.png` を流用している。差し替えは Sprite の `texture_path`（と `width` / `height`）を変えるだけでよく、スクリプトの変更は不要。
-- [ ] **キーアイコンが仮画像** — 2026-09-07。`runtime/assets/mainGame/ui/tutorial.icons` の `key_w` / `key_s` / `key_a` / `key_d` / `mouse_l` はすべて `white.png` を指している。本番画像ができたら `.icons` の `path` を差し替えるだけで説明文（`[icon:key_w]` 等）へ反映される。`.icons` のキャッシュは 1 秒間隔のポーリングで自動反映されるため、差し替え後はエディタの再起動不要（本ファイル「Text のインライン画像記法の残件」参照）。
+- [ ] **説明窓の素材が未着（仮素材で実装済み）** — 2026-09-07。`projects/WarashibeFishing/assets/mainGame/actors/UI/TutorialWindow.actor` のミニキャラと吹き出しは `assets://mainGame/textures/ui/white.png` を着色した矩形、送りマークは prologue の `nextArrow.png` を流用している。差し替えは Sprite の `texture_path`（と `width` / `height`）を変えるだけでよく、スクリプトの変更は不要。
+- [ ] **キーアイコンが仮画像** — 2026-09-07。`projects/WarashibeFishing/assets/mainGame/ui/tutorial.icons` の `key_w` / `key_s` / `key_a` / `key_d` / `mouse_l` はすべて `white.png` を指している。本番画像ができたら `.icons` の `path` を差し替えるだけで説明文（`[icon:key_w]` 等）へ反映される。`.icons` のキャッシュは 1 秒間隔のポーリングで自動反映されるため、差し替え後はエディタの再起動不要（本ファイル「Text のインライン画像記法の残件」参照）。
 - [ ] **チュートリアルの実機確認が未実施** — 2026-09-07。スクリプトのコンパイルとシーン JSON の整合（参照先アクタ・フィールド名）はプログラムで照合したが、Play での目視確認をしていない。特に (1) `Time.Scale = 0` 中に釣りの各状態が破綻しないか、(2) 説明窓の追従（`Camera.WorldToCanvas`）が 1920x1080 設計キャンバス上で意図した位置に出るか、(3) 台本（必ず食いつく／漂流物を出す）が手順どおり効くか、の 3 点は実機で確認すること。
-- [ ] **`runtime/assets/tutorial/scripts` の空ディレクトリが残っている** — 2026-09-07。旧チュートリアルシーン（`tutorial.scene` / `TutorialFlow.cs`）は削除済みだが、実行中のエディタがディレクトリのハンドルを掴んでいるため空フォルダだけ消せなかった。エディタを閉じてから削除すること。
+- [ ] **`projects/WarashibeFishing/assets/tutorial/scripts` の空ディレクトリが残っている** — 2026-09-07。旧チュートリアルシーン（`tutorial.scene` / `TutorialFlow.cs`）は削除済みだが、実行中のエディタがディレクトリのハンドルを掴んでいるため空フォルダだけ消せなかった。エディタを閉じてから削除すること。
 
 ## アクターの表示フラグ（visible）の残件（2026-09-07 実装時）
 
@@ -313,7 +313,7 @@
   - 参照ボックスの「参照先が見つかりません」警告（`ReferencePicker.RefreshLabel`）は、パス形式のとき**判定を諦めて出さない**。持ち主基準の解決をエディタ側で再現していないため。
   - 参照ボックスのダブルクリックによる Hierarchy ジャンプ（`ActorRefJump.RevealActorByName`）もパス形式では効かない（名前一致で探すため）。
   - `ScriptEvent` の結線先アクタ（`ScriptEventBinding`）は従来どおりシーン全体 DFS のまま。プレハブ内のイベント結線は同名インスタンスで壊れうる。
-- [ ] **`runtime/assets/tutorial/scripts` がアクセス拒否でスクリプト収集から毎回スキップされる** — 2026-09-08。エディタのログに `[ScriptCompiler] 読み取れないフォルダをスキップ … Access to the path … is denied.` が再読込のたびに出る。assets が別ドライブへのジャンクションであることに由来する権限の問題と思われる。
+- [ ] **`projects/WarashibeFishing/assets/tutorial/scripts` がアクセス拒否でスクリプト収集から毎回スキップされる** — 2026-09-08。エディタのログに `[ScriptCompiler] 読み取れないフォルダをスキップ … Access to the path … is denied.` が再読込のたびに出る。assets が別ドライブへのジャンクションであることに由来する権限の問題と思われる。
 
 ## プレハブのシーンへの反映（2026-09-08 実装時）
 
@@ -329,7 +329,7 @@
 
 ## 釣果リザルト演出（2026-09-08 作り直し時）
 
-正典: `runtime/assets/mainGame/scripts/CatchPresenter.cs` / `ResultPanel.cs`。
+正典: `projects/WarashibeFishing/assets/mainGame/scripts/CatchPresenter.cs` / `ResultPanel.cs`。
 
 - [ ] **スクリプトのメソッドを外から叩く IPC（`SCRIPT_DEBUG:<name>,<arg>`）が無い** — 2026-09-08。今回の目視確認では「釣果パネルだけを出す一時シーン＋一時ドライバスクリプト」を作って撮影し、確認後に消した。ヘッドレスで任意のゲーム進行（例: 釣り上げの瞬間）を再現できないため、3D 側（スロー放物線・横カメラ・しぶき）は<b>未検証のまま</b>。`SEED.Debug.OnCommand` のような購読口と `seed_send_ipc` からの `SCRIPT_DEBUG:` を実装すれば、AI による検証の守備範囲が大きく広がる。
 - [ ] **スロー放物線・横カメラ・しぶきパーティクルが実機未確認** — 2026-09-08。魚を実際に釣り上げないと通らない経路のため、ヘッドレスでは撮れていない。特に (1) `assets://mainGame/actors/FX/Splash.actor` を実行時 `Instantiate` したときに GPU パーティクルが放出されるか（Play 開始時に存在しないエミッタの扱い）、(2) 横カメラの θ/φ/距離の既定値で弧が画面に収まるか、(3) `Time.Scale` を下げているあいだに他システムが破綻しないか、の 3 点は人の目で確認すること。
@@ -338,7 +338,7 @@
 
 ## 釣果リザルト演出 — 縦跳び化とデバッグコマンド（2026-09-08 実装時）
 
-正典: `runtime/assets/mainGame/scripts/CatchPresenter.cs` / `ResultPanel.cs`、`docs/editor_mcp.md` 10 章。
+正典: `projects/WarashibeFishing/assets/mainGame/scripts/CatchPresenter.cs` / `ResultPanel.cs`、`docs/editor_mcp.md` 10 章。
 
 - [ ] **チュートリアル中に魚を釣ると釣果パネルを閉じられずソフトロックする** — 2026-09-08（実測）。
   `ResultPanel.IsConfirmPressed` は `InputGate.Allows(GameAction.UiConfirm)` を要求するが、
@@ -584,7 +584,7 @@
   対処するなら「掛かった直後の数拍は成立判定を止める」等が要る（要利用者判断）。
   なお `MainGame.scene` には旧 `minCastDistance`（10.000）の保存値が残るが、読まれないので実害は無い
   （実効値は 9.0m へ変わる）。
-  関連: `runtime/assets/mainGame/scripts/FishingController.cs`（`catchDistanceMeters` / `minCastMarginBeyondCatch` / `UpdateFight`）。
+  関連: `projects/WarashibeFishing/assets/mainGame/scripts/FishingController.cs`（`catchDistanceMeters` / `minCastMarginBeyondCatch` / `UpdateFight`）。
 - [ ] **「魚回復」の走り（Run）は世界端クランプで頭打ちになり、予約が捨てられる経路がある** — 2026-09-10（回復の予約化に伴う既知の制限）。
   隙（Rest）中に拾った「魚回復」は<b>その場では効かせず貯めて</b>、隙が終わる瞬間にまとめて魚 HP へ入れ、
   続く走り（`FishingFight.Phase.Run`）で「新しい魚 HP に対応する目標距離」まで沖へ走る仕様にした。
@@ -595,7 +595,7 @@
   また、<b>肉を拾った隙の中で魚 HP を削り切った</b>場合は `Tick` がフェーズ遷移ごと止まるため
   予約が適用されないまま釣り上がる（プレイヤーに不利にはならないので現状は許容）。
   数値バランスを詰めるときは「肉 1 個の効果量 × 1HP あたりの距離」と最長飛距離の関係を見ること。
-  関連: `runtime/assets/mainGame/scripts/FishingFight.cs`（`RecoverFishHp` / `CommitPendingFishHpRecovery` / `ComputeFloatDistanceStep`）。
+  関連: `projects/WarashibeFishing/assets/mainGame/scripts/FishingFight.cs`（`RecoverFishHp` / `CommitPendingFishHpRecovery` / `ComputeFloatDistanceStep`）。
 - [ ] **わらしべ連鎖の途中で食べられた魚は `LastCaughtFish` とチュートリアル判定に乗らない** — 2026-09-10（連鎖リザルト対応で確認・未着手）。
   釣り上げ時のリザルト表示と図鑑登録は連鎖の全匹ぶん行うようにしたが、
   `FishingEvents.Catch` / `CatchPresented` は従来どおり「1 回の釣り上げにつき 1 回」のままで、
@@ -604,11 +604,11 @@
   `Story/KaijuStoryTrigger.cs` は、連鎖の踏み台になった魚を「釣った」とは数えない。
   イベントの粒度を上げると上記 2 つの購読側（単一フラグ運用）が壊れるため、
   必要になったら連鎖用の別イベント（例 `fishing.chain_catch`）を足すのが素直。
-  関連: `runtime/assets/mainGame/scripts/CatchPresenter.cs`、`FishingController.cs`（`ChainCatchHistory`）。
+  関連: `projects/WarashibeFishing/assets/mainGame/scripts/CatchPresenter.cs`、`FishingController.cs`（`ChainCatchHistory`）。
 
 ## 釣果リザルトの魚画像アニメ（2026-09-10 Animator 化時）
 
-正典: `runtime/assets/mainGame/scripts/ResultPanel.cs`、
+正典: `projects/WarashibeFishing/assets/mainGame/scripts/ResultPanel.cs`、
 クリップ生成は `tools/gen_result_fish_clips.py`
 （`mainGame/animations/result_fish_in.anim` / `result_fish_out.anim`）。
 実行時生成の重ねスプライト方式（`ResultFishOverlay.actor` ＋ `SpawnOnce`）は撤去し、
@@ -648,7 +648,7 @@ PCM キャッシュ化＋同時発音数の上限で解決済み。以下はそ�
   ランタイム側は同一 SE の同時発音を 4 声に制限したが、**素材自体を短く（末尾の無音を落として
   0.2〜0.3 秒程度に）トリミングすれば重なり自体が起きなくなる**。
   他の SE も同様に「無音の尻尾」が付いていないか確認するとよい。
-  関連: `runtime/assets/mainGame/audios/`、`FishingFight.answerClickSePath`。
+  関連: `projects/WarashibeFishing/assets/mainGame/audios/`、`FishingFight.answerClickSePath`。
 - [ ] **`engine::plugin::host::tests::set_save_int_writes_flag_and_keeps_other_keys` がスイート全体では落ちる** — 2026-09-10（既存不具合・オーディオ改修とは無関係）。
   単体（`cargo test --bin SEED set_save_int_writes_flag_and_keeps_other_keys`）では通るが、
   `cargo test --bin SEED` では `save.json を読めない` で落ちる。`--test-threads=1` でも落ちる。
@@ -691,7 +691,7 @@ PCM キャッシュ化＋同時発音数の上限で解決済み。以下はそ�
   `FinishReeling()` して `Hooked` を抜けるため、`NearShore` が `Hooked` のまま true になる隙が無い。
   結果 `UpdateShoreCamera` の `wantsShoreView` が真にならず、`shoreCamDistance`（既定 7 / シーン 15）は
   読まれない。上の `catchDistanceMeters` を 4 m へ直せば自然に生き返る。
-  関連: `runtime/assets/mainGame/scripts/FishingController.cs`（`UpdateNearShore` / `UpdateShoreCamera`）。
+  関連: `projects/WarashibeFishing/assets/mainGame/scripts/FishingController.cs`（`UpdateNearShore` / `UpdateShoreCamera`）。
 - [ ] **`MainGame.scene` に漂流物の旧「抽選の重み」の保存値が残っている** — 2026-09-11（実害なし）。
   種類の決定を固定順（`DriftItemManager.spawnOrder`）へ変えたので
   `stunWeight` / `fishRecoverWeight` / `lineRecoverWeight` は削除済みだが、
@@ -900,3 +900,44 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   今回から `FishingController.ApplyDriftEffect` が種類別の音
   （`kaihuku` / `powerCharge` / `hirumiHit`）を鳴らす。prefab 側は空にしたので
   1 回の取得で鳴るのは 1 音。
+
+
+---
+
+## プロジェクト概念（.seedproj）— 2026-09-11 導入時の持ち越し
+
+正典: `docs/project_system.md`。導入時に「今はやらない」と判断したもの。
+
+- [ ] **`.seedproj` の `plugins_dir` はランタイムが見ない** — ランタイムは
+  アセットルートの親の `"plugins"` 固定でプラグインを探す
+  （`runtime/src/engine/core/app_base/app/app_init.rs`）。エディタ側だけが
+  `plugins_dir` を尊重するので、既定（`"plugins"`）以外にすると食い違う。
+  直すならランタイムへプラグインフォルダを渡す引数が要る。当面は既定固定で運用する。
+
+- [ ] **プロジェクトの切り替えは別プロセス**（「ファイル → 別のプロジェクトを開く...」）。
+  同一プロセスでの差し替えは、パネル・RuntimeManager・ランタイム子プロセスが
+  起動時のアセットルートを前提に状態を持っているため未対応。
+  同一プロセス切り替えをやるなら、全パネルの「プロジェクト変更」再初期化経路が要る。
+
+- [ ] **プロジェクトのテンプレート（初期コンテンツ投入）は未実装**。
+  差し込み口だけ用意してある（`ProjectCreator.ProjectCreated` イベント）。
+
+- [ ] **`.seedproj` を関連付けても既定アプリの「開く方法」は変えない**。
+  HKCU の ProgID と `shell\open\command` を書くだけで、
+  `UserChoice`（利用者が明示的に選んだ既定アプリ）は触らない（OS が署名で保護しており、
+  書き換えは行儀が悪い）。既に別アプリを既定に選んでいる場合はそちらが優先される。
+
+## テンプレートライブラリ（2026-09-11 実装時）
+
+- [ ] **ライブラリのシーンが参照するサンプルモデル 4 点の実体が無い** — 2026-09-11。
+  `templates/` のシーンは旧ジャンクション時代の絶対パス参照を `assets://` 相対へ正規化済み（554 か所）だが、
+  `models/bunny/bunny.obj`・`models/main_sponza/NewSponza_Main_glTF_003.gltf`・
+  `models/pkg_a_curtains/NewSponza_Curtains_glTF.gltf`・`models/sampleModels/ABeautifulGame/glTF/ABeautifulGame.gltf`
+  はライブラリに実体が無い（インポート画面では欠落参照として表示される）。実体を入れるか参照を消すかを決める。
+  関連: `docs/template_library.md` §7。
+
+- [ ] **既存ゲームが `assets/templates/` 配下に残している 5 ファイル** — 2026-09-11。
+  フォント 2（`templates/fonts/Digital/*.ttf`）・スカイボックス 1（`templates/skybox/*.hdr`）・砂浜テクスチャ 2
+  （`templates/terrain/textures/aerial_beach_01_1k.blend/textures/*.jpg`）は移行時に参照分だけ残した。
+  正規の置き場（`mainGame/fonts/` 等）へ移して参照を書き換えるのが本筋。
+  関連: `docs/project_system.md`（移行の節）。

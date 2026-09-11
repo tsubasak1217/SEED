@@ -5,7 +5,7 @@
 **同一の出力**を、エディタ無しでも作れるようにしたフォールバック実装。
 CI や、ランタイム／エディタをビルドできない環境での再生成に使う。
 
-生成元は `runtime/assets/mainGame/actors/Fish/Lv<N>/<name>.actor` 群のみで、
+生成元は `projects/WarashibeFishing/assets/mainGame/actors/Fish/Lv<N>/<name>.actor` 群のみで、
 レベルはディレクトリ名（`Lv<N>`）を唯一の情報源とする。
 （実行時のレベルは FishManager の levels 配列から引かれるが、あれはシーン内データで
 　図鑑生成のためだけにシーンを読むのは依存が重いので、prefab の置き場所を正典とする）
@@ -31,7 +31,7 @@ import sys
 DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: assets ルート（リポジトリルートからの相対）。
-ASSETS_REL_ROOT = os.path.join("runtime", "assets")
+ASSETS_REL_ROOT = os.path.join("projects", "WarashibeFishing", "assets")
 
 #: 魚 prefab の置き場所（assets ルートからの相対）。
 FISH_ACTOR_REL_DIR = "mainGame/actors/Fish"
@@ -65,7 +65,7 @@ GENERATED_HEADER = (
     "// 自動生成 — 編集しないで「図鑑画像を生成」で再生成\n"
     "// （エディタ: Tools > 図鑑画像を生成 / cmd: generate_fish_thumbnails /\n"
     "//   エディタ無し: python tools/gen_fish_catalog.py）\n"
-    "// 生成元: runtime/assets/mainGame/actors/Fish/Lv<N>/*.actor\n"
+    "// 生成元: projects/WarashibeFishing/assets/mainGame/actors/Fish/Lv<N>/*.actor\n"
 )
 
 

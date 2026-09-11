@@ -586,13 +586,13 @@ Edit / ポーズ中はデバッグカメラで描くため `main_camera_shading_
 
 ## 7. トゥーンの実装例（フルコード）
 
-以下は**同梱サンプル `runtime/assets/shaders/toon.wgsl` の全文**である。
+以下は**同梱サンプル `templates/shaders/toon.wgsl` の全文**である。
 同じ内容が `shading_asset.rs` のユニットテスト（`TOON_ASSET`）にも置かれており、
 「宣言の除去 → uniform 生成 → 連結 → naga 検証」の実経路を 3 変種すべて
 （rt_off / rt_on / rt_bindless）で通ることをテスト
 `toon_asset_passes_naga_validation_for_all_variants` が保証している。
 
-> テスト側が実ファイルを `include_str!` しないのは、`runtime/assets/` が
+> テスト側が実ファイルを `include_str!` しないのは、`projects/WarashibeFishing/assets/` が
 > このリポジトリのコミット対象外だからである（取り込むと新規クローンでビルドが落ちる）。
 > **この 3 か所（アセット実体・テストのリテラル・本節）は同一内容に保つこと。**
 

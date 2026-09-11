@@ -4,7 +4,7 @@ using System.IO;
 namespace SEEDEditor.Assets;
 
 /// <summary>
-/// アセットルート（runtime/assets）の可用性の判定結果。
+/// アセットルート（現在のプロジェクトの assets フォルダ）の可用性の判定結果。
 /// </summary>
 public enum AssetsRootStatus
 {
@@ -47,7 +47,7 @@ public readonly record struct AssetsRootProbeResult(
     string           Reason,
     string?          Detail)
 {
-    /// <summary>アセットフォルダを実際に読める状態か。</summary>
+    /// <summary>プロジェクトの assets フォルダを実際に読める状態か。</summary>
     public bool IsAvailable => Status == AssetsRootStatus.Ok;
 
     /// <summary>EditorLog へ 1 行で書くための整形文字列。</summary>
@@ -61,9 +61,13 @@ public readonly record struct AssetsRootProbeResult(
 /// <summary>
 /// アセットルートが「本当に使えるか」を 1 箇所で判定するユーティリティ。
 ///
+/// 【判定対象】
+/// 現在開いているプロジェクトの assets フォルダ（<c>&lt;ProjectRoot&gt;/assets</c>）。
+/// プロジェクト未確定のときはパスが空文字で渡るので Invalid になる。
+///
 /// 【なぜ Directory.Exists では不十分か】
-/// runtime/assets を別ドライブへのジャンクションにしている構成では、リンク先ドライブが
-/// 未接続でも <see cref="Directory.Exists(string)"/> は true を返す（親フォルダの
+/// assets フォルダを別ドライブ・ネットワーク先へのジャンクションにしている構成では、
+/// リンク先が未接続でも <see cref="Directory.Exists(string)"/> は true を返す（親フォルダの
 /// ディレクトリエントリとしてリンク自身が存在するため）。実際に開こうとした瞬間に
 /// <see cref="DirectoryNotFoundException"/> が飛び、Exists を信じたコードが落ちる。
 ///
@@ -88,7 +92,7 @@ public static class AssetsRootProbe
         {
             return new AssetsRootProbeResult(
                 AssetsRootStatus.Invalid, path ?? "", null,
-                "アセットフォルダのパスが設定されていません。", null);
+                "プロジェクトの assets フォルダが決まっていません（プロジェクトが開かれていません）。", null);
         }
 
         string full;
@@ -100,7 +104,7 @@ public static class AssetsRootProbe
         {
             return new AssetsRootProbeResult(
                 AssetsRootStatus.Invalid, path, null,
-                "アセットフォルダのパスが不正です。", ex.Message);
+                "プロジェクトの assets フォルダのパスが不正です。", ex.Message);
         }
 
         // リンク（ジャンクション/シンボリックリンク）かどうかを先に調べる。
@@ -131,7 +135,7 @@ public static class AssetsRootProbe
         {
             return new AssetsRootProbeResult(
                 AssetsRootStatus.AccessDenied, full, isLink ? linkTarget : null,
-                "アセットフォルダを読み取る権限がありません。", ex.Message);
+                "プロジェクトの assets フォルダを読み取る権限がありません。", ex.Message);
         }
         catch (Exception ex) when (ex is DirectoryNotFoundException or FileNotFoundException or IOException)
         {
@@ -146,14 +150,14 @@ public static class AssetsRootProbe
                       ex.Message)
                 : new AssetsRootProbeResult(
                       AssetsRootStatus.Missing, full, null,
-                      "アセットフォルダが存在しません。", ex.Message);
+                      "プロジェクトの assets フォルダが存在しません。", ex.Message);
         }
         catch (Exception ex)
         {
             // 想定外（ArgumentException など）。起動を止めないため Missing 扱いにする。
             return new AssetsRootProbeResult(
                 AssetsRootStatus.Missing, full, isLink ? linkTarget : null,
-                "アセットフォルダを開けませんでした。", ex.Message);
+                "プロジェクトの assets フォルダを開けませんでした。", ex.Message);
         }
     }
 

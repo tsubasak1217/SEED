@@ -120,6 +120,9 @@ public static class Program
     /// <summary>PAK の書き出し先を指定するオプション名。</summary>
     private const string WritePakOption = "--write-pak";
 
+    /// <summary>収録ファイル一覧の書き出し先を指定するオプション名。</summary>
+    private const string ListIncludedOption = "--list-included";
+
     /// <summary>
     /// 実プロジェクトのアセットルートに対して収集を行い、結果を表示する。
     /// 既定では PAK を書かないので、パッケージ化の前に
@@ -130,19 +133,27 @@ public static class Program
     /// エディタ UI を起動せずにパッケージ相当のアセットを用意するための入口で、
     /// パッケージ版の動作確認（実機確認）に使う。
     /// </para>
+    /// <para>
+    /// <c>--list-included &lt;出力ファイル&gt;</c> を付けると、収録が決まったファイルの
+    /// アセットルート相対パスを 1 行 1 件で書き出す。既存ゲームをプロジェクト形式へ移すとき、
+    /// 「templates/ 配下のうち実際に参照されている物はどれか」を機械的に洗い出すのに使う
+    /// （grep で絞り込める形にしてある。docs/template_library.md を参照）。
+    /// </para>
     /// </summary>
     /// <param name="args">
     /// コマンドライン引数。args[0] がアセットルート。
-    /// 続く位置引数は runtime/src（省略可）、"--write-pak &lt;パス&gt;" は任意の位置に置ける。
+    /// 続く位置引数は runtime/src（省略可）、
+    /// "--write-pak &lt;パス&gt;" と "--list-included &lt;パス&gt;" は任意の位置に置ける。
     /// </param>
     /// <returns>プロセス終了コード。</returns>
     private static int DryRun(string[] args)
     {
         var assetsRoot = args[0];
 
-        // 位置引数（runtime/src）とオプション（--write-pak）を分けて読む
+        // 位置引数（runtime/src）とオプション（--write-pak / --list-included）を分けて読む
         string? runtimeSourceRoot = null;
         string? pakOutputPath     = null;
+        string? listOutputPath    = null;
         for (int i = 1; i < args.Length; i++)
         {
             if (args[i] == WritePakOption)
@@ -153,6 +164,16 @@ public static class Program
                     return 1;
                 }
                 pakOutputPath = args[++i];
+                continue;
+            }
+            if (args[i] == ListIncludedOption)
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.WriteLine($"{ListIncludedOption} には出力先パスが必要です");
+                    return 1;
+                }
+                listOutputPath = args[++i];
                 continue;
             }
             runtimeSourceRoot ??= args[i];
@@ -218,6 +239,26 @@ public static class Program
             Console.WriteLine($"  {p}");
         if (result.IncludedDespiteExclusion.Count > DryRunFolderListLimit)
             Console.WriteLine($"  ...ほか {result.IncludedDespiteExclusion.Count - DryRunFolderListLimit} 件");
+
+        // 収録ファイル一覧の書き出し（指定時のみ）
+        if (listOutputPath is not null)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"収録ファイル一覧を書き出し: {listOutputPath}");
+            try
+            {
+                var listDir = Path.GetDirectoryName(Path.GetFullPath(listOutputPath));
+                if (!string.IsNullOrEmpty(listDir)) Directory.CreateDirectory(listDir);
+                // 1 行 1 件。並びは AssetCollectionResult.Included（相対パス昇順）のまま。
+                File.WriteAllLines(listOutputPath, result.Included.Select(a => a.RelPath));
+                Console.WriteLine($"完了: {result.Included.Count} 行");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠ 書き出しに失敗: {ex.Message}");
+                return 1;
+            }
+        }
 
         // PAK の書き出し（指定時のみ）
         if (pakOutputPath is not null)

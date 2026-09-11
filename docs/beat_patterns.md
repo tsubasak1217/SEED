@@ -3,9 +3,9 @@
 わらしべフィッシングの釣りバトル（リズム）で、魚が出題する打点の並びを書くための
 **レベルデザイン用テキスト**の仕様。
 
-- 置き場所: `runtime/assets/mainGame/rhythm/beat_patterns.txt`（UTF-8）
+- 置き場所: `projects/WarashibeFishing/assets/mainGame/rhythm/beat_patterns.txt`（UTF-8）
 - 読み込み: `FishingFight` の「パターンのファイル」欄（既定で上のパス）
-- 実装: `runtime/assets/mainGame/scripts/Rhythm/`
+- 実装: `projects/WarashibeFishing/assets/mainGame/scripts/Rhythm/`
   （`BeatPatternParser` が記法の解釈、`BeatPatternLibrary` が読み込みと抽選）
 
 ---

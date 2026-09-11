@@ -1436,9 +1436,9 @@ mod tests {
     /// 加えて `@range` / `@color` / `@ref` のパラメータ宣言を持ち、
     /// 「宣言の除去 → uniform 生成 → 連結 → naga 検証」の実経路を丸ごと通す。
     ///
-    /// **`runtime/assets/` を `include_str!` しない**のは、アセットディレクトリが
+    /// **プロジェクトの `assets/` を `include_str!` しない**のは、アセットディレクトリが
     /// このリポジトリのコミット対象外だからである（取り込むと新規クローンでビルドが落ちる）。
-    /// 同梱サンプル `runtime/assets/shaders/toon.wgsl` と docs の 7 章は
+    /// 同梱サンプル `templates/shaders/toon.wgsl`（テンプレートライブラリ） と docs の 7 章は
     /// このリテラルと同一内容にしておくこと。
     const TOON_ASSET: &str = r#"// @shading_contract 1
 // ============================================================
@@ -1765,7 +1765,7 @@ fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_defau
     /// トゥーンアセット＋生成ディスパッチを差し込んだ連結が、3 変種すべてで
     /// naga の parse + validate を通ること。
     ///
-    /// アセットを `runtime/assets/` に置かず**テストコード内の文字列リテラル**で持つのは、
+    /// アセットをプロジェクトの `assets/` に置かず**テストコード内の文字列リテラル**で持つのは、
     /// アセットディレクトリを読み取り専用に保つため（このリテラルは docs のサンプルにもなる）。
     #[test]
     fn toon_asset_passes_naga_validation_for_all_variants() {
