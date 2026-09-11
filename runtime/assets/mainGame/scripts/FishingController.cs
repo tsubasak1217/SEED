@@ -1268,17 +1268,17 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "通常のときの色(16進)")]
     private string fightEvalGoodColor = "#4CE07A";
 
-    /// <summary>完璧のときに鳴らす SE（<c>assets://</c> パス。空で無音）。</summary>
-    [SerializeField(Label = "完璧のときのSE")]
-    private string fightEvalPerfectSePath = "assets://mainGame/audios/beat_battle_perfect.mp3";
+    /// <summary>
+    /// 完璧のときに鳴らす SE の<b>音声辞書キー</b>（空で無音）。
+    /// 音量は辞書の既定値を使うので、ここには音量フィールドを持たない
+    /// （素材も音量も辞書 1 か所で差し替えられるようにするため）。
+    /// </summary>
+    [SerializeField(Label = "完璧のときの音（辞書キー）")]
+    private string fightEvalPerfectSeKey = "Fishing/eval_perfect";
 
-    /// <summary>通常評価のときに鳴らす SE（<c>assets://</c> パス。空で無音）。</summary>
-    [SerializeField(Label = "通常のときのSE")]
-    private string fightEvalGoodSePath = "assets://mainGame/audios/beat_battle.mp3";
-
-    /// <summary>評価 SE の音量（1.0 = 等倍）。</summary>
-    [SerializeField(Label = "評価SEの音量")]
-    private float fightEvalSeVolume = 0.9f;
+    /// <summary>通常評価のときに鳴らす SE の<b>音声辞書キー</b>（空で無音）。</summary>
+    [SerializeField(Label = "通常のときの音（辞書キー）")]
+    private string fightEvalGoodSeKey = "Fishing/eval_good";
 
     /// <summary>
     /// 評価バナーを出してから釣り上げ演出（ホワイトアウト）を始めるまでの秒数。
@@ -1485,60 +1485,60 @@ public class FishingController : SEEDScript
     private float runCamDistancePerSeparation = 0.6f;
 
     // ─── 効果音 ─────────────────────────────
+    //
+    // 素材のパスはここに持たず、シーン上の音声辞書（AudioDictionary コンポーネント）へ
+    // 集約してある。ここが持つのは「どの用途の音か」を表す<b>キー</b>だけで、
+    // 実体（ファイル）と既定音量は辞書側が決める。素材を差し替えたいときは
+    // 辞書の 1 行を直すだけでよく、スクリプトもシーンも触らずに済む（データドリブン）。
+    // キーが空なら鳴らさない。解決できないキーはランタイムが警告を出す。
 
-    /// <summary>竿を振ってキャストを開始した瞬間（<see cref="StartCast"/>）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
+    /// <summary>竿を振ってキャストを開始した瞬間（<see cref="StartCast"/>）に鳴らす効果音の辞書キー。空なら鳴らさない。</summary>
     [Header("効果音")]
-    [SerializeField(Label = "キャストの効果音")]
-    private string castSePath = "assets://mainGame/audios/Motion-Swish07-1.mp3";
+    [SerializeField(Label = "キャストの音（辞書キー）")]
+    private string castSeKey = "Fishing/cast";
 
-    /// <summary>キャスト効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "キャストの音量")]
-    private float castSeVolume = 1f;
+    /// <summary>竿を引いて構えた瞬間（<see cref="EnterWindup"/>、投げる前の振りかぶり）に鳴らす擦れ音の辞書キー。空なら鳴らさない。</summary>
+    [SerializeField(Label = "構え（引き）の音（辞書キー）")]
+    private string windupSeKey = "Fishing/windup";
 
-    /// <summary>竿を引いて構えた瞬間（<see cref="EnterWindup"/>、投げる前の振りかぶり）に鳴らす擦れ音のアセットパス。空文字なら鳴らさない。</summary>
-    [SerializeField(Label = "構え（引き）の効果音")]
-    private string windupSePath = "assets://mainGame/audios/kosure.mp3";
+    /// <summary>ウキが着水した瞬間（<see cref="UpdateFlight"/> で Casting → Floating へ遷移する瞬間）に鳴らす効果音の辞書キー。空なら鳴らさない。</summary>
+    [SerializeField(Label = "着水の音（辞書キー）")]
+    private string splashSeKey = "Fishing/land";
 
-    /// <summary>構え効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "構えの音量")]
-    private float windupSeVolume = 1f;
+    /// <summary>前アタリ（ウキが小さく沈む瞬間）に鳴らす効果音の辞書キー。空なら鳴らさない。</summary>
+    [SerializeField(Label = "前アタリの音（辞書キー）")]
+    private string nibbleSeKey = "Fishing/nibble";
 
-    /// <summary>ウキが着水した瞬間（<see cref="UpdateFlight"/> で Casting → Floating へ遷移する瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
-    [SerializeField(Label = "着水の効果音")]
-    private string splashSePath = "assets://mainGame/audios/sei_ge_mizu_chapon06.mp3";
-
-    /// <summary>着水効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "着水の音量")]
-    private float splashSeVolume = 1f;
-
-    /// <summary>前アタリ（ウキが小さく沈む瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
-    [SerializeField(Label = "前アタリの効果音")]
-    private string nibbleSePath = "assets://mainGame/audios/tstsuki.mp3";
-
-    /// <summary>前アタリ効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "前アタリの音量")]
-    private float nibbleSeVolume = 1f;
-
-    /// <summary>本アタリ（<see cref="FishState.HookWindow"/> 開始）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
-    [SerializeField(Label = "本アタリの効果音")]
-    private string hookSePath = "assets://mainGame/audios/hit.mp3";
-
-    /// <summary>本アタリ効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "本アタリの音量")]
-    private float hookSeVolume = 1f;
+    /// <summary>本アタリ（<see cref="FishState.HookWindow"/> 開始）に鳴らす効果音の辞書キー。空なら鳴らさない。</summary>
+    [SerializeField(Label = "本アタリの音（辞書キー）")]
+    private string hookSeKey = "Fishing/hook";
 
     /// <summary>
     /// 竿を振った瞬間（<see cref="UpdateSwingDetection"/> が左クリックを拾った瞬間）に鳴らす
-    /// 効果音のアセットパス。空文字なら鳴らさない。振りを読むのは
+    /// 効果音の辞書キー。空なら鳴らさない（既定は音を割り当てていないので空）。振りを読むのは
     /// 掛かる可能性がある状態（Nibbling / HookWindow）だけなので、効果音もそこでしか鳴らない
     /// （Floating / Reeling は竿振り自体を無視するため対象外）。
     /// </summary>
-    [SerializeField(Label = "竿振りの効果音")]
-    private string swingSePath = "";
+    [SerializeField(Label = "竿振りの音（辞書キー）")]
+    private string swingSeKey = "";
 
-    /// <summary>竿振り効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "竿振りの音量")]
-    private float swingSeVolume = 1f;
+    // ─── 漂流物の効果音（種類ごと）───────────────────────────
+    //
+    // 巻き込んだ漂流物の「効果」と「音」は 1 対 1 で対応するので、効果を適用する
+    // 唯一の対応表（<see cref="ApplyDriftEffect"/>）と同じ場所で音も鳴らす。
+    // ここもキーだけを持ち、素材と音量は辞書側が決める。
+
+    /// <summary>糸回復の漂流物を巻き込んだときに鳴らす効果音の辞書キー。空なら鳴らさない。</summary>
+    [Header("漂流物の効果音"), SerializeField(Label = "糸回復の音（辞書キー）")]
+    private string driftLineRecoverSeKey = "Drift/line_recover";
+
+    /// <summary>魚回復の漂流物を巻き込んだときに鳴らす効果音の辞書キー。空なら鳴らさない。</summary>
+    [SerializeField(Label = "魚回復の音（辞書キー）")]
+    private string driftFishRecoverSeKey = "Drift/fish_recover";
+
+    /// <summary>魚ひるみ（スタン）の漂流物を巻き込んだときに鳴らす効果音の辞書キー。空なら鳴らさない。</summary>
+    [SerializeField(Label = "魚ひるみの音（辞書キー）")]
+    private string driftStunSeKey = "Drift/stun";
 
     // ─── スタン演出（隙フェーズ） ───────────────────────────
 
@@ -2031,7 +2031,7 @@ public class FishingController : SEEDScript
         ClearBiteTiming();
         LastJudgement = DebugForceHookJudgement;
         ShowJudgement(DebugForceHookJudgement);
-        PlaySe(hookSePath, hookSeVolume);
+        PlaySe(hookSeKey);
 
         if (!TryHook(fish))
         {
@@ -2168,7 +2168,7 @@ public class FishingController : SEEDScript
         // 直前に PlayerMove.EnterFishingStance が本体アニメを触っているのでラッチを捨てる
         ResetPlayerClipLatch();
         CrossFadeBoth(floatClip, playerFloatClip);
-        PlaySe(splashSePath, splashSeVolume);
+        PlaySe(splashSeKey);
         // マウスの振りを読まない区間なのでカーソルロックを引き直す
         UpdateCursorLock();
         // 着水した（通常のキャストと同じくチュートリアル等が購読する）
@@ -2320,7 +2320,7 @@ public class FishingController : SEEDScript
     ///
     /// 成立すると <see cref="SwapHookedFish"/> で乗り換え、初期の糸の残りは
     /// <see cref="HookJudgement.Excellent"/>（＝満タン）で始める。合わせの手応え代わりに
-    /// 通常のヒットと同じ効果音（<see cref="hookSePath"/>）を鳴らす。
+    /// 通常のヒットと同じ効果音（<see cref="hookSeKey"/>）を鳴らす。
     /// </summary>
     /// <param name="eater">掛かっている魚を食べようとしている魚。</param>
     /// <returns>成立したら true。</returns>
@@ -2359,7 +2359,7 @@ public class FishingController : SEEDScript
         // 猶予が明けた次のフレームで改めて成立し得る。
         if (activeFight.SecondsSincePhaseStart < chainEatGraceSeconds) { return false; }
 
-        PlaySe(hookSePath, hookSeVolume);
+        PlaySe(hookSeKey);
         SwapHookedFish(eater, HookJudgement.Excellent);
         return true;
     }
@@ -2878,7 +2878,7 @@ public class FishingController : SEEDScript
         previewElapsed = 0f;
 
         // 竿を引いた手応えとして擦れ音を鳴らす（投げる前の振りかぶりに入った瞬間）
-        PlaySe(windupSePath, windupSeVolume);
+        PlaySe(windupSeKey);
 
         SEED.Debug.Log("[Fishing] Windup");
     }
@@ -3028,7 +3028,7 @@ public class FishingController : SEEDScript
 
         State = FishState.Casting;
         HideCastPreview();
-        PlaySe(castSePath, castSeVolume);
+        PlaySe(castSeKey);
         // 仕掛けを投げた（チュートリアルの手順送りなどが購読する）
         SEED.Events.Raise(FishingEvents.Cast);
 
@@ -3072,7 +3072,7 @@ public class FishingController : SEEDScript
             landingElapsed = 0f;
             reeledSinceLanding = false;
             CrossFadeBoth(floatClip, playerFloatClip);
-            PlaySe(splashSePath, splashSeVolume);
+            PlaySe(splashSeKey);
             // 着水した
             SEED.Events.Raise(FishingEvents.Land);
             SEED.Debug.Log("[Fishing] Floating");
@@ -3185,7 +3185,8 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 漂流物の種類に応じた効果をやり取りへ適用する【種類と効果の唯一の対応表】。
+    /// 漂流物の種類に応じた効果と効果音をやり取りへ適用する
+    /// 【種類 → 効果・音の唯一の対応表】。
     ///
     /// <code>
     /// ひるませ  … 隙（Rest）を効果量ぶんの小節数だけ延長する（FishingFight.AddRestBars）
@@ -3193,24 +3194,31 @@ public class FishingController : SEEDScript
     ///             隙が終わってから走り（Phase.Run）でまとめて取り返される（FishingFight.RecoverFishHp）
     /// 糸回復    … 糸の残りへ効果量ぶんを足す（上限 1）
     /// </code>
+    /// 効果音は「何が起きたか」を耳で伝えるものなので、効果を適用するこの場所で
+    /// 一緒に鳴らす（効果と音が食い違う経路を構造的に作らないため）。
+    /// 素材と音量は <see cref="driftStunSeKey"/> などのキーから音声辞書が決める。
+    ///
     /// 未知の種類は警告だけ出して何もしない（prefab の設定ミスを黙って握り潰さない）。
     /// </summary>
     /// <param name="f">効果の適用先。</param>
     /// <param name="item">拾った漂流物。</param>
-    private static void ApplyDriftEffect(FishingFight f, DriftItem item)
+    private void ApplyDriftEffect(FishingFight f, DriftItem item)
     {
         switch (item.Kind)
         {
             case DriftItem.KindStun:
                 f.AddRestBars(SEED.Mathf.RoundToInt(item.EffectAmount));
+                PlaySe(driftStunSeKey);
                 break;
 
             case DriftItem.KindFishRecover:
                 f.RecoverFishHp(item.EffectAmount);
+                PlaySe(driftFishRecoverSeKey);
                 break;
 
             case DriftItem.KindLineRecover:
                 f.RecoverLine(item.EffectAmount);
+                PlaySe(driftLineRecoverSeKey);
                 break;
 
             default:
@@ -4549,9 +4557,9 @@ public class FishingController : SEEDScript
             perfect ? fightEvalPerfectColor : fightEvalGoodColor,
             perfect);
 
-        // 評価に合わせた SE をバナーと同じ瞬間に鳴らす（一発再生。空パスなら無音）。
-        string se = perfect ? fightEvalPerfectSePath : fightEvalGoodSePath;
-        if (!string.IsNullOrWhiteSpace(se)) { SEED.Audio.Play(se, fightEvalSeVolume); }
+        // 評価に合わせた SE をバナーと同じ瞬間に鳴らす（一発再生。空キーなら無音）。
+        // 音量は辞書の既定値に任せる（完璧／通常で別々に調整したい場合も辞書側で行う）。
+        PlaySe(perfect ? fightEvalPerfectSeKey : fightEvalGoodSeKey);
     }
 
     /// <summary>
@@ -5070,7 +5078,7 @@ public class FishingController : SEEDScript
                 nibbleRemaining--;
                 nibbleDipElapsed = 0f;
                 nibbleTimer = NextNibbleInterval();
-                PlaySe(nibbleSePath, nibbleSeVolume);
+                PlaySe(nibbleSeKey);
                 return;
             }
 
@@ -5105,22 +5113,25 @@ public class FishingController : SEEDScript
         State = FishState.HookWindow;
         reactionElapsed = 0f;
         nibbleDipElapsed = NoDipElapsed;
-        PlaySe(hookSePath, hookSeVolume);
+        PlaySe(hookSeKey);
         // 本アタリ（合わせの受付が開いた）
         SEED.Events.Raise(FishingEvents.Bite);
         SEED.Debug.Log($"[Fishing] 本アタリ! {fish.DisplayName}");
     }
 
     /// <summary>
-    /// アタリ演出用の単発効果音を再生する共通ヘルパー。
-    /// <paramref name="path"/> が空文字／null の場合は何もしない（未設定＝無音を許容するため）。
+    /// 単発効果音を音声辞書のキーで再生する共通ヘルパー
+    /// 【このスクリプトから音を鳴らす唯一の出口】。
+    ///
+    /// <paramref name="key"/> が空文字／null の場合は何もしない（未設定＝無音を許容するため）。
+    /// 音量は辞書の既定値が使われる（呼び出し側で倍率を掛けたい場合だけ
+    /// <c>SEED.Audio.PlayDict(key, volume)</c> を直接呼ぶこと）。
     /// </summary>
-    /// <param name="path">再生するアセットパス（例: "assets://mainGame/audios/hit.mp3"）。</param>
-    /// <param name="volume">再生音量（0〜1）。</param>
-    private static void PlaySe(string path, float volume)
+    /// <param name="key">音声辞書のキー（例: "Fishing/hook"）。</param>
+    private static void PlaySe(string key)
     {
-        if (string.IsNullOrEmpty(path)) { return; }
-        SEED.Audio.Play(path, volume);
+        if (string.IsNullOrEmpty(key)) { return; }
+        SEED.Audio.PlayDict(key);
     }
 
     /// <summary>
@@ -5255,7 +5266,7 @@ public class FishingController : SEEDScript
 
         // 番号は振るたびに増やす（魚は状態を見ずに変化だけを見る）
         SwingSerial++;
-        PlaySe(swingSePath, swingSeVolume);
+        PlaySe(swingSeKey);
         return true;
     }
 
@@ -5318,7 +5329,7 @@ public class FishingController : SEEDScript
     public void PlayNibbleCue()
     {
         nibbleDipElapsed = 0f;
-        PlaySe(nibbleSePath, nibbleSeVolume);
+        PlaySe(nibbleSeKey);
     }
 
     /// <summary>

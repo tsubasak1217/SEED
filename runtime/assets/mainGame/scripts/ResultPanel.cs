@@ -502,6 +502,19 @@ public class ResultPanel : SEEDScript
     [SerializeField(Label = "退場クリップの尺(秒)")]
     private float fishOutSeconds = 0.27f;
 
+    // ─── 効果音 ──────────────────────────────────────────────
+    //
+    // 素材のパスも音量もここには持たない。シーン上の音声辞書（AudioDictionary）へ
+    // 集約し、ここはキーだけを持つ（データドリブン）。キーが空なら鳴らさない。
+
+    /// <summary>
+    /// 魚の絵が登場する瞬間（<see cref="PanelPhase.FishIn"/> へ入った瞬間）に鳴らす
+    /// 効果音の<b>音声辞書キー</b>（空なら鳴らさない）。
+    /// 連鎖で 2 匹目以降が出るときも同じ場所を通るので、各魚で 1 回ずつ鳴る。
+    /// </summary>
+    [Header("効果音"), SerializeField(Label = "魚の絵の登場音（辞書キー）")]
+    private string fishInSeKey = "Result/ko";
+
     // ─── 実行時の状態 ────────────────────────────────────────
 
     /// <summary>いまのフェーズ。</summary>
@@ -1079,6 +1092,9 @@ public class ResultPanel : SEEDScript
                 // 流せなかったときはアニメを諦め、そのまま表示サイズで出す。
                 fishRevealPending = TryPlayFishClip(fishInClipName);
                 if (!fishRevealPending) { ShowFishImmediately(); }
+                // 絵が出る瞬間に効果音を鳴らす。ここは 1 匹目も連鎖の 2 匹目以降も
+                // 必ず通る唯一の場所なので、魚 1 匹につき 1 回だけ鳴る。
+                PlaySe(fishInSeKey);
                 break;
 
             case PanelPhase.FishOut:
@@ -1224,6 +1240,18 @@ public class ResultPanel : SEEDScript
 
     /// <summary>魚の絵のアニメが使えるか（Animator を解決できていて生きているか）。</summary>
     private bool HasFishAnimator() => fishAnimator is { IsValid: true };
+
+    /// <summary>
+    /// 効果音を 1 つ鳴らす（辞書キーが空なら何もしない）
+    /// 【このパネルから音を鳴らす唯一の実装】。
+    /// 音量は音声辞書の既定値を使う（素材も音量も辞書 1 か所で差し替えられるようにするため）。
+    /// </summary>
+    /// <param name="key">音声辞書のキー（例: "Result/ko"）。</param>
+    private static void PlaySe(string key)
+    {
+        if (string.IsNullOrEmpty(key)) { return; }
+        SEED.Audio.PlayDict(key);
+    }
 
     /// <summary>
     /// 魚の絵のクリップを流す【再生を頼む唯一の場所】。

@@ -870,3 +870,33 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `ChainCatchMission.OnUpdate` の張り直しは `chainLimit == requiredCount`（＝上限に達した
   瞬間に達成する）構成では 1 度も走らない。今回は釣り側の二重化で回避したが、
   同じ作りのミッションを増やすなら `MissionBase` 側に「達成後も走る後始末の枠」が要る。
+
+- [ ] **音声辞書（AudioDictionary）への集約が mainGame だけ** — 2026-09-11（未対応）。
+  `mainGame/MainGame.scene` の `AudioDict` アクタへ効果音を集約し、mainGame の
+  スクリプト／プレハブは辞書キー参照へ移行した。**未対応は次の 4 つ**。
+  いずれも「辞書はシーンごとに要る」ため、対象シーンに `AudioDict` を置くのが先。
+  - `common/`（`TypewriterText` のメッセージ音など）… 複数シーンで共有されるうえ、
+    `TypewriterText.SePath` が**パスを受け取る API** なので、キー化するには
+    common 側の API を変える（またはシーン全体から引ける「キー → パス解決」API を足す）必要がある。
+    そのため `mainGame/Tutorial/TutorialWindow.cs` の `messageSePath` も**パスのまま残した**。
+  - `zukan/` / `title/` / `prologue/` のスクリプトと `.scene`。
+  - `mainGame/actors/BeachAmbient.actor`（＋シーン内インスタンス）… `AmbientLoop` が
+    クロスフェードのため **AudioComponent の `Volume` を毎フレーム書き換える**が、
+    辞書モードでは音量も辞書から解決されてコンポーネント側の音量が無視される
+    （`resolve_audio_component_source`）。**辞書化するとクロスフェードが壊れる**ので
+    パス指定のまま残した。辞書化したいなら「音量だけはコンポーネント側を使う」
+    抜け道か、フェード専用の再生 API が要る。
+  - `mainGame/audios/reel.mp3` はどこからも参照されていない（パッケージにも入らない）。
+
+- [ ] **音声辞書移行後の実機確認（ゲームプレイ中の音）** — 2026-09-11（未検証）。
+  ランタイム単体起動（`--mode=play --scene=assets://mainGame/MainGame.scene`）で
+  シーンのロード（actors=30）と **`[SEED audio]` 警告 0 件**までは確認済み。
+  ただし入力を伴う音（キャスト・アタリ・巻き取りループ・メトロノーム・ドラム・
+  判定クリック・足音・漂流物・リザルトの K.O.・ミッションクリア）は**鳴らしていない**。
+  キーの一致自体はスクリプトで突合済み（未解決 0 件・未参照 0 件）だが、
+  音量バランス（辞書へ移した既定値）は耳で確認すること。
+  とくに **漂流物の取得音は仕様が変わった**: 従来は prefab の `pickupSePath`
+  （糸回復=水音 / 魚回復=擦れ音 / ひるみ=スタン音）が鳴っていたが、
+  今回から `FishingController.ApplyDriftEffect` が種類別の音
+  （`kaihuku` / `powerCharge` / `hirumiHit`）を鳴らす。prefab 側は空にしたので
+  1 回の取得で鳴るのは 1 音。

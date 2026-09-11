@@ -263,9 +263,14 @@ public class PlayerMove : SEEDScript
     // moving フラグ（経路移動・自由移動）に加えて、MoveTowardWorldPoint による
     // 釣り中の横歩き（戻り値が LateralLeft/Right のとき）の両方を OR で見る。
 
-    /// <summary>足音 SE のアセットパス（空文字なら足音を再生しない）。</summary>
-    [Header("足音"), SerializeField(Label = "足音 SE のパス")]
-    private string footstepSePath = "assets://mainGame/audios/footsteps.mp3";
+    /// <summary>
+    /// 足音 SE の<b>音声辞書キー</b>（空文字なら足音を再生しない）。
+    /// 素材はシーン上の音声辞書が持つ（データドリブン）。
+    /// ただし足音は 1 歩ごとに音量を抽選するため、辞書の既定音量はそのまま使わず、
+    /// 下の最小／最大から抽選した音量を明示して鳴らす（<see cref="PlayFootstepSe"/>）。
+    /// </summary>
+    [Header("足音"), SerializeField(Label = "足音の音（辞書キー）")]
+    private string footstepSeKey = "Player/footstep";
 
     /// <summary>1 秒あたりの歩数。歩いている間、この頻度で SE を再生する（0 以下なら無音）。</summary>
     [SerializeField(Label = "1秒あたりの歩数")]
@@ -962,11 +967,14 @@ public class PlayerMove : SEEDScript
     /// 足音 SE を 1 回再生する。音量は <see cref="footstepVolumeMin"/>〜<see cref="footstepVolumeMax"/>
     /// からランダムに抽選し、さらに歩数を偶奇で数えて偶数歩をわずかに弱めることで
     /// 左右の足音らしい自然なばらつきを演出する（簡易的な近似。厳密な左右判定は行わない）。
-    /// パスが空文字なら無音（再生しない）。
+    /// 辞書キーが空文字なら無音（再生しない）。
+    ///
+    /// 音量は 1 歩ごとに変える必要があるため、<b>ここだけは辞書の既定音量を使わず</b>
+    /// 抽選した値を明示して渡す（素材の差し替えは辞書側で行える）。
     /// </summary>
     private void PlayFootstepSe()
     {
-        if (string.IsNullOrEmpty(footstepSePath)) { return; }   // 未設定なら無音
+        if (string.IsNullOrEmpty(footstepSeKey)) { return; }   // 未設定なら無音
 
         float volume = SEED.Random.Range(footstepVolumeMin, footstepVolumeMax);
 
@@ -976,7 +984,7 @@ public class PlayerMove : SEEDScript
             volume *= FootstepAlternateVolumeScale;
         }
 
-        SEED.Audio.Play(footstepSePath, volume);
+        SEED.Audio.PlayDict(footstepSeKey, volume);
     }
 
     /// <summary>描画フェーズで呼ばれる。描画に関わる処理向け。</summary>

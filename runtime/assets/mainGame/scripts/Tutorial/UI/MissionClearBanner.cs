@@ -62,9 +62,6 @@ public class MissionClearBanner : SEEDScript
     /// <summary>Animator に再生させる既定のクリップ名。</summary>
     private const string DefaultAnimatorClipName = "mission_clear";
 
-    /// <summary>クリア効果音の既定の音量。</summary>
-    private const float DefaultClearSeVolume = 1.0f;
-
     /// <summary>進捗が 1 のときの値。</summary>
     private const float ProgressComplete = 1f;
 
@@ -128,17 +125,12 @@ public class MissionClearBanner : SEEDScript
     // ─── クリア効果音 ────────────────────────────────────────
 
     /// <summary>
-    /// バナー表示開始時に 1 回だけ鳴らすクリア効果音のアセットパス（空なら鳴らさない）。
-    /// 既定の素材は同梱していないため空のままで、必要になったら差し替える
-    /// （データドリブン：音を変えるのにコード変更は不要）。
+    /// バナー表示開始時に 1 回だけ鳴らすクリア効果音の<b>音声辞書キー</b>（空なら鳴らさない）。
+    /// 素材も音量もシーン上の音声辞書が持つので、ここはキーだけを持つ
+    /// （データドリブン：音を変えるのにコード変更もシーン編集も不要）。
     /// </summary>
-    [Header("効果音"), SerializeField(Label = "クリア効果音", Tooltip = "バナー表示開始時に 1 回だけ鳴らす効果音。空なら鳴らさない")]
-    [AssetReference("mp3", "wav", "ogg")]
-    public string clearSePath = "";
-
-    /// <summary>クリア効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "クリア効果音の音量", Tooltip = "クリア効果音の音量（0〜1）")]
-    public float clearSeVolume = DefaultClearSeVolume;
+    [Header("効果音"), SerializeField(Label = "クリアの音（辞書キー）", Tooltip = "バナー表示開始時に 1 回だけ鳴らす効果音の辞書キー。空なら鳴らさない")]
+    public string clearSeKey = "UI/mission_clear";
 
     // ─── Animator 演出 ──────────────────────────────────────
     // シーン側の MissionClearBanner には AnimatorComponent（クリップ mission_clear）が
@@ -406,11 +398,11 @@ public class MissionClearBanner : SEEDScript
 
     // ─── 内部処理: 効果音 ───────────────────────────────────
 
-    /// <summary>クリア効果音を鳴らす（パス未設定なら何もしない）。</summary>
+    /// <summary>クリア効果音を鳴らす（辞書キー未設定なら何もしない。音量は辞書の既定値）。</summary>
     private void PlayClearSe()
     {
-        if (string.IsNullOrEmpty(clearSePath)) { return; }
-        SEED.Audio.Play(clearSePath, SEED.Mathf.Clamped01(clearSeVolume));
+        if (string.IsNullOrEmpty(clearSeKey)) { return; }
+        SEED.Audio.PlayDict(clearSeKey);
     }
 
     // ─── 内部処理: 見た目の適用 ─────────────────────────────

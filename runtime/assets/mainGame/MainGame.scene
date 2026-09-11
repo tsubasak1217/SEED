@@ -2239,7 +2239,8 @@
           "component": {
             "type": "AudioComponent",
             "data": {
-              "audio_path": "assets://mainGame/audios/stan.mp3",
+              "audio_path": "",
+              "dictionary_key": "Fishing/stun_loop",
               "volume": 1.0,
               "loop": true,
               "play_on_start": false,
@@ -16338,6 +16339,164 @@
           "children": []
         }
       ]
+    },
+    {
+      "name": "AudioDict",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "AudioDictionary",
+          "component": {
+            "type": "AudioDictionaryComponent",
+            "data": {
+              "groups": [
+                {
+                  "name": "Fishing",
+                  "entries": [
+                    {
+                      "usage": "windup",
+                      "path": "assets://mainGame/audios/kosure.mp3",
+                      "volume": 1.0
+                    },
+                    {
+                      "usage": "cast",
+                      "path": "assets://mainGame/audios/Motion-Swish07-1.mp3",
+                      "volume": 1.0
+                    },
+                    {
+                      "usage": "land",
+                      "path": "assets://mainGame/audios/sei_ge_mizu_chapon06.mp3",
+                      "volume": 1.0
+                    },
+                    {
+                      "usage": "nibble",
+                      "path": "assets://mainGame/audios/tstsuki.mp3",
+                      "volume": 1.0
+                    },
+                    {
+                      "usage": "hook",
+                      "path": "assets://mainGame/audios/hit.mp3",
+                      "volume": 1.0
+                    },
+                    {
+                      "usage": "reel_loop",
+                      "path": "assets://mainGame/audios/makitori.mp3",
+                      "volume": 0.6
+                    },
+                    {
+                      "usage": "judge_click",
+                      "path": "assets://mainGame/audios/Motion-Swish07-1.mp3",
+                      "volume": 0.8
+                    },
+                    {
+                      "usage": "metronome",
+                      "path": "assets://mainGame/audios/metronome.mp3",
+                      "volume": 0.45
+                    },
+                    {
+                      "usage": "metronome_bar",
+                      "path": "assets://mainGame/audios/metronome.mp3",
+                      "volume": 0.9
+                    },
+                    {
+                      "usage": "drum_loop",
+                      "path": "assets://mainGame/audios/drum.wav",
+                      "volume": 0.8
+                    },
+                    {
+                      "usage": "eval_perfect",
+                      "path": "assets://mainGame/audios/beat_battle_perfect.mp3",
+                      "volume": 0.9
+                    },
+                    {
+                      "usage": "eval_good",
+                      "path": "assets://mainGame/audios/beat_battle.mp3",
+                      "volume": 0.9
+                    },
+                    {
+                      "usage": "catch_splash",
+                      "path": "assets://mainGame/audios/sei_ge_mizu_chapon06.mp3",
+                      "volume": 0.9
+                    },
+                    {
+                      "usage": "stun_loop",
+                      "path": "assets://mainGame/audios/stan.mp3",
+                      "volume": 1.0
+                    }
+                  ]
+                },
+                {
+                  "name": "Player",
+                  "entries": [
+                    {
+                      "usage": "footstep",
+                      "path": "assets://mainGame/audios/footsteps.mp3",
+                      "volume": 1.0
+                    }
+                  ]
+                },
+                {
+                  "name": "Drift",
+                  "entries": [
+                    {
+                      "usage": "line_recover",
+                      "path": "assets://mainGame/audios/kaihuku.mp3",
+                      "volume": 1.0
+                    },
+                    {
+                      "usage": "fish_recover",
+                      "path": "assets://mainGame/audios/powerCharge.mp3",
+                      "volume": 1.0
+                    },
+                    {
+                      "usage": "stun",
+                      "path": "assets://mainGame/audios/hirumiHit.mp3",
+                      "volume": 1.0
+                    }
+                  ]
+                },
+                {
+                  "name": "Result",
+                  "entries": [
+                    {
+                      "usage": "ko",
+                      "path": "assets://mainGame/audios/K.O.mp3",
+                      "volume": 1.0
+                    }
+                  ]
+                },
+                {
+                  "name": "UI",
+                  "entries": [
+                    {
+                      "usage": "mission_clear",
+                      "path": "assets://mainGame/audios/mission_clear.mp3",
+                      "volume": 1.0
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "children": []
     }
   ]
 }

@@ -23,7 +23,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///   <see cref="BarPhase01"/> / <see cref="TimeToNearestBeat"/>）
 /// バトル開始と同時に魚の BPM・拍子でメトロノームが走り出す。時間は <c>dt</c> の積算で
 /// 管理する（音の再生位置を問い合わせる API が無いため）。拍が変わるたびに
-/// <see cref="metronomeSePath"/> を鳴らし、小節頭だけ音量を上げる。
+/// <see cref="metronomeSeKey"/> を鳴らし、小節頭だけ別のキー（<see cref="metronomeBarSeKey"/>）に
+/// 切り替えて音量を上げる。
 /// <see cref="Paused"/>（外部都合の一時停止フック）のあいだは時計ごと止まる＝無音になる。
 ///
 /// ■ ドラムループ（<see cref="SetupDrumLoop"/>）
@@ -249,9 +250,6 @@ public class FishingFight : SEEDScript
     /// <summary>再生速度の既定値（等倍）。</summary>
     private const float NormalPlaybackSpeed = 1f;
 
-    /// <summary>音量の下限（負の音量を渡さないためのクランプ値）。</summary>
-    private const float VolumeMin = 0f;
-
     /// <summary>
     /// 「小節頭／ループ境界にいるか」を判定するときの許容誤差（小節数・ループ数の単位）。
     /// ちょうど境界の時刻が浮動小数の丸めで境界の直前に見えると、
@@ -432,36 +430,33 @@ public class FishingFight : SEEDScript
 
     // ─── メトロノーム ────────────────────────────────────
 
-    /// <summary>拍ごとに鳴らすクリック音のアセットパス（空なら鳴らさない）。</summary>
-    [Header("メトロノーム"), SerializeField(Label = "メトロノームの効果音")]
-    private string metronomeSePath = "assets://mainGame/audios/metronome.mp3";
+    // 素材のパスも音量もここには持たない。シーン上の音声辞書（AudioDictionary）へ
+    // 集約し、ここはキーだけを持つ（データドリブン）。
+    // 小節頭だけ音量を上げたいので、同じ素材を指す行を「通常」「小節頭」の
+    // 2 キーに分けてある（音量は辞書側の既定値で決まる）。
 
-    /// <summary>小節頭以外の拍で鳴らす音量（0〜1）。</summary>
-    [SerializeField(Label = "メトロノームの音量")]
-    private float metronomeVolume = 0.45f;
+    /// <summary>小節頭以外の拍で鳴らすクリック音の辞書キー（空なら鳴らさない）。</summary>
+    [Header("メトロノーム"), SerializeField(Label = "メトロノームの音（辞書キー）")]
+    private string metronomeSeKey = "Fishing/metronome";
 
-    /// <summary>小節頭の拍で鳴らす音量（0〜1）。強拍を分かりやすくするため大きめにする。</summary>
-    [SerializeField(Label = "メトロノームの音量(小節頭)")]
-    private float metronomeBarHeadVolume = 0.9f;
+    /// <summary>小節頭の拍で鳴らすクリック音の辞書キー（空なら鳴らさない）。強拍を分かりやすくするため辞書側の音量を大きめにしてある。</summary>
+    [SerializeField(Label = "メトロノームの音・小節頭（辞書キー）")]
+    private string metronomeBarSeKey = "Fishing/metronome_bar";
 
     // ─── ドラムループ ────────────────────────────────────
     //
     // バトル中だけ BGM 枠でドラムループを鳴らし、再生速度を
     // 「魚の BPM ÷ 素材の BPM」に変えて魚の拍と完全に同じテンポにする。
-    // メトロノームと二重で鳴らす前提だが、metronomeVolume 系を 0 にすれば
+    // メトロノームと二重で鳴らす前提だが、辞書のメトロノーム行の音量を 0 にすれば
     // ドラムだけにもできる（メトロノームは拍の頭を鳴らす別系統のまま）。
 
-    /// <summary>ドラムループ素材のアセットパス（空ならドラムを鳴らさない）。</summary>
-    [Header("ドラムループ"), SerializeField(Label = "ドラムループの音源")]
-    private string drumLoopPath = "assets://mainGame/audios/drum.wav";
+    /// <summary>ドラムループ素材の辞書キー（空ならドラムを鳴らさない）。音量は辞書の既定値。</summary>
+    [Header("ドラムループ"), SerializeField(Label = "ドラムループの音源（辞書キー）")]
+    private string drumLoopKey = "Fishing/drum_loop";
 
     /// <summary>ドラムループ素材そのものの BPM（この値を基準に再生速度を決める）。</summary>
     [SerializeField(Label = "素材のBPM")]
     private float drumLoopBpm = 100f;
-
-    /// <summary>ドラムループの音量（1.0 = 等倍）。</summary>
-    [SerializeField(Label = "ドラムループの音量")]
-    private float drumLoopVolume = 0.8f;
 
     /// <summary>
     /// 出題（Call）フェーズの頭ごとにドラムループを鳴らし直すか【唯一の同期手段】。
@@ -796,24 +791,20 @@ public class FishingFight : SEEDScript
 
     // ─── 効果音 ──────────────────────────────────────────
 
-    /// <summary>糸が切れた瞬間に鳴らす効果音のアセットパス（空なら鳴らさない）。</summary>
-    [Header("効果音"), SerializeField(Label = "糸切れの効果音")]
-    private string lineBreakSePath = "";
-
-    /// <summary>糸切れ効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "糸切れの音量")]
-    private float lineBreakSeVolume = 1f;
+    /// <summary>
+    /// 糸が切れた瞬間に鳴らす効果音の辞書キー（空なら鳴らさない）。
+    /// 既定は空＝素材を割り当てていない。鳴らしたくなったら音声辞書に行を足し、
+    /// そのキーをここへ入れる（スクリプトの変更は不要）。
+    /// </summary>
+    [Header("効果音"), SerializeField(Label = "糸切れの音（辞書キー）")]
+    private string lineBreakSeKey = "";
 
     /// <summary>
-    /// 回答（<see cref="Phase.Answer"/>）中に左クリックするたび鳴らす効果音のアセットパス（空なら鳴らさない）。
+    /// 回答（<see cref="Phase.Answer"/>）中に左クリックするたび鳴らす効果音の辞書キー（空なら鳴らさない）。
     /// 判定（Excellent/Great/Nice/Miss）に関わらず、クリックそのものの手応えとして毎回鳴らす。
     /// </summary>
-    [SerializeField(Label = "回答クリックの効果音")]
-    private string answerClickSePath = "assets://mainGame/audios/Motion-Swish07-1.mp3";
-
-    /// <summary>回答クリック効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "回答クリックの音量")]
-    private float answerClickSeVolume = 0.8f;
+    [SerializeField(Label = "回答クリックの音（辞書キー）")]
+    private string answerClickSeKey = "Fishing/judge_click";
 
     // ─── UI 参照 ─────────────────────────────────────────
 
@@ -1335,11 +1326,8 @@ public class FishingFight : SEEDScript
         && !FishDefeated
         && CurrentPhase == Phase.Rest;
 
-    /// <summary>糸切れの効果音パス（コントローラ側から鳴らす場合の参照用）。</summary>
-    public string LineBreakSePath => lineBreakSePath;
-
-    /// <summary>糸切れの効果音の音量。</summary>
-    public float LineBreakSeVolume => lineBreakSeVolume;
+    /// <summary>糸切れの効果音の辞書キー（コントローラ側から鳴らす場合の参照用。音量は辞書が持つ）。</summary>
+    public string LineBreakSeKey => lineBreakSeKey;
 
     // ─── 拍時計の公開値 ───────────────────────────────────
 
@@ -2350,19 +2338,20 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// メトロノームを進める【拍の音を鳴らす唯一の出口】。
-    /// 拍番号が変わったフレームで 1 回だけ鳴らし、小節頭だけ音量を上げる。
+    /// 拍番号が変わったフレームで 1 回だけ鳴らす。小節頭は別のキーへ切り替えるだけで、
+    /// 実際の音量差は音声辞書の 2 行（通常／小節頭）が持つ。
     /// </summary>
     private void UpdateMetronome()
     {
-        if (string.IsNullOrEmpty(metronomeSePath)) { return; }
-
         // 拍はフェーズ内で数える（隙だけテンポが変わるため、通し拍番号では強拍がズレる）
         int beat = BeatIndex;
         if (beat == lastBeatPlayed) { return; }
 
         lastBeatPlayed = beat;
         bool barHead = beatsPerBar > 0 && beat % beatsPerBar == 0;
-        SEED.Audio.Play(metronomeSePath, SEED.Mathf.Clamped01(barHead ? metronomeBarHeadVolume : metronomeVolume));
+        string key = barHead ? metronomeBarSeKey : metronomeSeKey;
+        if (string.IsNullOrEmpty(key)) { return; }
+        SEED.Audio.PlayDict(key);
     }
 
     // ─── 内部処理: ドラムループ ─────────────────────────────
@@ -2387,7 +2376,7 @@ public class FishingFight : SEEDScript
         drumScheduled = false;
         drumPausedByFight = false;
 
-        if (string.IsNullOrEmpty(drumLoopPath)) { return; }
+        if (string.IsNullOrEmpty(drumLoopKey)) { return; }
 
         int beats = SEED.Mathf.Max(leadInBeats, 0);
         int barBeats = SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
@@ -2430,7 +2419,8 @@ public class FishingFight : SEEDScript
     /// </summary>
     private void StartDrumLoop()
     {
-        SEED.Audio.PlayBgm(drumLoopPath, SEED.Mathf.Max(drumLoopVolume, VolumeMin), loop: true);
+        // 音量は音声辞書の既定値に任せる（ドラムだけ絞りたい場合も辞書側の行で調整する）
+        SEED.Audio.PlayBgmDict(drumLoopKey, loop: true);
         drumPlaying = true;
         ApplyDrumSpeed();
     }
@@ -3416,18 +3406,18 @@ public class FishingFight : SEEDScript
         _ => initialLineNice,
     };
 
-    /// <summary>糸切れの効果音を鳴らす（パス未設定なら何もしない）。</summary>
+    /// <summary>糸切れの効果音を鳴らす（辞書キー未設定なら何もしない。音量は辞書の既定値）。</summary>
     private void PlayLineBreakSe()
     {
-        if (string.IsNullOrEmpty(lineBreakSePath)) { return; }
-        SEED.Audio.Play(lineBreakSePath, lineBreakSeVolume);
+        if (string.IsNullOrEmpty(lineBreakSeKey)) { return; }
+        SEED.Audio.PlayDict(lineBreakSeKey);
     }
 
-    /// <summary>回答フェーズの左クリック 1 回ごとに鳴らす効果音を鳴らす（パス未設定なら何もしない）。</summary>
+    /// <summary>回答フェーズの左クリック 1 回ごとに鳴らす効果音を鳴らす（辞書キー未設定なら何もしない）。</summary>
     private void PlayAnswerClickSe()
     {
-        if (string.IsNullOrEmpty(answerClickSePath)) { return; }
-        SEED.Audio.Play(answerClickSePath, answerClickSeVolume);
+        if (string.IsNullOrEmpty(answerClickSeKey)) { return; }
+        SEED.Audio.PlayDict(answerClickSeKey);
     }
 
     // ─── 内部状態: 糸ゲージの表示演出 ───────────────────────

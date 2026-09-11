@@ -459,13 +459,12 @@ public class CatchPresenter : SEEDScript
     [SerializeField(Label = "しぶきを消すまでの秒数")]
     private float splashLifeSeconds = 2.0f;
 
-    /// <summary>着水音（<c>assets://</c> パス）。空なら鳴らさない。</summary>
-    [SerializeField(Label = "水音")]
-    private string splashSePath = "assets://mainGame/audios/sei_ge_mizu_chapon06.mp3";
-
-    /// <summary>着水音の音量（0〜1）。</summary>
-    [SerializeField(Label = "水音の音量")]
-    private float splashSeVolume = 0.9f;
+    /// <summary>
+    /// 着水音の<b>音声辞書キー</b>（空なら鳴らさない）。
+    /// 素材と音量はシーン上の音声辞書が持つので、ここはキーだけを持つ（データドリブン）。
+    /// </summary>
+    [SerializeField(Label = "水音（辞書キー）")]
+    private string splashSeKey = "Fishing/catch_splash";
 
     // ─── 水しぶき（波紋＋水柱。全魚共通・規模は大きさで変わる）───
     //
@@ -1790,11 +1789,11 @@ public class CatchPresenter : SEEDScript
         splashElapsed = 0f;
     }
 
-    /// <summary>着水音を鳴らす（パスが空なら何もしない）。</summary>
+    /// <summary>着水音を鳴らす（辞書キーが空なら何もしない。音量は辞書の既定値）。</summary>
     private void PlaySplashSe()
     {
-        if (string.IsNullOrWhiteSpace(splashSePath)) { return; }
-        SEED.Audio.Play(splashSePath, SEED.Mathf.Clamped01(splashSeVolume));
+        if (string.IsNullOrWhiteSpace(splashSeKey)) { return; }
+        SEED.Audio.PlayDict(splashSeKey);
     }
 
     // ─── 釣果パネル ───────────────────────────────────────────

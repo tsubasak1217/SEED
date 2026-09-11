@@ -213,31 +213,28 @@ public class DriftItem : SEEDScript
     // ─── 効果音 ─────────────────────────────────────────
 
     /// <summary>
-    /// 巻き込まれた瞬間に鳴らす効果音のアセットパス（空なら鳴らさない）。
+    /// 巻き込まれた瞬間に鳴らす効果音の<b>音声辞書キー</b>（空なら鳴らさない）。
+    /// 素材も音量もシーン上の音声辞書が持つので、ここはキーだけを持つ。
+    ///
     /// <b>種類ごとの音は prefab 側で差し替える</b>（データドリブンの原則どおり、
     /// 種類と音の対応をコード側に持たない）。
+    /// 既定は空＝どの種類にも共通で鳴る音は無い。種類別の音は
+    /// <c>FishingController.ApplyDriftEffect</c>（種類 → 効果・音の対応表）が鳴らすので、
+    /// ここへキーを入れるとその音と<b>重ねて</b>鳴ることに注意。
     /// </summary>
-    [Header("効果音"), SerializeField(Label = "巻き込みの効果音")]
-    private string hitSePath = "";
-
-    /// <summary>巻き込み効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "巻き込みの音量")]
-    private float hitSeVolume = 1f;
+    [Header("効果音"), SerializeField(Label = "巻き込みの音（辞書キー）")]
+    private string hitSeKey = "";
 
     // ─── 取得演出（拾われた瞬間だけ・寿命切れでは出ない）──────────
 
     /// <summary>
-    /// <b>取得された瞬間</b>に鳴らす効果音（空なら鳴らさない）。
-    /// <see cref="hitSePath"/> と別に持つのは、種類ごとの「拾った音」を
+    /// <b>取得された瞬間</b>に鳴らす効果音の<b>音声辞書キー</b>（空なら鳴らさない）。
+    /// <see cref="hitSeKey"/> と別に持つのは、種類ごとの「拾った音」を
     /// prefab 側で差し替えられるようにするため（データドリブンの原則）。
     /// 寿命切れの消滅では鳴らさない。
     /// </summary>
-    [Header("取得演出"), SerializeField(Label = "取得の効果音"), AssetReference("mp3", "wav", "ogg")]
-    private string pickupSePath = "";
-
-    /// <summary>取得効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "取得の音量")]
-    private float pickupSeVolume = 1f;
+    [Header("取得演出"), SerializeField(Label = "取得の音（辞書キー）")]
+    private string pickupSeKey = "";
 
     /// <summary>取得した瞬間に出す演出の種類。</summary>
     [SerializeField(Label = "取得の演出")]
@@ -494,7 +491,7 @@ public class DriftItem : SEEDScript
     /// 取得された（ウキが巻き込んだ）ことをこの漂流物へ伝える
     /// 【取得演出の唯一の入口】。
     ///
-    /// 効果音（<see cref="hitSePath"/> ＋ <see cref="pickupSePath"/>）を鳴らし、
+    /// 効果音（<see cref="hitSeKey"/> ＋ <see cref="pickupSeKey"/>）を鳴らし、
     /// <see cref="pickupEffect"/> の演出を出す。<b>消滅そのものは行わない</b>
     /// （消すのは <see cref="Kill()"/> の役目）ので、拾った側は
     /// 「<see cref="Pickup"/> → <see cref="Kill()"/>」または
@@ -507,8 +504,8 @@ public class DriftItem : SEEDScript
         if (pickupPlayed) { return; }
         pickupPlayed = true;
 
-        PlaySe(hitSePath, hitSeVolume);
-        PlaySe(pickupSePath, pickupSeVolume);
+        PlaySe(hitSeKey);
+        PlaySe(pickupSeKey);
         PlayPickupEffect();
     }
 
@@ -560,14 +557,14 @@ public class DriftItem : SEEDScript
     // ─── 内部処理 ─────────────────────────────────────────
 
     /// <summary>
-    /// 効果音を 1 つ鳴らす（パスが空なら何もしない）【効果音再生の唯一の実装】。
+    /// 効果音を 1 つ鳴らす（辞書キーが空なら何もしない）【効果音再生の唯一の実装】。
+    /// 音量は音声辞書の既定値を使う（素材も音量も辞書 1 か所で差し替えられるようにするため）。
     /// </summary>
-    /// <param name="path">効果音のアセットパス。</param>
-    /// <param name="volume">音量（0〜1 にクランプする）。</param>
-    private static void PlaySe(string path, float volume)
+    /// <param name="key">効果音の音声辞書キー（例: "Drift/stun"）。</param>
+    private static void PlaySe(string key)
     {
-        if (string.IsNullOrEmpty(path)) { return; }
-        SEED.Audio.Play(path, SEED.Mathf.Clamped01(volume));
+        if (string.IsNullOrEmpty(key)) { return; }
+        SEED.Audio.PlayDict(key);
     }
 
     /// <summary>

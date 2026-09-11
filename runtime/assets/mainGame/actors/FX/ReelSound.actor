@@ -23,7 +23,8 @@
       "component": {
         "type": "AudioComponent",
         "data": {
-          "audio_path": "assets://mainGame/audios/makitori.mp3",
+          "audio_path": "",
+          "dictionary_key": "Fishing/reel_loop",
           "volume": 0.6,
           "loop": true,
           "play_on_start": false,

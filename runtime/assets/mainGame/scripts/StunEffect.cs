@@ -84,23 +84,21 @@ public class StunEffect : SEEDScript
     /// スタン中ずっとループ再生する音源（<c>StunEffect</c> アクタの Audio スロット）。
     /// <see cref="Show"/> の立ち上がりで Loop=true にして再生を開始し、
     /// <see cref="Stop"/> で停止する。未割り当て（IsValid==false）の場合は
-    /// 互換のため <see cref="stunSePath"/> による従来のワンショット再生にフォールバックする。
+    /// 互換のため <see cref="stunSeKey"/> による従来のワンショット再生にフォールバックする。
     /// </summary>
     [Header("効果音"), SerializeField(Label = "スタンの音源(ループ)")]
     private SEED.AudioSource? stunAudio;
 
     /// <summary>
-    /// <see cref="stunAudio"/> 未割り当て時のフォールバック用ワンショット効果音パス。
-    /// 空文字なら鳴らさない。<see cref="stunAudio"/> が有効なときは、
-    /// 空文字でなければ Play 前に <see cref="SEED.AudioSource.Path"/> へ上書きするための
-    /// Inspector 差し替え用パスとしても使う。
+    /// スタン音の<b>音声辞書キー</b>。素材と音量はシーン上の音声辞書が持つ（データドリブン）。
+    /// 空文字なら鳴らさない。
+    ///
+    /// <see cref="stunAudio"/> が有効なときは、空文字でなければ Play 前に
+    /// <see cref="SEED.AudioSource.DictionaryKey"/> へ書き込む（Inspector からの差し替え用）。
+    /// 未割り当てのときは、このキーでワンショット再生へフォールバックする。
     /// </summary>
-    [SerializeField(Label = "スタンの効果音(フォールバック/上書き用パス)")]
-    private string stunSePath = "assets://mainGame/audios/stan.mp3";
-
-    /// <summary>スタン効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "スタンの音量")]
-    private float stunSeVolume = 1f;
+    [SerializeField(Label = "スタンの音（辞書キー）")]
+    private string stunSeKey = "Fishing/stun_loop";
 
     // ─── 内部状態 ─────────────────────────────────────
 
@@ -172,16 +170,16 @@ public class StunEffect : SEEDScript
         {
             if (stunAudio is { IsValid: true } audio)
             {
-                // ループ音源側: Inspector でパス差し替えが指定されていれば反映してからループ再生
-                if (!string.IsNullOrEmpty(stunSePath)) { audio.Path = stunSePath; }
-                audio.Volume = stunSeVolume;
+                // ループ音源側: Inspector でキー差し替えが指定されていれば反映してからループ再生。
+                // 辞書モードではパスも音量も辞書が決めるので、ここで Volume は触らない。
+                if (!string.IsNullOrEmpty(stunSeKey)) { audio.DictionaryKey = stunSeKey; }
                 audio.Loop = true;
                 audio.Play();
             }
-            else if (!string.IsNullOrEmpty(stunSePath))
+            else if (!string.IsNullOrEmpty(stunSeKey))
             {
                 // フォールバック: AudioSource 未割り当て時は従来どおりワンショットで鳴らす
-                SEED.Audio.Play(stunSePath, stunSeVolume);
+                SEED.Audio.PlayDict(stunSeKey);
             }
         }
     }
