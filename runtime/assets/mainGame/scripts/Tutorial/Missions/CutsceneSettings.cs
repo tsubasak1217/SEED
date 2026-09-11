@@ -29,12 +29,31 @@
 ///     この値が出るため、シーンに保存値が無くても従来どおりの動きになる。
 ///  2. それでも 0 が入ってきた場合（古い保存値・誤入力）に備え、
 ///     「大きさとして 0 以下があり得ない項目」だけ <see cref="PositiveOr"/> で
-///     既定値へ寄せる。0 が意味を持つ項目（角度・画角・高さの上乗せ）は
-///     補正せずそのまま使う。
+///     既定値へ寄せる。0 が意味を持つ項目（角度・画角・高さの上乗せ・横ずれ）は
+///     補正せずそのまま使う。列挙型（カメラ制御・出現位置の基準）は保存値が無ければ
+///     宣言順の先頭＝既定になるので、補正しない。
 /// </summary>
 public sealed class CutsceneSettings
 {
     // ─── 既定値（旧 CutsceneMission の定数をここへ集約。重複定義しない）───
+
+    /// <summary>
+    /// カメラ制御の既定値。
+    /// 通常の追従のまま画面の奥で跳ねさせる（カメラには触らない）のが既定の絵。
+    /// </summary>
+    public const CutsceneCameraMode DefaultCameraMode = CutsceneCameraMode.FollowNormal;
+
+    /// <summary>出現位置の基準の既定値（通常カメラの視界の奥へ出す）。</summary>
+    public const CutsceneSpawnAnchor DefaultSpawnAnchor = CutsceneSpawnAnchor.CameraView;
+
+    /// <summary>視界基準のとき、カメラの前方向へ何メートル先へ出すかの既定値。</summary>
+    public const float DefaultCameraViewDistance = 60f;
+
+    /// <summary>視界基準のとき、カメラの真横へ何メートルずらすかの既定値（正で画面右）。</summary>
+    public const float DefaultCameraViewLateral = 15f;
+
+    /// <summary>跳ぶ方向（画面右方向を 0 度とした水平角）の既定値。</summary>
+    public const float DefaultJumpDirectionDegrees = 0f;
 
     /// <summary>跳ね上がる高さ（メートル。水面からの頂点の高さ）の既定値。</summary>
     public const float DefaultJumpApexHeight = 14f;
@@ -82,7 +101,34 @@ public sealed class CutsceneSettings
     /// </summary>
     public const float FieldOfViewUnspecified = 0f;
 
+    // ─── 演出の組み立て（何を基準にするか）──────────────────
+
+    /// <summary>
+    /// カメラ制御。<see cref="CutsceneCameraMode.FollowNormal"/> なら演出はカメラに触らない。
+    /// </summary>
+    public CutsceneCameraMode CameraMode { get; init; } = DefaultCameraMode;
+
+    /// <summary>出現位置の基準（通常カメラの視界の奥か、目標アクタ／ウキ基準か）。</summary>
+    public CutsceneSpawnAnchor SpawnAnchor { get; init; } = DefaultSpawnAnchor;
+
     // ─── 怪獣の動き ──────────────────────────────────────────
+
+    /// <summary>
+    /// 視界基準のとき、カメラの水平前方向へ何メートル先に出すか
+    /// （<see cref="CutsceneSpawnAnchor.CameraView"/> のときだけ使う）。
+    /// </summary>
+    public float CameraViewDistance { get; init; } = DefaultCameraViewDistance;
+
+    /// <summary>
+    /// 視界基準のとき、カメラの真横へ何メートルずらすか（正で画面右・負で画面左）。
+    /// </summary>
+    public float CameraViewLateral { get; init; } = DefaultCameraViewLateral;
+
+    /// <summary>
+    /// 跳ぶ方向（度）。視界基準のとき、<b>画面右方向</b>を 0 度として水平に回した向きへ跳ぶ。
+    /// 0 で画面を左から右へ横切り、90 でカメラへ向かってきて、−90 で遠ざかる。
+    /// </summary>
+    public float JumpDirectionDegrees { get; init; } = DefaultJumpDirectionDegrees;
 
     /// <summary>跳ね上がる高さ（メートル。水面から頂点までの高さ）。</summary>
     public float JumpApexHeight { get; init; } = DefaultJumpApexHeight;
@@ -150,6 +196,13 @@ public sealed class CutsceneSettings
     /// </summary>
     public float JumpHeightAmplitude => JumpApexHeight + SubmergedDepth;
 
+    /// <summary>
+    /// この演出がカメラの主導権を握るか
+    /// （<see cref="CutsceneCameraMode.FollowNormal"/> 以外なら握る）。
+    /// 握らないときは通常の追従（CameraMove）に任せ、位置・回転・画角のどれにも触らない。
+    /// </summary>
+    public bool UsesCameraControl => CameraMode != CutsceneCameraMode.FollowNormal;
+
     /// <summary>カメラ目標アクタが設定されているか。</summary>
     public bool HasCameraTarget => CameraTarget.IsValid;
 
@@ -169,6 +222,13 @@ public sealed class CutsceneSettings
     /// <returns>そのまま演出に使える調整値。</returns>
     public static CutsceneSettings FromMission(TutorialMission data) => new()
     {
+        CameraMode  = data.cutsceneCameraMode,
+        SpawnAnchor = data.cutsceneSpawnAnchor,
+
+        CameraViewDistance   = PositiveOr(data.cutsceneCameraViewDistance, DefaultCameraViewDistance),
+        CameraViewLateral    = data.cutsceneCameraViewLateral,
+        JumpDirectionDegrees = data.cutsceneJumpDirectionDegrees,
+
         JumpApexHeight     = PositiveOr(data.cutsceneJumpApexHeight,     DefaultJumpApexHeight),
         JumpTravelDistance = PositiveOr(data.cutsceneJumpTravelDistance, DefaultJumpTravelDistance),
         SubmergedDepth     = PositiveOr(data.cutsceneSubmergedDepth,     DefaultSubmergedDepth),

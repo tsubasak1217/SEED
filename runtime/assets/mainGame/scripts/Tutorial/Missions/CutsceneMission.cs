@@ -7,19 +7,21 @@
 /// チュートリアルの締めに流す演出ミッション。
 ///
 /// 【流れ】
-///  1. 画面奥（目標アクタの位置）に怪獣アクタを生成し、海面下へ沈めておく
+///  1. 画面の奥（既定は通常カメラの視界の奥・海の上）に怪獣アクタを生成し、海面下へ沈めておく
 ///  2. 放物線を描いて跳ね上がり、着水するまでを演出する
-///  3. カメラを怪獣へ寄せて注視する（MainCamera を毎フレーム補間で動かす）
+///  3. カメラ制御が指定されていれば怪獣へ寄せて注視する（既定は通常の追従のまま触らない）
 ///  4. 着水したら怪獣を片付け、達成にする（このあとディレクタが締めの台詞を出す）
 ///
-/// 【カメラの扱い】
-/// 会話のカメラ演出（DialogueCameraDirector）と同じ流儀で、
-/// <b>目標の姿勢を毎フレーム求め、そこへ指数補間で寄る</b>。
-/// 目標は 2 通りあり、ミッションデータで切り替わる。
+/// 【カメラの扱い（3 通り。ミッションデータの「演出:カメラ制御」で決まる）】
 /// <list type="bullet">
-///   <item>既定 … 怪獣の進行方向を基準に「距離・高さ・方位角」で回り込んだ位置から怪獣を注視する</item>
-///   <item>カメラ目標アクタを指定 … そのアクタの位置・回転（＋Camera があれば画角）へ寄る</item>
+///   <item><b>FollowNormal（既定）</b> … カメラには<b>一切触らない</b>。移動中と同じ
+///         通常の追従（CameraMove）のまま、画面の奥で怪獣が跳ねる絵になる。
+///         <see cref="TutorialRules.CameraSuspended"/> も立てず、画角の指定も無効。</item>
+///   <item>Orbit … 怪獣の進行方向を基準に「距離・高さ・方位角」で回り込んだ位置から注視する</item>
+///   <item>TargetActor … カメラ目標アクタの位置・回転（＋Camera があれば画角）へ寄る
+///         （会話のカメラ演出 DialogueCameraDirector と同じ流儀）</item>
 /// </list>
+/// Orbit / TargetActor では<b>目標の姿勢を毎フレーム求め、そこへ指数補間で寄る</b>。
 /// 画角を指定した場合は演出中だけ MainCamera の視野角を上書きし、終了時に必ず元へ戻す。
 /// 姿勢そのものは終了時に戻さない（CameraMove が通常の構図へ自然に戻す）。
 ///
@@ -49,6 +51,12 @@ public sealed class CutsceneMission : MissionBase
 
     /// <summary>放物線の係数（4 * t * (1 - t) が 0〜1 の山になる）。</summary>
     private const float ParabolaScale = 4f;
+
+    /// <summary>直角（度）。カメラの前方向から真横（画面右）を作るのに使う。</summary>
+    private const float RightAngleDegrees = 90f;
+
+    /// <summary>水面の高さが取れなかったときに使う高さ（メートル）。</summary>
+    private const float DefaultWaterSurfaceY = 0f;
 
     /// <summary>ゼロ除算を避けるための微小値。</summary>
     private const float DivideEpsilon = 1e-4f;
@@ -121,13 +129,16 @@ public sealed class CutsceneMission : MissionBase
         // 以降の計算はすべてこの調整値を見る（データの読み取りはここ 1 箇所だけ）
         settings = CutsceneSettings.FromMission(ctx.Data);
 
+        // カメラは出現位置の基準（視界基準）でも使うので、位置を決める前に掴んでおく
+        ResolveCamera();
         ResolveStartPosition(ctx);
         SpawnKaiju(ctx);
-        ResolveCamera();
 
-        // 通常のカメラ追従を止める。止めないと CameraMove が LateUpdate で
-        // 毎フレーム上書きしてしまい、この演出のカメラ操作が一切見えない。
-        TutorialRules.CameraSuspended = true;
+        // 通常のカメラ追従を止めるのは、この演出がカメラを握るときだけ。
+        // 止めないと CameraMove が LateUpdate で毎フレーム上書きしてしまい、
+        // 演出のカメラ操作が一切見えない。逆に FollowNormal では止めてはいけない
+        // （通常の追従のままにするのがこのモードの目的）。
+        if (settings.UsesCameraControl) { TutorialRules.CameraSuspended = true; }
     }
 
     /// <summary>
@@ -152,8 +163,10 @@ public sealed class CutsceneMission : MissionBase
     /// <param name="ctx">周辺への窓口（未使用）。</param>
     protected override void OnEnd(MissionContext ctx)
     {
-        // カメラは必ず通常の追従へ返す【預かったものを返す唯一の出口】
-        TutorialRules.CameraSuspended = false;
+        // カメラを止めたときだけ通常の追従へ返す【預かったものを返す唯一の出口】。
+        // 無条件に false にすると、他の演出（KaijuStoryTrigger など）が
+        // 止めている最中にこのミッションが終わったときに横取りして解除してしまう。
+        if (settings.UsesCameraControl) { TutorialRules.CameraSuspended = false; }
 
         RestoreFieldOfView();
 
@@ -168,13 +181,78 @@ public sealed class CutsceneMission : MissionBase
     // ─── 内部処理: 準備 ─────────────────────────────────────
 
     /// <summary>
-    /// 演出の開始地点と進む向きを決める。
+    /// 演出の開始地点と進む向きを決める【出現位置の唯一の入口】。
+    ///
+    /// データの「演出:出現位置の基準」で 2 通りに分かれる。
+    /// 視界基準はメインカメラが要るので、掴めていなければ目標アクタ／ウキ基準へ落ちる。
+    /// </summary>
+    /// <param name="ctx">周辺への窓口。</param>
+    private void ResolveStartPosition(MissionContext ctx)
+    {
+        if (settings.SpawnAnchor == CutsceneSpawnAnchor.CameraView && TryResolveCameraViewStart(ctx)) { return; }
+
+        ResolveTargetOrFloatStart(ctx);
+    }
+
+    /// <summary>
+    /// 通常カメラの視界を基準に、開始地点と進む向きを決める
+    /// 【画面の奥で跳ねさせる構図の唯一の計算点】。
+    ///
+    /// カメラのヨー角から水平の前方向・右方向を作り、
+    /// 「前へ カメラからの距離 ＋ 横へ 横ずれ」だけ進んだ点を開始地点にする
+    /// （高さは水面から待機の深さだけ沈めた位置）。カメラの俯角は使わない。
+    /// 高さ方向にカメラのピッチを混ぜると、見上げ／見下ろしのたびに
+    /// 怪獣が水面から浮いたり沈んだりしてしまうため。
+    /// 進む向きは「画面右方向」を 0 度として、跳ぶ方向の指定ぶん水平に回した向き。
+    /// </summary>
+    /// <param name="ctx">周辺への窓口。</param>
+    /// <returns>決められたら true。メインカメラを掴めていなければ false。</returns>
+    private bool TryResolveCameraViewStart(MissionContext ctx)
+    {
+        if (cameraTransform is not { } cam || !cam.IsValid) { return false; }
+
+        // カメラのヨー角（度）。エンジンの前方向は +Z なので (sin, 0, cos) が前、
+        // そこから直角ぶん回した (cos, 0, -sin) が真横（画面右）になる。
+        float cameraYaw  = cam.Rotation.y;
+        float yawRadians = cameraYaw * SEED.Mathf.Deg2Rad;
+        var   forward    = new SEED.Vector3(SEED.Mathf.Sin(yawRadians), 0f,  SEED.Mathf.Cos(yawRadians));
+        var   right      = new SEED.Vector3(SEED.Mathf.Cos(yawRadians), 0f, -SEED.Mathf.Sin(yawRadians));
+
+        var origin = cam.Position;
+        startPosition = new SEED.Vector3(
+            origin.x + forward.x * settings.CameraViewDistance + right.x * settings.CameraViewLateral,
+            ResolveWaterSurfaceY(ctx) + settings.SubmergedOffsetY,
+            origin.z + forward.z * settings.CameraViewDistance + right.z * settings.CameraViewLateral);
+
+        // 跳ぶ向き: 画面右方向（カメラのヨー + 直角）から、指定の角度ぶんさらに回す
+        float travelYaw = (cameraYaw + RightAngleDegrees + settings.JumpDirectionDegrees) * SEED.Mathf.Deg2Rad;
+        travelDirection = new SEED.Vector3(SEED.Mathf.Sin(travelYaw), 0f, SEED.Mathf.Cos(travelYaw));
+        return true;
+    }
+
+    /// <summary>
+    /// 水面の高さ（ワールド Y）を求める。
+    /// 釣り本体があればその水面、無ければ目標アクタの高さ、どちらも無ければ既定値。
+    /// </summary>
+    /// <param name="ctx">周辺への窓口。</param>
+    /// <returns>水面の高さ（メートル）。</returns>
+    private float ResolveWaterSurfaceY(MissionContext ctx)
+    {
+        if (ctx.Controller is { } controller) { return controller.WaterSurfaceY(); }
+        if (ctx.Data.targetActor is { IsValid: true } target) { return target.Position.y; }
+
+        SEED.Debug.LogWarning($"[Mission] {ctx.Data.id}: 水面の高さが取れないので {DefaultWaterSurfaceY} m として演出します。");
+        return DefaultWaterSurfaceY;
+    }
+
+    /// <summary>
+    /// 目標アクタ（無ければウキの沖側）を基準に開始地点と進む向きを決める（従来の決め方）。
     ///
     /// 目標アクタがあればその位置と向き、無ければウキの沖側を使う。
     /// どちらも取れなければ原点から手前向きへ跳ばす（絵にはならないが破綻はしない）。
     /// </summary>
     /// <param name="ctx">周辺への窓口。</param>
-    private void ResolveStartPosition(MissionContext ctx)
+    private void ResolveTargetOrFloatStart(MissionContext ctx)
     {
         if (ctx.Data.targetActor is { IsValid: true } target)
         {
@@ -240,6 +318,9 @@ public sealed class CutsceneMission : MissionBase
 
         desiredFieldOfView = ResolveDesiredFieldOfView();
 
+        // 画角を預かる前に、この演出がカメラを握るかどうかで分かれる
+        // （FollowNormal では ResolveDesiredFieldOfView が必ず「指定なし」を返す）
+
         // 画角を動かすときだけ元の値を預かる（戻す必要が無いなら預からない）
         if (desiredFieldOfView > CutsceneSettings.FieldOfViewUnspecified && cameraComponent is { } cam)
         {
@@ -257,9 +338,15 @@ public sealed class CutsceneMission : MissionBase
     /// <returns>演出中に使う画角（度）。</returns>
     private float ResolveDesiredFieldOfView()
     {
+        // 通常の追従のままにするモードでは画角にも触らない。
+        // CameraMove.UpdateFov が毎フレーム画角を書いているので、ここで書くと
+        // 1 フレームごとに奪い合って画角が震える（どちらの値にも落ち着かない）。
+        if (!settings.UsesCameraControl) { return CutsceneSettings.FieldOfViewUnspecified; }
+
         // 目標アクタの Camera が読めて、かつ実在する画角（正の度数）ならそれを使う。
         // 0 のときは「読めなかった」と同じ扱いにしてデータの指定へ落とす。
-        if (settings.HasCameraTarget
+        if (settings.CameraMode == CutsceneCameraMode.TargetActor
+            && settings.HasCameraTarget
             && settings.CameraTarget.GameObject.GetComponent<SEED.Camera>() is { } targetCam
             && targetCam.IsValid
             && targetCam.FieldOfView > CutsceneSettings.FieldOfViewUnspecified)
@@ -322,14 +409,23 @@ public sealed class CutsceneMission : MissionBase
     /// <param name="unscaledDelta">前フレームからの実時間（秒）。</param>
     private void ApplyCamera(SEED.Vector3 kaijuPosition, float unscaledDelta)
     {
+        // 通常の追従のままにするモードでは、位置・回転・画角のどれにも触らない
+        // （CameraMove が握ったままなので、ここで書くと毎フレーム奪い合いになる）
+        if (!settings.UsesCameraControl) { return; }
+
         if (cameraTransform is not { } cam || !cam.IsValid) { return; }
 
         float blend = ExponentialBlend(settings.CameraLerpRate, unscaledDelta);
 
         ApplyFieldOfView(blend);
 
-        // カメラ目標アクタがあれば構図の計算はせず、そのアクタの姿勢へ寄る
-        if (settings.HasCameraTarget) { ApplyCameraTargetPose(cam, blend); return; }
+        // カメラ目標アクタ指定なら構図の計算はせず、そのアクタの姿勢へ寄る。
+        // 目標が未設定・無効なら回り込みの構図へ落とす（カメラが固まるより絵になる）。
+        if (settings.CameraMode == CutsceneCameraMode.TargetActor && settings.HasCameraTarget)
+        {
+            ApplyCameraTargetPose(cam, blend);
+            return;
+        }
 
         ApplyCameraOrbitPose(cam, kaijuPosition, blend);
     }

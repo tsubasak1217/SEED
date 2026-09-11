@@ -22,17 +22,21 @@ using SEEDEditor.Scripting;
 /// （TextArea 属性はリストの要素に効かず、複数行の台詞が書けなくなる）。
 ///
 /// 【締め演出(Cutscene)の調整】
-/// 種類が Cutscene のミッションでは、怪獣の跳ね方とカメラの構図を「演出:〜」の
-/// 各項目で調整できる（既定値のままなら従来どおりの演出になる）。
+/// 種類が Cutscene のミッションでは、怪獣の跳ね方とカメラの扱いを「演出:〜」の
+/// 各項目で調整できる。<b>既定は「カメラは通常の追従のまま、画面の奥（海の上・
+/// 少し右寄り）で怪獣が跳ぶ」</b>形になる。
 /// <list type="bullet">
+///   <item>カメラ制御 … FollowNormal（既定・カメラに触らない）/ Orbit（距離・高さ・
+///         方位角で回り込む）/ TargetActor（カメラ目標アクタへ寄る）</item>
+///   <item>出現位置の基準 … CameraView（既定・通常カメラの視界の奥。カメラからの距離／
+///         横ずれ／跳ぶ方向で置く）/ TargetOrFloat（目標アクタ、無ければウキの沖側）</item>
 ///   <item>怪獣の動き … 跳ねる高さ / 助走の水平距離 / 待機の深さ / 向きの補正 / 着水までの回転量</item>
-///   <item>カメラ …… 距離 / 高さ / 方位角（0＝正面・90＝真横・180＝背後）/ 注視点の高さ /
-///                    補間の速さ / 画角（0 で変更しない）</item>
-///   <item>カメラ目標アクタ … 指定するとカメラの構図計算をやめ、そのアクタの
-///         位置・回転（＋Camera があれば画角）へ寄る</item>
+///   <item>カメラ（制御が FollowNormal 以外のときだけ有効）… 距離 / 高さ /
+///         方位角（0＝正面・90＝真横・180＝背後）/ 注視点の高さ / 補間の速さ /
+///         画角（0 で変更しない）/ カメラ目標アクタ</item>
 /// </list>
-/// 演出の秒数は「数値パラメータ」、怪獣の .actor は「文字列パラメータ」、
-/// 跳ねる位置の基準は「目標アクタ」で指定する（従来どおり）。
+/// 演出の秒数は「数値パラメータ」、怪獣の .actor は「文字列パラメータ」で指定する
+/// （従来どおり）。「目標アクタ」は出現位置の基準が TargetOrFloat のときの跳ねる位置になる。
 /// 値の読み出しと既定値の補正は <see cref="CutsceneSettings"/> が一手に引き受ける。
 ///
 /// 【使い方（シーン側）】
@@ -326,6 +330,45 @@ public struct TutorialMission
     // 既定値は下のフィールド初期化子が持つ（＝インスペクタにも実行時にもこの値が出る）。
     // 加えて CutsceneSettings 側で「0 以下なら既定値」の補正も掛かるため、
     // 保存値が無いミッションでも従来どおりの演出になる。
+
+    /// <summary>
+    /// 【Cutscene】カメラ制御（誰がカメラを動かすか）。
+    /// 既定の <see cref="CutsceneCameraMode.FollowNormal"/> では演出はカメラに一切触らず、
+    /// 移動中と同じ通常の追従（CameraMove）のまま画面の奥で怪獣が跳ねる。
+    /// 「演出:カメラ距離/高さ/方位角/注視点/補間の速さ/画角/カメラ目標アクタ」は
+    /// この項目が FollowNormal 以外のときだけ効く。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラ制御", Tooltip = "FollowNormal=通常の追従のまま(カメラに触らない) / Orbit=距離・高さ・方位角で回り込む / TargetActor=カメラ目標アクタへ寄る")]
+    public CutsceneCameraMode cutsceneCameraMode = CutsceneSettings.DefaultCameraMode;
+
+    /// <summary>
+    /// 【Cutscene】出現位置の基準（怪獣をどこへ出すか）。
+    /// 既定の <see cref="CutsceneSpawnAnchor.CameraView"/> は通常カメラの視界の奥（海の上）へ出す。
+    /// <see cref="CutsceneSpawnAnchor.TargetOrFloat"/> は目標アクタ、無ければウキの沖側を使う。
+    /// </summary>
+    [SerializeField(Label = "演出:出現位置の基準", Tooltip = "CameraView=通常カメラの視界の奥へ出す / TargetOrFloat=目標アクタ、無ければウキの沖側")]
+    public CutsceneSpawnAnchor cutsceneSpawnAnchor = CutsceneSettings.DefaultSpawnAnchor;
+
+    /// <summary>
+    /// 【Cutscene】視界基準のとき、カメラの水平前方向へ何メートル先に出すか。
+    /// 0 以下なら <see cref="CutsceneSettings.DefaultCameraViewDistance"/> が使われる。
+    /// </summary>
+    [SerializeField(Label = "演出:カメラからの距離(m)", Tooltip = "出現位置の基準が CameraView のとき、カメラの前方向へ何 m 先に出すか。0 以下で既定値")]
+    public float cutsceneCameraViewDistance = CutsceneSettings.DefaultCameraViewDistance;
+
+    /// <summary>
+    /// 【Cutscene】視界基準のとき、カメラの真横へ何メートルずらすか（正で画面右・負で画面左）。
+    /// 0 で画面中央。
+    /// </summary>
+    [SerializeField(Label = "演出:横ずれ(m)", Tooltip = "出現位置の基準が CameraView のとき、カメラの真横へ何 m ずらすか。正で画面右・負で画面左")]
+    public float cutsceneCameraViewLateral = CutsceneSettings.DefaultCameraViewLateral;
+
+    /// <summary>
+    /// 【Cutscene】跳ぶ方向（度）。視界基準のとき、<b>画面右方向</b>を 0 度として水平に回した向きへ跳ぶ。
+    /// 0 で画面を左から右へ横切り、90 でカメラへ向かってきて、−90 で遠ざかる。
+    /// </summary>
+    [SerializeField(Label = "演出:跳ぶ方向(度)", Tooltip = "0=画面左から右へ横切る / 90=カメラへ向かってくる / -90=遠ざかる（CameraView のときだけ有効）")]
+    public float cutsceneJumpDirectionDegrees = CutsceneSettings.DefaultJumpDirectionDegrees;
 
     /// <summary>
     /// 【Cutscene】怪獣が跳ね上がる高さ（メートル。水面から頂点まで）。
