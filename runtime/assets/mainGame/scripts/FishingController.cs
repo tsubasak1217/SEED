@@ -1370,6 +1370,36 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "更新を止めるレベル差")]
     private int radarSkipLevelGap = 3;
 
+    // ─── 魚の補充（レーダーが空のときだけ 1 匹連れてくる）─────────
+    // 魚は海全体に散らばって回遊しているので、投げた先のレーダー射程内に
+    // たまたま 1 匹も居ないことがある。そのままでは「何も起きない海を巻くだけ」に
+    // なるので、そのときだけ 1 匹を少し遠くへ用意する（用意するのは FishManager）。
+
+    /// <summary>
+    /// レーダーの射程内に「食いついてくれる魚」が 1 匹も居ないとき、
+    /// 1 匹だけ補充するか【補充機能の on/off】。
+    /// </summary>
+    [Header("魚の補充"), SerializeField(Label = "レーダーが空なら補充する")]
+    private bool fishRestockEnabled = true;
+
+    /// <summary>
+    /// 補充のクールタイム（秒）。1 度補充したら、この秒数が経つまで次の補充をしない
+    /// （魚が寄ってくる時間を与えないと、海が魚だらけになるだけになるため）。
+    /// </summary>
+    [SerializeField(Label = "補充のクールタイム(秒)")]
+    private float fishRestockCooldownSeconds = 20f;
+
+    /// <summary>
+    /// 補充する位置の、レーダー射程に対する距離の比率（0〜1）。
+    ///
+    /// 「そのままでは食いつかない程度に少し遠く」＝ 魚の餌感知距離
+    /// （<see cref="Fish.BaitSenseDistance"/> ＋ <see cref="BaitInfluenceRadius"/>）より外、
+    /// レーダー射程より内、にしたい。既定 0.85（射程 25m なら 21m 前後）は
+    /// 感知距離（既定 7.5 ＋ 2 ＝ 9.5m）の倍以上あるので、湧いた瞬間に食いつくことはない。
+    /// </summary>
+    [SerializeField(Label = "補充位置のレーダー射程比率")]
+    private float fishRestockRangeRatio = 0.85f;
+
     // ─── 怪獣の強制呼び出し（わらしべの最終段を確定させる）─────────
     // 通常のわらしべ連鎖は「格上が近くに居たら寄ってくる」確率的な仕組みなので、
     // 最後の 1 段（怪獣）が来ないまま終わり得る。ここで「このレベルまで来たら
@@ -1557,6 +1587,23 @@ public class FishingController : SEEDScript
     /// 新しく魚を掛けた瞬間と、逃げられた（<see cref="ReleaseHook"/>）瞬間に空になる。
     /// </summary>
     private readonly System.Collections.Generic.List<ChainCatchEntry> chainCatchHistory = new();
+
+    /// <summary>
+    /// <b>いまのやり取りに適用する連鎖回数の上限</b>（<see cref="TutorialRules.NoChainLimit"/> で無制限）
+    /// 【1 回のやり取りに上限を持ち越す唯一の置き場】。
+    ///
+    /// 【なぜミッションの上書きだけでは足りないのか】
+    /// チュートリアルの上限（<see cref="TutorialRules.ChainLimit"/>）は<b>ミッションの寿命</b>しか
+    /// 持たない。ところが「魚で魚を釣ろう」で 1 回連鎖したあとも、プレイヤーは<b>同じ魚を掛けたまま</b>
+    /// 次のミッション（漂流物・釣り上げ）へ進む。次のミッションの上書き（chainDisabled=false）が
+    /// 当たった瞬間に連鎖が解禁されてしまい、「1 回だけ体験させる」はずが 2 段目・3 段目まで進む。
+    /// そこで、上限が掛かっている間に連鎖を試みた時点でその値をここへ控え、
+    /// <b>やり取りが終わる（新しく掛ける・逃げられる）まで</b>守り続ける。
+    ///
+    /// 数える回数は <see cref="chainCatchHistory"/> の件数（＝このやり取りで乗り換えた回数）で、
+    /// リセットも履歴と同時に行う（<see cref="ResetChainProgress"/>）。
+    /// </summary>
+    private int chainLimitForCurrentFight = TutorialRules.NoChainLimit;
 
     // ─── アタリ／合わせの内部状態 ─────────────────────────────
 
@@ -1921,7 +1968,7 @@ public class FishingController : SEEDScript
 
         // 新しい 1 匹が掛かった ＝ 連鎖はここから数え直す【履歴を捨てる場所 その2】。
         // 前回の釣り上げ・糸切れで消し損ねた控えが残っていても、ここで必ず断ち切れる。
-        chainCatchHistory.Clear();
+        ResetChainProgress();
 
         // ヒット中はマウスの振りを読まないのでカーソルロックを引き直す（解除される）。
         UpdateCursorLock();
@@ -2283,6 +2330,16 @@ public class FishingController : SEEDScript
         // （巻き上げの練習中に横取りされると、手順が飛んで説明と噛み合わなくなる）。
         if (TutorialRules.Active && TutorialRules.ChainDisabled) { return false; }
 
+        // 連鎖回数の上限（チュートリアル）を<b>やり取り単位</b>でも守る【上限の二重化】。
+        // ミッションが切り替わって上書き（ChainDisabled）が外れても、同じ魚を掛けている
+        // 限りは上限を持ち越す（<see cref="chainLimitForCurrentFight"/> の説明を参照）。
+        LatchTutorialChainLimit();
+        if (chainLimitForCurrentFight > TutorialRules.NoChainLimit
+            && chainCatchHistory.Count >= chainLimitForCurrentFight)
+        {
+            return false;
+        }
+
         if (State != FishState.Hooked) { return false; }
         if (hookedFish is not { } prey) { return false; }
         if (ReferenceEquals(eater, prey)) { return false; }         // 自分自身は食えない
@@ -2308,6 +2365,38 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
+    /// チュートリアルが出している連鎖回数の上限を、いまのやり取りの上限として控える
+    /// 【やり取り単位の上限を控える唯一の場所】。
+    ///
+    /// 上書きが出ていない（<see cref="TutorialRules.Active"/> が false・上限が
+    /// <see cref="TutorialRules.NoChainLimit"/>）ときは<b>控えを消さない</b>。
+    /// ミッションが切り替わって上書きが外れても、掛けている魚が変わるまでは
+    /// 直前に受け取った上限を守り続けるため（上限は「体験させる回数」であって
+    /// 「ミッションが表示されている間だけの制限」ではない）。
+    /// 控えは <see cref="ResetChainProgress"/>（＝新しく魚を掛けた・逃げられた）で消える。
+    /// </summary>
+    private void LatchTutorialChainLimit()
+    {
+        if (!TutorialRules.Active) { return; }
+
+        int limit = TutorialRules.ChainLimit;
+        if (limit <= TutorialRules.NoChainLimit) { return; }
+
+        chainLimitForCurrentFight = limit;
+    }
+
+    /// <summary>
+    /// このやり取りの連鎖の進み具合を白紙に戻す【連鎖状態のリセットの唯一の出口】。
+    /// 履歴（＝乗り換えた回数）と、持ち越していた上限を必ず<b>同時に</b>消す
+    /// （片方だけ残すと「1 匹目から上限に達している」といった食い違いになる）。
+    /// </summary>
+    private void ResetChainProgress()
+    {
+        chainCatchHistory.Clear();
+        chainLimitForCurrentFight = TutorialRules.NoChainLimit;
+    }
+
+    /// <summary>
     /// 掛かっている魚を逃がす（外部・内部の共通出口）。掛かっていなければ何もしない。
     /// 状態は変えない（呼び出し側が Idle / Aiming などへ遷移させる）。
     /// </summary>
@@ -2320,7 +2409,7 @@ public class FishingController : SEEDScript
 
         // 釣り上げずに終わった（糸切れ・キャンセル・逃走）ので、
         // 連鎖の途中で食べさせた魚も成果にはならない【履歴を捨てる場所 その1】。
-        chainCatchHistory.Clear();
+        ResetChainProgress();
     }
 
     /// <summary>
@@ -2399,6 +2488,10 @@ public class FishingController : SEEDScript
 
         // 魚レーダーも釣り状態に依らず毎フレーム引き直す（早期 return の経路でも必ず消える）。
         UpdateFishRadar(ctx.DeltaTime);
+
+        // レーダーが空（食いついてくれる魚が 1 匹も居ない）なら 1 匹だけ補充する。
+        // レーダーの更新と同じ射程・同じ中心（ウキ）を見るので、必ずこの直後で行う。
+        UpdateFishRestock(ctx.DeltaTime);
 
         // 怪獣の強制呼び出しも釣り状態に依らず毎フレーム進める。
         // KaijuLure 側が「ヒットが続いているか」を見て自分で解除するので、
@@ -3342,6 +3435,139 @@ public class FishingController : SEEDScript
 
         // プレイヤーの正面を上にする（キャスト方向と同じ「正面のヨー角」を使う）
         r.UpdateRadar(center, CastYawDegrees() ?? 0f, radarEntries);
+    }
+
+    // ─── 魚の補充 ─────────────────────────────────────────────
+
+    /// <summary>1 回転（ラジアン）。補充位置の方位を抽選するのに使う。</summary>
+    private const float FullTurnRadians = 6.2831853f;
+
+    /// <summary>割合（0〜1）の下限。射程比率を丸めるのに使う。</summary>
+    private const float RatioMin = 0f;
+
+    /// <summary>割合（0〜1）の上限。射程比率を丸めるのに使う。</summary>
+    private const float RatioMax = 1f;
+
+    /// <summary>次に魚を補充してよくなるまでの残り秒数（0 以下で補充できる）。</summary>
+    private float fishRestockCooldownRemaining = 0f;
+
+    /// <summary>
+    /// レーダーの射程内に「食いついてくれる魚」が 1 匹も居なければ 1 匹だけ補充する
+    /// 【魚の補充の唯一の判断点】。
+    ///
+    /// [補充する条件]（すべて満たしたときだけ）
+    /// <code>
+    /// ・機能が有効（fishRestockEnabled）でクールタイムが明けている
+    /// ・ヒット前（ウキが着水中 BaitActive・掛かっていない）
+    ///   … ヒット中の「乗り換えの相手」はわらしべ側の仕組みが用意するので対象外
+    /// ・チュートリアルがアタリを止めていない（TutorialRules.BiteSuppressed が false）
+    /// ・レーダー射程内に、実体の魚も「近づけば実体化される仮想個体」も 1 匹も居ない
+    /// </code>
+    /// 位置は「ウキから見てランダムな方位・レーダー射程 × fishRestockRangeRatio の距離」。
+    /// 実際にどの個体を使うかは <see cref="FishManager.TryMaterializeOneNear"/> が決める
+    /// （チュートリアルのレベル制限・魚種の許可リストもそちらの既存規則を通る）。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数（クールタイムの消化に使う）。</param>
+    private void UpdateFishRestock(float deltaTime)
+    {
+        if (!fishRestockEnabled) { return; }
+
+        // クールタイムは釣りの状態に関わらず消化する
+        // （明けた瞬間に条件が揃っていれば、待たずにその場で補充できる）。
+        if (fishRestockCooldownRemaining > 0f)
+        {
+            fishRestockCooldownRemaining -= deltaTime;
+            return;
+        }
+
+        // ヒット中は対象外（わらしべ連鎖の相手は別の仕組みが用意する）。
+        // ウキが水上に無い間（待機・狙い・キャスト中・釣り上げ演出）も補充しない。
+        if (IsHooked || !BaitActive) { return; }
+
+        // チュートリアルが説明を読ませている間は補充しない
+        // （読んでいる裏で海の様子が変わると、説明と画面が噛み合わなくなる）。
+        if (TutorialRules.Active && TutorialRules.BiteSuppressed) { return; }
+
+        if (radar is not { } r) { return; }                       // 射程の出どころ
+        if (uki is not { IsValid: true } floatTf) { return; }
+        if (FishManager.Current is not { } manager) { return; }
+
+        float range = SEED.Mathf.Max(r.RangeMeters, 0f);
+        if (range <= 0f) { return; }
+
+        var center = floatTf.Position;
+        if (HasBiteCandidateNear(manager, center, range * range)) { return; }
+
+        // 出現位置: ウキから見てランダムな方位・レーダー射程 × 比率 の距離（水面上）
+        float angle    = SEED.Random.Range(0f, FullTurnRadians);
+        float distance = range * SEED.Mathf.Clamped(fishRestockRangeRatio, RatioMin, RatioMax);
+        var spawnAt = new SEED.Vector3(
+            center.x + SEED.Mathf.Sin(angle) * distance,
+            WaterSurfaceY(),
+            center.z + SEED.Mathf.Cos(angle) * distance);
+
+        // 成否に関わらずクールタイムを消費する。失敗する状況（動かせる個体が無い等）は
+        // 次のフレームでも同じなので、毎フレーム走査をやり直しても無駄になるだけ。
+        fishRestockCooldownRemaining = SEED.Mathf.Max(fishRestockCooldownSeconds, 0f);
+
+        bool restocked = manager.TryMaterializeOneNear(spawnAt);
+        SEED.Debug.Log($"[Fishing] 魚の補充: {(restocked ? "成功" : "失敗")}"
+            + $"（レーダー射程 {range:F1}m / ウキから {distance:F1}m / 次は {fishRestockCooldownRemaining:F0} 秒後）");
+    }
+
+    /// <summary>
+    /// 指定範囲に「食いついてくれる魚」が居るか
+    /// 【補充するかどうかを決める唯一の判定】。
+    ///
+    /// 数えるのは次の 2 種類（レーダーに点が出る個体と同じ条件にしてある）。
+    /// <list type="number">
+    ///   <item>実体化していて範囲内に居る魚（<see cref="Fish.All"/>）</item>
+    ///   <item>範囲内に居て、近づけば実体化される仮想個体
+    ///         （<see cref="FishManager.CanMaterializeNow"/>）。
+    ///         レベル帯の外の個体は近づいても実体化されない＝食いつかないので数えない。</item>
+    /// </list>
+    /// 1 匹でも見つかった時点で打ち切る（総数は要らない）。
+    /// </summary>
+    /// <param name="manager">仮想個体の台帳を持つ魚マネージャ。</param>
+    /// <param name="center">判定の中心（ウキの位置）。</param>
+    /// <param name="sqrRange">判定半径の 2 乗（レーダー射程の 2 乗）。</param>
+    /// <returns>1 匹でも居れば true。</returns>
+    private static bool HasBiteCandidateNear(FishManager manager, SEED.Vector3 center, float sqrRange)
+    {
+        // 1) 実体の魚（居れば仮想個体を見るまでもない）
+        foreach (var fish in Fish.All)
+        {
+            if (fish.Transform is not { IsValid: true } fishTf) { continue; }
+            if (SqrDistanceXZ(center, fishTf.Position) <= sqrRange) { return true; }
+        }
+
+        // 2) 仮想の魚（近づけば実体化される個体だけ）
+        for (int level = 0; level < manager.PooledLevelCount; level++)
+        {
+            var records = manager.PooledFishOf(level);
+            for (int i = 0; i < records.Count; i++)
+            {
+                var record = records[i];
+                if (record.Materialized) { continue; }
+
+                float sqrDistance = SqrDistanceXZ(center, record.Position);
+                if (sqrDistance > sqrRange) { continue; }
+                if (manager.CanMaterializeNow(record, sqrDistance)) { return true; }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>2 点間の XZ 平面上の距離の 2 乗（比較専用。平方根を省く）。</summary>
+    /// <param name="a">1 点目。</param>
+    /// <param name="b">2 点目。</param>
+    /// <returns>水平距離の 2 乗。</returns>
+    private static float SqrDistanceXZ(SEED.Vector3 a, SEED.Vector3 b)
+    {
+        float dx = b.x - a.x;
+        float dz = b.z - a.z;
+        return dx * dx + dz * dz;
     }
 
     /// <summary>
@@ -4478,7 +4704,7 @@ public class FishingController : SEEDScript
         // 4. 本物の釣り上げと同じ入口へ入る。
         //    hookedFish を埋めてから呼ぶのが「釣り上げ成立」の条件（FinishReeling 参照）。
         //    連鎖を経ていない 1 匹なので、履歴は空にしてから入る。
-        chainCatchHistory.Clear();
+        ResetChainProgress();
         hookedFish = target;
         SEED.Debug.Log($"[Fishing] catch_test: {target.DisplayName} で釣り上げ演出を起こす");
         FinishReeling();

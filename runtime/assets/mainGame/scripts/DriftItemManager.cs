@@ -2,6 +2,28 @@
 using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
+/// 漂流物の<b>種類</b>の決め方【出現ルールの唯一の列挙】。
+///
+/// 出現位置の抽選はこの設定に関係なく常にランダムで、
+/// ここが決めるのは「次に出すのがどの種類か」だけである。
+/// </summary>
+public enum DriftSpawnRule
+{
+    /// <summary>
+    /// 糸 HP に応じた重み付き抽選（既定）。
+    /// 糸が減っているほど糸回復が、残っているほど魚回復が出やすくなる。
+    /// ひるませ（スタン）は糸 HP に関係なく一定割合で出る。
+    /// </summary>
+    LineHpWeighted,
+
+    /// <summary>
+    /// 出現順（<see cref="DriftItemManager"/> の「出現順」）を先頭から 1 個ずつ巡回する固定順。
+    /// 「ひるませ 2 回につき回復 1 回」のような比率をデータの並びだけで作りたいときに使う。
+    /// </summary>
+    FixedOrder,
+}
+
+/// <summary>
 /// 漂流物（<see cref="DriftItem"/>）の<b>出現と一括片付けだけ</b>を司るスクリプト
 /// 【漂流物の生成の唯一の入口】。
 ///
@@ -22,7 +44,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///   位置 = 「ウキから竿先の方向へ shoreShiftMeters だけ寄せた点」を中心とした
 ///         spawnRadiusMin〜spawnRadiusMax の円環内のランダムな一点（水面上）
 ///         ただし竿先（＝岸側）から spawnRadiusMin より近い点は捨てて引き直す
-///   種類 = spawnOrder（出現順）を先頭から 1 個ずつ順に巡回（ランダムなのは位置だけ）
+///   種類 = 「出現の決め方」に従う（既定: 糸 HP 連動の重み付き抽選。
+///          FixedOrder なら spawnOrder を先頭から 1 個ずつ巡回）
 /// ヒットしていないあいだは、残っている漂流物をすべて消す
 /// </code>
 ///
@@ -47,6 +70,24 @@ public class DriftItemManager : SEEDScript
 
     /// <summary>アセット仮想パスの接頭辞。prefab パスに付いていなければ補う。</summary>
     private const string AssetSchemePrefix = "assets://";
+
+    /// <summary>割合・重みの下限（0）。抽選の各値をここから上へ丸める。</summary>
+    private const float RatioMin = 0f;
+
+    /// <summary>割合の上限（1 ＝ 100%）。糸 HP（0〜1）の上限も兼ねる。</summary>
+    private const float RatioMax = 1f;
+
+    /// <summary>
+    /// 糸 HP を読めない（＝ヒットしていない）ことを表す値。
+    /// 0〜1 に収まらない負値なので、正規の糸 HP と取り違えることがない。
+    /// </summary>
+    private const float NoLineHp = -1f;
+
+    /// <summary>糸 HP を読めないときに糸回復・魚回復へ与える等しい重み（＝ 0.5 / 0.5 になる）。</summary>
+    private const float EqualRecoverWeight = 1f;
+
+    /// <summary>0〜1 の割合をログへ「%」で出すときの倍率。</summary>
+    private const float PercentScale = 100f;
 
     // ─── prefab（データドリブン: 種類を増やすときはここへ足す）──────────
 
@@ -92,6 +133,35 @@ public class DriftItemManager : SEEDScript
     /// </summary>
     [SerializeField(Label = "岸側へのずらし(m)")]
     private float shoreShiftMeters = 4.0f;
+
+    /// <summary>
+    /// 出現する種類の決め方【種類決定の分岐の唯一のデータ】。
+    ///
+    /// <see cref="DriftSpawnRule.LineHpWeighted"/>（既定）は糸 HP に連動した重み付き抽選、
+    /// <see cref="DriftSpawnRule.FixedOrder"/> は「出現順」の固定巡回になる。
+    /// </summary>
+    [Header("出現の決め方"), SerializeField(Label = "出現の決め方")]
+    private DriftSpawnRule spawnRule = DriftSpawnRule.LineHpWeighted;
+
+    /// <summary>
+    /// 糸 HP 連動の抽選で「ひるませ」が出る割合（0〜1）【ひるませの固定確率】。
+    ///
+    /// ひるませは糸 HP と無関係に一定割合で出したいので、まずこのぶんを取り置き、
+    /// <b>残り（1 − この値）</b>を糸回復と魚回復で分け合う。
+    /// </summary>
+    [SerializeField(Label = "ひるみの割合")]
+    private float stunRatio = 0.34f;
+
+    /// <summary>
+    /// 糸回復・魚回復の重みへ一律に足す最小重み【片方が 0% になるのを防ぐ唯一の値】。
+    ///
+    /// 重みは「糸回復 = 1 − 糸HP」「魚回復 = 糸HP」なので、糸 HP が満タン（1.0）だと
+    /// 糸回復の重みが 0 になり<b>二度と出なくなる</b>。両方へこの値を足しておくと、
+    /// 満タンでも糸回復が「この値 ÷ (1 + この値×2)」相当の割合で出る
+    /// （既定 0.15 なら残り枠の約 11.5%）。
+    /// </summary>
+    [SerializeField(Label = "回復の最小重み")]
+    private float minRecoverWeight = 0.15f;
 
     /// <summary>
     /// 出現する種類の<b>順番</b>【種類決定の唯一のデータ】。
@@ -358,8 +428,83 @@ public class DriftItemManager : SEEDScript
     };
 
     /// <summary>
+    /// 次に出す prefab のパスを 1 つ返す【種類決定の唯一の入口】。
+    /// 決め方（<see cref="spawnRule"/>）で実装を切り替えるだけで、
+    /// 実際の抽選・巡回はそれぞれの実装が持つ。
+    /// </summary>
+    /// <returns>生成する prefab のパス（出せる種類が 1 つも無ければ空文字）。</returns>
+    private string PickPrefabPath() => spawnRule switch
+    {
+        DriftSpawnRule.FixedOrder => PickPrefabPathInOrder(),
+        _                         => PickPrefabPathByLineHp(),
+    };
+
+    /// <summary>
+    /// 糸 HP に応じた重み付き抽選で prefab のパスを 1 つ返す
+    /// 【糸 HP 連動の抽選の唯一の実装】。
+    ///
+    /// <code>
+    /// ひるませ = stunRatio（糸 HP と無関係の固定確率）
+    /// 残り枠   = 1 − stunRatio  を次の重みで分ける
+    ///   糸回復の重み = (1 − 糸HP) + minRecoverWeight   ← 糸が減っているほど大きい
+    ///   魚回復の重み = 糸HP      + minRecoverWeight   ← 糸が残っているほど大きい
+    /// ヒット外（糸 HP が無い）は 0.5 / 0.5
+    /// </code>
+    /// 重みの合計は必ず 1 以上になる（0 除算は起きない）。
+    /// </summary>
+    /// <returns>生成する prefab のパス（prefab パス未設定なら空文字）。</returns>
+    private string PickPrefabPathByLineHp()
+    {
+        float line01    = CurrentLine01();
+        float stun      = SEED.Mathf.Clamped(stunRatio, RatioMin, RatioMax);
+        float minWeight = SEED.Mathf.Max(minRecoverWeight, RatioMin);
+        bool  hasLine   = line01 >= RatioMin;
+
+        // 糸 HP が読めないヒット外では、回復 2 種を等しい重み（＝ 0.5 / 0.5）にする
+        float lineWeight = hasLine ? (RatioMax - line01) + minWeight : EqualRecoverWeight;
+        float fishWeight = hasLine ? line01 + minWeight             : EqualRecoverWeight;
+
+        float totalWeight  = lineWeight + fishWeight;
+        float recoverRatio = RatioMax - stun;
+        float lineChance   = recoverRatio * lineWeight / totalWeight;
+        float fishChance   = recoverRatio * fishWeight / totalWeight;
+
+        // 0〜1 の一様乱数を [ひるませ][糸回復][魚回復] の 3 区間へ割り当てる
+        float roll = SEED.Random.Range(RatioMin, RatioMax);
+        string kind = roll < stun                ? DriftItem.KindStun
+                    : roll < stun + lineChance   ? DriftItem.KindLineRecover
+                    :                              DriftItem.KindFishRecover;
+
+        string lineText = hasLine ? $"{line01 * PercentScale:F0}%" : "なし";
+        SEED.Debug.Log($"[DriftItemManager] 抽選: {kind}（糸HP {lineText} → ひるみ {stun * PercentScale:F0}%"
+            + $" / 糸回復 {lineChance * PercentScale:F0}% / 魚回復 {fishChance * PercentScale:F0}%）");
+
+        string path = PrefabPathOf(kind);
+        if (string.IsNullOrEmpty(path))
+        {
+            SEED.Debug.LogWarning($"[DriftItemManager] 漂流物「{kind}」の prefab パスが未設定です（今回は生成しません）。");
+        }
+        return path;
+    }
+
+    /// <summary>
+    /// いまのやり取りの糸 HP（0〜1）を読む【糸 HP を読む唯一の場所】。
+    ///
+    /// ヒットしていない（＝糸 HP という概念が無い）ときは <see cref="NoLineHp"/> を返す。
+    /// <see cref="FishingFight.Line01"/> は<b>やり取りが終わっても最後の値を保持する</b>ので、
+    /// 「掛かっているか」（<see cref="FishingController.IsHooked"/>）で必ず門を作ること。
+    /// </summary>
+    /// <returns>糸 HP（0〜1）。ヒットしていなければ <see cref="NoLineHp"/>。</returns>
+    private static float CurrentLine01()
+    {
+        if (FishingController.Current is not { IsHooked: true } controller) { return NoLineHp; }
+        if (controller.Fight is not { } fight) { return NoLineHp; }
+        return SEED.Mathf.Clamped(fight.Line01, RatioMin, RatioMax);
+    }
+
+    /// <summary>
     /// <see cref="spawnOrder"/> を先頭から順に巡回して、次に出す prefab のパスを 1 つ返す
-    /// 【種類決定の唯一の実装】。
+    /// 【固定順の巡回の唯一の実装】。
     ///
     /// 呼ぶたびに添字が 1 つ進み、末尾まで行ったら先頭へ戻る。
     /// 未知の種類名や prefab パス未設定の要素は警告を出して読み飛ばし、次の要素を試す。
@@ -367,7 +512,7 @@ public class DriftItemManager : SEEDScript
     /// 試行回数を配列 1 周ぶんで必ず打ち切るので、全要素が不正でも無限ループにはならない。
     /// </summary>
     /// <returns>生成する prefab のパス（出せる種類が 1 つも無ければ空文字）。</returns>
-    private string PickPrefabPath()
+    private string PickPrefabPathInOrder()
     {
         var order = spawnOrder;
         int count = order is null ? 0 : order.Length;

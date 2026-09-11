@@ -1164,6 +1164,205 @@ public class FishManager : SEEDScript
         return false;
     }
 
+    // ─── 補充（レーダーが空のときに 1 匹だけ連れてくる）─────────
+
+    /// <summary>
+    /// 指定地点へ魚を<b>1 匹だけ</b>実体化する【レーダー補充の唯一の入口】。
+    ///
+    /// 【何のためにあるか】
+    /// ウキの周り（レーダーの射程）に「食いついてくれる魚」が 1 匹も居ないと、
+    /// プレイヤーは何も起きない海をただ巻き続けることになる。
+    /// <c>FishingController</c> がその状態を見つけたときだけここを呼び、
+    /// 「少し遠く」に 1 匹を用意して自然に寄ってこられるようにする。
+    ///
+    /// 【どの個体を使うか】（上から順に試す。総数を増やさない順）
+    /// <list type="number">
+    ///   <item>実体化レベル帯の中の<b>仮想個体</b>を 1 匹移す（見た目にも総数にも影響なし）</item>
+    ///   <item>そのレベルの維持数に空きがあれば<b>新しく 1 匹</b>作る</item>
+    ///   <item>いっぱいなら、そのレベルで<b>いちばん遠い個体</b>を連れてくる
+    ///         （破棄 → 指定地点で作り直し。総数は変わらない）</item>
+    /// </list>
+    /// 実体化半径が「自動」（既定）の設定では、帯の中の個体はすべて実体化済みになるため
+    /// 実際にはほぼ 3 番が働く。連れてくる個体は「レーダー射程の外に居るもののうち最遠」
+    /// なので、画面内から魚が消える見え方にはなりにくい。
+    ///
+    /// 台本個体（<see cref="VirtualFish.Pinned"/>）と餌に関与中の個体（<c>IsEngaged</c>）は
+    /// 絶対に動かさない。チュートリアル中でも特別扱いはせず、レベル制限・魚種の許可リストと
+    /// いった既存の実体化規則（<see cref="IsActiveLevel"/> / <see cref="TryPickPrefab"/>）を
+    /// そのまま通す。
+    /// </summary>
+    /// <param name="worldPosition">出したい位置（ワールド座標。Y は「生成する高さ」で上書きされる）。</param>
+    /// <returns>1 匹用意できたら true。</returns>
+    public bool TryMaterializeOneNear(SEED.Vector3 worldPosition)
+    {
+        pool.EnsureLevelCount(levels.Count);
+        RefreshPolicy();
+
+        if (!TryResolveRestockLevel(worldPosition, out int levelIndex))
+        {
+            SEED.Debug.LogWarning("[FishManager] 補充: 実体化できるレベルがありません（レベル定義・チュートリアルの制限を確認してください）。");
+            return false;
+        }
+
+        // 置き場所は必ずそのレベルの円環内へ収める。
+        // <see cref="ClampFishToRings"/> が同じ規則で押し戻すので、円環の外へ置くと
+        // 次の LateUpdate で別の場所へ弾き飛ばされ、補充した意味が無くなる。
+        var ringPosition = ClampPositionToRing(levelIndex, worldPosition);
+        var spawnPosition = new SEED.Vector3(ringPosition.x, spawnHeight, ringPosition.z);
+
+        // 1) 仮想個体を連れてくる（実体化半径を絞っている設定ではここで済む）
+        if (NearestVirtualOf(levelIndex, spawnPosition) is { } virtualRecord)
+        {
+            virtualRecord.Position = spawnPosition;
+            if (!Materialize(virtualRecord)) { return false; }
+            LogRestock(levelIndex, spawnPosition, "仮想個体を実体化");
+            return true;
+        }
+
+        // 2) 維持数に空きがあれば新しく 1 匹作る
+        if (pool.UnpinnedCount(levelIndex) < MaintainCountOf(levelIndex))
+        {
+            if (!TryCreateRecord(levelIndex, true, spawnPosition, NoSpawnScatterRadius, false, out var created))
+            {
+                return false;
+            }
+            if (!Materialize(created))
+            {
+                // 実体化に失敗したレコードを残すと「居ないのに数だけ埋まる」ので取り消す
+                pool.Remove(created);
+                return false;
+            }
+            LogRestock(levelIndex, spawnPosition, "新規に生成");
+            return true;
+        }
+
+        // 3) いっぱいなら、いちばん遠い個体を連れてくる（総数を増やさない）
+        if (FarthestReusableOf(levelIndex, spawnPosition) is { } reused)
+        {
+            Dematerialize(reused);
+            reused.Position = spawnPosition;
+            if (!Materialize(reused)) { return false; }
+            LogRestock(levelIndex, spawnPosition, "遠くの個体を移動");
+            return true;
+        }
+
+        SEED.Debug.LogWarning($"[FishManager] 補充: Lv{levelIndex + LevelNumberToIndex} に動かせる個体がありません（全個体が台本個体か餌に関与中）。");
+        return false;
+    }
+
+    /// <summary>
+    /// 補充に使うレベルを決める【補充レベル決定の唯一の実装】。
+    ///
+    /// 指定地点の水域のレベルが実体化レベル帯の中ならそれを使う（いちばん自然）。
+    /// 帯の外なら基準レベル、それも使えなければ実体化できるレベルを先頭から探す
+    /// （チュートリアルのレベル制限が掛かっている場合はそのレベルだけが残る）。
+    /// </summary>
+    /// <param name="worldPosition">出したい位置（ワールド座標）。</param>
+    /// <param name="levelIndex">使うレベル（levels の添字、0 始まり）。</param>
+    /// <returns>使えるレベルが見つかれば true。</returns>
+    private bool TryResolveRestockLevel(SEED.Vector3 worldPosition, out int levelIndex)
+    {
+        levelIndex = MinimumLevelIndex;
+        if (levels.Count <= 0) { return false; }
+
+        int baseLevelIndex = BaseLevelIndex();
+
+        int levelAtPoint = RingLevelIndexAt(DistanceXZ(CenterPosition(), worldPosition));
+        if (IsActiveLevel(levelAtPoint, baseLevelIndex))
+        {
+            levelIndex = levelAtPoint;
+            return true;
+        }
+
+        if (IsActiveLevel(baseLevelIndex, baseLevelIndex))
+        {
+            levelIndex = baseLevelIndex;
+            return true;
+        }
+
+        for (int i = 0; i < levels.Count; i++)
+        {
+            if (!IsActiveLevel(i, baseLevelIndex)) { continue; }
+            levelIndex = i;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 指定レベルの<b>仮想</b>個体のうち、指定地点にいちばん近いものを返す。
+    /// </summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="target">基準にする位置（ワールド座標）。</param>
+    /// <returns>いちばん近い仮想個体。1 匹も居なければ null。</returns>
+    private VirtualFish? NearestVirtualOf(int levelIndex, SEED.Vector3 target)
+    {
+        var records = pool.RecordsOf(levelIndex);
+        VirtualFish? nearest = null;
+        float nearestSqr = 0f;
+
+        for (int i = 0; i < records.Count; i++)
+        {
+            var record = records[i];
+            if (record.Materialized) { continue; }
+
+            float sqrDistance = SqrDistanceXZ(target, record.Position);
+            if (nearest is not null && sqrDistance >= nearestSqr) { continue; }
+
+            nearest = record;
+            nearestSqr = sqrDistance;
+        }
+
+        return nearest;
+    }
+
+    /// <summary>
+    /// 指定レベルの<b>実体</b>のうち、指定地点からいちばん遠い「動かしてよい」個体を返す。
+    ///
+    /// 台本個体（<see cref="VirtualFish.Pinned"/>）と、餌に関与している個体
+    /// （寄り・つつき・掛かり・釣り上げ演出中）は動かしてはいけないので除く。
+    /// いちばん遠い個体を選ぶのは、移動させる（＝一度消える）個体を
+    /// できるだけプレイヤーの視界から遠ざけるため。
+    /// </summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="target">基準にする位置（ワールド座標）。</param>
+    /// <returns>いちばん遠い実体。動かせる個体が無ければ null。</returns>
+    private VirtualFish? FarthestReusableOf(int levelIndex, SEED.Vector3 target)
+    {
+        var records = pool.RecordsOf(levelIndex);
+        var fishing = FishingController.Current;
+
+        VirtualFish? farthest = null;
+        float farthestSqr = 0f;
+
+        for (int i = 0; i < records.Count; i++)
+        {
+            var record = records[i];
+            if (!record.Materialized) { continue; }
+            if (record.Pinned) { continue; }
+            if (fishing is { } fc && fc.IsEngaged(record.Actor)) { continue; }
+
+            float sqrDistance = SqrDistanceXZ(target, record.Position);
+            if (farthest is not null && sqrDistance <= farthestSqr) { continue; }
+
+            farthest = record;
+            farthestSqr = sqrDistance;
+        }
+
+        return farthest;
+    }
+
+    /// <summary>補充の結果を 1 行で記録する【補充ログの唯一の出口】。</summary>
+    /// <param name="levelIndex">補充に使ったレベル（levels の添字、0 始まり）。</param>
+    /// <param name="position">実際に置いた位置（ワールド座標）。</param>
+    /// <param name="how">どの手段で用意したか。</param>
+    private void LogRestock(int levelIndex, SEED.Vector3 position, string how)
+    {
+        SEED.Debug.Log($"[FishManager] 補充: Lv{levelIndex + LevelNumberToIndex} を {how}"
+            + $"（({position.x:F1}, {position.z:F1}) / 実体 {pool.MaterializedCount} 体）");
+    }
+
     /// <summary>
     /// 台本生成の実体【台本による 1 匹生成の唯一の実装】。
     /// 仮想レコードを「常時実体化（Pinned）」で作り、その場で実体化する。
