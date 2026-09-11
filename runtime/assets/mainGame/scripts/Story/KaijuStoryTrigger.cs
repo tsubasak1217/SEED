@@ -66,6 +66,24 @@ public class KaijuStoryTrigger : SEEDScript
     [SerializeField(Label = "怪獣の識別キー", Tooltip = "釣果の .actor パスにこの文字列が含まれていれば怪獣とみなす")]
     public string kaijuPrefabKey = DefaultKaijuPrefabKey;
 
+    // ── インスペクタ公開フィールド（会話中の見た目の差し替え）────
+
+    /// <summary>
+    /// 会話中<b>だけ</b>表示するアクタのパス（シーンのルートからの <c>Root/Child</c> 形式）。
+    /// 怪獣ストーリー用に置いたモデル（<c>KaijuStoryObjects/KaijuModel</c> と
+    /// <c>KaijuStoryObjects/PlayerModel</c>）を想定。Play 開始時に非表示にし、
+    /// 会話の開始で表示、終了で再び非表示にする（エディタ上は配置のため表示のままでよい）。
+    /// </summary>
+    [SerializeField(Label = "会話中だけ表示するアクタ", Tooltip = "Root/Child 形式のパス。Play 開始時に隠し、会話中だけ表示する")]
+    public string[] storyOnlyActorPaths = { "KaijuStoryObjects/KaijuModel", "KaijuStoryObjects/PlayerModel" };
+
+    /// <summary>
+    /// 会話中<b>だけ</b>非表示にするアクタのパス（通常のプレイヤー。会話用の PlayerModel と入れ替える）。
+    /// 空なら何も隠さない。
+    /// </summary>
+    [SerializeField(Label = "会話中に隠すアクタ", Tooltip = "Root/Child 形式のパス。会話中だけ非表示にする（既定: プレイヤー）")]
+    public string hiddenDuringStoryActorPath = "Player";
+
     /// <summary>
     /// デバッグ用。true にすると「怪獣かどうか」も「既読かどうか」も無視して、
     /// 釣果演出が閉じるたびに会話を再生する（台詞やカメラの確認用）。
@@ -93,6 +111,12 @@ public class KaijuStoryTrigger : SEEDScript
     /// <summary>ストーリー会話を再生中か（入力・カメラ追従を戻す責任があるか）。</summary>
     private bool _storyPlaying;
 
+    /// <summary>会話中だけ表示するアクタ（OnStart で <see cref="storyOnlyActorPaths"/> から解決）。</summary>
+    private readonly System.Collections.Generic.List<SEED.GameObject> _storyOnlyActors = new();
+
+    /// <summary>会話中だけ隠すアクタ（OnStart で <see cref="hiddenDuringStoryActorPath"/> から解決）。無効なら隠さない。</summary>
+    private SEED.GameObject _hiddenDuringStoryActor;
+
     // ── 公開プロパティ ──────────────────────────────────────
 
     /// <summary>ストーリー会話を再生中か（他スクリプトが割り込みを避けるために読む）。</summary>
@@ -111,6 +135,11 @@ public class KaijuStoryTrigger : SEEDScript
         // 曖昧になるため、ラムダの引数型を明示する。
         this.On(FishingEvents.Catch,          (string _) => OnCatchBegan());
         this.On(FishingEvents.CatchPresented, (string _) => OnCatchPresented());
+
+        // 会話用のモデルはエディタでは配置のために見えていてよいので、Play 開始時にここで隠す。
+        // 会話の開始・終了で表示／非表示を切り替える（SetStoryVisualsActive）。
+        ResolveStoryVisuals();
+        SetStoryVisualsActive(false);
     }
 
     /// <summary>
@@ -214,6 +243,7 @@ public class KaijuStoryTrigger : SEEDScript
         _storyPlaying = true;
 
         SuspendGameplay();
+        SetStoryVisualsActive(true);
         dialogue.StartDialogue();
     }
 
@@ -246,6 +276,9 @@ public class KaijuStoryTrigger : SEEDScript
     {
         InputGate.AllowAll();
 
+        // 会話用モデルを隠し、通常のプレイヤーを戻す
+        SetStoryVisualsActive(false);
+
         TutorialRules.CameraSuspended = false;
         TutorialRules.Active          = false;
     }
@@ -255,6 +288,71 @@ public class KaijuStoryTrigger : SEEDScript
     /// 参照が 1 つでも欠けていたら false（＝会話を出さない）を返す。
     /// </summary>
     /// <returns>怪獣なら true。</returns>
+    // ── 会話中の見た目の差し替え ────────────────────────────
+
+    /// <summary>
+    /// パス文字列から会話用の表示対象・非表示対象のアクタを解決して控える【解決の唯一の場所】。
+    /// 見つからないパスは警告を 1 行出して無視する（会話自体は続行できる）。
+    /// </summary>
+    private void ResolveStoryVisuals()
+    {
+        _storyOnlyActors.Clear();
+        foreach (string path in storyOnlyActorPaths ?? System.Array.Empty<string>())
+        {
+            var go = ResolveActorPath(path);
+            if (go.IsValid) { _storyOnlyActors.Add(go); }
+            else if (!string.IsNullOrWhiteSpace(path))
+            {
+                SEED.Debug.LogWarning($"[KaijuStory] 会話中だけ表示するアクタが見つかりません: {path}");
+            }
+        }
+
+        _hiddenDuringStoryActor = ResolveActorPath(hiddenDuringStoryActorPath);
+        if (!_hiddenDuringStoryActor.IsValid && !string.IsNullOrWhiteSpace(hiddenDuringStoryActorPath))
+        {
+            SEED.Debug.LogWarning($"[KaijuStory] 会話中に隠すアクタが見つかりません: {hiddenDuringStoryActorPath}");
+        }
+    }
+
+    /// <summary>
+    /// 会話用の見た目へ切り替える／戻す【表示切り替えの唯一の場所】。
+    /// <paramref name="active"/> が true なら会話用モデルを表示してプレイヤーを隠し、
+    /// false ならその逆にする。表示だけを切り替えるので、スクリプトやアニメーションは止まらない。
+    /// </summary>
+    /// <param name="active">会話用の見た目にするなら true。</param>
+    private void SetStoryVisualsActive(bool active)
+    {
+        foreach (var go in _storyOnlyActors)
+        {
+            if (!go.IsValid) { continue; }
+            var target = go;              // 構造体のコピーへ書く（foreach 変数へは代入できない）
+            target.Visible = active;
+        }
+        if (_hiddenDuringStoryActor.IsValid)
+        {
+            var player = _hiddenDuringStoryActor;
+            player.Visible = !active;
+        }
+    }
+
+    /// <summary>
+    /// <c>Root/Child</c> 形式のパスからアクタを引く。先頭の名前はシーン全体から探し、
+    /// 残りは子孫パスとして辿る。空パス・見つからない場合は無効な GameObject。
+    /// </summary>
+    /// <param name="path">シーンのルートからのアクタ名パス。</param>
+    private static SEED.GameObject ResolveActorPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) { return default; }
+        int slash = path.IndexOf(ActorPathSeparator);
+        string rootName = slash < 0 ? path : path.Substring(0, slash);
+        var go = SEED.GameObject.Find(rootName);
+        if (!go.IsValid || slash < 0) { return go; }
+        return go.FindChild(path.Substring(slash + 1));
+    }
+
+    /// <summary>アクタパスの区切り文字。</summary>
+    private const char ActorPathSeparator = '/';
+
     private bool IsKaijuCaught()
     {
         if (string.IsNullOrWhiteSpace(kaijuPrefabKey)) { return false; }
