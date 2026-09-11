@@ -1,0 +1,67 @@
+{
+  "game_name": "4008_\u308F\u3089\u3057\u3079\u30D5\u30A3\u30C3\u30B7\u30F3\u30B0",
+  "start_scene": "assets://title/title.scene",
+  "window_width": 1280,
+  "window_height": 720,
+  "render_resolution_mode": "fixed",
+  "target_fps": 60,
+  "vsync": "auto",
+  "scenes": [
+    {
+      "name": "title",
+      "path": "assets://title/title.scene"
+    },
+    {
+      "name": "prologue",
+      "path": "assets://prologue/proLogue.scene"
+    },
+    {
+      "name": "mainGame",
+      "path": "assets://mainGame/MainGame.scene"
+    },
+    {
+      "name": "zukan",
+      "path": "assets://zukan/zukan.scene"
+    },
+    {
+      "name": "demo_title",
+      "path": "assets://demo/scenes/demo_title.scene"
+    },
+    {
+      "name": "demo_game",
+      "path": "assets://demo/scenes/demo_game.scene"
+    },
+    {
+      "name": "demo_result",
+      "path": "assets://demo/scenes/demo_result.scene"
+    }
+  ],
+  "plugins": [
+    {
+      "name": "SamplePlugin",
+      "enabled": true
+    },
+    {
+      "name": "GameTools",
+      "enabled": true
+    }
+  ],
+  "rt_shadows": true,
+  "bloom": true,
+  "fxaa": true,
+  "bloom_intensity": 0.02151482508990682,
+  "transparency": "wboit",
+  "meshlet_cull": true,
+  "deferred": true,
+  "gi_intensity": 0.8928652412311202,
+  "reflection_intensity": 0.8597142702349546,
+  "ao_intensity": 2,
+  "features": {
+    "shadow": "shadowmap",
+    "gi": "rt",
+    "reflection": "rt",
+    "ao": "rt",
+    "translucency": "rt"
+  },
+  "refract_sequential_grab": true
+}

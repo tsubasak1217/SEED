@@ -217,3 +217,19 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 テンプレートライブラリからの初期コンテンツ投入はここへ差し込む。
 フックが例外を投げても生成は成功扱いになる（追加投入の失敗で、
 作ったばかりのプロジェクトを捨てさせないため）。
+
+## 既存ゲーム「わらしべフィッシング」の移行記録（2026-09-11）
+
+- 置き場: `projects/WarashibeFishing/`（`WarashibeFishing.seedproj` + `assets/` + `plugins/`）。同一リポジトリで追跡し、
+  git の扱いは従来どおり文字系のみ（画像・モデル・音声・地形ボクセル・フォントは `.gitignore` で除外）。
+- 旧構成 `runtime/assets`（`D:\SEED_assets` への NTFS ジャンクション）は廃止した。`D:\SEED_assets` は削除しておらず、
+  動作確認後に手で消してよい（`runtime/assets_realdir_backup_20260903/` と `runtime/plugins/GameTools/` も同様）。
+- `templates/` は参照している 5 ファイル（フォント 2・スカイボックス 1・砂浜テクスチャ 2）だけ `assets/templates/` に残し、
+  残りはテンプレートライブラリ `<repo>/templates/` へ移した（`docs/template_library.md`）。
+- 旧ジャンクション時代にエディタが書き込んだ絶対パス参照（`C:\...untimessets\...`）は、
+  ゲーム側 185 か所・ライブラリ側 554 か所を `assets://` 相対へ正規化した。
+- `project_settings.json` は以前 `.gitignore` で除外していたが、プロジェクトの一部として追跡に含めた。
+- プラグインは `projects/WarashibeFishing/plugins/`（GameTools・SamplePlugin）。`game_tools` の `build.rs` はここへ配置する。
+- 実行時生成物はプロジェクト直下の `cache/`・`save/`・`logs/`・`build/`（ランタイムは `assets/` の親を基準に解決する）。
+- エディタ設定（`editor/settings/`）はエンジン側のまま。起動時のシーン復元・最近のシーン一覧はプロジェクトをまたいで共有される
+  （プロジェクト単位にするのは `docs/backlog.md` の課題）。
