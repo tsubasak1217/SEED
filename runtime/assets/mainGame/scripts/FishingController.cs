@@ -1370,6 +1370,55 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "更新を止めるレベル差")]
     private int radarSkipLevelGap = 3;
 
+    // ─── 怪獣の強制呼び出し（わらしべの最終段を確定させる）─────────
+    // 通常のわらしべ連鎖は「格上が近くに居たら寄ってくる」確率的な仕組みなので、
+    // 最後の 1 段（怪獣）が来ないまま終わり得る。ここで「このレベルまで来たら
+    // 必ず怪獣が来る」を保証する。進行そのものは KaijuLure が持つ（単一責任）。
+
+    /// <summary>
+    /// 怪獣を呼ぶレベル。掛かっている魚のレベルがこれ以上になった瞬間に、
+    /// 怪獣を実体化して強制的に寄せる（直接ヒットでも、わらしべの乗り換えでも同じ）。
+    /// <see cref="KaijuLure.DisabledLevel"/>（0）で機能そのものを無効にする。
+    /// </summary>
+    [Header("怪獣の強制呼び出し"), SerializeField(Label = "怪獣を呼ぶレベル")]
+    private int kaijuLureLevel = 9;
+
+    /// <summary>
+    /// 怪獣の prefab 識別キー（.actor パスに含まれる文字列）。
+    /// <c>KaijuStoryTrigger</c> の怪獣判定と<b>同じキー</b>を使うので、
+    /// 片方だけ直すと「呼ばれるのに初回ストーリーが出ない」といったズレになる。
+    /// </summary>
+    [SerializeField(Label = "怪獣のプレハブキー")]
+    private string kaijuPrefabKey = "kaiju";
+
+    /// <summary>
+    /// 怪獣の出現距離（メートル）。掛かっている魚から見て<b>沖側</b>
+    /// （竿先 → 魚の方向の延長）へこの距離だけ離して実体化する。
+    /// 近すぎると湧いた瞬間が見え、遠すぎると到着までに釣り上がってしまう。
+    /// </summary>
+    [SerializeField(Label = "怪獣の出現距離(m)")]
+    private float kaijuSpawnDistance = 30f;
+
+    /// <summary>
+    /// 呼ばれた怪獣の遊泳速度倍率（魚側の「接近の速さ」に掛かる）。
+    /// 出現距離を速度で割った時間が、怪獣が到着するまでの目安になる。
+    /// </summary>
+    [SerializeField(Label = "呼ばれた怪獣の速度倍率")]
+    private float kaijuLureSpeedMultiplier = 2f;
+
+    /// <summary>
+    /// 呼び出しの遅延（秒）。ヒット演出（帯・SE・カメラの寄り）が落ち着いてから
+    /// 呼ぶための間で、条件が成立した瞬間からこの秒数を数える。
+    /// </summary>
+    [SerializeField(Label = "呼び出しの遅延(秒)")]
+    private float kaijuLureDelaySeconds = 1f;
+
+    /// <summary>
+    /// 怪獣の強制呼び出しの進行【呼び出し状態の唯一の持ち主】。
+    /// シーンの設定に依らず必ず存在するよう、参照フィールドではなく実体で持つ。
+    /// </summary>
+    private readonly KaijuLure kaijuLure = new();
+
     // ─── 引き演出のカメラ（LeadIn 中に <see cref="runCameraTarget"/> を置く構図）───
     // 中点（プレイヤーとウキの中点）を球面座標（方位角θ・仰角φ・距離）で見る構図。
     // 基準方向は「プレイヤー→ウキ」の水平方向（dirH）：
@@ -1682,6 +1731,8 @@ public class FishingController : SEEDScript
         }
         StopReelSound();
         AbortBiteTiming();
+        // 呼び出し途中の怪獣が居れば必ず畳む（シーン離脱で置き去りにしない）
+        kaijuLure.Cancel("シーン離脱");
         ReleaseHook();
         fight?.EndFight();
         engagedFish.Clear();
@@ -2150,6 +2201,11 @@ public class FishingController : SEEDScript
         UnregisterEngaged(eaten.Actor);
         eaten.Actor.Destroy();
 
+        // 強制呼び出しで寄せていた怪獣が食いついたのなら、ここで呼び出しを終える
+        // （以後は普通の「掛かっている魚」。寄せ続けると自分自身を餌として追ってしまう）。
+        // 関係ない魚が横取りした場合は何も起きないので、怪獣はそのまま寄り続ける。
+        kaijuLure.NotifyEaten(newFish);
+
         // 新しい魚を掛け直す
         hookedFish = newFish;
         newFish.OnHooked();
@@ -2185,6 +2241,25 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
+    /// 怪獣の強制呼び出しを 1 フレーム進める【<see cref="KaijuLure"/> の唯一の駆動点】。
+    /// インスペクタ値はここで <see cref="KaijuLure.Settings"/> へ組み直して渡すので、
+    /// 実行中に値を変えれば次のフレームから効く。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateKaijuLure(float deltaTime)
+    {
+        kaijuLure.Tick(
+            this,
+            deltaTime,
+            new KaijuLure.Settings(
+                kaijuLureLevel,
+                kaijuPrefabKey,
+                kaijuSpawnDistance,
+                kaijuLureSpeedMultiplier,
+                kaijuLureDelaySeconds));
+    }
+
+    /// <summary>
     /// <b>わらしべ連鎖</b>: より大きい魚が、掛かっている魚を<b>即座に食べる</b>ことを試みる
     /// 【連鎖成立の唯一の入口】。前アタリ・合わせは無く、成立すれば即ヒットが乗り換わる。
     ///
@@ -2209,7 +2284,13 @@ public class FishingController : SEEDScript
         if (State != FishState.Hooked) { return false; }
         if (hookedFish is not { } prey) { return false; }
         if (ReferenceEquals(eater, prey)) { return false; }         // 自分自身は食えない
-        if (!eater.CanPreyOn(prey)) { return false; }                // 魚レベルが十分高い魚だけが食える
+
+        // 魚レベルが十分高い魚だけが食える。ただし強制呼び出し中（<see cref="Fish.IsLured"/>）の
+        // 個体はレベル差の判定を素通りする ―― 怪獣（Lv10）と Lv9 の差は 1 しかなく、
+        // prefab の「捕食できる最小レベル差」次第では通常判定を通れないため。
+        // 隙（Rest）中であること・猶予（chainEatGraceSeconds）が明けていることは
+        // 呼ばれた個体にもそのまま課す（プレイヤーが 1 度も巻けないまま奪われないように）。
+        if (!eater.IsLured && !eater.CanPreyOn(prey)) { return false; }
 
         // 隙（Rest）中でなければ食えない（出題・回答中の捕食は許さない）
         if (fight is not { CurrentPhase: FishingFight.Phase.Rest } activeFight) { return false; }
@@ -2314,6 +2395,12 @@ public class FishingController : SEEDScript
 
         // 魚レーダーも釣り状態に依らず毎フレーム引き直す（早期 return の経路でも必ず消える）。
         UpdateFishRadar(ctx.DeltaTime);
+
+        // 怪獣の強制呼び出しも釣り状態に依らず毎フレーム進める。
+        // KaijuLure 側が「ヒットが続いているか」を見て自分で解除するので、
+        // 糸切れ・リリース・釣り上げ・姿勢解除のどの経路で抜けても呼び出しは必ず畳まれる
+        //（ポーズ中はこの行より前で return しているので、呼び出しも一緒に止まる）。
+        UpdateKaijuLure(ctx.DeltaTime);
 
         // プレイヤー参照が無ければ姿勢の出入りができないので何もしない
         if (playerMove is not { } pm) { return; }

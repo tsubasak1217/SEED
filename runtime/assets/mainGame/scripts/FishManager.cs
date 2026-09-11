@@ -141,6 +141,12 @@ public class FishManager : SEEDScript
     /// <summary>「生成総数」が未指定（既定値を使う）であることを表す下限。</summary>
     private const int MaintainCountUnspecified = 0;
 
+    /// <summary>
+    /// 位置指定生成で「ばらつかせない」ことを表す半径（＝指定した 1 点ちょうどに出す）。
+    /// <see cref="TryMaterializeByPrefabKey"/> が使う。
+    /// </summary>
+    private const float NoSpawnScatterRadius = 0f;
+
     // ─── 中心点 ───────────────────────────────────────────────
 
     /// <summary>
@@ -1070,6 +1076,74 @@ public class FishManager : SEEDScript
     /// <returns>生成できたら true。</returns>
     public bool SpawnOneNear(int levelIndex, SEED.Vector3 center, float radius, out SEED.GameObject fish)
         => SpawnOnePinned(levelIndex, center, radius, out fish, true);
+
+    /// <summary>
+    /// <b>魚種を指名して</b>指定地点に 1 匹その場で実体化する
+    /// 【prefab キー指定生成の唯一の入口】。
+    ///
+    /// <see cref="SpawnOneNear"/> がレベル番号で出すのに対し、こちらは
+    /// <b>.actor パスに含まれる文字列</b>（例 "kaiju"）で出す。「怪獣を必ず呼ぶ」
+    /// （<see cref="KaijuLure"/>）のように、レベル構成が変わっても同じ魚を指名したい
+    /// 用途のための入口で、指定キーを含む prefab を持つレベルを探して使う。
+    ///
+    /// 生成した個体は<b>常時実体化（<see cref="VirtualFish.Pinned"/>）</b>になる。
+    /// ＝距離やレベル帯で仮想へ戻されることも、維持数（<see cref="EnsurePopulation"/>）の
+    /// 勘定で押し出されることもない。「呼んだ怪獣が寄ってくる途中で消える」のを
+    /// 防ぐための特別枠で、既存の台本生成と同じ仕組みをそのまま使っている。
+    ///
+    /// <b>注意</b>: 常時実体化なので、呼び出し側が使い終わっても自動では消えない。
+    /// <see cref="KaijuLure"/> は「既に実体化している怪獣が居ればそれを使い回す」ため、
+    /// この経路で増えるアクタは高々 1 体に収まる。
+    /// </summary>
+    /// <param name="prefabKey">
+    /// .actor パスに含まれていてほしい文字列（大文字小文字は無視）。空なら失敗。
+    /// </param>
+    /// <param name="worldPosition">出現位置（ワールド座標。Y は「生成する高さ」で上書きされる）。</param>
+    /// <param name="fish">生成した魚（失敗時は無効ハンドル）。</param>
+    /// <returns>生成できたら true。指定キーを含む prefab がどのレベルにも無ければ false。</returns>
+    public bool TryMaterializeByPrefabKey(string prefabKey, SEED.Vector3 worldPosition, out SEED.GameObject fish)
+    {
+        fish = default;
+        if (string.IsNullOrWhiteSpace(prefabKey)) { return false; }
+
+        pool.EnsureLevelCount(levels.Count);
+
+        for (int levelIndex = 0; levelIndex < levels.Count; levelIndex++)
+        {
+            // そのレベルの候補（通常枠・レア枠）にキーを含む prefab があるか
+            var level = levels[levelIndex];
+            if (FindPrefabContaining(level.fishPrefabs, prefabKey) is null
+             && FindPrefabContaining(level.rareFishPrefabs, prefabKey) is null)
+            {
+                continue;
+            }
+
+            // 見つかったレベルで、魚種を指名して常時実体化のレコードを 1 件作る
+            if (!TryCreateRecord(
+                    levelIndex,
+                    usePositionOverride: true,
+                    overrideCenter: worldPosition,
+                    overrideRadius: NoSpawnScatterRadius,
+                    pinned: true,
+                    out var record,
+                    requiredPrefab: prefabKey))
+            {
+                return false;
+            }
+
+            if (!Materialize(record))
+            {
+                // 実体化に失敗したレコードを残すと「常時実体化のはずが仮想のまま」になるので取り消す
+                pool.Remove(record);
+                return false;
+            }
+
+            fish = record.Actor;
+            return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// 台本生成の実体【台本による 1 匹生成の唯一の実装】。

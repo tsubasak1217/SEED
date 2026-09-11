@@ -41,6 +41,12 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 直接進む（<see cref="OnHooked"/>）。失敗しても興味は失わず、食いつき距離付近に
 /// ホーミングで留まって隙を待ち続け、<see cref="chainWaitTimeoutSeconds"/> を超えたら諦める。
 ///
+/// [強制呼び出し（ルアー）]
+/// <see cref="KaijuLure"/> から <see cref="BeginLure"/> を受けた個体は、上の確率的な
+/// わらしべ連鎖とは別に「<b>必ず</b>掛かっている魚へ寄って食いつく」特別状態になる
+/// （感知距離・捕食可否・待ちタイムアウト・格上カリングをすべて素通りする）。
+/// 詳細は <see cref="IsLured"/> を参照。
+///
 /// 餌の位置・判定距離はすべて <see cref="FishingController.Current"/> から読む
 /// （魚は prefab から動的生成されるため、参照フィールドでコントローラを注入できない）。
 /// </summary>
@@ -120,6 +126,17 @@ public class Fish : SEEDScript
     /// 好みの魚でない獲物への感知に使う。
     /// </summary>
     private const float NeutralSenseMultiplier = 1f;
+
+    /// <summary>
+    /// 強制呼び出し（<see cref="IsLured"/>）でないときの速度倍率（＝倍率なし）。
+    /// </summary>
+    private const float NoLureSpeedMultiplier = 1f;
+
+    /// <summary>
+    /// 強制呼び出しの速度倍率の下限。0 や負の倍率を渡されても
+    /// 「その場で止まる／後ろ向きに泳ぐ」ことがないようにするための番人値。
+    /// </summary>
+    private const float MinLureSpeedMultiplier = NoLureSpeedMultiplier;
 
     // ─── 行動状態 ─────────────────────────────────────────────
 
@@ -471,6 +488,33 @@ public class Fish : SEEDScript
     /// <summary>餌へ反応しないクールダウンの残り秒数。0 以下で再び反応できる。</summary>
     private float loseInterestRemaining = 0f;
 
+    // ─── 強制呼び出し（ルアー中）─────────────────────────────
+    // 「Lv9 が掛かったら必ず怪獣が来る」を成立させるための特別状態。
+    // 制御は KaijuLure（FishingController が所有）が行い、この魚は言われたとおりに
+    // 振る舞うだけ ―― 誰をいつ呼ぶかの判断はここには一切置かない（単一責任）。
+
+    /// <summary>
+    /// いま<b>強制的に呼ばれている</b>（<see cref="BeginLure"/> 済み）か
+    /// 【ルアー状態の唯一の真偽値】。
+    ///
+    /// true のあいだ、この個体は次の 4 点で通常と違う振る舞いをする:
+    /// <list type="number">
+    ///   <item>掛かっている魚を<b>距離に関係なく</b>餌として追う（<see cref="TryGetBaitTarget"/>・
+    ///         <see cref="UpdateBehaviorState"/>）</item>
+    ///   <item>接近速度に <see cref="lureSpeedMultiplier"/> が掛かる（<see cref="EffectiveApproachSpeed"/>）</item>
+    ///   <item>隙を待つ時間（<see cref="chainWaitTimeoutSeconds"/>）で諦めない</item>
+    ///   <item>捕食可否（<see cref="CanPreyOn"/>）と格上カリング（<see cref="UpdateFarLevelCulling"/>）を
+    ///         素通りする ―― レベル差の設定がどうであっても必ず食いつけるようにするため</item>
+    /// </list>
+    /// </summary>
+    public bool IsLured { get; private set; } = false;
+
+    /// <summary>
+    /// ルアー中の接近速度の倍率（<see cref="IsLured"/> が false のあいだは
+    /// <see cref="NoLureSpeedMultiplier"/> ＝ 倍率なし）。
+    /// </summary>
+    private float lureSpeedMultiplier = NoLureSpeedMultiplier;
+
     /// <summary>逃走（<see cref="BehaviorState.Escape"/>）の残り秒数。</summary>
     private float escapeRemaining = 0f;
 
@@ -653,6 +697,59 @@ public class Fish : SEEDScript
         return SEED.Mathf.Max(preferredSenseMultiplier, NeutralSenseMultiplier);
     }
 
+    // ─── 強制呼び出し（KaijuLure から呼ばれる）───────────────────
+
+    /// <summary>
+    /// この個体を<b>強制的に</b>「掛かっている魚へ寄る」状態にする
+    /// 【ルアー開始の唯一の入口】。
+    ///
+    /// 呼ばれた瞬間に興味のクールダウンと隙待ちの経過をリセットし、逃走中なら
+    /// 逃走を打ち切る（そうしないと <see cref="escapeSeconds"/> のあいだ寄り始められない）。
+    /// 状態遷移そのものは通常どおり <see cref="UpdateBehaviorState"/> が行うので、
+    /// 次のフレームから <see cref="BehaviorState.Approach"/> へ入って寄ってくる。
+    ///
+    /// 既にルアー中なら倍率だけを上書きする（二重に呼んでも壊れない）。
+    /// </summary>
+    /// <param name="speedMultiplier">
+    /// 接近速度に掛ける倍率（<see cref="MinLureSpeedMultiplier"/> 未満は丸める）。
+    /// </param>
+    public void BeginLure(float speedMultiplier)
+    {
+        IsLured = true;
+        lureSpeedMultiplier = SEED.Mathf.Max(speedMultiplier, MinLureSpeedMultiplier);
+
+        // 「さっき興味を失ったばかり」でも即座に寄り直せるようにする
+        loseInterestRemaining = 0f;
+        chainWaitElapsed = 0f;
+
+        // 逃走中（竿振りに驚いた直後など）は自力で回遊へ戻るまで餌を見ないので、
+        // ここで打ち切っておく。クールダウンは掛けない（すぐ寄り始めてほしいため）。
+        if (State == BehaviorState.Escape) { BackToRoam(withCooldown: false); }
+
+        // 「餌に関わっている魚」として登録しておく【呼ばれた瞬間から守る】。
+        // 登録されているあいだ、FishManager の円環クランプ（出現円環への押し戻し）と
+        // 非実体化（間引き）の対象から外れる。呼んだ怪獣が寄ってくる途中で
+        // 沖へ引き戻されたり消えたりしないために必須。
+        // 解除は通常どおり BackToRoam / BeginEscape / OnDestroy が行う
+        //（SetEngaged のラッチをここで true にしておくので、取り残しにならない）。
+        SetEngaged(FishingController.Current, engaged: true);
+    }
+
+    /// <summary>
+    /// 強制呼び出しを終える【ルアー終了の唯一の出口】。
+    /// 状態は変えない ―― 呼ばれる場面は「食いついた（＝<see cref="BehaviorState.Bite"/>）」か
+    /// 「呼び出しが解除された（＝寄っている途中）」のどちらかで、前者は掛かったまま、
+    /// 後者は餌が消えることで <see cref="UpdateBehaviorState"/> が自然に回遊へ戻すため。
+    /// ルアー中でなければ何もしない（冪等）。
+    /// </summary>
+    public void EndLure()
+    {
+        if (!IsLured) { return; }
+
+        IsLured = false;
+        lureSpeedMultiplier = NoLureSpeedMultiplier;
+    }
+
     /// <summary>戦闘力係数（<c>FishingFight.SizeScore</c> だけが読む）。</summary>
     public float PowerScale => powerScale;
 
@@ -829,11 +926,15 @@ public class Fish : SEEDScript
     /// カリング中の個体にも効き続ける（位置の押し戻しだけなので軽い）。
     ///
     /// レベルが確定していない個体（<see cref="UnknownLevel"/>）は常に対象外。
+    /// 強制呼び出し中（<see cref="IsLured"/>）の個体も常に対象外 ―― 呼んだ本人を
+    /// 止めて隠してしまっては「必ず寄ってくる」が成立しないため
+    /// （<see cref="FishingController.RadarSkipLevelGap"/> の設定値に依らず守る）。
     /// </summary>
     /// <returns>カリング中（この個体の更新を止めるべき）なら true。</returns>
     private bool UpdateFarLevelCulling()
     {
-        bool cull = Level != UnknownLevel
+        bool cull = !IsLured
+                 && Level != UnknownLevel
                  && FishingController.Current is { IsHooked: true } fc
                  && fc.HookedFishLevel != UnknownLevel
                  && Level >= fc.HookedFishLevel + fc.RadarSkipLevelGap;
@@ -919,8 +1020,10 @@ public class Fish : SEEDScript
         // 好みの魚の倍率が掛かる。算出は TryGetBaitTarget に集約）以内へ入ったら寄っていく
         if (State == BehaviorState.Roam)
         {
-            if (loseInterestRemaining > 0f) { return; }
-            if (distance > senseRadius) { return; }
+            // 強制呼び出し中（IsLured）は「興味のクールダウン」も「感知距離」も無視して
+            // 必ず寄り始める（呼ばれた怪獣が沖で回遊したままになるのを防ぐ）。
+            if (!IsLured && loseInterestRemaining > 0f) { return; }
+            if (!IsLured && distance > senseRadius) { return; }
 
             State = BehaviorState.Approach;
             biteWaitStarted = false;
@@ -975,7 +1078,9 @@ public class Fish : SEEDScript
             biteWaitStarted = true;    // 上のヒステリシス判定にだけ使う（わらしべに食いつき待ち時間は無い）
 
             chainWaitElapsed += dt;
-            if (chainWaitElapsed > chainWaitTimeoutSeconds)
+            // 強制呼び出し中（IsLured）は諦めない。呼ばれた怪獣は隙が来るまで
+            // 食いつき距離に張り付いて待ち続ける（＝必ず乗り換えが起きる）。
+            if (!IsLured && chainWaitElapsed > chainWaitTimeoutSeconds)
             {
                 biteWaitStarted = false;
                 chainWaitElapsed = 0f;
@@ -1055,7 +1160,11 @@ public class Fish : SEEDScript
         }
 
         // 2) わらしべ連鎖: 掛かっている魚そのものが餌
-        if (fc.HookedFishBaitActive && fc.HookedFishBait is { } prey && CanPreyOn(prey))
+        //    強制呼び出し中（IsLured）は捕食可否（CanPreyOn）を素通りする。
+        //    怪獣（Lv10）と Lv9 のレベル差は 1 しかないため、prefab 側の
+        //    「捕食できる最小レベル差」の設定次第では通常判定を通れないことがあり、
+        //    そこで弾かれると「必ず食いつく」が成立しないため。
+        if (fc.HookedFishBaitActive && fc.HookedFishBait is { } prey && (IsLured || CanPreyOn(prey)))
         {
             position = fc.HookedFishBaitPosition;
             senseRadius = (baitSenseDistance + fc.ChainInfluenceRadius) * ChainSenseMultiplier(prey);
@@ -1094,7 +1203,15 @@ public class Fish : SEEDScript
     }
 
     /// <summary>
-    /// 餌へ近づく移動。餌の方位へ向き直しながら <see cref="approachSpeed"/> で前進する。
+    /// 接近に実際に使う速さ（m/s）【接近速度の唯一の算出点】。
+    /// 通常は <see cref="approachSpeed"/> そのまま、強制呼び出し中（<see cref="IsLured"/>）だけ
+    /// <see cref="lureSpeedMultiplier"/> が掛かる（遠くから呼ばれた怪獣を早く到着させるため）。
+    /// 逃走（<see cref="UpdateEscape"/>）には掛からない ―― 呼ばれた魚は逃げないので不要。
+    /// </summary>
+    private float EffectiveApproachSpeed => approachSpeed * lureSpeedMultiplier;
+
+    /// <summary>
+    /// 餌へ近づく移動。餌の方位へ向き直しながら <see cref="EffectiveApproachSpeed"/> で前進する。
     ///
     /// 行動半径のクランプは掛けない（餌が行動半径の外にあっても寄れるようにする）。
     /// FishManager の円環クランプについても <see cref="SetEngaged"/> で対象外にしてある。
@@ -1133,7 +1250,7 @@ public class Fish : SEEDScript
             transform.Rotation = new SEED.Vector3(0f, SmoothYawRad(targetHeadingRad, dt) / DegToRad, 0f);
 
             // 移動は水平単位ベクトル方向へ、行き過ぎない距離だけ直進させる
-            float step = SEED.Mathf.Min(approachSpeed * dt, distance);
+            float step = SEED.Mathf.Min(EffectiveApproachSpeed * dt, distance);
             float nextX = pos.x;
             float nextZ = pos.z;
             if (distance > DistanceEpsilon)
@@ -1147,7 +1264,7 @@ public class Fish : SEEDScript
         }
 
         // 遠い間は従来どおり旋回付きで泳ぎ（XZ）、高さだけを別途寄せる
-        SwimTowardHeading(targetHeadingRad, approachSpeed, dt);
+        SwimTowardHeading(targetHeadingRad, EffectiveApproachSpeed, dt);
         var swum = transform.Position;
         transform.Position = new SEED.Vector3(swum.x, easedY, swum.z);
     }
