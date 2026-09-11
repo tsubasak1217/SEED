@@ -86,6 +86,32 @@ pub(super) fn apply_window_clamp(hwnd: isize) {
     let _ = hwnd;
 }
 
+/// スクリプトのカーソルロック（`SEED.Input.CursorLocked`）用のクランプ。
+///
+/// ロック中は毎フレーム中央へワープさせているが、ワープはフレーム単位なので
+/// 激しく動かすと次のワープまでにカーソルがウィンドウの外へ出てしまう
+/// （スタンドアロン／パッケージ版で顕著。エディタ埋め込み Play は PLAY_CLAMP が別途効く）。
+/// そこでロック中は ClipCursor でも閉じ込める。
+///
+/// `apply_window_clamp` と違い、**自分のウィンドウがフォアグラウンドのときだけ**張る。
+/// ClipCursor はシステム全体に効くため、Alt+Tab で他アプリへ移った後も
+/// 毎フレーム張り直すと、他アプリの操作中にカーソルがこのウィンドウへ閉じ込められる。
+/// 埋め込み（WS_CHILD）の場合は最上位の祖先（エディタのウィンドウ）で判定する。
+pub(super) fn apply_cursor_lock_clamp(hwnd: isize) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+        let root = GetAncestor(hwnd as _, GA_ROOT);
+        let root = if root.is_null() { hwnd as _ } else { root };
+        if GetForegroundWindow() != root {
+            return;
+        }
+        apply_window_clamp(hwnd);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = hwnd;
+}
+
 /// Play クランプ解除。
 pub(super) fn release_window_clamp() {
     #[cfg(target_os = "windows")]

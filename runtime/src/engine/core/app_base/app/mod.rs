@@ -1883,7 +1883,7 @@ use actor_utils::{
 // undo.rs（app_base 直下の ActorActiveCommand）からも DFS 探索を共有するため再エクスポートする。
 pub(crate) use actor_utils::find_actor_by_dfs_mut;
 use platform_utils::{
-    camera_grab_start, camera_grab_end, apply_window_clamp, release_window_clamp,
+    camera_grab_start, camera_grab_end, apply_window_clamp, apply_cursor_lock_clamp, release_window_clamp,
     warp_cursor_to_local,
 };
 

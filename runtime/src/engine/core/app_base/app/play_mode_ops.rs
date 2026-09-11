@@ -227,7 +227,12 @@ impl App {
     pub(super) fn release_script_cursor_lock(&mut self) {
         crate::engine::core::scripting::clear_cursor_lock_request();
         if let Some(window) = self.window.clone() {
+            let was_locked = self.input.is_cursor_locked();
             self.input.set_cursor_lock(false, &window);
+            // ロック用の ClipCursor も外す（エディタの PLAY_CLAMP は別管理なので触らない）。
+            if was_locked && !self.play_clamp {
+                super::platform_utils::release_window_clamp();
+            }
         }
     }
 
