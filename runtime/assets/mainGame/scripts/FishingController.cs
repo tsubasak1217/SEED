@@ -989,13 +989,13 @@ public class FishingController : SEEDScript
     /// ロックしないと端に当たった瞬間 <see cref="SEED.Input.MouseDelta"/> が 0 に潰れ、
     /// 引く／振るのジェスチャが取れなくなる。
     ///
-    /// <b>釣り姿勢に入っている間（<see cref="FishState.Idle"/> 以外）はずっとロックする</b>
-    /// （2026-09-11 変更。以前は Aiming / Windup だけだった）。着水後もカーソルが画面上をさまよって
-    /// 邪魔にならないよう隠し、ウィンドウの外へ出ないようにするため。ポーズメニューは自分で
-    /// ロックを解除してカーソルを出す（<see cref="PauseMenu"/>）。詳細は <see cref="UpdateCursorLock"/>。
-    /// UI をマウスで操作したい場面が出たらここをオフにする。
+    /// <b>竿を投げてから（<see cref="FishState.Casting"/> 以降）釣りが終わるまでロックする</b>
+    /// （2026-09-11 変更）。狙い（Aiming）と振りかぶり（Windup）では隠さず自由に動かせる。
+    /// 着水後はカーソルが画面上をさまよって邪魔にならないよう隠し、中央へ固定する。
+    /// ポーズメニューは自分でロックを解除してカーソルを出す（<see cref="PauseMenu"/>）。
+    /// 詳細は <see cref="UpdateCursorLock"/>。UI をマウスで操作したい場面が出たらここをオフにする。
     /// </summary>
-    [Header("操作"), SerializeField(Label = "釣り中はカーソルをロック")]
+    [Header("操作"), SerializeField(Label = "投げた後はカーソルをロック")]
     private bool lockCursorWhileFishing = true;
 
     /// <summary>
@@ -2654,12 +2654,14 @@ public class FishingController : SEEDScript
     /// <summary>
     /// カーソルロックの望ましい状態。
     ///
-    /// 釣り姿勢に入っている間（<see cref="FishState.Idle"/> 以外）はロックする
+    /// 竿を投げてから（<see cref="FishState.Casting"/> 以降）釣りが終わるまでロックする
     /// （<see cref="lockCursorWhileFishing"/> がオフなら常に false ＝解除は必ず通る）。
-    /// 合わせ・リズム回答は左クリック、巻きはホイールなので、カーソルの位置を読む操作は無い。
+    /// 待機・狙い・振りかぶりでは隠さない。着水後の合わせ・リズム回答は左クリック、
+    /// 巻きはホイールなので、カーソルの位置を読む操作は無い。
     /// </summary>
     private bool WantsCursorLock()
-        => lockCursorWhileFishing && State != FishState.Idle;
+        => lockCursorWhileFishing
+        && State is not (FishState.Idle or FishState.Aiming or FishState.Windup);
 
     /// <summary>
     /// カーソルロックを現在の状態へ合わせる【適用の唯一の集約点】。
