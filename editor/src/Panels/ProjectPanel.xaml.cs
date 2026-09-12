@@ -203,6 +203,9 @@ public partial class ProjectPanel : UserControl
         InitializeComponent();
         MouseDown += OnPanelMouseDown;
         WireScrollViewerEvents();
+        // タブ状態の永続化に使うイベント（ツリー展開・スクロール）を張る
+        // （ProjectPanel.StatePersistence.cs）
+        WireTabStatePersistence();
         // 「隠しファイルを表示」トグルを環境設定の値へ揃える（ProjectPanel.Visibility.cs）
         InitVisibilityToggle();
     }
@@ -279,6 +282,11 @@ public partial class ProjectPanel : UserControl
     {
         bool wasAvailable = _assetsProbe.IsAvailable;
 
+        // この後の InitTabs はタブを作り直すため、いま画面に出ている状態を先に確定させる。
+        // 「再試行」ボタンやテンプレート取り込み後の再構築で、デバウンス待ちだった
+        // タブ構成が失われるのを防ぐ。初回（未判定＝利用不可）のときは何もしない。
+        FlushTabState();
+
         var probe = AssetsRootProbe.Check(_assetsRoot);
         _assetsProbe = probe;
         EditorLog.Write($"アセットルート判定 — {probe.LogLine}");
@@ -294,9 +302,11 @@ public partial class ProjectPanel : UserControl
             {
                 HideAssetsUnavailable();
                 BuildFolderTree();
-                // タブ機構を初期化する（ルートフォルダを開いた 1 枚だけの状態から始める）
-                InitTabs(_assetsRoot);
-                RefreshFileGrid();
+                // タブ機構を初期化する。前回終了時の状態が保存されていれば復元し、
+                // 無ければルートフォルダを開いた 1 枚だけの状態から始める。
+                // 復元した場合はアクティブタブの適用（＝ファイル一覧の構築）まで
+                // InitTabs の中で済んでいるので、ここで作り直すとサムネイル要求が二重に積まれる。
+                if (!InitTabs(_assetsRoot)) RefreshFileGrid();
                 StartWatcher();
             }
             catch (Exception ex)

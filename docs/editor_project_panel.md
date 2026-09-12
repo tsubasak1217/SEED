@@ -8,7 +8,8 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 | ファイル | 役割 |
 |---|---|
 | `editor/src/Panels/ProjectPanel.xaml(.cs)` | ツリー／ファイルグリッドの構築、選択・ドラッグ・リネーム・ファイル操作、右クリックメニューの組み立て |
-| `editor/src/Panels/ProjectPanel.Tabs.cs` | フォルダ位置のタブ（セッション限りの状態切替） |
+| `editor/src/Panels/ProjectPanel.Tabs.cs` | フォルダ位置のタブ（状態切替・タブバーの構築） |
+| `editor/src/Panels/ProjectPanel.StatePersistence.cs` | タブ状態の保存タイミング（デバウンス）と復元の適用（[§9](#9-状態の永続化)） |
 | `editor/src/Panels/ProjectPanel.Audio.cs` | 音声アセット向けメニュー（先頭無音カット） |
 | `editor/src/Panels/ProjectPanel.CopyPath.cs` | 「パスをコピー」メニュー（絶対パス / `assets://` パス） |
 | `editor/src/Panels/ProjectPanel.Visibility.cs` | 隠しファイルの表示制御（トグル・薄表示・ツリー再構築） |
@@ -21,7 +22,8 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 
 | ファイル | 役割 |
 |---|---|
-| `editor/src/Assets/AssetUriPath.cs` | 絶対パス ⇔ `assets://` 仮想パスの変換（正典） |
+| `editor/src/Assets/AssetUriPath.cs` | 絶対パス ⇔ `assets://` 仮想パス／アセットルート相対パスの変換（正典） |
+| `editor/src/Assets/ProjectPanelStateStore.cs` | タブ状態の JSON モデルと読み書き、パスの相対化・絶対化・間引き（[§9](#9-状態の永続化)） |
 | `editor/src/Assets/AssetPreviewKinds.cs` | 拡張子 → プレビュー種別（画像／フォント／モデル／無し）と寸法取得対象の対応表 |
 | `editor/src/Assets/AssetPreviewCacheKey.cs` | プレビューのキャッシュキー（パス＋更新時刻＋サイズ＋派生条件）。エディタ内メモリキャッシュ用 |
 | `editor/src/Assets/ModelThumbnailCacheKey.cs` | モデルサムネイル PNG の置き場とファイル名。**ランタイム（Rust）と規則を共有する**（[§5](#5-3d-モデルのサムネイル)） |
@@ -254,7 +256,7 @@ Play 中に処理しないのは、present が止まるとゲーム画面が数�
 
 | プロジェクト | 種類 | 内容 |
 |---|---|---|
-| `editor/tests/ProjectPanelLogicTests` | 自動（WPF 非依存） | `assets://` 相対化、拡張子判定、キャッシュキー、寸法書式、非表示ルール、**モデルサムネイルのキャッシュ鍵**。`dotnet run` で 52 件 |
+| `editor/tests/ProjectPanelLogicTests` | 自動（WPF 非依存） | `assets://` 相対化／絶対化、拡張子判定、キャッシュキー、寸法書式、非表示ルール、**モデルサムネイルのキャッシュ鍵**、**タブ状態の永続化**。`dotnet run` で 82 件 |
 | `editor/tests/ProjectPanelPreviewProbe` | 手動（WPF 依存） | 実ファイルへ向けてフォント描画・寸法取得を走らせる検証用コンソール |
 
 ### ランタイムとのキャッシュ鍵の突き合わせ
@@ -368,3 +370,115 @@ dotnet run --project editor/tests/ProjectPanelPreviewProbe -- "<フォルダ or 
 | `PackagingRules` | 配布 PAK に**収録**するか | 収録する（ランタイムが読む） |
 
 同じ拡張子が正反対の扱いになるのが正常。片方の都合でもう片方を書き換えないこと。
+
+
+---
+
+## 9. 状態の永続化
+
+**エディタを閉じて開き直しても、プロジェクトパネルは前回の見え方で復帰する。**
+保存するのは次の 4 つ。いずれも「作業者個人の見え方」であってプロジェクトの内容ではない。
+
+| 覚えるもの | 単位 |
+|---|---|
+| 開いているタブの一覧と、各タブが開いているフォルダ | タブごと |
+| アクティブなタブ | プロジェクトごと |
+| フォルダツリーの展開集合 | タブごと |
+| ファイル一覧の選択アイテムと垂直スクロール位置 | タブごと |
+
+「隠しファイルを表示」トグルは対象外。こちらは**プロジェクトを跨ぐ好み**なので
+`EditorPreferences`（`editor/settings/editor_preferences.json`）へ既に入っている（[§8](#8-隠しファイルの非表示)）。
+
+### 置き場と書式
+
+`editor/settings/project_panel_state.json`。プロジェクトごとに 1 エントリ。
+
+```json
+{
+  "format_version": 1,
+  "projects": {
+    "d:/seed_projects/warashibe": {
+      "active_tab": 1,
+      "tabs": [
+        { "path": "", "expanded": [ "" ], "selected": null, "scroll": 0 },
+        {
+          "path": "mainGame/textures",
+          "expanded": [ "", "mainGame", "mainGame/textures" ],
+          "selected": "mainGame/textures/a.png",
+          "scroll": 120.0
+        }
+      ]
+    }
+  }
+}
+```
+
+- **キーはプロジェクトルートの正規化パス**（絶対パス → スラッシュ区切り → 小文字）。
+  1 つのエディタ設定フォルダを複数プロジェクトで共有するため。
+- **`path` / `expanded` / `selected` はアセットルート相対・スラッシュ区切り**。
+  空文字がアセットルート自身を表す。絶対パスで書くとプロジェクトフォルダを
+  移動・リネームしただけで全タブが無効になるため、相対で持つ。
+- `.scene` ごとのビュー状態（`view_state.json`）と同じ置き場・同じ流儀にしてある。
+  プロジェクトフォルダへ書くと、フォルダを開いただけでチームに差分が出てしまう。
+
+### 保存のタイミング
+
+デバウンス方式。**最後の変更から 500ms（`TabStateSaveDebounceMs`）後に 1 回だけ書く。**
+
+| きっかけ | 出どころ |
+|---|---|
+| タブの追加・削除・切替、フォルダ移動 | `ProjectPanel.Tabs.cs` の各操作関数が `RequestTabStateSave()` を呼ぶ |
+| ツリーの展開・折りたたみ | `TreeViewItem.Expanded` / `Collapsed` をツリー側で一括受信（バブリング） |
+| スクロール | `ScrollViewer.ScrollChanged`。デバウンスが効くので実質「スクロールが止まったら保存」 |
+| エディタ終了 | `MainWindow` の `OnClosing` から `PanelProject.FlushTabState()` |
+
+毎回書かないのは、ツリーを連続開閉しただけでファイル I/O が頻発するため。
+書き込み時は画面の最新状態を `CaptureActiveTabState()` でアクティブタブへ吸い上げてから写す。
+
+**アセットフォルダが使えない状態（警告オーバーレイ表示中）では保存しない。**
+その状態はツリーもタブバーも空なので、書くと前回の正しい状態を壊す。
+
+### 復元のタイミングと間引き
+
+`SetAssetsPath` → アセットルートが「利用可能」と判定された後、`InitTabs` の中で復元する。
+**いま実在しないパスは黙って間引く**（エディタの外でフォルダを消しても起動は壊れない）。
+
+| 保存されていたもの | 実体が無いとき |
+|---|---|
+| タブのフォルダ | **そのタブごとスキップ**。残ったタブに合わせてアクティブ添字を詰め直す |
+| 展開集合の要素 | その要素だけ落とす |
+| 選択アイテム | 選択なしにする（ファイル・フォルダどちらでも実在すれば復元する） |
+| アクティブ添字 | 範囲外なら 0 |
+
+1 枚も残らなければ、従来どおりアセットルートを開いたタブ 1 枚から始める。
+タブ数は `MaxRestoredTabs`（32 枚）で頭打ち。壊れた JSON で起動が重くならないための歯止め。
+
+### 描画は「アクティブタブだけ」
+
+復元時に全タブぶんファイル一覧を作り直すと、**画像・モデルのサムネイル要求がタブ枚数ぶん
+一気に積まれる**（モデルは IPC でランタイムに描かせるので特に高い、[§5](#5-3d-モデルのサムネイル)）。
+そのため復元では、非アクティブなタブは状態を保持するだけで描かず、
+アクティブタブ 1 枚だけを `ApplyTabState` で適用する。
+`InitTabs` は「復元したか」を返し、復元した場合は呼び出し側が
+`RefreshFileGrid()` を重ねて呼ばない（二重構築＝要求の二重発行を防ぐ）。
+
+### 壊れたファイルの扱い
+
+| 状況 | 挙動 |
+|---|---|
+| ファイルが無い | 初回起動の正常な状態。警告も出さず既定の 1 枚で始める |
+| JSON が壊れている | ログに理由を残して空状態で起動。次の保存で健全なファイルに上書きされる |
+| `format_version` が無い | バージョン導入前のファイルとして v1 相当に読む |
+| `format_version` が未来 | 警告を残しつつ読める範囲は読む。新しい版で作業した後に古いエディタを 1 回起動しただけでタブ構成が消えるほうが害が大きいため |
+| `scroll` が NaN / 負値 / 無限大 | 0 に丸める（`ScrollViewer` へ渡してレイアウトを壊さない） |
+| 相対パスが `..` でアセット外へ出る | 拒否する（保存ファイルを書き換えてアセット外を開かせられないように） |
+
+### 検証
+
+- 単体テスト: `editor/tests/ProjectPanelLogicTests`（相対化・絶対化、間引き、アクティブ添字の
+  付け替え、JSON の往復、壊れたファイルの扱い）。
+- 実機: ヘッドレス起動で復元結果をログへ出す。
+
+```
+プロジェクトパネルの状態を復元しました: タブ 3 枚 / アクティブ 1 / 場所 <絶対パス>
+```

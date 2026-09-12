@@ -43,6 +43,12 @@
     <Compile Include="..\..\src\Assets\ProjectPanelVisibilityRules.cs">
       <Link>Linked\Assets\ProjectPanelVisibilityRules.cs</Link>
     </Compile>
+    <!-- タブ状態の永続化（相対化・絶対化・間引き・JSON 読み書き）。
+         保存タイミングと再描画は WPF 側（Panels/ProjectPanel.StatePersistence.cs）の責務なので
+         ここには入らない＝このファイルが WPF を使い始めたら設計が崩れている合図になる。 -->
+    <Compile Include="..\..\src\Assets\ProjectPanelStateStore.cs">
+      <Link>Linked\Assets\ProjectPanelStateStore.cs</Link>
+    </Compile>
 
     <!-- テストランナーと一時フォルダは既存テストのものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">

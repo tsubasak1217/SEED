@@ -1464,6 +1464,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SaveLayout();
         // シーンごとのビュー状態はデバウンス保存なので、終了時に確実に書き出す
         SEEDEditor.Settings.EditorViewState.Flush();
+        // プロジェクトパネルのタブ状態（開いている場所・展開・選択・スクロール）も同様
+        PanelProject.FlushTabState();
         ReleasePlayClamp();
         UninstallKeyboardHook();
         UninstallTerrainMouseHook();

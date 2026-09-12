@@ -34,7 +34,14 @@ internal sealed class ProjectFolderTab
 /// <summary>
 /// ProjectPanel のタブ機構（改修2）。
 /// パネル上部ツールバー左側に「開いているフォルダ位置」を表すタブを並べ、
-/// クリックで即座に切り替えられるようにする。永続化はせずセッション限りの状態。
+/// クリックで即座に切り替えられるようにする。
+///
+/// <para>
+/// タブ状態はエディタの再起動をまたいで復元される。保存の仕組みは
+/// ProjectPanel.StatePersistence.cs（いつ書くか）と
+/// <see cref="SEEDEditor.Assets.ProjectPanelStateStore"/>（何をどう書くか）にある。
+/// このファイルは状態を変えたら <c>RequestTabStateSave()</c> を呼ぶだけでよい。
+/// </para>
 /// </summary>
 public partial class ProjectPanel
 {
@@ -99,15 +106,28 @@ public partial class ProjectPanel
     // ── 初期化・フォルダ移動の反映 ────────────────────────────────
 
     /// <summary>
-    /// タブ機構を初期化する。アセットルートを開いたタブ 1 枚だけの状態にする。
+    /// タブ機構を初期化する。
+    /// 前回終了時の状態が保存されていればそれを復元し、無ければ
+    /// アセットルートを開いたタブ 1 枚だけの状態にする。
     /// SetAssetsPath から呼ばれる（プロジェクト切替時は状態を作り直す）。
     /// </summary>
-    private void InitTabs(string rootPath)
+    /// <param name="rootPath">アセットルートの絶対パス。</param>
+    /// <returns>
+    /// 復元した場合は true（ファイル一覧の描画までこの中で完了している）。
+    /// 既定の 1 枚で始めた場合は false（呼び出し側が従来どおり描画する）。
+    /// </returns>
+    private bool InitTabs(string rootPath)
     {
         _tabs.Clear();
+
+        // ① 保存済みの構成を試す（存在しないフォルダのタブは間引かれる）。
+        if (TryRestoreTabs(rootPath)) return true;
+
+        // ② 保存が無い／全部無効だった → ルート 1 枚の既定状態から始める。
         _tabs.Add(new ProjectFolderTab { CurrentPath = rootPath });
         _activeTabIndex = 0;
         RebuildTabBar();
+        return false;
     }
 
     /// <summary>
@@ -125,6 +145,7 @@ public partial class ProjectPanel
         tab.SelectedPath = null;
         tab.ScrollOffset = 0;
         RebuildTabBar();
+        RequestTabStateSave();
     }
 
     // ── タブバーの構築 ────────────────────────────────────────────
@@ -257,6 +278,7 @@ public partial class ProjectPanel
         _activeTabIndex = index;
         RebuildTabBar();
         ApplyTabState(_tabs[index]);
+        RequestTabStateSave();
     }
 
     /// <summary>
@@ -286,6 +308,8 @@ public partial class ProjectPanel
             if (index < _activeTabIndex) _activeTabIndex--;
             RebuildTabBar();
         }
+
+        RequestTabStateSave();
     }
 
     /// <summary>
@@ -305,11 +329,12 @@ public partial class ProjectPanel
                 // すでにそのタブがアクティブ → 選択だけ更新する
                 _pendingSelectPath = selectPath;
                 RefreshFileGrid();
+                RequestTabStateSave();
             }
             else
             {
                 _tabs[existing].SelectedPath = selectPath;
-                ActivateTab(existing);
+                ActivateTab(existing);   // 保存要求は ActivateTab 側で出す
             }
             return;
         }
@@ -320,6 +345,7 @@ public partial class ProjectPanel
         _activeTabIndex = _tabs.Count - 1;
         RebuildTabBar();
         ApplyTabState(_tabs[_activeTabIndex]);
+        RequestTabStateSave();
     }
 
     /// <summary>
@@ -336,6 +362,7 @@ public partial class ProjectPanel
         _activeTabIndex = _tabs.Count - 1;
         RebuildTabBar();
         ApplyTabState(_tabs[_activeTabIndex]);
+        RequestTabStateSave();
     }
 
     // ── 状態の退避と復元 ──────────────────────────────────────────

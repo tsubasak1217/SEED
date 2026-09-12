@@ -88,6 +88,46 @@ public static class Program
         harness.Add("ファイルが無ければ組み込み既定へフォールバックする",  HiddenRulesMissingFile);
         harness.Add("同梱の project_panel_rules.json が既定と一致する",    HiddenRulesShippedFile);
 
+        // ── 相対パス → 絶対パスの復元（AssetUriPath.ToAbsolute）──
+        harness.Add("空文字はアセットルート自身に戻る",                    ToAbsoluteRootItself);
+        harness.Add("入れ子の相対パスを絶対パスへ戻せる",                  ToAbsoluteNested);
+        harness.Add("区切り文字はスラッシュでも円記号でもよい",            ToAbsoluteSeparators);
+        harness.Add("ルート外へ出る相対パスは拒否される",                  ToAbsoluteEscapesRoot);
+        harness.Add("絶対パス・null を渡すと null になる",                 ToAbsoluteRejectsRooted);
+        harness.Add("相対化と絶対化は往復する",                            ToAbsoluteRoundTrip);
+
+        // ── タブ状態: プロジェクトキー ───────────────────────
+        harness.Add("プロジェクトキーは区切り・大小の揺れを吸収する",      StateProjectKeyNormalizes);
+        harness.Add("プロジェクト未確定ならキーは作られない",              StateProjectKeyEmpty);
+
+        // ── タブ状態: 保存用の組み立て（絶対 → 相対）─────────
+        harness.Add("保存時にパスがアセットルート相対になる",              StateBuildRelativizes);
+        harness.Add("アセット外のタブは保存対象から落ちる",                StateBuildDropsOutsideRoot);
+        harness.Add("落ちたタブに合わせてアクティブ添字が詰まる",          StateBuildRemapsActive);
+        harness.Add("展開集合は並び順が安定する",                          StateBuildSortsExpanded);
+        harness.Add("異常なスクロール値は 0 に丸められる",                 StateBuildSanitizesScroll);
+        harness.Add("タブが 1 枚も無ければ保存内容は作られない",           StateBuildEmpty);
+
+        // ── タブ状態: 復元（相対 → 絶対・存在しないものを間引く）
+        harness.Add("実在するタブは絶対パスで復元される",                  StateResolveBasic);
+        harness.Add("消えたフォルダのタブはタブごと捨てられる",            StateResolveDropsMissingTab);
+        harness.Add("展開集合は消えた要素だけが捨てられる",                StateResolvePrunesExpanded);
+        harness.Add("消えた選択ファイルは選択なしになる",                  StateResolveClearsMissingSelection);
+        harness.Add("フォルダを選択していた場合も復元できる",              StateResolveSelectionCanBeFolder);
+        harness.Add("アクティブ添字が範囲外なら先頭に倒れる",              StateResolveActiveOutOfRange);
+        harness.Add("全タブが無効なら復元しない",                          StateResolveAllInvalid);
+        harness.Add("タブ数は上限で頭打ちになる",                          StateResolveTabLimit);
+        harness.Add("復元後のスクロール値も 0 以上の有限値になる",         StateResolveSanitizesScroll);
+
+        // ── タブ状態: ファイル読み書き ───────────────────────
+        harness.Add("保存して読み直すと同じ状態に戻る",                    StateStoreRoundTrip);
+        harness.Add("JSON のキー名と format_version が仕様どおり",         StateStoreJsonShape);
+        harness.Add("ファイルが無いときは警告なしで空になる",              StateStoreMissingFile);
+        harness.Add("壊れた JSON は警告付きで空になる",                    StateStoreBrokenJson);
+        harness.Add("format_version 無しの旧形式も読める",                 StateStoreLegacyNoVersion);
+        harness.Add("未知の format_version でも読める（警告あり）",        StateStoreFutureVersion);
+        harness.Add("プロジェクトごとにエントリが独立する",                StateStoreMultipleProjects);
+
         return harness.Run();
     }
 
@@ -706,5 +746,508 @@ public static class Program
         }
         throw new AssertionException(
             $"editor フォルダが見つかりません（起点: {AppContext.BaseDirectory}）");
+    }
+
+    // ── 相対パス → 絶対パス（AssetUriPath.ToAbsolute）──────────
+    //
+    //  タブ状態の保存はアセットルート相対で行うため、復元側の変換が要る。
+    //  ここが緩いと、保存ファイルに書かれた ".." だけでアセット外のフォルダを
+    //  パネルに開かせられてしまうので、ルート外へ出る入力の拒否まで含めて見る。
+
+    private static void ToAbsoluteRootItself()
+    {
+        Check.Equal(Path.GetFullPath(Root), AssetUriPath.ToAbsolute(Root, ""), "空文字はルート自身");
+    }
+
+    private static void ToAbsoluteNested()
+    {
+        Check.Equal(Path.GetFullPath(Root + @"\mainGame\textures"),
+                    AssetUriPath.ToAbsolute(Root, "mainGame/textures"), "入れ子フォルダ");
+        Check.Equal(Path.GetFullPath(Root + @"\mainGame\textures\a.png"),
+                    AssetUriPath.ToAbsolute(Root, "mainGame/textures/a.png"), "入れ子ファイル");
+    }
+
+    private static void ToAbsoluteSeparators()
+    {
+        // 保存ファイルはスラッシュ区切りだが、手で書き換えられた円記号も同じ結果になること。
+        Check.Equal(AssetUriPath.ToAbsolute(Root, "mainGame/textures"),
+                    AssetUriPath.ToAbsolute(Root, @"mainGame\textures"), "区切り文字の違いを吸収");
+    }
+
+    private static void ToAbsoluteEscapesRoot()
+    {
+        Check.Equal(null, AssetUriPath.ToAbsolute(Root, "../secrets"),        "親へ出る");
+        Check.Equal(null, AssetUriPath.ToAbsolute(Root, "mainGame/../../x"),  "途中で親へ出る");
+        Check.Equal(null, AssetUriPath.ToAbsolute(Root, ".."),                "親そのもの");
+    }
+
+    private static void ToAbsoluteRejectsRooted()
+    {
+        Check.Equal(null, AssetUriPath.ToAbsolute(Root, @"C:\elsewhere\x.png"), "絶対パス入力");
+        Check.Equal(null, AssetUriPath.ToAbsolute(Root, null),                  "null 入力");
+        Check.Equal(null, AssetUriPath.ToAbsolute(null, "mainGame"),            "ルート未指定");
+        Check.Equal(null, AssetUriPath.ToAbsolute("",   "mainGame"),            "ルート空文字");
+    }
+
+    private static void ToAbsoluteRoundTrip()
+    {
+        var absolute = Path.GetFullPath(Root + @"\mainGame\fonts\x.otf");
+        var relative = AssetUriPath.ToRelative(Root, absolute);
+        Check.Equal("mainGame/fonts/x.otf", relative, "相対化");
+        Check.Equal(absolute, AssetUriPath.ToAbsolute(Root, relative), "絶対化で元へ戻る");
+    }
+
+    // ── タブ状態の永続化（ProjectPanelStateStore）───────────────
+
+    /// <summary>
+    /// 一時フォルダに検証用のアセットツリーを作り、アセットルートの絶対パスを返す。
+    ///
+    /// <para>構成: assets/{mainGame/textures/a.png, prologue}</para>
+    /// 復元の間引き（実在するものだけ残す）は実ファイルを見るため、
+    /// ここだけは本物のフォルダを用意する。
+    /// </summary>
+    /// <param name="temp">作成先の一時フォルダ。</param>
+    private static string MakeAssetsTree(TempDir temp)
+    {
+        var root = temp.CreateSubDirectory("assets");
+        Directory.CreateDirectory(Path.Combine(root, "mainGame", "textures"));
+        Directory.CreateDirectory(Path.Combine(root, "prologue"));
+        File.WriteAllText(Path.Combine(root, "mainGame", "textures", "a.png"), "dummy");
+        return root;
+    }
+
+    /// <summary>保存用スナップショットを 1 行で作るヘルパー。</summary>
+    /// <param name="folder">開いているフォルダの絶対パス。</param>
+    /// <param name="expanded">展開集合の絶対パス。</param>
+    /// <param name="selected">選択アイテムの絶対パス。</param>
+    /// <param name="scroll">スクロール位置。</param>
+    private static ProjectPanelTabSnapshot Snap(
+        string folder, string[]? expanded = null, string? selected = null, double scroll = 0)
+        => new(folder, expanded ?? Array.Empty<string>(), selected, scroll);
+
+    private static void StateProjectKeyNormalizes()
+    {
+        var a = ProjectPanelStateStore.MakeProjectKey(@"C:\projects\Warashibe");
+        var b = ProjectPanelStateStore.MakeProjectKey(@"c:\PROJECTS\warashibe\");
+        var c = ProjectPanelStateStore.MakeProjectKey(@"C:/projects/Warashibe");
+        Check.Equal(a, b, "大文字小文字・末尾区切りの揺れ");
+        Check.Equal(a, c, "区切り文字の揺れ");
+        Check.True(a != null && !a.Contains('\\'), "キーはスラッシュ区切り");
+    }
+
+    private static void StateProjectKeyEmpty()
+    {
+        Check.Equal(null, ProjectPanelStateStore.MakeProjectKey(null), "null");
+        Check.Equal(null, ProjectPanelStateStore.MakeProjectKey(""),   "空文字");
+        Check.Equal(null, ProjectPanelStateStore.MakeProjectKey("   "), "空白のみ");
+    }
+
+    private static void StateBuildRelativizes()
+    {
+        var tabs = new List<ProjectPanelTabSnapshot>
+        {
+            Snap(Root, new[] { Root }),
+            Snap(Root + @"\mainGame\textures",
+                 new[] { Root + @"\mainGame", Root + @"\mainGame\textures" },
+                 Root + @"\mainGame\textures\a.png",
+                 120.0),
+        };
+
+        var state = ProjectPanelStateStore.BuildState(Root, tabs, activeTabIndex: 1);
+        Check.True(state != null, "保存内容が作られる");
+        Check.Equal(2,  state!.Tabs.Count, "タブ数");
+        Check.Equal("", state.Tabs[0].Path, "ルートタブは空文字");
+        Check.Equal("mainGame/textures",       state.Tabs[1].Path,     "2 枚目の場所");
+        Check.Equal("mainGame/textures/a.png", state.Tabs[1].Selected, "選択アイテム");
+        Check.Equal(120.0, state.Tabs[1].Scroll,    "スクロール位置");
+        Check.Equal(1,     state.ActiveTab,         "アクティブ添字");
+        Check.Equal(2,     state.Tabs[1].Expanded.Count, "展開集合の件数");
+        Check.Equal("mainGame", state.Tabs[1].Expanded[0], "展開集合も相対パス");
+    }
+
+    private static void StateBuildDropsOutsideRoot()
+    {
+        var tabs = new List<ProjectPanelTabSnapshot>
+        {
+            Snap(@"D:\somewhere\else"),          // アセット外 → 落ちる
+            Snap(Root),
+            Snap(Root + @"\prologue", new[] { @"D:\somewhere\else", Root + @"\prologue" }),
+        };
+
+        var state = ProjectPanelStateStore.BuildState(Root, tabs, activeTabIndex: 1);
+        Check.Equal(2, state!.Tabs.Count, "アセット外のタブは落ちる");
+        Check.Equal("", state.Tabs[0].Path, "先頭は元の 2 枚目");
+        Check.Equal(1, state.Tabs[1].Expanded.Count, "展開集合もアセット外は落ちる");
+    }
+
+    private static void StateBuildRemapsActive()
+    {
+        var tabs = new List<ProjectPanelTabSnapshot>
+        {
+            Snap(@"D:\outside"),
+            Snap(Root),
+            Snap(Root + @"\prologue"),
+        };
+
+        // アクティブ（元 index=2）は間引き後 index=1 へ付け替わる
+        Check.Equal(1, ProjectPanelStateStore.BuildState(Root, tabs, 2)!.ActiveTab, "詰め直し");
+        // アクティブ自体が落ちた場合は先頭へ倒れる
+        Check.Equal(0, ProjectPanelStateStore.BuildState(Root, tabs, 0)!.ActiveTab, "アクティブが落ちた");
+        // 範囲外の添字でも壊れた値を書き残さない
+        Check.Equal(0, ProjectPanelStateStore.BuildState(Root, tabs, 99)!.ActiveTab, "範囲外");
+    }
+
+    private static void StateBuildSortsExpanded()
+    {
+        // 元は HashSet なので列挙順が不定。保存内容は毎回同じ並びになること。
+        var expanded = new[] { Root + @"\prologue", Root + @"\mainGame", Root };
+        var state    = ProjectPanelStateStore.BuildState(Root, new List<ProjectPanelTabSnapshot>
+        {
+            Snap(Root, expanded),
+        }, 0);
+
+        var list = state!.Tabs[0].Expanded;
+        Check.Equal(3,          list.Count, "件数");
+        Check.Equal("",         list[0],    "1 番目");
+        Check.Equal("mainGame", list[1],    "2 番目");
+        Check.Equal("prologue", list[2],    "3 番目");
+    }
+
+    private static void StateBuildSanitizesScroll()
+    {
+        var tabs = new List<ProjectPanelTabSnapshot>
+        {
+            Snap(Root, scroll: double.NaN),
+            Snap(Root, scroll: -50),
+            Snap(Root, scroll: double.PositiveInfinity),
+            Snap(Root, scroll: 42.5),
+        };
+        var state = ProjectPanelStateStore.BuildState(Root, tabs, 0)!;
+        Check.Equal(0.0,  state.Tabs[0].Scroll, "NaN");
+        Check.Equal(0.0,  state.Tabs[1].Scroll, "負値");
+        Check.Equal(0.0,  state.Tabs[2].Scroll, "無限大");
+        Check.Equal(42.5, state.Tabs[3].Scroll, "正常値はそのまま");
+    }
+
+    private static void StateBuildEmpty()
+    {
+        Check.Equal(null, ProjectPanelStateStore.BuildState(Root, new List<ProjectPanelTabSnapshot>(), 0),
+                    "タブ 0 枚");
+        Check.Equal(null, ProjectPanelStateStore.BuildState(Root, null, 0), "null");
+        Check.Equal(null, ProjectPanelStateStore.BuildState("", new List<ProjectPanelTabSnapshot>
+        {
+            Snap(Root),
+        }, 0), "ルート未指定");
+        Check.Equal(null, ProjectPanelStateStore.BuildState(Root, new List<ProjectPanelTabSnapshot>
+        {
+            Snap(@"D:\outside"),
+        }, 0), "全部アセット外");
+    }
+
+    /// <summary>保存済みエントリを組み立てるヘルパー（復元テスト用）。</summary>
+    /// <param name="activeTab">アクティブ添字。</param>
+    /// <param name="tabs">タブ定義。</param>
+    private static ProjectPanelProjectStateFile SavedState(
+        int activeTab, params ProjectPanelTabStateFile[] tabs)
+        => new() { ActiveTab = activeTab, Tabs = new List<ProjectPanelTabStateFile>(tabs) };
+
+    private static void StateResolveBasic()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        var saved = SavedState(1,
+            new ProjectPanelTabStateFile { Path = "" },
+            new ProjectPanelTabStateFile
+            {
+                Path     = "mainGame/textures",
+                Expanded = { "mainGame", "mainGame/textures" },
+                Selected = "mainGame/textures/a.png",
+                Scroll   = 120.0,
+            });
+
+        var resolved = ProjectPanelStateStore.Resolve(saved, root);
+        Check.True(resolved != null, "復元できる");
+        Check.Equal(2, resolved!.Tabs.Count, "タブ数");
+        Check.Equal(1, resolved.ActiveTabIndex, "アクティブ添字");
+        Check.Equal(Path.GetFullPath(root), resolved.Tabs[0].FolderPath, "ルートタブ");
+        Check.Equal(Path.GetFullPath(Path.Combine(root, "mainGame", "textures")),
+                    resolved.Tabs[1].FolderPath, "2 枚目の場所");
+        Check.Equal(Path.GetFullPath(Path.Combine(root, "mainGame", "textures", "a.png")),
+                    resolved.Tabs[1].SelectedPath, "選択アイテム");
+        Check.Equal(120.0, resolved.Tabs[1].ScrollOffset, "スクロール位置");
+        Check.Equal(2, resolved.Tabs[1].ExpandedPaths.Count, "展開集合");
+    }
+
+    private static void StateResolveDropsMissingTab()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        // 真ん中のタブだけフォルダが消えている
+        var saved = SavedState(2,
+            new ProjectPanelTabStateFile { Path = "" },
+            new ProjectPanelTabStateFile { Path = "deleted/folder" },
+            new ProjectPanelTabStateFile { Path = "prologue" });
+
+        var resolved = ProjectPanelStateStore.Resolve(saved, root)!;
+        Check.Equal(2, resolved.Tabs.Count, "消えたタブは捨てられる");
+        Check.Equal(1, resolved.ActiveTabIndex, "アクティブ添字が詰まる");
+        Check.Equal(Path.GetFullPath(Path.Combine(root, "prologue")),
+                    resolved.Tabs[1].FolderPath, "残ったタブの場所");
+
+        // アクティブだったタブが消えていた場合は先頭へ倒れる
+        var activeGone = ProjectPanelStateStore.Resolve(SavedState(1,
+            new ProjectPanelTabStateFile { Path = "" },
+            new ProjectPanelTabStateFile { Path = "deleted/folder" }), root)!;
+        Check.Equal(1, activeGone.Tabs.Count,      "残り 1 枚");
+        Check.Equal(0, activeGone.ActiveTabIndex,  "先頭へ倒れる");
+    }
+
+    private static void StateResolvePrunesExpanded()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        var saved = SavedState(0, new ProjectPanelTabStateFile
+        {
+            Path     = "",
+            Expanded = { "mainGame", "deleted", "prologue", "../outside" },
+        });
+
+        var resolved = ProjectPanelStateStore.Resolve(saved, root)!;
+        Check.Equal(1, resolved.Tabs.Count, "タブは残る");
+        Check.Equal(2, resolved.Tabs[0].ExpandedPaths.Count, "消えた要素とアセット外だけ落ちる");
+        Check.Equal(Path.GetFullPath(Path.Combine(root, "mainGame")),
+                    resolved.Tabs[0].ExpandedPaths[0], "先頭の展開フォルダ");
+    }
+
+    private static void StateResolveClearsMissingSelection()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        var resolved = ProjectPanelStateStore.Resolve(SavedState(0, new ProjectPanelTabStateFile
+        {
+            Path     = "mainGame/textures",
+            Selected = "mainGame/textures/gone.png",
+        }), root)!;
+
+        Check.Equal(null, resolved.Tabs[0].SelectedPath, "消えたファイルは選択なし");
+    }
+
+    private static void StateResolveSelectionCanBeFolder()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        var resolved = ProjectPanelStateStore.Resolve(SavedState(0, new ProjectPanelTabStateFile
+        {
+            Path     = "",
+            Selected = "prologue",
+        }), root)!;
+
+        Check.Equal(Path.GetFullPath(Path.Combine(root, "prologue")),
+                    resolved.Tabs[0].SelectedPath, "フォルダの選択も復元できる");
+    }
+
+    private static void StateResolveActiveOutOfRange()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        var tab = new ProjectPanelTabStateFile { Path = "" };
+        Check.Equal(0, ProjectPanelStateStore.Resolve(SavedState(99, tab), root)!.ActiveTabIndex, "上に外れる");
+        Check.Equal(0, ProjectPanelStateStore.Resolve(SavedState(-1, tab), root)!.ActiveTabIndex, "下に外れる");
+    }
+
+    private static void StateResolveAllInvalid()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        Check.Equal(null, ProjectPanelStateStore.Resolve(SavedState(0,
+            new ProjectPanelTabStateFile { Path = "gone1" },
+            new ProjectPanelTabStateFile { Path = "gone2" }), root), "全タブ無効");
+        Check.Equal(null, ProjectPanelStateStore.Resolve(null, root), "保存が無い");
+        Check.Equal(null, ProjectPanelStateStore.Resolve(SavedState(0), root), "タブ 0 枚");
+        Check.Equal(null, ProjectPanelStateStore.Resolve(
+            SavedState(0, new ProjectPanelTabStateFile { Path = "" }),
+            temp.Combine("no_such_assets_root")), "アセットルートが無い");
+    }
+
+    private static void StateResolveTabLimit()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        // 上限を超える枚数（すべて実在するルート）を書いた壊れたファイルを想定する
+        var saved = new ProjectPanelProjectStateFile();
+        for (int i = 0; i < ProjectPanelStateStore.MaxRestoredTabs * 2; i++)
+            saved.Tabs.Add(new ProjectPanelTabStateFile { Path = "" });
+
+        var resolved = ProjectPanelStateStore.Resolve(saved, root)!;
+        Check.Equal(ProjectPanelStateStore.MaxRestoredTabs, resolved.Tabs.Count, "上限で頭打ち");
+    }
+
+    private static void StateResolveSanitizesScroll()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+
+        var resolved = ProjectPanelStateStore.Resolve(SavedState(0,
+            new ProjectPanelTabStateFile { Path = "", Scroll = -99 },
+            new ProjectPanelTabStateFile { Path = "", Scroll = double.NaN },
+            new ProjectPanelTabStateFile { Path = "", Scroll = 33.5 }), root)!;
+
+        Check.Equal(0.0,  resolved.Tabs[0].ScrollOffset, "負値");
+        Check.Equal(0.0,  resolved.Tabs[1].ScrollOffset, "NaN");
+        Check.Equal(33.5, resolved.Tabs[2].ScrollOffset, "正常値");
+    }
+
+    private static void StateStoreRoundTrip()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+        var file = temp.Combine(ProjectPanelStateStore.FileName);
+        var key  = ProjectPanelStateStore.MakeProjectKey(temp.Path);
+
+        var tabs = new List<ProjectPanelTabSnapshot>
+        {
+            Snap(root),
+            Snap(Path.Combine(root, "mainGame", "textures"),
+                 new[] { root, Path.Combine(root, "mainGame") },
+                 Path.Combine(root, "mainGame", "textures", "a.png"),
+                 120.0),
+        };
+
+        var store = ProjectPanelStateStore.LoadFile(file);
+        store.Set(key, ProjectPanelStateStore.BuildState(root, tabs, 1));
+        Check.True(store.Save(), "保存できる");
+        Check.True(File.Exists(file), "ファイルが作られる");
+
+        // 別インスタンスで読み直す＝エディタを起動し直したのと同じ状況
+        var reloaded = ProjectPanelStateStore.LoadFile(file);
+        Check.Equal(0, reloaded.Warnings.Count, "警告なしで読める");
+
+        var resolved = ProjectPanelStateStore.Resolve(reloaded.TryGet(key), root)!;
+        Check.Equal(2, resolved.Tabs.Count,     "タブ数が戻る");
+        Check.Equal(1, resolved.ActiveTabIndex, "アクティブが戻る");
+        Check.Equal(Path.GetFullPath(Path.Combine(root, "mainGame", "textures")),
+                    resolved.Tabs[1].FolderPath, "場所が戻る");
+        Check.Equal(Path.GetFullPath(Path.Combine(root, "mainGame", "textures", "a.png")),
+                    resolved.Tabs[1].SelectedPath, "選択が戻る");
+        Check.Equal(120.0, resolved.Tabs[1].ScrollOffset, "スクロールが戻る");
+        Check.Equal(2, resolved.Tabs[1].ExpandedPaths.Count, "展開集合が戻る");
+    }
+
+    private static void StateStoreJsonShape()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+        var file = temp.Combine(ProjectPanelStateStore.FileName);
+
+        var store = ProjectPanelStateStore.LoadFile(file);
+        store.Set(ProjectPanelStateStore.MakeProjectKey(temp.Path),
+            ProjectPanelStateStore.BuildState(root, new List<ProjectPanelTabSnapshot>
+            {
+                Snap(Path.Combine(root, "prologue"),
+                     new[] { root }, Path.Combine(root, "prologue"), 12.0),
+            }, 0));
+        Check.True(store.Save(), "保存できる");
+
+        // JSON のキー名は docs/editor_project_panel.md に書いた仕様そのもの。
+        // 名前を変えると過去の保存が読めなくなるため、文字列として固定する。
+        var json = File.ReadAllText(file);
+        foreach (var token in new[]
+                 {
+                     "\"format_version\": 1", "\"projects\"", "\"active_tab\"",
+                     "\"tabs\"", "\"path\"", "\"expanded\"", "\"selected\"", "\"scroll\"",
+                 })
+        {
+            Check.True(json.Contains(token, StringComparison.Ordinal), $"JSON に {token} がある");
+        }
+        // パスはアセットルート相対・スラッシュ区切り（絶対パスを書き込んでいない）
+        Check.True(json.Contains("\"prologue\"", StringComparison.Ordinal), "相対パスで保存されている");
+        Check.True(!json.Contains(root.Replace("\\", "\\\\"), StringComparison.OrdinalIgnoreCase),
+                   "絶対パスは書き込まれない");
+    }
+
+    private static void StateStoreMissingFile()
+    {
+        using var temp = new TempDir();
+        var store = ProjectPanelStateStore.LoadFile(temp.Combine("not_created_yet.json"));
+        // 初回起動でファイルが無いのは正常なので警告にしない
+        Check.Equal(0,    store.Warnings.Count, "警告なし");
+        Check.Equal(null, store.TryGet(ProjectPanelStateStore.MakeProjectKey(temp.Path)), "中身は空");
+    }
+
+    private static void StateStoreBrokenJson()
+    {
+        using var temp = new TempDir();
+        var file = temp.Combine(ProjectPanelStateStore.FileName);
+        File.WriteAllText(file, "{ これは JSON ではない");
+
+        var store = ProjectPanelStateStore.LoadFile(file);
+        Check.True(store.Warnings.Count > 0, "理由が警告に残る");
+        Check.Equal(null, store.TryGet("any"), "空状態で起動できる");
+        // 壊れたファイルの上から保存し直せること（次回は正常に読める）
+        Check.True(store.Save(), "上書き保存できる");
+        Check.Equal(0, ProjectPanelStateStore.LoadFile(file).Warnings.Count, "保存後は正常に読める");
+    }
+
+    private static void StateStoreLegacyNoVersion()
+    {
+        using var temp = new TempDir();
+        var file = temp.Combine(ProjectPanelStateStore.FileName);
+        // format_version キーが無い（バージョン導入前）ファイル
+        File.WriteAllText(file, "{\"projects\":{\"k\":{\"active_tab\":0,\"tabs\":[{\"path\":\"\"}]}}}");
+
+        var store = ProjectPanelStateStore.LoadFile(file);
+        Check.Equal(0, store.Warnings.Count, "警告なしで読める");
+        Check.True(store.TryGet("k") != null, "エントリを読める");
+        Check.Equal(1, store.TryGet("k")!.Tabs.Count, "タブも読める");
+    }
+
+    private static void StateStoreFutureVersion()
+    {
+        using var temp = new TempDir();
+        var file = temp.Combine(ProjectPanelStateStore.FileName);
+        File.WriteAllText(file,
+            "{\"format_version\":99,\"projects\":{\"k\":{\"active_tab\":0,\"tabs\":[{\"path\":\"\"}]}}}");
+
+        var store = ProjectPanelStateStore.LoadFile(file);
+        // 新しい版で作業した後に古いエディタを 1 回起動しただけでタブ構成が消えないよう、
+        // 未知バージョンでも読める範囲は読む（警告だけ残す）。
+        Check.True(store.Warnings.Count > 0, "未知バージョンは警告に残る");
+        Check.True(store.TryGet("k") != null, "読める範囲は読む");
+    }
+
+    private static void StateStoreMultipleProjects()
+    {
+        using var temp = new TempDir();
+        var root = MakeAssetsTree(temp);
+        var file = temp.Combine(ProjectPanelStateStore.FileName);
+
+        var keyA = ProjectPanelStateStore.MakeProjectKey(@"C:\projects\Alpha");
+        var keyB = ProjectPanelStateStore.MakeProjectKey(@"C:\projects\Bravo");
+
+        var store = ProjectPanelStateStore.LoadFile(file);
+        store.Set(keyA, ProjectPanelStateStore.BuildState(root, new List<ProjectPanelTabSnapshot>
+        {
+            Snap(root),
+        }, 0));
+        store.Set(keyB, ProjectPanelStateStore.BuildState(root, new List<ProjectPanelTabSnapshot>
+        {
+            Snap(root), Snap(Path.Combine(root, "prologue")),
+        }, 1));
+        Check.True(store.Save(), "保存できる");
+
+        var reloaded = ProjectPanelStateStore.LoadFile(file);
+        Check.Equal(1, reloaded.TryGet(keyA)!.Tabs.Count, "A は 1 枚");
+        Check.Equal(2, reloaded.TryGet(keyB)!.Tabs.Count, "B は 2 枚");
+        Check.Equal(1, reloaded.TryGet(keyB)!.ActiveTab,  "B のアクティブ");
+        Check.Equal(null, reloaded.TryGet(ProjectPanelStateStore.MakeProjectKey(@"C:\projects\Charlie")),
+                    "未登録のプロジェクトは空");
     }
 }

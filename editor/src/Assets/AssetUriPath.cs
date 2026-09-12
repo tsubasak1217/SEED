@@ -93,6 +93,50 @@ public static class AssetUriPath
     }
 
     /// <summary>
+    /// <see cref="ToRelative"/> の逆変換。アセットルート相対パスを絶対パスへ戻す。
+    ///
+    /// <para>
+    /// <see cref="SEEDEditor.VirtualPath.ToAbsolute"/> とは入力が違う。あちらは
+    /// <c>assets://…</c> 形式（スキーム付き）を受け取り、スキームが無ければ素通しする。
+    /// こちらはスキームの無い相対パスだけを受け取り、<b>アセットルート外へ出る入力は拒否する</b>。
+    /// 保存ファイルから読み戻した文字列のように、信用できない相対パスを解決するために使う。
+    /// </para>
+    /// </summary>
+    /// <param name="assetsRoot">アセットルートの絶対パス。</param>
+    /// <param name="relativePath">
+    /// アセットルートからの相対パス（区切りはスラッシュでもバックスラッシュでもよい）。
+    /// 空文字はアセットルート自身を表す。
+    /// </param>
+    /// <returns>
+    /// 絶対パス。ルートが空・入力が <c>null</c>・入力が絶対パス・
+    /// <c>..</c> でルート外へ出る場合は <c>null</c>。
+    /// </returns>
+    public static string? ToAbsolute(string? assetsRoot, string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(assetsRoot)) return null;
+        if (relativePath is null) return null;
+
+        string root;
+        try { root = Path.GetFullPath(assetsRoot); }
+        catch { return null; }   // 不正文字などでパスとして解釈できない
+
+        // 空文字（＝ルート自身）はそのままルートを返す。
+        if (relativePath.Length == 0) return root;
+
+        // 絶対パスを渡されたら拒否する。ルート配下に見えても、
+        // 「相対パスとして保存した値」という前提が崩れている入力は受け付けない。
+        if (Path.IsPathRooted(relativePath)) return null;
+
+        string full;
+        try { full = Path.GetFullPath(Path.Combine(root, relativePath)); }
+        catch { return null; }
+
+        // ".." でルート外へ出ていないかを、素の前方一致ではなく相対計算で確認する
+        // （"assets" と "assetsBackup" の取り違えを防ぐため ToRelative と同じ判定を通す）。
+        return ToRelative(root, full) is null ? null : full;
+    }
+
+    /// <summary>
     /// 絶対パスを <c>assets://</c> 仮想パスへ変換する。
     /// </summary>
     /// <param name="assetsRoot">アセットルートの絶対パス。</param>
