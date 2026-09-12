@@ -451,9 +451,21 @@ fn shaders_take_screen_derivatives_in_camera_relative_space() {
         deferred.contains("fn deferred_camera_relative_ivp("),
         "deferred_lighting.wgsl のカメラ相対 ivp ヘルパーが消えている"
     );
+    // 微分は必ず **カメラ相対座標** に対して取ること（絶対ワールド座標だと f32 桁落ちで
+    // Ng が数度ずれて黒斑点になる）。式の綴りは変わりうる（現在は ddx_pos/ddy_pos という
+    // 局所変数に取ってから cross する形）ので、**微分の対象**だけを固定する。
     assert!(
-        deferred.contains("cross(dpdx(camera_relative_pos), dpdy(camera_relative_pos))"),
+        deferred.contains("dpdx(camera_relative_pos)") && deferred.contains("dpdy(camera_relative_pos)"),
         "deferred_lighting.wgsl の Ng が絶対ワールド座標の微分へ戻っている（桁落ち再発）"
+    );
+    assert!(
+        deferred.contains("cross(ddx_pos, ddy_pos)"),
+        "deferred_lighting.wgsl の Ng が画面微分の外積でなくなっている"
+    );
+    // 深度量子化による Ng の信頼度判定（遠景の点状ノイズ対策）が消えていないこと。
+    assert!(
+        deferred.contains("DEFERRED_NG_ERR_TRUST_LO") && deferred.contains("DEFERRED_NG_ERR_TRUST_HI"),
+        "遠景で Ng を N へ倒す信頼度フォールバックが消えている（点状アクネが再発する）"
     );
     assert!(
         !deferred.contains("cross(dpdx(world_pos), dpdy(world_pos))"),

@@ -251,6 +251,22 @@
   関連: `runtime/src/engine/plugin/host.rs:164`、`runtime/src/engine/core/font/inline/image_meta.rs`、
   `runtime/src/engine/core/save/path.rs`。
 
+## deferred の幾何法線（2026-09-13 の遠景ドットノイズ対策の残件）
+
+- [ ] **幾何法線 Ng を G-Buffer へ焼けば根治できる** — 2026-09-13。現在 Ng は深度バッファの
+  画面微分で復元しているため、①深度不連続（草・地形 → RT1.w の authored フラグで回避）
+  ②f32 桁落ち（カメラ相対微分で解決済み）③**深度の量子化**（遠景 → 今回、誤差を見積もって
+  N へ倒す対策を入れた）という 3 つの誤差源を抱える。`surface.wgsl` の Surface コメントにある
+  案 (a)「octahedral 8:8 で G-Buffer へ 1 チャンネル追加」を採れば 3 つとも消え、
+  幾何ゲートを全距離で正しく効かせられる。コストは G-Buffer 帯域 +2byte/px と、
+  全 G-Buffer 書き込み側（static / skinned / terrain / grass / シェーディングアセット）の改修。
+  関連: `renderer/shaders/deferred_lighting.wgsl`（`DEFERRED_NG_ERR_TRUST_LO/HI`）、
+  `gbuffer_write.wgsl`、`surface.wgsl`。
+
+- [ ] **遠景（誤差 0.06 超＝典型的なカメラで 30m 以上）のメッシュでは幾何ゲートが効かない**
+  — 2026-09-13 の対策の副作用（意図的）。「法線マップが表と言い張る薄い面の裏面光漏れ」が
+  その距離では防げない。上の G-Buffer 化で解消する。近距離（〜10m）は従来どおり完全に効く。
+
 ## シャドウマップ品質（2026-09-13 の改修時の残件）
 
 正典: [docs/shadow_mapping.md](shadow_mapping.md)。今回入れたのは

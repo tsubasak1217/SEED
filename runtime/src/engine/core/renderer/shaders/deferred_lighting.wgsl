@@ -152,6 +152,42 @@ const DEFERRED_BACKGROUND_DEPTH: f32 = 1.0;
 /// 法線マップ後の薄い面での光漏れ防止（geo_gate 本来の目的）を維持する。
 const GBUFFER_NORMAL_AUTHORED_THRESHOLD: f32 = 0.5;
 
+/// Depth32Float の相対 1 ulp（2^-23）。深度 1 段ぶんの刻み幅を `depth * この値` で見積もる。
+///
+/// f32 の ulp は指数で決まり、x∈[0.5,1) なら 2^-24、x∈[1,2) なら 2^-23 と 2 倍刻みで変わる。
+/// ここでは**安全側（大きめ）**に 2^-23 を使う。誤差の見積もりが過大なら
+/// 幾何ゲートが早めに緩むだけで、絵が壊れる方向には倒れない。
+const DEFERRED_DEPTH_F32_ULP: f32 = 1.1920929e-7;
+
+/// 深度復元 Ng の**推定角度誤差**（cos 単位）のうち、まだ完全に信用してよい上限。
+/// この値以下では従来どおり深度復元 Ng をそのまま幾何ゲートへ使う。
+///
+/// 0.02 は lighting_eval.wgsl の幾何ゲートが持つ遷移帯（RT_GEO_SHADOW_SOFT_COS）と同値。
+/// 「ゲート自身が吸収できる誤差の範囲」を信用の境目に置く、という決め方である。
+const DEFERRED_NG_ERR_TRUST_LO: f32 = 0.02;
+
+/// 深度復元 Ng を**完全に捨てて G-Buffer 法線 N へ倒す**推定角度誤差（cos 単位）。
+///
+/// ## なぜ必要か（遠景の島の斜面に出る点状ノイズの根治）
+/// Ng は深度バッファの画面微分で作るため、遠方では**深度そのものの量子化**が効く。
+/// 非線形な [0,1] 深度では 1 ulp が遠方で大きなワールド距離に化ける
+/// （near=0.1 / far=1000 のカメラで 5m なら 0.03mm、440m では 22cm 相当）。
+/// これが「1 画素ぶんのワールド距離」と同程度になると Ng は数十度の単位で暴れ、
+/// lighting_eval.wgsl の幾何ゲートがターミネータ付近で 0/1 に振れて
+/// **点状・ハッチ状の黒いドット**になる（遠景の島の斜面で実機確認）。
+/// 深度不連続（草・地形）は RT1.w の authored フラグで既に手当て済みだが、
+/// 本件は連続した 1 枚の斜面の内部でも起きる**別要因**なのでこちらで塞ぐ。
+///
+/// ## 0.06 の根拠
+/// 誤差がゲートの遷移帯（0.02）の 3 倍に達したら、そのゲートはもう
+/// 「幾何的に裏か表か」を判定できていない。3 倍を境に N（G-Buffer 法線＝
+/// 三角形をまたいで滑らか・量子化ノイズなし）へ倒す。
+/// 典型的なカメラ（fov 25°・720p・near 0.1/far 1000）では概ね
+/// 10m 以下で完全に Ng、30m 以上で完全に N、その間が滑らかな混合になる。
+/// N へ倒すと「法線マップが表と言い張る薄い面の裏側光漏れ」を防ぐ本来の目的は
+/// その距離では失われるが、漏れ自体が数ピクセル未満に縮む距離なので割り切る。
+const DEFERRED_NG_ERR_TRUST_HI: f32 = 0.06;
+
 // ── RT ソフト影マスクの「深度を考慮した」アップサンプル定数（Phase RT-Shadow-Denoise 改良）──
 //
 // 症状: 半解像度マスク（いもす法ボックスブラー済み）をバイリニアでフル解像度へ拡大すると、
@@ -298,11 +334,27 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // camera_relative_pos は絶対ワールド座標ではないので桁落ちしない。詳細な根拠は
     // deferred_camera_relative_ivp のコメントを参照。除算に使う w は上の clip.w と
     // ビット単位で同一（平行移動の除去は w 行を変えない）。
-    let rel4 = deferred_camera_relative_ivp(u_camera.inv_view_proj, u_camera.position) * ndc4;
+    let ivp_rel = deferred_camera_relative_ivp(u_camera.inv_view_proj, u_camera.position);
+    let rel4 = ivp_rel * ndc4;
     let camera_relative_pos = rel4.xyz / rel4.w;
     // 外積は平行移動不変（cross(dpdx(p - c), dpdy(p - c)) == cross(dpdx(p), dpdy(p)) が
     // 実数演算では厳密に成り立つ）ため、Ng の**意味**は従来と完全に同一。変わるのは精度だけ。
-    let ng_raw = cross(dpdx(camera_relative_pos), dpdy(camera_relative_pos));
+    let ddx_pos = dpdx(camera_relative_pos);
+    let ddy_pos = dpdy(camera_relative_pos);
+    let ng_raw  = cross(ddx_pos, ddy_pos);
+
+    // ── 1-c) 深度量子化に由来する Ng の誤差見積もり ───────────────────────────
+    // 「深度を 1 ulp 動かしたとき復元位置がワールドで何 m 動くか」を、そのまま
+    // 「1 画素ぶんのワールド移動量」と比べる。比がそのまま Ng の角度誤差（rad ≒ cos 単位）の
+    // 目安になる（微分は隣接画素の差であり、その差に量子化幅ぶんの不定性が乗るため）。
+    // 近距離では 1e-2 以下、遠景では 1 に迫る。ここでは discard より前に済ませる必要は
+    // ない（微分を使うのは pixel_world だけで、その微分は上で取得済み）。
+    let depth_quant_ndc = abs(depth) * DEFERRED_DEPTH_F32_ULP;
+    let rel4_q = ivp_rel * vec4<f32>(ndc.x, ndc.y, depth + depth_quant_ndc, 1.0);
+    let quant_world = length(rel4_q.xyz / rel4_q.w - camera_relative_pos);
+    let pixel_world = max(length(ddx_pos), length(ddy_pos));
+    // 0 除算回避の下限は「1 画素で 1nm も動かない＝縮退」しきい値。
+    let ng_err = clamp(quant_world / max(pixel_world, 1e-9), 0.0, 1.0);
 
     // ── 2) 背景ピクセルは discard（クリア色／スカイボックスを保持）───
     if depth >= DEFERRED_BACKGROUND_DEPTH {
@@ -358,6 +410,14 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if g1.w >= GBUFFER_NORMAL_AUTHORED_THRESHOLD {
         Ng = N;
     }
+    // ── 遠景（深度量子化で Ng が荒れる領域）は N へ滑らかにフォールバック ────────
+    // 上の authored フラグ（草・地形）は「深度**不連続**で暴れる」ケースの手当てで、
+    // こちらは「連続面でも遠いと深度の**量子化**で暴れる」ケースの手当て。
+    // しきい値は DEFERRED_NG_ERR_TRUST_LO/HI のコメントを参照。
+    // ng_err が小さい（＝近距離）ときは trust=1 で従来と 1 ビットも変わらない。
+    let ng_trust = 1.0 - smoothstep(DEFERRED_NG_ERR_TRUST_LO, DEFERRED_NG_ERR_TRUST_HI, ng_err);
+    // Ng は既に N と同じ半球へ揃えてあるので dot(Ng,N) >= 0、混合がゼロ長になることはない。
+    Ng = normalize(mix(N, Ng, ng_trust));
 
     // ── 5) Surface を構築して既存のライト評価へ渡す ─────────────
     // vertex_normal（Nv）は焼いていないため N で代用する。これにより RT 影の
