@@ -227,6 +227,18 @@ impl<'d> RenderPipelineBuilder<'d> {
         self
     }
 
+    /// 深度バイアス（constant / slope_scale / clamp）を上書きする（TOML の値より優先）。
+    ///
+    /// シャドウ深度パスのように「バイアスをプロジェクト設定から差し替えたい」場合に使う。
+    /// TOML 側は既定値の置き場として残し、設定が与えられたときだけここで上書きする
+    /// （TOML を書き換える／文字列置換するといった経路を作らないための入口）。
+    pub fn with_depth_bias(mut self, constant: i32, slope_scale: f32, clamp: f32) -> Self {
+        self.cfg.depth_bias_constant    = constant;
+        self.cfg.depth_bias_slope_scale = slope_scale;
+        self.cfg.depth_bias_clamp       = clamp;
+        self
+    }
+
     /// デバッグラベルを設定する（検証エラー時にどのパイプラインか特定しやすくする）。
     pub fn with_label(mut self, label: &'d str) -> Self {
         self.label = Some(label);

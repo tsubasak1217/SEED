@@ -151,9 +151,10 @@ WBOIT 3 + オーバーレイ 1 + パーティクル 1 + ブルーム/トーン�
 | 項目 | 内容 |
 |---|---|
 | 目的 | 方向光 CSM 3 カスケード＋スポット最大 4 灯の深度描画 |
-| 入出力 | 出力: `dir_tex`（`Depth32Float` の 3 レイヤ配列, 2048x2048）、スポット 1024x1024 |
+| 入出力 | 出力: `dir_tex`（`Depth32Float` の 3 レイヤ配列, 既定 2048x2048。`shadow.resolution` で 1024/2048/4096）、スポット 1024x1024 |
 | シェーダ | `depth_prepass.wgsl`（深度のみ）。読み取り側は `shadow.wgsl`（group4 binding2..5） |
-| 実装 | 行列準備 `frame_renderer.rs:1157`（`shadow.prepare_frame`）、深度記録 `:3942`（`shadow.record`）。定数は `renderer/shadow.rs:43-54`（`CSM_CASCADE_COUNT=3` / `SHADOW_MAP_SIZE=2048` / `SPOT_SHADOW_SIZE=1024` / `MAX_SHADOW_SPOTS=4` / `CSM_SPLIT_LAMBDA=0.5`） |
+| 実装 | 行列準備 `frame_renderer.rs:1157`（`shadow.prepare_frame`）、深度記録 `:3942`（`shadow.record`）。固定定数は `renderer/shadow.rs`（`CSM_CASCADE_COUNT=3` / `SPOT_SHADOW_SIZE=1024` / `MAX_SHADOW_SPOTS=4`）、**品質パラメータ**（解像度・影距離・分割係数・バイアス・PCF）は `renderer/shadow_settings.rs` と `project_settings.json` の `shadow` ブロック → [shadow_mapping.md](shadow_mapping.md) |
+| 品質 | 法線オフセット＋カスケード別深度バイアス＋回転 Vogel ディスク PCF。設計と設定は [shadow_mapping.md](shadow_mapping.md) が正典 |
 | Edit / Play | 差なし（キャスターが 0 なら 0 コストでスキップ）。ただし CSM はカメラ固有のため Edit ではデバッグカメラ基準。散布モデル（`kind=Model` プロップ）もキャスターに含む |
 
 ### 2.6 RT 加速構造ビルド（BLAS / TLAS）

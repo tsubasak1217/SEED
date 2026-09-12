@@ -14,6 +14,9 @@ pub(crate) mod lighting;
 pub(crate) mod clustered;
 pub(crate) mod ddgi;
 pub(crate) mod shadow;
+/// シャドウマップ品質設定（解像度・分割・バイアス・PCF）。project_settings.json の
+/// `shadow` ブロックから読み、シェーダ・パイプライン・行列計算の 3 系統が参照する。
+pub mod shadow_settings;
 pub(crate) mod rt_shadow;
 /// スキンメッシュの RT 加速構造（Phase RT-Skin）。変形後頂点の書き出し＋専用 BLAS 管理。
 pub(crate) mod rt_skin_blas;
@@ -165,6 +168,8 @@ pub use clustered::{ClusterResources, partition_directional_first,
                     MAX_LIGHTS_PER_CLUSTER};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
+pub use shadow_settings::{ShadowQuality, parse_shadow_quality, set_shadow_quality, shadow_quality,
+                          SHADOW_RESOLUTION_CHOICES};
 pub use rt_shadow::RtShadowResources;
 // B2/B3 が消費する API 群。B1 時点ではエンジン内から一部しか参照しないため未使用警告が出るが、
 // 公開 API 面の一覧として明示的に re-export しておく（消費側 B2 が pub パスで使う）。

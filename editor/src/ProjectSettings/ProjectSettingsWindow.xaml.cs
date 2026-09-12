@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -60,6 +61,7 @@ public partial class ProjectSettingsWindow : Window
             new("resolution",     "解像度設定", IsImplemented: true),
             new("render_quality", "レンダリング品質"),
             new("rt_shadows",     "RTシャドウ", IsImplemented: true),
+            new("shadow_quality", "シャドウマップ品質", IsImplemented: true),
         }),
         // ── オーディオ設定（将来実装）──────────────────────────────
         new("audio", "オーディオ", new()
@@ -340,6 +342,7 @@ public partial class ProjectSettingsWindow : Window
             "scene_manager"  => BuildSceneManagerPanel(),
             "resolution"     => BuildResolutionPanel(),
             "rt_shadows"     => BuildRtShadowsPanel(),
+            "shadow_quality" => BuildShadowQualityPanel(),
             "plugin_manage"  => BuildPluginManagePanel(),
             _                => BuildPlaceholderPanel(GetSubItemLabel(subItemId)),
         };
@@ -1035,6 +1038,282 @@ public partial class ProjectSettingsWindow : Window
         _runtimeManager?.SendToRuntime($"RT_SHADOWS:{(enabled ? "1" : "0")}");
     }
 
+    // ── シャドウマップ品質パネル ──────────────────────────────
+
+    /// <summary>影方式（features.shadow）が RT のときの JSON 値。この値のときは品質 UI を隠す。</summary>
+    private const string ShadowFeatureModeRt = "rt";
+
+    /// <summary>
+    /// シャドウ品質パネルのラベル列の幅 [px]。
+    /// 他パネル（120px）より広いのは、「定数深度バイアス[テクセル]」等の項目名が
+    /// 120px には収まらないため。行レイアウトの構造自体（ラベル列＋入力列の Grid）は共通にする。
+    /// </summary>
+    private const double ShadowQualityLabelColumnWidth = 190;
+
+    /// <summary>解像度コンボボックス（1024 / 2048 / 4096）。</summary>
+    private ComboBox? _cmbShadowResolution;
+    /// <summary>影の最大距離 [m] 入力欄。</summary>
+    private TextBox? _tbShadowDistance;
+    /// <summary>カスケード分割係数入力欄。</summary>
+    private TextBox? _tbShadowSplitLambda;
+    /// <summary>法線オフセット [テクセル] 入力欄。</summary>
+    private TextBox? _tbShadowNormalOffset;
+    /// <summary>定数深度バイアス [テクセル] 入力欄。</summary>
+    private TextBox? _tbShadowDepthBias;
+    /// <summary>slope バイアス入力欄。</summary>
+    private TextBox? _tbShadowSlopeBias;
+    /// <summary>PCF 半径 [テクセル] 入力欄。</summary>
+    private TextBox? _tbShadowPcfRadius;
+    /// <summary>PCF タップ数コンボボックス（1〜16）。</summary>
+    private ComboBox? _cmbShadowPcfTaps;
+
+    /// <summary>
+    /// project_settings.json ルートの "features" ブロックから影方式（features.shadow）を読み取る。
+    /// "features" は ProjectSettingsData が強い型でモデル化していないキーのため ExtraData に
+    /// 入っている（ビューポートツールバー等が書き込む機能マトリクス。SceneSettings 側の
+    /// RenderFeatureSettings.Shadow と同じ JSON 表現）。
+    /// ブロックが無い・shadow キーが無い・文字列でない場合はランタイム側既定の "shadowmap" を返す。
+    /// </summary>
+    private string GetProjectShadowFeatureMode()
+    {
+        const string defaultMode = "shadowmap";
+        if (_data.ExtraData.TryGetValue("features", out var features)
+            && features.ValueKind == JsonValueKind.Object
+            && features.TryGetProperty("shadow", out var shadowMode)
+            && shadowMode.ValueKind == JsonValueKind.String)
+        {
+            var value = shadowMode.GetString();
+            if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+        }
+        return defaultMode;
+    }
+
+    /// <summary>
+    /// 「シャドウマップ品質」設定パネルを構築して返す。
+    /// 影方式（features.shadow）が "shadowmap"（既定）のときだけ入力欄を表示し、
+    /// "rt"（レイトレ影）のときは説明文のみを表示する（このパネルの値はシャドウマップ
+    /// 経路でしか参照されないため）。影方式の切替そのものはシーン設定ウィンドウの役割であり、
+    /// このパネルからは変更しない。
+    /// </summary>
+    private UIElement BuildShadowQualityPanel()
+    {
+        var panel = new StackPanel();
+
+        panel.Children.Add(BuildPanelHeader(
+            "シャドウマップ品質",
+            "CSM（カスケードシャドウマップ）による影描画の品質パラメータです。\n" +
+            "影方式がシャドウマップ（features.shadow = \"shadowmap\"）のときのみ使用されます。"));
+
+        panel.Children.Add(new Border
+        {
+            Height     = 1,
+            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+            Margin     = new Thickness(0, 0, 0, 16),
+        });
+
+        // パネルを開くたびに入力欄参照をリセットする。
+        // RT 表示中は下の早期 return で null のままになり、CollectSettingsFromUi が
+        // 古い TextBox/ComboBox の値で _data.Shadow を誤って上書きしないようにするため。
+        _cmbShadowResolution  = null;
+        _tbShadowDistance     = null;
+        _tbShadowSplitLambda  = null;
+        _tbShadowNormalOffset = null;
+        _tbShadowDepthBias    = null;
+        _tbShadowSlopeBias    = null;
+        _tbShadowPcfRadius    = null;
+        _cmbShadowPcfTaps     = null;
+
+        if (string.Equals(GetProjectShadowFeatureMode(), ShadowFeatureModeRt, StringComparison.OrdinalIgnoreCase))
+        {
+            // RT 影が選択されている間、シャドウマップ品質はランタイムから一切参照されない
+            // （shadow_settings.rs のコメント参照）。入力欄を出しても混乱するだけなので説明文のみ表示する。
+            panel.Children.Add(new TextBlock
+            {
+                Text         = "レイトレ影（features.shadow = \"rt\"）が選択されているため、この設定は使用されません。\n" +
+                               "影方式はシーン設定ウィンドウで切り替えます。",
+                Foreground   = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize     = 12,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            return panel;
+        }
+
+        // 万一 "shadow": null という壊れた JSON を読み込んでいた場合の保険
+        // （表示だけならここで新規既定値を作れば十分。_data 自体の修復は CollectSettingsFromUi 側で行う）。
+        var shadow = _data.Shadow ?? new ShadowQualitySettings();
+
+        // ── 解像度 ──
+        panel.Children.Add(BuildShadowQualityComboRow(
+            "解像度",
+            out _cmbShadowResolution,
+            ShadowQualitySettings.ResolutionChoices.Select(r => (r.ToString(), (object)r)).ToArray(),
+            shadow.Resolution));
+        panel.Children.Add(BuildShadowQualityNote(
+            "変更はランタイム再起動後に反映されます（深度テクスチャを起動時に確保するため）。\n" +
+            "大きいほど影の輪郭・アクネが減りますが、VRAM 消費と描画コストが増えます。"));
+
+        // ── 影の最大距離 ──
+        panel.Children.Add(BuildShadowQualityTextRow("影の最大距離[m]", out _tbShadowDistance, shadow.Distance));
+        panel.Children.Add(BuildShadowQualityNote(
+            "影を描画する最大距離です（カメラの far クリップ距離との小さい方が使われます）。\n" +
+            "小さくするほど手前の影が精細になり、大きくするほど遠くまで影が届く代わりに手前の影が粗くなります。\n" +
+            $"範囲: {ShadowQualitySettings.DistanceMin}〜{ShadowQualitySettings.DistanceMax}"));
+
+        // ── カスケード分割係数 ──
+        panel.Children.Add(BuildShadowQualityTextRow("カスケード分割係数", out _tbShadowSplitLambda, shadow.SplitLambda));
+        panel.Children.Add(BuildShadowQualityNote(
+            "カスケード分割の均等・対数ブレンド係数です。0=均等分割、1=対数分割。\n" +
+            "大きいほど近景のカスケードが精細になります（その分、遠景側の負担が増えます）。\n" +
+            $"範囲: {ShadowQualitySettings.SplitLambdaMin}〜{ShadowQualitySettings.SplitLambdaMax}"));
+
+        // ── 法線オフセット ──
+        panel.Children.Add(BuildShadowQualityTextRow("法線オフセット[テクセル]", out _tbShadowNormalOffset, shadow.NormalOffsetTexels));
+        panel.Children.Add(BuildShadowQualityNote(
+            "大きいほどシャドウアクネ（縞模様）が消えますが、大きくしすぎると影が本体から\n" +
+            "浮いて見える「ピーターパン」現象が出ます。\n" +
+            $"範囲: {ShadowQualitySettings.TexelScaleMin}〜{ShadowQualitySettings.TexelScaleMax}"));
+
+        // ── 定数深度バイアス ──
+        panel.Children.Add(BuildShadowQualityTextRow("定数深度バイアス[テクセル]", out _tbShadowDepthBias, shadow.DepthBiasTexels));
+        panel.Children.Add(BuildShadowQualityNote(
+            "法線オフセットだけでは消しきれないアクネの最終保険です。\n" +
+            "大きいほどアクネは消えますが、法線オフセットと同様にピーターパンが強まります。\n" +
+            $"範囲: {ShadowQualitySettings.TexelScaleMin}〜{ShadowQualitySettings.TexelScaleMax}"));
+
+        // ── slope バイアス ──
+        panel.Children.Add(BuildShadowQualityTextRow("slope バイアス", out _tbShadowSlopeBias, shadow.SlopeBias));
+        panel.Children.Add(BuildShadowQualityNote(
+            "深度書き込み側（ラスタライザ）の傾き比例バイアスです。面が光源に対して傾くほど\n" +
+            "強く掛かり、法線オフセットとは別経路でシャドウアクネを抑えます。\n" +
+            $"範囲: {ShadowQualitySettings.SlopeBiasMin}〜{ShadowQualitySettings.SlopeBiasMax}"));
+
+        // ── PCF 半径 ──
+        panel.Children.Add(BuildShadowQualityTextRow("PCF 半径[テクセル]", out _tbShadowPcfRadius, shadow.PcfRadiusTexels));
+        panel.Children.Add(BuildShadowQualityNote(
+            "影の輪郭を柔らかくするフィルタ半径です。大きいほど輪郭が柔らかくなりますが、\n" +
+            "接地部の影が薄く（光漏れ気味に）見えるようになります。\n" +
+            $"範囲: {ShadowQualitySettings.TexelScaleMin}〜{ShadowQualitySettings.TexelScaleMax}"));
+
+        // ── PCF タップ数 ──
+        var pcfTapsChoices = Enumerable
+            .Range(ShadowQualitySettings.PcfTapsMin, ShadowQualitySettings.PcfTapsMax - ShadowQualitySettings.PcfTapsMin + 1)
+            .Select(n => (n.ToString(), (object)n))
+            .ToArray();
+        panel.Children.Add(BuildShadowQualityComboRow("PCF タップ数", out _cmbShadowPcfTaps, pcfTapsChoices, shadow.PcfTaps));
+        panel.Children.Add(BuildShadowQualityNote(
+            $"影の輪郭をぼかすサンプル数です（{ShadowQualitySettings.PcfTapsMin}〜{ShadowQualitySettings.PcfTapsMax}）。\n" +
+            "多いほど滑らかになりますが、ピクセルシェーダの負荷が上がります。"));
+
+        return panel;
+    }
+
+    /// <summary>
+    /// シャドウ品質パネルの数値入力行を 1 行構築する（ラベル＋TextBox）。
+    /// 解像度設定パネル等と同じ「ラベル列＋入力列」の Grid レイアウトに揃える
+    /// （ラベル列幅だけ ShadowQualityLabelColumnWidth に広げている）。
+    /// </summary>
+    /// <param name="label">左側に表示するラベル文字列。</param>
+    /// <param name="textBox">生成した TextBox（呼び出し側でフィールドに保持し、値収集に使う）。</param>
+    /// <param name="currentValue">初期表示値。</param>
+    private Grid BuildShadowQualityTextRow(string label, out TextBox textBox, double currentValue)
+    {
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ShadowQualityLabelColumnWidth) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var labelBlock = new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(labelBlock, 0);
+        row.Children.Add(labelBlock);
+
+        textBox = new TextBox
+        {
+            Text                = currentValue.ToString(CultureInfo.InvariantCulture),
+            FontSize            = 12,
+            Width               = 100,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Style               = (Style)Resources["SettingTextBox"],
+        };
+        Grid.SetColumn(textBox, 1);
+        row.Children.Add(textBox);
+
+        return row;
+    }
+
+    /// <summary>
+    /// シャドウ品質パネルのコンボボックス行を 1 行構築する（ラベル＋ComboBox）。
+    /// </summary>
+    /// <param name="label">左側に表示するラベル文字列。</param>
+    /// <param name="comboBox">生成した ComboBox（呼び出し側でフィールドに保持する）。</param>
+    /// <param name="choices">選択肢一覧（表示文字列, Tag に入れる値）の配列。</param>
+    /// <param name="currentValue">
+    /// 初期選択値。choices のいずれかの Tag と一致する項目を選択する（一致が無ければ先頭を選択）。
+    /// </param>
+    private Grid BuildShadowQualityComboRow(
+        string label, out ComboBox comboBox, (string Text, object Tag)[] choices, object currentValue)
+    {
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ShadowQualityLabelColumnWidth) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var labelBlock = new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(labelBlock, 0);
+        row.Children.Add(labelBlock);
+
+        // 配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる
+        var combo = new ComboBox { FontSize = 12, Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
+        // 手編集された project_settings.json 等で選択肢に無い値（解像度 3000 等）を読んだ場合は、
+        // 先頭固定ではなく数値として最も近い選択肢を選ぶ（Rust 側 nearest_resolution() と同じ考え方）。
+        // 完全一致が見つかった時点で以降の近似探索は打ち切る（diff=0 は他のどの差よりも必ず小さいため）。
+        int selectedIndex = 0;
+        long bestDiff = long.MaxValue;
+        for (int i = 0; i < choices.Length; i++)
+        {
+            combo.Items.Add(new ComboBoxItem { Content = choices[i].Text, Tag = choices[i].Tag });
+            if (Equals(choices[i].Tag, currentValue))
+            {
+                selectedIndex = i;
+                bestDiff = 0;
+            }
+            else if (bestDiff != 0 && choices[i].Tag is int choiceInt && currentValue is int currentInt)
+            {
+                long diff = Math.Abs((long)choiceInt - currentInt);
+                if (diff < bestDiff)
+                {
+                    bestDiff = diff;
+                    selectedIndex = i;
+                }
+            }
+        }
+        combo.SelectedIndex = selectedIndex;
+        comboBox = combo;
+        Grid.SetColumn(comboBox, 1);
+        row.Children.Add(comboBox);
+
+        return row;
+    }
+
+    /// <summary>シャドウ品質パネルの説明文行を構築する（他パネルと同じ薄いグレー・11px・折返し）。</summary>
+    private static TextBlock BuildShadowQualityNote(string text) => new()
+    {
+        Text         = text,
+        Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+        FontSize     = 11,
+        TextWrapping = TextWrapping.Wrap,
+        Margin       = new Thickness(ShadowQualityLabelColumnWidth, 4, 0, 12),
+    };
+
     /// <summary>
     /// 未実装の設定項目に表示するプレースホルダーパネルを構築して返す。
     /// </summary>
@@ -1174,6 +1453,69 @@ public partial class ProjectSettingsWindow : Window
         // 「RTシャドウ」パネルのチェック状態を収集する
         if (_rtShadowsCheckBox is not null)
             _data.RtShadows = _rtShadowsCheckBox.IsChecked == true;
+
+        // 「シャドウマップ品質」パネルの入力値を収集する。
+        // RT 影表示中（BuildShadowQualityPanel が入力欄を作らず早期 return した後）は
+        // 各フィールドが null のため何もしない＝_data.Shadow は変更前の値を維持する。
+        // パース不能な入力（空欄・数値でない文字列）は代入自体をスキップし、直前の値を保つ
+        // ことで、壊れた入力のまま保存が失敗する事態を防ぐ。
+        _data.Shadow ??= new(); // 万一 "shadow": null という壊れた JSON を読んでいた場合の保険
+        if (_cmbShadowResolution is not null
+            && (_cmbShadowResolution.SelectedItem as ComboBoxItem)?.Tag is int shadowResolution)
+        {
+            _data.Shadow.Resolution = shadowResolution; // 選択肢そのものの値なので範囲チェック不要
+        }
+        // double.TryParse は "NaN" / "Infinity" も有効な数値として解釈してしまい、
+        // Math.Clamp は NaN を素通りさせる（比較演算子が false になるため）。
+        // NaN のまま _data に入ると JsonSerializer.Serialize が例外を投げ保存全体が失敗するため、
+        // IsFinite で明示的に弾く（パース失敗と同様、直前の値を保持する）。
+        if (_tbShadowDistance is not null && double.TryParse(
+                _tbShadowDistance.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var shadowDistance)
+            && double.IsFinite(shadowDistance))
+        {
+            _data.Shadow.Distance = Math.Clamp(
+                shadowDistance, ShadowQualitySettings.DistanceMin, ShadowQualitySettings.DistanceMax);
+        }
+        if (_tbShadowSplitLambda is not null && double.TryParse(
+                _tbShadowSplitLambda.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var shadowSplitLambda)
+            && double.IsFinite(shadowSplitLambda))
+        {
+            _data.Shadow.SplitLambda = Math.Clamp(
+                shadowSplitLambda, ShadowQualitySettings.SplitLambdaMin, ShadowQualitySettings.SplitLambdaMax);
+        }
+        if (_tbShadowNormalOffset is not null && double.TryParse(
+                _tbShadowNormalOffset.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var shadowNormalOffset)
+            && double.IsFinite(shadowNormalOffset))
+        {
+            _data.Shadow.NormalOffsetTexels = Math.Clamp(
+                shadowNormalOffset, ShadowQualitySettings.TexelScaleMin, ShadowQualitySettings.TexelScaleMax);
+        }
+        if (_tbShadowDepthBias is not null && double.TryParse(
+                _tbShadowDepthBias.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var shadowDepthBias)
+            && double.IsFinite(shadowDepthBias))
+        {
+            _data.Shadow.DepthBiasTexels = Math.Clamp(
+                shadowDepthBias, ShadowQualitySettings.TexelScaleMin, ShadowQualitySettings.TexelScaleMax);
+        }
+        if (_tbShadowSlopeBias is not null && double.TryParse(
+                _tbShadowSlopeBias.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var shadowSlopeBias)
+            && double.IsFinite(shadowSlopeBias))
+        {
+            _data.Shadow.SlopeBias = Math.Clamp(
+                shadowSlopeBias, ShadowQualitySettings.SlopeBiasMin, ShadowQualitySettings.SlopeBiasMax);
+        }
+        if (_tbShadowPcfRadius is not null && double.TryParse(
+                _tbShadowPcfRadius.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var shadowPcfRadius)
+            && double.IsFinite(shadowPcfRadius))
+        {
+            _data.Shadow.PcfRadiusTexels = Math.Clamp(
+                shadowPcfRadius, ShadowQualitySettings.TexelScaleMin, ShadowQualitySettings.TexelScaleMax);
+        }
+        if (_cmbShadowPcfTaps is not null
+            && (_cmbShadowPcfTaps.SelectedItem as ComboBoxItem)?.Tag is int shadowPcfTaps)
+        {
+            _data.Shadow.PcfTaps = shadowPcfTaps; // 選択肢そのものの値なので範囲チェック不要
+        }
 
         // プラグイン有効/無効状態を収集する（CheckBox が存在する場合のみ）
         if (_pluginCheckBoxes.Count > 0)

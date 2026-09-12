@@ -229,6 +229,60 @@
 
 - [ ] **`duration` を超えるキーの貼り付けは最終フレームへ丸めて重なる** — 2026-09-07。`AnimKeyClipboard.Paste` はクリップ外へキーを作らない方針でフレームをクランプするため、長いキー列をクリップ末尾付近へ貼ると複数キーが最終フレームで潰れて上書きし合う（データは失われる）。「貼り付けで足りない長さを自動的に伸ばすか確認する」ほうが親切。関連: `editor/src/Panels/AnimationTimeline/AnimKeyClipboard.cs`。
 
+## テストの独立性（2026-09-13 に気付いた既存不具合・シャドウ改修とは無関係）
+
+- [ ] **`plugin::host::tests::set_save_int_writes_flag_and_keeps_other_keys` が全体実行だと落ちる**
+  — 2026-09-13。単体（`cargo test set_save_int_writes_flag_and_keeps_other_keys`）では通るが、
+  `cargo test`（`--test-threads=1` でも同じ）だと `save.json を読めない … (os error 3)` で失敗する。
+  セーブ先パスの解決（`save::resolve_save_path` / `SEED_SAVE_DIR`）がプロセスグローバルで、
+  他テストが同じ状態を触るか、後片付け（`remove_dir_all`）の順序に依存しているのが原因と思われる。
+  並列時は `font::inline::image_meta::tests::missing_path_is_cached_as_failure` も一緒に落ちる
+  （こちらもプロセスグローバルのキャッシュ依存）。**シャドウ改修の前から存在する問題**で、
+  renderer 側（`cargo test renderer::`）は全て緑。テストごとに一時ディレクトリを作るか、
+  グローバル状態を触るテストを 1 本のミューテックスで直列化するのが筋。
+  症状として **`cargo test` を回すとリポジトリ内へ `runtime/save/save.json`
+  （テストの値 `{"tutorial_done":1,"fish_record_kani":42}`）が生成される**。
+  `resolve_save_path()` は毎回 `SEED_SAVE_DIR` を読む実装なので、
+  「保存先がプロセスグローバルの環境変数＋グローバルなセーブストア」である以上、
+  他テストと実行順によって書き先が既定（cwd 基準の `save/`）へ落ちることがある、
+  という筋読み（未確定。直すときは実際の順序を追うこと）。
+  `.gitignore` は `projects/*/save/` しか除外していないため、うっかり `git add -A` すると混入する
+  （2026-09-13 は手で削除した）。`runtime/save/` を .gitignore へ足すか、テスト側でパスを固定するのが筋。
+  関連: `runtime/src/engine/plugin/host.rs:164`、`runtime/src/engine/core/font/inline/image_meta.rs`、
+  `runtime/src/engine/core/save/path.rs`。
+
+## シャドウマップ品質（2026-09-13 の改修時の残件）
+
+正典: [docs/shadow_mapping.md](shadow_mapping.md)。今回入れたのは
+「影の最大距離 + 分割係数 + 法線オフセット + カスケード別深度バイアス + 回転 Vogel ディスク PCF」と、
+`project_settings.json` の `shadow` ブロックによるデータ化まで。
+
+- [ ] **`shadow.distance` より遠くは影が完全に消える（フェードが無い）** — 2026-09-13。カスケード外は
+  可視率 1.0 を返すため、影距離の縁で影がぷつりと切れる。既定 150m では手前に寄った絵でしか
+  境界が画面に入らないので今回は許容したが、広い屋外を俯瞰するカメラだと切れ目が見える。
+  最終カスケードの外縁で影を 1.0 へ線形にフェードさせる（＋境界のスムーズブレンド）のが定石。
+  関連: `runtime/src/engine/core/renderer/shaders/shadow.wgsl::sample_shadow_dir`（UV 範囲外の早期 return）。
+
+- [ ] **カスケード境界のスムーズブレンドが無い** — 2026-09-13（R2 からの積み残し）。カスケードを
+  またぐと影の解像度と PCF の実効半径が段階的に変わるため、境界線がうっすら見えることがある。
+  2 カスケードぶんサンプルして `view_z` で線形補間するのが定石（コストは境界帯のみ）。
+
+- [ ] **シャドウ解像度の変更はランタイム再起動が必要** — 2026-09-13。`shadow.resolution` は深度
+  テクスチャと group4 の複合 BindGroup（`LightBuffer::new`）に結び付いているため、実行中に変えられない。
+  エディタ UI にもその旨を表示している。ライブ変更したいなら ShadowResources と LightBuffer の
+  複合 BG を作り直す経路が要る。関連: `renderer/shadow.rs::ShadowResources::new`、`renderer/lighting.rs`。
+
+- [ ] **シャドウ品質はプロジェクト設定のみ（シーン設定に無い）** — 2026-09-13。影の**方式**
+  （shadowmap / rt）はシーン設定（`.scene` の `settings.rendering.features`）で切り替わるのに、
+  品質パラメータは `project_settings.json` だけにある。シーンごとに詰めたくなったら
+  `SceneSettingsData.rendering` へ同じブロックを足し、`apply_scene_settings` で
+  `set_shadow_quality` を呼ぶ（解像度だけは起動時固定なので除外するか、再生成経路が要る）。
+
+- [ ] **PCF の回転ディザが拡大表示で粒状に見える場合がある** — 2026-09-13。IGN はピクセル座標だけの
+  関数なのでフレーム間ではちらつかないが、影の輪郭を画面上で大きく引き伸ばすと 1px 単位のディザが
+  見える。気になるなら `pcf_taps` を増やす（16 まで）か `pcf_radius_texels` を下げる。
+  根治するならタップ後に 3x3 の空間フィルタを掛けるか、TAA 側で均す。
+
 ## フレーム性能（2026-09-07 の統合バッチ／スクリプト／RT 最適化での残件）
 
 - [ ] **統合バッチの部分書き込み（変更行だけの `write_buffer`）は未実装** — 2026-09-07。`InstancedModelBatch::update` は可視インスタンスを (LOD, メッシュノード) ごとの連続バッファへ詰め直し、`queue.write_buffer` で**全行**を書く。1 体だけ動いたフレームでも全行アップロードになる。行の位置（compact index）は LOD バケット割り当てが変わらない限り安定なので、「前フレームの compact 列と一致する区間はスキップし、変わった行の範囲だけオフセット付きで書く」ことは原理的に可能。ただし ①バケットが 1 つでも動くと全行がずれる ②`write_buffer` はサイズより呼び出し回数のほうが支配的になりやすい、の 2 点があるため、**先に新設のサブスコープ（`描画/統合バッチ更新/バッチ更新`）で「バッチ更新」の実測を取ってから**着手すること。関連: `runtime/src/engine/core/renderer/gpu_resources.rs::InstancedModelBatch::update`。

@@ -463,15 +463,24 @@ impl ShadowDepthPipelines {
         // color_format = "none" なので surface_format は使用されない
         let sf_unused = wgpu::TextureFormat::Bgra8UnormSrgb;
 
+        // slope-scaled 深度バイアスはプロジェクト設定（shadow.slope_bias）で差し替える。
+        // TOML の値は「設定が無いときの既定」として残り、ここで上書きする。
+        // 深度を書く側のバイアス（傾き比例）と、サンプル側の法線オフセット
+        // （shadow.wgsl）は役割が違い、両方そろって初めて全角度のアクネを覆える。
+        let q = crate::engine::core::renderer::shadow_settings::shadow_quality();
+        let bias_constant = crate::engine::core::renderer::shadow_settings::DEFAULT_RASTER_CONST_BIAS;
+
         let (mesh, _) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/shadow_depth_mesh.toml"), sf_unused, shadow_df)
                 .with_label("shadow_depth_mesh")
+                .with_depth_bias(bias_constant, q.slope_bias, 0.0)
                 .with_cache(cache)
                 .build(get_shader_source);
 
         let (skinned, bgls_s) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/shadow_depth_skinned.toml"), sf_unused, shadow_df)
                 .with_label("shadow_depth_skinned")
+                .with_depth_bias(bias_constant, q.slope_bias, 0.0)
                 .with_cache(cache)
                 .build(get_shader_source);
         // skinned のレイアウトは (0=camera, 1=instances, 2=gap, 3=joints)。

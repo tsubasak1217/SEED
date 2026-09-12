@@ -359,8 +359,14 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         } else {
             // 従来のシャドウマップ経路（group 4 binding 2〜5, shadow.wgsl）。
             // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。
-            // 方向光は CSM、スポットは自身のマップを PCF 3x3 でサンプルして減衰する。
+            // 方向光は CSM、スポットは自身のマップを、いずれも
+            // 「法線オフセット ＋ 回転 Vogel ディスク PCF」でサンプルして減衰する。
             // point/rect の影はシャドウマップ非対応（RT 影経路で対応）。
+            //
+            // 影へ渡す法線は **Ng（フラットな幾何法線）**である。法線オフセットは
+            // 「受光点を実際の面から浮かせて自己遮蔽を避ける」ための幾何操作なので、
+            // 法線マップで曲げた N を使うと面から外れた方向へずれて影が崩れる
+            // （RT 影が Ng を自己交差回避に使うのと同じ理由）。
             let sidx = i32(light.shadow_index);
             if sidx >= 0 {
                 if light.kind == LIGHT_KIND_DIRECTIONAL {
@@ -368,9 +374,11 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
                     // のままにする。オフセットでカスケードが切り替わると、カスケード境界の
                     // 水面で影の解像度が波形に明滅するため（位置のずれは高々数十 cm で、
                     // カスケード選択に与えるべき影響も無い）。
-                    radiance = radiance * sample_shadow_dir(shadow_pos, view_z);
+                    radiance = radiance * sample_shadow_dir(shadow_pos, view_z, Ng, L, s.frag_coord);
                 } else if light.kind == LIGHT_KIND_SPOT {
-                    radiance = radiance * sample_shadow_spot(s.world_pos, sidx);
+                    radiance = radiance * sample_shadow_spot(
+                        s.world_pos, sidx, Ng, L, light_dist, s.frag_coord,
+                    );
                 }
             }
         }

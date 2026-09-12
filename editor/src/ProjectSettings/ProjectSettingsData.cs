@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -36,6 +36,150 @@ public class SceneEntry
     /// <summary>シーンファイルの仮想パス（assets://...）。</summary>
     [JsonPropertyName("path")]
     public string Path { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// シャドウマップ（CSM）の品質パラメータ一式。
+/// project_settings.json の "shadow" ブロックに対応する。
+/// ランタイム側 runtime/src/engine/core/renderer/shadow_settings.rs の ShadowQuality と
+/// 既定値・値域・JSON キー名を 1 ビットも違わず一致させること
+/// （ここでズレると、保存した瞬間にランタイムの見た目が変わってしまう）。
+/// features.shadow = "rt"（レイトレ影）のときはランタイムから一切参照されない。
+/// </summary>
+public class ShadowQualitySettings
+{
+    // ── 既定値（shadow_settings.rs の DEFAULT_* と同一の値）─────────
+
+    /// <summary>CSM 1 カスケードの解像度の既定値 [px]。</summary>
+    public const int DefaultResolution = 2048;
+
+    /// <summary>影を描画する最大距離の既定値 [m]。</summary>
+    public const double DefaultDistance = 150.0;
+
+    /// <summary>カスケード分割係数（0=均等, 1=対数）の既定値。</summary>
+    public const double DefaultSplitLambda = 0.8;
+
+    /// <summary>法線オフセット [テクセル] の既定値。</summary>
+    public const double DefaultNormalOffsetTexels = 1.5;
+
+    /// <summary>定数深度バイアス [テクセル] の既定値。</summary>
+    public const double DefaultDepthBiasTexels = 1.0;
+
+    /// <summary>slope-scaled 深度バイアスの既定値。</summary>
+    public const double DefaultSlopeBias = 2.0;
+
+    /// <summary>PCF フィルタ半径 [テクセル] の既定値。</summary>
+    public const double DefaultPcfRadiusTexels = 1.5;
+
+    /// <summary>PCF タップ数の既定値。</summary>
+    public const int DefaultPcfTaps = 12;
+
+    // ── 値域（shadow_settings.rs の sanitize() と同一の範囲）────────
+    // ランタイム側でも範囲外は丸められるが、「保存した瞬間に丸められて見た目が変わる」
+    // 事態を避けるため、UI 側の保存直前でもこの範囲へクランプする。
+
+    /// <summary>解像度として選択できる値（コンボボックスの選択肢と同一。正方のみ）。</summary>
+    public static readonly int[] ResolutionChoices = { 1024, 2048, 4096 };
+
+    /// <summary>影距離の下限 [m]。</summary>
+    public const double DistanceMin = 1.0;
+    /// <summary>影距離の上限 [m]。</summary>
+    public const double DistanceMax = 100000.0;
+
+    /// <summary>カスケード分割係数の下限（0=均等分割）。</summary>
+    public const double SplitLambdaMin = 0.0;
+    /// <summary>カスケード分割係数の上限（1=対数分割）。</summary>
+    public const double SplitLambdaMax = 1.0;
+
+    /// <summary>
+    /// 法線オフセット・定数深度バイアス・PCF 半径 [テクセル] に共通の下限。
+    /// この 3 つは単位が同じ（ワールド テクセル幅の倍数）なので値域も共通にする。
+    /// </summary>
+    public const double TexelScaleMin = 0.0;
+    /// <summary>
+    /// 同上の上限。4 テクセル以上はピーターパン（影の浮き）が誰の目にも分かる領域なので、
+    /// 事故防止に頭を押さえる（ランタイム側 TEXEL_SCALE_MAX と同値）。
+    /// </summary>
+    public const double TexelScaleMax = 8.0;
+
+    /// <summary>slope-scaled バイアスの下限。</summary>
+    public const double SlopeBiasMin = 0.0;
+    /// <summary>slope-scaled バイアスの上限。</summary>
+    public const double SlopeBiasMax = 16.0;
+
+    /// <summary>PCF タップ数の下限。</summary>
+    public const int PcfTapsMin = 1;
+    /// <summary>PCF タップ数の上限（shadow.wgsl のポアソンディスク表の要素数と一致させること）。</summary>
+    public const int PcfTapsMax = 16;
+
+    // ── 値本体 ───────────────────────────────────────────────
+
+    /// <summary>
+    /// CSM 1 カスケードあたりの解像度（正方・px）。1024 / 2048 / 4096 のいずれか。
+    /// 深度テクスチャの実体サイズに直結するため、変更はランタイムの<b>次回起動から</b>反映される
+    /// （実行中に変えても既存のテクスチャ・BindGroup は再確保されない）。
+    /// 大きくするほど影の輪郭のギザギザ・アクネが減るが、VRAM 消費と描画コストが増える。
+    /// </summary>
+    [JsonPropertyName("resolution")]
+    public int Resolution { get; set; } = DefaultResolution;
+
+    /// <summary>
+    /// 影を描画する最大距離 [m]（カメラの far クリップ距離との小さい方が実際に使われる）。
+    /// CSM の全カスケードはこの距離までを分割してカバーするため、これが実質的に
+    /// シャドウマップの解像度密度を決める最大の要因になる。小さくするほど手前の影が
+    /// 精細になり、大きくすると遠くまで影が届く代わりに手前の影が粗くなる。
+    /// </summary>
+    [JsonPropertyName("distance")]
+    public double Distance { get; set; } = DefaultDistance;
+
+    /// <summary>
+    /// カスケード分割の log/uniform ブレンド係数。0=均等分割、1=対数分割。
+    /// 大きくする（対数寄りにする）ほど近距離側のカスケードが小さく取られ、
+    /// カメラ手前の影が精細になる代わりに遠景側カスケードの負担が増える。
+    /// </summary>
+    [JsonPropertyName("split_lambda")]
+    public double SplitLambda { get; set; } = DefaultSplitLambda;
+
+    /// <summary>
+    /// 法線オフセット量 [テクセル]（そのカスケードのワールド テクセル幅の倍数）。
+    /// シャドウ空間へ投影する前に幾何法線方向へワールド位置をずらし、深度の量子化誤差
+    /// （シャドウアクネ＝縞模様）を防ぐ。大きくするとアクネは消えるが、薄い物体の影が
+    /// 本体から浮いて見える「ピーターパン」現象が目立つようになる。
+    /// </summary>
+    [JsonPropertyName("normal_offset")]
+    public double NormalOffsetTexels { get; set; } = DefaultNormalOffsetTexels;
+
+    /// <summary>
+    /// 定数深度バイアス [テクセル]（そのカスケードのワールド テクセル幅の倍数）。
+    /// 法線オフセットだけでは吸収しきれない残差（法線がほぼ光源方向を向く面の量子化誤差）
+    /// を潰すための最終保険。大きくするとアクネは消えるが、法線オフセットと同様に
+    /// ピーターパンが強まる。
+    /// </summary>
+    [JsonPropertyName("depth_bias")]
+    public double DepthBiasTexels { get; set; } = DefaultDepthBiasTexels;
+
+    /// <summary>
+    /// ラスタライザの slope-scaled 深度バイアス（シャドウ深度パスの書き込み時に適用）。
+    /// 面が光源方向に対して傾くほど強く掛かる、法線オフセットとは別経路のバイアス。
+    /// 両方揃って初めて全ての角度のシャドウアクネを抑えられる。
+    /// </summary>
+    [JsonPropertyName("slope_bias")]
+    public double SlopeBias { get; set; } = DefaultSlopeBias;
+
+    /// <summary>
+    /// PCF（Percentage Closer Filtering）のフィルタ半径 [テクセル]。
+    /// この半径の円板にポアソンディスクでタップを撒いて影の輪郭を柔らかくする。
+    /// 大きくするほど輪郭が滑らかになる代わりに、接地部の影が薄く（光漏れ気味に）見える。
+    /// </summary>
+    [JsonPropertyName("pcf_radius_texels")]
+    public double PcfRadiusTexels { get; set; } = DefaultPcfRadiusTexels;
+
+    /// <summary>
+    /// PCF のタップ数（1〜16）。多いほど影の輪郭が滑らかになるが、シャドウマップの
+    /// サンプリング回数が増えるためピクセルシェーダの負荷が上がる。
+    /// </summary>
+    [JsonPropertyName("pcf_taps")]
+    public int PcfTaps { get; set; } = DefaultPcfTaps;
 }
 
 /// <summary>
@@ -131,6 +275,14 @@ public class ProjectSettingsData
     /// </summary>
     [JsonPropertyName("rt_shadows")]
     public bool RtShadows { get; set; } = false;
+
+    /// <summary>
+    /// シャドウマップ（CSM）の品質設定。features.shadow = "shadowmap"（既定）のときに
+    /// ランタイムが参照する（"rt" のときは参照されない）。
+    /// project_settings.json の "shadow" ブロックに対応する。
+    /// </summary>
+    [JsonPropertyName("shadow")]
+    public ShadowQualitySettings Shadow { get; set; } = new();
 
     /// <summary>
     /// このクラスがモデル化していない未知キーを保持するバケット。

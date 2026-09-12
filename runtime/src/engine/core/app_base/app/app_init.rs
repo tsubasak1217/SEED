@@ -73,6 +73,29 @@ impl App {
             self.render_resolution_mode.as_str(),
             self.project_resolution,
         );
+        // シャドウマップ品質（解像度・影距離・カスケード分割・バイアス・PCF）も同じ JSON から読む。
+        //
+        // 【ここで読む理由】直後の `Renderer::new`（→ DrawContext::new）が
+        //   - 深度テクスチャを `shadow.resolution` の大きさで確保し（ShadowResources::new）
+        //   - シャドウ深度パイプラインを `shadow.slope_bias` で組む（ShadowDepthPipelines::new）
+        //   ため、**GPU 資源の生成より前**に確定していなければならない。
+        //   `load_graphics_settings`（後段）ではもう手遅れになる。
+        let shadow_quality =
+            crate::engine::core::renderer::set_shadow_quality(
+                crate::engine::core::renderer::parse_shadow_quality(&settings_json),
+            );
+        // 影の見え方の相談で最初に見る値なので起動ログへ残す。
+        eprintln!(
+            "[SEED INIT] shadow quality  resolution={} distance={} split_lambda={} normal_offset={}tex depth_bias={}tex slope_bias={} pcf={}tex/{}taps",
+            shadow_quality.resolution,
+            shadow_quality.distance,
+            shadow_quality.split_lambda,
+            shadow_quality.normal_offset_texels,
+            shadow_quality.depth_bias_texels,
+            shadow_quality.slope_bias,
+            shadow_quality.pcf_radius_texels,
+            shadow_quality.pcf_taps,
+        );
         // 目標フレームレート（0 = 無制限）と垂直同期モードも同じ JSON から読む。
         // どちらも起動時に一度だけ決まり、実行中に変わらない
         //（vsync はスワップチェーン再構成が必要なため、切り替えには再起動が要る）。

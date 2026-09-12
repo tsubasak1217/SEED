@@ -69,14 +69,32 @@
 - シャドウパス: 死蔵の depth_prepass.wgsl を流用（`ShadowDepthPipelines`, `shadow_depth_*.toml`）。
   skin compute 後・メインパス直前に各カスケード/スポットレイヤへ深度専用描画。
   シャドウ用 view-proj はレイヤごとに専用 `CameraBuffer`（group0）へアップロード。
-- CSM: practical split（`CSM_SPLIT_LAMBDA=0.5`）＋バウンディング球タイト正射＋テクセルスナップ。
-- シェーディング: `shadow.wgsl`（group4 binding2〜5）で方向光=カスケード選択→PCF3x3、スポット=PCF3x3。
-  slope-scaled 深度バイアス（`shadow_depth_*.toml` の `depth_bias_*`）＋シェーダ定数バイアス併用。
+- CSM: practical split（当時 `CSM_SPLIT_LAMBDA=0.5` 固定 → 現在は `shadow.split_lambda`, 既定0.8）
+  ＋バウンディング球タイト正射＋テクセルスナップ。
+- シェーディング: `shadow.wgsl`（group4 binding2〜5）で方向光=カスケード選択→PCF（当時3x3固定 →
+  現在は回転Vogelディスク）、スポットも同じフィルタ。
+  slope-scaled 深度バイアス（`shadow_depth_*.toml` の `depth_bias_*`。現在は `shadow.slope_bias` で上書き）
+  ＋定数バイアス併用（現在は法線オフセットとカスケード別バイアス）。
   影付きは「最初の cast_shadows=true な方向光1灯」＋スポット最大4。`GpuLight.shadow_index` で結線。
 - cast_shadows: `ModelComponent.cast_shadows`（既定true, インスペクタ「影を落とす」チェック）。
   粒度は共有バッチ（source_path）単位（インスタンス単位除外は未対応）。
-- TODO（R2残）: カスケード別カリング・境界スムーズブレンド・receive_shadows・point/rect影・
-  Play正射/2Dビュー時のCSM・カスケード可視化デバッグ表示。
+- TODO（R2残）: 境界スムーズブレンド・receive_shadows・point/rect影・
+  Play正射/2Dビュー時のCSM・カスケード可視化デバッグ表示。（カスケード別カリングは実装済み）
+
+#### 品質改修（2026-09-13, 実機A/B検証済み）
+シャドウアクネ（壁の横縞）と輪郭のジャギーを潰し、品質パラメータをデータ駆動化した。
+**設計と設定項目の正典は [shadow_mapping.md](shadow_mapping.md)**（本節は差分の要約）。
+- 原因: カメラ far（例1000m）をそのままCSMの遠端に使っていたため、カスケード0の1テクセルが
+  約11cmまで肥大。さらにNDC固定の定数バイアス0.0012がそのカスケードでは約0.68mの押し込みになり、
+  「壁の影は11cm刻みの階段」「地面の接地影は浮いて消える」が同時に起きていた。
+- 対策: ①影の最大距離（`shadow.distance`, 既定150m）で遠端を絞る ②`split_lambda` 既定を 0.5→0.8
+  ③法線オフセット（幾何法線方向へ「そのカスケードのテクセル幅×係数×sinθ」だけずらす）
+  ④定数バイアスをカスケードのテクセル幅とその深度レンジから換算（カスケード非依存の効きに）
+  ⑤PCF 3x3固定 → 回転Vogelディスク（既定12タップ・半径1.5テクセル、IGNでピクセル毎に回転）。
+- データ化: `project_settings.json` の `shadow` ブロック（解像度1024/2048/4096・影距離・分割係数・
+  法線オフセット・定数バイアス・slopeバイアス・PCF半径/タップ数）。実装は `renderer/shadow_settings.rs`。
+  エディタは「プロジェクト設定 → グラフィックス → シャドウマップ品質」。
+- 既定値は**改善後の値**（設定が無い既存プロジェクトも改善される）。解像度だけ据え置き2048。
 
 ### Phase R3: HDR＋ポストプロセス土台 【状況: 実装済み（実機検証待ち）】
 - オフスクリーンHDRターゲット（Rgba16Float）へシーン描画→フルスクリーントーンマップパスで

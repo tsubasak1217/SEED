@@ -504,7 +504,7 @@ mod tests {
             "影サンプル位置の変数（既定＝素のワールド座標）が消えている");
         assert!(eval.contains("+ vec3<f32>(s.shadow_refract_offset.x, 0.0, s.shadow_refract_offset.y);"),
             "平行光限定の影サンプル位置オフセットが消えている");
-        assert!(eval.contains("sample_shadow_dir(shadow_pos, view_z)"),
+        assert!(eval.contains("sample_shadow_dir(shadow_pos, view_z, Ng, L, s.frag_coord)"),
             "シャドウマップ経路（既定の影方式）がオフセット位置を使っていない");
         assert!(eval.contains("shadow_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord, true,"),
             "インライン RT 影経路がオフセット位置をレイ原点にしていない");
