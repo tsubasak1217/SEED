@@ -956,7 +956,9 @@ public partial class MainWindow
                 LblState.Foreground      = Brushes.LightGreen;
                 IconState.IconKey        = IconKeyStateEdit;
                 IconState.Foreground     = Brushes.LightGreen;
-                ViewportDocumentContent.Visibility = Visibility.Visible;
+                // ランタイムが READY を返すまでは HwndHost を隠しておく。表示したままだと
+                // 空のコンテナ HWND が白く描かれ、WPF のオーバーレイ（起動中画面）はその穴に描けない。
+                UpdateViewportHostVisibility();
                 TxtViewportStatus.Text             = "";
                 ViewportLoadingOverlay.Visibility  = Visibility.Visible;
                 Activate();
@@ -1007,6 +1009,8 @@ public partial class MainWindow
                 IconState.Foreground     = Brushes.Yellow;
                 TxtViewportStatus.Text            = "ビルド中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
+                // ランタイムはまだ無い（または作り直す）ので、READY まで HwndHost を隠す。
+                MarkViewportRuntimeNotReady();
                 break;
 
             case EditorState.Launching:
@@ -1023,6 +1027,7 @@ public partial class MainWindow
                 IconState.Foreground     = Brushes.LightSkyBlue;
                 TxtViewportStatus.Text            = "起動中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
+                MarkViewportRuntimeNotReady();
                 break;
 
             case EditorState.Idle:
@@ -1036,6 +1041,7 @@ public partial class MainWindow
                 IconState.Foreground     = Brushes.Gray;
                 TxtViewportStatus.Text            = "再起動中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
+                MarkViewportRuntimeNotReady();
                 break;
         }
 

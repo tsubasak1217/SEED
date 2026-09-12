@@ -51,6 +51,11 @@ public partial class MainWindow
                 }
             }
 
+            // ランタイムが接続できたので HwndHost を出してよい（保持中は保持側が抑える）。
+            // 保持の判定より後に置くことで、空のシーンが一瞬映る隙間を作らない。
+            _viewportRuntimeReady = true;
+            UpdateViewportHostVisibility();
+
             // FIRST_FRAME が届かない場合のフォールバック（リリースビルドの Runtime 等）。
             // READY 受信から 3 秒経ってもオーバーレイが残っていれば強制的に閉じる。
             // スプラッシュ保持中は保持側（SCENE_LOADED かタイムアウト）が閉じるので触らない。
@@ -100,6 +105,32 @@ public partial class MainWindow
     /// <summary>起動時スプラッシュを保持中か。</summary>
     private bool _startupSplashHold;
 
+    /// <summary>
+    /// 埋め込みランタイムが READY を返し、HwndHost を表示してよい状態か。
+    /// Launching / Building / Idle（ランタイム無し）で false に戻る。
+    /// </summary>
+    private bool _viewportRuntimeReady;
+
+    /// <summary>
+    /// HwndHost（<c>ViewportDocumentContent</c>）の表示を決める唯一の場所。
+    /// ランタイム未接続、または起動時スプラッシュ保持中は Hidden にして、
+    /// WPF のオーバーレイ（起動中画面）がその領域に描けるようにする
+    /// （表示中の HwndHost は WPF の描画に穴を開け、空のコンテナは白く映る）。
+    /// Play 中の表示判定は ApplyUiState の Play ケースが別途行う。
+    /// </summary>
+    private void UpdateViewportHostVisibility()
+    {
+        var show = _viewportRuntimeReady && !_startupSplashHold;
+        ViewportDocumentContent.Visibility = show ? Visibility.Visible : Visibility.Hidden;
+    }
+
+    /// <summary>ランタイムが無くなった（作り直す）ときに呼び、READY まで HwndHost を隠す。</summary>
+    private void MarkViewportRuntimeNotReady()
+    {
+        _viewportRuntimeReady = false;
+        UpdateViewportHostVisibility();
+    }
+
     /// <summary>保持を解除する条件となる、読み込みを要求した .scene の絶対パス。</summary>
     private string? _startupSplashScenePath;
 
@@ -114,7 +145,7 @@ public partial class MainWindow
         // 子ウィンドウを隠すだけでは、HwndHost 自身の HWND が WPF の描画に「穴」を開けたままで
         // オーバーレイが黒く抜ける。HwndHost（ViewportDocumentContent）ごと Hidden にして穴を無くす。
         _runtimeManager?.SetRuntimeWindowVisible(false);
-        ViewportDocumentContent.Visibility = Visibility.Hidden;
+        UpdateViewportHostVisibility();
         TxtViewportStatus.Text            = StartupSplashStatusText;
         ViewportLoadingOverlay.Visibility = Visibility.Visible;
         EditorLog.Write($"起動時スプラッシュ保持 — 読み込み完了まで子ウィンドウを隠す: {scenePath}");
@@ -144,7 +175,7 @@ public partial class MainWindow
         if (!_startupSplashHold) return;
         _startupSplashHold      = false;
         _startupSplashScenePath = null;
-        ViewportDocumentContent.Visibility = Visibility.Visible;
+        UpdateViewportHostVisibility();
         _runtimeManager?.SetRuntimeWindowVisible(true);
         // 隠している間にレイアウトが変わっていても、子ウィンドウをコンテナに合わせ直す。
         _runtimeManager?.ResizeRuntimeToContainer();
