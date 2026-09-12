@@ -452,15 +452,27 @@ fn shaders_take_screen_derivatives_in_camera_relative_space() {
         "deferred_lighting.wgsl のカメラ相対 ivp ヘルパーが消えている"
     );
     // 微分は必ず **カメラ相対座標** に対して取ること（絶対ワールド座標だと f32 桁落ちで
-    // Ng が数度ずれて黒斑点になる）。式の綴りは変わりうる（現在は ddx_pos/ddy_pos という
-    // 局所変数に取ってから cross する形）ので、**微分の対象**だけを固定する。
+    // Ng が数度ずれて黒斑点になる）。現在はハードウェア dpdx/dpdy ではなく
+    // 「深度差の小さい側の片側差分」（明示的な近傍 textureLoad ＋ deferred_rel_pos_at）で
+    // 取っているため、**復元関数がカメラ相対 ivp を受け取ること**を固定する。
     assert!(
-        deferred.contains("dpdx(camera_relative_pos)") && deferred.contains("dpdy(camera_relative_pos)"),
-        "deferred_lighting.wgsl の Ng が絶対ワールド座標の微分へ戻っている（桁落ち再発）"
+        deferred.contains("fn deferred_rel_pos_at(ivp_rel: mat4x4<f32>"),
+        "deferred_lighting.wgsl の近傍復元がカメラ相対 ivp を受け取らなくなっている（桁落ち再発）"
+    );
+    assert!(
+        deferred.contains("deferred_rel_pos_at(ivp_rel,"),
+        "deferred_lighting.wgsl が近傍位置をカメラ相対で復元していない（桁落ち再発）"
     );
     assert!(
         deferred.contains("cross(ddx_pos, ddy_pos)"),
         "deferred_lighting.wgsl の Ng が画面微分の外積でなくなっている"
+    );
+    // シルエット境界対策（片側差分の選択）が消えていないこと。
+    // これが無いと輪郭に沿って 1px の黒い縁が出る（2026-09-13 に実機確認）。
+    assert!(
+        deferred.contains("let use_right = abs(d_r - depth) <= abs(d_l - depth);")
+            && deferred.contains("let use_down  = abs(d_d - depth) <= abs(d_u - depth);"),
+        "深度差の小さい側を選ぶ片側差分が消えている（シルエットの黒縁が再発する）"
     );
     // 深度量子化による Ng の信頼度判定（遠景の点状ノイズ対策）が消えていないこと。
     assert!(

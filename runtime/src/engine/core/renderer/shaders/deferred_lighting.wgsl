@@ -305,16 +305,28 @@ fn deferred_camera_relative_ivp(ivp: mat4x4<f32>, cam: vec3<f32>) -> mat4x4<f32>
     );
 }
 
+/// 任意のピクセル座標＋深度から**カメラ相対**の復元位置を求める。
+///
+/// 中心画素と同じ写像（ビューポート相対 UV → NDC → 逆 view-proj）を使うので、
+/// 近傍画素どうしの引き算がそのまま「1 画素ぶんのワールド移動量」になる。
+/// `ivp_rel` は平行移動を落とした逆 view-proj（`deferred_camera_relative_ivp`）であること。
+/// 絶対ワールド座標で同じことをすると f32 の桁落ちで Ng が数度ずれる（根拠は同関数のコメント）。
+fn deferred_rel_pos_at(ivp_rel: mat4x4<f32>, pix: vec2<f32>, depth: f32) -> vec3<f32> {
+    let uv_vp = deferred_vp_uv_from_pix(pix);
+    let ndc   = vec3<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, depth);
+    let p     = ivp_rel * vec4<f32>(ndc, 1.0);
+    return p.xyz / p.w;
+}
+
 @fragment
 fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let pix = vec2<i32>(frag.xy);
 
     // ── 1) 深度読み出し＋ワールド座標復元 ─────────────────────
-    // 幾何法線 Ng のための dpdx/dpdy は**背景判定の discard より前**で評価する
-    // （surface_gather.wgsl と同じ流儀）。WGSL の discard は「ヘルパー化（demote）」で
-    // あり後続コードも実行されるため理屈の上では discard 後でも微分は取れるが、
-    // discard を早期終了として実装しうるドライバでの微分破損を原理的に排除するため、
-    // 微分は必ず一様制御フローの先頭側で済ませておく。
+    // 幾何法線 Ng の画面微分は**ハードウェアの dpdx/dpdy を使わない**（下記 1-b）。
+    // 明示的な近傍テクセルの `textureLoad` で片側差分を取るため、一様制御フローの制約
+    // （discard より前に評価しなければならない）は無い。それでも読み出しは背景判定より
+    // 前に置いてある（値の流れを追いやすく保つため）。
     let depth = textureLoad(t_depth, pix, 0);
 
     // uv: RT 全面基準（AO / SSGI / シャドウマスクは RT 全面で生成されるため、
@@ -337,18 +349,37 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let ivp_rel = deferred_camera_relative_ivp(u_camera.inv_view_proj, u_camera.position);
     let rel4 = ivp_rel * ndc4;
     let camera_relative_pos = rel4.xyz / rel4.w;
-    // 外積は平行移動不変（cross(dpdx(p - c), dpdy(p - c)) == cross(dpdx(p), dpdy(p)) が
-    // 実数演算では厳密に成り立つ）ため、Ng の**意味**は従来と完全に同一。変わるのは精度だけ。
-    let ddx_pos = dpdx(camera_relative_pos);
-    let ddy_pos = dpdy(camera_relative_pos);
+
+    // ── Ng 用の画面微分は「深度差の小さい側の片側差分」で取る ────────────────────
+    // ハードウェアの dpdx/dpdy は 2x2 クアッド固定の差分なので、**シルエット境界**では
+    // 必ず片側が別サーフェスへ飛び、Ng がその画素だけ大きく傾く。geo_gate はその Ng で
+    // 直接光を遮断するため、輪郭に沿った **1px の黒い縁**として可視化される
+    //（小屋の梁の上端・キャラクターの輪郭で実機確認）。
+    // 左右・上下それぞれで「深度が中心に近い側」を選べば、手前側の画素は自分の面の
+    // 隣接画素だけで微分でき、境界でも正しい面法線になる（片側差分の選択・定石）。
+    // textureLoad は範囲外で 0（＝最も手前）を返すため、画面端では自動的に反対側が選ばれる。
+    let d_l = textureLoad(t_depth, pix + vec2<i32>(-1,  0), 0);
+    let d_r = textureLoad(t_depth, pix + vec2<i32>( 1,  0), 0);
+    let d_u = textureLoad(t_depth, pix + vec2<i32>( 0, -1), 0);
+    let d_d = textureLoad(t_depth, pix + vec2<i32>( 0,  1), 0);
+    // 差が小さい側 = 同一サーフェスである可能性が高い側。
+    let use_right = abs(d_r - depth) <= abs(d_l - depth);
+    let use_down  = abs(d_d - depth) <= abs(d_u - depth);
+    let pos_x = deferred_rel_pos_at(ivp_rel, frag.xy + vec2<f32>(select(-1.0, 1.0, use_right), 0.0),
+                                    select(d_l, d_r, use_right));
+    let pos_y = deferred_rel_pos_at(ivp_rel, frag.xy + vec2<f32>(0.0, select(-1.0, 1.0, use_down)),
+                                    select(d_u, d_d, use_down));
+    // dpdx/dpdy と同じ向き（+x 右 / +y 下）へ符号を揃える。
+    let ddx_pos = select(camera_relative_pos - pos_x, pos_x - camera_relative_pos, use_right);
+    let ddy_pos = select(camera_relative_pos - pos_y, pos_y - camera_relative_pos, use_down);
     let ng_raw  = cross(ddx_pos, ddy_pos);
 
     // ── 1-c) 深度量子化に由来する Ng の誤差見積もり ───────────────────────────
     // 「深度を 1 ulp 動かしたとき復元位置がワールドで何 m 動くか」を、そのまま
     // 「1 画素ぶんのワールド移動量」と比べる。比がそのまま Ng の角度誤差（rad ≒ cos 単位）の
     // 目安になる（微分は隣接画素の差であり、その差に量子化幅ぶんの不定性が乗るため）。
-    // 近距離では 1e-2 以下、遠景では 1 に迫る。ここでは discard より前に済ませる必要は
-    // ない（微分を使うのは pixel_world だけで、その微分は上で取得済み）。
+    // 近距離では 1e-2 以下、遠景では 1 に迫る。
+    // （画面微分ではなく明示的な近傍タップに置き換えたため、一様制御フローの制約は無い。）
     let depth_quant_ndc = abs(depth) * DEFERRED_DEPTH_F32_ULP;
     let rel4_q = ivp_rel * vec4<f32>(ndc.x, ndc.y, depth + depth_quant_ndc, 1.0);
     let quant_world = length(rel4_q.xyz / rel4_q.w - camera_relative_pos);
