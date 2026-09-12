@@ -1278,6 +1278,24 @@ public sealed class RuntimeManager : IDisposable
     /// Runtime ウィンドウをコンテナの現在のクライアントサイズに合わせてリサイズする。
     /// 最大化起動などで初期サイズがズレた場合の補正用。
     /// </summary>
+    /// <summary>
+    /// 埋め込みランタイムの子ウィンドウの表示／非表示を切り替える。
+    ///
+    /// <para>
+    /// 起動時のスプラッシュ保持（<c>MainWindow.BeginStartupSplashHold</c>）で使う。
+    /// WPF のオーバーレイは HwndHost の上に描けない（Airspace）ため、起動シーンの読み込みが
+    /// 終わるまで子ウィンドウ自体を隠しておき、その間は WPF 側の起動中画面を見せる。
+    /// 非表示中もランタイムは描画・IPC を続ける（保持 Play と同じ扱い）。
+    /// </para>
+    /// </summary>
+    /// <param name="visible">true で表示、false で非表示。</param>
+    public void SetRuntimeWindowVisible(bool visible)
+    {
+        if (_runtimeHwnd == IntPtr.Zero) return;
+        Win32.ShowWindow(_runtimeHwnd, visible ? SW_SHOW : SW_HIDE);
+        EditorLog.Write($"SetRuntimeWindowVisible — {(visible ? "表示" : "非表示")}");
+    }
+
     public void ResizeRuntimeToContainer()
     {
         if (_runtimeHwnd == IntPtr.Zero || _viewportContainerHwnd == IntPtr.Zero) return;

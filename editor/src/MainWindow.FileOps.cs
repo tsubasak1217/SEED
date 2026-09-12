@@ -465,6 +465,9 @@ public partial class MainWindow
 
         Dispatcher.BeginInvoke(() =>
         {
+            // 起動時スプラッシュ保持中で、待っていたシーンなら子ウィンドウを見せる。
+            EndStartupSplashHoldIfMatches(loadedPath);
+
             if (_runtimeManager?.State != EditorState.Edit)
             {
                 EditorLog.Write($"SCENE_LOADED（Edit 以外のため現在シーンには反映しない）: {loadedPath}");
@@ -543,7 +546,8 @@ public partial class MainWindow
     /// 最近開いたシーン一覧（RecentScenesManager）の先頭にある、実在する .scene を読み込む。
     /// 無ければ何もしない（ランタイム側の既定シーンのまま）。
     /// </summary>
-    private void TryLoadLastScene()
+    /// <returns>読み込みを要求した .scene の絶対パス。要求しなかった（対象なし・失敗）場合は null。</returns>
+    private string? TryLoadLastScene()
     {
         try
         {
@@ -555,7 +559,7 @@ public partial class MainWindow
             {
                 EditorLog.Write($"起動時シーン指定 — {startup}");
                 LoadScene(startup);
-                return;
+                return startup;
             }
 
             var last = SEEDEditor.ProjectSettings.RecentScenesManager.LoadRecentScenes()
@@ -566,14 +570,16 @@ public partial class MainWindow
             if (last is null)
             {
                 EditorLog.Write("起動時シーン復元: 対象なし（既定シーンのまま）");
-                return;
+                return null;
             }
             EditorLog.Write($"起動時シーン復元 — {last}");
             LoadScene(last);
+            return last;
         }
         catch (Exception ex)
         {
             EditorLog.Write($"起動時シーン復元に失敗: {ex.Message}");
+            return null;
         }
     }
 }

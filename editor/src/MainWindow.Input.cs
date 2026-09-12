@@ -36,16 +36,21 @@ public partial class MainWindow
             SyncViewportSettings();
 
             // 起動後、最初に Edit ランタイムが準備できたら前回のシーンを復元する（一度だけ）。
+            // 復元するシーンがあるときは、その読み込みが終わるまで子ウィンドウを隠し、
+            // 起動中画面（スプラッシュ）を見せ続ける（空のシーンが一瞬映るのを避ける）。
             if (!_initialSceneLoaded && _runtimeManager?.State == EditorState.Edit)
             {
                 _initialSceneLoaded = true;
-                TryLoadLastScene();
+                var requested = TryLoadLastScene();
+                if (requested is not null) BeginStartupSplashHold(requested);
             }
 
             // FIRST_FRAME が届かない場合のフォールバック（リリースビルドの Runtime 等）。
             // READY 受信から 3 秒経ってもオーバーレイが残っていれば強制的に閉じる。
-            Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() =>
+            // スプラッシュ保持中は保持側（SCENE_LOADED かタイムアウト）が閉じるので触らない。
+            Task.Delay(FirstFrameFallbackMs).ContinueWith(_ => Dispatcher.BeginInvoke(() =>
             {
+                if (_startupSplashHold) return;
                 if (ViewportLoadingOverlay.Visibility != Visibility.Collapsed)
                     ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
             }));
@@ -60,8 +65,80 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // 起動シーンの読み込みを待っている間は閉じない（空のシーンの最初のフレームなので）。
+            if (_startupSplashHold) return;
             ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
         });
+    }
+
+    // ── 起動時スプラッシュ保持 ─────────────────────────────────
+    //
+    //  READY 直後の最初のフレームは「まだ何も読んでいない空のシーン」なので、そこで
+    //  起動中画面を閉じると、前回のシーン（地形・モデル）が読み込まれるまでの数秒間、
+    //  空のシーンが見えてしまう。復元するシーンがあるときは、SCENE_LOADED が届くまで
+    //  ランタイムの子ウィンドウを隠し、WPF 側の起動中画面（editor/resources/images の
+    //  スプラッシュ画像）を見せ続ける。
+
+    /// <summary>FIRST_FRAME が届かないときにオーバーレイを閉じるまでの猶予 [ms]。</summary>
+    private const int FirstFrameFallbackMs = 3000;
+
+    /// <summary>
+    /// 起動シーンの読み込み待ちの上限 [ms]。SCENE_LOADED が来なくてもこれを過ぎたら
+    /// 子ウィンドウを表示する（読み込み失敗などでスプラッシュが残り続けないため）。
+    /// </summary>
+    private const int StartupSplashTimeoutMs = 30000;
+
+    /// <summary>スプラッシュ保持中にオーバーレイ右下へ出す状態文言。</summary>
+    private const string StartupSplashStatusText = "シーンを読み込み中...";
+
+    /// <summary>起動時スプラッシュを保持中か。</summary>
+    private bool _startupSplashHold;
+
+    /// <summary>保持を解除する条件となる、読み込みを要求した .scene の絶対パス。</summary>
+    private string? _startupSplashScenePath;
+
+    /// <summary>
+    /// 起動時スプラッシュの保持を始める。子ウィンドウを隠し、起動中画面を出したままにする。
+    /// </summary>
+    /// <param name="scenePath">読み込みを要求した .scene の絶対パス。</param>
+    private void BeginStartupSplashHold(string scenePath)
+    {
+        _startupSplashHold      = true;
+        _startupSplashScenePath = scenePath;
+        _runtimeManager?.SetRuntimeWindowVisible(false);
+        TxtViewportStatus.Text            = StartupSplashStatusText;
+        ViewportLoadingOverlay.Visibility = Visibility.Visible;
+        EditorLog.Write($"起動時スプラッシュ保持 — 読み込み完了まで子ウィンドウを隠す: {scenePath}");
+
+        Task.Delay(StartupSplashTimeoutMs).ContinueWith(_ => Dispatcher.BeginInvoke(() =>
+            EndStartupSplashHold("タイムアウト")));
+    }
+
+    /// <summary>
+    /// SCENE_LOADED を受けたときに、待っていたシーンなら保持を解除する。
+    /// 別のシーン（既定シーン等）の通知は無視する。
+    /// </summary>
+    private void EndStartupSplashHoldIfMatches(string loadedPath)
+    {
+        if (!_startupSplashHold || _startupSplashScenePath is null) return;
+        if (!string.Equals(
+                System.IO.Path.GetFullPath(loadedPath),
+                System.IO.Path.GetFullPath(_startupSplashScenePath),
+                StringComparison.OrdinalIgnoreCase))
+            return;
+        EndStartupSplashHold("シーン読み込み完了");
+    }
+
+    /// <summary>起動時スプラッシュの保持を解除し、子ウィンドウを表示して起動中画面を閉じる。</summary>
+    private void EndStartupSplashHold(string reason)
+    {
+        if (!_startupSplashHold) return;
+        _startupSplashHold      = false;
+        _startupSplashScenePath = null;
+        _runtimeManager?.SetRuntimeWindowVisible(true);
+        ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
+        TxtViewportStatus.Text            = "";
+        EditorLog.Write($"起動時スプラッシュ解除 — {reason}");
     }
 
     /// <summary>
