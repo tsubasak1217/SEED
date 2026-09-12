@@ -117,9 +117,15 @@ impl App {
     ///
     /// 前提: `handle_resumed` 完了後（ウィンドウ・レンダラー初期化済み）にのみ動く。
     pub(super) fn pump_frame_when_redraw_stalled(&mut self, event_loop: &ActiveEventLoop) {
-        // 図鑑サムネイル生成中も同じ理由でフレームを回す必要がある
+        // サムネイル生成中も同じ理由でフレームを回す必要がある
         //（隔離ワールド線を描いて読み戻すまでジョブが進まないため）。
-        if !*HEADLESS && !screenshot::has_pending_request() && self.thumbnail_job.is_none() {
+        //
+        // ジョブ（1 枚ぶん）だけでなくセッション（連続生成のまとまり）が
+        // 残っている間も回す。セッション中のフレームはオフスクリーンへ描かれて
+        // present されないので、セッションを畳んだあとに**必ず 1 枚提示して**
+        // 元のシーンの絵へ戻す必要があり、そのフレームをここで保証する。
+        let thumbnail_active = self.thumbnail_job.is_some() || self.thumbnail_session.is_some();
+        if !*HEADLESS && !screenshot::has_pending_request() && !thumbnail_active {
             return;
         }
         // 初期化前・終了中はフレームを回せない。

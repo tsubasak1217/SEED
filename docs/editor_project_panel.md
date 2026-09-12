@@ -205,6 +205,23 @@ THUMBNAIL:<要求ID>,<一辺px>,<assets:// パス>
 撮り終えたら despawn して元へ戻す。ユーザーのシーンはエンティティごと生き残ったまま
 「描かれない」だけになる。背景の抜き方（ID パスのアルファをマスクにする）も共通。
 
+**提示フレーム（スワップチェーン）は一切使わない。** 撮影フレームは専用の
+オフスクリーンターゲット（`runtime/src/engine/core/renderer/thumbnail/target.rs`）へ描き、
+present しない。出力先の切り替えは `Renderer::begin_offscreen_frame` の 1 か所だけで、
+途中の描画コマンド列は通常フレームとまったく同じものが通る。
+
+| | 内容 |
+|---|---|
+| 切り替えの単位 | **セッション**（`thumbnail_session.is_some()` の間はすべてのフレームがオフスクリーン）。ジョブ単位で切り替えると、ジョブの隙間（次の要求を待つ最大 2 秒）に「被写体が消えた空の世界」が提示されてしまう |
+| ターゲットの大きさ | 常に**描画解像度**（`Renderer::render_size()`）。G-Buffer・深度・ID バッファと同じ基準にすることで、中間バッファのサイズ規則を 1 つも変えずに済み、カラーと ID マスクの解像度が必ず一致する（合成はこの一致を要求する）。要求サイズ（16〜512px）への縮小は従来どおり読み戻し後に「中央正方形を切り出して縮小」で行う |
+| ターゲットの寿命 | `Renderer` が 1 枚だけ持ち、描画解像度が変わったときだけ作り直す（連続生成のたびに確保し直さない） |
+| 画面の見え方 | 生成中は present が止まるので、**ビューポートはセッション開始直前の絵で静止する**。被写体は 1 フレームも映らない |
+| スクリーンショット | 環境変数のフレームダンプも `SCREENSHOT:` も「提示したフレーム」専用なので、撮影フレームは対象外。`SCREENSHOT:` 要求はセッションが畳まれた後の提示フレームで処理される |
+
+Play 中に処理しないのは、present が止まるとゲーム画面が数秒固まって見えるため
+（セッションは最後の要求から 2 秒残る）。「プレイ中の画面が一瞬別物になる」ほうは
+オフスクリーン化で解消している。
+
 違いは 3 つだけで、いずれも `ThumbnailPlan` が持つ:
 
 | | 図鑑 | モデル一覧 |
@@ -225,7 +242,9 @@ THUMBNAIL:<要求ID>,<一辺px>,<assets:// パス>
 
 実装:
 - ランタイム: `runtime/src/engine/core/app_base/app/thumbnail_ops.rs`（進行）、
-  `runtime/src/engine/core/renderer/thumbnail/`（キャッシュ鍵・プロトコル・待ち行列・構図）
+  `runtime/src/engine/core/renderer/thumbnail/`（キャッシュ鍵・プロトコル・待ち行列・構図・
+  オフスクリーンターゲット）、`runtime/src/engine/core/renderer/mod.rs`
+  （`begin_offscreen_frame` と `FrameOutput`）
 - エディタ: `editor/src/Panels/ProjectPanel.ModelThumbnails.cs`（要求と反映）、
   `editor/src/Assets/ModelThumbnailCacheKey.cs`（キャッシュ鍵）
 

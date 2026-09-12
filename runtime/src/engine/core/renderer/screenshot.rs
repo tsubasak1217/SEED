@@ -12,8 +12,10 @@
 //    SEED_SCREENSHOT_FRAMES … 撮影するフレーム番号のカンマ区切り（例 "120,240"）
 //
 //  フレーム番号の定義:
-//    `RenderFrame::finish()` が呼ばれた回数（= present したフレーム数）の 0 起点通し番号。
-//    アプリ側のフレームカウンタとは独立しており、提示フレームと 1 対 1 に対応する。
+//    **present したフレーム数**の 0 起点通し番号（提示フレームと 1 対 1 に対応する）。
+//    アプリ側のフレームカウンタとは独立している。
+//    サムネイル撮影フレームはオフスクリーンへ描いて present しないため、
+//    番号を消費しない（`RenderFrame::finish()` の呼び出し回数とは一致しない）。
 //
 //  wgpu 上の制約と対処:
 //    - `copy_texture_to_buffer` の `bytes_per_row` は COPY_BYTES_PER_ROW_ALIGNMENT
@@ -568,10 +570,14 @@ mod tests {
 }
 
 // ============================================================
-//  アクタ・サムネイル用のカラー読み戻し（図鑑画像）
+//  サムネイル用のカラー読み戻し（図鑑画像・モデル一覧のタイル画像）
 // ------------------------------------------------------------
-//  上の `SCREENSHOT:` レーンとの違いは 1 点だけ:
-//    こちらは **PNG を書かず、生の RGBA ピクセルを返す**。
+//  上の `SCREENSHOT:` レーンとの違いは 2 点:
+//    1. **PNG を書かず、生の RGBA ピクセルを返す**。
+//    2. コピー元が**提示テクスチャではない**。撮影フレームは専用の
+//       オフスクリーンターゲットへ描かれる（`renderer/thumbnail/target.rs`）ので、
+//       このレーンはそのターゲットから読み戻す。上の 2 レーンは提示フレーム専用で、
+//       撮影フレームでは `RenderFrame::finish` がそもそも呼ばない。
 //
 //  なぜ分けたか:
 //    サムネイルはカラーだけでは完成しない。ID バッファから作ったマスクでアルファを
@@ -592,7 +598,9 @@ static THUMBNAIL_REQUESTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false
 static THUMBNAIL_RESULT: std::sync::Mutex<Option<Result<(Vec<u8>, u32, u32), String>>> =
     std::sync::Mutex::new(None);
 
-/// 次に描くフレームの提示テクスチャを、サムネイル用に読み戻すよう要求する。
+/// 次に描くフレームのカラーターゲットを、サムネイル用に読み戻すよう要求する。
+///
+/// 撮影フレームのカラーターゲットは専用オフスクリーン（提示テクスチャではない）。
 pub fn request_thumbnail_color() {
     if let Ok(mut flag) = THUMBNAIL_REQUESTED.lock() {
         *flag = true;
@@ -603,9 +611,10 @@ pub fn request_thumbnail_color() {
     }
 }
 
-/// 要求が立っていれば、提示テクスチャ → 読み戻しバッファのコピーを `encoder` へ積む。
+/// 要求が立っていれば、`texture`（そのフレームのカラーターゲット）→ 読み戻しバッファの
+/// コピーを `encoder` へ積む。
 ///
-/// `RenderFrame::finish()` から `schedule_requested` と並べて呼ぶ。
+/// `RenderFrame::finish()` から呼ぶ。撮影フレームではオフスクリーンターゲットが渡る。
 pub fn schedule_thumbnail_color(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,

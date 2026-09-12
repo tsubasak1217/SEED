@@ -1809,13 +1809,33 @@ impl App {
         // ハンドルだけ取り出しておく。
         let sprite_mesh_cache = self.sprite_mesh_cpu_handle();
 
+        // ── このフレームをオフスクリーンへ描くか（サムネイル撮影中か）──────────
+        //   サムネイル生成セッションが生きている間、`active_world_line` は隔離ワールド線
+        //   （被写体 1 体だけの世界）に据えられ、カメラも構図用の正射へ差し替わっている。
+        //   その絵を提示すると、ユーザーのビューポートに被写体が映り込む。
+        //   そこでセッション中のフレームは**すべて**専用のオフスクリーンへ描き、
+        //   present しない（画面はセッション開始直前に提示した絵のまま固まる）。
+        //
+        //   判定に `thumbnail_job`（1 枚ぶんの進行）ではなく `thumbnail_session`
+        //   （連続生成のまとまり）を使うのは、ジョブとジョブの隙間（次の要求を待つ
+        //   最大 2 秒）も隔離ワールド線に留まるため。ジョブ単位で切り替えると、
+        //   その隙間だけ「被写体が消えた空の世界」が提示されてしまう。
+        //   `self` を可変借用する前に確定させておく。
+        let draw_offscreen_for_thumbnail = self.thumbnail_session.is_some();
+
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
         {
             // begin_frame = get_current_texture(): GPU バックプレッシャーでここが長くなる
             let _perf_t_bf = std::time::Instant::now();
             let _prof_bf = ScopeGuard::new("描画/BeginFrame(スワップチェーン取得)");
-            let begin_frame_result = renderer.begin_frame();
+            // サムネイル撮影中はスワップチェーンを取得せず、専用ターゲットへ描く。
+            // どちらも同じ `RenderFrame` を返すので、以降の描画コマンド列は一切変わらない。
+            let begin_frame_result = if draw_offscreen_for_thumbnail {
+                renderer.begin_offscreen_frame()
+            } else {
+                renderer.begin_frame()
+            };
             drop(_prof_bf);
             perf_begin_frame_ms = _perf_t_bf.elapsed().as_secs_f64() * 1000.0;
             match begin_frame_result {

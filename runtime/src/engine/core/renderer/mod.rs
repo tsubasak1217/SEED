@@ -139,6 +139,9 @@ pub mod letterbox;
 pub mod present_mode;
 pub use present_mode::{VsyncMode, parse_vsync_mode};
 
+/// サムネイル撮影専用のオフスクリーンカラーターゲット（提示フレームを汚さないため）。
+pub use thumbnail::target::{ThumbnailRenderTarget, TargetSpec as ThumbnailTargetSpec};
+
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, GizmoVertex};
 pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel, InlineUpdateResult,
@@ -351,6 +354,12 @@ pub struct Renderer {
     /// アスペクト維持で引き伸ばす（余白は黒帯）。
     /// スワップチェーンの configure は常にウィンドウ実サイズのまま（ここでは触らない）。
     fixed_render_size: Option<PhysicalSize<u32>>,
+    /// サムネイル撮影フレームの最終カラー出力先（オフスクリーン）。
+    ///
+    /// `None` = まだ 1 度も撮っていない（要求されたときに初めて確保する）。
+    /// 撮影は提示テクスチャを一切使わないため、生成中でもユーザーが見ている絵は
+    /// 変化しない。詳細は `thumbnail::target` のモジュールコメント参照。
+    thumbnail_target: Option<ThumbnailRenderTarget>,
     /// コンパイル済みパイプライン状態のキャッシュ。
     /// GPU が PIPELINE_CACHE フィーチャーをサポートする場合のみ Some になる。
     pipeline_cache: Option<wgpu::PipelineCache>,
@@ -680,6 +689,9 @@ impl Renderer {
         Self {
             surface, device, queue, config, size, depth_texture,
             fixed_render_size: None,
+            // サムネイル用オフスクリーンは「最初に要求されたとき」に確保する。
+            // 撮影を一度もしないセッションでフルスクリーン 1 枚ぶんを抱えないため。
+            thumbnail_target: None,
             pipeline_cache,
         }
     }
@@ -917,13 +929,70 @@ impl Renderer {
             &wgpu::CommandEncoderDescriptor { label: Some("Render Encoder") },
         );
         Ok(RenderFrame {
-            output,
+            output: FrameOutput::Swapchain(output),
             encoder,
             color_view,
             depth_view:      &self.depth_texture.view,
             depth_only_view: &self.depth_texture.depth_only_view,
             // 描画解像度をフレームへ焼き込む（フレーム中に変わらないことを保証するため）。
             render_px:       (rs.width, rs.height),
+            queue:           &self.queue,
+            device:          &self.device,
+        })
+    }
+
+    /// サムネイル撮影用に、**スワップチェーンを一切触らない**フレームを開始する。
+    ///
+    /// `begin_frame` との違いは出力先だけで、描画コマンド列は完全に同じものが通る。
+    ///   - `get_current_texture()` を呼ばない（提示キューを消費しない）
+    ///   - `finish()` で `present()` しない（画面は前のフレームのまま固まる）
+    ///   - 環境変数のフレームダンプ・`SCREENSHOT:` の撮影対象にもならない
+    ///     （どちらも「提示したフレーム」を撮る機能なので、撮影フレームは対象外）
+    ///
+    /// # 大きさ
+    /// ターゲットは常に**描画解像度**（`render_size()`）で確保する。理由は
+    /// `thumbnail::target` のモジュールコメント参照（中間バッファ・ID バッファと
+    /// 解像度を揃えるため。要求サイズへの縮小は読み戻し後に行う）。
+    ///
+    /// # 失敗
+    /// 描画解像度が 0（ウィンドウ最小化直後など）のときだけ `Err` を返す。
+    /// 呼び出し側はスワップチェーン取得失敗と同じ扱いでフレームを捨てればよいので、
+    /// 戻り値の型も `begin_frame` と揃えて `SurfaceError` にしてある。
+    pub fn begin_offscreen_frame(&mut self) -> Result<RenderFrame<'_>, wgpu::SurfaceError> {
+        // ── 1. 必要な仕様を決める（大きさは描画解像度、形式はスワップチェーンと同一）──
+        let rs = self.render_size();
+        let Some((width, height)) = thumbnail::target::sanitize_size(rs.width, rs.height) else {
+            // 0×0 では確保もレンダーパスも成立しない。Outdated と同じ扱いにして、
+            // 呼び出し側の既存のリカバリ経路（次フレームで作り直す）へ載せる。
+            return Err(wgpu::SurfaceError::Outdated);
+        };
+        let spec = ThumbnailTargetSpec { width, height, format: self.config.format };
+
+        // ── 2. ターゲットを用意する（同じ仕様なら作り直さない）──
+        if thumbnail::target::needs_recreate(self.thumbnail_target.as_ref().map(|t| t.spec()), spec)
+        {
+            self.thumbnail_target = Some(ThumbnailRenderTarget::new(&self.device, spec));
+        }
+
+        // ── 3. 深度を描画解像度へ追従させる（begin_frame の②と同じ規則）──
+        //   撮影フレームでも深度・ステンシルは共有テクスチャを使うため、
+        //   カラーと寸法が食い違うとレンダーパスのバリデーションで落ちる。
+        if width != self.depth_texture.width || height != self.depth_texture.height {
+            self.depth_texture = DepthTexture::new(&self.device, width, height);
+        }
+
+        let target = self.thumbnail_target.as_ref().expect("直前に用意した");
+        let color_view = target.texture().create_view(&wgpu::TextureViewDescriptor::default());
+        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Thumbnail Render Encoder"),
+        });
+        Ok(RenderFrame {
+            output: FrameOutput::Offscreen { texture: target.texture(), width, height },
+            encoder,
+            color_view,
+            depth_view:      &self.depth_texture.view,
+            depth_only_view: &self.depth_texture.depth_only_view,
+            render_px:       (width, height),
             queue:           &self.queue,
             device:          &self.device,
         })
@@ -945,12 +1014,63 @@ impl Drop for Renderer {
 //  RenderFrame — 1 フレーム分の描画リソース
 // ============================================================
 
+/// 1 フレームの最終カラー出力先。
+///
+/// 通常フレームはスワップチェーンの提示テクスチャへ描いて present する。
+/// サムネイル撮影フレームだけは専用のオフスクリーンへ描き、present しない
+/// （＝ユーザーが見ている絵を 1 ピクセルも変えない）。
+///
+/// **この 2 つの違いはフレームの入口と出口にしか現れない。** 途中の描画コマンド列は
+/// まったく同じで、`color_view` が指す先が違うだけである。
+enum FrameOutput<'r> {
+    /// 通常フレーム: スワップチェーンから取得した提示テクスチャ（`finish()` で present する）。
+    Swapchain(wgpu::SurfaceTexture),
+    /// サムネイル撮影フレーム: `Renderer` が持つオフスクリーンターゲット（present しない）。
+    Offscreen {
+        /// 読み戻しのコピー元になるカラーテクスチャ。
+        texture: &'r wgpu::Texture,
+        /// 幅 [px]（`SurfaceTexture::texture.size()` の代わりに使う）。
+        width: u32,
+        /// 高さ [px]。
+        height: u32,
+    },
+}
+
+impl<'r> FrameOutput<'r> {
+    /// 読み戻し（`copy_texture_to_buffer`）のコピー元テクスチャ。
+    fn texture(&self) -> &wgpu::Texture {
+        match self {
+            Self::Swapchain(surface) => &surface.texture,
+            Self::Offscreen { texture, .. } => texture,
+        }
+    }
+
+    /// 出力先の実寸（ピクセル）。
+    fn size_px(&self) -> (u32, u32) {
+        match self {
+            Self::Swapchain(surface) => {
+                let s = surface.texture.size();
+                (s.width, s.height)
+            }
+            Self::Offscreen { width, height, .. } => (*width, *height),
+        }
+    }
+
+    /// 提示（present）されるフレームか。
+    ///
+    /// スクリーンショット系の機能はすべて「提示したフレーム」を対象にしているので、
+    /// オフスクリーンのときは撮影もフレーム番号の払い出しも行わない。
+    fn is_presented(&self) -> bool {
+        matches!(self, Self::Swapchain(_))
+    }
+}
+
 /// `Renderer::begin_frame()` が返すフレームハンドル。
 ///
 /// `begin_render_pass()` でレンダーパスを開き、描画コマンドを積んだあと、
 /// スコープを外れてレンダーパスを閉じてから `finish()` でサブミットする。
 pub struct RenderFrame<'r> {
-    output:          wgpu::SurfaceTexture,
+    output:          FrameOutput<'r>,
     encoder:         wgpu::CommandEncoder,
     color_view:      wgpu::TextureView,
     /// All aspect: レンダーアタッチメント（depth+stencil 操作）用
@@ -1105,12 +1225,18 @@ impl<'r> RenderFrame<'r> {
     ///
     /// 最終プレゼント先の実寸。fixed では `render_size()` と一致しないため、
     /// レターボックス矩形の計算にだけ使う。
+    ///
+    /// サムネイル撮影フレーム（オフスクリーン）ではターゲットの実寸を返す。
+    /// そちらは必ず `render_size()` と同じ大きさで確保されるため、
+    /// レターボックス矩形は「不要」と判定され全面へ描かれる（＝提示フレームと同じ絵）。
     pub fn swapchain_px(&self) -> (u32, u32) {
-        let s = self.output.texture.size();
-        (s.width, s.height)
+        self.output.size_px()
     }
 
-    /// スワップチェーンのカラービューへの参照を返す（トーンマップ出力先）。
+    /// このフレームの最終カラービューへの参照を返す（トーンマップ出力先）。
+    ///
+    /// 通常フレームはスワップチェーンのビュー、サムネイル撮影フレームは
+    /// オフスクリーンターゲットのビューを指す。
     pub fn swapchain_view(&self) -> &wgpu::TextureView { &self.color_view }
 
     /// 外部カラービュー（HDR オフスクリーン等）へメインレンダーパスを開始する（Phase R3）。
@@ -2116,34 +2242,55 @@ impl<'r> RenderFrame<'r> {
         );
     }
 
-    /// コマンドを GPU にサブミットしてフレームを表示する。
+    /// コマンドを GPU にサブミットし、提示フレームなら表示する。
     ///
+    /// サムネイル撮影フレーム（`begin_offscreen_frame` 由来）は present しない。
     /// スクリーンショット機能が有効かつ現フレームが撮影対象なら、
     /// サブミット前にカラーターゲット → 読み戻しバッファのコピーを積み、
     /// present 後に PNG を書き出す（`screenshot` モジュール参照）。
     pub fn finish(mut self) {
-        // 提示フレームの通し番号を払い出す（機能無効時は撮影判定で即 None になる）。
-        let frame_index = screenshot::next_frame_index();
-        let pending = screenshot::schedule(
+        // ── スクリーンショット系は「提示フレーム」だけが対象 ──────────────
+        //   サムネイル撮影フレームは画面に出ないので、フレーム番号の払い出しも
+        //   （番号は present したフレームとの 1 対 1 対応が定義）、`SCREENSHOT:` の
+        //   消化も行わない。要求は次に提示されるフレームで普通に処理される。
+        let (pending, pending_request) = if self.output.is_presented() {
+            // 提示フレームの通し番号を払い出す（機能無効時は撮影判定で即 None になる）。
+            let frame_index = screenshot::next_frame_index();
+            let pending = screenshot::schedule(
+                self.device,
+                &mut self.encoder,
+                self.output.texture(),
+                frame_index,
+            );
+
+            // IPC（SCREENSHOT:）で要求された撮影があれば、同じフレームからもう 1 枚コピーを積む。
+            // 環境変数駆動のフレームダンプとは独立に動き、1 フレームにつき 1 件だけ消化する。
+            let pending_request = screenshot::schedule_requested(
+                self.device,
+                &mut self.encoder,
+                self.output.texture(),
+            );
+            (pending, pending_request)
+        } else {
+            (None, None)
+        };
+
+        // サムネイル（RENDER_ACTOR_THUMBNAIL: / THUMBNAIL:）のカラー読み戻し要求があれば、
+        // このフレームのカラーターゲットからコピーを積む。こちらは PNG を書かず生ピクセルを返す
+        // （ID バッファ由来のマスクでアルファを抜いてから初めて完成するため）。
+        // 撮影フレームは必ずオフスクリーン側なので、コピー元も提示テクスチャではない。
+        let pending_thumbnail = screenshot::schedule_thumbnail_color(
             self.device,
             &mut self.encoder,
-            &self.output.texture,
-            frame_index,
+            self.output.texture(),
         );
 
-        // IPC（SCREENSHOT:）で要求された撮影があれば、同じフレームからもう 1 枚コピーを積む。
-        // 環境変数駆動のフレームダンプとは独立に動き、1 フレームにつき 1 件だけ消化する。
-        let pending_request =
-            screenshot::schedule_requested(self.device, &mut self.encoder, &self.output.texture);
-
-        // 図鑑サムネイル（RENDER_ACTOR_THUMBNAIL:）のカラー読み戻し要求があれば、
-        // 同じフレームからもう 1 枚コピーを積む。こちらは PNG を書かず生ピクセルを返す
-        // （ID バッファ由来のマスクでアルファを抜いてから初めて完成するため）。
-        let pending_thumbnail =
-            screenshot::schedule_thumbnail_color(self.device, &mut self.encoder, &self.output.texture);
-
         self.queue.submit(std::iter::once(self.encoder.finish()));
-        self.output.present();
+        // 提示するのはスワップチェーンのときだけ。オフスクリーンでは何もしない
+        //（＝画面には直前に提示したフレームが残り続ける）。
+        if let FrameOutput::Swapchain(surface) = self.output {
+            surface.present();
+        }
 
         // present 後に読み出す。マップ完了待ちで同期するため、撮影フレームだけ重くなる。
         if let Some(pending) = pending {
