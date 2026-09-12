@@ -564,6 +564,34 @@ public static class Program
             Check.True(got.Contains("extra/extra.bin"), "追加同梱フォルダのファイルが入っていない");
         });
 
+        h.Add("参照の大文字小文字が実ファイルと違っても収録パスはディスクの表記になる", () =>
+        {
+            // Windows では参照解決が大文字小文字を無視するため気付けないが、収録パスが
+            // 参照側の表記（Tree.glb）になると PAK のエントリ名がそれになり、ランタイムの
+            // 検索（tree.glb）で見つからずシーンが読めなくなる。ディスク表記（tree.glb）へ正規化する。
+            var root = Path.Combine(Path.GetTempPath(), "seed_pkg_case_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(root, "scenes"));
+            Directory.CreateDirectory(Path.Combine(root, "models"));
+            try
+            {
+                File.WriteAllText(Path.Combine(root, "project_settings.json"),
+                    "{ \"start_scene\": \"assets://scenes/main.scene\", \"scenes\": [] }");
+                File.WriteAllText(Path.Combine(root, "scenes", "main.scene"),
+                    "{ \"actors\": [ { \"model_path\": \"assets://models/Tree.GLB\" } ] }");
+                File.WriteAllBytes(Path.Combine(root, "models", "tree.glb"), new byte[] { 1, 2, 3 });
+
+                var result = new AssetCollector(root, new AssetPackagingSettings()).Collect();
+                var rel = result.Included.Select(a => a.RelPath)
+                    .FirstOrDefault(r => r.Equals("models/tree.glb", StringComparison.OrdinalIgnoreCase));
+                Check.True(rel is not null, "参照先のモデルが収録されていない");
+                Check.Equal("models/tree.glb", rel!, "収録パスがディスクの表記（小文字）になっていない");
+            }
+            finally
+            {
+                try { Directory.Delete(root, recursive: true); } catch { }
+            }
+        });
+
         h.Add("全ファイル同梱トグルで従来どおり全部入る", () =>
         {
             using var fx = new AssetFixture();

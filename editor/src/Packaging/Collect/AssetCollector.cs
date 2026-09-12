@@ -75,6 +75,15 @@ public sealed class AssetCollector
     /// <summary>アセットルート相対パス → バイトサイズ。</summary>
     private readonly Dictionary<string, long> _filesOnDisk;
 
+    /// <summary>
+    /// 大文字小文字を無視したキー → ディスク上の実際の表記（相対パス）。
+    /// 参照文字列の表記（例 <c>Yasi.glb</c>）と実ファイル名（<c>yasi.glb</c>）が違っても、
+    /// 収録パス＝PAK のエントリ名は必ずディスク表記にする。Windows では参照解決が
+    /// 大文字小文字を無視するため気付けないが、PAK のエントリ名が参照側の表記になると
+    /// ランタイムの検索で見つからず「シーンが読めず灰色の画面」になる（実際に起きた）。
+    /// </summary>
+    private readonly Dictionary<string, string> _diskCasing;
+
     /// <summary>アセットルート相対のフォルダパス集合（フォルダ参照の解決に使う）。</summary>
     private readonly HashSet<string> _dirsOnDisk;
 
@@ -137,6 +146,7 @@ public sealed class AssetCollector
         _log               = log;
 
         _filesOnDisk     = new Dictionary<string, long>(AssetPathUtil.PathComparer);
+        _diskCasing      = new Dictionary<string, string>(AssetPathUtil.PathComparer);
         _dirsOnDisk      = new HashSet<string>(AssetPathUtil.PathComparer);
         _included        = new HashSet<string>(AssetPathUtil.PathComparer);
         _scanQueue       = new Queue<string>();
@@ -159,6 +169,7 @@ public sealed class AssetCollector
             var rel = AssetPathUtil.ToRelative(_assetsRoot, fi.FullName);
             if (rel is null || rel.Length == 0) continue;
             _filesOnDisk[rel] = fi.Length;
+            _diskCasing[rel]  = rel;   // 値はディスク表記そのもの
 
             // 親フォルダを順に登録する（フォルダ参照 assets://terrain/Scene1 の解決用）
             var dir = AssetPathUtil.GetDirectory(rel);
@@ -628,6 +639,8 @@ public sealed class AssetCollector
     {
         if (!_filesOnDisk.ContainsKey(rel)) return;
         if (IsNeverIncluded(rel)) return;   // 配布物に入れてはいけないもの（参照より優先する唯一の規則）
+        // 収録パスは参照側の表記ではなくディスク上の表記にそろえる（PAK のエントリ名になるため）。
+        rel = CanonicalDiskPath(rel);
         if (!_included.Add(rel)) return;
 
         var ext = AssetPathUtil.GetExtensionLower(rel);
@@ -684,6 +697,13 @@ public sealed class AssetCollector
             }
         }
     }
+
+    /// <summary>
+    /// 参照文字列の相対パスを、ディスク上の実際の表記（大文字小文字）に置き換える。
+    /// 索引に無いパスはそのまま返す（呼び出し側が存在確認済みの前提）。
+    /// </summary>
+    private string CanonicalDiskPath(string rel)
+        => _diskCasing.TryGetValue(rel, out var disk) ? disk : rel;
 
     /// <summary>フォルダ配下のファイルを丸ごと収録集合へ足す。</summary>
     /// <param name="dirRel">フォルダのルート相対パス。</param>
