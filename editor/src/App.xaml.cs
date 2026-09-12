@@ -179,8 +179,11 @@ public partial class App : Application
 
     // ── 起動スプラッシュ（別ウィンドウ） ─────────────────────────
 
-    /// <summary>スプラッシュ画像のリソース名（csproj の Resource Include で埋め込まれる縮小版）。</summary>
-    private const string STARTUP_SPLASH_RESOURCE = "resources/images/blueSky_ORE_splash.png";
+    /// <summary>
+    /// 起動スプラッシュ画像のリソース名（csproj の Resource Include で埋め込まれる）。
+    /// ビューポート内の起動中画面（blueSky_ORE.png）とは別の画像。差し替えるときは同じファイル名で上書きする。
+    /// </summary>
+    private const string STARTUP_SPLASH_RESOURCE = "resources/images/startup_splash.png";
 
     /// <summary>スプラッシュを閉じるときのフェード時間 [ms]。</summary>
     private const int STARTUP_SPLASH_FADE_MS = 250;
