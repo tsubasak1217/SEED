@@ -28,14 +28,18 @@ static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
 /// このフレーム数だけ詳細ログを出力する。
 const DEBUG_LOG_FRAMES: u64 = 10;
 
-/// 統合バッチ／BLAS キャッシュの遅延 prune のしきい値（フレーム数）。
-/// batch_key がこの数だけ連続で「そのフレームの描画対象」に不在なら、
-/// 対応する `shared_model_batches` エントリと RT の BLAS キャッシュを解放する。
-/// 即時解放にしないのは、非同期ロード中に gpu_model が一瞬 None になる等で batch_key が
-/// 一時的に消えたフレームでの誤解放→再ロードのスラッシングを避けるため。60fps で約 1 秒。
-/// マテリアルのインライン編集を止めれば、この猶予の後に stale バッチがまとめて解放され
-/// VRAM が定常状態へ戻る。
-const STALE_BATCH_PRUNE_FRAMES: u32 = 60;
+// 統合バッチ／BLAS キャッシュの遅延 prune のしきい値は**フレーム数固定ではなくなった**。
+// batch_key がしきい値ぶん連続で「そのフレームの描画対象」に不在なら、対応する
+// `shared_model_batches` エントリと RT の BLAS キャッシュを解放する。
+// 即時解放にしないのは、非同期ロード中に gpu_model が一瞬 None になる等で batch_key が
+// 一時的に消えたフレームでの誤解放→再ロードのスラッシングを避けるため。
+//
+// 旧実装は 60 フレーム固定（60fps で約 1 秒）だったが、画面外へ出入りする対象
+// （魚・漂流物）でバッチと BLAS の再構築が繰り返されていた。現在はプロジェクト設定
+// `streaming.keep_alive_secs`（既定 30 秒）を目標 fps でフレーム数へ換算した値を使う。
+// 値は `App::stale_batch_prune_frames()`（app/model_streaming.rs）が返す。
+// マテリアルのインライン編集を止めれば、この猶予の後に stale バッチがまとめて解放され
+// VRAM が定常状態へ戻る。
 
 /// 統合バッチの「規模ログ」を出す最小間隔（秒）。
 ///
@@ -971,6 +975,19 @@ impl App {
             }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
+
+        // ─ 1-6.5 モデル非同期ロードの完成品を反映する ───────
+        // ワーカーが読み終えた CPU モデルを受け取り、予算（件数・時間）の範囲で
+        // GPU アップロードして ECS へ差し込む。**ここでディスクには一切触らない**。
+        // Play / Edit の両方・ポーズ中も走らせる（ポーズで永久に出てこない事故を防ぐ）。
+        // 描画インスタンス収集より前に置くことで、差し込んだモデルは同フレームで描かれる。
+        {
+            crate::profile_scope!("ストリーミング/モデル反映");
+            self.pump_model_streaming();
+        }
+        // 統合バッチ／BLAS の遅延解放しきい値（プロジェクト設定 streaming.keep_alive_secs 由来）。
+        // 後段では `self.batch_absent_frames` を可変借用するため、ここで値だけ控えておく。
+        let stale_prune_frames = self.stale_batch_prune_frames();
 
         // ─ 1-7. ジョイントアタッチ（ソケット）追従 ─────────
         // モデルアニメ評価（update_animations）後・描画インスタンス収集前に、
@@ -2138,7 +2155,7 @@ impl App {
                             // 【エントリ自体は作ってから抜ける理由】ここで `continue` して
                             // map にキーごと載せないと、`shared_model_batches` に残っている
                             // 前フレームのバッチが更新されないまま描かれ続け、stale prune
-                            // （STALE_BATCH_PRUNE_FRAMES フレームの遅延解放）が走るまで
+                            // （keep_alive_secs 相当フレームの遅延解放）が走るまで
                             // 消えない。エントリを 0 インスタンスで残せば
                             // `InstancedModelBatch::update` が n_instances==0 の枝で
                             // lod_visible_counts を 0 に落とすため、**同じフレームで**確実に消える。
@@ -2376,7 +2393,7 @@ impl App {
                     // 新しい batch_key を生む。以前は shared_model_batches も RT の BLAS キャッシュも
                     // 追加のみで削除が無く、編集のたびに巨大な GPU リソースが無制限に蓄積して
                     // 数秒で VRAM が枯渇（OOM パニック）していた。ここで「このフレームの描画対象
-                    // （merge_map のキー）に STALE_BATCH_PRUNE_FRAMES 連続で不在」の batch_key を解放する。
+                    // （merge_map のキー）に keep_alive_secs 相当フレーム連続で不在」の batch_key を解放する。
                     // alive 集合（merge_map のキー）由来なので、解放するのは「もう描かれていない」
                     // ものだけ＝描画結果は不変。遅延方式で非同期ロード時の誤解放も避ける。
                     {
@@ -2384,11 +2401,14 @@ impl App {
                             merge_map.keys().cloned().collect::<std::collections::HashSet<String>>();
                         let cache_keys: std::collections::HashSet<String> =
                             self.shared_model_batches.keys().cloned().collect();
+                        // しきい値はプロジェクト設定（streaming.keep_alive_secs）由来。
+                        // 借用が重なるのでループ外で控えてから渡す。
+                        let prune_frames = stale_prune_frames;
                         let freed = compute_stale_batch_prune(
                             &cache_keys,
                             &alive,
                             &mut self.batch_absent_frames,
-                            STALE_BATCH_PRUNE_FRAMES,
+                            prune_frames,
                         );
                         if !freed.is_empty() {
                             // ① 統合バッチ本体（インスタンスバッファ・GpuModel 借用元は MC 側）を解放。

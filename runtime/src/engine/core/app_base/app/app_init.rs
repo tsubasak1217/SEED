@@ -111,6 +111,16 @@ impl App {
             self.vsync_mode.as_str(),
             self.is_embedded(),
         );
+        // モデル非同期ロード（ストリーミング）を初期化する。
+        // **target_fps 確定後**に呼ぶこと（keep_alive_secs → フレーム数の換算に使う）。
+        // ワーカースレッドはここで起動し、以後プロセス終了まで常駐する。
+        //
+        // 【レンダラー生成より前でよい理由】ワーカーは待ち行列が空の間は寝ているだけで、
+        // 最初のジョブが積まれるのはシーン据え付け後（`install_loaded_scene` の
+        // プリフェッチ開始／スクリプトの Instantiate）＝ `Renderer::new` の後である。
+        // したがって `asset_cache::set_bc_supported`（デバイス生成時に確定）より先に
+        // キャッシュを焼いてしまうことはない。この順序を変えるときは注意すること。
+        self.init_model_streaming(&settings_json);
         // Play・スタンドアロン時はプロジェクト設定のウィンドウ解像度を初期サイズに使う。
         // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
         let physical_size = if self.mode == RuntimeMode::Play {
@@ -874,6 +884,16 @@ impl App {
             // 物理タイムラインをリセットしてシーンロード後の初期状態に戻す
             self.reset_physics_timeline();
         }
+
+        // ── 9. モデルストリーミングの世代交代 ───────────────────────────────────
+        // 【必ず破棄する】GPU 反映待ちの保留スロットは旧 World の Entity
+        //   （インデックス＋世代）を持つ。World ごと作り直した後は同じ (index, generation)
+        //   が別実体を指し得るため、持ち越すと無関係なアクタへモデルを差し込む事故になる。
+        // 【プリフェッチ開始】シーン内のプレハブ参照と、後で生成され得るプレハブ
+        //   （`.actor` 走査）のモデルを低優先度で先読みする。走査・読み込みはすべて
+        //   ワーカー側で走るのでここでディスクには触らない。
+        super::model_streaming::clear_pending_slots();
+        self.start_model_prefetch();
     }
 
     pub(super) fn load_play_scene(&mut self) {

@@ -740,21 +740,54 @@ pub fn build_actor(
                     });
                 } else {
                     use std::sync::Arc;
+                    use crate::engine::core::app_base::app::model_streaming;
                     let path  = Path::new(&mc_data.model_path);
-                    // キャッシュから CPU モデルを取得するか、ディスクから読み込んでキャッシュに追加する
-                    let model: Arc<crate::engine::core::loader::model::Model> = {
-                        let mut cache = ctx.model_cache.borrow_mut();
-                        if let Some(cached) = cache.get(&mc_data.model_path) {
-                            Arc::clone(cached)
-                        } else {
-                            let m = Arc::new(load_model(path)?);
-                            cache.insert(mc_data.model_path.clone(), Arc::clone(&m));
-                            m
-                        }
+                    // ── CPU モデルの入手（3 段構え）────────────────────────────────
+                    // ① プロセス内 CPU キャッシュ（同一パスの 2 体目以降）: 即返る。
+                    // ② 非同期スコープ（プレイ中の Instantiate）かつ ① ミス:
+                    //    ワーカーへ要求だけ出し、モデル無し（gpu_model=None）で構築する。
+                    //    完成後に `App::pump_model_streaming` が差し込む（描画は None の間スキップ）。
+                    //    先読み済みなら要求を出した時点で完成品が返るので、待ちは発生しない。
+                    // ③ それ以外（シーン読み込み・サムネイル・エディタ操作）: 従来どおり同期ロード。
+                    //    エディタは SCENE_LOADED を「全モデルが揃った」合図に使うため、
+                    //    ここを非同期にしてはいけない。
+                    let cached: Option<Arc<crate::engine::core::loader::model::Model>> = {
+                        let cache = ctx.model_cache.borrow();
+                        cache.get(&mc_data.model_path).map(Arc::clone)
                     };
+                    let model: Option<Arc<crate::engine::core::loader::model::Model>> =
+                        match cached {
+                            Some(c) => Some(c),
+                            None if model_streaming::async_model_enabled() => {
+                                // 非同期要求。RAM キャッシュに先読み済みなら即座に Some が返る。
+                                let ready = model_streaming::request_model_async(
+                                    slot_entity, &mc_data.model_path,
+                                );
+                                if let Some(m) = &ready {
+                                    ctx.model_cache.borrow_mut()
+                                        .insert(mc_data.model_path.clone(), Arc::clone(m));
+                                }
+                                ready
+                            }
+                            None => {
+                                let m = Arc::new(load_model(path)?);
+                                ctx.model_cache.borrow_mut()
+                                    .insert(mc_data.model_path.clone(), Arc::clone(&m));
+                                Some(m)
+                            }
+                        };
+
                     let total = mc_data.instances.len();
-                    let gpu_model       = ctx.upload_model_with_overrides(&*model, &mc_data.material_overrides);
-                    let instanced_batch = ctx.create_instanced_batch(&*model, total as u32);
+                    // モデルが手元にある場合のみ GPU リソースを作る。
+                    // 非同期待ちの間は両方 None ＝ 描画・RT・ピッキングから外れるだけで、
+                    // Transform・スクリプト・コライダーは通常どおり動く。
+                    let (gpu_model, instanced_batch) = match &model {
+                        Some(m) => (
+                            Some(ctx.upload_model_with_overrides(&**m, &mc_data.material_overrides)),
+                            Some(ctx.create_instanced_batch(&**m, total as u32)),
+                        ),
+                        None => (None, None),
+                    };
                     let mut meta = mc_data.meta;
                     if meta.len() < total {
                         let start = meta.len();
@@ -763,9 +796,9 @@ pub fn build_actor(
                     }
                     world.insert(slot_entity, ModelComponent {
                         source_path:     mc_data.model_path,
-                        model:           Some(model),
-                        gpu_model:       Some(gpu_model),
-                        instanced_batch: Some(instanced_batch),
+                        model,
+                        gpu_model,
+                        instanced_batch,
                         instance_mats:   mc_data.instances,
                         instance_meta:   meta,
                         group_meta:      mc_data.groups,

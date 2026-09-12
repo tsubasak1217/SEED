@@ -508,6 +508,11 @@ dotnet run --project editor/tests/PackagingCollectorTests
 | `target_fps` | `60` | フレームレート上限（`0` で無制限）。CPU・GPU の空回りを止めて発熱を抑える |
 | `vsync` | `"auto"` | 垂直同期。`"auto"` はパッケージ版＝有効／エディタ埋め込み＝無効。`"on"` / `"off"` で固定 |
 | `game_name` | 空 | ウィンドウタイトル（未設定なら `"SEED"`） |
+| `streaming` | （省略可） | モデルの非同期ロード（ワーカースレッド・先読み・GPU アップロード予算・バッチ常駐時間）。キーの一覧と既定値は [docs/model_streaming.md](model_streaming.md) 6 章 |
+
+遅いドライブ（USB 外付け・低速 SSD）で「プレイ中に時々カクつく」と言われたら、まず
+`streaming` を見る。配布版でも環境変数 `SEED_STREAMING=0` で非同期ロードを丸ごと切って
+切り分けられる（[docs/model_streaming.md](model_streaming.md) 6 章）。
 
 `target_fps` と `vsync` は起動ログの `[SEED INIT] target_fps=… vsync=… embedded=…` と
 `[SEED INIT] vsync=… embedded=… present_mode=…` に解決結果が出る（§9 のログ）。

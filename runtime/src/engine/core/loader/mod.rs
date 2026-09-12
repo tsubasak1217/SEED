@@ -1,4 +1,6 @@
 pub mod asset_cache;
+/// モデルの非同期ストリーミングロード（ワーカースレッド + RAM キャッシュ + プリフェッチ）。
+pub mod async_loader;
 mod gltf_loader;
 pub mod model;
 mod obj_loader;
@@ -7,9 +9,45 @@ pub mod sprite_mesh;
 
 pub use model::*;
 
+use std::cell::Cell;
 use std::fmt;
 use std::path::Path;
 use std::time::Instant;
+
+// ============================================================
+//  ログの発生源タグ（メインスレッド / ロードワーカー）
+//
+//  【なぜ要るか】非同期化の効果は「ディスク読みがメインスレッドを止めていない」
+//  ことで測る。ところが `load_model` はメインスレッドからもワーカーからも
+//  同じコードが呼ばれるため、ログの `[SEED cache] キャッシュヒット …16.8ms`
+//  だけ見ても「メインが 16.8ms 止まった」のか「ワーカーが裏で 16.8ms 読んだ」のか
+//  区別できない。スレッドごとに接頭辞を切り替えて、ログだけで判別できるようにする。
+// ============================================================
+
+thread_local! {
+    /// このスレッドがモデルロード用ワーカーか（既定 false = メインスレッド）。
+    static IS_LOADER_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// 現在のスレッドを「モデルロード用ワーカー」として印を付ける。
+/// `async_loader` のワーカーが起動直後に一度だけ呼ぶ。
+pub(crate) fn mark_current_thread_as_loader_worker() {
+    IS_LOADER_WORKER.with(|f| f.set(true));
+}
+
+/// このスレッドがモデルロード用ワーカーか。
+pub fn is_loader_worker_thread() -> bool {
+    IS_LOADER_WORKER.with(|f| f.get())
+}
+
+/// ローダーのログ接頭辞。ワーカー側は `[SEED stream/worker]` になる。
+fn log_tag() -> &'static str {
+    if is_loader_worker_thread() {
+        "[SEED stream/worker]"
+    } else {
+        "[SEED cache]"
+    }
+}
 
 // ============================================================
 //  生成時間の内訳計測（LOD 簡略化 / メッシュレット分割）
@@ -92,7 +130,8 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
     let t_cache = Instant::now();
     if let Some(model) = asset_cache::try_load_model(path) {
         eprintln!(
-            "[SEED cache] キャッシュヒット: {} ({:.1} ms)",
+            "{} キャッシュヒット: {} ({:.1} ms)",
+            log_tag(),
             path.display(),
             t_cache.elapsed().as_secs_f64() * 1000.0,
         );
@@ -136,7 +175,8 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
     let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
 
     eprintln!(
-        "[SEED cache] 初回ロード: {} | parse {:.1}ms (内 lod={:.1}ms meshlet={:.1}ms) + tex処理 {:.1}ms ({} KiB, bc={}) + 書出 {:.1}ms",
+        "{} 初回ロード: {} | parse {:.1}ms (内 lod={:.1}ms meshlet={:.1}ms) + tex処理 {:.1}ms ({} KiB, bc={}) + 書出 {:.1}ms",
+        log_tag(),
         path.display(),
         parse_ms,
         lod_ms,

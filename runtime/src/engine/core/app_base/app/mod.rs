@@ -102,6 +102,9 @@ mod physics_ops;
 mod physics_timeline;
 mod tab_physics;
 mod script_scene_ops;
+/// モデル非同期ロード（ストリーミング）の App 側グルー。
+/// ワーカー完成品の GPU 反映・プリフェッチ開始・保留スロット台帳を担う。
+pub(crate) mod model_streaming;
 /// シーン保存のパス整合性ガード（誤ったパスへの上書きを止める）
 mod scene_save_ops;
 /// 埋め込みインプレース Play（フェーズ2）: ENTER_PLAY / EXIT_PLAY の状態遷移とアクター退避/復元。
@@ -1091,6 +1094,17 @@ pub struct App {
     merge_collector: merge_collect::MergeCollector,
     /// 統合バッチの規模ログを最後に出した時刻（プロファイラ有効時のみ使用）。
     merge_stats_logged_at: Option<std::time::Instant>,
+    /// 統合バッチ／BLAS キャッシュの遅延解放しきい値（フレーム数）。
+    ///
+    /// プロジェクト設定 `streaming.keep_alive_secs`（既定 30 秒）を目標 fps で
+    /// フレーム数へ換算した値。起動時に一度だけ決まり、以後変わらない。
+    /// 0 は「未初期化」を意味し、その場合は既定値へフォールバックする
+    /// （`App::stale_batch_prune_frames()` 参照）。
+    stale_batch_prune_frames: u32,
+    /// ストリーミング統計ログを最後に出した時刻（間隔制御用）。
+    streaming_stats_logged_at: Option<std::time::Instant>,
+    /// 前回ログ時点のストリーミング処理件数（完了＋失敗）。変化が無ければ黙る。
+    streaming_stats_last_total: u64,
 
     // ── ドラッグ&ドロップ ───────────────────────────────────────
     /// DROP_ACTOR コマンドを受け取ったときに設定する。
@@ -1710,6 +1724,9 @@ impl App {
             batch_absent_frames:     HashMap::new(),
             merge_collector:         merge_collect::MergeCollector::default(),
             merge_stats_logged_at:   None,
+            stale_batch_prune_frames: 0,
+            streaming_stats_logged_at: None,
+            streaming_stats_last_total: 0,
             pending_drop:            None,
             pending_water_param_decls_resend: false,
             pending_shading_param_decls_resend: false,

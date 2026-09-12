@@ -239,6 +239,115 @@ pub fn read_image_result(path: &str) -> std::io::Result<image::RgbaImage> {
 }
 
 // ============================================================
+//  列挙 API（プリフェッチ用）
+// ============================================================
+
+/// 指定拡張子のアセットを列挙し、`assets://` 仮想パスの配列で返す。
+///
+/// モデルの先読み（`loader::async_loader` のプリフェッチ）が
+/// 「このプロジェクトにどんな `.actor` があるか」を知るために使う。
+///
+/// - `ext`   : 拡張子（先頭のドット無し。大文字小文字は無視）
+/// - `dirs`  : アセットルート相対の絞り込みディレクトリ。空ならルート全体。
+/// - `limit` : 返す最大件数（巨大プロジェクトで走査が終わらないことを防ぐ）
+///
+/// パッケージ実行（PAK）では PAK のエントリ表から、それ以外では実ディレクトリの
+/// 再帰走査から集める。**呼び出し側はワーカースレッドから呼ぶこと**
+/// （ディレクトリ走査は USB 等の遅いドライブで数百ミリ秒かかる）。
+pub fn list_by_extension(ext: &str, dirs: &[String], limit: usize) -> Vec<String> {
+    let ext_lower = ext.to_ascii_lowercase();
+    let mut out: Vec<String> = Vec::new();
+
+    // 絞り込みディレクトリ（`/` 区切り・末尾スラッシュ無し）へ正規化する。
+    let prefixes: Vec<String> = dirs
+        .iter()
+        .map(|d| {
+            d.replace('\\', "/")
+                .trim_start_matches("./")
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .filter(|d| !d.is_empty())
+        .collect();
+    // 相対パスが絞り込み対象に含まれるか（絞り込み無しなら常に真）。
+    let matches_prefix = |rel: &str| -> bool {
+        if prefixes.is_empty() {
+            return true;
+        }
+        prefixes
+            .iter()
+            .any(|p| rel.starts_with(&format!("{p}/")) || rel == p)
+    };
+    // 拡張子が一致するか。
+    let matches_ext = |rel: &str| -> bool {
+        Path::new(rel)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case(&ext_lower))
+            .unwrap_or(false)
+    };
+
+    // ── ① PAK（パッケージ実行）─────────────────────────────
+    if let Some(Some(pak_mutex)) = PAK.get() {
+        if let Ok(pak) = pak_mutex.lock() {
+            for rel in pak.entry_paths() {
+                if out.len() >= limit {
+                    break;
+                }
+                let rel_norm = rel.replace('\\', "/");
+                if matches_ext(&rel_norm) && matches_prefix(&rel_norm) {
+                    out.push(format!("{ASSETS_SCHEME}{rel_norm}"));
+                }
+            }
+        }
+        // PAK 実行でも assets/ フォルダが併存することがある（フォールバック読み）。
+        // ただし二重登録を避けるため、PAK から 1 件でも取れたらそこで確定させる。
+        if !out.is_empty() {
+            return out;
+        }
+    }
+
+    // ── ② 実ディレクトリ走査（エディタ / 開発実行）───────────
+    let Some(root) = ASSETS_ROOT.get() else {
+        return out;
+    };
+    // 走査の起点。絞り込みがあればその分だけ、無ければルート全体。
+    let roots: Vec<PathBuf> = if prefixes.is_empty() {
+        vec![root.clone()]
+    } else {
+        prefixes.iter().map(|p| root.join(p)).collect()
+    };
+
+    // 明示的なスタックで再帰せずに走査する（深いツリーでもスタックを食わない）。
+    let mut stack: Vec<PathBuf> = roots;
+    while let Some(dir) = stack.pop() {
+        if out.len() >= limit {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if out.len() >= limit {
+                break;
+            }
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(path),
+                Ok(ft) if ft.is_file() => {
+                    if matches_ext(&path.to_string_lossy()) {
+                        out.push(to_virtual(&path.to_string_lossy()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+// ============================================================
 //  ヘルパー
 // ============================================================
 

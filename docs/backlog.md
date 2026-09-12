@@ -95,6 +95,40 @@
 - [ ] **プロローグ会話システムの実機未検証項目** — 2026-09-07。文字送り・送りマーク点滅・カメラ補間の見た目、日本語＋空白＋角括弧を含むフォントパス（ゆずポップ Regular）の実読み込み、CamTarget_* の高さ（目線位置は推定値）、CamTarget_Owner が Hut に埋まる可能性、Text の自動折り返し無し（`
 ` 手動改行）。関連: `projects/WarashibeFishing/assets/prologue/scripts/Dialogue/`、`proLogue.scene`。
 
+- [ ] **OBJ ローダーが `assets://` 仮想パスを解決しない（派生キャッシュが無いと必ず失敗する）**
+  — 2026-09-13（モデル非同期ロードの実装中に発覚）。`obj_loader::load` は受け取ったパスを
+  そのまま `tobj::load_obj` へ渡すため、`assets://mainGame/models/waterEffect/WaterColmn.obj`
+  のような仮想パスは `Parse error: open file failed` になる。glTF 経路は
+  `asset_cache::try_load_model` → `resolve_src` でキャッシュヒット時だけ救われていたので
+  見えていなかっただけで、**キャッシュが無い環境（新規プロジェクト・別マシン・PAK 配布）では
+  OBJ モデルが必ず読めない**。実測: わらしべフィッシングを D:\SEED_projects\WarashibeFishing で
+  起動すると `WaterColmn.obj` / `Ripple.obj`（`mainGame/actors/Effects/WaterColumn.actor` が参照）が
+  両方失敗する。直し方は `obj_loader::load` の入口で `asset_fs::resolve` してから渡す
+  （テクスチャの `base_dir` も解決後のパス基準にする）。PAK 対応まで考えるなら
+  `asset_fs::read_bytes` でバイト列を取って `tobj::load_obj_buf` を使う必要がある。
+  関連: `runtime/src/engine/core/loader/obj_loader.rs`、`runtime/src/engine/asset_fs.rs`。
+
+- [ ] **`Instantiate` の `.actor` JSON 読みはまだメインスレッド同期** — 2026-09-13。
+  モデル本体は非同期化したが、`Scene::load_actor_into` が `asset_fs::read_string` で
+  `.actor`（数 KB〜数十 KB の JSON）を読む部分は同期のまま。遅いドライブではサイズより
+  シーク待ちが効くので 1 件 10ms 級になり得る。実害が小さいのは、プリフェッチ走査が
+  同じ `.actor` をワーカー側で先に読んでいて OS のページキャッシュが温まっているため
+  （`streaming.prefetch=false` では素で効く）。直すなら、プリフェッチ走査で読んだ
+  JSON テキストを小さな RAM キャッシュへ残し、`load_actor_into` がそこを先に引く。
+  関連: `runtime/src/engine/core/app_base/scene.rs::load_actor_into`、
+  `runtime/src/engine/core/loader/async_loader.rs::scan_prefab_and_enqueue`。
+
+- [ ] **モデル非同期ロードの「保留 → GPU 反映」経路が実機未検証** — 2026-09-13。
+  `app/model_streaming.rs::install_streamed_model`（ワーカー完成 → GPU アップロード →
+  `ModelComponent` へ差し込み）は、プリフェッチが効いている通常プレイでは通らない
+  （`request` が即 `Ready` を返すため）。検証には「先読みが間に合わないうちに魚が出る」状況が要り、
+  それには実際に竿を振る操作（`SEED.Input.MouseDelta` を使うキャスト・ジェスチャ）が必要で、
+  `game_input_*`（MCP）や PostMessage では再現できなかった（チュートリアルの関門で止まる）。
+  単体テスト（重複排除・LRU・アップロード予算）と、先読み経路（`RequestState::Ready`）は検証済み。
+  実機で確認するときは `SEED_STREAMING=noprefetch` を付けて起動し、
+  ログに `[SEED stream] メイン適用: N 件 / x.xx ms` が出ること・魚が数フレーム遅れて現れることを見る。
+  関連: `docs/model_streaming.md`、`runtime/src/engine/core/app_base/app/model_streaming.rs`。
+
 - [ ] **Animator のクリップ設定 `loop_mode` がキーフレーム .anim では無視される** — 2026-09-09。`animation_ops.rs` のキーフレーム経路は `.anim` ファイルの `loop_mode` を使い、Animator 側の設定はモデル内蔵アニメ（`normalize_model_time`）でしか参照されない。インスペクタで「ループ」にしても .anim が once なら 1 回で止まる（TutorialMouse で発生）。Animator 側の設定を上書きとして優先させるのが自然。関連: `runtime/src/engine/core/app_base/app/animation_ops.rs:109,172`。
 
 ## ゲーム（わらしべフィッシング）

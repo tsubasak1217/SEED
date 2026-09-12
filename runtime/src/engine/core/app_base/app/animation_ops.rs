@@ -156,11 +156,22 @@ impl App {
                     });
 
                     let Some((me, anim_idx, duration)) = resolved else {
-                        // モデル未ロード or アニメ名が見つからない: 警告してスキップ（モデルは静止のまま）
-                        eprintln!(
-                            "[SEED anim] Model クリップ '{}' のアニメ '{}' を解決できません（Model スロット/内蔵アニメ名を確認）。モデルは静止します。",
-                            current_name, cref.anim
-                        );
+                        // ── まだモデルが届いていないだけのケースは黙ってスキップする ──
+                        // 非同期ストリーミング（app/model_streaming.rs）では、生成直後の
+                        // 数フレームだけ `ModelComponent::model` が None になる。これは
+                        // 設定ミスではなく正常な過渡状態で、本関数は毎フレーム呼ばれるため
+                        // 到着後は自動的に解決する。ここで警告すると魚 1 匹につき毎フレーム
+                        // ログが出てしまい、本来の警告（アニメ名の誤り）が埋没する。
+                        let still_streaming = model_entity
+                            .and_then(|me| world.get::<ModelComponent>(me))
+                            .is_some_and(|mc| mc.model.is_none());
+                        if !still_streaming {
+                            // モデルはあるがアニメ名が見つからない ＝ 本物の設定ミス。
+                            eprintln!(
+                                "[SEED anim] Model クリップ '{}' のアニメ '{}' を解決できません（Model スロット/内蔵アニメ名を確認）。モデルは静止します。",
+                                current_name, cref.anim
+                            );
+                        }
                         continue;
                     };
 

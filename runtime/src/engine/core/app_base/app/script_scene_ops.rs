@@ -114,6 +114,12 @@ impl App {
         // load_actor_into は draw_ctx と scene.world を同時に参照するため
         // ブロックスコープで借用ライフタイムを制限する
         let load_result = {
+            // ── モデルの非同期ロードを許可する唯一の区間 ────────────────────
+            // プレイ中に生成されるアクタ（魚・エフェクト等）のモデルは、ここから
+            // 構築される。USB 外付けのように遅いドライブでは同期ロードが
+            // 1 件 13〜50ms メインスレッドを止めるため、この区間だけワーカーへ逃がす。
+            // シーン読み込み・サムネイル・エディタ操作は対象外（同期のまま）。
+            let _async_scope = super::model_streaming::AsyncModelScope::enter();
             let ctx   = self.draw_ctx.as_ref().unwrap();
             let scene = self.scene.as_mut().unwrap();
             Scene::load_actor_into(

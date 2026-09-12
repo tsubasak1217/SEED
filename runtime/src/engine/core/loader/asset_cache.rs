@@ -558,6 +558,19 @@ pub fn try_load_model(src: &Path) -> Option<Model> {
     Some(model)
 }
 
+/// このモデルの派生キャッシュファイル（`.smdl`）のバイト数を返す（無ければ None）。
+///
+/// プリフェッチ（`async_loader`）が「先読みしていいサイズか」を **読む前に**
+/// 判断するための窓口。Sponza 級（1.8GB）を先読みすると RAM キャッシュを
+/// 一掃してしまうため、サイズだけ先に見て除外する。
+/// キャッシュがまだ無い場合（初回ロード前）は None を返すので、呼び出し側は
+/// 「サイズ不明 = 先読みしてよい」と扱ってよい（初回パースの結果が焼かれる）。
+pub fn cached_model_file_size(src: &Path) -> Option<u64> {
+    let resolved = resolve_src(src);
+    let cache_path = model_cache_path(&resolved)?;
+    std::fs::metadata(&cache_path).ok().map(|m| m.len())
+}
+
 // ============================================================
 //  モデルキャッシュ: 書き出し
 // ============================================================
