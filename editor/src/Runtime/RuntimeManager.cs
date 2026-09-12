@@ -353,6 +353,36 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<string>? ActorThumbnailFailed;
 
+    // ── モデルサムネイル描画（THUMBNAIL: の応答）────────────────────────────
+    //  プロジェクトパネルのタイル画像に使う。ランタイムはモデル（.glb / .gltf / .obj）を
+    //  隔離ワールド線へ読み込んで斜め上から撮り、キャッシュ PNG を書いて下記 1 行を返す。
+    //
+    //  図鑑（RENDER_ACTOR_THUMBNAIL）との違いは 2 つ:
+    //    1) 応答に**要求 ID** が付く。パネルは複数のタイルを並べて頼むので、
+    //       届いた PNG をどのタイルへ貼るか ID で対応付ける必要がある。
+    //    2) ランタイム側が待ち行列を持つ。要求と応答が 1 対 1 で往復するとは限らない。
+
+    /// <summary>モデルサムネイル生成の成功応答の接頭辞。後ろに <c>{要求ID},{PNG の絶対パス}</c> が続く。</summary>
+    public const string MODEL_THUMBNAIL_DONE_PREFIX = "THUMBNAIL_DONE:";
+
+    /// <summary>モデルサムネイル生成の失敗応答の接頭辞。後ろに <c>{要求ID},{理由}</c> が続く。</summary>
+    public const string MODEL_THUMBNAIL_FAILED_PREFIX = "THUMBNAIL_FAILED:";
+
+    /// <summary>モデルサムネイル応答のペイロード区切り文字（要求 ID と本体を分ける）。</summary>
+    public const char MODEL_THUMBNAIL_ARG_SEPARATOR = ',';
+
+    /// <summary>
+    /// モデルサムネイル生成が成功したときに発火する。
+    /// 第 1 引数は要求 ID、第 2 引数は書き出された PNG の絶対パス。
+    /// </summary>
+    public event Action<string, string>? ModelThumbnailCompleted;
+
+    /// <summary>
+    /// モデルサムネイル生成が失敗したときに発火する。
+    /// 第 1 引数は要求 ID（特定できなかった場合は空文字）、第 2 引数は理由メッセージ。
+    /// </summary>
+    public event Action<string, string>? ModelThumbnailFailed;
+
     // ── ゲーム入力注入（INPUT_*）の応答 ─────────────────────────
     //  ランタイム側の実装は runtime/src/engine/core/input/inject/ 一式。
     //  応答は「1 行 1 メッセージ」で下記 3 種類しか来ない。解釈は待ち受け側
@@ -1699,6 +1729,29 @@ public sealed class RuntimeManager : IDisposable
 
     // ── プライベート: IPC メッセージ処理 ──────────────────────
 
+    /// <summary>
+    /// モデルサムネイル応答のペイロード <c>{要求ID},{本体}</c> を 2 つに割る。
+    ///
+    /// <para>
+    /// <b>最初のカンマだけ</b>で割ること。本体は PNG の絶対パス（カンマ禁止）か
+    /// 人間向けの理由メッセージ（カンマを含みうる）なので、
+    /// 全部のカンマで割ると理由が途中で切れる。
+    /// </para>
+    ///
+    /// <para>
+    /// カンマが 1 つも無い壊れた応答は「要求 ID 不明」として扱い、
+    /// 本体をそのまま返す（呼び出し側は対応するタイルを見つけられず捨てる）。
+    /// </para>
+    /// </summary>
+    /// <param name="payload">接頭辞を取り除いた残りの文字列。</param>
+    /// <returns>(要求 ID, 本体)。</returns>
+    private static (string Id, string Body) SplitModelThumbnailPayload(string payload)
+    {
+        var comma = payload.IndexOf(MODEL_THUMBNAIL_ARG_SEPARATOR);
+        if (comma < 0) return (string.Empty, payload);
+        return (payload[..comma], payload[(comma + 1)..]);
+    }
+
     private void OnPipeMessage(string msg)
     {
         if (msg.StartsWith("READY:", StringComparison.Ordinal) &&
@@ -2188,6 +2241,22 @@ public sealed class RuntimeManager : IDisposable
             // アクターサムネイル描画の失敗応答。ペイロードは理由メッセージ。
             EditorLog.Write($"[Runtime→Editor] {msg}");
             ActorThumbnailFailed?.Invoke(msg[RENDER_ACTOR_THUMBNAIL_ERROR_PREFIX.Length..]);
+        }
+        else if (msg.StartsWith(MODEL_THUMBNAIL_DONE_PREFIX, StringComparison.Ordinal))
+        {
+            // モデルサムネイルの成功応答。ペイロードは「要求ID,PNG の絶対パス」。
+            // パスにカンマは使えない約束なので、最初の 1 個だけで割れば復元できる。
+            var (id, payload) = SplitModelThumbnailPayload(msg[MODEL_THUMBNAIL_DONE_PREFIX.Length..]);
+            ModelThumbnailCompleted?.Invoke(id, payload);
+        }
+        else if (msg.StartsWith(MODEL_THUMBNAIL_FAILED_PREFIX, StringComparison.Ordinal))
+        {
+            // モデルサムネイルの失敗応答。ペイロードは「要求ID,理由」。
+            // 理由は人間向けの文でカンマを含みうるため、こちらも最初の 1 個だけで割る。
+            // 失敗はタイルが形式アイコンのまま残るだけなので、ダイアログは出さずログのみ。
+            var (id, payload) = SplitModelThumbnailPayload(msg[MODEL_THUMBNAIL_FAILED_PREFIX.Length..]);
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+            ModelThumbnailFailed?.Invoke(id, payload);
         }
         else if (msg.StartsWith("LOAD_ERROR:", StringComparison.Ordinal))
         {

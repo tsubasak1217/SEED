@@ -40,11 +40,15 @@
 
 use std::path::PathBuf;
 
-use crate::engine::core::app_base::scene::Scene;
+use crate::engine::components::{ComponentData, ModelComponent};
+use crate::engine::core::app_base::scene::{build_actor, Scene};
 use crate::engine::core::renderer::actor_thumbnail::{
-    self, CropRect, Framing, RefineDecision, ThumbnailRequest, FRAMING_MARGIN_RATIO,
+    self, CropRect, Framing, RefineDecision, FRAMING_MARGIN_RATIO,
 };
 use crate::engine::core::renderer::screenshot;
+use crate::engine::core::renderer::thumbnail::view_basis::{self, ViewBasis};
+use crate::engine::core::renderer::thumbnail::{cache_key, request as model_request};
+use crate::engine::structs::objects::actor::ActorData;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::tensor::Vector3;
 use crate::engine::structs::transforms::Quaternion;
@@ -103,6 +107,99 @@ const JOB_DEADLINE_SECONDS: u64 = 30;
 /// 被写体が 1 ピクセルも写っていなかったときのエラーメッセージ。
 const ERROR_EMPTY_RENDER: &str = "アクタが 1 ピクセルも描画されませんでした（モデルが無い／読み込みに失敗した可能性）";
 
+/// モデル 1 体だけの仮アクタに付けるコンポーネントスロット名。
+///
+/// 実ファイルには保存されない（撮影のあいだメモリ上にだけ存在する）ので
+/// 名前そのものに意味は無いが、ログやデバッグ表示で正体が分かるようにしておく。
+const MODEL_SLOT_NAME: &str = "Model";
+
+/// モデル 1 体を原点・等倍で置くためのインスタンス行列（単位行列）。
+///
+/// `instance_mats` はワールド空間の行列なので、単位行列＝原点に等倍で 1 体。
+/// 構図はここから求めた AABB に合わせて決まるため、置き方はこれで十分。
+const IDENTITY_INSTANCE_MATRIX: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+// ============================================================
+//  ThumbnailPlan — 「何を・どこから撮って・どこへ出して・誰に返すか」
+// ============================================================
+
+/// 撮影する被写体の種類。
+///
+/// どちらも「隔離ワールド線へ 1 体だけ読み込む」点は同じで、
+/// 違うのは読み込み方だけなので、状態機械は 1 つを共有する。
+#[derive(Debug, Clone)]
+pub enum ThumbnailSubject {
+    /// `.actor` ファイルをそのまま読み込む（図鑑画像）。
+    Actor {
+        /// `assets://` 仮想パスまたは絶対パス。
+        path: String,
+    },
+    /// モデルファイル（.glb / .gltf / .obj）を、その場で作った仮アクタに載せる
+    /// （プロジェクトパネルのタイル画像）。
+    Model {
+        /// `assets://` 仮想パスまたは絶対パス。
+        path: String,
+    },
+}
+
+/// 完了したときに誰へどの書式で返すか。
+///
+/// 図鑑とプロジェクトパネルでは応答の接頭辞も引数も違うため、
+/// 「撮る仕組み」と「返す相手」を分けて持つ。
+#[derive(Debug, Clone)]
+pub enum ThumbnailReply {
+    /// 図鑑: `RENDER_ACTOR_THUMBNAIL_DONE:` / `RENDER_ACTOR_THUMBNAIL_ERROR:`。
+    ActorThumbnail,
+    /// プロジェクトパネル: `THUMBNAIL_DONE:{id},` / `THUMBNAIL_FAILED:{id},`。
+    ModelThumbnail {
+        /// エディタが付けた要求 ID。応答へそのまま添える。
+        request_id: String,
+    },
+}
+
+impl ThumbnailReply {
+    /// 成功応答の文字列を組み立てる。
+    fn format_done(&self, out_png: &str) -> String {
+        match self {
+            Self::ActorThumbnail => actor_thumbnail::format_done(out_png),
+            Self::ModelThumbnail { request_id } => model_request::format_done(request_id, out_png),
+        }
+    }
+
+    /// 失敗応答の文字列を組み立てる。
+    fn format_error(&self, message: &str) -> String {
+        match self {
+            Self::ActorThumbnail => actor_thumbnail::format_error(message),
+            Self::ModelThumbnail { request_id } => {
+                model_request::format_failed(request_id, message)
+            }
+        }
+    }
+}
+
+/// サムネイル 1 枚を撮るための指示一式。
+///
+/// IPC の文字列を解釈した結果をここへ畳み込み、以降の状態機械は
+/// 「図鑑かモデルか」を意識せずこの構造体だけを見て進む。
+#[derive(Debug, Clone)]
+pub struct ThumbnailPlan {
+    /// 撮る対象。
+    subject: ThumbnailSubject,
+    /// 書き出す PNG の絶対パス。
+    out_png: PathBuf,
+    /// 出力する一辺のピクセル数。
+    size_px: u32,
+    /// 視点（向きと画面の上下左右）。
+    basis: ViewBasis,
+    /// 応答の書式と宛先。
+    reply: ThumbnailReply,
+}
+
 // ============================================================
 //  ThumbnailJob — サムネイル 1 枚ぶんの進行状態
 // ============================================================
@@ -122,8 +219,8 @@ enum Phase {
 
 /// サムネイル生成ジョブ 1 件。`App::thumbnail_job` に入っている間だけ生きる。
 pub struct ThumbnailJob {
-    /// 要求の内容（出力先・サイズ・ビュー）。
-    request: ThumbnailRequest,
+    /// 撮影の指示一式（被写体・出力先・サイズ・視点・応答の宛先）。
+    plan: ThumbnailPlan,
     /// 現在の段階。
     phase: Phase,
     /// ジョブ開始時刻（デッドライン判定用）。
@@ -202,27 +299,147 @@ impl App {
     /// 引数は生の文字列で受け取り、ここで解釈する。解釈に失敗した内容も
     /// エディタへ理由付きで返したいので、パースを ipc.rs 側では行わない。
     pub(super) fn handle_render_actor_thumbnail(&mut self, args: &str) {
+        let reply = ThumbnailReply::ActorThumbnail;
+
         // 1 枚ずつ逐次実行する前提。前のジョブが残っているうちは受け付けない。
+        // （図鑑はエディタが 1 匹ずつ直列に投げてくるので待ち行列は要らない）
         if self.thumbnail_job.is_some() {
-            self.reply_thumbnail_error("前のサムネイル生成がまだ終わっていません");
+            self.reply_thumbnail_error(&reply, "前のサムネイル生成がまだ終わっていません");
             return;
         }
 
         let request = match actor_thumbnail::parse_request_args(args) {
             Ok(request) => request,
             Err(message) => {
-                self.reply_thumbnail_error(&message);
+                self.reply_thumbnail_error(&reply, &message);
                 return;
             }
         };
 
-        if let Err(message) = self.begin_thumbnail_job(request) {
-            self.reply_thumbnail_error(&message);
+        let plan = ThumbnailPlan {
+            subject: ThumbnailSubject::Actor { path: request.actor_path },
+            out_png: PathBuf::from(request.out_png),
+            size_px: request.size_px,
+            basis: request.view.to_basis(),
+            reply: reply.clone(),
+        };
+        if let Err(message) = self.begin_thumbnail_job(plan) {
+            self.reply_thumbnail_error(&reply, &message);
         }
     }
 
-    /// アクタを隔離ワールド線へ読み込み、状態を退避してジョブを開始する。
-    fn begin_thumbnail_job(&mut self, request: ThumbnailRequest) -> Result<(), String> {
+    // ─── モデルサムネイル（プロジェクトパネル）────────────────
+
+    /// `THUMBNAIL:` を受理する（IPC ディスパッチから 1 行で呼ばれる）。
+    ///
+    /// 図鑑と違い、こちらは**待ち行列へ積むだけ**で即座には描かない。
+    /// フォルダを開いた瞬間に数十件が一度に届くため、その場で走らせると
+    /// GPU 資源を食い潰す（図鑑の一括生成で実際に落ちた事例がある）。
+    ///
+    /// ただし、キャッシュに既に PNG があるときだけはここで即答する。
+    /// 描画を 1 フレームも回さずに済み、エディタも待たずにタイルを埋められる。
+    pub(super) fn handle_model_thumbnail(&mut self, args: &str) {
+        let request = match model_request::parse_request_args(args) {
+            Ok(request) => request,
+            Err(error) => {
+                // 要求 ID が読めていればそれを添えて返す。エディタはその ID の
+                // 送信枠を解放できる（ID 不明のまま返すと枠を握ったままになる）。
+                self.reply_thumbnail_error(
+                    &ThumbnailReply::ModelThumbnail { request_id: error.request_id },
+                    &error.message,
+                );
+                return;
+            }
+        };
+        let reply = ThumbnailReply::ModelThumbnail {
+            request_id: request.request_id.clone(),
+        };
+
+        // 出力先（キャッシュパス）を決める。ここで元ファイルの更新時刻とサイズを読むので、
+        // ファイルが無ければこの時点で分かる。
+        let out_png = match self.resolve_model_thumbnail_path(&request.asset_path, request.size_px)
+        {
+            Ok(path) => path,
+            Err(message) => {
+                self.reply_thumbnail_error(&reply, &message);
+                return;
+            }
+        };
+
+        // すでに焼けているならそのまま返す（描画を一切起こさない）。
+        if out_png.is_file() {
+            if let Some(ipc) = &self.ipc {
+                ipc.send(&reply.format_done(&out_png.to_string_lossy()));
+            }
+            return;
+        }
+
+        let plan = ThumbnailPlan {
+            subject: ThumbnailSubject::Model { path: request.asset_path },
+            out_png,
+            size_px: request.size_px,
+            // モデル一覧は形が分かることが第一なので、斜め前上から見下ろす。
+            basis: ViewBasis::model_default(),
+            reply,
+        };
+
+        // 待ち行列へ積む。あふれたぶんは「もう表示されていないタイル」なので
+        // 失敗として返し、エディタが待ち続けないようにする。
+        if let Some(evicted) = self.model_thumbnail_queue.push(plan) {
+            self.reply_thumbnail_error(
+                &evicted.reply,
+                "サムネイル要求が溜まりすぎたため古いものから破棄しました",
+            );
+        }
+    }
+
+    /// モデルサムネイルの出力先（キャッシュ PNG の絶対パス）を決める。
+    ///
+    /// キャッシュ場所の決め方はモデル変換キャッシュ（`.smdl`）と同じ
+    /// `asset_cache::cache_dir()` を使い、置き場を 2 か所に持たない。
+    fn resolve_model_thumbnail_path(
+        &self,
+        asset_path: &str,
+        size_px: u32,
+    ) -> Result<PathBuf, String> {
+        let cache_dir = crate::engine::core::loader::asset_cache::cache_dir()
+            .ok_or("キャッシュディレクトリを決められません（アセットルートが未設定）")?;
+
+        let resolved = crate::engine::asset_fs::resolve(asset_path);
+        let key = cache_key::key_from_file(asset_path, &resolved, size_px).ok_or_else(|| {
+            format!("モデルファイルを読めません: {}", resolved.display())
+        })?;
+
+        Ok(cache_key::thumbnail_path_in(&cache_dir, &key))
+    }
+
+    /// 待ち行列から 1 件だけ取り出してジョブを始める（毎周 `poll_thumbnail_job` から）。
+    ///
+    /// # 1 フレーム 1 件に絞る理由
+    /// ジョブは複数フレームにまたがるので、実行中は新しいジョブを始めない。
+    /// 結果として「同時に走るのは常に 1 件」になり、GPU 資源の消費が一定に保たれる。
+    ///
+    /// # Play 中に処理しない理由
+    /// 撮影は `active_world_line` を隔離ワールド線へ差し替えてカメラを動かす。
+    /// ゲームが動いている最中にそれをやると、プレイ中の画面が 1 瞬別物になる。
+    /// Edit へ戻れば待ち行列はそのまま残っているので、続きから再開される。
+    fn start_next_model_thumbnail(&mut self) {
+        if self.thumbnail_job.is_some() || self.model_thumbnail_queue.is_empty() {
+            return;
+        }
+        if self.mode != crate::engine::core::app_base::RuntimeMode::Edit {
+            return;
+        }
+        let Some(plan) = self.model_thumbnail_queue.pop() else { return };
+
+        let reply = plan.reply.clone();
+        if let Err(message) = self.begin_thumbnail_job(plan) {
+            self.reply_thumbnail_error(&reply, &message);
+        }
+    }
+
+    /// 被写体を隔離ワールド線へ読み込み、状態を退避してジョブを開始する。
+    fn begin_thumbnail_job(&mut self, plan: ThumbnailPlan) -> Result<(), String> {
         let Some(draw_ctx) = self.draw_ctx.as_ref() else {
             return Err("レンダラーが初期化されていません".to_string());
         };
@@ -243,21 +460,36 @@ impl App {
             session.idle_since = None;
         }
 
-        // ── 2. 隔離ワールド線を掃除してからアクタを 1 体だけ読み込む ──
+        // ── 2. 隔離ワールド線を掃除してから被写体を 1 体だけ読み込む ──
         let scene = self.scene.get_or_insert_with(|| Scene::new("main"));
         despawn_world_line(scene, THUMBNAIL_WORLD_LINE);
 
-        let path = actor_thumbnail::resolve_actor_path(&request.actor_path);
-        let actor = Scene::load_actor_into(
-            &path,
-            draw_ctx,
-            &mut scene.world,
-            // スクリプトは一切生成しない（撮影中に魚が泳ぎ出さないようにする）
-            None,
-            THUMBNAIL_WORLD_LINE,
-            None,
-        )
-        .map_err(|e| format!("アクタを読み込めません（{}）: {e}", path.display()))?;
+        // 読み込みは被写体の種類で分かれる。どちらも
+        //   - スクリプトは一切生成しない（撮影中に対象が動き出さないようにする）
+        //   - 隔離ワールド線にだけ置く
+        // という点は共通で、以降の工程は完全に同じ扱いになる。
+        let mut actor = match &plan.subject {
+            ThumbnailSubject::Actor { path } => {
+                let path = actor_thumbnail::resolve_actor_path(path);
+                Scene::load_actor_into(
+                    &path,
+                    draw_ctx,
+                    &mut scene.world,
+                    None,
+                    THUMBNAIL_WORLD_LINE,
+                    None,
+                )
+                .map_err(|e| format!("アクタを読み込めません（{}）: {e}", path.display()))?
+            }
+            ThumbnailSubject::Model { path } => {
+                let data = build_model_actor_data(path)?;
+                let actor = build_actor(data, draw_ctx, &mut scene.world, None, None)
+                    .map_err(|e| format!("モデルを読み込めません（{path}）: {e}"))?;
+                // `build_actor` はワールド線を設定しないので、ここで隔離側へ寄せる。
+                actor
+            }
+        };
+        actor.set_world_line_recursive(THUMBNAIL_WORLD_LINE);
 
         // 2D アクタ（キャンバス）は本機能の対象外。ワールド線を汚さずに弾く。
         if actor.is_2d() {
@@ -274,16 +506,16 @@ impl App {
         // 前回の読み戻し結果が残っていると古い絵を掴むので必ず捨てる
         screenshot::clear_thumbnail_color();
 
-        let view = request.view;
+        let basis = plan.basis;
         self.thumbnail_job = Some(ThumbnailJob {
-            request,
+            plan,
             phase: Phase::Warmup { frames_left: WARMUP_FRAMES },
             started_at: std::time::Instant::now(),
             id_mask: None,
             id_size: (0, 0),
             // Warmup 明けに compute_thumbnail_framing で必ず上書きされる暫定値
-            framing: actor_thumbnail::compute_framing(
-                [0.0; 3], [0.0; 3], view, 1, 1, FRAMING_MARGIN_RATIO,
+            framing: view_basis::compute_framing_for_basis(
+                [0.0; 3], [0.0; 3], basis, 1, 1, FRAMING_MARGIN_RATIO,
             ),
             refine_passes: 0,
         });
@@ -295,7 +527,12 @@ impl App {
     /// ジョブを 1 段進める（毎周 about_to_wait から呼ぶ。ジョブが無ければ即 return）。
     pub(super) fn poll_thumbnail_job(&mut self) {
         if self.thumbnail_job.is_none() {
-            // ジョブが無いなら、連続生成が途切れていないかだけ見る
+            // 空いているので、待っているモデルサムネイルがあれば 1 件だけ始める。
+            // （Play 中は何もせず、Edit へ戻ったときに続きから再開する）
+            self.start_next_model_thumbnail();
+        }
+        if self.thumbnail_job.is_none() {
+            // それでもジョブが無いなら、連続生成が途切れていないかだけ見る
             self.end_thumbnail_session_if_idle();
             return;
         }
@@ -430,10 +667,10 @@ impl App {
         )?;
 
         let (width, height) = self.thumbnail_viewport_size();
-        Ok(actor_thumbnail::compute_framing(
+        Ok(view_basis::compute_framing_for_basis(
             min,
             max,
-            job.request.view,
+            job.plan.basis,
             width,
             height,
             FRAMING_MARGIN_RATIO,
@@ -521,9 +758,8 @@ impl App {
         };
 
         // 画面右・上のワールドベクトルへパン量を戻し、視点と注視点を平行移動する。
-        let view = job.request.view;
-        let right = view.right();
-        let up = view.up_vector();
+        let right = job.plan.basis.right;
+        let up = job.plan.basis.up;
         let mut framing = job.framing;
         for axis in 0..3 {
             let shift = right[axis] * pan_right + up[axis] * pan_up;
@@ -580,8 +816,15 @@ impl App {
         }
 
         // 3. アルファブリード → 縮小 → PNG
-        let out_path = PathBuf::from(&job.request.out_png);
-        let size_px = job.request.size_px;
+        //    キャッシュ配下（cache/thumbnails/）はまだ存在しないことがあるので、
+        //    書き出す直前にディレクトリを作る（決めるのは純関数、作るのはここ）。
+        let out_path = job.plan.out_png.clone();
+        let size_px = job.plan.size_px;
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("出力先フォルダを作れません（{}）: {e}", parent.display())
+            })?;
+        }
         actor_thumbnail::write_thumbnail_png(&mut square, square_w, size_px, &out_path)?;
         Ok(out_path)
     }
@@ -590,9 +833,10 @@ impl App {
     ///
     /// 成否によらず**必ず**ここを通す（復帰を 1 か所に集約して漏れを防ぐ）。
     fn finish_thumbnail_job(&mut self, result: Result<PathBuf, String>) {
-        if self.thumbnail_job.take().is_none() {
+        let Some(job) = self.thumbnail_job.take() else {
             return;
-        }
+        };
+        let reply = job.plan.reply;
 
         // ── 1. 隔離ワールド線のエンティティを片付ける ─────────
         if let Some(scene) = self.scene.as_mut() {
@@ -612,14 +856,15 @@ impl App {
         screenshot::clear_thumbnail_color();
 
         // ── 4. 応答 ───────────────────────────────────────────
-        let reply = match result {
-            Ok(path) => actor_thumbnail::format_done(&path.to_string_lossy()),
-            Err(message) => actor_thumbnail::format_error(&message),
+        //   書式は要求元（図鑑 / プロジェクトパネル）ごとに違うが、
+        //   その振り分けは ThumbnailReply が一手に引き受ける。
+        let message = match result {
+            Ok(path) => reply.format_done(&path.to_string_lossy()),
+            Err(message) => reply.format_error(&message),
         };
         if let Some(ipc) = &self.ipc {
-            ipc.send(&reply);
+            ipc.send(&message);
         }
-
     }
 
     /// 連続生成が途切れていたら、セッションを畳んでシーンを元に戻す。
@@ -660,12 +905,56 @@ impl App {
         self.request_thumbnail_frame();
     }
 
-    /// ジョブを起こす前の失敗（引数不正など）をそのまま返す。
-    fn reply_thumbnail_error(&self, message: &str) {
+    /// ジョブを起こす前の失敗（引数不正など）を、要求元の書式で返す。
+    fn reply_thumbnail_error(&self, reply: &ThumbnailReply, message: &str) {
         if let Some(ipc) = &self.ipc {
-            ipc.send(&actor_thumbnail::format_error(message));
+            ipc.send(&reply.format_error(message));
         }
     }
+}
+
+// ============================================================
+//  モデル 1 体だけの仮アクタを組み立てる
+// ============================================================
+
+/// モデルファイル 1 つを載せただけの `ActorData` を作る。
+///
+/// # なぜ `ActorData` 経由なのか
+/// モデルの CPU 読み込み・GPU アップロード・インスタンスバッチ生成は
+/// `scene::build_actor` の `ModelComponent` 分岐にすべて揃っている
+/// （キャッシュ参照・マテリアルオーバーライド・メタ補完まで）。
+/// 同じことをここで書き直すと、片方だけ直して食い違う未来が確実に来る。
+/// 「.actor ファイルから読んだのと同じデータ」を組み立てて渡せば、
+/// 描画に至る経路は実際のシーンと 1 ビットも変わらない。
+///
+/// # なぜ JSON を経由するのか
+/// `ActorData` は `Default` を持たず、省略可能なフィールドを多数抱えている。
+/// フィールドが増えるたびにここを直す必要があると必ず追従漏れが出るので、
+/// serde の既定値に任せられる JSON 経由で組み立てる
+/// （コンポーネント側は型のまま作るので、綴り間違いはコンパイラが捕まえる）。
+fn build_model_actor_data(model_path: &str) -> Result<ActorData, String> {
+    // 既定値の塊を作ってから、必要な 2 つだけ差し替える
+    let mut model = ModelComponent::empty().to_data();
+    model.model_path = model_path.to_string();
+    // 原点に等倍で 1 体だけ置く（構図はこの AABB に合わせて後から決まる）
+    model.instances = vec![IDENTITY_INSTANCE_MATRIX];
+
+    let component = serde_json::to_value(ComponentData::ModelComponent(model))
+        .map_err(|e| format!("モデルコンポーネントを組み立てられません: {e}"))?;
+
+    // 表示名はファイル名（ログとヒエラルキー表示のためだけ。撮影結果には出ない）
+    let name = std::path::Path::new(model_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Model")
+        .to_string();
+
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "components": [{ "name": MODEL_SLOT_NAME, "component": component }],
+        "children": [],
+    }))
+    .map_err(|e| format!("仮アクタを組み立てられません: {e}"))
 }
 
 // ============================================================

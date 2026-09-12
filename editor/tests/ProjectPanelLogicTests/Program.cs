@@ -53,6 +53,17 @@ public static class Program
         harness.Add("実ファイルからのキーは書き換えで変わる",              CacheKeyFromFile);
         harness.Add("存在しないファイルでもキーは作れる",                  CacheKeyMissingFile);
 
+        // ── モデルサムネイルのキャッシュキー（ランタイムと共有の規則）──
+        harness.Add("モデル拡張子はモデルサムネイル対象",                  PreviewKindModel);
+        harness.Add("FNV-1a が仕様どおりの値を出す",                       ModelKeyFnvReferenceVectors);
+        harness.Add("パス正規化が区切り・大小・スキームを吸収する",        ModelKeyNormalization);
+        harness.Add("固定入力から Rust と同じファイル名が出る",            ModelKeyMatchesRuntimeFixture);
+        harness.Add("材料が 1 つ違えばファイル名が変わる",                 ModelKeyIngredientsMatter);
+        harness.Add("キャッシュパスは cache/thumbnails 配下になる",        ModelKeyCachePath);
+        harness.Add("アセットルートからキャッシュ場所を導ける",            ModelKeyCacheDirFromAssetsRoot);
+        harness.Add("実ファイルから作ったパスは更新で変わる",              ModelKeyPathForFile);
+        harness.Add("既定サイズはランタイムの受理範囲に収まる",            ModelKeyDefaultSizeInRange);
+
         // ── 寸法の表示書式 ──────────────────────────────────
         harness.Add("キャプションは 1024×512 形式",                        PixelSizeCaption);
         harness.Add("ツールチップには px が付く",                          PixelSizeTooltip);
@@ -273,6 +284,182 @@ public static class Program
         using var temp = new TempDir();
         var key = AssetPreviewCacheKey.BuildFromFile(temp.Combine("no_such_file.png"));
         Check.True(!string.IsNullOrEmpty(key), "存在しなくても例外にせずキーを返す");
+    }
+
+    // ── モデルサムネイルのキャッシュキー ────────────────────────
+    //
+    //  ここはランタイム（Rust）との**契約**のテストである。
+    //  プロジェクトパネルは「キャッシュ PNG があるか」をこの規則で探し、
+    //  ランタイムは同じ規則で PNG を書く。1 文字でもずれると
+    //  エディタは永久にキャッシュを見つけられず、毎回描き直しになる。
+    //
+    //  対になる Rust 側テスト:
+    //    runtime/src/engine/core/renderer/thumbnail/cache_key.rs の
+    //      - fnv1a_matches_reference_vectors
+    //      - normalization_unifies_separators_and_case
+    //      - fixed_input_produces_the_agreed_file_name
+    //      - every_ingredient_changes_the_file_name
+    //      - cache_path_is_under_the_thumbnails_subdirectory
+    //  **両者は同じ入力・同じ期待値を書くこと。**
+
+    /// <summary>両言語のテストで共有する固定入力: アセットパス。</summary>
+    private const string FixtureAssetPath = "assets://mainGame/models/Yasi.glb";
+
+    /// <summary>両言語のテストで共有する固定入力: 最終更新時刻（Unix 秒）。</summary>
+    private const long FixtureModifiedUnixSeconds = 1_700_000_000L;
+
+    /// <summary>両言語のテストで共有する固定入力: ファイルサイズ（バイト）。</summary>
+    private const long FixtureFileSizeBytes = 123_456L;
+
+    /// <summary>両言語のテストで共有する固定入力: サムネイル 1 辺（px）。</summary>
+    private const int FixtureSizePx = 128;
+
+    /// <summary>固定入力から出るべきキー文字列（Rust 側と同一）。</summary>
+    private const string FixtureKeyString = "maingame/models/yasi.glb|1700000000|123456|128";
+
+    /// <summary>固定入力から出るべきファイル名（Rust 側と同一）。</summary>
+    private const string FixtureFileName = "63cf730ec7b8e0eb.png";
+
+    /// <summary>固定入力のファイル名を求めるヘルパ。</summary>
+    private static string FixtureName()
+        => ModelThumbnailCacheKey.BuildFileName(
+            FixtureAssetPath, FixtureModifiedUnixSeconds, FixtureFileSizeBytes, FixtureSizePx);
+
+    private static void PreviewKindModel()
+    {
+        foreach (var ext in new[] { ".glb", ".gltf", ".obj" })
+        {
+            Check.Equal(AssetPreviewKind.Model, AssetPreviewKinds.Of(ext), ext);
+            Check.True(AssetPreviewKinds.SupportsModelThumbnail(ext), ext + " はモデルサムネイル対象");
+        }
+        Check.Equal(AssetPreviewKind.Model, AssetPreviewKinds.Of(".GLB"), "大文字 .GLB");
+        // .fbx はランタイムのローダが非対応。対象に入れると必ず失敗応答が返る。
+        Check.Equal(AssetPreviewKind.None, AssetPreviewKinds.Of(".fbx"), ".fbx は対象外");
+        // .blend も 3D だが読めないので対象外（Blender アイコンを出すだけ）
+        Check.Equal(AssetPreviewKind.None, AssetPreviewKinds.Of(".blend"), ".blend は対象外");
+    }
+
+    private static void ModelKeyFnvReferenceVectors()
+    {
+        // FNV 公式のテストベクタ（Rust 側と同じ 3 本）
+        Check.Equal(0xcbf29ce484222325UL,
+            ModelThumbnailCacheKey.Fnv1a64(Array.Empty<byte>()), "空文字列");
+        Check.Equal(0xaf63dc4c8601ec8cUL,
+            ModelThumbnailCacheKey.Fnv1a64(System.Text.Encoding.UTF8.GetBytes("a")), "a");
+        Check.Equal(0x85944171f73967e8UL,
+            ModelThumbnailCacheKey.Fnv1a64(System.Text.Encoding.UTF8.GetBytes("foobar")), "foobar");
+    }
+
+    private static void ModelKeyNormalization()
+    {
+        Check.Equal("maingame/models/yasi.glb",
+            ModelThumbnailCacheKey.NormalizeAssetPath(@"assets://mainGame\Models\Yasi.GLB"),
+            "スキーム・区切り・大小の吸収");
+        Check.Equal("foo/bar.obj",
+            ModelThumbnailCacheKey.NormalizeAssetPath("/Foo/Bar.obj"), "先頭スラッシュは落ちる");
+        // 非 ASCII はそのまま（大小の区別が無いので変換不要。Rust の to_ascii_lowercase と一致）
+        Check.Equal("モデル/魚.glb",
+            ModelThumbnailCacheKey.NormalizeAssetPath("assets://モデル/魚.glb"), "非 ASCII は不変");
+        Check.Equal("", ModelThumbnailCacheKey.NormalizeAssetPath(null), "null は空文字");
+    }
+
+    private static void ModelKeyMatchesRuntimeFixture()
+    {
+        Check.Equal(FixtureKeyString,
+            ModelThumbnailCacheKey.BuildKeyString(
+                FixtureAssetPath, FixtureModifiedUnixSeconds, FixtureFileSizeBytes, FixtureSizePx),
+            "キー文字列が Rust 側と一致すること");
+        Check.Equal(FixtureFileName, FixtureName(), "ファイル名が Rust 側と一致すること");
+
+        // 表記ゆれのあるパスでも同じキャッシュファイルへ落ちる
+        Check.Equal(FixtureFileName,
+            ModelThumbnailCacheKey.BuildFileName(
+                @"mainGame\models\YASI.glb",
+                FixtureModifiedUnixSeconds, FixtureFileSizeBytes, FixtureSizePx),
+            "表記ゆれでも同じファイル名");
+    }
+
+    private static void ModelKeyIngredientsMatter()
+    {
+        var baseName = FixtureName();
+
+        Check.True(ModelThumbnailCacheKey.BuildFileName(
+            FixtureAssetPath, FixtureModifiedUnixSeconds + 1, FixtureFileSizeBytes, FixtureSizePx)
+            != baseName, "更新時刻が効いていない");
+
+        Check.True(ModelThumbnailCacheKey.BuildFileName(
+            FixtureAssetPath, FixtureModifiedUnixSeconds, FixtureFileSizeBytes + 1, FixtureSizePx)
+            != baseName, "ファイルサイズが効いていない");
+
+        Check.True(ModelThumbnailCacheKey.BuildFileName(
+            FixtureAssetPath, FixtureModifiedUnixSeconds, FixtureFileSizeBytes, 256)
+            != baseName, "要求ピクセル数が効いていない");
+
+        Check.True(ModelThumbnailCacheKey.BuildFileName(
+            "mainGame/models/hut.glb",
+            FixtureModifiedUnixSeconds, FixtureFileSizeBytes, FixtureSizePx)
+            != baseName, "パスが効いていない");
+    }
+
+    private static void ModelKeyCachePath()
+    {
+        var path = ModelThumbnailCacheKey.BuildPath(
+            @"C:\proj\cache", FixtureAssetPath,
+            FixtureModifiedUnixSeconds, FixtureFileSizeBytes, FixtureSizePx);
+        Check.Equal(Path.Combine(@"C:\proj\cache", "thumbnails", FixtureFileName), path,
+            "cache/thumbnails/<ハッシュ>.png になること");
+
+        Check.Equal(null, ModelThumbnailCacheKey.BuildPath(
+            null, FixtureAssetPath,
+            FixtureModifiedUnixSeconds, FixtureFileSizeBytes, FixtureSizePx),
+            "キャッシュ場所が無ければ null");
+    }
+
+    private static void ModelKeyCacheDirFromAssetsRoot()
+    {
+        // ランタイムは --assets-root の親から cache を導出する（asset_cache.rs の cache_dir()）
+        Check.Equal(Path.Combine(@"C:\projects\Warashibe", "cache"),
+            ModelThumbnailCacheKey.CacheDirForAssetsRoot(@"C:\projects\Warashibe\assets"),
+            "アセットルートの親の cache/");
+        // 末尾区切りがあっても同じ場所になる
+        Check.Equal(Path.Combine(@"C:\projects\Warashibe", "cache"),
+            ModelThumbnailCacheKey.CacheDirForAssetsRoot(@"C:\projects\Warashibe\assets\"),
+            "末尾区切りは結果を変えない");
+        Check.Equal(null, ModelThumbnailCacheKey.CacheDirForAssetsRoot(""), "空文字は null");
+        Check.Equal(null, ModelThumbnailCacheKey.CacheDirForAssetsRoot(null), "null は null");
+    }
+
+    private static void ModelKeyPathForFile()
+    {
+        using var temp = new TempDir();
+        var model = Path.Combine(temp.Path, "a.glb");
+        File.WriteAllText(model, "first");
+
+        var first = ModelThumbnailCacheKey.BuildPathForFile(
+            @"C:\proj\cache", "models/a.glb", model, ModelThumbnailCacheKey.DefaultSizePx);
+        Check.True(first != null, "実ファイルからパスを作れること");
+
+        // 内容とサイズを変える（更新時刻が同じ秒でもサイズで区別できること）
+        File.WriteAllText(model, "second-and-longer");
+        var second = ModelThumbnailCacheKey.BuildPathForFile(
+            @"C:\proj\cache", "models/a.glb", model, ModelThumbnailCacheKey.DefaultSizePx);
+        Check.True(first != second, "書き換えたら別のキャッシュパスになること");
+
+        // 存在しないファイルは「サムネイルを出せない」として null
+        Check.Equal(null, ModelThumbnailCacheKey.BuildPathForFile(
+            @"C:\proj\cache", "models/none.glb",
+            Path.Combine(temp.Path, "none.glb"), ModelThumbnailCacheKey.DefaultSizePx),
+            "存在しないファイルは null");
+    }
+
+    private static void ModelKeyDefaultSizeInRange()
+    {
+        // 既定値の所有者はエディタ側。ランタイムの受理範囲から外れると
+        // タイルごとに必ず失敗応答が返るので、上下限との整合をここで見張る。
+        Check.True(ModelThumbnailCacheKey.DefaultSizePx >= ModelThumbnailCacheKey.MinSizePx,
+            "既定サイズが下限を下回っている");
+        Check.True(ModelThumbnailCacheKey.DefaultSizePx <= ModelThumbnailCacheKey.MaxSizePx,
+            "既定サイズが上限を超えている");
     }
 
     // ── 寸法の表示書式 ──────────────────────────────────────────

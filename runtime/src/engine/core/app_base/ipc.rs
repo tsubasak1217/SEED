@@ -1095,6 +1095,12 @@ pub enum IpcCommand {
     /// 引数は**未解釈のまま**運ぶ。解釈に失敗した理由もエディタへ返したいので、
     /// パースはハンドラ側（app/thumbnail_ops.rs）で行う。
     RenderActorThumbnail(String),
+    /// `THUMBNAIL:{要求ID},{一辺px},{assets:// パス}` — モデルファイル 1 つを
+    /// プロジェクトパネル用の正方形 PNG（キャッシュ）として書き出す。
+    ///
+    /// `RenderActorThumbnail` と同じく引数は**未解釈のまま**運ぶ。
+    /// 書式の正典は renderer/thumbnail/request.rs、処理は app/thumbnail_ops.rs。
+    ModelThumbnail(String),
 
     // ─── 入力注入（エディタ／MCP 経由の AI がゲームを操作する）──────────────
     /// 外部から注入されたゲーム入力 1 件。
@@ -1242,6 +1248,9 @@ fn parse_script_debug(line: &str) -> Option<IpcCommand> {
 
 /// `RENDER_ACTOR_THUMBNAIL:` コマンドの接頭辞（図鑑画像の生成）。
 const RENDER_ACTOR_THUMBNAIL_PREFIX: &str = "RENDER_ACTOR_THUMBNAIL:";
+/// `THUMBNAIL:` コマンドの接頭辞（モデルサムネイルの生成）。書式の正典は参照先に置く。
+const MODEL_THUMBNAIL_PREFIX: &str =
+    crate::engine::core::renderer::thumbnail::request::REQUEST_PREFIX;
 /// target と出力パスを区切る文字。
 const SCREENSHOT_ARG_SEPARATOR: char = ',';
 /// `SCREENSHOT:` の引数個数（target と path の 2 つ）。
@@ -3192,6 +3201,9 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with(RENDER_ACTOR_THUMBNAIL_PREFIX) => s
                             .strip_prefix(RENDER_ACTOR_THUMBNAIL_PREFIX)
                             .map(|rest| IpcCommand::RenderActorThumbnail(rest.to_string())),
+                        s if s.starts_with(MODEL_THUMBNAIL_PREFIX) => s
+                            .strip_prefix(MODEL_THUMBNAIL_PREFIX)
+                            .map(|rest| IpcCommand::ModelThumbnail(rest.to_string())),
                         s if s.starts_with(SCREENSHOT_PREFIX) => parse_screenshot(s),
                         // 入力注入（INPUT_*）。パースは input::inject::command が正典で、
                         // ここは 1 行を渡して IpcCommand へ包むだけ。

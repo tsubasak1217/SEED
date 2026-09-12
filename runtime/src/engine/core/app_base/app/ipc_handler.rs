@@ -1376,6 +1376,11 @@ impl App {
                     self.handle_screenshot_request(&target, &path);
                 }
                 // 図鑑画像（アクタ 1 体の背景透明サムネイル）の生成。実処理は thumbnail_ops.rs。
+                // プロジェクトパネル用モデルサムネイル。待ち行列へ積むだけ（実処理は thumbnail_ops.rs）。
+                IpcCommand::ModelThumbnail(args) => {
+                    self.handle_model_thumbnail(&args);
+                }
+                // 図鑑画像（アクタ 1 体の背景透明サムネイル）の生成。実処理は thumbnail_ops.rs。
                 IpcCommand::RenderActorThumbnail(args) => {
                     self.handle_render_actor_thumbnail(&args);
                 }

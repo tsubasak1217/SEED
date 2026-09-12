@@ -34,6 +34,9 @@
     <Compile Include="..\..\src\Assets\AssetPreviewCacheKey.cs">
       <Link>Linked\Assets\AssetPreviewCacheKey.cs</Link>
     </Compile>
+    <Compile Include="..\..\src\Assets\ModelThumbnailCacheKey.cs">
+      <Link>Linked\Assets\ModelThumbnailCacheKey.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Assets\ImagePixelSize.cs">
       <Link>Linked\Assets\ImagePixelSize.cs</Link>
     </Compile>

@@ -18,6 +18,17 @@ public enum AssetPreviewKind
 
     /// <summary>フォントで描いたサンプル文字列のサムネイル。</summary>
     Font,
+
+    /// <summary>
+    /// 3D モデルをランタイムにオフスクリーン描画させたサムネイル。
+    ///
+    /// <para>
+    /// 他の 2 種と違い、生成にランタイム（wgpu）が要る。エディタ単独では描けないので
+    /// 「キャッシュ PNG があれば出す／無ければランタイムへ頼む／ランタイムが居なければ
+    /// 形式アイコンのまま」という段階的な扱いになる（<c>ProjectPanel</c> 側）。
+    /// </para>
+    /// </summary>
+    Model,
 }
 
 /// <summary>
@@ -26,7 +37,8 @@ public enum AssetPreviewKind
 /// プロジェクトパネルのタイル生成は、この表の答えだけを見て
 ///   1. 画像サムネイルを非同期生成する
 ///   2. フォントサムネイルを遅延生成する
-///   3. 何もしない（形式アイコンのまま）
+///   3. モデルサムネイルをランタイムへ要求する（キャッシュにあればそれを出す）
+///   4. 何もしない（形式アイコンのまま）
 /// を振り分ける。新しい形式へ対応するときは、パネル側のコードではなく
 /// この表に 1 行足すこと（データドリブン）。
 ///
@@ -58,6 +70,21 @@ public static class AssetPreviewKinds
     };
 
     /// <summary>
+    /// モデルサムネイル（ランタイムによるオフスクリーン描画）を生成できる拡張子。
+    ///
+    /// <para>
+    /// ランタイムのモデルローダ（<c>runtime/src/engine/core/loader/mod.rs</c> の
+    /// <c>load_model</c>）が実際に読める形式と一致させること。
+    /// <c>.fbx</c> はローダが明示的に非対応なのでここには入れない
+    /// （入れるとタイルごとに必ず失敗応答が返る）。
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> ModelThumbnail = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".glb", ".gltf", ".obj",
+    };
+
+    /// <summary>
     /// ピクセル寸法（幅×高さ）の取得を試す拡張子。
     ///
     /// ヘッダだけを読む軽い処理なので、WIC が標準で読めない形式（.tga / .dds / .exr 等）も
@@ -78,6 +105,7 @@ public static class AssetPreviewKinds
         if (string.IsNullOrEmpty(extension)) return AssetPreviewKind.None;
         if (ImageThumbnail.Contains(extension)) return AssetPreviewKind.Image;
         if (FontThumbnail.Contains(extension))  return AssetPreviewKind.Font;
+        if (ModelThumbnail.Contains(extension)) return AssetPreviewKind.Model;
         return AssetPreviewKind.None;
     }
 
@@ -96,6 +124,11 @@ public static class AssetPreviewKinds
     public static bool SupportsFontThumbnail(string? extension)
         => !string.IsNullOrEmpty(extension) && FontThumbnail.Contains(extension);
 
+    /// <summary>モデルサムネイル（ランタイム描画）を生成できる拡張子か。</summary>
+    /// <param name="extension">先頭ドット付きの拡張子。</param>
+    public static bool SupportsModelThumbnail(string? extension)
+        => !string.IsNullOrEmpty(extension) && ModelThumbnail.Contains(extension);
+
     /// <summary>ピクセル寸法の取得を試す価値がある拡張子か。</summary>
     /// <param name="extension">先頭ドット付きの拡張子。</param>
     public static bool SupportsPixelSize(string? extension)
@@ -111,4 +144,7 @@ public static class AssetPreviewKinds
 
     /// <summary>画像サムネイル対象の拡張子一覧（アイコン表と共有するため）。</summary>
     public static IReadOnlyCollection<string> ImageThumbnailExtensions => ImageThumbnail.ToArray();
+
+    /// <summary>モデルサムネイル対象の拡張子一覧（アイコン表と共有するため）。</summary>
+    public static IReadOnlyCollection<string> ModelThumbnailExtensions => ModelThumbnail.ToArray();
 }

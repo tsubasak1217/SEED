@@ -143,7 +143,11 @@ pub fn bc_supported() -> bool {
 /// 環境（パッケージ判定・実行ファイル位置・アセットルート）を集めて
 /// `package_layout::decide_cache_dir` へ渡すだけの薄い層。
 /// 判定そのものは純関数側にあるのでユニットテストできる。
-fn cache_dir() -> Option<PathBuf> {
+///
+/// モデル変換キャッシュ（`.smdl`）以外にも、サムネイル PNG の置き場
+/// （`app/thumbnail_ops.rs`）がここを起点にする。**キャッシュ置き場の決め方を
+/// 2 か所に持たない**ため、クレート内へ公開している。
+pub(crate) fn cache_dir() -> Option<PathBuf> {
     // 開発 / エディタ実行での置き場（アセットルートの親の `cache/`）。
     // アセットルートが未初期化・親が無い場合は None になる。
     let dev_dir = crate::engine::asset_fs::root()

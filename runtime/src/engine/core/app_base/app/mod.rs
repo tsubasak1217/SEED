@@ -812,6 +812,14 @@ pub struct App {
     /// この間はエディタ用オーバーレイ（グリッド・ギズモ）とカメラ操作を止めて
     /// 「被写体だけが写った素の絵」を得る（詳細は app/thumbnail_ops.rs）。
     pub(crate) thumbnail_job: Option<thumbnail_ops::ThumbnailJob>,
+    /// モデルサムネイル（プロジェクトパネルのタイル画像）の待ち行列。
+    ///
+    /// `THUMBNAIL:` を受けるたびに積まれ、Edit モードのときだけ 1 件ずつ
+    /// `thumbnail_job` へ流れていく。フォルダを開いた瞬間に数十件届いても
+    /// 同時に走るのは常に 1 件だけになる（詳細は app/thumbnail_ops.rs）。
+    pub(crate) model_thumbnail_queue: crate::engine::core::renderer::thumbnail::request::ThumbnailQueue<
+        thumbnail_ops::ThumbnailPlan,
+    >,
     /// レンダリング機能マトリクス（影/GI/反射/AO/半透明のモード集合）。
     /// プロジェクト設定・IPC（RT_SHADOWS / SET_POST_FX の features）で更新する。
     /// 実行時分岐は resolve() 済みの ResolvedFeatures を参照する（frame_renderer）。
@@ -1616,6 +1624,7 @@ impl App {
             show_grid:       true,
             thumbnail_job:     None,
             thumbnail_session: None,
+            model_thumbnail_queue: Default::default(),
             render_features:    crate::engine::core::renderer::RenderFeatures::default(),
             features_log_state: None,
             show_axis_gizmo: true,

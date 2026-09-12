@@ -12,6 +12,7 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 | `editor/src/Panels/ProjectPanel.Audio.cs` | 音声アセット向けメニュー（先頭無音カット） |
 | `editor/src/Panels/ProjectPanel.CopyPath.cs` | 「パスをコピー」メニュー（絶対パス / `assets://` パス） |
 | `editor/src/Panels/ProjectPanel.Visibility.cs` | 隠しファイルの表示制御（トグル・薄表示・ツリー再構築） |
+| `editor/src/Panels/ProjectPanel.ModelThumbnails.cs` | 3D モデルのサムネイル要求とタイルへの反映（[§5](#5-3d-モデルのサムネイル)） |
 | `editor/src/Panels/ProjectPanel.TextEdit.cs` | 「テキストエディタで開く」メニュー（[docs/editor_script_panel.md](editor_script_panel.md)） |
 
 判定・変換の**純ロジックは WPF 非依存**として `editor/src/Assets/` に置き、
@@ -21,10 +22,11 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 | ファイル | 役割 |
 |---|---|
 | `editor/src/Assets/AssetUriPath.cs` | 絶対パス ⇔ `assets://` 仮想パスの変換（正典） |
-| `editor/src/Assets/AssetPreviewKinds.cs` | 拡張子 → プレビュー種別（画像／フォント／無し）と寸法取得対象の対応表 |
-| `editor/src/Assets/AssetPreviewCacheKey.cs` | プレビューのキャッシュキー（パス＋更新時刻＋サイズ＋派生条件） |
+| `editor/src/Assets/AssetPreviewKinds.cs` | 拡張子 → プレビュー種別（画像／フォント／モデル／無し）と寸法取得対象の対応表 |
+| `editor/src/Assets/AssetPreviewCacheKey.cs` | プレビューのキャッシュキー（パス＋更新時刻＋サイズ＋派生条件）。エディタ内メモリキャッシュ用 |
+| `editor/src/Assets/ModelThumbnailCacheKey.cs` | モデルサムネイル PNG の置き場とファイル名。**ランタイム（Rust）と規則を共有する**（[§5](#5-3d-モデルのサムネイル)） |
 | `editor/src/Assets/ImagePixelSize.cs` | ピクセル寸法の値と表示書式（`1024×512` / `1024×512 px`） |
-| `editor/src/Assets/ProjectPanelVisibilityRules.cs` | 非表示ルールの読み込みと照合（[§7](#7-隠しファイルの非表示)） |
+| `editor/src/Assets/ProjectPanelVisibilityRules.cs` | 非表示ルールの読み込みと照合（[§8](#8-隠しファイルの非表示)） |
 
 実処理（WPF 依存）は `editor/src/Controls/` に置く。
 
@@ -63,6 +65,7 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 |---|---|---|
 | 画像サムネイル | `BitmapImage`（`DecodePixelWidth` 指定） | `Task.Run`（デコード後 Freeze して UI へ） |
 | フォントサムネイル | `FontThumbnailRenderer.Render` | UI スレッド（`DispatcherPriority.Background` へ後回し） |
+| モデルサムネイル | ランタイム（wgpu）がオフスクリーン描画 → PNG キャッシュ | 別プロセス（IPC 往復。詳細は §5） |
 | 画像寸法 | `ImageDimensionsProbe.GetAsync` | `Task.Run` |
 
 フォントだけ UI スレッドなのは、`GlyphRun` / `DrawingVisual` / `RenderTargetBitmap` が
@@ -110,8 +113,7 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 **読めなかったこと（null）もキャッシュする**ので、壊れたフォントを一覧の再描画のたびに
 開き直さない。フォントを差し替えれば更新時刻が変わって描き直される。
 
-専用のベクターアイコンはまだ無いので、フォールバックの形式アイコンは文書アイコン
-（`Icon.File.Text`）を流用している（[backlog](backlog.md) 参照）。
+読めなかったときのフォールバックは専用のフォントアイコン（`Icon.File.Font`）。
 
 ---
 
@@ -131,12 +133,128 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 
 ---
 
-## 5. テスト・検証
+## 5. 3D モデルのサムネイル
+
+対象: `.glb` / `.gltf` / `.obj`（`AssetPreviewKinds` の表で定義。ランタイムの
+`loader::load_model` が読める形式と一致させてある。`.fbx` は非対応なので対象外）。
+
+画像・フォントと違い、**エディタ単独では描けない**。glTF を解釈して PBR で描くには
+レンダラが要るので、**ランタイム（wgpu）にオフスクリーンで描かせ、PNG をキャッシュして
+エディタはそれを表示する**という分担にしている。
+
+### 表示の手順（3 段構え）
+
+1. **キャッシュ PNG があれば即表示**する。ランタイムには一切触らない。
+   生成済み PNG はただの画像なので、画像サムネイルと同じ経路（`LoadImagePreviewAsync`）で読む。
+2. 無ければ **ランタイムへ生成を頼み**、`THUMBNAIL_DONE` が返ってからタイルへ貼る。
+3. **ランタイムが居ない／Play 中は何もしない**（形式アイコンのまま）。
+   Edit へ戻ってフォルダを開き直せば、また要求が飛ぶ。
+
+### IPC
+
+```
+THUMBNAIL:<要求ID>,<一辺px>,<assets:// パス>
+  → THUMBNAIL_DONE:<要求ID>,<書き出した PNG の絶対パス>
+  → THUMBNAIL_FAILED:<要求ID>,<理由>
+```
+
+- 図鑑の `RENDER_ACTOR_THUMBNAIL`（§ `docs/editor_mcp.md`）と違い、**応答に要求 ID が付く**。
+  パネルは複数のタイルを並べて頼むので、要求と応答が 1 対 1 で往復するとは限らず、
+  届いた PNG をどのタイルへ貼るかを ID で対応付ける必要があるため。
+- **パスにカンマは使えない**（引数の区切りと区別できない）。失敗理由はカンマを含みうるので、
+  エディタ側は**最初のカンマだけ**で ID と本体に割る。
+- **失敗応答にも必ず要求 ID を付ける。** エディタは「その ID の応答が来るまで」
+  タイル 1 枚ぶんの送信枠を握っているので、ID 無しで失敗を返すとどの枠を解放してよいか
+  分からず、以降の要求が詰まる。ID を読めた後の検証（サイズ範囲・拡張子・パス空）で
+  落ちた場合も ID を添える。ID 無しになるのは行の形自体が壊れているときだけ。
+- 一辺は 16〜512px。**既定値 128px の所有者はエディタ側**（`ModelThumbnailCacheKey.DefaultSizePx`）で、
+  ランタイムは受け取った値の範囲を検証するだけ。両方に既定値を置くと片方だけ変えたときに静かにずれる。
+- 書式の正典は `runtime/src/engine/core/renderer/thumbnail/request.rs`。
+
+### キャッシュの場所とファイル名
+
+```
+<プロジェクト>/cache/thumbnails/<ハッシュ>.png
+```
+
+- `cache/` の決め方はモデル変換キャッシュ（`.smdl`）と同じ `asset_cache.rs` の `cache_dir()`
+  ＝ アセットルートの親。エディタ側の写しは `ModelThumbnailCacheKey.CacheDirForAssetsRoot`。
+- ハッシュは **FNV-1a 64bit**。材料は `<正規化した相対パス>|<更新時刻(Unix秒)>|<ファイルサイズ>|<一辺px>`。
+  - パスは `assets://` を外し、区切りを `/` に統一し、**ASCII 範囲だけ**小文字化する
+    （Unicode 全体の小文字化は Rust と .NET で結果が違うため）。
+  - 更新時刻を**秒**までにしているのは、.NET（100ns 刻みの FILETIME 由来）と Rust で
+    端数の丸めが一致する保証がないから。同じ 1 秒の中でサイズを変えずに内容だけ
+    差し替えるとキャッシュが古いままになるが、ファイルを触り直せば解消する。
+- **探す側（C#）と書く側（Rust）が同じ規則でなければならない。** 1 文字ずれると
+  エディタは永久にキャッシュを見つけられず、起動のたびに全部描き直しになる。
+  そのため同じ固定入力・同じ期待値のテストを両言語に置いてある（§6）。
+
+### 負荷の抑え方
+
+| 仕掛け | 効果 |
+|---|---|
+| エディタ側の同時送信上限（2 件） | ランタイムは 1 件ずつしか描かないので、投げすぎても速くならない |
+| 一覧を作り直したら要求を忘れる | フォルダを移ったら未送信分も応答待ちも捨てる。遅れて届いた応答は貼る先が無いので素通りする（PNG はキャッシュに残るので開き直せば即ヒット） |
+| ランタイム側の待ち行列（上限 64 件） | 一度に届いても同時に走るのは常に 1 件。あふれた分は最古から失敗応答を返す |
+| Play 中は処理しない | 撮影はワールド線とカメラを差し替えるため。Edit へ戻れば続きから再開する |
+
+### 撮り方（現在のシーンを壊さない理由）
+
+図鑑サムネイル（`thumbnail_ops.rs`）と**同じ状態機械を共有**している。
+隔離ワールド線へ被写体を 1 体だけ読み込み、その間だけ `active_world_line` を差し替え、
+撮り終えたら despawn して元へ戻す。ユーザーのシーンはエンティティごと生き残ったまま
+「描かれない」だけになる。背景の抜き方（ID パスのアルファをマスクにする）も共通。
+
+違いは 3 つだけで、いずれも `ThumbnailPlan` が持つ:
+
+| | 図鑑 | モデル一覧 |
+|---|---|---|
+| 被写体 | `.actor` ファイル | モデル 1 体だけを載せた**その場で作る仮アクタ** |
+| 視点 | 真横 / 正面 / 真上 | 斜め前上から（方位 35°・仰角 25°） |
+| 応答 | `RENDER_ACTOR_THUMBNAIL_DONE` | `THUMBNAIL_DONE:<ID>,` |
+
+仮アクタは `ModelComponent::empty().to_data()` にモデルパスと単位行列を入れ、
+`scene::build_actor` へ渡して作る。読み込み・GPU アップロード・インスタンスバッチ生成は
+すべて `.actor` から読むときと同じ経路を通るので、**描画に至る道筋が実際のシーンと変わらない**
+（モデルの読み込みは同期なので、ロード完了を待つ仕掛けは要らない）。
+
+カメラの自動フィットは `renderer/thumbnail/view_basis.rs` の一般形に集約してある。
+軸に沿ったビュー（図鑑）でも斜めのビュー（モデル一覧）でも同じ式で、
+軸平行な箱をベクトル `a` へ射影した幅 `|a.x|·sx + |a.y|·sy + |a.z|·sz` から
+正射カメラの半高と視点距離を決める。
+
+実装:
+- ランタイム: `runtime/src/engine/core/app_base/app/thumbnail_ops.rs`（進行）、
+  `runtime/src/engine/core/renderer/thumbnail/`（キャッシュ鍵・プロトコル・待ち行列・構図）
+- エディタ: `editor/src/Panels/ProjectPanel.ModelThumbnails.cs`（要求と反映）、
+  `editor/src/Assets/ModelThumbnailCacheKey.cs`（キャッシュ鍵）
+
+---
+
+## 6. テスト・検証
 
 | プロジェクト | 種類 | 内容 |
 |---|---|---|
-| `editor/tests/ProjectPanelLogicTests` | 自動（WPF 非依存） | `assets://` 相対化、拡張子判定、キャッシュキー、寸法書式、非表示ルール。`dotnet run` で 43 件 |
+| `editor/tests/ProjectPanelLogicTests` | 自動（WPF 非依存） | `assets://` 相対化、拡張子判定、キャッシュキー、寸法書式、非表示ルール、**モデルサムネイルのキャッシュ鍵**。`dotnet run` で 52 件 |
 | `editor/tests/ProjectPanelPreviewProbe` | 手動（WPF 依存） | 実ファイルへ向けてフォント描画・寸法取得を走らせる検証用コンソール |
+
+### ランタイムとのキャッシュ鍵の突き合わせ
+
+モデルサムネイルのキャッシュ鍵は、**探す側（C#）と書く側（Rust）が別々に実装している**。
+片方だけ直すと静かに壊れるので、**同じ固定入力に対する同じ期待値**を両言語のテストへ書いてある。
+
+| 言語 | 場所 |
+|---|---|
+| Rust | `runtime/.../renderer/thumbnail/cache_key.rs` の `fixed_input_produces_the_agreed_file_name` ほか |
+| C# | `editor/tests/ProjectPanelLogicTests` の `ModelKeyMatchesRuntimeFixture` ほか |
+
+```
+入力: assets://mainGame/models/Yasi.glb / 更新時刻 1700000000 / サイズ 123456 / 一辺 128
+キー: maingame/models/yasi.glb|1700000000|123456|128
+結果: 63cf730ec7b8e0eb.png
+```
+
+**この値を変えるときは必ず両方のテストを同時に直すこと。**
 
 プローブの使い方（入力は読むだけ。書き換えない）:
 
@@ -152,7 +270,7 @@ dotnet run --project editor/tests/ProjectPanelPreviewProbe -- "<フォルダ or 
 
 ---
 
-## 6. 既知の制限
+## 7. 既知の制限
 
 - ファイル名が 2 行になる画像タイルは、サムネイル＋名前＋キャプションの合計が
   タイル高さをわずかに超える（サムネイル導入時からの既存挙動。`Border` は
@@ -163,7 +281,7 @@ dotnet run --project editor/tests/ProjectPanelPreviewProbe -- "<フォルダ or 
 
 ---
 
-## 7. 隠しファイルの非表示
+## 8. 隠しファイルの非表示
 
 **パネルに出す必要の無いファイル・フォルダは既定で隠す。** 対象は
 「エディタ・OS・外部ツールが勝手に作る作業ファイル」と「エンジンが生成する中間データ」の 2 種類で、

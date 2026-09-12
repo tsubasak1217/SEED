@@ -61,6 +61,16 @@ internal static class FileTypeIcons
         [".obj"]      = "Icon.File.Model",
         [".fbx"]      = "Icon.File.Model",
 
+        // ── DCC ツールのプロジェクトファイル ──
+        // エンジンは読み込めないが、制作の元データとしてアセットフォルダに同居する。
+        // 汎用ファイルアイコンだと書き出し済みモデルと見分けが付かないので専用アイコンにする。
+        // .blend1 以降は世代バックアップで、既定では非表示
+        //（ProjectPanelVisibilityRules）。「隠しファイルを表示」で出したときに
+        // 同じアイコンで並ぶよう、対応表には入れておく。
+        [".blend"]    = "Icon.File.Blender",
+        [".blend1"]   = "Icon.File.Blender",
+        [".blend2"]   = "Icon.File.Blender",
+
         // ── 画像（サムネイル生成対象。生成前・失敗時はこのアイコンのまま）──
         [".png"]      = "Icon.File.Image",
         [".jpg"]      = "Icon.File.Image",
@@ -93,12 +103,12 @@ internal static class FileTypeIcons
         [".log"]      = "Icon.File.Text",
 
         // ── フォント（サムネイル生成対象。生成前・失敗時はこのアイコンのまま）──
-        // 専用のベクターアイコンはまだ無いので文書アイコンで代用する。
         // 通常はフォントで描いたサンプル文字列のサムネイルへ差し替わるため、
-        // このアイコンが見えるのは「読めないフォントファイル」のときだけ。
-        [".ttf"]      = "Icon.File.Text",
-        [".otf"]      = "Icon.File.Text",
-        [".ttc"]      = "Icon.File.Text",
+        // このアイコンが見えるのは「読めないフォントファイル」
+        //（壊れたファイル・macOS のリソースフォーク ._*.otf など）のときだけ。
+        [".ttf"]      = "Icon.File.Font",
+        [".otf"]      = "Icon.File.Font",
+        [".ttc"]      = "Icon.File.Font",
     };
 
     // ── 既存 PNG アイコン（ユーザー資産）─────────────────────────────

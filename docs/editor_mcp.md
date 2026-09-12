@@ -979,6 +979,24 @@ RENDER_ACTOR_THUMBNAIL:<actor>,<out_png>,<size_px>,<view>
 - 実装は `runtime/src/engine/core/app_base/app/thumbnail_ops.rs`（進行）と
   `runtime/src/engine/core/renderer/actor_thumbnail.rs`（構図計算・マスク・PNG 化）。
 
+#### 近縁の IPC: モデルサムネイル（プロジェクトパネル）
+
+```
+THUMBNAIL:<要求ID>,<一辺px>,<assets:// パス>
+  → THUMBNAIL_DONE:<要求ID>,<PNG の絶対パス>
+  → THUMBNAIL_FAILED:<要求ID>,<理由>
+```
+
+プロジェクトパネルのタイル画像を作るための別コマンド。下の状態機械（隔離ワールド線・
+ID マスク・追い込み・セッション）を**そのまま共有**しており、違うのは
+「被写体がモデルファイル（`.glb` / `.gltf` / `.obj`）であること」
+「視点が斜め前上からであること」「出力先がキャッシュ規則で決まること」
+「応答に要求 ID が付くこと」の 4 点だけ。
+
+図鑑と違って**要求は待ち行列に積まれ、Edit モードのときだけ 1 件ずつ処理される**
+（フォルダを開いた瞬間に数十件届くため）。仕様の正典は
+[docs/editor_project_panel.md](editor_project_panel.md) §5。
+
 ### 仕組み（現在のシーンを壊さない理由）
 
 1. 専用の**隔離ワールド線**へアクタを 1 体だけ読み込む。SEED の描画は

@@ -189,6 +189,12 @@ CATALOG = [
     ("Icon.File.Config", "file-cog-outline"),
     ("Icon.File.Text", "file-document-outline"),
     ("Icon.File.Terrain", "terrain"),
+    # フォント（.ttf / .otf / .ttc）。通常はフォントサムネイルへ差し替わるので、
+    # これが見えるのは「読めないフォント」のときだけ。
+    ("Icon.File.Font", "format-font"),
+    # Blender のプロジェクトファイル（.blend）。エンジンは読み込めないが、
+    # 制作の元データとしてアセットフォルダに同居するので一目で分かるようにする。
+    ("Icon.File.Blender", "blender-software"),
 
     ("── パッケージング対象プラットフォーム ──", None),
     ("Icon.Platform.Windows", "microsoft-windows"),

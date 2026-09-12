@@ -325,6 +325,8 @@ public partial class ProjectPanel : UserControl
     {
         FolderTree.Items.Clear();
         FileGrid.Children.Clear();
+        // タイルが消えたのでモデルサムネイルの要求も忘れる（貼る先が無くなったため）
+        InvalidateModelThumbnailRequests();
         TabBar.Children.Clear();
         TxtBreadcrumb.Text = "Assets";
         BtnBack.IsEnabled  = false;
@@ -637,6 +639,8 @@ public partial class ProjectPanel : UserControl
         FileGrid.Children.Clear();
         // 薄表示タイルの記録はグリッドと寿命を合わせる（作り直したら忘れる）
         _dimmedTiles.Clear();
+        // 未送信のモデルサムネイル要求も捨てる（もう画面に無いタイルのために描かせない）
+        InvalidateModelThumbnailRequests();
 
         var rel = Path.GetRelativePath(_assetsRoot, _currentPath);
         TxtBreadcrumb.Text = rel == "." ? "Assets" : "Assets/" + rel.Replace('\\', '/');
@@ -727,6 +731,9 @@ public partial class ProjectPanel : UserControl
                 break;
             case AssetPreviewKind.Font:
                 ScheduleFontPreview(imgCtrl, file.FullName);
+                break;
+            case AssetPreviewKind.Model:
+                ScheduleModelThumbnail(imgCtrl, file.FullName);
                 break;
         }
 

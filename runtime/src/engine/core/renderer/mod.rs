@@ -80,6 +80,10 @@ pub(crate) mod screenshot;
 /// アクタ・サムネイル（図鑑画像）生成の純粋ロジック（構図計算・ID マスク・PNG 書き出し）。
 /// GPU/ECS には触らないので単体テストできる。実際の描画駆動は app/thumbnail_ops.rs 側。
 pub mod actor_thumbnail;
+/// モデルサムネイル（プロジェクトパネル用）の純粋ロジック
+/// （キャッシュ鍵・通信プロトコル・待ち行列・任意方向のカメラ自動フィット）。
+/// 実際の描画駆動は actor_thumbnail と同じ app/thumbnail_ops.rs 側が担う。
+pub mod thumbnail;
 /// テクスチャ画素の CPU 前処理（アルファブリード等）。GPU アップロード前に掛ける。
 pub mod texture;
 /// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。

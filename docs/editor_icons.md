@@ -129,7 +129,8 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
    生成が失敗した場合は `Source` を触らないので形式アイコンが残る。
    プレビュー対象の対応表は `editor/src/Assets/AssetPreviewKinds.cs`（WPF 非依存・単体テスト有り）で、
    現状は画像が `.png .jpg .jpeg .bmp .gif .tga .hdr .exr .webp`、
-   フォントが `.ttf .otf .ttc`。3D モデルや音声は常に形式アイコン表示。
+   フォントが `.ttf .otf .ttc`、3D モデルが `.glb .gltf .obj`
+   （モデルはランタイムにオフスクリーン描画させた PNG キャッシュを出す）。音声は常に形式アイコン表示。
    詳細は [docs/editor_project_panel.md](editor_project_panel.md)。
 
 現在の拡張子対応:
@@ -140,7 +141,7 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `.actor` / `.actor2d` | `folderview/actor.png` / `folderview/actor2d.png` |
 | `.inputmap` | `folderview/script.png` |
 | `.cs` / `.lua` / `.py` / `.wgsl` | `folderview/script.png` |
-| `.glb` / `.gltf` / `.obj` / `.fbx` | `folderview/model.png` |
+| `.glb` / `.gltf` / `.obj` / `.fbx` | `folderview/model.png`（`.glb` / `.gltf` / `.obj` はモデルサムネイル対象） |
 | `.png` `.jpg` `.jpeg` `.bmp` `.gif` `.tga` `.hdr` `.exr` `.webp` | `folderview/image.png`（サムネイル対象） |
 | フォルダ | `folderview/folder.png` / `folder_empty.png` |
 | `.anim` | `Icon.File.Anim`（ベクター） |
@@ -152,7 +153,8 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `.json` | `Icon.File.Json`（ベクター） |
 | `.toml` / `.yaml` / `.yml` / `.ini` / `.cfg` / `.lock` | `Icon.File.Config`（ベクター） |
 | `.txt` / `.md` / `.log` | `Icon.File.Text`（ベクター） |
-| `.ttf` / `.otf` / `.ttc` | `Icon.File.Text`（ベクター。フォント専用アイコンが無いため流用。通常はフォントサムネイルへ差し替わる） |
+| `.ttf` / `.otf` / `.ttc` | `Icon.File.Font`（ベクター。通常はフォントサムネイルへ差し替わるので、見えるのは読めないフォントのときだけ） |
+| `.blend` / `.blend1` / `.blend2` | `Icon.File.Blender`（ベクター。エンジンは読めない制作元データ。`.blend1` 以降は既定で非表示） |
 | 上記以外 | `folderview/image.png`（フォールバック） |
 
 新しい拡張子を足すときは、対応する PNG がユーザー資産として既にある場合のみ

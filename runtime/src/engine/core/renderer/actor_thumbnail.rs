@@ -26,6 +26,7 @@
 use std::path::{Path, PathBuf};
 
 use super::texture::alpha_bleed::bleed_alpha_edges_default;
+use super::thumbnail::view_basis::ViewBasis;
 
 // ─── 定数（マジックナンバー禁止）─────────────────────────────
 
@@ -141,12 +142,17 @@ impl ThumbnailView {
         ]
     }
 
-    /// 画面上方向にあたるワールドベクトル（`up()` の公開版）。
-    pub fn up_vector(self) -> [f32; 3] {
-        self.up()
-    }
+    // ─── 軸決め打ちの旧・射影式（テスト専用） ─────────────────
+    //
+    //  構図計算を `thumbnail::view_basis` の一般形へ委譲する前は、
+    //  「Side なら画面横は size[2]」のようにビューごとの決め打ちで幅を求めていた。
+    //  一般形（射影幅 = |a.x|·sx + |a.y|·sy + |a.z|·sz）はこれと同じ値を返すはずだが、
+    //  それは**証明されるべき前提**であってコメントで済ませてよいことではない。
+    //  そこで旧式をここに残し、`general_extents_match_the_legacy_axis_formulas`
+    //  で 1 つずつ突き合わせている。委譲によって図鑑の構図が動いていないことの番人。
 
-    /// AABB のサイズ [x, y, z] から「画面横方向」に写るワールド長さを取り出す。
+    /// AABB のサイズ [x, y, z] から「画面横方向」に写るワールド長さを取り出す（旧式）。
+    #[cfg(test)]
     fn screen_width_of(self, size: [f32; 3]) -> f32 {
         match self {
             Self::Side => size[2],  // 画面右 = ±Z
@@ -155,7 +161,8 @@ impl ThumbnailView {
         }
     }
 
-    /// AABB のサイズ [x, y, z] から「画面縦方向」に写るワールド長さを取り出す。
+    /// AABB のサイズ [x, y, z] から「画面縦方向」に写るワールド長さを取り出す（旧式）。
+    #[cfg(test)]
     fn screen_height_of(self, size: [f32; 3]) -> f32 {
         match self {
             Self::Side | Self::Front => size[1], // 画面上 = ±Y
@@ -163,7 +170,8 @@ impl ThumbnailView {
         }
     }
 
-    /// AABB のサイズ [x, y, z] から「視線方向（奥行き）」のワールド長さを取り出す。
+    /// AABB のサイズ [x, y, z] から「視線方向（奥行き）」のワールド長さを取り出す（旧式）。
+    #[cfg(test)]
     fn depth_of(self, size: [f32; 3]) -> f32 {
         match self {
             Self::Side => size[0],
@@ -193,6 +201,21 @@ impl ThumbnailView {
             // forward = (0, −1, 0) → sin(pitch) = 1
             Self::Top => std::f32::consts::FRAC_PI_2,
         }
+    }
+
+    /// このビューを、方向に依存しない一般形の基底（[`ViewBasis`]）へ変換する。
+    ///
+    /// 構図計算の本体はモデルサムネイルと共有する（`thumbnail::view_basis`）。
+    /// その際、基底を計算で作り直すと丸め誤差で図鑑の絵が変わりかねないので、
+    /// ここが持っている**厳密な定数（0 / ±1 / ±π/2）をそのまま**渡す。
+    pub fn to_basis(self) -> ViewBasis {
+        ViewBasis::from_parts(
+            self.forward(),
+            self.up(),
+            self.right(),
+            self.yaw(),
+            self.pitch(),
+        )
     }
 }
 
@@ -242,79 +265,6 @@ pub fn center_square_crop(viewport_w: u32, viewport_h: u32) -> CropRect {
         x: (viewport_w - side) / 2,
         y: (viewport_h - side) / 2,
         side,
-    }
-}
-
-/// AABB とビューポートから、被写体が中央の正方形にちょうど収まる構図を求める。
-///
-/// # 正射半高の決め方
-/// 正射投影では「1 ピクセルあたりのワールド長さ」が縦横で等しく、
-/// `2·half_h / viewport_h` になる。中央の正方形（一辺 `side` px）が覆うワールド長さは
-/// `side · 2·half_h / viewport_h` なので、その半分（＝正方形の半径）は
-/// `side · half_h / viewport_h`。
-/// これが被写体の必要半径 `needed` 以上であればよいので、
-/// `half_h ≥ needed · viewport_h / side` を満たす最小値を採る。
-///
-/// # 引数
-/// * `aabb_min` / `aabb_max` — 被写体のワールド AABB。
-/// * `view` — どの向きから撮るか。
-/// * `viewport_w` / `viewport_h` — 実際に描画するフレームバッファの大きさ（ピクセル）。
-/// * `margin_ratio` — 余白の比率（[`FRAMING_MARGIN_RATIO`] 参照）。
-pub fn compute_framing(
-    aabb_min: [f32; 3],
-    aabb_max: [f32; 3],
-    view: ThumbnailView,
-    viewport_w: u32,
-    viewport_h: u32,
-    margin_ratio: f32,
-) -> Framing {
-    // AABB の中心とサイズ（負のサイズにならないよう max(0) で守る）
-    let center = [
-        (aabb_min[0] + aabb_max[0]) * 0.5,
-        (aabb_min[1] + aabb_max[1]) * 0.5,
-        (aabb_min[2] + aabb_max[2]) * 0.5,
-    ];
-    let size = [
-        (aabb_max[0] - aabb_min[0]).max(0.0),
-        (aabb_max[1] - aabb_min[1]).max(0.0),
-        (aabb_max[2] - aabb_min[2]).max(0.0),
-    ];
-
-    // 画面内に収めるべき半径（縦横のうち大きいほう）に余白を掛ける
-    let needed_half = 0.5
-        * view
-            .screen_width_of(size)
-            .max(view.screen_height_of(size))
-        * margin_ratio;
-
-    // 中央正方形へ収まるよう、ビューポート高さ／正方形の一辺の比で割り増しする
-    let crop = center_square_crop(viewport_w.max(1), viewport_h.max(1));
-    let side = crop.side.max(1) as f32;
-    let ortho_half_h =
-        (needed_half * (viewport_h.max(1) as f32) / side).max(ORTHO_HALF_H_MIN);
-
-    // 視点は AABB の外側へ引く。奥行きの半分 × 係数（最低 EYE_PULLBACK_MIN）。
-    let half_depth = 0.5 * view.depth_of(size);
-    let pullback = (half_depth * EYE_PULLBACK_FACTOR).max(EYE_PULLBACK_MIN);
-    let forward = view.forward();
-    let eye = [
-        center[0] - forward[0] * pullback,
-        center[1] - forward[1] * pullback,
-        center[2] - forward[2] * pullback,
-    ];
-
-    // ファーは「視点から AABB の裏側まで」＋余裕
-    let far = pullback + half_depth + FAR_SLACK;
-
-    Framing {
-        eye,
-        target: center,
-        up: view.up(),
-        ortho_half_h,
-        near: ORTHO_NEAR,
-        far,
-        yaw: view.yaw(),
-        pitch: view.pitch(),
     }
 }
 
@@ -703,6 +653,7 @@ pub fn format_error(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::thumbnail::view_basis::{compute_framing_for_basis, extent_along};
 
     /// テスト用: 1 辺 1.0 の立方体 AABB。
     const UNIT_MIN: [f32; 3] = [-0.5, -0.5, -0.5];
@@ -711,6 +662,29 @@ mod tests {
     /// 浮動小数の近似比較。
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
+    }
+
+    /// テスト用: ビューを指定して構図を求める。
+    ///
+    /// 本番の撮影経路（`app/thumbnail_ops.rs` の `ThumbnailPlan`）は最初から基底を
+    /// 持っているので、ビューを受け取る入口は存在しない。ここだけ `to_basis()` を
+    /// 挟んで、従来どおり「ビューを指定した構図」を検査できるようにする。
+    fn framing_for(
+        aabb_min: [f32; 3],
+        aabb_max: [f32; 3],
+        view: ThumbnailView,
+        viewport_w: u32,
+        viewport_h: u32,
+        margin_ratio: f32,
+    ) -> Framing {
+        compute_framing_for_basis(
+            aabb_min,
+            aabb_max,
+            view.to_basis(),
+            viewport_w,
+            viewport_h,
+            margin_ratio,
+        )
     }
 
     // ─── 応答書式（エディタとの契約）─────────────────────────
@@ -782,23 +756,52 @@ mod tests {
     #[test]
     fn framing_places_eye_on_the_positive_axis_of_the_view() {
         // Side: +X 側から見る
-        let f = compute_framing(UNIT_MIN, UNIT_MAX, ThumbnailView::Side, 1024, 1024, 1.0);
+        let f = framing_for(UNIT_MIN, UNIT_MAX, ThumbnailView::Side, 1024, 1024, 1.0);
         assert!(f.eye[0] > f.target[0], "視点は +X 側に無ければならない");
         assert!(close(f.eye[1], f.target[1]) && close(f.eye[2], f.target[2]));
 
         // Front: +Z 側から見る
-        let f = compute_framing(UNIT_MIN, UNIT_MAX, ThumbnailView::Front, 1024, 1024, 1.0);
+        let f = framing_for(UNIT_MIN, UNIT_MAX, ThumbnailView::Front, 1024, 1024, 1.0);
         assert!(f.eye[2] > f.target[2], "視点は +Z 側に無ければならない");
 
         // Top: +Y 側から見る
-        let f = compute_framing(UNIT_MIN, UNIT_MAX, ThumbnailView::Top, 1024, 1024, 1.0);
+        let f = framing_for(UNIT_MIN, UNIT_MAX, ThumbnailView::Top, 1024, 1024, 1.0);
         assert!(f.eye[1] > f.target[1], "視点は +Y 側に無ければならない");
+    }
+
+    /// 一般形の射影幅が、委譲前の軸決め打ちの式と**厳密に**一致すること。
+    ///
+    /// `compute_framing` は `thumbnail::view_basis` の一般形へ委譲している。
+    /// ここが 1 つでもずれると図鑑サムネイルの構図（寄り・引き）が静かに変わるため、
+    /// 3 ビュー × 3 方向（画面横・画面縦・奥行き）をすべて突き合わせる。
+    #[test]
+    fn general_extents_match_the_legacy_axis_formulas() {
+        // 辺の長さが全部違う箱（取り違えを見逃さないため）
+        let size = [2.0, 3.0, 5.0];
+        for view in [ThumbnailView::Side, ThumbnailView::Front, ThumbnailView::Top] {
+            let basis = view.to_basis();
+            assert_eq!(
+                extent_along(basis.right, size),
+                view.screen_width_of(size),
+                "{view:?}: 画面横の射影幅が旧式と違う"
+            );
+            assert_eq!(
+                extent_along(basis.up, size),
+                view.screen_height_of(size),
+                "{view:?}: 画面縦の射影幅が旧式と違う"
+            );
+            assert_eq!(
+                extent_along(basis.forward, size),
+                view.depth_of(size),
+                "{view:?}: 奥行きの射影幅が旧式と違う"
+            );
+        }
     }
 
     #[test]
     fn framing_targets_the_aabb_center() {
         // 原点からずれた AABB でも中心を向く
-        let f = compute_framing([1.0, 2.0, 3.0], [3.0, 6.0, 9.0], ThumbnailView::Side, 512, 512, 1.0);
+        let f = framing_for([1.0, 2.0, 3.0], [3.0, 6.0, 9.0], ThumbnailView::Side, 512, 512, 1.0);
         assert!(close(f.target[0], 2.0));
         assert!(close(f.target[1], 4.0));
         assert!(close(f.target[2], 6.0));
@@ -810,29 +813,29 @@ mod tests {
         // 正方形ビューポートなので half_h = max(Z, Y)/2 × 余白比
         let min = [-0.1, -1.0, -5.0];
         let max = [0.1, 1.0, 5.0];
-        let f = compute_framing(min, max, ThumbnailView::Side, 800, 800, 1.0);
+        let f = framing_for(min, max, ThumbnailView::Side, 800, 800, 1.0);
         assert!(close(f.ortho_half_h, 5.0), "half_h={}", f.ortho_half_h);
 
         // 余白 10% を掛けると 10% 大きくなる
-        let f = compute_framing(min, max, ThumbnailView::Side, 800, 800, 1.1);
+        let f = framing_for(min, max, ThumbnailView::Side, 800, 800, 1.1);
         assert!(close(f.ortho_half_h, 5.5), "half_h={}", f.ortho_half_h);
     }
 
     #[test]
     fn framing_compensates_for_a_non_square_viewport() {
         // 横長ビューポート（高さが短辺）: 中央正方形の一辺 = 高さ なので補正なし
-        let f = compute_framing(UNIT_MIN, UNIT_MAX, ThumbnailView::Side, 1920, 1080, 1.0);
+        let f = framing_for(UNIT_MIN, UNIT_MAX, ThumbnailView::Side, 1920, 1080, 1.0);
         assert!(close(f.ortho_half_h, 0.5), "half_h={}", f.ortho_half_h);
 
         // 縦長ビューポート（幅が短辺）: 中央正方形は幅ぶんしかないので
         // half_h を viewport_h / side = 800/600 倍に広げる必要がある
-        let f = compute_framing(UNIT_MIN, UNIT_MAX, ThumbnailView::Side, 600, 800, 1.0);
+        let f = framing_for(UNIT_MIN, UNIT_MAX, ThumbnailView::Side, 600, 800, 1.0);
         assert!(close(f.ortho_half_h, 0.5 * 800.0 / 600.0), "half_h={}", f.ortho_half_h);
     }
 
     #[test]
     fn framing_clip_planes_enclose_the_subject() {
-        let f = compute_framing([-2.0, -2.0, -2.0], [2.0, 2.0, 2.0], ThumbnailView::Side, 512, 512, 1.1);
+        let f = framing_for([-2.0, -2.0, -2.0], [2.0, 2.0, 2.0], ThumbnailView::Side, 512, 512, 1.1);
         // 視点から被写体の最も手前の面までの距離
         let nearest = f.eye[0] - 2.0;
         let farthest = f.eye[0] - (-2.0);
@@ -843,7 +846,7 @@ mod tests {
     #[test]
     fn framing_survives_a_degenerate_aabb() {
         // 大きさゼロ（点）でもゼロ除算・ゼロ半高にならない
-        let f = compute_framing([1.0; 3], [1.0; 3], ThumbnailView::Side, 512, 512, 1.1);
+        let f = framing_for([1.0; 3], [1.0; 3], ThumbnailView::Side, 512, 512, 1.1);
         assert!(f.ortho_half_h >= ORTHO_HALF_H_MIN);
         assert!(f.far > f.near);
         assert!(f.eye[0] > f.target[0]);
@@ -1012,13 +1015,13 @@ mod tests {
         // ドキュメントの「画面右＝…」と実際の外積が食い違わないこと。
         // ここがずれると、追い込みのパンが逆方向へ効いて発散する。
         assert_eq!(ThumbnailView::Side.right(), [0.0, 0.0, 1.0]);
-        assert_eq!(ThumbnailView::Side.up_vector(), [0.0, 1.0, 0.0]);
+        assert_eq!(ThumbnailView::Side.up(), [0.0, 1.0, 0.0]);
 
         assert_eq!(ThumbnailView::Front.right(), [-1.0, 0.0, 0.0]);
-        assert_eq!(ThumbnailView::Front.up_vector(), [0.0, 1.0, 0.0]);
+        assert_eq!(ThumbnailView::Front.up(), [0.0, 1.0, 0.0]);
 
         assert_eq!(ThumbnailView::Top.right(), [1.0, 0.0, 0.0]);
-        assert_eq!(ThumbnailView::Top.up_vector(), [0.0, 0.0, 1.0]);
+        assert_eq!(ThumbnailView::Top.up(), [0.0, 0.0, 1.0]);
     }
 
     // ─── マスクの実測 ────────────────────────────────────────
