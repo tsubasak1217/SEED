@@ -2016,9 +2016,11 @@
                                         <Grid x:Name="ViewportLoadingOverlay"
                                               Grid.Row="2" Grid.Column="2"
                                               Panel.ZIndex="5"
+                                              Background="#21A4F7"
                                               IsHitTestVisible="False">
+                                            <!-- 背景色は画像の空の色（左上のピクセル）に合わせ、画像は切らずに全体を表示する。 -->
                                             <Image Source="pack://application:,,,/resources/images/blueSky_ORE.png"
-                                                   Stretch="UniformToFill"/>
+                                                   Stretch="Uniform"/>
                                             <TextBlock x:Name="TxtViewportStatus"
                                                        Text=""
                                                        Foreground="White" FontSize="14"

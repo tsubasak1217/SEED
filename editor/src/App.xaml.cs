@@ -1,4 +1,6 @@
 using System;
+using System.Threading.Tasks;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -155,10 +157,61 @@ public partial class App : Application
         // タスクバーのジャンプリスト（右クリックの「最近」欄）にも同じ一覧を反映する。
         ProjectJumpList.Refresh(recentStore);
 
+        // MainWindow の生成〜初回描画までは UI スレッドが塞がり、ウィンドウが真っ白のまま
+        // 数秒止まる。その間は別ウィンドウのスプラッシュ（起動中画像）で覆う。
+        // SplashScreen は自前のレイヤードウィンドウに 1 回描くだけなので、UI スレッドが
+        // 塞がっていても表示が保たれる。ヘッドレス（エージェント運用）では出さない。
+        var splash = isHeadless ? null : ShowStartupSplash();
+
         // 型名 MainWindow と Application.MainWindow プロパティが同名なので、
         // どちらを指しているかが読んで分かるよう明示的に書き分ける。
         var window = new SEEDEditor.MainWindow();
         this.MainWindow = window;
+        if (splash is not null)
+        {
+            // 初回描画が済んだらフェードアウト。万一 ContentRendered が来なくても上限時間で閉じる。
+            window.ContentRendered += (_, _) => CloseStartupSplash(splash);
+            _ = Task.Delay(STARTUP_SPLASH_MAX_MS).ContinueWith(_ =>
+                Dispatcher.BeginInvoke(() => CloseStartupSplash(splash)));
+        }
         window.Show();
+    }
+
+    // ── 起動スプラッシュ（別ウィンドウ） ─────────────────────────
+
+    /// <summary>スプラッシュ画像のリソース名（csproj の Resource Include で埋め込まれる縮小版）。</summary>
+    private const string STARTUP_SPLASH_RESOURCE = "resources/images/blueSky_ORE_splash.png";
+
+    /// <summary>スプラッシュを閉じるときのフェード時間 [ms]。</summary>
+    private const int STARTUP_SPLASH_FADE_MS = 250;
+
+    /// <summary>ContentRendered が来なくてもスプラッシュを閉じる上限 [ms]。</summary>
+    private const int STARTUP_SPLASH_MAX_MS = 20000;
+
+    /// <summary>閉じたスプラッシュを二重に閉じないための印。</summary>
+    private readonly HashSet<SplashScreen> _closedSplashes = new();
+
+    /// <summary>起動スプラッシュを表示する。失敗しても起動は続ける（null を返す）。</summary>
+    private SplashScreen? ShowStartupSplash()
+    {
+        try
+        {
+            var splash = new SplashScreen(STARTUP_SPLASH_RESOURCE);
+            splash.Show(autoClose: false, topMost: true);
+            return splash;
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"起動スプラッシュを表示できませんでした: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>起動スプラッシュをフェードアウトで閉じる（多重呼び出しは無視）。</summary>
+    private void CloseStartupSplash(SplashScreen splash)
+    {
+        if (!_closedSplashes.Add(splash)) return;
+        try { splash.Close(TimeSpan.FromMilliseconds(STARTUP_SPLASH_FADE_MS)); }
+        catch (Exception ex) { EditorLog.Write($"起動スプラッシュを閉じられませんでした: {ex.Message}"); }
     }
 }

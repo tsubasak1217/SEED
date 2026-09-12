@@ -546,8 +546,8 @@ public partial class MainWindow
     /// 最近開いたシーン一覧（RecentScenesManager）の先頭にある、実在する .scene を読み込む。
     /// 無ければ何もしない（ランタイム側の既定シーンのまま）。
     /// </summary>
-    /// <returns>読み込みを要求した .scene の絶対パス。要求しなかった（対象なし・失敗）場合は null。</returns>
-    private string? TryLoadLastScene()
+    /// <returns>起動時に開くべき .scene の絶対パス。対象が無い／判定に失敗した場合は null。</returns>
+    private string? ResolveStartupScenePath()
     {
         try
         {
@@ -558,7 +558,6 @@ public partial class MainWindow
             if (startup is not null)
             {
                 EditorLog.Write($"起動時シーン指定 — {startup}");
-                LoadScene(startup);
                 return startup;
             }
 
@@ -573,7 +572,6 @@ public partial class MainWindow
                 return null;
             }
             EditorLog.Write($"起動時シーン復元 — {last}");
-            LoadScene(last);
             return last;
         }
         catch (Exception ex)

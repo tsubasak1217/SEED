@@ -41,8 +41,14 @@ public partial class MainWindow
             if (!_initialSceneLoaded && _runtimeManager?.State == EditorState.Edit)
             {
                 _initialSceneLoaded = true;
-                var requested = TryLoadLastScene();
-                if (requested is not null) BeginStartupSplashHold(requested);
+                // 先に保持を始めてから読み込みを送る。順序が逆だと、読み込みが速い場合に
+                // SCENE_LOADED が保持開始より先に処理され、解除できずに残る／直後に黒くなる。
+                var requested = ResolveStartupScenePath();
+                if (requested is not null)
+                {
+                    BeginStartupSplashHold(requested);
+                    LoadScene(requested);
+                }
             }
 
             // FIRST_FRAME が届かない場合のフォールバック（リリースビルドの Runtime 等）。
@@ -105,7 +111,10 @@ public partial class MainWindow
     {
         _startupSplashHold      = true;
         _startupSplashScenePath = scenePath;
+        // 子ウィンドウを隠すだけでは、HwndHost 自身の HWND が WPF の描画に「穴」を開けたままで
+        // オーバーレイが黒く抜ける。HwndHost（ViewportDocumentContent）ごと Hidden にして穴を無くす。
         _runtimeManager?.SetRuntimeWindowVisible(false);
+        ViewportDocumentContent.Visibility = Visibility.Hidden;
         TxtViewportStatus.Text            = StartupSplashStatusText;
         ViewportLoadingOverlay.Visibility = Visibility.Visible;
         EditorLog.Write($"起動時スプラッシュ保持 — 読み込み完了まで子ウィンドウを隠す: {scenePath}");
@@ -135,7 +144,10 @@ public partial class MainWindow
         if (!_startupSplashHold) return;
         _startupSplashHold      = false;
         _startupSplashScenePath = null;
+        ViewportDocumentContent.Visibility = Visibility.Visible;
         _runtimeManager?.SetRuntimeWindowVisible(true);
+        // 隠している間にレイアウトが変わっていても、子ウィンドウをコンテナに合わせ直す。
+        _runtimeManager?.ResizeRuntimeToContainer();
         ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
         TxtViewportStatus.Text            = "";
         EditorLog.Write($"起動時スプラッシュ解除 — {reason}");
