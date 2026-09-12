@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "_note": "内蔵スクリプトエディタ（スクリプトパネル）で開ける拡張子と、その言語。正典は docs/editor_script_panel.md。ここを消してもエディタは動く（TextEditableCatalog.cs の組み込み既定へフォールバックする）。language は csharp / wgsl / json / csv / markdown / text のいずれか。",
+
+  "_note_forbidden": ".scene / .actor / .actor2d は意図的に載せない。エディタが常時読み込んで編集している実体で、テキストで書き換えると保存の取り合いになり内容が壊れるため。ここへ書いても読み込み時に拒否される。",
+
+  "_note_max_editable_bytes": "これを超えるファイルは読み取り専用タブで開く（誤編集・保存事故の防止）。既定 1 MiB。",
+  "max_editable_bytes": 1048576,
+
+  "extensions": [
+    { "extension": ".cs",       "language": "csharp",   "note": "C# ユーザースクリプト（補完・診断・デバッグの全機能が有効）" },
+    { "extension": ".wgsl",     "language": "wgsl",     "note": "シェーディングアセット（着色・静的辞書補完・ランタイム検証）" },
+
+    { "extension": ".json",     "language": "json",     "note": "各種設定（layers.json / props.json / terrain_meta.json など）" },
+    { "extension": ".txt",      "language": "text",     "note": "クレジット・メモなどの素のテキスト" },
+    { "extension": ".csv",      "language": "csv",      "note": "表データ（パラメータ表など）" },
+    { "extension": ".md",       "language": "markdown", "note": "ドキュメント" },
+
+    { "extension": ".inputmap", "language": "json",     "note": "入力マップ。ダブルクリックは専用エディタが優先、右クリックからテキストで開ける" },
+    { "extension": ".icons",    "language": "json",     "note": "アイコンセット（専用エディタが無いのでテキストで編集する）" },
+    { "extension": ".anim",     "language": "json",     "note": "アニメーションクリップ。ダブルクリックはタイムラインが優先、右クリックからテキストで開ける" }
+  ]
+}

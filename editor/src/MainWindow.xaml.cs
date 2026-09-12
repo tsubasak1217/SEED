@@ -240,6 +240,29 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     }
 
     /// <summary>
+    /// 「内蔵スクリプトエディタで開ける拡張子」のカタログを editor/config から読み込み、
+    /// アプリ全体（プロジェクトパネルのダブルクリック判定とタブ生成）へ反映する。
+    ///
+    /// 読み込み自体は失敗しない（必ず組み込み既定＝.cs / .wgsl ほかへフォールバックする）。
+    /// 詳細は docs/editor_script_panel.md。
+    /// </summary>
+    private static void LoadTextEditableCatalog()
+    {
+        var catalog = SEEDEditor.Panels.ScriptEditor.TextEditableCatalog
+            .LoadFromDir(SEEDEditor.Settings.EditorPaths.ConfigDir);
+
+        foreach (var w in catalog.Warnings)
+            EditorLog.Write($"[ScriptEditor] {w}");
+
+        SEEDEditor.Panels.ScriptEditor.EditorLanguages.UseCatalog(catalog);
+
+        EditorLog.Write(
+            $"[ScriptEditor] 編集可能拡張子カタログ読み込み完了 — " +
+            $"source={catalog.SourcePath ?? "(組み込み既定)"}  件数={catalog.Extensions.Count}  " +
+            $"上限={catalog.MaxEditableBytes:N0} バイト");
+    }
+
+    /// <summary>
     /// 現在のプロジェクトのアセットルート（assets:// の実体）。
     ///
     /// <para>
@@ -430,6 +453,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // RuntimeManager を生成する前に読み終えている必要がある
         // （後で読むと、保存した構成を無視して常に既定の構成で起動してしまう）。
         EditorPreferences.Init(SettingsDir);
+
+        // 内蔵スクリプトエディタで開ける拡張子（.cs / .wgsl / .json / .txt …）のカタログを読む。
+        // プロジェクトパネルのダブルクリック判定もこのカタログを引くため、
+        // パネルが最初の一覧を描く前に確定させておく。
+        LoadTextEditableCatalog();
 
         EditorLog.Write(
             $"OnWindowLoaded — RuntimeExePath={RuntimeExePath}  構成={CurrentRuntimeBuildConfig}");

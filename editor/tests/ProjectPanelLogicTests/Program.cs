@@ -58,6 +58,25 @@ public static class Program
         harness.Add("ツールチップには px が付く",                          PixelSizeTooltip);
         harness.Add("0 以下の寸法は無効と判定される",                      PixelSizeValidity);
 
+        // ── 非表示ルール（隠しファイル）──────────────────────
+        harness.Add("作業フォルダ（.backup / __MACOSX）は隠れる",          HiddenWorkFolders);
+        harness.Add("先頭がドットのフォルダ・ファイルは隠れる",            HiddenDotPrefixed);
+        harness.Add("作業ファイルの拡張子は隠れる",                        HiddenWorkExtensions);
+        harness.Add("地形の中間データ（tvox/tscatter/tcover）は隠れる",    HiddenTerrainIntermediates);
+        harness.Add("OS が作るファイル（Thumbs.db 等）は隠れる",           HiddenOsFiles);
+        harness.Add("macOS のリソースフォーク（._*）は隠れる",             HiddenResourceForks);
+        harness.Add("Blender の世代バックアップは隠れる",                  HiddenBlenderBackups);
+        harness.Add("制作物（.scene/.cs/.png/terrain_meta.json）は隠れない", VisibleAuthoredAssets);
+        harness.Add("フォルダ用ルールはファイルに適用されない",            HiddenFolderRuleDoesNotLeak);
+        harness.Add("拡張子の大文字小文字は区別しない（非表示判定）",      HiddenCaseInsensitive);
+        harness.Add("絶対パス・末尾区切り・空文字でも落ちない",            HiddenPathForms);
+        harness.Add("表示トグルが ON なら何も隠れない",                    HiddenShowAllToggle);
+        harness.Add("JSON でルールを差し替えられる",                       HiddenRulesFromJson);
+        harness.Add("空配列を書けばそのルールを無効にできる",              HiddenRulesEmptyList);
+        harness.Add("壊れた JSON は組み込み既定へフォールバックする",      HiddenRulesBrokenJson);
+        harness.Add("ファイルが無ければ組み込み既定へフォールバックする",  HiddenRulesMissingFile);
+        harness.Add("同梱の project_panel_rules.json が既定と一致する",    HiddenRulesShippedFile);
+
         return harness.Run();
     }
 
@@ -274,5 +293,231 @@ public static class Program
         Check.True(new ImagePixelSize(1, 1).IsValid,     "正の寸法は有効");
         Check.True(!new ImagePixelSize(0, 16).IsValid,   "幅 0 は無効");
         Check.True(!new ImagePixelSize(16, -1).IsValid,  "負の高さは無効");
+    }
+
+    // ── 非表示ルール（隠しファイル）──────────────────────────────
+    //
+    //  「パネルに出さないもの」の判定。ここが緩むと作業ファイルで一覧が埋まり、
+    //  きつすぎると制作物（.scene / 画像 / スクリプト）が消えて作業できなくなる。
+    //  後者のほうが重大なので、"隠れないこと" のテストも必ず置く。
+
+    /// <summary>組み込み既定のルール（JSON を読まない）。</summary>
+    private static ProjectPanelVisibilityRules Rules() => ProjectPanelVisibilityRules.BuiltIn();
+
+    /// <summary>ファイル名が隠れることを表明する。</summary>
+    private static void AssertHiddenFile(string name)
+        => Check.True(Rules().IsHiddenFileName(name), $"隠れるはず: {name}");
+
+    /// <summary>ファイル名が隠れないことを表明する。</summary>
+    private static void AssertVisibleFile(string name)
+        => Check.True(!Rules().IsHiddenFileName(name), $"見えるはず: {name}");
+
+    private static void HiddenWorkFolders()
+    {
+        var rules = Rules();
+        Check.True(rules.IsHiddenFolderName(".backup"),   ".backup（シーンの世代バックアップ）");
+        Check.True(rules.IsHiddenFolderName("__MACOSX"),  "__MACOSX（zip 展開の残骸）");
+        Check.True(rules.IsHiddenFolderName("__macosx"),  "大文字小文字は無視");
+        Check.True(!rules.IsHiddenFolderName("textures"), "普通のフォルダは見える");
+    }
+
+    private static void HiddenDotPrefixed()
+    {
+        var rules = Rules();
+        Check.True(rules.IsHiddenFolderName(".git"),     ".git");
+        Check.True(rules.IsHiddenFolderName(".vscode"),  ".vscode");
+        Check.True(rules.IsHiddenFileName(".gitignore"), ".gitignore");
+        Check.True(rules.IsHiddenFileName(".DS_Store"),  ".DS_Store");
+    }
+
+    private static void HiddenWorkExtensions()
+    {
+        AssertHiddenFile("scene.lock");     // エディタのロック
+        AssertHiddenFile("work.tmp");       // 一時ファイル
+        AssertHiddenFile("player.cs.bak");  // 手動バックアップ
+        AssertHiddenFile("tree.blend1");    // Blender の世代バックアップ
+    }
+
+    private static void HiddenTerrainIntermediates()
+    {
+        // いずれもエンジンが生成する独自バイナリ（magic TVOX / TSCT / TCOV）。
+        // エディタの地形ツールが読み書きするだけで、人が開く意味は無い。
+        AssertHiddenFile("chunk_0_0_0.tvox");
+        AssertHiddenFile("chunk_0_0_0.tscatter");
+        AssertHiddenFile("chunk_0_0_0.tcover");
+    }
+
+    private static void HiddenOsFiles()
+    {
+        AssertHiddenFile("Thumbs.db");
+        AssertHiddenFile("thumbs.db");     // 大文字小文字は無視
+        AssertHiddenFile("desktop.ini");
+    }
+
+    private static void HiddenResourceForks()
+    {
+        AssertHiddenFile("._character.png");   // AppleDouble
+        AssertVisibleFile("_character.png");   // 先頭が "_" だけなら普通のファイル
+    }
+
+    private static void HiddenBlenderBackups()
+    {
+        AssertHiddenFile("stage.blend1");
+        AssertHiddenFile("stage.blend9");      // パターン "*.blend?" で 2 世代目以降も拾う
+        AssertVisibleFile("stage.blend");      // 本体は当然見える
+    }
+
+    private static void VisibleAuthoredAssets()
+    {
+        AssertVisibleFile("title.scene");
+        AssertVisibleFile("Player.cs");
+        AssertVisibleFile("hero.png");
+        AssertVisibleFile("bgm.wav");
+        AssertVisibleFile("ui.icons");
+        // 地形フォルダの設定値は平文 JSON で、内容に意味があるので隠さない
+        AssertVisibleFile("terrain_meta.json");
+    }
+
+    private static void HiddenFolderRuleDoesNotLeak()
+    {
+        var rules = Rules();
+        // "__MACOSX" はフォルダ名のルール。同名のファイルは（ドットでもないので）見える。
+        Check.True(!rules.IsHiddenFileName("__MACOSX"),   "フォルダ名ルールはファイルに効かない");
+        // 逆に Thumbs.db はファイル名のルール。同名フォルダは見える。
+        Check.True(!rules.IsHiddenFolderName("Thumbs.db"), "ファイル名ルールはフォルダに効かない");
+    }
+
+    private static void HiddenCaseInsensitive()
+    {
+        AssertHiddenFile("WORK.TMP");
+        AssertHiddenFile("CHUNK_0_0_0.TVOX");
+    }
+
+    private static void HiddenPathForms()
+    {
+        var rules = Rules();
+        Check.True(rules.IsHiddenPath(@"C:\proj\assets\.backup", isDirectory: true),  "絶対パス（フォルダ）");
+        Check.True(rules.IsHiddenPath(@"C:\proj\assets\.backup\", isDirectory: true), "末尾区切りがあっても同じ");
+        Check.True(rules.IsHiddenPath(@"C:\proj\assets\a\b.tmp", isDirectory: false), "絶対パス（ファイル）");
+        Check.True(!rules.IsHiddenPath("", isDirectory: false),   "空文字は隠さない（例外にしない）");
+        Check.True(!rules.IsHiddenPath(null, isDirectory: false), "null は隠さない（例外にしない）");
+    }
+
+    private static void HiddenShowAllToggle()
+    {
+        var rules = Rules();
+        Check.True(!rules.ShouldShowPath("work.tmp", false, showHidden: false), "OFF なら隠れる");
+        Check.True(rules.ShouldShowPath("work.tmp", false, showHidden: true),   "ON なら見える");
+        Check.True(rules.ShouldShowPath("hero.png", false, showHidden: false),  "対象外は常に見える");
+    }
+
+    private static void HiddenRulesFromJson()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine(ProjectPanelVisibilityRules.FileName);
+        File.WriteAllText(path, """
+        {
+          "format_version": 1,
+          "hide_dot_prefixed": false,
+          "hidden_folder_names": ["Intermediate"],
+          "hidden_file_names": ["notes.md"],
+          "hidden_file_extensions": ["foo"],
+          "hidden_file_patterns": ["draft_*"]
+        }
+        """);
+
+        var rules = ProjectPanelVisibilityRules.Load(path);
+        Check.Equal(0, rules.Warnings.Count, "警告なしで読める");
+        Check.True(rules.SourcePath != null, "読み込み元が記録される");
+
+        Check.True(rules.IsHiddenFolderName("Intermediate"), "JSON のフォルダ名が効く");
+        Check.True(rules.IsHiddenFileName("notes.md"),       "JSON のファイル名が効く");
+        Check.True(rules.IsHiddenFileName("data.foo"),       "ドット無しで書いた拡張子も効く");
+        Check.True(rules.IsHiddenFileName("draft_01.png"),   "JSON のパターンが効く");
+        Check.True(!rules.IsHiddenFolderName(".git"),        "hide_dot_prefixed=false が効く");
+        Check.True(!rules.IsHiddenFileName("work.tmp"),      "JSON で差し替えたので組み込み既定は効かない");
+    }
+
+    private static void HiddenRulesEmptyList()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine(ProjectPanelVisibilityRules.FileName);
+        // 「拡張子では何も隠さない」を空配列で明示できること（未指定＝既定、と区別する）
+        File.WriteAllText(path, """
+        { "format_version": 1, "hidden_file_extensions": [] }
+        """);
+
+        var rules = ProjectPanelVisibilityRules.Load(path);
+        Check.True(!rules.IsHiddenFileName("work.tmp"),    "空配列なら拡張子では隠れない");
+        Check.True(rules.IsHiddenFolderName(".backup"),    "未指定のルールは組み込み既定のまま");
+    }
+
+    private static void HiddenRulesBrokenJson()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine(ProjectPanelVisibilityRules.FileName);
+        File.WriteAllText(path, "{ これは JSON ではない");
+
+        var rules = ProjectPanelVisibilityRules.Load(path);
+        Check.True(rules.Warnings.Count > 0,            "理由が警告に残る");
+        Check.Equal(null, rules.SourcePath,             "組み込み既定なので読み込み元は無い");
+        Check.True(rules.IsHiddenFileName("work.tmp"),  "組み込み既定で動き続ける");
+    }
+
+    private static void HiddenRulesMissingFile()
+    {
+        using var temp = new TempDir();
+        var rules = ProjectPanelVisibilityRules.LoadFromDir(temp.Path);
+        Check.True(rules.Warnings.Count > 0,           "理由が警告に残る");
+        Check.True(rules.IsHiddenFolderName(".backup"), "組み込み既定で動き続ける");
+    }
+
+    /// <summary>
+    /// リポジトリに入っている実物（editor/config/project_panel_rules.json）を読む。
+    ///
+    /// 組み込み既定は「JSON を消しても動く」ための写しなので、両者がずれると
+    /// 「開発環境と配布環境で隠れ方が違う」という気付きにくい差になる。
+    /// 実ファイルを読んで、警告ゼロ・既定と同じ判定になることを確かめる。
+    /// </summary>
+    private static void HiddenRulesShippedFile()
+    {
+        var configDir = FindEditorConfigDir();
+        var rules     = ProjectPanelVisibilityRules.LoadFromDir(configDir);
+
+        Check.True(rules.SourcePath != null, "同梱ファイルを実際に読めている");
+        Check.Equal(0, rules.Warnings.Count, "同梱ファイルは警告なしで読めること");
+
+        // 組み込み既定と同じ結果になること（代表例で突き合わせる）
+        var builtIn = ProjectPanelVisibilityRules.BuiltIn();
+        string[] samples =
+        {
+            ".backup", "__MACOSX", ".git", "Thumbs.db", "desktop.ini", ".DS_Store",
+            "a.lock", "a.tmp", "a.bak", "a.blend1", "a.blend2", "._a.png",
+            "a.tvox", "a.tscatter", "a.tcover",
+            "a.scene", "a.cs", "a.png", "terrain_meta.json",
+        };
+        foreach (var name in samples)
+        {
+            Check.Equal(builtIn.IsHiddenFileName(name),   rules.IsHiddenFileName(name),   $"ファイル: {name}");
+            Check.Equal(builtIn.IsHiddenFolderName(name), rules.IsHiddenFolderName(name), $"フォルダ: {name}");
+        }
+    }
+
+    /// <summary>
+    /// editor/config フォルダを探す。テストの出力先（editor/tests/&lt;Proj&gt;/bin/&lt;Cfg&gt;/&lt;tfm&gt;）から
+    /// 上へ辿り、SEEDEditor.csproj のあるフォルダ（＝ editor）を見つけて config を返す。
+    /// </summary>
+    /// <returns>editor/config の絶対パス。</returns>
+    private static string FindEditorConfigDir()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "SEEDEditor.csproj")))
+                return Path.Combine(dir.FullName, "config");
+            dir = dir.Parent;
+        }
+        throw new AssertionException(
+            $"editor フォルダが見つかりません（起点: {AppContext.BaseDirectory}）");
     }
 }

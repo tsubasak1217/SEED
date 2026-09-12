@@ -956,3 +956,33 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `Icons.xaml` は自動生成なので、直すなら `editor/gen_icons.py` のアイコン一覧へ `Icon.File.Font`（mdi の
   `format-font` 等）を足して再生成し、`FileTypeIcons` の `.ttf`/`.otf`/`.ttc` を差し替える。
   関連: `editor/src/Controls/FileTypeIcons.cs`、`docs/editor_icons.md`、`docs/editor_project_panel.md` §3。
+
+## プロジェクトパネルの非表示ルール／テキスト編集（2026-09-12 実装時の残件）
+
+- [ ] **Windows の隠し属性・システム属性は見ていない** — 2026-09-12。非表示判定（`ProjectPanelVisibilityRules`）は
+  **名前だけ**で行う（拡張子・完全一致・ワイルドカード・先頭ドット）。エクスプローラで「隠しファイル」属性を
+  付けただけのファイルはパネルに出る。属性を見るには `FileAttributes` が要り、純ロジック（WPF/IO 非依存）から
+  外れるので今回は入れていない。必要になったら「列挙側（`EnumerateSafe`）で属性を見て落とす」形で足すのが筋。
+  関連: `editor/src/Assets/ProjectPanelVisibilityRules.cs`、`docs/editor_project_panel.md` §7。
+
+- [ ] **隠しフォルダの中に居るときに表示トグルを OFF にすると、パンくずだけ取り残される** — 2026-09-12。
+  例えば `.backup` を開いた状態でトグルを OFF にすると、ツリーからはそのフォルダが消えるが
+  ファイル一覧は中身を描き続ける（作業中に足元が消えないようにする意図的な挙動）。
+  混乱するようならアセットルートへ戻す・通知を出すなどを検討する。
+  関連: `editor/src/Panels/ProjectPanel.Visibility.cs`（`RebuildForVisibilityChange`）。
+
+- [ ] **`.mat` はいまも OS の既定関連付けアプリで開く** — 2026-09-12。中身は JSON テキストなので、
+  内蔵エディタ（`text_editable_extensions.json` へ `{ "extension": ".mat", "language": "json" }` を足すだけ）で
+  開けるようにできる。Phase R7 の最小実装（`OpenMaterialFile`）をいつ畳むかの判断が要るため今回は触らず。
+  関連: `editor/src/Panels/ProjectPanel.xaml.cs`（`OpenMaterialFile`）、`docs/editor_script_panel.md` §1。
+
+- [ ] **開いているタブは外部の書き換えを検出しない** — 2026-09-12（従来からの挙動）。
+  テキスト編集の対象が増えたぶん、外部ツールと取り合いになる場面（`.icons` を VS Code で直す等）が
+  増える。タブのファイルを `FileSystemWatcher` で見て「外部で変更された。読み直す？」を出すのが本筋。
+  関連: `editor/src/Panels/ScriptEditorPanel.cs`、`docs/editor_script_panel.md` §6。
+
+- [ ] **専用エディタとテキスト編集の同時編集が保存を取り合う** — 2026-09-12。`.anim`（アニメーション
+  タイムライン）・`.inputmap`（入力マップ）は、専用エディタで開いたままテキストでも編集できる。
+  どちらもファイル全体を書き出すので、後から保存したほうが相手の変更を消す。検出も警告も無い。
+  タブを開くときに「同じファイルを他パネルが開いていないか」を問い合わせる口が要る。
+  関連: `editor/src/Panels/ProjectPanel.TextEdit.cs`、`docs/editor_script_panel.md` §6。

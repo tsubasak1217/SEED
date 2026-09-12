@@ -1,0 +1,37 @@
+{
+  "format_version": 1,
+  "_note": "プロジェクトパネル（アセットブラウザ）で既定では見せないファイル・フォルダの規則。正典は docs/editor_project_panel.md。ここを消してもエディタは動く（ProjectPanelVisibilityRules.cs の組み込み既定へフォールバックする）。パッケージ収録の除外（PackagingRules.cs）とは目的が別なので混ぜないこと。",
+
+  "_note_hide_dot_prefixed": "先頭がドットの名前（.git / .vscode / .DS_Store / .backup …）をまとめて隠す。",
+  "hide_dot_prefixed": true,
+
+  "_note_hidden_folder_names": "完全一致で隠すフォルダ名（大文字小文字は無視）。",
+  "hidden_folder_names": [
+    ".backup",
+    "__MACOSX"
+  ],
+
+  "_note_hidden_file_names": "完全一致で隠すファイル名（大文字小文字は無視）。OS が勝手に作るもの。",
+  "hidden_file_names": [
+    "Thumbs.db",
+    "desktop.ini",
+    ".DS_Store"
+  ],
+
+  "_note_hidden_file_extensions": "隠す拡張子。作業ファイル（.lock/.tmp/.bak/.blend1）と、エンジンが生成してエディタの地形ツールだけが読み書きする中間データ（.tvox/.tscatter/.tcover）。地形の設定値そのものは terrain_meta.json 側にあり、こちらは見せる。",
+  "hidden_file_extensions": [
+    ".lock",
+    ".tmp",
+    ".bak",
+    ".blend1",
+    ".tvox",
+    ".tscatter",
+    ".tcover"
+  ],
+
+  "_note_hidden_file_patterns": "ワイルドカード（* と ? のみ）で隠すファイル名。",
+  "hidden_file_patterns": [
+    "._*",
+    "*.blend?"
+  ]
+}

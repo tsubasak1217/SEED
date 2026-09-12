@@ -91,6 +91,9 @@
     <EmbeddedResource Include="src\Panels\ScriptEditor\Syntax\Wgsl.xshd">
       <LogicalName>SEEDEditor.Wgsl.xshd</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="src\Panels\ScriptEditor\Syntax\Json.xshd">
+      <LogicalName>SEEDEditor.Json.xshd</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- スクリプト API リファレンス（AI インライン補完の正典）を出力ディレクトリへコピーし、 -->

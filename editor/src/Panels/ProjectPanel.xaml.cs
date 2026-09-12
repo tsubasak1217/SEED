@@ -203,6 +203,8 @@ public partial class ProjectPanel : UserControl
         InitializeComponent();
         MouseDown += OnPanelMouseDown;
         WireScrollViewerEvents();
+        // 「隠しファイルを表示」トグルを環境設定の値へ揃える（ProjectPanel.Visibility.cs）
+        InitVisibilityToggle();
     }
 
     // ── 公開 API (MainWindow から呼ぶ) ────────────────────────────
@@ -217,8 +219,12 @@ public partial class ProjectPanel : UserControl
     public event Action<string>? InputMapFileOpened;
 
     /// <summary>
-    /// スクリプトエディタで編集できるファイル（.cs / .wgsl）がダブルクリックされたときに
-    /// 発火する（フルパス）。内蔵スクリプトエディタのタブで開く。
+    /// 内蔵スクリプトエディタで編集できるファイルを開く要求（フルパス）。
+    ///
+    /// 対象は .cs / .wgsl に加えてテキスト系（.json / .txt / .csv / .md / .icons …）。
+    /// 一覧は editor/config/text_editable_extensions.json（<see cref="Panels.ScriptEditor.TextEditableCatalog"/>）。
+    /// ダブルクリック（専用エディタを持たない形式）と、右クリック
+    /// 「テキストエディタで開く」（ProjectPanel.TextEdit.cs）の両方から発火する。
     /// </summary>
     public event Action<string>? ScriptFileOpened;
     /// <summary>.anim ファイルがダブルクリックされた（絶対パス）。AnimationTimelinePanel での編集起動用。</summary>
@@ -253,6 +259,10 @@ public partial class ProjectPanel : UserControl
     {
         _assetsRoot  = assetsPath;
         _currentPath = assetsPath;
+        // 「隠しファイルを表示」トグルをここでも環境設定へ揃える。
+        // このパネルは MainWindow の XAML 展開時（＝ EditorPreferences.Init より前）に
+        // 作られるため、コンストラクタでの同期だけでは保存値を拾えない。
+        InitVisibilityToggle();
         // 可用性を判定してから中身を構築する。判定が NG なら警告表示に切り替え、
         // ツリー構築・監視開始は一切行わない（列挙で落ちるのを未然に防ぐ）。
         RefreshAssetsAvailability(notifyChange: false);
@@ -505,12 +515,15 @@ public partial class ProjectPanel : UserControl
     /// サブフォルダを 1 つでも持つかを、例外を投げずに調べる。
     /// 壊れたジャンクション・削除直後・権限不足のフォルダでは false を返す
     /// （Directory.Exists が true でも列挙は失敗しうるため、必ずこの関数を通す）。
+    ///
+    /// 非表示ルール（ProjectPanel.Visibility.cs）で隠れるサブフォルダは数に入れない。
+    /// 入れてしまうと「展開しても何も出ないノード」ができる。
     /// </summary>
     /// <param name="dir">調べるフォルダ。</param>
-    /// <returns>サブフォルダが 1 つ以上あれば true。</returns>
-    private static bool HasSubdirectorySafe(DirectoryInfo dir)
+    /// <returns>表示対象のサブフォルダが 1 つ以上あれば true。</returns>
+    private bool HasSubdirectorySafe(DirectoryInfo dir)
     {
-        try { return dir.EnumerateDirectories().Any(); }
+        try { return dir.EnumerateDirectories().Any(d => ShouldShowEntry(d.FullName, isDirectory: true)); }
         catch (Exception ex)
         {
             EditorLog.Write($"フォルダ列挙に失敗しました（スキップ）: {dir.FullName} — {ex.Message}");
@@ -520,17 +533,21 @@ public partial class ProjectPanel : UserControl
 
     /// <summary>
     /// フォルダ配下のエントリ一覧を、例外を投げずに取得する（失敗時は空配列）。
+    ///
+    /// 非表示ルール（ProjectPanel.Visibility.cs）に当たるものはここで落とす。
+    /// ツリー・ファイル一覧の列挙はすべてこの関数を通るため、フィルタの掛け忘れが起きない。
+    /// 「隠しファイルを表示」トグルが ON のときは何も落とさない（薄く表示する）。
     /// </summary>
     /// <param name="path">対象フォルダ。</param>
     /// <param name="directories">true=サブフォルダ / false=ファイル。</param>
-    /// <returns>名前順に並べたパスの配列。失敗した場合は空。</returns>
-    private static string[] EnumerateSafe(string path, bool directories)
+    /// <returns>名前順に並べた表示対象パスの配列。失敗した場合は空。</returns>
+    private string[] EnumerateSafe(string path, bool directories)
     {
         try
         {
             var items = directories ? Directory.GetDirectories(path) : Directory.GetFiles(path);
             Array.Sort(items, StringComparer.Ordinal);
-            return items;
+            return Array.FindAll(items, p => ShouldShowEntry(p, directories));
         }
         catch (Exception ex)
         {
@@ -618,6 +635,8 @@ public partial class ProjectPanel : UserControl
         HideDragRect();
         _dragSelectActive = false;
         FileGrid.Children.Clear();
+        // 薄表示タイルの記録はグリッドと寿命を合わせる（作り直したら忘れる）
+        _dimmedTiles.Clear();
 
         var rel = Path.GetRelativePath(_assetsRoot, _currentPath);
         TxtBreadcrumb.Text = rel == "." ? "Assets" : "Assets/" + rel.Replace('\\', '/');
@@ -673,6 +692,8 @@ public partial class ProjectPanel : UserControl
         var  item    = WrapTile(
             MakeIconImage(SEEDEditor.Controls.FileTypeIcons.GetFolderImage(isEmpty), TileIconSize),
             dir.Name, dir.FullName);
+        // 「隠しファイルを表示」で出しているフォルダは薄く描く
+        ApplyHiddenAppearance(item, dir.FullName, isDirectory: true);
         AttachItemEvents(item, dir);
         AttachDropTarget(item);
         return item;
@@ -711,6 +732,9 @@ public partial class ProjectPanel : UserControl
 
         if (captionBlock != null)
             _ = LoadImageDimensionsAsync(item, captionBlock, file.FullName);
+
+        // 「隠しファイルを表示」で出しているファイルは薄く描く
+        ApplyHiddenAppearance(item, file.FullName, isDirectory: false);
 
         AttachItemEvents(item, file);
         return item;
@@ -940,11 +964,6 @@ public partial class ProjectPanel : UserControl
                 else if (entry is FileInfo imFile &&
                          imFile.Extension.Equals(".inputmap", StringComparison.OrdinalIgnoreCase))
                     InputMapFileOpened?.Invoke(imFile.FullName);
-                else if (entry is FileInfo scriptFile &&
-                         EditorLanguages.IsEditableExtension(scriptFile.Extension))
-                    // .cs（C# スクリプト）と .wgsl（シェーディングアセット）は
-                    // どちらも内蔵スクリプトエディタのタブで開く。
-                    ScriptFileOpened?.Invoke(scriptFile.FullName);
                 else if (entry is FileInfo animFile &&
                          animFile.Extension.Equals(".anim", StringComparison.OrdinalIgnoreCase))
                     AnimFileOpened?.Invoke(animFile.FullName);
@@ -958,6 +977,17 @@ public partial class ProjectPanel : UserControl
                                                    StringComparison.OrdinalIgnoreCase))
                     // .sprite_mesh はスプライトリグパネルで再編集する
                     SpriteMeshFileOpened?.Invoke(meshFile.FullName);
+                else if (entry is FileInfo textFile &&
+                         EditorLanguages.IsEditableExtension(textFile.Extension))
+                    // 専用エディタを持たないテキスト系（.cs / .wgsl / .json / .txt / .csv / .md / .icons …）は
+                    // 内蔵スクリプトエディタのタブで開く。対応拡張子は
+                    // editor/config/text_editable_extensions.json が決める。
+                    //
+                    // この分岐を**最後**に置いているのは、専用エディタを持つ形式
+                    //（.anim=タイムライン / .inputmap=入力マップ）を横取りしないため。
+                    // それらをテキストで開きたいときは右クリック
+                    //「テキストエディタで開く」（ProjectPanel.TextEdit.cs）を使う。
+                    ScriptFileOpened?.Invoke(textFile.FullName);
             }
             else if (e.ClickCount == 1)
             {
@@ -1054,11 +1084,16 @@ public partial class ProjectPanel : UserControl
         _selectedItems.Clear();
     }
 
+    /// <summary>
+    /// タイルの不透明度を塗り直す。切り取り中はさらに薄くし、そうでなければ
+    /// 本来の濃さ（隠し対象なら薄表示）へ戻す。
+    /// </summary>
+    /// <param name="tile">対象のタイル。</param>
     private void ApplyCutOpacity(Border tile)
     {
         bool isCut = _fileClipboard is { IsCut: true }
             && _fileClipboard.Value.Paths.Contains(tile.Tag as string ?? "");
-        tile.Opacity = isCut ? 0.5 : 1.0;
+        tile.Opacity = isCut ? CutTileOpacity : BaseTileOpacity(tile);
     }
 
     // ── ドラッグ範囲選択 ──────────────────────────────────────────
@@ -1416,6 +1451,7 @@ public partial class ProjectPanel : UserControl
         // 単一選択のときだけ、ファイル種別に応じた専用コマンドを先頭に出す
         AddSpriteRigMenuItems(menu);
         AddAudioMenuItems(menu);   // 音声ファイル（.wav/.mp3）向けの無音カット
+        AddTextEditMenuItems(menu);// テキスト系（.json/.anim/.icons 等）を内蔵エディタで開く
 
         Add(menu, "コピー",    "Ctrl+C", DoCopy);
         Add(menu, "切り取り",  "Ctrl+X", DoCut);

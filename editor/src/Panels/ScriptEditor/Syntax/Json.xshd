@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  JSON 用のシンタックスハイライト定義。
+
+  AvalonEdit の xshd v2 形式（2008 名前空間）で記述する。
+  配色はエディタ全体のダークテーマ（VS Dark 準拠）に合わせている。
+
+  対象は .json だけでなく、中身が JSON の独自拡張子（.icons / .inputmap / .anim など）も含む。
+  どの拡張子をこの定義で開くかは editor/config/text_editable_extensions.json が決める。
+
+  ルールの評価順について:
+    AvalonEdit は「文書内でより手前にマッチしたもの」を優先し、同一位置で競合した場合は
+    この XML 内で先に書かれたルールが勝つ。そのためキー（"name":）のルールを
+    文字列リテラルの Span より先に書き、キーと値を色で描き分けている。
+
+  コメント（// や /* */）は着色しない。JSON 仕様にコメントは無く、
+  ランタイム側（serde_json）も受け付けないため、「書いてよい」と誤解させないため。
+-->
+<SyntaxDefinition name="JSON"
+                  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+
+  <!-- ── 配色定義（VS ダークテーマ準拠）────────────────────────── -->
+  <!-- オブジェクトのキー "name": （水色） -->
+  <Color name="PropertyName"  foreground="#9CDCFE" />
+  <!-- 文字列リテラル（薄橙） -->
+  <Color name="String"        foreground="#CE9178" />
+  <!-- 文字列中のエスケープ \n \uXXXX（黄） -->
+  <Color name="Escape"        foreground="#D7BA7D" />
+  <!-- 数値リテラル（薄緑） -->
+  <Color name="NumberLiteral" foreground="#B5CEA8" />
+  <!-- true / false / null（青） -->
+  <Color name="Literal"       foreground="#569CD6" />
+  <!-- 区切り記号 { } [ ] : ,（薄灰） -->
+  <Color name="Punctuation"   foreground="#DCDCDC" />
+
+  <RuleSet ignoreCase="false">
+
+    <!-- ── オブジェクトのキー ─────────────────────────────────── -->
+    <!-- 直後に : が続く文字列だけをキー色にする（先読みなので : 自体は含めない）。 -->
+    <!-- 値の文字列より先に書くことで、同じ位置での競合に勝たせている。           -->
+    <Rule color="PropertyName">"(\\.|[^"\\])*"(?=\s*:)</Rule>
+
+    <!-- ── 文字列リテラル ─────────────────────────────────────── -->
+    <!-- 行をまたがない（JSON の文字列は改行を含められない）。               -->
+    <!-- 内側のルールセットでエスケープ \" を先に食べ、終端判定のズレを防ぐ。 -->
+    <Span color="String" multiline="false">
+      <Begin>"</Begin>
+      <End>"</End>
+      <RuleSet>
+        <Span begin="\\" end="." color="Escape" />
+      </RuleSet>
+    </Span>
+
+    <!-- ── リテラル ───────────────────────────────────────────── -->
+    <Keywords color="Literal">
+      <Word>true</Word>
+      <Word>false</Word>
+      <Word>null</Word>
+    </Keywords>
+
+    <!-- ── 数値（整数・小数・指数。先頭の符号も含める）─────────── -->
+    <Rule color="NumberLiteral">
+      \b[\-\+]?[0-9]+(\.[0-9]+)?([eE][\-\+]?[0-9]+)?\b
+    </Rule>
+
+    <!-- ── 区切り記号 ─────────────────────────────────────────── -->
+    <Rule color="Punctuation">
+      [?,.;()\[\]{}:]
+    </Rule>
+
+  </RuleSet>
+</SyntaxDefinition>

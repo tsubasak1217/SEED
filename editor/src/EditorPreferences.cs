@@ -147,6 +147,24 @@ public sealed class EditorPreferences
     public bool LogicPlacementGround { get; set; }
 
     /// <summary>
+    /// プロジェクトパネルで「隠しファイル」を表示するかどうか。既定はオフ。
+    ///
+    /// <para>
+    /// 隠す対象は editor/config/project_panel_rules.json のルール
+    /// （<see cref="SEEDEditor.Assets.ProjectPanelVisibilityRules"/>）で決まる。
+    /// エディタ・OS・外部ツールの作業ファイル（.backup / *.lock / Thumbs.db …）と、
+    /// エンジンが生成する地形の中間データ（.tvox / .tscatter / .tcover）が対象。
+    /// </para>
+    /// <para>
+    /// オンにすると全ファイルが見えるようになり、隠し対象は薄く表示される
+    /// （＝「普段は触らないもの」だと分かる）。ファイル操作そのものは制限しない。
+    /// UI 上はプロジェクトパネルのツールバーの「隠しファイル」トグルと 1 対 1 に対応する。
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("show_hidden_project_files")]
+    public bool ShowHiddenProjectFiles { get; set; } = false;
+
+    /// <summary>
     /// エディタが起動するランタイム（SEED.exe）のビルド構成 id。
     ///
     /// <para>

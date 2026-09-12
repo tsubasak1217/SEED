@@ -845,19 +845,33 @@ public class ScriptEditorPanel : UserControl
             return;
         }
 
+        // 拡張子から言語種別を確定する。以降の機能分岐（補完・診断・デバッグ・保存後処理）は
+        // すべてこの値を見て行う。
+        var language = EditorLanguages.FromPath(full);
+
+        // 大きすぎるファイルは読み取り専用タブで開く。
+        // 「開かない」ではなく「編集させない」にして、中身の確認だけはできるようにする。
+        // 上限は editor/config/text_editable_extensions.json の max_editable_bytes。
+        if (!readOnly && TryGetFileLength(full, out long byteLength)
+            && EditorLanguages.Catalog.ExceedsEditableSize(byteLength))
+        {
+            readOnly = true;
+            EditorLog.Write(
+                $"大きいファイルのため読み取り専用で開きます [{Path.GetFileName(full)}] " +
+                $"— {byteLength:N0} バイト（上限 {EditorLanguages.Catalog.MaxEditableBytes:N0} バイト）");
+        }
+
         string text;
         try { text = File.ReadAllText(full); }
         catch (Exception ex)
         {
-            EditorLog.Write($"スクリプトを開けませんでした: {ex.Message}");
+            EditorLog.Write($"ファイルを開けませんでした: {ex.Message}");
             return;
         }
 
-        // 拡張子から言語種別を確定する。以降の機能分岐（補完・診断・デバッグ・保存後処理）は
-        // すべてこの値を見て行う。
-        var language = EditorLanguages.FromPath(full);
-        // C# 専用機能を有効化するか（.wgsl は構文着色と保存のみ）
-        bool isCSharp = language == EditorLanguage.CSharp;
+        // Roslyn の意味解析を伴う機能（IntelliSense・診断・デバッグ・整形・AI 補完・
+        // 保存後のコンパイル検証）を有効化するか。C# 以外（.wgsl / テキスト系）は false。
+        bool isCSharp = EditorLanguages.UsesRoslyn(language);
 
         var editor = CreateEditor(text, language);
 
@@ -1084,6 +1098,30 @@ public class ScriptEditorPanel : UserControl
         // ローカル変数・引数の着色は読み取り専用タブ（エンジン同梱シェーダー）でも行う。
         // 参照目的で開いた .wgsl こそ色分けの価値が高いため。
         if (doc.Language == EditorLanguage.Wgsl) RunWgslSemanticColorize(doc);
+    }
+
+    /// <summary>
+    /// ファイルのバイト数を例外を投げずに取得する。
+    /// 取得できない場合（削除直後・権限不足・壊れたリンク）は false を返し、
+    /// 呼び出し側はサイズ制限を掛けずに開こうとする（読み込みで改めて失敗するため）。
+    /// </summary>
+    /// <param name="filePath">対象ファイルの絶対パス。</param>
+    /// <param name="byteLength">取得できたバイト数。</param>
+    /// <returns>取得できたら true。</returns>
+    private static bool TryGetFileLength(string filePath, out long byteLength)
+    {
+        try
+        {
+            var info = new FileInfo(filePath);
+            if (!info.Exists) { byteLength = 0; return false; }
+            byteLength = info.Length;
+            return true;
+        }
+        catch
+        {
+            byteLength = 0;
+            return false;
+        }
     }
 
     /// <summary>現在アクティブなドキュメントを保存する。</summary>
@@ -1710,6 +1748,9 @@ public class ScriptEditorPanel : UserControl
     private async void OnTextEntered(DocTab doc, string enteredText)
     {
         if (enteredText.Length == 0) return;
+        // 補完を持たない種別（JSON・CSV・テキスト等）では何も出さない。
+        // ここで弾かないと、候補源が無いまま ShowCompletionAsync まで進んでしまう。
+        if (!EditorLanguages.HasCompletion(doc.Language)) return;
         // C# は Roslyn ベースの補完なのでワークスペース必須。
         // WGSL は静的辞書ベース（Roslyn 非依存）なのでワークスペースが無くても動く。
         if (doc.IsCSharp && _workspace is null) return;
@@ -2447,11 +2488,11 @@ public class ScriptEditorPanel : UserControl
     private void FormatCurrent()
     {
         // Roslyn の C# フォーマッタを使うため、C# ドキュメント以外では実行しない。
-        // シェーダー（.wgsl）に適用するとコードが壊れるので明示的に弾く。
+        // シェーダー（.wgsl）や JSON / テキストに適用すると内容が壊れるので明示的に弾く。
         if (_activeDoc is null || !_activeDoc.IsCSharp)
         {
             if (_activeDoc is not null)
-                EditorLog.Write("コード整形は C# スクリプト専用です（シェーダーには適用しません）");
+                EditorLog.Write("コード整形は C# スクリプト専用です（C# 以外のファイルには適用しません）");
             return;
         }
 
@@ -2538,15 +2579,18 @@ public class ScriptEditorPanel : UserControl
         }
         SetDirty(doc, false);
 
-        // ── シェーディングアセット（.wgsl）の保存 ──────────────────
-        // ファイルへ書き出すだけで完了する。ランタイム側が mtime ポーリングで
-        // シェーダーをホットリロードするため、エディタからの通知は不要。
+        // ── C# 以外（シェーダー・テキスト系）の保存 ────────────────
+        // ファイルへ書き出すだけで完了する。
+        //   .wgsl : ランタイム側が mtime ポーリングでホットリロードするため通知は不要。
+        //   テキスト系（.json/.txt/.csv/.md/.icons …）: エディタが読み直す契機は
+        //           それぞれの利用側（シーン再読込・アセット参照）にあるため、ここでは何もしない。
         // C# 用の保存後処理（Roslyn コンパイル・全体検証・RELOAD_SCRIPTS 要求）は
-        // シェーダーには無意味かつ有害（スクリプトの不要な再ロード）なので走らせない。
+        // これらには無意味かつ有害（スクリプトの不要な再ロード）なので走らせない。
         if (!doc.IsCSharp)
         {
             _recovery?.Remove(doc.FilePath);
-            EditorLog.Write($"シェーダーを保存しました [{Path.GetFileName(doc.FilePath)}]");
+            EditorLog.Write(
+                $"{EditorLanguages.DisplayName(doc.Language)}を保存しました [{Path.GetFileName(doc.FilePath)}]");
             return;
         }
 
@@ -2639,8 +2683,15 @@ public class ScriptEditorPanel : UserControl
     // ── UI 生成 ──────────────────────────────────────────────
 
     /// <summary>
+    /// AvalonEdit 同梱の Markdown ハイライト定義名。
+    /// 同梱の有無はバージョン依存なので、取得できなければ無着色で開く。
+    /// </summary>
+    private const string MarkdownDefinitionName = "MarkDown";
+
+    /// <summary>
     /// ダークテーマ調整済みの AvalonEdit エディタを生成する。
-    /// 構文ハイライトは言語種別に応じて切り替える（C# / WGSL）。
+    /// 構文ハイライトは言語種別に応じて切り替える
+    /// （C# / WGSL / JSON / Markdown、それ以外は無着色）。
     /// </summary>
     private static TextEditor CreateEditor(string text, EditorLanguage language)
     {
@@ -2657,10 +2708,16 @@ public class ScriptEditorPanel : UserControl
             VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
             Options = { ConvertTabsToSpaces = true, IndentationSize = 4 },
         };
+        // 構文ハイライト定義。定義を持たない種別（CSV・プレーンテキスト）は null＝無着色。
+        // Markdown は AvalonEdit 同梱の定義があれば使う（無ければ無着色へフォールバック）。
         editor.SyntaxHighlighting = language switch
         {
-            EditorLanguage.Wgsl => WgslHighlighting.Get(),
-            _                   => BuildDarkCSharpHighlighting(),
+            EditorLanguage.Wgsl      => WgslHighlighting.Get(),
+            EditorLanguage.Json      => JsonHighlighting.Get(),
+            EditorLanguage.Markdown  => BuildDarkMarkdownHighlighting(),
+            EditorLanguage.Csv       => null,
+            EditorLanguage.PlainText => null,
+            _                        => BuildDarkCSharpHighlighting(),
         };
         editor.TextArea.Caret.CaretBrush = BrushText;
         editor.TextArea.SelectionBrush   = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF));
@@ -2715,6 +2772,47 @@ public class ScriptEditorPanel : UserControl
         _darkCSharp = def;
         return def;
     }
+
+    /// <summary>ダーク調整済みの Markdown 定義（初回のみ生成してキャッシュ）。</summary>
+    private static IHighlightingDefinition? _darkMarkdown;
+
+    /// <summary>
+    /// AvalonEdit 同梱の Markdown 定義（ライトテーマ向け配色）をダークテーマ向けに調整する。
+    ///
+    /// 同梱の既定色は見出し #800000・引用 #00008B・リンク #0000FF と暗い色ばかりで、
+    /// エディタ背景（#1E1E1E）ではほとんど読めない。C# 定義と同じやり方で、
+    /// グローバル共有の定義を初回だけ塗り替える。
+    /// 同梱定義が無いバージョンでは null を返し、無着色（読める既定色）で開く。
+    /// </summary>
+    private static IHighlightingDefinition? BuildDarkMarkdownHighlighting()
+    {
+        if (_darkMarkdown is not null) return _darkMarkdown;
+        var def = JsonHighlighting.GetBuiltIn(MarkdownDefinitionName);
+        if (def is null) return null;
+
+        // VS ダークテーマ寄りの配色（見出し＝青、引用＝緑、リンク＝水色、画像＝橙）
+        var colorMap = new Dictionary<string, Color>
+        {
+            ["Heading"]    = Color.FromRgb(0x56, 0x9C, 0xD6),
+            ["BlockQuote"] = Color.FromRgb(0x6A, 0x99, 0x55),
+            ["Link"]       = Color.FromRgb(0x4E, 0xC9, 0xB0),
+            ["Image"]      = Color.FromRgb(0xCE, 0x91, 0x78),
+        };
+        foreach (var namedColor in def.NamedHighlightingColors)
+        {
+            if (colorMap.TryGetValue(namedColor.Name, out var c))
+                namedColor.Foreground = new SimpleHighlightingBrush(c);
+            // 行末の強制改行（末尾スペース 2 個）の目印。既定の明るい灰色は
+            // 暗背景では光る帯になるので、控えめなグレーへ落とす。
+            else if (namedColor.Name == MarkdownLineBreakColorName)
+                namedColor.Background = new SimpleHighlightingBrush(Color.FromRgb(0x3A, 0x3A, 0x3A));
+        }
+        _darkMarkdown = def;
+        return def;
+    }
+
+    /// <summary>Markdown 定義で「行末の強制改行」を表す色の名前。</summary>
+    private const string MarkdownLineBreakColorName = "LineBreak";
 
     /// <summary>
     /// ユーザー設定の配色を共有ハイライト定義へ反映する。

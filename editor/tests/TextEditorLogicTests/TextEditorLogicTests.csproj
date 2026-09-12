@@ -1,0 +1,43 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    スクリプトパネル（内蔵テキストエディタ）の「何を開けるか・何語として扱うか」の
+    純ロジック単体テスト。
+
+    ProjectPanelLogicTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+
+    ここに並べたファイルが WPF 型・AvalonEdit を使い始めるとビルドが壊れる。
+    それが「判定ロジックと UI の分離が崩れた」検知器になる。
+
+    実行方法: dotnet run (project=editor/tests/TextEditorLogicTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.TextEditorLogic</RootNamespace>
+    <AssemblyName>TextEditorLogicTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: 言語種別と、編集可能拡張子のカタログ（いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\Panels\ScriptEditor\EditorLanguage.cs">
+      <Link>Linked\ScriptEditor\EditorLanguage.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\ScriptEditor\TextEditableCatalog.cs">
+      <Link>Linked\ScriptEditor\TextEditableCatalog.cs</Link>
+    </Compile>
+
+    <!-- テストランナーと一時フォルダは既存テストのものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+    <Compile Include="..\ProjectSystemTests\TempDir.cs">
+      <Link>Linked\TempDir.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

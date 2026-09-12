@@ -11,6 +11,8 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 | `editor/src/Panels/ProjectPanel.Tabs.cs` | フォルダ位置のタブ（セッション限りの状態切替） |
 | `editor/src/Panels/ProjectPanel.Audio.cs` | 音声アセット向けメニュー（先頭無音カット） |
 | `editor/src/Panels/ProjectPanel.CopyPath.cs` | 「パスをコピー」メニュー（絶対パス / `assets://` パス） |
+| `editor/src/Panels/ProjectPanel.Visibility.cs` | 隠しファイルの表示制御（トグル・薄表示・ツリー再構築） |
+| `editor/src/Panels/ProjectPanel.TextEdit.cs` | 「テキストエディタで開く」メニュー（[docs/editor_script_panel.md](editor_script_panel.md)） |
 
 判定・変換の**純ロジックは WPF 非依存**として `editor/src/Assets/` に置き、
 単体テスト（`editor/tests/ProjectPanelLogicTests`）が直接リンクして検証している。
@@ -22,6 +24,7 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 | `editor/src/Assets/AssetPreviewKinds.cs` | 拡張子 → プレビュー種別（画像／フォント／無し）と寸法取得対象の対応表 |
 | `editor/src/Assets/AssetPreviewCacheKey.cs` | プレビューのキャッシュキー（パス＋更新時刻＋サイズ＋派生条件） |
 | `editor/src/Assets/ImagePixelSize.cs` | ピクセル寸法の値と表示書式（`1024×512` / `1024×512 px`） |
+| `editor/src/Assets/ProjectPanelVisibilityRules.cs` | 非表示ルールの読み込みと照合（[§7](#7-隠しファイルの非表示)） |
 
 実処理（WPF 依存）は `editor/src/Controls/` に置く。
 
@@ -132,7 +135,7 @@ SEED エディタ（`editor/`, WPF）のプロジェクトパネル（アセッ�
 
 | プロジェクト | 種類 | 内容 |
 |---|---|---|
-| `editor/tests/ProjectPanelLogicTests` | 自動（WPF 非依存） | `assets://` 相対化、拡張子判定、キャッシュキー、寸法書式。`dotnet run` で 26 件 |
+| `editor/tests/ProjectPanelLogicTests` | 自動（WPF 非依存） | `assets://` 相対化、拡張子判定、キャッシュキー、寸法書式、非表示ルール。`dotnet run` で 43 件 |
 | `editor/tests/ProjectPanelPreviewProbe` | 手動（WPF 依存） | 実ファイルへ向けてフォント描画・寸法取得を走らせる検証用コンソール |
 
 プローブの使い方（入力は読むだけ。書き換えない）:
@@ -157,3 +160,74 @@ dotnet run --project editor/tests/ProjectPanelPreviewProbe -- "<フォルダ or 
 - フォントサムネイルはセッション中キャッシュへ載り続ける（1 枚あたり 96×96 の
   Pbgra32 ≒ 36KB）。フォントが数百個あるプロジェクトではメモリを見ること。
 - `.ttc` は先頭に見つかったフェイスで描く（フェイス選択の UI は無い）。
+
+---
+
+## 7. 隠しファイルの非表示
+
+**パネルに出す必要の無いファイル・フォルダは既定で隠す。** 対象は
+「エディタ・OS・外部ツールが勝手に作る作業ファイル」と「エンジンが生成する中間データ」の 2 種類で、
+どちらもユーザーが直接開く場面が無い。
+
+### ルールの置き場（データドリブン）
+
+| ファイル | 役割 |
+|---|---|
+| `editor/config/project_panel_rules.json` | 既定ルール（正典）。**ここを編集すればビルド無しで変えられる** |
+| `editor/src/Assets/ProjectPanelVisibilityRules.cs` | 読み込み・照合。JSON が無い／壊れている場合の組み込み既定も持つ |
+
+読み込みは `EditorPaths.ConfigDir`（開発配置＝`editor/config`、配布配置＝exe の隣の `config`）から 1 度だけ。
+**失敗しても起動は止めない**（必ず組み込み既定へフォールバックし、理由を `EditorLog` へ出す）。
+組み込み既定と JSON の内容が一致することは `ProjectPanelLogicTests` が実ファイルを読んで検証している。
+
+### 既定で隠すもの
+
+| 種別 | 対象 | 理由 |
+|---|---|---|
+| フォルダ | `.backup` | シーン保存の世代バックアップ（エディタが自動生成） |
+| フォルダ | `__MACOSX` | macOS で作った zip を展開したときの残骸 |
+| 両方 | 先頭がドットの名前（`hide_dot_prefixed`） | `.git` / `.vscode` / `.DS_Store` など |
+| ファイル | `*.lock` / `*.tmp` / `*.bak` | エディタのロック・一時ファイル・手動バックアップ |
+| ファイル | `*.blend1`・`*.blend?` | Blender の世代バックアップ |
+| ファイル | `Thumbs.db` / `desktop.ini` / `.DS_Store` / `._*` | OS が作るメタデータ・リソースフォーク |
+| ファイル | `*.tvox` / `*.tscatter` / `*.tcover` | **地形の中間データ**（下記） |
+
+### 地形の中間データを隠す根拠
+
+`.tvox`（ボクセル）・`.tscatter`（散布）・`.tcover`（地表カバー）は、いずれも
+ランタイム（Rust）が書き出す**独自バイナリ**（先頭 magic は `TVOX` / `TSCT` / `TCOV`。
+`runtime/src/engine/terrain/` の各 `write_chunk`）で、地形ブラシ・散布ブラシ・雪シミュレーションの
+結果を機械的に記録したもの。人が開いて意味のある内容ではなく、編集手段もエディタの地形ツールしかない。
+
+**`terrain_meta.json` は隠さない。** これだけは `serde_json` のテキストで、
+チャンクごとの当たり判定 ON/OFF とデシメート強度という「読んで意味のある値」が入っている
+（`runtime/src/engine/terrain/meta.rs`）。壊れても既定値へフォールバックするので手編集も安全。
+
+### 「隠しファイル」トグル
+
+ツールバー右（「新規作成」の左）の **`隠しファイル`** トグル。
+
+- ON にすると隠し対象も一覧に出る。ただし**薄く（不透明度 0.45）描き**、
+  ツールチップの先頭に「通常は非表示のファイル」と出して、普段触らないものだと分かるようにする。
+- 状態は環境設定（`editor/settings/editor_preferences.json` の `show_hidden_project_files`）へ保存し、
+  プロジェクトを跨いで保たれる。
+- 切り替えるとフォルダツリーを作り直し、開いていたフォルダまで展開し直す
+  （ツリーは遅延生成なのでフィルタ変更には再構築が要る）。
+- 表示されているだけで、コピー・削除・リネームなどの操作は通常のファイルと同じにできる。
+
+### 掛け忘れが起きない作り
+
+列挙は `ProjectPanel.xaml.cs` の `EnumerateSafe` / `HasSubdirectorySafe` の 2 つに集約してあり、
+フィルタはその中だけで掛けている。ツリー・ファイルグリッド・タブ復元はすべてここを通るので、
+新しい表示経路を足してもフィルタが外れない。
+
+### パッケージ収録ルール（`PackagingRules`）との関係
+
+**目的が違うので混ぜない。**
+
+| | 判断すること | `.tvox` の扱い |
+|---|---|---|
+| `ProjectPanelVisibilityRules` | パネルに**表示**するか | 隠す（人は触らない） |
+| `PackagingRules` | 配布 PAK に**収録**するか | 収録する（ランタイムが読む） |
+
+同じ拡張子が正反対の扱いになるのが正常。片方の都合でもう片方を書き換えないこと。
