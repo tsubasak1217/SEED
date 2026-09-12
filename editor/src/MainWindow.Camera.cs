@@ -889,15 +889,34 @@ public partial class MainWindow
             NativeInterop.AttachThreadInput(editorThread, childThread, false);
     }
 
-    /// <summary>埋め込み Play 停止時に、キーボードフォーカスをエディタ本体へ戻す。</summary>
-    private void ReturnFocusToEditor()
+    /// <summary>
+    /// キーボードフォーカス（OS レベル）をエディタ本体のウィンドウへ戻す。
+    /// 埋め込み Play 停止時のほか、ビューポートクリックで子 HWND にフォーカスが移った後に
+    /// エディタ側のテキスト入力（ヒエラルキーのリネーム欄など）へ入力を通したいときにも使う。
+    /// WPF の Focus() だけでは子プロセスの HWND から OS フォーカスを取り戻せないため。
+    /// </summary>
+    internal void ReturnFocusToEditor()
     {
         var editorHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-        if (editorHwnd != 0)
-        {
-            NativeInterop.SetForegroundWindow(editorHwnd);
-            Activate();
-        }
+        if (editorHwnd == 0) return;
+
+        NativeInterop.SetForegroundWindow(editorHwnd);
+        Activate();
+
+        // 子 HWND（別プロセスの winit ウィンドウ）が OS キーボードフォーカスを持っている間は、
+        // SetForegroundWindow / Activate だけではフォーカスが子に残り、WPF のテキスト入力に
+        // キー入力が届かない。FocusRuntimeChild と対称に、スレッド入力を結合してから
+        // エディタ本体の HWND へ SetFocus で取り戻す。
+        var child = _runtimeManager?.RuntimeHwnd ?? 0;
+        if (child == 0) return;
+
+        var editorThread = NativeInterop.GetWindowThreadProcessId(editorHwnd, out _);
+        var childThread  = NativeInterop.GetWindowThreadProcessId(child, out _);
+        if (editorThread != childThread)
+            NativeInterop.AttachThreadInput(editorThread, childThread, true);
+        NativeInterop.SetFocus(editorHwnd);
+        if (editorThread != childThread)
+            NativeInterop.AttachThreadInput(editorThread, childThread, false);
     }
 
     private void ApplyUiState(EditorState state)

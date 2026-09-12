@@ -2406,12 +2406,40 @@ public partial class HierarchyPanel : UserControl
         sp.Children.Add(tb);
         item.Header = sp;
 
-        // レンダリング後にフォーカスを当てて全選択
+        // レンダリング後にフォーカスを当てて全選択。
+        // Loaded（TextBox が可視ツリーに入った直後）と Input 優先度の 2 段で試み、
+        // どちらも取れなければ Background 優先度でもう一度だけ試す（追加直後は
+        // ツリー更新・選択通知・ランタイムへの SELECT 送信が同じフレームに重なり、
+        // 最初の Focus() が空振りすることがある）。
+        tb.Loaded += (_, _) => FocusRenameBox(tb);
         Dispatcher.BeginInvoke(() =>
         {
-            tb.Focus();
-            tb.SelectAll();
+            if (!FocusRenameBox(tb))
+                Dispatcher.BeginInvoke(() => FocusRenameBox(tb), DispatcherPriority.Background);
         }, DispatcherPriority.Input);
+    }
+
+    /// <summary>
+    /// リネーム用 TextBox へキーボードフォーカスを移し、文字列を全選択する。
+    ///
+    /// <para>
+    /// ビューポートをクリックした直後は OS のキーボードフォーカスがランタイムの子 HWND
+    /// （別プロセス）にあり、WPF の <c>Focus()</c> だけでは入力が TextBox へ届かない
+    /// （リネーム状態には見えるのに文字が入らない症状）。先に
+    /// <see cref="MainWindow.ReturnFocusToEditor"/> で OS フォーカスをエディタ本体へ戻してから
+    /// WPF 側のフォーカスを当てる。
+    /// </para>
+    /// </summary>
+    /// <returns>キーボードフォーカスが TextBox に乗ったら true。</returns>
+    private bool FocusRenameBox(TextBox tb)
+    {
+        if (tb.IsKeyboardFocused) { tb.SelectAll(); return true; }
+
+        (Window.GetWindow(this) as global::SEEDEditor.MainWindow)?.ReturnFocusToEditor();
+        tb.Focus();
+        Keyboard.Focus(tb);
+        tb.SelectAll();
+        return tb.IsKeyboardFocused;
     }
 
     // ── 重複名の解決 ─────────────────────────────────────────
