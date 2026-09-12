@@ -46,8 +46,17 @@ CATALOG = [
     ("Icon.Browse", "dots-horizontal"),
     ("Icon.DragHandle", "drag-horizontal-variant"),
     ("Icon.Lock", "lock-outline"),
+    # インスペクタのロックトグルの OFF 表示（ON は Icon.Lock）。
+    ("Icon.LockOpen", "lock-open-variant-outline"),
     ("Icon.Dirty", "circle-medium"),
     ("Icon.Prefab", "package-variant-closed"),
+
+    ("── インスペクタ（連動トグル・画像比率）──", None),
+    # Transform / CanvasTransform のスケール連動トグル（ON=鎖がつながる / OFF=切れる）。
+    ("Icon.Link", "link-variant"),
+    ("Icon.LinkOff", "link-variant-off"),
+    # 「画像比率に設定」ボタンの見出しアイコン（縦横比）。
+    ("Icon.AspectRatio", "aspect-ratio"),
 
     ("── アニメーションタイムライン ──", None),
     # フレーム送り（|◀ ◀ ▶ ▶|）とキー打ち込み。プレイバーの再生/一時停止は

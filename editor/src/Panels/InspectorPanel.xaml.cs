@@ -217,6 +217,9 @@ public partial class InspectorPanel : UserControl
             _runtime.ControlPointDeselected  -= OnControlPointDeselected;
             _runtime.BindableSourcesReceived -= OnBindableSourcesReceived;
             _runtime.TerrainCoverSimRunningChanged -= OnCoverSimRunningChanged;
+            // インスペクタのロック対象の生存確認（InspectorPanel.Lock.cs）
+            _runtime.HierarchyUpdated        -= OnHierarchyUpdatedForLock;
+            _runtime.HierarchyReset          -= OnHierarchyResetForLock;
         }
         _runtime = runtime;
         _runtime.SelectionChanged        += OnSelectionChanged;
@@ -227,6 +230,9 @@ public partial class InspectorPanel : UserControl
         _runtime.ControlPointDeselected  += OnControlPointDeselected;
         _runtime.BindableSourcesReceived += OnBindableSourcesReceived;
         _runtime.TerrainCoverSimRunningChanged += OnCoverSimRunningChanged;
+        // インスペクタのロック対象の生存確認（InspectorPanel.Lock.cs）
+        _runtime.HierarchyUpdated        += OnHierarchyUpdatedForLock;
+        _runtime.HierarchyReset          += OnHierarchyResetForLock;
     }
 
     /// <summary>
@@ -320,6 +326,9 @@ public partial class InspectorPanel : UserControl
     public void SetActorEditMode(bool isActorMode)
     {
         _isActorEditMode = isActorMode;
+        // モード切替（シーン編集 ⇔ アクター編集）は表示対象そのものが変わるため、
+        // インスペクタのロックは持ち越さない（InspectorPanel.Lock.cs）。
+        ReleaseInspectorLock(clearSelection: false, reason: "モード切替");
         ShowNoSelection();
     }
 
@@ -329,6 +338,14 @@ public partial class InspectorPanel : UserControl
         var tid  = System.Threading.Thread.CurrentThread.ManagedThreadId;
         var isUi = Dispatcher.CheckAccess();
         SEEDEditor.EditorLog.Write($"[Inspector.SelectActor] dfsId={dfsId} tid={tid} ui={isUi} currentId={_currentActorId}");
+
+        // インスペクタのロック中はロック対象以外への切り替えを無視する。
+        // 値の同期（ACTOR_COMPONENTS の反映）は止めない（InspectorPanel.Lock.cs）。
+        if (IsActorSwitchBlockedByLock(dfsId))
+        {
+            SEEDEditor.EditorLog.Write($"[Inspector.SelectActor] ロック中のため無視: dfsId={dfsId}");
+            return;
+        }
 
         // 表示モードを確実に切り替える（同一アクターへの再呼び出しでも必要）
         _isDraggingTransform    = false;
@@ -360,6 +377,9 @@ public partial class InspectorPanel : UserControl
     {
         Dispatcher.InvokeAsync(() =>
         {
+            // ロック中は表示対象の切り替えを無視する（ロック対象自身の通知だけ通す）
+            if (IsSelectionNotifyBlockedByLock(id)) return;
+
             if (id < 0)
             {
                 ShowNoSelection();
@@ -470,6 +490,8 @@ public partial class InspectorPanel : UserControl
         _accordionHeaders.Clear();
         _currentPrefabSource = null;
         ClearTransformRefs();
+        // 鍵トグルは表示対象があるときだけ出す（InspectorPanel.Lock.cs）
+        RefreshInspectorLockToggle();
     }
 
     private void ClearTransformRefs()
@@ -479,6 +501,9 @@ public partial class InspectorPanel : UserControl
         _tbSx = _tbSy = _tbSz = null;
         _tbPivotX = _tbPivotY = null;
         _tbAnchorX = _tbAnchorY = null;
+        // スケール連動の作業状態（基準値・ドラッグ中の固定）も一緒に捨てる。
+        // ON/OFF 自体はセッション設定なので残る（InspectorPanel.ScaleLink.cs）。
+        ResetScaleLinkState();
     }
 
     // ── Scene mode inspector ─────────────────────────────────
@@ -534,6 +559,8 @@ public partial class InspectorPanel : UserControl
             (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", 0.1);
             (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", 1.0);
             (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", 0.01);
+            // スケール連動トグル（鎖アイコン。InspectorPanel.ScaleLink.cs）
+            AttachScaleLinkToggle(grid, ScaleLinkRowIndex, ScaleLinkKind.Transform3D);
 
             ((StackPanel)section.Child).Children.Add(grid);
             ComponentStack.Children.Add(section);
@@ -549,6 +576,9 @@ public partial class InspectorPanel : UserControl
 
         ComponentScroll.Visibility  = Visibility.Visible;
         NoSelectionBlock.Visibility = Visibility.Collapsed;
+
+        // インスペクタのロック用トグル（鍵アイコン）を現在の状態に合わせる
+        RefreshInspectorLockToggle();
     }
 
     // ── Actor edit mode: component list ──────────────────────
@@ -1232,6 +1262,9 @@ public partial class InspectorPanel : UserControl
         var actorVisible = !root.TryGetProperty("visible", out var avv) || ReadJsonBool(avv, true);
         RebuildActorVisibleToggle(actorVisible);
 
+        // インスペクタのロック用トグル（鍵アイコン）を現在の状態に合わせる
+        RefreshInspectorLockToggle();
+
         // 複製後の新スロット検出用に現在のスロット ID セットを保存する
         var prevSlotIdxSet = _slotInfos.Select(s => s.SlotIdx).ToHashSet();
         AccordionStack.Children.Clear();
@@ -1320,6 +1353,8 @@ public partial class InspectorPanel : UserControl
             (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", 0.1);
             (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", 1.0);
             (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", 0.01);
+            // スケール連動トグル（鎖アイコン。InspectorPanel.ScaleLink.cs）
+            AttachScaleLinkToggle(grid, ScaleLinkRowIndex, ScaleLinkKind.Transform3D);
             ((StackPanel)section.Child).Children.Add(grid);
             transformContent = section;
         }
@@ -5273,6 +5308,12 @@ public partial class InspectorPanel : UserControl
         rowH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         rowH.textBox.LostFocus += (_, _) => CommitSize();
         NumericDragBehavior.SetOnDrag(rowW.textBox, CommitSize); NumericDragBehavior.SetOnDrag(rowH.textBox, CommitSize);
+
+        // 「画像比率に設定」ボタン（テクスチャが設定されているときだけ出す）。
+        // 値の反映は上の CommitSize（SET_SPRITE_SIZE）を通すので経路は二重化しない
+        // （InspectorPanel.ImageAspect.cs）。
+        var aspectRow = BuildImageAspectRow(info.TexturePath, rowW.textBox, rowH.textBox, CommitSize);
+        if (aspectRow is not null) sp.Children.Add(aspectRow);
 
         // ── レイヤー（描画優先度）フィールド ──────────────────────
         // 大きいほど手前に描画される（既定 0・同値はヒエラルキー順）。
@@ -10947,6 +10988,8 @@ public partial class InspectorPanel : UserControl
         _tbEz = AddSingleValueRow(grid, 1, "回転", "Z", rot, "#61AFEF", 1.0);
         // スケール行: X, Y
         (_tbSx, _tbSy) = AddXYRow(grid, 2, "スケール", sx, sy, "#E06C75", "#98C379", 0.01);
+        // スケール連動トグル（鎖アイコン。InspectorPanel.ScaleLink.cs）
+        AttachScaleLinkToggle(grid, ScaleLinkRowIndex, ScaleLinkKind.CanvasTransform2D);
 
         sp.Children.Add(grid);
 
@@ -11519,6 +11562,11 @@ public partial class InspectorPanel : UserControl
     private void CommitTransform()
     {
         if (_currentActorId < 0 || _tbPx is null) return;
+
+        // スケール連動（鎖トグル ON）なら、送信する前に他チャンネルの値を揃えておく。
+        // ここで書き換えることで、送信は従来どおり 1 通・Undo も 1 操作のままになる
+        // （InspectorPanel.ScaleLink.cs）。
+        ApplyScaleLinkBeforeCommit();
 
         // 2D Actor の場合は CanvasTransform 専用コマンドを送信する
         if (_isActor2D && (_isActorEditMode || _isVirtualActorSelected))

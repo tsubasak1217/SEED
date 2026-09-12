@@ -1,0 +1,42 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    インスペクタの計算ロジック（画像比率の適用・スケール連動）の単体テスト。
+
+    ComponentCatalogTests / ProjectSystemTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート
+         → NuGet の追加取得なしで `dotnet run` だけで回せる
+      2. SEEDEditor 本体（WPF / WinExe）を参照せず、対象ソースをリンクで取り込む
+         → ImageAspectCalculator / ScaleLinkCalculator が WPF 型を使った瞬間に
+           本テストがビルドできなくなる（＝計算と UI が癒着したことの検知器）
+
+    画像のデコード（ImageSizeCache）は WPF の BitmapDecoder に依存するため、
+    ここには取り込まない。取り込みたくなったら、それは計算とデコードの責務が
+    混ざったというサインなので、まず分離し直すこと。
+
+    実行方法: dotnet run (project=editor/tests/InspectorLogicTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.InspectorLogic</RootNamespace>
+    <AssemblyName>InspectorLogicTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（いずれも WPF 非依存の純粋計算） -->
+    <Compile Include="..\..\src\Panels\Inspector\ImageAspectCalculator.cs">
+      <Link>Linked\Panels\Inspector\ImageAspectCalculator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\Inspector\ScaleLinkCalculator.cs">
+      <Link>Linked\Panels\Inspector\ScaleLinkCalculator.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

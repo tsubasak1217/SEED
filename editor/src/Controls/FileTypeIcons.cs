@@ -26,23 +26,14 @@ namespace SEEDEditor.Controls;
 /// フォールバックの仕様は 2 段:
 ///   1. どちらの表にも無い拡張子は汎用アイコンになる
 ///      （画像 PNG = <see cref="LegacyFallbackPng"/>。従来の挙動を維持）。
-///   2. サムネイルを持てる形式（<see cref="SupportsThumbnail"/> が true）でも、
+///   2. プレビューを持てる形式（画像サムネイル・フォントサムネイル。可否の対応表は
+///      <see cref="SEEDEditor.Assets.AssetPreviewKinds"/>）でも、
 ///      プレビューの生成前・生成中・生成失敗の間は形式アイコンを出したままにする。
 ///      呼び出し側は「まず形式アイコンを描き、プレビューが取れたときだけ差し替える」
 ///      という順序を守ること（ProjectPanel.BuildFileItem がその実装例）。
 /// </summary>
 internal static class FileTypeIcons
 {
-    /// <summary>
-    /// サムネイル（実画像プレビュー）を生成できる拡張子。
-    /// ここに含まれる形式だけ、形式アイコンが後から実画像へ差し替わる。
-    /// 含まれない形式は常に形式アイコンのまま表示される。
-    /// </summary>
-    private static readonly HashSet<string> ThumbnailExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".hdr", ".exr", ".webp",
-    };
-
     /// <summary>拡張子（先頭ドット付き・小文字）-> アイコンキー。</summary>
     private static readonly Dictionary<string, string> IconKeyByExtension = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -100,15 +91,15 @@ internal static class FileTypeIcons
         [".txt"]      = "Icon.File.Text",
         [".md"]       = "Icon.File.Text",
         [".log"]      = "Icon.File.Text",
-    };
 
-    /// <summary>
-    /// この拡張子が実画像サムネイルへ差し替え可能かどうかを返す。
-    /// false の形式は常に形式アイコンで表示する。
-    /// </summary>
-    /// <param name="extension">先頭ドット付きの拡張子。</param>
-    public static bool SupportsThumbnail(string? extension)
-        => !string.IsNullOrEmpty(extension) && ThumbnailExtensions.Contains(extension);
+        // ── フォント（サムネイル生成対象。生成前・失敗時はこのアイコンのまま）──
+        // 専用のベクターアイコンはまだ無いので文書アイコンで代用する。
+        // 通常はフォントで描いたサンプル文字列のサムネイルへ差し替わるため、
+        // このアイコンが見えるのは「読めないフォントファイル」のときだけ。
+        [".ttf"]      = "Icon.File.Text",
+        [".otf"]      = "Icon.File.Text",
+        [".ttc"]      = "Icon.File.Text",
+    };
 
     // ── 既存 PNG アイコン（ユーザー資産）─────────────────────────────
 

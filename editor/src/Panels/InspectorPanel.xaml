@@ -13,28 +13,42 @@
         <Border Grid.Row="0" Background="#252526" BorderBrush="#3F3F46"
                 BorderThickness="0,0,0,1" Padding="8,6">
             <StackPanel>
-                <StackPanel Orientation="Horizontal">
-                    <!-- アクターのアクティブ切替（Unity の SetActive 相当）。
-                         非アクティブは自身と子孫が描画・更新・物理の対象外になる -->
-                    <CheckBox x:Name="ActorActiveCheck"
-                              IsChecked="True"
-                              VerticalAlignment="Center"
-                              Margin="0,0,6,0"
-                              Visibility="Collapsed"
-                              ToolTip="アクターのアクティブ切替（OFF で自身と子孫を無効化）"
-                              Checked="OnActorActiveChanged" Unchecked="OnActorActiveChanged"/>
-                    <!-- アクターの表示切替（Unity の Renderer.enabled 相当）。
-                         非表示は自身と子孫の描画だけが止まり、スクリプト・物理は動き続ける。
-                         中身（目アイコン）はコードビハインドが VisibilityToggle で差し込む -->
-                    <ContentControl x:Name="ActorVisibleToggleHost"
+                <!-- 1 行目: 左側にアクターの状態トグル＋名前、右端にインスペクタのロック -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal">
+                        <!-- アクターのアクティブ切替（Unity の SetActive 相当）。
+                             非アクティブは自身と子孫が描画・更新・物理の対象外になる -->
+                        <CheckBox x:Name="ActorActiveCheck"
+                                  IsChecked="True"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,6,0"
+                                  Visibility="Collapsed"
+                                  ToolTip="アクターのアクティブ切替（OFF で自身と子孫を無効化）"
+                                  Checked="OnActorActiveChanged" Unchecked="OnActorActiveChanged"/>
+                        <!-- アクターの表示切替（Unity の Renderer.enabled 相当）。
+                             非表示は自身と子孫の描画だけが止まり、スクリプト・物理は動き続ける。
+                             中身（目アイコン）はコードビハインドが VisibilityToggle で差し込む -->
+                        <ContentControl x:Name="ActorVisibleToggleHost"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,6,0"
+                                        Visibility="Collapsed"/>
+                        <TextBlock x:Name="ActorNameBlock"
+                                   Text="選択なし"
+                                   VerticalAlignment="Center"
+                                   Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <!-- インスペクタのロック（鍵アイコン）。ON の間は他のアクターを選んでも
+                         表示対象を切り替えない。中身はコードビハインドが差し込む
+                         （InspectorPanel.Lock.cs の RefreshInspectorLockToggle）。 -->
+                    <ContentControl x:Name="InspectorLockToggleHost"
+                                    Grid.Column="1"
                                     VerticalAlignment="Center"
-                                    Margin="0,0,6,0"
                                     Visibility="Collapsed"/>
-                    <TextBlock x:Name="ActorNameBlock"
-                               Text="選択なし"
-                               VerticalAlignment="Center"
-                               Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold"/>
-                </StackPanel>
+                </Grid>
                 <TextBlock x:Name="ActorModelBlock"
                            Text=""
                            Foreground="#666666" FontSize="11"

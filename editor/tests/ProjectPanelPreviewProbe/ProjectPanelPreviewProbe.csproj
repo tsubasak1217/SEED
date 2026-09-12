@@ -1,0 +1,50 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    プロジェクトパネルのプレビュー生成を「実ファイル」で確かめるための検証用コンソール。
+
+    ProjectPanelLogicTests（純ロジックの単体テスト）と役割を分けている:
+      - あちら: WPF 非依存の判定・変換を、環境に依らず自動で検証する
+      - こちら: WPF 依存の実処理（フォント描画・画像ヘッダ読み）を、
+               手元の実アセットへ向けて走らせ、結果を目視できる形で出す
+
+    SEEDEditor 本体（WinExe）は参照せず、検証対象のファイルだけをリンクで取り込む。
+
+    実行例（オプションの先頭に付くハイフン 2 個は XML コメントに書けないため省略して記す）:
+      dotnet run (project=editor/tests/ProjectPanelPreviewProbe) (区切り) "D:\...\fonts" "D:\...\textures" (out) "C:\temp\out"
+      ＊ 引数はフォルダでもファイルでもよい（フォルダは再帰的に走査する）
+      ＊ out オプションを指定するとフォントサムネイルを PNG で書き出す（目視確認用）
+      ＊ 入力ファイルは読むだけで、書き換えは一切しない
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ProjectPanelPreview</RootNamespace>
+    <AssemblyName>ProjectPanelPreviewProbe</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 検証対象（WPF 依存の実処理） -->
+    <Compile Include="..\..\src\Controls\FontThumbnailRenderer.cs">
+      <Link>Linked\Controls\FontThumbnailRenderer.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Controls\ImageDimensionsProbe.cs">
+      <Link>Linked\Controls\ImageDimensionsProbe.cs</Link>
+    </Compile>
+
+    <!-- 上記が依存する純ロジック -->
+    <Compile Include="..\..\src\Assets\AssetPreviewKinds.cs">
+      <Link>Linked\Assets\AssetPreviewKinds.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\AssetPreviewCacheKey.cs">
+      <Link>Linked\Assets\AssetPreviewCacheKey.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\ImagePixelSize.cs">
+      <Link>Linked\Assets\ImagePixelSize.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

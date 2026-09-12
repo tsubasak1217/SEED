@@ -46,6 +46,10 @@
 
 - [ ] **MCP ツールの実機未検証** — 2026-09-07。エディタを起動した状態での `seed_screenshot` / `seed_select` / `seed_play` / `seed_anim_preview` の往復は未確認（実装時にエディタが起動していなかった）。特に `SELECT:` 送信でインスペクタ表示が追従するか、`play_control` の状態遷移待ちが実測でどれくらいかかるかは要確認。関連: `docs/editor_mcp.md` の「代表的なループ」。
 
+- [ ] **インスペクタのロックはリネームでも解除される** — 2026-09-12。ロック対象の同一性を「DFS ID ＋ ロック時の名前」で見ているため（DFS ID はツリーの位置なので、手前のアクターが増減すると別アクターを指す）、対象をリネームすると一致が崩れて自動解除される。削除と ID ずれを区別できないのが根本原因で、直すならランタイム側にアクターの安定 ID（世代付きハンドル等）が要る。関連: `editor/src/Panels/InspectorPanel.Lock.cs::ValidateInspectorLock`、docs/inspector_features.md §2-2。
+
+- [ ] **「画像比率に設定」は TGA / WebP で寸法を取れない** — 2026-09-12。WPF の `BitmapDecoder` に該当コーデックが無い環境では元画像の寸法が読めず、ボタンを押しても何も起きない（ツールチップとログには理由を出す）。テクスチャの参照ダイアログは `.tga` / `.webp` も選べるので、必要になったら簡易ヘッダパーサ（TGA は先頭 18 バイト、WebP は VP8/VP8L/VP8X ヘッダ）を足す。関連: `editor/src/Panels/Inspector/ImageSizeCache.cs`、docs/inspector_features.md §1-4。
+
 ## 音声辞書（AudioDictionary）の残件（2026-09-11 実装時）
 
 - [x] ~~実機でのランタイム経路の確認~~ — 2026-09-11 に一時アセットルート（`%TEMP%` 配下・`D:\SEED_assets` は不使用）でランタイム単体起動（`SEED.exe --mode=play --assets-root=... --scene=...`）して確認済み。`AudioDictionary` ハンドルの `TryGetPath` / `DefaultVolume`、`PlayDict` の解決、辞書モード AudioComponent の `play_on_start`（`IsPlaying=True` を frame 5/30/120 で確認）、解決できないキーの警告が 1 度だけ出ること、までを実測した。**この検証で 2 件の不具合を見つけて修正済み**（`slot_is_kind` への登録漏れ＝`GetComponent<AudioDictionary>()` が常に null／音源を解決できない `play_on_start` の警告が毎フレーム出る）。**残るのはエディタ UI 経路のみ**（下記 2 項目）。
@@ -945,3 +949,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   （`templates/terrain/textures/aerial_beach_01_1k.blend/textures/*.jpg`）は移行時に参照分だけ残した。
   正規の置き場（`mainGame/fonts/` 等）へ移して参照を書き換えるのが本筋。
   関連: `docs/project_system.md`（移行の節）。
+
+- [ ] **フォントファイル専用のアイコンが無い** — 2026-09-12。プロジェクトパネルに `.ttf`/`.otf`/`.ttc` の
+  サムネイル（そのフォントで描いた `Aa あ`）を足したが、生成できないフォント（壊れたファイル・
+  macOS のリソースフォーク `._*.otf` など）のフォールバックは文書アイコン（`Icon.File.Text`）の流用のまま。
+  `Icons.xaml` は自動生成なので、直すなら `editor/gen_icons.py` のアイコン一覧へ `Icon.File.Font`（mdi の
+  `format-font` 等）を足して再生成し、`FileTypeIcons` の `.ttf`/`.otf`/`.ttc` を差し替える。
+  関連: `editor/src/Controls/FileTypeIcons.cs`、`docs/editor_icons.md`、`docs/editor_project_panel.md` §3。

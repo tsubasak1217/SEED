@@ -1,0 +1,50 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    プロジェクトパネルの「パス表示・プレビュー判定」まわりの純ロジック単体テスト。
+
+    ProjectSystemTests / SpriteRigTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+
+    ここに並べたファイルが WPF 型を使い始めるとビルドが壊れる。
+    それが「UI とデータ判定の分離が崩れた」検知器になる
+    （実際の描画・デコードを行う FontThumbnailRenderer / ImageDimensionsProbe は
+      WPF 依存なのでここには入れず、editor/tests/ProjectPanelPreviewProbe で実データ検証する）。
+
+    実行方法: dotnet run (project=editor/tests/ProjectPanelLogicTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ProjectPanelLogic</RootNamespace>
+    <AssemblyName>ProjectPanelLogicTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: パス変換・プレビュー判定・キャッシュキー・寸法表記（いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\Assets\AssetUriPath.cs">
+      <Link>Linked\Assets\AssetUriPath.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\AssetPreviewKinds.cs">
+      <Link>Linked\Assets\AssetPreviewKinds.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\AssetPreviewCacheKey.cs">
+      <Link>Linked\Assets\AssetPreviewCacheKey.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\ImagePixelSize.cs">
+      <Link>Linked\Assets\ImagePixelSize.cs</Link>
+    </Compile>
+
+    <!-- テストランナーと一時フォルダは既存テストのものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+    <Compile Include="..\ProjectSystemTests\TempDir.cs">
+      <Link>Linked\TempDir.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

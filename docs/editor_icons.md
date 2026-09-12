@@ -117,17 +117,20 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
    新しい拡張子が増えてもアイコンが欠けることはない。
    フォルダは `GetFolderImage(isEmpty)` が `folder.png` / `folder_empty.png`
    を出し分ける。
-4. **サムネイルを持てる形式** → プレビューの**生成前・生成中・生成失敗**の
+4. **プレビューを持てる形式** → プレビューの**生成前・生成中・生成失敗**の
    すべての期間、形式アイコンを表示したままにする。
    `ProjectPanel.BuildFileItem()` が実装例で、
    - まず `FileTypeIcons.GetImage(ext)` の形式アイコンで `Image` を作り、
-   - `FileTypeIcons.SupportsThumbnail(ext)` が true のときだけ
-     `LoadImagePreviewAsync()` を走らせ、
-   - **デコードに成功した場合に限り** `Image.Source` を実画像へ差し替える。
+   - `AssetPreviewKinds.Of(ext)` が返す種別に応じて画像サムネイル
+     （`LoadImagePreviewAsync()`）またはフォントサムネイル
+     （`FontThumbnailRenderer.Render()`）を走らせ、
+   - **生成に成功した場合に限り** `Image.Source` を差し替える。
 
-   デコードが失敗した場合は `Source` を触らないので形式アイコンが残る。
-   サムネイル対象は現状 `.png .jpg .jpeg .bmp .gif .tga .hdr .exr .webp` のみで、
-   3D モデルや音声は常に形式アイコン表示。
+   生成が失敗した場合は `Source` を触らないので形式アイコンが残る。
+   プレビュー対象の対応表は `editor/src/Assets/AssetPreviewKinds.cs`（WPF 非依存・単体テスト有り）で、
+   現状は画像が `.png .jpg .jpeg .bmp .gif .tga .hdr .exr .webp`、
+   フォントが `.ttf .otf .ttc`。3D モデルや音声は常に形式アイコン表示。
+   詳細は [docs/editor_project_panel.md](editor_project_panel.md)。
 
 現在の拡張子対応:
 
@@ -149,6 +152,7 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `.json` | `Icon.File.Json`（ベクター） |
 | `.toml` / `.yaml` / `.yml` / `.ini` / `.cfg` / `.lock` | `Icon.File.Config`（ベクター） |
 | `.txt` / `.md` / `.log` | `Icon.File.Text`（ベクター） |
+| `.ttf` / `.otf` / `.ttc` | `Icon.File.Text`（ベクター。フォント専用アイコンが無いため流用。通常はフォントサムネイルへ差し替わる） |
 | 上記以外 | `folderview/image.png`（フォールバック） |
 
 新しい拡張子を足すときは、対応する PNG がユーザー資産として既にある場合のみ
@@ -237,8 +241,22 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `Icon.Browse` | `dots-horizontal` |
 | `Icon.DragHandle` | `drag-horizontal-variant` |
 | `Icon.Lock` | `lock-outline` |
+| `Icon.LockOpen` | `lock-open-variant-outline` |
 | `Icon.Dirty` | `circle-medium` |
 | `Icon.Prefab` | `package-variant-closed` |
+
+#### インスペクタ（連動トグル・画像比率）
+
+インスペクタ専用。スケール連動トグル（鎖）と「画像比率に設定」ボタンの見出しで使う。
+ロックトグルは `Icon.Lock` / `Icon.LockOpen`、
+ドロップダウンの下向き山形は `Icon.MoveDown` を流用する。
+仕様は docs/inspector_features.md。
+
+| アイコンキー | MDI アイコン名 |
+|---|---|
+| `Icon.Link` | `link-variant` |
+| `Icon.LinkOff` | `link-variant-off` |
+| `Icon.AspectRatio` | `aspect-ratio` |
 
 #### アニメーションタイムライン
 

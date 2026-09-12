@@ -122,6 +122,80 @@ public partial class ProjectPanel : UserControl
     /// <summary>ファイルグリッドのタイルアイコンの一辺サイズ（px）。</summary>
     private const int TileIconSize = 66;
 
+    // ── タイルの寸法・書式（マジックナンバーをここへ集約）────────
+
+    /// <summary>タイル 1 枚の横幅（px）。</summary>
+    private const double TileWidth = 116;
+
+    /// <summary>「アイコン＋名前」だけのタイルに必要な高さ（px）。従来の見た目の基準値。</summary>
+    private const double TileBaseHeight = 116;
+
+    /// <summary>名前の下へ出すキャプション（画像の寸法など）1 行ぶんの高さ（px）。</summary>
+    private const double TileCaptionHeight = 16;
+
+    /// <summary>
+    /// タイル 1 枚の高さ（px）。
+    /// キャプションが出る／出ないでタイルの高さが変わると行ごとに段差ができるため、
+    /// キャプション 1 行ぶんの場所は全タイルで常に確保しておく。
+    /// </summary>
+    private const double TileHeight = TileBaseHeight + TileCaptionHeight;
+
+    /// <summary>タイルの余白（px）。</summary>
+    private const double TileMargin = 3;
+
+    /// <summary>タイルの角丸半径（px）。</summary>
+    private const double TileCornerRadius = 4;
+
+    /// <summary>名前・キャプションの最大幅（px）。</summary>
+    private const double TileLabelMaxWidth = 106;
+
+    /// <summary>名前の最大高さ（px。11pt で 2 行ぶん）。</summary>
+    private const double TileNameMaxHeight = 32;
+
+    /// <summary>名前のフォントサイズ。</summary>
+    private const double TileNameFontSize = 11;
+
+    /// <summary>キャプションのフォントサイズ（名前より一回り小さく出す）。</summary>
+    private const double TileCaptionFontSize = 9.5;
+
+    /// <summary>名前の文字色。</summary>
+    private static readonly Brush TileNameBrush = MakeFrozenBrush(0xCC, 0xCC, 0xCC);
+
+    /// <summary>キャプションの文字色（名前より控えめ）。</summary>
+    private static readonly Brush TileCaptionBrush = MakeFrozenBrush(0x8C, 0x8C, 0x8C);
+
+    /// <summary>
+    /// タイル内で「名前の TextBlock」を見分けるための Tag 値。
+    /// キャプションを足したことで StackPanel 内に TextBlock が複数並ぶため、
+    /// リネーム（StartRenameMode）が差し替える対象をこの印で特定する。
+    /// </summary>
+    private const string TileNameBlockTag = "TileNameBlock";
+
+    // ── サムネイル（画像・フォント共通）──────────────────────────
+
+    /// <summary>画像サムネイルのデコード幅（px）。表示サイズより少し大きめに読む。</summary>
+    private const int ThumbnailDecodePixelWidth = 80;
+
+    /// <summary>サムネイル表示時の一辺（px）。</summary>
+    private const double ThumbnailDisplaySize = 90;
+
+    /// <summary>サムネイル表示時の上マージン（px）。</summary>
+    private const double ThumbnailTopMargin = 3;
+
+    /// <summary>サムネイルの角丸半径（px）。</summary>
+    private const double ThumbnailCornerRadius = 3;
+
+    /// <summary>Freeze 済みの単色ブラシを作る（タイルごとにブラシを作らないため）。</summary>
+    /// <param name="r">赤成分。</param>
+    /// <param name="g">緑成分。</param>
+    /// <param name="b">青成分。</param>
+    private static Brush MakeFrozenBrush(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
+
     // ─────────────────────────────────────────────────────────────
 
     public ProjectPanel()
@@ -607,18 +681,37 @@ public partial class ProjectPanel : UserControl
     /// <summary>
     /// ファイル 1 個ぶんのタイルを作る。
     ///
-    /// アイコンは必ず「拡張子から引いた形式アイコン」で先に描く。サムネイルを
-    /// 生成できる形式のときだけ非同期プレビューを走らせ、成功した場合に限り
+    /// アイコンは必ず「拡張子から引いた形式アイコン」で先に描く。プレビューを
+    /// 生成できる形式のときだけ後追いで生成を走らせ、成功した場合に限り
     /// 実画像へ差し替える。したがってプレビュー生成前・生成中・生成失敗の間は
     /// 常に形式アイコンが見えたままになる（未知の拡張子は汎用ファイルアイコン）。
+    ///
+    /// プレビューの種別（画像サムネイル／フォントサムネイル／無し）と、
+    /// 寸法キャプションを出すかどうかは <see cref="AssetPreviewKinds"/> の対応表だけで決まる。
+    /// 新形式へ対応するときはこの関数ではなく対応表を触ること。
     /// </summary>
     private UIElement BuildFileItem(FileInfo file)
     {
+        // 画像ファイルは名前の下へピクセル寸法を出すので、キャプション行を用意しておく
+        bool wantsCaption = AssetPreviewKinds.SupportsPixelSize(file.Extension);
+
         var imgCtrl = MakeIconImage(
             SEEDEditor.Controls.FileTypeIcons.GetImage(file.Extension), TileIconSize);
-        var item    = WrapTile(imgCtrl, file.Name, file.FullName);
-        if (SEEDEditor.Controls.FileTypeIcons.SupportsThumbnail(file.Extension))
-            _ = LoadImagePreviewAsync(imgCtrl, file.FullName);
+        var item    = WrapTile(imgCtrl, file.Name, file.FullName, wantsCaption, out var captionBlock);
+
+        switch (AssetPreviewKinds.Of(file.Extension))
+        {
+            case AssetPreviewKind.Image:
+                _ = LoadImagePreviewAsync(imgCtrl, file.FullName);
+                break;
+            case AssetPreviewKind.Font:
+                ScheduleFontPreview(imgCtrl, file.FullName);
+                break;
+        }
+
+        if (captionBlock != null)
+            _ = LoadImageDimensionsAsync(item, captionBlock, file.FullName);
+
         AttachItemEvents(item, file);
         return item;
     }
@@ -644,30 +737,71 @@ public partial class ProjectPanel : UserControl
         return img;
     }
 
+    /// <summary>
+    /// キャプション無しのタイルを作る（フォルダなど、名前だけを出すもの）。
+    /// </summary>
+    /// <param name="iconCtrl">タイルへ載せるアイコン。</param>
+    /// <param name="name">表示名。</param>
+    /// <param name="fullPath">Tag とツールチップに入れる絶対パス。</param>
     private static Border WrapTile(Image iconCtrl, string name, string? fullPath)
+        => WrapTile(iconCtrl, name, fullPath, withCaption: false, out _);
+
+    /// <summary>
+    /// アイコン・名前（・キャプション）を縦に積んだタイルを作る。
+    ///
+    /// キャプションは「画像の寸法」のように後から分かる情報を出すための行で、
+    /// 内容が決まるまでは <see cref="Visibility.Collapsed"/> のまま置いておく。
+    /// 場所自体は <see cref="TileHeight"/> で常に確保しているので、
+    /// 後から見せてもタイルの高さは動かない。
+    /// </summary>
+    /// <param name="iconCtrl">タイルへ載せるアイコン。</param>
+    /// <param name="name">表示名。</param>
+    /// <param name="fullPath">Tag とツールチップに入れる絶対パス。</param>
+    /// <param name="withCaption">キャプション行を用意するなら true。</param>
+    /// <param name="captionBlock">用意したキャプションの TextBlock（不要なら null）。</param>
+    private static Border WrapTile(
+        Image iconCtrl, string name, string? fullPath, bool withCaption, out TextBlock? captionBlock)
     {
         var nameBlock = new TextBlock
         {
             Text                = name,
-            Foreground          = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            FontSize            = 11,
+            Foreground          = TileNameBrush,
+            FontSize            = TileNameFontSize,
             TextAlignment       = TextAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
             TextWrapping        = TextWrapping.Wrap,
-            MaxWidth            = 106,
-            MaxHeight           = 32,
+            MaxWidth            = TileLabelMaxWidth,
+            MaxHeight           = TileNameMaxHeight,
+            // リネーム時に差し替える対象を特定するための印
+            Tag                 = TileNameBlockTag,
         };
+
+        captionBlock = withCaption
+            ? new TextBlock
+            {
+                Foreground          = TileCaptionBrush,
+                FontSize            = TileCaptionFontSize,
+                TextAlignment       = TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming        = TextTrimming.CharacterEllipsis,
+                MaxWidth            = TileLabelMaxWidth,
+                // 内容が決まるまでは場所だけ確保して見せない
+                Visibility          = Visibility.Collapsed,
+            }
+            : null;
+
         var sp = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
         sp.Children.Add(iconCtrl);
         sp.Children.Add(nameBlock);
+        if (captionBlock != null) sp.Children.Add(captionBlock);
 
         return new Border
         {
-            Width        = 116,
-            Height       = 116,
-            Margin       = new Thickness(3),
+            Width        = TileWidth,
+            Height       = TileHeight,
+            Margin       = new Thickness(TileMargin),
             Background   = Brushes.Transparent,
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = new CornerRadius(TileCornerRadius),
             Cursor       = Cursors.Hand,
             Tag          = fullPath,
             ToolTip      = fullPath,
@@ -675,6 +809,12 @@ public partial class ProjectPanel : UserControl
         };
     }
 
+    /// <summary>
+    /// 画像ファイルのサムネイルを非同期に生成し、取れたらアイコンと差し替える。
+    /// デコードはバックグラウンドスレッドで行い、Freeze してから UI へ渡す。
+    /// </summary>
+    /// <param name="imgCtrl">差し替え先のアイコンコントロール。</param>
+    /// <param name="filePath">画像ファイルの絶対パス。</param>
     private async Task LoadImagePreviewAsync(Image imgCtrl, string filePath)
     {
         var bitmap = await Task.Run(() =>
@@ -684,7 +824,7 @@ public partial class ProjectPanel : UserControl
                 var bmp = new BitmapImage();
                 bmp.BeginInit();
                 bmp.UriSource        = new Uri(filePath, UriKind.Absolute);
-                bmp.DecodePixelWidth = 80;
+                bmp.DecodePixelWidth = ThumbnailDecodePixelWidth;
                 bmp.CacheOption      = BitmapCacheOption.OnLoad;
                 bmp.EndInit();
                 bmp.Freeze();
@@ -693,16 +833,78 @@ public partial class ProjectPanel : UserControl
             catch { return null; }
         });
 
-        if (bitmap != null)
-        {
-            imgCtrl.Source  = bitmap;
-            imgCtrl.Width   = 90;
-            imgCtrl.Height  = 90;
-            imgCtrl.Margin  = new Thickness(0, 3, 0, 0);
-            imgCtrl.Stretch = Stretch.Uniform;
-            imgCtrl.Clip    = new RectangleGeometry(new Rect(0, 0, 90, 90), 3, 3);
-        }
+        if (bitmap != null) ApplyThumbnail(imgCtrl, bitmap);
     }
+
+    /// <summary>
+    /// フォントファイルのサムネイル（そのフォントで描いたサンプル文字列）生成を予約する。
+    ///
+    /// サムネイル生成に使う GlyphRun / DrawingVisual / RenderTargetBitmap は
+    /// 生成したスレッドに紐づくため、画像のようにワーカースレッドへは出せない。
+    /// 代わりに Dispatcher の Background 優先度へ回し、一覧の表示・入力を先に通す。
+    /// 1 フォントあたり数 ms で、同じフォントは 2 回目以降キャッシュから返る。
+    /// </summary>
+    /// <param name="imgCtrl">差し替え先のアイコンコントロール。</param>
+    /// <param name="fontPath">フォントファイルの絶対パス。</param>
+    private void ScheduleFontPreview(Image imgCtrl, string fontPath)
+    {
+        Dispatcher.BeginInvoke(
+            new Action(() =>
+            {
+                var bitmap = SEEDEditor.Controls.FontThumbnailRenderer.Render(fontPath);
+                // 読めないフォントは null。その場合は形式アイコンのままにする。
+                if (bitmap != null) ApplyThumbnail(imgCtrl, bitmap);
+            }),
+            System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// 生成できたサムネイルをアイコンコントロールへ適用する（画像・フォント共通）。
+    /// </summary>
+    /// <param name="imgCtrl">差し替え先のアイコンコントロール。</param>
+    /// <param name="bitmap">Freeze 済みのサムネイル。</param>
+    private static void ApplyThumbnail(Image imgCtrl, BitmapSource bitmap)
+    {
+        imgCtrl.Source  = bitmap;
+        imgCtrl.Width   = ThumbnailDisplaySize;
+        imgCtrl.Height  = ThumbnailDisplaySize;
+        imgCtrl.Margin  = new Thickness(0, ThumbnailTopMargin, 0, 0);
+        imgCtrl.Stretch = Stretch.Uniform;
+        imgCtrl.Clip    = new RectangleGeometry(
+            new Rect(0, 0, ThumbnailDisplaySize, ThumbnailDisplaySize),
+            ThumbnailCornerRadius, ThumbnailCornerRadius);
+    }
+
+    /// <summary>
+    /// 画像のピクセル寸法をバックグラウンドで取得し、取れたら
+    /// タイルのキャプション（例 <c>1024×512</c>）とツールチップへ反映する。
+    ///
+    /// 取得はヘッダ読みだけで、対応コーデックが無い形式（.tga / .dds 等）では
+    /// null が返る。その場合はキャプションを出さない（＝従来どおりの見た目）。
+    /// </summary>
+    /// <param name="tile">対象タイル（ツールチップの更新先）。</param>
+    /// <param name="captionBlock">寸法を表示するキャプション。</param>
+    /// <param name="filePath">画像ファイルの絶対パス。</param>
+    private async Task LoadImageDimensionsAsync(Border tile, TextBlock captionBlock, string filePath)
+    {
+        var size = await SEEDEditor.Controls.ImageDimensionsProbe.GetAsync(filePath);
+        if (size is not { } pixels) return;
+
+        captionBlock.Text       = pixels.ToCaption();
+        captionBlock.Visibility = Visibility.Visible;
+        tile.ToolTip            = BuildTileToolTip(filePath, pixels);
+    }
+
+    /// <summary>
+    /// タイルのツールチップ文字列を作る。絶対パスを 1 行目に、
+    /// 寸法が分かっていれば 2 行目に <c>1024×512 px</c> を足す。
+    /// </summary>
+    /// <param name="fullPath">ファイルの絶対パス。</param>
+    /// <param name="pixels">分かっていればピクセル寸法。</param>
+    private static string BuildTileToolTip(string fullPath, ImagePixelSize? pixels)
+        => pixels is { } size
+            ? fullPath + Environment.NewLine + size.ToTooltipText()
+            : fullPath;
 
     // ── アイテムイベント ──────────────────────────────────────────
 
@@ -1217,6 +1419,8 @@ public partial class ProjectPanel : UserControl
 
         Add(menu, "コピー",    "Ctrl+C", DoCopy);
         Add(menu, "切り取り",  "Ctrl+X", DoCut);
+        // 絶対パス / assets:// パスのコピー（ProjectPanel.CopyPath.cs）
+        AddCopyPathMenuItems(menu);
         menu.Items.Add(new Separator());
         Add(menu, "削除",      null,     DoDelete);
         if (_selectedItems.Count == 1)
@@ -1274,6 +1478,8 @@ public partial class ProjectPanel : UserControl
         Add(menu, "新規作成",               null, () => OpenCreateItemWindow(_currentPath));
         Add(menu, "新規フォルダを作成",     null, CreateNewFolder);
         menu.Items.Add(new Separator());
+        // 現在開いているフォルダの絶対パス / assets:// パス（区切り線ごと足す。ProjectPanel.CopyPath.cs）
+        AddCurrentFolderCopyPathMenuItems(menu);
         Add(menu, "エクスプローラーで開く", null, () =>
             System.Diagnostics.Process.Start("explorer.exe", _currentPath));
 
@@ -1455,14 +1661,18 @@ public partial class ProjectPanel : UserControl
         if (_isRenaming) return;
         _isRenaming = true;
 
-        var sp        = (StackPanel)tile.Child;
-        var nameBlock = sp.Children.OfType<TextBlock>().First();
+        var sp = (StackPanel)tile.Child;
+        // タイルには名前とキャプション（画像の寸法）の TextBlock が並びうるので、
+        // 印（Tag）で名前のほうだけを取り出す。見つからない場合は先頭の TextBlock を使う。
+        var nameBlock = sp.Children.OfType<TextBlock>()
+                          .FirstOrDefault(tb => (tb.Tag as string) == TileNameBlockTag)
+                     ?? sp.Children.OfType<TextBlock>().First();
         var origName  = nameBlock.Text;
 
         var nameBox = new TextBox
         {
             Text                = origName,
-            FontSize            = 11,
+            FontSize            = TileNameFontSize,
             Background          = new SolidColorBrush(Color.FromRgb(0x30, 0x30, 0x30)),
             Foreground          = Brushes.White,
             BorderBrush         = new SolidColorBrush(Color.FromArgb(0xAA, 0x44, 0x88, 0xFF)),
