@@ -1509,6 +1509,14 @@ impl App {
                 }
             }
         } else {
+            // DLL が見つからない場合も黙らない。開発時は作業ディレクトリ（runtime/）相対で
+            // 探すため、エディタが渡す作業ディレクトリを間違えると「ゲームロジックが一切
+            // 動かない・入力が効かない」症状だけが出て原因が追えない（develop 構成で実際に起きた）。
+            eprintln!(
+                "[SEED] scripting host not found: {}  （cwd={}）— C# スクリプトは動きません。                 開発時は作業ディレクトリが runtime/ であること、配布時は bin/ に SEEDScripting.dll があることを確認してください。",
+                host_location.dll_path.display(),
+                std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(),
+            );
             None
         };
 

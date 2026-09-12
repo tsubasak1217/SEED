@@ -2632,20 +2632,26 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>
     /// Runtime の作業ディレクトリを解決する。
-    /// Cargo ビルド出力（target/debug, target/release）の場合は 2 階層上に戻し、
-    /// assets/ などが存在するプロジェクトルートを返す。
+    ///
+    /// <para>
+    /// Cargo ビルド出力（<c>runtime/target/&lt;構成&gt;/SEED.exe</c>）の場合は <c>runtime/</c>
+    /// （Cargo.toml のあるフォルダ）を返す。ランタイムはスクリプトホスト DLL を
+    /// 作業ディレクトリ相対（<c>../scripting/bin/Debug/net9.0</c>）で探すため、ここを
+    /// 間違えると C# スクリプトが一切動かない。
+    /// </para>
+    /// <para>
+    /// 構成フォルダ名（debug / release / develop …）で判定せず、Cargo.toml の実在で
+    /// 判定する（<see cref="BuildConfig.RuntimeSourceDirLocator"/>）。以前は
+    /// "debug" / "release" の名前決め打ちだったため、develop 構成では exe のフォルダが
+    /// 作業ディレクトリになり、スクリプトホストが見つからずゲームロジックが動かなかった。
+    /// </para>
     /// 配布時（exe 隣に assets/ がある構成）はそのまま exe のディレクトリを返す。
     /// </summary>
     private static string ResolveWorkingDirectory(string exePath)
     {
-        var exeDir     = Path.GetDirectoryName(exePath)!;
-        var buildType  = Path.GetFileName(exeDir);                    // "debug" / "release"
-        var targetDir  = Path.GetFileName(Path.GetDirectoryName(exeDir)!); // "target"
-
-        if ((buildType is "debug" or "release") && targetDir == "target")
-            return Path.GetFullPath(Path.Combine(exeDir, @"..\.."));
-
-        return exeDir;
+        var exeDir = Path.GetDirectoryName(exePath)!;
+        // 名前空間 BuildConfig はこのクラスのプロパティ BuildConfig と同名なので完全修飾で参照する。
+        return global::SEEDEditor.Runtime.BuildConfig.RuntimeSourceDirLocator.FromExePath(exePath) ?? exeDir;
     }
 
     private void ChangeState(EditorState next)
