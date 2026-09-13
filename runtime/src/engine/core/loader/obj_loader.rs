@@ -1,17 +1,56 @@
-use std::path::Path;
+// ============================================================
+//  obj_loader.rs — Wavefront OBJ/MTL ローダー
+//
+//  パスの解決は glTF ローダーと同じ 2 系統:
+//   - `assets://…` 仮想パス … asset_fs（PAK → ファイルシステムの順）でバイト列を読み、
+//     メモリ上で解析する。MTL は OBJ と同じ仮想フォルダから同じ経路で読む。
+//     テクスチャは `assets://dir/tex.png` の仮想パスを TextureSource::FilePath に持たせる
+//     （後段のテクスチャ読み込みが asset_fs で解決する。glTF ローダーと同じ約束）。
+//   - それ以外（絶対パス）… 従来どおり tobj にファイルパスを渡す。
+//
+//  以前は仮想パスをそのまま tobj へ渡していたため、派生キャッシュが無い環境
+//  （初回起動・配布先）では OBJ が必ず読めなかった（キャッシュヒット時だけ動いていた）。
+// ============================================================
+use std::io::{BufReader, Cursor};
+use std::path::{Path, PathBuf};
 use super::model::*;
 use super::LoadError;
+use crate::engine::asset_fs;
 
+/// tobj に渡す読み込みオプション（三角形化＋単一インデックス）。仮想／実パスで共通。
+fn load_options() -> tobj::LoadOptions {
+    tobj::LoadOptions {
+        triangulate:  true,
+        single_index: true,
+        ..Default::default()
+    }
+}
+
+/// OBJ を読み込む（`assets://` 仮想パスと絶対パスの両対応）。
 pub fn load(path: &Path) -> Result<Model, LoadError> {
-    let (obj_models, obj_materials_result) = tobj::load_obj(
-        path,
-        &tobj::LoadOptions {
-            triangulate:  true,
-            single_index: true,
-            ..Default::default()
-        },
-    ).map_err(|e| LoadError::Parse(e.to_string()))?;
+    let path_str = path.to_string_lossy();
+    if let Some(rel) = path_str.strip_prefix(asset_fs::ASSETS_SCHEME) {
+        // ── 仮想パス: asset_fs 経由でバイト列を読み、メモリ上で解析する ──
+        let bytes = asset_fs::read_bytes(&path_str)
+            .map_err(|e| LoadError::Io(format!("PAK read failed for {path_str}: {e}")))?;
+        // 仮想ベースフォルダ "assets://dir/file.obj" → "assets://dir"
+        let vbase = path_str.rsplit_once('/').map(|(b, _)| b.to_string())
+            .unwrap_or_else(|| asset_fs::ASSETS_SCHEME.trim_end_matches('/').to_string());
+        let name = rel.rsplit('/').next().unwrap_or("unnamed")
+            .rsplit_once('.').map(|(stem, _)| stem).unwrap_or("unnamed")
+            .to_string();
+        let mtl_base = vbase.clone();
+        let (obj_models, obj_materials) = load_from_bytes(&bytes, move |mtl_name| {
+            // MTL は OBJ と同じ仮想フォルダ（mtllib の相対指定はファイル名部分だけ使う）
+            asset_fs::read_bytes(&format!("{mtl_base}/{mtl_name}")).ok()
+        })?;
+        let tex_path = move |tex_name: &str| PathBuf::from(format!("{vbase}/{tex_name}"));
+        return Ok(build_model(name, &obj_models, &obj_materials, tex_path));
+    }
 
+    // ── 絶対パス: 従来どおりファイルから読む ──
+    let (obj_models, obj_materials_result) = tobj::load_obj(path, &load_options())
+        .map_err(|e| LoadError::Parse(e.to_string()))?;
     // マテリアルが読めなくてもモデルは返す
     let obj_materials = obj_materials_result.unwrap_or_default();
 
@@ -19,14 +58,52 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         .and_then(|s| s.to_str())
         .unwrap_or("unnamed")
         .to_string();
+    // OBJ は外部ファイル参照のみ。モデルファイルと同じディレクトリを基準とする。
+    let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let tex_path = move |tex_name: &str| base_dir.join(tex_name);
+    Ok(build_model(name, &obj_models, &obj_materials, tex_path))
+}
 
-    // ── テクスチャ ─────────────────────────────────────────────
+/// OBJ のバイト列を解析する。MTL は `mtl_reader(ファイル名)` が返すバイト列から読む
+/// （None なら「MTL が無い」として扱い、モデルだけ返す）。
+///
+/// 仮想パス経路とテストが共有する純粋部分（ファイルシステムに触らない）。
+fn load_from_bytes(
+    obj_bytes: &[u8],
+    mtl_reader: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<(Vec<tobj::Model>, Vec<tobj::Material>), LoadError> {
+    let mut reader = BufReader::new(Cursor::new(obj_bytes));
+    let (obj_models, obj_materials_result) = tobj::load_obj_buf(
+        &mut reader,
+        &load_options(),
+        |mtl_path: &Path| {
+            let mtl_name = mtl_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            match mtl_reader(mtl_name) {
+                Some(bytes) => tobj::load_mtl_buf(&mut BufReader::new(Cursor::new(bytes))),
+                None        => Err(tobj::LoadError::OpenFileFailed),
+            }
+        },
+    ).map_err(|e| LoadError::Parse(e.to_string()))?;
+    // マテリアルが読めなくてもモデルは返す（従来どおり）
+    Ok((obj_models, obj_materials_result.unwrap_or_default()))
+}
+
+/// tobj の解析結果からエンジンの `Model` を組み立てる（仮想／実パス共通）。
+///
+/// `tex_path` はマテリアルのテクスチャ名（MTL の map_Kd 等）を、
+/// 後段のテクスチャ読み込みが解決できるパスへ変換する（仮想: `assets://dir/name`、実: `dir/name`）。
+fn build_model(
+    name: String,
+    obj_models: &[tobj::Model],
+    obj_materials: &[tobj::Material],
+    tex_path: impl Fn(&str) -> PathBuf,
+) -> Model {
+    // ── テクスチャ ────────────────────────────────────────
     // OBJ は外部ファイル参照のみ。モデルファイルと同じディレクトリを基準とする。
     // (tex_name, linear) のタプルで用途を保持する:
     //   diffuse  → linear: false（sRGB カラーテクスチャ）
     //   normal   → linear: true （線形データテクスチャ）
     //   specular → linear: true （線形データテクスチャ）
-    let base_dir = path.parent().unwrap_or(Path::new("."));
     let textures: Vec<TextureData> = obj_materials.iter()
         .flat_map(|mat| {
             [
@@ -39,7 +116,7 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         .filter_map(|(name, linear)| Some((name?, linear)))
         .map(|(tex_name, linear)| TextureData {
             name:    Some(tex_name.to_string()),
-            source:  TextureSource::FilePath(base_dir.join(tex_name)),
+            source:  TextureSource::FilePath(tex_path(tex_name)),
             sampler: SamplerData::default(),
             linear,
         })
@@ -176,7 +253,7 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         root_nodes.push(node_idx);
     }
 
-    Ok(Model {
+    Model {
         name,
         nodes,
         root_nodes,
@@ -185,7 +262,7 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         textures,
         animations: Vec::new(),
         skins:      Vec::new(),
-    })
+    }
 }
 
 /// `tobj::Mesh` → `Primitive`（スキニングなし）
@@ -233,5 +310,53 @@ fn build_primitive(mesh: &tobj::Mesh) -> Primitive {
         meshlets,
         meshlet_vertices,
         meshlet_triangles,
+    }
+}
+
+// ============================================================
+//  テスト（ファイルシステムに触らない純粋部分）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 1 三角形 + MTL 参照を持つ最小 OBJ。
+    const OBJ: &str = "mtllib tri.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nusemtl red\nf 1/1/1 2/2/1 3/3/1\n";
+    /// map_Kd でテクスチャを参照する MTL。
+    const MTL: &str = "newmtl red\nKd 1 0 0\nmap_Kd tex.png\n";
+
+    /// メモリ上の OBJ/MTL から、マテリアルとテクスチャの仮想パスが組み立てられること。
+    #[test]
+    fn parses_from_bytes_with_virtual_texture_paths() {
+        let (models, mats) = load_from_bytes(OBJ.as_bytes(), |mtl_name| {
+            assert_eq!(mtl_name, "tri.mtl", "mtllib のファイル名で MTL を要求すること");
+            Some(MTL.as_bytes().to_vec())
+        }).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(mats.len(), 1);
+
+        let model = build_model("tri".into(), &models, &mats,
+            |tex| PathBuf::from(format!("assets://mainGame/models/{tex}")));
+        assert_eq!(model.meshes.len(), 1);
+        assert_eq!(model.meshes[0].primitives[0].indices.len(), 3);
+        assert_eq!(model.materials.len(), 1);
+        assert_eq!(model.materials[0].base_color_factor[..3], [1.0, 0.0, 0.0]);
+        assert_eq!(model.textures.len(), 1);
+        match &model.textures[0].source {
+            TextureSource::FilePath(p) =>
+                assert_eq!(p.to_string_lossy(), "assets://mainGame/models/tex.png"),
+            _ => panic!("テクスチャは仮想パスの FilePath であるべき"),
+        }
+    }
+
+    /// MTL が無くてもモデルは返ること（従来どおり）。
+    #[test]
+    fn missing_mtl_still_returns_model() {
+        let (models, mats) = load_from_bytes(OBJ.as_bytes(), |_| None).unwrap();
+        assert_eq!(models.len(), 1);
+        assert!(mats.is_empty());
+        let model = build_model("tri".into(), &models, &mats, |t| PathBuf::from(t));
+        assert_eq!(model.materials.len(), 1, "既定マテリアル 1 つで補われること");
     }
 }

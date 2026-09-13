@@ -95,7 +95,7 @@
 - [ ] **プロローグ会話システムの実機未検証項目** — 2026-09-07。文字送り・送りマーク点滅・カメラ補間の見た目、日本語＋空白＋角括弧を含むフォントパス（ゆずポップ Regular）の実読み込み、CamTarget_* の高さ（目線位置は推定値）、CamTarget_Owner が Hut に埋まる可能性、Text の自動折り返し無し（`
 ` 手動改行）。関連: `projects/WarashibeFishing/assets/prologue/scripts/Dialogue/`、`proLogue.scene`。
 
-- [ ] **OBJ ローダーが `assets://` 仮想パスを解決しない（派生キャッシュが無いと必ず失敗する）**
+- [x] **OBJ ローダーが `assets://` 仮想パスを解決しない（派生キャッシュが無いと必ず失敗する）**（2026-09-13 対応: obj_loader を asset_fs 経由のメモリ解析にし、MTL・テクスチャも仮想パスで解決。実データで確認）
   — 2026-09-13（モデル非同期ロードの実装中に発覚）。`obj_loader::load` は受け取ったパスを
   そのまま `tobj::load_obj` へ渡すため、`assets://mainGame/models/waterEffect/WaterColmn.obj`
   のような仮想パスは `Parse error: open file failed` になる。glTF 経路は
