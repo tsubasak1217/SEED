@@ -1512,6 +1512,9 @@ public sealed class RuntimeManager : IDisposable
                 CreateNoWindow         = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,
+                // cargo の出力は UTF-8。既定（OS コードページ）で読むと日本語が化ける。
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding  = System.Text.Encoding.UTF8,
             },
             EnableRaisingEvents = true,
         };
@@ -1593,6 +1596,10 @@ public sealed class RuntimeManager : IDisposable
             CreateNoWindow         = true,
             RedirectStandardError  = true,
             RedirectStandardOutput = true,
+            // ランタイム（Rust）とスクリプトホスト（C#、ScriptBridge の静的コンストラクタで UTF-8 に固定）は
+            // どちらも UTF-8 で書く。既定（OS コードページ）で読むと日本語が化ける。
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding  = System.Text.Encoding.UTF8,
         };
         // ヘッドレス起動時はランタイムへも伝える。
         // エディタのウィンドウが画面外にあると OS が WM_PAINT を配送せず、

@@ -13,6 +13,26 @@ namespace SEEDEditor.Scripting;
 /// </summary>
 public static unsafe class ScriptBridge
 {
+    /// <summary>
+    /// 標準出力／標準エラーの文字コードを UTF-8 に固定する。
+    ///
+    /// 既定は OS のコードページ（日本語 Windows では cp932）で、Rust 側（常に UTF-8）と
+    /// 同じストリームに混ざるため、読む側（エディタの Output パネル・配布物の logs/）で
+    /// どちらかの日本語が必ず化ける。ホストが最初に触られたときに 1 回だけ設定する。
+    /// BOM は付けない（設定のたびに BOM が出力へ混ざらないように）。
+    /// </summary>
+    static ScriptBridge()
+    {
+        try
+        {
+            Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        }
+        catch (Exception)
+        {
+            // コンソールハンドルが無い環境などでは設定できないことがある。ログは既定のまま続行する。
+        }
+    }
+
     // ─── ホスト API 登録 ──────────────────────────────────────
 
     /// <summary>
