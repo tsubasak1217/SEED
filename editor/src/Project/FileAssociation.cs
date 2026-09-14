@@ -105,6 +105,13 @@ public static class FileAssociation
             using (var cmdKey = Registry.CurrentUser.CreateSubKey(values.OpenCommandKeyPath))
                 cmdKey.SetValue(null, values.OpenCommandValue, RegistryValueKind.String);
 
+            // 5) 登録アプリ（Applications\SEEDEditor.exe）: ジャンプリストの JumpPath は
+            //    この登録で「対応する拡張子」を判定するため、ProgID とは別に書く。
+            using (var appCmdKey = Registry.CurrentUser.CreateSubKey(values.ApplicationOpenCommandKeyPath))
+                appCmdKey.SetValue(null, values.OpenCommandValue, RegistryValueKind.String);
+            using (var typesKey = Registry.CurrentUser.CreateSubKey(values.SupportedTypesKeyPath))
+                typesKey.SetValue(values.Extension, string.Empty, RegistryValueKind.String);
+
             NotifyShell();
             EditorLog.Write($"[関連付け] .seedproj を登録しました: {editorExePath}");
             error = null;

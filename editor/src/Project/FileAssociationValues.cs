@@ -43,7 +43,13 @@ public sealed record FileAssociationValues(
     string DefaultIconKeyPath,
     string DefaultIconValue,
     string OpenCommandKeyPath,
-    string OpenCommandValue)
+    string OpenCommandValue,
+    /// <summary>登録アプリ（Applications\SEEDEditor.exe）キーのパス。</summary>
+    string ApplicationKeyPath,
+    /// <summary>登録アプリの起動コマンドキーのパス。</summary>
+    string ApplicationOpenCommandKeyPath,
+    /// <summary>登録アプリの対応拡張子キーのパス（配下に .seedproj を空値で置く）。</summary>
+    string SupportedTypesKeyPath)
 {
     // ── 定数（レジストリの構造）────────────────────────────
 
@@ -61,6 +67,16 @@ public sealed record FileAssociationValues(
 
     /// <summary>ProgID 配下のアイコン指定サブキー。</summary>
     public const string DEFAULT_ICON_SUBKEY = "DefaultIcon";
+
+    /// <summary>
+    /// 「登録アプリ」としての登録先（<c>Software\Classes\Applications\SEEDEditor.exe</c>）のルート。
+    /// ProgID だけでも関連付けは動くが、タスクバーのジャンプリスト（JumpPath）は
+    /// 「その exe がその拡張子の登録ハンドラか」を Applications キーでも判定するため、両方に書く。
+    /// </summary>
+    public const string APPLICATIONS_ROOT = @"Software\Classes\Applications";
+
+    /// <summary>Applications キー配下で、対応する拡張子を列挙するサブキー名。</summary>
+    public const string SUPPORTED_TYPES_SUBKEY = "SupportedTypes";
 
     /// <summary>exe 内のアイコンインデックス（0 = 既定のアプリケーションアイコン）。</summary>
     private const int ICON_INDEX = 0;
@@ -94,6 +110,11 @@ public sealed record FileAssociationValues(
             DefaultIconKeyPath: $@"{CLASSES_ROOT}\{PROG_ID}\{DEFAULT_ICON_SUBKEY}",
             DefaultIconValue:   $"{quotedExe},{ICON_INDEX}",
             OpenCommandKeyPath: $@"{CLASSES_ROOT}\{PROG_ID}\{OPEN_COMMAND_SUBKEY}",
-            OpenCommandValue:   $"{quotedExe} \"{SHELL_PATH_PLACEHOLDER}\"");
+            OpenCommandValue:   $"{quotedExe} \"{SHELL_PATH_PLACEHOLDER}\"",
+            ApplicationKeyPath: $@"{APPLICATIONS_ROOT}\{System.IO.Path.GetFileName(editorExePath)}",
+            ApplicationOpenCommandKeyPath:
+                                $@"{APPLICATIONS_ROOT}\{System.IO.Path.GetFileName(editorExePath)}\{OPEN_COMMAND_SUBKEY}",
+            SupportedTypesKeyPath:
+                                $@"{APPLICATIONS_ROOT}\{System.IO.Path.GetFileName(editorExePath)}\{SUPPORTED_TYPES_SUBKEY}");
     }
 }

@@ -76,7 +76,6 @@ public static class Program
         // ── タスクバーのジャンプリスト ─────────────────────
         harness.Add("ジャンプリストは実在する .seedproj だけを順序通りに並べる", JumpListKeepsOnlyExistingInOrder);
         harness.Add("ジャンプリストは重複パスを除き最大件数で打ち切る",        JumpListDedupesAndCaps);
-        harness.Add("ジャンプリストの引数は引用符で囲まれる",                  JumpListQuotesArguments);
 
         // ── 関連付けの値 ────────────────────────────────────
         harness.Add("FileAssociation の値が HKCU 配下で組み立てられる",   AssociationValues);
@@ -765,7 +764,6 @@ public static class Program
         Check.Equal(2, items.Count, "実在する 2 件だけ");
         Check.Equal("ゲーム A", items[0].Title, "順序 1");
         Check.Equal("B", items[1].Title, "表示名が空ならファイル名");
-        Check.Equal(@"C:\p\B.seedproj", items[1].Description, "ツールチップはパス");
         Check.Equal(@"C:\p\B.seedproj", items[1].ProjectFilePath, "開くパス");
     }
 
@@ -786,15 +784,5 @@ public static class Program
         Check.Equal(items.Count, distinct, "重複なし");
     }
 
-    /// <summary>空白や日本語を含むパスは二重引用符で囲んで 1 引数にする。</summary>
-    private static void JumpListQuotesArguments()
-    {
-        var entries = new List<RecentProjectEntry>
-        {
-            new() { Path = @"D:\SEED projects\わらしべ.seedproj", Name = "わらしべ" },
-        };
-        var items = ProjectJumpListBuilder.Build(entries, _ => true);
-        Check.Equal("\"" + @"D:\SEED projects\わらしべ.seedproj" + "\"", items[0].Arguments, "引用符付き");
-    }
 
 }

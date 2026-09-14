@@ -177,13 +177,18 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 
 ### 5.1 タスクバーのジャンプリスト（右クリックの「最近」欄）
 
-タスクバーの SEED アイコン（起動中でもピン留めでも）を右クリックすると、「最近」欄に最近開いたプロジェクトが
-並ぶ（Visual Studio の「最近使ったもの」相当）。項目をクリックすると `.seedproj` を引数に SEEDEditor.exe が
-起動し、そのままエディタが開く。「タスク」欄の「スタート画面を開く」は引数なし起動。
+タスクバーの SEED アイコン（起動中でもピン留めでも）を右クリックすると、「最近」欄に最近開いたプロジェクトの
+`.seedproj` が並ぶ（Visual Studio の「最近使ったもの」相当）。
 
+- 項目は `.seedproj` そのもの（JumpPath）。クリックすると関連付けで SEEDEditor.exe が起動してそのプロジェクトが開き、
+  右クリックには Windows 標準の「フォルダーの場所を開く」が付く（プロジェクトのフォルダが開く）。
+- 表示名は Windows が `.seedproj` のファイル名から決める（JumpPath は表示名を持てない）。
+- 一覧の下のアプリ項目「SEED」を右クリック →「ファイルの場所を開く」でエンジン（exe）のフォルダが開く。
+  以前あった「スタート画面を開く」タスクは、アプリ項目のクリックと同じ動作だったため廃止した。
+- JumpPath は「その exe が `.seedproj` の登録ハンドラ」のときだけ表示されるため、更新前に関連付け
+  （HKCU の ProgID と `Applications\SEEDEditor.exe`）を確認し、無ければ登録する。ヘッドレス起動では触らない。
 - 元データはスタート画面と同じ `recent_projects.json`。実在する `.seedproj` だけを最大 10 件並べる。
-- 更新はプロジェクトを開いたとき・一覧から外したとき・スタート画面を出したとき（`ProjectJumpList.Refresh`）。
-  ヘッドレス起動では OS のジャンプリストを触らない。
+  更新はプロジェクトを開いたとき・一覧から外したとき・スタート画面を出したとき（`ProjectJumpList.Refresh`）。
 - 項目の組み立て（`ProjectJumpListBuilder`）は WPF 非依存で、`ProjectSystemTests` で検証している。
 - 一覧は exe のパス単位で OS が保持する（`%APPDATA%\Microsoft\Windows\Recent\CustomDestinations`）。
   別の場所にビルドしたエディタは別の一覧になる。

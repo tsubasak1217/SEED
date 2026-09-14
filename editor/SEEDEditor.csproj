@@ -9,6 +9,10 @@
     <!-- エディタ（エンジン）のバージョン。新規プロジェクトの .seedproj へ engine_version として
          記録され、スタート画面のタイトル横にも出る。取得は SEEDEditor.Project.EditorVersion。 -->
     <Version>0.1.0</Version>
+    <!-- タスクバー・ジャンプリスト・ファイルのプロパティに出る名前（FileDescription / ProductName）。
+         「SEED Editor」だとジャンプリストの「スタート画面を開く」と同じに見えるため短く SEED にする。 -->
+    <AssemblyTitle>SEED</AssemblyTitle>
+    <Product>SEED</Product>
     <!-- exe のアイコン（スタート画面・.seedproj 関連付けでも同じアイコンを使う。仮: templates/textures/symmetryORE1.png 由来） -->
     <ApplicationIcon>resources/app.ico</ApplicationIcon>
     <!-- SDK のデフォルト Page グロブを無効化し、src/ を明示指定する -->
