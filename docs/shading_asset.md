@@ -592,7 +592,7 @@ Edit / ポーズ中はデバッグカメラで描くため `main_camera_shading_
 （rt_off / rt_on / rt_bindless）で通ることをテスト
 `toon_asset_passes_naga_validation_for_all_variants` が保証している。
 
-> テスト側が実ファイルを `include_str!` しないのは、`projects/WarashibeFishing/assets/` が
+> テスト側が実ファイルを `include_str!` しないのは、`<project>/assets/` が
 > このリポジトリのコミット対象外だからである（取り込むと新規クローンでビルドが落ちる）。
 > **この 3 か所（アセット実体・テストのリテラル・本節）は同一内容に保つこと。**
 

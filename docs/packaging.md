@@ -453,7 +453,7 @@ dotnet run --project editor/tests/PackagingCollectorTests -- "<アセットル�
 ```
 
 `<アセットルート>` には**エディタが使うパスをそのまま**渡すこと
-（プロジェクトの `assets/` フォルダ。例: `projects/WarashibeFishing/assets`。
+（プロジェクトの `assets/` フォルダ。例: `D:\SEED_projects\WarashibeFishing\assets`。
 実体側のパスを渡すと `.scene` に書かれた絶対パス参照が一致せず、モデルが丸ごと落ちて見える）。
 
 引数なしで実行すると単体テストが走る。

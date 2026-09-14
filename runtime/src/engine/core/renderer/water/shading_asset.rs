@@ -1007,7 +1007,7 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// 正本（コピー元）:
     /// - `templates/shaders/magma.wgsl`（テンプレートライブラリ）
     /// - `templates/shaders/poison.wgsl`（同）
-    /// - `projects/WarashibeFishing/assets/mainGame/shaders/pop_ocean.wgsl`
+    /// - `<project>/assets/mainGame/shaders/pop_ocean.wgsl`
     ///
     /// **正本を更新したらフィクスチャも同じ内容へコピーし直すこと**（バイト一致が前提）。
     #[test]

@@ -147,7 +147,7 @@ cargo build -p new_plugin
 
 ### 5. project_settings.json に有効化エントリを追加する
 
-`projects/WarashibeFishing/assets/project_settings.json` の `"plugins"` 配列（`PluginEntry`）に追記
+`<project>/assets/project_settings.json` の `"plugins"` 配列（`PluginEntry`）に追記
 （未記載でもデフォルトで有効扱いだが、明示登録を推奨）:
 
 ```json

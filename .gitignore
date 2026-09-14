@@ -78,42 +78,18 @@ editor/settings/
 /tools/netcoredbg/
 
 # =========================
-# プロジェクト（projects/<Name>/）とテンプレートライブラリ（templates/）
-#   テキスト系（.seedproj / scene / actor / anim / json / cs / wgsl 等）は追跡する。
-#   重いバイナリ（画像/モデル/音声/地形ボクセル/フォント/アーカイブ）は除外（実体はローカルのみ）。
-#   実行時・パッケージ化の生成物（cache/ save/ logs/ build/）は追跡しない。
+# ゲームプロジェクト（<Name>.seedproj + assets/ + plugins/）はこのリポジトリの外で管理する
+#   （例: D:\SEED_projects\WarashibeFishing。バージョン管理はエンジンとは別系統 = Lore を予定。
+#   docs/project_system.md「既存ゲームの移行記録」参照）。
+#   誤ってリポジトリ内に作られたプロジェクトを追跡しないよう projects/ は丸ごと除外する。
 # =========================
-projects/**/*.png
-projects/**/*.jpg
-projects/**/*.jpeg
-projects/**/*.tga
-projects/**/*.bmp
-projects/**/*.gif
-projects/**/*.hdr
-projects/**/*.exr
-projects/**/*.webp
-projects/**/*.dds
-projects/**/*.ktx2
-projects/**/*.glb
-projects/**/*.gltf
-projects/**/*.bin
-projects/**/*.fbx
-projects/**/*.obj
-projects/**/*.max
-projects/**/*.usda
-projects/**/*.smd1
-projects/**/*.smdl
-projects/**/*.wav
-projects/**/*.mp3
-projects/**/*.ogg
-projects/**/*.flac
-projects/**/*.tcover
-projects/**/*.tvox
-projects/**/*.blend
-projects/**/*.blend1
-projects/**/*.zip
-projects/**/*.ttf
-projects/**/*.otf
+projects/
+
+# =========================
+# テンプレートライブラリ（templates/）
+#   テキスト系（scene / actor / anim / json / cs / wgsl 等）は追跡する。
+#   重いバイナリ（画像/モデル/音声/地形ボクセル/フォント/アーカイブ）は除外（実体はローカルのみ）。
+# =========================
 templates/**/*.png
 templates/**/*.jpg
 templates/**/*.jpeg
@@ -145,10 +121,6 @@ templates/**/*.blend1
 templates/**/*.zip
 templates/**/*.ttf
 templates/**/*.otf
-projects/*/cache/
-projects/*/save/
-projects/*/logs/
-projects/*/build/
 
 # =========================
 # セーブデータ（ゲーム進行の永続化。開発者ごとのローカル状態なので追跡しない）

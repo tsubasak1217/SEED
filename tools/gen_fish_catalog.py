@@ -5,13 +5,16 @@
 **同一の出力**を、エディタ無しでも作れるようにしたフォールバック実装。
 CI や、ランタイム／エディタをビルドできない環境での再生成に使う。
 
-生成元は `projects/WarashibeFishing/assets/mainGame/actors/Fish/Lv<N>/<name>.actor` 群のみで、
+生成元は `<project>/assets/mainGame/actors/Fish/Lv<N>/<name>.actor` 群のみで、
 レベルはディレクトリ名（`Lv<N>`）を唯一の情報源とする。
 （実行時のレベルは FishManager の levels 配列から引かれるが、あれはシーン内データで
 　図鑑生成のためだけにシーンを読むのは依存が重いので、prefab の置き場所を正典とする）
 
 使い方:
-    python tools/gen_fish_catalog.py [--repo <SEEDのルート>] [--check]
+    python tools/gen_fish_catalog.py [--project <プロジェクトのフォルダ or .seedproj>] [--check]
+
+    --project を省略すると環境変数 SEED_PROJECT（エディタ／ランタイムと同じ）を使う。
+    アセットルートは .seedproj の assets_dir（既定 "assets"）から解決する。
 
     --check を付けると書き込まずに、既存ファイルと一致するかだけを検証する
     （終了コード 0 = 一致 / 1 = 不一致・未生成）。
@@ -27,11 +30,15 @@ import sys
 
 # ─── 定数（マジックナンバー・マジックストリング禁止）─────────────────────
 
-#: このスクリプトから見たリポジトリルート（tools/ の 1 つ上）。
-DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#: プロジェクトの場所を示す環境変数（エディタ／ランタイムと同じ名前）。
+PROJECT_ENV_VAR = "SEED_PROJECT"
 
-#: assets ルート（リポジトリルートからの相対）。
-ASSETS_REL_ROOT = os.path.join("projects", "WarashibeFishing", "assets")
+#: プロジェクトファイルの拡張子。
+PROJECT_FILE_EXT = ".seedproj"
+
+#: .seedproj の中でアセットルートを指すキーと、省略時の既定値。
+PROJECT_ASSETS_DIR_KEY = "assets_dir"
+DEFAULT_ASSETS_DIR_NAME = "assets"
 
 #: 魚 prefab の置き場所（assets ルートからの相対）。
 FISH_ACTOR_REL_DIR = "mainGame/actors/Fish"
@@ -65,7 +72,7 @@ GENERATED_HEADER = (
     "// 自動生成 — 編集しないで「図鑑画像を生成」で再生成\n"
     "// （エディタ: Tools > 図鑑画像を生成 / cmd: generate_fish_thumbnails /\n"
     "//   エディタ無し: python tools/gen_fish_catalog.py）\n"
-    "// 生成元: projects/WarashibeFishing/assets/mainGame/actors/Fish/Lv<N>/*.actor\n"
+    "// 生成元: <project>/assets/mainGame/actors/Fish/Lv<N>/*.actor\n"
 )
 
 
@@ -100,12 +107,43 @@ def _fish_display_name(actor: dict, fallback: str) -> str:
     return fallback
 
 
-def collect_entries(repo_root: str) -> list[dict]:
+def resolve_project_file(project: str) -> str:
+    """--project に渡された「フォルダ or .seedproj」から .seedproj の絶対パスを決める。
+
+    フォルダが渡されたときは、その直下にある唯一の .seedproj を採用する
+    （0 個・複数はエラー: どれを指すのか推測しない）。
+    """
+    project = os.path.abspath(project)
+    if os.path.isfile(project):
+        if not project.lower().endswith(PROJECT_FILE_EXT):
+            raise ValueError(f"プロジェクトファイルではありません: {project}")
+        return project
+    if not os.path.isdir(project):
+        raise ValueError(f"プロジェクトが見つかりません: {project}")
+    candidates = sorted(
+        os.path.join(project, name) for name in os.listdir(project)
+        if name.lower().endswith(PROJECT_FILE_EXT))
+    if len(candidates) != 1:
+        raise ValueError(f"{PROJECT_FILE_EXT} が 1 つに決まりません（{len(candidates)} 個）: {project}")
+    return candidates[0]
+
+
+def resolve_assets_root(project: str) -> str:
+    """.seedproj の assets_dir（省略時は "assets"）からアセットルートの絶対パスを返す。
+
+    エディタ／ランタイムと同じ規則（プロジェクトフォルダからの相対）で解決する。
+    """
+    project_file = resolve_project_file(project)
+    project_dir = os.path.dirname(project_file)
+    assets_dir = _read_json(project_file).get(PROJECT_ASSETS_DIR_KEY) or DEFAULT_ASSETS_DIR_NAME
+    return os.path.normpath(os.path.join(project_dir, assets_dir))
+
+
+def collect_entries(assets_root: str) -> list[dict]:
     """魚 prefab を走査して、カタログ 1 行ぶんの辞書のリストを返す。
 
     並び順は「レベル昇順 → アクタ名の辞書順」で決定的（差分が安定する）。
     """
-    assets_root = os.path.join(repo_root, ASSETS_REL_ROOT)
     fish_dir = os.path.join(assets_root, *FISH_ACTOR_REL_DIR.split("/"))
     entries: list[dict] = []
 
@@ -261,13 +299,23 @@ def render_catalog_cs(entries: list[dict]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="FishCatalog.cs を prefab から生成する")
-    parser.add_argument("--repo", default=DEFAULT_REPO_ROOT, help="SEED リポジトリのルート")
+    parser.add_argument("--project", default=os.environ.get(PROJECT_ENV_VAR),
+                        help=f"プロジェクトのフォルダ or {PROJECT_FILE_EXT}（省略時は環境変数 {PROJECT_ENV_VAR}）")
     parser.add_argument("--check", action="store_true", help="書き込まず、既存ファイルとの一致だけ検証する")
     args = parser.parse_args()
 
-    entries = collect_entries(args.repo)
+    if not args.project:
+        print(f"[NG] プロジェクトが指定されていません（--project か環境変数 {PROJECT_ENV_VAR}）")
+        return 2
+    try:
+        assets_root = resolve_assets_root(args.project)
+    except ValueError as e:
+        print(f"[NG] {e}")
+        return 2
+
+    entries = collect_entries(assets_root)
     source = render_catalog_cs(entries)
-    out_path = os.path.join(args.repo, ASSETS_REL_ROOT, *CATALOG_CS_REL_PATH.split("/"))
+    out_path = os.path.join(assets_root, *CATALOG_CS_REL_PATH.split("/"))
 
     if args.check:
         if not os.path.isfile(out_path):

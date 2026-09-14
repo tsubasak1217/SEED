@@ -4,7 +4,7 @@
 
 ## なぜコピーを置くのか
 
-プロジェクトの `assets/`（例: `projects/WarashibeFishing/assets/`）はユーザーがエディタ上でファイルを自由に移動・改名・削除できる
+プロジェクトの `assets/`（例: `<project>/assets/`）はユーザーがエディタ上でファイルを自由に移動・改名・削除できる
 **作業領域** である。テストがそこを `include_str!` していると、ユーザーがアセットを
 1 つ動かしただけでクレートがコンパイル不能になる（実際に発生した）。
 そのため「出荷サンプルが壊れていないこと」を確かめるテストは、プロジェクトの `assets/` を
@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | `shaders/magma.wgsl` | `templates/shaders/magma.wgsl` | `renderer::water::shading_asset` |
 | `shaders/poison.wgsl` | `templates/shaders/poison.wgsl` | 同上 |
-| `shaders/pop_ocean.wgsl` | `projects/WarashibeFishing/assets/mainGame/shaders/pop_ocean.wgsl` | 同上 |
+| `shaders/pop_ocean.wgsl` | `<project>/assets/mainGame/shaders/pop_ocean.wgsl` | 同上 |
 | `terrain/cover_materials.json` | `templates/terrain/cover_materials.json` | `terrain::cover::tests_cover` |
 | `terrain/props.json` | `templates/terrain/props.json` | `app::terrain_scatter_ops` |
 | `terrain/layers.json` | `templates/terrain/layers.json` | 同上 |
