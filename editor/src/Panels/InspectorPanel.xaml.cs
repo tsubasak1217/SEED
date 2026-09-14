@@ -1219,16 +1219,38 @@ public partial class InspectorPanel : UserControl
     /// <param name="visible">このアクター自身の表示フラグ。</param>
     private void RebuildActorVisibleToggle(bool visible)
     {
-        ActorVisibleToggleHost.Content = SEEDEditor.Controls.VisibilityToggle.Create(
+        // ヘッダは背景が暗く、継承色＋不透明度だけでは目アイコンがほとんど見えなかったため、
+        // 状態ごとの色を明示し、不透明度は 1 に戻す（状態の違いは色で伝える）。
+        var brush = new SolidColorBrush(visible ? ActorVisibleOnColor : ActorVisibleOffColor);
+        var host = SEEDEditor.Controls.VisibilityToggle.Create(
             visible,
-            next => _runtime?.SendToRuntime(
-                SEEDEditor.Controls.VisibilityToggle.BuildCommand(_currentActorId, next)),
-            ActorVisibleToggleIconSize);
+            next =>
+            {
+                _runtime?.SendToRuntime(
+                    SEEDEditor.Controls.VisibilityToggle.BuildCommand(_currentActorId, next));
+                // ランタイムは SET_VISIBLE に対して ACTOR_COMPONENTS を返さないため、ここで
+                // 作り直さないとトグルが古い値（表示中）を持ち続け、非表示→表示に戻せない。
+                // 楽観的に新しい値で作り直し、以後届く ACTOR_COMPONENTS が正典として上書きする。
+                RebuildActorVisibleToggle(next);
+            },
+            ActorVisibleToggleIconSize,
+            brush);
+        host.Opacity = ActorVisibleToggleOpacity;
+        ActorVisibleToggleHost.Content    = host;
         ActorVisibleToggleHost.Visibility = Visibility.Visible;
     }
 
     /// <summary>インスペクタのアクタ名横に出す目アイコンの一辺サイズ（px）。</summary>
     private const double ActorVisibleToggleIconSize = 14.0;
+
+    /// <summary>目アイコンの色（表示中）。ヘッダの文字色と同じ明るさ。</summary>
+    private static readonly Color ActorVisibleOnColor = Color.FromRgb(0xE6, 0xE6, 0xE6);
+
+    /// <summary>目アイコンの色（非表示中）。暗い背景でも判読できる灰色。</summary>
+    private static readonly Color ActorVisibleOffColor = Color.FromRgb(0x9A, 0x9A, 0x9A);
+
+    /// <summary>目アイコンの不透明度。色で状態を伝えるので薄くしない。</summary>
+    private const double ActorVisibleToggleOpacity = 1.0;
 
     private void BuildActorComponentList(string json)
     {

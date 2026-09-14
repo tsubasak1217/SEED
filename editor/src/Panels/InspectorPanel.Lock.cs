@@ -53,10 +53,13 @@ public partial class InspectorPanel
     private const double InspectorLockOnOpacity = 1.0;
 
     /// <summary>非ロック時のアイコン不透明度（主張しすぎない）。</summary>
-    private const double InspectorLockOffOpacity = 0.35;
+    private const double InspectorLockOffOpacity = 0.95;
 
     /// <summary>ロック中のアイコン色（有効であることを一目で分かるように着色する）。</summary>
     private static readonly Color InspectorLockOnColor = Color.FromRgb(0xE5, 0xC0, 0x7B);
+
+    /// <summary>未固定時の鍵アイコンの色。継承色だと暗い背景に溶けて見えなかったため明示する。</summary>
+    private static readonly Color InspectorLockOffColor = Color.FromRgb(0xC8, 0xC8, 0xC8);
 
     // ── アイコンキー（editor/gen_icons.py の CATALOG と対応）───────────
 
@@ -264,7 +267,7 @@ public partial class InspectorPanel
         var icon = AppIcon.Create(
             _inspectorLocked ? InspectorLockOnIconKey : InspectorLockOffIconKey,
             InspectorLockIconSize);
-        if (_inspectorLocked) icon.Foreground = new SolidColorBrush(InspectorLockOnColor);
+        icon.Foreground = new SolidColorBrush(_inspectorLocked ? InspectorLockOnColor : InspectorLockOffColor);
 
         var host = new Border
         {
