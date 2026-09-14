@@ -261,6 +261,61 @@
             </Setter>
         </Style>
 
+        <!-- ════════════════════════════════════════════════════════════════
+             ツリーの開閉ハンドル（ヒエラルキー / プロジェクト / テンプレート取り込みのツリー共通）
+
+             白抜きの三角 1 つだけを描く。閉じた状態は右向き ▷、開いた状態は下向き ▽。
+             折りたたみセクションの見出し（MainWindow の DarkExpanderStyle・インスペクタの
+             アコーディオン）と同じ見た目に揃える。ToolBar の ToggleButton スタイルは
+             チェック時に枠と背景が付いて「四角で囲まれたシェブロン」に見えるため使わない。
+
+             使い方: TreeViewItem のテンプレート内で
+               <ToggleButton Style="{StaticResource TreeExpanderToggleStyle}"
+                             IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"/>
+             三角の向きは IsChecked で切り替わる（テンプレート側で Path を置く必要はない）。
+             ════════════════════════════════════════════════════════════════ -->
+        <SolidColorBrush x:Key="TreeExpanderStroke"      Color="#B4B4B4"/>
+        <SolidColorBrush x:Key="TreeExpanderStrokeHover" Color="#FFFFFF"/>
+        <!-- 閉じた状態（右向き ▷）と開いた状態（下向き ▽）の輪郭。
+             座標を 0.5 ずらして 1px の線をピクセル中心に載せ、にじみを抑える。 -->
+        <Geometry x:Key="TreeExpanderClosedGeometry">M 0.5,0.5 L 5.5,4.5 L 0.5,8.5 Z</Geometry>
+        <Geometry x:Key="TreeExpanderOpenGeometry">M 0.5,0.5 L 8.5,0.5 L 4.5,5.5 Z</Geometry>
+
+        <Style x:Key="TreeExpanderToggleStyle" TargetType="{x:Type ToggleButton}">
+            <!-- 行の高さに合わせた 16x16 のクリック領域。フォーカスは取らない（矢印キー操作をツリーに残す） -->
+            <Setter Property="Width"     Value="16"/>
+            <Setter Property="Height"    Value="16"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <!-- 透明な背景で 16x16 全体をクリック可能にする（Background が null だとヒットしない） -->
+                        <Border Background="Transparent">
+                            <!-- 輪郭だけの三角。Fill は無し（白抜き） -->
+                            <Path x:Name="Arrow"
+                                  Data="{StaticResource TreeExpanderClosedGeometry}"
+                                  Stroke="{StaticResource TreeExpanderStroke}" StrokeThickness="1"
+                                  Width="6" Height="9" Stretch="None"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"
+                                  SnapsToDevicePixels="True"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <!-- 開いた状態: 下向き ▽（幅と高さも入れ替える） -->
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Arrow" Property="Data"   Value="{StaticResource TreeExpanderOpenGeometry}"/>
+                                <Setter TargetName="Arrow" Property="Width"  Value="9"/>
+                                <Setter TargetName="Arrow" Property="Height" Value="6"/>
+                            </Trigger>
+                            <!-- ホバー: 線を白くして押せることを示す -->
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Arrow" Property="Stroke" Value="{StaticResource TreeExpanderStrokeHover}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         </ResourceDictionary>
     </Application.Resources>
 </Application>

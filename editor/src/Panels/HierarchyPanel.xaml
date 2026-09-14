@@ -41,16 +41,11 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <!-- 折りたたみトグル -->
+                                        <!-- 折りたたみトグル。見た目は App.xaml の TreeExpanderToggleStyle（閉 ▷ / 開 ▽ の白抜き三角）で共通化 -->
                                         <ToggleButton x:Name="Expander" Grid.Column="0"
                                                       IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
-                                                      Width="16" Height="16"
-                                                      Style="{StaticResource {x:Static ToolBar.ToggleButtonStyleKey}}"
-                                                      Visibility="Hidden">
-                                            <Path x:Name="Arrow" Data="M 0,0 L 4,4 L 8,0 Z"
-                                                  Fill="#888888" Width="8" Height="5"
-                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </ToggleButton>
+                                                      Style="{StaticResource TreeExpanderToggleStyle}"
+                                                      Visibility="Hidden"/>
                                         <ContentPresenter Grid.Column="1"
                                                           ContentSource="Header"
                                                           HorizontalAlignment="Left"
@@ -79,7 +74,6 @@
                             <!-- 展開中 -->
                             <Trigger Property="IsExpanded" Value="True">
                                 <Setter TargetName="ItemsHost"  Property="Visibility" Value="Visible"/>
-                                <Setter TargetName="Arrow"      Property="Data"        Value="M 0,4 L 8,4 L 4,0 Z"/>
                                 <Setter TargetName="IndentLine" Property="Visibility" Value="Visible"/>
                             </Trigger>
                             <!-- 選択中（ハイライトはコンテンツ幅の RowHighlight に描画し、右側の空白は塗らない） -->
