@@ -2161,7 +2161,7 @@ public partial class InspectorPanel : UserControl
         // 矢印（展開/折り畳みインジケータ）
         var arrow = new TextBlock
         {
-            Text              = "▼",
+            Text              = "▽",
             Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
             FontSize          = 8,
             VerticalAlignment = VerticalAlignment.Center,
@@ -2276,7 +2276,7 @@ public partial class InspectorPanel : UserControl
         var toggle = _expandStates.TrackCustom(expandKey, defaultExpanded: true, expanded =>
         {
             contentWrapper.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
-            arrow.Text                = expanded ? "▼" : "▶";
+            arrow.Text                = expanded ? "▽" : "▷";
         });
 
         // ── ヘッダーのマウス操作（開閉トグル / リネーム / 参照ドラッグ元）──
@@ -4506,7 +4506,7 @@ public partial class InspectorPanel : UserControl
 
         var arrow = new TextBlock
         {
-            Text              = "▶",
+            Text              = "▷",
             Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
             FontSize          = 8,
             VerticalAlignment = VerticalAlignment.Center,
@@ -4547,7 +4547,7 @@ public partial class InspectorPanel : UserControl
             ExpandKeyMaterialsPrefix + info.SlotIdx, defaultExpanded: false, expanded =>
             {
                 slotsPanel.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
-                arrow.Text            = expanded ? "▼" : "▶";
+                arrow.Text            = expanded ? "▽" : "▷";
             });
 
         header.MouseLeftButtonDown += (_, e) =>

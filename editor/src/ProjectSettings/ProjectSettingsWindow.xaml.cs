@@ -253,7 +253,7 @@ public partial class ProjectSettingsWindow : Window
         content.Children.Add(new TextBlock
         {
             // ▼: 展開中, ▶: 折りたたみ中
-            Text              = expanded ? "▼" : "▶",
+            Text              = expanded ? "▽" : "▷",
             Foreground        = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
             FontSize          = 8,
             Width             = 14,

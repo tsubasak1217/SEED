@@ -615,8 +615,8 @@
                                     </Style>
                                 </ToggleButton.Style>
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock x:Name="Arrow" Text="▶"
-                                               Foreground="#888888" FontSize="8"
+                                    <TextBlock x:Name="Arrow" Text="▷"
+                                               Foreground="#B4B4B4" FontSize="10"
                                                VerticalAlignment="Center" Margin="0,0,5,0"/>
                                     <ContentPresenter ContentSource="Header"
                                                       TextBlock.Foreground="#AAAAAA"
@@ -633,7 +633,7 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsExpanded" Value="True">
                                 <Setter TargetName="Content" Property="Visibility" Value="Visible"/>
-                                <Setter TargetName="Arrow"   Property="Text"       Value="▼"/>
+                                <Setter TargetName="Arrow"   Property="Text"       Value="▽"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
