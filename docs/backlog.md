@@ -1172,3 +1172,24 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   関連: `editor/src/Project/EngineVersionGate.cs`。
 - [ ] **「以後確認しない」オプションが無い** — 2026-09-15。チームで意図的に `engine_version` を更新せず運用したい場合、
   プロジェクトを開くたび同じ確認ダイアログが出続ける。関連: `editor/src/Project/EngineVersionGate.cs`。
+
+## バージョン管理（Lore）— 2026-09-15 スパイク時の残件（正典: docs/vcs_lore.md）
+
+- [ ] **ロック強制の前提となる認証（JWT）が未整備** — 2026-09-15。`[server.auth]` 無しではロック所有者も push ユーザーも
+  `<unknown>` になり「他人のロック」を判定できない。候補はチーム共有鍵で自己発行する JWT（LAN）／外部 OIDC（クラウド）。
+  決まるまでロック UI は取得・解放・表示に留める。関連: `tools/seed-loreserver/README.md`「ロック強制を実装するときの設計案」。
+- [ ] **push フックから変更ファイル一覧が取れない** — 2026-09-15。`HookContext` は repository / branch / revision / user /
+  metadata（client_ip）のみ。ロック照合には revision から差分を出す必要があり、200 ms のフック制限に収まらない恐れ。
+  クライアント側の保存ゲートを主、サーバ側は粗い判定に留める案。関連: `tools/seed-loreserver/src/hooks/push_guard.rs`。
+- [ ] **`seed_file_lock_store` は単一プロセス・同期 I/O** — 2026-09-15。`std::fs` で async ランタイムをブロックし、
+  Mutex を握ったまま書くので高頻度では読み取りも詰まる。低頻度・小ファイル前提の割り切り。マルチノード化時は S3/DynamoDB へ。
+- [ ] **seed-loreserver の常駐化・本番設定** — 2026-09-15。ポートを既定（41337/41339）へ戻し、証明書を恒久化し、
+  ログオン時の自動起動（タスク スケジューラ）と、チーム接続時の `host = "0.0.0.0"` ＋ファイアウォール規則を用意する。
+- [ ] **upstream（Lore）更新で壊れる箇所の確認手順** — 2026-09-15。`Cargo.lock` の継承、`[patch.crates-io] quinn-proto`、
+  `.cargo/config.toml` の `--cfg`、`ServerConfig` のフィールド、`LockStore` trait、`HookContext`、
+  `FailedPrecondition` のマッピング。関連: `tools/seed-loreserver/README.md`「upstream 更新時の手順」。
+- [ ] **CLI の罠をエディタ側で吸収する** — 2026-09-15。`stage . --scan`、空コミット防止、`sync` の競合判定は `flagConflict*`、
+  `resolve mine`（=リモート）／`theirs`（=ローカル）の言い換え、リネームは `stage move`。関連: `docs/vcs_lore.md` §3.1。
+- [ ] **未確認事項** — 複数マシン・ネットワーク越しの性能、認証有効時のロック所有者表示、`--cache` 付き clone のオフライン能力、
+  C# 非同期 API（`.WaitAsync()` / `.AsyncIter()`）と `LoreError` の実送出、数 GB 規模でのマージ性能、
+  リリース版 `loreserver.exe` のプラグイン構成、`--release` ビルド。
