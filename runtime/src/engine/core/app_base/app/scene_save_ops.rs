@@ -13,10 +13,13 @@
 //   ・別名保存（SAVE_SCENE_AS）だけがパスを変更でき、成功後に読み込み中パスを更新する。
 //   ・複製出力（SAVE_SCENE_COPY, Play 用一時シーン）は読み込み中パスを変更しない。
 //   ・書き込みは safe_write 経由（.tmp → rename ＋ .backup へ世代バックアップ）。
+//   ・**エディタ視点（位置・向き）は `.scene` へ書かない**。ユーザー別サイドカー
+//     （`editor_view_state.rs` = `cache/editor/view/**.view.json`）へ分離する。
 // ============================================================
 
 use std::path::Path;
 
+use crate::engine::core::app_base::editor_view_state::{self, EditorViewState};
 use crate::engine::core::app_base::scene::DebugCameraData;
 
 use super::App;
@@ -88,7 +91,7 @@ impl App {
                 None => {
                     // 一度も読み込んでいない＝新規シーンの初回保存。
                     // 書いてよいが、以後の上書き保存の基準にするためパスを採用する。
-                    self.write_scene_file(&path, true);
+                    self.write_scene_file(&path, SceneSaveMode::Overwrite);
                     return;
                 }
                 Some(loaded) => {
@@ -101,8 +104,7 @@ impl App {
         }
 
         // ── 2. 書き込み ───────────────────────────────────────────
-        let adopt = mode != SceneSaveMode::Copy;
-        self.write_scene_file(&path, adopt);
+        self.write_scene_file(&path, mode);
     }
 
     /// 地形の実体をフラッシュしてからシーンを保存する（IPC ハンドラの入口）。
@@ -143,8 +145,26 @@ impl App {
         }
     }
 
-    /// 実際に .scene を書き出す。`adopt` が true なら読み込み中パスを更新する。
-    fn write_scene_file(&mut self, path: &str, adopt: bool) {
+    /// 実際に .scene を書き出す。
+    ///
+    /// 【エディタ視点の行き先を決める唯一の場所】
+    /// - 上書き保存 / 別名保存（＝共有される `.scene`）
+    ///     → `.scene` には書かず、ユーザー別サイドカーへ書く。
+    ///       人ごとに違う値を共有ファイルへ入れないための分離であり、これが本改修の目的。
+    /// - 複製出力（`SceneSaveMode::Copy` ＝ Play 用一時シーン `%TEMP%\SEED\_play_temp.scene`）
+    ///     → 従来どおり `.scene` の `debug_camera` 節へ埋め込む。
+    ///       このファイルは共有されないので衝突しようがなく、Play 側で
+    ///       「メインカメラを持たないシーンのフォールバック視点」として必要。
+    ///       サイドカーは書かない（一時ファイルの視点をキャッシュへ残す意味が無い）。
+    ///
+    /// `mode` が `Copy` 以外なら、書き込み成功後に読み込み中パスを更新する。
+    fn write_scene_file(&mut self, path: &str, mode: SceneSaveMode) {
+        // Copy だけが「共有されない複製」。それ以外は作品ファイルそのもの。
+        let is_shared_scene = mode != SceneSaveMode::Copy;
+
+        // 現在の視点は scene を借りる前に取っておく（&self と &mut self の衝突回避）。
+        let cam_data = self.debug_camera_data();
+
         let Some(scene) = &self.scene else {
             if let Some(ipc) = &self.ipc {
                 ipc.send(SAVE_ERROR_NO_SCENE);
@@ -152,12 +172,19 @@ impl App {
             return;
         };
 
-        let cam_data = self.debug_camera_data();
+        // 共有される .scene には視点を渡さない（None なら debug_camera 節ごと出力されない）。
+        let embedded_camera = if is_shared_scene { None } else { Some(&cam_data) };
 
-        match scene.save(Path::new(path), &cam_data) {
+        match scene.save(Path::new(path), embedded_camera) {
             Ok(()) => {
-                if adopt {
+                if is_shared_scene {
                     self.loaded_scene_path = Some(path.to_string());
+                    // 視点はユーザー別サイドカーへ。失敗しても保存は成功扱い
+                    // （視点は利便性であり、作品データの保存可否とは別問題）。
+                    editor_view_state::save_for_scene(
+                        path,
+                        &EditorViewState::from_camera(&cam_data),
+                    );
                 }
                 if let Some(ipc) = &self.ipc {
                     ipc.send("SAVE_OK");
@@ -173,8 +200,10 @@ impl App {
 
     /// 現在のデバッグカメラ（Edit のフリーカメラ）を保存データへ写し取る。
     ///
-    /// `.scene` への保存と、Play スナップショットのメモリ内直列化
-    /// （`play_snapshot.rs`）の両方が同じ値を必要とするため関数化してある。
+    /// 3 つの用途が同じ値を必要とするため関数化してある:
+    ///   1. ユーザー別サイドカーへの視点保存（`write_scene_file` → `editor_view_state`）
+    ///   2. Play 用一時シーンへの視点埋め込み（`SceneSaveMode::Copy`）
+    ///   3. Play スナップショットのメモリ内直列化（`play_snapshot.rs`）
     pub(super) fn debug_camera_data(&self) -> DebugCameraData {
         let pos = self.camera.base.transform.position;
         DebugCameraData {

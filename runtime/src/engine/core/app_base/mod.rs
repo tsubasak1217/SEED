@@ -1,4 +1,7 @@
 pub mod app;
+/// エディタ視点（デバッグカメラの位置・向き）のユーザー別サイドカー
+/// （`<プロジェクト>/cache/editor/view/**.view.json`）
+pub mod editor_view_state;
 pub mod ipc;
 pub mod safe_write;
 pub mod scene;

@@ -253,7 +253,7 @@ impl App {
         // ── シーン JSON（.scene と同じ形式）を組み立てる ──
         //   ここで初めて json_actors を借りる。失敗しても Play は続行し、
         //   完全復元だけをあきらめる（軽量スナップショットは有効なまま）。
-        let scene_json = match scene.to_json_with_actors(&camera, &json_actors) {
+        let scene_json = match scene.to_json_with_actors(Some(&camera), &json_actors) {
             Ok(json) => Some(json),
             Err(e) => {
                 eprintln!(
@@ -599,7 +599,7 @@ mod tests {
         let camera   = DebugCameraData::default();
 
         let json = scene
-            .to_json_with_actors(&camera, &captured.json_actors)
+            .to_json_with_actors(Some(&camera), &captured.json_actors)
             .expect("直列化できること");
 
         // Scene::from_json と同じ型で読み戻す（GPU 無しで検証できる範囲）。
@@ -633,9 +633,9 @@ mod tests {
         let actors: Vec<ActorData> =
             scene.actors.iter().map(|a| a.to_data(&scene.world)).collect();
 
-        let via_owned    = scene.to_json(&camera).expect("直列化できること");
+        let via_owned    = scene.to_json(Some(&camera)).expect("直列化できること");
         let via_borrowed = scene
-            .to_json_with_actors(&camera, &actors)
+            .to_json_with_actors(Some(&camera), &actors)
             .expect("直列化できること");
         assert_eq!(via_owned, via_borrowed, "アクター列が同じなら出力も同一であること");
     }

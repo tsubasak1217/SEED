@@ -149,8 +149,9 @@ public partial class MainWindow
     /// 最後に .scene への永続化（SET_SCENE_SETTINGS）を要求する。
     ///
     /// 例外は 1 つ:
-    ///  - CameraTransform: カメラの位置・回転はシーン設定（settings 節）ではなく
-    ///    .scene の debug_camera 節が持つため、CAM_TRANSFORM だけを送る。
+    ///  - CameraTransform: カメラの位置・回転はシーン設定（settings 節）に含まれず、
+    ///    ユーザー別のサイドカー（&lt;プロジェクト&gt;/cache/editor/view/**.view.json）が持つ。
+    ///    書き出すのはランタイムのシーン保存時なので、ここでは CAM_TRANSFORM だけを送る。
     ///
     /// なおシーンビュー表示モード（view_mode）はこのウィンドウの管轄外で、
     /// ツールバーの CmbViewMode が直接持つ（OnViewModeChanged → SendPostFx）。

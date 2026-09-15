@@ -15,7 +15,9 @@ namespace SEEDEditor.SceneSettings;
 
 /// <summary>
 /// シーンビュー（Edit モードのデバッグカメラ）の表示・投影設定。
-/// カメラの「位置・向き」は .scene の別ノード（debug_camera 節）が持つため、ここには含めない。
+/// ここに入るのは「チームで共有したい」項目だけ（画角・描画距離・移動速度・2D 投影）。
+/// カメラの「位置・向き」は人ごとに違いコンフリクトの原因になるため、
+/// ユーザー別のサイドカー（&lt;プロジェクト&gt;/cache/editor/view/**.view.json）が持つ。
 /// </summary>
 public sealed class DebugCameraSettings
 {

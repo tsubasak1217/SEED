@@ -307,8 +307,14 @@ public partial class CreateItemWindow : Window
     ///
     /// ランタイムの `SceneData`（runtime/src/engine/core/app_base/scene.rs）で
     /// `#[serde(default)]` が付いていない必須キーは `name` と `actors` の 2 つだけであり、
-    /// `debug_camera` / `shading_asset` / `settings` はすべて省略可能。
+    /// `shading_asset` / `settings` / `terrain_dir` はすべて省略可能。
     /// したがってこの 2 キーだけがロード可能な最小構成になる。
+    ///
+    /// なおトップレベルの `debug_camera`（エディタ視点）は **書いてはいけない**。
+    /// 人ごとに違う値でコンフリクトするため、視点はユーザー別のサイドカー
+    /// （`&lt;プロジェクト&gt;/cache/editor/view/**.view.json`）へ分離済みで、
+    /// ランタイムの保存処理もこのキーを出力しない（読むだけの後方互換キー）。
+    /// 共有したい画角・移動速度は `settings.debug_camera` が持つ。
     /// </summary>
     private void OnCreateScene(object sender, RoutedEventArgs e)
     {

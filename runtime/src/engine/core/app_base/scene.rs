@@ -122,6 +122,15 @@ impl Default for CanvasCameraData {
 #[derive(Serialize, Deserialize)]
 struct SceneData {
     name:   String,
+    /// **旧形式の**エディタ視点（デバッグカメラの位置・向き・fov/far/speed）。
+    ///
+    /// 【読むが書かない】
+    /// 人ごとに必ず違う値なので、保存のたびに差分が出て複数人開発では必ず衝突した。
+    /// 現在は視点を `cache/editor/view/**.view.json`（`editor_view_state.rs`）へ、
+    /// 共有したい fov/far/speed を `settings.debug_camera` へ分離してあり、
+    /// **書き出し側（`SceneDataRef`）はこのキーを出さない**。
+    /// ここに残しているのは既存 `.scene` を読むための後方互換だけで、
+    /// そのシーンを保存し直した時点でキーごと消える（移行ツールは不要）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     debug_camera: Option<DebugCameraData>,
     /// シーン既定のシェーディングアセット（WGSL ファイル）のパス。
@@ -165,6 +174,13 @@ struct SceneData {
 #[derive(Serialize)]
 struct SceneDataRef<'a> {
     name:   &'a str,
+    /// エディタ視点（旧形式）。**共有される `.scene` へは常に `None` を渡すこと。**
+    ///
+    /// `Some` を渡してよいのは「そのファイルが共有されない」と言い切れる複製出力だけ
+    /// （現状は Play 用一時シーン `%TEMP%\SEED\_play_temp.scene` と、Play 開始状態の
+    /// メモリ内スナップショット）。どちらもディスク上の共有ファイルにはならないので、
+    /// 視点を埋めても衝突は起きず、Play 側で「メインカメラが無いときのフォールバック視点」
+    /// として従来どおり効かせられる。
     #[serde(skip_serializing_if = "Option::is_none")]
     debug_camera: Option<&'a DebugCameraData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -451,7 +467,11 @@ impl Scene {
     /// アクター列は `self.actors` を丸ごと `to_data` した内容になる。
     /// **アクター列を差し替えて書きたい場合**（Play スナップショットのように地形
     /// サブツリーを位置マーカーへ削ぐなど）は `to_json_with_actors` を直接呼ぶ。
-    pub fn to_json(&self, camera: &DebugCameraData) -> Result<String, SceneError> {
+    ///
+    /// # 引数
+    /// * `camera` - エディタ視点を `debug_camera` 節として埋め込むか。
+    ///   共有される `.scene` には **必ず `None`**（規約は `SceneDataRef::debug_camera` 参照）。
+    pub fn to_json(&self, camera: Option<&DebugCameraData>) -> Result<String, SceneError> {
         let actors: Vec<ActorData> =
             self.actors.iter().map(|a| a.to_data(&self.world)).collect();
         self.to_json_with_actors(camera, &actors)
@@ -468,13 +488,14 @@ impl Scene {
     /// そこだけを引数にして直列化本体（メタデータの組み立てと JSON 化）を共有する。
     pub fn to_json_with_actors(
         &self,
-        camera: &DebugCameraData,
+        camera: Option<&DebugCameraData>,
         actors: &[ActorData],
     ) -> Result<String, SceneError> {
         // 借用版の直列化型を使い、メタデータの clone を避ける。
         let data = SceneDataRef {
             name:         &self.name,
-            debug_camera: Some(camera),
+            // エディタ視点は共有ファイルへ書かない（`None` なら丸ごと省略される）。
+            debug_camera: camera,
             // シーン既定のシェーディングアセット（未設定なら None のまま出力を省略する）
             shading_asset:    self.shading_asset.as_deref(),
             shading_params:   &self.shading_params,
@@ -489,7 +510,15 @@ impl Scene {
     }
 
     /// シーンを `.scene` ファイルへ保存する（直列化は `to_json` に委譲）。
-    pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
+    ///
+    /// # 引数
+    /// * `path`   - 書き込み先の実パス
+    /// * `camera` - `debug_camera` 節として埋め込むエディタ視点。
+    ///   **共有される `.scene`（上書き保存・別名保存）では必ず `None`** を渡すこと。
+    ///   視点は `editor_view_state` のユーザー別サイドカーが持つ。
+    ///   `Some` を渡してよいのは Play 用一時シーンのような共有されない複製だけ
+    ///   （判断は `app/scene_save_ops.rs::write_scene_file` に集約してある）。
+    pub fn save(&self, path: &Path, camera: Option<&DebugCameraData>) -> Result<(), SceneError> {
         let json = self.to_json(camera)?;
         // 直接 write せず「旧版を .backup へ退避 → .tmp へ書き切ってから rename」する。
         // 途中で落ちても元の .scene は無傷で残り、誤った内容で上書きしても
@@ -543,13 +572,33 @@ impl Scene {
     }
 
     /// `.scene` ファイルを読み込んでシーンを構築する（構築本体は `from_json`）。
+    ///
+    /// 【エディタ視点の解決はここだけ】
+    /// 返すデバッグカメラは「ユーザー別サイドカー（`cache/editor/view/**.view.json`）
+    /// → `.scene` のトップレベル `debug_camera`（旧シーン互換）→ 無し」の優先順で決まる。
+    /// **ファイルから読む経路すべて**（Play 起動・IPC `LOAD_SCENE`・スクリプトのシーン遷移・
+    /// Play 停止時の開始シーン読み直し）がこの関数を通るため、ここに置けば経路差が出ない。
+    ///
+    /// 逆に `from_json`（メモリ上の JSON からの復元＝Play 開始状態のスナップショット）は
+    /// サイドカーを見ない。スナップショットには Play 開始時点の視点が埋め込まれており、
+    /// そちらを正とするのが正しい（`app/play_snapshot.rs`）。
     pub fn load(
         path:           &Path,
         ctx:            &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
-        let raw = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
-        Self::from_json(&raw, ctx, scripting_host)
+        let path_str = path.to_str().unwrap_or("");
+        let raw = crate::engine::asset_fs::read_string(path_str)?;
+        let (scene, cam) = Self::from_json(&raw, ctx, scripting_host)?;
+
+        // ユーザー別サイドカーがあれば position / yaw / pitch だけを差し替える
+        // （fov / far / speed は旧シーンの値 or 既定のまま。settings 節があれば
+        //  呼び出し側の `apply_scene_settings` が直後に上書きする）。
+        let cam = crate::engine::core::app_base::editor_view_state::merge_into_camera(
+            cam,
+            crate::engine::core::app_base::editor_view_state::load_for_scene(path_str),
+        );
+        Ok((scene, cam))
     }
 
     /// `.scene` の JSON テキストからシーンを構築する（ファイル読み込みを伴わない）。
@@ -1220,7 +1269,7 @@ mod folder_transform_tests {
         scene.actors.push(parent);
 
         let camera = DebugCameraData::default();
-        let json   = scene.to_json(&camera).expect("直列化できること");
+        let json   = scene.to_json(Some(&camera)).expect("直列化できること");
         let data: SceneData = serde_json::from_str(&json).expect("読み込み側の型で読めること");
 
         assert_eq!(data.name, "round_trip");
@@ -1228,11 +1277,69 @@ mod folder_transform_tests {
         assert_eq!(data.terrain_dir.as_deref(), Some("terrain/round_trip"));
         assert_eq!(data.shading_params.get("tint"), Some(&[1.0, 2.0, 3.0, 4.0]));
         assert_eq!(data.shading_bindings.get("target").map(String::as_str), Some("Actor|Model|pos"));
-        assert!(data.debug_camera.is_some(), "デバッグカメラが往復する");
+        assert!(data.debug_camera.is_some(), "明示的に渡したデバッグカメラは往復する");
         assert_eq!(data.actors.len(), 1, "トップレベルアクター数が往復する");
         assert_eq!(data.actors[0].name, "Parent");
         assert_eq!(data.actors[0].children.len(), 1, "子ツリーが往復する");
         assert_eq!(data.actors[0].children[0].name, "Child");
+    }
+
+    /// **共有される `.scene` にはエディタ視点（`debug_camera`）を 1 バイトも書かない。**
+    ///
+    /// これが本改修の核心の不変条件。ここが崩れると「保存するたびに人ごとの視点で
+    /// 差分が出てコンフリクトする」という元の問題がそのまま戻る。
+    /// キーの有無を JSON の生テキストで直接検査する（型を経由すると
+    /// `skip_serializing_if` の取り違えを見逃すため）。
+    #[test]
+    fn saved_scene_json_has_no_top_level_debug_camera() {
+        let mut scene = Scene::new("no_view_state");
+        let e = scene.world.spawn();
+        scene.world.insert(e, Transform::default());
+        scene.actors.push(Actor::new(e, "Solo"));
+
+        // `Scene::save` が使うのと同じ引数（camera = None）で直列化する。
+        let json = scene.to_json(None).expect("直列化できること");
+
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON として読めること");
+        let obj = value.as_object().expect("トップレベルはオブジェクト");
+        assert!(
+            !obj.contains_key("debug_camera"),
+            "共有される .scene にエディタ視点が書かれている: {json}"
+        );
+        // 生テキストにも現れないこと（ネストした別ノードに紛れ込んでいない保証）
+        assert!(
+            !json.contains("debug_camera"),
+            "出力のどこかに debug_camera が残っている: {json}"
+        );
+        // 共有すべき情報は従来どおり出る
+        assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some("no_view_state"));
+        assert!(obj.contains_key("actors"));
+
+        // 書いた JSON は読み込み側の型でそのまま読めること（キー欠落で壊れない）。
+        let data: SceneData = serde_json::from_str(&json).expect("読み込み側の型で読めること");
+        assert!(data.debug_camera.is_none(), "読み戻しても視点は無い");
+        assert_eq!(data.actors.len(), 1);
+    }
+
+    /// 旧 `.scene`（トップレベル `debug_camera` あり）は今も読める（後方互換）。
+    ///
+    /// 保存し直せばキーは消えるが、それまでの間は旧形式のまま開けなければならない。
+    #[test]
+    fn legacy_scene_with_debug_camera_is_still_readable() {
+        let raw = r#"{
+            "name": "legacy",
+            "debug_camera": {
+                "position": [1.0, 2.0, 3.0],
+                "yaw": 0.5, "pitch": -0.25,
+                "fov_deg": 60.0, "far": 500.0, "speed": 12.0
+            },
+            "actors": []
+        }"#;
+        let data: SceneData = serde_json::from_str(raw).expect("旧形式が読めること");
+        let cam = data.debug_camera.expect("旧形式の視点が読めること");
+        assert_eq!(cam.position, [1.0, 2.0, 3.0]);
+        assert_eq!(cam.fov_deg, 60.0);
+        assert_eq!(cam.speed, 12.0);
     }
 
     /// ActorData（is_folder=true / Actor2D）の serde 往復後も、読み込み経路を通せば
