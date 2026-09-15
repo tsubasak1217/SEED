@@ -1,0 +1,41 @@
+# =============================================================================
+# seed-loreserver ビルド設定
+# =============================================================================
+# upstream Lore のワークスペース root (.cargo/config.toml) と同じ rustflags を
+# 再宣言する。[patch] と同じく .cargo/config.toml も「ビルドを起動した
+# ワークスペース」のものしか効かないため、ここで揃えないと依存 crate が
+# 違う cfg でコンパイルされて壊れる。
+#
+# 必須なもの:
+#   --cfg tokio_unstable : lore-server が tokio-metrics の RuntimeMonitor を
+#                          使うために必要 (無いとコンパイルエラー)
+#   --cfg uuid_unstable  : uuid の IntoBytes/FromBytes を有効にする
+#   -C target-feature=+crt-static (windows-msvc)
+#                        : upstream と同じ CRT リンク方法に揃える
+#
+# clippy の -W フラグ群は警告設定にすぎないので、ここでは持ち込まない
+# (upstream のコードに対して SEED 側のリント方針を押し付けない)。
+#
+# NOTE: [target.<triple>] の rustflags は [build] とマージされず「置き換え」
+#       になる。Windows 用ブロックにも共通フラグを重複して書くこと。
+# =============================================================================
+
+[build]
+rustflags = [
+    "--cfg", "tokio_unstable",
+    "-C", "force-unwind-tables=yes",
+    "-C", "force-frame-pointers=yes",
+    "--cfg", "uuid_unstable",
+]
+rustdocflags = ["--cfg", "tokio_unstable"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "--cfg", "tokio_unstable",
+    "-C", "force-unwind-tables=yes",
+    "-C", "force-frame-pointers=yes",
+    "-C", "target-feature=+crt-static",
+    # Windows ではデバッグ情報を常に別ファイル (PDB) へ分離する
+    "-C", "split-debuginfo=packed",
+    "--cfg", "uuid_unstable",
+]

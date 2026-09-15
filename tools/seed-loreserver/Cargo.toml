@@ -1,0 +1,91 @@
+# =============================================================================
+# seed-loreserver : SEED 専用の Lore サーバ実行ファイル
+# =============================================================================
+# Epic Games の OSS バージョン管理 Lore (MIT) のサーバ本体 (lore-server crate)
+# をライブラリとして取り込み、SEED 独自のプラグイン／フックを登録した上で
+# 起動するだけの薄いラッパー crate。
+#
+# 素の `loreserver` バイナリはプラグインとフックを build.rs による
+# コンパイル時登録でしか増やせないため、SEED 用の追加実装
+# (ファイル永続化ロックストア／push ガードフック) を載せるには
+# 自前のバイナリが必要になる。将来 Epic 公式の強制ロック機能が入ったら
+# ここの自作分を削るだけで乗り換えられるよう、実装は薄く保つこと。
+#
+# NOTE: この crate は SEED の runtime/ ワークスペースには参加させない。
+#       Lore は edition 2024 / 独自 rustflags (.cargo/config.toml) を要求し、
+#       SEED 本体のビルド設定と混ぜると双方が壊れるため、単独プロジェクトとする。
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 単独ワークスペース宣言 (必須)
+# -----------------------------------------------------------------------------
+# SEED リポジトリの root にも Cargo ワークスペース (SEED/Cargo.toml) があるため、
+# 空の [workspace] を置いてこの crate をそこから切り離す。
+# これが無いと "current package believes it's in a workspace when it's not" で
+# ビルドできない。root 側 Cargo.toml は触らない方針なのでこちらで対処する。
+# -----------------------------------------------------------------------------
+[workspace]
+
+[package]
+name = "seed-loreserver"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "SEED 向けに拡張した Lore サーバ (ロック永続化 + push ガードフック)"
+license = "MIT"
+
+# 出力される実行ファイル名。素の loreserver と取り違えないよう別名にする。
+[[bin]]
+name = "seed-loreserver"
+path = "src/main.rs"
+
+# -----------------------------------------------------------------------------
+# 依存関係
+# -----------------------------------------------------------------------------
+# upstream Lore はまだ crates.io に公開されていないため、すべて git 依存。
+# tag を固定してビルドの再現性を確保する (v0.9.0 から動かさない)。
+# -----------------------------------------------------------------------------
+[dependencies]
+# サーバ本体。server_main() / ServerConfig / プラグイン・フックの trait を提供。
+lore-server = { git = "https://github.com/EpicGames/lore", tag = "v0.9.0" }
+# LockResource / LockData / Hash / RepositoryId (= Partition) / BranchId (= Context)
+lore-base = { git = "https://github.com/EpicGames/lore", tag = "v0.9.0" }
+# LockStore trait / LockQuery / LockError、および timestamp() ユーティリティ
+lore-revision = { git = "https://github.com/EpicGames/lore", tag = "v0.9.0" }
+
+anyhow = "1"
+async-trait = "0.1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+tracing = "0.1"
+
+[dev-dependencies]
+# 一時ディレクトリ (ロックストアの単体テストで使用)
+tempfile = "3"
+# #[tokio::test] で async な LockStore メソッドを直接叩くために必要。
+# 現在のスレッドだけで回す最小構成で十分。
+tokio = { version = "1", features = ["macros", "rt"] }
+
+# -----------------------------------------------------------------------------
+# quinn-proto のパッチ (必須)
+# -----------------------------------------------------------------------------
+# upstream Lore はワークスペース root の [patch.crates-io] で quinn-proto を
+# 自前フォーク (vendor/quinn-proto) に差し替えており、そこで追加された
+# TransportConfig::max_rtt() を lore-server / lore-transport が実際に呼んでいる
+# (lore-server/src/quic/quinn/quinn_server.rs:115、lore-transport/src/quic/client.rs:761)。
+# [patch] は「依存元のワークスペース root」でしか効かないため、
+# ここで同じ差し替えを再宣言しないと crates.io 版 0.11.13 が使われて
+# `no method named max_rtt` でビルドが落ちる。
+# -----------------------------------------------------------------------------
+[patch.crates-io]
+quinn-proto = { git = "https://github.com/EpicGames/lore", tag = "v0.9.0" }
+
+# -----------------------------------------------------------------------------
+# ビルドプロファイル
+# -----------------------------------------------------------------------------
+# upstream に合わせてデバッグ情報を行テーブルのみに落とす。
+# リンク時間と target/ サイズ、リンカのピークメモリを大きく下げられる。
+[profile.dev]
+debug = "line-tables-only"
