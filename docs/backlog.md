@@ -1145,3 +1145,30 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   どちらもファイル全体を書き出すので、後から保存したほうが相手の変更を消す。検出も警告も無い。
   タブを開くときに「同じファイルを他パネルが開いていないか」を問い合わせる口が要る。
   関連: `editor/src/Panels/ProjectPanel.TextEdit.cs`、`docs/editor_script_panel.md` §6。
+
+## エディタ視点サイドカー（cache/editor/view/**.view.json）— 2026-09-15 実装時の残件
+
+- [ ] **旧シーンで `settings` 節が無いものは、再保存時に fov/far/speed が既定へ戻る** — 2026-09-15。
+  `.scene` のトップレベル `debug_camera` にしか値が無い旧シーンを保存し直すと、トップレベルが消える一方で
+  `settings.debug_camera` が作られないため。全 `.scene` を走査した結果、該当は `templates/scenes/animation.scene` の
+  `speed=3.095869`（→ 5.0 に戻る）1 件のみで、実プロジェクトのシーンはすべて `settings.debug_camera` を保持済み。
+  対処するならロード時に「`settings` が無く `debug_camera` がある」ときだけ fov/far/speed を `scene.settings` へ
+  移し替える（`settings` 節を新規生成すると rendering/lod/physics の project_settings.json フォールバックを潰すので要注意）。
+  関連: `runtime/src/engine/core/app_base/scene.rs`（`load`）。
+- [ ] **シーンの改名・削除でサイドカーが孤児になる（GC なし）** — 2026-09-15。`cache/thumbnails/` の肥大化と同種。
+  まとめて「cache の掃除」機能を用意するのが筋。関連: `runtime/src/engine/core/app_base/editor_view_state.rs`。
+- [ ] **シーン切り替え時の視点保存は未実装** — 2026-09-15。保存せずに別シーンへ移ると視点は記録されない。
+  素朴に「切り替え前に書く」と、同一シーンの再読み込みで保存済み視点へ戻らなくなるため、
+  実装するなら「切り替え先が別シーンのときだけ書く」判定が要る。関連: `app/scene_save_ops.rs`。
+- [ ] **`SAVE_SCENE_COPY` は今も `.scene` へ視点を埋め込む** — 2026-09-15。現状の唯一の用途が
+  `%TEMP%\SEED\_play_temp.scene`（共有されない）なので許容しているが、将来 SAVE_SCENE_COPY を
+  「コピーを書き出す」ユーザー機能に流用する場合は、そのコピーに個人の視点が入らないよう分岐を足すこと
+  （判断箇所は `app/scene_save_ops.rs::write_scene_file`）。
+
+## engine_version 不一致チェック — 2026-09-15 実装時の残件
+
+- [ ] **`EngineVersionGate` は自動テスト対象外** — 2026-09-15。WPF（`MessageBox`）依存のため `ProjectSystemTests` に
+  リンクできず、ダイアログ選択→保存の分岐は手動確認のみ。判定ロジック本体（`EngineVersionCheck`）はテスト済み。
+  関連: `editor/src/Project/EngineVersionGate.cs`。
+- [ ] **「以後確認しない」オプションが無い** — 2026-09-15。チームで意図的に `engine_version` を更新せず運用したい場合、
+  プロジェクトを開くたび同じ確認ダイアログが出続ける。関連: `editor/src/Project/EngineVersionGate.cs`。

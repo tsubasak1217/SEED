@@ -21,12 +21,17 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   plugins/             ネイティブプラグイン DLL
 
   cache/               モデル等の変換キャッシュ（ランタイムが生成）
+    editor/view/       エディタ視点（デバッグカメラの位置・向き）のユーザー別サイドカー
+                       `<シーン相対パス>.view.json`。`.scene` には書かない（共有すると必ず衝突するため）
   save/                セーブデータ（ランタイムが生成）
   logs/                ゲーム実行ログ
   build/               パッケージ化の出力（build/windows など）
 ```
 
 `cache/` `save/` `logs/` `build/` は **実行時・ビルド時に自動生成される**。
+`cache/editor/view/` はエディタ専用のセッション状態で、失っても視点が既定に戻るだけ
+（実装: `runtime/src/engine/core/app_base/editor_view_state.rs`。fov / far / speed などの共有設定は
+従来どおり `.scene` の `settings.debug_camera`）。
 エディタは新規作成時にも作らない（何も起きていないのに空フォルダが並ぶのを避けるため）。
 バージョン管理からは除外してよい。
 
@@ -125,6 +130,40 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 起動時のアセットルートを前提に状態を持っているため。
 プロセスを分ければ「古いプロジェクトの状態が残る」事故が原理的に起きない。
 
+### 3.1 engine_version の不一致チェック
+
+チーム制作でエディタ（エンジン）を更新しながらゲームを作る運用を想定し、
+プロジェクトを**開く直前**に `.seedproj` の `engine_version` と、実行中エディタの版
+（`EditorVersion.Current`。`SEEDEditor.csproj` の `<Version>` 由来）を比較する。
+
+判定ロジックは `editor/src/Project/EngineVersionCheck.cs`（WPF 非依存の純粋関数。
+`editor/tests/ProjectSystemTests` で検証）。比較は `"major.minor.patch[...]"` を
+`.` 区切りの非負整数列として扱い、`+` 以降のビルドメタデータと `-` 以降の
+プレリリース識別子は比較前に落とす。要素数が異なる場合は短い方を 0 で補う
+（`"0.1.0"` と `"0.1.0.0"` は同値）。
+
+| 判定 (`EngineVersionComparison`) | 意味 | 挙動 |
+|---|---|---|
+| `Same` | 一致 | 何もしない |
+| `ProjectOlder` | プロジェクトの方が古い版で作られた | ダイアログで「このまま開く」／「engine_version を更新して開く」を選ばせる |
+| `ProjectNewer` | プロジェクトの方が新しい版で作られた | 強めの警告ダイアログで「このまま開く」／「開かない（スタート画面へ戻る）」を選ばせる |
+| `Unknown` | どちらか（大抵は旧プロジェクトで `engine_version` が空）が解釈できない | ログにのみ記録し、ダイアログは出さない |
+
+通知・更新（「更新して開く」を選んだ場合の `.seedproj` 保存し直しを含む）は
+`editor/src/Project/EngineVersionGate.cs` が担う。呼び出し箇所は
+`editor/src/App.xaml.cs`（`OpenProjectAndShowEditor`）と
+`editor/src/Startup/StartWindow.xaml.cs`（`OpenProject`）の 2 か所で、
+どちらも `ProjectContext.OpenFromFile` の直前に `EngineVersionGate.CheckBeforeOpen` を呼ぶ。
+「更新して開く」を選んだ場合の保存は既存の `SeedProjectFile.Save` をそのまま使うため、
+未知キー（`JsonExtensionData`）は失われない。
+
+ダイアログは既存の `editor/src/Headless/EditorDialogs.cs` を経由するため、
+ヘッドレス起動（`docs/editor_mcp.md`）では自動的に抑止され、ログへ 1 行落ちるだけで
+**「このまま開く・engine_version は更新しない」側で続行する**（AI エージェント運用等の
+自動化を止めないための意図的な既定値。通常起動時の「安全側＝触らない」という
+既定方針とは異なる、本機能固有の例外）。判定結果は `Same` を含め、
+`EditorLog` へ必ず 1 行残る。
+
 ---
 
 ## 4. ファイル関連付け（`.seedproj` のダブルクリック）
@@ -217,6 +256,8 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 | 最近のプロジェクト一覧 | `editor/src/Project/RecentProjectsStore.cs` |
 | 関連付け（値／レジストリ） | `editor/src/Project/FileAssociationValues.cs` / `FileAssociation.cs` |
 | エディタ版の取得 | `editor/src/Project/EditorVersion.cs` |
+| engine_version の不一致判定（純粋ロジック） | `editor/src/Project/EngineVersionCheck.cs` |
+| engine_version 不一致時の通知・更新（ダイアログ・保存） | `editor/src/Project/EngineVersionGate.cs` |
 | 起動引数の解析 | `editor/src/Headless/EditorStartupOptions.cs` |
 | 起動時の振り分け判断 | `editor/src/Startup/ProjectStartupResolver.cs` |
 | スタート画面 | `editor/src/Startup/StartWindow.xaml(.cs)` |
