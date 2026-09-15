@@ -324,6 +324,15 @@ public partial class StartWindow : Window
     /// <param name="projectFilePath">開く .seedproj の絶対パス。</param>
     private void OpenProject(string projectFilePath)
     {
+        // engine_version の食い違いを確認する（判定・通知は EngineVersionGate に一任）。
+        // 利用者が「開かない」を選んだ場合はスタート画面はそのまま維持し、
+        // ステータス行に理由を出して打ち切る（MainWindow は生成しない）。
+        if (!EngineVersionGate.CheckBeforeOpen(projectFilePath))
+        {
+            ShowStatus(EngineVersionGate.DeclinedStatusMessage, isError: true);
+            return;
+        }
+
         ProjectPaths paths;
         try
         {

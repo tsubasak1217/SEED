@@ -133,6 +133,16 @@ public partial class App : Application
     private void OpenProjectAndShowEditor(
         string projectFilePath, RecentProjectsStore recentStore, bool isHeadless)
     {
+        // engine_version の食い違いを確認する（判定・通知は EngineVersionGate に一任）。
+        // 利用者が明示的に「開かない」を選んだ場合だけ false が返る
+        // （プロジェクトの方が新しいエンジンで作られていた警告ダイアログでのみ起こり得る）。
+        // ヘッドレスではこの分岐へは来ない（ダイアログが自動的に「続行」側の既定値へ倒れるため）。
+        if (!EngineVersionGate.CheckBeforeOpen(projectFilePath))
+        {
+            new StartWindow(EngineVersionGate.DeclinedStatusMessage).Show();
+            return;
+        }
+
         ProjectPaths paths;
         try
         {

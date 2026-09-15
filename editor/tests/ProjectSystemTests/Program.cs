@@ -39,6 +39,17 @@ public static class Program
         harness.Add("新しい format_version は拒否される",                 SeedProjectFutureVersionThrows);
         harness.Add("フォルダから .seedproj を探せる",                    SeedProjectFindInDirectory);
 
+        // ── engine_version の判定（EngineVersionCheck） ──────
+        harness.Add("engine_version が一致すれば Same",                   EngineVersionSameIsDetected);
+        harness.Add("プロジェクトが古ければ ProjectOlder",                 EngineVersionProjectOlderIsDetected);
+        harness.Add("プロジェクトが新しければ ProjectNewer",               EngineVersionProjectNewerIsDetected);
+        harness.Add("ビルドメタデータ (+xxx) は比較前に落ちる",            EngineVersionBuildMetadataIsIgnored);
+        harness.Add("プレリリース識別子 (-beta) は比較前に落ちる",         EngineVersionPrereleaseIsIgnored);
+        harness.Add("プロジェクト側が空・null なら Unknown",               EngineVersionEmptyProjectVersionIsUnknown);
+        harness.Add("解釈できない文字列は Unknown",                        EngineVersionInvalidVersionIsUnknown);
+        harness.Add("4 要素以上のバージョンも要素数の差を 0 補完して比較する",
+                                                                          EngineVersionFourComponentIsComparedWithPadding);
+
         // ── ProjectPaths ────────────────────────────────────
         harness.Add("ProjectPaths が各フォルダを導出する",                ProjectPathsDerivation);
         harness.Add("ProjectPaths はランタイムの導出（assets の親）と一致する",
@@ -197,6 +208,73 @@ public static class Program
 
         Check.Equal(null, SeedProjectFile.FindInDirectory(temp.Combine("no_such_dir")),
                     "存在しないフォルダは null");
+    }
+
+    // ============================================================
+    //  engine_version の判定（EngineVersionCheck）
+    // ============================================================
+
+    /// <summary>完全一致は Same。</summary>
+    private static void EngineVersionSameIsDetected()
+    {
+        var result = EngineVersionCheck.Compare("0.1.0", "0.1.0");
+        Check.Equal(EngineVersionComparison.Same, result.Comparison, "0.1.0 vs 0.1.0");
+    }
+
+    /// <summary>プロジェクト側が数値として小さければ ProjectOlder（エディタの方が新しい）。</summary>
+    private static void EngineVersionProjectOlderIsDetected()
+    {
+        var result = EngineVersionCheck.Compare("0.1.0", "0.2.0");
+        Check.Equal(EngineVersionComparison.ProjectOlder, result.Comparison, "0.1.0 vs 0.2.0");
+    }
+
+    /// <summary>プロジェクト側が数値として大きければ ProjectNewer（プロジェクトの方が新しい）。</summary>
+    private static void EngineVersionProjectNewerIsDetected()
+    {
+        var result = EngineVersionCheck.Compare("0.3.0", "0.2.0");
+        Check.Equal(EngineVersionComparison.ProjectNewer, result.Comparison, "0.3.0 vs 0.2.0");
+    }
+
+    /// <summary>"+abc" のビルドメタデータは比較前に落ちるため "0.1.0+abc" と "0.1.0" は同値。</summary>
+    private static void EngineVersionBuildMetadataIsIgnored()
+    {
+        var result = EngineVersionCheck.Compare("0.1.0+abc", "0.1.0");
+        Check.Equal(EngineVersionComparison.Same, result.Comparison, "0.1.0+abc vs 0.1.0");
+        Check.Equal("0.1.0", result.ProjectVersionNormalized, "正規化後の文字列からメタデータが落ちている");
+    }
+
+    /// <summary>"-beta" のようなプレリリース識別子も比較前に落ちる。</summary>
+    private static void EngineVersionPrereleaseIsIgnored()
+    {
+        var result = EngineVersionCheck.Compare("1.0.0-beta", "1.0.0");
+        Check.Equal(EngineVersionComparison.Same, result.Comparison, "1.0.0-beta vs 1.0.0");
+    }
+
+    /// <summary>.seedproj の engine_version が空・null（＝旧プロジェクト）なら Unknown。</summary>
+    private static void EngineVersionEmptyProjectVersionIsUnknown()
+    {
+        var result = EngineVersionCheck.Compare("", "0.1.0");
+        Check.Equal(EngineVersionComparison.Unknown, result.Comparison, "空文字 vs 0.1.0");
+
+        var resultNull = EngineVersionCheck.Compare(null, "0.1.0");
+        Check.Equal(EngineVersionComparison.Unknown, resultNull.Comparison, "null vs 0.1.0");
+    }
+
+    /// <summary>数値として解釈できない文字列は Unknown。</summary>
+    private static void EngineVersionInvalidVersionIsUnknown()
+    {
+        var result = EngineVersionCheck.Compare("not-a-version", "0.1.0");
+        Check.Equal(EngineVersionComparison.Unknown, result.Comparison, "不正な文字列 vs 0.1.0");
+    }
+
+    /// <summary>4 要素以上のバージョンも、足りない要素を 0 として比較する。</summary>
+    private static void EngineVersionFourComponentIsComparedWithPadding()
+    {
+        var same = EngineVersionCheck.Compare("0.1.0.0", "0.1.0");
+        Check.Equal(EngineVersionComparison.Same, same.Comparison, "0.1.0.0 vs 0.1.0（末尾 0 は同値）");
+
+        var newer = EngineVersionCheck.Compare("0.1.0.1", "0.1.0");
+        Check.Equal(EngineVersionComparison.ProjectNewer, newer.Comparison, "0.1.0.1 vs 0.1.0（末尾が非 0 なら新しい）");
     }
 
     // ============================================================

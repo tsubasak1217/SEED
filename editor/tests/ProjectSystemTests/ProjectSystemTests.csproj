@@ -32,6 +32,10 @@
     <Compile Include="..\..\src\Project\SeedProjectFile.cs">
       <Link>Linked\Project\SeedProjectFile.cs</Link>
     </Compile>
+    <!-- engine_version 不一致の判定ロジック（WPF 非依存。通知側の EngineVersionGate.cs はリンクしない） -->
+    <Compile Include="..\..\src\Project\EngineVersionCheck.cs">
+      <Link>Linked\Project\EngineVersionCheck.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Project\ProjectPaths.cs">
       <Link>Linked\Project\ProjectPaths.cs</Link>
     </Compile>
