@@ -41,6 +41,24 @@ pub const NAME_MAX_CHARS: usize = 32;
 /// 英数字はこれとは別に `is_ascii_alphanumeric()` で許可する。
 const NAME_ALLOWED_ASCII_SYMBOLS: [char; 3] = ['_', '-', '.'];
 
+/// 参加者名で許可する非 ASCII 文字の範囲（両端を含むコードポイント）。
+///
+/// **エディタ側 `editor/src/Accounts/Crypto/AccountNameRule.cs` と同一の表**にすること
+/// （契約 `docs/seed_accounts.md` 2 章）。サーバが最終判定者なので、ここを緩めると
+/// 全角英数字（`ｔｓｕｂａｓａ`）や半角カナで他人に似た名前を登録でき、ロックの所有者表示で紛れる。
+///   - U+3005–U+3007 … 々 〆 〇
+///   - U+3041–U+309F … ひらがな
+///   - U+30A0–U+30FF … カタカナ（長音符 ー を含む）
+///   - U+3400–U+4DBF … CJK 統合漢字拡張 A
+///   - U+4E00–U+9FFF … CJK 統合漢字
+const NAME_ALLOWED_NON_ASCII_RANGES: [(u32, u32); 5] = [
+    (0x3005, 0x3007),
+    (0x3041, 0x309F),
+    (0x30A0, 0x30FF),
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+];
+
 /// リポジトリ ID の文字数（Lore の `RepositoryId` は 16 バイト = 32 桁の 16 進数）。
 pub const REPOSITORY_ID_HEX_CHARS: usize = 32;
 
@@ -299,8 +317,8 @@ impl NameError {
 /// 許可する文字:
 ///   - ASCII の英数字
 ///   - ASCII 記号のうち `_` `-` `.`
-///   - 非 ASCII のうち Unicode 的に英数字であるもの
-///     （ひらがな・カタカナ・漢字・全角英数字・長音符 `ー` などが該当する）
+///   - 非 ASCII は `NAME_ALLOWED_NON_ASCII_RANGES` の範囲だけ
+///     （ひらがな・カタカナ・漢字・々〆〇。**全角英数字と半角カナは不可**）
 ///
 /// 空白・制御文字・絵文字・その他の記号はすべて拒否する。
 /// 名前はロックの所有者表示に使われるため、見た目が紛れるものを入れない。
@@ -323,11 +341,13 @@ pub fn validate_name(name: &str) -> Result<(), NameError> {
         let allowed = if c.is_ascii() {
             c.is_ascii_alphanumeric() || NAME_ALLOWED_ASCII_SYMBOLS.contains(&c)
         } else {
-            // 非 ASCII は「Unicode 的に英数字」だけ通す。
-            // is_alphanumeric() は Letter 系（Lo/Lm など）と Number 系を含むので、
-            // 日本語（ひらがな・カタカナ・漢字・長音符）と全角英数字が通り、
-            // 絵文字・記号・各種空白は落ちる。
-            c.is_alphanumeric()
+            // 非 ASCII は明示した範囲だけ通す（エディタと同じ表）。
+            // Unicode の「英数字」で判定すると全角英数字や他言語の文字まで通り、
+            // 見た目が紛れる名前を作れてしまうため、範囲で絞る。
+            let code = c as u32;
+            NAME_ALLOWED_NON_ASCII_RANGES
+                .iter()
+                .any(|(begin, end)| (*begin..=*end).contains(&code))
         };
         if !allowed {
             return Err(NameError::ForbiddenCharacter);
@@ -374,7 +394,8 @@ mod tests {
             "つばさ",
             "翼",
             "カタカナー",
-            "ＡＢＣ123",
+            "々〆〇",
+            "つばさ-01",
             &"a".repeat(NAME_MAX_CHARS),
         ] {
             assert!(validate_name(name).is_ok(), "拒否された: {name:?}");
@@ -398,7 +419,11 @@ mod tests {
             Err(NameError::SurroundedByWhitespace)
         );
         // 内部の空白・記号・制御文字・絵文字はすべて文字種で落ちる
-        for name in ["tsu basa", "tsubasa@example.com", "a\tb", "a\nb", "🙂", "a/b", "a:b"] {
+        // 全角英数字・半角カナ・他言語の文字は「見た目が紛れる」ので通さない（エディタと同じ規則）
+        for name in [
+            "tsu basa", "tsubasa@example.com", "a\tb", "a\nb", "🙂", "a/b", "a:b",
+            "ＡＢＣ123", "ｔｓｕｂａｓａ", "ｶﾀｶﾅ", "한국어", "émile",
+        ] {
             assert_eq!(
                 validate_name(name),
                 Err(NameError::ForbiddenCharacter),
