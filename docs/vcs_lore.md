@@ -121,6 +121,8 @@ Lore v0.9.0 側の制約（ソースを読んで確認。実測は実装時の�
 | 起動 | `server\start-seed-loreserver.ps1`（二重起動しない。ログは `server\logs\` に起動ごと）。ログオン時はスタートアップの `SEED Lore Server.lnk` が呼ぶ |
 | 停止 | **`server\stop-seed-loreserver.ps1`**（ストアが 15 秒間更新されていないことを確かめてから止め、プロセスの終了まで待つ）。`Stop-Process` やタスク マネージャーで直接止めない |
 | 生存確認 | `http://127.0.0.1:41339/health_check` が 200 |
+| SEED アカウント | 発行窓口 `http://127.0.0.1:41350`（`/v1/health`）と権限サービス 41352（常に 127.0.0.1）を 2026-09-18 に有効化。データは `serveruth\`（`issuer_key.json` は秘密鍵。共有しない）。`repository_creators = ["tsubasa"]` |
+| 認証の切り替え | **まだ無効（Lore は匿名で接続できる）**。有効化は `server\enable-auth.ps1`（このリポジトリのオーナーが台帳に居ることを確かめ、`[server.auth]` と `auth_url` を足して安全に再起動。起動に失敗したら自動で元へ戻す）、戻すのは `server\disable-auth.ps1` |
 | リポジトリ | `lore://127.0.0.1:41337/WarashibeFishing`（作業コピー `D:\SEED_projects\WarashibeFishing`、identity `tsubasa`） |
 | 初回取り込み | revision 1（469 ファイル / 88 MiB）。サーバから clone し直して全ファイルの SHA-256 一致を確認済み |
 | バックアップ | サーバを止めて `server\store\` と `server\locks\` をコピーする（稼働中はファイルサイズが正しく見えない） |
