@@ -66,6 +66,8 @@ https://epicgames.github.io/lore/ と https://github.com/EpicGames/lore を参�
 
 ### 4.1 SEED アカウント（2026-09-18 決定。実装は段階 3）
 
+サーバとエディタの取り決め（API・鍵と署名の形式・有効化の順番）の正典は `docs/seed_accounts.md`。
+
 体験: Hub（スタート画面）で **SEED アカウント**を作ってログイン → オーナーが出す**招待コード**でプロジェクトに参加 →
 編集中のロックや送信にアカウント名が出る。中央のアカウントサーバは持たず、**プロジェクトのサーバ（オーナーの PC）が参加者を管理する**。
 
@@ -75,7 +77,7 @@ https://epicgames.github.io/lore/ と https://github.com/EpicGames/lore を参�
 | 参加 | オーナーが使い捨ての招待コードを発行 → 参加者のエディタが公開鍵を登録。オーナーは参加者を個別に失効できる |
 | ログイン | 発行窓口がチャレンジを出す → 利用者の秘密鍵で署名 → 登録済み公開鍵で検証 → **サーバの鍵で署名した短寿命 JWT** を返す（利用者鍵で直接 JWT を作らせない = 参加者同士のなりすまし防止） |
 | 発行窓口 | `seed-loreserver` と同じプロセス内の**別スレッド・別ランタイム・別ポート**の小さな HTTP サーバ（`server_main()` を呼ぶ前に起動。Lore の HTTP リスナーには独自ルートを足せない） |
-| Lore への提示 | エディタは **`LoreGlobalArgs.AccessToken`** に JWT を入れる（呼び出しごとの注入。トークン交換・`auth_url`・トークンストアを通らない。CLI は `--access-token`） |
+| Lore への提示 | エディタは **`LoreGlobalArgs.IdentityToken` と `AccessToken` の両方に同じ JWT** を入れ、`Identity` は空にする（呼び出しごとの注入。トークンストアを通らない。CLI は `--identity-token` と `--access-token`）。`AccessToken` だけだと、リポジトリ ID が決まらない呼び出し（create / list / clone）でヘッダに載らない（2026-09-18 実機確認） |
 | 期限 | 8〜12 時間。Lore にリフレッシュは無く、期限切れと権限なしはどちらもコード 7 で区別できないので、**エディタが `exp` を見て先回りで取り直す** |
 
 Lore v0.9.0 側の制約（ソースを読んで確認。実測は実装時のスパイクで行う）:
@@ -86,6 +88,8 @@ Lore v0.9.0 側の制約（ソースを読んで確認。実測は実装時の�
 - トークンには `sub` `iss` `iat` `exp` `aud` `env` `name` `preferred_username` `idp` `resources` の **10 個すべてが必要**（v0.9.0 の固定構造。upstream の main では緩和済み）。
   `resources` は `[{"resource_id":"urc-<リポジトリ ID>","permission":[…]}]`。オーナーには実 ID のエントリに `"owner"` を付ける（ワイルドカード `urc-*` はロックの強制解放に効かない）。
   `is_service_account` は**絶対に立てない**（ブランチ保護を素通りする）。
+- push / pull（QUIC）にトークンを載せるには、サーバ設定に `[environment.endpoint] auth_url`（空でなければ何でもよい）が必須。
+  その間は**新しいリポジトリを作れない**（Lore が作成を外部サービスへ委譲しようとして失敗する）。リポジトリは認証を有効にする前に作る。
 - 認証は全部か無か。有効にすると匿名アクセスはできない。既存のリポジトリと作業コピーはそのまま使える（`sub` を `tsubasa` にすれば履歴の名前も連続する）。
 - ロックの `owner` と push フックの `user()` は JWT の `sub` になる。**他人のロックの解放は `owner` / `admin` 権限が無いと拒否される**（サーバ側で所有者チェックあり）。
 - 残る穴: 有効なトークンがあれば誰でも `repository create` と全リポジトリの `list` ができる（v0.9.0）。参加者限定は中身には効くが存在の秘匿には効かない。
