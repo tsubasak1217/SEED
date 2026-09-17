@@ -1382,15 +1382,16 @@ impl App {
                 ct.position = [0.0, 0.0];
             }
 
-            // 保存先ディレクトリが存在しない場合は作成する
+            // 書き出しは actor_file に集約してある（保存先フォルダの作成・
+            // 先頭への format_version の刻印・safe_write による原子的置換＋世代バックアップ）。
+            // 以前はここだけ素の std::fs::write だったため、上書きに失敗しても
+            // 戻す手段が無かった（IPC の SaveActor と同じ保護に揃えた）。
             let save_path = std::path::Path::new(path);
-            if let Some(parent) = save_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            if let Some(w) = crate::engine::core::app_base::actor_file::save(save_path, &data)
+                .map_err(|e| e.to_string())?
+            {
+                eprintln!("[SEED EXPORT] {w}");
             }
-
-            // pretty-print JSON で書き出す
-            let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
-            std::fs::write(save_path, json).map_err(|e| e.to_string())?;
 
             Ok(save_path.to_string_lossy().to_string())
         })();

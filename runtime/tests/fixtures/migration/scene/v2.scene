@@ -1,0 +1,74 @@
+{
+  "format_version": 2,
+  "name": "MigrationSample",
+  "terrain_dir": "terrain/MigrationSample",
+  "actors": [
+    {
+      "name": "Effects",
+      "transform": {
+        "position": [0.0, 1.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "name": "Smoke",
+          "component": {
+            "type": "ParticleEmitterComponent",
+            "data": {
+              "max_particles": 256,
+              "shape": "pixel",
+              "blend": "normal"
+            }
+          }
+        },
+        {
+          "name": "Sparks",
+          "component": {
+            "type": "ParticleEmitterComponent",
+            "data": {
+              "max_particles": 64,
+              "blend": "add"
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "ModelChild",
+          "components": [
+            {
+              "name": "Body",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "assets://models/box.glb",
+                  "instances": []
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "HUD",
+      "actor_kind": "Actor2D",
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 1920.0,
+              "height": 1080.0,
+              "gravity_mode": "world_down"
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

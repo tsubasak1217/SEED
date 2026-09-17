@@ -1,0 +1,39 @@
+{
+  "name": "MigrationSampleActor",
+  "transform": {
+    "position": [0.0, 0.0, 0.0],
+    "rotation": [0.0, 0.0, 0.0],
+    "scale": [1.0, 1.0, 1.0]
+  },
+  "components": [
+    {
+      "name": "Trail",
+      "component": {
+        "type": "ParticleEmitterComponent",
+        "data": {
+          "max_particles": 128,
+          "shape": "point",
+          "blend": "additive"
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "ModelShape",
+      "components": [
+        {
+          "name": "Burst",
+          "component": {
+            "type": "ParticleEmitterComponent",
+            "data": {
+              "shape": { "model": { "path": "assets://models/shard.glb" } },
+              "blend": "alpha"
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

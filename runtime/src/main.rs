@@ -16,7 +16,21 @@ pub static NvOptimusEnablement: u32 = 1;
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
 fn main() {
-    // 起動ログ機構の初期化。**必ず main の最初**に置く。
+    // プロジェクトの一括アップグレード（`--upgrade-project <パス> [--dry-run]`）。
+    //
+    // 【なぜ最初に見るのか】
+    //   1. ウィンドウも GPU も初期化せずに終わる経路にするため。描画資源を一切作らないので、
+    //      エディタが起動中の環境でも安全に走らせられる。
+    //   2. 結果は 1 行 1 件の JSON を**標準出力**へ出す約束なので、
+    //      startup_log の標準出力差し替え（配布パッケージ実行時）より前に済ませる。
+    //      ここを通るのは開発者／エディタからの明示的な実行だけで、通常起動には影響しない。
+    if let Some(code) =
+        engine::core::migration::upgrade::run_cli_if_requested(&std::env::args().collect::<Vec<_>>())
+    {
+        std::process::exit(code);
+    }
+
+    // 起動ログ機構の初期化。**必ず（通常起動では）main の最初**に置く。
     //
     // 【理由】リリースビルドはコンソールを持たない（上の windows_subsystem）ため、
     //   配布物では `eprintln!` も C# の `Console.Error` も行き先が無く捨てられる。

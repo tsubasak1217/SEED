@@ -476,9 +476,10 @@ fn reinstantiate_prefabs_in_actors(
 /// 「取り込んだ版」と「ファイルの現在の版」を比べて更新検出（`PREFAB_STATUS`）に使う。
 /// 読み込みとハッシュ算出を 1 回のファイル読みで済ませるため、この関数に集約する。
 pub(super) fn load_actor_data_with_hash(src: &str) -> Result<(ActorData, String), String> {
-    let raw = crate::engine::asset_fs::read_string(src)
-        .map_err(|e| format!("読み込み失敗: {e}"))?;
-    let data: ActorData = serde_json::from_str(&raw).map_err(|e| format!("パース失敗: {e}"))?;
+    // 読み込みは `actor_file`（版の変換を含む唯一の経路）に委ねる。
+    // **ハッシュは変換前の生テキストから取る**（ディスク上の内容と一致させるため）。
+    let (data, raw) = crate::engine::core::app_base::actor_file::load_with_raw(src)
+        .map_err(|e| e.to_string())?;
     Ok((data, content_hash(&raw)))
 }
 

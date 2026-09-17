@@ -1,3 +1,5 @@
+/// `.actor` / `.actor2d` ファイルの読み書き（版の変換・刻印を含む唯一の経路）
+pub mod actor_file;
 pub mod app;
 /// エディタ視点（デバッグカメラの位置・向き）のユーザー別サイドカー
 /// （`<プロジェクト>/cache/editor/view/**.view.json`）

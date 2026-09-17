@@ -4,6 +4,8 @@ pub mod clock;
 pub mod font;
 pub mod input;
 pub mod loader;
+/// アセット形式のバージョンとマイグレーション（正典は docs/asset_migration.md）。
+pub mod migration;
 /// 配布パッケージのフォルダ構成（bin / caches / logs / saved）の正典。
 pub mod package_layout;
 pub mod parent_guard;

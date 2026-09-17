@@ -897,6 +897,14 @@ fn worker_loop(
 }
 
 /// `.actor` を読み、参照しているモデルを低優先度で待ち行列へ積む。
+///
+/// 【形式のマイグレーションを通さない理由】
+/// ここは `ActorData` を組み立てず、JSON を `Value` のまま走査して
+/// `model_path` の値だけを集める（先読みの対象を決めるだけで、結果は捨てる）。
+/// 版が古かろうがキーの名前と値は同じなので、変換を通す必要が無い。
+/// **ただし `model_path` のキー名を変える変換を足すときは、ここも直すこと**
+/// （変換を通していないので、旧版のファイルでは旧キーのままここに来る）。
+/// 版に依存する解釈を足したくなったら、`core::app_base::actor_file` 経由に変える。
 fn scan_prefab_and_enqueue(
     queue: &Arc<(Mutex<QueueInner>, Condvar)>,
     actor_path: &str,

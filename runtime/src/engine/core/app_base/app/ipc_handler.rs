@@ -495,11 +495,11 @@ impl App {
                         // .actor ファイルはプレハブのテンプレート。ルートの参照リンクは
                         // 書き出さない（テンプレートへの自己参照・二重リンク混入を防ぐ）。
                         data.prefab_source = None;
-                        let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
-                        // .actor もシーンと同じ「旧版を .backup へ退避 → .tmp → rename」で書く。
+                        // 保存は actor_file に集約してある（先頭へ現行の format_version を刻み、
+                        // 旧版を .backup へ退避 → .tmp → rename で書く）。
                         // プレハブ本体を壊すと全インスタンスへ波及するため保護価値が高い。
-                        if let Some(w) = crate::engine::core::app_base::safe_write::write_atomic_with_backup(
-                            std::path::Path::new(&path), &json).map_err(|e| e.to_string())?
+                        if let Some(w) = crate::engine::core::app_base::actor_file::save(
+                            std::path::Path::new(&path), &data).map_err(|e| e.to_string())?
                         {
                             eprintln!("[SEED SAVE] {w}");
                         }

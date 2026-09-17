@@ -31,7 +31,9 @@ use crate::engine::components::{
 };
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::{ActorData, ActorKind};
+use crate::engine::core::app_base::actor_file::{self, ActorFileError};
 use crate::engine::core::app_base::scene_settings::SceneSettingsData;
+use crate::engine::core::migration::{self, FormatKind, MigrationError};
 
 /// ゲーム本編（Play で動くシーン）の世界線番号。
 ///
@@ -50,6 +52,9 @@ pub enum SceneError {
     Io(std::io::Error),
     Json(serde_json::Error),
     Load(LoadError),
+    /// 形式の版の判定・変換に失敗した（未来版の拒否を含む）。
+    /// メッセージはそのまま利用者へ見せられる日本語になっている。
+    Migration(MigrationError),
 }
 
 impl std::fmt::Display for SceneError {
@@ -58,6 +63,7 @@ impl std::fmt::Display for SceneError {
             SceneError::Io(e)   => write!(f, "IO error: {e}"),
             SceneError::Json(e) => write!(f, "JSON error: {e}"),
             SceneError::Load(e) => write!(f, "Load error: {e}"),
+            SceneError::Migration(e) => write!(f, "{e}"),
         }
     }
 }
@@ -66,6 +72,18 @@ impl std::error::Error for SceneError {}
 impl From<std::io::Error>    for SceneError { fn from(e: std::io::Error)    -> Self { Self::Io(e) } }
 impl From<serde_json::Error> for SceneError { fn from(e: serde_json::Error) -> Self { Self::Json(e) } }
 impl From<LoadError>         for SceneError { fn from(e: LoadError)          -> Self { Self::Load(e) } }
+impl From<MigrationError>    for SceneError { fn from(e: MigrationError)     -> Self { Self::Migration(e) } }
+
+/// `.actor` ローダのエラーをシーンのエラーへ移す（種類は保ったまま）。
+impl From<ActorFileError> for SceneError {
+    fn from(e: ActorFileError) -> Self {
+        match e {
+            ActorFileError::Io(e)        => Self::Io(e),
+            ActorFileError::Json(e)      => Self::Json(e),
+            ActorFileError::Migration(e) => Self::Migration(e),
+        }
+    }
+}
 
 // ============================================================
 //  DebugCameraData — デバッグカメラの保存データ
@@ -194,6 +212,25 @@ struct SceneDataRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     terrain_dir: Option<&'a str>,
     actors: &'a [ActorData],
+}
+
+// ============================================================
+//  一括アップグレード用の再直列化
+// ============================================================
+
+/// 変換済みの `.scene` の `Value` を、**エンジンが保存するのと同じ並び**のテキストにする。
+///
+/// 一括アップグレード（`migration::upgrade`）から呼ぶ。`Value` をそのまま
+/// `to_string_pretty` すると `serde_json::Map` の並び（アルファベット順）になり、
+/// 中身が 1 つも変わらないファイルでも全行が差分になってしまう。
+/// `SceneData` を経由すれば欄の並びは宣言順のまま（＝普通に保存したときと同じ）になり、
+/// 差分は「版の行」と「実際に変換された値」だけで済む。
+///
+/// 副作用として「`SceneData` として読めないシーンは書き換えない」という安全弁にもなる
+/// （呼び出し側はエラーを `failed` として報告し、ファイルには触らない）。
+pub fn scene_text_from_value(value: serde_json::Value) -> Result<String, SceneError> {
+    let data: SceneData = serde_json::from_value(value)?;
+    Ok(migration::to_stamped_pretty_json(FormatKind::Scene, &data)?)
 }
 
 // ============================================================
@@ -506,7 +543,11 @@ impl Scene {
             terrain_dir:   self.terrain_dir.as_deref(),
             actors,
         };
-        Ok(serde_json::to_string_pretty(&data)?)
+        // 先頭に現行の `format_version` を刻む（`migration::to_stamped_pretty_json`）。
+        // 版が JSON の 1 行目に来るので、差分を見たときに「どの版か」がすぐ判る。
+        // Play 用一時シーンと Play スナップショットも同じ直列化を通るため、
+        // 復元側（`from_json`）から見れば常に現行版として読める。
+        Ok(migration::to_stamped_pretty_json(FormatKind::Scene, &data)?)
     }
 
     /// シーンを `.scene` ファイルへ保存する（直列化は `to_json` に委譲）。
@@ -532,14 +573,14 @@ impl Scene {
     // ── 読み込み ──────────────────────────────────────────────
 
     /// `.actor` ファイル（ActorData JSON）を読み込み、単一アクターのシーンを生成する。
+    ///
+    /// 読み込みは `actor_file`（版の変換・刻印を含む唯一の経路）に委ねる。
     pub fn load_actor(
         path:           &Path,
         ctx:            &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<Self, SceneError> {
-        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
-        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
-        let data: ActorData = serde_json::from_str(json)?;
+        let data = actor_file::load(path.to_str().unwrap_or(""))?;
         let name = data.name.clone();
         let mut scene = Scene::new(name);
         let actor = build_actor(data, ctx, &mut scene.world, scripting_host, None)?;
@@ -562,9 +603,7 @@ impl Scene {
         world_line:     u32,
         root_entity:    Option<Entity>,
     ) -> Result<Actor, SceneError> {
-        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
-        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
-        let data: ActorData = serde_json::from_str(json)?;
+        let data = actor_file::load(path.to_str().unwrap_or(""))?;
         let mut actor = build_actor(data, ctx, world, scripting_host, root_entity)?;
         // world_line を自身と全子孫へ伝播する
         actor.set_world_line_recursive(world_line);
@@ -606,13 +645,17 @@ impl Scene {
     /// `load` の実体。ファイル経路と、メモリ上の直列化文字列から復元する経路
     /// （Play スナップショットの復元＝`app/play_snapshot.rs`）で共有する。
     /// 先頭の BOM は許容する（エディタや外部ツールが付けることがあるため）。
+    ///
+    /// 【形式の版】
+    /// ここが `.scene` の**唯一の読み込み口**なので、版の判定と変換もここで行う
+    /// （`migration::load_json`）。古い `.scene` はメモリ上でだけ現行版へ持ち上げられ、
+    /// ファイルは書き換わらない。未来の版はエラーになる（`SceneError::Migration`）。
     pub fn from_json(
         raw:            &str,
         ctx:            &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
-        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
-        let data: SceneData = serde_json::from_str(json)?;
+        let data: SceneData = migration::load_json(FormatKind::Scene, raw)?;
 
         let cam = data.debug_camera;
         let mut scene = Scene::new(data.name);
@@ -1282,6 +1325,44 @@ mod folder_transform_tests {
         assert_eq!(data.actors[0].name, "Parent");
         assert_eq!(data.actors[0].children.len(), 1, "子ツリーが往復する");
         assert_eq!(data.actors[0].children[0].name, "Child");
+    }
+
+    /// 保存した `.scene` の JSON は、**先頭に**現行の `format_version` を持つこと。
+    ///
+    /// 版の欄が先頭に来ていれば、差分を見たときに「どの版のファイルか」が 1 行目で判る。
+    /// また、その欄があっても読み込み側（`SceneData`）が素通しできることを同時に固定する
+    /// （`SceneData` に欄を足していないので、未知キーとして無視されるのが正しい）。
+    #[test]
+    fn saved_scene_json_starts_with_the_current_format_version() {
+        let mut scene = Scene::new("stamped");
+        let e = scene.world.spawn();
+        scene.world.insert(e, Transform::default());
+        scene.actors.push(Actor::new(e, "Solo"));
+
+        let json = scene.to_json(None).expect("直列化できること");
+
+        // 先頭（1 行目が "{" なので 2 行目）に版の欄が来ること
+        let version_key = crate::engine::core::migration::JSON_VERSION_KEY;
+        assert!(
+            json.lines().nth(1).unwrap_or_default().contains(version_key),
+            "版の欄が JSON の先頭に無い:\n{json}"
+        );
+        // 値が現行版であること
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON として読めること");
+        assert_eq!(
+            value[version_key],
+            serde_json::json!(FormatKind::Scene.current_version())
+        );
+        // 版の欄はトップレベルだけ（シーン内の各アクタには付けない）
+        assert_eq!(
+            json.matches(version_key).count(),
+            1,
+            "版の欄がトップレベル以外にも出ている:\n{json}"
+        );
+        // 読み込み側の型でそのまま読めること
+        let data: SceneData = serde_json::from_str(&json).expect("読み込み側の型で読めること");
+        assert_eq!(data.name, "stamped");
+        assert_eq!(data.actors.len(), 1);
     }
 
     /// **共有される `.scene` にはエディタ視点（`debug_camera`）を 1 バイトも書かない。**

@@ -74,14 +74,66 @@ runtime/src/engine/core/migration/
 | 形式 | 版 | 内容 |
 |---|---|---|
 | `.scene` | 1 | 欄なしの従来形式 |
-| `.actor` | 1 | 欄なしの従来形式 |
+| `.scene` | 2 | 旧 enum 表記の正規化（`ParticleEmitterComponent.blend` の `alpha`→`normal` / `additive`→`add`、同 `shape` の `point`→`pixel`、`CanvasComponent.gravity_mode` の `screen_down`→`world_down`） |
+| `.actor` / `.actor2d` | 1 | 欄なしの従来形式 |
+| `.actor` / `.actor2d` | 2 | `.scene` v2 と同じ（同じ変換をアクタ木へ適用する） |
 
-（実装時に追記する）
+## 6. 実装メモ（M1 時点）
 
-## 6. 段階
+### 置き場と公開 API
 
-- **M1**: 仕組み（kind / registry / runner / error / json_walk）、`.scene` と `.actor` の読み込みフックと保存時の刻印、
-  `ActorData` 共通ローダ、未来版の拒否、最初の実変換（旧 enum 表記の正規化など単純なもの）、一括アップグレードの CLI、ゴールデンテスト。
+`runtime/src/engine/core/migration/`。外から使うのは次の 3 本だけ。
+
+| API | 用途 |
+|---|---|
+| `migration::load_json::<T>(kind, raw) -> Result<T, MigrationError>` | 読み込みの入口。BOM 除去・版の判定・変換・デシリアライズを一括で行う |
+| `migration::to_stamped_pretty_json(kind, body) -> Result<String, serde_json::Error>` | 保存の出口。**先頭に**現行版を刻んだ pretty JSON を作る |
+| `migration::migrate_to_current(kind, &mut Value) -> Result<MigrationReport, MigrationError>` | `Value` の上で連鎖を回す（一括アップグレードが使う） |
+
+`load_json` は**現行版のファイルで余計なコストを払わない**。まず版だけを先読みし、現行版なら
+テキストから直接デシリアライズする（従来と同じ経路）。古い版のときだけ `Value` を 1 回組み立てる。
+
+刻印は `#[serde(flatten)]` のラッパー経由なので、**本体の構造体に版の欄を足さなくてよい**。
+`ActorData` はシーンの中へ入れ子で使われるため、これが必須の性質になっている
+（版が付くのはファイルのトップレベルだけで、シーン内の各アクタには付かない）。
+
+### 差し込んだ場所
+
+| 形式 | 読み込み | 保存 |
+|---|---|---|
+| `.scene` | `app_base/scene.rs` の `Scene::from_json`（ファイル経路 5 か所と Play スナップショット復元が全部ここを通る） | `Scene::to_json_with_actors`（通常保存・Play 用一時シーン・スナップショットを兼ねる） |
+| `.actor` / `.actor2d` | `app_base/actor_file.rs`（**新設の共通ローダ**。`Scene::load_actor` / `Scene::load_actor_into` / `prefab_ops::load_actor_data_with_hash` の 3 か所が呼ぶ） | 同 `actor_file::save`（IPC `SaveActor` とエクスポートの両方） |
+
+- プレハブのハッシュは**生テキスト**から取る（`actor_file::load_with_raw` が生テキストも返す）。
+  順序は「読む → ハッシュ → 変換」。
+- `core/loader/async_loader.rs` の `.actor` 走査は `model_path` を拾うだけなので変換を通さない
+  （キー名を変える変換を足すときはそこも直す。コード内にコメントあり）。
+- アクタのエクスポートは素の `std::fs::write` だったが、IPC 保存と同じ `safe_write`
+  （`.backup/` 世代 → `.tmp` → rename）に揃えた。
+
+### 一括アップグレード
+
+`SEED.exe --upgrade-project <プロジェクト|.seedproj|assets ルート> [--dry-run]`。
+ウィンドウも GPU も作らずに終了する（`main` の入口で分岐する）。
+
+- 対象は `assets/` 配下の `.scene` / `.actor` / `.actor2d`。ドットで始まるフォルダ（`.backup` など）は入らない。
+- 出力は 1 ファイル 1 行の JSON ＋ 最後に集計 1 行。`failed` か `future_version` があれば終了コードは非 0。
+- **差分を最小にする**: 変換段が中身を 1 つも変えなかったファイルは、元の整形を保ったまま
+  **版の 1 行だけ**を差し込む。実際に変換が入ったファイルだけ `SceneData` / `ActorData` を
+  経由して書き直す（`Value` をそのまま書くと欄がアルファベット順に並び替わり、全行が差分になるため）。
+  書き直した場合は「保存形式の正規化により、変換手順以外の差分も含まれます」と `message` に出る。
+- 本体の型として読めないファイルは `failed` にして**書き換えない**（安全弁）。
+- **副作用**: `.actor` の内容が 1 行でも変わると `prefab_content_hash`（生テキストの FNV）が変わるため、
+  その `.actor` を参照するシーン内インスタンスの `prefab_hash` が古くなり、エディタで「プレハブが更新された」
+  と表示される。表示だけで壊れはしないが、一括アップグレードの直後は一斉に出る。
+  （シーン側の `prefab_hash` を貼り直す後処理は M2 以降の課題。`prefab_hash` を 1 つも持たない
+  プロジェクトでは起きない。）
+
+## 7. 段階
+
+- **M1（完了）**: 仕組み（kind / registry / runner / error / json_walk）、`.scene` と `.actor` の読み込みフックと保存時の刻印、
+  `ActorData` 共通ローダ、未来版の拒否、最初の実変換（旧 enum 表記の正規化）、一括アップグレードの CLI、ゴールデンテスト。
 - **M2**: エディタのメニュー（一括アップグレードの実行と結果表示）、`engine_version` の確認ダイアログからの導線、
   `.anim` / 地形 JSON / `.mat` / `.postfx` への拡大、`.inputmap` の二重実装の解消、保存経路を `safe_write` に寄せる。
 - **M3**: 構造的な旧対応（`RigidbodyComponent` の吸収など）を変換へ移す。パッケージ化のときに変換済みで同梱する。
+  一括アップグレード後に `#[serde(alias)]` の削除候補を片付ける。

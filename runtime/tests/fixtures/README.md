@@ -29,5 +29,19 @@
 | `terrain/cover_materials.json` | `templates/terrain/cover_materials.json` | `terrain::cover::tests_cover` |
 | `terrain/props.json` | `templates/terrain/props.json` | `app::terrain_scatter_ops` |
 | `terrain/layers.json` | `templates/terrain/layers.json` | 同上 |
+| `migration/scene/v1.scene` | 正本なし（手で作った変換前の見本） | `core::migration::golden` |
+| `migration/scene/v2.scene` | 同上（`v1.scene` を変換した期待結果） | 同上 |
+| `migration/actor/v1.actor` | 正本なし（手で作った変換前の見本） | 同上 |
+| `migration/actor/v2.actor` | 同上（`v1.actor` を変換した期待結果） | 同上 |
 
 `*.sprite_mesh` はアセット由来ではなくテストのために手で作った入力なので、正本は無い。
+
+## `migration/` の見本について
+
+アセット形式のマイグレーション（docs/asset_migration.md）のゴールデンテスト用。
+**`vN` が変換前、`vM` が期待結果**で、対になっている。プロジェクトのアセットのコピーではなく、
+変換したい旧表記を最小限に詰めた手作りの入力である（実データに旧表記が無くてもテストが効くように）。
+
+照合は `serde_json::Value` としての一致（JSON の**意味**）で行い、整形や欄の並びは見ない。
+版を上げたときは、**期待結果の見本を新しい版へ差し替える**こと
+（差し替え忘れは `golden::fixtures_declare_the_expected_versions` が検出する）。
