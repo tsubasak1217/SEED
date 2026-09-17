@@ -105,20 +105,80 @@ public readonly record struct LoreBranchRow(string Name, string Location, bool I
 /// <c>Revision</c> / <c>RevisionNumber</c> / <c>Parent</c> だけで、
 /// **コミットメッセージ・作者・日時は含まれない**
 /// （LoreRevisionHistoryEntryEventDataFFI をリフレクションで確認）。
-/// それらはリビジョンのメタデータ（<c>Lore.RevisionMetadataGet</c>）として
-/// 別途 1 件ずつ引く必要があり、今回はそこまで行わない。
-/// したがって <see cref="Author"/> / <see cref="Message"/> /
-/// <see cref="UnixTimeSeconds"/> は現状いつも空・0 になる。
-/// 型としては残してあるので、メタデータ取得を足せばそのまま埋まる。
+/// それらはリビジョンのメタデータ（<c>Lore.RevisionMetadataList</c>）として
+/// 別途 1 件ずつ引く。<see cref="ILoreBackend.RevisionMetadata"/> がその窓口で、
+/// 取得したキー・値を <see cref="LoreRevisionMetadataTranslator"/> が
+/// <see cref="Author"/> / <see cref="Message"/> / <see cref="UnixTimeSeconds"/> へ畳む。
+/// </para>
+/// <para>
+/// history だけを呼んだ直後はこの 3 つは空・0 のままで、
+/// メタデータを引いた後に <see cref="LoreRevisionRow.WithMetadata"/> で差し替える。
 /// </para>
 /// </summary>
 /// <param name="Number">リビジョン番号。</param>
 /// <param name="Id">リビジョン識別子（ハッシュの 16 進文字列）。</param>
-/// <param name="Author">コミットした人（v0.9.0 の history では取得できず空）。</param>
-/// <param name="Message">コミットメッセージ（v0.9.0 の history では取得できず空）。</param>
-/// <param name="UnixTimeSeconds">コミット時刻（v0.9.0 の history では取得できず 0）。</param>
+/// <param name="Author">コミットした人（メタデータを引くまでは空）。</param>
+/// <param name="Message">コミットメッセージ（メタデータを引くまでは空）。</param>
+/// <param name="UnixTimeSeconds">コミット時刻（メタデータを引くまでは 0）。</param>
 public readonly record struct LoreRevisionRow(
-    ulong Number, string Id, string Author, string Message, long UnixTimeSeconds);
+    ulong Number, string Id, string Author, string Message, long UnixTimeSeconds)
+{
+    /// <summary>
+    /// 番号と識別子はそのままに、メタデータ由来の 3 項目だけを差し替えた行を返す。
+    /// </summary>
+    /// <param name="author">コミットした人。</param>
+    /// <param name="message">コミットメッセージ。</param>
+    /// <param name="unixTimeSeconds">コミット時刻（Unix 秒）。</param>
+    public LoreRevisionRow WithMetadata(string? author, string? message, long unixTimeSeconds)
+        => this with
+        {
+            Author          = author  ?? string.Empty,
+            Message         = message ?? string.Empty,
+            UnixTimeSeconds = unixTimeSeconds,
+        };
+}
+
+/// <summary>
+/// メタデータの値の種類（Lore の <c>LoreMetadataType</c> のうち SEED が読むもの）。
+///
+/// <para>
+/// Lore 側の enum をそのまま使うとバックエンド境界が LoreVcs に依存してしまうため、
+/// 文字列でも Lore の enum でもなく、この最小の写しを持つ。
+/// 未知の種類は <see cref="Unknown"/> になり、変換側は単に無視する
+/// （新しい種類が増えてもビルドエラーにも例外にもならない）。
+/// </para>
+/// </summary>
+public enum LoreMetadataValueKind
+{
+    /// <summary>SEED が解釈しない種類（バイナリ・アドレス等）。</summary>
+    Unknown,
+
+    /// <summary>文字列（コミットメッセージ・作者名）。</summary>
+    String,
+
+    /// <summary>数値（コミット時刻の Unix 秒など）。</summary>
+    Numeric,
+
+    /// <summary>真偽値。</summary>
+    Boolean,
+}
+
+/// <summary>
+/// revision metadata list が返すメタデータ 1 件。
+///
+/// <para>
+/// Lore のメタデータは「キー → 型つきの値」の組で、1 リビジョンに複数付く。
+/// コミットメッセージ・作者・日時がどのキーに入るかは Lore の実装依存なので、
+/// ここでは解釈せずそのまま持ち、<see cref="LoreRevisionMetadataTranslator"/> が
+/// キー名の対応表で拾う（対応表を 1 か所に閉じるため）。
+/// </para>
+/// </summary>
+/// <param name="Key">メタデータのキー。</param>
+/// <param name="Kind">値の種類。</param>
+/// <param name="StringValue">文字列としての値（種類が String 以外なら空文字）。</param>
+/// <param name="NumericValue">数値としての値（種類が Numeric 以外なら 0）。</param>
+public readonly record struct LoreMetadataRow(
+    string Key, LoreMetadataValueKind Kind, string StringValue, ulong NumericValue);
 
 /// <summary>
 /// lock query / lock status が返すロック 1 行。

@@ -165,6 +165,25 @@ public interface ILoreBackend : IDisposable
     /// <param name="cancellationToken">中断用。</param>
     LoreRowsResult<LoreRevisionRow> History(int maxCount, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// 1 リビジョンのメタデータを一覧する（Lore の <c>revision metadata list</c>）。
+    ///
+    /// <para>
+    /// ★なぜ必要か: <c>revision history</c> が返すイベントは番号・ハッシュ・親しか
+    /// 持たず、**コミットメッセージ・作者・日時が入っていない**。
+    /// それらはリビジョンのメタデータとして別に付いているので、履歴を表示するには
+    /// 1 件ずつこれを引いて補う必要がある。
+    /// </para>
+    /// <para>
+    /// 1 リビジョンにつき 1 往復かかるため、呼び出し側（<c>LoreProvider</c>）は
+    /// 補う件数を設定値で上限を切ること。
+    /// </para>
+    /// </summary>
+    /// <param name="revisionId">リビジョン識別子（<see cref="LoreRevisionRow.Id"/>）。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    LoreRowsResult<LoreMetadataRow> RevisionMetadata(
+        string revisionId, CancellationToken cancellationToken);
+
     // ── ロック ──────────────────────────────────────────────
 
     /// <summary>

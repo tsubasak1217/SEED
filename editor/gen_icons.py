@@ -125,6 +125,24 @@ CATALOG = [
     ("Icon.Panel.AiAssistant", "robot-outline"),
     ("Icon.Panel.Terrain", "terrain"),
     ("Icon.Panel.SpriteRig", "vector-square-edit"),
+    ("Icon.Panel.VersionControl", "source-branch"),
+
+    ("── バージョン管理（Version Control パネル）──", None),
+    # 主操作。アーティストにも分かるよう「雲から降ろす／雲へ上げる」で統一する
+    # （sync / push という語は UI に出さないため、絵でも揃える）。
+    ("Icon.Vcs.Fetch", "cloud-download-outline"),
+    ("Icon.Vcs.Submit", "cloud-upload-outline"),
+    ("Icon.Vcs.Refresh", "refresh"),
+    ("Icon.Vcs.Branch", "source-branch"),
+    # 変更の種類（変更一覧の左端に出す）。
+    ("Icon.Vcs.Added", "plus-circle-outline"),
+    ("Icon.Vcs.Modified", "pencil-circle-outline"),
+    ("Icon.Vcs.Deleted", "minus-circle-outline"),
+    ("Icon.Vcs.Moved", "arrow-right-circle-outline"),
+    ("Icon.Vcs.Copied", "content-copy"),
+    # 競合は「合流して衝突している」ことが一目で分かる形にする。
+    ("Icon.Vcs.Conflict", "alert-circle"),
+    ("Icon.Vcs.Unknown", "help-circle-outline"),
 
     ("── コンポーネント種別（ComponentKind 対応）──", None),
     ("Icon.Component.Transform", "axis-arrow"),

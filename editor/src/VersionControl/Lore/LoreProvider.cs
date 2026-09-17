@@ -628,8 +628,12 @@ public sealed class LoreProvider : IVersionControlProvider
                         result.Call, VersionControlMessages.HISTORY_FAILED);
                 }
 
-                var revisions = new List<RevisionInfo>(result.Rows.Count);
-                foreach (var row in result.Rows)
+                // ★history はリビジョン番号とハッシュしか返さない。
+                //   メッセージ・作者・日時はメタデータを 1 件ずつ引いて補う。
+                var enriched = FillRevisionMetadata(result.Rows, token);
+
+                var revisions = new List<RevisionInfo>(enriched.Count);
+                foreach (var row in enriched)
                 {
                     revisions.Add(new RevisionInfo(
                         row.Number, row.Id, row.Author, row.Message,
@@ -640,6 +644,57 @@ public sealed class LoreProvider : IVersionControlProvider
                     revisions,
                     string.Format(VersionControlMessages.HISTORY_OK_FORMAT, revisions.Count));
             });
+    }
+
+    /// <summary>
+    /// 履歴の各行へ、リビジョンのメタデータ（メッセージ・作者・日時）を補う。
+    ///
+    /// <para>
+    /// 1 リビジョンにつき 1 往復かかるため、補うのは
+    /// <see cref="VersionControlSettings.HistoryMetadataLimit"/> 件までにする。
+    /// それを超えた分は番号とハッシュだけの行として残す（消さない）。
+    /// </para>
+    /// <para>
+    /// メタデータの取得に失敗した行は **黙って元のまま残す**。
+    /// 「1 件のメタデータが引けなかったから履歴全体が出ない」より、
+    /// 「その行だけメッセージが空」の方が利用者にとって良いため。
+    /// </para>
+    /// </summary>
+    /// <param name="rows">history が返した行。</param>
+    /// <param name="cancellationToken">中断用（途中で打ち切られたらそこまでで返す）。</param>
+    private IReadOnlyList<LoreRevisionRow> FillRevisionMetadata(
+        IReadOnlyList<LoreRevisionRow> rows, CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0) return rows;
+
+        var limit  = Math.Max(0, _settings.HistoryMetadataLimit);
+        var filled = new List<LoreRevisionRow>(rows.Count);
+
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+
+            // 上限を超えた分・識別子が無い行・中断されたあとはそのまま積む。
+            if (i >= limit || row.Id.Length == 0 || cancellationToken.IsCancellationRequested)
+            {
+                filled.Add(row);
+                continue;
+            }
+
+            var metadata = _backend.RevisionMetadata(row.Id, cancellationToken);
+            if (!metadata.Call.Succeeded)
+            {
+                filled.Add(row);
+                continue;
+            }
+
+            var fields = LoreRevisionMetadataTranslator.Extract(metadata.Rows);
+            filled.Add(fields.HasAny
+                ? row.WithMetadata(fields.Author, fields.Message, fields.UnixTimeSeconds)
+                : row);
+        }
+
+        return filled;
     }
 
     // ── 共通ヘルパー ────────────────────────────────────────

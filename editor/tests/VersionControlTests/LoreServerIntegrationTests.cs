@@ -64,6 +64,27 @@ public static class LoreServerIntegrationTests
     /// <summary>ロックの取得・照会に使うファイル（リポジトリ相対）。</summary>
     private const string LOCK_FILE = "locked.txt";
 
+    /// <summary>フォルダ移動テストの移動元フォルダ（リポジトリ相対）。</summary>
+    private const string FOLDER_MOVE_SOURCE = "folder_src";
+
+    /// <summary>フォルダ移動テストの移動先フォルダ（リポジトリ相対）。</summary>
+    private const string FOLDER_MOVE_TARGET = "folder_dst";
+
+    /// <summary>フォルダ移動テストで中に置くファイル 1。</summary>
+    private const string FOLDER_MOVE_FILE_A = "a.txt";
+
+    /// <summary>フォルダ移動テストで中に置くファイル 2。</summary>
+    private const string FOLDER_MOVE_FILE_B = "b.txt";
+
+    /// <summary>履歴メタデータのテストで作るファイル（リポジトリ相対）。</summary>
+    private const string HISTORY_PROBE_FILE = "history_probe.txt";
+
+    /// <summary>履歴メタデータのテストで使う、他と紛れないコミットメッセージ。</summary>
+    private const string HISTORY_PROBE_MESSAGE = "履歴メタデータの確認 probe-8f2a";
+
+    /// <summary>失敗時に生のメタデータを出す件数の上限（全部出すと読めない）。</summary>
+    private const int METADATA_DUMP_LIMIT = 3;
+
     // ── 共有状態（テスト間で持ち回る）────────────────────────
 
     /// <summary>起動中のサーバ。</summary>
@@ -95,6 +116,8 @@ public static class LoreServerIntegrationTests
         harness.Add("[結合] 「リモートを採用」でリモートの内容になる",       ResolveTakeRemoteTakesRemote);
         harness.Add("[結合] ロックの取得・照会・解放ができる",              LockRoundTrip);
         harness.Add("[結合] 改名は移動として記録される",                    RenameIsRecordedAsMove);
+        harness.Add("[結合] フォルダの移動も移動として記録される",          FolderMoveIsRecordedAsMove);
+        harness.Add("[結合] 履歴にメッセージ・作者・日時が入る",            HistoryCarriesMetadata);
         harness.Add("[結合] サーバを停止して後始末する",                    TearDown);
     }
 
@@ -397,9 +420,157 @@ public static class LoreServerIntegrationTests
                     $"送信の結末（{submit.Message} / {string.Join(" | ", submit.Details)}）");
     }
 
+    /// <summary>
+    /// **フォルダ**ごと移動したときに Lore が何をするかを確かめる。
+    ///
+    /// <para>
+    /// プロジェクトパネルではフォルダのドラッグ＆ドロップで中身ごと動く。
+    /// このとき <c>file stage move</c> にフォルダを渡して履歴が繋がるのか、
+    /// それともファイル単位に展開しないといけないのかは、
+    /// ドキュメントからは分からないので実機で確かめる必要がある。
+    /// </para>
+    /// <para>
+    /// 期待: 移動後のファイルが「移動」として一覧に出ること
+    /// （「削除 + 追加」になっていたら履歴が切れている）。
+    /// </para>
+    /// </summary>
+    private static void FolderMoveIsRecordedAsMove()
+    {
+        var provider = Require(_providerA);
+
+        // 1. フォルダを作って中身ごと送信する（移動前の状態を履歴に入れる）。
+        var sourceDir = Path.Combine(_dirA, FOLDER_MOVE_SOURCE);
+        Directory.CreateDirectory(sourceDir);
+        WriteLines(_dirA, Path.Combine(FOLDER_MOVE_SOURCE, FOLDER_MOVE_FILE_A), "folder file a");
+        WriteLines(_dirA, Path.Combine(FOLDER_MOVE_SOURCE, FOLDER_MOVE_FILE_B), "folder file b");
+
+        var initial = provider.SubmitAsync("フォルダ移動テストの初期投入").GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, initial.Outcome,
+                    $"初期投入の結末（{initial.Message} / {string.Join(" | ", initial.Details)}）");
+
+        // 2. フォルダごと動かしてから通知する（プロジェクトパネルと同じ順序）。
+        var targetDir = Path.Combine(_dirA, FOLDER_MOVE_TARGET);
+        Directory.Move(sourceDir, targetDir);
+
+        var notify = provider.NotifyMovedAsync(sourceDir, targetDir).GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, notify.Outcome,
+                    $"フォルダ移動通知の結末（{notify.Message} / {string.Join(" | ", notify.Details)}）");
+
+        // 3. 状態を取り直し、中のファイルが「移動」として出ることを確かめる。
+        var status = provider.GetStatusAsync(StatusRefreshMode.ScanOffline)
+                             .GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, status.Outcome, "状態取得の結末");
+
+        var all = string.Join(", ", status.Value!.Changes.Select(c => c.ToString()));
+
+        // 移動後のフォルダ配下のファイルが、移動（または移動したフォルダ自体）として
+        // 現れていること。削除 + 追加になっていたら履歴が切れている。
+        var movedEntries = status.Value.Changes
+            .Where(c => c.Path.Replace('\\', '/')
+                         .StartsWith(FOLDER_MOVE_TARGET + "/", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(c.Path.Replace('\\', '/'), FOLDER_MOVE_TARGET,
+                                         StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        Check.True(movedEntries.Count > 0,
+                   $"移動先が一覧に出る。実際の変更一覧: [{all}]");
+        Check.True(movedEntries.All(c => c.Kind == FileChangeKind.Moved),
+                   "移動先の項目がすべて「移動」として記録されている"
+                   + $"（削除+追加になっていたら履歴が切れる）。実際の変更一覧: [{all}]");
+
+        // 移動元が「削除」として別に出ていないこと（出ていたら履歴が切れている）。
+        var deletedSource = status.Value.Changes.Any(
+            c => c.Kind == FileChangeKind.Deleted
+                 && c.Path.Replace('\\', '/')
+                     .StartsWith(FOLDER_MOVE_SOURCE + "/", StringComparison.OrdinalIgnoreCase));
+        Check.True(!deletedSource,
+                   $"移動元が「削除」として残っていない。実際の変更一覧: [{all}]");
+
+        var submit = provider.SubmitAsync("フォルダの移動を送信").GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, submit.Outcome,
+                    $"送信の結末（{submit.Message} / {string.Join(" | ", submit.Details)}）");
+    }
+
+    /// <summary>
+    /// 履歴にコミットメッセージ・作者・日時が入ること。
+    ///
+    /// <para>
+    /// Lore の <c>revision history</c> はリビジョン番号とハッシュしか返さないため、
+    /// プロバイダが <c>revision metadata list</c> を 1 件ずつ引いて補っている。
+    /// キー名は Lore の実装依存なので、**実機で確かめないと対応表が正しいか分からない**。
+    /// 失敗したときはメタデータのキーと値をそのまま出して、対応表を直せるようにする。
+    /// </para>
+    /// </summary>
+    private static void HistoryCarriesMetadata()
+    {
+        var provider = Require(_providerA);
+
+        // このテスト専用の、他と紛れない印つきメッセージで 1 件コミットする。
+        WriteLines(_dirA, HISTORY_PROBE_FILE, "history probe");
+        var submit = provider.SubmitAsync(HISTORY_PROBE_MESSAGE).GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, submit.Outcome,
+                    $"送信の結末（{submit.Message} / {string.Join(" | ", submit.Details)}）");
+
+        var history = provider.GetHistoryAsync().GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, history.Outcome,
+                    $"履歴取得の結末（{history.Message} / {string.Join(" | ", history.Details)}）");
+        Check.True(history.Value!.Count > 0, "履歴が 1 件以上返る");
+
+        var found = history.Value.FirstOrDefault(
+            r => r.Message.Contains(HISTORY_PROBE_MESSAGE, StringComparison.Ordinal));
+
+        // 見つからなければ、生のメタデータを全部出して対応表を直せるようにする。
+        Check.True(found is not null,
+                   "直前のコミットメッセージが履歴に出る。"
+                   + $"実際の履歴: [{string.Join(" / ", history.Value.Select(r => r.ToString()))}]"
+                   + $" 生のメタデータ: [{DumpRawMetadata(_dirA, history.Value)}]");
+
+        Check.True(found!.Author.Length > 0,
+                   $"作者が入る（実際: '{found.Author}'）。"
+                   + $" 生のメタデータ: [{DumpRawMetadata(_dirA, history.Value)}]");
+        Check.True(found.TimestampUtc != default,
+                   $"日時が入る（実際: {found.TimestampUtc:O}）。"
+                   + $" 生のメタデータ: [{DumpRawMetadata(_dirA, history.Value)}]");
+    }
+
     // ============================================================
     //  共通ヘルパー
     // ============================================================
+
+    /// <summary>
+    /// 履歴の各リビジョンのメタデータを生のまま 1 行へ畳む（対応表を直すための診断用）。
+    /// </summary>
+    /// <param name="dir">作業コピーのルート。</param>
+    /// <param name="revisions">対象のリビジョン。</param>
+    private static string DumpRawMetadata(string dir, IReadOnlyList<RevisionInfo> revisions)
+    {
+        try
+        {
+            using var backend = new LoreNativeBackend(dir);
+            var parts = new List<string>();
+
+            // 全部出すと読めないので、新しい方から数件だけ。
+            foreach (var revision in revisions.Take(METADATA_DUMP_LIMIT))
+            {
+                var rows = backend.RevisionMetadata(revision.Id, CancellationToken.None);
+                if (!rows.Call.Succeeded)
+                {
+                    parts.Add($"#{revision.Number} 取得失敗({rows.Call})");
+                    continue;
+                }
+
+                var pairs = rows.Rows.Select(
+                    r => $"{r.Key}={r.Kind}:'{r.StringValue}'/{r.NumericValue}");
+                parts.Add($"#{revision.Number} {{{string.Join(", ", pairs)}}}");
+            }
+
+            return string.Join(" ; ", parts);
+        }
+        catch (Exception ex)
+        {
+            return $"（メタデータの採取に失敗: {ex.Message}）";
+        }
+    }
 
     /// <summary>リポジトリを新規作成する（エディタの操作ではないので直接 Lore を呼ぶ）。</summary>
     /// <param name="dir">作業コピーのルート。</param>

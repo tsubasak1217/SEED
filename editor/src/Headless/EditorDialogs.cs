@@ -57,6 +57,42 @@ internal static class EditorDialogs
     }
 
     /// <summary>
+    /// 1 行のテキストを入力させるモーダルを表示する（ヘッドレス時はログ出力のみ）。
+    ///
+    /// <para>
+    /// ヘッドレス時は <c>null</c>（＝取り消し）を返す。
+    /// 入力が要る操作は「勝手に既定値で進めない」のが安全側であり、
+    /// <see cref="Show"/> が破壊的でない側を返すのと同じ方針。
+    /// </para>
+    /// </summary>
+    /// <param name="prompt">入力欄の上に出す説明文。</param>
+    /// <param name="caption">タイトル。</param>
+    /// <param name="initialText">入力欄の初期値。</param>
+    /// <param name="owner">親ウィンドウ（中央に出すために使う）。</param>
+    /// <returns>入力された文字列（前後の空白は落とす）。取り消し・ヘッドレス時は null。</returns>
+    public static string? ShowTextInput(
+        string prompt,
+        string caption,
+        string? initialText = null,
+        Window? owner = null)
+    {
+        if (EditorStartupOptions.IsHeadless)
+        {
+            var flat = prompt.Replace("\r\n", " / ").Replace("\n", " / ");
+            EditorLog.Write($"{LOG_PREFIX} {caption}: {flat}  → 既定応答=キャンセル（入力なし）");
+            return null;
+        }
+
+        var window = new SEEDEditor.Dialogs.TextInputWindow(caption, prompt, initialText);
+
+        // 親を指定しないと WindowStartupLocation.CenterOwner が効かず左上に出る。
+        // 明示されなければアクティブなウィンドウを親にする。
+        window.Owner = owner ?? Application.Current?.MainWindow;
+
+        return window.ShowDialog() == true ? window.InputText : null;
+    }
+
+    /// <summary>
     /// ボタン構成ごとの、ヘッドレス時の既定応答を返す。
     /// 「勝手に破壊的な操作を承諾しない」を原則にする。
     /// </summary>

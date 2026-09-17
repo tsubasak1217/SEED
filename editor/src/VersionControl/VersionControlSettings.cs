@@ -43,6 +43,18 @@ public sealed class VersionControlSettings
     public const int DEFAULT_HISTORY_LENGTH = 100;
 
     /// <summary>
+    /// 履歴のうち、メッセージ・作者・日時（リビジョンのメタデータ）まで補う件数の上限。
+    ///
+    /// <para>
+    /// ★Lore の <c>revision history</c> は番号とハッシュしか返さないため、
+    /// メッセージ等は <c>revision metadata list</c> を **1 リビジョンにつき 1 回**
+    /// 呼んで補う。往復が件数分かかるので、パネルが最初に見せる範囲だけに絞る。
+    /// これを超えた分は番号だけが並ぶ（表示はできる）。
+    /// </para>
+    /// </summary>
+    public const int DEFAULT_HISTORY_METADATA_LIMIT = 30;
+
+    /// <summary>
     /// ワーカーを停止するときに実行中の操作を待つ上限 [ms]。
     /// これを超えたら待たずに諦める（エディタ終了を止めないため）。
     /// </summary>
@@ -68,6 +80,9 @@ public sealed class VersionControlSettings
     /// <summary>履歴の既定取得件数。</summary>
     public int HistoryLength { get; }
 
+    /// <summary>履歴のうちメタデータまで補う件数の上限。</summary>
+    public int HistoryMetadataLimit { get; }
+
     /// <summary>ワーカー停止時に実行中の操作を待つ上限。</summary>
     public TimeSpan ShutdownWait { get; }
 
@@ -81,12 +96,14 @@ public sealed class VersionControlSettings
     /// <param name="statusDebounce">状態再取得のデバウンス時間。</param>
     /// <param name="historyLength">履歴の既定取得件数。</param>
     /// <param name="shutdownWait">ワーカー停止時の待ち上限。</param>
+    /// <param name="historyMetadataLimit">履歴のうちメタデータまで補う件数の上限。</param>
     public VersionControlSettings(
         TimeSpan? localOperationTimeout  = null,
         TimeSpan? remoteOperationTimeout = null,
         TimeSpan? statusDebounce         = null,
         int?      historyLength          = null,
-        TimeSpan? shutdownWait           = null)
+        TimeSpan? shutdownWait           = null,
+        int?      historyMetadataLimit   = null)
     {
         LocalOperationTimeout  = localOperationTimeout
             ?? TimeSpan.FromMilliseconds(DEFAULT_LOCAL_OPERATION_TIMEOUT_MS);
@@ -97,6 +114,7 @@ public sealed class VersionControlSettings
         HistoryLength          = historyLength  ?? DEFAULT_HISTORY_LENGTH;
         ShutdownWait           = shutdownWait
             ?? TimeSpan.FromMilliseconds(DEFAULT_SHUTDOWN_WAIT_MS);
+        HistoryMetadataLimit   = historyMetadataLimit ?? DEFAULT_HISTORY_METADATA_LIMIT;
     }
 
     /// <summary>既定値だけで構成した設定。</summary>

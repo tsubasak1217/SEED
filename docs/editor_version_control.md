@@ -153,7 +153,7 @@ UI を触る購読側が自分で `Dispatcher` へ移すこと（サービスは
 | **相対パスは `WorkingDirectory` から解決される** | `LoreNativeBackend.NewGlobalArgs`（4.3） |
 | **Lore は一般的な失敗に `-1` を返す** | `RETURN_CODE_CANCELED = int.MinValue`（4.4） |
 | **`resolve mine` はオフラインだと実体を取れず失敗する** | `MergeResolve` だけ `offline: false`（4.5） |
-| **`REVISION_HISTORY_ENTRY` にメッセージ・作者・日時が無い** | 4.6（未解決。バックログ） |
+| **`REVISION_HISTORY_ENTRY` にメッセージ・作者・日時が無い** | `RevisionMetadata` で 1 件ずつ補う（4.6） |
 
 ### 4.1 競合解決の向き（取り違えると利用者の作業が消える）
 
@@ -214,13 +214,107 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 「自分の変更を残す」側は実体が手元にあるのでオフラインでも通るため、
 **片方だけ壊れることに気づきにくい**。`MergeResolve` は `offline: false` で呼ぶ。
 
-### 4.6 履歴にメッセージ・作者・日時が無い（未解決）
+### 4.6 履歴にメッセージ・作者・日時が無い（メタデータで補う）
 
 `LoreRevisionHistoryEntryEventDataFFI` は `Revision` / `RevisionNumber` / `Parent` しか
-持たない（リフレクションで確認）。コミットメッセージ等はリビジョンのメタデータ
-（`Lore.RevisionMetadataGet`）として 1 件ずつ引く必要がある。
-現状 `RevisionInfo.Author` / `Message` / `TimestampUtc` は空・0 のまま。
-型は残してあるので、メタデータ取得を足せばそのまま埋まる。
+持たない（リフレクションで確認）。コミットメッセージ等はリビジョンの**メタデータ**として
+別に保存されており、`Lore.RevisionMetadataList` で 1 リビジョンずつ引く必要がある。
+
+実サーバ（loreserver v0.9.0）で観測した実際のキーは次のとおり:
+
+| キー | 型 | 内容 |
+|---|---|---|
+| `message` | STRING | コミットメッセージ |
+| `committed-by` | STRING | コミットした人（identity） |
+| `created-by` | STRING | 作った人（identity） |
+| `timestamp` | NUMERIC | **Unix ミリ秒**（例 1789661083806） |
+| `branch` | （SEED では未使用の型） | ブランチ |
+
+吸収している場所:
+
+- `ILoreBackend.RevisionMetadata(revisionId)` … `revision metadata list` の 1 対 1 の窓口
+- `LoreRevisionMetadataTranslator` … キー名の対応表（**候補キーの配列はここだけ**）と
+  時刻の単位推定（秒 / ミリ / マイクロ / ナノを桁で判定し、
+  現実的でない値は「不明」にして **でたらめな日付を出さない**）
+- `LoreProvider.FillRevisionMetadata` … 履歴の各行へ 1 件ずつ補う
+
+1 リビジョンにつき 1 往復かかるため、補うのは
+`VersionControlSettings.HistoryMetadataLimit`（既定 30）件まで。
+超えた分と、メタデータを引けなかった行は**一覧から消さず**番号だけ残す
+（「1 件引けなかったから履歴全体が出ない」より良い）。
+
+### 4.7 フォルダの移動（実機で確認済み）
+
+`file stage move` に**フォルダ**を渡すと、Lore は中のファイルを
+「移動」として記録する（削除 + 追加にはならない）。
+したがってプロジェクトパネルのフォルダ D&D でも、ファイル単位に展開せず
+フォルダのパスをそのまま `NotifyMovedAsync` へ渡せばよい。
+結合テスト `[結合] フォルダの移動も移動として記録される` が、
+移動先が全件 `Moved` であること・移動元に `Deleted` が残らないことを固定している。
+
+---
+
+## 4.5 Version Control パネル（UI）
+
+### 4.5.1 ファイル一覧
+
+| パス | 役割 |
+|---|---|
+| `editor/src/Panels/VersionControlPanel.xaml` | 画面（ダークテーマ・行テンプレート 4 種） |
+| `editor/src/Panels/VersionControlPanel.xaml.cs` | 生成・購読・状態の反映・ヘッダー・変更一覧・右クリック |
+| `editor/src/Panels/VersionControlPanel.Operations.cs` | 取得 / 送信 / 競合解決 / ブランチ / 履歴 / ロック |
+| `editor/src/Panels/VersionControl/ChangeRowItem.cs` | 変更一覧の行（見出し / ファイル） |
+| `editor/src/Panels/VersionControl/HistoryRowItem.cs` | 履歴タブの行 |
+| `editor/src/Panels/VersionControl/LockRowItem.cs` | ロックタブの行 |
+| `editor/src/Panels/VersionControl/ChangeRowTemplateSelector.cs` | 行テンプレートの振り分け |
+| `editor/src/VersionControl/Presentation/VersionControlPanelState.cs` | **状態機械**（WPF 非依存・単体テスト済み） |
+| `editor/src/VersionControl/Presentation/VersionControlNotice.cs` | Outcome → 1 行メッセージ + 重大度 |
+| `editor/src/VersionControl/Presentation/ChangeListGroup.cs` | 競合を最上部へ束ねるグループ分け |
+| `editor/src/VersionControl/Presentation/VersionControlDisplay.cs` | 値 → 表示名・アイコンキー |
+| `editor/src/VersionControl/WorkingCopyWatcher.cs` | 作業コピーの見張り → `RequestRefresh` |
+| `editor/src/Dialogs/TextInputWindow.cs` | 1 行入力のモーダル（ブランチ名） |
+
+### 4.5.2 ビューとロジックを分ける理由
+
+ボタンの有効条件（利用可能か / 実行中か / メッセージが空か / 競合が残っているか）と
+結果の見せ方は分岐が多いのに、**間違えてもビルドが通り、GUI を起動しないと見えない**。
+そこで判断は全部 `VersionControlPanelState`（WPF 非依存）へ出し、
+`editor/tests/VersionControlTests/PanelStateTests.cs` で全分岐を固定する。
+ビューがやるのは「状態を読んでコントロールへ写す」ことだけ（`SyncControls()`）。
+
+### 4.5.3 画面の約束
+
+- **利用不可**（`.lore` が無い）… 操作 UI を出さず、案内だけを出す
+- **語彙** … stage / commit / push / sync を出さない。主操作は「最新を取得」「送信」の 2 つだけ
+- **モーダル** … 取り返しのつかない操作の確認だけ（「リモートを採用」／未送信ありのブランチ切替）。
+  必ず `Headless/EditorDialogs` 経由（ヘッドレスで UI スレッドが止まらないように）
+- **中断ボタンを出さない** … LoreVcs に実行中の操作を止める API が無い（3 章）。
+  出しても止まらないので不確定プログレスだけにする
+- **競合** … 常に一覧の最上部の独立グループ。2 択の表示名は
+  `LoreConflictResolutionMap.ToDisplayName` から取り、文字列を直書きしない
+- **ロックの「不明」** … サーバ認証なしの構成では普通に起こる。異常扱いせず淡々と出し、
+  **不明なロックには解除ボタンを出さない**（他人の編集権を黙って奪わないため）
+- **一覧は 1 本の仮想化 ListBox** … 見出しと行を平坦に混ぜ、
+  `ChangeRowTemplateSelector` でテンプレートを振り分ける。
+  入れ子の ItemsControl にすると仮想化が効かず、変更数百件で固まる
+
+### 4.5.4 自動更新
+
+`WorkingCopyWatcher` がプロジェクトルートを監視し、変化があれば
+`VersionControlService.RequestRefresh(ScanOffline)` を呼ぶ（デバウンスはサービス側が持つ）。
+無視するのは `.lore/` `cache/` `save/` `logs/` `build/` `.backup/`。
+**`.lore/` を無視しないと、Lore 自身の書き込みで無限ループになる**。
+
+プロジェクトパネルにも FileSystemWatcher はあるが、`assets/` 限定で
+内容の書き換え（LastWrite）を拾わないため相乗りできない。
+あちらの `NotifyFilter` を広げるとファイルグリッドが毎回再構築されて挙動が変わる。
+
+### 4.5.5 ドッキング
+
+`ContentId = "version_control"`（**変更禁止**）。既定では Project / Output と同じ下段。
+旧 `layout.xml` にはこのパネルが無いため `EnsureAnchorable` が補完するが、
+既定の「最初に見つかったペイン」では左ペインに入ってしまうので、
+`siblingContentId: "output"` を渡して**下段へ入れている**。
 
 ---
 
@@ -310,7 +404,16 @@ dotnet run --project editor/tests/VersionControlTests
 通すシナリオ: リポジトリ作成 → クローン → 送信 → 取得 → 同じ行の競合 →
 `KeepMine`（ローカルが残ることをファイル内容で確認）→ 解決後の送信 →
 `TakeRemote`（リモートになることを確認）→ ロック取得・照会・一覧・解放 →
-改名（`stage move`）。
+改名（`stage move`）→ **フォルダごとの移動**（4.7）→ **履歴のメタデータ**（4.6）。
+
+履歴メタデータのテストは、失敗すると**観測した生のキー・値をそのまま出す**。
+Lore の版が上がってキー名が変わったら、その出力を見て
+`LoreRevisionMetadataTranslator` の候補配列を直せばよい。
+
+### 7.3 パネルのロジック（既定で常に実行）
+
+`PanelStateTests.cs`。ボタンの有効条件・Outcome ごとの見せ方・競合のグルーピング・
+表示名の対応表を固定する。ビューを起動せずに全分岐を踏める。
 
 **この結合テストが実際に 5 件のバグを見つけた**（4.3 / 4.4 / 4.5 と、
 解決後のマージが取り残される問題）。境界の設計だけでは防げない種類なので、
@@ -320,8 +423,6 @@ Lore を触る変更を入れたら必ず一度は回すこと。
 
 ## 8. 現状の配線
 
-パネルがまだ無いので、配線は最小限。
-
 - `editor/src/Project/ProjectContext.cs` の `Open`
   （プロジェクトを開く 2 経路が合流する唯一の場所）で
   `VersionControlService.Open(paths.RootDir)` を呼ぶ。
@@ -329,9 +430,15 @@ Lore を触る変更を入れたら必ず一度は回すこと。
   `バージョン管理: Lore（<root> remote=... identity=...）` または `バージョン管理: なし（<root>）`
 - `editor/src/App.xaml.cs` の `OnExit` で
   `VersionControlService.Close()` → `LoreShutdownGuard.Shutdown()`。
+- `VersionControlPanel` が `StatusChanged` を購読し、`Dispatcher` へ移して反映する。
+- `WorkingCopyWatcher` が作業コピーの変化を見て `RequestRefresh` を呼ぶ（4.5.4）。
+- プロジェクトパネルの**改名（インライン編集）とドラッグ＆ドロップ移動**の成功直後に
+  `NotifyMovedAsync` を呼ぶ（`ProjectPanel.NotifyVersionControlMoved`）。
+  素のファイル移動は Lore 上で「削除 + 追加」になり履歴が切れるため、この通知が要。
+  削除・新規作成は走査（`ScanOffline`）で拾えるので通知は要らない。
 
-まだ繋いでいないもの（パネル側と合わせて次段で行う）:
+まだ繋いでいないもの:
 
-- 保存経路（`safe_write` 完了）からの `NotifyChangedAsync` / `RequestRefresh`
-- プロジェクトパネルの作成・削除・リネームからの `NotifyMovedAsync`
-- `StatusChanged` の購読と `Dispatcher` への移送
+- 保存経路（`safe_write` 完了）からの `NotifyChangedAsync`。
+  今は `WorkingCopyWatcher` が拾って `ScanOffline` で取り直しているので一覧には出るが、
+  保存のたびに走査が走る。保存経路から直接 `file dirty` を打てば `TrackedOnly` で済む。

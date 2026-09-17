@@ -210,4 +210,229 @@ public static class VersionControlMessages
 
     /// <summary>タイムアウトした。</summary>
     public const string TIMED_OUT = "時間内に完了しなかったため中断しました。";
+
+    // ============================================================
+    //  パネル（Version Control）の表示文言
+    //  ここも「唯一の置き場」の原則どおり同じファイルへ置く。
+    //  XAML にもコードビハインドにも日本語を直書きしないこと。
+    // ============================================================
+
+    // ── パネルの素性 ────────────────────────────────────────
+
+    /// <summary>パネルのタイトル（AvalonDock のタブに出る）。</summary>
+    public const string PANEL_TITLE = "バージョン管理";
+
+    // ── 利用不可のときの案内 ────────────────────────────────
+
+    /// <summary>バージョン管理下に無いときの見出し。</summary>
+    public const string PANEL_UNAVAILABLE_TITLE = "このプロジェクトはバージョン管理されていません";
+
+    /// <summary>バージョン管理下に置く手順の案内（利用不可のときだけ出す）。</summary>
+    public const string PANEL_UNAVAILABLE_GUIDE =
+        "バージョン管理下に置くには、Lore のリポジトリを作成するか、"
+        + "既にあるリポジトリをこのプロジェクトフォルダへ取得してください。"
+        + "作業コピーになると（プロジェクトフォルダに .lore フォルダができると）"
+        + "このパネルが使えるようになります。";
+
+    // ── ヘッダー ────────────────────────────────────────────
+
+    /// <summary>ブランチのラベル。</summary>
+    public const string PANEL_BRANCH_LABEL = "ブランチ";
+
+    /// <summary>ブランチのコンボの末尾に出す「新しいブランチを作る」項目。</summary>
+    public const string PANEL_BRANCH_NEW_ITEM = "新しいブランチ…";
+
+    /// <summary>新しいブランチ名を尋ねるダイアログのタイトル。</summary>
+    public const string PANEL_BRANCH_NEW_DIALOG_TITLE = "新しいブランチ";
+
+    /// <summary>新しいブランチ名を尋ねるダイアログの本文。</summary>
+    public const string PANEL_BRANCH_NEW_DIALOG_PROMPT = "新しいブランチの名前を入力してください。";
+
+    /// <summary>ブランチ切替の確認（未送信の変更があるとき。書式: 件数）。</summary>
+    public const string PANEL_BRANCH_SWITCH_CONFIRM_FORMAT =
+        "送信していない変更が {0} 件あります。\n"
+        + "ブランチを切り替えると、これらの変更が失われることがあります。\n"
+        + "切り替えますか？";
+
+    /// <summary>ブランチ切替の確認ダイアログのタイトル。</summary>
+    public const string PANEL_BRANCH_SWITCH_CONFIRM_TITLE = "ブランチの切り替え";
+
+    /// <summary>接続先と identity をまとめて出すときの書式（identity — リモート URL）。</summary>
+    public const string PANEL_CONNECTION_FORMAT = "{0} — {1}";
+
+    /// <summary>identity が分からないときの表示。</summary>
+    public const string PANEL_IDENTITY_UNKNOWN = "利用者不明";
+
+    /// <summary>リモート URL が分からないときの表示。</summary>
+    public const string PANEL_REMOTE_UNKNOWN = "接続先未設定";
+
+    /// <summary>更新ボタンのツールチップ。</summary>
+    public const string PANEL_REFRESH_TOOLTIP = "状態を取り直す";
+
+    // ── 主操作 ──────────────────────────────────────────────
+
+    /// <summary>「最新を取得」ボタンの文言。</summary>
+    public const string PANEL_FETCH_BUTTON = "最新を取得";
+
+    /// <summary>「送信」ボタンの文言。</summary>
+    public const string PANEL_SUBMIT_BUTTON = "送信";
+
+    /// <summary>メッセージ欄のプレースホルダ。</summary>
+    public const string PANEL_MESSAGE_PLACEHOLDER = "変更内容をひとことで";
+
+    // ── 結果の 1 行メッセージ（パネル専用の短い言い回し）────
+
+    /// <summary>先に最新を取得すべきとき。該当ボタンを強調する。</summary>
+    public const string PANEL_NOTICE_NEEDS_SYNC = "先に「最新を取得」してください。";
+
+    /// <summary>サーバへ繋がらないとき。</summary>
+    public const string PANEL_NOTICE_REQUIRES_CONNECTION = "サーバに接続できません。";
+
+    // ── 変更一覧 ────────────────────────────────────────────
+
+    /// <summary>競合グループの見出し（書式: 件数）。</summary>
+    public const string PANEL_GROUP_CONFLICTS_FORMAT = "競合（{0} 件）";
+
+    /// <summary>変更グループの見出し（書式: 件数）。</summary>
+    public const string PANEL_GROUP_CHANGES_FORMAT = "変更（{0} 件）";
+
+    /// <summary>変更が 1 件も無いときの表示。</summary>
+    public const string PANEL_NO_CHANGES = "変更はありません。";
+
+    /// <summary>「すべて」に対して競合解決を行うボタンの接頭辞（書式: 選択肢名）。</summary>
+    public const string PANEL_RESOLVE_ALL_FORMAT = "すべて{0}";
+
+    /// <summary>「リモートを採用」の確認本文（書式: 件数）。自分の変更が消えるため必ず確認する。</summary>
+    public const string PANEL_RESOLVE_TAKE_REMOTE_CONFIRM_FORMAT =
+        "{0} 件のファイルについて、自分の変更を捨ててリモートの内容にします。\n"
+        + "この操作は取り消せません。続けますか？";
+
+    /// <summary>「リモートを採用」の確認ダイアログのタイトル。</summary>
+    public const string PANEL_RESOLVE_TAKE_REMOTE_CONFIRM_TITLE = "リモートを採用";
+
+    // ── 変更の種類の表示名 ──────────────────────────────────
+
+    /// <summary>追加。</summary>
+    public const string PANEL_CHANGE_ADDED = "追加";
+
+    /// <summary>変更。</summary>
+    public const string PANEL_CHANGE_MODIFIED = "変更";
+
+    /// <summary>削除。</summary>
+    public const string PANEL_CHANGE_DELETED = "削除";
+
+    /// <summary>移動。</summary>
+    public const string PANEL_CHANGE_MOVED = "移動";
+
+    /// <summary>複製。</summary>
+    public const string PANEL_CHANGE_COPIED = "複製";
+
+    /// <summary>競合。</summary>
+    public const string PANEL_CHANGE_CONFLICT = "競合";
+
+    /// <summary>種類が分からない。</summary>
+    public const string PANEL_CHANGE_UNKNOWN = "不明";
+
+    // ── 右クリックメニュー ──────────────────────────────────
+
+    /// <summary>プロジェクトパネルで表示する。</summary>
+    public const string PANEL_MENU_SHOW_IN_PROJECT = "プロジェクトパネルで表示";
+
+    /// <summary>エクスプローラーでフォルダーの場所を開く。</summary>
+    public const string PANEL_MENU_OPEN_FOLDER = "フォルダーの場所を開く";
+
+    /// <summary>パスをクリップボードへコピーする。</summary>
+    public const string PANEL_MENU_COPY_PATH = "パスをコピー";
+
+    /// <summary>ロックする。</summary>
+    public const string PANEL_MENU_LOCK = "ロックする";
+
+    /// <summary>ロックを解除する。</summary>
+    public const string PANEL_MENU_UNLOCK = "ロックを解除";
+
+    // ── タブ ────────────────────────────────────────────────
+
+    /// <summary>「変更」タブ。</summary>
+    public const string PANEL_TAB_CHANGES = "変更";
+
+    /// <summary>「履歴」タブ。</summary>
+    public const string PANEL_TAB_HISTORY = "履歴";
+
+    /// <summary>「ロック」タブ。</summary>
+    public const string PANEL_TAB_LOCKS = "ロック";
+
+    // ── 履歴タブ ────────────────────────────────────────────
+
+    /// <summary>サーバに繋がっていないため履歴を出せないとき。</summary>
+    public const string PANEL_HISTORY_REQUIRES_CONNECTION =
+        "履歴はサーバ接続時のみ表示できます。";
+
+    /// <summary>履歴が 1 件も無いとき。</summary>
+    public const string PANEL_HISTORY_EMPTY = "履歴がありません。";
+
+    /// <summary>リビジョン番号の表示書式（書式: 番号）。</summary>
+    public const string PANEL_REVISION_NUMBER_FORMAT = "#{0}";
+
+    /// <summary>メッセージが空のリビジョンの表示。</summary>
+    public const string PANEL_REVISION_NO_MESSAGE = "（メッセージなし）";
+
+    /// <summary>日時の表示書式（履歴・ロック共通）。</summary>
+    public const string PANEL_TIMESTAMP_FORMAT = "yyyy/MM/dd HH:mm";
+
+    /// <summary>日時が取得できなかったときの表示。</summary>
+    public const string PANEL_TIMESTAMP_UNKNOWN = "日時不明";
+
+    // ── ロックタブ ──────────────────────────────────────────
+
+    /// <summary>ロックが 1 件も無いとき。</summary>
+    public const string PANEL_LOCKS_EMPTY = "ロックされているファイルはありません。";
+
+    /// <summary>保持者が自分。</summary>
+    public const string PANEL_LOCK_HOLDER_SELF = "自分";
+
+    /// <summary>保持者が他の人（書式: 所有者名）。</summary>
+    public const string PANEL_LOCK_HOLDER_OTHER_FORMAT = "他の人（{0}）";
+
+    /// <summary>保持者が不明（サーバ認証なしの構成では普通に起こる）。</summary>
+    public const string PANEL_LOCK_HOLDER_UNKNOWN = "不明";
+
+    /// <summary>ロックされていない。</summary>
+    public const string PANEL_LOCK_HOLDER_NONE = "ロックなし";
+
+    /// <summary>
+    /// 所有者が不明になり得ることの説明（ロックタブに常時出す）。
+    /// 「壊れている」と誤解されないよう、普通の状態だと明示する。
+    /// </summary>
+    public const string PANEL_LOCK_UNKNOWN_NOTE =
+        "サーバに利用者認証を設定していない構成では、保持者が「不明」になります"
+        + "（異常ではありません）。ロックは通知のみで、保存は止まりません。";
+
+    /// <summary>ロック解除ボタンの文言。</summary>
+    public const string PANEL_LOCK_RELEASE_BUTTON = "解除";
+
+    // ── 実行中の表示 ────────────────────────────────────────
+
+    /// <summary>実行中であることの表示（書式: 操作名）。</summary>
+    public const string PANEL_BUSY_FORMAT = "{0}…";
+
+    /// <summary>操作名: 状態の取り直し。</summary>
+    public const string PANEL_OPERATION_REFRESH = "更新中";
+
+    /// <summary>操作名: 最新を取得。</summary>
+    public const string PANEL_OPERATION_FETCH = "最新を取得中";
+
+    /// <summary>操作名: 送信。</summary>
+    public const string PANEL_OPERATION_SUBMIT = "送信中";
+
+    /// <summary>操作名: 競合の解決。</summary>
+    public const string PANEL_OPERATION_RESOLVE = "競合を解決中";
+
+    /// <summary>操作名: ブランチ操作。</summary>
+    public const string PANEL_OPERATION_BRANCH = "ブランチを操作中";
+
+    /// <summary>操作名: 履歴の取得。</summary>
+    public const string PANEL_OPERATION_HISTORY = "履歴を取得中";
+
+    /// <summary>操作名: ロックの操作。</summary>
+    public const string PANEL_OPERATION_LOCK = "ロックを操作中";
 }

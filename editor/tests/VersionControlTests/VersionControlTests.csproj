@@ -105,6 +105,20 @@
       <Link>Linked\VersionControl\Scheduling\SerialWorkerScheduler.cs</Link>
     </Compile>
 
+    <!-- ── パネルのビューモデル / 状態機械（WPF 非依存）── -->
+    <Compile Include="..\..\src\VersionControl\Presentation\VersionControlNotice.cs">
+      <Link>Linked\VersionControl\Presentation\VersionControlNotice.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Presentation\ChangeListGroup.cs">
+      <Link>Linked\VersionControl\Presentation\ChangeListGroup.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Presentation\VersionControlDisplay.cs">
+      <Link>Linked\VersionControl\Presentation\VersionControlDisplay.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Presentation\VersionControlPanelState.cs">
+      <Link>Linked\VersionControl\Presentation\VersionControlPanelState.cs</Link>
+    </Compile>
+
     <!-- ── バックエンド境界（生データの契約）── -->
     <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreCallResult.cs">
       <Link>Linked\VersionControl\Lore\Backend\LoreCallResult.cs</Link>
@@ -134,6 +148,9 @@
     </Compile>
     <Compile Include="..\..\src\VersionControl\Lore\LoreConnectionDiagnosis.cs">
       <Link>Linked\VersionControl\Lore\LoreConnectionDiagnosis.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreRevisionMetadataTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreRevisionMetadataTranslator.cs</Link>
     </Compile>
     <Compile Include="..\..\src\VersionControl\Lore\LoreProvider.cs">
       <Link>Linked\VersionControl\Lore\LoreProvider.cs</Link>

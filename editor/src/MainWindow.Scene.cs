@@ -277,6 +277,7 @@ public partial class MainWindow
         MenuItemAnimationTimeline.IsChecked = IsPanelVisible("animation_timeline");
         MenuItemSpriteRig.IsChecked = IsPanelVisible("sprite_rig");
         MenuItemProfiler.IsChecked = IsPanelVisible("profiler");
+        MenuItemVersionControl.IsChecked = IsPanelVisible("version_control");
         // スクリプト関連ウィンドウの表示状態もチェックへ反映する
         MenuItemOpenDocuments.IsChecked = IsPanelVisible("open_documents");
         MenuItemErrorList.IsChecked     = IsPanelVisible("error_list");

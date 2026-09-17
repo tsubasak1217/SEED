@@ -852,6 +852,11 @@
                               IsCheckable="True"
                               Tag="profiler"
                               Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemVersionControl"
+                              Header="バージョン管理"
+                              IsCheckable="True"
+                              Tag="version_control"
+                              Click="OnTogglePanel"/>
                 </MenuItem>
                 <!-- スクリプト: スクリプト編集関連ウィンドウ -->
                 <MenuItem Header="スクリプト">
@@ -2249,6 +2254,19 @@
                                                   CanHide="True"
                                                   CanFloat="True">
                                 <panels:ProfilerPanel x:Name="PanelProfiler"/>
+                            </avd:LayoutAnchorable>
+                            <!--
+                                ゲームプロジェクトのバージョン管理（Lore）。
+                                Project / Output と同じ下段に置く。アーティストも日常的に開くため、
+                                隠しパネルにはせず既定で見える位置にする。
+                                ContentId は layout.xml に永続化されるキーなので変更禁止。
+                            -->
+                            <avd:LayoutAnchorable Title="バージョン管理"
+                                                  ContentId="version_control"
+                                                  CanClose="False"
+                                                  CanHide="True"
+                                                  CanFloat="True">
+                                <panels:VersionControlPanel x:Name="PanelVersionControl"/>
                             </avd:LayoutAnchorable>
                         </avd:LayoutAnchorablePane>
 

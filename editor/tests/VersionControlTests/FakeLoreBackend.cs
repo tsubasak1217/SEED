@@ -77,6 +77,20 @@ public sealed class FakeLoreBackend : ILoreBackend
     public LoreRowsResult<LoreRevisionRow> HistoryResult { get; set; }
         = new(LoreCallResult.Success, Array.Empty<LoreRevisionRow>());
 
+    /// <summary>
+    /// リビジョン識別子ごとのメタデータの戻り値。
+    /// 並んでいない識別子には <see cref="DefaultRevisionMetadataResult"/> を返す。
+    /// </summary>
+    public Dictionary<string, LoreRowsResult<LoreMetadataRow>> RevisionMetadataResults { get; }
+        = new(StringComparer.Ordinal);
+
+    /// <summary>並んでいない識別子に対して返すメタデータ（既定は「空だが成功」）。</summary>
+    public LoreRowsResult<LoreMetadataRow> DefaultRevisionMetadataResult { get; set; }
+        = new(LoreCallResult.Success, Array.Empty<LoreMetadataRow>());
+
+    /// <summary>メタデータを引きにきたリビジョン識別子（呼ばれた順）。</summary>
+    public List<string> RevisionMetadataRequests { get; } = new();
+
     /// <summary>ロック一覧の戻り値。</summary>
     public LoreRowsResult<LoreLockRow> LockQueryResult { get; set; }
         = new(LoreCallResult.Success, Array.Empty<LoreLockRow>());
@@ -261,6 +275,18 @@ public sealed class FakeLoreBackend : ILoreBackend
     public LoreRowsResult<LoreRevisionRow> History(
         int maxCount, CancellationToken cancellationToken)
         => HistoryResult;
+
+    /// <summary>リビジョンのメタデータ。呼ばれた識別子を記録する。</summary>
+    /// <param name="revisionId">リビジョン識別子。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public LoreRowsResult<LoreMetadataRow> RevisionMetadata(
+        string revisionId, CancellationToken cancellationToken)
+    {
+        RevisionMetadataRequests.Add(revisionId);
+        return RevisionMetadataResults.TryGetValue(revisionId, out var result)
+            ? result
+            : DefaultRevisionMetadataResult;
+    }
 
     /// <summary>ロック一覧。</summary>
     /// <param name="cancellationToken">未使用。</param>

@@ -59,6 +59,9 @@ public sealed class LoreNativeBackend : ILoreBackend
     /// <summary>中断済みで実行しなかったときに詰めるメッセージ。</summary>
     private const string MESSAGE_CANCELED_BEFORE_START = "操作は開始前に中断されました。";
 
+    /// <summary>リビジョン識別子が空のまま metadata を引こうとしたときのメッセージ。</summary>
+    private const string MESSAGE_REVISION_ID_REQUIRED = "リビジョン識別子が指定されていません。";
+
     /// <summary>作業コピーのルート（絶対パス）。</summary>
     public string WorkingCopyRoot { get; }
 
@@ -397,6 +400,79 @@ public sealed class LoreNativeBackend : ILoreBackend
 
         return new LoreRowsResult<LoreRevisionRow>(call, rows);
     }
+
+    /// <summary>
+    /// 1 リビジョンのメタデータを一覧する。
+    ///
+    /// <para>
+    /// <c>revision history</c> にはメッセージ・作者・日時が入っていないため、
+    /// 履歴表示にはこれが要る（<see cref="ILoreBackend.RevisionMetadata"/> のコメント参照）。
+    /// キーの意味付けはここでは行わず、生のまま上へ返す。
+    /// </para>
+    /// </summary>
+    /// <param name="revisionId">リビジョン識別子（16 進文字列）。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public LoreRowsResult<LoreMetadataRow> RevisionMetadata(
+        string revisionId, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return LoreRowsResult<LoreMetadataRow>.FromFailure(CanceledResult());
+
+        // 識別子が空だと Lore は「現在のリビジョン」を見にいってしまい、
+        // 頼んだものと違う結果を返す。呼び出し側の取り違えを黙って通さない。
+        if (string.IsNullOrWhiteSpace(revisionId))
+        {
+            return LoreRowsResult<LoreMetadataRow>.FromFailure(
+                LoreCallResult.Failure(
+                    LoreCallResult.RETURN_CODE_INTERNAL_FAILURE,
+                    new[] { MESSAGE_REVISION_ID_REQUIRED }));
+        }
+
+        var rows = new List<LoreMetadataRow>();
+
+        using var globalArgs = NewGlobalArgs(offline: false);
+        using var args = new LoreRevisionMetadataListArgs
+        {
+            Revision = revisionId,
+        };
+
+        var call = Execute(() => LoreApi.RevisionMetadataList(globalArgs, args)
+            .Callback((evt, _) =>
+            {
+                if (evt.Tag != LoreEventTag.METADATA) return;
+
+                var data = evt.GetData<LoreMetadataEventDataFFI>();
+
+                // ★FFI の値はコールバックの中でだけ有効。
+                //   Tag を見てから必要な 1 つだけをその場で写す。
+                var value = data.Value;
+                var kind  = ToMetadataKind(value.Tag);
+
+                rows.Add(new LoreMetadataRow(
+                    Key:          data.Key ?? string.Empty,
+                    Kind:         kind,
+                    StringValue:  kind == LoreMetadataValueKind.String
+                                      ? value.String ?? string.Empty
+                                      : string.Empty,
+                    NumericValue: kind == LoreMetadataValueKind.Numeric ? value.Numeric : 0UL));
+            })
+            .Wait());
+
+        return new LoreRowsResult<LoreMetadataRow>(call, rows);
+    }
+
+    /// <summary>
+    /// Lore のメタデータ種別を SEED 側の最小の写しへ変換する。
+    /// 未知の種別は <see cref="LoreMetadataValueKind.Unknown"/> にして落とさない。
+    /// </summary>
+    /// <param name="type">Lore の種別。</param>
+    private static LoreMetadataValueKind ToMetadataKind(LoreMetadataType type) => type switch
+    {
+        LoreMetadataType.STRING  => LoreMetadataValueKind.String,
+        LoreMetadataType.NUMERIC => LoreMetadataValueKind.Numeric,
+        LoreMetadataType.BOOLEAN => LoreMetadataValueKind.Boolean,
+        _                        => LoreMetadataValueKind.Unknown,
+    };
 
     // ── ロック ──────────────────────────────────────────────
 

@@ -36,6 +36,7 @@ public static class Program
         var harness = new TestHarness();
 
         PureLogicTests.Register(harness);
+        PanelStateTests.Register(harness);
 
         var runServerTests = !string.IsNullOrWhiteSpace(
             Environment.GetEnvironmentVariable(ENV_RUN_SERVER_TESTS));

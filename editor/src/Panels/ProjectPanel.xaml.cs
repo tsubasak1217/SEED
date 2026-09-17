@@ -1398,9 +1398,49 @@ public partial class ProjectPanel : UserControl
                 if (File.Exists(destPath)) return false;      // 同名ファイルが存在
                 File.Move(srcPath, destPath);
             }
+
+            // バージョン管理へ「移動した」と伝える。
+            // 素のファイル移動は Lore 上で「削除 + 追加」になり履歴が切れるため、
+            // 移動が成功した直後に必ず通知する（実サーバ結合テストで、
+            // フォルダごとの移動も「移動」として記録されることを確認済み）。
+            NotifyVersionControlMoved(srcPath, destPath);
             return true;
         }
         catch { return false; }
+    }
+
+    /// <summary>
+    /// ファイル / フォルダの移動・改名をバージョン管理へ通知する。
+    ///
+    /// <para>
+    /// 結果は待たない（UI を止めないため）。バージョン管理が無いプロジェクトでは
+    /// NullProvider が Unavailable を返すだけで何も起きない。
+    /// 例外はプロバイダ境界の外へ出ない約束だが、await しないタスクで万一
+    /// 例外が出てもプロセスを落とさないよう、ここでも受け止めておく。
+    /// </para>
+    /// </summary>
+    /// <param name="fromPath">移動前の絶対パス。</param>
+    /// <param name="toPath">移動後の絶対パス。</param>
+    private static void NotifyVersionControlMoved(string fromPath, string toPath)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await SEEDEditor.VersionControl.VersionControlService.Provider
+                    .NotifyMovedAsync(fromPath, toPath)
+                    .ConfigureAwait(false);
+
+                if (result.IsError)
+                {
+                    EditorLog.Write($"[VCS] 移動を記録できませんでした: {result.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                EditorLog.Write($"[VCS] 移動の通知で例外が発生しました: {ex.Message}");
+            }
+        });
     }
 
     private void UpdateDragRect(Point cur)
@@ -1776,6 +1816,14 @@ public partial class ProjectPanel : UserControl
                             Path.GetFileNameWithoutExtension(origName),
                             Path.GetFileNameWithoutExtension(newName));
                 }
+                else
+                {
+                    // 実体が無い（すでに消えている）なら通知するものが無い。
+                    return;
+                }
+
+                // 改名もバージョン管理上は「移動」。通知しないと履歴が切れる。
+                NotifyVersionControlMoved(oldPath, newPath);
             }
             catch { }
         }

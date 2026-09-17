@@ -1,0 +1,584 @@
+<UserControl x:Class="SEEDEditor.Panels.VersionControlPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
+             xmlns:vc="clr-namespace:SEEDEditor.Panels.VersionControl"
+             Background="#1E1E1E">
+    <!--
+        バージョン管理（Version Control）パネル。
+
+        【画面の並び】
+          1. 利用不可の案内   … .lore が無いプロジェクトではここだけを出す
+          2. ヘッダー         … ブランチ / 接続先・identity / 更新
+          3. 主操作           … 「最新を取得」と「メッセージ + 送信」の 2 つだけ
+          4. 実行中の表示     … 不確定プログレス（中断ボタンは出さない。Lore に止める術が無い）
+          5. 1 行メッセージ   … 操作結果を色つきで 1 行
+          6. タブ             … 変更 / 履歴 / ロック
+
+        【語彙】
+        stage / commit / push / sync という語は一切出さない（アーティストも使うため）。
+        文言はすべて VersionControlMessages から流し込む（XAML に日本語を直書きしない）。
+
+        【配色】
+        既存パネル（OutputPanel / ProjectPanel）に合わせたダークテーマの直接指定。
+        このリポジトリには共有のブラシ辞書が無いため、慣習に合わせている。
+    -->
+    <UserControl.Resources>
+
+        <!-- ── 共通の色 ────────────────────────────────────────── -->
+        <SolidColorBrush x:Key="Vc.Background"     Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="Vc.Panel"          Color="#252526"/>
+        <SolidColorBrush x:Key="Vc.Toolbar"        Color="#2D2D2D"/>
+        <SolidColorBrush x:Key="Vc.Field"          Color="#1A1A1A"/>
+        <SolidColorBrush x:Key="Vc.Border"         Color="#3F3F46"/>
+        <SolidColorBrush x:Key="Vc.Text"           Color="#DCDCDC"/>
+        <SolidColorBrush x:Key="Vc.DimText"        Color="#999999"/>
+        <SolidColorBrush x:Key="Vc.Button"         Color="#404040"/>
+        <SolidColorBrush x:Key="Vc.PrimaryButton"  Color="#0E639C"/>
+        <SolidColorBrush x:Key="Vc.EmphasisButton" Color="#A07020"/>
+        <SolidColorBrush x:Key="Vc.Selection"      Color="#264F78"/>
+        <SolidColorBrush x:Key="Vc.ConflictHeader" Color="#4A2A2A"/>
+        <SolidColorBrush x:Key="Vc.ConflictText"   Color="#F0B0B0"/>
+
+        <!-- ── ボタン（ダークテーマ・無効時は薄くする）────────── -->
+        <Style x:Key="Vc.ButtonStyle" TargetType="Button">
+            <Setter Property="Background"      Value="{StaticResource Vc.Button}"/>
+            <Setter Property="Foreground"      Value="{StaticResource Vc.Text}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding"         Value="10,3"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="2"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
+                                <Setter Property="Cursor" Value="Arrow"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 主操作（最新を取得 / 送信）は一段目立たせる -->
+        <Style x:Key="Vc.PrimaryButtonStyle" TargetType="Button"
+               BasedOn="{StaticResource Vc.ButtonStyle}">
+            <Setter Property="Background" Value="{StaticResource Vc.PrimaryButton}"/>
+            <Setter Property="Padding"    Value="14,5"/>
+            <Setter Property="FontSize"   Value="12"/>
+        </Style>
+
+        <!-- ── タブ（このリポジトリに共有の TabItem スタイルが無いので局所定義）── -->
+        <Style x:Key="Vc.TabItemStyle" TargetType="TabItem">
+            <Setter Property="Foreground" Value="{StaticResource Vc.DimText}"/>
+            <Setter Property="FontSize"   Value="11"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Bd" Background="Transparent"
+                                BorderThickness="0,0,0,2" BorderBrush="Transparent"
+                                Padding="12,5">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush"
+                                        Value="{StaticResource Vc.PrimaryButton}"/>
+                                <Setter Property="Foreground" Value="{StaticResource Vc.Text}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#333333"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ── リストの行（詰めて表示・選択色をダークに）────────── -->
+        <Style x:Key="Vc.RowStyle" TargetType="ListBoxItem">
+            <Setter Property="Padding"         Value="0"/>
+            <Setter Property="Margin"          Value="0"/>
+            <Setter Property="MinHeight"       Value="0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background"      Value="Transparent"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Padding="4,1" SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background"
+                                        Value="{StaticResource Vc.Selection}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ══ 変更一覧の行テンプレート（4 種類）═══════════════════ -->
+
+        <!-- 競合グループの見出し。「すべて」に対する 2 択をここに置く。 -->
+        <DataTemplate x:Key="Vc.ConflictHeaderTemplate">
+            <Border Background="{StaticResource Vc.ConflictHeader}"
+                    CornerRadius="2" Padding="6,4" Margin="0,4,0,2">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <ctrl:AppIcon Grid.Column="0" IconKey="Icon.Vcs.Conflict"
+                                  Width="14" Height="14" VerticalAlignment="Center"
+                                  Foreground="{StaticResource Vc.ConflictText}"/>
+                    <TextBlock Grid.Column="1" Text="{Binding HeaderText}"
+                               Foreground="{StaticResource Vc.ConflictText}"
+                               FontWeight="Bold" FontSize="11"
+                               VerticalAlignment="Center" Margin="6,0,0,0"/>
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <Button Style="{StaticResource Vc.ButtonStyle}"
+                                Content="{x:Static vc:ChangeRowItem.KeepMineAllText}"
+                                Tag="{Binding}"
+                                Click="OnResolveAllKeepMine"/>
+                        <Button Style="{StaticResource Vc.ButtonStyle}"
+                                Content="{x:Static vc:ChangeRowItem.TakeRemoteAllText}"
+                                Tag="{Binding}" Margin="6,0,0,0"
+                                Click="OnResolveAllTakeRemote"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <!-- 通常グループの見出し（件数だけ）。 -->
+        <DataTemplate x:Key="Vc.GroupHeaderTemplate">
+            <TextBlock Text="{Binding HeaderText}"
+                       Foreground="{StaticResource Vc.DimText}"
+                       FontWeight="Bold" FontSize="11"
+                       Margin="2,8,0,2"/>
+        </DataTemplate>
+
+        <!-- 競合しているファイル行（1 件ずつの 2 択つき）。 -->
+        <DataTemplate x:Key="Vc.ConflictFileTemplate">
+            <Grid Margin="10,1,0,1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <ctrl:AppIcon Grid.Column="0" IconKey="{Binding KindIconKey}"
+                              Width="13" Height="13" VerticalAlignment="Center"
+                              Foreground="{StaticResource Vc.ConflictText}"
+                              ToolTip="{Binding KindText}"/>
+                <Image Grid.Column="1" Source="{Binding FileTypeIcon}"
+                       Width="14" Height="14" VerticalAlignment="Center"
+                       Margin="5,0,0,0"/>
+                <TextBlock Grid.Column="2" Text="{Binding PathText}"
+                           Foreground="{StaticResource Vc.Text}" FontSize="11"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" Margin="6,0,6,0"
+                           ToolTip="{Binding PathText}"/>
+
+                <StackPanel Grid.Column="3" Orientation="Horizontal">
+                    <Button Style="{StaticResource Vc.ButtonStyle}"
+                            Content="{x:Static vc:ChangeRowItem.KeepMineText}"
+                            Tag="{Binding}"
+                            Click="OnResolveFileKeepMine"/>
+                    <Button Style="{StaticResource Vc.ButtonStyle}"
+                            Content="{x:Static vc:ChangeRowItem.TakeRemoteText}"
+                            Tag="{Binding}" Margin="4,0,0,0"
+                            Click="OnResolveFileTakeRemote"/>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+
+        <!-- 通常のファイル行。 -->
+        <DataTemplate x:Key="Vc.FileTemplate">
+            <Grid Margin="10,1,0,1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <ctrl:AppIcon Grid.Column="0" IconKey="{Binding KindIconKey}"
+                              Width="13" Height="13" VerticalAlignment="Center"
+                              ToolTip="{Binding KindText}"/>
+                <TextBlock Grid.Column="1" Text="{Binding KindText}"
+                           Foreground="{StaticResource Vc.DimText}" FontSize="10"
+                           Width="34" TextAlignment="Center"
+                           VerticalAlignment="Center" Margin="4,0,0,0"/>
+                <Image Grid.Column="2" Source="{Binding FileTypeIcon}"
+                       Width="14" Height="14" VerticalAlignment="Center"
+                       Margin="2,0,0,0"/>
+                <TextBlock Grid.Column="3" Text="{Binding PathText}"
+                           Foreground="{StaticResource Vc.Text}" FontSize="11"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" Margin="6,0,0,0"
+                           ToolTip="{Binding PathText}"/>
+            </Grid>
+        </DataTemplate>
+
+        <vc:ChangeRowTemplateSelector x:Key="Vc.RowSelector"
+                                      ConflictHeaderTemplate="{StaticResource Vc.ConflictHeaderTemplate}"
+                                      GroupHeaderTemplate="{StaticResource Vc.GroupHeaderTemplate}"
+                                      ConflictFileTemplate="{StaticResource Vc.ConflictFileTemplate}"
+                                      FileTemplate="{StaticResource Vc.FileTemplate}"/>
+    </UserControl.Resources>
+
+    <Grid>
+        <!-- ══════════════════════════════════════════════════════
+             1. 利用不可のとき（.lore が無いプロジェクト）
+                操作 UI は一切出さず、案内だけを出す。
+             ══════════════════════════════════════════════════════ -->
+        <Border x:Name="UnavailableView" Visibility="Collapsed"
+                Background="{StaticResource Vc.Background}" Padding="20">
+            <StackPanel VerticalAlignment="Top" MaxWidth="520"
+                        HorizontalAlignment="Left">
+                <StackPanel Orientation="Horizontal">
+                    <ctrl:AppIcon IconKey="Icon.Panel.VersionControl"
+                                  Width="18" Height="18"
+                                  Foreground="{StaticResource Vc.DimText}"
+                                  VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtUnavailableTitle"
+                               Foreground="{StaticResource Vc.Text}"
+                               FontSize="13" FontWeight="Bold"
+                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </StackPanel>
+                <TextBlock x:Name="TxtUnavailableGuide"
+                           Foreground="{StaticResource Vc.DimText}"
+                           FontSize="11" TextWrapping="Wrap"
+                           Margin="0,10,0,0" LineHeight="18"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ══════════════════════════════════════════════════════
+             2〜6. バージョン管理下にあるときの本体
+             ══════════════════════════════════════════════════════ -->
+        <Grid x:Name="MainView">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>  <!-- ヘッダー -->
+                <RowDefinition Height="Auto"/>  <!-- 主操作 -->
+                <RowDefinition Height="Auto"/>  <!-- 実行中 -->
+                <RowDefinition Height="Auto"/>  <!-- 1 行メッセージ -->
+                <RowDefinition Height="*"/>     <!-- タブ -->
+            </Grid.RowDefinitions>
+
+            <!-- ── ヘッダー ────────────────────────────────────── -->
+            <Border Grid.Row="0" Background="{StaticResource Vc.Toolbar}" Padding="6,4">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <ctrl:AppIcon Grid.Column="0" IconKey="Icon.Vcs.Branch"
+                                  Width="14" Height="14" VerticalAlignment="Center"
+                                  Foreground="{StaticResource Vc.DimText}"/>
+                    <ComboBox x:Name="CmbBranch" Grid.Column="1"
+                              MinWidth="150" MaxWidth="260" Height="22" FontSize="11"
+                              VerticalAlignment="Center" Margin="6,0,0,0"
+                              SelectionChanged="OnBranchSelectionChanged"
+                              DropDownOpened="OnBranchDropDownOpened"/>
+
+                    <TextBlock x:Name="TxtConnection" Grid.Column="2"
+                               Foreground="{StaticResource Vc.DimText}" FontSize="11"
+                               VerticalAlignment="Center" Margin="12,0,8,0"
+                               TextTrimming="CharacterEllipsis"/>
+
+                    <Button x:Name="BtnRefresh" Grid.Column="3"
+                            Style="{StaticResource Vc.ButtonStyle}"
+                            Padding="6,3" Click="OnRefreshClick">
+                        <ctrl:AppIcon IconKey="Icon.Vcs.Refresh" Width="14" Height="14"/>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <!-- ── 主操作（「最新を取得」と「送信」の 2 つだけ）── -->
+            <Border Grid.Row="1" Background="{StaticResource Vc.Panel}" Padding="6,6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Button x:Name="BtnFetch" Grid.Column="0"
+                            Style="{StaticResource Vc.PrimaryButtonStyle}"
+                            Click="OnFetchLatestClick">
+                        <StackPanel Orientation="Horizontal">
+                            <ctrl:AppIcon IconKey="Icon.Vcs.Fetch" Width="14" Height="14"
+                                          VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TxtFetchLabel" Margin="6,0,0,0"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <!-- メッセージ欄（プレースホルダは重ねた TextBlock で出す） -->
+                    <Grid Grid.Column="1" Margin="8,0,8,0">
+                        <TextBox x:Name="TxtMessage"
+                                 Background="{StaticResource Vc.Field}"
+                                 Foreground="{StaticResource Vc.Text}"
+                                 BorderBrush="{StaticResource Vc.Border}"
+                                 BorderThickness="1" Padding="5,4" FontSize="11"
+                                 VerticalContentAlignment="Center"
+                                 TextChanged="OnMessageTextChanged"
+                                 KeyDown="OnMessageKeyDown"/>
+                        <TextBlock x:Name="TxtMessagePlaceholder"
+                                   Foreground="{StaticResource Vc.DimText}" FontSize="11"
+                                   IsHitTestVisible="False"
+                                   Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <Button x:Name="BtnSubmit" Grid.Column="2"
+                            Style="{StaticResource Vc.PrimaryButtonStyle}"
+                            Click="OnSubmitClick">
+                        <StackPanel Orientation="Horizontal">
+                            <ctrl:AppIcon IconKey="Icon.Vcs.Submit" Width="14" Height="14"
+                                          VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TxtSubmitLabel" Margin="6,0,0,0"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <!-- ── 実行中の表示（中断ボタンは出さない）────────── -->
+            <Grid x:Name="BusyView" Grid.Row="2" Visibility="Collapsed"
+                  Background="{StaticResource Vc.Panel}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <ProgressBar x:Name="BusyBar" Grid.Row="0" Height="3"
+                             IsIndeterminate="True"
+                             Background="Transparent" BorderThickness="0"
+                             Foreground="{StaticResource Vc.PrimaryButton}"/>
+                <TextBlock x:Name="TxtBusy" Grid.Row="1"
+                           Foreground="{StaticResource Vc.DimText}" FontSize="11"
+                           Margin="8,3,8,4"/>
+            </Grid>
+
+            <!-- ── 1 行メッセージ ────────────────────────────── -->
+            <Border x:Name="NoticeView" Grid.Row="3" Visibility="Collapsed"
+                    Background="{StaticResource Vc.Panel}" Padding="8,5">
+                <TextBlock x:Name="TxtNotice" FontSize="11" TextWrapping="Wrap"/>
+            </Border>
+
+            <!-- ── タブ（変更 / 履歴 / ロック）────────────────── -->
+            <TabControl x:Name="Tabs" Grid.Row="4"
+                        Background="{StaticResource Vc.Background}"
+                        BorderThickness="0"
+                        ItemContainerStyle="{StaticResource Vc.TabItemStyle}"
+                        SelectionChanged="OnTabSelectionChanged">
+
+                <!-- ── 変更 ── -->
+                <TabItem x:Name="TabChanges">
+                    <Grid Background="{StaticResource Vc.Background}">
+                        <ListBox x:Name="ChangeList"
+                                 Background="Transparent" BorderThickness="0"
+                                 Foreground="{StaticResource Vc.Text}"
+                                 SelectionMode="Extended"
+                                 ItemContainerStyle="{StaticResource Vc.RowStyle}"
+                                 ItemTemplateSelector="{StaticResource Vc.RowSelector}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 ScrollViewer.CanContentScroll="True"
+                                 VirtualizingStackPanel.IsVirtualizing="True"
+                                 VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                 VirtualizingStackPanel.ScrollUnit="Item"
+                                 HorizontalContentAlignment="Stretch"
+                                 ContextMenuOpening="OnChangeContextMenuOpening">
+                            <ListBox.ContextMenu>
+                                <ContextMenu Background="#2D2D2D" BorderBrush="#555">
+                                    <MenuItem x:Name="MenuShowInProject" Foreground="#CCC"
+                                              Click="OnShowInProject"/>
+                                    <MenuItem x:Name="MenuCopyPath" Foreground="#CCC"
+                                              Click="OnCopyPath"/>
+                                    <Separator/>
+                                    <MenuItem x:Name="MenuLock" Foreground="#CCC"
+                                              Click="OnLockSelected"/>
+                                    <MenuItem x:Name="MenuUnlock" Foreground="#CCC"
+                                              Click="OnUnlockSelected"/>
+                                </ContextMenu>
+                            </ListBox.ContextMenu>
+                        </ListBox>
+
+                        <TextBlock x:Name="TxtNoChanges"
+                                   Foreground="{StaticResource Vc.DimText}" FontSize="11"
+                                   Margin="10,12,0,0" VerticalAlignment="Top"
+                                   Visibility="Collapsed"/>
+                    </Grid>
+                </TabItem>
+
+                <!-- ── 履歴 ── -->
+                <TabItem x:Name="TabHistory">
+                    <Grid Background="{StaticResource Vc.Background}">
+                        <ListBox x:Name="HistoryList"
+                                 Background="Transparent" BorderThickness="0"
+                                 Foreground="{StaticResource Vc.Text}"
+                                 ItemContainerStyle="{StaticResource Vc.RowStyle}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 VirtualizingStackPanel.IsVirtualizing="True"
+                                 VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                 HorizontalContentAlignment="Stretch">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="2,2,2,2" ToolTip="{Binding RevisionId}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding NumberText}"
+                                                   Foreground="#7FB3D5" FontSize="11"
+                                                   MinWidth="42"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding MessageText}"
+                                                   Foreground="{StaticResource Vc.Text}"
+                                                   FontSize="11"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center"
+                                                   Margin="6,0,8,0"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding AuthorText}"
+                                                   Foreground="{StaticResource Vc.DimText}"
+                                                   FontSize="10"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,10,0"/>
+                                        <TextBlock Grid.Column="3" Text="{Binding TimestampText}"
+                                                   Foreground="{StaticResource Vc.DimText}"
+                                                   FontSize="10"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <TextBlock x:Name="TxtHistoryMessage"
+                                   Foreground="{StaticResource Vc.DimText}" FontSize="11"
+                                   Margin="10,12,10,0" TextWrapping="Wrap"
+                                   VerticalAlignment="Top" Visibility="Collapsed"/>
+                    </Grid>
+                </TabItem>
+
+                <!-- ── ロック ── -->
+                <TabItem x:Name="TabLocks">
+                    <Grid Background="{StaticResource Vc.Background}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 所有者が「不明」になるのは異常ではない、という注記を常時出す -->
+                        <TextBlock x:Name="TxtLockNote" Grid.Row="0"
+                                   Foreground="{StaticResource Vc.DimText}" FontSize="10"
+                                   TextWrapping="Wrap" Margin="8,6,8,4" LineHeight="15"/>
+
+                        <Grid Grid.Row="1">
+                            <ListBox x:Name="LockList"
+                                     Background="Transparent" BorderThickness="0"
+                                     Foreground="{StaticResource Vc.Text}"
+                                     ItemContainerStyle="{StaticResource Vc.RowStyle}"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     VirtualizingStackPanel.IsVirtualizing="True"
+                                     VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                     HorizontalContentAlignment="Stretch">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="2,2,2,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <ctrl:AppIcon Grid.Column="0" IconKey="Icon.Lock"
+                                                          Width="13" Height="13"
+                                                          VerticalAlignment="Center"
+                                                          Foreground="{StaticResource Vc.DimText}"/>
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding RelativePath}"
+                                                       Foreground="{StaticResource Vc.Text}"
+                                                       FontSize="11"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center"
+                                                       Margin="6,0,8,0"
+                                                       ToolTip="{Binding RelativePath}"/>
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding HolderText}"
+                                                       Foreground="{StaticResource Vc.DimText}"
+                                                       FontSize="10"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,10,0"/>
+                                            <TextBlock Grid.Column="3"
+                                                       Text="{Binding TimestampText}"
+                                                       Foreground="{StaticResource Vc.DimText}"
+                                                       FontSize="10"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,8,0"/>
+                                            <Button Grid.Column="4"
+                                                    Content="{x:Static vc:LockRowItem.ReleaseButtonText}"
+                                                    Tag="{Binding}"
+                                                    Click="OnReleaseLockClick">
+                                                <Button.Style>
+                                                    <Style TargetType="Button"
+                                                           BasedOn="{StaticResource Vc.ButtonStyle}">
+                                                        <Setter Property="Padding"  Value="8,1"/>
+                                                        <Setter Property="FontSize" Value="10"/>
+                                                        <Style.Triggers>
+                                                            <!-- 自分のロック以外は解除させない -->
+                                                            <DataTrigger Binding="{Binding CanRelease}"
+                                                                         Value="False">
+                                                                <Setter Property="Visibility"
+                                                                        Value="Collapsed"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <TextBlock x:Name="TxtLockMessage"
+                                       Foreground="{StaticResource Vc.DimText}" FontSize="11"
+                                       Margin="10,12,10,0" TextWrapping="Wrap"
+                                       VerticalAlignment="Top" Visibility="Collapsed"/>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </Grid>
+</UserControl>

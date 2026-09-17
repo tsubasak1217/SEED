@@ -97,6 +97,17 @@ public static class PureLogicTests
         harness.Add("接続できないときの履歴は RequiresConnection",           HistoryOfflineRequiresConnection);
         harness.Add("履歴の件数指定 0 は既定値へ丸められる",                 HistoryLengthIsClamped);
 
+        // ── 履歴のメタデータ（history にはメッセージ・作者・日時が無い）──
+        harness.Add("実機どおりのキーからメッセージ・作者・日時を取り出す",  MetadataExtractsRealKeys);
+        harness.Add("作者は committed-by を created-by より優先する",        MetadataPrefersCommittedBy);
+        harness.Add("キーの区切りと大文字小文字は無視して照合する",          MetadataKeysAreNormalized);
+        harness.Add("未知のキー・種類は無視して落ちない",                    MetadataIgnoresUnknownKeys);
+        harness.Add("Unix ミリ秒・マイクロ秒・ナノ秒を秒へ直す",            MetadataNormalizesTimeUnits);
+        harness.Add("現実的でない時刻は「不明」にして表示しない",            MetadataRejectsImplausibleTime);
+        harness.Add("履歴はメタデータで埋められる",                          HistoryIsEnrichedWithMetadata);
+        harness.Add("メタデータを引く件数は上限で打ち切られる",              HistoryMetadataIsLimited);
+        harness.Add("メタデータの取得に失敗しても履歴は消えない",            HistorySurvivesMetadataFailure);
+
         // ── 通知（パス変換）──
         harness.Add("作業コピー外のパスは Lore へ渡さない",                  OutsidePathsAreRejected);
         harness.Add("同じファイルを 2 回渡しても 1 回だけ通知する",          DuplicatePathsAreDeduplicated);
@@ -742,6 +753,229 @@ public static class PureLogicTests
         Check.Equal(VersionControlOutcome.Success, result.Outcome, "結末");
         Check.Equal(1, result.Value!.Count, "件数");
         Check.Equal(1UL, result.Value[0].Number, "リビジョン番号");
+    }
+
+    // ============================================================
+    //  履歴のメタデータ
+    //  （Lore の history は番号とハッシュしか返さない。メッセージ・作者・日時は
+    //    revision metadata list を 1 件ずつ引いて補う）
+    // ============================================================
+
+    /// <summary>
+    /// 実機（Lore v0.9.0 + loreserver）で実際に返ってきたキーの組から
+    /// 3 項目を取り出せること。ここが対応表の正しさを固定する要のテスト。
+    /// </summary>
+    private static void MetadataExtractsRealKeys()
+    {
+        // 実機の結合テストで観測したそのままの形
+        // （branch は SEED が解釈しない種類で返ってくる）。
+        var rows = new[]
+        {
+            new LoreMetadataRow("branch",       LoreMetadataValueKind.Unknown, "", 0UL),
+            new LoreMetadataRow("timestamp",    LoreMetadataValueKind.Numeric, "", 1_789_661_083_806UL),
+            new LoreMetadataRow("message",      LoreMetadataValueKind.String,  "初期投入", 0UL),
+            new LoreMetadataRow("created-by",   LoreMetadataValueKind.String,  "alice@example.com", 0UL),
+            new LoreMetadataRow("committed-by", LoreMetadataValueKind.String,  "alice@example.com", 0UL),
+        };
+
+        var fields = LoreRevisionMetadataTranslator.Extract(rows);
+
+        Check.Equal("初期投入", fields.Message, "メッセージ");
+        Check.Equal("alice@example.com", fields.Author, "作者");
+        // 1789661083806 ms → 1789661083 s。
+        Check.Equal(1_789_661_083L, fields.UnixTimeSeconds, "コミット時刻（Unix 秒）");
+        Check.True(fields.HasAny, "1 項目でも取れている");
+    }
+
+    /// <summary>
+    /// 作者は「作った人（created-by）」より「コミットした人（committed-by）」を優先する。
+    /// amend されたリビジョンで両者が食い違うため、どちらを採るかを固定しておく。
+    /// </summary>
+    private static void MetadataPrefersCommittedBy()
+    {
+        var rows = new[]
+        {
+            new LoreMetadataRow("created-by",   LoreMetadataValueKind.String, "alice@example.com", 0UL),
+            new LoreMetadataRow("committed-by", LoreMetadataValueKind.String, "bob@example.com",   0UL),
+        };
+
+        Check.Equal("bob@example.com",
+                    LoreRevisionMetadataTranslator.Extract(rows).Author,
+                    "作者（committed-by が優先される）");
+
+        // 並び順を入れ替えても結果が変わらないこと（メタデータの順序に依存しない）。
+        var reversed = new[] { rows[1], rows[0] };
+        Check.Equal("bob@example.com",
+                    LoreRevisionMetadataTranslator.Extract(reversed).Author,
+                    "並び順を変えても同じ");
+    }
+
+    /// <summary>
+    /// キーは大文字小文字と区切り（<c>_</c> <c>-</c> 空白）を無視して照合する。
+    /// Lore 側の綴りが <c>committed_by</c> や <c>committedBy</c> に変わっても拾えるようにするため。
+    /// </summary>
+    private static void MetadataKeysAreNormalized()
+    {
+        var rows = new[]
+        {
+            new LoreMetadataRow("Committed_By", LoreMetadataValueKind.String, "carol", 0UL),
+            new LoreMetadataRow("MESSAGE",      LoreMetadataValueKind.String, "大文字キー", 0UL),
+        };
+
+        var fields = LoreRevisionMetadataTranslator.Extract(rows);
+        Check.Equal("carol",     fields.Author,  "作者");
+        Check.Equal("大文字キー", fields.Message, "メッセージ");
+    }
+
+    /// <summary>
+    /// 知らないキー・知らない値の種類・空の並びでも落ちず、空の結果を返すこと。
+    /// Lore の版が上がってキーが増えても壊れないことの保証。
+    /// </summary>
+    private static void MetadataIgnoresUnknownKeys()
+    {
+        var rows = new[]
+        {
+            new LoreMetadataRow("branch",        LoreMetadataValueKind.Unknown, "", 0UL),
+            new LoreMetadataRow("some-new-key",  LoreMetadataValueKind.String,  "値", 0UL),
+            new LoreMetadataRow("",              LoreMetadataValueKind.String,  "キー無し", 0UL),
+            // 文字列の種類なのに中身が空 → 採用しない（空文字で上書きしない）。
+            new LoreMetadataRow("message",       LoreMetadataValueKind.String,  "   ", 0UL),
+        };
+
+        var fields = LoreRevisionMetadataTranslator.Extract(rows);
+        Check.Equal(string.Empty, fields.Message, "メッセージ");
+        Check.Equal(string.Empty, fields.Author,  "作者");
+        Check.Equal(0L, fields.UnixTimeSeconds,   "コミット時刻");
+        Check.True(!fields.HasAny, "何も取れていない");
+
+        // null / 空の並びでも落ちない。
+        Check.True(!LoreRevisionMetadataTranslator.Extract(null).HasAny, "null でも落ちない");
+        Check.True(!LoreRevisionMetadataTranslator.Extract(Array.Empty<LoreMetadataRow>()).HasAny,
+                   "空でも落ちない");
+    }
+
+    /// <summary>
+    /// 時刻の単位（秒・ミリ・マイクロ・ナノ）を桁から判定して秒へ直すこと。
+    /// Lore v0.9.0 は **ミリ秒** だが、版によって変わり得るので単位に依存しない。
+    /// </summary>
+    private static void MetadataNormalizesTimeUnits()
+    {
+        const long SECONDS = 1_789_661_083L;
+
+        Check.Equal(SECONDS,
+                    LoreRevisionMetadataTranslator.ToPlausibleUnixSeconds((ulong)SECONDS),
+                    "秒そのまま");
+        Check.Equal(SECONDS,
+                    LoreRevisionMetadataTranslator.ToPlausibleUnixSeconds((ulong)SECONDS * 1_000UL),
+                    "ミリ秒（実機の形式）");
+        Check.Equal(SECONDS,
+                    LoreRevisionMetadataTranslator.ToPlausibleUnixSeconds((ulong)SECONDS * 1_000_000UL),
+                    "マイクロ秒");
+        Check.Equal(SECONDS,
+                    LoreRevisionMetadataTranslator.ToPlausibleUnixSeconds((ulong)SECONDS * 1_000_000_000UL),
+                    "ナノ秒");
+    }
+
+    /// <summary>
+    /// 現実的な日時にならない値は 0（不明）にして、でたらめな日付を出さないこと。
+    /// 1970 年や遠い未来の日付が履歴に並ぶ方が、空欄より害が大きい。
+    /// </summary>
+    private static void MetadataRejectsImplausibleTime()
+    {
+        Check.Equal(0L, LoreRevisionMetadataTranslator.ToPlausibleUnixSeconds(0UL), "0 は不明");
+        Check.Equal(0L, LoreRevisionMetadataTranslator.ToPlausibleUnixSeconds(12UL), "小さすぎる値");
+        Check.Equal(0L, LoreRevisionMetadataTranslator.ToPlausibleUnixSeconds(ulong.MaxValue),
+                    "long に収まらない値");
+    }
+
+    /// <summary>
+    /// 履歴の各行がメタデータで埋められること（プロバイダ経由の結合）。
+    /// </summary>
+    private static void HistoryIsEnrichedWithMetadata()
+    {
+        var backend = new FakeLoreBackend
+        {
+            HistoryResult = new LoreRowsResult<LoreRevisionRow>(
+                LoreCallResult.Success,
+                new[]
+                {
+                    new LoreRevisionRow(2, "rev2", "", "", 0),
+                    new LoreRevisionRow(1, "rev1", "", "", 0),
+                }),
+        };
+
+        backend.RevisionMetadataResults["rev2"] = new LoreRowsResult<LoreMetadataRow>(
+            LoreCallResult.Success,
+            new[]
+            {
+                new LoreMetadataRow("message",      LoreMetadataValueKind.String,  "2 件目", 0UL),
+                new LoreMetadataRow("committed-by", LoreMetadataValueKind.String,  "alice",  0UL),
+                new LoreMetadataRow("timestamp",    LoreMetadataValueKind.Numeric, "", 1_789_661_083_806UL),
+            });
+
+        using var provider = NewProvider(backend);
+        var result = provider.GetHistoryAsync().GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Success, result.Outcome, "結末");
+        Check.Equal(2, result.Value!.Count, "件数");
+        Check.Equal("2 件目", result.Value[0].Message, "1 行目のメッセージ");
+        Check.Equal("alice",  result.Value[0].Author,  "1 行目の作者");
+        Check.True(result.Value[0].TimestampUtc != default, "1 行目の日時が入る");
+
+        // メタデータを持たないリビジョンも一覧から消えない（番号だけ残る）。
+        Check.Equal(1UL, result.Value[1].Number, "2 行目のリビジョン番号");
+        Check.Equal(string.Empty, result.Value[1].Message, "2 行目のメッセージは空");
+    }
+
+    /// <summary>
+    /// メタデータは 1 リビジョンにつき 1 往復かかるため、設定の上限で打ち切ること。
+    /// 上限を超えた行も一覧からは消えない。
+    /// </summary>
+    private static void HistoryMetadataIsLimited()
+    {
+        const int LIMIT = 2;
+
+        var rows = new List<LoreRevisionRow>();
+        for (var i = 0; i < 5; i++) rows.Add(new LoreRevisionRow((ulong)(5 - i), $"rev{5 - i}", "", "", 0));
+
+        var backend = new FakeLoreBackend
+        {
+            HistoryResult = new LoreRowsResult<LoreRevisionRow>(LoreCallResult.Success, rows),
+        };
+
+        var settings = new VersionControlSettings(historyMetadataLimit: LIMIT);
+        using var provider = NewProvider(backend, settings);
+
+        var result = provider.GetHistoryAsync().GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Success, result.Outcome, "結末");
+        Check.Equal(5, result.Value!.Count, "履歴の件数は減らない");
+        Check.Equal(LIMIT, backend.RevisionMetadataRequests.Count, "メタデータを引いた回数");
+        Check.Equal("rev5", backend.RevisionMetadataRequests[0], "新しい方から引く");
+    }
+
+    /// <summary>
+    /// メタデータの取得が失敗しても履歴そのものは返ること。
+    /// 「1 件引けなかったから履歴全体が出ない」より「その行だけ空欄」の方が良い。
+    /// </summary>
+    private static void HistorySurvivesMetadataFailure()
+    {
+        var backend = new FakeLoreBackend
+        {
+            HistoryResult = new LoreRowsResult<LoreRevisionRow>(
+                LoreCallResult.Success,
+                new[] { new LoreRevisionRow(1, "rev1", "", "", 0) }),
+            DefaultRevisionMetadataResult = LoreRowsResult<LoreMetadataRow>.FromFailure(
+                LoreCallResult.Failure(-1, new[] { "metadata not found" })),
+        };
+
+        using var provider = NewProvider(backend);
+        var result = provider.GetHistoryAsync().GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Success, result.Outcome, "結末");
+        Check.Equal(1, result.Value!.Count, "件数");
+        Check.Equal(1UL, result.Value[0].Number, "リビジョン番号は残る");
+        Check.Equal(string.Empty, result.Value[0].Message, "メッセージは空のまま");
     }
 
     // ============================================================

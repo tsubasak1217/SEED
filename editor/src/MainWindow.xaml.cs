@@ -1527,6 +1527,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                     "open_documents" => _openDocsPanel,
                     "error_list"     => _errorListPanel,
                     "profiler"       => PanelProfiler,
+                    "version_control" => PanelVersionControl,
                     _                => null,
                 };
             };
@@ -1602,9 +1603,26 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EnsureAnchorable("animation_timeline", "アニメーション", PanelAnimationTimeline);
         EnsureAnchorable("profiler", "プロファイラ", PanelProfiler);
         EnsureAnchorable("sprite_rig", "スプライトリグ", PanelSpriteRig);
+        // バージョン管理は Project / Output と同じ下段へ入れたいので、
+        // 「Output と同じペイン」を指定して補完する（既定では左ペインに入ってしまう）。
+        EnsureAnchorable(
+            "version_control", "バージョン管理", PanelVersionControl, siblingContentId: "output");
     }
 
-    private void EnsureAnchorable(string contentId, string title, object? content)
+    /// <summary>
+    /// 指定 ContentId のアンカーパネルがレイアウトに存在することを保証する。
+    /// </summary>
+    /// <param name="contentId">パネルの ContentId（layout.xml に永続化されるキー）。</param>
+    /// <param name="title">タブに出すタイトル。</param>
+    /// <param name="content">パネル本体。</param>
+    /// <param name="siblingContentId">
+    /// 追加先の目安にする既存パネルの ContentId。
+    /// 指定するとそのパネルと同じペインへ入れる（見つからなければ従来どおり最初のペイン）。
+    /// 省略すると最初に見つかったペイン＝左ペインへ入るため、
+    /// 下段に置きたいパネルでは必ず指定すること。
+    /// </param>
+    private void EnsureAnchorable(
+        string contentId, string title, object? content, string? siblingContentId = null)
     {
         if (content is null) return;
         var existing = DockManager.Layout.Descendents()
@@ -1617,7 +1635,17 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             return;
         }
 
-        var pane = DockManager.Layout.Descendents()
+        // 目安のパネルが在るなら、その親ペインへ並べる（配置の意図を保つ）。
+        LayoutAnchorablePane? pane = null;
+        if (!string.IsNullOrEmpty(siblingContentId))
+        {
+            pane = DockManager.Layout.Descendents()
+                .OfType<LayoutAnchorable>()
+                .FirstOrDefault(a => a.ContentId == siblingContentId)
+                ?.Parent as LayoutAnchorablePane;
+        }
+
+        pane ??= DockManager.Layout.Descendents()
             .OfType<LayoutAnchorablePane>()
             .FirstOrDefault();
         if (pane is null) return;
