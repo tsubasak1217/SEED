@@ -83,6 +83,18 @@ public static class VersionControlService
     /// <summary>診断ログの出力先（<see cref="Open"/> で差し込む）。</summary>
     public static Action<string>? Log { get; set; }
 
+    /// <summary>
+    /// ログイン中の SEED アカウント（トークンと名前）を返す関数。
+    ///
+    /// <para>
+    /// アプリ起動時に 1 度だけ差し込む（<c>App.OnStartup</c>）。
+    /// ここを経由することで、バージョン管理の層は
+    /// <c>SEEDEditor.Accounts</c> を一切参照しなくて済む（依存の向きを一方通行に保つ）。
+    /// 未設定なら常に匿名で、従来どおりの動作になる。
+    /// </para>
+    /// </summary>
+    public static Func<Lore.Backend.LoreAccountCredential>? CredentialProvider { get; set; }
+
     /// <summary>現在のプロバイダ（常に非 null）。</summary>
     public static IVersionControlProvider Provider => Volatile.Read(ref _provider);
 
@@ -107,7 +119,8 @@ public static class VersionControlService
         Close();
 
         _settings = settings ?? VersionControlSettings.Default;
-        var created = VersionControlProviderFactory.Create(projectRootDir, _settings, Log);
+        var created = VersionControlProviderFactory.Create(
+            projectRootDir, _settings, Log, CredentialProvider);
         Volatile.Write(ref _provider, created);
 
         Log?.Invoke(created.IsAvailable

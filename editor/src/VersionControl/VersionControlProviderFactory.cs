@@ -42,11 +42,16 @@ public static class VersionControlProviderFactory
     /// <param name="projectRootDir">プロジェクトルート（.seedproj のあるフォルダ）。</param>
     /// <param name="settings">設定（省略時は既定値）。</param>
     /// <param name="log">診断ログの出力先（省略可）。</param>
+    /// <param name="credentialProvider">
+    /// ログイン中の SEED アカウント（トークンと名前）を返す関数。
+    /// 省略すると常に匿名になり、従来どおり `.lore/config.toml` の identity が使われる。
+    /// </param>
     /// <returns>作られたプロバイダ（常に非 null）。</returns>
     public static IVersionControlProvider Create(
         string? projectRootDir,
         VersionControlSettings? settings = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        Func<LoreAccountCredential>? credentialProvider = null)
     {
         if (!VersionControlPaths.IsLoreWorkingCopy(projectRootDir))
             return new NullVersionControlProvider(projectRootDir);
@@ -58,7 +63,7 @@ public static class VersionControlProviderFactory
         try
         {
             scheduler = new SerialWorkerScheduler(effectiveSettings.ShutdownWait, log);
-            var backend = new LoreNativeBackend(projectRootDir!);
+            var backend = new LoreNativeBackend(projectRootDir!, credentialProvider);
             return new LoreProvider(backend, scheduler, effectiveSettings, ownsScheduler: true);
         }
         catch (Exception ex)

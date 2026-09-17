@@ -263,8 +263,21 @@ public static class VersionControlMessages
     /// <summary>identity が分からないときの表示。</summary>
     public const string PANEL_IDENTITY_UNKNOWN = "利用者不明";
 
+    /// <summary>
+    /// SEED アカウントでログイン中のときの identity 表示（例: "tsubasa（ログイン中）"）。
+    /// 匿名との違いをここで見せる。
+    /// </summary>
+    public const string PANEL_IDENTITY_SIGNED_IN_FORMAT = "{0}（ログイン中）";
+
     /// <summary>リモート URL が分からないときの表示。</summary>
     public const string PANEL_REMOTE_UNKNOWN = "接続先未設定";
+
+    /// <summary>パネルからオーナー向けの操作を開くボタンの文言。</summary>
+    public const string PANEL_ACCOUNTS_BUTTON = "アカウント";
+
+    /// <summary>パネルからオーナー向けの操作を開くボタンのツールチップ。</summary>
+    public const string PANEL_ACCOUNTS_TOOLTIP =
+        "このプロジェクトのアカウントと参加者を管理します";
 
     /// <summary>更新ボタンのツールチップ。</summary>
     public const string PANEL_REFRESH_TOOLTIP = "状態を取り直す";

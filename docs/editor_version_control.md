@@ -55,6 +55,9 @@
 | `Lore/LoreConnectionDiagnosis.cs` | 失敗が接続起因かの判定 |
 | `Lore/LoreProvider.cs` | 境界の実装（LoreVcs 非依存） |
 | `Lore/LoreLockService.cs` | ロック境界の実装（LoreVcs 非依存） |
+| `Lore/Backend/LoreCredentialResolver.cs` | **トークンと identity の決め方**（4.8） |
+| `Lore/Backend/ILoreCloner.cs` | クローンの抽象（作業コピーが無い状態で走る） |
+| `Lore/Backend/LoreNativeCloner.cs` | **LoreVcs に依存する 2 つ目のファイル**（clone だけ） |
 
 ---
 
@@ -251,6 +254,37 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 フォルダのパスをそのまま `NotifyMovedAsync` へ渡せばよい。
 結合テスト `[結合] フォルダの移動も移動として記録される` が、
 移動先が全件 `Moved` であること・移動元に `Deleted` が残らないことを固定している。
+
+### 4.8 SEED アカウントのトークンの渡し方（`LoreCredentialResolver`）
+
+エディタ側のアカウント機能は `docs/editor_accounts.md`、取り決めの正典は
+`docs/seed_accounts.md`。バージョン管理の層が持つのは次の 2 つだけ。
+
+- `VersionControlService.CredentialProvider`（`Func<LoreAccountCredential>`）
+  … アプリ起動時に 1 回差し込まれる。**アカウントの型は参照しない**（依存は一方通行）。
+  未設定なら常に匿名で、従来どおりの動作になる。
+- `LoreCredentialResolver` … 共通引数に載せる値を決める純関数。
+
+決め方（**間違えると全操作が失敗する**）:
+
+| ログイン中か | `IdentityToken` | `AccessToken` | `Identity` |
+|---|---|---|---|
+| している | JWT | **同じ JWT** | **空** |
+| していない | 空 | 空 | `.lore/config.toml` の identity |
+
+- **`AccessToken` だけでは足りない**（実サーバで確認済み）。Lore v0.9.0 の
+  `auth_exchange_for_identity` は、リポジトリ ID が確定していない呼び出し
+  （`repository create` / `repository list` / **`clone`**）で authorization token を
+  空にするため、`AccessToken` が Authorization ヘッダに載らず
+  `authorization header required` で失敗する。そちらは `IdentityToken` 由来を使う。
+- **`Identity` を同時に渡すと排他エラーで弾かれる**（identity はトークンの `sub` から読まれる）。
+
+表示・比較用の identity は別物で、`ResolveDisplayIdentity` が返す
+（ログイン中はアカウント名、未ログインなら config の identity）。
+ここを取り違えると **自分で取ったロックが「他の人」に見える**。
+
+`.lore/id` は**生の 16 バイト**であってテキストではない。
+`VersionControlPaths.ReadRepositoryId` が 32 桁の 16 進小文字へ変換して返す。
 
 ---
 

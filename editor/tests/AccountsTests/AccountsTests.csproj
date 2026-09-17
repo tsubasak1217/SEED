@@ -1,0 +1,157 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SEED アカウント（editor/src/Accounts/）の単体テスト。
+
+    VersionControlTests / ProjectSystemTests と同じ流儀:
+      - xunit 等を足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests/TestHarness.cs）
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、必要なファイルだけをリンクで取り込む
+
+    実サーバは要らない。発行窓口は HttpListener で立てた偽物（FakeAuthGateway）で、
+    本番ポート（41337 / 41339 / 41350）には一切触れない。
+
+    TargetFramework が net9.0-windows なのは DPAPI（ProtectedData）を使うため。
+    net9.0 のままだと [SupportedOSPlatform("windows")] の呼び出しが CA1416 になる。
+    WPF は使わない（UseWPF を立てない）。
+
+    LoreVcs を参照しているのは LoreNativeBackend をリンクしているため
+    （トークンがあるとき共通引数の Identity が空になることを、実際のバックエンドで確かめる）。
+    Lore の呼び出しそのものは行わないが、RuntimeIdentifier が無いと
+    ネイティブ lorelib.dll が出力に入らず、将来テストを足したときに落ちるので付けておく。
+
+    実行方法（XML コメント内に連続ハイフンは書けないので [DD] を "‐‐" と読み替える）:
+      dotnet run [DD]project editor/tests/AccountsTests
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.Accounts</RootNamespace>
+    <AssemblyName>AccountsTests</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LoreVcs" Version="0.9.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="4.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ── アカウント: 設定・文言 ── -->
+    <Compile Include="..\..\src\Accounts\AccountSettings.cs">
+      <Link>Linked\Accounts\AccountSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\AccountMessages.cs">
+      <Link>Linked\Accounts\AccountMessages.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\AccountEditorSettings.cs">
+      <Link>Linked\Accounts\AccountEditorSettings.cs</Link>
+    </Compile>
+
+    <!-- ── アカウント: 暗号 ── -->
+    <Compile Include="..\..\src\Accounts\Crypto\Base64Url.cs">
+      <Link>Linked\Accounts\Crypto\Base64Url.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Crypto\AccountNameRule.cs">
+      <Link>Linked\Accounts\Crypto\AccountNameRule.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Crypto\AccountKeyPair.cs">
+      <Link>Linked\Accounts\Crypto\AccountKeyPair.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Crypto\LoginSignaturePayload.cs">
+      <Link>Linked\Accounts\Crypto\LoginSignaturePayload.cs</Link>
+    </Compile>
+
+    <!-- ── アカウント: モデル ── -->
+    <Compile Include="..\..\src\Accounts\Model\SeedAccount.cs">
+      <Link>Linked\Accounts\Model\SeedAccount.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Model\AccountAuthState.cs">
+      <Link>Linked\Accounts\Model\AccountAuthState.cs</Link>
+    </Compile>
+
+    <!-- ── アカウント: 保管 ── -->
+    <Compile Include="..\..\src\Accounts\Storage\AccountPaths.cs">
+      <Link>Linked\Accounts\Storage\AccountPaths.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Storage\AccountRecord.cs">
+      <Link>Linked\Accounts\Storage\AccountRecord.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Storage\ISecretProtector.cs">
+      <Link>Linked\Accounts\Storage\ISecretProtector.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Storage\DpapiSecretProtector.cs">
+      <Link>Linked\Accounts\Storage\DpapiSecretProtector.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Storage\IAccountStore.cs">
+      <Link>Linked\Accounts\Storage\IAccountStore.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Storage\AccountFileStore.cs">
+      <Link>Linked\Accounts\Storage\AccountFileStore.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Storage\AccountExportFile.cs">
+      <Link>Linked\Accounts\Storage\AccountExportFile.cs</Link>
+    </Compile>
+
+    <!-- ── アカウント: 発行窓口のクライアント ── -->
+    <Compile Include="..\..\src\Accounts\Http\AuthContracts.cs">
+      <Link>Linked\Accounts\Http\AuthContracts.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Http\IAuthGatewayClient.cs">
+      <Link>Linked\Accounts\Http\IAuthGatewayClient.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Http\AuthGatewayClient.cs">
+      <Link>Linked\Accounts\Http\AuthGatewayClient.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Http\AuthEndpointResolver.cs">
+      <Link>Linked\Accounts\Http\AuthEndpointResolver.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Http\AuthFailureText.cs">
+      <Link>Linked\Accounts\Http\AuthFailureText.cs</Link>
+    </Compile>
+
+    <!-- ── アカウント: セッションと参加の段取り ── -->
+    <Compile Include="..\..\src\Accounts\AccountSessionManager.cs">
+      <Link>Linked\Accounts\AccountSessionManager.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\ProjectJoinService.cs">
+      <Link>Linked\Accounts\ProjectJoinService.cs</Link>
+    </Compile>
+
+    <!-- ── バージョン管理: 資格情報の受け渡し（テストの本命の 1 つ）── -->
+    <Compile Include="..\..\src\VersionControl\VersionControlSettings.cs">
+      <Link>Linked\VersionControl\VersionControlSettings.cs</Link>
+    </Compile>
+    <!-- `.lore/id`（リポジトリ ID）を読む。オーナー向けの操作がこれを要求する。 -->
+    <Compile Include="..\..\src\VersionControl\VersionControlPaths.cs">
+      <Link>Linked\VersionControl\VersionControlPaths.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreCallResult.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreCallResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreBackendRows.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreBackendRows.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\ILoreBackend.cs">
+      <Link>Linked\VersionControl\Lore\Backend\ILoreBackend.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\ILoreCloner.cs">
+      <Link>Linked\VersionControl\Lore\Backend\ILoreCloner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreCredentialResolver.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreCredentialResolver.cs</Link>
+    </Compile>
+    <!-- 実バックエンド。Lore の呼び出しはしないが、共通引数の組み立てを実物で確かめる。 -->
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreNativeBackend.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreNativeBackend.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

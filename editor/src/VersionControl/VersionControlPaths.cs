@@ -22,7 +22,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Text;
 
 namespace SEEDEditor.VersionControl;
 
@@ -159,5 +161,66 @@ public static class VersionControlPaths
             // アクセス権が無い等。バージョン管理下ではない扱いにする。
             return false;
         }
+    }
+
+    /// <summary>
+    /// 作業コピーのリポジトリ ID（`.lore/id`）を読み、API へ渡す形で返す。
+    ///
+    /// <para>
+    /// SEED アカウントの窓口は、権限をリポジトリ ID 単位で持つ
+    /// （docs/seed_accounts.md 2・3 章）。オーナー登録・招待コード発行・
+    /// 参加者一覧のすべてでこの値が要る。
+    /// </para>
+    /// <para>
+    /// ★`.lore/id` は **生の 16 バイト**であってテキストではない。
+    /// そのまま文字列として読むと、制御文字混じりの化けた値になる。
+    /// API へ渡すのは **32 桁の 16 進小文字**なので、ここで必ず変換する。
+    /// </para>
+    /// <para>
+    /// 長さが違うファイルは「読めなかった」として空文字を返す。
+    /// 中途半端に変換した ID を返すと、サーバ側の権限と一致せず
+    /// 「オーナーなのにオーナーとして扱われない」という分かりにくい失敗になる。
+    /// 読めなくても例外は投げない（バージョン管理そのものは動くため）。
+    /// </para>
+    /// </summary>
+    /// <param name="rootDir">作業コピーのルート。</param>
+    /// <returns>32 桁の 16 進小文字（読めなければ空文字）。</returns>
+    public static string ReadRepositoryId(string? rootDir)
+    {
+        if (string.IsNullOrWhiteSpace(rootDir)) return string.Empty;
+
+        try
+        {
+            var path = Path.Combine(
+                rootDir,
+                VersionControlSettings.LORE_METADATA_DIR_NAME,
+                VersionControlSettings.LORE_ID_FILE_NAME);
+
+            if (!File.Exists(path)) return string.Empty;
+
+            var bytes = File.ReadAllBytes(path);
+            if (bytes.Length != VersionControlSettings.REPOSITORY_ID_BYTE_LENGTH)
+                return string.Empty;
+
+            return ToLowerHex(bytes);
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// バイト列を 16 進小文字の文字列にする。
+    /// </summary>
+    /// <param name="bytes">変換するバイト列。</param>
+    private static string ToLowerHex(byte[] bytes)
+    {
+        var builder = new StringBuilder(bytes.Length * 2);
+        foreach (var value in bytes)
+        {
+            builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
+        }
+        return builder.ToString();
     }
 }

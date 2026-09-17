@@ -191,14 +191,28 @@ public static class VersionControlDisplay
 
     /// <summary>
     /// 接続先と identity を 1 行にまとめる（例: "tsubasa — lore://127.0.0.1:41337"）。
+    ///
+    /// <para>
+    /// SEED アカウントでログインしているときは、名前のうしろに「（ログイン中）」を付ける。
+    /// 匿名（`.lore/config.toml` の identity をそのまま使っている）ときとの
+    /// 違いが、パネルを見ただけで分かるようにするため
+    /// ── ロックの「自分／他の人」がそもそも成立するかがここで決まる。
+    /// </para>
     /// </summary>
-    /// <param name="identity">現在の identity。</param>
+    /// <param name="identity">現在の identity（ログイン中ならアカウント名）。</param>
     /// <param name="remoteUrl">リモート URL。</param>
-    public static string ToConnectionText(string? identity, string? remoteUrl)
+    /// <param name="isSignedIn">SEED アカウントでログイン中か。</param>
+    public static string ToConnectionText(
+        string? identity, string? remoteUrl, bool isSignedIn = false)
     {
-        var who   = LockInfo.IsUnknownOwnerName(identity)
+        var who = LockInfo.IsUnknownOwnerName(identity)
             ? VersionControlMessages.PANEL_IDENTITY_UNKNOWN
             : identity!.Trim();
+
+        // 名前が分からないのに「ログイン中」とは出さない（矛盾した表示になる）。
+        if (isSignedIn && !LockInfo.IsUnknownOwnerName(identity))
+            who = string.Format(VersionControlMessages.PANEL_IDENTITY_SIGNED_IN_FORMAT, who);
+
         var where = string.IsNullOrWhiteSpace(remoteUrl)
             ? VersionControlMessages.PANEL_REMOTE_UNKNOWN
             : remoteUrl.Trim();

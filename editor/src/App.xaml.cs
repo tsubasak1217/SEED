@@ -81,6 +81,20 @@ public partial class App : Application
         // 単体テストへリンクできるよう EditorLog を直接参照しない設計）。
         ProjectCreator.Log = EditorLog.Write;
 
+        // SEED アカウント（docs/seed_accounts.md）を読み、バージョン管理の層へ
+        // 資格情報の窓口を差し込む。**プロジェクトを開くより前**に済ませる必要がある
+        // （ProjectContext.Open が自動ログインを起こすため）。
+        // アカウントが無くても失敗しない（匿名で動く）。
+        try
+        {
+            Accounts.AccountService.Log = EditorLog.Write;
+            Accounts.AccountService.Initialize(SEEDEditor.Settings.EditorPaths.SettingsDir);
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"アカウントを初期化できませんでした: {ex.Message}");
+        }
+
         base.OnStartup(e);
 
         ShowStartupWindow();
@@ -97,6 +111,11 @@ public partial class App : Application
     /// </summary>
     protected override void OnExit(ExitEventArgs e)
     {
+        // アカウントのトークンを捨て、自動更新のタイマーを止める。
+        // Lore へトークンを渡す経路を先に閉じてから、バージョン管理を止める。
+        try { Accounts.AccountService.DetachFromProject(); }
+        catch (Exception ex) { EditorLog.Write($"アカウントの停止に失敗しました: {ex.Message}"); }
+
         // 先にワーカーを止める。止める前に Shutdown すると、
         // 走行中の Lore 呼び出しが解放済みのネイティブ側を触る。
         try { VersionControl.VersionControlService.Close(); }

@@ -83,6 +83,21 @@ public static class ProjectContext
             // バージョン管理が使えないことでプロジェクトを開けなくしない。
             EditorLog.Write($"バージョン管理を初期化できませんでした: {ex.Message}");
         }
+
+        // SEED アカウントの自動ログイン（docs/seed_accounts.md 6 章）。
+        // 窓口（既定はリモートと同じホストの 41350）が応答すればトークンを取り、
+        // 無ければ匿名のまま進む。**待たない**（窓口が無い環境で開くのが遅くなるため）。
+        try
+        {
+            Accounts.AccountService.Log = EditorLog.Write;
+            _ = Accounts.AccountService.AttachToProjectAsync(
+                VersionControl.VersionControlService.Provider.RemoteUrl);
+        }
+        catch (Exception ex)
+        {
+            // ログインできないことでプロジェクトを開けなくしない（匿名で動く）。
+            EditorLog.Write($"アカウントのログインを開始できませんでした: {ex.Message}");
+        }
     }
 
     /// <summary>

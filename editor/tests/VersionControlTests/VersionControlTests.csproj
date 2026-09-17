@@ -159,6 +159,11 @@
       <Link>Linked\VersionControl\Lore\LoreLockService.cs</Link>
     </Compile>
 
+    <!-- ── 資格情報の決め方（LoreNativeBackend が使う純関数）── -->
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreCredentialResolver.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreCredentialResolver.cs</Link>
+    </Compile>
+
     <!-- ── 実サーバ結合テストでだけ使う（LoreVcs 依存）── -->
     <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreNativeBackend.cs">
       <Link>Linked\VersionControl\Lore\Backend\LoreNativeBackend.cs</Link>

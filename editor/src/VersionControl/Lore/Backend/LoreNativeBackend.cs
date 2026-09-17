@@ -68,8 +68,49 @@ public sealed class LoreNativeBackend : ILoreBackend
     /// <summary>リモート URL（`.lore/config.toml` から読む）。</summary>
     public string RemoteUrl { get; }
 
-    /// <summary>identity（`.lore/config.toml` から読む）。</summary>
-    public string Identity { get; }
+    /// <summary>`.lore/config.toml` に書かれている identity（無ければ空）。</summary>
+    public string ConfigIdentity { get; }
+
+    /// <summary>
+    /// ログイン中のアカウントを取りに行く窓口（未設定なら常に匿名）。
+    ///
+    /// <para>
+    /// **毎回呼ぶ**。ログインはプロジェクトを開いた後に完了することがあり、
+    /// 生成時に 1 度読んで固定するとトークンが反映されない。
+    /// </para>
+    /// </summary>
+    private readonly Func<LoreAccountCredential>? _credentialProvider;
+
+    /// <summary>
+    /// 現在ログインしているアカウント（未ログインなら
+    /// <see cref="LoreAccountCredential.None"/>）。
+    /// </summary>
+    private LoreAccountCredential CurrentAccount
+    {
+        get
+        {
+            if (_credentialProvider is null) return LoreAccountCredential.None;
+
+            // 資格情報の取得で落ちてもバージョン管理は動かし続ける（匿名へ倒す）。
+            try { return _credentialProvider(); }
+            catch (Exception) { return LoreAccountCredential.None; }
+        }
+    }
+
+    /// <summary>
+    /// 現在 Lore の共通引数へ載る資格情報（診断とテスト用に公開する）。
+    /// 決め方は <see cref="LoreCredentialResolver"/> の 1 か所だけ。
+    /// </summary>
+    public LoreGlobalCredentials CurrentCredentials
+        => LoreCredentialResolver.Resolve(CurrentAccount, ConfigIdentity);
+
+    /// <summary>
+    /// 「自分は誰か」を表す identity。
+    /// ログイン中はアカウント名、未ログインなら `.lore/config.toml` の identity。
+    /// ロックの「自分／他の人」の判定はこれを使う。
+    /// </summary>
+    public string Identity
+        => LoreCredentialResolver.ResolveDisplayIdentity(CurrentAccount, ConfigIdentity);
 
     /// <summary>
     /// 作業コピーのルートを指定して生成する。
@@ -81,16 +122,23 @@ public sealed class LoreNativeBackend : ILoreBackend
     /// </para>
     /// </summary>
     /// <param name="workingCopyRoot">作業コピーのルート（= プロジェクトルート）。</param>
-    public LoreNativeBackend(string workingCopyRoot)
+    /// <param name="credentialProvider">
+    /// ログイン中のアカウントを返す関数（省略時は常に匿名）。
+    /// SEED アカウントを使わない構成でも今までどおり動く。
+    /// </param>
+    public LoreNativeBackend(
+        string workingCopyRoot,
+        Func<LoreAccountCredential>? credentialProvider = null)
     {
         if (string.IsNullOrWhiteSpace(workingCopyRoot))
             throw new ArgumentException("作業コピーのルートが空です。", nameof(workingCopyRoot));
 
-        WorkingCopyRoot = Path.GetFullPath(workingCopyRoot);
+        WorkingCopyRoot     = Path.GetFullPath(workingCopyRoot);
+        _credentialProvider = credentialProvider;
 
-        var config = ReadWorkingCopyConfig(WorkingCopyRoot);
-        RemoteUrl = config.TryGetValue(CONFIG_KEY_REMOTE_URL, out var url) ? url : string.Empty;
-        Identity  = config.TryGetValue(CONFIG_KEY_IDENTITY,   out var id)  ? id  : string.Empty;
+        var config     = ReadWorkingCopyConfig(WorkingCopyRoot);
+        RemoteUrl      = config.TryGetValue(CONFIG_KEY_REMOTE_URL, out var url) ? url : string.Empty;
+        ConfigIdentity = config.TryGetValue(CONFIG_KEY_IDENTITY,   out var id)  ? id  : string.Empty;
     }
 
     // ── 状態 ────────────────────────────────────────────────
@@ -594,24 +642,35 @@ public sealed class LoreNativeBackend : ILoreBackend
     /// この作業コピー向けの共通引数を作る。
     /// </summary>
     /// <param name="offline">サーバへ接続しないか。</param>
-    private LoreGlobalArgs NewGlobalArgs(bool offline) => new()
+    private LoreGlobalArgs NewGlobalArgs(bool offline)
     {
-        RepositoryPath = WorkingCopyRoot,
+        // ★資格情報の決め方は LoreCredentialResolver に一本化してある。
+        //   ・IdentityToken と AccessToken の **両方に同じ JWT** を入れる
+        //     （AccessToken だけだと、リポジトリ ID が未確定の呼び出しで
+        //       Authorization ヘッダが空になる。docs/seed_accounts.md 6 章）
+        //   ・Identity は **必ず空**（渡すと排他エラーで弾かれる）
+        var credentials = CurrentCredentials;
 
-        // ★これが無いと壊れる（実機で確認済み）。
-        //   Lore は引数に渡された **相対パスを WorkingDirectory から解決する** が、
-        //   空だと「呼び出したプロセスのカレントディレクトリ」が使われる。
-        //   エディタのカレントディレクトリは作業コピーとは無関係なので、
-        //   `lock acquire assets/a.png` が
-        //   `invalid path: <エディタの起動フォルダ>/assets/a.png` で失敗したり、
-        //   `merge resolve` が **どのファイルにも一致せず、しかも成功（rc=0）を返して**
-        //   競合が解決されないまま進んでしまう。
-        WorkingDirectory = WorkingCopyRoot,
+        return new LoreGlobalArgs
+        {
+            RepositoryPath = WorkingCopyRoot,
 
-        Offline  = offline,
-        // identity は `.lore/config.toml` の値が使われるので、空なら指定しない。
-        Identity = Identity,
-    };
+            // ★これが無いと壊れる（実機で確認済み）。
+            //   Lore は引数に渡された **相対パスを WorkingDirectory から解決する** が、
+            //   空だと「呼び出したプロセスのカレントディレクトリ」が使われる。
+            //   エディタのカレントディレクトリは作業コピーとは無関係なので、
+            //   `lock acquire assets/a.png` が
+            //   `invalid path: <エディタの起動フォルダ>/assets/a.png` で失敗したり、
+            //   `merge resolve` が **どのファイルにも一致せず、しかも成功（rc=0）を返して**
+            //   競合が解決されないまま進んでしまう。
+            WorkingDirectory = WorkingCopyRoot,
+
+            Offline       = offline,
+            IdentityToken = credentials.IdentityToken,
+            AccessToken   = credentials.AccessToken,
+            Identity      = credentials.Identity,
+        };
+    }
 
     /// <summary>
     /// Lore 呼び出しを実行し、LoreError を <see cref="LoreCallResult"/> へ畳む。

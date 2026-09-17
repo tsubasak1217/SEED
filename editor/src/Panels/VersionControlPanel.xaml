@@ -296,6 +296,7 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <ctrl:AppIcon Grid.Column="0" IconKey="Icon.Vcs.Branch"
@@ -312,7 +313,15 @@
                                VerticalAlignment="Center" Margin="12,0,8,0"
                                TextTrimming="CharacterEllipsis"/>
 
-                    <Button x:Name="BtnRefresh" Grid.Column="3"
+                    <!-- アカウントと参加者（オーナー向けの操作を開く）。
+                         文言は VersionControlMessages から流し込む。
+                         専用アイコンをまだ持たないので文字ボタンにしてある
+                         （絵文字・記号文字はアイコン代わりに使わない規約）。 -->
+                    <Button x:Name="BtnAccounts" Grid.Column="3"
+                            Style="{StaticResource Vc.ButtonStyle}"
+                            Padding="8,3" Margin="0,0,4,0" Click="OnAccountsClick"/>
+
+                    <Button x:Name="BtnRefresh" Grid.Column="4"
                             Style="{StaticResource Vc.ButtonStyle}"
                             Padding="6,3" Click="OnRefreshClick">
                         <ctrl:AppIcon IconKey="Icon.Vcs.Refresh" Width="14" Height="14"/>

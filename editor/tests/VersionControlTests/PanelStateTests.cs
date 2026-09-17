@@ -75,6 +75,7 @@ public static class PanelStateTests
         harness.Add("メッセージが空のリビジョンにも何か書く",              EmptyRevisionMessageIsLabeled);
         harness.Add("identity とリモート URL が 1 行にまとまる",           ConnectionTextIsFormatted);
         harness.Add("identity が無ければ「利用者不明」と出す",             UnknownIdentityIsLabeled);
+        harness.Add("ログイン中は identity に「（ログイン中）」が付く",     SignedInIdentityIsLabeled);
     }
 
     // ============================================================
@@ -544,6 +545,43 @@ public static class PanelStateTests
                           "tsubasa", "lore://127.0.0.1:41337"),
             VersionControlDisplay.ToConnectionText("tsubasa", "lore://127.0.0.1:41337"),
             "接続先の表示");
+    }
+
+    /// <summary>
+    /// SEED アカウントでログイン中は、名前のうしろに「（ログイン中）」が付く。
+    ///
+    /// <para>
+    /// 匿名（`.lore/config.toml` の identity をそのまま使っている状態）と
+    /// 見分けが付かないと、ロックの「自分／他の人」が成立しているのかが
+    /// 利用者にもこちらにも分からない。
+    /// </para>
+    /// </summary>
+    private static void SignedInIdentityIsLabeled()
+    {
+        var signedIn = VersionControlDisplay.ToConnectionText(
+            "tsubasa", "lore://127.0.0.1:41337", isSignedIn: true);
+
+        Check.Equal(
+            string.Format(VersionControlMessages.PANEL_CONNECTION_FORMAT,
+                          string.Format(VersionControlMessages.PANEL_IDENTITY_SIGNED_IN_FORMAT,
+                                        "tsubasa"),
+                          "lore://127.0.0.1:41337"),
+            signedIn,
+            "ログイン中の接続先の表示");
+
+        // 匿名のときは今までどおり（既定引数で振る舞いが変わらないこと）。
+        Check.Equal(
+            VersionControlDisplay.ToConnectionText("tsubasa", "lore://127.0.0.1:41337"),
+            VersionControlDisplay.ToConnectionText("tsubasa", "lore://127.0.0.1:41337",
+                                                   isSignedIn: false),
+            "匿名のときの表示は変わらないこと");
+
+        // identity が不明なのに「ログイン中」とは出さない（矛盾した表示になる）。
+        var unknown = VersionControlDisplay.ToConnectionText(
+            LockInfo.UNKNOWN_OWNER, "lore://127.0.0.1:41337", isSignedIn: true);
+        Check.True(
+            !unknown.Contains("ログイン中", StringComparison.Ordinal),
+            $"identity 不明ならログイン中と出さない（実際: {unknown}）");
     }
 
     /// <summary>identity やリモート URL が無くても空欄にしない。</summary>

@@ -98,6 +98,11 @@
          ネイティブ lorelib.dll の解決には上の RuntimeIdentifier=win-x64 が必要。
          利用側は editor/src/VersionControl/ の LoreProvider だけに閉じている。 -->
     <PackageReference Include="LoreVcs" Version="0.9.0" />
+    <!-- SEED アカウントの秘密鍵を DPAPI（CurrentUser）で包むために必要。
+         net9.0-windows でも ProtectedData は基底クラスライブラリに含まれず、
+         この NuGet パッケージが要る。利用側は
+         editor/src/Accounts/Storage/DpapiSecretProtector.cs だけに閉じている。 -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="4.7.0" />
   </ItemGroup>
 
   <ItemGroup>

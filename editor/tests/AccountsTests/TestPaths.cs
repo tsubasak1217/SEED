@@ -1,0 +1,68 @@
+// ============================================================
+//  TestPaths.cs — テスト用の使い捨てフォルダ
+//
+//  【役割】
+//  アカウントの保管先を **必ず一時フォルダへ向ける**。
+//
+//  【なぜこれが要るのか（壊すと利用者の実害になる）】
+//  既定の保管先は `%APPDATA%\SEED\account\account.json`。
+//  テストがそこへ書くと **利用者の本物のアカウントを上書きする**。
+//  鍵を失うと参加中のプロジェクトへ入れなくなるので、取り返しがつかない。
+//  そこで環境変数 SEED_ACCOUNT_DIR をプロセスの最初に必ず立て、
+//  個々のテストも明示的に一時フォルダを渡す（二重の防御）。
+// ============================================================
+
+using System;
+using System.IO;
+using SEEDEditor.Accounts;
+
+namespace SEEDEditor.Tests.Accounts;
+
+/// <summary>
+/// 使い捨てフォルダの用意と後始末。
+/// </summary>
+public static class TestPaths
+{
+    /// <summary>一時フォルダの親（%TEMP% 配下）。</summary>
+    private const string ROOT_DIR_NAME = "SeedAccountsTests";
+
+    /// <summary>このプロセスの一時フォルダの親。</summary>
+    public static string SessionRoot { get; } = Path.Combine(
+        Path.GetTempPath(), ROOT_DIR_NAME, Guid.NewGuid().ToString("N"));
+
+    /// <summary>
+    /// 保管先の既定を一時フォルダへ向ける（プロセスの最初に 1 回だけ呼ぶ）。
+    /// </summary>
+    public static void RedirectAccountDir()
+    {
+        var dir = NewDirectory("default_account_dir");
+        Environment.SetEnvironmentVariable(AccountSettings.ENV_ACCOUNT_DIR, dir);
+    }
+
+    /// <summary>
+    /// 一時フォルダを 1 つ作って返す。
+    /// </summary>
+    /// <param name="name">用途が分かる名前。</param>
+    public static string NewDirectory(string name)
+    {
+        var dir = Path.Combine(SessionRoot, name + "_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    /// <summary>
+    /// このプロセスが作った一時フォルダをまとめて消す。
+    /// 消せなくてもテストの結果は変えない（%TEMP% に残るだけ）。
+    /// </summary>
+    public static void Cleanup()
+    {
+        try
+        {
+            if (Directory.Exists(SessionRoot)) Directory.Delete(SessionRoot, recursive: true);
+        }
+        catch (Exception)
+        {
+            // 掴まれているファイルがあると消せない。テストの成否には影響しない。
+        }
+    }
+}

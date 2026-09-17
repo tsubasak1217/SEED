@@ -136,6 +136,9 @@ public partial class VersionControlPanel : UserControl
         HistoryList.ItemsSource = _historyRows;
         LockList.ItemsSource    = _lockRows;
 
+        // アカウント関連の文言とボタン（VersionControlPanel.Accounts.cs）。
+        InitializeAccountsUi();
+
         Loaded += OnPanelLoaded;
     }
 
@@ -165,6 +168,10 @@ public partial class VersionControlPanel : UserControl
         //   パネルはプロセスと寿命を共にするので、解除はプロセス終了に任せる。
         VersionControlService.StatusChanged += OnServiceStatusChanged;
 
+        // ログイン状態が変わったらヘッダーの表示を作り直す
+        // （VersionControlPanel.Accounts.cs）。StatusChanged と同じ理由で解除しない。
+        SubscribeAccountState();
+
         ApplyAvailability();
 
         // 使えるなら、開いた直後だけ走査つきで取り直す（エディタ外での変更を拾うため）。
@@ -188,9 +195,8 @@ public partial class VersionControlPanel : UserControl
 
         if (provider.IsAvailable)
         {
-            TxtConnection.Text    = VersionControlDisplay.ToConnectionText(
-                                        provider.Identity, provider.RemoteUrl);
-            TxtConnection.ToolTip = TxtConnection.Text;
+            // identity とログイン状態の反映は 1 か所（VersionControlPanel.Accounts.cs）。
+            RefreshConnectionText();
         }
 
         SyncControls();

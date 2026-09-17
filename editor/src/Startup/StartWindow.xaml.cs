@@ -122,6 +122,11 @@ public partial class StartWindow : Window
 
         RefreshRecentList();
         RefreshAssociationButton();
+
+        // アカウント欄（StartWindow.Accounts.cs）。失敗しても
+        // スタート画面そのものは使えるようにする。
+        try { RefreshAccountSection(); }
+        catch (Exception ex) { EditorLog.Write($"アカウント欄を描画できませんでした: {ex.Message}"); }
     }
 
     /// <summary>タイトルバー・枠をエディタ本体と同じダーク配色にする。</summary>

@@ -66,6 +66,19 @@ public sealed class VersionControlSettings
     /// <summary>Lore の作業コピー設定ファイル名（`.lore/` 直下）。</summary>
     public const string LORE_CONFIG_FILE_NAME = "config.toml";
 
+    /// <summary>
+    /// リポジトリ ID が入ったファイル名（`.lore/` 直下）。
+    /// SEED アカウントの権限はこの ID 単位で持つ（docs/seed_accounts.md 3 章）。
+    /// </summary>
+    public const string LORE_ID_FILE_NAME = "id";
+
+    /// <summary>
+    /// `.lore/id` のバイト数。
+    /// ★中身は **生のバイト列**であってテキストではない。
+    /// API へ渡す `repository_id` は、これを 16 進小文字にした 32 文字。
+    /// </summary>
+    public const int REPOSITORY_ID_BYTE_LENGTH = 16;
+
     // ── プロパティ ──────────────────────────────────────────
 
     /// <summary>ローカル操作のタイムアウト。</summary>
