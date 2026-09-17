@@ -331,9 +331,18 @@ public sealed class AuthMember
     [JsonPropertyName("status")]
     public string Status { get; set; } = string.Empty;
 
-    /// <summary>参加日時（ISO 8601 の文字列。サーバの書式をそのまま持つ）。</summary>
+    /// <summary>
+    /// 参加日時（**Unix ミリ秒**）。
+    ///
+    /// <para>
+    /// ★サーバ（`src/auth/model.rs` の `Grant::added_at`）は `u64` で返す。
+    /// ここを文字列にしていると JSON の読み取りごと失敗し、
+    /// **参加者一覧が丸ごと「サーバの応答を解釈できませんでした」になる**
+    /// （実サーバとの結合テストで発覚）。契約 3 章の `expires_at` と同じ単位。
+    /// </para>
+    /// </summary>
     [JsonPropertyName("added_at")]
-    public string AddedAt { get; set; } = string.Empty;
+    public long AddedAtUnixMs { get; set; }
 }
 
 /// <summary>参加者一覧の応答。</summary>

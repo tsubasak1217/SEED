@@ -65,6 +65,13 @@
 | `VersionControl/Lore/Backend/LoreCredentialResolver.cs` | **AccessToken と Identity の決め方（純関数）** |
 | `VersionControl/Lore/Backend/ILoreCloner.cs` / `LoreNativeCloner.cs` | クローン（作業コピーが無い状態で走る） |
 
+テストに足したもの:
+
+| パス | 役割 |
+|---|---|
+| `editor/tests/AccountsTests/AccountsServerFixture.cs` | 使い捨ての実サーバ（`[seed_auth]` のみ ↔ `[server.auth]` を切り替えられる） |
+| `editor/tests/AccountsTests/ServerIntegrationTests.cs` | 実サーバ × 実クラスの筋書き（4.0 節） |
+
 ---
 
 ## 2. 設計で外せない点
@@ -131,6 +138,19 @@ API へ渡す `repository_id` は **32 桁の 16 進小文字**なので、
 ログイン中はアカウント名（サーバがロックの所有者にその名前を記録するため）、
 未ログインなら `.lore/config.toml` の identity。
 ここを取り違えると、**自分で取ったロックが「他の人」に見える**。
+
+### 2.5.2 参加時の 2 つのポートは別物
+
+`JoinProjectRequest` は `Host` のほかに `AuthPort` と `LorePort` を持つ（0 なら契約の既定）。
+
+- `Host` に `host:port` と書いた場合、そのポートは **窓口（既定 41350）** として使う。
+- **Lore 本体のポート（既定 41337）は `LorePort` でしか指定できない。**
+  `AuthEndpointResolver.BuildLoreRemoteUrl` は `Host` に付いているポートを必ず落とす。
+
+こうしてあるのは、1 つの入力欄に 2 つのポートの意味を持たせると
+「参加はできるのにクローンだけ別のサーバへ行く」という壊れ方をするため。
+既定ポート以外で動かしているサーバに参加するには `LorePort` を渡すこと
+（参加画面はまだ既定のままで、指定する UI は無い）。
 
 ### 2.6 クローンが `ILoreBackend` に無い理由
 
@@ -269,6 +289,54 @@ dotnet run --project editor/tests/AccountsTests
 `editor/tests/VersionControlTests` の `PanelStateTests` にも
 「ログイン中は identity に（ログイン中）が付く」を足してある。
 
+### 4.0 実サーバとの結合テスト（`SEED_ACCOUNTS_TEST_SERVER`）
+
+偽の窓口・偽のクローンでは「エディタの中だけ」しか固定できない。
+**トークン付きのクローン**と、認証を有効にしたサーバに対する送信・取得・ロックを
+実際に動かすのが `ServerIntegrationTests.cs` ＋ `AccountsServerFixture.cs`。
+
+```powershell
+# 先に seed-loreserver をビルドしておく（debug の exe を使う）
+cd tools/seed-loreserver ; $env:CARGO_BUILD_JOBS="2" ; cargo build ; cd ../..
+
+$env:SEED_ACCOUNTS_TEST_SERVER = "1"
+dotnet run --project editor/tests/AccountsTests
+```
+
+| 環境変数 | 意味 |
+|---|---|
+| `SEED_ACCOUNTS_TEST_SERVER` | これが空でないときだけ結合テストを登録する（既定では 1 件も走らない） |
+| `SEED_ACCOUNTS_TEST_TMP` | 一時フォルダの親を差し替える（既定は `%TEMP%`）。ストアが数百 MB になるので逃がせる |
+| `SEED_ACCOUNTS_TEST_KEEP` | 失敗を追うとき用。一時フォルダを消さずに残す（**証明書とサーバの署名鍵が残るので、見終わったら消すこと**） |
+
+使うポートは **Lore 41357 / 41359、発行窓口 41361**（すべて 127.0.0.1）。
+本番（41337 / 41339 / 41350）には一切繋がない。
+`VersionControlTests` の `LoreServerFixture` も 41357 / 41359 を使うので、
+**2 つの結合テストを同時に走らせないこと**（順に走らせれば衝突しない）。
+
+通す筋書きは契約 5 章「有効化の順番」そのままで、
+第 1 段（`[seed_auth]` のみ）→ 第 2 段（`[server.auth]` を足して再起動）と進む。
+アカウントは A（`つばさ-01`＝日本語を含む名前）と B（`bob-02`）の 2 人を別フォルダで持つ。
+
+#### 実機で分かった注意点（ここを踏むと必ずハマる）
+
+1. **`[environment.endpoint] auth_url` は付け外しが要る。**
+   付けると clone と push が `RepositoryGet` の認可を外部 ReBAC サービスへ委譲されて落ち、
+   外すと pull が「Not authorized to access repository」で落ちる。
+   詳しい対応表と根拠は契約 5 章「`auth_url` の二律背反」。
+   テストは操作ごとにサーバを再起動して付け外ししている（＝**いまの運用手順そのもの**）。
+2. **サーバを強制終了する前に、mutable ストアの遅延書き出しを待つ。**
+   待たずに止めると**リポジトリ名 → ID の対応が消え**、次の起動から clone が
+   「Not found」で落ちる。`AccountsServerFixture.StopProcess` が
+   「ファイル数と合計サイズが落ち着くまで待つ」を実装している。
+3. **参加のポート。** `JoinProjectRequest` の `Host` に書いたポートは**窓口のもの**。
+   Lore 本体のポートは `LorePort` で明示する。**これを間違えると、
+   既定ポート（41337）で動いている別のサーバ＝本番へクローンしにいく。**
+4. **`GET /v1/members` の `added_at` は数値（Unix ミリ秒）。**
+   文字列で受けると一覧が丸ごと「サーバの応答を解釈できませんでした」になる。
+5. トークンはサーバを再起動しても有効（署名鍵 `issuer_key.json` が残るため）。
+   テストが再起動を挟んでもログインし直す必要は無い。
+
 ### 4.1 本物のアカウントを壊さないための仕掛け
 
 既定の保管先は `%APPDATA%\SEED\account\account.json`。テストがそこへ書くと
@@ -281,6 +349,11 @@ dotnet run --project editor/tests/AccountsTests
 ## 5. 今後の注意
 
 - `AuthContracts.cs` が契約との唯一の接点。サーバ側の綴りが変わったらここだけを直す。
+  **綴りだけでなく型も合わせること。** 時刻はすべて **Unix ミリ秒の数値**で、
+  文字列で受けているものは 1 つも無い（`added_at` を文字列にしていて、
+  実サーバに繋いだ途端に参加者一覧が丸ごと読めなくなった実績がある）。
+  偽の窓口（`FakeAuthGateway`）も**実サーバと同じ型**で返すこと ──
+  偽物だけ通るテストは、通らないより悪い。
 - JWT の検証はエディタでは行っていない（`exp` を見て先回りで更新するだけ）。
   Lore 本体がサーバの JWKS で検証するため、二重に検証しても意味が無い。
 - `AccountSettings.EXPORT_KDF_ITERATIONS` を増やすときは、

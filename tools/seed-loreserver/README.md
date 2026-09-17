@@ -200,8 +200,12 @@ ES256 も実装してあり、Lore v0.9.0 はどちらも受理する（JWK の 
 2. エディタ（またはループバックからの `POST /v1/bootstrap`）でオーナーを登録する。
    `repository_id` は `.lore/id`（生 16 バイト）を 32 桁の 16 進小文字にしたもの。
    **`.lore/id` はリポジトリを作らないと存在しない**ので、リポジトリ作成が先。
-3. `[server.auth]` / `[server.auth.jwk]` / `[environment.endpoint] auth_url` を足して再起動する。
+3. `[server.auth]` / `[server.auth.jwk]` を足して再起動する。
+   `[environment.endpoint] auth_url` は**操作によって付け外しする**（下の落とし穴表）。
 4. 以後、すべての操作にトークンが要る。
+
+> **止めるときは Ctrl+C。** 強制終了すると mutable ストアの遅延書き出しが間に合わず、
+> リポジトリ名 → ID の対応とブランチの先端が失われる（落とし穴表の最終行）。
 
 ### 運用上の注意
 
@@ -219,8 +223,9 @@ ES256 も実装してあり、Lore v0.9.0 はどちらも受理する（JWK の 
 | 事象 | 原因 | 対処 |
 | --- | --- | --- |
 | `--access-token` だけでは `repository create` / `clone` が「authorization header required」で落ちる | `auth_exchange_for_identity`（`lore-transport/src/auth/exchange.rs:537`）は `repository.is_zero()` のとき authorization token を空にする。リポジトリ ID が確定していない呼び出しでは access token が使われない | **`--identity-token` と `--access-token` の両方に同じ JWT を渡す**（`--identity` は渡さない。トークンが identity を名乗るので排他エラーになる） |
-| `push` / `pull` が「Not authorized to access repository」で落ちる | QUIC のストレージセッション（`lore-transport/src/quic/storage_service/client.rs` の `session_start`）は、サーバから受け取った environment の `auth_url` が空だとトークンを載せない | サーバ設定に `[environment.endpoint] auth_url = "<空でない任意の値>"` を足す。クライアントは供給されたトークンで交換を短絡するので、その URL へ接続しにはいかない |
-| `auth_url` を設定すると新規 `repository create` が「Failed to connect to rebac service」で落ちる | `lore-server/src/grpc/handlers/repository_create.rs:238` が `auth_url` があると外部 ReBAC サービスへ委譲する。既存リポジトリは手前の早期 return で通る | 新しいリポジトリを作るときだけ `[environment.endpoint]` を外して起動する |
+| `pull` / `sync` が「Not authorized to access repository」で落ちる | QUIC のストレージセッション（`lore-transport/src/quic/storage_service/client.rs` の `session_start`）は、サーバから受け取った environment の `auth_url` が空だとトークンを載せない（判定は `lore-transport/src/connection.rs` の `if !auth_url.is_empty()`） | サーバ設定に `[environment.endpoint] auth_url = "<空でない任意の値>"` を足す。クライアントは供給されたトークンで交換を短絡するので、その URL へ接続しにはいかない |
+| **`auth_url` を設定すると `clone` が「Not found」（rc 13）で落ちる。`repository create` と `push` も落ちる** | `lore-server/src/grpc/repository/v1/repository_get.rs` の `repository_load_name` / `repository_load_id` が `auth_url` があるときだけ `check_repository_query_authorization` を呼び、`lore-server/src/authnz/repository_authorizer.rs` がその URL の gRPC `epic_urc.UrcAuthApi/CheckUserPermission` へ接続する。SEED はそのサービスを持たないので必ず失敗し、失敗は `RepositoryNotFound` に畳まれる。`push` は `lore-revision/src/branch/push.rs` の「loading repository metadata hash」で同じ `RepositoryGet` を呼ぶ | **`clone` / `repository create` をする間だけ `[environment.endpoint]` を外して起動する**。根本解決は `CheckUserPermission` を話す gRPC サービスを自前で立てること。**`pull` と両立する設定は存在しない**（`docs/seed_accounts.md`「`auth_url` の二律背反」） |
+| **サーバを強制終了すると、次の起動からそのリポジトリを名前で引けなくなる** | ローカル mutable ストア（リポジトリ名 → ID の対応とブランチの先端が入る）は書き込みの `flush_delay_seconds` 秒後に別タスクでファイルへ落とす（`lore-storage/src/local/mutable_store.rs` の `flush_delayed`）。落ちる前に kill すると失われる。immutable 側は残るので「データはあるのにクローンだけできない」という分かりにくい壊れ方になる | Ctrl+C で止める。直前に push した場合は数秒待つ。結合テストは `AccountsServerFixture.StopProcess` で「mutable ストアのファイル数とサイズが落ち着くまで待つ」を実装している |
 | 期限切れと権限なしを区別できない | `JWTInterceptor` が理由を潰して `PermissionDenied` にする（`lore-server/src/auth/jwt_interceptor.rs:26`） | エディタが `exp` を見て先回りで更新する |
 | `lore lock query --path <path>` が「unsupported lock query combination」 | `Hash + Repository` の組合せ。upstream の `LocalLockStore` も `seed_file_lock_store` も未対応 | `lore lock status <path>` か `lore lock query --branch <name>` を使う |
 | JWT の期限検証に 60 秒の猶予がある | jsonwebtoken の `Validation::leeway` 既定値。Lore は変更していない | 期限切れの確認をするときは 60 秒より大きく過去へずらす |
@@ -373,7 +378,7 @@ cargo test
 | `token.rs` | 契約 4 章のクレームが揃い `is_service_account` / `migrate` / `urc-*` が入らないこと、ヘッダの `kid` と `alg`、失効した権限が `resources` に載らないこと、期限切れ・issuer 違い・audience 違い・別鍵の署名が拒否されること |
 | `store.rs` | bootstrap がオーナー 1 人だけを作ること、owner 以外が招待を作れないこと、招待コードの平文がファイルに残らないこと、招待の使い捨てと期限、名前衝突で招待が消費されないこと、同じ公開鍵なら権限だけ足すこと、失効と再招待、`accounts.json` の往復 |
 | `config.rs` | 引数の 2 形式、既定値、`data_dir` 必須、値の範囲、他の節が混ざった実ファイルから `[seed_auth]` だけ読めること |
-| `http.rs` | 長さ検証が文字数であること、役割の文字列変換、`StoreError` → HTTP ステータスの写像、ログイン失敗が区別できないこと |
+| `http.rs` | 長さ検証が文字数であること、役割の文字列変換、`StoreError` → HTTP ステータスの写像（**`CannotRevokeOwner` が 409 `owner_exists` になること**を含む）、ログイン失敗が区別できないこと |
 | `atomic_file.rs` | 親ディレクトリの作成・上書き・一時ファイルが残らないこと・書き込み失敗の検出 |
 
 サーバを実際に起動した状態での確認（`lore` CLI で repository create → push → ロック取得 → 再起動 → ロックが残っている）は手作業。手順は `config/local.example.toml` のコメントを参照。

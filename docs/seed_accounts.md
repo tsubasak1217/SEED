@@ -39,7 +39,7 @@ JSON（UTF-8）。エラーは HTTP ステータス ＋ `{"error":"<コード>",
 | `POST /v1/login/complete` | なし | `{"challenge_id","signature"}` | `{"access_token","expires_at":<Unix ミリ秒>,"name","grants":[{"repository_id","project_name","role"}]}`。失敗は 401 `login_failed` |
 | `POST /v1/invites` | Bearer（そのリポジトリの owner） | `{"repository_id","role":"member","expires_in_hours":72}` | `{"invite_code","expires_at"}`（コードは 1 回だけ返す。サーバにはハッシュで保存） |
 | `POST /v1/join` | なし（招待コードが資格） | `{"invite_code","name","public_key"}` | `{"name","repository_id","project_name","role"}`。同じ公開鍵の既存アカウントなら権限を足すだけ。名前の衝突は 409 `name_taken`、コード不正・期限切れ・使用済みは 403 `invite_invalid` |
-| `GET /v1/members?repository_id=…` | Bearer（owner） | — | `{"members":[{"name","role","status","added_at"}]}` |
+| `GET /v1/members?repository_id=…` | Bearer（owner） | — | `{"members":[{"name","role","status","added_at"}]}`。**`added_at` は Unix ミリ秒の数値**（文字列ではない） |
 | `POST /v1/members/revoke` | Bearer（owner） | `{"repository_id","name"}` | `{"name","status":"revoked"}`（**owner ロールの権限は失効できない。自分自身を含む** → 409） |
 | `GET /jwks.json` | なし | — | サーバの公開鍵（JWKS）。`{"keys":[…]}` 形式。Lore 本体は同じファイルを `file://` で読む |
 
@@ -50,7 +50,9 @@ JSON（UTF-8）。エラーは HTTP ステータス ＋ `{"error":"<コード>",
   一方、**窓口側の操作（招待発行・一覧・失効）は毎回 `accounts.json` を見るので失効が即座に効く**。
 - 失効（`status`）は**アカウント単位ではなくリポジトリ権限（grant）単位**。
   `/v1/login/complete` は「有効な権限が 1 件も無い」アカウントを 401 `login_failed` で断る。
-- 時刻の単位: チャレンジの `expires_in` は**秒**、`expires_at`（`/v1/invites` と `/v1/login/complete`）は **Unix ミリ秒**。
+- 時刻の単位: チャレンジの `expires_in` は**秒**、`expires_at`（`/v1/invites` と `/v1/login/complete`）と
+  `added_at`（`/v1/members`）は **Unix ミリ秒の数値**。
+  **時刻を JSON の文字列で返すものは 1 つも無い**（エディタ側を文字列で受けると一覧ごと読めなくなる）。
 - `owner_exists`（409）は「既にオーナーが居る」（bootstrap）と「owner の権限を失効させようとした」（revoke）の両方で返る。呼び出した操作で言い分けること。
   `expires_in_hours` は 1〜720（30 日）の範囲。省略時は 72。`role` の省略時は `member`。
 - 時刻・件数以外の入力にも上限がある: 本体 16 KiB、名前 32 文字、公開鍵 128 文字、署名 128 文字、
@@ -131,18 +133,62 @@ auth_url = "https://seed-auth.invalid"
 1. `[seed_auth]` だけで起動する（`jwks.json` ができる）。
 2. リポジトリを作る（`.lore/id` が無いと `bootstrap` に渡す `repository_id` が決まらない）。
 3. `POST /v1/bootstrap` でオーナーを登録し、招待コードで参加者を入れる。
-4. `[server.auth]` / `[server.auth.jwk]` / `[environment.endpoint]` を足して再起動する。
+4. `[server.auth]` / `[server.auth.jwk]` を足して再起動する。
+   `[environment.endpoint]` は**操作によって付け外しする**（次節）。
 
-**`auth_url` を設定したあとは、そのサーバで新しいリポジトリを作れなくなる**
-（Lore v0.9.0 は `auth_url` があると `repository create` を外部 ReBAC サービスへ委譲しようとして失敗する。
-既存リポジトリの再作成は早期 return で通る）。新規プロジェクトを足すときだけ
-`[environment.endpoint]` を一時的に外して起動すること。
+**サーバを止める前に、書き込みがディスクへ落ちるのを待つこと。**
+Lore のローカル mutable ストアは書き込みの `flush_delay_seconds` 秒後に別タスクで
+ファイルへ落とす。mutable ストアには**リポジトリ名 → ID の対応とブランチの先端**が入るので、
+落ちる前に強制終了すると、次の起動で**そのリポジトリを名前で引けなくなる**
+（`RepositoryGet` が NOT_FOUND を返し、clone が「Not found」で失敗する）。
+immutable 側は残るので「データはあるのにクローンだけできない」という分かりにくい壊れ方になる。
+止めるときは Ctrl+C（graceful shutdown）を使い、直前に push した場合は数秒待つこと。
+**実測で確認済み**（結合テスト `editor/tests/AccountsTests/AccountsServerFixture.cs` は
+止める前に mutable ストアのファイル数とサイズが落ち着くのを待っている）。
+
+### `auth_url` の二律背反（v0.9.0 の未解決点・実測）
+
+`[environment.endpoint] auth_url` は **1 つの値で 2 つの意味を持ってしまっている**。
+
+| | クライアント側 | サーバ側 |
+|---|---|---|
+| `auth_url` **あり** | QUIC のストレージセッションにトークンを載せる（`session_start`）。**pull に必須** | `RepositoryGet` の認可を `auth_url` の gRPC `CheckUserPermission` へ委譲する。**SEED はそのサービスを持たないので必ず失敗し、NOT_FOUND になる** |
+| `auth_url` **なし** | 「認証していないサーバ」とみなしてトークンを載せない → **pull が「Not authorized to access repository」で失敗** | 認可チェックを飛ばす（AllowAll）→ `RepositoryGet` が通る |
+
+`RepositoryGet` を使うのは **clone**（名前で引く）と **push**（ID でメタデータを引く）。
+実測での対応表（`seed-loreserver` 41357 / 窓口 41361 で確認）:
+
+| 操作 | `auth_url` なし | `auth_url` あり |
+|---|---|---|
+| clone（参加） | **通る** | **必ず落ちる**（`Not found`、rc 13） |
+| push（送信） | **通る** | ローカルストアにメタデータが残っていれば通るが、無ければ `Address not found: <hash>-000…0` で落ちる |
+| pull / sync（取得） | **落ちる**（`Not authorized to access repository`） | **通る** |
+| ロック（取得・照会・解放） | 通る | 通る |
+| 発行窓口（`[seed_auth]`） | 影響なし | 影響なし |
+
+**どちらの設定でも全部は通らない。** 当面の運用は
+「ふだんは `[environment.endpoint]` を付けておき、**新しいリポジトリを作るときと
+参加者がクローンするときだけ外して起動し直す**」。
+根本的に直すには、`auth_url` が指す先に **`epic_urc.UrcAuthApi/CheckUserPermission` を話す
+gRPC サービス**（JWT の `resources` を見て可否を返すだけ）を `seed-loreserver` 内に立てる必要がある。
+
+根拠（Lore v0.9.0 のソース）:
+`lore-server/src/grpc/repository/v1/repository_get.rs` の `repository_load_name` / `repository_load_id` が
+`if let Some(auth_url)` のときだけ `check_repository_query_authorization` を呼び、
+`lore-server/src/authnz/repository_authorizer.rs` がその URL へ gRPC 接続する。
+失敗はすべて `RepositoryNotFound` に畳まれる。
+クライアント側は `lore-transport/src/connection.rs` の `if !auth_url.is_empty()` で交換の有無を決める。
+**`RepositoryService` は JWT の `resources` を一切見ない**（`JWTAuthnInterceptor` は署名とクレームだけ検証）ので、
+トークンに権限やワイルドカード `urc-*` を足しても直らない。
 
 ## 6. エディタ側
 
 - **アカウント**（Hub）: 作成（名前 → 鍵ペア生成）、表示、書き出し／読み込み。
 - **プロジェクトを守る**（オーナー）: 開いているプロジェクトのリポジトリ ID（`.lore/id`）で `bootstrap` → 以後「招待コードを発行」「参加者の一覧と失効」。
 - **プロジェクトに参加**（Hub）: サーバのアドレス・招待コード・保存先 → `join` → ログイン → トークン付きでクローン → 開く。
+  アドレスに `host:port` と書いた場合、そのポートは **発行窓口のもの**として扱う。
+  Lore 本体のポートは別の値（既定 41337）なので、既定以外で動かしているサーバに参加するには
+  `JoinProjectRequest` の `LorePort` を明示する必要がある（画面からはまだ指定できない）。
 - **ログイン**: プロジェクトを開いたとき、窓口（既定はリモートと同じホストの 41350。利用者設定で上書き可）が応答すれば
   チャレンジ応答でトークンを取り、期限の手前で自動更新する。秘密鍵が手元にあるので操作は要らない。
 - **Lore への受け渡し**: `LoreNativeBackend` の共通引数で、**`IdentityToken` と `AccessToken` の両方に同じ JWT** を入れ、
@@ -159,7 +205,10 @@ auth_url = "https://seed-auth.invalid"
 - 平文 HTTP。LAN 内の信頼が前提（チャレンジ署名は再利用できないが、発行済みトークンは盗聴され得る）。LAN の外へ出すなら TLS を前段に置く。
 - Lore v0.9.0 では、有効なトークンがあれば誰でもリポジトリの作成と一覧ができる（中身は参加者だけ）。
 - 期限切れと権限なしを Lore の応答から区別できない（どちらも「Not authorized」）。エディタは `exp` を見て先回りで更新する。
-- `auth_url` を設定している間は新規リポジトリを作れない（上記「有効化の順番」）。
+- **`auth_url` を設定している間は、新規リポジトリの作成も参加者のクローンもできない**（上記「`auth_url` の二律背反」）。
+  逆に外している間は「最新を取得」が通らない。**現状これが最大の未解決点で、
+  `CheckUserPermission` を話す gRPC サービスを自前で立てるまで解消しない。**
+- **サーバの強制終了でリポジトリ名 → ID の対応とブランチの先端が失われる**（上記「有効化の順番」）。
 - owner の権限は失効できない（自分自身を含む）。オーナーの交代・追加は未対応。
 - `lore lock query --path <path>` は Lore 側が未対応の組合せ（`Hash + Repository`）。
   パスで引くときは `lore lock status <path>`、ブランチ単位なら `lore lock query --branch <name>` を使う。

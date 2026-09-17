@@ -11,9 +11,15 @@
 //   7. 参加の段取り（トークン付きクローンと失敗時の言い分け）
 //   8. Lore への資格情報の受け渡し（トークンがあれば Identity は空）
 //
-//  【実サーバは要らない】
+//  【既定では実サーバは要らない】
 //  発行窓口は HttpListener で立てた偽物（FakeAuthGateway）。
 //  **本番ポート（41337 / 41339 / 41350）には一切接続しない。**
+//
+//  【実サーバとの結合テスト】
+//  環境変数 SEED_ACCOUNTS_TEST_SERVER があるときだけ ServerIntegrationTests も走る。
+//  使い捨ての seed-loreserver を Lore 41357 / 41359、窓口 41361 で起動し、
+//  トークン付きのクローン・送信・取得・ロックを実クラスで通す。
+//  走らせ方と注意点は docs/editor_accounts.md の 4.0 節。
 //
 //  【利用者の実アカウントを触らない】
 //  最初に SEED_ACCOUNT_DIR を一時フォルダへ向ける（TestPaths）。
@@ -46,7 +52,43 @@ public static class Program
         JoinTests.Register(harness);
         CredentialTests.Register(harness);
 
-        var exitCode = harness.Run();
+        // 実サーバ結合テスト（環境変数があるときだけ）。
+        // 既定では 1 件も登録しない ── ふだんのテストを遅くしないため。
+        var runServerTests = ServerIntegrationTests.IsEnabled;
+        if (runServerTests)
+        {
+            Console.WriteLine(
+                $"[{ServerIntegrationTests.ENV_RUN_SERVER_TESTS}] が設定されているため、"
+                + "実サーバ結合テストも実行します"
+                + $"（Lore {AccountsServerFixture.PORT_QUIC_GRPC} / {AccountsServerFixture.PORT_HTTP}、"
+                + $"窓口 {AccountsServerFixture.PORT_AUTH}）。");
+            ServerIntegrationTests.Register(harness);
+        }
+        else
+        {
+            Console.WriteLine(
+                "実サーバ結合テストは省略します"
+                + $"（有効にするには環境変数 {ServerIntegrationTests.ENV_RUN_SERVER_TESTS} を設定）。");
+        }
+        Console.WriteLine();
+
+        int exitCode;
+        try
+        {
+            exitCode = harness.Run();
+        }
+        finally
+        {
+            // テストが途中で落ちても、起動したサーバは必ず止める。
+            ServerIntegrationTests.Cleanup();
+        }
+
+        // 結合テストで Lore を初期化していた場合の後始末。
+        // 環境変数が無いときは Lore を一度も呼んでいないので何も起きない。
+        if (runServerTests)
+        {
+            SEEDEditor.VersionControl.Lore.Backend.LoreShutdownGuard.Shutdown(Console.WriteLine);
+        }
 
         TestPaths.Cleanup();
         return exitCode;

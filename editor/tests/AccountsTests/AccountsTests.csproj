@@ -7,8 +7,13 @@
       - xunit 等を足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests/TestHarness.cs）
       - SEEDEditor 本体（WPF / WinExe）は参照せず、必要なファイルだけをリンクで取り込む
 
-    実サーバは要らない。発行窓口は HttpListener で立てた偽物（FakeAuthGateway）で、
+    既定では実サーバは要らない。発行窓口は HttpListener で立てた偽物（FakeAuthGateway）で、
     本番ポート（41337 / 41339 / 41350）には一切触れない。
+
+    環境変数 SEED_ACCOUNTS_TEST_SERVER があるときだけ、実サーバとの結合テスト
+    （ServerIntegrationTests / AccountsServerFixture）も走る。そちらは
+    tools/seed-loreserver の debug ビルドを Lore 41357 / 41359、窓口 41361 で起動する。
+    詳しくは docs/editor_accounts.md の 4.0 節。
 
     TargetFramework が net9.0-windows なのは DPAPI（ProtectedData）を使うため。
     net9.0 のままだと [SupportedOSPlatform("windows")] の呼び出しが CA1416 になる。
@@ -119,10 +124,17 @@
     <Compile Include="..\..\src\Accounts\ProjectJoinService.cs">
       <Link>Linked\Accounts\ProjectJoinService.cs</Link>
     </Compile>
+    <!-- プロセスに 1 つの入口。実サーバ結合テストで自動ログインの経路を通す。 -->
+    <Compile Include="..\..\src\Accounts\AccountService.cs">
+      <Link>Linked\Accounts\AccountService.cs</Link>
+    </Compile>
 
     <!-- ── バージョン管理: 資格情報の受け渡し（テストの本命の 1 つ）── -->
     <Compile Include="..\..\src\VersionControl\VersionControlSettings.cs">
       <Link>Linked\VersionControl\VersionControlSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\VersionControlMessages.cs">
+      <Link>Linked\VersionControl\VersionControlMessages.cs</Link>
     </Compile>
     <!-- `.lore/id`（リポジトリ ID）を読む。オーナー向けの操作がこれを要求する。 -->
     <Compile Include="..\..\src\VersionControl\VersionControlPaths.cs">
@@ -146,6 +158,112 @@
     <!-- 実バックエンド。Lore の呼び出しはしないが、共通引数の組み立てを実物で確かめる。 -->
     <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreNativeBackend.cs">
       <Link>Linked\VersionControl\Lore\Backend\LoreNativeBackend.cs</Link>
+    </Compile>
+
+    <!--
+      ── ここから下は実サーバ結合テスト（SEED_ACCOUNTS_TEST_SERVER=1）のためのリンク ──
+      「トークン付きのクローン」と「認証を有効にしたサーバへの送信・取得・ロック」を
+      エディタの実クラス（LoreNativeCloner / LoreProvider / LoreLockService）で通す。
+      環境変数が無いときはこれらのコードは実行されないが、
+      コンパイル時に型がずれていれば必ずビルドで気づける。
+    -->
+
+    <!-- モデル -->
+    <Compile Include="..\..\src\VersionControl\Model\VersionControlResult.cs">
+      <Link>Linked\VersionControl\Model\VersionControlResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\ChangedFile.cs">
+      <Link>Linked\VersionControl\Model\ChangedFile.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\WorkingCopyStatus.cs">
+      <Link>Linked\VersionControl\Model\WorkingCopyStatus.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\BranchInfo.cs">
+      <Link>Linked\VersionControl\Model\BranchInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\RevisionInfo.cs">
+      <Link>Linked\VersionControl\Model\RevisionInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\LockInfo.cs">
+      <Link>Linked\VersionControl\Model\LockInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\ConflictResolutionChoice.cs">
+      <Link>Linked\VersionControl\Model\ConflictResolutionChoice.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\OperationReports.cs">
+      <Link>Linked\VersionControl\Model\OperationReports.cs</Link>
+    </Compile>
+
+    <!-- 境界 -->
+    <Compile Include="..\..\src\VersionControl\Abstractions\IVersionControlProvider.cs">
+      <Link>Linked\VersionControl\Abstractions\IVersionControlProvider.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Abstractions\ILockService.cs">
+      <Link>Linked\VersionControl\Abstractions\ILockService.cs</Link>
+    </Compile>
+
+    <!-- VCS 無しの実装（VersionControlService が既定で持つ） -->
+    <Compile Include="..\..\src\VersionControl\Null\NullVersionControlProvider.cs">
+      <Link>Linked\VersionControl\Null\NullVersionControlProvider.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Null\NullLockService.cs">
+      <Link>Linked\VersionControl\Null\NullLockService.cs</Link>
+    </Compile>
+
+    <!-- スケジューラ -->
+    <Compile Include="..\..\src\VersionControl\Scheduling\IVersionControlScheduler.cs">
+      <Link>Linked\VersionControl\Scheduling\IVersionControlScheduler.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Scheduling\InlineScheduler.cs">
+      <Link>Linked\VersionControl\Scheduling\InlineScheduler.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Scheduling\SerialWorkerScheduler.cs">
+      <Link>Linked\VersionControl\Scheduling\SerialWorkerScheduler.cs</Link>
+    </Compile>
+
+    <!-- Lore の判断ロジックとプロバイダ -->
+    <Compile Include="..\..\src\VersionControl\Lore\LoreConflictResolutionMap.cs">
+      <Link>Linked\VersionControl\Lore\LoreConflictResolutionMap.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreStatusTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreStatusTranslator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreBranchTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreBranchTranslator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreLockTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreLockTranslator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LorePushDiagnosis.cs">
+      <Link>Linked\VersionControl\Lore\LorePushDiagnosis.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreConnectionDiagnosis.cs">
+      <Link>Linked\VersionControl\Lore\LoreConnectionDiagnosis.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreRevisionMetadataTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreRevisionMetadataTranslator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreProvider.cs">
+      <Link>Linked\VersionControl\Lore\LoreProvider.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreLockService.cs">
+      <Link>Linked\VersionControl\Lore\LoreLockService.cs</Link>
+    </Compile>
+
+    <!-- プロセスに 1 つの入口とプロバイダ生成（AccountService の差し込み先） -->
+    <Compile Include="..\..\src\VersionControl\VersionControlService.cs">
+      <Link>Linked\VersionControl\VersionControlService.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\VersionControlProviderFactory.cs">
+      <Link>Linked\VersionControl\VersionControlProviderFactory.cs</Link>
+    </Compile>
+
+    <!-- 実クローン（「プロジェクトに参加」の本体。偽物ではなくこれを通す） -->
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreNativeCloner.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreNativeCloner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreShutdownGuard.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreShutdownGuard.cs</Link>
     </Compile>
 
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->

@@ -122,20 +122,36 @@ public static class AuthEndpointResolver
     }
 
     /// <summary>
-    /// 参加時のクローン元 URL（`lore://host:41337/<プロジェクト名>`）を作る。
+    /// 参加時のクローン元 URL（`lore://host:<lorePort>/<プロジェクト名>`）を作る。
+    ///
+    /// <para>
+    /// ★<paramref name="host"/> に書かれたポートは **発行窓口のもの** として
+    /// <see cref="BuildHttpUri"/> が使う（参加画面はサーバのアドレスを 1 つしか受け取らない）。
+    /// Lore 本体のポートは別物なので、ここでは必ず <paramref name="lorePort"/> を使い、
+    /// ホストに付いているポートは落とす。
+    /// **ここを取り違えると、別ポートで動かしているサーバへ参加したつもりが
+    /// 既定ポート（41337）の別のサーバへクローンしにいく。**
+    /// </para>
     /// </summary>
-    /// <param name="host">サーバのホスト名か IP。</param>
+    /// <param name="host">サーバのホスト名か IP（ポートが付いていても落とす）。</param>
     /// <param name="projectName">サーバ上のプロジェクト名（リポジトリ名）。</param>
+    /// <param name="lorePort">
+    /// Lore 本体のポート。0 以下なら契約の既定
+    /// （<see cref="AccountSettings.DEFAULT_LORE_PORT"/>）を使う。
+    /// </param>
     /// <returns>クローン元 URL。ホストかプロジェクト名が空なら空文字。</returns>
-    public static string BuildLoreRemoteUrl(string? host, string? projectName)
+    public static string BuildLoreRemoteUrl(
+        string? host, string? projectName, int lorePort = 0)
     {
         var trimmedHost    = ExtractHost(host);
         var trimmedProject = projectName?.Trim() ?? string.Empty;
         if (trimmedHost.Length == 0 || trimmedProject.Length == 0) return string.Empty;
 
+        var port = lorePort > 0 ? lorePort : AccountSettings.DEFAULT_LORE_PORT;
+
         return AccountSettings.LORE_URL_SCHEME + SCHEME_SEPARATOR
                + trimmedHost + HOST_PORT_SEPARATOR
-               + AccountSettings.DEFAULT_LORE_PORT.ToString(CultureInfo.InvariantCulture)
+               + port.ToString(CultureInfo.InvariantCulture)
                + PATH_SEPARATOR + trimmedProject;
     }
 }

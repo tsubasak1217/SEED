@@ -439,7 +439,9 @@ public sealed class FakeAuthGateway : IDisposable
                     Status  = _revoked.Contains(pair.Key)
                         ? AccountSettings.MEMBER_STATUS_REVOKED
                         : AccountSettings.MEMBER_STATUS_ACTIVE,
-                    AddedAt = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+                    // ★実サーバ（src/auth/model.rs）と同じく Unix ミリ秒の数値で返す。
+                    //   ここを文字列にすると、偽物だけ通って実サーバで落ちる。
+                    AddedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 });
             }
         }

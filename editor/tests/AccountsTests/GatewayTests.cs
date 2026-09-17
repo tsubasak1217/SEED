@@ -37,6 +37,12 @@ public static class GatewayTests
     /// <summary>待ち合わせの 1 回あたりの間隔 [ms]。</summary>
     private const int POLL_INTERVAL_MS = 50;
 
+    /// <summary>
+    /// `added_at` が「いま」からどれだけ離れていてよいか [ms]。
+    /// 単位の取り違え（秒とミリ秒）なら必ずこの幅を超える。
+    /// </summary>
+    private const long ADDED_AT_TOLERANCE_MS = 5 * 60 * 1_000;
+
     /// <summary>テストを登録する。</summary>
     /// <param name="harness">テストランナー。</param>
     public static void Register(TestHarness harness)
@@ -366,6 +372,15 @@ public static class GatewayTests
                 Check.True(members.Count >= 1, "参加者が 1 人以上いること");
                 Check.True(gateway.LastMembersQuery.Contains("repository_id=", StringComparison.Ordinal),
                            "クエリ名が repository_id であること");
+
+                // ★`added_at` は **Unix ミリ秒の数値**（サーバの `u64`）。
+                //   ここを文字列として受けていたため、実サーバに繋いだ途端
+                //   一覧が丸ごと「サーバの応答を解釈できませんでした」になっていた。
+                //   数値として読めていること（＝いま時刻に近いこと）を固定する。
+                var nowUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                Check.True(
+                    Math.Abs(nowUnixMs - members[0].AddedAtUnixMs) < ADDED_AT_TOLERANCE_MS,
+                    $"added_at が Unix ミリ秒として読める（実際: {members[0].AddedAtUnixMs}）");
 
                 // 失効。
                 var revoked = await client.RevokeMemberAsync(token, new AuthRevokeRequest

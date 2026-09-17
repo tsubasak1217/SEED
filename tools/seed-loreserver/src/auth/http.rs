@@ -220,9 +220,13 @@ impl From<StoreError> for ApiError {
                 ERROR_NOT_FOUND,
                 "その参加者は見つかりません",
             ),
+            // ★契約 3 章のとおり **409 `owner_exists`**。
+            //   `forbidden` は 403 と対で定義されているコードなので、
+            //   409 に載せるとエディタ側が「オーナーだけが行えます」という
+            //   別の意味の文言を出してしまう（実サーバとの結合テストで発覚）。
             StoreError::CannotRevokeOwner => ApiError::new(
                 StatusCode::CONFLICT,
-                ERROR_FORBIDDEN,
+                ERROR_OWNER_EXISTS,
                 "オーナーの権限は失効できません",
             ),
             StoreError::RandomFailed => {
@@ -888,6 +892,14 @@ mod tests {
                 StoreError::MemberNotFound,
                 StatusCode::NOT_FOUND,
                 ERROR_NOT_FOUND,
+            ),
+            // owner の権限を失効させようとしたとき。
+            // 契約 3 章では bootstrap の「既にオーナーが居る」と同じ
+            // 409 `owner_exists` で返し、呼び出した操作で言い分ける。
+            (
+                StoreError::CannotRevokeOwner,
+                StatusCode::CONFLICT,
+                ERROR_OWNER_EXISTS,
             ),
             (
                 StoreError::InvalidRepositoryId,

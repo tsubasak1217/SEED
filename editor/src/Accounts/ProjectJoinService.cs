@@ -34,11 +34,27 @@ namespace SEEDEditor.Accounts;
 /// <summary>
 /// 参加の依頼内容。
 /// </summary>
-/// <param name="Host">サーバのアドレス（ホスト名か IP。ポートは既定を使う）。</param>
+/// <param name="Host">
+/// サーバのアドレス（ホスト名か IP）。`host:port` と書いた場合、そのポートは
+/// **発行窓口のもの**として扱う（Lore 本体のポートは <paramref name="LorePort"/>）。
+/// </param>
 /// <param name="InviteCode">招待コード。**ログへ出さないこと。**</param>
 /// <param name="DestinationDir">クローン先のフォルダ（空であること）。</param>
+/// <param name="AuthPort">
+/// 発行窓口のポート。0 以下なら契約の既定（<see cref="AccountSettings.DEFAULT_AUTH_PORT"/>）。
+/// <paramref name="Host"/> にポートが書かれていればそちらが優先される。
+/// </param>
+/// <param name="LorePort">
+/// Lore 本体のポート。0 以下なら契約の既定（<see cref="AccountSettings.DEFAULT_LORE_PORT"/>）。
+/// **既定ポート以外で動かしているサーバへ参加するには、ここを明示しないと
+/// 既定ポートの別のサーバへクローンしにいってしまう。**
+/// </param>
 public readonly record struct JoinProjectRequest(
-    string Host, string InviteCode, string DestinationDir);
+    string Host,
+    string InviteCode,
+    string DestinationDir,
+    int AuthPort = 0,
+    int LorePort = 0);
 
 /// <summary>
 /// 参加の結果。
@@ -124,8 +140,14 @@ public static class ProjectJoinService
                 AccountMessages.JOIN_DESTINATION_NOT_EMPTY_FORMAT, destination));
         }
 
-        var gateway = AuthEndpointResolver.BuildHttpUri(
-            request.Host, AccountSettings.DEFAULT_AUTH_PORT);
+        // ポートは「0 以下なら契約の既定」に正規化する。
+        // `default(JoinProjectRequest)` を渡されてもポート 0 で組み立てないため。
+        var authPort = request.AuthPort > 0
+            ? request.AuthPort : AccountSettings.DEFAULT_AUTH_PORT;
+        var lorePort = request.LorePort > 0
+            ? request.LorePort : AccountSettings.DEFAULT_LORE_PORT;
+
+        var gateway = AuthEndpointResolver.BuildHttpUri(request.Host, authPort);
         if (gateway is null)
             return JoinProjectResult.Failed(AccountMessages.GATEWAY_ADDRESS_INVALID);
 
@@ -171,7 +193,8 @@ public static class ProjectJoinService
             // ── 3) トークン付きでクローンする ──
             progress?.Report(AccountMessages.JOIN_CLONING);
 
-            var remoteUrl = AuthEndpointResolver.BuildLoreRemoteUrl(request.Host, join.ProjectName);
+            var remoteUrl = AuthEndpointResolver.BuildLoreRemoteUrl(
+                request.Host, join.ProjectName, lorePort);
             if (remoteUrl.Length == 0)
                 return JoinProjectResult.Failed(AccountMessages.GATEWAY_ADDRESS_INVALID);
 
