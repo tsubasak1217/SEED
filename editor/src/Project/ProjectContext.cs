@@ -68,6 +68,21 @@ public static class ProjectContext
         Paths = paths ?? throw new ArgumentNullException(nameof(paths));
         File  = file  ?? throw new ArgumentNullException(nameof(file));
         EditorLog.Write($"プロジェクトを開きました: {paths}");
+
+        // バージョン管理（Lore）の検出と生成。
+        // プロジェクトを開く経路は App.xaml.cs とスタート画面の 2 つあり、
+        // どちらもここへ合流するため、配線はこの 1 か所だけで足りる。
+        // .lore/ が無ければ NullProvider になり、何も起きない（起動は必ず続行する）。
+        try
+        {
+            VersionControl.VersionControlService.Log = EditorLog.Write;
+            VersionControl.VersionControlService.Open(paths.RootDir);
+        }
+        catch (Exception ex)
+        {
+            // バージョン管理が使えないことでプロジェクトを開けなくしない。
+            EditorLog.Write($"バージョン管理を初期化できませんでした: {ex.Message}");
+        }
     }
 
     /// <summary>

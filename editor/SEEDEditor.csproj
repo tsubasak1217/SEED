@@ -17,6 +17,25 @@
     <ApplicationIcon>resources/app.ico</ApplicationIcon>
     <!-- SDK のデフォルト Page グロブを無効化し、src/ を明示指定する -->
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
+
+    <!-- ── バージョン管理（Lore）のネイティブ依存 ─────────────────────────────
+         NuGet パッケージ LoreVcs はネイティブ本体 lorelib.dll を
+         runtimes/win-x64/native/ に持つ。これを出力へ展開させるには
+         RuntimeIdentifier の指定が必須（RID 非依存ビルドでは runtimes/ が
+         コピーされず、実行時に DllNotFoundException になる）。
+
+         ただし RID を指定すると既定では出力パスが
+         bin/Debug/net9.0-windows/win-x64/ へ 1 階層深くなる。SEED では
+         出力パスに依存している箇所が多数あり（エディタのログ位置・ランタイム exe の
+         探索・スタートメニューのショートカット・.seedproj の関連付け・
+         SeedMcpServer のコピー先 $(OutputPath)）、深くなると全部壊れる。
+         そのため AppendRuntimeIdentifierToOutputPath=false で従来の出力パスを維持する。
+
+         SelfContained=false は RID 指定によって自己完結発行（.NET ランタイム同梱・
+         数百 MB）へ倒れるのを防ぐための明示指定。フレームワーク依存のまま保つ。 -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>false</SelfContained>
   </PropertyGroup>
 
   <ItemGroup>
@@ -75,6 +94,10 @@
     <!-- スクリプトエディタのシンタックスハイライト用テキストエディタコントロール -->
     <PackageReference Include="AvalonEdit" Version="6.3.0.90" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- ゲームプロジェクトのバージョン管理（Epic Games 製 OSS Lore）の C# バインディング。
+         ネイティブ lorelib.dll の解決には上の RuntimeIdentifier=win-x64 が必要。
+         利用側は editor/src/VersionControl/ の LoreProvider だけに閉じている。 -->
+    <PackageReference Include="LoreVcs" Version="0.9.0" />
   </ItemGroup>
 
   <ItemGroup>

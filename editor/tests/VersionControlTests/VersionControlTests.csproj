@@ -1,0 +1,159 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    バージョン管理（Lore）中核層の単体テスト。
+
+    ProjectSystemTests / AssetsRootProbeTests と同じ流儀:
+      - xunit 等を足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests/TestHarness.cs）で回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、必要なファイルだけをリンクで取り込む
+
+    テストは 2 段構え:
+      1. 純粋ロジック（既定で常に実行）
+         ILoreBackend に偽物（FakeLoreBackend）を差し、Lore も実サーバも無しで
+         判断ロジックを固定する。ここが本体。
+      2. 実サーバ結合（環境変数 SEED_LORE_TEST_SERVER があるときだけ実行）
+         一時フォルダに loreserver を起動し、本物の LoreNativeBackend を通す。
+
+    2 のために LoreVcs を参照している。RuntimeIdentifier=win-x64 が無いと
+    ネイティブ lorelib.dll が出力に入らず DllNotFoundException になる。
+    （本体 editor/SEEDEditor.csproj と違い、テストは出力パスが深くなっても困らないので
+      AppendRuntimeIdentifierToOutputPath は既定のままにしてある）
+
+    実行方法（XML コメント内に連続ハイフンは書けないので [DD] を "‐‐" と読み替える）:
+      dotnet run [DD]project editor/tests/VersionControlTests
+          … 純粋ロジックのみ
+      $env:SEED_LORE_TEST_SERVER=1; dotnet run [DD]project editor/tests/VersionControlTests
+          … 実サーバ結合も実行
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.VersionControl</RootNamespace>
+    <AssemblyName>VersionControlTests</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LoreVcs" Version="0.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ── 設定・文言・パス変換（WPF / LoreVcs 非依存）── -->
+    <Compile Include="..\..\src\VersionControl\VersionControlSettings.cs">
+      <Link>Linked\VersionControl\VersionControlSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\VersionControlMessages.cs">
+      <Link>Linked\VersionControl\VersionControlMessages.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\VersionControlPaths.cs">
+      <Link>Linked\VersionControl\VersionControlPaths.cs</Link>
+    </Compile>
+
+    <!-- ── モデル ── -->
+    <Compile Include="..\..\src\VersionControl\Model\VersionControlResult.cs">
+      <Link>Linked\VersionControl\Model\VersionControlResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\ChangedFile.cs">
+      <Link>Linked\VersionControl\Model\ChangedFile.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\WorkingCopyStatus.cs">
+      <Link>Linked\VersionControl\Model\WorkingCopyStatus.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\BranchInfo.cs">
+      <Link>Linked\VersionControl\Model\BranchInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\RevisionInfo.cs">
+      <Link>Linked\VersionControl\Model\RevisionInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\LockInfo.cs">
+      <Link>Linked\VersionControl\Model\LockInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\ConflictResolutionChoice.cs">
+      <Link>Linked\VersionControl\Model\ConflictResolutionChoice.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\OperationReports.cs">
+      <Link>Linked\VersionControl\Model\OperationReports.cs</Link>
+    </Compile>
+
+    <!-- ── 境界 ── -->
+    <Compile Include="..\..\src\VersionControl\Abstractions\IVersionControlProvider.cs">
+      <Link>Linked\VersionControl\Abstractions\IVersionControlProvider.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Abstractions\ILockService.cs">
+      <Link>Linked\VersionControl\Abstractions\ILockService.cs</Link>
+    </Compile>
+
+    <!-- ── VCS 無しの実装 ── -->
+    <Compile Include="..\..\src\VersionControl\Null\NullVersionControlProvider.cs">
+      <Link>Linked\VersionControl\Null\NullVersionControlProvider.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Null\NullLockService.cs">
+      <Link>Linked\VersionControl\Null\NullLockService.cs</Link>
+    </Compile>
+
+    <!-- ── スケジューラ ── -->
+    <Compile Include="..\..\src\VersionControl\Scheduling\IVersionControlScheduler.cs">
+      <Link>Linked\VersionControl\Scheduling\IVersionControlScheduler.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Scheduling\InlineScheduler.cs">
+      <Link>Linked\VersionControl\Scheduling\InlineScheduler.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Scheduling\SerialWorkerScheduler.cs">
+      <Link>Linked\VersionControl\Scheduling\SerialWorkerScheduler.cs</Link>
+    </Compile>
+
+    <!-- ── バックエンド境界（生データの契約）── -->
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreCallResult.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreCallResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreBackendRows.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreBackendRows.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\ILoreBackend.cs">
+      <Link>Linked\VersionControl\Lore\Backend\ILoreBackend.cs</Link>
+    </Compile>
+
+    <!-- ── 判断ロジック（テストの本命）── -->
+    <Compile Include="..\..\src\VersionControl\Lore\LoreConflictResolutionMap.cs">
+      <Link>Linked\VersionControl\Lore\LoreConflictResolutionMap.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreStatusTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreStatusTranslator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreBranchTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreBranchTranslator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreLockTranslator.cs">
+      <Link>Linked\VersionControl\Lore\LoreLockTranslator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LorePushDiagnosis.cs">
+      <Link>Linked\VersionControl\Lore\LorePushDiagnosis.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreConnectionDiagnosis.cs">
+      <Link>Linked\VersionControl\Lore\LoreConnectionDiagnosis.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreProvider.cs">
+      <Link>Linked\VersionControl\Lore\LoreProvider.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreLockService.cs">
+      <Link>Linked\VersionControl\Lore\LoreLockService.cs</Link>
+    </Compile>
+
+    <!-- ── 実サーバ結合テストでだけ使う（LoreVcs 依存）── -->
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreNativeBackend.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreNativeBackend.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreShutdownGuard.cs">
+      <Link>Linked\VersionControl\Lore\Backend\LoreShutdownGuard.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

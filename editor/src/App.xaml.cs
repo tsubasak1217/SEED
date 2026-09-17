@@ -87,6 +87,27 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// アプリ終了時の後始末。
+    ///
+    /// <para>
+    /// バージョン管理（Lore）のワーカースレッドを止め、ネイティブ側を終了させる。
+    /// <c>Lore.Shutdown()</c> は **プロセスで 1 回だけ** 呼ぶものなので、
+    /// 呼び出しは <see cref="VersionControl.Lore.Backend.LoreShutdownGuard"/> に一本化してある。
+    /// </para>
+    /// </summary>
+    protected override void OnExit(ExitEventArgs e)
+    {
+        // 先にワーカーを止める。止める前に Shutdown すると、
+        // 走行中の Lore 呼び出しが解放済みのネイティブ側を触る。
+        try { VersionControl.VersionControlService.Close(); }
+        catch (Exception ex) { EditorLog.Write($"バージョン管理の停止に失敗しました: {ex.Message}"); }
+
+        VersionControl.Lore.Backend.LoreShutdownGuard.Shutdown(EditorLog.Write);
+
+        base.OnExit(e);
+    }
+
+    /// <summary>
     /// 起動時の最初のウィンドウを決めて表示する。
     /// </summary>
     private void ShowStartupWindow()

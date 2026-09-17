@@ -1193,3 +1193,19 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [ ] **未確認事項** — 複数マシン・ネットワーク越しの性能、認証有効時のロック所有者表示、`--cache` 付き clone のオフライン能力、
   C# 非同期 API（`.WaitAsync()` / `.AsyncIter()`）と `LoreError` の実送出、数 GB 規模でのマージ性能、
   リリース版 `loreserver.exe` のプラグイン構成、`--release` ビルド。
+
+### エディタ統合（中核層 editor/src/VersionControl/）— 2026-09-18 実装時の残件（正典: docs/editor_version_control.md）
+
+- [ ] **履歴にメッセージ・作者・日時が出ない** — 2026-09-18。`REVISION_HISTORY_ENTRY` には番号・ハッシュ・親しか無い。
+  `Lore.RevisionMetadataGet` を 1 件ずつ引く実装が要る（`RevisionInfo` の型は用意済み）。
+- [ ] **保存経路・プロジェクトパネルからの通知が未接続** — 2026-09-18。`safe_write` 完了 → `NotifyChangedAsync`、
+  作成・削除・改名 → `NotifyMovedAsync`（素のファイル移動は Lore 上で履歴が切れる）。パネル実装時に配線する。
+- [ ] **ロックの強制（保存ゲート）は未実装** — 2026-09-18。サーバ認証が入るまで所有者が `<unknown>` で、自分のロックと区別できない。
+- [ ] **実行中の Lore 呼び出しを中断できない** — 2026-09-18。LoreVcs に Cancel/Abort が無い。タイムアウトは UI を待たせない保険で、
+  ワーカーは走り続ける。長い操作に「キャンセル」ボタンを出さない。CLI をサブプロセス化して kill する案もある。
+- [ ] **push 拒否・接続失敗の判定が Lore のメッセージ文言に依存** — 2026-09-18。pre-1.0 で変わり得る。変わると `Failed` に落ちる（安全側）。
+  直す場所は `LorePushDiagnosis.NEEDS_SYNC_MARKERS` と `LoreConnectionDiagnosis.CONNECTION_MARKERS` の 2 か所。
+- [ ] **`LoreFileStageArgs.CaseChange` の意味が未確認** — 2026-09-18。大文字小文字だけの改名で失敗する可能性。
+- [ ] **リポジトリの作成・クローンが境界に無い** — 2026-09-18。「プロジェクトをバージョン管理下に置く」「参加する」UI を作るときに足す。
+  `.loreignore` の編集 UI も無い。
+- [ ] **実サーバ結合テスト（`SEED_LORE_TEST_SERVER`）は手動実行** — 2026-09-18。openssl と `loreserver.exe` の場所が固定値。CI に入れるなら設定化する。
