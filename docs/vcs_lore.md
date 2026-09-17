@@ -81,7 +81,23 @@ https://epicgames.github.io/lore/ と https://github.com/EpicGames/lore を参�
   `lore repository create lore://<host>:41337/<Project> --identity <name>` で作る。
 - ロックは `seed_file_lock_store`（JSON）に永続化。バックアップはストア 2 フォルダ＋ロック JSON をコピーするだけ。
 
-### 5.1 本番プロジェクトの初期化手順（案）
+### 5.0 現在の本番構成（2026-09-18 構築）
+
+| 項目 | 値 |
+|---|---|
+| サーバ実行ファイル | `C:\Users\k023g\SEED_lore\bin\seed-loreserver\seed-loreserver.exe`（`tools/seed-loreserver` の debug ビルドをコピー。リポジトリ側の再ビルドと干渉させないため） |
+| 設定 | `C:\Users\k023g\SEED_lore\server\config\local.toml`（127.0.0.1 限定、41337 / 41339、`seed_file_lock_store`、`seed_push_guard` 有効） |
+| データ | `server\store\{immutable,mutable}`、ロックは `server\locks\seed_locks.json`、証明書は `server\certs\`（自己署名 10 年） |
+| 起動 | `server\start-seed-loreserver.ps1`（二重起動しない。ログは `server\logs\` に起動ごと）。ログオン時はスタートアップの `SEED Lore Server.lnk` が呼ぶ |
+| 停止 | `Stop-Process -Name seed-loreserver` |
+| 生存確認 | `http://127.0.0.1:41339/health_check` が 200 |
+| リポジトリ | `lore://127.0.0.1:41337/WarashibeFishing`（作業コピー `D:\SEED_projects\WarashibeFishing`、identity `tsubasa`） |
+| 初回取り込み | revision 1（469 ファイル / 88 MiB）。サーバから clone し直して全ファイルの SHA-256 一致を確認済み |
+| バックアップ | サーバを止めて `server\store\` と `server\locks\` をコピーする（稼働中はファイルサイズが正しく見えない） |
+
+サーバの実行ファイルを更新するときは、サーバを止めてから `tools/seed-loreserver` をビルドし、exe を上の場所へコピーし直す。
+
+### 5.1 本番プロジェクトの初期化手順（他のプロジェクトを足すとき）
 
 ```powershell
 $env:RUST_LOG = "info"
