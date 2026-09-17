@@ -30,6 +30,7 @@ use serde::Serialize;
 use super::issuer::IssuerKey;
 use super::model::Account;
 use super::model::Role;
+use super::model::validate_repository_id;
 
 // -----------------------------------------------------------------------------
 // 定数
@@ -126,6 +127,24 @@ impl TokenClaims {
 /// 「権限があるのに解放できない」という分かりにくい失敗になる。
 pub fn resource_id_for(repository_id: &str) -> String {
     format!("{RESOURCE_ID_PREFIX}{repository_id}")
+}
+
+/// Lore のリソース識別子からリポジトリ ID を取り出す（`resource_id_for` の逆）。
+///
+/// Lore 本体が `auth_url` の gRPC へ送ってくる `resource_id` は
+/// `urc-<32桁hex>` の形（`lore-server/src/authnz/repository_authorizer.rs` の
+/// `format!("urc-{repository_id}")`）。
+///
+/// 接頭辞が付いていない値、書式が合わない値は `None` を返す。
+/// **ワイルドカード（`urc-*`）も `None`** になる
+/// （32 桁 16 進の検証を通らないため。権限を広げる抜け道を作らない）。
+pub fn repository_id_from_resource_id(resource_id: &str) -> Option<&str> {
+    let repository_id = resource_id.strip_prefix(RESOURCE_ID_PREFIX)?;
+    if validate_repository_id(repository_id) {
+        Some(repository_id)
+    } else {
+        None
+    }
 }
 
 // -----------------------------------------------------------------------------

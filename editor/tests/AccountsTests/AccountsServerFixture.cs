@@ -7,13 +7,20 @@
 //  契約 `docs/seed_accounts.md` 5 章「有効化の順番」をそのまま再現できるよう、
 //  次の 2 段階を切り替えられる。
 //
-//    第 1 段: `[seed_auth]` だけ有効（発行窓口は動くが Lore は匿名）
+//    第 1 段: `[seed_auth]` だけ有効（発行窓口と権限サービスは動くが Lore は匿名）
 //    第 2 段: `[server.auth]` / `[server.auth.jwk]` / `[environment.endpoint]` を足す
-//             （Lore 本体が JWT を要求する。新規リポジトリは作れなくなる）
+//             （Lore 本体が JWT を要求する）
+//
+//  【`auth_url` の付け外しはもう無い】
+//  以前は「clone と repository create のときだけ `[environment.endpoint]` を外す」
+//  必要があった（Lore が auth_url の gRPC へ権限を問い合わせるのに、
+//  SEED にその相手が居なかったため）。
+//  いまは seed-loreserver 自身が `epic_urc.UrcAuthApi` と `ucs.auth.RebacApi` を
+//  話すので、**auth_url を書きっぱなしの 1 つの設定**で全部の操作が通る。
 //
 //  【本番環境を絶対に触らないための約束】
-//  ・ポートは Lore 41357 / 41359、発行窓口 41361
-//    （本番の 41337 / 41339 / 41350 とは別。本番サーバは常駐している）
+//  ・ポートは Lore 41357 / 41359、発行窓口 41361、権限サービス 41362
+//    （本番の 41337 / 41339 / 41350 / 41352 とは別。本番サーバは常駐している）
 //  ・host は 127.0.0.1 固定（Windows ファイアウォールの確認も出ない）
 //  ・ストア・証明書・アカウントデータ・作業コピーはすべて使い捨てフォルダ
 //  ・止めるのは「自分が起動したプロセス」だけ（プロセス名で探して kill しない）
@@ -28,9 +35,11 @@
 // ============================================================
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -64,6 +73,12 @@ public sealed class AccountsServerFixture : IDisposable
     /// <summary>発行窓口の待ち受けポート（本番の 41350 とは別）。</summary>
     public const int PORT_AUTH = 41361;
 
+    /// <summary>
+    /// 権限サービス（gRPC）の待ち受けポート（本番の 41352 とは別）。
+    /// `[environment.endpoint] auth_url` はここを指す。
+    /// </summary>
+    public const int PORT_PERMISSION = 41362;
+
     /// <summary>待ち受けアドレス（ループバック固定）。</summary>
     public const string HOST = "127.0.0.1";
 
@@ -83,10 +98,18 @@ public sealed class AccountsServerFixture : IDisposable
 
     /// <summary>
     /// `[environment.endpoint] auth_url` に入れる値。
-    /// クライアントはトークンを渡された時点で交換を短絡するので、
-    /// **この URL へ接続しにはいかない**（空でなければ何でもよい）。
+    ///
+    /// <para>
+    /// **seed-loreserver 自身の権限サービスを指す。**
+    /// サーバはここへ `epic_urc.UrcAuthApi/CheckUserPermission` と
+    /// `ucs.auth.RebacApi/CreateResource` を問い合わせる。
+    /// `https://` で始まらないので TLS は使われない（平文 h2c）。
+    /// クライアント側はトークンを渡された時点で交換を短絡するので、
+    /// この URL へは接続しにいかない。
+    /// </para>
     /// </summary>
-    private const string AUTH_URL_PLACEHOLDER = "https://seed-auth.invalid";
+    private static string AuthUrl
+        => $"http://{HOST}:{PORT_PERMISSION.ToString(CultureInfo.InvariantCulture)}";
 
     /// <summary>ストアのフラッシュ間隔 [s]（テストなので短くする）。</summary>
     private const int STORE_FLUSH_DELAY_SECONDS = 1;
@@ -181,8 +204,11 @@ public sealed class AccountsServerFixture : IDisposable
     /// <summary>いま Lore 本体の JWT 認証が有効か（第 2 段かどうか）。</summary>
     public bool LoreAuthEnabled { get; private set; }
 
-    /// <summary>いま `[environment.endpoint] auth_url` を書いているか。</summary>
-    public bool AuthUrlConfigured { get; private set; }
+    /// <summary>
+    /// `[seed_auth] repository_creators` に書く名前。
+    /// ここに載っている人だけが、認証を有効にしたまま新しいリポジトリを作れる。
+    /// </summary>
+    private readonly string[] _repositoryCreators;
 
     /// <summary>設定フォルダ。</summary>
     private readonly string _configDir;
@@ -207,8 +233,14 @@ public sealed class AccountsServerFixture : IDisposable
     /// <summary>
     /// 一時フォルダを用意し、第 1 段（`[seed_auth]` のみ・Lore は匿名）で起動する。
     /// </summary>
-    public AccountsServerFixture()
+    /// <param name="repositoryCreators">
+    /// `[seed_auth] repository_creators` に書く名前（認証を有効にしたまま
+    /// 新しいリポジトリを作れる人）。省略すると空 ＝ 誰も作れない。
+    /// </param>
+    public AccountsServerFixture(params string[] repositoryCreators)
     {
+        _repositoryCreators = repositoryCreators ?? Array.Empty<string>();
+
         ServerExePath = ResolveServerExePath();
 
         if (!File.Exists(ServerExePath))
@@ -239,7 +271,7 @@ public sealed class AccountsServerFixture : IDisposable
 
         CreateSelfSignedCertificate(_certsDir);
 
-        Start(loreAuthEnabled: false, includeAuthUrl: false);
+        Start(loreAuthEnabled: false);
     }
 
     // ── 参照 ────────────────────────────────────────────────
@@ -287,17 +319,16 @@ public sealed class AccountsServerFixture : IDisposable
     /// 契約 5 章の第 2 段へ進む。サーバを止め、
     /// `[server.auth]` / `[server.auth.jwk]` / `[environment.endpoint]` を足して起動し直す。
     /// ストア・ロック・参加者データはそのまま引き継ぐ。
+    ///
+    /// <para>
+    /// **再起動はこの 1 回だけ。** 以後は操作ごとの設定変更をしない
+    /// （権限サービスができたので `auth_url` を付けっぱなしにできる）。
+    /// </para>
     /// </summary>
-    /// <param name="includeAuthUrl">
-    /// `[environment.endpoint] auth_url` を書くか。
-    /// **push / pull（QUIC ストレージセッション）にはこれが必須**だが、
-    /// リポジトリ ID が確定していない呼び出し（clone / repository create）は
-    /// これがあると通らない。切り分けのために切り替えられるようにしてある。
-    /// </param>
-    public void RestartWithLoreAuth(bool includeAuthUrl = true)
+    public void RestartWithLoreAuth()
     {
         StopProcess();
-        Start(loreAuthEnabled: true, includeAuthUrl);
+        Start(loreAuthEnabled: true);
     }
 
     // ── 起動・停止 ──────────────────────────────────────────
@@ -306,10 +337,9 @@ public sealed class AccountsServerFixture : IDisposable
     /// 設定を書き出してサーバを起動し、待ち受け開始まで待つ。
     /// </summary>
     /// <param name="loreAuthEnabled">Lore 本体の JWT 認証を有効にするか。</param>
-    /// <param name="includeAuthUrl">`[environment.endpoint] auth_url` を書くか。</param>
-    private void Start(bool loreAuthEnabled, bool includeAuthUrl)
+    private void Start(bool loreAuthEnabled)
     {
-        WriteServerConfig(loreAuthEnabled, includeAuthUrl);
+        WriteServerConfig(loreAuthEnabled);
 
         var startInfo = new ProcessStartInfo(ServerExePath, $"--config \"{_configDir}\"")
         {
@@ -329,9 +359,8 @@ public sealed class AccountsServerFixture : IDisposable
         StartDrain(process.StandardOutput, ServerLogPath);
         StartDrain(process.StandardError, ServerLogPath);
 
-        _process         = process;
-        LoreAuthEnabled  = loreAuthEnabled;
-        AuthUrlConfigured = loreAuthEnabled && includeAuthUrl;
+        _process        = process;
+        LoreAuthEnabled = loreAuthEnabled;
 
         WaitUntilListening();
     }
@@ -445,8 +474,7 @@ public sealed class AccountsServerFixture : IDisposable
     /// サーバ設定（local.toml）を書く。
     /// </summary>
     /// <param name="loreAuthEnabled">Lore 本体の JWT 認証を有効にするか（契約 5 章の第 2 段）。</param>
-    /// <param name="includeAuthUrl">`[environment.endpoint] auth_url` を書くか。</param>
-    private void WriteServerConfig(bool loreAuthEnabled, bool includeAuthUrl)
+    private void WriteServerConfig(bool loreAuthEnabled)
     {
         // TOML のパス区切りはスラッシュに統一する（円記号はエスケープが要るため）。
         static string Toml(string path) => path.Replace('\\', '/');
@@ -493,6 +521,8 @@ public sealed class AccountsServerFixture : IDisposable
         builder.AppendLine("enabled = true");
         builder.AppendLine($"host = \"{HOST}\"");
         builder.AppendLine($"port = {Port(PORT_AUTH)}");
+        builder.AppendLine($"permission_port = {Port(PORT_PERMISSION)}");
+        builder.AppendLine($"repository_creators = [{FormatTomlStringArray(_repositoryCreators)}]");
         builder.AppendLine($"data_dir = \"{Toml(AuthDataDir)}\"");
         builder.AppendLine($"issuer = \"{JWT_ISSUER}\"");
         builder.AppendLine($"audience = \"{JWT_AUDIENCE}\"");
@@ -508,19 +538,25 @@ public sealed class AccountsServerFixture : IDisposable
             builder.AppendLine();
             builder.AppendLine("[server.auth.jwk]");
             builder.AppendLine($"endpoint = \"file:///{Toml(JwksPath)}\"");
-
-            if (includeAuthUrl)
-            {
-                builder.AppendLine();
-                // push / pull（QUIC ストレージセッション）にトークンを載せるのに必須。
-                // この URL へ接続しにはいかない（トークンがあれば交換を短絡するため）。
-                builder.AppendLine("[environment.endpoint]");
-                builder.AppendLine($"auth_url = \"{AUTH_URL_PLACEHOLDER}\"");
-            }
+            builder.AppendLine();
+            // push / pull（QUIC ストレージセッション）にトークンを載せるのに必須。
+            // 同時に、サーバがリポジトリの可否を問い合わせる相手でもある
+            // （= seed-loreserver 自身の権限サービス）。付け外しはもう不要。
+            builder.AppendLine("[environment.endpoint]");
+            builder.AppendLine($"auth_url = \"{AuthUrl}\"");
         }
 
         File.WriteAllText(Path.Combine(_configDir, FILE_CONFIG), builder.ToString());
     }
+
+    /// <summary>
+    /// 文字列の配列を TOML の配列リテラルの中身へ変換する（`"a", "b"`）。
+    /// アカウント名に使える文字（契約 2 章）には <c>"</c> も <c>\</c> も
+    /// 含まれないので、エスケープは要らない。
+    /// </summary>
+    /// <param name="values">並べる文字列。</param>
+    private static string FormatTomlStringArray(IReadOnlyList<string> values)
+        => string.Join(", ", values.Select(value => $"\"{value}\""));
 
     /// <summary>
     /// 標準出力・標準エラーを読み続けてファイルへ落とす。
@@ -550,7 +586,8 @@ public sealed class AccountsServerFixture : IDisposable
     }
 
     /// <summary>
-    /// サーバが待ち受けを始めるまで待つ（Lore の 2 ポートと発行窓口の 3 つとも）。
+    /// サーバが待ち受けを始めるまで待つ
+    /// （Lore の 2 ポート・発行窓口・権限サービスの 4 つとも）。
     /// </summary>
     private void WaitUntilListening()
     {
@@ -566,8 +603,11 @@ public sealed class AccountsServerFixture : IDisposable
                     + $" ログ: {ServerLogPath}");
             }
 
-            if (CanConnect(PORT_HTTP) && CanConnect(PORT_QUIC_GRPC) && CanConnect(PORT_AUTH))
+            if (CanConnect(PORT_HTTP) && CanConnect(PORT_QUIC_GRPC)
+                && CanConnect(PORT_AUTH) && CanConnect(PORT_PERMISSION))
+            {
                 return;
+            }
 
             Thread.Sleep(STARTUP_POLL_INTERVAL_MS);
         }
@@ -634,7 +674,7 @@ public sealed class AccountsServerFixture : IDisposable
     }
 
     /// <summary>
-    /// 3 つのポートが解放されるまで待つ（再起動のたびに「使用中」で落ちないように）。
+    /// 4 つのポートが解放されるまで待つ（再起動のたびに「使用中」で落ちないように）。
     /// </summary>
     private static void WaitUntilPortsFree()
     {
@@ -642,8 +682,11 @@ public sealed class AccountsServerFixture : IDisposable
 
         while (DateTime.UtcNow < deadline)
         {
-            if (!CanConnect(PORT_HTTP) && !CanConnect(PORT_QUIC_GRPC) && !CanConnect(PORT_AUTH))
+            if (!CanConnect(PORT_HTTP) && !CanConnect(PORT_QUIC_GRPC)
+                && !CanConnect(PORT_AUTH) && !CanConnect(PORT_PERMISSION))
+            {
                 return;
+            }
 
             Thread.Sleep(STARTUP_POLL_INTERVAL_MS);
         }

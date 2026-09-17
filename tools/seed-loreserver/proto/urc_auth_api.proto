@@ -1,0 +1,106 @@
+// =============================================================================
+// epic_urc.UrcAuthApi : Lore サーバが `auth_url` へ問い合わせる権限 API
+// =============================================================================
+// Lore v0.9.0 のサーバは `[environment.endpoint] auth_url` が設定されていると、
+// リポジトリを引く操作 (RepositoryGet / RepositoryQuery / RepositoryMetadataGet /
+// RepositoryMetadataSet / RepositoryList) の可否を **この gRPC サービス**へ
+// 問い合わせる (lore-server/src/authnz/repository_authorizer.rs、
+// lore-server/src/grpc/handlers/repository_list.rs)。
+//
+// SEED はその外部サービスを持っていなかったため、問い合わせが必ず失敗し、
+// 失敗はすべて `RepositoryNotFound` に畳まれてクローンが「Not found」で
+// 落ちていた。ここに置いた定義は **その問い合わせを受ける側**を
+// seed-loreserver の中に実装するためのもの。
+//
+// 【この定義について】
+// upstream (lore-proto/proto/auth_api.proto、MIT) の**ワイヤ契約**のうち、
+// SEED が実際に応答する RPC とそこで使うメッセージだけを写したもの。
+// lore-proto が生成しているのは**クライアント側スタブだけ**なので、
+// サーバ側スタブは本 crate の build.rs で生成する。
+//
+// **フィールド番号・型・パッケージ名・サービス名・RPC 名は upstream と
+//   1 文字も変えてはいけない**（変えると gRPC のメソッドパスやワイヤ表現が
+//   食い違い、Lore 側から見て「サービスが無い」状態に戻る）。
+//
+// 写していない RPC（StartAuthSession / ExchangeUserTokenForMultiresourceToken
+// など）は、tonic のルータが自動で `Unimplemented` を返す。
+// Lore v0.9.0 のサーバはそれらを呼ばない（呼ぶのはクライアント側の
+// トークン交換だけで、SEED はトークンを供給済みなので交換を短絡する。
+// lore-transport/src/auth/exchange.rs の `exchange()` 冒頭）。
+// =============================================================================
+
+syntax = "proto3";
+
+package epic_urc;
+
+// Lore サーバが問い合わせる権限 API（SEED が応答する分だけ）。
+service UrcAuthApi {
+  // 死活確認。Lore は呼ばないが、運用での切り分け用に応答する。
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse) {};
+
+  // 「この利用者はこのリソース（= リポジトリ）を触ってよいか」。
+  // 呼び出し元: lore-server/src/authnz/repository_authorizer.rs の
+  //             AuthClientAuthorizer::check_repository_access
+  rpc CheckUserPermission(CheckUserPermissionRequest)
+      returns (CheckUserPermissionResponse) {};
+
+  // 「この利用者が触れるリソースを全部挙げよ」。
+  // 呼び出し元: lore-server/src/grpc/handlers/repository_list.rs の
+  //             lookup_authorized_repositories（`repository list` で使う）
+  rpc LookupUserPermissions(LookupUserPermissionsRequest)
+      returns (LookupUserPermissionsResponse) {};
+}
+
+// 死活確認の要求（中身なし）。
+message HealthCheckRequest {}
+
+// 死活確認の応答。
+message HealthCheckResponse { string status = 1; }
+
+// 「誰について尋ねているか」。
+// Lore サーバは常に未設定で送り、利用者は `authorization` メタデータの
+// Bearer トークンで決まる。
+message TargetUser {
+  oneof user {
+    string user_token = 1;
+  }
+}
+
+// 1 リソース分の許可された権限。
+message ResourcePermission {
+  string resource_id = 1;
+  repeated string permission = 2;
+}
+
+// 権限の問い合わせ。`resource_id` は `urc-<32桁hexのリポジトリID>` の形。
+message CheckUserPermissionRequest {
+  repeated string resource_id = 1;
+  optional TargetUser target_user = 2;
+}
+
+// 権限の問い合わせの応答。
+//
+// 呼び出し元は `allowed_resource_permission` の **先頭 1 件**の
+// `resource_id` が問い合わせた値と一致するかだけを見る
+// （repository_authorizer.rs:78-89）。
+message CheckUserPermissionResponse {
+  repeated ResourcePermission allowed_resource_permission = 1;
+  repeated ResourcePermission denied_resource_permission = 2;
+}
+
+// 触れるリソースの一覧要求。Lore は `resource_filter = "urc"` で呼ぶ。
+message LookupUserPermissionsRequest {
+  string resource_filter = 1;
+  optional string context_filter = 2;
+  optional int32 page_size = 3;
+  optional string page_token = 4;
+}
+
+// 触れるリソースの一覧。
+//
+// 呼び出し元は `resource_id` から `urc-` を剥がして 32 桁 hex として解釈する
+// （repository_list.rs の `lookup_authorized_repositories`）。
+message LookupUserPermissionsResponse {
+  repeated ResourcePermission resource_permission = 1;
+  optional string next_page_token = 2;
+}

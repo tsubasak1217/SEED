@@ -26,9 +26,18 @@ Hub（スタート画面）でアカウントを作ってログインし、オ�
 | 名前 | 1〜32 文字（**Unicode のコードポイント数**で数える）。使える文字は、ASCII の英数字と `_` `-` `.`、および日本語の次の範囲だけ: U+3005–U+3007（々〆〇）、U+3041–U+309F（ひらがな）、U+30A0–U+30FF（カタカナ。長音符 ー を含む）、U+3400–U+4DBF と U+4E00–U+9FFF（漢字）。**全角英数字・半角カナ・他言語の文字・空白・記号は不可**（ロックの所有者表示で他人に似た名前を作らせないため。サーバ `model.rs` とエディタ `AccountNameRule.cs` は同じ表を持つ）。**サーバ内で一意・作成後は変更不可**（JWT の `sub` に使う）。一意判定は **ASCII の大文字小文字を無視**する（`alice` と `Alice` は同じ人として扱い、後から来たほうを `name_taken` で断る。表示は入力どおり） |
 | リポジトリ ID | `.lore/id` は**生の 16 バイト**。API で渡す `repository_id` はそれを **32 桁の 16 進小文字**にしたもの |
 
-## 3. 発行窓口（HTTP API）
+## 3. 発行窓口（HTTP API）と権限サービス（gRPC）
 
-`seed-loreserver` と同じプロセスの別スレッド・別ランタイムで動く小さな HTTP サーバ。既定ポート **41350**。
+`seed-loreserver` は同じプロセスの中で、**別スレッド・別ランタイム**の小さなサーバを 2 つ動かす。
+
+| 窓口 | 種別 | 既定ポート | 相手 | 役目 |
+|---|---|---|---|---|
+| 発行窓口 | HTTP/JSON | **41350** | エディタ（利用者） | 参加者の登録・招待・チャレンジ応答ログイン・JWT 発行 |
+| 権限サービス | gRPC（平文 h2c） | **41352** | **Lore 本体（同じプロセス内のサーバ）** | 「この人はこのリポジトリを触ってよいか」に答える |
+
+権限サービスは**常に 127.0.0.1 で待ち受ける**（`[seed_auth] host` を `0.0.0.0` にしても外からは見えない。繋ぐのは同じプロセスの Lore 本体だけなので、LAN へ晒さない）。
+権限サービスは Lore の `[environment.endpoint] auth_url` が指す先。詳しくは 5 章の
+「`auth_url` の二律背反（解消済み）」。以下の表は発行窓口の API。
 JSON（UTF-8）。エラーは HTTP ステータス ＋ `{"error":"<コード>","message":"<日本語の説明>"}`。
 
 | メソッド／パス | 認証 | 入力 | 出力 |
@@ -46,8 +55,12 @@ JSON（UTF-8）。エラーは HTTP ステータス ＋ `{"error":"<コード>",
 - Bearer は `Authorization: Bearer <access_token>`（この窓口が発行した JWT。署名・期限・`resources` を検証）。
   方式名は `Bearer `（大文字小文字を区別する）。
 - チャレンジは 1 回限り・60 秒。ログイン失敗の理由は区別して返さない。
-- 失効した参加者は新しいトークンを取れない。発行済みトークンは期限（既定 8 時間）まで有効（Lore に失効の仕組みが無いため）。
-  一方、**窓口側の操作（招待発行・一覧・失効）は毎回 `accounts.json` を見るので失効が即座に効く**。
+- 失効した参加者は新しいトークンを取れない。
+  **窓口側の操作（招待発行・一覧・失効）と、権限サービスを通る操作（クローン・リポジトリの作成／削除・
+  メタデータ未取得の送信）は毎回 `accounts.json` を見るので、失効が即座に効く。**
+  残るのは「既に接続していてメタデータを持っているクライアントの送信」「ロックの取得・照会・解放」「最新を取得」で、
+  これらは Lore 側が**トークンに載っている `resources`** だけを見るため、そのトークンの期限（既定 8 時間）までは通る。
+  実測の詳細は 7 章「既知の制約」。
 - 失効（`status`）は**アカウント単位ではなくリポジトリ権限（grant）単位**。
   `/v1/login/complete` は「有効な権限が 1 件も無い」アカウントを 401 `login_failed` で断る。
 - 時刻の単位: チャレンジの `expires_in` は**秒**、`expires_at`（`/v1/invites` と `/v1/login/complete`）と
@@ -102,7 +115,9 @@ JSON（UTF-8）。エラーは HTTP ステータス ＋ `{"error":"<コード>",
 [seed_auth]
 enabled = true
 host = "127.0.0.1"          # チームが繋ぐ段階で 0.0.0.0
-port = 41350
+port = 41350                # 発行窓口（HTTP）
+permission_port = 41352     # 権限サービス（gRPC）。auth_url がここを指す
+repository_creators = ["つばさ"]   # 新しいリポジトリを作ってよい人。既定は空 = 誰も作れない
 data_dir = "C:/Users/<user>/SEED_lore/server/auth"   # accounts.json / issuer_key.json / jwks.json
 issuer = "seed-auth"
 audience = "seed-lore"
@@ -115,26 +130,37 @@ jwt_audience = ["seed-lore"]
 [server.auth.jwk]
 endpoint = "file:///C:/Users/<user>/SEED_lore/server/auth/jwks.json"
 
-# push / pull（QUIC ストレージセッション）を通すのに必須。理由は下の「有効化の順番」。
+# 2 つの意味を持つ。どちらも必須。
+#   クライアント側: push / pull（QUIC ストレージセッション）にトークンを載せる合図
+#   サーバ側      : リポジトリの可否を問い合わせる先（= 上の permission_port）
+# ホストは [seed_auth] host と同じものを書く（0.0.0.0 なら 127.0.0.1 で自分を指す）。
 [environment.endpoint]
-auth_url = "https://seed-auth.invalid"
+auth_url = "http://127.0.0.1:41352"
 ```
 
-- `[seed_auth]` だけ有効にして `[server.auth]` を書かなければ、窓口は動くが Lore は匿名のまま（移行期間の確認用）。
+- `[seed_auth]` だけ有効にして `[server.auth]` を書かなければ、窓口と権限サービスは動くが Lore は匿名のまま（移行期間の確認用）。
 - `accounts.json`（参加者・権限・招待コードのハッシュ）は tmp → rename で原子的に書く。
 - `data_dir` には `accounts.json` / `issuer_key.json` / `jwks.json` が置かれる。
   **`issuer_key.json` にはサーバの秘密鍵が入る**ので、共有フォルダやバージョン管理に入れないこと。
 - `token_ttl_hours` は 1〜24。`enabled = true` のとき `data_dir` は省略できない。
+- `permission_port` は `port` と違う値でなければならない（同じなら起動時に落とす）。
+- `repository_creators` の照合は名前の一意判定と同じく **ASCII の大文字小文字を無視**する。
+  規則に反する名前を書くと起動時に落とす（黙って無視すると「なぜか作れない」になるため）。
 - 設定の読み込み規則は Lore 本体と同じ（`--config` / `LORE_CONFIG_PATH`、`--env` / `LORE_ENV`、
   `default.toml` → `<env>.toml` → `local.toml` → `LORE__*`）。未知の節は Lore 本体の読み込みを壊さない（実機で確認済み）。
 
-### 有効化の順番（重要）
+### 有効化の順番
 
 1. `[seed_auth]` だけで起動する（`jwks.json` ができる）。
 2. リポジトリを作る（`.lore/id` が無いと `bootstrap` に渡す `repository_id` が決まらない）。
 3. `POST /v1/bootstrap` でオーナーを登録し、招待コードで参加者を入れる。
-4. `[server.auth]` / `[server.auth.jwk]` を足して再起動する。
-   `[environment.endpoint]` は**操作によって付け外しする**（次節）。
+4. `[server.auth]` / `[server.auth.jwk]` / `[environment.endpoint]` を足して再起動する。
+
+**再起動はこの 1 回だけ。** 以後は設定を触らずにクローン・送信・取得・ロック・
+新しいリポジトリの作成がすべて通る（次節）。
+
+2 つめ以降のリポジトリでは 2〜3 が要らない。`repository_creators` に載っている人が
+`repository create` すると、権限サービスがその人を owner として台帳へ登録する。
 
 **サーバを止める前に、書き込みがディスクへ落ちるのを待つこと。**
 Lore のローカル mutable ストアは書き込みの `flush_delay_seconds` 秒後に別タスクで
@@ -146,40 +172,66 @@ immutable 側は残るので「データはあるのにクローンだけでき�
 **実測で確認済み**（結合テスト `editor/tests/AccountsTests/AccountsServerFixture.cs` は
 止める前に mutable ストアのファイル数とサイズが落ち着くのを待っている）。
 
-### `auth_url` の二律背反（v0.9.0 の未解決点・実測）
+### `auth_url` の二律背反（**解消済み**）
 
-`[environment.endpoint] auth_url` は **1 つの値で 2 つの意味を持ってしまっている**。
+`[environment.endpoint] auth_url` は **1 つの値で 2 つの意味を持つ**。
 
 | | クライアント側 | サーバ側 |
 |---|---|---|
-| `auth_url` **あり** | QUIC のストレージセッションにトークンを載せる（`session_start`）。**pull に必須** | `RepositoryGet` の認可を `auth_url` の gRPC `CheckUserPermission` へ委譲する。**SEED はそのサービスを持たないので必ず失敗し、NOT_FOUND になる** |
-| `auth_url` **なし** | 「認証していないサーバ」とみなしてトークンを載せない → **pull が「Not authorized to access repository」で失敗** | 認可チェックを飛ばす（AllowAll）→ `RepositoryGet` が通る |
+| `auth_url` **あり** | QUIC のストレージセッションにトークンを載せる（`session_start`）。**pull に必須** | `RepositoryGet` などの認可を `auth_url` の gRPC へ委譲する |
+| `auth_url` **なし** | 「認証していないサーバ」とみなしてトークンを載せない → **pull が「Not authorized to access repository」で失敗** | 認可チェックを飛ばす（AllowAll） |
 
-`RepositoryGet` を使うのは **clone**（名前で引く）と **push**（ID でメタデータを引く）。
-実測での対応表（`seed-loreserver` 41357 / 窓口 41361 で確認）:
+以前は SEED に「委譲される側」が無かったため、`auth_url` を書くとサーバ側の問い合わせが
+必ず失敗し、失敗が `RepositoryNotFound` に畳まれて **clone と `repository create` が
+「Not found」で落ちていた**。逆に外すと pull が落ちる ── どちらの設定でも全部は通らなかった。
 
-| 操作 | `auth_url` なし | `auth_url` あり |
+**`seed-loreserver` が委譲される側を自前で実装したので、この二律背反は解消した。**
+`auth_url` を自分の権限サービス（既定 `http://127.0.0.1:41352`）へ向ければ、
+**1 つの設定のまま全部の操作が通る**（結合テスト `editor/tests/AccountsTests` で実測）。
+
+| 操作 | 結果 | サーバが権限サービスへ問い合わせるか |
 |---|---|---|
-| clone（参加） | **通る** | **必ず落ちる**（`Not found`、rc 13） |
-| push（送信） | **通る** | ローカルストアにメタデータが残っていれば通るが、無ければ `Address not found: <hash>-000…0` で落ちる |
-| pull / sync（取得） | **落ちる**（`Not authorized to access repository`） | **通る** |
-| ロック（取得・照会・解放） | 通る | 通る |
-| 発行窓口（`[seed_auth]`） | 影響なし | 影響なし |
+| clone（参加） | **通る** | する（`CheckUserPermission`。参加していなければ `Not found`） |
+| `repository create` | **通る**（`repository_creators` に載っている人だけ） | する（`CreateResource`） |
+| push（送信） | **通る** | メタデータを手元に持っていなければ `CheckUserPermission` |
+| pull / sync（取得） | **通る** | しない（トークンの `resources` を見る） |
+| ロック（取得・照会・解放） | **通る** | しない（トークンの `resources` を見る） |
+| `repository list` | 参加しているものだけ出る | する（`LookupUserPermissions`） |
+| 発行窓口（`[seed_auth]`） | 影響なし | ─ |
 
-**どちらの設定でも全部は通らない。** 当面の運用は
-「ふだんは `[environment.endpoint]` を付けておき、**新しいリポジトリを作るときと
-参加者がクローンするときだけ外して起動し直す**」。
-根本的に直すには、`auth_url` が指す先に **`epic_urc.UrcAuthApi/CheckUserPermission` を話す
-gRPC サービス**（JWT の `resources` を見て可否を返すだけ）を `seed-loreserver` 内に立てる必要がある。
+#### 権限サービスが話す gRPC（Lore v0.9.0 が呼ぶもの）
+
+| RPC | いつ呼ばれるか | 引数 | SEED の答え方 |
+|---|---|---|---|
+| `epic_urc.UrcAuthApi/CheckUserPermission` | `RepositoryGet` / `RepositoryQuery` / `RepositoryMetadataGet` / `RepositoryMetadataSet` | `resource_id = ["urc-<32桁hex>"]`、`target_user` なし、`authorization` メタデータに `Bearer <JWT>` | 台帳にその人の**有効な**権限があれば `allowed_resource_permission` に 1 件返す。無ければ `PERMISSION_DENIED` |
+| `epic_urc.UrcAuthApi/LookupUserPermissions` | `repository list` | `resource_filter = "urc"` | その人の有効な権限をすべて `urc-<id>` で返す |
+| `ucs.auth.RebacApi/CreateResource` | `RepositoryCreate` | `resource_id`、`resource_name`（リポジトリ名） | `repository_creators` に載っていれば許可し、**その人を owner として台帳へ登録**。載っていなければ `PERMISSION_DENIED` |
+| `ucs.auth.RebacApi/DeleteResource` | `RepositoryDelete` | `resource_id` | そのリポジトリの owner だけ許可（台帳は書き換えない） |
+
+- **判定の根拠は台帳（`accounts.json`）で、トークンの `resources` ではない。**
+  トークンから使うのは「誰か」（`sub`）だけ。だから**この表の操作については、
+  失効がトークンの期限を待たずに効く**（問い合わせが飛ばない操作は効かない。7 章）。
+- 接続は **平文 h2c**。`lore-server/src/authnz/auth.rs` と `rebac.rs` は
+  `auth_url.starts_with("https://")` のときだけ TLS を設定するので、`http://` なら証明書は要らない
+  （OS の証明書ストアに何も登録しなくてよい）。
+- **クライアントはこの URL へ接続しない。** エディタと CLI はトークンを供給しているので
+  トークン交換を短絡する（`lore-transport/src/auth/exchange.rs` の `exchange()` 冒頭、
+  `lore-credential/src/token_store.rs:606`）。`127.0.0.1` を書いても他の PC の参加者は困らない。
+- 利用者に見える文言（実測）:
+  リポジトリを引く操作の拒否は **`Not found`**（Lore が `RepositoryNotFound` へ畳むので
+  **リポジトリの存在は漏れない**）。`repository create` の拒否は
+  **`Not authorized to access repository`（rc 7）**。
+  どちらも理由の詳細はサーバのログにだけ残る。
 
 根拠（Lore v0.9.0 のソース）:
 `lore-server/src/grpc/repository/v1/repository_get.rs` の `repository_load_name` / `repository_load_id` が
 `if let Some(auth_url)` のときだけ `check_repository_query_authorization` を呼び、
 `lore-server/src/authnz/repository_authorizer.rs` がその URL へ gRPC 接続する。
-失敗はすべて `RepositoryNotFound` に畳まれる。
+`lore-server/src/grpc/repository/v1/repository_create.rs:293` が **同じ URL** の
+`ucs.auth.RebacApi/CreateResource` を呼ぶ。
 クライアント側は `lore-transport/src/connection.rs` の `if !auth_url.is_empty()` で交換の有無を決める。
 **`RepositoryService` は JWT の `resources` を一切見ない**（`JWTAuthnInterceptor` は署名とクレームだけ検証）ので、
-トークンに権限やワイルドカード `urc-*` を足しても直らない。
+可否はすべて権限サービスの答えで決まる。
 
 ## 6. エディタ側
 
@@ -202,12 +254,19 @@ gRPC サービス**（JWT の `resources` を見て可否を返すだけ）を `
 
 ## 7. 既知の制約
 
-- 平文 HTTP。LAN 内の信頼が前提（チャレンジ署名は再利用できないが、発行済みトークンは盗聴され得る）。LAN の外へ出すなら TLS を前段に置く。
-- Lore v0.9.0 では、有効なトークンがあれば誰でもリポジトリの作成と一覧ができる（中身は参加者だけ）。
-- 期限切れと権限なしを Lore の応答から区別できない（どちらも「Not authorized」）。エディタは `exp` を見て先回りで更新する。
-- **`auth_url` を設定している間は、新規リポジトリの作成も参加者のクローンもできない**（上記「`auth_url` の二律背反」）。
-  逆に外している間は「最新を取得」が通らない。**現状これが最大の未解決点で、
-  `CheckUserPermission` を話す gRPC サービスを自前で立てるまで解消しない。**
+- 平文 HTTP／平文 h2c。LAN 内の信頼が前提（チャレンジ署名は再利用できないが、発行済みトークンは盗聴され得る）。LAN の外へ出すなら TLS を前段に置く。
+- **失効が即座に効く範囲は「サーバへ問い合わせが飛ぶ操作」まで**（実測）。
+  効くもの: クローン、リポジトリの作成・削除、`repository list`、メタデータを手元に持っていない送信、
+  および発行窓口の操作（招待・一覧・失効・ログイン）。
+  効かないもの: **既に接続していてメタデータを持っているクライアントの送信**、ロックの取得・照会・解放、「最新を取得」。
+  これらは Lore 側がトークンの `resources` だけを見るため、**そのトークンの期限（`token_ttl_hours`）までは通る**。
+  急いで締め出したいときは `token_ttl_hours` を短くするか、サーバを再起動して接続を切ること。
+- 新しいリポジトリを作った直後は、**手元のトークンにそのリポジトリが載っていない**。
+  招待の発行・参加者一覧・失効はトークンの `resources` を見るので、
+  管理するにはログインし直す（トークンを取り直す）必要がある。
+- `repository_creators` は名前の一覧なので、**同じ名前のアカウントを別サーバから持ち込めるわけではない**
+  （名前はサーバ内で一意・鍵とひも付く）。
+- 期限切れと権限なしを Lore の応答から区別できない（どちらも「Not authorized」か「Not found」）。エディタは `exp` を見て先回りで更新する。
 - **サーバの強制終了でリポジトリ名 → ID の対応とブランチの先端が失われる**（上記「有効化の順番」）。
 - owner の権限は失効できない（自分自身を含む）。オーナーの交代・追加は未対応。
 - `lore lock query --path <path>` は Lore 側が未対応の組合せ（`Hash + Repository`）。

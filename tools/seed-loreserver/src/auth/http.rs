@@ -42,6 +42,9 @@ use serde::Serialize;
 use tracing::info;
 use tracing::warn;
 
+// 現在時刻の取得は発行窓口と権限サービスの両方で使うので、
+// `auth/mod.rs` に 1 つだけ置いてある。
+use super::now_ms;
 use super::challenge::CHALLENGE_ID_MAX_CHARS;
 use super::challenge::ChallengeIssueError;
 use super::challenge::ChallengeTable;
@@ -812,16 +815,6 @@ fn parse_role(role: Option<&str>) -> Result<Role, ApiError> {
     }
 }
 
-/// 現在時刻（UNIX epoch ミリ秒）。
-///
-/// 時計が 1970 年より前を指している環境は想定しない
-/// （そうなっていたらトークンの期限計算がすべて壊れるので、0 で潰す）。
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 // =============================================================================
 // 単体テスト

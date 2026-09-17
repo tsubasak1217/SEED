@@ -11,6 +11,7 @@ upstream の `loreserver` バイナリをそのまま使わず自前でビルド
 | `seed_file_lock_store` | `LockStore` プラグイン | upstream の `[lock_store] mode = "local"` はプロセス内メモリ（`DashMap`）なので、サーバを再起動するとロックが全部消える。JSON ファイルへ永続化する |
 | `seed_push_guard` | `BranchPush` フック | push の内容をログに残し、設定フラグで push を拒否できるようにする。将来の「ロック中ファイルを含む push の拒否」の土台 |
 | `seed_auth`（発行窓口） | 別スレッドの HTTP サーバ | SEED アカウント（参加者の登録・招待・ログイン）を管理し、Lore が受け取れる短寿命の JWT を発行する。`src/auth/` |
+| `seed_auth`（権限サービス） | 別スレッドの gRPC サーバ | Lore 本体が `[environment.endpoint] auth_url` へ投げる権限の問い合わせ（`epic_urc.UrcAuthApi` / `ucs.auth.RebacApi`）に答える。これが無いと **auth_url を設定した時点で clone と `repository create` が「Not found」で落ちる**。`src/auth/permission/` |
 
 それ以外は upstream のまま。将来 Epic の公式強制ロック（successor-locks LEP）が入ったら、ここの自作分を削って乗り換えられるよう薄く保つこと。
 
@@ -24,7 +25,10 @@ cargo build --release    # リリース
 
 - 初回はワークスペース全体（500 crate 超）をコンパイルするので **10〜30 分** かかる。
 - メモリが厳しい環境では並列数を落とす: `CARGO_BUILD_JOBS=2 cargo build`（それでも落ちるなら `1`）。
-- `protoc` は不要。`lore-server/build.rs` は `protoc` が PATH に無ければ、crate 内の生成済みソース（`src/legacy/generated/`）へフォールバックする。
+- **`protoc` をシステムへ入れる必要は無い。** 本 crate の `build.rs` は
+  `protoc-bin-vendored`（ビルド依存）が同梱する実行ファイルを使って `proto/*.proto` から
+  権限サービスのサーバ側スタブを生成する。upstream の `lore-server/build.rs` は
+  `protoc` が PATH に無ければ crate 内の生成済みソース（`src/legacy/generated/`）へフォールバックする。
 
 ### ビルド設定で注意が必要な 4 点
 
@@ -134,15 +138,29 @@ mode = "seed_file_lock_store"
         message: "seed_push_guard: push rejected because reject_all = true in [hooks.seed_push_guard]"
 ```
 
-## 発行窓口（SEED アカウント）
+## 発行窓口と権限サービス（SEED アカウント）
 
-参加者の登録・招待・チャレンジ応答ログイン・JWT 発行を行う小さな HTTP サーバ。
-**取り決めの正典は `docs/seed_accounts.md`**（鍵と署名の形式、HTTP API、トークンの中身）。
-実装は `src/auth/`（`config` / `model` / `store` / `issuer` / `token` / `user_key` / `challenge` / `crypto` / `atomic_file` / `http`）。
+参加者の登録・招待・チャレンジ応答ログイン・JWT 発行を行う小さな HTTP サーバ（**発行窓口**、既定 41350）と、
+Lore 本体からの権限の問い合わせに答える gRPC サーバ（**権限サービス**、既定 41352）。
+**取り決めの正典は `docs/seed_accounts.md`**（鍵と署名の形式、HTTP API、トークンの中身、権限サービスが話す RPC）。
+
+実装は `src/auth/`。
+
+| ファイル | 役目 |
+| --- | --- |
+| `config` / `model` / `store` / `issuer` / `token` / `user_key` / `challenge` / `crypto` / `atomic_file` / `http` | 発行窓口 |
+| `permission/mod.rs` | 権限サービスの起動（別スレッド＋別ランタイム＋別ポート） |
+| `permission/proto.rs` | `build.rs` が生成した gRPC スタブの取り込み |
+| `permission/decision.rs` | **判定そのもの**（gRPC に依存しない。単体テストはここ） |
+| `permission/urc_auth.rs` | `epic_urc.UrcAuthApi` の実装（翻訳だけ） |
+| `permission/rebac.rs` | `ucs.auth.RebacApi` の実装（翻訳だけ） |
+
+権限サービスは**発行窓口と同じ `AccountStore` の実体**を見る。だから招待・失効が判定へ即座に反映される。
+判定に使うのはトークンの `sub`（誰か）だけで、`resources` は見ない。
 
 ### 起動
 
-`main()` が `server_main()` を呼ぶ**前に** `auth::start()` を呼ぶ。理由は 2 つ。
+`main()` が `server_main()` を呼ぶ**前に** `auth::start()` を呼ぶ（発行窓口と権限サービスの両方を起動する）。理由は 2 つ。
 
 1. `server_main()` は同期関数で、内部で tokio ランタイムを作って呼び出しスレッドをブロックする。
    非同期タスクの内側から呼ぶと panic するので、窓口は先に別スレッド＋別ランタイムで起動しておく。
@@ -161,13 +179,18 @@ mode = "seed_file_lock_store"
 
 | キー | 型 | 既定 | 意味 |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | 窓口を起動するか |
-| `host` | string | `127.0.0.1` | 待ち受けアドレス。チームが繋ぐなら `0.0.0.0` |
-| `port` | u16 | `41350` | 待ち受けポート |
+| `enabled` | bool | `false` | 窓口と権限サービスを起動するか |
+| `host` | string | `127.0.0.1` | 待ち受けアドレス（両方に効く）。チームが繋ぐなら `0.0.0.0` |
+| `port` | u16 | `41350` | 発行窓口（HTTP）の待ち受けポート |
+| `permission_port` | u16 | `41352` | 権限サービス（gRPC）の待ち受けポート。`port` と同じ値なら起動を止める |
+| `repository_creators` | 文字列配列 | `[]` | 新しいリポジトリを作ってよいアカウント名。**既定は空 ＝ 認証が有効な間は誰も作れない。** 照合は ASCII の大文字小文字を無視。規則に反する名前を書くと起動を止める |
 | `data_dir` | string | （必須） | データファイルの置き場。`enabled = true` なら省略不可 |
 | `issuer` | string | `seed-auth` | JWT の `iss`。`[server.auth] jwt_issuer` と一致させる |
 | `audience` | string | `seed-lore` | JWT の `aud`。`[server.auth] jwt_audience` と一致させる |
 | `token_ttl_hours` | u64 | `8` | トークンの有効期間（1〜24） |
+
+`[environment.endpoint] auth_url` は **`http://<host>:<permission_port>`** を書く
+（`host` が `0.0.0.0` なら `127.0.0.1` で自分を指す）。`https://` で始めなければ TLS は使われない。
 
 読み込み規則は Lore 本体とまったく同じ（`--config <DIR>` / `LORE_CONFIG_PATH`、
 `--env <ENV>` / `LORE_ENV`、`default.toml` → `<env>.toml` → `<env>_<region>.toml` → `local.toml` → `LORE__*`）。
@@ -200,21 +223,31 @@ ES256 も実装してあり、Lore v0.9.0 はどちらも受理する（JWK の 
 2. エディタ（またはループバックからの `POST /v1/bootstrap`）でオーナーを登録する。
    `repository_id` は `.lore/id`（生 16 バイト）を 32 桁の 16 進小文字にしたもの。
    **`.lore/id` はリポジトリを作らないと存在しない**ので、リポジトリ作成が先。
-3. `[server.auth]` / `[server.auth.jwk]` を足して再起動する。
-   `[environment.endpoint] auth_url` は**操作によって付け外しする**（下の落とし穴表）。
+3. `[server.auth]` / `[server.auth.jwk]` / `[environment.endpoint] auth_url` を足して再起動する。
 4. 以後、すべての操作にトークンが要る。
+
+**再起動はこの 1 回だけ。** `auth_url` を権限サービスへ向けてあれば、
+clone・push・pull・ロック・新しいリポジトリの作成がこの 1 つの設定で通る。
+2 つめ以降のリポジトリは、`repository_creators` に載っている人が作れば
+**その人が自動で owner になる**ので、手順 1〜2 をやり直さなくてよい。
 
 > **止めるときは Ctrl+C。** 強制終了すると mutable ストアの遅延書き出しが間に合わず、
 > リポジトリ名 → ID の対応とブランチの先端が失われる（落とし穴表の最終行）。
 
 ### 運用上の注意
 
-- **平文 HTTP。** LAN 内の信頼が前提。チャレンジ署名は再利用できないが、発行済みトークンは盗聴され得る。
+- **平文 HTTP／平文 h2c。** LAN 内の信頼が前提。チャレンジ署名は再利用できないが、発行済みトークンは盗聴され得る。
   LAN の外へ出すなら TLS を前段に置くこと。
-- **失効は即座には効かない。** 失効した参加者は新しいトークンを取れないが、
-  発行済みトークンは `token_ttl_hours` まで有効（Lore に失効の仕組みが無い）。
-  窓口側の操作（招待発行・一覧・失効）は `accounts.json` を毎回見るので即座に効く。
+- **失効が効く範囲（実測）。** 権限サービスと発行窓口は `accounts.json` を毎回見るので、
+  そこを通る操作（**クローン・リポジトリの作成／削除・`repository list`・
+  メタデータを手元に持っていない送信**・招待・一覧・失効・ログイン）は**即座に**拒否される。
+  一方、**既に接続していてメタデータを持っているクライアントの送信**、ロックの取得・照会・解放、
+  「最新を取得」は Lore 側が**トークンの `resources`** だけを見るため、
+  そのトークンの期限（`token_ttl_hours`）までは通ってしまう。
 - **認証は全部か無か。** `[server.auth]` を有効にすると匿名アクセスは一切できなくなる。
+- **`repository_creators` は既定で空**（誰も新しいリポジトリを作れない）。
+  オーナーの名前を書き忘れると、認証を有効にした瞬間から `repository create` が
+  `permission denied` で落ちる。
 - `/v1/bootstrap` はループバック接続からのみ受け付ける（招待も認証も無しにオーナーになれるため）。
 - 招待コードの平文・秘密鍵・トークンはログに出していない。出さないこと。
 
@@ -223,8 +256,10 @@ ES256 も実装してあり、Lore v0.9.0 はどちらも受理する（JWK の 
 | 事象 | 原因 | 対処 |
 | --- | --- | --- |
 | `--access-token` だけでは `repository create` / `clone` が「authorization header required」で落ちる | `auth_exchange_for_identity`（`lore-transport/src/auth/exchange.rs:537`）は `repository.is_zero()` のとき authorization token を空にする。リポジトリ ID が確定していない呼び出しでは access token が使われない | **`--identity-token` と `--access-token` の両方に同じ JWT を渡す**（`--identity` は渡さない。トークンが identity を名乗るので排他エラーになる） |
-| `pull` / `sync` が「Not authorized to access repository」で落ちる | QUIC のストレージセッション（`lore-transport/src/quic/storage_service/client.rs` の `session_start`）は、サーバから受け取った environment の `auth_url` が空だとトークンを載せない（判定は `lore-transport/src/connection.rs` の `if !auth_url.is_empty()`） | サーバ設定に `[environment.endpoint] auth_url = "<空でない任意の値>"` を足す。クライアントは供給されたトークンで交換を短絡するので、その URL へ接続しにはいかない |
-| **`auth_url` を設定すると `clone` が「Not found」（rc 13）で落ちる。`repository create` と `push` も落ちる** | `lore-server/src/grpc/repository/v1/repository_get.rs` の `repository_load_name` / `repository_load_id` が `auth_url` があるときだけ `check_repository_query_authorization` を呼び、`lore-server/src/authnz/repository_authorizer.rs` がその URL の gRPC `epic_urc.UrcAuthApi/CheckUserPermission` へ接続する。SEED はそのサービスを持たないので必ず失敗し、失敗は `RepositoryNotFound` に畳まれる。`push` は `lore-revision/src/branch/push.rs` の「loading repository metadata hash」で同じ `RepositoryGet` を呼ぶ | **`clone` / `repository create` をする間だけ `[environment.endpoint]` を外して起動する**。根本解決は `CheckUserPermission` を話す gRPC サービスを自前で立てること。**`pull` と両立する設定は存在しない**（`docs/seed_accounts.md`「`auth_url` の二律背反」） |
+| `pull` / `sync` が「Not authorized to access repository」で落ちる | QUIC のストレージセッション（`lore-transport/src/quic/storage_service/client.rs` の `session_start`）は、サーバから受け取った environment の `auth_url` が空だとトークンを載せない（判定は `lore-transport/src/connection.rs` の `if !auth_url.is_empty()`） | サーバ設定に `[environment.endpoint] auth_url = "http://<host>:<permission_port>"` を足す。クライアントは供給されたトークンで交換を短絡するので、その URL へ接続しにはいかない |
+| **`auth_url` を設定すると `clone` が「Not found」（rc 13）で落ち、`repository create` も落ちる**（**解消済み**。権限サービスを止める／`auth_url` を別の場所へ向けると再発する） | `lore-server/src/grpc/repository/v1/repository_get.rs` の `repository_load_name` / `repository_load_id` が `auth_url` があるときだけ `check_repository_query_authorization` を呼び、`lore-server/src/authnz/repository_authorizer.rs` がその URL の gRPC `epic_urc.UrcAuthApi/CheckUserPermission` へ接続する。`repository create` は `repository_create.rs:293` で同じ URL の `ucs.auth.RebacApi/CreateResource` を呼ぶ。応答する相手が居ないと必ず失敗し、失敗は `RepositoryNotFound` に畳まれる | **`auth_url` を `seed-loreserver` 自身の権限サービス（既定 `http://127.0.0.1:41352`）へ向ける。** `[seed_auth] enabled = true` なら自動で起動している。起動ログ `[seed_auth/permission] 権限サービスを起動します: http://…` を確認すること |
+| 認証を有効にしたら `repository create` が `permission denied` で落ちる | `[seed_auth] repository_creators` が空（既定）なので、権限サービスが誰にも作成を許していない | 作ってよい人の**アカウント名**を `repository_creators` に足して再起動する |
+| 新しく作ったリポジトリで招待が 403 `forbidden` になる | 窓口の招待・一覧・失効はトークンの `resources` を見る（契約 4 章）。作成直後の手元のトークンには、そのリポジトリがまだ載っていない | **ログインし直す**（トークンを取り直す）。取り直したトークンには owner として載っている |
 | **サーバを強制終了すると、次の起動からそのリポジトリを名前で引けなくなる** | ローカル mutable ストア（リポジトリ名 → ID の対応とブランチの先端が入る）は書き込みの `flush_delay_seconds` 秒後に別タスクでファイルへ落とす（`lore-storage/src/local/mutable_store.rs` の `flush_delayed`）。落ちる前に kill すると失われる。immutable 側は残るので「データはあるのにクローンだけできない」という分かりにくい壊れ方になる | Ctrl+C で止める。直前に push した場合は数秒待つ。結合テストは `AccountsServerFixture.StopProcess` で「mutable ストアのファイル数とサイズが落ち着くまで待つ」を実装している |
 | 期限切れと権限なしを区別できない | `JWTInterceptor` が理由を潰して `PermissionDenied` にする（`lore-server/src/auth/jwt_interceptor.rs:26`） | エディタが `exp` を見て先回りで更新する |
 | `lore lock query --path <path>` が「unsupported lock query combination」 | `Hash + Repository` の組合せ。upstream の `LocalLockStore` も `seed_file_lock_store` も未対応 | `lore lock status <path>` か `lore lock query --branch <name>` を使う |
@@ -356,6 +391,23 @@ Epic 公式の強制ロック（successor-locks LEP）が入ったら、`seed_pu
 | push フックのログ | `user="tsubasa"`、gRPC スパンも `user_id="tsubasa"` |
 | `accounts.json` / `jwks.json` | 招待コードの平文が残っていないこと、JWKS に `alg` と `kid` が入っていることを確認 |
 
+## 権限サービスの動作確認済みのこと（2026-09-18、`editor/tests/AccountsTests` の結合テストで自動確認）
+
+ポートは Lore 41357 / 41359、窓口 41361、**権限サービス 41362**（すべて 127.0.0.1）。
+`[environment.endpoint] auth_url = "http://127.0.0.1:41362"` を**付けっぱなし**の 1 設定で通した。
+
+| 確認項目 | 結果 |
+| --- | --- |
+| `auth_url` を書いたままのクローン（参加） | **通る**（以前は必ず `Not found`） |
+| `auth_url` を書いたままの送信 → 取得 | **通る**（以前は操作ごとに再起動が必要だった） |
+| `auth_url` を書いたままのロック取得・照会・解放 | 通る |
+| `repository_creators` に載っている人の `repository create` | **通る**。`bootstrap` 無しでその人が owner になり、取り直したトークンに載る |
+| `repository_creators` に載っていない人の `repository create` | 拒否（`rc=7: Not authorized to access repository`。サーバログに `Create resource in auth failed - permission denied`） |
+| 参加していないリポジトリのクローン | 拒否（`Not found`。存在を漏らさない） |
+| 失効した参加者のクローン（トークンは期限内・取り直していない） | **拒否**（失効が即座に効く） |
+| 失効した参加者の送信（**既に接続済み**・トークンは期限内） | **通ってしまう**（メタデータを手元に持っているので `RepositoryGet` を呼ばない。既知の制約） |
+| サーバのログにトークンが出ていないこと | 確認済み（`eyJ` で始まる文字列は 0 件） |
+
 `aws` / `consul` プラグインが `register_all_plugins()` で登録されている点は、config リファレンス（`docs/reference/lore-server-config.md` の「Reference plugins」節）の「neither is compiled into `loreserver`」という記述と食い違う。v0.9.0 のソースでは `lore-server/src/plugins/{aws,hashicorp}.rs` が存在し `register_all_plugins()` から呼ばれている。ドキュメントが古い可能性が高いので、`seed_` 接頭辞の名前規約は崩さないこと（衝突すると `register_*_plugin()` が panic する）。
 
 ## テスト
@@ -380,5 +432,13 @@ cargo test
 | `config.rs` | 引数の 2 形式、既定値、`data_dir` 必須、値の範囲、他の節が混ざった実ファイルから `[seed_auth]` だけ読めること |
 | `http.rs` | 長さ検証が文字数であること、役割の文字列変換、`StoreError` → HTTP ステータスの写像（**`CannotRevokeOwner` が 409 `owner_exists` になること**を含む）、ログイン失敗が区別できないこと |
 | `atomic_file.rs` | 親ディレクトリの作成・上書き・一時ファイルが残らないこと・書き込み失敗の検出 |
+| `permission/decision.rs` | トークンから名前が取れること、壊れた／方式違いの `authorization` がすべて同じ理由で拒否されること、参加していないリポジトリが拒否されること、**失効が即座に効くこと**、`urc-*` などの不正な `resource_id` が通らないこと、`repository_creators` の効き方（既定は誰も作れない・載っている人は owner になる・別人のリポジトリは奪えない・同じ人の作り直しは通る）、削除は owner だけ |
 
-サーバを実際に起動した状態での確認（`lore` CLI で repository create → push → ロック取得 → 再起動 → ロックが残っている）は手作業。手順は `config/local.example.toml` のコメントを参照。
+サーバを実際に起動した状態での確認は、**エディタ側の結合テスト**が自動で行う（下記）。
+`lore` CLI での手作業の手順は `config/local.example.toml` のコメントを参照。
+
+```powershell
+# 実サーバ × エディタの実クラス（Lore 41357 / 41359、窓口 41361、権限サービス 41362）
+$env:SEED_ACCOUNTS_TEST_SERVER = "1"
+dotnet run --project editor/tests/AccountsTests
+```

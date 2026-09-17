@@ -34,6 +34,7 @@ use super::model::Invite;
 use super::model::NameError;
 use super::model::PROJECT_NAME_MAX_CHARS;
 use super::model::Role;
+use super::model::normalize_name_for_uniqueness;
 use super::model::validate_name;
 use super::model::validate_repository_id;
 use super::user_key::PublicKeyError;
@@ -246,6 +247,111 @@ impl AccountStore {
     /// ログインの署名検証に使う公開鍵を取り出すために使う。
     pub fn find_account(&self, name: &str) -> Option<Account> {
         self.document.lock().find_account(name).cloned()
+    }
+
+    /// そのアカウントが指定リポジトリに持つ**有効な**権限の役割を返す。
+    ///
+    /// 権限サービス（`permission/`）が Lore からの
+    /// `CheckUserPermission` に答えるために使う。
+    /// **毎回この台帳を見るので、失効はトークンの期限を待たずに即座に効く。**
+    /// 名前の照合は他と同じく ASCII の大文字小文字を区別しない。
+    pub fn active_role(&self, name: &str, repository_id: &str) -> Option<Role> {
+        self.document
+            .lock()
+            .find_account(name)
+            .and_then(|account| account.find_grant(repository_id))
+            .filter(|grant| grant.is_active())
+            .map(|grant| grant.role)
+    }
+
+    /// そのアカウントが持つ**有効な**権限を全部返す（リポジトリ ID と役割の組）。
+    ///
+    /// 権限サービスが `LookupUserPermissions`（`repository list`）に答えるために使う。
+    pub fn active_grants(&self, name: &str) -> Vec<(String, Role)> {
+        self.document
+            .lock()
+            .find_account(name)
+            .map(|account| {
+                account
+                    .grants
+                    .iter()
+                    .filter(|grant| grant.is_active())
+                    .map(|grant| (grant.repository_id.clone(), grant.role))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 新しいリポジトリの作成者を、そのリポジトリの owner として台帳へ登録する。
+    ///
+    /// Lore は `RepositoryCreate` の途中で
+    /// `ucs.auth.RebacApi/CreateResource` を呼ぶ。そこで**リポジトリ ID が
+    /// 初めて確定する**ので、この瞬間に owner を記録してしまえば
+    /// ループバックからの `POST /v1/bootstrap` が要らなくなる。
+    ///
+    /// 前提と判定:
+    ///   - アカウントは既に存在していること（トークンを持っている＝ログイン済み）。
+    ///     居なければ `MemberNotFound`。
+    ///   - そのリポジトリに**別人の**有効な owner が既に居れば `OwnerExists`。
+    ///     （同じ ID を後から奪いに来る経路を塞ぐ。作成者自身なら作り直しなので通す。）
+    ///
+    /// 成功したら、そのアカウントの当該リポジトリの権限を owner／有効にする。
+    ///
+    /// # Errors
+    /// 入力の形式不正、アカウント不在、別人がオーナー、保存の失敗。
+    pub fn register_repository_owner(
+        &self,
+        name: &str,
+        repository_id: &str,
+        project_name: &str,
+        now_ms: u64,
+    ) -> Result<String, StoreError> {
+        validate_name(name).map_err(StoreError::InvalidName)?;
+        if !validate_repository_id(repository_id) {
+            return Err(StoreError::InvalidRepositoryId);
+        }
+        if project_name.chars().count() > PROJECT_NAME_MAX_CHARS {
+            return Err(StoreError::InvalidProjectName);
+        }
+
+        self.mutate_and_persist(|document| {
+            // 作成者のアカウントを先に確定させる（表示名は台帳のものを使う）。
+            let display_name = document
+                .find_account(name)
+                .map(|account| account.name.clone())
+                .ok_or(StoreError::MemberNotFound)?;
+
+            // 別人が既に owner なら拒否する。
+            let taken_by_other = document.accounts.iter().any(|account| {
+                account.is_active_owner_of(repository_id)
+                    && normalize_name_for_uniqueness(&account.name)
+                        != normalize_name_for_uniqueness(&display_name)
+            });
+            if taken_by_other {
+                return Err(StoreError::OwnerExists);
+            }
+
+            let account = document
+                .find_account_mut(&display_name)
+                .expect("直前に見つけたアカウントが消えている");
+
+            match account.find_grant_mut(repository_id) {
+                Some(grant) => {
+                    grant.role = Role::Owner;
+                    grant.status = GrantStatus::Active;
+                    grant.project_name = project_name.to_string();
+                }
+                None => account.grants.push(Grant {
+                    repository_id: repository_id.to_string(),
+                    project_name: project_name.to_string(),
+                    role: Role::Owner,
+                    status: GrantStatus::Active,
+                    added_at: now_ms,
+                }),
+            }
+
+            Ok(display_name)
+        })
     }
 
     /// 指定リポジトリの参加者一覧を返す（失効済みも含む）。

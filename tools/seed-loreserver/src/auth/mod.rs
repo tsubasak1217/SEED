@@ -43,6 +43,7 @@ mod crypto;
 mod http;
 mod issuer;
 mod model;
+mod permission;
 mod store;
 mod token;
 mod user_key;
@@ -58,6 +59,20 @@ use store::AccountStore;
 
 /// 起動時メッセージの接頭辞（設定ミスを見つけやすくするため統一する）。
 const LOG_PREFIX: &str = "[seed_auth]";
+
+/// 現在時刻（UNIX epoch ミリ秒）。
+///
+/// 発行窓口（`http.rs`）と権限サービス（`permission/`）の両方が使うので、
+/// 実装はここに 1 つだけ置く。
+///
+/// 時計が 1970 年より前を指している環境は想定しない
+/// （そうなっていたらトークンの期限計算がすべて壊れるので、0 で潰す）。
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// 窓口を起動する（`[seed_auth] enabled = true` のときだけ）。
 ///
@@ -85,12 +100,7 @@ pub fn start() -> Result<bool, String> {
         )
     })?;
 
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    let issuer_key = IssuerKey::load_or_create(&config.data_dir, now_ms)?;
+    let issuer_key = IssuerKey::load_or_create(&config.data_dir, now_ms())?;
     // JWKS は Lore 本体が起動時に読むので、ここで必ず書き終えておく。
     let jwks_path = issuer_key.write_jwks(&config.data_dir)?;
     let jwks_body = issuer_key.jwks_json()?;
@@ -131,6 +141,14 @@ pub fn start() -> Result<bool, String> {
         challenges: ChallengeTable::new(),
         jwks_body,
     });
+
+    // --- 権限サービス（Lore の auth_url の向き先）------------------------
+    // 発行窓口と**同じ状態**を渡す。台帳の実体が 1 つなので、
+    // 招待・失効が判定へ即座に効く。
+    // ここで失敗した場合もサーバ全体の起動を止める（理由は上と同じ。
+    // 権限サービスが居ないまま auth_url 付きで Lore を起動すると、
+    // リポジトリを引く操作がすべて「Not found」になる）。
+    permission::start(Arc::clone(&state))?;
 
     spawn_server_thread(listener, state, &config)?;
     Ok(true)

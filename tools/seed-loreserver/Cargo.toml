@@ -84,6 +84,36 @@ base64 = "0.22"
 #         features を絞って、Cargo.lock に新しい crate が増えないようにする。
 config = { version = "0.15", default-features = false, features = ["toml"] }
 
+# --- SEED 権限サービス (src/auth/permission/) ---------------------------
+# Lore 本体が `[environment.endpoint] auth_url` へ問い合わせる gRPC
+# (epic_urc.UrcAuthApi / ucs.auth.RebacApi) を SEED 側で実装するために使う。
+# **いずれも lore-server が既に依存している crate・同じメジャー系列**なので
+# Cargo.lock 上の版は動かない (tonic 0.14.6 / prost 0.14.3)。
+#
+# tonic: gRPC サーバ本体。lore のワークスペースと同じく default-features = false。
+#        必要なのは codegen (生成コードの型)・router / server (待ち受け) だけ。
+tonic = { version = "0.14", default-features = false, features = [
+    "codegen",
+    "router",
+    "server",
+] }
+# tonic-prost: 生成コードが使う prost コーデック (tonic 0.14 で本体から分離された)。
+tonic-prost = "0.14"
+# prost: proto メッセージの derive。
+prost = "0.14"
+# tokio-stream: 先に bind した TcpListener を tonic へ渡すためのラッパー。
+#               bind を呼び出しスレッドで済ませたいので serve(addr) は使わない
+#               (ポートが塞がっていることを起動時に検出するため)。tonic の依存でもある。
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[build-dependencies]
+# build.rs で proto からサーバ側スタブ (tonic の server trait) を生成する。
+# lore-proto の生成済みコードは **クライアントだけ**なので、サーバ側は自前で作る。
+tonic-prost-build = "0.14"
+# protoc をシステムへ入れずに済ませるための同梱バイナリ。
+# **利用者の PC に protoc を要求しない**ことがこの依存の目的。
+protoc-bin-vendored = "3"
+
 [dev-dependencies]
 # 一時ディレクトリ (ロックストアの単体テストで使用)
 tempfile = "3"

@@ -19,13 +19,24 @@
 //     リポジトリ作成 → 匿名で最初の送信 → A のアカウント作成 →
 //     `.lore/id` から repository_id → bootstrap → ログイン → 招待 →
 //     B のアカウント作成 → join → B ログイン
-//   第 2 段（`[server.auth]` を足して再起動）
-//     B がトークン付きでクローン → B が送信 → A が取得 → A がロック →
-//     B から見た保持者は「他の人」 → B の解放は失敗・A（owner）は成功 →
-//     匿名は拒否 → 参加者一覧 → B を失効 → B の再ログインが失敗
+//   第 2 段（`[server.auth]` と `[environment.endpoint]` を足して**1 回だけ**再起動）
+//     B がトークン付きでクローン → B が送信 → A が取得 →
+//     A が 2 つめのリポジトリを作る（作成者が自動で owner になる）→
+//     作成を許されていない B は作れない → 参加していない C は引けない →
+//     A がロック → B から見た保持者は「他の人」 → B の解放は失敗・A は成功 →
+//     匿名は拒否 → 参加者一覧 → B を失効 → 失効が即座に効く
+//
+//  【★ここが以前と決定的に違う点】
+//  以前は `[environment.endpoint] auth_url` を**操作ごとに付け外しして
+//  サーバを再起動**しないと、クローン・送信・取得のすべてを通せなかった。
+//  seed-loreserver が権限サービス（`epic_urc.UrcAuthApi` /
+//  `ucs.auth.RebacApi`）を持つようになったので、**auth_url を書きっぱなしの
+//  1 つの設定**で全部通る。このテストは「第 1 段 → 第 2 段の 1 回だけ再起動する」
+//  形になっており、途中で設定を書き換えない。
 //
 //  【本番環境を触らないための約束】
-//  ポートは Lore 41357 / 41359、窓口 41361（本番 41337 / 41339 / 41350 とは別）。
+//  ポートは Lore 41357 / 41359、窓口 41361、権限サービス 41362
+//  （本番 41337 / 41339 / 41350 / 41352 とは別）。
 //  アカウントの保管先は使い捨てフォルダ（%APPDATA% の本物には触れない）。
 //  止めるのは自分が起動したプロセスだけ。
 //
@@ -86,6 +97,12 @@ public static class ServerIntegrationTests
     private const string NAME_B = "bob-02";
 
     /// <summary>
+    /// 参加者 C の名前。**2 つめのリポジトリにだけ**参加させ、
+    /// 1 つめのリポジトリを引けないことを確かめるために使う。
+    /// </summary>
+    private const string NAME_C = "carol-03";
+
+    /// <summary>
     /// 全角英数字の名前（サーバに拒否されること）。
     /// 半角の `tsubasa` と見分けがつかない名前を作らせないための規則（契約 2 章）。
     /// </summary>
@@ -93,6 +110,18 @@ public static class ServerIntegrationTests
 
     /// <summary>サーバ上のリポジトリ（プロジェクト）名。</summary>
     private const string REPOSITORY_NAME = "SeedAccountsIT";
+
+    /// <summary>
+    /// **認証を有効にしたまま**作る 2 つめのリポジトリ名。
+    /// 以前はこれができず、`[environment.endpoint]` を外して再起動するしかなかった。
+    /// </summary>
+    private const string REPOSITORY_NAME_SECOND = "SeedAccountsIT2";
+
+    /// <summary>
+    /// B が作ろうとして拒否されるリポジトリ名
+    /// （`repository_creators` に載っていない人は作れない）。
+    /// </summary>
+    private const string REPOSITORY_NAME_DENIED = "SeedAccountsITDenied";
 
     /// <summary>プロジェクトファイルの拡張子（参加後にこれを探す）。</summary>
     private const string PROJECT_FILE_EXTENSION = ".seedproj";
@@ -112,6 +141,12 @@ public static class ServerIntegrationTests
     /// <summary>B が送信する内容（A 側で一致を確かめる）。</summary>
     private const string FROM_B_CONTENT = "bob が送った 1 行";
 
+    /// <summary>失効の直前に B が送るファイル（送信が通ることの確認用）。</summary>
+    private const string FROM_B_BEFORE_REVOKE_FILE = "assets/from_b_before_revoke.txt";
+
+    /// <summary>失効の直後に B が送ろうとするファイル（拒否されることの確認用）。</summary>
+    private const string FROM_B_AFTER_REVOKE_FILE = "assets/from_b_after_revoke.txt";
+
     /// <summary>リポジトリ作成時に使う identity（匿名段階なので誰でもよい）。</summary>
     private const string SETUP_IDENTITY = "seed-it-setup";
 
@@ -121,11 +156,29 @@ public static class ServerIntegrationTests
     /// <summary>B の作業コピー（クローン先）のフォルダ名。</summary>
     private const string DIR_NAME_B = "member_b";
 
+    /// <summary>A が 2 つめのリポジトリを作るフォルダ名。</summary>
+    private const string DIR_NAME_A_SECOND = "owner_a_second";
+
+    /// <summary>B が作成を拒否されるリポジトリのフォルダ名。</summary>
+    private const string DIR_NAME_B_DENIED = "member_b_denied";
+
+    /// <summary>C が 1 つめのリポジトリを引こうとするフォルダ名（失敗する）。</summary>
+    private const string DIR_NAME_C_DENIED = "outsider_c_denied";
+
+    /// <summary>失効した B がクローンを試みるフォルダ名（失敗する）。</summary>
+    private const string DIR_NAME_B_AFTER_REVOKE = "member_b_after_revoke";
+
     /// <summary>リポジトリ ID の文字数（32 桁の 16 進小文字）。</summary>
     private const int REPOSITORY_ID_HEX_LENGTH = 32;
 
-    /// <summary>参加者一覧に期待する人数（A と B）。</summary>
+    /// <summary>1 つめのリポジトリの参加者一覧に期待する人数（A と B）。</summary>
     private const int EXPECTED_MEMBER_COUNT = 2;
+
+    /// <summary>
+    /// 2 つめのリポジトリを作った直後の参加者数（作成者 A だけ）。
+    /// **`bootstrap` を踏んでいないのに owner が居る**ことがこの機能の要点。
+    /// </summary>
+    private const int EXPECTED_SECOND_MEMBER_COUNT = 1;
 
     /// <summary>秘密を出さずに「あるかどうか」を伝えるための最小長。</summary>
     private const int MIN_TOKEN_LENGTH = 16;
@@ -152,6 +205,12 @@ public static class ServerIntegrationTests
 
     /// <summary>B のアカウント（参加者）。</summary>
     private static SeedAccount? _accountB;
+
+    /// <summary>C のアカウント（2 つめのリポジトリにだけ参加する）。</summary>
+    private static SeedAccount? _accountC;
+
+    /// <summary>2 つめのリポジトリ ID（認証を有効にしたまま作ったもの）。</summary>
+    private static string _repositoryIdSecond = string.Empty;
 
     /// <summary>A のアカウント保管フォルダ。</summary>
     private static string _accountDirA = string.Empty;
@@ -189,15 +248,17 @@ public static class ServerIntegrationTests
         harness.Add("[結合1] 全角英数字の名前はサーバもエディタも拒否する", Stage1_FullWidthNameRejected);
         harness.Add("[結合1] 招待コード発行 → B が join → B ログイン", Stage1_InviteAndJoin);
 
-        // ── 第 2 段: [server.auth] を足して再起動 ──
+        // ── 第 2 段: [server.auth] と [environment.endpoint] を足して 1 回だけ再起動 ──
         harness.Add("[結合2] 認証を有効にして再起動 → 匿名のプロバイダは拒否される", Stage2_RestartAndRejectAnonymous);
-        harness.Add("[結合2] auth_url を書くとクローンが落ちる（既知の落とし穴）", Stage2_AuthUrlBreaksClone);
-        harness.Add("[結合2] B がトークン付きでクローンできる（ProjectJoinService）", Stage2_JoinWithTokenClone);
-        harness.Add("[結合2] B が送信 → A が最新を取得して内容が届く", Stage2_SubmitAndFetch);
+        harness.Add("[結合2] auth_url を書いたままクローンできる（ProjectJoinService）", Stage2_JoinWithTokenClone);
+        harness.Add("[結合2] auth_url を書いたまま B が送信 → A が最新を取得できる", Stage2_SubmitAndFetch);
+        harness.Add("[結合2] 作成を許された A は認証したまま新しいリポジトリを作れて owner になる", Stage2_CreateRepositoryWhileAuthenticated);
+        harness.Add("[結合2] 作成を許されていない B は新しいリポジトリを作れない", Stage2_NonCreatorCannotCreateRepository);
+        harness.Add("[結合2] 参加していないリポジトリはクローンも取得もできない", Stage2_NonMemberCannotAccess);
         harness.Add("[結合2] A がロック → B から見ると「他の人」", Stage2_LockHolderIsOtherForB);
         harness.Add("[結合2] B は解放できず、A（owner）は解放できる", Stage2_ReleaseOnlyByOwner);
         harness.Add("[結合2] 期限前にトークンを取り直しても操作が通る", Stage2_RefreshTokenKeepsWorking);
-        harness.Add("[結合2] 参加者一覧 → B を失効 → B の再ログインが失敗する", Stage2_MembersAndRevoke);
+        harness.Add("[結合2] 参加者一覧 → B を失効 → 失効が即座に効く", Stage2_MembersAndRevoke);
         harness.Add("[結合2] AccountService の自動ログインが実サーバで通る", Stage2_AccountServiceAutoSignIn);
         harness.Add("[結合2] 秘密がファイルへ残っていない（招待コード・トークン）", Stage2_NoSecretsOnDisk);
 
@@ -215,7 +276,9 @@ public static class ServerIntegrationTests
     /// </summary>
     private static void Stage1_SetUpAndFirstSubmit()
     {
-        _server = new AccountsServerFixture();
+        // ★A だけを `[seed_auth] repository_creators` に載せる。
+        //   認証を有効にしたまま新しいリポジトリを作れるのは、ここに載っている人だけ。
+        _server = new AccountsServerFixture(NAME_A);
 
         _dirA = _server.CreateWorkingCopyDir(DIR_NAME_A);
         _dirB = _server.ReserveWorkingCopyDir(DIR_NAME_B);
@@ -403,22 +466,21 @@ public static class ServerIntegrationTests
     // ══════════════════════════════════════════════════════════
 
     /// <summary>
-    /// `[server.auth]` / `[server.auth.jwk]` を足して再起動し、
-    /// **トークンを持たないプロバイダが拒否される**ことを確かめる。
+    /// `[server.auth]` / `[server.auth.jwk]` / `[environment.endpoint]` を足して
+    /// **1 回だけ**再起動し、**トークンを持たないプロバイダが拒否される**ことを確かめる。
     ///
     /// <para>
-    /// ここは**運用時の構成**（`[environment.endpoint] auth_url` あり）で起動する。
-    /// auth_url は push / pull に必須だが、**その状態ではクローンができない**
-    /// （<see cref="Stage2_AuthUrlBreaksClone"/> で固定してある）。
+    /// ここから先は**設定を一切書き換えない**。
+    /// `auth_url` は seed-loreserver 自身の権限サービス（既定 41352 / テストは 41362）を
+    /// 指しているので、クローンも作成も送信も取得もこの 1 つの設定で通る。
     /// </para>
     /// </summary>
     private static void Stage2_RestartAndRejectAnonymous()
     {
         var server = Require(_server);
 
-        server.RestartWithLoreAuth(includeAuthUrl: true);
+        server.RestartWithLoreAuth();
         Check.True(server.LoreAuthEnabled, "Lore 本体の認証が有効になっている");
-        Check.True(server.AuthUrlConfigured, "auth_url を書いている（運用時の構成）");
 
         // 匿名（トークンを配らない）プロバイダでサーバへ行く操作を試す。
         using var anonymous = NewProvider(_dirA, credentialProvider: null);
@@ -429,62 +491,15 @@ public static class ServerIntegrationTests
     }
 
     /// <summary>
-    /// **既知の落とし穴を固定する（契約 7 章）。**
-    /// `[environment.endpoint] auth_url` を書くと、トークンが正しくても
-    /// クローンが「Not found」で落ちる。
-    /// auth_url は push / pull に必須なので、**参加者がクローンする間だけ
-    /// `[environment.endpoint]` を外して起動し直す**しかない
-    /// （新規リポジトリ作成と同じ手順）。
-    ///
-    /// <para>
-    /// 理由（Lore v0.9.0 のソースで確認）:
-    /// `lore-server/src/grpc/repository/v1/repository_get.rs` の
-    /// `repository_load_name` は `auth_url` があるときだけ
-    /// `check_repository_query_authorization` を呼び、その中で
-    /// `auth_url` の gRPC `CheckUserPermission` へ問い合わせる
-    /// （`lore-server/src/authnz/repository_authorizer.rs`）。
-    /// SEED はその外部サービスを持たないので接続に失敗し、
-    /// 失敗はすべて `RepositoryNotFound` に畳まれる。
-    /// **トークンの `resources` は RepositoryService では一切見られない**
-    /// （`JWTAuthnInterceptor` は署名とクレームしか検証しない）ので、
-    /// 権限を足しても直らない。
-    /// </para>
-    /// </summary>
-    private static void Stage2_AuthUrlBreaksClone()
-    {
-        var server   = Require(_server);
-        var accountB = Require(_accountB);
-
-        Check.True(server.AuthUrlConfigured, "auth_url がある状態で試す");
-
-        using var sessions = SignIn(server, accountB);
-        var token = RequireToken(sessions);
-
-        var destination = server.ReserveWorkingCopyDir("auth_url_clone");
-        var result = new LoreNativeCloner().Clone(
-            new LoreCloneRequest(
-                AccountsServerFixture.RepositoryUrl(REPOSITORY_NAME),
-                destination,
-                new LoreAccountCredential(token, accountB.Name),
-                FallbackIdentity: string.Empty),
-            CancellationToken.None);
-
-        Check.True(!result.Succeeded,
-                   "auth_url を書くとクローンが落ちる（直ったら契約とドキュメントを見直すこと）");
-        Check.True(result.MessagesContain(LORE_NOT_FOUND_MARKER),
-                   $"落ち方は「Not found」（実際: {Join(result.Messages)}）");
-    }
-
-    /// <summary>
     /// **このテストの本命。** B が「プロジェクトに参加」の実クラス
     /// （<see cref="ProjectJoinService"/> ＋ <see cref="LoreNativeCloner"/>）で
     /// トークン付きのクローンを行える。
     ///
     /// <para>
-    /// ★クローンの間だけ `[environment.endpoint]` を外して起動し直す。
-    /// これは**運用手順そのもの**で、新規リポジトリ作成と同じ回避策
-    /// （<see cref="Stage2_AuthUrlBreaksClone"/> の理由）。
-    /// 終わったら必ず auth_url 付きへ戻す（戻さないと push / pull が通らない）。
+    /// ★**`[environment.endpoint] auth_url` を書いたまま**通ることが要点。
+    /// 以前はここでサーバを止めて auth_url を外し、終わったら戻す必要があった。
+    /// いまは Lore が auth_url（= seed-loreserver の権限サービス）へ
+    /// `CheckUserPermission` を尋ね、台帳に B の権限があるので許可される。
     /// </para>
     /// </summary>
     private static void Stage2_JoinWithTokenClone()
@@ -504,26 +519,16 @@ public static class ServerIntegrationTests
             ExpiresInHours = AccountSettings.Default.InviteExpiresInHours,
         }).GetAwaiter().GetResult();
 
-        JoinProjectResult result;
-        server.RestartWithLoreAuth(includeAuthUrl: false);
-        try
-        {
-            var request = new JoinProjectRequest(
-                AccountsServerFixture.HOST,
-                invite.InviteCode,
-                _dirB,
-                AuthPort: AccountsServerFixture.PORT_AUTH,
-                LorePort: AccountsServerFixture.PORT_QUIC_GRPC);
+        var request = new JoinProjectRequest(
+            AccountsServerFixture.HOST,
+            invite.InviteCode,
+            _dirB,
+            AuthPort: AccountsServerFixture.PORT_AUTH,
+            LorePort: AccountsServerFixture.PORT_QUIC_GRPC);
 
-            result = ProjectJoinService.JoinAsync(
-                request, accountB, new LoreNativeCloner(), PROJECT_FILE_EXTENSION)
-                .GetAwaiter().GetResult();
-        }
-        finally
-        {
-            // push / pull を通すために運用時の構成へ戻す。
-            server.RestartWithLoreAuth(includeAuthUrl: true);
-        }
+        var result = ProjectJoinService.JoinAsync(
+            request, accountB, new LoreNativeCloner(), PROJECT_FILE_EXTENSION)
+            .GetAwaiter().GetResult();
 
         Check.True(result.Success, $"参加とクローンが成功する（{result.Message}）");
         Check.Equal(REPOSITORY_NAME, result.ProjectName, "参加したプロジェクト名");
@@ -537,8 +542,14 @@ public static class ServerIntegrationTests
 
     /// <summary>
     /// B が変更を送信し、A が「最新を取得」して内容が届くこと。
-    /// どちらもトークン付き。**`[environment.endpoint] auth_url` が無いと pull は通らない**
-    /// （QUIC のストレージセッションがトークンを載せなくなるため。実測で確認）。
+    /// どちらもトークン付きで、**設定はそのまま**（再起動しない）。
+    ///
+    /// <para>
+    /// `[environment.endpoint] auth_url` は pull に必須（無いと QUIC の
+    /// ストレージセッションがトークンを載せない）。送信（push）は
+    /// `RepositoryGet` でメタデータを引くので権限サービスを通る。
+    /// **以前はこの 2 つが両立せず、ここで 2 回再起動していた。**
+    /// </para>
     /// </summary>
     private static void Stage2_SubmitAndFetch()
     {
@@ -560,20 +571,8 @@ public static class ServerIntegrationTests
 
         WriteFile(_dirB, FROM_B_FILE, FROM_B_CONTENT);
 
-        // ★送信（push）は `RepositoryGet` でリポジトリのメタデータを引くので、
-        //   auth_url がある間は通らない（下の [未解決] テストで固定してある）。
-        //   ここでは auth_url を外した状態で送る。
-        server.RestartWithLoreAuth(includeAuthUrl: false);
-        VersionControlResult<SubmitReport> submit;
-        try
-        {
-            submit = _providerB.SubmitAsync("B からの送信").GetAwaiter().GetResult();
-        }
-        finally
-        {
-            // 取得（pull）は逆に auth_url が無いと通らないので戻す。
-            server.RestartWithLoreAuth(includeAuthUrl: true);
-        }
+        // ★設定を触らずにそのまま送る（以前はここで 2 回再起動していた）。
+        var submit = _providerB.SubmitAsync("B からの送信").GetAwaiter().GetResult();
 
         Check.Equal(VersionControlOutcome.Success, submit.Outcome,
                     $"B の送信の結末（{submit.Message} / {Join(submit.Details)}）");
@@ -590,6 +589,150 @@ public static class ServerIntegrationTests
         Check.True(File.Exists(arrived), $"B のファイルが A に届いている（{arrived}）");
         Check.Equal(FROM_B_CONTENT, File.ReadAllText(arrived, Encoding.UTF8).TrimEnd('\r', '\n'),
                     "届いた内容");
+    }
+
+    /// <summary>
+    /// **この変更の 2 つめの要点。**
+    /// `repository_creators` に載っている A が、**認証を有効にしたまま**
+    /// 新しいリポジトリを作れて、そのまま owner になること。
+    ///
+    /// <para>
+    /// 以前は `[environment.endpoint]` を外して再起動しないと作成できず、
+    /// 作成後はループバックから `POST /v1/bootstrap` を叩いて owner を
+    /// 登録する必要があった。いまは `ucs.auth.RebacApi/CreateResource` の中で
+    /// 作成者を owner として台帳へ書くので、どちらも要らない。
+    /// </para>
+    ///
+    /// <para>
+    /// ★作った直後の**手元のトークンには新しいリポジトリが載っていない**。
+    /// 窓口の招待・一覧・失効はトークンの `resources` を見る（契約 4 章）ので、
+    /// 新しいリポジトリを管理するにはログインし直す必要がある。
+    /// ここではその取り直しまで含めて確かめる（<see cref="_sessionA"/> は
+    /// 他のテストと共有しているので触らず、使い捨てのセッションを作る）。
+    /// </para>
+    /// </summary>
+    private static void Stage2_CreateRepositoryWhileAuthenticated()
+    {
+        var server   = Require(_server);
+        var sessionA = Require(_sessionA);
+        var accountA = Require(_accountA);
+
+        Check.True(server.LoreAuthEnabled, "認証を有効にしたまま作れることを確かめる");
+
+        var dir = server.CreateWorkingCopyDir(DIR_NAME_A_SECOND);
+        var url = AccountsServerFixture.RepositoryUrl(REPOSITORY_NAME_SECOND);
+
+        // 作成の可否は `[seed_auth] repository_creators` だけで決まるので、
+        // 手元のトークン（1 つめのリポジトリしか載っていない）のままで作れる。
+        CreateRepositoryWithToken(dir, url, RequireToken(sessionA));
+
+        Check.True(VersionControlPaths.IsLoreWorkingCopy(dir), "2 つめが作業コピーになっている");
+
+        _repositoryIdSecond = VersionControlPaths.ReadRepositoryId(dir);
+        Check.Equal(REPOSITORY_ID_HEX_LENGTH, _repositoryIdSecond.Length,
+                    "2 つめの repository_id の文字数");
+        Check.True(!string.Equals(_repositoryIdSecond, _repositoryId, StringComparison.Ordinal),
+                   "1 つめとは別のリポジトリ ID");
+
+        // ★取り直したトークンに、2 つめのリポジトリが owner として載っていること。
+        //   これが載る＝ CreateResource の中で台帳へ owner を書けている証拠。
+        using var freshSessionA = SignIn(server, accountA);
+        Check.True(freshSessionA.CurrentSession!.IsOwnerOf(_repositoryIdSecond),
+                   "作成者が 2 つめのリポジトリの owner として載っている（bootstrap していない）");
+
+        // 窓口から見ても owner が 1 人（作成者）だけ居ること。
+        using var client = new AuthGatewayClient(server.AuthBaseAddress, AccountSettings.Default);
+        var members = client.GetMembersAsync(RequireToken(freshSessionA), _repositoryIdSecond)
+                            .GetAwaiter().GetResult();
+
+        Check.Equal(EXPECTED_SECOND_MEMBER_COUNT, members.Count, "2 つめの参加者の人数");
+        Check.Equal(NAME_A, members[0].Name, "2 つめの owner の名前");
+        Check.Equal(AccountSettings.ROLE_OWNER, members[0].Role, "2 つめの owner の役割");
+    }
+
+    /// <summary>
+    /// `repository_creators` に載っていない B は、新しいリポジトリを作れないこと。
+    /// 判定は `ucs.auth.RebacApi/CreateResource` が行い、
+    /// Lore 側は `PERMISSION_DENIED` を受けて作成を中止する。
+    /// </summary>
+    private static void Stage2_NonCreatorCannotCreateRepository()
+    {
+        var server   = Require(_server);
+        var accountB = Require(_accountB);
+
+        using var sessions = SignIn(server, accountB);
+
+        var dir = server.CreateWorkingCopyDir(DIR_NAME_B_DENIED);
+        var url = AccountsServerFixture.RepositoryUrl(REPOSITORY_NAME_DENIED);
+
+        var error = CatchLoreError(
+            () => CreateRepositoryWithToken(dir, url, RequireToken(sessions)));
+
+        Check.True(error.Length > 0,
+                   "作成を許されていない人の repository create が失敗する");
+        Console.WriteLine($"  B の作成が拒否された理由: {error}");
+    }
+
+    /// <summary>
+    /// **参加していないリポジトリは触れないこと。**
+    /// C は 2 つめのリポジトリにだけ参加しているので、
+    /// 1 つめのリポジトリはクローンできない（`CheckUserPermission` が拒否 →
+    /// Lore 側で `RepositoryNotFound` へ畳まれて「Not found」になる）。
+    ///
+    /// <para>
+    /// C が 2 つめへ参加できること自体が、
+    /// 「自動登録された owner が本当に owner として振る舞える
+    /// （＝招待を発行できる）」ことの確認にもなっている。
+    /// </para>
+    /// </summary>
+    private static void Stage2_NonMemberCannotAccess()
+    {
+        var server   = Require(_server);
+        var accountA = Require(_accountA);
+        RequireText(_repositoryIdSecond, "2 つめの repository_id");
+
+        using var client = new AuthGatewayClient(server.AuthBaseAddress, AccountSettings.Default);
+
+        // 招待には「2 つめの owner」として載ったトークンが要るので、
+        // 共有している _sessionA は触らず、使い捨てのセッションでログインし直す。
+        using var ownerOfSecond = SignIn(server, accountA);
+
+        // A（2 つめの owner）が C を 2 つめへ招待する。
+        var invite = client.CreateInviteAsync(RequireToken(ownerOfSecond), new AuthInviteRequest
+        {
+            RepositoryId   = _repositoryIdSecond,
+            Role           = AccountSettings.ROLE_MEMBER,
+            ExpiresInHours = AccountSettings.Default.InviteExpiresInHours,
+        }).GetAwaiter().GetResult();
+
+        _accountC = CreateAndPersistAccount(NAME_C, TestPaths.NewDirectory("account_c"));
+
+        var join = client.JoinAsync(new AuthJoinRequest
+        {
+            InviteCode = invite.InviteCode,
+            Name       = _accountC.Name,
+            PublicKey  = _accountC.PublicKeyBase64Url,
+        }).GetAwaiter().GetResult();
+
+        Check.Equal(_repositoryIdSecond, join.RepositoryId, "C が参加したのは 2 つめ");
+
+        using var sessionC = SignIn(server, _accountC);
+        var tokenC = RequireToken(sessionC);
+
+        // ★1 つめのリポジトリはクローンできない。
+        var destination = server.ReserveWorkingCopyDir(DIR_NAME_C_DENIED);
+        var result = new LoreNativeCloner().Clone(
+            new LoreCloneRequest(
+                AccountsServerFixture.RepositoryUrl(REPOSITORY_NAME),
+                destination,
+                new LoreAccountCredential(tokenC, _accountC.Name),
+                FallbackIdentity: string.Empty),
+            CancellationToken.None);
+
+        Check.True(!result.Succeeded,
+                   "参加していないリポジトリはクローンできない");
+        Check.True(result.MessagesContain(LORE_NOT_FOUND_MARKER),
+                   $"落ち方は「Not found」＝存在を漏らさない（実際: {Join(result.Messages)}）");
     }
 
     /// <summary>
@@ -686,12 +829,24 @@ public static class ServerIntegrationTests
     /// <summary>
     /// 参加者一覧に B が出ること、失効させると B が新しいトークンを取れなくなること、
     /// owner の権限は失効できないこと（契約 3 章）。
+    ///
+    /// <para>
+    /// ★あわせて**失効がどこまで即座に効くか**を実測する。
+    /// 権限サービスは毎回 `accounts.json` を見るので、
+    /// そこを通る操作（送信 ＝ `RepositoryGet`、クローン）は
+    /// **発行済みトークンが期限内でも失効した時点で拒否**される。
+    /// 一方、ロックの照会や取得（`LockService`）と取得（QUIC のストレージ
+    /// セッション）は、Lore 側が**トークンに載っている `resources`** だけを見るので、
+    /// そのトークンの期限が切れるまでは通ってしまう。
+    /// この差はここで固定しておく（契約 7 章に書いてある制約の根拠）。
+    /// </para>
     /// </summary>
     private static void Stage2_MembersAndRevoke()
     {
-        var server   = Require(_server);
-        var sessionA = Require(_sessionA);
-        var accountB = Require(_accountB);
+        var server    = Require(_server);
+        var sessionA  = Require(_sessionA);
+        var accountB  = Require(_accountB);
+        var providerB = Require(_providerB);
 
         var tokenA = RequireToken(sessionA);
         using var client = new AuthGatewayClient(server.AuthBaseAddress, AccountSettings.Default);
@@ -712,6 +867,15 @@ public static class ServerIntegrationTests
         Check.Equal(AuthErrorCodes.OWNER_EXISTS, ownerRevoke.ErrorCode,
                     "owner を失効させようとしたときのエラーコード");
 
+        // 失効の直前に、B の**期限内の**トークンで送信が通ることを確かめておく
+        // （このあと同じトークンでどう変わるかを見るための基準）。
+        WriteFile(_dirB, FROM_B_BEFORE_REVOKE_FILE, FROM_B_CONTENT);
+        var beforeRevoke = providerB.SubmitAsync("失効前の送信").GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, beforeRevoke.Outcome,
+                    $"失効前は B が送信できる（{beforeRevoke.Message} / {Join(beforeRevoke.Details)}）");
+
+        var tokenBBeforeRevoke = RequireToken(Require(_sessionB));
+
         // B を失効させる。
         var revoke = client.RevokeMemberAsync(tokenA,
             new AuthRevokeRequest { RepositoryId = _repositoryId, Name = NAME_B })
@@ -719,7 +883,37 @@ public static class ServerIntegrationTests
         Check.Equal(NAME_B, revoke.Name, "失効させた名前");
         Check.Equal(AccountSettings.MEMBER_STATUS_REVOKED, revoke.Status, "失効後の状態");
 
-        // 失効した参加者は新しいトークンを取れない（発行済みは期限まで有効＝契約 7 章）。
+        // ★ここが「失効が即座に効く」ことの確認。
+        //   クローンはサーバの `RepositoryGet` を必ず通り、そこで権限サービスへ
+        //   問い合わせが飛ぶ。台帳を毎回見るので、**トークンを取り直していなくても**
+        //   失効した瞬間から拒否される。
+        var reclone = new LoreNativeCloner().Clone(
+            new LoreCloneRequest(
+                AccountsServerFixture.RepositoryUrl(REPOSITORY_NAME),
+                server.ReserveWorkingCopyDir(DIR_NAME_B_AFTER_REVOKE),
+                new LoreAccountCredential(tokenBBeforeRevoke, NAME_B),
+                FallbackIdentity: string.Empty),
+            CancellationToken.None);
+        Check.True(!reclone.Succeeded,
+                   "失効した参加者は、手元のトークンが期限内でもクローンできない"
+                   + $"（実際: {Join(reclone.Messages)}）");
+
+        // ★一方、**既に繋がっているクライアントの送信**は通ってしまう（実測）。
+        //   push はリポジトリのメタデータを手元に持っていれば `RepositoryGet` を
+        //   呼ばないため、権限サービスに問い合わせが飛ばない。
+        //   ロックの照会・取得と「最新を取得」も同様に、Lore 側は
+        //   **トークンに載っている `resources`** だけを見る。
+        //   つまり失効が効くのは「サーバへ問い合わせが飛ぶ操作」で、
+        //   それ以外は発行済みトークンの期限（token_ttl_hours）まで残る。
+        //   ここは結果を記録するだけにして、失敗にはしない
+        //   （契約 `docs/seed_accounts.md` 7 章の既知の制約）。
+        WriteFile(_dirB, FROM_B_AFTER_REVOKE_FILE, FROM_B_CONTENT);
+        var afterRevoke = providerB.SubmitAsync("失効後の送信").GetAwaiter().GetResult();
+        Console.WriteLine(
+            "  [実測] 失効直後・トークンは取り直さずに送信した結果: "
+            + $"{afterRevoke.Outcome}（{afterRevoke.Message}）");
+
+        // 失効した参加者は新しいトークンを取れない。
         var challenge = client.StartLoginAsync(NAME_B).GetAwaiter().GetResult();
         var signature = accountB.SignLoginChallenge(challenge.ChallengeId, challenge.Nonce);
         var failure   = CatchGatewayError(
@@ -820,6 +1014,7 @@ public static class ServerIntegrationTests
         SafeDispose(_sessionB);  _sessionB  = null;
         SafeDispose(_accountA);  _accountA  = null;
         SafeDispose(_accountB);  _accountB  = null;
+        SafeDispose(_accountC);  _accountC  = null;
 
         SafeDispose(_server);
         _server = null;
@@ -918,6 +1113,58 @@ public static class ServerIntegrationTests
                 $"リポジトリを作成できませんでした（rc={error.ReturnCode}）: "
                 + string.Join(" | ", error.Messages ?? Array.Empty<string>()));
         }
+    }
+
+    /// <summary>
+    /// 認証を有効にしたサーバに対して、トークン付きでリポジトリを新規作成する。
+    /// </summary>
+    /// <remarks>
+    /// 契約 6 章のとおり <c>IdentityToken</c> と <c>AccessToken</c> の両方に
+    /// 同じ JWT を入れ、<c>Identity</c> は空にする。
+    /// <c>AccessToken</c> だけだと、リポジトリ ID が確定していない
+    /// <c>repository create</c> では Authorization ヘッダが空になってしまう。
+    /// </remarks>
+    /// <param name="dir">作業コピーにするフォルダ。</param>
+    /// <param name="url">リポジトリ URL。</param>
+    /// <param name="token">アクセストークン（JWT）。</param>
+    private static void CreateRepositoryWithToken(string dir, string url, string token)
+    {
+        using var globalArgs = new LoreGlobalArgs
+        {
+            RepositoryPath   = dir,
+            WorkingDirectory = dir,
+            IdentityToken    = token,
+            AccessToken      = token,
+        };
+        using var args = new LoreRepositoryCreateArgs { RepositoryUrl = url };
+
+        LoreApi.RepositoryCreate(globalArgs, args).Wait();
+    }
+
+    /// <summary>
+    /// Lore の呼び出しが失敗することを期待し、その説明を 1 行で返す。
+    /// 成功してしまったらテストを落とす。
+    /// </summary>
+    /// <param name="action">失敗するはずの呼び出し。</param>
+    private static string CatchLoreError(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (LoreError error)
+        {
+            return $"rc={error.ReturnCode}: "
+                   + string.Join(" | ", error.Messages ?? Array.Empty<string>());
+        }
+        catch (AggregateException aggregate)
+            when (aggregate.InnerException is LoreError inner)
+        {
+            return $"rc={inner.ReturnCode}: "
+                   + string.Join(" | ", inner.Messages ?? Array.Empty<string>());
+        }
+
+        throw new AssertionException("失敗するはずの Lore 呼び出しが成功しました。");
     }
 
     /// <summary>

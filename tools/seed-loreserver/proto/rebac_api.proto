@@ -1,0 +1,52 @@
+// =============================================================================
+// ucs.auth.RebacApi : リポジトリ作成・削除のときに Lore が呼ぶ ReBAC API
+// =============================================================================
+// Lore v0.9.0 のサーバは `[environment.endpoint] auth_url` が設定されていると、
+// `RepositoryCreate` の途中で **同じ URL** の `ucs.auth.RebacApi/CreateResource`
+// を呼び、そこが拒否すればリポジトリを作らない
+// （lore-server/src/grpc/repository/v1/repository_create.rs:293-296 と
+//   lore-server/src/grpc/handlers/repository_create.rs:238-240 →
+//   repository_create_auth_resource）。
+// `RepositoryDelete` も同様に `DeleteResource` を呼ぶ。
+//
+// **接続先は UrcAuthApi と同じ `auth_url`**（別ポートではない）。
+// そのため 1 つの tonic サーバに 2 つのサービスを載せる。
+//
+// 【この定義について】
+// upstream (lore-proto/proto/rebac_api.proto、MIT) のワイヤ契約を写したもの。
+// lore-proto が生成しているのはクライアント側スタブだけなので、
+// サーバ側スタブは本 crate の build.rs で生成する。
+// **パッケージ名・サービス名・RPC 名・フィールド番号は変えないこと。**
+// =============================================================================
+
+syntax = "proto3";
+
+package ucs.auth;
+
+// リポジトリ（= リソース）の作成・削除を認可する API。
+service RebacApi {
+  // 「この利用者は、この ID のリポジトリを新しく作ってよいか」。
+  // 拒否は `PERMISSION_DENIED` で返す（Lore 側がそのまま
+  // 「permission denied」として利用者へ伝える）。
+  rpc CreateResource(CreateResourceRequest) returns (CreateResourceResponse) {};
+
+  // 「この利用者は、このリポジトリを削除してよいか」。
+  rpc DeleteResource(DeleteResourceRequest) returns (DeleteResourceResponse) {};
+}
+
+// 作成の認可要求。
+//   resource_id   … `urc-<32桁hexのリポジトリID>`
+//   resource_name … リポジトリ名（そのままプロジェクト名として台帳へ残す）
+message CreateResourceRequest {
+  string resource_id = 1;
+  string resource_name = 2;
+}
+
+// 作成の認可応答（中身なし。成功したかどうかは gRPC のステータスで伝わる）。
+message CreateResourceResponse {}
+
+// 削除の認可要求。
+message DeleteResourceRequest { string resource_id = 1; }
+
+// 削除の認可応答（中身なし）。
+message DeleteResourceResponse {}
