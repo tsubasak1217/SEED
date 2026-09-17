@@ -116,13 +116,17 @@ Lore v0.9.0 側の制約（ソースを読んで確認。実測は実装時の�
 | 設定 | `C:\Users\k023g\SEED_lore\server\config\local.toml`（127.0.0.1 限定、41337 / 41339、`seed_file_lock_store`、`seed_push_guard` 有効） |
 | データ | `server\store\{immutable,mutable}`、ロックは `server\locks\seed_locks.json`、証明書は `server\certs\`（自己署名 10 年） |
 | 起動 | `server\start-seed-loreserver.ps1`（二重起動しない。ログは `server\logs\` に起動ごと）。ログオン時はスタートアップの `SEED Lore Server.lnk` が呼ぶ |
-| 停止 | `Stop-Process -Name seed-loreserver` |
+| 停止 | **`server\stop-seed-loreserver.ps1`**（ストアが 15 秒間更新されていないことを確かめてから止め、プロセスの終了まで待つ）。`Stop-Process` やタスク マネージャーで直接止めない |
 | 生存確認 | `http://127.0.0.1:41339/health_check` が 200 |
 | リポジトリ | `lore://127.0.0.1:41337/WarashibeFishing`（作業コピー `D:\SEED_projects\WarashibeFishing`、identity `tsubasa`） |
 | 初回取り込み | revision 1（469 ファイル / 88 MiB）。サーバから clone し直して全ファイルの SHA-256 一致を確認済み |
 | バックアップ | サーバを止めて `server\store\` と `server\locks\` をコピーする（稼働中はファイルサイズが正しく見えない） |
 
 サーバの実行ファイルを更新するときは、サーバを止めてから `tools/seed-loreserver` をビルドし、exe を上の場所へコピーし直す。
+
+**強制終了に注意（2026-09-18 実測）**: Lore のストア（リポジトリ名 → ID の対応、ブランチの先端）は、書き込みから
+`flush_delay_seconds` 秒たってからファイルへ書き出される。その前にプロセスを強制終了すると直前の送信分が失われ、
+次の起動からクローンや取得が `Not found` になる（データ本体は残るのに辿れない）。本番の設定では遅延を 1 秒に縮めてある。
 
 ### 5.1 本番プロジェクトの初期化手順（他のプロジェクトを足すとき）
 
