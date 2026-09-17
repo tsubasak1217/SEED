@@ -1209,3 +1209,33 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [ ] **リポジトリの作成・クローンが境界に無い** — 2026-09-18。「プロジェクトをバージョン管理下に置く」「参加する」UI を作るときに足す。
   `.loreignore` の編集 UI も無い。
 - [ ] **実サーバ結合テスト（`SEED_LORE_TEST_SERVER`）は手動実行** — 2026-09-18。openssl と `loreserver.exe` の場所が固定値。CI に入れるなら設定化する。
+
+### Version Control パネル — 2026-09-18 実装時の残件（正典: docs/editor_version_control.md）
+
+- [ ] **実際のボタン操作での通し確認が未実施** — 2026-09-18。状態機械の単体テストと中核層の結合テストは通っているが、
+  パネルから `.lore` のあるプロジェクトを操作する経路（送信・取得・競合解決・ロック・改名の「移動」表示）は実機で未確認。
+  確認手順は `docs/editor_version_control.md` のパネルの節。
+- [ ] **保存経路から `NotifyChangedAsync` が未接続** — 2026-09-18。いまは `WorkingCopyWatcher` が走査（`ScanOffline`）で代替している。
+  ファイル数が増えたら `safe_write` 完了から dirty を打ち、`TrackedOnly` で済ませる。
+- [ ] **`ProjectPanel` の `FileSystemWatcher` にデバウンスが無い** — 2026-09-18。「最新を取得」で大量のファイルが変わると
+  ファイルグリッドの全再構築が連続する。
+- [ ] **`FileTypeIcons.LoadPng` が pack リソースを引けないと `IOException`** — 2026-09-18。本体では起きないが、
+  行の生成ループ中に投げるとパネルが壊れる。フォールバックを検討。
+- [ ] **履歴のメタデータ補完は 30 件まで** — 2026-09-18。それ以上は番号だけになる（追加読み込みの導線が無い）。差分表示も未実装。
+- [ ] **管理下に置く導線が無い** — 2026-09-18。`.lore` の無いプロジェクトでは案内テキストのみ。リポジトリ作成・クローン・`.loreignore` 編集の UI。
+- [ ] **ブランチ一覧はドロップダウンを開いたときだけ取得** — 2026-09-18（サーバ往復のため）。初回は現在のブランチのみ表示。
+
+## アセット形式のマイグレーション — 2026-09-18 M1 実装時の残件（正典: docs/asset_migration.md）
+
+- [ ] **`ModelComponentData.instances` に `#[serde(default)]` が無い** — 2026-09-18。`instances` を持たない `.scene` / `.actor` は
+  読み込みが丸ごと失敗する（見本作成中に発覚）。関連: `runtime/src/engine/components/model_component.rs:126`。
+- [ ] **一括アップグレード後に `prefab_hash` が一斉に古くなる** — 2026-09-18。`.actor` が 1 行でも変わると生テキストのハッシュが変わり、
+  エディタに「プレハブが更新された」が並ぶ（表示のみ）。シーン側の `prefab_hash` を貼り直す後処理が要る。
+  わらしべフィッシングの現行データは `prefab_hash` を持たないので未発生。
+- [ ] **旧 enum 表記の `alias` は削除候補** — 2026-09-18。全員が一括アップグレードを取り込んだ後に消す:
+  `particle_emitter_component.rs:159,162,288`、`canvas_component.rs:37`。`ParticleBlend::from_str_opt` の旧名受理は IPC 経路なので別判断。
+- [ ] **M2**: エディタからの一括アップグレード（メニュー・結果表示・`engine_version` の確認ダイアログからの導線）、
+  `.anim` / 地形 JSON / `.mat` / `.postfx` / `project_settings.json` への拡大、`.inputmap` の Rust・C# 二重実装の解消、
+  残る保存経路（`.tvox` / `.tcover` / `.tscatter` / `terrain_meta.json` / C# 側の書き込み）を `safe_write` 相当へ寄せる。
+- [ ] **`scripting::debug_command` の 2 テストが並列実行で落ちる** — 2026-09-18。共有グローバルのリングバッファによる既設のフレーキー
+  （`--test-threads=1` では通る）。
