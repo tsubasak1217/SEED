@@ -1239,3 +1239,21 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   残る保存経路（`.tvox` / `.tcover` / `.tscatter` / `terrain_meta.json` / C# 側の書き込み）を `safe_write` 相当へ寄せる。
 - [ ] **`scripting::debug_command` の 2 テストが並列実行で落ちる** — 2026-09-18。共有グローバルのリングバッファによる既設のフレーキー
   （`--test-threads=1` では通る）。
+
+## SEED アカウント — 2026-09-18 サーバ側（発行窓口）実装時の残件（正典: docs/seed_accounts.md）
+
+- [ ] **Lore の認証を有効にしたサーバでは新しいリポジトリを作れない** — 2026-09-18。push / pull（QUIC）にトークンを載せるには
+  `[environment.endpoint] auth_url` が必須だが、`auth_url` があると Lore v0.9.0 は `repository create` を外部 ReBAC へ委譲して失敗する。
+  いまは「新規プロジェクトを足すときだけ一時的に外して起動」で回避。窓口に最小の ReBAC gRPC（`CreateResource` を成功で返す）を
+  実装するか、upstream へ PR する。関連: `tools/seed-loreserver/README.md` の落とし穴表。
+- [ ] **オーナーの交代・追加ができない** — 2026-09-18。owner の権限は失効不可で、委譲の API も無い。
+- [ ] **失効しても発行済みトークンは期限（既定 8 時間）まで有効** — 2026-09-18。Lore に失効の仕組みが無い。急ぐときは
+  `token_ttl_hours` を短くするか、サーバの署名鍵を作り直す（全員が再ログインになる）。
+- [ ] **平文 HTTP** — 2026-09-18。LAN の外へ出すときは TLS を前段に置くか、窓口自体を TLS 化する。
+- [ ] **窓口に監査ログが無い** — 2026-09-18。誰がいつ誰を招待・失効したかは `accounts.json` の `created_by` / `used_by` にしか残らない。
+  使用済み・期限切れの招待も溜まり続ける。
+- [ ] **窓口は current-thread ランタイムでストアの I/O が同期** — 2026-09-18。数人規模なら問題ないが、増えたら `spawn_blocking` へ。
+- [ ] **`lore lock query --path` が使えない** — 2026-09-18。Lore 側が未対応の組合せ。パスで引くときは `lock status`。
+  `seed_file_lock_store` 側で対応すれば upstream より便利になる。
+- [ ] **本番サーバへの適用は未実施** — 2026-09-18。手順は `docs/seed_accounts.md`「有効化の順番」。エディタ側が揃って結合確認が済んでから、
+  (1) exe 差し替え＋`[seed_auth]` のみ → (2) Hub でアカウント作成 → (3) `bootstrap` → (4) `[server.auth]` ほかを足して再起動。

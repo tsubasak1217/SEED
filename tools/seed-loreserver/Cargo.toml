@@ -61,6 +61,29 @@ serde_json = "1"
 toml = "0.9"
 tracing = "0.1"
 
+# --- SEED アカウント発行窓口 (src/auth/) ---------------------------------
+# いずれも lore-server が既に依存しているものだけを選んでいる。
+# Cargo.lock 上の版が動かないよう、既存のエントリと同じ系列を指定すること
+# (upstream 由来のバージョン固定を壊さないため。README の「ビルドの落とし穴」参照)。
+#
+# axum: 窓口の HTTP サーバ。lore-server 本体の HTTP も同じ crate を使っている。
+axum = "0.8"
+# tokio: 窓口専用ランタイム。現在のスレッドだけで回す最小構成で足りる。
+#        net = TcpListener、time = タイムアウト/スリープ、rt = ランタイム。
+tokio = { version = "1", features = ["rt", "net", "time"] }
+# jsonwebtoken: JWT の署名と検証。**Lore v0.9.0 が使うのと同じ 9.3.1**。
+#               同じ crate・同じ版で作れば、検証側との食い違いが起きない。
+jsonwebtoken = "9.3"
+# ring: ECDSA P-256 (利用者の署名の検証)、Ed25519 (サーバの署名鍵)、
+#       SHA-256 (招待コードのハッシュ)、暗号論的乱数。
+ring = "0.17"
+# base64: base64url (パディングなし) の変換。
+base64 = "0.22"
+# config: Lore 本体と同じ設定読み込み規則を再現するために使う
+#         (default.toml -> <env>.toml -> local.toml -> LORE__*)。
+#         features を絞って、Cargo.lock に新しい crate が増えないようにする。
+config = { version = "0.15", default-features = false, features = ["toml"] }
+
 [dev-dependencies]
 # 一時ディレクトリ (ロックストアの単体テストで使用)
 tempfile = "3"

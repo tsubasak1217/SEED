@@ -23,10 +23,12 @@
 //   フックのログを見たいときは RUST_LOG=info を付けて起動すること。
 // =============================================================================
 
+mod auth;
 mod hooks;
 mod lock_store_file;
 
 use anyhow::Result;
+use anyhow::anyhow;
 use lore_server::hooks::HookRegistrationContext;
 use lore_server::hooks::HookRegistry;
 use lore_server::plugins::PluginRegistry;
@@ -36,12 +38,26 @@ use lore_server::server_config::ServerConfig;
 
 /// SEED 用に拡張した Lore サーバを起動する。
 ///
-/// 追加しているのは次の 2 点だけ。それ以外は upstream のまま動かす。
+/// 追加しているのは次の 3 点だけ。それ以外は upstream のまま動かす。
 ///   1. ロックストアプラグイン `seed_file_lock_store`
 ///      （`[lock_store] mode = "seed_file_lock_store"` で選択）
 ///   2. push ガードフック `seed_push_guard`
 ///      （`[hooks.seed_push_guard] enabled = true` で有効化）
+///   3. SEED アカウント発行窓口（`[seed_auth] enabled = true` で有効化）
 fn main() -> Result<()> {
+    // --- SEED アカウント発行窓口を先に起動する ---------------------------
+    // `server_main()` は同期関数で、内部で tokio ランタイムを作り
+    // 呼び出しスレッドをブロックする。そのため窓口は**その前に**
+    // 別スレッド＋別ランタイムで立ち上げておく必要がある。
+    //
+    // もう 1 つの理由: 窓口は起動時に `jwks.json` を書き出す。
+    // Lore 本体は `[server.auth.jwk] endpoint` を起動時に読み、
+    // 読めないとサーバ自体が起動に失敗するため、順序を逆にできない。
+    //
+    // ここで失敗したらサーバ全体を止める。窓口が動かないまま
+    // Lore だけ認証有効で起動すると、誰もトークンを取れず全員が締め出される。
+    auth::start().map_err(|e| anyhow!(e))?;
+
     // --- プラグインレジストリを組み立てる --------------------------------
     // `ServerConfig::plugin_registry` は「サーバ起動時にまず使われる」レジストリ。
     // lore-server 側は async_main() の中で、この上に
