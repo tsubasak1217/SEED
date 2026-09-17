@@ -88,8 +88,11 @@ Lore v0.9.0 側の制約（ソースを読んで確認。実測は実装時の�
 - トークンには `sub` `iss` `iat` `exp` `aud` `env` `name` `preferred_username` `idp` `resources` の **10 個すべてが必要**（v0.9.0 の固定構造。upstream の main では緩和済み）。
   `resources` は `[{"resource_id":"urc-<リポジトリ ID>","permission":[…]}]`。オーナーには実 ID のエントリに `"owner"` を付ける（ワイルドカード `urc-*` はロックの強制解放に効かない）。
   `is_service_account` は**絶対に立てない**（ブランチ保護を素通りする）。
-- push / pull（QUIC）にトークンを載せるには、サーバ設定に `[environment.endpoint] auth_url`（空でなければ何でもよい）が必須。
-  その間は**新しいリポジトリを作れない**（Lore が作成を外部サービスへ委譲しようとして失敗する）。リポジトリは認証を有効にする前に作る。
+- push / pull（QUIC）にトークンを載せるには、サーバ設定に `[environment.endpoint] auth_url` が必須。一方 Lore 本体は `auth_url` の gRPC へ
+  権限を問い合わせるため、問い合わせ先が無いとクローンと新規リポジトリ作成が必ず失敗する（v0.9.0 の二律背反）。
+  **2026-09-18 に解消**: `seed-loreserver` の中に権限サービス（`UrcAuthApi` / `RebacApi`、既定 41352、常に 127.0.0.1）を実装し、
+  `auth_url = "http://127.0.0.1:41352"` を向ける。判定の根拠は参加者の台帳。1 つの設定のままクローン・送信・取得・ロック・
+  新規リポジトリ作成（`[seed_auth] repository_creators` に載っている人だけ。作成者は自動で owner）が通る。
 - 認証は全部か無か。有効にすると匿名アクセスはできない。既存のリポジトリと作業コピーはそのまま使える（`sub` を `tsubasa` にすれば履歴の名前も連続する）。
 - ロックの `owner` と push フックの `user()` は JWT の `sub` になる。**他人のロックの解放は `owner` / `admin` 権限が無いと拒否される**（サーバ側で所有者チェックあり）。
 - 残る穴: 有効なトークンがあれば誰でも `repository create` と全リポジトリの `list` ができる（v0.9.0）。参加者限定は中身には効くが存在の秘匿には効かない。
