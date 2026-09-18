@@ -169,6 +169,9 @@ internal sealed class ReferencePicker
         {
             Content         = AppIcon.Create("Icon.Close", ClearButtonIconSize),
             Style           = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
+            // 幅 22px の小さなボタンなので、共通スタイルの通常余白（左右 10px）では中身の幅が 2px になり
+            // アイコンが見えなくなる。アイコン専用の余白（左右 4px）で 10px のアイコンを収める。
+            Padding         = SeedButtonMetrics.IconPadding,
             Width           = ClearButtonWidth,
             Margin          = new Thickness(3, 0, 0, 0),
             ToolTip         = spec.ClearTooltip,
