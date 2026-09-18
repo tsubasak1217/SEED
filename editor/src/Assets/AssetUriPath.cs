@@ -137,6 +137,42 @@ public static class AssetUriPath
     }
 
     /// <summary>
+    /// コンポーネント等に保存された「アセットの参照」を絶対パスへ解決する。
+    ///
+    /// <para>
+    /// 参照は 3 通りの書き方が混在する: <c>assets://…</c> の仮想パス（現行の正典）、
+    /// アセットルートからの相対パス（旧データ）、絶対パス（旧ジャンクション時代の名残）。
+    /// ファイルを開く側（インスペクタのボタン等）が書き方ごとに分岐すると漏れが出るので、
+    /// ここで 1 か所に受ける。
+    /// </para>
+    /// </summary>
+    /// <param name="assetsRoot">アセットルートの絶対パス。</param>
+    /// <param name="reference">保存されている参照文字列。</param>
+    /// <returns>
+    /// 絶対パス。空・<c>null</c>・ルート外・解釈できない入力なら <c>null</c>。
+    /// </returns>
+    public static string? ResolveToAbsolute(string? assetsRoot, string? reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference)) return null;
+        var value = reference.Trim();
+
+        // 仮想パスはスキームを外して相対パスとして扱う（大文字小文字は区別しない）
+        if (value.StartsWith(Scheme, StringComparison.OrdinalIgnoreCase))
+        {
+            return ToAbsolute(assetsRoot, value.Substring(Scheme.Length));
+        }
+
+        // 絶対パスはそのまま正規化して返す（存在の確認は呼び出し側）
+        if (Path.IsPathRooted(value))
+        {
+            try { return Path.GetFullPath(value); }
+            catch { return null; }
+        }
+
+        return ToAbsolute(assetsRoot, value);
+    }
+
+    /// <summary>
     /// 絶対パスを <c>assets://</c> 仮想パスへ変換する。
     /// </summary>
     /// <param name="assetsRoot">アセットルートの絶対パス。</param>

@@ -517,6 +517,11 @@ public partial class InputMapEditorWindow : Window
 
         cb.AddHandler(TextBox.TextChangedEvent, new TextChangedEventHandler((_, _) =>
         {
+            // TextChanged はテンプレート適用時や cb.Text の代入（行の生成・アクションの切替）でも届く。
+            // その時に反応するとドロップダウンが勝手に開き、開いただけで変更あり扱いになる。
+            // 利用者が実際に打っている（キーボードフォーカスが中にある）ときだけ扱う。
+            if (!cb.IsKeyboardFocusWithin) return;
+
             binding.Value = cb.Text;
             _isDirty = true;
 

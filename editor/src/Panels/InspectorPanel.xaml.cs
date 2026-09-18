@@ -4050,8 +4050,18 @@ public partial class InspectorPanel : UserControl
         };
         editBtn.Click += (_, _) =>
         {
-            // 既に存在するウィンドウがあればアクティブにする、なければ新規作成
-            var path = info.InputMapPath;
+            // コンポーネントには assets:// の仮想パス（または旧データの相対パス）が入っている。
+            // エディタウィンドウは絶対パスしか受け付けないので、ここで解決する
+            // （そのまま渡すとファイルが見つからず、空の一覧で開いてしまう）。
+            var path = SEEDEditor.Assets.AssetUriPath.ResolveToAbsolute(
+                SEEDEditor.Project.ProjectContext.AssetsDir, info.InputMapPath);
+            if (path is null)
+            {
+                SEEDEditor.Headless.EditorDialogs.Show(
+                    $"InputMap のパスを解決できません: {info.InputMapPath}",
+                    "InputMap", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
             var win  = new SEEDEditor.InputMap.InputMapEditorWindow(path)
             {
                 Owner = Window.GetWindow(this),

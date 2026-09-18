@@ -32,6 +32,9 @@ public static class Program
         harness.Add("フォルダではなくファイルを指すと Missing", FilePathIsMissing);
         harness.Add("生きたジャンクションは Ok でリンク先が取れる", LiveJunctionIsOk);
         harness.Add("壊れたジャンクションは BrokenLink（Exists は true を返す）", BrokenJunctionIsBrokenLink);
+        harness.Add("アセット参照の解決: assets:// 仮想パス",            ResolveVirtualReference);
+        harness.Add("アセット参照の解決: 相対パス・絶対パス",             ResolveRelativeAndAbsoluteReference);
+        harness.Add("アセット参照の解決: 空・ルート外は null",          ResolveInvalidReference);
 
         return harness.Run();
     }
@@ -203,5 +206,37 @@ public static class Program
         {
             try { Directory.Delete(Path, recursive: true); } catch { /* 後始末の失敗は無視 */ }
         }
+    }
+    // ── AssetUriPath.ResolveToAbsolute ──────────────────────────
+
+    /// <summary>assets:// の仮想パスはスキームを外してルート配下の絶対パスになる（大文字小文字も許す）。</summary>
+    private static void ResolveVirtualReference()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "seed_resolve_" + Guid.NewGuid().ToString("N"));
+        var expected = Path.GetFullPath(Path.Combine(root, "input", "main.inputmap"));
+        Check.Equal(expected, AssetUriPath.ResolveToAbsolute(root, "assets://input/main.inputmap"), "小文字のスキーム");
+        Check.Equal(expected, AssetUriPath.ResolveToAbsolute(root, "ASSETS://input/main.inputmap"), "大文字のスキーム");
+        Check.Equal(Path.GetFullPath(root), AssetUriPath.ResolveToAbsolute(root, "assets://"), "ルート自身");
+    }
+
+    /// <summary>相対パスはルート配下へ、絶対パスは正規化してそのまま返す。</summary>
+    private static void ResolveRelativeAndAbsoluteReference()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "seed_resolve_" + Guid.NewGuid().ToString("N"));
+        var expected = Path.GetFullPath(Path.Combine(root, "input", "main.inputmap"));
+        Check.Equal(expected, AssetUriPath.ResolveToAbsolute(root, "input/main.inputmap"), "相対パス");
+        Check.Equal(expected, AssetUriPath.ResolveToAbsolute(root, expected), "絶対パスはそのまま");
+        Check.Equal(expected, AssetUriPath.ResolveToAbsolute(root, "  input\\main.inputmap  "), "前後の空白と区切り文字の違い");
+    }
+
+    /// <summary>空・null・ルートの外へ出る参照は null（呼び出し側が「開けない」と扱う）。</summary>
+    private static void ResolveInvalidReference()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "seed_resolve_" + Guid.NewGuid().ToString("N"));
+        Check.Equal(null, AssetUriPath.ResolveToAbsolute(root, null), "null");
+        Check.Equal(null, AssetUriPath.ResolveToAbsolute(root, "   "), "空白");
+        Check.Equal(null, AssetUriPath.ResolveToAbsolute(root, "assets://../outside.inputmap"), "ルート外（仮想パス）");
+        Check.Equal(null, AssetUriPath.ResolveToAbsolute(root, "../outside.inputmap"), "ルート外（相対パス）");
+        Check.Equal(null, AssetUriPath.ResolveToAbsolute("", "assets://x.inputmap"), "ルート未設定");
     }
 }
