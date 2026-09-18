@@ -176,6 +176,23 @@ public static class SeedThemeColors
     /// <inheritdoc cref="SeedColorTable.DIALOG_ERROR_TEXT"/>
     public static readonly Color DialogErrorText = ToColor(SeedColorTable.DIALOG_ERROR_TEXT);
 
+    // ── マージエディタ ──────────────────────────────────────
+
+    /// <inheritdoc cref="SeedColorTable.MERGE_BLOCK_BG"/>
+    public static readonly Color MergeBlockBg = ToColor(SeedColorTable.MERGE_BLOCK_BG);
+
+    /// <inheritdoc cref="SeedColorTable.MERGE_BLOCK_BORDER"/>
+    public static readonly Color MergeBlockBorder = ToColor(SeedColorTable.MERGE_BLOCK_BORDER);
+
+    /// <inheritdoc cref="SeedColorTable.MERGE_ADDED_BG"/>
+    public static readonly Color MergeAddedBg = ToColor(SeedColorTable.MERGE_ADDED_BG);
+
+    /// <inheritdoc cref="SeedColorTable.MERGE_REMOVED_BG"/>
+    public static readonly Color MergeRemovedBg = ToColor(SeedColorTable.MERGE_REMOVED_BG);
+
+    /// <inheritdoc cref="SeedColorTable.MERGE_PADDING_STROKE"/>
+    public static readonly Color MergePaddingStroke = ToColor(SeedColorTable.MERGE_PADDING_STROKE);
+
     /// <summary>
     /// 色表の 16 進文字列を WPF の <see cref="Color"/> へ変換する。
     /// </summary>

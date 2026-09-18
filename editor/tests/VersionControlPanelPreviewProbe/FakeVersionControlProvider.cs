@@ -116,6 +116,24 @@ public sealed class FakeVersionControlProvider : IVersionControlProvider
         CancellationToken cancellationToken = default)
         => Task.FromResult(VersionControlResult.Success("競合を解決しました。"));
 
+    /// <summary>
+    /// 進行中のマージの向き。見た目の確認用なので sync 固定
+    /// （マージエディタの見出しは「リモート ／ 自分の変更」になる）。
+    /// </summary>
+    public MergeContext MergeContext => MergeContext.Unknown;
+
+    /// <inheritdoc/>
+    public Task<VersionControlResult> ResolveConflictsWithContentAsync(
+        string relativePath, string resolvedText,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(VersionControlResult.Success("競合を解決しました。"));
+
+    /// <inheritdoc/>
+    public Task<VersionControlResult> ResolveConflictsTakingBothAsync(
+        IReadOnlyList<string> relativePaths,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(VersionControlResult.Success("競合を解決しました。"));
+
     /// <inheritdoc/>
     public Task<VersionControlResult<IReadOnlyList<BranchInfo>>> GetBranchesAsync(
         CancellationToken cancellationToken = default)

@@ -63,6 +63,9 @@ public sealed class FakeLoreBackend : ILoreBackend
     /// <summary>競合解決の戻り値。</summary>
     public LoreCallResult MergeResolveResult { get; set; } = LoreCallResult.Success;
 
+    /// <summary>「作業コピーの中身のまま解決」の戻り値。</summary>
+    public LoreCallResult MergeResolveAsIsResult { get; set; } = LoreCallResult.Success;
+
     /// <summary>ブランチ一覧の戻り値。</summary>
     public LoreRowsResult<LoreBranchRow> BranchListResult { get; set; }
         = new(LoreCallResult.Success, Array.Empty<LoreBranchRow>());
@@ -159,6 +162,12 @@ public sealed class FakeLoreBackend : ILoreBackend
 
     /// <summary>競合解決に渡されたパス（最後の呼び出し）。</summary>
     public IReadOnlyList<string> LastResolvePaths { get; private set; } = Array.Empty<string>();
+
+    /// <summary>「作業コピーの中身のまま解決」が呼ばれた回数。</summary>
+    public int MergeResolveAsIsCallCount { get; private set; }
+
+    /// <summary>「作業コピーの中身のまま解決」に渡されたパス（最後の呼び出し）。</summary>
+    public IReadOnlyList<string> LastResolveAsIsPaths { get; private set; } = Array.Empty<string>();
 
     /// <summary>ブランチのマージが呼ばれた回数。</summary>
     public int BranchMergeCallCount { get; private set; }
@@ -271,6 +280,17 @@ public sealed class FakeLoreBackend : ILoreBackend
         LastResolveSide  = side;
         LastResolvePaths = relativePaths;
         return MergeResolveResult;
+    }
+
+    /// <summary>作業コピーの中身のまま解決。渡されたパスを記録する。</summary>
+    /// <param name="relativePaths">パス。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public LoreCallResult MergeResolveAsIs(
+        IReadOnlyList<string> relativePaths, CancellationToken cancellationToken)
+    {
+        MergeResolveAsIsCallCount++;
+        LastResolveAsIsPaths = relativePaths;
+        return MergeResolveAsIsResult;
     }
 
     /// <summary>ブランチ一覧。</summary>

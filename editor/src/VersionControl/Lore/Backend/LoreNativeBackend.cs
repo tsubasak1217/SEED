@@ -347,6 +347,27 @@ public sealed class LoreNativeBackend : ILoreBackend
         return Execute(() => LoreApi.BranchMergeResolveTheirs(globalArgs, theirsArgs).Wait());
     }
 
+    /// <summary>
+    /// いま作業コピーにある中身のまま競合を解決済みにする
+    /// （mine / theirs を指定しない <c>branch merge resolve</c>）。
+    /// </summary>
+    /// <param name="relativePaths">対象のリポジトリ相対パス。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public LoreCallResult MergeResolveAsIs(
+        IReadOnlyList<string> relativePaths, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return CanceledResult();
+
+        // ★オフラインにしてはいけない（MergeResolve と同じ理由）。
+        //   解決の記録はマージの状態そのものを書き換える操作であり、
+        //   中身の実体をローカルストアだけで賄えないことがある。
+        //   こちらは「作業コピーの中身をそのまま採る」ので一見ローカル完結に見えるが、
+        //   そこで offline を立てると片方の経路だけが壊れ、気づきにくい。
+        using var globalArgs = NewGlobalArgs(offline: false);
+        using var args = new LoreBranchMergeResolveArgs { Paths = ToArray(relativePaths) };
+        return Execute(() => LoreApi.BranchMergeResolve(globalArgs, args).Wait());
+    }
+
     // ── ブランチ ────────────────────────────────────────────
 
     /// <summary>ブランチを一覧する。</summary>

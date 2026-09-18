@@ -137,6 +137,27 @@ public interface ILoreBackend : IDisposable
         IReadOnlyList<string> relativePaths, LoreResolveSide side,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// **いま作業コピーにある中身のまま**、競合を解決済みにする
+    /// （Lore の <c>branch merge resolve</c>。mine / theirs を指定しない形）。
+    ///
+    /// <para>
+    /// マージエディタで合成したテキストを書き戻したあと、これを呼んで
+    /// 「この中身で決着した」と Lore に伝える。
+    /// </para>
+    /// <para>
+    /// ★印が残っていると Lore は
+    /// <c>[Warn] Cannot resolve path with conflict markers still present</c> を出し、
+    /// **何もしないのに成功（rc=0）を返す**（実機で確認済み）。
+    /// 呼び出し側は必ず status を引き直して、頼んだファイルが本当に
+    /// 解決済みになったかを確かめること（<c>MergeResolve</c> と同じ罠）。
+    /// </para>
+    /// </summary>
+    /// <param name="relativePaths">対象のリポジトリ相対パス。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    LoreCallResult MergeResolveAsIs(
+        IReadOnlyList<string> relativePaths, CancellationToken cancellationToken);
+
     // ── ブランチ ────────────────────────────────────────────
 
     /// <summary>

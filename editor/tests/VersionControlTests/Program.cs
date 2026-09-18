@@ -13,7 +13,8 @@
 //   9. 直列ワーカーが操作を重ねないこと
 //  10. 変更のパス群 → フォルダー階層のツリー、その平坦化と折りたたみ節
 //  11. ロックのゲートの判定表（誰のロックで止め、どこでは止めないか）
-//  12. 実サーバ結合（SEED_LORE_TEST_SERVER があるときだけ）
+//  12. マージエディタの純粋ロジック（印の分解・行差分・合成・検査）
+//  13. 実サーバ結合（SEED_LORE_TEST_SERVER があるときだけ）
 // ============================================================
 
 using System;
@@ -41,6 +42,7 @@ public static class Program
         PanelStateTests.Register(harness);
         ChangeTreeTests.Register(harness);
         LockGateTests.Register(harness);
+        MergeEditorTests.Register(harness);
 
         var runServerTests = !string.IsNullOrWhiteSpace(
             Environment.GetEnvironmentVariable(ENV_RUN_SERVER_TESTS));

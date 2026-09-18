@@ -55,7 +55,7 @@ public static class PureLogicTests
         harness.Add("未解決の競合は Unresolved になる",                      UnresolvedConflictIsDetected);
         harness.Add("自動マージ済みは AutoMerged になる",                    AutoMergedIsDetected);
         harness.Add("競合フラグが立っていなければ None",                     NoConflictIsNone);
-        harness.Add("競合フラグだけ立って判別できない行は Unresolved 扱い",  AmbiguousConflictIsUnresolved);
+        harness.Add("競合フラグだけの行は「中身のまま解決済み」（実測の形）", ResolvedWithContentIsDetected);
         harness.Add("オフライン取得ではリモート比較は NotChecked",           OfflineStatusDoesNotClaimRemote);
         harness.Add("オンライン取得で双方が進んでいれば Diverged",           DivergedIsDetected);
         harness.Add("オンライン取得でリモートが進んでいれば RemoteAhead",    RemoteAheadIsDetected);
@@ -470,12 +470,24 @@ public static class PureLogicTests
                     LoreStatusTranslator.ToConflictState(row), "非競合");
     }
 
-    /// <summary>判別できない競合は「未解決」に倒す（勝手に片方を採らない）。</summary>
-    private static void AmbiguousConflictIsUnresolved()
+    /// <summary>
+    /// 競合フラグだけが立ち、未解決・自動・mine・theirs のどれでもない行は
+    /// 「作業コピーの中身のまま解決済み」。
+    ///
+    /// <para>
+    /// 実測（2026-09-19、v0.9.0）: <c>branch merge resolve &lt;path&gt;</c> の直後は
+    /// <c>flagConflict=true, flagConflictUnresolved=false, mine=false, theirs=false</c>。
+    /// これを「未解決」へ倒すと、マージエディタ／「両方を取り込む」の直後に
+    /// 「まだ競合している」と誤判定してマージのコミットが行われない（実機で再現した不具合）。
+    /// </para>
+    /// </summary>
+    private static void ResolvedWithContentIsDetected()
     {
-        var row = FakeRows.File("a.txt", conflict: true);
-        Check.Equal(FileConflictState.Unresolved,
-                    LoreStatusTranslator.ToConflictState(row), "判別できない競合");
+        var row = FakeRows.File("a.txt", staged: true, dirty: false, conflict: true);
+        Check.Equal(FileConflictState.ResolvedWithContent,
+                    LoreStatusTranslator.ToConflictState(row), "中身のまま解決済み");
+        Check.True(!LoreStatusTranslator.ToChangedFile(row).IsUnresolvedConflict,
+                   "未解決とは数えない");
     }
 
     /// <summary>オフライン取得ではリモートとの比較を主張しない。</summary>

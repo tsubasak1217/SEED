@@ -90,7 +90,18 @@ public static class LoreStatusTranslator
     ///   <item>解決済み。ここで **Lore の mine / theirs の向き** を吸収する。
     ///         向きは進行中のマージの出どころで入れ替わるので
     ///         <paramref name="origin"/> が要る（LoreConflictResolutionMap 参照）</item>
+    ///   <item>競合フラグだけが立っていて、未解決・自動・mine・theirs のどれでもない
+    ///         → 作業コピーの中身のまま解決済み（<see cref="FileConflictState.ResolvedWithContent"/>）</item>
     /// </list>
+    /// <para>
+    /// 最後の項は実測（2026-09-19、v0.9.0）に基づく。<c>branch merge resolve &lt;path&gt;</c>
+    /// （mine / theirs 指定なし）の直後の status は
+    /// <c>flagConflict=true, flagConflictUnresolved=false, automerged=false, mine=false, theirs=false</c>
+    /// で、未解決のときは <c>flagConflictUnresolved=true</c> になる。
+    /// 以前はこの形を「判別できない → 未解決」へ倒していたが、そうするとマージエディタや
+    /// 「両方を取り込む」で解決した直後に「まだ競合している」と誤判定し、
+    /// マージのコミットが永久に行われない。
+    /// </para>
     /// </summary>
     /// <param name="row">status の 1 行。</param>
     /// <param name="origin">
@@ -109,10 +120,10 @@ public static class LoreStatusTranslator
         if (row.FlagConflictTheirs)
             return ToResolvedState(LoreResolveSide.Theirs, origin);
 
-        // 競合フラグは立っているが、どの状態にも当てはまらない
-        // （Lore がフラグを増やした場合など）。未解決として扱い、
-        // 利用者に選択させる方が安全（勝手に片方を採らない）。
-        return FileConflictState.Unresolved;
+        // 競合フラグだけが立っている＝作業コピーの中身のまま解決済み
+        // （Lore は「未解決」を flag_conflict_unresolved で明示するので、
+        //   ここに来るのは解決済みだけ。実測は summary 参照）。
+        return FileConflictState.ResolvedWithContent;
     }
 
     /// <summary>

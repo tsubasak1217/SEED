@@ -233,6 +233,33 @@ public static class SeedColorTable
     public const string TOGGLE_FG_CHECKED = PRIMARY_FG;
 
     // ══════════════════════════════════════════════════════════
+    //  マージエディタ（競合の中身を並べて解決する専用ウィンドウ）
+    //
+    //  ボタンではないが、**利用者がここで選んだ結果がアセットを上書きする**ため、
+    //  「どの行が足されたのか／消えたのか」が読み違えようのない明度差で
+    //  出ている必要がある。色の出所を散らさないようここへ置く。
+    //  文字色は本文（DIALOG_TEXT）のまま乗るので、背景はすべてそれ基準で検査する。
+    // ══════════════════════════════════════════════════════════
+
+    /// <summary>競合ブロック全体にかける薄い帯（どこからどこまでが 1 ブロックかを示す）。</summary>
+    public const string MERGE_BLOCK_BG = "#20222A";
+
+    /// <summary>競合ブロックの枠（帯だけでは境目が分かりにくいので線も引く）。</summary>
+    public const string MERGE_BLOCK_BORDER = "#4FA3E3";
+
+    /// <summary>その側が足した行の背景（緑）。</summary>
+    public const string MERGE_ADDED_BG = "#1E3A22";
+
+    /// <summary>元にあって、その側では消えた行の背景（赤）。</summary>
+    public const string MERGE_REMOVED_BG = "#4A2224";
+
+    /// <summary>
+    /// 詰め物（片側にしか行が無い場所）に引く斜線の色。
+    /// 背景を暗くするだけだと「空行」と区別が付かないので、斜線で塗る。
+    /// </summary>
+    public const string MERGE_PADDING_STROKE = "#6E6E78";
+
+    // ══════════════════════════════════════════════════════════
     //  コントラストの基準（WCAG 2.1）
     // ══════════════════════════════════════════════════════════
 
@@ -322,6 +349,14 @@ public static class SeedColorTable
         new("ダイアログ/入力欄",   FIELD_BG,       null, DIALOG_TEXT,         MIN_RATIO_TEXT),
         new("ダイアログ/一覧の選択行", DIALOG_LIST_SELECTION_BG, null, DIALOG_TEXT, MIN_RATIO_TEXT),
         new("ダイアログ/一覧のホバー行", DIALOG_LIST_HOVER_BG,   null, DIALOG_TEXT, MIN_RATIO_TEXT),
+
+        // ── マージエディタ（背景の上に本文色の文字が乗る）──
+        new("マージ/競合ブロックの帯", MERGE_BLOCK_BG,   null, DIALOG_TEXT, MIN_RATIO_TEXT),
+        new("マージ/追加行",           MERGE_ADDED_BG,   null, DIALOG_TEXT, MIN_RATIO_TEXT),
+        new("マージ/削除行",           MERGE_REMOVED_BG, null, DIALOG_TEXT, MIN_RATIO_TEXT),
+        // 文字ではない目印（枠・斜線）は 3:1。下地はエディタ本文の背景（入力欄と同じ）。
+        new("マージ/競合ブロックの枠", FIELD_BG, null, MERGE_BLOCK_BORDER,   MIN_RATIO_NON_TEXT),
+        new("マージ/詰め物の斜線",     FIELD_BG, null, MERGE_PADDING_STROKE, MIN_RATIO_NON_TEXT),
     };
 
     // ══════════════════════════════════════════════════════════

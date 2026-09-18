@@ -26,8 +26,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using SEEDEditor.Headless;
+using SEEDEditor.Panels.VersionControl.MergeEditor;
 using SEEDEditor.VersionControl;
+using SEEDEditor.VersionControl.Merge;
 using SEEDEditor.VersionControl.Model;
 using SEEDEditor.VersionControl.Presentation;
 using VcRows = SEEDEditor.Panels.VersionControl;
@@ -149,6 +152,43 @@ public partial class VersionControlPanel
     private async void OnResolveFileTakeRemote(object sender, RoutedEventArgs e)
         => await ResolveAsync(PathsFromButton(sender), ConflictResolutionChoice.TakeRemote);
 
+    /// <summary>「すべて両方を取り込む」。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnResolveAllTakeBoth(object sender, RoutedEventArgs e)
+        => await ResolveTakingBothAsync(AllConflictPaths());
+
+    /// <summary>1 件だけ「両方を取り込む」。</summary>
+    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnResolveFileTakeBoth(object sender, RoutedEventArgs e)
+        => await ResolveTakingBothAsync(PathsFromButton(sender));
+
+    /// <summary>1 件だけ「編集した内容で解決」。</summary>
+    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnResolveFileAsIs(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: VcRows.ConflictRowItem row }) return;
+        await ResolveWithFileContentAsync(row);
+    }
+
+    /// <summary>行の「比較…」ボタン。マージエディタを開く。</summary>
+    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnCompareConflict(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: VcRows.ConflictRowItem row }) OpenMergeEditor(row);
+    }
+
+    /// <summary>競合の行をダブルクリックしたとき。マージエディタを開く。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnConflictListDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ConflictList.SelectedItem is VcRows.ConflictRowItem row) OpenMergeEditor(row);
+    }
+
     /// <summary>いま未解決の競合になっているファイルのパスをすべて集める。</summary>
     private IReadOnlyList<string> AllConflictPaths()
         => _state.Status?.UnresolvedConflicts.Select(c => c.Path).ToList()
@@ -192,6 +232,125 @@ public partial class VersionControlPanel
 
         // 解決後は必ず状態を取り直す（残りの競合件数が変わる）。
         await ReloadStatusKeepingNoticeAsync(result);
+    }
+
+    /// <summary>
+    /// 「両方を取り込む」で解決する。
+    ///
+    /// <para>
+    /// 確認は挟まない。両方を残す操作は **どちらの変更も捨てない** ので、
+    /// 「リモートを採用」と違って取り返しがつかない性質が無い
+    /// （結果が気に入らなければ、送信する前に手で直せる）。
+    /// </para>
+    /// </summary>
+    /// <param name="paths">対象のリポジトリ相対パス。</param>
+    private async Task ResolveTakingBothAsync(IReadOnlyList<string> paths)
+    {
+        if (!_state.CanResolveConflicts || paths.Count == 0) return;
+
+        var result = await RunAsync(
+            VersionControlOperation.Resolve,
+            async () => await VersionControlService.Provider
+                                                   .ResolveConflictsTakingBothAsync(paths)
+                                                   .ConfigureAwait(true));
+        if (result is null) return;
+
+        await ReloadStatusKeepingNoticeAsync(result);
+    }
+
+    /// <summary>
+    /// 「編集した内容で解決」。いまファイルにある中身のまま解決済みにする。
+    ///
+    /// <para>
+    /// 中身はここで読み直す。行の器が持っている判定は一覧を作った時点のもので、
+    /// そのあと外部のエディタで保存されているかもしれないため。
+    /// </para>
+    /// </summary>
+    /// <param name="row">対象の行。</param>
+    private async Task ResolveWithFileContentAsync(VcRows.ConflictRowItem row)
+    {
+        if (!_state.CanResolveConflicts || row.RelativePath.Length == 0) return;
+
+        var read = MergeFileText.Read(row.AbsolutePath);
+        if (!read.Succeeded)
+        {
+            ShowInfoNotice(read.Reason);
+            return;
+        }
+
+        var result = await RunAsync(
+            VersionControlOperation.Resolve,
+            async () => await VersionControlService.Provider
+                                                   .ResolveConflictsWithContentAsync(
+                                                       row.RelativePath, read.Text)
+                                                   .ConfigureAwait(true));
+        if (result is null) return;
+
+        await ReloadStatusKeepingNoticeAsync(result);
+    }
+
+    /// <summary>
+    /// マージエディタを開く。開けない形式（バイナリ等）のときは理由を出す。
+    ///
+    /// <para>
+    /// ウィンドウは非モーダル。確定したときだけ、そのコールバックの中で
+    /// 解決を頼み、成功したらパネルを更新する。
+    /// </para>
+    /// </summary>
+    /// <param name="row">対象の行。</param>
+    private void OpenMergeEditor(VcRows.ConflictRowItem row)
+    {
+        if (!_state.CanResolveConflicts || row.RelativePath.Length == 0) return;
+
+        var provider = VersionControlService.Provider;
+
+        var opened = MergeEditorWindows.TryOpen(
+            row.AbsolutePath,
+            provider.MergeContext,
+            _state.BranchName,
+            Window.GetWindow(this),
+            resolvedText => CommitMergeAsync(row, resolvedText),
+            out var reason);
+
+        if (!opened && reason.Length > 0) MergeEditorWindows.ReportUnavailable(reason);
+    }
+
+    /// <summary>
+    /// マージエディタの「確定」から呼ばれる処理。
+    /// 結果を書き込んで解決し、成功したらパネルを更新する。
+    /// </summary>
+    /// <param name="row">マージエディタを開いたときの競合の行。</param>
+    /// <param name="resolvedText">マージエディタが作った結果テキスト。</param>
+    /// <returns>確定できたか、と利用者へ見せる 1 行。</returns>
+    private async Task<MergeEditorCommitResult> CommitMergeAsync(
+        VcRows.ConflictRowItem row, string resolvedText)
+    {
+        var provider = VersionControlService.Provider;
+
+        // ★ウィンドウは非モーダルなので、開いたままプロジェクトを切り替えられる。
+        //   相対パスだけで書くと、**別のプロジェクトの同名ファイル**へ書き込みかねない。
+        //   開いたときの絶対パスと、いまのプロジェクトで解決される絶対パスが
+        //   一致するときだけ進める。
+        var expected = System.IO.Path.Combine(provider.WorkingCopyRoot, row.RelativePath);
+        if (!string.Equals(expected, row.AbsolutePath, StringComparison.OrdinalIgnoreCase))
+            return MergeEditorCommitResult.Failed(VersionControlMessages.UNAVAILABLE);
+
+        var result = await RunAsync(
+            VersionControlOperation.Resolve,
+            async () => await provider.ResolveConflictsWithContentAsync(
+                                          row.RelativePath, resolvedText)
+                                      .ConfigureAwait(true));
+
+        // null は「別の操作が走っていて実行しなかった」。窓は閉じずに retry させる。
+        if (result is null)
+            return MergeEditorCommitResult.Failed(VersionControlMessages.CANCELED);
+
+        if (!result.IsSuccess)
+            return MergeEditorCommitResult.Failed(result.Message);
+
+        // 解決できたら残りの競合件数が変わる。パネルを取り直す。
+        await ReloadStatusKeepingNoticeAsync(result);
+        return MergeEditorCommitResult.Ok(result.Message);
     }
 
     /// <summary>

@@ -67,6 +67,13 @@ public enum FileConflictState
 
     /// <summary>競合を「リモートを採用」で解決済み。</summary>
     ResolvedTakeRemote,
+
+    /// <summary>
+    /// 競合を、作業コピーにある中身のまま解決済み
+    /// （マージエディタの結果／「両方を取り込む」／手直しした内容。
+    /// Lore の <c>branch merge resolve &lt;path&gt;</c> で mine / theirs を指定しなかった状態）。
+    /// </summary>
+    ResolvedWithContent,
 }
 
 /// <summary>

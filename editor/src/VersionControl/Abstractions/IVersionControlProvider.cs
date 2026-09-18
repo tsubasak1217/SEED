@@ -156,6 +156,56 @@ public interface IVersionControlProvider : IDisposable
         IReadOnlyList<string> relativePaths, ConflictResolutionChoice choice,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// いま進行中のマージの「向き」を返す。
+    ///
+    /// <para>
+    /// マージエディタの見出し（「取り込み元: ブランチ feature」「現在: main」）と、
+    /// 「両方を取り込む」の並び順を決めるのに使う。
+    /// 記録が無いときは <see cref="MergeContext.Unknown"/>（sync 扱い）。
+    /// </para>
+    /// </summary>
+    MergeContext MergeContext { get; }
+
+    /// <summary>
+    /// **結果のテキストを書き込んで** 競合を解決する（マージエディタの「確定」）。
+    ///
+    /// <para>
+    /// 書き込みは元の改行と BOM を保つ。競合の印が残っているテキストは
+    /// Lore を呼ぶ前に拒否する（印が残っていると Lore は何もしないのに
+    /// 成功を返すため、「解決した」という嘘になる）。
+    /// </para>
+    /// <para>
+    /// 解決後は <see cref="ResolveConflictsAsync"/> と同じで、
+    /// 残りの競合が無ければマージのコミットまで行う。
+    /// </para>
+    /// </summary>
+    /// <param name="relativePath">対象のリポジトリ相対パス（1 件）。</param>
+    /// <param name="resolvedText">書き込む中身（印を含まないこと）。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    Task<VersionControlResult> ResolveConflictsWithContentAsync(
+        string relativePath, string resolvedText,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 「両方を取り込む」で競合を解決する。
+    ///
+    /// <para>
+    /// 両者が同じ場所へ追加し合っただけの競合（印の「元」の節が空）でのみ成立する。
+    /// 同じ箇所を両方が変更している場合は、1 件でも混ざっていれば
+    /// **何も書き込まずに** 失敗させる（半端に書き換えない）。
+    /// </para>
+    /// <para>
+    /// 並び順は「既に共有されていた側を先」。sync なら 取り込み元 → 現在、
+    /// ブランチのマージなら 現在 → 取り込み元（<see cref="MergeContext"/> で決まる）。
+    /// </para>
+    /// </summary>
+    /// <param name="relativePaths">対象のリポジトリ相対パス。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    Task<VersionControlResult> ResolveConflictsTakingBothAsync(
+        IReadOnlyList<string> relativePaths,
+        CancellationToken cancellationToken = default);
+
     // ── ブランチ ────────────────────────────────────────────
 
     /// <summary>

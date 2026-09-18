@@ -46,8 +46,22 @@ public sealed class LoreMergeOriginStore
     /// <summary>印のファイル名（`cache/editor/vcs/` 直下）。</summary>
     public const string FILE_NAME = "merge_origin";
 
-    /// <summary>ブランチのマージが進行中であることを表す中身。</summary>
+    /// <summary>ブランチのマージが進行中であることを表す中身（1 行目）。</summary>
     private const string VALUE_BRANCH_MERGE = "branch-merge";
+
+    /// <summary>
+    /// 出どころを書く行の位置（0 始まり）。
+    ///
+    /// <para>
+    /// ★2 行目に取り込み元のブランチ名を足したのは後からなので、
+    /// **1 行しか無いファイルも必ず読めること**（後方互換）。
+    /// 1 行目だけで出どころが決まる構造にしてある。
+    /// </para>
+    /// </summary>
+    private const int LINE_INDEX_ORIGIN = 0;
+
+    /// <summary>取り込み元のブランチ名を書く行の位置（0 始まり）。無くてもよい。</summary>
+    private const int LINE_INDEX_SOURCE_BRANCH = 1;
 
     /// <summary>印のファイルの絶対パス（作業コピーが分からないときは空文字）。</summary>
     private readonly string _filePath;
@@ -77,24 +91,40 @@ public sealed class LoreMergeOriginStore
     /// 進行中のマージの出どころを読む。
     /// 印が無い・読めない場合は <see cref="MergeOrigin.Sync"/>（従来どおり）。
     /// </summary>
-    public MergeOrigin Read()
+    public MergeOrigin Read() => ReadContext().Origin;
+
+    /// <summary>
+    /// 進行中のマージの出どころと、取り込み元のブランチ名をまとめて読む。
+    /// 印が無い・読めない場合は <see cref="MergeContext.Unknown"/>（従来どおり sync）。
+    /// </summary>
+    public MergeContext ReadContext()
     {
-        if (_filePath.Length == 0) return MergeOrigin.Sync;
+        if (_filePath.Length == 0) return MergeContext.Unknown;
 
         try
         {
-            if (!File.Exists(_filePath)) return MergeOrigin.Sync;
+            if (!File.Exists(_filePath)) return MergeContext.Unknown;
 
-            var text = File.ReadAllText(_filePath).Trim();
-            return string.Equals(text, VALUE_BRANCH_MERGE, StringComparison.OrdinalIgnoreCase)
-                ? MergeOrigin.BranchMerge
-                : MergeOrigin.Sync;
+            // ★1 行しか無い古い印も読めるようにするため、行ごとに見る。
+            var lines  = File.ReadAllLines(_filePath);
+            var first  = lines.Length > LINE_INDEX_ORIGIN
+                ? lines[LINE_INDEX_ORIGIN].Trim()
+                : string.Empty;
+
+            if (!string.Equals(first, VALUE_BRANCH_MERGE, StringComparison.OrdinalIgnoreCase))
+                return MergeContext.Unknown;
+
+            var source = lines.Length > LINE_INDEX_SOURCE_BRANCH
+                ? lines[LINE_INDEX_SOURCE_BRANCH].Trim()
+                : string.Empty;
+
+            return new MergeContext(MergeOrigin.BranchMerge, source);
         }
         catch (Exception)
         {
             // 読めないなら「今までどおり」へ倒す（ここで例外を上げて
             // 競合の解決そのものを止める方が利用者にとって困る）。
-            return MergeOrigin.Sync;
+            return MergeContext.Unknown;
         }
     }
 
@@ -102,7 +132,11 @@ public sealed class LoreMergeOriginStore
     /// 「ブランチのマージが進行中」と記録する。
     /// 書けなかった場合は黙って諦める（読み出しが Sync へ倒れるだけ）。
     /// </summary>
-    public void MarkBranchMerge()
+    /// <param name="sourceBranch">
+    /// 取り込み元のブランチ名（マージエディタの見出しに使う）。
+    /// 省略・空のときは 1 行だけの印になる（従来と同じ形）。
+    /// </param>
+    public void MarkBranchMerge(string? sourceBranch = null)
     {
         if (_filePath.Length == 0) return;
 
@@ -113,7 +147,16 @@ public sealed class LoreMergeOriginStore
 
             // 印のフォルダは初回に作る（cache/ はランタイムが作るとは限らない）
             Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
-            File.WriteAllText(_filePath, VALUE_BRANCH_MERGE);
+
+            // ブランチ名に改行が混ざると行の意味が壊れるので、1 行目だけを採る。
+            var name = (sourceBranch ?? string.Empty)
+                .Replace("\r", " ").Replace("\n", " ").Trim();
+
+            File.WriteAllLines(
+                _filePath,
+                name.Length == 0
+                    ? new[] { VALUE_BRANCH_MERGE }
+                    : new[] { VALUE_BRANCH_MERGE, name });
         }
         catch (Exception)
         {

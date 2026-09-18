@@ -33,11 +33,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.VersionControl.Abstractions;
 using SEEDEditor.VersionControl.Lore.Backend;
+using SEEDEditor.VersionControl.Merge;
 using SEEDEditor.VersionControl.Model;
 using SEEDEditor.VersionControl.Scheduling;
 
@@ -67,6 +69,12 @@ public sealed class LoreProvider : IVersionControlProvider
 
     /// <summary>競合解決の操作名。</summary>
     private const string OP_RESOLVE = "resolve-conflicts";
+
+    /// <summary>マージエディタの結果で解決する操作名。</summary>
+    private const string OP_RESOLVE_WITH_CONTENT = "resolve-conflicts-with-content";
+
+    /// <summary>「両方を取り込む」で解決する操作名。</summary>
+    private const string OP_RESOLVE_TAKE_BOTH = "resolve-conflicts-take-both";
 
     /// <summary>ブランチ一覧の操作名。</summary>
     private const string OP_BRANCH_LIST = "branch-list";
@@ -497,6 +505,23 @@ public sealed class LoreProvider : IVersionControlProvider
         if (!resolve.Succeeded)
             return ToFailure(resolve, VersionControlMessages.RESOLVE_FAILED);
 
+        return FinalizeResolveCore(paths, token, VersionControlMessages.RESOLVE_OK_FORMAT);
+    }
+
+    /// <summary>
+    /// 解決を頼んだあとの後始末（残りの確認 → マージのコミット）。
+    ///
+    /// <para>
+    /// mine / theirs を指定する解決も、作業コピーの中身で解決する経路も、
+    /// ここから先は完全に同じ。**分けると片方だけ確認を忘れる**ので 1 か所にまとめる。
+    /// </para>
+    /// </summary>
+    /// <param name="paths">解決を頼んだリポジトリ相対パス。</param>
+    /// <param name="token">中断用。</param>
+    /// <param name="successFormat">成功時のメッセージ書式（件数を 1 つ埋める）。</param>
+    private VersionControlResult FinalizeResolveCore(
+        IReadOnlyList<string> paths, CancellationToken token, string successFormat)
+    {
         // 残りの競合を確認する。
         var status = _backend.Status(new LoreStatusRequest(Scan: false, Offline: true), token);
         if (!status.Call.Succeeded)
@@ -537,8 +562,229 @@ public sealed class LoreProvider : IVersionControlProvider
         // 誤った対応表を引く（ここが消し忘れの唯一の危険箇所）。
         _mergeOrigin.Clear();
 
-        return VersionControlResult.Success(
-            string.Format(VersionControlMessages.RESOLVE_OK_FORMAT, paths.Count));
+        return VersionControlResult.Success(string.Format(successFormat, paths.Count));
+    }
+
+    // ── 競合の解決（中身を指定する経路）──────────────────────
+
+    /// <summary>いま進行中のマージの向き（出どころと取り込み元のブランチ名）。</summary>
+    public MergeContext MergeContext => _mergeOrigin.ReadContext();
+
+    /// <summary>マージエディタで合成した結果を書き込んで解決する。</summary>
+    /// <param name="relativePath">対象のリポジトリ相対パス。</param>
+    /// <param name="resolvedText">書き込む中身（印を含まないこと）。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public Task<VersionControlResult> ResolveConflictsWithContentAsync(
+        string relativePath, string resolvedText,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return Task.FromResult(VersionControlResult.Failed(
+                VersionControlMessages.RESOLVE_NO_PATHS));
+        }
+
+        // ★印が残ったまま Lore に頼むと、Lore は何もしないのに成功を返す。
+        //   書き込む前に落として「解決したつもり」を作らない。
+        var markerLine = MergeValidation.FindMarkerLine(resolvedText);
+        if (markerLine != MergeValidation.NO_MARKER_LINE)
+        {
+            return Task.FromResult(VersionControlResult.Failed(
+                VersionControlMessages.RESOLVE_FAILED,
+                new[]
+                {
+                    string.Format(
+                        VersionControlMessages.MERGE_VALIDATE_MARKERS_REMAIN_FORMAT, markerLine),
+                }));
+        }
+
+        var path = relativePath;
+        var text = resolvedText ?? string.Empty;
+
+        return RunAsync(
+            OP_RESOLVE_WITH_CONTENT,
+            _settings.RemoteOperationTimeout,
+            cancellationToken,
+            token =>
+            {
+                var paths = new[] { path };
+
+                // ★書き込む前に「まだ競合しているか」を確かめる。
+                //   マージエディタは非モーダルなので、開いたままパネルの 2 択で
+                //   解決されていることがある。その状態で確定すると、
+                //   **解決済みのファイルを古い合成結果で黙って上書きする**。
+                //   status はローカル・走査なしなのでサーバ往復は無い。
+                var guard = EnsureStillConflicted(path, token);
+                if (guard is not null) return guard;
+
+                var write = WriteResolvedText(path, text);
+                if (write is not null) return write;
+
+                var resolve = _backend.MergeResolveAsIs(paths, token);
+                if (!resolve.Succeeded)
+                    return ToFailure(resolve, VersionControlMessages.RESOLVE_FAILED);
+
+                return FinalizeResolveCore(
+                    paths, token, VersionControlMessages.RESOLVE_OK_FORMAT);
+            });
+    }
+
+    /// <summary>「両方を取り込む」で競合を解決する。</summary>
+    /// <param name="relativePaths">対象のリポジトリ相対パス。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public Task<VersionControlResult> ResolveConflictsTakingBothAsync(
+        IReadOnlyList<string> relativePaths, CancellationToken cancellationToken = default)
+    {
+        if (relativePaths is null || relativePaths.Count == 0)
+        {
+            return Task.FromResult(VersionControlResult.Failed(
+                VersionControlMessages.RESOLVE_NO_PATHS));
+        }
+
+        var paths  = new List<string>(relativePaths);
+        var origin = _mergeOrigin.Read();
+
+        return RunAsync(
+            OP_RESOLVE_TAKE_BOTH,
+            _settings.RemoteOperationTimeout,
+            cancellationToken,
+            token => ResolveTakingBothCore(paths, origin, token));
+    }
+
+    /// <summary>
+    /// 「両方を取り込む」の本体（ワーカースレッド上で同期実行される）。
+    ///
+    /// <para>
+    /// ★全件ぶんの合成と検査を **先に済ませてから** 書き込む。
+    /// 1 件目を書いてから 2 件目で弾かれると、作業コピーが
+    /// 「一部だけ解決済み・一部は印つき」という説明しづらい状態になる。
+    /// </para>
+    /// </summary>
+    /// <param name="paths">対象のリポジトリ相対パス。</param>
+    /// <param name="origin">並び順を決める出どころ。</param>
+    /// <param name="token">中断用。</param>
+    private VersionControlResult ResolveTakingBothCore(
+        IReadOnlyList<string> paths, MergeOrigin origin, CancellationToken token)
+    {
+        // 1) 全件を読んで合成し、検査まで通す（書き込みはまだしない）。
+        var composed = new List<(string Path, string Text)>(paths.Count);
+        var blocked  = new List<string>();
+
+        foreach (var path in paths)
+        {
+            var absolute = Path.Combine(WorkingCopyRoot, path);
+            var read     = MergeFileText.Read(absolute);
+            if (!read.Succeeded)
+            {
+                blocked.Add(string.Format(
+                    VersionControlMessages.RESOLVE_TAKE_BOTH_BLOCKED_FORMAT, path, read.Reason));
+                continue;
+            }
+
+            if (!ConflictMarkerDocument.TryParse(read.Text, out var document, out var parseError))
+            {
+                blocked.Add(string.Format(
+                    VersionControlMessages.RESOLVE_TAKE_BOTH_BLOCKED_FORMAT, path, parseError));
+                continue;
+            }
+
+            var verdict = MergeTakeBothRule.Evaluate(document!);
+            if (!verdict.Allowed)
+            {
+                blocked.Add(string.Format(
+                    VersionControlMessages.RESOLVE_TAKE_BOTH_BLOCKED_FORMAT, path, verdict.Reason));
+                continue;
+            }
+
+            var text = MergeComposer.Compose(
+                document!,
+                MergeComposer.Fill(document!.ConflictCount, MergeBlockChoice.Both),
+                origin);
+
+            var validation = MergeValidation.Validate(path, text);
+            if (!validation.IsValid)
+            {
+                blocked.Add(string.Format(
+                    VersionControlMessages.RESOLVE_TAKE_BOTH_BLOCKED_FORMAT,
+                    path, validation.Message));
+                continue;
+            }
+
+            composed.Add((path, text));
+        }
+
+        // 1 件でも駄目なら何も書かない（半端な作業コピーを作らない）。
+        if (blocked.Count > 0)
+            return VersionControlResult.Failed(VersionControlMessages.RESOLVE_FAILED, blocked);
+
+        // 2) まとめて書き込む。
+        foreach (var (path, text) in composed)
+        {
+            var write = WriteResolvedText(path, text);
+            if (write is not null) return write;
+        }
+
+        // 3) Lore へ「この中身で決着した」と伝える。
+        var resolve = _backend.MergeResolveAsIs(paths, token);
+        if (!resolve.Succeeded)
+            return ToFailure(resolve, VersionControlMessages.RESOLVE_FAILED);
+
+        return FinalizeResolveCore(
+            paths, token, VersionControlMessages.RESOLVE_TAKE_BOTH_OK_FORMAT);
+    }
+
+    /// <summary>
+    /// 指定のパスがまだ未解決の競合であることを確かめる。
+    /// </summary>
+    /// <param name="relativePath">対象のリポジトリ相対パス。</param>
+    /// <param name="token">中断用。</param>
+    /// <returns>まだ競合していれば null、そうでなければ失敗を表す結果。</returns>
+    private VersionControlResult? EnsureStillConflicted(
+        string relativePath, CancellationToken token)
+    {
+        var status = _backend.Status(new LoreStatusRequest(Scan: false, Offline: true), token);
+        if (!status.Call.Succeeded)
+            return ToFailure(status.Call, VersionControlMessages.RESOLVE_FAILED);
+
+        var unresolved = LoreStatusTranslator.ExtractUnresolvedConflicts(status.Files);
+        foreach (var conflict in unresolved)
+        {
+            if (string.Equals(conflict.Path, relativePath, StringComparison.OrdinalIgnoreCase))
+                return null;
+        }
+
+        return VersionControlResult.Failed(
+            string.Format(
+                VersionControlMessages.RESOLVE_NOT_CONFLICTED_FORMAT, relativePath));
+    }
+
+    /// <summary>
+    /// 解決した中身をファイルへ書き戻す。
+    /// BOM は **いまファイルに付いているもの** に合わせる（付け外しすると全行が差分になる）。
+    /// </summary>
+    /// <param name="relativePath">対象のリポジトリ相対パス。</param>
+    /// <param name="text">書き込む中身。</param>
+    /// <returns>書けたら null、書けなければ失敗を表す結果。</returns>
+    private VersionControlResult? WriteResolvedText(string relativePath, string text)
+    {
+        var absolute = Path.Combine(WorkingCopyRoot, relativePath);
+
+        try
+        {
+            MergeFileText.Write(absolute, text, MergeFileText.HasUtf8Bom(absolute));
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return VersionControlResult.Failed(
+                VersionControlMessages.RESOLVE_FAILED,
+                new[]
+                {
+                    string.Format(
+                        VersionControlMessages.RESOLVE_WRITE_FAILED_FORMAT,
+                        relativePath, ex.Message),
+                });
+        }
     }
 
     // ── ブランチ ────────────────────────────────────────────
@@ -694,7 +940,9 @@ public sealed class LoreProvider : IVersionControlProvider
             // ★「このマージは branch merge 由来」と作業コピーへ記録する。
             //   mine / theirs の対応表は sync と入れ替わるため、
             //   これが無いと解決で逆の側を採ってしまう。
-            _mergeOrigin.MarkBranchMerge();
+            //   取り込み元のブランチ名も一緒に残す（マージエディタの見出しに使う。
+            //   エディタを閉じて開き直しても「何を取り込んでいたか」が分かるように）。
+            _mergeOrigin.MarkBranchMerge(sourceBranch);
 
             // 競合は「異常」ではなく想定内の分岐。既存の競合 UI（2 択 → 解決で
             // マージのコミットまで）でそのまま片付けられる。

@@ -817,4 +817,204 @@ public static class VersionControlMessages
 
     /// <summary>操作名: ロックの操作。</summary>
     public const string PANEL_OPERATION_LOCK = "ロックを操作中";
+
+    // ============================================================
+    //  マージエディタ（競合の中身を並べて解決する専用ウィンドウ）
+    //
+    //  【向きの語彙（ここだけは絶対にぶらさない）】
+    //  ・「取り込み元」… 印の >>>>>>> 側。sync ならリモート、
+    //                    ブランチのマージなら取り込み元のブランチ。
+    //  ・「現在」      … 印の <<<<<<< 側。sync なら自分の作業コピー、
+    //                    ブランチのマージなら取り込み先＝現在のブランチ。
+    //  Lore CLI の mine / theirs とは別の軸なので、この 2 語だけを画面に出す。
+    // ============================================================
+
+    // ── 印の解析に失敗したとき ──────────────────────────────
+
+    /// <summary>印が閉じていない（書式: 始まりの行番号）。</summary>
+    public const string MERGE_PARSE_UNTERMINATED_FORMAT =
+        "{0} 行目から始まる競合の印が閉じていません。ファイルを直してから解決してください。";
+
+    /// <summary>競合ブロックの中に別の印がある（書式: 行番号, 始まりの行番号, 行の中身）。</summary>
+    public const string MERGE_PARSE_NESTED_FORMAT =
+        "{0} 行目に、{1} 行目から始まる競合ブロックの中では現れないはずの印があります: {2}";
+
+    /// <summary>ブロックの外に印が転がっている（書式: 行番号, 行の中身）。</summary>
+    public const string MERGE_PARSE_ORPHAN_FORMAT =
+        "{0} 行目の印は、対応する競合ブロックの始まりがありません: {1}";
+
+    // ── ファイルを読めないとき ──────────────────────────────
+
+    /// <summary>ファイルが見つからない。</summary>
+    public const string MERGE_FILE_NOT_FOUND = "ファイルが見つかりません。";
+
+    /// <summary>大きすぎて開けない（書式: 上限 [MB]）。</summary>
+    public const string MERGE_FILE_TOO_LARGE_FORMAT =
+        "ファイルが大きすぎるため中身を並べて表示できません（上限 {0} MB）。";
+
+    /// <summary>バイナリなので中身を並べられない。</summary>
+    public const string MERGE_FILE_BINARY =
+        "行単位の内容を表示できません（バイナリ等）。2 択で解決してください。";
+
+    // ── 書き戻す前の検査 ────────────────────────────────────
+
+    /// <summary>印が残っている（書式: 行番号）。</summary>
+    public const string MERGE_VALIDATE_MARKERS_REMAIN_FORMAT =
+        "競合の印が {0} 行目に残っています。印を消さないと解決できません。";
+
+    /// <summary>JSON として読めない（書式: 解析エラーの内容）。</summary>
+    public const string MERGE_VALIDATE_JSON_BROKEN_FORMAT =
+        "結果が JSON として読めません: {0}";
+
+    /// <summary>同じオブジェクトの中でキーが重複している（書式: キー名）。</summary>
+    public const string MERGE_VALIDATE_JSON_DUPLICATE_KEY_FORMAT =
+        "同じオブジェクトの中でキー「{0}」が 2 回出てきます。"
+        + "このまま保存するとゲーム側で読み込めません。";
+
+    // ── 「両方を取り込む」の可否 ────────────────────────────
+
+    /// <summary>印が無い（バイナリ等）ので両方を取り込めない。</summary>
+    public const string MERGE_TAKE_BOTH_NO_MARKERS =
+        "このファイルには競合の印がないため「両方を取り込む」ことができません"
+        + "（バイナリなど、行単位で合成できない形式です）。";
+
+    /// <summary>同じ箇所を両方が変更しているので両方を取り込めない。</summary>
+    public const string MERGE_TAKE_BOTH_NOT_ADD_ONLY =
+        "同じ箇所を両方が変更しているため「両方を取り込む」ことができません"
+        + "（並べると内容が二重になります）。「比較…」で 1 つずつ選んでください。";
+
+    // ── マージエディタの画面 ────────────────────────────────
+
+    /// <summary>ウィンドウのタイトル（書式: ファイル名）。</summary>
+    public const string MERGE_EDITOR_TITLE_FORMAT = "マージ — {0}";
+
+    /// <summary>左上の見出し。</summary>
+    public const string MERGE_EDITOR_PANE_INCOMING = "取り込み元";
+
+    /// <summary>右上の見出し。</summary>
+    public const string MERGE_EDITOR_PANE_CURRENT = "現在";
+
+    /// <summary>下段の見出し。</summary>
+    public const string MERGE_EDITOR_PANE_RESULT = "結果";
+
+    /// <summary>sync のときの「取り込み元」の呼び名。</summary>
+    public const string MERGE_EDITOR_SOURCE_REMOTE = "リモート";
+
+    /// <summary>sync のときの「現在」の呼び名。</summary>
+    public const string MERGE_EDITOR_SOURCE_LOCAL = "自分の変更";
+
+    /// <summary>ブランチのマージのときの呼び名（書式: ブランチ名）。</summary>
+    public const string MERGE_EDITOR_SOURCE_BRANCH_FORMAT = "ブランチ {0}";
+
+    /// <summary>見出しの出どころ表示（書式: 取り込み元の名前, 現在の名前）。</summary>
+    public const string MERGE_EDITOR_ORIGIN_FORMAT = "取り込み元: {0}　／　現在: {1}";
+
+    /// <summary>残りの競合ブロック数（書式: 未選択数, 全体数）。</summary>
+    public const string MERGE_EDITOR_REMAINING_FORMAT = "未解決のブロック {0} / {1}";
+
+    /// <summary>すべて解決済みのときの表示。</summary>
+    public const string MERGE_EDITOR_ALL_RESOLVED = "すべてのブロックを選びました。";
+
+    /// <summary>ツールバー: すべて取り込み元。</summary>
+    public const string MERGE_EDITOR_ALL_INCOMING = "すべて取り込み元";
+
+    /// <summary>ツールバー: すべて現在。</summary>
+    public const string MERGE_EDITOR_ALL_CURRENT = "すべて現在";
+
+    /// <summary>ツールバー: すべて両方。</summary>
+    public const string MERGE_EDITOR_ALL_BOTH = "すべて両方";
+
+    /// <summary>ツールバー: 前の競合。</summary>
+    public const string MERGE_EDITOR_PREV_CONFLICT = "前の競合";
+
+    /// <summary>ツールバー: 次の競合。</summary>
+    public const string MERGE_EDITOR_NEXT_CONFLICT = "次の競合";
+
+    /// <summary>ツールバー: マージを確定。</summary>
+    public const string MERGE_EDITOR_APPLY = "マージを確定";
+
+    /// <summary>ツールバー: キャンセル。</summary>
+    public const string MERGE_EDITOR_CANCEL = "キャンセル";
+
+    /// <summary>ブロックのチェックボックスのツールチップ（書式: 側の名前）。</summary>
+    public const string MERGE_EDITOR_TAKE_SIDE_TOOLTIP_FORMAT = "このブロックで「{0}」を採用する";
+
+    /// <summary>結果の手編集がチェック操作で作り直される旨の注意。</summary>
+    public const string MERGE_EDITOR_RESULT_REGENERATED_NOTE =
+        "結果はチェックの操作で作り直されます（手で直した内容は失われます）。";
+
+    /// <summary>詰め物の行（片側にしか無い行の場所）のツールチップ。</summary>
+    public const string MERGE_EDITOR_PADDING_TOOLTIP = "この側には対応する行がありません。";
+
+    /// <summary>マージエディタを開けなかったときのダイアログのタイトル。</summary>
+    public const string MERGE_EDITOR_UNAVAILABLE_TITLE = "マージエディタを開けません";
+
+    /// <summary>印が 1 つも無いので開けない。</summary>
+    public const string MERGE_EDITOR_NO_CONFLICT =
+        "このファイルに競合の印がありません。すでに解決されている可能性があります。";
+
+    /// <summary>確定に失敗したときの表示（書式: 理由）。</summary>
+    public const string MERGE_EDITOR_APPLY_FAILED_FORMAT = "確定できませんでした: {0}";
+
+    /// <summary>未選択のブロックが残ったまま確定しようとしたときの確認（書式: 未選択数）。</summary>
+    public const string MERGE_EDITOR_APPLY_UNSELECTED_CONFIRM_FORMAT =
+        "まだ選んでいないブロックが {0} 個あります。\n"
+        + "そのブロックは「元の内容」（どちらの変更も入らない状態）になります。\n"
+        + "このまま確定しますか？";
+
+    /// <summary>未選択のまま確定する確認のタイトル。</summary>
+    public const string MERGE_EDITOR_APPLY_UNSELECTED_CONFIRM_TITLE = "マージの確定";
+
+    // ── 競合行の追加操作（パネル）────────────────────────────
+
+    /// <summary>行の「比較…」ボタン。</summary>
+    public const string PANEL_CONFLICT_COMPARE = "比較…";
+
+    /// <summary>行の「比較…」ボタンのツールチップ。</summary>
+    public const string PANEL_CONFLICT_COMPARE_TOOLTIP =
+        "マージエディタを開いて、ブロックごとにどちらを残すか選びます（ダブルクリックでも開きます）。";
+
+    /// <summary>行の「両方を取り込む」ボタン。</summary>
+    public const string PANEL_CONFLICT_TAKE_BOTH = "両方を取り込む";
+
+    /// <summary>「すべて両方を取り込む」ボタン。</summary>
+    public const string PANEL_CONFLICT_TAKE_BOTH_ALL = "すべて両方を取り込む";
+
+    /// <summary>「両方を取り込む」が使えるときのツールチップ。</summary>
+    public const string PANEL_CONFLICT_TAKE_BOTH_TOOLTIP =
+        "両方の追加を並べて残します（同じ場所に追加し合ったときだけ使えます）。";
+
+    /// <summary>「すべて両方を取り込む」が使えないときのツールチップ。</summary>
+    public const string PANEL_CONFLICT_TAKE_BOTH_ALL_BLOCKED =
+        "「両方を取り込む」ことができないファイルが含まれているため、まとめては実行できません。";
+
+    /// <summary>行の「編集した内容で解決」ボタン。</summary>
+    public const string PANEL_CONFLICT_RESOLVE_AS_IS = "編集した内容で解決";
+
+    /// <summary>「編集した内容で解決」が使えるときのツールチップ。</summary>
+    public const string PANEL_CONFLICT_RESOLVE_AS_IS_TOOLTIP =
+        "いまのファイルの中身のまま解決済みにします（外部のエディタで直した場合に使います）。";
+
+    /// <summary>「編集した内容で解決」が使えないときのツールチップ（書式: 理由）。</summary>
+    public const string PANEL_CONFLICT_RESOLVE_AS_IS_BLOCKED_FORMAT =
+        "このまま解決することはできません: {0}";
+
+    // ── 中身を指定した解決（プロバイダ）──────────────────────
+
+    /// <summary>「両方を取り込む」で解決できた（書式: 件数）。</summary>
+    public const string RESOLVE_TAKE_BOTH_OK_FORMAT = "{0} 件の競合を「両方を取り込む」で解決しました。";
+
+    /// <summary>「両方を取り込む」ができないファイルがあった（書式: パス, 理由）。</summary>
+    public const string RESOLVE_TAKE_BOTH_BLOCKED_FORMAT = "{0}: {1}";
+
+    /// <summary>結果をファイルへ書けなかった（書式: パス, 理由）。</summary>
+    public const string RESOLVE_WRITE_FAILED_FORMAT = "{0} を書き込めませんでした: {1}";
+
+    /// <summary>
+    /// 書き込もうとしたファイルが、もう競合していなかった（書式: パス）。
+    /// マージエディタを開いたまま別の手段で解決したときに起きる。
+    /// </summary>
+    public const string RESOLVE_NOT_CONFLICTED_FORMAT =
+        "{0} はもう競合していません（ほかの操作で解決された可能性があります）。"
+        + "上書きを避けるため中止しました。画面を更新してからやり直してください。";
 }

@@ -78,6 +78,10 @@
     <Compile Include="..\..\src\VersionControl\Model\MergeOrigin.cs">
       <Link>Linked\VersionControl\Model\MergeOrigin.cs</Link>
     </Compile>
+    <!-- 出どころ + 取り込み元のブランチ名（マージエディタの見出しに使う）。 -->
+    <Compile Include="..\..\src\VersionControl\Model\MergeContext.cs">
+      <Link>Linked\VersionControl\Model\MergeContext.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\VersionControl\Model\OperationReports.cs">
       <Link>Linked\VersionControl\Model\OperationReports.cs</Link>
     </Compile>
@@ -85,6 +89,43 @@
          パネルとプロバイダが同じ規則を使うことを固定するためテストへ取り込む。 -->
     <Compile Include="..\..\src\VersionControl\Model\BranchOperationRules.cs">
       <Link>Linked\VersionControl\Model\BranchOperationRules.cs</Link>
+    </Compile>
+
+    <!-- ── マージエディタの純粋ロジック（印の分解・行差分・合成・検査）──
+         WPF にも LoreVcs にも依存しない。競合の中身を書き換える側なので、
+         ここが一番「壊れると静かに被害が出る」場所。単体テストの本命の 1 つ。 -->
+    <Compile Include="..\..\src\VersionControl\Merge\MergeLine.cs">
+      <Link>Linked\VersionControl\Merge\MergeLine.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeSegment.cs">
+      <Link>Linked\VersionControl\Merge\MergeSegment.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeParseException.cs">
+      <Link>Linked\VersionControl\Merge\MergeParseException.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\ConflictMarkerDocument.cs">
+      <Link>Linked\VersionControl\Merge\ConflictMarkerDocument.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeLineDiff.cs">
+      <Link>Linked\VersionControl\Merge\MergeLineDiff.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeComposer.cs">
+      <Link>Linked\VersionControl\Merge\MergeComposer.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeInsertionMap.cs">
+      <Link>Linked\VersionControl\Merge\MergeInsertionMap.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeAlignedView.cs">
+      <Link>Linked\VersionControl\Merge\MergeAlignedView.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeTakeBothRule.cs">
+      <Link>Linked\VersionControl\Merge\MergeTakeBothRule.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeValidation.cs">
+      <Link>Linked\VersionControl\Merge\MergeValidation.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Merge\MergeFileText.cs">
+      <Link>Linked\VersionControl\Merge\MergeFileText.cs</Link>
     </Compile>
 
     <!-- ── 境界 ── -->

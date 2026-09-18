@@ -106,6 +106,26 @@ public sealed class NullVersionControlProvider : IVersionControlProvider
         CancellationToken cancellationToken = default)
         => Task.FromResult(Unavailable());
 
+    /// <summary>進行中のマージは存在しない。</summary>
+    public MergeContext MergeContext => MergeContext.Unknown;
+
+    /// <summary>常に利用不可を返す。</summary>
+    /// <param name="relativePath">未使用。</param>
+    /// <param name="resolvedText">未使用。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public Task<VersionControlResult> ResolveConflictsWithContentAsync(
+        string relativePath, string resolvedText,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(Unavailable());
+
+    /// <summary>常に利用不可を返す。</summary>
+    /// <param name="relativePaths">未使用。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public Task<VersionControlResult> ResolveConflictsTakingBothAsync(
+        IReadOnlyList<string> relativePaths,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(Unavailable());
+
     /// <summary>常に利用不可を返す。</summary>
     /// <param name="cancellationToken">未使用。</param>
     public Task<VersionControlResult<IReadOnlyList<BranchInfo>>> GetBranchesAsync(

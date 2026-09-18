@@ -492,12 +492,22 @@
                                         Margin="6,0,0,0"
                                         Content="{x:Static vc:ConflictRowItem.TakeRemoteAllText}"
                                         Click="OnResolveAllTakeRemote"/>
+                                <!-- 「すべて両方」は全件で成り立つときだけ押せる。
+                                     可否と理由はコードビハインドが流し込む。 -->
+                                <Button x:Name="BtnTakeBothAll"
+                                        Style="{StaticResource Vc.RowButton}"
+                                        Margin="6,0,0,0"
+                                        Content="{x:Static vc:ConflictRowItem.TakeBothAllText}"
+                                        ToolTipService.ShowOnDisabled="True"
+                                        Click="OnResolveAllTakeBoth"/>
                             </StackPanel>
                         </Border>
 
+                        <!-- ダブルクリックでマージエディタを開く（VS の「変更」一覧に倣う）。 -->
                         <ListBox x:Name="ConflictList" Grid.Row="1"
                                  Background="Transparent" BorderThickness="0"
                                  Foreground="{StaticResource Vc.Text}"
+                                 MouseDoubleClick="OnConflictListDoubleClick"
                                  ItemContainerStyle="{StaticResource Vc.RowStyle}"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -531,15 +541,37 @@
                                                    Margin="6,0,6,0"
                                                    ToolTip="{Binding PathText}"/>
 
+                                        <!-- 並びは「見てから選ぶ」順: 比較 → 2 択 → 両方 → 編集済み。
+                                             可否が中身に依るボタン（両方 / 編集した内容）は
+                                             IsEnabled と ToolTip を行の器から引く。 -->
                                         <StackPanel Grid.Column="3" Orientation="Horizontal">
                                             <Button Style="{StaticResource Vc.RowButton}"
-                                                    Content="{x:Static vc:ConflictRowItem.KeepMineText}"
+                                                    Content="{x:Static vc:ConflictRowItem.CompareText}"
+                                                    ToolTip="{x:Static vc:ConflictRowItem.CompareToolTip}"
                                                     Tag="{Binding}"
+                                                    Click="OnCompareConflict"/>
+                                            <Button Style="{StaticResource Vc.RowButton}"
+                                                    Content="{x:Static vc:ConflictRowItem.KeepMineText}"
+                                                    Tag="{Binding}" Margin="4,0,0,0"
                                                     Click="OnResolveFileKeepMine"/>
                                             <Button Style="{StaticResource Vc.RowButton}"
                                                     Content="{x:Static vc:ConflictRowItem.TakeRemoteText}"
                                                     Tag="{Binding}" Margin="4,0,0,0"
                                                     Click="OnResolveFileTakeRemote"/>
+                                            <Button Style="{StaticResource Vc.RowButton}"
+                                                    Content="{x:Static vc:ConflictRowItem.TakeBothText}"
+                                                    ToolTip="{Binding TakeBothToolTip}"
+                                                    ToolTipService.ShowOnDisabled="True"
+                                                    IsEnabled="{Binding CanTakeBoth}"
+                                                    Tag="{Binding}" Margin="4,0,0,0"
+                                                    Click="OnResolveFileTakeBoth"/>
+                                            <Button Style="{StaticResource Vc.RowButton}"
+                                                    Content="{x:Static vc:ConflictRowItem.ResolveAsIsText}"
+                                                    ToolTip="{Binding ResolveAsIsToolTip}"
+                                                    ToolTipService.ShowOnDisabled="True"
+                                                    IsEnabled="{Binding CanResolveAsIs}"
+                                                    Tag="{Binding}" Margin="4,0,0,0"
+                                                    Click="OnResolveFileAsIs"/>
                                         </StackPanel>
                                     </Grid>
                                 </DataTemplate>

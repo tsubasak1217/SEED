@@ -470,12 +470,25 @@ public partial class VersionControlPanel : UserControl
         _conflictRows.Clear();
 
         var group = _state.Groups.FirstOrDefault(g => g.IsConflictGroup);
-        if (group is null) return;
-
-        foreach (var file in group.Items)
+        if (group is not null)
         {
-            _conflictRows.Add(new VcRows.ConflictRowItem(file));
+            var root = VersionControlService.Provider.WorkingCopyRoot;
+            foreach (var file in group.Items)
+            {
+                // 行の生成でファイルを 1 回読む（「両方を取り込む」の可否判定のため）。
+                // 対象は未解決の競合だけなので普通は数件。
+                _conflictRows.Add(new VcRows.ConflictRowItem(file, root));
+            }
         }
+
+        // 「すべて両方を取り込む」は **全件で成り立つときだけ** 押せる。
+        // 1 件でも無理なものが混ざったまま押せると、まとめて失敗して
+        // 「どれが駄目だったのか」が分からなくなる。
+        var allTakeBoth = _conflictRows.Count > 0 && _conflictRows.All(r => r.CanTakeBoth);
+        BtnTakeBothAll.IsEnabled = allTakeBoth;
+        BtnTakeBothAll.ToolTip   = allTakeBoth
+            ? VersionControlMessages.PANEL_CONFLICT_TAKE_BOTH_TOOLTIP
+            : VersionControlMessages.PANEL_CONFLICT_TAKE_BOTH_ALL_BLOCKED;
     }
 
     /// <summary>
