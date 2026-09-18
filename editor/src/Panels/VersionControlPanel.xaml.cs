@@ -168,6 +168,8 @@ public partial class VersionControlPanel : UserControl
 
         MenuShowWorkingCopy.Header = VersionControlMessages.PANEL_MENU_SHOW_WORKING_COPY;
         MenuReleaseAllLocks.Header = VersionControlMessages.PANEL_MENU_RELEASE_ALL_LOCKS;
+        MenuMergeBranch.Header     = VersionControlMessages.PANEL_MENU_MERGE_BRANCH;
+        MenuArchiveBranch.Header   = VersionControlMessages.PANEL_MENU_ARCHIVE_BRANCH;
         MenuAccounts.Header        = VersionControlMessages.PANEL_MENU_ACCOUNTS;
 
         MenuChangesRefresh.Header    = VersionControlMessages.PANEL_REFRESH_TOOLTIP;
@@ -662,6 +664,11 @@ public partial class VersionControlPanel : UserControl
     {
         // 「ロックをすべて解除」は自分のロックがあるときだけ押せる。
         MenuReleaseAllLocks.IsEnabled = _state.CanChangeLocks;
+
+        // ブランチのマージ・削除はブランチ操作と同じ条件（利用可能かつ実行中でない）。
+        MenuMergeBranch.IsEnabled   = _state.CanChangeBranch;
+        MenuArchiveBranch.IsEnabled = _state.CanChangeBranch;
+
         OpenMenuUnder(BtnMore);
     }
 

@@ -93,6 +93,47 @@ internal static class EditorDialogs
     }
 
     /// <summary>
+    /// 一覧からブランチを 1 つ選ばせるモーダルを表示する（ヘッドレス時はログ出力のみ）。
+    ///
+    /// <para>
+    /// ヘッドレス時は <c>null</c>（＝取り消し）を返す。ブランチのマージも削除も
+    /// 「勝手に既定値で進めない」のが安全側であり、<see cref="ShowTextInput"/> と同じ方針。
+    /// </para>
+    /// </summary>
+    /// <param name="prompt">一覧の上に出す説明文。</param>
+    /// <param name="caption">タイトル。</param>
+    /// <param name="branches">選択肢（空なら表示せず null を返す）。</param>
+    /// <param name="note">一覧の下に出す補足（省略可）。</param>
+    /// <param name="owner">親ウィンドウ（中央に出すために使う）。</param>
+    /// <returns>選ばれたブランチ名。取り消し・ヘッドレス・選択肢なしのときは null。</returns>
+    public static string? ShowBranchPicker(
+        string prompt,
+        string caption,
+        System.Collections.Generic.IReadOnlyList<string> branches,
+        string? note = null,
+        Window? owner = null)
+    {
+        // 選択肢が無いのにダイアログを出すと「OK を押せない窓」になる。
+        // 呼び出し側でも先に確かめるが、境界としてここでも弾く。
+        if (branches is null || branches.Count == 0) return null;
+
+        if (EditorStartupOptions.IsHeadless)
+        {
+            var flat = prompt.Replace("\r\n", " / ").Replace("\n", " / ");
+            EditorLog.Write(
+                $"{LOG_PREFIX} {caption}: {flat}  → 既定応答=キャンセル（選択なし）");
+            return null;
+        }
+
+        var window = new SEEDEditor.Dialogs.BranchPickerWindow(caption, prompt, branches, note)
+        {
+            Owner = owner ?? Application.Current?.MainWindow,
+        };
+
+        return window.ShowDialog() == true ? window.SelectedBranch : null;
+    }
+
+    /// <summary>
     /// ボタン構成ごとの、ヘッドレス時の既定応答を返す。
     /// 「勝手に破壊的な操作を承諾しない」を原則にする。
     /// </summary>

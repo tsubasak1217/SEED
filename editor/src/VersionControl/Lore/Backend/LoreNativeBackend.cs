@@ -409,6 +409,51 @@ public sealed class LoreNativeBackend : ILoreBackend
         return Execute(() => LoreApi.BranchSwitch(globalArgs, args).Wait());
     }
 
+    /// <summary>別のブランチを現在のブランチへ取り込む。</summary>
+    /// <param name="sourceBranch">取り込み元のブランチ名。</param>
+    /// <param name="message">競合が無かったときに自動で打つコミットのメッセージ。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public LoreCallResult BranchMerge(
+        string sourceBranch, string message, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return CanceledResult();
+
+        // ★オフラインにしてはいけない。取り込み元がリモートにしか無い場合や、
+        //   取り込む中身の実体がローカルストアに無い場合に取ってこられなくなる
+        //   （MergeResolve と同じ理由）。
+        using var globalArgs = NewGlobalArgs(offline: false);
+        using var args = new LoreBranchMergeStartArgs
+        {
+            // Branch は「現在のブランチへ取り込む **元**」。
+            // 逆向き（現在のブランチを相手へ押し込む）は BranchMergeInto で、別 API。
+            Branch  = sourceBranch,
+            Message = message,
+            // 競合が無ければそのままコミットまで済ませる。
+            // NoCommit を立てると「マージ中」の状態が残り、次の送信が通らなくなる。
+            NoCommit = false,
+        };
+        return Execute(() => LoreApi.BranchMergeStart(globalArgs, args).Wait());
+    }
+
+    /// <summary>ブランチを削除（アーカイブ）する。</summary>
+    /// <param name="name">ブランチ名。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public LoreCallResult BranchArchive(string name, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return CanceledResult();
+
+        using var globalArgs = NewGlobalArgs(offline: false);
+        using var args = new LoreBranchArchiveArgs
+        {
+            Branch = name,
+            // 層（layer）・リンク（link）は SEED では使っていないので既定のまま。
+            // 立てると連結先のリポジトリまで巻き込んでアーカイブしてしまう。
+            IncludeLayers = false,
+            IncludeLinks  = false,
+        };
+        return Execute(() => LoreApi.BranchArchive(globalArgs, args).Wait());
+    }
+
     // ── 履歴 ────────────────────────────────────────────────
 
     /// <summary>履歴を取得する（サーバ必須）。</summary>

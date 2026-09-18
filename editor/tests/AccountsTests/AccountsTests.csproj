@@ -193,6 +193,14 @@
     <Compile Include="..\..\src\VersionControl\Model\OperationReports.cs">
       <Link>Linked\VersionControl\Model\OperationReports.cs</Link>
     </Compile>
+    <!-- 進行中のマージの出どころ（mine / theirs の向きがこれで変わる）と、
+         ブランチのマージ・削除（アーカイブ）の除外規則。 -->
+    <Compile Include="..\..\src\VersionControl\Model\MergeOrigin.cs">
+      <Link>Linked\VersionControl\Model\MergeOrigin.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Model\BranchOperationRules.cs">
+      <Link>Linked\VersionControl\Model\BranchOperationRules.cs</Link>
+    </Compile>
 
     <!-- 境界 -->
     <Compile Include="..\..\src\VersionControl\Abstractions\IVersionControlProvider.cs">
@@ -224,6 +232,9 @@
     <!-- Lore の判断ロジックとプロバイダ -->
     <Compile Include="..\..\src\VersionControl\Lore\LoreConflictResolutionMap.cs">
       <Link>Linked\VersionControl\Lore\LoreConflictResolutionMap.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreMergeOriginStore.cs">
+      <Link>Linked\VersionControl\Lore\LoreMergeOriginStore.cs</Link>
     </Compile>
     <Compile Include="..\..\src\VersionControl\Lore\LoreStatusTranslator.cs">
       <Link>Linked\VersionControl\Lore\LoreStatusTranslator.cs</Link>

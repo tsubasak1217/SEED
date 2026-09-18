@@ -73,6 +73,12 @@ public sealed class FakeLoreBackend : ILoreBackend
     /// <summary>ブランチ切替の戻り値。</summary>
     public LoreCallResult BranchSwitchResult { get; set; } = LoreCallResult.Success;
 
+    /// <summary>ブランチのマージの戻り値。</summary>
+    public LoreCallResult BranchMergeResult { get; set; } = LoreCallResult.Success;
+
+    /// <summary>ブランチの削除（アーカイブ）の戻り値。</summary>
+    public LoreCallResult BranchArchiveResult { get; set; } = LoreCallResult.Success;
+
     /// <summary>履歴の戻り値。</summary>
     public LoreRowsResult<LoreRevisionRow> HistoryResult { get; set; }
         = new(LoreCallResult.Success, Array.Empty<LoreRevisionRow>());
@@ -153,6 +159,21 @@ public sealed class FakeLoreBackend : ILoreBackend
 
     /// <summary>競合解決に渡されたパス（最後の呼び出し）。</summary>
     public IReadOnlyList<string> LastResolvePaths { get; private set; } = Array.Empty<string>();
+
+    /// <summary>ブランチのマージが呼ばれた回数。</summary>
+    public int BranchMergeCallCount { get; private set; }
+
+    /// <summary>ブランチのマージに渡された取り込み元（最後の呼び出し）。</summary>
+    public string LastBranchMergeSource { get; private set; } = string.Empty;
+
+    /// <summary>ブランチのマージに渡されたコミットメッセージ（最後の呼び出し）。</summary>
+    public string LastBranchMergeMessage { get; private set; } = string.Empty;
+
+    /// <summary>ブランチの削除（アーカイブ）が呼ばれた回数。</summary>
+    public int BranchArchiveCallCount { get; private set; }
+
+    /// <summary>ブランチの削除（アーカイブ）に渡された名前（最後の呼び出し）。</summary>
+    public string LastBranchArchiveName { get; private set; } = string.Empty;
 
     /// <summary>ロック取得に渡されたパス（最後の呼び出し）。</summary>
     public IReadOnlyList<string> LastLockAcquirePaths { get; private set; } = Array.Empty<string>();
@@ -268,6 +289,29 @@ public sealed class FakeLoreBackend : ILoreBackend
     /// <param name="cancellationToken">未使用。</param>
     public LoreCallResult BranchSwitch(string name, CancellationToken cancellationToken)
         => BranchSwitchResult;
+
+    /// <summary>ブランチのマージ。取り込み元とメッセージを記録する。</summary>
+    /// <param name="sourceBranch">取り込み元。</param>
+    /// <param name="message">自動コミットのメッセージ。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public LoreCallResult BranchMerge(
+        string sourceBranch, string message, CancellationToken cancellationToken)
+    {
+        BranchMergeCallCount++;
+        LastBranchMergeSource  = sourceBranch;
+        LastBranchMergeMessage = message;
+        return BranchMergeResult;
+    }
+
+    /// <summary>ブランチの削除（アーカイブ）。名前を記録する。</summary>
+    /// <param name="name">名前。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public LoreCallResult BranchArchive(string name, CancellationToken cancellationToken)
+    {
+        BranchArchiveCallCount++;
+        LastBranchArchiveName = name;
+        return BranchArchiveResult;
+    }
 
     /// <summary>履歴。</summary>
     /// <param name="maxCount">最大件数。</param>

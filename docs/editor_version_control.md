@@ -40,6 +40,8 @@
 | `Abstractions/IVersionControlProvider.cs` | プロバイダ境界 |
 | `Abstractions/ILockService.cs` | ロック境界（差し替え可能） |
 | `Model/*.cs` | 変更ファイル・ブランチ・リビジョン・ロック・競合・操作結果 |
+| `Model/MergeOrigin.cs` | 進行中のマージが sync 由来か branch merge 由来か（**mine/theirs の向きがこれで変わる**） |
+| `Model/BranchOperationRules.cs` | ブランチのマージ元・削除（アーカイブ）候補の除外規則（4.5.6） |
 | `Null/*.cs` | VCS 無しの実装 |
 | `Scheduling/*.cs` | 直列ワーカー（本番）とその場実行（テスト） |
 | `Lore/Backend/ILoreBackend.cs` | Lore コマンドの抽象（テストの継ぎ目） |
@@ -47,7 +49,8 @@
 | `Lore/Backend/LoreCallResult.cs` | Lore 呼び出し 1 回分の結末 |
 | `Lore/Backend/LoreNativeBackend.cs` | **LoreVcs に依存する唯一のファイル** |
 | `Lore/Backend/LoreShutdownGuard.cs` | `Lore.Shutdown()` をプロセスで 1 回だけ呼ぶ |
-| `Lore/LoreConflictResolutionMap.cs` | 競合解決の対応表（1 か所に固定） |
+| `Lore/LoreConflictResolutionMap.cs` | 競合解決の対応表（1 か所に固定。出どころで向きが変わる） |
+| `Lore/LoreMergeOriginStore.cs` | 進行中のマージの出どころを `cache/editor/vcs/merge_origin` へ記録 |
 | `Lore/LoreStatusTranslator.cs` | status の生データ → モデル |
 | `Lore/LoreBranchTranslator.cs` | LOCAL / REMOTE の統合 |
 | `Lore/LoreLockTranslator.cs` | ロック行 → モデル（所有者不明の扱い） |
@@ -77,6 +80,8 @@
 | `FetchLatestAsync()` | **最新を取得** | sync → 状態を引き直して競合検出 |
 | `ResolveConflictsAsync(paths, choice)` | 競合の解決 | `merge resolve mine/theirs` → 残り 0 ならマージを commit |
 | `GetBranchesAsync()` / `CreateBranchAsync` / `SwitchBranchAsync` | ブランチ | LOCAL/REMOTE は統合して返す |
+| `MergeBranchAsync(sourceBranch)` | **ブランチのマージ** | `branch merge <元>`（競合なしならコミットまで自動）→ 状態を引き直して競合検出 |
+| `ArchiveBranchAsync(name)` | **ブランチの削除（アーカイブ）** | `branch archive`。現在のブランチと既定ブランチは拒否 |
 | `GetHistoryAsync(maxCount)` | 履歴 | サーバ必須 |
 | `Locks` | ロック | 一覧・取得・解放・照会 |
 
@@ -148,7 +153,9 @@ UI を触る購読側が自分で `Dispatcher` へ移すこと（サービスは
 | `stage .` は走査しないと何も stage しない | `LoreProvider.SubmitCore` が `FileStage(".", scan: true)` |
 | 未 stage の commit が空リビジョンを作る | stage 直後の status で staged 件数を数え、0 なら commit しない |
 | `sync` は競合しても成功（rc=0）を返す | sync 後の status の `flagConflict*` で判定（`ExtractUnresolvedConflicts`） |
-| `resolve mine` / `theirs` が直感と逆 | `LoreConflictResolutionMap`（下記 4.1） |
+| **`branch merge` も競合を戻り値で伝えない**（成功を返すことも、失敗を返しつつ競合を残すこともある） | マージ後の status の `flagConflict*` で判定（`MergeBranchCore`。成否にかかわらず引き直す） |
+| **ブランチの「削除」が無い**（`archive` が一覧から隠す操作） | `ArchiveBranchAsync` を「削除（アーカイブ）」として出す（4.5.6） |
+| `resolve mine` / `theirs` が直感と逆 **（ただし逆になるのは sync のマージだけ）** | `LoreConflictResolutionMap` ＋ `LoreMergeOriginStore`（下記 4.1） |
 | 素のファイル移動は履歴が切れる | `NotifyMovedAsync` → `file stage move` |
 | 既定の status はファイルシステムを見ない | 保存時に `file dirty`、開いた直後だけ `scan` |
 | `history --offline` は失敗 | `LoreConnectionDiagnosis` で `RequiresConnection` へ畳む |
@@ -162,11 +169,18 @@ UI を触る購読側が自分で `Dispatcher` へ移すこと（サービスは
 
 ### 4.1 競合解決の向き（取り違えると利用者の作業が消える）
 
-```
-利用者の選択            Lore のコマンド          実際に採られる内容
-「自分の変更を残す」 →  resolve theirs      →  ローカル（自分）の内容
-「リモートを採用」   →  resolve mine        →  リモート（相手）の内容
-```
+**★向きは「進行中のマージがどちら由来か」で入れ替わる。** 実サーバ結合テストで
+ファイルの中身を突き合わせて確認した結果:
+
+| 進行中のマージ | 利用者の選択 | Lore のコマンド | 実際に採られる内容 |
+|---|---|---|---|
+| sync（最新を取得） | 自分の変更を残す | `resolve theirs` | ローカル（自分）の内容 |
+| sync（最新を取得） | リモートを採用 | `resolve mine` | リモート（相手）の内容 |
+| **branch merge（ブランチのマージ）** | 自分の変更を残す | **`resolve mine`** | **現在のブランチ（取り込み先）の内容** |
+| **branch merge（ブランチのマージ）** | リモートを採用 | **`resolve theirs`** | **取り込み元のブランチの内容** |
+
+つまり **sync のマージだけが逆**で、`branch merge` は Lore の語のとおり
+（mine = 自分 = 現在のブランチ）になる。
 
 根拠（Lore v0.9.0 のソース）:
 
@@ -174,15 +188,32 @@ UI を触る購読側が自分で `Dispatcher` へ移すこと（サービスは
   「`Merge of divergent branch history, other parent is current revision`」
   → `parent_other`（= `parents()[1]`）が**手元の現リビジョン**、
     `parent_self`（= `parents()[0]`）が**取り込んだ側（リモート）**。
+  この並べ替えは sync の経路にだけ入る。
 - `lore-revision/src/stage.rs`：`MergeParent::Mine => parents()[0]`、`Theirs => parents()[1]`。
 - `lore/src/branch.rs`：`merge_resolve_mine → MergeParent::Mine`、`_theirs → Theirs`。
 
 Lore 自身の doc コメントは `merge_resolve_mine` を "accepting the local (mine) version" と
-書いているが、sync マージの並びでは上記のとおり逆になる。**実サーバ結合テストで
-実際のファイル内容を突き合わせて確認済み**（`ResolveKeepMineKeepsLocal` /
-`ResolveTakeRemoteTakesRemote`）。
+書いており、`branch merge` ではそのとおりだが sync では逆になる。
+どちらも**実サーバ結合テストで実際のファイル内容を突き合わせて確認済み**
+（`ResolveKeepMineKeepsLocal` / `ResolveTakeRemoteTakesRemote` /
+`MergeConflictKeepMineKeepsCurrentBranch` / `MergeConflictTakeRemoteTakesSourceBranch`）。
 
 対応付けは `LoreConflictResolutionMap` の 1 か所だけで行い、単体テストで固定している。
+
+#### 進行中のマージの出どころをどう覚えているか
+
+向きを選ぶには「いま未解決のマージが sync 由来か branch merge 由来か」が要る。
+これは `LoreMergeOriginStore` が作業コピーの **`cache/editor/vcs/merge_origin`** に記録する。
+
+- `MergeBranchAsync` が競合を返したとき … `branch-merge` と書く
+- 競合を全部解決してマージをコミットしたとき／競合なしで取り込めたとき … 消す
+- `FetchLatestAsync`（sync）が通ったとき … 消す（進行中のマージが sync 由来へ入れ替わる）
+- **ファイルが無い／読めないときは sync 扱い**（従来どおりの、検証済みの挙動へ倒す）
+
+メモリではなくファイルに置いているのは、**マージを未解決のまま残してエディタを
+閉じ、開き直してから解決する**ことが普通に起こるため。プロセス内の変数で覚えていると、
+その場合に黙って逆の側を採ってしまう。`.lore/` は Lore のメタデータ用フォルダで
+status の走査に出てこないので、作業コピーと一緒に持ち回る印の置き場所として使っている。
 
 ### 4.2 `KEEP` が「変更」
 
@@ -308,8 +339,11 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 | 6 | 結果の 1 行メッセージ（重大度で色分け） |
 | 7 | **折りたたみ節** … 競合 (n) / 変更 (n) / ロック (n) / 履歴 |
 
-「その他 …」メニューは「フォルダーで表示」「ロックをすべて解除」「アカウント…」。
+「その他 …」メニューは「フォルダーで表示」「ロックをすべて解除」／
+「ブランチをマージ…」「ブランチを削除（アーカイブ）…」／「アカウント…」。
 **アカウントの入口はここに移した**（ヘッダーに並ぶのは手本と同じ 4 つのアイコンだけにするため）。
+ブランチのマージ・削除もここに置いている（ブランチのコンボは
+「切り替える」「作る」だけに保ち、取り返しのつかない操作を混ぜないため）。
 
 ### 4.5.2 ファイル一覧
 
@@ -379,7 +413,51 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
   `TreeExpanderClosedGeometry` / `TreeExpanderOpenGeometry`（白抜き三角）を使い回す。
   `▷` `▽` のような記号文字は書かない（`.claude/rules/editor-icons.md`）
 
-### 4.5.6 節の開閉と、サーバ往復の抑え方
+### 4.5.6 ブランチのマージと削除（アーカイブ）
+
+入口はどちらもヘッダーの「その他 …」メニュー。ブランチのコンボは
+「切り替える」「作る」だけに保つ（取り返しのつかない操作を同じ場所に混ぜない）。
+
+#### 「ブランチをマージ…」
+
+別のブランチを**現在のブランチへ取り込む**（`IVersionControlProvider.MergeBranchAsync`）。
+
+1. **未送信の変更が 1 件でもあれば始めない。** 1 行メッセージで
+   「先に『送信』するか、変更を元に戻してから」と案内して終わる。
+   取り込みは作業コピーのファイルを書き換えるので、手元の変更と混ざると
+   「どちらが自分の変更か」が分からなくなる。
+2. ブランチ一覧を取り直し、**現在のブランチを除いた**候補をダイアログに並べる
+   （`BranchOperationRules.MergeSourceCandidates`）。候補 0 件なら案内して終わる。
+3. 選ばれたら取り込む。競合が無ければ **Lore がマージのコミットまで自動で打つ**ので、
+   結果は「取り込みました。『送信』で共有されます」。**取り込みは手元だけの操作**であり、
+   ほかの人へ渡すには続けて「送信」が要る。
+4. 競合が出たら結末は `Conflicted`。**既存の競合の節がそのまま使える**
+   （2 択 → 全部解決したところでマージのコミットまで行う）。
+   このとき採られる側は 4.1 の表のとおり `sync` と**逆**になるので、
+   出どころを `cache/editor/vcs/merge_origin` に記録してから競合 UI へ渡している。
+5. 分岐で弾かれたら `NeedsSync`（「先に『最新を取得』してください」）、
+   サーバへ届かなければ `RequiresConnection`。
+
+#### 「ブランチを削除（アーカイブ）…」
+
+**Lore v0.9.0 にブランチの「削除」は無い。** あるのは `branch archive` で、
+これは**一覧から隠す**操作（`branch list` は既定の `Archived = false` で返さない）。
+コミットそのものはサーバに残るが、**このエディタからは元に戻せない**。
+そのため利用者向けの語彙は「削除（アーカイブ）」で統一し、
+選択ダイアログの補足と確認ダイアログの 2 段でその意味を伝える。
+
+1. ブランチ一覧を取り直し、**現在のブランチと既定ブランチ**
+   （`VersionControlSettings.DefaultBranchName`、既定は `main`）を除いた候補を並べる。
+2. 選んだあとに確認ダイアログ（「元に戻せません」）。ヘッドレスでは必ず「いいえ」。
+3. 実行後はコンボを取り直す（消えたブランチを残さない）。
+
+除外規則は `BranchOperationRules` の 1 か所だけが持ち、
+**パネル（一覧の絞り込み）とプロバイダ（実行直前の拒否）の両方が同じ規則を呼ぶ**。
+片方だけに置くと「一覧に出るのに必ず失敗する」「一覧に出ないのに実行できる」が生まれる。
+プロバイダ側の拒否は UI 以外から呼ばれたときの最後の砦なので消さないこと。
+名前の比較は大文字小文字を区別しない（`Main` を消せてしまうより、消せない側へ倒す）。
+
+### 4.5.7 節の開閉と、サーバ往復の抑え方
 
 - 既定は 競合＝開く / 変更＝開く / **ロックと履歴＝閉じる**。
   ロックと履歴は開いたときにしかサーバへ問い合わせない
@@ -394,7 +472,7 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 - ツリーの畳み状態はセッション内だけで保存しない。畳んだ集合で持つので、
   取得のたびに現れる新しいフォルダーは既定で開いた状態になる。
 
-### 4.5.7 状態取得のモード（どこがサーバに聞くか）
+### 4.5.8 状態取得のモード（どこがサーバに聞くか）
 
 | きっかけ | モード | 理由 |
 |---|---|---|
@@ -402,7 +480,7 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 | ヘッダーの更新 ⟳ | **`ScanOnline`** | 未送信・未取得の有無はサーバに聞かないと分からない。利用者が明示的に押したときだけ払う |
 | 送信 / 最新を取得 / 競合解決 / ブランチ切替の直後 | **`ScanOnline`** | どれもサーバと往復した直後で、結果を上段へ正しく映すため |
 
-### 4.5.8 自動更新
+### 4.5.9 自動更新
 
 `WorkingCopyWatcher` がプロジェクトルートを監視し、変化があれば
 `VersionControlService.RequestRefresh(ScanOffline)` を呼ぶ（デバウンスはサービス側が持つ）。
@@ -413,14 +491,14 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 内容の書き換え（LastWrite）を拾わないため相乗りできない。
 あちらの `NotifyFilter` を広げるとファイルグリッドが毎回再構築されて挙動が変わる。
 
-### 4.5.9 ドッキング
+### 4.5.10 ドッキング
 
 `ContentId = "version_control"`（**変更禁止**）。既定では Project / Output と同じ下段。
 旧 `layout.xml` にはこのパネルが無いため `EnsureAnchorable` が補完するが、
 既定の「最初に見つかったペイン」では左ペインに入ってしまうので、
 `siblingContentId: "output"` を渡して**下段へ入れている**。
 
-### 4.5.10 見た目の自動確認（PNG）
+### 4.5.11 見た目の自動確認（PNG）
 
 パネルは GUI を起動しないと見えないので、`editor/tests/VersionControlPanelPreviewProbe` が
 **ウィンドウを出さずに**実物の XAML を組み立て、各状態を PNG へ書き出す。
@@ -429,6 +507,15 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 dotnet run --project editor/tests/VersionControlPanelPreviewProbe -- --out <出力先>
 # changes / conflicts / locks / history / clean / unavailable の 6 枚
 ```
+
+PNG のほかに、**描画に写らない 2 つ**も同じ実行で確かめている（どれか落ちたら終了コード 1）:
+
+- **「その他 …」メニューの項目**（`MenuShowWorkingCopy` / `MenuReleaseAllLocks` /
+  `MenuMergeBranch` / `MenuArchiveBranch` / `MenuAccounts`）が揃っていて、文言が空でないこと。
+  メニューはポップアップなので PNG に写らず、文言はコードで差し込んでいるため
+  差し込み漏れが**空の項目**として黙って出る。
+- **ブランチ選択ダイアログ**（`BranchPickerWindow`）が例外なく組み立てられること。
+  共通スタイルのキー間違いは実際に開くまで分からないので、ここで 1 度組み立てておく（表示はしない）。
 
 - 偽のプロバイダは `VersionControlService.UseProviderForVerification`（**検証専用の入口**）で据える。
   Lore にもサーバにも一切触れない。
@@ -687,7 +774,12 @@ dotnet run --project editor/tests/VersionControlTests
 `FakeLoreBackend`（`ILoreBackend` の偽物）を差し、Lore も実サーバも無しで
 判断ロジックを固定する。固定しているのは主に:
 
-- 競合選択の対応表（両方向・往復）
+- 競合選択の対応表（**sync / branch merge の両方**・両方向・往復）と、
+  進行中のマージの出どころの記録・消去（`cache/editor/vcs/merge_origin`）
+- ブランチのマージ（競合検出が戻り値でなく status であること・`NeedsSync` /
+  `RequiresConnection` / 自分自身の拒否・自動コミットの文言）
+- ブランチの削除（アーカイブ）の拒否規則（現在のブランチ・既定ブランチ・
+  設定で差し替えた既定ブランチ）と、候補の絞り込みが同じ規則を使っていること
 - 空コミット防止（staged 0 件で `commit` を呼ばないこと）
 - stage が空でも手元が進んでいれば push すること（解決後のマージを取り残さない）
 - push 拒否 → `NeedsSync`、無関係な失敗は `Failed` のまま
@@ -718,7 +810,15 @@ dotnet run --project editor/tests/VersionControlTests
 通すシナリオ: リポジトリ作成 → クローン → 送信 → 取得 → 同じ行の競合 →
 `KeepMine`（ローカルが残ることをファイル内容で確認）→ 解決後の送信 →
 `TakeRemote`（リモートになることを確認）→ ロック取得・照会・一覧・解放 →
-改名（`stage move`）→ **フォルダごとの移動**（4.7）→ **履歴のメタデータ**（4.6）。
+改名（`stage move`）→ **フォルダごとの移動**（4.7）→ **履歴のメタデータ**（4.6）→
+**ブランチのマージ**（別ブランチで追加したファイルが取り込まれる）→
+**マージの競合で `KeepMine` が現在のブランチ側・`TakeRemote` が取り込み元側になること**
+（4.1 の向きの実機確認。ここが崩れると利用者の変更が黙って消える）→
+**削除（アーカイブ）したブランチが一覧から消えること**・**現在のブランチは削除できないこと**。
+
+> 実行前に、前回の中断で残った `loreserver.exe` が居ないか確かめること。
+> ポートが固定（41357 / 41359）なので、残っていると新しい fixture がそれに繋いでしまい、
+> 別のストアの上でテストが走って原因不明の失敗になる。
 
 履歴メタデータのテストは、失敗すると**観測した生のキー・値をそのまま出す**。
 Lore の版が上がってキー名が変わったら、その出力を見て

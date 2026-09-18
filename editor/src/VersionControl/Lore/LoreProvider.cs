@@ -12,6 +12,8 @@
 //  | `stage .` は走査しないと何も stage しない | FileStage(".", scan: true) で必ず走査する      |
 //  | 未 stage の commit が空リビジョンを作る  | stage 直後の status で staged 件数を数え、0 なら止める |
 //  | `sync` は競合しても成功を返す            | sync 後の status の flagConflict* で判定する   |
+//  | `branch merge` も競合を戻り値で伝えない  | マージ後の status の flagConflict* で判定する   |
+//  | ブランチの「削除」が無い                 | `branch archive`（一覧から隠す）を当てる        |
 //  | `resolve mine/theirs` が逆             | LoreConflictResolutionMap で対応付ける          |
 //  | 素のファイル移動は履歴が切れる            | NotifyMovedAsync → FileStageMove               |
 //  | 既定の status はファイルシステムを見ない  | 保存時に FileDirty、開いた直後だけ scan        |
@@ -75,6 +77,12 @@ public sealed class LoreProvider : IVersionControlProvider
     /// <summary>ブランチ切替の操作名。</summary>
     private const string OP_BRANCH_SWITCH = "branch-switch";
 
+    /// <summary>ブランチのマージの操作名。</summary>
+    private const string OP_BRANCH_MERGE = "branch-merge";
+
+    /// <summary>ブランチの削除（アーカイブ）の操作名。</summary>
+    private const string OP_BRANCH_ARCHIVE = "branch-archive";
+
     /// <summary>履歴取得の操作名。</summary>
     private const string OP_HISTORY = "history";
 
@@ -91,6 +99,12 @@ public sealed class LoreProvider : IVersionControlProvider
 
     /// <summary>ロックの実装（同じバックエンドとスケジューラを共有する）。</summary>
     private readonly LoreLockService _locks;
+
+    /// <summary>
+    /// 進行中のマージが sync 由来か branch merge 由来かの記録。
+    /// mine / theirs の対応表はこれで選ぶ（取り違えると利用者の変更が消える）。
+    /// </summary>
+    private readonly LoreMergeOriginStore _mergeOrigin;
 
     /// <summary>スケジューラをこの型が所有しているか（所有していれば Dispose で閉じる）。</summary>
     private readonly bool _ownsScheduler;
@@ -120,6 +134,7 @@ public sealed class LoreProvider : IVersionControlProvider
         _settings      = settings  ?? VersionControlSettings.Default;
         _ownsScheduler = ownsScheduler;
         _locks         = new LoreLockService(_backend, _scheduler, _settings);
+        _mergeOrigin   = new LoreMergeOriginStore(_backend.WorkingCopyRoot);
     }
 
     // ── 素性 ────────────────────────────────────────────────
@@ -166,8 +181,11 @@ public sealed class LoreProvider : IVersionControlProvider
                         result.Call, VersionControlMessages.STATUS_FAILED);
                 }
 
+                // 解決済みの競合を「どちらで解決したか」と表示するには、
+                // 進行中のマージの出どころが要る（mine / theirs の向きが入れ替わるため）。
                 return VersionControlResult<WorkingCopyStatus>.Ok(
-                    LoreStatusTranslator.ToWorkingCopyStatus(result, mode),
+                    LoreStatusTranslator.ToWorkingCopyStatus(
+                        result, mode, retrievedAtUtc: null, origin: _mergeOrigin.Read()),
                     VersionControlMessages.STATUS_OK);
             });
 
@@ -419,6 +437,10 @@ public sealed class LoreProvider : IVersionControlProvider
         if (!status.Call.Succeeded)
             return ToFailure<SyncReport>(status.Call, VersionControlMessages.FETCH_FAILED);
 
+        // sync が通った時点で、進行中のマージは sync 由来のものに入れ替わっている。
+        // ブランチのマージの印が残っていたら消す（残すと対応表を取り違える）。
+        _mergeOrigin.Clear();
+
         var conflicts = LoreStatusTranslator.ExtractUnresolvedConflicts(status.Files);
         var report    = new SyncReport(
             conflicts, status.Revision.RevisionNumber, status.Files.Count);
@@ -451,8 +473,10 @@ public sealed class LoreProvider : IVersionControlProvider
                 VersionControlMessages.RESOLVE_NO_PATHS));
         }
 
-        // 対応表の引き当てはここで済ませる（Lore を呼ぶ前に落ちる方が原因が分かりやすい）。
-        var side  = LoreConflictResolutionMap.ToLoreSide(choice);
+        // ★対応表は「進行中のマージが sync 由来か branch merge 由来か」で入れ替わる。
+        //   出どころは作業コピーに記録してあるものを読む（プロセスをまたいでも合うように）。
+        //   引き当てはここで済ませる（Lore を呼ぶ前に落ちる方が原因が分かりやすい）。
+        var side  = LoreConflictResolutionMap.ToLoreSide(choice, _mergeOrigin.Read());
         var paths = new List<string>(relativePaths);
 
         return RunAsync(
@@ -508,6 +532,10 @@ public sealed class LoreProvider : IVersionControlProvider
             string.Format(VersionControlMessages.MERGE_COMMIT_MESSAGE_FORMAT, paths.Count), token);
         if (!commit.Succeeded)
             return ToFailure(commit, VersionControlMessages.RESOLVE_FAILED);
+
+        // マージが確定したので出どころの印は用済み。残すと次の sync の競合で
+        // 誤った対応表を引く（ここが消し忘れの唯一の危険箇所）。
+        _mergeOrigin.Clear();
 
         return VersionControlResult.Success(
             string.Format(VersionControlMessages.RESOLVE_OK_FORMAT, paths.Count));
@@ -582,11 +610,183 @@ public sealed class LoreProvider : IVersionControlProvider
             token =>
             {
                 var call = _backend.BranchSwitch(name, token);
-                return call.Succeeded
-                    ? VersionControlResult.Success(
-                        string.Format(VersionControlMessages.BRANCH_SWITCH_OK_FORMAT, name))
-                    : ToFailure(call, VersionControlMessages.BRANCH_SWITCH_FAILED);
+                if (!call.Succeeded)
+                    return ToFailure(call, VersionControlMessages.BRANCH_SWITCH_FAILED);
+
+                // 別のブランチへ移った時点で、前のブランチで始めたマージは
+                // 「いま進行中のマージ」ではなくなる。印を残すと、移った先で起きた
+                // sync の競合に対して誤った対応表を引いてしまう。
+                _mergeOrigin.Clear();
+
+                return VersionControlResult.Success(
+                    string.Format(VersionControlMessages.BRANCH_SWITCH_OK_FORMAT, name));
             });
+    }
+
+    // ── ブランチのマージ ────────────────────────────────────
+
+    /// <summary>別のブランチを現在のブランチへ取り込む。</summary>
+    /// <param name="sourceBranch">取り込み元のブランチ名。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public Task<VersionControlResult<MergeReport>> MergeBranchAsync(
+        string sourceBranch, CancellationToken cancellationToken = default)
+    {
+        // 名前の必須判定は Lore を呼ぶ前に済ませる
+        // （「現在のブランチ自身か」は現在のブランチ名が要るのでワーカーの中で見る）。
+        if (string.IsNullOrWhiteSpace(sourceBranch))
+        {
+            return Task.FromResult(VersionControlResult<MergeReport>.Create(
+                VersionControlOutcome.Failed,
+                MergeReport.Nothing,
+                VersionControlMessages.BRANCH_NAME_REQUIRED));
+        }
+
+        return RunAsync(
+            OP_BRANCH_MERGE,
+            _settings.RemoteOperationTimeout,
+            cancellationToken,
+            token => MergeBranchCore(sourceBranch, token));
+    }
+
+    /// <summary>
+    /// ブランチのマージの本体（ワーカースレッド上で同期実行される）。
+    /// </summary>
+    /// <param name="sourceBranch">取り込み元のブランチ名。</param>
+    /// <param name="token">中断用。</param>
+    private VersionControlResult<MergeReport> MergeBranchCore(
+        string sourceBranch, CancellationToken token)
+    {
+        // 1) 現在のブランチ名を読む。自分自身の取り込みを弾くためと、
+        //    履歴に残るコミットメッセージを「どこへ取り込んだか」まで書くため。
+        var before = _backend.Status(new LoreStatusRequest(Scan: false, Offline: true), token);
+        if (!before.Call.Succeeded)
+            return ToFailure<MergeReport>(before.Call, VersionControlMessages.BRANCH_MERGE_FAILED);
+
+        var currentBranch = before.Revision.BranchName;
+
+        // 2) 規則で弾く（UI が絞り込んでいても、境界としてここでも守る）。
+        var check = BranchOperationRules.CheckMergeSource(sourceBranch, currentBranch);
+        if (!check.Allowed)
+        {
+            return VersionControlResult<MergeReport>.Create(
+                VersionControlOutcome.Failed, MergeReport.Nothing, check.Reason);
+        }
+
+        // 3) 取り込む。競合が無ければ Lore がこのメッセージでコミットまで打つ。
+        var message = string.Format(
+            VersionControlMessages.BRANCH_MERGE_COMMIT_MESSAGE_FORMAT, sourceBranch, currentBranch);
+        var merge = _backend.BranchMerge(sourceBranch, message, token);
+
+        // 4) ★成否にかかわらず状態を引き直す。
+        //    Lore の branch merge は競合しても成功を返すことがあり（sync と同じ罠）、
+        //    逆に失敗を返していても作業コピーには競合が残っていることがある。
+        //    「競合が出ているか」は必ず flagConflict* で判定する。
+        //    ここは走査不要・オフラインなのでサーバ往復は増えない。
+        var after = _backend.Status(new LoreStatusRequest(Scan: false, Offline: true), token);
+        var conflicts = after.Call.Succeeded
+            ? LoreStatusTranslator.ExtractUnresolvedConflicts(after.Files)
+            : Array.Empty<ChangedFile>();
+        var revision = after.Call.Succeeded ? after.Revision.RevisionNumber : 0UL;
+        var report   = new MergeReport(sourceBranch, conflicts, revision);
+
+        if (conflicts.Count > 0)
+        {
+            // ★「このマージは branch merge 由来」と作業コピーへ記録する。
+            //   mine / theirs の対応表は sync と入れ替わるため、
+            //   これが無いと解決で逆の側を採ってしまう。
+            _mergeOrigin.MarkBranchMerge();
+
+            // 競合は「異常」ではなく想定内の分岐。既存の競合 UI（2 択 → 解決で
+            // マージのコミットまで）でそのまま片付けられる。
+            return VersionControlResult<MergeReport>.Create(
+                VersionControlOutcome.Conflicted, report,
+                string.Format(VersionControlMessages.BRANCH_MERGE_CONFLICTED_FORMAT,
+                              sourceBranch, conflicts.Count),
+                merge.Messages);
+        }
+
+        if (!merge.Succeeded)
+        {
+            if (merge.WasCanceled)
+            {
+                return VersionControlResult<MergeReport>.Create(
+                    VersionControlOutcome.Canceled, report,
+                    VersionControlMessages.CANCELED, merge.Messages);
+            }
+
+            // 分岐（divergent）で弾かれたときは「先に最新を取得」と案内できる。
+            // 判定は push と同じマーカー表を使う（Lore は同じ語で返す）。
+            if (LorePushDiagnosis.NeedsSync(merge, remoteWasAhead: false))
+            {
+                return VersionControlResult<MergeReport>.Create(
+                    VersionControlOutcome.NeedsSync, report,
+                    VersionControlMessages.BRANCH_MERGE_NEEDS_SYNC, merge.Messages);
+            }
+
+            if (LoreConnectionDiagnosis.IsConnectionFailure(merge))
+            {
+                return VersionControlResult<MergeReport>.Create(
+                    VersionControlOutcome.RequiresConnection, report,
+                    VersionControlMessages.REQUIRES_CONNECTION, merge.Messages);
+            }
+
+            return VersionControlResult<MergeReport>.Create(
+                VersionControlOutcome.Failed, report,
+                VersionControlMessages.BRANCH_MERGE_FAILED, merge.Messages);
+        }
+
+        // 競合なしで取り込めた＝マージは Lore がコミットまで済ませている。
+        // 進行中のマージは無いので、古い印が残っていれば消す。
+        _mergeOrigin.Clear();
+
+        return VersionControlResult<MergeReport>.Ok(
+            report, string.Format(VersionControlMessages.BRANCH_MERGE_OK_FORMAT, sourceBranch));
+    }
+
+    // ── ブランチの削除（アーカイブ）──────────────────────────
+
+    /// <summary>ブランチを削除（アーカイブ）する。</summary>
+    /// <param name="name">ブランチ名。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    public Task<VersionControlResult> ArchiveBranchAsync(
+        string name, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return Task.FromResult(VersionControlResult.Failed(
+                VersionControlMessages.BRANCH_NAME_REQUIRED));
+        }
+
+        return RunAsync(
+            OP_BRANCH_ARCHIVE,
+            _settings.RemoteOperationTimeout,
+            cancellationToken,
+            token => ArchiveBranchCore(name, token));
+    }
+
+    /// <summary>
+    /// ブランチの削除（アーカイブ）の本体（ワーカースレッド上で同期実行される）。
+    /// </summary>
+    /// <param name="name">ブランチ名。</param>
+    /// <param name="token">中断用。</param>
+    private VersionControlResult ArchiveBranchCore(string name, CancellationToken token)
+    {
+        // 1) 現在のブランチ名を読む（守るべきブランチの判定に要る）。
+        var status = _backend.Status(new LoreStatusRequest(Scan: false, Offline: true), token);
+        if (!status.Call.Succeeded)
+            return ToFailure(status.Call, VersionControlMessages.BRANCH_ARCHIVE_FAILED);
+
+        // 2) 規則で弾く。archive は取り消せないので、UI の絞り込みだけに頼らない。
+        var check = BranchOperationRules.CheckArchive(
+            name, status.Revision.BranchName, _settings.DefaultBranchName);
+        if (!check.Allowed) return VersionControlResult.Failed(check.Reason);
+
+        // 3) 削除（アーカイブ）する。
+        var call = _backend.BranchArchive(name, token);
+        return call.Succeeded
+            ? VersionControlResult.Success(
+                string.Format(VersionControlMessages.BRANCH_ARCHIVE_OK_FORMAT, name))
+            : ToFailure(call, VersionControlMessages.BRANCH_ARCHIVE_FAILED);
     }
 
     // ── 履歴 ────────────────────────────────────────────────

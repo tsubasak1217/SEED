@@ -322,6 +322,13 @@
                                     <MenuItem x:Name="MenuReleaseAllLocks" Foreground="#CCC"
                                               Click="OnReleaseAllLocks"/>
                                     <Separator/>
+                                    <!-- ブランチのマージ・削除。取り返しがつかない側（削除）は
+                                         選択ダイアログのあとに確認ダイアログを重ねる。 -->
+                                    <MenuItem x:Name="MenuMergeBranch" Foreground="#CCC"
+                                              Click="OnMergeBranchClick"/>
+                                    <MenuItem x:Name="MenuArchiveBranch" Foreground="#CCC"
+                                              Click="OnArchiveBranchClick"/>
+                                    <Separator/>
                                     <MenuItem x:Name="MenuAccounts" Foreground="#CCC"
                                               Click="OnAccountsClick"/>
                                 </ContextMenu>

@@ -74,8 +74,17 @@
     <Compile Include="..\..\src\VersionControl\Model\ConflictResolutionChoice.cs">
       <Link>Linked\VersionControl\Model\ConflictResolutionChoice.cs</Link>
     </Compile>
+    <!-- 進行中のマージの出どころ。mine / theirs の向きがこれで入れ替わる。 -->
+    <Compile Include="..\..\src\VersionControl\Model\MergeOrigin.cs">
+      <Link>Linked\VersionControl\Model\MergeOrigin.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\VersionControl\Model\OperationReports.cs">
       <Link>Linked\VersionControl\Model\OperationReports.cs</Link>
+    </Compile>
+    <!-- ブランチのマージ・削除（アーカイブ）の除外規則。
+         パネルとプロバイダが同じ規則を使うことを固定するためテストへ取り込む。 -->
+    <Compile Include="..\..\src\VersionControl\Model\BranchOperationRules.cs">
+      <Link>Linked\VersionControl\Model\BranchOperationRules.cs</Link>
     </Compile>
 
     <!-- ── 境界 ── -->
@@ -152,6 +161,9 @@
     <!-- ── 判断ロジック（テストの本命）── -->
     <Compile Include="..\..\src\VersionControl\Lore\LoreConflictResolutionMap.cs">
       <Link>Linked\VersionControl\Lore\LoreConflictResolutionMap.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Lore\LoreMergeOriginStore.cs">
+      <Link>Linked\VersionControl\Lore\LoreMergeOriginStore.cs</Link>
     </Compile>
     <Compile Include="..\..\src\VersionControl\Lore\LoreStatusTranslator.cs">
       <Link>Linked\VersionControl\Lore\LoreStatusTranslator.cs</Link>

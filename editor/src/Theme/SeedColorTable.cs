@@ -75,6 +75,22 @@ public static class SeedColorTable
     /// <summary>エラーを示す文字色。</summary>
     public const string DIALOG_ERROR_TEXT = "#E88F8F";
 
+    /// <summary>
+    /// 一覧の選択行の背景。
+    ///
+    /// <para>
+    /// ★WPF 既定の <c>ListBoxItem</c> は、フォーカスが外れた選択行を
+    /// **明るい灰色**（`SystemColors.Control` 系）で塗る。暗いダイアログの中で
+    /// 明るい文字色を継いだまま塗られると、選択した行だけが読めなくなる。
+    /// ボタンのホバー色と同じ理由で、既定に任せずここで決める。
+    /// 値はパネル側の選択色（`Vc.Selection`）と揃えてある。
+    /// </para>
+    /// </summary>
+    public const string DIALOG_LIST_SELECTION_BG = "#264F78";
+
+    /// <summary>一覧のホバー行の背景（「少し明るい」に留める）。</summary>
+    public const string DIALOG_LIST_HOVER_BG = "#2A2A2B";
+
     // ══════════════════════════════════════════════════════════
     //  通常ボタン（暗黙スタイル）
     // ══════════════════════════════════════════════════════════
@@ -304,6 +320,8 @@ public static class SeedColorTable
         new("ダイアログ/成功",     SURFACE_DIALOG, null, DIALOG_SUCCESS_TEXT, MIN_RATIO_TEXT),
         new("ダイアログ/エラー",   SURFACE_DIALOG, null, DIALOG_ERROR_TEXT,   MIN_RATIO_TEXT),
         new("ダイアログ/入力欄",   FIELD_BG,       null, DIALOG_TEXT,         MIN_RATIO_TEXT),
+        new("ダイアログ/一覧の選択行", DIALOG_LIST_SELECTION_BG, null, DIALOG_TEXT, MIN_RATIO_TEXT),
+        new("ダイアログ/一覧のホバー行", DIALOG_LIST_HOVER_BG,   null, DIALOG_TEXT, MIN_RATIO_TEXT),
     };
 
     // ══════════════════════════════════════════════════════════

@@ -159,6 +159,14 @@ public static class SeedThemeColors
     /// <inheritdoc cref="SeedColorTable.DIALOG_TEXT"/>
     public static readonly Color DialogText = ToColor(SeedColorTable.DIALOG_TEXT);
 
+    /// <summary>ダイアログの一覧で、選択されている行の背景。</summary>
+    public static readonly Color DialogListSelectionBg =
+        ToColor(SeedColorTable.DIALOG_LIST_SELECTION_BG);
+
+    /// <summary>ダイアログの一覧で、マウスが乗っている行の背景。</summary>
+    public static readonly Color DialogListHoverBg =
+        ToColor(SeedColorTable.DIALOG_LIST_HOVER_BG);
+
     /// <inheritdoc cref="SeedColorTable.DIALOG_DIM_TEXT"/>
     public static readonly Color DialogDimText = ToColor(SeedColorTable.DIALOG_DIM_TEXT);
 

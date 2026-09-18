@@ -87,23 +87,27 @@ public static class LoreStatusTranslator
     ///   <item>未解決（flag_conflict_unresolved）→ Unresolved。
     ///         未解決なら「どちらを採ったか」の値は意味を持たないので先に見る</item>
     ///   <item>自動マージ済み → AutoMerged</item>
-    ///   <item>解決済み。ここで **Lore の mine / theirs の逆転** を吸収する:
-    ///         flag_conflict_mine  = リモート側を採用 → ResolvedTakeRemote
-    ///         flag_conflict_theirs = ローカル側を採用 → ResolvedKeepMine</item>
+    ///   <item>解決済み。ここで **Lore の mine / theirs の向き** を吸収する。
+    ///         向きは進行中のマージの出どころで入れ替わるので
+    ///         <paramref name="origin"/> が要る（LoreConflictResolutionMap 参照）</item>
     /// </list>
     /// </summary>
     /// <param name="row">status の 1 行。</param>
-    public static FileConflictState ToConflictState(in LoreStatusFileRow row)
+    /// <param name="origin">
+    /// 進行中のマージの出どころ。既定は sync（印が無いときの扱いと揃える）。
+    /// </param>
+    public static FileConflictState ToConflictState(
+        in LoreStatusFileRow row, MergeOrigin origin = MergeOrigin.Sync)
     {
         if (!row.FlagConflict) return FileConflictState.None;
         if (row.FlagConflictUnresolved) return FileConflictState.Unresolved;
         if (row.FlagConflictAutomerged) return FileConflictState.AutoMerged;
 
-        // 対応表は LoreConflictResolutionMap だけが持つ（逆転の知識を分散させない）。
+        // 対応表は LoreConflictResolutionMap だけが持つ（向きの知識を分散させない）。
         if (row.FlagConflictMine)
-            return ToResolvedState(LoreResolveSide.Mine);
+            return ToResolvedState(LoreResolveSide.Mine, origin);
         if (row.FlagConflictTheirs)
-            return ToResolvedState(LoreResolveSide.Theirs);
+            return ToResolvedState(LoreResolveSide.Theirs, origin);
 
         // 競合フラグは立っているが、どの状態にも当てはまらない
         // （Lore がフラグを増やした場合など）。未解決として扱い、
@@ -115,8 +119,9 @@ public static class LoreStatusTranslator
     /// Lore の resolve 側を「解決済み」状態へ変換する。
     /// </summary>
     /// <param name="side">Lore 側の値。</param>
-    private static FileConflictState ToResolvedState(LoreResolveSide side)
-        => LoreConflictResolutionMap.ToChoice(side) == ConflictResolutionChoice.KeepMine
+    /// <param name="origin">進行中のマージの出どころ。</param>
+    private static FileConflictState ToResolvedState(LoreResolveSide side, MergeOrigin origin)
+        => LoreConflictResolutionMap.ToChoice(side, origin) == ConflictResolutionChoice.KeepMine
             ? FileConflictState.ResolvedKeepMine
             : FileConflictState.ResolvedTakeRemote;
 
@@ -124,11 +129,13 @@ public static class LoreStatusTranslator
     /// status の 1 行を <see cref="ChangedFile"/> へ変換する。
     /// </summary>
     /// <param name="row">status の 1 行。</param>
-    public static ChangedFile ToChangedFile(in LoreStatusFileRow row)
+    /// <param name="origin">進行中のマージの出どころ。</param>
+    public static ChangedFile ToChangedFile(
+        in LoreStatusFileRow row, MergeOrigin origin = MergeOrigin.Sync)
         => new(
             path:      row.Path,
             kind:      ToChangeKind(row.Action),
-            conflict:  ToConflictState(row),
+            conflict:  ToConflictState(row, origin),
             isStaged:  row.FlagStaged,
             isDirty:   row.FlagDirty,
             fromPath:  row.FromPath,
@@ -138,13 +145,14 @@ public static class LoreStatusTranslator
     /// status の全行を <see cref="ChangedFile"/> の一覧へ変換する。
     /// </summary>
     /// <param name="rows">status の行。</param>
+    /// <param name="origin">進行中のマージの出どころ。</param>
     public static IReadOnlyList<ChangedFile> ToChangedFiles(
-        IReadOnlyList<LoreStatusFileRow>? rows)
+        IReadOnlyList<LoreStatusFileRow>? rows, MergeOrigin origin = MergeOrigin.Sync)
     {
         if (rows is null || rows.Count == 0) return Array.Empty<ChangedFile>();
 
         var result = new List<ChangedFile>(rows.Count);
-        foreach (var row in rows) result.Add(ToChangedFile(row));
+        foreach (var row in rows) result.Add(ToChangedFile(row, origin));
         return result;
     }
 
@@ -188,15 +196,20 @@ public static class LoreStatusTranslator
     /// <param name="result">status の生の結果。</param>
     /// <param name="mode">この status をどのモードで取ったか。</param>
     /// <param name="retrievedAtUtc">取得時刻（省略時は現在時刻）。</param>
+    /// <param name="origin">
+    /// 進行中のマージの出どころ。「どちらで解決済みか」の表示に使う
+    /// （解決済みの行のラベルだけに効き、未解決の判定には影響しない）。
+    /// </param>
     public static WorkingCopyStatus ToWorkingCopyStatus(
-        LoreStatusResult result, StatusRefreshMode mode, DateTime? retrievedAtUtc = null)
+        LoreStatusResult result, StatusRefreshMode mode, DateTime? retrievedAtUtc = null,
+        MergeOrigin origin = MergeOrigin.Sync)
     {
         ArgumentNullException.ThrowIfNull(result);
 
         return new WorkingCopyStatus(
             branchName:     result.Revision.BranchName,
             revisionNumber: result.Revision.RevisionNumber,
-            changes:        ToChangedFiles(result.Files),
+            changes:        ToChangedFiles(result.Files, origin),
             remoteState:    ToRemoteComparison(result.Revision, mode),
             mode:           mode,
             retrievedAtUtc: retrievedAtUtc);

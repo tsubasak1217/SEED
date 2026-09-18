@@ -154,6 +154,46 @@ public static class VersionControlMessages
     /// <summary>ブランチを切り替えられなかった。</summary>
     public const string BRANCH_SWITCH_FAILED = "ブランチを切り替えられませんでした。";
 
+    // ── ブランチのマージ ────────────────────────────────────
+
+    /// <summary>ブランチを取り込めた（書式: 取り込み元の名前）。</summary>
+    public const string BRANCH_MERGE_OK_FORMAT =
+        "ブランチ「{0}」を取り込みました。「送信」で共有されます。";
+
+    /// <summary>取り込みで競合が出た（書式: 取り込み元の名前, 競合件数）。</summary>
+    public const string BRANCH_MERGE_CONFLICTED_FORMAT =
+        "ブランチ「{0}」の取り込みで {1} 件が競合しました。競合の節で選んでください。";
+
+    /// <summary>ブランチを取り込めなかった。</summary>
+    public const string BRANCH_MERGE_FAILED = "ブランチを取り込めませんでした。";
+
+    /// <summary>先に最新を取得しないと取り込めない。</summary>
+    public const string BRANCH_MERGE_NEEDS_SYNC =
+        "ブランチが分岐しているため取り込めません。先に「最新を取得」してください。";
+
+    /// <summary>取り込み元に現在のブランチが指定された。</summary>
+    public const string BRANCH_MERGE_SELF =
+        "現在のブランチ自身は取り込めません。取り込み元には別のブランチを選んでください。";
+
+    // ── ブランチの削除（Lore ではアーカイブ）────────────────
+    //  ★Lore v0.9.0 にブランチの「削除」は無く、`branch archive`（一覧から隠す）が相当。
+    //    利用者向けの語彙は「削除（アーカイブ）」で統一する。
+
+    /// <summary>ブランチを削除（アーカイブ）できた（書式: 名前）。</summary>
+    public const string BRANCH_ARCHIVE_OK_FORMAT =
+        "ブランチ「{0}」を削除（アーカイブ）しました。一覧には出なくなります。";
+
+    /// <summary>ブランチを削除（アーカイブ）できなかった。</summary>
+    public const string BRANCH_ARCHIVE_FAILED = "ブランチを削除（アーカイブ）できませんでした。";
+
+    /// <summary>現在のブランチは削除できない。</summary>
+    public const string BRANCH_ARCHIVE_CURRENT =
+        "いま開いているブランチは削除できません。先に別のブランチへ切り替えてください。";
+
+    /// <summary>既定ブランチは削除できない（書式: 既定ブランチ名）。</summary>
+    public const string BRANCH_ARCHIVE_DEFAULT_FORMAT =
+        "既定のブランチ「{0}」は削除できません。";
+
     // ── 履歴 ────────────────────────────────────────────────
 
     /// <summary>履歴を取得できた（書式: 件数）。</summary>
@@ -312,6 +352,13 @@ public static class VersionControlMessages
     /// </summary>
     public const string MERGE_COMMIT_MESSAGE_FORMAT = "マージ: 競合 {0} 件を解決";
 
+    /// <summary>
+    /// ブランチのマージで競合が無かったときに Lore が自動で打つコミットのメッセージ
+    /// （書式: 取り込み元のブランチ名, 取り込み先のブランチ名）。
+    /// これも履歴に残るので、どちらをどちらへ取り込んだのか分かる形にする。
+    /// </summary>
+    public const string BRANCH_MERGE_COMMIT_MESSAGE_FORMAT = "マージ: 「{0}」を「{1}」へ取り込み";
+
     /// <summary>タイムアウトした。</summary>
     public const string TIMED_OUT = "時間内に完了しなかったため中断しました。";
 
@@ -360,6 +407,71 @@ public static class VersionControlMessages
 
     /// <summary>ブランチ切替の確認ダイアログのタイトル。</summary>
     public const string PANEL_BRANCH_SWITCH_CONFIRM_TITLE = "ブランチの切り替え";
+
+    // ── ブランチのマージ（パネル）────────────────────────────
+
+    /// <summary>「その他 …」メニューの「ブランチをマージ…」。</summary>
+    public const string PANEL_MENU_MERGE_BRANCH = "ブランチをマージ…";
+
+    /// <summary>マージ元を選ぶダイアログのタイトル。</summary>
+    public const string PANEL_BRANCH_MERGE_DIALOG_TITLE = "ブランチのマージ";
+
+    /// <summary>マージ元を選ぶダイアログの本文（書式: 現在のブランチ名）。</summary>
+    public const string PANEL_BRANCH_MERGE_DIALOG_PROMPT =
+        "現在のブランチ「{0}」へ取り込むブランチを選んでください。";
+
+    /// <summary>マージ元を選ぶダイアログの補足。</summary>
+    public const string PANEL_BRANCH_MERGE_DIALOG_NOTE =
+        "取り込みは手元だけで行われます。ほかの人へ渡すには、そのあと「送信」してください。";
+
+    /// <summary>未送信の変更があるので取り込みを始めない（書式: 件数）。</summary>
+    public const string PANEL_BRANCH_MERGE_DIRTY_FORMAT =
+        "送信していない変更が {0} 件あります。先に「送信」するか、変更を元に戻してから取り込んでください。";
+
+    /// <summary>取り込める（現在のブランチ以外の）ブランチが無い。</summary>
+    public const string PANEL_BRANCH_MERGE_NO_CANDIDATES =
+        "取り込めるブランチがありません（現在のブランチ以外が見つかりませんでした）。";
+
+    // ── ブランチの削除（アーカイブ。パネル）──────────────────
+
+    /// <summary>「その他 …」メニューの「ブランチを削除（アーカイブ）…」。</summary>
+    public const string PANEL_MENU_ARCHIVE_BRANCH = "ブランチを削除（アーカイブ）…";
+
+    /// <summary>削除するブランチを選ぶダイアログのタイトル。</summary>
+    public const string PANEL_BRANCH_ARCHIVE_DIALOG_TITLE = "ブランチの削除（アーカイブ）";
+
+    /// <summary>削除するブランチを選ぶダイアログの本文。</summary>
+    public const string PANEL_BRANCH_ARCHIVE_DIALOG_PROMPT =
+        "削除（アーカイブ）するブランチを選んでください。";
+
+    /// <summary>
+    /// 削除するブランチを選ぶダイアログの補足。
+    /// Lore の archive が「隠す」であり、元に戻せないことをここで明示する。
+    /// </summary>
+    public const string PANEL_BRANCH_ARCHIVE_DIALOG_NOTE =
+        "削除したブランチは一覧に出なくなります。コミットそのものは残りますが、"
+        + "このエディタからは元に戻せません。";
+
+    /// <summary>削除できる（現在のブランチ・既定ブランチ以外の）ブランチが無い。</summary>
+    public const string PANEL_BRANCH_ARCHIVE_NO_CANDIDATES =
+        "削除できるブランチがありません（現在のブランチと既定のブランチは削除できません）。";
+
+    /// <summary>削除の確認ダイアログの本文（書式: ブランチ名）。</summary>
+    public const string PANEL_BRANCH_ARCHIVE_CONFIRM_FORMAT =
+        "ブランチ「{0}」を削除（アーカイブ）します。\n"
+        + "削除すると一覧に出なくなり、このエディタからは元に戻せません。\n"
+        + "削除しますか？";
+
+    /// <summary>削除の確認ダイアログのタイトル。</summary>
+    public const string PANEL_BRANCH_ARCHIVE_CONFIRM_TITLE = "ブランチの削除（アーカイブ）";
+
+    // ── ブランチを選ぶダイアログの共通部品 ──────────────────
+
+    /// <summary>ブランチ選択ダイアログの決定ボタン。</summary>
+    public const string PANEL_BRANCH_PICKER_OK = "OK";
+
+    /// <summary>ブランチ選択ダイアログの取り消しボタン。</summary>
+    public const string PANEL_BRANCH_PICKER_CANCEL = "キャンセル";
 
     /// <summary>接続先と identity をまとめて出すときの書式（identity — リモート URL）。</summary>
     public const string PANEL_CONNECTION_FORMAT = "{0} — {1}";

@@ -98,6 +98,17 @@ public static class VersionControlService
     /// <summary>現在のプロバイダ（常に非 null）。</summary>
     public static IVersionControlProvider Provider => Volatile.Read(ref _provider);
 
+    /// <summary>
+    /// 現在の設定（常に非 null）。
+    ///
+    /// <para>
+    /// パネル側も「既定ブランチの名前」など、プロバイダと同じ値で判断する必要がある
+    /// （UI の絞り込みとプロバイダの拒否がずれると、
+    /// 一覧に出るのに必ず失敗する項目が生まれる）。そのためここから読めるようにしてある。
+    /// </para>
+    /// </summary>
+    public static VersionControlSettings Settings => Volatile.Read(ref _settings);
+
     /// <summary>直近に取得できた状態（未取得なら null）。</summary>
     public static WorkingCopyStatus? LastStatus { get; private set; }
 

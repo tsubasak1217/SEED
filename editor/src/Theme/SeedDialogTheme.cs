@@ -23,6 +23,7 @@
 //  名前付きスタイルで決まる。ここで色を指定すると二重管理が復活する。
 // ============================================================
 
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -67,6 +68,12 @@ public static class SeedDialogTheme
     /// <summary>枠線の色。</summary>
     public static readonly Brush FieldBorder = Frozen(SeedThemeColors.FieldBorder);
 
+    /// <summary>一覧の選択行の背景。</summary>
+    public static readonly Brush ListSelectionBg = Frozen(SeedThemeColors.DialogListSelectionBg);
+
+    /// <summary>一覧のホバー行の背景。</summary>
+    public static readonly Brush ListHoverBg = Frozen(SeedThemeColors.DialogListHoverBg);
+
     // ── 寸法 ────────────────────────────────────────────────
 
     /// <summary>外周の余白 [px]。</summary>
@@ -89,6 +96,12 @@ public static class SeedDialogTheme
 
     /// <summary>枠線の太さ [px]。</summary>
     public const double BORDER_THICKNESS_PX = 1;
+
+    /// <summary>一覧の 1 行の左右の内側余白 [px]。</summary>
+    private const double LIST_ITEM_PADDING_X_PX = 6;
+
+    /// <summary>一覧の 1 行の上下の内側余白 [px]。</summary>
+    private const double LIST_ITEM_PADDING_Y_PX = 3;
 
     // ── 部品 ────────────────────────────────────────────────
 
@@ -144,6 +157,80 @@ public static class SeedDialogTheme
             FontSize        = BODY_FONT_SIZE,
             Margin          = new Thickness(0, topMargin, 0, 0),
         };
+
+    /// <summary>
+    /// 選択肢を 1 つ選ばせる一覧を作る。
+    ///
+    /// <para>
+    /// ★行の見た目（選択・ホバー）を **WPF 既定に任せない**。
+    /// 既定の <see cref="ListBoxItem"/> はフォーカスが外れた選択行を明るい灰色で塗り、
+    /// 暗いダイアログで継いだ明るい文字色と重なって**選択した行だけ読めなくなる**。
+    /// ボタンのホバー色を共通書式が置き換えているのと同じ理由。
+    /// </para>
+    /// </summary>
+    /// <param name="items">並べる文字列（各行の <c>Tag</c> にも同じ値を入れる）。</param>
+    /// <param name="height">一覧の高さ [px]。</param>
+    /// <param name="topMargin">上の余白 [px]。</param>
+    public static ListBox NewListBox(
+        IEnumerable<string> items, double height, double topMargin = 0)
+    {
+        var list = new ListBox
+        {
+            Background         = Field,
+            Foreground         = Text,
+            BorderBrush        = FieldBorder,
+            BorderThickness    = new Thickness(BORDER_THICKNESS_PX),
+            FontSize           = BODY_FONT_SIZE,
+            Height             = height,
+            Margin             = new Thickness(0, topMargin, 0, 0),
+            ItemContainerStyle = NewListItemStyle(),
+        };
+
+        foreach (var text in items)
+        {
+            list.Items.Add(new ListBoxItem { Content = text, Tag = text });
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 一覧の 1 行の見た目（通常・ホバー・選択）を作る。
+    /// 文字色は一覧から継ぐので、ここでは背景だけを決める。
+    /// </summary>
+    private static Style NewListItemStyle()
+    {
+        var template = new ControlTemplate(typeof(ListBoxItem));
+
+        // Border 1 枚 + 中身。既定テンプレートを丸ごと置き換える。
+        var border = new FrameworkElementFactory(typeof(Border), "Bd");
+        border.SetValue(
+            Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+        border.SetValue(Border.PaddingProperty, new Thickness(
+            LIST_ITEM_PADDING_X_PX, LIST_ITEM_PADDING_Y_PX,
+            LIST_ITEM_PADDING_X_PX, LIST_ITEM_PADDING_Y_PX));
+        border.SetValue(Border.SnapsToDevicePixelsProperty, true);
+        border.AppendChild(new FrameworkElementFactory(typeof(ContentPresenter)));
+        template.VisualTree = border;
+
+        // ホバーより選択を後に置く（同時に成立したときは選択色を採る）。
+        var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+        hover.Setters.Add(new Setter(Border.BackgroundProperty, ListHoverBg, "Bd"));
+        template.Triggers.Add(hover);
+
+        var selected = new Trigger { Property = ListBoxItem.IsSelectedProperty, Value = true };
+        selected.Setters.Add(new Setter(Border.BackgroundProperty, ListSelectionBg, "Bd"));
+        template.Triggers.Add(selected);
+
+        var style = new Style(typeof(ListBoxItem));
+        style.Setters.Add(new Setter(Control.BackgroundProperty, Brushes.Transparent));
+        style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
+        style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
+        style.Setters.Add(new Setter(
+            Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+        style.Setters.Add(new Setter(Control.TemplateProperty, template));
+        return style;
+    }
 
     /// <summary>
     /// ダイアログのボタンを 1 つ作る。

@@ -127,6 +127,20 @@ public sealed class NullVersionControlProvider : IVersionControlProvider
         => Task.FromResult(Unavailable());
 
     /// <summary>常に利用不可を返す。</summary>
+    /// <param name="sourceBranch">未使用。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public Task<VersionControlResult<MergeReport>> MergeBranchAsync(
+        string sourceBranch, CancellationToken cancellationToken = default)
+        => Task.FromResult(Unavailable<MergeReport>());
+
+    /// <summary>常に利用不可を返す。</summary>
+    /// <param name="name">未使用。</param>
+    /// <param name="cancellationToken">未使用。</param>
+    public Task<VersionControlResult> ArchiveBranchAsync(
+        string name, CancellationToken cancellationToken = default)
+        => Task.FromResult(Unavailable());
+
+    /// <summary>常に利用不可を返す。</summary>
     /// <param name="maxCount">未使用。</param>
     /// <param name="cancellationToken">未使用。</param>
     public Task<VersionControlResult<IReadOnlyList<RevisionInfo>>> GetHistoryAsync(

@@ -58,6 +58,12 @@ public static class Program
     /// <summary>Dispatcher のキューを空にするために回す回数。</summary>
     private const int DispatcherPumpCount = 8;
 
+    /// <summary>ダイアログの組み立て確認で渡す計測幅（px）。表示はしないので目安でよい。</summary>
+    private const double DialogProbeWidthPx = 420;
+
+    /// <summary>ダイアログの組み立て確認で渡す計測高さ（px）。</summary>
+    private const double DialogProbeHeightPx = 340;
+
     /// <summary>出力先を指定するオプション名。</summary>
     private const string OPTION_OUT = "--out";
 
@@ -99,7 +105,141 @@ public static class Program
 
         Console.WriteLine();
         Console.WriteLine($"{written} 件の PNG を {outDir} に書き出しました。");
-        return written > 0 ? 0 : 1;
+
+        // 「その他 …」メニューはポップアップなので PNG には写らない。
+        // 項目が揃っていて文言が入っていることを別に確かめる。
+        var menuOk = VerifyMoreMenuItems();
+
+        // ダイアログはモーダルなので描画はしない。**組み立てが通るか**だけを確かめる
+        // （共通スタイルのキー間違い・リソース未解決は、ここで初めて例外になる）。
+        var dialogsOk = VerifyDialogsLoad();
+
+        return written > 0 && menuOk && dialogsOk ? 0 : 1;
+    }
+
+    /// <summary>
+    /// ヘッダーの「その他 …」メニューの項目が揃っていて、文言が入っていることを確かめる。
+    ///
+    /// <para>
+    /// メニューはポップアップなのでオフスクリーン描画に写らない。
+    /// 文言は <c>VersionControlMessages</c> からコードで差し込んでいるので、
+    /// 差し込み漏れがあると**空の項目**として黙って出る。
+    /// </para>
+    /// </summary>
+    /// <returns>期待どおりなら真。</returns>
+    private static bool VerifyMoreMenuItems()
+    {
+        // 期待する項目名（XAML の x:Name）。増減したらここも直す。
+        var expected = new[]
+        {
+            "MenuShowWorkingCopy",
+            "MenuReleaseAllLocks",
+            "MenuMergeBranch",
+            "MenuArchiveBranch",
+            "MenuAccounts",
+        };
+
+        VersionControlService.UseProviderForVerification(
+            new FakeVersionControlProvider(WORKING_COPY, CleanStatus()));
+
+        try
+        {
+            var panel = new VersionControlPanel { Width = PanelWidthPx, Height = PanelHeightPx };
+            panel.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+            Pump();
+
+            var ok = true;
+            foreach (var name in expected)
+            {
+                if (panel.FindName(name) is not MenuItem item)
+                {
+                    Console.WriteLine($"  [FAIL] メニュー項目が見つかりません: {name}");
+                    ok = false;
+                    continue;
+                }
+
+                var header = item.Header as string;
+                if (string.IsNullOrWhiteSpace(header))
+                {
+                    Console.WriteLine($"  [FAIL] メニュー項目の文言が空です: {name}");
+                    ok = false;
+                    continue;
+                }
+
+                Console.WriteLine($"  メニュー項目: {name} = 「{header}」");
+            }
+
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [FAIL] メニューの確認で例外: {ex}");
+            return false;
+        }
+        finally
+        {
+            VersionControlService.UseProviderForVerification(null);
+        }
+    }
+
+    /// <summary>
+    /// パネルから開くダイアログが例外なく組み立てられることを確かめる（表示はしない）。
+    ///
+    /// <para>
+    /// XAML の <c>StaticResource</c> は綴りを間違えてもビルドが通り、
+    /// 実際に開くまで壊れていることが分からない。ここで 1 度組み立てておけば、
+    /// エディタを起動せずに気づける。
+    /// </para>
+    /// </summary>
+    /// <returns>すべて組み立てられたら真。</returns>
+    private static bool VerifyDialogsLoad()
+    {
+        var ok = true;
+
+        foreach (var (name, build) in DialogCases())
+        {
+            try
+            {
+                var window = build();
+
+                // 表示せずにレイアウトまで通す（テンプレートの解決もここで起きる）。
+                window.Measure(new Size(DialogProbeWidthPx, DialogProbeHeightPx));
+                window.Close();
+
+                Console.WriteLine($"  ダイアログを組み立てました: {name}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  [FAIL] ダイアログ {name}: {ex}");
+                ok = false;
+            }
+        }
+
+        return ok;
+    }
+
+    /// <summary>組み立てを確かめるダイアログ（名前と作り方）。</summary>
+    private static IEnumerable<(string Name, Func<Window> Build)> DialogCases()
+    {
+        var branches = new[] { "main", "feature/fishing", "old-experiment" };
+
+        yield return ("ブランチのマージ", () => new SEEDEditor.Dialogs.BranchPickerWindow(
+            VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_TITLE,
+            string.Format(VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_PROMPT, "main"),
+            branches,
+            VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_NOTE));
+
+        yield return ("ブランチの削除（アーカイブ）", () => new SEEDEditor.Dialogs.BranchPickerWindow(
+            VersionControlMessages.PANEL_BRANCH_ARCHIVE_DIALOG_TITLE,
+            VersionControlMessages.PANEL_BRANCH_ARCHIVE_DIALOG_PROMPT,
+            branches,
+            VersionControlMessages.PANEL_BRANCH_ARCHIVE_DIALOG_NOTE));
+
+        // 補足なしでも組み立てられること（省略時の経路を踏む）。
+        yield return ("ブランチ選択（補足なし）", () => new SEEDEditor.Dialogs.BranchPickerWindow(
+            VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_TITLE,
+            VersionControlMessages.PANEL_BRANCH_ARCHIVE_DIALOG_PROMPT,
+            branches));
     }
 
     /// <summary>--out の値を解決する（無ければ実行ファイルの隣）。</summary>
@@ -238,15 +378,16 @@ public static class Program
             panel => ExpandSection(panel, "HeaderHistory")));
 
         yield return ("clean", new Scenario(
-            new FakeVersionControlProvider(
-                WORKING_COPY,
-                new WorkingCopyStatus(
-                    "Warashibe_Fishing", 42UL, Array.Empty<ChangedFile>(),
-                    RemoteComparison.NotChecked, StatusRefreshMode.ScanOffline))));
+            new FakeVersionControlProvider(WORKING_COPY, CleanStatus())));
 
         // プロバイダ無し＝「このプロジェクトはバージョン管理されていません」の画面。
         yield return ("unavailable", new Scenario(null));
     }
+
+    /// <summary>変更が 1 件も無い状態（「clean」の描画とメニューの確認で共用する）。</summary>
+    private static WorkingCopyStatus CleanStatus()
+        => new("Warashibe_Fishing", 42UL, Array.Empty<ChangedFile>(),
+               RemoteComparison.NotChecked, StatusRefreshMode.ScanOffline);
 
     /// <summary>フォルダー階層が分かるだけの数の変更を作る。</summary>
     private static IReadOnlyList<ChangedFile> ManyChanges() => new[]

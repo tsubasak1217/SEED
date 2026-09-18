@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using ProjectSystemTests;   // TempDir（実ファイルを書くテストで共有している後始末つき一時フォルダ）
 using SEEDEditor.VersionControl;
 using SEEDEditor.VersionControl.Lore;
 using SEEDEditor.VersionControl.Lore.Backend;
@@ -33,12 +34,18 @@ public static class PureLogicTests
     public static void Register(TestHarness harness)
     {
         // ── 競合選択の対応表（最重要。逆転すると作業が消える）──
-        harness.Add("「自分の変更を残す」は Lore の theirs に対応する",      KeepMineMapsToTheirs);
-        harness.Add("「リモートを採用」は Lore の mine に対応する",          TakeRemoteMapsToMine);
+        harness.Add("sync:「自分の変更を残す」は Lore の theirs に対応する", KeepMineMapsToTheirs);
+        harness.Add("sync:「リモートを採用」は Lore の mine に対応する",     TakeRemoteMapsToMine);
+        harness.Add("ブランチのマージでは対応が sync と入れ替わる",          BranchMergeMapIsFlippedFromSync);
         harness.Add("対応表は往復しても同じ値に戻る",                        ResolutionMapRoundTrips);
         harness.Add("解決を頼むと対応表どおりの側が Lore へ渡る",            ResolveSendsMappedSide);
-        harness.Add("flag_conflict_mine は「リモートを採用」として読まれる",  ConflictMineReadsAsTakeRemote);
-        harness.Add("flag_conflict_theirs は「自分の変更を残す」として読まれる",
+        harness.Add("マージ後の解決では入れ替わった側が Lore へ渡る",        ResolveAfterBranchMergeSendsFlippedSide);
+        harness.Add("解決しきったらマージの出どころの印が消える",            MergeOriginIsClearedAfterResolve);
+        harness.Add("最新の取得は古いマージの出どころの印を消す",            SyncClearsStaleBranchMergeOrigin);
+        harness.Add("ブランチの切り替えも出どころの印を消す",                BranchSwitchClearsMergeOrigin);
+        harness.Add("作業コピー外では出どころの印を書かない",                MergeOriginStoreIsSilentOutsideWorkingCopy);
+        harness.Add("flag_conflict_mine は出どころで読み方が変わる",          ConflictMineReadsAsTakeRemote);
+        harness.Add("flag_conflict_theirs は出どころで読み方が変わる",
                                                                              ConflictTheirsReadsAsKeepMine);
 
         // ── 状態フラグ → モデル変換 ──
@@ -81,6 +88,31 @@ public static class PureLogicTests
         harness.Add("現在のブランチはどちらの行で報告されても拾う",          CurrentBranchIsPickedUpFromEitherRow);
         harness.Add("ブランチの並びは最初に現れた順を保つ",                  BranchOrderIsPreserved);
         harness.Add("未知の location はローカル扱いで消えない",              UnknownLocationIsTreatedAsLocal);
+
+        // ── ブランチのマージ ──
+        harness.Add("マージは競合が無ければ成功し、送信を促す文言を返す",    MergeWithoutConflictsSucceeds);
+        harness.Add("マージは戻り値が成功でも競合があれば Conflicted",       MergeSuccessWithConflictsIsConflicted);
+        harness.Add("マージが失敗していても競合があれば Conflicted",         MergeFailureWithConflictsIsConflicted);
+        harness.Add("分岐で弾かれたマージは NeedsSync を返す",               MergeRejectionBecomesNeedsSync);
+        harness.Add("接続できないマージは RequiresConnection を返す",        MergeOfflineRequiresConnection);
+        harness.Add("現在のブランチ自身は取り込めず Lore を呼ばない",        MergeIntoSelfIsRejected);
+        harness.Add("マージ元が空なら Lore を一度も呼ばない",                MergeRequiresSourceName);
+        harness.Add("自動コミットの文言に取り込み元と先の両方が入る",        MergeCommitMessageNamesBothBranches);
+
+        // ── ブランチの削除（アーカイブ）──
+        harness.Add("削除（アーカイブ）が成功すると Lore へ名前が渡る",      ArchivePassesNameToLore);
+        harness.Add("現在のブランチは削除できず Lore を呼ばない",            ArchiveCurrentBranchIsRejected);
+        harness.Add("既定ブランチは削除できず Lore を呼ばない",              ArchiveDefaultBranchIsRejected);
+        harness.Add("既定ブランチ名は設定から差し替えられる",                ArchiveUsesConfiguredDefaultBranch);
+        harness.Add("名前が空なら Lore を一度も呼ばない",                    ArchiveRequiresName);
+        harness.Add("Lore が失敗したら Failed になる",                       ArchiveFailureIsFailed);
+
+        // ── ブランチ操作の除外規則（ダイアログの候補と同じ規則）──
+        harness.Add("マージ候補から現在のブランチが外れる",                  MergeCandidatesExcludeCurrent);
+        harness.Add("削除候補から現在のブランチと既定ブランチが外れる",      ArchiveCandidatesExcludeProtected);
+        harness.Add("除外規則は大文字小文字を区別しない",                    BranchRulesIgnoreCase);
+        harness.Add("候補の重複と空名は落とし、並び順は保つ",                BranchCandidatesAreDeduplicated);
+        harness.Add("現在のブランチが不明なら候補を空にしない",              BranchCandidatesSurviveUnknownCurrent);
 
         // ── ロック（所有者不明の扱い）──
         harness.Add("所有者 <unknown> は Unknown として扱う",                UnknownOwnerIsNotSelf);
@@ -130,30 +162,61 @@ public static class PureLogicTests
     //  競合選択の対応表
     // ============================================================
 
-    /// <summary>「自分の変更を残す」が Lore の theirs（= ローカル側）になる。</summary>
+    /// <summary>sync のマージでは「自分の変更を残す」が Lore の theirs（= ローカル側）。</summary>
     private static void KeepMineMapsToTheirs()
         => Check.Equal(LoreResolveSide.Theirs,
-                       LoreConflictResolutionMap.ToLoreSide(ConflictResolutionChoice.KeepMine),
-                       "KeepMine の対応先");
+                       LoreConflictResolutionMap.ToLoreSide(
+                           ConflictResolutionChoice.KeepMine, MergeOrigin.Sync),
+                       "KeepMine の対応先（sync）");
 
-    /// <summary>「リモートを採用」が Lore の mine（= リモート側）になる。</summary>
+    /// <summary>sync のマージでは「リモートを採用」が Lore の mine（= リモート側）。</summary>
     private static void TakeRemoteMapsToMine()
         => Check.Equal(LoreResolveSide.Mine,
-                       LoreConflictResolutionMap.ToLoreSide(ConflictResolutionChoice.TakeRemote),
-                       "TakeRemote の対応先");
+                       LoreConflictResolutionMap.ToLoreSide(
+                           ConflictResolutionChoice.TakeRemote, MergeOrigin.Sync),
+                       "TakeRemote の対応先（sync）");
 
-    /// <summary>対応表を往復しても元の選択に戻る。</summary>
-    private static void ResolutionMapRoundTrips()
+    /// <summary>
+    /// ★ブランチのマージでは向きが入れ替わる（実機で確認した Lore の罠）。
+    /// ここを sync と同じにすると、マージの解決で逆の側を採ってしまう。
+    /// </summary>
+    private static void BranchMergeMapIsFlippedFromSync()
     {
+        Check.Equal(LoreResolveSide.Mine,
+                    LoreConflictResolutionMap.ToLoreSide(
+                        ConflictResolutionChoice.KeepMine, MergeOrigin.BranchMerge),
+                    "KeepMine の対応先（branch merge）");
+        Check.Equal(LoreResolveSide.Theirs,
+                    LoreConflictResolutionMap.ToLoreSide(
+                        ConflictResolutionChoice.TakeRemote, MergeOrigin.BranchMerge),
+                    "TakeRemote の対応先（branch merge）");
+
+        // 2 つの出どころで同じ選択が別の側になる、という事実そのものを固定する。
         foreach (var choice in new[] { ConflictResolutionChoice.KeepMine,
                                        ConflictResolutionChoice.TakeRemote })
         {
-            var side = LoreConflictResolutionMap.ToLoreSide(choice);
-            Check.Equal(choice, LoreConflictResolutionMap.ToChoice(side), $"{choice} の往復");
+            Check.True(LoreConflictResolutionMap.ToLoreSide(choice, MergeOrigin.Sync)
+                       != LoreConflictResolutionMap.ToLoreSide(choice, MergeOrigin.BranchMerge),
+                       $"{choice} は出どころで対応先が変わる");
         }
     }
 
-    /// <summary>プロバイダ経由でも対応表どおりの側が Lore へ渡る。</summary>
+    /// <summary>対応表を往復しても元の選択に戻る（どちらの出どころでも）。</summary>
+    private static void ResolutionMapRoundTrips()
+    {
+        foreach (var origin in new[] { MergeOrigin.Sync, MergeOrigin.BranchMerge })
+        {
+            foreach (var choice in new[] { ConflictResolutionChoice.KeepMine,
+                                           ConflictResolutionChoice.TakeRemote })
+            {
+                var side = LoreConflictResolutionMap.ToLoreSide(choice, origin);
+                Check.Equal(choice, LoreConflictResolutionMap.ToChoice(side, origin),
+                            $"{choice}（{origin}）の往復");
+            }
+        }
+    }
+
+    /// <summary>プロバイダ経由でも対応表どおりの側が Lore へ渡る（sync の既定）。</summary>
     private static void ResolveSendsMappedSide()
     {
         var backend = new FakeLoreBackend();
@@ -169,20 +232,183 @@ public static class PureLogicTests
         Check.Equal(LoreResolveSide.Mine, backend.LastResolveSide, "TakeRemote で渡る側");
     }
 
-    /// <summary>flag_conflict_mine は「リモートを採用」で解決済みと読む。</summary>
+    /// <summary>
+    /// ★ブランチのマージで競合したあとの解決では、入れ替わった側が Lore へ渡ること。
+    ///
+    /// <para>
+    /// 出どころは作業コピー（`.lore/`）へ記録されるので、
+    /// 実ファイルを使って「マージ → 解決」の流れをそのまま踏む。
+    /// </para>
+    /// </summary>
+    private static void ResolveAfterBranchMergeSendsFlippedSide()
+    {
+        using var temp = new TempDir();
+
+        // `.lore/` が無いと印を書けない（作業コピーでない場所では記録しない設計）。
+        Directory.CreateDirectory(
+            Path.Combine(temp.Path, VersionControlSettings.LORE_METADATA_DIR_NAME));
+
+        var backend = new FakeLoreBackend { WorkingCopyRoot = temp.Path };
+
+        // 1 回目 = マージ前（現在のブランチ名）、2 回目 = マージ後（競合あり）。
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        backend.StatusResults.Add(FakeRows.Status(new[]
+        {
+            FakeRows.File("a.txt", conflict: true, conflictUnresolved: true),
+        }, branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var merge = provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Conflicted, merge.Outcome, "マージの結末");
+
+        // 以降の status は「競合なし」を返す（解決できたことにする）。
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+
+        provider.ResolveConflictsAsync(
+            new[] { "a.txt" }, ConflictResolutionChoice.KeepMine).GetAwaiter().GetResult();
+        Check.Equal(LoreResolveSide.Mine, backend.LastResolveSide,
+                    "ブランチのマージでは KeepMine → Lore の mine");
+    }
+
+    /// <summary>
+    /// マージが片付いたら出どころの印を消し、次の競合では sync の対応表へ戻ること。
+    /// 消し忘れると、ありふれた sync の競合で逆の側を採ってしまう。
+    /// </summary>
+    private static void MergeOriginIsClearedAfterResolve()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(
+            Path.Combine(temp.Path, VersionControlSettings.LORE_METADATA_DIR_NAME));
+
+        var backend = new FakeLoreBackend { WorkingCopyRoot = temp.Path };
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        backend.StatusResults.Add(FakeRows.Status(new[]
+        {
+            FakeRows.File("a.txt", conflict: true, conflictUnresolved: true),
+        }, branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+
+        // 印は Lore のメタデータ置き場ではなく SEED のユーザー別状態（cache/editor/vcs/）に置く
+        var marker = Path.Combine(
+            new[] { temp.Path }
+                .Concat(VersionControlSettings.EDITOR_VCS_STATE_DIR_SEGMENTS)
+                .Append(LoreMergeOriginStore.FILE_NAME)
+                .ToArray());
+        Check.True(File.Exists(marker), "競合が出たら印が残る");
+
+        // 解決 → 競合なし → マージのコミットまで進む。
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        provider.ResolveConflictsAsync(
+            new[] { "a.txt" }, ConflictResolutionChoice.KeepMine).GetAwaiter().GetResult();
+
+        Check.True(!File.Exists(marker), "解決しきったら印は消える");
+
+        // 印が無い状態では sync の対応表に戻る。
+        provider.ResolveConflictsAsync(
+            new[] { "a.txt" }, ConflictResolutionChoice.KeepMine).GetAwaiter().GetResult();
+        Check.Equal(LoreResolveSide.Theirs, backend.LastResolveSide,
+                    "印が無ければ sync の対応表");
+    }
+
+    /// <summary>
+    /// 「最新を取得」が通ったら、残っていたブランチのマージの印を消すこと。
+    /// 進行中のマージが sync 由来へ入れ替わるため。
+    /// </summary>
+    private static void SyncClearsStaleBranchMergeOrigin()
+    {
+        using var temp = new TempDir();
+        var loreDir = Path.Combine(temp.Path, VersionControlSettings.LORE_METADATA_DIR_NAME);
+        Directory.CreateDirectory(loreDir);
+
+        // 印だけを先に置いておく（前回のマージが残っている状況）。
+        var store = new LoreMergeOriginStore(temp.Path);
+        store.MarkBranchMerge();
+        Check.Equal(MergeOrigin.BranchMerge, store.Read(), "書いた印が読める");
+
+        var backend = new FakeLoreBackend { WorkingCopyRoot = temp.Path };
+        backend.StatusResults.Add(FakeRows.Status());
+        using var provider = NewProvider(backend);
+
+        provider.FetchLatestAsync().GetAwaiter().GetResult();
+
+        Check.Equal(MergeOrigin.Sync, store.Read(), "取得後は sync 扱いへ戻る");
+    }
+
+    /// <summary>
+    /// ブランチを切り替えたら出どころの印を消すこと。
+    /// 前のブランチで始めたマージは「いま進行中のマージ」ではなくなるため、
+    /// 残すと移った先の sync の競合で誤った対応表を引く。
+    /// </summary>
+    private static void BranchSwitchClearsMergeOrigin()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(
+            Path.Combine(temp.Path, VersionControlSettings.LORE_METADATA_DIR_NAME));
+
+        var store = new LoreMergeOriginStore(temp.Path);
+        store.MarkBranchMerge();
+
+        var backend = new FakeLoreBackend { WorkingCopyRoot = temp.Path };
+        using var provider = NewProvider(backend);
+
+        provider.SwitchBranchAsync("other").GetAwaiter().GetResult();
+        Check.Equal(MergeOrigin.Sync, store.Read(), "切り替え後は sync 扱いへ戻る");
+
+        // 切り替えに失敗したときは消さない（移れていないので、まだ同じマージの途中）。
+        store.MarkBranchMerge();
+        backend.BranchSwitchResult = LoreCallResult.Failure(2, new[] { "Branch not found" });
+        provider.SwitchBranchAsync("missing").GetAwaiter().GetResult();
+        Check.Equal(MergeOrigin.BranchMerge, store.Read(), "失敗したときは印を残す");
+    }
+
+    /// <summary>作業コピーでない場所では印を書かず、読みは sync のままになる。</summary>
+    private static void MergeOriginStoreIsSilentOutsideWorkingCopy()
+    {
+        using var temp = new TempDir();   // `.lore/` を作らない
+
+        var store = new LoreMergeOriginStore(temp.Path);
+        store.MarkBranchMerge();          // 例外を出さずに諦める
+
+        Check.Equal(MergeOrigin.Sync, store.Read(), "印が無いので sync");
+        Check.True(!File.Exists(Path.Combine(
+                       temp.Path, VersionControlSettings.LORE_METADATA_DIR_NAME,
+                       LoreMergeOriginStore.FILE_NAME)),
+                   "ファイルは作られない");
+
+        // ルートが空でも落ちない。
+        var empty = new LoreMergeOriginStore(string.Empty);
+        empty.MarkBranchMerge();
+        empty.Clear();
+        Check.Equal(MergeOrigin.Sync, empty.Read(), "ルート未指定でも sync");
+    }
+
+    /// <summary>flag_conflict_mine は sync では「リモートを採用」で解決済みと読む。</summary>
     private static void ConflictMineReadsAsTakeRemote()
     {
         var row = FakeRows.File("a.txt", conflict: true, conflictMine: true);
         Check.Equal(FileConflictState.ResolvedTakeRemote,
-                    LoreStatusTranslator.ToConflictState(row), "flag_conflict_mine の読み");
+                    LoreStatusTranslator.ToConflictState(row, MergeOrigin.Sync),
+                    "flag_conflict_mine の読み（sync）");
+
+        // ブランチのマージでは逆（mine = 現在のブランチ = 自分の変更を残した）。
+        Check.Equal(FileConflictState.ResolvedKeepMine,
+                    LoreStatusTranslator.ToConflictState(row, MergeOrigin.BranchMerge),
+                    "flag_conflict_mine の読み（branch merge）");
     }
 
-    /// <summary>flag_conflict_theirs は「自分の変更を残す」で解決済みと読む。</summary>
+    /// <summary>flag_conflict_theirs は sync では「自分の変更を残す」で解決済みと読む。</summary>
     private static void ConflictTheirsReadsAsKeepMine()
     {
         var row = FakeRows.File("a.txt", conflict: true, conflictTheirs: true);
         Check.Equal(FileConflictState.ResolvedKeepMine,
-                    LoreStatusTranslator.ToConflictState(row), "flag_conflict_theirs の読み");
+                    LoreStatusTranslator.ToConflictState(row, MergeOrigin.Sync),
+                    "flag_conflict_theirs の読み（sync）");
+
+        Check.Equal(FileConflictState.ResolvedTakeRemote,
+                    LoreStatusTranslator.ToConflictState(row, MergeOrigin.BranchMerge),
+                    "flag_conflict_theirs の読み（branch merge）");
     }
 
     // ============================================================
@@ -1183,6 +1409,347 @@ public static class PureLogicTests
             "test", _ => 1, TimeSpan.FromSeconds(1), CancellationToken.None);
 
         Check.True(task.IsCanceled, "中断として完了する");
+    }
+
+    // ============================================================
+    //  ブランチのマージ
+    //
+    //  ★ここで固定したいのは「競合の有無を戻り値ではなく status で見ている」こと。
+    //    Lore の branch merge は sync と同じく、競合していても成功を返すことがあり、
+    //    逆に失敗を返していても作業コピーには競合が残っていることがある。
+    //    どちらの向きで取り違えても、利用者は競合に気づかないまま次の操作へ進む。
+    // ============================================================
+
+    /// <summary>競合が無ければ成功し、「送信で共有される」ことを伝える。</summary>
+    private static void MergeWithoutConflictsSucceeds()
+    {
+        var backend = new FakeLoreBackend();
+        // 1 回目 = マージ前（現在のブランチ名を読む）、2 回目 = マージ後（競合の確認）。
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main", revisionNumber: 7));
+        using var provider = NewProvider(backend);
+
+        var result = provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Success, result.Outcome, "結末");
+        Check.Equal(1, backend.BranchMergeCallCount, "Lore の merge が 1 回だけ呼ばれる");
+        Check.Equal("feature", backend.LastBranchMergeSource, "取り込み元");
+        Check.Equal("feature", result.Value!.SourceBranch, "明細の取り込み元");
+        Check.Equal(7UL, result.Value.RevisionNumber, "明細のリビジョン番号");
+        Check.True(result.Message.Contains("送信", StringComparison.Ordinal),
+                   $"送信を促す文言が入る（実際: {result.Message}）");
+    }
+
+    /// <summary>戻り値が成功でも、status に競合が出ていれば Conflicted。</summary>
+    private static void MergeSuccessWithConflictsIsConflicted()
+    {
+        var backend = new FakeLoreBackend();
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        backend.StatusResults.Add(FakeRows.Status(new[]
+        {
+            FakeRows.File("a.txt", conflict: true, conflictUnresolved: true),
+        }, branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Conflicted, result.Outcome, "結末");
+        Check.Equal(1, result.Value!.Conflicts.Count, "競合の件数");
+        Check.Equal("a.txt", result.Value.Conflicts[0].Path, "競合したファイル");
+    }
+
+    /// <summary>
+    /// Lore が失敗を返していても、競合が出ているなら Conflicted として扱う。
+    /// ここを Failed にすると、利用者は競合が残ったまま「失敗した」と思って放置する。
+    /// </summary>
+    private static void MergeFailureWithConflictsIsConflicted()
+    {
+        var backend = new FakeLoreBackend
+        {
+            BranchMergeResult = LoreCallResult.Failure(
+                2, new[] { "Merge has unresolved conflicts" }),
+        };
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        backend.StatusResults.Add(FakeRows.Status(new[]
+        {
+            FakeRows.File("a.txt", conflict: true, conflictUnresolved: true),
+        }, branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Conflicted, result.Outcome, "結末");
+        Check.Equal(1, result.Value!.Conflicts.Count, "競合の件数");
+    }
+
+    /// <summary>分岐で弾かれたら「先に最新を取得」と案内できる NeedsSync。</summary>
+    private static void MergeRejectionBecomesNeedsSync()
+    {
+        var backend = new FakeLoreBackend
+        {
+            BranchMergeResult = LoreCallResult.Failure(
+                2, new[] { "Branch history is divergent" }),
+        };
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.NeedsSync, result.Outcome, "結末");
+    }
+
+    /// <summary>サーバへ届かないときは「異常」ではなく RequiresConnection。</summary>
+    private static void MergeOfflineRequiresConnection()
+    {
+        var backend = new FakeLoreBackend
+        {
+            BranchMergeResult = LoreCallResult.Failure(
+                2, new[] { "Cannot connect to remote server" }),
+        };
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.RequiresConnection, result.Outcome, "結末");
+    }
+
+    /// <summary>現在のブランチ自身の取り込みは意味が無いので Lore へ渡さない。</summary>
+    private static void MergeIntoSelfIsRejected()
+    {
+        var backend = new FakeLoreBackend();
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.MergeBranchAsync("main").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Failed, result.Outcome, "結末");
+        Check.Equal(0, backend.BranchMergeCallCount, "Lore の merge は呼ばれない");
+        Check.Equal(VersionControlMessages.BRANCH_MERGE_SELF, result.Message, "理由の文言");
+    }
+
+    /// <summary>名前が空なら status すら引かずに弾く。</summary>
+    private static void MergeRequiresSourceName()
+    {
+        var backend = new FakeLoreBackend();
+        using var provider = NewProvider(backend);
+
+        var result = provider.MergeBranchAsync("   ").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Failed, result.Outcome, "結末");
+        Check.Equal(0, backend.StatusCallCount, "Lore を一度も呼ばない");
+        Check.Equal(0, backend.BranchMergeCallCount, "Lore の merge も呼ばれない");
+    }
+
+    /// <summary>
+    /// 自動コミットのメッセージは履歴に残る。
+    /// 「どちらをどちらへ取り込んだか」が後から読めること。
+    /// </summary>
+    private static void MergeCommitMessageNamesBothBranches()
+    {
+        var backend = new FakeLoreBackend();
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        provider.MergeBranchAsync("feature").GetAwaiter().GetResult();
+
+        Check.True(backend.LastBranchMergeMessage.Contains("feature", StringComparison.Ordinal),
+                   $"取り込み元が入る（実際: {backend.LastBranchMergeMessage}）");
+        Check.True(backend.LastBranchMergeMessage.Contains("main", StringComparison.Ordinal),
+                   $"取り込み先が入る（実際: {backend.LastBranchMergeMessage}）");
+    }
+
+    // ============================================================
+    //  ブランチの削除（アーカイブ）
+    //
+    //  ★Lore の archive は取り消せない。守るべきブランチ（現在・既定）を
+    //    **プロバイダ側でも**弾いていることを固定する。UI の絞り込みだけに頼ると、
+    //    UI 以外から呼ばれたときに消えてしまう。
+    // ============================================================
+
+    /// <summary>削除できるブランチなら Lore へそのまま名前が渡る。</summary>
+    private static void ArchivePassesNameToLore()
+    {
+        var backend = new FakeLoreBackend();
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.ArchiveBranchAsync("old-feature").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Success, result.Outcome, "結末");
+        Check.Equal(1, backend.BranchArchiveCallCount, "Lore の archive が 1 回だけ呼ばれる");
+        Check.Equal("old-feature", backend.LastBranchArchiveName, "渡された名前");
+    }
+
+    /// <summary>現在のブランチは削除させない（足場を消す操作になる）。</summary>
+    private static void ArchiveCurrentBranchIsRejected()
+    {
+        var backend = new FakeLoreBackend();
+        backend.StatusResults.Add(FakeRows.Status(branchName: "feature"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.ArchiveBranchAsync("feature").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Failed, result.Outcome, "結末");
+        Check.Equal(0, backend.BranchArchiveCallCount, "Lore の archive は呼ばれない");
+        Check.Equal(VersionControlMessages.BRANCH_ARCHIVE_CURRENT, result.Message, "理由の文言");
+    }
+
+    /// <summary>既定ブランチ（main）は削除させない。</summary>
+    private static void ArchiveDefaultBranchIsRejected()
+    {
+        var backend = new FakeLoreBackend();
+        backend.StatusResults.Add(FakeRows.Status(branchName: "feature"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.ArchiveBranchAsync("main").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Failed, result.Outcome, "結末");
+        Check.Equal(0, backend.BranchArchiveCallCount, "Lore の archive は呼ばれない");
+    }
+
+    /// <summary>
+    /// 既定ブランチ名は設定値。"main" 以外を既定にしているリポジトリでも守れること。
+    /// </summary>
+    private static void ArchiveUsesConfiguredDefaultBranch()
+    {
+        var settings = new VersionControlSettings(defaultBranchName: "trunk");
+
+        var backend = new FakeLoreBackend();
+        backend.StatusResults.Add(FakeRows.Status(branchName: "feature"));
+        using var provider = NewProvider(backend, settings);
+
+        var protectedResult = provider.ArchiveBranchAsync("trunk").GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Failed, protectedResult.Outcome, "trunk の結末");
+        Check.Equal(0, backend.BranchArchiveCallCount, "trunk では Lore を呼ばない");
+
+        // 設定を差し替えたので、"main" はもう守られない（普通のブランチとして消せる）。
+        var mainResult = provider.ArchiveBranchAsync("main").GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, mainResult.Outcome, "main の結末");
+        Check.Equal(1, backend.BranchArchiveCallCount, "main では Lore を呼ぶ");
+    }
+
+    /// <summary>名前が空なら status すら引かずに弾く。</summary>
+    private static void ArchiveRequiresName()
+    {
+        var backend = new FakeLoreBackend();
+        using var provider = NewProvider(backend);
+
+        var result = provider.ArchiveBranchAsync("").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Failed, result.Outcome, "結末");
+        Check.Equal(0, backend.StatusCallCount, "Lore を一度も呼ばない");
+    }
+
+    /// <summary>Lore 側が失敗したらそのまま Failed。</summary>
+    private static void ArchiveFailureIsFailed()
+    {
+        var backend = new FakeLoreBackend
+        {
+            BranchArchiveResult = LoreCallResult.Failure(2, new[] { "Branch not found" }),
+        };
+        backend.StatusResults.Add(FakeRows.Status(branchName: "main"));
+        using var provider = NewProvider(backend);
+
+        var result = provider.ArchiveBranchAsync("missing").GetAwaiter().GetResult();
+
+        Check.Equal(VersionControlOutcome.Failed, result.Outcome, "結末");
+        Check.Equal(VersionControlMessages.BRANCH_ARCHIVE_FAILED, result.Message, "文言");
+    }
+
+    // ============================================================
+    //  ブランチ操作の除外規則
+    //
+    //  ★パネルのダイアログとプロバイダの拒否が **同じ規則** を使っていること。
+    //    ずれると「一覧に出るのに必ず失敗する」「一覧に出ないのに実行できる」が生まれる。
+    // ============================================================
+
+    /// <summary>マージ元の候補から現在のブランチが外れる。</summary>
+    private static void MergeCandidatesExcludeCurrent()
+    {
+        var branches = new[]
+        {
+            new BranchInfo("main",    true,  true, true),
+            new BranchInfo("feature", false, true, false),
+        };
+
+        var candidates = BranchOperationRules.MergeSourceCandidates(branches, "main");
+
+        Check.Equal(1, candidates.Count, "候補の件数");
+        Check.Equal("feature", candidates[0], "残る候補");
+    }
+
+    /// <summary>削除の候補から現在のブランチと既定ブランチが外れる。</summary>
+    private static void ArchiveCandidatesExcludeProtected()
+    {
+        var branches = new[]
+        {
+            new BranchInfo("main",    false, true, true),
+            new BranchInfo("feature", true,  true, false),
+            new BranchInfo("old",     false, true, false),
+        };
+
+        var candidates = BranchOperationRules.ArchiveCandidates(branches, "feature", "main");
+
+        Check.Equal(1, candidates.Count, "候補の件数");
+        Check.Equal("old", candidates[0], "残る候補");
+    }
+
+    /// <summary>
+    /// 守るべきブランチの判定は大文字小文字を区別しない。
+    /// "Main" を消せてしまうより、消せない側へ倒す方が損失が小さいため。
+    /// </summary>
+    private static void BranchRulesIgnoreCase()
+    {
+        Check.True(!BranchOperationRules.CheckArchive("MAIN", "feature", "main").Allowed,
+                   "MAIN は既定ブランチとして守られる");
+        Check.True(!BranchOperationRules.CheckArchive("Feature", "feature", "main").Allowed,
+                   "Feature は現在のブランチとして守られる");
+        Check.True(!BranchOperationRules.CheckMergeSource("MAIN", "main").Allowed,
+                   "MAIN は自分自身として弾かれる");
+    }
+
+    /// <summary>
+    /// Lore は同名ブランチを LOCAL / REMOTE の 2 行で返すことがある。
+    /// 候補を作る段階で 1 件へ畳み、空の名前は落とす。並び順は最初に現れた順を保つ。
+    /// </summary>
+    private static void BranchCandidatesAreDeduplicated()
+    {
+        var branches = new[]
+        {
+            new BranchInfo("zeta",    false, true,  false),
+            new BranchInfo("",        false, true,  false),
+            new BranchInfo("alpha",   false, true,  false),
+            new BranchInfo("ZETA",    false, false, true),
+        };
+
+        var candidates = BranchOperationRules.MergeSourceCandidates(branches, "main");
+
+        Check.Equal(2, candidates.Count, "候補の件数");
+        Check.Equal("zeta",  candidates[0], "1 件目（最初に現れた綴り）");
+        Check.Equal("alpha", candidates[1], "2 件目");
+    }
+
+    /// <summary>
+    /// 現在のブランチ名が分からない（状態が未取得）ときに候補を空にしない。
+    /// ここで全部弾くと、オフライン直後に何も選べなくなる。
+    /// </summary>
+    private static void BranchCandidatesSurviveUnknownCurrent()
+    {
+        var branches = new[]
+        {
+            new BranchInfo("main",    false, true, true),
+            new BranchInfo("feature", false, true, false),
+        };
+
+        var merge = BranchOperationRules.MergeSourceCandidates(branches, string.Empty);
+        Check.Equal(2, merge.Count, "マージ候補は減らない");
+
+        // 削除の方は「既定ブランチ」だけは名前で守れるので、そこは残り続ける。
+        var archive = BranchOperationRules.ArchiveCandidates(branches, string.Empty, "main");
+        Check.Equal(1, archive.Count, "削除候補は既定ブランチだけ外れる");
+        Check.Equal("feature", archive[0], "残る候補");
     }
 
     // ============================================================

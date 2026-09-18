@@ -182,6 +182,48 @@ public interface IVersionControlProvider : IDisposable
     Task<VersionControlResult> SwitchBranchAsync(
         string name, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 別のブランチを **現在のブランチへ取り込む**（マージ）。
+    ///
+    /// <para>結末の読み方:</para>
+    /// <list type="bullet">
+    ///   <item><see cref="VersionControlOutcome.Success"/> … 取り込んで手元にコミットまで済んだ。
+    ///         ほかの人へ渡すには続けて <see cref="SubmitAsync"/> が要る</item>
+    ///   <item><see cref="VersionControlOutcome.Conflicted"/> … 競合が出た。
+    ///         <see cref="MergeReport.Conflicts"/> に対象ファイルが入る。
+    ///         <see cref="ResolveConflictsAsync"/> の 2 択で解決すると、
+    ///         そこでマージのコミットまで行われる</item>
+    ///   <item><see cref="VersionControlOutcome.NeedsSync"/> … 分岐していて取り込めない。
+    ///         先に <see cref="FetchLatestAsync"/> を実行する</item>
+    ///   <item><see cref="VersionControlOutcome.RequiresConnection"/> … サーバに繋がらない</item>
+    /// </list>
+    /// <para>
+    /// 現在のブランチ自身は取り込めない（実装が拒否する）。
+    /// </para>
+    /// </summary>
+    /// <param name="sourceBranch">取り込み元のブランチ名（空は拒否する）。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    Task<VersionControlResult<MergeReport>> MergeBranchAsync(
+        string sourceBranch, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// ブランチを削除（アーカイブ）する。
+    ///
+    /// <para>
+    /// ★Lore v0.9.0 に「ブランチの削除」は無く、<c>branch archive</c>
+    /// （一覧から隠す）が相当する。コミットそのものは残るが、
+    /// このエディタからは元に戻せない。利用者向けの語彙は「削除（アーカイブ）」。
+    /// </para>
+    /// <para>
+    /// 現在のブランチと既定ブランチ（<see cref="VersionControlSettings.DefaultBranchName"/>）は
+    /// 実装が拒否する（<see cref="VersionControlOutcome.Failed"/>）。
+    /// </para>
+    /// </summary>
+    /// <param name="name">ブランチ名（空は拒否する）。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    Task<VersionControlResult> ArchiveBranchAsync(
+        string name, CancellationToken cancellationToken = default);
+
     // ── 履歴 ────────────────────────────────────────────────
 
     /// <summary>

@@ -134,6 +134,18 @@ public sealed class FakeVersionControlProvider : IVersionControlProvider
         => Task.FromResult(VersionControlResult.Success("ブランチを切り替えました。"));
 
     /// <inheritdoc/>
+    public Task<VersionControlResult<MergeReport>> MergeBranchAsync(
+        string sourceBranch, CancellationToken cancellationToken = default)
+        => Task.FromResult(VersionControlResult<MergeReport>.Ok(
+            new MergeReport(sourceBranch, null, 0UL), "ブランチを取り込みました。"));
+
+    /// <inheritdoc/>
+    public Task<VersionControlResult> ArchiveBranchAsync(
+        string name, CancellationToken cancellationToken = default)
+        => Task.FromResult(VersionControlResult.Success(
+            "ブランチを削除（アーカイブ）しました。"));
+
+    /// <inheritdoc/>
     public Task<VersionControlResult<IReadOnlyList<RevisionInfo>>> GetHistoryAsync(
         int maxCount = 0, CancellationToken cancellationToken = default)
         => Task.FromResult(VersionControlResult<IReadOnlyList<RevisionInfo>>.Ok(

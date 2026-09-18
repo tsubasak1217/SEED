@@ -91,9 +91,15 @@ deleteButton.Style = SeedButtonStyle.Get(SeedButtonStyle.DANGER);
 ```
 
 小さなモーダルを**コードで組む**ときは `Theme/SeedDialogTheme.cs` を使う
-（背景・入力欄・ラベル・ボタンの作り方が揃っている）。
+（背景・入力欄・ラベル・**一覧**・ボタンの作り方が揃っている）。
 `SeedDialogTheme.NewButton(text, onClick, isPrimary: true)` がダイアログ用の
 ボタンを共通スタイル付きで返す。
+
+選択肢を選ばせる一覧は `SeedDialogTheme.NewListBox(items, height)` を使う。
+**素の `ListBox` をそのまま置かない**。WPF 既定の `ListBoxItem` は、
+フォーカスが外れた選択行を明るい灰色（`SystemColors.Control` 系）で塗るため、
+暗いダイアログで明るい文字色を継いだまま塗られて**選択した行だけが読めなくなる**。
+ボタンのホバー色を共通書式がテンプレートごと置き換えているのと同じ理由。
 
 ---
 
@@ -170,6 +176,8 @@ deleteButton.Style = SeedButtonStyle.Get(SeedButtonStyle.DANGER);
 | 成功 | `#252526` | `#8ACB8A` | 8.01 |
 | エラー | `#252526` | `#E88F8F` | 6.39 |
 | 入力欄 | `#1A1A1A` | `#DCDCDC` | 12.69 |
+| 一覧の選択行 | `#264F78` | `#DCDCDC` | 6.19 |
+| 一覧のホバー行 | `#2A2A2B` | `#DCDCDC` | 10.46 |
 
 ---
 

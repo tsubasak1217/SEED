@@ -394,6 +394,193 @@ public partial class VersionControlPanel
                MessageBoxButton.YesNo,
                MessageBoxImage.Warning) == MessageBoxResult.Yes;
 
+    // ============================================================
+    //  ブランチのマージ・削除（アーカイブ）
+    // ============================================================
+
+    /// <summary>
+    /// 「ブランチをマージ…」。取り込み元を選ばせて、現在のブランチへ取り込む。
+    ///
+    /// <para>
+    /// 未送信の変更があるときは始めない。取り込みは作業コピーのファイルを
+    /// 書き換えるため、手元の変更と混ざると「どちらが自分の変更か」が分からなくなる。
+    /// </para>
+    /// </summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnMergeBranchClick(object sender, RoutedEventArgs e)
+    {
+        if (!_state.CanChangeBranch) return;
+
+        // ★判定に画面の一覧（_state.ChangeCount）を使わない。
+        //   画面の一覧は最後に更新した時点のもので、そのあとに保存されたファイルが抜けている。
+        //   抜けたまま取り込むと、その変更が取り込みの結果と混ざって見分けられなくなる。
+        //   走査（ScanOffline）はサーバ往復を伴わない（実測 0.11 秒）。送信ゲートと同じ考え方。
+        var scan = await VersionControlService.Provider
+                                              .GetStatusAsync(StatusRefreshMode.ScanOffline)
+                                              .ConfigureAwait(true);
+        var changeCount = scan.Value?.Changes.Count ?? 0;
+        if (!scan.IsSuccess)
+        {
+            // 走査できなければ「変更が無い」と断言できない。取り込みは作業コピーを
+            // 書き換えるので、確かめられないまま始めない。
+            EditorLog.Write($"[VCS] マージ前の走査に失敗しました: {scan.Outcome} {scan.Message}");
+            _state.SetNotice(VersionControlNotice.FromResult(scan));
+            SyncControls();
+            return;
+        }
+
+        // 未送信の変更がある間は取り込ませない（先に送信するか元に戻してもらう）。
+        if (changeCount > 0)
+        {
+            ShowInfoNotice(string.Format(
+                VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_FORMAT, changeCount));
+            return;
+        }
+
+        // 一覧はコンボを開いたときにしか取り直していない。ここで必ず取り直す。
+        // null は「取れなかった」。その理由は RunAsync が 1 行メッセージに出しているので、
+        // 「候補がありません」で上書きせずにそのまま見せる。
+        var branches = await LoadBranchesForDialogAsync();
+        if (branches is null) return;
+
+        var current    = _state.BranchName;
+        var candidates = BranchOperationRules.MergeSourceCandidates(branches, current);
+        if (candidates.Count == 0)
+        {
+            ShowInfoNotice(VersionControlMessages.PANEL_BRANCH_MERGE_NO_CANDIDATES);
+            return;
+        }
+
+        var source = EditorDialogs.ShowBranchPicker(
+            string.Format(VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_PROMPT, current),
+            VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_TITLE,
+            candidates,
+            VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_NOTE,
+            Window.GetWindow(this));
+
+        if (string.IsNullOrWhiteSpace(source)) return;
+
+        var result = await RunAsync(
+            VersionControlOperation.Branch,
+            async () => await VersionControlService.Provider
+                                                   .MergeBranchAsync(source)
+                                                   .ConfigureAwait(true));
+        if (result is null) return;
+
+        // 取り込みは作業コピーの中身を書き換える。競合が出ていれば競合の節へ出す必要も
+        // あるので、成功・競合のどちらでも状態と節を取り直す。
+        await ReloadStatusKeepingNoticeAsync(result);
+        await ReloadExpandedSectionsAsync();
+    }
+
+    /// <summary>
+    /// 「ブランチを削除（アーカイブ）…」。対象を選ばせ、確認してから削除する。
+    ///
+    /// <para>
+    /// Lore にブランチの削除は無く、archive（一覧から隠す）が相当する。
+    /// 取り消せないので、選択ダイアログの補足と確認ダイアログの 2 段で伝える。
+    /// </para>
+    /// </summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnArchiveBranchClick(object sender, RoutedEventArgs e)
+    {
+        if (!_state.CanChangeBranch) return;
+
+        // null は「取れなかった」。理由の 1 行メッセージを上書きしない（マージ側と同じ）。
+        var branches = await LoadBranchesForDialogAsync();
+        if (branches is null) return;
+
+        var current = _state.BranchName;
+
+        // 既定ブランチ名はプロバイダと同じ設定から取る（絞り込みと拒否をずらさない）。
+        var candidates = BranchOperationRules.ArchiveCandidates(
+            branches, current, VersionControlService.Settings.DefaultBranchName);
+        if (candidates.Count == 0)
+        {
+            ShowInfoNotice(VersionControlMessages.PANEL_BRANCH_ARCHIVE_NO_CANDIDATES);
+            return;
+        }
+
+        var target = EditorDialogs.ShowBranchPicker(
+            VersionControlMessages.PANEL_BRANCH_ARCHIVE_DIALOG_PROMPT,
+            VersionControlMessages.PANEL_BRANCH_ARCHIVE_DIALOG_TITLE,
+            candidates,
+            VersionControlMessages.PANEL_BRANCH_ARCHIVE_DIALOG_NOTE,
+            Window.GetWindow(this));
+
+        if (string.IsNullOrWhiteSpace(target)) return;
+
+        // 取り返しがつかないのでここで確認する（ヘッドレスでは必ず「いいえ」）。
+        if (!ConfirmArchiveBranch(target)) return;
+
+        var result = await RunAsync(
+            VersionControlOperation.Branch,
+            async () => await VersionControlService.Provider
+                                                   .ArchiveBranchAsync(target)
+                                                   .ConfigureAwait(true));
+        if (result is null || !result.IsSuccess) return;
+
+        // 消えたブランチが残らないよう、コンボを取り直す。
+        await ReloadBranchesKeepingNoticeAsync();
+    }
+
+    /// <summary>
+    /// ブランチ削除（アーカイブ）の確認。ヘッドレスでは必ず「いいえ」になる。
+    /// </summary>
+    /// <param name="name">対象のブランチ名。</param>
+    /// <returns>続行してよいか。</returns>
+    private static bool ConfirmArchiveBranch(string name)
+        => EditorDialogs.Show(
+               string.Format(
+                   VersionControlMessages.PANEL_BRANCH_ARCHIVE_CONFIRM_FORMAT, name),
+               VersionControlMessages.PANEL_BRANCH_ARCHIVE_CONFIRM_TITLE,
+               MessageBoxButton.YesNo,
+               MessageBoxImage.Warning) == MessageBoxResult.Yes;
+
+    /// <summary>
+    /// ダイアログへ並べるためにブランチ一覧を取り直す。
+    ///
+    /// <para>
+    /// **取れなかった場合は null を返す**（空の一覧とは区別する）。
+    /// 失敗の理由は <see cref="RunAsync"/> が 1 行メッセージに出しているので、
+    /// 呼び出し側はそれを上書きせずにそのまま戻ること。
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<BranchInfo>?> LoadBranchesForDialogAsync()
+    {
+        var result = await RunAsync(
+            VersionControlOperation.Branch,
+            async () => await VersionControlService.Provider
+                                                   .GetBranchesAsync()
+                                                   .ConfigureAwait(true));
+
+        return (result as VersionControlResult<IReadOnlyList<BranchInfo>>)?.Value;
+    }
+
+    /// <summary>
+    /// ブランチ一覧だけを取り直し、**直前の操作の 1 行メッセージは残す**。
+    /// （「削除しました」が「ブランチ一覧を取得しました」で潰れないようにする。）
+    /// </summary>
+    private async Task ReloadBranchesKeepingNoticeAsync()
+    {
+        var keep = _state.Notice;
+        await ReloadBranchesAsync();
+        _state.SetNotice(keep);
+        SyncControls();
+    }
+
+    /// <summary>
+    /// 操作を始めずに案内だけを 1 行メッセージへ出す。
+    /// </summary>
+    /// <param name="message">出す文言。</param>
+    private void ShowInfoNotice(string message)
+    {
+        _state.SetNotice(VersionControlNotice.Info(message));
+        SyncControls();
+    }
+
     /// <summary>コンボの選択を現在のブランチへ戻す（切り替えをやめたとき）。</summary>
     private void RestoreBranchSelection()
     {

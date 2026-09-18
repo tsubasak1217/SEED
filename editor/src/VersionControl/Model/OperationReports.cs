@@ -1,15 +1,16 @@
 // ============================================================
-//  OperationReports.cs — 「送信」と「最新を取得」が返す明細
+//  OperationReports.cs — 「送信」「最新を取得」「ブランチのマージ」が返す明細
 //
 //  【役割】
 //  結末（VersionControlOutcome）だけでは足りない、利用者へ見せたい内訳を持つ。
 //    ・送信 … 何件を送ったのか、どのリビジョンになったのか
 //    ・最新を取得 … 何件が更新され、どれが競合したのか
+//    ・ブランチのマージ … どのブランチを取り込み、どれが競合したのか
 //
 //  【1 ファイルにまとめている理由】
-//  どちらも「1 回の操作の明細」という同じ役割で、片方だけを参照する場面が無い。
+//  どれも「1 回の操作の明細」という同じ役割で、片方だけを参照する場面が無い。
 //  型ごとにファイルを割ると、対になっている事実が読み取りづらくなるため
-//  ここだけは 2 型を同居させている。
+//  ここだけは複数の型を同居させている。
 //
 //  【依存】
 //  WPF にも LoreVcs にも依存しない（単体テストへそのままリンクできる）。
@@ -105,4 +106,49 @@ public sealed class SyncReport
     /// <summary>ログ向けの 1 行表現。</summary>
     public override string ToString()
         => $"updated={UpdatedFileCount} conflicts={Conflicts.Count} rev={RevisionNumber}";
+}
+
+/// <summary>
+/// 「ブランチのマージ」（別のブランチを現在のブランチへ取り込む）の明細（不変）。
+/// </summary>
+public sealed class MergeReport
+{
+    /// <summary>取り込み元のブランチ名。</summary>
+    public string SourceBranch { get; }
+
+    /// <summary>
+    /// 競合して利用者の選択が必要になったファイル。
+    ///
+    /// <para>
+    /// Lore の <c>branch merge</c> は競合が無ければマージのコミットまで自動で打つが、
+    /// 競合の有無は戻り値ではなく **マージ後の状態の <c>flagConflict*</c>** で判定する
+    /// （sync と同じ罠。詳細は docs/vcs_lore.md 3.1）。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<ChangedFile> Conflicts { get; }
+
+    /// <summary>マージ後のリビジョン番号。取得できなければ 0。</summary>
+    public ulong RevisionNumber { get; }
+
+    /// <summary>競合が残っているか。</summary>
+    public bool HasConflicts => Conflicts.Count > 0;
+
+    /// <summary>全項目を指定して生成する。</summary>
+    /// <param name="sourceBranch">取り込み元のブランチ名。</param>
+    /// <param name="conflicts">競合したファイル。</param>
+    /// <param name="revisionNumber">マージ後のリビジョン番号。</param>
+    public MergeReport(
+        string? sourceBranch, IReadOnlyList<ChangedFile>? conflicts, ulong revisionNumber)
+    {
+        SourceBranch   = sourceBranch ?? string.Empty;
+        Conflicts      = conflicts ?? Array.Empty<ChangedFile>();
+        RevisionNumber = revisionNumber;
+    }
+
+    /// <summary>何も取り込まなかったことを表す明細。</summary>
+    public static MergeReport Nothing { get; } = new(string.Empty, null, 0);
+
+    /// <summary>ログ向けの 1 行表現。</summary>
+    public override string ToString()
+        => $"source={SourceBranch} conflicts={Conflicts.Count} rev={RevisionNumber}";
 }

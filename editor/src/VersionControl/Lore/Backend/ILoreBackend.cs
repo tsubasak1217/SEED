@@ -156,6 +156,34 @@ public interface ILoreBackend : IDisposable
     /// <param name="cancellationToken">中断用。</param>
     LoreCallResult BranchSwitch(string name, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// 別のブランチを現在のブランチへ取り込む（Lore の <c>branch merge &lt;branch&gt;</c>
+    /// ＝ <c>BranchMergeStart</c>）。
+    ///
+    /// <para>
+    /// 競合が無ければ Lore が <paramref name="message"/> でマージのコミットまで自動で打つ。
+    /// 競合があった場合の判定は **戻り値ではなく status の flagConflict***（sync と同じ罠）。
+    /// 呼び出し側は必ずマージ後に status を引き直すこと。
+    /// </para>
+    /// </summary>
+    /// <param name="sourceBranch">取り込み元のブランチ名。</param>
+    /// <param name="message">競合が無かったときに自動で打つコミットのメッセージ。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    LoreCallResult BranchMerge(
+        string sourceBranch, string message, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// ブランチを削除（アーカイブ）する（Lore の <c>branch archive</c>）。
+    ///
+    /// <para>
+    /// ★Lore v0.9.0 に「ブランチの削除」は無い。archive は一覧から隠す操作で、
+    /// <see cref="BranchList"/> は既定（<c>Archived = false</c>）でこれを返さない。
+    /// </para>
+    /// </summary>
+    /// <param name="name">ブランチ名。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    LoreCallResult BranchArchive(string name, CancellationToken cancellationToken);
+
     // ── 履歴 ────────────────────────────────────────────────
 
     /// <summary>

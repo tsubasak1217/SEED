@@ -67,11 +67,32 @@ public sealed class VersionControlSettings
     /// </summary>
     public const int DEFAULT_SHUTDOWN_WAIT_MS = 5_000;
 
+    /// <summary>
+    /// 既定ブランチの名前。
+    ///
+    /// <para>
+    /// 「削除（アーカイブ）してはいけないブランチ」の判定に使う。
+    /// Lore の archive は取り消せず、既定ブランチを隠すとほかの参加者の一覧からも
+    /// 消えるため、UI からは行えないようにしている。
+    /// リポジトリの既定ブランチ名が "main" でない場合は、この設定を差し替える。
+    /// </para>
+    /// </summary>
+    public const string DEFAULT_DEFAULT_BRANCH_NAME = "main";
+
     /// <summary>Lore の作業コピーを示すフォルダ名（この有無でプロバイダを決める）。</summary>
     public const string LORE_METADATA_DIR_NAME = ".lore";
 
     /// <summary>Lore の作業コピー設定ファイル名（`.lore/` 直下）。</summary>
     public const string LORE_CONFIG_FILE_NAME = "config.toml";
+
+    /// <summary>
+    /// SEED がバージョン管理のために置くユーザー別の状態ファイルのフォルダ（作業コピー相対）。
+    /// `.lore/` は Lore のメタデータ置き場なので SEED 固有のファイルは置かず、ランタイムの
+    /// 視点サイドカー（`cache/editor/view/`）と同じ `cache/editor/` の下に `vcs/` を切る。
+    /// `cache/` は `.loreignore` で除外されており、共有されない。
+    /// フォルダ名はプロジェクトの規約（`ProjectPaths.CACHE_DIR_NAME` = "cache"）と一致させること。
+    /// </summary>
+    public static readonly string[] EDITOR_VCS_STATE_DIR_SEGMENTS = { "cache", "editor", "vcs" };
 
     /// <summary>
     /// リポジトリ ID が入ったファイル名（`.lore/` 直下）。
@@ -109,6 +130,9 @@ public sealed class VersionControlSettings
     /// <summary>ワーカー停止時に実行中の操作を待つ上限。</summary>
     public TimeSpan ShutdownWait { get; }
 
+    /// <summary>既定ブランチの名前（削除してはいけないブランチの判定に使う）。</summary>
+    public string DefaultBranchName { get; }
+
     // ── 生成 ────────────────────────────────────────────────
 
     /// <summary>
@@ -121,6 +145,7 @@ public sealed class VersionControlSettings
     /// <param name="shutdownWait">ワーカー停止時の待ち上限。</param>
     /// <param name="historyMetadataLimit">履歴のうちメタデータまで補う件数の上限。</param>
     /// <param name="onlineStatusTimeout">オンラインの状態取得のタイムアウト。</param>
+    /// <param name="defaultBranchName">既定ブランチの名前。</param>
     public VersionControlSettings(
         TimeSpan? localOperationTimeout  = null,
         TimeSpan? remoteOperationTimeout = null,
@@ -128,7 +153,8 @@ public sealed class VersionControlSettings
         int?      historyLength          = null,
         TimeSpan? shutdownWait           = null,
         int?      historyMetadataLimit   = null,
-        TimeSpan? onlineStatusTimeout    = null)
+        TimeSpan? onlineStatusTimeout    = null,
+        string?   defaultBranchName      = null)
     {
         LocalOperationTimeout  = localOperationTimeout
             ?? TimeSpan.FromMilliseconds(DEFAULT_LOCAL_OPERATION_TIMEOUT_MS);
@@ -142,6 +168,12 @@ public sealed class VersionControlSettings
         HistoryMetadataLimit   = historyMetadataLimit ?? DEFAULT_HISTORY_METADATA_LIMIT;
         OnlineStatusTimeout    = onlineStatusTimeout
             ?? TimeSpan.FromMilliseconds(DEFAULT_ONLINE_STATUS_TIMEOUT_MS);
+
+        // 空文字を渡されたら「既定ブランチを守らない」ことになってしまうため、
+        // 空白だけの指定は無かったものとして既定値へ戻す。
+        DefaultBranchName = string.IsNullOrWhiteSpace(defaultBranchName)
+            ? DEFAULT_DEFAULT_BRANCH_NAME
+            : defaultBranchName;
     }
 
     /// <summary>既定値だけで構成した設定。</summary>
