@@ -34,9 +34,27 @@ public sealed class LockRowItem
     /// <summary>解除ボタンを出すか（自分のロックだけ）。</summary>
     public bool CanRelease { get; }
 
+    /// <summary>
+    /// このエディタが自動で取得しているロックか（開いているあいだ保持しているもの）。
+    ///
+    /// <para>
+    /// 利用者から見ると「掛けた覚えのないロック」になるので、印を出して
+    /// 手で掛けたロックと区別できるようにする。
+    /// </para>
+    /// </summary>
+    public bool IsAutoHeld { get; }
+
     /// <summary>解除ボタンの文言。</summary>
     public static string ReleaseButtonText { get; } =
         SEEDEditor.VersionControl.VersionControlMessages.PANEL_LOCK_RELEASE_BUTTON;
+
+    /// <summary>自動ロックの印の文言。</summary>
+    public static string AutoHeldText { get; } =
+        SEEDEditor.VersionControl.VersionControlMessages.PANEL_LOCK_AUTO_HELD;
+
+    /// <summary>自動ロックの印のツールチップ。</summary>
+    public static string AutoHeldTooltip { get; } =
+        SEEDEditor.VersionControl.VersionControlMessages.PANEL_LOCK_AUTO_HELD_TOOLTIP;
 
     /// <summary>ロック情報から表示用の行を作る。</summary>
     /// <param name="info">元のロック情報。</param>
@@ -46,5 +64,8 @@ public sealed class LockRowItem
         HolderText    = VersionControlDisplay.ToLockHolderText(info.Holder, info.Owner);
         TimestampText = VersionControlDisplay.ToTimestampText(info.AcquiredAtUtc);
         CanRelease    = VersionControlDisplay.CanRelease(info.Holder);
+        // 台帳に載っているのは「このエディタが自動で取ったもの」だけ。
+        // 手で掛けたロックは載らないので、ここが真になることは無い。
+        IsAutoHeld    = SEEDEditor.VersionControl.Locking.LockGatekeeper.IsAutoHeld(info.Path);
     }
 }

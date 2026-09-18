@@ -266,6 +266,19 @@ public partial class EditorCommandExecutor
         if (!fullPath.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase))
             return $"エラー: アセットフォルダ外への書き出しは禁止されています: {relPath}";
 
+        // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
+        // ★ここだけはモーダルを出さない。AI ツールは UI スレッド以外から呼ばれ、
+        //   誰も見ていない画面にダイアログを出しても閉じられない。判定だけ使い、
+        //   理由はツールの戻り値として AI へ返す（AI が次の手を選べる）。
+        var verdict = SEEDEditor.VersionControl.Locking.LockGatekeeper
+                                .DecideForWriteAsync(fullPath)
+                                .ConfigureAwait(false).GetAwaiter().GetResult();
+        if (!verdict.CanProceed)
+        {
+            _log($"[AI ツール] write_asset_file を止めました → {fullPath}: {verdict.Message}");
+            return $"エラー: {verdict.Message}";
+        }
+
         // ディレクトリが存在しない場合は作成する
         var dir = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(dir))

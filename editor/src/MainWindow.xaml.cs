@@ -406,6 +406,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         InitializeComponent();
         ApplyDockTheme();
 
+        // ロックのゲートが利用者へ話しかける口を差し込む。
+        // ・止めたとき   → EditorDialogs（ヘッドレスではログへ流れる）
+        // ・注意のとき   → このウィンドウのトースト
+        // 差し込む前（起動直後）に判定が走ってもログだけ残って動作は止まらない。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.Notifier =
+            new SEEDEditor.VersionControl.Locking.Presentation.LockGateNotifier(ShowToast);
+
         // 開いているプロジェクトがタイトルバーで分かるようにする
         // （別プロジェクトを別プロセスで開いたとき、タスクバーで見分けるのに要る）。
         Title = string.Format(WindowTitleFormat, SEEDEditor.Project.ProjectContext.DisplayName);

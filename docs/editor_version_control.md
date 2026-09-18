@@ -58,6 +58,8 @@
 | `Lore/Backend/LoreCredentialResolver.cs` | **トークンと identity の決め方**（4.8） |
 | `Lore/Backend/ILoreCloner.cs` | クローンの抽象（作業コピーが無い状態で走る） |
 | `Lore/Backend/LoreNativeCloner.cs` | **LoreVcs に依存する 2 つ目のファイル**（clone だけ） |
+| `Locking/*.cs` | **ロックのゲート**（保存・送信を止める／自動ロック）。4.6 |
+| `Locking/Presentation/LockGateNotifier.cs` | ゲートの提示（**この層で唯一 WPF に依存する**） |
 
 ---
 
@@ -439,6 +441,196 @@ dotnet run --project editor/tests/VersionControlPanelPreviewProbe -- --out <出�
 
 ---
 
+## 4.6 ロックのゲート（保存・送信を実際に止める）
+
+置き場: `editor/src/VersionControl/Locking/`。
+**書き込み口ごとに判定を書かない**。すべて `LockGatekeeper` を通す。
+
+| ファイル | 役割 |
+|---|---|
+| `LockEnforcementPolicy.cs` | 方針（`Enforce` / `WarnOnly`）の語彙 |
+| `LockGateSettings.cs` | `editor/settings/locking.json` と、期限・寿命などの調整値 |
+| `LockGateVerdict.cs` | 判定結果（行動 + 理由 + 文言）。保存用と送信用の 2 種 |
+| `LockGatePolicy.cs` | **判定表そのもの（純関数）**。通信もログもしない |
+| `AutoLockLedger.cs` | 「自動で取ったロック」の台帳（手動ロックと区別する唯一の記憶） |
+| `LockGatekeeper.cs` | 実行役。照会・取得・解放・キャッシュ・提示の振り分け |
+| `ILockGateNotifier.cs` | 提示の境界（WPF をこの層へ入れないため） |
+| `Presentation/LockGateNotifier.cs` | 唯一の WPF 依存。止め＝モーダル、注意＝トースト |
+
+### 4.6.1 判定表（保存ゲート）
+
+上から順に見て、最初に当てはまった行で決まる。
+
+| # | バージョン管理 | サーバ到達 | ログイン | 保持者 | 方針 | 結果 |
+|---|---|---|---|---|---|---|
+| 1 | 無し | - | - | - | - | 通す（無言） |
+| 2 | 有り | ✕ | - | 不明 | 両方 | 通す＋注意 |
+| 3 | 有り | ○ | 匿名 | なし | 両方 | 通す（無言） |
+| 4 | 有り | ○ | 匿名 | 誰か | 両方 | 通す＋注意 |
+| 5 | 有り | ○ | 済 | 自分 | 両方 | 通す（無言） |
+| 6 | 有り | ○ | 済 | 不明 | 両方 | 通す＋注意 |
+| 7 | 有り | ○ | 済 | 他人 | `Enforce` | **止める** |
+| 8 | 有り | ○ | 済 | 他人 | `WarnOnly` | 通す＋注意 |
+| 9 | 有り | ○ | 済 | なし | 両方 | その場で取得 → 下表へ |
+
+9 行目の前に 2 つ例外がある（どちらも `LockGatekeeper` 側）:
+
+- **まだ存在しないファイル**（新規保存・名前を付けて保存）は取りに行かず、そのまま通す。
+  誰も持っていないと分かっている以上は守る相手がおらず、逆に「まだ無いパスのロック」を
+  Lore が拒むと新規保存そのものが止まってしまう。
+- **取得がサーバへ届かなかった**（`RequiresConnection` / 期限切れ）ときは
+  「取れなかった」ではなく「確かめられなかった」として 2 行目と同じ扱いにする。
+
+取得できたあと（9 行目の続き）:
+
+| 取得の結末 | `Enforce` | `WarnOnly` |
+|---|---|---|
+| `Acquired` / `AlreadyMine` | 通す | 通す |
+| `HeldByOther`（割り込まれた） | **止める** | 通す＋注意 |
+| `HeldByUnknown` | 通す＋注意 | 通す＋注意 |
+| `Failed` | **止める** | 通す＋注意 |
+
+送信ゲート（`SubmitAsync` の前）は同じ語彙で、変更ファイルのうち
+**保持者が `Other` のものが 1 件でもあれば止める**。止めるときは全件を並べる。
+`Unknown` は止める理由に数えない。送信ゲートは**ロックを取りに行かない**
+（送信は編集済みのものを送る操作で、いまさら編集権を取っても意味が無い）。
+
+対象のファイル一覧は**その場で走査し直した結果**（`ScanOffline`。サーバ往復なし）を使う。
+パネルに出ている一覧は最後に更新した時点のもので、そのあとに保存されたファイルが
+抜けている。抜けたファイルは確かめられないまま送られてしまう。
+
+### 4.6.2 なぜ「分からないときは通す」のか（設計の芯）
+
+サーバに繋がらない・ログインしていない・所有者が `<unknown>` — どれも
+「他の人のものだと**確かめられない**」状態。確かめられないことを根拠に保存を
+止めると、サーバが落ちている間じゅう誰も作業できない。ロックは事故防止であって
+作業を人質に取る仕組みではないので、通して注意だけ残す。
+
+`<unknown>` を止めない理由はもう 1 つある。解除ボタンは自分のロックにしか
+出ない（`VersionControlDisplay.CanRelease`）ので、`<unknown>` のロックで止めると
+**誰にも外せない＝永久に保存できないファイル**が生まれる。
+
+逆に「取得に失敗した」は *分からない* ではなく *取れていない* なので、
+`Enforce` では止める。
+
+### 4.6.3 匿名ではロックを取らない
+
+匿名で `lock acquire` すると、サーバは所有者を `<unknown>` として記録する。
+つまり 4.6.2 の「誰にも外せないロック」を自分で作ることになる。
+自動ロックも保存ゲートの取得も、**ログイン中のときだけ**行う。
+
+### 4.6.4 UI を固めない
+
+保存経路は同期（`void`）なので、ゲートにも同期の入口（`EnsureWritable`）がある。
+ただしサーバ往復には `LockGateSettings.GateTimeout`（5 秒）の**短い期限**を掛け、
+超えたら「サーバに繋がらない」へ倒して通す。ロック操作の既定の期限
+（`RemoteOperationTimeout` = 2 分）をそのまま使うと、サーバ無応答のとき
+Ctrl+S でエディタが 2 分固まる。
+
+連続保存（シーン本体 → シーン設定の自動保存）で往復を繰り返さないよう、
+照会結果は `StatusCacheTtl`（3 秒）だけ使い回す。同じ注意も
+`WarningRepeatInterval`（60 秒）は出し直さない（毎回出すと読まれなくなる）。
+
+### 4.6.5 自動ロック（「編集中」）
+
+シーン（`.scene`）とアクター（`.actor` / `.actor2d`）を**開いたとき**にロックを取り、
+別のシーンへ切り替えたとき・タブを閉じたとき・プロジェクトを閉じたときに外す。
+「送信」しても、開いているあいだは保持したまま（＝「編集中」の表示として使う）。
+
+- 取得は**待たない**（`TrackOpenedDocument`）。シーンの読み込みをサーバ往復で
+  止めない。取れなくても開けるし、保存しようとした時点でゲートが正しく判断する。
+- ★**ログイン前に開いたぶんは「保留」に積み、ログインできたら取り直す**
+  （`RetryPendingAutoLocks`。配線は `App.xaml.cs` の `AuthStateChanged`）。
+  プロジェクトを開く → シーンを読む → 自動ログインが終わる、の順で進むため、
+  これが無いと**起動時に開くシーンのロックはほぼ必ず取れない**。
+  サーバへ届かなかったぶんも保留に戻る。
+- 外すのは**自分が自動で取ったものだけ**。`AutoLockLedger` に載っているパスに限る。
+  取得結果が `AlreadyMine`（もともと持っていた＝手で掛けた／前回の残り）なら
+  台帳へ入れない。入れると、利用者が意図して掛けたロックが
+  シーンを閉じた拍子に外れる。
+- パネルから手でロックを掛けると台帳から外れる（自動 → 手動への格上げ）。
+- まとめて外すのは `VersionControlService.Close()` の**先頭**。プロバイダを
+  捨てたあとでは解放の呼び出し先が無く、他の人から見て掛かりっぱなしになる。
+  待つのは `ReleaseWait`（3 秒）まで。外せなくても終了は止めない。
+- パネルのロック節に「編集中」の印が出る（`LockRowItem.IsAutoHeld`）。
+
+### 4.6.6 `.scene.lock` と Lore のロックの関係（決定事項）
+
+**`.scene.lock` は従来どおり維持し、その上に Lore のロックを重ねる。**
+片方の成否をもう片方の条件にしない。
+
+| | `.scene.lock`（`Scene/SceneLock.cs`） | Lore のロック |
+|---|---|---|
+| 守る範囲 | **同じ PC の中**（プロセス間） | **チームの中**（利用者間） |
+| 判定材料 | PID・マシン名 | サーバに記録された所有者名 |
+| 効く条件 | 常に（オフライン・未ログインでも） | ログイン中 かつ サーバへ繋がる |
+| 効き方 | シーンを読み取り専用で開く | 保存・送信を止める |
+| 対象 | `.scene` のみ | 作業コピー内の全ファイル |
+
+同じ利用者が対話エディタと AI のヘッドレスエディタで同じシーンを開いた場合、
+Lore から見ると**どちらも同じ所有者**なので「自分のロック」になり、区別できない。
+これを止められるのは PID を見る `.scene.lock` だけ。
+逆に、Lore のロックを `.scene.lock` の前提条件にすると、サーバが落ちている間は
+機械内の多重編集が素通りしてしまう。だから独立に掛ける。
+
+`.scene.lock` はプロジェクトの `.loreignore` に `*.lock` として入れる決まりなので
+（`docs/vcs_lore.md` のセットアップ手順）、リポジトリには載らない。
+つまり Lore 側から見れば `.scene.lock` は存在しない。
+
+### 4.6.7 ゲートを通している書き込み口
+
+| 対象 | ゲートを呼ぶ場所 |
+|---|---|
+| シーン上書き保存（`SAVE_SCENE`） | `MainWindow.Scene.cs` `ExecuteSave` |
+| シーン別名保存（`SAVE_SCENE_AS`） | `MainWindow.Scene.cs` `ExecuteSaveAs`（**パスを差し替える前**） |
+| シーン設定の自動保存 | 上の `ExecuteSave` を通るので自動的に含まれる |
+| アクター保存（`SAVE_ACTOR`） | `MainWindow.Scene.cs` `ExecuteActorSave` |
+| `.anim` | `Panels/AnimationTimelinePanel.xaml.cs` `OnSaveClip` |
+| `.inputmap` | `InputMap/InputMapEditorWindow.xaml.cs` `OnSave` |
+| `.sprite_mesh` | `Panels/SpriteRig/SpriteRigPanel.xaml.cs` `TrySave` |
+| 地形（`layers` / `chunk_config` / `props`） | `Terrain/TerrainSettingsWindow.xaml.cs` `OnApply`（3 件まとめて判定） |
+| `project_settings.json` | `ProjectSettings/ProjectSettingsWindow.xaml.cs` `OnSave` |
+| スクリプト・シェーダー・テキスト | `Panels/ScriptEditorPanel.cs` `Save(DocTab)` |
+| AI ツールの書き込み | `AI/Tools/EditorCommandExecutor.cs` `ExecuteWriteAssetFile` |
+| 送信 | `Panels/VersionControlPanel.Operations.cs` `OnSubmitClick` |
+
+ゲートは**書き手（`AnimClipIO.Save` など）の中ではなく、その操作の入口**に置いてある。
+書き手は `void` で失敗を返せないこと、データ入出力のクラスへバージョン管理の依存を
+持ち込みたくないこと、単体テストへリンクされている書き手があること（`SafeFileWriter` /
+`AnimClipIO` / `ProjectSettingsData`）が理由。**新しい保存経路を足したら、
+この表に 1 行足してゲートを通すこと。**
+
+`SAVE_SCENE_COPY`（Play 用の一時シーン）は作業コピーの外へ書くのでゲートに掛からない
+（パス変換が `null` を返し、1 行目の「バージョン管理下に無い」扱いになる）。
+
+`EditorCommandExecutor` だけはモーダルを出さない。AI ツールは UI スレッド以外から
+呼ばれ、誰も見ていない画面にダイアログを出しても閉じられないため、判定だけ使って
+理由をツールの戻り値として AI へ返す。
+
+### 4.6.8 設定（`editor/settings/locking.json`）
+
+```json
+{
+  "enforcement": "enforce",
+  "auto_lock_opened_documents": true
+}
+```
+
+- `enforcement`: `"enforce"`（既定・止める）か `"warn_only"`（注意だけ）。
+  綴り違いや未知の値は `enforce` へ倒す（黙って強制が外れないように）。
+- `auto_lock_opened_documents`: 開いたシーン・アクターのロックを自動で取るか。
+  切ると「編集中」の表示も出なくなる（手動ロックは従来どおり使える）。
+
+### 4.6.9 ランタイム側は守られていない（既知の限界）
+
+シーン・アクターの `.scene` / `.actor` を実際にディスクへ書くのは Rust のランタイム
+（`runtime/src/engine/core/app_base/app/scene_save_ops.rs`）で、エディタは IPC で
+依頼するだけ。ここで止めているのは**依頼を出す前**なので、
+ランタイムへ直接 `SAVE_SCENE` を送る経路（あれば）はゲートを通らない。
+現状エディタ以外に送り手は無く、実害は無い。
+
+---
+
 ## 5. csproj の注意
 
 `editor/SEEDEditor.csproj` に次を入れてある。
@@ -502,6 +694,7 @@ dotnet run --project editor/tests/VersionControlTests
 - sync 成功 + 競合あり → `Conflicted`
 - LOCAL / REMOTE ブランチの統合（順序・現在ブランチ・未知の location）
 - `<unknown>` 所有者の扱い、二重取得、行が返らないパス
+- **ロックのゲートの判定表**（4.6.1 の全行 + 取得後 + 送信 + 設定 + 台帳。`LockGateTests.cs`）
 - 状態フラグ → モデル変換（`KEEP` = 変更、競合 4 フラグの畳み込み、リモート比較）
 - パス変換（作業コピー外を弾く・重複除去・区切り正規化）
 - `NullProvider` が全部 `Unavailable` を返すこと
@@ -531,6 +724,31 @@ dotnet run --project editor/tests/VersionControlTests
 Lore の版が上がってキー名が変わったら、その出力を見て
 `LoreRevisionMetadataTranslator` の候補配列を直せばよい。
 
+### 7.2.1 ロックのゲートの実サーバ結合（`AccountsTests` 側）
+
+ロックの強制は「サーバが所有者名を返すこと」に依存するので、
+偽物では再現できない。認証つきのサーバを立てる
+`editor/tests/AccountsTests` の結合群へ 2 件足してある。
+
+```powershell
+cd tools/seed-loreserver ; cargo build     # 先にサーバを建てる
+$env:SEED_ACCOUNTS_TEST_SERVER = "1"
+dotnet run --project editor/tests/AccountsTests
+```
+
+- `[結合2] A がロック中は B の保存ゲート・送信ゲートが止まる`
+  … A が掛ける → B の `DecideForWriteAsync` が `Block`（保持者 `Other`・名前は A、
+  文言に A の名前が入る）→ B の `DecideForSubmitAsync` も `Block`（内訳にパスが並ぶ）
+- `[結合2] A が解放すると B は保存・送信でき、自動ロックも往復する`
+  … A が解放 → B の保存ゲートが**その場でロックを取って**通る（`Acquired`、
+  サーバ上の所有者が B）→ 送信ゲートも通る → `ReleaseAllTracked` でサーバ上も外れる →
+  `TrackOpenedDocument` で取れる → `ReleaseTrackedDocument` で外れる
+
+プロバイダと資格情報は `VersionControlService.UseProviderForVerification` と
+`CredentialProvider`（どちらも検証用の差し込み口）から据える。
+照会には数秒の寿命があるため、段の切り替えで
+`LockGatekeeper.ResetForVerification()`（テスト専用）を呼んで捨てている。
+
 ### 7.3 パネルのロジック（既定で常に実行）
 
 `PanelStateTests.cs`。ボタンの有効条件・Outcome ごとの見せ方・競合のグルーピング・
@@ -549,10 +767,18 @@ Lore を触る変更を入れたら必ず一度は回すこと。
   `VersionControlService.Open(paths.RootDir)` を呼ぶ。
   検出結果がエディタのログへ 1 行出る:
   `バージョン管理: Lore（<root> remote=... identity=...）` または `バージョン管理: なし（<root>）`
+- `editor/src/App.xaml.cs` の `OnStartup` で
+  `LockGatekeeper.Log` と `LockGatekeeper.Configure(EditorPaths.SettingsDir)`
+  （ロックの方針を読む）。提示の窓口（`Notifier`）は `MainWindow` の構築時に差し込む。
 - `editor/src/App.xaml.cs` の `OnExit` で
   `VersionControlService.Close()` → `LoreShutdownGuard.Shutdown()`。
+  `Close()` の先頭で自動ロックをまとめて解放する（4.6.5）。
 - `VersionControlPanel` が `StatusChanged` を購読し、`Dispatcher` へ移して反映する。
 - `WorkingCopyWatcher` が作業コピーの変化を見て `RequestRefresh` を呼ぶ（4.5.4）。
+- 保存経路（11 か所）と「送信」が `LockGatekeeper` を通る（4.6.7 の表）。
+- シーン・アクターを開くと自動でロックを取り、閉じると外す
+  （`MainWindow.FileOps.cs` の `AcquireSceneLock` / `ReleaseSceneLock` /
+  `OnActorFileOpened` / `CloseActorTab`）。
 - プロジェクトパネルの**改名（インライン編集）とドラッグ＆ドロップ移動**の成功直後に
   `NotifyMovedAsync` を呼ぶ（`ProjectPanel.NotifyVersionControlMoved`）。
   素のファイル移動は Lore 上で「削除 + 追加」になり履歴が切れるため、この通知が要。

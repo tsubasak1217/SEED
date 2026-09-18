@@ -186,6 +186,16 @@ public static class ServerIntegrationTests
     /// <summary>Lore が「見つからない」ときに返すメッセージ（終了コード 13）。</summary>
     private const string LORE_NOT_FOUND_MARKER = "Not found";
 
+    /// <summary>
+    /// 自動ロックの取得・解放を待つ上限 [ms]。
+    /// 自動ロックは「待たない」設計（開く操作を止めないため）なので、
+    /// テスト側でサーバ往復 1〜2 回ぶんだけ待つ。
+    /// </summary>
+    private const int GATE_WAIT_TIMEOUT_MS = 15_000;
+
+    /// <summary>自動ロックを待つときの見に行く間隔 [ms]。</summary>
+    private const int GATE_WAIT_POLL_MS = 200;
+
     // ── 共有する状態（テストは登録順に走る）────────────────
 
     /// <summary>使い捨てサーバ。</summary>
@@ -257,6 +267,8 @@ public static class ServerIntegrationTests
         harness.Add("[結合2] 参加していないリポジトリはクローンも取得もできない", Stage2_NonMemberCannotAccess);
         harness.Add("[結合2] A がロック → B から見ると「他の人」", Stage2_LockHolderIsOtherForB);
         harness.Add("[結合2] B は解放できず、A（owner）は解放できる", Stage2_ReleaseOnlyByOwner);
+        harness.Add("[結合2] A がロック中は B の保存ゲート・送信ゲートが止まる", Stage2_GateBlocksWhileOtherHolds);
+        harness.Add("[結合2] A が解放すると B は保存・送信でき、自動ロックも往復する", Stage2_GateAllowsAfterRelease);
         harness.Add("[結合2] 期限前にトークンを取り直しても操作が通る", Stage2_RefreshTokenKeepsWorking);
         harness.Add("[結合2] 参加者一覧 → B を失効 → 失効が即座に効く", Stage2_MembersAndRevoke);
         harness.Add("[結合2] AccountService の自動ログインが実サーバで通る", Stage2_AccountServiceAutoSignIn);
@@ -785,6 +797,220 @@ public static class ServerIntegrationTests
 
         var after = providerA.Locks.GetStatusAsync(new[] { LOCK_FILE }).GetAwaiter().GetResult();
         Check.Equal(LockHolder.None, after.Value![0].Holder, "解放後はロックなし");
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  ロックのゲート（保存・送信を実際に止める）
+    //
+    //  【なぜ実サーバで確かめるのか】
+    //  判定表そのものは純関数として VersionControlTests で固定してある。
+    //  ここで確かめたいのはその手前 ──
+    //   ・サーバが本当に「他の人（A）のロック」として返すか
+    //   ・LockGatekeeper がそれを引けて、保存と送信を止められるか
+    //   ・解放したあと、止まらなくなるか
+    //   ・開いたファイルのロックを自動で取り、閉じたときに外せるか
+    //  偽物では「サーバが所有者名を返す」ところが再現できず、
+    //  ロックの強制はまさにそこに依存している。
+    // ══════════════════════════════════════════════════════════
+
+    /// <summary>ゲートの検証で使う「B が保存しようとするファイル」の絶対パス。</summary>
+    private static string GateTargetPathForB()
+        => Path.Combine(_dirB, LOCK_FILE.Replace('/', Path.DirectorySeparatorChar));
+
+    /// <summary>
+    /// A がロックしているあいだ、B の保存ゲートと送信ゲートが止まること。
+    ///
+    /// <para>
+    /// 直前の <see cref="Stage2_ReleaseOnlyByOwner"/> で解放済みなので、
+    /// ここで A が掛け直してから確かめる。
+    /// </para>
+    /// </summary>
+    private static void Stage2_GateBlocksWhileOtherHolds()
+    {
+        var providerA = Require(_providerA);
+        var providerB = Require(_providerB);
+        var accountA  = Require(_accountA);
+
+        // A が掛ける（＝他の人のロック）。
+        var acquire = providerA.Locks.AcquireAsync(new[] { LOCK_FILE }).GetAwaiter().GetResult();
+        Check.True(acquire.Value is { Count: > 0 } && acquire.Value[0].CanEdit,
+                   $"A がロックを掛けられた（{acquire.Outcome} / {acquire.Message}）");
+
+        UseGateAs(providerB, _accountB, _sessionB);
+        try
+        {
+            // ── 保存ゲート ──
+            var write = SEEDEditor.VersionControl.Locking.LockGatekeeper
+                            .DecideForWriteAsync(GateTargetPathForB())
+                            .GetAwaiter().GetResult();
+
+            Check.Equal(SEEDEditor.VersionControl.Locking.LockGateAction.Block,
+                        write.Action, $"B の保存ゲート（{write}）");
+            Check.Equal(LockHolder.Other, write.Holder, "B から見た保持者");
+            Check.Equal(accountA.Name, write.OwnerName, "B から見た所有者名");
+            Check.True(write.Message.Contains(accountA.Name, StringComparison.Ordinal),
+                       $"止めた文言に A の名前が入る（実際: {write.Message}）");
+
+            // ── 送信ゲート ──
+            // 送信しようとしている変更ファイルの一覧に、A がロック中のものが混ざっている想定。
+            var submit = SEEDEditor.VersionControl.Locking.LockGatekeeper
+                             .DecideForSubmitAsync(new[] { LOCK_FILE })
+                             .GetAwaiter().GetResult();
+
+            Check.Equal(SEEDEditor.VersionControl.Locking.LockGateAction.Block,
+                        submit.Action, $"B の送信ゲート（{submit}）");
+            Check.Equal(1, submit.BlockingLocks.Count, "止める原因になったロックの件数");
+            Check.Equal(LOCK_FILE, submit.BlockingLocks[0].Path, "止める原因のパス");
+            Check.True(submit.Message.Contains(LOCK_FILE, StringComparison.Ordinal),
+                       $"止めた文言に対象パスが並ぶ（実際: {submit.Message}）");
+        }
+        finally
+        {
+            ReleaseGate();
+        }
+    }
+
+    /// <summary>
+    /// A が解放したあと、B の保存・送信が通ること。あわせて自動ロックの往復を確かめる。
+    /// </summary>
+    private static void Stage2_GateAllowsAfterRelease()
+    {
+        var providerA = Require(_providerA);
+        var providerB = Require(_providerB);
+        var accountB  = Require(_accountB);
+
+        // A が解放する（前のテストが途中で失敗していても、ここで必ず外す）。
+        var release = providerA.Locks.ReleaseAsync(new[] { LOCK_FILE }).GetAwaiter().GetResult();
+        Check.Equal(VersionControlOutcome.Success, release.Outcome,
+                    $"A の解放（{release.Message} / {Join(release.Details)}）");
+
+        UseGateAs(providerB, _accountB, _sessionB);
+        try
+        {
+            // ── 保存ゲート: 誰も持っていないので、その場で B が取って通る ──
+            var write = SEEDEditor.VersionControl.Locking.LockGatekeeper
+                            .DecideForWriteAsync(GateTargetPathForB())
+                            .GetAwaiter().GetResult();
+
+            Check.True(write.CanProceed, $"解放後は B が保存できる（{write}）");
+            Check.Equal(SEEDEditor.VersionControl.Locking.LockGateReason.Acquired,
+                        write.Reason, "その場でロックを取って通ったはず");
+
+            var afterWrite = providerB.Locks.GetStatusAsync(new[] { LOCK_FILE })
+                                            .GetAwaiter().GetResult();
+            Check.Equal(LockHolder.Self, afterWrite.Value![0].Holder,
+                        "保存ゲートを通ったあとは B がロックを持っている");
+            Check.Equal(accountB.Name, afterWrite.Value[0].Owner, "ロックの所有者名");
+
+            // ── 送信ゲート: 自分のロックは止める理由にならない ──
+            var submit = SEEDEditor.VersionControl.Locking.LockGatekeeper
+                             .DecideForSubmitAsync(new[] { LOCK_FILE })
+                             .GetAwaiter().GetResult();
+            Check.True(submit.CanProceed, $"自分のロックでは送信を止めない（{submit}）");
+            Check.Equal(0, submit.BlockingLocks.Count, "止める原因は無いはず");
+
+            // 保存ゲートが取ったロックは台帳に載る（＝閉じるときに自動で外れる対象）。
+            Check.True(SEEDEditor.VersionControl.Locking.LockGatekeeper.IsAutoHeld(LOCK_FILE),
+                       "保存ゲートが取ったロックは自動解放の対象として記録されるはず");
+
+            // ── 自動ロック: まとめて解放して、サーバ側でも外れていること ──
+            SEEDEditor.VersionControl.Locking.LockGatekeeper.ReleaseAllTracked();
+            Check.True(!SEEDEditor.VersionControl.Locking.LockGatekeeper.IsAutoHeld(LOCK_FILE),
+                       "解放後は台帳から消えるはず");
+
+            var afterRelease = providerB.Locks.GetStatusAsync(new[] { LOCK_FILE })
+                                              .GetAwaiter().GetResult();
+            Check.Equal(LockHolder.None, afterRelease.Value![0].Holder,
+                        "自動ロックの解放がサーバへ届いているはず");
+
+            // ── 自動ロック: 開いたときの取得（本番と同じ入口を通す）──
+            // TrackOpenedDocument は待たない（シーンの読み込みを止めないため）ので、
+            // 台帳に載るまで短く待つ。
+            SEEDEditor.VersionControl.Locking.LockGatekeeper
+                      .TrackOpenedDocument(GateTargetPathForB());
+
+            Check.True(
+                WaitUntil(() => SEEDEditor.VersionControl.Locking.LockGatekeeper.IsAutoHeld(LOCK_FILE)),
+                "開いたファイルのロックが自動で取得されるはず");
+
+            var afterOpen = providerB.Locks.GetStatusAsync(new[] { LOCK_FILE })
+                                           .GetAwaiter().GetResult();
+            Check.Equal(LockHolder.Self, afterOpen.Value![0].Holder,
+                        "自動ロックがサーバへ届いているはず");
+
+            // ── 自動ロック: 閉じたときの解放 ──
+            SEEDEditor.VersionControl.Locking.LockGatekeeper
+                      .ReleaseTrackedDocument(GateTargetPathForB());
+
+            Check.True(
+                WaitUntil(() =>
+                {
+                    var status = providerB.Locks.GetStatusAsync(new[] { LOCK_FILE })
+                                                .GetAwaiter().GetResult();
+                    return status.Value is { Count: > 0 }
+                           && status.Value[0].Holder == LockHolder.None;
+                }),
+                "閉じたら自動ロックが外れるはず");
+        }
+        finally
+        {
+            ReleaseGate();
+        }
+    }
+
+    /// <summary>
+    /// ゲートが使う「いまのプロバイダ」と「ログイン中のアカウント」を差し替える。
+    ///
+    /// <para>
+    /// <see cref="SEEDEditor.VersionControl.Locking.LockGatekeeper"/> は本番と同じく
+    /// <see cref="VersionControlService"/> 経由でプロバイダと資格情報を見る。
+    /// テストでは実行中のエディタが無いので、検証用の差し込み口から据える。
+    /// </para>
+    /// </summary>
+    /// <param name="provider">据えるプロバイダ。</param>
+    /// <param name="account">ログイン中として扱うアカウント。</param>
+    /// <param name="sessions">そのアカウントのセッション（トークンを持っている）。</param>
+    private static void UseGateAs(
+        LoreProvider provider, SeedAccount? account, AccountSessionManager? sessions)
+    {
+        var name  = account?.Name ?? string.Empty;
+        var token = sessions?.TryGetAccessToken() ?? string.Empty;
+
+        VersionControlService.UseProviderForVerification(provider);
+        VersionControlService.CredentialProvider = () => new LoreAccountCredential(token, name);
+
+        // 判定を既定（Enforce・自動ロックあり）に固定する。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.UseSettingsForVerification(null);
+        // 前のテストが残した照会結果・台帳を捨てる（寿命待ちをしないため）。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ResetForVerification();
+    }
+
+    /// <summary>
+    /// ゲートの差し込みを元へ戻す。
+    /// 戻さないと、後続のテスト（自動ログインなど）が
+    /// このテストのプロバイダを掴んだままになる。
+    /// </summary>
+    private static void ReleaseGate()
+    {
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ResetForVerification();
+        VersionControlService.UseProviderForVerification(null);
+        VersionControlService.CredentialProvider = null;
+    }
+
+    /// <summary>
+    /// 条件が満たされるまで短く待つ（自動ロックは待たない設計なので、テスト側で待つ）。
+    /// </summary>
+    /// <param name="condition">満たされてほしい条件。</param>
+    /// <returns>期限内に満たされたら真。</returns>
+    private static bool WaitUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(GATE_WAIT_TIMEOUT_MS);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition()) return true;
+            Thread.Sleep(GATE_WAIT_POLL_MS);
+        }
+        return condition();
     }
 
     /// <summary>

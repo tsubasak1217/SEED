@@ -577,6 +577,10 @@ public partial class InputMapEditorWindow : Window
             TbFilePath.Text = _filePath;
         }
 
+        // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
+        // 止められたときはウィンドウを閉じない（編集内容を失わせないため）。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(_filePath)) return;
+
         _data.SaveTo(_filePath);
         _isDirty = false;
         Close();

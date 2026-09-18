@@ -472,6 +472,9 @@ public partial class SpriteRigPanel : UserControl
             target = dialog.FileName;
         }
 
+        // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(target)) return false;
+
         try
         {
             string saved = document.Save(target);

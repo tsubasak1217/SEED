@@ -684,12 +684,36 @@
                                                        VerticalAlignment="Center"
                                                        Margin="6,0,8,0"
                                                        ToolTip="{Binding RelativePath}"/>
-                                            <TextBlock Grid.Column="2"
-                                                       Text="{Binding HolderText}"
-                                                       Foreground="{StaticResource Vc.DimText}"
-                                                       FontSize="10"
-                                                       VerticalAlignment="Center"
-                                                       Margin="0,0,10,0"/>
+                                            <!-- 保持者と、自動ロック（＝開いているあいだ保持）の印 -->
+                                            <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                                        VerticalAlignment="Center"
+                                                        Margin="0,0,10,0">
+                                                <TextBlock Text="{x:Static vc:LockRowItem.AutoHeldText}"
+                                                           ToolTip="{x:Static vc:LockRowItem.AutoHeldTooltip}"
+                                                           Foreground="{StaticResource Vc.Text}"
+                                                           FontSize="10"
+                                                           VerticalAlignment="Center"
+                                                           Margin="0,0,6,0">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Visibility"
+                                                                    Value="Collapsed"/>
+                                                            <Style.Triggers>
+                                                                <!-- 自動で取ったロックのときだけ出す -->
+                                                                <DataTrigger Binding="{Binding IsAutoHeld}"
+                                                                             Value="True">
+                                                                    <Setter Property="Visibility"
+                                                                            Value="Visible"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding HolderText}"
+                                                           Foreground="{StaticResource Vc.DimText}"
+                                                           FontSize="10"
+                                                           VerticalAlignment="Center"/>
+                                            </StackPanel>
                                             <TextBlock Grid.Column="3"
                                                        Text="{Binding TimestampText}"
                                                        Foreground="{StaticResource Vc.DimText}"

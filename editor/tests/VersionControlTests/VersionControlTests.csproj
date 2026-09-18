@@ -183,6 +183,25 @@
       <Link>Linked\VersionControl\Lore\Backend\LoreCredentialResolver.cs</Link>
     </Compile>
 
+    <!-- ── ロックのゲート（判定表そのもの。純関数と台帳・設定だけを取り込む）──
+         LockGatekeeper.cs は VersionControlService（＝プロバイダの静的な入口）に
+         依存するため、ここではなく AccountsTests の実サーバ結合で確かめる。 -->
+    <Compile Include="..\..\src\VersionControl\Locking\LockEnforcementPolicy.cs">
+      <Link>Linked\VersionControl\Locking\LockEnforcementPolicy.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Locking\LockGateVerdict.cs">
+      <Link>Linked\VersionControl\Locking\LockGateVerdict.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Locking\LockGatePolicy.cs">
+      <Link>Linked\VersionControl\Locking\LockGatePolicy.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Locking\LockGateSettings.cs">
+      <Link>Linked\VersionControl\Locking\LockGateSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Locking\AutoLockLedger.cs">
+      <Link>Linked\VersionControl\Locking\AutoLockLedger.cs</Link>
+    </Compile>
+
     <!-- ── 実サーバ結合テストでだけ使う（LoreVcs 依存）── -->
     <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreNativeBackend.cs">
       <Link>Linked\VersionControl\Lore\Backend\LoreNativeBackend.cs</Link>

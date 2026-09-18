@@ -114,6 +114,9 @@ public partial class MainWindow
             // actor_kind を読み取って 2D アクターか判定する
             var is2D = DetectActorIs2D(path);
             _actorTabs.Add(new ActorTab(path, name, wl, is2D));
+            // チーム内へ「このアクター（プレハブ）を編集中」と知らせる。
+            // タブを閉じるまで保持し、閉じたときに自動で外す（CloseActorTab）。
+            SEEDEditor.VersionControl.Locking.LockGatekeeper.TrackOpenedDocument(path);
             _activeActorPath = path;
             SendNavCommand($"OPEN_ACTOR:{wl},{path}");
             EditorLog.Write($"OnActorFileOpened — OPEN_ACTOR:{wl},{path} (is2D={is2D})");
@@ -240,6 +243,10 @@ public partial class MainWindow
         }
 
         _actorTabs.RemoveAt(idx);
+
+        // 「編集中」の記録を外す（自動で取ったロックだけが外れる）。
+        // キャンバス編集タブはファイルを持たないのでここへは来ない（上で return 済み）。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ReleaseTrackedDocument(closingTab.Path);
 
         // 閉じるタブの世界線アクターを除去（ナビゲーションではないので SendNavCommand 不要）
         _runtimeManager?.SendToRuntime($"REMOVE_WORLD_LINE:{closingTab.WorldLine}");
@@ -496,16 +503,46 @@ public partial class MainWindow
 
     /// <summary>
     /// シーンのロックを取得する。取れなければ読み取り専用モードへ落とす。
+    ///
+    /// <para>
+    /// ★ここで扱うロックは **2 種類**あり、目的が違うので両方掛ける。
+    /// </para>
+    /// <list type="number">
+    ///   <item>
+    ///     <c>.scene.lock</c>（<see cref="SEEDEditor.Scene.SceneLock"/>）…
+    ///     **同じ PC の中**の多重編集を防ぐ。PID を見るので、ログインしていなくても
+    ///     サーバに繋がらなくても効く。対話エディタと AI のヘッドレスエディタが
+    ///     同じシーンを開く事故がこれで止まる。
+    ///   </item>
+    ///   <item>
+    ///     Lore のロック（<see cref="SEEDEditor.VersionControl.Locking.LockGatekeeper"/>）…
+    ///     **チームの中**で「誰が編集中か」を共有する。ログイン中でサーバへ
+    ///     繋がるときだけ効く。
+    ///   </item>
+    /// </list>
+    /// <para>
+    /// ★<c>.scene.lock</c> を Lore の成否で左右させてはいけない。Lore を条件にすると、
+    /// サーバが落ちている間じゅう同じ PC の多重編集が素通りしてしまう。
+    /// 向きは逆で、**読み取り専用になったときは Lore のロックを取らない**
+    /// （保存できないインスタンスがチームに「編集中」と宣言するのはうそになる。
+    ///   実際に編集する側のインスタンスが取る）。
+    /// </para>
     /// </summary>
     private void AcquireSceneLock(string path)
     {
+        // 機械内のロックが先。取れたかどうかでチーム内のロックを取るか決める。
         var acquired = SEEDEditor.Scene.SceneLock.TryAcquire(
             path, SEEDEditor.Headless.EditorStartupOptions.IsHeadless, out var holder);
 
         _sceneReadOnly   = !acquired;
         _sceneLockHolder = holder;
 
-        if (acquired) return;
+        if (acquired)
+        {
+            // チーム内のロック。取れなくても開くことは妨げない（保存時にゲートが判断する）。
+            SEEDEditor.VersionControl.Locking.LockGatekeeper.TrackOpenedDocument(path);
+            return;
+        }
 
         var msg = string.Format(SEEDEditor.Scene.SceneLock.DENY_LOCKED_FORMAT,
                                 holder?.Describe() ?? "別プロセス");
@@ -515,10 +552,15 @@ public partial class MainWindow
             ShowToast("別のエディタが開いているため読み取り専用で開きました");
     }
 
-    /// <summary>現在のシーンのロックを解放する（シーン切り替え・エディタ終了時）。</summary>
+    /// <summary>
+    /// 現在のシーンのロックを解放する（シーン切り替え・エディタ終了時）。
+    /// <see cref="AcquireSceneLock"/> で掛けた 2 種類を両方外す。
+    /// 自動で取っていない（手で掛けた）Lore のロックは外れない。
+    /// </summary>
     private void ReleaseSceneLock()
     {
         if (_currentScenePath is null) return;
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ReleaseTrackedDocument(_currentScenePath);
         SEEDEditor.Scene.SceneLock.Release(_currentScenePath);
         _sceneReadOnly   = false;
         _sceneLockHolder = null;

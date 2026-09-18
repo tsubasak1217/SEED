@@ -72,6 +72,38 @@ public partial class VersionControlPanel
 
         var message = TxtMessage.Text;
 
+        // ── 送信ゲート ─────────────────────────────────────────
+        // サーバの push フックは「どのファイルが変わったか」を受け取れないため、
+        // 他の人がロック中のファイルを送ってしまうのを防げるのはここだけ。
+        //
+        // ★対象は画面に出ている一覧ではなく、**いま走査し直した結果**を使う。
+        //   画面の一覧は最後に更新した時点のもので、そのあとに保存されたファイルが
+        //   抜けている。抜けたファイルは確かめられないまま送られてしまう。
+        //   走査（ScanOffline）はサーバ往復を伴わない（実測 0.11 秒）。
+        var scan = await VersionControlService.Provider
+                                              .GetStatusAsync(StatusRefreshMode.ScanOffline)
+                                              .ConfigureAwait(true);
+        var changedPaths = scan.Value?.Changes.Select(c => c.Path).ToList()
+                           ?? new List<string>();
+        if (!scan.IsSuccess)
+        {
+            // 変更一覧を作れなければロックも確かめられない。ここでは止めず、
+            // 続く送信そのものの失敗として扱う（情報が無い状態で作業を止めない）。
+            EditorLog.Write($"[ロック] 送信前の走査に失敗しました: {scan.Outcome} {scan.Message}");
+        }
+
+        // ConfigureAwait(true) で UI スレッドへ戻ってから提示する（モーダルのため）。
+        var gate = await SEEDEditor.VersionControl.Locking.LockGatekeeper
+                                   .DecideForSubmitAsync(changedPaths)
+                                   .ConfigureAwait(true);
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.Present(gate);
+        if (!gate.CanProceed)
+        {
+            // 誰が押さえているのかをその場で見せる（止めた理由を確かめられるように）。
+            await ReloadLocksIfVisibleAsync();
+            return;
+        }
+
         var result = await RunAsync(
             VersionControlOperation.Submit,
             async () => await VersionControlService.Provider
@@ -557,6 +589,11 @@ public partial class VersionControlPanel
                                                    .AcquireAsync(paths)
                                                    .ConfigureAwait(true));
 
+        // ★手で掛けたロックは自動解放の対象から外す。
+        //   自動で取ったロックの台帳に残っていると、シーンを閉じた拍子に
+        //   「押さえておきたくて掛けたロック」まで外れてしまう。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ForgetTracked(paths);
+
         await ReloadLocksIfVisibleAsync();
     }
 
@@ -575,6 +612,9 @@ public partial class VersionControlPanel
                                                    .ReleaseAsync(paths)
                                                    .ConfigureAwait(true));
 
+        // もう手元には無いので台帳からも消す（残すと終了時に空振りの解放が走る）。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ForgetTracked(paths);
+
         await ReloadLocksIfVisibleAsync();
     }
 
@@ -592,6 +632,9 @@ public partial class VersionControlPanel
                                                    .Locks
                                                    .ReleaseAsync(new[] { row.RelativePath })
                                                    .ConfigureAwait(true));
+
+        // 自動で取ったロックを手で外した場合もここを通る。台帳から消しておく。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ForgetTracked(new[] { row.RelativePath });
 
         await ReloadLocksAsync();
     }
@@ -639,6 +682,9 @@ public partial class VersionControlPanel
                                                    .Locks
                                                    .ReleaseAsync(mine)
                                                    .ConfigureAwait(true));
+
+        // 自動で取っていたものも含めて外したので、台帳を空にしておく。
+        SEEDEditor.VersionControl.Locking.LockGatekeeper.ForgetTracked(mine);
 
         await ReloadLocksIfVisibleAsync();
     }

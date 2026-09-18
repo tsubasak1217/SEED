@@ -455,6 +455,10 @@ public partial class MainWindow
     private void ExecuteSave(string path)
     {
         if (RefuseSaveIfReadOnly()) return;
+        // チーム内のロック（Lore）のゲート。他の人が編集中なら、ここで止まる。
+        // 機械内の多重編集を防ぐ RefuseSaveIfReadOnly とは目的が違うので両方通す
+        //（docs/editor_version_control.md「2 つのロックの関係」）。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return;
 
         // シーン自動再読込へ「これから自分が書き込む」と伝える。
         // 実際に .scene を書き出すのはランタイム（SAVE_SCENE の非同期処理）のため、
@@ -474,6 +478,10 @@ public partial class MainWindow
     private void ExecuteSaveAs(string path)
     {
         if (RefuseSaveIfReadOnly()) return;
+        // ★ロックのゲートは **現在シーンパスを差し替えるより前**に通す。
+        //   差し替えてから止めると、保存していないのにエディタだけ新しいシーンを
+        //   指した状態になり、次の Ctrl+S が別のファイルを書いてしまう。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return;
 
         // 保存先が変わる場合は、ビュー状態の保存キーも新しいパスへ移す。
         // 移さないと、この後の操作が旧シーンのエントリへ書き込まれてしまう。
@@ -499,6 +507,9 @@ public partial class MainWindow
     /// <summary>IPC でアクター保存コマンドを送出する。</summary>
     private void ExecuteActorSave(string path)
     {
+        // アクター（プレハブ）もチーム内では奪い合う資産なので、シーンと同じゲートを通す。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return;
+
         _isSavingActor = true;
         // 保存完了（SAVE_OK）後にシーン内インスタンスへ自動反映するため、対象パスを覚えておく。
         NotifyActorSaveStarted(path);

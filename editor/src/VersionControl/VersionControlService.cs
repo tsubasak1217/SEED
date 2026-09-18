@@ -134,6 +134,13 @@ public static class VersionControlService
     /// </summary>
     public static void Close()
     {
+        // ★プロバイダを捨てる前に、自動で取ったロックを解放する。
+        //   順序を逆にすると、解放の呼び出し先（プロバイダ）がもう無く、
+        //   他の人から見てロックが掛かりっぱなしになる。
+        //   解放に失敗しても終了は止めない（Locking 側で握りつぶしている）。
+        try { Locking.LockGatekeeper.ReleaseAllTracked(); }
+        catch (Exception ex) { Log?.Invoke($"[VCS] 自動ロックの解放に失敗しました: {ex.Message}"); }
+
         Timer? timer;
         IVersionControlProvider previous;
 

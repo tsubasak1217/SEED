@@ -794,6 +794,9 @@ public partial class AnimationTimelinePanel : UserControl
             path = dlg.FileName;
         }
 
+        // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return;
+
         try
         {
             AnimClipIO.Save(_clip, path);

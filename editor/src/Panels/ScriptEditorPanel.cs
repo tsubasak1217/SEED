@@ -2569,6 +2569,12 @@ public class ScriptEditorPanel : UserControl
     {
         // 読み取り専用タブ（エンジン API のソース）は保存しない（機能保証のため）。
         if (doc.IsReadOnly) return;
+
+        // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
+        // 止められたときは dirty のままにする（タブに「未保存」が残り、
+        // 利用者が内容を失わずに再挑戦できる）。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(doc.FilePath)) return;
+
         try
         {
             File.WriteAllText(doc.FilePath, doc.Editor.Text);

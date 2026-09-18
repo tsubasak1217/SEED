@@ -829,6 +829,19 @@ public partial class TerrainSettingsWindow : Window
     /// </summary>
     private void OnApply(object sender, RoutedEventArgs e)
     {
+        // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
+        // 3 つのファイルは 1 回の「適用」でまとめて書くので、
+        // 1 つでも止められたら 1 つも書かない（半分だけ書くと地形の定義が食い違う）。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureAllWritable(new[]
+            {
+                TerrainLayersDocument.ResolvePath(_assetsRoot),
+                TerrainChunkConfigDocument.ResolvePath(_assetsRoot),
+                TerrainPropsDocument.ResolvePath(_assetsRoot),
+            }))
+        {
+            return;
+        }
+
         try
         {
             _doc.Save(_assetsRoot);

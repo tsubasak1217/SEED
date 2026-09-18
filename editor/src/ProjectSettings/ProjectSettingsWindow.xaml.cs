@@ -1367,6 +1367,10 @@ public partial class ProjectSettingsWindow : Window
         // 現在表示中のパネルのコントロールから最新値を収集する
         CollectSettingsFromUi();
 
+        // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
+        // 止められたときはウィンドウを閉じない（入力内容を失わせないため）。
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(_settingsPath)) return;
+
         try
         {
             _data.SaveTo(_settingsPath);

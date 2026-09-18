@@ -194,6 +194,83 @@ public static class VersionControlMessages
     /// <summary>所有者不明のロックを見つけたときの表示（サーバ認証なしの構成）。</summary>
     public const string LOCK_OWNER_UNKNOWN = "編集中（利用者不明）";
 
+    // ── ロックのゲート（保存・送信を止める／注意する）──────────
+    //
+    //  【文言の方針】
+    //  ・止めるときは「誰が」「どのファイルを」を必ず書く。
+    //    「保存できません」だけでは、利用者は次に何をすればよいか分からない。
+    //  ・止めないとき（注意）は「そのまま保存しました／送信しました」まで書く。
+    //    注意だけ出して結果を書かないと「止まったのか？」と迷わせる。
+
+    /// <summary>保存を止めたときのダイアログのタイトル。</summary>
+    public const string LOCK_GATE_BLOCKED_TITLE = "保存できません";
+
+    /// <summary>他の人がロック中で保存を止めた（書式: 所有者名, 相対パス）。</summary>
+    public const string LOCK_GATE_BLOCKED_BY_OTHER_FORMAT =
+        "{0} さんがロック中のため保存できません。\n"
+        + "対象: {1}\n"
+        + "その人が編集を終える（ロックを解除する）まで待つか、直接相談してください。";
+
+    /// <summary>編集権を取れなかったので保存を止めた（書式: 相対パス）。</summary>
+    public const string LOCK_GATE_ACQUIRE_FAILED_FORMAT =
+        "編集権（ロック）を取得できなかったため保存できません。\n"
+        + "対象: {0}\n"
+        + "サーバの状態を確かめて、もう一度保存してください。";
+
+    /// <summary>サーバへ問い合わせられなかったが保存は通した（書式: 相対パス）。</summary>
+    public const string LOCK_GATE_WARN_UNREACHABLE_FORMAT =
+        "サーバに接続できないため、ほかの人が編集中かどうか確認できませんでした。"
+        + "そのまま保存します（{0}）。";
+
+    /// <summary>ログインしていないので判定できないが保存は通した（書式: 相対パス）。</summary>
+    public const string LOCK_GATE_WARN_ANONYMOUS_FORMAT =
+        "ログインしていないため、ロックの持ち主を判定できません。"
+        + "そのまま保存します（{0}）。";
+
+    /// <summary>所有者不明のロックが残っていたが保存は通した（書式: 相対パス）。</summary>
+    public const string LOCK_GATE_WARN_UNKNOWN_OWNER_FORMAT =
+        "このファイルには利用者不明のロックが残っています（{0}）。"
+        + "ほかの人が編集中かもしれません。そのまま保存します。";
+
+    /// <summary>方針が「注意のみ」なので他の人のロックでも通した（書式: 所有者名, 相対パス）。</summary>
+    public const string LOCK_GATE_WARN_ONLY_FORMAT =
+        "{0} さんがロック中です（{1}）。設定が「注意のみ」のため保存は止めません。";
+
+    /// <summary>ロックを自動で取得したときのログ（書式: 相対パス）。</summary>
+    public const string LOCK_GATE_AUTO_ACQUIRED_FORMAT = "編集中として記録しました（{0}）。";
+
+    /// <summary>自動で取得したロックを解放したときのログ（書式: 相対パス）。</summary>
+    public const string LOCK_GATE_AUTO_RELEASED_FORMAT = "編集中の記録を解除しました（{0}）。";
+
+    /// <summary>ロックを自動取得できなかったときのログ（書式: 相対パス, 理由）。</summary>
+    public const string LOCK_GATE_AUTO_ACQUIRE_FAILED_FORMAT =
+        "編集中として記録できませんでした（{0}）: {1}";
+
+    // ── 送信ゲート ──────────────────────────────────────────
+
+    /// <summary>送信を止めたときのダイアログのタイトル。</summary>
+    public const string SUBMIT_BLOCKED_BY_LOCKS_TITLE = "送信できません";
+
+    /// <summary>他の人のロックがあるので送信を止めた（書式: 件数, 内訳）。</summary>
+    public const string SUBMIT_BLOCKED_BY_LOCKS_FORMAT =
+        "ほかの人がロック中のファイルが {0} 件あるため送信できません。\n{1}";
+
+    /// <summary>送信を止めた内訳の 1 行（書式: 相対パス, 所有者名）。</summary>
+    public const string SUBMIT_LOCK_LINE_FORMAT = "・{0}（{1} さん）";
+
+    /// <summary>方針が「注意のみ」なので、他の人のロックがあっても送信した（書式: 件数）。</summary>
+    public const string SUBMIT_LOCK_WARN_ONLY_FORMAT =
+        "ほかの人がロック中のファイルが {0} 件あります。"
+        + "設定が「注意のみ」のため送信は止めません。";
+
+    /// <summary>サーバへ問い合わせられず、ロックを確認しないまま送信した。</summary>
+    public const string SUBMIT_LOCK_WARN_UNREACHABLE =
+        "サーバに接続できないため、ほかの人のロックを確認できませんでした。そのまま送信します。";
+
+    /// <summary>ログインしていないので、ロックの持ち主を判定しないまま送信した。</summary>
+    public const string SUBMIT_LOCK_WARN_ANONYMOUS =
+        "ログインしていないため、ロックの持ち主を判定できません。そのまま送信します。";
+
     // ── 共通 ────────────────────────────────────────────────
 
     /// <summary>操作が中断された。</summary>
@@ -549,10 +626,29 @@ public static class VersionControlMessages
     /// <summary>
     /// 所有者が不明になり得ることの説明（ロックタブに常時出す）。
     /// 「壊れている」と誤解されないよう、普通の状態だと明示する。
+    ///
+    /// <para>
+    /// ★ロックは「通知のみ」ではなくなった（保存ゲート）。ただし止まるのは
+    /// **ログイン中にサーバから他の人のロックが確認できたときだけ**なので、
+    /// そこまで書かないと「不明」のロックでも止まると誤解される。
+    /// </para>
     /// </summary>
     public const string PANEL_LOCK_UNKNOWN_NOTE =
         "サーバに利用者認証を設定していない構成では、保持者が「不明」になります"
-        + "（異常ではありません）。ロックは通知のみで、保存は止まりません。";
+        + "（異常ではありません）。ほかの人のロックが確認できたファイルは保存・送信を止めますが、"
+        + "保持者が不明のとき・サーバに繋がらないとき・ログインしていないときは止めません。";
+
+    /// <summary>
+    /// 自動で取得したロック（開いているあいだ保持しているもの）に添える印。
+    /// 手で掛けたロックと区別できるようにするため。
+    /// </summary>
+    public const string PANEL_LOCK_AUTO_HELD = "編集中";
+
+    /// <summary>「編集中」の印のツールチップ（なぜ自分で掛けた覚えが無いのか説明する）。</summary>
+    public const string PANEL_LOCK_AUTO_HELD_TOOLTIP =
+        "エディタで開いているあいだ自動で取得しているロックです。"
+        + "閉じるかプロジェクトを終了すると自動で解除されます。"
+        + "「解除」を押すと手動で外せます。";
 
     /// <summary>ロック解除ボタンの文言。</summary>
     public const string PANEL_LOCK_RELEASE_BUTTON = "解除";

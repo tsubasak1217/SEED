@@ -95,6 +95,34 @@ public partial class App : Application
             EditorLog.Write($"アカウントを初期化できませんでした: {ex.Message}");
         }
 
+        // ロックのゲート（保存・送信を止めるかどうかの方針）を読む。
+        // 設定ファイルが無ければ既定（Enforce = 他の人のロックがあれば止める）。
+        // 画面への提示は MainWindow が Notifier を差し込むまでログだけになる。
+        try
+        {
+            VersionControl.Locking.LockGatekeeper.Log = EditorLog.Write;
+            VersionControl.Locking.LockGatekeeper.Configure(
+                SEEDEditor.Settings.EditorPaths.SettingsDir);
+
+            // ★自動ログインはプロジェクトを開いた「あと」に終わる。それより先に
+            //   起動時のシーンが開くため、その時点ではまだ匿名で、匿名では
+            //   ロックを取らない（所有者不明のロックを作らないため）。
+            //   ログインできた時点で取り直す。ここが唯一の配線。
+            Accounts.AccountService.AuthStateChanged += (_, state) =>
+            {
+                if (!state.IsSignedIn) return;
+                try { VersionControl.Locking.LockGatekeeper.RetryPendingAutoLocks(); }
+                catch (Exception ex)
+                {
+                    EditorLog.Write($"ロックの取り直しに失敗しました: {ex.Message}");
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"ロックの設定を読めませんでした: {ex.Message}");
+        }
+
         base.OnStartup(e);
 
         ShowStartupWindow();
