@@ -156,6 +156,36 @@ public static class VersionControlService
     }
 
     /// <summary>
+    /// プロバイダを直接差し替える（**画面の検証専用**）。
+    ///
+    /// <para>
+    /// 本番の入口は <see cref="Open"/> だけで、そこでは `.lore` の有無から
+    /// プロバイダが機械的に決まる。この関数はその判定を飛ばして、
+    /// 与えられたプロバイダをそのまま据える。
+    /// </para>
+    /// <para>
+    /// 用途はひとつだけ:
+    /// <c>editor/tests/VersionControlPanelPreviewProbe</c> が
+    /// 「変更あり」「競合あり」「ロックあり」といった各状態の画面を
+    /// 偽のプロバイダで作り、オフスクリーン描画して PNG に落とすため。
+    /// パネルは GUI を起動しないと見えないので、これが唯一の自動確認手段になる。
+    /// </para>
+    /// <para>
+    /// **本番コードからは呼ばないこと。** 実サーバへ繋がるプロバイダを
+    /// ここから据えると、`.lore` が無いプロジェクトでも操作 UI が出てしまう。
+    /// </para>
+    /// </summary>
+    /// <param name="provider">据えるプロバイダ（null なら「バージョン管理なし」へ戻す）。</param>
+    public static void UseProviderForVerification(IVersionControlProvider? provider)
+    {
+        lock (Gate)
+        {
+            Volatile.Write(ref _provider, provider ?? NoProject);
+            LastStatus = null;
+        }
+    }
+
+    /// <summary>
     /// 状態を取り直し、<see cref="StatusChanged"/> を発火する。
     /// </summary>
     /// <param name="mode">取得モード。</param>

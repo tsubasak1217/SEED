@@ -13,6 +13,11 @@
 //  それ以外（成功・失敗・競合の通知）はパネル内の 1 行メッセージで済ませる。
 //  ダイアログは必ず EditorDialogs 経由にする（ヘッドレスで UI スレッドが
 //  永久に止まるのを避けるため）。
+//
+//  【サーバ往復を増やさない】
+//  ロックと履歴は「その節が開いているとき」しか取りに行かない。
+//  閉じている節のために通信すると、パネルを出しているだけで
+//  gRPC 往復（実測 350 ms）が積み上がる。
 // ============================================================
 
 using System;
@@ -37,12 +42,14 @@ public partial class VersionControlPanel
 
     /// <summary>
     /// 「最新を取得」。取得後は必ず状態を取り直す
-    /// （競合が起きていれば一覧の最上部へ出す必要があるため）。
+    /// （競合が起きていれば競合の節へ出す必要があるため）。
     /// </summary>
     /// <param name="sender">送信元。</param>
     /// <param name="e">イベント引数。</param>
     private async void OnFetchLatestClick(object sender, RoutedEventArgs e)
     {
+        if (!_state.CanFetchLatest) return;
+
         var result = await RunAsync(
             VersionControlOperation.FetchLatest,
             async () => await VersionControlService.Provider
@@ -50,7 +57,7 @@ public partial class VersionControlPanel
                                                    .ConfigureAwait(true));
         if (result is null) return;
 
-        await ReloadStatusKeepingNoticeAsync();
+        await ReloadStatusKeepingNoticeAsync(result);
     }
 
     /// <summary>
@@ -60,7 +67,7 @@ public partial class VersionControlPanel
     /// <param name="e">イベント引数。</param>
     private async void OnSubmitClick(object sender, RoutedEventArgs e)
     {
-        // Enter キー経由でも来るので、ここでも押せる状態か確かめる。
+        // Ctrl+Enter 経由でもヘッダーのアイコンからも来るので、ここでも押せる状態か確かめる。
         if (!_state.CanSubmit) return;
 
         var message = TxtMessage.Text;
@@ -79,7 +86,7 @@ public partial class VersionControlPanel
             _state.ClearCommitMessage();
         }
 
-        await ReloadStatusKeepingNoticeAsync();
+        await ReloadStatusKeepingNoticeAsync(result);
     }
 
     // ============================================================
@@ -119,8 +126,7 @@ public partial class VersionControlPanel
     /// <param name="sender">クリックされたボタン。</param>
     private static IReadOnlyList<string> PathsFromButton(object sender)
     {
-        if (sender is Button { Tag: VcRows.ChangeRowItem row }
-            && !row.IsHeader
+        if (sender is Button { Tag: VcRows.ConflictRowItem row }
             && row.RelativePath.Length > 0)
         {
             return new[] { row.RelativePath };
@@ -153,7 +159,7 @@ public partial class VersionControlPanel
         if (result is null) return;
 
         // 解決後は必ず状態を取り直す（残りの競合件数が変わる）。
-        await ReloadStatusKeepingNoticeAsync();
+        await ReloadStatusKeepingNoticeAsync(result);
     }
 
     /// <summary>
@@ -336,8 +342,8 @@ public partial class VersionControlPanel
         if (result is null) return;
 
         // 切り替え後は中身が丸ごと変わる。状態も一覧も取り直す。
-        await ReloadStatusKeepingNoticeAsync();
-        await ReloadActiveTabAsync();
+        await ReloadStatusKeepingNoticeAsync(result);
+        await ReloadExpandedSectionsAsync();
 
         // コンボの選択を実際のブランチへ合わせ直す（失敗していれば元へ戻る）。
         FillBranchCombo(null);
@@ -375,29 +381,26 @@ public partial class VersionControlPanel
     }
 
     // ============================================================
-    //  タブ（履歴 / ロック）
+    //  履歴
     // ============================================================
 
-    /// <summary>
-    /// タブが切り替わったら、その中身を取り直す。
-    /// 履歴とロックはサーバ往復が要るので、**開いたときだけ**取りに行く。
-    /// </summary>
+    /// <summary>履歴の節の更新ボタン。</summary>
     /// <param name="sender">送信元。</param>
     /// <param name="e">イベント引数。</param>
-    private async void OnTabSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void OnHistoryRefreshClick(object sender, RoutedEventArgs e)
     {
-        // TabControl の中の ListBox の選択変更も同じイベントで上がってくる。
-        if (!ReferenceEquals(e.OriginalSource, Tabs)) return;
-        if (!_state.IsAvailable) return;
-
-        await ReloadActiveTabAsync();
+        // 取り直しは最初のページから（「さらに読み込む」で伸ばした分は畳む）。
+        _historyLimit = VersionControlMessages.PANEL_HISTORY_PAGE_SIZE;
+        await ReloadHistoryAsync();
     }
 
-    /// <summary>いま開いているタブの中身を取り直す。</summary>
-    private async Task ReloadActiveTabAsync()
+    /// <summary>「さらに読み込む」。取得件数の上限を 1 ページぶん伸ばして取り直す。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnHistoryLoadMoreClick(object sender, RoutedEventArgs e)
     {
-        if (ReferenceEquals(Tabs.SelectedItem, TabHistory)) await ReloadHistoryAsync();
-        else if (ReferenceEquals(Tabs.SelectedItem, TabLocks)) await ReloadLocksAsync();
+        _historyLimit += VersionControlMessages.PANEL_HISTORY_PAGE_SIZE;
+        await ReloadHistoryAsync();
     }
 
     /// <summary>
@@ -405,21 +408,25 @@ public partial class VersionControlPanel
     /// </summary>
     private async Task ReloadHistoryAsync()
     {
+        var limit = _historyLimit;
+
         var result = await RunAsync(
             VersionControlOperation.History,
             async () => await VersionControlService.Provider
-                                                   .GetHistoryAsync()
+                                                   .GetHistoryAsync(limit)
                                                    .ConfigureAwait(true));
         if (result is null) return;
 
+        _historyLoaded = true;
         _historyRows.Clear();
+        BtnHistoryMore.Visibility = Visibility.Collapsed;
 
         if (result.Outcome == VersionControlOutcome.RequiresConnection)
         {
-            ShowTabMessage(TxtHistoryMessage,
-                           VersionControlMessages.PANEL_HISTORY_REQUIRES_CONNECTION);
+            ShowSectionMessage(TxtHistoryMessage,
+                               VersionControlMessages.PANEL_HISTORY_REQUIRES_CONNECTION);
 
-            // 案内はタブの中に出しているので、1 行メッセージは重複させない。
+            // 案内は節の中に出しているので、1 行メッセージは重複させない。
             _state.SetNotice(VersionControlNotice.None);
             SyncControls();
             return;
@@ -427,7 +434,7 @@ public partial class VersionControlPanel
 
         if (!result.IsSuccess)
         {
-            ShowTabMessage(TxtHistoryMessage, result.Message);
+            ShowSectionMessage(TxtHistoryMessage, result.Message);
             return;
         }
 
@@ -440,15 +447,31 @@ public partial class VersionControlPanel
             }
         }
 
-        ShowTabMessage(TxtHistoryMessage,
-                       _historyRows.Count == 0
-                           ? VersionControlMessages.PANEL_HISTORY_EMPTY
-                           : null);
+        // 要求した上限ちょうど返ってきた＝まだ先がある可能性が高い。
+        // （「あと何件あるか」を Lore は返さないので、これが唯一の手掛かり。）
+        BtnHistoryMore.Visibility = _historyRows.Count >= limit
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        ShowSectionMessage(TxtHistoryMessage,
+                           _historyRows.Count == 0
+                               ? VersionControlMessages.PANEL_HISTORY_EMPTY
+                               : null);
 
         // 取得できたこと自体は利用者が頼んだ操作ではないので、静かに閉じる。
         _state.SetNotice(VersionControlNotice.None);
         SyncControls();
     }
+
+    // ============================================================
+    //  ロック
+    // ============================================================
+
+    /// <summary>ロックの節の更新ボタン。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnLocksRefreshClick(object sender, RoutedEventArgs e)
+        => await ReloadLocksAsync();
 
     /// <summary>
     /// ロック一覧を取り直す。
@@ -463,12 +486,13 @@ public partial class VersionControlPanel
                                                    .ConfigureAwait(true));
         if (result is null) return;
 
+        _locksLoaded = true;
         _lockRows.Clear();
 
         if (result.Outcome == VersionControlOutcome.RequiresConnection)
         {
-            ShowTabMessage(TxtLockMessage,
-                           VersionControlMessages.PANEL_NOTICE_REQUIRES_CONNECTION);
+            ShowSectionMessage(TxtLockMessage,
+                               VersionControlMessages.PANEL_NOTICE_REQUIRES_CONNECTION);
             _state.SetNotice(VersionControlNotice.None);
             SyncControls();
             return;
@@ -476,7 +500,7 @@ public partial class VersionControlPanel
 
         if (!result.IsSuccess)
         {
-            ShowTabMessage(TxtLockMessage, result.Message);
+            ShowSectionMessage(TxtLockMessage, result.Message);
             return;
         }
 
@@ -492,17 +516,17 @@ public partial class VersionControlPanel
             }
         }
 
-        ShowTabMessage(TxtLockMessage,
-                       _lockRows.Count == 0 ? VersionControlMessages.PANEL_LOCKS_EMPTY : null);
+        ShowSectionMessage(TxtLockMessage,
+                           _lockRows.Count == 0 ? VersionControlMessages.PANEL_LOCKS_EMPTY : null);
 
         _state.SetNotice(VersionControlNotice.None);
         SyncControls();
     }
 
-    /// <summary>タブ内の案内文を出す / 消す。</summary>
+    /// <summary>節の中の案内文を出す / 消す。</summary>
     /// <param name="target">対象の TextBlock。</param>
     /// <param name="message">出す文言（null なら隠す）。</param>
-    private static void ShowTabMessage(TextBlock target, string? message)
+    private static void ShowSectionMessage(TextBlock target, string? message)
     {
         if (string.IsNullOrEmpty(message))
         {
@@ -518,7 +542,7 @@ public partial class VersionControlPanel
     //  ロックの取得・解放
     // ============================================================
 
-    /// <summary>変更一覧で選んだファイルをロックする。</summary>
+    /// <summary>変更ツリーで選んだファイルをロックする。</summary>
     /// <param name="sender">送信元。</param>
     /// <param name="e">イベント引数。</param>
     private async void OnLockSelected(object sender, RoutedEventArgs e)
@@ -536,7 +560,7 @@ public partial class VersionControlPanel
         await ReloadLocksIfVisibleAsync();
     }
 
-    /// <summary>変更一覧で選んだファイルのロックを解除する。</summary>
+    /// <summary>変更ツリーで選んだファイルのロックを解除する。</summary>
     /// <param name="sender">送信元。</param>
     /// <param name="e">イベント引数。</param>
     private async void OnUnlockSelected(object sender, RoutedEventArgs e)
@@ -554,7 +578,7 @@ public partial class VersionControlPanel
         await ReloadLocksIfVisibleAsync();
     }
 
-    /// <summary>ロックタブの解除ボタン。</summary>
+    /// <summary>ロックの節にある解除ボタン。</summary>
     /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
     /// <param name="e">イベント引数。</param>
     private async void OnReleaseLockClick(object sender, RoutedEventArgs e)
@@ -572,10 +596,57 @@ public partial class VersionControlPanel
         await ReloadLocksAsync();
     }
 
-    /// <summary>ロックタブが開いているときだけ一覧を取り直す（無駄な往復を避ける）。</summary>
+    /// <summary>
+    /// 「ロックをすべて解除」（ヘッダーの「その他」メニュー）。
+    ///
+    /// <para>
+    /// 解除するのは **自分のロックだけ**。所有者が不明なロックまで巻き込むと、
+    /// 他の人の編集権を黙って奪い得る（LockRowItem のコメントと同じ理由）。
+    /// </para>
+    /// </summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnReleaseAllLocks(object sender, RoutedEventArgs e)
+    {
+        if (!_state.CanChangeLocks) return;
+
+        // いまの一覧が古い可能性があるので、必ず取り直してから対象を決める。
+        var listed = await RunAsync(
+            VersionControlOperation.Lock,
+            async () => await VersionControlService.Provider
+                                                   .Locks
+                                                   .ListAsync()
+                                                   .ConfigureAwait(true));
+        if (listed is null || !listed.IsSuccess) return;
+
+        var locks = (listed as VersionControlResult<IReadOnlyList<LockInfo>>)?.Value;
+        var mine  = locks?.Where(l => VersionControlDisplay.CanRelease(l.Holder))
+                          .Select(l => l.Path)
+                          .ToList()
+                    ?? new List<string>();
+
+        if (mine.Count == 0)
+        {
+            _state.SetNotice(VersionControlNotice.Info(
+                VersionControlMessages.PANEL_NO_RELEASABLE_LOCKS));
+            SyncControls();
+            return;
+        }
+
+        await RunAsync(
+            VersionControlOperation.Lock,
+            async () => await VersionControlService.Provider
+                                                   .Locks
+                                                   .ReleaseAsync(mine)
+                                                   .ConfigureAwait(true));
+
+        await ReloadLocksIfVisibleAsync();
+    }
+
+    /// <summary>ロックの節が開いているときだけ一覧を取り直す（無駄な往復を避ける）。</summary>
     private async Task ReloadLocksIfVisibleAsync()
     {
-        if (ReferenceEquals(Tabs.SelectedItem, TabLocks)) await ReloadLocksAsync();
+        if (IsSectionExpanded(VersionControlSection.Locks)) await ReloadLocksAsync();
     }
 
     // ============================================================
@@ -590,13 +661,45 @@ public partial class VersionControlPanel
     /// 利用者は自分の操作が成功したのか分からなくなる。
     /// </para>
     /// </summary>
-    private async Task ReloadStatusKeepingNoticeAsync()
+    /// <param name="previous">
+    /// 直前の操作の結果。サーバが応答したと分かるときだけ、続けて
+    /// <see cref="StatusRefreshMode.ScanOnline"/> で取り直して
+    /// 上段の「未送信・未取得」まで更新する（詳細は
+    /// <see cref="ShouldGoOnlineAfter"/>）。
+    /// </param>
+    private async Task ReloadStatusKeepingNoticeAsync(VersionControlResult? previous)
     {
         var keep = _state.Notice;
+        var mode = ShouldGoOnlineAfter(previous)
+            ? StatusRefreshMode.ScanOnline
+            : StatusRefreshMode.ScanOffline;
 
-        await RefreshAsync(StatusRefreshMode.ScanOffline);
+        await RefreshAsync(mode);
 
         _state.SetNotice(keep);
         SyncControls();
     }
+
+    /// <summary>
+    /// 直前の操作のあと、サーバへ問い合わせる取り直しをしてよいか。
+    ///
+    /// <para>
+    /// 「サーバが応答したことが分かっている」ときだけ真を返す。
+    /// 成功はもちろん、<see cref="VersionControlOutcome.NeedsSync"/> と
+    /// <see cref="VersionControlOutcome.Conflicted"/> も、サーバの内容と
+    /// 比べられた結果なので応答があったと言える。
+    /// </para>
+    /// <para>
+    /// 逆に、接続できずに終わった直後にもう一度サーバへ行くと、
+    /// **同じ待ち時間（既定 2 分）をもう一度払う**ことになる。
+    /// 利用者から見れば「失敗したのに、さらに固まった」だけなので、
+    /// そのときはオフラインで取り直して素早く画面を戻す。
+    /// </para>
+    /// </summary>
+    /// <param name="result">直前の操作の結果。</param>
+    private static bool ShouldGoOnlineAfter(VersionControlResult? result)
+        => result is not null
+           && (result.IsSuccess
+               || result.Outcome == VersionControlOutcome.NeedsSync
+               || result.Outcome == VersionControlOutcome.Conflicted);
 }

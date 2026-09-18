@@ -26,11 +26,20 @@ namespace SEEDEditor.Panels;
 
 public partial class VersionControlPanel
 {
-    /// <summary>アカウント関連の固定文言をコントロールへ流し込む。</summary>
+    /// <summary>
+    /// アカウント関連の固定文言をコントロールへ流し込む。
+    ///
+    /// <para>
+    /// アカウントの入口はヘッダーの「その他 …」メニューの中にある
+    /// （手本の Visual Studio に合わせ、ヘッダーに並ぶのは
+    ///   取得 / 送信 / 更新 / その他 の 4 つだけにしたため）。
+    /// 見出しの文言は VersionControlPanel.xaml.cs 側でまとめて貼るので、
+    /// ここではツールチップだけを足す。
+    /// </para>
+    /// </summary>
     private void InitializeAccountsUi()
     {
-        BtnAccounts.Content = VersionControlMessages.PANEL_ACCOUNTS_BUTTON;
-        BtnAccounts.ToolTip = VersionControlMessages.PANEL_ACCOUNTS_TOOLTIP;
+        MenuAccounts.ToolTip = VersionControlMessages.PANEL_ACCOUNTS_TOOLTIP;
     }
 
     /// <summary>

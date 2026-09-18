@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    バージョン管理パネルの見た目を「実物の XAML」で確かめるための検証用コンソール。
+
+    VersionControlTests（純ロジックの単体テスト）と役割を分けている:
+      - あちら: WPF 非依存の判定・変換（ツリーの組み立て・見出し・保存）を検証する
+      - こちら: 実際の XAML を読み込んでオフスクリーン描画し、PNG に落とす
+               （パネルは GUI を起動しないと見えないので、目視確認の材料を作る）
+
+    SEEDEditor 本体をプロジェクト参照するのは、パネルの XAML・共通ボタン書式・
+    アイコン辞書がすべて本体アセンブリの中にあるため。**エディタは起動しない**
+    （App はリソース読み込みのために生成するだけで、Run() は呼ばない）。
+
+    偽のプロバイダを VersionControlService.UseProviderForVerification で据えるので、
+    Lore にもサーバにも一切触れない。
+
+    実行例（オプションの先頭に付くハイフン 2 個は XML コメントに書けないため省略して記す）:
+      dotnet run (project=editor/tests/VersionControlPanelPreviewProbe) (区切り) (out) "C:\temp\out"
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.VersionControlPanelPreview</RootNamespace>
+    <AssemblyName>VersionControlPanelPreviewProbe</AssemblyName>
+    <!-- 本体と同じ RID。LoreVcs のネイティブ依存の解決条件をそろえる
+         （このプローブは Lore を呼ばないが、参照の復元は同じ条件で行う）。 -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\SEEDEditor.csproj" />
+  </ItemGroup>
+
+</Project>

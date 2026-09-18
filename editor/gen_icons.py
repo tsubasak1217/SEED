@@ -143,6 +143,14 @@ CATALOG = [
     # 競合は「合流して衝突している」ことが一目で分かる形にする。
     ("Icon.Vcs.Conflict", "alert-circle"),
     ("Icon.Vcs.Unknown", "help-circle-outline"),
+    # 未送信（↑）／未取得（↓）の件数行。Icon.MoveUp/MoveDown はシェブロン（メニューの開閉）
+    # として既に別の意味で使っているため、ここは明確な矢印を別キーで持つ。
+    ("Icon.Vcs.Unpushed", "arrow-up"),
+    ("Icon.Vcs.Unpulled", "arrow-down"),
+
+    ("── ツリーの一括開閉（変更ツリーの見出し右端）──", None),
+    ("Icon.ExpandAll", "unfold-more-horizontal"),
+    ("Icon.CollapseAll", "unfold-less-horizontal"),
 
     ("── コンポーネント種別（ComponentKind 対応）──", None),
     ("Icon.Component.Transform", "axis-arrow"),

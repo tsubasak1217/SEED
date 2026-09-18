@@ -34,6 +34,13 @@ public sealed class VersionControlSettings
     public const int DEFAULT_REMOTE_OPERATION_TIMEOUT_MS = 120_000;
 
     /// <summary>
+    /// オンラインの状態取得（`StatusRefreshMode.ScanOnline`。ヘッダーの更新ボタンなど）の既定タイムアウト。
+    /// 送信・取得と同じ 2 分を使うと、サーバが無応答のときに「更新中…」が 2 分続く。
+    /// 状態取得はサーバ往復 1 回（実測 0.4 秒前後）なので、短い期限で「接続できない」に倒す。
+    /// </summary>
+    public const int DEFAULT_ONLINE_STATUS_TIMEOUT_MS = 15_000;
+
+    /// <summary>
     /// 状態の再取得をまとめるデバウンス時間 [ms]。
     /// 保存が連続したときに status を毎回走らせないための待ち。
     /// </summary>
@@ -87,6 +94,9 @@ public sealed class VersionControlSettings
     /// <summary>サーバ往復を伴う操作のタイムアウト。</summary>
     public TimeSpan RemoteOperationTimeout { get; }
 
+    /// <summary>オンラインの状態取得（ScanOnline）のタイムアウト。送信・取得より短い。</summary>
+    public TimeSpan OnlineStatusTimeout { get; }
+
     /// <summary>状態再取得のデバウンス時間。</summary>
     public TimeSpan StatusDebounce { get; }
 
@@ -110,13 +120,15 @@ public sealed class VersionControlSettings
     /// <param name="historyLength">履歴の既定取得件数。</param>
     /// <param name="shutdownWait">ワーカー停止時の待ち上限。</param>
     /// <param name="historyMetadataLimit">履歴のうちメタデータまで補う件数の上限。</param>
+    /// <param name="onlineStatusTimeout">オンラインの状態取得のタイムアウト。</param>
     public VersionControlSettings(
         TimeSpan? localOperationTimeout  = null,
         TimeSpan? remoteOperationTimeout = null,
         TimeSpan? statusDebounce         = null,
         int?      historyLength          = null,
         TimeSpan? shutdownWait           = null,
-        int?      historyMetadataLimit   = null)
+        int?      historyMetadataLimit   = null,
+        TimeSpan? onlineStatusTimeout    = null)
     {
         LocalOperationTimeout  = localOperationTimeout
             ?? TimeSpan.FromMilliseconds(DEFAULT_LOCAL_OPERATION_TIMEOUT_MS);
@@ -128,6 +140,8 @@ public sealed class VersionControlSettings
         ShutdownWait           = shutdownWait
             ?? TimeSpan.FromMilliseconds(DEFAULT_SHUTDOWN_WAIT_MS);
         HistoryMetadataLimit   = historyMetadataLimit ?? DEFAULT_HISTORY_METADATA_LIMIT;
+        OnlineStatusTimeout    = onlineStatusTimeout
+            ?? TimeSpan.FromMilliseconds(DEFAULT_ONLINE_STATUS_TIMEOUT_MS);
     }
 
     /// <summary>既定値だけで構成した設定。</summary>

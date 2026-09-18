@@ -152,7 +152,10 @@ public sealed class LoreProvider : IVersionControlProvider
         CancellationToken cancellationToken = default)
         => RunAsync(
             OP_STATUS,
-            TimeoutFor(mode == StatusRefreshMode.ScanOnline),
+            // オンライン取得は送信・取得より短い専用の期限（無応答のサーバで 2 分固まらないため）
+            mode == StatusRefreshMode.ScanOnline
+                ? _settings.OnlineStatusTimeout
+                : _settings.LocalOperationTimeout,
             cancellationToken,
             token =>
             {
@@ -167,14 +170,6 @@ public sealed class LoreProvider : IVersionControlProvider
                     LoreStatusTranslator.ToWorkingCopyStatus(result, mode),
                     VersionControlMessages.STATUS_OK);
             });
-
-    /// <summary>
-    /// 操作の期限を選ぶ。サーバ往復を伴うものは長い方を使う
-    /// （ローカル操作は 0.1 秒で終わるのに 2 分待たせない）。
-    /// </summary>
-    /// <param name="touchesServer">サーバ往復を伴うか。</param>
-    private TimeSpan TimeoutFor(bool touchesServer)
-        => touchesServer ? _settings.RemoteOperationTimeout : _settings.LocalOperationTimeout;
 
     /// <summary>取得モードを Lore の status 条件へ変換する。</summary>
     /// <param name="mode">取得モード。</param>

@@ -81,6 +81,37 @@ public static class VersionControlDisplay
     }
 
     /// <summary>
+    /// 変更の種類を行の右端に出す 1 文字へ直す（A / M / D / R / C / ! / ?）。
+    ///
+    /// <para>
+    /// Visual Studio の「Git 変更」と同じ 1 文字表記にそろえる。
+    /// ツリーの行は名前が長いので、種類は場所を取らない 1 文字にして右端へ寄せ、
+    /// 文字数の揺れで列がガタつかないようにする
+    /// （<see cref="ToChangeText"/> の「追加 / 変更 / …」はツールチップで補う）。
+    /// 表示名と同じく、未解決の競合は種類より優先する。
+    /// </para>
+    /// </summary>
+    /// <param name="kind">変更の種類。</param>
+    /// <param name="conflict">競合の状態。</param>
+    public static string ToChangeLetter(FileChangeKind kind, FileConflictState conflict)
+    {
+        if (conflict == FileConflictState.Unresolved)
+        {
+            return VersionControlMessages.PANEL_CHANGE_LETTER_CONFLICT;
+        }
+
+        return kind switch
+        {
+            FileChangeKind.Added    => VersionControlMessages.PANEL_CHANGE_LETTER_ADDED,
+            FileChangeKind.Modified => VersionControlMessages.PANEL_CHANGE_LETTER_MODIFIED,
+            FileChangeKind.Deleted  => VersionControlMessages.PANEL_CHANGE_LETTER_DELETED,
+            FileChangeKind.Moved    => VersionControlMessages.PANEL_CHANGE_LETTER_MOVED,
+            FileChangeKind.Copied   => VersionControlMessages.PANEL_CHANGE_LETTER_COPIED,
+            _                       => VersionControlMessages.PANEL_CHANGE_LETTER_UNKNOWN,
+        };
+    }
+
+    /// <summary>
     /// 変更の種類に対応するアイコンキーを返す。
     /// 表示名と同じく、未解決の競合は種類より優先する。
     /// </summary>

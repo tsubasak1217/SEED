@@ -119,6 +119,25 @@
       <Link>Linked\VersionControl\Presentation\VersionControlPanelState.cs</Link>
     </Compile>
 
+    <!-- ── 変更ツリー（パス → フォルダー階層 → 見えている行）── -->
+    <Compile Include="..\..\src\VersionControl\Presentation\ChangeTreeNode.cs">
+      <Link>Linked\VersionControl\Presentation\ChangeTreeNode.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Presentation\ChangeTreeFlattener.cs">
+      <Link>Linked\VersionControl\Presentation\ChangeTreeFlattener.cs</Link>
+    </Compile>
+
+    <!-- ── 折りたたみ節の見出し・既定値と、その保存 ── -->
+    <Compile Include="..\..\src\VersionControl\Presentation\VersionControlSections.cs">
+      <Link>Linked\VersionControl\Presentation\VersionControlSections.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\Presentation\VersionControlSyncSummary.cs">
+      <Link>Linked\VersionControl\Presentation\VersionControlSyncSummary.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\VersionControl\VersionControlPanelStateStore.cs">
+      <Link>Linked\VersionControl\VersionControlPanelStateStore.cs</Link>
+    </Compile>
+
     <!-- ── バックエンド境界（生データの契約）── -->
     <Compile Include="..\..\src\VersionControl\Lore\Backend\LoreCallResult.cs">
       <Link>Linked\VersionControl\Lore\Backend\LoreCallResult.cs</Link>
@@ -175,6 +194,12 @@
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+
+    <!-- 一時フォルダのヘルパーも ProjectSystemTests のものを共有する
+         （節の開閉の保存・復元テストが実ファイルを書くために使う）。 -->
+    <Compile Include="..\ProjectSystemTests\TempDir.cs">
+      <Link>Linked\TempDir.cs</Link>
     </Compile>
   </ItemGroup>
 

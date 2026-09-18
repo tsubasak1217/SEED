@@ -272,9 +272,6 @@ public static class VersionControlMessages
     /// <summary>リモート URL が分からないときの表示。</summary>
     public const string PANEL_REMOTE_UNKNOWN = "接続先未設定";
 
-    /// <summary>パネルからオーナー向けの操作を開くボタンの文言。</summary>
-    public const string PANEL_ACCOUNTS_BUTTON = "アカウント";
-
     /// <summary>パネルからオーナー向けの操作を開くボタンのツールチップ。</summary>
     public const string PANEL_ACCOUNTS_TOOLTIP =
         "このプロジェクトのアカウントと参加者を管理します";
@@ -290,8 +287,87 @@ public static class VersionControlMessages
     /// <summary>「送信」ボタンの文言。</summary>
     public const string PANEL_SUBMIT_BUTTON = "送信";
 
-    /// <summary>メッセージ欄のプレースホルダ。</summary>
-    public const string PANEL_MESSAGE_PLACEHOLDER = "変更内容をひとことで";
+    /// <summary>
+    /// メッセージ欄のプレースホルダ。
+    /// 「&lt;必須&gt;」を明記するのは、空だと送信ボタンが押せないことを
+    /// 押す前に知らせるため（無効なボタンだけでは理由が伝わらない）。
+    /// </summary>
+    public const string PANEL_MESSAGE_PLACEHOLDER = "メッセージを入力してください <必須>";
+
+    // ── ヘッダーのアイコンボタン ────────────────────────────
+    //  文字ラベルを持たないので、ツールチップが唯一の説明になる。
+
+    /// <summary>ヘッダーの「取得」アイコンボタンのツールチップ。</summary>
+    public const string PANEL_HEADER_FETCH_TOOLTIP = "最新を取得（サーバの変更を手元へ）";
+
+    /// <summary>ヘッダーの「送信」アイコンボタンのツールチップ。</summary>
+    public const string PANEL_HEADER_SUBMIT_TOOLTIP = "送信（手元の変更をサーバへ）";
+
+    /// <summary>ヘッダーの「その他」アイコンボタンのツールチップ。</summary>
+    public const string PANEL_HEADER_MORE_TOOLTIP = "その他の操作";
+
+    // ── 「その他」メニュー ──────────────────────────────────
+
+    /// <summary>作業コピーのフォルダーをエクスプローラーで開く。</summary>
+    public const string PANEL_MENU_SHOW_WORKING_COPY = "フォルダーで表示";
+
+    /// <summary>自分が持っているロックをまとめて解除する。</summary>
+    public const string PANEL_MENU_RELEASE_ALL_LOCKS = "ロックをすべて解除";
+
+    /// <summary>アカウントと参加者のダイアログを開く。</summary>
+    public const string PANEL_MENU_ACCOUNTS = "アカウント…";
+
+    /// <summary>解除できる（自分の）ロックが 1 件も無いとき。</summary>
+    public const string PANEL_NO_RELEASABLE_LOCKS = "解除できるロックはありません。";
+
+    // ── 未送信 / 未取得の行 ────────────────────────────────
+    //
+    //  【なぜ件数ではなく「あり／なし」なのか】
+    //  Lore が返すのは is_local_ahead / is_remote_ahead という **真偽値だけ** で、
+    //  「何コミット進んでいるか」は返らない（LoreStatusTranslator.ToRemoteComparison）。
+    //  数を書けない以上、書けるふりをせず「あり／なし」で出す。
+    //  さらにこの真偽値はサーバへ問い合わせたときしか得られないため、
+    //  オフライン取得の直後は「未確認」になる。
+
+    /// <summary>未送信の見出し（件数が分かる将来のために書式も持つ）。</summary>
+    public const string PANEL_SYNC_UNPUSHED_COUNT_FORMAT = "未送信 {0}";
+
+    /// <summary>未取得の見出し（件数が分かる将来のために書式も持つ）。</summary>
+    public const string PANEL_SYNC_UNPULLED_COUNT_FORMAT = "未取得 {0}";
+
+    /// <summary>未送信がある（件数は分からない）。</summary>
+    public const string PANEL_SYNC_UNPUSHED_PRESENT = "未送信あり";
+
+    /// <summary>未送信が無い。</summary>
+    public const string PANEL_SYNC_UNPUSHED_NONE = "未送信なし";
+
+    /// <summary>未取得がある（件数は分からない）。</summary>
+    public const string PANEL_SYNC_UNPULLED_PRESENT = "未取得あり";
+
+    /// <summary>未取得が無い。</summary>
+    public const string PANEL_SYNC_UNPULLED_NONE = "未取得なし";
+
+    /// <summary>サーバへ問い合わせていないので未送信が分からない。</summary>
+    public const string PANEL_SYNC_UNPUSHED_UNCHECKED = "未送信 未確認";
+
+    /// <summary>サーバへ問い合わせていないので未取得が分からない。</summary>
+    public const string PANEL_SYNC_UNPULLED_UNCHECKED = "未取得 未確認";
+
+    /// <summary>未確認のときのツールチップ（どうすれば分かるかを書く）。</summary>
+    public const string PANEL_SYNC_UNCHECKED_TOOLTIP =
+        "サーバへ問い合わせていないため、未送信・未取得の有無は分かりません。"
+        + "更新（円形の矢印）を押すとサーバに問い合わせて確かめます。";
+
+    /// <summary>サーバに繋がらず未送信・未取得を確かめられなかったときのツールチップ。</summary>
+    public const string PANEL_SYNC_UNAVAILABLE_TOOLTIP =
+        "サーバに接続できないため、未送信・未取得の有無を確かめられませんでした。";
+
+    /// <summary>リモートにこのブランチがまだ無い（初回の送信前）ときのツールチップ。</summary>
+    public const string PANEL_SYNC_REMOTE_MISSING_TOOLTIP =
+        "このブランチはまだサーバにありません（初回の送信でサーバ側に作られます）。";
+
+    /// <summary>履歴節へ飛ぶリンクの文言。</summary>
+    public const string PANEL_SYNC_SHOW_HISTORY_LINK = "すべての履歴を表示する";
 
     // ── 結果の 1 行メッセージ（パネル専用の短い言い回し）────
 
@@ -363,18 +439,76 @@ public static class VersionControlMessages
     /// <summary>ロックを解除する。</summary>
     public const string PANEL_MENU_UNLOCK = "ロックを解除";
 
-    // ── タブ ────────────────────────────────────────────────
+    // ── 折りたたみ節の見出し ────────────────────────────────
+    //  Visual Studio の「Git 変更」に倣い、タブではなく縦に並ぶ折りたたみ節にする。
+    //  見出しには必ず件数を添える（開かずに規模が分かるようにするため）。
 
-    /// <summary>「変更」タブ。</summary>
-    public const string PANEL_TAB_CHANGES = "変更";
+    /// <summary>「競合」節の見出し（書式: 件数）。</summary>
+    public const string PANEL_SECTION_CONFLICTS_FORMAT = "競合 ({0})";
 
-    /// <summary>「履歴」タブ。</summary>
-    public const string PANEL_TAB_HISTORY = "履歴";
+    /// <summary>「変更」節の見出し（書式: 件数）。</summary>
+    public const string PANEL_SECTION_CHANGES_FORMAT = "変更 ({0})";
 
-    /// <summary>「ロック」タブ。</summary>
-    public const string PANEL_TAB_LOCKS = "ロック";
+    /// <summary>「ロック」節の見出し（書式: 件数）。</summary>
+    public const string PANEL_SECTION_LOCKS_FORMAT = "ロック ({0})";
 
-    // ── 履歴タブ ────────────────────────────────────────────
+    /// <summary>「履歴」節の見出し（件数は「さらに読み込む」で増えるので付けない）。</summary>
+    public const string PANEL_SECTION_HISTORY = "履歴";
+
+    /// <summary>節の中身をまだ取りに行っていないときの件数表示。</summary>
+    public const string PANEL_SECTION_COUNT_UNKNOWN = "…";
+
+    // ── 節の見出しの右端に置くアイコンボタン ────────────────
+
+    /// <summary>ツリーをすべて展開する。</summary>
+    public const string PANEL_TREE_EXPAND_ALL_TOOLTIP = "すべて展開";
+
+    /// <summary>ツリーをすべて折りたたむ。</summary>
+    public const string PANEL_TREE_COLLAPSE_ALL_TOOLTIP = "すべて折りたたむ";
+
+    /// <summary>節の「その他」メニューのツールチップ。</summary>
+    public const string PANEL_SECTION_MORE_TOOLTIP = "この一覧の操作";
+
+    // ── 変更ツリー ──────────────────────────────────────────
+
+    /// <summary>作業コピーのパスが分からないときの根の表示。</summary>
+    public const string PANEL_TREE_ROOT_UNKNOWN = "（作業コピー）";
+
+    /// <summary>
+    /// 変更の状態を表す 1 文字（行の右端）。
+    /// Visual Studio の「Git 変更」と同じ位置・同じ 1 文字表記にそろえる。
+    /// </summary>
+    public const string PANEL_CHANGE_LETTER_ADDED = "A";
+
+    /// <summary>変更（Modified）。</summary>
+    public const string PANEL_CHANGE_LETTER_MODIFIED = "M";
+
+    /// <summary>削除（Deleted）。</summary>
+    public const string PANEL_CHANGE_LETTER_DELETED = "D";
+
+    /// <summary>移動・改名（Renamed）。</summary>
+    public const string PANEL_CHANGE_LETTER_MOVED = "R";
+
+    /// <summary>複製（Copied）。</summary>
+    public const string PANEL_CHANGE_LETTER_COPIED = "C";
+
+    /// <summary>未解決の競合。種類より優先して出す。</summary>
+    public const string PANEL_CHANGE_LETTER_CONFLICT = "!";
+
+    /// <summary>種類が分からない。</summary>
+    public const string PANEL_CHANGE_LETTER_UNKNOWN = "?";
+
+    // ── 履歴節 ──────────────────────────────────────────────
+
+    /// <summary>履歴をさらに読み込むボタンの文言。</summary>
+    public const string PANEL_HISTORY_LOAD_MORE = "さらに読み込む";
+
+    /// <summary>
+    /// 履歴の初回取得件数。全件をいきなり引くとサーバ往復が長くなるため、
+    /// まず直近の N 件だけを出し、足りなければ「さらに読み込む」で伸ばす。
+    /// </summary>
+    public const int PANEL_HISTORY_PAGE_SIZE = 30;
+
 
     /// <summary>サーバに繋がっていないため履歴を出せないとき。</summary>
     public const string PANEL_HISTORY_REQUIRES_CONNECTION =

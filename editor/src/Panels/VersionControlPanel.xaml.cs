@@ -3,14 +3,22 @@
 //
 //  【役割】
 //  バージョン管理の中核層（editor/src/VersionControl/）を、アーティストも迷わない
-//  画面として見せる。判断ロジックは持たず、次の 2 つへ委ねる:
+//  画面として見せる。判断ロジックは持たず、次の 3 つへ委ねる:
 //    ・何ができるか / 何と出すか … VersionControlPanelState（WPF 非依存・単体テスト済み）
+//    ・どう束ねて並べるか        … ChangeTreeBuilder / ChangeTreeFlattener /
+//                                  VersionControlSections / VersionControlSyncSummary
 //    ・実際の操作                … VersionControlService.Provider（IVersionControlProvider）
 //  ここに書くのは「コントロールへ写す」ことと「イベントを流す」ことだけ。
 //
+//  【手本】
+//  Visual Studio の「Git 変更」パネル。並びと「変更をフォルダー階層のツリーで見せる」
+//  ところを借りている。違いは XAML の先頭コメントと docs/editor_version_control.md に書いた。
+//
 //  【ファイル分割】
-//    ・本ファイル                         … 生成・購読・状態の反映・ヘッダー・変更一覧
+//    ・本ファイル                         … 生成・購読・状態の反映・変更ツリー・右クリック
+//    ・VersionControlPanel.Sections.cs    … 折りたたみ節の開閉と、その保存・復元
 //    ・VersionControlPanel.Operations.cs  … 取得 / 送信 / 競合解決 / ブランチ / ロック / 履歴
+//    ・VersionControlPanel.Accounts.cs    … identity 表示とアカウントのダイアログ
 //
 //  【スレッド（重要）】
 //  VersionControlService.StatusChanged は **ワーカースレッドから発火し得る**。
@@ -30,6 +38,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using SEEDEditor.VersionControl;
@@ -62,13 +71,13 @@ public partial class VersionControlPanel : UserControl
     private static readonly Brush NoticeErrorBrush =
         new SolidColorBrush(Color.FromRgb(0xE8, 0x8F, 0x8F));
 
-    /// <summary>主操作ボタンの通常色。</summary>
-    private static readonly Brush PrimaryButtonBrush =
-        new SolidColorBrush(Color.FromRgb(0x0E, 0x63, 0x9C));
+    // ── リソースキー（マジック文字列を散らさない）────────────
 
-    /// <summary>「最新を取得」を強調するときの色（NeedsSync のとき）。</summary>
-    private static readonly Brush EmphasisButtonBrush =
-        new SolidColorBrush(Color.FromRgb(0xA0, 0x70, 0x20));
+    /// <summary>主操作のボタン書式のキー。</summary>
+    private const string RES_PRIMARY_BUTTON = "Vc.PrimaryButton";
+
+    /// <summary>通常操作のボタン書式のキー。</summary>
+    private const string RES_NORMAL_BUTTON = "Vc.NormalButton";
 
     // ── ブランチコンボの特別項目 ────────────────────────────
 
@@ -76,21 +85,41 @@ public partial class VersionControlPanel : UserControl
     /// 「新しいブランチ…」項目を見分けるためのタグ。
     /// ブランチ名と衝突しないよう、Lore のブランチ名に使えない文字を含める。
     /// </summary>
-    private const string BRANCH_ITEM_NEW_TAG = "new-branch";
+    private const string BRANCH_ITEM_NEW_TAG = "new-branch";
 
     // ── 状態 ────────────────────────────────────────────────
 
     /// <summary>ボタンの有効条件・表示メッセージを決める状態機械（WPF 非依存）。</summary>
     private readonly VersionControlPanelState _state = new();
 
-    /// <summary>変更一覧の行（見出しとファイルを 1 本に畳んだもの）。</summary>
-    private readonly ObservableCollection<VcRows.ChangeRowItem> _changeRows = new();
+    /// <summary>競合節の行。</summary>
+    private readonly ObservableCollection<VcRows.ConflictRowItem> _conflictRows = new();
 
-    /// <summary>履歴タブの行。</summary>
+    /// <summary>変更ツリーの「いま見えている行」。</summary>
+    private readonly ObservableCollection<VcRows.ChangeTreeRowItem> _treeRows = new();
+
+    /// <summary>履歴節の行。</summary>
     private readonly ObservableCollection<VcRows.HistoryRowItem> _historyRows = new();
 
-    /// <summary>ロックタブの行。</summary>
+    /// <summary>ロック節の行。</summary>
     private readonly ObservableCollection<VcRows.LockRowItem> _lockRows = new();
+
+    /// <summary>
+    /// いまの変更ツリー（根）。状態を取り直すたびに作り直す。
+    /// </summary>
+    private ChangeTreeNode? _tree;
+
+    /// <summary>
+    /// 利用者が畳んだ節点の相対パス（根は空文字）。
+    ///
+    /// <para>
+    /// 「開いた集合」ではなく「畳んだ集合」で持つ。こうしておくと、
+    /// 取得のたびに現れる新しいフォルダーが既定で開いた状態になる
+    /// （開いた集合で持つと、取得直後に中身が見えず「壊れた」ように見える）。
+    /// セッション内だけの状態で、保存はしない（変更の中身は毎回入れ替わるため）。
+    /// </para>
+    /// </summary>
+    private readonly HashSet<string> _collapsedTreePaths = new(StringComparer.Ordinal);
 
     /// <summary>作業コピーの見張り（利用可能なときだけ生成する）。</summary>
     private WorkingCopyWatcher? _watcher;
@@ -114,27 +143,49 @@ public partial class VersionControlPanel : UserControl
         InitializeComponent();
 
         // 固定文言を流し込む（XAML に日本語を直書きしないため）。
-        TxtUnavailableTitle.Text     = VersionControlMessages.PANEL_UNAVAILABLE_TITLE;
-        TxtUnavailableGuide.Text     = VersionControlMessages.PANEL_UNAVAILABLE_GUIDE;
-        TxtFetchLabel.Text           = VersionControlMessages.PANEL_FETCH_BUTTON;
-        TxtSubmitLabel.Text          = VersionControlMessages.PANEL_SUBMIT_BUTTON;
-        TxtMessagePlaceholder.Text   = VersionControlMessages.PANEL_MESSAGE_PLACEHOLDER;
-        TxtNoChanges.Text            = VersionControlMessages.PANEL_NO_CHANGES;
-        TxtLockNote.Text             = VersionControlMessages.PANEL_LOCK_UNKNOWN_NOTE;
-        BtnRefresh.ToolTip           = VersionControlMessages.PANEL_REFRESH_TOOLTIP;
+        TxtUnavailableTitle.Text   = VersionControlMessages.PANEL_UNAVAILABLE_TITLE;
+        TxtUnavailableGuide.Text   = VersionControlMessages.PANEL_UNAVAILABLE_GUIDE;
+        TxtFetchLabel.Text         = VersionControlMessages.PANEL_FETCH_BUTTON;
+        TxtSubmitLabel.Text        = VersionControlMessages.PANEL_SUBMIT_BUTTON;
+        TxtMessagePlaceholder.Text = VersionControlMessages.PANEL_MESSAGE_PLACEHOLDER;
+        TxtNoChanges.Text          = VersionControlMessages.PANEL_NO_CHANGES;
+        TxtLockNote.Text           = VersionControlMessages.PANEL_LOCK_UNKNOWN_NOTE;
 
-        TabChanges.Header = VersionControlMessages.PANEL_TAB_CHANGES;
-        TabHistory.Header = VersionControlMessages.PANEL_TAB_HISTORY;
-        TabLocks.Header   = VersionControlMessages.PANEL_TAB_LOCKS;
+        BtnShowHistory.Content = VersionControlMessages.PANEL_SYNC_SHOW_HISTORY_LINK;
+        BtnHistoryMore.Content = VersionControlMessages.PANEL_HISTORY_LOAD_MORE;
+
+        // ヘッダーのアイコンボタンは文字を持たないので、ツールチップが唯一の説明になる。
+        BtnHeaderFetch.ToolTip  = VersionControlMessages.PANEL_HEADER_FETCH_TOOLTIP;
+        BtnHeaderSubmit.ToolTip = VersionControlMessages.PANEL_HEADER_SUBMIT_TOOLTIP;
+        BtnRefresh.ToolTip      = VersionControlMessages.PANEL_REFRESH_TOOLTIP;
+        BtnMore.ToolTip         = VersionControlMessages.PANEL_HEADER_MORE_TOOLTIP;
+
+        BtnExpandAll.ToolTip      = VersionControlMessages.PANEL_TREE_EXPAND_ALL_TOOLTIP;
+        BtnCollapseAll.ToolTip    = VersionControlMessages.PANEL_TREE_COLLAPSE_ALL_TOOLTIP;
+        BtnChangesMore.ToolTip    = VersionControlMessages.PANEL_SECTION_MORE_TOOLTIP;
+        BtnLocksRefresh.ToolTip   = VersionControlMessages.PANEL_REFRESH_TOOLTIP;
+        BtnHistoryRefresh.ToolTip = VersionControlMessages.PANEL_REFRESH_TOOLTIP;
+
+        MenuShowWorkingCopy.Header = VersionControlMessages.PANEL_MENU_SHOW_WORKING_COPY;
+        MenuReleaseAllLocks.Header = VersionControlMessages.PANEL_MENU_RELEASE_ALL_LOCKS;
+        MenuAccounts.Header        = VersionControlMessages.PANEL_MENU_ACCOUNTS;
+
+        MenuChangesRefresh.Header    = VersionControlMessages.PANEL_REFRESH_TOOLTIP;
+        MenuChangesShowFolder.Header = VersionControlMessages.PANEL_MENU_SHOW_WORKING_COPY;
 
         MenuShowInProject.Header = VersionControlMessages.PANEL_MENU_SHOW_IN_PROJECT;
         MenuCopyPath.Header      = VersionControlMessages.PANEL_MENU_COPY_PATH;
+        MenuOpenFolder.Header    = VersionControlMessages.PANEL_MENU_OPEN_FOLDER;
         MenuLock.Header          = VersionControlMessages.PANEL_MENU_LOCK;
         MenuUnlock.Header        = VersionControlMessages.PANEL_MENU_UNLOCK;
 
-        ChangeList.ItemsSource  = _changeRows;
-        HistoryList.ItemsSource = _historyRows;
-        LockList.ItemsSource    = _lockRows;
+        ConflictList.ItemsSource = _conflictRows;
+        ChangeTree.ItemsSource   = _treeRows;
+        HistoryList.ItemsSource  = _historyRows;
+        LockList.ItemsSource     = _lockRows;
+
+        // 折りたたみ節の初期状態（保存があれば復元）。VersionControlPanel.Sections.cs
+        InitializeSections();
 
         // アカウント関連の文言とボタン（VersionControlPanel.Accounts.cs）。
         InitializeAccountsUi();
@@ -179,6 +230,9 @@ public partial class VersionControlPanel : UserControl
         {
             StartWatcher();
             _ = RefreshAsync(StatusRefreshMode.ScanOffline);
+
+            // 開いた状態で復元された節の中身を取りに行く（ロック・履歴）。
+            _ = ReloadExpandedSectionsAsync();
         }
     }
 
@@ -199,6 +253,7 @@ public partial class VersionControlPanel : UserControl
             RefreshConnectionText();
         }
 
+        RebuildRows();
         SyncControls();
     }
 
@@ -236,7 +291,7 @@ public partial class VersionControlPanel : UserControl
         Dispatcher.BeginInvoke(new Action(() =>
         {
             _state.ApplyStatus(e.Status);
-            RebuildChangeRows();
+            RebuildRows();
             EnsureBranchComboShowsCurrent();
             SyncControls();
         }));
@@ -280,7 +335,8 @@ public partial class VersionControlPanel : UserControl
     ///
     /// <para>
     /// **有効/無効・表示文言の判断はここに書かない**。すべて
-    /// <see cref="VersionControlPanelState"/> が持っており、ここは写すだけ。
+    /// <see cref="VersionControlPanelState"/> と Presentation/ の純関数が持っており、
+    /// ここは写すだけ。
     /// </para>
     /// </summary>
     private void SyncControls()
@@ -288,20 +344,39 @@ public partial class VersionControlPanel : UserControl
         if (!_state.IsAvailable) return;
 
         // ── ボタンの有効条件 ──
-        BtnFetch.IsEnabled   = _state.CanFetchLatest;
-        BtnSubmit.IsEnabled  = _state.CanSubmit;
-        BtnRefresh.IsEnabled = _state.CanRefresh;
-        CmbBranch.IsEnabled  = _state.CanChangeBranch;
-        TxtMessage.IsEnabled = _state.IsAvailable && !_state.IsBusy;
+        BtnFetch.IsEnabled        = _state.CanFetchLatest;
+        BtnHeaderFetch.IsEnabled  = _state.CanFetchLatest;
+        BtnSubmit.IsEnabled       = _state.CanSubmit;
+        BtnHeaderSubmit.IsEnabled = _state.CanSubmit;
+        BtnRefresh.IsEnabled      = _state.CanRefresh;
+        BtnMore.IsEnabled         = _state.IsAvailable && !_state.IsBusy;
+        CmbBranch.IsEnabled       = _state.CanChangeBranch;
+        TxtMessage.IsEnabled      = _state.IsAvailable && !_state.IsBusy;
+
+        BtnLocksRefresh.IsEnabled   = _state.CanChangeLocks;
+        BtnHistoryRefresh.IsEnabled = _state.IsAvailable && !_state.IsBusy;
+        BtnHistoryMore.IsEnabled    = _state.IsAvailable && !_state.IsBusy;
 
         // 押せない理由をツールチップで必ず示す（理由の無い無効ボタンは故障に見える）。
         var reason = _state.SubmitBlockedReason;
-        BtnSubmit.ToolTip = reason.Length == 0 ? null : reason;
+        BtnSubmit.ToolTip = reason.Length == 0
+            ? VersionControlMessages.PANEL_HEADER_SUBMIT_TOOLTIP
+            : reason;
+        BtnHeaderSubmit.ToolTip = BtnSubmit.ToolTip;
 
         // ── 「最新を取得」の強調（NeedsSync のとき）──
-        BtnFetch.Background = _state.EmphasizeFetchLatest
-            ? EmphasisButtonBrush
-            : PrimaryButtonBrush;
+        //  色を直接塗らず、**主操作の書式を入れ替える**ことで示す。
+        //  ボタンの配色は共通書式だけが決める（docs/editor_ui_style.md）。
+        ApplyPrimaryEmphasis(_state.EmphasizeFetchLatest);
+
+        // ── 未送信・未取得の 1 行 ──
+        var sync = VersionControlSyncSummary.From(_state.Status);
+        TxtUnpushed.Text = sync.UnpushedText;
+        TxtUnpulled.Text = sync.UnpulledText;
+        SyncLine.ToolTip = sync.Tooltip.Length == 0 ? null : sync.Tooltip;
+
+        // ── 折りたたみ節の見出し（件数つき）── VersionControlPanel.Sections.cs
+        SyncSectionHeaders();
 
         // ── 実行中の表示（中断ボタンは出さない）──
         BusyView.Visibility = _state.ShowProgress ? Visibility.Visible : Visibility.Collapsed;
@@ -311,8 +386,8 @@ public partial class VersionControlPanel : UserControl
         var notice = _state.Notice;
         if (notice.HasText)
         {
-            TxtNotice.Text       = notice.Text;
-            TxtNotice.Foreground = ToBrush(notice.Severity);
+            TxtNotice.Text        = notice.Text;
+            TxtNotice.Foreground  = ToBrush(notice.Severity);
             NoticeView.Visibility = Visibility.Visible;
         }
         else
@@ -325,8 +400,35 @@ public partial class VersionControlPanel : UserControl
             TxtMessage.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         // ── 変更なしの案内 ──
-        TxtNoChanges.Visibility =
-            _changeRows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        //  変更が 1 件も無いときはツリーごと隠す。根の 1 行だけが残っていると、
+        //  「変更はありません。」と重なって読めないうえ、
+        //  何も入っていないフォルダーが開いているように見える。
+        //  まだ一度も状態を取れていない間は、どちらも出さない
+        //  （「変更はありません」は取得できて初めて言えること）。
+        var isKnown = _state.Status is not null;
+        var hasRows = _tree is { FileCount: > 0 };
+
+        ChangeTree.Visibility   = hasRows ? Visibility.Visible : Visibility.Collapsed;
+        TxtNoChanges.Visibility = isKnown && !hasRows ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// 「最新を取得」を主操作として見せるか、「送信」を主操作として見せるかを入れ替える。
+    ///
+    /// <para>
+    /// 送信がリモートの進みで弾かれた直後（NeedsSync）は、押すべきなのは
+    /// 「最新を取得」の方である。色を塗り替えるのではなく **書式そのものを入れ替える**
+    /// ことで、共通書式の外でホバー色を決めてしまう事故を避ける。
+    /// </para>
+    /// </summary>
+    /// <param name="emphasizeFetch">「最新を取得」を主操作として見せるか。</param>
+    private void ApplyPrimaryEmphasis(bool emphasizeFetch)
+    {
+        var primary = (Style)FindResource(RES_PRIMARY_BUTTON);
+        var normal  = (Style)FindResource(RES_NORMAL_BUTTON);
+
+        BtnFetch.Style  = emphasizeFetch ? primary : normal;
+        BtnSubmit.Style = emphasizeFetch ? normal  : primary;
     }
 
     /// <summary>重大度に対応する色を返す（配色の対応表はここだけ）。</summary>
@@ -340,22 +442,132 @@ public partial class VersionControlPanel : UserControl
         _                                    => NoticeInfoBrush,
     };
 
+    // ============================================================
+    //  変更ツリーと競合一覧
+    // ============================================================
+
     /// <summary>
-    /// 状態機械が組み立てたグループを、1 本のリストの行へ展開する。
+    /// 状態から「競合の行」と「変更ツリー」を作り直す。
     /// </summary>
-    private void RebuildChangeRows()
+    private void RebuildRows()
     {
-        _changeRows.Clear();
+        RebuildConflictRows();
+        RebuildTree();
+    }
 
-        foreach (var group in _state.Groups)
+    /// <summary>
+    /// 競合節の行を作り直す（未解決の競合だけ・パス順）。
+    ///
+    /// <para>
+    /// 並び順は <see cref="ChangeListBuilder"/> が決めた競合グループをそのまま使う。
+    /// 「競合を最上部に束ねる」判断を 2 か所に持たないため。
+    /// </para>
+    /// </summary>
+    private void RebuildConflictRows()
+    {
+        _conflictRows.Clear();
+
+        var group = _state.Groups.FirstOrDefault(g => g.IsConflictGroup);
+        if (group is null) return;
+
+        foreach (var file in group.Items)
         {
-            _changeRows.Add(VcRows.ChangeRowItem.Header(group.Header, group.IsConflictGroup));
-
-            foreach (var file in group.Items)
-            {
-                _changeRows.Add(VcRows.ChangeRowItem.ForFile(file, group.IsConflictGroup));
-            }
+            _conflictRows.Add(new VcRows.ConflictRowItem(file));
         }
+    }
+
+    /// <summary>
+    /// 変更ツリーを組み直して、見えている行だけをリストへ流す。
+    /// </summary>
+    private void RebuildTree()
+    {
+        // 競合は専用の節で扱うので、ツリーには「競合以外の変更」を入れる。
+        var group = _state.Groups.FirstOrDefault(g => !g.IsConflictGroup);
+        var items = group?.Items ?? (IReadOnlyList<ChangedFile>)Array.Empty<ChangedFile>();
+
+        _tree = ChangeTreeBuilder.Build(VersionControlService.Provider.WorkingCopyRoot, items);
+
+        RefreshTreeRows();
+    }
+
+    /// <summary>
+    /// いまのツリーと畳み集合から「見えている行」を作り直す。
+    /// 開閉のたびに呼ばれるので、ツリーの組み直しとは分けてある。
+    /// </summary>
+    private void RefreshTreeRows()
+    {
+        _treeRows.Clear();
+
+        foreach (var row in ChangeTreeFlattener.Flatten(_tree, _collapsedTreePaths))
+        {
+            _treeRows.Add(new VcRows.ChangeTreeRowItem(row));
+        }
+    }
+
+    /// <summary>ツリーの行の開閉ハンドルが押された。</summary>
+    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnTreeHandleClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: VcRows.ChangeTreeRowItem row }) return;
+
+        ToggleTreeNode(row);
+        e.Handled = true;
+    }
+
+    /// <summary>ツリーの行をダブルクリックした（フォルダーなら開閉する）。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnTreeDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ChangeTree.SelectedItem is not VcRows.ChangeTreeRowItem row) return;
+        if (!row.IsContainer) return;
+
+        ToggleTreeNode(row);
+        e.Handled = true;
+    }
+
+    /// <summary>1 つの節点の開閉を切り替えて、行を作り直す。</summary>
+    /// <param name="row">対象の行。</param>
+    private void ToggleTreeNode(VcRows.ChangeTreeRowItem row)
+    {
+        if (!row.IsContainer) return;
+
+        if (!_collapsedTreePaths.Remove(row.RelativePath))
+        {
+            _collapsedTreePaths.Add(row.RelativePath);
+        }
+
+        RefreshTreeRows();
+    }
+
+    /// <summary>「すべて展開」。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnExpandAllClick(object sender, RoutedEventArgs e)
+    {
+        _collapsedTreePaths.Clear();
+        RefreshTreeRows();
+    }
+
+    /// <summary>
+    /// 「すべて折りたたむ」。根だけは開いたままにする
+    /// （根まで畳むと 1 行だけになり、押し間違えたように見えるため）。
+    /// </summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnCollapseAllClick(object sender, RoutedEventArgs e)
+    {
+        _collapsedTreePaths.Clear();
+
+        foreach (var path in ChangeTreeFlattener.AllContainerPaths(_tree))
+        {
+            // 根（空文字）は畳まない。
+            if (path.Length == 0) continue;
+            _collapsedTreePaths.Add(path);
+        }
+
+        RefreshTreeRows();
     }
 
     // ============================================================
@@ -425,17 +637,77 @@ public partial class VersionControlPanel : UserControl
     //  ヘッダー
     // ============================================================
 
-    /// <summary>更新ボタン。走査つきで取り直す（エディタ外での変更を拾う）。</summary>
+    /// <summary>
+    /// 更新ボタン。**サーバへ問い合わせる**取り直しを行う。
+    ///
+    /// <para>
+    /// 自動更新（保存のたび）は <see cref="StatusRefreshMode.ScanOffline"/> のままで、
+    /// ここだけ <see cref="StatusRefreshMode.ScanOnline"/> にしている。
+    /// 未送信・未取得の有無はサーバに聞かないと分からず（Lore の仕様）、
+    /// オフラインのままでは上段の 1 行がいつまでも「未確認」のままになるため。
+    /// </para>
+    /// </summary>
     /// <param name="sender">送信元。</param>
     /// <param name="e">イベント引数。</param>
     private async void OnRefreshClick(object sender, RoutedEventArgs e)
     {
-        await RefreshAsync(StatusRefreshMode.ScanOffline, showResult: true);
-        await ReloadActiveTabAsync();
+        await RefreshAsync(StatusRefreshMode.ScanOnline, showResult: true);
+        await ReloadExpandedSectionsAsync();
+    }
+
+    /// <summary>「その他 …」。ボタンの直下にメニューを出す。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnMoreClick(object sender, RoutedEventArgs e)
+    {
+        // 「ロックをすべて解除」は自分のロックがあるときだけ押せる。
+        MenuReleaseAllLocks.IsEnabled = _state.CanChangeLocks;
+        OpenMenuUnder(BtnMore);
+    }
+
+    /// <summary>「変更」節の「その他 …」。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnChangesMoreClick(object sender, RoutedEventArgs e)
+    {
+        MenuChangesRefresh.IsEnabled = _state.CanRefresh;
+        OpenMenuUnder(BtnChangesMore);
+    }
+
+    /// <summary>
+    /// ボタンに付けた ContextMenu を、そのボタンの直下へ出す。
+    /// 右クリックを待たずに左クリックで開くための共通処理。
+    /// </summary>
+    /// <param name="button">対象のボタン。</param>
+    private static void OpenMenuUnder(Button button)
+    {
+        if (button.ContextMenu is not { } menu) return;
+
+        menu.PlacementTarget = button;
+        menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen          = true;
+    }
+
+    /// <summary>「フォルダーで表示」。作業コピーのルートをエクスプローラーで開く。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnShowWorkingCopy(object sender, RoutedEventArgs e)
+    {
+        var root = VersionControlService.Provider.WorkingCopyRoot;
+        if (string.IsNullOrWhiteSpace(root)) return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(root) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"[VCS] フォルダーを開けませんでした: {ex.Message}");
+        }
     }
 
     // ============================================================
-    //  変更一覧の右クリックメニュー
+    //  変更ツリーの右クリックメニュー
     // ============================================================
 
     /// <summary>
@@ -452,7 +724,7 @@ public partial class VersionControlPanel : UserControl
 
         var paths = SelectedChangePaths();
 
-        // 見出しだけを選んでいるときはメニューを出さない（できることが無い）。
+        // フォルダーや根だけを選んでいるときはメニューを出さない（できることが無い）。
         if (paths.Count == 0)
         {
             e.Handled = true;
@@ -461,6 +733,7 @@ public partial class VersionControlPanel : UserControl
 
         MenuShowInProject.IsEnabled = paths.Count == 1;
         MenuCopyPath.IsEnabled      = true;
+        MenuOpenFolder.IsEnabled    = paths.Count == 1;
         MenuLock.IsEnabled          = _state.CanChangeLocks;
         MenuUnlock.IsEnabled        = _state.CanChangeLocks;
     }
@@ -475,27 +748,27 @@ public partial class VersionControlPanel : UserControl
     /// </summary>
     private void SelectRowUnderCursor()
     {
-        var position = Mouse.GetPosition(ChangeList);
-        var hit      = ChangeList.InputHitTest(position) as DependencyObject;
+        var position = Mouse.GetPosition(ChangeTree);
+        var hit      = ChangeTree.InputHitTest(position) as DependencyObject;
 
         // ヒットした要素から ListBoxItem まで親を辿る。
         while (hit is not null && hit is not ListBoxItem)
         {
-            hit = System.Windows.Media.VisualTreeHelper.GetParent(hit);
+            hit = VisualTreeHelper.GetParent(hit);
         }
 
-        if (hit is not ListBoxItem { DataContext: VcRows.ChangeRowItem row }) return;
-        if (ChangeList.SelectedItems.Contains(row)) return;
+        if (hit is not ListBoxItem { DataContext: VcRows.ChangeTreeRowItem row }) return;
+        if (ChangeTree.SelectedItems.Contains(row)) return;
 
-        ChangeList.SelectedItems.Clear();
-        ChangeList.SelectedItems.Add(row);
+        ChangeTree.SelectedItems.Clear();
+        ChangeTree.SelectedItems.Add(row);
     }
 
-    /// <summary>選択中のファイル行のリポジトリ相対パスを集める（見出し行は除く）。</summary>
+    /// <summary>選択中の**ファイル行**のリポジトリ相対パスを集める（フォルダー行は除く）。</summary>
     private IReadOnlyList<string> SelectedChangePaths()
-        => ChangeList.SelectedItems
-                     .OfType<VcRows.ChangeRowItem>()
-                     .Where(r => !r.IsHeader && r.RelativePath.Length > 0)
+        => ChangeTree.SelectedItems
+                     .OfType<VcRows.ChangeTreeRowItem>()
+                     .Where(r => r.IsFile && r.RelativePath.Length > 0)
                      .Select(r => r.RelativePath)
                      .Distinct(StringComparer.OrdinalIgnoreCase)
                      .ToList();
@@ -542,8 +815,19 @@ public partial class VersionControlPanel : UserControl
         OpenContainingFolder(absolute);
     }
 
+    /// <summary>「フォルダーの場所を開く」。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnOpenContainingFolder(object sender, RoutedEventArgs e)
+    {
+        var paths = SelectedChangePaths();
+        if (paths.Count == 0) return;
+
+        OpenContainingFolder(ToAbsolutePath(paths[0]));
+    }
+
     /// <summary>
-    /// エクスプローラーでファイルの場所を開く（プロジェクトパネルで出せないときの代替）。
+    /// エクスプローラーでファイルの場所を開く。
     /// </summary>
     /// <param name="absolutePath">対象の絶対パス。</param>
     private static void OpenContainingFolder(string absolutePath)
@@ -609,12 +893,20 @@ public partial class VersionControlPanel : UserControl
         SyncControls();
     }
 
-    /// <summary>メッセージ欄で Enter を押したら送信する（押せる状態のときだけ）。</summary>
+    /// <summary>
+    /// メッセージ欄のキー入力。
+    ///
+    /// <para>
+    /// 欄が複数行になったので、Enter は**改行**として素通しする。
+    /// 送信は Ctrl+Enter（手本の VS と同じ割り当て）。
+    /// </para>
+    /// </summary>
     /// <param name="sender">送信元。</param>
     /// <param name="e">キーイベント。</param>
     private void OnMessageKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter) return;
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control) return;
         if (!_state.CanSubmit) return;
 
         e.Handled = true;

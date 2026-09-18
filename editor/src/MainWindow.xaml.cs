@@ -1466,6 +1466,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SEEDEditor.Settings.EditorViewState.Flush();
         // プロジェクトパネルのタブ状態（開いている場所・展開・選択・スクロール）も同様
         PanelProject.FlushTabState();
+        // バージョン管理パネルの折りたたみ節（競合 / 変更 / ロック / 履歴）の開閉も同様
+        PanelVersionControl.FlushSectionState();
         ReleasePlayClamp();
         UninstallKeyboardHook();
         UninstallTerrainMouseHook();

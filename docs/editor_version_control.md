@@ -290,49 +290,117 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 
 ## 4.5 Version Control パネル（UI）
 
-### 4.5.1 ファイル一覧
+手本は **Visual Studio の「Git 変更」パネル**。並び（ブランチのコンボ → 未送信/未取得の 1 行 →
+メッセージ欄 → 主操作 → 折りたたみ節）と「変更をフォルダー階層のツリーで見せる」ところを
+そのまま借りている。借りなかったところは 4.5.4 に理由つきで書く。
+
+### 4.5.1 画面の並び
+
+| 位置 | 中身 |
+|---|---|
+| 1 | **ヘッダー** … 分岐アイコン ＋ ブランチのコンボ（末尾に「新しいブランチ…」）／ identity — リモート ／ 取得 ↓・送信 ↑・更新 ⟳・その他 … のアイコンボタン |
+| 2 | **未送信・未取得** … 「↑ 未送信… ↓ 未取得…」＋「すべての履歴を表示する」（履歴の節を開いて先頭へ） |
+| 3 | **メッセージ欄** … 複数行。プレースホルダは「メッセージを入力してください &lt;必須&gt;」。Enter は改行、**Ctrl+Enter で送信** |
+| 4 | **主操作** … 「送信」（`Seed.Button.Primary`）と「最新を取得」（通常）。`NeedsSync` のときは 2 つの書式が入れ替わる |
+| 5 | 実行中の不確定プログレス（中断ボタンは出さない） |
+| 6 | 結果の 1 行メッセージ（重大度で色分け） |
+| 7 | **折りたたみ節** … 競合 (n) / 変更 (n) / ロック (n) / 履歴 |
+
+「その他 …」メニューは「フォルダーで表示」「ロックをすべて解除」「アカウント…」。
+**アカウントの入口はここに移した**（ヘッダーに並ぶのは手本と同じ 4 つのアイコンだけにするため）。
+
+### 4.5.2 ファイル一覧
 
 | パス | 役割 |
 |---|---|
-| `editor/src/Panels/VersionControlPanel.xaml` | 画面（ダークテーマ・行テンプレート 4 種） |
-| `editor/src/Panels/VersionControlPanel.xaml.cs` | 生成・購読・状態の反映・ヘッダー・変更一覧・右クリック |
+| `editor/src/Panels/VersionControlPanel.xaml` | 画面（ダークテーマ・節の見出し書式・ツリーの行テンプレート） |
+| `editor/src/Panels/VersionControlPanel.xaml.cs` | 生成・購読・状態の反映・変更ツリー・右クリック |
+| `editor/src/Panels/VersionControlPanel.Sections.cs` | 折りたたみ節の開閉・見出し・高さ配分・保存 |
 | `editor/src/Panels/VersionControlPanel.Operations.cs` | 取得 / 送信 / 競合解決 / ブランチ / 履歴 / ロック |
-| `editor/src/Panels/VersionControl/ChangeRowItem.cs` | 変更一覧の行（見出し / ファイル） |
-| `editor/src/Panels/VersionControl/HistoryRowItem.cs` | 履歴タブの行 |
-| `editor/src/Panels/VersionControl/LockRowItem.cs` | ロックタブの行 |
-| `editor/src/Panels/VersionControl/ChangeRowTemplateSelector.cs` | 行テンプレートの振り分け |
+| `editor/src/Panels/VersionControlPanel.Accounts.cs` | identity 表示とアカウントのダイアログ |
+| `editor/src/Panels/VersionControl/ChangeTreeRowItem.cs` | 変更ツリーの行（インデント・アイコン・状態の 1 文字） |
+| `editor/src/Panels/VersionControl/ConflictRowItem.cs` | 競合節の行（2 択ボタンつき） |
+| `editor/src/Panels/VersionControl/HistoryRowItem.cs` | 履歴節の行 |
+| `editor/src/Panels/VersionControl/LockRowItem.cs` | ロック節の行 |
 | `editor/src/VersionControl/Presentation/VersionControlPanelState.cs` | **状態機械**（WPF 非依存・単体テスト済み） |
 | `editor/src/VersionControl/Presentation/VersionControlNotice.cs` | Outcome → 1 行メッセージ + 重大度 |
-| `editor/src/VersionControl/Presentation/ChangeListGroup.cs` | 競合を最上部へ束ねるグループ分け |
-| `editor/src/VersionControl/Presentation/VersionControlDisplay.cs` | 値 → 表示名・アイコンキー |
+| `editor/src/VersionControl/Presentation/ChangeListGroup.cs` | 競合と変更を分けるグループ分け |
+| `editor/src/VersionControl/Presentation/ChangeTreeNode.cs` | **パス群 → フォルダー階層のツリー** |
+| `editor/src/VersionControl/Presentation/ChangeTreeFlattener.cs` | ツリー → 見えている行（仮想化リスト用） |
+| `editor/src/VersionControl/Presentation/VersionControlSections.cs` | 節の見出し・表示可否・既定の開閉・保存キー |
+| `editor/src/VersionControl/Presentation/VersionControlSyncSummary.cs` | 前後関係 → 「未送信 / 未取得」の 1 行 |
+| `editor/src/VersionControl/Presentation/VersionControlDisplay.cs` | 値 → 表示名・アイコンキー・状態の 1 文字 |
+| `editor/src/VersionControl/VersionControlPanelStateStore.cs` | 節の開閉の保存（`editor/settings/version_control_panel_state.json`） |
 | `editor/src/VersionControl/WorkingCopyWatcher.cs` | 作業コピーの見張り → `RequestRefresh` |
 | `editor/src/Dialogs/TextInputWindow.cs` | 1 行入力のモーダル（ブランチ名） |
+| `editor/tests/VersionControlPanelPreviewProbe/` | 画面をオフスクリーン描画して PNG に落とす検証用コンソール |
 
-### 4.5.2 ビューとロジックを分ける理由
+### 4.5.3 ビューとロジックを分ける理由
 
-ボタンの有効条件（利用可能か / 実行中か / メッセージが空か / 競合が残っているか）と
-結果の見せ方は分岐が多いのに、**間違えてもビルドが通り、GUI を起動しないと見えない**。
-そこで判断は全部 `VersionControlPanelState`（WPF 非依存）へ出し、
-`editor/tests/VersionControlTests/PanelStateTests.cs` で全分岐を固定する。
+ボタンの有効条件（利用可能か / 実行中か / メッセージが空か / 競合が残っているか）、
+ツリーの組み立て、見出しの件数、状態の 1 文字は分岐が多いのに、
+**間違えてもビルドが通り、GUI を起動しないと見えない**。
+そこで判断は全部 `Presentation/`（WPF 非依存）へ出し、
+`editor/tests/VersionControlTests/PanelStateTests.cs` と `ChangeTreeTests.cs` で固定する。
 ビューがやるのは「状態を読んでコントロールへ写す」ことだけ（`SyncControls()`）。
 
-### 4.5.3 画面の約束
+### 4.5.4 手本から意図的に変えたところ
+
+| 手本（VS） | SEED | 理由 |
+|---|---|---|
+| 「↑↓ 3 / 1」と**件数**を出す | 「未送信あり / 未取得なし / 未確認」 | Lore が返すのは `is_local_ahead` / `is_remote_ahead` の **真偽値だけ**で件数を持たない（`LoreStatusRevisionRow`）。数を書けないのに書くと嘘になる |
+| 件数は常に出ている | オフライン取得中は「未確認」 | 前後関係は `ScanOnline` でしか分からない。「なし」と書くと送り忘れる |
+| 「修正（amend）」「スタッシュ」「関連する項目」 | 置かない | Lore に対応する概念が無い |
+| 「すべてをコミット ▾」 | 「送信」＋「最新を取得」の 2 つ | 中核層の語彙（2 章）をそのまま出す |
+| 画面全体が 1 本のスクロール | 節ごとに中身がスクロール | 全体スクロールだと「変更」の一覧が伸び切って**仮想化が効かなくなる**（数百〜数千件で固まる）。開いている節が高さを分け合う形にした |
+| ツリーは `TreeView` | **平坦化した仮想化 ListBox** | 同上。`ChangeTreeFlattener` が「見えている行」だけを作り、インデントと開閉ハンドルで木に見せる |
+
+### 4.5.5 画面の約束
 
 - **利用不可**（`.lore` が無い）… 操作 UI を出さず、案内だけを出す
-- **語彙** … stage / commit / push / sync を出さない。主操作は「最新を取得」「送信」の 2 つだけ
+- **語彙** … stage / commit / push / sync を出さない
 - **モーダル** … 取り返しのつかない操作の確認だけ（「リモートを採用」／未送信ありのブランチ切替）。
   必ず `Headless/EditorDialogs` 経由（ヘッドレスで UI スレッドが止まらないように）
 - **中断ボタンを出さない** … LoreVcs に実行中の操作を止める API が無い（3 章）。
   出しても止まらないので不確定プログレスだけにする
-- **競合** … 常に一覧の最上部の独立グループ。2 択の表示名は
-  `LoreConflictResolutionMap.ToDisplayName` から取り、文字列を直書きしない
+- **競合** … 常に最上部の独立した節。**0 件のときは節ごと隠す**（本当に競合したときの目立ち方を鈍らせない）。
+  2 択の表示名は `LoreConflictResolutionMap.ToDisplayName` から取り、文字列を直書きしない
 - **ロックの「不明」** … サーバ認証なしの構成では普通に起こる。異常扱いせず淡々と出し、
-  **不明なロックには解除ボタンを出さない**（他人の編集権を黙って奪わないため）
-- **一覧は 1 本の仮想化 ListBox** … 見出しと行を平坦に混ぜ、
-  `ChangeRowTemplateSelector` でテンプレートを振り分ける。
-  入れ子の ItemsControl にすると仮想化が効かず、変更数百件で固まる
+  **不明なロックには解除ボタンを出さない**（他人の編集権を黙って奪わないため）。
+  「ロックをすべて解除」も自分のロックだけを対象にする
+- **状態の 1 文字** … 行の右端に `A`（追加）/ `M`（変更）/ `D`（削除）/ `R`（移動）/ `C`（複製）/ `!`（競合）。
+  日本語の表示名はツールチップに回す（名前が長い行で列がガタつかないように）
+- **ボタンの色を画面側で決めない** … アイコンは `Seed.Button.Icon`、主操作は `Seed.Button.Primary`、
+  リンクは `Seed.Button.Link`（`docs/editor_ui_style.md`）。
+  `NeedsSync` の強調も**色を塗らずに書式を入れ替える**ことで表す
+- **開閉ハンドルはベクター** … 節の見出しもツリーも `App.xaml` の
+  `TreeExpanderClosedGeometry` / `TreeExpanderOpenGeometry`（白抜き三角）を使い回す。
+  `▷` `▽` のような記号文字は書かない（`.claude/rules/editor-icons.md`）
 
-### 4.5.4 自動更新
+### 4.5.6 節の開閉と、サーバ往復の抑え方
+
+- 既定は 競合＝開く / 変更＝開く / **ロックと履歴＝閉じる**。
+  ロックと履歴は開いたときにしかサーバへ問い合わせない
+  （パネルを出しただけで gRPC 往復が積み上がらないようにする）。
+- 開閉はプロジェクトごとに `editor/settings/version_control_panel_state.json` へ保存する。
+  保存キー（`conflicts` / `changes` / `locks` / `history`）は **変更禁止**
+  （変えると利用者の開閉状態が黙って失われる）。
+  書き込みはデバウンスし、終了時に `MainWindow` が `FlushSectionState()` で確実に書き出す。
+- 履歴はまず直近 `PANEL_HISTORY_PAGE_SIZE` 件だけを引き、「さらに読み込む」で伸ばす。
+  Lore は「残り何件か」を返さないので、**要求した上限ちょうど返ってきたとき**だけ
+  「さらに読み込む」を出す。
+- ツリーの畳み状態はセッション内だけで保存しない。畳んだ集合で持つので、
+  取得のたびに現れる新しいフォルダーは既定で開いた状態になる。
+
+### 4.5.7 状態取得のモード（どこがサーバに聞くか）
+
+| きっかけ | モード | 理由 |
+|---|---|---|
+| 保存・ファイル監視（自動） | `ScanOffline` | 通信しない。上段の未送信・未取得は「未確認」のまま |
+| ヘッダーの更新 ⟳ | **`ScanOnline`** | 未送信・未取得の有無はサーバに聞かないと分からない。利用者が明示的に押したときだけ払う |
+| 送信 / 最新を取得 / 競合解決 / ブランチ切替の直後 | **`ScanOnline`** | どれもサーバと往復した直後で、結果を上段へ正しく映すため |
+
+### 4.5.8 自動更新
 
 `WorkingCopyWatcher` がプロジェクトルートを監視し、変化があれば
 `VersionControlService.RequestRefresh(ScanOffline)` を呼ぶ（デバウンスはサービス側が持つ）。
@@ -343,12 +411,31 @@ Lore は一般的な失敗に `-1` を返す（分岐による push 拒否も `-
 内容の書き換え（LastWrite）を拾わないため相乗りできない。
 あちらの `NotifyFilter` を広げるとファイルグリッドが毎回再構築されて挙動が変わる。
 
-### 4.5.5 ドッキング
+### 4.5.9 ドッキング
 
 `ContentId = "version_control"`（**変更禁止**）。既定では Project / Output と同じ下段。
 旧 `layout.xml` にはこのパネルが無いため `EnsureAnchorable` が補完するが、
 既定の「最初に見つかったペイン」では左ペインに入ってしまうので、
 `siblingContentId: "output"` を渡して**下段へ入れている**。
+
+### 4.5.10 見た目の自動確認（PNG）
+
+パネルは GUI を起動しないと見えないので、`editor/tests/VersionControlPanelPreviewProbe` が
+**ウィンドウを出さずに**実物の XAML を組み立て、各状態を PNG へ書き出す。
+
+```bash
+dotnet run --project editor/tests/VersionControlPanelPreviewProbe -- --out <出力先>
+# changes / conflicts / locks / history / clean / unavailable の 6 枚
+```
+
+- 偽のプロバイダは `VersionControlService.UseProviderForVerification`（**検証専用の入口**）で据える。
+  Lore にもサーバにも一切触れない。
+- `Loaded` は「表示されたとき」に飛ぶ routed event なので、プローブが手で発火させて
+  パネル本来の初期化経路を通す。
+- プローブが起動アセンブリになるため、`App.xaml` の中の相対 pack URI
+  （`resources/icons/Icons.xaml` など）の探索先を本体アセンブリへ向け直している
+  （`ResourceAssemblyInitializer`）。向け直しに失敗すると
+  「アイコンも共通書式も無い PNG」になるので、必ず警告を出すようにしてある。
 
 ---
 
