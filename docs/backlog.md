@@ -1233,8 +1233,14 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   わらしべフィッシングの現行データは `prefab_hash` を持たないので未発生。
 - [ ] **旧 enum 表記の `alias` は削除候補** — 2026-09-18。全員が一括アップグレードを取り込んだ後に消す:
   `particle_emitter_component.rs:159,162,288`、`canvas_component.rs:37`。`ParticleBlend::from_str_opt` の旧名受理は IPC 経路なので別判断。
-- [ ] **M2 の残り（ランタイム側 M2a は 2026-09-18 に完了）**: エディタからの一括アップグレード（メニュー・結果表示）と
-  C# の書き手の刻印・`--migrate-json` の利用・`.inputmap` の C# 側二重実装の削除・C# 側の書き込みの原子化（M2b、実装中）。
+- [ ] **M2 完了（2026-09-18: M2a ランタイム a8c8575f、M2b エディタ bd6067e4）の残件**:
+  `SceneSettingsData.cs` / `FishCatalogGenerator.cs` / `AssetCollector.cs` はまだ門を通っていない（Rust の変換を素通しする C# 読み手。
+  読むキーが変換対象になったら同じコミットで直す）／`engine_version` の不一致ダイアログから形式アップグレードへの導線／
+  `chunk_config.json` が版の仕組みに未搭載で `File.WriteAllText` のまま／`MigrateJsonRunner.Run` は同期で UI を最大 30 秒止めうる
+  （古いファイルを開いたときのみ）／アップグレードダイアログの一覧は 200 行で打ち切り／一括ゲートは全パスを 1 回で照会するため
+  数千ファイルで 5 秒の期限に掛かる可能性（分割照会は未実装）。
+- [ ] **`.inputmap` の v1 → v2 が Rust 一本になった回帰リスク** — 2026-09-18。ランタイム exe が未ビルドの構成では v1 の `.inputmap` を
+  開けない（黙って空で開かないことはテストで固定）。一括アップグレードを 1 回通せば以後は起きない。
 - [ ] **`.tvox` の `safe_write` 化（3 か所）** — 2026-09-18。`app/terrain_ops.rs:4704, 4789, 4881`。同ファイルに別セッションの未コミット
   変更があるため見送り。`.tcover` / `.tscatter` と同じく `safe_write::write_atomic`（世代なし）へ寄せるだけ。
 - [ ] **独自の版機構のままの形式** — 2026-09-18。`terrain_meta.json` / `.tvox` / `.tcover` / `.tscatter` / `.seedproj` / シェーディング WGSL は
