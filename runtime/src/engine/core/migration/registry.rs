@@ -50,6 +50,11 @@ pub const STEPS: &[StepEntry] = &[
         from_version: 1,
         func: steps::actor::v1_to_v2::migrate,
     },
+    StepEntry {
+        kind: FormatKind::InputMap,
+        from_version: 1,
+        func: steps::inputmap::v1_to_v2::migrate,
+    },
 ];
 
 /// `(形式, 変換元の版)` に対応する変換関数を返す。未登録なら `None`。
@@ -125,9 +130,13 @@ mod tests {
     fn lookup_returns_registered_steps_only() {
         assert!(lookup(FormatKind::Scene, 1).is_some());
         assert!(lookup(FormatKind::Actor, 1).is_some());
+        assert!(lookup(FormatKind::InputMap, 1).is_some());
         // 現行版からの段は無い
         assert!(lookup(FormatKind::Scene, FormatKind::Scene.current_version()).is_none());
         // 0 版という概念は無い
         assert!(lookup(FormatKind::Actor, 0).is_none());
+        // 実変換が無い形式（現行版 1）には段が 1 つも無い
+        assert!(lookup(FormatKind::Anim, 1).is_none());
+        assert!(lookup(FormatKind::ProjectSettings, 1).is_none());
     }
 }

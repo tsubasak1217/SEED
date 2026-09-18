@@ -19,7 +19,10 @@
 //  同じリニア値を返すため、スプライト描画は元テクスチャと同一挙動になる。
 // ============================================================
 
-mod asset;
+// `.postfx` の読み込み入口はマイグレーション層（`core::migration::upgrade::canonical`）
+// からも検証に使うため公開する。ここを private に戻すと一括アップグレードが
+// 「.postfx として読めるか」を確かめられなくなる。
+pub mod asset;
 mod bake;
 
 pub use bake::{SpritePostfxCache, resolve_baked};

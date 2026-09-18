@@ -645,8 +645,20 @@ impl TerrainPropSet {
     /// 切り詰める（データ差し替えでの試行錯誤を止めないため、エラーにはしない）。
     /// プロップが 1 つも無い場合は既定セットへフォールバックする
     /// （props.json を空にしても地形が丸裸にならないための規約）。
-    pub fn from_json_str(s: &str) -> Result<Self, serde_json::Error> {
-        let mut set: TerrainPropSet = serde_json::from_str(s)?;
+    ///
+    /// 【版の扱い】
+    /// `props.json` はマイグレーション機構（`core::migration`）に載っており、
+    /// **ここが唯一の読み込み入口**である。版の欄（`format_version`）が無いファイルは
+    /// v1 とみなし、現行版より新しいファイルは読み込みを拒否する。
+    /// 書き手はエディタ（C#）なので、版の刻印はエディタ側の責務。
+    ///
+    /// 失敗理由は人が読む文字列で返す（版の拒否と JSON 解析の失敗を同じ型で扱うため）。
+    pub fn from_json_str(s: &str) -> Result<Self, String> {
+        let mut set: TerrainPropSet = crate::engine::core::migration::load_json(
+            crate::engine::core::migration::FormatKind::TerrainProps,
+            s,
+        )
+        .map_err(|e| e.to_string())?;
         set.props.truncate(TERRAIN_MAX_PROPS);
         if set.props.is_empty() {
             set = Self::default();

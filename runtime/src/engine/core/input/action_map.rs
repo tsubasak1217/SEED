@@ -4,8 +4,12 @@
 //  役割（単一責任）:
 //    - .inputmap（JSON, v2）を serde でパースし、PC のバインディング
 //      （Key / GamepadButton / GamepadAxis）を評価可能な形へ解決する。
-//    - v1（version 欠落）を読み込んだ場合は内部で v2 へ移行する（後方互換）。
 //    - アクションを Bool / Axis1D / Axis2D で評価する。
+//
+//  v1（version 欠落）→ v2 の移行は**このファイルでは行わない**。
+//  マイグレーション機構の変換段（core::migration::steps::inputmap::v1_to_v2）が
+//  JSON のまま持ち上げ、ここへは常に v2 の形で届く。
+//  （変換をランタイム 1 か所へ集約する方針。docs/asset_migration.md 1 章）
 //
 //  スキーマ v2 の要点:
 //    - value_type: 0=Bool / 1=Axis1D / 2=Axis2D。
@@ -43,12 +47,9 @@ const INPUT_TYPE_KEY: &str = "Key";
 const INPUT_TYPE_GAMEPAD_BUTTON: &str = "GamepadButton";
 /// 入力種別: ゲームパッド軸（アナログ）。
 const INPUT_TYPE_GAMEPAD_AXIS: &str = "GamepadAxis";
-/// 入力種別: WASD 合成軸（v1 のみ。v2 移行時に正負バインドへ展開する）。
-const INPUT_TYPE_WASD: &str = "WASD";
-/// WASD 軸の値: 水平。
-const WASD_HORIZONTAL: &str = "Horizontal";
-/// WASD 軸の値: 垂直。
-const WASD_VERTICAL: &str = "Vertical";
+// 入力種別 `WASD`（v1 の合成軸）とその値 `Horizontal` / `Vertical` は、
+// v1 → v2 の変換段（`core::migration::steps::inputmap::v1_to_v2`）だけが扱う。
+// 変換を通った後のデータに `WASD` は残らないため、ここには定数を置かない。
 
 /// アクション値の型（エディタ ActionValueType と数値一致）。
 const VALUE_TYPE_BOOL: i32 = 0;
@@ -341,9 +342,22 @@ impl ActionMap {
         Self { actions: Vec::new() }
     }
 
-    /// JSON 文字列をパースして ActionMap を構築する（v2。version 欠落は v1 として移行）。
+    /// JSON 文字列をパースして ActionMap を構築する。
+    ///
+    /// 【版の扱い】
+    /// v1 → v2 の移行は**マイグレーション機構の変換段**
+    /// （`core::migration::steps::inputmap::v1_to_v2`）が JSON の上で行う。
+    /// ここへ来た時点でデータは必ず v2 の形（軸は正負グループ）になっているので、
+    /// 本関数は v2 の読み取りだけを行う。版の欄（`version`）が無いファイルは v1 とみなし、
+    /// 現行版より新しいファイルは読み込みを拒否して空マップになる。
+    ///
+    /// 失敗は 1 行のログを出して空マップを返す（入力が効かなくなるだけで、
+    /// ゲーム自体は起動できるほうが調査しやすい）。
     pub fn parse(json: &str) -> Self {
-        let raw: RawFile = match serde_json::from_str(json) {
+        let raw: RawFile = match crate::engine::core::migration::load_json(
+            crate::engine::core::migration::FormatKind::InputMap,
+            json,
+        ) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("[SEED script] InputMap パース失敗: {e}");
@@ -353,6 +367,20 @@ impl ActionMap {
 
         let actions = raw.actions.into_iter().map(resolve_action).collect();
         Self { actions }
+    }
+
+    /// `.inputmap` のテキストが読めるかだけを確かめる（構築はしない）。
+    ///
+    /// 一括アップグレード（`core::migration::upgrade`）が「変換後のファイルを
+    /// エンジンが読めるか」を検証するために使う。`parse` は失敗を握りつぶして
+    /// 空マップを返す仕様なので、検証用にはこちらを使うこと。
+    pub fn validate_json(json: &str) -> Result<(), String> {
+        crate::engine::core::migration::load_json::<RawFile>(
+            crate::engine::core::migration::FormatKind::InputMap,
+            json,
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// 名前一致のアクションを引く。
@@ -492,12 +520,17 @@ fn normalize_if_long(x: f32, y: f32) -> [f32; 2] {
     }
 }
 
-// ─── アクション解決（v2 パース + v1 移行）─────────────────────
+// ─── アクション解決（v2 のみ）────────────────────────────────
 
 /// 生アクションを解決済み Action へ変換する。
 ///
 /// value_type に応じて適切な v2 フィールド（bindings / positive・negative / x・y）を読む。
-/// さらに `bindings` に残る v1 バインド（Key / WASD）を型に応じて移行する。
+///
+/// 【v1 の移行はここにはもう無い】
+/// `bindings` に合成軸（WASD）や素のキーを詰めていた v1 の形は、
+/// 読み込みの手前で `core::migration::steps::inputmap::v1_to_v2` が
+/// JSON のまま v2 の形へ直す。変換をランタイム 1 か所へ集約するための構成で、
+/// ここに移行処理を書き戻すと「変換が 2 か所にある」状態へ逆戻りする。
 fn resolve_action(a: RawAction) -> Action {
     let value_type = ValueType::from_i32(a.value_type);
 
@@ -508,21 +541,17 @@ fn resolve_action(a: RawAction) -> Action {
             ActionBody::Bool { bindings, condition: Condition::from_opt(&a.condition) }
         }
         ValueType::Axis1D => {
-            let mut positive: Vec<Source> = a.positive.iter().filter_map(resolve_source).collect();
-            let mut negative: Vec<Source> = a.negative.iter().filter_map(resolve_source).collect();
-            // v1 移行: bindings 内の WASD / Key を正負へ展開する。
-            migrate_axis1d_bindings(&a.bindings, &mut positive, &mut negative);
+            let positive: Vec<Source> = a.positive.iter().filter_map(resolve_source).collect();
+            let negative: Vec<Source> = a.negative.iter().filter_map(resolve_source).collect();
             ActionBody::Axis1D { positive, negative }
         }
         ValueType::Axis2D => {
             let x = a.x.unwrap_or_default();
             let y = a.y.unwrap_or_default();
-            let mut x_pos: Vec<Source> = x.positive.iter().filter_map(resolve_source).collect();
-            let mut x_neg: Vec<Source> = x.negative.iter().filter_map(resolve_source).collect();
-            let mut y_pos: Vec<Source> = y.positive.iter().filter_map(resolve_source).collect();
-            let mut y_neg: Vec<Source> = y.negative.iter().filter_map(resolve_source).collect();
-            // v1 移行: bindings 内の WASD を x/y の正負へ展開する。
-            migrate_axis2d_bindings(&a.bindings, &mut x_pos, &mut x_neg, &mut y_pos, &mut y_neg);
+            let x_pos: Vec<Source> = x.positive.iter().filter_map(resolve_source).collect();
+            let x_neg: Vec<Source> = x.negative.iter().filter_map(resolve_source).collect();
+            let y_pos: Vec<Source> = y.positive.iter().filter_map(resolve_source).collect();
+            let y_neg: Vec<Source> = y.negative.iter().filter_map(resolve_source).collect();
             ActionBody::Axis2D { x_pos, x_neg, y_pos, y_neg, normalize: a.normalize }
         }
     };
@@ -549,73 +578,9 @@ fn resolve_source(b: &RawBinding) -> Option<Source> {
             axis,
             dead_zone: b.dead_zone.unwrap_or(DEFAULT_DEAD_ZONE),
         }),
-        // WASD は移行ヘルパー、その他（VirtualButton 等）は基盤なしのため無視。
+        // v1 の合成軸 `WASD` は変換段が展開済みなのでここには来ない。
+        // その他（VirtualButton 等）は基盤なしのため無視。
         _ => None,
-    }
-}
-
-/// v1 の Axis1D バインド（bindings）を正負グループへ移行する。
-///
-/// - WASD Horizontal → positive += [D, →], negative += [A, ←]。
-/// - WASD Vertical   → positive += [W, ↑], negative += [S, ↓]。
-/// - 素の Key        → positive（v1 の「Key 押下で +1」挙動を維持）。
-fn migrate_axis1d_bindings(bindings: &[RawBinding], positive: &mut Vec<Source>, negative: &mut Vec<Source>) {
-    for b in bindings {
-        if b.platform != PLATFORM_PC {
-            continue;
-        }
-        match b.input_type.as_str() {
-            INPUT_TYPE_WASD => expand_wasd(&b.value, positive, negative),
-            INPUT_TYPE_KEY => {
-                if let Some(k) = key_from_name(&b.value) {
-                    positive.push(Source::Key(k));
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// v1 の Axis2D バインド（bindings）を x/y の正負グループへ移行する。
-///
-/// - WASD Horizontal → x（D/→ 正, A/← 負）。
-/// - WASD Vertical   → y（W/↑ 正, S/↓ 負）。
-/// - 素の Key は v1 の eval_vector2 が無視していたため移行しない。
-fn migrate_axis2d_bindings(
-    bindings: &[RawBinding],
-    x_pos: &mut Vec<Source>,
-    x_neg: &mut Vec<Source>,
-    y_pos: &mut Vec<Source>,
-    y_neg: &mut Vec<Source>,
-) {
-    for b in bindings {
-        if b.platform != PLATFORM_PC || b.input_type != INPUT_TYPE_WASD {
-            continue;
-        }
-        match b.value.as_str() {
-            WASD_HORIZONTAL => expand_wasd(WASD_HORIZONTAL, x_pos, x_neg),
-            WASD_VERTICAL => expand_wasd(WASD_VERTICAL, y_pos, y_neg),
-            _ => {}
-        }
-    }
-}
-
-/// WASD 合成軸を正負のキーソースへ展開する（矢印キーも同時に有効）。
-fn expand_wasd(value: &str, positive: &mut Vec<Source>, negative: &mut Vec<Source>) {
-    match value {
-        WASD_HORIZONTAL => {
-            positive.push(Source::Key(KeyCode::KeyD));
-            positive.push(Source::Key(KeyCode::ArrowRight));
-            negative.push(Source::Key(KeyCode::KeyA));
-            negative.push(Source::Key(KeyCode::ArrowLeft));
-        }
-        WASD_VERTICAL => {
-            positive.push(Source::Key(KeyCode::KeyW));
-            positive.push(Source::Key(KeyCode::ArrowUp));
-            negative.push(Source::Key(KeyCode::KeyS));
-            negative.push(Source::Key(KeyCode::ArrowDown));
-        }
-        _ => {}
     }
 }
 

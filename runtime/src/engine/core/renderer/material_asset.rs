@@ -129,8 +129,13 @@ pub fn default_mat_json() -> String {
         shading_model: crate::engine::core::renderer::surface_id::SHADING_MODEL_DEFAULT_PBR,
         textures:     MatTextures::default(),
     };
-    // pretty JSON（人手編集・diff レビューのしやすさを優先）
-    serde_json::to_string_pretty(&asset).unwrap_or_default()
+    // pretty JSON（人手編集・diff レビューのしやすさを優先）＋先頭に現行の format_version。
+    // 雛形の正典なので、エディタ（C#）が真似して書けるよう版の欄も含めておく。
+    crate::engine::core::migration::to_stamped_pretty_json(
+        crate::engine::core::migration::FormatKind::Material,
+        &asset,
+    )
+    .unwrap_or_default()
 }
 
 /// `.mat` の alpha_mode 文字列を `AlphaMode` へ変換する。
@@ -228,6 +233,13 @@ fn cache() -> &'static Mutex<HashMap<String, Arc<MaterialAsset>>> {
 /// - 無ければ `asset_fs` 経由で読み込み（仮想パス assets:// / PAK 対応）、
 ///   JSON パースに成功したらキャッシュへ登録して返す。
 /// - 読み込み・パース失敗時は `None`（呼び出し元はオーバーライド適用をスキップする）。
+///
+/// 【版の扱い】
+/// `.mat` はマイグレーション機構（`core::migration`）に載っており、
+/// **ここが `.mat` を読む唯一の入口**である。版の欄（`format_version`）が無いファイルは
+/// v1 とみなし、現行版より新しいファイルは読み込みを拒否する（`None` になる）。
+/// 書き手はエディタ（C#）なので、版の刻印はエディタ側の責務
+/// （docs/asset_migration.md「エディタ側の実装メモ」）。
 pub fn load(path: &str) -> Option<Arc<MaterialAsset>> {
     if let Some(cached) = cache().lock().ok().and_then(|c| c.get(path).cloned()) {
         return Some(cached);
@@ -242,7 +254,10 @@ pub fn load(path: &str) -> Option<Arc<MaterialAsset>> {
         }
     };
 
-    let asset: MaterialAsset = match serde_json::from_str(&text) {
+    let asset: MaterialAsset = match crate::engine::core::migration::load_json(
+        crate::engine::core::migration::FormatKind::Material,
+        &text,
+    ) {
         Ok(a)  => a,
         Err(e) => {
             eprintln!("[SEED material_asset] .mat パース失敗: path={path:?} err={e}");

@@ -491,24 +491,13 @@ pub(super) fn prefab_content_hash(src: &str) -> Option<String> {
     crate::engine::asset_fs::read_string(src).ok().map(|raw| content_hash(&raw))
 }
 
-// ── 内容ハッシュ（FNV-1a 64bit）─────────────────────────────────────────────
-//  暗号学的強度は不要（衝突しても「更新に気付かない」だけで破壊は起きない）。外部
-//  クレートを増やさず、C# エディタ側でも数行で同じ値を再現できることを優先して
-//  FNV-1a を採用する。定数は FNV の規格値。
-/// FNV-1a 64bit のオフセット基底（規格値）。
-const FNV_OFFSET_BASIS_64: u64 = 0xcbf2_9ce4_8422_2325;
-/// FNV-1a 64bit の素数（規格値）。
-const FNV_PRIME_64: u64 = 0x0000_0100_0000_01b3;
-
-/// 文字列の内容ハッシュを 16 桁の 16 進数文字列で返す（FNV-1a 64bit）。
-fn content_hash(text: &str) -> String {
-    let mut hash = FNV_OFFSET_BASIS_64;
-    for byte in text.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME_64);
-    }
-    format!("{hash:016x}")
-}
+// ── 内容ハッシュ ───────────────────────────────────────────────────────────
+//  実装は `core::app_base::prefab_hash`（FNV-1a 64bit）に 1 か所だけ置いてある。
+//  一括アップグレード後の `prefab_hash` 貼り直し
+//  （`core::migration::upgrade::prefab_rehash`）も同じ関数を使う。
+//  片方だけアルゴリズムが変わると全インスタンスが一斉に stale 表示になるため、
+//  ここでは再実装せず再輸出する。
+use crate::engine::core::app_base::prefab_hash::content_hash;
 
 /// 1 つのプレハブインスタンス `slot` を、参照先ファイルの内容で再展開する（in place 置換）。
 ///
@@ -692,7 +681,8 @@ mod tests {
         assert_eq!(a.len(), 16, "常に 16 桁（64bit の 16 進数）であること");
         assert!(a.chars().all(|ch| ch.is_ascii_hexdigit()), "16 進数の文字だけであること");
         // 空文字は FNV-1a のオフセット基底そのもの（規格どおりであることの固定値検証）。
-        assert_eq!(content_hash(""), format!("{FNV_OFFSET_BASIS_64:016x}"));
+        // 実装は `core::app_base::prefab_hash` にあり、規格値の検証はそちらでも行っている。
+        assert_eq!(content_hash(""), "cbf29ce484222325");
     }
 
     /// 版ずれ集計が「stale / unknown / total」を参照パスごとに正しく数えることを確認する。

@@ -48,6 +48,12 @@ const CASES: &[GoldenCase] = &[
         before: include_str!("../../../../tests/fixtures/migration/actor/v1.actor"),
         after: include_str!("../../../../tests/fixtures/migration/actor/v2.actor"),
     },
+    GoldenCase {
+        kind: FormatKind::InputMap,
+        label: "inputmap v1 → v2（合成軸 WASD の正負グループ展開）",
+        before: include_str!("../../../../tests/fixtures/migration/inputmap/v1.inputmap"),
+        after: include_str!("../../../../tests/fixtures/migration/inputmap/v2.inputmap"),
+    },
 ];
 
 /// 変換前の見本を現行版まで持ち上げると、期待結果の見本と一致すること。
@@ -109,37 +115,43 @@ fn after_fixture_is_already_up_to_date() {
     }
 }
 
-/// 変換後の見本が、本体のデシリアライズを通せること。
+/// 変換後の見本が、**エンジンの本体の型として読める**こと。
 ///
 /// 「JSON としては直ったが、エンジンが読めない形になっていた」を防ぐ。
-/// アクタは `ActorData` で、シーンは `actors` 配列を `Vec<ActorData>` として検証する
-/// （`SceneData` は `scene.rs` の内部型なのでここからは触れない）。
+/// 検証そのものは一括アップグレードが使うのと同じ `upgrade::canonical::render_or_validate`
+/// に任せる（形式ごとの本体の型を知っているのはそちらの 1 か所だけ、という構成を保つため）。
 #[test]
-fn converted_fixture_deserializes_into_actor_data() {
-    use crate::engine::structs::objects::actor::ActorData;
+fn converted_fixture_is_readable_by_the_engine() {
+    use super::upgrade::canonical;
 
     for case in CASES {
         let mut value: Value = serde_json::from_str(case.before).expect("変換前の見本");
         runner::migrate_to_current(case.kind, &mut value).expect("変換");
 
-        match case.kind {
-            FormatKind::Actor => {
-                serde_json::from_value::<ActorData>(value).unwrap_or_else(|e| {
-                    panic!("{}: 変換後の見本が ActorData として読めない: {e}", case.label)
-                });
-            }
-            FormatKind::Scene => {
-                let actors = value
-                    .get_mut("actors")
-                    .map(Value::take)
-                    .expect("シーンの見本には actors がある");
-                serde_json::from_value::<Vec<ActorData>>(actors).unwrap_or_else(|e| {
-                    panic!(
-                        "{}: 変換後の見本のアクタが ActorData として読めない: {e}",
-                        case.label
-                    )
-                });
-            }
+        canonical::render_or_validate(case.kind, value).unwrap_or_else(|e| {
+            panic!("{}: 変換後の見本をエンジンが読めない: {e}", case.label)
+        });
+    }
+}
+
+/// 実変換を持たない形式（現行版 1）は、見本が無くても連鎖が空で成功すること。
+///
+/// 「版の欄を読む・未来版を拒否する・保存で刻む」だけの形式が、
+/// 表に足しただけで壊れていないか（段の欠落で落ちないか）を確かめる。
+#[test]
+fn version_only_formats_migrate_without_any_step() {
+    for kind in FormatKind::ALL.iter().copied() {
+        if kind.current_version() != super::kind::IMPLICIT_FIRST_VERSION {
+            continue;
         }
+        let mut value: Value = serde_json::json!({ "anything": 1 });
+        let report = runner::migrate_to_current(kind, &mut value)
+            .unwrap_or_else(|e| panic!("{kind}: 欄なしのファイルが変換できない: {e}"));
+        assert!(!report.changed(), "{kind}: 段が走ってはいけない");
+        assert_eq!(
+            value[kind.version_key()],
+            serde_json::json!(kind.current_version()),
+            "{kind}: 版の欄が刻まれていない"
+        );
     }
 }

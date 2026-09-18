@@ -16,16 +16,18 @@ pub static NvOptimusEnablement: u32 = 1;
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
 fn main() {
-    // プロジェクトの一括アップグレード（`--upgrade-project <パス> [--dry-run]`）。
+    // アセット形式のマイグレーション系サブコマンド。
+    //   - `--upgrade-project <パス> [--dry-run]` … プロジェクト配下の一括アップグレード
+    //   - `--migrate-json <kind>`                … 標準入力の JSON 1 件を現行版へ変換
     //
     // 【なぜ最初に見るのか】
     //   1. ウィンドウも GPU も初期化せずに終わる経路にするため。描画資源を一切作らないので、
     //      エディタが起動中の環境でも安全に走らせられる。
-    //   2. 結果は 1 行 1 件の JSON を**標準出力**へ出す約束なので、
-    //      startup_log の標準出力差し替え（配布パッケージ実行時）より前に済ませる。
+    //   2. 結果を**標準出力**へ出す約束なので、startup_log の標準出力差し替え
+    //      （配布パッケージ実行時）より前に済ませる。
     //      ここを通るのは開発者／エディタからの明示的な実行だけで、通常起動には影響しない。
     if let Some(code) =
-        engine::core::migration::upgrade::run_cli_if_requested(&std::env::args().collect::<Vec<_>>())
+        engine::core::migration::cli::run_if_requested(&std::env::args().collect::<Vec<_>>())
     {
         std::process::exit(code);
     }

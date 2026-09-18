@@ -387,8 +387,20 @@ impl CoverMaterialSet {
     ///
     /// 上限を超えた定義は切り詰め、各素材の値は安全な範囲へ丸める。
     /// パースに失敗した場合のみ `Err`（呼び出し側は既定セットへ落とす）。
-    pub fn from_json_str(text: &str) -> Result<Self, serde_json::Error> {
-        let mut set: Self = serde_json::from_str(text)?;
+    ///
+    /// 【版の扱い】
+    /// `cover_materials.json` はマイグレーション機構（`core::migration`）に載っており、
+    /// **ここが唯一の読み込み入口**である。版の欄（`format_version`）が無いファイルは
+    /// v1 とみなし、現行版より新しいファイルは読み込みを拒否する。
+    /// 書き手はエディタ（C#）なので、版の刻印はエディタ側の責務。
+    ///
+    /// 失敗理由は人が読む文字列で返す（版の拒否と JSON 解析の失敗を同じ型で扱うため）。
+    pub fn from_json_str(text: &str) -> Result<Self, String> {
+        let mut set: Self = crate::engine::core::migration::load_json(
+            crate::engine::core::migration::FormatKind::TerrainCoverMaterials,
+            text,
+        )
+        .map_err(|e| e.to_string())?;
         set.materials.truncate(TERRAIN_MAX_COVER_MATERIALS);
         for m in set.materials.iter_mut() {
             m.sanitize();

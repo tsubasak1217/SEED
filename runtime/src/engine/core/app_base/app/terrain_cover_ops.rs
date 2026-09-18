@@ -1399,7 +1399,15 @@ impl App {
                 continue;
             }
             let bytes = write_cover_chunk(field, coord);
-            match std::fs::write(&path, &bytes) {
+            // 書き込みは `safe_write::write_atomic`（`.tmp` へ書き切って rename）を通す。
+            // 素の `std::fs::write` は途中で落ちると**中身が半分のチャンク**を残し、
+            // 次回ロードでそのチャンクのカバーが失われる。
+            //
+            // **世代バックアップ（`.backup/`）は取らない**。カバーは 1 チャンクごとの
+            // バイナリで、地形 1 面ぶんで数百ファイル・数十 MB になる。保存のたびに
+            // 世代を複製するとプロジェクトが肥大化し、VCS の転送量も跳ね上がる。
+            // 原子的置換だけで「書き損じで壊れる」事故は防げるので、それで十分とする。
+            match crate::engine::core::app_base::safe_write::write_atomic(&path, &bytes) {
                 Ok(()) => written += 1,
                 Err(e) => eprintln!("[SEED terrain] tcover save failed: {path:?} err={e}"),
             }

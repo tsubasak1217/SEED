@@ -83,8 +83,20 @@ impl PostfxAsset {
     ///
     /// 各エフェクトの `type` を見て手動でディスパッチし、未知 type は警告してスキップする。
     /// 各フィールドは欠落時にデフォルト値を使う（全 serde default 相当）。
-    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
-        let raw: PostfxAssetRaw = serde_json::from_str(text)?;
+    ///
+    /// 【版の扱い】
+    /// `.postfx` はマイグレーション機構（`core::migration`）に載っており、
+    /// **ここが `.postfx` を読む唯一の入口**である。版の欄（`format_version`）が無い
+    /// ファイルは v1 とみなし、現行版より新しいファイルは読み込みを拒否する。
+    /// 書き手はエディタ（C#）なので、版の刻印はエディタ側の責務。
+    ///
+    /// 失敗理由は人が読む文字列で返す（版の拒否と JSON 解析の失敗を同じ型で扱うため）。
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        let raw: PostfxAssetRaw = crate::engine::core::migration::load_json(
+            crate::engine::core::migration::FormatKind::Postfx,
+            text,
+        )
+        .map_err(|e| e.to_string())?;
         let mut effects = Vec::with_capacity(raw.effects.len());
         for v in &raw.effects {
             // "type" 文字列を取り出す（無ければスキップ）。
@@ -147,7 +159,13 @@ pub fn default_postfx_json() -> String {
             { "type": "tint",     "color": [1.0, 0.95, 0.9, 1.0] }
         ]
     });
-    serde_json::to_string_pretty(&out).unwrap_or_default()
+    // 先頭に現行の format_version を刻む。雛形の正典なので、
+    // エディタ（C#）が真似して書けるよう版の欄も含めておく。
+    crate::engine::core::migration::to_stamped_pretty_json(
+        crate::engine::core::migration::FormatKind::Postfx,
+        &out,
+    )
+    .unwrap_or_default()
 }
 
 // ============================================================

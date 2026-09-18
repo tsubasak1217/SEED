@@ -94,15 +94,22 @@ pub struct UpgradeTarget {
 /// - ドットで始まるフォルダ（`.backup` など）は中へ入らない
 /// - 結果はパスの昇順（レポートの並びを実行ごとに安定させるため）
 /// - 読めないフォルダは黙って飛ばす（1 つの権限エラーで全体を止めない）
+///
+/// 形式の判定は**アセットルート相対パス**で行う。拡張子が `.json` の形式
+/// （`terrain/layers.json` / `project_settings.json` など）は置き場所でしか
+/// 見分けられないため、ファイル名だけでは判定しない。
 pub fn collect_targets(assets_root: &Path) -> Vec<UpgradeTarget> {
     let mut found = Vec::new();
-    collect_recursive(assets_root, &mut found);
+    collect_recursive(assets_root, assets_root, &mut found);
     found.sort_by(|a, b| a.path.cmp(&b.path));
     found
 }
 
 /// `collect_targets` の再帰本体。
-fn collect_recursive(dir: &Path, out: &mut Vec<UpgradeTarget>) {
+///
+/// * `assets_root` … 形式判定に使う相対パスの基準（再帰しても変わらない）
+/// * `dir`         … 今見ているフォルダ
+fn collect_recursive(assets_root: &Path, dir: &Path, out: &mut Vec<UpgradeTarget>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -115,13 +122,19 @@ fn collect_recursive(dir: &Path, out: &mut Vec<UpgradeTarget>) {
             if is_hidden_dir(&path) {
                 continue;
             }
-            collect_recursive(&path, out);
+            collect_recursive(assets_root, &path, out);
         } else if file_type.is_file() {
-            if let Some(kind) = FormatKind::from_path(&path) {
+            if let Some(kind) = kind_of(assets_root, &path) {
                 out.push(UpgradeTarget { path, kind });
             }
         }
     }
+}
+
+/// アセットルート相対パスからファイルの形式を判定する。対象外なら `None`。
+pub fn kind_of(assets_root: &Path, path: &Path) -> Option<FormatKind> {
+    let relative = path.strip_prefix(assets_root).ok()?;
+    FormatKind::from_asset_relative_path(&relative.to_string_lossy())
 }
 
 /// フォルダ名がドットで始まるか（列挙から外す対象か）。
@@ -222,6 +235,76 @@ mod tests {
         );
         assert_eq!(targets[0].kind, FormatKind::Actor);
         assert_eq!(targets[2].kind, FormatKind::Scene);
+
+        fs::remove_dir_all(assets.parent().unwrap()).ok();
+    }
+
+    /// 拡張子で見分けられない形式は**置き場所**で拾い、同名の無関係ファイルは拾わないこと。
+    #[test]
+    fn collects_json_formats_by_location_only() {
+        let assets = temp_dir("collect_json").join(ASSETS_DIR_NAME);
+        fs::create_dir_all(assets.join("terrain")).unwrap();
+        fs::create_dir_all(assets.join("ui")).unwrap();
+
+        fs::write(assets.join("project_settings.json"), "{}").unwrap();
+        fs::write(assets.join("terrain/layers.json"), "{}").unwrap();
+        fs::write(assets.join("terrain/props.json"), "{}").unwrap();
+        fs::write(assets.join("terrain/cover_materials.json"), "{}").unwrap();
+        // 置き場所が違う同名ファイル・地形フォルダの別 JSON は対象外
+        fs::write(assets.join("ui/layers.json"), "{}").unwrap();
+        fs::write(assets.join("terrain/terrain_meta.json"), "{}").unwrap();
+
+        let targets = collect_targets(&assets);
+        let found: Vec<(String, FormatKind)> = targets
+            .iter()
+            .map(|t| (display_path(&assets, &t.path), t.kind))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "assets/project_settings.json".to_string(),
+                    FormatKind::ProjectSettings
+                ),
+                (
+                    "assets/terrain/cover_materials.json".to_string(),
+                    FormatKind::TerrainCoverMaterials
+                ),
+                ("assets/terrain/layers.json".to_string(), FormatKind::TerrainLayers),
+                ("assets/terrain/props.json".to_string(), FormatKind::TerrainProps),
+            ],
+            "列挙結果が想定と違う: {found:?}"
+        );
+
+        fs::remove_dir_all(assets.parent().unwrap()).ok();
+    }
+
+    /// 新しく対象へ入れた拡張子（`.anim` / `.mat` / `.postfx` / `.inputmap` /
+    /// `.sprite_mesh`）が拾われること。
+    #[test]
+    fn collects_newly_supported_extensions() {
+        let assets = temp_dir("collect_ext").join(ASSETS_DIR_NAME);
+        fs::create_dir_all(&assets).unwrap();
+        for name in [
+            "Swim.anim",
+            "Water.mat",
+            "Blur.postfx",
+            "Game.inputmap",
+            "Body.sprite_mesh",
+        ] {
+            fs::write(assets.join(name), "{}").unwrap();
+        }
+
+        let kinds: Vec<FormatKind> = collect_targets(&assets).iter().map(|t| t.kind).collect();
+        for expected in [
+            FormatKind::Anim,
+            FormatKind::Material,
+            FormatKind::Postfx,
+            FormatKind::InputMap,
+            FormatKind::SpriteMesh,
+        ] {
+            assert!(kinds.contains(&expected), "{expected} が拾われていない: {kinds:?}");
+        }
 
         fs::remove_dir_all(assets.parent().unwrap()).ok();
     }

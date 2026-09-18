@@ -5,6 +5,10 @@ pub mod app;
 /// （`<プロジェクト>/cache/editor/view/**.view.json`）
 pub mod editor_view_state;
 pub mod ipc;
+/// プレハブの「取り込んだ版」を表す内容ハッシュ（FNV-1a 64bit）
+pub mod prefab_hash;
+/// `project_settings.json` を読む唯一の入口（版の変換を含む）
+pub mod project_settings;
 pub mod safe_write;
 pub mod scene;
 /// シーン単位のビューポート／レンダリング設定（`.scene` の settings 節）

@@ -50,8 +50,10 @@ paths:
   （全員の作業コピーが勝手に変わって VCS で衝突する）。書き換えてよいのは
   「普通に保存したとき」と「一括アップグレード（`SEED.exe --upgrade-project`）」だけ。
 - **変換は Rust に一本化する**。C# 側で同じ変換を書かない（`.inputmap` の二重実装が既に負債になっている）。
-- **読み込みの入口を増やさない**。`.scene` は `Scene::from_json`、`.actor` は
-  `core::app_base::actor_file` が唯一の経路。新しい経路を作るとマイグレーションが素通りする。
+- **読み込みの入口を増やさない**。形式ごとに入口は 1 本だけ（docs/asset_migration.md 6 章の表）。
+  `.scene` は `Scene::from_json`、`.actor` は `core::app_base::actor_file`、
+  `project_settings.json` は `core::app_base::project_settings`。
+  新しい経路を作るとマイグレーションが素通りする。
 - **プレハブのハッシュは生テキストから取る**（`prefab_ops::prefab_content_hash`）。
   「生テキストでハッシュ → その後に変換」の順序を崩さない。
 
@@ -62,9 +64,23 @@ Rust の変換を通らない読み手が居る。対象は **docs/asset_migrati
 `FishCatalogGenerator.cs` が `.actor` のコンポーネント構造、`AssetCollector.cs` が参照の正規表現走査）。
 これらが見ているキー名・構造を変えるなら、同じコミットで C# 側も直す。
 
-## 5. 版を持たない形式を触るとき
+## 5. 対象になっている形式と、まだ載っていない形式
 
-`.anim` / `.mat` / `.postfx` / `layers.json` / `props.json` などはまだ版の欄を持たない（M2 で追加予定）。
-それらのキー名・構造を変えるなら、**先に版の仕組みへ載せてから**変えること。
-`kind.rs` に形式を足し、読み込みの入口に `migration::load_json` を通し、保存で
-`migration::to_stamped_pretty_json` を使う。
+版の仕組みに載っているのは **`kind.rs` の表にあるものだけ**（正典は docs/asset_migration.md 5.1）。
+2026-09-18 時点で `.scene` / `.actor` / `.actor2d` / `.anim` / `.mat` / `.postfx` /
+`.inputmap` / `.sprite_mesh` / `terrain/layers.json` / `terrain/props.json` /
+`terrain/cover_materials.json` / `project_settings.json` が対象。
+
+- **版の欄名は形式ごとに違う**。新しく足す形式は `format_version`、
+  `.inputmap` / `.sprite_mesh` は従来からの `version`。
+  欄名はコードに直書きせず `FormatKind::version_key()` を通すこと。
+- **書き手が C# の形式**（`.anim` / `.mat` / `.postfx` / 地形 JSON / `project_settings.json` /
+  `.inputmap` / `.sprite_mesh`）は、ランタイムは読むだけで刻印しない。
+  キー名・構造を変えたら C# の書き手も同じコミットで直す（4 章）。
+- **まだ載っていない形式**（`.tvox` / `.tcover` / `.tscatter` / `terrain_meta.json` / `.seedproj` /
+  シェーディング WGSL）は独自の版機構を持つ。それらのキー名・構造を変えるなら、
+  **先に版の仕組みへ載せてから**変えること。
+  `kind.rs` に形式を足し、読み込みの入口に `migration::load_json` を通し、保存で
+  `migration::to_stamped_pretty_json` を使う。
+  拡張子が他形式と衝突する（`.json` など）場合は `asset_relative_paths` で置き場所を指定する。
+  一括アップグレードの検証は `upgrade/canonical.rs` の網羅 match に腕を足す（書き忘れるとビルドが落ちる）。

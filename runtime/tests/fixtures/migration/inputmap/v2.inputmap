@@ -1,0 +1,55 @@
+{
+  "version": 2,
+  "actions": [
+    {
+      "name": "Fire",
+      "value_type": 0,
+      "condition": "Trigger",
+      "bindings": [
+        { "platform": "PC", "input_type": "Key", "value": "Space" },
+        { "platform": "PC", "input_type": "GamepadButton", "value": "South" }
+      ]
+    },
+    {
+      "name": "Steer",
+      "value_type": 1,
+      "bindings": [
+        { "platform": "PC", "input_type": "GamepadAxis", "value": "LeftStickX", "dead_zone": 0.25 }
+      ],
+      "positive": [
+        { "platform": "PC", "input_type": "Key", "value": "D" },
+        { "platform": "PC", "input_type": "Key", "value": "RightArrow" },
+        { "platform": "PC", "input_type": "Key", "value": "E" }
+      ],
+      "negative": [
+        { "platform": "PC", "input_type": "Key", "value": "A" },
+        { "platform": "PC", "input_type": "Key", "value": "LeftArrow" }
+      ]
+    },
+    {
+      "name": "Move",
+      "value_type": 2,
+      "normalize": true,
+      "x": {
+        "positive": [
+          { "platform": "PC", "input_type": "Key", "value": "D" },
+          { "platform": "PC", "input_type": "Key", "value": "RightArrow" }
+        ],
+        "negative": [
+          { "platform": "PC", "input_type": "Key", "value": "A" },
+          { "platform": "PC", "input_type": "Key", "value": "LeftArrow" }
+        ]
+      },
+      "y": {
+        "positive": [
+          { "platform": "PC", "input_type": "Key", "value": "W" },
+          { "platform": "PC", "input_type": "Key", "value": "UpArrow" }
+        ],
+        "negative": [
+          { "platform": "PC", "input_type": "Key", "value": "S" },
+          { "platform": "PC", "input_type": "Key", "value": "DownArrow" }
+        ]
+      }
+    }
+  ]
+}

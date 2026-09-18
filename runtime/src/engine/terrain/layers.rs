@@ -360,8 +360,20 @@ impl TerrainLayerSet {
     /// レイヤ数が TERRAIN_MAX_LAYERS を超える場合は先頭 TERRAIN_MAX_LAYERS 層へ
     /// 切り詰める（データ差し替えでの試行錯誤を止めないため、エラーにはしない）。
     /// レイヤが 1 つも無い場合は既定セットへフォールバックする。
-    pub fn from_json_str(s: &str) -> Result<Self, serde_json::Error> {
-        let mut set: TerrainLayerSet = serde_json::from_str(s)?;
+    ///
+    /// 【版の扱い】
+    /// `layers.json` はマイグレーション機構（`core::migration`）に載っており、
+    /// **ここが唯一の読み込み入口**である。版の欄（`format_version`）が無いファイルは
+    /// v1 とみなし、現行版より新しいファイルは読み込みを拒否する。
+    /// 書き手はエディタ（C#）なので、版の刻印はエディタ側の責務。
+    ///
+    /// 失敗理由は人が読む文字列で返す（版の拒否と JSON 解析の失敗を同じ型で扱うため）。
+    pub fn from_json_str(s: &str) -> Result<Self, String> {
+        let mut set: TerrainLayerSet = crate::engine::core::migration::load_json(
+            crate::engine::core::migration::FormatKind::TerrainLayers,
+            s,
+        )
+        .map_err(|e| e.to_string())?;
         set.layers.truncate(TERRAIN_MAX_LAYERS);
         if set.layers.is_empty() {
             set = Self::default();

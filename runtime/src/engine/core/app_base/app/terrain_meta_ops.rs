@@ -46,8 +46,19 @@ impl App {
             self.terrain.decimate_strength,
         );
         let path = dir.join(TERRAIN_META_FILE_NAME);
-        match std::fs::write(&path, write_meta(&meta)) {
-            Ok(()) => {
+        // 書き込みは `safe_write`（旧版を `.backup/` へ退避 → `.tmp` へ書き切って rename）を通す。
+        // 素の `std::fs::write` は書き込み途中で落ちると**中身が半分のファイル**を残す。
+        // このファイルが壊れると当たり判定設定とデシメート強度が丸ごと既定へ戻るため、
+        // .scene / .actor と同じ扱いにする。世代バックアップも取る（数 KB の JSON なので安い）。
+        match crate::engine::core::app_base::safe_write::write_atomic_with_backup(
+            &path,
+            &write_meta(&meta),
+        ) {
+            Ok(warning) => {
+                if let Some(w) = warning {
+                    // バックアップだけの失敗は保存自体を止めない（保存できない方が損害が大きい）。
+                    eprintln!("[SEED terrain] terrain_meta {w}: {path:?}");
+                }
                 self.terrain.meta_dirty = false;
                 1
             }

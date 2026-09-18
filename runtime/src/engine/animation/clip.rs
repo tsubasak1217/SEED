@@ -333,10 +333,20 @@ impl AnimationClip {
     ///
     /// `label` はエラーメッセージ・警告に出す識別子（通常はアセットパス）。
     /// ファイル読み込みと分離してあるのは、フォーマットの検証を単体テストできるようにするため。
+    ///
+    /// 【版の扱い】
+    /// `.anim` はマイグレーション機構（`core::migration`）に載っており、
+    /// **ここが `.anim` を読む唯一の入口**である。版の欄（`format_version`）が
+    /// 無いファイルは v1 とみなし、現行版より新しいファイルは読み込みを拒否する。
+    /// `.anim` の書き手はエディタ（C#）なので、版の刻印はエディタ側の責務
+    /// （docs/asset_migration.md「エディタ側の実装メモ」）。
     pub fn from_json(label: &str, text: &str) -> Result<AnimationClip, String> {
         let path = label;
-        let raw: RawClip =
-            serde_json::from_str(text).map_err(|e| format!("{path}: JSON parse error: {e}"))?;
+        let raw: RawClip = crate::engine::core::migration::load_json(
+            crate::engine::core::migration::FormatKind::Anim,
+            text,
+        )
+        .map_err(|e| format!("{path}: {e}"))?;
 
         // トラックを型付きへ変換する
         let mut tracks = Vec::new();

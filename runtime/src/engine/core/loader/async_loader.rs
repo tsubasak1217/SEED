@@ -251,9 +251,19 @@ fn is_falsy_flag(normalized: &str) -> bool {
 }
 
 /// 環境変数を見ない純粋な JSON 解釈（単体テスト対象）。
+///
+/// 【版の扱い】
+/// 通常の呼び出し元（`App::init_model_streaming`）が渡すテキストは共通ローダ
+/// （`app_base::project_settings::load_text`）で変換済みだが、本関数は公開 API で
+/// 単体テストからも直接呼ばれるため、ここでも `migration::load_json` を通す。
+/// 二重に通しても連鎖は走らない（現行版なら何もしない）。
+/// JSON が壊れている・未来版のときは既定設定へ落ちる（従来どおり）。
 fn parse_streaming_config_raw(json: &str) -> StreamingConfig {
     let mut cfg = StreamingConfig::default();
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+    let Ok(v) = crate::engine::core::migration::load_json::<serde_json::Value>(
+        crate::engine::core::migration::FormatKind::ProjectSettings,
+        json,
+    ) else {
         return cfg;
     };
     let Some(s) = v.get(SETTINGS_KEY_STREAMING) else {

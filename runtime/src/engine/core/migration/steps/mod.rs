@@ -17,5 +17,7 @@
 pub mod actor;
 /// 複数形式で共有する変換の部品。
 pub mod common;
+/// 入力アクションマップ（`.inputmap`）の変換段。
+pub mod inputmap;
 /// シーン（`.scene`）の変換段。
 pub mod scene;

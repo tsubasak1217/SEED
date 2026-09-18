@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use winit::event_loop::ActiveEventLoop;
 
+use crate::engine::core::app_base::project_settings;
 use crate::engine::core::renderer::Renderer;
 use crate::engine::core::window::{WindowConfig, create_window};
 use crate::engine::methods::drawer::{DrawContext, IdBuffer};
@@ -60,7 +61,12 @@ impl App {
         // プロジェクト設定のウィンドウ解像度を全モードで一度だけ読み込みキャッシュする。
         // カメラ新規追加時の既定アスペクト比・ルートキャンバスの自動解像度計算に使用する。
         // project_settings.json は 1 回だけ読み、解像度とゲーム名の両方をここから取る。
-        let settings_json = Self::read_project_settings_json();
+        //
+        // 読み込みは共通ローダ（`app_base::project_settings`）に集約してある。
+        // asset_fs 経由（PAK 実行・実フォルダ実行の両方に対応）で読み、
+        // 版のマイグレーションもそこで通る。読めなければ空文字列が返り、
+        // 各 parse_* の「JSON パース失敗 → 既定値」経路へそのまま合流する。
+        let settings_json = project_settings::load_text();
         self.project_resolution = parse_window_size(&settings_json);
         // 描画解像度モード（window / fixed）も同じ JSON から読む。
         // fixed のときだけ「内部解像度で描いて最終段でレターボックス」経路に入る
@@ -414,24 +420,6 @@ impl App {
         asset_fs::init(assets_root, pak_path.as_deref());
     }
 
-    /// プロジェクト設定（project_settings.json）からゲームウィンドウの初期解像度を読む。
-    ///
-    /// 【asset_fs 経由に変更した理由】
-    /// 以前は assets_root を自前解決して `std::fs::read_to_string` で直接読んでいたが、
-    /// パッケージ実行（exe の隣に assets.pak だけがあり assets/ フォルダが無い構成）では
-    /// このパスが実在せず、常に既定解像度 1920x1080 へフォールバックしていた
-    /// （= 本関数が原因だったウィンドウ解像度バグ）。
-    /// handle_resumed の先頭で asset_fs 初期化を済ませてから呼ばれるようになったため、
-    /// ここでは `asset_fs::read_string` 経由にし、PAK 実行・実フォルダ実行の両方に対応する。
-    /// JSON の解釈自体は純関数 `parse_window_size` に切り出してあり、
-    /// フィールド欠落・範囲外・片方欠け・正常系は単体テストで検証済み（本ファイル末尾）。
-    fn read_project_settings_json() -> String {
-        use crate::engine::asset_fs;
-        // 読み込み失敗（PAK 未収録・ファイル不在など）は空文字列を返し、
-        // parse_window_size / parse_game_name 側の「JSON パース失敗 → 既定値」経路にそのまま合流させる。
-        asset_fs::read_string("assets://project_settings.json").unwrap_or_default()
-    }
-
     /// プロジェクトのプラグインフォルダからプラグインをロードする。
     ///
     /// プラグインフォルダ: `{assets_root}/../plugins/`
@@ -469,12 +457,11 @@ impl App {
             .map(|p| p.join("plugins"))
             .unwrap_or_else(|| std::path::PathBuf::from("plugins"));
 
-        // project_settings.json から有効化リストを読み込む（asset_fs 経由。
+        // project_settings.json から有効化リストを読み込む（共通ローダ経由。
         // 上の is_packaged() 早期リターンにより、ここへ来るのは非パッケージ実行時のみ）。
-        let enabled_list: Vec<PluginEntry> = asset_fs::read_string("assets://project_settings.json")
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|v| v.get("plugins").cloned())
+        let enabled_list: Vec<PluginEntry> = project_settings::load_value()
+            .get("plugins")
+            .cloned()
             .and_then(|arr| serde_json::from_value(arr).ok())
             .unwrap_or_default();
 
@@ -499,15 +486,9 @@ impl App {
     /// ファイルや配列が無い場合は空レジストリのまま（名前解決は全て失敗し、
     /// スクリプトはパス直接指定のみ使用可能）。
     pub(super) fn load_scene_registry(&mut self) {
-        use crate::engine::asset_fs;
-
         self.scene_registry.clear();
-        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else {
-            return;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return;
-        };
+        // 読み込みは共通ローダ（版の変換を含む）。読めなければ空オブジェクトが返る。
+        let v = project_settings::load_value();
         let Some(scenes) = v["scenes"].as_array() else {
             return;
         };
@@ -531,14 +512,9 @@ impl App {
     /// エディタからは IPC の `RT_SHADOWS:1` / `RT_SHADOWS:0` でも実行中に切替可能（起動時はここが初期値）。
     /// ファイルが無い／パース不可／キーが無い場合は既定値 false のまま変更しない。
     pub(super) fn load_graphics_settings(&mut self) {
-        use crate::engine::asset_fs;
-
-        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else {
-            return;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return;
-        };
+        // 読み込みは共通ローダ（版の変換を含む）。読めなければ空オブジェクトが返り、
+        // 以降の `v["key"]` はすべて Null → 既定値のまま変更しない。
+        let v = project_settings::load_value();
         // 影方式（旧キー rt_shadows: bool）→ ShadowMode。既定 false=ShadowMap（後方互換）。
         self.render_features.shadow = if v["rt_shadows"].as_bool().unwrap_or(false) {
             crate::engine::core::renderer::ShadowMode::Rt
@@ -897,28 +873,21 @@ impl App {
     }
 
     pub(super) fn load_play_scene(&mut self) {
-        use crate::engine::asset_fs;
-
         // ロードするシーンパスを決定する
         let scene_path_str: String = if let Some(path) = &self.scene_path {
             // エディタから --scene= で指定されたパス
             path.clone()
         } else {
-            // project_settings.json の start_scene を読む
-            let json = match asset_fs::read_string("assets://project_settings.json") {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            match serde_json::from_str::<serde_json::Value>(&json) {
-                Ok(v) => {
-                    let s = v["start_scene"].as_str().unwrap_or("").to_string();
-                    if s.is_empty() {
-                        return;
-                    }
-                    s
-                }
-                Err(_) => return,
+            // project_settings.json の start_scene を読む（共通ローダ経由）。
+            // 読めない・未設定なら何もせず戻る（従来どおり）。
+            let s = project_settings::load_value()["start_scene"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            if s.is_empty() {
+                return;
             }
+            s
         };
 
         // PAK モードで resolve するとファイルシステム読みになるため、
@@ -1062,8 +1031,8 @@ mod tests {
     use super::*;
 
     /// JSON 自体が不正（空文字列・破損データ含む）な場合は既定解像度を返すこと。
-    /// `read_project_settings_json` は asset_fs::read_string が失敗した際に
-    /// 空文字列へフォールバックしてこの関数へ渡すため、その経路の下支えでもある。
+    /// 共通ローダ `project_settings::load_text()` はファイルが読めない／版が不正なときに
+    /// 空文字列を返してこの関数へ渡すため、その経路の下支えでもある。
     #[test]
     fn parse_window_size_invalid_json_returns_default() {
         assert_eq!(parse_window_size(""), DEFAULT_WINDOW_SIZE);

@@ -225,6 +225,20 @@ impl std::fmt::Display for SpriteMeshError {
     }
 }
 
+/// マイグレーション層の失敗を `.sprite_mesh` のエラー型へ写す。
+///
+/// 版に関する失敗（未来版・段の欠落）は「未対応の version」として、
+/// それ以外（JSON が壊れている・トップレベルがオブジェクトでない）は解析失敗として扱う。
+/// 呼び出し側から見たエラーの種別を、機構の導入前と同じに保つための対応表。
+fn map_migration_error(e: crate::engine::core::migration::MigrationError) -> SpriteMeshError {
+    use crate::engine::core::migration::MigrationError;
+    match e {
+        MigrationError::FutureVersion { found, .. } => SpriteMeshError::UnsupportedVersion(found),
+        MigrationError::MissingStep { from, .. } => SpriteMeshError::UnsupportedVersion(from),
+        other => SpriteMeshError::Parse(other.to_string()),
+    }
+}
+
 // ============================================================
 //  2D アフィン行列ヘルパー
 // ============================================================
@@ -294,16 +308,27 @@ impl SpriteMesh {
     /// - 各頂点のウェイトが 1〜MAX_BONE_INFLUENCES 本・非負・ボーン範囲内・合計が正
     ///
     /// ウェイトは合計 1.0 になるよう**読込時に正規化**する（GPU 側では正規化しない）。
+    ///
+    /// 【版の扱い】
+    /// `.sprite_mesh` はマイグレーション機構（`core::migration`）に載っている。
+    /// 欄名は従来どおり `version` で、現行版も従来どおり 1（`SPRITE_MESH_VERSION`）。
+    /// 版の欄が無いファイルは v1 とみなし、現行版より新しいファイルは拒否する。
     pub fn from_json(src: &str) -> Result<Self, SpriteMeshError> {
-        let data: SpriteMeshData =
-            serde_json::from_str(src).map_err(|e| SpriteMeshError::Parse(e.to_string()))?;
+        let data: SpriteMeshData = crate::engine::core::migration::load_json(
+            crate::engine::core::migration::FormatKind::SpriteMesh,
+            src,
+        )
+        .map_err(map_migration_error)?;
         Self::from_data(data)
     }
 
     /// パース済みのシリアライズ表現から検証済みの `SpriteMesh` を構築する。
     pub fn from_data(data: SpriteMeshData) -> Result<Self, SpriteMeshError> {
         // ── version ──
-        // version 省略（0）は「バージョン導入前の手書き」とみなして受け入れる。
+        // `from_json` を通った場合、版の判定はマイグレーション層が済ませており
+        // ここへ来る `version` は必ず現行版（欄なしのファイルも現行版へ持ち上がる）。
+        // この判定は `from_data` を直接呼ぶ経路のための保険として残す。
+        // 0 は `#[serde(default)]` による「欄なし」の表現なので受け入れる。
         if data.version != 0 && data.version != SPRITE_MESH_VERSION {
             return Err(SpriteMeshError::UnsupportedVersion(data.version));
         }
@@ -693,6 +718,39 @@ mod tests {
         assert_eq!(
             SpriteMesh::from_json(src).unwrap_err(),
             SpriteMeshError::UnsupportedVersion(99)
+        );
+    }
+
+    /// version 欄を持たないファイルは現行版として読めること（欄なし＝v1 の規約）。
+    ///
+    /// 手書きの `.sprite_mesh`（版の欄を書いていない）が読めなくならないことの固定。
+    #[test]
+    fn accepts_a_file_without_a_version_field() {
+        let src = r#"{
+            "vertices": [[0,0],[1,0],[0,1]], "uvs": [[0,0],[1,0],[0,1]], "triangles": [0,1,2],
+            "bones": [{"name":"a","parent":""}],
+            "weights": [[{"bone":0,"weight":1.0}],[{"bone":0,"weight":1.0}],[{"bone":0,"weight":1.0}]]
+        }"#;
+        assert!(SpriteMesh::from_json(src).is_ok(), "欄なしが読めない");
+    }
+
+    /// **挙動の変更点**: 明示的な `"version": 0` は未対応として弾かれる。
+    ///
+    /// 機構の導入前は「欄なし＝serde 既定の 0」と区別できず 0 を受け入れていたが、
+    /// マイグレーション層は「欄なし＝v1」と「明示的な 0」を区別する。
+    /// 0 は版として存在しないので、未対応版として報告するのが正しい
+    /// （欄なしのファイルは上のテストのとおり従来どおり読める）。
+    #[test]
+    fn rejects_an_explicit_version_zero() {
+        let src = r#"{
+            "version": 0,
+            "vertices": [[0,0]], "uvs": [[0,0]], "triangles": [0,0,0],
+            "bones": [{"name":"a","parent":""}],
+            "weights": [[{"bone":0,"weight":1.0}]]
+        }"#;
+        assert_eq!(
+            SpriteMesh::from_json(src).unwrap_err(),
+            SpriteMeshError::UnsupportedVersion(0)
         );
     }
 

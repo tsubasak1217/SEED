@@ -33,6 +33,8 @@
 | `migration/scene/v2.scene` | 同上（`v1.scene` を変換した期待結果） | 同上 |
 | `migration/actor/v1.actor` | 正本なし（手で作った変換前の見本） | 同上 |
 | `migration/actor/v2.actor` | 同上（`v1.actor` を変換した期待結果） | 同上 |
+| `migration/inputmap/v1.inputmap` | 正本なし（手で作った変換前の見本） | 同上 |
+| `migration/inputmap/v2.inputmap` | 同上（`v1.inputmap` を変換した期待結果） | 同上 |
 
 `*.sprite_mesh` はアセット由来ではなくテストのために手で作った入力なので、正本は無い。
 
@@ -45,3 +47,19 @@
 照合は `serde_json::Value` としての一致（JSON の**意味**）で行い、整形や欄の並びは見ない。
 版を上げたときは、**期待結果の見本を新しい版へ差し替える**こと
 （差し替え忘れは `golden::fixtures_declare_the_expected_versions` が検出する）。
+
+### 見本が要るのは「実変換がある形式」だけ
+
+`.anim` / `.mat` / `.postfx` / 地形 JSON / `project_settings.json` / `.sprite_mesh` は
+現行版 1 で変換段を持たない（版の欄を読む・未来版を拒否する・保存で刻む、だけ）。
+変換前後の見本は無くてよく、代わりに
+`golden::version_only_formats_migrate_without_any_step` が
+「段が 1 つも無くても版が刻まれること」を全形式について確かめている。
+それらに最初の変換段を足すときに、この表へ 1 行と見本 2 本を足すこと。
+
+### 版の欄名は形式ごとに違う
+
+`migration/inputmap/*` の見本だけ版の欄が `version`（`format_version` ではない）。
+`.inputmap` と `.sprite_mesh` は仕組みの導入前から `version` で版を持っており、
+既存ファイルを 1 バイトも書き換えずに載せるため綴りをそのまま尊重している
+（正典は `runtime/src/engine/core/migration/kind.rs` の表）。

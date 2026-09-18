@@ -2,9 +2,15 @@
 //  upgrade — プロジェクトの一括アップグレード（`SEED.exe --upgrade-project`）
 //
 //  【何をするか】
-//  アセットルート配下の `.scene` / `.actor` / `.actor2d` を列挙し、
-//  **古いものだけ**を現行版へ変換して `safe_write`（旧版を `.backup/` へ退避 →
-//  `.tmp` へ書き切って rename）で書き戻す。結果は 1 ファイル 1 行の JSON で出す。
+//  アセットルート配下の「版を持つ形式」のファイル（`kind.rs` の表にあるもの全部）を
+//  列挙し、**古いもの・版の欄が無いもの**を現行版へ直して `safe_write`
+//  （旧版を `.backup/` へ退避 → `.tmp` へ書き切って rename）で書き戻す。
+//  結果は 1 ファイル 1 行の JSON で出す。
+//
+//  【「版の欄が無いもの」も書き換える理由】
+//  実変換がまだ無い形式（現行版 1）は、欄が無くても意味としては現行版である。
+//  それでも版の 1 行を刻んでおくと、次に版を上げたときに
+//  「欄なし＝v1」という暗黙の規約に頼らずに済む。差分は**その 1 行だけ**になる。
 //
 //  【運用】
 //  開いただけでは誰のファイルも書き換わらない（読み込み時の変換はメモリ上だけ）。
@@ -17,27 +23,35 @@
 //  エディタが起動中の環境でも安全に実行できる。
 //
 //  【ファイル構成】
-//  | ファイル    | 責務 |
-//  |-------------|------|
-//  | `mod.rs`    | 引数の解釈・1 件ずつの処理・レポート出力 |
-//  | `target.rs` | アセットルートの決定と対象ファイルの列挙 |
-//  | `report.rs` | 結果の表現（JSON Lines と集計） |
+//  | ファイル            | 責務 |
+//  |---------------------|------|
+//  | `mod.rs`            | 引数の解釈・1 件ずつの処理・レポート出力 |
+//  | `target.rs`         | アセットルートの決定と対象ファイルの列挙 |
+//  | `canonical.rs`      | 形式ごとの「保存と同じテキスト化」と読めることの検証 |
+//  | `prefab_rehash.rs`  | 変換後の `prefab_hash` 貼り直し |
+//  | `report.rs`         | 結果の表現（JSON Lines と集計） |
 // ============================================================
 
+/// 形式ごとの「保存と同じテキスト化」と、読めることの検証。
+pub mod canonical;
+/// 変換後の `prefab_hash` 貼り直し。
+pub mod prefab_rehash;
 /// 結果の表現（JSON Lines と集計）。
 pub mod report;
 /// アセットルートの決定と対象ファイルの列挙。
 pub mod target;
 
+use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use super::kind::FormatKind;
 use super::{migrate_to_current, MigrationError};
+use crate::engine::core::app_base::prefab_hash::content_hash;
 use crate::engine::core::app_base::safe_write;
-use report::{FileReport, UpgradeStatus, UpgradeSummary};
+use report::{FileReport, PrefabRehashReport, UpgradeStatus, UpgradeSummary};
 
 // ── 定数 ─────────────────────────────────────────────────────────
 
@@ -133,14 +147,38 @@ fn parse_project_arg(args: &[String]) -> Option<String> {
 ///
 /// 戻り値は集計。呼び出し側が終了コードの判定に使う。
 /// この関数は `asset_fs` を初期化しない（テストから何度でも呼べるようにするため）。
+///
+/// 【処理の順序】
+/// (1) 全ファイルを 1 件ずつ変換する
+/// (2) `.actor` の内容が変わったぶんだけ、シーンの `prefab_hash` を貼り直す
+///
+/// (2) は (1) の後でなければならない。貼り直しに使う新しいハッシュは
+/// **書き込み後のファイルの内容**から取るため。
 pub fn upgrade_project(assets_root: &Path, dry_run: bool, out: &mut dyn Write) -> UpgradeSummary {
     let mut summary = UpgradeSummary::new(dry_run);
+    // `.actor` の「旧ハッシュ → 新ハッシュ」。貼り直しの対象を絞るために使う。
+    let mut prefab_hash_changes: HashMap<String, String> = HashMap::new();
+    // 貼り直しの走査対象になるシーン（列挙をもう一度やり直さないよう控える）。
+    let mut scenes: Vec<PathBuf> = Vec::new();
 
     for t in target::collect_targets(assets_root) {
+        if t.kind == FormatKind::Scene {
+            scenes.push(t.path.clone());
+        }
         let display = target::display_path(assets_root, &t.path);
         let outcome = upgrade_one(&t.path, t.kind, display, dry_run);
+        if let Some((old_hash, new_hash)) = outcome.prefab_hash_change {
+            prefab_hash_changes.insert(old_hash, new_hash);
+        }
         summary.count(outcome.status);
         write_line(out, &outcome.report);
+    }
+
+    // ── プレハブの版（prefab_hash）の貼り直し ──
+    for restamp in prefab_rehash::restamp_scenes(assets_root, &scenes, &prefab_hash_changes, dry_run)
+    {
+        summary.count_prefab_rehash(restamp.updated);
+        write_line(out, &PrefabRehashReport::from(restamp));
     }
 
     write_line(out, &summary);
@@ -163,6 +201,11 @@ fn write_line<T: serde::Serialize>(out: &mut dyn Write, value: &T) {
 struct FileOutcome {
     report: FileReport,
     status: UpgradeStatus,
+    /// `.actor` を書き換えた場合の「旧ハッシュ → 新ハッシュ」。
+    ///
+    /// シーン側に焼き込まれた `prefab_hash` を貼り直すために使う。
+    /// `.actor` 以外・書き換えなかった場合は `None`。
+    prefab_hash_change: Option<(String, String)>,
 }
 
 impl FileOutcome {
@@ -178,28 +221,20 @@ impl FileOutcome {
         Self {
             report: FileReport::new(kind, display, from, to, status, message),
             status,
+            prefab_hash_change: None,
         }
     }
-}
 
-/// 変換済みの `Value` を、その形式をエンジンが保存するのと同じテキストにする。
-///
-/// 形式ごとの本体の型を知っているのは各形式のモジュールなので、ここでは振り分けだけ行う。
-/// 本体の型として読めない（＝エンジンが解釈できない）ファイルはエラーにして書き換えない。
-fn render_current_text(kind: FormatKind, value: Value) -> Result<String, String> {
-    match kind {
-        FormatKind::Scene => crate::engine::core::app_base::scene::scene_text_from_value(value)
-            .map_err(|e| format!("シーンとして書き出せません: {e}")),
-        FormatKind::Actor => {
-            crate::engine::core::app_base::actor_file::text_from_value(value)
-                .map_err(|e| format!("アクタとして書き出せません: {e}"))
-        }
+    /// プレハブの版の貼り直し情報を添える。
+    fn with_prefab_hash_change(mut self, old_hash: String, new_hash: String) -> Self {
+        self.prefab_hash_change = Some((old_hash, new_hash));
+        self
     }
 }
 
 /// 1 ファイルを処理する。
 ///
-/// 手順: 読む → JSON にする → 版を見る → 古ければ変換して書く。
+/// 手順: 読む → JSON にする → 版を見る → 直す必要があれば変換して書く。
 /// どの段階で失敗しても**そのファイルだけ**が `failed` になり、全体は続行する。
 fn upgrade_one(path: &Path, kind: FormatKind, display: String, dry_run: bool) -> FileOutcome {
     let failed = |from: u32, message: String| {
@@ -246,7 +281,11 @@ fn upgrade_one(path: &Path, kind: FormatKind, display: String, dry_run: bool) ->
             .to_string(),
         );
     }
-    if from == current {
+    // 版の欄が物理的に書かれているか。
+    // 「欄が無い＝v1」は暗黙の規約なので、実変換が要らない（from == current）場合でも
+    // 版の 1 行だけは刻んでおく。刻んだ後は規約に頼らずに版が判る。
+    let stamped = has_version_field(&value, kind);
+    if from == current && stamped {
         return FileOutcome::new(kind, display, from, current, UpgradeStatus::UpToDate, "");
     }
 
@@ -258,12 +297,13 @@ fn upgrade_one(path: &Path, kind: FormatKind, display: String, dry_run: bool) ->
     }
 
     // ── テキストにする ──
-    // 本体の型（SceneData / ActorData）を経由して、普通に保存したときと同じ並びで書く。
+    // 本体の型（SceneData / ActorData など）を経由して、普通に保存したときと同じ並びで書く。
     // `Value` をそのまま書くと欄がアルファベット順に並び替わり、中身が変わらない
     // ファイルでも全行が差分になる（差分が読めず、次の保存でまた全行戻る）。
+    // 書き手がエディタ（C#）の形式は正準テキストを作れないので、**読めることの検証だけ**行う。
     // dry-run でもここまでは必ず通す（＝書けないファイルを実行前に知らせる検証になる）。
-    let canonical = match render_current_text(kind, value.clone()) {
-        Ok(t) => t,
+    let canonical = match canonical::render_or_validate(kind, value.clone()) {
+        Ok(c) => c,
         Err(e) => return failed(from, e),
     };
 
@@ -277,10 +317,22 @@ fn upgrade_one(path: &Path, kind: FormatKind, display: String, dry_run: bool) ->
     };
     let (json, mut message) = match spliced {
         Some(text) => (text, String::new()),
-        None => {
-            let note = normalization_note(&value, &canonical);
-            (canonical, note)
-        }
+        None => match canonical.text() {
+            // 正準の書き手がある形式: 本体の型を経由したテキストで書き直す。
+            Some(rendered) => {
+                let note = normalization_note(&value, &rendered, kind);
+                (rendered, note)
+            }
+            // 正準の書き手が無い形式（書き手は C#）: 変換後の値をそのまま書く。
+            // 欄の並びは `serde_json` の既定に従うため、元の整形は保たれない。
+            None => (
+                match super::to_stamped_pretty_json(kind, &value) {
+                    Ok(t) => t,
+                    Err(e) => return failed(from, format!("JSON として書き出せません: {e}")),
+                },
+                VALUE_REWRITE_NOTE.to_string(),
+            ),
+        },
     };
 
     if dry_run {
@@ -300,10 +352,29 @@ fn upgrade_one(path: &Path, kind: FormatKind, display: String, dry_run: bool) ->
                 }
                 message.push_str(&w);
             }
-            FileOutcome::new(kind, display, from, current, UpgradeStatus::Upgraded, message)
+            let outcome =
+                FileOutcome::new(kind, display, from, current, UpgradeStatus::Upgraded, message);
+            // `.actor` は生テキストのハッシュがプレハブの版なので、書き換えた前後の値を控える。
+            // シーン側の `prefab_hash` を貼り直すのに使う（貼り直しは全ファイルの処理後）。
+            if kind == FormatKind::Actor {
+                outcome.with_prefab_hash_change(content_hash(&raw), content_hash(&json))
+            } else {
+                outcome
+            }
         }
         Err(e) => failed(from, format!("書き込み失敗: {e}")),
     }
+}
+
+/// 版の欄が JSON に**物理的に**書かれているか。
+///
+/// `read_version` は欄が無いファイルを「1 版」として返すので、
+/// 「欄が無い」と「欄に 1 と書いてある」を区別できない。
+/// 一括アップグレードは前者にも版の行を刻むため、ここで区別する。
+fn has_version_field(value: &Value, kind: FormatKind) -> bool {
+    value
+        .as_object()
+        .is_some_and(|o| o.contains_key(kind.version_key()))
 }
 
 /// 変換段がこのファイルの中身を 1 つも変えなかったか（版の欄は比較から外す）。
@@ -327,6 +398,10 @@ fn content_is_unchanged(before: &Value, after: &Value, kind: FormatKind) -> bool
 ///
 /// 字下げは 2 スペース（`serde_json::to_string_pretty` と同じ）を前提にしている。
 /// 別の字下げで書かれたファイルでも JSON として正しいままだが、その 1 行だけ幅が揃わない。
+///
+/// 改行コードは**元のファイルに合わせる**（CRLF のファイルへ LF を混ぜない）。
+/// 混ぜると差分に「1 行目が変わった」という無関係なノイズが出るうえ、
+/// ファイル内で改行が不揃いになる。
 fn splice_version_line(text: &str, parsed: &Value, kind: FormatKind) -> Option<String> {
     // 既に版の欄があるテキストには差し込まない（欄が二重になり、後勝ちで古い版が残る）。
     let obj = parsed.as_object()?;
@@ -340,16 +415,39 @@ fn splice_version_line(text: &str, parsed: &Value, kind: FormatKind) -> Option<S
     let open = text.find('{')?;
     let rest = text.get(open + 1..)?;
     Some(format!(
-        "{}\n{VERSION_LINE_INDENT}\"{}\": {},{}",
+        "{}{}{VERSION_LINE_INDENT}\"{}\": {},{}",
         &text[..=open],
+        detect_line_ending(rest),
         kind.version_key(),
         kind.current_version(),
         rest
     ))
 }
 
+/// 開き波括弧の直後のテキストから、そのファイルが使っている改行コードを推定する。
+///
+/// 直後が CRLF ならそのファイルは CRLF で書かれているとみなす。
+/// 改行が 1 つも無い（1 行 JSON）なら LF を使う（`to_string_pretty` と同じ）。
+fn detect_line_ending(rest: &str) -> &'static str {
+    match rest.find('\n') {
+        Some(at) if at > 0 && rest.as_bytes()[at - 1] == b'\r' => CRLF,
+        _ => LF,
+    }
+}
+
 /// 差し込む版の行の字下げ（`serde_json::to_string_pretty` と同じ 2 スペース）。
 const VERSION_LINE_INDENT: &str = "  ";
+/// Windows の改行コード。
+const CRLF: &str = "\r\n";
+/// Unix の改行コード（`serde_json::to_string_pretty` が使うもの）。
+const LF: &str = "\n";
+
+/// 正準の書き手が無い形式を `Value` から書き直したときの断り。
+///
+/// 欄の並びが `serde_json` の既定に従うため、元ファイルの整形は保たれない。
+/// 差分を見る人に「全行が変わっているのは変換のせいではない」と伝える。
+const VALUE_REWRITE_NOTE: &str =
+    "この形式はランタイムに保存側の実装が無いため、欄の並びが書き直されています";
 
 /// 本体の型を往復したことで、変換手順以外の差分が入ったかを調べる。
 ///
@@ -357,17 +455,17 @@ const VERSION_LINE_INDENT: &str = "  ";
 /// `emit_rate` → `emit_interval`）や、既定値で省略される欄など。害はないが、
 /// 差分を見る人に「この差は変換手順の分ではない」と伝えられるようにしておく。
 /// 差が無ければ空文字。
-fn normalization_note(migrated: &Value, rendered: &str) -> String {
+fn normalization_note(migrated: &Value, rendered: &str, kind: FormatKind) -> String {
     let Ok(mut back) = serde_json::from_str::<Value>(rendered) else {
         return String::new();
     };
     // 版の欄は刻印で必ず入るので、比較の前に両方から外す。
     if let Some(obj) = back.as_object_mut() {
-        obj.remove(crate::engine::core::migration::JSON_VERSION_KEY);
+        obj.remove(kind.version_key());
     }
     let mut expected = migrated.clone();
     if let Some(obj) = expected.as_object_mut() {
-        obj.remove(crate::engine::core::migration::JSON_VERSION_KEY);
+        obj.remove(kind.version_key());
     }
     if back == expected {
         String::new()
@@ -591,6 +689,207 @@ mod tests {
         fs::remove_dir_all(assets.parent().unwrap()).ok();
     }
 
+    /// 実変換を持たない形式（現行版 1）でも、版の欄が無ければ 1 行だけ刻むこと。
+    ///
+    /// 「欄が無い＝v1」は暗黙の規約なので、ここで明示しておくと次に版を上げたときに
+    /// 規約へ頼らずに済む。差分はその 1 行だけであること。
+    #[test]
+    fn stamps_version_only_formats_that_have_no_version_field() {
+        let assets = temp_assets("stamp_only");
+        fs::create_dir_all(assets.join("terrain")).unwrap();
+
+        // 版の欄を持たない `.anim` と `terrain/layers.json`
+        let anim = assets.join("Swim.anim");
+        let anim_text = "{\n  \"name\": \"Swim\",\n  \"duration\": 1.0,\n  \"tracks\": []\n}";
+        fs::write(&anim, anim_text).unwrap();
+        let layers = assets.join("terrain/layers.json");
+        let layers_text = "{\n  \"layers\": [\n    { \"name\": \"Grass\" }\n  ]\n}";
+        fs::write(&layers, layers_text).unwrap();
+
+        let mut out = Vec::new();
+        let summary = upgrade_project(&assets, false, &mut out);
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.upgraded, 2, "版の欄が無いファイルは刻む対象");
+
+        let expected_anim = format!(
+            "{{\n  \"{}\": {},\n  \"name\": \"Swim\",\n  \"duration\": 1.0,\n  \"tracks\": []\n}}",
+            FormatKind::Anim.version_key(),
+            FormatKind::Anim.current_version()
+        );
+        assert_eq!(fs::read_to_string(&anim).unwrap(), expected_anim);
+        let after_layers = fs::read_to_string(&layers).unwrap();
+        assert!(
+            after_layers.contains(&format!("\"{}\": 1", FormatKind::TerrainLayers.version_key())),
+            "{after_layers}"
+        );
+        assert!(after_layers.contains("\"Grass\""), "中身が失われている: {after_layers}");
+
+        // 2 回目は全件 up_to_date（刻印済みなので触らない）
+        let mut out2 = Vec::new();
+        let summary2 = upgrade_project(&assets, false, &mut out2);
+        assert_eq!(summary2.up_to_date, 2);
+        assert_eq!(summary2.upgraded, 0);
+
+        fs::remove_dir_all(assets.parent().unwrap()).ok();
+    }
+
+    /// `.inputmap` は既存の版番号（`version`）を尊重したまま v1 → v2 が走ること。
+    ///
+    /// 中身が変わる形式なので、版の 1 行差し込みではなく書き直しになる。
+    #[test]
+    fn upgrades_inputmap_using_its_own_version_key() {
+        let assets = temp_assets("inputmap");
+        let map = assets.join("Game.inputmap");
+        fs::write(
+            &map,
+            r#"{"actions":[{"name":"Steer","value_type":1,
+                "bindings":[{"platform":"PC","input_type":"WASD","value":"Horizontal"}]}]}"#,
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        let summary = upgrade_project(&assets, false, &mut out);
+        assert_eq!(summary.upgraded, 1);
+
+        let after: Value = serde_json::from_str(&fs::read_to_string(&map).unwrap()).unwrap();
+        assert_eq!(
+            after[FormatKind::InputMap.version_key()],
+            Value::from(FormatKind::InputMap.current_version()),
+            "版の欄は version（format_version ではない）"
+        );
+        assert!(
+            after.get("format_version").is_none(),
+            "別の欄名で刻んではいけない: {after}"
+        );
+        assert_eq!(after["actions"][0]["positive"][0]["value"], Value::from("D"));
+
+        // 2 回目は up_to_date（冪等）
+        let mut out2 = Vec::new();
+        assert_eq!(upgrade_project(&assets, false, &mut out2).up_to_date, 1);
+
+        fs::remove_dir_all(assets.parent().unwrap()).ok();
+    }
+
+    /// `.actor` を書き換えたあと、シーン側の `prefab_hash` が新しい値へ貼り直されること。
+    ///
+    /// 貼り直すのは「アップグレード前のファイルと同期していた」インスタンスだけで、
+    /// もともと古かったインスタンスは古いまま残ること（本物の更新通知を消さない）。
+    #[test]
+    fn restamps_prefab_hash_only_for_instances_that_were_in_sync() {
+        use crate::engine::core::app_base::prefab_hash::content_hash;
+
+        let assets = temp_assets("rehash");
+        fs::create_dir_all(assets.join("prefabs")).unwrap();
+
+        // 版の欄を持たない `.actor`（アップグレードで 1 行増える）
+        let actor = assets.join("prefabs/Fish.actor");
+        let actor_text = "{\n  \"name\": \"Fish\",\n  \"components\": [],\n  \"children\": []\n}";
+        fs::write(&actor, actor_text).unwrap();
+        let old_hash = content_hash(actor_text);
+        let stale_hash = "0123456789abcdef"; // 取り込み直していないインスタンスの値
+
+        // 同期していたインスタンス 2 つ ＋ もともと古いインスタンス 1 つ
+        let scene = assets.join("Main.scene");
+        let scene_text = format!(
+            concat!(
+                "{{\n",
+                "  \"name\": \"Main\",\n",
+                "  \"actors\": [\n",
+                "    {{ \"name\": \"a\", \"components\": [], \"children\": [],",
+                " \"prefab_source\": \"assets://prefabs/Fish.actor\", \"prefab_hash\": \"{0}\" }},\n",
+                "    {{ \"name\": \"b\", \"components\": [], \"children\": [],",
+                " \"prefab_source\": \"assets://prefabs/Fish.actor\", \"prefab_hash\": \"{0}\" }},\n",
+                "    {{ \"name\": \"c\", \"components\": [], \"children\": [],",
+                " \"prefab_source\": \"assets://prefabs/Fish.actor\", \"prefab_hash\": \"{1}\" }}\n",
+                "  ]\n",
+                "}}"
+            ),
+            old_hash, stale_hash
+        );
+        fs::write(&scene, &scene_text).unwrap();
+
+        let mut out = Vec::new();
+        let summary = upgrade_project(&assets, false, &mut out);
+        assert_eq!(summary.upgraded, 2, "シーンとアクタの両方が刻まれる");
+        assert_eq!(summary.prefab_hash_scenes, 1);
+        assert_eq!(summary.prefab_hash_updated, 2, "同期していた 2 件だけ");
+
+        // 新しいハッシュ＝書き換え後のファイルの内容ハッシュ
+        let new_hash = content_hash(&fs::read_to_string(&actor).unwrap());
+        let after = fs::read_to_string(&scene).unwrap();
+        assert_eq!(
+            after.matches(&new_hash).count(),
+            2,
+            "同期していたインスタンスが貼り直されていない:\n{after}"
+        );
+        assert!(
+            after.contains(stale_hash),
+            "もともと古いインスタンスまで貼り直している:\n{after}"
+        );
+        assert!(!after.contains(&old_hash), "旧ハッシュが残っている:\n{after}");
+
+        // レポートに貼り直し行が出ていること
+        let lines = parse_lines(&out);
+        let rehash = lines
+            .iter()
+            .find(|l| l["kind"] == Value::from("prefab_hash"))
+            .expect("貼り直しの行");
+        assert_eq!(rehash["updated"], Value::from(2));
+
+        fs::remove_dir_all(assets.parent().unwrap()).ok();
+    }
+
+    /// dry-run では `prefab_hash` の貼り直しも 1 バイトも書かないこと。
+    #[test]
+    fn prefab_hash_restamp_respects_dry_run() {
+        use crate::engine::core::app_base::prefab_hash::content_hash;
+
+        let assets = temp_assets("rehash_dry");
+        fs::create_dir_all(assets.join("prefabs")).unwrap();
+        let actor = assets.join("prefabs/Fish.actor");
+        let actor_text = "{\n  \"name\": \"Fish\",\n  \"components\": [],\n  \"children\": []\n}";
+        fs::write(&actor, actor_text).unwrap();
+
+        let scene = assets.join("Main.scene");
+        let scene_text = format!(
+            "{{\n  \"name\": \"Main\",\n  \"actors\": [\n    {{ \"name\": \"a\", \"components\": [], \"children\": [], \"prefab_source\": \"assets://prefabs/Fish.actor\", \"prefab_hash\": \"{}\" }}\n  ]\n}}",
+            content_hash(actor_text)
+        );
+        fs::write(&scene, &scene_text).unwrap();
+
+        let mut out = Vec::new();
+        let summary = upgrade_project(&assets, true, &mut out);
+        assert!(summary.dry_run);
+        // dry-run では `.actor` を書いていないので貼り直しの対象も出ない
+        assert_eq!(summary.prefab_hash_updated, 0);
+        assert_eq!(fs::read_to_string(&actor).unwrap(), actor_text);
+        assert_eq!(fs::read_to_string(&scene).unwrap(), scene_text);
+
+        fs::remove_dir_all(assets.parent().unwrap()).ok();
+    }
+
+    /// エンジンが読めないファイルは書き換えず `failed` になること（安全弁）。
+    #[test]
+    fn unreadable_content_is_reported_without_writing() {
+        let assets = temp_assets("unreadable");
+        // `.sprite_mesh` として整合しない中身（頂点が空）
+        let mesh = assets.join("Broken.sprite_mesh");
+        let original = r#"{"vertices":[],"uvs":[],"triangles":[],"bones":[],"weights":[]}"#;
+        fs::write(&mesh, original).unwrap();
+
+        let mut out = Vec::new();
+        let summary = upgrade_project(&assets, false, &mut out);
+        assert_eq!(summary.failed, 1);
+        assert!(summary.has_problem());
+        assert_eq!(
+            fs::read_to_string(&mesh).unwrap(),
+            original,
+            "読めないファイルを書き換えている"
+        );
+
+        fs::remove_dir_all(assets.parent().unwrap()).ok();
+    }
+
     /// 版の欄を明示的に持つ古いファイルには差し込まないこと（欄の二重定義を避ける）。
     #[test]
     fn does_not_splice_when_a_version_field_already_exists() {
@@ -602,6 +901,36 @@ mod tests {
         let empty = "{}";
         let parsed: Value = serde_json::from_str(empty).unwrap();
         assert!(splice_version_line(empty, &parsed, FormatKind::Actor).is_none());
+    }
+
+    /// CRLF で書かれたファイルへ差し込むと、差し込んだ行も CRLF になること。
+    ///
+    /// LF を混ぜると「1 行目が変わった」という無関係な差分が出て、
+    /// ファイル内の改行も不揃いになる（実データ 14 本がこの経路を通った）。
+    #[test]
+    fn spliced_line_uses_the_files_own_line_ending() {
+        let crlf = "{\r\n  \"name\": \"X\",\r\n  \"components\": []\r\n}";
+        let parsed: Value = serde_json::from_str(crlf).unwrap();
+        let out = splice_version_line(crlf, &parsed, FormatKind::Actor).expect("差し込めること");
+        assert!(
+            out.starts_with("{\r\n  \"format_version\": 2,\r\n  \"name\""),
+            "CRLF が保たれていない: {out:?}"
+        );
+        // 1 行目以降の元テキストがそのまま残っていること
+        assert_eq!(out.matches("\r\n").count(), 4);
+        assert!(!out.contains("\n\n"), "LF が混ざっている: {out:?}");
+
+        // LF のファイルは従来どおり LF
+        let lf = "{\n  \"name\": \"X\"\n}";
+        let parsed: Value = serde_json::from_str(lf).unwrap();
+        let out = splice_version_line(lf, &parsed, FormatKind::Actor).unwrap();
+        assert!(!out.contains('\r'), "CR が混ざっている: {out:?}");
+
+        // 改行が 1 つも無い 1 行 JSON は LF を使う
+        let one_line = r#"{"name":"X"}"#;
+        let parsed: Value = serde_json::from_str(one_line).unwrap();
+        let out = splice_version_line(one_line, &parsed, FormatKind::Actor).unwrap();
+        assert_eq!(out, "{\n  \"format_version\": 2,\"name\":\"X\"}");
     }
 
     /// 引数の解釈: `=` 区切りと空白区切りの両方を受け付けること。
