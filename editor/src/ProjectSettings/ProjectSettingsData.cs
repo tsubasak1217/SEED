@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using SEEDEditor.Migration;
 
 namespace SEEDEditor.ProjectSettings;
 
@@ -189,6 +190,29 @@ public class ShadowQualitySettings
 /// </summary>
 public class ProjectSettingsData
 {
+    // ── 版 ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// 版の欄を JSON の**先頭**へ出すための並び順。
+    /// 既定（属性なし）の並び順は 0 なので、それより小さい値にすれば必ず先頭に来る。
+    /// 先頭に置くのは、差分を見たときに版がすぐ分かるようにするため
+    /// （docs/asset_migration.md 6.5 (1)）。
+    /// </summary>
+    private const int FORMAT_VERSION_PROPERTY_ORDER = -1;
+
+    /// <summary>
+    /// アセット形式のバージョン。保存時は常に現行版
+    /// （<see cref="AssetFormats.ProjectSettings"/> の表）を書く。
+    ///
+    /// <para>
+    /// 欄が無い古いファイルは 1 版として読まれる（ランタイムと同じ規約）。
+    /// 値をここへ直書きせず表から取ることで、版を上げたときに直す場所を 1 か所に保つ。
+    /// </para>
+    /// </summary>
+    [JsonPropertyName(AssetFormats.FORMAT_VERSION_KEY)]
+    [JsonPropertyOrder(FORMAT_VERSION_PROPERTY_ORDER)]
+    public int FormatVersion { get; set; } = AssetFormats.ProjectSettings.CurrentVersion;
+
     // ── 必須設定 ─────────────────────────────────────────────
 
     /// <summary>ゲームの名前（パッケージフォルダ名・ウィンドウタイトルなどに使用）。</summary>
@@ -305,16 +329,40 @@ public class ProjectSettingsData
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     /// <summary>
-    /// 指定パスから設定ファイルをロードする。
-    /// ファイルが存在しない場合や JSON パースに失敗した場合はデフォルト値を返す。
+    /// 読み込めなかったファイルの代わりに作られた既定値か。
+    ///
+    /// <para>
+    /// 未来版（新しいエンジンで保存された）・変換失敗のときに真になる。
+    /// **真のまま保存してはいけない**（既定値でプロジェクト設定を丸ごと上書きしてしまう）。
+    /// 呼び出し側は編集させずに閉じること。
+    /// </para>
     /// </summary>
+    [JsonIgnore]
+    public bool IsUnreadable { get; private set; }
+
+    /// <summary>
+    /// 指定パスから設定ファイルをロードする。
+    ///
+    /// <para>
+    /// 古い形式ならランタイムの変換を通してから解釈する（メモリ上だけ。ファイルは書き換えない）。
+    /// ファイルが存在しない場合や JSON パースに失敗した場合はデフォルト値を返す。
+    /// 未来版・変換失敗のときは <see cref="IsUnreadable"/> を立てた既定値を返す。
+    /// </para>
+    /// </summary>
+    /// <param name="path">読み込む project_settings.json の絶対パス。</param>
     public static ProjectSettingsData LoadFrom(string path)
     {
-        if (!File.Exists(path)) return new ProjectSettingsData();
+        var read = AssetMigrationGateway.ReadFile(path, AssetFormats.ProjectSettings);
+        if (read.Status == AssetReadStatus.Missing) return new ProjectSettingsData();
+        if (read.IsBlocked) return new ProjectSettingsData { IsUnreadable = true };
+
         try
         {
-            var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<ProjectSettingsData>(json) ?? new ProjectSettingsData();
+            var data = JsonSerializer.Deserialize<ProjectSettingsData>(read.Text)
+                       ?? new ProjectSettingsData();
+            // 変換済みのテキストを読んだので、ここでは現行版を名乗ってよい。
+            data.FormatVersion = AssetFormats.ProjectSettings.CurrentVersion;
+            return data;
         }
         catch
         {
@@ -323,10 +371,22 @@ public class ProjectSettingsData
         }
     }
 
-    /// <summary>現在の設定を指定パスに JSON として保存する。</summary>
+    /// <summary>
+    /// 現在の設定を指定パスに JSON として保存する（常に現行版を先頭へ刻む）。
+    ///
+    /// <para>
+    /// 書き込みは <see cref="SEEDEditor.Assets.SafeFileWriter"/> 経由の原子的置換
+    /// （旧版を .backup/ へ退避 → .tmp へ書き切って rename）で行う。
+    /// project_settings.json はアセットルート直下にあるので、
+    /// バックアップの基準もそのフォルダ（＝アセットルート）でよい。
+    /// </para>
+    /// </summary>
+    /// <param name="path">保存先の絶対パス。</param>
     public void SaveTo(string path)
     {
+        FormatVersion = AssetFormats.ProjectSettings.CurrentVersion;
         var json = JsonSerializer.Serialize(this, JsonOptions);
-        File.WriteAllText(path, json);
+        SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(
+            path, json, Path.GetDirectoryName(Path.GetFullPath(path)));
     }
 }

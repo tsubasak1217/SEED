@@ -328,6 +328,97 @@ public static class LockGatekeeper
     }
 
     // ============================================================
+    //  一括書き込みゲート
+    // ============================================================
+
+    /// <summary>
+    /// 多数のファイルをまとめて書き換えてよいか確かめる（提示はしない）。
+    ///
+    /// <para>
+    /// プロジェクトの形式アップグレードのように、**1 回の操作で数十〜数百ファイルを
+    /// 書き換える**機能のための入口。<see cref="EnsureAllWritable"/> は 1 件ずつ
+    /// 照会してロックを取りに行くため、この規模では
+    /// (a) サーバ往復がファイル数ぶん走って待たされ、
+    /// (b) 実行した人が大量のロックを握ったままになる。
+    /// ここは **1 回の照会で全部見て、取りには行かない**。
+    /// </para>
+    /// </summary>
+    /// <param name="absolutePaths">書き換える予定のファイルの絶対パス。</param>
+    /// <param name="cancellationToken">中断用。</param>
+    /// <returns>判定結果。</returns>
+    public static async Task<LockGateSubmitVerdict> DecideForBulkWriteAsync(
+        IEnumerable<string?>? absolutePaths, CancellationToken cancellationToken = default)
+    {
+        var provider = VersionControlService.Provider;
+
+        if (!provider.IsAvailable || !provider.Locks.IsAvailable)
+        {
+            return new LockGateSubmitVerdict(
+                LockGateAction.Allow, LockGateReason.VersionControlUnavailable, message: null);
+        }
+
+        // 作業コピーの外にあるパスはロックという概念が無いので落とす。
+        // 同じパスが 2 回来ても意味が無いので重ねない。
+        var relatives = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (absolutePaths is not null)
+        {
+            foreach (var path in absolutePaths)
+            {
+                var relative = ToRelative(path);
+                if (relative is null) continue;
+                if (seen.Add(relative)) relatives.Add(relative);
+            }
+        }
+
+        if (relatives.Count == 0)
+        {
+            return new LockGateSubmitVerdict(
+                LockGateAction.Allow, LockGateReason.NoLock, message: null);
+        }
+
+        // 実行前は必ずサーバへ問い合わせる（キャッシュは使わない）。
+        // 下調べから実行までのあいだに誰かがロックを掛けていることがあるため。
+        using var timeout = CreateTimeout(cancellationToken);
+        var result = await provider.Locks
+                                   .GetStatusAsync(relatives, timeout.Token)
+                                   .ConfigureAwait(false);
+
+        var reachable = result.IsSuccess;
+        if (!reachable)
+        {
+            Log?.Invoke($"[ロック] 一括書き込み前の照会に失敗しました: {result.Outcome} {result.Message}");
+        }
+
+        return LockGatePolicy.DecideForBulkWrite(
+            result.Value,
+            isVersionControlAvailable: true,
+            isServerReachable:         reachable,
+            isSignedIn:                IsSignedIn(),
+            policy:                    _settings.Policy);
+    }
+
+    /// <summary>
+    /// 一括書き込みの判定結果を利用者へ見せる（**呼び出し元のスレッドで行う**）。
+    /// </summary>
+    /// <param name="verdict">判定結果。</param>
+    public static void PresentBulkWrite(LockGateSubmitVerdict? verdict)
+    {
+        if (verdict is null || !verdict.HasMessage) return;
+
+        if (verdict.Action == LockGateAction.Block)
+        {
+            Log?.Invoke($"[ロック] 一括書き込みを止めました: {verdict}");
+            Notifier?.NotifyBlocked(
+                VersionControlMessages.BULK_WRITE_BLOCKED_BY_LOCKS_TITLE, verdict.Message);
+            return;
+        }
+
+        Log?.Invoke($"[ロック] {verdict}");
+        Notifier?.NotifyWarning(verdict.Message);
+    }
+
+    // ============================================================
     //  自動ロック（開いているあいだ保持する）
     // ============================================================
 

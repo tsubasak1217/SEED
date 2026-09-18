@@ -3,8 +3,16 @@
 //
 //  役割:
 //    - .inputmap（JSON, v2）の読み書き。
-//    - version 欠落（v1）を読み込んだ場合は内部で v2 へ移行する（後方互換）。
-//    - 保存は常に version=2。
+//    - 保存は常に現行版（AssetFormats.InputMap.CurrentVersion）を version へ刻む。
+//
+//  版（version）とマイグレーション:
+//    この形式は版の仕組み導入前から `version` 欄を持っていたため、欄名は
+//    `format_version` ではなく `version` のまま（綴りを変えないこと）。
+//    v1 → v2 の変換は **ランタイム（Rust）に一本化**してある
+//    （runtime/.../migration/steps/inputmap/v1_to_v2.rs）。
+//    以前はこのファイルにも同じ変換（InputAction.MigrateFromV1）があり、
+//    「ランタイムとエディタで移行結果が食い違う」負債になっていたので削除した。
+//    読み込みは AssetMigrationGateway を通すだけでよい。
 //
 //  スキーマ v2:
 //    - value_type: 0=Bool / 1=Axis1D / 2=Axis2D。
@@ -19,10 +27,9 @@
 // ============================================================
 
 using System.Collections.Generic;
-using System.IO;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using SEEDEditor.Migration;
 
 namespace SEEDEditor.InputMap;
 
@@ -51,9 +58,13 @@ public enum ActionCondition
 /// <summary>InputMap アセット全体のルートデータ。</summary>
 public class InputMapData
 {
-    /// <summary>スキーマバージョン（保存時は常に 2）。</summary>
+    /// <summary>
+    /// スキーマバージョン。保存時は常に現行版（<see cref="AssetFormats.InputMap"/> の表）。
+    /// **クラスの先頭に宣言してあるので、直列化でもトップレベルの先頭に出る**
+    /// （版を先頭に置くのは差分を読みやすくするため。順序を変えないこと）。
+    /// </summary>
     [JsonPropertyName("version")]
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = AssetFormats.InputMap.CurrentVersion;
 
     /// <summary>定義済みアクションのリスト。</summary>
     [JsonPropertyName("actions")]
@@ -62,6 +73,18 @@ public class InputMapData
     /// <summary>未知フィールド（往復で失わないよう保持）。</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
+
+    /// <summary>
+    /// 読み込めなかったファイルの代わりに作られた空データか。
+    ///
+    /// <para>
+    /// 未来版（新しいエンジンで保存された）・変換失敗のときに真になる。
+    /// **真のまま保存してはいけない**（中身が空なので、利用者のアクション定義が全部消える）。
+    /// 呼び出し側は編集させずに閉じること。
+    /// </para>
+    /// </summary>
+    [JsonIgnore]
+    public bool IsUnreadable { get; private set; }
 
     // ── 永続化 ──────────────────────────────────────────────
 
@@ -72,47 +95,56 @@ public class InputMapData
     };
 
     /// <summary>
-    /// JSON ファイルからロードする。ファイルが存在しない場合は空データ（v2）を返す。
-    /// version 欠落（v1）は v2 へ移行してから返す。
+    /// JSON ファイルからロードする。
+    ///
+    /// <para>
+    /// 古い版（v1）はランタイムの変換段を通してから解釈する（メモリ上だけ。ファイルは書き換えない）。
+    /// ファイルが存在しない場合は空データを返す。未来版・変換失敗のときは
+    /// 空データに <see cref="IsUnreadable"/> を立てて返す（呼び出し側は保存させないこと）。
+    /// </para>
     /// </summary>
+    /// <param name="path">読み込む .inputmap の絶対パス。</param>
     public static InputMapData LoadFrom(string path)
     {
-        if (!File.Exists(path)) return new InputMapData();
-        var json = File.ReadAllText(path);
-        if (string.IsNullOrWhiteSpace(json)) return new InputMapData();
+        var read = AssetMigrationGateway.ReadFile(path, AssetFormats.InputMap);
+        if (read.Status == AssetReadStatus.Missing) return new InputMapData();
+        if (read.IsBlocked) return new InputMapData { IsUnreadable = true };
+        if (string.IsNullOrWhiteSpace(read.Text)) return new InputMapData();
 
-        // version を判定（欠落＝v1）。
-        bool isV1;
         try
         {
-            var node = JsonNode.Parse(json);
-            isV1 = node?["version"] is null;
+            var data = JsonSerializer.Deserialize<InputMapData>(read.Text) ?? new InputMapData();
+            // 変換済みのテキストを読んだので、ここでは現行版を名乗ってよい。
+            data.Version = AssetFormats.InputMap.CurrentVersion;
+            return data;
         }
-        catch
+        catch (JsonException)
         {
-            // パース不能なら空データ。
+            // 壊れた JSON（従来どおり空データで開く。門は壊れたテキストを素通しする）。
             return new InputMapData();
         }
-
-        var data = JsonSerializer.Deserialize<InputMapData>(json) ?? new InputMapData();
-
-        if (isV1)
-        {
-            // v1 → v2 移行。
-            foreach (var action in data.Actions) action.MigrateFromV1();
-        }
-        data.Version = 2;
-        return data;
     }
 
-    /// <summary>JSON ファイルへ保存する（常に version=2）。</summary>
-    public void SaveTo(string path)
+    /// <summary>
+    /// JSON ファイルへ保存する（常に現行版を刻む）。
+    ///
+    /// <para>
+    /// 書き込みは <see cref="SEEDEditor.Assets.SafeFileWriter"/> 経由の原子的置換
+    /// （旧版を .backup/ へ退避 → .tmp へ書き切って rename）で行う。
+    /// </para>
+    /// </summary>
+    /// <param name="path">保存先の絶対パス。</param>
+    /// <param name="assetsRoot">
+    /// アセットルート（バックアップの置き場を &lt;assets&gt;/.backup/ にそろえるために使う）。
+    /// null ならファイルの隣に .backup フォルダができる。
+    /// </param>
+    public void SaveTo(string path, string? assetsRoot = null)
     {
-        Version = 2;
+        Version = AssetFormats.InputMap.CurrentVersion;
         // 型に無関係なグループを null 化して出力をクリーンに保つ。
         foreach (var action in Actions) action.PrepareForSave();
         var json = JsonSerializer.Serialize(this, SerializeOptions);
-        File.WriteAllText(path, json);
+        SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(path, json, assetsRoot);
     }
 }
 
@@ -173,77 +205,13 @@ public class InputAction
     /// <summary>Axis2D Y 軸を取得（無ければ生成）。</summary>
     public AxisBindingGroup EnsureY() => Y ??= new();
 
-    // ── 移行・保存整形 ───────────────────────────────────────
-
-    /// <summary>
-    /// v1（bindings に全型が入る形式）から v2 へ移行する。
-    /// Bool は bindings をそのまま使う。Axis1D/Axis2D は WASD / Key を正負グループへ展開する。
-    /// </summary>
-    public void MigrateFromV1()
-    {
-        switch (ValueType)
-        {
-            case ActionValueType.Bool:
-                // bindings のうち PC の Key/GamepadButton/GamepadAxis のみ残す（WASD は無意味）。
-                if (Bindings is not null)
-                    Bindings.RemoveAll(b => b.InputType == "WASD");
-                Condition ??= ActionCondition.Press;
-                break;
-
-            case ActionValueType.Axis1D:
-                {
-                    var pos = EnsurePositive();
-                    var neg = EnsureNegative();
-                    if (Bindings is not null)
-                    {
-                        foreach (var b in Bindings)
-                        {
-                            if (b.Platform != "PC") continue;
-                            if (b.InputType == "WASD") ExpandWasd(b.Value, pos, neg);
-                            else if (b.InputType == "Key") pos.Add(new InputBinding { InputType = "Key", Value = b.Value });
-                        }
-                    }
-                    Bindings = null;
-                    break;
-                }
-
-            case ActionValueType.Axis2D:
-                {
-                    var x = EnsureX();
-                    var y = EnsureY();
-                    if (Bindings is not null)
-                    {
-                        foreach (var b in Bindings)
-                        {
-                            if (b.Platform != "PC" || b.InputType != "WASD") continue;
-                            if (b.Value == "Horizontal") ExpandWasd("Horizontal", x.EnsurePositive(), x.EnsureNegative());
-                            else if (b.Value == "Vertical") ExpandWasd("Vertical", y.EnsurePositive(), y.EnsureNegative());
-                        }
-                    }
-                    Bindings = null;
-                    break;
-                }
-        }
-    }
-
-    /// <summary>WASD 合成軸を正負キーバインドへ展開する（矢印キーも同時に有効）。</summary>
-    private static void ExpandWasd(string value, List<InputBinding> positive, List<InputBinding> negative)
-    {
-        if (value == "Horizontal")
-        {
-            positive.Add(new InputBinding { InputType = "Key", Value = "D" });
-            positive.Add(new InputBinding { InputType = "Key", Value = "RightArrow" });
-            negative.Add(new InputBinding { InputType = "Key", Value = "A" });
-            negative.Add(new InputBinding { InputType = "Key", Value = "LeftArrow" });
-        }
-        else if (value == "Vertical")
-        {
-            positive.Add(new InputBinding { InputType = "Key", Value = "W" });
-            positive.Add(new InputBinding { InputType = "Key", Value = "UpArrow" });
-            negative.Add(new InputBinding { InputType = "Key", Value = "S" });
-            negative.Add(new InputBinding { InputType = "Key", Value = "DownArrow" });
-        }
-    }
+    // ── 保存整形 ─────────────────────────────────────────────
+    //
+    //  【v1 → v2 の移行はここには無い】
+    //  以前は MigrateFromV1 / ExpandWasd がここで同じ変換を行っていたが、
+    //  ランタイム（migration/steps/inputmap/v1_to_v2.rs）と二重実装になっており、
+    //  片方だけ直すと移行結果が食い違う負債だった。変換は Rust 一本に集約したので、
+    //  **ここへ移行処理を書き戻さないこと**（docs/asset_migration.md 1 章「変換の場所」）。
 
     /// <summary>保存前に、値の型に無関係なグループを null 化する（出力をクリーンに保つ）。</summary>
     public void PrepareForSave()

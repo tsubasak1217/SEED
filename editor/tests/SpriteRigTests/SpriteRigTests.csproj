@@ -32,6 +32,16 @@
     <Compile Include="..\..\src\Panels\SpriteRig\IO\*.cs">
       <Link>Linked\IO\%(Filename)%(Extension)</Link>
     </Compile>
+
+    <!-- .sprite_mesh の読み書きが通る層（いずれも WPF 非依存）:
+         ・Migration … 版（version）の覗き読みとランタイムへの変換依頼
+         ・SafeFileWriter … 保存の原子的置換（tmp へ書き切って rename） -->
+    <Compile Include="..\..\src\Migration\*.cs">
+      <Link>Linked\Migration\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\SafeFileWriter.cs">
+      <Link>Linked\Assets\SafeFileWriter.cs</Link>
+    </Compile>
   </ItemGroup>
 
 </Project>

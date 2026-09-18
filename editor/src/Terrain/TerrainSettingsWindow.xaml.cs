@@ -829,6 +829,15 @@ public partial class TerrainSettingsWindow : Window
     /// </summary>
     private void OnApply(object sender, RoutedEventArgs e)
     {
+        // 読めなかったファイル（新しいエンジンで保存された・変換に失敗した）は
+        // フォールバックの内容で開いているため、保存すると定義が丸ごと消える。
+        // 理由のダイアログは読み込みの門（AssetMigrationGateway）が既に出している。
+        if (_doc.IsUnreadable || _props.IsUnreadable)
+        {
+            SetStatus("読み込めなかったファイルがあるため保存しません（新しいエンジンで保存された可能性があります）", ok: false);
+            return;
+        }
+
         // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
         // 3 つのファイルは 1 回の「適用」でまとめて書くので、
         // 1 つでも止められたら 1 つも書かない（半分だけ書くと地形の定義が食い違う）。

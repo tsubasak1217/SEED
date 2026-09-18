@@ -271,6 +271,33 @@ public static class VersionControlMessages
     public const string SUBMIT_LOCK_WARN_ANONYMOUS =
         "ログインしていないため、ロックの持ち主を判定できません。そのまま送信します。";
 
+    // ── 一括書き込みゲート ──────────────────────────────────
+    //
+    //  「多数のファイルをまとめて書き換える操作」（プロジェクトの形式アップグレードなど）
+    //  の前に、他の人のロックを 1 回の照会で確かめるためのもの。
+    //  判定表は送信ゲートと同じ（取りに行かず、他の人のロックがあれば止める）で、
+    //  文言だけが「送信」ではなく「実行」になる。
+
+    /// <summary>一括書き込みを止めたときのダイアログのタイトル。</summary>
+    public const string BULK_WRITE_BLOCKED_BY_LOCKS_TITLE = "実行できません";
+
+    /// <summary>他の人のロックがあるので一括書き込みを止めた（書式: 件数, 内訳）。</summary>
+    public const string BULK_WRITE_BLOCKED_BY_LOCKS_FORMAT =
+        "ほかの人がロック中のファイルが {0} 件あるため実行できません。\n{1}";
+
+    /// <summary>方針が「注意のみ」なので、他の人のロックがあっても実行した（書式: 件数）。</summary>
+    public const string BULK_WRITE_LOCK_WARN_ONLY_FORMAT =
+        "ほかの人がロック中のファイルが {0} 件あります。"
+        + "設定が「注意のみ」のため実行は止めません。";
+
+    /// <summary>サーバへ問い合わせられず、ロックを確認しないまま実行した。</summary>
+    public const string BULK_WRITE_LOCK_WARN_UNREACHABLE =
+        "サーバに接続できないため、ほかの人のロックを確認できませんでした。そのまま実行します。";
+
+    /// <summary>ログインしていないので、ロックの持ち主を判定しないまま実行した。</summary>
+    public const string BULK_WRITE_LOCK_WARN_ANONYMOUS =
+        "ログインしていないため、ロックの持ち主を判定できません。そのまま実行します。";
+
     // ── 共通 ────────────────────────────────────────────────
 
     /// <summary>操作が中断された。</summary>

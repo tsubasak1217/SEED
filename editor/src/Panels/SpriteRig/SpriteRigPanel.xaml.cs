@@ -477,7 +477,8 @@ public partial class SpriteRigPanel : UserControl
 
         try
         {
-            string saved = document.Save(target);
+            // アセットルートを渡すと、旧版のバックアップが <assets>/.backup/ へ集まる。
+            string saved = document.Save(target, SEEDEditor.Project.ProjectContext.AssetsDir);
             MeshSaved?.Invoke(saved);
             UpdateUiForActiveDocument();
             return true;

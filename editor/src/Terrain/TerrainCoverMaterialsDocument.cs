@@ -27,6 +27,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using SEEDEditor.Migration;
 
 namespace SEEDEditor.Terrain;
 
@@ -84,11 +85,16 @@ internal sealed class TerrainCoverMaterialsDocument
     public static TerrainCoverMaterialsDocument Load(string assetsRoot)
     {
         var path = ResolvePath(assetsRoot);
+
+        // 版の欄を覗き、古ければランタイムの変換を通す（メモリ上だけ）。
+        // このドキュメントは読むだけなので、読めなくても空一覧へ倒してよい
+        //（書き戻さない＝利用者のデータを上書きする経路が無い）。
+        var read = AssetMigrationGateway.ReadFile(path, AssetFormats.TerrainCoverMaterials);
+
         JsonObject? root = null;
         try
         {
-            if (File.Exists(path))
-                root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+            if (read.HasText) root = JsonNode.Parse(read.Text) as JsonObject;
         }
         catch (Exception)
         {

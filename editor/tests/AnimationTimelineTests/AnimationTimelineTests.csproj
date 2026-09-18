@@ -60,6 +60,16 @@
     <Compile Include="..\..\src\Panels\AnimationTimeline\AnimTimelineZoom.cs">
       <Link>Linked\AnimTimelineZoom.cs</Link>
     </Compile>
+    <!-- .anim の読み書きが通る層（いずれも WPF 非依存）:
+         ・Migration … 版（format_version）の覗き読みとランタイムへの変換依頼
+         ・SafeFileWriter … 保存の原子的置換（tmp へ書き切って rename） -->
+    <Compile Include="..\..\src\Migration\*.cs">
+      <Link>Linked\Migration\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\SafeFileWriter.cs">
+      <Link>Linked\Assets\SafeFileWriter.cs</Link>
+    </Compile>
+
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>
     </Compile>

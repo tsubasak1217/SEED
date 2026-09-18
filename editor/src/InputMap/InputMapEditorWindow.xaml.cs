@@ -112,6 +112,17 @@ public partial class InputMapEditorWindow : Window
         DwmSetWindowAttribute(helper.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
 
         TbFilePath.Text = string.IsNullOrEmpty(_filePath) ? "（未保存）" : _filePath;
+
+        // 読めなかったファイル（新しいエンジンで保存された・変換に失敗した）は
+        // 空の一覧として開いてしまうため、編集させずに閉じる。
+        // そのまま保存すると利用者のアクション定義が全部消える。
+        // 理由のダイアログは読み込みの門（AssetMigrationGateway）が既に出している。
+        if (_data.IsUnreadable)
+        {
+            Close();
+            return;
+        }
+
         RefreshActionList();
     }
 
@@ -581,7 +592,8 @@ public partial class InputMapEditorWindow : Window
         // 止められたときはウィンドウを閉じない（編集内容を失わせないため）。
         if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(_filePath)) return;
 
-        _data.SaveTo(_filePath);
+        // アセットルートを渡すと、旧版のバックアップが <assets>/.backup/ へ集まる。
+        _data.SaveTo(_filePath, SEEDEditor.Project.ProjectContext.AssetsDir);
         _isDirty = false;
         Close();
     }

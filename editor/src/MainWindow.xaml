@@ -5,6 +5,7 @@
         xmlns:panels="clr-namespace:SEEDEditor.Panels"
         xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
         xmlns:local="clr-namespace:SEEDEditor"
+        xmlns:migration="clr-namespace:SEEDEditor.Migration"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="SEED Editor" Height="720" Width="1280"
         Background="#1E1E1E"
@@ -942,6 +943,14 @@
                 <!-- 全魚 prefab を透過 PNG へ描き出し、FishCatalog.cs を再生成する。
                      ランタイムへ 1 匹ずつ描画を依頼するため、完了までしばらくかかる。 -->
                 <MenuItem Header="図鑑画像を生成" Click="OnGenerateFishThumbnails"/>
+                <Separator/>
+                <!-- アセットを現在のエンジンの形式へそろえる（docs/asset_migration.md）。
+                     まず dry-run で内容を見せ、承諾を得てから書き換える。
+                     書き換えた結果はバージョン管理パネルに変更として並ぶ。
+                     表示名は MigrationMessages の定数を参照する（起動時の案内トーストが
+                     「ツール → <この名前>」と案内するため、綴りがずれると案内が嘘になる）。 -->
+                <MenuItem Header="{x:Static migration:MigrationMessages.UPGRADE_MENU_HEADER}"
+                          Click="OnUpgradeProjectFormats"/>
             </MenuItem>
 
         </Menu>

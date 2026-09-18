@@ -799,7 +799,9 @@ public partial class AnimationTimelinePanel : UserControl
 
         try
         {
-            AnimClipIO.Save(_clip, path);
+            // アセットルートを渡すと、旧版のバックアップが <assets>/.backup/ へ集まる
+            //（渡さないと .anim の隣に .backup フォルダが増えてしまう）。
+            AnimClipIO.Save(_clip, path, _assetsPath);
             _currentFilePath = path;
             _isDirty = false;
             UpdateTitle();

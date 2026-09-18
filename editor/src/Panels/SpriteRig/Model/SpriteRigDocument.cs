@@ -487,11 +487,17 @@ public sealed partial class SpriteRigDocument
     /// <c>.sprite_mesh</c> として保存する。
     /// </summary>
     /// <param name="path">保存先（null なら <see cref="DefaultMeshPath"/>）。</param>
+    /// <param name="assetsRoot">
+    /// アセットルート（旧版のバックアップを &lt;assets&gt;/.backup/ へ集めるために使う）。
+    /// null なら .sprite_mesh の隣に .backup フォルダができる。
+    /// </param>
     /// <returns>実際に保存したパス。</returns>
-    public string Save(string? path = null)
+    public string Save(string? path = null, string? assetsRoot = null)
     {
         string target = path ?? DefaultMeshPath;
-        SpriteMeshFile.Save(target, Mesh, Image.Width, Image.Height, ImagePath, DisplayNameFor(target));
+        SpriteMeshFile.Save(
+            target, Mesh, Image.Width, Image.Height, ImagePath, DisplayNameFor(target),
+            comment: string.Empty, assetsRoot: assetsRoot);
         MeshPath = target;
         IsDirty = false;
         return target;

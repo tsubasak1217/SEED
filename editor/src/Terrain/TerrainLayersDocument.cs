@@ -30,6 +30,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Unicode;
+using SEEDEditor.Migration;
 
 namespace SEEDEditor.Terrain;
 
@@ -361,6 +362,16 @@ internal sealed class TerrainLayersDocument
     /// <summary>読み込み時に既存ファイルが無かった／壊れていたか（UI での注意表示に使う）。</summary>
     public bool WasMissingOrInvalid { get; private init; }
 
+    /// <summary>
+    /// 読み込めなかったファイル（未来版・変換失敗）の代わりに作られたか。
+    ///
+    /// <para>
+    /// **真のまま保存してはいけない**（フォールバックの 1 レイヤで layers.json を
+    /// 丸ごと上書きしてしまう）。呼び出し側は編集させずに閉じること。
+    /// </para>
+    /// </summary>
+    public bool IsUnreadable { get; private init; }
+
     private TerrainLayersDocument(JsonObject root)
     {
         _root = root;
@@ -377,11 +388,26 @@ internal sealed class TerrainLayersDocument
     public static TerrainLayersDocument Load(string assetsRoot)
     {
         var path = ResolvePath(assetsRoot);
+
+        // 版の欄を覗き、古ければランタイムの変換を通す（メモリ上だけ。ファイルは書き換えない）。
+        var read = AssetMigrationGateway.ReadFile(path, AssetFormats.TerrainLayers);
+        if (read.IsBlocked)
+        {
+            // 未来版・変換失敗。フォールバックで開くと保存で上書きしてしまうので、
+            // 「読めなかった」印を付けて返す（呼び出し側が編集させない）。
+            var blocked = new TerrainLayersDocument(new JsonObject())
+            {
+                WasMissingOrInvalid = true,
+                IsUnreadable = true,
+            };
+            blocked.Layers.Add(TerrainLayerEdit.CreateNew(FallbackLayerName));
+            return blocked;
+        }
+
         JsonObject? root = null;
         try
         {
-            if (File.Exists(path))
-                root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+            if (read.HasText) root = JsonNode.Parse(read.Text) as JsonObject;
         }
         catch (Exception)
         {
@@ -422,11 +448,13 @@ internal sealed class TerrainLayersDocument
     {
         var path = ResolvePath(assetsRoot);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, ToJsonString());
+        // 原子的置換（旧版を <assets>/.backup/ へ退避 → .tmp へ書き切って rename）。
+        SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(path, ToJsonString(), assetsRoot);
     }
 
     /// <summary>
     /// 現在の編集内容を JSON 文字列へ直列化する（保存と往復テストで共有する）。
+    /// 版（format_version）はトップレベルの先頭に入る。
     /// </summary>
     public string ToJsonString()
     {
@@ -443,7 +471,10 @@ internal sealed class TerrainLayersDocument
             // 日本語のレイヤ名や "_comment" が \uXXXX へ潰れないようにする。
             Encoder = JavaScriptEncoder.Create(UnicodeRanges.All),
         };
-        return _root.ToJsonString(options);
+        // 版を先頭に刻む（値と欄名は AssetFormats の表から取る。ここへ直書きしない）。
+        return AssetVersionStamp
+            .WithVersionFirst(_root, AssetFormats.TerrainLayers)
+            .ToJsonString(options);
     }
 
     /// <summary>assets ルートから layers.json の絶対パスを求める。</summary>

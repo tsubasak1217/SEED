@@ -153,7 +153,12 @@ public partial class CreateItemWindow : Window
         var stem = Path.GetFileNameWithoutExtension(path);
         try
         {
-            File.WriteAllText(path, contentFactory(stem), new UTF8Encoding(false));
+            // 原子的置換（.tmp へ書き切って rename）。新規作成なのでバックアップは作られないが、
+            // 書き込み経路を 1 本にそろえておく（中断で壊れたファイルを残さない）。
+            SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(
+                path, contentFactory(stem),
+                SEEDEditor.Project.ProjectContext.AssetsDir,
+                new UTF8Encoding(false));
         }
         catch
         {
@@ -339,8 +344,11 @@ public partial class CreateItemWindow : Window
         const string BaseName = "NewMaterial";
         const string Ext      = ".mat";
 
+        // 版はトップレベルの先頭に置く（欄名も値も AssetFormats の表から取る。直書きしない）。
+        // ランタイム側の雛形 default_mat_json() と同じ形にしてある。
         CreateFileAndClose(BaseName, Ext, stem => $$"""
             {
+              "{{SEEDEditor.Migration.AssetFormats.Material.VersionKeyName}}": {{SEEDEditor.Migration.AssetFormats.Material.CurrentVersion}},
               "name": "{{stem}}",
               "base_color": [1.0, 1.0, 1.0, 1.0],
               "metallic": 1.0,
@@ -428,8 +436,11 @@ public partial class CreateItemWindow : Window
         const string BaseName = "NewPostFX";
         const string Ext      = ".postfx";
 
-        CreateFileAndClose(BaseName, Ext, _ => """
+        // 版はトップレベルの先頭に置く（欄名も値も AssetFormats の表から取る。直書きしない）。
+        // ランタイム側の雛形 default_postfx_json() と同じ形にしてある。
+        CreateFileAndClose(BaseName, Ext, _ => $$"""
             {
+              "{{SEEDEditor.Migration.AssetFormats.Postfx.VersionKeyName}}": {{SEEDEditor.Migration.AssetFormats.Postfx.CurrentVersion}},
               "every_frame": false,
               "effects": [
                 { "type": "blur", "radius": 4 },

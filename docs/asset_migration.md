@@ -34,8 +34,10 @@
   `SceneSettingsData.cs`（`.scene` の `settings` / `shading_asset`）、`FishCatalogGenerator.cs`（`.actor`）、
   `AssetCollector.cs`（参照の正規表現走査、`project_settings.json`）。`.anim` / `.inputmap` / `.sprite_mesh` / `layers.json` /
   `props.json` / `project_settings.json` は**書き手が C# にしか無い**。
-  → M2a で `--migrate-json` の口を用意した。C# 側から通す作業は M2b（6.5 章）。
-  `.inputmap` の v1→v2 は M2a で Rust 側を変換段へ集約した（C# 側の二重実装の解消は M2b）。
+  → M2a で `--migrate-json` の口を用意し、M2b で C# 側の読み手を通した（6.6 章）。
+  `SceneSettingsData.cs` / `FishCatalogGenerator.cs` / `AssetCollector.cs` は
+  まだ門を通っていない（`docs/backlog.md`）。
+  `.inputmap` の v1→v2 は M2a で Rust 側を変換段へ集約し、M2b で C# 側の二重実装を削除した。
 - `safe_write`（tmp → rename ＋ `.backup/` 世代）の適用範囲は 6 章「保存経路」の表を見ること
   （M2a で `terrain_meta.json` / `.tcover` / `.tscatter` を追加。`.tvox` は M3）。
 
@@ -323,6 +325,111 @@ Rust の変換を通らない C# の読み手（docs 2 章の一覧）は、フ�
 - 実行後は `.actor` を参照するシーンの `prefab_hash` が貼り直されるため、
   VCS パネルには `.scene` も変更として並ぶ。これは正常。
 
+## 6.6 エディタ側の実装（M2b）
+
+6.5 の 3 項目をエディタ（C#）へ入れたときの構成。置き場は `editor/src/Migration/`。
+
+### 置き場と役割
+
+| ファイル | 役割 |
+|---|---|
+| `AssetFormat.cs` | **`kind.rs` の表の写し**（形式・版の欄名・現行版・書き手）。`AssetFormats.All` が一覧 |
+| `AssetVersionPeek.cs` | 版の欄だけを安く覗く。`Utf8JsonReader` でトップレベルを走査し、入れ子は読み飛ばす |
+| `AssetVersionStamp.cs` | `JsonObject` の**先頭**へ現行版を置いた新しいオブジェクトを作る（地形 JSON が使う） |
+| `MigrateJsonRunner.cs` | `--migrate-json <kind>` の起動。終了コード 0/1/2/3 を `MigrateJsonOutcome` へ写す |
+| `ProjectUpgradeRunner.cs` | `--upgrade-project [--dry-run]` の起動 |
+| `ProjectUpgradeReport.cs` | JSON Lines の解釈（`kind` で行種別を判定。解釈できない行は捨てずに別枠へ） |
+| `AssetMigrationGateway.cs` | **C# の読み手が通る唯一の門**。覗く → 現行版なら素通し → 古ければ変換 → 未来版は開かせない |
+| `ProjectUpgradeNotice.cs` | プロジェクトを開いた直後の dry-run と案内 |
+| `MigrationMessages.cs` | 文言（ダイアログ・トースト・ログ）の集約 |
+| `IMigrationNotifier.cs` / `Presentation/MigrationNotifier.cs` | 提示の境界と WPF 実装（モーダル＝`EditorDialogs` / 案内＝トースト） |
+| `Presentation/ProjectUpgradeWindow.cs` | 一括アップグレードのダイアログ（dry-run → 実行） |
+
+`Presentation/` 以外は **WPF 非依存**。`ProjectSettingsData` / `InputMapData` /
+`AnimClipIO` / `SpriteMeshFile` が単体テストへリンクされているため、
+この層が WPF を引き込むとテストがビルドできなくなる（それが検知器になっている）。
+
+### 版の表がずれないようにする仕組み
+
+C# は `kind.rs` の**写し**を持つ（版を刻むたびに exe を起動しないため）。
+写しである以上ずれるので、`editor/tests/MigrationTests` が `kind.rs` を読んで
+形式・欄名・現行版・書き手の 4 つを突き合わせる。**片方だけ直すとテストが落ちる**。
+
+### 刻印を入れた書き手
+
+| ファイル | 書き手 | 刻み方 |
+|---|---|---|
+| `*.anim` | `Panels/AnimationTimeline/AnimClipIO.Serialize` | `Utf8JsonWriter` で最初に書く |
+| `*.mat` / `*.postfx` の雛形 | `CreateItemWindow.OnCreateMaterial` / `OnCreatePostFX` | 雛形テキストの先頭行 |
+| `terrain/layers.json` | `Terrain/TerrainLayersDocument.ToJsonString` | `AssetVersionStamp.WithVersionFirst` |
+| `terrain/props.json` | `Terrain/TerrainPropsDocument.ToJsonString` | 同上 |
+| `project_settings.json` | `ProjectSettings/ProjectSettingsData` | `FormatVersion` プロパティ＋`[JsonPropertyOrder]` で先頭 |
+| `*.inputmap` | `InputMap/InputMapData` | `Version` プロパティ（クラスの先頭に宣言） |
+| `*.sprite_mesh` | `Panels/SpriteRig/IO/SpriteMeshFile` | `SpriteMeshDto.Version`（DTO の先頭） |
+
+値は**すべて `AssetFormats` の表から取る**（`SpriteMeshFile.SchemaVersion` も表を指す）。
+`terrain/cover_materials.json` はエディタに書き手が無い（読むだけ）。
+
+### 門を通した読み手
+
+`.anim` / `.inputmap` / `.sprite_mesh` / 地形 3 種 / `project_settings.json` の 7 経路。
+どれも **まず版を覗き、現行版なら `SEED.exe` を起動しない**（実データはほぼこの経路）。
+
+失敗の返し方は読み手の性格で 2 通りに分かれる。
+
+| 読み手 | 失敗の返し方 | 門へ渡す `notify` |
+|---|---|---|
+| `AnimClipIO.Load` / `SpriteMeshFile.Load` | 例外（`InvalidDataException`） | **false**（呼び出し元がダイアログを出すので二重に出さない） |
+| `InputMapData.LoadFrom` / `ProjectSettingsData.LoadFrom` / 地形ドキュメント | 既定値 ＋ `IsUnreadable = true` | true |
+
+**`IsUnreadable` の扱いが要点**。これらの読み手は失敗を握りつぶして既定値を返すため、
+そのまま編集させると「空の設定を保存して全部消す」事故になる。
+`InputMapEditorWindow` / `ProjectSettingsWindow` は `OnLoaded` で閉じ、
+`TerrainSettingsWindow` は「保存して適用」を拒否する。
+
+`.inputmap` の C# 側 v1→v2（`InputAction.MigrateFromV1` / `ExpandWasd`）は**削除した**。
+変換は Rust の `migration/steps/inputmap/v1_to_v2.rs` 一本。ここへ書き戻さないこと。
+
+### 保存の原子化
+
+上の書き手（＋`CreateItemWindow` の新規作成）は `File.WriteAllText` をやめ、
+`Assets/SafeFileWriter.WriteAllTextAtomic`（旧版を `.backup/` へ退避 → `.tmp` へ書き切って rename）
+を通す。アセットルートを渡すと世代バックアップが `<assets>/.backup/` に集まる
+（渡さないとファイルの隣に `.backup` が増える）。
+
+### 一括アップグレードのメニュー
+
+「ツール → プロジェクトの形式をアップグレード...」（`MainWindow.Migration.cs`）。
+
+1. 開くと **dry-run** が走り、形式ごとの件数・対象ファイルの一覧・
+   未来版／失敗を別枠で表示する（この時点で 1 バイトも書かない）
+2. 「アップグレードを実行」を押すと、**まず対象ファイルのロックを 1 回でまとめて確認**する
+   （`LockGatekeeper.DecideForBulkWriteAsync`）。他の人のロックがあれば止める
+3. 実行後は結果（更新件数・`prefab_hash` の貼り直し件数・失敗）を出し、
+   `VersionControlService.RequestRefresh()` で VCS パネルへ変更を並べる
+
+ロックの確認に `EnsureAllWritable` を使わないのは、あれが 1 件ずつ照会して
+**ロックを取りに行く**ため。数十〜数百ファイルでは往復が長く、
+実行した人が大量のロックを握ったままになる。判定表は送信ゲートと同じものを
+`LockGatePolicy.DecideForBulkWrite` として共有している（文言だけ差し替え）。
+
+### プロジェクトを開いたときの案内
+
+`MainWindow.OnWindowLoaded` → `ProjectUpgradeNotice.ScanInBackground`。
+バックグラウンドで dry-run を 1 回走らせ、古い形式があれば
+Output ログとトーストで「古い形式のファイルが n 件あります。ツール → … で更新できます」と知らせる。
+**待たない**（プロジェクトを開く処理を遅くしない）。ランタイム exe が無ければ黙ってログだけ。
+ヘッドレス起動では通知しない。
+
+### M2b で入った挙動の変更点（互換性）
+
+| 変更 | 影響 |
+|---|---|
+| C# が書くファイルに版の欄が入る | 次に保存したファイルから 1 行増える。ランタイムは従来どおり読める |
+| `.inputmap` の v1→v2 が Rust 経由になった | **ランタイム exe が未ビルドだと v1 の `.inputmap` を開けない**（従来は C# 側で移行していた）。一括アップグレードを 1 回通せば以後は v2 なので起きない |
+| 未来版のファイルを開かなくなった | 既定値で開いて上書き保存する事故を防ぐため。ダイアログで知らせる |
+| 保存が原子的置換になった | `<assets>/.backup/` に世代が残る（`.anim` / `.inputmap` / `.sprite_mesh` / 地形 JSON / `project_settings.json`）|
+
 ## 7. 段階
 
 - **M1（完了）**: 仕組み（kind / registry / runner / error / json_walk）、`.scene` と `.actor` の読み込みフックと保存時の刻印、
@@ -332,9 +439,12 @@ Rust の変換を通らない C# の読み手（docs 2 章の一覧）は、フ�
   `project_settings.json` の共通ローダ、`.inputmap` の変換段化（Rust 側の二重実装の解消）、
   `--migrate-json` の追加、一括アップグレードの拡大と `prefab_hash` の貼り直し、
   `terrain_meta.json` / `.tcover` / `.tscatter` を `safe_write` へ。
-- **M2b（未着手・エディタ側）**: 6.5 の 3 項目
-  （C# の書き手が版を刻む・C# の読み手を `--migrate-json` へ通す・一括アップグレードのメニューと結果表示）。
-  `engine_version` の確認ダイアログからの導線もここ。
+- **M2b（完了・エディタ側）**: 6.5 の 3 項目（C# の書き手が版を刻む・C# の読み手を
+  `--migrate-json` へ通す・一括アップグレードのメニューと結果表示）と、
+  プロジェクトを開いたときの案内、C# 側 `.inputmap` 変換の削除、保存の原子化。
+  実装の地図は 6.6 章。検証は `editor/tests/MigrationTests`
+  （`kind.rs` との突き合わせを含む）。
+  `engine_version` の確認ダイアログからの導線は未着手（`docs/backlog.md`）。
 - **M3**: 構造的な旧対応（`RigidbodyComponent` の吸収など）を変換へ移す。パッケージ化のときに変換済みで同梱する。
   一括アップグレード後に `#[serde(alias)]` の削除候補を片付ける。
   `.tvox` を `safe_write` へ寄せる（`app/terrain_ops.rs` の 3 か所。M2a では別作業と衝突するため見送り）。

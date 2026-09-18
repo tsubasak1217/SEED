@@ -469,6 +469,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EditorLog.Write(
             $"OnWindowLoaded — RuntimeExePath={RuntimeExePath}  構成={CurrentRuntimeBuildConfig}");
 
+        // アセット形式のマイグレーションを配線し、古い形式の下調べを起こす
+        // （MainWindow.Migration.cs）。exe のパスを使うので EditorPreferences.Init の後に置く。
+        InitAssetMigration();
+
         // シーン設定（デバッグカメラ・レンダリング・編集時物理）を読み込む。
         // 起動直後はまだシーンを開いていないため、旧保存先である project_settings.json から
         // レンダリング設定をフォールバック生成する（読むだけで書き戻しはしない）。

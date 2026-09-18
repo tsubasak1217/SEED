@@ -164,6 +164,27 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 既定方針とは異なる、本機能固有の例外）。判定結果は `Same` を含め、
 `EditorLog` へ必ず 1 行残る。
 
+### 3.2 アセット形式のアップグレード（ツールメニュー）
+
+`engine_version` がエンジン全体の版であるのに対し、**アセットは形式ごとに版を持つ**
+（`.scene` / `.actor` / `.anim` …）。正典は `docs/asset_migration.md`。
+
+- **プロジェクトを開いた直後**、バックグラウンドで
+  `SEED.exe --upgrade-project <プロジェクト> --dry-run` を 1 回だけ走らせる
+  （1 バイトも書き込まない）。古い形式のファイルがあれば Output ログとトーストで
+  「古い形式のファイルが n 件あります。ツール → プロジェクトの形式をアップグレード で更新できます」と知らせる。
+  ランタイム exe が未ビルドなら黙ってログだけ。ヘッドレス起動では通知しない。
+  実装は `editor/src/Migration/ProjectUpgradeNotice.cs`（起こすのは `MainWindow.Migration.cs`）。
+- **「ツール → プロジェクトの形式をアップグレード...」** で
+  `editor/src/Migration/Presentation/ProjectUpgradeWindow.cs` が開く。
+  開いた直後に dry-run を実行して「形式ごとの件数・対象ファイル・未来版／失敗」を見せ、
+  「アップグレードを実行」を押すと、
+  ①対象ファイルのロックを 1 回でまとめて確認（他の人がロック中なら止める）
+  →②実行 →③結果表示 →④`VersionControlService.RequestRefresh()` で VCS パネルへ反映、
+  の順に進む。`.actor` を書き換えるとシーンの `prefab_hash` が貼り直されるため、
+  VCS パネルには `.scene` も変更として並ぶ（正常）。
+- **オーナーが 1 回実行して送信する**運用を想定している。開いただけでは誰のファイルも変わらない。
+
 ---
 
 ## 4. ファイル関連付け（`.seedproj` のダブルクリック）
@@ -258,6 +279,8 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 | エディタ版の取得 | `editor/src/Project/EditorVersion.cs` |
 | engine_version の不一致判定（純粋ロジック） | `editor/src/Project/EngineVersionCheck.cs` |
 | engine_version 不一致時の通知・更新（ダイアログ・保存） | `editor/src/Project/EngineVersionGate.cs` |
+| アセット形式の版の表・覗き読み・変換の呼び出し | `editor/src/Migration/`（正典は `docs/asset_migration.md`） |
+| 形式アップグレードのメニュー・ダイアログ・起動時の案内 | `editor/src/MainWindow.Migration.cs` / `editor/src/Migration/Presentation/ProjectUpgradeWindow.cs` / `editor/src/Migration/ProjectUpgradeNotice.cs` |
 | 起動引数の解析 | `editor/src/Headless/EditorStartupOptions.cs` |
 | 起動時の振り分け判断 | `editor/src/Startup/ProjectStartupResolver.cs` |
 | スタート画面 | `editor/src/Startup/StartWindow.xaml(.cs)` |

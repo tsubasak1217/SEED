@@ -263,6 +263,89 @@ public static class LockGatePolicy
         bool isServerReachable,
         bool isSignedIn,
         LockEnforcementPolicy policy)
+        => DecideForManyPaths(
+               locks, isVersionControlAvailable, isServerReachable, isSignedIn, policy,
+               SubmitWording);
+
+    /// <summary>
+    /// 一括書き込みゲートの判定（プロジェクトの形式アップグレードなど）。
+    ///
+    /// <para>
+    /// 判定表は送信ゲートと**まったく同じ**（ロックを取りに行かず、他の人のロックが
+    /// 1 件でもあれば止める）。違うのは文言だけなので、判定の本体は
+    /// <see cref="DecideForManyPaths"/> で共有する。表を 2 つ持つと片方だけ直す事故が起きる。
+    /// </para>
+    /// <para>
+    /// 保存ゲート（<see cref="DecideForWrite"/>）と違って**取りに行かない**のは、
+    /// 対象が数十〜数百ファイルになるためである。まとめてロックを取ると、
+    /// 実行した人が大量のロックを握ったままになり、他の人が何も編集できなくなる。
+    /// </para>
+    /// </summary>
+    /// <param name="locks">書き換える予定のファイルのロック状態（照会結果）。</param>
+    /// <param name="isVersionControlAvailable">バージョン管理下にあるか。</param>
+    /// <param name="isServerReachable">ロックの状態を取得できたか。</param>
+    /// <param name="isSignedIn">ログイン中か。</param>
+    /// <param name="policy">強制方針。</param>
+    /// <returns>取るべき行動。</returns>
+    public static LockGateSubmitVerdict DecideForBulkWrite(
+        IReadOnlyList<LockInfo>? locks,
+        bool isVersionControlAvailable,
+        bool isServerReachable,
+        bool isSignedIn,
+        LockEnforcementPolicy policy)
+        => DecideForManyPaths(
+               locks, isVersionControlAvailable, isServerReachable, isSignedIn, policy,
+               BulkWriteWording);
+
+    /// <summary>
+    /// 複数パスをまとめて見るゲートの文言一式。
+    ///
+    /// <para>
+    /// 送信ゲートと一括書き込みゲートは判定が同じで文言だけが違う。
+    /// 文言を差し替えられるようにしておくことで、判定表を 1 つに保てる。
+    /// </para>
+    /// </summary>
+    /// <param name="UnreachableWarning">サーバへ届かなかったときの注意。</param>
+    /// <param name="AnonymousWarning">ログインしていないときの注意。</param>
+    /// <param name="WarnOnlyFormat">方針が「注意のみ」のときの注意（書式: 件数）。</param>
+    /// <param name="BlockedFormat">止めるときの文言（書式: 件数, 内訳）。</param>
+    public readonly record struct LockGateManyPathsWording(
+        string UnreachableWarning,
+        string AnonymousWarning,
+        string WarnOnlyFormat,
+        string BlockedFormat);
+
+    /// <summary>送信ゲートの文言。</summary>
+    private static readonly LockGateManyPathsWording SubmitWording = new(
+        VersionControlMessages.SUBMIT_LOCK_WARN_UNREACHABLE,
+        VersionControlMessages.SUBMIT_LOCK_WARN_ANONYMOUS,
+        VersionControlMessages.SUBMIT_LOCK_WARN_ONLY_FORMAT,
+        VersionControlMessages.SUBMIT_BLOCKED_BY_LOCKS_FORMAT);
+
+    /// <summary>一括書き込みゲートの文言。</summary>
+    private static readonly LockGateManyPathsWording BulkWriteWording = new(
+        VersionControlMessages.BULK_WRITE_LOCK_WARN_UNREACHABLE,
+        VersionControlMessages.BULK_WRITE_LOCK_WARN_ANONYMOUS,
+        VersionControlMessages.BULK_WRITE_LOCK_WARN_ONLY_FORMAT,
+        VersionControlMessages.BULK_WRITE_BLOCKED_BY_LOCKS_FORMAT);
+
+    /// <summary>
+    /// 複数パスをまとめて見るゲートの判定本体（送信・一括書き込みで共有）。
+    /// </summary>
+    /// <param name="locks">対象ファイルのロック状態（照会結果）。</param>
+    /// <param name="isVersionControlAvailable">バージョン管理下にあるか。</param>
+    /// <param name="isServerReachable">ロックの状態を取得できたか。</param>
+    /// <param name="isSignedIn">ログイン中か。</param>
+    /// <param name="policy">強制方針。</param>
+    /// <param name="wording">文言一式。</param>
+    /// <returns>取るべき行動。</returns>
+    private static LockGateSubmitVerdict DecideForManyPaths(
+        IReadOnlyList<LockInfo>? locks,
+        bool isVersionControlAvailable,
+        bool isServerReachable,
+        bool isSignedIn,
+        LockEnforcementPolicy policy,
+        LockGateManyPathsWording wording)
     {
         // 1) バージョン管理下に無い → そもそも送信できないが、ここでは止めない。
         if (!isVersionControlAvailable)
@@ -277,7 +360,7 @@ public static class LockGatePolicy
             return new LockGateSubmitVerdict(
                 LockGateAction.AllowWithWarning,
                 LockGateReason.ServerUnreachable,
-                VersionControlMessages.SUBMIT_LOCK_WARN_UNREACHABLE);
+                wording.UnreachableWarning);
         }
 
         // 他の人のロックだけを集める。
@@ -303,7 +386,7 @@ public static class LockGatePolicy
             return new LockGateSubmitVerdict(
                 LockGateAction.AllowWithWarning,
                 LockGateReason.NotSignedIn,
-                VersionControlMessages.SUBMIT_LOCK_WARN_ANONYMOUS,
+                wording.AnonymousWarning,
                 blocking);
         }
 
@@ -320,7 +403,7 @@ public static class LockGatePolicy
             return new LockGateSubmitVerdict(
                 LockGateAction.AllowWithWarning,
                 LockGateReason.WarnOnlyPolicy,
-                Format(VersionControlMessages.SUBMIT_LOCK_WARN_ONLY_FORMAT,
+                Format(wording.WarnOnlyFormat,
                        blocking.Count.ToString(CultureInfo.InvariantCulture)),
                 blocking);
         }
@@ -329,7 +412,7 @@ public static class LockGatePolicy
         return new LockGateSubmitVerdict(
             LockGateAction.Block,
             LockGateReason.HeldByOther,
-            Format(VersionControlMessages.SUBMIT_BLOCKED_BY_LOCKS_FORMAT,
+            Format(wording.BlockedFormat,
                    blocking.Count.ToString(CultureInfo.InvariantCulture),
                    DescribeLocks(blocking)),
             blocking);

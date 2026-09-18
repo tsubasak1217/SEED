@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using SEEDEditor.Migration;
 using SEEDEditor.Panels.SpriteRig.Mesh;
 
 namespace SEEDEditor.Panels.SpriteRig.IO;
@@ -24,8 +25,14 @@ namespace SEEDEditor.Panels.SpriteRig.IO;
 /// </summary>
 public static class SpriteMeshFile
 {
-    /// <summary>書き出す <c>.sprite_mesh</c> のスキーマバージョン。</summary>
-    public const int SchemaVersion = 1;
+    /// <summary>
+    /// 書き出す <c>.sprite_mesh</c> のスキーマバージョン。
+    ///
+    /// 正典は <see cref="AssetFormats.SpriteMesh"/> の表（＝ランタイムの kind.rs の写し）。
+    /// ここで値を直書きせず表から取ることで、版を上げたときに直す場所を 1 か所に保つ。
+    /// 欄名も <c>format_version</c> ではなく <c>version</c> のまま（綴りを変えないこと）。
+    /// </summary>
+    public static readonly int SchemaVersion = AssetFormats.SpriteMesh.CurrentVersion;
 
     /// <summary><c>.sprite_mesh</c> の拡張子（ドット付き）。</summary>
     public const string Extension = ".sprite_mesh";
@@ -66,6 +73,10 @@ public static class SpriteMeshFile
     /// <param name="texturePath">元画像の絶対パス（null なら texture を書かない）。</param>
     /// <param name="name">アセット名（空なら拡張子を除いたファイル名を使う）。</param>
     /// <param name="comment">制作者向けメモ。</param>
+    /// <param name="assetsRoot">
+    /// アセットルート（バックアップを &lt;assets&gt;/.backup/ へ集めるために使う）。
+    /// null なら .sprite_mesh の隣に .backup フォルダができる。
+    /// </param>
     /// <exception cref="InvalidOperationException">メッシュがランタイムの検証を通らない場合。</exception>
     public static void Save(
         string path,
@@ -74,7 +85,8 @@ public static class SpriteMeshFile
         int imageHeight,
         string? texturePath,
         string name = "",
-        string comment = "")
+        string comment = "",
+        string? assetsRoot = null)
     {
         string json = Serialize(mesh, imageWidth, imageHeight,
             texturePath == null ? null : MakeRelativeTexturePath(path, texturePath),
@@ -83,7 +95,9 @@ public static class SpriteMeshFile
 
         string? directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-        File.WriteAllText(path, json);
+        // 原子的置換（旧版を .backup/ へ退避 → .tmp へ書き切って rename）。
+        // 途中で落ちても「書きかけの .sprite_mesh」が残らない。
+        SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(path, json, assetsRoot);
     }
 
     /// <summary>
@@ -235,10 +249,19 @@ public static class SpriteMeshFile
     /// （開いただけで形が変わってしまうのを避けるため）。
     /// </summary>
     /// <param name="path">読み込む <c>.sprite_mesh</c> の絶対パス。</param>
+    /// <exception cref="FileNotFoundException">ファイルが存在しない場合。</exception>
+    /// <exception cref="InvalidDataException">未来版・変換失敗で開けない場合。</exception>
     public static LoadResult Load(string path)
     {
-        string json = File.ReadAllText(path);
-        return Deserialize(json, Path.GetDirectoryName(path));
+        // 版の欄（version）を覗き、古ければランタイムの変換を通す（メモリ上だけ）。
+        // notify: false — 呼び出し元（SpriteRigPanel）が例外を捕まえて自前のダイアログを出す。
+        var read = AssetMigrationGateway.ReadFile(path, AssetFormats.SpriteMesh, notify: false);
+        if (read.Status == AssetReadStatus.Missing)
+            throw new FileNotFoundException($".sprite_mesh が見つかりません: {path}", path);
+        if (!read.HasText)
+            throw new InvalidDataException(read.Message);
+
+        return Deserialize(read.Text, Path.GetDirectoryName(path));
     }
 
     /// <summary>

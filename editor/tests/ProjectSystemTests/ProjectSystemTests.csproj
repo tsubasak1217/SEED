@@ -77,6 +77,16 @@
       <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
     </Compile>
 
+    <!-- project_settings.json の読み書きが通る層（いずれも WPF 非依存）:
+         ・Migration … 版（format_version）の覗き読みとランタイムへの変換依頼
+         ・SafeFileWriter … 保存の原子的置換（tmp へ書き切って rename） -->
+    <Compile Include="..\..\src\Migration\*.cs">
+      <Link>Linked\Migration\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\SafeFileWriter.cs">
+      <Link>Linked\Assets\SafeFileWriter.cs</Link>
+    </Compile>
+
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

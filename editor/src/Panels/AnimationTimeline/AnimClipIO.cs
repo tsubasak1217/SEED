@@ -8,12 +8,20 @@
 //  （InspectorPanel 既存コードの手動 JsonElement 解析パターンを踏襲）。
 //
 //  数値は常に InvariantCulture で読み書きする。
+//
+//  【版（format_version）の扱い】
+//  .anim は「書き手がエディタにしか無い」形式なので、版を刻むのはここの責務である
+//  （docs/asset_migration.md 5.1 / 6.5）。
+//    ・書き出し … トップレベルの**先頭**へ現行版を書く。値は AssetFormats の表から取る
+//    ・読み込み … AssetMigrationGateway を通す。古ければランタイムが持ち上げ、
+//                 未来版（新しいエンジンで保存されたファイル）は開かずに例外にする
 // ============================================================
 
 using System;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using SEEDEditor.Migration;
 
 namespace SEEDEditor.Panels.AnimationTimeline;
 
@@ -22,11 +30,29 @@ internal static class AnimClipIO
 {
     // ── 読み込み ────────────────────────────────────────────────
 
-    /// <summary>.anim ファイルを読み込み、編集用モデルへ変換する。</summary>
+    /// <summary>
+    /// .anim ファイルを読み込み、編集用モデルへ変換する。
+    ///
+    /// <para>
+    /// 古い形式ならランタイムの変換を通してから解釈する（メモリ上だけ。ファイルは書き換えない）。
+    /// 未来版・変換失敗のときは <see cref="InvalidDataException"/> を投げる。
+    /// **既定値のクリップを返してはいけない**（そのまま保存すると利用者の作ったキーが全部消える）。
+    /// </para>
+    /// </summary>
+    /// <param name="path">読み込む .anim の絶対パス。</param>
+    /// <exception cref="FileNotFoundException">ファイルが存在しない場合。</exception>
+    /// <exception cref="InvalidDataException">未来版・変換失敗で開けない場合。</exception>
     public static AnimClip Load(string path)
     {
-        var json = File.ReadAllText(path);
-        return Parse(json);
+        // notify: false — 呼び出し元（AnimationTimelinePanel）が例外を捕まえて
+        // 自前のダイアログを出すため、ここで出すと同じ文言が 2 回出る。
+        var read = AssetMigrationGateway.ReadFile(path, AssetFormats.Anim, notify: false);
+        if (read.Status == AssetReadStatus.Missing)
+            throw new FileNotFoundException($".anim が見つかりません: {path}", path);
+        if (!read.HasText)
+            throw new InvalidDataException(read.Message);
+
+        return Parse(read.Text);
     }
 
     /// <summary>JSON 文字列から編集用モデルを構築する（テスト・ラウンドトリップ検証用に公開）。</summary>
@@ -135,11 +161,25 @@ internal static class AnimClipIO
 
     // ── 書き出し ────────────────────────────────────────────────
 
-    /// <summary>編集用モデルを .anim ファイルへ書き出す。</summary>
-    public static void Save(AnimClip clip, string path)
+    /// <summary>
+    /// 編集用モデルを .anim ファイルへ書き出す。
+    ///
+    /// <para>
+    /// 書き込みは <see cref="SEEDEditor.Assets.SafeFileWriter"/> 経由の原子的置換
+    /// （旧版を .backup/ へ退避 → .tmp へ書き切って rename）で行う。
+    /// 途中で落ちても「書きかけの .anim」が残らない。
+    /// </para>
+    /// </summary>
+    /// <param name="clip">保存するクリップ。</param>
+    /// <param name="path">保存先の絶対パス。</param>
+    /// <param name="assetsRoot">
+    /// アセットルート（バックアップを &lt;assets&gt;/.backup/ へ集めるために使う）。
+    /// null なら .anim の隣に .backup フォルダができる。
+    /// </param>
+    public static void Save(AnimClip clip, string path, string? assetsRoot = null)
     {
         var json = Serialize(clip);
-        File.WriteAllText(path, json);
+        SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(path, json, assetsRoot);
     }
 
     /// <summary>編集用モデルを Rust serde 互換の JSON 文字列へ変換する（ラウンドトリップ検証用に公開）。</summary>
@@ -150,6 +190,9 @@ internal static class AnimClipIO
         using (var writer = new Utf8JsonWriter(stream, options))
         {
             writer.WriteStartObject();
+            // 版はトップレベルの先頭に置く（差分を見たときに版がすぐ分かるように）。
+            // 欄名も値も AssetFormats の表から取る（値をここへ直書きしない）。
+            writer.WriteNumber(AssetFormats.Anim.VersionKeyName, AssetFormats.Anim.CurrentVersion);
             writer.WriteString("name", clip.Name);
             writer.WriteNumber("duration", clip.Duration);
             // 編集用フレームレート（Rust 側は #[serde(default)] なので旧エディタとも共存できる）

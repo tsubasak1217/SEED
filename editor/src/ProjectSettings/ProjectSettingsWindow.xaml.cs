@@ -199,6 +199,16 @@ public partial class ProjectSettingsWindow : Window
         int dark = 1;
         DwmSetWindowAttribute(helper.Handle, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int));
 
+        // 読めなかった project_settings.json（新しいエンジンで保存された・変換に失敗した）は
+        // 既定値のまま開いてしまうため、編集させずに閉じる。
+        // そのまま保存するとプロジェクト設定が既定値で丸ごと上書きされる。
+        // 理由のダイアログは読み込みの門（AssetMigrationGateway）が既に出している。
+        if (_data.IsUnreadable)
+        {
+            Close();
+            return;
+        }
+
         // カテゴリツリーを構築し、デフォルト項目（シーンマネージャ）を選択する
         BuildCategoryPanel();
         SelectSubItem("scene_manager");

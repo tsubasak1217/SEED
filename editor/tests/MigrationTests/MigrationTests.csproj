@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    アセット形式のマイグレーション（docs/asset_migration.md）のエディタ側単体テスト。
+
+    SpriteRigTests / ProjectSystemTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （マイグレーション層が WPF 型を使い始めたらビルドが壊れ、
+          それが「読み込み・保存の判断が UI から独立していること」の検知器になる）
+
+    検証の柱:
+      1. C# の版の表（AssetFormat.cs）が Rust の正典（kind.rs）と一致すること
+      2. 版の覗き読み（欄なし・現行・未来・壊れたファイル）
+      3. 一括アップグレード（upgrade-project）の出力（JSON Lines）の解釈
+      4. 刻印の往復（保存すると版が先頭に入り、読み戻せる）
+      5. 1 件変換（migrate-json）の実行（runtime/target/debug/SEED.exe があるときだけ）
+
+    実行方法: dotnet run (project=editor/tests/MigrationTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.Migration</RootNamespace>
+    <AssemblyName>MigrationTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: マイグレーション層一式（Presentation/ は WPF 依存なので入らない） -->
+    <Compile Include="..\..\src\Migration\*.cs">
+      <Link>Linked\Migration\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- 保存経路が使う原子的書き込み -->
+    <Compile Include="..\..\src\Assets\SafeFileWriter.cs">
+      <Link>Linked\Assets\SafeFileWriter.cs</Link>
+    </Compile>
+
+    <!-- 刻印の往復を確かめる書き手（どちらも WPF 非依存） -->
+    <Compile Include="..\..\src\InputMap\InputMapData.cs">
+      <Link>Linked\InputMap\InputMapData.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\ProjectSettingsData.cs">
+      <Link>Linked\ProjectSettings\ProjectSettingsData.cs</Link>
+    </Compile>
+
+    <!-- リポジトリルートとランタイム exe の探索（kind.rs の場所と SEED.exe を引くのに使う） -->
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfig.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeBuildConfig.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeExeLocator.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeExeLocator.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>
