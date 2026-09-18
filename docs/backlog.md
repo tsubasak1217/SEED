@@ -1233,9 +1233,15 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   わらしべフィッシングの現行データは `prefab_hash` を持たないので未発生。
 - [ ] **旧 enum 表記の `alias` は削除候補** — 2026-09-18。全員が一括アップグレードを取り込んだ後に消す:
   `particle_emitter_component.rs:159,162,288`、`canvas_component.rs:37`。`ParticleBlend::from_str_opt` の旧名受理は IPC 経路なので別判断。
-- [ ] **M2**: エディタからの一括アップグレード（メニュー・結果表示・`engine_version` の確認ダイアログからの導線）、
-  `.anim` / 地形 JSON / `.mat` / `.postfx` / `project_settings.json` への拡大、`.inputmap` の Rust・C# 二重実装の解消、
-  残る保存経路（`.tvox` / `.tcover` / `.tscatter` / `terrain_meta.json` / C# 側の書き込み）を `safe_write` 相当へ寄せる。
+- [ ] **M2 の残り（ランタイム側 M2a は 2026-09-18 に完了）**: エディタからの一括アップグレード（メニュー・結果表示）と
+  C# の書き手の刻印・`--migrate-json` の利用・`.inputmap` の C# 側二重実装の削除・C# 側の書き込みの原子化（M2b、実装中）。
+- [ ] **`.tvox` の `safe_write` 化（3 か所）** — 2026-09-18。`app/terrain_ops.rs:4704, 4789, 4881`。同ファイルに別セッションの未コミット
+  変更があるため見送り。`.tcover` / `.tscatter` と同じく `safe_write::write_atomic`（世代なし）へ寄せるだけ。
+- [ ] **独自の版機構のままの形式** — 2026-09-18。`terrain_meta.json` / `.tvox` / `.tcover` / `.tscatter` / `.seedproj` / シェーディング WGSL は
+  この仕組みに未搭載（M3 で判断）。
+- [ ] **`--upgrade-project` で `.scene` が 2 回書かれることがある** — 2026-09-18（アップグレード＋`prefab_hash` の貼り直し）。
+  `.backup/` に 2 世代残るだけで結果は正しいが、1 回にまとめる余地。
+- [ ] **`.sprite_mesh` の明示的な `"version": 0` を弾くようになった** — 2026-09-18。従来は受理していた（実データに該当なし）。
 - [ ] **`scripting::debug_command` の 2 テストが並列実行で落ちる** — 2026-09-18。共有グローバルのリングバッファによる既設のフレーキー
   （`--test-threads=1` では通る）。
 
