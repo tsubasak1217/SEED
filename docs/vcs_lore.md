@@ -23,7 +23,7 @@ https://epicgames.github.io/lore/ と https://github.com/EpicGames/lore を参�
 - エディタ視点（デバッグカメラの位置・向き）を `.scene` から `<project>/cache/editor/view/` のサイドカーへ分離
   （`.scene` に人ごとの値が入り、保存のたびに衝突していたため）。
 - `.seedproj` の `engine_version` がエディタと食い違うときの確認ダイアログ。
-- `<project>/.loreignore` を作成（cache / save / logs / build / `.backup/` / `*.tmp` / `*.bak` / `*.blend1` / `_unreferenced/`）。
+- `<project>/.loreignore` を作成（cache / save / logs / build / `.backup/` / `*.tmp` / `*.bak` / `*.blend1` / `*.lock`（エディタのシーンロック） / `_unreferenced/`）。
   Lore の ignore は **stage / commit / status にだけ効く送り出し側のフィルタ**で、コミット済みのものは遡って外れない。
 
 ## 3. 実機検証の結果（v0.9.0、プロジェクト複製 470 ファイル / 88 MiB）
