@@ -9,34 +9,26 @@
              Drop="OnPanelDrop"
              DragOver="OnPanelDragOver">
     <UserControl.Resources>
-        <!-- 上部ツールバーのボタン共通スタイル（アイコン + テキスト併記） -->
-        <Style x:Key="ToolbarButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="#404040"/>
-            <Setter Property="Foreground" Value="#CCCCCC"/>
-            <Setter Property="BorderThickness" Value="0"/>
+        <!-- 上部ツールバーのボタン共通スタイル（アイコン + テキスト併記）。
+             色・ホバー・押下・無効の見た目はボタン共通書式
+             （Theme/SeedButtonStyles.xaml）が決める。ここは寸法だけ。
+             以前は Background だけを指定していたため、WPF 既定テンプレートの
+             ホバー（淡い水色）が出て文字が読めなくなっていた。 -->
+        <Style x:Key="ToolbarButtonStyle" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Base}">
             <Setter Property="Padding" Value="7,3"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="Margin" Value="0,0,4,0"/>
-            <Setter Property="Cursor" Value="Hand"/>
         </Style>
 
-        <!-- 左縦パネルのツール選択トグル共通スタイル -->
-        <Style x:Key="ToolToggleStyle" TargetType="ToggleButton">
-            <Setter Property="Background" Value="#333333"/>
-            <Setter Property="Foreground" Value="#CCCCCC"/>
-            <Setter Property="BorderThickness" Value="0"/>
+        <!-- 左縦パネルのツール選択トグル共通スタイル。
+             選択中（IsChecked）のアクセント色も共通書式が持つ。 -->
+        <Style x:Key="ToolToggleStyle" TargetType="ToggleButton"
+               BasedOn="{StaticResource Seed.Button.Base}">
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="Margin" Value="0,0,0,3"/>
-            <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
-            <Style.Triggers>
-                <!-- 選択中のツールは背景を明るくして一目で分かるようにする -->
-                <Trigger Property="IsChecked" Value="True">
-                    <Setter Property="Background" Value="#0E639C"/>
-                    <Setter Property="Foreground" Value="#FFFFFF"/>
-                </Trigger>
-            </Style.Triggers>
         </Style>
 
         <!-- 左縦パネルの見出しラベル -->

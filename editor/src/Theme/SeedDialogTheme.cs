@@ -1,70 +1,71 @@
 // ============================================================
-//  AccountDialogTheme.cs — アカウント関連ダイアログの見た目を 1 か所へ
+//  SeedDialogTheme.cs — コードで組む小さなモーダルの見た目を 1 か所へ
 //
 //  【役割】
 //  配色・寸法・部品（ラベル / 入力欄 / ボタン）の作り方をまとめる。
-//  アカウント関連のモーダルは 4 つあり、それぞれが自前で色と余白を書くと
-//  「1 つだけ背景色が違う」ダイアログが必ず生まれる。
+//  XAML を持たない小さなダイアログ（アカウント関連・テキスト入力・音声トリムなど）が
+//  それぞれ自前で色と余白を書くと、「1 つだけ背景色が違う」ダイアログが必ず生まれる。
+//
+//  【このファイルが統合したもの】
+//  以前は同じ値が 3 か所に複製されていた:
+//    - Accounts/Views/AccountDialogTheme.cs（アカウント系 4 ダイアログ）
+//    - Dialogs/TextInputWindow.cs（private な色定数 5 個）
+//    - Dialogs/AudioSilenceTrimWindow.cs（private な色定数 5 個。補足色だけ値がずれていた）
+//  色の出所は Theme/SeedColorTable.cs、ボタンの見た目は Theme/SeedButtonStyles.xaml に一本化した。
 //
 //  【XAML を使わない理由】
-//  既存の小さなモーダル（TextInputWindow / AudioSilenceTrimWindow）と同じ流儀。
 //  入力欄とボタンが数個の画面は、XAML と分けると 2 ファイルを往復することになる。
-//  加えて XAML の StaticResource は **綴りを間違えてもビルドが通る**ため、
+//  加えて XAML の StaticResource は綴りを間違えてもビルドが通るため、
 //  起動しないと分からない壊れ方をする。コードで組めばコンパイラが見てくれる。
 //
-//  【配色の出所】
-//  エディタ本体のダイアログ（ProjectSettingsWindow / TextInputWindow）と同じ値。
+//  【ボタンの色をここに持たない理由】
+//  ボタンは Application.Current のリソース（SeedButtonStyles.xaml）が持つ暗黙スタイル・
+//  名前付きスタイルで決まる。ここで色を指定すると二重管理が復活する。
 // ============================================================
 
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 
-namespace SEEDEditor.Accounts.Views;
+namespace SEEDEditor.Theme;
 
 /// <summary>
-/// アカウント関連ダイアログの配色・寸法・部品。
+/// コードで組むモーダルダイアログの配色・寸法・部品。
 /// </summary>
-public static class AccountDialogTheme
+public static class SeedDialogTheme
 {
-    // ── 配色 ────────────────────────────────────────────────
+    // ── 配色（実体は SeedColorTable）──────────────────────────
+
+    /// <summary>色表の色から凍結済みブラシを作る。</summary>
+    /// <param name="color">元になる色。</param>
+    private static SolidColorBrush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     /// <summary>ダイアログの背景。</summary>
-    public static readonly Brush Background =
-        new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26));
+    public static readonly Brush Background = Frozen(SeedThemeColors.DialogSurface);
 
     /// <summary>入力欄の背景。</summary>
-    public static readonly Brush Field =
-        new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A));
+    public static readonly Brush Field = Frozen(SeedThemeColors.FieldBg);
 
     /// <summary>本文の文字色。</summary>
-    public static readonly Brush Text =
-        new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xDC));
+    public static readonly Brush Text = Frozen(SeedThemeColors.DialogText);
 
     /// <summary>補足の文字色。</summary>
-    public static readonly Brush DimText =
-        new SolidColorBrush(Color.FromRgb(0x8A, 0x8A, 0x8A));
+    public static readonly Brush DimText = Frozen(SeedThemeColors.DialogDimText);
 
     /// <summary>成功・肯定の文字色。</summary>
-    public static readonly Brush SuccessText =
-        new SolidColorBrush(Color.FromRgb(0x8A, 0xCB, 0x8A));
+    public static readonly Brush SuccessText = Frozen(SeedThemeColors.DialogSuccessText);
 
     /// <summary>エラーの文字色。</summary>
-    public static readonly Brush ErrorText =
-        new SolidColorBrush(Color.FromRgb(0xE8, 0x8F, 0x8F));
+    public static readonly Brush ErrorText = Frozen(SeedThemeColors.DialogErrorText);
 
     /// <summary>枠線の色。</summary>
-    public static readonly Brush FieldBorder =
-        new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
-
-    /// <summary>ボタンの背景。</summary>
-    public static readonly Brush Button =
-        new SolidColorBrush(Color.FromRgb(0x40, 0x40, 0x40));
-
-    /// <summary>主要ボタンの背景。</summary>
-    public static readonly Brush PrimaryButton =
-        new SolidColorBrush(Color.FromRgb(0x0E, 0x63, 0x9C));
+    public static readonly Brush FieldBorder = Frozen(SeedThemeColors.FieldBorder);
 
     // ── 寸法 ────────────────────────────────────────────────
 
@@ -77,14 +78,8 @@ public static class AccountDialogTheme
     /// <summary>入力欄の内側余白 [px]。</summary>
     public const double FIELD_PADDING_PX = 5;
 
-    /// <summary>ボタンの幅 [px]。</summary>
-    public const double BUTTON_WIDTH_PX = 110;
-
-    /// <summary>ボタンの縦余白 [px]。</summary>
-    public const double BUTTON_PADDING_Y_PX = 4;
-
-    /// <summary>ボタン同士の間隔 [px]。</summary>
-    public const double BUTTON_GAP_PX = 8;
+    /// <summary>ボタン同士の間隔 [px]。ボタン自体の寸法は共通スタイルが決める。</summary>
+    public const double BUTTON_GAP_PX = SeedButtonMetrics.DIALOG_BUTTON_GAP_PX;
 
     /// <summary>本文の文字サイズ。</summary>
     public const double BODY_FONT_SIZE = 12;
@@ -151,32 +146,40 @@ public static class AccountDialogTheme
         };
 
     /// <summary>
-    /// ボタンを 1 つ作る。
+    /// ダイアログのボタンを 1 つ作る。
+    /// 色・余白・ホバーの挙動はすべて共通スタイル（SeedButtonStyles.xaml）が決める。
     /// </summary>
     /// <param name="text">文言。</param>
     /// <param name="onClick">押されたときの処理。</param>
-    /// <param name="isPrimary">主要ボタンか（色を変える）。</param>
-    /// <param name="leftMargin">左の余白 [px]。</param>
+    /// <param name="isPrimary">主操作か（アクセント色にする）。</param>
+    /// <param name="leftMargin">左の余白 [px]。ボタン列の 2 個目以降に付ける。</param>
     public static Button NewButton(
         string text, RoutedEventHandler onClick, bool isPrimary = false,
         double leftMargin = 0)
     {
         var button = new Button
         {
-            Content         = text,
-            MinWidth        = BUTTON_WIDTH_PX,
-            Padding         = new Thickness(BUTTON_GAP_PX, BUTTON_PADDING_Y_PX,
-                                            BUTTON_GAP_PX, BUTTON_PADDING_Y_PX),
-            Background      = isPrimary ? PrimaryButton : Button,
-            Foreground      = Text,
-            BorderThickness = new Thickness(0),
-            FontSize        = BODY_FONT_SIZE,
-            Cursor          = Cursors.Hand,
-            Margin          = new Thickness(leftMargin, 0, 0, 0),
+            Content  = text,
+            FontSize = BODY_FONT_SIZE,
+            Margin   = new Thickness(leftMargin, 0, 0, 0),
         };
+        SeedButtonStyle.Apply(
+            button,
+            isPrimary ? SeedButtonStyle.DIALOG_PRIMARY : SeedButtonStyle.DIALOG);
         button.Click += onClick;
         return button;
     }
+
+    /// <summary>
+    /// 既に作ってあるボタンへダイアログ用の共通スタイルを当てる
+    /// （XAML 由来のボタンや、生成箇所を変えたくないボタン向け）。
+    /// </summary>
+    /// <param name="button">対象のボタン。</param>
+    /// <param name="isPrimary">主操作か。</param>
+    public static void ApplyButtonStyle(ButtonBase button, bool isPrimary = false)
+        => SeedButtonStyle.Apply(
+            button,
+            isPrimary ? SeedButtonStyle.DIALOG_PRIMARY : SeedButtonStyle.DIALOG);
 
     /// <summary>
     /// ダイアログの共通設定を適用する（背景・配置・タスクバーに出さない）。

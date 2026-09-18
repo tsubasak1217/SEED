@@ -27,6 +27,7 @@ using SEEDEditor.Panels.ScriptEditor;
 using SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 using SEEDEditor.Runtime;
 using SEEDEditor.Scripting;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
@@ -627,11 +628,11 @@ public class ScriptEditorPanel : UserControl
 
         Button ToolBtn(string content, string tooltip, Action onClick)
         {
+            // 色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める
             var b = new Button
             {
                 Content = content, ToolTip = tooltip,
-                Foreground = BrushText, Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
-                BorderBrush = BrushBorder, Margin = new Thickness(2, 0, 0, 0),
+                Margin = new Thickness(2, 0, 0, 0),
                 Padding = new Thickness(6, 1, 6, 1), FontSize = 11,
             };
             b.Click += (_, _) => onClick();

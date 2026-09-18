@@ -31,33 +31,27 @@
                           SelectionChanged="OnClipComboSelectionChanged"/>
 
                 <Button x:Name="BtnNewClip" Content="新規" Click="OnNewClip"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="8,2" FontSize="11" Margin="6,0,0,0" Cursor="Hand"/>
+                        Padding="8,2" FontSize="11" Margin="6,0,0,0"/>
                 <Button x:Name="BtnOpenClip" Content="直接開く" Click="OnOpenClip"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="8,2" FontSize="11" Margin="4,0,0,0" Cursor="Hand"/>
+                        Padding="8,2" FontSize="11" Margin="4,0,0,0"/>
                 <Button x:Name="BtnSaveClip" Content="保存" Click="OnSaveClip"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="8,2" FontSize="11" Margin="4,0,0,0" Cursor="Hand"/>
+                        Padding="8,2" FontSize="11" Margin="4,0,0,0"/>
 
                 <!-- 再生/一時停止トグル。アイコンはコード側で差し替える。 -->
                 <Button x:Name="BtnPlayPause" Click="OnPlayPause"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="8,2" Margin="14,0,0,0" Cursor="Hand"
+                        Padding="8,2" Margin="14,0,0,0"
                         ToolTip="Edit モード中のみプレビュー再生できます">
                     <ctrl:AppIcon IconKey="Icon.Play" Width="11" Height="11"/>
                 </Button>
 
                 <!-- フレーム送り: |◀ ◀ [frame] ▶ ▶| -->
                 <Button x:Name="BtnFrameStart" Click="OnFrameStart"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="6,2" Margin="10,0,0,0" Cursor="Hand"
+                        Padding="6,2" Margin="10,0,0,0"
                         ToolTip="先頭フレームへ (Home)">
                     <ctrl:AppIcon IconKey="Icon.Anim.FrameStart" Width="11" Height="11"/>
                 </Button>
                 <Button x:Name="BtnFramePrev" Click="OnFramePrev"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="6,2" Margin="2,0,0,0" Cursor="Hand"
+                        Padding="6,2" Margin="2,0,0,0"
                         ToolTip="1 フレーム戻る (←) / Shift+← で 10 フレーム">
                     <ctrl:AppIcon IconKey="Icon.Anim.FramePrev" Width="11" Height="11"/>
                 </Button>
@@ -67,22 +61,22 @@
                          ToolTip="現在のフレーム番号（編集可）"
                          KeyDown="OnFrameBoxKeyDown" LostFocus="OnFrameBoxLostFocus"/>
                 <Button x:Name="BtnFrameNext" Click="OnFrameNext"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="6,2" Margin="2,0,0,0" Cursor="Hand"
+                        Padding="6,2" Margin="2,0,0,0"
                         ToolTip="1 フレーム進む (→) / Shift+→ で 10 フレーム">
                     <ctrl:AppIcon IconKey="Icon.Anim.FrameNext" Width="11" Height="11"/>
                 </Button>
                 <Button x:Name="BtnFrameEnd" Click="OnFrameEnd"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="6,2" Margin="2,0,0,0" Cursor="Hand"
+                        Padding="6,2" Margin="2,0,0,0"
                         ToolTip="最終フレームへ (End)">
                     <ctrl:AppIcon IconKey="Icon.Anim.FrameEnd" Width="11" Height="11"/>
                 </Button>
 
-                <!-- キー挿入: 選択アクタの現在値をプレイヘッド位置へ打ち込む -->
+                <!-- キー挿入: 選択アクタの現在値をプレイヘッド位置へ打ち込む。
+                     このツールバーの主作業なので、共通書式の「完了・生成」色を使う
+                     （以前はここだけ緑がかった背景を直書きしていた）。 -->
                 <Button x:Name="BtnInsertKey" Click="OnInsertKey"
-                        Background="#3A4A3A" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="8,2" Margin="10,0,0,0" Cursor="Hand"
+                        Style="{StaticResource Seed.Button.Success}"
+                        Padding="8,2" Margin="10,0,0,0"
                         ToolTip="選択アクタの現在値でプレイヘッド位置にキーを打つ (I)">
                     <StackPanel Orientation="Horizontal">
                         <ctrl:AppIcon IconKey="Icon.Anim.InsertKey" Width="11" Height="11"/>
@@ -90,8 +84,7 @@
                     </StackPanel>
                 </Button>
                 <Button x:Name="BtnOverwriteKey" Click="OnOverwriteKey"
-                        Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                        Padding="8,2" Margin="4,0,0,0" Cursor="Hand"
+                        Padding="8,2" Margin="4,0,0,0"
                         ToolTip="選択中のキーを、選択アクタの現在値で上書きする (U)">
                     <StackPanel Orientation="Horizontal">
                         <ctrl:AppIcon IconKey="Icon.Anim.OverwriteKey" Width="11" Height="11"/>
@@ -125,8 +118,7 @@
                 </ComboBox>
 
                 <ToggleButton x:Name="BtnLockContext" Click="OnToggleLockContext"
-                              Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                              Padding="6,2" Margin="12,0,0,0" Cursor="Hand"
+                              Padding="6,2" Margin="12,0,0,0"
                               ToolTip="編集対象（Animator / キー対象アクタ）を固定し、アクタ選択の変化を無視する">
                     <ctrl:AppIcon IconKey="Icon.Lock" Width="11" Height="11"/>
                 </ToggleButton>
@@ -174,8 +166,7 @@
                                 </ComboBox.ItemContainerStyle>
                             </ComboBox>
                             <Button x:Name="BtnAddTrack" Click="OnAddTrack"
-                                    Background="#404040" Foreground="#CCCCCC" BorderThickness="0"
-                                    Width="20" Margin="2,0,0,0" Cursor="Hand"
+                                    Width="20" Margin="2,0,0,0"
                                     ToolTip="選択したプロパティのトラックを追加">
                                 <ctrl:AppIcon IconKey="Icon.Add" Width="11" Height="11"/>
                             </Button>

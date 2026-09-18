@@ -27,6 +27,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Controls;
 
@@ -235,9 +236,12 @@ public sealed class CurveEditorControl : UserControl
         {
             int idx = i;
             var color = s_channelColors[Math.Min(idx, s_channelColors.Length - 1)];
+            // 背景色がチャンネル色そのもの（＝値）なので、ホバーで塗り替えない
+            // 色見本用スタイルを使う。押せることは枠の明るさで示す。
             var btn = new Button
             {
                 Content  = idx < labels.Length ? labels[idx] : (idx + 1).ToString(),
+                Style    = SeedButtonStyle.Get(SeedButtonStyle.SWATCH),
                 Width    = 26, Height = 20, FontSize = 11, Margin = new Thickness(0, 0, 3, 0),
                 Foreground = Brushes.White,
                 Tag      = idx,

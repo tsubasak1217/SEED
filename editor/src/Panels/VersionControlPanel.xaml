@@ -33,52 +33,28 @@
         <SolidColorBrush x:Key="Vc.Border"         Color="#3F3F46"/>
         <SolidColorBrush x:Key="Vc.Text"           Color="#DCDCDC"/>
         <SolidColorBrush x:Key="Vc.DimText"        Color="#999999"/>
-        <SolidColorBrush x:Key="Vc.Button"         Color="#404040"/>
+        <!-- Vc.PrimaryButton はタブの下線など「ボタン以外」の強調にも使うため残す。
+             ボタンそのものの配色は共通書式（Seed.Button.*）が持つ。 -->
         <SolidColorBrush x:Key="Vc.PrimaryButton"  Color="#0E639C"/>
-        <SolidColorBrush x:Key="Vc.EmphasisButton" Color="#A07020"/>
         <SolidColorBrush x:Key="Vc.Selection"      Color="#264F78"/>
         <SolidColorBrush x:Key="Vc.ConflictHeader" Color="#4A2A2A"/>
         <SolidColorBrush x:Key="Vc.ConflictText"   Color="#F0B0B0"/>
 
-        <!-- ── ボタン（ダークテーマ・無効時は薄くする）────────── -->
-        <Style x:Key="Vc.ButtonStyle" TargetType="Button">
-            <Setter Property="Background"      Value="{StaticResource Vc.Button}"/>
-            <Setter Property="Foreground"      Value="{StaticResource Vc.Text}"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding"         Value="10,3"/>
-            <Setter Property="FontSize"        Value="11"/>
-            <Setter Property="Cursor"          Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="2"
-                                Padding="{TemplateBinding Padding}"
-                                SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.85"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
-                                <Setter Property="Cursor" Value="Arrow"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        <!-- ── ボタン（見た目はボタン共通書式 Theme/SeedButtonStyles.xaml に従う）──
+             以前はここで独自のテンプレートを持ち、ホバーを Opacity で表していた。
+             不透明度を下げる方式は暗い下地に対して「暗くなる」だけで押せることが伝わらず、
+             他の画面ともホバー色が揃わないため、共通書式へ寄せた。 -->
+        <Style x:Key="Vc.ButtonStyle" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Base}">
+            <Setter Property="Padding"  Value="10,3"/>
+            <Setter Property="FontSize" Value="11"/>
         </Style>
 
         <!-- 主操作（最新を取得 / 送信）は一段目立たせる -->
         <Style x:Key="Vc.PrimaryButtonStyle" TargetType="Button"
-               BasedOn="{StaticResource Vc.ButtonStyle}">
-            <Setter Property="Background" Value="{StaticResource Vc.PrimaryButton}"/>
-            <Setter Property="Padding"    Value="14,5"/>
-            <Setter Property="FontSize"   Value="12"/>
+               BasedOn="{StaticResource Seed.Button.Primary}">
+            <Setter Property="Padding"  Value="14,5"/>
+            <Setter Property="FontSize" Value="12"/>
         </Style>
 
         <!-- ── タブ（このリポジトリに共有の TabItem スタイルが無いので局所定義）── -->

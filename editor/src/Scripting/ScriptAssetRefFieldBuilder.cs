@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using Microsoft.Win32;
 using SEEDEditor.Panels;
 using static SEEDEditor.Scripting.ScriptFieldWidgets;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Scripting;
 
@@ -125,19 +126,15 @@ internal static class ScriptAssetRefFieldBuilder
         if (canEdit) AttachDrop(pathBox, dotted, CommitAbsolutePath);
 
         // ── 参照ボタン（ファイル選択ダイアログ）──────────────
+        // 色・ホバー・無効時の見た目は共通スタイル（Theme/SeedButtonStyles.xaml）に任せる
         var browseBtn = new Button
         {
             Content           = BrowseButtonText,
-            Background        = BrushButtonBg,
-            Foreground        = BrushText,
-            BorderBrush       = BrushButtonBorder,
-            BorderThickness   = new Thickness(1),
+            Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             FontSize          = BrowseButtonFontSize,
             Padding           = BrowseButtonPadding,
             Margin            = new Thickness(3, 0, 0, 0),
-            Cursor            = System.Windows.Input.Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
-            Template          = FileRefBuilder.BuildButtonTemplate(),
             ToolTip           = "ファイルを選んで参照を設定する",
             IsEnabled         = canEdit,
         };

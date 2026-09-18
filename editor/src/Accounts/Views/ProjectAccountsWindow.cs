@@ -30,6 +30,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using SEEDEditor.Accounts.Http;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Accounts.Views;
 
@@ -105,26 +106,26 @@ public sealed class ProjectAccountsWindow : Window
         _repositoryId = repositoryId ?? string.Empty;
         _projectName  = projectName  ?? string.Empty;
 
-        AccountDialogTheme.ApplyWindowChrome(
+        SeedDialogTheme.ApplyWindowChrome(
             this, AccountMessages.OWNER_DIALOG_TITLE, WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX);
 
         var root = new StackPanel
         {
-            Margin = new Thickness(AccountDialogTheme.CONTENT_PADDING_PX),
+            Margin = new Thickness(SeedDialogTheme.CONTENT_PADDING_PX),
         };
 
         // ── ヘッダー（自分が誰で、どこへ繋がっているか）──
-        _headerText = AccountDialogTheme.NewLabel(string.Empty);
+        _headerText = SeedDialogTheme.NewLabel(string.Empty);
         root.Children.Add(_headerText);
 
         root.Children.Add(NewSeparator());
 
         // ── オーナー登録の節 ──
         _bootstrapSection = new StackPanel();
-        _bootstrapSection.Children.Add(AccountDialogTheme.NewLabel(
+        _bootstrapSection.Children.Add(SeedDialogTheme.NewLabel(
             AccountMessages.OWNER_BOOTSTRAP_LOOPBACK_NOTE,
-            AccountDialogTheme.DimText, AccountDialogTheme.NOTE_FONT_SIZE));
-        _bootstrapSection.Children.Add(AccountDialogTheme.NewButton(
+            SeedDialogTheme.DimText, SeedDialogTheme.NOTE_FONT_SIZE));
+        _bootstrapSection.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.OWNER_BOOTSTRAP_BUTTON, OnBootstrap, isPrimary: true));
         root.Children.Add(_bootstrapSection);
 
@@ -132,36 +133,36 @@ public sealed class ProjectAccountsWindow : Window
         _ownerSection = new StackPanel();
 
         var inviteRow = new StackPanel { Orientation = Orientation.Horizontal };
-        inviteRow.Children.Add(AccountDialogTheme.NewButton(
+        inviteRow.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.OWNER_INVITE_BUTTON, OnCreateInvite, isPrimary: true));
-        inviteRow.Children.Add(AccountDialogTheme.NewButton(
+        inviteRow.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_COPY, OnCopyInvite,
-            leftMargin: AccountDialogTheme.BUTTON_GAP_PX));
+            leftMargin: SeedDialogTheme.BUTTON_GAP_PX));
         _ownerSection.Children.Add(inviteRow);
 
-        _inviteCodeBox = AccountDialogTheme.NewTextBox(
-            topMargin: AccountDialogTheme.ROW_SPACING_PX);
+        _inviteCodeBox = SeedDialogTheme.NewTextBox(
+            topMargin: SeedDialogTheme.ROW_SPACING_PX);
         _inviteCodeBox.IsReadOnly = true;
         _ownerSection.Children.Add(_inviteCodeBox);
 
-        _inviteNoteText = AccountDialogTheme.NewLabel(
-            string.Empty, AccountDialogTheme.DimText,
-            AccountDialogTheme.NOTE_FONT_SIZE, topMargin: 4);
+        _inviteNoteText = SeedDialogTheme.NewLabel(
+            string.Empty, SeedDialogTheme.DimText,
+            SeedDialogTheme.NOTE_FONT_SIZE, topMargin: 4);
         _ownerSection.Children.Add(_inviteNoteText);
 
         _ownerSection.Children.Add(NewSeparator());
 
-        _ownerSection.Children.Add(AccountDialogTheme.NewLabel(
+        _ownerSection.Children.Add(SeedDialogTheme.NewLabel(
             AccountMessages.OWNER_MEMBERS_TITLE));
 
         _memberList = new ListBox
         {
             Height          = MEMBER_LIST_HEIGHT_PX,
-            Background      = AccountDialogTheme.Field,
-            Foreground      = AccountDialogTheme.Text,
-            BorderBrush     = AccountDialogTheme.FieldBorder,
-            BorderThickness = new Thickness(AccountDialogTheme.BORDER_THICKNESS_PX),
-            FontSize        = AccountDialogTheme.BODY_FONT_SIZE,
+            Background      = SeedDialogTheme.Field,
+            Foreground      = SeedDialogTheme.Text,
+            BorderBrush     = SeedDialogTheme.FieldBorder,
+            BorderThickness = new Thickness(SeedDialogTheme.BORDER_THICKNESS_PX),
+            FontSize        = SeedDialogTheme.BODY_FONT_SIZE,
             Margin          = new Thickness(0, 4, 0, 0),
         };
         // owner の権限は失効できない（契約 3 章）。選んだ行に合わせてボタンを出し入れする。
@@ -173,20 +174,20 @@ public sealed class ProjectAccountsWindow : Window
             Orientation = Orientation.Horizontal,
             Margin      = new Thickness(0, 6, 0, 0),
         };
-        memberButtons.Children.Add(AccountDialogTheme.NewButton(
+        memberButtons.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.OWNER_REFRESH_BUTTON, OnRefreshMembers));
-        _revokeButton = AccountDialogTheme.NewButton(
+        _revokeButton = SeedDialogTheme.NewButton(
             AccountMessages.OWNER_REVOKE_BUTTON, OnRevokeMember,
-            leftMargin: AccountDialogTheme.BUTTON_GAP_PX);
+            leftMargin: SeedDialogTheme.BUTTON_GAP_PX);
         memberButtons.Children.Add(_revokeButton);
         _ownerSection.Children.Add(memberButtons);
 
         root.Children.Add(_ownerSection);
 
         // ── 状態 ──
-        _statusText = AccountDialogTheme.NewLabel(
-            string.Empty, AccountDialogTheme.DimText,
-            AccountDialogTheme.NOTE_FONT_SIZE, topMargin: SECTION_SPACING_PX);
+        _statusText = SeedDialogTheme.NewLabel(
+            string.Empty, SeedDialogTheme.DimText,
+            SeedDialogTheme.NOTE_FONT_SIZE, topMargin: SECTION_SPACING_PX);
         root.Children.Add(_statusText);
 
         // ── 閉じる ──
@@ -194,9 +195,9 @@ public sealed class ProjectAccountsWindow : Window
         {
             Orientation         = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin              = new Thickness(0, AccountDialogTheme.ROW_SPACING_PX, 0, 0),
+            Margin              = new Thickness(0, SeedDialogTheme.ROW_SPACING_PX, 0, 0),
         };
-        closeRow.Children.Add(AccountDialogTheme.NewButton(
+        closeRow.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_CLOSE, (_, _) => Close()));
         root.Children.Add(closeRow);
 
@@ -524,8 +525,8 @@ public sealed class ProjectAccountsWindow : Window
     {
         _statusText.Text       = message;
         _statusText.Foreground = isError
-            ? AccountDialogTheme.ErrorText
-            : AccountDialogTheme.SuccessText;
+            ? SeedDialogTheme.ErrorText
+            : SeedDialogTheme.SuccessText;
     }
 
     /// <summary>節の区切り線を作る。</summary>
@@ -533,7 +534,7 @@ public sealed class ProjectAccountsWindow : Window
         => new()
         {
             Height     = SEPARATOR_THICKNESS_PX,
-            Background = AccountDialogTheme.FieldBorder,
+            Background = SeedDialogTheme.FieldBorder,
             Margin     = new Thickness(0, SECTION_SPACING_PX, 0, SECTION_SPACING_PX),
         };
 }

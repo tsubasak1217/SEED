@@ -48,37 +48,11 @@
             </Setter>
         </Style>
 
-        <!-- ── 参照ボタン スタイル ──────────────────────────────── -->
-        <Style x:Key="BrowseButton" TargetType="Button">
-            <Setter Property="Background"      Value="#3A3A3A"/>
-            <Setter Property="Foreground"      Value="#CCCCCC"/>
-            <Setter Property="BorderBrush"     Value="#555555"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding"         Value="8,4"/>
-            <Setter Property="FontSize"        Value="11"/>
-            <Setter Property="Cursor"          Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="2"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#686868"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        <!-- ── 参照ボタン（見た目はボタン共通書式に従う）──────── -->
+        <Style x:Key="BrowseButton" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Outlined}">
+            <Setter Property="Padding"  Value="8,4"/>
+            <Setter Property="FontSize" Value="11"/>
         </Style>
 
     </Window.Resources>

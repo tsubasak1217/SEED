@@ -14,6 +14,12 @@
                  アイコン資産は PNG・ベクターとも editor/resources/icons/ に置く。
                  キー一覧と追加手順は docs/editor_icons.md が正典。 -->
             <ResourceDictionary Source="pack://application:,,,/resources/icons/Icons.xaml"/>
+
+            <!-- ボタンの共通書式（Button / ToggleButton / RepeatButton の暗黙スタイルと、
+                 主操作・危険操作・リンク風・アイコン専用などの名前付きスタイル）。
+                 色・寸法の出所は src/Theme/SeedColorTable.cs と SeedButtonMetrics.cs の 1 か所。
+                 使い分けと「自前で色を決めない」規約は docs/editor_ui_style.md が正典。 -->
+            <ResourceDictionary Source="pack://application:,,,/src/Theme/SeedButtonStyles.xaml"/>
         </ResourceDictionary.MergedDictionaries>
 
         <!-- ════════════════════════════════════════════════════════════════
@@ -73,8 +79,13 @@
                         <!-- トラック（背景）＋つまみのみの最小構成。上下ボタンは持たない -->
                         <Grid Background="{StaticResource ComboScrollTrack}" SnapsToDevicePixels="True">
                             <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <!-- Style="{x:Null}" はボタン共通書式（SeedButtonStyles.xaml）の
+                                     暗黙スタイルから抜けるための指定。暗黙スタイルは
+                                     ControlTemplate 内部の「Style 未指定」要素にも効くため、
+                                     これが無いとスクロールバーの余白部分がボタンとして塗られる。 -->
                                 <Track.DecreaseRepeatButton>
                                     <RepeatButton Command="ScrollBar.PageUpCommand"
+                                                  Style="{x:Null}"
                                                   Opacity="0" Focusable="False"/>
                                 </Track.DecreaseRepeatButton>
                                 <Track.Thumb>
@@ -82,6 +93,7 @@
                                 </Track.Thumb>
                                 <Track.IncreaseRepeatButton>
                                     <RepeatButton Command="ScrollBar.PageDownCommand"
+                                                  Style="{x:Null}"
                                                   Opacity="0" Focusable="False"/>
                                 </Track.IncreaseRepeatButton>
                             </Track>
@@ -162,7 +174,10 @@
                     <ControlTemplate TargetType="{x:Type ComboBox}">
                         <Grid>
                             <!-- 本体全域を覆うトグル（クリックでドロップダウン開閉） -->
+                            <!-- Style="{x:Null}" はボタン共通書式の暗黙スタイルから抜けるための指定
+                                 （コンボ本体はこのトグルが全域を覆うため、ボタンの配色が乗ると二重になる）。 -->
                             <ToggleButton x:Name="ToggleButton"
+                                          Style="{x:Null}"
                                           Focusable="False" ClickMode="Press"
                                           Background="{TemplateBinding Background}"
                                           BorderBrush="{TemplateBinding BorderBrush}"

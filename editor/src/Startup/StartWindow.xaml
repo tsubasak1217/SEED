@@ -23,77 +23,23 @@
             <Setter Property="Margin"     Value="0,0,0,10"/>
         </Style>
 
-        <!-- ── 右ペインの大きめアクションボタン ─────────────── -->
-        <Style x:Key="ActionButton" TargetType="Button">
-            <Setter Property="Background"      Value="#2D2D30"/>
-            <Setter Property="Foreground"      Value="#DCDCDC"/>
-            <Setter Property="BorderBrush"     Value="#3F3F46"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding"         Value="14,10"/>
-            <Setter Property="Margin"          Value="0,0,0,10"/>
-            <Setter Property="FontSize"        Value="12"/>
-            <Setter Property="Cursor"          Value="Hand"/>
+        <!-- ── 右ペインの大きめアクションボタン ───────────────
+             色・ホバー・押下・無効の見た目はボタン共通書式
+             （Theme/SeedButtonStyles.xaml）が決める。ここでは寸法と
+             「文字を左寄せにする」ことだけを足す。 -->
+        <Style x:Key="ActionButton" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Outlined}">
+            <Setter Property="Padding"  Value="14,10"/>
+            <Setter Property="Margin"   Value="0,0,0,10"/>
+            <Setter Property="FontSize" Value="12"/>
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="3"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#3A3A3D"/>
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="#5A5A60"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#094D80"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
         </Style>
 
         <!-- ── 小さめのボタン（アカウントの書き出し／読み込み）── -->
-        <Style x:Key="SmallButton" TargetType="Button">
-            <Setter Property="Background"      Value="#2D2D30"/>
-            <Setter Property="Foreground"      Value="#DCDCDC"/>
-            <Setter Property="BorderBrush"     Value="#3F3F46"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding"         Value="10,5"/>
-            <Setter Property="FontSize"        Value="11"/>
-            <Setter Property="Cursor"          Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="3"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#3A3A3D"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        <Style x:Key="SmallButton" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Outlined}">
+            <Setter Property="Padding"  Value="10,5"/>
+            <Setter Property="FontSize" Value="11"/>
         </Style>
 
         <!-- ── 最近のプロジェクト 1 行 ──────────────────────── -->

@@ -27,6 +27,7 @@ using SEEDEditor.AI.LocalLlm;
 using SEEDEditor.AI.Models;
 using SEEDEditor.AI.Providers;
 using SEEDEditor.AI.Tools;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.AI;
 
@@ -340,13 +341,12 @@ public class AIAssistantPanel
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
+        // このパネルの主操作。色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める。
         _sendButton = new Button
         {
             Content         = "送信",
+            Style           = SeedButtonStyle.Get(SeedButtonStyle.PRIMARY),
             Width           = 60,
-            Background      = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
-            Foreground      = Brushes.White,
-            BorderThickness = new Thickness(0),
             Margin          = new Thickness(4, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Bottom,
         };
@@ -412,9 +412,6 @@ public class AIAssistantPanel
             Content         = "モデル取得",
             FontSize        = 11,
             Padding         = new Thickness(8, 3, 8, 3),
-            Background      = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
-            Foreground      = Brushes.LightGray,
-            BorderThickness = new Thickness(0),
             Margin          = new Thickness(0, 2, 0, 0),
         };
         _popupApiKeyLabel   = MakeSettingsLabel("API Key");
@@ -430,9 +427,6 @@ public class AIAssistantPanel
             Content             = "状態を更新",
             FontSize            = 10,
             Padding             = new Thickness(6, 2, 6, 2),
-            Background          = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
-            Foreground          = Brushes.LightGray,
-            BorderThickness     = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         // BuildGeminiStatusSection は _checkModelsBtn と _modelStatusLabels を使うため後に呼ぶ
@@ -446,10 +440,6 @@ public class AIAssistantPanel
             Content         = "履歴",
             FontSize        = 11,
             Padding         = new Thickness(8, 2, 8, 2),
-            Background      = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
-            Foreground      = Brushes.LightGray,
-            BorderThickness = new Thickness(0),
-            Cursor          = Cursors.Hand,
         };
         _sessionListPanel = new StackPanel { Orientation = Orientation.Vertical };
         _chatPanel        = new Grid();
@@ -676,16 +666,14 @@ public class AIAssistantPanel
         panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         // 「新しいチャット」ボタン
+        // 履歴パネルの主操作。色・ホバーは共通書式が決める。
         var newChatBtn = new Button
         {
             Content         = "+ 新しいチャット",
+            Style           = SeedButtonStyle.Get(SeedButtonStyle.PRIMARY),
             FontSize        = 12,
             Padding         = new Thickness(10, 6, 10, 6),
             Margin          = new Thickness(8, 8, 8, 4),
-            Background      = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
-            Foreground      = Brushes.White,
-            BorderThickness = new Thickness(0),
-            Cursor          = Cursors.Hand,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         newChatBtn.Click += (_, _) =>

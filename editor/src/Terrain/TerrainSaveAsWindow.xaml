@@ -22,35 +22,10 @@
 
     <Window.Resources>
         <!-- ダイアログ内ボタン共通スタイル（地形設定ウィンドウの ToolButtonStyle に合わせる）。 -->
-        <Style x:Key="DialogButtonStyle" TargetType="Button">
-            <Setter Property="Background"      Value="#333333"/>
-            <Setter Property="Foreground"      Value="#CCCCCC"/>
-            <Setter Property="BorderBrush"     Value="#454545"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding"         Value="10,4"/>
-            <Setter Property="Margin"          Value="0,0,6,0"/>
-            <Setter Property="Cursor"          Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="2">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}"/>
-                        </Border>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#3E3E42"/>
-                </Trigger>
-                <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Foreground" Value="#666666"/>
-                </Trigger>
-            </Style.Triggers>
+        <Style x:Key="DialogButtonStyle" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Outlined}">
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="Margin"  Value="0,0,6,0"/>
         </Style>
 
         <!-- 入力欄共通スタイル。 -->

@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
@@ -133,17 +134,7 @@ public partial class InspectorPanel
     /// <summary>行ラベルの文字色。</summary>
     private static readonly Brush TextSlotCaptionBrush = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
 
-    /// <summary>切替ボタンの背景色（既存の「参照」ボタンと同色）。</summary>
-    private static readonly Brush TextSlotButtonBackground = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
-
-    /// <summary>切替ボタンの文字色（既存の「参照」ボタンと同色）。</summary>
-    private static readonly Brush TextSlotButtonForeground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB));
-
-    /// <summary>切替ボタンの枠色（既存の「参照」ボタンと同色）。</summary>
-    private static readonly Brush TextSlotButtonBorder = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44));
-
-    /// <summary>切替ボタンの枠の太さ（px）。</summary>
-    private const double TextSlotButtonBorderThickness = 1;
+    // 切替ボタンの色・枠はボタン共通書式（Theme/SeedButtonStyles.xaml）が決める。ここでは持たない。
 
     /// <summary>入力欄の高さを他の行と揃えるための最小高さ（px）。</summary>
     private const double TextSlotInputMinHeight = 18;
@@ -423,18 +414,14 @@ public partial class InspectorPanel
         var isIconMode = !string.IsNullOrEmpty(slot.Path) &&
                          !slot.Path.Contains(TextSlotSchemeSeparator, StringComparison.Ordinal);
 
+        // 色・ホバーは共通スタイル（Theme/SeedButtonStyles.xaml）に任せる
         var toggle = new Button
         {
+            Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             FontSize          = TextSlotToggleFontSize,
             Padding           = TextSlotTogglePadding,
             Margin            = TextSlotSideMargin,
-            Cursor            = Cursors.Hand,
-            Background        = TextSlotButtonBackground,
-            Foreground        = TextSlotButtonForeground,
-            BorderBrush       = TextSlotButtonBorder,
-            BorderThickness   = new Thickness(TextSlotButtonBorderThickness),
             VerticalAlignment = VerticalAlignment.Center,
-            Template          = FileRefBuilder.BuildButtonTemplate(),
             ToolTip           = TextSlotToggleTooltip,
         };
 

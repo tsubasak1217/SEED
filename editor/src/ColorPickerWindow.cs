@@ -18,6 +18,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor;
 
@@ -182,9 +183,9 @@ public sealed class ColorPickerWindow : Window
         var textGrid = BuildTextGrid();
 
         // ── ボタン行（スポイト / OK / Cancel） ───────────────────
-        var btnEye = MakeButton("💉 スポイト", "#4A5A4A");
-        var btnOk  = MakeButton("OK",          "#61AFEF");
-        var btnCc  = MakeButton("キャンセル",   "#3A3A3A");
+        var btnEye = MakeButton("💉 スポイト", SeedButtonStyle.BASE);
+        var btnOk  = MakeButton("OK",          SeedButtonStyle.PRIMARY);
+        var btnCc  = MakeButton("キャンセル",   SeedButtonStyle.BASE);
 
         btnEye.Click += (_, _) => StartEyedropper();
         btnOk.Click  += (_, _) =>
@@ -742,19 +743,22 @@ public sealed class ColorPickerWindow : Window
             MaxLength       = 8,
         };
 
-    private static Button MakeButton(string text, string hexColor)
+    /// <summary>
+    /// ボタン行の 1 個を作る。色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める。
+    /// </summary>
+    /// <param name="text">文言。</param>
+    /// <param name="styleKey">使う共通スタイルのキー（<see cref="SeedButtonStyle"/>）。</param>
+    private static Button MakeButton(string text, string styleKey)
     {
-        var col = (Color)ColorConverter.ConvertFromString(hexColor);
-        return new Button
+        var button = new Button
         {
-            Content         = text,
-            Margin          = new Thickness(4, 0, 0, 0),
-            Padding         = new Thickness(12, 4, 12, 4),
-            Background      = new SolidColorBrush(col),
-            Foreground      = Brushes.White,
-            BorderThickness = new Thickness(0),
-            FontSize        = 12,
+            Content  = text,
+            Margin   = new Thickness(4, 0, 0, 0),
+            Padding  = new Thickness(12, 4, 12, 4),
+            FontSize = 12,
         };
+        SeedButtonStyle.Apply(button, styleKey);
+        return button;
     }
 
     /// <summary>RGBA + Hex テキスト入力グリッドを生成する。</summary>

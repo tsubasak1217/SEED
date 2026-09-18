@@ -54,40 +54,11 @@
             </Setter>
         </Style>
 
-        <!-- ── ボタン ───────────────────────────────────────── -->
-        <Style x:Key="DialogButton" TargetType="Button">
-            <Setter Property="Background"      Value="#2D2D30"/>
-            <Setter Property="Foreground"      Value="#DCDCDC"/>
-            <Setter Property="BorderBrush"     Value="#3F3F46"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding"         Value="16,6"/>
-            <Setter Property="FontSize"        Value="12"/>
-            <Setter Property="Cursor"          Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="3"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#3A3A3D"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#094D80"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        <!-- ── ボタン（見た目はボタン共通書式に従う。寸法だけ足す）── -->
+        <Style x:Key="DialogButton" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Dialog}">
+            <Setter Property="Padding"  Value="16,6"/>
+            <Setter Property="FontSize" Value="12"/>
         </Style>
 
     </Window.Resources>

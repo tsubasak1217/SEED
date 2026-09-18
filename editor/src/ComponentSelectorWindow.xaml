@@ -47,31 +47,17 @@
             <Setter Property="Cursor"      Value="Hand"/>
         </Style>
 
-        <Style x:Key="ActionButton" TargetType="Button">
+        <!-- 決定・取消ボタン（色・ホバーはボタン共通書式に従う）-->
+        <Style x:Key="ActionButton" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Dialog}">
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Padding"  Value="16,5"/>
-            <Setter Property="Cursor"   Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="1" CornerRadius="3"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.8"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        </Style>
+
+        <Style x:Key="ActionButtonPrimary" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.DialogPrimary}">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding"  Value="16,5"/>
         </Style>
     </Window.Resources>
 
@@ -144,15 +130,11 @@
                     Margin="8,0,8,8">
             <Button x:Name="BtnConfirm"
                     Content="追加"
-                    Background="#1A4A7A" Foreground="White"
-                    BorderBrush="#2A5A8A"
-                    Style="{StaticResource ActionButton}"
+                    Style="{StaticResource ActionButtonPrimary}"
                     IsEnabled="False"
                     Click="OnConfirm"/>
             <Button x:Name="BtnCancel"
                     Content="キャンセル"
-                    Background="#2A2A2A" Foreground="#AAAAAA"
-                    BorderBrush="#444444"
                     Style="{StaticResource ActionButton}"
                     IsCancel="True"
                     Margin="6,0,0,0"

@@ -16,9 +16,7 @@
         <Border Grid.Row="0" Background="#2D2D2D" Padding="4,2">
             <StackPanel Orientation="Horizontal">
                 <ToggleButton x:Name="BtnPause" Click="OnTogglePause"
-                              Background="#404040" Foreground="#CCCCCC"
-                              BorderThickness="0" Padding="10,2" FontSize="11"
-                              Cursor="Hand"
+                              Padding="10,2" FontSize="11"
                               ToolTip="計測の一時停止 / 再開">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <ctrl:AppIcon IconKey="Icon.Pause" Width="11" Height="11"/>

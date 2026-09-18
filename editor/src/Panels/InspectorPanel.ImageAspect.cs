@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using SEEDEditor.Controls;
 using SEEDEditor.Panels.Inspector;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
@@ -147,14 +148,10 @@ public partial class InspectorPanel
         var button = new Button
         {
             Content             = content,
-            Foreground          = new SolidColorBrush(ImageAspectForeground),
-            Background          = new SolidColorBrush(ImageAspectBackground),
-            BorderBrush         = new SolidColorBrush(ImageAspectBorder),
-            BorderThickness     = new Thickness(ImageAspectBorderThickness),
+            Style               = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             Padding             = ImageAspectButtonPadding,
             Margin              = ImageAspectRowMargin,
             HorizontalAlignment = HorizontalAlignment.Left,
-            Cursor              = Cursors.Hand,
             ToolTip             = BuildImageAspectToolTip(texturePath),
         };
 

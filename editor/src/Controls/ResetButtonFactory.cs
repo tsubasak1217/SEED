@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Controls;
 
@@ -24,14 +25,7 @@ internal static class ResetButtonFactory
     /// <summary>アイコンの一辺サイズ（px）。行幅を圧迫しない小型サイズ。</summary>
     private const double IconSize = 11;
 
-    /// <summary>ボタン背景色（他の小型ボタンと同系統の暗いグレー）。</summary>
-    private static readonly Color BackgroundColor = Color.FromRgb(0x33, 0x33, 0x33);
-
-    /// <summary>ボタン文字色。</summary>
-    private static readonly Color ForegroundColor = Color.FromRgb(0xBB, 0xBB, 0xBB);
-
-    /// <summary>ボタン枠線色。</summary>
-    private static readonly Color BorderColor = Color.FromRgb(0x44, 0x44, 0x44);
+    // 色はボタン共通書式（Theme/SeedButtonStyles.xaml）が決める。ここでは持たない。
 
     /// <summary>ボタン内側の左右余白（px）。記号が中央に見える値。</summary>
     private const double ContentPaddingX = 5;
@@ -39,8 +33,8 @@ internal static class ResetButtonFactory
     /// <summary>ボタン内側の下余白（px）。</summary>
     private const double ContentPaddingBottom = 1;
 
-    /// <summary>ボタン枠線の太さ（px）。</summary>
-    private const double BorderThicknessPx = 1;
+    /// <summary>ボタン枠線の太さ（px）。共通スタイル（枠線つき）と同じ値を使う。</summary>
+    private const double BorderThicknessPx = SeedButtonMetrics.OUTLINED_BORDER_PX;
 
     /// <summary>行本体とボタンの間隔（px）。</summary>
     private const double OuterMarginLeft = 4;
@@ -69,18 +63,16 @@ internal static class ResetButtonFactory
     /// <param name="onReset">押下時に呼ぶ処理（既定値の適用）。</param>
     public static Button Create(string tooltip, Action onReset)
     {
+        // 色・ホバー・無効時の見た目は共通スタイル（Theme/SeedButtonStyles.xaml）に任せる。
+        // 枠線つきのスタイルを選ぶのは、行の右端で占める幅（ReservedRowWidth）を
+        // 枠の太さ込みで計算しているため。
         var button = new Button
         {
             Content           = AppIcon.Create(IconKey, IconSize),
-            Background        = new SolidColorBrush(BackgroundColor),
-            Foreground        = new SolidColorBrush(ForegroundColor),
-            BorderBrush       = new SolidColorBrush(BorderColor),
-            BorderThickness   = new Thickness(BorderThicknessPx),
+            Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             Padding           = ContentPadding,
             Margin            = OuterMargin,
-            Cursor            = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
-            Template          = SEEDEditor.Panels.FileRefBuilder.BuildButtonTemplate(),
             ToolTip           = tooltip,
         };
         button.Click += (_, _) => onReset();

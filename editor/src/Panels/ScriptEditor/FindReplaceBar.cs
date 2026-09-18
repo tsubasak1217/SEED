@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using ICSharpCode.AvalonEdit;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels.ScriptEditor;
 
@@ -219,13 +220,11 @@ public sealed class FindReplaceBar : Border
 
     private static Button MakeButton(string content, string tooltip, Action onClick)
     {
+        // 色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める
         var btn = new Button
         {
             Content    = content,
             ToolTip    = tooltip,
-            Foreground = Text,
-            Background = FieldBg,
-            BorderBrush= Border2,
             MinWidth   = 28,
             Margin     = new Thickness(2, 0, 0, 0),
             Padding    = new Thickness(4, 1, 4, 1),

@@ -21,6 +21,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using SEEDEditor.Accounts.Crypto;
 using SEEDEditor.Accounts.Storage;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Accounts.Views;
 
@@ -50,47 +51,47 @@ public sealed class AccountCreateWindow : Window
     /// <summary>ダイアログを構築する。</summary>
     public AccountCreateWindow()
     {
-        AccountDialogTheme.ApplyWindowChrome(
+        SeedDialogTheme.ApplyWindowChrome(
             this, AccountMessages.CREATE_DIALOG_TITLE, WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX);
 
         var root = new StackPanel
         {
-            Margin = new Thickness(AccountDialogTheme.CONTENT_PADDING_PX),
+            Margin = new Thickness(SeedDialogTheme.CONTENT_PADDING_PX),
         };
 
-        root.Children.Add(AccountDialogTheme.NewLabel(AccountMessages.CREATE_DIALOG_PROMPT));
-        root.Children.Add(AccountDialogTheme.NewLabel(
+        root.Children.Add(SeedDialogTheme.NewLabel(AccountMessages.CREATE_DIALOG_PROMPT));
+        root.Children.Add(SeedDialogTheme.NewLabel(
             AccountMessages.CREATE_DIALOG_RULE_NOTE,
-            AccountDialogTheme.DimText, AccountDialogTheme.NOTE_FONT_SIZE, topMargin: 4));
+            SeedDialogTheme.DimText, SeedDialogTheme.NOTE_FONT_SIZE, topMargin: 4));
 
-        _nameBox = AccountDialogTheme.NewTextBox(
-            topMargin: AccountDialogTheme.ROW_SPACING_PX);
+        _nameBox = SeedDialogTheme.NewTextBox(
+            topMargin: SeedDialogTheme.ROW_SPACING_PX);
         _nameBox.TextChanged += (_, _) => SyncValidation();
         _nameBox.KeyDown     += OnNameKeyDown;
         root.Children.Add(_nameBox);
 
-        _statusText = AccountDialogTheme.NewLabel(
-            string.Empty, AccountDialogTheme.ErrorText,
-            AccountDialogTheme.NOTE_FONT_SIZE, topMargin: 6);
+        _statusText = SeedDialogTheme.NewLabel(
+            string.Empty, SeedDialogTheme.ErrorText,
+            SeedDialogTheme.NOTE_FONT_SIZE, topMargin: 6);
         root.Children.Add(_statusText);
 
-        root.Children.Add(AccountDialogTheme.NewLabel(
+        root.Children.Add(SeedDialogTheme.NewLabel(
             AccountMessages.NAME_IMMUTABLE_NOTE,
-            AccountDialogTheme.DimText, AccountDialogTheme.NOTE_FONT_SIZE,
-            topMargin: AccountDialogTheme.ROW_SPACING_PX));
+            SeedDialogTheme.DimText, SeedDialogTheme.NOTE_FONT_SIZE,
+            topMargin: SeedDialogTheme.ROW_SPACING_PX));
 
         var buttons = new StackPanel
         {
             Orientation         = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin              = new Thickness(0, AccountDialogTheme.ROW_SPACING_PX, 0, 0),
+            Margin              = new Thickness(0, SeedDialogTheme.ROW_SPACING_PX, 0, 0),
         };
-        _createButton = AccountDialogTheme.NewButton(
+        _createButton = SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_OK, OnCreate, isPrimary: true);
         buttons.Children.Add(_createButton);
-        buttons.Children.Add(AccountDialogTheme.NewButton(
+        buttons.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_CANCEL, OnCancel,
-            leftMargin: AccountDialogTheme.BUTTON_GAP_PX));
+            leftMargin: SeedDialogTheme.BUTTON_GAP_PX));
         root.Children.Add(buttons);
 
         Content = root;

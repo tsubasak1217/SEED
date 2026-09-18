@@ -1,0 +1,346 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:theme="clr-namespace:SEEDEditor.Theme">
+
+    <!--
+    ════════════════════════════════════════════════════════════════════════
+     SeedButtonStyles.xaml — エディタ全体のボタン書式（唯一の定義場所）
+
+     【役割】
+     Button / ToggleButton / RepeatButton の見た目を 1 か所で決める。
+     App.xaml の MergedDictionaries から読み込まれ、アプリ全体に効く。
+
+     【この辞書が解決した不具合】
+     WPF 既定の Button テンプレートは、ホバー時に背景を淡い水色（#BEE6FD 系）へ
+     強制的に塗り替える。Background だけを指定した暗色ボタン（各パネルの
+     Background="#404040" Foreground="#CCCCCC" 等）は、**ホバーの瞬間だけ**
+     淡い水色の上に淡い灰色の文字となり、文字が読めなくなっていた。
+     暗黙スタイルでテンプレートごと置き換えることで、この状態を根絶する。
+
+     【構成】
+       1. ブラシ        … 色は theme:SeedThemeColors（＝SeedColorTable）から取る。
+                          この XAML に #RRGGBB を直接書かないこと。
+       2. 共通テンプレート… ButtonBase 用が 1 つだけ。状態別の色は
+                          theme:ButtonChrome の添付プロパティから読むので、
+                          バリエーションを増やしてもテンプレートは複製しない。
+       3. スタイル      … 暗黙スタイル（Button / ToggleButton / RepeatButton）と
+                          名前付きスタイル（Primary / Danger / Link / Icon / Dialog / Outlined）。
+
+     【使い分けと規約】
+     docs/editor_ui_style.md が正典。要点は
+       ・ボタンの色を画面側で決めない（Background / Foreground を直接書かない）
+       ・見た目を変えたいときは名前付きスタイルを選ぶ。無ければここに足す
+       ・コントラスト比は editor/tests/ThemeContrastTests が機械的に検査する
+
+     【暗黙スタイルの効き方（実測済み）】
+     Application.Resources の暗黙スタイルは、ControlTemplate の内部に置かれた
+     「Style 未指定」の要素にも適用される。テンプレート内部で素の
+     Button / ToggleButton / RepeatButton を使っている箇所は Style="{x:Null}" で
+     明示的に除外すること（App.xaml のコンボ／スクロールバー、MainWindow の
+     スクロールバー／スライダーが該当）。
+     WPF 標準の ScrollBar・ComboBox・Slider・Expander・TreeView・ToolBar・
+     TabControl、および AvalonDock / AvalonEdit の内部要素は、いずれも
+     テーマ側で明示スタイルを持つため影響を受けない（プローブで確認済み）。
+    ════════════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- ════════════════════════════════════════════════════════════════
+         1. ブラシ（色の実体は theme:SeedThemeColors ＝ SeedColorTable）
+         ════════════════════════════════════════════════════════════════ -->
+
+    <!-- 通常ボタン -->
+    <SolidColorBrush x:Key="Seed.Brush.Button.Bg"          Color="{x:Static theme:SeedThemeColors.ButtonBg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.BgHover"     Color="{x:Static theme:SeedThemeColors.ButtonBgHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.BgPressed"   Color="{x:Static theme:SeedThemeColors.ButtonBgPressed}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.BgDisabled"  Color="{x:Static theme:SeedThemeColors.ButtonBgDisabled}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.Fg"          Color="{x:Static theme:SeedThemeColors.ButtonFg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.FgHover"     Color="{x:Static theme:SeedThemeColors.ButtonFgHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.FgDisabled"  Color="{x:Static theme:SeedThemeColors.ButtonFgDisabled}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.Border"      Color="{x:Static theme:SeedThemeColors.ButtonBorder}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Button.BorderFocus" Color="{x:Static theme:SeedThemeColors.ButtonBorderFocus}"/>
+
+    <!-- 主操作ボタン -->
+    <SolidColorBrush x:Key="Seed.Brush.Primary.Bg"         Color="{x:Static theme:SeedThemeColors.PrimaryBg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Primary.BgHover"    Color="{x:Static theme:SeedThemeColors.PrimaryBgHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Primary.BgPressed"  Color="{x:Static theme:SeedThemeColors.PrimaryBgPressed}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Primary.BgDisabled" Color="{x:Static theme:SeedThemeColors.PrimaryBgDisabled}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Primary.Fg"         Color="{x:Static theme:SeedThemeColors.PrimaryFg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Primary.FgDisabled" Color="{x:Static theme:SeedThemeColors.PrimaryFgDisabled}"/>
+
+    <!-- 完了・生成ボタン -->
+    <SolidColorBrush x:Key="Seed.Brush.Success.Bg"         Color="{x:Static theme:SeedThemeColors.SuccessBg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Success.BgHover"    Color="{x:Static theme:SeedThemeColors.SuccessBgHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Success.BgPressed"  Color="{x:Static theme:SeedThemeColors.SuccessBgPressed}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Success.Fg"         Color="{x:Static theme:SeedThemeColors.SuccessFg}"/>
+
+    <!-- 危険操作ボタン -->
+    <SolidColorBrush x:Key="Seed.Brush.Danger.Bg"          Color="{x:Static theme:SeedThemeColors.DangerBg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Danger.BgHover"     Color="{x:Static theme:SeedThemeColors.DangerBgHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Danger.BgPressed"   Color="{x:Static theme:SeedThemeColors.DangerBgPressed}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Danger.Fg"          Color="{x:Static theme:SeedThemeColors.DangerFg}"/>
+
+    <!-- リンク風ボタン -->
+    <SolidColorBrush x:Key="Seed.Brush.Link.Fg"            Color="{x:Static theme:SeedThemeColors.LinkFg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Link.FgHover"       Color="{x:Static theme:SeedThemeColors.LinkFgHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Link.FgPressed"     Color="{x:Static theme:SeedThemeColors.LinkFgPressed}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Link.FgDisabled"    Color="{x:Static theme:SeedThemeColors.LinkFgDisabled}"/>
+
+    <!-- アイコン専用ボタン（背景は透明。ホバー時だけ白を薄く重ねる） -->
+    <SolidColorBrush x:Key="Seed.Brush.Icon.BgHover"       Color="{x:Static theme:SeedThemeColors.IconOverlayHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Icon.BgPressed"     Color="{x:Static theme:SeedThemeColors.IconOverlayPressed}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Icon.Fg"            Color="{x:Static theme:SeedThemeColors.IconFg}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Icon.FgHover"       Color="{x:Static theme:SeedThemeColors.IconFgHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Icon.FgDisabled"    Color="{x:Static theme:SeedThemeColors.IconFgDisabled}"/>
+
+    <!-- トグルの ON 状態 -->
+    <SolidColorBrush x:Key="Seed.Brush.Toggle.BgChecked"      Color="{x:Static theme:SeedThemeColors.ToggleBgChecked}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Toggle.BgCheckedHover" Color="{x:Static theme:SeedThemeColors.ToggleBgCheckedHover}"/>
+    <SolidColorBrush x:Key="Seed.Brush.Toggle.FgChecked"      Color="{x:Static theme:SeedThemeColors.ToggleFgChecked}"/>
+
+    <!-- ════════════════════════════════════════════════════════════════
+         2. 共通テンプレート
+
+         ButtonBase 用の 1 つだけを持ち、Button / ToggleButton / RepeatButton の
+         すべてが同じものを使う。状態ごとの色は theme:ButtonChrome の
+         添付プロパティから読むため、バリエーションを足してもここは増えない。
+         ════════════════════════════════════════════════════════════════ -->
+    <ControlTemplate x:Key="Seed.Template.Button" TargetType="{x:Type ButtonBase}">
+        <Grid SnapsToDevicePixels="True">
+            <!-- 本体。背景・枠はボタン自身のプロパティをそのまま使う -->
+            <Border x:Name="Bd"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="{x:Static theme:SeedButtonMetrics.Corner}"
+                    SnapsToDevicePixels="True">
+                <ContentPresenter x:Name="Content"
+                                  Margin="{TemplateBinding Padding}"
+                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                  RecognizesAccessKey="True"
+                                  SnapsToDevicePixels="True"/>
+            </Border>
+
+            <!-- キーボードフォーカス枠。本体に重ねて描くのでレイアウトへ影響しない。
+                 WPF 既定の点線フォーカス枠（FocusVisualStyle）は暗色背景で見えないため置き換える。 -->
+            <Border x:Name="FocusRing"
+                    BorderBrush="{StaticResource Seed.Brush.Button.BorderFocus}"
+                    BorderThickness="{x:Static theme:SeedButtonMetrics.FocusRing}"
+                    Margin="{x:Static theme:SeedButtonMetrics.FocusRingInset}"
+                    CornerRadius="{x:Static theme:SeedButtonMetrics.Corner}"
+                    Visibility="Collapsed"
+                    IsHitTestVisible="False"
+                    SnapsToDevicePixels="True"/>
+        </Grid>
+
+        <ControlTemplate.Triggers>
+            <!-- ── トグルの ON（Button / RepeatButton では成立しないので何も起きない）── -->
+            <Trigger Property="ToggleButton.IsChecked" Value="True">
+                <Setter TargetName="Bd" Property="Background"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.CheckedBackground)}"/>
+                <Setter TargetName="Content" Property="TextElement.Foreground"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.CheckedForeground)}"/>
+            </Trigger>
+
+            <!-- ── ホバー ── -->
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.HoverBackground)}"/>
+                <Setter TargetName="Content" Property="TextElement.Foreground"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.HoverForeground)}"/>
+            </Trigger>
+
+            <!-- ── ON かつホバー（ON の色をさらに一段明るく）── -->
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="ToggleButton.IsChecked" Value="True"/>
+                    <Condition Property="IsMouseOver" Value="True"/>
+                </MultiTrigger.Conditions>
+                <Setter TargetName="Bd" Property="Background"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.CheckedHoverBackground)}"/>
+                <Setter TargetName="Content" Property="TextElement.Foreground"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.CheckedForeground)}"/>
+            </MultiTrigger>
+
+            <!-- ── 押下（ホバーより後に書くことで、重なったときは押下が勝つ）── -->
+            <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Bd" Property="Background"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.PressedBackground)}"/>
+                <Setter TargetName="Content" Property="TextElement.Foreground"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.PressedForeground)}"/>
+            </Trigger>
+
+            <!-- ── キーボードフォーカス（マウス操作では出さない）── -->
+            <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+            </Trigger>
+
+            <!-- ── 無効（最後に書いて他のすべてに勝たせる）── -->
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="Bd" Property="Background"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.DisabledBackground)}"/>
+                <Setter TargetName="Content" Property="TextElement.Foreground"
+                        Value="{Binding RelativeSource={RelativeSource TemplatedParent},
+                                        Path=(theme:ButtonChrome.DisabledForeground)}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="Transparent"/>
+                <Setter Property="Cursor" Value="Arrow"/>
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <!-- ════════════════════════════════════════════════════════════════
+         3. スタイル
+         ════════════════════════════════════════════════════════════════ -->
+
+    <!-- ── 通常ボタンの土台。個別スタイルはこれを BasedOn する ──
+         MinWidth / MinHeight / FontSize は意図的に持たない。
+         ツールバーの詰まったボタンまで太らせてしまうため、
+         大きさは使う側（またはダイアログ用スタイル）が決める。 -->
+    <Style x:Key="Seed.Button.Base" TargetType="{x:Type ButtonBase}">
+        <Setter Property="Background"      Value="{StaticResource Seed.Brush.Button.Bg}"/>
+        <Setter Property="Foreground"      Value="{StaticResource Seed.Brush.Button.Fg}"/>
+        <Setter Property="BorderBrush"     Value="{StaticResource Seed.Brush.Button.Border}"/>
+        <Setter Property="BorderThickness" Value="{x:Static theme:SeedButtonMetrics.NoBorder}"/>
+        <Setter Property="Padding"         Value="{x:Static theme:SeedButtonMetrics.Padding}"/>
+        <Setter Property="Cursor"          Value="Hand"/>
+        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        <Setter Property="VerticalContentAlignment"   Value="Center"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <!-- 既定の点線フォーカス枠は暗色背景で見えない。テンプレート側の枠を使う。 -->
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template"        Value="{StaticResource Seed.Template.Button}"/>
+    </Style>
+
+    <!-- ── 暗黙スタイル（Style を指定していないボタンすべてに効く）──
+         BasedOn の TargetType が派生元（ButtonBase）でも、
+         TargetType がそれを継承していれば適用できる。 -->
+    <Style TargetType="{x:Type Button}"       BasedOn="{StaticResource Seed.Button.Base}"/>
+    <Style TargetType="{x:Type ToggleButton}" BasedOn="{StaticResource Seed.Button.Base}"/>
+    <Style TargetType="{x:Type RepeatButton}" BasedOn="{StaticResource Seed.Button.Base}"/>
+
+    <!-- ── 主操作（OK / 作成 / 送信 など、その画面で一番押してほしいもの）── -->
+    <Style x:Key="Seed.Button.Primary" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="Background" Value="{StaticResource Seed.Brush.Primary.Bg}"/>
+        <Setter Property="Foreground" Value="{StaticResource Seed.Brush.Primary.Fg}"/>
+        <Setter Property="theme:ButtonChrome.HoverBackground"    Value="{StaticResource Seed.Brush.Primary.BgHover}"/>
+        <Setter Property="theme:ButtonChrome.PressedBackground"  Value="{StaticResource Seed.Brush.Primary.BgPressed}"/>
+        <Setter Property="theme:ButtonChrome.DisabledBackground" Value="{StaticResource Seed.Brush.Primary.BgDisabled}"/>
+        <Setter Property="theme:ButtonChrome.HoverForeground"    Value="{StaticResource Seed.Brush.Primary.Fg}"/>
+        <Setter Property="theme:ButtonChrome.PressedForeground"  Value="{StaticResource Seed.Brush.Primary.Fg}"/>
+        <Setter Property="theme:ButtonChrome.DisabledForeground" Value="{StaticResource Seed.Brush.Primary.FgDisabled}"/>
+    </Style>
+
+    <!-- ── 完了・生成（実行すると成果物ができる操作。パッケージのビルドなど）── -->
+    <Style x:Key="Seed.Button.Success" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="Background" Value="{StaticResource Seed.Brush.Success.Bg}"/>
+        <Setter Property="Foreground" Value="{StaticResource Seed.Brush.Success.Fg}"/>
+        <Setter Property="theme:ButtonChrome.HoverBackground"   Value="{StaticResource Seed.Brush.Success.BgHover}"/>
+        <Setter Property="theme:ButtonChrome.PressedBackground" Value="{StaticResource Seed.Brush.Success.BgPressed}"/>
+        <Setter Property="theme:ButtonChrome.HoverForeground"   Value="{StaticResource Seed.Brush.Success.Fg}"/>
+        <Setter Property="theme:ButtonChrome.PressedForeground" Value="{StaticResource Seed.Brush.Success.Fg}"/>
+    </Style>
+
+    <!-- ── 危険操作（削除 / 破棄 / ロック解除の強制 など、取り返しのつかないもの）── -->
+    <Style x:Key="Seed.Button.Danger" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="Background" Value="{StaticResource Seed.Brush.Danger.Bg}"/>
+        <Setter Property="Foreground" Value="{StaticResource Seed.Brush.Danger.Fg}"/>
+        <Setter Property="theme:ButtonChrome.HoverBackground"   Value="{StaticResource Seed.Brush.Danger.BgHover}"/>
+        <Setter Property="theme:ButtonChrome.PressedBackground" Value="{StaticResource Seed.Brush.Danger.BgPressed}"/>
+        <Setter Property="theme:ButtonChrome.HoverForeground"   Value="{StaticResource Seed.Brush.Danger.Fg}"/>
+        <Setter Property="theme:ButtonChrome.PressedForeground" Value="{StaticResource Seed.Brush.Danger.Fg}"/>
+    </Style>
+
+    <!-- ── リンク風（文章中の「詳しくはこちら」のような副次操作）── -->
+    <Style x:Key="Seed.Button.Link" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{StaticResource Seed.Brush.Link.Fg}"/>
+        <Setter Property="Padding"    Value="{x:Static theme:SeedButtonMetrics.LinkPadding}"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="theme:ButtonChrome.HoverBackground"    Value="Transparent"/>
+        <Setter Property="theme:ButtonChrome.PressedBackground"  Value="Transparent"/>
+        <Setter Property="theme:ButtonChrome.DisabledBackground" Value="Transparent"/>
+        <Setter Property="theme:ButtonChrome.HoverForeground"    Value="{StaticResource Seed.Brush.Link.FgHover}"/>
+        <Setter Property="theme:ButtonChrome.PressedForeground"  Value="{StaticResource Seed.Brush.Link.FgPressed}"/>
+        <Setter Property="theme:ButtonChrome.DisabledForeground" Value="{StaticResource Seed.Brush.Link.FgDisabled}"/>
+    </Style>
+
+    <!-- ── アイコン専用（ツールバーの小さなボタン。背景は透明で、ホバー時だけ薄く光る）── -->
+    <Style x:Key="Seed.Button.Icon" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{StaticResource Seed.Brush.Icon.Fg}"/>
+        <Setter Property="Padding"    Value="{x:Static theme:SeedButtonMetrics.IconPadding}"/>
+        <Setter Property="theme:ButtonChrome.HoverBackground"    Value="{StaticResource Seed.Brush.Icon.BgHover}"/>
+        <Setter Property="theme:ButtonChrome.PressedBackground"  Value="{StaticResource Seed.Brush.Icon.BgPressed}"/>
+        <Setter Property="theme:ButtonChrome.DisabledBackground" Value="Transparent"/>
+        <Setter Property="theme:ButtonChrome.HoverForeground"    Value="{StaticResource Seed.Brush.Icon.FgHover}"/>
+        <Setter Property="theme:ButtonChrome.PressedForeground"  Value="{StaticResource Seed.Brush.Icon.FgHover}"/>
+        <Setter Property="theme:ButtonChrome.DisabledForeground" Value="{StaticResource Seed.Brush.Icon.FgDisabled}"/>
+    </Style>
+
+    <!-- ── ダイアログの決定・取消ボタン（最小幅を揃えてボタン列を整える）── -->
+    <Style x:Key="Seed.Button.Dialog" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="MinWidth" Value="{x:Static theme:SeedButtonMetrics.DIALOG_MIN_WIDTH_PX}"/>
+        <Setter Property="Padding"  Value="{x:Static theme:SeedButtonMetrics.DialogPadding}"/>
+    </Style>
+
+    <!-- ── ダイアログの主操作（Primary ＋ ダイアログの寸法）── -->
+    <Style x:Key="Seed.Button.DialogPrimary" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Primary}">
+        <Setter Property="MinWidth" Value="{x:Static theme:SeedButtonMetrics.DIALOG_MIN_WIDTH_PX}"/>
+        <Setter Property="Padding"  Value="{x:Static theme:SeedButtonMetrics.DialogPadding}"/>
+    </Style>
+
+    <!-- ── 枠線つき（スタート画面の大きな選択肢のように、面として見せたいもの）── -->
+    <Style x:Key="Seed.Button.Outlined" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="BorderThickness" Value="{x:Static theme:SeedButtonMetrics.OutlinedBorder}"/>
+    </Style>
+
+    <!-- ── 色見本（背景色そのものが「値」であるボタン）──
+         カラーピッカーのスウォッチ、カーブエディタのチャンネル切替、
+         ピボット/アンカーのプリセット選択などがこれにあたる。
+         ホバーで背景を塗り替えると値が見えなくなるため、
+         状態は「背景を保ったまま枠で示す」。 -->
+    <Style x:Key="Seed.Button.Swatch" TargetType="{x:Type ButtonBase}"
+           BasedOn="{StaticResource Seed.Button.Base}">
+        <Setter Property="BorderThickness" Value="{x:Static theme:SeedButtonMetrics.OutlinedBorder}"/>
+        <!-- 背景はどの状態でも Background（＝値）のまま。
+             ButtonChrome にはバインドの解決先が要るので、透明を入れて
+             「Bd の Background を上書きしない」…のではなく、
+             Bd に重ねた枠だけで状態を示すため、ここでは背景を変えない値を入れる。 -->
+        <Setter Property="theme:ButtonChrome.HoverBackground"
+                Value="{Binding RelativeSource={RelativeSource Self}, Path=Background}"/>
+        <Setter Property="theme:ButtonChrome.PressedBackground"
+                Value="{Binding RelativeSource={RelativeSource Self}, Path=Background}"/>
+        <Setter Property="theme:ButtonChrome.DisabledBackground"
+                Value="{Binding RelativeSource={RelativeSource Self}, Path=Background}"/>
+        <Setter Property="theme:ButtonChrome.HoverForeground"
+                Value="{StaticResource Seed.Brush.Button.FgHover}"/>
+        <Setter Property="theme:ButtonChrome.PressedForeground"
+                Value="{StaticResource Seed.Brush.Button.Fg}"/>
+        <Setter Property="theme:ButtonChrome.DisabledForeground"
+                Value="{StaticResource Seed.Brush.Button.FgDisabled}"/>
+        <Style.Triggers>
+            <!-- ホバー・押下は枠を明るくして示す（背景は値のまま）。 -->
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{StaticResource Seed.Brush.Button.BorderFocus}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

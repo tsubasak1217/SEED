@@ -10,32 +10,19 @@
 
     <Window.Resources>
 
-        <!-- ── アクションボタン（保存・キャンセル）スタイル ─────── -->
-        <Style x:Key="ActionButton" TargetType="Button">
+        <!-- ── アクションボタン（保存・キャンセル）─────────────
+             色・ホバー・押下はボタン共通書式（Theme/SeedButtonStyles.xaml）が決める。
+             ここは寸法だけ。主操作（保存）は ActionButtonPrimary を使う。 -->
+        <Style x:Key="ActionButton" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Dialog}">
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Padding"  Value="16,6"/>
-            <Setter Property="Cursor"   Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="1" CornerRadius="3"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.85"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.70"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        </Style>
+
+        <Style x:Key="ActionButtonPrimary" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.DialogPrimary}">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding"  Value="16,6"/>
         </Style>
 
         <!-- ── 設定フィールド テキストボックス スタイル ────────── -->
@@ -72,37 +59,11 @@
             </Setter>
         </Style>
 
-        <!-- ── 参照ボタン スタイル ──────────────────────────────── -->
-        <Style x:Key="BrowseButton" TargetType="Button">
-            <Setter Property="Background"      Value="#3A3A3A"/>
-            <Setter Property="Foreground"      Value="#CCCCCC"/>
-            <Setter Property="BorderBrush"     Value="#555555"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding"         Value="8,4"/>
-            <Setter Property="FontSize"        Value="11"/>
-            <Setter Property="Cursor"          Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="2"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#686868"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        <!-- ── 参照ボタン（見た目はボタン共通書式に従う）──────── -->
+        <Style x:Key="BrowseButton" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Outlined}">
+            <Setter Property="Padding"  Value="8,4"/>
+            <Setter Property="FontSize" Value="11"/>
         </Style>
 
     </Window.Resources>
@@ -160,15 +121,9 @@
                         Margin="0,0,12,0">
                 <Button x:Name="BtnSave"
                         Content="保存して閉じる"
-                        Background="#1A4A7A"
-                        Foreground="White"
-                        BorderBrush="#2A5A8A"
-                        Style="{StaticResource ActionButton}"
+                        Style="{StaticResource ActionButtonPrimary}"
                         Click="OnSave"/>
                 <Button Content="キャンセル"
-                        Background="#2A2A2A"
-                        Foreground="#AAAAAA"
-                        BorderBrush="#444444"
                         IsCancel="True"
                         Style="{StaticResource ActionButton}"
                         Margin="8,0,0,0"

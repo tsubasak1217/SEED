@@ -1,0 +1,39 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ボタン共通書式（editor/src/Theme/）の配色を機械的に検査するテスト。
+
+    VersionControlTests / AccountsTests と同じ流儀:
+      - xunit 等を足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests/TestHarness.cs）
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、必要なファイルだけをリンクで取り込む
+
+    WPF を使わない（UseWPF を立てない）。色の定義（SeedColorTable.cs）は
+    16 進文字列の定数だけで書かれており、WPF 型に依存しないためリンクできる。
+    XAML 側はこの表を {x:Static} 経由で参照しているので、
+    ここで検査した値がそのまま画面の色になる。
+
+    実行方法（XML コメント内に連続ハイフンは書けないので [DD] を "‐‐" と読み替える）:
+      dotnet run [DD]project editor/tests/ThemeContrastTests
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ThemeContrast</RootNamespace>
+    <AssemblyName>ThemeContrastTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 検査対象。色の唯一の出所。 -->
+    <Compile Include="..\..\src\Theme\SeedColorTable.cs">
+      <Link>Linked\Theme\SeedColorTable.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

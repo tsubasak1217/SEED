@@ -18,13 +18,16 @@
 //  【XAML を使わない理由】
 //  入力欄 1 つとボタン 2 つしかなく、既存の AudioSilenceTrimWindow と同じく
 //  コードだけで組んだ方が読みやすい（XAML と分けると 2 ファイルを往復することになる）。
+//
+//  【配色・寸法】
+//  自前では持たない。Theme/SeedDialogTheme（色と部品）と
+//  Theme/SeedButtonStyles.xaml（ボタンの状態別の見た目）に従う。
 // ============================================================
 
-using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Media;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Dialogs;
 
@@ -33,56 +36,15 @@ namespace SEEDEditor.Dialogs;
 /// </summary>
 public sealed class TextInputWindow : Window
 {
-    // ── 配色（エディタの他ダイアログと揃える）────────────────────
+    // 配色・部品の作り方は Theme/SeedDialogTheme に集約してある（自前で色を決めない）。
 
-    /// <summary>ダイアログの背景。</summary>
-    private static readonly Brush BackgroundBrush =
-        new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26));
-
-    /// <summary>入力欄の背景。</summary>
-    private static readonly Brush FieldBrush =
-        new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A));
-
-    /// <summary>本文の文字色。</summary>
-    private static readonly Brush TextBrush =
-        new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xDC));
-
-    /// <summary>枠線の色。</summary>
-    private static readonly Brush FieldBorderBrush =
-        new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
-
-    /// <summary>ボタンの背景。</summary>
-    private static readonly Brush ButtonBrush =
-        new SolidColorBrush(Color.FromRgb(0x40, 0x40, 0x40));
-
-    // ── レイアウト寸法 ────────────────────────────────────────────
+    // ── レイアウト寸法（このダイアログ固有のもののみ）──────────────
 
     /// <summary>ウィンドウ幅（px）。</summary>
     private const double WINDOW_WIDTH_PX = 420;
 
     /// <summary>ウィンドウ高さ（px）。</summary>
     private const double WINDOW_HEIGHT_PX = 176;
-
-    /// <summary>外周の余白（px）。</summary>
-    private const double CONTENT_PADDING_PX = 14;
-
-    /// <summary>説明文と入力欄の間の余白（px）。</summary>
-    private const double ROW_SPACING_PX = 10;
-
-    /// <summary>入力欄の内側余白（px）。</summary>
-    private const double FIELD_PADDING_PX = 5;
-
-    /// <summary>ボタンの幅（px）。</summary>
-    private const double BUTTON_WIDTH_PX = 84;
-
-    /// <summary>ボタンの縦余白（px）。</summary>
-    private const double BUTTON_PADDING_Y_PX = 4;
-
-    /// <summary>ボタン同士の間隔（px）。</summary>
-    private const double BUTTON_GAP_PX = 8;
-
-    /// <summary>本文の文字サイズ。</summary>
-    private const double BODY_FONT_SIZE = 12;
 
     // ── ボタン文言 ────────────────────────────────────────────────
 
@@ -108,41 +70,20 @@ public sealed class TextInputWindow : Window
     /// <param name="initialText">入力欄の初期値。</param>
     public TextInputWindow(string title, string prompt, string? initialText = null)
     {
-        Title                 = title;
-        Width                 = WINDOW_WIDTH_PX;
-        Height                = WINDOW_HEIGHT_PX;
-        Background            = BackgroundBrush;
-        ResizeMode            = ResizeMode.NoResize;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        ShowInTaskbar         = false;
+        SeedDialogTheme.ApplyWindowChrome(this, title, WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX);
 
         // ── 説明文 / 入力欄 / ボタン列 の 3 段 ──
-        var root = new Grid { Margin = new Thickness(CONTENT_PADDING_PX) };
+        var root = new Grid { Margin = new Thickness(SeedDialogTheme.CONTENT_PADDING_PX) };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var promptText = new TextBlock
-        {
-            Text         = prompt,
-            Foreground   = TextBrush,
-            FontSize     = BODY_FONT_SIZE,
-            TextWrapping = TextWrapping.Wrap,
-        };
+        var promptText = SeedDialogTheme.NewLabel(prompt);
         Grid.SetRow(promptText, 0);
         root.Children.Add(promptText);
 
-        _inputBox = new TextBox
-        {
-            Text            = initialText ?? string.Empty,
-            Background      = FieldBrush,
-            Foreground      = TextBrush,
-            BorderBrush     = FieldBorderBrush,
-            BorderThickness = new Thickness(1),
-            Padding         = new Thickness(FIELD_PADDING_PX),
-            FontSize        = BODY_FONT_SIZE,
-            Margin          = new Thickness(0, ROW_SPACING_PX, 0, 0),
-        };
+        _inputBox = SeedDialogTheme.NewTextBox(
+            initialText ?? string.Empty, SeedDialogTheme.ROW_SPACING_PX);
         _inputBox.KeyDown += OnInputKeyDown;
         Grid.SetRow(_inputBox, 1);
         root.Children.Add(_inputBox);
@@ -153,8 +94,10 @@ public sealed class TextInputWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment   = VerticalAlignment.Bottom,
         };
-        buttons.Children.Add(NewButton(OK_BUTTON_TEXT, OnOk, isFirst: true));
-        buttons.Children.Add(NewButton(CANCEL_BUTTON_TEXT, OnCancel, isFirst: false));
+        buttons.Children.Add(SeedDialogTheme.NewButton(
+            OK_BUTTON_TEXT, OnOk, isPrimary: true));
+        buttons.Children.Add(SeedDialogTheme.NewButton(
+            CANCEL_BUTTON_TEXT, OnCancel, leftMargin: SeedDialogTheme.BUTTON_GAP_PX));
         Grid.SetRow(buttons, 2);
         root.Children.Add(buttons);
 
@@ -166,28 +109,6 @@ public sealed class TextInputWindow : Window
             _inputBox.Focus();
             _inputBox.SelectAll();
         };
-    }
-
-    /// <summary>ボタンを 1 つ作る（見た目を 1 か所に揃えるためのヘルパー）。</summary>
-    /// <param name="text">ボタンの文言。</param>
-    /// <param name="onClick">押されたときの処理。</param>
-    /// <param name="isFirst">左端のボタンか（左端だけ左余白を付けない）。</param>
-    private static Button NewButton(string text, RoutedEventHandler onClick, bool isFirst)
-    {
-        var button = new Button
-        {
-            Content         = text,
-            Width           = BUTTON_WIDTH_PX,
-            Padding         = new Thickness(0, BUTTON_PADDING_Y_PX, 0, BUTTON_PADDING_Y_PX),
-            Background      = ButtonBrush,
-            Foreground      = TextBrush,
-            BorderThickness = new Thickness(0),
-            FontSize        = BODY_FONT_SIZE,
-            Cursor          = Cursors.Hand,
-            Margin          = new Thickness(isFirst ? 0 : BUTTON_GAP_PX, 0, 0, 0),
-        };
-        button.Click += onClick;
-        return button;
     }
 
     /// <summary>Enter で確定、Escape で取り消し（キーボードだけで閉じられるように）。</summary>

@@ -17,6 +17,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Accounts.Views;
 
@@ -57,52 +58,52 @@ public sealed class PassphraseWindow : Window
     /// </param>
     public PassphraseWindow(string title, string prompt, bool requireConfirmation)
     {
-        AccountDialogTheme.ApplyWindowChrome(
+        SeedDialogTheme.ApplyWindowChrome(
             this, title, WINDOW_WIDTH_PX,
             requireConfirmation ? WINDOW_HEIGHT_WITH_CONFIRM_PX : WINDOW_HEIGHT_PX);
 
         var root = new StackPanel
         {
-            Margin = new Thickness(AccountDialogTheme.CONTENT_PADDING_PX),
+            Margin = new Thickness(SeedDialogTheme.CONTENT_PADDING_PX),
         };
 
-        root.Children.Add(AccountDialogTheme.NewLabel(prompt));
+        root.Children.Add(SeedDialogTheme.NewLabel(prompt));
 
-        root.Children.Add(AccountDialogTheme.NewLabel(
-            AccountMessages.LABEL_PASSPHRASE, AccountDialogTheme.DimText,
-            AccountDialogTheme.NOTE_FONT_SIZE,
-            topMargin: AccountDialogTheme.ROW_SPACING_PX));
-        _passphraseBox = AccountDialogTheme.NewPasswordBox(topMargin: 2);
+        root.Children.Add(SeedDialogTheme.NewLabel(
+            AccountMessages.LABEL_PASSPHRASE, SeedDialogTheme.DimText,
+            SeedDialogTheme.NOTE_FONT_SIZE,
+            topMargin: SeedDialogTheme.ROW_SPACING_PX));
+        _passphraseBox = SeedDialogTheme.NewPasswordBox(topMargin: 2);
         _passphraseBox.KeyDown += OnKeyDown;
         root.Children.Add(_passphraseBox);
 
         if (requireConfirmation)
         {
-            root.Children.Add(AccountDialogTheme.NewLabel(
-                AccountMessages.LABEL_PASSPHRASE_CONFIRM, AccountDialogTheme.DimText,
-                AccountDialogTheme.NOTE_FONT_SIZE,
-                topMargin: AccountDialogTheme.ROW_SPACING_PX));
-            _confirmBox = AccountDialogTheme.NewPasswordBox(topMargin: 2);
+            root.Children.Add(SeedDialogTheme.NewLabel(
+                AccountMessages.LABEL_PASSPHRASE_CONFIRM, SeedDialogTheme.DimText,
+                SeedDialogTheme.NOTE_FONT_SIZE,
+                topMargin: SeedDialogTheme.ROW_SPACING_PX));
+            _confirmBox = SeedDialogTheme.NewPasswordBox(topMargin: 2);
             _confirmBox.KeyDown += OnKeyDown;
             root.Children.Add(_confirmBox);
         }
 
-        _statusText = AccountDialogTheme.NewLabel(
-            string.Empty, AccountDialogTheme.ErrorText,
-            AccountDialogTheme.NOTE_FONT_SIZE, topMargin: 6);
+        _statusText = SeedDialogTheme.NewLabel(
+            string.Empty, SeedDialogTheme.ErrorText,
+            SeedDialogTheme.NOTE_FONT_SIZE, topMargin: 6);
         root.Children.Add(_statusText);
 
         var buttons = new StackPanel
         {
             Orientation         = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin              = new Thickness(0, AccountDialogTheme.ROW_SPACING_PX, 0, 0),
+            Margin              = new Thickness(0, SeedDialogTheme.ROW_SPACING_PX, 0, 0),
         };
-        buttons.Children.Add(AccountDialogTheme.NewButton(
+        buttons.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_OK, OnOk, isPrimary: true));
-        buttons.Children.Add(AccountDialogTheme.NewButton(
+        buttons.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_CANCEL, OnCancel,
-            leftMargin: AccountDialogTheme.BUTTON_GAP_PX));
+            leftMargin: SeedDialogTheme.BUTTON_GAP_PX));
         root.Children.Add(buttons);
 
         Content = root;

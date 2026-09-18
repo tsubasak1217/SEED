@@ -220,7 +220,12 @@
                         <Border Background="{TemplateBinding Background}">
                             <Track x:Name="PART_Track" IsDirectionReversed="True">
                                 <Track.DecreaseRepeatButton>
+                                    <!-- Style="{x:Null}" はボタン共通書式（Theme/SeedButtonStyles.xaml）の
+                                         暗黙スタイルから抜けるための指定。暗黙スタイルは ControlTemplate
+                                         内部の「Style 未指定」要素にも効くため、これが無いとスクロールバーの
+                                         余白部分がホバーで灰色に塗られてしまう。 -->
                                     <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                                  Style="{x:Null}"
                                                   Background="Transparent" BorderThickness="0"
                                                   IsTabStop="False" Focusable="False"/>
                                 </Track.DecreaseRepeatButton>
@@ -244,6 +249,7 @@
                                 </Track.Thumb>
                                 <Track.IncreaseRepeatButton>
                                     <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                                  Style="{x:Null}"
                                                   Background="Transparent" BorderThickness="0"
                                                   IsTabStop="False" Focusable="False"/>
                                 </Track.IncreaseRepeatButton>
@@ -374,7 +380,9 @@
                         <Grid>
                             <Track x:Name="PART_Track">
                                 <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static Slider.DecreaseLarge}">
+                                    <!-- Style="{x:Null}" はボタン共通書式の暗黙スタイルから抜けるための指定
+                                         （溝の描画専用で、ボタンとしての余白や最小寸法を持たせない）。 -->
+                                    <RepeatButton Command="{x:Static Slider.DecreaseLarge}" Style="{x:Null}">
                                         <RepeatButton.Template>
                                             <ControlTemplate TargetType="RepeatButton">
                                                 <Border Background="#61AFEF" Height="4" VerticalAlignment="Center"/>
@@ -397,7 +405,7 @@
                                     </Thumb>
                                 </Track.Thumb>
                                 <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static Slider.IncreaseLarge}">
+                                    <RepeatButton Command="{x:Static Slider.IncreaseLarge}" Style="{x:Null}">
                                         <RepeatButton.Template>
                                             <ControlTemplate TargetType="RepeatButton">
                                                 <Border Background="#444444" Height="4" VerticalAlignment="Center"/>
@@ -1043,11 +1051,11 @@
                             <ctrl:AppIcon IconKey="Icon.Debug.StepOut" Width="15" Height="15" Foreground="#DDDDDD"/>
                         </Button>
                     </StackPanel>
+                    <!-- 見た目はボタン共通書式（Theme/SeedButtonStyles.xaml）に従う -->
                     <Button x:Name="BtnSettings"
                             Width="28" Height="28" Margin="6,0,0,0"
                             Click="OnSettings"
-                            Background="#404040" Foreground="#AAAAAA"
-                            BorderThickness="0" Padding="4"
+                            Padding="4"
                             ToolTip="Settings">
                         <ctrl:AppIcon IconKey="Icon.Settings" Width="16" Height="16"/>
                     </Button>

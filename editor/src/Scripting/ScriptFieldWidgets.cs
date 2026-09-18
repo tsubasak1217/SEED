@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Scripting;
 
@@ -53,11 +54,7 @@ internal static class ScriptFieldWidgets
 
     // ── 行内アイコンボタン（配列要素・ScriptEvent 行で共有）─────
 
-    /// <summary>行内ボタンの背景色。</summary>
-    public static readonly SolidColorBrush BrushButtonBg = new(Color.FromRgb(0x2A, 0x2A, 0x2A));
-
-    /// <summary>行内ボタンの枠線色。</summary>
-    public static readonly SolidColorBrush BrushButtonBorder = new(Color.FromRgb(0x44, 0x44, 0x44));
+    // 行内ボタンの色はボタン共通書式（Theme/SeedButtonStyles.xaml）が決める。ここでは持たない。
 
     /// <summary>削除（×）・並び替え（∧∨）ボタンのアイコン一辺サイズ（px）。</summary>
     public const double RowButtonIconSize = 10;
@@ -83,7 +80,7 @@ internal static class ScriptFieldWidgets
     /// <param name="padding">内側余白。null なら行内ボタン用の既定値。</param>
     /// <param name="isEnabled">
     /// 押せるかどうか。false のときはクリックを受け付けず、
-    /// 共通テンプレートに無効時の見た目が無いため不透明度で押せないことを示す。
+    /// 不透明度を下げて押せないことを示す（アイコン色を固定しているため）。
     /// </param>
     public static Button MakeIconButton(
         string     iconKey,
@@ -97,17 +94,16 @@ internal static class ScriptFieldWidgets
         var icon = SEEDEditor.Controls.AppIcon.Create(iconKey, iconSize);
         icon.SetBrush(iconBrush);
 
+        // 色・ホバーは共通スタイル（Theme/SeedButtonStyles.xaml）に任せる。
+        // Opacity を併用するのは、アイコンの色を SetBrush で固定しているため
+        // 共通スタイルの無効時文字色が効かず、背景だけでは押せないことが伝わらないから。
         var btn = new Button
         {
             Content           = icon,
-            Background        = BrushButtonBg,
-            BorderBrush       = BrushButtonBorder,
-            BorderThickness   = new Thickness(1),
+            Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             Padding           = padding ?? RowButtonPadding,
             Margin            = new Thickness(3, 0, 0, 0),
-            Cursor            = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
-            Template          = SEEDEditor.Panels.FileRefBuilder.BuildButtonTemplate(),
             ToolTip           = tooltip,
             IsEnabled         = isEnabled,
             Opacity           = isEnabled ? 1.0 : DisabledButtonOpacity,

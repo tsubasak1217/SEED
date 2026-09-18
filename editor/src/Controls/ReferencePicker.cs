@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using SEEDEditor.Panels;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Controls;
 
@@ -162,14 +163,13 @@ internal sealed class ReferencePicker
         };
 
         // ── 解除（クリア）ボタン ─────────────────────────────
+        // 色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める。
+        // 解除は取り消しの効く操作なので危険色ではなく通常のアイコンボタンにする。
         _clearButton = new Button
         {
             Content         = AppIcon.Create("Icon.Close", ClearButtonIconSize),
+            Style           = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             Width           = ClearButtonWidth,
-            Foreground      = BrushClear,
-            Background      = BrushClearBg,
-            BorderBrush     = BrushClearBorder,
-            BorderThickness = new Thickness(1),
             Margin          = new Thickness(3, 0, 0, 0),
             ToolTip         = spec.ClearTooltip,
         };

@@ -15,6 +15,7 @@ using SEEDEditor;
 using SEEDEditor.Controls;
 using SEEDEditor.Runtime;
 using SEEDEditor.Scripting;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
@@ -2636,13 +2637,12 @@ public partial class InspectorPanel : UserControl
         byte AlphaByte(float f) => (byte)Math.Clamp((int)(f * 255), 0, 255);
         var  initColor = Color.FromArgb(AlphaByte(a), LinearToSrgbByte(r), LinearToSrgbByte(g), LinearToSrgbByte(b));
 
+        // 背景色が「選んでいる色」そのものなので、ホバーで塗り替えない色見本用スタイルを使う
         var btn = new Button
         {
+            Style      = SeedButtonStyle.Get(SeedButtonStyle.SWATCH),
             Height     = 22,
             Background = new SolidColorBrush(initColor),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-            BorderThickness = new Thickness(1),
-            Cursor     = Cursors.Hand,
         };
         btn.Click += (_, _) =>
         {
@@ -3014,11 +3014,8 @@ public partial class InspectorPanel : UserControl
         var btnApplyWindowAspect = new Button
         {
             Content             = "ウィンドウアスペクト比を適用",
+            Style               = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             FontSize            = 11,
-            Foreground          = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            Background          = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
-            BorderBrush         = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
-            BorderThickness     = new Thickness(1),
             Padding             = new Thickness(8, 3, 8, 3),
             Margin              = new Thickness(0, 2, 0, 4),
             HorizontalAlignment = HorizontalAlignment.Left,
@@ -4045,15 +4042,11 @@ public partial class InspectorPanel : UserControl
         var editBtn = new Button
         {
             Content             = "InputMap エディタを開く",
+            Style               = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             Margin              = new Thickness(0, 4, 0, 0),
             Padding             = new Thickness(8, 4, 8, 4),
-            Background          = new SolidColorBrush(Color.FromRgb(0x2A, 0x3A, 0x2A)),
-            Foreground          = new SolidColorBrush(Color.FromRgb(0xAA, 0xCC, 0xAA)),
-            BorderBrush         = new SolidColorBrush(Color.FromRgb(0x44, 0x66, 0x44)),
-            BorderThickness     = new Thickness(1),
             HorizontalAlignment = HorizontalAlignment.Left,
             FontSize            = 11,
-            Cursor              = Cursors.Hand,
         };
         editBtn.Click += (_, _) =>
         {
@@ -4901,10 +4894,8 @@ public partial class InspectorPanel : UserControl
         var resetBtn = new Button
         {
             Content = "埋込に戻す",
-            Background = new SolidColorBrush(Color.FromRgb(0x33, 0x28, 0x20)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
             Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Margin = new Thickness(0, 6, 0, 0),
-            Cursor = Cursors.Hand, HorizontalAlignment = HorizontalAlignment.Left,
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
         resetBtn.Click += (_, _) =>
         {
@@ -5734,9 +5725,8 @@ public partial class InspectorPanel : UserControl
         var clipBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
         var addClipBtn = new Button
         {
-            Content = "追加", Background = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Cursor = Cursors.Hand,
+            Content = "追加",
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 10,
         };
         addClipBtn.Click += (_, _) =>
         {
@@ -5751,9 +5741,9 @@ public partial class InspectorPanel : UserControl
         };
         var removeClipBtn = new Button
         {
-            Content = "削除", Background = new SolidColorBrush(Color.FromRgb(0x40, 0x28, 0x28)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Margin = new Thickness(4, 0, 0, 0), Cursor = Cursors.Hand,
+            Content = "削除",
+            Style   = SeedButtonStyle.Get(SeedButtonStyle.DANGER),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Margin = new Thickness(4, 0, 0, 0),
         };
         removeClipBtn.Click += (_, _) =>
         {
@@ -5773,10 +5763,8 @@ public partial class InspectorPanel : UserControl
         var addModelClipBtn = new Button
         {
             Content = "モデル内蔵アニメを追加",
-            Background = new SolidColorBrush(Color.FromRgb(0x28, 0x30, 0x40)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
             Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Margin = new Thickness(0, 4, 0, 0),
-            Cursor = Cursors.Hand, HorizontalAlignment = HorizontalAlignment.Left,
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
         if (modelAnims.Count == 0)
         {
@@ -5853,9 +5841,8 @@ public partial class InspectorPanel : UserControl
         // ── タイムラインで編集 ──────────────────────────────────
         var editTimelineBtn = new Button
         {
-            Content = "タイムラインで編集", Background = new SolidColorBrush(Color.FromRgb(0x2C, 0x20, 0x38)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)), BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 3, 8, 3), FontSize = 11, Margin = new Thickness(0, 10, 0, 0), Cursor = Cursors.Hand,
+            Content = "タイムラインで編集",
+            Padding = new Thickness(8, 3, 8, 3), FontSize = 11, Margin = new Thickness(0, 10, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
         };
         editTimelineBtn.Click += (_, _) =>
@@ -9941,16 +9928,16 @@ public partial class InspectorPanel : UserControl
                     float pv = pvVals[pvColIdx];
                     float qv = pvVals[pvRowIdx];
                     bool pvActive = Math.Abs(curPivX - pv) < 0.01f && Math.Abs(curPivY - qv) < 0.01f;
+                    // 背景色が選択状態そのものなので、ホバーで塗り替えない色見本用スタイルを使う
                     var pvBtn = new Button
                     {
+                        Style           = SeedButtonStyle.Get(SeedButtonStyle.SWATCH),
                         Width           = 16,
                         Height          = 16,
                         Margin          = new Thickness(1),
                         Background      = pvActive
                             ? new SolidColorBrush(Color.FromRgb(0x61, 0xAF, 0xEF))
                             : new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
-                        BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
-                        BorderThickness = new Thickness(1),
                         Padding         = new Thickness(0),
                         Tag             = (pv, qv),
                     };
@@ -11045,16 +11032,16 @@ public partial class InspectorPanel : UserControl
                 float qv = pvPresetVals[pvRow];
                 // 現在選択中のプリセットを強調表示する
                 bool pvActive = (Math.Abs(pivx - pv) < 0.01f && Math.Abs(pivy - qv) < 0.01f);
+                // 背景色が選択状態そのものなので、ホバーで塗り替えない色見本用スタイルを使う
                 var pvBtn = new Button
                 {
+                    Style           = SeedButtonStyle.Get(SeedButtonStyle.SWATCH),
                     Width           = 16,
                     Height          = 16,
                     Margin          = new Thickness(1),
                     Background      = pvActive
                         ? new SolidColorBrush(Color.FromRgb(0x61, 0xAF, 0xEF))
                         : new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
-                    BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
-                    BorderThickness = new Thickness(1),
                     Padding         = new Thickness(0),
                     Tag             = (pv, qv),
                 };
@@ -11112,16 +11099,16 @@ public partial class InspectorPanel : UserControl
                 float bv = presetVals[row];
                 // 現在選択中のプリセットを強調表示する
                 bool isActive = (Math.Abs(ancX - av) < 0.01f && Math.Abs(ancY - bv) < 0.01f);
+                // 背景色が選択状態そのものなので、ホバーで塗り替えない色見本用スタイルを使う
                 var btn = new Button
                 {
+                    Style             = SeedButtonStyle.Get(SeedButtonStyle.SWATCH),
                     Width             = 16,
                     Height            = 16,
                     Margin            = new Thickness(1),
                     Background        = isActive
                         ? new SolidColorBrush(Color.FromRgb(0x61, 0xAF, 0xEF))
                         : new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
-                    BorderBrush       = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
-                    BorderThickness   = new Thickness(1),
                     Padding           = new Thickness(0),
                     Tag               = (av, bv),
                 };

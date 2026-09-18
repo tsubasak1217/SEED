@@ -2,8 +2,8 @@ using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 using SEEDEditor.Audio;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Dialogs;
 
@@ -15,12 +15,8 @@ namespace SEEDEditor.Dialogs;
 /// </summary>
 public sealed class AudioSilenceTrimWindow : Window
 {
-    // ── 配色（エディタの他ダイアログと揃える）────────────────────
-    private static readonly Brush BackgroundBrush = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26));
-    private static readonly Brush FieldBrush      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A));
-    private static readonly Brush TextBrush       = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xDC));
-    private static readonly Brush BorderBrush2    = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
-    private static readonly Brush DimTextBrush    = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99));
+    // 配色は Theme/SeedDialogTheme に集約してある（自前で色を決めない）。
+    // 以前はここに 5 個の色定数を持っていたが、他のダイアログと同じ値の複製だった。
 
     // ── レイアウト寸法 ────────────────────────────────────────────
     /// <summary>ウィンドウ幅（px）。</summary>
@@ -41,9 +37,6 @@ public sealed class AudioSilenceTrimWindow : Window
     /// <summary>外周の余白（px）。</summary>
     private const double ContentPaddingPx = 14;
 
-    /// <summary>ボタンの幅（px）。</summary>
-    private const double ButtonWidthPx = 84;
-
     // ── 入力コントロール ──────────────────────────────────────────
     private readonly TextBox    _thresholdBox;
     private readonly TextBox    _paddingBox;
@@ -63,7 +56,7 @@ public sealed class AudioSilenceTrimWindow : Window
         Title                 = "先頭の無音をカット";
         Width                 = WindowWidthPx;
         Height                = WindowHeightPx;
-        Background            = BackgroundBrush;
+        Background            = SeedDialogTheme.Background;
         ResizeMode            = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar         = false;
@@ -74,7 +67,7 @@ public sealed class AudioSilenceTrimWindow : Window
         root.Children.Add(new TextBlock
         {
             Text       = targetFileName,
-            Foreground = DimTextBrush,
+            Foreground = SeedDialogTheme.DimText,
             Margin     = new Thickness(0, 0, 0, ContentPaddingPx),
             TextTrimming = TextTrimming.CharacterEllipsis,
         });
@@ -93,7 +86,7 @@ public sealed class AudioSilenceTrimWindow : Window
         _trimTrailingCheck = new CheckBox
         {
             Content    = "末尾の無音もカットする",
-            Foreground = TextBrush,
+            Foreground = SeedDialogTheme.Text,
             IsChecked  = AudioTrimOptions.DefaultTrimTrailing,
             Margin     = new Thickness(0, RowSpacingPx, 0, ContentPaddingPx),
         };
@@ -103,7 +96,7 @@ public sealed class AudioSilenceTrimWindow : Window
         root.Children.Add(new TextBlock
         {
             Text       = "保存方法",
-            Foreground = TextBrush,
+            Foreground = SeedDialogTheme.Text,
             Margin     = new Thickness(0, 0, 0, RowSpacingPx / 2),
         });
 
@@ -112,7 +105,7 @@ public sealed class AudioSilenceTrimWindow : Window
         {
             Content    = "上書き（元は .bak に退避）",
             GroupName  = saveModeGroup,
-            Foreground = TextBrush,
+            Foreground = SeedDialogTheme.Text,
             IsChecked  = AudioTrimOptions.DefaultSaveMode == AudioTrimSaveMode.Overwrite,
             Margin     = new Thickness(0, 0, 0, RowSpacingPx / 2),
         };
@@ -120,7 +113,7 @@ public sealed class AudioSilenceTrimWindow : Window
         {
             Content    = "別名で保存（<name>_trim.<ext>）",
             GroupName  = saveModeGroup,
-            Foreground = TextBrush,
+            Foreground = SeedDialogTheme.Text,
             IsChecked  = AudioTrimOptions.DefaultSaveMode == AudioTrimSaveMode.SaveAs,
         };
         root.Children.Add(_overwriteRadio);
@@ -133,20 +126,21 @@ public sealed class AudioSilenceTrimWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin              = new Thickness(0, ContentPaddingPx, 0, 0),
         };
+        // 見た目（色・余白・ホバー）は共通スタイルに任せる
         var okButton = new Button
         {
             Content   = "OK",
-            Width     = ButtonWidthPx,
             IsDefault = true,
             Margin    = new Thickness(0, 0, RowSpacingPx, 0),
         };
+        SeedDialogTheme.ApplyButtonStyle(okButton, isPrimary: true);
         okButton.Click += OnOkClicked;
         var cancelButton = new Button
         {
             Content  = "キャンセル",
-            Width    = ButtonWidthPx,
             IsCancel = true,
         };
+        SeedDialogTheme.ApplyButtonStyle(cancelButton);
         buttons.Children.Add(okButton);
         buttons.Children.Add(cancelButton);
         root.Children.Add(buttons);
@@ -171,14 +165,14 @@ public sealed class AudioSilenceTrimWindow : Window
         {
             Text              = label,
             Width             = LabelWidthPx,
-            Foreground        = TextBrush,
+            Foreground        = SeedDialogTheme.Text,
             VerticalAlignment = VerticalAlignment.Center,
         });
         row.Children.Add(input);
         row.Children.Add(new TextBlock
         {
             Text              = hint,
-            Foreground        = DimTextBrush,
+            Foreground        = SeedDialogTheme.DimText,
             Margin            = new Thickness(RowSpacingPx, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
         });
@@ -193,9 +187,9 @@ public sealed class AudioSilenceTrimWindow : Window
     {
         Text            = initialValue.ToString(CultureInfo.InvariantCulture),
         Width           = NumericBoxWidthPx,
-        Background      = FieldBrush,
-        Foreground      = TextBrush,
-        BorderBrush     = BorderBrush2,
+        Background      = SeedDialogTheme.Field,
+        Foreground      = SeedDialogTheme.Text,
+        BorderBrush     = SeedDialogTheme.FieldBorder,
         Padding         = new Thickness(4, 2, 4, 2),
         TextAlignment   = TextAlignment.Right,
     };

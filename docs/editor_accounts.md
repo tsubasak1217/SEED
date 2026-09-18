@@ -52,7 +52,7 @@
 | `Http/AuthContracts.cs` | 契約 3 章の要求・応答の形（JSON のキー名はここだけ） |
 | `Http/IAuthGatewayClient.cs` / `AuthGatewayClient.cs` | 発行窓口の境界と HTTP 実装 |
 | `Http/AuthEndpointResolver.cs` | 窓口 URL とクローン元 URL の組み立て（純関数） |
-| `Views/AccountDialogTheme.cs` | ダイアログの配色・寸法・部品 |
+| （配色・寸法・部品） | `editor/src/Theme/SeedDialogTheme.cs` へ移した。エディタの他のダイアログ（`TextInputWindow` / `AudioSilenceTrimWindow`）と共用。ボタンの見た目は `docs/editor_ui_style.md` が正典 |
 | `Views/AccountCreateWindow.cs` | アカウントの作成 |
 | `Views/PassphraseWindow.cs` | パスフレーズ入力（書き出し／読み込み共用） |
 | `Views/JoinProjectWindow.cs` | プロジェクトに参加 |

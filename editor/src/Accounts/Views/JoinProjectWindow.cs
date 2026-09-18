@@ -21,6 +21,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using SEEDEditor.VersionControl.Lore.Backend;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Accounts.Views;
 
@@ -70,34 +71,34 @@ public sealed class JoinProjectWindow : Window
     {
         _projectFileExtension = projectFileExtension;
 
-        AccountDialogTheme.ApplyWindowChrome(
+        SeedDialogTheme.ApplyWindowChrome(
             this, AccountMessages.JOIN_DIALOG_TITLE, WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX);
 
         var root = new StackPanel
         {
-            Margin = new Thickness(AccountDialogTheme.CONTENT_PADDING_PX),
+            Margin = new Thickness(SeedDialogTheme.CONTENT_PADDING_PX),
         };
 
         // ── サーバのアドレス ──
-        root.Children.Add(AccountDialogTheme.NewLabel(
-            AccountMessages.LABEL_SERVER_HOST, AccountDialogTheme.DimText,
-            AccountDialogTheme.NOTE_FONT_SIZE));
-        _hostBox = AccountDialogTheme.NewTextBox(topMargin: 2);
+        root.Children.Add(SeedDialogTheme.NewLabel(
+            AccountMessages.LABEL_SERVER_HOST, SeedDialogTheme.DimText,
+            SeedDialogTheme.NOTE_FONT_SIZE));
+        _hostBox = SeedDialogTheme.NewTextBox(topMargin: 2);
         root.Children.Add(_hostBox);
 
         // ── 招待コード ──
-        root.Children.Add(AccountDialogTheme.NewLabel(
-            AccountMessages.LABEL_INVITE_CODE, AccountDialogTheme.DimText,
-            AccountDialogTheme.NOTE_FONT_SIZE,
-            topMargin: AccountDialogTheme.ROW_SPACING_PX));
-        _inviteBox = AccountDialogTheme.NewTextBox(topMargin: 2);
+        root.Children.Add(SeedDialogTheme.NewLabel(
+            AccountMessages.LABEL_INVITE_CODE, SeedDialogTheme.DimText,
+            SeedDialogTheme.NOTE_FONT_SIZE,
+            topMargin: SeedDialogTheme.ROW_SPACING_PX));
+        _inviteBox = SeedDialogTheme.NewTextBox(topMargin: 2);
         root.Children.Add(_inviteBox);
 
         // ── 保存先（入力欄 ＋ 参照ボタン）──
-        root.Children.Add(AccountDialogTheme.NewLabel(
-            AccountMessages.LABEL_DESTINATION, AccountDialogTheme.DimText,
-            AccountDialogTheme.NOTE_FONT_SIZE,
-            topMargin: AccountDialogTheme.ROW_SPACING_PX));
+        root.Children.Add(SeedDialogTheme.NewLabel(
+            AccountMessages.LABEL_DESTINATION, SeedDialogTheme.DimText,
+            SeedDialogTheme.NOTE_FONT_SIZE,
+            topMargin: SeedDialogTheme.ROW_SPACING_PX));
 
         var destinationRow = new Grid { Margin = new Thickness(0, 2, 0, 0) };
         destinationRow.ColumnDefinitions.Add(
@@ -105,21 +106,21 @@ public sealed class JoinProjectWindow : Window
         destinationRow.ColumnDefinitions.Add(
             new ColumnDefinition { Width = GridLength.Auto });
 
-        _destinationBox = AccountDialogTheme.NewTextBox();
+        _destinationBox = SeedDialogTheme.NewTextBox();
         Grid.SetColumn(_destinationBox, 0);
         destinationRow.Children.Add(_destinationBox);
 
-        var browseButton = AccountDialogTheme.NewButton(
+        var browseButton = SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_BROWSE, OnBrowse, leftMargin: BROWSE_BUTTON_GAP_PX);
         Grid.SetColumn(browseButton, 1);
         destinationRow.Children.Add(browseButton);
         root.Children.Add(destinationRow);
 
         // ── 状態 ──
-        _statusText = AccountDialogTheme.NewLabel(
-            string.Empty, AccountDialogTheme.DimText,
-            AccountDialogTheme.NOTE_FONT_SIZE,
-            topMargin: AccountDialogTheme.ROW_SPACING_PX);
+        _statusText = SeedDialogTheme.NewLabel(
+            string.Empty, SeedDialogTheme.DimText,
+            SeedDialogTheme.NOTE_FONT_SIZE,
+            topMargin: SeedDialogTheme.ROW_SPACING_PX);
         root.Children.Add(_statusText);
 
         // ── ボタン ──
@@ -127,14 +128,14 @@ public sealed class JoinProjectWindow : Window
         {
             Orientation         = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin              = new Thickness(0, AccountDialogTheme.ROW_SPACING_PX, 0, 0),
+            Margin              = new Thickness(0, SeedDialogTheme.ROW_SPACING_PX, 0, 0),
         };
-        _joinButton = AccountDialogTheme.NewButton(
+        _joinButton = SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_JOIN, OnJoin, isPrimary: true);
         buttons.Children.Add(_joinButton);
-        buttons.Children.Add(AccountDialogTheme.NewButton(
+        buttons.Children.Add(SeedDialogTheme.NewButton(
             AccountMessages.BUTTON_CANCEL, OnCancel,
-            leftMargin: AccountDialogTheme.BUTTON_GAP_PX));
+            leftMargin: SeedDialogTheme.BUTTON_GAP_PX));
         root.Children.Add(buttons);
 
         Content = root;
@@ -233,7 +234,7 @@ public sealed class JoinProjectWindow : Window
     {
         _statusText.Text       = message;
         _statusText.Foreground = isError
-            ? AccountDialogTheme.ErrorText
-            : AccountDialogTheme.DimText;
+            ? SeedDialogTheme.ErrorText
+            : SeedDialogTheme.DimText;
     }
 }

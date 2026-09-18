@@ -13,76 +13,22 @@
 
     <Window.Resources>
 
-        <!-- ボタン共通スタイル -->
-        <Style x:Key="PkgBtn" TargetType="Button">
-            <Setter Property="Height"          Value="28"/>
-            <Setter Property="Padding"         Value="14,0"/>
-            <Setter Property="Background"      Value="#3A3A3A"/>
-            <Setter Property="Foreground"      Value="#CCCCCC"/>
-            <Setter Property="BorderBrush"     Value="#555555"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Cursor"          Value="Hand"/>
-            <Setter Property="FontSize"        Value="11"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="3"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsEnabled"   Value="False">
-                                <Setter Property="Foreground"   Value="#555555"/>
-                                <Setter Property="BorderBrush"  Value="#3A3A3A"/>
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="#505050"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter Property="Background" Value="#686868"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        <!-- ボタン共通スタイル（見た目はボタン共通書式に従う。寸法だけ足す）-->
+        <Style x:Key="PkgBtn" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Outlined}">
+            <Setter Property="Height"   Value="28"/>
+            <Setter Property="Padding"  Value="14,0"/>
+            <Setter Property="FontSize" Value="11"/>
         </Style>
 
-        <!-- ビルドボタン（アクセントカラー） -->
-        <Style x:Key="BuildBtn" TargetType="Button" BasedOn="{StaticResource PkgBtn}">
-            <Setter Property="Background"  Value="#1A5A1A"/>
-            <Setter Property="BorderBrush" Value="#2A7A2A"/>
-            <Setter Property="Foreground"  Value="#AAFFAA"/>
-            <Setter Property="FontWeight"  Value="Bold"/>
-            <Setter Property="Width"       Value="130"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="3"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Background"  Value="#252525"/>
-                                <Setter Property="BorderBrush" Value="#333333"/>
-                                <Setter Property="Foreground"  Value="#555555"/>
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="#226A22"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter Property="Background" Value="#1A7A1A"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+        <!-- ビルドボタン（成果物ができる操作なので完了色。色は共通書式が持つ） -->
+        <Style x:Key="BuildBtn" TargetType="Button"
+               BasedOn="{StaticResource Seed.Button.Success}">
+            <Setter Property="Height"     Value="28"/>
+            <Setter Property="Padding"    Value="14,0"/>
+            <Setter Property="FontSize"   Value="11"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Width"      Value="130"/>
         </Style>
 
         <!-- 設定項目の説明ラベル -->
@@ -112,7 +58,7 @@
             <Setter Property="Height"   Value="24"/>
         </Style>
 
-        <!-- 参照ボタン -->
+        <!-- 参照ボタン（「...」だけの小さなボタン） -->
         <Style x:Key="BrowseBtn" TargetType="Button" BasedOn="{StaticResource PkgBtn}">
             <Setter Property="Content"  Value="..."/>
             <Setter Property="Width"    Value="28"/>

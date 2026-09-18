@@ -11,6 +11,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using Microsoft.Win32;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.ProjectSettings;
 
@@ -1760,15 +1761,13 @@ public partial class ProjectSettingsWindow : Window
             };
         }
 
+        // この行の主操作。色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める。
         var btn = new Button
         {
             Content             = "インポート",
+            Style               = SeedButtonStyle.Get(SeedButtonStyle.PRIMARY),
             Padding             = new Thickness(10, 4, 10, 4),
             FontSize            = 11,
-            Background          = new SolidColorBrush(Color.FromRgb(0x09, 0x4D, 0x80)),
-            Foreground          = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
-            BorderThickness     = new Thickness(0),
-            Cursor              = Cursors.Hand,
             VerticalAlignment   = VerticalAlignment.Center,
         };
         btn.Click += (_, _) =>

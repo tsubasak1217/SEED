@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
@@ -166,18 +167,14 @@ internal static class FileRefBuilder
             e.Handled = true;
         };
 
+        // 色・ホバー・無効時の見た目は共通スタイル（Theme/SeedButtonStyles.xaml）に任せる
         var browseBtn = new Button
         {
             Content           = "参照",
-            Background        = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
-            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-            BorderThickness   = new Thickness(1),
+            Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             FontSize          = 10,
             Padding           = new Thickness(6, 2, 6, 2),
-            Cursor            = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
-            Template          = BuildButtonTemplate(),
         };
         browseBtn.Click += (_, _) =>
         {
@@ -195,15 +192,10 @@ internal static class FileRefBuilder
             var clearBtn = new Button
             {
                 Content           = SEEDEditor.Controls.AppIcon.Create("Icon.Close", ClearButtonIconSize),
-                Background        = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
-                Foreground        = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
-                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                BorderThickness   = new Thickness(1),
+                Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
                 Padding           = new Thickness(6, 2, 6, 2),
                 Margin            = new Thickness(2, 0, 0, 0),
-                Cursor            = Cursors.Hand,
                 VerticalAlignment = VerticalAlignment.Center,
-                Template          = BuildButtonTemplate(),
                 ToolTip           = "参照を解除する",
                 // 未設定のときは押しても意味がないため無効化する
                 IsEnabled         = hasPath,
@@ -238,25 +230,9 @@ internal static class FileRefBuilder
         return null;
     }
 
-    internal static ControlTemplate BuildButtonTemplate()
-    {
-        var t  = new ControlTemplate(typeof(Button));
-        var bd = new FrameworkElementFactory(typeof(Border));
-        bd.SetBinding(Border.BackgroundProperty,
-            new System.Windows.Data.Binding("Background")
-            { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-        bd.SetBinding(Border.BorderBrushProperty,
-            new System.Windows.Data.Binding("BorderBrush")
-            { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-        bd.SetBinding(Border.BorderThicknessProperty,
-            new System.Windows.Data.Binding("BorderThickness")
-            { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-        bd.SetValue(Border.CornerRadiusProperty, new CornerRadius(2));
-        var cp = new FrameworkElementFactory(typeof(ContentPresenter));
-        cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-        cp.SetValue(ContentPresenter.VerticalAlignmentProperty,   VerticalAlignment.Center);
-        bd.AppendChild(cp);
-        t.VisualTree = bd;
-        return t;
-    }
+    // BuildButtonTemplate() は削除した。
+    // ホバー・押下・無効のトリガーを持たない最小テンプレートで、
+    // インスペクタ行のボタン 6 か所が「押しても見た目が変わらない」状態になっていた。
+    // 現在はボタン共通書式（Theme/SeedButtonStyles.xaml）の
+    // Seed.Button.Outlined を使う（同じ枠つきの見た目＋状態の反応つき）。
 }

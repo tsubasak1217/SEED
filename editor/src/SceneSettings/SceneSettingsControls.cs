@@ -18,6 +18,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.SceneSettings;
 
@@ -550,14 +551,10 @@ internal static class SceneSettingsControls
         var button = new Button
         {
             Content             = "デフォルトに戻す",
+            Style               = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             FontSize            = FontSizeHint,
             Padding             = new Thickness(10, 5, 10, 5),
-            Cursor              = Cursors.Hand,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Background          = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
-            Foreground          = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            BorderBrush         = BrushBorder,
-            BorderThickness     = new Thickness(1),
             ToolTip             = "このカテゴリの設定だけを既定値へ戻します。",
         };
         button.Click += (_, _) => onReset();

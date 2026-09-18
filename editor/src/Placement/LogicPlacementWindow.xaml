@@ -65,14 +65,12 @@
             <Setter Property="Padding"         Value="8,4,8,6"/>
             <Setter Property="FontSize"        Value="11"/>
         </Style>
-        <!-- ボタン -->
-        <Style TargetType="Button">
-            <Setter Property="Background"      Value="#333338"/>
-            <Setter Property="Foreground"      Value="#DCDCDC"/>
-            <Setter Property="BorderBrush"     Value="#3F3F46"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding"         Value="10,4"/>
-            <Setter Property="FontSize"        Value="11"/>
+        <!-- ボタン（このウィンドウ内の既定。見た目はボタン共通書式に従う）
+             以前はここに Template を持たない暗黙スタイルを置いていたため、
+             アプリ共通の暗黙スタイルを隠して WPF 既定の明るいホバーが出ていた。 -->
+        <Style TargetType="Button" BasedOn="{StaticResource Seed.Button.Outlined}">
+            <Setter Property="Padding"  Value="10,4"/>
+            <Setter Property="FontSize" Value="11"/>
         </Style>
     </Window.Resources>
 

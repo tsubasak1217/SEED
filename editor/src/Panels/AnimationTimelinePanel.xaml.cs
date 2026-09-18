@@ -46,6 +46,7 @@ using System.Windows.Threading;
 using Microsoft.Win32;
 using SEEDEditor.Panels.AnimationTimeline;
 using SEEDEditor.Runtime;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
@@ -2011,11 +2012,12 @@ public partial class AnimationTimelinePanel : UserControl
         };
         ValueEditorHost.Children.Add(cmbInterp);
 
+        // 破壊操作なので危険色。色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める。
         var btnDelete = new Button
         {
-            Content = "選択キーを削除", Background = new SolidColorBrush(Color.FromRgb(0x40, 0x28, 0x28)),
-            Foreground = new SolidColorBrush(AnimationTimelineConstants.TextColor), BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 2, 8, 2), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), Cursor = Cursors.Hand,
+            Content = "選択キーを削除",
+            Style   = SeedButtonStyle.Get(SeedButtonStyle.DANGER),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 11, Margin = new Thickness(12, 0, 0, 0),
         };
         btnDelete.Click += (_, _) => DeleteSelectedKeys();
         ValueEditorHost.Children.Add(btnDelete);
@@ -2130,11 +2132,12 @@ public partial class AnimationTimelinePanel : UserControl
         }
 
         // ── 削除ボタン ──
+        // 破壊操作なので危険色。色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める。
         var btnDelete = new Button
         {
-            Content = "削除", Background = new SolidColorBrush(Color.FromRgb(0x40, 0x28, 0x28)),
-            Foreground = new SolidColorBrush(AnimationTimelineConstants.TextColor), BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 2, 8, 2), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), Cursor = Cursors.Hand,
+            Content = "削除",
+            Style   = SeedButtonStyle.Get(SeedButtonStyle.DANGER),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 11, Margin = new Thickness(12, 0, 0, 0),
         };
         btnDelete.Click += (_, _) => DeleteKeyAt(trackIndex, track.Keys.IndexOf(key));
         ValueEditorHost.Children.Add(btnDelete);
