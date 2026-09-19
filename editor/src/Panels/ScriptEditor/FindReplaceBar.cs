@@ -36,6 +36,12 @@ public sealed class FindReplaceBar : Border
     /// <summary>検索語・大文字小文字設定・表示状態が変わったときに発火する（ハイライト更新用）。</summary>
     public event Action? SearchChanged;
 
+    /// <summary>
+    /// 検索の「次へ／前へ」でキャレットを飛ばす直前に発火する（戻る／進むの履歴記録用）。
+    /// 移動してからでは「飛ぶ前の位置」が取れないため、移動前に知らせる必要がある。
+    /// </summary>
+    public event Action? BeforeJump;
+
     /// <summary>現在の検索語。</summary>
     public string SearchTerm => _findBox.Text;
 
@@ -140,6 +146,8 @@ public sealed class FindReplaceBar : Border
     private void FindNext(bool back)
     {
         if (_editor is null || string.IsNullOrEmpty(_findBox.Text)) return;
+        // キャレットが飛ぶ前に、いまの位置を戻る／進むの履歴へ残してもらう
+        BeforeJump?.Invoke();
         var text    = _editor.Text;
         var keyword  = _findBox.Text;
 
@@ -184,6 +192,11 @@ public sealed class FindReplaceBar : Border
     private void ReplaceAll()
     {
         if (_editor is null || string.IsNullOrEmpty(_findBox.Text)) return;
+        // 読み取り専用のエディタには書き込まない。
+        // 「置換」は Document.Text を直接差し替えるため、TextArea の編集コマンドに
+        // しか効かない IsReadOnly を素通りしてしまう（エンジン API のソースや、
+        // ディスクから消えた「ファイルが見つかりません」タブが対象になり得る）。
+        if (_editor.IsReadOnly) return;
         var text    = _editor.Text;
         var keyword  = _findBox.Text;
         int count = 0;

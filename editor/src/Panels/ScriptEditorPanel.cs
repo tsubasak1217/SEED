@@ -24,6 +24,7 @@ using SEEDEditor;
 using SEEDEditor.AI.LocalLlm;
 using SEEDEditor.Debugger;
 using SEEDEditor.Panels.ScriptEditor;
+using SEEDEditor.Panels.ScriptEditor.DiskSync;
 using SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 using SEEDEditor.Runtime;
 using SEEDEditor.Scripting;
@@ -31,8 +32,23 @@ using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
-/// <summary>開いているドキュメント 1 件の情報（「タブ」パネル表示用）。</summary>
-public sealed record OpenDocInfo(string FilePath, bool IsDirty, bool IsActive, bool IsReadOnly);
+/// <summary>
+/// 開いているドキュメント 1 件の情報（「タブ」パネル表示用）。
+/// </summary>
+/// <param name="FilePath">ファイルの絶対パス。</param>
+/// <param name="IsDirty">未保存の編集があるか。</param>
+/// <param name="IsActive">いまエディタに表示されているか。</param>
+/// <param name="IsReadOnly">読み取り専用タブ（エンジン API のソースなど）か。</param>
+/// <param name="IsMissing">
+/// ディスク上からファイルが消えているか（ブランチ切り替え・マージで消えた等）。
+/// 「タブ」パネルは、この行が実体を失っていることが分かる見た目にする。
+/// </param>
+public sealed record OpenDocInfo(
+    string FilePath,
+    bool   IsDirty,
+    bool   IsActive,
+    bool   IsReadOnly,
+    bool   IsMissing = false);
 
 /// <summary>診断（エラー・警告）1 件（「エラー一覧」パネル表示用）。</summary>
 public sealed record ScriptDiagnostic(bool IsError, string Id, string Message, int Line, int Column, int Offset, string FilePath);
@@ -50,7 +66,14 @@ public sealed record ScriptDiagnostic(bool IsError, string Id, string Message, i
 /// - 保存成功時に ScriptSaved イベントを発火（MainWindow が RELOAD_SCRIPTS を送信）
 /// - 未保存タブには ● マークを表示し、閉じるときに保存確認を出す
 /// </summary>
-public class ScriptEditorPanel : UserControl
+/// <remarks>
+/// 役割ごとに partial で分割してある:
+/// <list type="bullet">
+///   <item><c>ScriptEditorPanel.DiskSync.cs</c> — 開いているタブをディスクの状態へ追従させる</item>
+///   <item><c>ScriptEditorPanel.Navigation.cs</c> — 戻る／進む（ナビゲーション履歴）</item>
+/// </list>
+/// </remarks>
+public partial class ScriptEditorPanel : UserControl
 {
     // ── 表示倍率の下限・上限（Ctrl+ホイール）──
     private const double MinFontSize = 8.0;
@@ -95,7 +118,11 @@ public class ScriptEditorPanel : UserControl
     {
         public required string            FilePath;
         public required TextEditor        Editor;
-        public required FrameworkElement  Content;        // エディタ + ルーラーのコンテナ
+        public required FrameworkElement  Content;        // 通知帯 + 本文（エディタ or 見つかりません）の外枠
+        public required Decorator         Body;           // 本文の差し替え口
+        public required FrameworkElement  EditorArea;     // エディタ + ルーラーのコンテナ
+        public required FrameworkElement  MissingView;    // 「ファイルが見つかりません」表示
+        public required ScriptDiskNoticeBar Notice;       // 上部の非モーダル通知帯
         public required TextMarkerService Markers;
         public required DispatcherTimer   DiagTimer;
         public required DispatcherTimer   OccurTimer;    // 選択単語ハイライトのデバウンス
@@ -124,6 +151,33 @@ public class ScriptEditorPanel : UserControl
         public BreakpointMargin? BpMargin;
         /// <summary>デバッガ停止行の赤背景ハイライト。</summary>
         public DebugLineHighlighter? DebugLine;
+
+        // ── ディスク追従（ScriptEditorPanel.DiskSync.cs が使う）──────
+
+        /// <summary>いまこのタブが取っている、ディスクに対する表示状態。</summary>
+        public ScriptDiskStatus DiskStatus = ScriptDiskStatus.Normal;
+
+        /// <summary>
+        /// 「最後にディスクと読み書きした内容」のハッシュ。
+        /// これと現在のディスク内容を突き合わせて、自分の保存による変化を無視する。
+        /// null ＝ ディスクに実体が無い前提（「見つかりません」タブ）。
+        /// </summary>
+        public string? DiskBaseline;
+
+        /// <summary>
+        /// ディスクから本文を流し込んでいる最中か。
+        /// true の間は TextChanged の通常処理（ダーティ化・ワークスペース反映・
+        /// 診断予約・履歴記録）を止める（自分の読み直しを利用者の編集と誤認しないため）。
+        /// </summary>
+        public bool IsSyncingFromDisk;
+
+        // ── ナビゲーション履歴（ScriptEditorPanel.Navigation.cs が使う）──
+
+        /// <summary>直前に見ていたキャレット行（ジャンプ判定の基準）。0 ＝ 未取得。</summary>
+        public int NavLastCaretLine;
+
+        /// <summary>直前に見ていたキャレット桁（ジャンプ元の位置を正確に記録するため）。</summary>
+        public int NavLastCaretColumn;
 
         /// <summary>
         /// C# の意味解析（IntelliSense・診断・整形・デバッグ）を適用するドキュメントか。
@@ -238,9 +292,19 @@ public class ScriptEditorPanel : UserControl
         {
             if (_activeDoc is not null) UpdateSearchHighlight(_activeDoc);
         };
+        // 検索の「次へ／前へ」で飛ぶ前の位置を、戻る／進むの履歴へ残す
+        _findBar.BeforeJump += RecordCurrentNavPoint;
 
         // キーボードショートカット
         PreviewKeyDown += OnPanelKeyDown;
+
+        // マウスのサイドボタンで戻る／進む（Visual Studio と同じ割り当て）。
+        // パネル全体でトンネリング（Preview）して拾うので、エディタ上でも
+        // 検索バー上でも効き、パネルの外では反応しない。
+        PreviewMouseDown += OnPanelMouseDown;
+
+        // 開いているタブをディスクの状態へ追従させる監視を開始する
+        InitDiskSync();
 
         // パネルがキーボードフォーカスを持たない（=アクティブでない）ときは
         // 全エディタを読み取り専用にし、テキスト入力を受け付けないようにする。
@@ -259,8 +323,10 @@ public class ScriptEditorPanel : UserControl
     {
         var editable = IsKeyboardFocusWithin;
         foreach (var doc in _docs)
-            // 読み取り専用タブ（エンジン API のソース）は常に編集不可を維持する。
-            doc.Editor.IsReadOnly = doc.IsReadOnly || !editable;
+            // 読み取り専用タブ（エンジン API のソース）と、ディスクから消えたタブは
+            // 常に編集不可を維持する（消えたファイルの古い中身を編集させない）。
+            doc.Editor.IsReadOnly =
+                doc.IsReadOnly || doc.DiskStatus == ScriptDiskStatus.Missing || !editable;
     }
 
     /// <summary>現在アクティブなエディタ（なければ null）。</summary>
@@ -269,6 +335,9 @@ public class ScriptEditorPanel : UserControl
     /// <summary>指定ドキュメントをアクティブにして表示領域へ載せる。</summary>
     private void ActivateDoc(DocTab? doc)
     {
+        // タブを切り替える＝別ファイルへ移動したということなので、
+        // 離れる側の現在位置を「戻る」履歴へ残す（切り替え前に取る必要がある）。
+        RecordNavPointOnLeavingActiveDoc(doc);
         _activeDoc = doc;
         _editorHost.Child = doc?.Content;
         _findBar.SetTarget(doc?.Editor);
@@ -289,7 +358,10 @@ public class ScriptEditorPanel : UserControl
 
     /// <summary>開いているドキュメントの一覧を返す（「タブ」パネル用）。</summary>
     public IReadOnlyList<OpenDocInfo> GetOpenDocuments()
-        => _docs.Select(d => new OpenDocInfo(d.FilePath, d.IsDirty, d == _activeDoc, d.IsReadOnly)).ToList();
+        => _docs.Select(d => new OpenDocInfo(
+                d.FilePath, d.IsDirty, d == _activeDoc, d.IsReadOnly,
+                d.DiskStatus == ScriptDiskStatus.Missing))
+            .ToList();
 
     /// <summary>
     /// 開いている各ドキュメントの現在のブレークポイント（ファイルパス→行番号）。
@@ -326,22 +398,21 @@ public class ScriptEditorPanel : UserControl
     /// <summary>指定ファイルの指定行を開いてキャレットを移動する（デバッグの現在行表示用）。</summary>
     public void GoToLine(string filePath, int line)
     {
-        // デバッガのステップインでエンジン側ソース（ScriptBridge.cs など、ユーザーの
-        // アセット配下でないスクリプト）へ飛んだ場合は、閲覧は許可するが編集はさせない
-        // （機能保証のため読み取り専用で開く）。ユーザースクリプト（アセット配下）は編集可。
-        if (IsUserScriptPath(filePath)) OpenFile(filePath);
-        else                            OpenFileReadOnly(filePath);
+        // 飛ぶ前の位置を「戻る」で辿れるようにしてからジャンプする
+        RecordCurrentNavPoint();
+        JumpTo(filePath, line, NavDefaultColumn);
+    }
 
-        var full = Path.GetFullPath(filePath);
-        var doc = _docs.FirstOrDefault(d =>
+    /// <summary>開いているドキュメントをパスで探す（大文字小文字を無視・絶対パスへ正規化）。</summary>
+    /// <param name="filePath">探すファイルのパス。</param>
+    /// <returns>見つかったドキュメント。無ければ null。</returns>
+    private DocTab? FindDoc(string filePath)
+    {
+        string full;
+        try { full = Path.GetFullPath(filePath); }
+        catch { return null; }
+        return _docs.FirstOrDefault(d =>
             string.Equals(d.FilePath, full, StringComparison.OrdinalIgnoreCase));
-        if (doc is null) return;
-
-        int clamped = Math.Clamp(line, 1, Math.Max(1, doc.Editor.Document.LineCount));
-        var docLine = doc.Editor.Document.GetLineByNumber(clamped);
-        doc.Editor.CaretOffset = docLine.Offset;
-        doc.Editor.ScrollToLine(clamped);
-        doc.Editor.Focus();
     }
 
     /// <summary>
@@ -552,9 +623,13 @@ public class ScriptEditorPanel : UserControl
     /// <summary>指定診断の該当箇所へジャンプする（「エラー一覧」パネルのダブルクリック）。</summary>
     public void GoToDiagnostic(ScriptDiagnostic d)
     {
+        // 飛ぶ前の位置を「戻る」で辿れるようにしてからジャンプする
+        RecordCurrentNavPoint();
+
+        // 利用者が一覧から明示的に選んだジャンプなので、ファイルが消えていても
+        // タブを作って「ファイルが見つかりません」と言い切る（黙って何も起きないより良い）。
         OpenFile(d.FilePath);
-        var target = _docs.FirstOrDefault(x =>
-            string.Equals(x.FilePath, Path.GetFullPath(d.FilePath), StringComparison.OrdinalIgnoreCase));
+        var target = FindDoc(d.FilePath);
         if (target is null) return;
         int off = Math.Min(d.Offset, target.Editor.Document.TextLength);
         target.Editor.CaretOffset = off;
@@ -759,6 +834,15 @@ public class ScriptEditorPanel : UserControl
     /// <summary>キーボードショートカット処理。</summary>
     private void OnPanelKeyDown(object sender, KeyEventArgs e)
     {
+        // 戻る／進む（Ctrl+- / Ctrl+Shift+- / Alt+← / Alt+→）。
+        // Alt 併用では Ctrl が付かないので、Ctrl の判定より前に見る必要がある。
+        if (TryHandleNavigationKey(e))
+        {
+            // Ctrl+K で待機中だった整形コードは、別の操作が挟まった時点で解除する
+            _awaitingFormatChord = false;
+            return;
+        }
+
         bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
         if (!ctrl) return;
 
@@ -814,6 +898,9 @@ public class ScriptEditorPanel : UserControl
     public void SetAssetsPath(string assetsRoot)
     {
         _assetsRoot = assetsRoot;
+        // 別プロジェクトへ切り替えたら、前のプロジェクトのパスを指す履歴は意味を失う
+        _navHistory.Clear();
+        _lastEditPosition = null;
         try
         {
             _workspace = new ScriptWorkspace(assetsRoot);
@@ -825,16 +912,34 @@ public class ScriptEditorPanel : UserControl
         }
     }
 
-    /// <summary>ファイルを開く（既に開いていればそのタブをアクティブにする）。</summary>
-    public void OpenFile(string filePath) => OpenFileInternal(filePath, readOnly: false);
+    /// <summary>
+    /// ファイルを開く（既に開いていればそのタブをアクティブにする）。
+    /// 利用者が明示的に開こうとした経路なので、ファイルが無ければ
+    /// 「ファイルが見つかりません」タブを開いて理由を見せる。
+    /// </summary>
+    public void OpenFile(string filePath)
+        => OpenFileInternal(filePath, readOnly: false, allowMissing: true);
 
     /// <summary>
     /// ファイルを読み取り専用タブで開く（エンジン API のソースなど、機能保証のため
     /// 編集させたくないファイル向け）。定義ジャンプ（F12）から使う。
+    /// 利用者が開こうとしたものではないので、実体が無いときは何も開かない。
     /// </summary>
-    public void OpenFileReadOnly(string filePath) => OpenFileInternal(filePath, readOnly: true);
+    public void OpenFileReadOnly(string filePath)
+        => OpenFileInternal(filePath, readOnly: true, allowMissing: false);
 
-    private void OpenFileInternal(string filePath, bool readOnly)
+    /// <summary>
+    /// ファイルをタブで開く（既に開いていればそのタブをアクティブにする）。
+    /// </summary>
+    /// <param name="filePath">開くファイルのパス。</param>
+    /// <param name="readOnly">読み取り専用タブとして開くか。</param>
+    /// <param name="allowMissing">
+    /// ファイルが存在しないときに「ファイルが見つかりません」タブを作ってよいか。
+    /// 利用者が明示的に開こうとした経路（プロジェクトパネル・エラー一覧）だけ true にする。
+    /// 定義ジャンプ・デバッガの行表示・履歴移動のような内部経路で true にすると、
+    /// 利用者が望んでいない空タブが量産される。
+    /// </param>
+    private void OpenFileInternal(string filePath, bool readOnly, bool allowMissing)
     {
         var full = Path.GetFullPath(filePath);
 
@@ -842,6 +947,11 @@ public class ScriptEditorPanel : UserControl
             string.Equals(d.FilePath, full, StringComparison.OrdinalIgnoreCase));
         if (existing is not null)
         {
+            // 同じファイルを開き直す＝利用者が「いまの中身を見たい」と言っている。
+            // 「ファイルが見つかりません」タブが残っているときに、復活したファイルを
+            // プロジェクトパネルからダブルクリックする、という一番自然な復旧操作を
+            // 効かせるため、アクティブにする前に必ず点検する。
+            CheckDocAgainstDisk(existing);
             ActivateDoc(existing);
             return;
         }
@@ -862,12 +972,25 @@ public class ScriptEditorPanel : UserControl
                 $"— {byteLength:N0} バイト（上限 {EditorLanguages.Catalog.MaxEditableBytes:N0} バイト）");
         }
 
-        string text;
-        try { text = File.ReadAllText(full); }
-        catch (Exception ex)
+        // ディスク上に実体があるか。無い場合は、利用者が開こうとした経路
+        // （allowMissing）に限り「ファイルが見つかりません」タブとして開く。
+        bool exists = File.Exists(full);
+        if (!exists && !allowMissing)
         {
-            EditorLog.Write($"ファイルを開けませんでした: {ex.Message}");
+            EditorLog.Write($"ファイルが見つかりません: {full}");
             return;
+        }
+
+        string text = string.Empty;
+        if (exists)
+        {
+            try { text = File.ReadAllText(full); }
+            catch (Exception ex)
+            {
+                // 存在はするのに読めない（ロック中・権限不足）。中途半端なタブは作らない。
+                EditorLog.Write($"ファイルを開けませんでした: {ex.Message}");
+                return;
+            }
         }
 
         // Roslyn の意味解析を伴う機能（IntelliSense・診断・デバッグ・整形・AI 補完・
@@ -895,14 +1018,25 @@ public class ScriptEditorPanel : UserControl
         // 右側の概観ルーラー（マーククリックでジャンプ）
         var ruler = new OverviewRuler(editor);
 
-        // エディタ本体 + ルーラーを横並びにしてコンテンツにする
-        var content = new Grid();
-        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // エディタ本体 + ルーラーを横並びにする
+        var editorArea = new Grid();
+        editorArea.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        editorArea.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(editor, 0);
         Grid.SetColumn(ruler, 1);
-        content.Children.Add(editor);
-        content.Children.Add(ruler);
+        editorArea.Children.Add(editor);
+        editorArea.Children.Add(ruler);
+
+        // タブの中身は ［通知帯］＋［本文］の 2 段。
+        // 本文は「エディタ」と「ファイルが見つかりません」を差し替えられるようにする。
+        var missingView = new ScriptMissingFileView(full);
+        var body        = new Decorator { Child = editorArea };
+        var notice      = new ScriptDiskNoticeBar();
+
+        var content = new DockPanel();
+        DockPanel.SetDock(notice, Dock.Top);
+        content.Children.Add(notice);
+        content.Children.Add(body);   // 残り全体（最後 = フィル）
 
         // 診断の再計算を遅延実行するデバウンスタイマー。
         // 間隔は言語ごとに変える（C#=ローカルの Roslyn 解析 / WGSL=ランタイムへの検証依頼）。
@@ -918,6 +1052,10 @@ public class ScriptEditorPanel : UserControl
             FilePath    = full,
             Editor      = editor,
             Content     = content,
+            Body        = body,
+            EditorArea  = editorArea,
+            MissingView = missingView,
+            Notice      = notice,
             Markers     = markers,
             DiagTimer   = diagTimer,
             OccurTimer  = occurTimer,
@@ -982,7 +1120,12 @@ public class ScriptEditorPanel : UserControl
         editor.TextChanged += (_, _) =>
         {
             if (doc.IsReadOnly) return;
+            // ディスクからの読み直しで本文を流し込んでいる最中は、利用者の編集ではないので
+            // ダーティ化も履歴記録もしない（読み直し側が後処理をまとめて走らせる）。
+            if (doc.IsSyncingFromDisk) return;
             SetDirty(doc, true);
+            // 前の編集位置から十分離れた場所を編集したら、そこを履歴に残す
+            RecordEditPointIfFar(doc);
             // シェーダー（.wgsl）は C# ワークスペースへ入れない（Roslyn の解析対象外）。
             if (doc.IsCSharp) _workspace?.UpsertText(doc.FilePath, editor.Text);
             // タイマー自体はシェーダーでも回す（未保存内容のクラッシュ復元退避に使うため）。
@@ -1002,7 +1145,11 @@ public class ScriptEditorPanel : UserControl
             doc.Inline = new InlineCompletionController(
                 editor,
                 GetInlineProvider(),
-                isEnabled:     () => _settings.InlineCompletionEnabled && !readOnly,
+                // ディスクからの読み直しで本文を流し込んでいる間は無効化する。
+                // 総入れ替えも TextChanged なので、そのままだとマージ直後に
+                // 開いているタブの数だけクラウドへ補完要求が飛ぶ。
+                isEnabled:     () => _settings.InlineCompletionEnabled && !readOnly
+                                     && !doc.IsSyncingFromDisk,
                 isSuppressed:  () => false,
                 isAutoTrigger: () => !_settings.InlineCompletionManualOnly);
         }
@@ -1046,6 +1193,10 @@ public class ScriptEditorPanel : UserControl
         editor.TextArea.Caret.PositionChanged += (_, _) => ScheduleOccurrence();
         editor.TextArea.SelectionChanged      += (_, _) => ScheduleOccurrence();
 
+        // 一定行数以上のキャレット移動（クリック・検索・PageDown など）を
+        // 「ジャンプ」とみなして、飛ぶ直前の位置を履歴に残す。
+        editor.TextArea.Caret.PositionChanged += (_, _) => OnCaretMovedForNavigation(doc);
+
         // コピー/カットをプレーンテキストのみに上書きする。
         // AvalonEdit 既定は選択範囲全体に RTF/HTML（ハイライト付き）を生成するため
         // 数万行のコピーが非常に遅い。プレーンテキストだけ載せれば VS 並みに速い。
@@ -1069,20 +1220,43 @@ public class ScriptEditorPanel : UserControl
         // 書式・配色設定を適用する
         ApplySettingsToEditor(editor);
 
-        // ワークスペースに最新テキストを反映する（開いた瞬間の内容で同期）。
-        // 読み取り専用（エンジン API のソース）はユーザーのワークスペースへ入れない。
-        // シェーダー（.wgsl）も C# ではないので入れない。
-        if (!readOnly && isCSharp)
-            _workspace?.UpsertText(full, text);
+        // ディスク追従の基準値。実体が無いタブは「基準無し（null）」にしておき、
+        // ファイルが現れた時点で必ず食い違いとして検出されるようにする。
+        doc.DiskBaseline = exists ? HashOfText(text) : null;
 
         _docs.Add(doc);
-        // 初期状態を現在のフォーカス状態に合わせる（読み取り専用タブは常に編集不可）
+        if (!exists)
+            // 実体が無いので「ファイルが見つかりません」表示で開く
+            ApplyDiskStatus(doc, ScriptDiskStatus.Missing);
+        // 初期状態を現在のフォーカス状態に合わせる（読み取り専用・消えたタブは編集不可）
         UpdateEditability();
+        // 新しいフォルダが監視対象に加わったかもしれないので監視を張り直す
+        RefreshDiskWatchTargets();
         ActivateDoc(doc);
-        // 初回の診断・セマンティック着色を実行する（読み取り専用はワークスペース外なので不要）。
-        // 構文ハイライト（正規表現ベース）は読み取り専用・シェーダーでもそのまま効く。
-        if (!readOnly && isCSharp)
+
+        // 読み込み直後の後処理（ワークスペース同期・診断・意味着色）。
+        // 実体が無いタブでは中身が空なので走らせない（消えた型の空定義を
+        // ワークスペースへ入れると、他ファイルが誤って赤線になる）。
+        if (exists) RunPostLoadPasses(doc);
+    }
+
+    /// <summary>
+    /// 本文を読み込んだ直後に走らせる後処理をまとめたもの。
+    /// 初回に開いたときと、ディスクからの再読み込み後で同じ処理を通すために共通化してある。
+    ///
+    /// - ワークスペース（IntelliSense / F12 用）へ最新テキストを反映する
+    /// - Roslyn 診断・セマンティック着色を実行する（C# のみ）
+    /// - シェーディングアセット（.wgsl）はランタイムへ検証を依頼し、ローカル変数を着色する
+    ///
+    /// 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ入れない
+    /// （型の二重定義を避けるため）。構文ハイライトは読み取り専用でもそのまま効く。
+    /// </summary>
+    /// <param name="doc">対象ドキュメント。</param>
+    private void RunPostLoadPasses(DocTab doc)
+    {
+        if (!doc.IsReadOnly && doc.IsCSharp)
         {
+            _workspace?.UpsertText(doc.FilePath, doc.Editor.Text);
             _ = RunDiagnosticsAsync(doc);
             _ = RunSemanticColorizeAsync(doc);
         }
@@ -1092,7 +1266,7 @@ public class ScriptEditorPanel : UserControl
         // ランタイム未接続なら検証側（RuntimeManager.SendValidateWgsl）が送信を拒否して
         // 「検証不可」を返すため、ここで状態を判定する必要はない。
         // 未接続で捨てられた場合は、接続完了時に RevalidateWgslDocuments で追いつく。
-        else if (!readOnly && doc.Language == EditorLanguage.Wgsl)
+        else if (!doc.IsReadOnly && doc.Language == EditorLanguage.Wgsl)
         {
             _ = RunWgslDiagnosticsAsync(doc);
         }
@@ -1134,8 +1308,9 @@ public class ScriptEditorPanel : UserControl
     /// <summary>開いている全ドキュメント（タブウィンドウの全スクリプト）を保存する。</summary>
     public void SaveAll()
     {
-        // Save は SetDirty で _docs を変更しないため列挙中に走らせても安全だが、
-        // 念のためスナップショットしてから保存する。
+        // Save は _docs の構成を変えない（DocumentsChanged は発火するが、
+        // 開いているタブの増減は起きない）。それでも列挙中の変化に備えて
+        // スナップショットしてから保存する。
         foreach (var doc in _docs.ToList()) Save(doc);
     }
 
@@ -1169,7 +1344,12 @@ public class ScriptEditorPanel : UserControl
         switch (result)
         {
             case MessageBoxResult.Cancel: return false;          // 終了中止
-            case MessageBoxResult.Yes:    foreach (var d in dirty) Save(d); break;
+            // 終了直前の保存では、外部変更を理由に保存を見送らない（checkDiskChanges: false）。
+            // 利用者は一覧を見たうえで［はい］と答えており、ここで黙って見送ると
+            // 直後にプロセスごと消えて編集内容が戻せなくなる。
+            case MessageBoxResult.Yes:
+                foreach (var d in dirty) Save(d, checkDiskChanges: false);
+                break;
             // No = 破棄して終了（何もしない）
         }
         return true;
@@ -1231,20 +1411,24 @@ public class ScriptEditorPanel : UserControl
     {
         try
         {
-            if (File.Exists(filePath))
+            // 元ファイルが消えていても開く（allowMissing）。退避されているのは
+            // 未保存の編集そのものなので、「ファイルが無いから捨てる」のが一番損失が大きい。
+            // 開いた後に内容を流し込めば、ディスク追従の判定が
+            // 「無い・未保存あり」＝削除の帯を出す状態へ自然に移る。
+            OpenFile(filePath);
+            var doc = FindDoc(filePath);
+            if (doc is null)
             {
-                OpenFile(filePath);
-                var doc = _docs.FirstOrDefault(d =>
-                    string.Equals(d.FilePath, Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase));
-                if (doc is not null && doc.Editor.Text != content)
-                {
-                    // Text 変更で TextChanged が発火し、ダーティ化・再退避される
-                    doc.Editor.Text = content;
-                }
+                EditorLog.Write($"復元スキップ（ファイルを開けませんでした）: {filePath}");
+                return;
             }
-            else
+            if (doc.Editor.Text != content)
             {
-                EditorLog.Write($"復元スキップ（元ファイルが存在しません）: {filePath}");
+                // Text 変更で TextChanged が発火し、ダーティ化・再退避される
+                doc.Editor.Text = content;
+                // 未保存の編集を持った状態になったので、表示を判定し直す
+                // （消えているファイルなら「見つかりません」→ 削除の帯へ移る）
+                CheckDocAgainstDisk(doc);
             }
         }
         catch (Exception ex)
@@ -2382,12 +2566,14 @@ public class ScriptEditorPanel : UserControl
     /// </summary>
     private void NavigateToDefinition(string filePath, int offset, bool readOnly)
     {
-        if (readOnly) OpenFileReadOnly(filePath);
-        else          OpenFile(filePath);
+        // 飛ぶ前の位置を「戻る」で辿れるようにしてからジャンプする
+        RecordCurrentNavPoint();
 
-        var full = Path.GetFullPath(filePath);
-        var target = _docs.FirstOrDefault(d =>
-            string.Equals(d.FilePath, full, StringComparison.OrdinalIgnoreCase));
+        // 定義の解決結果は利用者が開こうとしたファイルではないため、
+        // 実体が無いときは「ファイルが見つかりません」タブを作らない。
+        OpenFileInternal(filePath, readOnly, allowMissing: false);
+
+        var target = FindDoc(filePath);
         if (target is null) return;
 
         int clamped = Math.Min(offset, target.Editor.Document.TextLength);
@@ -2516,8 +2702,16 @@ public class ScriptEditorPanel : UserControl
             if (formatted != editor.Text)
             {
                 int caret = editor.CaretOffset;
-                editor.Document.Text = formatted;
-                editor.CaretOffset = Math.Min(caret, editor.Document.TextLength);
+                // 整形も本文の総入れ替えなので、再読み込みと同じ前処理が要る:
+                // 履歴のアンカーを行・桁へ落とし、差し替えでキャレットが飛ぶ間は
+                // 履歴の記録を止める（止めないと偽の点が積まれ「進む」が捨てられる）。
+                if (_activeDoc is not null) FreezeNavigationAnchors(_activeDoc.FilePath);
+                WithNavigationSuppressed(() =>
+                {
+                    editor.Document.Text = formatted;
+                    editor.CaretOffset = Math.Min(caret, editor.Document.TextLength);
+                });
+                if (_activeDoc is not null) ResetNavCaretTracking(_activeDoc);
             }
         }
         catch (Exception ex)
@@ -2565,19 +2759,78 @@ public class ScriptEditorPanel : UserControl
 
     // ── 保存・コンパイルチェック ─────────────────────────────
 
-    private void Save(DocTab doc)
+    /// <summary>
+    /// 1 ドキュメントを保存する。
+    /// </summary>
+    /// <param name="doc">保存するドキュメント。</param>
+    /// <param name="checkDiskChanges">
+    /// 保存の直前にディスクを点検し、外部で書き換わっていたら保存を見送るか。
+    ///
+    /// 既定は true。false にするのは「タブを閉じる」「アプリを終了する」の保存確認で
+    /// 利用者が［はい］と答えた場合だけ。そこで黙って保存を見送ると、
+    /// 直後に本文ごと捨てられて**取り戻せない編集内容を失う**。
+    /// 外部変更を上書きしてしまう方は、バージョン管理の差分に残るので取り戻せる。
+    /// </param>
+    private void Save(DocTab doc, bool checkDiskChanges = true)
     {
         // 読み取り専用タブ（エンジン API のソース）は保存しない（機能保証のため）。
         if (doc.IsReadOnly) return;
+
+        // 「ファイルが見つかりません」表示のタブは保存しない。
+        // 中身は消える前の古いテキストなので、書き戻すと別ブランチのファイルを
+        // 復活させてしまう。未保存の編集があるタブはこの状態にならない
+        // （削除されても本文と帯を保つ）ので、失うものは無い。
+        if (doc.DiskStatus == ScriptDiskStatus.Missing)
+        {
+            EditorLog.Write(
+                $"保存しませんでした（ファイルがディスク上にありません）: {doc.FilePath}");
+            return;
+        }
+
+        // 保存の直前にディスクを見て、監視の検知が間に合っていない書き換えを拾う。
+        // ブランチのマージが入った直後（検知のデバウンス中）に Ctrl+S を押すと、
+        // 取り込んだ変更を黙って巻き戻してしまうため。
+        //
+        // 判定は必ず判定表（ScriptDiskState.Decide）へ委ねる。ここで独自に分岐すると
+        // 表と実装が二重化し、「未保存でもないのに『未保存の編集があるため』の帯が出て、
+        // ［このまま編集を続ける］で基準だけ新しい内容へ進み、以後どの点検でも
+        // 食い違いを検出できなくなる」という一番まずい状態を作る。
+        if (checkDiskChanges)
+        {
+            // 「無い」と「読めない」を分ける。TryComputeFileHash は
+            // 無い / ロック中 / 権限不足のいずれでも null を返すため、
+            // null を「消えた」と決め打つと、他プロセスが書き込み中のファイルを
+            // 無検査で上書きしてしまう（マージ直後はまさにその瞬間）。
+            bool existsOnDisk = File.Exists(doc.FilePath);
+            var  diskHash     = existsOnDisk ? TryComputeFileHash(doc.FilePath) : null;
+
+            if (existsOnDisk && diskHash is null)
+            {
+                EditorLog.Write(
+                    $"保存を中止しました（ディスク上のファイルを読めません）: {doc.FilePath}");
+                return;
+            }
+            if (existsOnDisk && diskHash != doc.DiskBaseline)
+            {
+                // 未保存なし → 黙って再読み込み / 未保存あり → 上書きせず帯を出す
+                CheckDocAgainstDisk(doc);
+                EditorLog.Write(
+                    $"保存せずにディスクの状態へ合わせました（外部で変更されています）: {doc.FilePath}");
+                return;
+            }
+            // ファイルが消えている場合はそのまま書いて作り直す
+            // （「保存すると作り直されます」の経路）。
+        }
 
         // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
         // 止められたときは dirty のままにする（タブに「未保存」が残り、
         // 利用者が内容を失わずに再挑戦できる）。
         if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(doc.FilePath)) return;
 
+        var savedText = doc.Editor.Text;
         try
         {
-            File.WriteAllText(doc.FilePath, doc.Editor.Text);
+            File.WriteAllText(doc.FilePath, savedText);
         }
         catch (Exception ex)
         {
@@ -2585,6 +2838,13 @@ public class ScriptEditorPanel : UserControl
             return;
         }
         SetDirty(doc, false);
+
+        // 自分が書いた内容を「最後に読み書きした内容」として記録する。
+        // これが無いと、自分の保存で飛んでくる監視イベントで自分を再読み込みしてしまう。
+        // 削除されていたファイルを保存で作り直した場合も、ここで通常表示へ戻る。
+        doc.DiskBaseline = HashOfText(savedText);
+        ApplyDiskStatus(doc, ScriptDiskStatus.Normal);
+        RefreshDiskWatchTargets();
 
         // ── C# 以外（シェーダー・テキスト系）の保存 ────────────────
         // ファイルへ書き出すだけで完了する。
@@ -2657,10 +2917,15 @@ public class ScriptEditorPanel : UserControl
                 "スクリプトエディタ",
                 MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
             if (result == MessageBoxResult.Cancel) return;
-            if (result == MessageBoxResult.Yes)    Save(doc);
+            // 閉じる直前の保存も、外部変更を理由に見送らない（PromptSaveOnExit と同じ理由。
+            // 見送ると直後に本文ごと捨てられて編集内容が戻せなくなる）。
+            if (result == MessageBoxResult.Yes)    Save(doc, checkDiskChanges: false);
         }
         // 閉じたドキュメントの退避データは不要（保存済み or 破棄を選択済み）
         _recovery?.Remove(doc.FilePath);
+        // このファイルの履歴点はアンカー（本文に追従）で持っているので、
+        // ドキュメントが無くなる前に行・桁の固定値へ落とし込む
+        FreezeNavigationAnchors(doc.FilePath);
         doc.DiagTimer.Stop();
         doc.OccurTimer.Stop();
         doc.Inline?.Dispose();   // インライン補完のタイマー・購読・レンダラを解放
@@ -2673,6 +2938,8 @@ public class ScriptEditorPanel : UserControl
         if (_activeDoc == doc)
             ActivateDoc(_docs.Count == 0 ? null : _docs[Math.Clamp(idx, 0, _docs.Count - 1)]);
         UpdateEmptyHint();
+        // 監視の必要が無くなったフォルダを外す
+        RefreshDiskWatchTargets();
         DocumentsChanged?.Invoke();
         NotifyDiagnosticsChanged();
     }

@@ -147,6 +147,9 @@ public static class SeedThemeColors
 
     // ── ダイアログの文字と入力欄 ────────────────────────────
 
+    /// <inheritdoc cref="SeedColorTable.SURFACE_WINDOW"/>
+    public static readonly Color WindowSurface = ToColor(SeedColorTable.SURFACE_WINDOW);
+
     /// <inheritdoc cref="SeedColorTable.SURFACE_DIALOG"/>
     public static readonly Color DialogSurface = ToColor(SeedColorTable.SURFACE_DIALOG);
 
@@ -192,6 +195,17 @@ public static class SeedThemeColors
 
     /// <inheritdoc cref="SeedColorTable.MERGE_PADDING_STROKE"/>
     public static readonly Color MergePaddingStroke = ToColor(SeedColorTable.MERGE_PADDING_STROKE);
+
+    // ── スクリプトエディタの通知帯（ディスク追従）──────────
+
+    /// <inheritdoc cref="SeedColorTable.NOTICE_BAR_BG"/>
+    public static readonly Color NoticeBarBg = ToColor(SeedColorTable.NOTICE_BAR_BG);
+
+    /// <inheritdoc cref="SeedColorTable.NOTICE_BAR_BORDER"/>
+    public static readonly Color NoticeBarBorder = ToColor(SeedColorTable.NOTICE_BAR_BORDER);
+
+    /// <inheritdoc cref="SeedColorTable.NOTICE_BAR_ICON"/>
+    public static readonly Color NoticeBarIcon = ToColor(SeedColorTable.NOTICE_BAR_ICON);
 
     /// <summary>
     /// 色表の 16 進文字列を WPF の <see cref="Color"/> へ変換する。

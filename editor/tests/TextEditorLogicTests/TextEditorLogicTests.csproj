@@ -31,6 +31,14 @@
       <Link>Linked\ScriptEditor\TextEditableCatalog.cs</Link>
     </Compile>
 
+    <!-- テスト対象: ディスク追従の判定表と、戻る／進むの履歴（いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\Panels\ScriptEditor\DiskSync\ScriptDiskState.cs">
+      <Link>Linked\ScriptEditor\DiskSync\ScriptDiskState.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\ScriptEditor\Navigation\ScriptNavigationHistory.cs">
+      <Link>Linked\ScriptEditor\Navigation\ScriptNavigationHistory.cs</Link>
+    </Compile>
+
     <!-- テストランナーと一時フォルダは既存テストのものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

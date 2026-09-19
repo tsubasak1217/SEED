@@ -48,6 +48,21 @@ public sealed class BreakpointSet
                    .OrderBy(n => n)
                    .ToList();
 
+    /// <summary>
+    /// 現在のアンカーを全て捨て、指定行で張り直す。
+    ///
+    /// ディスク上でファイルが書き換わったときの再読み込みのように本文を丸ごと
+    /// 差し替えると、アンカーが全て先頭へ寄ってブレークポイントが 1 行目に集まる。
+    /// 差し替えの前に <see cref="Lines"/> で行を控えておき、後からこれで張り直す。
+    /// 新しい本文の行数を超える行は落とす（短くなったファイルでの復元用）。
+    /// </summary>
+    /// <param name="lines">張り直す行番号（1 起点）。</param>
+    public void ResetTo(IEnumerable<int> lines)
+    {
+        _anchors.Clear();
+        foreach (var line in lines) AddAnchor(line);
+    }
+
     /// <summary>指定行の先頭にアンカーを作って追加する（行が有効な範囲のときのみ）。</summary>
     private void AddAnchor(int line)
     {

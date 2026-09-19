@@ -260,6 +260,24 @@ public static class SeedColorTable
     public const string MERGE_PADDING_STROKE = "#6E6E78";
 
     // ══════════════════════════════════════════════════════════
+    //  スクリプトエディタの通知帯（ディスク追従）
+    //
+    //  「ディスク上で変更されました」「削除されました」を、作業を止めずに
+    //  知らせるための非モーダルな帯。見落とすと編集内容を失うので、
+    //  エディタ本体（#1E1E1E）に埋もれない明度差が要る。
+    //  文字色は本文（DIALOG_TEXT）が乗る。
+    // ══════════════════════════════════════════════════════════
+
+    /// <summary>通知帯の背景（暗い琥珀。警告だが作業は続けられる、という強さ）。</summary>
+    public const string NOTICE_BAR_BG = "#3A3212";
+
+    /// <summary>通知帯の枠（背景だけでは境目が出ないので下線を引く）。</summary>
+    public const string NOTICE_BAR_BORDER = "#8A7828";
+
+    /// <summary>通知帯の先頭に置く警告アイコンの色。</summary>
+    public const string NOTICE_BAR_ICON = "#D7BA36";
+
+    // ══════════════════════════════════════════════════════════
     //  コントラストの基準（WCAG 2.1）
     // ══════════════════════════════════════════════════════════
 
@@ -357,6 +375,12 @@ public static class SeedColorTable
         // 文字ではない目印（枠・斜線）は 3:1。下地はエディタ本文の背景（入力欄と同じ）。
         new("マージ/競合ブロックの枠", FIELD_BG, null, MERGE_BLOCK_BORDER,   MIN_RATIO_NON_TEXT),
         new("マージ/詰め物の斜線",     FIELD_BG, null, MERGE_PADDING_STROKE, MIN_RATIO_NON_TEXT),
+
+        // ── スクリプトエディタの通知帯（帯の上に本文色の文字とアイコンが乗る）──
+        new("通知帯/本文",       NOTICE_BAR_BG,   null, DIALOG_TEXT,       MIN_RATIO_TEXT),
+        new("通知帯/アイコン",   NOTICE_BAR_BG,   null, NOTICE_BAR_ICON,   MIN_RATIO_NON_TEXT),
+        // 帯そのものがエディタ本文の背景から浮いて見えるか（枠は文字ではないので 3:1）。
+        new("通知帯/枠",         SURFACE_WINDOW,  null, NOTICE_BAR_BORDER, MIN_RATIO_NON_TEXT),
     };
 
     // ══════════════════════════════════════════════════════════

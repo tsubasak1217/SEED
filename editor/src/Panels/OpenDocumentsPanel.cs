@@ -79,6 +79,19 @@ public sealed class OpenDocumentsPanel : UserControl
             _list.Children.Add(BuildRow(d));
     }
 
+    /// <summary>
+    /// 行のツールチップ文言を作る。
+    /// 常にフルパスを出し、通常と違う状態（消えている・読み取り専用）だけ理由を添える。
+    /// </summary>
+    /// <param name="doc">対象ドキュメント。</param>
+    /// <returns>ツールチップに出す文字列。</returns>
+    private static string BuildRowToolTip(OpenDocInfo doc)
+    {
+        if (doc.IsMissing)  return $"{doc.FilePath}（ファイルが見つかりません）";
+        if (doc.IsReadOnly) return $"{doc.FilePath}（読み取り専用・エンジン API）";
+        return doc.FilePath;
+    }
+
     /// <summary>1 ファイル分の行を生成する。</summary>
     private UIElement BuildRow(OpenDocInfo doc)
     {
@@ -93,8 +106,12 @@ public sealed class OpenDocumentsPanel : UserControl
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        // ファイル名（+ 未保存なら未保存マーク / 読み取り専用なら鍵アイコンを前置）
+        // ファイル名（+ 消えていれば警告マーク / 未保存なら未保存マーク /
+        //              読み取り専用なら鍵アイコンを前置）
         var nameStack = new StackPanel { Orientation = Orientation.Horizontal };
+        // ディスクから消えたことは他のどの状態より先に分かってほしいので先頭に置く
+        if (doc.IsMissing)
+            nameStack.Children.Add(MakeTabIcon("Icon.Warning", Dim));
         if (doc.IsReadOnly)
             nameStack.Children.Add(MakeTabIcon(
                 "Icon.Lock", new SolidColorBrush(Color.FromRgb(0xFF, 0xC8, 0x2E))));
@@ -103,9 +120,12 @@ public sealed class OpenDocumentsPanel : UserControl
         nameStack.Children.Add(new TextBlock
         {
             Text = Path.GetFileName(doc.FilePath),
-            Foreground = Text, FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            // 実体を失った行は薄い色 + 取り消し線で「もう無い」ことを見た目で伝える
+            Foreground = doc.IsMissing ? Dim : Text,
+            TextDecorations = doc.IsMissing ? TextDecorations.Strikethrough : null,
+            FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            ToolTip = doc.IsReadOnly ? $"{doc.FilePath}（読み取り専用・エンジン API）" : doc.FilePath,
+            ToolTip = BuildRowToolTip(doc),
         });
         Grid.SetColumn(nameStack, 0);
         grid.Children.Add(nameStack);

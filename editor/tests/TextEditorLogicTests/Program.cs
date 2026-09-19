@@ -17,6 +17,9 @@ namespace TextEditorLogicTests;
 ///   3. サイズ上限（巨大ファイルを読み取り専用にする境界）
 ///   4. JSON が壊れていても組み込み既定で動き続けること
 ///   5. 言語ごとの機能の有無（<see cref="EditorLanguages"/>）
+///   6. ディスク追従の判定表（<see cref="DiskSyncTests"/>）
+///      ＝ 外部でファイルが書き換わった・消えたときに、未保存の編集を守れるか
+///   7. 戻る／進むの履歴（<see cref="NavigationHistoryTests"/>）
 /// </summary>
 public static class Program
 {
@@ -54,6 +57,12 @@ public static class Program
         // ── 言語ごとの機能の有無 ────────────────────────────
         harness.Add("Roslyn 機能は C# だけ",                               CapabilityRoslyn);
         harness.Add("補完を持つのは C# と WGSL だけ",                      CapabilityCompletion);
+
+        // ── ディスク追従（開いているタブをディスクの状態へ合わせる）──
+        DiskSyncTests.Register(harness);
+
+        // ── 戻る／進む（ナビゲーション履歴）──────────────────
+        NavigationHistoryTests.Register(harness);
 
         // ── 共有カタログの差し替え（静的状態を変えるので最後）────
         harness.Add("UseCatalog で全体の判定が切り替わる",                 EditorLanguagesUseCatalog);
