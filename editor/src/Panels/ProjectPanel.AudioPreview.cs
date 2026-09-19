@@ -37,11 +37,15 @@ public partial class ProjectPanel
 {
     // ── 定数 ─────────────────────────────────────────────────────
 
-    /// <summary>試聴ボタンのアイコン一辺（px）。当たり判定はこの 1.5 倍（下限 18px）。</summary>
-    private const double AudioPreviewIconSize = 11;
+    /// <summary>
+    /// 試聴ボタンのアイコン一辺（px）。当たり判定はこの 1.5 倍（下限 18px）。
+    /// 当初は 11px だったが「一回り大きく」の要望（2026-09-20）で 14px にした
+    /// （当たり判定は 18px → 21px）。
+    /// </summary>
+    private const double AudioPreviewIconSize = 14;
 
-    /// <summary>試聴ボタンとファイル名の間隔（px）。</summary>
-    private const double AudioPreviewButtonGap = 2;
+    /// <summary>試聴ボタンとファイル名の間隔（px）。ボタンは名前の左に置く。</summary>
+    private const double AudioPreviewButtonGap = 3;
 
     /// <summary>再生中に出すアイコン（押すと止まる）。</summary>
     private const string AudioPreviewStopIconKey = "Icon.Stop";
@@ -112,7 +116,8 @@ public partial class ProjectPanel
             MinWidth  = SeedButtonMetrics.IconHitAreaSize(AudioPreviewIconSize),
             MinHeight = SeedButtonMetrics.IconHitAreaSize(AudioPreviewIconSize),
             Padding   = new Thickness(0),
-            Margin    = new Thickness(AudioPreviewButtonGap, 0, 0, 0),
+            // 名前の左に置くので、間隔は右側（名前との間）に取る。
+            Margin    = new Thickness(0, 0, AudioPreviewButtonGap, 0),
             VerticalAlignment          = VerticalAlignment.Center,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment   = VerticalAlignment.Center,

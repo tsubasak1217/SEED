@@ -94,10 +94,30 @@ public partial class ScriptEditorPanel : UserControl
     private const int WgslMinMarkerLength = 1;
     // 選択単語ハイライトのデバウンス間隔（キャレット移動のたびの全文走査を避ける）
     private static readonly TimeSpan OccurrenceDebounce   = TimeSpan.FromMilliseconds(180);
-    // これを超える文字数のファイルでは選択単語ハイライトを無効化する（巨大ファイルの操作性優先）
-    private const int OccurrenceMaxTextLength = 200_000;
-    // これを超える文字数のファイルではセマンティック着色を無効化する（毎編集の全文分類が重いため）
-    private const int SemanticMaxTextLength   = 200_000;
+    // これを超える文字数のファイルでは選択単語ハイライトを無効化する（巨大ファイルの操作性優先）。
+    // 以前は 200,000 で、FishingController.cs（219,457 文字）だけ選択単語の強調が出なかった。
+    // 走査は線形（デバウンス 180 ms）で、検索ハイライトは元から上限なしで同じ走査をしているため、
+    // 現実的な大きさのスクリプトが引っかからない値へ引き上げた（2026-09-20）。
+    private const int OccurrenceMaxTextLength = 1_000_000;
+    // ── セマンティック着色（C#）の範囲の決め方 ──
+    // これ以下の文字数なら全文を分類する。超えたら「見えている範囲 ± 余白」だけを分類する（窓方式）。
+    //
+    // ★以前は 200,000 文字を超えると着色そのものを無効化していた。そのため大きなスクリプト
+    //   （FishingController.cs = 219,457 文字）だけ、属性・型・メソッド・フィールド・ローカル変数の色が
+    //   一切付かず、「スクリプトによって色が揺れる」ように見えていた（2026-09-20 の報告）。
+    //   実測（同ファイル・5,994 行・プロジェクト 86 ファイル、Roslyn 4.8）:
+    //     編集後の全文分類 430〜600 ms（バックグラウンド・UI は止まらない）／600 行の窓なら 60〜110 ms。
+    //   全文方式はスクロールしても色が抜けないので、現実的な大きさのスクリプトは全文で扱う。
+    //   それを超える巨大ファイルでも「色が付かない」状態は作らず、窓方式へ落とす。
+    private const int SemanticFullMaxTextLength = 400_000;
+    // 窓方式のとき、見えている範囲の上下へ足す行数（通常のスクロールで色が抜けない程度に広く取る）
+    private const int SemanticWindowMarginLines = 400;
+    // 窓方式のとき、見えている範囲が窓の端へこの行数まで近づいたら分類し直す
+    private const int SemanticWindowRefreshSlackLines = 100;
+    // 窓方式のスクロール追従のデバウンス間隔（スクロール中に毎フレーム分類しないため）
+    private static readonly TimeSpan SemanticScrollDebounce = TimeSpan.FromMilliseconds(120);
+    // これを超える文字数の .wgsl では軽量セマンティック着色を行わない（全文走査＋全再描画が重いため）
+    private const int WgslSemanticMaxTextLength = 200_000;
     // ── カラーテーマ（エディタ全体のダークテーマに合わせる）──
     private static readonly SolidColorBrush BrushBg        = new(Color.FromRgb(0x1E, 0x1E, 0x1E));
     private static readonly SolidColorBrush BrushEditorBg  = new(Color.FromRgb(0x1E, 0x1E, 0x1E));
@@ -178,6 +198,16 @@ public partial class ScriptEditorPanel : UserControl
 
         /// <summary>直前に見ていたキャレット桁（ジャンプ元の位置を正確に記録するため）。</summary>
         public int NavLastCaretColumn;
+
+        /// <summary>
+        /// セマンティック着色が「窓方式」（巨大ファイルで、見えている範囲 ± 余白だけを分類）のとき、
+        /// いま分類済みの先頭行（1 始まり）。全文方式のときは 0。
+        /// </summary>
+        public int SemanticWindowFirstLine;
+        /// <summary>窓方式のとき、いま分類済みの末尾行（1 始まり）。全文方式のときは 0。</summary>
+        public int SemanticWindowLastLine;
+        /// <summary>窓方式のスクロール追従に使うデバウンスタイマー（必要になるまで作らない）。</summary>
+        public DispatcherTimer? SemanticScrollTimer;
 
         /// <summary>
         /// C# の意味解析（IntelliSense・診断・整形・デバッグ）を適用するドキュメントか。
@@ -1212,6 +1242,11 @@ public partial class ScriptEditorPanel : UserControl
         // 「ジャンプ」とみなして、飛ぶ直前の位置を履歴に残す。
         editor.TextArea.Caret.PositionChanged += (_, _) => OnCaretMovedForNavigation(doc);
 
+        // 巨大ファイル（セマンティック着色が窓方式）では、スクロールで窓の外へ出たら分類し直す。
+        // 全文方式のドキュメントでは即座に戻るだけ（OnScrolledForSemantic の先頭で判定）。
+        if (isCSharp)
+            editor.TextArea.TextView.ScrollOffsetChanged += (_, _) => OnScrolledForSemantic(doc);
+
         // コピー/カットをプレーンテキストのみに上書きする。
         // AvalonEdit 既定は選択範囲全体に RTF/HTML（ハイライト付き）を生成するため
         // 数万行のコピーが非常に遅い。プレーンテキストだけ載せれば VS 並みに速い。
@@ -1707,8 +1742,8 @@ public partial class ScriptEditorPanel : UserControl
     /// </summary>
     private void RunWgslSemanticColorize(DocTab doc)
     {
-        // 巨大ファイルでは全文走査＋全再描画が重いので着色しない（C# 側と同じ方針）
-        if (doc.Editor.Document.TextLength > SemanticMaxTextLength)
+        // 巨大ファイルでは全文走査＋全再描画が重いので着色しない
+        if (doc.Editor.Document.TextLength > WgslSemanticMaxTextLength)
         {
             doc.Semantic.Clear();
             doc.Editor.TextArea.TextView.Redraw();
@@ -1743,24 +1778,24 @@ public partial class ScriptEditorPanel : UserControl
     {
         if (_workspace is null) return;
 
-        // 巨大ファイルでは全文分類（数万スパン）の再計算が重いので着色を無効化する
-        if (doc.Editor.Document.TextLength > SemanticMaxTextLength)
-        {
-            doc.Semantic.Clear();
-            doc.Editor.TextArea.TextView.Redraw();
-            return;
-        }
-
         var document = _workspace.GetDocument(doc.FilePath);
         if (document is null) return;
 
         var source = doc.Editor.Text;
+
+        // 分類する範囲を決める（UI スレッド上で、await の前に）。
+        // 全文方式なら文書全体、窓方式なら「見えている範囲 ± 余白」。
+        var window = SemanticWindowFor(doc);
+
         List<SemanticColorizer.Span>? spans = null;
         try
         {
             var text = await document.GetTextAsync();
+            // ワークスペース側のテキストが一瞬古い（短い）ことがあるので、範囲を収まるように丸める
+            int start = Math.Clamp(window.StartOffset, 0, text.Length);
+            int end   = Math.Clamp(window.EndOffset, start, text.Length);
             var classified = await Classifier.GetClassifiedSpansAsync(
-                document, new TextSpan(0, text.Length));
+                document, TextSpan.FromBounds(start, end));
 
             spans = new List<SemanticColorizer.Span>();
             foreach (var cs in classified)
@@ -1779,7 +1814,99 @@ public partial class ScriptEditorPanel : UserControl
         if (doc.Editor.Text != source) return;
 
         doc.Semantic.SetSpans(spans);
+        // 窓方式のときだけ、分類済みの行範囲を覚える（スクロールで外へ出たら分類し直すため）。
+        doc.SemanticWindowFirstLine = window.IsWindowed ? window.FirstLine : 0;
+        doc.SemanticWindowLastLine  = window.IsWindowed ? window.LastLine  : 0;
         doc.Editor.TextArea.TextView.Redraw();
+    }
+
+    /// <summary>セマンティック着色で分類する範囲（不変）。</summary>
+    /// <param name="StartOffset">分類を始めるオフセット。</param>
+    /// <param name="EndOffset">分類を終えるオフセット。</param>
+    /// <param name="FirstLine">窓方式のときの先頭行（1 始まり）。</param>
+    /// <param name="LastLine">窓方式のときの末尾行（1 始まり）。</param>
+    /// <param name="IsWindowed">窓方式か（偽なら全文）。</param>
+    private readonly record struct SemanticWindow(
+        int StartOffset, int EndOffset, int FirstLine, int LastLine, bool IsWindowed);
+
+    /// <summary>
+    /// セマンティック着色で分類する範囲を決める。
+    /// <see cref="SemanticFullMaxTextLength"/> 以下なら全文、超えたら見えている範囲 ± 余白。
+    /// </summary>
+    /// <param name="doc">対象ドキュメント。</param>
+    private static SemanticWindow SemanticWindowFor(DocTab doc)
+    {
+        var document = doc.Editor.Document;
+        if (document.TextLength <= SemanticFullMaxTextLength)
+            return new SemanticWindow(0, document.TextLength, 0, 0, IsWindowed: false);
+
+        var (visibleFirst, visibleLast) = VisibleLineRange(doc);
+        int first = Math.Max(1, visibleFirst - SemanticWindowMarginLines);
+        int last  = Math.Min(document.LineCount, visibleLast + SemanticWindowMarginLines);
+        return new SemanticWindow(
+            document.GetLineByNumber(first).Offset,
+            document.GetLineByNumber(last).EndOffset,
+            first, last, IsWindowed: true);
+    }
+
+    /// <summary>
+    /// いま画面に見えている行の範囲（1 始まり）を返す。
+    /// まだレイアウトされていない（見えている行が確定していない）ときはキャレット行で代用する。
+    /// </summary>
+    /// <param name="doc">対象ドキュメント。</param>
+    private static (int First, int Last) VisibleLineRange(DocTab doc)
+    {
+        var textView = doc.Editor.TextArea.TextView;
+        if (textView.VisualLinesValid && textView.VisualLines.Count > 0)
+        {
+            return (textView.VisualLines[0].FirstDocumentLine.LineNumber,
+                    textView.VisualLines[^1].LastDocumentLine.LineNumber);
+        }
+
+        int caretLine = doc.Editor.TextArea.Caret.Line;
+        return (caretLine, caretLine);
+    }
+
+    /// <summary>
+    /// スクロールしたとき。窓方式で着色しているドキュメントだけ、見えている範囲が
+    /// 分類済みの窓の端へ近づいたら分類し直す（デバウンスつき）。全文方式では何もしない。
+    /// </summary>
+    /// <param name="doc">スクロールしたドキュメント。</param>
+    private void OnScrolledForSemantic(DocTab doc)
+    {
+        // 窓方式でない（全文を分類済み）なら、スクロールで色が抜けることは無い。
+        if (doc.SemanticWindowLastLine == 0) return;
+
+        var (first, last) = VisibleLineRange(doc);
+
+        // 見えている範囲が、分類済みの窓の端へ余白ぶんまで近づいたら分類し直す。
+        // 文書の先頭・末尾に張り付いている窓は、それ以上広げようが無いので対象にしない
+        // （対象にすると、端に居るあいだスクロールのたびに無駄な分類が走る）。
+        bool windowTouchesTop    = doc.SemanticWindowFirstLine <= 1;
+        bool windowTouchesBottom = doc.SemanticWindowLastLine >= doc.Editor.Document.LineCount;
+        bool needTop    = !windowTouchesTop
+                          && first - SemanticWindowRefreshSlackLines < doc.SemanticWindowFirstLine;
+        bool needBottom = !windowTouchesBottom
+                          && last + SemanticWindowRefreshSlackLines > doc.SemanticWindowLastLine;
+        if (!needTop && !needBottom) return;
+
+        doc.SemanticScrollTimer ??= CreateSemanticScrollTimer(doc);
+        doc.SemanticScrollTimer.Stop();
+        doc.SemanticScrollTimer.Start();
+    }
+
+    /// <summary>窓方式のスクロール追従に使うデバウンスタイマーを作る。</summary>
+    /// <param name="doc">対象ドキュメント。</param>
+    private DispatcherTimer CreateSemanticScrollTimer(DocTab doc)
+    {
+        var timer = new DispatcherTimer { Interval = SemanticScrollDebounce };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            // 閉じられたタブのために分類を走らせない
+            if (_docs.Contains(doc)) _ = RunSemanticColorizeAsync(doc);
+        };
+        return timer;
     }
 
     // ── 診断ツールチップ（ホバー表示、外れたら閉じる）─────────

@@ -60,11 +60,17 @@ public static class Program
     /// <summary>タイルの角丸半径（px）。</summary>
     private const double TileCornerRadius = 4;
 
-    /// <summary>試聴ボタンのアイコン一辺（px）。</summary>
-    private const double PreviewIconSize = 11;
+    /// <summary>
+    /// 試聴ボタンのアイコン一辺（px）。ProjectPanel.AudioPreview.cs の AudioPreviewIconSize と同じ値にすること
+    /// （このプローブはタイルの構造を写して描いているだけで、パネルの実コードは通らない）。
+    /// </summary>
+    private const double PreviewIconSize = 14;
+
+    /// <summary>試聴ボタンとファイル名の間隔（px）。ProjectPanel 側の AudioPreviewButtonGap と同じ値。</summary>
+    private const double PreviewButtonGap = 3;
 
     /// <summary>ファイル名の折り返し幅（px。ボタンぶん狭めた後の値）。</summary>
-    private const double NameMaxWidth = 106 - 18;
+    private const double NameMaxWidth = 106 - 21;
 
     // ── 合成する音声の仕様 ────────────────────────────────────────
 
@@ -317,7 +323,8 @@ public static class Program
             MinWidth  = SeedButtonMetrics.IconHitAreaSize(PreviewIconSize),
             MinHeight = SeedButtonMetrics.IconHitAreaSize(PreviewIconSize),
             Padding   = new Thickness(0),
-            Margin    = new Thickness(2, 0, 0, 0),
+            // ボタンは名前の左。間隔は名前との間（右側）に取る。
+            Margin    = new Thickness(0, 0, PreviewButtonGap, 0),
             VerticalAlignment          = VerticalAlignment.Center,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment   = VerticalAlignment.Center,
@@ -330,8 +337,8 @@ public static class Program
             Orientation         = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
-        nameRow.Children.Add(nameBlock);
         nameRow.Children.Add(button);
+        nameRow.Children.Add(nameBlock);
 
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
         stack.Children.Add(image);

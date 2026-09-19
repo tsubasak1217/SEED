@@ -858,7 +858,7 @@ public partial class ProjectPanel : UserControl
     /// <param name="withCaption">キャプション行を用意するなら true。</param>
     /// <param name="captionBlock">用意したキャプションの TextBlock（不要なら null）。</param>
     /// <param name="nameSideButton">
-    /// 名前の右へ並べる小さなボタン（音声の試聴ボタン）。不要なら null。
+    /// 名前の左へ並べる小さなボタン（音声の試聴ボタン）。不要なら null。
     /// <para>
     /// null のときはタイルの構造を従来どおり（縦並びの中に名前の TextBlock が直接入る）
     /// に保つ。リネームは「名前の TextBlock を探して TextBox と差し替える」作りなので、
@@ -919,8 +919,10 @@ public partial class ProjectPanel : UserControl
                 // 印を引き継ぐ。リネームが名前の行を 1 段だけ潜って探せるようにするため。
                 Tag                 = TileNameRowTag,
             };
-            nameRow.Children.Add(nameBlock);
+            // ボタンは名前の **左**（2026-09-20 の要望。名前の長さで位置が動かず、狙いやすい）。
+            // リネームは印（Tag）で名前の TextBlock を探すので、並び順には依存しない。
             nameRow.Children.Add(nameSideButton);
+            nameRow.Children.Add(nameBlock);
             sp.Children.Add(nameRow);
         }
 
