@@ -148,7 +148,7 @@
             <Setter Property="FontSize" Value="12"/>
         </Style>
 
-        <!-- 競合の 2 択など、行の中に置く小さな文字ボタン。 -->
+        <!-- 行の中に置く小さな文字ボタン（いまはロックの「解除」だけ）。 -->
         <Style x:Key="Vc.RowButton" TargetType="Button"
                BasedOn="{StaticResource Seed.Button.Base}">
             <Setter Property="Padding"  Value="8,2"/>
@@ -475,7 +475,13 @@
 
                 <!-- ── 節: 競合 ─────────────────────────────────
                      未解決の競合があるときだけ出す。
-                     「すべて」に対する 2 択は見出しのすぐ下に置く。 -->
+
+                     【行にはボタンを置かない（2026-09-19 の指摘）】
+                     以前は行に 5 つのボタンを並べていたが、パネルが細いと
+                     ボタンが幅を食い切って**ファイル名が 1 文字も見えなかった**。
+                     この節の仕事は「何が競合しているか」を伝えることだけにして、
+                     解決はマージエディタの中で行う（ダブルクリック／Enter で開く）。
+                     開けないファイル（バイナリ等）は 2 択のダイアログへ落とす。 -->
                 <Grid x:Name="SectionConflicts" Grid.Row="0" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -492,36 +498,32 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
+                        <!-- 見出しの下の帯は案内 1 行だけ（操作ボタンは置かない）。
+                             文言はコードビハインドが流し込む（XAML に日本語を書かない）。 -->
                         <Border Grid.Row="0" Background="{StaticResource Vc.ConflictHeader}"
                                 Padding="6,4" Margin="4,3,4,2" CornerRadius="2">
                             <StackPanel Orientation="Horizontal">
                                 <ctrl:AppIcon IconKey="Icon.Vcs.Conflict"
                                               Width="14" Height="14" VerticalAlignment="Center"
                                               Foreground="{StaticResource Vc.ConflictText}"/>
-                                <Button Style="{StaticResource Vc.RowButton}"
-                                        Margin="8,0,0,0"
-                                        Content="{x:Static vc:ConflictRowItem.KeepMineAllText}"
-                                        Click="OnResolveAllKeepMine"/>
-                                <Button Style="{StaticResource Vc.RowButton}"
-                                        Margin="6,0,0,0"
-                                        Content="{x:Static vc:ConflictRowItem.TakeRemoteAllText}"
-                                        Click="OnResolveAllTakeRemote"/>
-                                <!-- 「すべて両方」は全件で成り立つときだけ押せる。
-                                     可否と理由はコードビハインドが流し込む。 -->
-                                <Button x:Name="BtnTakeBothAll"
-                                        Style="{StaticResource Vc.RowButton}"
-                                        Margin="6,0,0,0"
-                                        Content="{x:Static vc:ConflictRowItem.TakeBothAllText}"
-                                        ToolTipService.ShowOnDisabled="True"
-                                        Click="OnResolveAllTakeBoth"/>
+                                <!-- 色は Vc.HeaderText（#AAAAAA）。Vc.DimText（#999999）だと
+                                     競合の帯（#4A2A2A）に対してコントラスト比 4.45 で
+                                     規約の 4.5 を割る（docs/editor_ui_style.md）。
+                                     1 段明るい既存の「薄い文字」色を使って 5.46 にしている。 -->
+                                <TextBlock x:Name="TxtConflictHint"
+                                           Foreground="{StaticResource Vc.HeaderText}"
+                                           FontSize="11" TextWrapping="Wrap"
+                                           VerticalAlignment="Center" Margin="8,0,0,0"/>
                             </StackPanel>
                         </Border>
 
-                        <!-- ダブルクリックでマージエディタを開く（VS の「変更」一覧に倣う）。 -->
+                        <!-- ダブルクリック / Enter でマージエディタを開く
+                             （VS の「変更」一覧に倣う。この 2 つが唯一の入口）。 -->
                         <ListBox x:Name="ConflictList" Grid.Row="1"
                                  Background="Transparent" BorderThickness="0"
                                  Foreground="{StaticResource Vc.Text}"
                                  MouseDoubleClick="OnConflictListDoubleClick"
+                                 KeyDown="OnConflictListKeyDown"
                                  ItemContainerStyle="{StaticResource Vc.RowStyle}"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -530,12 +532,20 @@
                                  HorizontalContentAlignment="Stretch">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="4,1,2,1">
+                                    <!-- 列: 競合アイコン / 種別アイコン / 「ファイル名＋フォルダ」。
+                                         ★ファイル名とフォルダを **1 つの TextBlock の 2 つの Run**
+                                         にしてあるのが肝。列を分けると、幅が足りないときに
+                                         Grid がフォルダ側の列を 0 にしたあと
+                                         **ファイル名の列を省略記号なしで切り落とす**
+                                         （Auto 列の子は縮めた幅で測り直されないため。実測で確認）。
+                                         1 本の行にしておけば TextTrimming が行全体に効くので、
+                                         後ろにあるフォルダから順に消え、最後まで残るのはファイル名、
+                                         それでも入りきらなければ「…」が付く。 -->
+                                    <Grid Margin="4,1,2,1" ToolTip="{Binding TooltipText}">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
                                         <ctrl:AppIcon Grid.Column="0"
@@ -547,46 +557,14 @@
                                         <Image Grid.Column="1" Source="{Binding FileTypeIcon}"
                                                Width="14" Height="14" VerticalAlignment="Center"
                                                Margin="5,0,0,0"/>
-                                        <TextBlock Grid.Column="2" Text="{Binding PathText}"
-                                                   Foreground="{StaticResource Vc.Text}"
-                                                   FontSize="11"
+                                        <TextBlock Grid.Column="2" FontSize="11"
                                                    TextTrimming="CharacterEllipsis"
                                                    VerticalAlignment="Center"
-                                                   Margin="6,0,6,0"
-                                                   ToolTip="{Binding PathText}"/>
-
-                                        <!-- 並びは「見てから選ぶ」順: 比較 → 2 択 → 両方 → 編集済み。
-                                             可否が中身に依るボタン（両方 / 編集した内容）は
-                                             IsEnabled と ToolTip を行の器から引く。 -->
-                                        <StackPanel Grid.Column="3" Orientation="Horizontal">
-                                            <Button Style="{StaticResource Vc.RowButton}"
-                                                    Content="{x:Static vc:ConflictRowItem.CompareText}"
-                                                    ToolTip="{x:Static vc:ConflictRowItem.CompareToolTip}"
-                                                    Tag="{Binding}"
-                                                    Click="OnCompareConflict"/>
-                                            <Button Style="{StaticResource Vc.RowButton}"
-                                                    Content="{x:Static vc:ConflictRowItem.KeepMineText}"
-                                                    Tag="{Binding}" Margin="4,0,0,0"
-                                                    Click="OnResolveFileKeepMine"/>
-                                            <Button Style="{StaticResource Vc.RowButton}"
-                                                    Content="{x:Static vc:ConflictRowItem.TakeRemoteText}"
-                                                    Tag="{Binding}" Margin="4,0,0,0"
-                                                    Click="OnResolveFileTakeRemote"/>
-                                            <Button Style="{StaticResource Vc.RowButton}"
-                                                    Content="{x:Static vc:ConflictRowItem.TakeBothText}"
-                                                    ToolTip="{Binding TakeBothToolTip}"
-                                                    ToolTipService.ShowOnDisabled="True"
-                                                    IsEnabled="{Binding CanTakeBoth}"
-                                                    Tag="{Binding}" Margin="4,0,0,0"
-                                                    Click="OnResolveFileTakeBoth"/>
-                                            <Button Style="{StaticResource Vc.RowButton}"
-                                                    Content="{x:Static vc:ConflictRowItem.ResolveAsIsText}"
-                                                    ToolTip="{Binding ResolveAsIsToolTip}"
-                                                    ToolTipService.ShowOnDisabled="True"
-                                                    IsEnabled="{Binding CanResolveAsIs}"
-                                                    Tag="{Binding}" Margin="4,0,0,0"
-                                                    Click="OnResolveFileAsIs"/>
-                                        </StackPanel>
+                                                   Margin="6,0,6,0"><Run
+                                                Text="{Binding FileName, Mode=OneWay}"
+                                                Foreground="{StaticResource Vc.Text}"/><Run
+                                                Text="{Binding DirectoryText, Mode=OneWay}"
+                                                Foreground="{StaticResource Vc.DimText}"/></TextBlock>
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>

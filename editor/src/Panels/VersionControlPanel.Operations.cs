@@ -34,7 +34,6 @@ using System.Windows.Input;
 using SEEDEditor.Headless;
 using SEEDEditor.Panels.VersionControl.MergeEditor;
 using SEEDEditor.VersionControl;
-using SEEDEditor.VersionControl.Merge;
 using SEEDEditor.VersionControl.Model;
 using SEEDEditor.VersionControl.Presentation;
 using VcRows = SEEDEditor.Panels.VersionControl;
@@ -132,83 +131,37 @@ public partial class VersionControlPanel
     //  競合の解決
     // ============================================================
 
-    /// <summary>「すべて自分の変更を残す」。</summary>
+    /// <summary>
+    /// 競合の行をダブルクリックしたとき。マージエディタを開く。
+    ///
+    /// <para>
+    /// ★行にボタンは無い（2026-09-19 の指摘で全部外した）。
+    /// ダブルクリックと Enter がこの節の唯一の入口になる。
+    /// </para>
+    /// </summary>
     /// <param name="sender">送信元。</param>
     /// <param name="e">イベント引数。</param>
-    private async void OnResolveAllKeepMine(object sender, RoutedEventArgs e)
-        => await ResolveAsync(AllConflictPaths(), ConflictResolutionChoice.KeepMine);
-
-    /// <summary>「すべてリモートを採用」。自分の変更が消えるので確認を挟む。</summary>
-    /// <param name="sender">送信元。</param>
-    /// <param name="e">イベント引数。</param>
-    private async void OnResolveAllTakeRemote(object sender, RoutedEventArgs e)
-        => await ResolveAsync(AllConflictPaths(), ConflictResolutionChoice.TakeRemote);
-
-    /// <summary>1 件だけ「自分の変更を残す」。</summary>
-    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
-    /// <param name="e">イベント引数。</param>
-    private async void OnResolveFileKeepMine(object sender, RoutedEventArgs e)
-        => await ResolveAsync(PathsFromButton(sender), ConflictResolutionChoice.KeepMine);
-
-    /// <summary>1 件だけ「リモートを採用」。自分の変更が消えるので確認を挟む。</summary>
-    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
-    /// <param name="e">イベント引数。</param>
-    private async void OnResolveFileTakeRemote(object sender, RoutedEventArgs e)
-        => await ResolveAsync(PathsFromButton(sender), ConflictResolutionChoice.TakeRemote);
-
-    /// <summary>「すべて両方を取り込む」。</summary>
-    /// <param name="sender">送信元。</param>
-    /// <param name="e">イベント引数。</param>
-    private async void OnResolveAllTakeBoth(object sender, RoutedEventArgs e)
-        => await ResolveTakingBothAsync(AllConflictPaths());
-
-    /// <summary>1 件だけ「両方を取り込む」。</summary>
-    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
-    /// <param name="e">イベント引数。</param>
-    private async void OnResolveFileTakeBoth(object sender, RoutedEventArgs e)
-        => await ResolveTakingBothAsync(PathsFromButton(sender));
-
-    /// <summary>1 件だけ「編集した内容で解決」。</summary>
-    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
-    /// <param name="e">イベント引数。</param>
-    private async void OnResolveFileAsIs(object sender, RoutedEventArgs e)
+    private async void OnConflictListDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not Button { Tag: VcRows.ConflictRowItem row }) return;
-        await ResolveWithFileContentAsync(row);
-    }
-
-    /// <summary>行の「比較…」ボタン。マージエディタを開く。</summary>
-    /// <param name="sender">送信元（Tag に対象の行が入っている）。</param>
-    /// <param name="e">イベント引数。</param>
-    private void OnCompareConflict(object sender, RoutedEventArgs e)
-    {
-        if (sender is Button { Tag: VcRows.ConflictRowItem row }) OpenMergeEditor(row);
-    }
-
-    /// <summary>競合の行をダブルクリックしたとき。マージエディタを開く。</summary>
-    /// <param name="sender">送信元。</param>
-    /// <param name="e">イベント引数。</param>
-    private void OnConflictListDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (ConflictList.SelectedItem is VcRows.ConflictRowItem row) OpenMergeEditor(row);
-    }
-
-    /// <summary>いま未解決の競合になっているファイルのパスをすべて集める。</summary>
-    private IReadOnlyList<string> AllConflictPaths()
-        => _state.Status?.UnresolvedConflicts.Select(c => c.Path).ToList()
-           ?? (IReadOnlyList<string>)Array.Empty<string>();
-
-    /// <summary>ボタンの Tag に入っている行から対象パスを取り出す。</summary>
-    /// <param name="sender">クリックされたボタン。</param>
-    private static IReadOnlyList<string> PathsFromButton(object sender)
-    {
-        if (sender is Button { Tag: VcRows.ConflictRowItem row }
-            && row.RelativePath.Length > 0)
+        if (ConflictList.SelectedItem is VcRows.ConflictRowItem row)
         {
-            return new[] { row.RelativePath };
+            await OpenMergeEditorAsync(row);
         }
+    }
 
-        return Array.Empty<string>();
+    /// <summary>
+    /// 競合の一覧で Enter を押したとき。ダブルクリックと同じ扱いにする
+    /// （一覧はキーボードでも辿れるので、開く手段もキーボードに用意する）。
+    /// </summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">キーイベント。</param>
+    private async void OnConflictListKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        if (ConflictList.SelectedItem is not VcRows.ConflictRowItem row) return;
+
+        e.Handled = true;
+        await OpenMergeEditorAsync(row);
     }
 
     /// <summary>
@@ -239,62 +192,7 @@ public partial class VersionControlPanel
     }
 
     /// <summary>
-    /// 「両方を取り込む」で解決する。
-    ///
-    /// <para>
-    /// 確認は挟まない。両方を残す操作は **どちらの変更も捨てない** ので、
-    /// 「リモートを採用」と違って取り返しがつかない性質が無い
-    /// （結果が気に入らなければ、送信する前に手で直せる）。
-    /// </para>
-    /// </summary>
-    /// <param name="paths">対象のリポジトリ相対パス。</param>
-    private async Task ResolveTakingBothAsync(IReadOnlyList<string> paths)
-    {
-        if (!_state.CanResolveConflicts || paths.Count == 0) return;
-
-        var result = await RunAsync(
-            VersionControlOperation.Resolve,
-            async () => await VersionControlService.Provider
-                                                   .ResolveConflictsTakingBothAsync(paths)
-                                                   .ConfigureAwait(true));
-        if (result is null) return;
-
-        await ReloadStatusKeepingNoticeAsync(result);
-    }
-
-    /// <summary>
-    /// 「編集した内容で解決」。いまファイルにある中身のまま解決済みにする。
-    ///
-    /// <para>
-    /// 中身はここで読み直す。行の器が持っている判定は一覧を作った時点のもので、
-    /// そのあと外部のエディタで保存されているかもしれないため。
-    /// </para>
-    /// </summary>
-    /// <param name="row">対象の行。</param>
-    private async Task ResolveWithFileContentAsync(VcRows.ConflictRowItem row)
-    {
-        if (!_state.CanResolveConflicts || row.RelativePath.Length == 0) return;
-
-        var read = MergeFileText.Read(row.AbsolutePath);
-        if (!read.Succeeded)
-        {
-            ShowInfoNotice(read.Reason);
-            return;
-        }
-
-        var result = await RunAsync(
-            VersionControlOperation.Resolve,
-            async () => await VersionControlService.Provider
-                                                   .ResolveConflictsWithContentAsync(
-                                                       row.RelativePath, read.Text)
-                                                   .ConfigureAwait(true));
-        if (result is null) return;
-
-        await ReloadStatusKeepingNoticeAsync(result);
-    }
-
-    /// <summary>
-    /// マージエディタを開く。開けない形式（バイナリ等）のときは理由を出す。
+    /// マージエディタを開く。開けない形式（バイナリ等）のときは 2 択のダイアログへ落とす。
     ///
     /// <para>
     /// ウィンドウは非モーダル。確定したときだけ、そのコールバックの中で
@@ -302,7 +200,7 @@ public partial class VersionControlPanel
     /// </para>
     /// </summary>
     /// <param name="row">対象の行。</param>
-    private void OpenMergeEditor(VcRows.ConflictRowItem row)
+    private async Task OpenMergeEditorAsync(VcRows.ConflictRowItem row)
     {
         if (!_state.CanResolveConflicts || row.RelativePath.Length == 0) return;
 
@@ -316,7 +214,51 @@ public partial class VersionControlPanel
             resolvedText => CommitMergeAsync(row, resolvedText),
             out var reason);
 
-        if (!opened && reason.Length > 0) MergeEditorWindows.ReportUnavailable(reason);
+        if (opened || reason.Length == 0) return;
+
+        // 中身を並べられないファイル（バイナリ・印が無い・印が壊れている）。
+        // 行からボタンを外したので、ここで尋ねないと解決する手段が無くなる。
+        await ResolveUnopenableAsync(row, reason);
+    }
+
+    /// <summary>
+    /// マージエディタで開けないファイルを、「どちらの内容を残すか」の 2 択で解決する。
+    ///
+    /// <para>
+    /// ★呼び名（「自分の変更 / リモート」か「ブランチ名」か）は
+    /// <see cref="MergeEditorWindows"/> の 1 か所から取る。ここで推測しない。
+    /// </para>
+    /// <para>
+    /// ★「現在を残す」= <see cref="ConflictResolutionChoice.KeepMine"/>、
+    /// 「取り込み元を採用」= <see cref="ConflictResolutionChoice.TakeRemote"/>。
+    /// sync とブランチのマージで Lore の mine / theirs が逆になる件は
+    /// <c>LoreConflictResolutionMap</c> が吸収するので、ここでは向きを考えない。
+    /// </para>
+    /// </summary>
+    /// <param name="row">対象の行。</param>
+    /// <param name="reason">マージエディタで開けなかった理由。</param>
+    private async Task ResolveUnopenableAsync(VcRows.ConflictRowItem row, string reason)
+    {
+        var context = VersionControlService.Provider.MergeContext;
+
+        var pick = EditorDialogs.ShowConflictSidePicker(
+            string.Format(
+                VersionControlMessages.PANEL_CONFLICT_PICK_SIDE_BODY_FORMAT, reason),
+            row.RelativePath,
+            string.Format(
+                VersionControlMessages.PANEL_CONFLICT_PICK_SIDE_KEEP_CURRENT_FORMAT,
+                MergeEditorWindows.CurrentName(context, _state.BranchName)),
+            string.Format(
+                VersionControlMessages.PANEL_CONFLICT_PICK_SIDE_TAKE_INCOMING_FORMAT,
+                MergeEditorWindows.IncomingName(context)),
+            Window.GetWindow(this));
+
+        var choice = ConflictSidePickMap.ToResolutionChoice(pick);
+        if (choice is null) return;
+
+        // 「取り込み元を採用」は自分側の内容が消える。
+        // 確認は ResolveAsync が持っているものをそのまま通す（確認の条件を 2 か所に持たない）。
+        await ResolveAsync(new[] { row.RelativePath }, choice.Value);
     }
 
     /// <summary>

@@ -172,6 +172,11 @@
     <Compile Include="..\..\src\VersionControl\Presentation\VersionControlPanelState.cs">
       <Link>Linked\VersionControl\Presentation\VersionControlPanelState.cs</Link>
     </Compile>
+    <!-- 並べて表示できない競合（バイナリ等）の 2 択 → 解決の選択肢 の対応表。
+         取り違えると利用者の作業が消える側なので、対応表と同じく単体テストで固定する。 -->
+    <Compile Include="..\..\src\VersionControl\Presentation\ConflictSidePick.cs">
+      <Link>Linked\VersionControl\Presentation\ConflictSidePick.cs</Link>
+    </Compile>
 
     <!-- ── 変更ツリー（パス → フォルダー階層 → 見えている行）── -->
     <Compile Include="..\..\src\VersionControl\Presentation\ChangeTreeNode.cs">

@@ -19,6 +19,7 @@ using SEEDEditor.VersionControl.Lore;
 using SEEDEditor.VersionControl.Lore.Backend;
 using SEEDEditor.VersionControl.Model;
 using SEEDEditor.VersionControl.Null;
+using SEEDEditor.VersionControl.Presentation;
 using SEEDEditor.VersionControl.Scheduling;
 using SpriteRigTests;
 
@@ -47,6 +48,13 @@ public static class PureLogicTests
         harness.Add("flag_conflict_mine は出どころで読み方が変わる",          ConflictMineReadsAsTakeRemote);
         harness.Add("flag_conflict_theirs は出どころで読み方が変わる",
                                                                              ConflictTheirsReadsAsKeepMine);
+
+        // ── 並べて表示できない競合（バイナリ等）の 2 択 ──
+        harness.Add("「現在を残す」は KeepMine になる",                      PickKeepCurrentIsKeepMine);
+        harness.Add("「取り込み元を採用」は TakeRemote になる",              PickTakeIncomingIsTakeRemote);
+        harness.Add("取り消しは何も解決しない",                              PickCancelResolvesNothing);
+        harness.Add("2 択はどちらの出どころでも画面どおりの側へ届く",        PickReachesIntendedSide);
+        harness.Add("確認が要るのは「取り込み元を採用」だけ",                PickConfirmationIsOnlyForTakeIncoming);
 
         // ── 状態フラグ → モデル変換 ──
         harness.Add("KEEP は「変更」として読まれる（MODIFY は存在しない）",  KeepActionIsModified);
@@ -409,6 +417,79 @@ public static class PureLogicTests
         Check.Equal(FileConflictState.ResolvedTakeRemote,
                     LoreStatusTranslator.ToConflictState(row, MergeOrigin.BranchMerge),
                     "flag_conflict_theirs の読み（branch merge）");
+    }
+
+    // ============================================================
+    //  並べて表示できない競合（バイナリ等）の 2 択
+    //
+    //  マージエディタで開けないファイルは、この 2 択だけが解決手段になる。
+    //  「現在を残す」で相手の内容が入ってしまったら（またはその逆なら）
+    //  利用者の作業が黙って消える。画面の文言と Lore へ届く側の対応を固定する。
+    // ============================================================
+
+    /// <summary>「現在を残す」＝ 自分の変更を残す。</summary>
+    private static void PickKeepCurrentIsKeepMine()
+        => Check.Equal(ConflictResolutionChoice.KeepMine,
+                       ConflictSidePickMap.ToResolutionChoice(ConflictSidePick.KeepCurrent),
+                       "KeepCurrent の解決の選択肢");
+
+    /// <summary>「取り込み元を採用」＝ リモートを採用。</summary>
+    private static void PickTakeIncomingIsTakeRemote()
+        => Check.Equal(ConflictResolutionChoice.TakeRemote,
+                       ConflictSidePickMap.ToResolutionChoice(ConflictSidePick.TakeIncoming),
+                       "TakeIncoming の解決の選択肢");
+
+    /// <summary>取り消しは「何もしない」（既定で進めない）。</summary>
+    private static void PickCancelResolvesNothing()
+        => Check.True(ConflictSidePickMap.ToResolutionChoice(ConflictSidePick.Cancel) is null,
+                      "Cancel は解決を起こさない");
+
+    /// <summary>
+    /// ★画面の「現在 / 取り込み元」が、sync でもブランチのマージでも
+    /// 意図した側で Lore へ届くこと（対応表 2 段の突き合わせ）。
+    ///
+    /// <para>
+    /// 期待値の根拠は <c>LoreConflictResolutionMap</c> のコメントの表:
+    /// sync では parents()[0] = リモート = Lore の mine、parents()[1] = ローカル = theirs。
+    /// ブランチのマージでは parents()[0] = 現在のブランチ = mine、
+    /// parents()[1] = 取り込み元 = theirs。
+    /// つまり「現在を残す」は sync なら theirs、ブランチのマージなら mine へ落ちるのが正しい。
+    /// </para>
+    /// </summary>
+    private static void PickReachesIntendedSide()
+    {
+        // (選んだ側, 進行中のマージ, Lore へ届くべき側)
+        var cases = new[]
+        {
+            (ConflictSidePick.KeepCurrent,  MergeOrigin.Sync,        LoreResolveSide.Theirs),
+            (ConflictSidePick.TakeIncoming, MergeOrigin.Sync,        LoreResolveSide.Mine),
+            (ConflictSidePick.KeepCurrent,  MergeOrigin.BranchMerge, LoreResolveSide.Mine),
+            (ConflictSidePick.TakeIncoming, MergeOrigin.BranchMerge, LoreResolveSide.Theirs),
+        };
+
+        foreach (var (pick, origin, expected) in cases)
+        {
+            var choice = ConflictSidePickMap.ToResolutionChoice(pick);
+            Check.True(choice is not null, $"{pick} は解決の選択肢を持つ");
+
+            Check.Equal(expected,
+                        LoreConflictResolutionMap.ToLoreSide(choice!.Value, origin),
+                        $"{pick}（{origin}）が Lore へ渡す側");
+        }
+    }
+
+    /// <summary>
+    /// 確認ダイアログを重ねるのは「取り込み元を採用」だけ
+    /// （自分側の内容が消えるのはこちらだけなので）。
+    /// </summary>
+    private static void PickConfirmationIsOnlyForTakeIncoming()
+    {
+        Check.True(ConflictSidePickMap.NeedsConfirmation(ConflictSidePick.TakeIncoming),
+                   "TakeIncoming は確認が要る");
+        Check.True(!ConflictSidePickMap.NeedsConfirmation(ConflictSidePick.KeepCurrent),
+                   "KeepCurrent は確認が要らない");
+        Check.True(!ConflictSidePickMap.NeedsConfirmation(ConflictSidePick.Cancel),
+                   "Cancel は確認が要らない");
     }
 
     // ============================================================

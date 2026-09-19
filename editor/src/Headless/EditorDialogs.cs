@@ -134,6 +134,47 @@ internal static class EditorDialogs
     }
 
     /// <summary>
+    /// 並べて表示できない競合（バイナリ等）で「どちらを残すか」を選ばせるモーダルを表示する
+    /// （ヘッドレス時はログ出力のみ）。
+    ///
+    /// <para>
+    /// ヘッドレス時は <see cref="SEEDEditor.VersionControl.Presentation.ConflictSidePick.Cancel"/>
+    /// （＝何もしない）を返す。どちらを選んでも片側の内容が失われる操作なので、
+    /// 「勝手に既定値で進めない」の原則がそのまま当てはまる。
+    /// </para>
+    /// </summary>
+    /// <param name="body">本文（開けない理由を含む 1 文）。</param>
+    /// <param name="path">対象のファイルのパス。</param>
+    /// <param name="keepCurrentText">「現在」を残すボタンの文言。</param>
+    /// <param name="takeIncomingText">「取り込み元」を採るボタンの文言。</param>
+    /// <param name="owner">親ウィンドウ（中央に出すために使う）。</param>
+    /// <returns>選ばれた側。取り消し・ヘッドレス時は取り消し。</returns>
+    public static SEEDEditor.VersionControl.Presentation.ConflictSidePick ShowConflictSidePicker(
+        string body,
+        string path,
+        string keepCurrentText,
+        string takeIncomingText,
+        Window? owner = null)
+    {
+        if (EditorStartupOptions.IsHeadless)
+        {
+            var flat = body.Replace("\r\n", " / ").Replace("\n", " / ");
+            EditorLog.Write(
+                $"{LOG_PREFIX} {flat} ({path})  → 既定応答=キャンセル（選択なし）");
+            return SEEDEditor.VersionControl.Presentation.ConflictSidePick.Cancel;
+        }
+
+        var window = new SEEDEditor.Dialogs.ConflictSidePickerWindow(
+            body, path, keepCurrentText, takeIncomingText)
+        {
+            Owner = owner ?? Application.Current?.MainWindow,
+        };
+
+        window.ShowDialog();
+        return window.Pick;
+    }
+
+    /// <summary>
     /// ボタン構成ごとの、ヘッドレス時の既定応答を返す。
     /// 「勝手に破壊的な操作を承諾しない」を原則にする。
     /// </summary>

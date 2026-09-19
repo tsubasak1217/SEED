@@ -3,8 +3,15 @@
 //
 //  【手本】
 //  Visual Studio の 3-way マージエディタ。上段左に「取り込み元」、上段右に「現在」、
-//  下段に「結果」。上段はブロック単位で行を揃えて同期スクロールし、
+//  下段に「結果」。上段はブロック単位で行を揃えて並べ、
 //  各ブロックの左端のチェックで採用/不採用を切り替えると結果が作り直される。
+//
+//  【上段 2 面のスクロールは連動させない（2026-09-19 の指摘で撤去）】
+//  行を揃えてあるので縦オフセットを写すだけで同期はできるが、**操作しづらい**。
+//  片方を読みながらもう片方を別の位置で見たい（例: 取り込み元の後ろの方を見ながら
+//  現在の該当箇所を探す）ときに、動かした側につられてもう片方が飛んでしまう。
+//  行揃え（<see cref="MergeAlignedView"/> の詰め物）はそのまま残すので、
+//  「前の競合 / 次の競合」は両面を同じ行番号へ寄せられる。
 //
 //  【なぜ専用ウィンドウなのか】
 //  `.scene` / `.actor` / `.actor2d` はスクリプトエディタで開くことを
@@ -132,9 +139,6 @@ public sealed class MergeEditorWindow : Window
     /// <summary>「マージを確定」ボタン（確定中は押せなくする）。</summary>
     private readonly Button _applyButton;
 
-    /// <summary>同期スクロールの相互呼び出しを止める印。</summary>
-    private bool _syncingScroll;
-
     /// <summary>確定を実行中か（二重に走らせない）。</summary>
     private bool _committing;
 
@@ -227,7 +231,6 @@ public sealed class MergeEditorWindow : Window
             ToolTipService.SetShowOnDisabled(_takeBothButton, true);
         }
 
-        SynchronizeVerticalScroll();
         RefreshResult();
     }
 
@@ -445,38 +448,6 @@ public sealed class MergeEditorWindow : Window
             VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
         };
 
-    /// <summary>
-    /// 上段 2 面の縦スクロールを同期させる。
-    /// 行数が揃えてあるので、縦のオフセットを合わせるだけで意味が通る。
-    /// </summary>
-    private void SynchronizeVerticalScroll()
-    {
-        _incomingEditor.TextArea.TextView.ScrollOffsetChanged +=
-            (_, _) => MirrorScroll(_incomingEditor, _currentEditor);
-        _currentEditor.TextArea.TextView.ScrollOffsetChanged +=
-            (_, _) => MirrorScroll(_currentEditor, _incomingEditor);
-    }
-
-    /// <summary>片方のスクロール位置をもう片方へ写す。</summary>
-    /// <param name="source">動いた側。</param>
-    /// <param name="target">合わせる側。</param>
-    private void MirrorScroll(TextEditor source, TextEditor target)
-    {
-        // 写した先のスクロールがまたこちらを呼ぶので、印で止める。
-        if (_syncingScroll) return;
-
-        _syncingScroll = true;
-        try
-        {
-            target.ScrollToVerticalOffset(source.VerticalOffset);
-            target.ScrollToHorizontalOffset(source.HorizontalOffset);
-        }
-        finally
-        {
-            _syncingScroll = false;
-        }
-    }
-
     // ============================================================
     //  選択と結果の作り直し
     // ============================================================
@@ -578,6 +549,13 @@ public sealed class MergeEditorWindow : Window
     /// <summary>
     /// 競合ブロックの表示位置へスクロールする。
     /// 端で止める（巻き戻すと「どこまで見たか」が分からなくなるため）。
+    ///
+    /// <para>
+    /// ★上段 2 面は普段は連動しない（自由に別々の場所を見られる）ので、
+    /// 「両面を同じブロックへ並べ直す」のはこの操作だけの役目になる。
+    /// 行を揃えてある（<see cref="MergeAlignedView"/>）ため、
+    /// 同じ行番号へ寄せれば両面とも同じブロックの先頭が出る。
+    /// </para>
     /// </summary>
     /// <param name="step">移動量（-1 で前、+1 で次）。</param>
     private void MoveToConflict(int step)

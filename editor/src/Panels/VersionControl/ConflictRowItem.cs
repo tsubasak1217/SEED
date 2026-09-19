@@ -2,53 +2,66 @@
 //  ConflictRowItem.cs — 「競合」節の 1 行（WPF へ流す器）
 //
 //  【役割】
-//  未解決の競合 1 件を、解決の手段つきの行として出すための器。
-//  手段は 4 つ:
-//    ・比較…                 … マージエディタを開く（行はダブルクリックでも開く）
-//    ・両方を取り込む         … 同じ場所へ追加し合ったときだけ
-//    ・自分の変更を残す / リモートを採用 … 従来の 2 択
-//    ・編集した内容で解決     … 外部のエディタで直した場合
+//  未解決の競合 1 件を **一覧に出すためだけ** の器。
+//  持つのは表示に要るものだけ（ファイル名・フォルダ・アイコン・パス）で、
+//  解決の手段は一切持たない。
+//
+//  【行からボタンを全部外した理由（2026-09-19 の指摘）】
+//  以前はこの行に「比較… / 自分の変更を残す / リモートを採用 / 両方を取り込む /
+//  編集した内容で解決」の 5 つを並べていた。パネルは細いので**ボタンが幅を食い切り、
+//  肝心の「何のファイルが競合しているのか」が 1 文字も見えなかった**。
+//  一覧の仕事は「どれが競合しているか」を伝えることに絞り、
+//  どちらを残すかの選択は**マージエディタの中だけ**で行う
+//  （行のダブルクリック／Enter で開く）。
+//
+//  【ファイル名を先に、フォルダは後ろに薄く】
+//  幅が足りないときに削られてよいのはフォルダ側。名前を左に置き、
+//  フォルダは右の可変幅の列に置いて省略させる（XAML の列定義がそれを担う）。
+//
+//  【ファイルを読まなくなった】
+//  以前は「両方を取り込めるか」「印が残っていないか」を決めるために
+//  1 件ごとにファイルを読み、ブロックごとに LCS まで回していた
+//  （docs/backlog.md「競合の一覧を作るたびにファイルを読んで差分まで取る」）。
+//  その判定を使うボタンが無くなったので、器の生成は **純粋に文字列操作だけ** になった。
 //
 //  【なぜ変更ツリーと別の型にするのか】
 //  競合の行は「フォルダー階層で眺めるもの」ではない。
-//  未解決のうちは送信できず、利用者は必ず 1 件ずつ選択しなければならないので、
-//  階層に散らさず**平らな一覧**でフルパスを出し、行ごとに手段を並べる。
-//
-//  【ボタンの文言を直書きしない】
-//  「自分の変更を残す」「リモートを採用」は取り違えると利用者の作業が消える。
-//  対応表（LoreConflictResolutionMap）から引いた文言だけを使い、
-//  XAML にも日本語を書かない。
-//
-//  【ここでファイルを読む理由】
-//  「両方を取り込む」が成り立つか・印が残っていないかは **中身を見ないと分からない**。
-//  押してから「できません」と言うより、押せない理由をツールチップに出す方がよい。
-//  読むのは未解決の競合だけ（普通は数件）で、上限つき（MergeFileText）。
+//  未解決のうちは送信できず、利用者は必ず 1 件ずつ片付けなければならないので、
+//  階層に散らさず**平らな一覧**で出す。
 // ============================================================
 
 using System.IO;
 using System.Windows.Media;
 using SEEDEditor.Controls;
 using SEEDEditor.VersionControl;
-using SEEDEditor.VersionControl.Lore;
-using SEEDEditor.VersionControl.Merge;
 using SEEDEditor.VersionControl.Model;
 using SEEDEditor.VersionControl.Presentation;
 
 namespace SEEDEditor.Panels.VersionControl;
 
 /// <summary>
-/// 「競合」節の 1 行（不変）。
+/// 「競合」節の 1 行（不変。表示用の値だけを持つ）。
 /// </summary>
 public sealed class ConflictRowItem
 {
-    /// <summary>リポジトリ相対パス。</summary>
+    /// <summary>パスの区切り文字（Lore は '/' を返すが、念のため '\' も見る）。</summary>
+    private static readonly char[] PathSeparators = { '/', '\\' };
+
+    /// <summary>リポジトリ相対パス（解決を頼むときの鍵）。</summary>
     public string RelativePath { get; }
 
     /// <summary>作業コピー上の絶対パス（マージエディタへ渡す）。</summary>
     public string AbsolutePath { get; }
 
-    /// <summary>行に出すパス（移動・改名なら「移動前 → 移動後」）。</summary>
-    public string PathText { get; }
+    /// <summary>ファイル名だけ（行の主役。通常の文字色で出す）。</summary>
+    public string FileName { get; }
+
+    /// <summary>
+    /// ファイル名のうしろへ薄い色で続けるフォルダ。ルート直下なら空文字。
+    /// **先頭にファイル名との間隔（空白）を含む**
+    /// （1 つの TextBlock の中の Run なので Margin では空けられない）。
+    /// </summary>
+    public string DirectoryText { get; }
 
     /// <summary>ファイル種別のアイコン。</summary>
     public ImageSource? FileTypeIcon { get; }
@@ -56,56 +69,11 @@ public sealed class ConflictRowItem
     /// <summary>競合アイコンのキー。</summary>
     public string KindIconKey { get; }
 
-    /// <summary>状態の日本語表示（ツールチップ）。</summary>
+    /// <summary>状態の日本語表示（競合アイコンのツールチップ）。</summary>
     public string KindText { get; }
 
-    /// <summary>「両方を取り込む」が使えるか。</summary>
-    public bool CanTakeBoth { get; }
-
-    /// <summary>「両方を取り込む」のツールチップ（使えないときは理由）。</summary>
-    public string TakeBothToolTip { get; }
-
-    /// <summary>「編集した内容で解決」が使えるか（印が残っていないか）。</summary>
-    public bool CanResolveAsIs { get; }
-
-    /// <summary>「編集した内容で解決」のツールチップ（使えないときは理由）。</summary>
-    public string ResolveAsIsToolTip { get; }
-
-    // ── ボタンの文言（XAML から x:Static で引く）────────────
-
-    /// <summary>「自分の変更を残す」ボタンの文言（対応表から取る）。</summary>
-    public static string KeepMineText { get; } =
-        LoreConflictResolutionMap.ToDisplayName(ConflictResolutionChoice.KeepMine);
-
-    /// <summary>「リモートを採用」ボタンの文言（対応表から取る）。</summary>
-    public static string TakeRemoteText { get; } =
-        LoreConflictResolutionMap.ToDisplayName(ConflictResolutionChoice.TakeRemote);
-
-    /// <summary>「すべて自分の変更を残す」ボタンの文言。</summary>
-    public static string KeepMineAllText { get; } =
-        string.Format(VersionControlMessages.PANEL_RESOLVE_ALL_FORMAT, KeepMineText);
-
-    /// <summary>「すべてリモートを採用」ボタンの文言。</summary>
-    public static string TakeRemoteAllText { get; } =
-        string.Format(VersionControlMessages.PANEL_RESOLVE_ALL_FORMAT, TakeRemoteText);
-
-    /// <summary>「比較…」ボタンの文言。</summary>
-    public static string CompareText { get; } = VersionControlMessages.PANEL_CONFLICT_COMPARE;
-
-    /// <summary>「比較…」ボタンのツールチップ。</summary>
-    public static string CompareToolTip { get; } =
-        VersionControlMessages.PANEL_CONFLICT_COMPARE_TOOLTIP;
-
-    /// <summary>「両方を取り込む」ボタンの文言。</summary>
-    public static string TakeBothText { get; } = VersionControlMessages.PANEL_CONFLICT_TAKE_BOTH;
-
-    /// <summary>「すべて両方を取り込む」ボタンの文言。</summary>
-    public static string TakeBothAllText { get; } =
-        VersionControlMessages.PANEL_CONFLICT_TAKE_BOTH_ALL;
-
-    /// <summary>「編集した内容で解決」ボタンの文言。</summary>
-    public static string ResolveAsIsText { get; } =
-        VersionControlMessages.PANEL_CONFLICT_RESOLVE_AS_IS;
+    /// <summary>行全体のツールチップ（フルパス＋開き方の案内）。</summary>
+    public string TooltipText { get; }
 
     /// <summary>
     /// 競合したファイルから行を作る。
@@ -119,9 +87,14 @@ public sealed class ConflictRowItem
             ? file.Path
             : Path.Combine(workingCopyRoot, file.Path);
 
-        PathText = file.FromPath.Length == 0
-            ? file.Path
-            : $"{file.FromPath} → {file.Path}";
+        // ファイル名とフォルダを分ける。区切りが無ければルート直下＝フォルダは空。
+        var separator = file.Path.LastIndexOfAny(PathSeparators);
+        FileName      = separator < 0 ? file.Path : file.Path[(separator + 1)..];
+        DirectoryText = separator < 0
+            ? string.Empty
+            : string.Format(
+                  VersionControlMessages.PANEL_CONFLICT_ROW_DIRECTORY_FORMAT,
+                  file.Path[..separator]);
 
         KindIconKey = VersionControlDisplay.ToChangeIconKey(file.Kind, file.Conflict);
         KindText    = VersionControlDisplay.ToChangeText(file.Kind, file.Conflict);
@@ -129,51 +102,24 @@ public sealed class ConflictRowItem
         // ファイル種別アイコンは既存の対応表をそのまま使う（二重管理しない）。
         FileTypeIcon = FileTypeIcons.GetImage(Path.GetExtension(file.Path));
 
-        // 中身を 1 回だけ読んで、2 つの可否をまとめて決める。
-        var read = MergeFileText.Read(AbsolutePath);
-
-        var takeBoth = read.Succeeded
-            ? MergeTakeBothRule.Evaluate(read.Text)
-            : MergeTakeBothVerdict.No(read.Reason);
-        CanTakeBoth     = takeBoth.Allowed;
-        TakeBothToolTip = takeBoth.Allowed
-            ? VersionControlMessages.PANEL_CONFLICT_TAKE_BOTH_TOOLTIP
-            : takeBoth.Reason;
-
-        var asIs = EvaluateResolveAsIs(AbsolutePath, read);
-        CanResolveAsIs     = asIs.Allowed;
-        ResolveAsIsToolTip = asIs.Allowed
-            ? VersionControlMessages.PANEL_CONFLICT_RESOLVE_AS_IS_TOOLTIP
-            : string.Format(
-                VersionControlMessages.PANEL_CONFLICT_RESOLVE_AS_IS_BLOCKED_FORMAT, asIs.Reason);
+        TooltipText = BuildTooltip(file);
     }
 
     /// <summary>
-    /// 「編集した内容で解決」が使えるかを決める。
-    ///
-    /// <para>
-    /// テキストとして読めたなら「印が残っていないこと」が条件。
-    /// 読めなかった場合、ファイルが実在するなら **バイナリ等で印が入り得ない** ので使える
-    /// （Lore は印をテキストにしか書かない）。実在しないなら使えない。
-    /// </para>
+    /// 行のツールチップを組み立てる。
+    /// フルパス（行では省略され得るので必ず全部出す）＋開き方の案内。
+    /// 移動・改名なら移動前のパスも添える（行には出さないため、ここが唯一の手がかり）。
     /// </summary>
-    /// <param name="absolutePath">対象の絶対パス。</param>
-    /// <param name="read">読み込み結果。</param>
-    /// <returns>使えるか、と使えない理由。</returns>
-    private static (bool Allowed, string Reason) EvaluateResolveAsIs(
-        string absolutePath, MergeFileReadResult read)
+    /// <param name="file">対象の変更。</param>
+    /// <returns>ツールチップの文言。</returns>
+    private string BuildTooltip(ChangedFile file)
     {
-        if (read.Succeeded)
-        {
-            var markerLine = MergeValidation.FindMarkerLine(read.Text);
-            return markerLine == MergeValidation.NO_MARKER_LINE
-                ? (true, string.Empty)
-                : (false, string.Format(
-                    VersionControlMessages.MERGE_VALIDATE_MARKERS_REMAIN_FORMAT, markerLine));
-        }
+        var moved = file.FromPath.Length == 0
+            ? string.Empty
+            : string.Format(
+                  VersionControlMessages.PANEL_CONFLICT_ROW_MOVED_FROM_FORMAT, file.FromPath);
 
-        return File.Exists(absolutePath)
-            ? (true, string.Empty)
-            : (false, read.Reason);
+        return string.Format(
+            VersionControlMessages.PANEL_CONFLICT_ROW_TOOLTIP_FORMAT, AbsolutePath, moved);
     }
 }

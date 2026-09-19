@@ -110,7 +110,8 @@ public static class VersionControlMessages
 
     /// <summary>取得したが競合が残った（書式: 競合件数）。</summary>
     public const string FETCH_CONFLICTED_FORMAT =
-        "最新を取得しましたが、{0} 件のファイルが競合しています。どちらを残すか選んでください。";
+        "最新を取得しましたが、{0} 件のファイルが競合しています。"
+        + "競合の節のファイルをダブルクリックして解決してください。";
 
     /// <summary>取得に失敗した。</summary>
     public const string FETCH_FAILED = "最新を取得できませんでした。";
@@ -169,7 +170,8 @@ public static class VersionControlMessages
 
     /// <summary>取り込みで競合が出た（書式: 取り込み元の名前, 競合件数）。</summary>
     public const string BRANCH_MERGE_CONFLICTED_FORMAT =
-        "ブランチ「{0}」の取り込みで {1} 件が競合しました。競合の節で選んでください。";
+        "ブランチ「{0}」の取り込みで {1} 件が競合しました。"
+        + "競合の節のファイルをダブルクリックして解決してください。";
 
     /// <summary>ブランチを取り込めなかった。</summary>
     public const string BRANCH_MERGE_FAILED = "ブランチを取り込めませんでした。";
@@ -655,9 +657,6 @@ public static class VersionControlMessages
     /// <summary>変更が 1 件も無いときの表示。</summary>
     public const string PANEL_NO_CHANGES = "変更はありません。";
 
-    /// <summary>「すべて」に対して競合解決を行うボタンの接頭辞（書式: 選択肢名）。</summary>
-    public const string PANEL_RESOLVE_ALL_FORMAT = "すべて{0}";
-
     /// <summary>「リモートを採用」の確認本文（書式: 件数）。自分の変更が消えるため必ず確認する。</summary>
     public const string PANEL_RESOLVE_TAKE_REMOTE_CONFIRM_FORMAT =
         "{0} 件のファイルについて、自分の変更を捨ててリモートの内容にします。\n"
@@ -932,7 +931,7 @@ public static class VersionControlMessages
     /// <summary>同じ箇所を両方が変更しているので両方を取り込めない。</summary>
     public const string MERGE_TAKE_BOTH_NOT_ADD_ONLY =
         "同じ箇所を両方が変更しているため「両方を取り込む」ことができません"
-        + "（並べると内容が二重になります）。「比較…」で 1 つずつ選んでください。";
+        + "（並べると内容が二重になります）。ブロックごとに 1 つずつ選んでください。";
 
     // ── マージエディタの画面 ────────────────────────────────
 
@@ -997,9 +996,6 @@ public static class VersionControlMessages
     /// <summary>詰め物の行（片側にしか無い行の場所）のツールチップ。</summary>
     public const string MERGE_EDITOR_PADDING_TOOLTIP = "この側には対応する行がありません。";
 
-    /// <summary>マージエディタを開けなかったときのダイアログのタイトル。</summary>
-    public const string MERGE_EDITOR_UNAVAILABLE_TITLE = "マージエディタを開けません";
-
     /// <summary>印が 1 つも無いので開けない。</summary>
     public const string MERGE_EDITOR_NO_CONFLICT =
         "このファイルに競合の印がありません。すでに解決されている可能性があります。";
@@ -1016,39 +1012,53 @@ public static class VersionControlMessages
     /// <summary>未選択のまま確定する確認のタイトル。</summary>
     public const string MERGE_EDITOR_APPLY_UNSELECTED_CONFIRM_TITLE = "マージの確定";
 
-    // ── 競合行の追加操作（パネル）────────────────────────────
+    // ── 競合の節（パネル）────────────────────────────────────
+    //  行にはボタンを置かない。解決はマージエディタの中だけで行う
+    //  （2026-09-19 の指摘。ボタンが幅を食ってファイル名が見えなかった）。
 
-    /// <summary>行の「比較…」ボタン。</summary>
-    public const string PANEL_CONFLICT_COMPARE = "比較…";
+    /// <summary>見出しの下の帯に出す案内。</summary>
+    public const string PANEL_CONFLICT_HINT = "ダブルクリックで開いて解決します。";
 
-    /// <summary>行の「比較…」ボタンのツールチップ。</summary>
-    public const string PANEL_CONFLICT_COMPARE_TOOLTIP =
-        "マージエディタを開いて、ブロックごとにどちらを残すか選びます（ダブルクリックでも開きます）。";
+    /// <summary>
+    /// 競合の行で、ファイル名のうしろへ続けるフォルダ（書式: フォルダ）。
+    ///
+    /// <para>
+    /// ★先頭の空白は飾りではなく**間隔そのもの**。ファイル名とフォルダは
+    /// 1 つの TextBlock の 2 つの Run として描くので（行全体に省略記号を効かせるため）、
+    /// Margin では間隔を空けられない。
+    /// </para>
+    /// </summary>
+    public const string PANEL_CONFLICT_ROW_DIRECTORY_FORMAT = "   {0}";
 
-    /// <summary>行の「両方を取り込む」ボタン。</summary>
-    public const string PANEL_CONFLICT_TAKE_BOTH = "両方を取り込む";
+    /// <summary>競合の行のツールチップ（書式: 絶対パス, 移動前の行）。</summary>
+    public const string PANEL_CONFLICT_ROW_TOOLTIP_FORMAT =
+        "{0}{1}\nダブルクリックで開いて解決します。";
 
-    /// <summary>「すべて両方を取り込む」ボタン。</summary>
-    public const string PANEL_CONFLICT_TAKE_BOTH_ALL = "すべて両方を取り込む";
+    /// <summary>
+    /// 移動・改名の競合でツールチップへ足す行（書式: 移動前のパス）。
+    /// 行にはファイル名しか出さないので、移動前を知る手段はここだけになる。
+    /// </summary>
+    public const string PANEL_CONFLICT_ROW_MOVED_FROM_FORMAT = "\n移動前: {0}";
 
-    /// <summary>「両方を取り込む」が使えるときのツールチップ。</summary>
-    public const string PANEL_CONFLICT_TAKE_BOTH_TOOLTIP =
-        "両方の追加を並べて残します（同じ場所に追加し合ったときだけ使えます）。";
+    // ── 並べて表示できないファイルの 2 択（パネル）────────────
+    //  バイナリ（png / blend など）や印の無いファイルはマージエディタで開けない。
+    //  行のボタンを外したので、この小さな選択ダイアログが唯一の解決手段になる。
 
-    /// <summary>「すべて両方を取り込む」が使えないときのツールチップ。</summary>
-    public const string PANEL_CONFLICT_TAKE_BOTH_ALL_BLOCKED =
-        "「両方を取り込む」ことができないファイルが含まれているため、まとめては実行できません。";
+    /// <summary>ダイアログのタイトル。</summary>
+    public const string PANEL_CONFLICT_PICK_SIDE_TITLE = "どちらの内容を残しますか？";
 
-    /// <summary>行の「編集した内容で解決」ボタン。</summary>
-    public const string PANEL_CONFLICT_RESOLVE_AS_IS = "編集した内容で解決";
+    /// <summary>ダイアログの本文（書式: 開けない理由）。</summary>
+    public const string PANEL_CONFLICT_PICK_SIDE_BODY_FORMAT =
+        "このファイルは中身を並べて表示できません（{0}）。どちらの内容を残しますか？";
 
-    /// <summary>「編集した内容で解決」が使えるときのツールチップ。</summary>
-    public const string PANEL_CONFLICT_RESOLVE_AS_IS_TOOLTIP =
-        "いまのファイルの中身のまま解決済みにします（外部のエディタで直した場合に使います）。";
+    /// <summary>「現在」側を残すボタン（書式: 「現在」の呼び名）。</summary>
+    public const string PANEL_CONFLICT_PICK_SIDE_KEEP_CURRENT_FORMAT = "{0} を残す";
 
-    /// <summary>「編集した内容で解決」が使えないときのツールチップ（書式: 理由）。</summary>
-    public const string PANEL_CONFLICT_RESOLVE_AS_IS_BLOCKED_FORMAT =
-        "このまま解決することはできません: {0}";
+    /// <summary>「取り込み元」側を採るボタン（書式: 「取り込み元」の呼び名）。</summary>
+    public const string PANEL_CONFLICT_PICK_SIDE_TAKE_INCOMING_FORMAT = "{0} を採用";
+
+    /// <summary>取り消しボタン。</summary>
+    public const string PANEL_CONFLICT_PICK_SIDE_CANCEL = "キャンセル";
 
     // ── 中身を指定した解決（プロバイダ）──────────────────────
 

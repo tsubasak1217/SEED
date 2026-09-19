@@ -50,7 +50,7 @@ public static class PanelStateTests
         harness.Add("未解決の競合が残っていると送信は押せない",            SubmitDisabledWhileConflicted);
         harness.Add("実行中は主操作をすべて無効にする",                    ButtonsDisabledWhileBusy);
         harness.Add("押せない理由が必ず 1 つ返る",                        SubmitBlockedReasonIsExplained);
-        harness.Add("競合が無ければ 2 択ボタンは出さない",                 ResolveDisabledWithoutConflicts);
+        harness.Add("競合が無ければ解決の入口を開かせない",                ResolveDisabledWithoutConflicts);
 
         // ── 実行中の表示 ──
         harness.Add("実行中は操作名つきの表示になる",                      BusyTextShowsOperation);
@@ -269,7 +269,7 @@ public static class PanelStateTests
         Check.Equal(string.Empty, ready.SubmitBlockedReason, "押せるときは理由なし");
     }
 
-    /// <summary>競合が無ければ 2 択ボタンは押させない。</summary>
+    /// <summary>競合が無ければ解決の入口（マージエディタ）を開かせない。</summary>
     private static void ResolveDisabledWithoutConflicts()
     {
         var state = NewAvailableState();

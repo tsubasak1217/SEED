@@ -10,7 +10,8 @@
 //     EditorDialogs が抑止するのは「返事を待って止まる」モーダルだけで、
 //     この窓はその対象ではない。開いたことはログに残す。
 //  3. 開けない理由（バイナリ・印が無い・印が壊れている）は、窓を出さずに
-//     その場で利用者へ伝える。ここが唯一の判断箇所。
+//     <see cref="TryOpen"/> の out で返す。ここが唯一の判断箇所で、
+//     受け取った側（パネル）が「どちらの内容を残すか」の 2 択ダイアログへ落とす。
 //
 //  【表示名の決め方】
 //  「取り込み元 / 現在」の呼び名は出どころで変わる。推測を画面側に持ち込まないよう、
@@ -98,17 +99,6 @@ public static class MergeEditorWindows
             return false;
         }
     }
-
-    /// <summary>
-    /// 開けなかったことを利用者へ伝える（ヘッドレスではログだけになる）。
-    /// </summary>
-    /// <param name="reason">開けなかった理由。</param>
-    public static void ReportUnavailable(string reason)
-        => EditorDialogs.Show(
-            reason,
-            VersionControlMessages.MERGE_EDITOR_UNAVAILABLE_TITLE,
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
 
     /// <summary>
     /// 「取り込み元」の呼び名を決める。
