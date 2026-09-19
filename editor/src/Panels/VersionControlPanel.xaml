@@ -54,6 +54,20 @@
         <SolidColorBrush x:Key="Vc.ConflictHeader" Color="#4A2A2A"/>
         <SolidColorBrush x:Key="Vc.ConflictText"   Color="#F0B0B0"/>
 
+        <!-- ══ ブランチ一覧の右クリックメニュー ═══════════════════
+             ドロップダウンの中のブランチを右クリックすると出る「そのブランチへの操作」。
+             見出し・可否・対象名はコードビハインド（OnBranchItemRightClick）が
+             開く直前に流し込む。見た目はヘッダーの「その他 …」メニューと揃える。 -->
+        <ContextMenu x:Key="Vc.BranchItemMenu" Background="#2D2D2D" BorderBrush="#555">
+            <!-- 項目の並び（0: マージ / 1: 削除）はコードビハインドの定数と対応させる。 -->
+            <MenuItem Foreground="#CCC"
+                      ToolTipService.ShowOnDisabled="True"
+                      Click="OnBranchItemMergeClick"/>
+            <MenuItem Foreground="#CCC"
+                      ToolTipService.ShowOnDisabled="True"
+                      Click="OnBranchItemArchiveClick"/>
+        </ContextMenu>
+
         <!-- ══ 折りたたみ節の見出し ═══════════════════════════════
              見出し全体を 1 つの ToggleButton にして、どこを押しても開閉するようにする。
              ボタン共通書式（Seed.Button.*）を当てないのは、これが「押しボタン」ではなく

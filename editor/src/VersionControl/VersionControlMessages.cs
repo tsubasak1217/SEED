@@ -465,6 +465,24 @@ public static class VersionControlMessages
     /// <summary>削除の確認ダイアログのタイトル。</summary>
     public const string PANEL_BRANCH_ARCHIVE_CONFIRM_TITLE = "ブランチの削除（アーカイブ）";
 
+    // ── ブランチ一覧の右クリック（そのブランチに対する操作）────
+
+    /// <summary>
+    /// ブランチ一覧の右クリックメニュー「このブランチを現在のブランチへマージ」
+    /// （書式: {0} 右クリックしたブランチ名、{1} 現在のブランチ名）。
+    /// </summary>
+    public const string PANEL_BRANCH_ITEM_MERGE_FORMAT = "「{0}」を「{1}」へマージ";
+
+    /// <summary>
+    /// 現在のブランチ名が分からないときの「このブランチを現在のブランチへマージ」
+    /// （書式: 右クリックしたブランチ名）。
+    /// </summary>
+    public const string PANEL_BRANCH_ITEM_MERGE_UNKNOWN_CURRENT_FORMAT =
+        "「{0}」を現在のブランチへマージ";
+
+    /// <summary>ブランチ一覧の右クリックメニュー「このブランチを削除」（書式: ブランチ名）。</summary>
+    public const string PANEL_BRANCH_ITEM_ARCHIVE_FORMAT = "「{0}」を削除（アーカイブ）…";
+
     // ── ブランチを選ぶダイアログの共通部品 ──────────────────
 
     /// <summary>ブランチ選択ダイアログの決定ボタン。</summary>

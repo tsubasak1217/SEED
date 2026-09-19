@@ -438,6 +438,8 @@ public partial class VersionControlPanel
             foreach (var name in names)
             {
                 var item = new ComboBoxItem { Content = name, Tag = name };
+                // 右クリックで「そのブランチへの操作」（マージ / 削除）を出す。
+                item.MouseRightButtonUp += OnBranchItemRightClick;
                 CmbBranch.Items.Add(item);
                 if (string.Equals(name, current, StringComparison.Ordinal)) selected = item;
             }
@@ -570,32 +572,7 @@ public partial class VersionControlPanel
     private async void OnMergeBranchClick(object sender, RoutedEventArgs e)
     {
         if (!_state.CanChangeBranch) return;
-
-        // ★判定に画面の一覧（_state.ChangeCount）を使わない。
-        //   画面の一覧は最後に更新した時点のもので、そのあとに保存されたファイルが抜けている。
-        //   抜けたまま取り込むと、その変更が取り込みの結果と混ざって見分けられなくなる。
-        //   走査（ScanOffline）はサーバ往復を伴わない（実測 0.11 秒）。送信ゲートと同じ考え方。
-        var scan = await VersionControlService.Provider
-                                              .GetStatusAsync(StatusRefreshMode.ScanOffline)
-                                              .ConfigureAwait(true);
-        var changeCount = scan.Value?.Changes.Count ?? 0;
-        if (!scan.IsSuccess)
-        {
-            // 走査できなければ「変更が無い」と断言できない。取り込みは作業コピーを
-            // 書き換えるので、確かめられないまま始めない。
-            EditorLog.Write($"[VCS] マージ前の走査に失敗しました: {scan.Outcome} {scan.Message}");
-            _state.SetNotice(VersionControlNotice.FromResult(scan));
-            SyncControls();
-            return;
-        }
-
-        // 未送信の変更がある間は取り込ませない（先に送信するか元に戻してもらう）。
-        if (changeCount > 0)
-        {
-            ShowInfoNotice(string.Format(
-                VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_FORMAT, changeCount));
-            return;
-        }
+        if (!await EnsureNoUnsubmittedChangesForMergeAsync()) return;
 
         // 一覧はコンボを開いたときにしか取り直していない。ここで必ず取り直す。
         // null は「取れなかった」。その理由は RunAsync が 1 行メッセージに出しているので、
@@ -620,6 +597,54 @@ public partial class VersionControlPanel
 
         if (string.IsNullOrWhiteSpace(source)) return;
 
+        await ExecuteMergeBranchAsync(source);
+    }
+
+    /// <summary>
+    /// 取り込みを始めてよいか（未送信の変更が無いか）を、作業コピーを走査して確かめる。
+    ///
+    /// <para>
+    /// ★判定に画面の一覧（<c>_state.ChangeCount</c>）を使わない。
+    /// 画面の一覧は最後に更新した時点のもので、そのあとに保存されたファイルが抜けている。
+    /// 抜けたまま取り込むと、その変更が取り込みの結果と混ざって見分けられなくなる。
+    /// 走査（ScanOffline）はサーバ往復を伴わない（実測 0.11 秒）。送信ゲートと同じ考え方。
+    /// </para>
+    /// </summary>
+    /// <returns>始めてよければ真。駄目なときは理由を 1 行メッセージへ出してから偽。</returns>
+    private async Task<bool> EnsureNoUnsubmittedChangesForMergeAsync()
+    {
+        var scan = await VersionControlService.Provider
+                                              .GetStatusAsync(StatusRefreshMode.ScanOffline)
+                                              .ConfigureAwait(true);
+        var changeCount = scan.Value?.Changes.Count ?? 0;
+        if (!scan.IsSuccess)
+        {
+            // 走査できなければ「変更が無い」と断言できない。取り込みは作業コピーを
+            // 書き換えるので、確かめられないまま始めない。
+            EditorLog.Write($"[VCS] マージ前の走査に失敗しました: {scan.Outcome} {scan.Message}");
+            _state.SetNotice(VersionControlNotice.FromResult(scan));
+            SyncControls();
+            return false;
+        }
+
+        // 未送信の変更がある間は取り込ませない（先に送信するか元に戻してもらう）。
+        if (changeCount > 0)
+        {
+            ShowInfoNotice(string.Format(
+                VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_FORMAT, changeCount));
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 指定のブランチを現在のブランチへ取り込み、状態と節を取り直す。
+    /// （「その他 …」の選択ダイアログからも、一覧の右クリックからも、ここへ来る。）
+    /// </summary>
+    /// <param name="source">取り込み元のブランチ名。</param>
+    private async Task ExecuteMergeBranchAsync(string source)
+    {
         var result = await RunAsync(
             VersionControlOperation.Branch,
             async () => await VersionControlService.Provider
@@ -671,6 +696,16 @@ public partial class VersionControlPanel
 
         if (string.IsNullOrWhiteSpace(target)) return;
 
+        await ExecuteArchiveBranchAsync(target);
+    }
+
+    /// <summary>
+    /// 確認してから指定のブランチを削除（アーカイブ）し、コンボを取り直す。
+    /// （「その他 …」の選択ダイアログからも、一覧の右クリックからも、ここへ来る。）
+    /// </summary>
+    /// <param name="target">対象のブランチ名。</param>
+    private async Task ExecuteArchiveBranchAsync(string target)
+    {
         // 取り返しがつかないのでここで確認する（ヘッドレスでは必ず「いいえ」）。
         if (!ConfirmArchiveBranch(target)) return;
 
@@ -683,6 +718,104 @@ public partial class VersionControlPanel
 
         // 消えたブランチが残らないよう、コンボを取り直す。
         await ReloadBranchesKeepingNoticeAsync();
+    }
+
+    // ── ブランチ一覧の右クリック（そのブランチへの操作）──────
+
+    /// <summary>右クリックメニューの中での「マージ」の位置（XAML の並びと対応）。</summary>
+    private const int BRANCH_ITEM_MENU_INDEX_MERGE = 0;
+
+    /// <summary>右クリックメニューの中での「削除」の位置（XAML の並びと対応）。</summary>
+    private const int BRANCH_ITEM_MENU_INDEX_ARCHIVE = 1;
+
+    /// <summary>
+    /// ドロップダウンの中のブランチを右クリックしたとき。
+    /// そのブランチへの操作（現在のブランチへマージ / 削除）をメニューで出す。
+    ///
+    /// <para>
+    /// ★ドロップダウンは先に閉じる。コンボのポップアップはマウスの捕捉を握っており、
+    /// 開いたままメニューを重ねると捕捉の取り合いでどちらかが勝手に閉じる。
+    /// メニューの位置はマウスの位置に置く（閉じた項目を基準にはできない）。
+    /// </para>
+    /// </summary>
+    /// <param name="sender">右クリックされた項目。</param>
+    /// <param name="e">イベント引数。</param>
+    private void OnBranchItemRightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not ComboBoxItem { Tag: string name } || name.Length == 0) return;
+
+        // 右クリックで項目が選ばれた扱いにならないよう、ここで止める。
+        e.Handled = true;
+        CmbBranch.IsDropDownOpen = false;
+
+        if (FindResource("Vc.BranchItemMenu") is not ContextMenu menu) return;
+        if (menu.Items.Count <= BRANCH_ITEM_MENU_INDEX_ARCHIVE) return;
+
+        var current = _state.BranchName;
+
+        // 可否と理由はプロバイダと同じ規則から引く（一覧に出るのに必ず失敗する、を作らない）。
+        var mergeCheck   = BranchOperationRules.CheckMergeSource(name, current);
+        var archiveCheck = BranchOperationRules.CheckArchive(
+            name, current, VersionControlService.Settings.DefaultBranchName);
+
+        var merge = (MenuItem)menu.Items[BRANCH_ITEM_MENU_INDEX_MERGE];
+        merge.Header    = current.Length > 0
+            ? string.Format(VersionControlMessages.PANEL_BRANCH_ITEM_MERGE_FORMAT, name, current)
+            : string.Format(
+                VersionControlMessages.PANEL_BRANCH_ITEM_MERGE_UNKNOWN_CURRENT_FORMAT, name);
+        merge.Tag       = name;
+        merge.IsEnabled = _state.CanChangeBranch && mergeCheck.Allowed;
+        merge.ToolTip   = mergeCheck.Allowed ? null : mergeCheck.Reason;
+
+        var archive = (MenuItem)menu.Items[BRANCH_ITEM_MENU_INDEX_ARCHIVE];
+        archive.Header    = string.Format(
+            VersionControlMessages.PANEL_BRANCH_ITEM_ARCHIVE_FORMAT, name);
+        archive.Tag       = name;
+        archive.IsEnabled = _state.CanChangeBranch && archiveCheck.Allowed;
+        archive.ToolTip   = archiveCheck.Allowed ? null : archiveCheck.Reason;
+
+        menu.PlacementTarget = CmbBranch;
+        menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen          = true;
+    }
+
+    /// <summary>右クリックメニュー「〜へマージ」。対象は項目の Tag に入っている。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnBranchItemMergeClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string source } || source.Length == 0) return;
+        if (!_state.CanChangeBranch) return;
+
+        // 規則は開く前にも見ているが、実行の直前にもう一度見る（状態が変わっていることがある）。
+        var check = BranchOperationRules.CheckMergeSource(source, _state.BranchName);
+        if (!check.Allowed)
+        {
+            ShowInfoNotice(check.Reason);
+            return;
+        }
+
+        if (!await EnsureNoUnsubmittedChangesForMergeAsync()) return;
+        await ExecuteMergeBranchAsync(source);
+    }
+
+    /// <summary>右クリックメニュー「〜を削除（アーカイブ）…」。対象は項目の Tag に入っている。</summary>
+    /// <param name="sender">送信元。</param>
+    /// <param name="e">イベント引数。</param>
+    private async void OnBranchItemArchiveClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string target } || target.Length == 0) return;
+        if (!_state.CanChangeBranch) return;
+
+        var check = BranchOperationRules.CheckArchive(
+            target, _state.BranchName, VersionControlService.Settings.DefaultBranchName);
+        if (!check.Allowed)
+        {
+            ShowInfoNotice(check.Reason);
+            return;
+        }
+
+        await ExecuteArchiveBranchAsync(target);
     }
 
     /// <summary>
