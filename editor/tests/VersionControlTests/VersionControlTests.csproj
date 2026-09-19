@@ -127,6 +127,10 @@
     <Compile Include="..\..\src\VersionControl\Merge\MergeFileText.cs">
       <Link>Linked\VersionControl\Merge\MergeFileText.cs</Link>
     </Compile>
+    <!-- 競合中のシーンを「読まない・上書きしない」ための判定（印の定義は Merge と共用）。 -->
+    <Compile Include="..\..\src\Scene\SceneConflictGuard.cs">
+      <Link>Linked\Scene\SceneConflictGuard.cs</Link>
+    </Compile>
 
     <!-- ── 境界 ── -->
     <Compile Include="..\..\src\VersionControl\Abstractions\IVersionControlProvider.cs">

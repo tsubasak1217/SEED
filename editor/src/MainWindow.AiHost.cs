@@ -377,6 +377,13 @@ public partial class MainWindow : IEditorAiHost
         // 別インスタンスがこのシーンを開いている間は保存させない。
         // ここで弾かないと DoQuickSave が黙って何もせず、保存完了通知を待ち続けてしまう。
         if (SceneSaveDenialReason is { } denial) return denial;
+        // 競合中のシーンは ExecuteSave が弾く（RefuseSaveIfConflicted）。ここでも先に返さないと、
+        // 上と同じ理由で保存完了通知を待ち続けてしまう。アクタータブの保存は対象外。
+        if (_activeActorPath is null
+            && SEEDEditor.Scene.SceneConflictGuard.IsConflicted(_currentScenePath))
+        {
+            return SEEDEditor.Scene.SceneConflictGuard.MESSAGE_SAVE_DENIED;
+        }
 
         var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnSaved(bool ok, string err) => tcs.TrySetResult(ok ? null : err);

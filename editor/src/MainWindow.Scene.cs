@@ -400,6 +400,31 @@ public partial class MainWindow
         return true;
     }
 
+    /// <summary>
+    /// 競合中（ファイルに競合の印が入っている）シーンへの上書き保存を弾く。弾いたら true。
+    ///
+    /// <para>
+    /// シーンを開いたままマージや「最新を取得」で競合すると、ファイルには印が入るが、
+    /// メモリ上のシーンはマージ前のまま（印つきのファイルは読めないので再読込も見送る）。
+    /// ここで保存を通すと、メモリ上の古いシーンで印つきのファイルを上書きし、
+    /// 相手側の変更が黙って消える。解決するまで上書きさせない
+    /// （別名で保存は止めない。別のファイルへ逃がす手段として残す）。
+    /// </para>
+    /// </summary>
+    /// <param name="path">保存先のシーンの絶対パス。</param>
+    private bool RefuseSaveIfConflicted(string path)
+    {
+        if (!SEEDEditor.Scene.SceneConflictGuard.IsConflicted(path)) return false;
+
+        EditorLog.Write($"保存を拒否しました（競合中）: {path}");
+        ShowToast(SEEDEditor.Scene.SceneConflictGuard.TOAST_SAVE_DENIED);
+        // ヘッドレスでは EditorDialogs がログへ流すだけなので止まらない。
+        SEEDEditor.Headless.EditorDialogs.Show(
+            SEEDEditor.Scene.SceneConflictGuard.MESSAGE_SAVE_DENIED, "SEED Editor",
+            MessageBoxButton.OK, MessageBoxImage.Warning);
+        return true;
+    }
+
     /// <summary>Ctrl+Shift+S / 名前を付けて保存。</summary>
     private void ShowSaveAsDialog()
     {
@@ -455,6 +480,7 @@ public partial class MainWindow
     private void ExecuteSave(string path)
     {
         if (RefuseSaveIfReadOnly()) return;
+        if (RefuseSaveIfConflicted(path)) return;
         // チーム内のロック（Lore）のゲート。他の人が編集中なら、ここで止まる。
         // 機械内の多重編集を防ぐ RefuseSaveIfReadOnly とは目的が違うので両方通す
         //（docs/editor_version_control.md「2 つのロックの関係」）。

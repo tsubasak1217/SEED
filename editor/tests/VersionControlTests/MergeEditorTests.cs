@@ -117,6 +117,7 @@ public static class MergeEditorTests
                     ProviderTakeBothIsAllOrNothing);
         harness.Add("マージ: 両方を取り込むと書き込み・解決・コミットまで進む（実測の status の形）",
                     ProviderTakeBothResolvesAndCommits);
+        harness.Add("マージ: 競合の印が入ったシーンだけを「競合中」と判定する", SceneConflictGuardDetectsMarkers);
         harness.Add("マージ: 出どころの印に取り込み元ブランチ名を残せる", StoresMergeSourceBranch);
         harness.Add("マージ: 1 行だけの古い印も読める", ReadsLegacySingleLineOrigin);
     }
@@ -953,6 +954,41 @@ public static class MergeEditorTests
                        "sync では取り込み元が先");
             Check.Equal(1, backend.MergeResolveAsIsCallCount, "Lore へ 1 回だけ頼む");
             Check.Equal(1, backend.CommitCallCount, "残りが無いのでマージをコミットする");
+        }
+        finally
+        {
+            dir.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// 競合の印が入ったシーンだけを「競合中」と判定すること
+    /// （自動再読込の見送りと、上書き保存の拒否がこの判定に乗っている）。
+    /// 読めない・存在しないファイルは「競合中ではない」＝従来の挙動を妨げない。
+    /// </summary>
+    private static void SceneConflictGuardDetectsMarkers()
+    {
+        var dir = new TempDir();
+        try
+        {
+            var clean = Path.Combine(dir.Path, "clean.scene");
+            File.WriteAllText(clean, "{ \"name\": \"main\", \"actors\": [] }");
+            Check.True(!SEEDEditor.Scene.SceneConflictGuard.IsConflicted(clean), "普通のシーンは競合中ではない");
+
+            var conflicted = Path.Combine(dir.Path, "conflicted.scene");
+            File.WriteAllText(conflicted, Text(
+                "{", "<<<<<<< ours", "\"x\": 1", "||||||| original", "\"x\": 0",
+                "=======", "\"x\": 2", ">>>>>>> theirs", "}"));
+            Check.True(SEEDEditor.Scene.SceneConflictGuard.IsConflicted(conflicted), "印つきのシーンは競合中");
+
+            // 文字列の中に記号が現れても、行頭の印でなければ競合ではない。
+            var lookalike = Path.Combine(dir.Path, "lookalike.scene");
+            File.WriteAllText(lookalike, "{ \"note\": \"<<<<<<< not a marker\" }");
+            Check.True(!SEEDEditor.Scene.SceneConflictGuard.IsConflicted(lookalike), "行頭でなければ印ではない");
+
+            Check.True(!SEEDEditor.Scene.SceneConflictGuard.IsConflicted(
+                           Path.Combine(dir.Path, "missing.scene")), "存在しないファイル");
+            Check.True(!SEEDEditor.Scene.SceneConflictGuard.IsConflicted(null), "null");
         }
         finally
         {

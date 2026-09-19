@@ -109,6 +109,13 @@ public sealed class SceneAutoReloader : IDisposable
     /// <summary>進行状態を UI（ステータス表示・ログ）へ伝える。</summary>
     private readonly Action<SceneReloadStatus, string> _report;
 
+    /// <summary>
+    /// 再読込してはいけない理由を返す（null なら読み込んでよい）。省略可。
+    /// 例: バージョン管理の競合の印が入っていて JSON として読めない
+    /// （読みに行くとエラーダイアログが出るだけなので、解決されるまで見送る）。
+    /// </summary>
+    private readonly Func<string, string?>? _reloadBlockReason;
+
     // ── 内部状態（すべて UI スレッドからのみ触る）──────────────────
 
     private readonly Dispatcher     _dispatcher;
@@ -153,13 +160,17 @@ public sealed class SceneAutoReloader : IDisposable
     /// <param name="playbackState">現在のエディタ再生状態を返す関数。</param>
     /// <param name="loadScene">シーン読み込み（ファイルを開くのと同じ経路）。</param>
     /// <param name="report">進行状態の通知先。</param>
+    /// <param name="reloadBlockReason">
+    /// 再読込してはいけない理由を返す関数（引数はシーンの絶対パス。null を返せば読み込む）。省略可。
+    /// </param>
     public SceneAutoReloader(
         Dispatcher dispatcher,
         Func<bool> isEnabled,
         Func<bool> isDirty,
         Func<PlaybackState> playbackState,
         Action<string> loadScene,
-        Action<SceneReloadStatus, string> report)
+        Action<SceneReloadStatus, string> report,
+        Func<string, string?>? reloadBlockReason = null)
     {
         _dispatcher = dispatcher;
         _isEnabled  = isEnabled;
@@ -167,6 +178,7 @@ public sealed class SceneAutoReloader : IDisposable
         _playbackState = playbackState;
         _loadScene  = loadScene;
         _report     = report;
+        _reloadBlockReason = reloadBlockReason;
 
         // デバウンス用タイマー（UI スレッド）。イベントが来るたびに Stop→Start で
         // 期限を延ばし、静まってから 1 回だけ発火させる。
@@ -400,6 +412,15 @@ public sealed class SceneAutoReloader : IDisposable
             return;
         }
 
+        // 4.5. 読みに行ってはいけない状態（競合の印が入っている等）なら見送る。
+        //      既知ハッシュは更新しない。解決されてファイルが書き換われば、
+        //      次のイベントでここを通り抜けて読み直される。
+        if (_reloadBlockReason?.Invoke(_scenePath) is { } blockedReason)
+        {
+            _report(SceneReloadStatus.Skipped, blockedReason);
+            return;
+        }
+
         // 5. 未保存の編集があるときは破棄になるため再読込しない。
         //    既知ハッシュを更新しないので、ユーザーが保存すれば
         //    エディタ側の内容で上書きされる（＝この差分は解消する）。
@@ -421,6 +442,14 @@ public sealed class SceneAutoReloader : IDisposable
     private void Reload()
     {
         if (_scenePath is null) return;
+
+        // 手動の再読込（ForceReload）でも、読めないと分かっているファイルは読みに行かない
+        // （ランタイムが失敗を返してエラーダイアログが出るだけで、何も得られない）。
+        if (_reloadBlockReason?.Invoke(_scenePath) is { } blockedReason)
+        {
+            _report(SceneReloadStatus.Skipped, blockedReason);
+            return;
+        }
 
         _report(SceneReloadStatus.Running, MessageRunning);
         try

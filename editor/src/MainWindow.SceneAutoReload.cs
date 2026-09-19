@@ -48,7 +48,13 @@ public partial class MainWindow
             playbackState: () => CurrentPlaybackState,
             // 読み込みはファイルを開いたときと同じ経路
             loadScene: LoadScene,
-            report: SetSceneReloadStatus);
+            report: SetSceneReloadStatus,
+            // バージョン管理の競合の印が入ったシーンは JSON として読めない。
+            // 読みに行くとエラーダイアログが出るだけなので、解決されるまで見送る
+            // （解決でファイルが書き換われば、次の変更通知で読み直される）。
+            reloadBlockReason: path => SceneConflictGuard.IsConflicted(path)
+                ? SceneConflictGuard.MESSAGE_RELOAD_SKIPPED
+                : null);
 
         // 既に開いているシーンがあれば、その時点から監視を始める
         _sceneAutoReloader.SetScenePath(_currentScenePath);
