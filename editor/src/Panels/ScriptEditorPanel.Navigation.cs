@@ -290,7 +290,10 @@ public partial class ScriptEditorPanel
         // 桁は「行末の 1 つ先」まで許す（キャレットは行末に置けるため）
         int clampedCol  = Math.Clamp(column, NavDefaultColumn, docLine.Length + 1);
         doc.Editor.CaretOffset = docLine.Offset + (clampedCol - NavDefaultColumn);
-        doc.Editor.ScrollToLine(clampedLine);
+        // ★ScrollToLine を直接呼ばない。履歴で戻った先が「閉じていたタブ」のときは
+        //   開き直した直後でまだレイアウトされておらず、その状態の ScrollToLine は何もしない
+        //   （EditorReveal のコメント参照）。
+        SEEDEditor.Panels.ScriptEditor.EditorReveal.RevealCaretLine(doc.Editor);
     }
 
     /// <summary>

@@ -633,7 +633,9 @@ public partial class ScriptEditorPanel : UserControl
         if (target is null) return;
         int off = Math.Min(d.Offset, target.Editor.Document.TextLength);
         target.Editor.CaretOffset = off;
-        target.Editor.ScrollToLine(target.Editor.Document.GetLineByOffset(off).LineNumber);
+        // 未オープンのファイルの診断へ飛ぶと、開いた直後でレイアウト前のため
+        // ScrollToLine が効かない。レイアウト済みかどうかを吸収するヘルパを通す。
+        EditorReveal.RevealCaretLine(target.Editor);
         target.Editor.Focus();
     }
 
@@ -2578,8 +2580,10 @@ public partial class ScriptEditorPanel : UserControl
 
         int clamped = Math.Min(offset, target.Editor.Document.TextLength);
         target.Editor.CaretOffset = clamped;
-        var line = target.Editor.Document.GetLineByOffset(clamped).LineNumber;
-        target.Editor.ScrollToLine(line);
+        // ★ScrollToLine を直接呼ばない。いま開いたばかりのタブはまだレイアウトされておらず、
+        //   その状態の ScrollToLine は何もしない（ファイルは開くのに定義の行が出ない）。
+        //   レイアウト済みかどうかを吸収するヘルパを通す（EditorReveal のコメント参照）。
+        EditorReveal.RevealCaretLine(target.Editor);
         target.Editor.Focus();
     }
 
