@@ -5,7 +5,8 @@
 
     対象:
       - AiOperationPolicy : トークン検証・読み取り専用の既定・shutdown の可否
-      - SceneLock         : ロックの stale 判定（別プロセス死亡／別マシン）
+      - SceneLock         : ロックの置き場（cache/editor/scene_locks）・stale 判定
+                            （別プロセス死亡／別マシン）・旧位置（<scene>.lock）の後始末
       - SafeFileWriter    : バックアップ世代の切り詰めと原子的書き込み
       - Launcher          : 空きポート選択・起動インスタンスの同一性検証
       - SeedInstance      : 束縛が無いときの変更系ツール拒否

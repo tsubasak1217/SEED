@@ -15,7 +15,9 @@
 // ============================================================
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using SEEDEditor.VersionControl.Model;
 
 namespace SEEDEditor.VersionControl.Presentation;
@@ -249,5 +251,63 @@ public static class VersionControlDisplay
             : remoteUrl.Trim();
 
         return string.Format(VersionControlMessages.PANEL_CONNECTION_FORMAT, who, where);
+    }
+
+    // ── 未送信でマージを止めたときのモーダル本文 ──────────────
+
+    /// <summary>
+    /// モーダルに並べる未送信ファイルの最大件数。これを超えた分は「ほか n 件」に畳む。
+    /// 全部並べると画面からあふれ、最後の行（次に何をすればよいか）が読まれない。
+    /// </summary>
+    public const int UNSUBMITTED_WARNING_MAX_FILES = 10;
+
+    /// <summary>
+    /// 未送信の変更があってマージを止めたときのモーダル本文を組み立てる。
+    ///
+    /// <para>
+    /// 「マージは実行されていません」を **1 行目**に置くのが要点。
+    /// 2026-09-19 の事故では 1 行メッセージ（「送信していない変更が 1 件あります。
+    /// 先に送信…」）だけで止めていたため、利用者はマージが走ったと思い込み、
+    /// 邪魔していたロックファイルをそのまま送信してしまった。
+    /// </para>
+    /// </summary>
+    /// <param name="changes">未送信の変更（走査結果そのまま）。</param>
+    /// <param name="maxListedFiles">列挙する最大件数（既定は
+    /// <see cref="UNSUBMITTED_WARNING_MAX_FILES"/>）。</param>
+    /// <returns>モーダルへそのまま渡せる複数行の本文。</returns>
+    public static string BuildUnsubmittedMergeWarning(
+        IReadOnlyList<ChangedFile>? changes,
+        int maxListedFiles = UNSUBMITTED_WARNING_MAX_FILES)
+    {
+        var count = changes?.Count ?? 0;
+        var text  = new StringBuilder();
+
+        text.AppendLine(VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_HEADER);
+        text.AppendLine(string.Format(
+            CultureInfo.CurrentCulture,
+            VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_COUNT_FORMAT, count));
+
+        // 列挙。件数が 0 でも（＝呼び出し側の想定外でも）本文は成立させる。
+        var listed = Math.Min(count, Math.Max(0, maxListedFiles));
+        for (int i = 0; i < listed; i++)
+        {
+            var file = changes![i];
+            text.AppendLine(string.Format(
+                CultureInfo.CurrentCulture,
+                VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_FILE_FORMAT,
+                file.Path, ToChangeText(file.Kind, file.Conflict)));
+        }
+        if (count > listed)
+        {
+            text.AppendLine(string.Format(
+                CultureInfo.CurrentCulture,
+                VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_MORE_FORMAT,
+                count - listed));
+        }
+
+        // 最後は必ず「次に何をすればよいか」で終える。
+        text.AppendLine();
+        text.Append(VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_FOOTER);
+        return text.ToString();
     }
 }

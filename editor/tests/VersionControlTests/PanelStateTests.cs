@@ -76,6 +76,11 @@ public static class PanelStateTests
         harness.Add("identity とリモート URL が 1 行にまとまる",           ConnectionTextIsFormatted);
         harness.Add("identity が無ければ「利用者不明」と出す",             UnknownIdentityIsLabeled);
         harness.Add("ログイン中は identity に「（ログイン中）」が付く",     SignedInIdentityIsLabeled);
+
+        // ── 未送信でマージを止めたときのモーダル本文 ──
+        harness.Add("マージ中止の本文は「実行されていません」で始まる",      MergeWarningStartsWithNotExecuted);
+        harness.Add("マージ中止の本文は未送信ファイルを列挙する",            MergeWarningListsChangedFiles);
+        harness.Add("マージ中止の本文は上限を超えた分を畳む",                MergeWarningFoldsOverflow);
     }
 
     // ============================================================
@@ -621,4 +626,71 @@ public static class PanelStateTests
     /// <param name="changes">変更。</param>
     private static WorkingCopyStatus NewStatus(params ChangedFile[] changes)
         => new("main", 1UL, changes, RemoteComparison.NotChecked, StatusRefreshMode.ScanOffline);
+
+    // ============================================================
+    //  未送信でマージを止めたときのモーダル本文
+    //
+    //  2026-09-19 の事故: シーンのロックファイル 1 件で取り込みが止まったが、
+    //  伝えていたのは「送信していない変更が 1 件あります。先に送信…」の 1 行だけ。
+    //  利用者はマージが走ったと思い込み、そのロックファイルを送信してしまった。
+    //  「マージは実行されていません」が **本文の 1 行目**にあることを固定する。
+    // ============================================================
+
+    private static void MergeWarningStartsWithNotExecuted()
+    {
+        var body = VersionControlDisplay.BuildUnsubmittedMergeWarning(
+            new[] { NewChange("assets/mainGame/MainGame.scene.lock", FileChangeKind.Added) });
+
+        Check.True(body.StartsWith(
+                       VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_HEADER,
+                       StringComparison.Ordinal),
+                   "本文は「マージは実行されていません。」で始まるはず");
+        Check.True(body.EndsWith(
+                       VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_FOOTER,
+                       StringComparison.Ordinal),
+                   "本文は次にすべきことで終わるはず");
+
+        // 変更が 0 件（呼び出し側の想定外）でも本文が壊れないこと。
+        var empty = VersionControlDisplay.BuildUnsubmittedMergeWarning(null);
+        Check.True(empty.StartsWith(
+                       VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_HEADER,
+                       StringComparison.Ordinal),
+                   "変更が無くても本文は成立するはず");
+    }
+
+    private static void MergeWarningListsChangedFiles()
+    {
+        var body = VersionControlDisplay.BuildUnsubmittedMergeWarning(new[]
+        {
+            NewChange("assets/mainGame/MainGame.scene.lock", FileChangeKind.Added),
+            NewChange(".loreignore",                         FileChangeKind.Modified),
+        });
+
+        Check.True(body.Contains("assets/mainGame/MainGame.scene.lock", StringComparison.Ordinal),
+                   "パスが列挙されるはず");
+        Check.True(body.Contains(VersionControlMessages.PANEL_CHANGE_ADDED, StringComparison.Ordinal),
+                   "変更の種類（追加）が書かれるはず");
+        Check.True(body.Contains(VersionControlMessages.PANEL_CHANGE_MODIFIED, StringComparison.Ordinal),
+                   "変更の種類（変更）が書かれるはず");
+        Check.True(body.Contains("2", StringComparison.Ordinal), "件数が書かれるはず");
+    }
+
+    private static void MergeWarningFoldsOverflow()
+    {
+        // 上限 2 件に対して 5 件 → 2 件だけ並べ、残り 3 件は「ほか 3 件」へ畳む。
+        var changes = Enumerable.Range(0, 5)
+            .Select(i => NewChange($"assets/f{i}.scene", FileChangeKind.Modified))
+            .ToArray();
+
+        var body = VersionControlDisplay.BuildUnsubmittedMergeWarning(changes, maxListedFiles: 2);
+
+        Check.True(body.Contains("assets/f0.scene", StringComparison.Ordinal), "1 件目は並ぶはず");
+        Check.True(body.Contains("assets/f1.scene", StringComparison.Ordinal), "2 件目は並ぶはず");
+        Check.True(!body.Contains("assets/f2.scene", StringComparison.Ordinal),
+                   "上限を超えた分は並べないはず");
+        Check.True(body.Contains(
+                       string.Format(VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_DIALOG_MORE_FORMAT, 3),
+                       StringComparison.Ordinal),
+                   "残りは「ほか 3 件」へ畳まれるはず");
+    }
 }

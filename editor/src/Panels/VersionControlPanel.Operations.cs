@@ -11,6 +11,10 @@
 //    ・「リモートを採用」… 自分の変更が消える
 //    ・ブランチの切り替え … 未送信の変更があると失われ得る
 //  それ以外（成功・失敗・競合の通知）はパネル内の 1 行メッセージで済ませる。
+//  例外が 1 つある: **マージを未送信の変更で止めたとき**は、確認ではなく通知だが
+//  モーダルを出す。止めたことに気づかないと「マージしたのに反映されない」まま
+//  作業が進んでしまう（2026-09-19 の事故。EnsureNoUnsubmittedChangesForMergeAsync の
+//  コメントに経緯を書いてある）。
 //  ダイアログは必ず EditorDialogs 経由にする（ヘッドレスで UI スレッドが
 //  永久に止まるのを避けるため）。
 //
@@ -609,6 +613,15 @@ public partial class VersionControlPanel
     /// 抜けたまま取り込むと、その変更が取り込みの結果と混ざって見分けられなくなる。
     /// 走査（ScanOffline）はサーバ往復を伴わない（実測 0.11 秒）。送信ゲートと同じ考え方。
     /// </para>
+    ///
+    /// <para>
+    /// ★止めたことは **1 行メッセージだけでは伝わらない**。2026-09-19 の事故
+    /// （シーンのロックファイルが未追跡の 1 件として残り、マージ前の確認が止まった。
+    ///   利用者は 1 行メッセージを「送信しろ」という指示と読んでそのまま送信し、
+    ///   マージは実行されないまま「マージしたのに反映されない」状態になった）を受けて、
+    /// モーダルでも「マージは実行されていません」と邪魔しているファイルを見せる。
+    /// ヘッドレスでは <see cref="EditorDialogs"/> がログへ流すだけなので止まらない。
+    /// </para>
     /// </summary>
     /// <returns>始めてよければ真。駄目なときは理由を 1 行メッセージへ出してから偽。</returns>
     private async Task<bool> EnsureNoUnsubmittedChangesForMergeAsync()
@@ -621,7 +634,8 @@ public partial class VersionControlPanel
         {
             // 走査できなければ「変更が無い」と断言できない。取り込みは作業コピーを
             // 書き換えるので、確かめられないまま始めない。
-            EditorLog.Write($"[VCS] マージ前の走査に失敗しました: {scan.Outcome} {scan.Message}");
+            EditorLog.Write($"{VersionControlMessages.LOG_PREFIX} "
+                            + $"マージ前の走査に失敗しました: {scan.Outcome} {scan.Message}");
             _state.SetNotice(VersionControlNotice.FromResult(scan));
             SyncControls();
             return false;
@@ -632,6 +646,14 @@ public partial class VersionControlPanel
         {
             ShowInfoNotice(string.Format(
                 VersionControlMessages.PANEL_BRANCH_MERGE_DIRTY_FORMAT, changeCount));
+
+            // 1 行メッセージは見落とされる。何が邪魔しているかまで見せて止める。
+            var body = VersionControlDisplay.BuildUnsubmittedMergeWarning(scan.Value?.Changes);
+            EditorDialogs.Show(
+                body,
+                VersionControlMessages.PANEL_BRANCH_MERGE_DIALOG_TITLE,
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return false;
         }
 

@@ -61,6 +61,14 @@ public static class Program
         harness.Add("自分自身のロックは無効扱い（張り直し）",             OwnLockIsStale);
         harness.Add("別マシンのロックは有効扱い（生死不明なので安全側）", RemoteMachineLockIsHeld);
         harness.Add("ロックの取得と解放が往復する",                       LockAcquireAndRelease);
+        harness.Add("ロックは cache/editor/scene_locks へ置かれる",       LockPathIsUnderCacheDir);
+        harness.Add("ルート外のシーンは旧位置へ落ちる",                   LockPathFallsBackOutsideRoot);
+        harness.Add("旧位置: 同マシンの生存プロセスは尊重する",           LegacyLockOfLiveProcessIsRespected);
+        harness.Add("旧位置: 同マシンの無効ロックは削除する",             LegacyLockOfDeadProcessIsDeleted);
+        harness.Add("旧位置: 別マシンのロックは無視する（汚染対策）",     LegacyLockOfOtherMachineIsIgnored);
+        harness.Add("旧位置の無効ロックは取得時に実際に消える",           AcquireRemovesStaleLegacyLockFile);
+        harness.Add("旧位置の別マシンのロックは残るが尊重されない",       AcquireIgnoresForeignLegacyLockFile);
+        harness.Add("旧位置の掃除だけを行える（ロックは取り直さない）",   SweepLegacyRemovesOnlyStaleLocks);
 
         // ── 6. バックアップ ──
         harness.Add("バックアップは最新 N 世代だけ残る",                  BackupRotationKeepsNewest);
@@ -305,26 +313,232 @@ public static class Program
                    "別マシンのロックは有効扱いのはず");
     }
 
+    /// <summary>
+    /// 実在し得ない PID（Windows の PID は 4 の倍数なので int.MaxValue は絶対に生きていない）。
+    /// 「死んだプロセスのロック」をファイル経由で再現するために使う。
+    /// </summary>
+    private const int NeverAlivePid = int.MaxValue;
+
+    /// <summary>テストで使う「別マシン」の名前（実在しないと分かる値）。</summary>
+    private const string ForeignMachineName = "SEED-TEST-OTHER-PC";
+
+    /// <summary>
+    /// テスト用のプロジェクト一式（ルート＋assets/mainGame/MainGame.scene）を作る。
+    /// </summary>
+    /// <param name="tag">一時フォルダ名に付ける目印。</param>
+    /// <param name="root">作られたプロジェクトルート。</param>
+    /// <returns>シーンの絶対パス。</returns>
+    private static string TempProjectScene(string tag, out string root)
+    {
+        root = TempDir(tag);
+        var sceneDir = Path.Combine(root, "assets", "mainGame");
+        Directory.CreateDirectory(sceneDir);
+        var scene = Path.Combine(sceneDir, "MainGame.scene");
+        File.WriteAllText(scene, "{}");
+        return scene;
+    }
+
+    /// <summary>旧位置（シーンの隣）へロックファイルを直接書く。</summary>
+    /// <param name="scene">シーンの絶対パス。</param>
+    /// <param name="pid">書き込む PID。</param>
+    /// <param name="machine">書き込むマシン名。</param>
+    private static void WriteLegacyLock(string scene, int pid, string machine)
+    {
+        File.WriteAllText(
+            SceneLock.LegacyLockPathFor(scene),
+            $"{{\"pid\":{pid},\"headless\":false,\"started_at\":\"\",\"machine\":\"{machine}\"}}");
+    }
+
     private static void LockAcquireAndRelease()
     {
-        var dir   = TempDir("lock");
-        var scene = Path.Combine(dir, "MainGame.scene");
-        File.WriteAllText(scene, "{}");
+        var scene = TempProjectScene("lock", out var root);
         try
         {
-            Check.True(SceneLock.TryAcquire(scene, headless: false, out _), "初回の取得は成功するはず");
-            Check.True(File.Exists(SceneLock.LockPathFor(scene)), "ロックファイルが作られるはず");
+            Check.True(SceneLock.TryAcquire(scene, root, headless: false, out _),
+                       "初回の取得は成功するはず");
+            Check.True(File.Exists(SceneLock.LockPathFor(scene, root)),
+                       "ロックファイルが作られるはず");
+            Check.True(!File.Exists(SceneLock.LegacyLockPathFor(scene)),
+                       "旧位置（シーンの隣＝アセットの中）には作られないはず");
 
-            var read = SceneLock.Read(scene);
+            var read = SceneLock.Read(scene, root);
             Check.True(read is not null, "ロックを読み戻せるはず");
             Check.Equal(Environment.ProcessId, read!.Pid, "ロックの PID");
 
-            SceneLock.Release(scene);
-            Check.True(!File.Exists(SceneLock.LockPathFor(scene)), "解放でロックファイルが消えるはず");
+            SceneLock.Release(scene, root);
+            Check.True(!File.Exists(SceneLock.LockPathFor(scene, root)),
+                       "解放でロックファイルが消えるはず");
         }
         finally
         {
-            try { Directory.Delete(dir, recursive: true); } catch { }
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    private static void LockPathIsUnderCacheDir()
+    {
+        // ルート直下の相対構造をそのまま cache/editor/scene_locks の下へ写すこと。
+        var root     = Path.Combine(Path.GetTempPath(), "seed_lockroot");
+        var scene    = Path.Combine(root, "assets", "mainGame", "MainGame.scene");
+        var expected = Path.Combine(root, SceneLock.CACHE_DIR_NAME, SceneLock.EDITOR_DIR_NAME,
+                                    SceneLock.SCENE_LOCKS_DIR_NAME,
+                                    "assets", "mainGame", "MainGame.scene" + SceneLock.LOCK_EXTENSION);
+        Check.Equal(expected, SceneLock.LockPathFor(scene, root), "ロックファイルの置き場");
+    }
+
+    private static void LockPathFallsBackOutsideRoot()
+    {
+        var root  = Path.Combine(Path.GetTempPath(), "seed_lockroot");
+        var scene = Path.Combine(Path.GetTempPath(), "seed_other", "MainGame.scene");
+
+        // ルートの外にあるシーンは置き場を決められないので旧位置（シーンの隣）へ落ちる。
+        Check.Equal(SceneLock.LegacyLockPathFor(scene), SceneLock.LockPathFor(scene, root),
+                    "ルート外のシーンのロック位置");
+        // ルートが未確定（プロジェクト未オープン）のときも同じ。
+        Check.Equal(SceneLock.LegacyLockPathFor(scene), SceneLock.LockPathFor(scene, null),
+                    "ルート未確定時のロック位置");
+        Check.Equal(SceneLock.LegacyLockPathFor(scene), SceneLock.LockPathFor(scene, ""),
+                    "ルートが空文字のときのロック位置");
+    }
+
+    private static void LegacyLockOfLiveProcessIsRespected()
+    {
+        // 旧版エディタが実際に開いている状態。従来どおり尊重して読み取り専用にする。
+        var info = new SceneLockInfo { Pid = 999_999, Machine = Environment.MachineName };
+        Check.Equal(LegacySceneLockAction.Respect,
+                    SceneLock.ClassifyLegacyLock(true, info, Environment.ProcessId,
+                                                 Environment.MachineName, _ => true),
+                    "同マシン・生存プロセスの旧位置ロックへの処置");
+    }
+
+    private static void LegacyLockOfDeadProcessIsDeleted()
+    {
+        // 残骸。消しておかないとバージョン管理に追跡されたまま残り続ける。
+        var dead = new SceneLockInfo { Pid = 999_999, Machine = Environment.MachineName };
+        Check.Equal(LegacySceneLockAction.Delete,
+                    SceneLock.ClassifyLegacyLock(true, dead, Environment.ProcessId,
+                                                 Environment.MachineName, _ => false),
+                    "同マシン・死亡プロセスの旧位置ロックへの処置");
+
+        // 自分自身が残したもの（新位置へ移行済み）も残骸。
+        var own = new SceneLockInfo { Pid = Environment.ProcessId, Machine = Environment.MachineName };
+        Check.Equal(LegacySceneLockAction.Delete,
+                    SceneLock.ClassifyLegacyLock(true, own, Environment.ProcessId,
+                                                 Environment.MachineName, _ => true),
+                    "自分自身の旧位置ロックへの処置");
+
+        // 壊れて読めないものも残骸として掃除する。
+        Check.Equal(LegacySceneLockAction.Delete,
+                    SceneLock.ClassifyLegacyLock(true, null, Environment.ProcessId,
+                                                 Environment.MachineName, _ => true),
+                    "壊れた旧位置ロックへの処置");
+
+        // ファイルが無ければ何もしない。
+        Check.Equal(LegacySceneLockAction.None,
+                    SceneLock.ClassifyLegacyLock(false, null, Environment.ProcessId,
+                                                 Environment.MachineName, _ => true),
+                    "旧位置にファイルが無いときの処置");
+    }
+
+    private static void LegacyLockOfOtherMachineIsIgnored()
+    {
+        // ★新位置と規則が違う。旧位置の別マシンのロックはバージョン管理経由の汚染で
+        //   あることが多く、尊重すると共同作業者が永久に読み取り専用になる。
+        var info = new SceneLockInfo { Pid = 1, Machine = ForeignMachineName };
+        Check.Equal(LegacySceneLockAction.IgnoreForeign,
+                    SceneLock.ClassifyLegacyLock(true, info, Environment.ProcessId,
+                                                 Environment.MachineName, _ => true),
+                    "別マシンの旧位置ロックへの処置");
+
+        // マシン名が空（誰のものか決められない）も同じ扱い。尊重も削除もしない。
+        var unknown = new SceneLockInfo { Pid = 1, Machine = "" };
+        Check.Equal(LegacySceneLockAction.IgnoreForeign,
+                    SceneLock.ClassifyLegacyLock(true, unknown, Environment.ProcessId,
+                                                 Environment.MachineName, _ => false),
+                    "マシン名が空の旧位置ロックへの処置");
+    }
+
+    private static void AcquireRemovesStaleLegacyLockFile()
+    {
+        var scene = TempProjectScene("legacy_stale", out var root);
+        try
+        {
+            WriteLegacyLock(scene, NeverAlivePid, Environment.MachineName);
+
+            Check.True(SceneLock.TryAcquire(scene, root, headless: false, out var holder),
+                       "同マシンの死んだ旧位置ロックは取得を妨げないはず");
+            Check.True(holder is null, "保持者は居ないはず");
+            Check.True(!File.Exists(SceneLock.LegacyLockPathFor(scene)),
+                       "旧位置の無効なロックは削除されるはず");
+            Check.True(File.Exists(SceneLock.LockPathFor(scene, root)),
+                       "新位置へロックが作られるはず");
+
+            SceneLock.Release(scene, root);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    private static void AcquireIgnoresForeignLegacyLockFile()
+    {
+        var scene = TempProjectScene("legacy_foreign", out var root);
+        try
+        {
+            WriteLegacyLock(scene, 1, ForeignMachineName);
+
+            Check.True(SceneLock.TryAcquire(scene, root, headless: false, out var holder),
+                       "別マシンの旧位置ロック（汚染の可能性）では読み取り専用にしないはず");
+            Check.True(holder is null, "保持者として扱わないはず");
+            Check.True(File.Exists(SceneLock.LegacyLockPathFor(scene)),
+                       "別マシンの旧位置ロックは削除しないはず（本物の共有かもしれない）");
+            Check.True(File.Exists(SceneLock.LockPathFor(scene, root)),
+                       "新位置へロックが作られるはず");
+
+            SceneLock.Release(scene, root);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// シーンを開いたままブランチを切り替えると、追跡されてしまっている旧位置のロックが
+    /// 作業コピーへ書き戻される。読み直しのたびに呼ぶ掃除が、残骸だけを消し、
+    /// 別マシンのものと新位置のロックには触らないこと。
+    /// </summary>
+    private static void SweepLegacyRemovesOnlyStaleLocks()
+    {
+        var scene = TempProjectScene("legacy_sweep", out var root);
+        try
+        {
+            // シーンを開いている状態（新位置にロックがある）。
+            Check.True(SceneLock.TryAcquire(scene, root, headless: false, out _), "取得できるはず");
+
+            // ブランチの切り替えで旧位置の残骸（同マシン・死んだ PID）が書き戻された。
+            WriteLegacyLock(scene, NeverAlivePid, Environment.MachineName);
+            Check.True(SceneLock.SweepLegacy(scene, root), "残骸は消えるはず");
+            Check.True(!File.Exists(SceneLock.LegacyLockPathFor(scene)), "旧位置のファイルが消えている");
+            Check.True(File.Exists(SceneLock.LockPathFor(scene, root)), "新位置のロックはそのまま");
+
+            // 別マシンのものは消さない。
+            WriteLegacyLock(scene, 1, ForeignMachineName);
+            Check.True(!SceneLock.SweepLegacy(scene, root), "別マシンのものは消さないはず");
+            Check.True(File.Exists(SceneLock.LegacyLockPathFor(scene)), "別マシンの旧位置ロックは残る");
+
+            // フォールバック中（ルート未確定）は旧位置が現役なので掃除しない。
+            File.Delete(SceneLock.LegacyLockPathFor(scene));
+            WriteLegacyLock(scene, NeverAlivePid, Environment.MachineName);
+            Check.True(!SceneLock.SweepLegacy(scene, null), "旧位置が現役のときは掃除しないはず");
+            Check.True(File.Exists(SceneLock.LegacyLockPathFor(scene)), "現役の旧位置ロックは残る");
+
+            SceneLock.Release(scene, root);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
         }
     }
 

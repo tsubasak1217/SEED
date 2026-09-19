@@ -21,6 +21,13 @@ namespace SEEDEditor.VersionControl;
 /// </summary>
 public static class VersionControlMessages
 {
+    // ── ログ ────────────────────────────────────────────────
+
+    /// <summary>
+    /// エディタのログへ書く行の接頭辞（grep で操作の履歴を追うための目印）。
+    /// </summary>
+    public const string LOG_PREFIX = "[VCS]";
+
     // ── プロバイダの素性 ────────────────────────────────────
 
     /// <summary>Lore プロバイダの表示名。</summary>
@@ -427,6 +434,32 @@ public static class VersionControlMessages
     /// <summary>未送信の変更があるので取り込みを始めない（書式: 件数）。</summary>
     public const string PANEL_BRANCH_MERGE_DIRTY_FORMAT =
         "送信していない変更が {0} 件あります。先に「送信」するか、変更を元に戻してから取り込んでください。";
+
+    // ── 未送信でマージを止めたときのモーダル ──────────────────
+    //
+    //  【なぜ 1 行メッセージだけでは足りないか（2026-09-19 の事故）】
+    //  シーンを開くと出る `.scene.lock` が「未追跡の追加 1 件」として残り、
+    //  マージ前の確認が 1 行メッセージだけで止まっていた。利用者はそれを
+    //  「送信しろ」という指示と読んで送信し、マージは実行されないまま
+    //  「マージしたのに反映されない」という状態になった。
+    //  止めたことと、何が邪魔しているのかを、見落とせない形で伝える。
+
+    /// <summary>モーダルの 1 行目。**マージが実行されていない**ことを最初に言う。</summary>
+    public const string PANEL_BRANCH_MERGE_DIRTY_DIALOG_HEADER = "マージは実行されていません。";
+
+    /// <summary>未送信の件数の行（書式: 件数）。</summary>
+    public const string PANEL_BRANCH_MERGE_DIRTY_DIALOG_COUNT_FORMAT =
+        "送信していない変更が {0} 件あります:";
+
+    /// <summary>列挙する 1 行（書式: パス, 変更の種類）。</summary>
+    public const string PANEL_BRANCH_MERGE_DIRTY_DIALOG_FILE_FORMAT = "・{0}（{1}）";
+
+    /// <summary>列挙を打ち切った残り（書式: 残り件数）。</summary>
+    public const string PANEL_BRANCH_MERGE_DIRTY_DIALOG_MORE_FORMAT = "ほか {0} 件";
+
+    /// <summary>モーダルの最後の行（次に何をすればよいか）。</summary>
+    public const string PANEL_BRANCH_MERGE_DIRTY_DIALOG_FOOTER =
+        "この変更を「送信」するか元に戻してから、もう一度マージを実行してください。";
 
     /// <summary>取り込める（現在のブランチ以外の）ブランチが無い。</summary>
     public const string PANEL_BRANCH_MERGE_NO_CANDIDATES =

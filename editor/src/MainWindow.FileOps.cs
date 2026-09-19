@@ -432,6 +432,15 @@ public partial class MainWindow
             _currentScenePath = path;
             AcquireSceneLock(path);
         }
+        else
+        {
+            // 同じシーンの読み直し（自動再読込など）。ロックは取り直さないが、
+            // 旧位置（シーンの隣）の残骸だけはここで片付ける。
+            // シーンを開いたままブランチを切り替えると、追跡されてしまっている旧位置の
+            // ロックファイルが作業コピーへ書き戻されるため（SceneLock.SweepLegacy 参照）。
+            SEEDEditor.Scene.SceneLock.SweepLegacy(
+                path, SEEDEditor.Project.ProjectContext.RootDir, EditorLog.Write);
+        }
 
         // 以下は同じシーンの読み直しでも必ずやり直す。
         // 特に RetargetSceneAutoReloader はファイル内容のハッシュを取り込むため、
@@ -509,7 +518,8 @@ public partial class MainWindow
     /// </para>
     /// <list type="number">
     ///   <item>
-    ///     <c>.scene.lock</c>（<see cref="SEEDEditor.Scene.SceneLock"/>）…
+    ///     シーンロック（<see cref="SEEDEditor.Scene.SceneLock"/>。置き場は
+    ///     <c>cache/editor/scene_locks/&lt;相対パス&gt;.lock</c>）…
     ///     **同じ PC の中**の多重編集を防ぐ。PID を見るので、ログインしていなくても
     ///     サーバに繋がらなくても効く。対話エディタと AI のヘッドレスエディタが
     ///     同じシーンを開く事故がこれで止まる。
@@ -521,18 +531,27 @@ public partial class MainWindow
     ///   </item>
     /// </list>
     /// <para>
-    /// ★<c>.scene.lock</c> を Lore の成否で左右させてはいけない。Lore を条件にすると、
+    /// ★シーンロックを Lore の成否で左右させてはいけない。Lore を条件にすると、
     /// サーバが落ちている間じゅう同じ PC の多重編集が素通りしてしまう。
     /// 向きは逆で、**読み取り専用になったときは Lore のロックを取らない**
     /// （保存できないインスタンスがチームに「編集中」と宣言するのはうそになる。
     ///   実際に編集する側のインスタンスが取る）。
+    /// </para>
+    /// <para>
+    /// ★ロックファイルの置き場を決めるためプロジェクトルートを渡す。渡さないと
+    /// シーンの隣（＝アセットの中）へ書き、バージョン管理を汚してしまう
+    /// （2026-09-19 の事故。詳細は <see cref="SEEDEditor.Scene.SceneLock"/> の冒頭）。
     /// </para>
     /// </summary>
     private void AcquireSceneLock(string path)
     {
         // 機械内のロックが先。取れたかどうかでチーム内のロックを取るか決める。
         var acquired = SEEDEditor.Scene.SceneLock.TryAcquire(
-            path, SEEDEditor.Headless.EditorStartupOptions.IsHeadless, out var holder);
+            path,
+            SEEDEditor.Project.ProjectContext.RootDir,
+            SEEDEditor.Headless.EditorStartupOptions.IsHeadless,
+            out var holder,
+            EditorLog.Write);
 
         _sceneReadOnly   = !acquired;
         _sceneLockHolder = holder;
@@ -546,7 +565,7 @@ public partial class MainWindow
 
         var msg = string.Format(SEEDEditor.Scene.SceneLock.DENY_LOCKED_FORMAT,
                                 holder?.Describe() ?? "別プロセス");
-        EditorLog.Write($"[シーンロック] {path} — {msg}");
+        EditorLog.Write($"{SEEDEditor.Scene.SceneLock.LOG_PREFIX} {path} — {msg}");
         // ヘッドレスではモーダルを出せない（誰も閉じられない）ためログのみ。
         if (!SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
             ShowToast("別のエディタが開いているため読み取り専用で開きました");
@@ -561,7 +580,9 @@ public partial class MainWindow
     {
         if (_currentScenePath is null) return;
         SEEDEditor.VersionControl.Locking.LockGatekeeper.ReleaseTrackedDocument(_currentScenePath);
-        SEEDEditor.Scene.SceneLock.Release(_currentScenePath);
+        // 取得時と同じプロジェクトルートを渡す（置き場が変わると自分のロックを消せない）。
+        SEEDEditor.Scene.SceneLock.Release(
+            _currentScenePath, SEEDEditor.Project.ProjectContext.RootDir);
         _sceneReadOnly   = false;
         _sceneLockHolder = null;
     }

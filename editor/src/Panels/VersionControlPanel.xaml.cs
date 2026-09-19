@@ -613,14 +613,58 @@ public partial class VersionControlPanel : UserControl
         }
         catch (Exception ex)
         {
-            EditorLog.Write($"[VCS] {VersionControlPanelState.ToOperationName(operation)}"
+            EditorLog.Write($"{VersionControlMessages.LOG_PREFIX} "
+                            + $"{VersionControlPanelState.ToOperationName(operation)}"
                             + $" で例外が発生しました: {ex}");
             result = VersionControlResult.Failed(VersionControlMessages.UNEXPECTED_FAILURE);
         }
 
+        LogOperationResult(operation, result);
         _state.EndOperation(result);
         SyncControls();
         return result;
+    }
+
+    /// <summary>ログへ出す診断メッセージ（<c>Details</c>）の最大件数。</summary>
+    private const int OperationLogDetailLimit = 3;
+
+    /// <summary>
+    /// 操作の結末をエディタのログへ 1 行残す。
+    ///
+    /// <para>
+    /// ★なぜ必要か（2026-09-19 の事故）。利用者が「どのボタンを押して何が起きたか」を
+    /// ログから再現できず、原因の特定に実データの調査が必要になった。
+    /// パネルの 1 行メッセージは次の操作で消えるため、残るのはログだけ。
+    /// </para>
+    ///
+    /// <para>
+    /// 自動更新（保存のたび・定期の <see cref="VersionControlOperation.Refresh"/>）は
+    /// 成功時に出さない。数秒おきに積もってログが読めなくなり、
+    /// 肝心の「利用者が押した操作」が埋まってしまう。失敗は原因調査に要るので出す。
+    /// </para>
+    /// </summary>
+    /// <param name="operation">実行した操作。</param>
+    /// <param name="result">操作の結果。</param>
+    private static void LogOperationResult(
+        VersionControlOperation operation, VersionControlResult result)
+    {
+        if (operation == VersionControlOperation.Refresh && result.IsSuccess) return;
+
+        var name = VersionControlPanelState.ToOperationName(operation);
+        EditorLog.Write($"{VersionControlMessages.LOG_PREFIX} {name}: "
+                        + $"{result.Outcome} — {result.Message}");
+
+        // 診断用の生メッセージは先頭数件だけ。全部出すと 1 操作でログが流れる。
+        var shown = Math.Min(result.Details.Count, OperationLogDetailLimit);
+        for (int i = 0; i < shown; i++)
+        {
+            EditorLog.Write($"{VersionControlMessages.LOG_PREFIX} 詳細: {result.Details[i]}");
+        }
+        if (result.Details.Count > shown)
+        {
+            EditorLog.Write($"{VersionControlMessages.LOG_PREFIX} 詳細: "
+                            + $"ほか {result.Details.Count - shown} 件");
+        }
     }
 
     /// <summary>

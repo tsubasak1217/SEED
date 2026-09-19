@@ -567,7 +567,14 @@ ERROR: seed_launch で起動したインスタンスのみ操作できます。�
 
 ### 7.5 シーンロック（多重編集の防止）
 
-- シーンを開いたエディタは `<scene>.lock` を作る（`{pid, headless, started_at, machine}`）。
+- シーンを開いたエディタはロックファイル（`{pid, headless, started_at, machine}`）を
+  **`<プロジェクトルート>/cache/editor/scene_locks/<ルートからの相対パス>.lock`** へ作る。
+  例: `assets/mainGame/MainGame.scene`
+  → `cache/editor/scene_locks/assets/mainGame/MainGame.scene.lock`。
+  2026-09-19 まではシーンの隣（`<scene>.lock`）に置いていたが、バージョン管理へ
+  混入して事故を起こしたため移した（経緯は `docs/editor_version_control.md` 4.6.6）。
+  旧位置のファイルは取得時に後始末する（同マシンの無効なロックは削除、
+  別マシンのものは汚染の可能性が高いので尊重も削除もしない）。
 - 2 つ目のインスタンスが同じシーンを開くと **読み取り専用**になる。
   タイトルバーに `[読み取り専用]` が付き、保存（Ctrl+S・AI `save_scene` とも）は
   「誰が掴んでいるか」を添えて拒否される。
