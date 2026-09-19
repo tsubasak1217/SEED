@@ -20,6 +20,10 @@ namespace TextEditorLogicTests;
 ///   6. ディスク追従の判定表（<see cref="DiskSyncTests"/>）
 ///      ＝ 外部でファイルが書き換わった・消えたときに、未保存の編集を守れるか
 ///   7. 戻る／進むの履歴（<see cref="NavigationHistoryTests"/>）
+///   8. F12 の飛び先（<see cref="DeclarationLocatorTests"/>）
+///      ＝ エンジン API のソースの中の「宣言そのもの」へ飛べるか
+///   9. 開いていたタブのセッション復元（<see cref="SessionStoreTests"/>）
+///      ＝ 再起動でタブ構成が戻り、壊れた記録でも起動を止めないか
 /// </summary>
 public static class Program
 {
@@ -66,6 +70,9 @@ public static class Program
 
         // ── F12 の飛び先（エンジン API のソースの中の宣言そのもの）──
         DeclarationLocatorTests.Register(harness);
+
+        // ── 開いていたタブのセッション復元（JSON・相対/絶対・正規化・間引き）──
+        SessionStoreTests.Register(harness);
 
         // ── 共有カタログの差し替え（静的状態を変えるので最後）────
         harness.Add("UseCatalog で全体の判定が切り替わる",                 EditorLanguagesUseCatalog);

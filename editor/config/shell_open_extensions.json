@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "_note": "プロジェクトパネルでダブルクリックしたとき、エディタで開かずに OS の関連付け（既定のアプリ）へ渡す形式。正典は docs/editor_project_panel.md。ここを消してもエディタは動く（ShellOpenCatalog.cs の組み込み既定へフォールバックする）。",
+
+  "_note_categories": "画像・音声の拡張子はここに並べない。Assets/AssetPreviewKinds.cs が唯一の情報源で、下の真偽値は『その分類を関連付け対象に含めるか』だけを決める（二重管理の禁止）。",
+  "include_image_extensions": true,
+  "include_audio_extensions": true,
+
+  "_note_extensions": "分類に属さない個別の形式。エンジンが読めない制作元データで、対応する外部ツールへ渡したいもの。",
+  "extensions": [
+    { "extension": ".blend",  "note": "Blender のプロジェクトファイル。関連付けがあれば Blender が起動する" },
+    { "extension": ".blend1", "note": "Blender の世代バックアップ（既定では非表示。表示したときも本体と同じ挙動にする）" },
+    { "extension": ".blend2", "note": "Blender の世代バックアップ（同上）" }
+  ]
+}

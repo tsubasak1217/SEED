@@ -1,0 +1,58 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    音声タイル（波形サムネイル＋試聴ボタン）の見た目を確かめるための検証用コンソール。
+
+    ProjectPanelLogicTests（純ロジックの単体テスト）と役割を分けている:
+      - あちら: ピーク計算・状態遷移・キャッシュ鍵を、環境に依らず自動で検証する
+      - こちら: 実際に音声を復号して波形を描き、共通書式のボタンを載せた状態を
+               PNG に落とす（一覧は GUI を起動しないと見えないので、目視の材料を作る）
+
+    ProjectPanelPreviewProbe と分けている理由:
+      あちらが検証する FontThumbnailRenderer / ImageDimensionsProbe は internal で、
+      プロジェクト参照からは見えない（だからソースをリンクしている）。
+      こちらは公開型（WaveformThumbnailRenderer / AppIcon / SeedButtonStyle）と
+      アイコン辞書・共通ボタン書式が要るので、本体をプロジェクト参照する。
+      同じ csproj に両方を入れると、リンクしたソースと参照アセンブリで
+      同じ型が二重定義になる。
+
+    **エディタは起動しない**（App はリソース読み込みのために生成するだけで Run() は呼ばない）。
+    **音は鳴らさない**（復号して描くだけで、出力デバイスには一切触れない）。
+    入力の音声はこのプログラムが一時フォルダへ合成するので、実アセットも読まない。
+
+    実行例（オプションの先頭に付くハイフン 2 個は XML コメントに書けないため省略して記す）:
+      dotnet run (project=editor/tests/AudioTilePreviewProbe) (区切り) (out) "C:\temp\out"
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AudioTilePreview</RootNamespace>
+    <AssemblyName>AudioTilePreviewProbe</AssemblyName>
+    <!-- 本体と同じ RID。LoreVcs のネイティブ依存の解決条件をそろえる
+         （このプローブは Lore を呼ばないが、参照の復元は同じ条件で行う）。 -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\SEEDEditor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      アイコン辞書・共通ボタン書式は本体アセンブリの中にあるが、
+      App.xaml の pack URI はアセンブリ名を書かない形なので、
+      既定では「起動アセンブリ＝このプローブ」の中を探しに行って失敗する。
+      その向け直しは VersionControlPanelPreviewProbe が既に解いているので、
+      同じ仕組みを 2 つ持たずにソースを共有する。
+    -->
+    <Compile Include="..\VersionControlPanelPreviewProbe\ResourceAssemblyInitializer.cs">
+      <Link>Linked\ResourceAssemblyInitializer.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

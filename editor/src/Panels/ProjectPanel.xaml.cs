@@ -171,6 +171,19 @@ public partial class ProjectPanel : UserControl
     /// </summary>
     private const string TileNameBlockTag = "TileNameBlock";
 
+    /// <summary>
+    /// 「名前＋横のボタン」を横並びにした行を見分けるための Tag 値。
+    /// 音声タイルだけこの行を挟むので、リネームは名前の TextBlock を
+    /// 1 段だけ潜って探す必要がある（StartRenameMode）。
+    /// </summary>
+    private const string TileNameRowTag = "TileNameRow";
+
+    /// <summary>
+    /// 名前の横にボタンを置いたときに、名前へ最低限残す折り返し幅（px）。
+    /// ボタンぶん狭めた結果 1 文字ずつ改行される、という潰れ方を防ぐ。
+    /// </summary>
+    private const double TileNameMinWidthWithButton = 40;
+
     // ── サムネイル（画像・フォント共通）──────────────────────────
 
     /// <summary>画像サムネイルのデコード幅（px）。表示サイズより少し大きめに読む。</summary>
@@ -364,8 +377,36 @@ public partial class ProjectPanel : UserControl
     /// <summary>
     /// Runtime 参照を注入する。Hierarchy からドラッグされたアクタを
     /// アクタファイル化（EXPORT_ACTOR 送信）するために使用する。
+    ///
+    /// <para>
+    /// あわせて実行状態の変化を購読する。ゲームの Play が始まったら試聴を止めるため
+    /// （エディタの試聴とゲーム内の音が重なって鳴ると、どちらの音か分からなくなる）。
+    /// </para>
     /// </summary>
-    public void SetRuntime(SEEDEditor.Runtime.RuntimeManager runtime) => _runtime = runtime;
+    /// <param name="runtime">ランタイム管理。</param>
+    public void SetRuntime(SEEDEditor.Runtime.RuntimeManager runtime)
+    {
+        // 同じインスタンスを二重購読しない（注入は起動時の 1 回だけの想定だが、
+        // 万一 2 回呼ばれても購読が増えないようにしておく）。
+        if (_runtime is not null) _runtime.StateChanged -= OnRuntimeStateChangedForAudio;
+
+        _runtime = runtime;
+        if (_runtime is not null) _runtime.StateChanged += OnRuntimeStateChangedForAudio;
+    }
+
+    /// <summary>
+    /// 実行状態が変わったときの処理（試聴の停止だけを見る）。
+    ///
+    /// <para>
+    /// この通知はパイプ受信スレッドから来るので、UI へ触る前にディスパッチャへ渡す。
+    /// </para>
+    /// </summary>
+    /// <param name="state">新しい実行状態。</param>
+    private void OnRuntimeStateChangedForAudio(SEEDEditor.Runtime.EditorState state)
+    {
+        if (state != SEEDEditor.Runtime.EditorState.Play) return;
+        Dispatcher.BeginInvoke(new Action(StopAudioPreview));
+    }
 
     public void HandleCopy()  => DoCopy();
     public void HandleCut()   => DoCut();
@@ -651,6 +692,11 @@ public partial class ProjectPanel : UserControl
         _dimmedTiles.Clear();
         // 未送信のモデルサムネイル要求も捨てる（もう画面に無いタイルのために描かせない）
         InvalidateModelThumbnailRequests();
+        // 走っている波形生成も打ち切る（同じ理由）
+        InvalidateWaveformThumbnailRequests();
+        // 前の一覧の試聴ボタンへの参照を捨てる（消えたタイルを握り続けない）。
+        // 再生そのものは止めない（フォルダ移動のときだけ NavigateTo が止める）。
+        ClearAudioPreviewButtons();
 
         var rel = Path.GetRelativePath(_assetsRoot, _currentPath);
         TxtBreadcrumb.Text = rel == "." ? "Assets" : "Assets/" + rel.Replace('\\', '/');
@@ -732,7 +778,15 @@ public partial class ProjectPanel : UserControl
 
         var imgCtrl = MakeIconImage(
             SEEDEditor.Controls.FileTypeIcons.GetImage(file.Extension), TileIconSize);
-        var item    = WrapTile(imgCtrl, file.Name, file.FullName, wantsCaption, out var captionBlock);
+
+        // 音声ファイルだけ、ファイル名の横へ試聴ボタンを添える
+        //（一覧から離れずに中身を確かめられるようにするため）。
+        var nameSideButton = AssetPreviewKinds.IsAudioExtension(file.Extension)
+            ? BuildAudioPreviewButton(file.FullName)
+            : null;
+
+        var item = WrapTile(
+            imgCtrl, file.Name, file.FullName, wantsCaption, out var captionBlock, nameSideButton);
 
         switch (AssetPreviewKinds.Of(file.Extension))
         {
@@ -744,6 +798,9 @@ public partial class ProjectPanel : UserControl
                 break;
             case AssetPreviewKind.Model:
                 ScheduleModelThumbnail(imgCtrl, file.FullName);
+                break;
+            case AssetPreviewKind.AudioWaveform:
+                ScheduleWaveformThumbnail(imgCtrl, file.FullName);
                 break;
         }
 
@@ -785,7 +842,7 @@ public partial class ProjectPanel : UserControl
     /// <param name="name">表示名。</param>
     /// <param name="fullPath">Tag とツールチップに入れる絶対パス。</param>
     private static Border WrapTile(Image iconCtrl, string name, string? fullPath)
-        => WrapTile(iconCtrl, name, fullPath, withCaption: false, out _);
+        => WrapTile(iconCtrl, name, fullPath, withCaption: false, out _, nameSideButton: null);
 
     /// <summary>
     /// アイコン・名前（・キャプション）を縦に積んだタイルを作る。
@@ -800,8 +857,17 @@ public partial class ProjectPanel : UserControl
     /// <param name="fullPath">Tag とツールチップに入れる絶対パス。</param>
     /// <param name="withCaption">キャプション行を用意するなら true。</param>
     /// <param name="captionBlock">用意したキャプションの TextBlock（不要なら null）。</param>
+    /// <param name="nameSideButton">
+    /// 名前の右へ並べる小さなボタン（音声の試聴ボタン）。不要なら null。
+    /// <para>
+    /// null のときはタイルの構造を従来どおり（縦並びの中に名前の TextBlock が直接入る）
+    /// に保つ。リネームは「名前の TextBlock を探して TextBox と差し替える」作りなので、
+    /// 構造を変えるのはボタンを置くタイルだけに留める。
+    /// </para>
+    /// </param>
     private static Border WrapTile(
-        Image iconCtrl, string name, string? fullPath, bool withCaption, out TextBlock? captionBlock)
+        Image iconCtrl, string name, string? fullPath, bool withCaption, out TextBlock? captionBlock,
+        Button? nameSideButton)
     {
         var nameBlock = new TextBlock
         {
@@ -833,7 +899,31 @@ public partial class ProjectPanel : UserControl
 
         var sp = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
         sp.Children.Add(iconCtrl);
-        sp.Children.Add(nameBlock);
+
+        if (nameSideButton is null)
+        {
+            sp.Children.Add(nameBlock);
+        }
+        else
+        {
+            // 名前とボタンを横並びにする。名前の折り返し幅（MaxWidth）はボタンぶん狭める
+            // ＝タイルの幅からはみ出させない。
+            nameBlock.MaxWidth = Math.Max(
+                TileNameMinWidthWithButton,
+                TileLabelMaxWidth - nameSideButton.MinWidth);
+
+            var nameRow = new StackPanel
+            {
+                Orientation         = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                // 印を引き継ぐ。リネームが名前の行を 1 段だけ潜って探せるようにするため。
+                Tag                 = TileNameRowTag,
+            };
+            nameRow.Children.Add(nameBlock);
+            nameRow.Children.Add(nameSideButton);
+            sp.Children.Add(nameRow);
+        }
+
         if (captionBlock != null) sp.Children.Add(captionBlock);
 
         return new Border
@@ -1005,6 +1095,14 @@ public partial class ProjectPanel : UserControl
                     // それらをテキストで開きたいときは右クリック
                     //「テキストエディタで開く」（ProjectPanel.TextEdit.cs）を使う。
                     ScriptFileOpened?.Invoke(textFile.FullName);
+                else if (entry is FileInfo shellFile &&
+                         ShellOpenCatalogProvider.Current.ShouldOpenPathWithShell(shellFile.FullName))
+                    // エディタが自前で開かない形式（.blend / 画像 / 音声）は
+                    // OS の関連付け（既定のアプリ）へ渡す。
+                    // テキストの分岐より後ろに置いているのは、内蔵エディタで開ける形式を
+                    // 横取りしないため（.json などは両方に当てはまりうる）。
+                    // 対応拡張子は editor/config/shell_open_extensions.json が決める。
+                    OpenWithShell(shellFile.FullName);
             }
             else if (e.ClickCount == 1)
             {
@@ -1118,6 +1216,16 @@ public partial class ProjectPanel : UserControl
     private void OnSVPreviewLMBDown(object sender, MouseButtonEventArgs e)
     {
         _dragStart = e.GetPosition(FileScrollViewer);
+
+        // タイルの中のボタン（音声の試聴ボタン）から始まった操作は、
+        // タイルの操作として扱わない。ここで抜けないと、ボタンを押した指の
+        // わずかな揺れが「ファイルのドラッグ開始」になってしまう。
+        // ボタン自身はクリックを処理するので、押下の扱いは任せてよい。
+        if (e.OriginalSource is DependencyObject buttonSrc && IsInsideButton(buttonSrc))
+        {
+            _itemDragStartTile = null;
+            return;
+        }
 
         if (e.OriginalSource is DependencyObject src)
         {
@@ -1584,18 +1692,29 @@ public partial class ProjectPanel : UserControl
     /// <summary>
     /// Phase R7 最小実装: .mat ファイルをダブルクリックした際、専用パネルを新設せず
     /// Windows の既定関連付けアプリ（未関連付けなら「アプリの選択」ダイアログ）で開く。
-    /// UseShellExecute=true で ShellExecute 経由起動する（プロセス起動失敗は無視して黙って何もしない）。
+    ///
+    /// <para>
+    /// 起動そのものは <see cref="OpenWithShell"/> に任せる（.blend・画像・音声と同じ道）。
+    /// かつては失敗を黙って捨てていたが、それだと「ダブルクリックしても何も起きない」
+    /// としか分からなかったため、共通化のついでに理由を出すようにした。
+    /// </para>
     /// </summary>
-    private static void OpenMaterialFile(string fullPath)
+    /// <param name="fullPath">.mat ファイルの絶対パス。</param>
+    private void OpenMaterialFile(string fullPath) => OpenWithShell(fullPath);
+
+    /// <summary>
+    /// ファイルを OS の関連付け（既定のアプリ）で開く。
+    /// 失敗しても例外にせず、理由をトーストとログで伝える。
+    /// </summary>
+    /// <param name="fullPath">開くファイルの絶対パス。</param>
+    private void OpenWithShell(string fullPath)
     {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(fullPath)
-            {
-                UseShellExecute = true,
-            });
-        }
-        catch { }
+        var result = ShellOpenLauncher.Open(fullPath);
+        if (result.Success) return;
+
+        var message = result.ErrorMessage ?? "ファイルを開けませんでした。";
+        ShowProjectToast(message);
+        EditorLog.Write($"[関連付け] {message}");
     }
 
     private static void Add(ContextMenu menu, string header, string? gesture, Action action)
@@ -1747,6 +1866,54 @@ public partial class ProjectPanel : UserControl
 
     // ── インラインリネーム ────────────────────────────────────────
 
+    /// <summary>
+    /// タイルの中から「名前の TextBlock」と、それが入っているパネルを探す。
+    ///
+    /// <para>
+    /// タイルの中身は形式によって 2 通りある。
+    ///   ・通常      … 縦並びの直下に名前の TextBlock がある
+    ///   ・音声      … 「名前＋試聴ボタン」の横並びを 1 段挟む
+    /// リネームは名前だけを TextBox へ差し替えるので、どちらの形でも
+    /// 「どのパネルの何番目か」を正しく取り出す必要がある。
+    /// </para>
+    /// </summary>
+    /// <param name="root">タイル直下の縦並びパネル。</param>
+    /// <param name="host">名前の TextBlock が入っているパネル。</param>
+    /// <param name="nameBlock">名前の TextBlock。</param>
+    /// <returns>見つかれば true。</returns>
+    private static bool TryFindTileNameBlock(Panel root, out Panel host, out TextBlock nameBlock)
+    {
+        // ① 直下（従来の形）。印が付いたものを優先し、無ければ先頭の TextBlock。
+        var direct = root.Children.OfType<TextBlock>()
+                         .FirstOrDefault(tb => (tb.Tag as string) == TileNameBlockTag)
+                  ?? root.Children.OfType<TextBlock>().FirstOrDefault();
+        if (direct != null)
+        {
+            host      = root;
+            nameBlock = direct;
+            return true;
+        }
+
+        // ② 「名前＋ボタン」の行の中（音声タイル）。
+        foreach (var row in root.Children.OfType<Panel>())
+        {
+            if ((row.Tag as string) != TileNameRowTag) continue;
+
+            var inner = row.Children.OfType<TextBlock>()
+                           .FirstOrDefault(tb => (tb.Tag as string) == TileNameBlockTag)
+                     ?? row.Children.OfType<TextBlock>().FirstOrDefault();
+            if (inner == null) continue;
+
+            host      = row;
+            nameBlock = inner;
+            return true;
+        }
+
+        host      = root;
+        nameBlock = null!;
+        return false;
+    }
+
     private void StartRenameMode(Border tile)
     {
         // pending フラグをここで解除（OnFsChanged の FSW 抑制を終わらせる）
@@ -1755,12 +1922,15 @@ public partial class ProjectPanel : UserControl
         _isRenaming = true;
 
         var sp = (StackPanel)tile.Child;
-        // タイルには名前とキャプション（画像の寸法）の TextBlock が並びうるので、
-        // 印（Tag）で名前のほうだけを取り出す。見つからない場合は先頭の TextBlock を使う。
-        var nameBlock = sp.Children.OfType<TextBlock>()
-                          .FirstOrDefault(tb => (tb.Tag as string) == TileNameBlockTag)
-                     ?? sp.Children.OfType<TextBlock>().First();
-        var origName  = nameBlock.Text;
+        // 名前の TextBlock と、それが入っているパネルを探す。
+        // 音声タイルだけ「名前＋試聴ボタン」の横並びを 1 段挟むので、
+        // 直下に無ければその行の中まで見る（見つからなければリネームしない）。
+        if (!TryFindTileNameBlock(sp, out var nameHost, out var nameBlock))
+        {
+            _isRenaming = false;
+            return;
+        }
+        var origName = nameBlock.Text;
 
         var nameBox = new TextBox
         {
@@ -1782,16 +1952,16 @@ public partial class ProjectPanel : UserControl
             nameBox.Select(0, stemLen);
         };
 
-        int blockIdx = sp.Children.IndexOf(nameBlock);
-        sp.Children.RemoveAt(blockIdx);
-        sp.Children.Insert(blockIdx, nameBox);
+        int blockIdx = nameHost.Children.IndexOf(nameBlock);
+        nameHost.Children.RemoveAt(blockIdx);
+        nameHost.Children.Insert(blockIdx, nameBox);
 
         void RestoreBlock()
         {
             if (!_isRenaming) return;
             _isRenaming = false;
-            sp.Children.Remove(nameBox);
-            sp.Children.Insert(blockIdx, nameBlock);
+            nameHost.Children.Remove(nameBox);
+            nameHost.Children.Insert(blockIdx, nameBlock);
         }
 
         void Commit()
@@ -1899,6 +2069,9 @@ public partial class ProjectPanel : UserControl
     private void NavigateTo(string path)
     {
         if (!Directory.Exists(path)) return;
+        // 別のフォルダへ移ったら試聴は止める。
+        // 鳴っているタイルが画面から消えたまま音だけ続くと、止め方が分からなくなる。
+        StopAudioPreview();
         _currentPath = path;
         // アクティブタブの「開いているフォルダ位置」を更新し、タブ名（フォルダ名）を追従させる
         OnActiveFolderChanged(path);

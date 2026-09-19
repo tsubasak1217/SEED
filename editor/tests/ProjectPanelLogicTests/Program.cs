@@ -128,6 +128,30 @@ public static class Program
         harness.Add("未知の format_version でも読める（警告あり）",        StateStoreFutureVersion);
         harness.Add("プロジェクトごとにエントリが独立する",                StateStoreMultipleProjects);
 
+        // ── 関連付けで開く拡張子（ShellOpenCatalog）──────────
+        harness.Add(".blend は関連付けで開く対象",                         ShellOpenBlend);
+        harness.Add("画像・音声は分類から取り込まれる",                    ShellOpenCategories);
+        harness.Add("エディタが自前で開く形式は対象外",                    ShellOpenExcludesEditorOwned);
+        harness.Add("分類を切ると画像・音声が外れる",                      ShellOpenCategoryToggle);
+        harness.Add("拡張子はドット無し・大文字でも引ける",                ShellOpenExtensionForms);
+        harness.Add("壊れた JSON は組み込み既定へフォールバックする",      ShellOpenBrokenJson);
+        harness.Add("同梱の shell_open_extensions.json が既定と一致する",  ShellOpenShippedFile);
+
+        // ── 波形サムネイルのピーク計算（WaveformPeaks）────────
+        harness.Add("無音は全列が振幅 0 になる",                           WaveformSilence);
+        harness.Add("正弦波は全列がほぼ ±1 に開く",                        WaveformSine);
+        harness.Add("片側だけ大きい波は最小・最大が非対称になる",          WaveformAsymmetric);
+        harness.Add("サンプル数が列数より少なくても列数ぶん返る",          WaveformFewerSamplesThanColumns);
+        harness.Add("推定より長い音でも列数を超えず全体が入る",            WaveformLongerThanEstimate);
+        harness.Add("列数 1 でも破綻しない",                               WaveformSingleColumn);
+        harness.Add("ステレオはチャンネルを平均して 1 本になる",           WaveformStereoMix);
+        harness.Add("NaN・無限大は無音として捨てられる",                   WaveformNonFinite);
+        harness.Add("列数 0 以下は例外になる",                             WaveformInvalidColumnCount);
+        harness.Add("波形キャッシュは cache/editor/waveforms 配下",        WaveformCachePath);
+
+        // ── 音声の試聴（偽の再生装置で状態遷移だけを見る）──────
+        AudioPreviewTests.Register(harness);
+
         return harness.Run();
     }
 
@@ -230,7 +254,8 @@ public static class Program
 
     private static void PreviewKindNone()
     {
-        foreach (var ext in new[] { ".cs", ".scene", ".wav", ".txt", ".unknown", "", ".fontx" })
+        // .wav はここに居ない。波形サムネイルの対象になったため（AudioPreviewKind を参照）。
+        foreach (var ext in new[] { ".cs", ".scene", ".txt", ".unknown", "", ".fontx" })
             Check.Equal(AssetPreviewKind.None, AssetPreviewKinds.Of(ext), "'" + ext + "'");
         Check.Equal(AssetPreviewKind.None, AssetPreviewKinds.Of(null), "null");
     }
@@ -1249,5 +1274,298 @@ public static class Program
         Check.Equal(1, reloaded.TryGet(keyB)!.ActiveTab,  "B のアクティブ");
         Check.Equal(null, reloaded.TryGet(ProjectPanelStateStore.MakeProjectKey(@"C:\projects\Charlie")),
                     "未登録のプロジェクトは空");
+    }
+
+    // ── 関連付けで開く拡張子（ShellOpenCatalog）──────────────────
+
+    private static void ShellOpenBlend()
+    {
+        var catalog = ShellOpenCatalog.BuiltIn();
+        Check.True(catalog.ShouldOpenWithShell(".blend"),  ".blend は関連付けで開く");
+        Check.True(catalog.ShouldOpenWithShell(".blend1"), "世代バックアップも同じ扱い");
+        Check.True(catalog.ShouldOpenPathWithShell(@"C:\a\b\鯉.blend"), "パス指定でも引ける");
+    }
+
+    private static void ShellOpenCategories()
+    {
+        var catalog = ShellOpenCatalog.BuiltIn();
+        // 拡張子はここに並べず AssetPreviewKinds から取り込む（二重管理の禁止）。
+        Check.True(catalog.ShouldOpenWithShell(".png"),  "画像は既定のビューアへ");
+        Check.True(catalog.ShouldOpenWithShell(".tga"),  "サムネイルを描けない画像も対象");
+        Check.True(catalog.ShouldOpenWithShell(".tif"),  "寸法取得だけの形式も画像として扱う");
+        Check.True(catalog.ShouldOpenWithShell(".wav"),  "音声は既定のプレイヤーへ");
+        Check.True(catalog.ShouldOpenWithShell(".ogg"),  "鳴らせない形式でも関連付けには渡す");
+    }
+
+    private static void ShellOpenExcludesEditorOwned()
+    {
+        var catalog = ShellOpenCatalog.BuiltIn();
+        // エディタが自前で開く形式を横取りしないこと（ダブルクリックの既存動線を壊さない）。
+        foreach (var ext in new[] { ".scene", ".actor", ".inputmap", ".anim", ".mat",
+                                    ".sprite_mesh", ".cs", ".wgsl", ".json", ".txt", ".md",
+                                    ".glb", ".ttf", "", ".unknown" })
+        {
+            Check.True(!catalog.ShouldOpenWithShell(ext), "'" + ext + "' は関連付け対象ではない");
+        }
+        Check.True(!catalog.ShouldOpenWithShell(null), "null は対象外");
+        Check.True(!catalog.ShouldOpenPathWithShell(""), "空パスは対象外");
+    }
+
+    private static void ShellOpenCategoryToggle()
+    {
+        using var temp = new TempDir();
+        var file = temp.Combine(ShellOpenCatalog.FileName);
+        File.WriteAllText(file,
+            "{\"format_version\":1,\"include_image_extensions\":false," +
+            "\"include_audio_extensions\":false,\"extensions\":[{\"extension\":\"blend\"}]}");
+
+        var catalog = ShellOpenCatalog.Load(file);
+        Check.True(catalog.ShouldOpenWithShell(".blend"), "個別指定は生きる");
+        Check.True(!catalog.ShouldOpenWithShell(".png"),  "画像分類を切れば外れる");
+        Check.True(!catalog.ShouldOpenWithShell(".wav"),  "音声分類を切れば外れる");
+        Check.True(catalog.SourcePath != null,            "読んだファイルが記録される");
+    }
+
+    private static void ShellOpenExtensionForms()
+    {
+        var catalog = ShellOpenCatalog.BuiltIn();
+        Check.True(catalog.ShouldOpenWithShell("blend"),   "ドット無しでも引ける");
+        Check.True(catalog.ShouldOpenWithShell(".BLEND"),  "大文字でも引ける");
+        Check.True(catalog.ShouldOpenWithShell(" .blend "), "前後の空白は無視する");
+        Check.True(!catalog.ShouldOpenWithShell("."),      "ドットだけは無効");
+    }
+
+    private static void ShellOpenBrokenJson()
+    {
+        using var temp = new TempDir();
+        var file = temp.Combine(ShellOpenCatalog.FileName);
+        File.WriteAllText(file, "{ これは JSON ではない");
+
+        var catalog = ShellOpenCatalog.Load(file);
+        Check.True(catalog.Warnings.Count > 0,            "警告が残る");
+        Check.True(catalog.ShouldOpenWithShell(".blend"), "組み込み既定で動き続ける");
+
+        var missing = ShellOpenCatalog.Load(temp.Combine("no_such_file.json"));
+        Check.True(missing.ShouldOpenWithShell(".blend"), "ファイルが無くても既定で動く");
+        Check.True(ShellOpenCatalog.LoadFromDir(null).ShouldOpenWithShell(".blend"),
+                   "構成フォルダ不明でも既定で動く");
+    }
+
+    private static void ShellOpenShippedFile()
+    {
+        // 同梱 JSON と組み込み既定がずれると「JSON を消すと挙動が変わる」ことになる。
+        var shipped = FindRepoFile(Path.Combine("editor", "config", ShellOpenCatalog.FileName));
+        if (shipped is null) return;   // 配置が違う環境ではこの検査を飛ばす
+
+        var fromFile = ShellOpenCatalog.Load(shipped);
+        var builtIn  = ShellOpenCatalog.BuiltIn();
+        Check.Equal(builtIn.ExplicitExtensions.Count, fromFile.ExplicitExtensions.Count, "個別指定の件数");
+        foreach (var ext in builtIn.ExplicitExtensions)
+            Check.True(fromFile.ShouldOpenWithShell(ext), "同梱 JSON にも " + ext + " がある");
+        Check.Equal(builtIn.IncludesImages, fromFile.IncludesImages, "画像分類の既定");
+        Check.Equal(builtIn.IncludesAudio,  fromFile.IncludesAudio,  "音声分類の既定");
+    }
+
+    /// <summary>
+    /// リポジトリ同梱のファイルを探す（テストの実行場所が bin 配下なので上へ辿る）。
+    /// 見つからなければ null（その検査は飛ばす）。
+    /// </summary>
+    private static string? FindRepoFile(string relativePath)
+    {
+        var dir = AppContext.BaseDirectory;
+        for (int i = 0; i < RepoProbeDepth && dir != null; i++)
+        {
+            var candidate = Path.Combine(dir, relativePath);
+            if (File.Exists(candidate)) return candidate;
+            dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
+        }
+        return null;
+    }
+
+    /// <summary>リポジトリ同梱ファイルを探すときに遡る階層数の上限。</summary>
+    private const int RepoProbeDepth = 12;
+
+    // ── 波形サムネイルのピーク計算（WaveformPeaks）────────────────
+
+    /// <summary>テストで使う標準的な列数（サムネイルの既定幅と同じ）。</summary>
+    private const int WaveColumns = 128;
+
+    /// <summary>浮動小数の比較に使う許容誤差。</summary>
+    private const double WaveTolerance = 1e-5;
+
+    private static void WaveformSilence()
+    {
+        var samples = new float[WaveColumns * 10];   // 全要素 0
+        var columns = WaveformPeaks.Compute(samples, WaveColumns, samples.Length);
+
+        Check.Equal(WaveColumns, columns.Length, "列数");
+        foreach (var c in columns) Check.Close(0.0, c.Amplitude, WaveTolerance, "無音の振幅");
+        Check.True(WaveformPeaks.IsSilent(columns, 1e-4f), "無音と判定される");
+    }
+
+    private static void WaveformSine()
+    {
+        // 1 列あたり十分な周期数が入るようにして、どの列でも山と谷を踏むようにする。
+        const int SamplesPerColumn = 64;
+        const double CyclesPerColumn = 4.0;
+        var samples = new float[WaveColumns * SamplesPerColumn];
+        for (int i = 0; i < samples.Length; i++)
+        {
+            double phase = 2.0 * Math.PI * CyclesPerColumn * i / SamplesPerColumn;
+            samples[i] = (float)Math.Sin(phase);
+        }
+
+        var columns = WaveformPeaks.Compute(samples, WaveColumns, samples.Length);
+        Check.Equal(WaveColumns, columns.Length, "列数");
+        foreach (var c in columns)
+        {
+            Check.True(c.Max > 0.9f,  "上側のピークが出る");
+            Check.True(c.Min < -0.9f, "下側のピークが出る");
+        }
+        Check.True(!WaveformPeaks.IsSilent(columns, 1e-4f), "無音ではない");
+    }
+
+    private static void WaveformAsymmetric()
+    {
+        // 上へ 1.0、下へ 0.1 しか振れない波（片側だけ大きい）。
+        // 平均を取ると消えてしまう差が、最小・最大なら残ることを確かめる。
+        const int SamplesPerColumn = 8;
+        const float UpperPeak = 1.0f;
+        const float LowerPeak = -0.1f;
+        var samples = new float[WaveColumns * SamplesPerColumn];
+        for (int i = 0; i < samples.Length; i++)
+            samples[i] = (i % 2 == 0) ? UpperPeak : LowerPeak;
+
+        var columns = WaveformPeaks.Compute(samples, WaveColumns, samples.Length);
+        foreach (var c in columns)
+        {
+            Check.Close(UpperPeak, c.Max, WaveTolerance, "最大は上側のピーク");
+            Check.Close(LowerPeak, c.Min, WaveTolerance, "最小は下側のピーク");
+        }
+    }
+
+    private static void WaveformFewerSamplesThanColumns()
+    {
+        // 列数より短い音（極端に短い効果音）。列は必ず要求数ぶん返り、
+        // 埋まった列が横へ引き伸ばされる（右半分が空白にならない）。
+        var samples = new[] { 0.5f, -0.5f, 1.0f };
+        var columns = WaveformPeaks.Compute(samples, WaveColumns, samples.Length);
+
+        Check.Equal(WaveColumns, columns.Length, "列数は要求どおり");
+        // 1 列 1 サンプルなので帯の高さ（Amplitude）は 0 になるが、
+        // 振れ幅（Peak）は残る＝無音ではない。ここが両者を取り違えないための検査。
+        Check.True(!WaveformPeaks.IsSilent(columns, 1e-4f), "中身が残る");
+        Check.Close(0.0, columns[0].Amplitude, WaveTolerance, "1 サンプルの列は帯の高さ 0");
+        Check.Close(0.5, columns[0].Peak,      WaveTolerance, "それでも振れ幅は残る");
+        foreach (var c in columns) Check.True(c.Amplitude >= 0f, "最大 >= 最小");
+        Check.Close(1.0, columns[WaveColumns - 1].Max, WaveTolerance, "最後の列は最後のサンプル");
+        Check.Close(0.5, columns[0].Max, WaveTolerance, "先頭の列は先頭のサンプル");
+    }
+
+    private static void WaveformLongerThanEstimate()
+    {
+        // 復号器の申告（推定 100 フレーム）より実際が 40 倍長い場合。
+        // 列があふれても捨てずに解像度を落として最後まで読む。
+        const int ActualSamples = 4000;
+        const long WrongEstimate = 100;
+        const float LatePeak = 0.75f;
+        var samples = new float[ActualSamples];
+        samples[ActualSamples - 1] = LatePeak;   // 末尾にだけ音がある
+
+        var columns = WaveformPeaks.Compute(samples, WaveColumns, WrongEstimate);
+        Check.Equal(WaveColumns, columns.Length, "列数は要求どおり");
+
+        float maxAll = 0f;
+        foreach (var c in columns) if (c.Max > maxAll) maxAll = c.Max;
+        Check.Close(LatePeak, maxAll, WaveTolerance, "末尾のピークが失われない");
+    }
+
+    private static void WaveformSingleColumn()
+    {
+        // 退化した要求（列数 1）。潰し処理が空きを作れない経路を通る。
+        var acc = new WaveformPeakAccumulator(1, estimatedFrameCount: 2);
+        for (int i = 0; i < 100; i++) acc.Add(i % 2 == 0 ? 0.25f : -0.75f);
+
+        var columns = acc.Build();
+        Check.Equal(1, columns.Length, "列数 1");
+        Check.Close(0.25,  columns[0].Max, WaveTolerance, "最大が残る");
+        Check.Close(-0.75, columns[0].Min, WaveTolerance, "最小が残る");
+    }
+
+    private static void WaveformStereoMix()
+    {
+        // L=+1.0 / R=-1.0 のステレオは、混ぜると 0（打ち消し合う）。
+        const int Channels = 2;
+        var acc = new WaveformPeakAccumulator(4, estimatedFrameCount: 4);
+        var buffer = new float[] { 1f, -1f, 1f, -1f, 1f, -1f, 1f, -1f };
+        acc.AddInterleaved(buffer, buffer.Length, Channels);
+        foreach (var c in acc.Build()) Check.Close(0.0, c.Amplitude, WaveTolerance, "左右が打ち消す");
+
+        // L=+1.0 / R=0 なら平均 +0.5。
+        var acc2 = new WaveformPeakAccumulator(2, estimatedFrameCount: 2);
+        acc2.AddInterleaved(new float[] { 1f, 0f, 1f, 0f }, 4, Channels);
+        foreach (var c in acc2.Build()) Check.Close(0.5, c.Max, WaveTolerance, "チャンネル平均");
+
+        // 端数（フレームの途中で切れたバッファ）は落として落ちない。
+        var acc3 = new WaveformPeakAccumulator(2, estimatedFrameCount: 2);
+        acc3.AddInterleaved(new float[] { 1f, 1f, 1f }, 3, Channels);
+        Check.Equal(2, acc3.Build().Length, "端数があっても列数は保たれる");
+    }
+
+    private static void WaveformNonFinite()
+    {
+        // 復号の事故で NaN・無限大が紛れても、以降の比較を壊さない。
+        var acc = new WaveformPeakAccumulator(2, estimatedFrameCount: 4);
+        acc.Add(float.NaN);
+        acc.Add(0.5f);
+        acc.Add(float.PositiveInfinity);
+        acc.Add(0.25f);
+
+        var columns = acc.Build();
+        foreach (var c in columns)
+        {
+            Check.True(float.IsFinite(c.Min), "最小が有限");
+            Check.True(float.IsFinite(c.Max), "最大が有限");
+            Check.True(c.Max <= 1.0f, "無限大が最大として残らない");
+        }
+    }
+
+    private static void WaveformInvalidColumnCount()
+    {
+        bool threw = false;
+        try { _ = new WaveformPeakAccumulator(0, 10); }
+        catch (ArgumentOutOfRangeException) { threw = true; }
+        Check.True(threw, "列数 0 は例外");
+
+        threw = false;
+        try { _ = new WaveformPeakAccumulator(-1, 10); }
+        catch (ArgumentOutOfRangeException) { threw = true; }
+        Check.True(threw, "負の列数は例外");
+    }
+
+    private static void WaveformCachePath()
+    {
+        const string Root = @"C:\projects\Warashibe";
+        var dir = WaveformThumbnailCacheKey.CacheDirForProjectRoot(Root);
+        Check.Equal(Path.Combine(Root, "cache", "editor", "waveforms"), dir, "置き場");
+        Check.Equal(null, WaveformThumbnailCacheKey.CacheDirForProjectRoot(""), "ルート不明なら null");
+
+        // 材料が 1 つ違えばファイル名が変わる（差し替えた音声が古い波形のままにならない）。
+        var when = new DateTime(2026, 9, 19, 12, 0, 0, DateTimeKind.Utc);
+        var baseName = WaveformThumbnailCacheKey.BuildFileName(@"C:\a\se.wav", when, 1000, 128, 128);
+        Check.Equal(baseName, WaveformThumbnailCacheKey.BuildFileName(@"C:\A\SE.WAV", when, 1000, 128, 128),
+                    "大文字小文字は同一視される");
+        Check.True(baseName != WaveformThumbnailCacheKey.BuildFileName(@"C:\a\se.wav", when.AddSeconds(1), 1000, 128, 128),
+                   "更新時刻が違えば別名");
+        Check.True(baseName != WaveformThumbnailCacheKey.BuildFileName(@"C:\a\se.wav", when, 1001, 128, 128),
+                   "サイズが違えば別名");
+        Check.True(baseName != WaveformThumbnailCacheKey.BuildFileName(@"C:\a\se.wav", when, 1000, 256, 128),
+                   "出力の大きさが違えば別名");
+        Check.True(baseName.EndsWith(WaveformThumbnailCacheKey.ThumbnailExtension, StringComparison.Ordinal),
+                   "拡張子は .png");
+
+        Check.Equal(WaveformThumbnailCacheKey.MinSizePx, WaveformThumbnailCacheKey.ClampSize(0), "下限で止まる");
+        Check.Equal(WaveformThumbnailCacheKey.MaxSizePx, WaveformThumbnailCacheKey.ClampSize(99999), "上限で止まる");
+        Check.Equal(128, WaveformThumbnailCacheKey.ClampSize(128), "範囲内はそのまま");
     }
 }

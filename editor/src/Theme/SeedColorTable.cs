@@ -278,6 +278,38 @@ public static class SeedColorTable
     public const string NOTICE_BAR_ICON = "#D7BA36";
 
     // ══════════════════════════════════════════════════════════
+    //  音声の波形サムネイル（プロジェクトパネルのタイル）
+    //
+    //  音声ファイルのアイコンの代わりに、実際の波形を描いた PNG を出す。
+    //  文字ではないが「鳴っている場所」を読み取る図なので、
+    //  非テキストの目印として 3.0 以上の比を要求する。
+    //  下地はタイルの背景（パネルの地色 = SURFACE_WINDOW）。タイルは通常
+    //  透明で、選択・ホバー時だけ半透明の白（ICON_OVERLAY_HOVER）が重なる。
+    // ══════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 波形の帯（各列の最小〜最大を結ぶ縦線）の色。
+    ///
+    /// <para>
+    /// 音声であることが一目で分かるよう、他の形式アイコン（灰色系）とは別の
+    /// 色味にする。緑がかった青は暗い地色から十分に浮き、かつ
+    /// 主操作（PRIMARY_BG）やリンク（LINK_FG）と取り違えない。
+    /// </para>
+    /// </summary>
+    public const string WAVEFORM_FG = "#4FC3A1";
+
+    /// <summary>
+    /// 波形の中心線（振幅 0 の高さ）の色。
+    ///
+    /// <para>
+    /// 無音の区間でも「ここに音の軌跡がある」と分かるように薄く 1 本引く。
+    /// 目印というより補助線なので、波形本体より暗くしてうるさくしない
+    /// （コントラスト検査の対象外。読み取るべき情報を持たないため）。
+    /// </para>
+    /// </summary>
+    public const string WAVEFORM_CENTER_LINE = "#3A5A52";
+
+    // ══════════════════════════════════════════════════════════
     //  コントラストの基準（WCAG 2.1）
     // ══════════════════════════════════════════════════════════
 
@@ -381,6 +413,12 @@ public static class SeedColorTable
         new("通知帯/アイコン",   NOTICE_BAR_BG,   null, NOTICE_BAR_ICON,   MIN_RATIO_NON_TEXT),
         // 帯そのものがエディタ本文の背景から浮いて見えるか（枠は文字ではないので 3:1）。
         new("通知帯/枠",         SURFACE_WINDOW,  null, NOTICE_BAR_BORDER, MIN_RATIO_NON_TEXT),
+
+        // ── 音声の波形サムネイル（タイルの背景に対して読み取れること）──
+        // 通常のタイル（透明＝パネルの地色）と、ホバー・選択で白を重ねた状態の両方を見る。
+        new("波形/通常のタイル",     SURFACE_WINDOW, null,                  WAVEFORM_FG, MIN_RATIO_NON_TEXT),
+        new("波形/ホバー中のタイル", SURFACE_WINDOW, ICON_OVERLAY_HOVER,    WAVEFORM_FG, MIN_RATIO_NON_TEXT),
+        new("波形/選択中のタイル",   SURFACE_WINDOW, ICON_OVERLAY_PRESSED,  WAVEFORM_FG, MIN_RATIO_NON_TEXT),
     };
 
     // ══════════════════════════════════════════════════════════

@@ -29,6 +29,18 @@ public enum AssetPreviewKind
     /// </para>
     /// </summary>
     Model,
+
+    /// <summary>
+    /// 音声を復号して描いた波形サムネイル（列ごとの最小・最大＝ピーク）。
+    ///
+    /// <para>
+    /// 生成はエディタ内（NAudio で復号 → WPF で描画）で完結する。
+    /// 長い BGM でも全サンプルをメモリへ載せないよう、読みながら逐次ダウンサンプルする
+    /// （計算は <c>Assets/WaveformPeaks.cs</c>、描画とキャッシュは
+    ///  <c>Controls/WaveformThumbnailRenderer.cs</c>）。
+    /// </para>
+    /// </summary>
+    AudioWaveform,
 }
 
 /// <summary>
@@ -85,6 +97,35 @@ public static class AssetPreviewKinds
     };
 
     /// <summary>
+    /// 波形サムネイルを生成でき、かつ「音声ファイル」として扱う拡張子。
+    ///
+    /// <para>
+    /// <b>エディタ全体で音声かどうかを判定する唯一の集合。</b>
+    /// 無音カット（<c>Audio/AudioSilenceTrimmer.IsAudioFile</c>）も
+    /// タイルの試聴ボタン（<c>Panels/ProjectPanel.AudioPreview.cs</c>）も
+    /// 関連付けで開く判定（<see cref="ShellOpenCatalog"/> の音声分類）も、
+    /// それぞれで拡張子を並べ直さずここを引く。
+    /// </para>
+    ///
+    /// <para>
+    /// 実際に復号できるかは形式と環境による（<c>.ogg</c> は既定では開けないことが多い）。
+    /// 可否は生成・再生側が実際に開いて判断し、失敗しても形式アイコンのまま据え置く
+    /// ＝ここは「音声として扱う候補」であって「必ず鳴る形式」ではない。
+    /// </para>
+    ///
+    /// <para>
+    /// なお <c>Controls/AudioDictionaryCatalog.AudioExtensions</c> は別物として残している。
+    /// あちらは「AudioComponent の音声パス欄が受け付ける並び」で、
+    /// ランタイム側の定数との一致を <c>editor/tests/AudioDictionaryTests</c> が
+    /// 順序込みで固定しているため、こちらの集合（順序を持たない）とは役割が違う。
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> AudioWaveform = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".wav", ".mp3", ".ogg", ".flac",
+    };
+
+    /// <summary>
     /// ピクセル寸法（幅×高さ）の取得を試す拡張子。
     ///
     /// ヘッダだけを読む軽い処理なので、WIC が標準で読めない形式（.tga / .dds / .exr 等）も
@@ -106,6 +147,7 @@ public static class AssetPreviewKinds
         if (ImageThumbnail.Contains(extension)) return AssetPreviewKind.Image;
         if (FontThumbnail.Contains(extension))  return AssetPreviewKind.Font;
         if (ModelThumbnail.Contains(extension)) return AssetPreviewKind.Model;
+        if (AudioWaveform.Contains(extension))  return AssetPreviewKind.AudioWaveform;
         return AssetPreviewKind.None;
     }
 
@@ -129,6 +171,26 @@ public static class AssetPreviewKinds
     public static bool SupportsModelThumbnail(string? extension)
         => !string.IsNullOrEmpty(extension) && ModelThumbnail.Contains(extension);
 
+    /// <summary>音声ファイルとして扱う拡張子か（波形サムネイル・試聴ボタンの対象）。</summary>
+    /// <param name="extension">先頭ドット付きの拡張子。</param>
+    public static bool IsAudioExtension(string? extension)
+        => !string.IsNullOrEmpty(extension) && AudioWaveform.Contains(extension);
+
+    /// <summary>音声ファイルか（拡張子だけで判定する。中身は見ない）。</summary>
+    /// <param name="path">ファイルパス。null・空可。</param>
+    public static bool IsAudioPath(string? path)
+        => !string.IsNullOrEmpty(path) && IsAudioExtension(Path.GetExtension(path));
+
+    /// <summary>画像ファイルとして扱う拡張子か（サムネイル対象 ∪ 寸法取得対象）。</summary>
+    /// <remarks>
+    /// サムネイルを描けるか（<see cref="SupportsImageThumbnail"/>）より広い。
+    /// 「この形式を画像ビューアへ渡してよいか」の判定に使う（<see cref="ShellOpenCatalog"/>）。
+    /// </remarks>
+    /// <param name="extension">先頭ドット付きの拡張子。</param>
+    public static bool IsImageExtension(string? extension)
+        => !string.IsNullOrEmpty(extension)
+           && (ImageThumbnail.Contains(extension) || PixelSizeProbe.Contains(extension));
+
     /// <summary>ピクセル寸法の取得を試す価値がある拡張子か。</summary>
     /// <param name="extension">先頭ドット付きの拡張子。</param>
     public static bool SupportsPixelSize(string? extension)
@@ -147,4 +209,11 @@ public static class AssetPreviewKinds
 
     /// <summary>モデルサムネイル対象の拡張子一覧（アイコン表と共有するため）。</summary>
     public static IReadOnlyCollection<string> ModelThumbnailExtensions => ModelThumbnail.ToArray();
+
+    /// <summary>音声拡張子の一覧（アイコン表・関連付け表と共有するため）。</summary>
+    public static IReadOnlyCollection<string> AudioExtensions => AudioWaveform.ToArray();
+
+    /// <summary>画像拡張子の一覧（関連付け表と共有するため。サムネイル対象 ∪ 寸法取得対象）。</summary>
+    public static IReadOnlyCollection<string> ImageExtensions
+        => ImageThumbnail.Union(PixelSizeProbe, StringComparer.OrdinalIgnoreCase).ToArray();
 }

@@ -346,12 +346,16 @@ public partial class ScriptEditorPanel : UserControl
             ApplySettingsToEditor(doc.Editor);
             UpdateSearchHighlight(doc);
             UpdateOccurrenceHighlight(doc);
-            doc.Editor.Focus();
+            // セッション復元中はフォーカスを移さない（起動直後にシーンビューから
+            // 入力先を奪わないため。ScriptEditorPanel.Session.cs 参照）
+            if (!_suppressEditorFocus) doc.Editor.Focus();
         }
         UpdateEmptyHint();
         DocumentsChanged?.Invoke();
         // ドキュメントを表示したら「タブ」パネルの自動表示を要求する
         if (doc is not null) DocumentActivated?.Invoke();
+        // タブを開いた／切り替えた → セッション（次回起動時に復元する内容）の保存を予約する
+        RequestSessionSave();
     }
 
     // ── 「タブ」パネル / 「エラー一覧」パネル向け 公開 API ────
@@ -792,6 +796,11 @@ public partial class ScriptEditorPanel : UserControl
         _breakpointStore = new BreakpointStore(settingsDir);
         ApplyColorsToHighlighting(_settings);
         foreach (var doc in _docs) ApplySettingsToEditor(doc.Editor);
+
+        // 前回開いていたタブの復元へ「書式・ストア類がそろった」ことを伝える
+        //（SetAssetsPath と両方そろった時点で 1 度だけ復元が走る。ScriptEditorPanel.Session.cs）。
+        // ここより前に復元すると、復元したタブにブレークポイントが戻らない。
+        NotifySettingsReadyForSession();
     }
 
     /// <summary>設定ダイアログを開く。</summary>
@@ -912,6 +921,10 @@ public partial class ScriptEditorPanel : UserControl
             EditorLog.Write($"スクリプト解析の初期化に失敗しました（補完・F12 が無効）: {ex.Message}");
             _workspace = null;
         }
+
+        // 前回開いていたタブの復元へ「アセットルートが決まった」ことを伝える
+        //（InitSettings と両方そろった時点で 1 度だけ復元が走る。ScriptEditorPanel.Session.cs）。
+        NotifyAssetsPathReadyForSession();
     }
 
     /// <summary>
@@ -2950,6 +2963,10 @@ public partial class ScriptEditorPanel : UserControl
         RefreshDiskWatchTargets();
         DocumentsChanged?.Invoke();
         NotifyDiagnosticsChanged();
+        // タブを閉じた → セッション（次回起動時に復元する内容）の保存を予約する。
+        // アクティブタブを閉じた場合は上の ActivateDoc からも予約が飛ぶが、
+        // 最後の 1 枚を閉じた場合（ActivateDoc(null)）も含めてここで必ず拾う。
+        RequestSessionSave();
     }
 
     private void SetDirty(DocTab doc, bool dirty)

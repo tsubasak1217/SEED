@@ -63,4 +63,46 @@ public static class AssetPreviewCacheKey
         var normalizedPath = (path ?? string.Empty).ToLowerInvariant();
         return string.Join(FieldSeparator, normalizedPath, UnknownField, UnknownField, variant);
     }
+
+    // ── ファイル名化 ────────────────────────────────────────────
+
+    /// <summary>FNV-1a 64bit のオフセット基底値（仕様値）。</summary>
+    private const ulong FnvOffsetBasis = 0xcbf29ce484222325UL;
+
+    /// <summary>FNV-1a 64bit の素数（仕様値）。</summary>
+    private const ulong FnvPrime = 0x00000100000001b3UL;
+
+    /// <summary>ハッシュを 16 桁の小文字 16 進で書き出す書式。</summary>
+    private const string HashFormat = "x16";
+
+    /// <summary>
+    /// キー文字列を、そのままファイル名に使える 16 桁の 16 進へ畳む。
+    ///
+    /// <para>
+    /// キーにはパスがそのまま入っているため、ファイル名にできない文字
+    /// （<c>:</c> <c>\</c> など）やパス長の上限（260 文字）に当たる。
+    /// ハッシュにすれば長さが固定になり、日本語パスでも安全に扱える。
+    /// 衝突しても「別ファイルのサムネイルが出る」だけで壊れないので、
+    /// 暗号強度は要らない（必要なのは同じ入力から同じ名前が出ることだけ）。
+    /// </para>
+    ///
+    /// <para>
+    /// 3D モデルのサムネイル（<see cref="ModelThumbnailCacheKey"/>）は
+    /// 同じ FNV-1a を自前で持っている。あちらは <b>Rust 側と 1 ビットも違ってはいけない
+    /// 取り決めの写し</b>で、他所の都合で式が変わると両言語の対応が静かに壊れるため、
+    /// 意図的に独立させてある（こちらはエディタ内で完結する用途）。
+    /// </para>
+    /// </summary>
+    /// <param name="key"><see cref="Build"/> などが作ったキー文字列。</param>
+    /// <returns>16 桁の小文字 16 進。</returns>
+    public static string ToFileNameHash(string? key)
+    {
+        ulong hash = FnvOffsetBasis;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(key ?? string.Empty))
+        {
+            hash ^= b;
+            hash *= FnvPrime;
+        }
+        return hash.ToString(HashFormat, CultureInfo.InvariantCulture);
+    }
 }

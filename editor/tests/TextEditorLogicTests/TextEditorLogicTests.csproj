@@ -44,6 +44,11 @@
       <Link>Linked\ScriptEditor\Navigation\ScriptNavigationHistory.cs</Link>
     </Compile>
 
+    <!-- テスト対象: 開いていたタブのセッション復元（JSON の読み書き・相対/絶対・正規化・間引き。WPF 非依存） -->
+    <Compile Include="..\..\src\Panels\ScriptEditor\Session\ScriptEditorSessionStore.cs">
+      <Link>Linked\ScriptEditor\Session\ScriptEditorSessionStore.cs</Link>
+    </Compile>
+
     <!-- テスト対象: F12 の飛び先（エンジン API のソースの中の「宣言そのもの」）を探すロジック。
          WPF 非依存だが Roslyn の構文木を使うので、下の PackageReference が要る。 -->
     <Compile Include="..\..\src\Panels\ScriptEditor\DeclarationLocator.cs">

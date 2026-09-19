@@ -10,6 +10,8 @@ C# スクリプト（`.cs`）・シェーディングアセット（`.wgsl`）�
 | `editor/src/Panels/ScriptEditorPanel.cs` | パネル本体（タブ・エディタ生成・保存・補完・診断・デバッグ） |
 | `editor/src/Panels/ScriptEditorPanel.DiskSync.cs` | ディスク追従（監視・点検・表示の切り替え・再読み込み） |
 | `editor/src/Panels/ScriptEditorPanel.Navigation.cs` | 戻る／進む（位置の解決と入力の受け口） |
+| `editor/src/Panels/ScriptEditorPanel.Session.cs` | タブのセッション復元（保存の契機とエディタへの再適用） |
+| `editor/src/Panels/ScriptEditor/Session/ScriptEditorSessionStore.cs` | **セッションの JSON 読み書き・パスの相対化／絶対化・値の正規化（WPF 非依存・テスト対象）** |
 | `editor/src/Panels/ScriptEditor/DiskSync/ScriptDiskState.cs` | **ディスク追従の判定表（WPF 非依存・テスト対象）** |
 | `editor/src/Panels/ScriptEditor/DiskSync/ScriptDiskWatcher.cs` | フォルダ単位のファイル監視とデバウンス |
 | `editor/src/Panels/ScriptEditor/DiskSync/ScriptDiskNoticeBar.cs` | タブ上部の非モーダル通知帯 |
@@ -325,8 +327,18 @@ AvalonEdit の `TextEditor.ScrollToLine` は、内部の ScrollViewer をテン�
 
 | プロジェクト | 種類 | 内容 |
 |---|---|---|
-| `editor/tests/TextEditorLogicTests` | 自動（WPF 非依存） | 拡張子 → 言語、シーン・アクタの拒否、サイズ上限、JSON の読み込み・フォールバック、言語ごとの機能の有無、**ディスク追従の判定表**、**戻る／進むの履歴**。`dotnet run` で 53 件 |
+| `editor/tests/TextEditorLogicTests` | 自動（WPF 非依存） | 下表の 6 つを通しで検証。`dotnet run` で **81 件** |
 | `editor/tests/ThemeContrastTests` | 自動（WPF 非依存） | 通知帯の背景×文字・アイコン・枠のコントラスト比 |
+
+`TextEditorLogicTests` の内訳:
+
+| 対象 | ファイル | 何を守るか |
+|---|---|---|
+| 拡張子 → 言語 / サイズ上限 / カタログの読み込み | `Program.cs` | 開ける形式と、その着色・機能の切り替わり方。シーン・アクタ・地形バイナリを必ず拒むこと |
+| ディスク追従の判定表 | `DiskSyncTests.cs` | 外部でファイルが書き換わった・消えたときに未保存の編集を守れるか（5.2） |
+| 戻る／進むの履歴 | `NavigationHistoryTests.cs` | 往復できるか・近い点がまとまるか・消えたファイルを飛ばすか（6.） |
+| F12 の飛び先 | `DeclarationLocatorTests.cs` | エンジン API のソースの中の**宣言そのもの**へ飛ぶこと（コメントや同じ綴りの語へ飛ばない） |
+| タブのセッション復元 | `SessionStoreTests.cs` | 往復・相対／絶対パス・`..` の拒否・壊れた JSON で起動を止めないこと・上限（9.） |
 
 ```
 dotnet run --project editor/tests/TextEditorLogicTests
@@ -353,3 +365,128 @@ dotnet run --project editor/tests/TextEditorLogicTests
   `.inputmap` も同じ。検出・警告の仕組みは無い（[backlog](backlog.md)）。
 - `.anim` / `.inputmap` をテキストで壊すと、それぞれの専用エディタが開けなくなる。
   専用エディタで編集できることはそちらで行うこと。
+
+---
+
+## 9. タブのセッション復元
+
+エディタを閉じて開き直したときに、**前回開いていたタブをそのまま出し直す**。
+Visual Studio / VS Code と同じ「前回の続きから始められる」ための仕組み。
+
+### 9.1 保存する内容と置き場
+
+| 項目 | 内容 |
+|---|---|
+| タブ一覧 | 開いていたファイルのパス（**表示順そのまま**） |
+| アクティブタブ | 保存時にパネル内で選ばれていたタブ |
+| キャレット | 各タブの行・桁 |
+| スクロール | 各タブの縦スクロール位置（px） |
+| 読み取り専用 | そのタブが読み取り専用（F12 で開いたエンジン API のソース等）だったか |
+
+置き場は **`<プロジェクトルート>/cache/editor/script_editor_session.json`**。
+`cache/` はシーンロック（`cache/editor/scene_locks`）・視点サイドカー（`cache/editor/view`）・
+VCS の状態（`cache/editor/vcs`）と同じ「利用者別の状態」の区画で、
+初期コミットから `.loreignore` 済み＝**バージョン管理に載らない**。
+「どのスクリプトを開いていたか」は作業者個人の見え方であってプロジェクトの内容ではないため。
+
+```json
+{
+  "format_version": 1,
+  "active_tab": 1,
+  "tabs": [
+    { "path": "assets/Scripts/PlayerMove.cs", "line": 42, "column": 7, "scroll": 1234.5, "read_only": false },
+    { "path": "C:/SEED/scripting/src/GameObject.cs", "line": 10, "column": 1, "scroll": 0, "read_only": true }
+  ]
+}
+```
+
+- **パスはプロジェクトルート相対**（スラッシュ区切り）。絶対パスで持つと、
+  プロジェクトフォルダを移動・リネームした瞬間に全タブが無効になる。
+- **ルート外のファイルだけ絶対パスのまま**書く。F12 で開いたエンジン API のソースが該当で、
+  相対化しても `..` を連ねた脆いパスになるだけで意味が無い。
+- 読み込み時、相対パスはルートと結合して絶対化する。**`..` でルートの外へ出る相対パスは捨てる**
+  （壊れた・細工された JSON でプロジェクトと無関係なファイルを勝手に開かないため）。
+- 書き込みは `<path>.tmp` へ書いて `File.Move(overwrite)` する**原子的置換**。
+  `SafeFileWriter.WriteAllTextAtomic` を使わないのは、あちらが `.backup` 世代を残すため
+  （アセット向けの仕組みで、キャッシュに世代を溜めても誰も読まない）。
+
+### 9.2 保存の契機
+
+**タブを開いた / 閉じた / 切り替えた** の 3 つだけ。`DispatcherTimer` で
+`SessionSaveDebounceMs`（700ms）デバウンスし、エディタ終了時は
+`MainWindow.OnWindowClosing` から `FlushSessionState()` で即時に書く。
+
+- **並べ替えは契機に無い**。スクリプトエディタに**タブの並べ替え機能が存在しない**ため
+  （表示順 ＝ `_docs` の挿入順 ＝ 開いた順。タブ一覧 UI の `OpenDocumentsPanel` も並べ替えを持たない）。
+  並べ替えを実装したら、ここに契機を 1 つ足すこと。
+- **キャレット移動のたびには書かない**（1 文字動かすたびのファイル I/O になる）。
+  代わりに**書く瞬間に現在のキャレット・スクロールを読み直す**ので、
+  デバウンス後に書かれる値は常に最新になる。
+- タブが 0 枚になったら**保存ファイルを消す**（空の JSON は書かない）。
+  「全部閉じて終了した」も前回の状態なので、次回また開き直すのは誤り。
+  ただし**このセッションで一度もタブを持てなかった**場合は消さない
+  （ファイルがロック中で復元に失敗しただけ、という一時的な理由で記録を永久に失わないため）。
+
+### 9.3 復元の契機と、しないこと
+
+復元は **`SetAssetsPath` と `InitSettings` の両方が済んだ直後**に 1 度だけ走る
+（MainWindow は `SetAssetsPath` → `InitSettings` の順に呼ぶ。`LoadLayout` より前）。
+片方だけで走らせると取りこぼすものがあるため、呼び出し順に依存しない待ち合わせにしてある。
+
+| 前提 | 済んでいないと起きること |
+|---|---|
+| `SetAssetsPath` | Roslyn ワークスペースが無く、復元したタブだけ補完・F12 が効かない |
+| `InitSettings` | `BreakpointStore` がまだ無く、復元したタブにブレークポイントが戻らない |
+
+**復元しない・やらない条件:**
+
+- **ヘッドレス起動（`EditorStartupOptions.IsHeadless`）では読み書きとも一切しない。**
+  MCP・CI から起動したヘッドレスエディタがセッションを書くと、
+  利用者が対話エディタで開いていたタブ構成を黙って壊す。
+- プロジェクトルートが空（プロジェクト未確定）なら置き場が決まらないので何もしない。
+- 保存ファイルが無い・空・壊れている → **黙って「復元なし」**。
+  例外を投げずダイアログも出さない（この機能の失敗でエディタが起動しないのは論外）。
+  理由は `EditorLog` にだけ残す。`format_version` が未知（大きい）でも読める範囲は読む
+  （捨てると、新しいエディタで作業したあと古いエディタを 1 回起動しただけでタブが消える）。
+- **フォーカスを奪わない。** 復元は利用者がタブを選んだわけではないので、
+  `ActivateDoc` の `Editor.Focus()` を抑止し（`_suppressEditorFocus`）、
+  AvalonDock 側の前面化（`EnsureScriptEditorDocument` / `FocusScriptEditorDocument` の類）も
+  **呼ばない**。どのドキュメントを前面にするかは `layout.xml` が覚えている側の役目で、
+  起動直後にシーンビューから前面を奪うのは「前回の続きから始める」目的を超えている。
+  パネル内部でどのタブを選ぶかは別の話なので、そちらは保存時のアクティブタブへ戻す。
+- **復元は `WithNavigationSuppressed` で包む**（6.0）。利用者の移動ではないので、
+  戻る／進む履歴に偽の点を積まない。
+- **復元中は保存しない**（`_suppressSessionSave`）。復元で開いたタブが保存を誘発して
+  書き続けるのを止める。
+
+### 9.4 タブごとの復元の仕方
+
+| 保存されていた状態 | 復元 |
+|---|---|
+| 通常のタブ | `OpenFile()`（`allowMissing: true`）。**実体が無ければ「ファイルが見つかりません」タブになる**（5.5）。ブランチを戻せばディスク追従がそのまま通常表示へ戻す |
+| 読み取り専用タブ | 実体があるときだけ `OpenFileReadOnly()`。`allowMissing: false` なので、消えていればそのタブは黙って捨てる（参照していただけのエンジン API ソースを「見つかりません」タブで残す価値が薄い） |
+| 読めない（ロック中・権限不足） | タブが作られないので諦める。保存ファイルはそのまま残るので次回また試せる |
+
+- キャレットは `MoveCaretTo` へ通す。**行・桁は現在の本文の範囲へ丸める**ので、
+  前回より短くなったファイルでも落ちない。
+- スクロールは最後に上書きする（`EditorReveal` はキャレット行を画面中央へ寄せるが、
+  復元で戻したいのは「前回見えていた範囲」そのもの）。
+  適用は **`EditorReveal` と同じ Loaded 待ちの作法**で行う（6.0.1）。
+  復元で作ったタブは起動直後でまだレイアウトされておらず、非アクティブなタブに至っては
+  ビジュアルツリーに繋がってすらいないため、その場で `ScrollTo*` を呼んでも**無反応**になる。
+  非アクティブタブでは、利用者がそのタブへ切り替えた瞬間に正しい位置で出る。
+- 復元するタブ数は `MaxRestoredTabs`（**32 枚**）で頭打ち。肥大・破損した JSON で
+  起動が重くならないための歯止め。**保存側では切らない**（利用者が実際に開いていたタブを失うため）。
+- 行・桁・スクロールの異常値（0 以下・NaN・無限大・巨大値）と、
+  範囲外の `active_tab`（先頭へ倒す）はすべて読み込み時に正規化する。
+
+### 9.5 責務の分け方
+
+| 層 | ファイル | 持つもの |
+|---|---|---|
+| 純ロジック（WPF 非依存） | `ScriptEditor/Session/ScriptEditorSessionStore.cs` | JSON の読み書き・パスの相対化／絶対化・値の正規化・上限での間引き |
+| UI 側 | `ScriptEditorPanel.Session.cs` | いつ保存するか（デバウンス）・どうエディタへ戻すか（タブを開く・キャレット・スクロール） |
+
+純ロジック側は `editor/tests/TextEditorLogicTests` から**ソースリンク**してテストする。
+このファイルが WPF 型を使い始めるとテストのビルドが壊れる＝分離が崩れた検知器になる
+（`ScriptDiskState` / `ScriptNavigationHistory` と同じ思想）。

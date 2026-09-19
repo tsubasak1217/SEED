@@ -30,9 +30,11 @@ public static class AudioSilenceTrimmer
     private static readonly HashSet<string> ProcessableExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".wav", ".mp3" };
 
-    /// <summary>音声ファイルとして扱う拡張子。未対応形式もメニュー表示の判定に使う。</summary>
-    private static readonly HashSet<string> AudioExtensions =
-        new(StringComparer.OrdinalIgnoreCase) { ".wav", ".mp3", ".ogg", ".flac" };
+    // 「何を音声ファイルとみなすか」はここには置かない。
+    // Assets/AssetPreviewKinds.cs が唯一の情報源（波形サムネイル・試聴ボタン・
+    // 関連付けで開く判定も同じ集合を引く）。ここで並べ直すと、
+    // 新しい形式を足したときに「一覧には波形が出るのに無音カットのメニューが出ない」
+    // といった食い違いが必ず起きる。
 
     /// <summary>WAV 拡張子。</summary>
     private const string WavExtension = ".wav";
@@ -64,11 +66,7 @@ public static class AudioSilenceTrimmer
     /// <summary>1 バイトあたりのビット数（ビットレート算出用）。</summary>
     private const int BitsPerByte = 8;
 
-    /// <summary>Media Foundation の初期化を一度だけ行うためのフラグ。</summary>
-    private static bool _mediaFoundationStarted;
-
-    /// <summary>_mediaFoundationStarted の排他用ロック。</summary>
-    private static readonly object MediaFoundationLock = new();
+    // Media Foundation の初期化フラグはここには置かない（MediaFoundationRuntime が持つ）。
 
     // ── 公開判定 API ──────────────────────────────────────────────
 
@@ -85,7 +83,7 @@ public static class AudioSilenceTrimmer
     /// </summary>
     /// <param name="path">対象ファイルのパス。</param>
     public static bool IsAudioFile(string path)
-        => AudioExtensions.Contains(Path.GetExtension(path));
+        => SEEDEditor.Assets.AssetPreviewKinds.IsAudioPath(path);
 
     // ── 本体 ──────────────────────────────────────────────────────
 
@@ -381,16 +379,14 @@ public static class AudioSilenceTrimmer
 
     /// <summary>
     /// Media Foundation を一度だけ初期化する（MP3 のデコード／エンコードに必要）。
+    ///
+    /// <para>
+    /// 実体は <see cref="MediaFoundationRuntime"/> にある。試聴（NAudioPreviewPlayer）も
+    /// 同じ基盤を使うため、「初期化済みか」という 1 つの事実を 2 か所で持たないよう
+    /// 共通クラスへ移した。
+    /// </para>
     /// </summary>
-    private static void EnsureMediaFoundationStarted()
-    {
-        lock (MediaFoundationLock)
-        {
-            if (_mediaFoundationStarted) return;
-            MediaFoundationApi.Startup();
-            _mediaFoundationStarted = true;
-        }
-    }
+    private static void EnsureMediaFoundationStarted() => MediaFoundationRuntime.EnsureStarted();
 
     // ── 出力ファイルの配置 ────────────────────────────────────────
 

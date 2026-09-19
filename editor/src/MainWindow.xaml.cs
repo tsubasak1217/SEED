@@ -263,6 +263,31 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     }
 
     /// <summary>
+    /// 「OS の関連付けで開く拡張子」のカタログを editor/config から読み込み、
+    /// アプリ全体（プロジェクトパネルのダブルクリック判定）へ反映する。
+    ///
+    /// 読み込み自体は失敗しない（必ず組み込み既定＝.blend ほかへフォールバックする）。
+    /// 画像・音声の拡張子はこのカタログには入らず、AssetPreviewKinds の分類を参照する。
+    /// 詳細は docs/editor_project_panel.md。
+    /// </summary>
+    private static void LoadShellOpenCatalog()
+    {
+        var catalog = SEEDEditor.Assets.ShellOpenCatalog
+            .LoadFromDir(SEEDEditor.Settings.EditorPaths.ConfigDir);
+
+        foreach (var w in catalog.Warnings)
+            EditorLog.Write($"[関連付け] {w}");
+
+        SEEDEditor.Assets.ShellOpenCatalogProvider.UseCatalog(catalog);
+
+        EditorLog.Write(
+            $"[関連付け] カタログ読み込み完了 — " +
+            $"source={catalog.SourcePath ?? "(組み込み既定)"}  " +
+            $"個別指定={catalog.ExplicitExtensions.Count}  " +
+            $"画像={catalog.IncludesImages}  音声={catalog.IncludesAudio}");
+    }
+
+    /// <summary>
     /// 現在のプロジェクトのアセットルート（assets:// の実体）。
     ///
     /// <para>
@@ -466,6 +491,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // パネルが最初の一覧を描く前に確定させておく。
         LoadTextEditableCatalog();
 
+        // OS の関連付けで開く拡張子（.blend / 画像 / 音声）のカタログも同じ理由でここで読む。
+        // 内蔵エディタの動線を横取りしない順序で引かれるので、両方そろっている必要がある。
+        LoadShellOpenCatalog();
+
         EditorLog.Write(
             $"OnWindowLoaded — RuntimeExePath={RuntimeExePath}  構成={CurrentRuntimeBuildConfig}");
 
@@ -579,7 +608,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             if (available) TryStartEditRuntime();
         };
         // Hierarchy からドラッグしたアクタをアクタファイル化（EXPORT_ACTOR 送信）するため Runtime を注入
+        //（あわせて Play 開始で音声の試聴を止めるため、実行状態の変化も購読させる）
         PanelProject.SetRuntime(_runtimeManager);
+        // トーストの実体は MainWindow 側にあるので、出し口だけをパネルへ渡す
+        //（関連付けで開けなかった・試聴に失敗した、を伝えるのに使う）。
+        // MigrationNotifier / LockGateNotifier と同じ注入方式。
+        PanelProject.SetToast(ShowToast);
         PanelProject.SceneFileOpened    += OnSceneFileOpened;
         PanelProject.ActorFileOpened    += OnActorFileOpened;
         PanelProject.InputMapFileOpened += OnInputMapFileOpened;
@@ -1477,8 +1511,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SEEDEditor.Settings.EditorViewState.Flush();
         // プロジェクトパネルのタブ状態（開いている場所・展開・選択・スクロール）も同様
         PanelProject.FlushTabState();
+        // スクリプトエディタの開いていたタブ（パス・アクティブ・キャレット・スクロール）も同様
+        PanelScriptEditor.FlushSessionState();
         // バージョン管理パネルの折りたたみ節（競合 / 変更 / ロック / 履歴）の開閉も同様
         PanelVersionControl.FlushSectionState();
+        // 音声の試聴を止めて出力デバイスを解放する。
+        // ここで止めないと、ウィンドウが閉じた後も鳴り続けたまま
+        // プロセス終了まで残ることがある（止める手段が画面に無い状態になる）。
+        PanelProject.DisposeAudioPreview();
         ReleasePlayClamp();
         UninstallKeyboardHook();
         UninstallTerrainMouseHook();

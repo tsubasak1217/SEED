@@ -50,6 +50,26 @@
       <Link>Linked\Assets\ProjectPanelStateStore.cs</Link>
     </Compile>
 
+    <Compile Include="..\..\src\Assets\ShellOpenCatalog.cs">
+      <Link>Linked\Assets\ShellOpenCatalog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\WaveformPeaks.cs">
+      <Link>Linked\Assets\WaveformPeaks.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Assets\WaveformThumbnailCacheKey.cs">
+      <Link>Linked\Assets\WaveformThumbnailCacheKey.cs</Link>
+    </Compile>
+
+    <Compile Include="..\..\src\Audio\AudioPreviewSupport.cs">
+      <Link>Linked\Audio\AudioPreviewSupport.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Audio\IAudioPreviewPlayer.cs">
+      <Link>Linked\Audio\IAudioPreviewPlayer.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Audio\AudioPreviewController.cs">
+      <Link>Linked\Audio\AudioPreviewController.cs</Link>
+    </Compile>
+
     <!-- テストランナーと一時フォルダは既存テストのものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>
