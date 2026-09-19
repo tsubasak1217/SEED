@@ -23,6 +23,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- DeclarationLocator が構文木（Roslyn）を使う。版は本体 editor/SEEDEditor.csproj と揃えること。 -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- テスト対象: 言語種別と、編集可能拡張子のカタログ（いずれも WPF 非依存） -->
     <Compile Include="..\..\src\Panels\ScriptEditor\EditorLanguage.cs">
       <Link>Linked\ScriptEditor\EditorLanguage.cs</Link>
@@ -37,6 +42,12 @@
     </Compile>
     <Compile Include="..\..\src\Panels\ScriptEditor\Navigation\ScriptNavigationHistory.cs">
       <Link>Linked\ScriptEditor\Navigation\ScriptNavigationHistory.cs</Link>
+    </Compile>
+
+    <!-- テスト対象: F12 の飛び先（エンジン API のソースの中の「宣言そのもの」）を探すロジック。
+         WPF 非依存だが Roslyn の構文木を使うので、下の PackageReference が要る。 -->
+    <Compile Include="..\..\src\Panels\ScriptEditor\DeclarationLocator.cs">
+      <Link>Linked\ScriptEditor\DeclarationLocator.cs</Link>
     </Compile>
 
     <!-- テストランナーと一時フォルダは既存テストのものを共有する（同じ仕組みを二重に持たない） -->

@@ -44,7 +44,12 @@ public static class RoslynCompletion
     /// メタデータ参照経由のため <see cref="ResolveDefinitionAsync"/> では解決できない。
     /// これで得た型名から、呼び出し側がエンジンのソースファイルを引き当てて開く。
     /// </summary>
-    public static async Task<(string assembly, string typeName, string? memberName)?>
+    /// <remarks>
+    /// <c>parameterTypes</c> はメソッド・コンストラクタ・インデクサの引数の型の表記
+    /// （オーバーロードのうち、どの宣言へ飛ぶかを決めるために使う）。それ以外は null。
+    /// </remarks>
+    public static async Task<(string assembly, string typeName, string? memberName,
+                              System.Collections.Generic.IReadOnlyList<string>? parameterTypes)?>
         ResolveMetadataDefinitionAsync(Document document, int position)
     {
         try
@@ -64,7 +69,22 @@ public static class RoslynCompletion
 
             // メンバ（メソッド・プロパティ・フィールド）ならその名前も返し、キャレット位置決めに使う
             string? memberName = symbol is INamedTypeSymbol ? null : symbol.Name;
-            return (assembly!, typeSymbol.Name, memberName);
+
+            // オーバーロードの絞り込み用に、引数の型の表記を取り出す。
+            // 構築済みジェネリック（Foo<int>）や拡張メソッドの簡約形では、宣言どおりの表記に
+            // ならないので、必ず元の定義（OriginalDefinition / ReducedFrom）から取る。
+            System.Collections.Generic.IReadOnlyList<string>? parameterTypes = symbol switch
+            {
+                IMethodSymbol method => (method.ReducedFrom ?? method).OriginalDefinition.Parameters
+                    .Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
+                    .ToList(),
+                IPropertySymbol { IsIndexer: true } indexer => indexer.OriginalDefinition.Parameters
+                    .Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
+                    .ToList(),
+                _ => null,
+            };
+
+            return (assembly!, typeSymbol.Name, memberName, parameterTypes);
         }
         catch
         {

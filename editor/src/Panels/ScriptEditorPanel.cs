@@ -2549,7 +2549,7 @@ public partial class ScriptEditorPanel : UserControl
         if (meta is { } m &&
             string.Equals(m.assembly, EngineAssemblyName, StringComparison.OrdinalIgnoreCase))
         {
-            var src = ResolveEngineSource(m.typeName, m.memberName);
+            var src = ResolveEngineSource(m.typeName, m.memberName, m.parameterTypes);
             if (src is { } s)
             {
                 NavigateToDefinition(s.filePath, s.offset, readOnly: true);
@@ -2592,58 +2592,62 @@ public partial class ScriptEditorPanel : UserControl
     /// その中の定義位置（型宣言・メンバ宣言）のオフセットを引き当てる。
     /// ソースが見つからなければ null。
     /// </summary>
-    private (string filePath, int offset)? ResolveEngineSource(string typeName, string? memberName)
+    /// <param name="typeName">型の単純名。</param>
+    /// <param name="memberName">メンバのシンボル名（型そのものなら null）。</param>
+    /// <param name="parameterTypes">引数の型の表記（オーバーロードの絞り込み用。無ければ null）。</param>
+    private (string filePath, int offset)? ResolveEngineSource(
+        string typeName, string? memberName, IReadOnlyList<string>? parameterTypes)
     {
         var srcDir = FindEngineSourceDir();
         if (srcDir is null) return null;
 
         try
         {
-            // まずファイル名が型名と一致する .cs を探す（SEED API は 1 型 1 ファイル命名）
-            string? file = Directory
+            var allFiles = Directory
                 .EnumerateFiles(srcDir, "*.cs", SearchOption.AllDirectories)
-                .FirstOrDefault(f =>
-                    string.Equals(Path.GetFileNameWithoutExtension(f), typeName, StringComparison.OrdinalIgnoreCase));
+                .ToList();
 
-            // 見つからなければ、型宣言を含むファイルを走査して探す
-            file ??= Directory
-                .EnumerateFiles(srcDir, "*.cs", SearchOption.AllDirectories)
-                .FirstOrDefault(f => Regex.IsMatch(
-                    File.ReadAllText(f),
-                    $@"\b(class|struct|interface|enum)\s+{Regex.Escape(typeName)}\b"));
+            // 候補の並び: まずファイル名が型名と一致するもの（SEED API は 1 型 1 ファイル命名）、
+            // 次に型宣言を含むそれ以外のファイル（partial で複数ファイルに分かれた型のため）。
+            // 後者の絞り込みは正規表現で十分（ここは「読む価値のあるファイルか」の粗いふるいで、
+            // 位置決めそのものは下の DeclarationLocator が構文木で行う）。
+            var typePattern = new Regex(
+                $@"\b(class|struct|interface|enum|record|delegate)\b[^;{{]*\b{Regex.Escape(typeName)}\b");
+            var candidates = allFiles
+                .Where(f => string.Equals(Path.GetFileNameWithoutExtension(f), typeName,
+                                          StringComparison.OrdinalIgnoreCase))
+                .Concat(allFiles.Where(f =>
+                    !string.Equals(Path.GetFileNameWithoutExtension(f), typeName,
+                                   StringComparison.OrdinalIgnoreCase)))
+                .ToList();
 
-            if (file is null) return null;
+            (string filePath, int offset)? typeOnly = null;
 
-            var text = File.ReadAllText(file);
-            return (file, FindDeclarationOffset(text, typeName, memberName));
+            foreach (var file in candidates)
+            {
+                var text = File.ReadAllText(file);
+                if (!typePattern.IsMatch(text)) continue;
+
+                // ★宣言の位置は構文木で探す（名前の最初の一致で探すと、宣言より前の
+                //   XML ドキュメントコメントや別メンバの本文に当たる）。
+                var location = DeclarationLocator.Find(text, typeName, memberName, parameterTypes);
+                if (location.Kind == DeclarationMatchKind.Member) return (file, location.Offset);
+
+                // 型は見つかったがメンバがこのファイルに無い。partial の別ファイルを探し続け、
+                // どこにも無ければ最初に見つけた型宣言へ飛ぶ。
+                if (location.Kind == DeclarationMatchKind.Type)
+                {
+                    if (string.IsNullOrEmpty(memberName)) return (file, location.Offset);
+                    typeOnly ??= (file, location.Offset);
+                }
+            }
+
+            return typeOnly;
         }
         catch
         {
             return null;
         }
-    }
-
-    /// <summary>
-    /// ソーステキスト中の定義位置オフセットを求める。メンバ名があればそれを優先し、
-    /// なければ型宣言、いずれも無ければ先頭（0）を返す。
-    /// </summary>
-    private static int FindDeclarationOffset(string text, string typeName, string? memberName)
-    {
-        // メンバ（メソッド/プロパティ/フィールド）名の宣言らしき位置
-        if (!string.IsNullOrEmpty(memberName))
-        {
-            var m = Regex.Match(text, $@"\b{Regex.Escape(memberName!)}\b");
-            if (m.Success) return m.Index;
-        }
-        // 型宣言（class/struct/interface/enum TypeName）
-        var t = Regex.Match(text, $@"\b(class|struct|interface|enum)\s+{Regex.Escape(typeName)}\b");
-        if (t.Success)
-        {
-            // 型名そのものの先頭に合わせる
-            int nameIdx = text.IndexOf(typeName, t.Index, StringComparison.Ordinal);
-            return nameIdx >= 0 ? nameIdx : t.Index;
-        }
-        return 0;
     }
 
     // エンジンソースディレクトリ（scripting/src）の探索結果キャッシュ（"" は探索失敗）

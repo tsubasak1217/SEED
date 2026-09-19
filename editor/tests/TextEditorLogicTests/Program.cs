@@ -64,6 +64,9 @@ public static class Program
         // ── 戻る／進む（ナビゲーション履歴）──────────────────
         NavigationHistoryTests.Register(harness);
 
+        // ── F12 の飛び先（エンジン API のソースの中の宣言そのもの）──
+        DeclarationLocatorTests.Register(harness);
+
         // ── 共有カタログの差し替え（静的状態を変えるので最後）────
         harness.Add("UseCatalog で全体の判定が切り替わる",                 EditorLanguagesUseCatalog);
 
