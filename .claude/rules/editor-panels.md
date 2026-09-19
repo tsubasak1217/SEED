@@ -27,3 +27,8 @@ paths:
 - 色を足す・変えるときは `editor/src/Theme/SeedColorTable.cs` の定数と
   `ContrastCases` を更新し、`dotnet run --project editor/tests/ThemeContrastTests` を通す
   （背景×文字のコントラスト比 4.5 以上／無効時 3.0 以上を機械的に検査する）。
+- **「×」（`Icon.Close`）ボタンは `editor/src/Controls/CloseIconButton.cs` で作る**。
+  アイコン（`AppIcon`）へ直接マウスハンドラを付けない（当たり判定が絵の大きさしか無くなる）。
+  当たり判定はアイコンの 1.5 倍・下限 18px（`SeedButtonMetrics.IconHitAreaSize`）で、
+  見た目のアイコンサイズは変えない。行やタブの高さが伸びるときは `verticalBleed` で
+  周囲の余白を食わせる。詳細は `docs/editor_ui_style.md` 3 章。

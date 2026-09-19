@@ -14,6 +14,8 @@
 
 ## エディタ
 
+- [ ] **検索バーの閉じるボタンだけ文字の「✕」のまま** — 2026-09-19。エディタ中の「×」ボタンは共通ファクトリ（`editor/src/Controls/CloseIconButton.cs`）へ寄せてベクターアイコン（`Icon.Close`）に統一したが、スクリプトエディタの検索／置換バーの閉じるボタンだけは文字リテラル `"✕"` の `Button` として残っている（`editor/src/Panels/ScriptEditor/FindReplaceBar.cs::MakeButton` を「<」「>」「置換」と共有しているため）。当たり判定は `MinWidth 28` × 文字高 ≒ 18px 以上あるので押しづらさは無いが、`.claude/rules/editor-icons.md` の「アイコン代わりの記号文字を使わない」には反する。直すなら MakeButton をテキスト用とアイコン用に分けるところから。関連: `editor/src/Panels/ScriptEditor/FindReplaceBar.cs:74`。
+
 - [ ] **ビルド構成の切り替えで未保存のシーン編集は失われる** — 2026-09-12。ツールバーのビルド構成コンボ（Debug / Develop / Release）は Edit ランタイムを終了して建て直すため、ランタイム側にしか無い未保存の編集は消える。現状は `_isDirty` のときに確認ダイアログを出して同意を取るだけで、保存してから切り替える導線は無い。Play の「保存 → 切り替え → 復元」と同じ仕組み（`SaveCurrentSceneToTempAsync`）で退避・復元できるはず。関連: `editor/src/MainWindow.RuntimeBuildConfig.cs::OnRuntimeBuildConfigChanged`、`editor/src/Runtime/RuntimeManager.cs::SwitchBuildConfigAsync`、docs/runtime_build_configs.md。
 
 - [ ] **構成ごとに `runtime/target/<構成>/` が増えてディスクを食う** — 2026-09-12。Debug / Develop / Release はビルドキャッシュを共有しないため、3 構成すべてを使うと target が 3 セット（各数 GB）できる。エディタからは掃除できず、利用者が手で消すしかない。使っていない構成の target を消す導線（またはサイズ表示）があってもよい。関連: docs/runtime_build_configs.md。

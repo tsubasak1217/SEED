@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using SEEDEditor.Theme;
 
 namespace SEEDEditor.Panels;
 
@@ -25,6 +26,30 @@ public sealed class OpenDocumentsPanel : UserControl
 
     /// <summary>タブ行に添えるアイコン（鍵・未保存・閉じる）の一辺サイズ（px）。</summary>
     private const double TabIconSize = 11.0;
+
+    /// <summary>閉じるボタンにホバーしたときのアイコン色（赤系＝消える操作であることを示す）。</summary>
+    private static readonly SolidColorBrush CloseHover = new(Color.FromRgb(0xFF, 0x66, 0x66));
+
+    /// <summary>行の内側余白（左・上・右・下）。</summary>
+    private static readonly Thickness RowPadding = new(8, 4, 6, 4);
+
+    /// <summary>ファイル名と閉じるボタンの間隔・行右端との間隔。</summary>
+    private static readonly Thickness CloseButtonMargin = new(4, 0, 2, 0);
+
+    /// <summary>行のファイル名 1 行が占める高さの目安（px）。FontSize 12 の行送り。</summary>
+    private const double RowTextHeight = 16.0;
+
+    /// <summary>
+    /// 閉じるボタンを行の上下余白へはみ出させる量（px）。
+    ///
+    /// 閉じるボタンの当たり判定はアイコン（11px）より大きい正方形になるため、
+    /// そのままだと行の高さが文字（約 16px）ではなくボタンで決まって行が伸びる。
+    /// はみ出した分は行の内側余白（上下 4px）に収まるので、見た目は変わらないまま
+    /// 当たり判定だけが上下へ広がる。値は当たり判定の規定から導くので、
+    /// 倍率を変えてもここを直す必要はない。
+    /// </summary>
+    private static readonly double CloseButtonVerticalBleed = Math.Max(
+        0, (SeedButtonMetrics.IconHitAreaSize(TabIconSize) - RowTextHeight) / 2);
 
     /// <summary>
     /// タブ名の前へ置く小さなアイコン（読み取り専用の鍵・未保存マーク）を作る。
@@ -98,7 +123,7 @@ public sealed class OpenDocumentsPanel : UserControl
         var row = new Border
         {
             Background = doc.IsActive ? Active : Brushes.Transparent,
-            Padding    = new Thickness(8, 4, 6, 4),
+            Padding    = RowPadding,
             Cursor     = Cursors.Hand,
         };
 
@@ -130,15 +155,16 @@ public sealed class OpenDocumentsPanel : UserControl
         Grid.SetColumn(nameStack, 0);
         grid.Children.Add(nameStack);
 
-        // 閉じるボタン
-        var close = SEEDEditor.Controls.AppIcon.Create("Icon.Close", TabIconSize);
-        close.SetBrush(Dim);
-        close.Cursor            = Cursors.Hand;
-        close.VerticalAlignment = VerticalAlignment.Center;
-        close.Margin            = new Thickness(4, 0, 2, 0);
-        close.MouseEnter += (_, _) => close.SetBrush(new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)));
-        close.MouseLeave += (_, _) => close.SetBrush(Dim);
-        close.MouseLeftButtonDown += (_, e) => { _editorPanel.CloseFile(doc.FilePath); e.Handled = true; };
+        // 閉じるボタン（生成は共通の窓口。アイコンの大きさは変えず当たり判定だけ広い）。
+        // Button なので押下は親の行へ伝わらない（× を押してもアクティブ化しない）。
+        var close = SEEDEditor.Controls.CloseIconButton.Create(
+            TabIconSize,
+            tooltip:        "このファイルを閉じる",
+            onClick:        () => _editorPanel.CloseFile(doc.FilePath),
+            iconBrush:      Dim,
+            hoverIconBrush: CloseHover,
+            margin:         CloseButtonMargin,
+            verticalBleed:  CloseButtonVerticalBleed);
         Grid.SetColumn(close, 1);
         grid.Children.Add(close);
 

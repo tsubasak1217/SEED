@@ -18,8 +18,15 @@ namespace SEEDEditor.Theme;
 
 /// <summary>
 /// ボタン共通の寸法。値の変更はここだけで行う。
+///
+/// <para>
+/// 当たり判定（ヒットエリア）の算出だけは WPF 型を使わないため
+/// <c>SeedButtonMetrics.HitArea.cs</c> へ分けてある（単体テストから
+/// WPF 抜きでリンクするため）。partial の片割れなので、
+/// 利用側からは同じ 1 つのクラスとして見える。
+/// </para>
 /// </summary>
-public static class SeedButtonMetrics
+public static partial class SeedButtonMetrics
 {
     /// <summary>角の丸み [px]。エディタ内の他の角丸（バージョン管理パネル等）と揃えてある。</summary>
     public const double CORNER_RADIUS_PX = 2;

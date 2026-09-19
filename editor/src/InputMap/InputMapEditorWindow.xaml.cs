@@ -33,6 +33,25 @@ public partial class InputMapEditorWindow : Window
     /// <summary>バインディング行の削除ボタンのアイコン一辺サイズ（px）。</summary>
     private const double RowDeleteIconSize = 11;
 
+    /// <summary>
+    /// バインディング行の削除ボタンの幅（px）。
+    /// 行の列幅に合わせた固定値で、当たり判定の下限
+    /// （<see cref="SEEDEditor.Theme.SeedButtonMetrics.ICON_HIT_AREA_MIN_PX"/>）より広い。
+    /// </summary>
+    private const double RowDeleteButtonWidth = 28;
+
+    /// <summary>バインディング行の削除ボタンの高さ（px）。下限より高いので押しやすさは確保される。</summary>
+    private const double RowDeleteButtonHeight = 24;
+
+    /// <summary>バインディング行の削除ボタンのアイコン色（破壊操作なので赤系）。</summary>
+    private static readonly SolidColorBrush RowDeleteBrush = new(Color.FromRgb(0xAA, 0x44, 0x44));
+
+    /// <summary>バインディング行の削除ボタンのホバー時アイコン色。</summary>
+    private static readonly SolidColorBrush RowDeleteHoverBrush = new(Color.FromRgb(0xFF, 0x66, 0x66));
+
+    /// <summary>バインディング行の削除ボタンの外側余白。</summary>
+    private static readonly Thickness RowDeleteButtonMargin = new(4, 2, 4, 2);
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int value, int size);
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
@@ -460,25 +479,23 @@ public partial class InputMapEditorWindow : Window
         };
 
         // ── 削除ボタン ───────────────────────────────────────
-        var btnRemove = new Button
-        {
-            Content = SEEDEditor.Controls.AppIcon.Create("Icon.Close", RowDeleteIconSize),
-            Width = 28,
-            Height = 24,
-            Background = Brushes.Transparent,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0x44, 0x44)),
-            BorderThickness = new Thickness(0),
-            FontSize = 11,
-            Cursor = Cursors.Hand,
-            Margin = new Thickness(4, 2, 4, 2),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        btnRemove.Click += (_, _) =>
-        {
-            owningList.Remove(binding);
-            _isDirty = true;
-            RefreshBindingPane();
-        };
+        // 生成は「×」ボタン共通の窓口（Controls/CloseIconButton）。
+        // 色・ホバーは共通書式に任せ、赤系のアイコン色だけ従来どおり保つ。
+        var btnRemove = SEEDEditor.Controls.CloseIconButton.Create(
+            RowDeleteIconSize,
+            tooltip:        "このバインディングを削除する",
+            onClick:        () =>
+            {
+                owningList.Remove(binding);
+                _isDirty = true;
+                RefreshBindingPane();
+            },
+            iconBrush:      RowDeleteBrush,
+            hoverIconBrush: RowDeleteHoverBrush,
+            margin:         RowDeleteButtonMargin);
+        // 行の列幅に合わせた固定寸法（いずれも当たり判定の下限より大きい）。
+        btnRemove.Width  = RowDeleteButtonWidth;
+        btnRemove.Height = RowDeleteButtonHeight;
 
         Grid.SetColumn(cbType, 0);
         Grid.SetColumn(cbValue, 1);

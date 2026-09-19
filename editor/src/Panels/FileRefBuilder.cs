@@ -18,6 +18,12 @@ internal static class FileRefBuilder
     /// <summary>参照クリアボタンのアイコン一辺サイズ（px）。</summary>
     private const double ClearButtonIconSize = 10;
 
+    /// <summary>参照クリアボタンの内側余白。同じ行の「参照」ボタンと見た目をそろえる。</summary>
+    private static readonly Thickness ClearButtonPadding = new(6, 2, 6, 2);
+
+    /// <summary>参照クリアボタンと「参照」ボタンの間隔。</summary>
+    private static readonly Thickness ClearButtonMargin = new(2, 0, 0, 0);
+
     /// <summary>ダブルクリックと判定するクリック回数（WPF の ClickCount 比較用）。</summary>
     private const int DoubleClickCount = 2;
 
@@ -189,18 +195,17 @@ internal static class FileRefBuilder
         // クリアボタン（指定があるときのみ）: 参照を未設定へ戻す
         if (onClear != null)
         {
-            var clearBtn = new Button
-            {
-                Content           = SEEDEditor.Controls.AppIcon.Create("Icon.Close", ClearButtonIconSize),
-                Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
-                Padding           = new Thickness(6, 2, 6, 2),
-                Margin            = new Thickness(2, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                ToolTip           = "参照を解除する",
-                // 未設定のときは押しても意味がないため無効化する
-                IsEnabled         = hasPath,
-            };
-            clearBtn.Click += (_, _) => onClear();
+            // 生成は「×」ボタン共通の窓口（Controls/CloseIconButton）。
+            // 当たり判定は共通の規定まで広がり、枠線つきの見た目は「参照」ボタンに合わせる。
+            var clearBtn = SEEDEditor.Controls.CloseIconButton.Create(
+                ClearButtonIconSize,
+                tooltip:  "参照を解除する",
+                onClick:  () => onClear(),
+                margin:   ClearButtonMargin,
+                padding:  ClearButtonPadding,
+                styleKey: SeedButtonStyle.OUTLINED);
+            // 未設定のときは押しても意味がないため無効化する
+            clearBtn.IsEnabled = hasPath;
             Grid.SetColumn(clearBtn, 3); grid.Children.Add(clearBtn);
         }
 

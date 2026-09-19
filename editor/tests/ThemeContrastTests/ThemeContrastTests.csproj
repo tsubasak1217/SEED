@@ -30,6 +30,13 @@
       <Link>Linked\Theme\SeedColorTable.cs</Link>
     </Compile>
 
+    <!-- 検査対象。当たり判定（ヒットエリア）寸法の唯一の出所。
+         SeedButtonMetrics.cs 本体は Thickness（WPF 型）を使うためリンクできないので、
+         WPF に依存しない partial の片割れだけを取り込む。 -->
+    <Compile Include="..\..\src\Theme\SeedButtonMetrics.HitArea.cs">
+      <Link>Linked\Theme\SeedButtonMetrics.HitArea.cs</Link>
+    </Compile>
+
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

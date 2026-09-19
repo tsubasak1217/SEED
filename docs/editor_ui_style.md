@@ -5,10 +5,12 @@ SEED エディタ（`editor/`、C# WPF、ダークテーマ）のボタンの見
 
 - 色の定義 … `editor/src/Theme/SeedColorTable.cs`（16 進文字列の定数表。WPF 非依存）
 - 寸法の定義 … `editor/src/Theme/SeedButtonMetrics.cs`
+  （当たり判定の算出だけは WPF 非依存の `SeedButtonMetrics.HitArea.cs`）
 - スタイルの定義 … `editor/src/Theme/SeedButtonStyles.xaml`（`App.xaml` から結合）
 - コードから使うキー … `editor/src/Theme/SeedButtonStyle.cs`
 - 状態別の色を差し替える仕組み … `editor/src/Theme/ButtonChrome.cs`（添付プロパティ）
-- 検査 … `editor/tests/ThemeContrastTests`
+- 「×」ボタンの共通ファクトリ … `editor/src/Controls/CloseIconButton.cs`（3 章）
+- 検査 … `editor/tests/ThemeContrastTests`（配色と当たり判定）
 
 ---
 
@@ -103,7 +105,82 @@ deleteButton.Style = SeedButtonStyle.Get(SeedButtonStyle.DANGER);
 
 ---
 
-## 3. 色表（`SeedColorTable`）
+## 3. 「×」ボタンと小さなアイコンボタンの当たり判定
+
+### 3.1 「×」は共通の窓口で作る
+
+閉じる・解除・削除の「×」（`Icon.Close`）は、
+**`editor/src/Controls/CloseIconButton.cs` を必ず通して作る**。
+アイコン（`AppIcon`）へ直接マウスハンドラを付けない。
+
+```csharp
+using SEEDEditor.Controls;
+
+var close = CloseIconButton.Create(
+    TabCloseIconSize,                    // 見た目のアイコンの大きさ（変えない）
+    tooltip:       "このタブを閉じる",
+    onClick:       () => CloseTab(tab),
+    margin:        TabCloseButtonMargin,
+    verticalBleed: TabCloseButtonVerticalBleed);
+```
+
+| 引数 | 使いどころ |
+|---|---|
+| `iconSize` | アイコン（見た目）の一辺。**当たり判定の計算にだけ使い、絵の大きさは変えない** |
+| `tooltip` / `tag` / `onClick` | 文言・対象データ・押されたときの処理。`Click` を後から足してもよい |
+| `iconBrush` / `hoverIconBrush` | 既存箇所の強調色（赤系の削除など）を保つときだけ。**ボタン自体の色は書かない** |
+| `margin` / `padding` | 周囲との間隔・内側余白（既定は余白 0 の正方形） |
+| `verticalBleed` | 行やタブの高さを伸ばしたくないとき（3.3） |
+| `styleKey` | 既定はアイコン専用。枠線つきの小ボタンが並ぶ行だけ `OUTLINED` |
+
+実体は `Seed.Button.Icon` を当てた **`Button`**。ボタンにしているのは、
+
+- ホバー・押下・無効の見た目、キーボード操作、UI Automation の Invoke が共通書式で揃う
+- `ButtonBase` が `MouseLeftButtonDown` を自分で処理して `Handled` を立てるので、
+  **ドラッグ元や開閉トグルを兼ねた行・見出しの中に置いても誤作動しない**
+  （インスペクタのコンポーネント見出しがこれにあたる）
+
+から。以前 `MouseDown`（押した瞬間）で閉じていた箇所も、`Click`（離した瞬間）へ揃えてよい。
+どうしても `Button` にできない場所だけ、`Background="Transparent"` を入れた `Border` で
+当たり判定を広げる（背景が無いと空白部分がヒットしない）。
+
+### 3.2 当たり判定の大きさ
+
+`editor/src/Theme/SeedButtonMetrics.HitArea.cs` が唯一の出所。
+
+```
+当たり判定 = max(ceil(アイコン一辺 × 1.5), 18px)   の正方形（アイコンは中央）
+```
+
+- 倍率 `ICON_HIT_AREA_SCALE = 1.5`、下限 `ICON_HIT_AREA_MIN_PX = 18`
+- 端数は切り上げる（小数の寸法は枠やホバー背景がにじむため）
+- 9〜12px のアイコンはすべて下限 18px に丸まる
+- 検査は `editor/tests/ThemeContrastTests`（`dotnet run --project editor/tests/ThemeContrastTests`）
+
+ボタン側には `Width`/`Height` ではなく **`MinWidth`/`MinHeight`** として入るので、
+もっと大きい寸法を持つ既存ボタン（22×22 など）を縮めることはない。
+行内の並び替えボタン（`Scripting/ScriptFieldWidgets.MakeIconButton`）も同じ規定を使う。
+
+### 3.3 行やタブの高さを伸ばさない
+
+当たり判定はたいてい行の文字（15〜16px）より大きいので、素直に置くと行が数 px 伸びる。
+その場合は `verticalBleed` に「上下へはみ出させる量」を渡し、
+**周囲の余白（行やタブの padding）を食わせて**高さを保つ。
+負のマージンは描画と当たり判定はそのままに、レイアウト上の要求高さだけを縮める。
+
+```csharp
+// 例: 文字 16px の行に 18px の当たり判定を載せる（行の padding は上下 4px）
+private static readonly double CloseButtonVerticalBleed = Math.Max(
+    0, (SeedButtonMetrics.IconHitAreaSize(TabIconSize) - RowTextHeight) / 2);
+```
+
+値は規定から計算して持つこと（直書きしない）。実測では
+「タブ」パネルの行 24px、プロジェクトパネルのタブ 20px、インスペクタの見出し 28px が
+いずれも変更前と同じ高さのまま、当たり判定だけ 18×18 に広がっている。
+
+---
+
+## 4. 色表（`SeedColorTable`）
 
 すべて実測値。比は WCAG 2.1 のコントラスト比で、
 通常の文字は 4.5 以上、無効状態とフォーカス枠は 3.0 以上を満たす。
@@ -194,7 +271,7 @@ deleteButton.Style = SeedButtonStyle.Get(SeedButtonStyle.DANGER);
 
 ---
 
-## 4. 仕組み（変更するときに知っておくこと）
+## 5. 仕組み（変更するときに知っておくこと）
 
 ### 暗黙スタイルはテンプレート内部にも効く（実測済み）
 
@@ -233,7 +310,7 @@ WPF 標準の `ScrollBar` / `ComboBox` / `Slider` / `Expander` / `TreeView` /
 
 ---
 
-## 5. 意図的に共通書式へ寄せていないもの
+## 6. 意図的に共通書式へ寄せていないもの
 
 次はボタンだが「別の見た目であること」に意味があるため、独自スタイルのまま残す。
 いずれもホバー色は暗色側なので、文字が消える問題は起きない。

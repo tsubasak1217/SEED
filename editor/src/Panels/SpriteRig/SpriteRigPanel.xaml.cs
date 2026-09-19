@@ -43,6 +43,9 @@ public partial class SpriteRigPanel : UserControl
     /// <summary>タブ見出しの閉じるボタン一辺（px）。</summary>
     private const double TabCloseIconSize = 9.0;
 
+    /// <summary>タブ名と閉じるボタンの間隔。従来の内側余白（左 3px）と同じ見え方にする。</summary>
+    private static readonly Thickness TabCloseButtonMargin = new(3.0, 0.0, 0.0, 0.0);
+
     /// <summary>開いているドキュメント（タブ）の集合。</summary>
     private readonly SpriteRigDocumentSet _documents = new();
 
@@ -205,16 +208,13 @@ public partial class SpriteRigPanel : UserControl
     /// <param name="document">対象ドキュメント。</param>
     private FrameworkElement BuildTabHeader(SpriteRigDocument document)
     {
-        var closeButton = new Button
-        {
-            Content = AppIcon.Create("Icon.Close", TabCloseIconSize),
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0.0),
-            Padding = new Thickness(3.0, 0.0, 0.0, 0.0),
-            Cursor = Cursors.Hand,
-            ToolTip = "このタブを閉じる",
-            Tag = document,
-        };
+        // 生成は共通の窓口（Controls/CloseIconButton）。
+        // アイコンの見た目は従来のままで、当たり判定だけが規定まで広がる。
+        var closeButton = CloseIconButton.Create(
+            TabCloseIconSize,
+            tooltip: "このタブを閉じる",
+            tag:     document,
+            margin:  TabCloseButtonMargin);
         closeButton.Click += OnCloseTabClicked;
 
         var title = new TextBlock

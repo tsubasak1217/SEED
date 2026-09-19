@@ -54,6 +54,15 @@ public partial class TerrainSettingsWindow
     /// <summary>条件削除ボタンのアイコン一辺サイズ（px）。</summary>
     private const double ConditionRemoveIconSize = 11;
 
+    /// <summary>
+    /// 条件削除ボタンの内側余白。ウィンドウの ToolButtonStyle（XAML）と同じ値にして、
+    /// 同じ画面に並ぶ他のツールボタンと見た目をそろえる。
+    /// </summary>
+    private static readonly Thickness ConditionRemoveButtonPadding = new(8, 3, 8, 3);
+
+    /// <summary>条件削除ボタンと直前の入力欄の間隔。</summary>
+    private static readonly Thickness ConditionRemoveButtonMargin = new(8, 0, 0, 0);
+
     /// <summary>レイヤ条件のレイヤ名コンボ幅（px）。</summary>
     private const double ConditionLayerComboWidth = 140;
 
@@ -461,20 +470,22 @@ public partial class TerrainSettingsWindow
             };
             panel.Children.Add(boxWeight);
 
-            // 削除ボタン。
-            var btnRemove = new Button
-            {
-                Style   = (Style)FindResource("ToolButtonStyle"),
-                Content = SEEDEditor.Controls.AppIcon.Create("Icon.Close", ConditionRemoveIconSize),
-                Width   = ConditionRemoveButtonWidth,
-                Margin  = new Thickness(8, 0, 0, 0),
-                ToolTip = "この条件を削除する",
-            };
-            btnRemove.Click += (_, _) =>
-            {
-                rule.LayerConditions.RemoveAt(index);
-                RebuildPropPropertyPanel();
-            };
+            // 削除ボタン。生成は「×」ボタン共通の窓口（Controls/CloseIconButton）。
+            // 枠線つきスタイル＋ToolButtonStyle と同じ余白なので見た目は従来どおりで、
+            // 当たり判定は共通の規定（アイコンの 1.5 倍・下限つき）を下回らない。
+            var btnRemove = SEEDEditor.Controls.CloseIconButton.Create(
+                ConditionRemoveIconSize,
+                tooltip:  "この条件を削除する",
+                onClick:  () =>
+                {
+                    rule.LayerConditions.RemoveAt(index);
+                    RebuildPropPropertyPanel();
+                },
+                margin:   ConditionRemoveButtonMargin,
+                padding:  ConditionRemoveButtonPadding,
+                styleKey: SEEDEditor.Theme.SeedButtonStyle.OUTLINED);
+            // 行の列幅に合わせた固定幅（当たり判定の下限より広い）。
+            btnRemove.Width = ConditionRemoveButtonWidth;
             panel.Children.Add(btnRemove);
 
             PanelPropProperties.Children.Add(MakeRow($"条件 {index}", panel));

@@ -1,17 +1,22 @@
 // ============================================================
-//  Program.cs — ボタン共通書式の配色を機械的に検査する
+//  Program.cs — ボタン共通書式（配色・当たり判定）を機械的に検査する
 //
 //  【何を守るテストか】
-//  「ホバーした瞬間だけ文字が読めなくなる」不具合の再発を防ぐ。
-//  通常・ホバー・押下・無効・フォーカス、主操作・完了・危険操作・
-//  リンク風・アイコン専用・トグル ON の全状態について、
-//  背景と文字のコントラスト比が基準（WCAG AA）を満たすことを確かめる。
+//  1. 配色: 「ホバーした瞬間だけ文字が読めなくなる」不具合の再発を防ぐ。
+//     通常・ホバー・押下・無効・フォーカス、主操作・完了・危険操作・
+//     リンク風・アイコン専用・トグル ON の全状態について、
+//     背景と文字のコントラスト比が基準（WCAG AA）を満たすことを確かめる。
+//  2. 当たり判定: 小さなアイコンボタン（× など）の押せる範囲が、
+//     アイコンの 1.5 倍・下限 18px を下回らないことを確かめる。
+//     当たり判定が小さすぎて押しづらい、という不具合の再発を防ぐ。
 //
 //  【検査対象の出所】
-//  SeedColorTable.ContrastCases が状態の一覧を持つ。
+//  配色は SeedColorTable.ContrastCases が状態の一覧を持つ。
 //  スタイルを足したらそこへ 1 行足すこと（足さないと検査されない）。
 //  XAML は同じ表を {x:Static} 経由で参照しているので、
 //  ここが通れば画面の色も同じ値になる。
+//  当たり判定は SeedButtonMetrics.IconHitAreaSize が唯一の出所で、
+//  「×」ボタンの共通ファクトリ（Controls/CloseIconButton）が必ずここから引く。
 //
 //  実行:  dotnet run --project editor/tests/ThemeContrastTests
 // ============================================================
@@ -38,7 +43,7 @@ public static class Program
     {
         var harness = new TestHarness();
 
-        Console.WriteLine("=== ボタン共通書式の配色検査 ===");
+        Console.WriteLine("=== ボタン共通書式の検査（配色・当たり判定）===");
         Console.WriteLine();
 
         // ── 1. 状態ごとのコントラスト比 ──────────────────────
@@ -120,6 +125,86 @@ public static class Program
                         RATIO_TOLERANCE,
                         "同色のコントラスト比"));
 
+        // ── 5. 小さなアイコンボタンの当たり判定 ──────────────
+        //     「× が小さすぎて押しづらい」への対策そのもの。
+        //     見た目のアイコンは小さいままで、押せる範囲だけを広げる。
+        harness.Add("当たり判定: エディタで実際に使うアイコンサイズすべてで下限以上", () =>
+        {
+            foreach (var iconSize in EDITOR_ICON_SIZES_PX)
+            {
+                var hit = SeedButtonMetrics.IconHitAreaSize(iconSize);
+                Check.True(
+                    hit >= SeedButtonMetrics.ICON_HIT_AREA_MIN_PX,
+                    $"アイコン {iconSize}px の当たり判定が {hit}px で、"
+                    + $"下限 {SeedButtonMetrics.ICON_HIT_AREA_MIN_PX}px を下回る");
+            }
+        });
+
+        harness.Add("当たり判定: アイコンの 1.5 倍を下回らない", () =>
+        {
+            foreach (var iconSize in EDITOR_ICON_SIZES_PX)
+            {
+                var hit = SeedButtonMetrics.IconHitAreaSize(iconSize);
+                Check.True(
+                    hit >= iconSize * SeedButtonMetrics.ICON_HIT_AREA_SCALE,
+                    $"アイコン {iconSize}px の当たり判定が {hit}px で、"
+                    + $"1.5 倍（{iconSize * SeedButtonMetrics.ICON_HIT_AREA_SCALE}px）に足りない");
+            }
+        });
+
+        harness.Add("当たり判定: 下限が効かない大きさでは 1.5 倍を切り上げた値になる", () =>
+        {
+            // 13px → 19.5 → 20 / 15px → 22.5 → 23（いずれも下限 18 より大きい）
+            Check.Equal(20.0, SeedButtonMetrics.IconHitAreaSize(13), "アイコン 13px の当たり判定");
+            Check.Equal(23.0, SeedButtonMetrics.IconHitAreaSize(15), "アイコン 15px の当たり判定");
+        });
+
+        harness.Add("当たり判定: 下限が効く大きさでは下限そのものになる", () =>
+        {
+            // 9px → 13.5 → 14 だが下限 18 が勝つ。11px → 16.5 → 17 も同様。
+            Check.Equal(SeedButtonMetrics.ICON_HIT_AREA_MIN_PX,
+                        SeedButtonMetrics.IconHitAreaSize(9), "アイコン 9px の当たり判定");
+            Check.Equal(SeedButtonMetrics.ICON_HIT_AREA_MIN_PX,
+                        SeedButtonMetrics.IconHitAreaSize(11), "アイコン 11px の当たり判定");
+        });
+
+        harness.Add("当たり判定: 端数を持たない（小数の描画位置でにじませない）", () =>
+        {
+            foreach (var iconSize in EDITOR_ICON_SIZES_PX)
+            {
+                var hit = SeedButtonMetrics.IconHitAreaSize(iconSize);
+                Check.True(
+                    Math.Abs(hit - Math.Round(hit)) < SIZE_TOLERANCE_PX,
+                    $"アイコン {iconSize}px の当たり判定 {hit}px が整数になっていない");
+            }
+        });
+
+        harness.Add("当たり判定: 異常な入力でも押せない大きさにならない", () =>
+        {
+            // サイズ未設定（double.NaN）がそのまま渡る事故や、0・負の値でも
+            // 0px のボタンを作らず下限へ倒す。
+            Check.Equal(SeedButtonMetrics.ICON_HIT_AREA_MIN_PX,
+                        SeedButtonMetrics.IconHitAreaSize(double.NaN), "NaN のときの当たり判定");
+            Check.Equal(SeedButtonMetrics.ICON_HIT_AREA_MIN_PX,
+                        SeedButtonMetrics.IconHitAreaSize(double.PositiveInfinity), "無限大のときの当たり判定");
+            Check.Equal(SeedButtonMetrics.ICON_HIT_AREA_MIN_PX,
+                        SeedButtonMetrics.IconHitAreaSize(0), "0px のときの当たり判定");
+            Check.Equal(SeedButtonMetrics.ICON_HIT_AREA_MIN_PX,
+                        SeedButtonMetrics.IconHitAreaSize(-5), "負の値のときの当たり判定");
+        });
+
+        harness.Add("当たり判定: アイコンが大きいほど狭くならない", () =>
+        {
+            var previous = 0.0;
+            for (var iconSize = 1.0; iconSize <= MONOTONIC_CHECK_MAX_PX; iconSize += 0.5)
+            {
+                var hit = SeedButtonMetrics.IconHitAreaSize(iconSize);
+                Check.True(hit >= previous,
+                           $"アイコン {iconSize}px の当たり判定 {hit}px が、より小さいアイコンの {previous}px を下回る");
+                previous = hit;
+            }
+        });
+
         var exitCode = harness.Run();
 
         // 参考表示: 全状態の実測値（基準を満たしていても値が見えるようにする）
@@ -155,4 +240,17 @@ public static class Program
 
     /// <summary>コントラスト比の比較に使う許容誤差。</summary>
     private const double RATIO_TOLERANCE = 0.01;
+
+    /// <summary>
+    /// エディタが実際に使っている小さなアイコンの一辺サイズ（px）。
+    /// 「×」ボタンや行内の操作ボタンで使われている値を並べてある
+    /// （タブ 9〜11 / インスペクタ 10〜12 / 参照解除 10 / 追加ボタン 16）。
+    /// </summary>
+    private static readonly double[] EDITOR_ICON_SIZES_PX = { 9, 10, 11, 12, 13, 14, 15, 16 };
+
+    /// <summary>寸法の比較に使う許容誤差（px）。</summary>
+    private const double SIZE_TOLERANCE_PX = 1e-9;
+
+    /// <summary>単調性の検査で試すアイコンサイズの上限（px）。</summary>
+    private const double MONOTONIC_CHECK_MAX_PX = 64.0;
 }

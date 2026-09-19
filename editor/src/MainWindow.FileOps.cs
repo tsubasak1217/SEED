@@ -24,6 +24,15 @@ public partial class MainWindow
     /// <summary>シーンタブの閉じるボタンのアイコン一辺サイズ（px）。</summary>
     private const double SceneTabCloseIconSize = 10;
 
+    /// <summary>アクタータブの閉じるボタンの通常時アイコン色（タブ名より控えめな灰）。</summary>
+    private static readonly SolidColorBrush ActorTabCloseBrush = new(Color.FromRgb(0x88, 0x88, 0x88));
+
+    /// <summary>アクタータブの閉じるボタンのホバー時アイコン色。</summary>
+    private static readonly SolidColorBrush ActorTabCloseHoverBrush = Brushes.White;
+
+    /// <summary>アクタータブの閉じるボタンとタブ名の間隔。</summary>
+    private static readonly Thickness ActorTabCloseMargin = new(4, 0, 0, 0);
+
     // ── シーンファイル読み込み ────────────────────────────────────
 
     private void OnSceneFileOpened(string path)
@@ -326,31 +335,15 @@ public partial class MainWindow
             // 内部レイアウト
             var dp = new DockPanel { Margin = new Thickness(8, 0, 4, 0) };
 
-            // 閉じるボタン
-            var closeBtn = new Button
-            {
-                Content         = SEEDEditor.Controls.AppIcon.Create("Icon.Close", SceneTabCloseIconSize),
-                Width           = 16,
-                Height          = 16,
-                Margin          = new Thickness(4, 0, 0, 0),
-                Background      = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
-                Foreground      = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-                FontSize        = 11,
-                Cursor          = Cursors.Hand,
-                VerticalAlignment = VerticalAlignment.Center,
-                Padding         = new Thickness(0),
-            };
-            // × ボタンのホバー
-            closeBtn.MouseEnter += (s, e) =>
-                closeBtn.Foreground = Brushes.White;
-            closeBtn.MouseLeave += (s, e) =>
-                closeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
-            closeBtn.Click += (s, e) =>
-            {
-                e.Handled = true;
-                CloseActorTab(tab.Path);
-            };
+            // 閉じるボタン（生成は共通の窓口。見た目のアイコンは従来のままで
+            // 当たり判定だけ広い。タブの高さは固定なので背は伸びない）
+            var closeBtn = SEEDEditor.Controls.CloseIconButton.Create(
+                SceneTabCloseIconSize,
+                tooltip:        "このタブを閉じる",
+                onClick:        () => CloseActorTab(tab.Path),
+                iconBrush:      ActorTabCloseBrush,
+                hoverIconBrush: ActorTabCloseHoverBrush,
+                margin:         ActorTabCloseMargin);
 
             // アクター名テキスト
             var txt = new TextBlock

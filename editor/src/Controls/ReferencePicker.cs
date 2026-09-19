@@ -93,10 +93,19 @@ internal sealed class ReferencePicker
 {
     // ── レイアウト定数 ────────────────────────────────────────
     private const double CaptionWidth   = 90;
+
+    /// <summary>
+    /// 解除ボタンの幅（px）。行の見た目に合わせた固定幅で、
+    /// 当たり判定の下限（<see cref="SeedButtonMetrics.ICON_HIT_AREA_MIN_PX"/>）より広いので、
+    /// この幅を指定しても押しやすさの規定は満たしたままになる。
+    /// </summary>
     private const double ClearButtonWidth = 22;
 
     /// <summary>解除ボタンのアイコン一辺サイズ（px）。</summary>
     private const double ClearButtonIconSize = 10;
+
+    /// <summary>解除ボタンとドロップゾーンの間隔。</summary>
+    private static readonly Thickness ClearButtonMargin = new(3, 0, 0, 0);
     private const double LabelFontSize  = 11;
 
     // ── 配色 ─────────────────────────────────────────────────
@@ -163,20 +172,21 @@ internal sealed class ReferencePicker
         };
 
         // ── 解除（クリア）ボタン ─────────────────────────────
+        // 生成は「×」ボタン共通の窓口（Controls/CloseIconButton）。
         // 色・ホバーは共通書式（Theme/SeedButtonStyles.xaml）が決める。
         // 解除は取り消しの効く操作なので危険色ではなく通常のアイコンボタンにする。
-        _clearButton = new Button
-        {
-            Content         = AppIcon.Create("Icon.Close", ClearButtonIconSize),
-            Style           = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
-            // 幅 22px の小さなボタンなので、共通スタイルの通常余白（左右 10px）では中身の幅が 2px になり
-            // アイコンが見えなくなる。アイコン専用の余白（左右 4px）で 10px のアイコンを収める。
-            Padding         = SeedButtonMetrics.IconPadding,
-            Width           = ClearButtonWidth,
-            Margin          = new Thickness(3, 0, 0, 0),
-            ToolTip         = spec.ClearTooltip,
-        };
-        _clearButton.Click += (_, _) => Commit(null, null);
+        // 枠線つきスタイルを選ぶのは、同じ行に並ぶ他の小ボタンと見た目を揃えるため。
+        _clearButton = CloseIconButton.Create(
+            ClearButtonIconSize,
+            tooltip:  spec.ClearTooltip,
+            onClick:  () => Commit(null, null),
+            margin:   ClearButtonMargin,
+            // 共通スタイルの通常余白（左右 10px）では中身の幅が 2px になりアイコンが
+            // 見えなくなる。アイコン専用の余白（左右 4px）で 10px のアイコンを収める。
+            padding:  SeedButtonMetrics.IconPadding,
+            styleKey: SeedButtonStyle.OUTLINED);
+        // 幅は行の見た目に合わせた固定値（当たり判定の下限より広い）。
+        _clearButton.Width = ClearButtonWidth;
 
         // ── 行レイアウト（[見出し] ドロップゾーン ✕）───────────
         var grid = new Grid();

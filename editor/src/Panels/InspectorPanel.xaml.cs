@@ -780,6 +780,22 @@ public partial class InspectorPanel : UserControl
     private static readonly SolidColorBrush RemoveButtonBrush      = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
     /// <summary>コンポーネント削除ボタンのホバー色（破壊操作なので赤系）。</summary>
     private static readonly SolidColorBrush RemoveButtonHoverBrush = new(Color.FromRgb(0xFF, 0x66, 0x66));
+    /// <summary>セクションヘッダーの内側余白。</summary>
+    private static readonly Thickness SectionHeaderPadding = new(6, 6, 6, 6);
+    /// <summary>コンポーネント削除ボタンとタイトルの間隔。</summary>
+    private static readonly Thickness RemoveButtonMargin = new(6, 0, 0, 0);
+    /// <summary>セクションヘッダーの 1 行が占める高さの目安（px）。タイトル（FontSize 12）の行送り。</summary>
+    private const double SectionHeaderRowHeight = 16.0;
+    /// <summary>
+    /// 削除ボタンをヘッダーの上下余白へはみ出させる量（px）。
+    ///
+    /// 削除ボタンの当たり判定はアイコン（12px）より大きい正方形なので、
+    /// そのままだとヘッダーの高さがボタンで決まって全セクションが伸びる。
+    /// はみ出す分はヘッダーの内側余白（上下 6px）に収まるため見た目は変わらず、
+    /// 当たり判定だけが上下へ広がる。値は当たり判定の規定から導いている。
+    /// </summary>
+    private static readonly double RemoveButtonVerticalBleed = Math.Max(
+        0, (SeedButtonMetrics.IconHitAreaSize(SectionHeaderIconSize) - SectionHeaderRowHeight) / 2);
     /// <summary>再生/停止トグルの停止中の ToolTip。</summary>
     private const string CoverSimPlayToolTip =
         "リアルタイムに積もらせ続けます（秒数欄とは無関係）。もう一度押すと止まります。";
@@ -2148,7 +2164,7 @@ public partial class InspectorPanel : UserControl
             Background      = new SolidColorBrush(headerBgColor),
             BorderBrush     = isComponentSlot && slotIdx == _selectedSlotIdx ? selectedBorderBrush : defaultBorderBrush,
             BorderThickness = isComponentSlot && slotIdx == _selectedSlotIdx ? selectedBorderThickness : defaultBorderThickness,
-            Padding         = new Thickness(6, 6, 6, 6),
+            Padding         = SectionHeaderPadding,
             Cursor          = Cursors.Hand,
         };
 
@@ -2236,21 +2252,22 @@ public partial class InspectorPanel : UserControl
         // ── 削除×ボタン（旧コンポーネント一覧チップの削除機能を移設。コンポーネントスロットのみ）──
         if (isComponentSlot)
         {
-            var removeBtn = SEEDEditor.Controls.AppIcon.Create("Icon.Close", SectionHeaderIconSize);
-            removeBtn.SetBrush(RemoveButtonBrush);
-            removeBtn.VerticalAlignment = VerticalAlignment.Center;
-            removeBtn.Cursor            = Cursors.Hand;
-            removeBtn.Margin            = new Thickness(6, 0, 0, 0);
-            removeBtn.ToolTip           = "コンポーネントを削除";
-            removeBtn.MouseEnter += (_, _) => removeBtn.SetBrush(RemoveButtonHoverBrush);
-            removeBtn.MouseLeave += (_, _) => removeBtn.SetBrush(RemoveButtonBrush);
-            removeBtn.MouseLeftButtonDown += (_, e) =>
-            {
-                // 開閉トグルへ伝播させない（削除操作を折り畳みと混同しないため）
-                e.Handled = true;
-                if (_currentActorId >= 0)
-                    _runtime?.SendToRuntime($"REMOVE_COMPONENT:{_currentActorId},{slotIdx}");
-            };
+            // 生成は共通の窓口（Controls/CloseIconButton）。アイコンの大きさは変えず、
+            // 当たり判定だけを規定まで広げる。Button は押下を自分で処理するため、
+            // ヘッダーの開閉トグル・リネーム・参照ドラッグへは伝播しない
+            // （＝削除操作が折り畳みやドラッグと混ざらない）。
+            var removeBtn = SEEDEditor.Controls.CloseIconButton.Create(
+                SectionHeaderIconSize,
+                tooltip:        "コンポーネントを削除",
+                onClick:        () =>
+                {
+                    if (_currentActorId >= 0)
+                        _runtime?.SendToRuntime($"REMOVE_COMPONENT:{_currentActorId},{slotIdx}");
+                },
+                iconBrush:      RemoveButtonBrush,
+                hoverIconBrush: RemoveButtonHoverBrush,
+                margin:         RemoveButtonMargin,
+                verticalBleed:  RemoveButtonVerticalBleed);
             Grid.SetColumn(removeBtn, 4);
             headerGrid.Children.Add(removeBtn);
         }

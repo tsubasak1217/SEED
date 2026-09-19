@@ -49,6 +49,9 @@ public partial class InspectorPanel
     /// <summary>行内アイコン（警告・解除）の一辺サイズ（px）。</summary>
     private const double BoneRowIconSize = 12.0;
 
+    /// <summary>解除（×）ボタンと解決先パスの間隔。</summary>
+    private static readonly Thickness BoneRowClearButtonMargin = new(3, 0, 0, 0);
+
     /// <summary>「ボーンアクターを生成」ボタンのアイコンサイズ（px）。</summary>
     private const double BoneButtonIconSize = 14.0;
 
@@ -308,14 +311,13 @@ public partial class InspectorPanel
         // 明示指定の解除ボタン（明示指定の行だけ出す）
         if (bone.IsOverride)
         {
-            var clear = new Button
-            {
-                Padding = new Thickness(2),
-                Margin = new Thickness(3, 0, 0, 0),
-                ToolTip = "明示指定を解除して自動解決に戻す",
-                Content = AppIcon.Create("Icon.Close", size: BoneRowIconSize),
-            };
-            clear.Click += (_, _) => ApplySkinBoneOverride(info, allRows, bone.Name, null);
+            // 生成は共通の窓口（Controls/CloseIconButton）。
+            // アイコンの大きさは従来どおりで、当たり判定だけ規定まで広がる。
+            var clear = CloseIconButton.Create(
+                BoneRowIconSize,
+                tooltip: "明示指定を解除して自動解決に戻す",
+                onClick: () => ApplySkinBoneOverride(info, allRows, bone.Name, null),
+                margin:  BoneRowClearButtonMargin);
             DockPanel.SetDock(clear, Dock.Right);
             row.Children.Add(clear);
         }

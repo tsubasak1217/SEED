@@ -68,6 +68,26 @@ public partial class ProjectPanel
     /// <summary>閉じるボタンアイコンの一辺サイズ（px）。</summary>
     private const double TabCloseIconSize = 11.0;
 
+    /// <summary>
+    /// タブ名と閉じるボタンの間隔。
+    /// 閉じるボタンは当たり判定を正方形で確保するぶんアイコンの左右に余白を持つため、
+    /// 従来（6px）より詰めておかないと見た目の間隔が広がってしまう。
+    /// </summary>
+    private static readonly Thickness TabCloseButtonMargin = new(2, 0, 0, 0);
+
+    /// <summary>タブ名 1 行が占める高さの目安（px）。<see cref="TabFontSize"/> の行送り。</summary>
+    private const double TabTextHeight = 15.0;
+
+    /// <summary>
+    /// 閉じるボタンをタブの上下余白へはみ出させる量（px）。
+    ///
+    /// 当たり判定はアイコン（11px）より大きい正方形なので、そのままだと
+    /// タブの高さが文字ではなくボタンで決まって、タブが縦に伸びてしまう。
+    /// はみ出す分はタブの内側余白（上下 2px）に収まるため見た目は変わらない。
+    /// </summary>
+    private static readonly double TabCloseButtonVerticalBleed = Math.Max(
+        0, (SEEDEditor.Theme.SeedButtonMetrics.IconHitAreaSize(TabCloseIconSize) - TabTextHeight) / 2);
+
     /// <summary>タブ列末尾に置く「新しいタブ」ボタンのアイコン一辺サイズ（px）。閉じるボタンより一回り大きくして視認性を確保する。</summary>
     private const double NewTabButtonIconSize = 13.0;
 
@@ -214,17 +234,16 @@ public partial class ProjectPanel
         // 閉じるボタンは最後の 1 枚には出さない（閉じられないことを見た目でも示す）
         if (_tabs.Count > MinTabCount)
         {
-            var closeBtn = SEEDEditor.Controls.AppIcon.Create("Icon.Close", TabCloseIconSize);
-            closeBtn.SetBrush(TabCloseForeground);
-            closeBtn.Margin            = new Thickness(6, 0, 0, 0);
-            closeBtn.VerticalAlignment = VerticalAlignment.Center;
-            closeBtn.Cursor            = Cursors.Hand;
-            closeBtn.ToolTip           = "このタブを閉じる";
-            closeBtn.MouseLeftButtonDown += (_, e) =>
-            {
-                CloseTab(tab);
-                e.Handled = true;   // タブ本体のクリック（アクティブ化）へ伝播させない
-            };
+            // 生成は共通の窓口（Controls/CloseIconButton）。アイコンの見た目は変えず、
+            // 当たり判定だけを規定まで広げる。Button が押下を自分で処理するので、
+            // タブ本体のクリック（アクティブ化）へは伝播しない。
+            var closeBtn = SEEDEditor.Controls.CloseIconButton.Create(
+                TabCloseIconSize,
+                tooltip:       "このタブを閉じる",
+                onClick:       () => CloseTab(tab),
+                iconBrush:     TabCloseForeground,
+                margin:        TabCloseButtonMargin,
+                verticalBleed: TabCloseButtonVerticalBleed);
             content.Children.Add(closeBtn);
         }
 

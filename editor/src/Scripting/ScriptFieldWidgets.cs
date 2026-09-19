@@ -97,12 +97,20 @@ internal static class ScriptFieldWidgets
         // 色・ホバーは共通スタイル（Theme/SeedButtonStyles.xaml）に任せる。
         // Opacity を併用するのは、アイコンの色を SetBrush で固定しているため
         // 共通スタイルの無効時文字色が効かず、背景だけでは押せないことが伝わらないから。
+        //
+        // 当たり判定（Min*）は「×」ボタンと同じ共通の規定から引く
+        // （Theme/SeedButtonMetrics.IconHitAreaSize。正典は docs/editor_ui_style.md）。
+        // アイコンの見た目は iconSize のままで、押せる範囲だけが広がる。
+        // 行の高さは入力欄（MakeTextBox: 約 19px）が決めているため、この最小寸法では伸びない。
+        var hitArea = SeedButtonMetrics.IconHitAreaSize(iconSize);
         var btn = new Button
         {
             Content           = icon,
             Style             = SeedButtonStyle.Get(SeedButtonStyle.OUTLINED),
             Padding           = padding ?? RowButtonPadding,
             Margin            = new Thickness(3, 0, 0, 0),
+            MinWidth          = hitArea,
+            MinHeight         = hitArea,
             VerticalAlignment = VerticalAlignment.Center,
             ToolTip           = tooltip,
             IsEnabled         = isEnabled,

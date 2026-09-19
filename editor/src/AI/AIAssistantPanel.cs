@@ -40,6 +40,18 @@ public class AIAssistantPanel
     /// <summary>履歴セッション削除ボタンのアイコン一辺サイズ（px）。</summary>
     private const double SessionDeleteIconSize = 12;
 
+    /// <summary>
+    /// 履歴セッション削除ボタンの一辺（px）。行の右端に置く正方形で、
+    /// 当たり判定の下限（<see cref="SeedButtonMetrics.ICON_HIT_AREA_MIN_PX"/>）より大きい。
+    /// </summary>
+    private const double SessionDeleteButtonSize = 22;
+
+    /// <summary>履歴セッション削除ボタンのアイコン色（破壊操作なので赤系）。</summary>
+    private static readonly SolidColorBrush SessionDeleteBrush = new(Color.FromRgb(180, 80, 80));
+
+    /// <summary>履歴セッション削除ボタンのホバー時アイコン色。</summary>
+    private static readonly SolidColorBrush SessionDeleteHoverBrush = new(Color.FromRgb(0xFF, 0x66, 0x66));
+
     /// <summary>設定（歯車）ボタンのアイコン一辺サイズ（px）。</summary>
     private const double GearButtonIconSize = 15;
 
@@ -801,23 +813,18 @@ public class AIAssistantPanel
         Grid.SetColumn(infoStack, 0);
         grid.Children.Add(infoStack);
 
-        // 削除ボタン
-        var deleteBtn = new Button
-        {
-            Content         = SEEDEditor.Controls.AppIcon.Create("Icon.Close", SessionDeleteIconSize),
-            Width           = 22,
-            Height          = 22,
-            Background      = Brushes.Transparent,
-            Foreground      = new SolidColorBrush(Color.FromRgb(180, 80, 80)),
-            BorderThickness = new Thickness(0),
-            Cursor          = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        deleteBtn.Click += (_, e) =>
-        {
-            e.Handled = true;
-            DeleteSession(session);
-        };
+        // 削除ボタン。生成は「×」ボタン共通の窓口（Controls/CloseIconButton）。
+        // 色・ホバーは共通書式に任せ、赤系のアイコン色だけ従来どおり保つ。
+        // Button が押下を処理するので、行クリック（セッション切替）へは伝播しない。
+        var deleteBtn = SEEDEditor.Controls.CloseIconButton.Create(
+            SessionDeleteIconSize,
+            tooltip:        "この履歴を削除する",
+            onClick:        () => DeleteSession(session),
+            iconBrush:      SessionDeleteBrush,
+            hoverIconBrush: SessionDeleteHoverBrush);
+        // 行の右端に合わせた固定寸法（当たり判定の下限より大きい）。
+        deleteBtn.Width  = SessionDeleteButtonSize;
+        deleteBtn.Height = SessionDeleteButtonSize;
         Grid.SetColumn(deleteBtn, 1);
         grid.Children.Add(deleteBtn);
 
