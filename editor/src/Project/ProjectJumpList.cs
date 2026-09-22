@@ -4,8 +4,11 @@
 //  「最近」欄に最近開いたプロジェクトの .seedproj を並べる（Visual Studio の「最近使ったもの」相当）。
 //   - 項目は JumpPath（ファイルそのもの）。クリックすると .seedproj の関連付けで SEEDEditor.exe が
 //     起動し、右クリックには Windows 標準の「フォルダーの場所を開く」（プロジェクトのフォルダ）が付く。
-//   - アプリ自身の項目（"SEED"）は Windows が自動で出す。右クリックの「ファイルの場所を開く」で
-//     エンジン（exe）のフォルダが開く。以前あった「スタート画面を開く」タスクは同じ動作の重複なので廃止。
+//   - アプリ自身の項目（"SEED"）は Windows が自動で出す。その右クリックは Windows 標準の
+//     「開く／管理者として実行／ピン留め／プロパティ」だけで、アプリからは項目を足せない
+//     （2026-09-23 に「SEED 本体のフォルダーを開く項目が欲しい」と指摘され、実機で確認）。
+//     そこで「タスク」欄に「SEED のフォルダーを開く」（explorer.exe でエンジンのフォルダを開く）を置く。
+//     開く先は EngineFolderLocator が決める（開発配置＝リポジトリ、配布配置＝exe のフォルダ）。
 //
 //  【前提】
 //   JumpPath は「そのアプリがその拡張子の登録ハンドラである」ときだけ表示される（未登録なら黙って落ちる）。
@@ -33,6 +36,24 @@ namespace SEEDEditor.Project;
 /// </summary>
 public static class ProjectJumpList
 {
+    /// <summary>「SEED のフォルダーを開く」タスクの表示名。</summary>
+    private const string OPEN_ENGINE_FOLDER_TITLE = "SEED のフォルダーを開く";
+
+    /// <summary>「SEED のフォルダーを開く」タスクの説明（ホバーで出る）。</summary>
+    private const string OPEN_ENGINE_FOLDER_DESCRIPTION = "SEED 本体（エンジン）のフォルダーをエクスプローラーで開きます";
+
+    /// <summary>フォルダーを開くのに使うプログラム。</summary>
+    private const string EXPLORER_EXE = "explorer.exe";
+
+    /// <summary>
+    /// タスク項目のアイコンに使う shell32.dll のフォルダーアイコンの番号。
+    /// 負の値は「リソース ID」指定（正の値は並び順の指定になる）。ID 4 は標準の閉じたフォルダー。
+    /// </summary>
+    private const int SHELL32_FOLDER_ICON_RESOURCE = -4;
+
+    /// <summary>アイコンを取るシステム DLL。</summary>
+    private const string SHELL32_DLL = "shell32.dll";
+
     /// <summary>
     /// 最近の一覧を読み直してジャンプリストを作り直す。
     /// 失敗しても（OS 側の制限・権限など）エディタの動作には影響させない。
@@ -73,8 +94,28 @@ public static class ProjectJumpList
                 });
             }
 
+            // 「タスク」欄: SEED 本体のフォルダーをエクスプローラーで開く。
+            // Windows が出す "SEED" の項目の右クリックには足せないので、ここに置く。
+            var engineFolder = EngineFolderLocator.Resolve(
+                Path.GetDirectoryName(exePath), Directory.Exists);
+            if (engineFolder.Length > 0)
+            {
+                jumpList.JumpItems.Add(new JumpTask
+                {
+                    Title             = OPEN_ENGINE_FOLDER_TITLE,
+                    Description       = OPEN_ENGINE_FOLDER_DESCRIPTION,
+                    ApplicationPath   = EXPLORER_EXE,
+                    // パスに空白があっても 1 引数として渡るように引用符で囲む。
+                    Arguments         = $"\"{engineFolder}\"",
+                    IconResourcePath  = SHELL32_DLL,
+                    IconResourceIndex = SHELL32_FOLDER_ICON_RESOURCE,
+                    WorkingDirectory  = engineFolder,
+                });
+            }
+
             JumpList.SetJumpList(Application.Current, jumpList);
-            EditorLog.Write($"ジャンプリストを更新しました: 最近 {specs.Count} 件");
+            EditorLog.Write(
+                $"ジャンプリストを更新しました: 最近 {specs.Count} 件 / 本体のフォルダー={engineFolder}");
         }
         catch (Exception ex)
         {

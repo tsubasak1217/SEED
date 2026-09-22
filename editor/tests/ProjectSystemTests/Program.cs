@@ -87,6 +87,7 @@ public static class Program
         // ── タスクバーのジャンプリスト ─────────────────────
         harness.Add("ジャンプリストは実在する .seedproj だけを順序通りに並べる", JumpListKeepsOnlyExistingInOrder);
         harness.Add("ジャンプリストは重複パスを除き最大件数で打ち切る",        JumpListDedupesAndCaps);
+        harness.Add("「SEED のフォルダーを開く」は配置に応じてリポジトリ／exe のフォルダを指す", EngineFolderResolvesByLayout);
 
         // ── 関連付けの値 ────────────────────────────────────
         harness.Add("FileAssociation の値が HKCU 配下で組み立てられる",   AssociationValues);
@@ -862,5 +863,33 @@ public static class Program
         Check.Equal(items.Count, distinct, "重複なし");
     }
 
+    /// <summary>
+    /// ジャンプリストの「SEED のフォルダーを開く」で開く先。
+    /// 開発配置（editor/bin/Debug/net9.0-windows）ならリポジトリのフォルダ、
+    /// 配布配置（exe の隣に config/）なら exe のフォルダ、どちらでもなければ exe のフォルダ。
+    /// </summary>
+    private static void EngineFolderResolvesByLayout()
+    {
+        // 開発配置: 3 階層上に editor/config がある → その親（リポジトリ）を開く
+        var devExeDir = @"C:\src\SEED\editor\bin\Debug\net9.0-windows";
+        var devDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            @"C:\src\SEED\editor\config", @"C:\src\SEED",
+        };
+        Check.Equal(@"C:\src\SEED", EngineFolderLocator.Resolve(devExeDir, devDirs.Contains), "開発配置はリポジトリ");
 
+        // 配布配置: exe の隣に config/ があり、3 階層上に editor/config は無い → exe のフォルダ
+        var distExeDir = @"D:\Apps\SEED";
+        var distDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"D:\Apps\SEED\config" };
+        Check.Equal(distExeDir, EngineFolderLocator.Resolve(distExeDir, distDirs.Contains), "配布配置は exe のフォルダ");
+
+        // どちらでもない（目印なし）→ exe のフォルダ
+        Check.Equal(@"E:\x\y", EngineFolderLocator.Resolve(@"E:\x\y", _ => false), "目印なしは exe のフォルダ");
+
+        // 浅すぎて 3 階層上が無い → exe のフォルダ（例外にしない）
+        Check.Equal(@"C:\", EngineFolderLocator.Resolve(@"C:\", _ => true), "ルート直下でも落ちない");
+
+        // 実行ファイルの場所が分からない → 空文字（呼び出し側がタスクを出さない）
+        Check.Equal(string.Empty, EngineFolderLocator.Resolve(null, _ => true), "不明なら空");
+    }
 }
