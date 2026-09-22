@@ -243,12 +243,7 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 - 項目は `.seedproj` そのもの（JumpPath）。クリックすると関連付けで SEEDEditor.exe が起動してそのプロジェクトが開き、
   右クリックには Windows 標準の「フォルダーの場所を開く」が付く（プロジェクトのフォルダが開く）。
 - 表示名は Windows が `.seedproj` のファイル名から決める（JumpPath は表示名を持てない）。
-- 一覧の下のアプリ項目「SEED」は Windows が自動で出す。**その右クリックは Windows 標準の
-  「開く／管理者として実行／ピン留め／プロパティ」だけで、アプリからは項目を足せない**
-  （2026-09-23 に実機で確認。以前この節に書いていた「ファイルの場所を開く」は出ない）。
-  そのため「タスク」欄に **「SEED のフォルダーを開く」**（`explorer.exe` でエンジンのフォルダを開く）を置く。
-  開く先は `EngineFolderLocator` が決める: 開発配置（`editor/bin/<Cfg>/<tfm>/` で 3 階層上に `editor/config`
-  がある）なら**リポジトリのフォルダ**、配布配置（exe の隣に `config/`）なら **exe のフォルダ**。
+- 一覧の下のアプリ項目「SEED」を右クリック →「ファイルの場所を開く」でエンジン（exe）のフォルダが開く。
   以前あった「スタート画面を開く」タスクは、アプリ項目のクリックと同じ動作だったため廃止した。
 - JumpPath は「その exe が `.seedproj` の登録ハンドラ」のときだけ表示されるため、更新前に関連付け
   （HKCU の ProgID と `Applications\SEEDEditor.exe`）を確認し、無ければ登録する。ヘッドレス起動では触らない。
