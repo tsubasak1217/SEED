@@ -27,6 +27,8 @@ pub mod host_api;
 pub mod actor_ref_path;
 // スクリプト入力 API の ID ⇔ winit 型対応表
 pub mod input_bridge;
+// 画面情報 API（SEED.Screen）の FFI とフレームごとの写しの公開口
+pub mod screen_bridge;
 // ControlPoint パス評価（時刻 → ワールド位置／進行方向）の純関数層
 pub mod path_query;
 // カメラのワールド→スクリーン射影（Camera.WorldToScreen / WorldToCanvas）の純関数層

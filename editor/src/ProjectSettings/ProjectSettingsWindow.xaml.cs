@@ -728,6 +728,9 @@ public partial class ProjectSettingsWindow : Window
     /// <summary>垂直同期モードのコンボボックス（自動 / 有効 / 無効）。</summary>
     private ComboBox? _cmbVsync;
 
+    /// <summary>画面の向き（モバイル）のコンボボックス（項目は ScreenOrientationSetting.Choices。Tag に設定値）。</summary>
+    private ComboBox? _cmbScreenOrientation;
+
     /// <summary>「解像度設定」パネルを構築して返す。</summary>
     ///
     /// よくある解像度のプリセット＋「カスタム...」のコンボボックス。
@@ -897,6 +900,70 @@ public partial class ProjectSettingsWindow : Window
         // 解像度と同じ「ゲームウィンドウの出し方」の設定なので同じパネルに置く
         //（保存経路も同じ ProjectSettingsData → project_settings.json）。
         panel.Children.Add(BuildFrameRatePanel());
+
+        // ── 画面の向き（モバイル）───────────────────────────────
+        // 同じく「画面の出し方」の設定。Android の APK を作るときだけ使われる。
+        panel.Children.Add(BuildScreenOrientationPanel());
+
+        return panel;
+    }
+
+    /// <summary>
+    /// 「画面の向き（モバイル）」小節（縦横どちらも / 縦に固定 / 横に固定）を構築して返す。
+    ///
+    /// project_settings.json の screen_orientation へ保存される。Android の APK を作るとき
+    /// （runtime/android/build_and_run.ps1）にマニフェストへ焼き込まれ、デスクトップの実行には影響しない。
+    /// </summary>
+    private UIElement BuildScreenOrientationPanel()
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text       = "画面の向き（モバイル）",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
+            FontSize   = 13,
+            FontWeight = FontWeights.Bold,
+            Margin     = new Thickness(0, 0, 0, 8),
+        });
+
+        // ── 画面の向きコンボボックス行 ──
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var label = new TextBlock
+        {
+            Text              = "画面の向き",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 0);
+        row.Children.Add(label);
+
+        // 配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる
+        _cmbScreenOrientation = new ComboBox { FontSize = 12 };
+        foreach (var (value, text) in ScreenOrientationSetting.Choices)
+        {
+            _cmbScreenOrientation.Items.Add(new ComboBoxItem { Content = text, Tag = value });
+        }
+        // 初期選択: 現在値（前後空白除去・大文字小文字無視）に対応する項目。未知の値は既定（縦横どちらも）。
+        _cmbScreenOrientation.SelectedIndex = ScreenOrientationSetting.IndexOf(_data.ScreenOrientation);
+        Grid.SetColumn(_cmbScreenOrientation, 1);
+        row.Children.Add(_cmbScreenOrientation);
+        panel.Children.Add(row);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text         = "Android 版の画面の向きです。「横に固定」は左右どちら向きの横にも端末のセンサーに従って回ります（「縦に固定」の逆さの縦は端末の設定次第）。\n" +
+                           "APK を作るときにアプリの設定（マニフェスト）へ書き込まれるので、変えたら APK を作り直してください。\n" +
+                           "デスクトップ（Windows）の実行には影響しません。スクリプトからは SEED.Screen.Orientation で今の向きを読めます。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(120, 4, 0, 0),
+        });
 
         return panel;
     }
@@ -1463,6 +1530,13 @@ public partial class ProjectSettingsWindow : Window
             && (_cmbVsync.SelectedItem as ComboBoxItem)?.Tag is string vsync)
         {
             _data.Vsync = vsync;
+        }
+
+        // 「画面の向き（モバイル）」の選択値を収集する（Tag に JSON 値が入っている）
+        if (_cmbScreenOrientation is not null
+            && (_cmbScreenOrientation.SelectedItem as ComboBoxItem)?.Tag is string screenOrientation)
+        {
+            _data.ScreenOrientation = screenOrientation;
         }
 
         // 「RTシャドウ」パネルのチェック状態を収集する

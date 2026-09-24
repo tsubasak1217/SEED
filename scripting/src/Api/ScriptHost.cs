@@ -588,6 +588,35 @@ public static unsafe class ScriptHost
         return true;
     }
 
+    // ── 画面情報（SEED.Screen）──────────────────────────────────
+    // 種別と並びは Rust 側 runtime/src/engine/core/scripting/screen_bridge.rs の SCREEN_QUERY_* と一致させる。
+
+    /// <summary>画面情報の種別: 描画ターゲットの寸法（2 要素: 幅, 高さ）。</summary>
+    public const int ScreenQuerySize = 0;
+    /// <summary>画面情報の種別: 安全領域（4 要素: x, y, 幅, 高さ）。</summary>
+    public const int ScreenQuerySafeArea = 1;
+    /// <summary>画面情報の種別: 画面の向き（1 要素: ScreenOrientation の数値）。</summary>
+    public const int ScreenQueryOrientation = 2;
+    /// <summary>画面情報の種別: 論理 DPI（1 要素）。</summary>
+    public const int ScreenQueryDpi = 3;
+    /// <summary>どの種別でも書き込まれる要素数の上限（Rust 側 SCREEN_QUERY_MAX_FLOATS と一致）。</summary>
+    public const int ScreenQueryMaxFloats = 4;
+
+    /// <summary>
+    /// 画面情報を 1 項目問い合わせ、値を <paramref name="values"/> の先頭へ書く。
+    /// 値はエンジンがフレームごとに 1 回だけ差し替える写しなので、同じフレームの間は何度呼んでも同じ。
+    /// </summary>
+    /// <param name="kind">種別（ScreenQuery*）。</param>
+    /// <param name="expectedCount">その種別で書き込まれるはずの要素数。</param>
+    /// <param name="values">書き込み先（<see cref="ScreenQueryMaxFloats"/> 要素以上）。</param>
+    /// <returns>書き込まれた要素数が <paramref name="expectedCount"/> と一致したら true。ホスト API 未登録・未知の種別は false。</returns>
+    public static bool ScreenQuery(int kind, int expectedCount, Span<float> values)
+    {
+        if (!_available || _api.Screen == null || values.Length < ScreenQueryMaxFloats) return false;
+        fixed (float* p = values)
+            return _api.Screen(kind, p, ScreenQueryMaxFloats) == expectedCount;
+    }
+
     // ── 2D プリミティブ描画（SEED.Draw）─────────────────────────
 
     /// <summary>
@@ -1264,4 +1293,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, int> AppEnv;
     /// <summary>(kind, index, out float*, cap) → kind 0=対応判定(1/0) / 1=本数 / 2=index 番目の指を out へ 6 要素（書いた要素数。範囲外=0）（タッチ。Input.TouchCount / GetTouch）</summary>
     public delegate* unmanaged[Cdecl]<int, int, float*, int, int> InputTouch;
+    /// <summary>(kind, out float*, cap) → 書いた要素数（kind 0=寸法 2 要素 / 1=安全領域 4 要素 / 2=向き 1 要素 / 3=DPI 1 要素。未知・容量不足=0）（画面情報。SEED.Screen）</summary>
+    public delegate* unmanaged[Cdecl]<int, float*, int, int> Screen;
 }

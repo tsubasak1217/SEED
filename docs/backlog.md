@@ -1616,10 +1616,32 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [x] **戻るキーの扱い（段階A）** — 2026-09-24 記載 / 同日対応（A-3）。Unity と同じく `KeyCode.Escape` として届ける（`core/input/key_remap.rs` の置き換え表を `PlatformTraits::key_remap` で選ぶ。デスクトップは空の表）。アプリは自動で終了しない（判断はスクリプト）。docs/android.md §14.5。以下は記載時のメモ。GameActivity はキーをネイティブへ渡し、winit が処理済み扱いにするため
   `onBackPressed` が呼ばれず何も起きない（`[SEED KEY] pressed logical=Named(BrowserBack)` とログに出るだけ）。
   ゲーム側に渡す／`moveTaskToBack` する等の方針を決める。
-- [ ] **画面の向き・安全領域（段階A）** — 2026-09-24。マニフェストは `screenOrientation="fullSensor"`（端末の回転ロックを
+- [x] **画面の向き・安全領域（段階A）** — 2026-09-24 記載 / 同日対応（A-4）。プロジェクト設定の `screen_orientation`（both / portrait / landscape）を `build_and_run.ps1` が読み、`app/build.gradle.kts` の変換表でマニフェストの `screenOrientation`（fullSensor / sensorPortrait / sensorLandscape）へ焼き込む。スクリプトの `SEED.Screen`（`Width` / `Height` / `SafeArea` / `Orientation` / `DPI`）を追加し、Android は `ScreenReporter.java`（WindowInsets と Display.getRotation）→ JNI → `platform/screen/` → フレームごとの写しで値を渡す。エミュレータで 4 方向・切り欠きの overlay 3 種・内部解像度固定・向きの固定を確認（docs/android.md §15）。回転ロックの尊重と縦画面のキャンバスは下の新しい項目へ分けた。以下は記載時のメモ。マニフェストは `screenOrientation="fullSensor"`（端末の回転ロックを
   無視する）・切り欠きは `shortEdges`。プロジェクト設定からの向き指定、回転ロックの尊重（`fullUser`）、
   安全領域（切り欠き・ナビゲーションバー）を返す API が要る。内部解像度固定（`render_resolution=fixed`）と
   キャンバスの自動スケールが縦長画面で意図どおりかも未確認（どちらも project_settings の解像度基準）。
+- [ ] **キャンバス UI へ安全領域を自動で反映する仕組みが無い（段階A 以降）** — 2026-09-24（A-4 実装時）。`Screen.SafeArea` は読めるが、
+  キャンバスのアンカー・パディングは描画面全体が基準のままで、四隅にアンカーした UI はカメラ穴・ジェスチャーバーに重なる
+  （エミュレータの四隅スプライトで確認）。Unity の SafeArea 用 RectTransform のように、キャンバス（またはアンカー基準）に
+  「安全領域の内側に合わせる」選択肢を足す。値は `core/scripting/screen_bridge.rs` の写しか `platform::screen::snapshot` を使えば、
+  スクリプトと同じフレーム内で一貫する。関連: `app/canvas_collect.rs`（`build_canvas_viewport_map` / ルートの自動解像度）。
+- [ ] **縦画面でキャンバスの自動スケールが縦横別々に掛かる（縦持ち対応のゲームで見た目が崩れる）** — 2026-09-24（A-4 の確認時）。
+  `auto_scale` のルートキャンバス（1920x1080 基準）を 1080x2400 の縦画面に出すと、横 0.5625 倍・縦 2.22 倍になり、正方形のスプライトが
+  縦長に伸びる（レイアウトの付き直し自体は回転に追従している）。縦持ちのゲームでは子の `keep_aspect_ratio` を使うか縦長の基準解像度で作る
+  必要がある。「縦横で小さい方の倍率に合わせる」等の等倍スケールの選択肢を検討する。関連: `components/canvas_component.rs`（`auto_scale`）。
+- [ ] **端末の回転ロックを尊重する向きの選択肢が無い** — 2026-09-24（A-4 実装時）。`screen_orientation` は fullSensor / sensorPortrait /
+  sensorLandscape（どれもセンサー優先で回転ロックを無視）だけ。ユーザーの回転ロックに従う `fullUser` / `userPortrait` / `userLandscape` を
+  選べるようにするなら、`app/build.gradle.kts` の変換表・エディタの `ScreenOrientationSetting.Choices`・`build_and_run.ps1` の既定値の説明を揃えて足す。
+- [ ] **回転の直後の 1 フレームほど、安全領域が全画面・向きが縦横比の値になる** — 2026-09-24（A-4 実装時・低優先）。Java の報告と winit の
+  `Resized` が別経路で前後するため、描画面が先に変わったフレームは一致する報告が無い（エミュレータで 270 → 0・180 → 90 のときに 1 回ずつ）。
+  気になるなら、描画面の大きさの変化を検出したら報告が届くまで写しの更新を 1〜2 フレーム待つ、などを検討する。
+  関連: `platform/screen/report.rs`（`select_for_frame`）、`app/screen_publish.rs`。
+- [ ] **実機（Pixel 6a）で安全領域と向きを確認する** — 2026-09-24。エミュレータ（内蔵の切り欠き・overlay の corner / double）では
+  4 方向の値を確認したが、実機は作業中ずっと私物として使用中で、その後 USB の接続も外れたため未実施。実際のパンチホールで
+  `[SEED SCREEN] Java 報告` の内訳（cutout）と `safe=` を 4 方向で確かめる（実機では overlay を触らない。回転の強制は §10 の
+  `cmd window user-rotation lock` を使い、控えた設定へ必ず戻す）。分割画面・自然な向きが横のタブレットも未確認。
+- [ ] **`Screen.DPI` は論理 DPI（densityDpi）だけ** — 2026-09-24（A-4 実装時・低優先）。Android の densityDpi は 120/160/240/320/420/480… の
+  区分値で、物理的な大きさ（インチ）の計算には粗い。必要になったら `DisplayMetrics.xdpi / ydpi` を報告に足して別 API にする。
 - [ ] **音声（oboe）が鳴るか未確認（段階A）** — 2026-09-24。rodio → cpal → oboe（`c++_static`）は、実機で出力ストリームを
   開くところまで確認した（無音・音量 0 の AudioComponent で `OboeAudio: OboeVersion1.8.1` →
   `AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`）。実際に音が鳴るか・バックグラウンドで止まるかは未確認。

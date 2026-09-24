@@ -272,6 +272,16 @@ public class ProjectSettingsData
     [JsonPropertyName("vsync")]
     public string Vsync { get; set; } = "auto";
 
+    /// <summary>
+    /// 画面の向き（モバイル＝Android の APK だけに効く）。
+    /// "both"（既定）= 縦横どちらも（端末の向きに追従）、"portrait" = 縦に固定、"landscape" = 横に固定。
+    /// APK を作るときにマニフェストの screenOrientation へ焼き込まれる（値と表示名は
+    /// <see cref="ScreenOrientationSetting"/>、マニフェストの値への変換表は runtime/android/app/build.gradle.kts）。
+    /// デスクトップの実行には影響しない。
+    /// </summary>
+    [JsonPropertyName("screen_orientation")]
+    public string ScreenOrientation { get; set; } = ScreenOrientationSetting.Default;
+
     // ── シーンマネージャ ─────────────────────────────────────
 
     /// <summary>

@@ -45,6 +45,10 @@
     <Compile Include="..\..\src\ProjectSettings\ProjectSettingsData.cs">
       <Link>Linked\ProjectSettings\ProjectSettingsData.cs</Link>
     </Compile>
+    <!-- ProjectSettingsData の既定値（画面の向き）が参照する値の表（WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\ScreenOrientationSetting.cs">
+      <Link>Linked\ProjectSettings\ScreenOrientationSetting.cs</Link>
+    </Compile>
 
     <!-- リポジトリルートとランタイム exe の探索（kind.rs の場所と SEED.exe を引くのに使う） -->
     <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfig.cs">

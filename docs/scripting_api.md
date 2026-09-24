@@ -2733,6 +2733,75 @@ if (SEED.Application.IsEditorPlay)
 
 ---
 
+## 7.12 Screen（画面の寸法・安全領域・向き・DPI）
+
+画面の大きさ、カメラ穴・切り欠き・ジェスチャーバーに隠れない範囲（安全領域）、端末の向き、DPI を読む静的クラスです。
+座標はすべて `Input.MousePos` と同じ「描画ターゲットの左上原点・Y 下向き・ピクセル」なので、`Input.MousePos` や `Touch.Position` とそのまま比べられます。
+
+```csharp
+// 画面（描画ターゲット）
+Screen.Width          // int:   描画ターゲットの幅（ピクセル。Input.MousePos と同じ単位）
+Screen.Height         // int:   描画ターゲットの高さ
+Screen.SafeArea       // Rect:  安全領域（カメラ穴・切り欠き・ジェスチャーバーを避けた範囲。左上原点）
+                      //        安全領域の無い環境（デスクトップ）では全画面 (0, 0, Width, Height)
+Screen.Orientation    // ScreenOrientation: 画面の向き（Android は端末の回転から 4 方向、デスクトップはウィンドウの縦横比）
+Screen.DPI            // float: OS が報告する論理 DPI（Android は densityDpi、Windows は 96 × 表示スケール）。取れなければ 96
+
+// ScreenOrientation（Unity と同じ意味）
+ScreenOrientation.Portrait            // 縦長・正立（端末の上端が上）
+ScreenOrientation.PortraitUpsideDown  // 縦長・逆さ
+ScreenOrientation.LandscapeLeft       // 横長。縦持ちから反時計回りに倒した向き（端末の上端が左）。デスクトップの横長ウィンドウもこれ
+ScreenOrientation.LandscapeRight      // 横長。縦持ちから時計回りに倒した向き（端末の上端が右）
+
+// Rect（不変値型。x, y が左上、width, height が大きさ）
+var r = new SEED.Rect(x, y, width, height);   // new SEED.Rect(position, size) でも作れる
+r.x  r.y  r.width  r.height                    // float（フィールド）
+r.XMin  r.YMin  r.XMax  r.YMax                 // float: 左端・上端・右端（x + width）・下端（y + height）
+r.Position  r.Size  r.Center                   // Vector2: 左上・大きさ・中心
+r.Contains(point)                              // bool: 点が矩形の内側（境界を含む）か
+SEED.Rect.Zero                                 // (0, 0, 0, 0)
+
+// 例: スコア表示の下地を安全領域の左上に置く（カメラ穴・ジェスチャーバーを避ける）
+public override void Update(ref NativeFrameContext ctx)
+{
+    var safe = SEED.Screen.SafeArea;
+    const float margin = 16f;
+    var size = new SEED.Vector2(200f, 48f);
+    // Draw のスクリーンスペースは Screen と同じ左上原点・px。Draw.Rect は中心と大きさで描く
+    var center = new SEED.Vector2(safe.XMin + margin + size.x * 0.5f, safe.YMin + margin + size.y * 0.5f);
+    SEED.Draw.Rect(center, size, new SEED.Color(0f, 0f, 0f, 0.5f));
+    // 右下に寄せるなら safe.XMax - margin / safe.YMax - margin を基準にする
+}
+
+// 例: 縦持ち・横持ちでレイアウトを切り替える（向きが変わったフレームだけ組み直す）
+private SEED.ScreenOrientation _lastOrientation;
+public override void Update(ref NativeFrameContext ctx)
+{
+    var orientation = SEED.Screen.Orientation;
+    if (orientation == _lastOrientation) return;
+    _lastOrientation = orientation;
+    bool portrait = orientation is SEED.ScreenOrientation.Portrait or SEED.ScreenOrientation.PortraitUpsideDown;
+    /* portrait ? 縦用の配置 : 横用の配置 */
+}
+
+// 例: 指の位置を画面の割合（0〜1）にする
+var t = SEED.Input.GetTouch(0);
+var ratio = new SEED.Vector2(t.Position.x / SEED.Screen.Width, t.Position.y / SEED.Screen.Height);
+```
+
+| 実行環境 | `Width` / `Height` | `SafeArea` | `Orientation` | `DPI` |
+|---|---|---|---|---|
+| Android（ウィンドウに合わせて描く・既定） | 画面の物理ピクセル（例 1080x2400） | カメラ穴・切り欠き・ナビゲーションバー（ジェスチャーバー）の辺だけ内側へ寄る | 端末の回転から 4 方向 | densityDpi（例 420） |
+| Android（解像度を固定・レターボックス） | 内部解像度（project_settings の `window_width` x `window_height`） | 内部解像度の座標へ写した安全領域。黒帯に収まる穴・バーの分は削られない | 端末の回転から 4 方向 | densityDpi |
+| デスクトップ（ウィンドウ Play・配布版） | ウィンドウのクライアント領域（解像度を固定なら内部解像度） | 全画面 | ウィンドウの縦横比（縦長 = Portrait / それ以外 = LandscapeLeft） | 96 × 表示スケール |
+| エディタ埋め込みの Play | ゲームビューの大きさ | 全画面 | ゲームビューの縦横比 | 96 × 表示スケール |
+
+> **重要**: `Screen` の値はエンジンが**フレームごとに 1 回**（スクリプトより前に）差し替えます。同じフレームの間は何度読んでも同じ値で、端末の回転や安全領域の変化は次のフレームから見えます。回転の直後の数フレームは、OS からの知らせと画面の大きさの変化が前後するため、安全領域が全画面・向きが縦横比からの値（`Portrait` / `LandscapeLeft`）になることがあります。
+
+> **重要**: 安全領域は自動ではキャンバス UI に反映されません。ボタンや HUD を穴・ジェスチャーバーから避けたいときは、`Screen.SafeArea` を読んでスクリプトで位置を決めてください。Android の画面の向き（縦固定・横固定・両方）はプロジェクト設定の「画面の向き（モバイル）」で決まり、APK を作るときに固定されます（スクリプトからは変えられません）。なお Android でスクリプトが動くのは段階B から（2026-09 時点では準備中。docs/android.md）。
+
+---
+
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
 
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。

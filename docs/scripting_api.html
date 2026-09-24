@@ -230,6 +230,7 @@
     <a href="#sec-draw3d">Draw3D（3D 図形）</a>
     <a href="#sec-events">Events（イベント）</a>
     <a href="#sec-application">Application（実行環境）</a>
+    <a href="#sec-screen">Screen（画面・安全領域）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -1967,6 +1968,65 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="warn">
     <code>IsDebugAllowed</code> はあくまで<b>分岐の共通ゲート</b>であり、コードそのものを配布版から取り除くわけではありません。
     チート防止として厳密に守りたい処理は、これに頼らず別途対策してください。
+  </div>
+</section>
+
+<!-- ════════════════ 7.12 Screen ════════════════ -->
+<section id="sec-screen" data-keywords="Screen 画面 スクリーン 寸法 幅 高さ Width Height 解像度 安全領域 セーフエリア SafeArea safe area ノッチ 切り欠き カメラ穴 パンチホール ジェスチャーバー ナビゲーションバー ホームインジケータ 向き 画面の向き 回転 縦 横 縦持ち 横持ち Orientation ScreenOrientation Portrait PortraitUpsideDown LandscapeLeft LandscapeRight DPI dpi 密度 Rect 矩形 XMin XMax YMin YMax Contains Android スマホ モバイル 回転ロック 縦固定 横固定 screen_orientation">
+  <h2>7.12 Screen（画面の寸法・安全領域・向き・DPI）</h2>
+  <p class="section-note">
+    画面の大きさ、カメラ穴・切り欠き・ジェスチャーバーに隠れない範囲（安全領域）、端末の向き、DPI を読む静的クラスです。
+    座標はすべて <code>Input.MousePos</code> と同じ「描画ターゲットの左上原点・Y 下向き・ピクセル」なので、
+    <code>Input.MousePos</code> や <code>Touch.Position</code> とそのまま比べられます。
+  </p>
+  <div class="api"><code class="sig">Screen.Width</code><span class="desc">int。描画ターゲットの幅（ピクセル。Input.MousePos と同じ単位）</span></div>
+  <div class="api"><code class="sig">Screen.Height</code><span class="desc">int。描画ターゲットの高さ</span></div>
+  <div class="api"><code class="sig">Screen.SafeArea</code><span class="desc">Rect。安全領域（カメラ穴・切り欠き・ジェスチャーバーを避けた範囲。左上原点）。安全領域の無い環境（デスクトップ）では全画面 (0, 0, Width, Height)</span></div>
+  <div class="api"><code class="sig">Screen.Orientation</code><span class="desc">ScreenOrientation。画面の向き（Android は端末の回転から 4 方向、デスクトップはウィンドウの縦横比）</span></div>
+  <div class="api"><code class="sig">Screen.DPI</code><span class="desc">float。OS が報告する論理 DPI（Android は densityDpi、Windows は 96 × 表示スケール）。取れなければ 96</span></div>
+  <div class="api"><code class="sig">ScreenOrientation.Portrait / PortraitUpsideDown</code><span class="desc">縦長・正立 / 縦長・逆さ</span></div>
+  <div class="api"><code class="sig">ScreenOrientation.LandscapeLeft / LandscapeRight</code><span class="desc">横長。縦持ちから反時計回りに倒した向き（端末の上端が左。デスクトップの横長ウィンドウもこれ）／ 時計回りに倒した向き（端末の上端が右）</span></div>
+  <div class="api"><code class="sig">new Rect(x, y, width, height)</code><span class="desc">不変値型の矩形。new Rect(position, size) でも作れる。Rect.Zero = (0, 0, 0, 0)</span></div>
+  <div class="api"><code class="sig">r.x / r.y / r.width / r.height</code><span class="desc">float（フィールド）。左上の位置と大きさ</span></div>
+  <div class="api"><code class="sig">r.XMin / r.YMin / r.XMax / r.YMax</code><span class="desc">float。左端・上端・右端（x + width）・下端（y + height）</span></div>
+  <div class="api"><code class="sig">r.Position / r.Size / r.Center</code><span class="desc">Vector2。左上・大きさ・中心</span></div>
+  <div class="api"><code class="sig">r.Contains(point)</code><span class="desc">bool。点が矩形の内側（境界を含む）か</span></div>
+<pre><span class="c">// スコア表示の下地を安全領域の左上に置く（カメラ穴・ジェスチャーバーを避ける）</span>
+<span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+{
+    <span class="k">var</span> safe = <span class="t">SEED.Screen</span>.SafeArea;
+    <span class="k">const float</span> margin = 16f;
+    <span class="k">var</span> size = <span class="k">new</span> <span class="t">SEED.Vector2</span>(200f, 48f);
+    <span class="c">// Draw のスクリーンスペースは Screen と同じ左上原点・px。Draw.Rect は中心と大きさで描く</span>
+    <span class="k">var</span> center = <span class="k">new</span> <span class="t">SEED.Vector2</span>(safe.XMin + margin + size.x * 0.5f, safe.YMin + margin + size.y * 0.5f);
+    <span class="t">SEED.Draw</span>.Rect(center, size, <span class="k">new</span> <span class="t">SEED.Color</span>(0f, 0f, 0f, 0.5f));
+}</pre>
+<pre><span class="c">// 縦持ち・横持ちでレイアウトを切り替える（向きが変わったフレームだけ組み直す）</span>
+<span class="k">private</span> <span class="t">SEED.ScreenOrientation</span> _lastOrientation;
+<span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+{
+    <span class="k">var</span> orientation = <span class="t">SEED.Screen</span>.Orientation;
+    <span class="k">if</span> (orientation == _lastOrientation) <span class="k">return</span>;
+    _lastOrientation = orientation;
+    <span class="k">bool</span> portrait = orientation <span class="k">is</span> <span class="t">SEED.ScreenOrientation</span>.Portrait <span class="k">or</span> <span class="t">SEED.ScreenOrientation</span>.PortraitUpsideDown;
+    <span class="c">/* portrait ? 縦用の配置 : 横用の配置 */</span>
+}</pre>
+  <table>
+    <tr><th>実行環境</th><th>Width / Height</th><th>SafeArea</th><th>Orientation</th><th>DPI</th></tr>
+    <tr><td>Android（ウィンドウに合わせて描く・既定）</td><td>画面の物理ピクセル（例 1080x2400）</td><td>カメラ穴・切り欠き・ナビゲーションバー（ジェスチャーバー）の辺だけ内側へ寄る</td><td>端末の回転から 4 方向</td><td>densityDpi（例 420）</td></tr>
+    <tr><td>Android（解像度を固定・レターボックス）</td><td>内部解像度（window_width x window_height）</td><td>内部解像度の座標へ写した安全領域。黒帯に収まる穴・バーの分は削られない</td><td>端末の回転から 4 方向</td><td>densityDpi</td></tr>
+    <tr><td>デスクトップ（ウィンドウ Play・配布版）</td><td>ウィンドウのクライアント領域（解像度を固定なら内部解像度）</td><td>全画面</td><td>ウィンドウの縦横比（縦長 = Portrait / それ以外 = LandscapeLeft）</td><td>96 × 表示スケール</td></tr>
+    <tr><td>エディタ埋め込みの Play</td><td>ゲームビューの大きさ</td><td>全画面</td><td>ゲームビューの縦横比</td><td>96 × 表示スケール</td></tr>
+  </table>
+  <div class="warn">
+    <code>Screen</code> の値はエンジンが<b>フレームごとに 1 回</b>（スクリプトより前に）差し替えます。同じフレームの間は何度読んでも同じ値で、
+    端末の回転や安全領域の変化は次のフレームから見えます。回転の直後の数フレームは、OS からの知らせと画面の大きさの変化が前後するため、
+    安全領域が全画面・向きが縦横比からの値（Portrait / LandscapeLeft）になることがあります。
+  </div>
+  <div class="warn">
+    安全領域は自動ではキャンバス UI に反映されません。ボタンや HUD を穴・ジェスチャーバーから避けたいときは、<code>Screen.SafeArea</code> を読んで
+    スクリプトで位置を決めてください。Android の画面の向き（縦固定・横固定・両方）はプロジェクト設定の「画面の向き（モバイル）」で決まり、
+    APK を作るときに固定されます（スクリプトからは変えられません）。Android でスクリプトが動くのは段階B から（2026-09 時点では準備中）。
   </div>
 </section>
 

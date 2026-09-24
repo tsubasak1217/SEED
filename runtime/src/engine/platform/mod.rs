@@ -13,12 +13,15 @@
 //  【実行時にしか分からない値】
 //  この表はコンパイル時定数。Android のアプリ専用フォルダのように OS が実行時にだけ教える値は
 //  paths.rs に「起動時に 1 回だけ設定する値」として持つ（cfg 分岐を散らさないのは同じ）。
+//  安全領域・画面の向きのように実行中に何度も変わる値は screen/ に持つ。
 //
 //  Android 対応の全体像は docs/android.md を参照。
 // ============================================================
 
 /// プラットフォームが与える書き込み先（セーブ・キャッシュの置き場。起動時に 1 回設定する）。
 pub mod paths;
+/// 実行時に更新される画面情報（安全領域・画面の向き・DPI。OS の報告とスクリプトへ見せる写し）。
+pub mod screen;
 
 use crate::engine::core::input::key_remap::{self, KeyRemapRule};
 
@@ -71,7 +74,20 @@ pub struct PlatformTraits {
     /// キー入力を入力状態へ入れる直前（`app/event_handler.rs` の on_keyboard_input）で引く。
     /// Android は戻るキー → Escape（Unity と同じ）。デスクトップは空（従来どおり何も置き換えない）。
     pub key_remap: &'static [KeyRemapRule],
+
+    /// 表示倍率 1.0 に当たる DPI（スクリプトの `Screen.DPI` = winit の scale_factor × この値）。
+    ///
+    /// winit の scale_factor は OS の論理密度を基準値で割ったもの: Windows は 96 dpi を 1.0、
+    /// Android は mdpi（160 dpi）を 1.0（densityDpi / 160）とする。掛け戻すと OS が報告する論理 DPI になる
+    /// （Android は DisplayMetrics.densityDpi、Windows は 96 × 表示スケール）。
+    pub reference_dpi: u32,
 }
+
+/// Windows の論理 DPI の基準（表示スケール 100% = 96 dpi）。
+pub const DESKTOP_REFERENCE_DPI: u32 = 96;
+
+/// Android の論理 DPI の基準（mdpi = 160 dpi。DisplayMetrics.DENSITY_DEFAULT）。
+pub const ANDROID_REFERENCE_DPI: u32 = 160;
 
 /// デスクトップ（Windows）の特性。従来の SEED.exe の振る舞いそのもの。
 pub const DESKTOP: PlatformTraits = PlatformTraits {
@@ -82,9 +98,10 @@ pub const DESKTOP: PlatformTraits = PlatformTraits {
     touch_drives_mouse:    false,
     mouse_simulates_touch: true,
     key_remap:             key_remap::DESKTOP_KEY_REMAP,
+    reference_dpi:         DESKTOP_REFERENCE_DPI,
 };
 
-/// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力・戻るキー）。
+/// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力・戻るキー・画面情報）。
 pub const ANDROID: PlatformTraits = PlatformTraits {
     app_sizes_window:      false,
     scripting_supported:   false,
@@ -93,6 +110,7 @@ pub const ANDROID: PlatformTraits = PlatformTraits {
     touch_drives_mouse:    true,
     mouse_simulates_touch: false,
     key_remap:             key_remap::ANDROID_KEY_REMAP,
+    reference_dpi:         ANDROID_REFERENCE_DPI,
 };
 
 /// 定義済みの全プラットフォームの特性（表全体への検査用）。
@@ -153,5 +171,16 @@ mod tests {
         assert!(ANDROID.touch_supported);
         assert!(ANDROID.touch_drives_mouse);
         assert!(!ANDROID.mouse_simulates_touch);
+    }
+
+    /// DPI の基準は winit の scale_factor の定義と同じ（Windows 96 / Android 160）。
+    /// Android の Pixel 6（densityDpi 420 → scale_factor 2.625）が 420 に戻ること。
+    #[test]
+    fn reference_dpi_matches_winit_scale_factor_definition() {
+        use screen::snapshot::dpi_from_scale_factor;
+        assert_eq!(DESKTOP.reference_dpi, 96);
+        assert_eq!(ANDROID.reference_dpi, 160);
+        let pixel6 = dpi_from_scale_factor(Some(420.0 / 160.0), ANDROID.reference_dpi as f32);
+        assert!((pixel6 - 420.0).abs() < 1e-3, "dpi={pixel6}");
     }
 }

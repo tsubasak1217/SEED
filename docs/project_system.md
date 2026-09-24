@@ -15,7 +15,8 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
 <ProjectRoot>/
   <Name>.seedproj      プロジェクトファイル（JSON。この 1 枚が入口）
   assets/              ゲームのアセット。assets:// のルート
-    project_settings.json     ゲーム名・開始シーン・シーン一覧・解像度・プラグイン有効化
+    project_settings.json     ゲーム名・開始シーン・シーン一覧・解像度・画面の向き（Android）・プラグイン有効化
+                              （キーの一覧は docs/packaging.md §8.1）
     packaging_settings.json   パッケージ化の設定
     scenes/Main.scene         新規作成時に置かれる開始シーン
   plugins/             ネイティブプラグイン DLL

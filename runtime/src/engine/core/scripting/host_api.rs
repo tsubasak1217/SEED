@@ -3811,6 +3811,9 @@ pub struct ScriptHostApi {
     // タッチ（SEED.Input.TouchSupported / TouchCount / GetTouch / Touches）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     input_touch:             unsafe extern "system" fn(i32, i32, *mut f32, i32) -> i32,
+    // 画面情報（SEED.Screen.Width / Height / SafeArea / Orientation / DPI。実体は screen_bridge.rs）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    screen:                  unsafe extern "system" fn(i32, *mut f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3858,6 +3861,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     asset_text:              ffi_asset_text,
     app_env:                 ffi_app_env,
     input_touch:             ffi_input_touch,
+    screen:                  super::screen_bridge::ffi_screen,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

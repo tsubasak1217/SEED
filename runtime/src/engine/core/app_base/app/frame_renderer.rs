@@ -313,6 +313,25 @@ impl App {
     /// 導出が 2 か所に分かれると、埋め込み Play でだけ座標が数十 px ずれる、
     /// といった再現性の低い不具合になる。
     pub(super) fn render_target_size_px(&self) -> [f32; 2] {
+        self.render_target_size_for(self.effective_window_size())
+    }
+
+    /// 描画面の実寸（埋め込みなら親ウィンドウのクライアント領域、それ以外は自ウィンドウの inner_size）。
+    /// どちらも取れなければ None。
+    pub(super) fn effective_window_size(&self) -> Option<winit::dpi::PhysicalSize<u32>> {
+        self.get_parent_client_size()
+            .or_else(|| self.window.as_ref().map(|w| w.inner_size()))
+    }
+
+    /// `render_target_size_px` と同じ規則で、読み取り済みの描画面の実寸からレンダーターゲットサイズ（px）を求める。
+    ///
+    /// ウィンドウの大きさは別スレッド・別プロセス（リサイズ中の OS）からいつでも変わるので、
+    /// 1 つの計算の中で実寸を 2 回読むと別々の大きさが混ざる。実寸を 1 回だけ読んで他の値と
+    /// 組み合わせたい呼び出し側（`screen_publish.rs`）はこちらを使う。
+    pub(super) fn render_target_size_for(
+        &self,
+        window_size: Option<winit::dpi::PhysicalSize<u32>>,
+    ) -> [f32; 2] {
         use crate::engine::core::scripting::camera_project::{
             FALLBACK_TARGET_HEIGHT, FALLBACK_TARGET_WIDTH,
         };
@@ -323,12 +342,9 @@ impl App {
         if let Some((w, h)) = self.fixed_render_resolution() {
             return [w as f32, h as f32];
         }
-        let size = self
-            .get_parent_client_size()
-            .or_else(|| self.window.as_ref().map(|w| w.inner_size()));
         [
-            size.map_or(FALLBACK_TARGET_WIDTH,  |s| s.width  as f32),
-            size.map_or(FALLBACK_TARGET_HEIGHT, |s| s.height as f32),
+            window_size.map_or(FALLBACK_TARGET_WIDTH,  |s| s.width  as f32),
+            window_size.map_or(FALLBACK_TARGET_HEIGHT, |s| s.height as f32),
         ]
     }
 
@@ -857,6 +873,9 @@ impl App {
         if time_running {
             use crate::engine::ecs::Phase;
             use crate::engine::core::scripting::{publish_input, publish_physics_sender};
+            // 画面情報（SEED.Screen）をこのフレームの値へ差し替える。ポインタイベント・スクリプトの
+            // どのフェーズより前に 1 回だけ行うので、フレームの中で値が変わらない（screen_publish.rs）。
+            self.publish_screen_snapshot();
             // アニメーション評価（スクリプト更新より前に実行し、スクリプトが上書き可能にする）。
             // AnimatorComponent のクリップを進めて対象アクターの Transform 等へ書き込む。
             {

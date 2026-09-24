@@ -5,6 +5,8 @@
 //  パッケージ実行のときだけ「配布物（assets/seed/assets.pak）」。
 //  .so は build_and_run.ps1 が app/src/main/jniLibs/<ABI>/libSEED.so へ置く（AGP の既定の置き場）。
 //  配布物は build_and_run.ps1 -ProjectDir が app/src/main/assets/seed/ へ置く（AGP の既定の assets の置き場）。
+//  画面の向きはプロジェクト設定の screen_orientation を build_and_run.ps1 が -Pseed.orientation=<値> で渡し、
+//  下の変換表でマニフェストの screenOrientation へ差し込む（manifestPlaceholders）。
 // ============================================================
 
 plugins {
@@ -41,6 +43,44 @@ val seedAbis = providers.gradleProperty("seed.abis").orNull
  */
 val gamesActivityVersion = "4.4.0"
 
+/**
+ * 画面の向きの変換表（唯一の置き場）: プロジェクト設定の screen_orientation の値 → マニフェストの screenOrientation。
+ *   both      … fullSensor      … 縦横 4 方向に追従（端末の回転ロックは無視してセンサーに従う）
+ *   portrait  … sensorPortrait  … 縦だけ（逆さの縦へ回るかは端末の設定次第。エミュレータでは回らなかった）
+ *   landscape … sensorLandscape … 横だけ（左右どちら向きの横もセンサーに従う）
+ * 設定の値はエディタの ProjectSettingsData.ScreenOrientation（project_settings.json の screen_orientation）と同じ。
+ */
+val screenOrientationTable = mapOf(
+    "both" to "fullSensor",
+    "portrait" to "sensorPortrait",
+    "landscape" to "sensorLandscape",
+)
+
+/** screen_orientation が無い・空のときの値（エディタの既定値と同じ）。 */
+val defaultScreenOrientationSetting = "both"
+
+/**
+ * このビルドの screen_orientation（前後の空白を落として小文字にそろえる）。
+ * build_and_run.ps1 がプロジェクト設定から読んで -Pseed.orientation=<値> で渡す。未指定なら既定値。
+ */
+val seedOrientationSetting = providers.gradleProperty("seed.orientation").orNull
+    ?.trim()
+    ?.lowercase()
+    ?.takeIf { it.isNotEmpty() }
+    ?: defaultScreenOrientationSetting
+
+/**
+ * マニフェストへ差し込む screenOrientation。表に無い値は、設定ミスでビルドを止めるより従来動作へ倒すほうが安全なので、
+ * 警告を出して既定値（both = fullSensor）にする（ランタイムの設定値の読み方と同じ方針）。
+ */
+val seedScreenOrientation = screenOrientationTable[seedOrientationSetting] ?: run {
+    logger.warn(
+        "SEED: screen_orientation=\"$seedOrientationSetting\" は不明な値です（使える値: " +
+            "${screenOrientationTable.keys.joinToString()}）。\"$defaultScreenOrientationSetting\" として扱います。"
+    )
+    screenOrientationTable.getValue(defaultScreenOrientationSetting)
+}
+
 android {
     // Java の名前空間（R クラス等）。applicationId と同じにしておく。
     namespace = "com.seedengine.runtime"
@@ -61,6 +101,9 @@ android {
         ndk {
             abiFilters += seedAbis
         }
+        // AndroidManifest.xml の ${seedScreenOrientation} を置き換える（画面の向きの固定。上の変換表）。
+        manifestPlaceholders["seedScreenOrientation"] = seedScreenOrientation
+        logger.lifecycle("SEED: screen_orientation=$seedOrientationSetting → screenOrientation=$seedScreenOrientation")
     }
 
     compileOptions {

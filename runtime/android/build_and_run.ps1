@@ -7,7 +7,9 @@
 #    2. APK に入れる配布物（app/src/main/assets/seed/）を決める
 #         -ProjectDir あり … SeedPak（editor/tools/SeedPak）で assets.pak を作って置く（パッケージ実行の APK）
 #         -ProjectDir なし … 置き場を空にする（pak の無い開発用の APK。アセットは 5 の run-as 転送で送る）
-#    3. gradlew assembleDebug で APK を作る
+#    3. gradlew assembleDebug で APK を作る（画面の向きはプロジェクト設定の screen_orientation を
+#       -Pseed.orientation で渡し、app/build.gradle.kts の変換表がマニフェストへ差し込む。
+#       -ProjectDir / -AssetsDir の設定を読み、どちらも無ければ既定値 both）
 #    4. adb install -r で端末（実機／エミュレータ）へ入れる
 #    5. （任意）アセットフォルダをアプリの内部専用フォルダへ送る（run-as で tar を流し込む。開発用の高速経路）
 #    6. am start で起動し、logcat（タグ SEED ほか）を表示・保存する
@@ -93,6 +95,17 @@ $ApkPackageRootName = 'seed'
 # 配布物の PAK のファイル名（エンジンの package_layout::PAK_FILE_NAME・エディタの PackageLayout.PakFileName と同じ）。
 $PakFileName = 'assets.pak'
 
+# プロジェクト設定のファイル名（アセットルートの目印。SeedPak の PakInputResolver と同じ）。
+$ProjectSettingsFileName = 'project_settings.json'
+# プロジェクトファイルの拡張子・アセットフォルダのキーと既定値（エディタの SeedProjectFile と同じ）。
+$SeedProjectExtension = '.seedproj'
+$SeedProjectAssetsDirKey = 'assets_dir'
+$DefaultAssetsDirName = 'assets'
+# 画面の向きのキーと既定値（エディタの ProjectSettingsData.ScreenOrientation と同じ）。
+# 値 → マニフェストの screenOrientation の変換表は app/build.gradle.kts だけに置く（ここは値を読んで渡すだけ）。
+$ScreenOrientationKey = 'screen_orientation'
+$DefaultScreenOrientation = 'both'
+
 # このスクリプトのあるフォルダ（runtime/android）を基準にする。
 $AndroidRoot = $PSScriptRoot
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $AndroidRoot)
@@ -166,6 +179,75 @@ function Get-AdbTargetArgs([string]$Adb) {
     return @()
 }
 
+# ── プロジェクト設定（画面の向き）─────────────────────────────────────
+
+# プロジェクトフォルダからアセットルートを決める（SeedPak の PakInputResolver.ResolveFromProject と同じ規則。
+# 規則を変えるときは両方を直す）。決められなければ $null。
+#   1. .seedproj があれば、その assets_dir（複数あればフォルダ名と同じ名前のもの、無ければ名前順の先頭）
+#   2. 無ければ <フォルダ>/assets
+#   3. それも無く、フォルダ自体に project_settings.json があればそのフォルダ
+function Resolve-ProjectAssetsRoot([string]$Dir) {
+    $root = (Resolve-Path -LiteralPath $Dir).Path
+    $projects = @(Get-ChildItem -LiteralPath $root -File -Filter "*$SeedProjectExtension" -ErrorAction SilentlyContinue |
+        Sort-Object Name)
+    if ($projects.Count -gt 0) {
+        $folderName = Split-Path -Leaf $root
+        # Select-Object -First 1 は見つからなければ $null（StrictMode では空配列の [0] が例外になるため添字で取らない）。
+        $chosen = $projects | Where-Object { $_.BaseName -ieq $folderName } | Select-Object -First 1
+        if (-not $chosen) { $chosen = $projects[0] }
+        $assetsDirName = $DefaultAssetsDirName
+        try {
+            $project = Get-Content -LiteralPath $chosen.FullName -Raw -Encoding utf8 | ConvertFrom-Json
+            $property = $project.PSObject.Properties[$SeedProjectAssetsDirKey]
+            if ($property -and $property.Value -is [string] -and $property.Value.Trim()) { $assetsDirName = $property.Value }
+        }
+        catch {
+            Write-Warning "$($chosen.FullName) を JSON として読めません（assets_dir は既定の $DefaultAssetsDirName とみなします）: $_"
+        }
+        # assets_dir が絶対パスでもそのまま使えるよう Combine で結合する（エディタの ProjectPaths と同じ）。
+        return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($root, $assetsDirName))
+    }
+    $defaultAssets = Join-Path $root $DefaultAssetsDirName
+    if (Test-Path -LiteralPath $defaultAssets -PathType Container) { return $defaultAssets }
+    if (Test-Path -LiteralPath (Join-Path $root $ProjectSettingsFileName)) { return $root }
+    return $null
+}
+
+# アセットルートの project_settings.json から画面の向き（screen_orientation の値）を読む。
+# ファイル・キーが無い、値が文字列でない・空なら既定値。前後の空白を落として小文字にそろえる。
+# 値の妥当性の確認とマニフェストの値への変換は app/build.gradle.kts の変換表が行う（表を 1 か所に保つため。
+# 表に無い値は Gradle が警告を出して既定値へ倒す）。
+function Get-ScreenOrientationSetting([string]$AssetsRoot) {
+    if (-not $AssetsRoot) { return $DefaultScreenOrientation }
+    $settingsPath = Join-Path $AssetsRoot $ProjectSettingsFileName
+    if (-not (Test-Path -LiteralPath $settingsPath)) { return $DefaultScreenOrientation }
+    try {
+        $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding utf8 | ConvertFrom-Json
+    }
+    catch {
+        Write-Warning "$settingsPath を JSON として読めません（画面の向きは既定の $DefaultScreenOrientation にします）: $_"
+        return $DefaultScreenOrientation
+    }
+    $property = $settings.PSObject.Properties[$ScreenOrientationKey]
+    if (-not $property -or -not ($property.Value -is [string]) -or -not $property.Value.Trim()) {
+        return $DefaultScreenOrientation
+    }
+    return $property.Value.Trim().ToLowerInvariant()
+}
+
+# このビルド（APK）の画面の向きを決める。APK を作るときに 1 回呼ぶ。
+# 段階C のエディタ統合も、このスクリプトへ -ProjectDir / -AssetsDir を渡せば同じ判定になる。
+#   -ProjectDir … そのプロジェクトのアセットルートの設定（SeedPak と同じ導き方）
+#   -AssetsDir  … そのアセットフォルダの設定
+#   どちらも無い … 既定値（both）
+function Resolve-ScreenOrientation([string]$FromProjectDir, [string]$FromAssetsDir) {
+    $assetsRoot = if ($FromProjectDir) { Resolve-ProjectAssetsRoot $FromProjectDir } elseif ($FromAssetsDir) { $FromAssetsDir } else { $null }
+    $value = Get-ScreenOrientationSetting $assetsRoot
+    $source = if ($assetsRoot) { Join-Path $assetsRoot $ProjectSettingsFileName } else { '既定値（-ProjectDir / -AssetsDir なし）' }
+    Write-Host "      画面の向き（$ScreenOrientationKey）: $value  ← $source"
+    return $value
+}
+
 # ── 各工程 ─────────────────────────────────────────────────────────
 
 # 1. cargo ndk で libSEED.so をビルドして jniLibs へ置く。
@@ -214,12 +296,15 @@ function Update-ApkPackage {
 }
 
 # 3. gradlew assembleDebug で APK を作る。
-function Invoke-GradleBuild([string]$Ndk) {
+#
+# 画面の向き（$Orientation = screen_orientation の値）は -Pseed.orientation で渡し、
+# app/build.gradle.kts の変換表がマニフェストの screenOrientation へ差し込む（APK に焼き込まれる）。
+function Invoke-GradleBuild([string]$Ndk, [string]$Orientation) {
     Write-Host '[3/6] gradlew assembleDebug' -ForegroundColor Cyan
     Push-Location -LiteralPath $AndroidRoot
     try {
         # -Abi で選んだ ABI だけを APK に詰める（jniLibs に残っている別 ABI の古い .so を詰めないため）。
-        & (Join-Path $AndroidRoot 'gradlew.bat') assembleDebug "-Pseed.ndkPath=$Ndk" "-Pseed.abis=$($Abi -join ',')" --console=plain
+        & (Join-Path $AndroidRoot 'gradlew.bat') assembleDebug "-Pseed.ndkPath=$Ndk" "-Pseed.abis=$($Abi -join ',')" "-Pseed.orientation=$Orientation" --console=plain
         if ($LASTEXITCODE -ne 0) { throw "gradlew assembleDebug が失敗しました（終了コード $LASTEXITCODE）。" }
     }
     finally {
@@ -314,7 +399,13 @@ $adb = Join-Path $sdk 'platform-tools/adb.exe'
 if (-not (Test-Path -LiteralPath $adb)) { throw "adb が見つかりません: $adb（SDK Manager で Platform-Tools を入れてください）" }
 
 if (-not $SkipRustBuild) { Assert-CargoNdk; Invoke-NativeBuild $ndk }
-if (-not $SkipGradle) { Update-ApkPackage; Assert-JavaHome; Invoke-GradleBuild $ndk }
+if (-not $SkipGradle) {
+    Update-ApkPackage
+    Assert-JavaHome
+    # 画面の向きは APK（マニフェスト）に焼き込まれる。-SkipGradle で APK を作り直さないときは前回の値のまま。
+    $orientation = Resolve-ScreenOrientation -FromProjectDir $ProjectDir -FromAssetsDir $AssetsDir
+    Invoke-GradleBuild $ndk $orientation
+}
 
 $needsDevice = (-not $NoInstall) -or $AssetsDir -or (-not $NoLaunch) -or (-not $NoLogcat)
 if ($needsDevice) {

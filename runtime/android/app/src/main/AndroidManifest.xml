@@ -19,7 +19,9 @@
         android:theme="@style/Theme.SeedRuntime">
 
         <!--
-          screenOrientation="fullSensor" … 端末の向き（縦横 4 方向）に追従する。
+          screenOrientation … 画面の向き。プロジェクト設定の screen_orientation からビルド時に決まる
+            （app/build.gradle.kts の変換表 → manifestPlaceholders の seedScreenOrientation）。
+            both=fullSensor（縦横 4 方向に追従）/ portrait=sensorPortrait / landscape=sensorLandscape。
           configChanges … 回転・画面サイズ・キーボード等の構成変更で Activity を作り直させない。
             作り直されると onDestroy → プロセス終了（MainActivity のコメント参照）になってしまうため、
             起こり得る構成変更は広めに列挙してある。変更はネイティブ側へ Resized 等で通知される。
@@ -31,7 +33,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="fullSensor"
+            android:screenOrientation="${seedScreenOrientation}"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|fontWeightAdjustment|locale|layoutDirection|colorMode|touchscreen|mcc|mnc">
 
             <!-- GameActivity が onCreate で読み込むネイティブライブラリ名（libSEED.so）。 -->

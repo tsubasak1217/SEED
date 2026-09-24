@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using SEEDEditor.Headless;
 using SEEDEditor.Project;
+using SEEDEditor.ProjectSettings;
 using SEEDEditor.Startup;
 using SpriteRigTests;   // TestHarness / Check（テストランナーは SpriteRigTests と共用）
 
@@ -22,6 +23,7 @@ namespace ProjectSystemTests;
 ///   5. RecentProjectsStore の往復と、旧 recent_projects.json（.scene 配列）の移行
 ///   6. FileAssociation のレジストリ値組み立て
 ///   7. ProjectCreator が一時フォルダに一式を生成すること
+///   8. project_settings.json の screen_orientation（画面の向き）の既定値・往復・正規化
 /// </summary>
 public static class Program
 {
@@ -97,6 +99,12 @@ public static class Program
         harness.Add("生成した .seedproj はそのまま開ける",                CreatorOutputIsLoadable);
         harness.Add("生成後フックが呼ばれる",                             CreatorInvokesHook);
         harness.Add("不正な名前・空でない作成先は拒否される",             CreatorRejectsInvalidInput);
+
+        // ── 画面の向き（project_settings.json の screen_orientation）──
+        harness.Add("screen_orientation の既定値は both",                 ScreenOrientationDefaultsToBoth);
+        harness.Add("screen_orientation は保存 → 読み込みで往復する",     ScreenOrientationRoundTrip);
+        harness.Add("screen_orientation が無い旧ファイルは both で読む",  ScreenOrientationMissingKeyIsBoth);
+        harness.Add("screen_orientation は空白・大文字・未知の値を正規化する", ScreenOrientationNormalizes);
 
         return harness.Run();
     }
@@ -798,6 +806,62 @@ public static class Program
         temp.CreateSubDirectory("EmptyOk");
         Check.True(ProjectCreator.ValidateDestination(temp.Path, "EmptyOk") is null,
                    "空の既存フォルダは使える");
+    }
+
+    // ============================================================
+    //  画面の向き（project_settings.json の screen_orientation）
+    // ============================================================
+
+    /// <summary>project_settings.json の中の画面の向きのキー（build_and_run.ps1・build.gradle.kts と同じ）。</summary>
+    private const string ScreenOrientationKey = "screen_orientation";
+
+    /// <summary>新しい設定の既定値は both（縦横どちらも）。Gradle 側の既定値と同じ。</summary>
+    private static void ScreenOrientationDefaultsToBoth()
+    {
+        Check.Equal("both", new ProjectSettingsData().ScreenOrientation, "既定値");
+        Check.Equal(ScreenOrientationSetting.Both, ScreenOrientationSetting.Default, "Default 定数");
+    }
+
+    /// <summary>保存した値が JSON の screen_orientation に書かれ、読み戻せる。</summary>
+    private static void ScreenOrientationRoundTrip()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+
+        var data = new ProjectSettingsData { ScreenOrientation = ScreenOrientationSetting.Portrait };
+        data.SaveTo(path);
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(path)))
+        {
+            Check.Equal("portrait", doc.RootElement.GetProperty(ScreenOrientationKey).GetString(),
+                        "JSON のキーと値（ランタイム側のスクリプトが読む形）");
+        }
+        Check.Equal("portrait", ProjectSettingsData.LoadFrom(path).ScreenOrientation, "読み戻した値");
+    }
+
+    /// <summary>キーの無い旧ファイルは既定値（both）で読む（既存プロジェクトの挙動は変わらない）。</summary>
+    private static void ScreenOrientationMissingKeyIsBoth()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        File.WriteAllText(path, "{ \"game_name\": \"Old\", \"window_width\": 1280, \"window_height\": 720 }");
+
+        var loaded = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("Old", loaded.GameName, "ほかのキーは読める");
+        Check.Equal("both", loaded.ScreenOrientation, "screen_orientation が無ければ both");
+    }
+
+    /// <summary>前後の空白・大文字小文字を吸収し、未知の値・空は既定値へ倒す（ps1・Gradle と同じ読み方）。</summary>
+    private static void ScreenOrientationNormalizes()
+    {
+        Check.Equal("landscape", ScreenOrientationSetting.Normalize("  Landscape "), "空白と大文字");
+        Check.Equal("portrait",  ScreenOrientationSetting.Normalize("PORTRAIT"),     "大文字");
+        Check.Equal("both",      ScreenOrientationSetting.Normalize("sideways"),     "未知の値");
+        Check.Equal("both",      ScreenOrientationSetting.Normalize(""),             "空");
+        Check.Equal("both",      ScreenOrientationSetting.Normalize(null),           "null");
+        Check.Equal(1, ScreenOrientationSetting.IndexOf("portrait"),  "コンボボックスの位置（縦）");
+        Check.Equal(0, ScreenOrientationSetting.IndexOf("unknown"),   "未知の値は既定値の位置");
+        Check.Equal(3, ScreenOrientationSetting.Choices.Length,       "選べる値は 3 つ（build.gradle.kts の変換表と同じ数）");
     }
 
     // ============================================================

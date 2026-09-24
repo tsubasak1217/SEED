@@ -85,6 +85,10 @@ mod lifecycle_diag;
 mod touch_diag;
 /// 置き換えたキー（Android の戻るキー → Escape）のフレーム単位診断ログ（lifecycle_diag_log が真のときだけ）。
 mod key_diag;
+/// フレームごとの画面情報（SEED.Screen の Width / Height / SafeArea / Orientation / DPI）の計算と公開。
+mod screen_publish;
+/// 画面情報の診断ログ（公開した写しが変わったときだけ。lifecycle_diag_log が真のときだけ）。
+mod screen_diag;
 /// バックグラウンドへの出入り（Android の suspended / resumed）でのセーブ書き出し・パイプラインキャッシュ保存・
 /// シミュレーション停止。描画サーフェスの破棄・再生成（surface_lifecycle）とは別の責務。
 mod background_lifecycle;

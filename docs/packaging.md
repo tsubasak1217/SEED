@@ -527,6 +527,7 @@ dotnet run --project editor/tests/PackagingCollectorTests
 | `vsync` | `"auto"` | 垂直同期。`"auto"` はパッケージ版＝有効／エディタ埋め込み＝無効。`"on"` / `"off"` で固定 |
 | `game_name` | 空 | ウィンドウタイトル（未設定なら `"SEED"`） |
 | `streaming` | （省略可） | モデルの非同期ロード（ワーカースレッド・先読み・GPU アップロード予算・バッチ常駐時間）。キーの一覧と既定値は [docs/model_streaming.md](model_streaming.md) 6 章 |
+| `screen_orientation` | `"both"` | **Android の APK だけ**に効く画面の向き。`"both"`（縦横 4 方向に追従）/ `"portrait"`（縦に固定）/ `"landscape"`（横に固定）。エディタでは「プロジェクト設定 → 解像度設定 → 画面の向き（モバイル）」。起動時に読む値ではなく、APK を作るときにマニフェストの `screenOrientation` へ焼き込む（`runtime/android/build_and_run.ps1` → `app/build.gradle.kts` の変換表。**書き換えたら APK を作り直す**）。デスクトップには効かない。[android.md](android.md) §15 |
 
 遅いドライブ（USB 外付け・低速 SSD）で「プレイ中に時々カクつく」と言われたら、まず
 `streaming` を見る。配布版でも環境変数 `SEED_STREAMING=0` で非同期ロードを丸ごと切って

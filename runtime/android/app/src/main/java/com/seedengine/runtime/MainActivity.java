@@ -6,17 +6,20 @@
 //    ・ネイティブライブラリの読み込み
 //    ・環境変数 TMPDIR / HOME をアプリのフォルダへ向ける（理由は setAppDirectoryEnvironment のコメント）
 //    ・全画面（システムバーを隠す）
+//    ・安全領域と画面の回転をネイティブへ知らせる（中身は ScreenReporter。契機の受け口だけここ）
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
-//  だけを行う。全体像は docs/android.md。
+//  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
 
 package com.seedengine.runtime;
 
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
+import android.view.View;
 
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -59,12 +62,45 @@ public class MainActivity extends GameActivity {
      */
     private static native void nativeFlushSaveData();
 
+    /** 安全領域と画面の回転をネイティブへ知らせる係（UI スレッド専用）。 */
+    private final ScreenReporter screenReporter = new ScreenReporter(this);
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
         setAppDirectoryEnvironment();
         super.onCreate(savedInstanceState);
         hideSystemBars();
+        // 描画面（SurfaceView）は super.onCreate の中で作られる。以降、安全領域・回転の変化を知らせる。
+        screenReporter.attach(mSurfaceView);
+    }
+
+    /**
+     * WindowInsets（システムバー・切り欠き）が変わった。GameActivity の処理（IME 等）の後に、
+     * レイアウトが確定してから安全領域をネイティブへ知らせる。
+     */
+    @Override
+    public WindowInsetsCompat onApplyWindowInsets(View view, WindowInsetsCompat insets) {
+        WindowInsetsCompat result = super.onApplyWindowInsets(view, insets);
+        screenReporter.reportAfterLayout();
+        return result;
+    }
+
+    /** 描画面のレイアウトが確定した（回転・リサイズの後に来る）。大きさ・安全領域・回転を知らせる。 */
+    @Override
+    public void onGlobalLayout() {
+        super.onGlobalLayout();
+        screenReporter.report();
+    }
+
+    /**
+     * 構成が変わった（回転など。マニフェストの configChanges で Activity は作り直されない）。
+     * レイアウトがまだ前の向きなら報告は onGlobalLayout に任せる（ScreenReporter.reportAfterRotation）。
+     */
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        screenReporter.reportAfterRotation();
     }
 
     /**
@@ -122,6 +158,8 @@ public class MainActivity extends GameActivity {
         Log.i(LOG_TAG, "MainActivity.onDestroy (isFinishing=" + isFinishing()
                 + ", isChangingConfigurations=" + isChangingConfigurations()
                 + ") → セーブを書き出してプロセスを終了します");
+        // 表示の変化の購読をやめる（プロセスごと終えるので実害は無いが、万一戻った場合に備える）。
+        screenReporter.detach();
         try {
             nativeFlushSaveData();
         } catch (UnsatisfiedLinkError e) {

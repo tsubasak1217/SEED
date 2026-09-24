@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -61,7 +61,7 @@ runtime/                      パッケージ SEED
     src/entry.rs              android_main（GameActivity から呼ばれる入口）
     src/logcat/               log / 標準出力 / 標準エラー / panic を logcat（タグ SEED）へ
     src/app_dirs.rs           アプリ専用フォルダ（files・cache）をセーブ・キャッシュの書き込み先としてエンジンへ設定（§14.1）
-    src/jni_exports.rs        Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し。§14.2）
+    src/jni_exports.rs        Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し。§14.2／安全領域と回転の報告。§15）
     src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
     src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
     src/heartbeat.rs          提示フレーム数を 3 秒ごとにログ（描画ループの生存確認）
@@ -103,6 +103,7 @@ runtime/android/
   app/build.gradle.kts       minSdk 29 / targetSdk 35 / abiFilters arm64-v8a, x86_64 / 依存
   app/src/main/AndroidManifest.xml
   app/src/main/java/com/seedengine/runtime/MainActivity.java   GameActivity 派生（薄い）
+  app/src/main/java/com/seedengine/runtime/ScreenReporter.java 安全領域と画面の回転を集めてネイティブへ渡す（§15）
   app/src/main/res/values/{strings,themes}.xml
   app/src/main/jniLibs/<ABI>/libSEED.so    ← cargo ndk の出力（生成物・追跡しない）
   app/src/main/assets/seed/assets.pak      ← SeedPak の出力（-ProjectDir のときだけ。生成物・追跡しない。§13）
@@ -116,7 +117,8 @@ runtime/android/
   （`buildFeatures { prefab = true }` や CMake の `find_package(game-activity)` を足してはいけない）。
 - テーマは AppCompat 系が必須（GameActivity は AppCompatActivity 派生）。全画面・切り欠き側まで描画（`shortEdges`）。
 - マニフェストの要点:
-  - `screenOrientation="fullSensor"` … 4 方向に追従（端末の回転ロックも無視してセンサーに従う）。
+  - `screenOrientation="${seedScreenOrientation}"` … プロジェクト設定の `screen_orientation` からビルド時に決まる
+    （既定 `fullSensor` = 4 方向に追従・端末の回転ロックも無視してセンサーに従う。`sensorPortrait` / `sensorLandscape`。§15.1）。
   - `configChanges` … 回転・画面サイズ・キーボード・フォント等の構成変更で Activity を作り直させない（広めに列挙）。
   - `launchMode="singleTask"` … Activity を 1 インスタンスに保つ（§8 の「1 プロセス 1 回」の制約のため）。
 
@@ -140,6 +142,8 @@ MainActivity（Java）: static { System.loadLibrary("SEED") }
                                      → handle_suspended（サーフェス破棄・イベントループを Wait へ）
                resumed（2 回目以降）→ handle_surface_resumed（サーフェス再生成・サイズ依存状態の更新・Poll へ）
                                      → enter_foreground（物理再開・背面にいた時間を捨てる。§14.4）
+  onCreate の最後（super.onCreate の後）: ScreenReporter.attach … 以降、WindowInsets・レイアウト・構成・表示の変化のたびに
+      安全領域と回転を JNI（nativeOnScreenChanged）で報告し、エンジンがフレームごとに SEED.Screen の値へ反映する（§15）
   MainActivity.onDestroy → nativeFlushSaveData（JNI。セーブの未書き出し分）→ Process.killProcess（§14.2）
 ```
 
@@ -157,9 +161,12 @@ OS ごとの「振る舞いの差」は cfg を散らさず、`runtime/src/engin
 | `touch_drives_mouse` | false | true | 指0 がマウス（カーソル座標＋左ボタン）を駆動するか（`input/touch/bridge.rs`。§12.2） |
 | `mouse_simulates_touch` | true | false | マウス左ボタンで指を 1 本合成するか（同上。`touch_drives_mouse` と排他） |
 | `key_remap` | 空 | 戻るキー → Escape | OS 固有のキーをエンジンの KeyCode へ置き換える表（`core/input/key_remap.rs`。§14.5） |
+| `reference_dpi` | 96 | 160 | 表示倍率 1.0 に当たる DPI。スクリプトの `Screen.DPI` = winit の scale_factor × この値（§15.3） |
 
 実行時にしか分からない値（Android のアプリ専用フォルダ）は特性表ではなく `platform/paths.rs` の `PlatformPaths`
 （起動時に 1 回だけ設定する値）に持つ。Android の糊が設定し、デスクトップは設定しない（§14.1）。
+実行中に何度も変わる値（安全領域・表示の回転）は `platform/screen/` に持つ。Android の糊（JNI）が報告し、エンジンがフレームごとに
+読んでスクリプトへ見せる写しを作る。デスクトップは報告しない（全画面・縦横比の向き。§15）。
 
 cfg が残るのは「そもそもコンパイルできない API」の箇所だけ:
 - `netcorehost` は Android では依存しない（`runtime/Cargo.toml`）。`engine/core/scripting` は Android で
@@ -245,7 +252,7 @@ pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
 | `-Abi arm64-v8a,x86_64` | ビルドする ABI（既定は両方）。APK にもこの ABI だけを詰める（Gradle へ `-Pseed.abis` で渡す） |
 | `-Release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
 | `-Serial <adb のシリアル>` | 対象端末。**2 台以上つながっているときは必須** |
-| `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の内部アプリ専用フォルダの `assets/` へ送る（前回分は消して置き直す）。開発用の高速経路 |
+| `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の内部アプリ専用フォルダの `assets/` へ送る（前回分は消して置き直す）。開発用の高速経路。APK を作るときは、このフォルダ（`-ProjectDir` ならそのアセットルート）の `screen_orientation` で画面の向きを決める（どちらも無ければ `both`。§15.1） |
 | `-ProjectDir <プロジェクトフォルダ>` | SeedPak（`editor/tools/SeedPak`）で pak を作り `app/src/main/assets/seed/` に置いてから APK を作る（パッケージ実行・push 無し。§13）。`.seedproj`／`assets/` を持つフォルダか、アセットルートそのもの。`-AssetsDir`・`-SkipGradle` とは同時に指定できない。**指定しないで Gradle を回すと置き場を空にする**（pak の無い開発用の APK になる） |
 | `-SkipRustBuild` / `-SkipGradle` / `-NoInstall` / `-NoLaunch` / `-NoLogcat` | 工程を飛ばす |
 | `-LogcatSeconds <秒>` / `-LogFile <パス>` | logcat を何秒集めるか（0 = Ctrl+C まで）／保存先 |
@@ -319,6 +326,8 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | `[SEED PIPELINE CACHE] 読込 N KiB → 採用後 M KiB` / `保存 …` / `変化なし …` | パイプラインキャッシュ（§14.3） | 起動時の生成時間は `[SEED INIT] DrawContext created (N ms)`・`描画パイプライン生成 合計 N ms` |
 | `[SEED LIFECYCLE] background / foreground: …` / `[SEED PHYSICS] 3D 物理スレッド: …` | 背面での停止・前面での再開（§14.4） | 物理スレッドは止めた・再開したを 1 回ずつ出す |
 | `[SEED KEY FRAME] f=N Escape:down+up` | 置き換えたキー（戻るキー → Escape）の入力状態（`app/key_diag.rs`。§14.5） | スクリプトの `GetKeyDown` / `GetKeyUp` が読むフレーム末の値 |
+| `[SEED SCREEN] Java 報告: …` / `報告を受け取りました: …` | 安全領域・回転の報告（`ScreenReporter.java`・`jni_exports.rs`。§15.4） | 描画面の大きさ・各辺からの距離・回転・表示の自然な向きの大きさ。Java の行には WindowInsets の種類ごとの内訳も出る |
+| `[SEED SCREEN] size=… safe=(x,y,幅,高さ) orientation=… dpi=… window=… report=…` | スクリプトの `SEED.Screen` が返す値（`app/screen_diag.rs`。§15.4） | 変化したフレームだけ。`report=none` は今の描画面に一致する報告が無いフレーム（回転の直後） |
 | `[SEED SAVE TEST] …` | 検証用のセーブ書き換え（`debug.seed.save_test` が 1 か 2 のときだけ。§14.6） | 起動時に読んだ値と書き換えた値 |
 | `[SEED PANIC] ...` / タグ `RustPanic` | panic フック（liblog へ同期で直接）／android-activity | 場所（ファイル:行）と backtrace |
 | `wgpu_hal::... / wgpu_core::...: ...` | 依存クレートの log（android_logger） | `naga` の Info は多すぎるため Warn 以上だけ出す |
@@ -354,7 +363,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | GPU 機能の差（起動ログ） | バインドレス非対応・ワイヤーフレーム対応・BC 圧縮対応 | バインドレス対応（配列 4096）・ワイヤーフレーム非対応・BC 圧縮非対応・メッシュレットカリング非対応（CPU カリング経路） |
 | 毎フレーム描画（`[SEED HEARTBEAT]`） | 約 59 fps（非フォーカス時はエンジン既定の 30 fps 上限） | 縦 約 18〜19 fps／横 約 37〜39 fps。GPU 待ちが支配的と見られる（`[PERF]` で 1 フレーム約 50 ms のうち提示待ち `finish` が 28〜41 ms、CPU 側の処理は数 ms） |
 | 1 枚絵 | 空アセットではクリア色、最小アセットでモデルが陰影付きで描画 | 同じ絵が描画された |
-| 回転 4 方向 | `adb emu rotate`。`Resized 2400x1080` / `1080x2400` で描画継続 | `cmd window fixed-to-user-rotation enabled` ＋ `cmd window user-rotation lock 0〜3` で同じ結果（検証後は元の設定に戻した） |
+| 回転 4 方向 | `adb emu rotate`。`Resized 2400x1080` / `1080x2400` で描画継続（段階A-4 で安全領域・向きの値とカメラ・キャンバス・タッチの追従も確認。§15.5） | `cmd window fixed-to-user-rotation enabled` ＋ `cmd window user-rotation lock 0〜3` で同じ結果（検証後は元の設定に戻した） |
 | ホーム → 復帰（`KEYCODE_HOME` → `am start`） | `suspended` → `released` → heartbeat `+0` → `recreated 1080x2400` → 描画再開 | 同じ（復帰の `am start` は HOT で 28 ms） |
 | タッチ（`input tap` / `input swipe`） | `[SEED TOUCH] Started ... / Ended ... moves=21` | 同じ。adb の操作とは別に、画面を指でなぞった操作も届いた |
 | 戻るキー | `[SEED KEY] pressed logical=Named(BrowserBack)`。Activity は終わらない（段階A-3 で Escape に置き換え。§14.5） | 同じ |
@@ -387,6 +396,8 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
   作れないため、`MainActivity.onDestroy` でプロセスを終了させている。構成変更での作り直しは `configChanges` で防いでいる。
   セーブはバックグラウンドへ回る時点（suspended）と、終了直前の JNI 呼び出しで書き出す（段階A-3。§14.2）。
 - 戻るキーは `KeyCode.Escape` としてスクリプトへ届く。アプリは自動で終了しない（段階A-3。§14.5）。
+- 画面の向きはプロジェクト設定の `screen_orientation`（both / portrait / landscape）で APK を作るときに決まる。端末の回転ロックは尊重しない。
+  安全領域・向き・DPI は `SEED.Screen` で読めるが、キャンバス UI へ安全領域を自動では反映しない（段階A-4。§15）。
 - バックグラウンド中は物理スレッドを止める（段階A-3。§14.4）。音声・ゲームパッド（gilrs）のスレッドは止めていない。
 - パイプラインキャッシュはアプリのキャッシュフォルダへ保存し、2 回目以降の起動で読む（段階A-3。§14.3）。
   実機での短縮幅は未計測（エミュレータはホスト側ドライバのキャッシュが効くため差が小さい。§14.7）。
@@ -403,7 +414,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | 段階 | 内容 |
 |---|---|
 | **0（完了）** | 実機/エミュレータに 1 枚絵。libSEED.so ＋ Gradle ＋ GameActivity、logcat、サーフェスの破棄・再生成、回転追従 |
-| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API、音声、logcat の整備 |
+| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声、logcat の整備 |
 | **B** | スクリプト: ScriptPackager の事前コンパイル DLL と linux-bionic 向け CoreCLR ランタイムパックを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: 実行先セレクタ（PC／実機／エミュレータ）、ビルド → install → 起動 → logcat → 停止、pak/DLL だけ push する高速経路、パッケージ化ウィンドウの Android 出力の実働化（`build_and_run.ps1` の各関数が土台） |
 | **D** | Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
@@ -429,6 +440,14 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
   エンジンの非フォーカス時 30 fps 上限が掛かる。「OK」を押せば 60 fps に戻る。
 - **`screenOrientation="fullSensor"` は端末の回転ロックを無視する**ため、エミュレータで
   `settings put system user_rotation` は効かない。回転の確認は `adb emu rotate`（またはエミュレータの回転ボタン）で行う。
+  `adb emu rotate` は 1 回ごとに `ROTATION_0 → 270 → 180 → 90 → 0` の順に回る（4 回で元に戻る）。
+- **WindowInsets（安全領域）はネイティブへ届かない**: android-activity 0.6.1 は GameActivity の `InsetsChanged` を中身の無いイベントとして
+  出すだけ（`content_rect()` はある）で、winit 0.30 は `TODO: handle Android InsetsChanged` と warn して捨てる。そのため Java（`ScreenReporter`）で
+  集めて JNI で渡している。GameActivity 自身が SurfaceView の `OnApplyWindowInsetsListener` と `OnGlobalLayoutListener` なので、
+  MainActivity で `onApplyWindowInsets` / `onGlobalLayout` を上書きする（super を必ず呼ぶ。IME の処理と content rect の通知があるため）。
+- 没入モード（システムバーを隠す）では `getInsets(systemBars())` は 0 になる。隠れているバーの範囲は `getInsetsIgnoringVisibility` で取る（§15.3）。
+- エミュレータの切り欠きの overlay（`cutout.emulation.*`）を切り替えると、動いている SEED は Activity の作り直し → プロセス終了になる。
+  切り替えた後はシステムバーの高さが古いまま残ることがあり、`wm density <別の値>` → `wm density reset` で読み直される（§15.4）。
 - bash（Git Bash）から adb に `/sdcard/...` を渡すとパス変換で壊れる。`MSYS_NO_PATHCONV=1` を付けるか pwsh を使う。
 - 同じ NDK でもパスの表記（`/` と `\`）が違うと cc 系の依存（oboe-sys 等）が再ビルドされる。スクリプト経由に揃えるとよい。
 - **Mali-G78（Pixel 6a）は Vulkan の `multiDrawIndirect` を持たない**。wgpu の `MULTI_DRAW_INDIRECT` を無条件に要求すると
@@ -970,3 +989,171 @@ adb shell input keyevent --longpress KEYCODE_BACK
 - 背面中も音声・ゲームパッド（gilrs）のスレッドは動く。`[PLAY_WD]` の監視ログが背面中に誤報を出す（既存の一時診断）。
 - 前面のまま強制終了された分のセーブは失われる（仕様）。
 - 起動の初期化（handle_resumed）が android_main スレッドで同期に走る問題（ANR の恐れ）は変わっていない（backlog の既存項目）。
+
+---
+
+## 15. 画面の向きと安全領域（段階A-4・2026-09-24）
+
+プロジェクト設定で画面の向き（縦横どちらも／縦に固定／横に固定）を選べるようにし、スクリプトから画面の寸法・安全領域・
+向き・DPI を読む `SEED.Screen`（`Width` / `Height` / `SafeArea` / `Orientation` / `DPI`）を追加した。
+利用者向けの API 説明は [scripting_api.md](scripting_api.md) §7.12。
+
+### 15.1 画面の向きの設定（プロジェクト設定 → マニフェスト）
+
+```
+エディタ「プロジェクト設定 → 解像度設定 → 画面の向き（モバイル）」（値と表示名は editor/src/ProjectSettings/ScreenOrientationSetting.cs）
+  └ project_settings.json の screen_orientation（"both" / "portrait" / "landscape"。既定 "both"）
+      └ build_and_run.ps1 の Resolve-ScreenOrientation（-ProjectDir / -AssetsDir のアセットルートから読む。どちらも無ければ both）
+          └ gradlew assembleDebug -Pseed.orientation=<値>
+              └ app/build.gradle.kts の変換表 → manifestPlaceholders["seedScreenOrientation"]
+                  └ AndroidManifest.xml の android:screenOrientation="${seedScreenOrientation}"
+```
+
+| 設定値 | マニフェスト（値） | 振る舞い |
+|---|---|---|
+| `both`（既定） | `fullSensor`（10） | 縦横 4 方向に追従（端末の回転ロックは無視してセンサーに従う。従来どおり） |
+| `portrait` | `sensorPortrait`（7） | 縦だけ。逆さの縦へ回るかは端末の設定次第（エミュレータでは 0 度のままだった） |
+| `landscape` | `sensorLandscape`（6） | 横だけ。左右どちら向きの横にもセンサーに従って回る |
+
+- **変換表は `app/build.gradle.kts` の 1 か所だけ**。`build_and_run.ps1` は値を読んで渡すだけ、エディタは値と表示名だけを持つ。
+  表に無い値は Gradle が警告（`SEED: screen_orientation="…" は不明な値です…`）を出して `both` として扱う。前後の空白・大文字小文字は吸収する。
+- 起動時に読む値ではなく **APK（マニフェスト）に焼き込む**。値を変えたら Gradle を回して APK を作り直す（`-SkipGradle` では前回の APK のまま）。
+  段階C のエディタ統合も `build_and_run.ps1` へ `-ProjectDir` / `-AssetsDir` を渡せば同じ判定になる。
+- `-ProjectDir` のアセットルートは SeedPak（`PakInputResolver`）と同じ規則で決める（`.seedproj` の `assets_dir` → `<フォルダ>/assets` → フォルダ自体）。
+- 確かめ方: Gradle の出力の `SEED: screen_orientation=<値> → screenOrientation=<マニフェストの値>` と、
+  `aapt2 dump xmltree --file AndroidManifest.xml app/build/outputs/apk/debug/app-debug.apk` の `screenOrientation(0x0101001e)=<数値>`。
+
+### 15.2 安全領域と向きの流れ
+
+```
+MainActivity（Java・UI スレッド）: onApplyWindowInsets / onGlobalLayout / onConfigurationChanged ＋ 表示の変化（DisplayListener）
+  └ ScreenReporter（java/.../ScreenReporter.java）
+       描画面（GameActivity の SurfaceView）の大きさ・安全領域（描画面の各辺からの距離・物理ピクセル）・
+       Display.getRotation・表示の自然な向きの大きさ（Display.Mode の physicalWidth / Height）。前回と同じなら送らない
+      └ JNI nativeOnScreenChanged（native/src/jni_exports.rs）→ platform::screen::report::submit（Mutex。最新と直前の 2 件）
+エンジン（android_main のスレッド）: 毎フレーム 1 回、Play 中のゲームロジックの先頭（ポインタイベント・スクリプトより前）
+  App::publish_screen_snapshot（app/screen_publish.rs）
+    ├ report::select_for_frame(今の描画面の大きさ)     大きさが一致する報告だけを使う（§15.3）
+    ├ ScreenSnapshot::compute（platform/screen/snapshot.rs。純関数）  描画ターゲット座標への写像・向き・DPI
+    ├ screen_bridge::publish_screen_snapshot             スクリプトが読む写し（スレッドローカル）
+    └ screen_diag::observe                               [SEED SCREEN] ログ（変化したフレームだけ。lifecycle_diag_log の端末）
+スクリプト: SEED.Screen.* → ffi_screen（scripting/screen_bridge.rs。kind 0=寸法 / 1=安全領域 / 2=向き / 3=DPI）
+```
+
+| ファイル | 役割 |
+|---|---|
+| `runtime/src/engine/platform/screen/report.rs` | OS の報告（`ScreenReport`）の保持と選び方（`ReportHistory::select_for_frame`） |
+| `runtime/src/engine/platform/screen/orientation.rs` | `ScreenOrientation` と判定（回転＋表示の自然な向き／縦横比）。純関数 |
+| `runtime/src/engine/platform/screen/snapshot.rs` | 1 フレーム分の値を作る純関数（描画ターゲット座標への写像・レターボックス・DPI） |
+| `runtime/src/engine/platform/mod.rs` | `PlatformTraits::reference_dpi`（Windows 96 / Android 160） |
+| `runtime/src/engine/core/scripting/screen_bridge.rs` | FFI（`ffi_screen`。`ScriptHostApi` の末尾に `screen`）と写しの公開口 |
+| `runtime/src/engine/core/app_base/app/screen_publish.rs`・`screen_diag.rs` | 毎フレームの公開・診断ログ |
+| `runtime/android/app/src/main/java/com/seedengine/runtime/ScreenReporter.java` | WindowInsets・回転を集めて JNI へ（MainActivity は契機の受け口だけ） |
+| `runtime/android/native/src/jni_exports.rs` | `nativeOnScreenChanged`（ScreenReporter の static native） |
+| `scripting/src/Api/Screen.cs`・`ScreenOrientation.cs`・`Rect.cs`・`ScriptHost.cs` | C# API |
+
+### 15.3 決まりごと
+
+- **安全領域の中身**: `max(getInsets(systemBars() | displayCutout()), getInsetsIgnoringVisibility(navigationBars()))`（辺ごとの最大）。
+  没入モード（全画面。今のまま）ではシステムバーが隠れていて `systemBars()` は 0 なので、実際に効くのは「切り欠き（カメラ穴）」と
+  「ナビゲーションバー（ジェスチャーバー）の範囲」。ナビゲーションバーを隠れていても数えるのは、その辺をなぞるとまずシステムがバーを出し
+  （ゲームの操作として届かない）、出たバーは画面に重なるため（iOS のホームインジケータと同じ扱い）。ステータスバーは隠れている間は数えない
+  （横持ちの上端が丸ごと使えなくなるのを避ける）。各種類の値は Java のログの内訳に出る（§15.4）。
+- **座標**: `Input.MousePos` と同じ描画ターゲットの左上原点・Y 下向き・ピクセル。Java は窓基準の距離を描画面（SurfaceView）の各辺からの
+  距離へ直して渡す（没入モードでは描画面＝窓＝画面全体なので同じ値）。エンジンは「ウィンドウに合わせて描く」ではそのまま、
+  「解像度を固定」では入力と同じ `renderer/letterbox.rs` の `window_to_internal` で内部解像度の座標へ写し、描画ターゲットの外（黒帯）を切り落とす。
+- **向き**: 報告があれば `Display.getRotation` と表示の自然な向きから決める（自然な向きが縦の端末: 0=Portrait / 1=LandscapeLeft /
+  2=PortraitUpsideDown / 3=LandscapeRight。自然な向きが横の端末は自然な向きを LandscapeLeft として 1 つずらす）。自然な向きに窓の大きさを
+  使わないのは、分割画面などで窓と表示の縦横が食い違うため。報告が無い（デスクトップ・最初の報告前・回転の直後で大きさが一致しない）ときは
+  描画面の縦横比（縦長 = Portrait、それ以外 = LandscapeLeft）。
+- **DPI**: winit の `scale_factor` × `PlatformTraits::reference_dpi`。winit の Android 実装は `scale_factor = densityDpi / 160` なので
+  densityDpi（エミュレータ 420）に戻る。Windows は 96 × 表示スケール。
+- **1 フレーム内で不変**: 写しの差し替えはフレームの決まった位置で 1 回だけ。OS の報告は別スレッドからいつ届いても次のフレームまで見えない。
+  写しを作るときも描画面の実寸は 1 回だけ読み、描画ターゲットの寸法（`render_target_size_for`）・向き・安全領域をそこから求める
+  （リサイズ中に 2 回読むと、寸法は新しく向きは古い大きさから、というフレームが PC で 1 回出たため）。
+- **回転の直後**: Java の報告と winit の `Resized` は別経路で前後して届く。報告に「そのときの描画面の大きさ」を添え、エンジンは今の描画面と
+  大きさが一致する報告だけを使う。報告が先に届いた間は直前の報告（古い向き）を使い続け、描画面が先に変わった間は一致する報告が無いので
+  全画面・縦横比の向きになる（エミュレータで 1 フレーム観測）。描画面が一度でも最新の報告に追い付いたら古い報告は捨てる
+  （270 → 180 → 90 度と回したとき、大きさが同じ 270 度の報告を 90 度の描画面に 1 フレーム当ててしまう不具合をエミュレータで見つけて直した。
+  `report.rs` の回帰テスト）。Java 側も、回転の通知の時点ではレイアウトが前の向きのまま（描画面の大きさと WindowInsets が古い）ことがあるので、
+  回転の通知からの報告は「描画面の縦横が回転後の表示の縦横と合うとき」だけにし、合わなければレイアウト完了（onGlobalLayout）からの報告に任せる。
+- **回転への追従（既存の `on_resize` 経路）**: カメラのアスペクト（`on_resize` の `set_aspect_ratio`）・キャンバス UI（毎フレーム描画面の大きさで
+  レイアウト）・タッチ座標（`window_pos_to_input`。内部解像度固定のときの写像は `on_resize` の `sync_input_view_map` で張り直す）を 4 方向で確かめ、
+  いずれも追従していたので修正はしていない（§15.5）。
+
+### 15.4 確認方法
+
+| 行 | 中身 |
+|---|---|
+| `[SEED SCREEN] Java 報告: frame=1080x2400 insets=(0,128,0,63) rotation=0 natural=1080x2400 内訳{cutout=… bars=… navIgnoringVisibility=… statusIgnoringVisibility=…}` | Java が集めた値（描画面基準）と、窓基準の種類ごとの内訳 |
+| `[SEED SCREEN] 報告を受け取りました: …` | JNI で受け取った（内容が変わったときだけ） |
+| `[SEED SCREEN] size=1080x2400 safe=(0,128,1080,2209) orientation=Portrait dpi=420 window=1080x2400 report=frame=… rot=… natural=… insets=(…)` | スクリプトの `SEED.Screen` が返す値（変化したフレームだけ・Play 中）。`report=none` は今の描画面に一致する報告が無いフレーム |
+
+```bash
+# 4 方向。adb emu rotate は 1 回ごとに ROTATION_0 → 270 → 180 → 90 → 0 と回る（4 回で元に戻る）
+adb -s emulator-5554 emu rotate
+adb -s emulator-5554 logcat -d -v threadtime --pid=$(adb -s emulator-5554 shell pidof com.seedengine.runtime) | grep "SEED SCREEN"
+# タッチ座標の確認（回転後の表示の座標で指定。右上付近）
+adb -s emulator-5554 shell input tap 2300 150      # 横。[SEED TOUCH FRAME] の Began(2300.0,150.0)
+
+# カメラ穴の模擬（エミュレータだけ。実機では触らない）。切り替えは Activity を作り直す構成変更なので、
+# 動いている SEED はプロセスごと終わる（§8 の方針）→ am start で起動し直す
+adb -s emulator-5554 shell cmd overlay enable com.android.internal.display.cutout.emulation.corner   # double / tall / hole も可
+adb -s emulator-5554 shell cmd overlay disable com.android.internal.display.cutout.emulation.corner  # 必ず戻す
+# overlay を切り替えた後、システムバーの高さが古いまま残ることがある（ナビゲーションバー 63 → 84 px・ステータスバー 128 → 126 px）。
+# 表示密度を一度変えて戻すと読み直される（dumpsys window の InsetsSource で確かめる）
+adb -s emulator-5554 shell wm density 400 && adb -s emulator-5554 shell wm density reset
+adb -s emulator-5554 shell "dumpsys window" | grep -E "InsetsSource id=.* type=(navigationBars|statusBars|displayCutout) "
+
+# 向きの固定: screen_orientation を portrait / landscape にしたアセットで APK を作り、マニフェストと回転を確かめる
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -SkipRustBuild -AssetsDir <portrait にしたアセット>
+aapt2 dump xmltree --file AndroidManifest.xml runtime/android/app/build/outputs/apk/debug/app-debug.apk | grep screenOrientation
+```
+
+- AVD `seed_pixel6_api35` は overlay 無しでも上端に 128 px の切り欠き（Pixel 6 のカメラ穴）を持つ。
+- 共用の端末では、回転・overlay・表示密度を変えたら元に戻す（`cmd window user-rotation` / `fixed-to-user-rotation`・
+  `settings get system accelerometer_rotation` と `cmd overlay list` で控えておく）。
+- PC の C# API は、`SEED.exe --mode=play --assets-root=<一時プロジェクト>/assets --scene=assets://scenes/Main.scene`（作業フォルダは `runtime/`）で
+  `SEED.Screen.*` を `SEED.Debug.Log` するスクリプトを載せ、SEED のウィンドウだけを `SetWindowPos` で縦長・横長に変えて確かめた。
+
+### 15.5 確認結果（2026-09-24）
+
+エミュレータ（AVD `seed_pixel6_api35`・API 35・x86_64・1080x2400・420 dpi・ジェスチャーナビゲーション）。アセットは最小構成（§7）に、
+四隅へアンカーした色付きスプライト 4 枚と中央 1 枚のキャンバスを足したもの。値は `[SEED SCREEN]`（スクリプトの `SEED.Screen` と同じ値）。
+
+| 条件 | 回転 | 値 |
+|---|---|---|
+| 内蔵の切り欠き（上 128） | 0 | `size=1080x2400 safe=(0,128,1080,2209) orientation=Portrait dpi=420`（上は穴、下はジェスチャーバー 63） |
+| 〃 | 270 | `size=2400x1080 safe=(0,0,2272,1017) orientation=LandscapeRight`（穴は右、下はジェスチャーバー 63） |
+| 〃 | 180 | `size=1080x2400 safe=(0,0,1080,2272) orientation=PortraitUpsideDown`（穴は下。ジェスチャーバーと重なって 128） |
+| 〃 | 90 | `size=2400x1080 safe=(128,0,2272,1017) orientation=LandscapeLeft`（穴は左） |
+| overlay `corner`（上 126） | 0 / 270 / 180 / 90 | `(0,126,1080,2211)` Portrait / `(0,0,2274,1017)` LandscapeRight / `(0,0,1080,2274)` PortraitUpsideDown / `(126,0,2274,1017)` LandscapeLeft |
+| overlay `double`（上下 84） | 0 / 270 / 180 / 90 | `(0,84,1080,2232)` Portrait / `(84,0,2232,1017)` LandscapeRight / `(0,84,1080,2232)` PortraitUpsideDown / `(84,0,2232,1017)` LandscapeLeft |
+| 解像度を固定（1920x1080） | 0 / 180 | `size=1920x1080 safe=(0,0,1920,1080)`（上下の黒帯が穴とジェスチャーバーを吸収） |
+| 〃 | 270 / 90 | `size=1920x1080 safe=(0,0,1920,1017)`（左右の黒帯 240 が穴 128 を吸収。下の 63 は拡大率 1 なのでそのまま） |
+| `screen_orientation=portrait` | 4 回回す | マニフェスト 7（sensorPortrait）。表示は `ROTATION_0` のまま、`Portrait` のまま |
+| `screen_orientation=landscape` | 4 回回す | マニフェスト 6（sensorLandscape）。縦の端末で起動しても横（`ROTATION_90`）で始まり、90 と 270 だけを行き来（LandscapeLeft ↔ LandscapeRight、穴の辺も追従） |
+| 既定（`both`）・不明な値 `sideways` | — | マニフェスト 10（fullSensor）。`sideways` は Gradle が警告して both 扱い |
+| `-ProjectDir`（`.seedproj` の `assets_dir=Content`、値 `"  Landscape "`） | — | SeedPak と同じ `Content` から読み、`landscape` → マニフェスト 6 |
+| 回転への追従 | 4 方向 | モデルが歪まない（カメラのアスペクト）。キャンバスの四隅のスプライトが四隅へ付き直す。`input tap 2300 150`（横）→ `Began(2300.0,150.0)`、`980 150`（縦）→ `Began(980.0,150.0)`。解像度を固定では `2300 150` → `(2060.0,150.0)`（黒帯の上＝枠外。レターボックスの写像） |
+
+- 縦の画面ではキャンバスの自動スケール（`auto_scale`）が縦横別々に掛かるため、1920x1080 基準で作った正方形のスプライトは縦長に伸びる
+  （既存の仕様。レイアウトの付き直し自体は正しい。backlog）。
+- 回転の直後、`report=none`（全画面・縦横比の向き）のフレームが 1 回出ることがある（§15.3。270 → 0・180 → 90 のときに 1 回ずつ観測）。
+
+PC（Windows・`SEED.exe` 単体の Play ＋ 確認用スクリプト）: 起動時 540x960 の窓で `size=540x960 safe=(0,0,540,960) orientation=Portrait dpi=96`、
+窓を 1264x721 → 624x1001 → 784x761 に変えると `LandscapeLeft` → `Portrait` → `LandscapeLeft`（`Width` / `Height` も窓のクライアント領域に追従）。
+同じフレームに 2 回読んだ値はすべて一致（`stable=True`）。解像度を固定（540x960）では窓を変えても `size=540x960` のままで、`Orientation` だけが窓の縦横比で変わった。
+
+実機（Pixel 6a）は未実施（作業の開始時は別のアプリが前面で使用中、その後 USB の接続が外れた）。
+
+### 15.6 制限・持ち越し
+
+詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
+
+- Android ではスクリプトが動かない（段階B）ため、`SEED.Screen` の C# 側は PC でだけ確かめた。Android では同じ値をログで確かめた。
+- 安全領域をキャンバス UI へ自動で反映する仕組み（セーフエリアのパディング・アンカー）は無い。スクリプトが `SafeArea` を読んで配置する。
+- 回転の直後の 1 フレーム程度は、安全領域が全画面・向きが縦横比からの値になることがある。
+- 端末の回転ロックは尊重しない（`fullSensor` / `sensorPortrait` / `sensorLandscape`。`fullUser` 等の選択肢は無い）。
+- 実機（Pixel 6a の実際のカメラ穴）・分割画面（描画面が表示の一部になる）・自然な向きが横のタブレットは未確認。
+- `Screen.DPI` は OS の論理 DPI（Android は密度の区分値 densityDpi）で、物理的な DPI（xdpi / ydpi）ではない。
