@@ -25,7 +25,7 @@ SEED で作ったゲームを、そのまま Android 端末で動かせるよう
 | 対象 API | API 35（Android 15） | `targetSdk = compileSdk = 35` |
 | GPU | **Vulkan 1.1 必須**（wgpu の Vulkan バックエンド。GLES へは落とさない） | マニフェストで `android.hardware.vulkan.version` 0x401000 を必須宣言 |
 | 16KB ページ | 対応済み（NDK r28 の既定で LOAD セグメントが 16KB 整列） | `llvm-readelf -l libSEED.so` で `0x4000` を確認済み。最終確認は段階D |
-| 開発用端末 | 実機 Pixel 6a（arm64・Mali-G78）／AVD `seed_pixel6_api35`（API 35・Google APIs・x86_64・GPU host） | 実機検証は段階0 では未実施（§7） |
+| 開発用端末 | 実機 Pixel 6a（Android 16 / API 36・arm64・Mali-G78）／AVD `seed_pixel6_api35`（API 35・Google APIs・x86_64・GPU host） | どちらも段階0 の項目を確認済み（§7） |
 
 ---
 
@@ -121,7 +121,7 @@ MainActivity（Java）: static { System.loadLibrary("SEED") }
       └ android-activity が専用スレッドで android_main(app) を呼ぶ（runtime/android/native/src/entry.rs）
           1. logcat::init()            … android_logger・panic フック・標準出力/標準エラーの付け替え
           2. device_info::log          … SDK・機種・ABI・データパス
-          3. launch::launch_args       … <外部アプリ専用フォルダ>/assets をアセットルートにした LaunchArgs（mode=Play）
+          3. launch::launch_args       … <アプリ専用フォルダ>/assets をアセットルートにした LaunchArgs（mode=Play。§4.5）
           4. EventLoop::builder().with_android_app(app).build()
           5. heartbeat::spawn()        … 3 秒ごとの提示フレーム数ログ
           6. App::run_with_event_loop(event_loop, args)   … 以降はデスクトップと同じエンジン
@@ -160,15 +160,22 @@ cfg が残るのは「そもそもコンパイルできない API」の箇所だ
 PC の開発時レイアウト（`<Project>/assets` とその隣の `save/`・`cache/`）を、端末のアプリ専用フォルダへそのまま写した形。
 
 ```
-/sdcard/Android/data/com.seedengine.runtime/files/     … 外部アプリ専用フォルダ（取れなければ内部フォルダ）
-  assets/                 アセットルート（adb push 先。無ければ初回起動時に空で作る）
+<データルート>/
+  assets/                 アセットルート（無ければ初回起動時に空で作る）
     project_settings.json
     scenes/Main.scene ...
   save/                   セーブデータ（エンジンの save/path.rs が assets の親に作る）
   cache/                  派生データキャッシュ（モデルの .smdl 等。2 回目以降の起動はキャッシュヒット）
 ```
 
-`assets/` が空でも、エンジンは既定値（空のシーン）で起動してクリア色の描画まで行う。
+データルートは次の順に見て、`assets/project_settings.json` がある最初のものを使う（`runtime/android/native/src/launch.rs`）。
+どちらにも無ければ 1 を使い、空の `assets/` でエンジンは既定値（空のシーン）のまま起動してクリア色の描画まで行う。
+
+| 順 | 場所 | 置き方 |
+|---|---|---|
+| 1 | 内部アプリ専用フォルダ `/data/user/0/com.seedengine.runtime/files` | `build_and_run.ps1 -AssetsDir`。デバッグ版 APK の `run-as` でアプリの権限になり、tar を流し込む（§5.2）。**実機でもエミュレータでも読める** |
+| 2 | 外部アプリ専用フォルダ `/sdcard/Android/data/com.seedengine.runtime/files` | 手で `adb push`。エミュレータでは読めるが、**実機（Android 11 以降）では adb push が作ったフォルダが shell の所有になりアプリから読めない**（Permission denied。起動時に警告を出す） |
+
 段階A で APK 内の pak（AssetManager 経由）と保存先の振替に置き換える。
 
 ---
@@ -177,7 +184,8 @@ PC の開発時レイアウト（`<Project>/assets` とその隣の `save/`・`c
 
 ### 5.1 一括スクリプト（推奨）
 
-`runtime/android/build_and_run.ps1`（**pwsh 7 以降**で実行。Windows PowerShell 5.1 は対象外）。
+`runtime/android/build_and_run.ps1`（**pwsh 7.4 以降**で実行。アセット転送の tar をネイティブコマンド間のパイプで
+バイト列のまま渡すため。Windows PowerShell 5.1 は対象外）。
 
 ```powershell
 # 環境変数（例。ANDROID_NDK_HOME が無ければ SDK 内 ndk/ の最新版を警告付きで使う）
@@ -188,17 +196,21 @@ $env:JAVA_HOME        = "C:\Program Files\Android\Android Studio\jbr"
 # 両 ABI をビルドして、つながっている 1 台で起動し logcat を流す（Ctrl+C で終了）
 pwsh -File runtime/android/build_and_run.ps1
 
-# エミュレータ向けだけ・アセットを push・20 秒ぶんの logcat をファイルへ
+# エミュレータ向けだけ・アセットを送る・20 秒ぶんの logcat をファイルへ
 pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
      -AssetsDir D:\path\to\Project\assets -LogcatSeconds 20 -LogFile logcat.txt
+
+# 実機（arm64）。ビルド済みなら APK は作り直さず、アセットだけ差し替えて再起動する
+pwsh -File runtime/android/build_and_run.ps1 -Abi arm64-v8a -Serial <実機のシリアル> `
+     -SkipRustBuild -SkipGradle -NoInstall -AssetsDir D:\path\to\Project\assets
 ```
 
 | 引数 | 意味 |
 |---|---|
-| `-Abi arm64-v8a,x86_64` | ビルドする ABI（既定は両方） |
+| `-Abi arm64-v8a,x86_64` | ビルドする ABI（既定は両方）。APK にもこの ABI だけを詰める（Gradle へ `-Pseed.abis` で渡す） |
 | `-Release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
 | `-Serial <adb のシリアル>` | 対象端末。**2 台以上つながっているときは必須** |
-| `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の `assets/` へ push |
+| `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の内部アプリ専用フォルダの `assets/` へ送る（前回分は消して置き直す） |
 | `-SkipRustBuild` / `-SkipGradle` / `-NoInstall` / `-NoLaunch` / `-NoLogcat` | 工程を飛ばす |
 | `-LogcatSeconds <秒>` / `-LogFile <パス>` | logcat を何秒集めるか（0 = Ctrl+C まで）／保存先 |
 
@@ -210,11 +222,16 @@ cargo ndk -t arm64-v8a -t x86_64 -P 29 -o ../app/src/main/jniLibs build      # 1
 cd ..
 .\gradlew.bat assembleDebug "-Pseed.ndkPath=$env:ANDROID_NDK_HOME"            # 2. APK
 adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk     # 3. インストール
-adb -s emulator-5554 shell am start -n com.seedengine.runtime/.MainActivity   # 4. 起動
-adb -s emulator-5554 logcat -s SEED RustPanic                                  # 5. ログ
+# 4. アセット（run-as でアプリの権限になり、tar を内部フォルダへ展開する。pwsh 7.4 以降）
+& "$env:SystemRoot\System32\tar.exe" -cf - -C D:\path\to\Project\assets . |
+    adb -s emulator-5554 exec-in run-as com.seedengine.runtime sh -c "rm -rf files/assets && mkdir -p files/assets && tar -xf - -C files/assets"
+adb -s emulator-5554 shell am start -n com.seedengine.runtime/.MainActivity   # 5. 起動
+adb -s emulator-5554 logcat -s SEED RustPanic                                  # 6. ログ
 ```
 
 `-P 29` は `minSdk` と同じ API レベルでリンクするため（cargo-ndk の既定は 21）。
+`adb exec-in` / `exec-out` は 2 つ目以降の引数を 1 つずつ引用して端末へ渡す（`adb shell` は引用せずに連結する）ため、
+`sh -c` のスクリプトはそのまま 1 引数で渡す。
 
 ### 5.3 所要時間と大きさ（段階0 の実測・debug）
 
@@ -224,9 +241,12 @@ adb -s emulator-5554 logcat -s SEED RustPanic                                  #
 | arm64 追加ビルド（ホスト側の成果物は共有） | 約 4 分 10 秒 |
 | エンジンだけ変えたときの再ビルド | 約 20 秒 |
 | `gradlew assembleDebug`（初回・依存取得込み） | 約 2〜3.5 分 |
+| `gradlew assembleDebug`（1 ABI・.so だけ変わったとき） | 約 1 分 50 秒（大半は .so のシンボル削り） |
 | `libSEED.so`（未ストリップ・フルデバッグ情報） | 約 445 MB / ABI |
-| APK 内の `libSEED.so`（AGP がシンボルを削ったもの） | 約 53 MB / ABI |
-| APK（2 ABI） | 約 108 MB |
+| APK 内の `libSEED.so`（AGP がシンボルを削ったもの） | 約 43〜53 MB / ABI（arm64 が小さい） |
+| APK（2 ABI／arm64 のみ／x86_64 のみ） | 約 108 MB／50.4 MB／57.8 MB |
+| `adb install -r`（実機 Pixel 6a・arm64 のみ 50.4 MB） | 約 4.0 秒 |
+| アセット転送（run-as ＋ tar・最小アセット 3.2 MB） | 1 秒未満 |
 
 ---
 
@@ -237,7 +257,11 @@ adb -s emulator-5554 logcat -s SEED RustPanic                                  #
 ```powershell
 adb logcat -s SEED RustPanic            # 普段はこれで十分
 adb logcat -v threadtime SEED:V RustPanic:V GameActivity:V AndroidRuntime:E DEBUG:V libc:F *:S   # 起動失敗・クラッシュ時
+adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻以降だけ（共用端末で logcat -c しない）
 ```
+
+実機は他の作業者・エージェントと共用することがあるため、**`adb logcat -c`（全消去）は使わない**。
+`build_and_run.ps1` も起動直前の端末の時刻を控えて `logcat -T` で今回分だけを取り出す。
 
 | 行の印 | 出どころ | 読み方 |
 |---|---|---|
@@ -261,22 +285,33 @@ adb logcat -v threadtime SEED:V RustPanic:V GameActivity:V AndroidRuntime:E DEBU
 
 ## 7. 段階0 で確認できたこと（2026-09-24）
 
-エミュレータ `seed_pixel6_api35`（API 35・x86_64・GPU host）で確認。**実機（Pixel 6a・arm64）は未接続のため未確認**
-（arm64 の `libSEED.so` はビルドでき、AArch64・16KB 整列・依存 .so が system のものだけであることまでは確認済み）。
+エミュレータと実機の両方で確認した。使ったアセットは最小構成（BrainStem.glb ＋ 平行光 1 灯。
+音声だけは無音・音量 0 の AudioComponent を足した版）。実機は arm64、エミュレータは x86_64 の debug ビルド。
+実機で見つかった 2 点（間接描画の feature・アセットの置き場）を直した後、エミュレータでも再確認した
+（ホスト GPU では `MULTI_DRAW_INDIRECT=true` のまま従来どおり要求され、内部フォルダのアセットで描画された）。
 
-| 確認項目 | 結果 |
-|---|---|
-| 起動 → サーフェス作成 | `[SEED SURFACE] created 1080x2400 format=Rgba8UnormSrgb present_mode=Fifo` |
-| wgpu アダプタ | `backend=Vulkan`（エミュレータは gfxstream 経由でホストの GPU。`ro.hardware.vulkan=ranchu`） |
-| 毎フレーム描画 | `[SEED HEARTBEAT]` で約 59 fps（フォーカス時。非フォーカス時はエンジン既定の 30 fps 上限） |
-| 1 枚絵 | 空アセットではクリア色、最小アセット（BrainStem.glb ＋ 平行光 1 灯）でモデルが陰影付きで描画された |
-| 回転（`adb emu rotate` で 4 方向） | `ScaleFactorChanged` → `Resized 2400x1080` / `1080x2400`。Activity は作り直されず描画継続 |
-| ホーム → 復帰（`KEYCODE_HOME` → `am start`） | `suspended` → `released` → heartbeat `+0` → `recreated 1080x2400` → 描画再開 |
-| タッチ（`input tap` / `input swipe`） | `[SEED TOUCH] Started ... / Ended ... moves=21` |
-| 戻るキー | `[SEED KEY] pressed logical=Named(BrowserBack)`。ネイティブ側が受け取るので Activity は終わらない |
-| panic | `[SEED PANIC] ... panicked at ...:行:列` と backtrace → Activity 終了 → `onDestroy` でプロセス終了 |
-| キャッシュ・保存先 | 2 回目の起動でモデルキャッシュがヒット（`<外部フォルダ>/cache` が書ける） |
-| Windows | `cargo check` / `cargo build` が通り、`SEED.exe` が従来どおり生成（GPU 選択用エクスポートも維持） |
+| 確認項目 | エミュレータ（AVD `seed_pixel6_api35`・API 35・x86_64・GPU host） | 実機 Pixel 6a（Android 16 / API 36・arm64・Mali-G78 ドライバ r54p1） |
+|---|---|---|
+| 起動 → サーフェス作成 | `created 1080x2400 format=Rgba8UnormSrgb present_mode=Fifo` | 同じ（`alpha_mode=Inherit`） |
+| wgpu アダプタ | `backend=Vulkan`（gfxstream 経由でホストの NVIDIA GPU。`ro.hardware.vulkan=ranchu`） | `name=Mali-G78 type=IntegratedGpu backend=Vulkan` |
+| `request_device` | 通過 | **初回は `UnsupportedFeature(MULTI_DRAW_INDIRECT)` で失敗**。間接描画の feature を「対応していれば要求」に直して通過（§10） |
+| GPU 機能の差（起動ログ） | バインドレス非対応・ワイヤーフレーム対応・BC 圧縮対応 | バインドレス対応（配列 4096）・ワイヤーフレーム非対応・BC 圧縮非対応・メッシュレットカリング非対応（CPU カリング経路） |
+| 毎フレーム描画（`[SEED HEARTBEAT]`） | 約 59 fps（非フォーカス時はエンジン既定の 30 fps 上限） | 縦 約 18〜19 fps／横 約 37〜39 fps。GPU 待ちが支配的と見られる（`[PERF]` で 1 フレーム約 50 ms のうち提示待ち `finish` が 28〜41 ms、CPU 側の処理は数 ms） |
+| 1 枚絵 | 空アセットではクリア色、最小アセットでモデルが陰影付きで描画 | 同じ絵が描画された |
+| 回転 4 方向 | `adb emu rotate`。`Resized 2400x1080` / `1080x2400` で描画継続 | `cmd window fixed-to-user-rotation enabled` ＋ `cmd window user-rotation lock 0〜3` で同じ結果（検証後は元の設定に戻した） |
+| ホーム → 復帰（`KEYCODE_HOME` → `am start`） | `suspended` → `released` → heartbeat `+0` → `recreated 1080x2400` → 描画再開 | 同じ（復帰の `am start` は HOT で 28 ms） |
+| タッチ（`input tap` / `input swipe`） | `[SEED TOUCH] Started ... / Ended ... moves=21` | 同じ。adb の操作とは別に、画面を指でなぞった操作も届いた |
+| 戻るキー | `[SEED KEY] pressed logical=Named(BrowserBack)`。Activity は終わらない | 同じ |
+| panic（`debug.seed.panic_test=1`） | `[SEED PANIC] ... 場所` と backtrace → Activity 終了 → `onDestroy` でプロセス終了 | 同じ |
+| 音声（oboe） | 未確認 | 初期化まで確認（`OboeAudio: OboeVersion1.8.1`、`AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`。音は出していない） |
+| アセットの置き場 | 外部アプリ専用フォルダへの adb push でも、run-as で内部フォルダへ送っても読めた | **adb push は Permission denied**（shell 所有のフォルダになる）。run-as で内部フォルダへ送る方式で読めた（§4.5） |
+| 起動時間（`handle_resumed` 開始 → 最初のフレームの終わり） | 約 3.5 秒（うちパイプライン生成 約 1.6 秒） | 約 4.5 秒（うちパイプライン生成 約 3.4 秒・シーン読込 0.24 秒）。`am start` の TotalTime は 487 ms（Activity 表示まで） |
+| インストール（`adb install -r`） | 約 1.5 秒（APK 60.5 MB・x86_64 のみ） | 約 4.0 秒（APK 50.4 MB・arm64 のみ） |
+| SELinux | — | `avc: denied { search }` が cgroup / cgroup2 のルートに対して 4 件（`android_main` スレッド・最初のフレーム時。CPU 数の問い合わせで cgroup を見に行ったものと推測）。動作に影響なし |
+| ドライバ・wgpu の警告 | `Missing downlevel flags: SURFACE_VIEW_FORMATS` | `Unrecognized present mode SHARED_DEMAND_REFRESH / SHARED_CONTINUOUS_REFRESH`（wgpu が知らない Android 固有の提示モード。無害）。Mali ドライバの警告・検証エラーは無し |
+| 16KB ページ | — | 端末は 4KB ページ（`getconf PAGE_SIZE` = 4096）。.so は 16KB 整列なのでどちらでも読める。16KB 関連のログは無し |
+| キャッシュ・保存先 | 2 回目の起動でモデルキャッシュがヒット | 内部フォルダの `cache/` に書けた（初回ロード 160 ms・`bc=false`） |
+| Windows | `cargo check` / `cargo build` が通り、`SEED.exe` が従来どおり生成（GPU 選択用エクスポートも維持） | 実機向けの修正後も同じ |
 
 ---
 
@@ -285,7 +320,8 @@ adb logcat -v threadtime SEED:V RustPanic:V GameActivity:V AndroidRuntime:E DEBU
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
 - **スクリプト（C#）は動かない**（段階B）。
-- アセットは adb push した外部アプリ専用フォルダから読む。APK 内の pak は未対応（段階A）。
+- アセットはデバッグ版 APK の run-as で内部アプリ専用フォルダへ送ったものを読む（リリース版では run-as が使えない）。
+  APK 内の pak は未対応（段階A）。
 - タッチはログに出るだけで、入力システム（`SEED.Input`）へはつながっていない（段階A）。
 - **Activity の破棄＝プロセス終了**。winit 0.30 は onDestroy をアプリへ通知しない（イベントループが終わらず
   GameActivity の onDestroy が android_main の終了を待ち続けて ANR になる）うえ、EventLoop はプロセスで 1 度しか
@@ -293,11 +329,12 @@ adb logcat -v threadtime SEED:V RustPanic:V GameActivity:V AndroidRuntime:E DEBU
 - 戻るキーは何もしない（ネイティブ側で消費される）。
 - バックグラウンド中もエンジンの物理スレッド等は回り続ける（イベントループ自体は `ControlFlow::Wait` で眠る）。
 - パイプラインキャッシュの置き場が「実行ファイルの隣」前提のため Android では保存されず、毎回シェーダを作り直す
-  （エミュレータで 2〜6 秒）。
+  （エミュレータで約 1.6 秒、実機で約 3.4 秒）。
 - ゲームパッド（gilrs）は Android 非対応（初期化に失敗して「パッド無効」で続行）。
-- 音声（rodio → cpal → oboe）はビルド・リンクまで。鳴ることは未確認。
-- 実機の GPU（Mali 等）でエンジンが要求する features / limits（`INDIRECT_FIRST_INSTANCE`、bind group 5 個、
-  頂点シェーダでの storage buffer 等）が満たせるかは未確認。
+- 音声（rodio → cpal → oboe）は実機で出力ストリームを開くところまで確認。実際に音が鳴るかは未確認。
+- **実機の描画は重い**。Pixel 6a の debug ビルドで縦 約 18〜19 fps（GPU 待ちが支配的と見られる）。デスクトップ向けの描画経路
+  （deferred・MRT 5 枚・シャドウ 2048・SSGI 等）を端末の実解像度 1080x2400 でそのまま回しているため。
+  モバイル向け描画プリセット（描画解像度スケール・重い後処理の既定オフ）は段階D。
 
 ---
 
@@ -334,6 +371,27 @@ adb logcat -v threadtime SEED:V RustPanic:V GameActivity:V AndroidRuntime:E DEBU
   `settings put system user_rotation` は効かない。回転の確認は `adb emu rotate`（またはエミュレータの回転ボタン）で行う。
 - bash（Git Bash）から adb に `/sdcard/...` を渡すとパス変換で壊れる。`MSYS_NO_PATHCONV=1` を付けるか pwsh を使う。
 - 同じ NDK でもパスの表記（`/` と `\`）が違うと cc 系の依存（oboe-sys 等）が再ビルドされる。スクリプト経由に揃えるとよい。
+- **Mali-G78（Pixel 6a）は Vulkan の `multiDrawIndirect` を持たない**。wgpu の `MULTI_DRAW_INDIRECT` を無条件に要求すると
+  `request_device` が `UnsupportedFeature` で失敗する。エンジンで間接描画を使うのはメッシュレットカリングの
+  `multi_draw_indexed_indirect_count`（wgpu 25 では `MULTI_DRAW_INDIRECT_COUNT` だけを要求）だけなので、
+  `MULTI_DRAW_INDIRECT` / `INDIRECT_FIRST_INSTANCE` / `MULTI_DRAW_INDIRECT_COUNT` はどれも「対応していれば要求」にし、
+  3 つが揃うときだけメッシュレットカリングを使う（`renderer/mod.rs`）。デスクトップの要求内容は変わらない。
+  なお wgpu の `check_limits` は超過した limit を最後の 1 つしか返さないので、limit で落ちたときは 1 つずつ潰すことになる。
+- **実機では `adb push` で外部アプリ専用フォルダ（`/sdcard/Android/data/<pkg>/files`）に作ったフォルダは shell の所有
+  （`drwxrws--- shell ext_data_rw`）になり、アプリからは Permission denied で読めない**（エミュレータでは読めた）。
+  `run-as` で入っても外部フォルダは Permission denied で読めなかった（原因は未特定）。デバッグ版 APK の `run-as` で内部フォルダへ
+  `tar` を流し込むのが確実（§5.2）。
+- `adb exec-in` / `exec-out` は 2 つ目以降の引数を 1 つずつ単一引用符で囲んで端末へ渡すが、`adb shell` は引数をそのまま
+  連結して端末のシェルに解釈させる。`sh -c` のスクリプトを渡すときは、前者は引用せずに 1 引数、後者は内側で引用する。
+  `adb logcat` は各引数を引用して渡すので、空白を含む時刻（`-T "09-24 17:00:00.000"`）もそのまま渡せる。
+- **共用端末では `adb logcat -c` をしない**（他の人のログも消える）。起動直前の端末時刻を控えて `logcat -T` で取り出す。
+  実機はログが非常に多く、リングバッファからすぐ押し出される（数分で消える）ので、事象の直後に取り出して保存する。
+- 実機で回転を強制するには `cmd window fixed-to-user-rotation enabled` ＋ `cmd window user-rotation lock <0〜3>`。
+  検証前に `cmd window fixed-to-user-rotation` と `cmd window user-rotation`（引数なしで現在値を表示）を控え、
+  終わったら控えた値へ戻す（戻さないと端末の回転ロックが変わったままになる）。
+- Activity が `singleTask` なので、動いている最中に `am start` しても前面へ出るだけで作り直されない。送り直したアセットや
+  入れ直した .so を読ませるには `am force-stop` してから起動する（`build_and_run.ps1` は毎回そうしている）。
+- 実機の縦画面より横画面のほうが fps が高かった（18〜19 fps 対 37〜39 fps。描画する画素数は同じ）。原因は未調査（段階D）。
 
 ## 11. .NET ランタイムのスパイク結果（2026-09-24、段階B の前提）
 
@@ -395,3 +453,29 @@ let loader = ctx.get_delegate_loader()?;          // get_function_with_unmanaged
 - スクリプト側は Android では暗号 API と `OperatingSystem.IsAndroid()` に依存しない（Mono では False を返す）。
 - 未検証のリスク: アプリの private dir からの dlopen（SELinux と linker 名前空間）、ART のシグナルチェーンとの共存、
   CoreCLR の暗号 API に必要な JNI 初期化、ICU の利用可否。
+
+### 11.4 実機（Pixel 6a、Android 16、arm64）での結果（2026-09-24 追記）
+
+- **既定のままでは両ランタイムとも `coreclr_initialize` で SIGSEGV**（SEGV_MAPERR、フォルトアドレス `0xb4000074…`）。
+  原因は arm64 の Android 11 以降で bionic がヒープポインタの上位バイトに付けるタグ（TBI、値 0xB4）。
+  x86_64 エミュレータと、その ARM 変換では再現しない。**.NET を載せた APK の確認は実機が必須。**
+- 対策はどちらか 1 つ（段階B の必須項目）:
+  - `AndroidManifest.xml` の `<application>` に `android:allowNativeHeapPointerTagging="false"`（仕様からの推定。APK では未検証）
+  - hostfxr を読み込む前に `mallopt(M_BIONIC_SET_HEAP_TAGGING_LEVEL, M_HEAP_TAGGING_LEVEL_NONE)` を 1 回呼ぶ
+    （実行ファイルでは `spikes/dotnet_host/device/notag_preload.c` の LD_PRELOAD シムで効果を確認済み。アプリプロセスでは未検証）
+  - 環境変数では無効化できない（bionic の `libc_init_mte.cpp` で確認）。MTE 有効端末（Pixel 8 以降）は別論点で未検証。
+- タグ付けを無効にすると、機能面はエミュレータと同じ結果になった（共通経路 OK、SEED 現行経路は CoreCLR で PNSE、
+  暗号 API は両方ともプロセス即死、Mono の collectible ALC は Unload されない）。
+- 所要時間（実機、各 3 回の中央値）:
+
+| 項目 | Mono 9.0 | CoreCLR 10.0 |
+|---|---|---|
+| ランタイム起動 | 約 83 ms | 約 18 ms |
+| 初回の関数取得 | 約 31 ms | 約 8 ms |
+| 機能チェック一式（初回 / 2 回目） | 516 ms / 83 ms | 193 ms / 57 ms |
+| プロセス全体 | 約 0.8 s | 約 0.34 s |
+
+- JIT 量: Mono 約 4,100 メソッド（600〜775 ms）、CoreCLR 約 350 メソッド（73〜132 ms）。
+- Invariant 無効時は system ICU 76（`/apex/com.android.i18n`）が読み込まれ、TZ 検索は 0.6〜0.7 秒
+  （エミュレータで見えた 8〜12 秒は実機では起きない）。
+- 実機用ランナーは `spikes/dotnet_host/device/device_run.sh`（私物端末の他アプリのログを持ち出さないよう、logcat は自プロセス分に絞って取得する）。

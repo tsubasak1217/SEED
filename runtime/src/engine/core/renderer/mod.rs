@@ -520,14 +520,29 @@ impl Renderer {
             eprintln!("[SEED BINDLESS] 非対応（{reason}）→ 従来の平均色経路を使用");
         }
 
-        // GPU メッシュレットカリング（第1弾）は MULTI_DRAW_INDIRECT_COUNT に依存する。
-        // 非対応 GPU では従来の CPU カリング＋draw_indexed 経路へ完全フォールバックする。
+        // ── 間接描画まわりの feature ─────────────────────────────────────
+        // エンジンで間接描画を使うのは GPU メッシュレットカリング（第1弾）だけで、次の 3 つに依存する。
+        //   - MULTI_DRAW_INDIRECT_COUNT … multi_draw_indexed_indirect_count（描画コマンド数を GPU が決める）
+        //   - INDIRECT_FIRST_INSTANCE   … 各コマンドの first_instance で可視インスタンス番号を渡す
+        //   - MULTI_DRAW_INDIRECT       … Vulkan の multiDrawIndirect（複数コマンドの間接描画の前提）
+        // モバイル GPU には multiDrawIndirect を持たないもの（実機 Pixel 6a の Mali-G78 等）があり、
+        // 無条件に要求すると request_device が UnsupportedFeature で失敗して起動できない。
+        // そこで 3 つとも「アダプタが対応していれば要求する」にし、揃うときだけメッシュレットカリングを使う。
+        // 揃わない GPU では従来の CPU カリング＋draw_indexed 経路へ完全フォールバックする
+        // （デスクトップ GPU は 3 つとも対応しているので、要求内容も経路も従来と変わらない）。
+        let supports_multi_draw = af.contains(wgpu::Features::MULTI_DRAW_INDIRECT);
+        let supports_first_instance = af.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
         let supports_mdi_count = af.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
-        gpu_resources::set_meshlet_cull_supported(supports_mdi_count);
-        if supports_mdi_count {
+        let supports_meshlet_cull = supports_mdi_count && supports_multi_draw && supports_first_instance;
+        gpu_resources::set_meshlet_cull_supported(supports_meshlet_cull);
+        if supports_meshlet_cull {
             eprintln!("[SEED MESHLET] メッシュレットカリング: 対応（MULTI_DRAW_INDIRECT_COUNT を要求）");
         } else {
-            eprintln!("[SEED MESHLET] メッシュレットカリング: 非対応 → 従来 CPU カリング経路を使用");
+            eprintln!(
+                "[SEED MESHLET] メッシュレットカリング: 非対応 → 従来 CPU カリング経路を使用\
+                 （MULTI_DRAW_INDIRECT_COUNT={supports_mdi_count} MULTI_DRAW_INDIRECT={supports_multi_draw} \
+                 INDIRECT_FIRST_INSTANCE={supports_first_instance}）"
+            );
         }
 
         // エディタのシーンビュー「ワイヤーフレーム」モードは POLYGON_MODE_LINE（ネイティブ限定）
@@ -560,8 +575,9 @@ impl Renderer {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
-                required_features: wgpu::Features::MULTI_DRAW_INDIRECT
-                                 | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                // 間接描画の 3 つはアダプタが対応しているものだけを要求する（理由は上の「間接描画まわり」）。
+                required_features: if supports_multi_draw { wgpu::Features::MULTI_DRAW_INDIRECT } else { wgpu::Features::empty() }
+                                 | if supports_first_instance { wgpu::Features::INDIRECT_FIRST_INSTANCE } else { wgpu::Features::empty() }
                                  | if supports_mdi_count { wgpu::Features::MULTI_DRAW_INDIRECT_COUNT } else { wgpu::Features::empty() }
                                  // ワイヤーフレーム描画（PolygonMode::Line）。対応時のみ要求する。
                                  | if supports_wireframe { wgpu::Features::POLYGON_MODE_LINE } else { wgpu::Features::empty() }

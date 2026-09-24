@@ -18,11 +18,20 @@ val seedTargetSdk = 35
 /** Java のソース／バイトコードの版（AGP 9 の既定に合わせる）。 */
 val seedJavaVersion = JavaVersion.VERSION_17
 
+/** 同梱する ABI の既定値。実機（arm64-v8a）とエミュレータ（x86_64）。 */
+val defaultSeedAbis = listOf("arm64-v8a", "x86_64")
+
 /**
- * 同梱する ABI。実機（arm64-v8a）とエミュレータ（x86_64）。
+ * 実際に APK へ詰める ABI。build_and_run.ps1 は -Abi で選んだものだけを -Pseed.abis=a,b で渡す
+ * （jniLibs に残っている別 ABI の古い .so を詰めない・APK を小さくするため）。未指定なら既定値。
  * jniLibs に無い ABI は単に入らないだけなので、片方だけビルドした場合もそのまま詰められる。
  */
-val seedAbis = listOf("arm64-v8a", "x86_64")
+val seedAbis = providers.gradleProperty("seed.abis").orNull
+    ?.split(',')
+    ?.map { it.trim() }
+    ?.filter { it.isNotEmpty() }
+    ?.takeIf { it.isNotEmpty() }
+    ?: defaultSeedAbis
 
 /**
  * GameActivity の版。android-activity 0.6.1（winit 0.30 が使う Rust 側の glue）が同梱する

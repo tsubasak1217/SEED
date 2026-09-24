@@ -1,4 +1,4 @@
-﻿#requires -Version 7.0
+﻿#requires -Version 7.4
 # ============================================================
 #  build_and_run.ps1 — SEED ランタイムを Android 向けにビルドし、端末で起動する（段階0）
 #
@@ -6,12 +6,13 @@
 #    1. cargo ndk で libSEED.so をビルドし app/src/main/jniLibs/<ABI>/ へ置く
 #    2. gradlew assembleDebug で APK を作る
 #    3. adb install -r で端末（実機／エミュレータ）へ入れる
-#    4. （任意）アセットフォルダをアプリ専用フォルダへ adb push する
+#    4. （任意）アセットフォルダをアプリの内部専用フォルダへ送る（run-as で tar を流し込む）
 #    5. am start で起動し、logcat（タグ SEED ほか）を表示・保存する
 #  段階C（エディタの「実行」統合）はこのスクリプトの各関数を土台にする想定。
 #
-#  【前提】pwsh（PowerShell 7 以降）で実行する。Windows PowerShell 5.1 は日本語を含む
-#  スクリプトの解釈が不安定なため対象外（先頭の #requires で弾く）。
+#  【前提】pwsh（PowerShell 7.4 以降）で実行する。7.4 未満はネイティブコマンド間のパイプが
+#  バイト列を壊す（アセット転送の tar が壊れる）。Windows PowerShell 5.1 は日本語を含む
+#  スクリプトの解釈も不安定なため対象外（先頭の #requires で弾く）。
 #
 #  【マシン固有のパス】すべて環境変数から取る（リポジトリには書かない）。
 #    ANDROID_SDK_ROOT（無ければ ANDROID_HOME） … Android SDK
@@ -66,8 +67,13 @@ $PackageName = 'com.seedengine.runtime'
 $LaunchActivity = "$PackageName/.MainActivity"
 # cargo ndk がリンクする Android API レベル（app/build.gradle.kts の seedMinSdk と同じ）。
 $AndroidApiLevel = 29
-# アセットの push 先（アプリ専用の外部フォルダ。runtime/android/native/src/launch.rs の規約）。
-$RemoteAssetsDir = "/sdcard/Android/data/$PackageName/files/assets"
+# logcat -T に渡す「この時刻以降」の書式（端末の date コマンドの書式。logcat の -v threadtime と同じ並び）。
+$LogcatSinceFormat = '+%m-%d %H:%M:%S.000'
+# アセットの送り先（run-as の作業フォルダ＝アプリの内部データフォルダ /data/user/0/<パッケージ名> からの相対。
+# runtime/android/native/src/launch.rs が最優先で見る置き場）。
+$RemoteAssetsDir = 'files/assets'
+# アセットを tar にまとめる Windows 標準の tar（Git 等の別の tar を拾わないよう場所を固定する）。
+$HostTar = Join-Path $env:SystemRoot 'System32/tar.exe'
 # logcat で表示するタグ（SEED = エンジン・グルー・MainActivity。RustPanic = android-activity が
 # 受け止めた panic。ほかは Java 例外・ネイティブクラッシュ・Activity の起動終了の手掛かり）。
 $LogcatFilters = @('SEED:V', 'RustPanic:V', 'GameActivity:V', 'AndroidRuntime:E', 'DEBUG:V', 'libc:F', 'vulkan:W', 'ActivityTaskManager:I', '*:S')
@@ -168,7 +174,8 @@ function Invoke-GradleBuild([string]$Ndk) {
     Write-Host '[2/5] gradlew assembleDebug' -ForegroundColor Cyan
     Push-Location -LiteralPath $AndroidRoot
     try {
-        & (Join-Path $AndroidRoot 'gradlew.bat') assembleDebug "-Pseed.ndkPath=$Ndk" --console=plain
+        # -Abi で選んだ ABI だけを APK に詰める（jniLibs に残っている別 ABI の古い .so を詰めないため）。
+        & (Join-Path $AndroidRoot 'gradlew.bat') assembleDebug "-Pseed.ndkPath=$Ndk" "-Pseed.abis=$($Abi -join ',')" --console=plain
         if ($LASTEXITCODE -ne 0) { throw "gradlew assembleDebug が失敗しました（終了コード $LASTEXITCODE）。" }
     }
     finally {
@@ -185,32 +192,48 @@ function Install-Apk([string]$Adb, [string[]]$TargetArgs) {
     if ($LASTEXITCODE -ne 0) { throw "adb install が失敗しました（終了コード $LASTEXITCODE）。" }
 }
 
-# 4. アセットフォルダをアプリ専用フォルダへ送る（-AssetsDir 指定時のみ）。
+# 4. アセットフォルダをアプリの内部専用フォルダへ送る（-AssetsDir 指定時のみ）。
+#
+# 【なぜ adb push ではないのか】実機（Android 11 以降）では、adb push で外部アプリ専用フォルダ
+# （/sdcard/Android/data/<パッケージ名>/files）に作ったフォルダは shell の所有になり、アプリからは
+# Permission denied で読めない。そこでデバッグ版 APK だけが使える run-as でアプリの権限になり、
+# ホストで作った tar のストリームを内部データフォルダへ展開する（前回分は消してから置き直す）。
+# 展開後は他のユーザーから読めないよう権限を絞る（Windows の tar は全員書き込み可で記録するため）。
+# なお adb exec-in は 2 つ目以降の引数を 1 つずつ引用して端末へ渡すので、スクリプトは引用せずに渡す。
 function Push-Assets([string]$Adb, [string[]]$TargetArgs) {
     if (-not $AssetsDir) { return }
     if (-not (Test-Path -LiteralPath (Join-Path $AssetsDir 'project_settings.json'))) {
         throw "-AssetsDir にはプロジェクトの assets/（project_settings.json を含むフォルダ）を指定してください: $AssetsDir"
     }
-    Write-Host "[4/5] adb push $AssetsDir -> $RemoteAssetsDir" -ForegroundColor Cyan
-    & $Adb @TargetArgs shell mkdir -p $RemoteAssetsDir
-    & $Adb @TargetArgs push (Join-Path $AssetsDir '.') $RemoteAssetsDir
-    if ($LASTEXITCODE -ne 0) { throw "adb push が失敗しました（終了コード $LASTEXITCODE）。" }
+    if (-not (Test-Path -LiteralPath $HostTar)) { throw "tar が見つかりません: $HostTar" }
+    Write-Host "[4/5] $AssetsDir -> (run-as $PackageName) $RemoteAssetsDir" -ForegroundColor Cyan
+    $extract = "rm -rf $RemoteAssetsDir && mkdir -p $RemoteAssetsDir && tar -xf - -C $RemoteAssetsDir && chmod -R u+rwX,go-rwx $RemoteAssetsDir"
+    & $HostTar -cf - -C $AssetsDir . | & $Adb @TargetArgs exec-in run-as $PackageName sh -c $extract
+    if ($LASTEXITCODE -ne 0) { throw "アセットの転送が失敗しました（終了コード $LASTEXITCODE）。デバッグ版 APK がインストール済みか確認してください。" }
+    # 置けたかを確かめる（exec-in は端末側の失敗を終了コードで返さないことがある）。
+    $check = & $Adb @TargetArgs exec-out run-as $PackageName sh -c "test -f $RemoteAssetsDir/project_settings.json && echo ok"
+    if ("$check".Trim() -ne 'ok') { throw "アセットの転送後に $RemoteAssetsDir/project_settings.json が見つかりません。" }
 }
 
 # 5. 起動して logcat を表示（・保存）する。
 function Start-AppAndWatchLog([string]$Adb, [string[]]$TargetArgs) {
-    if (-not $NoLogcat) {
-        # 前回までのログを消してから起動する（今回の起動分だけを見るため）。
-        & $Adb @TargetArgs logcat -c
-    }
+    # 今回の起動分だけを見るため、起動直前の「端末の時刻」を控えて、それ以降のログだけを出す（logcat -T）。
+    # logcat -c（ログの全消去）は使わない。実機は他の作業者・エージェントと共用することがあり、
+    # 消すと他の人の調査ログまで失われるため。
+    # （adb shell は引数をそのまま連結して端末のシェルへ渡すので、書式は内側で引用する）
+    $since = "$(& $Adb @TargetArgs shell "date '$LogcatSinceFormat'")".Trim()
     if (-not $NoLaunch) {
+        # 動いていれば止めてから起動し直す。Activity は singleTask なので、動いたままだと am start は
+        # 前面へ出すだけで、送り直したアセットや入れ直した .so を読まない。止めるのは自分のパッケージだけ。
+        & $Adb @TargetArgs shell am force-stop $PackageName
         Write-Host "[5/5] am start $LaunchActivity" -ForegroundColor Cyan
         & $Adb @TargetArgs shell am start -W -n $LaunchActivity
         if ($LASTEXITCODE -ne 0) { throw "am start が失敗しました（終了コード $LASTEXITCODE）。" }
     }
     if ($NoLogcat) { return }
 
-    $logcatArgs = @('logcat', '-v', 'threadtime')
+    # adb logcat は引数を 1 つずつ引用して端末へ渡すため、空白を含む時刻もそのまま渡せる。
+    $logcatArgs = @('logcat', '-v', 'threadtime', '-T', $since)
     if ($LogcatSeconds -gt 0) {
         # 決めた秒数だけ待ってから、それまでのログをまとめて取り出す（-d = 取り出して終了）。
         Start-Sleep -Seconds $LogcatSeconds

@@ -1906,7 +1906,8 @@ impl App {
                     let rt_on = draw_ctx.rt_active(resolved_features.rt_shadow());
 
                     // このフレームで GPU メッシュレットカリング（第1弾）を使うか。
-                    // メッシュレットカリングは常時有効。GPU が MULTI_DRAW_INDIRECT_COUNT 対応のときのみ稼働し、
+                    // メッシュレットカリングは常時有効。GPU が間接描画の 3 feature（MULTI_DRAW_INDIRECT_COUNT /
+                    // MULTI_DRAW_INDIRECT / INDIRECT_FIRST_INSTANCE）すべてに対応するときのみ稼働し（判定は renderer/mod.rs）、
                     // 非対応 GPU では自動的に従来 draw_indexed 経路へフォールバックする（ON/OFF 設定は撤去済み）。
                     let meshlet_active =
                         crate::engine::core::renderer::gpu_resources::meshlet_cull_supported();

@@ -1523,12 +1523,17 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 段階0（エミュレータで 1 枚絵・回転・ホーム復帰・タッチ受信・panic ログまで）で見つけた「今はやらない」課題。
 段階の区分（A / B / C / D）は docs/android.md §9。
 
-- [ ] **実機（Pixel 6a・arm64・Mali-G78）で未検証** — 2026-09-24。arm64 の libSEED.so はビルドでき（AArch64・16KB 整列を確認）、
-  エミュレータ（gfxstream 経由のホスト GPU）では動いたが、実機は未接続だった。エンジンは `Renderer::new` で
-  `MULTI_DRAW_INDIRECT | INDIRECT_FIRST_INSTANCE` を無条件に要求し、limits も `max_bind_groups: 5` /
-  `max_storage_buffers_per_shader_stage: 12` とデスクトップ前提。Mali 等でこれらが満たせないと `request_device` で
-  panic する恐れがある（推測。要実機確認）。頂点シェーダでの storage buffer（downlevel `VERTEX_STORAGE`）も要確認。
-  関連: `runtime/src/engine/core/renderer/mod.rs`（`Renderer::new`）。
+- [ ] **実機の描画が重い（GPU 待ちが支配的と見られる・段階D）** — 2026-09-24。Pixel 6a（Mali-G78・ドライバ r54p1）の debug ビルドで
+  縦 約 18〜19 fps／横 約 37〜39 fps。`[PERF]` では 1 フレーム約 50 ms のうち提示待ち（`finish`）28〜41 ms・
+  `begin_frame` 最大 19 ms で、CPU 側は数 ms。デスクトップ向けの描画経路（deferred・MRT 5 枚・シャドウ 2048・SSGI）を
+  端末の実解像度 1080x2400 のまま回しているため。モバイル向け描画プリセット（描画解像度スケール・重い後処理の既定オフ）で
+  対処する。縦より横が速い理由は未調査（描画する画素数は同じ）。関連: `runtime/src/engine/core/renderer/`、
+  project_settings の `render_resolution`。
+- [ ] **実機 GPU の features / limits の余裕を一覧で出す診断（低優先）** — 2026-09-24。実機では `MULTI_DRAW_INDIRECT` が無く
+  `request_device` が落ちたため、間接描画の 3 feature を「対応していれば要求」にして通した（Mali-G78 では
+  `max_bind_groups: 5` 等の limits は足りていた）。wgpu の `check_limits` は超過した limit を最後の 1 件しか返さないので、
+  別の端末で limit 超過に当たると 1 件ずつしか分からない。起動時に「要求 limits とアダプタ limits」を全件比べてログに出すと
+  端末ごとの検証が速い。関連: `runtime/src/engine/core/renderer/mod.rs`（`Renderer::new`）。
 - [ ] **Activity 破棄時にセーブの未書き出し分が失われる** — 2026-09-24。`MainActivity.onDestroy` はプロセスを即終了させる
   （winit 0.30 が onDestroy をアプリへ通知しない・EventLoop は 1 プロセス 1 回のため。docs/android.md §8）。
   Windows は `CloseRequested` で `save::flush_if_dirty()` を呼ぶが、Android にはその経路が無い。
@@ -1536,12 +1541,14 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   関連: `runtime/android/app/src/main/java/com/seedengine/runtime/MainActivity.java`、`app/render.rs`。
 - [ ] **タッチの本実装（段階A）** — 2026-09-24。`WindowEvent::Touch` は `app/lifecycle_diag.rs` でログに出すだけ。
   複数指の `Input.TouchCount` / `GetTouch(i)`（PC はマウス＝指 0）とキャンバス UI のポインタイベントへの接続が必要。
-- [ ] **APK 内 pak（AssetManager）非対応（段階A）** — 2026-09-24。アセットは `/sdcard/Android/data/<pkg>/files/assets` へ
-  adb push したものを `std::fs` で読んでいる。`engine/asset_fs.rs`・`engine/pak.rs` は実ファイル前提。
+- [ ] **APK 内 pak（AssetManager）非対応（段階A）** — 2026-09-24。アセットは `build_and_run.ps1 -AssetsDir` が
+  デバッグ版 APK の run-as で内部アプリ専用フォルダ（`/data/user/0/<pkg>/files/assets`）へ送ったものを `std::fs` で読む
+  （実機では外部フォルダへの adb push は shell 所有のフォルダになりアプリから読めない。docs/android.md §4.5）。
+  リリース版では run-as が使えないので、配布には APK 内 pak が必須。`engine/asset_fs.rs`・`engine/pak.rs` は実ファイル前提。
 - [ ] **保存先・キャッシュ・パイプラインキャッシュの置き場（段階A）** — 2026-09-24。セーブ（`save/path.rs`）と
-  派生キャッシュ（`loader/asset_cache.rs`）は「アセットルートの親」規則でたまたま外部アプリ専用フォルダに落ちている。
+  派生キャッシュ（`loader/asset_cache.rs`）は「アセットルートの親」規則でたまたまアプリ専用フォルダに落ちている。
   パイプラインキャッシュ（`renderer/mod.rs::pipeline_cache_path`）は実行ファイルの隣（Android では `/system/bin`）
-  前提のため保存されず、毎回シェーダを作り直す（エミュレータで起動 2〜6 秒）。プラットフォームのデータフォルダを
+  前提のため保存されず、毎回シェーダを作り直す（パイプライン生成がエミュレータで約 1.6 秒、実機 Pixel 6a で約 3.4 秒）。プラットフォームのデータフォルダを
   エンジンへ明示的に渡す仕組みにする。なお初期化（最初の resumed の `handle_resumed`）は android_main スレッドで
   同期に走り、その間に端末側でサーフェスが破棄されると UI スレッドはネイティブの応答を待ち続ける
   （native_app_glue の `android_app_set_window` は時間切れ無しで待つ）。起動が長いほど ANR の恐れがあるため、
@@ -1556,7 +1563,14 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   無視する）・切り欠きは `shortEdges`。プロジェクト設定からの向き指定、回転ロックの尊重（`fullUser`）、
   安全領域（切り欠き・ナビゲーションバー）を返す API が要る。内部解像度固定（`render_resolution=fixed`）と
   キャンバスの自動スケールが縦長画面で意図どおりかも未確認（どちらも project_settings の解像度基準）。
-- [ ] **音声（oboe）が鳴るか未確認（段階A）** — 2026-09-24。rodio → cpal → oboe（`c++_static`）はビルド・リンクまで。
+- [ ] **音声（oboe）が鳴るか未確認（段階A）** — 2026-09-24。rodio → cpal → oboe（`c++_static`）は、実機で出力ストリームを
+  開くところまで確認した（無音・音量 0 の AudioComponent で `OboeAudio: OboeVersion1.8.1` →
+  `AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`）。実際に音が鳴るか・バックグラウンドで止まるかは未確認。
+- [ ] **実機 logcat の無害なノイズ（低優先）** — 2026-09-24。Pixel 6a で毎回出る: SELinux の
+  `avc: denied { search }`（cgroup / cgroup2 のルート。`android_main` スレッドが最初のフレーム時に 4 件。CPU 数の問い合わせ
+  と推測・未特定）、wgpu の `Unrecognized present mode SHARED_DEMAND_REFRESH / SHARED_CONTINUOUS_REFRESH`
+  （サーフェスの構成ごとに 2 行）、`Unable to find extension: VK_KHR_display` 等（インスタンス拡張の探索）。
+  どれも動作に影響しないが、調査のときに紛らわしいので出どころを特定して抑えるか docs に明記しておく。
 - [ ] **ゲームパッド非対応** — 2026-09-24。gilrs は Android 未対応で「パッド無効」で続行する。
   Android のゲームパッドは GameActivity の入力イベントから取る必要がある。
 - [ ] **スクリプト未対応（段階B）** — 2026-09-24。`platform::CURRENT.scripting_supported == false` でスクリプトホストを探さない。

@@ -22,6 +22,8 @@
 | `tools/stage.py` | 端末へ push するディレクトリ一式を ABI ごとに組み立てる（dotnet-root 形式 / 自己完結の平坦形式） |
 | `tools/run_on_device.sh` | 端末上で 1 シナリオ実行し、出力と logcat を保存する |
 | `tools/summarize_timing.py` | ログから所要時間を抜き出して中央値・最小・最大を表にする |
+| `device/device_run.sh` | 実機用ランナー。logcat を自プロセス分に絞って取得する（私物端末の他アプリのログを持ち出さない） |
+| `device/notag_preload.c` | 実機で必須のヒープポインタタグ無効化（`mallopt`）を main より前に行う LD_PRELOAD シム（`docs/android.md` §11.4） |
 
 ## 手順の概略
 
@@ -35,6 +37,8 @@
 
 ## 注意
 
+- 実機（arm64、Android 11 以降）ではヒープポインタのタグ付けを無効にしないと両ランタイムとも起動時に落ちる。
+  `LD_PRELOAD=<libnotag_preload.so>` を付けて実行する（`device/notag_preload.c` を NDK の clang でビルドする）。
 - 検証は adb のシェル権限（`/data/local/tmp`）で行う。アプリのプロセス内（SELinux のアプリドメイン、
   private dir からの dlopen、ART のシグナルチェーン）は別途の検証が要る。
 - 暗号 API（SHA256 / RandomNumberGenerator）はどちらのランタイムでもプロセスごと落ちる。呼ばないこと。
