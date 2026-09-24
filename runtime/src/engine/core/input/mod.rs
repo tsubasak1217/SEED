@@ -5,6 +5,7 @@ pub mod inject;
 pub mod keyboard;
 pub mod mouse;
 pub mod raw_input;
+pub mod touch;
 
 pub use raw_input::RawInput;
 pub use inject::{InjectAction, InjectCommand, InjectTickOutcome, InputInjection, InputSequencePlayer};
@@ -14,13 +15,15 @@ use gamepad::GamepadState;
 use std::time::Instant;
 
 use winit::dpi::PhysicalPosition;
-use winit::event::{MouseButton, MouseScrollDelta};
+use winit::event::{MouseButton, MouseScrollDelta, TouchPhase as RawTouchPhase};
 use winit::keyboard::KeyCode;
 use winit::window::Window;
 
+use crate::engine::platform;
 use crate::engine::structs::tensor::Vector2;
 use keyboard::KeyboardState;
 use mouse::MouseState;
+use touch::{PointerBridge, PointerBridgePolicy, TouchPoint, TouchState};
 
 // ─── InputState ────────────────────────────────────────────────────────────
 
@@ -88,6 +91,11 @@ pub struct ViewMap {
 pub struct Input {
     keyboard: KeyboardState,
     mouse: MouseState,
+    /// 複数指のタッチ状態（`touch/state.rs`）。スクリプトの `Input.TouchCount` / `GetTouch` の源。
+    touch: TouchState,
+    /// マウス ⇔ タッチの相互変換（`touch/bridge.rs`）。実マウス・実タッチのイベントは必ずここを通し、
+    /// どちらの入力源が「左ボタン＝指0」を握るかをここだけで決める（二重駆動の防止）。
+    pointer_bridge: PointerBridge,
     /// ゲームパッド状態（gilrs バックエンド）。毎フレーム `update_gamepad` でポンプする。
     gamepad: GamepadState,
     /// 外部（エディタ／MCP 経由の AI）から注入された入力。
@@ -105,10 +113,18 @@ pub struct Input {
 }
 
 impl Input {
+    /// このビルドのプラットフォーム特性（`platform::CURRENT`）に従って作る。
     pub fn new() -> Self {
+        Self::with_pointer_policy(PointerBridgePolicy::from_traits(&platform::CURRENT))
+    }
+
+    /// マウス ⇔ タッチの相互変換方針を指定して作る（本番は `new`。テストで Android の方針を試すため）。
+    pub fn with_pointer_policy(policy: PointerBridgePolicy) -> Self {
         Self {
             keyboard: KeyboardState::new(),
             mouse: MouseState::new(),
+            touch: TouchState::new(),
+            pointer_bridge: PointerBridge::new(policy),
             gamepad: GamepadState::new(),
             injection: InputInjection::new(),
             view_map: None,
@@ -164,9 +180,14 @@ impl Input {
     }
 
     /// `WindowEvent::MouseInput` を処理する。
+    ///
+    /// 相互変換（`touch/bridge.rs`）を通す。デスクトップではマウスの状態は従来と同一で、
+    /// 左ボタンで指を 1 本合成するだけ。Android（指0 がマウスを駆動する端末）では、
+    /// タッチがポインタを握っている間の実マウスの左ボタンは無視される（二重駆動の防止）。
     pub fn process_mouse_button(&mut self, button: MouseButton, pressed: bool) {
         if self.is_active {
-            self.mouse.process_button(button, pressed);
+            self.pointer_bridge
+                .on_mouse_button(button, pressed, &mut self.mouse, &mut self.touch);
         }
     }
 
@@ -186,8 +207,45 @@ impl Input {
     pub fn process_cursor_moved(&mut self, x: f32, y: f32) {
         if self.is_active {
             let ([mx, my], _inside) = self.window_pos_to_input([x, y]);
-            self.mouse.process_cursor_moved(mx, my);
+            // 相互変換を通す（押下中なら合成した指も動かす。Android でタッチが握っている間は無視）。
+            self.pointer_bridge.on_cursor_moved(
+                Vector2::new(mx, my),
+                &mut self.mouse,
+                &mut self.touch,
+            );
         }
+    }
+
+    /// `WindowEvent::Touch` を処理する（ウィンドウのクライアント座標・物理ピクセル）。
+    ///
+    /// 座標は `process_cursor_moved` と同じ写像（内部解像度固定モードのレターボックス）を通すので、
+    /// タッチの位置は `mouse_position` と同じ単位・原点（描画ターゲットの左上原点ピクセル）になる。
+    /// 指0 がマウスを駆動する端末（Android）では、ここで MouseState も更新される。
+    ///
+    /// # 引数
+    /// - `raw_id` … OS が付けた指の ID（winit の `Touch::id`）
+    /// - `phase`  … winit のタッチイベント種別（Started / Moved / Ended / Cancelled）
+    /// - `x`, `y` … ウィンドウのクライアント座標（物理ピクセル）
+    pub fn process_touch(&mut self, raw_id: u64, phase: RawTouchPhase, x: f32, y: f32) {
+        if self.is_active {
+            let ([tx, ty], _inside) = self.window_pos_to_input([x, y]);
+            self.pointer_bridge.on_touch(
+                raw_id,
+                phase,
+                Vector2::new(tx, ty),
+                &mut self.mouse,
+                &mut self.touch,
+            );
+        }
+    }
+
+    /// 実タッチの指をすべて取り消す（フォーカス喪失時の安全弁）。
+    ///
+    /// OS の離れ・取り消しが届かないまま指（とタッチ由来の左ボタン押下）が残り続けるのを防ぐ。
+    /// マウスから合成した指は残す（マウスの左ボタン自体もフォーカス喪失では解除しない従来動作に揃える）。
+    pub fn cancel_touches(&mut self) {
+        self.pointer_bridge
+            .cancel_real_touches(&mut self.mouse, &mut self.touch);
     }
 
     /// `WindowEvent::MouseWheel` を処理する。
@@ -212,6 +270,10 @@ impl Input {
         // 注入側も実入力とまったく同じタイミングで畳む。
         // これにより注入の GetKeyDown / GetKeyUp も 1 フレームだけ立つ。
         self.injection.end_frame();
+        // タッチの段階を進める。**mouse.end_frame の後**に呼ぶこと: 次フレームで見せる
+        // タッチ由来の左ボタンの解放・押下（素早いタップの解放など）をここで入れるため。
+        self.pointer_bridge
+            .end_frame(&mut self.mouse, &mut self.touch);
     }
 
     // ─── キーボード API ────────────────────────────────────────
@@ -352,6 +414,26 @@ impl Input {
     /// マウスに何らかの入力があるか（C++: IsMouseInputAny）
     pub fn is_mouse_input_any(&self) -> bool {
         self.is_active && (self.mouse.is_any() || self.injection.state().has_mouse_input())
+    }
+
+    // ─── タッチ API ────────────────────────────────────────────
+
+    /// このフレームの指の本数（スクリプトの `Input.TouchCount`）。
+    ///
+    /// このフレームで離れた指（Ended / Canceled）も含む。デスクトップでは左ボタン押下中に 1 になる
+    /// （マウスから合成した指）。
+    pub fn touch_count(&self) -> usize {
+        self.touch.count()
+    }
+
+    /// このフレームの `index` 番目の指（触れ始めた順。スクリプトの `Input.GetTouch`）。範囲外は None。
+    pub fn touch(&self, index: usize) -> Option<TouchPoint> {
+        self.touch.get(index)
+    }
+
+    /// このフレームの指を触れ始めた順に列挙する（診断ログ用）。
+    pub fn touches(&self) -> impl Iterator<Item = TouchPoint> + '_ {
+        self.touch.iter()
     }
 
     // ─── カーソル制御 ──────────────────────────────────────────
@@ -687,5 +769,90 @@ mod tests {
         input.release_injected_input();
         let p = input.mouse_position(InputState::Current);
         assert_eq!((p.x, p.y), (12.0, 10.0));
+    }
+
+    // ─── タッチ（input/touch との結線）─────────────────────────
+
+    use touch::TouchPhase;
+
+    /// Android と同じ方針（指0 がマウスを駆動する）。
+    const ANDROID_POLICY: PointerBridgePolicy = PointerBridgePolicy {
+        touch_drives_mouse: true,
+        mouse_simulates_touch: false,
+    };
+
+    /// タッチの座標はカーソルと同じ写像（内部解像度固定のレターボックス）を通る。
+    #[test]
+    fn touch_position_uses_the_same_mapping_as_cursor() {
+        let mut input = Input::new();
+        // 横長ウィンドウに正方形の内部解像度 → 左右に黒帯が付く（非自明な写像）。
+        input.set_view_map(Some(ViewMap { window: (800, 400), internal: (400, 400) }));
+        input.process_cursor_moved(300.0, 100.0);
+        let m = input.mouse_position(InputState::Current);
+
+        input.process_touch(5, RawTouchPhase::Started, 300.0, 100.0);
+        let t = input.touch(0).expect("指が 1 本載る");
+        assert_eq!((t.position.x, t.position.y), (m.x, m.y), "マウスと同じ単位・原点");
+        assert_ne!((t.position.x, t.position.y), (300.0, 100.0), "写像が掛かっている");
+    }
+
+    /// デスクトップ（テストを走らせるホスト）ではマウス左ボタンが指を 1 本合成する。
+    #[test]
+    fn desktop_mouse_left_button_simulates_touch() {
+        let mut input = Input::new();
+        input.process_cursor_moved(10.0, 20.0);
+        assert_eq!(input.touch_count(), 0);
+        input.process_mouse_button(MouseButton::Left, true);
+        assert_eq!(input.touch_count(), 1);
+        assert_eq!(input.touch(0).unwrap().phase, TouchPhase::Began);
+        assert!(input.is_press_mouse(MouseButton::Left), "マウスの状態は従来どおり");
+
+        input.end_frame();
+        input.process_cursor_moved(15.0, 20.0);
+        let t = input.touch(0).unwrap();
+        assert_eq!(t.phase, TouchPhase::Moved);
+        assert_eq!((t.delta.x, t.delta.y), (5.0, 0.0));
+
+        input.end_frame();
+        input.process_mouse_button(MouseButton::Left, false);
+        assert_eq!(input.touch(0).unwrap().phase, TouchPhase::Ended);
+        input.end_frame();
+        assert_eq!(input.touch_count(), 0);
+        assert!(input.touch(0).is_none(), "範囲外は None");
+    }
+
+    /// Android の方針: 指0 がマウスの座標・左ボタンを駆動し、素早いタップは 2 フレームに分かれる
+    /// （Input::end_frame が mouse → touch の順で畳むことの確認を兼ねる）。
+    #[test]
+    fn android_policy_touch_drives_mouse_through_input() {
+        let mut input = Input::with_pointer_policy(ANDROID_POLICY);
+        input.process_touch(0, RawTouchPhase::Started, 64.0, 32.0);
+        input.process_touch(0, RawTouchPhase::Ended, 64.0, 32.0);
+        let m = input.mouse_position(InputState::Current);
+        assert_eq!((m.x, m.y), (64.0, 32.0));
+        assert!(input.is_trigger_mouse(MouseButton::Left));
+        assert!(input.is_press_mouse(MouseButton::Left));
+        assert!(!input.is_release_mouse(MouseButton::Left));
+        assert_eq!(input.touch(0).unwrap().phase, TouchPhase::Began);
+
+        input.end_frame();
+        assert!(input.is_release_mouse(MouseButton::Left), "解放は次フレーム");
+        assert!(!input.is_press_mouse(MouseButton::Left));
+        assert_eq!(input.touch(0).unwrap().phase, TouchPhase::Ended);
+
+        input.end_frame();
+        assert!(!input.is_release_mouse(MouseButton::Left));
+        assert_eq!(input.touch_count(), 0);
+    }
+
+    /// フォーカス喪失の安全弁: 実タッチは取り消され、タッチ由来の押下も解ける。
+    #[test]
+    fn cancel_touches_releases_touch_driven_mouse() {
+        let mut input = Input::with_pointer_policy(ANDROID_POLICY);
+        input.process_touch(3, RawTouchPhase::Started, 1.0, 1.0);
+        input.end_frame();
+        input.cancel_touches();
+        assert!(input.is_release_mouse(MouseButton::Left));
+        assert_eq!(input.touch(0).unwrap().phase, TouchPhase::Canceled);
     }
 }

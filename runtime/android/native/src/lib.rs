@@ -7,7 +7,7 @@
 //    launch        … アプリ専用データフォルダからエンジンの起動引数を組み立てる
 //    device_info   … 起動時に端末情報（SDK・ABI・機種）をログへ残す
 //    heartbeat     … 描画ループの生存確認（提示フレーム数を一定間隔でログへ）
-//    debug_hooks   … 検証用フック（システムプロパティで意図的に panic させる）
+//    debug_hooks   … 検証用フック（システムプロパティで意図的 panic・複数指の合成タッチ列）
 //    sysprop       … Android システムプロパティの読み取り
 //
 //  全体像・ビルド手順は docs/android.md を参照。

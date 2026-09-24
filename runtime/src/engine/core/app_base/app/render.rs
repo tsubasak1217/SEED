@@ -89,6 +89,9 @@ impl ApplicationHandler for App {
                 // 押下状態を落として閉じ込め・非表示を必ず解除する。
                 if !focused {
                     self.force_restore_camera_cursor();
+                    // 同じ理由で、タッチの離れが届かず指（と指0 由来の左ボタン押下）が
+                    // 残り続けないよう、実タッチの指を取り消す（安全弁）。
+                    self.input.cancel_touches();
                 }
             }
 
@@ -108,8 +111,15 @@ impl ApplicationHandler for App {
                 self.on_mouse_wheel(delta);
             }
 
+            // 複数指のタッチ。プラットフォーム特性に応じて指0 がマウスも駆動する（event_handler.rs）。
+            WindowEvent::Touch(touch) => {
+                self.on_touch(touch);
+            }
+
             // ── メインループ ──────────────────────────────────
             WindowEvent::RedrawRequested => {
+                // 検証用の合成タッチ（debug.seed.touch_test。要求が無ければ何もしない）。
+                self.pump_touch_test_sequence();
                 self.handle_redraw_requested(event_loop);
             }
 

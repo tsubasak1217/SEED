@@ -34,23 +34,52 @@ pub struct PlatformTraits {
     /// サーフェス・リサイズ・タッチのライフサイクル診断ログを標準エラーへ出すか。
     ///
     /// Android 段階0 の実機検証（回転・バックグラウンド復帰・タッチ受信の確認）用。
+    /// 段階A からはタッチ状態とタッチ由来のマウス状態のフレーム単位ログ（`app/touch_diag.rs`）も出す。
     /// デスクトップでは出さない（エディタの Output パネルを埋めないため）。
     pub lifecycle_diag_log: bool,
+
+    /// タッチ入力を主に使う端末か（スクリプトの `Input.TouchSupported`）。
+    ///
+    /// プラットフォーム単位の値。タッチパネル付き PC でも実タッチは届く（TouchState に載る）が、
+    /// デスクトップはマウスが主なので false のまま。
+    pub touch_supported: bool,
+
+    /// 指0（他に触れている指が無い状態で触れ始めた指）が MouseState（カーソル座標＋左ボタン）を
+    /// 駆動するか（`input/touch/bridge.rs`）。
+    ///
+    /// true の端末（Android）は OS からマウスイベントが来ないため、これで既存のキャンバス UI の
+    /// ポインタイベントやスクリプトのマウス API がタッチで動く。`mouse_simulates_touch` と排他。
+    pub touch_drives_mouse: bool,
+
+    /// マウス左ボタンで指を 1 本合成するか（`input/touch/bridge.rs`）。
+    ///
+    /// true の端末（デスクトップ）では、PC の Play でも `Input.GetTouch` を使うスクリプトを試せる。
+    /// `touch_drives_mouse` と排他（両方 true だと同じ操作がマウスとタッチを往復して二重になる）。
+    pub mouse_simulates_touch: bool,
 }
 
 /// デスクトップ（Windows）の特性。従来の SEED.exe の振る舞いそのもの。
 pub const DESKTOP: PlatformTraits = PlatformTraits {
-    app_sizes_window:    true,
-    scripting_supported: true,
-    lifecycle_diag_log:  false,
+    app_sizes_window:      true,
+    scripting_supported:   true,
+    lifecycle_diag_log:    false,
+    touch_supported:       false,
+    touch_drives_mouse:    false,
+    mouse_simulates_touch: true,
 };
 
-/// Android の特性（段階0: 実機/エミュレータに 1 枚絵を出すスパイク時点）。
+/// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力）。
 pub const ANDROID: PlatformTraits = PlatformTraits {
-    app_sizes_window:    false,
-    scripting_supported: false,
-    lifecycle_diag_log:  true,
+    app_sizes_window:      false,
+    scripting_supported:   false,
+    lifecycle_diag_log:    true,
+    touch_supported:       true,
+    touch_drives_mouse:    true,
+    mouse_simulates_touch: false,
 };
+
+/// 定義済みの全プラットフォームの特性（表全体への検査用）。
+pub const ALL: [PlatformTraits; 2] = [DESKTOP, ANDROID];
 
 /// このビルドが動くプラットフォームの特性。
 pub const CURRENT: PlatformTraits = if cfg!(target_os = "android") {
@@ -72,5 +101,27 @@ mod tests {
         assert!(!DESKTOP.lifecycle_diag_log);
         #[cfg(not(target_os = "android"))]
         assert_eq!(CURRENT, DESKTOP);
+    }
+
+    /// マウス ⇔ タッチの相互変換は、どのプラットフォームでも片方向だけ（二重駆動の防止）。
+    #[test]
+    fn pointer_conversion_directions_are_exclusive() {
+        for traits in ALL {
+            assert!(
+                !(traits.touch_drives_mouse && traits.mouse_simulates_touch),
+                "touch_drives_mouse と mouse_simulates_touch は排他: {traits:?}"
+            );
+        }
+    }
+
+    /// タッチ関連の既定: PC はマウス＝指、Android は指0＝マウス。
+    #[test]
+    fn touch_traits_per_platform() {
+        assert!(!DESKTOP.touch_supported);
+        assert!(DESKTOP.mouse_simulates_touch);
+        assert!(!DESKTOP.touch_drives_mouse);
+        assert!(ANDROID.touch_supported);
+        assert!(ANDROID.touch_drives_mouse);
+        assert!(!ANDROID.mouse_simulates_touch);
     }
 }

@@ -6,15 +6,17 @@
 //  - on_keyboard_input: キーボード入力処理（Ctrl+Z/Y Undo/Redo）
 //  - on_mouse_button:   マウスボタン処理（LMB / RMB）
 //  - on_mouse_wheel:    マウスホイール処理
+//  - on_touch:          タッチ処理（複数指。Input のタッチ状態とタッチ由来のマウス状態）
 //
 //  カーソル移動・ドラッグ処理は drag_handler.rs に移動した。
 // ============================================================
 
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Touch};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::engine::core::app_base::ipc::ToolMode;
+use crate::engine::core::input::touch::test_sequence;
 use crate::engine::methods::drawer::IdBuffer;
 
 use super::{
@@ -204,6 +206,49 @@ impl App {
         };
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TOOL_MODE:{name}"));
+        }
+    }
+
+    // ============================================================
+    //  on_touch
+    // ============================================================
+
+    /// タッチ入力処理（複数指）。
+    ///
+    /// Input のタッチ状態を更新する。指0 がマウスを駆動する端末（Android）では、
+    /// Input の中でカーソル座標と左ボタンも更新される（input/touch/bridge.rs）。
+    ///
+    /// エディタ操作（ギズモ・矩形選択・ピック）へは流さない。それらは Edit / Pause の
+    /// マウス専用の機能で、タッチ主体の端末（Android）は常に Play で動くため。
+    /// Play の入力の読み手（キャンバス UI のポインタイベント・スクリプトの Input API）は
+    /// どちらも Input だけを見るので、Input の更新で足りる。
+    pub(super) fn on_touch(&mut self, touch: Touch) {
+        self.input.process_touch(
+            touch.id,
+            touch.phase,
+            touch.location.x as f32,
+            touch.location.y as f32,
+        );
+    }
+
+    /// 検証用の合成タッチ列を流す（フレームの先頭＝実イベントと同じ「フレームの間」で呼ぶ）。
+    ///
+    /// Android の `debug.seed.touch_test=1` で要求されたときだけイベントが出る
+    /// （input/touch/test_sequence.rs）。要求が無ければアトミック変数を 1 回読むだけ。
+    /// 合成イベントは実タッチと同じ `process_touch` を通す。
+    pub(super) fn pump_touch_test_sequence(&mut self) {
+        // 通常時（要求なし）はウィンドウの大きさの問い合わせもせずに抜ける。
+        if !test_sequence::is_requested() {
+            return;
+        }
+        let Some(size) = self.window.as_ref().map(|w| w.inner_size()) else { return };
+        let due = test_sequence::take_due(std::time::Instant::now(), (size.width, size.height));
+        for t in due {
+            eprintln!(
+                "[SEED TOUCH TEST] {:?} id={:#x} pos=({:.1}, {:.1})",
+                t.phase, t.raw_id, t.x, t.y
+            );
+            self.input.process_touch(t.raw_id, t.phase, t.x, t.y);
         }
     }
 

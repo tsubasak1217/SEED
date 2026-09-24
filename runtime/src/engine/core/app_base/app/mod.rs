@@ -81,6 +81,8 @@ mod render;
 mod surface_lifecycle;
 /// サーフェス・リサイズ・タッチのライフサイクル診断ログ（platform::CURRENT.lifecycle_diag_log が真のときだけ）。
 mod lifecycle_diag;
+/// タッチ状態とタッチ由来のマウス状態のフレーム単位診断ログ（lifecycle_diag_log が真のときだけ）。
+mod touch_diag;
 mod frame_renderer;
 /// IPC 駆動スクリーンショット（SCREENSHOT:）のアプリ側処理。
 mod screenshot_ops;

@@ -545,6 +545,49 @@ public static unsafe class ScriptHost
         return _api.InputCursorLock(action, value);
     }
 
+    // ── タッチ（複数指）──────────────────────────────────────────
+
+    /// <summary>指 1 本を FFI で受け取る float 要素数（Rust 側 input_bridge::TOUCH_POINT_FLOATS と一致）。</summary>
+    private const int TouchPointFloats = 6;
+    // 並び（Rust 側 input_bridge::TOUCH_FIELD_* と一致させる）
+    private const int TouchFieldFingerId = 0;
+    private const int TouchFieldPhase = 1;
+    private const int TouchFieldPositionX = 2;
+    private const int TouchFieldPositionY = 3;
+    private const int TouchFieldDeltaX = 4;
+    private const int TouchFieldDeltaY = 5;
+
+    /// <summary>
+    /// タッチの整数問い合わせ（kind: 0=対応判定 1/0 / 1=本数）。kind は Input.cs の TouchQuery* を渡す。
+    /// ホスト API 未登録・Play 外は 0。
+    /// </summary>
+    public static int InputTouchQuery(int kind)
+    {
+        if (!_available || _api.InputTouch == null) return 0;
+        return _api.InputTouch(kind, 0, null, 0);
+    }
+
+    /// <summary>
+    /// このフレームの index 番目（触れ始めた順）の指を取得する。範囲外・Play 外・未登録は false
+    /// （<paramref name="touch"/> は <see cref="Touch.None"/>）。
+    /// </summary>
+    /// <param name="kind">「index 番目の指」の問い合わせ種別（Input.cs の TouchQueryGet）。</param>
+    /// <param name="index">一覧の位置（0 起点）。</param>
+    /// <param name="touch">取得した指。</param>
+    public static bool InputTouchGet(int kind, int index, out Touch touch)
+    {
+        touch = Touch.None;
+        if (!_available || _api.InputTouch == null) return false;
+        float* buf = stackalloc float[TouchPointFloats];
+        if (_api.InputTouch(kind, index, buf, TouchPointFloats) != TouchPointFloats) return false;
+        touch = new Touch(
+            (int)buf[TouchFieldFingerId],
+            new Vector2(buf[TouchFieldPositionX], buf[TouchFieldPositionY]),
+            new Vector2(buf[TouchFieldDeltaX], buf[TouchFieldDeltaY]),
+            (TouchPhase)(int)buf[TouchFieldPhase]);
+        return true;
+    }
+
     // ── 2D プリミティブ描画（SEED.Draw）─────────────────────────
 
     /// <summary>
@@ -1219,4 +1262,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, int> AssetText;
     /// <summary>(kind) → 1=真 / 0=偽 / -1=未知の kind（実行環境の判定。kind: 0=パッケージ実行/1=エディタからの Play）</summary>
     public delegate* unmanaged[Cdecl]<int, int> AppEnv;
+    /// <summary>(kind, index, out float*, cap) → kind 0=対応判定(1/0) / 1=本数 / 2=index 番目の指を out へ 6 要素（書いた要素数。範囲外=0）（タッチ。Input.TouchCount / GetTouch）</summary>
+    public delegate* unmanaged[Cdecl]<int, int, float*, int, int> InputTouch;
 }

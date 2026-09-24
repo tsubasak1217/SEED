@@ -1539,8 +1539,32 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   Windows は `CloseRequested` で `save::flush_if_dirty()` を呼ぶが、Android にはその経路が無い。
   段階A で onPause / suspended 時の flush と、正式な終了処理（winit の更新または自前の破棄通知）を入れる。
   関連: `runtime/android/app/src/main/java/com/seedengine/runtime/MainActivity.java`、`app/render.rs`。
-- [ ] **タッチの本実装（段階A）** — 2026-09-24。`WindowEvent::Touch` は `app/lifecycle_diag.rs` でログに出すだけ。
-  複数指の `Input.TouchCount` / `GetTouch(i)`（PC はマウス＝指 0）とキャンバス UI のポインタイベントへの接続が必要。
+- [x] **タッチの本実装（段階A）** — 2026-09-24 記載 / 同日対応。複数指の状態機械（`input/touch/`）・指0 → マウスの駆動
+  （Android）・マウス左ボタン → 指の合成（PC）・C# の `Input.TouchSupported` / `TouchCount` / `GetTouch(i)` / `Touches` を実装。
+  キャンバス UI のポインタイベントは指0 がマウスを動かす経路で判定される。正典は docs/android.md §12。残りは直後に並べた各項目。
+- [ ] **実機でのタッチ → スクリプト／ボタン反応の確認（段階B 待ち）** — 2026-09-24。Android ではスクリプトが動かないため、
+  `Input.GetTouch` の値と、キャンバス UI のポインタイベント（配信先がスクリプト）でボタンが反応するところまでは実機で未確認。
+  入力状態（指の一覧・タッチ由来のマウス）は `[SEED TOUCH FRAME]` ログで確認済み（エミュレータ）。段階B でスクリプトが動いたら、
+  PC で使った確認用スクリプト（docs/android.md §12.4 の TouchProbe）を実機に載せて確かめる。
+- [ ] **実機（Pixel 6a）でタッチ状態・複数指を確認する** — 2026-09-24。エミュレータ（`input tap` / `swipe` / `input mouse tap`・
+  コンソールの protocol B 3 本指・合成タッチ列）と PC では確認済みだが、実機は端末が私物として使用中で、起動直後にユーザーが別アプリへ
+  移って最初のフレーム前にプロセスが終了したため未完（docs/android.md §12.5）。端末が空いているときに
+  `debug.seed.touch_test=1`（合成 3 本指）と `input tap` / `swipe` で `[SEED TOUCH FRAME]` を確かめる。手順は §12.4。
+- [ ] **ジェスチャ（ピンチ・回転・長押し・ダブルタップ・フリック）の組み込み API が無い（段階A 以降）** — 2026-09-24。
+  今は `GetTouch` の位置と `DeltaPosition` からスクリプトで組み立てる（docs/scripting_api.md §6.5 の例）。
+  `Touch.TapCount` / 押下時間 / 圧力（winit の `Touch::force`）も未公開。必要になったら `TouchState` に足して FFI の並びを拡張する。
+- [ ] **キャンバス UI のポインタイベントは指0 の 1 本だけ（複数指の UI 操作は未対応）** — 2026-09-24。
+  `pointer_events.rs` はマウス 1 本（＝指0）で Enter / Down / Click を判定する。2 本目以降の指でボタンを押す、
+  2 つのボタンを同時に押す（仮想パッド＋ボタン）といった操作はできない。指ごとのポインタ状態を持たせる必要がある。
+  また指を離した後もマウス位置が最後の位置に残るため、ボタンのホバー状態（OnPointerEnter 済み）が次に触れるまで残る（Unity と同じ挙動）。
+- [ ] **MCP の入力注入からタッチを合成しない** — 2026-09-24。エディタ／MCP の `INPUT_MOUSE_*` 注入は `Input` の注入層に入り、
+  実マウスとは別に OR 合成される。PC の「マウス左ボタン → 指」の合成は実マウスだけが対象なので、AI の操作で
+  `Input.GetTouch` を使うスクリプトを試すことはできない。注入層にもタッチ（指の追加・移動・離し）の操作を足すのが筋。
+  関連: `runtime/src/engine/core/input/inject/`、`input/touch/bridge.rs`。
+- [ ] **タッチパネル付き PC の実タッチは未検証** — 2026-09-24。Windows の winit は WM_TOUCH / WM_POINTER を `Touch` として送り、
+  OS はタッチをマウスへ昇格して別に送る（winit は昇格マウスを区別しない）。`bridge.rs` は「実タッチが触れている間は
+  マウスから指を合成しない・合成中の指は実タッチで Canceled にする」ことで二重に数えないようにしたが、実機（タッチパネル）では未確認。
+  `Input.TouchSupported` はプラットフォーム単位の値なのでタッチパネル付き PC でも false。
 - [ ] **APK 内 pak（AssetManager）非対応（段階A）** — 2026-09-24。アセットは `build_and_run.ps1 -AssetsDir` が
   デバッグ版 APK の run-as で内部アプリ専用フォルダ（`/data/user/0/<pkg>/files/assets`）へ送ったものを `std::fs` で読む
   （実機では外部フォルダへの adb push は shell 所有のフォルダになりアプリから読めない。docs/android.md §4.5）。
@@ -1553,6 +1577,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   同期に走り、その間に端末側でサーフェスが破棄されると UI スレッドはネイティブの応答を待ち続ける
   （native_app_glue の `android_app_set_window` は時間切れ無しで待つ）。起動が長いほど ANR の恐れがあるため、
   キャッシュ化と初期化の分割・非同期化も合わせて検討する。
+  2026-09-24（タッチ実装の実機確認時）の実測: APK 更新直後の初回起動で、起動から `load_play_scene done` まで約 44 秒
+  （モデルキャッシュの作り直し 3.3 秒を含む。残りの内訳は未調査。前面では別のゲームが動いていた）。その間に操作された
+  戻るジェスチャ・タッチは初期化が終わってからまとめて届き、ActivityTaskManager に `Activity pause timeout`（起動 +6 秒）・
+  `Activity stop timeout`（+19 秒）が出て、最初のフレームの提示前にバックグラウンドでプロセスが終了した（`app died, no saved state`）。
 - [ ] **バックグラウンド中もシミュレーションが回る（段階A）** — 2026-09-24。suspended 中はイベントループが
   `ControlFlow::Wait` で眠るが、物理スレッド（3D/2D）は回り続ける（エミュレータで計 20% 前後の CPU）。音声も止めていない。
   suspended で一時停止・resumed で再開する。関連: `app/surface_lifecycle.rs`。

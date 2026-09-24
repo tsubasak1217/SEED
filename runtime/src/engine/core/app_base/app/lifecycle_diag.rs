@@ -4,7 +4,9 @@
 //  【目的】
 //  端末の回転（Resized）・フォーカス・タッチ・キーが実際に届いているかを
 //  logcat（標準エラー経由）で確認できるようにする。エンジンの入力処理には一切関与せず、
-//  観測してログを出すだけ（タッチの本実装 Input.TouchCount / GetTouch は段階A）。
+//  観測してログを出すだけ。タッチはここでは winit から届いた生イベントを出し、
+//  入力状態（Input.TouchCount / GetTouch・タッチ由来のマウス）への反映結果は
+//  touch_diag.rs がフレーム単位で出す。
 //
 //  【出す条件】platform::CURRENT.lifecycle_diag_log が真のときだけ（Android）。
 //  デスクトップでは何も出さない（エディタの Output パネルを埋めないため）。

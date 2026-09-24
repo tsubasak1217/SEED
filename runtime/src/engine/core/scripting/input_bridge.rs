@@ -11,6 +11,8 @@
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
+use crate::engine::core::input::touch::TouchPoint;
+
 // ─── 入力判定の種別 ──────────────────────────────────────────
 
 /// 押下状態の判定種別（C# 側 FFI 呼び出しの kind 引数と一致させる）。
@@ -35,6 +37,42 @@ pub const MOUSE_STATE_POSITION_DELTA: i32 = 4;
 pub const CURSOR_LOCK_GET: i32 = 0;
 /// ロック状態を設定する（フレーム末に App が適用）。
 pub const CURSOR_LOCK_SET: i32 = 1;
+
+// ── タッチ（複数指）の問い合わせ種別（C# 側 Input.cs の TouchQuery* と一致させる）──
+/// タッチ入力を主に使う端末か（戻り値 1 / 0。out は使わない）。Play 外でも答える。
+pub const TOUCH_QUERY_SUPPORTED: i32 = 0;
+/// このフレームの指の本数（戻り値 = 本数。out は使わない）。Play 外は 0。
+pub const TOUCH_QUERY_COUNT: i32 = 1;
+/// index 番目の指（out へ `TOUCH_POINT_FLOATS` 要素。戻り値 = 書いた要素数。範囲外・容量不足・Play 外は 0）。
+pub const TOUCH_QUERY_GET: i32 = 2;
+
+// ── 指 1 本を FFI で渡すときの float 配列の並び（C# 側 ScriptHost.InputTouchGet と一致させる）──
+/// 要素数。
+pub const TOUCH_POINT_FLOATS: usize = 6;
+/// 指番号（0 起点の整数を float で。2^24 未満なので無損失）。
+pub const TOUCH_FIELD_FINGER_ID: usize = 0;
+/// 段階（`TouchPhase::id()` の整数を float で）。
+pub const TOUCH_FIELD_PHASE: usize = 1;
+/// 位置 x（`Input.MousePos` と同じスクリーン座標系・ピクセル）。
+pub const TOUCH_FIELD_POSITION_X: usize = 2;
+/// 位置 y。
+pub const TOUCH_FIELD_POSITION_Y: usize = 3;
+/// 前フレームからの移動量 x。
+pub const TOUCH_FIELD_DELTA_X: usize = 4;
+/// 前フレームからの移動量 y。
+pub const TOUCH_FIELD_DELTA_Y: usize = 5;
+
+/// 指 1 本を FFI の float 配列へ詰める（並びは `TOUCH_FIELD_*`）。
+pub fn touch_point_to_floats(t: &TouchPoint) -> [f32; TOUCH_POINT_FLOATS] {
+    let mut out = [0.0; TOUCH_POINT_FLOATS];
+    out[TOUCH_FIELD_FINGER_ID] = t.finger_id as f32;
+    out[TOUCH_FIELD_PHASE] = t.phase.id() as f32;
+    out[TOUCH_FIELD_POSITION_X] = t.position.x;
+    out[TOUCH_FIELD_POSITION_Y] = t.position.y;
+    out[TOUCH_FIELD_DELTA_X] = t.delta.x;
+    out[TOUCH_FIELD_DELTA_Y] = t.delta.y;
+    out
+}
 
 // ─── キーコード対応表 ────────────────────────────────────────
 
@@ -127,4 +165,27 @@ pub fn mouse_button_from_id(id: u32) -> Option<MouseButton> {
         2 => MouseButton::Middle,
         _ => return None,
     })
+}
+
+// ============================================================
+//  テスト（タッチの FFI 配列の並び）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::core::input::touch::TouchPhase;
+    use crate::engine::structs::tensor::Vector2;
+
+    /// 指 1 本の詰め方は C# 側（ScriptHost.InputTouchGet）の読み方と同じ並びであること。
+    #[test]
+    fn touch_point_layout_matches_csharp_contract() {
+        let t = TouchPoint {
+            finger_id: 3,
+            position: Vector2::new(12.5, 34.0),
+            delta: Vector2::new(-1.0, 2.5),
+            phase: TouchPhase::Moved,
+        };
+        assert_eq!(touch_point_to_floats(&t), [3.0, 1.0, 12.5, 34.0, -1.0, 2.5]);
+    }
 }

@@ -2561,6 +2561,48 @@ unsafe extern "system" fn ffi_input_cursor_lock(action: i32, value: i32) -> i32 
     }
 }
 
+/// タッチ（複数指）の問い合わせ（SEED.Input.TouchSupported / TouchCount / GetTouch / Touches）。
+///
+/// # 引数
+/// - `kind`  … `input_bridge::TOUCH_QUERY_*`（0=対応判定 / 1=本数 / 2=index 番目の指）
+/// - `index` … kind=2 のときの一覧の位置（触れ始めた順・0 起点）。それ以外は無視
+/// - `out` / `cap` … kind=2 のときの書き込み先と容量（`TOUCH_POINT_FLOATS` 以上必要）
+///
+/// # 戻り値
+/// - kind=0: 1=タッチ主体の端末 / 0=それ以外（プラットフォーム特性。Play 外でも答える）
+/// - kind=1: このフレームの本数（Play 外は 0）
+/// - kind=2: 書いた要素数（`TOUCH_POINT_FLOATS`）。範囲外・容量不足・Play 外は 0（例外にしない）
+/// - 未知の kind: 0
+///
+/// 入力状態はフェーズ実行中に変更されない（イベント処理とフレーム末の end_frame でだけ変わる）ので、
+/// 1 フレームに何度呼んでも同じ値を返す。
+unsafe extern "system" fn ffi_input_touch(kind: i32, index: i32, out: *mut f32, cap: i32) -> i32 {
+    // 対応判定は入力状態ではなくプラットフォームの性質なので、公開中かどうかに関わらず答える。
+    if kind == input_bridge::TOUCH_QUERY_SUPPORTED {
+        return if crate::engine::platform::CURRENT.touch_supported { 1 } else { 0 };
+    }
+    let ptr = INPUT_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    // SAFETY: INPUT_PTR は publish_input が公開している間（フェーズ実行中）だけ非 null で、
+    // その間 Input は変更されない（イベント処理・end_frame はフェーズの外）。
+    let input = unsafe { &*ptr };
+    match kind {
+        // 本数は MAX_TOUCHES（10）以下なので i32 に収まる。
+        input_bridge::TOUCH_QUERY_COUNT => input.touch_count() as i32,
+        input_bridge::TOUCH_QUERY_GET => {
+            if out.is_null() || index < 0 || cap < input_bridge::TOUCH_POINT_FLOATS as i32 {
+                return 0;
+            }
+            let Some(touch) = input.touch(index as usize) else { return 0 };
+            let values = input_bridge::touch_point_to_floats(&touch);
+            // SAFETY: out は null でなく、C# 側が cap（>= TOUCH_POINT_FLOATS）要素の領域を確保している。
+            unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), out, values.len()) };
+            values.len() as i32
+        }
+        _ => 0,
+    }
+}
+
 // ─── 2D プリミティブ描画 FFI（SEED.Draw）────────────────────
 
 /// スクリーンスペースを表す `space_idx`（＝ `Entity::None` の index）。
@@ -3766,6 +3808,9 @@ pub struct ScriptHostApi {
     // 実行環境の判定（SEED.Application.IsPackaged / IsEditorPlay）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     app_env:                 unsafe extern "system" fn(i32) -> i32,
+    // タッチ（SEED.Input.TouchSupported / TouchCount / GetTouch / Touches）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    input_touch:             unsafe extern "system" fn(i32, i32, *mut f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3812,6 +3857,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     script_debug_take:       ffi_script_debug_take,
     asset_text:              ffi_asset_text,
     app_env:                 ffi_app_env,
+    input_touch:             ffi_input_touch,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。
@@ -4009,6 +4055,58 @@ mod slot_key_tests {
     fn rejects_malformed_keys() {
         for key in ["slot.", "slot.0", "slot..num", "slot.x.num", "slots.0.num", "content"] {
             assert_eq!(parse_slot_field_key(key), None, "{key}");
+        }
+    }
+}
+
+// ============================================================
+//  単体テスト（タッチ FFI: 公開中の Input を読む・範囲外は 0・何度呼んでも同じ）
+// ============================================================
+
+#[cfg(test)]
+mod touch_ffi_tests {
+    use super::*;
+    use winit::event::MouseButton;
+
+    /// 公開中の Input から本数・指を読める。範囲外・容量不足・非公開は 0（例外にしない）。
+    #[test]
+    fn touch_queries_read_published_input() {
+        // テストはデスクトップの方針なので、マウス左ボタンが指を 1 本合成する。
+        let mut input = Input::new();
+        input.process_cursor_moved(40.0, 60.0);
+        input.process_mouse_button(MouseButton::Left, true);
+
+        let mut buf = [0.0f32; input_bridge::TOUCH_POINT_FLOATS];
+        let len = input_bridge::TOUCH_POINT_FLOATS as i32;
+        publish_input(Some(&input));
+        unsafe {
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_COUNT, 0, std::ptr::null_mut(), 0), 1);
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_GET, 0, buf.as_mut_ptr(), len), len);
+            // 指番号 0・Began(0)・位置 (40,60)・差分 0
+            assert_eq!(buf, [0.0, 0.0, 40.0, 60.0, 0.0, 0.0]);
+
+            // 同じフレームに何度呼んでも同じ値
+            let mut again = [0.0f32; input_bridge::TOUCH_POINT_FLOATS];
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_GET, 0, again.as_mut_ptr(), len), len);
+            assert_eq!(buf, again);
+
+            // 範囲外・負の index・容量不足・null は 0
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_GET, 1, buf.as_mut_ptr(), len), 0);
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_GET, -1, buf.as_mut_ptr(), len), 0);
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_GET, 0, buf.as_mut_ptr(), len - 1), 0);
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_GET, 0, std::ptr::null_mut(), len), 0);
+            // 未知の kind は 0
+            assert_eq!(ffi_input_touch(99, 0, buf.as_mut_ptr(), len), 0);
+        }
+        publish_input(None);
+        unsafe {
+            // 非公開（Play 外）は本数 0。対応判定だけはプラットフォームの性質として答える。
+            assert_eq!(ffi_input_touch(input_bridge::TOUCH_QUERY_COUNT, 0, std::ptr::null_mut(), 0), 0);
+            let supported = if crate::engine::platform::CURRENT.touch_supported { 1 } else { 0 };
+            assert_eq!(
+                ffi_input_touch(input_bridge::TOUCH_QUERY_SUPPORTED, 0, std::ptr::null_mut(), 0),
+                supported
+            );
         }
     }
 }

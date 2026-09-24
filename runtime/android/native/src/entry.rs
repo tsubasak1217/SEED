@@ -52,6 +52,8 @@ fn android_main(app: AndroidApp) {
     // 検証用: システムプロパティ debug.seed.panic_test=1 のときだけ意図的に panic する
     //（panic が logcat に残ることの確認用。通常起動では何もしない）。
     debug_hooks::panic_if_requested();
+    // 検証用: debug.seed.touch_test=1 のときだけ複数指の合成タッチ列を流す（通常起動では何もしない）。
+    debug_hooks::request_touch_test_if_enabled();
 
     let args = launch::launch_args(&app);
 

@@ -682,8 +682,8 @@ public override void OnDestroy()
 </section>
 
 <!-- ════════════════ 6.5 Input ════════════════ -->
-<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD カーソルロック CursorLocked 相対マウス MouseDelta MousePosition MousePositionCanvas キャンバス座標 ジェスチャ 移動量 振る キャスト">
-  <h2>6.5 Input（キーボード・マウス入力）</h2>
+<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD カーソルロック CursorLocked 相対マウス MouseDelta MousePosition MousePositionCanvas キャンバス座標 ジェスチャ 移動量 振る キャスト タッチ Touch touch 複数指 マルチタッチ 指 TouchCount GetTouch Touches TouchSupported TouchPhase Began Moved Stationary Ended Canceled FingerId DeltaPosition ピンチ スワイプ タップ Android スマホ 実機">
+  <h2>6.5 Input（キーボード・マウス・タッチ入力）</h2>
   <p class="section-note">判定は 3 種類: 押している間 / 押した瞬間 / 離した瞬間。</p>
   <h3>キーボード</h3>
   <div class="api"><code class="sig">Input.GetKey(KeyCode.Space)</code><span class="desc">bool: 押されている間 true</span></div>
@@ -717,6 +717,35 @@ public override void OnDestroy()
 transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</span>(move.x, 0f, move.y) * speed * <span class="t">SEED.Time</span>.DeltaTime;
 <span class="k">if</span> (<span class="t">SEED.Input</span>.GetKeyDown(<span class="t">SEED.KeyCode</span>.Space)) { <span class="c">/* ジャンプ */</span> }</pre>
   <div class="api"><code class="sig">KeyCode（キー定義）</code><span class="desc"><code>A</code>〜<code>Z</code> / <code>Alpha0</code>〜<code>Alpha9</code>（メイン数字キー）/ <code>F1</code>〜<code>F12</code> / <code>UpArrow DownArrow LeftArrow RightArrow</code> / <code>Space Enter Escape Tab Backspace Delete</code> / <code>LeftShift RightShift LeftControl RightControl LeftAlt RightAlt</code></span></div>
+  <h3 id="input-touch">タッチ（複数指）</h3>
+  <p class="section-note">Unity 風の複数指タッチ。<strong>PC ではマウスの左ボタンが指 1 本として合成される</strong>ので、タッチ前提のスクリプトも PC の Play で試せる。Android では<strong>最初に触れた指（指0）がマウスも動かす</strong>（<code>MousePos</code>・<code>GetMouseButton(MouseButton.Left)</code>・キャンバス UI の <code>OnPointer*</code> がタッチで動く）。</p>
+  <div class="api"><code class="sig">Input.TouchSupported</code><span class="desc">bool: タッチ入力を主に使う端末か（Android: true / PC: false。プラットフォーム単位）</span></div>
+  <div class="api"><code class="sig">Input.TouchCount</code><span class="desc">int: このフレームの指の本数（このフレームで離れた指も含む。最大 10）</span></div>
+  <div class="api"><code class="sig">Input.GetTouch(i)</code><span class="desc">Touch: i 番目（触れ始めた順・0 起点）の指。範囲外は例外にせず <code>Touch.None</code></span></div>
+  <div class="api"><code class="sig">Input.Touches</code><span class="desc">Touch[]: 全指（触れ始めた順）。呼ぶたびに配列を作るので、毎フレームなら TouchCount + GetTouch が軽い</span></div>
+  <div class="api"><code class="sig">touch.FingerId</code><span class="desc">int: 指番号（0 起点。触れている間は不変。空いている最小の番号を割り当てる）</span></div>
+  <div class="api"><code class="sig">touch.Position</code><span class="desc">Vector2: 位置（スクリーン座標・ピクセル・左上原点。Input.MousePos と同じ系）</span></div>
+  <div class="api"><code class="sig">touch.DeltaPosition</code><span class="desc">Vector2: 前フレームからの移動量（右=+X / 下=+Y。触れ始めたフレームは触れ始めた位置から）</span></div>
+  <div class="api"><code class="sig">touch.Phase</code><span class="desc">TouchPhase: このフレームの段階（下記）</span></div>
+  <div class="api"><code class="sig">touch.IsValid</code><span class="desc">bool: 有効な指か（<code>Touch.None</code> は FingerId = -1・Phase = Canceled で false）</span></div>
+  <div class="api"><code class="sig">TouchPhase</code><span class="desc"><code>Began</code> 触れ始めたフレームだけ / <code>Moved</code> 触れたまま位置が変わった / <code>Stationary</code> 触れたまま位置が変わっていない / <code>Ended</code> 離れたフレームだけ（そのフレームは一覧に残り次フレームで消える）/ <code>Canceled</code> OS に取り消されたフレームだけ（Unity と同じ並び）</span></div>
+<pre><span class="c">// 例: 1 本指ドラッグで移動・2 本指で拡大率（ピンチ）</span>
+<span class="k">if</span> (<span class="t">SEED.Input</span>.TouchCount == 1)
+{
+    <span class="k">var</span> t = <span class="t">SEED.Input</span>.GetTouch(0);
+    <span class="k">if</span> (t.Phase == <span class="t">SEED.TouchPhase</span>.Moved) { <span class="c">/* t.DeltaPosition だけ動かす */</span> }
+    <span class="k">if</span> (t.Phase == <span class="t">SEED.TouchPhase</span>.Ended) { <span class="c">/* 指を離した = タップ判定など */</span> }
+}
+<span class="k">else if</span> (<span class="t">SEED.Input</span>.TouchCount &gt;= 2)
+{
+    <span class="k">var</span> a = <span class="t">SEED.Input</span>.GetTouch(0);
+    <span class="k">var</span> b = <span class="t">SEED.Input</span>.GetTouch(1);
+    <span class="k">float</span> now  = (a.Position - b.Position).Magnitude;
+    <span class="k">float</span> prev = ((a.Position - a.DeltaPosition) - (b.Position - b.DeltaPosition)).Magnitude;
+    <span class="k">float</span> pinch = now - prev;   <span class="c">// 正 = 指が離れた（拡大）</span>
+}</pre>
+  <p class="section-note"><strong>重要</strong>: 素早いタップ（触れて離れるまでが 1 フレームに収まる）も、<strong>触れたフレームは <code>Began</code>・次のフレームで <code>Ended</code></strong> として必ず 2 フレームに分けて見える。Android でタッチが動かすマウスも同じで、左ボタンは「押下フレーム → 次フレームで解放」になる。</p>
+  <p class="section-note"><strong>重要</strong>: PC ではマウス左ボタンを押している間だけ指が 1 本（<code>FingerId = 0</code>）載り、押したまま動かすと <code>Moved</code>、止めると <code>Stationary</code>、離したフレームは <code>Ended</code>。右・中ボタンやホイールは指にならない。Android では 2 本目以降の指はマウスに影響せず、指0 が離れた後に残った指が指0 を引き継ぐこともない。なお Android でスクリプトが動くのは段階B から（2026-09 時点では準備中。docs/android.md）。</p>
 </section>
 
 <!-- ════════════════ 6.6 Physics ════════════════ -->

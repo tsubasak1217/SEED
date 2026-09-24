@@ -731,7 +731,7 @@ Random.InitState(seed)       // シード固定（再現用）
 
 ---
 
-## 6.5 Input（キーボード・マウス入力）
+## 6.5 Input（キーボード・マウス・タッチ入力）
 
 エンジンの入力状態を参照する静的クラス。判定は 3 種類（押している間 / 押した瞬間 / 離した瞬間）。
 
@@ -789,6 +789,55 @@ if (SEED.Input.GetKeyDown(SEED.KeyCode.Space)) { /* ジャンプ */ }
 > Play を停止すると自動的に解除されるため、解除し忘れでカーソルが消えたままにはならない。
 
 `KeyCode` の定義: `A`〜`Z` / `Alpha0`〜`Alpha9`（メイン数字キー）/ `F1`〜`F12` / `UpArrow` `DownArrow` `LeftArrow` `RightArrow` / `Space` `Enter` `Escape` `Tab` `Backspace` `Delete` / `LeftShift` `RightShift` `LeftControl` `RightControl` `LeftAlt` `RightAlt`
+
+### タッチ（複数指）
+
+Unity 風の複数指タッチ。**PC ではマウスの左ボタンが指 1 本として合成される**ので、タッチ前提のスクリプトも PC の Play でそのまま試せます。Android では**最初に触れた指（指0）がマウスも動かす**（`MousePos`・`GetMouseButton(MouseButton.Left)`・キャンバス UI の `OnPointer*` がタッチで動く）ので、マウス前提のスクリプトも実機で動きます。
+
+```csharp
+// タッチ（複数指）
+Input.TouchSupported  // bool: タッチ入力を主に使う端末か（Android: true / PC: false。プラットフォーム単位）
+Input.TouchCount      // int:  このフレームの指の本数（このフレームで離れた指も含む。最大 10）
+Input.GetTouch(i)     // Touch: i 番目（触れ始めた順・0 起点）の指。範囲外は例外にせず Touch.None
+Input.Touches         // Touch[]: 全指（触れ始めた順。呼ぶたびに配列を作るので毎フレームなら TouchCount + GetTouch が軽い）
+
+// Touch（値型。同じフレームの間は何度取得しても同じ値）
+touch.FingerId        // int:     指番号（0 起点。触れている間は不変。空いている最小の番号を割り当てる）
+touch.Position        // Vector2: 位置（スクリーン座標・ピクセル・左上原点。Input.MousePos と同じ系）
+touch.DeltaPosition   // Vector2: 前フレームからの移動量（右=+X / 下=+Y。触れ始めたフレームは触れ始めた位置から）
+touch.Phase           // TouchPhase: このフレームの段階
+touch.IsValid         // bool:    有効な指か（Touch.None は FingerId = -1・Phase = Canceled で false）
+
+// TouchPhase（Unity と同じ並び）
+TouchPhase.Began       // 触れ始めたフレームだけ
+TouchPhase.Moved       // 触れたまま前フレームから位置が変わった
+TouchPhase.Stationary  // 触れたまま位置が変わっていない
+TouchPhase.Ended       // 離れたフレームだけ（そのフレームは一覧に残り、次フレームで消える）
+TouchPhase.Canceled    // OS に取り消されたフレームだけ（着信・フォーカス喪失など。Ended と同じく 1 フレーム残る）
+
+// 例: 1 本指ドラッグで移動・2 本指で拡大率（ピンチ）
+public override void Update(ref NativeFrameContext ctx)
+{
+    if (SEED.Input.TouchCount == 1)
+    {
+        var t = SEED.Input.GetTouch(0);
+        if (t.Phase == SEED.TouchPhase.Moved) { /* t.DeltaPosition だけ動かす */ }
+        if (t.Phase == SEED.TouchPhase.Ended) { /* 指を離した = タップ判定など */ }
+    }
+    else if (SEED.Input.TouchCount >= 2)
+    {
+        var a = SEED.Input.GetTouch(0);
+        var b = SEED.Input.GetTouch(1);
+        float now  = (a.Position - b.Position).Magnitude;
+        float prev = ((a.Position - a.DeltaPosition) - (b.Position - b.DeltaPosition)).Magnitude;
+        float pinch = now - prev;   // 正 = 指が離れた（拡大）
+    }
+}
+```
+
+> **重要**: 素早いタップ（触れて離れるまでが 1 フレームに収まる）も、**触れたフレームは `Began`・次のフレームで `Ended`** として必ず 2 フレームに分けて見えます（`Began` だけ・`Ended` だけを調べるスクリプトも取りこぼさない）。Android でタッチが動かすマウスも同じで、左ボタンは「押下フレーム → 次フレームで解放」になります。
+
+> **重要**: PC ではマウス左ボタンを押している間だけ指が 1 本（`FingerId = 0`）載り、押したまま動かすと `Moved`、止めると `Stationary`、離したフレームは `Ended` です。右・中ボタンやホイールは指になりません。Android では 2 本目以降の指はマウスに影響せず、指0 が離れた後に残った指が指0 を引き継ぐこともありません（新たに全指が離れてから触れた指が次の指0）。なお Android でスクリプトが動くのは段階B から（2026-09 時点では準備中。docs/android.md）。
 
 ---
 

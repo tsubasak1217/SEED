@@ -9612,6 +9612,9 @@ impl App {
             self.input.update_cursor_lock(&window);
         }
 
+        // タッチ状態のフレーム単位診断ログ（Android のみ）。スクリプトが今フレーム読んだのと
+        // 同じ値を出すため、end_frame で段階を進める直前に呼ぶ。
+        super::touch_diag::observe_frame(&self.input);
         self.input.end_frame();
         self.cam_input.end_frame();
 

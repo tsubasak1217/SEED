@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）時点の内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -139,7 +139,10 @@ OS ごとの「振る舞いの差」は cfg を散らさず、`runtime/src/engin
 |---|---|---|---|
 | `app_sizes_window` | true | false | ウィンドウ生成に project_settings の `window_width/height` を使うか（Android は端末の画面＝サーフェス実サイズ） |
 | `scripting_supported` | true | false | スクリプトホスト（CLR）を探すか（Android は段階B まで無し） |
-| `lifecycle_diag_log` | false | true | Resized / Focused / タッチ / キー / サーフェス生成の診断ログ（`app/lifecycle_diag.rs`） |
+| `lifecycle_diag_log` | false | true | Resized / Focused / タッチ / キー / サーフェス生成の診断ログ（`app/lifecycle_diag.rs`）と、タッチ状態のフレーム単位ログ（`app/touch_diag.rs`） |
+| `touch_supported` | false | true | スクリプトの `Input.TouchSupported`（タッチ主体の端末か。§12） |
+| `touch_drives_mouse` | false | true | 指0 がマウス（カーソル座標＋左ボタン）を駆動するか（`input/touch/bridge.rs`。§12.2） |
+| `mouse_simulates_touch` | true | false | マウス左ボタンで指を 1 本合成するか（同上。`touch_drives_mouse` と排他） |
 
 cfg が残るのは「そもそもコンパイルできない API」の箇所だけ:
 - `netcorehost` は Android では依存しない（`runtime/Cargo.toml`）。`engine/core/scripting` は Android で
@@ -268,7 +271,9 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | `[SEED INIT] ...` | エンジンの起動ログ（eprintln! → 標準エラー転送） | Windows 版の起動ログと同じ内容。アダプタ名・バックエンド（`backend=Vulkan`）もここ |
 | `[SEED SURFACE] created / released / recreated` | サーフェスの生成・破棄・再生成 | 大きさ・形式・提示モード |
 | `[SEED LIFECYCLE] suspended / resumed / Resized / Focused ...` | ライフサイクル診断 | 回転・バックグラウンド復帰の確認 |
-| `[SEED TOUCH] Started / Ended ...` / `[SEED KEY] ...` | タッチ・キーの受信（段階0 は受信の確認だけ） | Moved は件数だけ Ended 行にまとめる |
+| `[SEED TOUCH] Started / Ended ...` / `[SEED KEY] ...` | winit から届いた生のタッチ・キー | Moved は件数だけ Ended 行にまとめる |
+| `[SEED TOUCH FRAME] f=.. n=.. #0:Began(x,y)d(dx,dy) ... \| mouse=(x,y) L=PD-` | 入力状態（`Input.TouchCount` / `GetTouch` とタッチ由来のマウス）のフレーム末の値（`app/touch_diag.rs`） | 変化のあったフレームだけ 1 行。`L` は左ボタンの押下中 P / 押した瞬間 D / 離した瞬間 U（§12.3） |
+| `[SEED TOUCH TEST] Started id=0x5eed000N ...` | 検証用の合成タッチ列（`debug.seed.touch_test=1` のときだけ。§12.3） | 合成したイベントそのもの。反映結果は `[SEED TOUCH FRAME]` で見る |
 | `[SEED HEARTBEAT] presented_frames total=N +d in 3.0s (x fps)` | 生存確認（3 秒ごと） | バックグラウンド中は `+0`、復帰で再び増える |
 | `[SEED PANIC] ...` / タグ `RustPanic` | panic フック（liblog へ同期で直接）／android-activity | 場所（ファイル:行）と backtrace |
 | `wgpu_hal::... / wgpu_core::...: ...` | 依存クレートの log（android_logger） | `naga` の Info は多すぎるため Warn 以上だけ出す |
@@ -278,6 +283,8 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 - `[PERF f=...]` `[PLAY_HB]` `[PLAY_DIAG n]` `[SEED FRAME n]` はエンジン既存の診断出力で、Windows 版でも同じように出ている。
 - 意図的な panic で経路を確認する: `adb shell setprop debug.seed.panic_test 1` → 起動（`[SEED PANIC]` が出て
   Activity が終わり、プロセスが終了する）→ `adb shell setprop debug.seed.panic_test 0` で戻す。
+- 複数指の合成タッチ列で確認する: `adb shell setprop debug.seed.touch_test 1` → 起動（最初のフレームの 2 秒後に
+  3 本指の列が 1 回流れる。§12.3）→ `adb shell setprop debug.seed.touch_test 0` で戻す。
 - APK に入る .so はシンボルが削られているため backtrace の多くは `<unknown>`。
   未ストリップの `app/src/main/jniLibs/<ABI>/libSEED.so` と NDK の `llvm-addr2line` で後から解決できる。
 
@@ -322,7 +329,9 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 - **スクリプト（C#）は動かない**（段階B）。
 - アセットはデバッグ版 APK の run-as で内部アプリ専用フォルダへ送ったものを読む（リリース版では run-as が使えない）。
   APK 内の pak は未対応（段階A）。
-- タッチはログに出るだけで、入力システム（`SEED.Input`）へはつながっていない（段階A）。
+- タッチは入力システムへつながった（§12）。ただしスクリプト（`Input.GetTouch` 等）は段階B まで Android で動かないため、
+  実機で効くのは「指0 → マウス」経由のもの（キャンバス UI のポインタイベントの判定・入力状態）だけ。
+  ポインタイベントの配信先もスクリプトなので、実機でボタンが反応するところまでは段階B で確認する。
 - **Activity の破棄＝プロセス終了**。winit 0.30 は onDestroy をアプリへ通知しない（イベントループが終わらず
   GameActivity の onDestroy が android_main の終了を待ち続けて ANR になる）うえ、EventLoop はプロセスで 1 度しか
   作れないため、`MainActivity.onDestroy` でプロセスを終了させている。構成変更での作り直しは `configChanges` で防いでいる。
@@ -343,7 +352,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | 段階 | 内容 |
 |---|---|
 | **0（完了）** | 実機/エミュレータに 1 枚絵。libSEED.so ＋ Gradle ＋ GameActivity、logcat、サーフェスの破棄・再生成、回転追従 |
-| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager）、保存先の振替、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0）、安全領域・画面の向き API、音声、logcat の整備 |
+| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager）、保存先の振替、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API、音声、logcat の整備 |
 | **B** | スクリプト: ScriptPackager の事前コンパイル DLL と linux-bionic 向け CoreCLR ランタイムパックを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: 実行先セレクタ（PC／実機／エミュレータ）、ビルド → install → 起動 → logcat → 停止、pak/DLL だけ push する高速経路、パッケージ化ウィンドウの Android 出力の実働化（`build_and_run.ps1` の各関数が土台） |
 | **D** | Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
@@ -479,3 +488,136 @@ let loader = ctx.get_delegate_loader()?;          // get_function_with_unmanaged
 - Invariant 無効時は system ICU 76（`/apex/com.android.i18n`）が読み込まれ、TZ 検索は 0.6〜0.7 秒
   （エミュレータで見えた 8〜12 秒は実機では起きない）。
 - 実機用ランナーは `spikes/dotnet_host/device/device_run.sh`（私物端末の他アプリのログを持ち出さないよう、logcat は自プロセス分に絞って取得する）。
+
+---
+
+## 12. タッチ入力（段階A・2026-09-24）
+
+複数指のタッチを入力システム（`Input`）へつなぎ、C# から Unity 風の API（`Input.TouchCount` / `GetTouch(i)` / `Touches` /
+`TouchSupported`）で読めるようにした。利用者向けの API 説明は [scripting_api.md](scripting_api.md) §6.5「タッチ（複数指）」。
+
+### 12.1 構成と流れ
+
+```
+winit WindowEvent::Touch { id, phase, location }    Android: MotionEvent の各ポインタ（Windows: WM_TOUCH / WM_POINTER）
+  └ App::on_touch（app/event_handler.rs）
+      └ Input::process_touch（input/mod.rs）         カーソルと同じ写像（内部解像度固定のレターボックス）で入力座標へ
+          └ PointerBridge::on_touch（input/touch/bridge.rs）   入力源の調停・マウス ⇔ タッチの相互変換
+              ├ TouchState::apply（input/touch/state.rs）       指の一覧（フレーム単位の状態機械）
+              └ 指0 → MouseState（touch_drives_mouse の端末だけ）  カーソル座標・左ボタン
+実マウス（CursorMoved / MouseInput）も Input → PointerBridge を通る（mouse_simulates_touch の端末では左ボタンで指を合成）
+フレーム末: Input::end_frame … MouseState::end_frame → PointerBridge::end_frame（TouchState::end_frame → 次フレーム分をマウスへ）
+スクリプト: SEED.Input.* → ffi_input_touch（scripting/host_api.rs。並びは scripting/input_bridge.rs の TOUCH_*）
+```
+
+| ファイル | 役割 |
+|---|---|
+| `runtime/src/engine/core/input/touch/phase.rs` | `TouchPhase`（Began / Moved / Stationary / Ended / Canceled。数値は C# と同じ） |
+| `runtime/src/engine/core/input/touch/state.rs` | `TouchState`（生イベント → 指の一覧。純ロジック・単体テスト付き） |
+| `runtime/src/engine/core/input/touch/bridge.rs` | `PointerBridge`（相互変換と二重駆動の防止。単体テスト付き） |
+| `runtime/src/engine/core/input/touch/test_sequence.rs` | 検証用の合成タッチ列（`debug.seed.touch_test=1` のときだけ流れる） |
+| `runtime/src/engine/core/app_base/app/touch_diag.rs` | `[SEED TOUCH FRAME]` ログ（`lifecycle_diag_log` の端末だけ） |
+| `runtime/src/engine/core/scripting/host_api.rs`（`ffi_input_touch`）・`input_bridge.rs`（`TOUCH_*`） | FFI（`ScriptHostApi` の末尾に `input_touch` を追加） |
+| `scripting/src/Api/Touch.cs`・`TouchPhase.cs`・`Input.cs`・`ScriptHost.cs` | C# API |
+| `runtime/android/native/src/debug_hooks.rs` | `debug.seed.touch_test` を読んで合成タッチ列を要求する |
+
+### 12.2 決まりごと
+
+- **座標**: `Input.MousePos` と同じ（ウィンドウのクライアント座標の物理ピクセル・左上原点。内部解像度固定のときは
+  レターボックスを通した描画解像度の座標）。`Input::process_cursor_moved` と同じ `window_pos_to_input` を通す。
+  Android はウィンドウが画面全体なので、`adb shell input tap X Y` の X, Y がそのまま位置になる。
+- **段階は Unity と同じ**: Began は触れ始めたフレームだけ、動かなければ Stationary、Ended / Canceled はそのフレームだけ一覧に残って
+  次フレームで消える。Moved / Stationary は「前フレーム末からの位置の差」で決める（Android は 1 本が動くと全ポインタの Moved を送るため）。
+- **1 フレームに 1 段階**: 触れたフレームのうちに離れた指（素早いタップ・`input tap`）は、そのフレームは Began・次フレームで Ended。
+  このフレームで離れた指と同じ OS の ID で触れ直したら、次フレームへ回す（一覧に同じ指が 2 度出ない）。
+- **本数**: 同時に一覧へ載るのは最大 10 本（`MAX_TOUCHES`）。超えた指は離すまで無視する。
+- **FingerId**: OS の ID ではなく、一覧で空いている最小の番号（0 起点）。並びは触れ始めた順。
+- **指0**: 他に触れている指が無い状態で触れ始めた指。FingerId が 0 かどうかとは別の概念で、指0 が離れても残った指は引き継がない。
+- **フォーカス喪失**: `WindowEvent::Focused(false)` で実タッチの指をすべて Canceled にする（OS の取り消しが届かない場合の安全弁）。
+
+### 12.3 マウス ⇔ タッチの相互変換（`PlatformTraits`）
+
+| フラグ | デスクトップ | Android | 振る舞い |
+|---|---|---|---|
+| `touch_drives_mouse` | false | true | 指0 の位置 → カーソル座標、触れている間 → 左ボタン押下、離れたら解放。他の指はマウスに影響しない。既存のキャンバス UI のポインタイベント・スクリプトのマウス API がタッチで動く |
+| `mouse_simulates_touch` | true | false | マウス左ボタンで指を 1 本合成（押下 → Began、押下中の移動 → Moved、止まれば Stationary、離す → Ended）。PC の Play で `GetTouch` を試せる |
+| `touch_supported` | false | true | `Input.TouchSupported` の値（プラットフォーム単位） |
+
+- 2 つの変換フラグは排他（`platform/mod.rs` のテストで固定）。
+- **二重駆動の防止**: `touch_drives_mouse` の端末では、実タッチが触れている間（とタッチ由来の押下が続いている間）は実マウスの
+  カーソル移動・左ボタンを無視する。`mouse_simulates_touch` の端末で実タッチ（タッチパネル付き PC）が触れたら、合成中の指は
+  Canceled で畳み、実タッチが触れている間は新しく合成しない（OS がタッチをマウスへ昇格して送ってきても 2 本に数えない）。
+- winit 0.30.13 の Android 実装は MotionEvent の Down / PointerDown / Move / Up / PointerUp / Cancel をすべて `Touch` として送り、
+  ホバーやマウスのボタン操作（`ACTION_HOVER_*` / `ACTION_BUTTON_*`）は捨てる（`CursorMoved` / `MouseInput` は出さない。ソースで確認）。
+  GameActivity の既定の入力フィルタは `SOURCE_TOUCHSCREEN (0x1002)` とのビット積で判定するため、ポインタ系の入力元
+  （マウス 0x2002 等）も通る。つまり Android のマウスは「押している間だけの指」として届く（§12.5 で `input mouse tap` で確認）。
+- タッチ由来の左ボタンは TouchState が見せる段階に合わせる。素早いタップはマウスも「押下フレーム → 次フレームで解放」になる。
+  指0 が入れ替わって解放と押下が同じフレームに重なるときは、押下を次フレームへ回す。
+- タッチが動かすマウスでは `Input.MouseDelta`（カーソル座標の差分）は動くが、`Input.MouseMove`（OS の Raw Input）は 0 のまま。
+
+### 12.4 確認方法
+
+ログ（タグ `SEED`。§6）:
+
+| 行 | 中身 |
+|---|---|
+| `[SEED TOUCH] Started id=0 pos=(540.0, 1200.0) ...` | winit から届いた生イベント（`app/lifecycle_diag.rs`） |
+| `[SEED TOUCH FRAME] f=12 n=1 #0:Began(540.0,1200.0)d(0.0,0.0) \| mouse=(540.0,1200.0) L=PD-` | フレーム末の入力状態。`n` = `Input.TouchCount`、`#指番号:段階(位置)d(移動量)` が `GetTouch(i)`、`mouse` と `L`（P=押下中 / D=押した瞬間 / U=離した瞬間）がタッチ由来のマウス。変化のあったフレームだけ出る |
+| `[SEED TOUCH TEST] Started id=0x5eed0000 pos=(...)` | 検証用の合成タッチ列（下記） |
+
+```powershell
+# 1 本指（実機・エミュレータ共通）
+adb -s <serial> shell input tap 540 1200
+adb -s <serial> shell input swipe 300 1600 800 1000 800
+adb -s <serial> shell input mouse tap 700 900        # マウスの入力元（エミュレータで確認）
+# 複数指: 非 root の端末は sendevent が SELinux で拒否され（エミュレータでも Permission denied）、input は 1 本指だけなので、
+# 検証用の合成タッチ列を使う（3 本が同時に触れ、指0 だけがマウスを動かす列。中身は input/touch/test_sequence.rs）
+adb -s <serial> shell setprop debug.seed.touch_test 1
+adb -s <serial> shell am force-stop com.seedengine.runtime
+adb -s <serial> shell am start -n com.seedengine.runtime/.MainActivity   # 最初のフレームの 2 秒後に 1 回流れる
+adb -s <serial> logcat -d -s SEED | Select-String "TOUCH"
+adb -s <serial> shell setprop debug.seed.touch_test 0                     # 必ず戻す
+```
+
+- 合成タッチ列は実タッチと同じ `Input::process_touch` を通る（座標の写像・状態機械・相互変換が本番と同じ）。
+  プロパティが無ければ毎フレームのアトミック変数 1 回の読み取りだけで、本番の入力経路には影響しない。
+- 一連の確認は作業用スクリプト（リポジトリ外）で自動化した: ビルド → install → アセット転送 → 起動 → 最初のフレーム待ち →
+  **前面が SEED であることを確かめてから** input を注入 → logcat 保存。共用・私物の端末では、SEED 以外が前面のときに注入しない。
+- PC の C# API は、`SEED.exe --mode=play --assets-root=<一時プロジェクト>/assets --scene=assets://scenes/Main.scene`
+  （作業フォルダは `runtime/`。`../scripting/bin/Debug/net9.0/SEEDScripting.dll` を読む）で、`TouchCount` / `GetTouch(0)` /
+  `Touches` / マウス状態を `SEED.Debug.Log` するスクリプトを載せ、SEED のウィンドウにだけ `PostMessage` でマウスのメッセージ
+  （WM_MOUSEMOVE / WM_LBUTTONDOWN / WM_LBUTTONUP）を送って確かめた（実カーソルや他のウィンドウは動かさない）。
+
+### 12.5 確認結果（2026-09-24）
+
+エミュレータ（AVD `seed_pixel6_api35`・API 35・x86_64・画面 1080x2400）と PC（Windows・`SEED.exe` 単体の Play）で確認した。
+**実機（Pixel 6a・arm64）は未完**: arm64 の APK は作成・インストールでき、起動中に届いた実際の指のタッチ（戻るジェスチャのなぞりと、
+システムに取り消された 2 回のタッチ。いずれも ID 0）が新しい経路で受信された（`[SEED TOUCH] Started / Ended / Cancelled`、panic なし）。
+ただし端末が私物として使用中で、APK 更新直後の初回起動が約 44 秒かかる間にユーザーが別アプリへ移り、最初のフレームの提示前に
+バックグラウンドでプロセスが終了したため、`[SEED TOUCH FRAME]`（フレーム単位の状態）と合成タッチ列による複数指の確認はできていない。
+この受信の並び（同じ ID の再タッチが 1 フレームに 3 回）は `state.rs` の回帰テストに写した。
+
+| 確認項目 | 結果 |
+|---|---|
+| `input tap 540 1200` | 生の Started / Ended が同じフレームに届き、`[SEED TOUCH FRAME]` はそのフレームが `#0:Began(540.0,1200.0)` ＋ `L=PD-`、次のフレームが `#0:Ended` ＋ `L=--U`（タップが 2 フレームに分かれる） |
+| `input swipe 300 1600 800 1000 800` | `Began` → 約 45 フレームの `Moved`（1 フレーム約 10〜20 px の移動量）→ `Ended(800.0,1000.0)` ＋ `L=--U`。マウス座標が毎フレーム指に追従 |
+| `input mouse tap 700 900`（入力元がマウス） | `Touch` として届き、指と同じく `Began` → `Ended`（§12.3 の「Android のマウスは押している間だけの指」を確認） |
+| OS 経由の複数指（エミュレータのコンソール `adb emu event send` で protocol B の 3 スロット） | `n=1 → 2 → 3` と同時に追跡。1 本目は `Stationary` のまま 2 本目だけ `Moved d(0.0,100.0)`、3 本目が `Began` → `Moved`。1 本目が離れたフレームで `L=--U`、その後 2 本目を動かしてもマウスは 1 本目の最後の位置のまま（`L=---`） |
+| 合成タッチ列（`debug.seed.touch_test=1`） | 上と同じ並びが `[SEED TOUCH TEST]` の合成イベントから再現（3 本同時・指0 だけがマウスを駆動）。検証後にプロパティは元（未設定）へ戻した |
+| 座標 | `input tap X Y` の X, Y がそのまま位置（ウィンドウが画面全体・原点一致） |
+| PC（`SEED.exe` 単体の Play ＋ 確認用スクリプト） | 起動時 `TouchSupported=False` / `TouchCount=0` / `GetTouch(5)` は `Touch.None`。左ボタン押下で `#0 Began`、押したまま移動で `Moved delta=(50,20)`、静止で `Stationary`、離して `Ended` → 次フレーム `n=0`。押下と解放を同じメッセージ列で送った素早いクリックも `Began` → 次フレーム `Ended`（マウス自体は従来どおり同じフレームに押下・解放）。同じフレームに `GetTouch(0)` を 2 回呼んでも同じ値・`Touches.Length == TouchCount` |
+
+- 非 root の端末では `sendevent` が SELinux で拒否される（エミュレータの shell でも `/dev/input/event2: Permission denied`。shell は
+  input グループに入っているが書けない）。エミュレータはコンソールの `event send` で `ABS_MT_*` を送ると virtio のマルチタッチ装置
+  （0〜32767 の範囲を画面へ写す）へ届く。実機は合成タッチ列（`debug.seed.touch_test`）で確かめる。
+
+### 12.6 制限・持ち越し
+
+詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
+
+- 実機（Pixel 6a）での `[SEED TOUCH FRAME]` と複数指の確認が未完（§12.5）。
+- Android ではスクリプトが動かない（段階B）ため、`Input.GetTouch` の値とキャンバス UI のボタン反応（配信先がスクリプト）は Android では未確認。
+  入力状態（指の一覧・タッチ由来のマウス）までは `[SEED TOUCH FRAME]` で確認した（エミュレータ）。
+- ジェスチャ（ピンチ・回転・長押し・ダブルタップ）・タップ回数・圧力の組み込み API は無い（スクリプトで組み立てる）。
+- キャンバス UI のポインタイベントは指0 の 1 本だけ。指を離した後もマウス位置が残るので、ボタンのホバー状態は次に触れるまで残る。
+- MCP の入力注入からはタッチを合成しない。タッチパネル付き PC の実タッチ（Windows の WM_TOUCH / WM_POINTER ＋ 昇格マウス）は未検証。

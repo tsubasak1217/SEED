@@ -39,9 +39,11 @@ public enum MouseButton
 }
 
 /// <summary>
-/// キーボード・マウス入力の静的アクセサ。エンジンの入力状態を FFI 経由で参照する。
+/// キーボード・マウス・タッチ入力の静的アクセサ。エンジンの入力状態を FFI 経由で参照する。
 ///
 /// 判定は 3 種類: 押している間（GetKey）・押した瞬間（GetKeyDown）・離した瞬間（GetKeyUp）。
+/// タッチは Unity 風（TouchCount / GetTouch / Touches）。PC はマウス左ボタン＝指 1 本、
+/// Android は最初に触れた指がマウス（MousePos・左ボタン）も動かす。
 /// ゲームロジックのフェーズ（Update 等）内でのみ有効な値を返す。
 /// </summary>
 public static class Input
@@ -61,6 +63,11 @@ public static class Input
     // ── カーソルロック操作種別（Rust 側 CURSOR_LOCK_* と一致させる）──
     private const int CursorLockGet = 0;
     private const int CursorLockSet = 1;
+
+    // ── タッチの問い合わせ種別（Rust 側 input_bridge.rs の TOUCH_QUERY_* と一致させる）──
+    private const int TouchQuerySupported = 0;
+    private const int TouchQueryCount = 1;
+    private const int TouchQueryGet = 2;
 
     // ── キーボード ───────────────────────────────────────────
 
@@ -145,6 +152,46 @@ public static class Input
 
     /// <summary>カーソルロックの設定（<see cref="CursorLocked"/> の別名）。</summary>
     public static void SetCursorLock(bool locked) => CursorLocked = locked;
+
+    // ── タッチ（複数指）─────────────────────────────────────
+
+    /// <summary>
+    /// タッチ入力を主に使う端末か（Android: true / PC: false）。プラットフォーム単位の値。
+    ///
+    /// false の PC でも、マウスの左ボタンが指 1 本として合成されるので
+    /// <see cref="TouchCount"/> / <see cref="GetTouch"/> はそのまま使える。
+    /// タッチ用 UI（仮想パッド等）を出すかどうかの判断に使う。
+    /// </summary>
+    public static bool TouchSupported => ScriptHost.InputTouchQuery(TouchQuerySupported) == 1;
+
+    /// <summary>
+    /// このフレームの指の本数（このフレームで離れた指＝Ended / Canceled も含む。最大 10）。
+    /// PC ではマウスの左ボタンを押している間 1 になる（離したフレームも Ended として 1）。
+    /// </summary>
+    public static int TouchCount => ScriptHost.InputTouchQuery(TouchQueryCount);
+
+    /// <summary>
+    /// このフレームの index 番目（触れ始めた順・0 起点）の指。
+    /// 範囲外は例外にせず <see cref="Touch.None"/>（FingerId = -1・Phase = Canceled）を返す。
+    /// </summary>
+    public static Touch GetTouch(int index)
+        => ScriptHost.InputTouchGet(TouchQueryGet, index, out var touch) ? touch : Touch.None;
+
+    /// <summary>
+    /// このフレームの全指（触れ始めた順）。呼ぶたびに新しい配列を作るので、
+    /// 毎フレーム呼ぶなら <see cref="TouchCount"/> と <see cref="GetTouch"/> で回すほうが軽い。
+    /// </summary>
+    public static Touch[] Touches
+    {
+        get
+        {
+            int count = TouchCount;
+            if (count <= 0) return Array.Empty<Touch>();
+            var touches = new Touch[count];
+            for (int i = 0; i < count; i++) touches[i] = GetTouch(i);
+            return touches;
+        }
+    }
 
     // ── 簡易軸入力 ───────────────────────────────────────────
 
