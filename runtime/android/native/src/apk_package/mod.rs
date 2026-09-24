@@ -12,7 +12,7 @@
 //  ソース側は runtime/android/app/src/main/assets/seed/（生成物・追跡しない）。Gradle が APK の
 //  assets/seed/ へ詰める。pak は app/build.gradle.kts の noCompress で非圧縮のまま格納する
 //  （圧縮されていると後ろ向きの Seek のたびに先頭から展開し直すことになり遅い）。
-//  置くのは build_and_run.ps1 -ProjectDir（SeedPak で pak を作って置く）。
+//  置くのは SeedAndroid の --project（build_and_run.ps1 -ProjectDir。SeedPak で pak を作って置く）。
 //
 //  【読み方】
 //  アプリ全体の AAssetManager（スレッド安全）から「seed/<相対パス>」を開き、
@@ -34,7 +34,8 @@ use apk_asset::ApkAsset;
 
 /// APK の assets/ の中で、配布物のルートにするフォルダ名。
 ///
-/// build_and_run.ps1 の置き場（app/src/main/assets/seed）と一致させること。
+/// SeedAndroid の置き場（app/src/main/assets/seed。editor/src/Android/Common/AndroidRuntimeContract.cs の
+/// ApkPackageRootName）と一致させること。
 pub const APK_PACKAGE_ROOT: &str = "seed";
 
 /// APK 内の assets.pak を調べた結果（起動モードの判定とログ用）。

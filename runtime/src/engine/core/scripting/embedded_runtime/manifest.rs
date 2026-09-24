@@ -2,7 +2,8 @@
 //  embedded_runtime/manifest.rs — 同梱 .NET の目録（bundle.json）の読み取りと検査
 //
 //  【何の目録か】
-//  build_and_run.ps1（runtime/android/dotnet_runtime.json が設定の正典）が ABI ごとに書き出す、
+//  SeedAndroid（editor/src/Android/Dotnet/DotnetRuntimeBundle.cs。runtime/android/dotnet_runtime.json が設定の正典）が
+//  ABI ごとに書き出す、
 //  APK に同梱した .NET ランタイムの一覧。APK の assets/seed/dotnet/<ABI>/bundle.json に入る。
 //    - 版と種類（coreclr / mono）・ABI・中身の識別子（content_id。展開先のフォルダ名に使う）
 //    - ファイルの一覧（dotnet-root 形式の中での相対パス・取り出し元・大きさ）
@@ -13,7 +14,7 @@
 //  hostfxr を読み込んで CLR を起動する（clr_host/embedded.rs）。
 //
 //  【書式を変えるとき】
-//  build_and_run.ps1 の書き出し（New-DotnetBundle）と SUPPORTED_FORMAT_VERSION を一緒に上げる。
+//  書き出し側（DotnetRuntimeBundle.cs の ManifestFormatVersion と WriteManifest）と SUPPORTED_FORMAT_VERSION を一緒に上げる。
 //  版の合わない目録は読まずにスクリプト無しで起動する（古い APK と新しいランタイムを混ぜない）。
 // ============================================================
 
@@ -22,7 +23,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
-/// 読める目録の書式の版（build_and_run.ps1 の `$DotnetBundleFormatVersion` と一致させる）。
+/// 読める目録の書式の版（editor/src/Android/Dotnet/DotnetRuntimeBundle.cs の `ManifestFormatVersion` と一致させる）。
 pub const SUPPORTED_FORMAT_VERSION: u32 = 1;
 
 /// 相対パスの区切り（目録の中は OS に関係なく `/`）。

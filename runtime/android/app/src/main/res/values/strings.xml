@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 表示名（ランチャーのアイコン名）。段階C でプロジェクト設定の game_name から生成する予定。 -->
+<!--
+  表示名（ランチャーのアイコン名）の既定値。プロジェクトから名前が決まるとき（プロジェクト設定の android.app_name、
+  無ければ .seedproj の表示名）は、app/build.gradle.kts がマニフェストの android:label へその名前を直接入れるので使われない。
+  プロジェクトの無い開発用の APK・手で gradlew を叩いたときにこの名前になる（docs/android.md §18）。
+-->
 <resources>
     <string name="app_name">SEED Runtime</string>
 </resources>

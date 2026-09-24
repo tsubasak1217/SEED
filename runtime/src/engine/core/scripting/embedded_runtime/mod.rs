@@ -10,7 +10,7 @@
 //    dotnet/<ABI>/bundle.json          … 目録
 //    dotnet/<ABI>/<dotnet-root 内の相対パス> … BCL の DLL・deps.json・runtimeconfig（asset）
 //  .so（hostfxr・hostpolicy・coreclr・clrjit・System.*.Native）は APK の lib/<ABI>/ に入る（native_library）。
-//  置き場を変えるときは runtime/android/build_and_run.ps1 の $DotnetBundleDirName / $DotnetBundleManifestName も直す。
+//  置き場を変えるときは書き出し側（editor/src/Android/Dotnet/DotnetRuntimeBundle.cs の BundleDirName / ManifestFileName）も直す。
 //
 //  全体像は docs/android.md §17。
 // ============================================================
@@ -47,7 +47,7 @@ pub fn manifest_path_for_abi(abi: &str) -> String {
 mod tests {
     use super::*;
 
-    /// 置き場の名前は build_and_run.ps1 の書き出し先と一致させる（ずれると APK の .NET が見つからない）。
+    /// 置き場の名前は書き出し側（DotnetRuntimeBundle.cs）の書き出し先と一致させる（ずれると APK の .NET が見つからない）。
     #[test]
     fn bundle_paths_match_build_script_contract() {
         assert_eq!(bundle_dir_for_abi("arm64-v8a"), "dotnet/arm64-v8a");

@@ -106,7 +106,105 @@ public static class Program
         harness.Add("screen_orientation が無い旧ファイルは both で読む",  ScreenOrientationMissingKeyIsBoth);
         harness.Add("screen_orientation は空白・大文字・未知の値を正規化する", ScreenOrientationNormalizes);
 
+        // ── Android アプリ情報（project_settings.json の android 節）──
+        harness.Add("android 節は保存 → 読み込みで往復し、知らないキーも保つ",   AndroidSectionRoundTrip);
+        harness.Add("android 節は空なら保存しない（既存のファイルに空の節を増やさない）", AndroidSectionOmittedWhenEmpty);
+        harness.Add("android 節の型の違う値でも他の設定は読める",               AndroidSectionWrongTypesDoNotBreakLoading);
+
+        // ── プロジェクトフォルダ → アセットルート（SeedPak / SeedAndroid 共通の規則）──
+        harness.Add("プロジェクトフォルダの解決: .seedproj → assets/ → フォルダ自体", ProjectFolderResolverRules);
+
         return harness.Run();
+    }
+
+    // ============================================================
+    //  Android アプリ情報（project_settings.json の android 節）
+    // ============================================================
+
+    /// <summary>書いた値が android 節に入り、読み戻せる。知らないキーも保つ。</summary>
+    private static void AndroidSectionRoundTrip()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        File.WriteAllText(path, "{ \"game_name\": \"G\", \"android\": { \"future_key\": 5 } }");
+
+        var data = ProjectSettingsData.LoadFrom(path);
+        Check.True(data.Android is not null && data.Android.ExtraData.ContainsKey("future_key"), "知らないキーを読む");
+        data.Android!.ApplicationId = "com.example.game";
+        data.Android.AppName = "ゲーム";
+        data.Android.VersionCode = 4;
+        data.Android.VersionName = "1.2";
+        data.SaveTo(path);
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(path)))
+        {
+            var android = doc.RootElement.GetProperty(AndroidAppSettings.SectionKey);
+            Check.Equal("com.example.game", android.GetProperty("application_id").GetString(), "application_id");
+            Check.Equal(4, android.GetProperty("version_code").GetInt32(), "version_code は整数");
+            Check.Equal(5, android.GetProperty("future_key").GetInt32(), "知らないキーを書き戻す");
+        }
+        var loaded = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("ゲーム", loaded.Android?.AppName, "app_name");
+        Check.Equal("1.2", loaded.Android?.VersionName, "version_name");
+        Check.Equal("G", loaded.GameName, "他の設定");
+    }
+
+    /// <summary>何も設定していなければ android 節を書かない。</summary>
+    private static void AndroidSectionOmittedWhenEmpty()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        new ProjectSettingsData { Android = new AndroidAppSettings() }.SaveTo(path);
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        Check.True(!doc.RootElement.TryGetProperty(AndroidAppSettings.SectionKey, out _), "空の節は書かない");
+        Check.True(ProjectSettingsData.LoadFrom(path).Android is null, "読み戻すと null（既定値）");
+    }
+
+    /// <summary>手で書いた型違いの値で ProjectSettingsData 全体の読み込みが失敗しない（既定値で上書き保存される事故を防ぐ）。</summary>
+    private static void AndroidSectionWrongTypesDoNotBreakLoading()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        File.WriteAllText(path, "{ \"game_name\": \"Keep\", \"android\": { \"version_code\": \"x\", \"app_name\": 12 } }");
+        var loaded = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("Keep", loaded.GameName, "他の設定は読める");
+        Check.True(loaded.Android?.VersionCode is null, "読めない版は未設定");
+        Check.Equal("12", loaded.Android?.AppName, "数値の名前は文字列として");
+    }
+
+    /// <summary>プロジェクトフォルダの解決の規則（SeedPak の --project・SeedAndroid の --project と同じ）。</summary>
+    private static void ProjectFolderResolverRules()
+    {
+        using var temp = new TempDir();
+        // 1. .seedproj の assets_dir（Content）
+        var withProject = temp.CreateSubDirectory("WithProject");
+        var file = SeedProjectFile.Create("WithProject", "表示名");
+        file.AssetsDir = "Content";
+        file.Save(Path.Combine(withProject, "WithProject.seedproj"));
+        Directory.CreateDirectory(Path.Combine(withProject, "Content"));
+        var resolved = ProjectFolderResolver.Resolve(withProject, out var error)!;
+        Check.True(error is null, $"エラーなし: {error}");
+        Check.Equal(Path.Combine(withProject, "Content"), resolved.AssetsRoot, "assets_dir");
+        Check.Equal("WithProject", resolved.ProjectName, "name");
+        Check.Equal("表示名", resolved.ProjectDisplayName, "display_name");
+
+        // 2. .seedproj が無ければ <フォルダ>/assets
+        var plain = temp.CreateSubDirectory("Plain");
+        Directory.CreateDirectory(Path.Combine(plain, "assets"));
+        var plainResolved = ProjectFolderResolver.Resolve(plain, out _)!;
+        Check.Equal(Path.Combine(plain, "assets"), plainResolved.AssetsRoot, "assets/");
+        Check.True(plainResolved.ProjectName is null, ".seedproj が無ければ名前は無い");
+
+        // 3. フォルダ自体がアセットルート
+        var root = temp.CreateSubDirectory("RootAssets");
+        File.WriteAllText(Path.Combine(root, "project_settings.json"), "{}");
+        var rootResolved = ProjectFolderResolver.Resolve(root, out _)!;
+        Check.Equal(root, rootResolved.AssetsRoot, "フォルダ自体");
+        Check.Equal(temp.Path, rootResolved.ProjectRoot, "プロジェクトルートは親（ランタイムと同じ）");
+
+        // 決められない
+        Check.True(ProjectFolderResolver.Resolve(temp.CreateSubDirectory("Empty"), out var emptyError) is null && emptyError is not null, "空のフォルダ");
+        Check.True(ProjectFolderResolver.Resolve(temp.Combine("Missing"), out var missingError) is null && missingError!.Contains("見つかりません"), "無いフォルダ");
     }
 
     // ============================================================
@@ -812,7 +910,7 @@ public static class Program
     //  画面の向き（project_settings.json の screen_orientation）
     // ============================================================
 
-    /// <summary>project_settings.json の中の画面の向きのキー（build_and_run.ps1・build.gradle.kts と同じ）。</summary>
+    /// <summary>project_settings.json の中の画面の向きのキー（SeedAndroid・build.gradle.kts と同じ）。</summary>
     private const string ScreenOrientationKey = "screen_orientation";
 
     /// <summary>新しい設定の既定値は both（縦横どちらも）。Gradle 側の既定値と同じ。</summary>

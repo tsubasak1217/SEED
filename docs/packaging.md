@@ -513,7 +513,8 @@ dotnet run --project editor/tests/PackagingCollectorTests
   セーブ・キャッシュの書き込みは端末のアプリ専用フォルダへ振り替えてある（セーブ `files/save/`・キャッシュ
   `/data/user/0/<パッケージ名>/cache`。2026-09-24。[android.md](android.md) §14）。
   パッケージ化ウィンドウの Android 出力（.so のビルド・APK 化・pak の同梱）もまだ実働しない（段階C。今は
-  `runtime/android/build_and_run.ps1 -ProjectDir` が SeedPak で作った pak を APK へ入れる）。
+  SeedAndroid（`editor/tools/SeedAndroid`。`build_and_run.ps1 -ProjectDir` はそのラッパー）の `--project` が SeedPak で作った pak を APK へ入れる）。
+  スクリプトは段階B で APK に同梱した .NET 10 の CoreCLR で動く（[android.md](android.md) §17）。
 
 ### 8.1 配布版の動作に効くプロジェクト設定
 
@@ -529,7 +530,8 @@ dotnet run --project editor/tests/PackagingCollectorTests
 | `vsync` | `"auto"` | 垂直同期。`"auto"` はパッケージ版＝有効／エディタ埋め込み＝無効。`"on"` / `"off"` で固定 |
 | `game_name` | 空 | ウィンドウタイトル（未設定なら `"SEED"`） |
 | `streaming` | （省略可） | モデルの非同期ロード（ワーカースレッド・先読み・GPU アップロード予算・バッチ常駐時間）。キーの一覧と既定値は [docs/model_streaming.md](model_streaming.md) 6 章 |
-| `screen_orientation` | `"both"` | **Android の APK だけ**に効く画面の向き。`"both"`（縦横 4 方向に追従）/ `"portrait"`（縦に固定）/ `"landscape"`（横に固定）。エディタでは「プロジェクト設定 → 解像度設定 → 画面の向き（モバイル）」。起動時に読む値ではなく、APK を作るときにマニフェストの `screenOrientation` へ焼き込む（`runtime/android/build_and_run.ps1` → `app/build.gradle.kts` の変換表。**書き換えたら APK を作り直す**）。デスクトップには効かない。[android.md](android.md) §15 |
+| `screen_orientation` | `"both"` | **Android の APK だけ**に効く画面の向き。`"both"`（縦横 4 方向に追従）/ `"portrait"`（縦に固定）/ `"landscape"`（横に固定）。エディタでは「プロジェクト設定 → 解像度設定 → 画面の向き（モバイル）」。起動時に読む値ではなく、APK を作るときにマニフェストの `screenOrientation` へ焼き込む（SeedAndroid → `app/build.gradle.kts` の変換表。**書き換えたら APK を作り直す**）。デスクトップには効かない。[android.md](android.md) §15 |
+| `android` | （無し） | **Android の APK だけ**に効くアプリの識別情報 `application_id` / `app_name` / `version_code` / `version_name`（どれも省略可。既定は `.seedproj` の名前から `com.seedengine.<英数字化した名前>`・プロジェクトの表示名・`1`・`"1.0"`）。エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」。APK を作るときに `applicationId` / ランチャーの名前 / `versionCode` / `versionName` へ焼き込む（**書き換えたら APK を作り直す**。ID を変えると端末では別のアプリになる）。デスクトップには効かない。[android.md](android.md) §18 |
 
 遅いドライブ（USB 外付け・低速 SSD）で「プレイ中に時々カクつく」と言われたら、まず
 `streaming` を見る。配布版でも環境変数 `SEED_STREAMING=0` で非同期ロードを丸ごと切って
@@ -656,7 +658,7 @@ Android では、Windows の出力フォルダ（実行ファイルを除く）�
 | `assets.pak` | 実行ファイルの隣 | `assets/seed/assets.pak`（Gradle の `noCompress` で非圧縮のまま格納） |
 | PAK の外に置くアセット（PAK に無いときのフォールバック先） | `{ゲーム名}/assets/<相対パス>` | `assets/seed/assets/<相対パス>`（大文字小文字を区別する） |
 | `bin/`（スクリプト DLL） | 同梱（§5） | `assets/seed/bin/`（SeedPak `--scripts` の出力。中身は PC と同じ。ランタイムはバイト列で読む。端末の `files/bin/` に置いた差し替えが優先。[android.md](android.md) §17.7） |
-| .NET ランタイム | `bin/dotnet/`（§5。DotnetRuntimeBundler） | `.so` は APK の `lib/<ABI>/`、BCL・deps.json・目録 `bundle.json` は `assets/seed/dotnet/<ABI>/`。`runtime/android/build_and_run.ps1` が NuGet のランタイムパックから組み立て、初回起動時に端末の `files/dotnet/` へ展開する（[android.md](android.md) §17） |
+| .NET ランタイム | `bin/dotnet/`（§5。DotnetRuntimeBundler） | `.so` は APK の `lib/<ABI>/`、BCL・deps.json・目録 `bundle.json` は `assets/seed/dotnet/<ABI>/`。SeedAndroid（`editor/src/Android/Dotnet/DotnetRuntimeBundle.cs`）が NuGet のランタイムパックから組み立て、初回起動時に端末の `files/dotnet/` へ展開する（[android.md](android.md) §17） |
 | `caches/` `logs/` `saved/` | 実行時に作る | APK には置けないので端末のアプリ専用フォルダへ振り替える: `saved/` → `files/save/`、`caches/` → `/data/user/0/<パッケージ名>/cache`、`logs/` は作らない（logcat）。[android.md](android.md) §14 |
 | 起動ログ | `logs/seed_*.log`（§9） | logcat（タグ `SEED`） |
 
@@ -684,7 +686,7 @@ dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --
 
 | 引数 | 意味 |
 |---|---|
-| `--project <フォルダ>` | プロジェクトフォルダ。アセットルートをエディタと同じ導き方で決める: `.seedproj` があればその `assets_dir`（`ProjectPaths`）、無ければ `<フォルダ>/assets`、それも無くフォルダ自体に `project_settings.json` があればそのフォルダ |
+| `--project <フォルダ>` | プロジェクトフォルダ。アセットルートをエディタと同じ導き方で決める: `.seedproj` があればその `assets_dir`（`ProjectPaths`）、無ければ `<フォルダ>/assets`、それも無くフォルダ自体に `project_settings.json` があればそのフォルダ（規則の正典は `editor/src/Project/ProjectFolderResolver.cs`。SeedAndroid の `--project` も同じ） |
 | `--assets <フォルダ>` | アセットルートを直接指定する（`--project` と排他） |
 | `--out <フォルダ>` | 出力フォルダ。`<フォルダ>/assets.pak` だけを書く（無ければ作る） |
 | `--runtime-src <フォルダ>` | エンジンのソース `runtime/src`（エンジン内蔵の `assets://` 参照を起点に加える。§2）。既定はツールの位置・カレントから上へ辿ったリポジトリの `runtime/src`。見つからなければ省略して続ける |
@@ -696,11 +698,12 @@ dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --
   `assets://` への書き換えがこの表記を基準にする）。SeedPak は `Path.GetFullPath` で絶対化する。
 - ログはウィンドウと同じ書式（§6）で標準出力へ出る。
 - 終了コード: `0` 成功 / `1` 引数・入力の誤り / `2` 収録対象 0 件（PAK は書かない） / `3` 書き出し失敗 / `4` スクリプトのコンパイル・同梱の失敗（`--scripts` / `--scripts-only`）。
-- `bin/` は上書きで書き足す（古いファイルは消さない。置き場を作り直すのは呼び出し側。`build_and_run.ps1` は毎回作り直す）。
+- `bin/` は上書きで書き足す（古いファイルは消さない。置き場を作り直すのは呼び出し側。SeedAndroid は毎回作り直す）。
 - SeedPak は `scripting/SEEDScripting.csproj` を参照しているので、`dotnet run` のたびにスクリプトホストもビルドされ、同梱する
   `SEEDScripting.dll` が常に最新になる（`ScriptPrecompileTests` と同じ組み方）。
-- Android の APK へ入れるときは `runtime/android/build_and_run.ps1 -ProjectDir <フォルダ>` がこのツールを
-  `--out runtime/android/app/src/main/assets/seed --scripts` で呼ぶ（`-PushScripts` では `--scripts-only`）。
+- Android の APK へ入れるときは SeedAndroid（`editor/tools/SeedAndroid`。[android.md](android.md) §5。`runtime/android/build_and_run.ps1` は
+  そのラッパー）の `--project <フォルダ>` がこのツールを `--out runtime/android/app/src/main/assets/seed --scripts` で呼ぶ
+  （`push`・`--push-scripts` では `--scripts-only`）。アセット・パッケージ化のコードが前回から変わっていなければ呼ばない。
 
 2026-09-24 に最小アセット（BrainStem.glb ＋ 平行光・3 ファイル）で、SeedPak の出力と「変更前のパッケージ化ウィンドウと
 同じ呼び出し（`AssetCollector` → `PakWriter` の直呼び）」の出力の SHA-256 が一致することを確かめた。

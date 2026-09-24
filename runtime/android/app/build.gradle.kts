@@ -1,15 +1,20 @@
 // ============================================================
-//  app/build.gradle.kts — SEED ランタイムの APK（段階0 / 段階A）
+//  app/build.gradle.kts — SEED ランタイムの APK（段階0〜C）
 //
 //  中身は「Java の薄い Activity（MainActivity）＋ cargo ndk が作った libSEED.so」と、
 //  パッケージ実行のときだけ「配布物（assets/seed/assets.pak と bin/ のスクリプト DLL）」、
 //  それに同梱 .NET（段階B。.so と BCL・目録 bundle.json）。
-//  .so は build_and_run.ps1 が app/src/main/jniLibs/<ABI>/libSEED.so へ置く（AGP の既定の置き場）。
-//  配布物は build_and_run.ps1 -ProjectDir が app/src/main/assets/seed/ へ置く（AGP の既定の assets の置き場）。
-//  同梱 .NET は build_and_run.ps1 が runtime/android/dotnet_runtime.json から app/src/seedDotnet/ へ組み立てる
-//  （下の sourceSets で jniLibs・assets の置き場として足す。生成物・追跡しない。docs/android.md §17）。
-//  画面の向きはプロジェクト設定の screen_orientation を build_and_run.ps1 が -Pseed.orientation=<値> で渡し、
-//  下の変換表でマニフェストの screenOrientation へ差し込む（manifestPlaceholders）。
+//  置き場へ置くのは SeedAndroid（editor/src/Android/。build_and_run.ps1 はそれを呼ぶだけのラッパー）:
+//    .so       … app/src/main/jniLibs/<ABI>/libSEED.so（AGP の既定の置き場）
+//    配布物    … --project のとき app/src/main/assets/seed/（AGP の既定の assets の置き場）
+//    同梱 .NET … runtime/android/dotnet_runtime.json から app/src/seedDotnet/ へ組み立てる
+//               （下の sourceSets で jniLibs・assets の置き場として足す。生成物・追跡しない。docs/android.md §17）
+//  プロジェクト設定から決まる値は Gradle のプロジェクトプロパティ（-Pseed.* か環境変数 ORG_GRADLE_PROJECT_seed.*）で受け取り、
+//  下の変換で APK へ焼き込む（値の変換はこのファイルの 1 か所。docs/android.md §15.1・§18）:
+//    seed.orientation                  … screen_orientation → マニフェストの screenOrientation（変換表）
+//    seed.applicationId / seed.appName … android.application_id / app_name → applicationId・android:label
+//    seed.versionCode / seed.versionName … android.version_code / version_name → versionCode・versionName
+//  渡されなければ既定値（com.seedengine.runtime・SEED Runtime 等。手で gradlew を叩いたときもこれ）。
 // ============================================================
 
 plugins {
@@ -29,7 +34,7 @@ val seedJavaVersion = JavaVersion.VERSION_17
 val defaultSeedAbis = listOf("arm64-v8a", "x86_64")
 
 /**
- * 実際に APK へ詰める ABI。build_and_run.ps1 は -Abi で選んだものだけを -Pseed.abis=a,b で渡す
+ * 実際に APK へ詰める ABI。SeedAndroid は今回の ABI（--abi か端末から判定）だけを -Pseed.abis=a,b で渡す
  * （jniLibs に残っている別 ABI の古い .so を詰めない・APK を小さくするため）。未指定なら既定値。
  * jniLibs に無い ABI は単に入らないだけなので、片方だけビルドした場合もそのまま詰められる。
  */
@@ -64,7 +69,7 @@ val defaultScreenOrientationSetting = "both"
 
 /**
  * このビルドの screen_orientation（前後の空白を落として小文字にそろえる）。
- * build_and_run.ps1 がプロジェクト設定から読んで -Pseed.orientation=<値> で渡す。未指定なら既定値。
+ * SeedAndroid がプロジェクト設定から読んで -Pseed.orientation=<値> で渡す。未指定なら既定値。
  */
 val seedOrientationSetting = providers.gradleProperty("seed.orientation").orNull
     ?.trim()
@@ -84,29 +89,73 @@ val seedScreenOrientation = screenOrientationTable[seedOrientationSetting] ?: ru
     screenOrientationTable.getValue(defaultScreenOrientationSetting)
 }
 
+// ── アプリの識別情報（プロジェクト設定 project_settings.json の "android" 節。docs/android.md §18）──────────
+// SeedAndroid（editor/src/Android/Gradle/GradleInvocation.cs）が値を検査・既定値の補完をしてから渡す。
+// ここは受け取った値をそのまま APK へ反映するだけ（無ければ下の既定値）。
+
+/**
+ * アプリ ID の既定値（プロジェクトから決められないとき・手で gradlew を叩いたとき）。
+ * SeedAndroid の AndroidRuntimeContract.DefaultApplicationId と同じ。Java のクラスの名前空間（namespace）は
+ * アプリ ID を変えてもこのまま（JNI の関数名が名前空間に結び付いているため）。
+ */
+val defaultApplicationId = "com.seedengine.runtime"
+
+/** ランチャーに出る名前の既定値（res/values/strings.xml の app_name = "SEED Runtime" を参照する）。 */
+val defaultAppLabel = "@string/app_name"
+
+/** 整数の版の既定値。 */
+val defaultVersionCode = 1
+
+/** 版の文字列の既定値（プロジェクトの無い開発用の APK）。プロジェクトがあれば SeedAndroid が "1.0" 等を渡す。 */
+val defaultVersionName = "0.0.1-dev"
+
+/** Gradle のプロジェクトプロパティ seed.<name> の値（前後の空白を落とし、空なら null）。 */
+fun seedProperty(name: String): String? =
+    providers.gradleProperty("seed.$name").orNull?.trim()?.takeIf { it.isNotEmpty() }
+
+/** このビルドのアプリ ID（-Pseed.applicationId）。 */
+val seedApplicationId = seedProperty("applicationId") ?: defaultApplicationId
+
+/** このビルドのランチャーの名前（-Pseed.appName。マニフェストの android:label へ ${seedAppLabel} として入る）。 */
+val seedAppLabel = seedProperty("appName") ?: defaultAppLabel
+
+/** このビルドの整数の版（-Pseed.versionCode。整数でなければ警告して既定値）。 */
+val seedVersionCode = seedProperty("versionCode")?.let { text ->
+    text.toIntOrNull() ?: run {
+        logger.warn("SEED: seed.versionCode=\"$text\" は整数ではありません。$defaultVersionCode として扱います。")
+        null
+    }
+} ?: defaultVersionCode
+
+/** このビルドの版の文字列（-Pseed.versionName）。 */
+val seedVersionName = seedProperty("versionName") ?: defaultVersionName
+
 android {
     // Java の名前空間（R クラス等）。applicationId と同じにしておく。
     namespace = "com.seedengine.runtime"
     compileSdk = seedTargetSdk
 
     // NDK の場所（APK へ詰める前に .so のデバッグシンボルを削るのに使う）。
-    // マシン固有のパスをリポジトリへ書かないため、build_and_run.ps1 が環境変数 ANDROID_NDK_HOME から
+    // マシン固有のパスをリポジトリへ書かないため、SeedAndroid が見つけた NDK（ANDROID_NDK_HOME か SDK の ndk/）を
     // -Pseed.ndkPath=... で渡す。未指定なら AGP の既定 NDK を使う（無ければ削らずに詰めるだけ）。
     providers.gradleProperty("seed.ndkPath").orNull?.let { ndkPath = it }
 
     defaultConfig {
-        // 段階0 の仮の ID。段階C でプロジェクト設定（ゲームごとの ID）からデータドリブンに生成する。
-        applicationId = "com.seedengine.runtime"
+        // アプリの識別情報（プロジェクト設定の "android" 節。上の「アプリの識別情報」）。
+        applicationId = seedApplicationId
         minSdk = seedMinSdk
         targetSdk = seedTargetSdk
-        versionCode = 1
-        versionName = "0.0.1-stage0"
+        versionCode = seedVersionCode
+        versionName = seedVersionName
         ndk {
             abiFilters += seedAbis
         }
         // AndroidManifest.xml の ${seedScreenOrientation} を置き換える（画面の向きの固定。上の変換表）。
         manifestPlaceholders["seedScreenOrientation"] = seedScreenOrientation
+        // AndroidManifest.xml の ${seedAppLabel} を置き換える（ランチャーに出る名前）。
+        manifestPlaceholders["seedAppLabel"] = seedAppLabel
         logger.lifecycle("SEED: screen_orientation=$seedOrientationSetting → screenOrientation=$seedScreenOrientation")
+        logger.lifecycle("SEED: applicationId=$seedApplicationId label=$seedAppLabel versionCode=$seedVersionCode versionName=$seedVersionName")
     }
 
     compileOptions {
@@ -134,7 +183,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            // build_and_run.ps1 が組み立てる同梱 .NET（生成物）。lib/<ABI>/ の .so と assets/seed/dotnet/<ABI>/ の BCL・目録。
+            // SeedAndroid が組み立てる同梱 .NET（生成物）。lib/<ABI>/ の .so と assets/seed/dotnet/<ABI>/ の BCL・目録。
             // 無ければ何も足されない（.NET の無い APK。端末はスクリプト無しで起動する）。
             jniLibs.srcDir("src/seedDotnet/jniLibs")
             assets.srcDir("src/seedDotnet/assets")
@@ -156,6 +205,6 @@ dependencies {
     implementation("androidx.core:core:1.13.1")
     implementation("androidx.games:games-activity:$gamesActivityVersion")
     // 同梱 .NET（CoreCLR）の Java 側。暗号ライブラリが JNI_OnLoad で探すクラス（net.dot.android.crypto.*）の .jar を
-    // build_and_run.ps1 が src/seedDotnet/libs/ へ置く（dotnet_runtime.json の java_libraries。無ければ何も入らない）。
+    // SeedAndroid が src/seedDotnet/libs/ へ置く（dotnet_runtime.json の java_libraries。無ければ何も入らない）。
     implementation(fileTree(mapOf("dir" to "src/seedDotnet/libs", "include" to listOf("*.jar"))))
 }

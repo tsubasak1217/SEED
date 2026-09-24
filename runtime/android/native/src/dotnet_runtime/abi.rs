@@ -3,7 +3,8 @@
 //
 //  APK の lib/<ABI>/（.so）と assets/seed/dotnet/<ABI>/（同梱 .NET の目録と BCL）は Android の ABI 名で並ぶ。
 //  2 ABI 入りの APK（開発用）でも、自分の ABI の同梱 .NET だけを展開する。
-//  build_and_run.ps1 の -Abi（arm64-v8a / x86_64）と runtime/android/dotnet_runtime.json の abis と一致させる。
+//  SeedAndroid の ABI の表（editor/src/Android/Common/AndroidAbi.cs。arm64-v8a / x86_64）と
+//  runtime/android/dotnet_runtime.json の abis と一致させる。
 // ============================================================
 
 /// Rust のアーキテクチャ名（std::env::consts::ARCH）→ Android の ABI 名。

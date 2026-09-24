@@ -13,9 +13,9 @@
 //  【出力】
 //  <出力フォルダ>/assets.pak（--scripts-only では作らない）と、--scripts のとき <出力フォルダ>/bin/。
 //  project_settings.json は収集の起点として必ず PAK に入る。.NET ランタイム本体は入れない
-//  （Windows はパッケージ化ウィンドウの DotnetRuntimeBundler、Android は build_and_run.ps1 が NuGet から組み立てる）。
-//  Android の APK へ同梱するときは runtime/android/build_and_run.ps1 -ProjectDir がこのツールを --scripts 付きで呼び、
-//  DLL だけの差し替え（-PushScripts）では --scripts-only で呼ぶ。
+//  （Windows はパッケージ化ウィンドウの DotnetRuntimeBundler、Android は SeedAndroid の DotnetRuntimeBundle が NuGet から組み立てる）。
+//  Android の APK へ同梱するときは SeedAndroid（editor/tools/SeedAndroid。build_and_run.ps1 はそのラッパー）の --project が
+//  このツールを --scripts 付きで呼び、DLL だけの差し替え（push / --push-scripts）では --scripts-only で呼ぶ。
 // ============================================================
 
 using System;

@@ -282,6 +282,17 @@ public class ProjectSettingsData
     [JsonPropertyName("screen_orientation")]
     public string ScreenOrientation { get; set; } = ScreenOrientationSetting.Default;
 
+    /// <summary>
+    /// Android アプリの識別情報（"android" 節: application_id / app_name / version_code / version_name。
+    /// モバイル＝Android の APK だけに効く）。null・空の値は既定値（ID は .seedproj の名前から
+    /// com.seedengine.&lt;英数字化した名前&gt;、名前はプロジェクトの表示名、版は 1 / "1.0"）。
+    /// APK を作るときに焼き込まれる（SeedAndroid → Gradle の -Pseed.applicationId 等 → runtime/android/app/build.gradle.kts）。
+    /// 何も設定されていなければ節ごと保存しない（既存のファイルに空の節を増やさない）。
+    /// </summary>
+    [JsonPropertyName(AndroidAppSettings.SectionKey)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AndroidAppSettings? Android { get; set; }
+
     // ── シーンマネージャ ─────────────────────────────────────
 
     /// <summary>
@@ -395,6 +406,8 @@ public class ProjectSettingsData
     public void SaveTo(string path)
     {
         FormatVersion = AssetFormats.ProjectSettings.CurrentVersion;
+        // "android" 節は何も設定されていなければ書かない（空の節を増やさない。既定値はビルド時に決まる）。
+        if (Android is { IsEmpty: true }) Android = null;
         var json = JsonSerializer.Serialize(this, JsonOptions);
         SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(
             path, json, Path.GetDirectoryName(Path.GetFullPath(path)));

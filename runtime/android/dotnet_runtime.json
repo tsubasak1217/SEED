@@ -1,6 +1,6 @@
 {
   "comment": [
-    "Android の APK に同梱する .NET ランタイムの設定（唯一の置き場）。読むのは build_and_run.ps1（Get-DotnetRuntimeSettings）。",
+    "Android の APK に同梱する .NET ランタイムの設定（唯一の置き場）。読むのは SeedAndroid（editor/src/Android/Dotnet/DotnetRuntimeSettings.cs）。",
     "dotnet_runtime で coreclr / mono を切り替える。版とパック名を変えたら APK を作り直すだけでよい（ランタイムのコードは目録 bundle.json を読む）。",
     "パックは NuGet から取得し（dotnet restore の PackageDownload。~/.nuget/packages にキャッシュ）、ABI ごとに dotnet-root 形式へ組み立てる。",
     "  .so                 -> app/src/seedDotnet/jniLibs/<ABI>/（APK の lib/<ABI>/。端末では nativeLibraryDir に展開される）",

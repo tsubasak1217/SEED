@@ -15,7 +15,8 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
 <ProjectRoot>/
   <Name>.seedproj      プロジェクトファイル（JSON。この 1 枚が入口）
   assets/              ゲームのアセット。assets:// のルート
-    project_settings.json     ゲーム名・開始シーン・シーン一覧・解像度・画面の向き（Android）・プラグイン有効化
+    project_settings.json     ゲーム名・開始シーン・シーン一覧・解像度・画面の向き（Android）・Android アプリ情報
+                              （android 節。アプリ ID・名前・版。docs/android.md §18）・プラグイン有効化
                               （キーの一覧は docs/packaging.md §8.1）
     packaging_settings.json   パッケージ化の設定
     scenes/Main.scene         新規作成時に置かれる開始シーン
@@ -24,6 +25,9 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   cache/               モデル等の変換キャッシュ（ランタイムが生成）
     editor/view/       エディタ視点（デバッグカメラの位置・向き）のユーザー別サイドカー
                        `<シーン相対パス>.view.json`。`.scene` には書かない（共有すると必ず衝突するため）
+    android/run_state.json  Android の実行状態（前回の実行先・端末へ入れた APK・前回の実行の結果と指紋）。
+                       SeedAndroid／エディタの実行先「実機・エミュレータ」が書く（docs/android.md §4.6）。
+                       失っても前回の実行先が選ばれない・APK を入れ直すだけ
   save/                セーブデータ（ランタイムが生成）
   logs/                ゲーム実行ログ
   build/               パッケージ化の出力（build/windows など）
@@ -273,6 +277,7 @@ JSON。形式の正典は `editor/src/Project/SeedProjectFile.cs`。
 |---|---|
 | `.seedproj` の読み書き | `editor/src/Project/SeedProjectFile.cs` |
 | 各フォルダの絶対パス導出 | `editor/src/Project/ProjectPaths.cs` |
+| ツールの「プロジェクトフォルダ」指定 → アセットルート・プロジェクト名（SeedPak・SeedAndroid の `--project`） | `editor/src/Project/ProjectFolderResolver.cs` |
 | いま開いているプロジェクト | `editor/src/Project/ProjectContext.cs` |
 | 新規プロジェクトの生成 | `editor/src/Project/ProjectCreator.cs` |
 | 最近のプロジェクト一覧 | `editor/src/Project/RecentProjectsStore.cs` |

@@ -14,7 +14,7 @@
 #  【出力名】libSEED.so（[lib] name = "SEED"）。Gradle 側（MainActivity の System.loadLibrary と
 #  マニフェストの android.app.lib_name）とエディタのパッケージ化ウィンドウがこの名前を前提にする。
 #
-#  【ビルド】runtime/android/build_and_run.ps1（cargo ndk）から行う。
+#  【ビルド】SeedAndroid（editor/tools/SeedAndroid。cargo ndk）から行う（runtime/android/build_and_run.ps1 はそのラッパー）。
 #  依存はすべて Android ターゲット限定で、src/lib.rs も #![cfg(target_os = "android")] なので、
 #  Windows 向けにビルドされても中身の無い DLL になるだけ（ワークスペースの既定対象からも外してある）。
 #  詳細は docs/android.md。

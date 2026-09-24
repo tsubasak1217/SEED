@@ -4,7 +4,7 @@
 //  【なぜ Java から読み込むのか】
 //  CoreCLR の暗号ライブラリ（libSystem.Security.Cryptography.Native.Android.so。SHA256・RandomNumberGenerator・
 //  TLS 等が使う）は、JNI_OnLoad で JavaVM を受け取り、自分用の Java クラス（net.dot.android.crypto.* ＝ パックの
-//  .jar。build_and_run.ps1 が APK の Java クラスへ入れる）を FindClass で探す。見つからなければ abort() する。
+//  .jar。SeedAndroid が APK の Java クラスへ入れる）を FindClass で探す。見つからなければ abort() する。
 //  ネイティブのスレッドから JNI_OnLoad を呼ぶと、FindClass はシステムのクラスローダーで探すため APK のクラスが
 //  見えず abort() になる。System.loadLibrary で読み込めば、JNI_OnLoad はアプリのクラスローダーの文脈で呼ばれる。
 //

@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Android のビルド・配置・起動の中核（editor/src/Android/）と SeedAndroid の引数解釈の単体テスト。
+
+    対象:
+      - AdbDeviceListParser / AndroidDeviceSelector : adb devices -l の解析・端末選び
+      - AndroidAbis                                : ABI の表・端末の abilist からの選び方
+      - AndroidBuildPlan                           : 実行計画（ハッシュ・記録・明示指定から、どの工程を飛ばすか）
+      - GradleInvocation                           : gradlew の引数と -P / 環境変数の組み立て
+      - AndroidAppIdentityResolver / AndroidAppSettings : 既定のアプリ識別情報・検査・"android" 節の寛容な読み取り
+      - DotnetRuntimeBundle                        : 同梱 .NET の dotnet-root 形式への組み立て（一時フォルダ）
+      - 指紋・tar・行の読み取り・記録・道具の解決・SeedAndroid の引数
+
+    PackagingCollectorTests / ProjectSystemTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness）で回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （中核が WPF 型を使い始めたらビルドが壊れ、それが「中核が UI から独立していること」の検知器になる）
+      - 端末・adb・cargo・Gradle は使わない（純粋な処理と一時フォルダのファイル操作だけ）
+
+    実行方法: dotnet run (project=editor/tests/AndroidPipelineTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AndroidPipeline</RootNamespace>
+    <AssemblyName>AndroidPipelineTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: Android の中核（すべて WPF 非依存） -->
+    <Compile Include="..\..\src\Android\**\*.cs">
+      <Link>Linked\Android\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\ScreenOrientationSetting.cs">
+      <Link>Linked\ProjectSettings\ScreenOrientationSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
+      <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\EditorVersion.cs">
+      <Link>Linked\Project\EditorVersion.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\SeedProjectFile.cs">
+      <Link>Linked\Project\SeedProjectFile.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\ProjectPaths.cs">
+      <Link>Linked\Project\ProjectPaths.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\ProjectFolderResolver.cs">
+      <Link>Linked\Project\ProjectFolderResolver.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\PackageLayout.cs">
+      <Link>Linked\Packaging\PackageLayout.cs</Link>
+    </Compile>
+    <!-- SeedAndroid の引数解釈と設定 JSON（純粋な処理・ファイルの読み込みだけ） -->
+    <Compile Include="..\..\tools\SeedAndroid\SeedAndroidArguments.cs">
+      <Link>Linked\Tools\SeedAndroid\SeedAndroidArguments.cs</Link>
+    </Compile>
+    <Compile Include="..\..\tools\SeedAndroid\RunRequestConfig.cs">
+      <Link>Linked\Tools\SeedAndroid\RunRequestConfig.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

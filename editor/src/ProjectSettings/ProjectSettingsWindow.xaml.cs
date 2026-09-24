@@ -905,6 +905,10 @@ public partial class ProjectSettingsWindow : Window
         // 同じく「画面の出し方」の設定。Android の APK を作るときだけ使われる。
         panel.Children.Add(BuildScreenOrientationPanel());
 
+        // ── Android アプリ情報（モバイル）─────────────────────────
+        // 画面の向きと同じく APK を作るときに焼き込まれる値（アプリ ID・名前・版）。中身は ProjectSettingsWindow.Android.cs。
+        panel.Children.Add(BuildAndroidAppPanel());
+
         return panel;
     }
 
@@ -912,7 +916,7 @@ public partial class ProjectSettingsWindow : Window
     /// 「画面の向き（モバイル）」小節（縦横どちらも / 縦に固定 / 横に固定）を構築して返す。
     ///
     /// project_settings.json の screen_orientation へ保存される。Android の APK を作るとき
-    /// （runtime/android/build_and_run.ps1）にマニフェストへ焼き込まれ、デスクトップの実行には影響しない。
+    /// （SeedAndroid。editor/src/Android/）にマニフェストへ焼き込まれ、デスクトップの実行には影響しない。
     /// </summary>
     private UIElement BuildScreenOrientationPanel()
     {
@@ -1444,6 +1448,19 @@ public partial class ProjectSettingsWindow : Window
         // 現在表示中のパネルのコントロールから最新値を収集する
         CollectSettingsFromUi();
 
+        // Android アプリ情報はビルドと同じ規則で検査し、誤りがあれば保存しない（ウィンドウも閉じない）。
+        // 誤った値のまま保存すると、APK を作るときに初めて止まって気付きにくいため。
+        var androidErrors = ValidateAndroidAppInputs();
+        if (androidErrors.Count > 0)
+        {
+            MessageBox.Show(
+                "Android アプリ情報に誤りがあります（解像度設定 → Android アプリ情報）:\n\n" + string.Join("\n", androidErrors),
+                "入力エラー",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         // 他の人がロック中なら書かせない（バージョン管理のロックの唯一のゲート）。
         // 止められたときはウィンドウを閉じない（入力内容を失わせないため）。
         if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(_settingsPath)) return;
@@ -1538,6 +1555,9 @@ public partial class ProjectSettingsWindow : Window
         {
             _data.ScreenOrientation = screenOrientation;
         }
+
+        // 「Android アプリ情報（モバイル）」の入力値を収集する（空欄は既定値。ProjectSettingsWindow.Android.cs）
+        CollectAndroidAppSettings();
 
         // 「RTシャドウ」パネルのチェック状態を収集する
         if (_rtShadowsCheckBox is not null)

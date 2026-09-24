@@ -6,7 +6,7 @@
     パッケージ化ウィンドウ（editor/src/Packaging/PackagingWindow）と「同じコード」で PAK を作る:
       収録規則（AssetCollector / PackagingRules）→ パス書き換え（AssetPathRewriter）→ 書き出し（PakWriter）
     の手順とログの書式は AssetPakBuilder に集約してあり、ウィンドウもこのツールもそれを呼ぶだけ。
-    Android の APK へ同梱する pak（runtime/android/build_and_run.ps1 の ProjectDir 引数）を作るのに使う。
+    Android の APK へ同梱する pak（editor/tools/SeedAndroid の project 引数。build_and_run.ps1 はそのラッパー）を作るのに使う。
     scripts オプションでは、ウィンドウの「スクリプト事前コンパイル」と同じ ScriptPackager で bin/ も作る
     （SEEDScripting を参照するのはそのため。ScriptPrecompileTests と同じ組み方）。
 
@@ -75,6 +75,10 @@
     </Compile>
     <Compile Include="..\..\src\Project\ProjectPaths.cs">
       <Link>Linked\Project\ProjectPaths.cs</Link>
+    </Compile>
+    <!-- プロジェクトフォルダ → アセットルートの規則（SeedAndroid と共有する唯一の置き場） -->
+    <Compile Include="..\..\src\Project\ProjectFolderResolver.cs">
+      <Link>Linked\Project\ProjectFolderResolver.cs</Link>
     </Compile>
     <!-- スクリプトの事前コンパイルとスクリプトホストの同梱（パッケージ化ウィンドウと同じファイル。WPF 非依存） -->
     <Compile Include="..\..\src\Packaging\Scripts\ScriptPackager.cs">

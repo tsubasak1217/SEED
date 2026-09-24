@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）、段階B の C# スクリプトの実行（APK に同梱した .NET 10 の CoreCLR。§17）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）、段階B の C# スクリプトの実行（APK に同梱した .NET 10 の CoreCLR。§17）、段階C-1 のビルド・配置・起動の C# 化（中核 `editor/src/Android/` とコンソールツール `SeedAndroid`。§4.6・§5）とアプリの識別情報（§18）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -43,8 +43,21 @@ SEED で作ったゲームを、そのまま Android 端末で動かせるよう
 | GameActivity | `androidx.games:games-activity:4.4.0` | winit 0.30 が使う android-activity 0.6.1 が同梱する C 側 GameActivity が 4.4.0。**必ず一致させる** |
 | AppCompat / Core | `androidx.appcompat:appcompat:1.7.1` / `androidx.core:core:1.13.1` | games-activity の POM は依存を宣言していないため明示する |
 
-マシン固有のパスはリポジトリに書かない（`gradle.properties` にも書かない）。
-SDK は AGP が `ANDROID_HOME` を読み、NDK は `build_and_run.ps1` が `-Pseed.ndkPath=...` で Gradle へ渡す。
+マシン固有のパスはリポジトリに書かない（`gradle.properties` にも書かない）。道具の場所は SeedAndroid
+（`editor/src/Android/Toolchain/AndroidToolchain.cs`）が「環境変数 → 既定の場所」の順に探し、見つからない道具はそれが要る工程で
+対処付きのエラーにする。
+
+| 道具 | 探す順 |
+|---|---|
+| Android SDK | `ANDROID_SDK_ROOT` → `ANDROID_HOME` → `%LOCALAPPDATA%\Android\Sdk` |
+| Android NDK | `ANDROID_NDK_HOME`（`source.properties` があること）→ SDK の `ndk\` の最新版（その旨を知らせる） |
+| adb | SDK の `platform-tools\adb.exe` |
+| JDK | `JAVA_HOME` → Android Studio 同梱の JBR（`%ProgramFiles%\Android\Android Studio\jbr`） |
+| cargo | `PATH` → `CARGO_HOME\bin` → `%USERPROFILE%\.cargo\bin`（cargo-ndk の有無は libSEED.so のビルドの直前に `cargo ndk --version` で確かめる） |
+| dotnet | `DOTNET_HOST_PATH` → `PATH` → `%ProgramFiles%\dotnet` |
+
+見つけた SDK と JDK は gradlew の環境変数 `ANDROID_HOME` / `JAVA_HOME` として、NDK は cargo ndk の `ANDROID_NDK_HOME` と
+Gradle の `-Pseed.ndkPath=...` として渡す（同じ表記に揃える。表記が変わると cc 系の依存が作り直されるため。§10）。
 `local.properties` を Android Studio が作っても追跡されない（`runtime/android/.gitignore`）。
 
 ---
@@ -97,7 +110,7 @@ runtime/                      パッケージ SEED
 
 ```
 runtime/android/
-  build_and_run.ps1          ビルド → install → 起動 → logcat の一括スクリプト（pwsh）
+  build_and_run.ps1          SeedAndroid（§5）を従来の引数で呼ぶだけの互換ラッパー（pwsh 7。手順の中身は §4.6 の中核）
   dotnet_runtime.json        APK に同梱する .NET の設定（版・パック名・coreclr / mono の切り替え。§17.2）
   settings.gradle.kts        リポジトリ（google / mavenCentral）と :app
   build.gradle.kts           AGP 9.1.0
@@ -111,9 +124,10 @@ runtime/android/
   app/src/main/java/com/seedengine/runtime/DotnetJniLibraries.java 同梱 .NET の暗号ライブラリを System.loadLibrary する（JNI_OnLoad。§17.8）
   app/src/main/res/values/{strings,themes}.xml
   app/src/main/jniLibs/<ABI>/libSEED.so    ← cargo ndk の出力（生成物・追跡しない）
-  app/src/main/assets/seed/assets.pak      ← SeedPak の出力（-ProjectDir のときだけ。生成物・追跡しない。§13）
-  app/src/main/assets/seed/bin/            ← SeedPak --scripts の出力（スクリプトの DLL。-ProjectDir のときだけ。§17.7）
+  app/src/main/assets/seed/assets.pak      ← SeedPak の出力（--project のときだけ。生成物・追跡しない。§13）
+  app/src/main/assets/seed/bin/            ← SeedPak --scripts の出力（スクリプトの DLL。--project のときだけ。§17.7）
   app/src/seedDotnet/                      ← 同梱 .NET（jniLibs/<ABI>/・assets/seed/dotnet/<ABI>/・libs/*.jar。生成物・追跡しない。§17.3）
+  app/build/seed/                          ← SeedAndroid の作業フォルダ（置き場の記録 step_stamps.json・NuGet の取り寄せ・DLL の差し替え用。§4.6）
   native/                    §4.1 の cdylib クレート
 ```
 
@@ -121,7 +135,9 @@ runtime/android/
 - `packaging.jniLibs.useLegacyPackaging = true`（段階B）。.so をインストール時に nativeLibraryDir へ展開させる（同梱 .NET の .so を
   dotnet-root から参照するため。§17.4）。その分 APK の .so は圧縮され、インストール時に展開される。
 
-- `applicationId` は仮に `com.seedengine.runtime`。段階C でプロジェクト設定からデータドリブンに生成する。
+- `applicationId`・`versionCode`・`versionName`・ランチャーの名前（`android:label="${seedAppLabel}"`）はプロジェクト設定の
+  `android` 節から Gradle のプロジェクトプロパティで受け取る（§18。渡されなければ `com.seedengine.runtime` / `SEED Runtime` 等）。
+  Java のクラスの名前空間（`namespace`）は `com.seedengine.runtime` のまま（JNI の関数名が結び付いているため）。
 - **GameActivity の prefab（C++ の glue）は使わない**。android-activity が自前の glue を持つため
   （`buildFeatures { prefab = true }` や CMake の `find_package(game-activity)` を足してはいけない）。
 - テーマは AppCompat 系が必須（GameActivity は AppCompatActivity 派生）。全画面・切り欠き側まで描画（`shortEdges`）。
@@ -228,57 +244,167 @@ PC の開発時レイアウト（`<Project>/assets`）を、端末のアプリ�
 
 | 順 | 場所 | 置き方 |
 |---|---|---|
-| 1 | 内部アプリ専用フォルダ `/data/user/0/com.seedengine.runtime/files` | `build_and_run.ps1 -AssetsDir`。デバッグ版 APK の `run-as` でアプリの権限になり、tar を流し込む（§5.2）。**実機でもエミュレータでも読める** |
+| 1 | 内部アプリ専用フォルダ `/data/user/0/com.seedengine.runtime/files` | `SeedAndroid run --assets-dir`（ps1 の `-AssetsDir`）。デバッグ版 APK の `run-as` でアプリの権限になり、tar を流し込む（§5）。**実機でもエミュレータでも読める** |
 | 2 | 外部アプリ専用フォルダ `/sdcard/Android/data/com.seedengine.runtime/files` | 手で `adb push`。エミュレータでは読めるが、**実機（Android 11 以降）では adb push が作ったフォルダが shell の所有になりアプリから読めない**（Permission denied。起動時に警告を出す） |
 
 APK 内の pak（パッケージ実行）は §13。パッケージ実行でもアセットルートはこの内部フォルダの `assets/`
 （PAK にも APK にも無いアセットのフォールバック先。作らない）。セーブ・キャッシュの置き場は §14.1。
+アプリ ID を変えたとき（§18）は `/data/user/0/<アプリ ID>/` になる（端末側のコードはパスを決め打ちしていない）。
+
+### 4.6 ビルド・配置・起動の中核（`editor/src/Android/`。段階C-1・2026-09-25）
+
+Android の一連の手順（段階B までは `runtime/android/build_and_run.ps1` の中身）を、C# の WPF 非依存のクラス群にした。
+エディタ本体（`editor/SEEDEditor.csproj` は `src/**` を含む）とコンソールツール `editor/tools/SeedAndroid`（ファイルをリンクして取り込む。§5.1）が
+同じクラスを使う（PAK の `AssetPakBuilder` をパッケージ化ウィンドウと SeedPak が共有するのと同じ関係）。単体テストは `editor/tests/AndroidPipelineTests`。
+
+```
+editor/src/Android/
+  Common/     AndroidRuntimeContract（端末側のコード・Gradle と一致させる名前と値）・AndroidAbi（ABI の表と端末の abilist からの選び方）
+  Toolchain/  AndroidToolchain（SDK / NDK / adb / JDK / cargo / dotnet の場所。§3）・AndroidEnginePaths（リポジトリの置き場）
+  Processes/  ChildProcessRunner（子プロセスの起動・行単位の出力・標準入力・中断で子孫ごと終了）・MixedEncodingLineReader（UTF-8 と ANSI の混在）
+  Adb/        AdbClient（devices -l・getprop・install・pm path・run-as の tar 展開・am start / force-stop・logcat）・AdbDeviceListParser・
+              AndroidDeviceSelector・RunAsTarArchive（.NET の TarWriter。外部の tar は使わない）・AndroidLogcatSession
+  Project/    AndroidProjectResolver（--project / --assets-dir）・AndroidProjectSettingsReader（screen_orientation と android 節）・
+              AndroidAppIdentityResolver（アプリの識別情報の既定値と検査。§18）
+  Dotnet/     DotnetRuntimeSettings（dotnet_runtime.json）・NuGetRuntimePackRestorer・DotnetRuntimeBundle（dotnet-root への組み立てと目録。§17）
+  Gradle/     GradleInvocation（gradlew の引数と -P／環境変数の組み立て）
+  Plan/       AndroidBuildPlan（どの工程を飛ばすか。純粋な処理）・AndroidStepFingerprints / AndroidFingerprint（指紋）・AndroidBuildInputs（入力の表）
+  State/      AndroidStepStamps（置き場の中身の記録。エンジン側）・AndroidRunState（プロジェクトの実行状態）
+  Steps/      工程ごとの実装（NativeBuild・PackageContent・DotnetBundle・GradleBuild・Install・PushAssets・PushScripts・Launch・Logcat）
+  Pipeline/   AndroidRunPipeline（本体）・AndroidRunRequest（指定）・AndroidPipelineEvent（進み具合）・AndroidDeviceActions（一覧・停止・logcat）
+```
+
+**入口（段階C-2 のエディタ統合で使うもの）**
+
+| やること | 呼ぶもの |
+|---|---|
+| 準備 | `AndroidEnginePaths.Locate(AppContext.BaseDirectory, Environment.CurrentDirectory)`・`AndroidToolchain.Detect()` |
+| 実行先の一覧（実機／エミュレータ・ABI 付き） | `new AndroidDeviceActions(toolchain).ListDevicesAsync(ct)` → `AndroidDeviceEntry`（`Device.Kind` が `Physical` / `Emulator`・`Device.IsReady`・`BuildAbi`） |
+| ビルド → インストール → 起動 → logcat | `new AndroidRunPipeline(engine, toolchain).RunAsync(new AndroidRunRequest { Goal = AndroidRunGoal.Run, ProjectDir = …, Serial = … }, progress, ct)` |
+| スクリプトの DLL だけ差し替え | 同じ `RunAsync` を `Goal = AndroidRunGoal.Push` で |
+| 停止ボタン | `ct` を取り消す（子プロセスを止める。logcat の途中なら「止めた」＝成功）＋ `AndroidDeviceActions.StopAppAsync(serial, result.Identity.ApplicationId, ct)` |
+| 前回の実行先（セレクタの既定値） | `AndroidRunState.Load(AndroidRunState.PathForProject(projectRoot)).LastTarget` |
+
+- `RunAsync` は全体をスレッドプールで動かし（UI スレッドから `await` しても止めない）、失敗しても例外は投げず `AndroidPipelineResult`
+  （`Succeeded` / `Canceled` / `FailureKind` / `FailureMessage` / 工程ごとの結果 / 計画 / 端末 / アプリの識別情報）を返す。
+- 進み具合は `IProgress<AndroidPipelineEvent>` に届く: `AndroidPhaseStarted`（何番目か・行う理由）/ `AndroidPhaseFinished`（成功・飛ばした・失敗・中断と
+  所要時間・一行の結果。飛ばした工程は Started 無しでこれだけ）/ `AndroidLogLine`（説明・子プロセスの標準出力・標準エラー・警告・エラー・logcat の 1 行）/
+  `AndroidProgressChanged`（0〜1）/ `AndroidPipelineError`（失敗の種類 `AndroidFailureKind` と説明。最後に 1 回）。子プロセスの出力を読むスレッドからも
+  届くので受け手はスレッド安全にする（WPF の `Progress<T>` なら UI スレッドへ順に送られる）。
+
+**工程を飛ばす判断（`Plan/AndroidBuildPlan.cs`。純粋な処理で、材料は準備の段階で集める）**
+
+| 工程 | 入力の指紋（ファイルは相対パス・大きさ・更新時刻） | 出力の同一性 |
+|---|---|---|
+| libSEED.so（ABI ごと） | `AndroidBuildInputs.NativeSources`（Cargo.toml / Cargo.lock・runtime/src・runtime/android/native・plugin_api・埋め込むアイコン）＋ ABI・プロファイル・API レベル・NDK | `jniLibs/<ABI>/libSEED.so` |
+| pak とスクリプト | プロジェクトのアセットルート全体＋ `PackageToolSources`（SeedPak・パッケージ化のコード・scripting/・runtime/src）＋プロジェクトの場所。プロジェクトを APK に入れないなら「置き場を空にする」 | `app/src/main/assets/seed/` の一覧 |
+| 同梱 .NET | `dotnet_runtime.json` の中身・ABI・組み立て方の版 | `app/src/seedDotnet/` の一覧 |
+| APK | 上流の出力の同一性・Gradle のソース（`GradleSources`）・渡すプロパティ（ABI・向き・識別情報・NDK） | `app-debug.apk` |
+| インストール | — | 前回自分がこの端末へ入れた APK の SHA-256 と、入れた直後の `pm path`（インストールのたびに変わる）が、今の APK と端末の `pm path` に一致するか |
+
+- 記録が無い・入力が違う・出力が無い・出力が記録と違う（外で作り直された・消された）なら行う。上流を作り直すなら Gradle とインストールも行う。
+  libSEED.so は古い ABI だけを作る。開発用の転送・起動・logcat は指定どおり行う。
+- 明示の `--skip-rust` / `--skip-gradle` / `--no-install` 等（ps1 の `-SkipRustBuild` 等）は自動判定より強い。`--rebuild` は自動で飛ばさない。
+- 中身そのもの（数 GB になり得るアセット、1 本 450 MB の .so）は読まない。中身が変わったのに大きさも更新時刻も同じ、という稀な場合は `--rebuild`。
+  入力の表（`AndroidBuildInputs`）に足し忘れた入力は「変えたのに作り直されない」になる（多めに入れる分には安全）。
+
+**記録の置き場**
+
+| 記録 | 置き場 | 中身 |
+|---|---|---|
+| 置き場の中身（`AndroidStepStamps`） | `runtime/android/app/build/seed/step_stamps.json`（エンジン側。`gradlew clean` で消える＝全部作り直すだけ） | 工程ごとに「作ったときの入力の指紋と出力の同一性」、最後の APK の SHA-256・ABI・アプリ ID |
+| 実行状態（`AndroidRunState`） | `<プロジェクト>/cache/android/run_state.json`（[project_system.md](project_system.md) §1 の `cache/`。プロジェクトが無ければ `runtime/android/app/build/seed/run_state.json`） | 前回の実行先（シリアル・種類・機種・ABI・アプリ ID）、端末ごとに自分が入れた APK（SHA-256・`pm path`）、前回の実行の結果・工程ごとの判断・指紋 |
+
+- 置き場の記録をプロジェクトの `cache/` に置かないのは、Gradle の置き場（jniLibs・assets/seed・seedDotnet・APK）がリポジトリに 1 つずつしかなく、
+  別のプロジェクトをビルドすると中身が入れ替わるため（置き場と一緒に持たないと、切り替えた後に別のプロジェクトの pak のまま「変更なし」と判断してしまう）。
+- 壊れた・版の違う記録は「記録なし」として扱う（作り直す・入れ直すだけ）。
 
 ---
 
 ## 5. ビルドと実行
 
-### 5.1 一括スクリプト（推奨）
+### 5.1 SeedAndroid（推奨）
 
-`runtime/android/build_and_run.ps1`（**pwsh 7.4 以降**で実行。アセット転送の tar をネイティブコマンド間のパイプで
-バイト列のまま渡すため。Windows PowerShell 5.1 は対象外）。
+`editor/tools/SeedAndroid`（.NET 10 のコンソールアプリ。中身は §4.6 の中核）。リポジトリの中で実行する（道具の場所は §3）。
 
 ```powershell
-# 環境変数（例。ANDROID_NDK_HOME が無ければ SDK 内 ndk/ の最新版を警告付きで使う）
-$env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"
-$env:ANDROID_NDK_HOME = "$env:LOCALAPPDATA\Android\Sdk\ndk\28.2.13676358"
-$env:JAVA_HOME        = "C:\Program Files\Android\Android Studio\jbr"
+# 端末の一覧（シリアル・種類・状態・ABI・機種）。--json で JSON
+dotnet run --project editor/tools/SeedAndroid -- devices
 
-# 両 ABI をビルドして、つながっている 1 台で起動し logcat を流す（Ctrl+C で終了）
-pwsh -File runtime/android/build_and_run.ps1
+# 一気通貫: ビルド → 同梱 → インストール → 起動 → logcat（ABI は端末から判定。Ctrl+C で logcat を止めて終える）
+dotnet run --project editor/tools/SeedAndroid -- run --project D:\path\to\Project --serial emulator-5554
 
-# エミュレータ向けだけ・アセットを送る・20 秒ぶんの logcat をファイルへ
-pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
-     -AssetsDir D:\path\to\Project\assets -LogcatSeconds 20 -LogFile logcat.txt
+# 20 秒ぶんの logcat を UTF-8 で保存して終える
+dotnet run --project editor/tools/SeedAndroid -- run --project D:\path\to\Project --serial <実機> --logcat-seconds 20 --log-file logcat.txt
 
-# 実機（arm64）。ビルド済みなら APK は作り直さず、アセットだけ差し替えて再起動する
-pwsh -File runtime/android/build_and_run.ps1 -Abi arm64-v8a -Serial <実機のシリアル> `
-     -SkipRustBuild -SkipGradle -NoInstall -AssetsDir D:\path\to\Project\assets
+# APK を作るだけ（端末が 1 台に決まればその ABI、決まらなければ両方）／作って入れるまで
+dotnet run --project editor/tools/SeedAndroid -- build --project D:\path\to\Project --abi arm64-v8a
+dotnet run --project editor/tools/SeedAndroid -- install --project D:\path\to\Project --serial <実機>
 
-# 配布版と同じ形（APK 内 pak ＋ スクリプトの DLL ＋ 同梱 .NET）。push 無しで起動する（§13・§17）
-pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
-     -ProjectDir D:\path\to\Project -LogcatSeconds 20
+# スクリプトの DLL だけを作り直して端末の files/bin/ へ送り、起動し直す（APK は作り直さない。§17.7）
+dotnet run --project editor/tools/SeedAndroid -- push --project D:\path\to\Project --serial emulator-5554
 
-# スクリプトの DLL だけを作り直して端末の files/bin/ へ送り、再起動する（APK は作り直さない。§17.7）
-pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -SkipRustBuild -SkipGradle -NoInstall `
-     -ProjectDir D:\path\to\Project -PushScripts -LogcatSeconds 20
+# 開発用: pak の無い APK にして、アセットを run-as で端末の files/assets へ送る（§4.5）
+dotnet run --project editor/tools/SeedAndroid -- run --assets-dir D:\path\to\Project\assets --serial emulator-5554
+
+# 止める・logcat だけを流す
+dotnet run --project editor/tools/SeedAndroid -- stop --project D:\path\to\Project
+dotnet run --project editor/tools/SeedAndroid -- logcat --serial emulator-5554
 ```
 
-| 引数 | 意味 |
+| サブコマンド | 行う工程 |
 |---|---|
-| `-Abi arm64-v8a,x86_64` | ビルドする ABI（既定は両方）。APK にもこの ABI だけを詰める（Gradle へ `-Pseed.abis` で渡す） |
-| `-Release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
-| `-Serial <adb のシリアル>` | 対象端末。**2 台以上つながっているときは必須** |
-| `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の内部アプリ専用フォルダの `assets/` へ送る（前回分は消して置き直す）。開発用の高速経路。APK を作るときは、このフォルダ（`-ProjectDir` ならそのアセットルート）の `screen_orientation` で画面の向きを決める（どちらも無ければ `both`。§15.1） |
-| `-ProjectDir <プロジェクトフォルダ>` | SeedPak（`editor/tools/SeedPak`）で pak とスクリプトの `bin/`（`--scripts`）を作り `app/src/main/assets/seed/` に置いてから APK を作る（パッケージ実行・push 無し。§13・§17.7）。`.seedproj`／`assets/` を持つフォルダか、アセットルートそのもの。`-AssetsDir` とは同時に指定できない。`-SkipGradle` とは `-PushScripts` のとき（スクリプトの出どころ）だけ併用できる。**指定しないで Gradle を回すと置き場を空にする**（pak・スクリプトの無い開発用の APK になる） |
-| `-PushScripts` | `-ProjectDir`（無ければ `-AssetsDir`）の `.cs` を SeedPak `--scripts-only` で事前コンパイルし、DLL と runtimeconfig を端末の `files/bin/` へ送る（APK は作り直さない。§17.7） |
-| `-SkipRustBuild` / `-SkipGradle` / `-NoInstall` / `-NoLaunch` / `-NoLogcat` | 工程を飛ばす（`-SkipGradle` では同梱 .NET の組み立て（§17.3）も飛ばす） |
-| `-LogcatSeconds <秒>` / `-LogFile <パス>` | logcat を何秒集めるか（0 = Ctrl+C まで）／保存先 |
+| `devices` | 端末の一覧（`--json` で JSON。使える端末は ABI も読む） |
+| `build` | libSEED.so → pak とスクリプト → 同梱 .NET → APK |
+| `install` | build ＋ インストール（Gradle の `installDebug` と同じく、要ればビルドする） |
+| `run` | install ＋（`--assets-dir` のアセット・`--push-scripts` の DLL の転送）＋ 起動 ＋ logcat |
+| `push` | スクリプトの DLL（と `--assets-dir` のアセット）の転送 ＋ 起動 ＋ logcat |
+| `stop` | `am force-stop <アプリ ID>`（アプリ ID は `--app-id`、無ければ `--project` / `--assets-dir` の設定から） |
+| `logcat` | logcat（`--since <端末の時刻>` から。省略時は今から） |
+
+| オプション | 意味 |
+|---|---|
+| `--project <フォルダ>` | プロジェクト（`.seedproj` か `assets/` を持つフォルダ、またはアセットルートそのもの。規則は SeedPak と共有の `ProjectFolderResolver`）。APK に pak とスクリプトを入れる（パッケージ実行。§13・§17）。画面の向き・アプリの識別情報（§18）もここの `project_settings.json` から読む |
+| `--assets-dir <フォルダ>` | 開発用: pak の無い APK にして、このアセットフォルダを run-as で端末の `files/assets` へ送る（`--project` と排他。端末は APK の pak を優先するため） |
+| `--serial <シリアル>` | 対象の端末。省略時は使える端末がちょうど 1 台のときそれ（2 台以上ならエラー。前回の実行先を添える。私物の実機へ勝手に入れないため） |
+| `--abi <ABI[,ABI]>` | `arm64-v8a` / `x86_64`。省略時は端末の `ro.product.cpu.abilist` の先頭から選ぶ（端末が決まらなければ両方） |
+| `--release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
+| `--config <JSON>` | 指定をまとめた設定 JSON（キーは `AndroidRunRequest` の snake_case: `project` / `assets_dir` / `serial` / `abis` / `release` / `skip_rust_build` / `skip_gradle` / `no_install` / `no_launch` / `no_logcat` / `push_scripts` / `rebuild` / `logcat_seconds` / `log_file`。相対パスは JSON のフォルダから。コマンドラインが優先） |
+| `--skip-rust` / `--skip-gradle` / `--no-install` / `--no-launch` / `--no-logcat` | 工程を飛ばす（`--skip-gradle` は pak とスクリプト・同梱 .NET・Gradle をまとめて飛ばす） |
+| `--push-scripts` | `run` でもスクリプトの DLL を作り直して `files/bin/` へ送る |
+| `--rebuild` | 変更の有無で工程を自動で飛ばさない（すべて作り直し、入れ直す） |
+| `--logcat-seconds <秒>` / `--log-file <パス>` | logcat を流す秒数（0 か省略で止めるまで）／保存先（UTF-8） |
+| `--app-id <ID>` / `--since <時刻>` / `--json` | `stop` のアプリ ID ／ `logcat` の起点／ `devices` の JSON |
+
+- 入力が前回から変わっていない工程は自動で飛ばす（§4.6）。準備の段階で「行う／飛ばす」と理由を一覧で出し、最後に工程ごとの結果と所要時間をまとめる。
+- 終了コード: `0` 成功 / `1` 指定の誤り / `2` 道具が無い / `3` 端末が無い・選べない / `4` ビルドの失敗 / `5` 端末の操作の失敗 / `130` 中断（Ctrl+C）。
+- Ctrl+C は中断の合図として、自分が起動した子プロセス（cargo・Gradle・adb）とその子孫を止めて終わる。logcat を流している間の Ctrl+C は「止めた」＝成功。
+- 子プロセスの出力は行ごとに「厳密な UTF-8 として読めるか」で文字コードを見分ける（Gradle・dotnet が ANSI コードページで書く行も化けない）。
+  SeedAndroid 自身の出力をファイル・パイプへ向けたときと logcat の保存（`--log-file`）は UTF-8（以前の `-LogFile` の文字化けは解消）。
+- gradlew（バッチファイル＝cmd.exe を通る）へ渡す値のうち、cmd.exe が解釈する文字（`" % ! ^ & | < > ( )`）を含むもの（アプリ名等）は `-P` ではなく
+  環境変数 `ORG_GRADLE_PROJECT_seed.*` で渡す（Gradle の仕様で `-P` と同じプロジェクトプロパティになる。引数の破損・コマンドの注入を防ぐ）。
+
+**build_and_run.ps1（互換ラッパー）**
+
+`runtime/android/build_and_run.ps1` は従来の引数を受け取り、`SeedAndroid run` の引数へ置き換えて `dotnet run` で呼ぶだけ（手順の中身は持たない）。
+pwsh 7 以降で実行する（日本語を含むため Windows PowerShell 5.1 は対象外。tar のパイプが無くなったので 7.4 の制限は無い）。終了コードは SeedAndroid のもの。
+
+| ps1 の引数 | SeedAndroid の引数 |
+|---|---|
+| `-Abi a,b` | `--abi a,b`（**省略時は渡さない**＝端末から判定。従来は両方） |
+| `-Release` / `-Serial` | `--release` / `--serial` |
+| `-ProjectDir` / `-AssetsDir` | `--project` / `--assets-dir`（呼んだ場所からの相対パスは絶対パスにして渡す） |
+| `-PushScripts` | `--push-scripts` |
+| `-SkipRustBuild` / `-SkipGradle` / `-NoInstall` / `-NoLaunch` / `-NoLogcat` | `--skip-rust` / `--skip-gradle` / `--no-install` / `--no-launch` / `--no-logcat` |
+| `-LogcatSeconds` / `-LogFile` | `--logcat-seconds` / `--log-file` |
+
+従来との違い: 変わっていない工程を自動で飛ばす（すべて作り直すには SeedAndroid の `--rebuild`）、`-Abi` の省略時は端末の ABI だけを作る、
+`-ProjectDir` と `-SkipGradle` を（`-PushScripts` 無しで）一緒に指定できる（プロジェクトのアプリ ID でインストール・起動する）、`-LogFile` が UTF-8。
+
+```powershell
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -ProjectDir D:\path\to\Project -LogcatSeconds 20
+pwsh -File runtime/android/build_and_run.ps1 -Serial emulator-5554 -SkipRustBuild -SkipGradle -NoInstall -ProjectDir D:\path\to\Project -PushScripts
+```
 
 ### 5.2 手で 1 段ずつ行う場合
 
@@ -318,6 +444,17 @@ adb -s emulator-5554 logcat -s SEED RustPanic                                  #
 | SeedPak（最小アセット 3 ファイル・3.0 MB）| 書き出し 0.1〜0.2 秒（`dotnet run` の起動・ビルド確認込みで約 2 秒） |
 | `-ProjectDir` の SeedPak → Gradle → install（x86_64・.so は既存） | 約 28 秒 |
 
+段階C-1（SeedAndroid。2026-09-25・エミュレータ x86_64・最小構成＋確認用スクリプトのプロジェクト）:
+
+| 項目 | 実測 |
+|---|---|
+| 準備（道具・プロジェクト・端末・各工程の指紋。runtime/src 674 ファイルほか） | 0.1〜0.4 秒 |
+| `run` 1 回目（記録なし。.so は cargo の増分ビルド） | 75.0 秒（.so 9.2・SeedPak 8.4・同梱 .NET 1.3・Gradle 11.7・install 9.3・起動 9.7（端末の .NET の展開込み）・logcat 25） |
+| `run` 2 回目（何も変えない） | 15.2 秒（5 工程を飛ばし、起動 2.2＋logcat 12） |
+| `.cs` を変えた `run`（build_and_run.ps1 経由） | 26.8 秒（SeedPak 4.5・Gradle 2.3・install 2.6・起動 1.9・logcat 12。.so と同梱 .NET は飛ばす） |
+| `push`（スクリプトの DLL だけ） | 8.3 秒（SeedPak `--scripts-only`＋転送 6.5・起動 1.8。logcat を除く） |
+| arm64 の `build`（別の ABI へ切り替え。.so は増分ビルド） | 47.1 秒（.so 19.2・SeedPak 6.7・同梱 .NET 1.2・Gradle 19.9） |
+
 ---
 
 ## 6. logcat の見方
@@ -332,7 +469,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 ```
 
 実機は他の作業者・エージェントと共用することがあるため、**`adb logcat -c`（全消去）は使わない**。
-`build_and_run.ps1` も起動直前の端末の時刻を控えて `logcat -T` で今回分だけを取り出す。
+SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控えて `logcat -T` で今回分だけを取り出す。
 
 | 行の印 | 出どころ | 読み方 |
 |---|---|---|
@@ -446,7 +583,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | **0（完了）** | 実機/エミュレータに 1 枚絵。libSEED.so ＋ Gradle ＋ GameActivity、logcat、サーフェスの破棄・再生成、回転追従 |
 | **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声（鳴ることの確認・背面での停止・音声フォーカス・音量キー。**2026-09-24 実装・§16**）、logcat の整備 |
 | **B** | スクリプト: **PC も Android も .NET 10 の CoreCLR に揃える**（PC は全 C# プロジェクトを `net10.0` へ移行済み。Android は `android-*` ランタイムパック＋同じ版の bionic パックの hostfxr / hostpolicy。§11）。ScriptPackager の事前コンパイル DLL とランタイムを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う（**2026-09-25 実装・§17**。Mono へ切り替え可）。出荷時は NativeAOT を後で検討 |
-| **C** | エディタ「実行」統合: 実行先セレクタ（PC／実機／エミュレータ）、ビルド → install → 起動 → logcat → 停止、pak/DLL だけ push する高速経路、パッケージ化ウィンドウの Android 出力の実働化（`build_and_run.ps1` の各関数が土台） |
+| **C** | エディタ「実行」統合: **C-1（2026-09-25 実装・§4.6・§5・§18）** ビルド・配置・起動の手順を C# の中核（`editor/src/Android/`）とコンソールツール `SeedAndroid` に移し、変わっていない工程の自動の省略・アプリの識別情報のプロジェクト設定化。**C-2** 実行先セレクタ（PC／実機／エミュレータ）、中核を呼んでビルド → install → 起動 → logcat → 停止を Output パネルへ、pak/DLL だけ push する高速経路。パッケージ化ウィンドウの Android 出力の実働化 |
 | **D** | Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
 
 ---
@@ -517,7 +654,11 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
   検証前に `cmd window fixed-to-user-rotation` と `cmd window user-rotation`（引数なしで現在値を表示）を控え、
   終わったら控えた値へ戻す（戻さないと端末の回転ロックが変わったままになる）。
 - Activity が `singleTask` なので、動いている最中に `am start` しても前面へ出るだけで作り直されない。送り直したアセットや
-  入れ直した .so を読ませるには `am force-stop` してから起動する（`build_and_run.ps1` は毎回そうしている）。
+  入れ直した .so を読ませるには `am force-stop` してから起動する（SeedAndroid の起動の工程は毎回そうしている）。
+- **アプリ ID を変えた APK では `am start -n <ID>/.MainActivity` の省略形が使えない**（`.MainActivity` をアプリ ID の下のクラスと解釈する）。
+  Activity のクラスの名前空間は `com.seedengine.runtime` のままなので、`-n <ID>/com.seedengine.runtime.MainActivity` と完全修飾で渡す（§18）。
+- **gradlew.bat（バッチファイル）へ `&` 等を含む値を引数で渡すと cmd.exe が解釈する**（引数が割れる・別のコマンドとして動く）。
+  プロジェクトのデータ（アプリ名等）は環境変数 `ORG_GRADLE_PROJECT_<名前>` で渡す（`providers.gradleProperty` で `-P` と同じに読める。§5.1）。
 - 実機の縦画面より横画面のほうが fps が高かった（18〜19 fps 対 37〜39 fps。描画する画素数は同じ）。原因は未調査（段階D）。
 - **wgpu のパイプラインキャッシュに別アダプタのデータを渡すと、`fallback: true` でも検証エラーになる**
   （wgpu-core の `PipelineCacheValidationError::DeviceMismatch` は「避けられた誤り」扱い）。エラーハンドラが無いと
@@ -779,8 +920,8 @@ adb -s <serial> shell setprop debug.seed.touch_test 0                     # 必�
 
 - パッケージ実行でもアセットルートは内部フォルダの `files/assets`（PAK にも APK にも無いアセットの最後のフォールバック先）。
   フォルダは作らない（パッケージ実行では空で正常）。
-- APK に pak が入っていると、run-as で送ったアセットは「PAK に無いもの」しか使われない。`build_and_run.ps1` は Gradle を
-  回すたびに置き場を作り直す（`-ProjectDir` があれば SeedPak の出力、無ければ空＝開発用の APK。§13.5）。
+- APK に pak が入っていると、run-as で送ったアセットは「PAK に無いもの」しか使われない。SeedAndroid は Gradle を
+  回す前に置き場を今回の指定どおりにする（`--project` があれば SeedPak の出力、無ければ空＝開発用の APK。§13.5）。
 
 ### 13.2 APK 内のレイアウト
 
@@ -847,8 +988,8 @@ launch.rs: ApkPackageSource::probe_pak()   … AAssetManager で seed/assets.pak
 ### 13.5 ビルドと実行
 
 ```powershell
-# pak を作って APK に入れ、push 無しで起動する（-ProjectDir は .seedproj／assets/ を持つフォルダか、アセットルートそのもの）
-pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -ProjectDir D:\path\to\Project -LogcatSeconds 20
+# pak を作って APK に入れ、push 無しで起動する（--project は .seedproj／assets/ を持つフォルダか、アセットルートそのもの）
+dotnet run --project editor/tools/SeedAndroid -- run --project D:\path\to\Project --serial emulator-5554 --logcat-seconds 20
 
 # pak だけを作る（エディタは起動しない。パッケージ化ウィンドウと同じ収録規則・パス書き換え・PAK 形式）
 dotnet run --project editor/tools/SeedPak -- --project D:\path\to\Project --out <出力フォルダ>
@@ -856,15 +997,13 @@ dotnet run --project editor/tools/SeedPak -- --project D:\path\to\Project --out 
 
 | 経路 | 使う場面 | 変更の反映 | リリース版 APK |
 |---|---|---|---|
-| `-ProjectDir`（APK 内 pak） | 配布版と同じ形での確認・リリース版 | pak と APK を作り直して入れ直す（SeedPak → Gradle → install で約 30 秒〜） | 動く |
-| `-AssetsDir`（run-as 転送） | 開発中の素早い差し替え | `-SkipRustBuild -SkipGradle -NoInstall -AssetsDir …` でアセットだけ送り直し（1 秒未満） | 動かない（run-as はデバッグ版だけ） |
+| `--project`（APK 内 pak。ps1 の `-ProjectDir`） | 配布版と同じ形での確認・リリース版 | pak と APK を作り直して入れ直す（アセットが変わったときだけ。SeedPak → Gradle → install で約 10〜30 秒） | 動く |
+| `--assets-dir`（run-as 転送。ps1 の `-AssetsDir`） | 開発中の素早い差し替え | `run --assets-dir …` の 2 回目以降は APK を作り直さず（変更なし）アセットだけ送り直す（1 秒未満） | 動かない（run-as はデバッグ版だけ） |
 
-- `-ProjectDir` と `-AssetsDir` は同時に指定できない（端末は pak を優先するため）。`-ProjectDir` は `-SkipGradle` とも併用できない。
-- `-SkipGradle -AssetsDir` のとき、前回のビルドで APK に pak を入れていれば警告する（そのままの APK ならパッケージ実行が優先される）。
+- `--project` と `--assets-dir` は同時に指定できない（端末は pak を優先するため）。
+- `--skip-gradle --assets-dir` のとき、前回のビルドで APK に pak を入れていれば警告する（そのままの APK ならパッケージ実行が優先される）。
 - SeedPak の詳細（引数・アセットルートの決め方・収録ルール・終了コード）は [packaging.md](packaging.md) §10。
-- `-LogFile` に保存される logcat は、日本語が文字化けすることがある（pwsh が adb の UTF-8 出力をコンソールのコードページで
-  読むため。以前からの挙動。backlog）。確実に残すなら `adb logcat -d -v threadtime -T "<時刻>" SEED:V *:S > file` を
-  bash 等から直接実行する。
+- logcat の保存（`--log-file`・ps1 の `-LogFile`）は UTF-8 のまま書く（段階C-1 で、以前の日本語の文字化けを解消した）。
 
 ### 13.6 確認結果（2026-09-24）
 
@@ -961,7 +1100,7 @@ wgpu 25 の `Features::PIPELINE_CACHE`（Vulkan のみ）が使える環境で�
   `<名前>.bin.tmp` へ書いてから rename（書き込み中に殺されても壊れたファイルを残さない）。
 - 読み込み: wgpu の検証で弾かれるデータ（ドライバ更新・破損は fallback で黙って空。別アダプタは fallback でも検証エラー。§10）は
   エラースコープで捕まえて空のキャッシュで作り直す。読み込んだ大きさと採用後の大きさをログに出す（採用後が小さければ弾かれた）。
-- `build_and_run.ps1` は起動のたびに `am force-stop` するので、ホームへ戻さずに作業を繰り返すと保存されない（backlog）。
+- SeedAndroid（build_and_run.ps1）の起動の工程は毎回 `am force-stop` するので、ホームへ戻さずに作業を繰り返すと保存されない（backlog）。
 
 ### 14.4 バックグラウンド中の停止（物理スレッド・ゲーム時間）
 
@@ -1049,7 +1188,7 @@ adb shell input keyevent --longpress KEYCODE_BACK
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
 - 実機（Pixel 6a）での確認は 2026-09-24 に済んだ（§14.7。パイプライン生成 約 3.0〜3.6 秒 → 約 0.52 秒）。
-- `build_and_run.ps1` は毎回 force-stop してから起動するので、開発中にホームへ戻さないとパイプラインキャッシュが保存されない
+- SeedAndroid（build_and_run.ps1）は毎回 force-stop してから起動するので、開発中にホームへ戻さないとパイプラインキャッシュが保存されない
   （最初のフレームの後にも 1 回保存する案）。
 - 背面中もゲームパッド（gilrs）のスレッドは動く（音声は段階A-5 で止めた。§16）。`[PLAY_WD]` の監視ログが背面中に誤報を出す（既存の一時診断）。
 - 前面のまま強制終了された分のセーブは失われる（仕様）。
@@ -1068,7 +1207,8 @@ adb shell input keyevent --longpress KEYCODE_BACK
 ```
 エディタ「プロジェクト設定 → 解像度設定 → 画面の向き（モバイル）」（値と表示名は editor/src/ProjectSettings/ScreenOrientationSetting.cs）
   └ project_settings.json の screen_orientation（"both" / "portrait" / "landscape"。既定 "both"）
-      └ build_and_run.ps1 の Resolve-ScreenOrientation（-ProjectDir / -AssetsDir のアセットルートから読む。どちらも無ければ both）
+      └ SeedAndroid の AndroidProjectSettingsReader（--project / --assets-dir のアセットルートから読み、正規化する。
+        どちらも無ければ both。知らない値は警告して both。editor/src/Android/Project/）
           └ gradlew assembleDebug -Pseed.orientation=<値>
               └ app/build.gradle.kts の変換表 → manifestPlaceholders["seedScreenOrientation"]
                   └ AndroidManifest.xml の android:screenOrientation="${seedScreenOrientation}"
@@ -1080,11 +1220,13 @@ adb shell input keyevent --longpress KEYCODE_BACK
 | `portrait` | `sensorPortrait`（7） | 縦だけ。逆さの縦へ回るかは端末の設定次第（エミュレータでは 0 度のままだった） |
 | `landscape` | `sensorLandscape`（6） | 横だけ。左右どちら向きの横にもセンサーに従って回る |
 
-- **変換表は `app/build.gradle.kts` の 1 か所だけ**。`build_and_run.ps1` は値を読んで渡すだけ、エディタは値と表示名だけを持つ。
-  表に無い値は Gradle が警告（`SEED: screen_orientation="…" は不明な値です…`）を出して `both` として扱う。前後の空白・大文字小文字は吸収する。
-- 起動時に読む値ではなく **APK（マニフェスト）に焼き込む**。値を変えたら Gradle を回して APK を作り直す（`-SkipGradle` では前回の APK のまま）。
-  段階C のエディタ統合も `build_and_run.ps1` へ `-ProjectDir` / `-AssetsDir` を渡せば同じ判定になる。
-- `-ProjectDir` のアセットルートは SeedPak（`PakInputResolver`）と同じ規則で決める（`.seedproj` の `assets_dir` → `<フォルダ>/assets` → フォルダ自体）。
+- **変換表は `app/build.gradle.kts` の 1 か所だけ**。SeedAndroid は値を読んで（エディタと同じ `ScreenOrientationSetting.Normalize` で）
+  正規化して渡すだけ、エディタは値と表示名だけを持つ。知らない値は SeedAndroid が警告して `both` にする（手で gradlew を叩いたときは
+  Gradle が警告 `SEED: screen_orientation="…" は不明な値です…` を出して `both` として扱う）。前後の空白・大文字小文字は吸収する。
+- 起動時に読む値ではなく **APK（マニフェスト）に焼き込む**。値を変えたら APK を作り直す（SeedAndroid は渡すプロパティが変われば Gradle を回す。
+  `--skip-gradle` では前回の APK のまま）。段階C-2 のエディタ統合も同じ中核を呼ぶので同じ判定になる。
+- `--project` のアセットルートは SeedPak と同じ規則（`editor/src/Project/ProjectFolderResolver.cs`）で決める（`.seedproj` の `assets_dir` →
+  `<フォルダ>/assets` → フォルダ自体）。
 - 確かめ方: Gradle の出力の `SEED: screen_orientation=<値> → screenOrientation=<マニフェストの値>` と、
   `aapt2 dump xmltree --file AndroidManifest.xml app/build/outputs/apk/debug/app-debug.apk` の `screenOrientation(0x0101001e)=<数値>`。
 
@@ -1392,13 +1534,15 @@ APK に .NET 10 の CoreCLR（Android 版）を同梱し、PC と同じスクリ
 ### 17.1 全体の流れ
 
 ```
-ビルド（runtime/android/build_and_run.ps1）
-  [2/7] SeedPak --scripts … assets.pak と bin/（SEEDUserScripts.dll・SEEDScripting.dll・runtimeconfig・依存 DLL）→ app/src/main/assets/seed/
-  [3/7] 同梱 .NET … dotnet_runtime.json の版・パックを NuGet から取り寄せ（~/.nuget/packages）、-Abi の ABI ごとに組み立てる
+ビルド（SeedAndroid。editor/src/Android/。§4.6）
+  pak とスクリプト（Steps/PackageContentStep）… SeedPak --scripts で assets.pak と bin/（SEEDUserScripts.dll・SEEDScripting.dll・
+          runtimeconfig・依存 DLL）→ app/src/main/assets/seed/
+  同梱 .NET（Steps/DotnetBundleStep → Dotnet/DotnetRuntimeBundle）… dotnet_runtime.json の版・パックを NuGet から取り寄せ（~/.nuget/packages）、
+          今回の ABI ごとに組み立てる
           .so（hostfxr・hostpolicy・coreclr・clrjit・System.*.Native）→ app/src/seedDotnet/jniLibs/<ABI>/（APK の lib/<ABI>/）
           BCL の DLL・deps.json・runtimeconfig・目録 bundle.json → app/src/seedDotnet/assets/seed/dotnet/<ABI>/
           暗号ライブラリの Java 側（.jar）→ app/src/seedDotnet/libs/（APK の Java クラス）
-  [4/7] Gradle（useLegacyPackaging = true。.so をインストール時に nativeLibraryDir へ展開させる）
+  APK（Steps/GradleBuildStep）… Gradle（useLegacyPackaging = true。.so をインストール時に nativeLibraryDir へ展開させる）
 端末
   MainActivity の static 初期化: System.loadLibrary("SEED") → DotnetJniLibraries（暗号ライブラリを System.loadLibrary。JNI_OnLoad。§17.8）
   MainActivity.onCreate: 環境変数 TMPDIR / HOME / DOTNET_EnableDiagnostics=0（§17.6）
@@ -1421,7 +1565,7 @@ APK に .NET 10 の CoreCLR（Android 版）を同梱し、PC と同じスクリ
 | 層 | ファイル | 役割 |
 |---|---|---|
 | 設定 | `runtime/android/dotnet_runtime.json` | 版・パック名・coreclr / mono・.so の置き方・ランタイムプロパティ（唯一の置き場。§17.2） |
-| 組み立て | `runtime/android/build_and_run.ps1`（`Update-DotnetBundles` ほか） | NuGet から取り寄せ、ABI ごとに jniLibs / assets / 目録を作る。`-PushScripts` |
+| 組み立て | `editor/src/Android/Dotnet/`（`DotnetRuntimeSettings`・`NuGetRuntimePackRestorer`・`DotnetRuntimeBundle`）と `Steps/DotnetBundleStep` | NuGet から取り寄せ、ABI ごとに jniLibs / assets / 目録を作る（単体テスト `AndroidPipelineTests`）。DLL の差し替えは `Steps/PushScriptsStep`（`push`） |
 | 目録と展開 | `runtime/src/engine/core/scripting/embedded_runtime/`（`manifest.rs`・`install.rs`） | bundle.json の検査と files/dotnet/ への展開・使い回し・修復（単体テスト付き） |
 | DLL の置き場 | `runtime/src/engine/core/scripting/script_binaries.rs` | `ScriptBinarySource`（フォルダ / 配布物の bin/）と選び方の純関数（単体テスト付き） |
 | CLR の起動 | `runtime/src/engine/core/scripting/clr_host/`（`embedded.rs`・`desktop.rs`・`entry_points.rs`・`heap_tagging.rs`） | 同梱 .NET と PC の 2 経路。関数ポインタの取り出しは共通（`entry_points.rs`） |
@@ -1447,8 +1591,10 @@ APK に .NET 10 の CoreCLR（Android 版）を同梱し、PC と同じスクリ
 | `runtime_properties` | `System.Globalization.Invariant=true` | CLR の起動前に hostfxr へ設定するプロパティ（§17.6） |
 
 - 値を変えたら APK を作り直すだけでよい（ランタイムのコードは APK の目録 `bundle.json` を読む）。
-- 目録の `content_id` は「設定ファイル・`build_and_run.ps1`・ABI・目録の書式の版」のハッシュ（先頭 16 桁）。同じなら組み立てを省き
-  （`変更なし（content_id=…）`）、端末も展開を使い回す。NuGet のパックは版ごとに中身が変わらないため、パックの中身は材料に入れていない。
+- 目録の `content_id` は「目録の書式の版・ABI・設定ファイルの文字列・組み立て方の版（`DotnetRuntimeBundle.AssemblerRevision`）」の
+  ハッシュ（先頭 16 桁）。同じなら組み立てを省き（`変更なし（content_id=…）`）、端末も展開を使い回す。NuGet のパックは版ごとに中身が
+  変わらないため、パックの中身は材料に入れていない。組み立て方（出力の中身）を変えたら `AssemblerRevision` を上げる。
+  段階B まではスクリプト（build_and_run.ps1）の文字列を材料にしていたため、C# へ移した最初のビルドで content_id が変わり、端末は 1 回だけ展開し直す。
 
 ### 17.3 APK 内のレイアウトと端末上の展開
 
@@ -1528,18 +1674,19 @@ hostfxr / hostpolicy / CoreCLR は dotnet-root 形式のフォルダに .so が�
 - `MainActivity.onCreate`（ネイティブのスレッドが無いうち）に `DOTNET_EnableDiagnostics=0`（デバッガ・プロファイラ・EventPipe の待ち受けを
   止める）。`TMPDIR` / `HOME` は §14.1 のとおり（.NET の `Path.GetTempPath()` はキャッシュフォルダを返す）。
 
-### 17.7 スクリプトの DLL の置き場と高速経路（`-PushScripts`）
+### 17.7 スクリプトの DLL の置き場と高速経路（`push`・ps1 の `-PushScripts`）
 
 | 順 | 置き場 | 置き方 | 読めるか |
 |---|---|---|---|
-| 1 | 内部アプリ専用フォルダ `files/bin/` | `build_and_run.ps1 -PushScripts`（run-as ＋ tar。デバッグ版 APK だけ） | 実機・エミュレータとも読める |
+| 1 | 内部アプリ専用フォルダ `files/bin/` | `SeedAndroid push`・`run --push-scripts`（ps1 の `-PushScripts`。run-as ＋ tar。デバッグ版 APK だけ） | 実機・エミュレータとも読める |
 | 2 | 外部アプリ専用フォルダ `/sdcard/Android/data/<pkg>/files/bin/` | 手で `adb push` | エミュレータは読める。**実機（Pixel 6a・Android 16）は読めない**（Permission denied。警告を出して飛ばす） |
-| 3 | APK の `assets/seed/bin/` | `build_and_run.ps1 -ProjectDir`（SeedPak `--scripts`） | 読める（配布版と同じ形） |
+| 3 | APK の `assets/seed/bin/` | `SeedAndroid run --project`（ps1 の `-ProjectDir`。SeedPak `--scripts`） | 読める（配布版と同じ形） |
 
 - `SEEDScripting.dll` がある最初の置き場を使い、`SEEDUserScripts.dll` と runtimeconfig も同じ置き場から読む（版の違うホストと混ぜない）。
   選び方は `script_binaries::choose_binaries`（単体テスト付き）。ログの `[SEED DOTNET] スクリプトの置き場: …` で分かる。
-- `-PushScripts` は `-ProjectDir`（無ければ `-AssetsDir`）の .cs を SeedPak `--scripts-only` で事前コンパイルし、`bin/` の DLL と runtimeconfig を
+- `push` は `--project`（無ければ `--assets-dir`）の .cs を SeedPak `--scripts-only` で事前コンパイルし、`bin/` の DLL と runtimeconfig を
   `files/bin/` へ送り（前回分は消してから）、force-stop して起動し直す。APK は作り直さない。SeedPak は `scripting/` も一緒にビルドする。
+  tar は .NET の `TarWriter`（GNU 形式・0600 / 0700）で作って adb の標準入力へ直接書く（外部の tar・pwsh のパイプは使わない）。
 - 差し替えを消すと APK の中のものへ戻る: `adb exec-out run-as com.seedengine.runtime rm -rf files/bin`
 - 当初は外部アプリ専用フォルダへ `adb push` する形にしたが、実機では §4.5 と同じ理由（adb push が作ったフォルダは shell の所有）で
   アプリから読めなかったため、run-as の内部フォルダへ変えた。外部フォルダは手で置く場合の候補として残した（エミュレータでは使える）。
@@ -1554,7 +1701,7 @@ CoreCLR の暗号ライブラリ（`libSystem.Security.Cryptography.Native.Andro
 
 - ネイティブのスレッドから `JNI_OnLoad` を呼ぶ案（`AndroidApp::vm_as_ptr()` の JavaVM を渡す）は採らなかった。`FindClass` がシステムの
   クラスローダーで探すため、APK のクラスが見えず必ず abort する。
-- 採った方法: `build_and_run.ps1` がパックの `.jar` を `app/src/seedDotnet/libs/` へ置き、Gradle が APK の Java クラスへ入れる。
+- 採った方法: SeedAndroid（`DotnetRuntimeBundle.UpdateJavaLibraries`）がパックの `.jar` を `app/src/seedDotnet/libs/` へ置き、Gradle が APK の Java クラスへ入れる。
   `MainActivity` の static 初期化で `DotnetJniLibraries.loadAvailable()` が `System.loadLibrary("System.Security.Cryptography.Native.Android")`
   する（`JNI_OnLoad` はアプリのクラスローダーの文脈で呼ばれる）。.jar のクラスが APK に無い（Mono・.NET 無し）ときは読み込まない。
 - CLR は dotnet-root の `libSystem.Security.Cryptography.Native.Android.so` を dlopen する。`symlink` では実体が nativeLibraryDir の同じファイルなので、
@@ -1590,11 +1737,10 @@ CoreCLR の暗号ライブラリ（`libSystem.Security.Cryptography.Native.Andro
 | タグ `DOTNET` の `[Script] …` | スクリプトの `SEED.Debug.Log`（CoreCLR） |
 
 ```bash
-# ビルド → install → 起動（x86_64 のエミュレータ。実機は -Abi arm64-v8a -Serial <実機>）
-pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -ProjectDir <プロジェクト> -NoLogcat
-adb -s emulator-5554 logcat -d -v threadtime -T "<起動前の時刻>" SEED:V DOTNET:V '*:S' > log.txt
+# ビルド → install → 起動 → 20 秒の logcat を UTF-8 で保存（ABI は端末から判定。実機は --serial <実機>）
+dotnet run --project editor/tools/SeedAndroid -- run --project <プロジェクト> --serial emulator-5554 --logcat-seconds 20 --log-file log.txt
 # DLL だけの差し替え（APK はそのまま）
-pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -SkipRustBuild -SkipGradle -NoInstall -ProjectDir <プロジェクト> -PushScripts -NoLogcat
+dotnet run --project editor/tools/SeedAndroid -- push --project <プロジェクト> --serial emulator-5554 --logcat-seconds 20
 # 展開の所要時間だけを測る（展開を消して起動し直す）
 adb exec-out run-as com.seedengine.runtime sh -c 'rm -rf files/dotnet' ; adb shell am force-stop com.seedengine.runtime ; adb shell am start -n com.seedengine.runtime/.MainActivity
 # 展開先を見る
@@ -1637,3 +1783,99 @@ debug ビルド。アセットは最小構成（§7）に確認用のスクリ�
 - TLS・X509 は未確認。Mono の実機・Mono の暗号 API は未対応。
 - スクリプトのデバッグ（netcoredbg のアタッチ）は Android では使えない（診断機能を止めている・DAC を入れていない）。
 - Roslyn の DLL（約 9 MB）が Android の `bin/` にも入る（読み込まれない）。
+
+---
+
+## 18. アプリの識別情報（段階C-1・2026-09-25）
+
+ゲームごとに Android のアプリ ID・ランチャーの名前・版を持てるようにした（データドリブン）。それまでは全ゲームが仮の
+`com.seedengine.runtime`（名前 SEED Runtime）で、端末には 1 本しか入れられなかった。
+
+### 18.1 設定（`project_settings.json` の `android` 節）
+
+```json
+"android": {
+  "application_id": "com.example.mygame",
+  "app_name": "私のゲーム",
+  "version_code": 3,
+  "version_name": "1.0.3"
+}
+```
+
+| キー | 既定（空・無いとき） | 意味・検査 |
+|---|---|---|
+| `application_id` | `.seedproj` の `name` から `com.seedengine.<英数字化した名前>`。`.seedproj` が無ければ `com.seedengine.runtime` | アプリ ID（端末はこれで別のアプリかを見分ける）。2 区切り以上・各区切りは英字で始まり英数字と `_` だけ |
+| `app_name` | プロジェクトの表示名（`.seedproj` の `display_name`、空なら `name`）。`.seedproj` が無ければ `SEED Runtime` | ランチャーに出る名前（マニフェストの `android:label`）。先頭（空白を除く）に `@` / `?` は使えない（リソースの参照と解釈される）・改行不可 |
+| `version_code` | `1` | 整数の版（1〜2100000000。ストアへ出すたびに増やす）。数字の文字列も読む |
+| `version_name` | `"1.0"` | 人が読む版の文字列。改行不可 |
+
+- 英数字化: 全角を半角へ（NFKC）→ 小文字 → `a-z0-9` だけ残す。数字で始まれば `app` を前に付け、何も残らなければ（日本語だけの名前）
+  `app` ＋ 名前の SHA-256 の先頭 8 桁（日本語名のプロジェクトどうしで ID がぶつからないように）。例 `WarashibeFishing` → `com.seedengine.warashibefishing`、
+  `3DGame` → `com.seedengine.app3dgame`、`釣りゲーム` → `com.seedengine.app` ＋ 8 桁。
+- **プロジェクトの名前を変えると既定の ID も変わる**（端末は別のアプリとして入れ、セーブを引き継がない）。配布するゲームは ID を明示しておく。
+- 既定値と検査の正典は `editor/src/Android/Project/AndroidAppIdentityResolver.cs`（エディタのプロジェクト設定ウィンドウと SeedAndroid が同じ関数を使う）。
+  設定の JSON の読み書きは `editor/src/ProjectSettings/AndroidAppSettings.cs`（型の違う値は「未設定」として読み、ProjectSettingsData 全体の読み込みを
+  失敗させない。知らないキーは保存で失われない。何も設定されていなければ節ごと保存しない）。
+- エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」（画面の向きの下）。空欄は既定値で、各欄の下に既定値を出す。
+  保存のときにビルドと同じ規則で検査し、誤りがあれば保存しない。ランタイム（SEED.exe・libSEED.so）はこの節を読まない。
+
+### 18.2 流れ（プロジェクト設定 → APK）
+
+```
+project_settings.json の android 節（＋ .seedproj の name / display_name）
+  └ SeedAndroid: AndroidProjectResolver.ResolveIdentity（検査 → 既定値で埋める。誤りがあれば何もビルドせずに止める）
+      └ gradlew assembleDebug -Pseed.applicationId=… -Pseed.versionCode=…（値が cmd.exe の解釈する文字を含めば
+        環境変数 ORG_GRADLE_PROJECT_seed.appName=… 等。Gradle/GradleInvocation.cs）
+          └ app/build.gradle.kts: applicationId / versionCode / versionName ／ manifestPlaceholders["seedAppLabel"]
+              └ AndroidManifest.xml の android:label="${seedAppLabel}"（渡されなければ @string/app_name = SEED Runtime）
+  └ 端末の操作（install の確認・run-as・am start・force-stop）は決まったアプリ ID で行う。
+    Activity は完全修飾（<ID>/com.seedengine.runtime.MainActivity）で起動する（Java の名前空間は変えないため）
+```
+
+- 変換（プロパティ → APK の値）は `app/build.gradle.kts` の 1 か所。手で gradlew を叩いて値を渡さなければ従来どおり
+  `com.seedengine.runtime` / `SEED Runtime` / `versionCode 1` / `versionName 0.0.1-dev`。
+- 端末側のコード（libSEED.so）はパッケージ名を決め打ちしていない（データの置き場は `internal_data_path()` 等から得る）。JNI の関数名
+  （`Java_com_seedengine_runtime_…`）は Java のクラスの名前空間に結び付くので、アプリ ID を変えても動く。
+
+### 18.3 確認結果（2026-09-25・エミュレータ x86_64）
+
+`aapt2 dump badging app-debug.apk`（build-tools 36.0.0）で確かめた。
+
+| プロジェクト | package（versionCode / versionName） | application-label |
+|---|---|---|
+| `.seedproj` 無し（アセットだけ） | `com.seedengine.runtime`（1 / 1.0） | SEED Runtime（`@string/app_name`） |
+| `IdentProbe.seedproj`（表示名「識別テスト」）・`android` 節なし | `com.seedengine.identprobe`（1 / 1.0） | 識別テスト |
+| `android` 節 `com.seedengine.c1test`・`C1 テスト & Co`・7・`0.7 (c1)` | `com.seedengine.c1test`（7 / 0.7 (c1)） | C1 テスト & Co（`&` と括弧は環境変数で渡した） |
+| 同じ節で名前を `C1 Space Test`・版を `0.8` に | `com.seedengine.c1test`（7 / 0.8） | C1 Space Test（空白だけなので `-P` の引数で渡した） |
+
+- 別 ID のアプリ（`com.seedengine.c1test`）は `run` でインストール・`<ID>/com.seedengine.runtime.MainActivity` の起動・スクリプトの実行
+  （`[PROBE v2] OnStart`）・データの置き場 `/data/user/0/com.seedengine.c1test/files` まで確かめ、終わった後にアンインストールした。
+
+---
+
+## 19. 段階C-1 の確認結果と制限（2026-09-25）
+
+`SeedAndroid`（§5.1）と `build_and_run.ps1` の互換ラッパーで、エミュレータ（AVD `seed_pixel6_api35`・x86_64）に対して確かめた。
+プロジェクトは段階B の確認用プロジェクト（最小構成＋確認用スクリプト）の写し。
+
+| 項目 | 結果 |
+|---|---|
+| `run`（1 回目・記録なし） | 7 工程すべて（.so 9.2・SeedPak 8.4・同梱 .NET 1.3・Gradle 11.7・install 9.3・起動 9.7・logcat 25 秒）。logcat にスクリプトの `[PROBE v1] OnStart … rid=linux-bionic-x64` と毎秒の `SEED.Debug.Log`（タグ DOTNET）。保存した logcat は UTF-8 で日本語が化けない。同梱 .NET の content_id が変わったため端末は 1 回だけ展開し直した（2104 ms） |
+| `run`（2 回目・変更なし） | .so・pak・同梱 .NET・APK・インストールの 5 工程を「変更なし」「端末に同じ APK が入っている」で飛ばし、起動と logcat だけ（15.2 秒） |
+| `.cs` を変えて `build_and_run.ps1 -Abi x86_64 -Serial … -ProjectDir … -LogcatSeconds 12 -LogFile …` | pak とスクリプト（入力が変わった）・Gradle・install だけを行い、.so と同梱 .NET は飛ばした（26.8 秒・終了コード 0） |
+| `push` | SeedPak `--scripts-only` → run-as で `files/bin/` へ 5 ファイル 9.1 MB → 起動し直し、`スクリプトの置き場: /data/user/0/com.seedengine.runtime/files/bin/` から `[PROBE v2] OnStart` |
+| `run --assets-dir … --push-scripts`（開発用の経路） | pak の無い APK（57.3 MB）・アセット 4 ファイルの run-as 転送・DLL の転送 → 「APK に apk:seed/assets.pak がありません。開発用の置き場…から読みます」→ `load_play_scene done actors=2` → `[PROBE v2] OnStart` |
+| `stop` / `logcat` / `devices --json` | `am force-stop` で `pidof` が空になる。誤ったアプリ ID は終了コード 1。`devices --json` はシリアル・種類・状態・ABI（`build_abi`） |
+| アプリの識別情報 | §18.3 |
+| arm64 の `build`（別の ABI へ切り替え） | .so（増分）19.2・SeedPak 6.7・同梱 .NET 1.2（x86_64 の前回分を消して arm64 を組み立て）・Gradle 19.9 秒 |
+| エンジンのソース（コメント）・`dotnet_runtime.json`・Gradle の設定を変えた後の `build` | .so・pak・同梱 .NET を「入力が変わった」で作り直し、Gradle も回した |
+| 最後の確認（既定の ID に戻して `run` を 2 回） | 1 回目 46.6 秒（pak・Gradle・install・起動・logcat。スクリプトは APK の `bin/` から）、2 回目 13.4 秒（5 工程を飛ばす）。端末に残したのは `com.seedengine.runtime`（versionName 1.0）だけ |
+| 実機（Pixel 6a・arm64） | **未実施**（作業中は USB につながっていなかった。arm64 の APK を作るところまで。backlog） |
+
+**制限・持ち越し**（詳細は [backlog.md](backlog.md) の「Android」節）
+
+- Gradle の置き場は 1 つなので、ABI・プロジェクト・アプリ ID を行き来するたびに APK を作り直す（APK を指紋ごとに取っておく仕組みは無い）。
+- pak とスクリプトは SeedPak を子プロセス（`dotnet run`）で呼ぶ（1 回 2〜6 秒のうち多くは `dotnet run` のビルドの確認）。エディタへ組み込む段階C-2 では
+  同じプロセスの `AssetPakBuilder` / `ScriptPackager` を直接呼ぶ余地がある。
+- 入力の指紋はファイルの大きさと更新時刻（中身は読まない）。`AndroidBuildInputs` の表に無いファイルを工程が読むようになったら表へ足す。
+- インストールを飛ばす判断は「前回自分が入れた APK が、その時の場所のまま入っている」こと。他の人・他のプロジェクトが同じ ID で入れ直せば入れ直す。

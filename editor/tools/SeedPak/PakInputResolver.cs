@@ -5,7 +5,8 @@
 //  解釈済みの引数（SeedPakOptions）から、PAK 作りに要る入力をファイルシステムを見て確定させる。
 //    - アセットルート … --assets ならそのまま。--project なら、エディタと同じく .seedproj の
 //                       assets_dir から導く（ProjectPaths。.seedproj が無ければ <フォルダ>/assets、
-//                       それも無くフォルダ自体に project_settings.json があればそのフォルダ）
+//                       それも無くフォルダ自体に project_settings.json があればそのフォルダ。
+//                       規則は editor/src/Project/ProjectFolderResolver.cs の 1 か所で、SeedAndroid と共有する）
 //    - runtime/src    … --runtime-src か、このツールの位置・カレントから上へ辿って見つけたリポジトリの runtime/src
 //    - 収録ルール     … <アセットルート>/packaging_settings.json（パッケージ化ウィンドウと同じファイル）
 //
@@ -108,45 +109,21 @@ public static class PakInputResolver
     }
 
     /// <summary>
-    /// プロジェクトフォルダからアセットルートを決める（エディタと同じ導き方を優先する）。
+    /// プロジェクトフォルダからアセットルートを決める（エディタと同じ導き方。規則の正典は
+    /// editor/src/Project/ProjectFolderResolver.cs で、Android の SeedAndroid も同じ規則を使う）。
     /// </summary>
     /// <param name="projectDir">--project の値。</param>
     /// <param name="error">失敗理由の出力先。</param>
     /// <returns>(アセットルート, 決め方の説明)。決められなければアセットルートは null。</returns>
     private static (string? AssetsRoot, string Origin) ResolveFromProject(string projectDir, Action<string> error)
     {
-        var root = NormalizeDirectory(projectDir);
-        if (!Directory.Exists(root))
+        var resolved = ProjectFolderResolver.Resolve(projectDir, out var message);
+        if (resolved is null)
         {
-            error($"プロジェクトフォルダが見つかりません: {root}");
+            error($"{message}（{SeedPakArguments.AssetsOption} でアセットルートを直接指定することもできます）");
             return (null, "");
         }
-
-        // 1. .seedproj があれば、その assets_dir（エディタが開くときと同じ ProjectPaths の導出）
-        var projectFile = SeedProjectFile.FindInDirectory(root);
-        if (projectFile is not null)
-        {
-            if (!SeedProjectFile.TryLoad(projectFile, out var file, out var loadError))
-            {
-                error(loadError ?? $"プロジェクトファイルを読めません: {projectFile}");
-                return (null, "");
-            }
-            var paths = ProjectPaths.FromProjectFile(projectFile, file!);
-            return (paths.AssetsDir, $"{Path.GetFileName(projectFile)} の assets_dir");
-        }
-
-        // 2. .seedproj が無ければ既定の <フォルダ>/assets
-        var defaultAssets = Path.Combine(root, SeedProjectFile.DEFAULT_ASSETS_DIR);
-        if (Directory.Exists(defaultAssets))
-            return (defaultAssets, $"{SeedProjectFile.DEFAULT_ASSETS_DIR}/（.seedproj なし）");
-
-        // 3. フォルダ自体がアセットルート（project_settings.json を直下に持つ）
-        if (File.Exists(Path.Combine(root, ProjectSettingsFileName)))
-            return (root, $"{SeedPakArguments.ProjectOption} のフォルダ自体（{ProjectSettingsFileName} あり）");
-
-        error($"アセットルートを決められません: {root} に .seedproj も {SeedProjectFile.DEFAULT_ASSETS_DIR}/ も " +
-              $"{ProjectSettingsFileName} もありません（{SeedPakArguments.AssetsOption} で直接指定できます）");
-        return (null, "");
+        return (resolved.AssetsRoot, resolved.Origin);
     }
 
     /// <summary>

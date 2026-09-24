@@ -6,8 +6,8 @@ namespace SEEDEditor.ProjectSettings;
 /// プロジェクト設定「画面の向き」（project_settings.json の <c>screen_orientation</c>）の値と表示名。
 ///
 /// <para>
-/// この値はモバイル（Android）の APK を作るときに使われる。runtime/android/build_and_run.ps1 が
-/// project_settings.json から読み、Gradle へ <c>-Pseed.orientation=&lt;値&gt;</c> で渡し、
+/// この値はモバイル（Android）の APK を作るときに使われる。SeedAndroid（editor/src/Android/Project/AndroidProjectSettingsReader.cs）が
+/// project_settings.json から読んで正規化し、Gradle へ <c>-Pseed.orientation=&lt;値&gt;</c> で渡し、
 /// runtime/android/app/build.gradle.kts の変換表がマニフェストの screenOrientation
 /// （both=fullSensor / portrait=sensorPortrait / landscape=sensorLandscape）へ差し込む。
 /// マニフェストの値への変換表はそちらだけに置き、ここは設定値とエディタの表示名だけを持つ。
@@ -42,7 +42,7 @@ public static class ScreenOrientationSetting
 
     /// <summary>
     /// 設定値を正規化する（前後の空白を落として小文字へ。知らない値・空・null は既定値）。
-    /// build_and_run.ps1・build.gradle.kts と同じ読み方。
+    /// SeedAndroid・build.gradle.kts と同じ読み方。
     /// </summary>
     /// <param name="value">project_settings.json から読んだ値。</param>
     /// <returns>Choices のいずれかの値。</returns>

@@ -1,8 +1,9 @@
 # ============================================================
 #  runtime/android — 生成物は追跡しない
+#  （置き場へ置くのは SeedAndroid。editor/src/Android/・editor/tools/SeedAndroid。docs/android.md §4.6）
 # ============================================================
 
-# Gradle / Android Studio の作業フォルダ・生成物
+# Gradle / Android Studio の作業フォルダ・生成物（app/build/seed/ は SeedAndroid の作業フォルダと置き場の記録）
 .gradle/
 .kotlin/
 .idea/
@@ -15,11 +16,11 @@ captures/
 # マシン固有の SDK パス（Android Studio が自動生成する）
 local.properties
 
-# cargo ndk が書き出す libSEED.so（build_and_run.ps1 が毎回作り直す）
+# cargo ndk が書き出す libSEED.so（SeedAndroid がソースの変更を見て作り直す）
 app/src/main/jniLibs/
 
-# APK に同梱する配布物（assets/seed/assets.pak。build_and_run.ps1 -ProjectDir が SeedPak で作る）
+# APK に同梱する配布物（assets/seed/assets.pak と bin/。SeedAndroid --project が SeedPak で作る）
 app/src/main/assets/
 
-# APK に同梱する .NET（build_and_run.ps1 が runtime/android/dotnet_runtime.json と NuGet のパックから組み立てる。docs/android.md §17）
+# APK に同梱する .NET（SeedAndroid が runtime/android/dotnet_runtime.json と NuGet のパックから組み立てる。docs/android.md §17）
 app/src/seedDotnet/

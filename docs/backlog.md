@@ -1614,10 +1614,13 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   「`assets_root` があればソースをコンパイル、無ければ実行ファイルの隣の `bin/SEEDUserScripts.dll`」で分けるが、Android の
   パッケージ実行は `assets_root`（内部フォルダ。フォールバック先）を持つ。段階B では `LaunchArgs.package_source` の有無でも分け、
   DLL を配布物の `bin/`（APK の `assets/seed/bin/`）から `PackageSource` で読んで `load_assembly_from_bytes` へ渡す。
-- [ ] **`build_and_run.ps1 -LogFile` の logcat で日本語が文字化けする（既存）** — 2026-09-24 に気付いた。pwsh が adb の UTF-8 出力を
+- [x] **`build_and_run.ps1 -LogFile` の logcat で日本語が文字化けする（既存）** — 2026-09-24 記載 / 2026-09-25 対応（段階C-1）。logcat は SeedAndroid
+  （`editor/src/Android/Adb/AndroidLogcatSession.cs`）が adb の出力を UTF-8 のまま読み、`--log-file`（ps1 の `-LogFile`）へ UTF-8 で書く。
+  子プロセスの出力は行ごとに UTF-8 か ANSI かを見分ける（`Processes/MixedEncodingLineReader.cs`）。エミュレータで保存した logcat の日本語が化けないことを確認。
+  以下は記載時のメモ。pwsh が adb の UTF-8 出力を
   コンソールのコードページ（CP932）として読んでから `Set-Content -Encoding utf8` するため、エンジンの日本語ログが化ける
   （`[SEED INIT]` 等の ASCII 部分は読める）。pwsh 7.4 のネイティブコマンドのバイト列そのままのリダイレクト（`> file`）で保存するか、
-  読み取りの間だけ `[Console]::OutputEncoding` を UTF-8 にする。回避策は docs/android.md §13.5。
+  読み取りの間だけ `[Console]::OutputEncoding` を UTF-8 にする。
 - [x] **保存先・キャッシュ・パイプラインキャッシュの置き場（段階A）** — 2026-09-24 記載 / 同日対応（A-3）。置き場は上の項目のとおり。パイプラインキャッシュはアダプタごとのファイル（`wgpu_pipeline_cache_*.bin`）を suspended で保存し、全生成箇所がキャッシュを受け取るようにした（`renderer/pipeline_cache/`。docs/android.md §14.3）。初期化の同期実行（ANR の恐れ）は下の新しい項目へ分けた。以下は記載時のメモ。セーブ（`save/path.rs`）と
   派生キャッシュ（`loader/asset_cache.rs`）は「アセットルートの親」規則でたまたまアプリ専用フォルダに落ちている。
   パイプラインキャッシュ（`renderer/mod.rs::pipeline_cache_path`）は実行ファイルの隣（Android では `/system/bin`）
@@ -1728,6 +1731,9 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [ ] **`-PushScripts` の 1 回が約 9 秒（うち SeedPak の `dotnet run` のビルド確認とコンパイルが 5〜6 秒）** — 2026-09-25（段階B）。SeedPak は
   `scripting/` を参照しているので `dotnet run` のたびにビルドの確認が走る。段階C のエディタ統合では、エディタが持っている ScriptPackager を
   直接呼ぶ（プロセスを起動しない）形にすれば数百 ms になる見込み。
+  2026-09-25（段階C-1）: SeedAndroid の `push` はエミュレータで 8.3 秒（SeedPak＋転送 6.5・起動 1.8）。中核（`Steps/SeedPakProcess.cs`）は SeedPak を
+  子プロセスで呼ぶままにした（ps1 と同じ経路・中断で止められる）。C-2 で同じプロセスの `AssetPakBuilder` / `ScriptPackager` を呼ぶ実装に差し替える
+  （`PackageContentStep` / `PushScriptsStep` の中だけの変更で済む形にしてある）。
 - [ ] **外部アプリ専用フォルダの `files/bin/` は実機で読めない（候補としては残している）** — 2026-09-25（段階B）。`adb push` で置いた DLL は
   Pixel 6a（Android 16）で Permission denied（§4.5 と同じ理由）。`-PushScripts` は run-as の内部フォルダへ送るように変えた。外部フォルダは
   エミュレータで手で置くとき用の候補で、読めなければ警告して飛ばす（docs/android.md §17.7）。
@@ -1742,6 +1748,9 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   あわせて APK 化（Gradle）とアセットの同梱が要る。段階0 ではエディタには手を入れていない。
   2026-09-24 追記: アセットの同梱の形は決まった（APK の `assets/seed/assets.pak`。docs/android.md §13）。ウィンドウからは
   `AssetPakBuilder`（SeedPak と共通）で `runtime/android/app/src/main/assets/seed/` へ書き、`build_and_run.ps1` の工程を呼べばよい。
+  2026-09-25 追記（段階C-1）: 工程は C# の中核 `editor/src/Android/`（エディタ本体に入っている）になった。ウィンドウからは
+  `AndroidRunPipeline.RunAsync(new AndroidRunRequest { Goal = Build, ProjectDir = …, Abis = … }, progress, ct)` を呼び、
+  出来た `runtime/android/app/build/outputs/apk/debug/app-debug.apk` を出力フォルダへ写せばよい（署名・リリース版は段階D）。
 - [ ] **debug の libSEED.so が約 445 MB / ABI（段階C）** — 2026-09-24。フルデバッグ情報のため。APK へはシンボルを削って
   約 53 MB で入るが、ビルド・コピー・削りの時間が掛かる。Android の開発ビルドだけ `debug = "line-tables-only"` 等にする案。
 - [ ] **Android ビルドでだけ出る警告（Windows 専用コードの cfg 漏れ）** — 2026-09-24。`input/cursor_visibility.rs` の
@@ -1774,6 +1783,33 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `core::background_gate` を見る。以下は記載時のメモ。A-3 の時点では音声（rodio → cpal → oboe）も背面で動いていた。
   また `app/play_diag.rs` のフレーム監視（`[PLAY_WD] stuck at stage=frame_end … (A)イベントループスレッド自体がブロック`）が、
   背面でイベントループが Wait に入っている間ずっと 5 秒ごとに誤報する（撤去予定の一時診断。背面中は黙らせるか撤去する）。
+- [x] **段階C-1: ビルド・配置・起動の手順を C# へ移す（SeedAndroid）** — 2026-09-25 対応。`runtime/android/build_and_run.ps1` の中身
+  （道具の解決・cargo ndk・SeedPak・同梱 .NET の組み立て・Gradle・adb install・run-as の転送・am start・logcat）を WPF 非依存の中核
+  `editor/src/Android/` に移し（エディタ本体にも入る）、コンソールツール `editor/tools/SeedAndroid`（devices / build / install / run / push / stop / logcat）
+  から使う。ps1 は従来の引数で SeedAndroid を呼ぶだけのラッパー。入力の指紋と置き場の記録から変わっていない工程を自動で飛ばす
+  （エミュレータで 2 回目の run が 75 → 15 秒）。アプリの識別情報（`project_settings.json` の `android` 節・プロジェクト設定ウィンドウ）も入れた。
+  正典は docs/android.md §4.6・§5・§18・§19。単体テスト `editor/tests/AndroidPipelineTests`。
+- [ ] **段階C-2: エディタの「実行」に実行先セレクタ（PC / 実機 / エミュレータ）を付ける** — 2026-09-25（C-1 の続き）。中核の入口は
+  docs/android.md §4.6 の表（`AndroidDeviceActions.ListDevicesAsync` / `AndroidRunPipeline.RunAsync` / `StopAppAsync`・`AndroidRunState.LastTarget`）。
+  イベント（`AndroidPipelineEvent`）を Output パネルへ、`CancellationToken` を停止ボタンへつなぐ。エディタからの pak とスクリプトは同じプロセスの
+  `AssetPakBuilder` / `ScriptPackager` を呼ぶ形にすると速い（上の `-PushScripts` の項目）。Play 中のエディタが `scripting/bin` の DLL を握っていると
+  SeedPak の `dotnet run` の再ビルドが失敗し得る点にも注意（未確認）。
+- [ ] **段階C-1 の実機（Pixel 6a・arm64）での一気通貫の確認** — 2026-09-25。C-1 の作業中は実機が USB につながっておらず、SeedAndroid の `run` /
+  `push` / `stop` はエミュレータ（x86_64）だけで確かめた（arm64 の APK の `build` までは確認済み。docs/android.md §19）。端末が空いているときに
+  `dotnet run --project editor/tools/SeedAndroid -- run --project <プロジェクト> --serial <実機> --logcat-seconds 30` で、インストール・起動・
+  スクリプトの `SEED.Debug.Log` と、2 回目の run で工程が飛ばされることを確かめる。
+- [ ] **ABI・プロジェクト・アプリ ID を行き来するたびに APK を作り直す（低優先）** — 2026-09-25（段階C-1）。Gradle の置き場と APK は 1 つなので、
+  エミュレータ（x86_64）と実機（arm64）を交互に使うと、毎回 同梱 .NET の組み立て（ABI の入れ替え）と Gradle が走る（約 20〜50 秒）。
+  APK を指紋ごとに `app/build/seed/apk/` へ取っておき、同じ指紋なら写すだけにする案（`GradleBuildStep` と置き場の記録に閉じた変更で済む）。
+- [ ] **工程の入力の指紋はファイルの大きさと更新時刻だけ（中身は読まない）** — 2026-09-25（段階C-1・低優先）。数 GB のアセット・450 MB の .so を毎回読まないため
+  （make・MSBuild と同じ）。中身が変わったのに大きさも時刻も同じだと作り直されない（`--rebuild` で逃げられる）。また工程の入力の表
+  （`Plan/AndroidBuildInputs.cs`）に無いファイルを工程が読むようになると「変えたのに作り直されない」になる（エンジンが `include_bytes!` で
+  リポジトリの別の場所を埋め込む等。今は `editor/resources/icons/viewport/location.png` を入れてある）。
+- [ ] **SeedAndroid の Ctrl+C を対話のコンソールで確かめていない** — 2026-09-25（段階C-1）。中断の仕組み（子プロセスとその子孫を止めて
+  OperationCanceledException）は単体テスト（ping を途中で止める）と logcat の秒数の時間切れでは確かめたが、ビルドの途中で人が Ctrl+C を押す操作は
+  未確認（cmd.exe・Gradle のデーモンが同じコンソールの Ctrl+C を受けたときの振る舞い）。
+- [ ] **ps1 ラッパー・SeedAndroid の `dotnet run` のたびにツールのビルドの確認が走る（2〜4 秒）** — 2026-09-25（段階C-1・低優先）。
+  ビルド済みの `editor/tools/SeedAndroid/bin/Debug/net10.0/SeedAndroid.exe` を直接呼べば省ける（中核を変えたら作り直しが要る）。
 
 ## .NET 10 への統一（2026-09-24 段階B-0 実装時の残件）
 
