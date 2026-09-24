@@ -134,5 +134,7 @@ fn parse_args() -> LaunchArgs {
         editor_resources,
         scene_path,
         play_collider_draw,
+        // デスクトップはスクリプトホストを探して（開発ビルド出力・実行ファイルの bin/）起動する（app/script_boot.rs）。
+        embedded_clr: None,
     }
 }

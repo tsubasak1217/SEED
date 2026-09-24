@@ -2,9 +2,12 @@
 //  app/build.gradle.kts — SEED ランタイムの APK（段階0 / 段階A）
 //
 //  中身は「Java の薄い Activity（MainActivity）＋ cargo ndk が作った libSEED.so」と、
-//  パッケージ実行のときだけ「配布物（assets/seed/assets.pak）」。
+//  パッケージ実行のときだけ「配布物（assets/seed/assets.pak と bin/ のスクリプト DLL）」、
+//  それに同梱 .NET（段階B。.so と BCL・目録 bundle.json）。
 //  .so は build_and_run.ps1 が app/src/main/jniLibs/<ABI>/libSEED.so へ置く（AGP の既定の置き場）。
 //  配布物は build_and_run.ps1 -ProjectDir が app/src/main/assets/seed/ へ置く（AGP の既定の assets の置き場）。
+//  同梱 .NET は build_and_run.ps1 が runtime/android/dotnet_runtime.json から app/src/seedDotnet/ へ組み立てる
+//  （下の sourceSets で jniLibs・assets の置き場として足す。生成物・追跡しない。docs/android.md §17）。
 //  画面の向きはプロジェクト設定の screen_orientation を build_and_run.ps1 が -Pseed.orientation=<値> で渡し、
 //  下の変換表でマニフェストの screenOrientation へ差し込む（manifestPlaceholders）。
 // ============================================================
@@ -119,6 +122,25 @@ android {
         noCompress += "pak"
     }
 
+    packaging {
+        jniLibs {
+            // .so をインストール時に端末のファイルとして展開させる（nativeLibraryDir。AndroidManifest の extractNativeLibs=true）。
+            // 同梱 .NET の hostfxr / hostpolicy / CoreCLR は dotnet-root 形式のフォルダに .so が並ぶことを前提にするため、
+            // ランタイムが files/dotnet/ の dotnet-root から nativeLibraryDir の .so へシンボリックリンクを張る（または複製する）。
+            // APK から直接読み込む既定の形（useLegacyPackaging = false）では .so がファイルとして存在しない（docs/android.md §17.4）。
+            useLegacyPackaging = true
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            // build_and_run.ps1 が組み立てる同梱 .NET（生成物）。lib/<ABI>/ の .so と assets/seed/dotnet/<ABI>/ の BCL・目録。
+            // 無ければ何も足されない（.NET の無い APK。端末はスクリプト無しで起動する）。
+            jniLibs.srcDir("src/seedDotnet/jniLibs")
+            assets.srcDir("src/seedDotnet/assets")
+        }
+    }
+
     buildTypes {
         getByName("release") {
             // 段階0 は配布しない（署名・AAB・難読化は段階D）。
@@ -133,4 +155,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.core:core:1.13.1")
     implementation("androidx.games:games-activity:$gamesActivityVersion")
+    // 同梱 .NET（CoreCLR）の Java 側。暗号ライブラリが JNI_OnLoad で探すクラス（net.dot.android.crypto.*）の .jar を
+    // build_and_run.ps1 が src/seedDotnet/libs/ へ置く（dotnet_runtime.json の java_libraries。無ければ何も入らない）。
+    implementation(fileTree(mapOf("dir" to "src/seedDotnet/libs", "include" to listOf("*.jar"))))
 }

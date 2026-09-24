@@ -366,6 +366,39 @@ public static unsafe class ScriptBridge
         }
     }
 
+    /// <summary>
+    /// 事前コンパイル済みのユーザースクリプト DLL（SEEDUserScripts.dll）を、中身（バイト列）からロードする。
+    ///
+    /// 同梱 .NET（Android）の起動経路。DLL は APK の中（ファイルとして見えない）にあることがあるため、
+    /// Rust 側が読んだ中身を受け取る。ロード後の扱い（collectible ALC・埋め込み型マップ）は
+    /// <see cref="LoadPrecompiledScripts"/> と同じ。
+    ///
+    /// 戻り値: 解決可能になったスクリプト型数（-1 はロード失敗）。
+    /// </summary>
+    /// <param name="dataPtr">DLL の中身。</param>
+    /// <param name="dataLen">その長さ（バイト）。</param>
+    /// <param name="namePtr">ログに出す名前（どこから読んだか）の UTF-8 バイト列。</param>
+    /// <param name="nameLen">その長さ。</param>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int LoadPrecompiledScriptsFromBytes(byte* dataPtr, int dataLen, byte* namePtr, int nameLen)
+    {
+        try
+        {
+            // LoadPrecompiledScripts と同じ前処理（旧インスタンスの例外抑制状態・名前付きイベント購読の全消去）。
+            ClearAllErrorState();
+            SEED.Events.ClearAll();
+            // Rust 側のバッファは呼び出しの間だけ有効なので、ここで配列へ写してから渡す。
+            var bytes = new ReadOnlySpan<byte>(dataPtr, dataLen).ToArray();
+            var name  = Encoding.UTF8.GetString(namePtr, nameLen);
+            return ScriptAssemblyManager.LoadPrecompiledBytes(bytes, name);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] LoadPrecompiledScriptsFromBytes failed: {ex}");
+            return -1;
+        }
+    }
+
     // ─── フィールド設定 ───────────────────────────────────────
 
     /// <summary>

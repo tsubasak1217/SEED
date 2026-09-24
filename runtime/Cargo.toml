@@ -63,13 +63,16 @@ rodio              = "0.20"
 gilrs              = "0.11"
 
 # ── C# スクリプトホスト（hostfxr 経由で .NET CLR を起動）─────────────────
-# Android では依存しない。理由:
-#   ・netcorehost 既定機能の nethost-download が引く nethost-sys の build.rs が
-#     Android ターゲットで "platform not supported" と panic し、ビルド自体が通らない。
-#   ・段階0 の Android はスクリプトを実行しない（engine/core/scripting の Android 版 load は
-#     「未対応」を返すスタブ）。段階B で Hostfxr::load_from_path（nethost 不要）を使う形で戻す。
+# PC は既定の機能（nethost-download・net10_0・utils）のまま。nethost で PC の .NET（または bin/dotnet の同梱）を探す。
 [target.'cfg(not(target_os = "android"))'.dependencies]
 netcorehost = "0.20"
+
+# Android（段階B）は APK に同梱した .NET の libhostfxr.so を Hostfxr::load_from_path で直接読むので nethost は使わない。
+# 既定の機能を切るのは、nethost-download が引く nethost-sys の build.rs が Android ターゲットで
+# "platform not supported" と panic し、ビルド自体が通らないため（docs/android.md §10）。
+#   net10_0 … get_function_with_unmanaged_callers_only（net5_0 以上）と load_assembly_from_bytes（net8_0 以上）
+[target.'cfg(target_os = "android")'.dependencies]
+netcorehost = { version = "0.20", default-features = false, features = ["net10_0"] }
 
 [target.'cfg(windows)'.dependencies]
 # 追加 feature の用途（起動ログ機構 core/startup_log/）:

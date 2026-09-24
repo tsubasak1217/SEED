@@ -7,6 +7,8 @@
       収録規則（AssetCollector / PackagingRules）→ パス書き換え（AssetPathRewriter）→ 書き出し（PakWriter）
     の手順とログの書式は AssetPakBuilder に集約してあり、ウィンドウもこのツールもそれを呼ぶだけ。
     Android の APK へ同梱する pak（runtime/android/build_and_run.ps1 の ProjectDir 引数）を作るのに使う。
+    scripts オプションでは、ウィンドウの「スクリプト事前コンパイル」と同じ ScriptPackager で bin/ も作る
+    （SEEDScripting を参照するのはそのため。ScriptPrecompileTests と同じ組み方）。
 
     editor/tests/*Tests と同じ流儀:
       - 外部パッケージを足さない素のコンソールアプリ
@@ -74,6 +76,19 @@
     <Compile Include="..\..\src\Project\ProjectPaths.cs">
       <Link>Linked\Project\ProjectPaths.cs</Link>
     </Compile>
+    <!-- スクリプトの事前コンパイルとスクリプトホストの同梱（パッケージ化ウィンドウと同じファイル。WPF 非依存） -->
+    <Compile Include="..\..\src\Packaging\Scripts\ScriptPackager.cs">
+      <Link>Linked\Packaging\Scripts\ScriptPackager.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      ScriptPackager が使う事前コンパイルの正典（ScriptAssemblyManager.CompileToFile・型マップ規約）。
+      参照しておくと、このツールを dotnet run するたびに scripting/ もビルドされ、同梱するスクリプトホスト
+      （scripting/bin/Debug/net10.0/SEEDScripting.dll）が常に最新になる。
+    -->
+    <ProjectReference Include="..\..\..\scripting\SEEDScripting.csproj" />
   </ItemGroup>
 
 </Project>

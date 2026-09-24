@@ -143,6 +143,8 @@ fn play_launch_args(
         editor_resources: None,
         scene_path: None,
         play_collider_draw: false,
+        // 同梱 .NET の起動材料は entry.rs が dotnet_runtime::prepare で作って入れる（起動モードとは独立）。
+        embedded_clr: None,
     }
 }
 

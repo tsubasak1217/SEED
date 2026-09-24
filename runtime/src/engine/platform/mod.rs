@@ -40,11 +40,11 @@ pub struct PlatformTraits {
     /// 描画は常にサーフェスの実サイズで行う（内部解像度固定モードの基準解像度としては引き続き使う）。
     pub app_sizes_window: bool,
 
-    /// C# スクリプト（CLR）を実行できるか。
+    /// C# スクリプト（CLR）をどこから用意するか。
     ///
-    /// false のときはスクリプトホスト（SEEDScripting.dll）を探さず、スクリプト無しで起動を続ける。
-    /// Android は段階B（CoreCLR ランタイムの同梱）まで false。
-    pub scripting_supported: bool,
+    /// 起動材料（`LaunchArgs.embedded_clr`）が渡されていれば、どのプラットフォームでもそれを使う
+    /// （同梱 .NET。`core/scripting/clr_host/embedded.rs`）。渡されていないときの振る舞いをここで決める。
+    pub script_host_source: ScriptHostSource,
 
     /// サーフェス・リサイズ・タッチのライフサイクル診断ログを標準エラーへ出すか。
     ///
@@ -86,6 +86,17 @@ pub struct PlatformTraits {
     pub reference_dpi: u32,
 }
 
+/// C# スクリプトのホスト（CLR と SEEDScripting.dll）の用意の仕方（起動材料が渡されていないとき）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptHostSource {
+    /// ファイルを探す（PC）: 開発ビルド出力か実行ファイルの bin/ の SEEDScripting.dll を、
+    /// インストール済み（または bin/dotnet に同梱）の .NET で起動する（`ScriptingHost::load`）。
+    SearchFiles,
+    /// 同梱 .NET だけを使う（Android）: 糊が APK から用意した起動材料（`LaunchArgs.embedded_clr`）が
+    /// 無ければスクリプト無しで起動する（探しても見つかる場所が無く、誤った案内が出るだけなので探さない）。
+    EmbeddedOnly,
+}
+
 /// Windows の論理 DPI の基準（表示スケール 100% = 96 dpi）。
 pub const DESKTOP_REFERENCE_DPI: u32 = 96;
 
@@ -95,7 +106,7 @@ pub const ANDROID_REFERENCE_DPI: u32 = 160;
 /// デスクトップ（Windows）の特性。従来の SEED.exe の振る舞いそのもの。
 pub const DESKTOP: PlatformTraits = PlatformTraits {
     app_sizes_window:      true,
-    scripting_supported:   true,
+    script_host_source:    ScriptHostSource::SearchFiles,
     lifecycle_diag_log:    false,
     touch_supported:       false,
     touch_drives_mouse:    false,
@@ -104,10 +115,10 @@ pub const DESKTOP: PlatformTraits = PlatformTraits {
     reference_dpi:         DESKTOP_REFERENCE_DPI,
 };
 
-/// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力・戻るキー・画面情報）。
+/// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力・戻るキー・画面情報 ＋ 段階B の同梱 .NET のスクリプト）。
 pub const ANDROID: PlatformTraits = PlatformTraits {
     app_sizes_window:      false,
-    scripting_supported:   false,
+    script_host_source:    ScriptHostSource::EmbeddedOnly,
     lifecycle_diag_log:    true,
     touch_supported:       true,
     touch_drives_mouse:    true,
@@ -135,12 +146,18 @@ mod tests {
     #[test]
     fn desktop_traits_keep_existing_behavior() {
         assert!(DESKTOP.app_sizes_window);
-        assert!(DESKTOP.scripting_supported);
+        assert_eq!(DESKTOP.script_host_source, ScriptHostSource::SearchFiles);
         assert!(!DESKTOP.lifecycle_diag_log);
         // キーの置き換えは Android だけ（PC のキー入力は従来どおり素通し）。
         assert!(DESKTOP.key_remap.is_empty());
         #[cfg(not(target_os = "android"))]
         assert_eq!(CURRENT, DESKTOP);
+    }
+
+    /// Android のスクリプトは同梱 .NET（APK から展開したもの）だけを使い、PC の探索経路は使わない。
+    #[test]
+    fn android_uses_embedded_runtime_only() {
+        assert_eq!(ANDROID.script_host_source, ScriptHostSource::EmbeddedOnly);
     }
 
     /// Android は戻るキーを Escape へ置き換える表を使う（Unity と同じ対応）。

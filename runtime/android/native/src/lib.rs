@@ -6,6 +6,8 @@
 //    logcat/       … log・標準出力／標準エラー・panic を logcat へ流す
 //    app_dirs      … アプリ専用フォルダ（files・cache）をエンジンのセーブ・キャッシュの書き込み先に設定する
 //    launch        … 起動モード（APK 内 pak／開発用の置き場）を決めてエンジンの起動引数を組み立てる
+//    dotnet_runtime/ … APK に同梱した .NET を files/dotnet/ へ展開し、スクリプトの DLL の置き場を選んで
+//                    CLR の起動材料（LaunchArgs.embedded_clr）を作る（段階B）
 //    apk_package/  … APK の assets/seed/ を配布物として読む読み口（AAssetManager。APK 内 pak 用）
 //    jni_exports   … Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し・安全領域と回転の報告・
 //                    音声フォーカスの報告）
@@ -28,6 +30,7 @@ mod app_dirs;
 mod debug_hooks;
 mod debug_save_test;
 mod device_info;
+mod dotnet_runtime;
 mod entry;
 mod heartbeat;
 mod jni_exports;

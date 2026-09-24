@@ -6,17 +6,23 @@
 //    2. 入力の確定（PakInputResolver: アセットルート・runtime/src・収録ルール）
 //    3. PAK 作り（AssetPakBuilder: 収集 → 報告 → 書き出し → 報告）
 //       ＝ パッケージ化ウィンドウの「収録アセットの収集」「PAK 書き出し」フェーズと同じコード・同じログ
+//    4. （--scripts / --scripts-only のとき）スクリプトの同梱（ScriptPackager）
+//       ＝ パッケージ化ウィンドウの「スクリプト事前コンパイル」フェーズと同じコード: アセット配下の .cs を
+//          bin/SEEDUserScripts.dll へ事前コンパイルし、スクリプトホスト（SEEDScripting.dll・依存 DLL・runtimeconfig）を写す
 //
 //  【出力】
-//  <出力フォルダ>/assets.pak だけを書く。配布物で PAK の外に置く必要があるものは現状ない
-//  （project_settings.json は収集の起点として必ず PAK に入る。bin/ のスクリプト DLL と .NET は
-//  Windows 版のパッケージ化ウィンドウの工程で、Android では段階B まで使わない）。
-//  Android の APK へ同梱するときは runtime/android/build_and_run.ps1 -ProjectDir がこのツールを呼ぶ。
+//  <出力フォルダ>/assets.pak（--scripts-only では作らない）と、--scripts のとき <出力フォルダ>/bin/。
+//  project_settings.json は収集の起点として必ず PAK に入る。.NET ランタイム本体は入れない
+//  （Windows はパッケージ化ウィンドウの DotnetRuntimeBundler、Android は build_and_run.ps1 が NuGet から組み立てる）。
+//  Android の APK へ同梱するときは runtime/android/build_and_run.ps1 -ProjectDir がこのツールを --scripts 付きで呼び、
+//  DLL だけの差し替え（-PushScripts）では --scripts-only で呼ぶ。
 // ============================================================
 
 using System;
+using System.IO;
 using SEEDEditor.Packaging;
 using SEEDEditor.Packaging.Pak;
+using SEEDEditor.Packaging.Scripts;
 
 namespace SEEDEditor.Tools.SeedPak;
 
@@ -37,8 +43,11 @@ public static class Program
     /// <summary>書き出しに失敗した。</summary>
     private const int ExitWriteFailed = 3;
 
+    /// <summary>スクリプトの事前コンパイル・同梱に失敗した（--scripts / --scripts-only）。</summary>
+    private const int ExitScriptsFailed = 4;
+
     /// <summary>
-    /// 引数を解釈して assets.pak を作る。
+    /// 引数を解釈して assets.pak と（--scripts / --scripts-only のとき）bin/ を作る。
     /// </summary>
     /// <param name="args">コマンドライン引数（SeedPakArguments.Usage 参照）。</param>
     /// <returns>プロセス終了コード。</returns>
@@ -60,12 +69,38 @@ public static class Program
         }
 
         // ── 2. 入力 ──
-        var inputs = PakInputResolver.Resolve(parsed.Options, message => Console.Error.WriteLine(message));
+        var options = parsed.Options;
+        var inputs  = PakInputResolver.Resolve(options, message => Console.Error.WriteLine(message));
         if (inputs is null) return ExitInvalidInput;
 
-        Console.WriteLine("SeedPak — assets.pak の作成");
+        Console.WriteLine(options.WritesPak ? "SeedPak — assets.pak の作成" : "SeedPak — スクリプトの同梱（bin/ だけ）");
         Console.WriteLine($"アセットルート: {inputs.AssetsRoot}（{inputs.AssetsRootOrigin}）");
         Console.WriteLine($"runtime/src: {inputs.RuntimeSourceRoot ?? "（見つからないため、エンジン内蔵参照は起点に加えません）"}");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        if (options.WritesPak)
+        {
+            var pakResult = WritePak(inputs);
+            if (pakResult != ExitSuccess) return pakResult;
+        }
+
+        if (options.WritesScripts)
+        {
+            var scriptsResult = WriteScripts(inputs);
+            if (scriptsResult != ExitSuccess) return scriptsResult;
+        }
+
+        Console.WriteLine($"完了: {inputs.OutDir}（{watch.Elapsed.TotalSeconds:F1} 秒）");
+        return ExitSuccess;
+    }
+
+    /// <summary>
+    /// assets.pak を作る（パッケージ化ウィンドウの「収録アセットの収集」「PAK 書き出し」と同じコード・同じログ）。
+    /// </summary>
+    /// <param name="inputs">確定した入力。</param>
+    /// <returns>終了コード（成功なら <see cref="ExitSuccess"/>）。</returns>
+    private static int WritePak(PakInputs inputs)
+    {
         Console.WriteLine(inputs.SettingsFound
             ? $"収録ルール: {inputs.SettingsPath}"
             : $"収録ルール: 既定値（{inputs.SettingsPath} が無いため）");
@@ -97,7 +132,38 @@ public static class Program
             return ExitWriteFailed;
         }
         AssetPakBuilder.ReportWrite(stats, Console.WriteLine);
-        Console.WriteLine($"完了: {pakPath}（{watch.Elapsed.TotalSeconds:F1} 秒）");
+        Console.WriteLine($"PAK 完了: {pakPath}（{watch.Elapsed.TotalSeconds:F1} 秒）");
+        return ExitSuccess;
+    }
+
+    /// <summary>
+    /// bin/ にスクリプトを作る（パッケージ化ウィンドウの「スクリプト事前コンパイル」と同じ ScriptPackager）。
+    /// </summary>
+    /// <param name="inputs">確定した入力（アセットルート・runtime/src・出力フォルダ）。</param>
+    /// <returns>終了コード（成功なら <see cref="ExitSuccess"/>）。</returns>
+    private static int WriteScripts(PakInputs inputs)
+    {
+        // ScriptPackager はスクリプトホストのビルド出力を runtime フォルダ基準（..\scripting\bin\Debug\net10.0）で探す。
+        var runtimeDir = inputs.RuntimeSourceRoot is null ? null : Path.GetDirectoryName(inputs.RuntimeSourceRoot);
+        if (runtimeDir is null)
+        {
+            Console.Error.WriteLine(
+                $"❌ runtime/ が見つからないため、スクリプトホストのビルド出力を探せません（{SeedPakArguments.RuntimeSourceOption} で runtime/src を指定してください）");
+            return ExitInvalidInput;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("── スクリプトの事前コンパイルと同梱 ──");
+        var watch  = System.Diagnostics.Stopwatch.StartNew();
+        var result = ScriptPackager.Run(runtimeDir, inputs.AssetsRoot, inputs.OutDir, Console.WriteLine);
+        if (!result.Success)
+        {
+            ScriptPackager.LogErrors(result, message => Console.Error.WriteLine(message));
+            return ExitScriptsFailed;
+        }
+        Console.WriteLine(
+            $"スクリプト完了: {PackageLayout.BinDirectory(inputs.OutDir)}（{result.ScriptTypeCount} 型 / {result.SourceFileCount} ファイル・" +
+            $"{watch.Elapsed.TotalSeconds:F1} 秒）");
         return ExitSuccess;
     }
 

@@ -9,18 +9,16 @@
 // ============================================================
 
 use std::path::{Path, PathBuf};
-// Arc は CLR をロードする load（デスクトップのみ）の戻り値でだけ使う。
-#[cfg(not(target_os = "android"))]
-use std::sync::Arc;
-
-// hostfxr（.NET ホスティング API）への入口。Android は段階0 で CLR を扱わないため依存しない
-// （runtime/Cargo.toml の netcorehost は Android 以外だけの依存。理由は同ファイルのコメント参照）。
-#[cfg(not(target_os = "android"))]
-use netcorehost::{nethost, pdcstr, pdcstring::PdCString};
 
 use crate::engine::core::package_layout;
 use crate::engine::ecs::Entity;
 
+// CLR（.NET）の起動: PC（nethost・パス指定）と同梱 .NET（Android・バイト列）の 2 経路と、共通のエントリポイント解決
+pub mod clr_host;
+// アプリに同梱した .NET の目録（bundle.json）と、端末のファイルとしての展開（Android）
+pub mod embedded_runtime;
+// スクリプトの DLL 一式（SEEDScripting.dll・SEEDUserScripts.dll・runtimeconfig）の読み口と置き場の選び方
+pub mod script_binaries;
 // C# → Rust のコンポーネントアクセスブリッジ
 pub mod host_api;
 // アクタ参照文字列（"./Child" / "../Sibling" / 絶対パス / 素の名前）のパス解決
@@ -38,9 +36,7 @@ pub mod name_pending;
 pub mod visible_pending;
 // SCRIPT_DEBUG IPC → SEED.Debug.OnCommand の待ち行列
 pub mod debug_command;
-// CLR を持たないプラットフォーム（Android 段階0）向けの ScriptingHost::load（常に「未対応」を返す）
-#[cfg(target_os = "android")]
-mod unsupported_platform;
+pub use clr_host::EmbeddedClrHost;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
     publish_input, publish_physics_sender, publish_canvas_mouse_position,
@@ -172,6 +168,9 @@ type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
 /// 事前コンパイル済みユーザースクリプト DLL をロードする（パッケージ版の経路）。
 /// 引数は DLL パスの UTF-8 バイト列とその長さ。戻り値は解決可能になった型数（負値はエラー）。
 type LoadPrecompiledFn = unsafe extern "system" fn(*const u8, i32) -> i32;
+/// 事前コンパイル済みユーザースクリプト DLL をバイト列からロードする（同梱 .NET の経路。Android の APK 内の bin/ 等）。
+/// 引数は (DLL の中身, その長さ, ログ用の名前の UTF-8, その長さ)。戻り値は解決可能になった型数（負値はエラー）。
+type LoadPrecompiledBytesFn = unsafe extern "system" fn(*const u8, i32, *const u8, i32) -> i32;
 /// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
 type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
 /// 保留中の [SerializeField] 参照フィールド（アクタ参照文字列／スロット名）を
@@ -253,23 +252,14 @@ type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostAp
 
 // ============================================================
 //  ScriptingHost — CLR ライフタイムと関数ポインタを保持
+//
+//  構築は clr_host（PC: ScriptingHost::load / 同梱 .NET: ScriptingHost::load_embedded）。
+//  関数ポインタの取り出しは両経路で共通（clr_host/entry_points.rs）。
 // ============================================================
-
-/// CLR（hostfxr）の初期化済みコンテキストの型。
-#[cfg(not(target_os = "android"))]
-type ClrContext = netcorehost::hostfxr::HostfxrContext<
-    netcorehost::hostfxr::InitializedForRuntimeConfig,
->;
-
-/// CLR を持たないプラットフォーム（Android 段階0）では「値を 1 つも作れない型」にする。
-/// これで ScriptingHost が構築され得ないことを型で保証する
-/// （ロードは unsupported_platform.rs の `load` が必ず Err を返す）。
-#[cfg(target_os = "android")]
-type ClrContext = std::convert::Infallible;
 
 pub struct ScriptingHost {
     // CLR が Drop されると全マネージドオブジェクトが無効になるため保持。
-    _context: ClrContext,
+    _context: clr_host::ClrContext,
 
     pub create_fn:          CreateFn,
     pub destroy_fn:         DestroyFn,
@@ -289,6 +279,9 @@ pub struct ScriptingHost {
     pub(crate) compile_fn:   CompileFn,
     /// 事前コンパイル済みユーザースクリプト DLL のロード（パッケージ版の起動経路）
     pub(crate) load_precompiled_fn: LoadPrecompiledFn,
+    /// 事前コンパイル済みユーザースクリプト DLL のバイト列からのロード（同梱 .NET の起動経路）。
+    /// 古い SEEDScripting.dll には無いので省略可能（None なら同梱 .NET ではユーザースクリプトを読めない）。
+    pub(crate) load_precompiled_bytes_fn: Option<LoadPrecompiledBytesFn>,
     pub(crate) set_field_fn: SetFieldFn,
     /// 保留中の参照フィールドを解決・注入する（OnStart 直前にフェーズ内で呼ぶ）
     pub(crate) resolve_refs_fn: ResolveRefsFn,
@@ -312,140 +305,10 @@ unsafe impl Send for ScriptingHost {}
 unsafe impl Sync for ScriptingHost {}
 
 impl ScriptingHost {
-    /// 探索結果から CLR を初期化して ScriptingHost を構築する。
-    ///
-    /// ## シャドウコピーを掛ける／掛けないの判断
-    /// 開発ビルド出力（`scripting/bin/...`）の DLL を直接ロードすると
-    /// プロセス実行中ずっとファイルがロックされ、エディタ/VS からの再ビルドが
-    /// 「別プロセスが使用中」で失敗する。そのため開発時だけ DLL 一式を
-    /// プロセス専用のテンポラリへコピーし、そのコピーをロードする。
-    ///
-    /// 一方パッケージ版では DLL は `{exe のフォルダ}/bin/` にあり、そこには
-    /// 同梱 .NET ランタイム（`bin/dotnet/`。実測 75 MB 超）も同居する。
-    /// シャドウコピーはフォルダ直下の全ファイルを写すため、そのまま掛けると
-    /// 起動のたびに配布物の副次ファイルをテンポラリへ複製することになる。
-    /// 配布物は再ビルドされないのでロックしても実害が無く、コピーは不要。
-    #[cfg(not(target_os = "android"))]
-    pub fn load(location: &ScriptingHostLocation) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
-        let dll_path = location.dll_path.as_path();
-
-        // 開発ビルド出力のときだけシャドウコピー（失敗時は元のパスにフォールバック）
-        let load_dll = if location.is_dev_build_output {
-            Self::shadow_copy(dll_path).unwrap_or_else(|_| dll_path.to_path_buf())
-        } else {
-            dll_path.to_path_buf()
-        };
-        let config_path = load_dll.with_extension("runtimeconfig.json");
-
-        // ── CLR（hostfxr）の探索先を決める ──
-        // 実行ファイルの bin/ に dotnet/ を同梱していればそこを .NET ルートとして使い、
-        // 無ければ PC にインストール済みの .NET を使う（従来どおり）。
-        // どちらを使ったかは配布先での切り分けに直結するので必ず 1 行残す。
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf));
-        let bundled_root = bundled_dotnet_root(exe_dir.as_deref(), &|path| path.is_dir());
-
-        let hostfxr = match &bundled_root {
-            Some(root) => {
-                eprintln!("[SEED] dotnet root: bundled {}", root.display());
-                nethost::load_hostfxr_with_dotnet_root(PdCString::from_os_str(root.as_os_str())?)?
-            }
-            None => {
-                eprintln!("[SEED] dotnet root: global");
-                nethost::load_hostfxr()?
-            }
-        };
-
-        let context = hostfxr.initialize_for_runtime_config(
-            PdCString::from_os_str(config_path.as_os_str())?,
-        )?;
-
-        let loader = context.get_delegate_loader_for_assembly(
-            PdCString::from_os_str(load_dll.as_os_str())?,
-        )?;
-
-        macro_rules! get_fn {
-            ($ty:ty, $method:expr) => {{
-                *loader.get_function_with_unmanaged_callers_only::<$ty>(
-                    pdcstr!("SEEDEditor.Scripting.ScriptBridge, SEEDScripting"),
-                    $method,
-                )?
-            }};
-        }
-
-        Ok(Arc::new(Self {
-            _context:          context,
-            create_fn:         get_fn!(fn(*const u8, i32) -> isize,           pdcstr!("CreateComponent")),
-            destroy_fn:        get_fn!(fn(isize),                              pdcstr!("DestroyComponent")),
-            on_start_fn:       get_fn!(fn(isize, u32, u32),                    pdcstr!("OnStart")),
-            on_destroy_fn:     get_fn!(fn(isize, u32, u32),                    pdcstr!("OnDestroy")),
-            begin_frame_fn:    get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("BeginFrame")),
-            early_update_fn:   get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EarlyUpdate")),
-            update_fn:         get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("Update")),
-            constant_update_fn:get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("ConstantUpdate")),
-            late_update_fn:    get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("LateUpdate")),
-            render_fn:         get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("Render")),
-            end_frame_fn:      get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EndFrame")),
-            physics_event_fn:  get_fn!(fn(isize, *const RawPhysicsEvent),      pdcstr!("OnPhysicsEvent")),
-            compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
-            load_precompiled_fn: get_fn!(fn(*const u8, i32) -> i32,            pdcstr!("LoadPrecompiledScripts")),
-            set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
-            resolve_refs_fn:   get_fn!(fn(isize, u32, u32),                    pdcstr!("ResolveReferenceFields")),
-            is_ref_field_fn:   get_fn!(fn(isize, *const u8, i32) -> i32,       pdcstr!("IsReferenceField")),
-            read_field_floats_fn: get_fn!(fn(isize, *const u8, i32, *mut f32, i32) -> i32,
-                                                                              pdcstr!("ReadFieldFloats")),
-            describe_fields_fn: get_fn!(fn(isize, *mut u8, i32) -> i32,
-                                                                              pdcstr!("DescribeSerializeFields")),
-            read_bindable_value_fn: get_fn!(fn(isize, *const u8, i32, i32, *mut u8, i32) -> i32,
-                                                                              pdcstr!("ReadBindableValue")),
-            describe_bindable_members_fn: get_fn!(fn(isize, *mut u8, i32) -> i32,
-                                                                              pdcstr!("DescribeBindableMembers")),
-            register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
-        }))
-    }
-
     /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
     /// CLR ロード後に一度だけ呼ぶ。これ以降 transform.Position などのアクセスが有効になる。
     pub fn install_host_api(&self) {
         unsafe { (self.register_host_api_fn)(host_api::host_api_ptr()); }
-    }
-
-    /// DLL とその関連ファイル一式を、プロセス専用のテンポラリディレクトリへ
-    /// コピーし、コピー後の DLL パスを返す。
-    ///
-    /// ビルド出力ディレクトリをロックしないためのシャドウコピー。
-    /// hostfxr は runtimeconfig.json / deps.json / 依存 DLL を DLL と同じ
-    /// フォルダから解決するため、ディレクトリ内の全ファイルをコピーする。
-    #[cfg(not(target_os = "android"))]
-    fn shadow_copy(dll_path: &Path) -> std::io::Result<PathBuf> {
-        use std::fs;
-
-        let src_dir = dll_path.parent().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "DLL の親ディレクトリが取得できません")
-        })?;
-        let file_name = dll_path.file_name().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "DLL ファイル名が取得できません")
-        })?;
-
-        // プロセス ID 単位のシャドウディレクトリ（多重起動でも衝突しない）
-        let shadow_dir = std::env::temp_dir()
-            .join("SEED_scripting_shadow")
-            .join(std::process::id().to_string());
-
-        // 既存の残骸を掃除してから作り直す
-        let _ = fs::remove_dir_all(&shadow_dir);
-        fs::create_dir_all(&shadow_dir)?;
-
-        // ソースディレクトリ直下の全ファイルをコピーする
-        for entry in fs::read_dir(src_dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() { continue; }
-            let dst = shadow_dir.join(entry.file_name());
-            fs::copy(entry.path(), dst)?;
-        }
-
-        Ok(shadow_dir.join(file_name))
     }
 
     /// アセットルート配下の全 .cs スクリプトを CLR 側でコンパイル（再コンパイル）する。
@@ -472,6 +335,35 @@ impl ScriptingHost {
         let path_string = dll_path.to_string_lossy();
         let bytes = path_string.as_bytes();
         unsafe { (self.load_precompiled_fn)(bytes.as_ptr(), bytes.len() as i32) }
+    }
+
+    /// 事前コンパイル済みユーザースクリプト DLL をバイト列からロードする（同梱 .NET の起動経路）。
+    ///
+    /// Android では DLL が APK の中（ファイルとして見えない）にあることがあるため、
+    /// パスではなく中身を渡す。C# 側はパス版と同じく collectible な AssemblyLoadContext へ読み、
+    /// 埋め込みの型マップで解決テーブルを作る（ScriptAssemblyManager.LoadPrecompiledBytes）。
+    ///
+    /// # 引数
+    /// * `assembly`     - SEEDUserScripts.dll の中身
+    /// * `display_name` - ログに出す名前（どこから読んだか）
+    ///
+    /// # 戻り値
+    /// 解決可能になったスクリプト型の数（負値はロード失敗。古い SEEDScripting.dll で関数が無いときも負値）。
+    pub fn load_precompiled_scripts_from_bytes(&self, assembly: &[u8], display_name: &str) -> i32 {
+        let Some(load_bytes) = self.load_precompiled_bytes_fn else {
+            eprintln!(
+                "[SEED] SEEDScripting.dll に LoadPrecompiledScriptsFromBytes がありません（古いスクリプトホスト）。\
+                 scripting を再ビルドしてください（dotnet build scripting/SEEDScripting.csproj）"
+            );
+            return PRECOMPILED_LOAD_UNSUPPORTED;
+        };
+        // C# 側の長さは int。2 GiB を超える DLL は扱えない（実際には数 MB）。
+        let Ok(length) = i32::try_from(assembly.len()) else {
+            eprintln!("[SEED] ユーザースクリプト DLL が大きすぎます（{} バイト）", assembly.len());
+            return PRECOMPILED_LOAD_UNSUPPORTED;
+        };
+        let name = display_name.as_bytes();
+        unsafe { load_bytes(assembly.as_ptr(), length, name.as_ptr(), name.len() as i32) }
     }
 
     /// スクリプトホスト DLL の探索を行い、最初に見つかった候補を返す。
@@ -517,6 +409,9 @@ pub const SCRIPTING_HOST_DLL_NAME: &str = "SEEDScripting.dll";
 /// エディタの `ScriptPackager` と同じ名前でなければならない。
 pub const PRECOMPILED_SCRIPTS_DLL_NAME: &str = "SEEDUserScripts.dll";
 
+/// バイト列からのユーザースクリプトのロードを行えなかったときの戻り値（C# 側の失敗 -1 と同じ扱いの負値）。
+const PRECOMPILED_LOAD_UNSUPPORTED: i32 = -1;
+
 /// 開発時のスクリプトホスト DLL の位置（ワーキングディレクトリ `runtime/` から見た相対）。
 ///
 /// 末尾のフォルダ名は `scripting/SEEDScripting.csproj` の `TargetFramework` と一致必須
@@ -551,7 +446,7 @@ pub const REQUIRED_DOTNET_RUNTIME_LABEL: &str = ".NET 10";
 pub const BUNDLED_DOTNET_ROOT_DIR: &str = "dotnet";
 
 /// 同梱 .NET ルート配下の host フォルダ名（`<root>/host/fxr/<ver>/hostfxr.dll`）。
-/// （同梱 .NET の探索は CLR をロードする load からだけ使う。Android 段階0 では未使用）
+/// （同梱 .NET の探索は PC の CLR 起動（clr_host/desktop.rs）からだけ使う。Android は同梱 .NET を別経路で起動する）
 #[cfg_attr(target_os = "android", allow(dead_code))]
 const BUNDLED_DOTNET_HOST_DIR: &str = "host";
 

@@ -21,7 +21,7 @@ use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 
-use crate::{app_dirs, debug_hooks, debug_save_test, device_info, heartbeat, launch, logcat};
+use crate::{app_dirs, debug_hooks, debug_save_test, device_info, dotnet_runtime, heartbeat, launch, logcat};
 
 /// android_main に一度入ったか（同一プロセスでの 2 回目を検出する）。
 static ANDROID_MAIN_ENTERED: AtomicBool = AtomicBool::new(false);
@@ -61,7 +61,10 @@ fn android_main(app: AndroidApp) {
     // 検証用: debug.seed.save_test=1|2 のときだけセーブを書き換える（書き込み先の設定後。通常起動では何もしない）。
     debug_save_test::run_if_enabled();
 
-    let args = launch::launch_args(&app);
+    let mut args = launch::launch_args(&app);
+    // 同梱 .NET を files/dotnet/ へ展開し（初回だけ）、C# スクリプトを動かす起動材料を作る（段階B）。
+    // 用意できなければ None のまま（エンジンはスクリプト無しで起動する）。
+    args.embedded_clr = dotnet_runtime::prepare(&app);
 
     // Android の EventLoop は AndroidApp と結び付けて作る必要がある（素の EventLoop::new() は panic）。
     let event_loop = EventLoop::builder()

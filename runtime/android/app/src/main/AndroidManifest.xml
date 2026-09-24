@@ -4,6 +4,9 @@
 
   ・Vulkan 1.1 必須（wgpu の Vulkan バックエンドを使う。0x401000 = Vulkan 1.1）
   ・Activity は 1 つだけ（GameActivity 派生の MainActivity）
+  ・allowNativeHeapPointerTagging="false" … arm64 の Android 11 以降で bionic がヒープポインタの上位バイトに付けるタグ（TBI）を
+    止める。同梱 .NET（CoreCLR / Mono）はタグ付きポインタで coreclr_initialize 中に SIGSEGV になる（実機 Pixel 6a で確認。
+    docs/android.md §11.4・§17）。ランタイムも CLR の起動直前に mallopt で同じ無効化を行う（二重の対策）。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -14,6 +17,7 @@
 
     <application
         android:allowBackup="false"
+        android:allowNativeHeapPointerTagging="false"
         android:appCategory="game"
         android:label="@string/app_name"
         android:theme="@style/Theme.SeedRuntime">

@@ -1,0 +1,47 @@
+{
+  "comment": [
+    "Android の APK に同梱する .NET ランタイムの設定（唯一の置き場）。読むのは build_and_run.ps1（Get-DotnetRuntimeSettings）。",
+    "dotnet_runtime で coreclr / mono を切り替える。版とパック名を変えたら APK を作り直すだけでよい（ランタイムのコードは目録 bundle.json を読む）。",
+    "パックは NuGet から取得し（dotnet restore の PackageDownload。~/.nuget/packages にキャッシュ）、ABI ごとに dotnet-root 形式へ組み立てる。",
+    "  .so                 -> app/src/seedDotnet/jniLibs/<ABI>/（APK の lib/<ABI>/。端末では nativeLibraryDir に展開される）",
+    "  java_libraries      -> app/src/seedDotnet/libs/（APK の Java クラス。CoreCLR の暗号ライブラリが JNI_OnLoad で探す net.dot.android.crypto.*）",
+    "  BCL・deps.json 等   -> app/src/seedDotnet/assets/seed/dotnet/<ABI>/<dotnet-root 内の相対パス> と目録 bundle.json",
+    "coreclr: 本物の CoreCLR（android-* パック）に、同じ版の linux-bionic パックの hostfxr / hostpolicy を組み合わせる（Microsoft 非サポートの組み合わせ）。",
+    "mono   : linux-bionic パックだけ（中身は Mono。libcoreclr.so は互換シム）。CoreCLR が動かない端末への逃げ道として残す。",
+    "詳細は docs/android.md の 11 章（スパイク）と 17 章（スクリプト実行）。"
+  ],
+  "dotnet_runtime": "coreclr",
+  "version": "10.0.12",
+  "framework": "Microsoft.NETCore.App",
+  "target_framework": "net10.0",
+  "abis": {
+    "arm64-v8a": "arm64",
+    "x86_64": "x64"
+  },
+  "runtimes": {
+    "coreclr": {
+      "runtime_pack": "Microsoft.NETCore.App.Runtime.android-{arch}",
+      "runtime_rid": "android-{arch}",
+      "host_pack": "Microsoft.NETCore.App.Runtime.linux-bionic-{arch}",
+      "host_rid": "linux-bionic-{arch}",
+      "excluded_native_files": [ "libmscordaccore.so", "libmscordbi.so" ],
+      "java_libraries": [ "libSystem.Security.Cryptography.Native.Android.jar" ]
+    },
+    "mono": {
+      "runtime_pack": "Microsoft.NETCore.App.Runtime.linux-bionic-{arch}",
+      "runtime_rid": "linux-bionic-{arch}",
+      "host_pack": "Microsoft.NETCore.App.Runtime.linux-bionic-{arch}",
+      "host_rid": "linux-bionic-{arch}",
+      "excluded_native_files": [],
+      "java_libraries": []
+    }
+  },
+  "host_libraries": {
+    "libhostfxr.so": "host/fxr/{version}",
+    "libhostpolicy.so": "shared/{framework}/{version}"
+  },
+  "native_library_mode": "symlink",
+  "runtime_properties": {
+    "System.Globalization.Invariant": "true"
+  }
+}

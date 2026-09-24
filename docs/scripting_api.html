@@ -747,7 +747,7 @@ transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</s
     <span class="k">float</span> pinch = now - prev;   <span class="c">// 正 = 指が離れた（拡大）</span>
 }</pre>
   <p class="section-note"><strong>重要</strong>: 素早いタップ（触れて離れるまでが 1 フレームに収まる）も、<strong>触れたフレームは <code>Began</code>・次のフレームで <code>Ended</code></strong> として必ず 2 フレームに分けて見える。Android でタッチが動かすマウスも同じで、左ボタンは「押下フレーム → 次フレームで解放」になる。</p>
-  <p class="section-note"><strong>重要</strong>: PC ではマウス左ボタンを押している間だけ指が 1 本（<code>FingerId = 0</code>）載り、押したまま動かすと <code>Moved</code>、止めると <code>Stationary</code>、離したフレームは <code>Ended</code>。右・中ボタンやホイールは指にならない。Android では 2 本目以降の指はマウスに影響せず、指0 が離れた後に残った指が指0 を引き継ぐこともない。なお Android でスクリプトが動くのは段階B から（2026-09 時点では準備中。docs/android.md）。</p>
+  <p class="section-note"><strong>重要</strong>: PC ではマウス左ボタンを押している間だけ指が 1 本（<code>FingerId = 0</code>）載り、押したまま動かすと <code>Moved</code>、止めると <code>Stationary</code>、離したフレームは <code>Ended</code>。右・中ボタンやホイールは指にならない。Android では 2 本目以降の指はマウスに影響せず、指0 が離れた後に残った指が指0 を引き継ぐこともない。Android でもスクリプトは PC と同じ DLL がそのまま動く（APK に同梱した .NET 10 の CoreCLR。docs/android.md §17）。</p>
 </section>
 
 <!-- ════════════════ 6.6 Physics ════════════════ -->
@@ -2026,7 +2026,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="warn">
     安全領域は自動ではキャンバス UI に反映されません。ボタンや HUD を穴・ジェスチャーバーから避けたいときは、<code>Screen.SafeArea</code> を読んで
     スクリプトで位置を決めてください。Android の画面の向き（縦固定・横固定・両方）はプロジェクト設定の「画面の向き（モバイル）」で決まり、
-    APK を作るときに固定されます（スクリプトからは変えられません）。Android でスクリプトが動くのは段階B から（2026-09 時点では準備中）。
+    APK を作るときに固定されます（スクリプトからは変えられません）。Android でのスクリプトの実行（同梱 .NET・DLL の差し替え）は docs/android.md §17。
   </div>
 </section>
 

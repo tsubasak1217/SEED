@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）、段階B の C# スクリプトの実行（APK に同梱した .NET 10 の CoreCLR。§17）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -64,6 +64,7 @@ runtime/                      パッケージ SEED
     src/jni_exports.rs        Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し。§14.2／安全領域と回転の報告。§15／
                               音声フォーカスの報告。§16）
     src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
+    src/dotnet_runtime/       同梱 .NET の展開（files/dotnet/）・スクリプトの DLL の置き場の選択 → CLR の起動材料（LaunchArgs.embedded_clr。§17）
     src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
     src/heartbeat.rs          提示フレーム数を 3 秒ごとにログ（描画ループの生存確認）
     src/device_info.rs        起動時の端末情報ログ
@@ -97,6 +98,7 @@ runtime/                      パッケージ SEED
 ```
 runtime/android/
   build_and_run.ps1          ビルド → install → 起動 → logcat の一括スクリプト（pwsh）
+  dotnet_runtime.json        APK に同梱する .NET の設定（版・パック名・coreclr / mono の切り替え。§17.2）
   settings.gradle.kts        リポジトリ（google / mavenCentral）と :app
   build.gradle.kts           AGP 9.1.0
   gradle.properties          AndroidX 等（マシン固有パスは書かない）
@@ -106,13 +108,18 @@ runtime/android/
   app/src/main/java/com/seedengine/runtime/MainActivity.java   GameActivity 派生（薄い）
   app/src/main/java/com/seedengine/runtime/ScreenReporter.java 安全領域と画面の回転を集めてネイティブへ渡す（§15）
   app/src/main/java/com/seedengine/runtime/AudioFocusController.java 音声フォーカスの要求・放棄と、変化のネイティブへの通知（§16）
+  app/src/main/java/com/seedengine/runtime/DotnetJniLibraries.java 同梱 .NET の暗号ライブラリを System.loadLibrary する（JNI_OnLoad。§17.8）
   app/src/main/res/values/{strings,themes}.xml
   app/src/main/jniLibs/<ABI>/libSEED.so    ← cargo ndk の出力（生成物・追跡しない）
   app/src/main/assets/seed/assets.pak      ← SeedPak の出力（-ProjectDir のときだけ。生成物・追跡しない。§13）
+  app/src/main/assets/seed/bin/            ← SeedPak --scripts の出力（スクリプトの DLL。-ProjectDir のときだけ。§17.7）
+  app/src/seedDotnet/                      ← 同梱 .NET（jniLibs/<ABI>/・assets/seed/dotnet/<ABI>/・libs/*.jar。生成物・追跡しない。§17.3）
   native/                    §4.1 の cdylib クレート
 ```
 
 - pak は `androidResources { noCompress += "pak" }` で非圧縮（STORED）のまま APK に入れる（§13.2）。
+- `packaging.jniLibs.useLegacyPackaging = true`（段階B）。.so をインストール時に nativeLibraryDir へ展開させる（同梱 .NET の .so を
+  dotnet-root から参照するため。§17.4）。その分 APK の .so は圧縮され、インストール時に展開される。
 
 - `applicationId` は仮に `com.seedengine.runtime`。段階C でプロジェクト設定からデータドリブンに生成する。
 - **GameActivity の prefab（C++ の glue）は使わない**。android-activity が自前の glue を持つため
@@ -127,8 +134,8 @@ runtime/android/
 ### 4.3 起動の流れ
 
 ```
-MainActivity（Java）: static { System.loadLibrary("SEED") }
-  onCreate の最初（super.onCreate の前）: 環境変数 TMPDIR＝cache・HOME＝files（Os.setenv。§14.1）
+MainActivity（Java）: static { System.loadLibrary("SEED"); DotnetJniLibraries.loadAvailable() … 同梱 .NET の暗号ライブラリ（§17.8） }
+  onCreate の最初（super.onCreate の前）: 環境変数 TMPDIR＝cache・HOME＝files・DOTNET_EnableDiagnostics=0（Os.setenv。§14.1・§17.6）
   └ GameActivity.onCreate … android.app.lib_name=SEED を読み、GameActivity_onCreate（Rust 側 glue）へ
       └ android-activity が専用スレッドで android_main(app) を呼ぶ（runtime/android/native/src/entry.rs）
           1. logcat::init()            … android_logger・panic フック・標準出力/標準エラーの付け替え
@@ -136,6 +143,8 @@ MainActivity（Java）: static { System.loadLibrary("SEED") }
           2b. app_dirs::init           … セーブ（files/save）・キャッシュ（cache）の書き込み先をエンジンへ設定（§14.1）
           3. launch::launch_args       … APK に seed/assets.pak があればパッケージ実行（配布物の読み口 package_source 付き。§13）、
                                          無ければ <アプリ専用フォルダ>/assets をアセットルートにした LaunchArgs（mode=Play。§4.5）
+          3b. dotnet_runtime::prepare  … 同梱 .NET を files/dotnet/ へ展開（初回）し、スクリプトの DLL の置き場を選んで
+                                         CLR の起動材料を LaunchArgs.embedded_clr へ（§17）。App::new が CLR を起動する
           4. EventLoop::builder().with_android_app(app).build()
           5. heartbeat::spawn()        … 3 秒ごとの提示フレーム数ログ
           6. App::run_with_event_loop(event_loop, args)   … 以降はデスクトップと同じエンジン
@@ -160,7 +169,7 @@ OS ごとの「振る舞いの差」は cfg を散らさず、`runtime/src/engin
 | フラグ | デスクトップ | Android | 効く場所 |
 |---|---|---|---|
 | `app_sizes_window` | true | false | ウィンドウ生成に project_settings の `window_width/height` を使うか（Android は端末の画面＝サーフェス実サイズ） |
-| `scripting_supported` | true | false | スクリプトホスト（CLR）を探すか（Android は段階B まで無し） |
+| `script_host_source` | `SearchFiles` | `EmbeddedOnly` | 起動材料（`LaunchArgs.embedded_clr`）が無いときにスクリプトホスト（CLR）をどう用意するか。PC はファイルを探す、Android は同梱 .NET だけ（無ければスクリプト無し。§17） |
 | `lifecycle_diag_log` | false | true | Resized / Focused / タッチ / キー / サーフェス生成の診断ログ（`app/lifecycle_diag.rs`）と、タッチ状態のフレーム単位ログ（`app/touch_diag.rs`） |
 | `touch_supported` | false | true | スクリプトの `Input.TouchSupported`（タッチ主体の端末か。§12） |
 | `touch_drives_mouse` | false | true | 指0 がマウス（カーソル座標＋左ボタン）を駆動するか（`input/touch/bridge.rs`。§12.2） |
@@ -176,9 +185,10 @@ OS ごとの「振る舞いの差」は cfg を散らさず、`runtime/src/engin
 デスクトップは報告しない（ずっと「持っている」）ので、音声の出力は止まらない（§16）。
 
 cfg が残るのは「そもそもコンパイルできない API」の箇所だけ:
-- `netcorehost` は Android では依存しない（`runtime/Cargo.toml`）。`engine/core/scripting` は Android で
-  `ScriptingHost::load` が常に「未対応」を返すスタブ（`scripting/unsupported_platform.rs`）になり、
-  CLR コンテキストの型は値を作れない `Infallible` になる。
+- `netcorehost` は Android では既定の機能（nethost-download）を外して依存する（`runtime/Cargo.toml`。§10）。
+  PC の探索経路（nethost・パス指定の読み込み。`scripting/clr_host/desktop.rs`）は Android ではコンパイルせず、
+  `ScriptingHost::load` は「使わない経路」として理由を返すだけ。同梱 .NET の起動（`clr_host/embedded.rs`）は全プラットフォーム共通。
+  ヒープポインタのタグ付けの無効化（`clr_host/heap_tagging.rs`）は Android だけ。
 - `engine/core/app_base/ipc.rs` の `read_loop` の `PeekNamedPipe` 呼び出し（Windows 専用。IPC は Android で使わない）。
 
 描画サーフェスのライフサイクル（デスクトップでは一切走らない）:
@@ -250,9 +260,13 @@ pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
 pwsh -File runtime/android/build_and_run.ps1 -Abi arm64-v8a -Serial <実機のシリアル> `
      -SkipRustBuild -SkipGradle -NoInstall -AssetsDir D:\path\to\Project\assets
 
-# 配布版と同じ形（APK 内 pak）。SeedPak で pak を作って APK に入れ、push 無しで起動する（§13）
+# 配布版と同じ形（APK 内 pak ＋ スクリプトの DLL ＋ 同梱 .NET）。push 無しで起動する（§13・§17）
 pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
      -ProjectDir D:\path\to\Project -LogcatSeconds 20
+
+# スクリプトの DLL だけを作り直して端末の files/bin/ へ送り、再起動する（APK は作り直さない。§17.7）
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -SkipRustBuild -SkipGradle -NoInstall `
+     -ProjectDir D:\path\to\Project -PushScripts -LogcatSeconds 20
 ```
 
 | 引数 | 意味 |
@@ -261,8 +275,9 @@ pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
 | `-Release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
 | `-Serial <adb のシリアル>` | 対象端末。**2 台以上つながっているときは必須** |
 | `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の内部アプリ専用フォルダの `assets/` へ送る（前回分は消して置き直す）。開発用の高速経路。APK を作るときは、このフォルダ（`-ProjectDir` ならそのアセットルート）の `screen_orientation` で画面の向きを決める（どちらも無ければ `both`。§15.1） |
-| `-ProjectDir <プロジェクトフォルダ>` | SeedPak（`editor/tools/SeedPak`）で pak を作り `app/src/main/assets/seed/` に置いてから APK を作る（パッケージ実行・push 無し。§13）。`.seedproj`／`assets/` を持つフォルダか、アセットルートそのもの。`-AssetsDir`・`-SkipGradle` とは同時に指定できない。**指定しないで Gradle を回すと置き場を空にする**（pak の無い開発用の APK になる） |
-| `-SkipRustBuild` / `-SkipGradle` / `-NoInstall` / `-NoLaunch` / `-NoLogcat` | 工程を飛ばす |
+| `-ProjectDir <プロジェクトフォルダ>` | SeedPak（`editor/tools/SeedPak`）で pak とスクリプトの `bin/`（`--scripts`）を作り `app/src/main/assets/seed/` に置いてから APK を作る（パッケージ実行・push 無し。§13・§17.7）。`.seedproj`／`assets/` を持つフォルダか、アセットルートそのもの。`-AssetsDir` とは同時に指定できない。`-SkipGradle` とは `-PushScripts` のとき（スクリプトの出どころ）だけ併用できる。**指定しないで Gradle を回すと置き場を空にする**（pak・スクリプトの無い開発用の APK になる） |
+| `-PushScripts` | `-ProjectDir`（無ければ `-AssetsDir`）の `.cs` を SeedPak `--scripts-only` で事前コンパイルし、DLL と runtimeconfig を端末の `files/bin/` へ送る（APK は作り直さない。§17.7） |
+| `-SkipRustBuild` / `-SkipGradle` / `-NoInstall` / `-NoLaunch` / `-NoLogcat` | 工程を飛ばす（`-SkipGradle` では同梱 .NET の組み立て（§17.3）も飛ばす） |
 | `-LogcatSeconds <秒>` / `-LogFile <パス>` | logcat を何秒集めるか（0 = Ctrl+C まで）／保存先 |
 
 ### 5.2 手で 1 段ずつ行う場合
@@ -307,10 +322,11 @@ adb -s emulator-5554 logcat -s SEED RustPanic                                  #
 
 ## 6. logcat の見方
 
-エンジン・糊・MainActivity の出力はすべて **タグ `SEED`** に集まる。
+エンジン・糊・MainActivity の出力はすべて **タグ `SEED`** に集まる。C# スクリプトの `SEED.Debug.Log`（`Console` の出力）は、
+CoreCLR では **タグ `DOTNET`**（.NET の Android 版 `Console` が logcat へ直接書く）、Mono では標準出力を経由してタグ `SEED` に出る（§17.10）。
 
 ```powershell
-adb logcat -s SEED RustPanic            # 普段はこれで十分
+adb logcat -s SEED DOTNET RustPanic     # 普段はこれで十分（DOTNET = C# スクリプトのログ）
 adb logcat -v threadtime SEED:V RustPanic:V GameActivity:V AndroidRuntime:E DEBUG:V libc:F *:S   # 起動失敗・クラッシュ時
 adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻以降だけ（共用端末で logcat -c しない）
 ```
@@ -340,6 +356,8 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | `[SEED SCREEN] Java 報告: …` / `報告を受け取りました: …` | 安全領域・回転の報告（`ScreenReporter.java`・`jni_exports.rs`。§15.4） | 描画面の大きさ・各辺からの距離・回転・表示の自然な向きの大きさ。Java の行には WindowInsets の種類ごとの内訳も出る |
 | `[SEED SCREEN] size=… safe=(x,y,幅,高さ) orientation=… dpi=… window=… report=…` | スクリプトの `SEED.Screen` が返す値（`app/screen_diag.rs`。§15.4） | 変化したフレームだけ。`report=none` は今の描画面に一致する報告が無いフレーム（回転の直後） |
 | `[SEED SAVE TEST] …` | 検証用のセーブ書き換え（`debug.seed.save_test` が 1 か 2 のときだけ。§14.6） | 起動時に読んだ値と書き換えた値 |
+| `[SEED DOTNET] ...` | 同梱 .NET の展開・スクリプトの DLL の置き場・CLR の起動（`dotnet_runtime/`・`clr_host/embedded.rs`。§17.10） | 展開・起動の所要時間と、どの置き場の DLL を使ったか |
+| タグ `DOTNET` の `[Script] ...` / `[SEEDScripting] ...` | C# スクリプトの `SEED.Debug.Log` とスクリプトホスト（CoreCLR の `Console`） | Mono では同じ行がタグ `SEED` に出る |
 | `[SEED PANIC] ...` / タグ `RustPanic` | panic フック（liblog へ同期で直接）／android-activity | 場所（ファイル:行）と backtrace |
 | `wgpu_hal::... / wgpu_core::...: ...` | 依存クレートの log（android_logger） | `naga` の Info は多すぎるため Warn 以上だけ出す |
 
@@ -395,13 +413,12 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
-- **スクリプト（C#）は動かない**（段階B）。
+- ~~スクリプト（C#）は動かない~~ → 段階B で APK に同梱した .NET 10 の CoreCLR で動く（§17）。
 - アセットは APK 内の pak（パッケージ実行。リリース版でも動く）か、デバッグ版 APK の run-as で内部アプリ専用フォルダへ
   送ったもの（開発用）を読む（§13）。
 - セーブ・キャッシュは起動モードに関係なくアプリ専用フォルダ（`files/save/`・`cache/`）に書く（段階A-3 で振り替え。§14.1）。
-- タッチは入力システムへつながった（§12）。ただしスクリプト（`Input.GetTouch` 等）は段階B まで Android で動かないため、
-  実機で効くのは「指0 → マウス」経由のもの（キャンバス UI のポインタイベントの判定・入力状態）だけ。
-  ポインタイベントの配信先もスクリプトなので、実機でボタンが反応するところまでは段階B で確認する。
+- タッチは入力システムへつながった（§12）。スクリプトの `Input.GetTouch` 等は段階B（§17）で実機でも動くことを確かめた。
+  キャンバス UI のボタン（ポインタイベントの配信先がスクリプト）が実機で反応するところは未確認。
 - **Activity の破棄＝プロセス終了**。winit 0.30 は onDestroy をアプリへ通知しない（イベントループが終わらず
   GameActivity の onDestroy が android_main の終了を待ち続けて ANR になる）うえ、EventLoop はプロセスで 1 度しか
   作れないため、`MainActivity.onDestroy` でプロセスを終了させている。構成変更での作り直しは `configChanges` で防いでいる。
@@ -428,7 +445,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 |---|---|
 | **0（完了）** | 実機/エミュレータに 1 枚絵。libSEED.so ＋ Gradle ＋ GameActivity、logcat、サーフェスの破棄・再生成、回転追従 |
 | **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声（鳴ることの確認・背面での停止・音声フォーカス・音量キー。**2026-09-24 実装・§16**）、logcat の整備 |
-| **B** | スクリプト: **PC も Android も .NET 10 の CoreCLR に揃える**（PC は全 C# プロジェクトを `net10.0` へ移行済み。Android は `android-*` ランタイムパック＋同じ版の bionic パックの hostfxr / hostpolicy。§11）。ScriptPackager の事前コンパイル DLL とランタイムを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う。出荷時は NativeAOT を後で検討 |
+| **B** | スクリプト: **PC も Android も .NET 10 の CoreCLR に揃える**（PC は全 C# プロジェクトを `net10.0` へ移行済み。Android は `android-*` ランタイムパック＋同じ版の bionic パックの hostfxr / hostpolicy。§11）。ScriptPackager の事前コンパイル DLL とランタイムを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う（**2026-09-25 実装・§17**。Mono へ切り替え可）。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: 実行先セレクタ（PC／実機／エミュレータ）、ビルド → install → 起動 → logcat → 停止、pak/DLL だけ push する高速経路、パッケージ化ウィンドウの Android 出力の実働化（`build_and_run.ps1` の各関数が土台） |
 | **D** | Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
 
@@ -437,7 +454,25 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 ## 10. 技術メモ（ハマりどころ）
 
 - **netcorehost の既定機能 `nethost-download`** は `nethost-sys` の build.rs が Android で
-  `platform not supported` と panic する。Android では依存自体を外した（`[target.'cfg(not(target_os = "android"))'.dependencies]`）。
+  `platform not supported` と panic する。段階0〜A は Android では依存自体を外していた。段階B からは Android だけ
+  `default-features = false, features = ["net10_0"]` で依存する（`Hostfxr::load_from_path` を使うので nethost は要らない）。
+- **同梱 .NET（段階B）のハマりどころ**（詳細は §17）:
+  - AGP の既定（`useLegacyPackaging = false`）では .so は APK から直接読み込まれ、端末のファイルとして存在しない
+    （`dladdr` のパスが `…/base.apk!/lib/<ABI>/libSEED.so`）。hostfxr / hostpolicy / CoreCLR は dotnet-root 形式のフォルダの
+    実ファイル（かシンボリックリンク）を前提にするので `useLegacyPackaging = true` にした。
+  - bionic の `dladdr` はシンボリックリンクを辿った実パスを返す。hostfxr が自分の場所から推す dotnet-root は当てにならないので、
+    `initialize_for_runtime_config_with_dotnet_root` で明示する。それでも `System.Private.CoreLib.dll` は dotnet-root の
+    framework フォルダから読まれた（シンボリックリンクの置き方で動く。§17.4）。
+  - アプリのデータフォルダ（`app_data_file`）のファイルを実行可能として読み込むと、SELinux の `avc: granted { execute }` が
+    ファイルごとに 1 行ずつ出る（`auditallow`＝許可しつつ記録。R2R の DLL も対象）。将来の Android で禁止される恐れがある（backlog）。
+  - Mono は、型の静的フィールドの型（ラムダを貯める隠れクラス `<>c`・`<>O` の `Func<Roslyn の型, …>` 等）をクラスの読み込み時に
+    解決する。事前コンパイル DLL を読むだけの経路で Roslyn の型が見えると、Roslyn の無い端末で `TypeLoadException` になった
+    （`ScriptAssemblyManager` から Roslyn を使うコードを `ScriptAssemblyEmitter` へ分けて解消。§17.9）。
+  - CoreCLR の暗号ライブラリの `JNI_OnLoad` は、パックの `.jar` のクラス（`net.dot.android.crypto.*`）を `FindClass` で探し、
+    無ければ `abort()` する。ネイティブのスレッドから呼ぶとシステムのクラスローダーで探すので必ず失敗する。Java の
+    `System.loadLibrary` で読み込む（§17.8）。
+  - debuggerd（tombstone のバックトレース）は `lib/` の下の .so しか読めない（`files/` に複製した .so は関数名が出ない）。
+  - PowerShell の `$x = if (…) { @(1 要素) }` は配列が中身へ展開される（StrictMode で `.Count` が無いエラー）。配列は `if` の外で作る。
 - **winit 0.30 の Android**: `EventLoop::new()` は panic する（`with_android_app` 必須）。`MainEvent::Destroy` は
   warn ログだけでアプリへ届かない。`resumed` / `suspended` はネイティブウィンドウの生成・破棄ごとに何度も来る。
   winit は `ConfigChanged` のたびに `ScaleFactorChanged` を出し、続く `WindowResized` で `Resized` を出す。
@@ -505,7 +540,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 
 目的: Android 上で Rust から hostfxr 経由で .NET を起動し、`UnmanagedCallersOnly` の C# 関数を呼べるかの検証。
 検証コードは `runtime/android/spikes/dotnet_host/`（README 参照）。検証環境はエミュレータ x86_64 と、その ARM 変換上の arm64。
-**実機とアプリプロセス内は未検証**（adb のシェル権限で `/data/local/tmp` から実行した）。
+**実機とアプリプロセス内は未検証**（adb のシェル権限で `/data/local/tmp` から実行した）。実機は §11.4、アプリプロセス内（段階B の本実装）は §17。
 
 **段階B の方針（2026-09-24 決定）: PC も Android も .NET 10 の CoreCLR に揃える**（Mono は採らない。PC 側は全 C# プロジェクトを `net10.0` / `net10.0-windows` へ移行済みで、以下のスパイクの net9.0 / `rollForward` の記述は当時の構成）。
 
@@ -720,8 +755,8 @@ adb -s <serial> shell setprop debug.seed.touch_test 0                     # 必�
 
 - 実機（Pixel 6a）の `[SEED TOUCH FRAME]` と複数指（合成タッチ列）は 2026-09-24 に確認済み（§12.5）。実機で OS 経由の複数指
   （本物の 2 本指以上）は未確認（非 root では注入できない。人の指で触る必要がある）。
-- Android ではスクリプトが動かない（段階B）ため、`Input.GetTouch` の値とキャンバス UI のボタン反応（配信先がスクリプト）は Android では未確認。
-  入力状態（指の一覧・タッチ由来のマウス）までは `[SEED TOUCH FRAME]` で確認した（エミュレータ）。
+- スクリプトは段階B（§17）で Android でも動くようになり、スクリプトの `Input.GetTouch`（段階・位置・移動量）と `Input.TouchCount` は
+  エミュレータと実機で確かめた（§17.11）。キャンバス UI のボタン反応（ポインタイベントの配信先がスクリプト）は Android では未確認。
 - ジェスチャ（ピンチ・回転・長押し・ダブルタップ）・タップ回数・圧力の組み込み API は無い（スクリプトで組み立てる）。
 - キャンバス UI のポインタイベントは指0 の 1 本だけ。指を離した後もマウス位置が残るので、ボタンのホバー状態は次に触れるまで残る。
 - MCP の入力注入からはタッチを合成しない。タッチパネル付き PC の実タッチ（Windows の WM_TOUCH / WM_POINTER ＋ 昇格マウス）は未検証。
@@ -768,6 +803,7 @@ APK
 - `project_settings.json` は PAK の中（収集の起点として必ず入る。[packaging.md](packaging.md) §2）。PAK の外に置く必要がある
   ファイルは現状無い（Windows の `bin/`＝スクリプト DLL と .NET は段階B）。PAK の外に置いたファイルも、同じ読み口で
   `assets://` として読める（13.1 の表の 2 番目）。APK 内のパスは大文字小文字を区別する（PAK の検索だけは区別しない）。
+  段階B からはスクリプトの `bin/`（`assets/seed/bin/`）と同梱 .NET（`assets/seed/dotnet/<ABI>/`）も APK に入る（§17.3）。
 
 ### 13.3 仕組み
 
@@ -855,9 +891,8 @@ dotnet run --project editor/tools/SeedPak -- --project D:\path\to\Project --out 
 - ~~パッケージ実行ではセーブ・キャッシュを書けない~~ → 段階A-3 でアプリ専用フォルダへ振り替えた（§14.1）。
 - モデルの派生キャッシュは PAK 実行では効かない（Windows の配布物と同じ。[packaging.md](packaging.md) §8）。パイプラインキャッシュは
   段階A-3 から保存される（§14.3）。
-- 段階B（スクリプト）: `App::new` は「アセットルートがあればソースをコンパイル、無ければ事前コンパイル DLL」で分けるが、
-  Android のパッケージ実行もアセットルートを持つ。段階B では `package_source` の有無でも分け、DLL を配布物の `bin/` から
-  （`PackageSource` で）読む必要がある。
+- ~~段階B（スクリプト）: Android のパッケージ実行も DLL を配布物の `bin/` から読む必要がある~~ → 段階B で、同梱 .NET の起動材料
+  （`LaunchArgs.embedded_clr`）があれば事前コンパイル DLL をバイト列で読むようにした（APK の `bin/` は `PackageSource` で読む。§17.7）。
 - APK 内のパスは大文字小文字を区別する（PAK の外に置くファイルは、参照と実名を一致させる）。
 - 読み出しは読み口 1 本の直列化（13.4）。
 
@@ -1190,7 +1225,8 @@ PC（Windows・`SEED.exe` 単体の Play ＋ 確認用スクリプト）: 起動
 
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
-- Android ではスクリプトが動かない（段階B）ため、`SEED.Screen` の C# 側は PC でだけ確かめた。Android では同じ値をログで確かめた。
+- `SEED.Screen` の C# 側は、段階B（§17）でスクリプトが動くようになってから Android でも確かめた（エミュレータ・実機の縦画面で
+  `SafeArea`・`Orientation`・`DPI`。§17.11）。回転中の値はログ（`[SEED SCREEN]`）でだけ確かめている。
 - 安全領域をキャンバス UI へ自動で反映する仕組み（セーフエリアのパディング・アンカー）は無い。スクリプトが `SafeArea` を読んで配置する。
 - 回転の直後の 1 フレーム程度は、安全領域が全画面・向きが縦横比からの値になることがある。
 - 端末の回転ロックは尊重しない（`fullSensor` / `sensorPortrait` / `sensorLandscape`。`fullUser` 等の選択肢は無い）。
@@ -1344,3 +1380,260 @@ adb shell input keyevent KEYCODE_VOLUME_UP ; adb shell cmd media_session volume 
 - debug ビルドの実機では、ミキサーとデコードのオーディオスレッドが 1 コアの約 34% を使った（エミュレータは約 7%）。音声系クレート
   （rodio・cpal・symphonia 等）は dev プロファイルで最適化されていない。
 - ダッキングの下げ幅（×0.2）は定数（`output_policy::DUCKED_GAIN`）。プロジェクト設定にはしていない。
+
+---
+
+## 17. C# スクリプトの実行（段階B・2026-09-25）
+
+APK に .NET 10 の CoreCLR（Android 版）を同梱し、PC と同じスクリプトホスト（`SEEDScripting.dll`）と事前コンパイル DLL
+（`SEEDUserScripts.dll`。ScriptPackager / SeedPak）で C# スクリプトを動かす。スクリプト側の変更は要らない（PC と同じ DLL がそのまま動く）。
+構成は §11 のスパイクの結論どおり（**CoreCLR を採用し、Mono は切り替えられる逃げ道として残す**）。PC の起動経路（nethost・パス指定）は変えていない。
+
+### 17.1 全体の流れ
+
+```
+ビルド（runtime/android/build_and_run.ps1）
+  [2/7] SeedPak --scripts … assets.pak と bin/（SEEDUserScripts.dll・SEEDScripting.dll・runtimeconfig・依存 DLL）→ app/src/main/assets/seed/
+  [3/7] 同梱 .NET … dotnet_runtime.json の版・パックを NuGet から取り寄せ（~/.nuget/packages）、-Abi の ABI ごとに組み立てる
+          .so（hostfxr・hostpolicy・coreclr・clrjit・System.*.Native）→ app/src/seedDotnet/jniLibs/<ABI>/（APK の lib/<ABI>/）
+          BCL の DLL・deps.json・runtimeconfig・目録 bundle.json → app/src/seedDotnet/assets/seed/dotnet/<ABI>/
+          暗号ライブラリの Java 側（.jar）→ app/src/seedDotnet/libs/（APK の Java クラス）
+  [4/7] Gradle（useLegacyPackaging = true。.so をインストール時に nativeLibraryDir へ展開させる）
+端末
+  MainActivity の static 初期化: System.loadLibrary("SEED") → DotnetJniLibraries（暗号ライブラリを System.loadLibrary。JNI_OnLoad。§17.8）
+  MainActivity.onCreate: 環境変数 TMPDIR / HOME / DOTNET_EnableDiagnostics=0（§17.6）
+  android_main → launch::launch_args → dotnet_runtime::prepare（runtime/android/native/src/dotnet_runtime/）
+      1. APK の assets/seed/dotnet/<ABI>/bundle.json を読む（無ければ「.NET の無い APK」としてスクリプト無し）
+      2. スクリプトの DLL の置き場を選ぶ（files/bin → 外部の files/bin → APK の bin/。SEEDScripting.dll がある最初の置き場。
+         どこにも無ければ .NET を展開せずにスクリプト無し）
+      3. files/dotnet/<種類>-<版>-<content_id>/ へ展開（初回。BCL は APK の assets から複製、.so は nativeLibraryDir へのシンボリックリンク）
+         2 回目以降は印（.seed_bundle_complete）と asset の大きさを確かめて使い回し、.so のリンクだけ確かめて直す
+      4. その置き場の SEEDScripting.runtimeconfig.json を展開先の app/ へ写す（hostfxr にはファイルのパスが要る）
+      → LaunchArgs.embedded_clr（EmbeddedClrHost）
+  App::new → app/script_boot.rs → ScriptingHost::load_embedded（runtime/src/engine/core/scripting/clr_host/embedded.rs）
+      mallopt（ヒープのタグ付けの無効化。§17.5）→ Hostfxr::load_from_path → initialize_for_runtime_config_with_dotnet_root
+      → set_runtime_property_value（System.Globalization.Invariant=true）→ get_delegate_loader（ここで CLR が起動）
+      → load_assembly_from_bytes（SEEDScripting.dll を Default の AssemblyLoadContext へ）→ エントリポイントの取り出し（PC と共通）
+  → install_host_api → load_precompiled_scripts_from_bytes（SEEDUserScripts.dll。C# の ScriptBridge.LoadPrecompiledScriptsFromBytes）
+  以降のスクリプトの実行（CreateComponent・OnStart・Update …）は PC と同じ経路
+```
+
+| 層 | ファイル | 役割 |
+|---|---|---|
+| 設定 | `runtime/android/dotnet_runtime.json` | 版・パック名・coreclr / mono・.so の置き方・ランタイムプロパティ（唯一の置き場。§17.2） |
+| 組み立て | `runtime/android/build_and_run.ps1`（`Update-DotnetBundles` ほか） | NuGet から取り寄せ、ABI ごとに jniLibs / assets / 目録を作る。`-PushScripts` |
+| 目録と展開 | `runtime/src/engine/core/scripting/embedded_runtime/`（`manifest.rs`・`install.rs`） | bundle.json の検査と files/dotnet/ への展開・使い回し・修復（単体テスト付き） |
+| DLL の置き場 | `runtime/src/engine/core/scripting/script_binaries.rs` | `ScriptBinarySource`（フォルダ / 配布物の bin/）と選び方の純関数（単体テスト付き） |
+| CLR の起動 | `runtime/src/engine/core/scripting/clr_host/`（`embedded.rs`・`desktop.rs`・`entry_points.rs`・`heap_tagging.rs`） | 同梱 .NET と PC の 2 経路。関数ポインタの取り出しは共通（`entry_points.rs`） |
+| 起動時の分岐 | `runtime/src/engine/core/app_base/app/script_boot.rs`・`platform/mod.rs`（`script_host_source`） | 起動材料の有無とプラットフォームの特性でスクリプトホストとユーザースクリプトの読み方を決める |
+| Android の糊 | `runtime/android/native/src/dotnet_runtime/`（`mod.rs`・`abi.rs`・`native_library_dir.rs`・`script_sources.rs`） | ABI・nativeLibraryDir（dladdr）・DLL の置き場の候補を集めて起動材料を作る |
+| Java | `DotnetJniLibraries.java`・`MainActivity.java` | 暗号ライブラリの System.loadLibrary・環境変数 |
+| C# | `scripting/src/ScriptBridge.cs`（`LoadPrecompiledScriptsFromBytes`）・`ScriptAssemblyManager.cs`（`LoadPrecompiledBytes`）・`Compilation/ScriptAssemblyEmitter.cs` | バイト列からの読み込みと、Roslyn に触れるコードの分離（§17.9） |
+| DLL を作る | `editor/tools/SeedPak`（`--scripts` / `--scripts-only`） | パッケージ化ウィンドウと同じ ScriptPackager で bin/ を作る（[packaging.md](packaging.md) §10.2） |
+
+### 17.2 設定（`runtime/android/dotnet_runtime.json`）
+
+| キー | 既定 | 意味 |
+|---|---|---|
+| `dotnet_runtime` | `coreclr` | `coreclr` / `mono`（§17.9）。`runtimes` の中の同名の設定を使う |
+| `version` / `framework` / `target_framework` | `10.0.12` / `Microsoft.NETCore.App` / `net10.0` | パックの版と、dotnet-root の中のフォルダ名（`shared/<framework>/<version>/`） |
+| `abis` | `arm64-v8a→arm64`・`x86_64→x64` | Android の ABI → パック名の `{arch}` |
+| `runtimes.<種類>.runtime_pack` / `runtime_rid` | CoreCLR: `Microsoft.NETCore.App.Runtime.android-{arch}` | BCL・`libcoreclr.so` 等の出どころ（パックの `runtimes/<RID>/lib/<TFM>/`・`native/`） |
+| `runtimes.<種類>.host_pack` / `host_rid` | `Microsoft.NETCore.App.Runtime.linux-bionic-{arch}` | `libhostfxr.so`・`libhostpolicy.so` の出どころ（android パックには無い） |
+| `runtimes.<種類>.excluded_native_files` | CoreCLR: `libmscordaccore.so`・`libmscordbi.so` | 入れない .so（デバッガ用）。`.a`・`.dex`・`.jar` はそもそも .so / .dll でないので入らない |
+| `runtimes.<種類>.java_libraries` | CoreCLR: 暗号ライブラリの `.jar` | APK の Java クラスへ入れる .jar（§17.8。Mono は無し） |
+| `host_libraries` | hostfxr → `host/fxr/{version}`、hostpolicy → `shared/{framework}/{version}` | host_pack の .so の dotnet-root 内の置き場 |
+| `native_library_mode` | `symlink` | .so を dotnet-root へ置く方法（`symlink` / `copy`。§17.4） |
+| `runtime_properties` | `System.Globalization.Invariant=true` | CLR の起動前に hostfxr へ設定するプロパティ（§17.6） |
+
+- 値を変えたら APK を作り直すだけでよい（ランタイムのコードは APK の目録 `bundle.json` を読む）。
+- 目録の `content_id` は「設定ファイル・`build_and_run.ps1`・ABI・目録の書式の版」のハッシュ（先頭 16 桁）。同じなら組み立てを省き
+  （`変更なし（content_id=…）`）、端末も展開を使い回す。NuGet のパックは版ごとに中身が変わらないため、パックの中身は材料に入れていない。
+
+### 17.3 APK 内のレイアウトと端末上の展開
+
+```
+APK
+  lib/<ABI>/libSEED.so, libhostfxr.so, libhostpolicy.so, libcoreclr.so, libclrjit.so, libSystem.Native.so,
+            libSystem.Globalization.Native.so, libSystem.IO.Compression.Native.so, libSystem.Security.Cryptography.Native.Android.so
+  assets/seed/assets.pak                                      … §13
+  assets/seed/bin/SEEDScripting.dll ほか                       … SeedPak --scripts（PC の配布物の bin/ と同じ中身）
+  assets/seed/dotnet/<ABI>/bundle.json                        … 目録（ファイル一覧・版・content_id・プロパティ）
+  assets/seed/dotnet/<ABI>/shared/Microsoft.NETCore.App/<版>/*.dll, Microsoft.NETCore.App.deps.json, .runtimeconfig.json
+  classes.dex の net.dot.android.crypto.*                      … 暗号ライブラリの .jar（§17.8）
+
+端末（/data/user/0/com.seedengine.runtime/）
+  files/dotnet/coreclr-10.0.12-<content_id>/                  … dotnet-root（hostfxr へ渡すフォルダ）
+    host/fxr/10.0.12/libhostfxr.so            → nativeLibraryDir/libhostfxr.so（シンボリックリンク）
+    shared/Microsoft.NETCore.App/10.0.12/*.dll                … APK の assets から複製
+    shared/Microsoft.NETCore.App/10.0.12/lib*.so → nativeLibraryDir/lib*.so
+    app/SEEDScripting.runtimeconfig.json                      … スクリプトの置き場から毎回写す（中身が同じなら書かない）
+    .seed_bundle_complete                                     … 展開の完了の印（中身は content_id。最後に書く）
+  files/bin/                                                  … -PushScripts の置き場（§17.7）
+```
+
+- deps.json は、パックのものの `native` の一覧を「実際に入れた .so」だけに絞って書き直す（.a・.jar・デバッガ用 .so を載せない）。
+  `runtime`（BCL）は全部入れるのでそのまま。Mono は `System.Private.CoreLib.dll` がパックの `native/` にあるので BCL と一緒に入れる。
+- 展開の途中でプロセスが殺されても、印が無いので次回は最初から展開し直す。中身の違う古い版（別の content_id）のフォルダは展開の後に消す。
+- 2 回目以降は印と asset（全ファイルの有無と大きさ）を確かめるだけ（実機で 4〜77 ms）。**アプリを入れ直すと nativeLibraryDir の場所
+  （`/data/app/~~<乱数>/…`）が変わりシンボリックリンクが切れる**が、.so だけを張り直す（BCL は展開し直さない。実機で 8 本を張り直し 4.2 ms）。
+- runtimeconfig を DLL の置き場からそのまま渡さないのは、hostfxr がそのフォルダを「アプリのフォルダ」として扱い、並んだ DLL
+  （SEEDScripting.dll 等）を TPA に載せて、バイト列から読む SEEDScripting と二重になるため。空のフォルダ（`app/`）へ写してから渡す。
+- 2 ABI 入りの APK では、assets（BCL）は両方の ABI のものが入る（lib/ と違って ABI で分けられない）。配布は arm64 だけの想定（§2）。
+
+### 17.4 .so の見せ方（シンボリックリンクと複製。実機で両方を確かめてシンボリックリンクを既定にした）
+
+hostfxr / hostpolicy / CoreCLR は dotnet-root 形式のフォルダに .so が並んでいることを前提にする。.so は APK の `lib/<ABI>/` に入れ、
+`useLegacyPackaging = true` でインストール時に nativeLibraryDir へ展開させたうえで、dotnet-root から次のどちらかで参照する。
+
+| | `symlink`（既定） | `copy` |
+|---|---|---|
+| 実機 Pixel 6a・エミュレータで CLR が起動しスクリプトが動くか | 動く | 動く |
+| 展開の所要時間（実機・初回） | 456〜839 ms | 484 ms |
+| .so の容量 | 増えない | 1 ABI あたり約 12 MB 増える |
+| .so を実行する場所 | nativeLibraryDir（OS が展開した `apk_data_file`） | アプリのデータフォルダ（`app_data_file`。SELinux の auditallow の対象） |
+| tombstone のバックトレース | 関数名が出る | 出ない（debuggerd は `lib/` の下しか読めない） |
+| スクリプトの暗号 API（§17.8） | **動く**（Java が JNI_OnLoad した実体と同じファイル） | **プロセスごと落ちる**（CLR が別の実体を読み、初期化されていない。エミュレータで SIGSEGV を確認） |
+| アプリの入れ直し | リンクが切れるので張り直す（install の修復） | 大きさが同じなら使い回す |
+
+- 心配だった点（bionic の `dladdr` はシンボリックリンクを辿った実パスを返すので、CoreCLR が自分のフォルダ＝nativeLibraryDir から
+  `System.Private.CoreLib.dll` を探すのではないか）は起きなかった。CoreLib は dotnet-root の framework フォルダから読まれた
+  （SELinux の記録に `…/files/dotnet/…/System.Private.CoreLib.dll` の execute が出る）。hostfxr の自己位置からの dotnet-root の推定は
+  当てにならないので、dotnet-root は常に明示する（`initialize_for_runtime_config_with_dotnet_root`）。
+- 以上から既定は `symlink`。シンボリックリンクを許さない端末が見つかったときの逃げ道として `copy` を残した（`dotnet_runtime.json` の
+  `native_library_mode` を変えて APK を作り直すだけ）。
+- どちらの方式でも、BCL の R2R（事前コンパイル済みのネイティブコード入り DLL）はアプリのデータフォルダから実行可能として読み込まれる。
+  SELinux は許可しつつ記録する（`avc: granted { execute } … tcontext=u:object_r:app_data_file`。ファイルごとに 1 行）。将来の Android で
+  禁止されると、この方式（hostfxr ＋ ファイルの dotnet-root）は使えなくなる（backlog）。
+
+### 17.5 ヒープポインタのタグ付け（実機 arm64 の必須対策）
+
+§11.4 のとおり、arm64 の Android 11 以降は bionic がヒープポインタの上位バイトにタグ（0xB4）を付け、CoreCLR / Mono が
+`coreclr_initialize` で SIGSEGV になる。2 つとも入れた。
+
+1. `AndroidManifest.xml` の `<application android:allowNativeHeapPointerTagging="false">`（プロセスの開始時点から付かない。API 30 以降）
+2. `clr_host/heap_tagging.rs`: CLR の起動直前（hostfxr を読み込む前）に `mallopt(M_BIONIC_SET_HEAP_TAGGING_LEVEL, M_HEAP_TAGGING_LEVEL_NONE)`
+   （マニフェストの属性が無い APK でも起動できる保険。bionic の malloc.h は「いつでも・複数スレッドが動いていても呼んでよい」。API 31 以降）
+
+実機 Pixel 6a（Android 16）で、`[SEED DOTNET] ヒープポインタのタグ付けを無効にしました（mallopt=1 …）` の後に CLR が起動した
+（`aapt2 dump xmltree` で APK のマニフェストに `allowNativeHeapPointerTagging=false`・`extractNativeLibs=true` を確認）。
+
+### 17.6 ランタイムプロパティ・環境変数
+
+- `System.Globalization.Invariant=true` は `set_runtime_property_value` で設定する（runtimeconfig は PC と同じファイルなので書き換えない。
+  Windows には影響しない）。アプリのプロセスからは端末の ICU（`/apex/com.android.i18n`）を読めないため。`CultureInfo("ja-JP")` 等は
+  `CultureNotFoundException` になる（§11.1 のスパイクと同じ。スクリプトは文化に依存しない書式を使う）。
+- runtimeconfig は `SEEDScripting.runtimeconfig.json`（net10.0・`Microsoft.NETCore.App 10.0.0`・`rollForward=LatestMinor`）をそのまま使う
+  （10.0.12 へロールフォワード）。
+- `MainActivity.onCreate`（ネイティブのスレッドが無いうち）に `DOTNET_EnableDiagnostics=0`（デバッガ・プロファイラ・EventPipe の待ち受けを
+  止める）。`TMPDIR` / `HOME` は §14.1 のとおり（.NET の `Path.GetTempPath()` はキャッシュフォルダを返す）。
+
+### 17.7 スクリプトの DLL の置き場と高速経路（`-PushScripts`）
+
+| 順 | 置き場 | 置き方 | 読めるか |
+|---|---|---|---|
+| 1 | 内部アプリ専用フォルダ `files/bin/` | `build_and_run.ps1 -PushScripts`（run-as ＋ tar。デバッグ版 APK だけ） | 実機・エミュレータとも読める |
+| 2 | 外部アプリ専用フォルダ `/sdcard/Android/data/<pkg>/files/bin/` | 手で `adb push` | エミュレータは読める。**実機（Pixel 6a・Android 16）は読めない**（Permission denied。警告を出して飛ばす） |
+| 3 | APK の `assets/seed/bin/` | `build_and_run.ps1 -ProjectDir`（SeedPak `--scripts`） | 読める（配布版と同じ形） |
+
+- `SEEDScripting.dll` がある最初の置き場を使い、`SEEDUserScripts.dll` と runtimeconfig も同じ置き場から読む（版の違うホストと混ぜない）。
+  選び方は `script_binaries::choose_binaries`（単体テスト付き）。ログの `[SEED DOTNET] スクリプトの置き場: …` で分かる。
+- `-PushScripts` は `-ProjectDir`（無ければ `-AssetsDir`）の .cs を SeedPak `--scripts-only` で事前コンパイルし、`bin/` の DLL と runtimeconfig を
+  `files/bin/` へ送り（前回分は消してから）、force-stop して起動し直す。APK は作り直さない。SeedPak は `scripting/` も一緒にビルドする。
+- 差し替えを消すと APK の中のものへ戻る: `adb exec-out run-as com.seedengine.runtime rm -rf files/bin`
+- 当初は外部アプリ専用フォルダへ `adb push` する形にしたが、実機では §4.5 と同じ理由（adb push が作ったフォルダは shell の所有）で
+  アプリから読めなかったため、run-as の内部フォルダへ変えた。外部フォルダは手で置く場合の候補として残した（エミュレータでは使える）。
+- Android ではその場コンパイル（.cs から）をしない（Roslyn の参照アセンブリが端末に無い）。`bin/` には PC と同じく Roslyn の DLL（約 9 MB）も
+  入るが、Android では読み込まれない（backlog）。スクリプトのホットリロードは無い（DLL を差し替えて再起動する）。
+
+### 17.8 暗号 API（JNI の初期化）
+
+CoreCLR の暗号ライブラリ（`libSystem.Security.Cryptography.Native.Android.so`。`SHA256`・`RandomNumberGenerator`・TLS 等）は JNI で Java の
+暗号 API を呼ぶ。`JNI_OnLoad`（中身は `AndroidCryptoNative_InitLibraryOnLoad`）で JavaVM を受け取り、パックの `.jar` のクラス
+（`net.dot.android.crypto.DotnetProxyTrustManager`・`PalPbkdf2` 等）を `FindClass` で探し、**無ければ `abort()` する**。
+
+- ネイティブのスレッドから `JNI_OnLoad` を呼ぶ案（`AndroidApp::vm_as_ptr()` の JavaVM を渡す）は採らなかった。`FindClass` がシステムの
+  クラスローダーで探すため、APK のクラスが見えず必ず abort する。
+- 採った方法: `build_and_run.ps1` がパックの `.jar` を `app/src/seedDotnet/libs/` へ置き、Gradle が APK の Java クラスへ入れる。
+  `MainActivity` の static 初期化で `DotnetJniLibraries.loadAvailable()` が `System.loadLibrary("System.Security.Cryptography.Native.Android")`
+  する（`JNI_OnLoad` はアプリのクラスローダーの文脈で呼ばれる）。.jar のクラスが APK に無い（Mono・.NET 無し）ときは読み込まない。
+- CLR は dotnet-root の `libSystem.Security.Cryptography.Native.Android.so` を dlopen する。`symlink` では実体が nativeLibraryDir の同じファイルなので、
+  bionic は Java が読み込んで初期化済みの実体を返す。`copy` では別の実体になり、`SHA256.HashData` で SIGSEGV（fault addr 0）になった（エミュレータ）。
+- 確認: スクリプトの `SHA256.HashData("SEED")` が `DA5E401CB3FF5A14…`（PC の hashlib と一致）、`RandomNumberGenerator.GetBytes(4)` が 4 バイト
+  （エミュレータ・実機とも）。TLS（`SslStream`・`HttpClient` の https）と X509 は未確認（backlog）。
+
+### 17.9 Mono への切り替え
+
+`dotnet_runtime.json` の `dotnet_runtime` を `mono` にして APK を作り直す（linux-bionic パックだけを使う。中身は Mono で、`libcoreclr.so` は
+互換シム）。起動経路（hostfxr → バイト列 → Default ALC）は CoreCLR と同じ。
+
+- エミュレータ（x86_64）で起動・スクリプトの実行（OnStart・null 参照 / 0 除算の例外・毎秒のログ）を確認した。所要時間は CLR の起動 791〜1350 ms・
+  ユーザースクリプト 429 ms（CoreCLR の約 10 倍）。`OperatingSystem.IsAndroid()` は False、`Console` の出力は標準出力経由でタグ `SEED` に出る。
+- **Mono で見つかった不具合と対処**: Mono は型の静的フィールドの型をクラスの読み込み時に解決する。`ScriptAssemblyManager` は事前コンパイル DLL を
+  読むだけの処理と Roslyn を使う処理のラムダが同じ隠れクラス（`<>c`・`<>O`。`Func<Diagnostic, bool>` 等のフィールドを持つ）に入っていたため、
+  読むだけの経路でも Roslyn（`Microsoft.CodeAnalysis`）を探しに行き `TypeLoadException` になった（CoreCLR は遅延して解決するので動いていた）。
+  Roslyn を使うコードを `scripting/src/Compilation/ScriptAssemblyEmitter.cs` へ分け、`ScriptAssemblyManager` から Roslyn の型を無くして解消した
+  （PC の挙動・公開 API は同じ。`ScriptPrecompileTests` 15 件と Windows の Play で確認）。
+- 暗号 API は Mono では使えない（linux-bionic パックの暗号は OpenSSL 版で、端末の BoringSSL と合わない。§11.1）。`java_libraries` は空。
+- 実機では未確認（CoreCLR の実機確認を優先した）。
+
+### 17.10 ログと確認方法
+
+| 行 | 中身 |
+|---|---|
+| `[SEED DOTNET] Java: System.Security.Cryptography.Native.Android を読み込みました（JNI_OnLoad 済み）` | 暗号ライブラリの読み込み（§17.8） |
+| `[SEED DOTNET] .NET を展開しました: <dotnet-root>（182 ファイル・BCL 65.2 MiB・.so の置き方 Symlink・nativeLibraryDir=…・839.4 ms）` | 初回の展開。2 回目以降は `展開済みの .NET を使います: …（確認 N ms・182 ファイル・置き直した .so N 個）` |
+| `[SEED DOTNET] スクリプトの置き場の候補: … — SEEDScripting.dll=あり / …` と `スクリプトの置き場: …` | §17.7 の選択 |
+| `[SEED DOTNET] ヒープポインタのタグ付けを無効にしました（mallopt=1 …）` | §17.5 |
+| `[SEED DOTNET] CLR を起動しました: coreclr 10.0.12（arm64-v8a）… hostfxr 読込 / 初期化 / ランタイム起動 / SEEDScripting 読込 / 関数の取り出し / 合計` | CLR の起動の所要時間 |
+| `[SEED] precompiled scripts loaded: 1 type(s)  （<置き場>/SEEDUserScripts.dll・14 KiB・N ms）` | ユーザースクリプトの読み込み |
+| タグ `DOTNET` の `[Script] …` | スクリプトの `SEED.Debug.Log`（CoreCLR） |
+
+```bash
+# ビルド → install → 起動（x86_64 のエミュレータ。実機は -Abi arm64-v8a -Serial <実機>）
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -ProjectDir <プロジェクト> -NoLogcat
+adb -s emulator-5554 logcat -d -v threadtime -T "<起動前の時刻>" SEED:V DOTNET:V '*:S' > log.txt
+# DLL だけの差し替え（APK はそのまま）
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -SkipRustBuild -SkipGradle -NoInstall -ProjectDir <プロジェクト> -PushScripts -NoLogcat
+# 展開の所要時間だけを測る（展開を消して起動し直す）
+adb exec-out run-as com.seedengine.runtime sh -c 'rm -rf files/dotnet' ; adb shell am force-stop com.seedengine.runtime ; adb shell am start -n com.seedengine.runtime/.MainActivity
+# 展開先を見る
+adb exec-out run-as com.seedengine.runtime sh -c 'ls -l files/dotnet/*/shared/Microsoft.NETCore.App/10.0.12/ | head'
+```
+
+確認用のスクリプト（一時プロジェクト。リポジトリ外）は、起動時に .NET の版・RID・OS と、null 参照（SIGSEGV → `NullReferenceException`）・
+整数の 0 除算・暗号 API（`[SerializeField] testCrypto`）を試し、毎秒 `Time`・`Input.TouchCount`・`Screen.SafeArea`・`Screen.Orientation` を
+ログへ出し、触れ始めるたびにモデルの大きさを切り替え、指の横移動でモデルを回す。
+
+### 17.11 確認結果（2026-09-25）
+
+debug ビルド。アセットは最小構成（§7）に確認用のスクリプトを足したもの。
+
+| 項目 | エミュレータ（x86_64・API 35） | 実機 Pixel 6a（arm64・Android 16） |
+|---|---|---|
+| 同梱 .NET の大きさ（1 ABI） | BCL 等 174 ファイル 57.9 MB ＋ .so 8 個 12.1 MB | BCL 等 174 ファイル 65.2 MB ＋ .so 8 個 11.7 MB |
+| APK（1 ABI・pak 3.1 MB・bin 9.1 MB 込み） | 63.9 MB | 60.5 MB（`adb install -r` 4.3 秒） |
+| 初回の展開 | 475〜506 ms（展開を消して 3 回。インストール直後の 1 回目は 5.6 秒＝インストール直後の端末の負荷と見られる） | 456〜839 ms（symlink）・484 ms（copy） |
+| 2 回目以降の確認 | 2.5〜3.8 ms | 4〜77 ms（入れ直し後の張り直し 8 本を含めて 4.2 ms） |
+| CLR の起動（hostfxr 読込〜関数の取り出し） | 65〜128 ms（インストール直後の 1 回目は 1159 ms） | 61〜175 ms（ランタイム起動 24〜83 ms・SEEDScripting 読込 17〜48 ms） |
+| ユーザースクリプトの読み込み | 37〜48 ms | 10〜24 ms |
+| `OnStart` の実行環境 | `.NET 10.0.12 rid=linux-bionic-x64 os=Android (API level 35) isAndroid=True` | `rid=linux-bionic-arm64 arch=Arm64 os=Android (API level 36)` |
+| null 参照・0 除算 | 両方とも例外として捕まる（ART のシグナルチェーンの下でも CoreCLR のハードウェア例外が動く） | 同じ |
+| 暗号 API（symlink） | SHA256・RandomNumberGenerator が動く | 同じ |
+| 毎秒のログ | `Time`・`TouchCount`・`SafeArea=(0,128,1080,2209)`・`Portrait`・dpi 420 | `SafeArea=(0,132,1080,2205)`・`Portrait`・dpi 420（約 11〜17 fps） |
+| タッチ | `input tap` で大きさが切り替わり、`input swipe` で 122° 回った（画面で確認） | 同じ（104° 回った） |
+| 背面 → 復帰 | 復帰後もスクリプトが動き続け、状態（触れた回数）も残る。背面の間はゲーム時間が進まない | 同じ |
+| `-PushScripts` | 置き場 `files/bin/` の v2 が使われた | 同じ（約 9 秒。うち SeedPak のビルドとコンパイル 5〜6 秒）。外部フォルダへの adb push は読めなかった |
+| Mono | 起動とスクリプトの実行を確認（§17.9） | 未確認 |
+| Windows（`SEED.exe`） | 開発時の Play（その場コンパイル・`dotnet root: global`）と配布物の形（`bin/SEEDUserScripts.dll`）の両方で同じスクリプトが動いた | — |
+
+### 17.12 制限・持ち越し
+
+詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
+
+- 初回の展開（実機で 0.5〜0.8 秒）と CLR の起動は android_main のスレッドで同期に行う（その間 UI スレッドはサーフェスの受け渡しで待つ）。
+- BCL は絞っていない（1 ABI で 58〜65 MB。APK で約 25 MB 増）。trim は動的に読むスクリプト DLL が壊れるため §11.2 のとおり保留。
+- アプリのデータフォルダのファイルを実行する方式（R2R の DLL・`copy` の .so）は SELinux の auditallow の対象（§17.4）。
+- TLS・X509 は未確認。Mono の実機・Mono の暗号 API は未対応。
+- スクリプトのデバッグ（netcoredbg のアタッチ）は Android では使えない（診断機能を止めている・DAC を入れていない）。
+- Roslyn の DLL（約 9 MB）が Android の `bin/` にも入る（読み込まれない）。

@@ -4,9 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.Emit;
 using SEEDEditor.Scripting.Compilation;
 
 namespace SEEDEditor.Scripting;
@@ -26,6 +23,13 @@ namespace SEEDEditor.Scripting;
 ///   再コンパイル時に旧アセンブリをアンロードできる（＝ホットリロード）
 /// - .cs ファイルパス → スクリプト型 のマッピングを保持し、
 ///   シーンファイルに保存されたパスから型を解決する
+///
+/// 【Roslyn に触れない】
+/// コンパイル（Roslyn を使う部分）は <see cref="ScriptAssemblyEmitter"/> に分けてあり、このクラスの
+/// フィールド・ラムダ・メソッドのシグネチャには Roslyn の型が一切出てこない。事前コンパイル DLL を読むだけの
+/// 経路（配布物・Android の同梱 .NET）では Roslyn が解決できないことがあり、Roslyn の型を使うラムダが同じ
+/// クラスにあると、その入れ子クラス（&lt;&gt;c・&lt;&gt;O）の読み込みで Mono が TypeLoadException を出すため
+/// （理由の詳細は ScriptAssemblyEmitter.cs の冒頭）。ここへ Roslyn を使うコードを戻さないこと。
 ///
 /// 【注意】
 /// Reload 前に旧アセンブリ型のインスタンス（GCHandle）をすべて解放しておくこと。
@@ -59,29 +63,14 @@ public static class ScriptAssemblyManager
 
     // ── 定数 ─────────────────────────────────────────────────
 
-    /// <summary>その場コンパイル時のアセンブリ名の接頭辞（毎回ユニークにする）。</summary>
-    private const string InMemoryAssemblyNamePrefix = "SEEDUserScripts_";
-
     /// <summary>collectible ロードコンテキストの表示名。</summary>
     private const string LoadContextName = "SEEDUserScripts";
 
     /// <summary>コンパイルエラーを表す戻り値（FFI 用。型数は 0 以上なので負値と区別できる）。</summary>
     private const int CompileFailureCode = -1;
 
-    /// <summary>コンパイルエラーの stderr 出力に付ける接頭辞（エディタの Output パネルが拾う）。</summary>
-    private const string CompileErrorPrefix = "[ScriptCompileError] ";
-
     /// <summary>ログの共通接頭辞。</summary>
     private const string LogPrefix = "[SEEDScripting] ";
-
-    // ── 参照アセンブリ ───────────────────────────────────────
-
-    /// <summary>コンパイル参照。ホスト側にロード済みの全アセンブリ（SEEDScripting 自身を含む）。</summary>
-    private static List<MetadataReference> BuildReferences() =>
-        AppDomain.CurrentDomain.GetAssemblies()
-            .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location) && File.Exists(a.Location))
-            .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
-            .ToList();
 
     // ============================================================
     //  ① その場コンパイル（エディタ／Play）
@@ -98,52 +87,33 @@ public static class ScriptAssemblyManager
     /// </returns>
     public static int CompileAndLoad(string assetsRoot)
     {
-        // 収集は「読めないフォルダを飛ばして続行する」方式。
-        // 1 つでも開けないフォルダ（権限・削除保留・壊れた再解析ポイント等）があるだけで
-        // プロジェクト全体のスクリプトが 1 本も動かなくなるのを防ぐ。
-        var files = ScriptSourceCompiler.CollectScriptFiles(assetsRoot);
+        // コンパイル（Roslyn）は ScriptAssemblyEmitter の担当。エラーはそちらが stderr に出す。
+        var build = ScriptAssemblyEmitter.EmitInMemory(assetsRoot);
 
         // スクリプトが 1 つも無い場合は空状態にして正常終了する
-        if (files.Count == 0)
+        if (build.SourceFileCount == 0)
         {
             Unload();
             return 0;
         }
 
-        // ── コンパイル（条件は ScriptSourceCompiler が唯一の定義）──
-        var compilation = ScriptSourceCompiler.CreateCompilation(
-            InMemoryAssemblyNamePrefix + Guid.NewGuid().ToString("N"),
-            files,
-            BuildReferences(),
-            OptimizationLevel.Debug);
-
-        // 埋め込み PDB 付きで発行する。ソースツリーにファイルパスを設定しているため、
-        // Visual Studio を SEED.exe にアタッチするとスクリプトの .cs にブレークポイントを
-        // 張ってデバッグできる（PE 内にシンボルが含まれるので追加ファイル不要）。
-        using var ms = new MemoryStream();
-        var emitOptions = new EmitOptions(debugInformationFormat: DebugInformationFormat.Embedded);
-        var result = compilation.Emit(ms, options: emitOptions);
-        if (!result.Success)
-        {
-            foreach (var d in result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error))
-                Console.Error.WriteLine(CompileErrorPrefix + ScriptSourceCompiler.FormatDiagnostic(d));
-            // 旧アセンブリを維持して呼び出し側にエラーを伝える
+        // 失敗時は旧アセンブリを維持して呼び出し側にエラーを伝える
+        if (!build.Success || build.Image is null)
             return CompileFailureCode;
-        }
-
-        // ── 型マップは emit 前の compilation（セマンティックモデル）から作る ──
-        // ここで作った対応を、ロード後に実際の Type へ引き当てる。
-        var entries = ScriptSourceCompiler.MapScriptTypes(compilation, assetsRoot);
 
         // ── 旧アセンブリをアンロードし、新アセンブリをロードする ──
         Unload();
-        ms.Position = 0;
-        _context  = CreateLoadContext();
-        _assembly = _context.LoadFromStream(ms);
+        using (var image = build.Image)
+        {
+            image.Position = 0;
+            _context  = CreateLoadContext();
+            _assembly = _context.LoadFromStream(image);
+        }
 
-        var typeCount = RegisterTypes(entries);
+        // 型マップ（emit 前のセマンティックモデルから作ったもの）を実際の Type へ引き当てる
+        var typeCount = RegisterTypes(build.Entries);
 
-        Console.WriteLine($"{LogPrefix}compiled {typeCount} script type(s) from {files.Count} file(s)");
+        Console.WriteLine($"{LogPrefix}compiled {typeCount} script type(s) from {build.SourceFileCount} file(s)");
         return typeCount;
     }
 
@@ -172,108 +142,8 @@ public static class ScriptAssemblyManager
         string              assetsRoot,
         string              outputDllPath,
         IEnumerable<string> referenceAssemblyPaths)
-    {
-        var files = ScriptSourceCompiler.CollectScriptFiles(assetsRoot);
-
-        // 参照アセンブリを作る（存在しないパス・重複した単純名は落とす）。
-        // 同じ単純名が 2 つあると Roslyn が CS1704 で全体を失敗させるため、
-        // 「後勝ち」で 1 つに畳む（呼び出し側が本命の DLL を後ろへ置く）。
-        var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in referenceAssemblyPaths)
-        {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) continue;
-            byName[Path.GetFileNameWithoutExtension(path)] = path;
-        }
-
-        var references = new List<MetadataReference>();
-        var refErrors  = new List<string>();
-        foreach (var path in byName.Values)
-        {
-            try { references.Add(MetadataReference.CreateFromFile(path)); }
-            catch (Exception ex) { refErrors.Add($"参照アセンブリを読めません: {path} — {ex.Message}"); }
-        }
-
-        var compilation = ScriptSourceCompiler.CreateCompilation(
-            PrecompiledScriptArtifact.AssemblyName,
-            files,
-            references,
-            OptimizationLevel.Release);
-
-        // 型マップは emit の前に作る（emit 結果ではなくセマンティックモデルから得る）
-        var entries = ScriptSourceCompiler.MapScriptTypes(compilation, assetsRoot);
-
-        // ソースがあるのに 1 型も見つからない＝ SEEDScripting.dll が参照に無い可能性が高い。
-        // 黙って「0 型の DLL」を配ると、実行時に全スクリプトが Script type not found になる。
-        if (files.Count > 0 && entries.Count == 0)
-        {
-            refErrors.Add(
-                "スクリプト型が 1 つも見つかりません（参照に SEEDScripting.dll が含まれているか確認してください）");
-            return ScriptCompileResult.Failed(refErrors, files.Count);
-        }
-
-        // 型マップを UTF-8 テキストのマニフェストリソースとして埋め込む
-        var typeMapText  = PrecompiledScriptArtifact.SerializeTypeMap(
-            entries.Select(e => new KeyValuePair<string, string>(e.AssetKey, e.MetadataName)));
-        var typeMapBytes = System.Text.Encoding.UTF8.GetBytes(typeMapText);
-        var resources    = new[]
-        {
-            // dataProvider は Roslyn から複数回呼ばれ得るので、毎回新しいストリームを返す
-            new ResourceDescription(
-                PrecompiledScriptArtifact.TypeMapResourceName,
-                () => new MemoryStream(typeMapBytes, writable: false),
-                isPublic: true),
-        };
-
-        try
-        {
-            var dir = Path.GetDirectoryName(outputDllPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-            // 埋め込み PDB（配布先でも例外のスタックに行番号が出る。追加ファイル不要）
-            var emitOptions = new EmitOptions(debugInformationFormat: DebugInformationFormat.Embedded);
-
-            EmitResult emitResult;
-            using (var fs = new FileStream(outputDllPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                emitResult = compilation.Emit(fs, manifestResources: resources, options: emitOptions);
-
-            var errors = emitResult.Diagnostics
-                .Where(d => d.Severity == DiagnosticSeverity.Error)
-                .Select(ScriptSourceCompiler.FormatDiagnostic)
-                .ToList();
-            errors.InsertRange(0, refErrors);
-
-            var warnings = emitResult.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Warning);
-
-            if (!emitResult.Success)
-            {
-                // 中途半端な DLL を残さない（次のビルドが古い DLL を配ってしまうため）
-                try { File.Delete(outputDllPath); } catch { /* 消せなくても報告済みなので続行 */ }
-                return new ScriptCompileResult
-                {
-                    Success         = false,
-                    SourceFileCount = files.Count,
-                    ScriptTypeCount = 0,
-                    Errors          = errors,
-                    WarningCount    = warnings,
-                };
-            }
-
-            return new ScriptCompileResult
-            {
-                Success         = true,
-                SourceFileCount = files.Count,
-                ScriptTypeCount = entries.Select(e => e.MetadataName).Distinct(StringComparer.Ordinal).Count(),
-                Errors          = errors,
-                WarningCount    = warnings,
-                OutputPath      = outputDllPath,
-            };
-        }
-        catch (Exception ex)
-        {
-            refErrors.Add($"DLL の書き出しに失敗しました: {outputDllPath} — {ex.Message}");
-            return ScriptCompileResult.Failed(refErrors, files.Count);
-        }
-    }
+        // コンパイル（Roslyn）は ScriptAssemblyEmitter の担当（このクラスに Roslyn の型を持ち込まないため）。
+        => ScriptAssemblyEmitter.CompileToFile(assetsRoot, outputDllPath, referenceAssemblyPaths);
 
     /// <summary>
     /// 事前コンパイル済みのユーザースクリプト DLL をロードする（パッケージ版の起動経路）。
@@ -294,15 +164,37 @@ public static class ScriptAssemblyManager
                 return CompileFailureCode;
             }
 
-            var bytes = File.ReadAllBytes(dllPath);
+            return LoadPrecompiledBytes(File.ReadAllBytes(dllPath), dllPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"{LogPrefix}LoadPrecompiled failed: {ex}");
+            return CompileFailureCode;
+        }
+    }
 
+    /// <summary>
+    /// 事前コンパイル済みのユーザースクリプト DLL を、中身（バイト列）からロードする。
+    ///
+    /// <para>
+    /// パス版（<see cref="LoadPrecompiled"/>）の本体で、同梱 .NET（Android）の起動経路からも直接呼ばれる
+    /// （DLL が APK の中にありファイルとして見えないため、Rust 側が読んだ中身を受け取る）。
+    /// </para>
+    /// </summary>
+    /// <param name="bytes">SEEDUserScripts.dll の中身。</param>
+    /// <param name="sourceName">ログ用の出どころ（パスや apk:seed/bin/… 。末尾のファイル名だけをログに出す）。</param>
+    /// <returns>解決可能になったスクリプト型の数。失敗時は -1。</returns>
+    public static int LoadPrecompiledBytes(byte[] bytes, string sourceName)
+    {
+        try
+        {
             Unload();
             _context = CreateLoadContext();
             using (var ms = new MemoryStream(bytes, writable: false))
                 _assembly = _context.LoadFromStream(ms);
 
-            var typeCount = RegisterPrecompiledTypes(_assembly, dllPath);
-            Console.WriteLine($"{LogPrefix}loaded {typeCount} precompiled script type(s) from {Path.GetFileName(dllPath)}");
+            var typeCount = RegisterPrecompiledTypes(_assembly, sourceName);
+            Console.WriteLine($"{LogPrefix}loaded {typeCount} precompiled script type(s) from {Path.GetFileName(sourceName)}");
             return typeCount;
         }
         catch (Exception ex)
@@ -421,6 +313,8 @@ public static class ScriptAssemblyManager
     /// そこで Resolving で、プロセス内にロード済みの同名アセンブリ（ALC を問わず
     /// AppDomain 全体から検索）へフォールバックさせる。これで基底クラス SEEDScript や
     /// SEED.* API を含む SEEDScripting をユーザーアセンブリから参照できる。
+    /// 同梱 .NET（Android）では SEEDScripting をバイト列から Default ALC へ読む（load_assembly_bytes）ため
+    /// 既定のフォールバックでも解決できるが、どちらの経路でも同じ Resolving で足りる。
     /// </summary>
     /// <returns>生成したロードコンテキスト。</returns>
     private static AssemblyLoadContext CreateLoadContext()

@@ -109,6 +109,8 @@ pub(crate) mod canvas_collect;
 mod collider2d_wireframe;
 mod collider3d_pick;
 mod app_init;
+/// 起動時のスクリプトホスト（CLR）の用意とユーザースクリプトの読み込み（PC の探索・同梱 .NET の 2 経路）
+mod script_boot;
 /// 描画解像度モード（window / fixed）の定義・パースと、fixed の有効判定
 mod render_resolution;
 /// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）
@@ -606,6 +608,12 @@ pub struct LaunchArgs {
     pub scene_path: Option<String>,
     /// Play 起動時に実行時コライダー描画を有効化するか（SyncViewportSettings の遅延を回避）。
     pub play_collider_draw: bool,
+    /// 同梱 .NET（埋め込み CLR）の起動材料。
+    ///
+    /// Android の糊（runtime/android/native の dotnet_runtime）が APK から .NET を展開して作る。
+    /// Some ならスクリプトはこれで起動し、ユーザースクリプトは事前コンパイル DLL をバイト列で読む
+    /// （その場コンパイルはしない）。None ならプラットフォームの既定（PC はファイルを探す。app/script_boot.rs）。
+    pub embedded_clr: Option<crate::engine::core::scripting::EmbeddedClrHost>,
 }
 
 // ============================================================
@@ -1466,46 +1474,6 @@ pub struct App {
 pub(super) const DEFAULT_PROJECT_RESOLUTION: (u32, u32) = (1920, 1080);
 
 impl App {
-    /// 実行ファイルの隣に置かれた事前コンパイル済みユーザースクリプト DLL を読み込む。
-    ///
-    /// パッケージ版（`--assets-root` 無しで起動された配布物）専用の経路。
-    /// DLL が無いのは「スクリプトを 1 つも使っていないゲーム」や
-    /// 「スクリプト同梱前にビルドされた古いパッケージ」でも起こり得るので、
-    /// 見つからないこと自体はエラーにせず 1 行だけ残して起動を続ける。
-    ///
-    /// # 引数
-    /// * `host` - ロード済みのスクリプティングホスト
-    fn load_precompiled_user_scripts(host: &Arc<ScriptingHost>) {
-        use crate::engine::core::package_layout;
-        use crate::engine::core::scripting::PRECOMPILED_SCRIPTS_DLL_NAME;
-
-        // 実行ファイルの bin/ 直下（cwd はショートカット等で変わるため exe 基準で探す）。
-        // 配布物のフォルダ構成の正典は core::package_layout。
-        let Some(dll_path) = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(package_layout::bin_dir))
-            .map(|bin| bin.join(PRECOMPILED_SCRIPTS_DLL_NAME))
-        else {
-            eprintln!("[SEED] precompiled scripts: 実行ファイルのパスが取得できません");
-            return;
-        };
-
-        if !dll_path.exists() {
-            eprintln!(
-                "[SEED] precompiled scripts not found: {} (スクリプト無しで起動します)",
-                dll_path.display()
-            );
-            return;
-        }
-
-        let count = host.load_precompiled_scripts(&dll_path);
-        if count >= 0 {
-            eprintln!("[SEED] precompiled scripts loaded: {count} type(s)");
-        } else {
-            eprintln!("[SEED] precompiled scripts failed to load (see errors above)");
-        }
-    }
-
     /// App インスタンスを生成する（EventLoop は run() で生成される）。
     pub fn new(args: LaunchArgs) -> Self {
         // 親プロセス（エディタ）の監視を開始する。
@@ -1526,76 +1494,12 @@ impl App {
             ipc.is_some(),
         ));
 
-        let host_location = ScriptingHost::resolve_dll_path();
-        let scripting_host = if !crate::engine::platform::CURRENT.scripting_supported {
-            // CLR を持たないプラットフォーム（Android 段階0）。DLL を探しても見つからず
-            // 「作業ディレクトリが違う」等の誤った案内が出るだけなので、理由を 1 行残して先へ進む。
-            eprintln!(
-                "[SEED] このプラットフォーム（{}）では C# スクリプトは未対応です。スクリプト無しで起動します（docs/android.md）。",
-                std::env::consts::OS,
-            );
-            None
-        } else if host_location.dll_path.exists() {
-            // DLL が存在する場合のみ CLR ロードを試みる（存在しない場合は hostfxr 検索で遅延するため）
-            match ScriptingHost::load(&host_location) {
-                Ok(host) => {
-                    // コンポーネントアクセス用の関数ポインタ表を C# へ登録する
-                    // （これ以降 transform.Position などのスクリプトアクセスが有効になる）
-                    host.install_host_api();
-                    Some(host)
-                }
-                Err(err) => {
-                    // CLR の初期化に失敗しても起動自体は続ける（スクリプト無しで動く）。
-                    // ただし黙って落とすと「配布先でだけ何も動かない」の原因が追えないため、
-                    // 原因と対処を必ず stderr に残す。
-                    //
-                    // 実際に一番多いのは「配布先に .NET ランタイムが入っていない」ケース。
-                    // 利用者向けのダイアログは出していない（ランタイムに MessageBox の
-                    // 共通ヘルパが無く、起動経路にモーダルを足す判断は別途必要なため）。
-                    eprintln!("[SEED] scripting host failed to load: {err}");
-                    eprintln!(
-                        "[SEED]   {label} ランタイムが見つからない可能性があります。\
-                         パッケージ化で「.NET ランタイムを同梱」を有効にして dotnet/ フォルダを\
-                         実行ファイルの隣に置くか、実行する PC に {label} をインストールしてください。",
-                        label = crate::engine::core::scripting::REQUIRED_DOTNET_RUNTIME_LABEL,
-                    );
-                    eprintln!("[SEED]   スクリプト無しで起動を続けます。");
-                    None
-                }
-            }
-        } else {
-            // DLL が見つからない場合も黙らない。開発時は作業ディレクトリ（runtime/）相対で
-            // 探すため、エディタが渡す作業ディレクトリを間違えると「ゲームロジックが一切
-            // 動かない・入力が効かない」症状だけが出て原因が追えない（develop 構成で実際に起きた）。
-            eprintln!(
-                "[SEED] scripting host not found: {}  （cwd={}）— C# スクリプトは動きません。                 開発時は作業ディレクトリが runtime/ であること、配布時は bin/ に SEEDScripting.dll があることを確認してください。",
-                host_location.dll_path.display(),
-                std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(),
-            );
-            None
-        };
-
-        // ユーザースクリプトを CLR 側で使えるようにする。
+        // スクリプトホスト（CLR ＋ SEEDScripting.dll）を用意し、ユーザースクリプトを読み込む。
         // シーンロード時の ScriptComponent 生成（型解決）より前に行う必要がある。
-        //
-        // 経路は 2 つあり、アセットルートの有無で切り替える。
-        //   ① assets_root あり（エディタ / Play）… その場で .cs をコンパイルする。
-        //      コンパイルエラーは C# 側が stderr に出し、エディタの Output パネルに載る。
-        //   ② assets_root なし（パッケージ版）  … 実行ファイルの隣に置かれた
-        //      事前コンパイル済み DLL を読むだけにする。配布物にソースと Roslyn を
-        //      同梱しないため、ここでコンパイルすることはできない。
+        // 経路（同梱 .NET・PC の探索・その場コンパイル・事前コンパイル DLL）の選び方は script_boot.rs。
+        let scripting_host = Self::boot_scripting_host(&args);
         if let Some(host) = &scripting_host {
-            match &args.assets_root {
-                Some(root) => {
-                    let count = host.compile_scripts(root);
-                    if count >= 0 {
-                        eprintln!("[SEED] user scripts compiled: {count} type(s)");
-                    } else {
-                        eprintln!("[SEED] user script compilation failed (see errors above)");
-                    }
-                }
-                None => Self::load_precompiled_user_scripts(host),
-            }
+            Self::load_user_scripts(host, &args);
         }
 
         Self {

@@ -263,10 +263,11 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 
 ### 起動時の流れ（ランタイム）
 
-`App::new`（`runtime/src/engine/core/app_base/app/mod.rs`）が経路を 2 つに分ける。
+`App::new` が `app/script_boot.rs`（`runtime/src/engine/core/app_base/app/`）で経路を分ける。
 
 | 起動 | 条件 | 動作 |
 |---|---|---|
+| Android（同梱 .NET） | `LaunchArgs.embedded_clr` あり | 端末の `files/bin/` か APK の `bin/` の `SEEDUserScripts.dll` をバイト列で読む（その場コンパイルはしない。[android.md](android.md) §17） |
 | エディタ / Play | `--assets-root` あり | その場で `.cs` をコンパイルする（ホットリロード可） |
 | パッケージ版 | `--assets-root` なし | `{exe のフォルダ}/bin/SEEDUserScripts.dll` を読むだけ |
 
@@ -328,7 +329,8 @@ PAK 化のときに絶対パスは `assets://` 形式へ書き換わるので、
 dotnet run --project editor/tests/ScriptPrecompileTests -- "<runtime>" "<アセットルート>" "<出力先>"
 ```
 
-引数なしで実行すると単体テスト（型マップ・別フォルダ同名ファイルの解決など）が走る。
+引数なしで実行すると単体テスト（型マップ・別フォルダ同名ファイルの解決・バイト列からのロードなど）が走る。
+同じ処理は SeedPak の `--scripts-only` でも行える（`--out` の下に `bin/` を作る。§10.2）。
 
 ### .NET ランタイムの同梱（self-contained 配布）
 
@@ -653,13 +655,18 @@ Android では、Windows の出力フォルダ（実行ファイルを除く）�
 | 配布物のルート | `{ゲーム名}/`（実行ファイルのフォルダ） | APK の `assets/seed/` |
 | `assets.pak` | 実行ファイルの隣 | `assets/seed/assets.pak`（Gradle の `noCompress` で非圧縮のまま格納） |
 | PAK の外に置くアセット（PAK に無いときのフォールバック先） | `{ゲーム名}/assets/<相対パス>` | `assets/seed/assets/<相対パス>`（大文字小文字を区別する） |
-| `bin/`（スクリプト DLL・.NET） | 同梱（§5） | 段階B |
+| `bin/`（スクリプト DLL） | 同梱（§5） | `assets/seed/bin/`（SeedPak `--scripts` の出力。中身は PC と同じ。ランタイムはバイト列で読む。端末の `files/bin/` に置いた差し替えが優先。[android.md](android.md) §17.7） |
+| .NET ランタイム | `bin/dotnet/`（§5。DotnetRuntimeBundler） | `.so` は APK の `lib/<ABI>/`、BCL・deps.json・目録 `bundle.json` は `assets/seed/dotnet/<ABI>/`。`runtime/android/build_and_run.ps1` が NuGet のランタイムパックから組み立て、初回起動時に端末の `files/dotnet/` へ展開する（[android.md](android.md) §17） |
 | `caches/` `logs/` `saved/` | 実行時に作る | APK には置けないので端末のアプリ専用フォルダへ振り替える: `saved/` → `files/save/`、`caches/` → `/data/user/0/<パッケージ名>/cache`、`logs/` は作らない（logcat）。[android.md](android.md) §14 |
 | 起動ログ | `logs/seed_*.log`（§9） | logcat（タグ `SEED`） |
 
 - 名前の正典は `runtime/src/engine/core/package_layout.rs`（`PAK_FILE_NAME` / `LOOSE_ASSETS_DIR_NAME`）と
   `editor/src/Packaging/PackageLayout.cs`（`PakFileName`）。両側のテストで文字列を固定している。
-- `project_settings.json` は PAK の中に入る（§2 の起点）。PAK の外に置かなければならないファイルは現状無い。
+- `project_settings.json` は PAK の中に入る（§2 の起点）。PAK の外に置くのはスクリプトの `bin/` だけ（段階B）。
+- Android のランタイムはスクリプトの DLL を「端末の `files/bin/` → APK の `bin/`」の順に探す（`SEEDScripting.dll` がある最初の置き場）。
+  パス指定の読み込み（`load_assembly_and_get_function_pointer`）が Android 版 CoreCLR で使えないため、`SEEDScripting.dll` と
+  `SEEDUserScripts.dll` はバイト列で読む（C# の `ScriptBridge.LoadPrecompiledScriptsFromBytes`）。Roslyn の DLL も同じ `bin/` に入るが、
+  Android では読み込まれない（その場コンパイルをしない）。
 - 起動モードはデータの有無で決まる: APK に `assets/seed/assets.pak` があればパッケージ実行、無ければ開発用の置き場
   （run-as で送ったアセット）。
 
@@ -681,14 +688,19 @@ dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --
 | `--assets <フォルダ>` | アセットルートを直接指定する（`--project` と排他） |
 | `--out <フォルダ>` | 出力フォルダ。`<フォルダ>/assets.pak` だけを書く（無ければ作る） |
 | `--runtime-src <フォルダ>` | エンジンのソース `runtime/src`（エンジン内蔵の `assets://` 参照を起点に加える。§2）。既定はツールの位置・カレントから上へ辿ったリポジトリの `runtime/src`。見つからなければ省略して続ける |
+| `--scripts` | 加えて `<出力フォルダ>/bin/` にスクリプトを作る。パッケージ化ウィンドウと同じ `ScriptPackager`（§5）で、アセット配下の `.cs` を `SEEDUserScripts.dll` へ事前コンパイルし、スクリプトホスト（`SEEDScripting.dll`・`SEEDScripting.runtimeconfig.json`・`.deps.json`・Roslyn）を `scripting/bin/Debug/net10.0/` から写す。スクリプトホストの場所は `--runtime-src` の親（`runtime/`）から探す |
+| `--scripts-only` | `bin/` だけを作る（PAK は作らない。Android の `-PushScripts` で DLL だけを差し替えるとき） |
 
 - 収録ルールはパッケージ化ウィンドウと同じ `<アセットルート>/packaging_settings.json` の `assets`（無ければ既定値）。
 - アセットルートは**エディタが使うパスと同じ表記**で渡すこと（§7 と同じ注意。シーン内の絶対パス参照の照合と
   `assets://` への書き換えがこの表記を基準にする）。SeedPak は `Path.GetFullPath` で絶対化する。
 - ログはウィンドウと同じ書式（§6）で標準出力へ出る。
-- 終了コード: `0` 成功 / `1` 引数・入力の誤り / `2` 収録対象 0 件（PAK は書かない） / `3` 書き出し失敗。
+- 終了コード: `0` 成功 / `1` 引数・入力の誤り / `2` 収録対象 0 件（PAK は書かない） / `3` 書き出し失敗 / `4` スクリプトのコンパイル・同梱の失敗（`--scripts` / `--scripts-only`）。
+- `bin/` は上書きで書き足す（古いファイルは消さない。置き場を作り直すのは呼び出し側。`build_and_run.ps1` は毎回作り直す）。
+- SeedPak は `scripting/SEEDScripting.csproj` を参照しているので、`dotnet run` のたびにスクリプトホストもビルドされ、同梱する
+  `SEEDScripting.dll` が常に最新になる（`ScriptPrecompileTests` と同じ組み方）。
 - Android の APK へ入れるときは `runtime/android/build_and_run.ps1 -ProjectDir <フォルダ>` がこのツールを
-  `--out runtime/android/app/src/main/assets/seed` で呼ぶ。
+  `--out runtime/android/app/src/main/assets/seed --scripts` で呼ぶ（`-PushScripts` では `--scripts-only`）。
 
 2026-09-24 に最小アセット（BrainStem.glb ＋ 平行光・3 ファイル）で、SeedPak の出力と「変更前のパッケージ化ウィンドウと
 同じ呼び出し（`AssetCollector` → `PakWriter` の直呼び）」の出力の SHA-256 が一致することを確かめた。

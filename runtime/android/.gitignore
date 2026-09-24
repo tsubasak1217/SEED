@@ -20,3 +20,6 @@ app/src/main/jniLibs/
 
 # APK に同梱する配布物（assets/seed/assets.pak。build_and_run.ps1 -ProjectDir が SeedPak で作る）
 app/src/main/assets/
+
+# APK に同梱する .NET（build_and_run.ps1 が runtime/android/dotnet_runtime.json と NuGet のパックから組み立てる。docs/android.md §17）
+app/src/seedDotnet/

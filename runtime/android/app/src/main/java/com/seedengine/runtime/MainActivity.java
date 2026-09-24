@@ -4,7 +4,7 @@
 //  GameActivity（AGDK）を継承するだけの薄いクラス。描画・入力・ゲームループはすべて
 //  ネイティブ側（libSEED.so の android_main → エンジン）で動き、ここでは
 //    ・ネイティブライブラリの読み込み
-//    ・環境変数 TMPDIR / HOME をアプリのフォルダへ向ける（理由は setAppDirectoryEnvironment のコメント）
+//    ・環境変数 TMPDIR / HOME をアプリのフォルダへ向け、同梱 .NET の診断機能を止める（理由は setAppDirectoryEnvironment のコメント）
 //    ・全画面（システムバーを隠す）
 //    ・安全領域と画面の回転をネイティブへ知らせる（中身は ScreenReporter。契機の受け口だけここ）
 //    ・音量キーの対象をメディアの音量にし、音声フォーカスを前面で要求・前面を離れるときに手放す
@@ -51,10 +51,22 @@ public class MainActivity extends GameActivity {
     /** ユーザーのホームを指す環境変数（.NET のユーザーフォルダ系 API が読む）。 */
     private static final String HOME_DIR_ENV = "HOME";
 
+    /**
+     * 同梱 .NET（CoreCLR / Mono）の診断機能（デバッガ・プロファイラ・EventPipe の待ち受け）の有効／無効を決める環境変数。
+     * 端末ではデバッガを付けないので止めておく（起動時の待ち受けスレッドと TMPDIR への FIFO・ソケットの作成を省く。
+     * docs/android.md §11.2・§17）。CLR は起動時に getenv で読むので、ネイティブのスレッドが無いうちに設定する。
+     */
+    private static final String DOTNET_DIAGNOSTICS_ENV = "DOTNET_EnableDiagnostics";
+
+    /** {@link #DOTNET_DIAGNOSTICS_ENV} に入れる値（0 = 無効）。 */
+    private static final String DOTNET_DIAGNOSTICS_DISABLED = "0";
+
     static {
         // GameActivity も onCreate で読み込むが、失敗を最も早い段階で明確に出すためここでも読む
         // （2 回目の loadLibrary は何もしない）。
         System.loadLibrary(NATIVE_LIBRARY_NAME);
+        // 同梱 .NET の、JNI の初期化が要るネイティブライブラリ（暗号）を CLR の起動より前に読み込む（段階B）。
+        DotnetJniLibraries.loadAvailable();
     }
 
     /**
@@ -144,8 +156,11 @@ public class MainActivity extends GameActivity {
         try {
             Os.setenv(TEMP_DIR_ENV, getCacheDir().getAbsolutePath(), true);
             Os.setenv(HOME_DIR_ENV, getFilesDir().getAbsolutePath(), true);
+            // 同梱 .NET の診断機能を止める（段階B。理由は DOTNET_DIAGNOSTICS_ENV のコメント）。
+            Os.setenv(DOTNET_DIAGNOSTICS_ENV, DOTNET_DIAGNOSTICS_DISABLED, true);
         } catch (ErrnoException e) {
-            Log.w(LOG_TAG, "環境変数 " + TEMP_DIR_ENV + " / " + HOME_DIR_ENV + " を設定できませんでした: " + e);
+            Log.w(LOG_TAG, "環境変数 " + TEMP_DIR_ENV + " / " + HOME_DIR_ENV + " / " + DOTNET_DIAGNOSTICS_ENV
+                    + " を設定できませんでした: " + e);
         }
     }
 

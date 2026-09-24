@@ -290,6 +290,13 @@
   （2026-09-13 は手で削除した）。`runtime/save/` を .gitignore へ足すか、テスト側でパスを固定するのが筋。
   関連: `runtime/src/engine/plugin/host.rs:164`、`runtime/src/engine/core/font/inline/image_meta.rs`、
   `runtime/src/engine/core/save/path.rs`。
+- [ ] **ほかにもプロセスグローバルな状態に依存して並列実行でたまに落ちるテストがある** — 2026-09-25（Android 段階B の `cargo test` で気付いた。
+  どちらも単体では毎回通る・段階B では触っていないファイル）。
+  - `engine::core::scripting::debug_command::tests::pushes_and_peeks_in_order` … `PENDING`（SCRIPT_DEBUG の待ち行列）を
+    `drops_oldest_when_full`・`ipc::tests::parses_script_debug_commands` と共有している。
+  - `engine::core::font::inline::icon_set::tests::poll_keeps_previous_content_on_parse_failure` … .icons のキャッシュ（`invalidate_all`）を
+    他の icon_set のテストと共有している。
+  上の項目と同じく、グローバル状態を触るテストをミューテックスで直列化するか、状態をテストごとに持てる形にする。
 
 ## deferred の幾何法線（2026-09-13 の遠景ドットノイズ対策の残件）
 
@@ -1549,7 +1556,11 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [x] **タッチの本実装（段階A）** — 2026-09-24 記載 / 同日対応。複数指の状態機械（`input/touch/`）・指0 → マウスの駆動
   （Android）・マウス左ボタン → 指の合成（PC）・C# の `Input.TouchSupported` / `TouchCount` / `GetTouch(i)` / `Touches` を実装。
   キャンバス UI のポインタイベントは指0 がマウスを動かす経路で判定される。正典は docs/android.md §12。残りは直後に並べた各項目。
-- [ ] **実機でのタッチ → スクリプト／ボタン反応の確認（段階B 待ち）** — 2026-09-24。Android ではスクリプトが動かないため、
+- [ ] **実機でのタッチ → スクリプト／ボタン反応の確認（段階B 待ち）** — 2026-09-24。2026-09-25 追記: 段階B でスクリプトが動くようになり、
+  スクリプトの `Input.TouchCount` / `GetTouch`（Began / Moved / Ended・位置・移動量）はエミュレータと実機 Pixel 6a で確認した
+  （`input tap` / `swipe` でモデルの大きさ・向きが変わる。docs/android.md §17.11）。**残りはキャンバス UI のボタン**（ポインタイベントの
+  配信先がスクリプト）が実機で反応するところ。ボタン付きのキャンバスとスクリプトを載せたプロジェクトで確かめる。以下は記載時のメモ。
+  Android ではスクリプトが動かないため、
   `Input.GetTouch` の値と、キャンバス UI のポインタイベント（配信先がスクリプト）でボタンが反応するところまでは実機で未確認。
   入力状態（指の一覧・タッチ由来のマウス）は `[SEED TOUCH FRAME]` ログで確認済み（エミュレータ）。段階B でスクリプトが動いたら、
   PC で使った確認用スクリプト（docs/android.md §12.4 の TouchProbe）を実機に載せて確かめる。
@@ -1596,7 +1607,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `Mutex<PakReader>` で共有する（デスクトップのファイルと同じ）。非同期ロードのワーカーが増えて読み込みの直列化が効いてきたら、
   非圧縮の pak で取れる `Asset::open_file_descriptor` の fd に対する pread（位置を共有しない読み出し）に置き換えれば Mutex が要らなくなる。
   関連: `runtime/android/native/src/apk_package/`、`runtime/src/engine/pak/`。
-- [ ] **段階B: Android のパッケージ実行で事前コンパイル DLL を配布物から読む** — 2026-09-24。`App::new` はスクリプトの経路を
+- [x] **段階B: Android のパッケージ実行で事前コンパイル DLL を配布物から読む** — 2026-09-24 記載 / 2026-09-25 対応。同梱 .NET の起動材料
+  （`LaunchArgs.embedded_clr`）があれば、`SEEDScripting.dll` / `SEEDUserScripts.dll` を「files/bin → 外部 files/bin → APK の bin/」の
+  最初の置き場からバイト列で読む（`core/scripting/script_binaries.rs`・`app/script_boot.rs`・C# の `LoadPrecompiledScriptsFromBytes`。
+  docs/android.md §17.7）。以下は記載時のメモ。`App::new` はスクリプトの経路を
   「`assets_root` があればソースをコンパイル、無ければ実行ファイルの隣の `bin/SEEDUserScripts.dll`」で分けるが、Android の
   パッケージ実行は `assets_root`（内部フォルダ。フォールバック先）を持つ。段階B では `LaunchArgs.package_source` の有無でも分け、
   DLL を配布物の `bin/`（APK の `assets/seed/bin/`）から `PackageSource` で読んで `load_assembly_from_bytes` へ渡す。
@@ -1678,8 +1692,48 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   どれも動作に影響しないが、調査のときに紛らわしいので出どころを特定して抑えるか docs に明記しておく。
 - [ ] **ゲームパッド非対応** — 2026-09-24。gilrs は Android 未対応で「パッド無効」で続行する。
   Android のゲームパッドは GameActivity の入力イベントから取る必要がある。
-- [ ] **スクリプト未対応（段階B）** — 2026-09-24。`platform::CURRENT.scripting_supported == false` でスクリプトホストを探さない。
+- [x] **スクリプト未対応（段階B）** — 2026-09-24 記載 / 2026-09-25 対応。.NET 10 の Android 版 CoreCLR（＋同じ版の bionic パックの
+  hostfxr / hostpolicy）を APK に同梱し（`runtime/android/dotnet_runtime.json` → `build_and_run.ps1` が NuGet から組み立てる）、
+  初回起動時に `files/dotnet/` へ展開して `Hostfxr::load_from_path` → `initialize_for_runtime_config_with_dotnet_root` →
+  `load_assembly_from_bytes` → `get_delegate_loader` で起動する（`core/scripting/clr_host/embedded.rs`）。エミュレータと実機 Pixel 6a で
+  スクリプト（OnStart・Update・タッチ・Screen・例外・暗号 API）が動くことを確認。Mono へも切り替えられる（エミュレータで確認）。
+  正典は docs/android.md §17。残りは直後に並べた各項目。以下は記載時のメモ。`platform::CURRENT.scripting_supported == false` でスクリプトホストを探さない。
   `scripting/unsupported_platform.rs` の `load` は常に Err。linux-bionic 向け CoreCLR を同梱して `Hostfxr::load_from_path` で戻す。
+- [ ] **同梱 .NET の展開と CLR の起動が android_main で同期に走る（段階B・2026-09-25）** — 初回の展開（実機で 0.5〜0.8 秒・インストール直後の
+  エミュレータで 5.6 秒の例あり）と CLR の起動（60〜175 ms）・ユーザースクリプトの読み込みを、イベントループの前に android_main のスレッドで行う。
+  その間 UI スレッドはサーフェスの受け渡し（`android_app_set_window`）で待つので、「起動の初期化が android_main スレッドで同期に走る」の
+  項目と同じ ANR の恐れが増える。展開を別スレッドで先に始め、スクリプトの読み込みの直前で待つ等。関連: `runtime/android/native/src/dotnet_runtime/`、
+  `app/script_boot.rs`。
+- [ ] **同梱 .NET の BCL を絞っていない（APK が約 25 MB・展開後 58〜65 MB / ABI 増える）** — 2026-09-25（段階B）。パックの `lib/<TFM>/*.dll` を
+  全部入れている（R2R 済み。arm64 65.2 MB・x86_64 57.9 MB）。スクリプトが使う範囲に絞れば小さくなるが、trim（ILLink）は動的に読むスクリプト DLL を
+  壊す（docs/android.md §11.2）ので、「使う DLL の一覧」を事前コンパイル時に求めて deps.json と一緒に絞る等の別の方法が要る。
+  2 ABI 入りの APK は assets の BCL が両方入る（lib/ と違って ABI で分けられない）。配布は arm64 だけの想定。
+- [ ] **アプリのデータフォルダのファイルを実行する方式が将来の Android で禁止される恐れ** — 2026-09-25（段階B）。BCL の R2R の DLL（と `copy` の .so）は
+  `files/dotnet/` から実行可能として読み込まれ、SELinux は許可しつつ記録する（`avc: granted { execute } … app_data_file`。ファイルごとに 1 行）。
+  auditallow は「監視中」の印で、将来禁止されると hostfxr ＋ ファイルの dotnet-root の方式は使えない。そのときは .NET for Android と同じく
+  アセンブリをメモリから渡す自前のホスト（`coreclr_initialize` ＋ 外部アセンブリのプローブ）か NativeAOT（段階D）へ移る。
+  あわせて、この記録で logcat が埋まる（起動ごとに十数行）。
+- [ ] **TLS（SslStream・HttpClient の https）と X509 を Android で確かめていない** — 2026-09-25（段階B）。暗号ライブラリの JNI の初期化
+  （`DotnetJniLibraries.java` の `System.loadLibrary` ＋ パックの .jar）で SHA256・RandomNumberGenerator は動いた。TLS は `DotnetProxyTrustManager` を
+  使うので同じ仕組みで動く見込みだが未確認。`native_library_mode = "copy"` では暗号 API がプロセスごと落ちる（docs/android.md §17.8）。
+- [ ] **Mono の実機での確認・Mono の暗号 API** — 2026-09-25（段階B）。Mono（`dotnet_runtime = "mono"`）はエミュレータで起動とスクリプトの実行を
+  確かめた（CLR の起動 0.8〜1.4 秒・ユーザースクリプトの読み込み 0.4 秒で CoreCLR の約 10 倍遅い）。実機（ヒープのタグ付けの対策込み）は未確認。
+  暗号 API は linux-bionic パックが OpenSSL 版のため動かない（§11.1）。
+- [ ] **Android でスクリプトのデバッグ（netcoredbg のアタッチ）ができない** — 2026-09-25（段階B）。`DOTNET_EnableDiagnostics=0` で診断機能を止め、
+  DAC（`libmscordaccore.so`・`libmscordbi.so`）も入れていない。必要になったら、デバッグ用の APK だけ診断機能と DAC を入れ、adb forward で
+  netcoredbg を付ける形を検討する。
+- [ ] **Android の `bin/` に Roslyn の DLL（約 9 MB）が入る（読み込まれない）** — 2026-09-25（段階B）。SeedPak `--scripts` は PC の配布物と同じ
+  ScriptPackager の出力（スクリプトホスト一式）を置くため。Android ではその場コンパイルをしないので不要（APK が約 3.5 MB・`-PushScripts` の転送が 9 MB 増える）。
+  SeedPak に「実行時に要るものだけ」の指定を足すか、Android の同梱で `SEEDScripting.dll` / `SEEDUserScripts.dll` / runtimeconfig だけに絞る。
+- [ ] **`-PushScripts` の 1 回が約 9 秒（うち SeedPak の `dotnet run` のビルド確認とコンパイルが 5〜6 秒）** — 2026-09-25（段階B）。SeedPak は
+  `scripting/` を参照しているので `dotnet run` のたびにビルドの確認が走る。段階C のエディタ統合では、エディタが持っている ScriptPackager を
+  直接呼ぶ（プロセスを起動しない）形にすれば数百 ms になる見込み。
+- [ ] **外部アプリ専用フォルダの `files/bin/` は実機で読めない（候補としては残している）** — 2026-09-25（段階B）。`adb push` で置いた DLL は
+  Pixel 6a（Android 16）で Permission denied（§4.5 と同じ理由）。`-PushScripts` は run-as の内部フォルダへ送るように変えた。外部フォルダは
+  エミュレータで手で置くとき用の候補で、読めなければ警告して飛ばす（docs/android.md §17.7）。
+- [ ] **C# スクリプトのログのタグが CoreCLR（DOTNET）と Mono（SEED）で違う** — 2026-09-25（段階B）。CoreCLR の Android 版 `Console` は logcat へ
+  タグ `DOTNET` で直接書き、Mono は標準出力（→ エンジンの転送でタグ `SEED`）。`build_and_run.ps1` の logcat の絞り込みには両方を入れた。
+  揃えるなら、スクリプトホストの `SEED.Debug.Log` をエンジンのログ関数（FFI）経由にする。
 - [ ] **エディタのパッケージ化ウィンドウの Android 出力が実働しない（段階C）** — 2026-09-24。`PackagingWindow.xaml.cs` は
   runtime/ で `cargo build --target <triple>` して `runtime/target/<triple>/<profile>/libSEED.so` を拾う前提だが、
   runtime/ 単体を Android 向けにビルドすると winit の Android 機能（android-game-activity）が有効にならず、

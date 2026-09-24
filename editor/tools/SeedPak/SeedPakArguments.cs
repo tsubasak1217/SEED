@@ -10,16 +10,38 @@ using System.Collections.Generic;
 
 namespace SEEDEditor.Tools.SeedPak;
 
+/// <summary>何を作るか（--scripts / --scripts-only で決まる）。</summary>
+public enum SeedPakContent
+{
+    /// <summary>assets.pak だけ（従来どおり・既定）。</summary>
+    PakOnly,
+
+    /// <summary>assets.pak と bin/（スクリプトの事前コンパイル DLL とスクリプトホスト一式）。</summary>
+    PakAndScripts,
+
+    /// <summary>bin/ だけ（PAK は作らない。Android の -PushScripts でスクリプトだけ差し替えるとき）。</summary>
+    ScriptsOnly,
+}
+
 /// <summary>解釈済みのコマンドライン引数。</summary>
 /// <param name="ProjectDir">--project の値（プロジェクトフォルダ）。</param>
 /// <param name="AssetsDir">--assets の値（アセットルートの直接指定）。</param>
-/// <param name="OutDir">--out の値（assets.pak を書くフォルダ）。</param>
+/// <param name="OutDir">--out の値（assets.pak・bin/ を書くフォルダ）。</param>
 /// <param name="RuntimeSourceDir">--runtime-src の値（runtime/src。省略可）。</param>
+/// <param name="Content">何を作るか（--scripts / --scripts-only）。</param>
 public sealed record SeedPakOptions(
     string? ProjectDir,
     string? AssetsDir,
     string OutDir,
-    string? RuntimeSourceDir);
+    string? RuntimeSourceDir,
+    SeedPakContent Content = SeedPakContent.PakOnly)
+{
+    /// <summary>assets.pak を作るか。</summary>
+    public bool WritesPak => Content != SeedPakContent.ScriptsOnly;
+
+    /// <summary>bin/（スクリプト）を作るか。</summary>
+    public bool WritesScripts => Content != SeedPakContent.PakOnly;
+}
 
 /// <summary>引数を解釈した結果（成功・ヘルプ要求・エラーのどれか）。</summary>
 /// <param name="Options">成功したときの値。</param>
@@ -44,6 +66,12 @@ public static class SeedPakArguments
     /// <summary>エンジンのソース（runtime/src）。組み込み参照（assets://）を収録の起点に加えるのに使う。</summary>
     public const string RuntimeSourceOption = "--runtime-src";
 
+    /// <summary>assets.pak に加えて bin/（スクリプトの事前コンパイル DLL とスクリプトホスト一式）も作る（値を取らない）。</summary>
+    public const string ScriptsOption = "--scripts";
+
+    /// <summary>bin/ だけを作る（PAK は作らない。値を取らない）。</summary>
+    public const string ScriptsOnlyOption = "--scripts-only";
+
     /// <summary>使い方を表示する。</summary>
     public const string HelpOption = "--help";
 
@@ -57,6 +85,7 @@ public static class SeedPakArguments
         使い方:
           dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ>
           dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --out <出力フォルダ>
+          dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ> --scripts
 
         オプション:
           --project <フォルダ>      プロジェクトフォルダ。<フォルダ>/assets をアセットルートにする
@@ -64,12 +93,17 @@ public static class SeedPakArguments
           --assets <フォルダ>       アセットルートを直接指定する（--project と排他）
           --out <フォルダ>          出力フォルダ。<フォルダ>/assets.pak を書く（無ければ作る）
           --runtime-src <フォルダ>  エンジンのソース runtime/src（既定: このツールのあるリポジトリから探す）
+          --scripts                 加えて <フォルダ>/bin/ にスクリプトを作る（パッケージ化ウィンドウと同じ ScriptPackager:
+                                    アセット配下の .cs を事前コンパイルした SEEDUserScripts.dll と、スクリプトホスト
+                                    SEEDScripting.dll・依存 DLL・runtimeconfig。ホストは scripting/bin/Debug/net10.0 から写す）
+          --scripts-only            bin/ だけを作る（PAK は作らない。Android の DLL の差し替え用）
           --help, -h                この説明を表示する
 
         収録ルールはパッケージ化ウィンドウと同じく <アセットルート>/packaging_settings.json を読む（無ければ既定値）。
         アセットルートはエディタが使うパスと同じ表記で渡すこと（シーン内の絶対パス参照の照合・書き換えがこの表記を基準にする）。
+        bin/ は上書きで書き足す（古いファイルは消さない。置き場を作り直すのは呼び出し側）。
 
-        終了コード: 0 成功 / 1 引数・入力の誤り / 2 収録対象 0 件 / 3 書き出し失敗
+        終了コード: 0 成功 / 1 引数・入力の誤り / 2 収録対象 0 件 / 3 書き出し失敗 / 4 スクリプトのコンパイル・同梱の失敗
         """;
 
     /// <summary>
@@ -80,12 +114,23 @@ public static class SeedPakArguments
     public static SeedPakParseResult Parse(IReadOnlyList<string> args)
     {
         string? project = null, assets = null, output = null, runtimeSource = null;
+        var content = SeedPakContent.PakOnly;
 
         for (int i = 0; i < args.Count; i++)
         {
             var arg = args[i];
             if (arg == HelpOption || arg == HelpShortOption)
                 return new SeedPakParseResult(null, ShowHelp: true, Error: null);
+
+            // 値を取らないフラグ（何を作るか）
+            if (arg is ScriptsOption or ScriptsOnlyOption)
+            {
+                var requested = arg == ScriptsOption ? SeedPakContent.PakAndScripts : SeedPakContent.ScriptsOnly;
+                if (content != SeedPakContent.PakOnly && content != requested)
+                    return Fail($"{ScriptsOption} と {ScriptsOnlyOption} は同時に指定できません");
+                content = requested;
+                continue;
+            }
 
             // 以降のオプションはすべて値を 1 つ取る
             if (arg is not (ProjectOption or AssetsOption or OutOption or RuntimeSourceOption))
@@ -111,7 +156,7 @@ public static class SeedPakArguments
             return Fail($"{OutOption} を指定してください");
 
         return new SeedPakParseResult(
-            new SeedPakOptions(project, assets, output, runtimeSource), ShowHelp: false, Error: null);
+            new SeedPakOptions(project, assets, output, runtimeSource, content), ShowHelp: false, Error: null);
     }
 
     /// <summary>エラーの解釈結果を作る。</summary>

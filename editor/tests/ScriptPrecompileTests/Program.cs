@@ -153,6 +153,31 @@ public static class Program
             Check.True(!File.Exists(dll), "ロード後に DLL を削除できない（ファイルをロックしている）");
         });
 
+        h.Add("事前コンパイル DLL を中身（バイト列）からロードしてもパス版と同じ型へ解決する", () =>
+        {
+            // 同梱 .NET（Android）の経路: DLL は APK の中にありファイルとして見えないため、
+            // Rust 側が読んだ中身を LoadPrecompiledScriptsFromBytes → LoadPrecompiledBytes へ渡す。
+            using var fx = new ScriptFixture();
+            fx.BuildStandardTree();
+
+            var dll = fx.OutputPath(PrecompiledScriptArtifact.AssemblyFileName);
+            Check.True(ScriptAssemblyManager.CompileToFile(fx.Root, dll, BuildReferences()).Success,
+                "前提のコンパイルに失敗した");
+
+            var count = ScriptAssemblyManager.LoadPrecompiledBytes(File.ReadAllBytes(dll), "apk:seed/bin/" + PrecompiledScriptArtifact.AssemblyFileName);
+            Check.Equal(StandardTreeScriptTypeCount, count, "バイト列からロードできたスクリプト型数");
+            Check.Equal("Alpha.Foo", ScriptAssemblyManager.Resolve("assets://a/Foo.cs")?.FullName,
+                "バイト列からロードした型マップで a/Foo.cs が解決できない");
+            Check.Equal("Beta.Foo", ScriptAssemblyManager.Resolve("assets://b/Foo.cs")?.FullName,
+                "バイト列からロードした型マップで b/Foo.cs が解決できない");
+        });
+
+        h.Add("壊れた中身（バイト列）のロードは -1 を返す（例外を投げない）", () =>
+        {
+            var count = ScriptAssemblyManager.LoadPrecompiledBytes([0x4D, 0x5A, 0x00], "broken.dll");
+            Check.Equal(-1, count, "壊れた DLL のロード結果");
+        });
+
         h.Add("スクリプトではない型は型マップに載らない", () =>
         {
             using var fx = new ScriptFixture();
