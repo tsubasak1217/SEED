@@ -1551,7 +1551,9 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `Input.GetTouch` の値と、キャンバス UI のポインタイベント（配信先がスクリプト）でボタンが反応するところまでは実機で未確認。
   入力状態（指の一覧・タッチ由来のマウス）は `[SEED TOUCH FRAME]` ログで確認済み（エミュレータ）。段階B でスクリプトが動いたら、
   PC で使った確認用スクリプト（docs/android.md §12.4 の TouchProbe）を実機に載せて確かめる。
-- [ ] **実機（Pixel 6a）でタッチ状態・複数指を確認する** — 2026-09-24。エミュレータ（`input tap` / `swipe` / `input mouse tap`・
+- [x] **実機（Pixel 6a）でタッチ状態・複数指を確認する** — 2026-09-24 記載 / 同日対応。合成タッチ列（`debug.seed.touch_test=1`）で `n=1 → 2 → 3` の
+  追跡と指0 だけがマウスを駆動すること、`input tap` / `swipe` と実際の指のなぞりで `[SEED TOUCH FRAME]` とマウスの追従を確認（docs/android.md §12.5）。
+  人の 2 本指以上（OS 経由の複数指）は実機では未確認（非 root では注入できない）。以下は記載時のメモ。エミュレータ（`input tap` / `swipe` / `input mouse tap`・
   コンソールの protocol B 3 本指・合成タッチ列）と PC では確認済みだが、実機は端末が私物として使用中で、起動直後にユーザーが別アプリへ
   移って最初のフレーム前にプロセスが終了したため未完（docs/android.md §12.5）。端末が空いているときに
   `debug.seed.touch_test=1`（合成 3 本指）と `input tap` / `swipe` で `[SEED TOUCH FRAME]` を確かめる。手順は §12.4。
@@ -1577,7 +1579,9 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   で渡す。pak はエディタ無しで `editor/tools/SeedPak`（パッケージ化ウィンドウと同じ `AssetPakBuilder`）が作り、
   `build_and_run.ps1 -ProjectDir` が APK へ入れる。エミュレータで push 無しの描画を確認。正典は docs/android.md §13。
   残りは直後に並べた各項目。
-- [ ] **実機（Pixel 6a）で APK 内 pak の起動を確認する** — 2026-09-24。エミュレータ（x86_64）では push 無しで描画まで確認したが、
+- [x] **実機（Pixel 6a）で APK 内 pak の起動を確認する** — 2026-09-24 記載 / 同日対応。push 無しの APK で「APK 内の pak で起動します … 非圧縮
+  （APK 内の位置 52547452）」→ `asset_fs: packaged pak=apk:seed/assets.pak entries=3` → BrainStem が描画（約 18〜19 fps。docs/android.md §13.6）。
+  以下は記載時のメモ。エミュレータ（x86_64）では push 無しで描画まで確認したが、
   実機は作業中ずっと私物として使用中（別アプリが前面）だったため未実施。arm64 の .so はビルド済み（コードは ABI に依存しない）。
   端末が空いているときに `build_and_run.ps1 -Abi arm64-v8a -Serial <実機> -ProjectDir <プロジェクト> -LogcatSeconds 30` で、
   起動ログの「APK 内の pak で起動します … 非圧縮」と `asset_fs: packaged pak=apk:seed/assets.pak` と描画を確かめる。
@@ -1636,15 +1640,35 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `Resized` が別経路で前後するため、描画面が先に変わったフレームは一致する報告が無い（エミュレータで 270 → 0・180 → 90 のときに 1 回ずつ）。
   気になるなら、描画面の大きさの変化を検出したら報告が届くまで写しの更新を 1〜2 フレーム待つ、などを検討する。
   関連: `platform/screen/report.rs`（`select_for_frame`）、`app/screen_publish.rs`。
-- [ ] **実機（Pixel 6a）で安全領域と向きを確認する** — 2026-09-24。エミュレータ（内蔵の切り欠き・overlay の corner / double）では
+- [x] **実機（Pixel 6a）で安全領域と向きを確認する** — 2026-09-24 記載 / 同日対応。実際のパンチホールは 132 px で、穴のある辺だけが内側へ寄ることを
+  4 方向で確認（0 度 `safe=(0,132,1080,2205)` Portrait・90 度 `(132,0,2268,1017)` LandscapeLeft・180 度 `(0,0,1080,2268)` PortraitUpsideDown・
+  270 度 `(0,0,2268,1017)` LandscapeRight・dpi 420。回転の設定は検証前の `default` / `lock 0` へ戻した。docs/android.md §15.5）。
+  分割画面・自然な向きが横のタブレットは未確認のまま。以下は記載時のメモ。エミュレータ（内蔵の切り欠き・overlay の corner / double）では
   4 方向の値を確認したが、実機は作業中ずっと私物として使用中で、その後 USB の接続も外れたため未実施。実際のパンチホールで
   `[SEED SCREEN] Java 報告` の内訳（cutout）と `safe=` を 4 方向で確かめる（実機では overlay を触らない。回転の強制は §10 の
   `cmd window user-rotation lock` を使い、控えた設定へ必ず戻す）。分割画面・自然な向きが横のタブレットも未確認。
 - [ ] **`Screen.DPI` は論理 DPI（densityDpi）だけ** — 2026-09-24（A-4 実装時・低優先）。Android の densityDpi は 120/160/240/320/420/480… の
   区分値で、物理的な大きさ（インチ）の計算には粗い。必要になったら `DisplayMetrics.xdpi / ydpi` を報告に足して別 API にする。
-- [ ] **音声（oboe）が鳴るか未確認（段階A）** — 2026-09-24。rodio → cpal → oboe（`c++_static`）は、実機で出力ストリームを
-  開くところまで確認した（無音・音量 0 の AudioComponent で `OboeAudio: OboeVersion1.8.1` →
-  `AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`）。実際に音が鳴るか・バックグラウンドで止まるかは未確認。
+- [x] **音声（oboe）が鳴るか未確認（段階A）** — 2026-09-24 記載 / 同日対応（A-5）。エミュレータと実機で、テスト音源（AudioComponent の自動再生）が
+  2ch・44100 Hz・F32 の AAudio ストリームで再生されることを確認（`dumpsys audio` の player `state:started`・audio_flinger のトラック `Active=yes`・
+  ホスト PC 側でエミュレータの音声セッションに波形）。背面での停止・音声フォーカス・音量キーも対応した（docs/android.md §16）。以下は記載時のメモ。
+  rodio → cpal → oboe（`c++_static`）は、実機で出力ストリームを開くところまで確認した（無音・音量 0 の AudioComponent で
+  `OboeAudio: OboeVersion1.8.1` → `AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`）。実際に音が鳴るか・バックグラウンドで止まるかは未確認。
+- [ ] **出力デバイスの切り替え（ヘッドホンの抜き差し・Bluetooth）で音が止まったまま戻らない恐れ（未確認）** — 2026-09-24（A-5 実装時）。
+  cpal 0.15 の oboe はストリームの切断（AAudio の `DISCONNECTED`）をエラーの通知で知らせるだけで開き直さない（エンジン側はログを出すだけ）。
+  出力は `core/audio/output/`（`AudioOutput`）に閉じているので、エラーの通知を受けたら「ミキサーを残したまま出力ストリームだけを開き直す」
+  （ミキサーの出口をコールバックから取り戻して新しいストリームへつなぐ）形で直せる。実機でヘッドホン・Bluetooth を抜き差しして確かめる。
+- [ ] **音声フォーカスの恒久的な喪失（`AUDIOFOCUS_LOSS`）を端末の上で確かめていない** — 2026-09-24（A-5 実装時）。エミュレータでは SEED が前面のまま
+  他のアプリに `AUDIOFOCUS_GAIN` を要求させる手段が無かった（分割画面は片側が空で解除、YouTube Music の音声プレビューは一時的な要求だけ）。
+  状態の扱いは単体テスト（`output_policy.rs`）で固定済み。音楽アプリを入れた端末で、SEED を前面にしたまま通知の操作パネルから再生を始めて確かめる。
+  実機では、音声フォーカスの喪失・ダッキング・音量キーも未実施（私物の端末で他のアプリを動かさない・音量を変えないため）。
+- [ ] **AAudio の player が `USAGE_MEDIA`・性能モードが既定のまま（低優先）** — 2026-09-24（A-5 実装時）。cpal 0.15 の oboe は usage・content type・
+  性能モード（`PerformanceMode::LowLatency`）を指定する口が無い（音声フォーカスの要求だけ `USAGE_GAME`）。リズムゲームで遅延が問題になったら、
+  oboe を直接使う出力（`AudioOutput` の差し替え）か cpal の更新を検討する。ダッキングの下げ幅（×0.2、`output_policy::DUCKED_GAIN`）も定数のまま。
+- [ ] **debug ビルドの音声のオーディオスレッドが重い（実機で 1 コアの約 34%）** — 2026-09-24（A-5 の確認時）。Pixel 6a の debug ビルドで、
+  ループ音 1 つを鳴らしている間の `AudioTrack` スレッドが 10 秒で 336 tick（エミュレータは 68 tick）。rodio・cpal・symphonia・hound 等の
+  音声系クレートはルートの `Cargo.toml` の `[profile.dev.package.*]` で最適化されていない（wgpu・物理系はされている）。
+  実機の debug ビルドで音が途切れるようなら、音声系クレートに `opt-level = 2` を足す。
 - [ ] **実機 logcat の無害なノイズ（低優先）** — 2026-09-24。Pixel 6a で毎回出る: SELinux の
   `avc: denied { search }`（cgroup / cgroup2 のルート。`android_main` スレッドが最初のフレーム時に 4 件。CPU 数の問い合わせ
   と推測・未特定）、wgpu の `Unrecognized present mode SHARED_DEMAND_REFRESH / SHARED_CONTINUOUS_REFRESH`
@@ -1670,7 +1694,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   （`[PLAY_HB]` が毎秒）、物理が動いていると `[PERF f=...]` も 60 フレームごとに出る。Windows 版でも同じ。撤去予定の一時診断のはず。
 - [ ] **`runtime/Cargo.lock` はワークスペース化前の残骸** — 2026-09-24。ワークスペースの lock はルートの `Cargo.lock`。
   runtime/ 側は 2026-05 から更新されておらず参照もされない。削除してよいか確認する（低優先）。
-- [ ] **実機（Pixel 6a）で A-3 を確認する（特にパイプラインキャッシュの短縮幅）** — 2026-09-24。
+- [x] **実機（Pixel 6a）で A-3 を確認する（特にパイプラインキャッシュの短縮幅）** — 2026-09-24 記載 / 同日対応。パイプライン生成は
+  キャッシュ無し 3595 ms（インストール直後）/ 3014 ms（ファイルを消した起動）→ キャッシュ有り 528 / 522 ms（約 85% 減。キャッシュ 618 KiB・保存 2.6〜6.2 ms）。
+  書き込み先・セーブ（ホーム → am kill で毎回残る／前面のまま force-stop では残らない）・物理スレッドの停止と再開・戻るキー（Escape の down / up）も
+  確認した（docs/android.md §14.7）。以下は記載時のメモ。
   エミュレータではセーブ（suspended・onDestroy の JNI）・書き込み先・物理停止・戻るキーを確認したが、実機は作業中ずっと私物として
   使用中（別アプリが前面）で、その後 USB の接続も外れたため未実施。arm64 の .so はビルド済み（コードは ABI に依存しない）。
   エミュレータのパイプライン生成はホスト（gfxstream → NVIDIA）のドライバが自前のキャッシュを持つため、キャッシュの有無で約 7% しか
@@ -1685,8 +1712,9 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   ネイティブの応答を待ち続ける（native_app_glue の `android_app_set_window` は時間切れ無し）。パイプラインキャッシュで短くはなるが、
   初期化の分割・非同期化は未着手。記録: APK 更新直後の初回起動で 44 秒かかり、`Activity pause timeout`・`stop timeout` の後に
   プロセスが終了した例がある（上の記載時のメモ）。
-- [ ] **バックグラウンド中も音声・ゲームパッドのスレッドが動く／`[PLAY_WD]` が誤報する** — 2026-09-24。
-  A-3 で物理スレッドは止めたが、音声（rodio → cpal → oboe）とゲームパッド（gilrs。Android では無効だがポーリングスレッドは残る）は
-  背面でも動く。音は鳴るかどうか自体が未確認（上の「音声（oboe）が鳴るか未確認」）。止めるなら `core::background_gate` を見る。
+- [ ] **バックグラウンド中もゲームパッドのスレッドが動く／`[PLAY_WD]` が誤報する** — 2026-09-24。
+  A-3 で物理スレッドは止めた。音声は A-5（2026-09-24）で出力ストリームごと一時停止するようにした（背面の `AudioTrack` スレッドの CPU 時間は
+  10 秒で 0 tick。docs/android.md §16）。残りはゲームパッド（gilrs。Android では無効だがポーリングスレッドは残る）で、止めるなら
+  `core::background_gate` を見る。以下は記載時のメモ。A-3 の時点では音声（rodio → cpal → oboe）も背面で動いていた。
   また `app/play_diag.rs` のフレーム監視（`[PLAY_WD] stuck at stage=frame_end … (A)イベントループスレッド自体がブロック`）が、
   背面でイベントループが Wait に入っている間ずっと 5 秒ごとに誤報する（撤去予定の一時診断。背面中は黙らせるか撤去する）。

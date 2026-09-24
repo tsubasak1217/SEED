@@ -13,15 +13,18 @@
 //      3. シミュレーションを止める … 物理スレッドを眠らせる（core::background_gate を立てる）
 //         背面の印は書き出しが済んでから立てる（印を見た後の書き換えは、この書き出しに含まれないと
 //         言い切れるようにするため。検証用フック runtime/android/native/src/debug_save_test.rs が頼る順序）
+//      4. 音声を止める … 出力ストリームごと一時停止する（audio_output_sync.rs。背面の印を見て決めるので 3 の後）
 //    前面へ（enter_foreground）:
 //      1. シミュレーションを再開する（物理スレッドが条件変数ですぐ起きる）
 //      2. 背面にいた時間をゲームの時間から捨てる（Clock::forget_elapsed。取り戻しの連続実行を防ぐ）
+//      3. 音声を戻す … ただし音声フォーカスを失ったまま（着信中・他のアプリが再生中）なら止めたまま
 //
 //  【同期で行う理由】
 //  suspended の処理が終わるまで Android の UI スレッドはウィンドウの破棄を待っている
 //  （android-activity の glue が終わりを待つ）。ここで書き終えてから戻れば、直後にプロセスが
 //  殺されてもセーブは残る。書き込むのはセーブ（数 KB）とパイプラインキャッシュ（数 MB。内容が
-//  変わらなければ書かない）だけなので、UI スレッドの待ちは短い。
+//  変わらなければ書かない）だけなので、UI スレッドの待ちは短い。音声の一時停止（AAudio の requestPause）は
+//  待たずに戻る。
 //
 //  デスクトップには suspended が届かないので、このファイルの処理は一切走らない
 //  （初回の resumed で呼ぶ ensure_foreground は、もともと前面なので何も変えない）。
@@ -36,7 +39,7 @@ use super::App;
 const LOG_TAG: &str = "[SEED LIFECYCLE]";
 
 impl App {
-    /// バックグラウンドへ回った（suspended）。シミュレーションを止め、セーブとパイプラインキャッシュを書き出す。
+    /// バックグラウンドへ回った（suspended）。セーブとパイプラインキャッシュを書き出し、シミュレーションと音声を止める。
     ///
     /// 描画サーフェスの破棄（handle_suspended）より先に呼ぶ（書き出しを最優先するため。
     /// どちらも suspended から戻る前に終わる）。
@@ -53,14 +56,19 @@ impl App {
         // ③ 物理スレッドを止める（次の周回から眠る）。書き出しの後に立てる理由はファイル先頭のコメント。
         background_gate::enter_background();
         eprintln!("{LOG_TAG} background: シミュレーションを止めました（物理スレッドは前面へ戻るまで眠ります）");
+
+        // ④ 音声を止める（出力ストリームごと一時停止。③の印を見て決める。まだ何も鳴らしていなければ何もしない）。
+        self.sync_audio_output();
     }
 
-    /// 前面へ戻った（2 回目以降の resumed でサーフェスを作り直せたとき）。シミュレーションを再開する。
+    /// 前面へ戻った（2 回目以降の resumed でサーフェスを作り直せたとき）。シミュレーションと音声を再開する。
     pub(super) fn enter_foreground(&mut self) {
         // 背面にいた時間はゲームの時間に入れない（最初のフレームの delta を「今から」にする）。
         self.clock.forget_elapsed();
         background_gate::enter_foreground();
         eprintln!("{LOG_TAG} foreground: シミュレーションを再開しました");
+        // 音声を戻す（音声フォーカスを失ったままなら止めたまま。audio_output_sync.rs）。
+        self.sync_audio_output();
     }
 
     /// 初回の resumed（初期化）の後に呼ぶ。前面であることを確定させる。

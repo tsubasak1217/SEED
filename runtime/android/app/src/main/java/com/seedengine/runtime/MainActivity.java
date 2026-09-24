@@ -7,6 +7,8 @@
 //    ・環境変数 TMPDIR / HOME をアプリのフォルダへ向ける（理由は setAppDirectoryEnvironment のコメント）
 //    ・全画面（システムバーを隠す）
 //    ・安全領域と画面の回転をネイティブへ知らせる（中身は ScreenReporter。契機の受け口だけここ）
+//    ・音量キーの対象をメディアの音量にし、音声フォーカスを前面で要求・前面を離れるときに手放す
+//      （中身は AudioFocusController。契機の受け口だけここ）
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
@@ -14,6 +16,7 @@
 package com.seedengine.runtime;
 
 import android.content.res.Configuration;
+import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Process;
 import android.system.ErrnoException;
@@ -65,14 +68,35 @@ public class MainActivity extends GameActivity {
     /** 安全領域と画面の回転をネイティブへ知らせる係（UI スレッド専用）。 */
     private final ScreenReporter screenReporter = new ScreenReporter(this);
 
+    /** 音声フォーカスの要求・放棄と変化の通知（UI スレッド専用。システムサービスを使うので onCreate で作る）。 */
+    private AudioFocusController audioFocus;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
         setAppDirectoryEnvironment();
         super.onCreate(savedInstanceState);
         hideSystemBars();
+        // 音量キーは常にメディアの音量（ゲームの音が属する STREAM_MUSIC）を上げ下げする。指定しないと
+        // 何も鳴っていない瞬間の対象が端末の既定（端末によっては着信音量）になるため固定する。
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+        audioFocus = new AudioFocusController(this);
         // 描画面（SurfaceView）は super.onCreate の中で作られる。以降、安全領域・回転の変化を知らせる。
         screenReporter.attach(mSurfaceView);
+    }
+
+    /** 前面に来た。音声フォーカスを要求する（得られるまでネイティブは音声を止めたまま）。 */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        audioFocus.request();
+    }
+
+    /** 前面を離れる。音声フォーカスを手放す（ネイティブは音声を止める）。 */
+    @Override
+    protected void onPause() {
+        super.onPause();
+        audioFocus.abandon();
     }
 
     /**

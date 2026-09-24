@@ -90,8 +90,10 @@ mod screen_publish;
 /// 画面情報の診断ログ（公開した写しが変わったときだけ。lifecycle_diag_log が真のときだけ）。
 mod screen_diag;
 /// バックグラウンドへの出入り（Android の suspended / resumed）でのセーブ書き出し・パイプラインキャッシュ保存・
-/// シミュレーション停止。描画サーフェスの破棄・再生成（surface_lifecycle）とは別の責務。
+/// シミュレーション停止・音声の停止。描画サーフェスの破棄・再生成（surface_lifecycle）とは別の責務。
 mod background_lifecycle;
+/// 背面・音声フォーカス（Android）に合わせた音声の出力全体の一時停止・再開・全体音量（ダッキング）。
+mod audio_output_sync;
 mod frame_renderer;
 /// IPC 駆動スクリーンショット（SCREENSHOT:）のアプリ側処理。
 mod screenshot_ops;

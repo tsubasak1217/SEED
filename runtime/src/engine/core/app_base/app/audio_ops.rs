@@ -131,11 +131,16 @@ impl App {
     }
 
     /// AudioManager を必要に応じて初期化する（既に試行済みなら何もしない）。
+    ///
+    /// 作れたら、最初の音を鳴らす前に出力全体の状態（Android の背面・音声フォーカス）を当てる
+    /// （作る前から音声フォーカスを失っている場合に、最初の音が漏れないように。audio_output_sync.rs）。
     fn ensure_audio_manager(&mut self) {
         if self.audio.is_none() {
             self.audio = AudioManager::new();
             if self.audio.is_none() {
                 eprintln!("[Script] Audio: オーディオデバイスの初期化に失敗しました（無音で継続）");
+            } else {
+                self.sync_audio_output();
             }
         }
     }

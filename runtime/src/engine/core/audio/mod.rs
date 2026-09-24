@@ -40,11 +40,26 @@
 //    長い音（BGM を誤って Audio.Play した場合など）は PCM がメモリを食うので
 //    PCM_CACHE_MAX_SECONDS を超えたらキャッシュせず、従来どおりストリーム再生へ落とす。
 //    「長すぎる」と分かった結果もキャッシュに残す（毎回デコードし直さないため）。
+//
+//  【出力全体の一時停止・全体音量（Android の背面・音声フォーカス）】
+//    出力ストリームは自前で開いて持つ（output/。rodio の OutputStream は一時停止できないため）。
+//    App が背面・音声フォーカスから決めた状態（output_policy.rs）を apply_output_policy で当てると、
+//    出力ストリームごと一時停止・再開し、全体音量の倍率（ダッキング）を変える。Sink ごとの状態
+//    （スクリプトの PauseBgm 等）には触らないので、再開で勝手に鳴り出す音は無い。
+//    止めている間に鳴らそうとした単発の音（効果音・ループしないコンポーネント音源）は捨てる
+//    （積んでおくと、再開した瞬間に溜まった分がまとめて鳴るため）。BGM とループ音は止めたまま積み、
+//    再開で続きから鳴る。デスクトップは止めることが無いので従来どおり。
 // ============================================================
 
 /// 音声辞書のキー索引（`グループ/用途` → パス・既定音量）。
 /// AudioManager とは独立した純粋ロジックなので、サブモジュールとして分離している。
 pub mod dictionary_index;
+/// 音声の出力（出力ストリーム・ミキサー・全体音量）。rodio の OutputStream の代わり。
+pub mod output;
+/// 出力全体を止めるか・全体音量をどうするかの判断（背面・音声フォーカスから。純関数）。
+pub mod output_policy;
+/// 左右の耳の位置で音量を振り分ける音源（rodio の SpatialSink と同じ仕組み。AudioComponent 用）。
+pub mod spatial_voice;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -52,9 +67,13 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source, SpatialSink};
+use rodio::{Decoder, Sink, Source};
 
 use crate::engine::ecs::Entity;
+
+use self::output::AudioOutput;
+use self::output_policy::OutputPolicy;
+use self::spatial_voice::SpatialVoice;
 
 // ─── SE の同時発音数・PCM キャッシュの定数 ───────────────────
 
@@ -257,10 +276,10 @@ fn decode_pcm(bytes: SharedBytes, path: &str) -> Option<Arc<DecodedPcm>> {
 ///
 /// App が遅延初期化で保持し、スクリプトのオーディオコマンド適用時に使用する。
 pub struct AudioManager {
-    /// 出力ストリーム（Drop されると全音声が止まるため保持し続ける）
-    _stream: OutputStream,
-    /// Sink 生成用のストリームハンドル
-    handle: OutputStreamHandle,
+    /// 音声の出力（Drop されると全音声が止まるため保持し続ける）。Sink の生成・全体の一時停止・全体音量。
+    output: AudioOutput,
+    /// いま出力に当てている全体の状態（一時停止・全体音量。App が背面・音声フォーカスから決める）。
+    output_policy: OutputPolicy,
     /// 再生中の BGM（None = BGM なし）
     bgm: Option<Sink>,
     /// BGM の再生速度（1.0 = 等倍）。
@@ -270,8 +289,8 @@ pub struct AudioManager {
     /// 再生中の SE 群（finished は cleanup で回収する）
     se_sinks: Vec<SeVoice>,
     /// 再生中のコンポーネント音源（Key = AudioComponent のスロットエンティティ）。
-    /// SpatialSink を使い、毎フレーム update_component_voice で減衰・パンを更新する。
-    component_voices: HashMap<Entity, SpatialSink>,
+    /// SpatialVoice（rodio の SpatialSink と同じ仕組み）を使い、毎フレーム update_component_voice で減衰・パンを更新する。
+    component_voices: HashMap<Entity, SpatialVoice>,
     /// play_on_start を一度発火させたスロットエンティティ
     /// （非ループ SE が鳴り終わった後に再発火しないための記録）。
     component_started: HashSet<Entity>,
@@ -292,12 +311,15 @@ pub struct AudioManager {
 
 impl AudioManager {
     /// 既定のオーディオデバイスで初期化する。デバイスが無い場合は None。
+    ///
+    /// 作った直後の出力は「通常（鳴らす・全体音量そのまま）」。背面・音声フォーカスの状態は
+    /// App が作った直後に apply_output_policy で当てる（app/audio_output_sync.rs）。
     pub fn new() -> Option<Self> {
-        let (stream, handle) = OutputStream::try_default().ok()?;
+        let output = AudioOutput::open_default()?;
         let (pcm_done_tx, pcm_done_rx) = channel();
         Some(Self {
-            _stream: stream,
-            handle,
+            output,
+            output_policy: OutputPolicy::NORMAL,
             bgm: None,
             bgm_speed: BGM_SPEED_DEFAULT,
             se_sinks: Vec::new(),
@@ -311,13 +333,45 @@ impl AudioManager {
         })
     }
 
+    // ─── 出力全体（背面・音声フォーカス）──────────────────────────
+
+    /// 出力全体の状態（一時停止・全体音量）を当てる。今と同じなら何もしない。
+    ///
+    /// 出力ストリームごと止める・戻すだけで、Sink ごとの状態（PauseBgm 等）には触らない
+    /// （ファイル冒頭「出力全体の一時停止・全体音量」）。
+    ///
+    /// # 戻り値
+    /// 変わったなら変わる前の状態（ログに使う）。同じなら None。
+    pub fn apply_output_policy(&mut self, policy: OutputPolicy) -> Option<OutputPolicy> {
+        if self.output_policy == policy {
+            return None;
+        }
+        self.output.set_paused(policy.paused);
+        self.output.set_gain(policy.gain);
+        Some(std::mem::replace(&mut self.output_policy, policy))
+    }
+
+    /// 出力全体を止めているか（背面・音声フォーカスの喪失）。
+    ///
+    /// 止めている間の単発の音は鳴らさずに捨てる（play_se / play_component の冒頭）。
+    fn output_paused(&self) -> bool {
+        self.output_policy.paused
+    }
+
     /// 効果音を再生する（多重再生可）。volume は 1.0 = 等倍。
     ///
     /// 初回だけ全デコードして PCM をキャッシュし、2 回目以降はその PCM を共有して鳴らす
     /// （理由はファイル冒頭「SE の再生方式」）。同時発音数は
     /// [`MAX_SE_VOICES_PER_SOUND`] / [`MAX_SE_VOICES`] で頭打ちにする。
+    /// 出力全体を止めている間（Android の背面・音声フォーカスの喪失）は鳴らさずに捨てる
+    /// （積むと再開の瞬間にまとめて鳴るため。効果音はその瞬間の音）。
     pub fn play_se(&mut self, path: &str, volume: f32) {
         crate::profile_scope!("オーディオ/SE 再生");
+
+        // 0. 出力を止めている間の効果音は捨てる
+        if self.output_paused() {
+            return;
+        }
 
         // 1. 済んだ初回デコードがあれば取り込む（この呼び出しから使えるようになる）
         self.collect_finished_decodes();
@@ -333,9 +387,7 @@ impl AudioManager {
         self.enforce_se_voice_limits(pcm.as_ref());
 
         // 4. Sink を作って流す
-        let Ok(sink) = Sink::try_new(&self.handle) else {
-            return;
-        };
+        let sink = self.output.new_sink();
         sink.set_volume(volume.max(0.0));
         match &pcm {
             // 通常経路: キャッシュ済み PCM をそのまま鳴らす（デコード無し）
@@ -429,6 +481,9 @@ impl AudioManager {
 
     /// BGM を再生する（既存の BGM は停止して置き換える）。
     /// looped = true でループ再生。volume は 1.0 = 等倍。
+    ///
+    /// 出力全体を止めている間（Android の背面・音声フォーカスの喪失）も捨てずに積む
+    /// （その時点の BGM として残り、出力の再開で先頭から鳴る）。
     pub fn play_bgm(&mut self, path: &str, volume: f32, looped: bool) {
         self.stop_bgm();
         let Some(bytes) = self.load(path) else { return };
@@ -436,9 +491,7 @@ impl AudioManager {
             eprintln!("[Script] Audio: デコード失敗 ({path})");
             return;
         };
-        let Ok(sink) = Sink::try_new(&self.handle) else {
-            return;
-        };
+        let sink = self.output.new_sink();
         sink.set_volume(volume.max(0.0));
         // 保持している再生速度を新しい Sink にも引き継ぐ（等倍ならリセット扱いになる）
         sink.set_speed(self.bgm_speed);
@@ -517,24 +570,28 @@ impl AudioManager {
 
     /// コンポーネント音源を再生する（既に同スロットで再生中なら停止して置き換える）。
     ///
-    /// SpatialSink を使用し、減衰・パンは毎フレームの update_component_voice で反映する。
+    /// SpatialVoice を使用し、減衰・パンは毎フレームの update_component_voice で反映する。
     /// 再生開始時はエミッタを正面（中央）に置く。
+    /// 出力全体を止めている間（Android の背面・音声フォーカスの喪失）は、ループしない音は鳴らさずに捨て、
+    /// 自動再生は「発火済み」として記録する（効果音と同じ理由）。ループする音は積んでおき、出力の再開で鳴る。
     pub fn play_component(&mut self, slot: Entity, path: &str, volume: f32, looped: bool) {
         self.stop_component(slot);
+        if self.output_paused() && !looped {
+            self.component_started.insert(slot);
+            return;
+        }
         let Some(bytes) = self.load(path) else { return };
         let Ok(decoder) = Decoder::new(Cursor::new(bytes)) else {
             eprintln!("[Script] Audio: デコード失敗 ({path})");
             return;
         };
         // エミッタ正面（単位距離）・両耳 ±EAR_OFFSET で初期化する
-        let Ok(sink) = SpatialSink::try_new(
-            &self.handle,
+        let sink = SpatialVoice::new(
+            self.output.new_sink(),
             [0.0, 0.0, 1.0],
             [-EAR_OFFSET, 0.0, 0.0],
             [EAR_OFFSET, 0.0, 0.0],
-        ) else {
-            return;
-        };
+        );
         sink.set_volume(volume.max(0.0));
         if looped {
             sink.append(decoder.repeat_infinite());
@@ -745,6 +802,115 @@ mod tests {
 
         // 後始末（テスト終了時に鳴りっぱなしにしない）
         audio.se_sinks.clear();
+    }
+
+    // ─── 出力全体の一時停止（背面・音声フォーカス）─────────────
+
+    /// 出力を止めた状態（背面へ回ったとき・音声フォーカスを失ったとき）。
+    const PAUSED_OUTPUT: OutputPolicy = OutputPolicy { paused: true, gain: output_policy::FULL_GAIN };
+
+    /// 無音の PCM の長さ（秒）。テスト中に鳴り終わらない長さにする。
+    const SILENT_PCM_SECONDS: u32 = 10;
+
+    /// 無音の PCM のサンプリング周波数（Hz）。
+    const SILENT_PCM_RATE: u32 = 44_100;
+
+    /// 条件が満たされるのを待つ上限。
+    const WAIT_LIMIT: Duration = Duration::from_secs(3);
+
+    /// 条件を見直す間隔。
+    const WAIT_POLL: Duration = Duration::from_millis(10);
+
+    /// 一時停止の指示がオーディオスレッドへ届くまで置く時間（届く前のバッファが書き終わるのも待つ）。
+    const PAUSE_SETTLE: Duration = Duration::from_millis(100);
+
+    /// 止まっていることを確かめるために見守る時間。
+    const PAUSE_OBSERVE: Duration = Duration::from_millis(300);
+
+    /// 中身が無音のモノラル PCM（鳴らしても音は出ない）。
+    fn silent_pcm() -> Arc<DecodedPcm> {
+        let samples = vec![0.0; (SILENT_PCM_SECONDS * SILENT_PCM_RATE) as usize];
+        Arc::new(DecodedPcm::new(samples, 1, SILENT_PCM_RATE))
+    }
+
+    /// 条件が満たされるまで待つ（上限まで待っても駄目なら false）。
+    fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
+        let started = std::time::Instant::now();
+        while started.elapsed() < WAIT_LIMIT {
+            if condition() {
+                return true;
+            }
+            std::thread::sleep(WAIT_POLL);
+        }
+        condition()
+    }
+
+    /// 出力を止めると再生位置が止まり、戻すと続きから進むこと（出力ストリームごとの一時停止）。
+    #[test]
+    fn output_pause_freezes_playback_and_resume_continues() {
+        let Some(mut audio) = manager_or_skip() else { return };
+        let sink = audio.output.new_sink();
+        sink.set_volume(0.0); // 中身も無音だが、念のため音量も 0 にする
+        sink.append(PcmSource::new(silent_pcm()));
+        assert!(wait_until(|| sink.get_pos() > Duration::ZERO), "出力が動いていない");
+
+        assert_eq!(audio.apply_output_policy(PAUSED_OUTPUT), Some(OutputPolicy::NORMAL));
+        assert!(audio.output.is_paused());
+        std::thread::sleep(PAUSE_SETTLE);
+        let frozen = sink.get_pos();
+        std::thread::sleep(PAUSE_OBSERVE);
+        assert_eq!(sink.get_pos(), frozen, "出力を止めている間に再生位置が進んだ");
+
+        assert_eq!(audio.apply_output_policy(OutputPolicy::NORMAL), Some(PAUSED_OUTPUT));
+        assert!(!audio.output.is_paused());
+        assert!(wait_until(|| sink.get_pos() > frozen), "出力を戻しても再生位置が進まない");
+    }
+
+    /// 同じ状態を当て直しても何もしない（毎フレーム呼ばれるため）。
+    #[test]
+    fn applying_same_output_policy_is_noop() {
+        let Some(mut audio) = manager_or_skip() else { return };
+        assert_eq!(audio.apply_output_policy(OutputPolicy::NORMAL), None);
+        assert!(audio.apply_output_policy(PAUSED_OUTPUT).is_some());
+        assert_eq!(audio.apply_output_policy(PAUSED_OUTPUT), None);
+    }
+
+    /// スクリプトが一時停止した BGM は、出力を止めて戻しても一時停止のまま
+    /// （出力全体の再開で勝手に鳴り出さない）。
+    #[test]
+    fn output_resume_keeps_bgm_paused_by_game() {
+        let Some(mut audio) = manager_or_skip() else { return };
+        let bgm = audio.output.new_sink();
+        bgm.set_volume(0.0);
+        bgm.append(PcmSource::new(silent_pcm()));
+        audio.bgm = Some(bgm);
+        audio.pause_bgm();
+
+        audio.apply_output_policy(PAUSED_OUTPUT);
+        audio.apply_output_policy(OutputPolicy::NORMAL);
+        assert!(audio.bgm.as_ref().is_some_and(|sink| sink.is_paused()), "出力の再開で BGM が鳴り出した");
+
+        audio.resume_bgm();
+        assert!(audio.bgm.as_ref().is_some_and(|sink| !sink.is_paused()));
+        audio.stop_bgm();
+    }
+
+    /// 出力を止めている間の効果音・ループしないコンポーネント音源は鳴らさずに捨てる
+    /// （再開の瞬間にまとめて鳴らない）。自動再生は発火済みとして記録する。
+    #[test]
+    fn one_shot_sounds_are_dropped_while_output_paused() {
+        let Some(mut audio) = manager_or_skip() else { return };
+        audio.apply_output_policy(PAUSED_OUTPUT);
+
+        // 読み込みより前に捨てるので、パスは存在しなくてよい
+        audio.play_se("assets://__seed_test_missing.wav", 0.0);
+        assert!(audio.se_sinks.is_empty(), "止めている間の効果音を積んだ");
+        assert!(audio.pcm_decoding.is_empty(), "止めている間にデコードを始めた");
+
+        let slot = Entity::from_raw(1, 0);
+        audio.play_component(slot, "assets://__seed_test_missing.wav", 0.0, false);
+        assert!(!audio.is_component_playing(slot));
+        assert!(!audio.component_needs_autostart(slot), "自動再生が発火済みにならない（毎フレーム撃ち直す）");
     }
 
     /// SE 1 回あたりのコストを実測する【性能改修の前後を数字で比べるための道具】。

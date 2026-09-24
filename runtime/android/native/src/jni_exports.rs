@@ -1,5 +1,5 @@
 // ============================================================
-//  jni_exports.rs — Java（MainActivity・ScreenReporter）から呼ばれるネイティブ関数（JNI）
+//  jni_exports.rs — Java（MainActivity・ScreenReporter・AudioFocusController）から呼ばれるネイティブ関数（JNI）
 //
 //  【仕組み】
 //  MainActivity は static 初期化子で System.loadLibrary("SEED") している。同じパッケージの Java クラスの
@@ -19,11 +19,18 @@
 //  安全領域（描画面の各辺からの距離・物理ピクセル）・表示の回転・表示の自然な向きの大きさ・そのときの描画面の
 //  大きさを、値が変わったときに UI スレッドから呼ぶ。エンジン側の報告の置き場（platform::screen::report。Mutex）へ
 //  入れるだけで、スクリプトが読む値（SEED.Screen）へは次のフレームの公開で反映される（app/screen_publish.rs）。
+//
+//  【nativeOnAudioFocusChanged（AudioFocusController）】
+//  音声フォーカスの要求・放棄の結果と、OS からの変化の通知（着信・他のアプリの再生・通知音）を、状態の番号で
+//  UI スレッドから呼ぶ。エンジン側の置き場（platform::audio_focus。原子変数）へ入れるだけで、出力の一時停止・
+//  再開・全体音量にはエンジンのイベントループの次の周回で反映される（app/audio_output_sync.rs）。
+//  番号の対応は AudioFocus::from_code。
 // ============================================================
 
 use std::ffi::c_void;
 
 use seed_engine::engine::core::save;
+use seed_engine::engine::platform::audio_focus::{self, AudioFocus};
 use seed_engine::engine::platform::screen::report::{self, EdgeInsets, ScreenReport};
 
 use crate::logcat;
@@ -101,6 +108,34 @@ pub extern "system" fn Java_com_seedengine_runtime_ScreenReporter_nativeOnScreen
         // 同じ内容の報告の繰り返し（何も変わらない）。
         Ok(false) => {}
         Err(_) => logcat::error("[SEED SCREEN] 画面の報告の受け取り中に panic しました"),
+    }
+}
+
+/// `AudioFocusController.nativeOnAudioFocusChanged(int)`（Java の `private static native void`）の実体。
+///
+/// # 引数
+/// * `_env` / `_class` - JNIEnv* と AudioFocusController の jclass（使わない）
+/// * `state` - 音声フォーカスの状態の番号（AudioFocusController.STATE_*。AudioFocus::from_code と同じ対応）
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_seedengine_runtime_AudioFocusController_nativeOnAudioFocusChanged(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    state: i32,
+) {
+    let Some(focus) = AudioFocus::from_code(state) else {
+        // Java とネイティブの版の食い違い。知らない状態で音を止めたり鳴らしたりせず、今の状態のまま続ける。
+        logcat::warn(&format!("[SEED AUDIO] 知らない音声フォーカスの番号を受け取りました（無視します）: {state}"));
+        return;
+    };
+    // 原子変数への書き込みだけだが、JNI の境界を panic で越えないよう念のため受け止める。
+    match std::panic::catch_unwind(|| audio_focus::report(focus)) {
+        Ok(true) => logcat::info(&format!(
+            "[SEED AUDIO] 音声フォーカスの報告を受け取りました: {}（エンジンが次の周回で出力へ反映）",
+            focus.describe()
+        )),
+        // 同じ状態の繰り返し（何も変わらない）。
+        Ok(false) => {}
+        Err(_) => logcat::error("[SEED AUDIO] 音声フォーカスの報告の受け取り中に panic しました"),
     }
 }
 

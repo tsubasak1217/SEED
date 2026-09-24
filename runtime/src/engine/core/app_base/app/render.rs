@@ -53,6 +53,12 @@ impl ApplicationHandler for App {
     /// エディタ側がタイムアウトする。描画が止まっている間だけ IPC を処理する。
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         super::play_diag::atw_tick();
+        // 音声フォーカス（Android の UI スレッドから JNI で届く）に合わせて音声の出力全体を止める・戻す。
+        // フレームではなくイベントループの 1 周ごとに見る: ホームへ戻る途中などは RedrawRequested が止まっても
+        // ループは回り続けるので、フレームで見ると手放した音声フォーカスの反映が suspended まで遅れる
+        // （エミュレータで約 1 秒、音が鳴り続けた）。変わったときだけ切り替える（audio_output_sync.rs。
+        // デスクトップは常に「通常」のままで、原子変数を 2 つ読むだけ）。
+        self.sync_audio_output();
         self.pump_ipc_while_frames_stalled(event_loop);
         // 表示由来の再描画が来ない状況（ヘッドレス／撮影待ち）でフレームを強制的に回す。
         self.pump_frame_when_redraw_stalled(event_loop);

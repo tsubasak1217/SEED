@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -61,7 +61,8 @@ runtime/                      パッケージ SEED
     src/entry.rs              android_main（GameActivity から呼ばれる入口）
     src/logcat/               log / 標準出力 / 標準エラー / panic を logcat（タグ SEED）へ
     src/app_dirs.rs           アプリ専用フォルダ（files・cache）をセーブ・キャッシュの書き込み先としてエンジンへ設定（§14.1）
-    src/jni_exports.rs        Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し。§14.2／安全領域と回転の報告。§15）
+    src/jni_exports.rs        Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し。§14.2／安全領域と回転の報告。§15／
+                              音声フォーカスの報告。§16）
     src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
     src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
     src/heartbeat.rs          提示フレーム数を 3 秒ごとにログ（描画ループの生存確認）
@@ -104,6 +105,7 @@ runtime/android/
   app/src/main/AndroidManifest.xml
   app/src/main/java/com/seedengine/runtime/MainActivity.java   GameActivity 派生（薄い）
   app/src/main/java/com/seedengine/runtime/ScreenReporter.java 安全領域と画面の回転を集めてネイティブへ渡す（§15）
+  app/src/main/java/com/seedengine/runtime/AudioFocusController.java 音声フォーカスの要求・放棄と、変化のネイティブへの通知（§16）
   app/src/main/res/values/{strings,themes}.xml
   app/src/main/jniLibs/<ABI>/libSEED.so    ← cargo ndk の出力（生成物・追跡しない）
   app/src/main/assets/seed/assets.pak      ← SeedPak の出力（-ProjectDir のときだけ。生成物・追跡しない。§13）
@@ -138,12 +140,15 @@ MainActivity（Java）: static { System.loadLibrary("SEED") }
           5. heartbeat::spawn()        … 3 秒ごとの提示フレーム数ログ
           6. App::run_with_event_loop(event_loop, args)   … 以降はデスクトップと同じエンジン
                resumed（1 回目）   → handle_resumed（ウィンドウ・GPU・シーンの初期化。デスクトップと同じ）
-               suspended           → enter_background（セーブ・パイプラインキャッシュの書き出し → 物理停止。§14）
+               suspended           → enter_background（セーブ・パイプラインキャッシュの書き出し → 物理停止 → 音声の出力を一時停止。§14・§16）
                                      → handle_suspended（サーフェス破棄・イベントループを Wait へ）
                resumed（2 回目以降）→ handle_surface_resumed（サーフェス再生成・サイズ依存状態の更新・Poll へ）
-                                     → enter_foreground（物理再開・背面にいた時間を捨てる。§14.4）
-  onCreate の最後（super.onCreate の後）: ScreenReporter.attach … 以降、WindowInsets・レイアウト・構成・表示の変化のたびに
+                                     → enter_foreground（物理再開・背面にいた時間を捨てる・音声の出力を再開。§14.4・§16）
+  onCreate の最後（super.onCreate の後）: 音量キーの対象をメディアの音量に固定（setVolumeControlStream。§16.4）・
+      ScreenReporter.attach … 以降、WindowInsets・レイアウト・構成・表示の変化のたびに
       安全領域と回転を JNI（nativeOnScreenChanged）で報告し、エンジンがフレームごとに SEED.Screen の値へ反映する（§15）
+  onResume → AudioFocusController.request（音声フォーカスを要求）/ onPause → abandon（手放す）。結果と OS からの変化は
+      JNI（nativeOnAudioFocusChanged）で報告し、エンジンがイベントループの次の周回（about_to_wait）で音声の出力を止める・戻す・下げる（§16）
   MainActivity.onDestroy → nativeFlushSaveData（JNI。セーブの未書き出し分）→ Process.killProcess（§14.2）
 ```
 
@@ -167,6 +172,8 @@ OS ごとの「振る舞いの差」は cfg を散らさず、`runtime/src/engin
 （起動時に 1 回だけ設定する値）に持つ。Android の糊が設定し、デスクトップは設定しない（§14.1）。
 実行中に何度も変わる値（安全領域・表示の回転）は `platform/screen/` に持つ。Android の糊（JNI）が報告し、エンジンがフレームごとに
 読んでスクリプトへ見せる写しを作る。デスクトップは報告しない（全画面・縦横比の向き。§15）。
+音声フォーカスの状態も同じく `platform/audio_focus.rs` に持ち、Android の糊（JNI）が報告してエンジンがイベントループの 1 周ごとに読む。
+デスクトップは報告しない（ずっと「持っている」）ので、音声の出力は止まらない（§16）。
 
 cfg が残るのは「そもそもコンパイルできない API」の箇所だけ:
 - `netcorehost` は Android では依存しない（`runtime/Cargo.toml`）。`engine/core/scripting` は Android で
@@ -181,7 +188,8 @@ cfg が残るのは「そもそもコンパイルできない API」の箇所だ
 - `app/surface_lifecycle.rs` … suspended / 2 回目以降の resumed の処理と、サーフェスが無い間の
   フレーム描画スキップ（`surface_missing`。`handle_redraw_requested` の先頭で判定）。
 - `app/background_lifecycle.rs` … 背面・前面への出入りでのセーブとパイプラインキャッシュの書き出し、
-  物理スレッドの停止・再開（`core/background_gate.rs`）、ゲーム時間の取り戻し防止（§14）。
+  物理スレッドの停止・再開（`core/background_gate.rs`）、ゲーム時間の取り戻し防止（§14）、音声の出力の一時停止・再開
+  （`app/audio_output_sync.rs` 経由。§16）。
 - `renderer/present_counter.rs` … present した回数のアトミックカウンタ（`heartbeat` が読む）。
 
 ### 4.5 データの置き場
@@ -325,6 +333,9 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | `[SEED SAVE] save file: …` / `suspended: …` / `onDestroy（プロセス終了前）: …` | セーブの置き場と自動書き出しの結果 | 「未書き出しの変更を書き出しました」「未書き出しの変更なし」「セーブ未使用」（§14.2） |
 | `[SEED PIPELINE CACHE] 読込 N KiB → 採用後 M KiB` / `保存 …` / `変化なし …` | パイプラインキャッシュ（§14.3） | 起動時の生成時間は `[SEED INIT] DrawContext created (N ms)`・`描画パイプライン生成 合計 N ms` |
 | `[SEED LIFECYCLE] background / foreground: …` / `[SEED PHYSICS] 3D 物理スレッド: …` | 背面での停止・前面での再開（§14.4） | 物理スレッドは止めた・再開したを 1 回ずつ出す |
+| `[SEED AUDIO] 出力ストリームを開きました（2ch・44100 Hz・F32）` | 音声の出力を初めて使ったとき（`core/audio/output/`。§16.1） | 開けた設定。開けなければ `出力ストリームを開けません: …` |
+| `[SEED AUDIO] Java: 音声フォーカス: … → 状態 N` / `音声フォーカスの報告を受け取りました: …` | 音声フォーカスの要求・放棄の結果と OS からの変化（`AudioFocusController.java`・`jni_exports.rs`。§16.3） | Java の行は Android の値（`AUDIOFOCUS_LOSS_TRANSIENT` 等）、ネイティブの行は変わったときだけ |
+| `[SEED AUDIO] 音声を一時停止しました（背面=… ・音声フォーカス=…）` / `音声を再開しました（全体音量 ×1.00・…）` / `全体音量を ×0.20 にしました（…）` | 出力全体の状態が変わった（`app/audio_output_sync.rs`。§16.2・§16.3） | まだ何も鳴らしていない（出力を開いていない）間は出ない |
 | `[SEED KEY FRAME] f=N Escape:down+up` | 置き換えたキー（戻るキー → Escape）の入力状態（`app/key_diag.rs`。§14.5） | スクリプトの `GetKeyDown` / `GetKeyUp` が読むフレーム末の値 |
 | `[SEED SCREEN] Java 報告: …` / `報告を受け取りました: …` | 安全領域・回転の報告（`ScreenReporter.java`・`jni_exports.rs`。§15.4） | 描画面の大きさ・各辺からの距離・回転・表示の自然な向きの大きさ。Java の行には WindowInsets の種類ごとの内訳も出る |
 | `[SEED SCREEN] size=… safe=(x,y,幅,高さ) orientation=… dpi=… window=… report=…` | スクリプトの `SEED.Screen` が返す値（`app/screen_diag.rs`。§15.4） | 変化したフレームだけ。`report=none` は今の描画面に一致する報告が無いフレーム（回転の直後） |
@@ -368,7 +379,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | タッチ（`input tap` / `input swipe`） | `[SEED TOUCH] Started ... / Ended ... moves=21` | 同じ。adb の操作とは別に、画面を指でなぞった操作も届いた |
 | 戻るキー | `[SEED KEY] pressed logical=Named(BrowserBack)`。Activity は終わらない（段階A-3 で Escape に置き換え。§14.5） | 同じ |
 | panic（`debug.seed.panic_test=1`） | `[SEED PANIC] ... 場所` と backtrace → Activity 終了 → `onDestroy` でプロセス終了 | 同じ |
-| 音声（oboe） | 未確認 | 初期化まで確認（`OboeAudio: OboeVersion1.8.1`、`AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`。音は出していない） |
+| 音声（oboe） | 段階A-5 で確認: 2ch・44100 Hz・F32 の AAudio ストリームで再生（`dumpsys audio` の player が `state:started`、ホスト PC 側でエミュレータの音声セッションに音の波形が出る）。背面・音声フォーカスの喪失で一時停止（§16.6） | 段階0 は初期化まで（`OboeAudio: OboeVersion1.8.1`、`AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`）。段階A-5 で再生・背面での一時停止・再開を確認（§16.6） |
 | アセットの置き場 | 外部アプリ専用フォルダへの adb push でも、run-as で内部フォルダへ送っても読めた | **adb push は Permission denied**（shell 所有のフォルダになる）。run-as で内部フォルダへ送る方式で読めた（§4.5） |
 | 起動時間（`handle_resumed` 開始 → 最初のフレームの終わり） | 約 3.5 秒（うちパイプライン生成 約 1.6 秒） | 約 4.5 秒（うちパイプライン生成 約 3.4 秒・シーン読込 0.24 秒）。`am start` の TotalTime は 487 ms（Activity 表示まで） |
 | インストール（`adb install -r`） | 約 1.5 秒（APK 60.5 MB・x86_64 のみ） | 約 4.0 秒（APK 50.4 MB・arm64 のみ） |
@@ -398,11 +409,13 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 - 戻るキーは `KeyCode.Escape` としてスクリプトへ届く。アプリは自動で終了しない（段階A-3。§14.5）。
 - 画面の向きはプロジェクト設定の `screen_orientation`（both / portrait / landscape）で APK を作るときに決まる。端末の回転ロックは尊重しない。
   安全領域・向き・DPI は `SEED.Screen` で読めるが、キャンバス UI へ安全領域を自動では反映しない（段階A-4。§15）。
-- バックグラウンド中は物理スレッドを止める（段階A-3。§14.4）。音声・ゲームパッド（gilrs）のスレッドは止めていない。
+- バックグラウンド中は物理スレッドを止め（段階A-3。§14.4）、音声は出力ストリームごと一時停止する（段階A-5。§16）。
+  ゲームパッド（gilrs）のスレッドは止めていない。
 - パイプラインキャッシュはアプリのキャッシュフォルダへ保存し、2 回目以降の起動で読む（段階A-3。§14.3）。
-  実機での短縮幅は未計測（エミュレータはホスト側ドライバのキャッシュが効くため差が小さい。§14.7）。
+  実機（Pixel 6a）ではパイプライン生成が 3595 / 3014 ms → 528 / 522 ms に縮んだ（約 85% 減。§14.7）。
 - ゲームパッド（gilrs）は Android 非対応（初期化に失敗して「パッド無効」で続行）。
-- 音声（rodio → cpal → oboe）は実機で出力ストリームを開くところまで確認。実際に音が鳴るかは未確認。
+- 音声（rodio → cpal → oboe）はエミュレータと実機で再生を確認した。背面へ回る・音声フォーカスを失うと出力ストリームごと一時停止し、
+  戻ると再開する（段階A-5。§16）。出力デバイスの切り替え（ヘッドホン・Bluetooth）からの復帰は未対応・未確認（§16.7）。
 - **実機の描画は重い**。Pixel 6a の debug ビルドで縦 約 18〜19 fps（GPU 待ちが支配的と見られる）。デスクトップ向けの描画経路
   （deferred・MRT 5 枚・シャドウ 2048・SSGI 等）を端末の実解像度 1080x2400 でそのまま回しているため。
   モバイル向け描画プリセット（描画解像度スケール・重い後処理の既定オフ）は段階D。
@@ -414,7 +427,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | 段階 | 内容 |
 |---|---|
 | **0（完了）** | 実機/エミュレータに 1 枚絵。libSEED.so ＋ Gradle ＋ GameActivity、logcat、サーフェスの破棄・再生成、回転追従 |
-| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声、logcat の整備 |
+| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声（鳴ることの確認・背面での停止・音声フォーカス・音量キー。**2026-09-24 実装・§16**）、logcat の整備 |
 | **B** | スクリプト: ScriptPackager の事前コンパイル DLL と linux-bionic 向け CoreCLR ランタイムパックを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: 実行先セレクタ（PC／実機／エミュレータ）、ビルド → install → 起動 → logcat → 停止、pak/DLL だけ push する高速経路、パッケージ化ウィンドウの Android 出力の実働化（`build_and_run.ps1` の各関数が土台） |
 | **D** | Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
@@ -677,11 +690,10 @@ adb -s <serial> shell setprop debug.seed.touch_test 0                     # 必�
 ### 12.5 確認結果（2026-09-24）
 
 エミュレータ（AVD `seed_pixel6_api35`・API 35・x86_64・画面 1080x2400）と PC（Windows・`SEED.exe` 単体の Play）で確認した。
-**実機（Pixel 6a・arm64）は未完**: arm64 の APK は作成・インストールでき、起動中に届いた実際の指のタッチ（戻るジェスチャのなぞりと、
-システムに取り消された 2 回のタッチ。いずれも ID 0）が新しい経路で受信された（`[SEED TOUCH] Started / Ended / Cancelled`、panic なし）。
-ただし端末が私物として使用中で、APK 更新直後の初回起動が約 44 秒かかる間にユーザーが別アプリへ移り、最初のフレームの提示前に
-バックグラウンドでプロセスが終了したため、`[SEED TOUCH FRAME]`（フレーム単位の状態）と合成タッチ列による複数指の確認はできていない。
-この受信の並び（同じ ID の再タッチが 1 フレームに 3 回）は `state.rs` の回帰テストに写した。
+実機（Pixel 6a・Android 16・arm64）は 2026-09-24 の追加確認で、下表の「実機」の行のとおり確認した（APK 内 pak の最小構成。約 18 fps）。
+それより前の試行では、端末が私物として使用中で、APK 更新直後の初回起動が約 44 秒かかる間にユーザーが別アプリへ移り、最初のフレームの
+提示前にプロセスが終了した。そのとき届いた実際の指のタッチ（戻るジェスチャのなぞりと、システムに取り消された 2 回のタッチ。いずれも ID 0）の
+受信の並び（同じ ID の再タッチが 1 フレームに 3 回）は `state.rs` の回帰テストに写した。
 
 | 確認項目 | 結果 |
 |---|---|
@@ -690,6 +702,9 @@ adb -s <serial> shell setprop debug.seed.touch_test 0                     # 必�
 | `input mouse tap 700 900`（入力元がマウス） | `Touch` として届き、指と同じく `Began` → `Ended`（§12.3 の「Android のマウスは押している間だけの指」を確認） |
 | OS 経由の複数指（エミュレータのコンソール `adb emu event send` で protocol B の 3 スロット） | `n=1 → 2 → 3` と同時に追跡。1 本目は `Stationary` のまま 2 本目だけ `Moved d(0.0,100.0)`、3 本目が `Began` → `Moved`。1 本目が離れたフレームで `L=--U`、その後 2 本目を動かしてもマウスは 1 本目の最後の位置のまま（`L=---`） |
 | 合成タッチ列（`debug.seed.touch_test=1`） | 上と同じ並びが `[SEED TOUCH TEST]` の合成イベントから再現（3 本同時・指0 だけがマウスを駆動）。検証後にプロパティは元（未設定）へ戻した |
+| 実機: 合成タッチ列（`debug.seed.touch_test=1`） | `n=1 → 2 → 3` を追跡（f=34〜61）。指0 だけがマウスを駆動（`L=PD-` → `P--` → 指0 が離れたフレームで `--U`、以後 `L=---` でマウスは指0 の最後の位置のまま）。2 本目の `Moved d(0.0,120.0)`・3 本目の `Moved d(54.0,0.0)` も列のとおり。プロパティは元（未設定）へ戻した |
+| 実機: `input tap 540 1200` / `input swipe 300 1600 800 1000 800` | タップは `#0:Began(540.0,1200.0)` ＋ `L=PD-` → 次のフレームで `#0:Ended` ＋ `L=--U`。スワイプは `Began(300.0,1600.0)` → 14 フレームの `Moved`（1 フレーム約 55 ms・31〜41 px）→ `Ended(800.0,1000.0)` ＋ `L=--U`。マウス座標が毎フレーム指に追従 |
+| 実機: 実際の指 | 合成列の後に届いた実際の指の上向きのなぞり（`[SEED TOUCH] Started id=0 pos=(1043.0,1516.0)` … `moves=16`）も `Began` → `Moved` ×4 → `Ended` で追跡され、マウスが追従 |
 | 座標 | `input tap X Y` の X, Y がそのまま位置（ウィンドウが画面全体・原点一致） |
 | PC（`SEED.exe` 単体の Play ＋ 確認用スクリプト） | 起動時 `TouchSupported=False` / `TouchCount=0` / `GetTouch(5)` は `Touch.None`。左ボタン押下で `#0 Began`、押したまま移動で `Moved delta=(50,20)`、静止で `Stationary`、離して `Ended` → 次フレーム `n=0`。押下と解放を同じメッセージ列で送った素早いクリックも `Began` → 次フレーム `Ended`（マウス自体は従来どおり同じフレームに押下・解放）。同じフレームに `GetTouch(0)` を 2 回呼んでも同じ値・`Touches.Length == TouchCount` |
 
@@ -701,7 +716,8 @@ adb -s <serial> shell setprop debug.seed.touch_test 0                     # 必�
 
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
-- 実機（Pixel 6a）での `[SEED TOUCH FRAME]` と複数指の確認が未完（§12.5）。
+- 実機（Pixel 6a）の `[SEED TOUCH FRAME]` と複数指（合成タッチ列）は 2026-09-24 に確認済み（§12.5）。実機で OS 経由の複数指
+  （本物の 2 本指以上）は未確認（非 root では注入できない。人の指で触る必要がある）。
 - Android ではスクリプトが動かない（段階B）ため、`Input.GetTouch` の値とキャンバス UI のボタン反応（配信先がスクリプト）は Android では未確認。
   入力状態（指の一覧・タッチ由来のマウス）までは `[SEED TOUCH FRAME]` で確認した（エミュレータ）。
 - ジェスチャ（ピンチ・回転・長押し・ダブルタップ）・タップ回数・圧力の組み込み API は無い（スクリプトで組み立てる）。
@@ -825,8 +841,10 @@ dotnet run --project editor/tools/SeedPak -- --project D:\path\to\Project --out 
 | 開発用の経路（pak 無し APK ＋ run-as） | 「APK に apk:seed/assets.pak がありません。開発用の置き場…から読みます」→ 内部フォルダから従来どおり描画 |
 | Windows の配布物 | SeedPak の pak を `SEED.exe` の隣に置いた構成（`assets/` フォルダ無し）で、起動ログに `起動形態: パッケージ実行（配布物）`・`asset_fs: packaged pak=…\assets.pak entries=3`、BrainStem が描画（`SEED_SCREENSHOT_FRAMES` で撮影） |
 
-実機（Pixel 6a）は、作業中ずっと端末が私物として使用中（別アプリが前面）だったため未実施。端末が空いているときに
-`-Abi arm64-v8a -Serial <実機> -ProjectDir <プロジェクト>` で同じ確認をする（backlog）。
+実機（Pixel 6a・Android 16・Mali-G78）は 2026-09-24 の追加確認で、`-Abi arm64-v8a -Serial <実機> -ProjectDir <最小構成>` の APK
+（pak 3.0 MB。push 無し）が「APK 内の pak で起動します（パッケージ実行）: apk:seed/assets.pak  3.0 MiB・非圧縮（APK 内の位置 52547452）」→
+`[SEED INIT] asset_fs: packaged pak=apk:seed/assets.pak entries=3` → `load_play_scene done actors=2 (278ms)` → BrainStem が描画
+（約 18.3〜19.0 fps。縦画面）。`am start -W` の TotalTime は 199〜499 ms。
 
 ### 13.7 制限・持ち越し
 
@@ -919,7 +937,8 @@ wgpu 25 の `Features::PIPELINE_CACHE`（Vulkan のみ）が使える環境で�
 - 前面へ戻った最初のフレームは `Clock::forget_elapsed` で背面にいた時間を捨てる（delta が背面の時間になり、
   ConstantUpdate がその時間ぶん連続で回るのを防ぐ）。
 - デスクトップは suspended が来ないので不変（物理スレッドは毎ループ Atomic の読み取り 1 回だけ）。
-- 音声（rodio → oboe）とゲームパッド（gilrs）のスレッドは止めていない（backlog）。
+- 音声は段階A-5 で出力ストリームごと一時停止するようにした（オーディオスレッドのコールバックも止まる。§16.2）。
+  ゲームパッド（gilrs）のスレッドは止めていない（backlog）。
 
 ### 14.5 戻るキー
 
@@ -977,16 +996,25 @@ adb shell input keyevent --longpress KEYCODE_BACK
 | 戻るキー | `input keyevent KEYCODE_BACK` → `[SEED KEY] pressed logical=Named(BrowserBack) physical=Unidentified(Android(0x0004))` → `[SEED KEY FRAME] f=1235 Escape:down+up`。長押しは down と up が別フレーム。Activity は前面のまま |
 | デスクトップ（SEED.exe の Play → ウィンドウを閉じる） | 1 回目: 「旧ファイル名から読込 3079 KiB → 採用後 3079 KiB: …\target\debug\pipeline_cache.bin（保存は …\wgpu_pipeline_cache_vulkan_4318_9504.bin）」→ 終了時「保存 3130 KiB（3.1 ms）」。2 回目: 「読込 3130 KiB → 採用後 3130 KiB」→ 終了時「変化なし」。モデルキャッシュは従来どおりアセットルートの親の `cache/` |
 
-実機（Pixel 6a）は、作業中は端末が私物として使用中（別アプリが前面）で、その後 USB の接続も外れたため未実施。
+実機（Pixel 6a・Android 16・Mali-G78 ドライバ r54p1・arm64 の debug ビルド）は 2026-09-24 の追加確認で、APK 内 pak の最小構成により
+下表のとおり確認した（`build_and_run.ps1 -ProjectDir`。各回は起動 → 描画 → ホーム → `am kill`）。
+
+| 項目 | 実機の結果 |
+|---|---|
+| 書き込み先 | 「書き込み先: データ（セーブ）=/data/user/0/com.seedengine.runtime/files / キャッシュ=/data/user/0/com.seedengine.runtime/cache」、`TMPDIR=…/cache`・`HOME=…/files`、`[SEED SAVE] save file: …/files/save/save.json` |
+| セーブ（suspended） | save_test=1: 起動時 None → ホームで「未書き出しの変更を書き出しました」→ am kill → 次の起動で Some(1)。以後 Some(2)・Some(3)・Some(4) と毎回残った。比較（前面のまま force-stop）: メモリ上の 5 は残らず Some(4) |
+| パイプラインキャッシュ | 初回（インストール直後・ファイル無し）`描画パイプライン生成 合計 3595 ms` → ホームで「保存 618 KiB（6.2 ms）」→ 2 回目「読込 618 KiB → 採用後 618 KiB」で **528 ms**。ファイルを消して繰り返すと 3014 ms → 522 ms（**約 85% 減**）。ファイル名は `wgpu_pipeline_cache_vulkan_5045_2449604608.bin`（ARM のベンダー ID 0x13b5） |
+| 物理スレッド | ホームで「2D / 3D 物理スレッド: アプリがバックグラウンドのためステップを止めて眠ります」、前面で「前面へ戻ったのでステップを再開します（止めていた時間 27.0 秒）」 |
+| 戻るキー | `input keyevent KEYCODE_BACK` → `[SEED KEY] pressed logical=Named(BrowserBack) physical=Unidentified(Android(0x0004))` → `[SEED KEY FRAME] f=100 Escape:down`・`f=101 Escape:up`（実機は 1 フレーム約 55 ms のため押下と解放が別フレーム）。Activity は前面のまま |
 
 ### 14.8 制限・持ち越し
 
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
-- 実機（Pixel 6a）での確認が未実施。特にパイプラインキャッシュの短縮幅（段階0 の実測ではパイプライン生成 約 3.4 秒）。
+- 実機（Pixel 6a）での確認は 2026-09-24 に済んだ（§14.7。パイプライン生成 約 3.0〜3.6 秒 → 約 0.52 秒）。
 - `build_and_run.ps1` は毎回 force-stop してから起動するので、開発中にホームへ戻さないとパイプラインキャッシュが保存されない
   （最初のフレームの後にも 1 回保存する案）。
-- 背面中も音声・ゲームパッド（gilrs）のスレッドは動く。`[PLAY_WD]` の監視ログが背面中に誤報を出す（既存の一時診断）。
+- 背面中もゲームパッド（gilrs）のスレッドは動く（音声は段階A-5 で止めた。§16）。`[PLAY_WD]` の監視ログが背面中に誤報を出す（既存の一時診断）。
 - 前面のまま強制終了された分のセーブは失われる（仕様）。
 - 起動の初期化（handle_resumed）が android_main スレッドで同期に走る問題（ANR の恐れ）は変わっていない（backlog の既存項目）。
 
@@ -1145,7 +1173,16 @@ PC（Windows・`SEED.exe` 単体の Play ＋ 確認用スクリプト）: 起動
 窓を 1264x721 → 624x1001 → 784x761 に変えると `LandscapeLeft` → `Portrait` → `LandscapeLeft`（`Width` / `Height` も窓のクライアント領域に追従）。
 同じフレームに 2 回読んだ値はすべて一致（`stable=True`）。解像度を固定（540x960）では窓を変えても `size=540x960` のままで、`Orientation` だけが窓の縦横比で変わった。
 
-実機（Pixel 6a）は未実施（作業の開始時は別のアプリが前面で使用中、その後 USB の接続が外れた）。
+実機（Pixel 6a・Android 16・1080x2400・420 dpi・ジェスチャーナビゲーション）は 2026-09-24 の追加確認で、回転を
+`cmd window fixed-to-user-rotation enabled` ＋ `cmd window user-rotation lock 0〜3` で強制して確かめた（検証前の `default` / `lock 0` へ戻した）。
+実際のカメラ穴は 132 px で、穴のある辺だけが内側へ寄る（どの向きでもジェスチャーバーの辺は 63 px。180 度だけは穴とバーが同じ辺で 132 px）。
+
+| 回転 | 値（`[SEED SCREEN]`） |
+|---|---|
+| 0 | `size=1080x2400 safe=(0,132,1080,2205) orientation=Portrait dpi=420`（Java 報告の内訳 `cutout=(0,132,0,0)`） |
+| 90 | `size=2400x1080 safe=(132,0,2268,1017) orientation=LandscapeLeft`（`cutout=(132,0,0,0)`） |
+| 180 | `size=1080x2400 safe=(0,0,1080,2268) orientation=PortraitUpsideDown`（`cutout=(0,0,0,132)`） |
+| 270 | `size=2400x1080 safe=(0,0,2268,1017) orientation=LandscapeRight`（`cutout=(0,0,132,0)`） |
 
 ### 15.6 制限・持ち越し
 
@@ -1155,5 +1192,153 @@ PC（Windows・`SEED.exe` 単体の Play ＋ 確認用スクリプト）: 起動
 - 安全領域をキャンバス UI へ自動で反映する仕組み（セーフエリアのパディング・アンカー）は無い。スクリプトが `SafeArea` を読んで配置する。
 - 回転の直後の 1 フレーム程度は、安全領域が全画面・向きが縦横比からの値になることがある。
 - 端末の回転ロックは尊重しない（`fullSensor` / `sensorPortrait` / `sensorLandscape`。`fullUser` 等の選択肢は無い）。
-- 実機（Pixel 6a の実際のカメラ穴）・分割画面（描画面が表示の一部になる）・自然な向きが横のタブレットは未確認。
+- 実機（Pixel 6a の実際のカメラ穴）は 2026-09-24 に確認済み（§15.5）。分割画面（描画面が表示の一部になる）・自然な向きが横のタブレットは未確認。
 - `Screen.DPI` は OS の論理 DPI（Android は密度の区分値 densityDpi）で、物理的な DPI（xdpi / ydpi）ではない。
+
+---
+
+## 16. 音声（段階A-5・2026-09-24）
+
+実際に音が鳴ることを確かめ、背面へ回ったときの停止と、Android の音声フォーカス（他のアプリとの音の譲り合い）・音量キーに対応した。
+デスクトップの振る舞いは変えていない（出力ストリームを自前で開くようにしたが、開き方と出力される値は rodio と同じ。§16.1）。
+スクリプトの音声 API の説明は [scripting_api.md](scripting_api.md) §6.7。
+
+### 16.1 経路
+
+```
+AudioManager（core/audio/mod.rs）   BGM・効果音・AudioComponent の Sink を管理（従来どおり）
+  └ AudioOutput（core/audio/output/）  rodio のミキサー（dynamic_mixer）＋ cpal の出力ストリーム ＋ 全体音量
+      └ cpal 0.15 → oboe 1.8.1 → AAudio（Android）/ WASAPI（Windows）
+```
+
+- **rodio 0.20 の `OutputStream` をやめ、cpal のストリームを自分で開いて持つ**（`output/stream_builder.rs`）。`OutputStream` は中の
+  `cpal::Stream` を公開しておらず、ストリームを一時停止できないため（Sink を全部 pause しても、オーディオスレッドは無音を作り続け、
+  AAudio のストリームは「再生中」のまま音声経路を起こし続ける）。開く手順・既定の設定・対応する出力形式は rodio 0.20.1 の
+  `OutputStream::try_default` と同じ（既定デバイスの既定設定 → 対応設定を優先順に → 他のデバイス）。Sink は `Sink::new_idle` で作って
+  ミキサーへ足す（rodio の `Sink::try_new` と同じつなぎ方）。
+- 違いは 3 つだけ: (1) ストリームを一時停止・再開できる、(2) 出力の全サンプルに全体音量の倍率を掛ける（倍率 1.0 では値がビット単位で
+  変わらない。単体テストで固定）、(3) 符号無し整数形式の無音をその形式の中央値にした（rodio は MAX / 2。Windows の WASAPI 共有モード
+  （通常 f32）と Android の oboe（i16 / f32 だけ）では使われない形式）。
+- AudioComponent の左右の振り分け（rodio の `SpatialSink`）は、`OutputStreamHandle` からしか作れないため同じ仕組みを
+  `core/audio/spatial_voice.rs` に移した（rodio の `Spatial` ソースと 10 ms ごとの位置の読み直し）。
+- Android で開けた設定は、エミュレータ・実機とも **2ch・44100 Hz・F32**（`[SEED AUDIO] 出力ストリームを開きました`）。AAudio の player は
+  `usage=USAGE_MEDIA`（cpal / oboe の既定。cpal からは変えられない）で、音量はメディアの音量（STREAM_MUSIC）に属する。
+
+| ファイル | 役割 |
+|---|---|
+| `runtime/src/engine/core/audio/output/mod.rs` | `AudioOutput`: 出力ストリーム・ミキサー・全体音量。`new_sink` / `set_paused` / `set_gain` |
+| `runtime/src/engine/core/audio/output/stream_builder.rs` | cpal のストリームとミキサーを開く（rodio の `try_default` と同じ手順） |
+| `runtime/src/engine/core/audio/output/gain.rs` | 全体音量の倍率（原子変数）と出力バッファの書き込み（倍率の変化は 1 バッファかけて直線で移す） |
+| `runtime/src/engine/core/audio/output_policy.rs` | 背面・音声フォーカスから「出力を止めるか・全体音量」を決める純関数 |
+| `runtime/src/engine/core/audio/spatial_voice.rs` | rodio の `SpatialSink` と同じ仕組みの音源（AudioComponent 用） |
+| `runtime/src/engine/platform/audio_focus.rs` | OS の音声フォーカスの最新の報告（JNI が書き、App が読む） |
+| `runtime/src/engine/core/app_base/app/audio_output_sync.rs` | 条件を集めて AudioManager へ当てる（変わったときだけ切り替えてログ） |
+| `runtime/android/app/src/main/java/com/seedengine/runtime/AudioFocusController.java` | 音声フォーカスの要求・放棄と変化のネイティブへの通知 |
+| `runtime/android/native/src/jni_exports.rs` | `nativeOnAudioFocusChanged`（状態の番号 → `platform::audio_focus`） |
+
+### 16.2 背面での停止
+
+- `suspended`（背面へ回る）→ `enter_background` の 4 段目で**出力ストリームごと一時停止**する（AAudio の requestPause。オーディオスレッドの
+  コールバックも止まり、どの音の再生位置も進まない）。2 回目以降の `resumed` → `enter_foreground` で再開する（音声フォーカスを失ったままなら止めたまま）。
+- 実際には、それより前に `MainActivity.onPause` で音声フォーカスを手放した時点（§16.3）で止まる（ホームへ戻す操作では suspended より 0.3〜0.5 秒早い）。
+- **ゲーム側の一時停止とは独立**。出力ストリームだけを止め、Sink ごとの状態（スクリプトの `PauseBgm` 等）には触らないので、
+  止めていた BGM が再開で鳴り出す・鳴っていた BGM が止まったまま、は起きない（単体テスト `output_resume_keeps_bgm_paused_by_game`）。
+- 止めている間に鳴らそうとした**単発の音（`Audio.Play` の効果音・ループしない AudioComponent）は捨てる**。積んでおくと、再開した瞬間に
+  溜まった分がまとめて鳴るため（効果音はその瞬間の音）。AudioComponent の自動再生は「発火済み」として記録する。BGM とループ音は止めたまま積み、
+  再開で続きから鳴る。前面で音声フォーカスを失っている間（ゲームは動き続ける）に効く決まりで、背面ではゲーム自体が止まっている。
+- デスクトップは背面にも音声フォーカスの喪失にもならないので、出力は止まらない（毎周回、原子変数を 2 つ読むだけ）。
+
+### 16.3 音声フォーカス
+
+`AudioFocusController.java` が **前面に来たとき（onResume）に要求し、前面を離れるとき（onPause）に手放す**。要求は
+`AUDIOFOCUS_GAIN`・`USAGE_GAME` / `CONTENT_TYPE_MUSIC`・遅延を許す（`setAcceptsDelayedFocusGain`）・ダッキングの通知を受ける
+（`setWillPauseWhenDucked(true)`）。結果と OS からの変化は状態の番号で JNI へ渡し（番号は `AudioFocusController.STATE_*` と
+`AudioFocus::from_code` の 2 か所で一致させる）、エンジンは**イベントループの 1 周ごと**（`about_to_wait`）に読んで出力へ当てる。
+
+| Android の値 | 状態（`platform::audio_focus::AudioFocus`） | 出力 | 例 |
+|---|---|---|---|
+| 要求が通った / `AUDIOFOCUS_GAIN` | `Gained` | 鳴らす（全体音量 ×1.0） | 通常・一時的な喪失からの回復 |
+| `AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK` | `Ducked` | 全体音量 ×0.2（約 -14 dB。止めない） | 通知音 |
+| `AUDIOFOCUS_LOSS_TRANSIENT` / 要求が保留（`REQUEST_DELAYED`） | `LostTransient` | 一時停止（`GAIN` で再開） | 着信の呼び出し音・通話中に前面へ戻った |
+| `AUDIOFOCUS_LOSS` / 要求が拒否 | `Lost` | 一時停止（OS は要求を捨てるので `GAIN` は来ない。次の onResume で要求し直す） | 他のアプリが音楽の再生を始めた |
+| 自分で手放した（onPause） | `Released` | 一時停止 | ホーム・他のアプリの画面が上に来た |
+
+- 背面と音声フォーカスは独立に数え、**どちらか一方でも止める理由があれば止める**（`output_policy.rs` の `decide`。表を単体テストで固定）。
+- ダッキングを OS に任せないのは、OS の自動ダッキングは再生の種類や端末で効き方が変わり得るため（AAudio の再生は自動ダッキングの
+  対象外とされるが、ここでは確かめていない）。`setWillPauseWhenDucked(true)` で必ず通知を受け、自分で全体音量を下げる。
+  エミュレータでは OS 側の「ducked players」は空のまま、こちらの全体音量だけが下がった。
+- 反映を**フレームではなくイベントループの周回**にしたのは、ホームへ戻る途中などで描画（RedrawRequested）が止まってもループは回り続けるため。
+  フレームで反映していた版では、手放した音声フォーカスの反映が suspended まで約 1.1 秒遅れ、その間も鳴り続けた（エミュレータ）。
+- ログは Java の行（`[SEED AUDIO] Java: 音声フォーカス: …`。Android の値そのもの）と、ネイティブの行（受け取った状態・出力の切り替え）の 2 段。
+  `MediaFocusControl` タグ（システム）にも要求・放棄が出る（§6）。
+
+### 16.4 音量キー
+
+GameActivity は音量キーをネイティブへ渡さずシステムへ回す（既定のキーフィルタ。§10）。`MainActivity.onCreate` で
+`setVolumeControlStream(AudioManager.STREAM_MUSIC)` を呼び、音量キーの対象をメディアの音量に固定した。指定しないと対象は
+「その時に鳴っているストリーム（無ければ端末の既定）」になり（エミュレータの記録では `sugg:USE_DEFAULT_STREAM_TYPE`）、端末によっては
+何も鳴っていない瞬間に着信音量が変わる。指定後は `adjustSuggestedStreamVolume(sugg:STREAM_MUSIC …)` になる。
+
+### 16.5 確認方法
+
+```bash
+# 可聴のテスト音源: 2 秒ループの中に 150 ms の小さな 440 Hz（振幅 0.25）を 1 回。AudioComponent（自動再生・ループ）で鳴らす
+#   （作り方の例: Python の wave で 44.1 kHz / 16 bit / モノラルを書く。音量はコンポーネントの volume で絞る）
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -AssetsDir <テスト音源入りのアセット> -NoLogcat
+
+# 再生中か（player の状態・アクティブなトラック）
+adb shell dumpsys audio | grep "AudioPlaybackConfiguration .*u/pid:<uid>/"      # state:started / paused
+adb shell dumpsys media.audio_flinger                                            # Tracks の Active=yes / no・S=A / P、Standby
+adb shell cmd package list packages -U com.seedengine.runtime                   # uid
+
+# 背面: ホーム → [SEED AUDIO] 音声を一時停止しました → am start で戻す → 音声を再開しました
+adb shell input keyevent KEYCODE_HOME
+# オーディオスレッド（AudioTrack）の CPU 時間: run-as で /proc/<pid>/task/*/stat の utime+stime を 10 秒空けて 2 回読む（§14.6 と同じ）
+
+# 音声フォーカス（エミュレータだけ。実機では他のアプリを操作しない）
+adb shell cmd notification post -t "SEED" seed_duck "duck test"   # 通知音 → LOSS_TRANSIENT_CAN_DUCK → 全体音量 ×0.20 → GAIN で ×1.00
+adb emu gsm call 5550100 ; adb emu gsm cancel 5550100             # 着信の呼び出し音 → LOSS_TRANSIENT → 一時停止 → GAIN で再開
+adb shell dumpsys audio | sed -n '/focus commands as seen by MediaFocusControl/,/^$/p'   # 要求・放棄の記録
+#   後片付け: 通知（シェードの「すべて消去」）・通話履歴（content delete --uri content://call_log/calls）を消す
+
+# 音量キー（エミュレータだけ。終わったら元の値へ。何も鳴っていないときは最初の 1 回が UI 表示だけになる）
+adb shell input keyevent KEYCODE_VOLUME_UP ; adb shell cmd media_session volume --stream 3 --get
+```
+
+- ホスト PC 側で「本当に音が出ているか」を見るには、Windows の Core Audio（`IAudioMeterInformation`）でエミュレータ（`qemu-system-x86_64`）の
+  音声セッションのピーク値を読む（PowerShell の Add-Type で C# から呼べる。追加のインストールは要らない）。
+- エミュレータの共有 API 35 イメージでは `cmd media_session volume --set` の音量設定が反映されなかった（音量を戻すときは音量キーを使う）。
+
+### 16.6 確認結果（2026-09-24）
+
+エミュレータ（AVD `seed_pixel6_api35`・API 35・x86_64）・実機（Pixel 6a・Android 16・arm64）・PC（Windows・`SEED.exe` 単体の Play）。
+アセットは最小構成に §16.5 のテスト音源（AudioComponent・自動再生・ループ）を足したもの（音量はエミュレータ 0.5・実機 0.1・PC 0.05）。
+
+| 項目 | エミュレータ | 実機 Pixel 6a |
+|---|---|---|
+| 鳴ること | 出力ストリーム 2ch・44100 Hz・F32。`dumpsys audio` の player `type:AAudio … state:started`。audio_flinger のトラックが `Active=yes`（float・44100 Hz・STREAM_MUSIC）・出力スレッド `Standby: no`。ホスト PC 側のエミュレータの音声セッションのピーク値が 2 秒ごとに約 0.0021（ビープ）、それ以外は約 0.00007 | 同じ設定。player `state:started`（`deviceIds:[3]`）、audio_flinger のトラック `Active=yes`（`S=A`・float・44100 Hz） |
+| ホーム（背面） | onPause で音声フォーカスを手放した 12 ms 後に「音声を一時停止しました」（suspended より 0.5 秒早い）。player `state:paused`、トラック `Active=no`・`S=P`、出力スレッドが `Standby: yes`。ホスト側のピーク値は 0.000000 | 手放した 1 ms 後に一時停止。player `state:paused`、トラック `Active=no`・`S=P` |
+| オーディオスレッド（`AudioTrack`）の CPU 時間（10 秒あたり） | 前面 68 tick（0.68 秒）→ 背面 0 tick | 前面 336 tick（3.36 秒。debug ビルド）→ 背面 0 tick |
+| 前面へ戻す | 要求が通る → 「音声を再開しました（全体音量 ×1.00…）」→ `state:started` | 同じ（物理スレッドも「止めていた時間 27.0 秒」で再開） |
+| 通知音（ダッキング） | SystemUI が `req=3`（GAIN_TRANSIENT_MAY_DUCK）→ `LOSS_TRANSIENT_CAN_DUCK` → 30 ms 後に「全体音量を ×0.20 にしました」→ 通知音の放棄 → `GAIN` → 16 ms 後に ×1.00。OS の「ducked players」は空 | 未実施（私物の端末で他のアプリを動かさない） |
+| 着信（一時的な喪失） | `adb emu gsm call`: Telecom が `req=2`（GAIN_TRANSIENT・`AudioFocus_For_Phone_Ring_And_Calls`）→ `LOSS_TRANSIENT` → 一時停止（着信は通知で表示され SEED は前面のまま・player `state:paused`）→ `gsm cancel` → `GAIN` → 再開 | 未実施（同上） |
+| 他のアプリの画面が上に来る | YouTube Music の音声プレビュー（`req=2`）: SEED の onPause で手放して一時停止 → 閉じると onResume で要求 → 再開 | 未実施（同上） |
+| 恒久的な喪失（`AUDIOFOCUS_LOSS`） | **起こせなかった**（SEED が前面のまま他のアプリに `AUDIOFOCUS_GAIN` を要求させる手段が無い。分割画面は片側が空で解除され、プレビューは一時的な要求だけ）。状態の扱いは単体テストで固定 | 未実施 |
+| 音量キー | `adjustSuggestedStreamVolume(sugg:STREAM_MUSIC …)`、ゲームの音が鳴っている間は最初の押下から効く（5 → 6 → 5 に戻した）。変更前は `sugg:USE_DEFAULT_STREAM_TYPE` で、何も鳴っていないときの最初の押下は UI 表示だけ | 未実施（音量を変えない） |
+
+- PC: `cargo test` の出力の単体テスト（`output_pause_freezes_playback_and_resume_continues` 等。WASAPI の出力を実際に開いて一時停止・再開する）が通過。
+  `SEED.exe` 単体の Play で同じテスト音源（音量 0.05）を鳴らし、Windows 側の `SEED` の音声セッションのピーク値が 2 秒ごとに約 0.0086。
+  起動ログに音声の初期化の失敗は無く、`[SEED AUDIO]` の行も出ない（デスクトップのログは従来どおり）。
+
+### 16.7 制限・持ち越し
+
+詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
+
+- **出力デバイスの切り替え（ヘッドホンの抜き差し・Bluetooth）からの復帰が無い**（未確認）。cpal 0.15 の oboe はストリームの切断を
+  エラーの通知で知らせるだけで開き直さない。ミキサーを残したまま出力ストリームだけを開き直す仕組みが要る（`AudioOutput` に閉じた変更で済む形にしてある）。
+- 恒久的な喪失（`AUDIOFOCUS_LOSS`）はエミュレータで起こせず、実機では他のアプリを操作しないため、端末の上での確認は未実施（状態の扱いは単体テストのみ）。
+- 実機での音声フォーカスの喪失・ダッキング・音量キーは未実施（私物の端末で他のアプリを動かさない・音量を変えないため）。
+- AAudio の player は `USAGE_MEDIA`・性能モードは既定（低遅延ではない）のまま（cpal 0.15 から指定できない）。音声フォーカスの要求は `USAGE_GAME`。
+- debug ビルドの実機では、ミキサーとデコードのオーディオスレッドが 1 コアの約 34% を使った（エミュレータは約 7%）。音声系クレート
+  （rodio・cpal・symphonia 等）は dev プロファイルで最適化されていない。
+- ダッキングの下げ幅（×0.2）は定数（`output_policy::DUCKED_GAIN`）。プロジェクト設定にはしていない。
