@@ -509,12 +509,11 @@ dotnet run --project editor/tests/PackagingCollectorTests
 - 新しいアセット形式を足したときは、`PackagingRules` の
   `ScannableExtensions` / `SiblingExtensions` / `FolderCompanions` の追従を忘れないこと。
   登録漏れは**ビルドエラーにならず**、パッケージ版だけが壊れる形で出る。
-- **Android は PAK での起動まで**（2026-09-24。§10）。APK 内の `assets.pak` から起動できるが、スクリプト（段階B）は未対応。
-  セーブ・キャッシュの書き込みは端末のアプリ専用フォルダへ振り替えてある（セーブ `files/save/`・キャッシュ
-  `/data/user/0/<パッケージ名>/cache`。2026-09-24。[android.md](android.md) §14）。
-  パッケージ化ウィンドウの Android 出力（.so のビルド・APK 化・pak の同梱）もまだ実働しない（段階C。今は
-  SeedAndroid（`editor/tools/SeedAndroid`。`build_and_run.ps1 -ProjectDir` はそのラッパー）の `--project` が SeedPak で作った pak を APK へ入れる）。
-  スクリプトは段階B で APK に同梱した .NET 10 の CoreCLR で動く（[android.md](android.md) §17）。
+- **Android の APK はデバッグ署名まで**（2026-09-25。§10.3）。APK 内の `assets.pak` から起動し、スクリプトは段階B で APK に同梱した
+  .NET 10 の CoreCLR で動く（[android.md](android.md) §17）。セーブ・キャッシュの書き込みは端末のアプリ専用フォルダへ振り替えてある
+  （セーブ `files/save/`・キャッシュ `/data/user/0/<パッケージ名>/cache`。[android.md](android.md) §14）。
+  パッケージ化ウィンドウの Android 出力は段階C-2 で実働した（中核 `editor/src/Android/` の `Goal = Build` で APK を作って出力フォルダへ写す。§10.3）。
+  ストアへ出す配布用の署名・AAB は段階D。
 
 ### 8.1 配布版の動作に効くプロジェクト設定
 
@@ -707,3 +706,20 @@ dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --
 
 2026-09-24 に最小アセット（BrainStem.glb ＋ 平行光・3 ファイル）で、SeedPak の出力と「変更前のパッケージ化ウィンドウと
 同じ呼び出し（`AssetCollector` → `PakWriter` の直呼び）」の出力の SHA-256 が一致することを確かめた。
+
+### 10.3 パッケージ化ウィンドウの Android 出力（段階C-2・2026-09-25）
+
+「パッケージ化」→ Android →「ビルド開始」は、Windows の流れ（`cargo build` → 実行ファイル・`bin/`・`assets.pak` を並べる）を通らず、
+Android のビルド・配置・起動の中核（`editor/src/Android/`。SeedAndroid・エディタの Android 実行と同じクラス）を `Goal = Build`（端末は使わない）で呼び、
+できた APK（`runtime/android/app/build/outputs/apk/debug/app-debug.apk`）を出力フォルダへ写す。詳細は [android.md](android.md) §20.6。
+
+| 項目 | 内容 |
+|---|---|
+| 出力 | `{出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-debug.apk`（名前の決まりは `editor/src/Packaging/AndroidApkOutput.cs`） |
+| 設定（`packaging_settings.json` の `android`） | `output_path`・`arch`（`Arm64V8a` / `X86_64` / `Both`。画面では「ABI」）・`build_type`（画面では「Rust の最適化」。Release は `cargo --release`） |
+| 署名 | デバッグ署名（配布用の署名・AAB は段階D。画面に明記） |
+| APK の中身 | `assets.pak` と `bin/`（SeedPak `--scripts`。収録は同じ `assets` の設定）・同梱 .NET（常に入る。「.NET ランタイムを同梱」の切り替えは Android では出さない）・`libSEED.so` |
+
+- 以前の `android.ndk_path`（NDK のパス）は廃止した。道具の場所は環境変数と既定の場所から自動で探す（[android.md](android.md) §3）。
+  古い設定ファイルの `ndk_path` は読み飛ばし、次の保存で消える。
+- 変更の無い工程は飛ばす（エディタの実行・SeedAndroid と置き場を共有するので、入力が同じならすぐ終わる）。ウィンドウを閉じると作成を中断する。

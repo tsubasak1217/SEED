@@ -337,9 +337,13 @@ public partial class MainWindow : IEditorAiHost
         switch (action)
         {
             case "play":
+                // seed_play は PC の実行だけを扱う（実行先セレクタが Android でも PC の Play）。
+                // Android の実行中は PC の Play を始めない（プレイバーと同じ排他。docs/editor_mcp.md 6.4）。
+                if (IsAndroidRunActive)
+                    return AndroidRunBlocksPcPlayMessage;
                 if (state != EditorState.Edit)
                     return $"play は Edit 状態でのみ実行できます（現在: {state}）。";
-                // プレイバーのボタンと同じハンドラを通す（スクリプト検証・一時保存を含む）
+                // プレイバーのボタンと同じ PC の Play のハンドラを通す（スクリプト検証・一時保存を含む）
                 OnPlayPause(this, empty);
                 return await WaitForStateAsync(EditorState.Play, AiPlayStateTimeoutMs);
 

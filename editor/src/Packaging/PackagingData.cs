@@ -47,11 +47,19 @@ public enum MacArch
     Universal,
 }
 
-/// <summary>Android ビルドのアーキテクチャ。</summary>
+/// <summary>
+/// Android ビルドのアーキテクチャ（APK に詰める ABI。表示名と ABI 名の対応は AndroidApkOutput.cs）。
+/// </summary>
 public enum AndroidArch
 {
+    /// <summary>arm64-v8a（現行の実機ほぼすべて。配布用）。</summary>
     Arm64V8a,
+
+    /// <summary>x86_64（PC のエミュレータで試すためだけ）。</summary>
     X86_64,
+
+    /// <summary>両方（1 つの APK に arm64-v8a と x86_64 を詰める。実機とエミュレータの両方で試すとき）。</summary>
+    Both,
 }
 
 // ─── プラットフォームごとの設定 ───────────────────────────────
@@ -82,21 +90,27 @@ public class MacOsSettings
     public MacArch Arch { get; set; } = MacArch.Arm64;
 }
 
-/// <summary>Android パッケージング設定。</summary>
+/// <summary>
+/// Android パッケージング設定（段階C-2 で実働化。中核 editor/src/Android/ の Goal = Build で APK を作る）。
+///
+/// <para>
+/// 以前あった NDK のパス（ndk_path）は段階C-2 で廃止した。道具の場所は環境変数と既定の場所から自動で探す
+/// （editor/src/Android/Toolchain/AndroidToolchain.cs。マシン固有のパスをプロジェクトの設定に書かない）。
+/// 古い設定ファイルの ndk_path は読み飛ばし、次の保存で消える。
+/// </para>
+/// </summary>
 public class AndroidSettings
 {
     [JsonPropertyName("output_path")]
     public string OutputPath { get; set; } = "";
 
+    /// <summary>Rust（libSEED.so）の最適化。Release は cargo --release。APK はどちらもデバッグ署名（配布用の署名は段階D）。</summary>
     [JsonPropertyName("build_type")]
     public BuildType BuildType { get; set; } = BuildType.Release;
 
+    /// <summary>APK に詰める ABI。</summary>
     [JsonPropertyName("arch")]
     public AndroidArch Arch { get; set; } = AndroidArch.Arm64V8a;
-
-    /// <summary>Android NDK のルートパス。</summary>
-    [JsonPropertyName("ndk_path")]
-    public string NdkPath { get; set; } = "";
 }
 
 /// <summary>iOS パッケージング設定。</summary>

@@ -1,0 +1,97 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    エディタからの Android の実行（段階C-2）の「UI の判断」の単体テスト。
+    エージェントは SEEDEditor.exe を起動できない（GUI の目視はユーザーが最後に行う）ため、画面に出る判断は
+    すべて WPF 非依存のクラスへ切り出し、ここで確かめる。
+
+    対象:
+      - RunTargetCatalogBuilder / RunTargetSelectionStore : 実行先の一覧（PC + 端末・選べない状態・案内の行）と前回の選択の復元
+      - PlayBarPolicy                                     : 実行・停止ボタンの有効/無効・絵柄・ツールチップ・状態表示・進捗（PC との排他）
+      - AndroidRunStateMachine / AndroidRunController     : 状態機械（Idle → Building → Running → Stopping → Idle）と
+                                                            停止・アプリの終了（pidof）・失敗の段取り（偽の中核で。端末は使わない）
+      - AndroidRunOutputFormatter / LogcatLineParser      : Output パネルへ出す文言と色（飛ばした工程・失敗・logcat）
+      - OutputLineClassifier                              : 従来の Output パネルの色分け（本文の印）を変えていないこと
+      - AndroidRunEnvironment / AndroidToolchainReport    : Android の実行先を使えるか・道具の一覧
+      - AndroidApkOutput / AndroidEditorRunRequests       : パッケージ化ウィンドウの Android 出力の名前と中核への指定
+
+    AndroidPipelineTests と同じ流儀:
+      - 外部パッケージを足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness）で回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （判断のクラスが WPF 型を使い始めたらこのテストのビルドが壊れ、それが「UI から独立していること」の検知器になる）
+      - 端末・adb・cargo・Gradle は使わない（中核の入口は偽物。ファイルは一時フォルダだけ）
+
+    実行方法: dotnet run (project=editor/tests/AndroidRunUiTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AndroidRunUi</RootNamespace>
+    <AssemblyName>AndroidRunUiTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: エディタからの Android の実行の判断（WPF 非依存） -->
+    <Compile Include="..\..\src\AndroidRun\**\*.cs">
+      <Link>Linked\AndroidRun\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- Output パネルの行の見た目（色の種類・出どころ）と従来の色分け -->
+    <Compile Include="..\..\src\Logging\**\*.cs">
+      <Link>Linked\Logging\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- PC のランタイムの状態（プレイバーの判断の材料） -->
+    <Compile Include="..\..\src\Runtime\EditorState.cs">
+      <Link>Linked\Runtime\EditorState.cs</Link>
+    </Compile>
+    <!-- パッケージ化ウィンドウの Android 出力の決まりと、その設定の型 -->
+    <Compile Include="..\..\src\Packaging\AndroidApkOutput.cs">
+      <Link>Linked\Packaging\AndroidApkOutput.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\PackagingData.cs">
+      <Link>Linked\Packaging\PackagingData.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+
+    <!-- 中核（editor/src/Android/。AndroidPipelineTests・SeedAndroid と同じ取り込み方） -->
+    <Compile Include="..\..\src\Android\**\*.cs">
+      <Link>Linked\Android\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\ScreenOrientationSetting.cs">
+      <Link>Linked\ProjectSettings\ScreenOrientationSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
+      <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\EditorVersion.cs">
+      <Link>Linked\Project\EditorVersion.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\SeedProjectFile.cs">
+      <Link>Linked\Project\SeedProjectFile.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\ProjectPaths.cs">
+      <Link>Linked\Project\ProjectPaths.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\ProjectFolderResolver.cs">
+      <Link>Linked\Project\ProjectFolderResolver.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\PackageLayout.cs">
+      <Link>Linked\Packaging\PackageLayout.cs</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のもの、一時フォルダは AndroidPipelineTests のものを共有する -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+    <Compile Include="..\AndroidPipelineTests\TempDir.cs">
+      <Link>Linked\TempDir.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

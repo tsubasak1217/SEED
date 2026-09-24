@@ -35,6 +35,7 @@ public static class AdbTests
         harness.Add("端末選び: 使える端末が無ければ状態ごとの説明", NoReadyExplainsStates);
         harness.Add("ABI: 端末の abilist の先頭からビルドできるものを選ぶ", ChoosesAbiForDevice);
         harness.Add("ABI: 並びの解釈（重複をまとめ表の順に・知らない名前はエラー）", ParsesAbiList);
+        harness.Add("pidof: 空白区切りの数字をプロセス ID にし、数字でない語・空は読み飛ばす", ParsesProcessIds);
     }
 
     /// <summary>混ざった出力を読む。</summary>
@@ -158,5 +159,15 @@ public static class AdbTests
         Check.True(unknown is not null && unknown.Contains("mips"), $"知らない名前: {unknown}");
         AndroidAbis.ParseList(" , ", out var empty);
         Check.True(empty is not null, "空はエラー");
+    }
+
+    /// <summary>pidof の出力の解釈（エディタの実行がアプリの終了を見つけるのに使う）。</summary>
+    private static void ParsesProcessIds()
+    {
+        Check.Equal("12345", string.Join(",", AdbClient.ParseProcessIds("12345\r\n")), "1 つ（改行つき）");
+        Check.Equal("12345,12400", string.Join(",", AdbClient.ParseProcessIds(" 12345 12400 ")), "複数（空白区切り）");
+        Check.Equal(0, AdbClient.ParseProcessIds(string.Empty).Count, "動いていなければ空");
+        Check.Equal(0, AdbClient.ParseProcessIds("error: device offline").Count, "数字でない語は読み飛ばす");
+        Check.Equal(0, AdbClient.ParseProcessIds("-5 0").Count, "0 以下・符号付きはプロセス ID ではない");
     }
 }

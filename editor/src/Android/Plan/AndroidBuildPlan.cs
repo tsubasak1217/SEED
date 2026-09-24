@@ -120,6 +120,11 @@ public sealed record AndroidStepDecision(
 /// <param name="Warnings">警告。</param>
 public sealed record AndroidBuildPlan(IReadOnlyList<AndroidStepDecision> Steps, IReadOnlyList<string> Warnings)
 {
+    /// <summary>
+    /// 入力も出力も前回の記録と同じで飛ばすときの理由（エディタの Output パネルはこの理由の工程を「変更なし」の 1 行で出す）。
+    /// </summary>
+    public const string UnchangedReason = "変更なし";
+
     /// <summary>その工程の判断（計画に無ければ null）。</summary>
     /// <param name="phase">工程。</param>
     /// <returns>判断。</returns>
@@ -233,7 +238,7 @@ public sealed record AndroidBuildPlan(IReadOnlyList<AndroidStepDecision> Steps, 
             firstReason ??= $"{abi.Name}: {reason}";
         }
         return stale.Count == 0
-            ? Skip(AndroidPipelinePhase.NativeBuild, "変更なし", input.Abis)
+            ? Skip(AndroidPipelinePhase.NativeBuild, UnchangedReason, input.Abis)
             : Run(AndroidPipelinePhase.NativeBuild, firstReason!, stale);
     }
 
@@ -241,7 +246,7 @@ public sealed record AndroidBuildPlan(IReadOnlyList<AndroidStepDecision> Steps, 
     private static AndroidStepDecision Compare(AndroidPipelinePhase phase, string key, AndroidPlanInput input)
     {
         var reason = StaleReason(key, input);
-        return reason is null ? Skip(phase, "変更なし", input.Abis) : Run(phase, reason, input.Abis);
+        return reason is null ? Skip(phase, UnchangedReason, input.Abis) : Run(phase, reason, input.Abis);
     }
 
     /// <summary>

@@ -237,6 +237,21 @@ public static class InfrastructureTests
         Check.Equal("emulator-5554", loadedState.LastTarget?.Serial, "前回の実行先");
         Check.Equal(new AndroidInstallRecord("com.x.y", "sha", "/data/app/a/base.apk"), loadedState.InstallRecordFor("emulator-5554"), "入れた APK の記録");
         Check.True(loadedState.InstallRecordFor("other") is null, "無い端末");
+        Check.True(loadedState.EditorTarget is null, "エディタの選択は未設定なら null");
+
+        // エディタの実行先セレクタの選択（段階C-2）: 項目を足しただけなので版は 1 のまま・往復する
+        loadedState.EditorTarget = AndroidRunState.EditorPcTarget;
+        loadedState.Save(runStatePath);
+        var withSelection = AndroidRunState.Load(runStatePath);
+        Check.Equal(AndroidRunState.EditorPcTarget, withSelection.EditorTarget, "エディタの選択（pc）");
+        Check.Equal("emulator-5554", withSelection.LastTarget?.Serial, "他の記録は保たれる");
+        Check.True(File.ReadAllText(runStatePath).Contains("\"editor_target\""), "JSON のキーは editor_target");
+
+        // 項目の無い古い記録（C-1 の書式）もそのまま読める
+        File.WriteAllText(runStatePath, "{\"format_version\": 1, \"last_target\": {\"serial\": \"s\", \"kind\": \"physical\", \"application_id\": \"a.b\"}}");
+        var legacy = AndroidRunState.Load(runStatePath);
+        Check.Equal("s", legacy.LastTarget?.Serial, "古い記録の前回の実行先");
+        Check.True(legacy.EditorTarget is null, "古い記録のエディタの選択は null");
     }
 
     /// <summary>道具の解決。</summary>

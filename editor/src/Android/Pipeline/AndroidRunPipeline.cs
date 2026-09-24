@@ -96,6 +96,8 @@ public sealed class AndroidRunPipeline
         try
         {
             (context, plan) = await PrepareAsync(request, prepareLog, cancellationToken).ConfigureAwait(false);
+            // 決まった端末・アプリ・ABI を先に知らせる（エディタはアプリの終了の見張りと停止に使う）
+            prepareLog.Report(new AndroidPrepared(context.Device, context.Identity, context.Abis));
             prepareLog.Report(new AndroidPhaseFinished(
                 AndroidPipelinePhase.Prepare, 0, plan.Steps.Count, prepareTitle, AndroidPhaseOutcome.Succeeded, prepareWatch.Elapsed,
                 $"{plan.Steps.Count(s => s.Runs)} 工程を行い、{plan.Steps.Count(s => !s.Runs)} 工程を飛ばします"));

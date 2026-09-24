@@ -348,31 +348,20 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     }
 
     // ── 実行バーのボタン画像（ユーザー設定の PNG アイコン）────────────
-    // 実行状態の遷移（MainWindow.Camera.cs の ApplyEditorState）から
-    // ImgPlayPause.Source へ代入して見た目を切り替える。
+    // プレイバーの判断（AndroidRun/PlayBarPolicy.cs）の絵柄に合わせて、
+    // MainWindow.AndroidRun.cs の ApplyPlayBar が ImgPlayPause.Source へ代入して見た目を切り替える。
+    // 状態インジケータ（ラベル左のベクターアイコン）のキーと色も PlayBarPolicy が持つ（段階C-2 で移した）。
 
     /// <summary>実行ボタンが「再生できる」状態のときの画像。</summary>
     private static readonly BitmapImage _imgPlay  = new(new Uri("pack://application:,,,/resources/icons/playbar/play.png"));
     /// <summary>実行ボタンが「一時停止できる」状態（＝Play 中）のときの画像。</summary>
     private static readonly BitmapImage _imgPause = new(new Uri("pack://application:,,,/resources/icons/playbar/pause.png"));
 
-    // ── 状態インジケータのアイコンキー（Icons.xaml のリソースキー）──────
-    // ラベル左の丸印はもともと記号文字だったものをベクターアイコンに置き換えた箇所で、
-    // PNG 資産が無いためベクターのまま扱う。
-
-    /// <summary>状態インジケータ: 編集中。</summary>
-    private const string IconKeyStateEdit     = "Icon.Dirty";
-    /// <summary>状態インジケータ: 再生中 / 起動中。</summary>
-    private const string IconKeyStatePlay     = "Icon.Play";
-    /// <summary>状態インジケータ: 一時停止中。</summary>
-    private const string IconKeyStatePause    = "Icon.Pause";
-    /// <summary>状態インジケータ: ビルド中。</summary>
-    private const string IconKeyStateBuilding = "Icon.Settings";
-    /// <summary>状態インジケータ: 待機（ランタイム未起動）。</summary>
-    private const string IconKeyStateIdle     = "Icon.Info";
-
+    /// <summary>実行ボタンの地（再生の絵柄のとき）。</summary>
     private static readonly SolidColorBrush _brushPlay  = new(Color.FromRgb(0x1F, 0x4A, 0x22));
+    /// <summary>停止ボタンの地（XAML の Background と同じ値。コードからは参照しない）。</summary>
     private static readonly SolidColorBrush _brushStop  = new(Color.FromRgb(0x4A, 0x1F, 0x1F));
+    /// <summary>実行ボタンの地（一時停止の絵柄のとき）。</summary>
     private static readonly SolidColorBrush _brushPause = new(Color.FromRgb(0x4A, 0x30, 0x00));
 
     private ViewportHost?          _viewportHost;
@@ -526,6 +515,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // ツールバーのビルド構成コンボへカタログと現在の選択を流し込む
         // （MainWindow.RuntimeBuildConfig.cs）。
         InitRuntimeBuildConfigCombo();
+        // 実行先セレクタ（PC / Android の実機・エミュレータ）と Android の実行を用意する
+        // （MainWindow.AndroidRun.cs）。プレイバーの初回の表示もここで当たる。
+        InitRunTargets();
 
         _runtimeManager.StateChanged         += OnStateChanged;
         _runtimeManager.RuntimeHwndAvailable += OnRuntimeHwndAvailable;
@@ -1073,25 +1065,46 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         return false;
     }
 
+    /// <summary>
+    /// 実行（PC の Play・Android の実行）の前に、アセットフォルダが使えるかを確かめる。
+    /// 使えない状態では実行しても何も読み込めない（Android は APK に何も入らない）。
+    /// 起動して即失敗させるより、理由を明示してここで止める。
+    /// </summary>
+    /// <returns>使えるなら true。使えなければ理由を出して false。</returns>
+    private bool CheckAssetsBeforeRun()
+    {
+        var assets = SEEDEditor.Assets.AssetsRootProbe.Check(AssetsPath);
+        if (assets.IsAvailable) return true;
+
+        EditorLog.Write($"Play を中止しました（アセット不在）— {assets.LogLine}");
+        TxtViewportStatus.Text = "アセットフォルダが利用できないため実行できません — " + assets.Reason;
+        SEEDEditor.Headless.EditorDialogs.Show(
+            $"アセットフォルダが利用できないため実行できません。\n\n{assets.Path}\n\n理由: {assets.Reason}",
+            "SEED Editor — 実行できません",
+            MessageBoxButton.OK, MessageBoxImage.Error);
+        return false;
+    }
+
+    /// <summary>
+    /// PC の Play / Pause / Resume（従来の実行ボタンの処理）。
+    /// 実行ボタンの Click は OnPlayBarPlayClick（MainWindow.AndroidRun.cs）が受け、実行先が PC のときだけここへ来る。
+    /// AI ツール（seed_play）はここを直接呼ぶ（PC の実行だけを扱う）。
+    /// </summary>
     private async void OnPlayPause(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager is null) return;
         var state = _runtimeManager.State;
         if (state == EditorState.Edit)
         {
-            // アセットフォルダが使えない状態では Play しても何も読み込めない。
-            // 起動して即失敗させるより、理由を明示してここで止める。
-            var assets = SEEDEditor.Assets.AssetsRootProbe.Check(AssetsPath);
-            if (!assets.IsAvailable)
+            // Android の実行中は PC の Play を始めない（プレイバーは押せないが、AI ツールからの呼び出しに備える）
+            if (IsAndroidRunActive)
             {
-                EditorLog.Write($"Play を中止しました（アセット不在）— {assets.LogLine}");
-                TxtViewportStatus.Text = "アセットフォルダが利用できないため実行できません — " + assets.Reason;
-                SEEDEditor.Headless.EditorDialogs.Show(
-                    $"アセットフォルダが利用できないため実行できません。\n\n{assets.Path}\n\n理由: {assets.Reason}",
-                    "SEED Editor — 実行できません",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                EditorLog.Write("Play を中止しました（Android で実行中）");
                 return;
             }
+
+            // アセットフォルダが使えない状態では Play しても何も読み込めない。
+            if (!CheckAssetsBeforeRun()) return;
 
             // スクリプトの全体コンパイルを検証し、エラーがあれば実行をブロックする。
             // ランタイムは全 .cs を 1 アセンブリに一括コンパイルするため、
@@ -1174,6 +1187,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             _runtimeManager.Resume();
     }
 
+    /// <summary>
+    /// PC の実行を止める（従来の停止ボタンの処理）。
+    /// 停止ボタンの Click は OnPlayBarStopClick（MainWindow.AndroidRun.cs）が受け、PC の実行中だけここへ来る
+    /// （Android の実行中は Android の停止へ振り分ける）。
+    /// </summary>
     private async void OnStop(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager is null) return;
@@ -1535,6 +1553,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _sceneAutoReloader?.Dispose();
         _sceneAutoReloader = null;
         _scriptReloadStatusTimer?.Stop();
+        // Android の実行（ビルドの子プロセス・logcat）と端末の一覧の取得を止める（MainWindow.AndroidRun.cs）
+        ShutdownAndroidRun();
         _runtimeManager?.Dispose();
         ViewportDocumentContent.Content = null;
     }

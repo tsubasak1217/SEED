@@ -8,6 +8,8 @@
 //
 //  【中身】
 //    last_target … 最後に使った実行先（エディタの実行先セレクタの既定値に使う。段階C-2）
+//    editor_target … エディタの実行先セレクタで最後に選んだもの（"pc" か端末のシリアル。段階C-2。
+//                   PC を選んだことも覚えるため last_target とは別に持つ。SeedAndroid は読まない・書き戻すときは保つ）
 //    installs    … 端末（シリアル）ごとに、最後に自分が入れた APK の SHA-256 と、入れた直後の pm path
 //                   （インストールを飛ばしてよいかの判断。Plan/AndroidBuildPlan.cs）
 //    last_run    … 最後の実行の結果（工程ごとの判断・所要時間・その時の入力の指紋）
@@ -110,6 +112,9 @@ public sealed class AndroidRunState
     /// <summary>記録の書式の版（変えたら上げる。違う版は読まない）。</summary>
     public const int CurrentFormatVersion = 1;
 
+    /// <summary><see cref="EditorTarget"/> で「PC（この PC で実行）」を表す値。</summary>
+    public const string EditorPcTarget = "pc";
+
     /// <summary>プロジェクトの cache/ の中の置き場（cache/android/run_state.json）。</summary>
     public static readonly string ProjectRelativePath = Path.Combine("cache", "android", "run_state.json");
 
@@ -127,6 +132,13 @@ public sealed class AndroidRunState
     /// <summary>最後に使った実行先。</summary>
     [JsonPropertyName("last_target")]
     public AndroidTargetRecord? LastTarget { get; set; }
+
+    /// <summary>
+    /// エディタの実行先セレクタで最後に選んだもの（<see cref="EditorPcTarget"/> か端末のシリアル。未選択なら null）。
+    /// 項目を足しただけなので書式の版は変えない（古い記録は null として読む）。
+    /// </summary>
+    [JsonPropertyName("editor_target")]
+    public string? EditorTarget { get; set; }
 
     /// <summary>シリアル → 最後に自分が入れた APK。</summary>
     [JsonPropertyName("installs")]

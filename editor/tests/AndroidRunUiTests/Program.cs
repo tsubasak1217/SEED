@@ -1,0 +1,31 @@
+using SpriteRigTests;   // TestHarness / Check（テストランナーは SpriteRigTests と共用）
+
+namespace AndroidRunUiTests;
+
+/// <summary>
+/// エディタからの Android の実行（段階C-2。docs/android.md §20）の「UI の判断」の単体テスト。
+///
+/// 検証の柱:
+///   1. 実行先の一覧の組み立てと前回の選択の復元（RunTargetCatalogTests）
+///   2. プレイバーのボタンの有効/無効・絵柄・文言と PC との排他（PlayBarPolicyTests）
+///   3. 状態機械の遷移（StateMachineTests）と、停止・アプリの終了・失敗の段取り（ControllerTests。偽の中核）
+///   4. Output パネルへ出す文言と色（OutputFormattingTests）
+///   5. Android の実行先を使えるか・道具の一覧・パッケージ化の出力・中核への指定（EnvironmentAndPackagingTests）
+/// 端末・adb・cargo・Gradle は使わない。
+/// </summary>
+public static class Program
+{
+    /// <summary>エントリポイント。全テストを実行し、失敗があれば終了コード 1 を返す。</summary>
+    /// <returns>終了コード。</returns>
+    public static int Main()
+    {
+        var harness = new TestHarness();
+        RunTargetCatalogTests.Register(harness);
+        PlayBarPolicyTests.Register(harness);
+        StateMachineTests.Register(harness);
+        ControllerTests.Register(harness);
+        OutputFormattingTests.Register(harness);
+        EnvironmentAndPackagingTests.Register(harness);
+        return harness.Run();
+    }
+}

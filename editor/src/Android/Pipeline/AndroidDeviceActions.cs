@@ -1,7 +1,8 @@
 // ============================================================
-//  AndroidDeviceActions.cs — ビルドを伴わない端末の操作（端末の一覧・アプリの停止・logcat）
+//  AndroidDeviceActions.cs — ビルドを伴わない端末の操作（端末の一覧・アプリの停止・動いているかの確認・logcat）
 //
-//  エディタの実行先セレクタ（段階C-2）が端末の一覧を出す・停止ボタンでアプリを止める・Output パネルへ logcat を流すのに使う。
+//  エディタの実行先セレクタ（段階C-2）が端末の一覧を出す・停止ボタンでアプリを止める・アプリ側の終了を見つける
+//  （pidof）・Output パネルへ logcat を流すのに使う。
 //  コンソールツールの devices / stop / logcat も同じ。触るのは自分のアプリ（アプリ ID）だけ。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
@@ -91,6 +92,30 @@ public sealed class AndroidDeviceActions
             throw new AndroidPipelineException(AndroidFailureKind.DeviceOperation, $"am force-stop {applicationId} が失敗しました（終了コード {exitCode}）。");
         }
         return device;
+    }
+
+    /// <summary>
+    /// アプリが端末で動いているか（pidof。自分のアプリだけを問い合わせる）。
+    /// エディタの実行（段階C-2）が、アプリ側で終了した（戻るキー・クラッシュ等）ことを見つけて「実行中」を終えるのに使う。
+    /// 端末の一覧は取り直さない（数秒おきに呼ぶため。端末が外れていれば adb の失敗として例外になる）。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>動いていれば true。</returns>
+    /// <exception cref="AndroidPipelineException">adb が無い・問い合わせが失敗したとき。</exception>
+    public async Task<bool> IsAppRunningAsync(string serial, string applicationId, CancellationToken cancellationToken)
+    {
+        var adb = CreateAdb();
+        try
+        {
+            var pids = await adb.GetProcessIdsAsync(serial, applicationId, cancellationToken).ConfigureAwait(false);
+            return pids.Count > 0;
+        }
+        catch (Exception ex) when (ex is AdbCommandException or ChildProcessStartException)
+        {
+            throw new AndroidPipelineException(AndroidFailureKind.DeviceOperation, ex.Message, ex);
+        }
     }
 
     /// <summary>

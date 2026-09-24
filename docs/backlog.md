@@ -1734,13 +1734,20 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   2026-09-25（段階C-1）: SeedAndroid の `push` はエミュレータで 8.3 秒（SeedPak＋転送 6.5・起動 1.8）。中核（`Steps/SeedPakProcess.cs`）は SeedPak を
   子プロセスで呼ぶままにした（ps1 と同じ経路・中断で止められる）。C-2 で同じプロセスの `AssetPakBuilder` / `ScriptPackager` を呼ぶ実装に差し替える
   （`PackageContentStep` / `PushScriptsStep` の中だけの変更で済む形にしてある）。
+  2026-09-25 追記（段階C-2）: C-2 でも子プロセスのまま（エディタの実行・パッケージ化ウィンドウとも中核の `SeedPakProcess` を通る）。
+  中核は SeedAndroid にもリンクされ、SeedAndroid は Roslyn（ScriptPackager）を参照しないため、差し替えるなら「pak とスクリプトを作る窓口」を
+  中核に置き、エディタだけが同じプロセスの実装を渡す形にする。Play 中のエディタ（PC の実行）が `scripting/bin` の DLL を握っていると
+  SeedPak の `dotnet run` の再ビルドが失敗し得る点は未確認のまま。
 - [ ] **外部アプリ専用フォルダの `files/bin/` は実機で読めない（候補としては残している）** — 2026-09-25（段階B）。`adb push` で置いた DLL は
   Pixel 6a（Android 16）で Permission denied（§4.5 と同じ理由）。`-PushScripts` は run-as の内部フォルダへ送るように変えた。外部フォルダは
   エミュレータで手で置くとき用の候補で、読めなければ警告して飛ばす（docs/android.md §17.7）。
 - [ ] **C# スクリプトのログのタグが CoreCLR（DOTNET）と Mono（SEED）で違う** — 2026-09-25（段階B）。CoreCLR の Android 版 `Console` は logcat へ
   タグ `DOTNET` で直接書き、Mono は標準出力（→ エンジンの転送でタグ `SEED`）。`build_and_run.ps1` の logcat の絞り込みには両方を入れた。
   揃えるなら、スクリプトホストの `SEED.Debug.Log` をエンジンのログ関数（FFI）経由にする。
-- [ ] **エディタのパッケージ化ウィンドウの Android 出力が実働しない（段階C）** — 2026-09-24。`PackagingWindow.xaml.cs` は
+- [x] **エディタのパッケージ化ウィンドウの Android 出力が実働しない（段階C）** — 2026-09-24 記載 / 2026-09-25 対応（段階C-2）。ウィンドウは
+  中核を `Goal = Build`（端末は使わない）で呼び、できた APK を `{出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-debug.apk` へ写す（デバッグ署名。
+  画面に明記）。NDK のパスの欄と `android.ndk_path` は廃止、アーキテクチャは「ABI」（arm64-v8a / x86_64 / 両方）、ビルド種別は「Rust の最適化」。
+  道具の見つかり方を欄に出す。docs/android.md §20.6・docs/packaging.md §10.3。以下は記載時のメモ。`PackagingWindow.xaml.cs` は
   runtime/ で `cargo build --target <triple>` して `runtime/target/<triple>/<profile>/libSEED.so` を拾う前提だが、
   runtime/ 単体を Android 向けにビルドすると winit の Android 機能（android-game-activity）が有効にならず、
   android-activity の compile_error で失敗する（段階0 以前は nethost-sys の build.rs の panic で失敗していた）。
@@ -1789,11 +1796,37 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   から使う。ps1 は従来の引数で SeedAndroid を呼ぶだけのラッパー。入力の指紋と置き場の記録から変わっていない工程を自動で飛ばす
   （エミュレータで 2 回目の run が 75 → 15 秒）。アプリの識別情報（`project_settings.json` の `android` 節・プロジェクト設定ウィンドウ）も入れた。
   正典は docs/android.md §4.6・§5・§18・§19。単体テスト `editor/tests/AndroidPipelineTests`。
-- [ ] **段階C-2: エディタの「実行」に実行先セレクタ（PC / 実機 / エミュレータ）を付ける** — 2026-09-25（C-1 の続き）。中核の入口は
+- [x] **段階C-2: エディタの「実行」に実行先セレクタ（PC / 実機 / エミュレータ）を付ける** — 2026-09-25 記載 / 同日対応。実行ボタンの隣の
+  実行先コンボ（開くたびに adb で探し直す・選べない端末は理由付きで無効・前回の選択はプロジェクトごと）、状態機械 Idle → Building → Running →
+  Stopping → Idle（アプリ側の終了は pidof で検知）、進み具合と logcat を色付きで Output パネルへ、停止ボタン（ビルドの中止・端末のアプリの停止）、
+  PC の実行との排他、パッケージ化ウィンドウの Android 出力。判断はすべて WPF 非依存（`editor/src/AndroidRun/`）で単体テスト `editor/tests/AndroidRunUiTests`。
+  正典は docs/android.md §20。以下は記載時のメモ。中核の入口は
   docs/android.md §4.6 の表（`AndroidDeviceActions.ListDevicesAsync` / `AndroidRunPipeline.RunAsync` / `StopAppAsync`・`AndroidRunState.LastTarget`）。
   イベント（`AndroidPipelineEvent`）を Output パネルへ、`CancellationToken` を停止ボタンへつなぐ。エディタからの pak とスクリプトは同じプロセスの
-  `AssetPakBuilder` / `ScriptPackager` を呼ぶ形にすると速い（上の `-PushScripts` の項目）。Play 中のエディタが `scripting/bin` の DLL を握っていると
+  `AssetPakBuilder` / `ScriptPackager` を呼ぶ形にすると速い（上の `-PushScripts` の項目。C-2 では未実施）。Play 中のエディタが `scripting/bin` の DLL を握っていると
   SeedPak の `dotnet run` の再ビルドが失敗し得る点にも注意（未確認）。
+- [ ] **段階C-2 の端末での確認（エディタから実行・停止・アプリの終了の検知・Output）** — 2026-09-25（段階C-2）。作業中は端末が無く、
+  PC のメモリ不足でエミュレータも起動しなかったため、エディタの Android 実行は単体テスト（偽の中核）と中核の `Goal = Build`・端末 0 台の一覧までしか
+  確かめていない。端末（エミュレータ・Pixel 6a）で、(1) コンボに端末が出て選べる (2) 実行 → Output に工程の行・「変更なし」・logcat（DOTNET は
+  フィルタ「ゲーム」）(3) 停止ボタンで `pidof` が空になる (4) 端末の戻るキーでアプリを終えると数秒で Idle に戻る (5) ビルド中の停止で子プロセスが残らない
+  (6) エディタを開き直すと前回の端末が選ばれている、を確かめる（手順は docs/android.md §20・報告の GUI 確認手順）。
+- [ ] **エディタの Android 実行は保存済みのファイルから・開始シーンから・Rust は debug** — 2026-09-25（段階C-2）。APK はディスク上のファイルから
+  作るので未保存の変更は含まれない（Output に警告を 1 行出すだけ。保存を促すダイアログ・自動保存は無い）。起動するシーンはプロジェクト設定の
+  開始シーン（PC の Play の「編集中のシーンから」は無い。エディタから開くシーンを渡す仕組みが要る）。Rust はツールバーのビルド構成と連動せず debug。
+- [ ] **実行先の一覧は開いたときだけ更新（接続・切断の自動検知なし）** — 2026-09-25（段階C-2・低優先）。`adb track-devices` で見張れば、
+  端末を挿した・外したときにコンボと実行ボタンを自動で更新できる（選んでいた端末が外れた後も、開き直すまでは「使える」表示のまま。
+  実行すれば中核が「つながっていません」で止める）。
+- [ ] **エディタからの Android 実行で DLL だけを送る高速経路（Push）を出していない** — 2026-09-25（段階C-2）。`.cs` だけを変えたときも
+  pak とスクリプト → Gradle → install を回す（エミュレータで約 27 秒。§5.3）。SeedAndroid の `push`（約 8 秒）に当たる操作をプレイバーへ
+  足すか、スクリプトだけの変更を見分けて自動で Push にする。
+- [ ] **エディタを閉じても端末のアプリは止めない・Android の実行の MCP ツールが無い** — 2026-09-25（段階C-2・低優先）。閉じる操作を adb で
+  待たせないため、閉じるときは子プロセス（ビルド・logcat）を止めるだけ。AI ツールの `seed_play` は PC の実行だけを扱い、エディタで Android の実行が
+  動いている間は `play` を拒否する（docs/editor_mcp.md 6.4）。端末での確認を AI に任せるなら、安全機構（インスタンス束縛・端末の指定の明示）付きで
+  MCP ツールを足す。
+- [ ] **Android の実行の後に Gradle のデーモン（最大ヒープ 2 GB）が残る** — 2026-09-25（段階C-2）。Gradle の既定（3 時間で自動終了）。
+  メモリの少ない PC では、実行を終えたら `gradlew --stop` を呼ぶ・`org.gradle.daemon.idletimeout` を短くする等を検討する。
+- [ ] **Output パネルの警告と「ビルド」の色が同じ黄** — 2026-09-25（段階C-2・低優先）。色の種類は分けてある（`OutputTone.Warning` / `Build`）ので、
+  分けるなら OutputPanel の「色の種類 → ブラシ」の表だけを直す（docs/editor_ui_style.md 7 章）。
 - [ ] **段階C-1 の実機（Pixel 6a・arm64）での一気通貫の確認** — 2026-09-25。C-1 の作業中は実機が USB につながっておらず、SeedAndroid の `run` /
   `push` / `stop` はエミュレータ（x86_64）だけで確かめた（arm64 の APK の `build` までは確認済み。docs/android.md §19）。端末が空いているときに
   `dotnet run --project editor/tools/SeedAndroid -- run --project <プロジェクト> --serial <実機> --logcat-seconds 30` で、インストール・起動・

@@ -945,18 +945,13 @@ public partial class MainWindow
         // （Play・起動中・ビルド中はランタイムを差し替えられない）。
         UpdateRuntimeBuildConfigEnabled(state);
 
+        // 実行・停止ボタン・状態表示（EDIT / PLAY …）は最後の ApplyPlayBar がまとめて当てる
+        // （判断は AndroidRun/PlayBarPolicy.cs。Android の実行中・実行先が Android のときもそこで決まる）。
+        // ここでは状態ごとのビューポートの表示だけを切り替える。
         switch (state)
         {
             case EditorState.Edit:
                 _pressedVks.Clear();
-                BtnPlayPause.IsEnabled   = true;
-                BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
-                BtnStop.IsEnabled        = false;
-                LblState.Text            = "EDIT";
-                LblState.Foreground      = Brushes.LightGreen;
-                IconState.IconKey        = IconKeyStateEdit;
-                IconState.Foreground     = Brushes.LightGreen;
                 // ランタイムが READY を返すまでは HwndHost を隠しておく。表示したままだと
                 // 空のコンテナ HWND が白く描かれ、WPF のオーバーレイ（起動中画面）はその穴に描けない。
                 UpdateViewportHostVisibility();
@@ -966,14 +961,6 @@ public partial class MainWindow
                 break;
 
             case EditorState.Play:
-                BtnPlayPause.IsEnabled   = true;
-                BtnPlayPause.Background  = _brushPause;
-                ImgPlayPause.Source      = _imgPause;
-                BtnStop.IsEnabled        = true;
-                LblState.Text            = "PLAY";
-                LblState.Foreground      = Brushes.LightSkyBlue;
-                IconState.IconKey        = IconKeyStatePlay;
-                IconState.Foreground     = Brushes.LightSkyBlue;
                 // ビューポートホストの表示制御:
                 // - ウィンドウ Play: ランタイムは別ウィンドウなのでホストを隠す（従来動作）
                 // - 埋め込みインプレース Play: この WPF 要素がランタイム子 HWND のホストそのもの。
@@ -987,27 +974,11 @@ public partial class MainWindow
                 break;
 
             case EditorState.Pause:
-                BtnPlayPause.IsEnabled   = true;
-                BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
-                BtnStop.IsEnabled        = true;
-                LblState.Text            = "PAUSE";
-                LblState.Foreground      = Brushes.Orange;
-                IconState.IconKey        = IconKeyStatePause;
-                IconState.Foreground     = Brushes.Orange;
                 ViewportDocumentContent.Visibility = Visibility.Visible;
                 ViewportLoadingOverlay.Visibility  = Visibility.Collapsed;
                 break;
 
             case EditorState.Building:
-                BtnPlayPause.IsEnabled   = false;
-                BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
-                BtnStop.IsEnabled        = false;
-                LblState.Text            = "BUILDING...";
-                LblState.Foreground      = Brushes.Yellow;
-                IconState.IconKey        = IconKeyStateBuilding;
-                IconState.Foreground     = Brushes.Yellow;
                 TxtViewportStatus.Text            = "ビルド中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 // ランタイムはまだ無い（または作り直す）ので、READY まで HwndHost を隠す。
@@ -1018,28 +989,13 @@ public partial class MainWindow
                 // Play ランタイム起動シーケンス進行中（プロセス起動〜Play 遷移前）。
                 // ・実行ボタンは無効化して連打による多重起動を UI 側でも防ぐ（不具合2）。
                 // ・Stop ボタンは有効化し、ウィンドウ出現前でも起動をキャンセルできるようにする（不具合1）。
-                BtnPlayPause.IsEnabled   = false;
-                BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
-                BtnStop.IsEnabled        = true;
-                LblState.Text            = "LAUNCHING...";
-                LblState.Foreground      = Brushes.LightSkyBlue;
-                IconState.IconKey        = IconKeyStatePlay;
-                IconState.Foreground     = Brushes.LightSkyBlue;
+                //   （ボタンの有効/無効は PlayBarPolicy の PC の表が持つ）
                 TxtViewportStatus.Text            = "起動中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 MarkViewportRuntimeNotReady();
                 break;
 
             case EditorState.Idle:
-                BtnPlayPause.IsEnabled   = false;
-                BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
-                BtnStop.IsEnabled        = false;
-                LblState.Text            = "IDLE";
-                LblState.Foreground      = Brushes.Gray;
-                IconState.IconKey        = IconKeyStateIdle;
-                IconState.Foreground     = Brushes.Gray;
                 TxtViewportStatus.Text            = "再起動中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 MarkViewportRuntimeNotReady();
@@ -1052,6 +1008,9 @@ public partial class MainWindow
                    || state == EditorState.Play;
         TxtFps.Visibility = showFps ? Visibility.Visible : Visibility.Collapsed;
         if (!showFps) TxtFps.Text = "";
+
+        // 実行・停止ボタン・状態表示・実行先コンボを当てる（MainWindow.AndroidRun.cs。判断は PlayBarPolicy）
+        ApplyPlayBar(state);
     }
 
     /// <summary>ランタイムからFPS通知を受け取ったときにUI上の表示を更新する。</summary>

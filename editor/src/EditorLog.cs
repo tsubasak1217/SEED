@@ -1,9 +1,15 @@
 using System;
 using System.IO;
+using SEEDEditor.Logging;
 
 namespace SEEDEditor;
 
-/// <summary>デバッグ用ログ。ファイルへの追記と UI パネルへのリアルタイム通知を行う。</summary>
+/// <summary>
+/// デバッグ用ログ。ファイルへの追記と UI パネルへのリアルタイム通知を行う。
+///
+/// 行の色（Output パネル）は、書き手が決めて渡す（<see cref="Write(string, OutputLineStyle?)"/>。Android の実行の行）か、
+/// 渡さなければ Output パネルが本文の印から決める（<see cref="OutputLineClassifier"/>。従来どおり）。
+/// </summary>
 internal static class EditorLog
 {
     private static readonly string LogPath = ResolveLogPath();
@@ -39,8 +45,11 @@ internal static class EditorLog
     /// <summary>最後に開き直しを試みた時刻（開けている間は使わない）。</summary>
     private static DateTime _lastReopenAttempt = DateTime.MinValue;
 
-    /// <summary>新しいログ行が追加されたときに発火する（任意スレッドから呼ばれる）。</summary>
-    public static event Action<string>? LogWritten;
+    /// <summary>
+    /// 新しいログ行が追加されたときに発火する（任意スレッドから呼ばれる）。
+    /// 本文は時刻付き。見た目は書き手が決めたときだけ入る（null なら受け手が本文から決める）。
+    /// </summary>
+    public static event Action<EditorLogEntry>? LogWritten;
 
     private static StreamWriter? OpenWriter()
     {
@@ -89,7 +98,17 @@ internal static class EditorLog
         catch { /* ignore */ }
     }
 
-    public static void Write(string message)
+    /// <summary>1 行書く（Output パネルの色は本文の印から決まる。従来の書き方）。</summary>
+    /// <param name="message">本文。</param>
+    public static void Write(string message) => Write(message, null);
+
+    /// <summary>
+    /// 1 行書く（Output パネルの色と出どころを書き手が決める）。
+    /// ファイルへ書く中身は <see cref="Write(string)"/> と同じ（見た目はファイルに残らない）。
+    /// </summary>
+    /// <param name="message">本文。</param>
+    /// <param name="style">見た目（null なら本文の印から決まる）。</param>
+    public static void Write(string message, OutputLineStyle? style)
     {
         var line = $"{DateTime.Now:HH:mm:ss.fff}  {message}";
         System.Diagnostics.Debug.WriteLine("[SEEDEditor] " + message);
@@ -104,6 +123,6 @@ internal static class EditorLog
 
             try { _writer?.WriteLine(line); } catch { /* ignore */ }
         }
-        try { LogWritten?.Invoke(line); } catch { /* ignore */ }
+        try { LogWritten?.Invoke(new EditorLogEntry(line, style)); } catch { /* ignore */ }
     }
 }

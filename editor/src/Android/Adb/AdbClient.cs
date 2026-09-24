@@ -193,6 +193,42 @@ public sealed class AdbClient
     }
 
     /// <summary>
+    /// アプリのプロセス ID（pidof &lt;アプリ ID&gt;）。動いていなければ空。
+    /// エディタの実行（段階C-2）が「端末でアプリが終わったか」を見張るのに使う（自分のアプリだけを問い合わせる）。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID（検査済みの値。英数字・_・. だけなので adb shell にそのまま渡せる）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>プロセス ID の並び（動いていなければ空）。</returns>
+    /// <exception cref="AdbCommandException">adb 自体が失敗したとき（端末が外れた等。標準エラーに理由が出る）。</exception>
+    public async Task<IReadOnlyList<int>> GetProcessIdsAsync(string serial, string applicationId, CancellationToken cancellationToken)
+    {
+        var capture = await ChildProcessRunner.CaptureAsync(
+            Spec(serial, "shell", "pidof", applicationId), cancellationToken).ConfigureAwait(false);
+        var pids = ParseProcessIds(capture.StandardOutputText);
+        if (pids.Count > 0) return pids;
+
+        // pidof は見つからないとき終了コード 1 で何も出さない。adb 自体の失敗（device not found 等）は標準エラーに理由が出る
+        if (capture.ExitCode != 0 && capture.StandardError.Any(line => line.Trim().Length > 0))
+        {
+            throw new AdbCommandException($"pidof {applicationId} が失敗しました（{serial}・終了コード {capture.ExitCode}）: {capture.AllOutputText}");
+        }
+        return Array.Empty<int>();
+    }
+
+    /// <summary>
+    /// pidof の出力（空白区切りの数字。例 "12345" / "12345 12400"）をプロセス ID の並びにする（純粋な処理）。
+    /// 数字でない語（エラーの文言など）は読み飛ばす。
+    /// </summary>
+    /// <param name="output">pidof の標準出力。</param>
+    /// <returns>プロセス ID の並び（出力の順）。</returns>
+    public static IReadOnlyList<int> ParseProcessIds(string output) =>
+        output.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Select(token => int.TryParse(token, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var pid) ? pid : 0)
+            .Where(pid => pid > 0)
+            .ToArray();
+
+    /// <summary>
     /// Activity を起動して表示されるまで待つ（am start -W -n）。出力（LaunchState・TotalTime 等）を返す。
     /// </summary>
     /// <param name="serial">端末のシリアル。</param>

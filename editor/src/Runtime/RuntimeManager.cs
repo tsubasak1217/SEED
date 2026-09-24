@@ -12,14 +12,8 @@ using SEEDEditor.Runtime.BuildConfig;
 
 namespace SEEDEditor.Runtime;
 
-// ============================================================
-//  EditorState
-// ============================================================
-
-// Launching: Play ボタン押下後、Play ランタイムの起動シーケンス（プロセス起動〜
-//            ウィンドウ／パイプ準備）が進行中の過渡状態。この間に Stop を押せるよう
-//            にする（起動キャンセル用）とともに、Play ボタンの再入をブロックする。
-public enum EditorState { Idle, Building, Launching, Edit, Play, Pause }
+// EditorState（Idle / Building / Launching / Edit / Play / Pause）は EditorState.cs にある
+// （プレイバーの判断を WPF 非依存の単体テストから使うため、段階C-2 で切り出した）。
 
 // ============================================================
 //  RuntimeManager

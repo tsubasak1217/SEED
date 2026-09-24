@@ -324,3 +324,40 @@ WPF 標準の `ScrollBar` / `ComboBox` / `Slider` / `Expander` / `TreeView` /
 | `Panels/SpriteRig/SpriteRigPanel.xaml` のツールバー | ツール選択トグル |
 | `CreateItemWindow.xaml` の項目カード（`ItemRowStyle`） | ボタンだが「一覧の行」 |
 | `Panels/AnimationTimeline/` のドープシート上の操作 | タイムライン専用の描画 |
+
+---
+
+## 7. Output パネルの行の色と出どころ
+
+Output パネル（`Panels/OutputPanel.xaml.cs`）の行の色は **5 種類の「色の種類」** で決まり、色そのもの（ブラシ）は
+OutputPanel の表 1 か所にある。種類と出どころ（表示フィルタの「エンジン / ゲーム」）は WPF 非依存の
+`editor/src/Logging/OutputLineStyle.cs` が持つ（単体テスト `editor/tests/AndroidRunUiTests`）。
+
+| 色の種類 | 文字色 | 使う行 |
+|---|---|---|
+| `Default` | `#CCCCCC`（灰） | 通常の行・工程の結果・logcat の通常の行 |
+| `Runtime` | `#6CD5F5`（水色） | 実行先からの通知（`[Runtime→Editor]`・Android の実行の開始／停止／アプリの終了・端末とアプリ ID） |
+| `Build` | `#CCCC55`（黄） | ビルドの進み具合（`[cargo]`・`BUILDING`・Android の工程の見出し・子プロセスの出力） |
+| `Warning` | `#CCCC55`（黄。いまは `Build` と同じ色） | 警告（Android の `警告:`・logcat の重要度 W・logcat の終わり） |
+| `Error` | `#F48484`（赤） | エラー・失敗（Android の工程の失敗・失敗の種類・logcat の重要度 E/F/A） |
+
+- 行の見た目の決め方は 2 通り:
+  - **`EditorLog.Write(本文)`（従来の書き方）** … Output パネルが本文の印から決める（`Logging/OutputLineClassifier.cs`。上から順に
+    `[Runtime→Editor]` → 水色、`error`（大文字小文字を問わない）/ `失敗` / `EXCEPTION` → 赤、`[cargo]` / `BUILDING` / `BuildAsync` → 黄、それ以外は灰。
+    本文に `[Script` を含めば出どころ＝ゲーム）。段階C-2 で OutputPanel から表へ切り出したもので、判定は変えていない。
+  - **`EditorLog.Write(本文, 見た目)`** … 書き手が色と出どころを決める（Android の実行の行。`AndroidRun/AndroidRunOutputFormatter.cs`。
+    logcat のタグ `DOTNET` はゲーム）。
+- 警告の色を分けたくなったら、OutputPanel の「色の種類 → ブラシ」の表だけを直す（書き手は `Warning` を出している）。
+- Android の実行の行の書式は [android.md](android.md) §20.4。
+
+## 8. プレイバーの実行先セレクタ
+
+ツールバーの実行ボタンの隣の実行先コンボ（`MainWindow.xaml` の `CmbRunTarget`。[android.md](android.md) §20.2）は、
+アプリ共通のダーク ComboBox 暗黙スタイル（`App.xaml`）をそのまま使い、寸法と項目の並び（アイコン＋文言）だけを書いている。
+
+- 項目の文言とアイコンは項目（`ComboBoxItem`）の `Foreground` を継ぐ。**色を項目の中で直接指定しない**
+  （ホバー・選択時は白、無効の行は減光という共通の見た目が崩れ、ホバーで文字が読めなくなるため）。
+- 選べない行（使えない状態の端末・案内の行）は `ComboBoxItem.IsEnabled = false` にし、理由を `ToolTip` に出す
+  （`ToolTipService.ShowOnDisabled = true`。無効の実行・停止ボタンも同じく押せない理由をツールチップに出す）。
+- 実行・停止ボタン（プレイバーの PNG アイコンのボタン）は 6 章の「意図的に共通書式へ寄せていないもの」のまま。有効/無効・絵柄・ツールチップ・
+  状態表示の文言と色は `AndroidRun/PlayBarPolicy.cs` が決め、`MainWindow.AndroidRun.cs` の `ApplyPlayBar` が当てる。

@@ -8,7 +8,8 @@
 //  【対応プラットフォーム】
 //  ・Windows   — このマシンから直接ビルド可能
 //  ・macOS     — macOS 上でのビルドが必要（CI / osxcross）
-//  ・Android   — Android NDK + cargo-ndk が必要
+//  ・Android   — 中核 editor/src/Android/（SeedAndroid・エディタの Android 実行と共通）の Goal = Build で
+//                デバッグ署名の APK を作り、出力フォルダへ写す（段階C-2。Android SDK / NDK / JDK / cargo-ndk / .NET SDK が必要）
 //  ・iOS       — macOS + Xcode でのビルドが必要
 //  ・PS5       — ライセンス契約が必要
 //  ・Switch    — ライセンス契約が必要
@@ -21,6 +22,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -28,10 +30,14 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using Microsoft.Win32;
+using SEEDEditor.Android.Pipeline;
+using SEEDEditor.Android.Toolchain;
+using SEEDEditor.AndroidRun;
 using SEEDEditor.Packaging.Collect;
 using SEEDEditor.Packaging.Pak;
 using SEEDEditor.Packaging.Runtime;
 using SEEDEditor.Packaging.Scripts;
+using SEEDEditor.Project;
 
 namespace SEEDEditor.Packaging;
 
@@ -68,6 +74,9 @@ public partial class PackagingWindow : Window
     /// <summary>ゲーム名入力フィールド（設定ペイン共通ヘッダー部分）。</summary>
     private TextBox?       _tbGameName;
 
+    /// <summary>Android の APK 作成の中断の合図（作成中だけ。ウィンドウを閉じたら子プロセスごと止める）。</summary>
+    private CancellationTokenSource? _androidBuildCancellation;
+
     // ── プラットフォームメタ一覧 ─────────────────────────────
 
     private static readonly List<PlatformInfo> Platforms = [
@@ -81,7 +90,8 @@ public partial class PackagingWindow : Window
         new(TargetPlatform.Android,
             "Android", "Icon.Platform.Android",
             PlatformAvailability.RequiresSetup,
-            "Android NDK と cargo-ndk のセットアップが必要です"),
+            "Android SDK・NDK・JDK・Rust（cargo-ndk）・.NET SDK が必要です（場所は環境変数と既定の場所から自動で探します。下の「道具」の欄）。" +
+            "できる APK はデバッグ署名です（配布用の署名・AAB は段階D）。"),
         new(TargetPlatform.iOS,
             "iOS", "Icon.Platform.iOS",
             PlatformAvailability.RequiresOtherOS,
@@ -135,6 +145,10 @@ public partial class PackagingWindow : Window
 
         var settingsPath = Path.Combine(assetsPath, PackagingData.SettingsFileName);
         _data = PackagingData.LoadFrom(settingsPath);
+
+        // Android の APK 作成中に閉じたら、子プロセス（cargo・Gradle・SeedPak）とその子孫を止める
+        // （行き先の無いビルドを裏で走らせ続けない）。
+        Closed += (_, _) => CancelAndroidBuild();
     }
 
     /// <summary>
@@ -360,7 +374,8 @@ public partial class PackagingWindow : Window
 
         // ── .NET ランタイムの同梱（実際にパッケージを作れるプラットフォームのみ） ──
         // 配布先に .NET が入っていないとスクリプトが 1 つも動かないため既定は ON。
-        if (meta.Availability != PlatformAvailability.RequiresLicense)
+        // Android の APK には常に同梱 .NET（CoreCLR）が入るので、この切り替えは出さない（docs/android.md §17）。
+        if (meta.Availability != PlatformAvailability.RequiresLicense && platform != TargetPlatform.Android)
         {
             SettingsPane.Children.Add(BuildCheckRow(
                 ".NET ランタイムを同梱", _data.BundleDotnetRuntime,
@@ -466,34 +481,65 @@ public partial class PackagingWindow : Window
 
     // ── Android 設定 ─────────────────────────────────────────
 
+    /// <summary>Android の出力の説明（名前の決まりは AndroidApkOutput.cs）。</summary>
+    private const string AndroidOutputNote =
+        "出力: {出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-debug.apk（ABI が両方なら arm64-v8a+x86_64）";
+
+    /// <summary>Android の署名の説明（画面に明記する）。</summary>
+    private const string AndroidSigningNote =
+        "できる APK はデバッグ署名です（Android の debug 版と同じく、この PC のデバッグ用の鍵で署名）。" +
+        "端末へ入れて試せますが、ストアへは出せません。配布用の署名・AAB は段階D で対応します。";
+
+    /// <summary>Android のアプリの識別情報の置き場の説明。</summary>
+    private const string AndroidIdentityNote =
+        "アプリ ID・ランチャーの名前・版・画面の向きは、プロジェクト設定 → 解像度設定 の\n" +
+        "「Android アプリ情報（モバイル）」「画面の向き（モバイル）」で設定します（docs/android.md §15・§18）。";
+
+    /// <summary>Android の APK の作り方の説明。</summary>
+    private const string AndroidBuildStepsNote =
+        "1. libSEED.so（cargo ndk）\n" +
+        "2. APK に入れる pak とスクリプト（SeedPak。下の「アセット収録」の設定を使う）\n" +
+        "3. 同梱 .NET の組み立て\n" +
+        "4. APK の作成（Gradle）\n" +
+        "5. 出力フォルダへ写す\n\n" +
+        "変更の無い工程は飛ばします（エディタの Android 実行・SeedAndroid と置き場を共有）。\n" +
+        "Rust の最適化を Release にすると、初回の libSEED.so のビルドに数分かかります。";
+
+    /// <summary>
+    /// Android の設定欄（段階C-2 で実働化）。
+    /// APK は中核（editor/src/Android/。SeedAndroid・エディタの Android 実行と共通）の Goal = Build で作る。
+    /// 道具の場所は自動で探すので、以前の「Android NDK パス」の欄は廃止した（マシン固有のパスをプロジェクトに書かない）。
+    /// </summary>
     private void BuildAndroidSettings()
     {
         SettingsPane.Children.Add(BuildSectionSubHeader("出力設定"));
         AddOutputFolderRows(TargetPlatform.Android, _data.Android.OutputPath,
             path => _data.Android.OutputPath = path);
+        SettingsPane.Children.Add(BuildInfoBlock(AndroidOutputNote));
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
-        SettingsPane.Children.Add(BuildComboRow("ビルド種別",
+        SettingsPane.Children.Add(BuildComboRow("ABI",
+            AndroidApkOutput.ArchChoices.Select(choice => choice.Label).ToArray(),
+            AndroidApkOutput.LabelFor(_data.Android.Arch),
+            v => _data.Android.Arch = AndroidApkOutput.ArchFor(v)));
+        SettingsPane.Children.Add(BuildComboRow("Rust の最適化",
             ["Release", "Debug"],
             _data.Android.BuildType == BuildType.Debug ? "Debug" : "Release",
             v => _data.Android.BuildType = v == "Debug" ? BuildType.Debug : BuildType.Release));
-        SettingsPane.Children.Add(BuildComboRow("アーキテクチャ",
-            ["arm64-v8a", "x86_64"],
-            _data.Android.Arch == AndroidArch.X86_64 ? "x86_64" : "arm64-v8a",
-            v => _data.Android.Arch = v == "x86_64" ? AndroidArch.X86_64 : AndroidArch.Arm64V8a));
 
-        SettingsPane.Children.Add(BuildSectionSubHeader("NDK 設定"));
-        SettingsPane.Children.Add(BuildFolderRow("Android NDK パス", _data.Android.NdkPath,
-            path => _data.Android.NdkPath = path));
+        SettingsPane.Children.Add(BuildSectionSubHeader("署名"));
+        SettingsPane.Children.Add(BuildNoteBlock(AndroidSigningNote, PlatformAvailability.RequiresSetup));
 
-        SettingsPane.Children.Add(BuildSectionSubHeader("セットアップ手順"));
-        SettingsPane.Children.Add(BuildInfoBlock(
-            "1. Android NDK をインストール\n" +
-            "2. cargo install cargo-ndk\n" +
-            "3. rustup target add aarch64-linux-android\n" +
-            "4. NDK パスを上記フィールドに設定\n\n" +
-            "ビルドコマンド例：\n" +
-            "  cargo ndk --target arm64-v8a build --release"));
+        SettingsPane.Children.Add(BuildSectionSubHeader("アプリの識別情報"));
+        SettingsPane.Children.Add(BuildInfoBlock(AndroidIdentityNote));
+
+        // 道具が見つかったか（ファイルの有無だけ。見つからない道具は赤で理由と対処）
+        SettingsPane.Children.Add(BuildSectionSubHeader("道具（環境変数 → 既定の場所から自動で探す）"));
+        var tools = AndroidToolchainReport.Build(AndroidToolchain.Detect());
+        SettingsPane.Children.Add(BuildInfoBlock(AndroidToolchainReport.Describe(tools), isWarning: !AndroidToolchainReport.AllFound(tools)));
+
+        SettingsPane.Children.Add(BuildSectionSubHeader("ビルド手順"));
+        SettingsPane.Children.Add(BuildInfoBlock(AndroidBuildStepsNote));
     }
 
     // ── iOS 設定 ─────────────────────────────────────────────
@@ -920,6 +966,13 @@ public partial class PackagingWindow : Window
     /// <summary>非同期でビルドを実行する。</summary>
     private async Task RunBuildAsync(TargetPlatform platform, string outputPath)
     {
+        // Android は中核（Goal = Build）で APK を作る（cargo build を直接呼ぶ以下の流れは通らない）
+        if (platform == TargetPlatform.Android)
+        {
+            await RunAndroidBuildAsync(outputPath);
+            return;
+        }
+
         AppendLog($"═══ ビルド開始: {Platforms.Find(p => p.Platform == platform)!.DisplayName} ═══");
         AppendLog($"出力先: {outputPath}");
         AppendLog("");
@@ -950,12 +1003,7 @@ public partial class PackagingWindow : Window
             TargetPlatform.macOS =>
                 ("aarch64-apple-darwin", "SEED",
                  BuildArgs(_data.MacOs.BuildType, "aarch64-apple-darwin")),
-            TargetPlatform.Android when _data.Android.Arch == AndroidArch.X86_64 =>
-                ("x86_64-linux-android", "libSEED.so",
-                 BuildArgs(_data.Android.BuildType, "x86_64-linux-android")),
-            TargetPlatform.Android =>
-                ("aarch64-linux-android", "libSEED.so",
-                 BuildArgs(_data.Android.BuildType, "aarch64-linux-android")),
+            // Android はここへ来ない（RunAndroidBuildAsync。libSEED.so は runtime/android/native を cargo ndk で作る）
             TargetPlatform.iOS =>
                 ("aarch64-apple-ios", "SEED",
                  BuildArgs(_data.Ios.BuildType, "aarch64-apple-ios")),
@@ -968,7 +1016,6 @@ public partial class PackagingWindow : Window
         profileDir = platform switch
         {
             TargetPlatform.macOS    => _data.MacOs.BuildType    == BuildType.Release ? "release" : "debug",
-            TargetPlatform.Android  => _data.Android.BuildType  == BuildType.Release ? "release" : "debug",
             TargetPlatform.iOS      => _data.Ios.BuildType      == BuildType.Release ? "release" : "debug",
             _ => profileDir,
         };
@@ -1020,7 +1067,7 @@ public partial class PackagingWindow : Window
             if (File.Exists(binarySource))
             {
                 // Windows / macOS / iOS は実行ファイルをゲーム名にリネームする
-                // Android (.so) はシステムが名前を参照するためリネームしない
+                // （Android は RunAndroidBuildAsync で APK を写すのでここへ来ない）
                 var renamedBinary = platform switch
                 {
                     TargetPlatform.Windows => $"{gameName}.exe",
@@ -1091,6 +1138,136 @@ public partial class PackagingWindow : Window
         {
             AppendLog($"❌ コピー失敗: {ex.Message}");
             SetStatus("コピー失敗");
+        }
+    }
+
+    // ── Android の APK（段階C-2）──────────────────────────────
+
+    /// <summary>Android の APK 作成を始めたときの進捗（％）。</summary>
+    private const int ProgressAndroidStart = 5;
+
+    /// <summary>Android の APK 作成の工程を終えたときの進捗（％。残りは出力フォルダへ写す分）。</summary>
+    private const int ProgressAndroidEnd = 95;
+
+    /// <summary>1 MiB（APK の大きさの表示用）。</summary>
+    private const double BytesPerMegabyte = 1024.0 * 1024.0;
+
+    /// <summary>中核の進み具合（割合）の下限。</summary>
+    private const double MinPipelineFraction = 0.0;
+
+    /// <summary>中核の進み具合（割合）の上限。</summary>
+    private const double MaxPipelineFraction = 1.0;
+
+    /// <summary>
+    /// Android の APK を中核（editor/src/Android/。Goal = Build。端末は使わない）で作り、出力フォルダへ写す。
+    ///
+    /// <para>
+    /// 工程（libSEED.so → pak とスクリプト → 同梱 .NET → APK）は SeedAndroid・エディタの Android 実行と同じクラスが行い、
+    /// 変更の無い工程は自動で飛ばす（置き場を共有するので、実行で作った APK と入力が同じならすぐ終わる）。
+    /// ログの書式は Output パネルの Android の行と同じ（AndroidRunOutputFormatter）。できる APK はデバッグ署名（段階D で配布用の署名）。
+    /// </para>
+    /// </summary>
+    /// <param name="outputPath">出力フォルダ。</param>
+    private async Task RunAndroidBuildAsync(string outputPath)
+    {
+        AppendLog("═══ ビルド開始: Android（デバッグ署名の APK） ═══");
+        AppendLog($"出力先: {outputPath}");
+        AppendLog("");
+
+        // エンジンのリポジトリ（runtime/android の Gradle・cargo の置き場）を探す
+        var engine = AndroidEnginePaths.Locate(AppContext.BaseDirectory, Environment.CurrentDirectory, _runtimePath);
+        if (engine is null)
+        {
+            AppendLog("エラー: " + AndroidRunEnvironment.NoEngineReason);
+            SetStatus("ビルドできません（エンジンのリポジトリが見つかりません）");
+            SetProgress(0);
+            return;
+        }
+
+        var abis = AndroidApkOutput.AbisFor(_data.Android.Arch);
+        var projectDir = string.IsNullOrWhiteSpace(ProjectContext.RootDir) ? _assetsPath : ProjectContext.RootDir;
+        var request = AndroidEditorRunRequests.ForPackage(projectDir, abis, _data.Android.BuildType == BuildType.Release);
+        AppendLog($"ABI: {string.Join(", ", abis)}・Rust: {(request.Release ? "Release（--release）" : "Debug")}・プロジェクト: {projectDir}");
+
+        SetStatus("Android の APK を作成中…");
+        SetProgress(ProgressAndroidStart);
+        AndroidPipelineResult result;
+        using (var cancellation = new CancellationTokenSource())
+        {
+            _androidBuildCancellation = cancellation;
+            try
+            {
+                // Progress<T> はこのウィンドウの UI スレッドへ順に送る（子プロセスの出力を読むスレッドからも届くため）
+                var progress = new Progress<AndroidPipelineEvent>(OnAndroidPackagingEvent);
+                result = await new AndroidRunPipeline(engine, AndroidToolchain.Detect()).RunAsync(request, progress, cancellation.Token);
+            }
+            finally
+            {
+                _androidBuildCancellation = null;
+            }
+        }
+
+        if (!result.Succeeded)
+        {
+            AppendLog("");
+            AppendLog(result.Canceled ? "中断しました。" : AndroidRunOutputFormatter.DescribeFailure(result));
+            SetStatus(result.Canceled ? "中断しました" : "ビルド失敗");
+            SetProgress(0);
+            return;
+        }
+
+        // できた APK（runtime/android/app/build/outputs/apk/debug/app-debug.apk）を出力フォルダへ写す
+        var destination = AndroidApkOutput.DestinationPath(outputPath, GetGameName(), abis);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(engine.DebugApkPath, destination, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppendLog($"APK を出力フォルダへ写せませんでした: {ex.Message}");
+            SetStatus("コピー失敗");
+            SetProgress(0);
+            return;
+        }
+
+        var megabytes = new FileInfo(destination).Length / BytesPerMegabyte;
+        AppendLog("");
+        AppendLog($"ビルド完了: {destination}（{megabytes:F1} MB・{string.Join(", ", abis)}・デバッグ署名。合計 {result.Elapsed.TotalSeconds:F1} 秒）");
+        SetProgress(ProgressComplete);
+        SetStatus($"ビルド完了 → {destination}");
+
+        // エクスプローラーで APK を選んだ状態で開く
+        Process.Start("explorer.exe", $"/select,\"{destination}\"");
+    }
+
+    /// <summary>Android の APK 作成の進み具合（UI スレッド）: ログへ書き、進捗とステータスを進める。</summary>
+    /// <param name="pipelineEvent">中核のイベント。</param>
+    private void OnAndroidPackagingEvent(AndroidPipelineEvent pipelineEvent)
+    {
+        foreach (var line in AndroidRunOutputFormatter.Format(pipelineEvent)) AppendLog(line.Text);
+        switch (pipelineEvent)
+        {
+            case AndroidPhaseStarted started when started.Phase != AndroidPipelinePhase.Prepare:
+                SetStatus($"[{started.Index}/{started.Count}] {started.Title}…");
+                break;
+            case AndroidProgressChanged changed:
+                SetProgress(ProgressAndroidStart + (int)((ProgressAndroidEnd - ProgressAndroidStart)
+                    * Math.Clamp(changed.Fraction, MinPipelineFraction, MaxPipelineFraction)));
+                break;
+        }
+    }
+
+    /// <summary>Android の APK 作成を止める（作成中でなければ何もしない。子プロセスとその子孫は中核が止める）。</summary>
+    private void CancelAndroidBuild()
+    {
+        try
+        {
+            _androidBuildCancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 作成が終わった直後
         }
     }
 

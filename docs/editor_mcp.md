@@ -195,7 +195,7 @@ MCP サーバーを掴んでいる間ずっと `bin\Debug\net10.0\SeedMcpServer.
 | `seed_screenshot`（screen） | `screenshot` | `EditorCommandExecutor.Visual.cs::ExecuteScreenshot` |
 | `seed_select` | `select_actor` | `IEditorAiHost.SelectActorAsync`（`SELECT:` + `GET_ACTOR_COMPONENTS:`） |
 | `seed_hierarchy` | `get_hierarchy` | 最後に届いた `HIERARCHY:` のキャッシュ |
-| `seed_play` | `play_control` | `MainWindow.OnPlayPause` / `OnStop`（プレイバーと同じ経路） |
+| `seed_play` | `play_control` | `MainWindow.OnPlayPause` / `OnStop`（プレイバーの PC の実行と同じ経路。実行ボタンの Click は `OnPlayBarPlayClick` が実行先で振り分けるが、`seed_play` は常に PC） |
 | `seed_anim_preview` | `anim_preview` | IPC `ANIM_PREVIEW:{dfs},{clip},{time}` |
 | `seed_anim_preview_stop` | `anim_preview_stop` | IPC `ANIM_PREVIEW_STOP:{dfs}` |
 | `seed_anim_reload` | `anim_reload` | IPC `ANIM_RELOAD:{clip}` |
@@ -450,6 +450,10 @@ OS が `WM_PAINT` を配送しないため、winit の `RedrawRequested` によ�
 - `seed_play(action:"play")` は **Edit 状態でのみ**、`pause` は Play 中のみ、
   `resume` は Pause 中のみ、`stop` は Play/Pause 中のみ実行できる。それ以外は
   `{"ok":false,"error":"..."}` を返す（現在の状態がメッセージに入る）。
+- `seed_play` は **PC の実行だけ**を扱う（プレイバーの実行先セレクタが Android の端末でも PC の Play になる。
+  Android の実行を MCP から始めるツールは無い。[android.md](android.md) §20）。
+  エディタで **Android の実行が動いている間は `play` を拒否する**（PC の実行と Android の実行は同時に動かさない。
+  プレイバーと同じ排他）。
 - `seed_save_scene` は Edit 状態のみ。新規（未保存）シーンは保存先が決まらないためエラー。
   さらに次の場合も拒否される（いずれもデータ損失の防止。詳細は 7 章）:
   ヘッドレスで `confirm:true` が無い / 他のエディタが同じシーンを開いている（`.lock`）/

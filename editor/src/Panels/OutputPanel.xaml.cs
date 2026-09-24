@@ -12,6 +12,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using SEEDEditor.Logging;
 
 namespace SEEDEditor.Panels;
 
@@ -23,6 +24,10 @@ namespace SEEDEditor.Panels;
 /// 2. 一定間隔のタイマで少量ずつ、仮想化 ListBox へ反映する。
 ///    ListBox は VirtualizingStackPanel により画面内の数十行だけを実体化するため、
 ///    行数・追記頻度に関係なく追加・トリム・スクロールが軽量に保たれる。
+///
+/// 行の色と出どころ（エンジン / ゲーム）は、書き手が決めたもの（Android の実行の行）を使い、
+/// 決めていなければ本文の印から決める（Logging/OutputLineClassifier.cs。規約は docs/editor_ui_style.md 7 章）。
+/// ここは「色の種類 → ブラシ」の表だけを持つ。
 /// </summary>
 public partial class OutputPanel : UserControl
 {
@@ -36,12 +41,8 @@ public partial class OutputPanel : UserControl
     /// </summary>
     private const int MaxLinesWhileScrolledUp = MaxLines * 30;
 
-    /// <summary>
-    /// ログの発生源カテゴリ。
-    /// - <see cref="Game"/>: ユーザースクリプトの Debug.Log 出力（<c>[Script]</c> 系）。
-    /// - <see cref="Engine"/>: それ以外（Rust エンジン・エディタ内部・ビルド・ランタイム通知など）。
-    /// </summary>
-    private enum LogCategory { Engine, Game }
+    // ログの発生源（エンジン / ゲーム）は Logging/OutputLineStyle.cs の OutputSource。
+    // ゲーム = ユーザースクリプトの Debug.Log（PC は [Script] 系の行、Android は logcat のタグ DOTNET）。
 
     /// <summary>表示フィルタ。ComboBox の選択インデックスと一致させる（0=すべて, 1=エンジン, 2=ゲーム）。</summary>
     private enum LogFilter { All = 0, Engine = 1, Game = 2 }
@@ -81,14 +82,14 @@ public partial class OutputPanel : UserControl
     private readonly LogRowCollection _rows = new();
 
     /// <summary>
-    /// 追加された全ログ行の履歴（カテゴリ付き）。フィルタ切り替え時にここから再構築する。
+    /// 追加された全ログ行の履歴（見た目付き）。フィルタ切り替え時にここから再構築する。
     /// 先頭破棄を O(1) にするため Queue を使う。
     /// </summary>
-    private readonly Queue<(string line, LogCategory cat)> _entries = new();
+    private readonly Queue<(string line, OutputLineStyle style)> _entries = new();
 
     // ── バッチ描画（大量ログ時も UI 応答を保つ）──────────────────────────────
     /// <summary>UI へ未反映の保留ログ行（producer=任意スレッド / consumer=UI スレッド）。</summary>
-    private readonly ConcurrentQueue<string> _pending = new();
+    private readonly ConcurrentQueue<EditorLogEntry> _pending = new();
 
     /// <summary>保留件数の概算（Interlocked 管理）。上限判定に使う。</summary>
     private int _pendingCount;
@@ -127,6 +128,19 @@ public partial class OutputPanel : UserControl
     private static readonly SolidColorBrush BrushError   = new(Color.FromRgb(0xF4, 0x84, 0x84)); // 赤
     private static readonly SolidColorBrush BrushBuild   = new(Color.FromRgb(0xCC, 0xCC, 0x55)); // 黄
 
+    /// <summary>
+    /// 色の種類 → 文字色（規約の正典は docs/editor_ui_style.md 7 章）。
+    /// 警告はいまビルドと同じ黄で出す（色を分けるときはこの表だけを直す）。
+    /// </summary>
+    private static readonly IReadOnlyDictionary<OutputTone, SolidColorBrush> BrushByTone = new Dictionary<OutputTone, SolidColorBrush>
+    {
+        [OutputTone.Default] = BrushDefault,
+        [OutputTone.Runtime] = BrushRuntime,
+        [OutputTone.Build]   = BrushBuild,
+        [OutputTone.Warning] = BrushBuild,
+        [OutputTone.Error]   = BrushError,
+    };
+
     static OutputPanel()
     {
         // 色ブラシは複数スレッドから参照され得ないが、Freeze しておくと描画が軽くなる。
@@ -159,10 +173,10 @@ public partial class OutputPanel : UserControl
             new ScrollChangedEventHandler(OnScrollChanged));
     }
 
-    private void OnLogWritten(string line)
+    private void OnLogWritten(EditorLogEntry entry)
     {
         // 任意スレッドから届く。キューへ積むだけにして、UI への反映はタイマ（FlushTick）に任せる。
-        _pending.Enqueue(line);
+        _pending.Enqueue(entry);
         int n = Interlocked.Increment(ref _pendingCount);
 
         // 上限超過分は古い行から捨てる（描画は最新 MaxLines 行のみ・全文はファイルログに残る）。
@@ -180,10 +194,10 @@ public partial class OutputPanel : UserControl
 
         _frontTrimmedThisTick = 0;
         int added = 0;
-        while (added < FlushChunk && _pending.TryDequeue(out var line))
+        while (added < FlushChunk && _pending.TryDequeue(out var entry))
         {
             Interlocked.Decrement(ref _pendingCount);
-            AppendLine(line);
+            AppendLine(entry);
             added++;
         }
 
@@ -202,22 +216,25 @@ public partial class OutputPanel : UserControl
         }
     }
 
-    /// <summary>1 行を履歴へ蓄積し、フィルタに一致すれば表示行へ追加する。</summary>
-    private void AppendLine(string line)
+    /// <summary>
+    /// 1 行を履歴へ蓄積し、フィルタに一致すれば表示行へ追加する。
+    /// 見た目は書き手が決めたもの（Android の実行の行）を使い、無ければ本文の印から決める。
+    /// </summary>
+    private void AppendLine(EditorLogEntry entry)
     {
-        var cat = Classify(line);
-        _entries.Enqueue((line, cat));
+        var style = entry.Style ?? OutputLineClassifier.Classify(entry.Line);
+        _entries.Enqueue((entry.Line, style));
         while (_entries.Count > MaxLines)
             _entries.Dequeue();
 
-        if (MatchesFilter(cat))
-            AddRow(line);
+        if (MatchesFilter(style.Source))
+            AddRow(entry.Line, style.Tone);
     }
 
     /// <summary>表示行コレクションへ 1 行追加し、上限を超えたら先頭を捨てる（スクロールは呼び出し側でまとめて行う）。</summary>
-    private void AddRow(string line)
+    private void AddRow(string line, OutputTone tone)
     {
-        _rows.Add(new LogRow(line, PickBrush(line)));
+        _rows.Add(new LogRow(line, BrushFor(tone)));
 
         if (_atBottom)
         {
@@ -268,19 +285,11 @@ public partial class OutputPanel : UserControl
         }
     }
 
-    /// <summary>
-    /// ログ行の発生源を判定する。
-    /// ユーザースクリプトの Debug.Log は <c>[Script]</c> 系を前置してランタイム標準出力へ流れるため、
-    /// <c>[Script</c> を含む行をゲーム側、それ以外をエンジン側とする。
-    /// </summary>
-    private static LogCategory Classify(string line)
-        => line.Contains("[Script") ? LogCategory.Game : LogCategory.Engine;
-
-    /// <summary>現在のフィルタでこのカテゴリを表示するかどうか。</summary>
-    private bool MatchesFilter(LogCategory cat) => _filter switch
+    /// <summary>現在のフィルタでこの出どころの行を表示するかどうか。</summary>
+    private bool MatchesFilter(OutputSource source) => _filter switch
     {
-        LogFilter.Engine => cat == LogCategory.Engine,
-        LogFilter.Game   => cat == LogCategory.Game,
+        LogFilter.Engine => source == OutputSource.Engine,
+        LogFilter.Game   => source == OutputSource.Game,
         _                => true,   // All
     };
 
@@ -297,23 +306,19 @@ public partial class OutputPanel : UserControl
     private void RebuildFromEntries()
     {
         _rows.Clear();
-        foreach (var (line, cat) in _entries)
-            if (MatchesFilter(cat))
-                AddRow(line);
+        foreach (var (line, style) in _entries)
+            if (MatchesFilter(style.Source))
+                AddRow(line, style.Tone);
 
         _atBottom = true;   // 再構築後は最下部へ追従させる
         ScrollToBottom();
     }
 
-    private static SolidColorBrush PickBrush(string line)
-    {
-        if (line.Contains("[Runtime→Editor]"))  return BrushRuntime;
-        if (line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-            line.Contains("失敗") || line.Contains("EXCEPTION")) return BrushError;
-        if (line.Contains("[cargo]") || line.Contains("BUILDING") ||
-            line.Contains("BuildAsync"))        return BrushBuild;
-        return BrushDefault;
-    }
+    /// <summary>色の種類から文字色を引く（表に無い種類は通常色）。</summary>
+    /// <param name="tone">色の種類。</param>
+    /// <returns>文字色。</returns>
+    private static SolidColorBrush BrushFor(OutputTone tone) =>
+        BrushByTone.TryGetValue(tone, out var brush) ? brush : BrushDefault;
 
     /// <summary>Ctrl+C で選択行をコピーする。</summary>
     private void OnListKeyDown(object sender, KeyEventArgs e)

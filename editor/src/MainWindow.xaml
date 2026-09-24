@@ -6,6 +6,8 @@
         xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
         xmlns:local="clr-namespace:SEEDEditor"
         xmlns:migration="clr-namespace:SEEDEditor.Migration"
+        xmlns:androidRun="clr-namespace:SEEDEditor.AndroidRun"
+        xmlns:theme="clr-namespace:SEEDEditor.Theme"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="SEED Editor" Height="720" Width="1280"
         Background="#1E1E1E"
@@ -304,6 +306,15 @@
         <!-- ランタイムのビルド構成コンボの幅。
              最長ラベル "Develop" ＋ ドロップダウン矢印が収まる最小幅。 -->
         <sys:Double x:Key="RuntimeBuildConfigComboWidth">96</sys:Double>
+
+        <!-- 実行先コンボ（PC / Android の実機・エミュレータ。段階C-2）の幅。
+             「emulator-5554（エミュレータ）」＋アイコン＋余白＋矢印が収まる幅（長い機種名は … で切れる。ドロップダウンは広がる）。 -->
+        <sys:Double x:Key="RunTargetComboWidth">216</sys:Double>
+        <!-- 実行先コンボの項目のアイコンの一辺。 -->
+        <sys:Double x:Key="RunTargetIconSize">12</sys:Double>
+        <!-- Android の実行の進み具合のバーの幅と、工程名の文言の最大幅（超えたら … で切る）。 -->
+        <sys:Double x:Key="AndroidRunProgressBarWidth">56</sys:Double>
+        <sys:Double x:Key="AndroidRunProgressTextMaxWidth">280</sys:Double>
 
         <!-- Playbar ボタンスタイル -->
         <Style x:Key="PlayBarBtnStyle" TargetType="Button">
@@ -993,27 +1004,112 @@
                     <TextBlock x:Name="LblState"
                                Text="EDIT" Foreground="#60C060"
                                VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <!-- 実行ボタン。押したときに PC の Play / Pause / Resume か、選んだ Android の端末での実行かを
+                         OnPlayBarPlayClick が PlayBarPolicy の判断で振り分ける（MainWindow.AndroidRun.cs）。
+                         押せない理由をツールチップで見せるため、無効のときもツールチップを出す。 -->
                     <Button x:Name="BtnPlayPause"
                             Style="{StaticResource PlayBarBtnStyle}"
                             Background="#1F4A22"
-                            Click="OnPlayPause"
+                            Click="OnPlayBarPlayClick"
+                            ToolTipService.ShowOnDisabled="True"
                             ToolTip="Play / Pause / Resume">
                         <!-- 再生/一時停止の切替はコード側で Source を差し替える
-                             （MainWindow.Camera.cs の状態遷移を参照）。 -->
+                             （MainWindow.AndroidRun.cs の ApplyPlayBar を参照）。 -->
                         <Image x:Name="ImgPlayPause"
                                Source="pack://application:,,,/resources/icons/playbar/play.png"
                                Width="18" Height="18"
                                RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Button>
+                    <!-- 停止ボタン。PC の実行か Android の実行（ビルドの中止・端末のアプリの停止）かを
+                         OnPlayBarStopClick が振り分ける。 -->
                     <Button x:Name="BtnStop"
                             Style="{StaticResource PlayBarBtnStyle}"
                             Background="#4A1F1F"
-                            Click="OnStop" IsEnabled="False"
+                            Click="OnPlayBarStopClick" IsEnabled="False"
+                            ToolTipService.ShowOnDisabled="True"
                             ToolTip="Stop">
                         <Image Source="pack://application:,,,/resources/icons/playbar/stop.png"
                                Width="18" Height="18"
                                RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Button>
+
+                    <!-- 実行先（PC / Android の実機・エミュレータ。段階C-2。docs/android.md §20）。
+                         一覧は開くたびに adb で探し直し、使えない状態の端末・案内の行は無効にして理由をツールチップに出す
+                         （一覧の組み立ては AndroidRun/RunTargetCatalog.cs、結線は MainWindow.AndroidRun.cs）。
+                         配色はアプリ共通のダーク ComboBox 暗黙スタイル（App.xaml）を継承し、ここでは寸法と項目の並びだけを書く
+                         （項目の文字・アイコンは項目の Foreground を継ぐので、ホバー・選択・無効の色も共通のまま）。 -->
+                    <ComboBox x:Name="CmbRunTarget"
+                              Width="{StaticResource RunTargetComboWidth}"
+                              Height="24" Margin="6,0,0,0"
+                              FontSize="11"
+                              VerticalAlignment="Center"
+                              VerticalContentAlignment="Center"
+                              ToolTipService.ShowOnDisabled="True"
+                              DropDownOpened="OnRunTargetDropDownOpened"
+                              SelectionChanged="OnRunTargetSelectionChanged">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel LastChildFill="True">
+                                    <ctrl:AppIcon DockPanel.Dock="Left"
+                                                  IconKey="{Binding IconKey}"
+                                                  Width="{StaticResource RunTargetIconSize}"
+                                                  Height="{StaticResource RunTargetIconSize}"
+                                                  Margin="0,0,5,0"
+                                                  VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding Text}"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                        <ComboBox.ItemContainerStyle>
+                            <!-- 選べない行（使えない状態の端末・案内の行）は無効にし、理由をツールチップで出す -->
+                            <Style TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+                                <Setter Property="IsEnabled" Value="{Binding CanRun}"/>
+                                <Setter Property="ToolTip" Value="{Binding ToolTip}"/>
+                                <Setter Property="ToolTipService.ShowOnDisabled" Value="True"/>
+                                <Style.Triggers>
+                                    <!-- 案内の行（探している・見つからない・使えない理由）は選べないが、文言そのものが情報なので、
+                                         無効の減光色ではなくダイアログの補足と同じ文字色で出す（背景 #252526 に対してコントラスト比 5.38。
+                                         SeedColorTable.DIALOG_DIM_TEXT と ContrastCases「ダイアログ/補足」）。 -->
+                                    <DataTrigger Binding="{Binding Kind}" Value="{x:Static androidRun:RunTargetKind.Notice}">
+                                        <Setter Property="Foreground">
+                                            <Setter.Value>
+                                                <SolidColorBrush Color="{x:Static theme:SeedThemeColors.DialogDimText}"/>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </DataTrigger>
+                                    <!-- 選んでいる行は、使えない端末（未接続・未許可）でも無効にしない。無効の減光色は選択の青の上で
+                                         読めなくなるため（同じ行を選び直しても何も起きない。実行ボタンは理由付きで押せないまま）。 -->
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter Property="IsEnabled" Value="True"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ComboBox.ItemContainerStyle>
+                    </ComboBox>
+
+                    <!-- Android の実行の進み具合（ビルド中は割合のバー＋「% [i/n] 工程名」、実行中は実行先。
+                         Android の実行中だけ出す。文言は PlayBarPolicy が決める）。 -->
+                    <StackPanel x:Name="AndroidRunProgressPanel"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                Margin="8,0,0,0"
+                                Visibility="Collapsed">
+                        <ProgressBar x:Name="PbAndroidRun"
+                                     Width="{StaticResource AndroidRunProgressBarWidth}" Height="6"
+                                     Minimum="0" Maximum="1" Value="0"
+                                     VerticalAlignment="Center"
+                                     Foreground="#33AA33" Background="#2A2A2A" BorderBrush="#3A3A3A"/>
+                        <TextBlock x:Name="TxtAndroidRunProgress"
+                                   Text=""
+                                   Foreground="#AAAAAA"
+                                   FontSize="11"
+                                   VerticalAlignment="Center"
+                                   Margin="6,0,0,0"
+                                   MaxWidth="{StaticResource AndroidRunProgressTextMaxWidth}"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
 
                     <!-- ランタイム（SEED.exe）のビルド構成: Debug / Develop / Release。
                          項目はデータ側（editor/config/runtime_build_configs.json）から読み、

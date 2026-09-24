@@ -7,6 +7,7 @@
 //  届くので、受け手はスレッド安全にすること（WPF の Progress&lt;T&gt; は UI スレッドへ順に送るのでそのままでよい）。
 //
 //  【種類】
+//    AndroidPrepared      … 準備で決まった端末・アプリの識別情報・ABI（準備を終えたときに 1 回。エディタが停止・終了の見張りに使う）
 //    AndroidPhaseStarted  … 工程を始めた（何番目か・理由）
 //    AndroidPhaseFinished … 工程を終えた（成功・飛ばした・失敗・中断と所要時間）。飛ばした工程は Started 無しでこれだけ届く
 //    AndroidLogLine       … 1 行のログ（説明・子プロセスの出力・警告・エラー・logcat）
@@ -17,6 +18,9 @@
 // ============================================================
 
 using System;
+using System.Collections.Generic;
+using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Project;
 
 namespace SEEDEditor.Android.Pipeline;
 
@@ -65,6 +69,16 @@ public enum AndroidLogLevel
     /// <summary>端末の logcat の 1 行。</summary>
     Logcat,
 }
+
+/// <summary>
+/// 準備で決まった値（準備を終えたときに 1 回。工程より前に届く）。
+/// エディタの実行（段階C-2）は、ここで分かったアプリ ID と端末で「アプリが動いているか」を見張り、停止ボタンでアプリを止める。
+/// </summary>
+/// <param name="Device">対象の端末（端末の工程が無ければ null）。</param>
+/// <param name="Identity">アプリの識別情報。</param>
+/// <param name="Abis">今回の ABI。</param>
+public sealed record AndroidPrepared(AdbDevice? Device, AndroidAppIdentity Identity, IReadOnlyList<AndroidAbi> Abis)
+    : AndroidPipelineEvent(AndroidPipelinePhase.Prepare);
 
 /// <summary>工程を始めた。</summary>
 /// <param name="Phase">工程。</param>
