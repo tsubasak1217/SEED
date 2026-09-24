@@ -134,6 +134,17 @@ impl Clock {
     /// デバッグセッションのアタッチ/デタッチに合わせてブレークポイント停止ガードを切り替える。
     pub fn set_debug_guard(&mut self, on: bool) { self.debug_guard = on; }
 
+    /// 前フレームからの経過時間を捨てる（次の `tick` の delta を「今から」の時間にする）。
+    ///
+    /// Android でバックグラウンドから前面へ戻ったとき（app/background_lifecycle.rs）に呼ぶ。
+    /// 背面にいた間はフレームが止まっているため、そのまま `tick` すると最初のフレームの delta が
+    /// 背面にいた時間（数秒〜数時間）になり、ゲーム時間が一気に進んだうえ ConstantUpdate が
+    /// その時間ぶん連続で回る（固定ステップの取り戻し）。背面の間はゲームの時間を止めておく
+    /// （物理スレッドも止めている。physics/background_pause.rs）のと揃える。
+    pub fn forget_elapsed(&mut self) {
+        self.last_frame = Instant::now();
+    }
+
     /// フレーム開始時に呼ぶ。
     ///
     /// # 引数
@@ -401,5 +412,34 @@ mod tests {
         assert!((full_steps - 60).abs() <= 1, "full_steps={full_steps}");
         assert!((half_steps * 2 - full_steps).abs() <= 1,
                 "half_steps={half_steps}, full_steps={full_steps}");
+    }
+
+    /// バックグラウンドから戻った最初のフレーム: forget_elapsed で背面にいた時間を捨てる。
+    /// 捨てないと delta が背面の時間になり、ConstantUpdate がその時間ぶん連続で回る。
+    #[test]
+    fn forget_elapsed_drops_time_spent_in_background() {
+        /// 背面にいた時間（仮）。
+        const BACKGROUND: std::time::Duration = std::time::Duration::from_secs(60);
+        /// 戻った直後のフレームの delta として許す上限（テスト実行の揺れを見込んだ値）。
+        const MAX_RESUMED_DELTA: f32 = 1.0;
+
+        let mut c = Clock::new();
+        // 前フレームが 60 秒前だった状態を作る（起動直後で Instant を戻せない環境では検証しない）。
+        let Some(long_ago) = Instant::now().checked_sub(BACKGROUND) else { return };
+
+        // 捨てない場合: 背面の時間がそのまま delta と固定ステップに積まれる（現象の確認）。
+        c.last_frame = long_ago;
+        let stale = c.tick(true, TIME_SCALE_DEFAULT);
+        assert!(stale.delta_time >= BACKGROUND.as_secs_f32());
+        assert!(c.drain_fixed().count() > 1);
+
+        // 捨てた場合: 戻った直後のフレームの delta は小さく、固定ステップも取り戻さない。
+        c.last_frame = long_ago;
+        c.forget_elapsed();
+        let resumed = c.tick(true, TIME_SCALE_DEFAULT);
+        assert!(resumed.delta_time < MAX_RESUMED_DELTA, "delta={}", resumed.delta_time);
+        // 固定ステップは delta ぶんだけ（背面の 60 秒ぶん＝3600 回を取り戻さない）。
+        let max_steps = (MAX_RESUMED_DELTA / FIXED_DELTA).ceil() as usize + 1;
+        assert!(c.drain_fixed().count() <= max_steps);
     }
 }

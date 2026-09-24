@@ -83,6 +83,11 @@ mod surface_lifecycle;
 mod lifecycle_diag;
 /// タッチ状態とタッチ由来のマウス状態のフレーム単位診断ログ（lifecycle_diag_log が真のときだけ）。
 mod touch_diag;
+/// 置き換えたキー（Android の戻るキー → Escape）のフレーム単位診断ログ（lifecycle_diag_log が真のときだけ）。
+mod key_diag;
+/// バックグラウンドへの出入り（Android の suspended / resumed）でのセーブ書き出し・パイプラインキャッシュ保存・
+/// シミュレーション停止。描画サーフェスの破棄・再生成（surface_lifecycle）とは別の責務。
+mod background_lifecycle;
 mod frame_renderer;
 /// IPC 駆動スクリーンショット（SCREENSHOT:）のアプリ側処理。
 mod screenshot_ops;

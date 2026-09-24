@@ -560,13 +560,15 @@ fn create_copy_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::
         bind_group_layouts: &[&bgl],
         push_constant_ranges: &[],
     });
+    // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+    let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("HiZ Copy Pipeline"),
         layout: Some(&layout),
         module: &shader,
         entry_point: Some("cs_main"),
         compilation_options: Default::default(),
-        cache: None,
+        cache: shared_cache.as_ref(),
     });
 
     (pipeline, bgl)
@@ -611,13 +613,15 @@ fn create_gen_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::B
         bind_group_layouts: &[&bgl],
         push_constant_ranges: &[],
     });
+    // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+    let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("HiZ Gen Pipeline"),
         layout: Some(&layout),
         module: &shader,
         entry_point: Some("cs_main"),
         compilation_options: Default::default(),
-        cache: None,
+        cache: shared_cache.as_ref(),
     });
 
     (pipeline, bgl)
@@ -686,13 +690,15 @@ fn create_occ_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::B
         bind_group_layouts: &[&bgl],
         push_constant_ranges: &[],
     });
+    // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+    let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("HiZ Occlusion Pipeline"),
         layout: Some(&layout),
         module: &shader,
         entry_point: Some("cs_main"),
         compilation_options: Default::default(),
-        cache: None,
+        cache: shared_cache.as_ref(),
     });
 
     (pipeline, bgl)

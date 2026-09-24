@@ -6,6 +6,8 @@
 //    adb shell setprop debug.seed.panic_test 0   … 元に戻す
 //    adb shell setprop debug.seed.touch_test 1   … 次回起動時に複数指の合成タッチ列を 1 回流す
 //    adb shell setprop debug.seed.touch_test 0   … 元に戻す
+//    adb shell setprop debug.seed.save_test 1|2  … セーブの書き出しタイミングの確認（debug_save_test.rs）
+//    adb shell setprop debug.seed.save_test 0    … 元に戻す
 //  （debug.* のプロパティは adb shell から書ける。端末の再起動で消える）
 // ============================================================
 

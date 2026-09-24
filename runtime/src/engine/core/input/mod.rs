@@ -2,6 +2,8 @@ pub mod action_map;
 pub mod cursor_visibility;
 pub mod gamepad;
 pub mod inject;
+/// OS 固有のキー（Android の戻るキー等）をエンジンの KeyCode へ置き換える表（platform::PlatformTraits::key_remap が選ぶ）。
+pub mod key_remap;
 pub mod keyboard;
 pub mod mouse;
 pub mod raw_input;

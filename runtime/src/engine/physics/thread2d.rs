@@ -195,6 +195,9 @@ fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<Physic
     // 最大速度クランプ付きで目標へ追従させる（3D 版 thread.rs と同じ仕組み）。
     let mut drag_targets: HashMap<u64, Isometry<Real>> = HashMap::new();
 
+    // アプリがバックグラウンドの間はステップを止める（Android の suspended。background_pause.rs）。
+    let mut background_pause = super::background_pause::BackgroundPause::new("2D");
+
     loop {
         // ── コマンド処理（全キューをフラッシュ）────────────────────────────
         loop {
@@ -251,6 +254,15 @@ fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<Physic
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return,
             }
+        }
+
+        // アプリがバックグラウンド（Android の suspended）の間は止まる（3D 版 thread.rs と同じ）。
+        // ステップを進めず条件変数で眠り、前面へ戻れば即座に起きる（background_pause.rs）。
+        // 次ステップ時刻を今へ合わせ直し、背面にいた時間ぶんのステップを取り戻さない。
+        // デスクトップでは常に前面なので Atomic の読み取り 1 回で素通りする。
+        if background_pause.sleep_if_background() {
+            next_step = Instant::now();
+            continue;
         }
 
         // Pause 中・時間スケール 0 のときは物理ステップをスキップする

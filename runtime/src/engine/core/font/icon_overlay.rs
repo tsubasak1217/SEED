@@ -174,6 +174,8 @@ impl IconOverlay {
         });
 
         let stride = std::mem::size_of::<IconOverlayVertex>() as u64;
+        // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+        let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Icon Overlay Pipeline"),
             layout: Some(&layout),
@@ -228,7 +230,7 @@ impl IconOverlay {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: shared_cache.as_ref(),
         });
 
         Self {

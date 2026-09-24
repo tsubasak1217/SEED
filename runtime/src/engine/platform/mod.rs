@@ -10,8 +10,17 @@
 //  - そもそもコンパイルできない API（Win32 など）を使う箇所 → 従来どおり #[cfg]
 //  - コンパイルはできるが振る舞いを変えたい箇所          → この表のフラグで分岐
 //
+//  【実行時にしか分からない値】
+//  この表はコンパイル時定数。Android のアプリ専用フォルダのように OS が実行時にだけ教える値は
+//  paths.rs に「起動時に 1 回だけ設定する値」として持つ（cfg 分岐を散らさないのは同じ）。
+//
 //  Android 対応の全体像は docs/android.md を参照。
 // ============================================================
+
+/// プラットフォームが与える書き込み先（セーブ・キャッシュの置き場。起動時に 1 回設定する）。
+pub mod paths;
+
+use crate::engine::core::input::key_remap::{self, KeyRemapRule};
 
 /// 実行プラットフォームの特性（能力と方針）。
 ///
@@ -56,6 +65,12 @@ pub struct PlatformTraits {
     /// true の端末（デスクトップ）では、PC の Play でも `Input.GetTouch` を使うスクリプトを試せる。
     /// `touch_drives_mouse` と排他（両方 true だと同じ操作がマウスとタッチを往復して二重になる）。
     pub mouse_simulates_touch: bool,
+
+    /// OS 固有のキーをエンジンの KeyCode へ置き換える表（`core/input/key_remap.rs`）。
+    ///
+    /// キー入力を入力状態へ入れる直前（`app/event_handler.rs` の on_keyboard_input）で引く。
+    /// Android は戻るキー → Escape（Unity と同じ）。デスクトップは空（従来どおり何も置き換えない）。
+    pub key_remap: &'static [KeyRemapRule],
 }
 
 /// デスクトップ（Windows）の特性。従来の SEED.exe の振る舞いそのもの。
@@ -66,9 +81,10 @@ pub const DESKTOP: PlatformTraits = PlatformTraits {
     touch_supported:       false,
     touch_drives_mouse:    false,
     mouse_simulates_touch: true,
+    key_remap:             key_remap::DESKTOP_KEY_REMAP,
 };
 
-/// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力）。
+/// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力・戻るキー）。
 pub const ANDROID: PlatformTraits = PlatformTraits {
     app_sizes_window:      false,
     scripting_supported:   false,
@@ -76,6 +92,7 @@ pub const ANDROID: PlatformTraits = PlatformTraits {
     touch_supported:       true,
     touch_drives_mouse:    true,
     mouse_simulates_touch: false,
+    key_remap:             key_remap::ANDROID_KEY_REMAP,
 };
 
 /// 定義済みの全プラットフォームの特性（表全体への検査用）。
@@ -99,8 +116,21 @@ mod tests {
         assert!(DESKTOP.app_sizes_window);
         assert!(DESKTOP.scripting_supported);
         assert!(!DESKTOP.lifecycle_diag_log);
+        // キーの置き換えは Android だけ（PC のキー入力は従来どおり素通し）。
+        assert!(DESKTOP.key_remap.is_empty());
         #[cfg(not(target_os = "android"))]
         assert_eq!(CURRENT, DESKTOP);
+    }
+
+    /// Android は戻るキーを Escape へ置き換える表を使う（Unity と同じ対応）。
+    #[test]
+    fn android_remaps_back_key_to_escape() {
+        use winit::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
+        let back = PhysicalKey::Unidentified(NativeKeyCode::Android(key_remap::ANDROID_KEYCODE_BACK));
+        assert_eq!(
+            key_remap::remap_physical_key(ANDROID.key_remap, back),
+            PhysicalKey::Code(KeyCode::Escape)
+        );
     }
 
     /// マウス ⇔ タッチの相互変換は、どのプラットフォームでも片方向だけ（二重駆動の防止）。

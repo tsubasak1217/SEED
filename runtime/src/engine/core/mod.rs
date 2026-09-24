@@ -1,5 +1,7 @@
 pub mod app_base;
 pub mod audio;
+/// アプリがバックグラウンドにいるか（Android の suspended〜resumed）の共有状態と、その間スレッドを眠らせる待機。
+pub mod background_gate;
 pub mod clock;
 pub mod font;
 pub mod input;

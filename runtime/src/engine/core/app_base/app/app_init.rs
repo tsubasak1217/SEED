@@ -186,6 +186,10 @@ impl App {
             DEFAULT_CAMERA_POSITION[2],
         );
 
+        // 起動時のパイプライン生成（DrawContext と、その後のテキスト・プリミティブ・ギズモ）の所要を
+        // 1 行ずつ残す。パイプラインキャッシュの効き目（初回起動と 2 回目の差）を比べる計測用。
+        let pipelines_started = std::time::Instant::now();
+
         // scene_format = HDR オフスクリーン（Rgba16Float）。シーン描画パイプラインは
         // これでビルドし、トーンマップ後の直描き（プレビューブリット）のみ surface_format。
         let ctx = DrawContext::new(
@@ -196,7 +200,8 @@ impl App {
             renderer.depth_format(),
             renderer.pipeline_cache(),
         );
-        eprintln!("[SEED INIT] DrawContext created");
+        let draw_ctx_elapsed = pipelines_started.elapsed();
+        eprintln!("[SEED INIT] DrawContext created ({} ms)", draw_ctx_elapsed.as_millis());
 
         let scene = crate::engine::core::app_base::scene::Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
@@ -290,6 +295,11 @@ impl App {
                 self.screen_hint.is_some()
             );
         }
+        eprintln!(
+            "[SEED INIT] 描画パイプライン生成 合計 {} ms（DrawContext {} ms ＋ テキスト・プリミティブ・ギズモ）",
+            pipelines_started.elapsed().as_millis(),
+            draw_ctx_elapsed.as_millis(),
+        );
 
         self.renderer = Some(renderer);
         self.window = Some(window);

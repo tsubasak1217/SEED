@@ -9,6 +9,7 @@
 //    char_gravity.rs — キネマティックキャラへのノーコード重力適用（落下積分・接地リセット）
 //    types2d.rs — 2D メインスレッド・物理スレッド間の共通型定義
 //    thread2d.rs — Rapier2D を使用した 2D 物理スレッド実装
+//    background_pause.rs — アプリがバックグラウンドの間、物理スレッドを眠らせる（3D / 2D 共通）
 //
 //  【エクスポート方針】
 //    利用側は `use crate::engine::physics::*` で取得できるよう
@@ -18,6 +19,7 @@
 pub(crate) mod types;
 mod types2d;
 mod shape;
+mod background_pause;
 pub mod thread;
 pub mod char_world;
 pub mod char_gravity;

@@ -16,8 +16,10 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Touch}
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::engine::core::app_base::ipc::ToolMode;
+use crate::engine::core::input::key_remap::remap_physical_key;
 use crate::engine::core::input::touch::test_sequence;
 use crate::engine::methods::drawer::IdBuffer;
+use crate::engine::platform;
 
 use super::{
     App, RuntimeMode, camera_grab_end, camera_grab_start,
@@ -77,9 +79,14 @@ impl App {
     ///
     /// Ctrl+Z で Undo、Ctrl+Y で Redo を実行する。
     /// Ctrl キー押下状態を `self.ctrl_held` に記録する。
+    ///
+    /// 入力状態へ入れる前に、プラットフォームの置き換え表（`platform::CURRENT.key_remap`）で
+    /// OS 固有のキーをエンジンのキーへ置き換える（Android の戻るキー → Escape。デスクトップは素通し）。
+    /// 置き換え後のキーは通常のキーと同じ経路を通るので、スクリプトの `Input.GetKeyDown` でも拾える。
     pub(super) fn on_keyboard_input(&mut self, event: KeyEvent) {
         let pressed = event.state == ElementState::Pressed;
-        if let PhysicalKey::Code(key) = event.physical_key {
+        let physical_key = remap_physical_key(platform::CURRENT.key_remap, event.physical_key);
+        if let PhysicalKey::Code(key) = physical_key {
             self.input.process_key(key, pressed);
 
             // 修飾キーの押下状態は、モーダルへ渡す前に必ず更新する

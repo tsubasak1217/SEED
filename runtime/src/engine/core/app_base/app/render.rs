@@ -17,20 +17,27 @@ impl ApplicationHandler for App {
     /// 実装本体は app_init.rs の handle_resumed に委譲する。
     ///
     /// 2 回目以降の resumed（Android でバックグラウンドから復帰したとき）は、
-    /// 初期化をやり直さず描画サーフェスだけを作り直す（surface_lifecycle.rs）。
+    /// 初期化をやり直さず描画サーフェスだけを作り直し（surface_lifecycle.rs）、
+    /// 作り直せたらシミュレーションを再開する（background_lifecycle.rs）。
     /// デスクトップでは resumed は起動時の 1 回だけなので、常に初期化経路を通る。
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.renderer.is_some() {
-            self.handle_surface_resumed(event_loop);
+            if self.handle_surface_resumed(event_loop) {
+                self.enter_foreground();
+            }
             return;
         }
         self.handle_resumed(event_loop);
+        // 初期化前に suspended が届いていても、物理スレッドが眠ったままにならないようにする。
+        self.ensure_foreground();
     }
 
     /// 描画サーフェスが使えなくなった（Android でバックグラウンドへ回った）ときに呼ばれる。
-    /// サーフェスを破棄してイベントループを待機させる（surface_lifecycle.rs）。
+    /// 先にセーブ・パイプラインキャッシュを書き出してシミュレーションを止め（background_lifecycle.rs）、
+    /// それからサーフェスを破棄してイベントループを待機させる（surface_lifecycle.rs）。
     /// デスクトップでは届かない。
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.enter_background();
         self.handle_suspended(event_loop);
     }
 

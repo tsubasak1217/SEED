@@ -307,6 +307,9 @@ fn run_physics_loop(
     // 毎フレーム更新は高コスト（322 トライメッシュの再構築）なので、変化時のみに限定して軽く保つ。
     let mut query_dirty = true;
 
+    // アプリがバックグラウンドの間はステップを止める（Android の suspended。background_pause.rs）。
+    let mut background_pause = super::background_pause::BackgroundPause::new("3D");
+
     loop {
         // ── ① 保留コマンドを全ドレイン（非ブロック）────────────────────────
         //   既にキューに届いている分は、待たずにその場で全て処理する。
@@ -324,6 +327,16 @@ fn run_physics_loop(
         if query_dirty {
             query_pipeline.update(&collider_set);
             query_dirty = false;
+        }
+
+        // ── ①' アプリがバックグラウンド（Android の suspended）の間は止まる ────────
+        //   ステップを進めず条件変数で眠り、前面へ戻れば即座に起きる（background_pause.rs）。
+        //   眠りから戻ったら①のドレインへ（停止・問い合わせコマンドに応答するため）。
+        //   次ステップ時刻を今へ合わせ直し、背面にいた時間ぶんのステップを取り戻さない。
+        //   デスクトップでは常に前面なので Atomic の読み取り 1 回で素通りする。
+        if background_pause.sleep_if_background() {
+            next_step = Instant::now();
+            continue;
         }
 
         // ── ② Pause 中はコマンド到着まで（or 短時間）ブロックして待つ ──────────

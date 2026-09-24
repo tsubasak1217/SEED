@@ -16,7 +16,7 @@
 //      SEEDScripting.dll / SEEDScripting.runtimeconfig.json / SEEDScripting.deps.json
 //      Microsoft.CodeAnalysis*.dll / SEEDUserScripts.dll
 //      dotnet/               … 同梱 .NET ランタイム（self-contained 配布）
-//    caches/                 … 実行時生成（モデル派生キャッシュ / pipeline_cache.bin）
+//    caches/                 … 実行時生成（モデル派生キャッシュ / パイプラインキャッシュ wgpu_pipeline_cache_*.bin）
 //    logs/                   … 実行時生成（起動ログ seed_*.log）
 //    saved/                  … 実行時生成（セーブデータ save.json）
 //  ```

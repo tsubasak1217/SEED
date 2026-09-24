@@ -1539,7 +1539,7 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `max_bind_groups: 5` 等の limits は足りていた）。wgpu の `check_limits` は超過した limit を最後の 1 件しか返さないので、
   別の端末で limit 超過に当たると 1 件ずつしか分からない。起動時に「要求 limits とアダプタ limits」を全件比べてログに出すと
   端末ごとの検証が速い。関連: `runtime/src/engine/core/renderer/mod.rs`（`Renderer::new`）。
-- [ ] **Activity 破棄時にセーブの未書き出し分が失われる** — 2026-09-24。`MainActivity.onDestroy` はプロセスを即終了させる
+- [x] **Activity 破棄時にセーブの未書き出し分が失われる** — 2026-09-24 記載 / 同日対応（A-3）。suspended（背面へ回る）で同期に `save::flush_if_dirty()`（`app/background_lifecycle.rs`）、保険として `MainActivity.onDestroy` からプロセス終了前に JNI（`nativeFlushSaveData`。`jni_exports.rs`）で書き出す。エミュレータで検証用フック `debug.seed.save_test` により両経路を確認（docs/android.md §14.2・§14.7）。正式な終了処理（winit の更新・自前の破棄通知）は未着手のまま（プロセス終了の方針は据え置き）。以下は記載時のメモ。`MainActivity.onDestroy` はプロセスを即終了させる
   （winit 0.30 が onDestroy をアプリへ通知しない・EventLoop は 1 プロセス 1 回のため。docs/android.md §8）。
   Windows は `CloseRequested` で `save::flush_if_dirty()` を呼ぶが、Android にはその経路が無い。
   段階A で onPause / suspended 時の flush と、正式な終了処理（winit の更新または自前の破棄通知）を入れる。
@@ -1581,7 +1581,7 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   実機は作業中ずっと私物として使用中（別アプリが前面）だったため未実施。arm64 の .so はビルド済み（コードは ABI に依存しない）。
   端末が空いているときに `build_and_run.ps1 -Abi arm64-v8a -Serial <実機> -ProjectDir <プロジェクト> -LogcatSeconds 30` で、
   起動ログの「APK 内の pak で起動します … 非圧縮」と `asset_fs: packaged pak=apk:seed/assets.pak` と描画を確かめる。
-- [ ] **パッケージ実行（APK 内 pak）ではセーブ・キャッシュを書けない（A-3 で対応）** — 2026-09-24。`save/path.rs` と
+- [x] **パッケージ実行（APK 内 pak）ではセーブ・キャッシュを書けない（A-3 で対応）** — 2026-09-24 記載 / 同日対応。`engine/platform/paths.rs` の `PlatformPaths`（起動時に 1 回設定）へ Android の files・cache を渡し、セーブは `files/save/`、キャッシュは `/data/user/0/<pkg>/cache` に起動モードに関係なく書く（docs/android.md §14.1）。以下は記載時のメモ。`save/path.rs` と
   `package_layout::decide_cache_dir` はパッケージ実行（`asset_fs::is_packaged()`）で実行ファイル基準に切り替わるため、Android では
   `/system/bin/saved`・`/system/bin/caches` を指し、書き込みはエラーを返すだけで保存されない（落ちはしない）。
   開発用の経路（run-as のアセット）では従来どおり内部フォルダの `save/`・`cache/` に書ける。下の「保存先・キャッシュ…」と合わせて、
@@ -1598,7 +1598,7 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   コンソールのコードページ（CP932）として読んでから `Set-Content -Encoding utf8` するため、エンジンの日本語ログが化ける
   （`[SEED INIT]` 等の ASCII 部分は読める）。pwsh 7.4 のネイティブコマンドのバイト列そのままのリダイレクト（`> file`）で保存するか、
   読み取りの間だけ `[Console]::OutputEncoding` を UTF-8 にする。回避策は docs/android.md §13.5。
-- [ ] **保存先・キャッシュ・パイプラインキャッシュの置き場（段階A）** — 2026-09-24。セーブ（`save/path.rs`）と
+- [x] **保存先・キャッシュ・パイプラインキャッシュの置き場（段階A）** — 2026-09-24 記載 / 同日対応（A-3）。置き場は上の項目のとおり。パイプラインキャッシュはアダプタごとのファイル（`wgpu_pipeline_cache_*.bin`）を suspended で保存し、全生成箇所がキャッシュを受け取るようにした（`renderer/pipeline_cache/`。docs/android.md §14.3）。初期化の同期実行（ANR の恐れ）は下の新しい項目へ分けた。以下は記載時のメモ。セーブ（`save/path.rs`）と
   派生キャッシュ（`loader/asset_cache.rs`）は「アセットルートの親」規則でたまたまアプリ専用フォルダに落ちている。
   パイプラインキャッシュ（`renderer/mod.rs::pipeline_cache_path`）は実行ファイルの隣（Android では `/system/bin`）
   前提のため保存されず、毎回シェーダを作り直す（パイプライン生成がエミュレータで約 1.6 秒、実機 Pixel 6a で約 3.4 秒）。プラットフォームのデータフォルダを
@@ -1610,10 +1610,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   （モデルキャッシュの作り直し 3.3 秒を含む。残りの内訳は未調査。前面では別のゲームが動いていた）。その間に操作された
   戻るジェスチャ・タッチは初期化が終わってからまとめて届き、ActivityTaskManager に `Activity pause timeout`（起動 +6 秒）・
   `Activity stop timeout`（+19 秒）が出て、最初のフレームの提示前にバックグラウンドでプロセスが終了した（`app died, no saved state`）。
-- [ ] **バックグラウンド中もシミュレーションが回る（段階A）** — 2026-09-24。suspended 中はイベントループが
+- [x] **バックグラウンド中もシミュレーションが回る（段階A）** — 2026-09-24 記載 / 同日、物理スレッドを対応（A-3）。`core/background_gate.rs` を suspended で立て、物理スレッド（3D / 2D）は `physics/background_pause.rs` で条件変数に眠る（エミュレータで背面 約 11 秒の CPU 時間が 3D 2 tick・2D 1 tick）。前面へ戻った最初のフレームは `Clock::forget_elapsed` で背面の時間を捨てる。音声・ゲームパッドは下の新しい項目へ分けた。以下は記載時のメモ。suspended 中はイベントループが
   `ControlFlow::Wait` で眠るが、物理スレッド（3D/2D）は回り続ける（エミュレータで計 20% 前後の CPU）。音声も止めていない。
   suspended で一時停止・resumed で再開する。関連: `app/surface_lifecycle.rs`。
-- [ ] **戻るキーの扱い（段階A）** — 2026-09-24。GameActivity はキーをネイティブへ渡し、winit が処理済み扱いにするため
+- [x] **戻るキーの扱い（段階A）** — 2026-09-24 記載 / 同日対応（A-3）。Unity と同じく `KeyCode.Escape` として届ける（`core/input/key_remap.rs` の置き換え表を `PlatformTraits::key_remap` で選ぶ。デスクトップは空の表）。アプリは自動で終了しない（判断はスクリプト）。docs/android.md §14.5。以下は記載時のメモ。GameActivity はキーをネイティブへ渡し、winit が処理済み扱いにするため
   `onBackPressed` が呼ばれず何も起きない（`[SEED KEY] pressed logical=Named(BrowserBack)` とログに出るだけ）。
   ゲーム側に渡す／`moveTaskToBack` する等の方針を決める。
 - [ ] **画面の向き・安全領域（段階A）** — 2026-09-24。マニフェストは `screenOrientation="fullSensor"`（端末の回転ロックを
@@ -1648,3 +1648,23 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   （`[PLAY_HB]` が毎秒）、物理が動いていると `[PERF f=...]` も 60 フレームごとに出る。Windows 版でも同じ。撤去予定の一時診断のはず。
 - [ ] **`runtime/Cargo.lock` はワークスペース化前の残骸** — 2026-09-24。ワークスペースの lock はルートの `Cargo.lock`。
   runtime/ 側は 2026-05 から更新されておらず参照もされない。削除してよいか確認する（低優先）。
+- [ ] **実機（Pixel 6a）で A-3 を確認する（特にパイプラインキャッシュの短縮幅）** — 2026-09-24。
+  エミュレータではセーブ（suspended・onDestroy の JNI）・書き込み先・物理停止・戻るキーを確認したが、実機は作業中ずっと私物として
+  使用中（別アプリが前面）で、その後 USB の接続も外れたため未実施。arm64 の .so はビルド済み（コードは ABI に依存しない）。
+  エミュレータのパイプライン生成はホスト（gfxstream → NVIDIA）のドライバが自前のキャッシュを持つため、キャッシュの有無で約 7% しか
+  変わらない（1236 → 1150 ms 前後）。実機（Mali-G78。段階0 でパイプライン生成 約 3.4 秒）で「初回と 2 回目」「キャッシュを消した起動」を
+  比べる。手順は docs/android.md §14.6。
+- [ ] **`build_and_run.ps1` の起動（毎回 force-stop）ではパイプラインキャッシュが保存されない** — 2026-09-24。
+  保存は suspended（背面へ回る）と Drop だけで、force-stop はどちらも起こさない。開発中にホームへ戻さないまま .so の差し替えを繰り返すと、
+  毎回シェーダを作り直す。最初の数フレームを描いた後にも 1 回保存する（内容が同じなら書かない仕組みは既にある）か、スクリプトの
+  再起動前に `input keyevent KEYCODE_HOME` を挟む。関連: `runtime/src/engine/core/renderer/pipeline_cache/mod.rs`、`runtime/android/build_and_run.ps1`。
+- [ ] **起動の初期化が android_main スレッドで同期に走る（ANR の恐れ）** — 2026-09-24（「保存先・キャッシュ…」の項目から分離）。
+  最初の resumed の `handle_resumed` がパイプライン生成・シーン読込まで同期で行い、その間に端末側でサーフェスが破棄されると UI スレッドは
+  ネイティブの応答を待ち続ける（native_app_glue の `android_app_set_window` は時間切れ無し）。パイプラインキャッシュで短くはなるが、
+  初期化の分割・非同期化は未着手。記録: APK 更新直後の初回起動で 44 秒かかり、`Activity pause timeout`・`stop timeout` の後に
+  プロセスが終了した例がある（上の記載時のメモ）。
+- [ ] **バックグラウンド中も音声・ゲームパッドのスレッドが動く／`[PLAY_WD]` が誤報する** — 2026-09-24。
+  A-3 で物理スレッドは止めたが、音声（rodio → cpal → oboe）とゲームパッド（gilrs。Android では無効だがポーリングスレッドは残る）は
+  背面でも動く。音は鳴るかどうか自体が未確認（上の「音声（oboe）が鳴るか未確認」）。止めるなら `core::background_gate` を見る。
+  また `app/play_diag.rs` のフレーム監視（`[PLAY_WD] stuck at stage=frame_end … (A)イベントループスレッド自体がブロック`）が、
+  背面でイベントループが Wait に入っている間ずっと 5 秒ごとに誤報する（撤去予定の一時診断。背面中は黙らせるか撤去する）。

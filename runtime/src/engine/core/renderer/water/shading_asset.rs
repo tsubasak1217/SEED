@@ -589,9 +589,12 @@ impl WaterShadingAssetPipelines {
 
         // ── パイプライン生成 ──────────────────────────────────
         let resolve = make_resolver(asset_name, &body, &decls, &generated);
+        // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+        let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
         let (pipeline, _bgls) =
             RenderPipelineBuilder::new(device, WATER_SURFACE_TOML, out_format, depth_format)
                 .with_label(PIPELINE_LABEL)
+                .with_cache(shared_cache.as_ref())
                 // 差し替え済みリストを渡すため、TOML の shader_sources を上書きする。
                 .with_shader_sources(names)
                 .build_owned(resolve);

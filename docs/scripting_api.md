@@ -790,6 +790,8 @@ if (SEED.Input.GetKeyDown(SEED.KeyCode.Space)) { /* ジャンプ */ }
 
 `KeyCode` の定義: `A`〜`Z` / `Alpha0`〜`Alpha9`（メイン数字キー）/ `F1`〜`F12` / `UpArrow` `DownArrow` `LeftArrow` `RightArrow` / `Space` `Enter` `Escape` `Tab` `Backspace` `Delete` / `LeftShift` `RightShift` `LeftControl` `RightControl` `LeftAlt` `RightAlt`
 
+Android の戻るキー（ナビゲーションバーの戻る・戻るジェスチャ）は `KeyCode.Escape` として届く（Unity と同じ）。アプリは自動で終了しないので、ポーズメニューや終了確認は `Input.GetKeyDown(KeyCode.Escape)` を拾ってスクリプトで決める。
+
 ### タッチ（複数指）
 
 Unity 風の複数指タッチ。**PC ではマウスの左ボタンが指 1 本として合成される**ので、タッチ前提のスクリプトも PC の Play でそのまま試せます。Android では**最初に触れた指（指0）がマウスも動かす**（`MousePos`・`GetMouseButton(MouseButton.Left)`・キャンバス UI の `OnPointer*` がタッチで動く）ので、マウス前提のスクリプトも実機で動きます。
@@ -2209,14 +2211,15 @@ void OnCatch(string fishId, float sizeCm, int price)
 }
 ```
 
-> **重要**: `Set*` はメモリ上のストアを書き換えるだけです。ディスクへ書き出すのは `Save()` を呼んだときと、Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で `Save()` を呼んでください。
+> **重要**: `Set*` はメモリ上のストアを書き換えるだけです。ディスクへ書き出すのは `Save()` を呼んだときと、Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で `Save()` を呼んでください。Android ではこれに加えて、バックグラウンドへ回るとき（ホーム・アプリ切り替え・画面オフ）とアプリを閉じるときにも自動保存します（Android は背面のアプリを予告なく終了させることがあるため）。
 
 > **重要**: 整数と実数は相互に読み替えられます（実数 → 整数は 0 方向へ切り捨て）。文字列と数値は**相互変換しません** — 型を間違えた読み取りは既定値を返すので、書いたときと同じ型で読んでください。
 
 | 保存先 | パス |
 |---|---|
-| パッケージ実行（配布ビルド） | 実行ファイルと同じ階層の `save/save.json` |
+| パッケージ実行（配布ビルド） | 実行ファイルと同じ階層の `saved/save.json` |
 | エディタから Play | `runtime/save/save.json`（Git 追跡外） |
+| Android（APK 内 pak でも開発用の置き場でも同じ） | アプリの内部データ `/data/user/0/<パッケージ名>/files/save/save.json`（デバッグ版 APK なら `adb exec-out run-as <パッケージ名> cat files/save/save.json` で見られる） |
 | 環境変数 `SEED_SAVE_DIR` 指定時 | そのディレクトリの `save.json`（最優先） |
 
 > **重要**: セーブデータは Play を終了して Edit へ戻しても**巻き戻りません**（ゲームの進行であってシーンの編集データではないため）。テストで初期状態へ戻したいときは `SaveData.DeleteAll()` + `SaveData.Save()` を呼ぶか、保存先の `save.json` を削除してください。

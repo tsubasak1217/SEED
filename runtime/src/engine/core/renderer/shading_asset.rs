@@ -926,6 +926,8 @@ impl ShadingAssetPipelines {
         let decls_src = generate_param_decls(&params_set.params);
         let generated = generate_dispatch(&found, &params_set.params);
 
+        // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+        let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
         // ── rt_off 変種（必須） ───────────────────────────────
         let (_src_off, names_off, _start_off) =
             prepare_variant(Variant::RtOff, asset_name, &body, &decls_src, &generated)
@@ -937,6 +939,7 @@ impl ShadingAssetPipelines {
             device, include_str!("pipelines/deferred_lighting.toml"), out_format, depth_format,
         )
         .with_label("deferred_lighting_shading_asset")
+        .with_cache(shared_cache.as_ref())
         // 差し替え済みリストを渡すため、TOML の shader_sources を上書きする。
         .with_shader_sources(names_off)
         .build_owned(resolve_off);
@@ -973,6 +976,7 @@ impl ShadingAssetPipelines {
                         out_format, depth_format,
                     )
                     .with_label("deferred_lighting_rt_shading_asset")
+                    .with_cache(shared_cache.as_ref())
                     .with_shader_sources(names)
                     .build_owned(resolve);
                     // group 順 [0 camera,1 gbuffer,2 gap,3 gap,4 lights+TLAS]。group4 を控える。
@@ -1071,6 +1075,8 @@ fn build_bindless_pipeline(
         ],
         push_constant_ranges: &[],
     });
+    // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+    let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label:  Some("deferred_lighting_rt_bindless_shading_asset"),
         layout: Some(&layout),
@@ -1089,7 +1095,7 @@ fn build_bindless_pipeline(
         depth_stencil: None,
         multisample:   wgpu::MultisampleState::default(),
         multiview:     None,
-        cache:         None,
+        cache:         shared_cache.as_ref(),
     })
 }
 

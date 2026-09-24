@@ -66,7 +66,8 @@ Android の APK へ同梱する形は §10。
     SEEDScripting.dll / SEEDScripting.runtimeconfig.json / SEEDScripting.deps.json
     Microsoft.CodeAnalysis*.dll / SEEDUserScripts.dll
     dotnet/               … 同梱 .NET ランタイム（§5）
-  caches/                 … 実行時生成（`pipeline_cache.bin`。モデル派生キャッシュ `*.smdl` の
+  caches/                 … 実行時生成（パイプラインキャッシュ `wgpu_pipeline_cache_<バックエンド>_<ベンダー ID>_<デバイス ID>.bin`＝アダプタごと。
+                             2026-09 以前の `pipeline_cache.bin` は読み込みだけに使う。モデル派生キャッシュ `*.smdl` の
                              置き場でもあるが、PAK 実行では現状これが効かない → §8）
   logs/                   … 実行時生成（起動ログ `seed_*.log`。§9）
   saved/                  … 実行時生成（セーブデータ `save.json`）
@@ -497,7 +498,7 @@ dotnet run --project editor/tests/PackagingCollectorTests
   キャッシュの有効性判定に元ファイルの mtime + サイズを使っており
   （`asset_cache::source_stamp`）、PAK モードでは元ファイルがディスク上に存在しないため
   読み込みも書き出しも即座に打ち切られる。したがって配布版の `caches/` に入るのは
-  今のところ `pipeline_cache.bin` だけで、モデルは毎回パースし直している
+  今のところパイプラインキャッシュ（アダプタごとの `wgpu_pipeline_cache_*.bin`）だけで、モデルは毎回パースし直している
   （起動が遅くなるだけで動作はする）。`docs/backlog.md` 参照。
 - `project_settings.json` の読み込み（ウィンドウサイズ・ゲーム名・描画解像度モード・
   目標フレームレート・垂直同期・プラグイン設定）は 2026-09-09 に
@@ -506,8 +507,9 @@ dotnet run --project editor/tests/PackagingCollectorTests
 - 新しいアセット形式を足したときは、`PackagingRules` の
   `ScannableExtensions` / `SiblingExtensions` / `FolderCompanions` の追従を忘れないこと。
   登録漏れは**ビルドエラーにならず**、パッケージ版だけが壊れる形で出る。
-- **Android は PAK での起動まで**（2026-09-24。§10）。APK 内の `assets.pak` から起動できるが、スクリプト（段階B）と、
-  セーブ・キャッシュの書き込み（配布物の `saved/`・`caches/` を端末の内部ストレージへ振り替える作業。現状は書けない）は未対応。
+- **Android は PAK での起動まで**（2026-09-24。§10）。APK 内の `assets.pak` から起動できるが、スクリプト（段階B）は未対応。
+  セーブ・キャッシュの書き込みは端末のアプリ専用フォルダへ振り替えてある（セーブ `files/save/`・キャッシュ
+  `/data/user/0/<パッケージ名>/cache`。2026-09-24。[android.md](android.md) §14）。
   パッケージ化ウィンドウの Android 出力（.so のビルド・APK 化・pak の同梱）もまだ実働しない（段階C。今は
   `runtime/android/build_and_run.ps1 -ProjectDir` が SeedPak で作った pak を APK へ入れる）。
 
@@ -651,7 +653,7 @@ Android では、Windows の出力フォルダ（実行ファイルを除く）�
 | `assets.pak` | 実行ファイルの隣 | `assets/seed/assets.pak`（Gradle の `noCompress` で非圧縮のまま格納） |
 | PAK の外に置くアセット（PAK に無いときのフォールバック先） | `{ゲーム名}/assets/<相対パス>` | `assets/seed/assets/<相対パス>`（大文字小文字を区別する） |
 | `bin/`（スクリプト DLL・.NET） | 同梱（§5） | 段階B |
-| `caches/` `logs/` `saved/` | 実行時に作る | APK には置けない。端末の内部ストレージへの振り替えが要る（未対応。現状は書けない） |
+| `caches/` `logs/` `saved/` | 実行時に作る | APK には置けないので端末のアプリ専用フォルダへ振り替える: `saved/` → `files/save/`、`caches/` → `/data/user/0/<パッケージ名>/cache`、`logs/` は作らない（logcat）。[android.md](android.md) §14 |
 | 起動ログ | `logs/seed_*.log`（§9） | logcat（タグ `SEED`） |
 
 - 名前の正典は `runtime/src/engine/core/package_layout.rs`（`PAK_FILE_NAME` / `LOOSE_ASSETS_DIR_NAME`）と

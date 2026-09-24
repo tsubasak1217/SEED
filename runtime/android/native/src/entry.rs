@@ -21,7 +21,7 @@ use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 
-use crate::{debug_hooks, device_info, heartbeat, launch, logcat};
+use crate::{app_dirs, debug_hooks, debug_save_test, device_info, heartbeat, launch, logcat};
 
 /// android_main に一度入ったか（同一プロセスでの 2 回目を検出する）。
 static ANDROID_MAIN_ENTERED: AtomicBool = AtomicBool::new(false);
@@ -49,11 +49,17 @@ fn android_main(app: AndroidApp) {
     logcat::info("android_main 開始");
     device_info::log(&app);
 
+    // セーブ・キャッシュの書き込み先をアプリ専用フォルダ（files・cache）に設定する。
+    // エンジンがセーブやキャッシュの置き場を初めて決めるより前（＝App を作る前）に行う。
+    app_dirs::init(&app);
+
     // 検証用: システムプロパティ debug.seed.panic_test=1 のときだけ意図的に panic する
     //（panic が logcat に残ることの確認用。通常起動では何もしない）。
     debug_hooks::panic_if_requested();
     // 検証用: debug.seed.touch_test=1 のときだけ複数指の合成タッチ列を流す（通常起動では何もしない）。
     debug_hooks::request_touch_test_if_enabled();
+    // 検証用: debug.seed.save_test=1|2 のときだけセーブを書き換える（書き込み先の設定後。通常起動では何もしない）。
+    debug_save_test::run_if_enabled();
 
     let args = launch::launch_args(&app);
 

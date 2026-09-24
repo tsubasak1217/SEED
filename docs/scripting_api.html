@@ -682,7 +682,7 @@ public override void OnDestroy()
 </section>
 
 <!-- ════════════════ 6.5 Input ════════════════ -->
-<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD カーソルロック CursorLocked 相対マウス MouseDelta MousePosition MousePositionCanvas キャンバス座標 ジェスチャ 移動量 振る キャスト タッチ Touch touch 複数指 マルチタッチ 指 TouchCount GetTouch Touches TouchSupported TouchPhase Began Moved Stationary Ended Canceled FingerId DeltaPosition ピンチ スワイプ タップ Android スマホ 実機">
+<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD カーソルロック CursorLocked 相対マウス MouseDelta MousePosition MousePositionCanvas キャンバス座標 ジェスチャ 移動量 振る キャスト タッチ Touch touch 複数指 マルチタッチ 指 TouchCount GetTouch Touches TouchSupported TouchPhase Began Moved Stationary Ended Canceled FingerId DeltaPosition ピンチ スワイプ タップ Android スマホ 実機 戻るキー 戻る バックキー Escape">
   <h2>6.5 Input（キーボード・マウス・タッチ入力）</h2>
   <p class="section-note">判定は 3 種類: 押している間 / 押した瞬間 / 離した瞬間。</p>
   <h3>キーボード</h3>
@@ -717,6 +717,7 @@ public override void OnDestroy()
 transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</span>(move.x, 0f, move.y) * speed * <span class="t">SEED.Time</span>.DeltaTime;
 <span class="k">if</span> (<span class="t">SEED.Input</span>.GetKeyDown(<span class="t">SEED.KeyCode</span>.Space)) { <span class="c">/* ジャンプ */</span> }</pre>
   <div class="api"><code class="sig">KeyCode（キー定義）</code><span class="desc"><code>A</code>〜<code>Z</code> / <code>Alpha0</code>〜<code>Alpha9</code>（メイン数字キー）/ <code>F1</code>〜<code>F12</code> / <code>UpArrow DownArrow LeftArrow RightArrow</code> / <code>Space Enter Escape Tab Backspace Delete</code> / <code>LeftShift RightShift LeftControl RightControl LeftAlt RightAlt</code></span></div>
+  <p class="section-note">Android の戻るキー（ナビゲーションバーの戻る・戻るジェスチャ）は <code>KeyCode.Escape</code> として届く（Unity と同じ）。アプリは自動で終了しないので、ポーズメニューや終了確認は <code>Input.GetKeyDown(KeyCode.Escape)</code> を拾ってスクリプトで決める。</p>
   <h3 id="input-touch">タッチ（複数指）</h3>
   <p class="section-note">Unity 風の複数指タッチ。<strong>PC ではマウスの左ボタンが指 1 本として合成される</strong>ので、タッチ前提のスクリプトも PC の Play で試せる。Android では<strong>最初に触れた指（指0）がマウスも動かす</strong>（<code>MousePos</code>・<code>GetMouseButton(MouseButton.Left)</code>・キャンバス UI の <code>OnPointer*</code> がタッチで動く）。</p>
   <div class="api"><code class="sig">Input.TouchSupported</code><span class="desc">bool: タッチ入力を主に使う端末か（Android: true / PC: false。プラットフォーム単位）</span></div>
@@ -1618,7 +1619,8 @@ SolvePath();
 }</pre>
   <div class="warn">
     <b>Set* はメモリ上のストアを書き換えるだけです。</b> ディスクへ書き出すのは <code>Save()</code> を呼んだときと、
-    Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で <code>Save()</code> を呼んでください。<br>
+    Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で <code>Save()</code> を呼んでください。
+    Android ではこれに加えて、バックグラウンドへ回るとき（ホーム・アプリ切り替え・画面オフ）とアプリを閉じるときにも自動保存します（Android は背面のアプリを予告なく終了させることがあるため）。<br>
     <b>整数と実数は相互に読み替えられます</b>（実数 → 整数は 0 方向へ切り捨て）。
     <b>文字列と数値は相互変換しません</b> — 型を間違えた読み取りは既定値を返すので、書いたときと同じ型で読んでください。<br>
     セーブデータは Play を終了して Edit へ戻しても<b>巻き戻りません</b>（ゲームの進行であってシーンの編集データではないため）。
@@ -1626,8 +1628,9 @@ SolvePath();
   </div>
   <table>
     <tr><th>実行のしかた</th><th>保存先</th></tr>
-    <tr><td>パッケージ実行（配布ビルド）</td><td>実行ファイルと同じ階層の <code>save/save.json</code></td></tr>
+    <tr><td>パッケージ実行（配布ビルド）</td><td>実行ファイルと同じ階層の <code>saved/save.json</code></td></tr>
     <tr><td>エディタから Play</td><td><code>runtime/save/save.json</code>（Git 追跡外）</td></tr>
+    <tr><td>Android（APK 内 pak でも開発用の置き場でも同じ）</td><td>アプリの内部データ <code>/data/user/0/&lt;パッケージ名&gt;/files/save/save.json</code>（デバッグ版 APK なら <code>adb exec-out run-as &lt;パッケージ名&gt; cat files/save/save.json</code> で見られる）</td></tr>
     <tr><td>環境変数 <code>SEED_SAVE_DIR</code> 指定時</td><td>そのディレクトリの <code>save.json</code>（最優先）</td></tr>
   </table>
 </section>

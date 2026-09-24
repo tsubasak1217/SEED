@@ -75,12 +75,14 @@ struct PyramidPipes {
 impl PyramidPipes {
     fn new(device: &wgpu::Device) -> Self {
         // ダウンサンプルはブルームの 13-tap を共用（出力 HDR）。自己完結のリゾルバを渡す。
-        // パイプラインキャッシュは遅延構築のため None（一度きりの構築コストのみ）。
+        // 遅延構築で Renderer からキャッシュを受け取る経路が無いため、共有のパイプラインキャッシュを使う
+        // （未作成・非対応なら None＝従来どおりキャッシュ無し）。
+        let shared_cache = super::pipeline_cache::shared::shared();
         let down_pipeline = PostPipeline::from_toml(
             device,
             include_str!("pipelines/post_bloom_down.toml"),
             PYRAMID_FORMAT,
-            None,
+            shared_cache.as_ref(),
             |name: &str| -> &'static str {
                 match name {
                     "fullscreen.wgsl" => include_str!("shaders/fullscreen.wgsl"),
@@ -119,7 +121,7 @@ impl PyramidPipes {
             down_pipeline,
             down_sampler,
             white_view,
-            imos: ImosBlur::new(device, None),
+            imos: ImosBlur::new(device, shared_cache.as_ref()),
         }
     }
 }

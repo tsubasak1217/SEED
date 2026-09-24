@@ -2048,9 +2048,12 @@ impl App {
                             || !self.terrain.grass_buffers.is_empty()
                             || !water_volumes.is_empty();
                         if need_field && self.interaction_field.is_none() {
+                            // 遅延構築なので共有のパイプラインキャッシュを渡す（非対応なら None）。
+                            let shared_cache =
+                                crate::engine::core::renderer::pipeline_cache::shared::shared();
                             self.interaction_field = Some(
                                 crate::engine::core::renderer::InteractionFieldRenderer::new(
-                                    &draw_ctx.device, None,
+                                    &draw_ctx.device, shared_cache.as_ref(),
                                 ),
                             );
                         }
@@ -6090,13 +6093,16 @@ impl App {
                         if water_gate {
                             crate::profile_scope!("描画/水面 prepare");
                             // 遅延構築（App::new は device 確立前に走るためここで初期化する）。
-                            // パイプラインキャッシュは遅延構築のため None（一度きりの構築コストのみ）。
+                            // Renderer から引数で受け取る経路が無いため、共有のパイプラインキャッシュを
+                            // 渡す（未作成・非対応なら None＝従来どおりキャッシュ無し）。
                             if self.water_renderer.is_none() {
+                                let shared_cache =
+                                    crate::engine::core::renderer::pipeline_cache::shared::shared();
                                 self.water_renderer = Some(
                                     crate::engine::core::renderer::WaterRenderer::new(
                                         &draw_ctx.device,
                                         crate::engine::core::renderer::HDR_FORMAT,
-                                        None,
+                                        shared_cache.as_ref(),
                                     ),
                                 );
                             }
@@ -9615,6 +9621,8 @@ impl App {
         // タッチ状態のフレーム単位診断ログ（Android のみ）。スクリプトが今フレーム読んだのと
         // 同じ値を出すため、end_frame で段階を進める直前に呼ぶ。
         super::touch_diag::observe_frame(&self.input);
+        // 置き換えたキー（Android の戻るキー → Escape）の診断ログ。理由はタッチと同じ（Android のみ）。
+        super::key_diag::observe_frame(&self.input);
         self.input.end_frame();
         self.cam_input.end_frame();
 

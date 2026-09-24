@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -60,11 +60,14 @@ runtime/                      パッケージ SEED
   android/native/             パッケージ seed-android → cdylib SEED → libSEED.so
     src/entry.rs              android_main（GameActivity から呼ばれる入口）
     src/logcat/               log / 標準出力 / 標準エラー / panic を logcat（タグ SEED）へ
+    src/app_dirs.rs           アプリ専用フォルダ（files・cache）をセーブ・キャッシュの書き込み先としてエンジンへ設定（§14.1）
+    src/jni_exports.rs        Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し。§14.2）
     src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
     src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
     src/heartbeat.rs          提示フレーム数を 3 秒ごとにログ（描画ループの生存確認）
     src/device_info.rs        起動時の端末情報ログ
-    src/debug_hooks.rs        検証用フック（意図的 panic）
+    src/debug_hooks.rs        検証用フック（意図的 panic・複数指の合成タッチ列）
+    src/debug_save_test.rs    検証用フック（セーブの書き出しタイミングの確認。debug.seed.save_test。§14.6）
     src/sysprop.rs            システムプロパティの読み取り
 ```
 
@@ -121,18 +124,23 @@ runtime/android/
 
 ```
 MainActivity（Java）: static { System.loadLibrary("SEED") }
+  onCreate の最初（super.onCreate の前）: 環境変数 TMPDIR＝cache・HOME＝files（Os.setenv。§14.1）
   └ GameActivity.onCreate … android.app.lib_name=SEED を読み、GameActivity_onCreate（Rust 側 glue）へ
       └ android-activity が専用スレッドで android_main(app) を呼ぶ（runtime/android/native/src/entry.rs）
           1. logcat::init()            … android_logger・panic フック・標準出力/標準エラーの付け替え
           2. device_info::log          … SDK・機種・ABI・データパス
+          2b. app_dirs::init           … セーブ（files/save）・キャッシュ（cache）の書き込み先をエンジンへ設定（§14.1）
           3. launch::launch_args       … APK に seed/assets.pak があればパッケージ実行（配布物の読み口 package_source 付き。§13）、
                                          無ければ <アプリ専用フォルダ>/assets をアセットルートにした LaunchArgs（mode=Play。§4.5）
           4. EventLoop::builder().with_android_app(app).build()
           5. heartbeat::spawn()        … 3 秒ごとの提示フレーム数ログ
           6. App::run_with_event_loop(event_loop, args)   … 以降はデスクトップと同じエンジン
                resumed（1 回目）   → handle_resumed（ウィンドウ・GPU・シーンの初期化。デスクトップと同じ）
-               suspended           → handle_suspended（サーフェス破棄・イベントループを Wait へ）
+               suspended           → enter_background（セーブ・パイプラインキャッシュの書き出し → 物理停止。§14）
+                                     → handle_suspended（サーフェス破棄・イベントループを Wait へ）
                resumed（2 回目以降）→ handle_surface_resumed（サーフェス再生成・サイズ依存状態の更新・Poll へ）
+                                     → enter_foreground（物理再開・背面にいた時間を捨てる。§14.4）
+  MainActivity.onDestroy → nativeFlushSaveData（JNI。セーブの未書き出し分）→ Process.killProcess（§14.2）
 ```
 
 ### 4.4 プラットフォーム差の扱い（エンジン側）
@@ -148,6 +156,10 @@ OS ごとの「振る舞いの差」は cfg を散らさず、`runtime/src/engin
 | `touch_supported` | false | true | スクリプトの `Input.TouchSupported`（タッチ主体の端末か。§12） |
 | `touch_drives_mouse` | false | true | 指0 がマウス（カーソル座標＋左ボタン）を駆動するか（`input/touch/bridge.rs`。§12.2） |
 | `mouse_simulates_touch` | true | false | マウス左ボタンで指を 1 本合成するか（同上。`touch_drives_mouse` と排他） |
+| `key_remap` | 空 | 戻るキー → Escape | OS 固有のキーをエンジンの KeyCode へ置き換える表（`core/input/key_remap.rs`。§14.5） |
+
+実行時にしか分からない値（Android のアプリ専用フォルダ）は特性表ではなく `platform/paths.rs` の `PlatformPaths`
+（起動時に 1 回だけ設定する値）に持つ。Android の糊が設定し、デスクトップは設定しない（§14.1）。
 
 cfg が残るのは「そもそもコンパイルできない API」の箇所だけ:
 - `netcorehost` は Android では依存しない（`runtime/Cargo.toml`）。`engine/core/scripting` は Android で
@@ -161,6 +173,8 @@ cfg が残るのは「そもそもコンパイルできない API」の箇所だ
   （全パイプラインがその形式で作られているため）。
 - `app/surface_lifecycle.rs` … suspended / 2 回目以降の resumed の処理と、サーフェスが無い間の
   フレーム描画スキップ（`surface_missing`。`handle_redraw_requested` の先頭で判定）。
+- `app/background_lifecycle.rs` … 背面・前面への出入りでのセーブとパイプラインキャッシュの書き出し、
+  物理スレッドの停止・再開（`core/background_gate.rs`）、ゲーム時間の取り戻し防止（§14）。
 - `renderer/present_counter.rs` … present した回数のアトミックカウンタ（`heartbeat` が読む）。
 
 ### 4.5 データの置き場
@@ -168,16 +182,21 @@ cfg が残るのは「そもそもコンパイルできない API」の箇所だ
 起動モードは APK 内の pak の有無で決まる（§13.1）。APK に `assets/seed/assets.pak` があればパッケージ実行で、
 アセットは APK から読む。無ければ以下の「開発用の置き場」から読む（この節の残り）。
 
-PC の開発時レイアウト（`<Project>/assets` とその隣の `save/`・`cache/`）を、端末のアプリ専用フォルダへそのまま写した形。
+PC の開発時レイアウト（`<Project>/assets`）を、端末のアプリ専用フォルダへそのまま写した形。
+セーブとキャッシュの置き場は起動モードに関係なく決まっている（§14.1）。
 
 ```
-<データルート>/
-  assets/                 アセットルート（無ければ初回起動時に空で作る）
-    project_settings.json
-    scenes/Main.scene ...
-  save/                   セーブデータ（エンジンの save/path.rs が assets の親に作る）
-  cache/                  派生データキャッシュ（モデルの .smdl 等。2 回目以降の起動はキャッシュヒット）
+/data/user/0/com.seedengine.runtime/
+  files/                  データルート 1（下の表）。環境変数 HOME
+    assets/               アセットルート（無ければ初回起動時に空で作る）
+      project_settings.json
+      scenes/Main.scene ...
+    save/save.json        セーブデータ（パッケージ実行でも同じ。§14.1）
+  cache/                  派生データキャッシュ（モデルの .smdl・パイプラインキャッシュ）。環境変数 TMPDIR。
+                          OS が容量不足のときに消すことがある（消えても再生成される）
 ```
+
+段階0〜A-2 で使っていた `files/cache/`（アセットルートの親の cache）は使われなくなった（消してよい）。
 
 データルートは次の順に見て、`assets/project_settings.json` がある最初のものを使う（`runtime/android/native/src/launch.rs`）。
 どちらにも無ければ 1 を使い、空の `assets/` でエンジンは既定値（空のシーン）のまま起動してクリア色の描画まで行う。
@@ -188,7 +207,7 @@ PC の開発時レイアウト（`<Project>/assets` とその隣の `save/`・`c
 | 2 | 外部アプリ専用フォルダ `/sdcard/Android/data/com.seedengine.runtime/files` | 手で `adb push`。エミュレータでは読めるが、**実機（Android 11 以降）では adb push が作ったフォルダが shell の所有になりアプリから読めない**（Permission denied。起動時に警告を出す） |
 
 APK 内の pak（パッケージ実行）は §13。パッケージ実行でもアセットルートはこの内部フォルダの `assets/`
-（PAK にも APK にも無いアセットのフォールバック先。作らない）。保存先・キャッシュの振り替えは段階A の次の作業（§13.7）。
+（PAK にも APK にも無いアセットのフォールバック先。作らない）。セーブ・キャッシュの置き場は §14.1。
 
 ---
 
@@ -295,6 +314,12 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | `[SEED TOUCH FRAME] f=.. n=.. #0:Began(x,y)d(dx,dy) ... \| mouse=(x,y) L=PD-` | 入力状態（`Input.TouchCount` / `GetTouch` とタッチ由来のマウス）のフレーム末の値（`app/touch_diag.rs`） | 変化のあったフレームだけ 1 行。`L` は左ボタンの押下中 P / 押した瞬間 D / 離した瞬間 U（§12.3） |
 | `[SEED TOUCH TEST] Started id=0x5eed000N ...` | 検証用の合成タッチ列（`debug.seed.touch_test=1` のときだけ。§12.3） | 合成したイベントそのもの。反映結果は `[SEED TOUCH FRAME]` で見る |
 | `[SEED HEARTBEAT] presented_frames total=N +d in 3.0s (x fps)` | 生存確認（3 秒ごと） | バックグラウンド中は `+0`、復帰で再び増える |
+| `書き込み先: データ（セーブ）=… / キャッシュ=…`・`環境変数 TMPDIR=…` | 書き込み先の設定（app_dirs.rs） | §14.1 |
+| `[SEED SAVE] save file: …` / `suspended: …` / `onDestroy（プロセス終了前）: …` | セーブの置き場と自動書き出しの結果 | 「未書き出しの変更を書き出しました」「未書き出しの変更なし」「セーブ未使用」（§14.2） |
+| `[SEED PIPELINE CACHE] 読込 N KiB → 採用後 M KiB` / `保存 …` / `変化なし …` | パイプラインキャッシュ（§14.3） | 起動時の生成時間は `[SEED INIT] DrawContext created (N ms)`・`描画パイプライン生成 合計 N ms` |
+| `[SEED LIFECYCLE] background / foreground: …` / `[SEED PHYSICS] 3D 物理スレッド: …` | 背面での停止・前面での再開（§14.4） | 物理スレッドは止めた・再開したを 1 回ずつ出す |
+| `[SEED KEY FRAME] f=N Escape:down+up` | 置き換えたキー（戻るキー → Escape）の入力状態（`app/key_diag.rs`。§14.5） | スクリプトの `GetKeyDown` / `GetKeyUp` が読むフレーム末の値 |
+| `[SEED SAVE TEST] …` | 検証用のセーブ書き換え（`debug.seed.save_test` が 1 か 2 のときだけ。§14.6） | 起動時に読んだ値と書き換えた値 |
 | `[SEED PANIC] ...` / タグ `RustPanic` | panic フック（liblog へ同期で直接）／android-activity | 場所（ファイル:行）と backtrace |
 | `wgpu_hal::... / wgpu_core::...: ...` | 依存クレートの log（android_logger） | `naga` の Info は多すぎるため Warn 以上だけ出す |
 
@@ -305,6 +330,10 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
   Activity が終わり、プロセスが終了する）→ `adb shell setprop debug.seed.panic_test 0` で戻す。
 - 複数指の合成タッチ列で確認する: `adb shell setprop debug.seed.touch_test 1` → 起動（最初のフレームの 2 秒後に
   3 本指の列が 1 回流れる。§12.3）→ `adb shell setprop debug.seed.touch_test 0` で戻す。
+- セーブの書き出しタイミングを確認する: `adb shell setprop debug.seed.save_test 1`（または 2）→ 手順は §14.6 →
+  `adb shell setprop debug.seed.save_test 0` で戻す。
+- `[PLAY_WD] stuck at stage=frame_end … (A)イベントループスレッド自体がブロック` はバックグラウンド中に 5 秒ごとに出るが、
+  イベントループが Wait で眠っているだけの誤報（既存の一時診断。backlog）。
 - APK に入る .so はシンボルが削られているため backtrace の多くは `<unknown>`。
   未ストリップの `app/src/main/jniLibs/<ABI>/libSEED.so` と NDK の `llvm-addr2line` で後から解決できる。
 
@@ -328,7 +357,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | 回転 4 方向 | `adb emu rotate`。`Resized 2400x1080` / `1080x2400` で描画継続 | `cmd window fixed-to-user-rotation enabled` ＋ `cmd window user-rotation lock 0〜3` で同じ結果（検証後は元の設定に戻した） |
 | ホーム → 復帰（`KEYCODE_HOME` → `am start`） | `suspended` → `released` → heartbeat `+0` → `recreated 1080x2400` → 描画再開 | 同じ（復帰の `am start` は HOT で 28 ms） |
 | タッチ（`input tap` / `input swipe`） | `[SEED TOUCH] Started ... / Ended ... moves=21` | 同じ。adb の操作とは別に、画面を指でなぞった操作も届いた |
-| 戻るキー | `[SEED KEY] pressed logical=Named(BrowserBack)`。Activity は終わらない | 同じ |
+| 戻るキー | `[SEED KEY] pressed logical=Named(BrowserBack)`。Activity は終わらない（段階A-3 で Escape に置き換え。§14.5） | 同じ |
 | panic（`debug.seed.panic_test=1`） | `[SEED PANIC] ... 場所` と backtrace → Activity 終了 → `onDestroy` でプロセス終了 | 同じ |
 | 音声（oboe） | 未確認 | 初期化まで確認（`OboeAudio: OboeVersion1.8.1`、`AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK`。音は出していない） |
 | アセットの置き場 | 外部アプリ専用フォルダへの adb push でも、run-as で内部フォルダへ送っても読めた | **adb push は Permission denied**（shell 所有のフォルダになる）。run-as で内部フォルダへ送る方式で読めた（§4.5） |
@@ -337,7 +366,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | SELinux | — | `avc: denied { search }` が cgroup / cgroup2 のルートに対して 4 件（`android_main` スレッド・最初のフレーム時。CPU 数の問い合わせで cgroup を見に行ったものと推測）。動作に影響なし |
 | ドライバ・wgpu の警告 | `Missing downlevel flags: SURFACE_VIEW_FORMATS` | `Unrecognized present mode SHARED_DEMAND_REFRESH / SHARED_CONTINUOUS_REFRESH`（wgpu が知らない Android 固有の提示モード。無害）。Mali ドライバの警告・検証エラーは無し |
 | 16KB ページ | — | 端末は 4KB ページ（`getconf PAGE_SIZE` = 4096）。.so は 16KB 整列なのでどちらでも読める。16KB 関連のログは無し |
-| キャッシュ・保存先 | 2 回目の起動でモデルキャッシュがヒット | 内部フォルダの `cache/` に書けた（初回ロード 160 ms・`bc=false`） |
+| キャッシュ・保存先 | 2 回目の起動でモデルキャッシュがヒット | 内部フォルダの `cache/` に書けた（初回ロード 160 ms・`bc=false`）。置き場は段階A-3 で変更（§14.1） |
 | Windows | `cargo check` / `cargo build` が通り、`SEED.exe` が従来どおり生成（GPU 選択用エクスポートも維持） | 実機向けの修正後も同じ |
 
 ---
@@ -349,18 +378,18 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 - **スクリプト（C#）は動かない**（段階B）。
 - アセットは APK 内の pak（パッケージ実行。リリース版でも動く）か、デバッグ版 APK の run-as で内部アプリ専用フォルダへ
   送ったもの（開発用）を読む（§13）。
-- **パッケージ実行ではセーブ・キャッシュを書けない**。保存先が実行ファイル基準（Android では `/system/bin/saved` 等）に
-  なるため（エラーを返すだけで落ちない）。開発用の置き場で起動したときは従来どおり内部フォルダに書ける。振り替えは段階A の次の作業（§13.7）。
+- セーブ・キャッシュは起動モードに関係なくアプリ専用フォルダ（`files/save/`・`cache/`）に書く（段階A-3 で振り替え。§14.1）。
 - タッチは入力システムへつながった（§12）。ただしスクリプト（`Input.GetTouch` 等）は段階B まで Android で動かないため、
   実機で効くのは「指0 → マウス」経由のもの（キャンバス UI のポインタイベントの判定・入力状態）だけ。
   ポインタイベントの配信先もスクリプトなので、実機でボタンが反応するところまでは段階B で確認する。
 - **Activity の破棄＝プロセス終了**。winit 0.30 は onDestroy をアプリへ通知しない（イベントループが終わらず
   GameActivity の onDestroy が android_main の終了を待ち続けて ANR になる）うえ、EventLoop はプロセスで 1 度しか
   作れないため、`MainActivity.onDestroy` でプロセスを終了させている。構成変更での作り直しは `configChanges` で防いでいる。
-- 戻るキーは何もしない（ネイティブ側で消費される）。
-- バックグラウンド中もエンジンの物理スレッド等は回り続ける（イベントループ自体は `ControlFlow::Wait` で眠る）。
-- パイプラインキャッシュの置き場が「実行ファイルの隣」前提のため Android では保存されず、毎回シェーダを作り直す
-  （エミュレータで約 1.6 秒、実機で約 3.4 秒）。
+  セーブはバックグラウンドへ回る時点（suspended）と、終了直前の JNI 呼び出しで書き出す（段階A-3。§14.2）。
+- 戻るキーは `KeyCode.Escape` としてスクリプトへ届く。アプリは自動で終了しない（段階A-3。§14.5）。
+- バックグラウンド中は物理スレッドを止める（段階A-3。§14.4）。音声・ゲームパッド（gilrs）のスレッドは止めていない。
+- パイプラインキャッシュはアプリのキャッシュフォルダへ保存し、2 回目以降の起動で読む（段階A-3。§14.3）。
+  実機での短縮幅は未計測（エミュレータはホスト側ドライバのキャッシュが効くため差が小さい。§14.7）。
 - ゲームパッド（gilrs）は Android 非対応（初期化に失敗して「パッド無効」で続行）。
 - 音声（rodio → cpal → oboe）は実機で出力ストリームを開くところまで確認。実際に音が鳴るかは未確認。
 - **実機の描画は重い**。Pixel 6a の debug ビルドで縦 約 18〜19 fps（GPU 待ちが支配的と見られる）。デスクトップ向けの描画経路
@@ -374,7 +403,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | 段階 | 内容 |
 |---|---|
 | **0（完了）** | 実機/エミュレータに 1 枚絵。libSEED.so ＋ Gradle ＋ GameActivity、logcat、サーフェスの破棄・再生成、回転追従 |
-| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API、音声、logcat の整備 |
+| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API、音声、logcat の整備 |
 | **B** | スクリプト: ScriptPackager の事前コンパイル DLL と linux-bionic 向け CoreCLR ランタイムパックを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: 実行先セレクタ（PC／実機／エミュレータ）、ビルド → install → 起動 → logcat → 停止、pak/DLL だけ push する高速経路、パッケージ化ウィンドウの Android 出力の実働化（`build_and_run.ps1` の各関数が土台） |
 | **D** | Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
@@ -423,6 +452,22 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 - Activity が `singleTask` なので、動いている最中に `am start` しても前面へ出るだけで作り直されない。送り直したアセットや
   入れ直した .so を読ませるには `am force-stop` してから起動する（`build_and_run.ps1` は毎回そうしている）。
 - 実機の縦画面より横画面のほうが fps が高かった（18〜19 fps 対 37〜39 fps。描画する画素数は同じ）。原因は未調査（段階D）。
+- **wgpu のパイプラインキャッシュに別アダプタのデータを渡すと、`fallback: true` でも検証エラーになる**
+  （wgpu-core の `PipelineCacheValidationError::DeviceMismatch` は「避けられた誤り」扱い）。エラーハンドラが無いと
+  その場で panic する。ファイル名をアダプタごと（`wgpu::util::pipeline_cache_key`）に分け、読み込みはエラースコープで
+  囲んで、弾かれたら空のキャッシュで作り直している（§14.3）。版違い・破損は fallback で黙って空になる。
+- エミュレータ（gfxstream）の Vulkan アダプタはホストの GPU のベンダー ID・デバイス ID をそのまま名乗る
+  （この PC ではデスクトップの SEED.exe と同じ `wgpu_pipeline_cache_vulkan_4318_9504`）。ホスト側のドライバが自前の
+  シェーダキャッシュを持つので、エミュレータではパイプラインキャッシュの効果がほとんど見えない。効果の計測は実機で行う。
+- **バックグラウンドの Activity を破棄させる（onDestroy を起こす）**には `adb shell am stack list` で SEED の
+  RootTask id を調べて `adb shell am stack remove <id>`（最近のタスクから消したのと同じ）。`am kill` / `am force-stop` は
+  コールバック無しでプロセスを殺すので onDestroy も suspended も来ない。
+- 環境変数の書き換え（`std::env::set_var`）は Rust 2024 で unsafe（他スレッドの getenv と競合する）。
+  ネイティブのスレッドが無い `MainActivity.onCreate` の super.onCreate より前に Java の `Os.setenv` で行う。
+- winit の `suspended` は android-activity の `TerminateWindow` から同期で呼ばれ、glue は処理が終わるまで UI スレッドを
+  待たせる（`android_app_set_window`）。ここで書いたセーブは、直後にプロセスが殺されても残る（ただし長く掛けると ANR）。
+- Git Bash から `adb shell date +'%m-%d …'` のように空白を含む引数を渡すと端末側で分割される（`adb shell` は連結して
+  端末のシェルへ渡す）。`adb shell "date +'%m-%d %H:%M:%S.000'"` と 1 引数にする。
 
 ## 11. .NET ランタイムのスパイク結果（2026-09-24、段階B の前提）
 
@@ -768,13 +813,160 @@ dotnet run --project editor/tools/SeedPak -- --project D:\path\to\Project --out 
 
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
-- **パッケージ実行ではセーブ・キャッシュを書けない（段階A の次の作業 A-3）**。`save/path.rs` と `package_layout::decide_cache_dir` は
-  パッケージ実行（`is_packaged()`）で実行ファイル基準（Android では `/system/bin/saved`・`/system/bin/caches`）になり、
-  書き込みはエラーを返すだけで落ちない。開発用の経路では従来どおり内部フォルダの `save/`・`cache/` に書ける。
-- モデルの派生キャッシュは PAK 実行では効かない（Windows の配布物と同じ。[packaging.md](packaging.md) §8）。パイプラインキャッシュも
-  保存されない（§8）。
+- ~~パッケージ実行ではセーブ・キャッシュを書けない~~ → 段階A-3 でアプリ専用フォルダへ振り替えた（§14.1）。
+- モデルの派生キャッシュは PAK 実行では効かない（Windows の配布物と同じ。[packaging.md](packaging.md) §8）。パイプラインキャッシュは
+  段階A-3 から保存される（§14.3）。
 - 段階B（スクリプト）: `App::new` は「アセットルートがあればソースをコンパイル、無ければ事前コンパイル DLL」で分けるが、
   Android のパッケージ実行もアセットルートを持つ。段階B では `package_source` の有無でも分け、DLL を配布物の `bin/` から
   （`PackageSource` で）読む必要がある。
 - APK 内のパスは大文字小文字を区別する（PAK の外に置くファイルは、参照と実名を一致させる）。
 - 読み出しは読み口 1 本の直列化（13.4）。
+
+---
+
+## 14. 保存先の振り替え・セーブの保護・起動基盤（段階A-3・2026-09-24）
+
+パッケージ実行（APK 内 pak）で書けなかったセーブ・キャッシュをアプリ専用フォルダへ振り替え、Android 流の
+「バックグラウンドへ回るときに書き出す」を入れた。あわせて、パイプラインキャッシュの保存（起動の短縮）・
+バックグラウンド中の物理スレッド停止・戻るキーの Escape 化を行った。デスクトップの振る舞いは変えていない
+（パイプラインキャッシュのファイル名だけアダプタごとになった。§14.3）。
+
+### 14.1 書き込み先（`engine/platform/paths.rs`）
+
+| 用途 | Android（パッケージ実行・開発用の置き場とも） | デスクトップ（従来どおり） |
+|---|---|---|
+| セーブ | `/data/user/0/<pkg>/files/save/save.json` | パッケージ実行 `{exe}/saved/`・エディタ Play `{assets}/../save/` |
+| モデルの派生キャッシュ（.smdl） | `/data/user/0/<pkg>/cache/` | パッケージ実行 `{exe}/caches/`・開発 `{assets}/../cache/` |
+| パイプラインキャッシュ | `/data/user/0/<pkg>/cache/wgpu_pipeline_cache_vulkan_<ベンダー>_<デバイス>.bin` | パッケージ実行 `{exe}/caches/`・開発 実行ファイルの隣（ファイル名の規則は同じ） |
+| 環境変数 `TMPDIR` / `HOME` | `cache` / `files` | 触らない |
+
+- `PlatformPaths { data_dir, cache_dir }` は「起動時に 1 回だけ設定する値」（`OnceLock`）。Android の糊（`app_dirs.rs`）が
+  `internal_data_path()`（files）と、その親の `cache`（`platform::paths::android_cache_dir_for_files_dir`。Context.getCacheDir() と
+  同じ場所。無ければ作る）を設定する。デスクトップは設定しない（`None`）ので、`save::path::decide_save_dir`・
+  `package_layout::decide_cache_dir` は従来の規則のまま（単体テストで固定）。
+- 設定されていれば起動モードに関係なく最優先（セーブの規約 2・キャッシュの規則 1）。以前は実行ファイル（app_process）の隣
+  ＝ `/system/bin` を基準にしていたため、パッケージ実行では `/system/bin/saved`・`/system/bin/caches` を指して書けなかった。
+- セーブのフォルダ名は `save`。段階0 からの開発用の置き場（アセットルート files/assets の親の save/）と同じ場所なので、
+  既存の端末のセーブをそのまま引き継ぐ。
+- `TMPDIR` / `HOME` はアプリプロセスに元々無い（zygote から受け継ぐ環境に無い。エミュレータの `/proc/<pid>/environ` で確認）。
+  段階B の .NET（`Path.GetTempPath()`・ユーザーフォルダ系 API）と Rust の `std::env::temp_dir()`（未設定だと
+  アプリから書けない `/data/local/tmp`）のために設定する。ネイティブで `set_var` しないのは、Rust 2024 で unsafe（他スレッドの getenv と
+  競合）になったため。ネイティブのスレッドが無いうちに `MainActivity.onCreate`（super.onCreate の前）で `Os.setenv` し、
+  ネイティブ側は値を読んでログに出すだけ（違っていれば警告）。
+
+### 14.2 セーブの書き出しタイミング
+
+| 契機 | 経路 | 備考 |
+|---|---|---|
+| バックグラウンドへ回る（ホーム・アプリ切り替え・画面オフ・最近のタスク） | winit の `suspended` → `app/background_lifecycle.rs` の `enter_background` → `save::flush_if_dirty()` | 同期で書く。android-activity の glue はこの処理が終わるまで UI スレッドを待たせるので、直後にプロセスが殺されても残る |
+| Activity の破棄（アプリを閉じる・最近のタスクから消す） | `MainActivity.onDestroy` → JNI `nativeFlushSaveData`（`jni_exports.rs`）→ `save::flush_if_dirty()` → `Process.killProcess` | 保険。通常は onStop（ウィンドウ破棄 → suspended）で書き出し済みで「未書き出しの変更なし」になる |
+| スクリプトの `SaveData.Save()` | 従来どおり | 段階B |
+
+- JNI は命名規則（`Java_com_seedengine_runtime_MainActivity_nativeFlushSaveData`）で結び付く（`System.loadLibrary` 済みのため）。
+  JNIEnv を触らないので jni クレートは使っていない。UI スレッドから呼ぶが、セーブのストアは Mutex で守られている。
+  panic は JNI の境界で受け止め、ログは liblog へ直接書く（プロセス終了の直前でも消えない）。
+- 背面へ回る処理の順序は「セーブ → パイプラインキャッシュ → 物理停止の印（`background_gate`）」。印を見た後の書き換えは
+  その suspended の書き出しに含まれないと言い切れる（検証用フックのモード 2 がこれを使う）。
+- 前面のまま `am force-stop`・OS による強制終了・クラッシュでは、直前の背面移行以降の変更は失われる（Windows の強制終了と同じ）。
+- 「Activity の破棄＝プロセス終了」の方針（§8）は変えていない（winit 0.30 が onDestroy を知らせないため）。
+
+### 14.3 パイプラインキャッシュ（`renderer/pipeline_cache/`）
+
+wgpu 25 の `Features::PIPELINE_CACHE`（Vulkan のみ）が使える環境で、キャッシュを 1 つ作って全パイプラインの生成に渡し、
+中身をファイルへ保存して次回起動で読む。非対応の環境（feature 無し）では従来どおりキャッシュ無し。
+
+- 以前もキャッシュ自体は作っていたが、(1) 置き場が実行ファイル基準で Android では保存できなかった、(2) 一部の生成箇所
+  （テキスト・2D/3D プリミティブ・軸ギズモ・アイコン・操作ガイド・Hi-Z・シェーディングアセット・水面・インタラクション場・
+  屈折ピラミッド）が `cache: None` だった、(3) 保存が Renderer の Drop だけで、Android では走らなかった。
+- 全生成箇所（`create_render_pipeline` / `create_compute_pipeline` の 34 か所と `RenderPipelineBuilder` 経由）がキャッシュを受け取る。
+  Renderer から引数で渡せない箇所は `pipeline_cache::shared::shared()`（Renderer が登録した複製。wgpu のハンドルは複製しても
+  同じキャッシュを指す）を使う。キャッシュはデバイス専用だが、アプリのデバイスは Renderer の 1 つだけ。
+- ファイル名は `wgpu::util::pipeline_cache_key`（バックエンド・ベンダー ID・デバイス ID）＋ `.bin`。GPU が 2 つある PC でも
+  交互に上書きしない。旧 `pipeline_cache.bin` は新しい名前のファイルが無いときだけ読む（デスクトップの移行用。保存はしない）。
+- 保存: Android は `suspended` のたび、デスクトップは Renderer の Drop。内容のハッシュが前回の読み込み・保存と同じなら書かない。
+  `<名前>.bin.tmp` へ書いてから rename（書き込み中に殺されても壊れたファイルを残さない）。
+- 読み込み: wgpu の検証で弾かれるデータ（ドライバ更新・破損は fallback で黙って空。別アダプタは fallback でも検証エラー。§10）は
+  エラースコープで捕まえて空のキャッシュで作り直す。読み込んだ大きさと採用後の大きさをログに出す（採用後が小さければ弾かれた）。
+- `build_and_run.ps1` は起動のたびに `am force-stop` するので、ホームへ戻さずに作業を繰り返すと保存されない（backlog）。
+
+### 14.4 バックグラウンド中の停止（物理スレッド・ゲーム時間）
+
+- `core/background_gate.rs`: 前面・背面の共有状態（AtomicBool ＋ Mutex/Condvar）。App の suspended（書き出しの後）で背面、
+  2 回目以降の resumed（サーフェスを作り直せたとき）で前面。初回の resumed の後にも前面を確定させる。
+- 物理スレッド（3D `physics/thread.rs`・2D `physics/thread2d.rs`。キャンバスごとの 2D も）はコマンドを捌いた直後に
+  `physics/background_pause.rs` を呼び、背面の間はステップを進めず条件変数で眠る。前面へ戻れば即座に起きる。
+  背面の間も 250 ms ごとに起きてコマンド（Stop・同期の問い合わせ）を捌く。ゲーム側の Pause（タイムライン）とは独立。
+  復帰時は次ステップ時刻を今へ合わせ直し、背面にいた時間ぶんのステップを取り戻さない。
+- 前面へ戻った最初のフレームは `Clock::forget_elapsed` で背面にいた時間を捨てる（delta が背面の時間になり、
+  ConstantUpdate がその時間ぶん連続で回るのを防ぐ）。
+- デスクトップは suspended が来ないので不変（物理スレッドは毎ループ Atomic の読み取り 1 回だけ）。
+- 音声（rodio → oboe）とゲームパッド（gilrs）のスレッドは止めていない（backlog）。
+
+### 14.5 戻るキー
+
+- GameActivity は戻るキー（ナビゲーションバーの戻る・戻るジェスチャ）をネイティブへ渡し、winit は
+  `physical_key=Unidentified(NativeKeyCode::Android(4))`・`logical_key=Named(BrowserBack)` で届ける。エンジンの KeyCode に
+  無いので、これまでは入力状態に入らず捨てられていた。
+- `core/input/key_remap.rs` の置き換え表（データ）で `KEYCODE_BACK`（4）→ `KeyCode::Escape`。どの表を使うかは
+  `PlatformTraits::key_remap`（Android だけ。デスクトップは空の表）。`app/event_handler.rs` の on_keyboard_input が
+  入力状態へ入れる前に引くので、スクリプトの `Input.GetKeyDown(KeyCode.Escape)` で拾える（Unity と同じ）。
+- アプリは自動で終了しない（ネイティブ側が処理済みにするので onBackPressed は呼ばれない。§10）。ポーズ・終了確認はスクリプトが決める。
+- 置き換え元を論理キー（BrowserBack）でなく Android のキーコードにしたのは、PC のキーボードの「ブラウザの戻る」キー
+  （物理キー KeyCode::BrowserBack）と混同しないため。
+
+### 14.6 確認方法
+
+```bash
+# 1) 書き込み先: 起動ログの「書き込み先: …」「環境変数 TMPDIR=…」「[SEED SAVE] save file: …」
+adb exec-out run-as com.seedengine.runtime sh -c 'ls -la files/save cache; cat files/save/save.json'
+
+# 2) セーブ（検証用フック。スクリプトの代わりに起動時にカウンタを書き換える。debug_save_test.rs）
+adb shell setprop debug.seed.save_test 1
+#   起動 → ホーム（suspended で書き出し）→ adb shell am kill com.seedengine.runtime → 起動 → 増えた値が読める
+#   比較: 前面のまま adb shell am force-stop → 起動 → 増える前の値のまま（書き出しは背面へ回るときだけ）
+adb shell setprop debug.seed.save_test 2    # 加えて、背面へ回った後（書き出しの後）に LATE キーを書き換える
+#   起動 → ホーム → adb shell am stack list で SEED の RootTask id → adb shell am stack remove <id>
+#   （Activity が破棄され onDestroy の JNI が書き出す）→ 起動 → LATE キーが読める
+#   比較: ホーム → am kill → 起動 → LATE キーは前の値のまま
+adb shell setprop debug.seed.save_test 0    # 必ず戻す
+
+# 3) パイプラインキャッシュ: 起動 → ホーム（保存）→ am kill → 起動。「読込 N KiB → 採用後 M KiB」と
+#    [SEED INIT] DrawContext created (N ms) を比べる。効果だけを見るには、キャッシュファイルを消した起動と比べる
+adb exec-out run-as com.seedengine.runtime sh -c 'rm -f cache/wgpu_pipeline_cache_*.bin'
+
+# 4) 物理スレッド: ホーム中に [SEED PHYSICS] の停止ログ。スレッドごとの CPU 時間は
+#    run-as で /proc/<pid>/task/*/stat の utime+stime（14・15 番目）を 2 回読んで差を取る
+
+# 5) 戻るキー（押して離す／長押し）
+adb shell input keyevent KEYCODE_BACK
+adb shell input keyevent --longpress KEYCODE_BACK
+```
+
+### 14.7 確認結果（2026-09-24）
+
+エミュレータ（AVD `seed_pixel6_api35`・API 35・x86_64）。アセットは最小構成（§7）。パッケージ実行（`-ProjectDir`）で確認し、
+書き込み先は開発用の置き場（`-AssetsDir`）でも確認した。デスクトップは `SEED.exe` 単体の Play（同じ最小構成）。
+
+| 項目 | 結果 |
+|---|---|
+| 書き込み先 | 「書き込み先: データ（セーブ）=/data/user/0/com.seedengine.runtime/files / キャッシュ=/data/user/0/com.seedengine.runtime/cache」、`[SEED SAVE] save file: …/files/save/save.json`（パッケージ実行・開発用の置き場の両方）。`TMPDIR=…/cache`・`HOME=…/files` |
+| セーブ（suspended） | save_test=1: 起動時 None → メモリ上で 1 → ホームで「[SEED SAVE] suspended: 未書き出しの変更を書き出しました」→ save.json に 1 → am kill → 再起動で Some(1)。比較（前面のまま force-stop）: メモリ上の 2 は残らず Some(1) |
+| セーブ（onDestroy の JNI） | save_test=2: ホームの書き出しの後に LATE=2（メモリ上）→ `am stack remove` → 「MainActivity.onDestroy … → セーブを書き出してプロセスを終了します」「[SEED SAVE] onDestroy（プロセス終了前）: 未書き出しの変更を書き出しました」→ save.json に LATE=2 → 再起動で Some(2)。比較（ホーム → am kill）: LATE=3 は残らず Some(2) |
+| パイプラインキャッシュ | 初回「保存済みのファイル無し（初回）」→ ホームで「保存 1796 KiB（2.3 ms）」→ 2 回目「読込 1796 KiB → 採用後 1796 KiB」。変化が無い背面移行は「変化なし（1796 KiB）のため保存しません」 |
+| 生成時間（エミュレータ） | インストール直後の最初の起動は `描画パイプライン生成 合計` 3141 ms、2 回目 1256 ms。ただしこの差の大半はホスト側（gfxstream 経由の NVIDIA ドライバ）のシェーダキャッシュで、キャッシュファイルの有無だけを切り替えた比較（同じ温まり方で 2 回ずつ）は無し 1236 / 1236 ms、有り 1158 / 1145 ms（約 7% 減）。実機（Mali）での短縮幅は未計測 |
+| 物理スレッド | ホームで「[SEED PHYSICS] 2D / 3D 物理スレッド: アプリがバックグラウンドのためステップを止めて眠ります」、前面で「…前面へ戻ったのでステップを再開します（止めていた時間 21.6 秒）」。スレッドごとの CPU 時間（1 tick＝10 ms）: 前面 約 7 秒で 3D 65・2D 16 tick、背面 約 11 秒で 2・1 tick |
+| 戻るキー | `input keyevent KEYCODE_BACK` → `[SEED KEY] pressed logical=Named(BrowserBack) physical=Unidentified(Android(0x0004))` → `[SEED KEY FRAME] f=1235 Escape:down+up`。長押しは down と up が別フレーム。Activity は前面のまま |
+| デスクトップ（SEED.exe の Play → ウィンドウを閉じる） | 1 回目: 「旧ファイル名から読込 3079 KiB → 採用後 3079 KiB: …\target\debug\pipeline_cache.bin（保存は …\wgpu_pipeline_cache_vulkan_4318_9504.bin）」→ 終了時「保存 3130 KiB（3.1 ms）」。2 回目: 「読込 3130 KiB → 採用後 3130 KiB」→ 終了時「変化なし」。モデルキャッシュは従来どおりアセットルートの親の `cache/` |
+
+実機（Pixel 6a）は、作業中は端末が私物として使用中（別アプリが前面）で、その後 USB の接続も外れたため未実施。
+
+### 14.8 制限・持ち越し
+
+詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
+
+- 実機（Pixel 6a）での確認が未実施。特にパイプラインキャッシュの短縮幅（段階0 の実測ではパイプライン生成 約 3.4 秒）。
+- `build_and_run.ps1` は毎回 force-stop してから起動するので、開発中にホームへ戻さないとパイプラインキャッシュが保存されない
+  （最初のフレームの後にも 1 回保存する案）。
+- 背面中も音声・ゲームパッド（gilrs）のスレッドは動く。`[PLAY_WD]` の監視ログが背面中に誤報を出す（既存の一時診断）。
+- 前面のまま強制終了された分のセーブは失われる（仕様）。
+- 起動の初期化（handle_resumed）が android_main スレッドで同期に走る問題（ANR の恐れ）は変わっていない（backlog の既存項目）。

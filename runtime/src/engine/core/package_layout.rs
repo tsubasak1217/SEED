@@ -22,7 +22,7 @@
 //      SEEDScripting.dll / SEEDScripting.runtimeconfig.json / SEEDScripting.deps.json
 //      Microsoft.CodeAnalysis*.dll / SEEDUserScripts.dll
 //      dotnet/               … 同梱 .NET ランタイム（self-contained 配布）
-//    caches/                 … 実行時生成（モデル派生キャッシュ *.smdl / pipeline_cache.bin）
+//    caches/                 … 実行時生成（モデル派生キャッシュ *.smdl / パイプラインキャッシュ wgpu_pipeline_cache_*.bin）
 //    logs/                   … 実行時生成（起動ログ seed_*.log）
 //    saved/                  … 実行時生成（セーブデータ save.json）
 //  ```
@@ -34,8 +34,11 @@
 //
 //  【Android】
 //  配布物の読み取り専用部分（assets.pak と PAK 外の assets/）は APK の assets/seed/ に
-//  同じ相対構成で入る（読むのは engine::package_source の実装）。書き込む caches / logs / saved は
-//  APK に置けないため、端末の内部ストレージへの振り替えが別途要る（docs/android.md）。
+//  同じ相対構成で入る（読むのは engine::package_source の実装）。書き込む caches / saved は
+//  APK に置けないため、端末のアプリ専用フォルダへ振り替える（engine::platform::paths が与える。
+//  キャッシュは `decide_cache_dir` の `platform_cache_dir`＝/data/user/0/<pkg>/cache、
+//  セーブは save::path の規約 2＝files/save。docs/android.md §14）。logs（起動ログ）は Android では
+//  書かない（logcat へ出す）。
 //
 //  【エディタ側の対応物】
 //  `editor/src/Packaging/PackageLayout.cs` が同じ名前の定数を持つ。
@@ -132,6 +135,8 @@ pub fn saved_dir(exe_dir: &Path) -> PathBuf {
 /// パイプラインキャッシュは exe の隣）ため、呼び出し側が `dev_dir` で渡す。
 ///
 /// # 引数
+/// * `platform_cache_dir` - プラットフォームが与えるキャッシュフォルダ（Android の
+///   `/data/user/0/<pkg>/cache`。`platform::paths::cache_dir()`。デスクトップは `None`）
 /// * `packaged` - パッケージ実行か（`asset_fs::is_packaged()`）
 /// * `exe_dir`  - 実行ファイルのあるフォルダ（取得できなければ `None`）
 /// * `dev_dir`  - パッケージ実行でないときに使う置き場（決められなければ `None`）
@@ -140,10 +145,17 @@ pub fn saved_dir(exe_dir: &Path) -> PathBuf {
 /// キャッシュを置くフォルダ。決められない場合は `None`
 /// （呼び出し側はキャッシュを諦める＝機能は落とさない）。
 pub fn decide_cache_dir(
+    platform_cache_dir: Option<&Path>,
     packaged: bool,
     exe_dir: Option<&Path>,
     dev_dir: Option<PathBuf>,
 ) -> Option<PathBuf> {
+    // プラットフォームがキャッシュフォルダを与えていれば（Android）、起動モードに関係なくそこへ置く。
+    // 実行ファイルの隣（/system/bin）もアセットルートの親も書けるとは限らないため。
+    if let Some(dir) = platform_cache_dir {
+        return Some(dir.to_path_buf());
+    }
+
     // パッケージ実行では配布フォルダの中の caches/ に集約する。
     // 実行ファイルの位置が取れないときだけ開発時の置き場へ落ちる
     // （ゲームを起動できなくするほどの事情ではない）。
@@ -189,6 +201,7 @@ mod tests {
     #[test]
     fn packaged_cache_dir_uses_exe_caches() {
         let dir = decide_cache_dir(
+            None,
             true,
             Some(Path::new("D:/Games/MyGame")),
             Some(PathBuf::from("C:/repo/runtime/cache")),
@@ -200,6 +213,7 @@ mod tests {
     #[test]
     fn dev_cache_dir_is_passed_through() {
         let dir = decide_cache_dir(
+            None,
             false,
             Some(Path::new("C:/repo/runtime/target/debug")),
             Some(PathBuf::from("C:/repo/runtime/cache")),
@@ -210,14 +224,25 @@ mod tests {
     /// パッケージ実行でも exe の位置が取れなければ開発時の置き場へ落ちる。
     #[test]
     fn packaged_without_exe_dir_falls_back_to_dev_dir() {
-        let dir = decide_cache_dir(true, None, Some(PathBuf::from("C:/fallback/cache")));
+        let dir = decide_cache_dir(None, true, None, Some(PathBuf::from("C:/fallback/cache")));
         assert_eq!(dir, Some(PathBuf::from("C:/fallback/cache")));
     }
 
     /// どちらも決められないときは None（キャッシュ無しで動く）。
     #[test]
     fn no_information_yields_none() {
-        assert_eq!(decide_cache_dir(true, None, None), None);
-        assert_eq!(decide_cache_dir(false, Some(Path::new("C:/game")), None), None);
+        assert_eq!(decide_cache_dir(None, true, None, None), None);
+        assert_eq!(decide_cache_dir(None, false, Some(Path::new("C:/game")), None), None);
+    }
+
+    /// プラットフォームのキャッシュフォルダ（Android）は、パッケージ実行でも開発用の置き場でも最優先。
+    /// 実行ファイルの隣（/system/bin/caches）へ行かないこと（A-2 までの不具合の回帰防止）。
+    #[test]
+    fn platform_cache_dir_wins_in_both_modes() {
+        let platform = Path::new("/data/user/0/com.seedengine.runtime/cache");
+        let exe = Some(Path::new("/system/bin"));
+        let dev = || Some(PathBuf::from("/data/user/0/com.seedengine.runtime/files/cache"));
+        assert_eq!(decide_cache_dir(Some(platform), true, exe, dev()), Some(platform.to_path_buf()));
+        assert_eq!(decide_cache_dir(Some(platform), false, exe, dev()), Some(platform.to_path_buf()));
     }
 }

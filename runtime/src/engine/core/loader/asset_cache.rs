@@ -10,6 +10,8 @@
 //  ・2 回目以降:   キャッシュ（bincode）を読むだけ。デコード・パース・LOD 生成を全てスキップ。
 //
 //  【キャッシュ配置】
+//  ・プラットフォームがキャッシュフォルダを与えている（Android）: そのフォルダ
+//    （`/data/user/0/<pkg>/cache`。起動モードに関係なく。`platform::paths`）
 //  ・開発 / エディタ実行: `{assets_root}/../cache/`
 //    （assets 外。プロジェクト設定・PAK には含めない）
 //  ・パッケージ実行:      `{exe のフォルダ}/caches/`
@@ -140,8 +142,8 @@ pub fn bc_supported() -> bool {
 
 /// キャッシュディレクトリを返す（決められないなら None）。
 ///
-/// 環境（パッケージ判定・実行ファイル位置・アセットルート）を集めて
-/// `package_layout::decide_cache_dir` へ渡すだけの薄い層。
+/// 環境（プラットフォームのキャッシュフォルダ・パッケージ判定・実行ファイル位置・アセットルート）を
+/// 集めて `package_layout::decide_cache_dir` へ渡すだけの薄い層。
 /// 判定そのものは純関数側にあるのでユニットテストできる。
 ///
 /// モデル変換キャッシュ（`.smdl`）以外にも、サムネイル PNG の置き場
@@ -159,6 +161,7 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
 
     crate::engine::core::package_layout::decide_cache_dir(
+        crate::engine::platform::paths::cache_dir(),
         crate::engine::asset_fs::is_packaged(),
         exe_dir.as_deref(),
         dev_dir,

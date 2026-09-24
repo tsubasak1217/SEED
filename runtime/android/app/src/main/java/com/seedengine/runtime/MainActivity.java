@@ -4,8 +4,9 @@
 //  GameActivity（AGDK）を継承するだけの薄いクラス。描画・入力・ゲームループはすべて
 //  ネイティブ側（libSEED.so の android_main → エンジン）で動き、ここでは
 //    ・ネイティブライブラリの読み込み
+//    ・環境変数 TMPDIR / HOME をアプリのフォルダへ向ける（理由は setAppDirectoryEnvironment のコメント）
 //    ・全画面（システムバーを隠す）
-//    ・Activity 破棄時のプロセス終了（理由は onDestroy のコメント）
+//    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
 //  だけを行う。全体像は docs/android.md。
 // ============================================================
 
@@ -13,6 +14,8 @@ package com.seedengine.runtime;
 
 import android.os.Bundle;
 import android.os.Process;
+import android.system.ErrnoException;
+import android.system.Os;
 import android.util.Log;
 
 import androidx.core.view.WindowCompat;
@@ -36,16 +39,54 @@ public class MainActivity extends GameActivity {
     /** logcat のタグ（ネイティブ側と同じにして `adb logcat -s SEED` で一緒に見えるようにする）。 */
     private static final String LOG_TAG = "SEED";
 
+    /** 一時ファイルの置き場を指す環境変数（.NET の Path.GetTempPath・Rust の std::env::temp_dir が読む）。 */
+    private static final String TEMP_DIR_ENV = "TMPDIR";
+
+    /** ユーザーのホームを指す環境変数（.NET のユーザーフォルダ系 API が読む）。 */
+    private static final String HOME_DIR_ENV = "HOME";
+
     static {
         // GameActivity も onCreate で読み込むが、失敗を最も早い段階で明確に出すためここでも読む
         // （2 回目の loadLibrary は何もしない）。
         System.loadLibrary(NATIVE_LIBRARY_NAME);
     }
 
+    /**
+     * 未書き出しのセーブデータを同期でディスクへ書き出す（libSEED.so の jni_exports.rs）。
+     *
+     * <p>プロセスを終える直前（onDestroy）の保険。通常はバックグラウンドへ回った時点
+     * （ネイティブ側の suspended）で書き出し済みで、何も書かずに戻る。</p>
+     */
+    private static native void nativeFlushSaveData();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
+        setAppDirectoryEnvironment();
         super.onCreate(savedInstanceState);
         hideSystemBars();
+    }
+
+    /**
+     * 環境変数 TMPDIR をアプリのキャッシュフォルダ、HOME をアプリのデータフォルダ（files）へ向ける。
+     *
+     * <p>Android のアプリプロセスではこれらが設定されていない（zygote から受け継ぐ環境に無い。API 35 の
+     * エミュレータで /proc/&lt;pid&gt;/environ を見て確認）。段階B で載せる .NET は
+     * Path.GetTempPath() が TMPDIR（無ければ Android に無い /tmp/）を、ユーザーフォルダ系の API が HOME を使い、
+     * Rust の std::env::temp_dir() も TMPDIR（無ければアプリから書けない /data/local/tmp）を使うため、
+     * 起動時に向けておく（docs/android.md §11.2・§14）。</p>
+     *
+     * <p>ネイティブ側で設定しないのは、環境変数の書き換えが他スレッドの getenv と競合するため
+     * （Rust 2024 では std::env::set_var が unsafe）。ネイティブのスレッドが 1 本も無い
+     * super.onCreate の前にここで済ませる。失敗しても起動は続ける（ログだけ残す）。</p>
+     */
+    private void setAppDirectoryEnvironment() {
+        try {
+            Os.setenv(TEMP_DIR_ENV, getCacheDir().getAbsolutePath(), true);
+            Os.setenv(HOME_DIR_ENV, getFilesDir().getAbsolutePath(), true);
+        } catch (ErrnoException e) {
+            Log.w(LOG_TAG, "環境変数 " + TEMP_DIR_ENV + " / " + HOME_DIR_ENV + " を設定できませんでした: " + e);
+        }
     }
 
     @Override
@@ -71,12 +112,22 @@ public class MainActivity extends GameActivity {
      * </ol>
      * <p>回転などの構成変更ではマニフェストの configChanges により Activity は作り直されないので、
      * ここへ来るのは「アプリを閉じる」ときだけになる。段階A 以降で正式な終了処理に置き換える。</p>
+     *
+     * <p>プロセスを終える前に、ネイティブのセーブの未書き出し分を同期で書き出す（nativeFlushSaveData）。
+     * winit がアプリへ破棄を知らせないため、ここがエンジンの「終了時の保存」に当たる唯一の経路。
+     * 通常はバックグラウンドへ回った時点（onStop のウィンドウ破棄 → suspended）で書き出し済みで、ここは保険。</p>
      */
     @Override
     protected void onDestroy() {
         Log.i(LOG_TAG, "MainActivity.onDestroy (isFinishing=" + isFinishing()
                 + ", isChangingConfigurations=" + isChangingConfigurations()
-                + ") → プロセスを終了します");
+                + ") → セーブを書き出してプロセスを終了します");
+        try {
+            nativeFlushSaveData();
+        } catch (UnsatisfiedLinkError e) {
+            // 古い libSEED.so（関数が無い）でもプロセスは必ず終える。
+            Log.w(LOG_TAG, "nativeFlushSaveData を呼べませんでした: " + e);
+        }
         Process.killProcess(Process.myPid());
         // killProcess は通常戻らない。万一戻った場合に備えて本来の後始末へ進む。
         super.onDestroy();

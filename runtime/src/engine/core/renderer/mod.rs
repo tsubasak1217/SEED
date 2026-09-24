@@ -84,6 +84,9 @@ pub(crate) mod screenshot;
 pub mod present_counter;
 /// 描画サーフェスの破棄・再生成（Android の suspended / resumed）。
 mod surface_lifecycle;
+/// パイプラインキャッシュ（ドライバがコンパイルしたシェーダ）の生成・読み込み・保存と、
+/// 引数で渡せない生成箇所向けの共有ハンドル（アダプタごとのファイル。Android の起動短縮）。
+pub mod pipeline_cache;
 /// アクタ・サムネイル（図鑑画像）生成の純粋ロジック（構図計算・ID マスク・PNG 書き出し）。
 /// GPU/ECS には触らないので単体テストできる。実際の描画駆動は app/thumbnail_ops.rs 側。
 pub mod actor_thumbnail;
@@ -242,43 +245,12 @@ pub use render_features::{RenderFeatures, ResolvedFeatures, ShadowMode, GiMode,
 //  Renderer 本体
 // ============================================================
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-// ============================================================
-//  パイプラインキャッシュ（コンパイル済みシェーダの永続化）
-// ============================================================
-
-/// パイプラインキャッシュのファイル名。
-///
-/// GPU ドライバがコンパイルしたパイプラインのバイナリで、次回起動時の
-/// シェーダコンパイル時間を短縮するためだけに使う（消しても再生成される）。
-const PIPELINE_CACHE_FILE_NAME: &str = "pipeline_cache.bin";
-
-/// パイプラインキャッシュファイルの置き場を決める。
-///
-/// - パッケージ実行: `{exe のフォルダ}/caches/pipeline_cache.bin`
-///   （配布物の実行時生成物は `caches/` に集約する。構成の正典は `core::package_layout`）
-/// - 開発 / エディタ実行: 従来どおり実行ファイルの隣
-///   （`target/debug` などビルド出力の中なので、掃除は `cargo clean` に任せられる）
-///
-/// 実行ファイルの位置が取れない場合は `None`（キャッシュ無しで動く）。
-fn pipeline_cache_path() -> Option<PathBuf> {
-    use crate::engine::core::package_layout;
-
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))?;
-
-    let dir = package_layout::decide_cache_dir(
-        crate::engine::asset_fs::is_packaged(),
-        Some(&exe_dir),
-        Some(exe_dir.clone()),
-    )?;
-    Some(dir.join(PIPELINE_CACHE_FILE_NAME))
-}
+// パイプラインキャッシュ（コンパイル済みシェーダの永続化）の置き場・ファイル名・読み書きは
+// pipeline_cache モジュールにある（Renderer は PersistentPipelineCache を 1 つ持つだけ）。
 
 // ============================================================
 //  深度テクスチャ
@@ -376,9 +348,9 @@ pub struct Renderer {
     /// 撮影は提示テクスチャを一切使わないため、生成中でもユーザーが見ている絵は
     /// 変化しない。詳細は `thumbnail::target` のモジュールコメント参照。
     thumbnail_target: Option<ThumbnailRenderTarget>,
-    /// コンパイル済みパイプライン状態のキャッシュ。
+    /// コンパイル済みパイプライン状態のキャッシュ（ファイルへの保存・読み込みも受け持つ）。
     /// GPU が PIPELINE_CACHE フィーチャーをサポートする場合のみ Some になる。
-    pipeline_cache: Option<wgpu::PipelineCache>,
+    pipeline_cache: Option<pipeline_cache::PersistentPipelineCache>,
 }
 
 impl Renderer {
@@ -648,26 +620,15 @@ impl Renderer {
         let queue  = Arc::new(queue);
 
         // GPU が PIPELINE_CACHE をサポートする場合のみキャッシュを生成する。
-        // `pipeline_cache_path()` が決めた場所からデータを読み込み、
-        // ファイルが存在しない場合・不正データの場合は fallback=true により
-        // 通常コンパイルにフォールバックする。
-        let pipeline_cache = if supports_pipeline_cache {
-            let cache_path = pipeline_cache_path();
-            let cache_data = cache_path.as_ref().and_then(|p| std::fs::read(p).ok());
-
-            // Safety: cache_data は自分のプロセスが書き出したものを読み込む。
-            // fallback=true なので不正データでもパニックせず再コンパイルに移行する。
-            let cache = unsafe {
-                device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
-                    label:    Some("SEED Pipeline Cache"),
-                    data:     cache_data.as_deref(),
-                    fallback: true,
-                })
-            };
-            Some(cache)
-        } else {
-            None
-        };
+        // 置き場（Android はアプリのキャッシュフォルダ）・アダプタごとのファイル名・前回保存分の
+        // 読み込み・壊れたデータの扱いは pipeline_cache モジュールが持つ。
+        // 引数で渡せない生成箇所（遅延生成・DrawContext の外の描画器）のために共有ハンドルにも登録する。
+        let pipeline_cache = pipeline_cache::PersistentPipelineCache::open(
+            &device,
+            &adapter.get_info(),
+            supports_pipeline_cache,
+        );
+        pipeline_cache::shared::install(pipeline_cache.as_ref().map(|c| c.cache()));
 
         let surface_caps   = surface.get_capabilities(&adapter);
         // sRGB フォーマットを優先して選択する。
@@ -841,31 +802,22 @@ impl Renderer {
 
     /// コンパイル済みパイプラインキャッシュへの参照を返す。
     /// GPU が非対応の場合は None を返す。
-    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> { self.pipeline_cache.as_ref() }
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.pipeline_cache.as_ref().map(|c| c.cache())
+    }
 
     // ── パイプラインキャッシュ保存 ──────────────────────────────
 
     /// パイプラインキャッシュをディスクへ書き出す。
     ///
-    /// 置き場は `pipeline_cache_path()`（パッケージ実行なら `{exe}/caches/`）。
-    /// キャッシュが None（GPU 非対応）または `get_data()` が None の場合は何もしない。
-    ///
-    /// 保存先フォルダはパッケージ化では作らない方針（空フォルダは zip で落ちる）ため、
-    /// 書き込み直前にここで作る。作成・書き込みの失敗はいずれも警告 1 行で済ませる
+    /// 置き場・ファイル名・書き方（一時ファイル → 置き換え・内容が変わらなければ書かない）は
+    /// `pipeline_cache::PersistentPipelineCache::save`。呼ばれるのは Drop（デスクトップの終了時）と、
+    /// バックグラウンドへ回るとき（Android の suspended。app/background_lifecycle.rs）。
+    /// キャッシュが None（GPU 非対応）なら何もしない。失敗は警告 1 行で済ませる
     /// （キャッシュが無くても起動時間が伸びるだけで、動作には影響しない）。
     pub fn save_pipeline_cache(&self) {
-        let Some(cache) = &self.pipeline_cache else { return; };
-        let Some(data)  = cache.get_data() else { return; };
-        let Some(path)  = pipeline_cache_path() else { return; };
-
-        if let Some(dir) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                eprintln!("[SEED] pipeline cache dir create failed: {dir:?} err={e}");
-                return;
-            }
-        }
-        if let Err(e) = std::fs::write(&path, &data) {
-            eprintln!("[SEED] pipeline cache save failed: {e}");
+        if let Some(cache) = &self.pipeline_cache {
+            cache.save();
         }
     }
 
@@ -1056,9 +1008,13 @@ impl Renderer {
 // ============================================================
 
 /// `Renderer` がドロップされる際にパイプラインキャッシュを自動保存する。
+///
+/// 共有ハンドル（`pipeline_cache::shared`）の登録も外す。残しておくとキャッシュの複製がデバイスを
+/// 掴んだまま（プロセス終了まで）になり、Renderer と一緒にデバイスが片付かないため。
 impl Drop for Renderer {
     fn drop(&mut self) {
         self.save_pipeline_cache();
+        pipeline_cache::shared::install(None);
     }
 }
 

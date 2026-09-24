@@ -7,6 +7,8 @@
 //    ※ 初回の resumed（ウィンドウ・GPU・シーンの初期化）は app_init.rs の handle_resumed
 //  - 「サーフェスが無いのでフレームを描けない」判定（surface_missing）
 //  - イベントループの制御モード（描画中 / 待機中）の定義
+//  サーフェス以外の出入りの処理（セーブ・パイプラインキャッシュの書き出し、物理スレッドの停止・再開）は
+//  background_lifecycle.rs が受け持つ（呼び分けは render.rs の suspended / resumed）。
 //
 //  【背景】
 //  Android はアプリがバックグラウンドへ回るとネイティブウィンドウ（ANativeWindow）を破棄し、
@@ -49,10 +51,14 @@ impl App {
     ///
     /// 既存の winit Window から描画サーフェスを作り直し、サイズ依存の状態を合わせ直して
     /// 描画ループを再開する。作り直せなかったときは描画を止めたまま次の resumed を待つ。
-    pub(super) fn handle_surface_resumed(&mut self, event_loop: &ActiveEventLoop) {
+    ///
+    /// # 戻り値
+    /// サーフェスを作り直して描画を再開したら true（呼び出し元はシミュレーションも再開する）。
+    /// 作り直せなかったら false（描画もシミュレーションも止めたまま）。
+    pub(super) fn handle_surface_resumed(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let Some(window) = self.window.clone() else {
             eprintln!("[SEED LIFECYCLE][WARN] resumed: ウィンドウが未生成のためサーフェスを作れません");
-            return;
+            return false;
         };
 
         let recreated = self
@@ -61,7 +67,7 @@ impl App {
             .is_some_and(|renderer| renderer.recreate_surface(window.clone()));
         if !recreated {
             eprintln!("[SEED LIFECYCLE][WARN] resumed: サーフェスを作り直せませんでした。次の resumed を待ちます");
-            return;
+            return false;
         }
 
         // バックグラウンド中に端末が回転していれば、ウィンドウの大きさが変わっている。
@@ -72,6 +78,7 @@ impl App {
 
         event_loop.set_control_flow(ACTIVE_CONTROL_FLOW);
         window.request_redraw();
+        true
     }
 
     /// 描画サーフェスが（一時的に）無く、フレームを描けない状態か。

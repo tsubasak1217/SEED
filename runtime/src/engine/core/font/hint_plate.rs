@@ -94,6 +94,8 @@ impl HintPlate {
             3 => Float32x2, // radius [px]（y は詰め物）
             4 => Float32x4, // color
         ];
+        // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+        let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Hint Plate Pipeline"),
             layout: Some(&layout),
@@ -131,7 +133,7 @@ impl HintPlate {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: shared_cache.as_ref(),
         });
 
         Self { pipeline }

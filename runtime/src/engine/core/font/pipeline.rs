@@ -156,6 +156,8 @@ impl TextPipeline {
         };
 
         // ── レンダーパイプライン ───────────────────────────────
+        // 共有のパイプラインキャッシュ（Renderer が作ったもの。未作成・非対応なら None＝従来どおりキャッシュ無し）。
+        let shared_cache = crate::engine::core::renderer::pipeline_cache::shared::shared();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Text Render Pipeline"),
             layout: Some(&layout),
@@ -192,7 +194,7 @@ impl TextPipeline {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: shared_cache.as_ref(),
         });
 
         // ── サンプラー（バイリニアフィルタリング）─────────────

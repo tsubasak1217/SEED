@@ -17,6 +17,9 @@
 //  ディスクへの書き出しは次のタイミングだけ:
 //    1. スクリプトが `SaveData.Save()` を呼んだとき（明示保存）
 //    2. Play 終了（Edit 復帰）時 / アプリ終了時の自動フラッシュ（保険）
+//    3. Android: バックグラウンドへ回るとき（suspended。app/background_lifecycle.rs）と、
+//       Activity の破棄でプロセスを終える直前（MainActivity.onDestroy → JNI。保険）の自動フラッシュ。
+//       Android はアプリを閉じるとプロセスごと即終了し、2 の「アプリ終了時」が来ないため。
 //
 //  【Play を抜けても揮発させない理由】
 //  セーブデータは「ゲームの進行」であって「シーンの編集データ」ではない。
@@ -122,17 +125,52 @@ pub fn save() -> bool {
     }
 }
 
+/// 自動保存（`flush_if_dirty`）の結果。呼び出し元がログに残すために返す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoFlushOutcome {
+    /// ストアが 1 度も使われていない（セーブを使わないプロジェクト。ファイルも作らない）。
+    NotLoaded,
+    /// 未書き出しの変更が無かった（書く必要が無い）。
+    Clean,
+    /// 未書き出しの変更をディスクへ書き出した。
+    Written,
+    /// 書き出しに失敗した（理由は標準エラーへ出してある）。
+    Failed,
+}
+
+impl AutoFlushOutcome {
+    /// ログ用の短い説明。
+    pub fn describe(self) -> &'static str {
+        match self {
+            AutoFlushOutcome::NotLoaded => "セーブ未使用（書き出すものなし）",
+            AutoFlushOutcome::Clean => "未書き出しの変更なし",
+            AutoFlushOutcome::Written => "未書き出しの変更を書き出しました",
+            AutoFlushOutcome::Failed => "書き出しに失敗しました",
+        }
+    }
+}
+
 /// 変更がある場合のみディスクへ書き出す（自動保存用）。
 ///
-/// Play 終了時・アプリ終了時に呼ぶ。ストアが未初期化（1 度もアクセス
-/// されていない）なら何もしない — セーブを使わないプロジェクトで
-/// 空ファイルを作らないため。
-pub fn flush_if_dirty() {
-    let Some(m) = SAVE_STORE.get() else { return };
+/// Play 終了時・アプリ終了時・バックグラウンドへ回るとき（Android の suspended と、
+/// MainActivity.onDestroy からの JNI 呼び出し）に呼ぶ。ストアが未初期化（1 度もアクセス
+/// されていない）なら何もしない — セーブを使わないプロジェクトで空ファイルを作らないため。
+///
+/// ストアは Mutex で守られているので、どのスレッドから呼んでもよい（onDestroy は UI スレッド）。
+///
+/// # 戻り値
+/// 何をしたか（呼び出し元がログに残す。無視してもよい）。
+pub fn flush_if_dirty() -> AutoFlushOutcome {
+    let Some(m) = SAVE_STORE.get() else { return AutoFlushOutcome::NotLoaded };
     let mut s = m.lock().unwrap_or_else(|e| e.into_inner());
-    if s.is_dirty() {
-        if let Err(e) = s.flush() {
+    if !s.is_dirty() {
+        return AutoFlushOutcome::Clean;
+    }
+    match s.flush() {
+        Ok(()) => AutoFlushOutcome::Written,
+        Err(e) => {
             eprintln!("[SEED SAVE] auto flush failed: {e}");
+            AutoFlushOutcome::Failed
         }
     }
 }
