@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -60,7 +60,8 @@ runtime/                      パッケージ SEED
   android/native/             パッケージ seed-android → cdylib SEED → libSEED.so
     src/entry.rs              android_main（GameActivity から呼ばれる入口）
     src/logcat/               log / 標準出力 / 標準エラー / panic を logcat（タグ SEED）へ
-    src/launch.rs             アプリ専用フォルダ → エンジンの起動引数（LaunchArgs）
+    src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
+    src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
     src/heartbeat.rs          提示フレーム数を 3 秒ごとにログ（描画ループの生存確認）
     src/device_info.rs        起動時の端末情報ログ
     src/debug_hooks.rs        検証用フック（意図的 panic）
@@ -101,8 +102,11 @@ runtime/android/
   app/src/main/java/com/seedengine/runtime/MainActivity.java   GameActivity 派生（薄い）
   app/src/main/res/values/{strings,themes}.xml
   app/src/main/jniLibs/<ABI>/libSEED.so    ← cargo ndk の出力（生成物・追跡しない）
+  app/src/main/assets/seed/assets.pak      ← SeedPak の出力（-ProjectDir のときだけ。生成物・追跡しない。§13）
   native/                    §4.1 の cdylib クレート
 ```
+
+- pak は `androidResources { noCompress += "pak" }` で非圧縮（STORED）のまま APK に入れる（§13.2）。
 
 - `applicationId` は仮に `com.seedengine.runtime`。段階C でプロジェクト設定からデータドリブンに生成する。
 - **GameActivity の prefab（C++ の glue）は使わない**。android-activity が自前の glue を持つため
@@ -121,7 +125,8 @@ MainActivity（Java）: static { System.loadLibrary("SEED") }
       └ android-activity が専用スレッドで android_main(app) を呼ぶ（runtime/android/native/src/entry.rs）
           1. logcat::init()            … android_logger・panic フック・標準出力/標準エラーの付け替え
           2. device_info::log          … SDK・機種・ABI・データパス
-          3. launch::launch_args       … <アプリ専用フォルダ>/assets をアセットルートにした LaunchArgs（mode=Play。§4.5）
+          3. launch::launch_args       … APK に seed/assets.pak があればパッケージ実行（配布物の読み口 package_source 付き。§13）、
+                                         無ければ <アプリ専用フォルダ>/assets をアセットルートにした LaunchArgs（mode=Play。§4.5）
           4. EventLoop::builder().with_android_app(app).build()
           5. heartbeat::spawn()        … 3 秒ごとの提示フレーム数ログ
           6. App::run_with_event_loop(event_loop, args)   … 以降はデスクトップと同じエンジン
@@ -158,7 +163,10 @@ cfg が残るのは「そもそもコンパイルできない API」の箇所だ
   フレーム描画スキップ（`surface_missing`。`handle_redraw_requested` の先頭で判定）。
 - `renderer/present_counter.rs` … present した回数のアトミックカウンタ（`heartbeat` が読む）。
 
-### 4.5 データの置き場（段階0）
+### 4.5 データの置き場
+
+起動モードは APK 内の pak の有無で決まる（§13.1）。APK に `assets/seed/assets.pak` があればパッケージ実行で、
+アセットは APK から読む。無ければ以下の「開発用の置き場」から読む（この節の残り）。
 
 PC の開発時レイアウト（`<Project>/assets` とその隣の `save/`・`cache/`）を、端末のアプリ専用フォルダへそのまま写した形。
 
@@ -179,7 +187,8 @@ PC の開発時レイアウト（`<Project>/assets` とその隣の `save/`・`c
 | 1 | 内部アプリ専用フォルダ `/data/user/0/com.seedengine.runtime/files` | `build_and_run.ps1 -AssetsDir`。デバッグ版 APK の `run-as` でアプリの権限になり、tar を流し込む（§5.2）。**実機でもエミュレータでも読める** |
 | 2 | 外部アプリ専用フォルダ `/sdcard/Android/data/com.seedengine.runtime/files` | 手で `adb push`。エミュレータでは読めるが、**実機（Android 11 以降）では adb push が作ったフォルダが shell の所有になりアプリから読めない**（Permission denied。起動時に警告を出す） |
 
-段階A で APK 内の pak（AssetManager 経由）と保存先の振替に置き換える。
+APK 内の pak（パッケージ実行）は §13。パッケージ実行でもアセットルートはこの内部フォルダの `assets/`
+（PAK にも APK にも無いアセットのフォールバック先。作らない）。保存先・キャッシュの振り替えは段階A の次の作業（§13.7）。
 
 ---
 
@@ -206,6 +215,10 @@ pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
 # 実機（arm64）。ビルド済みなら APK は作り直さず、アセットだけ差し替えて再起動する
 pwsh -File runtime/android/build_and_run.ps1 -Abi arm64-v8a -Serial <実機のシリアル> `
      -SkipRustBuild -SkipGradle -NoInstall -AssetsDir D:\path\to\Project\assets
+
+# 配布版と同じ形（APK 内 pak）。SeedPak で pak を作って APK に入れ、push 無しで起動する（§13）
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 `
+     -ProjectDir D:\path\to\Project -LogcatSeconds 20
 ```
 
 | 引数 | 意味 |
@@ -213,7 +226,8 @@ pwsh -File runtime/android/build_and_run.ps1 -Abi arm64-v8a -Serial <実機の�
 | `-Abi arm64-v8a,x86_64` | ビルドする ABI（既定は両方）。APK にもこの ABI だけを詰める（Gradle へ `-Pseed.abis` で渡す） |
 | `-Release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
 | `-Serial <adb のシリアル>` | 対象端末。**2 台以上つながっているときは必須** |
-| `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の内部アプリ専用フォルダの `assets/` へ送る（前回分は消して置き直す） |
+| `-AssetsDir <assets フォルダ>` | `project_settings.json` を含むフォルダを §4.5 の内部アプリ専用フォルダの `assets/` へ送る（前回分は消して置き直す）。開発用の高速経路 |
+| `-ProjectDir <プロジェクトフォルダ>` | SeedPak（`editor/tools/SeedPak`）で pak を作り `app/src/main/assets/seed/` に置いてから APK を作る（パッケージ実行・push 無し。§13）。`.seedproj`／`assets/` を持つフォルダか、アセットルートそのもの。`-AssetsDir`・`-SkipGradle` とは同時に指定できない。**指定しないで Gradle を回すと置き場を空にする**（pak の無い開発用の APK になる） |
 | `-SkipRustBuild` / `-SkipGradle` / `-NoInstall` / `-NoLaunch` / `-NoLogcat` | 工程を飛ばす |
 | `-LogcatSeconds <秒>` / `-LogFile <パス>` | logcat を何秒集めるか（0 = Ctrl+C まで）／保存先 |
 
@@ -223,6 +237,8 @@ pwsh -File runtime/android/build_and_run.ps1 -Abi arm64-v8a -Serial <実機の�
 cd runtime/android/native
 cargo ndk -t arm64-v8a -t x86_64 -P 29 -o ../app/src/main/jniLibs build      # 1. libSEED.so
 cd ..
+# 1b.（パッケージ実行にするときだけ）APK に入れる pak を作る。開発用の APK にするなら app/src/main/assets/seed を消す
+dotnet run --project ../../editor/tools/SeedPak -- --project D:\path\to\Project --out app/src/main/assets/seed
 .\gradlew.bat assembleDebug "-Pseed.ndkPath=$env:ANDROID_NDK_HOME"            # 2. APK
 adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk     # 3. インストール
 # 4. アセット（run-as でアプリの権限になり、tar を内部フォルダへ展開する。pwsh 7.4 以降）
@@ -250,6 +266,8 @@ adb -s emulator-5554 logcat -s SEED RustPanic                                  #
 | APK（2 ABI／arm64 のみ／x86_64 のみ） | 約 108 MB／50.4 MB／57.8 MB |
 | `adb install -r`（実機 Pixel 6a・arm64 のみ 50.4 MB） | 約 4.0 秒 |
 | アセット転送（run-as ＋ tar・最小アセット 3.2 MB） | 1 秒未満 |
+| SeedPak（最小アセット 3 ファイル・3.0 MB）| 書き出し 0.1〜0.2 秒（`dotnet run` の起動・ビルド確認込みで約 2 秒） |
+| `-ProjectDir` の SeedPak → Gradle → install（x86_64・.so は既存） | 約 28 秒 |
 
 ---
 
@@ -269,6 +287,8 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | 行の印 | 出どころ | 読み方 |
 |---|---|---|
 | `[SEED INIT] ...` | エンジンの起動ログ（eprintln! → 標準エラー転送） | Windows 版の起動ログと同じ内容。アダプタ名・バックエンド（`backend=Vulkan`）もここ |
+| `APK 内の pak で起動します（パッケージ実行）: apk:seed/assets.pak  3.0 MiB・非圧縮（APK 内の位置 N）` | 起動モードの判定（launch.rs） | 「非圧縮」が出ないときは noCompress の設定漏れ（警告も出る）。pak が無ければ「APK に … がありません。開発用の置き場…から読みます」 |
+| `[SEED INIT] asset_fs: packaged pak=apk:seed/assets.pak entries=N` | PAK を開けた（app_init.rs。Windows の配布物ではファイルパスが出る） | 開けなければ `[App][ERROR] assets.pak を開けません: …` |
 | `[SEED SURFACE] created / released / recreated` | サーフェスの生成・破棄・再生成 | 大きさ・形式・提示モード |
 | `[SEED LIFECYCLE] suspended / resumed / Resized / Focused ...` | ライフサイクル診断 | 回転・バックグラウンド復帰の確認 |
 | `[SEED TOUCH] Started / Ended ...` / `[SEED KEY] ...` | winit から届いた生のタッチ・キー | Moved は件数だけ Ended 行にまとめる |
@@ -327,8 +347,10 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
 
 - **スクリプト（C#）は動かない**（段階B）。
-- アセットはデバッグ版 APK の run-as で内部アプリ専用フォルダへ送ったものを読む（リリース版では run-as が使えない）。
-  APK 内の pak は未対応（段階A）。
+- アセットは APK 内の pak（パッケージ実行。リリース版でも動く）か、デバッグ版 APK の run-as で内部アプリ専用フォルダへ
+  送ったもの（開発用）を読む（§13）。
+- **パッケージ実行ではセーブ・キャッシュを書けない**。保存先が実行ファイル基準（Android では `/system/bin/saved` 等）に
+  なるため（エラーを返すだけで落ちない）。開発用の置き場で起動したときは従来どおり内部フォルダに書ける。振り替えは段階A の次の作業（§13.7）。
 - タッチは入力システムへつながった（§12）。ただしスクリプト（`Input.GetTouch` 等）は段階B まで Android で動かないため、
   実機で効くのは「指0 → マウス」経由のもの（キャンバス UI のポインタイベントの判定・入力状態）だけ。
   ポインタイベントの配信先もスクリプトなので、実機でボタンが反応するところまでは段階B で確認する。
@@ -352,7 +374,7 @@ adb logcat -d -v threadtime -T "09-24 17:00:00.000" SEED:V *:S   # その時刻�
 | 段階 | 内容 |
 |---|---|
 | **0（完了）** | 実機/エミュレータに 1 枚絵。libSEED.so ＋ Gradle ＋ GameActivity、logcat、サーフェスの破棄・再生成、回転追従 |
-| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager）、保存先の振替、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API、音声、logcat の整備 |
+| **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API、音声、logcat の整備 |
 | **B** | スクリプト: ScriptPackager の事前コンパイル DLL と linux-bionic 向け CoreCLR ランタイムパックを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: 実行先セレクタ（PC／実機／エミュレータ）、ビルド → install → 起動 → logcat → 停止、pak/DLL だけ push する高速経路、パッケージ化ウィンドウの Android 出力の実働化（`build_and_run.ps1` の各関数が土台） |
 | **D** | Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
@@ -621,3 +643,138 @@ adb -s <serial> shell setprop debug.seed.touch_test 0                     # 必�
 - ジェスチャ（ピンチ・回転・長押し・ダブルタップ）・タップ回数・圧力の組み込み API は無い（スクリプトで組み立てる）。
 - キャンバス UI のポインタイベントは指0 の 1 本だけ。指を離した後もマウス位置が残るので、ボタンのホバー状態は次に触れるまで残る。
 - MCP の入力注入からはタッチを合成しない。タッチパネル付き PC の実タッチ（Windows の WM_TOUCH / WM_POINTER ＋ 昇格マウス）は未検証。
+
+---
+
+## 13. APK 内 pak からの起動（段階A・2026-09-24）
+
+配布版（リリース版 APK）でも動くよう、Windows のパッケージ化と同じ `assets.pak` を APK に同梱し、AAssetManager 経由で
+読めるようにした。run-as でのアセット転送（§5.2）は、APK を作り直さずにアセットだけ差し替える開発用の高速経路として残る。
+
+### 13.1 起動モードの決め方
+
+データの有無だけで決める（設定フラグは無い。`runtime/android/native/src/launch.rs`）。
+
+| 順 | 条件 | 起動モード | 仮想パス `assets://<相対パス>` を読む順 |
+|---|---|---|---|
+| 1 | APK に `assets/seed/assets.pak` がある | パッケージ実行（`asset_fs::is_packaged() == true`） | PAK → APK の `seed/assets/<相対パス>` → 内部フォルダの `files/assets/<相対パス>` |
+| 2 | 無い | 開発用の置き場（§4.5） | 内部フォルダ `files/assets`（run-as で送ったもの）→ 外部フォルダ |
+
+- パッケージ実行でもアセットルートは内部フォルダの `files/assets`（PAK にも APK にも無いアセットの最後のフォールバック先）。
+  フォルダは作らない（パッケージ実行では空で正常）。
+- APK に pak が入っていると、run-as で送ったアセットは「PAK に無いもの」しか使われない。`build_and_run.ps1` は Gradle を
+  回すたびに置き場を作り直す（`-ProjectDir` があれば SeedPak の出力、無ければ空＝開発用の APK。§13.5）。
+
+### 13.2 APK 内のレイアウト
+
+Windows のパッケージ出力（`{ゲーム名}/` から実行ファイルを除いたもの）と同じ相対構成を APK の `assets/seed/` に置く。
+構成の正典はエンジンの `core::package_layout`（`PAK_FILE_NAME` / `LOOSE_ASSETS_DIR_NAME`）とエディタの `PackageLayout`。
+
+```
+APK
+  assets/seed/                  配布物のルート（apk_package::APK_PACKAGE_ROOT）
+    assets.pak                  アセット（SeedPak／パッケージ化ウィンドウの出力と同じもの）。非圧縮（STORED）で格納
+    assets/<相対パス>            任意: PAK に入れずに置くアセット（PAK に無いときのフォールバック先）
+  lib/<ABI>/libSEED.so
+```
+
+- ソース側は `runtime/android/app/src/main/assets/seed/`（生成物・`runtime/android/.gitignore` 済み）。Gradle の既定の
+  assets の置き場なので、Gradle 側の設定は noCompress だけ。
+- pak は `app/build.gradle.kts` の `androidResources { noCompress += "pak" }` で非圧縮のまま入れる。ネイティブ側は AAsset を
+  Read + Seek しながらエントリを読むので、圧縮されていると後ろ向きの Seek のたびに先頭から展開し直すことになる。
+  非圧縮で入ったかは起動ログの「非圧縮（APK 内の位置 N）」で分かる（`AAsset_openFileDescriptor64` が成功する＝非圧縮）。
+- `project_settings.json` は PAK の中（収集の起点として必ず入る。[packaging.md](packaging.md) §2）。PAK の外に置く必要がある
+  ファイルは現状無い（Windows の `bin/`＝スクリプト DLL と .NET は段階B）。PAK の外に置いたファイルも、同じ読み口で
+  `assets://` として読める（13.1 の表の 2 番目）。APK 内のパスは大文字小文字を区別する（PAK の検索だけは区別しない）。
+
+### 13.3 仕組み
+
+```
+launch.rs: ApkPackageSource::probe_pak()   … AAssetManager で seed/assets.pak を開けるか・大きさ・非圧縮か
+  └ LaunchArgs.package_source = Some(Arc<ApkPackageSource>)
+      └ App::init_asset_fs（app_init.rs）: package_source::open_pak → PakReader::from_boxed(ApkAsset)
+          └ asset_fs::init_with(assets_root, pak, Some(package))
+              read_bytes("assets://x") = PAK の x → package.read_all("assets/x") → std::fs::read(<アセットルート>/x)
+```
+
+| 層 | ファイル | 役割 |
+|---|---|---|
+| PAK 形式 | `runtime/src/engine/pak/mod.rs` | `PakReader`。ファイル専用だった読み口を `PakSource` に一般化（`open(path)` はファイル、`from_source` / `from_boxed` は任意の読み口）。エントリ表は 64 KiB の先読み越しに読む |
+| 読み口の抽象 | `runtime/src/engine/pak/source.rs` | `PakSource`＝`Read + Seek + Send`（ブランケット実装。File・Cursor・ApkAsset） |
+| 配布物の読み口 | `runtime/src/engine/package_source.rs` | `PackageSource`（配布物のルート相対でファイルを開く・`Send + Sync`）、`open_pak`、`loose_asset_path` |
+| 読む順 | `runtime/src/engine/asset_fs.rs` | `init_with` と `read_virtual_layers`（PAK → 配布物の PAK 外 → ファイルシステム） |
+| 起動引数 | `app/mod.rs` の `LaunchArgs.package_source`・`app/app_init.rs` の `init_asset_fs` | 渡されていれば読み口から PAK を開く。デスクトップは None（従来どおり実行ファイルの隣の assets.pak をファイルで開く。PAK の外は従来どおり `std::fs`） |
+| Android の実装 | `runtime/android/native/src/apk_package/` | `ApkPackageSource`（AAssetManager で `seed/<相対パス>` を開く）、`ApkAsset`（ndk の Asset に Send を足した包み） |
+| 起動モード | `runtime/android/native/src/launch.rs` | 13.1 |
+
+- ndk クレートは依存に足していない。android-activity が再公開する `winit::platform::android::activity::ndk` を使う
+  （`AndroidApp` と同じく、android-activity と版が食い違わないようにするため。Cargo.toml・Cargo.lock は変更なし）。
+- デスクトップも PAK を開けなかったとき（壊れている等）は理由を 1 行出すようになった（`[App][ERROR] assets.pak を開けません: …`。
+  以前は黙って PAK 無しで起動していた）。開けたときは `[SEED INIT] asset_fs: packaged pak=<場所> entries=N`。
+
+### 13.4 スレッド安全性
+
+- `asset_fs` はメインスレッドのほか、モデルの非同期ロードのワーカー（`loader/async_loader.rs`）・rayon（`loader/asset_cache.rs`）・
+  音声スレッドから呼ばれる。
+- PAK の読み口は 1 本で、従来どおり `Mutex<PakReader>` で直列化する（デスクトップのファイルも同じ。同時性は変わらない）。
+- ndk 0.9 の `Asset`（AAsset）は Read + Seek を実装するが Send ではない（生ポインタを持ち、ndk も付けていない）。NDK の資料が
+  禁じるのは「複数スレッドで共有して同時に使うこと」で、AAsset にスレッドへの結び付き（スレッドローカルな状態）は無い。
+  そこで Send だけを足した `ApkAsset` で包む（`unsafe impl Send`。Sync は足さない＝`&mut` でしか使えず、Mutex の中でしか
+  触られない）。元の AAssetManager は android-activity がアプリ全体の AssetManager へのグローバル参照をリークして保持しており、
+  プロセスの終わりまで有効。
+- `PackageSource`（PAK の外のファイル）は呼び出しごとに Asset を開き直すので、Mutex 無しで同時に呼べる（AAssetManager はスレッド安全）。
+- 並列に読みたくなったら、非圧縮の pak なら `Asset::open_file_descriptor` の fd に対する pread に置き換えられる（Mutex が要らなくなる）。
+  今は読み込みの直列化が問題になる場面が無いので入れていない（backlog）。
+
+### 13.5 ビルドと実行
+
+```powershell
+# pak を作って APK に入れ、push 無しで起動する（-ProjectDir は .seedproj／assets/ を持つフォルダか、アセットルートそのもの）
+pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -ProjectDir D:\path\to\Project -LogcatSeconds 20
+
+# pak だけを作る（エディタは起動しない。パッケージ化ウィンドウと同じ収録規則・パス書き換え・PAK 形式）
+dotnet run --project editor/tools/SeedPak -- --project D:\path\to\Project --out <出力フォルダ>
+```
+
+| 経路 | 使う場面 | 変更の反映 | リリース版 APK |
+|---|---|---|---|
+| `-ProjectDir`（APK 内 pak） | 配布版と同じ形での確認・リリース版 | pak と APK を作り直して入れ直す（SeedPak → Gradle → install で約 30 秒〜） | 動く |
+| `-AssetsDir`（run-as 転送） | 開発中の素早い差し替え | `-SkipRustBuild -SkipGradle -NoInstall -AssetsDir …` でアセットだけ送り直し（1 秒未満） | 動かない（run-as はデバッグ版だけ） |
+
+- `-ProjectDir` と `-AssetsDir` は同時に指定できない（端末は pak を優先するため）。`-ProjectDir` は `-SkipGradle` とも併用できない。
+- `-SkipGradle -AssetsDir` のとき、前回のビルドで APK に pak を入れていれば警告する（そのままの APK ならパッケージ実行が優先される）。
+- SeedPak の詳細（引数・アセットルートの決め方・収録ルール・終了コード）は [packaging.md](packaging.md) §10。
+- `-LogFile` に保存される logcat は、日本語が文字化けすることがある（pwsh が adb の UTF-8 出力をコンソールのコードページで
+  読むため。以前からの挙動。backlog）。確実に残すなら `adb logcat -d -v threadtime -T "<時刻>" SEED:V *:S > file` を
+  bash 等から直接実行する。
+
+### 13.6 確認結果（2026-09-24）
+
+エミュレータ（AVD `seed_pixel6_api35`・API 35・x86_64）。アセットは最小構成（BrainStem.glb ＋ 平行光。§7）。
+
+| 確認項目 | 結果 |
+|---|---|
+| SeedPak の出力 | 3 ファイル / 3.0 MB（`assets.pak` 3,197,760 バイト・パス書き換え 2 件）。変更前のパッケージ化ウィンドウと同じ呼び出し（`AssetCollector` → `PakWriter` の直呼び）で作った pak と SHA-256 が一致 |
+| APK 内の格納 | `assets/seed/assets.pak` が STORED（非圧縮）。起動ログに「非圧縮（APK 内の位置 60153292）」 |
+| push 無しで起動 | run-as で送ってあった内部フォルダの `files/assets` を退避した状態で、`[SEED INIT] asset_fs: packaged pak=apk:seed/assets.pak entries=3` → `scene registry loaded count=1` → `load_play_scene done actors=2` → BrainStem が描画（約 57 fps）。起動後も `files/assets` は作られない |
+| PAK の外（APK の `seed/assets/`） | モデルを抜いた PAK（2 件）＋ `seed/assets/models/BrainStem.glb`（APK 内では DEFLATED）の APK で、モデルが APK の PAK 外から読まれて描画された |
+| 開発用の経路（pak 無し APK ＋ run-as） | 「APK に apk:seed/assets.pak がありません。開発用の置き場…から読みます」→ 内部フォルダから従来どおり描画 |
+| Windows の配布物 | SeedPak の pak を `SEED.exe` の隣に置いた構成（`assets/` フォルダ無し）で、起動ログに `起動形態: パッケージ実行（配布物）`・`asset_fs: packaged pak=…\assets.pak entries=3`、BrainStem が描画（`SEED_SCREENSHOT_FRAMES` で撮影） |
+
+実機（Pixel 6a）は、作業中ずっと端末が私物として使用中（別アプリが前面）だったため未実施。端末が空いているときに
+`-Abi arm64-v8a -Serial <実機> -ProjectDir <プロジェクト>` で同じ確認をする（backlog）。
+
+### 13.7 制限・持ち越し
+
+詳細と持ち越し先は [backlog.md](backlog.md) の「Android」節。
+
+- **パッケージ実行ではセーブ・キャッシュを書けない（段階A の次の作業 A-3）**。`save/path.rs` と `package_layout::decide_cache_dir` は
+  パッケージ実行（`is_packaged()`）で実行ファイル基準（Android では `/system/bin/saved`・`/system/bin/caches`）になり、
+  書き込みはエラーを返すだけで落ちない。開発用の経路では従来どおり内部フォルダの `save/`・`cache/` に書ける。
+- モデルの派生キャッシュは PAK 実行では効かない（Windows の配布物と同じ。[packaging.md](packaging.md) §8）。パイプラインキャッシュも
+  保存されない（§8）。
+- 段階B（スクリプト）: `App::new` は「アセットルートがあればソースをコンパイル、無ければ事前コンパイル DLL」で分けるが、
+  Android のパッケージ実行もアセットルートを持つ。段階B では `package_source` の有無でも分け、DLL を配布物の `bin/` から
+  （`PackageSource` で）読む必要がある。
+- APK 内のパスは大文字小文字を区別する（PAK の外に置くファイルは、参照と実名を一致させる）。
+- 読み出しは読み口 1 本の直列化（13.4）。

@@ -2,7 +2,7 @@
 //  PakTestReader.cs — テスト用の PAK 読み込み
 //
 //  【役割】
-//  runtime/src/engine/pak.rs の PakReader と**同じ手順**で assets.pak を読む。
+//  runtime/src/engine/pak/mod.rs の PakReader と**同じ手順**で assets.pak を読む。
 //  PakWriter が書いたバイナリを実際に読み返すことで、
 //  ヘッダー・エントリ表・オフセットの整合を検証する。
 //

@@ -1,7 +1,8 @@
 ﻿# パッケージ化（配布ビルド）
 
 エディタの「パッケージ化」ウィンドウ（`editor/src/Packaging/`）が行う処理と、
-`assets.pak` に何が入るかの規則をまとめる。
+`assets.pak` に何が入るかの規則をまとめる。エディタを起動せずに同じ PAK を作るツール（SeedPak）と、
+Android の APK へ同梱する形は §10。
 
 関連ファイル:
 
@@ -17,11 +18,15 @@
 | `editor/src/Packaging/Collect/AssetPackagingSettings.cs` | 収録ルールのユーザー設定 |
 | `editor/src/Packaging/Pak/PakWriter.cs` | `assets.pak` の書き出し |
 | `editor/src/Packaging/Pak/AssetPathRewriter.cs` | 絶対パス → `assets://` の書き換え |
+| `editor/src/Packaging/Pak/AssetPakBuilder.cs` | **PAK 作りの手順**（収集 → 報告 → 書き出し → 報告）とログの書式。パッケージ化ウィンドウと SeedPak が共有する |
+| `editor/tools/SeedPak/` | エディタを起動せずに `assets.pak` を作るコンソールツール（§10） |
 | `editor/src/Packaging/Scripts/ScriptPackager.cs` | **ユーザースクリプトの事前コンパイル**とスクリプトホストの同梱 |
 | `editor/src/Packaging/Runtime/DotnetRuntimeBundler.cs` | **.NET ランタイムの同梱**（検出・バージョン選択・コピー） |
 | `runtime/src/engine/core/scripting/mod.rs` | 同梱 `dotnet/` の検出と CLR の初期化（`BUNDLED_DOTNET_ROOT_DIR`） |
 | `scripting/src/Compilation/` | コンパイル共通実装・型マップ規約（`PrecompiledScriptArtifact`） |
-| `runtime/src/engine/pak.rs` | ランタイム側の PAK リーダー（フォーマットの正典） |
+| `runtime/src/engine/pak/mod.rs` | ランタイム側の PAK リーダー（フォーマットの正典）。読み口は `pak/source.rs` の `PakSource`（`Read + Seek + Send`） |
+| `runtime/src/engine/package_source.rs` | 配布物の読み口（`PackageSource`）。Android の APK 内 pak を読むのに使う（§10） |
+| `runtime/android/native/src/apk_package/` | Android: APK の `assets/seed/` を配布物として読む実装（§10） |
 | `editor/tests/PackagingCollectorTests/` | 収録・PAK の単体テストとドライラン |
 | `editor/tests/ScriptPrecompileTests/` | 事前コンパイル・型解決の単体テストとスクリプト同梱の実行 |
 
@@ -206,8 +211,12 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 
 ## 4. PAK の書き出し
 
-フォーマットは `runtime/src/engine/pak.rs` の `PakReader` が読む形式で固定
+フォーマットは `runtime/src/engine/pak/mod.rs` の `PakReader` が読む形式で固定
 （magic `"SEED"` / version 1 / entry_count / エントリ表 / データ部）。**変更しない**。
+
+収集（§2）→ 結果の報告（§6）→ 書き出し → 書き出し結果の報告、という手順とログの書式は
+`AssetPakBuilder` にまとめてあり、パッケージ化ウィンドウと SeedPak（§10）は同じものを呼ぶ
+（同じ入力からは 1 バイトも違わない PAK になる。`PackagingCollectorTests` で固定）。
 
 メモリを使わないよう 2 段構えで書く。
 
@@ -462,6 +471,9 @@ dotnet run --project editor/tests/PackagingCollectorTests -- "<アセットル�
 dotnet run --project editor/tests/PackagingCollectorTests
 ```
 
+ドライランの収録ルールは既定値（`packaging_settings.json` を読まない）。`--write-pak` で書き出す PAK も同じ。
+プロジェクトの設定どおりの PAK をエディタ無しで作るなら SeedPak（§10）を使う。
+
 ---
 
 ## 8. 既知の制限
@@ -494,6 +506,10 @@ dotnet run --project editor/tests/PackagingCollectorTests
 - 新しいアセット形式を足したときは、`PackagingRules` の
   `ScannableExtensions` / `SiblingExtensions` / `FolderCompanions` の追従を忘れないこと。
   登録漏れは**ビルドエラーにならず**、パッケージ版だけが壊れる形で出る。
+- **Android は PAK での起動まで**（2026-09-24。§10）。APK 内の `assets.pak` から起動できるが、スクリプト（段階B）と、
+  セーブ・キャッシュの書き込み（配布物の `saved/`・`caches/` を端末の内部ストレージへ振り替える作業。現状は書けない）は未対応。
+  パッケージ化ウィンドウの Android 出力（.so のビルド・APK 化・pak の同梱）もまだ実働しない（段階C。今は
+  `runtime/android/build_and_run.ps1 -ProjectDir` が SeedPak で作った pak を APK へ入れる）。
 
 ### 8.1 配布版の動作に効くプロジェクト設定
 
@@ -619,3 +635,57 @@ panic すると、ログにメッセージ・位置・バックトレースが�
 `assets.pak` を持たない開発ビルドの単体起動では、標準ハンドルに一切触れない。
 ログは従来どおりエディタの Output パネル／コンソールへ流れ、ログファイルも作られない。
 panic フックだけは同じように設置されるが、**ダイアログは出さず**ログ出力のみになる。
+
+---
+
+## 10. Android（APK 内 pak）と SeedPak ツール
+
+### 10.1 Android の配布物
+
+Android では、Windows の出力フォルダ（実行ファイルを除く）と同じ相対構成を APK の `assets/seed/` に入れ、
+ランタイムは AAssetManager 経由でそれを読む（正典は [android.md](android.md) §13）。
+
+| 配布物の中身 | Windows | Android |
+|---|---|---|
+| 配布物のルート | `{ゲーム名}/`（実行ファイルのフォルダ） | APK の `assets/seed/` |
+| `assets.pak` | 実行ファイルの隣 | `assets/seed/assets.pak`（Gradle の `noCompress` で非圧縮のまま格納） |
+| PAK の外に置くアセット（PAK に無いときのフォールバック先） | `{ゲーム名}/assets/<相対パス>` | `assets/seed/assets/<相対パス>`（大文字小文字を区別する） |
+| `bin/`（スクリプト DLL・.NET） | 同梱（§5） | 段階B |
+| `caches/` `logs/` `saved/` | 実行時に作る | APK には置けない。端末の内部ストレージへの振り替えが要る（未対応。現状は書けない） |
+| 起動ログ | `logs/seed_*.log`（§9） | logcat（タグ `SEED`） |
+
+- 名前の正典は `runtime/src/engine/core/package_layout.rs`（`PAK_FILE_NAME` / `LOOSE_ASSETS_DIR_NAME`）と
+  `editor/src/Packaging/PackageLayout.cs`（`PakFileName`）。両側のテストで文字列を固定している。
+- `project_settings.json` は PAK の中に入る（§2 の起点）。PAK の外に置かなければならないファイルは現状無い。
+- 起動モードはデータの有無で決まる: APK に `assets/seed/assets.pak` があればパッケージ実行、無ければ開発用の置き場
+  （run-as で送ったアセット）。
+
+### 10.2 SeedPak（エディタを起動せずに PAK を作る）
+
+`editor/tools/SeedPak/` のコンソールアプリ。パッケージ化ウィンドウの「収録アセットの収集」「PAK 書き出し」フェーズと
+**同じコード**（`AssetPakBuilder` → `AssetCollector` / `PakWriter` / `AssetPathRewriter`）で `assets.pak` を作る。
+`editor/tests/*Tests` と同じく、WPF 非依存のソースをリンクして取り込む素のコンソールアプリで、パッケージ化のロジックが
+WPF に依存し始めるとこのツールのビルドが壊れて気付ける（`editor/SEEDEditor.csproj` は `tools\**` を本体から除外している）。
+
+```
+dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ>
+dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --out <出力フォルダ>
+```
+
+| 引数 | 意味 |
+|---|---|
+| `--project <フォルダ>` | プロジェクトフォルダ。アセットルートをエディタと同じ導き方で決める: `.seedproj` があればその `assets_dir`（`ProjectPaths`）、無ければ `<フォルダ>/assets`、それも無くフォルダ自体に `project_settings.json` があればそのフォルダ |
+| `--assets <フォルダ>` | アセットルートを直接指定する（`--project` と排他） |
+| `--out <フォルダ>` | 出力フォルダ。`<フォルダ>/assets.pak` だけを書く（無ければ作る） |
+| `--runtime-src <フォルダ>` | エンジンのソース `runtime/src`（エンジン内蔵の `assets://` 参照を起点に加える。§2）。既定はツールの位置・カレントから上へ辿ったリポジトリの `runtime/src`。見つからなければ省略して続ける |
+
+- 収録ルールはパッケージ化ウィンドウと同じ `<アセットルート>/packaging_settings.json` の `assets`（無ければ既定値）。
+- アセットルートは**エディタが使うパスと同じ表記**で渡すこと（§7 と同じ注意。シーン内の絶対パス参照の照合と
+  `assets://` への書き換えがこの表記を基準にする）。SeedPak は `Path.GetFullPath` で絶対化する。
+- ログはウィンドウと同じ書式（§6）で標準出力へ出る。
+- 終了コード: `0` 成功 / `1` 引数・入力の誤り / `2` 収録対象 0 件（PAK は書かない） / `3` 書き出し失敗。
+- Android の APK へ入れるときは `runtime/android/build_and_run.ps1 -ProjectDir <フォルダ>` がこのツールを
+  `--out runtime/android/app/src/main/assets/seed` で呼ぶ。
+
+2026-09-24 に最小アセット（BrainStem.glb ＋ 平行光・3 ファイル）で、SeedPak の出力と「変更前のパッケージ化ウィンドウと
+同じ呼び出し（`AssetCollector` → `PakWriter` の直呼び）」の出力の SHA-256 が一致することを確かめた。

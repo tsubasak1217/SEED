@@ -133,7 +133,7 @@ public partial class PackagingWindow : Window
         _runtimePath    = ResolveRuntimeDir();
         _runtimeSrcPath = Path.Combine(_runtimePath, "src");
 
-        var settingsPath = Path.Combine(assetsPath, "packaging_settings.json");
+        var settingsPath = Path.Combine(assetsPath, PackagingData.SettingsFileName);
         _data = PackagingData.LoadFrom(settingsPath);
     }
 
@@ -1164,8 +1164,9 @@ public partial class PackagingWindow : Window
     // ────────────────────────────────────────────────────────────
     //  アセット収集と PAK 書き出し
     //
-    //  収録ファイルの決定は AssetCollector（参照グラフの閉包）、
-    //  バイナリの書き出しは PakWriter（ストリーミング）に委譲する。
+    //  手順（収録ファイルの決定 → 結果の報告 → 書き出し → 報告）とログの書式は
+    //  AssetPakBuilder に集約してあり、エディタを起動せずに PAK を作るコンソールツール
+    //  （editor/tools/SeedPak）も同じものを通る。
     //  ここは「進捗と結果を UI へ流す」だけを担当する。
     // ────────────────────────────────────────────────────────────
 
@@ -1190,20 +1191,6 @@ public partial class PackagingWindow : Window
     /// <summary>PAK 書き出し中に割り当てる進捗の上限値（％）。</summary>
     private const int ProgressPakEnd = 95;
 
-    /// <summary>欠落参照をログへ列挙する最大件数（多すぎるとログが読めなくなる）。</summary>
-    private const int MaxLoggedMissingReferences = 50;
-
-    /// <summary>除外ルールに当たったまま同梱したファイルをログへ列挙する最大件数。</summary>
-    private const int MaxLoggedExcludedButIncluded = 20;
-
-    /// <summary>バイト数を MB 表記へ直すための除数。</summary>
-    private const double BytesPerMegabyte = 1024.0 * 1024.0;
-
-    /// <summary>
-    /// 収録アセットを決定し、assets.pak にまとめて出力先へ書き出す。
-    /// </summary>
-    /// <param name="outputDir">出力フォルダ（ここに assets.pak を作る）。</param>
-    /// <param name="phaseWatch">フェーズ所要時間の計測用ストップウォッチ。</param>
     /// <summary>
     /// .NET ランタイムを出力フォルダへ同梱する（設定が ON のときだけ）。
     ///
@@ -1239,9 +1226,19 @@ public partial class PackagingWindow : Window
         }
     }
 
+    /// <summary>
+    /// 収録アセットを決定し、assets.pak にまとめて出力先へ書き出す。
+    ///
+    /// <para>
+    /// 手順とログの書式は <see cref="AssetPakBuilder"/>（SeedPak ツールと共通）。
+    /// ここでは重い処理をワーカースレッドへ出し、フェーズの時間・進捗・ステータスを UI へ流すだけ。
+    /// </para>
+    /// </summary>
+    /// <param name="outputDir">出力フォルダ（ここに assets.pak を作る）。</param>
+    /// <param name="phaseWatch">フェーズ所要時間の計測用ストップウォッチ。</param>
     private async Task PackAssetsAsync(string outputDir, Stopwatch phaseWatch)
     {
-        var pakPath = Path.Combine(outputDir, "assets.pak");
+        var pakPath = PackageLayout.PakPath(outputDir);
 
         // ── フェーズ: 収録ファイルの決定 ────────────────────────
         SetStatus("収録アセットを収集中...");
@@ -1251,16 +1248,15 @@ public partial class PackagingWindow : Window
         AssetCollectionResult result = null!;
         await Task.Run(() =>
         {
-            var collector = new AssetCollector(_assetsPath, _data.Assets, _runtimeSrcPath, LogFromWorker);
-            result = collector.Collect();
+            result = AssetPakBuilder.Collect(_assetsPath, _data.Assets, _runtimeSrcPath, LogFromWorker);
         });
         LogPhase("収録アセットの収集", phaseWatch);
-        ReportCollection(result);
+        AssetPakBuilder.ReportCollection(result, AppendLog);
         SetProgress(ProgressPakStart);
 
-        if (result.Included.Count == 0)
+        if (!AssetPakBuilder.HasContent(result))
         {
-            AppendLog("❌ 収録対象が 0 件です。project_settings.json の start_scene / scenes を確認してください。");
+            AppendLog(AssetPakBuilder.EmptyCollectionMessage);
             return;
         }
 
@@ -1272,46 +1268,10 @@ public partial class PackagingWindow : Window
         PakWriteStats stats = default;
         await Task.Run(() =>
         {
-            stats = PakWriter.Write(pakPath, _assetsPath, result.Included, LogFromWorker, ReportPakProgress);
+            stats = AssetPakBuilder.Write(pakPath, _assetsPath, result, LogFromWorker, ReportPakProgress);
         });
         LogPhase("PAK 書き出し", phaseWatch);
-
-        AppendLog($"✓ assets.pak 作成完了: {stats.EntryCount} ファイル / {ToMegabytes(stats.TotalBytes):F1} MB");
-        if (stats.SizeMismatchCount > 0)
-            AppendLog($"⚠ 収集後にサイズが変わったファイル: {stats.SizeMismatchCount} 件（0 埋め / 切り捨てで整合させました）");
-    }
-
-    /// <summary>収集結果（件数・サイズ・欠落・警告）をログへ書き出す。</summary>
-    /// <param name="result">AssetCollector の結果。</param>
-    private void ReportCollection(AssetCollectionResult result)
-    {
-        AppendLog($"収録: {result.Included.Count} ファイル / {ToMegabytes(result.IncludedBytes):F1} MB");
-        AppendLog($"除外: {result.ExcludedFileCount} ファイル / {ToMegabytes(result.ExcludedBytes):F1} MB " +
-                  $"（アセット全体 {result.TotalFileCount} ファイル / {ToMegabytes(result.TotalBytes):F1} MB）");
-
-        // 実体の無いシーン登録
-        foreach (var scene in result.MissingScenes)
-            AppendLog($"⚠ 登録シーンの実体がありません: {scene}");
-
-        // 除外ルールに当たっているが参照されたので入れたもの（設定見直しの材料）
-        if (result.IncludedDespiteExclusion.Count > 0)
-        {
-            AppendLog($"⚠ 除外ルールに一致するが参照されているため同梱: {result.IncludedDespiteExclusion.Count} ファイル");
-            foreach (var path in result.IncludedDespiteExclusion.Take(MaxLoggedExcludedButIncluded))
-                AppendLog($"    {path}");
-            if (result.IncludedDespiteExclusion.Count > MaxLoggedExcludedButIncluded)
-                AppendLog($"    …ほか {result.IncludedDespiteExclusion.Count - MaxLoggedExcludedButIncluded} ファイル");
-        }
-
-        // 参照はあるが実体が無いパス（パッケージ版で読み込み失敗になる箇所）
-        if (result.MissingReferences.Count > 0)
-        {
-            AppendLog($"❌ 参照先が見つからないパス: {result.MissingReferences.Count} 件");
-            foreach (var m in result.MissingReferences.Take(MaxLoggedMissingReferences))
-                AppendLog($"    {m.ReferencePath}  ← {m.SourceRelPath}");
-            if (result.MissingReferences.Count > MaxLoggedMissingReferences)
-                AppendLog($"    …ほか {result.MissingReferences.Count - MaxLoggedMissingReferences} 件");
-        }
+        AssetPakBuilder.ReportWrite(stats, AppendLog);
     }
 
     /// <summary>PAK 書き出しの進捗を UI へ反映する（ワーカースレッドから呼ばれる）。</summary>
@@ -1324,7 +1284,7 @@ public partial class PackagingWindow : Window
         {
             SetProgress(percent);
             SetStatus($"assets.pak 書き出し中 {p.FilesWritten}/{p.TotalFiles} ファイル " +
-                      $"({ToMegabytes(p.BytesWritten):F0}/{ToMegabytes(p.TotalBytes):F0} MB)");
+                      $"({AssetPakBuilder.ToMegabytes(p.BytesWritten):F0}/{AssetPakBuilder.ToMegabytes(p.TotalBytes):F0} MB)");
         });
     }
 
@@ -1341,18 +1301,13 @@ public partial class PackagingWindow : Window
         watch.Restart();
     }
 
-    /// <summary>バイト数を MB へ変換する。</summary>
-    /// <param name="bytes">バイト数。</param>
-    /// <returns>MB 単位の値。</returns>
-    private static double ToMegabytes(long bytes) => bytes / BytesPerMegabyte;
-
     // ── 設定の保存 ───────────────────────────────────────────
 
     private void SaveSettings()
     {
         // TextBox の現在値を _data へ反映してから保存する
         if (_tbGameName != null) _data.GameName = _tbGameName.Text.Trim();
-        var path = Path.Combine(_assetsPath, "packaging_settings.json");
+        var path = Path.Combine(_assetsPath, PackagingData.SettingsFileName);
         _data.SaveTo(path);
     }
 

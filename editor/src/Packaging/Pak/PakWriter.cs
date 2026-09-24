@@ -1,7 +1,7 @@
 // ============================================================
 //  PakWriter.cs — assets.pak の書き出し
 //
-//  【バイナリ形式】（runtime/src/engine/pak.rs の PakReader と 1 対 1。変更禁止）
+//  【バイナリ形式】（runtime/src/engine/pak/mod.rs の PakReader と 1 対 1。変更禁止）
 //  [Header - 12 bytes]
 //    magic:       "SEED" (4 bytes)
 //    version:     1      (u32 LE)
@@ -73,7 +73,7 @@ public static class PakWriter
     /// <summary>エントリ 1 件あたりの固定バイト数（path_len 4 + offset 8 + size 8）。</summary>
     private const int EntryFixedBytes = 20;
 
-    /// <summary>PAK フォーマットのバージョン番号（pak.rs の VERSION と一致させる）。</summary>
+    /// <summary>PAK フォーマットのバージョン番号（pak/mod.rs の VERSION と一致させる）。</summary>
     private const uint FormatVersion = 1;
 
     // ── 動作パラメータ ───────────────────────────────────────

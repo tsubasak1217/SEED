@@ -5,7 +5,10 @@
 #    - android_main（android-activity の入口）で winit の EventLoop を AndroidApp と結び付け、
 #      エンジン本体（runtime/ のライブラリ seed_engine）を起動する
 #    - log クレートの出力・標準出力／標準エラー・panic を logcat（タグ SEED）へ流す
-#    - 端末のアプリ専用データフォルダからエンジンの起動引数（LaunchArgs）を組み立てる
+#    - APK 内の配布物（assets/seed/assets.pak）か端末のアプリ専用データフォルダから、
+#      エンジンの起動引数（LaunchArgs）を組み立てる
+#  APK 内のファイルは AAssetManager で読む。ndk クレートは依存に足さず、android-activity が再公開する
+#  winit::platform::android::activity::ndk から使う（android-activity と版が食い違わないようにするため）。
 #  エンジン本体のコードはここに置かない（Android 固有の「糊」だけを持つ）。
 #
 #  【出力名】libSEED.so（[lib] name = "SEED"）。Gradle 側（MainActivity の System.loadLibrary と

@@ -582,6 +582,11 @@ pub struct LaunchArgs {
     /// アセットルートディレクトリの絶対パス（Play / パッケージモードで使用）。
     /// None の場合は実行ファイルの隣に assets/ or assets.pak があると仮定する。
     pub assets_root:      Option<String>,
+    /// 配布物の読み口（assets.pak と PAK 外のアセットの置き場）。
+    ///
+    /// Android の APK 内 pak で起動するとき（runtime/android/native の ApkPackageSource）だけ Some。
+    /// None なら従来どおりアセットルートの親（＝実行ファイルの隣）の assets.pak を探す（デスクトップ）。
+    pub package_source:   Option<Arc<dyn crate::engine::package_source::PackageSource>>,
     /// エディタリソースディレクトリの絶対パス（Edit モードで使用）。
     /// カメラギズモ等エディタ専用モデルのパス解決に使用する。
     pub editor_resources: Option<String>,
@@ -699,6 +704,9 @@ pub struct App {
     last_ipc_pump_at: std::time::Instant,
     /// アセットルートのパス（Playモード・パッケージモードでのシーン自動ロードに使用）。
     assets_root:  Option<String>,
+    /// 配布物の読み口（LaunchArgs.package_source。Android の APK 内 pak のときだけ Some）。
+    /// `init_asset_fs` が asset_fs へ渡す。
+    package_source: Option<Arc<dyn crate::engine::package_source::PackageSource>>,
     /// エディタリソースディレクトリ（カメラギズモモデル等の読み込みに使用）。
     editor_resources: Option<String>,
     /// Play モードで読み込むシーンパス。None なら project_settings.json の start_scene を使う。
@@ -1609,6 +1617,7 @@ impl App {
             last_frame_at:    std::time::Instant::now(),
             last_ipc_pump_at: std::time::Instant::now(),
             assets_root:      args.assets_root,
+            package_source:   args.package_source,
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,
             // 実際に読み込んだシーンのパスはロード成功時にだけ入る（起動直後は未確定）。

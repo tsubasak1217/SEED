@@ -776,6 +776,11 @@
   イベントの粒度を上げると上記 2 つの購読側（単一フラグ運用）が壊れるため、
   必要になったら連鎖用の別イベント（例 `fishing.chain_catch`）を足すのが素直。
   関連: `<project>/assets/mainGame/scripts/CatchPresenter.cs`、`FishingController.cs`（`ChainCatchHistory`）。
+- [ ] **docs/packaging.md §8.1「再パッケージせずに JSON を直接書き換えても効く」が今の読み順と合わない** — 2026-09-24
+  （APK 内 pak の作業中に気付いた・未対応）。`project_settings.json` は収集の起点として必ず PAK に入り（§2）、
+  `asset_fs::read_bytes` は PAK を優先する（PAK に無いときだけ実行ファイルの隣の `assets/` を読む）ため、配布先で
+  `assets/project_settings.json` を置いても PAK の中身が勝って効かない。記述を直すか、`project_settings.json` だけ
+  「PAK の外にあればそちらを優先」にするかを決める（後者なら Android の APK 内 `assets/seed/assets/` も同じ仕組みで効く）。
 
 ## 釣果リザルトの魚画像アニメ（2026-09-10 Animator 化時）
 
@@ -1565,10 +1570,34 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   OS はタッチをマウスへ昇格して別に送る（winit は昇格マウスを区別しない）。`bridge.rs` は「実タッチが触れている間は
   マウスから指を合成しない・合成中の指は実タッチで Canceled にする」ことで二重に数えないようにしたが、実機（タッチパネル）では未確認。
   `Input.TouchSupported` はプラットフォーム単位の値なのでタッチパネル付き PC でも false。
-- [ ] **APK 内 pak（AssetManager）非対応（段階A）** — 2026-09-24。アセットは `build_and_run.ps1 -AssetsDir` が
-  デバッグ版 APK の run-as で内部アプリ専用フォルダ（`/data/user/0/<pkg>/files/assets`）へ送ったものを `std::fs` で読む
-  （実機では外部フォルダへの adb push は shell 所有のフォルダになりアプリから読めない。docs/android.md §4.5）。
-  リリース版では run-as が使えないので、配布には APK 内 pak が必須。`engine/asset_fs.rs`・`engine/pak.rs` は実ファイル前提。
+- [x] **APK 内 pak（AssetManager）非対応（段階A）** — 2026-09-24 記載 / 同日対応。Windows の出力と同じ相対構成を APK の
+  `assets/seed/` に入れ（`assets.pak` は Gradle の `noCompress` で非圧縮）、APK に pak があればパッケージ実行で起動する
+  （`launch.rs`。無ければ従来の run-as 経路）。`PakReader` を `Read + Seek + Send` の読み口（`PakSource`）へ一般化し、
+  配布物の読み口 `PackageSource`（Android は `apk_package::ApkPackageSource`＝AAssetManager）を `LaunchArgs.package_source`
+  で渡す。pak はエディタ無しで `editor/tools/SeedPak`（パッケージ化ウィンドウと同じ `AssetPakBuilder`）が作り、
+  `build_and_run.ps1 -ProjectDir` が APK へ入れる。エミュレータで push 無しの描画を確認。正典は docs/android.md §13。
+  残りは直後に並べた各項目。
+- [ ] **実機（Pixel 6a）で APK 内 pak の起動を確認する** — 2026-09-24。エミュレータ（x86_64）では push 無しで描画まで確認したが、
+  実機は作業中ずっと私物として使用中（別アプリが前面）だったため未実施。arm64 の .so はビルド済み（コードは ABI に依存しない）。
+  端末が空いているときに `build_and_run.ps1 -Abi arm64-v8a -Serial <実機> -ProjectDir <プロジェクト> -LogcatSeconds 30` で、
+  起動ログの「APK 内の pak で起動します … 非圧縮」と `asset_fs: packaged pak=apk:seed/assets.pak` と描画を確かめる。
+- [ ] **パッケージ実行（APK 内 pak）ではセーブ・キャッシュを書けない（A-3 で対応）** — 2026-09-24。`save/path.rs` と
+  `package_layout::decide_cache_dir` はパッケージ実行（`asset_fs::is_packaged()`）で実行ファイル基準に切り替わるため、Android では
+  `/system/bin/saved`・`/system/bin/caches` を指し、書き込みはエラーを返すだけで保存されない（落ちはしない）。
+  開発用の経路（run-as のアセット）では従来どおり内部フォルダの `save/`・`cache/` に書ける。下の「保存先・キャッシュ…」と合わせて、
+  プラットフォームの書き込み可能なフォルダを `engine/platform` 経由で渡す。
+- [ ] **APK 内 pak の読み出しは読み口 1 本の直列化（低優先）** — 2026-09-24。`ApkAsset`（ndk の Asset に Send を足した包み）を
+  `Mutex<PakReader>` で共有する（デスクトップのファイルと同じ）。非同期ロードのワーカーが増えて読み込みの直列化が効いてきたら、
+  非圧縮の pak で取れる `Asset::open_file_descriptor` の fd に対する pread（位置を共有しない読み出し）に置き換えれば Mutex が要らなくなる。
+  関連: `runtime/android/native/src/apk_package/`、`runtime/src/engine/pak/`。
+- [ ] **段階B: Android のパッケージ実行で事前コンパイル DLL を配布物から読む** — 2026-09-24。`App::new` はスクリプトの経路を
+  「`assets_root` があればソースをコンパイル、無ければ実行ファイルの隣の `bin/SEEDUserScripts.dll`」で分けるが、Android の
+  パッケージ実行は `assets_root`（内部フォルダ。フォールバック先）を持つ。段階B では `LaunchArgs.package_source` の有無でも分け、
+  DLL を配布物の `bin/`（APK の `assets/seed/bin/`）から `PackageSource` で読んで `load_assembly_from_bytes` へ渡す。
+- [ ] **`build_and_run.ps1 -LogFile` の logcat で日本語が文字化けする（既存）** — 2026-09-24 に気付いた。pwsh が adb の UTF-8 出力を
+  コンソールのコードページ（CP932）として読んでから `Set-Content -Encoding utf8` するため、エンジンの日本語ログが化ける
+  （`[SEED INIT]` 等の ASCII 部分は読める）。pwsh 7.4 のネイティブコマンドのバイト列そのままのリダイレクト（`> file`）で保存するか、
+  読み取りの間だけ `[Console]::OutputEncoding` を UTF-8 にする。回避策は docs/android.md §13.5。
 - [ ] **保存先・キャッシュ・パイプラインキャッシュの置き場（段階A）** — 2026-09-24。セーブ（`save/path.rs`）と
   派生キャッシュ（`loader/asset_cache.rs`）は「アセットルートの親」規則でたまたまアプリ専用フォルダに落ちている。
   パイプラインキャッシュ（`renderer/mod.rs::pipeline_cache_path`）は実行ファイルの隣（Android では `/system/bin`）
@@ -1609,6 +1638,8 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   android-activity の compile_error で失敗する（段階0 以前は nethost-sys の build.rs の panic で失敗していた）。
   .so は `runtime/android/native`（cargo ndk）が作る（出力先の並びは同じ `runtime/target/<triple>/<profile>/`）。
   あわせて APK 化（Gradle）とアセットの同梱が要る。段階0 ではエディタには手を入れていない。
+  2026-09-24 追記: アセットの同梱の形は決まった（APK の `assets/seed/assets.pak`。docs/android.md §13）。ウィンドウからは
+  `AssetPakBuilder`（SeedPak と共通）で `runtime/android/app/src/main/assets/seed/` へ書き、`build_and_run.ps1` の工程を呼べばよい。
 - [ ] **debug の libSEED.so が約 445 MB / ABI（段階C）** — 2026-09-24。フルデバッグ情報のため。APK へはシンボルを削って
   約 53 MB で入るが、ビルド・コピー・削りの時間が掛かる。Android の開発ビルドだけ `debug = "line-tables-only"` 等にする案。
 - [ ] **Android ビルドでだけ出る警告（Windows 専用コードの cfg 漏れ）** — 2026-09-24。`input/cursor_visibility.rs` の

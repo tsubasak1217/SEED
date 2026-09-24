@@ -379,9 +379,13 @@ impl App {
     ///
     /// - `self.assets_root` が指定されている場合はそれを使う
     /// - 未指定の場合は実行ファイルの隣にある assets/ フォルダを使う
-    /// - assets.pak が実行ファイルの隣にあれば PAK モードで初期化する
+    /// - 配布物の読み口（`self.package_source`。Android の APK）があれば、その assets.pak で PAK モードにする
+    /// - そうでなく assets.pak が実行ファイルの隣（アセットルートの親）にあれば PAK モードで初期化する
     fn init_asset_fs(&self) {
         use crate::engine::asset_fs;
+        use crate::engine::core::package_layout;
+        use crate::engine::package_source;
+        use crate::engine::pak::PakReader;
         use std::path::PathBuf;
 
         // アセットルートを決定する
@@ -391,14 +395,24 @@ impl App {
             // 実行ファイルの隣の assets/ ディレクトリを使う
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|d| d.join("assets")))
-                .unwrap_or_else(|| PathBuf::from("assets"))
+                .and_then(|p| p.parent().map(|d| d.join(package_layout::LOOSE_ASSETS_DIR_NAME)))
+                .unwrap_or_else(|| PathBuf::from(package_layout::LOOSE_ASSETS_DIR_NAME))
         };
+
+        // ── 配布物の読み口が渡されている（Android の APK 内 pak）──
+        //   PAK は読み口から開き、PAK に無いアセットは読み口の assets/ → アセットルートの順に探す。
+        //   アセットルートのフォルダは無くてよい（PAK 実行では無いのが正常なので読めるかの確認もしない）。
+        if let Some(package) = &self.package_source {
+            let location = package.describe(package_layout::PAK_FILE_NAME);
+            let pak = open_pak_logged(|| package_source::open_pak(package.as_ref()), &location);
+            asset_fs::init_with(assets_root, pak, Some(Arc::clone(package)));
+            return;
+        }
 
         // 実行ファイルの隣に assets.pak があれば PAK モードにする
         let pak_path = assets_root
             .parent()
-            .map(|dir| dir.join("assets.pak"))
+            .map(|dir| dir.join(package_layout::PAK_FILE_NAME))
             .filter(|p| p.exists());
 
         // アセットルートが実際に読めるかを 1 回の read_dir で確かめる。
@@ -421,7 +435,11 @@ impl App {
             }
         }
 
-        asset_fs::init(assets_root, pak_path.as_deref());
+        // PAK を開けなかったとき（壊れている等）は理由をログに残し、ファイルシステムだけで続ける。
+        let pak = pak_path.as_deref().and_then(|path| {
+            open_pak_logged(|| PakReader::open(path), &path.display().to_string())
+        });
+        asset_fs::init_with(assets_root, pak, None);
     }
 
     /// プロジェクトのプラグインフォルダからプラグインをロードする。
@@ -935,6 +953,35 @@ impl App {
                 eprintln!("[SEED INIT] load_play_scene FAILED: {e}");
             }
             None => {}
+        }
+    }
+}
+
+/// assets.pak を開き、結果を起動ログへ 1 行残す（`init_asset_fs` 専用）。
+///
+/// 開けたらエントリ数を、開けなければ理由を出す。開けないときは `None`（＝パッケージ実行にしない。
+/// アセットはファイルシステムから読む）を返し、起動は止めない。
+///
+/// # 引数
+/// * `open`     - PAK を開く処理（ファイル・配布物の読み口のどちらでもよい）
+/// * `location` - ログに出す PAK の場所
+fn open_pak_logged(
+    open: impl FnOnce() -> std::io::Result<crate::engine::pak::PakReader>,
+    location: &str,
+) -> Option<crate::engine::pak::PakReader> {
+    match open() {
+        Ok(reader) => {
+            eprintln!(
+                "[SEED INIT] asset_fs: packaged pak={location} entries={}",
+                reader.entry_count()
+            );
+            Some(reader)
+        }
+        Err(e) => {
+            eprintln!(
+                "[App][ERROR] assets.pak を開けません: {location} — {e}（PAK 無しで起動し、アセットはファイルシステムから読みます）"
+            );
+            None
         }
     }
 }

@@ -12,15 +12,25 @@
 //  "assets://textures/player.png"
 //   ↑ スキーム       ↑ アセットルートからの相対パス
 //
+//  【仮想パスを読む順】（read_bytes / read_virtual_layers）
+//    1. PAK（パッケージ実行のとき）
+//    2. 配布物の PAK 外のアセット（配布物の読み口 PackageSource を渡されたときだけ。
+//       Android の APK 内 assets/seed/assets/<相対パス>。engine::package_source 参照）
+//    3. ファイルシステムの <アセットルート>/<相対パス>（エディタモード兼フォールバック）
+//  デスクトップの配布物は 2 を持たない（PAK 外のアセット＝実行ファイルの隣の assets/ が
+//  そのまま 3 のアセットルートなので、従来どおり 1 → 3 の順になる）。
+//
 //  【初期化】
-//  `init(assets_root, pak_path)` をアプリ起動時に一度だけ呼ぶ。
-//  - assets_root: アセットフォルダの絶対パス
-//  - pak_path:    assets.pak の絶対パス（存在する場合のみ Some）
+//  アプリ起動時に一度だけ、次のどちらかを呼ぶ（App::init_asset_fs）。
+//  - `init(assets_root, pak_path)` … assets.pak をファイルパスで開く（開けなければ黙って PAK 無し）
+//  - `init_with(assets_root, pak, package)` … 開いた PAK と配布物の読み口を直接渡す
+//    （Android の APK 内 pak。デスクトップの起動も開けなかった理由をログに残すためこちらを使う）
 // ============================================================
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use super::package_source::{self, PackageSource};
 use super::pak::PakReader;
 
 // ============================================================
@@ -32,7 +42,16 @@ static ASSETS_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// PAK リーダー（存在する場合のみ Some）。
 /// Mutex で包んで Seek による &mut 要件に対応する。
+///
+/// 【スレッド安全性】メインスレッド・モデルの非同期ロードのワーカー・rayon・音声スレッドから読まれる。
+/// 読み口は 1 本なので読み出しは Mutex で直列化する（デスクトップのファイル・Android の APK 内アセットとも同じ）。
 static PAK: OnceLock<Option<Mutex<PakReader>>> = OnceLock::new();
+
+/// 配布物の読み口（Android の APK など、ファイルシステムの外にある配布物のときだけ Some）。
+///
+/// PAK に無いアセットを配布物の `assets/<相対パス>` から読むのに使う。
+/// `PackageSource` は `Send + Sync`（同時に呼ばれてよい）なので Mutex では包まない。
+static PACKAGE: OnceLock<Option<Arc<dyn PackageSource>>> = OnceLock::new();
 
 /// 仮想パスのスキーム文字列。
 pub const ASSETS_SCHEME: &str = "assets://";
@@ -45,21 +64,31 @@ pub const ASSETS_SCHEME: &str = "assets://";
 ///
 /// - `assets_root`: アセットフォルダの絶対パス
 /// - `pak_path`:    assets.pak のパス（存在しない場合は None を渡す）
+///
+/// PAK を開けなかった場合は黙って PAK 無し（ファイルシステムのみ）で初期化する。
+/// 開けなかった理由をログに残したい呼び出し側は、自分で `PakReader::open` して `init_with` を使う。
 pub fn init(assets_root: PathBuf, pak_path: Option<&Path>) {
+    let pak = pak_path
+        .filter(|p| p.exists())
+        .and_then(|p| PakReader::open(p).ok());
+    init_with(assets_root, pak, None);
+}
+
+/// 開いた PAK と配布物の読み口を直接渡して初期化する。アプリ起動時に一度だけ呼ぶこと。
+///
+/// - `assets_root`: アセットフォルダの絶対パス（ファイルシステムへのフォールバック先）
+/// - `pak`:         開いた assets.pak（無ければ None ＝パッケージ実行ではない）
+/// - `package`:     配布物の読み口（PAK 外のアセットを配布物から読む場合だけ Some。Android の APK）
+///
+/// 2 回目以降の呼び出しは無視される（`OnceLock`。最初の 1 回だけが効く）。
+pub fn init_with(
+    assets_root: PathBuf,
+    pak: Option<PakReader>,
+    package: Option<Arc<dyn PackageSource>>,
+) {
     let _ = ASSETS_ROOT.set(assets_root);
-
-    let pak = pak_path.and_then(|p| {
-        if p.exists() {
-            match PakReader::open(p) {
-                Ok(reader) => Some(Mutex::new(reader)),
-                Err(_) => None,
-            }
-        } else {
-            None
-        }
-    });
-
-    let _ = PAK.set(pak);
+    let _ = PAK.set(pak.map(Mutex::new));
+    let _ = PACKAGE.set(package);
 }
 
 // ============================================================
@@ -171,26 +200,56 @@ pub fn mtime(path: &str) -> u64 {
 
 /// バイト列としてアセットを読み込む。
 ///
+/// 仮想パスは次の順に探す（詳細は `read_virtual_layers`）。
 /// 1. PAK に存在すれば PAK から読む
-/// 2. 存在しなければファイルシステムから読む（エディタモード兼フォールバック）
+/// 2. 配布物の読み口があれば、配布物の PAK 外（`assets/<相対パス>`）から読む（Android の APK）
+/// 3. どちらにも無ければファイルシステムから読む（エディタモード兼フォールバック）
 pub fn read_bytes(path: &str) -> std::io::Result<Vec<u8>> {
     // 仮想パスの場合は相対パスを取り出す
     if let Some(rel) = path.strip_prefix(ASSETS_SCHEME) {
-        // PAK から読む
-        if let Some(Some(pak_mutex)) = PAK.get() {
-            if let Ok(mut pak) = pak_mutex.lock() {
-                if let Some(data) = pak.read(rel) {
-                    return Ok(data);
-                }
-            }
-        }
-        // ファイルシステムへフォールバック
-        let file_path = resolve(path);
-        return std::fs::read(file_path);
+        let pak = PAK.get().and_then(Option::as_ref);
+        let package = PACKAGE.get().and_then(Option::as_ref).map(|p| p.as_ref());
+        return read_virtual_layers(rel, pak, package, &resolve(path));
     }
 
     // 絶対パスの場合はそのまま読む（エディタモード・後方互換）
     std::fs::read(path)
+}
+
+/// 仮想パスの相対部分を、PAK → 配布物の PAK 外 → ファイルシステムの順で読む【層を引数で受ける】。
+///
+/// グローバル状態に触らないので、層の組み合わせ（デスクトップの配布物＝PAK とファイルシステム、
+/// Android の配布物＝PAK と APK とファイルシステム、エディタ＝ファイルシステムのみ）を単体テストで検証できる。
+/// `read_bytes` はグローバルの層を渡すだけ。
+///
+/// # 引数
+/// * `rel`     - `assets://` を外した相対パス（区切り・大文字小文字は PAK 側が吸収する）
+/// * `pak`     - PAK（パッケージ実行でなければ None）
+/// * `package` - 配布物の読み口（APK など。デスクトップ・エディタは None）
+/// * `fs_path` - ファイルシステム上の実パス（`resolve` の結果）
+fn read_virtual_layers(
+    rel: &str,
+    pak: Option<&Mutex<PakReader>>,
+    package: Option<&dyn PackageSource>,
+    fs_path: &Path,
+) -> std::io::Result<Vec<u8>> {
+    // ── 1. PAK ──
+    if let Some(pak_mutex) = pak {
+        if let Ok(mut pak) = pak_mutex.lock() {
+            if let Some(data) = pak.read(rel) {
+                return Ok(data);
+            }
+        }
+    }
+    // ── 2. 配布物の PAK 外（Android: APK の assets/seed/assets/<相対パス>）──
+    //   無い・読めないときは黙って次へ（最終的なエラーはファイルシステムの結果で返す）。
+    if let Some(package) = package {
+        if let Ok(data) = package.read_all(&package_source::loose_asset_path(rel)) {
+            return Ok(data);
+        }
+    }
+    // ── 3. ファイルシステムへフォールバック ──
+    std::fs::read(fs_path)
 }
 
 /// テキスト（UTF-8）としてアセットを読み込む。
@@ -415,5 +474,93 @@ mod tests {
     fn read_image_result_reports_error() {
         let r = read_image_result("no/such/texture_for_test.png");
         assert!(r.is_err(), "存在しないパスは Err になるべき");
+    }
+
+    // ── 読む順（read_virtual_layers）─────────────────────────────
+
+    use crate::engine::package_source::MemoryPackage;
+    use crate::engine::pak::tests::build_pak_bytes;
+
+    /// メモリ上の PAK を Mutex で包んで返す（asset_fs のグローバルと同じ持ち方）。
+    fn memory_pak(entries: &[(&str, &[u8])]) -> Mutex<PakReader> {
+        Mutex::new(PakReader::from_source(std::io::Cursor::new(build_pak_bytes(entries))).unwrap())
+    }
+
+    /// テストごとの一時フォルダ（ファイルシステム層の実ファイルを置く）。
+    fn layer_temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("seed_asset_fs_layers_{tag}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 3 層すべてに同じアセットがあるときは PAK が勝つこと。
+    #[test]
+    fn layers_prefer_pak() {
+        let dir = layer_temp_dir("pak_first");
+        let fs_file = dir.join("a.txt");
+        std::fs::write(&fs_file, b"fs").unwrap();
+        let pak = memory_pak(&[("a.txt", b"pak")]);
+        let package = MemoryPackage::new(&[("assets/a.txt", b"apk")]);
+
+        let data = read_virtual_layers("a.txt", Some(&pak), Some(&package), &fs_file).unwrap();
+        assert_eq!(data, b"pak");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PAK に無いアセットは配布物の PAK 外（assets/<相対パス>）から読むこと（Android の APK）。
+    /// 区切りが \ でも配布物側は / で引く。
+    #[test]
+    fn layers_fall_back_to_package_loose_asset() {
+        let dir = layer_temp_dir("package");
+        let pak = memory_pak(&[("other.txt", b"pak")]);
+        let package = MemoryPackage::new(&[("assets/dir/b.txt", b"apk")]);
+
+        let data =
+            read_virtual_layers("dir\\b.txt", Some(&pak), Some(&package), &dir.join("missing.txt")).unwrap();
+        assert_eq!(data, b"apk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PAK にも配布物にも無ければファイルシステムから読むこと。
+    #[test]
+    fn layers_fall_back_to_filesystem() {
+        let dir = layer_temp_dir("fs");
+        let fs_file = dir.join("c.txt");
+        std::fs::write(&fs_file, b"fs").unwrap();
+        let pak = memory_pak(&[("other.txt", b"pak")]);
+        let package = MemoryPackage::new(&[]);
+
+        let data = read_virtual_layers("c.txt", Some(&pak), Some(&package), &fs_file).unwrap();
+        assert_eq!(data, b"fs");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// デスクトップの配布物（配布物の読み口なし）は従来どおり PAK → ファイルシステムの順であること。
+    #[test]
+    fn desktop_layers_are_pak_then_filesystem() {
+        let dir = layer_temp_dir("desktop");
+        let fs_file = dir.join("d.txt");
+        std::fs::write(&fs_file, b"fs").unwrap();
+        let pak = memory_pak(&[("Models/E.glb", b"glb")]);
+
+        // PAK の検索は大文字小文字・区切りを問わない（従来の挙動）。
+        let from_pak = read_virtual_layers("models\\e.glb", Some(&pak), None, &dir.join("x")).unwrap();
+        assert_eq!(from_pak, b"glb");
+        let from_fs = read_virtual_layers("d.txt", Some(&pak), None, &fs_file).unwrap();
+        assert_eq!(from_fs, b"fs");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// どの層にも無ければファイルシステムのエラー（NotFound）を返すこと。
+    #[test]
+    fn layers_report_not_found() {
+        let dir = layer_temp_dir("none");
+        let pak = memory_pak(&[]);
+        let package = MemoryPackage::new(&[]);
+        let err = read_virtual_layers("none.txt", Some(&pak), Some(&package), &dir.join("none.txt"))
+            .err()
+            .expect("どこにも無いのでエラー");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

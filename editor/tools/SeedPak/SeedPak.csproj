@@ -1,0 +1,79 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SeedPak — エディタを起動せずに assets.pak を作るコンソールツール。
+
+    パッケージ化ウィンドウ（editor/src/Packaging/PackagingWindow）と「同じコード」で PAK を作る:
+      収録規則（AssetCollector / PackagingRules）→ パス書き換え（AssetPathRewriter）→ 書き出し（PakWriter）
+    の手順とログの書式は AssetPakBuilder に集約してあり、ウィンドウもこのツールもそれを呼ぶだけ。
+    Android の APK へ同梱する pak（runtime/android/build_and_run.ps1 の ProjectDir 引数）を作るのに使う。
+
+    editor/tests/*Tests と同じ流儀:
+      - 外部パッケージを足さない素のコンソールアプリ
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （パッケージ化のロジックが WPF 型を使い始めたらこのツールのビルドが壊れて気付ける）
+
+    実行方法（リポジトリのルートで。XML のコメントにハイフン 2 つを書けないため引数の書式は Program.cs 参照）:
+      dotnet run (project=editor/tools/SeedPak) の後ろに、プロジェクトフォルダと出力フォルダを渡す
+    詳細は docs/packaging.md の「SeedPak」節。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tools.SeedPak</RootNamespace>
+    <AssemblyName>SeedPak</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 収録規則（参照グラフの閉包・同伴ファイル・除外）。パッケージ化ウィンドウと同じファイル -->
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
+      <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
+      <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\Collect\AssetCollector.cs</Link>
+    </Compile>
+    <!-- パス書き換えと PAK 書き出し、その手順（ウィンドウと共通の入口） -->
+    <Compile Include="..\..\src\Packaging\Pak\AssetPathRewriter.cs">
+      <Link>Linked\Packaging\Pak\AssetPathRewriter.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\PakWriter.cs">
+      <Link>Linked\Packaging\Pak\PakWriter.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\AssetPakBuilder.cs">
+      <Link>Linked\Packaging\Pak\AssetPakBuilder.cs</Link>
+    </Compile>
+    <!-- 配布物のフォルダ構成（assets.pak の名前）と、収録ルールを読む設定ファイル -->
+    <Compile Include="..\..\src\Packaging\PackageLayout.cs">
+      <Link>Linked\Packaging\PackageLayout.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\PackagingData.cs">
+      <Link>Linked\Packaging\PackagingData.cs</Link>
+    </Compile>
+    <!-- プロジェクトフォルダ指定のアセットルートを、エディタと同じ導き方（.seedproj の assets_dir）で決める。
+         EditorVersion は SeedProjectFile.Create が参照するため一緒に取り込む（ProjectSystemTests と同じ組）。 -->
+    <Compile Include="..\..\src\Project\EditorVersion.cs">
+      <Link>Linked\Project\EditorVersion.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\SeedProjectFile.cs">
+      <Link>Linked\Project\SeedProjectFile.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Project\ProjectPaths.cs">
+      <Link>Linked\Project\ProjectPaths.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

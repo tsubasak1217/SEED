@@ -6,7 +6,8 @@
 //  【検証範囲】
 //   1. AssetReferenceScanner : 参照抽出の 4 系統
 //   2. AssetCollector        : 閉包 / 同伴ファイル / 除外と参照優先 / 欠落検出
-//   3. PakWriter             : PAK バイナリの往復（pak.rs と同じ読み方で確認）
+//   3. PakWriter             : PAK バイナリの往復（pak/mod.rs と同じ読み方で確認）
+//      AssetPakBuilder       : ウィンドウと SeedPak が共有する手順（直呼びと同じ PAK になること）
 //   4. AssetPathRewriter     : 絶対パス 4 形式の書き換え
 //   5. DotnetRuntimeBundler  : 同梱する .NET の選択と出力先レイアウト
 //   6. PackageLayout         : 配布物のフォルダ構成と旧レイアウトの後始末の判定
@@ -647,6 +648,51 @@ public static class Program
             Check.True(!scene.Contains(fx.Root.Replace("\\", "\\\\")), "エスケープ済み絶対パスが残っている");
             Check.True(scene.Contains("assets://models/box.glb"), "仮想パスへ書き換わっていない");
         });
+
+        h.Add("共通手順（AssetPakBuilder）の PAK は AssetCollector + PakWriter の直呼びと 1 バイトも違わない", () =>
+        {
+            // パッケージ化ウィンドウは以前 AssetCollector と PakWriter を直接呼んでいた。
+            // 手順を AssetPakBuilder へ移し SeedPak ツールと共有した後も、同じ入力から同じ PAK になること
+            // （絶対パス 4 形式の書き換えを含むフィクスチャで比べる）。
+            using var fx = new AssetFixture();
+            var settings = new AssetPackagingSettings();
+
+            var directPath = Path.Combine(fx.Root, "out_direct", PackageLayout.PakFileName);
+            var direct     = new AssetCollector(fx.Root, settings).Collect();
+            PakWriter.Write(directPath, fx.Root, direct.Included);
+
+            var builderPath = PackageLayout.PakPath(Path.Combine(fx.Root, "out_builder"));
+            var viaBuilder  = AssetPakBuilder.Collect(fx.Root, settings, runtimeSourceRoot: null, log: null);
+            Check.True(AssetPakBuilder.HasContent(viaBuilder), "収録対象があるはず");
+            var stats = AssetPakBuilder.Write(builderPath, fx.Root, viaBuilder, log: null, progress: null);
+
+            Check.Equal(direct.Included.Count, stats.EntryCount, "エントリ数が違う");
+            Check.True(File.ReadAllBytes(directPath).SequenceEqual(File.ReadAllBytes(builderPath)),
+                "直呼びと AssetPakBuilder で PAK のバイト列が違う");
+        });
+
+        h.Add("共通手順の報告に件数・欠落参照・書き出し結果が載る", () =>
+        {
+            using var fx = new AssetFixture();
+            var result = AssetPakBuilder.Collect(fx.Root, new AssetPackagingSettings(), null, null);
+            var lines  = new List<string>();
+            AssetPakBuilder.ReportCollection(result, lines.Add);
+
+            Check.True(lines.Any(l => l.StartsWith($"収録: {result.Included.Count} ファイル")), "収録件数の行が無い");
+            Check.True(lines.Any(l => l.StartsWith("❌ 参照先が見つからないパス:")), "欠落参照の行が無い");
+            Check.True(lines.Any(l => l.Contains("scenes/no_such_texture.png")), "欠落参照の中身が無い");
+
+            var written = new List<string>();
+            AssetPakBuilder.ReportWrite(new PakWriteStats(3, 1024 * 1024, 1, 0), written.Add);
+            Check.Equal(1, written.Count, "食い違いが無ければ 1 行");
+            Check.True(written[0].StartsWith($"✓ {PackageLayout.PakFileName} 作成完了: 3 ファイル"), "完了行の書式が違う");
+        });
+
+        h.Add("収録対象が 0 件なら書き出さない判定になる", () =>
+        {
+            var empty = new AssetCollectionResult();
+            Check.True(!AssetPakBuilder.HasContent(empty), "0 件なのに HasContent が true");
+        });
     }
 
     // ============================================================
@@ -845,6 +891,11 @@ public static class Program
 
             Check.Equal(Path.Combine(@"D:\Out\MyGame", "bin"),
                 PackageLayout.BinDirectory(@"D:\Out\MyGame"), "bin フォルダのパス組み立てが違う");
+
+            // PAK のファイル名（ランタイムの package_layout::PAK_FILE_NAME・Android の APK 内 seed/assets.pak と同じ）
+            Check.Equal("assets.pak", PackageLayout.PakFileName, "PAK のファイル名が規約と違う");
+            Check.Equal(Path.Combine(@"D:\Out\MyGame", "assets.pak"),
+                PackageLayout.PakPath(@"D:\Out\MyGame"), "PAK のパス組み立てが違う");
         });
 
         h.Add("旧レイアウトの残骸だけを削除対象に選ぶ", () =>

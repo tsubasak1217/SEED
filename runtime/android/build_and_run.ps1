@@ -1,14 +1,18 @@
 ﻿#requires -Version 7.4
 # ============================================================
-#  build_and_run.ps1 — SEED ランタイムを Android 向けにビルドし、端末で起動する（段階0）
+#  build_and_run.ps1 — SEED ランタイムを Android 向けにビルドし、端末で起動する（段階0 / 段階A）
 #
 #  【流れ】
 #    1. cargo ndk で libSEED.so をビルドし app/src/main/jniLibs/<ABI>/ へ置く
-#    2. gradlew assembleDebug で APK を作る
-#    3. adb install -r で端末（実機／エミュレータ）へ入れる
-#    4. （任意）アセットフォルダをアプリの内部専用フォルダへ送る（run-as で tar を流し込む）
-#    5. am start で起動し、logcat（タグ SEED ほか）を表示・保存する
-#  段階C（エディタの「実行」統合）はこのスクリプトの各関数を土台にする想定。
+#    2. APK に入れる配布物（app/src/main/assets/seed/）を決める
+#         -ProjectDir あり … SeedPak（editor/tools/SeedPak）で assets.pak を作って置く（パッケージ実行の APK）
+#         -ProjectDir なし … 置き場を空にする（pak の無い開発用の APK。アセットは 5 の run-as 転送で送る）
+#    3. gradlew assembleDebug で APK を作る
+#    4. adb install -r で端末（実機／エミュレータ）へ入れる
+#    5. （任意）アセットフォルダをアプリの内部専用フォルダへ送る（run-as で tar を流し込む。開発用の高速経路）
+#    6. am start で起動し、logcat（タグ SEED ほか）を表示・保存する
+#  端末側は「APK に assets/seed/assets.pak があればそれで起動、無ければ内部フォルダの assets/」で決まる
+#  （runtime/android/native/src/launch.rs）。段階C（エディタの「実行」統合）はこのスクリプトの各関数を土台にする想定。
 #
 #  【前提】pwsh（PowerShell 7.4 以降）で実行する。7.4 未満はネイティブコマンド間のパイプが
 #  バイト列を壊す（アセット転送の tar が壊れる）。Windows PowerShell 5.1 は日本語を含む
@@ -23,6 +27,7 @@
 #    pwsh -File runtime/android/build_and_run.ps1                       # 両 ABI をビルドして接続端末で起動
 #    pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -LogcatSeconds 20 -LogFile out.log
 #    pwsh -File runtime/android/build_and_run.ps1 -AssetsDir D:\path\to\project\assets
+#    pwsh -File runtime/android/build_and_run.ps1 -Abi x86_64 -Serial emulator-5554 -ProjectDir D:\path\to\project
 #
 #  詳細は docs/android.md。
 # ============================================================
@@ -40,7 +45,12 @@ param(
     [string]$Serial,
 
     # 端末へ push するアセットフォルダ（プロジェクトの assets/。project_settings.json を含む）。
+    # 開発用の高速経路（APK を作り直さずアセットだけ差し替えられる）。-ProjectDir とは同時に使わない。
     [string]$AssetsDir,
+
+    # APK に同梱する pak を作るプロジェクトフォルダ（SeedPak の --project。.seedproj か assets/ を持つフォルダ、
+    # またはアセットルートそのもの）。指定すると push 無しで APK だけで起動する（パッケージ実行）。
+    [string]$ProjectDir,
 
     # 各工程を飛ばす（途中から繰り返すとき用）。
     [switch]$SkipRustBuild,
@@ -78,10 +88,20 @@ $HostTar = Join-Path $env:SystemRoot 'System32/tar.exe'
 # 受け止めた panic。ほかは Java 例外・ネイティブクラッシュ・Activity の起動終了の手掛かり）。
 $LogcatFilters = @('SEED:V', 'RustPanic:V', 'GameActivity:V', 'AndroidRuntime:E', 'DEBUG:V', 'libc:F', 'vulkan:W', 'ActivityTaskManager:I', '*:S')
 
+# APK の assets/ の中で配布物のルートにするフォルダ名（native/src/apk_package/mod.rs の APK_PACKAGE_ROOT と同じ）。
+$ApkPackageRootName = 'seed'
+# 配布物の PAK のファイル名（エンジンの package_layout::PAK_FILE_NAME・エディタの PackageLayout.PakFileName と同じ）。
+$PakFileName = 'assets.pak'
+
 # このスクリプトのあるフォルダ（runtime/android）を基準にする。
 $AndroidRoot = $PSScriptRoot
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $AndroidRoot)
 $NativeCrateDir = Join-Path $AndroidRoot 'native'
 $JniLibsDir = Join-Path $AndroidRoot 'app/src/main/jniLibs'
+# APK に同梱する配布物の置き場（Gradle の既定の assets ソース app/src/main/assets の下。生成物・追跡しない）。
+$ApkPackageDir = Join-Path $AndroidRoot "app/src/main/assets/$ApkPackageRootName"
+# pak を作るコンソールツール（パッケージ化ウィンドウと同じ収録規則・パス書き換え・PAK 形式）。
+$SeedPakProject = Join-Path $RepoRoot 'editor/tools/SeedPak'
 $ApkPath = Join-Path $AndroidRoot 'app/build/outputs/apk/debug/app-debug.apk'
 
 # ── ツールチェーンの解決 ─────────────────────────────────────────────
@@ -156,7 +176,7 @@ function Invoke-NativeBuild([string]$Ndk) {
     $cargoArgs += @('-P', "$AndroidApiLevel", '-o', $JniLibsDir, 'build')
     if ($Release) { $cargoArgs += '--release' }
 
-    Write-Host "[1/5] cargo $($cargoArgs -join ' ')" -ForegroundColor Cyan
+    Write-Host "[1/6] cargo $($cargoArgs -join ' ')" -ForegroundColor Cyan
     Push-Location -LiteralPath $NativeCrateDir
     try {
         & cargo @cargoArgs
@@ -169,9 +189,33 @@ function Invoke-NativeBuild([string]$Ndk) {
         ForEach-Object { Write-Host ("      {0}  {1:N1} MB  {2}" -f $_.Directory.Name, ($_.Length / 1MB), $_.LastWriteTime) }
 }
 
-# 2. gradlew assembleDebug で APK を作る。
+# 2. APK に同梱する配布物（app/src/main/assets/seed/）を決める。
+#
+# -ProjectDir があれば SeedPak で assets.pak を作って置き（パッケージ実行の APK）、無ければ置き場を空にする
+# （pak の無い開発用の APK）。置き場に前回の pak が残ったままだと、端末はそれで起動して run-as で送った
+# アセットを読まなくなるため、Gradle を回すたびに今回の引数どおりの状態へ作り直す。
+function Update-ApkPackage {
+    if (Test-Path -LiteralPath $ApkPackageDir) {
+        Remove-Item -LiteralPath $ApkPackageDir -Recurse -Force
+    }
+    if (-not $ProjectDir) {
+        Write-Host "[2/6] APK に pak を入れません（開発用。アセットは -AssetsDir の run-as 転送で送る）" -ForegroundColor Cyan
+        return
+    }
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        throw 'dotnet が見つかりません。SeedPak（editor/tools/SeedPak）の実行に .NET SDK が必要です。'
+    }
+    Write-Host "[2/6] SeedPak: $ProjectDir -> $ApkPackageDir/$PakFileName" -ForegroundColor Cyan
+    & dotnet run --project $SeedPakProject -- --project $ProjectDir --out $ApkPackageDir
+    if ($LASTEXITCODE -ne 0) { throw "SeedPak が失敗しました（終了コード $LASTEXITCODE）。" }
+    $pak = Join-Path $ApkPackageDir $PakFileName
+    if (-not (Test-Path -LiteralPath $pak)) { throw "SeedPak の出力に $PakFileName がありません: $pak" }
+    Write-Host ("      {0}  {1:N1} MB" -f $pak, ((Get-Item -LiteralPath $pak).Length / 1MB))
+}
+
+# 3. gradlew assembleDebug で APK を作る。
 function Invoke-GradleBuild([string]$Ndk) {
-    Write-Host '[2/5] gradlew assembleDebug' -ForegroundColor Cyan
+    Write-Host '[3/6] gradlew assembleDebug' -ForegroundColor Cyan
     Push-Location -LiteralPath $AndroidRoot
     try {
         # -Abi で選んだ ABI だけを APK に詰める（jniLibs に残っている別 ABI の古い .so を詰めないため）。
@@ -185,14 +229,14 @@ function Invoke-GradleBuild([string]$Ndk) {
     Write-Host ("      {0}  {1:N1} MB" -f $ApkPath, ((Get-Item -LiteralPath $ApkPath).Length / 1MB))
 }
 
-# 3. APK を端末へ入れる（既存のデータは残す）。
+# 4. APK を端末へ入れる（既存のデータは残す）。
 function Install-Apk([string]$Adb, [string[]]$TargetArgs) {
-    Write-Host "[3/5] adb install -r $ApkPath" -ForegroundColor Cyan
+    Write-Host "[4/6] adb install -r $ApkPath" -ForegroundColor Cyan
     & $Adb @TargetArgs install -r $ApkPath
     if ($LASTEXITCODE -ne 0) { throw "adb install が失敗しました（終了コード $LASTEXITCODE）。" }
 }
 
-# 4. アセットフォルダをアプリの内部専用フォルダへ送る（-AssetsDir 指定時のみ）。
+# 5. アセットフォルダをアプリの内部専用フォルダへ送る（-AssetsDir 指定時のみ）。
 #
 # 【なぜ adb push ではないのか】実機（Android 11 以降）では、adb push で外部アプリ専用フォルダ
 # （/sdcard/Android/data/<パッケージ名>/files）に作ったフォルダは shell の所有になり、アプリからは
@@ -206,7 +250,7 @@ function Push-Assets([string]$Adb, [string[]]$TargetArgs) {
         throw "-AssetsDir にはプロジェクトの assets/（project_settings.json を含むフォルダ）を指定してください: $AssetsDir"
     }
     if (-not (Test-Path -LiteralPath $HostTar)) { throw "tar が見つかりません: $HostTar" }
-    Write-Host "[4/5] $AssetsDir -> (run-as $PackageName) $RemoteAssetsDir" -ForegroundColor Cyan
+    Write-Host "[5/6] $AssetsDir -> (run-as $PackageName) $RemoteAssetsDir" -ForegroundColor Cyan
     $extract = "rm -rf $RemoteAssetsDir && mkdir -p $RemoteAssetsDir && tar -xf - -C $RemoteAssetsDir && chmod -R u+rwX,go-rwx $RemoteAssetsDir"
     & $HostTar -cf - -C $AssetsDir . | & $Adb @TargetArgs exec-in run-as $PackageName sh -c $extract
     if ($LASTEXITCODE -ne 0) { throw "アセットの転送が失敗しました（終了コード $LASTEXITCODE）。デバッグ版 APK がインストール済みか確認してください。" }
@@ -215,7 +259,7 @@ function Push-Assets([string]$Adb, [string[]]$TargetArgs) {
     if ("$check".Trim() -ne 'ok') { throw "アセットの転送後に $RemoteAssetsDir/project_settings.json が見つかりません。" }
 }
 
-# 5. 起動して logcat を表示（・保存）する。
+# 6. 起動して logcat を表示（・保存）する。
 function Start-AppAndWatchLog([string]$Adb, [string[]]$TargetArgs) {
     # 今回の起動分だけを見るため、起動直前の「端末の時刻」を控えて、それ以降のログだけを出す（logcat -T）。
     # logcat -c（ログの全消去）は使わない。実機は他の作業者・エージェントと共用することがあり、
@@ -226,7 +270,7 @@ function Start-AppAndWatchLog([string]$Adb, [string[]]$TargetArgs) {
         # 動いていれば止めてから起動し直す。Activity は singleTask なので、動いたままだと am start は
         # 前面へ出すだけで、送り直したアセットや入れ直した .so を読まない。止めるのは自分のパッケージだけ。
         & $Adb @TargetArgs shell am force-stop $PackageName
-        Write-Host "[5/5] am start $LaunchActivity" -ForegroundColor Cyan
+        Write-Host "[6/6] am start $LaunchActivity" -ForegroundColor Cyan
         & $Adb @TargetArgs shell am start -W -n $LaunchActivity
         if ($LASTEXITCODE -ne 0) { throw "am start が失敗しました（終了コード $LASTEXITCODE）。" }
     }
@@ -250,13 +294,27 @@ function Start-AppAndWatchLog([string]$Adb, [string[]]$TargetArgs) {
 
 # ── 本体 ──────────────────────────────────────────────────────────
 
+# 引数の食い違いは何もビルドしないうちに弾く。
+if ($ProjectDir -and $AssetsDir) {
+    throw '-ProjectDir（APK 内の pak で起動）と -AssetsDir（run-as で送ったアセットで起動）は同時に指定できません。端末は APK に pak があればそちらを優先します。'
+}
+if ($ProjectDir -and $SkipGradle) {
+    throw '-ProjectDir は APK を作り直すときだけ効きます（-SkipGradle と同時に指定できません）。'
+}
+if ($ProjectDir -and -not (Test-Path -LiteralPath $ProjectDir -PathType Container)) {
+    throw "-ProjectDir のフォルダが見つかりません: $ProjectDir"
+}
+if ($AssetsDir -and $SkipGradle -and (Test-Path -LiteralPath (Join-Path $ApkPackageDir $PakFileName))) {
+    Write-Warning "前回のビルドで APK に $PakFileName を入れています。そのままの APK ならパッケージ実行が優先され、送ったアセットは PAK に無いものしか使われません（-SkipGradle を外すと pak 無しで作り直します）。"
+}
+
 $sdk = Resolve-AndroidSdk
 $ndk = Resolve-AndroidNdk $sdk
 $adb = Join-Path $sdk 'platform-tools/adb.exe'
 if (-not (Test-Path -LiteralPath $adb)) { throw "adb が見つかりません: $adb（SDK Manager で Platform-Tools を入れてください）" }
 
 if (-not $SkipRustBuild) { Assert-CargoNdk; Invoke-NativeBuild $ndk }
-if (-not $SkipGradle) { Assert-JavaHome; Invoke-GradleBuild $ndk }
+if (-not $SkipGradle) { Update-ApkPackage; Assert-JavaHome; Invoke-GradleBuild $ndk }
 
 $needsDevice = (-not $NoInstall) -or $AssetsDir -or (-not $NoLaunch) -or (-not $NoLogcat)
 if ($needsDevice) {

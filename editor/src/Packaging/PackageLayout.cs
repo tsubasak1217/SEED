@@ -46,6 +46,14 @@ namespace SEEDEditor.Packaging;
 /// <summary>配布パッケージのフォルダ構成（サブフォルダ名とパス組み立て）。</summary>
 public static class PackageLayout
 {
+    // ── ファイル名（ランタイム側 package_layout.rs と一致必須） ──
+
+    /// <summary>
+    /// アセットをまとめた PAK のファイル名（出力フォルダ直下。Android では APK の assets/seed/ 直下）。
+    /// ランタイム側 <c>package_layout::PAK_FILE_NAME</c> と一致必須。
+    /// </summary>
+    public const string PakFileName = "assets.pak";
+
     // ── フォルダ名（ランタイム側 package_layout.rs と一致必須） ──
 
     /// <summary>
@@ -100,6 +108,12 @@ public static class PackageLayout
         [".deps.json", ".runtimeconfig.json"];
 
     // ── パス組み立て（純関数） ───────────────────────────────
+
+    /// <summary>PAK のパス <c>{gameOutDir}/assets.pak</c> を返す【純関数】。</summary>
+    /// <param name="gameOutDir">パッケージ出力フォルダ。</param>
+    /// <returns><c>{gameOutDir}/assets.pak</c>。</returns>
+    public static string PakPath(string gameOutDir) =>
+        Path.Combine(gameOutDir, PakFileName);
 
     /// <summary>副次ファイルフォルダ <c>{gameOutDir}/bin</c> を返す【純関数】。</summary>
     /// <param name="gameOutDir">パッケージ出力フォルダ。</param>

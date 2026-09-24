@@ -9,6 +9,8 @@ pub mod core;
 pub mod ecs;
 pub mod methods;
 pub mod pak;
+/// 配布物（assets.pak と PAK 外のファイル）を相対パスで開く読み口。Android の APK 内 pak 用（docs/android.md §13）
+pub mod package_source;
 pub mod physics;
 pub mod plugin;
 pub mod structs;

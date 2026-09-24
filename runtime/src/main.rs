@@ -129,6 +129,8 @@ fn parse_args() -> LaunchArgs {
         mode,
         pipe_name,
         assets_root,
+        // デスクトップの配布物は実行ファイルの隣の assets.pak をファイルとして開く（init_asset_fs）。
+        package_source: None,
         editor_resources,
         scene_path,
         play_collider_draw,

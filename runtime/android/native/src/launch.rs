@@ -1,7 +1,13 @@
 // ============================================================
-//  launch.rs — アプリ専用データフォルダからエンジンの起動引数を組み立てる
+//  launch.rs — 起動モードを決めて、エンジンの起動引数（LaunchArgs）を組み立てる
 //
-//  【データの置き場（段階0）】
+//  【起動モードの決め方】データの有無だけで決める（設定フラグは持たない）。
+//    1. パッケージ実行 … APK の assets/seed/assets.pak があるとき（配布版。リリース版 APK でも動く）。
+//                         アセットは APK 内の pak から読む（apk_package / engine::package_source）。
+//    2. 開発用の置き場 … APK に pak が無いとき。端末のアプリ専用フォルダの assets/ から読む
+//                         （build_and_run.ps1 -AssetsDir が run-as で送る。デバッグ版 APK でしか使えない）。
+//
+//  【データの置き場】
 //  PC の開発時レイアウト（projects/<Name>/assets と、その隣の save/・cache/）をそのまま
 //  端末のアプリ専用フォルダへ写した形にする。
 //
@@ -12,23 +18,29 @@
 //      save/                            … セーブデータ（エンジンが自動で作る）
 //      cache/                           … 派生データキャッシュ（エンジンが自動で作る）
 //
-//  【データルートの選び方】候補を次の順に見て、assets/project_settings.json がある最初のものを使う。
-//  どれにも無ければ先頭（内部フォルダ）を使い、空の assets/ を作ってエンジンは既定値で起動する。
+//  パッケージ実行でも、アセットルートは内部アプリ専用フォルダの assets/ にしておく
+//  （PAK にも APK にも無いアセットのフォールバック先。フォルダは作らない＝空で正常）。
+//  セーブ・キャッシュの置き場の振り替え（パッケージ実行では実行ファイル基準になっている）は次の作業（段階A-3）。
+//
+//  【データルートの選び方（開発用の置き場）】候補を次の順に見て、assets/project_settings.json がある
+//  最初のものを使う。どれにも無ければ先頭（内部フォルダ）を使い、空の assets/ を作ってエンジンは既定値で起動する。
 //    1. 内部アプリ専用フォルダ（/data/user/0/<パッケージ名>/files）
 //       … build_and_run.ps1 -AssetsDir が run-as（デバッグ版 APK の権限）で書き込む先。
 //         実機でもエミュレータでも確実にアプリから読める。
 //    2. 外部アプリ専用フォルダ（/sdcard/Android/data/<パッケージ名>/files）
 //       … 手で adb push した場合の置き場。エミュレータでは読めるが、実機（Android 11 以降）では
 //         adb push が作ったフォルダは shell の所有になりアプリから読めない（Permission denied）。
-//
-//  段階A で APK 内の pak（AssetManager 経由）と保存先の振替へ置き換える予定（docs/android.md）。
 // ============================================================
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use seed_engine::engine::core::app_base::{LaunchArgs, RuntimeMode};
+use seed_engine::engine::core::package_layout;
+use seed_engine::engine::package_source::PackageSource;
 use winit::platform::android::activity::AndroidApp;
 
+use crate::apk_package::{ApkPackageSource, PakProbe};
 use crate::logcat;
 
 /// データルート直下のアセットルートのフォルダ名（PC のプロジェクトの assets/ と同じ名前）。
@@ -37,12 +49,27 @@ const ASSETS_DIR_NAME: &str = "assets";
 /// アセットルートに必ずある目印のファイル（エンジンのプロジェクト設定）。
 const PROJECT_SETTINGS_FILE_NAME: &str = "project_settings.json";
 
-/// アプリ専用データフォルダからエンジンの起動引数を組み立てる。
+/// ログに出すバイト数を MiB へ直す除数。
+const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
+
+/// 起動モードを決めて、エンジンの起動引数を組み立てる。
 ///
 /// 端末上では常にゲームとして起動する（エディタ埋め込み・IPC・親プロセス監視は無い）。
-/// 開始シーンは assets/project_settings.json の start_scene に任せる。
+/// 開始シーンは project_settings.json の start_scene に任せる（パッケージ実行では PAK の中のもの）。
 pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
     let internal = app.internal_data_path();
+
+    // ── 1. APK に配布物の pak があればパッケージ実行 ──
+    let package = ApkPackageSource::new(app.asset_manager());
+    if let Some(probe) = package.probe_pak() {
+        return packaged_launch_args(internal.as_deref(), package, &probe);
+    }
+    logcat::info(&format!(
+        "APK に {} がありません。開発用の置き場（アプリ専用フォルダの assets/）から読みます",
+        package.describe(package_layout::PAK_FILE_NAME)
+    ));
+
+    // ── 2. 開発用の置き場（run-as で送った内部フォルダ → 外部フォルダ）──
     let external = app.external_data_path();
     let candidates: Vec<&Path> = [internal.as_deref(), external.as_deref()]
         .into_iter()
@@ -61,12 +88,60 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
         None => logcat::warn("アプリ専用データフォルダが取得できません。アセット無しの既定値で起動します"),
     }
 
+    play_launch_args(assets_root, None)
+}
+
+/// パッケージ実行（APK 内の pak）の起動引数を組み立てる。
+///
+/// # 引数
+/// * `internal` - 内部アプリ専用フォルダ（アセットルートのフォールバック先を作るのに使う）
+/// * `package`  - APK の配布物の読み口（エンジンの asset_fs へ渡す）
+/// * `probe`    - pak を調べた結果（ログ用）
+fn packaged_launch_args(internal: Option<&Path>, package: ApkPackageSource, probe: &PakProbe) -> LaunchArgs {
+    let location = package.describe(package_layout::PAK_FILE_NAME);
+    match probe.uncompressed_offset {
+        Some(offset) => logcat::info(&format!(
+            "APK 内の pak で起動します（パッケージ実行）: {location}  {:.1} MiB・非圧縮（APK 内の位置 {offset}）",
+            probe.size as f64 / BYTES_PER_MIB
+        )),
+        None => {
+            logcat::info(&format!(
+                "APK 内の pak で起動します（パッケージ実行）: {location}  {:.1} MiB",
+                probe.size as f64 / BYTES_PER_MIB
+            ));
+            logcat::warn(&format!(
+                "{location} が APK 内で圧縮されています。読めますが Seek のたびに展開し直すため遅くなります。\
+                 app/build.gradle.kts の androidResources.noCompress に \"pak\" が入っているか確認してください"
+            ));
+        }
+    }
+
+    // PAK にも APK にも無いアセットのフォールバック先（開発用の置き場と同じ場所）。作らない。
+    let assets_root = internal.map(assets_root_of);
+    if let Some(path) = &assets_root {
+        logcat::info(&format!("アセットルート（PAK に無いアセットのフォールバック先）: {}", path.display()));
+    }
+
+    let package: Arc<dyn PackageSource> = Arc::new(package);
+    play_launch_args(assets_root, Some(package))
+}
+
+/// ゲームとして起動する LaunchArgs を組み立てる（両モード共通）。
+///
+/// # 引数
+/// * `assets_root`    - アセットルート（ファイルシステム）
+/// * `package_source` - 配布物の読み口（パッケージ実行のときだけ Some）
+fn play_launch_args(
+    assets_root: Option<PathBuf>,
+    package_source: Option<Arc<dyn PackageSource>>,
+) -> LaunchArgs {
     LaunchArgs {
         parent_hwnd: None,
         parent_pid: None,
         mode: RuntimeMode::Play,
         pipe_name: None,
         assets_root: assets_root.map(|path| path.to_string_lossy().into_owned()),
+        package_source,
         editor_resources: None,
         scene_path: None,
         play_collider_draw: false,

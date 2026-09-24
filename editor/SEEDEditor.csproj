@@ -83,6 +83,16 @@
     <Page Remove="tests\**" />
   </ItemGroup>
 
+  <!-- エディタを起動せずに使うコンソールツール（editor/tools/。例: SeedPak）も独立したプロジェクト。   -->
+  <!-- tests と同じ理由（Main の重複・obj の生成ファイルの二重取り込み）で本体から除外する。            -->
+  <ItemGroup>
+    <Compile Remove="tools\**" />
+    <EmbeddedResource Remove="tools\**" />
+    <None Remove="tools\**" />
+    <Content Remove="tools\**" />
+    <Page Remove="tools\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Dirkster.AvalonDock" Version="4.74.0" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.0" />

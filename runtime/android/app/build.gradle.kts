@@ -1,8 +1,10 @@
 // ============================================================
-//  app/build.gradle.kts — SEED ランタイムの APK（段階0: 1 枚絵を出すスパイク）
+//  app/build.gradle.kts — SEED ランタイムの APK（段階0 / 段階A）
 //
-//  中身は「Java の薄い Activity（MainActivity）＋ cargo ndk が作った libSEED.so」だけ。
+//  中身は「Java の薄い Activity（MainActivity）＋ cargo ndk が作った libSEED.so」と、
+//  パッケージ実行のときだけ「配布物（assets/seed/assets.pak）」。
 //  .so は build_and_run.ps1 が app/src/main/jniLibs/<ABI>/libSEED.so へ置く（AGP の既定の置き場）。
+//  配布物は build_and_run.ps1 -ProjectDir が app/src/main/assets/seed/ へ置く（AGP の既定の assets の置き場）。
 // ============================================================
 
 plugins {
@@ -64,6 +66,14 @@ android {
     compileOptions {
         sourceCompatibility = seedJavaVersion
         targetCompatibility = seedJavaVersion
+    }
+
+    androidResources {
+        // 配布物の pak は圧縮せずに APK へ入れる。ネイティブ側は AAsset を Read + Seek しながらエントリを
+        // 読むが、圧縮されていると後ろ向きの Seek のたびに先頭から展開し直すことになり遅い（非圧縮なら
+        // APK 内の位置へ直接 Seek できる。ファイル記述子とオフセットでも読める）。
+        // 非圧縮で入ったかは起動ログの「APK 内の pak で起動します … 非圧縮（APK 内の位置 N）」で分かる。
+        noCompress += "pak"
     }
 
     buildTypes {

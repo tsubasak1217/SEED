@@ -115,6 +115,13 @@ public class IosSettings
 public class PackagingData
 {
     /// <summary>
+    /// 設定ファイルの名前（アセットルート直下に置く）。
+    /// パッケージ化ウィンドウと SeedPak ツール（editor/tools/SeedPak）が同じファイルを読む。
+    /// エディタ専用の設定なので PAK には入れない（<see cref="Collect.PackagingRules.NeverIncludedRelativePaths"/>）。
+    /// </summary>
+    public const string SettingsFileName = "packaging_settings.json";
+
+    /// <summary>
     /// ゲームの名前。出力フォルダ名・実行ファイル名に使用される。
     /// 空の場合は project_settings.json の game_name を参照する。
     /// </summary>

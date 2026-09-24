@@ -21,7 +21,9 @@ const ASSETS_ROOT_ARG_PREFIX: &str = "--assets-root=";
 const PIPE_ARG_PREFIX: &str = "--pipe=";
 
 /// 配布パッケージに同梱されるアセットアーカイブのファイル名（exe の隣に置かれる）。
-pub const PAK_FILE_NAME: &str = "assets.pak";
+///
+/// 名前の正典は `core::package_layout::PAK_FILE_NAME`（`app_init.rs::init_asset_fs` も同じ定数を見る）。
+pub const PAK_FILE_NAME: &str = crate::engine::core::package_layout::PAK_FILE_NAME;
 
 /// 起動形態。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

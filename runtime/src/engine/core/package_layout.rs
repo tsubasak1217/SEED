@@ -32,12 +32,34 @@
 //  空フォルダは zip 化・展開で落ちることが多く、「あるはず」を前提にすると
 //  配布先でだけ壊れる。必要になった時点でランタイムが `create_dir_all` する。
 //
+//  【Android】
+//  配布物の読み取り専用部分（assets.pak と PAK 外の assets/）は APK の assets/seed/ に
+//  同じ相対構成で入る（読むのは engine::package_source の実装）。書き込む caches / logs / saved は
+//  APK に置けないため、端末の内部ストレージへの振り替えが別途要る（docs/android.md）。
+//
 //  【エディタ側の対応物】
 //  `editor/src/Packaging/PackageLayout.cs` が同じ名前の定数を持つ。
 //  どちらかを変えたら必ず両方直すこと（名前がずれると配布物だけが壊れる）。
 // ============================================================
 
 use std::path::{Path, PathBuf};
+
+// ============================================================
+//  ファイル名（配布物のルート直下に置くもの）
+// ============================================================
+
+/// アセットをまとめた PAK のファイル名（配布物のルート直下）。
+///
+/// デスクトップは実行ファイルの隣、Android は APK の assets/seed/ 直下に置く。
+/// エディタ側 `PackageLayout.PakFileName` と一致必須。
+pub const PAK_FILE_NAME: &str = "assets.pak";
+
+/// PAK に入れずに置くアセットのフォルダ名（配布物のルート直下）。
+///
+/// PAK に無いアセットはここから読む（`assets://a/b.png` → `<ルート>/assets/a/b.png`）。
+/// デスクトップでは既定のアセットルート（実行ファイルの隣の assets/）そのもの。
+/// Android では APK の assets/seed/assets/（`engine::package_source::loose_asset_path`）。
+pub const LOOSE_ASSETS_DIR_NAME: &str = "assets";
 
 // ============================================================
 //  フォルダ名（配布物の中に作るサブフォルダ）
@@ -155,6 +177,8 @@ mod tests {
     /// 名前がずれるとビルドは通るのに配布物だけが壊れるため、文字列で固定する。
     #[test]
     fn dir_names_match_editor_contract() {
+        assert_eq!(PAK_FILE_NAME, "assets.pak");
+        assert_eq!(LOOSE_ASSETS_DIR_NAME, "assets");
         assert_eq!(BIN_DIR_NAME, "bin");
         assert_eq!(CACHES_DIR_NAME, "caches");
         assert_eq!(LOGS_DIR_NAME, "logs");
