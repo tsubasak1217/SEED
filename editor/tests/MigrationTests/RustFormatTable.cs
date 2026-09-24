@@ -68,7 +68,7 @@ public static class RustFormatTable
     /// </summary>
     public static string? FindKindRs()
     {
-        // テスト実行ディレクトリ（bin/Debug/net9.0/）から上へ辿って
+        // テスト実行ディレクトリ（bin/Debug/net10.0/）から上へ辿って
         // runtime/Cargo.toml を持つフォルダ（＝リポジトリルート）を探す。
         var repoRoot = RuntimeExeLocator.FindRepoRoot(AppContext.BaseDirectory)
                        ?? RuntimeExeLocator.FindRepoRoot(Environment.CurrentDirectory);

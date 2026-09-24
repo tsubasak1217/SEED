@@ -55,7 +55,7 @@ internal static class EditorLog
 
     private static string ResolveLogPath()
     {
-        // bin/Debug/net9.0-windows/ から 3階層上が editor/
+        // bin/Debug/net10.0-windows/ から 3階層上が editor/
         var editorDir = Path.GetFullPath(
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\"));
         var logsDir = Path.Combine(editorDir, "logs");

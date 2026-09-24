@@ -10,12 +10,12 @@ master への ff-merge 運用で壊れたものが取り込まれる。この手
 
 ## 3 系統と依存関係
 
-- **scripting/**（C#, `SEEDScripting.csproj`, net9.0）: スクリプト API 基底クラス＋CLR ブリッジ。ビルド成果物 `SEEDScripting.dll` を runtime が実行時ロードする。
+- **scripting/**（C#, `SEEDScripting.csproj`, net10.0）: スクリプト API 基底クラス＋CLR ブリッジ。ビルド成果物 `SEEDScripting.dll` を runtime が実行時ロードする。
 - **editor/**（C# WPF, `SEEDEditor.sln`）: エディタ本体。runtime を子プロセスとして起動する。
 - **runtime/**（Rust, cargo workspace メンバー）: エンジン本体 `SEED.exe`。起動時に `SEEDScripting.dll` を CLR にロードする。
 
 依存の要点（`runtime/src/engine/core/scripting/mod.rs` の `resolve_dll_path()`）:
-runtime はワーキングディレクトリ基準で `../scripting/bin/Debug/net9.0/SEEDScripting.dll`
+runtime はワーキングディレクトリ基準で `../scripting/bin/Debug/net10.0/SEEDScripting.dll`
 を探してロードする。**runtime は scripting の DLL 成果物にランタイム依存**する（コンパイル依存ではない）。
 このため scripting を変更したら runtime を再ビルドしなくても、DLL さえ更新すれば反映される。
 
@@ -54,7 +54,7 @@ cargo build
 | `editor/**` | `SEEDEditor.sln` のビルド |
 
 **古い DLL が読まれる罠:** scripting のソースを直しても
-`SEEDScripting.csproj` を再ビルドしなければ `bin/Debug/net9.0/SEEDScripting.dll`
+`SEEDScripting.csproj` を再ビルドしなければ `bin/Debug/net10.0/SEEDScripting.dll`
 は古いまま。runtime はそれをロードするので、変更が反映されず「直したのに動かない」
 という症状になる。scripting を触ったら DLL 再ビルドを最優先で確認する。
 

@@ -113,7 +113,7 @@ public sealed class ScriptFixture : IDisposable
     /// 「スクリプトホストのビルド出力」を模したフォルダを作る。
     ///
     /// <para>
-    /// パッケージャは <c>{runtimePath}/../scripting/bin/Debug/net9.0/</c> を見るため、
+    /// パッケージャは <c>{runtimePath}/../scripting/bin/Debug/net10.0/</c> を見るため、
     /// 一時フォルダにその形を作り、テストプロセスが実際に読み込んでいる本物の
     /// <c>SEEDScripting.dll</c> を置く（参照アセンブリとしても使われるので本物が要る）。
     /// あわせて runtimeconfig（同梱の入力）とダミーの <c>.pdb</c>
@@ -125,7 +125,7 @@ public sealed class ScriptFixture : IDisposable
     {
         var baseDir    = Path.GetDirectoryName(Root)!;
         var runtimeDir = Path.Combine(baseDir, "runtime");
-        var hostDir    = Path.Combine(baseDir, "scripting", "bin", "Debug", "net9.0");
+        var hostDir    = Path.Combine(baseDir, "scripting", "bin", "Debug", "net10.0");
         Directory.CreateDirectory(runtimeDir);
         Directory.CreateDirectory(hostDir);
 
@@ -136,7 +136,7 @@ public sealed class ScriptFixture : IDisposable
         // .NET 同梱フェーズが読む runtimeconfig（中身は最小限で十分）
         File.WriteAllText(
             Path.Combine(hostDir, HostRuntimeConfigFileName),
-            """{"runtimeOptions":{"tfm":"net9.0","framework":{"name":"Microsoft.NETCore.App","version":"9.0.0"}}}""",
+            """{"runtimeOptions":{"tfm":"net10.0","framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}""",
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
         // 配布物に含めてはいけないデバッグシンボル（除外されることの確認用）

@@ -49,7 +49,7 @@ namespace SEEDEditor.Packaging.Runtime;
 /// .NET のバージョン（major.minor.patch[-prerelease]）。
 ///
 /// <para>
-/// フォルダ名（<c>9.0.20</c>）や <c>dotnet --list-runtimes</c> の出力から作る。
+/// フォルダ名（<c>10.0.12</c>）や <c>dotnet --list-runtimes</c> の出力から作る。
 /// <see cref="System.Version"/> を使わないのは、プレビュー版のサフィックス
 /// （<c>10.0.0-preview.5.25277.114</c>）を含む文字列が Version.Parse で弾かれるため。
 /// </para>
@@ -144,7 +144,7 @@ public sealed class DotnetBundleResult
     /// <summary>スキップ・失敗の理由（1 行）。同梱できたときは空文字。</summary>
     public string SkipReason { get; init; } = "";
 
-    /// <summary>同梱した CLR のバージョン（例 <c>9.0.20</c>）。</summary>
+    /// <summary>同梱した CLR のバージョン（例 <c>10.0.12</c>）。</summary>
     public string FrameworkVersion { get; init; } = "";
 
     /// <summary>同梱した hostfxr のバージョン。</summary>
@@ -435,7 +435,7 @@ public static class DotnetRuntimeBundler
     /// <summary>
     /// <c>dotnet --list-runtimes</c> の出力を解析する【純関数】。
     ///
-    /// <para>1 行の形式: <c>Microsoft.NETCore.App 9.0.20 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]</c></para>
+    /// <para>1 行の形式: <c>Microsoft.NETCore.App 10.0.12 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]</c></para>
     /// <para>形式に合わない行（空行・警告など）は黙って読み飛ばす。</para>
     /// </summary>
     /// <param name="output">コマンドの標準出力。</param>
@@ -507,7 +507,7 @@ public static class DotnetRuntimeBundler
     /// （ロールフォワードの判断は hostfxr が runtimeconfig の rollForward に従って行う領分）。
     /// </para>
     /// </summary>
-    /// <param name="versionDirNames">バージョンフォルダ名の一覧（例 <c>9.0.19</c>、<c>9.0.20</c>）。</param>
+    /// <param name="versionDirNames">バージョンフォルダ名の一覧（例 <c>10.0.11</c>、<c>10.0.12</c>）。</param>
     /// <param name="required">要求バージョン（major.minor だけを見る）。</param>
     /// <returns>選ばれたフォルダ名。見つからなければ null。</returns>
     public static string? SelectLatestPatch(IEnumerable<string> versionDirNames, DotnetVersion required)

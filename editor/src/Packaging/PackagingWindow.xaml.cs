@@ -365,8 +365,8 @@ public partial class PackagingWindow : Window
             SettingsPane.Children.Add(BuildCheckRow(
                 ".NET ランタイムを同梱", _data.BundleDotnetRuntime,
                 v => _data.BundleDotnetRuntime = v,
-                "スクリプト実行に必要な .NET を dotnet/ フォルダごと配布物へ入れます（約 75 MB 増）。\n" +
-                "OFF にすると配布先の PC に .NET 9 のインストールが必要になり、\n" +
+                "スクリプト実行に必要な .NET を dotnet/ フォルダごと配布物へ入れます（約 77 MB 増）。\n" +
+                "OFF にすると配布先の PC に .NET 10 のインストールが必要になり、\n" +
                 "未インストールの環境ではスクリプトが動かないまま起動します。"));
         }
 

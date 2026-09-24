@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -25,7 +25,7 @@
          コピーされず、実行時に DllNotFoundException になる）。
 
          ただし RID を指定すると既定では出力パスが
-         bin/Debug/net9.0-windows/win-x64/ へ 1 階層深くなる。SEED では
+         bin/Debug/net10.0-windows/win-x64/ へ 1 階層深くなる。SEED では
          出力パスに依存している箇所が多数あり（エディタのログ位置・ランタイム exe の
          探索・スタートメニューのショートカット・.seedproj の関連付け・
          SeedMcpServer のコピー先 $(OutputPath)）、深くなると全部壊れる。
@@ -109,9 +109,10 @@
          利用側は editor/src/VersionControl/ の LoreProvider だけに閉じている。 -->
     <PackageReference Include="LoreVcs" Version="0.9.0" />
     <!-- SEED アカウントの秘密鍵を DPAPI（CurrentUser）で包むために必要。
-         net9.0-windows でも ProtectedData は基底クラスライブラリに含まれず、
-         この NuGet パッケージが要る。利用側は
-         editor/src/Accounts/Storage/DpapiSecretProtector.cs だけに閉じている。 -->
+         ProtectedData は基底クラスライブラリ（Microsoft.NETCore.App）には含まれない。
+         ただしエディタは WPF 経由で Microsoft.WindowsDesktop.App も参照しており、そちらに同梱されているため、
+         .NET 10 SDK ではこの参照に NU1510（明示参照は不要）の警告が出る。外すかは保留（docs/backlog.md）。
+         利用側は editor/src/Accounts/Storage/DpapiSecretProtector.cs だけに閉じている。 -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="4.7.0" />
   </ItemGroup>
 
@@ -156,7 +157,7 @@
     <!-- .exe だけでなく .dll / .runtimeconfig.json / .deps.json も必須。           -->
     <!-- これらが揃っていないと AppHost (.exe) がランタイムを起動できず MCP が失敗する。 -->
     <ItemGroup>
-      <_SeedMcpServerFiles Include="$(MSBuildProjectDirectory)\SeedMcpServer\bin\$(Configuration)\net9.0\*.*" />
+      <_SeedMcpServerFiles Include="$(MSBuildProjectDirectory)\SeedMcpServer\bin\$(Configuration)\net10.0\*.*" />
     </ItemGroup>
     <Copy SourceFiles="@(_SeedMcpServerFiles)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
   </Target>

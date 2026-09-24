@@ -2730,7 +2730,7 @@ public sealed class RuntimeManager : IDisposable
     /// <para>
     /// Cargo ビルド出力（<c>runtime/target/&lt;構成&gt;/SEED.exe</c>）の場合は <c>runtime/</c>
     /// （Cargo.toml のあるフォルダ）を返す。ランタイムはスクリプトホスト DLL を
-    /// 作業ディレクトリ相対（<c>../scripting/bin/Debug/net9.0</c>）で探すため、ここを
+    /// 作業ディレクトリ相対（<c>../scripting/bin/Debug/net10.0</c>）で探すため、ここを
     /// 間違えると C# スクリプトが一切動かない。
     /// </para>
     /// <para>

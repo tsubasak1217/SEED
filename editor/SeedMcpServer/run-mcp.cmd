@@ -3,7 +3,7 @@ rem ============================================================================
 rem  run-mcp.cmd - SEED editor MCP server launcher (shadow-copy mode)
 rem
 rem  WHY:
-rem  Launching bin\Debug\net9.0\SeedMcpServer.exe directly from .mcp.json keeps
+rem  Launching bin\Debug\net10.0\SeedMcpServer.exe directly from .mcp.json keeps
 rem  that exe locked for as long as Claude Code holds the MCP connection, so
 rem  building the editor (which also builds SeedMcpServer) fails with
 rem  "the file is being used by another process".
@@ -16,7 +16,8 @@ rem  stdout is reserved for JSON-RPC: this script never writes to stdout.
 rem  (ASCII only: cmd.exe mis-parses UTF-8 comments.)
 rem ============================================================================
 setlocal
-set "SRC=%~dp0bin\Debug\net9.0"
+rem The folder name must match TargetFramework in SeedMcpServer.csproj.
+set "SRC=%~dp0bin\Debug\net10.0"
 if not exist "%SRC%\SeedMcpServer.exe" (
   echo [run-mcp] build output not found: %SRC% 1>&2
   echo [run-mcp] run: dotnet build editor\SeedMcpServer\SeedMcpServer.csproj 1>&2

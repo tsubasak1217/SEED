@@ -26,7 +26,7 @@ SEEDのC#スクリプト実行・デバッグ回りは、過去に「サイレ�
 
 ### 原因候補（可能性が高い順）
 1. **ファイル横断のコンパイルエラーによるサイレント停止**（最頻）。型名の重複など、単一ファイルでは気づかない衝突で一括コンパイルが失敗し、全スクリプトが Placeholder のまま止まる。過去の実例: あるスクリプト内の `enum` と別スクリプトのクラスが同名（例: `Test`）になり、一括コンパイルが失敗して全スクリプトがサイレント停止した。
-2. **SEEDScripting.dll の再ビルド漏れ**。ランタイムは `../scripting/bin/Debug/net9.0/SEEDScripting.dll` をロードする。API・ローダを変更したのに再ビルドしていないと、古い挙動のまま or 型解決に失敗する。
+2. **SEEDScripting.dll の再ビルド漏れ**。ランタイムは `../scripting/bin/Debug/net10.0/SEEDScripting.dll` をロードする。API・ローダを変更したのに再ビルドしていないと、古い挙動のまま or 型解決に失敗する。
 3. **collectible ALC の Resolving 失敗**。基底クラス `SEEDScript` を含む SEEDScripting 本体は、Rust ランタイムが hostfxr 経由で Default とは別の独立 ALC にロードする。collectible ALC 既定のフォールバック（Default ALC）では名前解決できず `GetTypes()` が `FileNotFoundException` で落ち、スクリプトが1つもロードされない（→ Update も呼ばれず、ブレークポイントも当然止まらない）。
 4. スクリプトが1つも `.cs` として存在しない／`IScriptComponent` を実装した非 abstract クラスが無い（この場合は正常に 0 型で終了する）。
 

@@ -271,7 +271,7 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 | パッケージ版 | `--assets-root` なし | `{exe のフォルダ}/bin/SEEDUserScripts.dll` を読むだけ |
 
 スクリプトホスト（`SEEDScripting.dll`）の探索順は
-`{cwd}/../scripting/bin/Debug/net9.0/`（開発ビルド出力）→ `{exe のフォルダ}/bin/`。
+`{cwd}/../scripting/bin/Debug/net10.0/`（開発ビルド出力）→ `{exe のフォルダ}/bin/`。
 **exe 直下は候補にしない**（旧配置の残骸を拾って新旧のホストが混ざるのを防ぐため）。
 
 **開発ビルド出力から読んだときだけ**テンポラリへシャドウコピーする
@@ -318,7 +318,7 @@ PAK 化のときに絶対パスは `assets://` 形式へ書き換わるので、
 中途半端な DLL も残さない（古い成果物が配られるのを防ぐため）。
 
 「スクリプトホストが見つかりません」と出た場合はエディタ（ソリューション）が
-未ビルドで、`scripting/bin/Debug/net9.0/` が無い状態。先にビルドすること。
+未ビルドで、`scripting/bin/Debug/net10.0/` が無い状態。先にビルドすること。
 
 ### UI を使わずにスクリプト同梱だけを実行する
 
@@ -353,8 +353,8 @@ dotnet run --project editor/tests/ScriptPrecompileTests -- "<runtime>" "<アセ�
   └ bin/
       ├ SEEDScripting.dll ほか
       └ dotnet/
-          ├ host/fxr/9.0.20/hostfxr.dll
-          └ shared/Microsoft.NETCore.App/9.0.20/*   （coreclr.dll / hostpolicy.dll / BCL 一式）
+          ├ host/fxr/10.0.12/hostfxr.dll
+          └ shared/Microsoft.NETCore.App/10.0.12/*   （coreclr.dll / hostpolicy.dll / BCL 一式）
 ```
 
 フォルダ名 `dotnet` はランタイム側 `runtime/src/engine/core/scripting/mod.rs` の
@@ -379,7 +379,7 @@ CLR の初期化に失敗したときは、黙って落とさず stderr に理�
 
 ```
 [SEED] scripting host failed to load: One of the dependent libraries is missing.
-[SEED]   .NET 9 ランタイムが見つからない可能性があります。パッケージ化で「.NET ランタイムを同梱」を…
+[SEED]   .NET 10 ランタイムが見つからない可能性があります。パッケージ化で「.NET ランタイムを同梱」を…
 [SEED]   スクリプト無しで起動を続けます。
 ```
 
@@ -392,13 +392,13 @@ CLR の初期化に失敗したときは、黙って落とさず stderr に理�
 .NET ルートの検出順:
 
 1. 環境変数 `DOTNET_ROOT`
-2. `dotnet --list-runtimes` の出力（`Microsoft.NETCore.App 9.0.20 [<共有フォルダ>]` を解析し、2 段上をルートとする）
+2. `dotnet --list-runtimes` の出力（`Microsoft.NETCore.App 10.0.12 [<共有フォルダ>]` を解析し、2 段上をルートとする）
 3. `%ProgramFiles%\dotnet`
 
 先に見つかった候補から順に「要求 major.minor に一致する最新パッチ」を探し、
 最初に CLR と hostfxr が両方揃ったものを採用する。
 
-- **major.minor が違うものは選ばない**（`9.0` 要求に `10.0` を使わない）。
+- **major.minor が違うものは選ばない**（`10.0` 要求に `9.0` や `11.0` を使わない）。
   ロールフォワードの判断は hostfxr が `rollForward` に従って行う領分。
 - hostfxr は **CLR と同じバージョンを優先**し、無ければ**それ以上で最新**。
   CLR より古い hostfxr は選ばない（新しいフレームワークを解決できないため）。
@@ -411,8 +411,8 @@ CLR の初期化に失敗したときは、黙って落とさず stderr に理�
 
 | | サイズ | 配布先の要件 |
 |---|---|---|
-| ON（既定） | +約 75 MB（実測 187 ファイル / 74.3 MB） | 無し |
-| OFF | — | .NET 9 ランタイムのインストールが必要 |
+| ON（既定） | +約 77 MB（実測 190 ファイル / 76.7 MB。.NET 10.0.12） | 無し |
+| OFF | — | .NET 10 ランタイムのインストールが必要 |
 
 検出できなかった場合はエラーにせず警告してスキップする（framework-dependent のまま
 パッケージ化は完了する）。「.NET が入った PC でなら動く配布物」にはなるので、
@@ -479,9 +479,9 @@ dotnet run --project editor/tests/PackagingCollectorTests
 
 ## 8. 既知の制限
 
-- **「.NET ランタイムを同梱」を OFF にすると、対象マシンに .NET 9 のインストールが必要**。
+- **「.NET ランタイムを同梱」を OFF にすると、対象マシンに .NET 10 のインストールが必要**。
   スクリプトホストは framework-dependent（`SEEDScripting.runtimeconfig.json` が
-  `Microsoft.NETCore.App 9.0` を要求する）なので、未インストールの PC では
+  `Microsoft.NETCore.App 10.0` を要求する）なので、未インストールの PC では
   CLR の初期化に失敗し、**スクリプト無しでゲームが起動する**（ゲーム自体は落ちない）。
   既定は同梱 ON なので通常は問題にならない（§5「.NET ランタイムの同梱」）。
   なお同梱するのは**ビルドマシンにインストール済みの .NET**であり、

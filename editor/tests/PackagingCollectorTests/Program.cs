@@ -795,6 +795,26 @@ public static class Program
                 "最新パッチを選べていない");
         });
 
+        h.Add("net10.0 の runtimeconfig なら 10.0 系の最新パッチと同じ版の hostfxr を選ぶ", () =>
+        {
+            // SEEDScripting の実際の runtimeconfig と同じ形
+            // （EnableDynamicLoading により rollForward=LatestMinor が付く。同梱の判定には使わない）
+            var parsed = DotnetRuntimeBundler.TryParseRequiredFrameworkVersion(
+                """{"runtimeOptions":{"tfm":"net10.0","rollForward":"LatestMinor","framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}""",
+                out var required);
+            Check.True(parsed, "net10.0 の runtimeconfig を読めていない");
+
+            // 開発機と同じ並び（6.0〜10.0 が同居していても 10.0 系だけを候補にする）
+            string[] installed = ["6.0.36", "7.0.20", "8.0.31", "9.0.20", "10.0.12"];
+            var framework = DotnetRuntimeBundler.SelectLatestPatch(installed, required);
+            Check.Equal("10.0.12", framework, "10.0 系の最新パッチを選べていない");
+
+            // host/fxr にも版ごとの hostfxr が並ぶ。CLR と同じ版を選ぶこと
+            Check.Equal("10.0.12",
+                DotnetRuntimeBundler.SelectHostFxrVersion(["8.0.31", "9.0.20", "10.0.12"], framework ?? ""),
+                "CLR と同じ版の hostfxr を選べていない");
+        });
+
         h.Add("major.minor が違うものは選ばない", () =>
         {
             var required = new DotnetVersion(9, 0, 0, "");

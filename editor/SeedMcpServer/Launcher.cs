@@ -33,6 +33,12 @@ internal static class Launcher
     private const string EDITOR_EXE_NAME = "SEEDEditor.exe";
 
     /// <summary>
+    /// エディタの開発ビルド出力のフォルダ名（<c>editor/bin/&lt;Cfg&gt;/&lt;これ&gt;/</c>）。
+    /// SEEDEditor.csproj の TargetFramework と一致必須（.NET を上げたら一緒に直す）。
+    /// </summary>
+    private const string EDITOR_TARGET_FRAMEWORK_DIR = "net10.0-windows";
+
+    /// <summary>
     /// エディタ exe の探索先を上書きする環境変数名。
     /// 開発・計測時に別 OutDir へビルドしたエディタを seed_launch で起動するために使う
     /// （docs/editor_mcp.md「自前ビルドで起動する」を参照）。
@@ -249,8 +255,8 @@ internal static class Launcher
     /// <para>探索順（この MCP サーバー exe の位置を起点にする）:</para>
     /// <list type="number">
     ///   <item>同じディレクトリ … エディタビルド時にコピーされた配置</item>
-    ///   <item>bin/&lt;Configuration&gt;/net9.0-windows … リポジトリ内の開発ビルド配置
-    ///         （MCP は editor/SeedMcpServer/bin/&lt;Cfg&gt;/net9.0 に居るので 4 階層上が editor/）</item>
+    ///   <item>bin/&lt;Configuration&gt;/net10.0-windows … リポジトリ内の開発ビルド配置
+    ///         （MCP は editor/SeedMcpServer/bin/&lt;Cfg&gt;/net10.0 に居るので 4 階層上が editor/）</item>
     /// </list>
     /// </summary>
     /// <returns>見つかった絶対パス。見つからなければ null。</returns>
@@ -274,14 +280,14 @@ internal static class Launcher
         var sameDir = Path.Combine(baseDir, EDITOR_EXE_NAME);
         if (File.Exists(sameDir)) return Path.GetFullPath(sameDir);
 
-        // 2) 開発時配置: editor/SeedMcpServer/bin/<Cfg>/net9.0 → editor/
+        // 2) 開発時配置: editor/SeedMcpServer/bin/<Cfg>/net10.0 → editor/
         //    Configuration 名は自分のパスから引き継ぐ（Debug で動いていれば Debug を見る）。
         var editorRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", ".."));
         var configName = Path.GetFileName(Path.GetFullPath(Path.Combine(baseDir, "..")));
         foreach (var cfg in new[] { configName, "Debug", "Release" })
         {
             if (string.IsNullOrEmpty(cfg)) continue;
-            var candidate = Path.Combine(editorRoot, "bin", cfg, "net9.0-windows", EDITOR_EXE_NAME);
+            var candidate = Path.Combine(editorRoot, "bin", cfg, EDITOR_TARGET_FRAMEWORK_DIR, EDITOR_EXE_NAME);
             if (File.Exists(candidate)) return Path.GetFullPath(candidate);
         }
 

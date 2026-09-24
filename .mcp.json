@@ -5,7 +5,7 @@
       "command": "cmd",
       "args": [
         "/c",
-        "editor\\SeedMcpServer\run-mcp.cmd"
+        "editor\\SeedMcpServer\\run-mcp.cmd"
       ],
       "env": {}
     }

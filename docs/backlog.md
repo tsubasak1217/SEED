@@ -189,6 +189,8 @@
 
 ## エディタ MCP / ヘッドレス（2026-09-07 実装の残件）
 
+- [ ] **`.mcp.json` の起動引数が JSON のエスケープで壊れていて、MCP サーバーが起動しない** — 2026-09-24（.NET 10 移行の作業中に発見。未修正）。`"args": ["/c", "editor\\SeedMcpServer\run-mcp.cmd"]` の `\r` が JSON では復帰文字（CR）になり、`cmd /c` には `editor\SeedMcpServer<CR>un-mcp.cmd` が渡って「内部コマンドまたは外部コマンド…として認識されていません」で終了コード 1 になる（Python の `json.load` ＋ `subprocess` で再現済み）。同日の Claude Code セッションでは seed-editor が `CONNECTION_CLOSED` で接続できなかった。直すなら `"editor\\SeedMcpServer\\run-mcp.cmd"`。docs/editor_mcp.md §3 の例 `"editor\SeedMcpServer\run-mcp.cmd"` も JSON として不正（`\S`）なので合わせて直す。関連: `.mcp.json`、`editor/SeedMcpServer/run-mcp.cmd`、docs/editor_mcp.md §2〜3。
+
 - [ ] **2026-09-08 追加の MCP ツールの残件** — `seed_save_get/set/delete/flush`（IPC `SAVE_DATA:`）、`seed_find_actor`、`seed_input` をヘッドレスで実走行して確認済み。残る制限:
   - `save_data` に「全キー一覧」の op が無い（キー名を知っている前提）。`SaveStore` に列挙 API を足せば `op:"list"` を追加できる。
   - `seed_find_actor` の名前解決は**エディタ側の Hierarchy ノードモデル**で行う（ランタイムの `actor_ref_path.rs` とは別実装）。検索用途では先頭セグメントをシーン全体 DFS へ緩和しているため、参照フィールドの保存書式（ルート起点の厳密なパス）とは規則が完全一致しない。
@@ -474,7 +476,7 @@
 - [ ] **ポーズメニューのスプライトが FishingUI のダイアログより奥に描かれる** — 2026-09-08。動的生成した PauseMenu キャンバスは root の末尾に付くのに、暗幕（PauseOverlay）と選択の下敷き（PauseHighlight）が FishingUI のダイアログ枠より奥に出る。選択行の下敷きは 2 行目・3 行目ではダイアログ枠に完全に隠れて見えない。**「文字だけダイアログの上に浮く」半分は 2026-09-08 に解決済み**（UI 描画順をゾーン → レイヤー → 種別で統合。`renderer/ui_draw_order.rs` / `ui_draw_pass.rs`）。残るスプライト同士の前後は純粋に `layer` 値の設計問題（PauseOverlay / PauseHighlight のレイヤーが FishingUI のダイアログ枠より小さい）と思われるので、両者のレイヤー帯を決め直すこと。
 - [ ] **`GameObject.IsValid` は「破棄済みか」を見ていない** — 2026-09-08。`SEED.Entity.IsValid` は「未束縛でない」かどうかだけを見るので、`Destroy` 済みのアクタを指すハンドルも `true` を返す（ランタイムへ生存を問い合わせていない）。`docs/scripting_api.md` は「参照先が今も生きているか」と説明しており、実装と食い違っている。生存問い合わせの FFI を足すか、ドキュメントの表現を実装に合わせるかの判断が要る。
 - [ ] **旧セーブキー `best_size:魚` が孤立している** — 2026-09-08。魚 prefab に日本語の表示名を入れる前は `Fish.DisplayName` が全種で既定名 `魚` を返していたため、既存の `runtime/save/save.json` には全魚種ぶんが混ざった `best_size:魚` が 1 件だけある。今後は `best_size:<日本語名>` で記録されるので、この旧キーはどこからも読まれない。移行するか消すかは要判断（移行先が特定できないので削除が妥当）。
-- [ ] **`resolve_dll_path` の開発時候補がカレントディレクトリ基準** — 2026-09-08 記載 / 2026-09-10 に候補パスのみ更新。`runtime/src/engine/core/scripting/mod.rs::resolve_dll_path` は `cwd/../scripting/bin/Debug/net9.0/SEEDScripting.dll`（開発ビルド出力）→ `{exe のフォルダ}/bin/SEEDScripting.dll`（配布配置）の順で探す。ランタイムの作業ディレクトリは `RuntimeManager.ResolveWorkingDirectory` が「exe の 2 階層上が `target` のときだけ」リポジトリ側へ上げるため、`docs/editor_mcp.md §5.5` が推奨する `cargo build --target-dir <別ディレクトリ>` で作った SEED.exe を `SEED_RUNTIME_EXE` で使うと DLL が見つからず、ランタイムが起動しない（エディタ側は「ランタイムが接続しません」としか言わない）。回避策は出力先の **`bin/` サブフォルダ**へ `SEEDScripting.dll` 一式を手でコピーすること（2026-09-10 のレイアウト移行で exe 直下は候補から外れた）。開発ビルド出力を exe の位置からも探すか、環境変数で明示できるようにしたい。
+- [ ] **`resolve_dll_path` の開発時候補がカレントディレクトリ基準** — 2026-09-08 記載 / 2026-09-10 に候補パスのみ更新。`runtime/src/engine/core/scripting/mod.rs::resolve_dll_path` は `cwd/../scripting/bin/Debug/net10.0/SEEDScripting.dll`（開発ビルド出力）→ `{exe のフォルダ}/bin/SEEDScripting.dll`（配布配置）の順で探す。ランタイムの作業ディレクトリは `RuntimeManager.ResolveWorkingDirectory` が「exe の 2 階層上が `target` のときだけ」リポジトリ側へ上げるため、`docs/editor_mcp.md §5.5` が推奨する `cargo build --target-dir <別ディレクトリ>` で作った SEED.exe を `SEED_RUNTIME_EXE` で使うと DLL が見つからず、ランタイムが起動しない（エディタ側は「ランタイムが接続しません」としか言わない）。回避策は出力先の **`bin/` サブフォルダ**へ `SEEDScripting.dll` 一式を手でコピーすること（2026-09-10 のレイアウト移行で exe 直下は候補から外れた）。開発ビルド出力を exe の位置からも探すか、環境変数で明示できるようにしたい。
 - [ ] **`seed_launch(scene:)` が `assets://` パスを受け付けない** — 2026-09-08。`editor/SeedMcpServer/Launcher.cs` は `Path.GetFullPath(scenePath)` をそのまま `--scene` へ渡すため、`assets://zukan/zukan.scene` は `…\SEED\assets:\zukan\zukan.scene` という壊れたパスになり、シーンが読めないまま「ランタイムが接続しません」でタイムアウトする（原因が一切表示されない）。絶対パスなら正常に動く。`assets://` を assets ルート基準へ解決するか、少なくともエラーとして弾きたい。
 - [ ] **キャンバスの `auto_scale` がカメラ基準解像度より大きいキャンバスを縮小しない** — 2026-09-08。カメラの `target_width/height` が 1280x720 のとき、`auto_scale: true` の 1920x1080 キャンバスは 1 単位＝描画ターゲット 1px で描かれ、中央 1280x720 の外に置いた要素は画面に出ない（ヘッドレス Play のスクリーンショットで実測）。今回は図鑑・ポーズメニューのキャンバスを 1280x720 にして回避した。既存の `FishingUI` は端をアンカー基準で置いているため実害が出ていないだけなので、`auto_scale` の意図（基準解像度へフィットさせる）どおりに効いているか要確認。
   **2026-09-10 追記**: `render_resolution_mode: "fixed"` では描画ターゲットが `window_width × window_height`（例 1280x720）に固定されるので、キャンバスもその解像度に合わせておけば「1 単位＝描画ターゲット 1px」の前提が崩れず、ウィンドウサイズによらず同じ見た目になる。上の項目と同じく回避策であって根本解決ではない。
@@ -1718,3 +1720,20 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `core::background_gate` を見る。以下は記載時のメモ。A-3 の時点では音声（rodio → cpal → oboe）も背面で動いていた。
   また `app/play_diag.rs` のフレーム監視（`[PLAY_WD] stuck at stage=frame_end … (A)イベントループスレッド自体がブロック`）が、
   背面でイベントループが Wait に入っている間ずっと 5 秒ごとに誤報する（撤去予定の一時診断。背面中は黙らせるか撤去する）。
+
+## .NET 10 への統一（2026-09-24 段階B-0 実装時の残件）
+
+- [ ] **.NET 10 SDK の既定アナライザーで CA2024 の警告が 6 件出る** — 2026-09-24。`net10.0-windows` へ上げたら、async メソッド内で
+  `process.StandardOutput/StandardError.EndOfStream` を見ている箇所が CA2024（非同期メソッドで EndOfStream を使わない。
+  バッファが空だと同期で読みに行きスレッドを塞ぐ）になった。ビルドは通る。直すと読み取り方（`ReadLineAsync` が null を返すまで読む等）が
+  変わるため、挙動を変えない方針の移行作業では直していない。関連: `editor/src/AI/AIAssistantPanel.cs`（2048, 2071 行）、
+  `editor/src/AI/Providers/CliAgentProvider.cs`（329, 347, 444, 462 行）。
+- [ ] **エディタの `System.Security.Cryptography.ProtectedData` 参照に NU1510 の警告が出る** — 2026-09-24。
+  エディタは WPF 経由で `Microsoft.WindowsDesktop.App` を参照しており、ProtectedData はそちらに同梱されている（.NET 9 の参照パックにも
+  入っていた）ため、.NET 10 SDK が「明示参照は不要」と警告する。実行時は元からフレームワーク側が使われている（.NET 9 / 10 とも
+  ビルド出力に ProtectedData.dll が無く、SEEDEditor.deps.json にも載らない）ので、外しても挙動は変わらない見込み（外したビルドは未確認）。
+  WPF を使わない `AccountsTests` は引き続きこのパッケージが要る。関連: `editor/SEEDEditor.csproj`。
+- [ ] **スクリプトデバッガ（netcoredbg）が .NET 10 の CLR にアタッチできるか未確認** — 2026-09-24。ランタイムの CLR が 10.0.12 になった。
+  この PC の `tools/netcoredbg/` には `dbgshim.dll`（9.0.13）等だけがあり `netcoredbg.exe` 本体が無いため、アタッチ・ブレークポイントを
+  試せていない。netcoredbg を配置したら、.NET 10 対応の版か（必要なら新しい版へ差し替え）を確かめる。関連: docs/scripting_debugger.md、
+  `editor/src/Debugger/NetcoredbgLocator.cs`。

@@ -1085,7 +1085,7 @@ AI の実機確認は「使い捨て loreserver + 競合状態の使い捨てプ
 
 - `RuntimeIdentifier` が無いと、ネイティブ本体 `lorelib.dll`（別パッケージ
   `LoreVcs.runtime.win-x64` にある）が出力へ展開されず、実行時に落ちる。
-- ただし RID を付けると既定では出力が `bin/Debug/net9.0-windows/win-x64/` へ 1 階層深くなる。
+- ただし RID を付けると既定では出力が `bin/Debug/net10.0-windows/win-x64/` へ 1 階層深くなる。
   SEED は出力パスに依存している箇所が多い（エディタのログ位置・ランタイム exe の探索・
   スタートメニューのショートカット・`.seedproj` の関連付け・`SeedMcpServer` のコピー先
   `$(OutputPath)`）ため、`AppendRuntimeIdentifierToOutputPath=false` で従来どおりに保つ。
@@ -1095,7 +1095,7 @@ AI の実機確認は「使い捨て loreserver + 競合状態の使い捨てプ
 
 ```bash
 dotnet msbuild editor/SEEDEditor.csproj -getProperty:OutputPath -getProperty:TargetPath
-# OutputPath = bin\Debug\net9.0-windows\   のままであること
+# OutputPath = bin\Debug\net10.0-windows\   のままであること
 ```
 
 ---

@@ -70,8 +70,9 @@ public static class ScriptPackager
     /// スクリプトホストのビルド出力フォルダ（runtime フォルダからの相対）。
     /// ランタイムが開発時に探す場所（scripting/mod.rs の
     /// DEV_SCRIPTING_HOST_RELATIVE_DIR）と同じ場所を指す。
+    /// 末尾のフォルダ名は SEEDScripting.csproj の TargetFramework と一致必須。
     /// </summary>
-    private const string HostBuildOutputRelativeDir = @"..\scripting\bin\Debug\net9.0";
+    private const string HostBuildOutputRelativeDir = @"..\scripting\bin\Debug\net10.0";
 
     /// <summary>スクリプトホスト本体の DLL 名（存在確認に使う）。</summary>
     private const string HostAssemblyFileName = "SEEDScripting.dll";

@@ -38,7 +38,7 @@ public static class EditorPaths
 
     /// <summary>
     /// 実行ファイルの置き場からエディタルートまで遡る相対パス。
-    /// 開発ビルドは editor/bin/&lt;Cfg&gt;/net9.0-windows/ に出るため 3 階層。
+    /// 開発ビルドは editor/bin/&lt;Cfg&gt;/net10.0-windows/ に出るため 3 階層。
     /// </summary>
     private const string EDITOR_ROOT_RELATIVE = @"..\..\..\";
 

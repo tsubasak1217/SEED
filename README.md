@@ -3,7 +3,7 @@
 [![CI Debug](https://github.com/tsubasak1217/SEED/actions/workflows/ci.yml/badge.svg)](https://github.com/tsubasak1217/SEED/actions/workflows/ci.yml)
 [![CI Release](https://github.com/tsubasak1217/SEED/actions/workflows/ci-release.yml/badge.svg)](https://github.com/tsubasak1217/SEED/actions/workflows/ci-release.yml)
 
-Rust製ゲームエンジンRuntimeと、.NET 9.0 (WPF) 製エディタのハイブリッドプロジェクト。
+Rust製ゲームエンジンRuntimeと、.NET 10 (WPF) 製エディタのハイブリッドプロジェクト。
 
 ## プロジェクト構成
 

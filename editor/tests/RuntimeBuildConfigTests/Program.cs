@@ -310,7 +310,7 @@ public static class Program
     {
         using var tmp = new TempDir();
         var repo      = CreateFakeRepo(tmp);
-        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net9.0-windows");
+        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net10.0-windows");
 
         var catalog = RuntimeBuildConfigCatalog.BuiltIn();
         foreach (var cfg in catalog.Configs)
@@ -327,7 +327,7 @@ public static class Program
     {
         using var tmp = new TempDir();
         CreateFakeRepo(tmp);
-        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net9.0-windows");
+        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net10.0-windows");
         var cfg       = RuntimeBuildConfigCatalog.BuiltIn().Resolve(IdDevelop);
 
         var path = RuntimeExeLocator.Resolve(cfg, editorDir, currentDir: null, envOverride: null);
@@ -343,7 +343,7 @@ public static class Program
     {
         using var tmp = new TempDir();
         CreateFakeRepo(tmp);
-        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net9.0-windows");
+        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net10.0-windows");
         var overrideExe = tmp.WriteFile(@"measure\SEED.exe", "dummy");
         var cfg = RuntimeBuildConfigCatalog.BuiltIn().Resolve(IdDevelop);
 
@@ -357,7 +357,7 @@ public static class Program
     {
         using var tmp = new TempDir();
         var repo      = CreateFakeRepo(tmp);
-        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net9.0-windows");
+        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net10.0-windows");
         var cfg       = RuntimeBuildConfigCatalog.BuiltIn().Resolve(IdDevelop);
 
         var path = RuntimeExeLocator.Resolve(
@@ -375,9 +375,9 @@ public static class Program
     {
         using var tmp = new TempDir();
         CreateFakeRepo(tmp);
-        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net9.0-windows");
+        var editorDir = tmp.CreateDirectory(@"repo\editor\bin\Debug\net10.0-windows");
         var sideBySide = tmp.WriteFile(
-            @"repo\editor\bin\Debug\net9.0-windows\SEED.exe", "dummy");
+            @"repo\editor\bin\Debug\net10.0-windows\SEED.exe", "dummy");
         var cfg = RuntimeBuildConfigCatalog.BuiltIn().Resolve(IdDevelop);
 
         var path = RuntimeExeLocator.Resolve(cfg, editorDir, currentDir: null, envOverride: null);

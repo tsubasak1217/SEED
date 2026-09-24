@@ -70,16 +70,15 @@ dotnet build editor/SEEDEditor.csproj
 
 | 成果物 | パス |
 |---|---|
-| MCP サーバー単体ビルド | `editor/SeedMcpServer/bin/Debug/net9.0/SeedMcpServer.exe` |
-| エディタビルド時のコピー先 | `editor/bin/Debug/net9.0-windows/SeedMcpServer.exe` |
+| MCP サーバー単体ビルド | `editor/SeedMcpServer/bin/Debug/net10.0/SeedMcpServer.exe` |
+| エディタビルド時のコピー先 | `editor/bin/Debug/net10.0-windows/SeedMcpServer.exe` |
 
 `.mcp.json` は前者を **`run-mcp.cmd` 経由で**起動する（`dotnet run` ではなくビルド済み exe。
 `dotnet run` は毎回ビルド判定が走り、MCP のハンドシェイクが遅くなるため）。
 
 `editor/SeedMcpServer/run-mcp.cmd` は起動のたびにビルド出力を `%LOCALAPPDATA%\SEED\mcp\<乱数>\` へ
 コピーし、コピー側の exe を実行する（shadow copy）。exe を直接起動すると Claude Code が
-MCP サーバーを掴んでいる間ずっと `bin\Debug
-et9.0\SeedMcpServer.exe` がロックされ、
+MCP サーバーを掴んでいる間ずっと `bin\Debug\net10.0\SeedMcpServer.exe` がロックされ、
 エディタ本体のビルド（SeedMcpServer も一緒にビルドされる）が
 「別のプロセスが使用中」で失敗するため。コピー元は環境変数 `SEED_MCP_SOURCE_DIR` で
 サーバーへ渡され、エディタ exe の相対探索はそのフォルダを基準に行う。
@@ -344,7 +343,7 @@ IPC ではそのパスだけを返す（`PROFILE_DUMP_DONE:{パス}`）。
 ### 5.5 自前ビルドで起動する（利用者のエディタが動いている間）
 
 利用者のエディタが起動していると `runtime/target/debug/SEED.exe` と
-`editor/bin/Debug/net9.0-windows/SEEDEditor.exe` はロックされ、上書きできない。
+`editor/bin/Debug/net10.0-windows/SEEDEditor.exe` はロックされ、上書きできない。
 別の出力先へビルドしたものを `seed_launch` で起動したいときは、
 **MCP サーバーを起動するプロセスの環境変数**で exe の場所を上書きする。
 

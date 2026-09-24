@@ -518,14 +518,18 @@ pub const SCRIPTING_HOST_DLL_NAME: &str = "SEEDScripting.dll";
 pub const PRECOMPILED_SCRIPTS_DLL_NAME: &str = "SEEDUserScripts.dll";
 
 /// 開発時のスクリプトホスト DLL の位置（ワーキングディレクトリ `runtime/` から見た相対）。
-const DEV_SCRIPTING_HOST_RELATIVE_DIR: &str = "../scripting/bin/Debug/net9.0";
+///
+/// 末尾のフォルダ名は `scripting/SEEDScripting.csproj` の `TargetFramework` と一致必須
+/// （ビルド出力が `bin/Debug/<TargetFramework>/` に出るため）。エディタ側
+/// `ScriptPackager.HostBuildOutputRelativeDir` も同じ場所を指すので、上げるときは両方直すこと。
+const DEV_SCRIPTING_HOST_RELATIVE_DIR: &str = "../scripting/bin/Debug/net10.0";
 
 /// スクリプトホストが要求する .NET ランタイムの表示名（利用者向けの案内文で使う）。
 ///
 /// 正典は `scripting/SEEDScripting.csproj` の `TargetFramework`（= `SEEDScripting.runtimeconfig.json`
 /// の framework version）。ここは案内文に出す文字列でしかないので、
 /// 判定には使わない（判定は hostfxr が runtimeconfig.json を読んで行う）。
-pub const REQUIRED_DOTNET_RUNTIME_LABEL: &str = ".NET 9";
+pub const REQUIRED_DOTNET_RUNTIME_LABEL: &str = ".NET 10";
 
 // ============================================================
 //  同梱 .NET ランタイム（self-contained 配布）の探索
@@ -593,7 +597,7 @@ pub struct ScriptingHostLocation {
 
 /// スクリプトホスト DLL の探索候補を優先順に列挙する【純関数】。
 ///
-/// 1. 開発ビルド出力: `{cwd}/../scripting/bin/Debug/net9.0/SEEDScripting.dll`
+/// 1. 開発ビルド出力: `{cwd}/../scripting/bin/Debug/net10.0/SEEDScripting.dll`
 ///    （`cargo run` を `runtime/` で実行する開発時の配置）
 /// 2. パッケージ配置: `{exe のフォルダ}/bin/SEEDScripting.dll`
 ///    （配布物。cwd はユーザーがどこから起動したかで変わるため exe 基準にする）
@@ -643,7 +647,7 @@ mod scripting_host_path_tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(
             candidates[0].dll_path,
-            Path::new("C:/proj/runtime/../scripting/bin/Debug/net9.0/SEEDScripting.dll")
+            Path::new("C:/proj/runtime/../scripting/bin/Debug/net10.0/SEEDScripting.dll")
         );
         assert!(candidates[0].is_dev_build_output, "開発ビルド出力の印が付いていない");
     }
