@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 表示名（ランチャーのアイコン名）。段階C でプロジェクト設定の game_name から生成する予定。 -->
+<resources>
+    <string name="app_name">SEED Runtime</string>
+</resources>

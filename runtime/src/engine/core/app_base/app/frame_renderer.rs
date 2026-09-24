@@ -439,6 +439,15 @@ impl App {
     ///
     /// render.rs の window_event から委譲される。
     pub(super) fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop) {
+        // ── サーフェス不在ガード ──────────────────────────────────────────
+        // Android でバックグラウンドへ回っている間は描画サーフェスが無い（suspended で破棄済み）。
+        // 描く先が無いのでフレームを丸ごと飛ばす。request_redraw もしない
+        // （復帰時は surface_lifecycle.rs の handle_surface_resumed が再開させる）。
+        // デスクトップでは常にサーフェスがあるため素通りする。
+        if self.surface_missing() {
+            return;
+        }
+
         // プロファイラのフレーム記録を開始する（計測が無効なら実質ゼロコストで即 return）。
         // 早期 return 経路（描画一時停止・最小化・サーフェスエラー）では end_frame が
         // 呼ばれないが、次フレームの begin_frame が記録をクリアするので破綻しない。

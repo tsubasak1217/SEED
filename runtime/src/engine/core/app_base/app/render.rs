@@ -15,8 +15,23 @@ use super::App;
 impl ApplicationHandler for App {
     /// ウィンドウ・レンダラーを初期化し、IPC へ READY を通知する。
     /// 実装本体は app_init.rs の handle_resumed に委譲する。
+    ///
+    /// 2 回目以降の resumed（Android でバックグラウンドから復帰したとき）は、
+    /// 初期化をやり直さず描画サーフェスだけを作り直す（surface_lifecycle.rs）。
+    /// デスクトップでは resumed は起動時の 1 回だけなので、常に初期化経路を通る。
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.renderer.is_some() {
+            self.handle_surface_resumed(event_loop);
+            return;
+        }
         self.handle_resumed(event_loop);
+    }
+
+    /// 描画サーフェスが使えなくなった（Android でバックグラウンドへ回った）ときに呼ばれる。
+    /// サーフェスを破棄してイベントループを待機させる（surface_lifecycle.rs）。
+    /// デスクトップでは届かない。
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.handle_suspended(event_loop);
     }
 
     /// イベントループが次のイベント待ちへ入る直前に呼ばれる。
@@ -50,6 +65,8 @@ impl ApplicationHandler for App {
         // 【一時・診断】届いた WindowEvent 種別を記録（ENTER_PLAY から一定時間 [PLAY_EV] へ出力）。
         // 「RedrawRequested が配達されなくなる直前に何が届いていたか」（Focused/Occluded 等）を見る。
         super::play_diag::note_window_event(classify_window_event(&event));
+        // サーフェス・リサイズ・タッチの診断ログ（Android のみ。デスクトップでは即 return）。
+        super::lifecycle_diag::observe_window_event(&event);
 
         match event {
             WindowEvent::CloseRequested if !self.is_embedded() => {

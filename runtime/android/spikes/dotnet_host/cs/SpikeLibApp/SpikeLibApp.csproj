@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    SpikeLibApp: trim 検証用。SpikeLib と同じソースを OutputType=Exe（空の Main）でビルドする。
+    ILLink は中間アセンブリを RootMode=EntryPoint でルート化するため、ライブラリのままでは trim 構成が安定しない。
+    アセンブリ名は SpikeLib のまま（Rust 側の型名 "SpikeLib.Exports, SpikeLib" とプラグインの参照名を変えない）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>SpikeLib</AssemblyName>
+    <RootNamespace>SpikeLib</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 自己完結 Exe は apphost 必須（NETSDK1067）。生成される apphost は使わず、Rust ホストから hostfxr 経由で起動する -->
+    <UseAppHost>true</UseAppHost>
+    <!-- trim 時に hostfxr/hostpolicy から呼ばれる ComponentActivator を残す（既定では false にされ、Mono が起動時に SIGSEGV する） -->
+    <_EnableConsumingManagedCodeFromNativeHosting>true</_EnableConsumingManagedCodeFromNativeHosting>
+    <!-- Exports / Checks はリフレクションと Rust からの関数ポインタ取得で使うので、アセンブリ丸ごと残す -->
+    <TrimMode>full</TrimMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\SpikeLib\*.cs" />
+    <TrimmerRootAssembly Include="SpikeLib" />
+  </ItemGroup>
+</Project>

@@ -77,6 +77,10 @@ mod pick_2d;
 mod pointer_events;
 mod canvas_drop;
 mod render;
+/// 描画サーフェスの破棄・再生成（Android の suspended / resumed）とイベントループの待機切替。
+mod surface_lifecycle;
+/// サーフェス・リサイズ・タッチのライフサイクル診断ログ（platform::CURRENT.lifecycle_diag_log が真のときだけ）。
+mod lifecycle_diag;
 mod frame_renderer;
 /// IPC 駆動スクリーンショット（SCREENSHOT:）のアプリ側処理。
 mod screenshot_ops;
@@ -174,7 +178,7 @@ pub(crate) mod interaction_source_scene_gizmo;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::EventLoop;
 use winit::window::Window;
 
 // ── エンジン内部モジュール ───────────────────────────────────
@@ -1502,7 +1506,15 @@ impl App {
         ));
 
         let host_location = ScriptingHost::resolve_dll_path();
-        let scripting_host = if host_location.dll_path.exists() {
+        let scripting_host = if !crate::engine::platform::CURRENT.scripting_supported {
+            // CLR を持たないプラットフォーム（Android 段階0）。DLL を探しても見つからず
+            // 「作業ディレクトリが違う」等の誤った案内が出るだけなので、理由を 1 行残して先へ進む。
+            eprintln!(
+                "[SEED] このプラットフォーム（{}）では C# スクリプトは未対応です。スクリプト無しで起動します（docs/android.md）。",
+                std::env::consts::OS,
+            );
+            None
+        } else if host_location.dll_path.exists() {
             // DLL が存在する場合のみ CLR ロードを試みる（存在しない場合は hostfxr 検索で遅延するため）
             match ScriptingHost::load(&host_location) {
                 Ok(host) => {
@@ -1778,11 +1790,21 @@ impl App {
         }
     }
 
-    /// エントリポイント。EventLoop を生成して実行する。
+    /// エントリポイント（デスクトップ）。EventLoop を生成して実行する。
     pub fn run(args: LaunchArgs) {
         let event_loop: EventLoop<()> =
             EventLoop::new().expect("Failed to create event loop");
-        event_loop.set_control_flow(ControlFlow::Poll);
+        Self::run_with_event_loop(event_loop, args);
+    }
+
+    /// 生成済みの EventLoop で App を実行する（ウィンドウが閉じるまで返らない）。
+    ///
+    /// Android では `android_main` が受け取った `AndroidApp` を
+    /// `EventLoopBuilderExtAndroid::with_android_app` で結び付けた EventLoop でなければ
+    /// 生成できない（素の `EventLoop::new()` は panic する）。そのため EventLoop の生成は
+    /// 呼び出し側（runtime/android/native）に任せ、ここは実行だけを担う。
+    pub fn run_with_event_loop(event_loop: EventLoop<()>, args: LaunchArgs) {
+        event_loop.set_control_flow(surface_lifecycle::ACTIVE_CONTROL_FLOW);
         let mut app = App::new(args);
         event_loop.run_app(&mut app).expect("Failed to run app");
     }

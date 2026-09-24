@@ -2,7 +2,9 @@
 // デバッグビルドはコンソールを残し、ログを確認できるようにする。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod engine;
+// エンジン本体はライブラリ・クレート seed_engine（src/lib.rs）にある。
+// この bin は起動引数の解釈と Windows 固有の起動前処理だけを担う。
+use seed_engine::engine;
 
 use engine::core::app_base::{App, LaunchArgs, RuntimeMode};
 

@@ -157,3 +157,5 @@ Debug ↔ Develop を往復してもお互いを作り直すことはないが�
 
 パッケージ化（配布ビルド）はこの構成とは独立していて、
 パッケージ化ウィンドウ側の `BuildType`（Debug / Release）で決まる。
+Android 向け（`libSEED.so` と APK）のビルドもこの構成とは独立していて、`runtime/android/build_and_run.ps1`
+（cargo ndk）の `-Release` の有無で dev / release を選ぶ。構成と手順の正典は [android.md](android.md)。

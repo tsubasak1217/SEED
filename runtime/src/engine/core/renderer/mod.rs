@@ -80,6 +80,10 @@ pub mod caustics;
 pub mod interaction;
 /// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
 pub(crate) mod screenshot;
+/// 提示（present）したフレーム数の計数（Android の生存確認ログ・計測用）。
+pub mod present_counter;
+/// 描画サーフェスの破棄・再生成（Android の suspended / resumed）。
+mod surface_lifecycle;
 /// アクタ・サムネイル（図鑑画像）生成の純粋ロジック（構図計算・ID マスク・PNG 書き出し）。
 /// GPU/ECS には触らないので単体テストできる。実際の描画駆動は app/thumbnail_ops.rs 側。
 pub mod actor_thumbnail;
@@ -345,7 +349,14 @@ impl DepthTexture {
 ///
 /// `device` / `queue` は `Arc` で共有し、`DrawContext` と所有権なしに共用できる。
 pub struct Renderer {
-    surface:        wgpu::Surface<'static>,
+    /// wgpu インスタンス。描画サーフェスの作り直し（Android の suspended → resumed）に使うため保持する。
+    instance:       wgpu::Instance,
+    /// 選択済みアダプタ。作り直したサーフェスの対応フォーマット・提示モードの確認に使う。
+    adapter:        wgpu::Adapter,
+    /// 描画先サーフェス。`None` = 一時的にサーフェスが無い
+    /// （Android でバックグラウンドへ回り、ネイティブウィンドウが破棄されている間）。
+    /// デスクトップでは生成から終了まで常に `Some`。
+    surface:        Option<wgpu::Surface<'static>>,
     device:         Arc<wgpu::Device>,
     queue:          Arc<wgpu::Queue>,
     config:         wgpu::SurfaceConfiguration,
@@ -686,13 +697,24 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        // 端末ごとのサーフェス実寸と形式は Android 検証で最初に見る値なので残す
+        //（デスクトップは従来どおり出さない。platform::CURRENT.lifecycle_diag_log）。
+        if crate::engine::platform::CURRENT.lifecycle_diag_log {
+            eprintln!(
+                "[SEED SURFACE] created {}x{} format={:?} present_mode={:?} alpha_mode={:?}",
+                config.width, config.height, config.format, config.present_mode, config.alpha_mode,
+            );
+        }
 
         let depth_texture = DepthTexture::new(&device, size.width, size.height);
 
         // fixed_render_size は既定 None（= 従来どおり描画解像度はスワップチェーン実サイズ）。
         // 内部解像度固定を使う場合は生成直後に set_fixed_render_size で明示的に設定する。
         Self {
-            surface, device, queue, config, size, depth_texture,
+            instance,
+            adapter,
+            surface: Some(surface),
+            device, queue, config, size, depth_texture,
             fixed_render_size: None,
             // サムネイル用オフスクリーンは「最初に要求されたとき」に確保する。
             // 撮影を一度もしないセッションでフルスクリーン 1 枚ぶんを抱えないため。
@@ -865,7 +887,11 @@ impl Renderer {
             self.size = new_size;
             self.config.width  = new_size.width;
             self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
+            // サーフェスが無い間（Android のバックグラウンド中）は大きさだけ覚えておき、
+            // 再生成時（recreate_surface）にこの値で構成する。
+            if let Some(surface) = &self.surface {
+                surface.configure(&self.device, &self.config);
+            }
             // 深度は「描画解像度」で確保する。fixed 無効（None）のときは
             // render_size() == new_size なので従来と完全に同一の呼び出しになる。
             let rs = self.render_size();
@@ -897,7 +923,12 @@ impl Renderer {
     pub fn depth_view(&self) -> &wgpu::TextureView { &self.depth_texture.depth_only_view }
 
     pub fn begin_frame(&mut self) -> Result<RenderFrame<'_>, wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
+        // サーフェスが無い（Android でバックグラウンド中）ときは Lost として返す。
+        // 通常はフレーム先頭の surface_missing ガードで手前に弾かれるので、ここは保険。
+        let Some(surface) = &self.surface else {
+            return Err(wgpu::SurfaceError::Lost);
+        };
+        let output = surface.get_current_texture()?;
 
         // Vulkan の swapchain は surface.configure() の要求サイズを
         // current_extent（実際のウィンドウサイズ）にクランプする場合がある。
@@ -2295,6 +2326,7 @@ impl<'r> RenderFrame<'r> {
         //（＝画面には直前に提示したフレームが残り続ける）。
         if let FrameOutput::Swapchain(surface) = self.output {
             surface.present();
+            present_counter::record_present();
         }
 
         // present 後に読み出す。マップ完了待ちで同期するため、撮影フレームだけ重くなる。

@@ -1,0 +1,19 @@
+# ============================================================
+#  runtime/android — 生成物は追跡しない
+# ============================================================
+
+# Gradle / Android Studio の作業フォルダ・生成物
+.gradle/
+.kotlin/
+.idea/
+*.iml
+build/
+app/build/
+captures/
+.cxx/
+
+# マシン固有の SDK パス（Android Studio が自動生成する）
+local.properties
+
+# cargo ndk が書き出す libSEED.so（build_and_run.ps1 が毎回作り直す）
+app/src/main/jniLibs/

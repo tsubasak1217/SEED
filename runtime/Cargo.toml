@@ -8,6 +8,19 @@ edition = "2024"
 # "failed to determine package fingerprint" で失敗する。
 exclude = ["assets/**", "save/**", "logs/**"]
 
+# ── エンジン本体はライブラリ（rlib）、SEED.exe は薄い bin ─────────────────
+# Android 対応（docs/android.md）で、エンジン本体を 2 つの成果物から使うために分けた。
+#   ・Windows : 同じパッケージの src/main.rs（bin 名 SEED）→ SEED.exe（従来どおり）
+#   ・Android : runtime/android/native（cdylib 名 SEED）→ libSEED.so（path 依存でこのライブラリを使う）
+# ライブラリ名は bin 名（SEED）と衝突させないため seed_engine とする。
+# crate-type は既定の rlib のみ（Windows のビルドで不要な DLL を作らない）。
+[lib]
+name = "seed_engine"
+path = "src/lib.rs"
+# ドキュメントコメント中のコード例（```rust）は説明用の断片で単体ではコンパイルできないため、
+# doctest として実行しない（bin だった頃は doctest 自体が走らなかったので従来と同じ扱い）。
+doctest = false
+
 [dependencies]
 winit = "0.30"
 wgpu = "25"
@@ -38,7 +51,6 @@ base64 = "0.22"
 urlencoding = "2"
 naga = { version = "25", features = ["wgsl-in"] }
 toml  = "0.8"
-netcorehost = "0.20"
 libloading = "0.8"
 seed-plugin-api    = { path = "../plugin_api" }
 rapier3d           = { version = "0.22", features = ["simd-stable"] }
@@ -49,6 +61,15 @@ rodio              = "0.20"
 # ゲームパッド入力（.inputmap の GamepadButton / GamepadAxis 評価基盤）。
 # クロスプラットフォームのパッド抽象。毎フレーム next_event() でイベントをポンプする。
 gilrs              = "0.11"
+
+# ── C# スクリプトホスト（hostfxr 経由で .NET CLR を起動）─────────────────
+# Android では依存しない。理由:
+#   ・netcorehost 既定機能の nethost-download が引く nethost-sys の build.rs が
+#     Android ターゲットで "platform not supported" と panic し、ビルド自体が通らない。
+#   ・段階0 の Android はスクリプトを実行しない（engine/core/scripting の Android 版 load は
+#     「未対応」を返すスタブ）。段階B で Hostfxr::load_from_path（nethost 不要）を使う形で戻す。
+[target.'cfg(not(target_os = "android"))'.dependencies]
+netcorehost = "0.20"
 
 [target.'cfg(windows)'.dependencies]
 # 追加 feature の用途（起動ログ機構 core/startup_log/）:

@@ -1,0 +1,5 @@
+# Gradle wrapper の改行コードを固定する（core.autocrlf=true でも壊さないため）。
+# gradlew は sh スクリプトなので LF、gradlew.bat は CRLF、wrapper の jar はバイナリ。
+gradlew        text eol=lf
+*.bat          text eol=crlf
+*.jar          binary

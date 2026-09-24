@@ -9,8 +9,13 @@
 // ============================================================
 
 use std::path::{Path, PathBuf};
+// Arc は CLR をロードする load（デスクトップのみ）の戻り値でだけ使う。
+#[cfg(not(target_os = "android"))]
 use std::sync::Arc;
 
+// hostfxr（.NET ホスティング API）への入口。Android は段階0 で CLR を扱わないため依存しない
+// （runtime/Cargo.toml の netcorehost は Android 以外だけの依存。理由は同ファイルのコメント参照）。
+#[cfg(not(target_os = "android"))]
 use netcorehost::{nethost, pdcstr, pdcstring::PdCString};
 
 use crate::engine::core::package_layout;
@@ -31,6 +36,9 @@ pub mod name_pending;
 pub mod visible_pending;
 // SCRIPT_DEBUG IPC → SEED.Debug.OnCommand の待ち行列
 pub mod debug_command;
+// CLR を持たないプラットフォーム（Android 段階0）向けの ScriptingHost::load（常に「未対応」を返す）
+#[cfg(target_os = "android")]
+mod unsupported_platform;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
     publish_input, publish_physics_sender, publish_canvas_mouse_position,
@@ -245,11 +253,21 @@ type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostAp
 //  ScriptingHost — CLR ライフタイムと関数ポインタを保持
 // ============================================================
 
+/// CLR（hostfxr）の初期化済みコンテキストの型。
+#[cfg(not(target_os = "android"))]
+type ClrContext = netcorehost::hostfxr::HostfxrContext<
+    netcorehost::hostfxr::InitializedForRuntimeConfig,
+>;
+
+/// CLR を持たないプラットフォーム（Android 段階0）では「値を 1 つも作れない型」にする。
+/// これで ScriptingHost が構築され得ないことを型で保証する
+/// （ロードは unsupported_platform.rs の `load` が必ず Err を返す）。
+#[cfg(target_os = "android")]
+type ClrContext = std::convert::Infallible;
+
 pub struct ScriptingHost {
     // CLR が Drop されると全マネージドオブジェクトが無効になるため保持。
-    _context: netcorehost::hostfxr::HostfxrContext<
-        netcorehost::hostfxr::InitializedForRuntimeConfig,
-    >,
+    _context: ClrContext,
 
     pub create_fn:          CreateFn,
     pub destroy_fn:         DestroyFn,
@@ -305,6 +323,7 @@ impl ScriptingHost {
     /// シャドウコピーはフォルダ直下の全ファイルを写すため、そのまま掛けると
     /// 起動のたびに配布物の副次ファイルをテンポラリへ複製することになる。
     /// 配布物は再ビルドされないのでロックしても実害が無く、コピーは不要。
+    #[cfg(not(target_os = "android"))]
     pub fn load(location: &ScriptingHostLocation) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         let dll_path = location.dll_path.as_path();
 
@@ -396,6 +415,7 @@ impl ScriptingHost {
     /// ビルド出力ディレクトリをロックしないためのシャドウコピー。
     /// hostfxr は runtimeconfig.json / deps.json / 依存 DLL を DLL と同じ
     /// フォルダから解決するため、ディレクトリ内の全ファイルをコピーする。
+    #[cfg(not(target_os = "android"))]
     fn shadow_copy(dll_path: &Path) -> std::io::Result<PathBuf> {
         use std::fs;
 
@@ -525,9 +545,12 @@ pub const REQUIRED_DOTNET_RUNTIME_LABEL: &str = ".NET 9";
 pub const BUNDLED_DOTNET_ROOT_DIR: &str = "dotnet";
 
 /// 同梱 .NET ルート配下の host フォルダ名（`<root>/host/fxr/<ver>/hostfxr.dll`）。
+/// （同梱 .NET の探索は CLR をロードする load からだけ使う。Android 段階0 では未使用）
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const BUNDLED_DOTNET_HOST_DIR: &str = "host";
 
 /// 同梱 .NET ルート配下の fxr フォルダ名（hostfxr のバージョン別フォルダの親）。
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const BUNDLED_DOTNET_FXR_DIR: &str = "fxr";
 
 /// 同梱 .NET ランタイムのルートを決める【純関数】。
@@ -545,6 +568,7 @@ const BUNDLED_DOTNET_FXR_DIR: &str = "fxr";
 ///
 /// # 戻り値
 /// 同梱ランタイムを使うなら、その .NET ルートの絶対パス。使わないなら None。
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub(crate) fn bundled_dotnet_root(
     exe_dir:    Option<&Path>,
     dir_exists: &dyn Fn(&Path) -> bool,

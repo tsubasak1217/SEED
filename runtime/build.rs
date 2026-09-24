@@ -8,8 +8,13 @@ fn main() {
     // #[no_mangle] だけでは EXE のエクスポートテーブルに入らないため、
     // NVIDIA/AMD ドライバーが GetProcAddress で見つけられない。
     // /EXPORT リンカーフラグで強制的にエクスポートテーブルに追加する。
+    //
+    // 【-bins に限定する理由】両シンボルは bin（src/main.rs）だけが定義する。
+    // エンジン本体をライブラリ（seed_engine）へ分けたため、`rustc-link-arg`（全リンク対象）の
+    // ままだとライブラリの単体テスト実行ファイルにも /EXPORT が付き、未定義シンボルで
+    // リンクに失敗する（cargo test が通らなくなる）。SEED.exe への効果は従来と同じ。
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        println!("cargo:rustc-link-arg=/EXPORT:NvOptimusEnablement");
-        println!("cargo:rustc-link-arg=/EXPORT:AmdPowerXpressRequestHighPerformance");
+        println!("cargo:rustc-link-arg-bins=/EXPORT:NvOptimusEnablement");
+        println!("cargo:rustc-link-arg-bins=/EXPORT:AmdPowerXpressRequestHighPerformance");
     }
 }

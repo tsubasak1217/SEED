@@ -1,0 +1,45 @@
+# ============================================================
+#  runtime/android/native — SEED の Android 用エントリ（libSEED.so）
+#
+#  【役割】Android の GameActivity（Java 側 MainActivity）から読み込まれる共有ライブラリ。
+#    - android_main（android-activity の入口）で winit の EventLoop を AndroidApp と結び付け、
+#      エンジン本体（runtime/ のライブラリ seed_engine）を起動する
+#    - log クレートの出力・標準出力／標準エラー・panic を logcat（タグ SEED）へ流す
+#    - 端末のアプリ専用データフォルダからエンジンの起動引数（LaunchArgs）を組み立てる
+#  エンジン本体のコードはここに置かない（Android 固有の「糊」だけを持つ）。
+#
+#  【出力名】libSEED.so（[lib] name = "SEED"）。Gradle 側（MainActivity の System.loadLibrary と
+#  マニフェストの android.app.lib_name）とエディタのパッケージ化ウィンドウがこの名前を前提にする。
+#
+#  【ビルド】runtime/android/build_and_run.ps1（cargo ndk）から行う。
+#  依存はすべて Android ターゲット限定で、src/lib.rs も #![cfg(target_os = "android")] なので、
+#  Windows 向けにビルドされても中身の無い DLL になるだけ（ワークスペースの既定対象からも外してある）。
+#  詳細は docs/android.md。
+# ============================================================
+
+[package]
+name = "seed-android"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "SEED"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+# 実機（Android）でしか意味を持たない糊なので、ホスト上の単体テスト・doctest は持たない。
+test = false
+doctest = false
+
+[target.'cfg(target_os = "android")'.dependencies]
+# エンジン本体（runtime/ のライブラリ。パッケージ名は SEED、ライブラリ名は seed_engine）。
+seed_engine = { package = "SEED", path = "../.." }
+# エンジンと同じ winit 0.30。android-game-activity で GameActivity 用の glue（android-activity 0.6.1）を有効にする。
+# android-activity 0.6.1 が同梱する GameActivity の C 側は 4.4.0 なので、Gradle 側の
+# androidx.games:games-activity も 4.4.0 に揃える（食い違うと JNI の呼び出し規約がずれて起動しない）。
+winit = { version = "0.30", features = ["android-game-activity"] }
+log = "0.4"
+# log クレートの出力を logcat へ流す。regex 付きのフィルタ（既定機能）は使わないので切る。
+android_logger = { version = "0.15", default-features = false }
+# 標準出力/標準エラーの付け替え（pipe / dup2）と、システムプロパティ（端末情報・デバッグ用フラグ）の読み取り。
+libc = "0.2"

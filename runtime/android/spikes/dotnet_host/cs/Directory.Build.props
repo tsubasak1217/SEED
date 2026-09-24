@@ -1,0 +1,10 @@
+<Project>
+  <!-- スパイク共通設定: NuGet キャッシュ等を作業ディレクトリ外へ散らかさないため、中間出力もこの配下に閉じる -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

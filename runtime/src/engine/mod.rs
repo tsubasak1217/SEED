@@ -22,3 +22,5 @@ pub mod water;
 pub mod interaction;
 /// ロジック配置: 円形・グリッド・直線・ランダムのパターンから決定的に点列を生成する純粋層
 pub mod placement;
+/// 実行プラットフォームの特性表（ウィンドウ寸法の主導権・スクリプト可否・診断ログ）。docs/android.md 参照
+pub mod platform;

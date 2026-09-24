@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    SpikePlugin: collectible AssemblyLoadContext へ LoadFromStream で読み込む「ユーザースクリプト相当」の DLL。
+    SEED のユーザースクリプトが SEEDScripting を参照するのと同じ形で SpikeLib を参照する（実体はコピーしない）。
+  -->
+  <PropertyGroup>
+    <AssemblyName>SpikePlugin</AssemblyName>
+    <RootNamespace>SpikePlugin</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SpikeLib\SpikeLib.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+</Project>

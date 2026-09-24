@@ -2,13 +2,26 @@
 #  SEED ワークスペースルート
 #
 #  メンバー:
-#    runtime/          — エンジン本体 (SEED.exe)
+#    runtime/          — エンジン本体 (ライブラリ seed_engine + SEED.exe)
+#    runtime/android/native/ — Android 用エントリ (libSEED.so。docs/android.md)
 #    plugin_api/       — プラグイン作成者向け API クレート (trait 定義のみ)
 #    plugins/*/        — 各プラグイン DLL クレート
 # ============================================================
 
 [workspace]
 members  = [
+    "runtime",
+    # Android 用の薄い cdylib（android_main・logcat 転送）。ワークスペースに入れるのは、
+    # 依存バージョン（Cargo.lock）と下の [profile.*]（wgpu 等の最適化）を Windows 版と共有するため。
+    # ビルドは runtime/android/build_and_run.ps1（cargo ndk）から行う。
+    "runtime/android/native",
+    "plugin_api",
+    "plugins/sample_plugin",
+    "plugins/game_tools",
+]
+# 引数なしの cargo build / test（ルートで実行した場合）の対象は従来どおりの 4 クレート。
+# Android クレートは Windows 向けには中身が空の DLL にしかならないため既定対象から外す。
+default-members = [
     "runtime",
     "plugin_api",
     "plugins/sample_plugin",

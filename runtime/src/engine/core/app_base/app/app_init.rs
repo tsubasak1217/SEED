@@ -129,7 +129,11 @@ impl App {
         self.init_model_streaming(&settings_json);
         // Play・スタンドアロン時はプロジェクト設定のウィンドウ解像度を初期サイズに使う。
         // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
-        let physical_size = if self.mode == RuntimeMode::Play {
+        // ウィンドウの大きさを OS が決めるプラットフォーム（Android）でも指定しない
+        //（ウィンドウ＝端末の画面。描画はサーフェスの実サイズで行う。engine/platform/mod.rs 参照）。
+        let physical_size = if self.mode == RuntimeMode::Play
+            && crate::engine::platform::CURRENT.app_sizes_window
+        {
             Some(self.project_resolution)
         } else {
             None

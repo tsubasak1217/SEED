@@ -1719,16 +1719,23 @@ fn write_loop(mut file: std::fs::File, rx: mpsc::Receiver<String>) {
 /// メインスレッドの WriteFile がカーネルロックで待たされるため、
 /// PeekNamedPipe でノンブロッキング確認してから ReadFile する方式を維持する。
 fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
+    // PeekNamedPipe（peek_pipe）は Windows 専用。エディタとの名前付きパイプ IPC は Windows でしか
+    // 使わない（Android 等では --pipe= が渡らず接続自体が起きない）ため、非 Windows では
+    // 事前確認を省いてブロッキングの read_line に任せる（非 Windows でコンパイルを通すためのガード）。
+    #[cfg(windows)]
     use std::os::windows::io::AsRawHandle;
 
     let mut reader   = BufReader::new(file);
     let mut line_buf = String::new();
 
     loop {
-        let avail = peek_pipe(reader.get_ref().as_raw_handle());
-        if avail == 0 {
-            thread::sleep(Duration::from_millis(1));
-            continue;
+        #[cfg(windows)]
+        {
+            let avail = peek_pipe(reader.get_ref().as_raw_handle());
+            if avail == 0 {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
         }
 
         line_buf.clear();

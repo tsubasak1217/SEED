@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SEED ランタイム（段階0）の AndroidManifest。全体像は docs/android.md。
+
+  ・Vulkan 1.1 必須（wgpu の Vulkan バックエンドを使う。0x401000 = Vulkan 1.1）
+  ・Activity は 1 つだけ（GameActivity 派生の MainActivity）
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature
+        android:name="android.hardware.vulkan.version"
+        android:version="0x401000"
+        android:required="true" />
+
+    <application
+        android:allowBackup="false"
+        android:appCategory="game"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.SeedRuntime">
+
+        <!--
+          screenOrientation="fullSensor" … 端末の向き（縦横 4 方向）に追従する。
+          configChanges … 回転・画面サイズ・キーボード等の構成変更で Activity を作り直させない。
+            作り直されると onDestroy → プロセス終了（MainActivity のコメント参照）になってしまうため、
+            起こり得る構成変更は広めに列挙してある。変更はネイティブ側へ Resized 等で通知される。
+          launchMode="singleTask" … Activity を 1 インスタンスに保つ（起動し直しても既存を前面へ出す）。
+            2 つ目のインスタンスができると android_main が同一プロセスで再度呼ばれ、winit の
+            EventLoop を作り直せずに終了するため。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|fontWeightAdjustment|locale|layoutDirection|colorMode|touchscreen|mcc|mnc">
+
+            <!-- GameActivity が onCreate で読み込むネイティブライブラリ名（libSEED.so）。 -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="SEED" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

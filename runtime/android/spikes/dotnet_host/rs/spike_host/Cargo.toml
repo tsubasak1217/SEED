@@ -1,0 +1,20 @@
+[package]
+name = "spike_host"
+version = "0.1.0"
+edition = "2021"
+description = "Android(linux-bionic) 上で hostfxr 経由で .NET を起動できるかを検証するスパイク用ホスト"
+publish = false
+
+[dependencies]
+# nethost-download（既定機能）は nethost-sys の build.rs が Android で panic するため無効化する。
+# hostfxr は load_from_path で直接読み込むので nethost 自体が不要。
+# net9_0: get_function_with_unmanaged_callers_only（net5_0 以上）と load_assembly_* 系（net8_0 以上）を有効化
+# utils : Unix の sigaltstack 調整（CoreCLR/Mono のシグナル処理と Rust の小さな altstack の衝突対策）
+netcorehost = { version = "0.20", default-features = false, features = ["net9_0", "utils"] }
+
+[profile.release]
+opt-level = 3
+strip = true
+
+# このクレートはルートのワークスペースに属さない（単独でビルドする検証用）。
+[workspace]

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Activity のテーマ。GameActivity は AppCompatActivity 派生なので AppCompat 系のテーマが必須
+  （そうでないと起動時に IllegalStateException で落ちる）。
+-->
+<resources>
+    <style name="Theme.SeedRuntime" parent="Theme.AppCompat.NoActionBar">
+        <!-- タイトルバー・ステータスバーを出さない全画面。 -->
+        <item name="android:windowFullscreen">true</item>
+        <!-- ネイティブの初回描画までに白が一瞬見えないよう、背景を黒にする。 -->
+        <item name="android:windowBackground">@android:color/black</item>
+        <!-- 画面の切り欠き（カメラ穴）側まで描画面を広げる。安全領域の扱いは段階A（docs/android.md）。 -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

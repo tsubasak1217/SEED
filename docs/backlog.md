@@ -1516,3 +1516,62 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `editor/tests/AudioDictionaryTests` が固定しているため、統合せずに残した。
   役割（AudioComponent の音声パス欄が受け付ける並び）が違う、という整理で
   両方のコメントに相互参照を書いてある。増やすときは両方を見ること。
+
+
+## Android（2026-09-24 段階0 実装時の残件・正典: docs/android.md）
+
+段階0（エミュレータで 1 枚絵・回転・ホーム復帰・タッチ受信・panic ログまで）で見つけた「今はやらない」課題。
+段階の区分（A / B / C / D）は docs/android.md §9。
+
+- [ ] **実機（Pixel 6a・arm64・Mali-G78）で未検証** — 2026-09-24。arm64 の libSEED.so はビルドでき（AArch64・16KB 整列を確認）、
+  エミュレータ（gfxstream 経由のホスト GPU）では動いたが、実機は未接続だった。エンジンは `Renderer::new` で
+  `MULTI_DRAW_INDIRECT | INDIRECT_FIRST_INSTANCE` を無条件に要求し、limits も `max_bind_groups: 5` /
+  `max_storage_buffers_per_shader_stage: 12` とデスクトップ前提。Mali 等でこれらが満たせないと `request_device` で
+  panic する恐れがある（推測。要実機確認）。頂点シェーダでの storage buffer（downlevel `VERTEX_STORAGE`）も要確認。
+  関連: `runtime/src/engine/core/renderer/mod.rs`（`Renderer::new`）。
+- [ ] **Activity 破棄時にセーブの未書き出し分が失われる** — 2026-09-24。`MainActivity.onDestroy` はプロセスを即終了させる
+  （winit 0.30 が onDestroy をアプリへ通知しない・EventLoop は 1 プロセス 1 回のため。docs/android.md §8）。
+  Windows は `CloseRequested` で `save::flush_if_dirty()` を呼ぶが、Android にはその経路が無い。
+  段階A で onPause / suspended 時の flush と、正式な終了処理（winit の更新または自前の破棄通知）を入れる。
+  関連: `runtime/android/app/src/main/java/com/seedengine/runtime/MainActivity.java`、`app/render.rs`。
+- [ ] **タッチの本実装（段階A）** — 2026-09-24。`WindowEvent::Touch` は `app/lifecycle_diag.rs` でログに出すだけ。
+  複数指の `Input.TouchCount` / `GetTouch(i)`（PC はマウス＝指 0）とキャンバス UI のポインタイベントへの接続が必要。
+- [ ] **APK 内 pak（AssetManager）非対応（段階A）** — 2026-09-24。アセットは `/sdcard/Android/data/<pkg>/files/assets` へ
+  adb push したものを `std::fs` で読んでいる。`engine/asset_fs.rs`・`engine/pak.rs` は実ファイル前提。
+- [ ] **保存先・キャッシュ・パイプラインキャッシュの置き場（段階A）** — 2026-09-24。セーブ（`save/path.rs`）と
+  派生キャッシュ（`loader/asset_cache.rs`）は「アセットルートの親」規則でたまたま外部アプリ専用フォルダに落ちている。
+  パイプラインキャッシュ（`renderer/mod.rs::pipeline_cache_path`）は実行ファイルの隣（Android では `/system/bin`）
+  前提のため保存されず、毎回シェーダを作り直す（エミュレータで起動 2〜6 秒）。プラットフォームのデータフォルダを
+  エンジンへ明示的に渡す仕組みにする。なお初期化（最初の resumed の `handle_resumed`）は android_main スレッドで
+  同期に走り、その間に端末側でサーフェスが破棄されると UI スレッドはネイティブの応答を待ち続ける
+  （native_app_glue の `android_app_set_window` は時間切れ無しで待つ）。起動が長いほど ANR の恐れがあるため、
+  キャッシュ化と初期化の分割・非同期化も合わせて検討する。
+- [ ] **バックグラウンド中もシミュレーションが回る（段階A）** — 2026-09-24。suspended 中はイベントループが
+  `ControlFlow::Wait` で眠るが、物理スレッド（3D/2D）は回り続ける（エミュレータで計 20% 前後の CPU）。音声も止めていない。
+  suspended で一時停止・resumed で再開する。関連: `app/surface_lifecycle.rs`。
+- [ ] **戻るキーの扱い（段階A）** — 2026-09-24。GameActivity はキーをネイティブへ渡し、winit が処理済み扱いにするため
+  `onBackPressed` が呼ばれず何も起きない（`[SEED KEY] pressed logical=Named(BrowserBack)` とログに出るだけ）。
+  ゲーム側に渡す／`moveTaskToBack` する等の方針を決める。
+- [ ] **画面の向き・安全領域（段階A）** — 2026-09-24。マニフェストは `screenOrientation="fullSensor"`（端末の回転ロックを
+  無視する）・切り欠きは `shortEdges`。プロジェクト設定からの向き指定、回転ロックの尊重（`fullUser`）、
+  安全領域（切り欠き・ナビゲーションバー）を返す API が要る。内部解像度固定（`render_resolution=fixed`）と
+  キャンバスの自動スケールが縦長画面で意図どおりかも未確認（どちらも project_settings の解像度基準）。
+- [ ] **音声（oboe）が鳴るか未確認（段階A）** — 2026-09-24。rodio → cpal → oboe（`c++_static`）はビルド・リンクまで。
+- [ ] **ゲームパッド非対応** — 2026-09-24。gilrs は Android 未対応で「パッド無効」で続行する。
+  Android のゲームパッドは GameActivity の入力イベントから取る必要がある。
+- [ ] **スクリプト未対応（段階B）** — 2026-09-24。`platform::CURRENT.scripting_supported == false` でスクリプトホストを探さない。
+  `scripting/unsupported_platform.rs` の `load` は常に Err。linux-bionic 向け CoreCLR を同梱して `Hostfxr::load_from_path` で戻す。
+- [ ] **エディタのパッケージ化ウィンドウの Android 出力が実働しない（段階C）** — 2026-09-24。`PackagingWindow.xaml.cs` は
+  runtime/ で `cargo build --target <triple>` して `runtime/target/<triple>/<profile>/libSEED.so` を拾う前提だが、
+  runtime/ 単体を Android 向けにビルドすると winit の Android 機能（android-game-activity）が有効にならず、
+  android-activity の compile_error で失敗する（段階0 以前は nethost-sys の build.rs の panic で失敗していた）。
+  .so は `runtime/android/native`（cargo ndk）が作る（出力先の並びは同じ `runtime/target/<triple>/<profile>/`）。
+  あわせて APK 化（Gradle）とアセットの同梱が要る。段階0 ではエディタには手を入れていない。
+- [ ] **debug の libSEED.so が約 445 MB / ABI（段階C）** — 2026-09-24。フルデバッグ情報のため。APK へはシンボルを削って
+  約 53 MB で入るが、ビルド・コピー・削りの時間が掛かる。Android の開発ビルドだけ `debug = "line-tables-only"` 等にする案。
+- [ ] **Android ビルドでだけ出る警告（Windows 専用コードの cfg 漏れ）** — 2026-09-24。`input/cursor_visibility.rs` の
+  `MAX_COUNTER_STEPS`、`startup_log/wide.rs` の `NUL_UTF16`、`frame_renderer.rs` の `my_hwnd` が未使用になる。実害なし・低優先。
+- [ ] **logcat が既存の常時診断ログで埋まる** — 2026-09-24。`app/play_diag.rs` の `PLAY_DIAG_ENABLED` が `true || ...` で常時有効
+  （`[PLAY_HB]` が毎秒）、物理が動いていると `[PERF f=...]` も 60 フレームごとに出る。Windows 版でも同じ。撤去予定の一時診断のはず。
+- [ ] **`runtime/Cargo.lock` はワークスペース化前の残骸** — 2026-09-24。ワークスペースの lock はルートの `Cargo.lock`。
+  runtime/ 側は 2026-05 から更新されておらず参照もされない。削除してよいか確認する（低優先）。

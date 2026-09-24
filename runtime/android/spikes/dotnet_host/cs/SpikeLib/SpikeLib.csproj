@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    SpikeLib: Android(linux-bionic) 上の CoreCLR を Rust(hostfxr) から起動できるかを検証するテスト用ライブラリ。
+    SEEDScripting.csproj と同じく EnableDynamicLoading=true（runtimeconfig.json を生成させる）。
+  -->
+  <PropertyGroup>
+    <AssemblyName>SpikeLib</AssemblyName>
+    <RootNamespace>SpikeLib</RootNamespace>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <!-- bionic には利用可能な ICU が無い想定。runtimeconfig.json に System.Globalization.Invariant=true を出す -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+</Project>
