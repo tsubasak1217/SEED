@@ -1030,7 +1030,8 @@ public sealed class RuntimeManager : IDisposable
         // DetachRuntimeWindow がウィンドウをトップレベルへ切り離してしまう。
         // 埋め込み Play ではウィンドウ操作を一切行わず、ランタイム内部の
         // 一時停止（IPC: PAUSE）だけを行う。
-        _pipe?.Send("PAUSE");
+        // 命令の文字列は Android の実行（TCP の通信路）と共有する（RuntimeIpcCommands。段階D-1）。
+        _pipe?.Send(RuntimeIpcCommands.Pause);
         if (!_inEmbeddedPlay) EmbedRuntimeWindow();
         else EditorLog.Write("Pause — 埋め込み Play 中のためウィンドウ埋め込みをスキップ");
         ChangeState(EditorState.Pause);
@@ -1046,7 +1047,7 @@ public sealed class RuntimeManager : IDisposable
         // シーンパネルのコンテナは子を失って真っ白（空の HwndHost）になる。
         if (!_inEmbeddedPlay) DetachRuntimeWindow();
         else EditorLog.Write("Resume — 埋め込み Play 中のためウィンドウ切り離しをスキップ");
-        _pipe?.Send("RESUME");
+        _pipe?.Send(RuntimeIpcCommands.Resume);
         ChangeState(EditorState.Play);
     }
 

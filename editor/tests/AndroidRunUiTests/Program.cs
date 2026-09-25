@@ -12,6 +12,7 @@ namespace AndroidRunUiTests;
 ///   4. Output パネルへ出す文言と色（OutputFormattingTests）
 ///   5. Android の実行先を使えるか・道具の一覧・パッケージ化の出力・中核への指定（EnvironmentAndPackagingTests）
 ///   6. Android（自動）・エミュレータへの切り替えの表示、起動するシーン、未保存の変更の確認（AutoTargetAndSceneTests。段階C-3）
+///   7. Android の実行中の一時停止・再開（端末のアプリとの IPC。プレイバー・状態機械・段取り。IpcPauseTests。段階D-1）
 /// 端末・adb・cargo・Gradle は使わない。
 /// </summary>
 public static class Program
@@ -28,6 +29,7 @@ public static class Program
         OutputFormattingTests.Register(harness);
         EnvironmentAndPackagingTests.Register(harness);
         AutoTargetAndSceneTests.Register(harness);
+        IpcPauseTests.Register(harness);
         return harness.Run();
     }
 }

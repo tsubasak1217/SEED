@@ -15,7 +15,9 @@ namespace AndroidPipelineTests;
 ///      （EmulatorAndSceneTests。段階C-3）
 ///   7. 未登録の起動シーンを pak の収録の起点に足す判断・指紋・SeedPak の引数・pak に無いときの警告（PakSceneSeedTests。段階C-4）
 ///   8. run の起動の前に push した DLL の上書き（files/bin/）を消す判断・run-as の引数・出力の読み方（PushOverrideTests。段階C-4）
-/// 端末・adb・cargo・Gradle は使わない。
+///   9. 端末のアプリとの IPC（ポート・adb forward・起動の extra・行の送受信・挨拶までのやり直し・スクリーンショット・
+///      SeedAndroid の pause / resume / screenshot の引数。IpcTests。段階D-1）
+/// 端末・adb・cargo・Gradle は使わない（IPC はループバックの偽のランタイム）。
 /// </summary>
 public static class Program
 {
@@ -32,6 +34,7 @@ public static class Program
         EmulatorAndSceneTests.Register(harness);
         PakSceneSeedTests.Register(harness);
         PushOverrideTests.Register(harness);
+        IpcTests.Register(harness);
         return harness.Run();
     }
 }

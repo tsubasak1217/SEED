@@ -5,6 +5,8 @@ pub mod app;
 /// （`<プロジェクト>/cache/editor/view/**.view.json`）
 pub mod editor_view_state;
 pub mod ipc;
+/// IPC の通信路（名前付きパイプ・TCP）。行の中身（プロトコル）は ipc.rs、運び方はこちら（段階D-1）
+pub mod ipc_transport;
 /// プレハブの「取り込んだ版」を表す内容ハッシュ（FNV-1a 64bit）
 pub mod prefab_hash;
 /// `project_settings.json` を読む唯一の入口（版の変換を含む）

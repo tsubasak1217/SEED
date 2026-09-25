@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using SEEDEditor.Android;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Pipeline;
 
 namespace SEEDEditor.Tools.SeedAndroid;
@@ -42,6 +43,15 @@ public enum SeedAndroidCommand
 
     /// <summary>logcat を流す。</summary>
     Logcat,
+
+    /// <summary>動いているアプリを一時停止する（IPC の PAUSE。段階D-1）。</summary>
+    Pause,
+
+    /// <summary>動いているアプリの一時停止を解く（IPC の RESUME。段階D-1）。</summary>
+    Resume,
+
+    /// <summary>動いているアプリの画面を撮って PC へ取り出す（IPC の SCREENSHOT。段階D-1）。</summary>
+    Screenshot,
 }
 
 /// <summary>コマンドラインで指定された値（指定されなかったものは null / false）。</summary>
@@ -82,6 +92,12 @@ public sealed record SeedAndroidCommandLine
 
     /// <summary>--since の値（logcat の起点。端末の時刻 "MM-dd HH:mm:ss.fff"）。</summary>
     public string? Since { get; init; }
+
+    /// <summary>--ipc-port の値（端末のランタイムが IPC を待ち受けるポート。0 なら使わない。段階D-1）。</summary>
+    public int? IpcPort { get; init; }
+
+    /// <summary>--out の値（screenshot の書き先。段階D-1）。</summary>
+    public string? OutputPath { get; init; }
 
     /// <summary>--release。</summary>
     public bool Release { get; init; }
@@ -132,6 +148,9 @@ public static class SeedAndroidArguments
         ["push"]    = SeedAndroidCommand.Push,
         ["stop"]    = SeedAndroidCommand.Stop,
         ["logcat"]  = SeedAndroidCommand.Logcat,
+        ["pause"]      = SeedAndroidCommand.Pause,
+        ["resume"]     = SeedAndroidCommand.Resume,
+        ["screenshot"] = SeedAndroidCommand.Screenshot,
     };
 
     /// <summary>ヘルプを求める語（サブコマンドの位置）。</summary>
@@ -171,6 +190,12 @@ public static class SeedAndroidArguments
 
     /// <summary>起動するシーン。</summary>
     public const string SceneOption = "--scene";
+
+    /// <summary>端末のランタイムが IPC を待ち受けるポート（段階D-1）。</summary>
+    public const string IpcPortOption = "--ipc-port";
+
+    /// <summary>screenshot の書き先（段階D-1）。</summary>
+    public const string OutOption = "--out";
 
     // ── オプションの名前（値を取らないもの）──────────────────────
 
@@ -219,6 +244,10 @@ public static class SeedAndroidArguments
           push      スクリプトの DLL（と --assets-dir のアセット）だけを送って起動し直す（APK は作り直さない）
           stop      アプリを止める（am force-stop）
           logcat    logcat を流す（タグ SEED・DOTNET ほか。Ctrl+C で止める）
+          pause     動いているアプリを一時停止する（adb forward → IPC の PAUSE → 切り離して閉じる。一時停止のまま残る）
+          resume    動いているアプリの一時停止を解く（IPC の RESUME）
+          screenshot 動いているアプリの画面を撮って PC へ取り出す（IPC の SCREENSHOT → run-as で PNG を取り出す。--out）
+                    （pause / resume / screenshot は run / push で起動したアプリだけ。エディタの実行中はエディタが使うので使えない）
 
         オプション:
           --project <フォルダ>      プロジェクト（.seedproj か assets/ を持つフォルダ、またはアセットルートそのもの）。
@@ -238,7 +267,7 @@ public static class SeedAndroidArguments
           --release                 Rust 側を --release でビルドする（APK はデバッグ署名のまま）
           --config <JSON>           指定をまとめた設定 JSON（キーは project / assets_dir / serial / emulator_fallback / avd /
                                     scene / abis / release / skip_rust_build / skip_gradle / no_install / no_launch / no_logcat /
-                                    push_scripts / rebuild / logcat_seconds / log_file。project・assets_dir・log_file の相対パスは
+                                    push_scripts / rebuild / logcat_seconds / log_file / ipc_port。project・assets_dir・log_file の相対パスは
                                     JSON のフォルダから、scene はアセットルートから。コマンドラインが優先）
           --skip-rust               libSEED.so のビルドを飛ばす
           --skip-gradle             APK の作成（pak とスクリプト・同梱 .NET・Gradle）を飛ばす
@@ -247,8 +276,12 @@ public static class SeedAndroidArguments
           --rebuild                 変更の有無で工程を自動で飛ばさない（すべて作り直し、入れ直す）
           --logcat-seconds <秒>     logcat を流す秒数（0 か省略で止めるまで）
           --log-file <パス>         logcat の保存先（UTF-8）
-          --app-id <ID>             stop で止めるアプリ（省略時は --project の設定から。無ければ com.seedengine.runtime）
+          --app-id <ID>             stop / pause / resume / screenshot の対象のアプリ（省略時は --project の設定から。
+                                    無ければ com.seedengine.runtime）
           --since <時刻>            logcat の起点（端末の時刻 "MM-dd HH:mm:ss.fff"。省略時は今）
+          --ipc-port <ポート>       端末のランタイムが一時停止などの IPC を待ち受けるポート（run / push が起動オプションで渡し、
+                                    pause / resume / screenshot がつなぐ。省略時は 52735、0 なら渡さない）
+          --out <パス>              screenshot の書き先（省略時はカレントフォルダの android_screenshot_<日時>.png）
           --json                    devices の出力を JSON にする
           --help, -h                この説明を表示する
 
@@ -295,7 +328,7 @@ public static class SeedAndroidArguments
 
             // 以降のオプションはすべて値を 1 つ取る
             if (arg is not (ConfigOption or ProjectOption or AssetsDirOption or SerialOption or AbiOption or LogcatSecondsOption
-                or LogFileOption or ApplicationIdOption or SinceOption or AvdOption or SceneOption))
+                or LogFileOption or ApplicationIdOption or SinceOption or AvdOption or SceneOption or IpcPortOption or OutOption))
             {
                 return Fail($"不明な引数です: {arg}");
             }
@@ -315,6 +348,16 @@ public static class SeedAndroidArguments
                 case SinceOption:         line = line with { Since = value }; break;
                 case AvdOption:           line = line with { Avd = value }; break;
                 case SceneOption:         line = line with { ScenePath = value }; break;
+                case OutOption:           line = line with { OutputPath = value }; break;
+                case IpcPortOption:
+                    if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var ipcPort)
+                        || AndroidIpcSettings.Validate(ipcPort) is { } ipcPortError)
+                    {
+                        return Fail($"{IpcPortOption} には {AndroidIpcSettings.DisabledPort}（使わない）か " +
+                                    $"{AndroidIpcSettings.MinPort}〜{AndroidIpcSettings.MaxPort} の整数を指定してください: {value}");
+                    }
+                    line = line with { IpcPort = ipcPort };
+                    break;
                 case AbiOption:
                     AndroidAbis.ParseList(value, out var abiError);
                     if (abiError is not null) return Fail($"{AbiOption}: {abiError}");
@@ -335,12 +378,24 @@ public static class SeedAndroidArguments
             return Fail($"{ProjectOption} と {AssetsDirOption} は同時に指定できません（端末は APK の pak を優先します）");
         }
         // 「自動」は端末を用意する（要ればエミュレータを起動する）経路なので、既にある端末を操作するだけのサブコマンドでは使わない
-        if (AndroidDeviceTarget.IsAutoSerial(line.Serial) && (command is SeedAndroidCommand.Stop or SeedAndroidCommand.Logcat))
+        if (AndroidDeviceTarget.IsAutoSerial(line.Serial) && OperatesRunningDevice(command))
         {
-            return Fail($"{SerialOption} {AndroidDeviceTarget.AutoSerial} は build / install / run / push で使えます（stop / logcat にはシリアルを指定してください）");
+            return Fail($"{SerialOption} {AndroidDeviceTarget.AutoSerial} は build / install / run / push で使えます" +
+                        "（stop / logcat / pause / resume / screenshot にはシリアルを指定してください）");
+        }
+        if (line.OutputPath is not null && command != SeedAndroidCommand.Screenshot)
+        {
+            return Fail($"{OutOption} は screenshot で使います");
         }
         return new SeedAndroidParseResult(line, ShowHelp: false, Error: null);
     }
+
+    /// <summary>既にある端末（動いているアプリ）を操作するだけのサブコマンドか（ビルド・インストールをしない）。</summary>
+    /// <param name="command">サブコマンド。</param>
+    /// <returns>そうなら true。</returns>
+    public static bool OperatesRunningDevice(SeedAndroidCommand command) => command is
+        SeedAndroidCommand.Stop or SeedAndroidCommand.Logcat or
+        SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot;
 
     /// <summary>
     /// 設定 JSON の値（無ければ既定値）の上にコマンドラインの指定を重ね、サブコマンドの目的を入れる。
@@ -372,6 +427,7 @@ public static class SeedAndroidArguments
             Rebuild         = line.Rebuild || baseline.Rebuild,
             LogcatSeconds   = line.LogcatSeconds ?? baseline.LogcatSeconds,
             LogFile         = line.LogFile ?? baseline.LogFile,
+            IpcPort         = line.IpcPort ?? baseline.IpcPort,
         };
     }
 

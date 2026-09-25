@@ -1,10 +1,11 @@
 // ============================================================
-//  AndroidRunPhase.cs — エディタからの Android の実行の状態・止め方・終わり方の値
+//  AndroidRunPhase.cs — エディタからの Android の実行の状態・止め方・終わり方・IPC の状態の値
 //
 //  【状態機械】（遷移の正典は AndroidRunStateMachine.cs）
-//    Idle ──実行──▶ Building ──起動に成功──▶ Running ──停止／アプリの終了──▶ Stopping ──▶ Idle
-//                    │  └──────停止───────────────────────────────────────▶ Stopping ──▶ Idle
-//                    └──失敗・logcat の終わり（パイプラインが戻った）──────────────────────▶ Idle
+//    Idle ──実行──▶ Building ──起動に成功──▶ Running ⇄ Paused ──停止／アプリの終了──▶ Stopping ──▶ Idle
+//                    │  └──────停止──────────────────────────────────────────────▶ Stopping ──▶ Idle
+//                    └──失敗・logcat の終わり（パイプラインが戻った）──────────────────────────────▶ Idle
+//  Running ⇄ Paused は端末のアプリとの IPC（TCP。段階D-1）がつながっているときだけ（AndroidIpcStatus.Connected）。
 //
 //  WPF に依存しない（editor/tests/AndroidRunUiTests からリンクされる）。
 // ============================================================
@@ -23,8 +24,29 @@ public enum AndroidRunPhase
     /// <summary>端末でアプリが動いている（logcat を流している）。</summary>
     Running,
 
+    /// <summary>端末のアプリを一時停止している（IPC で PAUSE を送った。段階D-1。logcat・アプリの見張りは続ける）。</summary>
+    Paused,
+
     /// <summary>止めている途中（子プロセスの終了・アプリの停止を待っている）。</summary>
     Stopping,
+}
+
+/// <summary>
+/// 端末のアプリとの IPC（adb forward ＋ TCP。段階D-1）の状態。Running / Paused の間だけ意味を持つ。
+/// </summary>
+public enum AndroidIpcStatus
+{
+    /// <summary>使わない（実行していない・ポート 0 の指定で起動オプションを渡していない）。</summary>
+    Off,
+
+    /// <summary>つないでいる途中（起動の直後・切れた後のつなぎ直し）。</summary>
+    Connecting,
+
+    /// <summary>つながっている（実行バーから一時停止・再開を送れる）。</summary>
+    Connected,
+
+    /// <summary>つながらなかった（古い APK・時間切れ等。理由は AndroidRunSnapshot.IpcNote）。</summary>
+    Unavailable,
 }
 
 /// <summary>止める理由。</summary>
@@ -36,7 +58,10 @@ public enum AndroidRunStopReason
     /// <summary>停止ボタン。</summary>
     User,
 
-    /// <summary>端末でアプリが終わった（最近のタスクから消した・強制停止・クラッシュ等。pidof で見つける。戻るキーでは終わらない）。</summary>
+    /// <summary>
+    /// 端末でアプリが終わった（最近のタスクから消した・強制停止・クラッシュ等。pidof で見つける。戻るキーでは終わらない。
+    /// 段階D-1 から、IPC が切れたときにもすぐ pidof で確かめて見つける）。
+    /// </summary>
     AppExited,
 
     /// <summary>エディタを閉じる。</summary>

@@ -2,14 +2,13 @@
 //  StopCommand.cs — stop（アプリを止める。am force-stop）
 //
 //  止めるアプリ ID は --app-id、無ければ --project / --assets-dir（設定 JSON 可）の設定から決める
-//  （ビルドのときと同じ既定値。プロジェクトも無ければ com.seedengine.runtime）。
+//  （ビルドのときと同じ既定値。プロジェクトも無ければ com.seedengine.runtime。TargetApplication）。
 // ============================================================
 
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Pipeline;
-using SEEDEditor.Android.Project;
 using SEEDEditor.Android.Toolchain;
 
 namespace SEEDEditor.Tools.SeedAndroid.Commands;
@@ -29,20 +28,10 @@ public static class StopCommand
         AndroidToolchain toolchain, SeedAndroidCommandLine line, AndroidRunRequest? config, CancellationToken cancellationToken)
     {
         var request = SeedAndroidArguments.ToRequest(line, config);
-        string applicationId;
-        if (!string.IsNullOrWhiteSpace(line.ApplicationId))
+        if (!TargetApplication.TryResolve(line, request, out var applicationId, out var error))
         {
-            applicationId = line.ApplicationId.Trim();
-            if (!AndroidAppIdentityResolver.IsValidApplicationId(applicationId))
-            {
-                Console.Error.WriteLine($"エラー: アプリ ID の形式が正しくありません: {applicationId}");
-                return SeedAndroidExitCodes.InvalidRequest;
-            }
-        }
-        else
-        {
-            applicationId = AndroidProjectResolver.ResolveIdentity(
-                AndroidProjectResolver.Resolve(request.ProjectDir, request.AssetsDir)).ApplicationId;
+            Console.Error.WriteLine($"エラー: {error}");
+            return SeedAndroidExitCodes.InvalidRequest;
         }
 
         var device = await new AndroidDeviceActions(toolchain).StopAppAsync(request.Serial, applicationId, cancellationToken);

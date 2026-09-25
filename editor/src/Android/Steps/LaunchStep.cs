@@ -10,6 +10,8 @@
 //  MainActivity が「seed.」で始まる文字列の extra を JSON にまとめてネイティブへ渡し、runtime/android/native の
 //  launch.rs が LaunchArgs.scene_path に入れる（pak に無ければ logcat に警告を出して開始シーンで起動する）。
 //  毎回アプリを止めてから起動するので、extra は必ず新しいプロセスの onCreate に届く。
+//  段階D-1 から、エディタとの IPC を待ち受けるポート（--es seed.ipc_port '<ポート>'。0 の指定なら渡さない）も渡す。
+//  端末のランタイムが 127.0.0.1:<ポート> で待ち受け、エディタ／SeedAndroid が adb forward 越しにつなぐ（Ipc/）。
 //  APK の pak はプロジェクト設定の開始シーン・シーン一覧から参照をたどって作り、シーンマネージャに未登録の起動シーンは
 //  準備で収録の起点に足す（段階C-4。Project/AndroidPakSceneSeeds → SeedPak --extra-scene）。それでも入っていないのは
 //  収録に失敗したか、pak を作り直さなかった（push・--skip-gradle）とき。その保険として、起動の直前に置き場の pak
@@ -80,7 +82,7 @@ public sealed class LaunchStep : IAndroidPipelineStep
     {
         var adb = context.RequireAdb();
         var device = context.RequireDevice();
-        var extras = LaunchExtras(context.LaunchScene);
+        var extras = LaunchExtras(context.LaunchScene, context.IpcDevicePort);
         WarnIfSceneNotInPak(context, log);
         try
         {
@@ -185,12 +187,23 @@ public sealed class LaunchStep : IAndroidPipelineStep
         : ReasonCollectionFailed;
 
     /// <summary>
-    /// 起動オプションを am start の extra にする（純粋な処理）。今は「起動するシーン」だけ（seed.scene）。
+    /// 起動オプションを am start の extra にする（純粋な処理）。「起動するシーン」（seed.scene）と、エディタとの IPC を
+    /// 待ち受けるポート（seed.ipc_port。段階D-1。値は 10 進の文字列＝Java は文字列の extra だけを渡す）。
     /// </summary>
     /// <param name="launchScene">起動するシーン（アセットルートからの相対パス。null なら開始シーン＝extra なし）。</param>
+    /// <param name="ipcDevicePort">IPC のポート（null なら渡さない＝端末は待ち受けない）。</param>
     /// <returns>extra の並び。</returns>
-    public static IReadOnlyList<AdbIntentExtra> LaunchExtras(string? launchScene) =>
-        string.IsNullOrWhiteSpace(launchScene)
-            ? NoExtras
-            : new[] { new AdbIntentExtra(AndroidRuntimeContract.SceneExtraName, launchScene) };
+    public static IReadOnlyList<AdbIntentExtra> LaunchExtras(string? launchScene, int? ipcDevicePort = null)
+    {
+        var extras = new List<AdbIntentExtra>();
+        if (!string.IsNullOrWhiteSpace(launchScene))
+        {
+            extras.Add(new AdbIntentExtra(AndroidRuntimeContract.SceneExtraName, launchScene));
+        }
+        if (ipcDevicePort is { } port)
+        {
+            extras.Add(new AdbIntentExtra(AndroidRuntimeContract.IpcPortExtraName, port.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+        return extras.Count == 0 ? NoExtras : extras;
+    }
 }

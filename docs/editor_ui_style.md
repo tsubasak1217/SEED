@@ -361,6 +361,18 @@ OutputPanel の表 1 か所にある。種類と出どころ（表示フィル�
   （`ToolTipService.ShowOnDisabled = true`。無効の実行・停止ボタンも同じく押せない理由をツールチップに出す）。
 - 実行・停止ボタン（プレイバーの PNG アイコンのボタン）は 6 章の「意図的に共通書式へ寄せていないもの」のまま。有効/無効・絵柄・ツールチップ・
   状態表示の文言と色は `AndroidRun/PlayBarPolicy.cs` が決め、`MainWindow.AndroidRun.cs` の `ApplyPlayBar` が当てる。
+- **Android の実行中の一時停止（段階D-1。[android.md](android.md) §21）は PC の Play と同じ実行ボタンで行う**（Android 専用のボタンは作らない）。
+  状態表示・絵柄・色は PC の PLAY / PAUSE に揃える:
+
+  | 状態 | 状態表示（色・アイコン） | 実行ボタン | 停止ボタン |
+  |---|---|---|---|
+  | PC の Play（参考） | `PLAY`（水色・`Icon.Play`） | 一時停止の絵柄（橙の地）で押せる | 押せる |
+  | PC の Pause（参考） | `PAUSE`（橙・`Icon.Pause`） | 再生の絵柄（緑の地）で押せる | 押せる |
+  | Android・端末のアプリとつながっている | `ANDROID PLAY`（水色・`Icon.Platform.Android`） | 一時停止の絵柄で押せる（一時停止） | 端末のアプリを止める |
+  | Android・一時停止中 | `ANDROID PAUSE`（橙・`Icon.Pause`） | 再生の絵柄で押せる（再開） | 端末のアプリを止める |
+  | Android・つないでいる途中／つながらない | `ANDROID RUN`（水色・`Icon.Platform.Android`） | 一時停止の絵柄で**無効**（理由をツールチップに） | 端末のアプリを止める |
+
+  絵柄の PNG（`playbar/play.png`・`pause.png`）と地の色（`_brushPlay` / `_brushPause`）は PC と同じものを使う（新しい絵柄・色は足していない）。
 
 **項目の並びと見た目**（行を作るのは `AndroidRun/RunTargetCatalog.cs`。どの行も同じ ItemTemplate＝アイコン＋文言で、色は項目から継ぐ）
 

@@ -3,12 +3,20 @@
 //
 //  【遷移】
 //    Idle     ──Start──────────────────────────────▶ Building
-//    Building ──起動（Launch）の工程が成功─────────▶ Running（アプリの見張りを始める合図を返す）
+//    Building ──起動（Launch）の工程が成功─────────▶ Running（アプリの見張りと IPC の接続を始める合図を返す）
 //    Building ──RequestStop(User)──────────────────▶ Stopping
-//    Running  ──RequestStop(User / AppExited)──────▶ Stopping
-//    Building / Running / Stopping ──Complete─────▶ Idle（起動後に停止ボタンで止めたときだけ、アプリを止め終えるまで Stopping）
+//    Running  ──RequestPause（IPC がつながっている）▶ Paused（段階D-1）
+//    Paused   ──RequestResume──────────────────────▶ Running
+//    Paused   ──IpcLost（通信路が切れた）───────────▶ Running（端末のランタイムは切断で一時停止を解く）
+//    Running / Paused ──RequestStop(User / AppExited)▶ Stopping
+//    Building / Running / Paused / Stopping ──Complete▶ Idle（起動後に停止ボタンで止めたときだけ、アプリを止め終えるまで Stopping）
 //    Stopping ──FinishStopApp──────────────────────▶ Idle
 //  Idle で届いたイベント（パイプラインが戻った後に遅れて届いた行など）は無視する。
+//
+//  【IPC の状態（AndroidIpcStatus。段階D-1）】Running / Paused の間だけ意味を持つ
+//    Off ──BeginIpcConnect──▶ Connecting ──IpcConnected──▶ Connected ──IpcLost──▶ Connecting（つなぎ直す）
+//                                   └──IpcFailed（理由）──▶ Unavailable
+//    Off のまま（DisableIpc・ポート 0 の指定）なら一時停止は使えない。Start・Complete で Off に戻す。
 //
 //  【終わり方（AndroidRunOutcome）の決め方】止める理由を優先し、無ければパイプラインの結果で決める。
 //    停止ボタン: 起動の工程に入っていれば StoppedByUser（アプリも止める）、入る前なら BuildCanceled（アプリに触らない）
@@ -73,6 +81,15 @@ public sealed class AndroidRunStateMachine
     /// <summary>準備の途中の詳細（エミュレータの起動待ち等）。</summary>
     public string? PrepareDetail { get; private set; }
 
+    /// <summary>端末のアプリとの IPC の状態（段階D-1）。</summary>
+    public AndroidIpcStatus Ipc { get; private set; } = AndroidIpcStatus.Off;
+
+    /// <summary>IPC の状態の補足（つながらなかった理由・使わない理由）。</summary>
+    public string? IpcNote { get; private set; }
+
+    /// <summary>一時停止できるか（実行中で IPC がつながっている）。</summary>
+    public bool CanPause => Phase == AndroidRunPhase.Running && Ipc == AndroidIpcStatus.Connected;
+
     /// <summary>いまの写し。</summary>
     public AndroidRunSnapshot Snapshot => new()
     {
@@ -86,6 +103,8 @@ public sealed class AndroidRunStateMachine
         Fraction = Fraction,
         StopReason = StopReason,
         PrepareDetail = PrepareDetail,
+        Ipc = Ipc,
+        IpcNote = IpcNote,
     };
 
     /// <summary>
@@ -108,6 +127,8 @@ public sealed class AndroidRunStateMachine
         StepCount = 0;
         Fraction = MinFraction;
         PrepareDetail = null;
+        Ipc = AndroidIpcStatus.Off;
+        IpcNote = null;
         return true;
     }
 
@@ -165,17 +186,102 @@ public sealed class AndroidRunStateMachine
     }
 
     /// <summary>
-    /// 止める（Building / Running のときだけ。アプリの終了は Running のときだけ）。
+    /// 止める（Building / Running / Paused のときだけ。アプリの終了は Running / Paused のときだけ）。
     /// </summary>
     /// <param name="reason">理由。</param>
     /// <returns>Stopping に入ったら true（呼び出し側は中断の合図を送る）。</returns>
     public bool RequestStop(AndroidRunStopReason reason)
     {
         if (reason == AndroidRunStopReason.None) return false;
-        if (Phase is not (AndroidRunPhase.Building or AndroidRunPhase.Running)) return false;
-        if (reason == AndroidRunStopReason.AppExited && Phase != AndroidRunPhase.Running) return false;
+        if (Phase is not (AndroidRunPhase.Building or AndroidRunPhase.Running or AndroidRunPhase.Paused)) return false;
+        if (reason == AndroidRunStopReason.AppExited && Phase is not (AndroidRunPhase.Running or AndroidRunPhase.Paused)) return false;
         StopReason = reason;
         Phase = AndroidRunPhase.Stopping;
+        return true;
+    }
+
+    // ── 端末のアプリとの IPC（段階D-1）────────────────────────────
+
+    /// <summary>
+    /// IPC の接続を始める（Running / Paused のときだけ。起動の直後・切れた後のつなぎ直し）。
+    /// </summary>
+    /// <returns>Connecting にしたら true。</returns>
+    public bool BeginIpcConnect()
+    {
+        if (Phase is not (AndroidRunPhase.Running or AndroidRunPhase.Paused)) return false;
+        Ipc = AndroidIpcStatus.Connecting;
+        IpcNote = null;
+        return true;
+    }
+
+    /// <summary>
+    /// IPC を使わない（ポート 0 の指定で起動オプションを渡していない）。
+    /// </summary>
+    /// <param name="reason">使わない理由（実行ボタンのツールチップに出す）。</param>
+    public void DisableIpc(string reason)
+    {
+        Ipc = AndroidIpcStatus.Off;
+        IpcNote = reason;
+    }
+
+    /// <summary>
+    /// IPC がつながった（Running のときだけ受け付ける。止めている途中・止めた後に遅れて届いた接続は捨てさせる）。
+    /// </summary>
+    /// <returns>受け付けたら true（false なら呼び出し側は接続を閉じる）。</returns>
+    public bool IpcConnected()
+    {
+        if (Phase != AndroidRunPhase.Running || Ipc != AndroidIpcStatus.Connecting) return false;
+        Ipc = AndroidIpcStatus.Connected;
+        IpcNote = null;
+        return true;
+    }
+
+    /// <summary>
+    /// IPC がつながらなかった（Running / Paused のときだけ）。
+    /// </summary>
+    /// <param name="reason">理由（実行ボタンのツールチップに出す）。</param>
+    /// <returns>反映したら true。</returns>
+    public bool IpcFailed(string reason)
+    {
+        if (Phase is not (AndroidRunPhase.Running or AndroidRunPhase.Paused) || Ipc != AndroidIpcStatus.Connecting) return false;
+        Ipc = AndroidIpcStatus.Unavailable;
+        IpcNote = reason;
+        return true;
+    }
+
+    /// <summary>
+    /// つながっていた IPC が切れた（Running / Paused のときだけ）。端末のランタイムは黙って切れると一時停止を解くので
+    /// Paused なら Running へ戻す。呼び出し側はアプリが動いているかを確かめ、動いていればつなぎ直す（Connecting のまま）。
+    /// </summary>
+    /// <returns>反映したら true（一時停止していたかは戻り値の前に Phase を見る）。</returns>
+    public bool IpcLost()
+    {
+        if (Phase is not (AndroidRunPhase.Running or AndroidRunPhase.Paused) || Ipc != AndroidIpcStatus.Connected) return false;
+        Phase = AndroidRunPhase.Running;
+        Ipc = AndroidIpcStatus.Connecting;
+        IpcNote = null;
+        return true;
+    }
+
+    /// <summary>
+    /// 一時停止にする（Running で IPC がつながっているときだけ。呼び出し側は PAUSE を送り、送れなければ <see cref="RequestResume"/> で戻す）。
+    /// </summary>
+    /// <returns>Paused にしたら true。</returns>
+    public bool RequestPause()
+    {
+        if (!CanPause) return false;
+        Phase = AndroidRunPhase.Paused;
+        return true;
+    }
+
+    /// <summary>
+    /// 一時停止を解く（Paused のときだけ。呼び出し側は RESUME を送る）。
+    /// </summary>
+    /// <returns>Running にしたら true。</returns>
+    public bool RequestResume()
+    {
+        if (Phase != AndroidRunPhase.Paused) return false;
+        Phase = AndroidRunPhase.Running;
         return true;
     }
 
@@ -190,6 +296,9 @@ public sealed class AndroidRunStateMachine
         var outcome = DecideOutcome(result);
         var needsStopApp = outcome == AndroidRunOutcome.StoppedByUser && Serial is not null && ApplicationId is not null;
         Phase = needsStopApp ? AndroidRunPhase.Stopping : AndroidRunPhase.Idle;
+        // 実行が終わったら IPC は使わない（呼び出し側が通信路を閉じ、forward を外す）
+        Ipc = AndroidIpcStatus.Off;
+        IpcNote = null;
         return new AndroidRunCompletion(outcome, needsStopApp, result);
     }
 

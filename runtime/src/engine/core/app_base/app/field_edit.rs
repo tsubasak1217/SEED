@@ -440,6 +440,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::Pause
         | IpcCommand::Resume
         | IpcCommand::Stop
+        // TCP の通信路（Android）の切り離し・切断。一時停止の扱いだけでシーンを変えない。
+        | IpcCommand::Detach
+        | IpcCommand::EditorDisconnected
         | IpcCommand::PauseRender
         | IpcCommand::ResumeRender
         | IpcCommand::EnterPlay

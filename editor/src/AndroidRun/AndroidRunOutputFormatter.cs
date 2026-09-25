@@ -283,6 +283,57 @@ public static class AndroidRunOutputFormatter
     /// <returns>行。</returns>
     public static AndroidRunOutputLine NotStarted(string reason) => Notice(OutputTone.Warning, $"実行を始めませんでした: {reason}");
 
+    // ── 端末のアプリとの IPC（一時停止・再開。段階D-1）──────────────────
+
+    /// <summary>IPC がつながった行。</summary>
+    /// <param name="targetText">実行先の表示名。</param>
+    /// <param name="devicePort">端末側のポート。</param>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine IpcConnected(string? targetText, int devicePort) =>
+        Notice(OutputTone.Runtime,
+            $"{targetText} のアプリとつながりました（adb forward・端末のポート {devicePort}）。実行バーから一時停止・再開できます。");
+
+    /// <summary>IPC がつながらなかった行（一時停止は使えない。実行は続ける）。</summary>
+    /// <param name="reason">理由と、何を確かめればよいか。</param>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine IpcUnavailable(string reason) =>
+        Notice(OutputTone.Warning, $"端末のアプリとの通信路につながらないため、一時停止は使えません（実行は続けます）: {reason}");
+
+    /// <summary>IPC を使わない理由（ポート 0 の指定。実行ボタンのツールチップにも使う）。</summary>
+    public const string IpcDisabledReason = "一時停止用の通信路を使わない指定です（ipc_port = 0）";
+
+    /// <summary>IPC を使わない指定の行（ポート 0）。</summary>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine IpcDisabled() =>
+        Notice(OutputTone.Default, $"{IpcDisabledReason}。一時停止は使えません。");
+
+    /// <summary>一時停止した行。</summary>
+    /// <param name="targetText">実行先の表示名。</param>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine Paused(string? targetText) =>
+        Notice(OutputTone.Runtime, $"一時停止しました（{targetText}。ゲームの時間・物理・スクリプトを止めています。実行ボタンで再開）。");
+
+    /// <summary>再開した行。</summary>
+    /// <param name="targetText">実行先の表示名。</param>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine Resumed(string? targetText) => Notice(OutputTone.Runtime, $"再開しました（{targetText}）。");
+
+    /// <summary>一時停止を送れなかった行（通信路が切れていた）。</summary>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine PauseNotSent() =>
+        Notice(OutputTone.Warning, "一時停止を送れませんでした（端末のアプリとの通信路が切れています）。");
+
+    /// <summary>
+    /// IPC が切れたがアプリは動いている行（つなぎ直す。一時停止中だったなら端末のゲームは再開している）。
+    /// </summary>
+    /// <param name="wasPaused">切れたときに一時停止していたか。</param>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine IpcLost(bool wasPaused) =>
+        Notice(OutputTone.Warning,
+            "端末のアプリとの通信路が切れました（アプリは動いています）。" +
+            (wasPaused ? "端末のゲームは一時停止を解いて続いています。" : string.Empty) +
+            "つなぎ直します…");
+
     /// <summary>
     /// 実行を終えた行（終わり方の 1 行と、工程の数・所要時間の 1 行）。
     /// </summary>

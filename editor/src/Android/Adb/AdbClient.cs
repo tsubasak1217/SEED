@@ -81,6 +81,15 @@ public sealed class AdbClient
     /// <summary>相対パスの区切り（端末のパス）。</summary>
     private const char RemotePathSeparator = '/';
 
+    /// <summary>adb forward の TCP の指定の接頭辞（tcp:&lt;ポート&gt;）。</summary>
+    private const string ForwardTcpPrefix = "tcp:";
+
+    /// <summary>adb forward で「PC 側の空きポートを adb に選ばせる」ときのポート（選ばれたポートを標準出力に返す）。</summary>
+    private const int ForwardAnyLocalPort = 0;
+
+    /// <summary>ポートとして読める最大値。</summary>
+    private const int MaxTcpPort = 65535;
+
     /// <summary>親フォルダを表す区切り（アプリのデータフォルダの外へ出るので受け付けない）。</summary>
     private const string RemoteParentSegment = "..";
 
@@ -268,6 +277,132 @@ public sealed class AdbClient
         var lines = output.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
         if (lines.Count == 0) return false;
         return lines.Contains(RemovedMarker, StringComparer.Ordinal) ? true : null;
+    }
+
+    /// <summary>
+    /// run-as でアプリの権限になり、アプリの内部データフォルダの中のファイルをそのまま読む（exec-out run-as &lt;ID&gt; cat &lt;パス&gt;。
+    /// 段階D-1: IPC のスクリーンショットを取り出すのに使う）。デバッグ版の APK だけが使える。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID（検査済みの値）。</param>
+    /// <param name="remotePath">読むファイル（内部データフォルダからの相対。絶対パス・.. は受け付けない）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>ファイルの中身。</returns>
+    /// <exception cref="AdbCommandException">読めなかった（無い・run-as が失敗した）とき。</exception>
+    public async Task<byte[]> RunAsReadFileAsync(
+        string serial, string applicationId, string remotePath, CancellationToken cancellationToken)
+    {
+        var capture = await ChildProcessRunner.CaptureBytesAsync(
+            Spec(serial, RunAsReadFileArguments(applicationId, remotePath)), cancellationToken).ConfigureAwait(false);
+        var errors = string.Join(" / ", capture.StandardError.Where(line => line.Trim().Length > 0));
+        // exec-out は端末の標準エラー（cat: … No such file）も同じ出力に混ぜることがあるので、空・エラーの文言は失敗とみなす
+        if (capture.ExitCode != 0 || capture.Output.Length == 0 || errors.Length > 0)
+        {
+            throw new AdbCommandException(
+                $"run-as で {remotePath} を読めませんでした（終了コード {capture.ExitCode}・{capture.Output.Length} バイト）: {errors}".TrimEnd());
+        }
+        return capture.Output;
+    }
+
+    /// <summary>
+    /// run-as でファイルを読む adb の引数を作る（純粋な処理）: exec-out run-as &lt;ID&gt; cat &lt;パス&gt;。
+    /// </summary>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <param name="remotePath">読むファイル（内部データフォルダからの相対）。</param>
+    /// <returns>adb の引数（-s は含まない）。</returns>
+    /// <exception cref="ArgumentException">remotePath が空・絶対パス・.. を含むとき。</exception>
+    public static string[] RunAsReadFileArguments(string applicationId, string remotePath)
+    {
+        RequireRelativeRemotePath(remotePath, nameof(remotePath));
+        return new[] { "exec-out", "run-as", applicationId, "cat", remotePath };
+    }
+
+    /// <summary>
+    /// PC のポートを端末のポートへ中継する（adb forward tcp:0 tcp:&lt;端末のポート&gt;。PC 側の空きポートは adb が選ぶ。段階D-1）。
+    /// 外すのは <see cref="RemoveForwardAsync"/>（自分が張ったものだけを外す）。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="devicePort">端末のポート（ランタイムが 127.0.0.1 で待ち受けているもの）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>adb が選んだ PC 側のポート。</returns>
+    /// <exception cref="AdbCommandException">張れなかったとき（端末が外れた等）。</exception>
+    public async Task<int> ForwardTcpAsync(string serial, int devicePort, CancellationToken cancellationToken)
+    {
+        var capture = await ChildProcessRunner.CaptureAsync(Spec(serial, ForwardArguments(devicePort)), cancellationToken).ConfigureAwait(false);
+        var localPort = ParseForwardedPort(capture.StandardOutputText);
+        if (capture.ExitCode != 0 || localPort is null)
+        {
+            throw new AdbCommandException($"adb forward が失敗しました（{serial}・終了コード {capture.ExitCode}）: {capture.AllOutputText}".TrimEnd());
+        }
+        return localPort.Value;
+    }
+
+    /// <summary>
+    /// 自分が張った forward を外す（adb forward --remove tcp:&lt;PC 側のポート&gt;。他の forward には触らない）。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="localPort">PC 側のポート（<see cref="ForwardTcpAsync"/> の戻り値）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <exception cref="AdbCommandException">外せなかったとき（既に無い・端末が外れた等）。</exception>
+    public async Task RemoveForwardAsync(string serial, int localPort, CancellationToken cancellationToken)
+    {
+        var capture = await ChildProcessRunner.CaptureAsync(Spec(serial, RemoveForwardArguments(localPort)), cancellationToken).ConfigureAwait(false);
+        if (capture.ExitCode != 0)
+        {
+            throw new AdbCommandException($"adb forward --remove が失敗しました（{serial}・終了コード {capture.ExitCode}）: {capture.AllOutputText}".TrimEnd());
+        }
+    }
+
+    /// <summary>
+    /// forward を張る adb の引数を作る（純粋な処理）: forward tcp:0 tcp:&lt;端末のポート&gt;。
+    /// </summary>
+    /// <param name="devicePort">端末のポート。</param>
+    /// <returns>adb の引数（-s は含まない）。</returns>
+    public static string[] ForwardArguments(int devicePort) =>
+        new[] { "forward", ForwardTcp(ForwardAnyLocalPort), ForwardTcp(devicePort) };
+
+    /// <summary>
+    /// forward を外す adb の引数を作る（純粋な処理）: forward --remove tcp:&lt;PC 側のポート&gt;。
+    /// </summary>
+    /// <param name="localPort">PC 側のポート。</param>
+    /// <returns>adb の引数（-s は含まない）。</returns>
+    public static string[] RemoveForwardArguments(int localPort) => new[] { "forward", "--remove", ForwardTcp(localPort) };
+
+    /// <summary>
+    /// adb forward tcp:0 … の出力（選ばれた PC 側のポートの数字 1 行）を読む（純粋な処理）。
+    /// </summary>
+    /// <param name="output">adb の標準出力。</param>
+    /// <returns>ポート（読めなければ null）。</returns>
+    public static int? ParseForwardedPort(string output)
+    {
+        foreach (var line in output.Split('\n'))
+        {
+            var text = line.Trim();
+            if (int.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var port)
+                && port is > ForwardAnyLocalPort and <= MaxTcpPort)
+            {
+                return port;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>adb forward の TCP の指定（tcp:&lt;ポート&gt;）。</summary>
+    /// <param name="port">ポート。</param>
+    /// <returns>指定の文字列。</returns>
+    private static string ForwardTcp(int port) => ForwardTcpPrefix + port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>内部データフォルダからの相対パスであることを確かめる（アプリのデータフォルダの外を指さないように）。</summary>
+    /// <param name="remotePath">相対パス。</param>
+    /// <param name="parameterName">引数の名前（例外の説明用）。</param>
+    /// <exception cref="ArgumentException">空・絶対パス・.. を含むとき。</exception>
+    private static void RequireRelativeRemotePath(string remotePath, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(remotePath) || remotePath.StartsWith(RemotePathSeparator)
+            || remotePath.Split(RemotePathSeparator).Contains(RemoteParentSegment))
+        {
+            throw new ArgumentException($"アプリのデータフォルダからの相対パスにしてください（{RemoteParentSegment} も使えません）: {remotePath}", parameterName);
+        }
     }
 
     /// <summary>アプリを止める（am force-stop。自分のアプリだけ）。</summary>

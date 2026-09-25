@@ -201,6 +201,7 @@ use crate::engine::core::clock::Clock;
 use crate::engine::core::input::Input;
 use crate::engine::core::renderer::Renderer;
 use crate::engine::core::app_base::ipc::{IpcClient, ToolMode, GizmoSpace};
+use crate::engine::core::app_base::ipc_transport::{self, IpcSessionPolicy, IpcTransportKind};
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
 use crate::engine::methods::drawer::{DrawContext, CameraBuffer, IdBuffer, InstancedModelBatch};
 use crate::engine::methods::gizmo_interact::GizmoPart;
@@ -592,6 +593,12 @@ pub struct LaunchArgs {
     pub parent_pid:       Option<u32>,
     pub mode:             RuntimeMode,
     pub pipe_name:        Option<String>,
+    /// エディタとの IPC を TCP で待ち受けるポート（127.0.0.1 だけ。段階D-1）。
+    ///
+    /// Android はエディタ／SeedAndroid が起動オプション（am start の extra seed.ipc_port）で渡し、
+    /// PC でも --ipc-port=<ポート> で試せる。`pipe_name` があればそちらが優先（ipc_transport/endpoint.rs）。
+    /// None なら待ち受けない（従来どおり IPC 無しの Play）。
+    pub ipc_port:         Option<u16>,
     /// アセットルートディレクトリの絶対パス（Play / パッケージモードで使用）。
     /// None の場合は実行ファイルの隣に assets/ or assets.pak があると仮定する。
     pub assets_root:      Option<String>,
@@ -705,6 +712,9 @@ pub struct App {
     mode:         RuntimeMode,
     ipc:          Option<IpcClient>,
     paused:       bool,
+    /// TCP の通信路（Android）が切れたときに一時停止をどう扱うか（DETACH の印。段階D-1。
+    /// 名前付きパイプでは切断が積まれないので使われない。ipc_transport/session_policy.rs）。
+    ipc_session:  IpcSessionPolicy,
     /// AI 実行中にレンダリングを停止して GPU リソースを LLM に解放するフラグ。
     /// PAUSE_RENDER / RESUME_RENDER IPC コマンドで切り替える。
     render_paused: bool,
@@ -1480,18 +1490,24 @@ impl App {
         // 親が終了した際に自プロセスも自動終了するバックグラウンドスレッドが起動する。
         crate::engine::core::parent_guard::watch(args.parent_pid);
 
-        let ipc = args.pipe_name.as_deref()
-            .and_then(|name| IpcClient::connect(name).ok());
+        // IPC の通信路を開く（--pipe= があれば名前付きパイプ、無くポートがあれば TCP で待ち受け、どちらも無ければ無し）。
+        // 選び方の正典は ipc_transport/endpoint.rs（段階D-1）。
+        let ipc = ipc_transport::open_endpoint(&ipc_transport::choose_endpoint(
+            args.pipe_name.as_deref(),
+            args.ipc_port,
+        ));
 
         // 実行環境フラグを確定させる（スクリプト API SEED.Application の判定源）。
         // エディタからの Play は「--mode=play かつ --pipe= で IPC 接続あり」でのみ成立する
         // （配布 exe の単体起動は引数なし → mode=Play・IPC なし、
         //   エディタの Edit モードは --mode=edit なので Play にならない）。
         // 判定条件の詳細と Edit モードを false 扱いにする理由は app_env.rs のコメントを参照。
+        // TCP の待ち受け（Android）は起動の時点ではエディタとつながっていないので「接続あり」に数えない
+        // （段階D-1 の前と同じく Android では false のまま。docs/android.md §21）。
         // スクリプトホストのロードより前に初期化しておくこと（C# 側が初回アクセスで読む）。
         crate::engine::app_env::init(crate::engine::app_env::decide_editor_play(
             matches!(args.mode, RuntimeMode::Play),
-            ipc.is_some(),
+            ipc.as_ref().is_some_and(|client| client.transport() == IpcTransportKind::NamedPipe),
         ));
 
         // スクリプトホスト（CLR ＋ SEEDScripting.dll）を用意し、ユーザースクリプトを読み込む。
@@ -1526,6 +1542,7 @@ impl App {
             mode:         args.mode,
             ipc,
             paused:        false,
+            ipc_session:   IpcSessionPolicy::default(),
             render_paused: false,
             window_focused: true,
             // フレーム途絶判定・IPC ポンプの時間ゲートの起点（初回は「今」から数える）。

@@ -1,5 +1,6 @@
 // ============================================================
-//  AndroidDeviceActions.cs — ビルドを伴わない端末の操作（端末の一覧・端末の用意・アプリの停止・動いているかの確認・logcat）
+//  AndroidDeviceActions.cs — ビルドを伴わない端末の操作（端末の一覧・端末の用意・アプリの停止・動いているかの確認・logcat・
+//                            アプリとの IPC の接続〈段階D-1〉）
 //
 //  エディタの実行先セレクタ（段階C-2）が端末の一覧を出す・停止ボタンでアプリを止める・アプリ側の終了を見つける
 //  （pidof）・Output パネルへ logcat を流すのに使う。
@@ -16,6 +17,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Emulator;
+using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Processes;
 using SEEDEditor.Android.Toolchain;
 
@@ -159,6 +161,38 @@ public sealed class AndroidDeviceActions
         var (lines, _) = await AndroidLogcatSession.RunAsync(
             adb, device.Serial, start, AndroidRuntimeContract.LogcatFilters, duration, logFile, onLine, cancellationToken).ConfigureAwait(false);
         return (device, start, lines);
+    }
+
+    /// <summary>
+    /// 端末のアプリの IPC（TCP）へ adb forward 越しにつなぐ（段階D-1。エディタの実行バーの一時停止・再開と、SeedAndroid の
+    /// pause / resume / screenshot が使う）。張った forward は通信路を閉じると外れる（AndroidIpcSession.CloseAsync）。
+    /// </summary>
+    /// <param name="serial">端末のシリアル（null なら使える端末がちょうど 1 台のときそれ）。</param>
+    /// <param name="devicePort">端末でランタイムが待ち受けているポート。</param>
+    /// <param name="timings">時間の決まり（null なら既定）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>つながった通信路。</returns>
+    /// <exception cref="AndroidPipelineException">adb が無い・端末を決められない。</exception>
+    /// <exception cref="AndroidIpcException">forward を張れない・時間内につながらない。</exception>
+    public async Task<AndroidIpcSession> ConnectIpcAsync(
+        string? serial, int devicePort, AndroidIpcTimings? timings, CancellationToken cancellationToken)
+    {
+        AdbClient adb;
+        string target;
+        if (string.IsNullOrWhiteSpace(serial))
+        {
+            var (selectedAdb, device) = await SelectDeviceAsync(null, cancellationToken).ConfigureAwait(false);
+            adb = selectedAdb;
+            target = device.Serial;
+        }
+        else
+        {
+            // シリアルが分かっていれば一覧を取り直さない（エディタの実行中は端末が決まっている）
+            adb = CreateAdb();
+            target = serial;
+        }
+        return await AndroidIpcConnector.ConnectAsync(adb, target, devicePort, timings ?? AndroidIpcTimings.Default, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>adb を用意する（無ければ理由付きの例外）。</summary>

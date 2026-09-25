@@ -84,6 +84,28 @@ public static class AndroidRuntimeContract
     /// <summary>起動するシーンの extra の名前（seed.scene）。</summary>
     public const string SceneExtraName = LaunchOptionExtraPrefix + LaunchOptionSceneKey;
 
+    /// <summary>
+    /// 起動オプション「エディタとの IPC を TCP で待ち受けるポート」の JSON のキー（値は 10 進の文字列。段階D-1）。
+    /// runtime/src/engine/platform/launch_options.rs の IPC_PORT_KEY と一致させる。
+    /// </summary>
+    public const string LaunchOptionIpcPortKey = "ipc_port";
+
+    /// <summary>IPC のポートの extra の名前（seed.ipc_port）。</summary>
+    public const string IpcPortExtraName = LaunchOptionExtraPrefix + LaunchOptionIpcPortKey;
+
+    // ── アプリの内部データフォルダ（run-as の作業フォルダ）の絶対パス ──────────────
+
+    /// <summary>
+    /// アプリの内部データフォルダの絶対パスの書式（{0}=アプリ ID。主ユーザー＝ユーザー 0。run-as の作業フォルダと同じ場所）。
+    /// ランタイムへ絶対パスを渡す命令（IPC の SCREENSHOT）で使う。
+    /// </summary>
+    public const string AppDataDirFormat = "/data/user/0/{0}";
+
+    /// <summary>
+    /// IPC のスクリーンショットを端末に置く場所（内部データフォルダからの相対。アプリのキャッシュ。取り出した後に消す。段階D-1）。
+    /// </summary>
+    public const string RemoteScreenshotPath = "cache/seed_ipc_screenshot.png";
+
     // ── logcat ────────────────────────────────────────────
 
     /// <summary>

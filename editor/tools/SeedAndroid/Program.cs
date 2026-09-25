@@ -81,6 +81,9 @@ public static class Program
                 SeedAndroidCommand.Devices => await DevicesCommand.RunAsync(toolchain, line.Json, cancellation.Token),
                 SeedAndroidCommand.Stop    => await StopCommand.RunAsync(toolchain, line, config, cancellation.Token),
                 SeedAndroidCommand.Logcat  => await LogcatCommand.RunAsync(toolchain, line, config, cancellation.Token),
+                // 動いているアプリへ IPC で 1 命令（段階D-1）
+                SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot
+                                           => await AppControlCommand.RunAsync(toolchain, line, config, cancellation.Token),
                 _                          => await PipelineCommand.RunAsync(toolchain, line, config, cancellation.Token),
             };
         }

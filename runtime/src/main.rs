@@ -17,6 +17,9 @@ pub static NvOptimusEnablement: u32 = 1;
 #[used]
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
+/// エディタとの IPC を TCP で待ち受けるポートの起動引数（検証用。`--ipc-port=<ポート>`。段階D-1）。
+const IPC_PORT_ARG: &str = "--ipc-port=";
+
 fn main() {
     // アセット形式のマイグレーション系サブコマンド。
     //   - `--upgrade-project <パス> [--dry-run]` … プロジェクト配下の一括アップグレード
@@ -105,6 +108,13 @@ fn parse_args() -> LaunchArgs {
         .find(|a| a.starts_with("--pipe="))
         .map(|a| a["--pipe=".len()..].to_string());
 
+    // 検証用: エディタとの IPC を TCP（127.0.0.1:<ポート>）で待ち受ける（Android と同じ通信路を PC で試す。段階D-1）。
+    // --pipe= があればそちらが優先（ipc_transport/endpoint.rs）。数字でなければ無視して待ち受けない。
+    let ipc_port = raw
+        .iter()
+        .find(|a| a.starts_with(IPC_PORT_ARG))
+        .and_then(|a| a[IPC_PORT_ARG.len()..].parse::<u16>().ok());
+
     let assets_root = raw
         .iter()
         .find(|a| a.starts_with("--assets-root="))
@@ -128,6 +138,7 @@ fn parse_args() -> LaunchArgs {
         parent_pid,
         mode,
         pipe_name,
+        ipc_port,
         assets_root,
         // デスクトップの配布物は実行ファイルの隣の assets.pak をファイルとして開く（init_asset_fs）。
         package_source: None,

@@ -7,7 +7,8 @@
 //    - 前回の選択（プロジェクトごと）           … RunTargetSelectionStore（cache/android/run_state.json）
 //    - 実行・停止ボタン・状態表示・進捗          … PlayBarPolicy（PC の表示もここから当てる。PC との排他もここ）
 //    - Android の実行（端末の用意〈要ればエミュレータを起動〉→ ビルド → インストール → 起動 → logcat → 停止・
-//      アプリの終了の検知）… AndroidRunController（中核への指定は AndroidEditorRunRequests）
+//      アプリの終了の検知・実行バーからの一時停止と再開〈段階D-1。端末のアプリと adb forward ＋ TCP の IPC でつなぐ〉）
+//      … AndroidRunController（中核への指定は AndroidEditorRunRequests）
 //    - 起動するシーン（PC の Play と同じ「開いているシーン」）… AndroidRunSceneChoice
 //    - 未保存の変更の確認（保存して実行 / 保存せず実行 / キャンセル）… AndroidUnsavedChangesPrompt
 //    - Output パネルの行                        … AndroidRunOutputFormatter の行を色付きで EditorLog へ
@@ -118,6 +119,11 @@ public partial class MainWindow
 
     /// <summary>エミュレータを起動するときの AVD（エディタの設定 android.emulator_avd。未設定なら null）。</summary>
     private static string? ConfiguredEmulatorAvd => EditorPreferences.Instance.Android?.EmulatorAvd;
+
+    /// <summary>
+    /// 端末のランタイムが一時停止などの IPC を待ち受けるポート（エディタの設定 android.ipc_port。未設定なら null＝既定。段階D-1）。
+    /// </summary>
+    private static int? ConfiguredIpcPort => EditorPreferences.Instance.Android?.IpcPort;
 
     /// <summary>Android の実行が動いているか（Building / Running / Stopping）。</summary>
     private bool IsAndroidRunActive => _androidRun?.Snapshot.IsActive ?? false;
@@ -342,7 +348,10 @@ public partial class MainWindow
         PbAndroidRun.Value                 = view.ProgressFraction ?? 0;
     }
 
-    /// <summary>実行ボタン: PC の Play / Pause / Resume か、選んでいる端末での実行を始める（判断は PlayBarPolicy）。</summary>
+    /// <summary>
+    /// 実行ボタン: PC の Play / Pause / Resume か、選んでいる端末での実行を始める、または Android の実行の一時停止・再開
+    /// （段階D-1。PC の Play と同じボタン。判断は PlayBarPolicy）。
+    /// </summary>
     private void OnPlayBarPlayClick(object sender, RoutedEventArgs e)
     {
         switch (ComputePlayBarView().PlayAction)
@@ -352,6 +361,13 @@ public partial class MainWindow
                 break;
             case PlayBarAction.StartAndroid:
                 StartAndroidRun();
+                break;
+            case PlayBarAction.PauseAndroid:
+                // 送るだけ（状態の変化は StateChanged でプレイバーへ戻ってくる）
+                _androidRun?.TryPause();
+                break;
+            case PlayBarAction.ResumeAndroid:
+                _androidRun?.TryResume();
                 break;
         }
     }
@@ -419,7 +435,7 @@ public partial class MainWindow
 
         var projectDir = string.IsNullOrWhiteSpace(ProjectContext.RootDir) ? AssetsPath : ProjectContext.RootDir;
         var scene = AndroidRunSceneChoice.Decide(_playFromStartScene, _currentScenePath, AssetsPath);
-        var request = AndroidEditorRunRequests.ForPlay(projectDir, target, scene.ScenePath, ConfiguredEmulatorAvd);
+        var request = AndroidEditorRunRequests.ForPlay(projectDir, target, scene.ScenePath, ConfiguredEmulatorAvd, ConfiguredIpcPort);
         if (!controller.TryStart(request, target.Text))
         {
             WriteAndroidLine(AndroidRunOutputFormatter.NotStarted(AndroidAlreadyRunningReason));

@@ -6,6 +6,8 @@
 // ============================================================
 
 use crate::engine::core::app_base::ipc::IpcCommand;
+use crate::engine::core::app_base::ipc_transport::IpcTransportKind;
+use crate::engine::core::app_base::ipc_transport::session_policy::DisconnectAction;
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
 use crate::engine::core::app_base::app::RuntimeMode;
 use crate::engine::core::app_base::undo::TransformCommand;
@@ -39,7 +41,51 @@ const IPC_PUMP_FRAME_STALL_MS: u64 = 100;
 /// 時間ゲートを入れて、およそ 60Hz 相当までポンプ頻度を落とす。
 const IPC_PUMP_INTERVAL_MS: u64 = 16;
 
+// ── TCP の通信路（Android。段階D-1）のログ ──────────────────────────────
+// PC（名前付きパイプ）では出さない（エディタの Output に一時停止のたびに行が増えないように。log_remote_ipc）。
+
+/// ログの印（logcat の SEED タグで探しやすくする。ipc_transport/tcp.rs と同じ）。
+const REMOTE_IPC_LOG_PREFIX: &str = "[SEED IPC]";
+
+/// PAUSE を受けて一時停止したときのログ。
+const REMOTE_PAUSED_LOG: &str = "一時停止しました（PAUSE。ゲームの時間・物理・スクリプトを止めています）";
+
+/// RESUME を受けて再開したときのログ。
+const REMOTE_RESUMED_LOG: &str = "再開しました（RESUME）";
+
+/// 接続が黙って切れたので一時停止を解いたときのログ。
+const REMOTE_DISCONNECT_RESUMED_LOG: &str = "エディタとの接続が切れたため、一時停止を解いて Play を続けます";
+
+/// DETACH の後の切断なので一時停止を据え置いたときのログ。
+const REMOTE_DETACHED_KEEP_PAUSED_LOG: &str =
+    "切り離し（DETACH）の後の切断なので一時停止のままにします（RESUME を送るか、次の接続が切れると再開します）";
+
 impl App {
+    /// TCP の通信路（Android）のときだけ、IPC で状態が変わったことを標準エラー（logcat）へ 1 行出す。
+    ///
+    /// # 引数
+    /// * `message` - 本文（印は付けて出す）
+    fn log_remote_ipc(&self, message: &str) {
+        if self.ipc.as_ref().is_some_and(|ipc| ipc.transport() == IpcTransportKind::TcpListener) {
+            eprintln!("{REMOTE_IPC_LOG_PREFIX} {message}");
+        }
+    }
+
+    /// TCP の通信路が切れた（ipc_transport/tcp.rs が積んだ EditorDisconnected）。
+    ///
+    /// 黙って切れたなら一時停止を解いて Play を続け、DETACH の後なら一時停止のまま据え置く
+    /// （判断は ipc_transport/session_policy.rs）。
+    fn handle_ipc_disconnected(&mut self) {
+        match self.ipc_session.on_disconnected(self.paused) {
+            DisconnectAction::Nothing => {}
+            DisconnectAction::Resume => {
+                self.paused = false;
+                self.log_remote_ipc(REMOTE_DISCONNECT_RESUMED_LOG);
+            }
+            DisconnectAction::KeepPaused => self.log_remote_ipc(REMOTE_DETACHED_KEEP_PAUSED_LOG),
+        }
+    }
+
     /// フレームループが止まっている間だけ、イベントループ側から IPC を処理する。
     ///
     /// winit の `about_to_wait` から毎周呼ばれる。以下をすべて満たすときだけ
@@ -129,8 +175,17 @@ impl App {
                         self.sync_debug_camera_to_main_camera();
                     }
                     self.paused = true;
+                    self.log_remote_ipc(REMOTE_PAUSED_LOG);
                 }
-                IpcCommand::Resume             => self.paused = false,
+                IpcCommand::Resume             => {
+                    self.paused = false;
+                    self.log_remote_ipc(REMOTE_RESUMED_LOG);
+                }
+                // ── TCP の通信路（Android）の切り離し・切断（段階D-1。扱いの正典は ipc_transport/session_policy.rs）──
+                // DETACH: 相手が「このまま切り離す」と言った（SeedAndroid の pause / resume）。次の切断で一時停止を解かない。
+                IpcCommand::Detach             => self.ipc_session.on_detach(),
+                // 切断: 黙って切れた（エディタを閉じた・落ちた・USB が外れた）なら、一時停止を解いて Play を続ける。
+                IpcCommand::EditorDisconnected => self.handle_ipc_disconnected(),
                 // AI 実行中レンダリング停止（GPU リソースを LLM に解放するため）
                 IpcCommand::PauseRender        => self.render_paused = true,
                 // AI 応答完了後にレンダリングを再開する

@@ -121,6 +121,60 @@ public static class ChildProcessRunner
         }
     }
 
+    /// <summary>
+    /// 子プロセスを動かし、標準出力をバイト列のまま集めて返す（adb exec-out でファイルを取り出す等。段階D-1）。
+    /// 標準エラーは行で集める。中断・孫がパイプを握ったときの扱いは <see cref="RunAsync"/> と同じ。
+    /// </summary>
+    /// <param name="spec">起動内容。</param>
+    /// <param name="cancellationToken">中断の合図（子プロセスとその子孫を終了させる）。</param>
+    /// <returns>終了コードと出力。</returns>
+    /// <exception cref="ChildProcessStartException">起動できなかったとき。</exception>
+    /// <exception cref="OperationCanceledException">中断されたとき（子は終了済み）。</exception>
+    public static async Task<ChildProcessBytesCapture> CaptureBytesAsync(ChildProcessSpec spec, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var process = new Process { StartInfo = CreateStartInfo(spec) };
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        {
+            throw new ChildProcessStartException($"{spec.FileName} を起動できません: {ex.Message}", ex);
+        }
+
+        // 中断されたら子プロセスとその子孫を終了させる（自分が起動したものだけ）
+        using var registration = cancellationToken.Register(() => TryKillTree(process));
+
+        using var readerCancellation = new CancellationTokenSource();
+        using var output = new MemoryStream();
+        var errors = new List<string>();
+        var errorGate = new object();
+        var stdout = process.StandardOutput.BaseStream.CopyToAsync(output, readerCancellation.Token);
+        var stderr = MixedEncodingLineReader.ReadLinesAsync(
+            process.StandardError.BaseStream, line => { lock (errorGate) errors.Add(line); }, readerCancellation.Token);
+        var stdin = WriteStandardInputAsync(process, null, cancellationToken);
+
+        await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // 終了後の残りの出力を待つ（孫がパイプを握っていたら打ち切る）
+        var readers = Task.WhenAll(stdout, stderr);
+        if (await Task.WhenAny(readers, Task.Delay(OutputDrainTimeout, CancellationToken.None)).ConfigureAwait(false) != readers)
+        {
+            readerCancellation.Cancel();
+            CloseQuietly(process.StandardOutput.BaseStream);
+            CloseQuietly(process.StandardError.BaseStream);
+        }
+        await IgnoreReaderShutdownAsync(readers).ConfigureAwait(false);
+        await IgnoreReaderShutdownAsync(stdin).ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (errorGate)
+        {
+            return new ChildProcessBytesCapture(process.ExitCode, output.ToArray(), errors.ToArray());
+        }
+    }
+
     /// <summary>起動設定を作る（窓を出さない・入出力はすべてパイプ）。</summary>
     /// <param name="spec">起動内容。</param>
     /// <returns>起動設定。</returns>

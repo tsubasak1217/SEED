@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using SEEDEditor.Android;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Android.Project;
 using SEEDEditor.AndroidRun;
@@ -133,6 +134,65 @@ public sealed class FakeBackend : IAndroidRunBackend
             ? Task.FromResult(running)
             : Task.FromException<bool>(new AndroidPipelineException(AndroidFailureKind.DeviceOperation, "adb: device offline"));
     }
+
+    /// <summary>
+    /// IPC の接続の中身（呼ばれた回数を渡す。既定は「つながらない」＝段階D-1 より前と同じく一時停止できない）。
+    /// </summary>
+    public Func<int, CancellationToken, Task<IAndroidIpcLink>> ConnectIpc { get; set; } =
+        (_, _) => Task.FromException<IAndroidIpcLink>(new AndroidIpcException(AndroidIpcFailureKind.NotListening, "テスト: 待ち受けていません"));
+
+    /// <summary>IPC の接続の呼ばれ方（シリアル・端末側のポート）。</summary>
+    public ConcurrentQueue<(string Serial, int DevicePort)> IpcConnects { get; } = new();
+
+    /// <summary>IPC の接続が呼ばれた回数（Interlocked）。</summary>
+    private int _ipcConnects;
+
+    /// <inheritdoc />
+    public Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, CancellationToken cancellationToken)
+    {
+        IpcConnects.Enqueue((serial, devicePort));
+        return ConnectIpc(Interlocked.Increment(ref _ipcConnects), cancellationToken);
+    }
+}
+
+/// <summary>
+/// 偽の IPC の通信路（端末・adb を使わない）。送った命令を記録し、テストから切断を起こせる。
+/// </summary>
+public sealed class FakeIpcLink : IAndroidIpcLink
+{
+    /// <summary>切れると完了する。</summary>
+    private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>送った命令。</summary>
+    public ConcurrentQueue<string> Sent { get; } = new();
+
+    /// <summary>閉じ方（CloseAsync の detach）。閉じていなければ空。</summary>
+    public ConcurrentQueue<bool> Closes { get; } = new();
+
+    /// <summary>送るのを失敗させるか（切れている扱い）。</summary>
+    public bool FailSend { get; set; }
+
+    /// <inheritdoc />
+    public Task Closed => _closed.Task;
+
+    /// <inheritdoc />
+    public bool Send(string command)
+    {
+        if (FailSend || _closed.Task.IsCompleted) return false;
+        Sent.Enqueue(command);
+        return true;
+    }
+
+    /// <inheritdoc />
+    public Task CloseAsync(bool detach)
+    {
+        Closes.Enqueue(detach);
+        _closed.TrySetResult();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>端末側から切れた（アプリが終わった・adb が切れた）ことにする。</summary>
+    public void Disconnect() => _closed.TrySetResult();
 }
 
 /// <summary>偽のパイプラインの台本（中核の RunAsync と同じ順でイベントを出す）。</summary>

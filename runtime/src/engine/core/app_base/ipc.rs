@@ -1,20 +1,19 @@
+use crate::engine::core::app_base::ipc_transport::{self, IpcTransportKind};
 use crate::engine::core::input::inject::{parse_inject_command, INJECT_COMMAND_PREFIX};
 
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
-use std::sync::mpsc;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
 
 // ============================================================
 //  モジュール定数
 // ============================================================
 
-/// パイプ接続を試みる最大リトライ回数。
-const PIPE_CONNECT_RETRIES: u32 = 20;
-
-/// リトライ間隔 (ミリ秒)。エディタ起動後のパイプ準備待ち時間に相当する。
-const PIPE_CONNECT_RETRY_MS: u64 = 100;
+/// 意図した切り離しの行（`DETACH`）。この後に通信路が切れても一時停止を据え置く
+/// （SeedAndroid の pause / resume が「1 命令送って切る」ため。ipc_transport/session_policy.rs）。
+const DETACH_COMMAND: &str = "DETACH";
 
 // ============================================================
 //  ToolMode — エディタの左ツールバー選択状態
@@ -100,12 +99,19 @@ pub struct TerrainChunkConfig {
 //  IpcCommand — エディタから受け取るコマンド
 // ============================================================
 
-/// エディタ（Named Pipe サーバー）から受信するコマンド 1 件分。
+/// エディタ（Named Pipe サーバー。Android は TCP の接続元）から受信するコマンド 1 件分。
 /// IPC 受信スレッドがテキストプロトコルをパースしてこの型に変換し、メインループへ渡す。
 pub enum IpcCommand {
     Pause,
     Resume,
     Stop,
+    /// `DETACH` — 相手が「この後そのまま切り離す」と言った（TCP の通信路。段階D-1）。
+    /// この後の切断（`EditorDisconnected`）では一時停止を解かない（SeedAndroid の pause / resume 用。
+    /// 扱いの正典は ipc_transport/session_policy.rs）。
+    Detach,
+    /// TCP の通信路が切れた（ワイヤ書式は無い。ipc_transport/tcp.rs が切断を見つけて積む）。
+    /// 一時停止中なら再開する（DETACH の後の切断は据え置き）。名前付きパイプでは積まれない。
+    EditorDisconnected,
     /// エディタから転送されたカメラキー押下（キー名: "W","A","S","D","Q","E","SHIFT"）
     CamKeyDown(String),
     /// エディタから転送されたカメラキー離し
@@ -1139,31 +1145,75 @@ pub enum IpcCommand {
 //  IpcClient
 // ============================================================
 
-/// Named Pipe クライアント。
-/// エディタ（サーバー）への接続、コマンド受信、イベント送信を行う。
+/// IPC クライアント（エディタとの通信路の口）。
+/// エディタへの接続（名前付きパイプ）・待ち受け（TCP）、コマンド受信、イベント送信を行う。
+///
+/// 行の読み書き（read_loop / write_loop）は通信路に依存しない。通信路ごとの違い（パイプの PeekNamedPipe・
+/// TCP の 1 本ずつの accept と切断の通知）は ipc_transport/ に閉じ込めてある（段階D-1）。
 pub struct IpcClient {
     commands: mpsc::Receiver<IpcCommand>,
     /// 送信メッセージを書き込み専用スレッドへ渡すチャンネル。
     /// 呼び出し元は投入するだけで即座に返り、パイプ書き込みでブロックしない。
     write_tx: mpsc::Sender<String>,
+    /// 通信路の種類（名前付きパイプ・TCP）。
+    transport: IpcTransportKind,
+    /// TCP で待ち受けているアドレス（名前付きパイプなら None）。
+    tcp_local_addr: Option<SocketAddr>,
+    /// TCP でエディタとつながっているかの印（名前付きパイプなら None ＝ 従来どおり常に書き込みスレッドへ積む）。
+    /// つながっていなければ send は積まずに捨てる（ipc_transport/tcp.rs）。
+    tcp_connected: Option<Arc<AtomicBool>>,
 }
 
 impl IpcClient {
-    /// パイプ名（`\\.\pipe\<name>` のうち `<name>` 部分）を指定して接続する。
+    /// パイプ名（`\\.\pipe\<name>` のうち `<name>` 部分）を指定して接続する（PC のエディタ。従来どおり）。
     pub fn connect(pipe_name: &str) -> std::io::Result<Self> {
-        let pipe_path = format!(r"\\.\pipe\{}", pipe_name);
-        let file = try_open(&pipe_path)?;
-        let write_file = file.try_clone()?;
+        let (reader, writer) = ipc_transport::pipe::open(pipe_name)?;
 
         // 書き込み専用スレッドを起動する。パイプが詰まってもこのスレッドが待つだけで、
         // 送信元（レンダースレッド等）は影響を受けない。
         let (write_tx, write_rx) = mpsc::channel::<String>();
-        thread::spawn(move || write_loop(write_file, write_rx));
+        thread::spawn(move || write_loop(writer, write_rx));
 
         let (tx, rx) = mpsc::channel();
-        thread::spawn(move || read_loop(file, tx));
+        thread::spawn(move || read_loop(reader, tx));
 
-        Ok(Self { commands: rx, write_tx })
+        Ok(Self {
+            commands: rx,
+            write_tx,
+            transport: IpcTransportKind::NamedPipe,
+            tcp_local_addr: None,
+            tcp_connected: None,
+        })
+    }
+
+    /// 127.0.0.1:<ポート> で待ち受ける（Android。エディタ／SeedAndroid が adb forward 越しにつなぐ。段階D-1）。
+    ///
+    /// すぐ戻る（つながるのを待たない）。つながるまでは `send` した行を捨てる（IPC 無しの Play と同じ）。
+    /// つながったら挨拶の 1 行（READY:0）を書き、切れたら `IpcCommand::EditorDisconnected` を積んで次の接続を待つ。
+    ///
+    /// # 引数
+    /// * `port` - 待ち受けるポート（0 なら OS が空きポートを選ぶ。`tcp_local_addr` で分かる）
+    pub fn listen_tcp(port: u16) -> std::io::Result<Self> {
+        let (write_tx, write_rx) = mpsc::channel::<String>();
+        let (tx, rx) = mpsc::channel();
+        let listening = ipc_transport::tcp::listen(port, tx, write_rx)?;
+        Ok(Self {
+            commands: rx,
+            write_tx,
+            transport: IpcTransportKind::TcpListener,
+            tcp_local_addr: Some(listening.local),
+            tcp_connected: Some(listening.connected),
+        })
+    }
+
+    /// 通信路の種類。
+    pub fn transport(&self) -> IpcTransportKind {
+        self.transport
+    }
+
+    /// TCP で待ち受けているアドレス（名前付きパイプなら None）。
+    pub fn tcp_local_addr(&self) -> Option<SocketAddr> {
+        self.tcp_local_addr
     }
 
     /// エディタにメッセージを 1 行送信する（非ブロッキング）。
@@ -1174,7 +1224,12 @@ impl IpcClient {
     /// ブロックしていた（[PERF] の physics rest スパイクの実体）。実際の WriteFile は
     /// 書き込み専用スレッドに委譲し、ここではチャンネルへ投入して即座に返す。
     /// 全メッセージが単一チャンネル・単一スレッド経由のため送信順序（FIFO）は保たれる。
+    ///
+    /// TCP（Android）でエディタがつながっていなければ、積まずにその場で捨てる（IPC 無しの Play と同じ。段階D-1）。
     pub fn send(&self, msg: &str) {
+        if self.tcp_connected.as_ref().is_some_and(|connected| !connected.load(Ordering::Acquire)) {
+            return;
+        }
         // 書き込みスレッドが生存する限り失敗しない。切断時（スレッド終了後）は捨てる。
         let _ = self.write_tx.send(msg.to_string());
     }
@@ -1696,51 +1751,52 @@ fn parse2u_nf<const N: usize>(rest: &str) -> Option<(u32, u32, [f32; N])> {
 //  内部ヘルパー
 // ============================================================
 
-/// IPC 書き込み専用スレッド。
+/// IPC 書き込み専用スレッド（名前付きパイプ。TCP は ipc_transport/tcp.rs の書き込みスレッドが同じ役をする）。
 ///
-/// チャンネルで受け取ったメッセージを名前付きパイプへ 1 行ずつ書き込む。
+/// チャンネルで受け取ったメッセージを通信路へ 1 行ずつ書き込む。
 /// パイプバッファ満杯で writeln! がブロックしても、待つのはこのスレッドだけで、
 /// 送信元スレッド（レンダースレッド等）は send() でチャンネルへ投入済みのため影響しない。
 /// 送信元がすべて Drop されて write_tx が閉じると recv() が Err を返しループを抜ける。
-fn write_loop(mut file: std::fs::File, rx: mpsc::Receiver<String>) {
-    use std::io::Write;
+///
+/// # 引数
+/// * `sink` - 書き込み先（`Write` を満たす通信路。名前付きパイプはファイルハンドル）
+/// * `rx`   - App が送る行の受け口
+pub(crate) fn write_loop<W: Write>(mut sink: W, rx: mpsc::Receiver<String>) {
     while let Ok(msg) = rx.recv() {
         // 元の send() と同じく 1 メッセージ = 1 行（改行区切り）で書き込む。
         // 書き込みエラー（パイプ切断等）でスレッドを終了する。
-        if writeln!(file, "{}", msg).is_err() {
+        if writeln!(sink, "{}", msg).is_err() {
             break;
         }
     }
 }
 
-/// PeekNamedPipe でデータ確認後のみ ReadFile する。
-///
-/// try_clone() した複製ハンドルでブロッキング ReadFile を使うと、
-/// メインスレッドの WriteFile がカーネルロックで待たされるため、
-/// PeekNamedPipe でノンブロッキング確認してから ReadFile する方式を維持する。
-fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
-    // PeekNamedPipe（peek_pipe）は Windows 専用。エディタとの名前付きパイプ IPC は Windows でしか
-    // 使わない（Android 等では --pipe= が渡らず接続自体が起きない）ため、非 Windows では
-    // 事前確認を省いてブロッキングの read_line に任せる（非 Windows でコンパイルを通すためのガード）。
-    #[cfg(windows)]
-    use std::os::windows::io::AsRawHandle;
+/// `read_loop` が終わった理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadLoopEnd {
+    /// 通信路が閉じた（相手が切った・読み取りに失敗した）。
+    Closed,
+    /// 受け手（App）が居なくなった（コマンドを渡すチャンネルが閉じた）。
+    ReceiverGone,
+}
 
-    let mut reader   = BufReader::new(file);
+/// 通信路から 1 行ずつ読み、テキストプロトコルを `IpcCommand` にして App へ渡す（切断まで戻らない）。
+///
+/// 通信路には依存しない（段階D-1 で名前付きパイプ専用から `Read` 全般へ広げた）。
+/// 名前付きパイプの「データがあるときだけ ReadFile する」待ち方は ipc_transport/pipe.rs の PipeReader が持つ。
+/// 知らない行・書式の誤った行は捨てる（従来どおり）。
+///
+/// # 引数
+/// * `source` - 読み取り元（`Read` を満たす通信路）
+/// * `tx`     - App へコマンドを渡す送り口
+pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> ReadLoopEnd {
+    let mut reader   = BufReader::new(source);
     let mut line_buf = String::new();
 
     loop {
-        #[cfg(windows)]
-        {
-            let avail = peek_pipe(reader.get_ref().as_raw_handle());
-            if avail == 0 {
-                thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-        }
-
         line_buf.clear();
         match reader.read_line(&mut line_buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) | Err(_) => return ReadLoopEnd::Closed,
             Ok(_) => {
                 let trimmed = line_buf.trim();
                 let cmd = if let Some(key) = trimmed.strip_prefix("CAM_KEY_DOWN:") {
@@ -1755,6 +1811,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "PAUSE"        => Some(IpcCommand::Pause),
                         "RESUME"       => Some(IpcCommand::Resume),
                         "STOP"         => Some(IpcCommand::Stop),
+                        // 意図した切り離し（TCP の通信路。この後の切断では一時停止を解かない。段階D-1）
+                        DETACH_COMMAND => Some(IpcCommand::Detach),
                         "DBG_GUARD:1"  => Some(IpcCommand::SetDebugGuard(true)),
                         "DBG_GUARD:0"  => Some(IpcCommand::SetDebugGuard(false)),
                         "PLAY_CLAMP:1" => Some(IpcCommand::PlayClamp(true)),
@@ -3230,27 +3288,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                     }
                 };
                 if let Some(cmd) = cmd {
-                    if tx.send(cmd).is_err() { break; }
+                    if tx.send(cmd).is_err() { return ReadLoopEnd::ReceiverGone; }
                 }
             }
         }
     }
-}
-
-#[cfg(windows)]
-fn peek_pipe(handle: std::os::windows::raw::HANDLE) -> u32 {
-    let mut available: u32 = 0;
-    unsafe {
-        windows_sys::Win32::System::Pipes::PeekNamedPipe(
-            handle as _,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            &mut available,
-            std::ptr::null_mut(),
-        );
-    }
-    available
 }
 
 /// ANIM_PREVIEW_CLIP コマンドの接頭辞。
@@ -3284,26 +3326,58 @@ fn parse_anim_preview_clip(line: &str) -> Option<IpcCommand> {
     })
 }
 
-fn try_open(path: &str) -> std::io::Result<std::fs::File> {
-    for _ in 0..PIPE_CONNECT_RETRIES {
-        match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(f)  => return Ok(f),
-            Err(_) => thread::sleep(Duration::from_millis(PIPE_CONNECT_RETRY_MS)),
-        }
-    }
-    OpenOptions::new().read(true).write(true).open(path)
-}
-
 // ============================================================
-//  テスト — 地形コマンドのパース
+//  テスト — 地形コマンドのパース・通信路に依存しない read_loop / write_loop
 //
-//  read_loop はパイプ読み込みと一体で自動テストできないため、そこから
-//  切り出した純粋関数 parse_terrain_command を直接検証する。
+//  地形コマンドは read_loop から切り出した純粋関数 parse_terrain_command を直接検証する。
+//  read_loop / write_loop は段階D-1 から Read / Write 全般を受けるので、メモリ上のバイト列で確かめる
+//  （パイプ・TCP 無しで。TCP の通信路そのものは ipc_transport/tcp.rs のテスト）。
 // ============================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// read_loop に行を読ませ、App へ渡ったコマンドを集める（通信路の代わりにメモリ上のバイト列）。
+    fn read_all(input: &str) -> (Vec<IpcCommand>, ReadLoopEnd) {
+        let (tx, rx) = mpsc::channel();
+        let end = read_loop(std::io::Cursor::new(input.as_bytes().to_vec()), tx);
+        (rx.try_iter().collect(), end)
+    }
+
+    /// 一時停止・再開・切り離しの行がコマンドになり、知らない行は捨て、読み終わりで Closed を返す
+    /// （PC の Play と同じ文字列。\r\n の行末も前後の空白を落として読む）。
+    #[test]
+    fn read_loop_parses_pause_resume_detach_from_any_reader() {
+        let (commands, end) = read_all("PAUSE\r\nNO_SUCH_COMMAND\nRESUME\n  DETACH  \nSTOP");
+        assert_eq!(end, ReadLoopEnd::Closed, "読み終わり（相手が閉じた）で Closed");
+        assert_eq!(commands.len(), 4, "知らない行は捨てる");
+        assert!(matches!(commands[0], IpcCommand::Pause));
+        assert!(matches!(commands[1], IpcCommand::Resume));
+        assert!(matches!(commands[2], IpcCommand::Detach));
+        assert!(matches!(commands[3], IpcCommand::Stop), "最後の行は改行が無くても読む");
+    }
+
+    /// 受け手（App）が居なくなったら ReceiverGone で終わる（TCP の受け付けスレッドが受け付けをやめる合図）。
+    #[test]
+    fn read_loop_stops_when_receiver_is_gone() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let end = read_loop(std::io::Cursor::new(b"PAUSE\nRESUME\n".to_vec()), tx);
+        assert_eq!(end, ReadLoopEnd::ReceiverGone);
+    }
+
+    /// write_loop は 1 メッセージを 1 行で書き、送り口が閉じたら終わる（通信路に依存しない）。
+    #[test]
+    fn write_loop_writes_one_line_per_message() {
+        let (tx, rx) = mpsc::channel::<String>();
+        tx.send("READY:0".to_string()).unwrap();
+        tx.send("FPS:59.9".to_string()).unwrap();
+        drop(tx);
+        let mut sink: Vec<u8> = Vec::new();
+        write_loop(&mut sink, rx);
+        assert_eq!(String::from_utf8(sink).unwrap(), "READY:0\nFPS:59.9\n");
+    }
 
     /// プラグインのエディタメニューアクションが正しく分解されること。
     ///

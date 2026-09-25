@@ -8,12 +8,17 @@
 //                            onCreate の最初（ネイティブのスレッドが立つ前）に JNI で渡す
 //    Android の糊           … runtime/android/native の jni_exports.rs（受け取り）→ launch_options.rs（預かり）→
 //                            launch.rs（起動するシーンを決めて LaunchArgs.scene_path へ）
-//  ここに置くのは、JSON の書式（キーの名前）・シーンのパスの読み替え・「どのシーンで起動するか」の判断
-//  （どれも純粋な処理。ホストの cargo test で確かめる）。シーンがあるかの確かめ方（pak・APK・アプリ専用フォルダ）は
-//  呼び出し側が関数で渡す。デスクトップは使わない（エディタは --scene= で渡す。main.rs）。
+//  ここに置くのは、JSON の書式（キーの名前）・シーンのパスの読み替え・「どのシーンで起動するか」の判断・
+//  IPC のポートの読み方（どれも純粋な処理。ホストの cargo test で確かめる）。シーンがあるかの確かめ方
+//  （pak・APK・アプリ専用フォルダ）は呼び出し側が関数で渡す。デスクトップは使わない（エディタは --scene= で渡す。main.rs）。
 //
-//  【JSON】{"scene": "scenes/Main.scene"}。知らないキーは読み飛ばす（Java は seed.* をすべて渡すので、先の版で
-//  足したオプションが古いネイティブへ届いても起動を止めない）。
+//  【JSON】{"scene": "scenes/Main.scene", "ipc_port": "52735"}。値は文字列（Java は文字列の extra だけを渡す）。
+//  知らないキーは読み飛ばす（Java は seed.* をすべて渡すので、先の版で足したオプションが古いネイティブへ届いても
+//  起動を止めない）。
+//
+//  【ipc_port（段階D-1）】エディタとの IPC を TCP で待ち受けるポート（127.0.0.1 だけ）。エディタ／SeedAndroid が
+//  am start の extra seed.ipc_port で渡し、launch.rs が parse_ipc_port で確かめて LaunchArgs.ipc_port へ入れる
+//  （無い・読めなければ待ち受けない。読めない値はシーンの指定を巻き込まず、その項目だけ警告して無視する）。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +28,13 @@ use crate::engine::asset_fs::ASSETS_SCHEME;
 /// 起動するシーンの JSON のキー（C# の AndroidRuntimeContract.LaunchOptionSceneKey と一致させる。
 /// フィールド名 `scene` がそのままキーになる。一致はテストで確かめる）。
 pub const SCENE_KEY: &str = "scene";
+
+/// IPC のポートの JSON のキー（C# の AndroidRuntimeContract.LaunchOptionIpcPortKey と一致させる。
+/// フィールド名 `ipc_port` がそのままキーになる。一致はテストで確かめる。段階D-1）。
+pub const IPC_PORT_KEY: &str = "ipc_port";
+
+/// 待ち受けに使えるポートの最小値（0 は「OS に選ばせる」なので、エディタが forward できず使えない）。
+const MIN_IPC_PORT: u16 = 1;
 
 /// 相対パスの区切り（pak のエントリ・仮想パスと同じ）。
 const SEPARATOR: char = '/';
@@ -45,10 +57,14 @@ pub struct LaunchOptions {
     /// 起動するシーン（アセットルートからの相対パス。無ければ project_settings.json の開始シーン）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<String>,
+    /// エディタとの IPC を TCP で待ち受けるポート（受け取ったままの文字列。確かめ方は `parse_ipc_port`。段階D-1）。
+    /// 無ければ待ち受けない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipc_port: Option<String>,
 }
 
 impl LaunchOptions {
-    /// JSON から読む（空の文字列は「オプションなし」。空白だけのシーンは指定なしとみなす）。
+    /// JSON から読む（空の文字列は「オプションなし」。空白だけのシーン・ポートは指定なしとみなす）。
     ///
     /// # 戻り値
     /// 読めなければ理由（JSON の誤り・オブジェクトでない・型の違い）。
@@ -65,6 +81,9 @@ impl LaunchOptions {
         if options.scene.as_deref().is_some_and(|scene| scene.trim().is_empty()) {
             options.scene = None;
         }
+        if options.ipc_port.as_deref().is_some_and(|port| port.trim().is_empty()) {
+            options.ipc_port = None;
+        }
         Ok(options)
     }
 
@@ -72,6 +91,29 @@ impl LaunchOptions {
     pub fn to_json(&self) -> String {
         // 文字列のフィールドだけなので書き出しは失敗しない
         serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// IPC のポート（指定が無ければ None、あれば確かめた結果）。
+    ///
+    /// # 戻り値
+    /// None = 指定なし（待ち受けない）／Some(Ok(ポート))／Some(Err(読めない理由))。
+    pub fn ipc_port(&self) -> Option<Result<u16, String>> {
+        self.ipc_port.as_deref().map(parse_ipc_port)
+    }
+}
+
+/// IPC のポートの文字列を確かめる【純関数】（1〜65535 の 10 進整数。前後の空白は許す）。
+///
+/// # 戻り値
+/// ポートか、使えない理由。
+pub fn parse_ipc_port(text: &str) -> Result<u16, String> {
+    let trimmed = text.trim();
+    match trimmed.parse::<u16>() {
+        Ok(port) if port >= MIN_IPC_PORT => Ok(port),
+        _ => Err(format!(
+            "IPC のポート {trimmed} は使えません（{MIN_IPC_PORT}〜{} の整数で指定してください）",
+            u16::MAX
+        )),
     }
 }
 
@@ -168,6 +210,7 @@ mod tests {
     fn json_round_trip_keeps_scene_and_uses_scene_key() {
         let options = LaunchOptions {
             scene: Some("シーン/森 の 2.scene".to_string()),
+            ..Default::default()
         };
         let json = options.to_json();
         assert!(json.contains(&format!("\"{SCENE_KEY}\"")), "キーは SCENE_KEY: {json}");
@@ -175,6 +218,36 @@ mod tests {
         // Java（org.json）が書く形（/ を \/ にエスケープする）も読める
         let from_java = LaunchOptions::from_json("{\"scene\":\"scenes\\/Second.scene\"}").unwrap();
         assert_eq!(from_java.scene.as_deref(), Some("scenes/Second.scene"));
+    }
+
+    /// IPC のポートは IPC_PORT_KEY の文字列で届き（Java は文字列の extra だけを渡す）、往復しても変わらない。
+    #[test]
+    fn ipc_port_uses_its_key_and_round_trips() {
+        let options = LaunchOptions {
+            scene: Some("scenes/Main.scene".to_string()),
+            ipc_port: Some("52735".to_string()),
+        };
+        let json = options.to_json();
+        assert!(json.contains(&format!("\"{IPC_PORT_KEY}\"")), "キーは IPC_PORT_KEY: {json}");
+        assert_eq!(LaunchOptions::from_json(&json).unwrap(), options);
+        let from_java = LaunchOptions::from_json("{\"scene\":\"scenes\\/Main.scene\",\"ipc_port\":\"52735\"}").unwrap();
+        assert_eq!(from_java.ipc_port(), Some(Ok(52735)));
+        assert_eq!(LaunchOptions::default().ipc_port(), None, "指定が無ければ待ち受けない");
+        assert_eq!(LaunchOptions::from_json("{\"ipc_port\":\"  \"}").unwrap().ipc_port, None, "空白だけは指定なし");
+    }
+
+    /// ポートは 1〜65535 の整数だけ。読めない値はその項目だけの誤りで、シーンの指定は巻き込まない。
+    #[test]
+    fn ipc_port_is_validated_without_breaking_scene() {
+        assert_eq!(parse_ipc_port(" 52735 "), Ok(52735));
+        assert_eq!(parse_ipc_port("1"), Ok(1));
+        assert_eq!(parse_ipc_port("65535"), Ok(65535));
+        for bad in ["0", "65536", "-1", "abc", "52735x", ""] {
+            assert!(parse_ipc_port(bad).is_err(), "{bad} は使えない");
+        }
+        let options = LaunchOptions::from_json("{\"scene\":\"scenes/Main.scene\",\"ipc_port\":\"abc\"}").unwrap();
+        assert_eq!(options.scene.as_deref(), Some("scenes/Main.scene"), "シーンはそのまま使える");
+        assert!(matches!(options.ipc_port(), Some(Err(_))), "ポートだけが誤り");
     }
 
     #[test]
@@ -217,6 +290,7 @@ mod tests {
         let asked = RefCell::new(Vec::new());
         let options = LaunchOptions {
             scene: Some("assets://scenes\\Second.scene".to_string()),
+            ..Default::default()
         };
         let choice = choose_scene(&options, |relative| {
             asked.borrow_mut().push(relative.to_string());
@@ -239,6 +313,7 @@ mod tests {
         let missing = choose_scene(
             &LaunchOptions {
                 scene: Some("scenes/NoSuch.scene".to_string()),
+                ..Default::default()
             },
             |_| false,
         );
@@ -253,6 +328,7 @@ mod tests {
         let invalid = choose_scene(
             &LaunchOptions {
                 scene: Some("../outside.scene".to_string()),
+                ..Default::default()
             },
             |_| panic!("読めない指定では聞かない"),
         );

@@ -130,4 +130,11 @@ public sealed record AndroidRunRequest
     /// <summary>logcat の保存先（null なら保存しない。UTF-8）。</summary>
     [JsonPropertyName("log_file")]
     public string? LogFile { get; init; }
+
+    /// <summary>
+    /// 端末のランタイムがエディタとの IPC を待ち受けるポート（段階D-1）。起動の工程（Run・Push）で am start の extra
+    /// seed.ipc_port として渡す。null なら既定（Ipc/AndroidIpcSettings.DefaultDevicePort）、0 なら渡さない（一時停止などは使えない）。
+    /// </summary>
+    [JsonPropertyName("ipc_port")]
+    public int? IpcPort { get; init; }
 }

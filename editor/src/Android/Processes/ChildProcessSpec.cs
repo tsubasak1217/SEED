@@ -62,3 +62,9 @@ public sealed record ChildProcessCapture(int ExitCode, IReadOnlyList<string> Sta
     /// <summary>標準出力と標準エラーを改行でつないだもの（エラーの説明用）。</summary>
     public string AllOutputText => string.Join('\n', StandardOutput.Concat(StandardError));
 }
+
+/// <summary>標準出力をバイト列のまま集めた子プロセスの結果（adb exec-out でファイルを取り出す等。段階D-1）。</summary>
+/// <param name="ExitCode">終了コード。</param>
+/// <param name="Output">標準出力のバイト列（文字として解釈しない）。</param>
+/// <param name="StandardError">標準エラーの行。</param>
+public sealed record ChildProcessBytesCapture(int ExitCode, byte[] Output, IReadOnlyList<string> StandardError);

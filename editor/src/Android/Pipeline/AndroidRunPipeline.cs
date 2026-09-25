@@ -29,6 +29,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Plan;
 using SEEDEditor.Android.Processes;
 using SEEDEditor.Android.Project;
@@ -162,6 +163,8 @@ public sealed class AndroidRunPipeline
             ScreenOrientation = orientation, Abis = abis, Device = device, Adb = adb,
             Stamps = stamps, RunState = runState, RunStatePath = runStatePath, LaunchScene = launchScene,
             PakExtraScenes = pakExtraScenes,
+            // エディタとの IPC のポート（起動の工程が am start の extra seed.ipc_port で渡す。段階D-1）
+            IpcDevicePort = AndroidIpcSettings.ResolveDevicePort(request.IpcPort),
         };
         var buildScope = request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
         if (buildScope)
@@ -226,6 +229,10 @@ public sealed class AndroidRunPipeline
         if (request.LogcatSeconds < 0)
         {
             throw new AndroidPipelineException(AndroidFailureKind.InvalidRequest, "logcat の秒数は 0 以上にしてください（0 は止めるまで）。");
+        }
+        if (AndroidIpcSettings.Validate(request.IpcPort) is { } ipcPortError)
+        {
+            throw new AndroidPipelineException(AndroidFailureKind.InvalidRequest, ipcPortError);
         }
     }
 

@@ -64,6 +64,8 @@ public static class AndroidBuildInputs
         "runtime/android/app/src/main/AndroidManifest.xml",
         "runtime/android/app/src/main/java",
         "runtime/android/app/src/main/res",
+        // デバッグ版だけのマニフェスト（エディタとの IPC に要る INTERNET 権限。段階D-1）
+        "runtime/android/app/src/debug",
     };
 
     /// <summary>入力を辿るときに飛ばすフォルダ名（ビルドの生成物・道具の作業フォルダ）。</summary>

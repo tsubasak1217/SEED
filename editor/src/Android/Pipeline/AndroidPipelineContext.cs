@@ -75,6 +75,12 @@ public sealed class AndroidPipelineContext
     /// <summary>logcat の起点の端末の時刻（起動の直前に控える）。</summary>
     public string? LogcatSince { get; set; }
 
+    /// <summary>
+    /// 端末のランタイムがエディタとの IPC を待ち受けるポート（null なら渡さない）。起動の工程が am start の extra
+    /// （seed.ipc_port）にして渡す（段階D-1。指定から Ipc/AndroidIpcSettings.ResolveDevicePort で決める）。
+    /// </summary>
+    public int? IpcDevicePort { get; init; }
+
     /// <summary>対象の端末（無ければ例外）。</summary>
     /// <returns>端末。</returns>
     public AdbDevice RequireDevice() =>

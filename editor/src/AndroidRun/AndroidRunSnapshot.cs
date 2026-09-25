@@ -47,6 +47,17 @@ public sealed record AndroidRunSnapshot
     /// <summary>止める理由（止めていなければ None）。</summary>
     public AndroidRunStopReason StopReason { get; init; }
 
+    /// <summary>端末のアプリとの IPC の状態（段階D-1。Running / Paused の間だけ意味を持つ）。</summary>
+    public AndroidIpcStatus Ipc { get; init; } = AndroidIpcStatus.Off;
+
+    /// <summary>
+    /// IPC の状態の補足（つながらなかった理由・使わない理由。実行ボタンのツールチップに出す。無ければ null）。
+    /// </summary>
+    public string? IpcNote { get; init; }
+
     /// <summary>動いているか（Idle 以外）。</summary>
     public bool IsActive => Phase != AndroidRunPhase.Idle;
+
+    /// <summary>端末でアプリが動いている（実行中か一時停止中）か。</summary>
+    public bool IsAppAlive => Phase is AndroidRunPhase.Running or AndroidRunPhase.Paused;
 }

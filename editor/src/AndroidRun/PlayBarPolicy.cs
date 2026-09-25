@@ -6,9 +6,11 @@
 //  MainWindow はこの結果をそのまま画面へ当てるだけ（MainWindow.AndroidRun.cs の ApplyPlayBar）。
 //
 //  【決まり】
-//    1. Android の実行中（Building / Running / Stopping）は Android の表示が優先:
-//       実行ボタンは押せない（Running では一時停止の絵柄のまま無効。Android は一時停止できない理由をツールチップに）、
-//       停止ボタンは Building / Running で「Android を止める」、実行先は変えられない
+//    1. Android の実行中（Building / Running / Paused / Stopping）は Android の表示が優先:
+//       実行ボタンは、端末のアプリと IPC がつながっていれば PC の Play と同じく一時停止（Running）・再開（Paused）になる
+//       （段階D-1。状態表示は ANDROID PLAY / ANDROID PAUSE）。つながっていなければ一時停止の絵柄のまま押せない
+//       （つないでいる途中・つながらなかった理由をツールチップに。状態表示は ANDROID RUN）。
+//       停止ボタンは Building / Running / Paused で「Android を止める」、実行先は変えられない
 //    2. PC の実行中（Launching / Play / Pause）は従来の PC の表示（実行先が Android でも PC の一時停止・停止を優先）。
 //       実行先は変えられない（PC の実行中に Android の実行を始めさせない）
 //    3. どちらも動いていないとき:
@@ -46,6 +48,12 @@ public enum PlayBarAction
 
     /// <summary>選んでいる Android の端末で実行を始める。</summary>
     StartAndroid,
+
+    /// <summary>端末のアプリを一時停止する（IPC で PAUSE。段階D-1）。</summary>
+    PauseAndroid,
+
+    /// <summary>端末のアプリの一時停止を解く（IPC で RESUME。段階D-1）。</summary>
+    ResumeAndroid,
 }
 
 /// <summary>停止ボタンを押したときにすること。</summary>
@@ -166,8 +174,24 @@ public static class PlayBarPolicy
     /// <summary>ビルド中の停止ボタンのツールチップ。</summary>
     private const string AndroidBuildingStopToolTip = "ビルドを中止する（子プロセスの終了を待ってから止まります）";
 
-    /// <summary>実行中の実行ボタン（一時停止の絵柄）のツールチップ。</summary>
-    private const string AndroidRunningPlayToolTip = "Android の実行は一時停止できません（停止ボタンで端末のアプリを止めます）。";
+    /// <summary>
+    /// 実行中で IPC を使わない・使えないときの実行ボタン（一時停止の絵柄で無効）のツールチップの書式（{0}=理由）。
+    /// </summary>
+    private const string AndroidPauseUnavailableToolTipFormat = "一時停止できません: {0}（停止ボタンで端末のアプリを止めます）。";
+
+    /// <summary>IPC の理由が分からないとき（実行していない等）の理由。</summary>
+    private const string AndroidPauseUnavailableDefaultReason = "端末のアプリとの通信路がありません";
+
+    /// <summary>IPC をつないでいる途中の実行ボタン（一時停止の絵柄で無効）のツールチップ。</summary>
+    private const string AndroidIpcConnectingToolTip =
+        "端末のアプリとの通信路（adb forward）につないでいます…（つながると一時停止できます）。";
+
+    /// <summary>IPC がつながっているときの実行ボタン（一時停止の絵柄）のツールチップ。</summary>
+    private const string AndroidPauseToolTip =
+        "Android のアプリを一時停止（端末のゲームの時間・物理・スクリプトを止めます。PC の Play の一時停止と同じ命令）";
+
+    /// <summary>一時停止中の実行ボタン（再生の絵柄）のツールチップ。</summary>
+    private const string AndroidResumeToolTip = "再開（端末のアプリの一時停止を解きます）";
 
     /// <summary>実行中の停止ボタンのツールチップ。</summary>
     private const string AndroidRunningStopToolTip = "端末のアプリを止める（logcat も止めます）";
@@ -190,14 +214,23 @@ public static class PlayBarPolicy
     /// <summary>Android のビルド中の状態表示。</summary>
     public const string AndroidBuildingLabel = "ANDROID BUILD...";
 
-    /// <summary>Android の実行中の状態表示。</summary>
+    /// <summary>Android の実行中（端末のアプリと IPC がつながっていない＝一時停止できない）の状態表示。</summary>
     public const string AndroidRunningLabel = "ANDROID RUN";
+
+    /// <summary>Android の実行中（IPC がつながっている＝PC の PLAY と同じく一時停止できる。段階D-1）の状態表示。</summary>
+    public const string AndroidPlayLabel = "ANDROID PLAY";
+
+    /// <summary>Android の一時停止中（PC の PAUSE にあたる。段階D-1）の状態表示。</summary>
+    public const string AndroidPauseLabel = "ANDROID PAUSE";
 
     /// <summary>Android の停止中の状態表示。</summary>
     public const string AndroidStoppingLabel = "STOPPING...";
 
     /// <summary>Android の実行中の状態アイコン。</summary>
     private const string AndroidRunningIconKey = "Icon.Platform.Android";
+
+    /// <summary>Android の一時停止中の状態アイコン（PC の PAUSE と同じ）。</summary>
+    private const string AndroidPausedIconKey = "Icon.Pause";
 
     /// <summary>止めている途中の状態アイコン。</summary>
     private const string StoppingIconKey = "Icon.Stop";
@@ -218,6 +251,9 @@ public static class PlayBarPolicy
 
     /// <summary>実行中の進捗の書式（{0}=実行先）。</summary>
     private const string RunningProgressFormat = "{0} で実行中";
+
+    /// <summary>一時停止中の進捗の書式（{0}=実行先。段階D-1）。</summary>
+    private const string PausedProgressFormat = "{0} で一時停止中";
 
     /// <summary>割合を % にする倍率。</summary>
     private const double PercentScale = 100.0;
@@ -316,7 +352,7 @@ public static class PlayBarPolicy
         };
     }
 
-    /// <summary>Android の実行中（Building / Running / Stopping）。</summary>
+    /// <summary>Android の実行中（Building / Running / Paused / Stopping）。</summary>
     private static PlayBarView ForAndroidActive(AndroidRunSnapshot android) => android.Phase switch
     {
         AndroidRunPhase.Building => new PlayBarView
@@ -334,19 +370,21 @@ public static class PlayBarPolicy
             ProgressText = BuildingProgressText(android),
             ProgressFraction = android.Fraction,
         },
-        AndroidRunPhase.Running => new PlayBarView
+        AndroidRunPhase.Running => ForAndroidRunning(android),
+        // 一時停止中: PC の PAUSE と同じ絵柄（再生）・色（橙）・アイコン。実行ボタンで再開（段階D-1）
+        AndroidRunPhase.Paused => new PlayBarView
         {
-            PlayAction = PlayBarAction.None,
-            PlayGlyph = PlayGlyph.Pause,
-            PlayToolTip = AndroidRunningPlayToolTip,
+            PlayAction = PlayBarAction.ResumeAndroid,
+            PlayGlyph = PlayGlyph.Play,
+            PlayToolTip = AndroidResumeToolTip,
             StopAction = StopBarAction.StopAndroid,
             StopToolTip = AndroidRunningStopToolTip,
             TargetSelectorEnabled = false,
             TargetSelectorToolTip = TargetLockedByAndroidToolTip,
-            StateLabel = AndroidRunningLabel,
-            StateTone = PlayBarTone.Running,
-            StateIconKey = AndroidRunningIconKey,
-            ProgressText = string.Format(RunningProgressFormat, android.TargetText),
+            StateLabel = AndroidPauseLabel,
+            StateTone = PlayBarTone.Paused,
+            StateIconKey = AndroidPausedIconKey,
+            ProgressText = string.Format(PausedProgressFormat, android.TargetText),
         },
         _ => new PlayBarView
         {
@@ -362,6 +400,45 @@ public static class PlayBarPolicy
             StateIconKey = StoppingIconKey,
             ProgressText = AndroidStoppingToolTip,
         },
+    };
+
+    /// <summary>
+    /// Android の実行中（端末でアプリが動いている）。端末のアプリと IPC がつながっていれば PC の PLAY と同じく
+    /// 一時停止の絵柄で押せる（状態表示 ANDROID PLAY）。つながっていなければ一時停止の絵柄のまま押せない
+    /// （つないでいる途中・つながらなかった理由をツールチップに。状態表示 ANDROID RUN）。
+    /// </summary>
+    /// <param name="android">Android の実行の写し。</param>
+    /// <returns>見た目と動き。</returns>
+    private static PlayBarView ForAndroidRunning(AndroidRunSnapshot android)
+    {
+        var connected = android.Ipc == AndroidIpcStatus.Connected;
+        return new PlayBarView
+        {
+            PlayAction = connected ? PlayBarAction.PauseAndroid : PlayBarAction.None,
+            PlayGlyph = PlayGlyph.Pause,
+            PlayToolTip = RunningPlayToolTip(android),
+            StopAction = StopBarAction.StopAndroid,
+            StopToolTip = AndroidRunningStopToolTip,
+            TargetSelectorEnabled = false,
+            TargetSelectorToolTip = TargetLockedByAndroidToolTip,
+            StateLabel = connected ? AndroidPlayLabel : AndroidRunningLabel,
+            StateTone = PlayBarTone.Running,
+            StateIconKey = AndroidRunningIconKey,
+            ProgressText = string.Format(RunningProgressFormat, android.TargetText),
+        };
+    }
+
+    /// <summary>
+    /// 実行中の実行ボタン（一時停止の絵柄）のツールチップ（押せるなら一時停止の説明、押せないなら理由）。
+    /// </summary>
+    /// <param name="android">Android の実行の写し。</param>
+    /// <returns>ツールチップ。</returns>
+    public static string RunningPlayToolTip(AndroidRunSnapshot android) => android.Ipc switch
+    {
+        AndroidIpcStatus.Connected => AndroidPauseToolTip,
+        AndroidIpcStatus.Connecting => AndroidIpcConnectingToolTip,
+        _ => string.Format(AndroidPauseUnavailableToolTipFormat,
+            string.IsNullOrWhiteSpace(android.IpcNote) ? AndroidPauseUnavailableDefaultReason : android.IpcNote),
     };
 
     /// <summary>

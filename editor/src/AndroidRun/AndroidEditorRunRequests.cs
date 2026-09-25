@@ -6,6 +6,7 @@
 //                            実行先が Android（自動）なら serial = "auto"（実機 → 起動中のエミュレータ → AVD を起動）、
 //                            端末なら そのシリアル＋emulator_fallback（見えなければエミュレータで実行。段階C-3）。
 //                            起動するシーン（開いているシーン）とエミュレータの AVD（エディタの設定）も渡す。
+//                            一時停止などの IPC のポート（エディタの設定 android.ipc_port。未設定なら既定。段階D-1）も渡す。
 //                            開いているシーンがシーンマネージャに未登録なら、中核の準備がそれを pak の収録の起点に足す
 //                            （ScenePath から決める。Android/Project/AndroidPakSceneSeeds。SeedAndroid の --scene と同じ経路。段階C-4）
 //    パッケージ化ウィンドウ … Goal = Build: 端末を使わずに APK を作るだけ（ABI と Rust の最適化を指定）。
@@ -35,8 +36,13 @@ public static class AndroidEditorRunRequests
     /// シーンマネージャに未登録なら中核が pak の収録の起点に足す（段階C-4）。
     /// </param>
     /// <param name="emulatorAvd">エミュレータを起動するときの AVD（エディタの設定 android.emulator_avd。未設定なら null）。</param>
+    /// <param name="ipcPort">
+    /// 端末のランタイムが一時停止などの IPC を待ち受けるポート（エディタの設定 android.ipc_port。未設定なら null＝既定のポート、
+    /// 0 なら使わない。段階D-1）。
+    /// </param>
     /// <returns>指定。</returns>
-    public static AndroidRunRequest ForPlay(string projectDir, RunTargetEntry target, string? scenePath, string? emulatorAvd) => new()
+    public static AndroidRunRequest ForPlay(
+        string projectDir, RunTargetEntry target, string? scenePath, string? emulatorAvd, int? ipcPort = null) => new()
     {
         Goal = AndroidRunGoal.Run,
         ProjectDir = projectDir,
@@ -45,6 +51,7 @@ public static class AndroidEditorRunRequests
         EmulatorFallback = !target.IsAndroidAuto,
         Avd = string.IsNullOrWhiteSpace(emulatorAvd) ? null : emulatorAvd.Trim(),
         ScenePath = scenePath,
+        IpcPort = ipcPort,
     };
 
     /// <summary>

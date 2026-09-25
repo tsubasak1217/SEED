@@ -42,6 +42,10 @@ EditorCommandExecutor
    └─ IEditorAiHost（= MainWindow）             … 状態取得・再生制御・保存・キャプチャ
 ```
 
+AI ツールが送る IPC は PC のランタイム（名前付きパイプ）だけ。Android の実行（実行先セレクタで端末を選んだ実行）は、同じ文字列の IPC を
+adb forward 越しの TCP で送れる（段階D-1。実行バーの一時停止・再開と SeedAndroid の `pause` / `resume` / `screenshot`。[android.md](android.md) §21）が、
+AI ツールからは使えない（backlog）。
+
 **ポートは固定ではない**。
 
 | インスタンス | ポート | トークン | AI の変更操作 |

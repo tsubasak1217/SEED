@@ -9,13 +9,16 @@ namespace SEEDEditor.Ipc;
 /// <summary>
 /// Named Pipe サーバー。Runtime（クライアント）からの接続を待ち受け、
 /// 双方向でメッセージを送受信する。
+///
+/// 行の送受信（受信ループ・送信・文字コード）は通信路に依存しない <see cref="IpcLineChannel"/> が行う
+/// （Android の TCP の通信路と共有。段階D-1）。ここは名前付きパイプの作成と接続待ちだけを持つ。
 /// </summary>
 public sealed class PipeServer : IDisposable
 {
     private readonly NamedPipeServerStream _pipe;
-    private StreamReader?                  _reader;
-    private StreamWriter?                  _writer;
-    private readonly CancellationTokenSource _cts = new();
+
+    /// <summary>行の送受信（接続するまでは null）。</summary>
+    private IpcLineChannel? _channel;
 
     /// <summary>Runtime に渡すパイプ名（\\.\pipe\ 以降の部分）。</summary>
     public string PipeName { get; }
@@ -40,12 +43,14 @@ public sealed class PipeServer : IDisposable
     public async Task WaitForConnectionAsync(CancellationToken ct = default)
     {
         // ConfigureAwait(false) でUIスレッドのSyncContextを引き継がないようにする。
-        // ReadLoopAsync が UI スレッドコンテキストで動くと、UIスレッドがブロック中に
+        // 受信ループが UI スレッドコンテキストで動くと、UIスレッドがブロック中に
         // ReadLineAsync の継続が実行されず、Rust→C# バッファが詰まってデッドロックになる。
         await _pipe.WaitForConnectionAsync(ct).ConfigureAwait(false);
-        _reader = new StreamReader(_pipe,  leaveOpen: true);
-        _writer = new StreamWriter(_pipe,  leaveOpen: true) { AutoFlush = true };
-        _ = ReadLoopAsync(_cts.Token);
+        // 読み続ける条件にパイプの接続状態を渡す（従来の受信ループと同じく、切れたら止める）
+        var channel = new IpcLineChannel(_pipe, nameof(PipeServer), () => _pipe.IsConnected);
+        channel.MessageReceived += line => MessageReceived?.Invoke(line);
+        _channel = channel;
+        channel.Start();
     }
 
     /// <summary>Runtime にコマンドを送信する。</summary>
@@ -54,7 +59,7 @@ public sealed class PipeServer : IDisposable
         if (!_pipe.IsConnected) return;
         try
         {
-            _writer?.WriteLine(message);
+            _channel?.Send(message);
         }
         catch (IOException ex)
         {
@@ -62,43 +67,9 @@ public sealed class PipeServer : IDisposable
         }
     }
 
-    private async Task ReadLoopAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested && _pipe.IsConnected)
-        {
-            string? line;
-            try
-            {
-                // ConfigureAwait(false): UIスレッドのSyncContextを引き継がない。
-                // これにより「UIスレッドブロック中も読み取りループが継続」し、
-                // Rust→C# バッファが詰まってデッドロックになるのを防ぐ。
-                line = await _reader!.ReadLineAsync(ct).ConfigureAwait(false);
-            }
-            catch
-            {
-                // パイプ切断・キャンセル: ループを終了する
-                break;
-            }
-
-            if (line == null) break;
-
-            try
-            {
-                // イベントハンドラの例外がループを止めないよう個別に保護する
-                MessageReceived?.Invoke(line.Trim());
-            }
-            catch (Exception ex)
-            {
-                // ハンドラ例外はログに記録してループを継続する
-                System.Diagnostics.Debug.WriteLine($"[PipeServer] MessageReceived handler threw: {ex.Message}");
-            }
-        }
-    }
-
     public void Dispose()
     {
-        _cts.Cancel();
+        _channel?.Dispose();
         _pipe.Dispose();
-        _cts.Dispose();
     }
 }
