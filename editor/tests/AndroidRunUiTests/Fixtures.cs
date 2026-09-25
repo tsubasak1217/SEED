@@ -153,6 +153,28 @@ public sealed class FakeBackend : IAndroidRunBackend
         IpcConnects.Enqueue((serial, devicePort, token));
         return ConnectIpc(Interlocked.Increment(ref _ipcConnects), cancellationToken);
     }
+
+    /// <summary>
+    /// 一時停止中の写しの取り出しの中身（呼ばれた回数・PC の書き先・中断の合図を渡す。§20.17）。
+    /// 既定は「取り出せない」（写しを扱わない従来のテストは、一時停止の後に警告の 1 行が出るだけで状態は変わらない）。
+    /// </summary>
+    public Func<int, string, CancellationToken, Task<AndroidSceneSnapshotResult>> FetchSnapshot { get; set; } =
+        (_, _, _) => Task.FromException<AndroidSceneSnapshotResult>(
+            new AndroidIpcException(AndroidIpcFailureKind.NoReply, "テスト: 写しを取り出しません"));
+
+    /// <summary>写しの取り出しの呼ばれ方（シリアル・アプリ ID・PC の書き先）。</summary>
+    public ConcurrentQueue<(string Serial, string ApplicationId, string LocalPath)> SnapshotFetches { get; } = new();
+
+    /// <summary>写しの取り出しが呼ばれた回数（Interlocked）。</summary>
+    private int _snapshotFetches;
+
+    /// <inheritdoc />
+    public Task<AndroidSceneSnapshotResult> FetchSceneSnapshotAsync(
+        string serial, string applicationId, IAndroidIpcLink link, string localPath, CancellationToken cancellationToken)
+    {
+        SnapshotFetches.Enqueue((serial, applicationId, localPath));
+        return FetchSnapshot(Interlocked.Increment(ref _snapshotFetches), localPath, cancellationToken);
+    }
 }
 
 /// <summary>

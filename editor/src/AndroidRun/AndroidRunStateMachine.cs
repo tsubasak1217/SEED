@@ -18,6 +18,12 @@
 //                                   └──IpcFailed（理由）──▶ Unavailable
 //    Off のまま（DisableIpc・ポート 0 の指定）なら一時停止は使えない。Start・Complete で Off に戻す。
 //
+//  【一時停止中の端末のシーンの写し（AndroidPauseSnapshotStatus。docs/android.md §20.17）】Paused の間だけ意味を持つ
+//    None ──BeginPauseSnapshot（Paused のとき。回数を進める）──▶ Fetching ──PauseSnapshotFetched──▶ Ready
+//                                                                      └──PauseSnapshotFailed──▶ Failed
+//    Paused を出る（RequestResume・IpcLost・RequestStop・Complete・Start）と None へ戻す。
+//    結果は回数（Generation）で照合し、再開した後に遅れて届いた古い結果は捨てる。
+//
 //  【終わり方（AndroidRunOutcome）の決め方】止める理由を優先し、無ければパイプラインの結果で決める。
 //    停止ボタン: 起動の工程に入っていれば StoppedByUser（アプリも止める）、入る前なら BuildCanceled（アプリに触らない）
 //    アプリの終了: AppExited ／ エディタを閉じる: Canceled
@@ -30,6 +36,7 @@
 
 using System;
 using SEEDEditor.Android.Pipeline;
+using SEEDEditor.SceneSnapshot;
 
 namespace SEEDEditor.AndroidRun;
 
@@ -87,6 +94,12 @@ public sealed class AndroidRunStateMachine
     /// <summary>IPC の状態の補足（つながらなかった理由・使わない理由）。</summary>
     public string? IpcNote { get; private set; }
 
+    /// <summary>一時停止中の端末のシーンの写しの状態（docs/android.md §20.17）。</summary>
+    public AndroidPauseSnapshotState PauseSnapshot { get; private set; } = AndroidPauseSnapshotState.None;
+
+    /// <summary>写しを取り出した回数（一時停止のたびに進む。実行をまたいでも戻さない＝古い結果と取り違えない）。</summary>
+    private int _pauseSnapshotGeneration;
+
     /// <summary>一時停止できるか（実行中で IPC がつながっている）。</summary>
     public bool CanPause => Phase == AndroidRunPhase.Running && Ipc == AndroidIpcStatus.Connected;
 
@@ -105,6 +118,7 @@ public sealed class AndroidRunStateMachine
         PrepareDetail = PrepareDetail,
         Ipc = Ipc,
         IpcNote = IpcNote,
+        PauseSnapshot = PauseSnapshot,
     };
 
     /// <summary>
@@ -129,6 +143,7 @@ public sealed class AndroidRunStateMachine
         PrepareDetail = null;
         Ipc = AndroidIpcStatus.Off;
         IpcNote = null;
+        PauseSnapshot = AndroidPauseSnapshotState.None;
         return true;
     }
 
@@ -197,6 +212,8 @@ public sealed class AndroidRunStateMachine
         if (reason == AndroidRunStopReason.AppExited && Phase is not (AndroidRunPhase.Running or AndroidRunPhase.Paused)) return false;
         StopReason = reason;
         Phase = AndroidRunPhase.Stopping;
+        // 一時停止を出るので写しは使わない（エディタは編集中のシーンへ戻す）
+        PauseSnapshot = AndroidPauseSnapshotState.None;
         return true;
     }
 
@@ -260,6 +277,8 @@ public sealed class AndroidRunStateMachine
         Phase = AndroidRunPhase.Running;
         Ipc = AndroidIpcStatus.Connecting;
         IpcNote = null;
+        // 端末は切断で一時停止を解いたので、写しはもう「いまの端末の状態」ではない
+        PauseSnapshot = AndroidPauseSnapshotState.None;
         return true;
     }
 
@@ -282,8 +301,57 @@ public sealed class AndroidRunStateMachine
     {
         if (Phase != AndroidRunPhase.Paused) return false;
         Phase = AndroidRunPhase.Running;
+        // 再開したら写しは使わない（エディタは編集中のシーンへ戻す）
+        PauseSnapshot = AndroidPauseSnapshotState.None;
         return true;
     }
+
+    // ── 一時停止中の端末のシーンの写し（docs/android.md §20.17）──────────────
+
+    /// <summary>
+    /// 写しの取り出しを始める（Paused のときだけ。回数を進めて Fetching にする）。
+    /// </summary>
+    /// <returns>この取り出しの回数（Paused でなければ null）。</returns>
+    public int? BeginPauseSnapshot()
+    {
+        if (Phase != AndroidRunPhase.Paused) return null;
+        var generation = ++_pauseSnapshotGeneration;
+        PauseSnapshot = new AndroidPauseSnapshotState(AndroidPauseSnapshotStatus.Fetching, generation, null, null, null);
+        return generation;
+    }
+
+    /// <summary>
+    /// 写しを取り出せた（同じ回数の取り出しの途中で、まだ Paused のときだけ受け付ける）。
+    /// </summary>
+    /// <param name="generation">取り出しの回数（<see cref="BeginPauseSnapshot"/> の戻り値）。</param>
+    /// <param name="localPath">PC に写したファイル。</param>
+    /// <param name="camera">端末のメインカメラの位置と向き（無ければ null）。</param>
+    /// <returns>反映したら true（再開した後に遅れて届いた等は false）。</returns>
+    public bool PauseSnapshotFetched(int generation, string localPath, SceneSnapshotCameraPose? camera)
+    {
+        if (!IsFetching(generation)) return false;
+        PauseSnapshot = new AndroidPauseSnapshotState(AndroidPauseSnapshotStatus.Ready, generation, localPath, camera, null);
+        return true;
+    }
+
+    /// <summary>
+    /// 写しを取り出せなかった（同じ回数の取り出しの途中で、まだ Paused のときだけ受け付ける）。一時停止は続ける。
+    /// </summary>
+    /// <param name="generation">取り出しの回数。</param>
+    /// <param name="reason">理由（Output に出す）。</param>
+    /// <returns>反映したら true。</returns>
+    public bool PauseSnapshotFailed(int generation, string reason)
+    {
+        if (!IsFetching(generation)) return false;
+        PauseSnapshot = new AndroidPauseSnapshotState(AndroidPauseSnapshotStatus.Failed, generation, null, null, reason);
+        return true;
+    }
+
+    /// <summary>その回数の取り出しの途中で、まだ一時停止しているか。</summary>
+    private bool IsFetching(int generation) =>
+        Phase == AndroidRunPhase.Paused
+        && PauseSnapshot.Status == AndroidPauseSnapshotStatus.Fetching
+        && PauseSnapshot.Generation == generation;
 
     /// <summary>
     /// パイプラインが戻ったことを反映し、終わり方と「アプリも止めるか」を決める。
@@ -299,6 +367,7 @@ public sealed class AndroidRunStateMachine
         // 実行が終わったら IPC は使わない（呼び出し側が通信路を閉じ、forward を外す）
         Ipc = AndroidIpcStatus.Off;
         IpcNote = null;
+        PauseSnapshot = AndroidPauseSnapshotState.None;
         return new AndroidRunCompletion(outcome, needsStopApp, result);
     }
 

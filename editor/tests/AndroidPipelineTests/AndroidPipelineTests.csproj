@@ -41,6 +41,16 @@
     <Compile Include="..\..\src\Ipc\RuntimeIpcCommands.cs">
       <Link>Linked\Ipc\RuntimeIpcCommands.cs</Link>
     </Compile>
+    <!-- シーンの写し（SNAPSHOT_SCENE）の命令・応答・メインカメラの姿勢（中核の Android/Ipc/AndroidIpcSnapshot が使う。§20.17） -->
+    <Compile Include="..\..\src\SceneSnapshot\SceneSnapshotWire.cs">
+      <Link>Linked\SceneSnapshot\SceneSnapshotWire.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\SceneSnapshot\SceneSnapshotReply.cs">
+      <Link>Linked\SceneSnapshot\SceneSnapshotReply.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\SceneSnapshot\SceneSnapshotCameraPose.cs">
+      <Link>Linked\SceneSnapshot\SceneSnapshotCameraPose.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\ProjectSettings\ScreenOrientationSetting.cs">
       <Link>Linked\ProjectSettings\ScreenOrientationSetting.cs</Link>
     </Compile>

@@ -12,6 +12,11 @@
 //              つながらなければ（古い APK 等）一時停止は使えないまま実行を続ける（理由を Output とツールチップへ）。
 //              通信路が切れたら、すぐ pidof で確かめ、アプリが終わっていれば「アプリが終わった」（見張りより先に気付く）、
 //              動いていればつなぎ直す（端末のランタイムは切断で一時停止を解くので、Paused なら Running へ戻す）
+//    - 一時停止中の写し（docs/android.md §20.17）: PAUSE を送れたら、同じ通信路で SNAPSHOT_SCENE を送って端末のシーンの
+//              現在の状態を書き出させ、run-as で <プロジェクト>/cache/android/snapshot/paused.scene へ取り出す（中核の
+//              Android/Ipc/AndroidIpcSnapshot）。取り出せたら状態（AndroidRunSnapshot.PauseSnapshot）を Ready にし、
+//              エディタ（AndroidPauseSnapshotViewCoordinator）がシーンパネルへ閲覧専用で出す。取り出せなくても一時停止は成功のまま
+//              （理由を Output へ）。再開・停止・切断・アプリの終了で取り出しを取り消す（遅れて届いた結果は回数で捨てる）
 //    - 停止: 中断の合図を送り（ビルド中なら子プロセスとその子孫の終了を中核が待つ）、パイプラインが戻るのを待ってから、
 //            IPC を閉じて forward を外し、起動の工程に入っていればアプリを止める（am force-stop。実行の合図とは別の新しい合図・時間切れ付き）
 //    - 終了: パイプラインが戻ったら終わり方を 1 行出して Idle へ
@@ -79,6 +84,12 @@ public sealed class AndroidRunController : IDisposable
 
     /// <summary>IPC の接続の世代（つなぎ始める・閉じるたびに進め、古い接続の知らせを捨てる）。</summary>
     private int _ipcGeneration;
+
+    /// <summary>一時停止中の写しを PC に置くパス（プロジェクトが分からなければ null＝写しを取り出さない。§20.17）。</summary>
+    private string? _pauseSnapshotPath;
+
+    /// <summary>写しの取り出しの中断の合図（取り出していなければ null）。</summary>
+    private CancellationTokenSource? _pauseSnapshotCancellation;
 
     /// <summary>中核の入口と時間の決まりを指定して作る。</summary>
     /// <param name="backend">中核の入口。</param>
@@ -157,6 +168,8 @@ public sealed class AndroidRunController : IDisposable
                 ? AndroidIpcSettings.ResolveDevicePort(request.IpcPort)
                 : null;
             _ipcToken = request.IpcToken;
+            // 一時停止中の写しの置き場（プロジェクトの cache/。§20.17）
+            _pauseSnapshotPath = AndroidPauseSnapshotFiles.LocalPathFor(request.ProjectDir);
         }
         RaiseStateChanged();
         Emit(AndroidRunOutputFormatter.Started(targetText, request.ProjectDir));
@@ -181,6 +194,7 @@ public sealed class AndroidRunController : IDisposable
         }
         RaiseStateChanged();
         Emit(AndroidRunOutputFormatter.Stopping(AndroidRunStopReason.User));
+        CancelPauseSnapshot();
         // 中断の合図は子プロセスを止める処理（プロセスツリーの終了）を同期に呼ぶので、UI スレッドを止めないよう別スレッドで送る
         _ = Task.Run(() => TryCancel(cancellation));
         return completion;
@@ -214,6 +228,8 @@ public sealed class AndroidRunController : IDisposable
             return false;
         }
         Emit(AndroidRunOutputFormatter.Paused(targetText));
+        // 端末のシーンの写しを取り出す（取り出せなくても一時停止は成功のまま。§20.17）
+        StartPauseSnapshot(link);
         return true;
     }
 
@@ -232,6 +248,8 @@ public sealed class AndroidRunController : IDisposable
             link = _ipcLink;
             targetText = _machine.TargetText;
         }
+        // 写しの取り出しの途中なら取り消す（状態機械は再開で写しを None に戻している）
+        CancelPauseSnapshot();
         RaiseStateChanged();
         link?.Send(RuntimeIpcCommands.Resume);
         Emit(AndroidRunOutputFormatter.Resumed(targetText));
@@ -258,6 +276,7 @@ public sealed class AndroidRunController : IDisposable
             monitor = _monitorCancellation;
             (link, ipc) = DetachIpcLocked();
         }
+        CancelPauseSnapshot();
         TryCancel(ipc);
         TryCancel(monitor);
         TryCancel(run);
@@ -284,6 +303,7 @@ public sealed class AndroidRunController : IDisposable
                     : new AndroidPipelineResult { FailureKind = AndroidFailureKind.Build, FailureMessage = $"予期しないエラー（{ex.GetType().Name}）: {ex.Message}" };
             }
             StopMonitor();
+            CancelPauseSnapshot();
             // IPC を閉じて forward を外す（アプリを止める前に。止めた後の切断の知らせは世代で捨てる）
             await CloseIpcAsync().ConfigureAwait(false);
 
@@ -440,6 +460,7 @@ public sealed class AndroidRunController : IDisposable
         }
         RaiseStateChanged();
         Emit(AndroidRunOutputFormatter.Stopping(AndroidRunStopReason.AppExited));
+        CancelPauseSnapshot();
         TryCancel(cancellation);
     }
 
@@ -549,6 +570,8 @@ public sealed class AndroidRunController : IDisposable
             serial = _machine.Serial;
             applicationId = _machine.ApplicationId;
         }
+        // 写しの取り出しの途中なら取り消す（通信路が切れたので応答は来ない。端末は一時停止を解いている）
+        CancelPauseSnapshot();
         RaiseStateChanged();
         // 自分が張った forward を外す（接続はもう切れている）
         _ = CloseLinkQuietlyAsync(link);
@@ -633,6 +656,89 @@ public sealed class AndroidRunController : IDisposable
         {
             // 閉じられなくても実行の段取りは続ける
         }
+    }
+
+    // ── 一時停止中の端末のシーンの写し（docs/android.md §20.17）──────────────
+
+    /// <summary>
+    /// 写しの取り出しを始める（PAUSE を送れた直後。一時停止中で、置き場と端末が分かっているときだけ）。
+    /// 取り出しはスレッドプールで進み、結果は回数で照合して状態機械へ入れる（再開した後に届いた結果は捨てる）。
+    /// </summary>
+    /// <param name="link">PAUSE を送った通信路（同じ通信路で SNAPSHOT_SCENE を送る）。</param>
+    private void StartPauseSnapshot(IAndroidIpcLink link)
+    {
+        int generation;
+        string serial;
+        string applicationId;
+        string localPath;
+        string? targetText;
+        CancellationTokenSource cancellation;
+        CancellationTokenSource? previous;
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_ipcLink, link) || _pauseSnapshotPath is not { } path
+                || _machine.Serial is not { } s || _machine.ApplicationId is not { } id
+                || _machine.BeginPauseSnapshot() is not { } g)
+            {
+                return;
+            }
+            generation = g;
+            serial = s;
+            applicationId = id;
+            localPath = path;
+            targetText = _machine.TargetText;
+            cancellation = new CancellationTokenSource();
+            previous = _pauseSnapshotCancellation;
+            _pauseSnapshotCancellation = cancellation;
+        }
+        TryCancel(previous);
+        RaiseStateChanged();
+        Emit(AndroidPauseSnapshotOutputFormatter.Fetching(targetText));
+        _ = Task.Run(() => FetchPauseSnapshotAsync(serial, applicationId, link, localPath, generation, cancellation.Token));
+    }
+
+    /// <summary>写しを取り出して状態機械へ入れる（スレッドプール）。取り消されたら何も出さない。</summary>
+    private async Task FetchPauseSnapshotAsync(
+        string serial, string applicationId, IAndroidIpcLink link, string localPath, int generation, CancellationToken cancellationToken)
+    {
+        AndroidSceneSnapshotResult result;
+        try
+        {
+            result = await _backend.FetchSceneSnapshotAsync(serial, applicationId, link, localPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 再開・停止・切断で取り消した（状態機械は写しを None に戻している）
+            return;
+        }
+        catch (Exception ex)
+        {
+            bool reported;
+            lock (_gate) reported = _machine.PauseSnapshotFailed(generation, ex.Message);
+            if (!reported) return;
+            RaiseStateChanged();
+            Emit(AndroidPauseSnapshotOutputFormatter.FetchFailed(ex.Message));
+            return;
+        }
+
+        bool accepted;
+        lock (_gate) accepted = !cancellationToken.IsCancellationRequested
+                                && _machine.PauseSnapshotFetched(generation, result.LocalPath, result.Reply.Camera);
+        if (!accepted) return;
+        RaiseStateChanged();
+        foreach (var line in AndroidPauseSnapshotOutputFormatter.Fetched(result)) Emit(line);
+    }
+
+    /// <summary>写しの取り出しの途中なら取り消す（取り出していなければ何もしない）。</summary>
+    private void CancelPauseSnapshot()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_gate)
+        {
+            cancellation = _pauseSnapshotCancellation;
+            _pauseSnapshotCancellation = null;
+        }
+        TryCancel(cancellation);
     }
 
     // ── 部品 ───────────────────────────────────────────

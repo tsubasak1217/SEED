@@ -168,6 +168,11 @@ impl App {
             None => Vec::new(),
         };
         for cmd in cmds {
+            // ── 端末の一時停止の写しを閲覧専用で出している間は、保存・編集・シーンの切り替えを捨てる ──
+            //   （判断と応答は app/snapshot_view_ops.rs。出していなければ何もしない。docs/android.md §20.17）
+            if self.refuse_in_snapshot_view(&cmd) {
+                continue;
+            }
             // ── インスペクタのフィールド編集を Undo 履歴へ載せる（汎用機構） ──
             //   コマンドを分類し、対象があれば適用「前」の値をスナップショットしておく。
             //   個別ハンドラには一切手を入れず、この 1 箇所で全 SET_* 経路を拾う
@@ -1294,6 +1299,10 @@ impl App {
                 // まとめて適用する（シーンの読み直しは何件あっても 1 回。hot_reload_ops.rs）。
                 IpcCommand::HotReload(request) => {
                     self.hot_reload_batch.push(request);
+                }
+                // シーンの写し（書き出し・エディタでの閲覧と戻し。app/scene_snapshot_ops.rs・app/snapshot_view_ops.rs）
+                IpcCommand::SceneSnapshot(command) => {
+                    self.handle_snapshot_command(command);
                 }
                 IpcCommand::DuplicateComponent { actor_dfs_id, slot_idx } => {
                     self.handle_duplicate_component(actor_dfs_id, slot_idx);

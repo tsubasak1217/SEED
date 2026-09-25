@@ -1443,6 +1443,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
     private void OnWindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
     {
+        // 端末の一時停止の写しを出している間は、先に編集中のシーンへ戻してから閉じ直す
+        // （下の「保存しますか」を元のシーンについて尋ねるため。MainWindow.AndroidSnapshot.cs。§20.17）
+        if (DeferCloseUntilSnapshotViewEnds())
+        {
+            e.Cancel = true;
+            return;
+        }
+
         // ヘッドレスでは未保存確認を出さずにそのまま閉じる。
         // ここでダイアログを出すと、画面外に出たモーダルを誰も操作できず終了できない
         //（seed_shutdown が永久に返らない）。安全側（Cancel）へ倒すと今度は終了要求自体が

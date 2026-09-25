@@ -325,6 +325,12 @@ public partial class MainWindow
     {
         if (_deleteDialogOpen) return;
         if (_runtimeManager?.State != EditorState.Edit) return;
+        // 端末の一時停止の写しの表示中（閲覧専用）は削除の確認も出さない（ランタイムも削除を捨てる。§20.17）
+        if (CurrentReadOnlyState.DeniesEdit)
+        {
+            ShowToast(SnapshotRefusedToast);
+            return;
+        }
 
         // リネーム中（TextBox にフォーカスあり）は削除しない
         if (FocusManager.GetFocusedElement(this) is TextBox) return;
@@ -393,12 +399,14 @@ public partial class MainWindow
     /// </summary>
     private bool RefuseSaveIfReadOnly()
     {
-        var reason = SceneSaveDenialReason;
+        // 判断は Scene/EditorReadOnlyPolicy（別のエディタのロック・端末の一時停止の写しの表示中。§20.17）
+        var state = CurrentReadOnlyState;
+        var reason = state.SaveDenialReason;
         if (reason is null) return false;
 
         EditorLog.Write($"保存を拒否しました: {reason}");
         // ヘッドレスではモーダルを出せないのでトーストとログのみ（非モーダル）。
-        ShowToast("読み取り専用のため保存できません");
+        ShowToast(state.SaveDeniedToast ?? SEEDEditor.Scene.EditorReadOnlyPolicy.LockSaveDeniedToast);
         if (!SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
             MessageBox.Show(reason, "SEED Editor", MessageBoxButton.OK, MessageBoxImage.Warning);
         return true;
@@ -434,6 +442,9 @@ public partial class MainWindow
     private bool ShowSaveAsDialog()
     {
         if (_runtimeManager?.State != EditorState.Edit) return false;
+        // 端末の一時停止の写しの表示中は、ダイアログを出す前に止める（写しの内容を別名で保存させない。§20.17）。
+        // 別のエディタのロックのときは従来どおり（ダイアログの後の ExecuteSaveAs が止める）
+        if (CurrentReadOnlyState.Cause == SEEDEditor.Scene.EditorReadOnlyCause.DeviceSnapshotView && RefuseSaveIfReadOnly()) return false;
         // キャンバス編集タブ表示中の保存はシーン保存として扱う（DoQuickSave と同じ理由）
         CloseActiveSceneCanvasTab();
         EndInactiveSceneCanvasTabs();
@@ -594,6 +605,8 @@ public partial class MainWindow
 
                 // 保存→Android で実行（「保存して実行」。MainWindow.AndroidRun.cs）
                 ContinuePendingAndroidRun(saved: true);
+                // 保存→端末の写しを表示（「保存して表示」。MainWindow.AndroidSnapshot.cs。§20.17）
+                ContinuePendingSnapshotSave(saved: true);
             }
             else
             {
@@ -603,6 +616,8 @@ public partial class MainWindow
                 _pendingSceneLoad = null;
                 // 「保存して実行」の続きも取りやめる（保存していない内容で実行しない）
                 ContinuePendingAndroidRun(saved: false);
+                // 「保存して表示」の続きも取りやめる（未保存の変更を守るため写しは出さない）
+                ContinuePendingSnapshotSave(saved: false);
                 EditorLog.Write($"OnSaveCompleted — 保存失敗: {errorMsg}");
                 SEEDEditor.Headless.EditorDialogs.Show(
                     $"保存に失敗しました:\n{DescribeSaveError(errorMsg)}", "SEED Editor",
@@ -670,9 +685,10 @@ public partial class MainWindow
         var name = _currentScenePath != null
             ? System.IO.Path.GetFileNameWithoutExtension(_currentScenePath)
             : "新規シーン";
-        // 読み取り専用（他インスタンスがロック保持中）は必ずタイトルへ出す。
-        // 保存できないことに気づかないまま作業を続ける事故を防ぐため。
-        var readOnly = _sceneReadOnly ? $" {ReadOnlyTitleMark}" : "";
+        // 読み取り専用（他インスタンスがロック保持中）・閲覧専用（端末の一時停止の写しの表示中）は必ずタイトルへ出す。
+        // 保存できないことに気づかないまま作業を続ける事故を防ぐため（印は EditorReadOnlyPolicy が決める）。
+        var mark = CurrentReadOnlyState.TitleMark;
+        var readOnly = mark is null ? "" : $" {mark}";
         Title = _isDirty ? $"SEED Editor — {name}*{readOnly}" : $"SEED Editor — {name}{readOnly}";
         MenuQuickSave.Header = _currentScenePath != null ? "上書き保存" : "上書き保存（未保存）";
     }

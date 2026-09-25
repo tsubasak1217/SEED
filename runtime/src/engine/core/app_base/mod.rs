@@ -16,6 +16,9 @@ pub mod prefab_hash;
 pub mod project_settings;
 pub mod safe_write;
 pub mod scene;
+/// シーンの写し（SNAPSHOT_SCENE）と写しの閲覧（SNAPSHOT_VIEW_*）の書式・集め方（純粋な処理。App への適用は
+/// app/scene_snapshot_ops.rs・app/snapshot_view_ops.rs。docs/android.md §20.17）
+pub mod scene_snapshot;
 /// シーン単位のビューポート／レンダリング設定（`.scene` の settings 節）
 pub mod scene_settings;
 pub mod undo;

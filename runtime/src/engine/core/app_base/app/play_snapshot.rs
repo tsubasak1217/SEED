@@ -296,6 +296,32 @@ impl App {
         }
     }
 
+    /// 端末の写しを閲覧専用で出す前（SNAPSHOT_VIEW_BEGIN。app/snapshot_view_ops.rs）に、編集中のシーンを
+    /// **Play 開始時と同じ形**でメモリへ退避する（docs/android.md §20.17）。
+    ///
+    /// 写しの読み込みはシーンを丸ごと差し替えるので、Play 中のシーン遷移と同じ「完全版」（PlayStartState）が要る:
+    /// シーン JSON（地形は位置マーカー）・アクター編集タブ・デバッグカメラ。地形の実データは呼び出し側が差し替えの
+    /// 直前に move で入れ（`terrain`）、戻すときは `restore_from_play_start` をそのまま使う（ファイルを読まないので
+    /// 未保存の編集・スカルプトも戻る）。`transitioned` は立てておく（差し替えが起きる前提の退避のため）。
+    ///
+    /// # 戻り値
+    /// 退避した状態。シーンが無い・直列化に失敗したときは理由（呼び出し側は写しを出さないか、保存済みの
+    /// ファイルの読み直しで戻す）。
+    pub(super) fn capture_edit_stash(&self) -> Result<PlayStartState, String> {
+        // デバッグカメラは self の別フィールドなので、scene を借りる前に取っておく。
+        let camera = self.debug_camera_data();
+        let scene = self.scene.as_ref().ok_or_else(|| "シーンが読み込まれていません".to_string())?;
+        let CapturedTopLevels { json_actors, edit_tabs, .. } = capture_top_levels(&scene.actors, &scene.world);
+        let json = scene
+            .to_json_with_actors(Some(&camera), &json_actors)
+            .map_err(|e| format!("編集中のシーンを直列化できません: {e}"))?;
+        let mut state = PlayStartState::new(self.loaded_scene_path.clone());
+        state.scene_json = Some(json);
+        state.edit_tabs = edit_tabs;
+        state.transitioned = true;
+        Ok(state)
+    }
+
     /// Play 中の **シーン差し替え直前** に呼ぶフック。地形の実データを退避する。
     ///
     /// install_loaded_scene は必ず rebuild_terrain_after_load を呼び、その中で

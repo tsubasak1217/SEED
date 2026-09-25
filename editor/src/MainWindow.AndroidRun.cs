@@ -14,7 +14,8 @@
 //    - 起動するシーン（PC の Play と同じ「開いているシーン」）… AndroidRunSceneChoice
 //    - 未保存の変更の確認（保存して実行 / 保存せず実行 / キャンセル）… AndroidUnsavedChangesPrompt
 //    - Output パネルの行                        … AndroidRunOutputFormatter の行を色付きで EditorLog へ
-//    - Android の実行中のビューポート（PC のランタイムを隠して「Android で実行中（端末: …）」を出す）
+//    - Android の実行中のビューポート（PC のランタイムを隠して「Android で実行中（端末: …）」を出す。一時停止中は
+//      端末のシーンの写しを編集用ランタイムに閲覧専用で出し、バナーを出す〈§20.17。段取りは MainWindow.AndroidSnapshot.cs〉）
 //      … AndroidViewportPolicy（当てるのは ApplyAndroidViewport）
 //  PC の実行（従来の Play）は OnPlayPause / OnStop のまま。実行・停止ボタンの Click はここで行き先を振り分ける。
 //  エミュレータの AVD はエディタの設定 android.emulator_avd（EditorPreferences.Android。設定の画面は無い）。
@@ -187,10 +188,15 @@ public partial class MainWindow
                 // ビューポート: 動いている間は PC のランタイムを隠して案内を出し、Idle に戻ったら元に戻す
                 ApplyAndroidViewport();
                 _androidHotReload?.OnRunStateChanged(controller.Snapshot, AssetsPath);
+                // 一時停止中の端末のシーンの写し: 取り出せたらシーンパネルへ閲覧専用で出し、一時停止を出たら戻す（§20.17）
+                _snapshotView?.OnRunStateChanged(controller.Snapshot);
             });
             controller.OutputWritten += line => EditorLog.Write(line.Text, line.Style);
             _androidRun = controller;
             _androidHotReload = hotReload;
+            // 写しをシーンパネルへ出す段取り（MainWindow.AndroidSnapshot.cs）と、閲覧専用で捨てた命令の知らせ
+            InitAndroidSnapshotView();
+            if (_runtimeManager is not null) _runtimeManager.RawMessageReceived += OnRuntimeLineForSnapshotView;
         }
         if (!environment.Availability.IsAvailable)
         {
@@ -398,14 +404,21 @@ public partial class MainWindow
     /// <summary>
     /// Android の実行の状態に合わせてビューポート（シーンパネル）を当てる（判断は AndroidViewportPolicy。UI スレッド）。
     /// 動いている間は PC のランタイムの子ウィンドウとホストを隠し、起動中画面（ViewportLoadingOverlay）に
-    /// 「Android で実行中（端末: …）」などの案内を出す。Idle に戻ったら PC の状態の表示へ戻す。
+    /// 「Android で実行中（端末: …）」などの案内を出す。一時停止中に端末のシーンの写しを出している間は、PC のランタイム
+    /// （写しを読み込んだ編集用ランタイム）を見せてビューポートの上に閲覧専用のバナーを出す（§20.17）。
+    /// Idle に戻ったら PC の状態の表示へ戻す。
     /// Android が動いていないうちは何もしない（PC の Play / Edit の表示は ApplyUiState が当てたまま）。
-    /// Android の状態の変化（StateChanged）と PC の状態遷移（ApplyUiState の最後）から呼ぶ。
+    /// Android の状態の変化（StateChanged）・写しの段取りの変化・PC の状態遷移（ApplyUiState の最後）から呼ぶ。
     /// </summary>
     /// <param name="pcState">PC の状態（ApplyUiState から渡す。null ならランタイムの今の状態）。</param>
     private void ApplyAndroidViewport(EditorState? pcState = null)
     {
-        var view = AndroidViewportPolicy.Compute(_androidRun?.Snapshot ?? AndroidRunSnapshot.Idle);
+        var view = AndroidViewportPolicy.Compute(
+            _androidRun?.Snapshot ?? AndroidRunSnapshot.Idle,
+            _snapshotView?.ViewPhase ?? SEEDEditor.SceneSnapshot.SceneSnapshotViewPhase.Idle,
+            _snapshotView?.GivenUpGeneration ?? 0);
+        // 閲覧専用のバナー（写しを出している間だけ。帯はビューポートと別の行なので HwndHost に隠れない）
+        SnapshotViewBanner.Show(view.BannerText);
         if (view.HidesRuntime)
         {
             var first = !_androidViewportNoticeShown;
@@ -419,6 +432,8 @@ public partial class MainWindow
             return;
         }
 
+        // PC のランタイム（Idle に戻った）か、端末の写しを読み込んだ編集用ランタイム（一時停止中・閲覧専用）を見せる。
+        // どちらも「案内を閉じて PC のランタイムの子ウィンドウを出し直す」同じ手順
         if (!_androidViewportNoticeShown) return;
         _androidViewportNoticeShown = false;
         RestorePcViewportAfterAndroid(pcState ?? _runtimeManager?.State ?? EditorState.Idle);

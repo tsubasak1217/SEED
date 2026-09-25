@@ -1015,6 +1015,10 @@ public partial class MainWindow
         // Android の実行中は、上で当てた PC のビューポートの表示より「Android で実行中」の案内を優先する
         // （MainWindow.AndroidRun.cs。判断は AndroidViewportPolicy。Android が動いていなければ何もしない）
         ApplyAndroidViewport(state);
+
+        // 端末の一時停止の写しを出している間に編集用ランタイムが Edit でなくなったら（落ちて作り直し等）写しの表示を畳み、
+        // 閲覧専用の表示（インスペクタ・ヒエラルキー・ギズモ）を当て直す（MainWindow.AndroidSnapshot.cs。§20.17）
+        OnPcStateChangedForSnapshotView(state);
     }
 
     /// <summary>ランタイムからFPS通知を受け取ったときにUI上の表示を更新する。</summary>

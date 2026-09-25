@@ -445,6 +445,13 @@ public sealed class RuntimeManager : IDisposable
     public event Action<string>? CameraStateReceived;
 
     /// <summary>
+    /// ランタイムから届いたすべての行（受信のスレッドから、個別のイベントより先に発火する）。
+    /// 応答を待ち合わせる段取り（端末の一時停止の写しの閲覧 SNAPSHOT_VIEW_*。docs/android.md §20.17）が使う。
+    /// 受け手は重い処理をしないこと（受信を止める）。
+    /// </summary>
+    public event Action<string>? RawMessageReceived;
+
+    /// <summary>
     /// 編集時物理タイムライン状態が更新されたときに発火する。
     /// 引数: "paused,at_latest,current_frame,total_frames,time_sec"
     /// </summary>
@@ -1774,6 +1781,16 @@ public sealed class RuntimeManager : IDisposable
 
     private void OnPipeMessage(string msg)
     {
+        // 応答を待ち合わせる段取り（写しの閲覧等）へ生の行を渡す。受け手の不具合で受信を止めない
+        try
+        {
+            RawMessageReceived?.Invoke(msg);
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"[Runtime→Editor] RawMessageReceived の受け手で例外: {ex.Message}");
+        }
+
         if (msg.StartsWith("READY:", StringComparison.Ordinal) &&
             long.TryParse(msg["READY:".Length..], out var hwnd))
         {
@@ -2277,6 +2294,12 @@ public sealed class RuntimeManager : IDisposable
             var (id, payload) = SplitModelThumbnailPayload(msg[MODEL_THUMBNAIL_FAILED_PREFIX.Length..]);
             EditorLog.Write($"[Runtime→Editor] {msg}");
             ModelThumbnailFailed?.Invoke(id, payload);
+        }
+        else if (msg.StartsWith("SNAPSHOT_", StringComparison.Ordinal))
+        {
+            // 端末の一時停止の写しの閲覧（SNAPSHOT_VIEW_READY / FAILED / ENDED / REFUSED。docs/android.md §20.17）。
+            // 待ち合わせは RawMessageReceived の受け手（SceneSnapshotViewSession）が行うので、ここでは記録だけ
+            EditorLog.Write($"[Runtime→Editor] {msg}");
         }
         else if (msg.StartsWith("LOAD_ERROR:", StringComparison.Ordinal))
         {

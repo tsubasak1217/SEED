@@ -54,7 +54,11 @@ public partial class MainWindow
             // （解決でファイルが書き換われば、次の変更通知で読み直される）。
             reloadBlockReason: path => SceneConflictGuard.IsConflicted(path)
                 ? SceneConflictGuard.MESSAGE_RELOAD_SKIPPED
-                : null);
+                // 端末の一時停止の写しの表示中は、編集中のシーンが退避中なので読み直さない（§20.17。再開・停止で戻った後に
+                // 「ディスクから再読込」で取り込める）
+                : _snapshotView?.IsViewActive == true
+                    ? SnapshotReloadSkippedMessage
+                    : null);
 
         // 既に開いているシーンがあれば、その時点から監視を始める
         _sceneAutoReloader.SetScenePath(_currentScenePath);

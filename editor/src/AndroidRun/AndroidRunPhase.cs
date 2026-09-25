@@ -6,11 +6,31 @@
 //                    │  └──────停止──────────────────────────────────────────────▶ Stopping ──▶ Idle
 //                    └──失敗・logcat の終わり（パイプラインが戻った）──────────────────────────────▶ Idle
 //  Running ⇄ Paused は端末のアプリとの IPC（TCP。段階D-1）がつながっているときだけ（AndroidIpcStatus.Connected）。
+//  Paused の間は端末のシーンの写しを取り出す（AndroidPauseSnapshotStatus。docs/android.md §20.17）。
 //
 //  WPF に依存しない（editor/tests/AndroidRunUiTests からリンクされる）。
 // ============================================================
 
 namespace SEEDEditor.AndroidRun;
+
+/// <summary>
+/// 一時停止中の端末のシーンの写し（SNAPSHOT_SCENE で書き出させて run-as で PC へ取り出したもの）の状態。
+/// Paused の間だけ意味を持ち、Paused を出る（再開・停止・切断・アプリの終了）と None に戻る。
+/// </summary>
+public enum AndroidPauseSnapshotStatus
+{
+    /// <summary>取り出していない（一時停止していない）。</summary>
+    None,
+
+    /// <summary>取り出している途中（端末が書き出す → PC へ写す）。</summary>
+    Fetching,
+
+    /// <summary>取り出せた（PC のファイルがある。エディタがシーンパネルに閲覧専用で出す）。</summary>
+    Ready,
+
+    /// <summary>取り出せなかった（理由は AndroidPauseSnapshotState.Note。一時停止は続いている）。</summary>
+    Failed,
+}
 
 /// <summary>Android の実行の状態。</summary>
 public enum AndroidRunPhase

@@ -1,5 +1,6 @@
 use crate::engine::core::app_base::hot_reload::wire as hot_reload_wire;
 use crate::engine::core::app_base::ipc_transport::{self, IpcTransportKind};
+use crate::engine::core::app_base::scene_snapshot::wire as scene_snapshot_wire;
 use crate::engine::core::input::inject::{parse_inject_command, INJECT_COMMAND_PREFIX};
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -528,6 +529,10 @@ pub enum IpcCommand {
     /// 書式と応答（RELOAD_DONE: / RELOAD_SKIPPED: / RELOAD_FAILED:）の正典は hot_reload/wire.rs。
     /// App はフレームの境界でまとめて適用する（app/hot_reload_ops.rs）。
     HotReload(crate::engine::core::app_base::hot_reload::HotReloadRequest),
+    /// シーンの写し（SNAPSHOT_SCENE:{パス} / SNAPSHOT_VIEW_BEGIN:{パス}[|file_ok] / SNAPSHOT_VIEW_END。docs/android.md §20.17）。
+    /// 書式と応答（SNAPSHOT_DONE: / SNAPSHOT_VIEW_READY: …）の正典は scene_snapshot/wire.rs。
+    /// App の処理は app/scene_snapshot_ops.rs（書き出し）と app/snapshot_view_ops.rs（エディタでの閲覧・戻し）。
+    SceneSnapshot(crate::engine::core::app_base::scene_snapshot::SnapshotCommand),
     /// コンポーネントスロットを複製する
     /// フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
     DuplicateComponent { actor_dfs_id: u32, slot_idx: u32 },
@@ -2316,6 +2321,11 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                         // 実行中の差し替え（RELOAD_SCENE[:相対パス] / RELOAD_ASSET:相対パス。書式の正典は hot_reload/wire.rs。
                         // 受け付けないパスも Invalid として積み、応答で理由を返す＝相手を応答待ちのまま待たせない）
                         s if hot_reload_wire::is_reload_line(s) => hot_reload_wire::parse(s).map(IpcCommand::HotReload),
+                        // シーンの写し（SNAPSHOT_SCENE:パス / SNAPSHOT_VIEW_BEGIN:パス[|file_ok] / SNAPSHOT_VIEW_END。
+                        // 書式の正典は scene_snapshot/wire.rs。docs/android.md §20.17）
+                        s if scene_snapshot_wire::is_snapshot_line(s) => {
+                            scene_snapshot_wire::parse(s).map(IpcCommand::SceneSnapshot)
+                        }
                         s if s.starts_with("DUPLICATE_COMPONENT:") => {
                             // フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
                             parse2u(&s["DUPLICATE_COMPONENT:".len()..])
@@ -3398,6 +3408,30 @@ mod tests {
         assert_eq!(*requests[1], HotReloadRequest::Scene { only_if: Some("scenes/Main.scene".to_string()) });
         assert_eq!(*requests[2], HotReloadRequest::Asset { relative: "ui/a.png".to_string() });
         assert!(matches!(requests[3], HotReloadRequest::Invalid { .. }));
+    }
+
+    /// シーンの写しの命令（SNAPSHOT_SCENE / SNAPSHOT_VIEW_BEGIN / SNAPSHOT_VIEW_END）が SceneSnapshot として届く
+    /// （docs/android.md §20.17）。パスの無い命令は捨てる。
+    #[test]
+    fn read_loop_parses_scene_snapshot_commands() {
+        use crate::engine::core::app_base::scene_snapshot::SnapshotCommand;
+        let (commands, _) = read_all(
+            "SNAPSHOT_SCENE:/data/user/0/com.x/cache/seed_ipc_snapshot.scene\nSNAPSHOT_VIEW_BEGIN:C:/p/paused.scene|file_ok\nSNAPSHOT_SCENE:\nSNAPSHOT_VIEW_END\n",
+        );
+        let snapshots: Vec<&SnapshotCommand> = commands
+            .iter()
+            .map(|command| match command {
+                IpcCommand::SceneSnapshot(snapshot) => snapshot,
+                _ => panic!("SceneSnapshot を期待した"),
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 3, "パスの無い SNAPSHOT_SCENE は捨てる");
+        assert_eq!(
+            *snapshots[0],
+            SnapshotCommand::Snapshot { path: "/data/user/0/com.x/cache/seed_ipc_snapshot.scene".to_string() }
+        );
+        assert_eq!(*snapshots[1], SnapshotCommand::ViewBegin { path: "C:/p/paused.scene".to_string(), allow_file_restore: true });
+        assert_eq!(*snapshots[2], SnapshotCommand::ViewEnd);
     }
 
     /// 受け手（App）が居なくなったら ReceiverGone で終わる（TCP の受け付けスレッドが受け付けをやめる合図）。

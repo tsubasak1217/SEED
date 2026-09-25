@@ -132,6 +132,10 @@ mod scene_save_ops;
 mod play_mode_ops;
 /// Play 開始時の編集状態の退避と復元（軽量スナップショット＋シーン遷移対策の完全スナップショット）。
 mod play_snapshot;
+/// SNAPSHOT_SCENE: いまの世界（スクリプトが生成したアクタを含む）を既存のシーン形式で書き出す（docs/android.md §20.17）。
+mod scene_snapshot_ops;
+/// SNAPSHOT_VIEW_BEGIN / END: エディタの編集用ランタイムで写しを閲覧専用に出し、編集中のシーンへ戻す（§20.17）。
+mod snapshot_view_ops;
 /// 【一時】埋め込み Play の凍結/黒画面 診断計器（ウォッチドッグ・ステージ印・イベントトレース）。原因確定後に撤去。
 mod play_diag;
 mod audio_ops;
@@ -1529,6 +1533,12 @@ pub struct App {
     /// 破棄するのは「Play 開始状態の復元に失敗し、開始シーンをファイルから読み直した」経路
     /// だけである（未保存編集が失われ、履歴が前提とする状態を再現できないため）。
     pub(super) undo_history_before_play: Option<UndoHistory>,
+
+    // ── 端末の一時停止の写しの閲覧（docs/android.md §20.17）─────────────────
+    /// エディタの編集用ランタイムで端末の写しを閲覧専用に出している間の状態
+    /// （退避した編集中のシーン・Undo 履歴・ツール。app/snapshot_view_ops.rs）。
+    /// Some の間は保存・編集の命令を捨てる。None = 出していない（通常の Edit）。
+    snapshot_view: Option<snapshot_view_ops::SnapshotViewState>,
 }
 
 /// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
@@ -1796,6 +1806,8 @@ impl App {
             play_start:          None,
             // Play をまたぐ Undo 履歴の退避（起動直後は退避なし）。
             undo_history_before_play: None,
+            // 端末の写しの閲覧（起動直後は出していない）
+            snapshot_view: None,
         }
     }
 

@@ -110,7 +110,8 @@ impl App {
             // ── モーダルトランスフォーム（Blender 風 G/R/S）─────────────
             // 開始キーと、モーダル中の全キーをここで消費する。
             // Ctrl 併用時は既存ショートカット（Ctrl+Z/Y 等）を優先するため通さない。
-            if pressed && !self.ctrl_held && self.handle_modal_transform_key(key) {
+            // 端末の写しを閲覧専用で出している間は始めない（写しは動かさない。app/snapshot_view_ops.rs）。
+            if pressed && !self.ctrl_held && !self.is_snapshot_view_active() && self.handle_modal_transform_key(key) {
                 return;
             }
             // モーダル中はキーリリースも含めて以降の処理を行わない
@@ -194,8 +195,12 @@ impl App {
     /// 【無視する条件】
     /// - RMB でのカメラ操作中（Q/W/E は上下・前後移動キーを兼ねるため）
     /// - モーダルトランスフォーム進行中（モーダルはツール切替と排他）
+    /// - 端末の一時停止の写しを閲覧専用で出している間（選択ツールに固定。app/snapshot_view_ops.rs。docs/android.md §20.17）
     pub(super) fn set_tool_mode_from_hotkey(&mut self, tool: ToolMode) {
         if self.cam_input.rmb || self.modal_transform_active() {
+            return;
+        }
+        if self.is_snapshot_view_active() && tool != ToolMode::Select {
             return;
         }
         if !(self.mode == RuntimeMode::Edit || self.paused) {

@@ -1666,6 +1666,14 @@
                                             </DockPanel>
                                         </Border>
 
+                                        <!-- ── 閲覧専用のバナー（Row 1, 全列スパン。docs/android.md §20.17）────────
+                                             Android の一時停止中に端末のシーンの写しをシーンパネルへ出している間だけ Visible。
+                                             写しを出すときは地形モードを抜ける（地形ツールバーは Collapsed）ので同じ行を共有できる。
+                                             HwndHost（ビューポート）とは別の行に置くため Airspace 問題なし。
+                                             文言は EditorReadOnlyPolicy / AndroidViewportPolicy が決め、ApplyAndroidViewport が当てる。 -->
+                                        <ctrl:ReadOnlyViewBanner x:Name="SnapshotViewBanner"
+                                                                 Grid.Row="1" Grid.ColumnSpan="3"/>
+
                                         <!-- ── 地形（terrain）グローバル操作バー（Row 1, 全列スパン）────────
                                              CmbSceneMode が terrain のときだけ Visible になる。
                                              HwndHost（ビューポート）とは別の行に置くため Airspace 問題なし。

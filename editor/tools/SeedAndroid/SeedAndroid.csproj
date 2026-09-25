@@ -39,6 +39,16 @@
     <Compile Include="..\..\src\Ipc\RuntimeIpcCommands.cs">
       <Link>Linked\Ipc\RuntimeIpcCommands.cs</Link>
     </Compile>
+    <!-- シーンの写し（SNAPSHOT_SCENE）の命令・応答・メインカメラの姿勢（snapshot と、エディタの一時停止の写しで共有。§20.17） -->
+    <Compile Include="..\..\src\SceneSnapshot\SceneSnapshotWire.cs">
+      <Link>Linked\SceneSnapshot\SceneSnapshotWire.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\SceneSnapshot\SceneSnapshotReply.cs">
+      <Link>Linked\SceneSnapshot\SceneSnapshotReply.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\SceneSnapshot\SceneSnapshotCameraPose.cs">
+      <Link>Linked\SceneSnapshot\SceneSnapshotCameraPose.cs</Link>
+    </Compile>
     <!-- プロジェクト設定の値の表（画面の向き・Android アプリの識別情報。エディタのプロジェクト設定ウィンドウと同じ） -->
     <Compile Include="..\..\src\ProjectSettings\ScreenOrientationSetting.cs">
       <Link>Linked\ProjectSettings\ScreenOrientationSetting.cs</Link>

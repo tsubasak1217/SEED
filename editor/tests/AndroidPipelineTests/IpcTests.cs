@@ -47,6 +47,120 @@ public static class IpcTests
         harness.Add("接続トークン: 起動の記録（run_state.json の ipc_launches）の往復と、端末・アプリ ID での引き当て", RunStateRecordsIpcLaunch);
         harness.Add("スクリーンショット: 端末の書き先（アプリのキャッシュ）と応答（DONE の幅・高さ・ERROR の理由）の読み方", ParsesScreenshotReply);
         harness.Add("SeedAndroid: pause / resume / screenshot・--ipc-port（0〜65535）・--out は screenshot だけ・auto は使えない", ParsesControlArguments);
+        harness.Add("写し（§20.17）: 端末の書き先・run-as の引数・SNAPSHOT_SCENE の応答待ち（失敗・切断・時間切れは理由付き）・SeedAndroid の snapshot と --out", SnapshotRequestAndArguments);
+    }
+
+    /// <summary>
+    /// 一時停止中の写し（docs/android.md §20.17）の中核の部品: 端末の書き先・run-as の引数・通信路での応答待ち・SeedAndroid の引数。
+    /// 取り出し（run-as）まで通る成功の流れは実機で確かめる（adb が要るため）。ここでは adb に届く前に終わる流れを確かめる。
+    /// </summary>
+    private static void SnapshotRequestAndArguments()
+    {
+        Check.Equal("/data/user/0/com.seedengine.runtime/cache/seed_ipc_snapshot.scene", AndroidIpcSnapshot.DevicePath(AppId),
+            "アプリのキャッシュの絶対パス（ランタイムは .scene だけを受け付ける）");
+        Check.Equal("exec-out run-as com.seedengine.runtime cat cache/seed_ipc_snapshot.scene",
+            string.Join(" ", AdbClient.RunAsReadFileArguments(AppId, AndroidRuntimeContract.RemoteSnapshotPath)), "run-as で読む");
+
+        // 端末が書き出せなかった（SNAPSHOT_FAILED）: 理由付きの失敗・受け手を外す
+        var failing = new SnapshotLink(command => command.StartsWith(SEEDEditor.SceneSnapshot.SceneSnapshotWire.SnapshotScenePrefix, StringComparison.Ordinal)
+            ? "SNAPSHOT_FAILED:/data/x.scene|シーンが読み込まれていません"
+            : null);
+        var unusedAdb = new AdbClient("adb-is-not-called");
+        var failed = CatchIpcAsync(AndroidIpcSnapshot.FetchAsync(unusedAdb, "SERIAL", AppId, failing, Path.Combine(Path.GetTempPath(), "never.scene"),
+            TimeSpan.FromSeconds(5), CancellationToken.None));
+        Check.True(failed.Message.Contains("シーンが読み込まれていません"), $"端末の理由を伝える: {failed.Message}");
+        Check.Equal($"SNAPSHOT_SCENE:{AndroidIpcSnapshot.DevicePath(AppId)}", failing.Sent.Single(), "命令の書式");
+        Check.Equal(0, failing.Subscribers, "応答の受け手を外す");
+
+        // 応答の前に切れた・時間切れ・送れない
+        SnapshotLink? closing = null;
+        closing = new SnapshotLink(_ =>
+        {
+            // 命令を受け取った直後に端末のアプリが終わった
+            closing!.Disconnect();
+            return null;
+        });
+        var closed = CatchIpcAsync(AndroidIpcSnapshot.FetchAsync(unusedAdb, "SERIAL", AppId, closing, "x.scene", TimeSpan.FromSeconds(5), CancellationToken.None));
+        Check.Equal(AndroidIpcFailureKind.Disconnected, closed.Kind, "応答の前に切れた");
+        Check.True(closed.Message.Contains("応答の前に"), $"切れた理由: {closed.Message}");
+        var silent = new SnapshotLink(_ => null);
+        var timedOut = CatchIpcAsync(AndroidIpcSnapshot.FetchAsync(unusedAdb, "SERIAL", AppId, silent, "x.scene", TimeSpan.FromMilliseconds(50), CancellationToken.None));
+        Check.Equal(AndroidIpcFailureKind.NoReply, timedOut.Kind, "時間切れ");
+        Check.True(timedOut.Message.Contains("書き出しませんでした"), $"時間切れの理由: {timedOut.Message}");
+        var notSent = CatchIpcAsync(AndroidIpcSnapshot.FetchAsync(unusedAdb, "SERIAL", AppId, new SnapshotLink(_ => null) { FailSend = true }, "x.scene",
+            TimeSpan.FromSeconds(5), CancellationToken.None));
+        Check.Equal(AndroidIpcFailureKind.Disconnected, notSent.Kind, "送れない");
+
+        // SeedAndroid: snapshot（--out を使える・auto は使えない・使い方に載る）
+        var snapshot = SeedAndroidArguments.Parse(new[] { "snapshot", "--serial", "2B011JEGR02535", "--out", "a.scene" });
+        Check.True(snapshot.Error is null, $"snapshot: {snapshot.Error}");
+        Check.Equal(SeedAndroidCommand.Snapshot, snapshot.CommandLine!.Command, "サブコマンド");
+        Check.Equal("a.scene", snapshot.CommandLine.OutputPath, "--out");
+        Check.True(SeedAndroidArguments.Parse(new[] { "snapshot", "--serial", "auto" }).Error is not null, "auto は使えない");
+        Check.True(SeedAndroidArguments.OperatesRunningDevice(SeedAndroidCommand.Snapshot), "動いているアプリだけを操作する");
+        Check.True(SeedAndroidArguments.Usage.Contains("snapshot"), "使い方に載せる");
+    }
+
+    /// <summary>非同期の AndroidIpcException を受け止める（投げなければ失敗）。</summary>
+    private static AndroidIpcException CatchIpcAsync(Task task)
+    {
+        try
+        {
+            task.Wait(TimeSpan.FromSeconds(10));
+        }
+        catch (AggregateException ex) when (ex.InnerException is AndroidIpcException ipc)
+        {
+            return ipc;
+        }
+        throw new AssertionException("AndroidIpcException が投げられませんでした");
+    }
+
+    /// <summary>送った命令に決めた行を返す偽の通信路（写しのテスト用。端末・adb を使わない）。</summary>
+    private sealed class SnapshotLink(Func<string, string?> reply) : IAndroidIpcLink
+    {
+        /// <summary>切れると完了する。</summary>
+        private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>受け手。</summary>
+        private Action<string>? _received;
+
+        /// <summary>送った命令。</summary>
+        public List<string> Sent { get; } = new();
+
+        /// <summary>送るのを失敗させるか。</summary>
+        public bool FailSend { get; init; }
+
+        /// <summary>受け手の数（外し忘れの確認用）。</summary>
+        public int Subscribers => _received?.GetInvocationList().Length ?? 0;
+
+        /// <inheritdoc />
+        public event Action<string>? MessageReceived
+        {
+            add => _received += value;
+            remove => _received -= value;
+        }
+
+        /// <inheritdoc />
+        public Task Closed => _closed.Task;
+
+        /// <inheritdoc />
+        public bool Send(string command)
+        {
+            if (FailSend || _closed.Task.IsCompleted) return false;
+            Sent.Add(command);
+            if (reply(command) is { } line) _received?.Invoke(line);
+            return true;
+        }
+
+        /// <summary>切れたことにする。</summary>
+        public void Disconnect() => _closed.TrySetResult();
+
+        /// <inheritdoc />
+        public Task CloseAsync(bool detach)
+        {
+            _closed.TrySetResult();
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>ポートの決め方。</summary>

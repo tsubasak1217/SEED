@@ -16,6 +16,9 @@ namespace AndroidRunUiTests;
 ///   8. Android の実行中の差し替え（変わったファイルのまとめ方・監視の始め方と止め方・Output。HotReloadControllerTests。§23）
 ///   9. パッケージ化の配布用（release の APK / AAB の名前・選択肢・中核への指定・署名のパスワードの保護保存。ReleasePackagingTests。§24）
 ///  10. Android の実行中のビューポート（PC のランタイムを隠して「Android で実行中（端末: …）」を出す。ViewportPolicyTests。§20.16）
+///  11. 一時停止中の端末のシーンの写し（取り出しの状態機械と段取り・ビューポート・Output。PauseSnapshotTests。§20.17）
+///  12. 写しをシーンパネルへ閲覧専用で出す段取り（応答の読み方・編集用ランタイムへの命令・一時停止に合わせた出し入れ・
+///      閲覧専用の判断。SnapshotViewTests。§20.17）
 /// 端末・adb・cargo・Gradle は使わない。
 /// </summary>
 public static class Program
@@ -36,6 +39,8 @@ public static class Program
         HotReloadControllerTests.Register(harness);
         ReleasePackagingTests.Register(harness);
         ViewportPolicyTests.Register(harness);
+        PauseSnapshotTests.Register(harness);
+        SnapshotViewTests.Register(harness);
         return harness.Run();
     }
 }

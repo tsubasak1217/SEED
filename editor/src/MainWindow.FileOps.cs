@@ -38,6 +38,8 @@ public partial class MainWindow
     private void OnSceneFileOpened(string path)
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
+        // 端末の一時停止の写しの表示中は別のシーンを開かない（保存の確認も出さない。§20.17）
+        if (RefuseSceneSwitchIfSnapshotView()) return;
 
         // キャンバス編集タブが開いていたら先に閉じてアクターをシーンへ戻す
         //（LOAD_SCENE は世界線 > 0 のアクターを保持するため、開いたままだと
@@ -103,6 +105,8 @@ public partial class MainWindow
     private void OnActorFileOpened(string path)
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
+        // 端末の一時停止の写しの表示中はアクターの編集タブを開かない（写しは閲覧専用。§20.17）
+        if (RefuseSceneSwitchIfSnapshotView()) return;
 
         // 同じアクターが既にアクティブなら何もしない
         if (_activeActorPath == path) return;
@@ -390,18 +394,13 @@ public partial class MainWindow
     /// <summary>読み取り専用の原因となっているロック保持者（説明メッセージ用）。</summary>
     private SEEDEditor.Scene.SceneLockInfo? _sceneLockHolder;
 
-    /// <summary>読み取り専用時にタイトルへ付ける印。</summary>
-    private const string ReadOnlyTitleMark = "[読み取り専用]";
-
     /// <summary>
-    /// 現在のシーンが保存禁止（読み取り専用）かどうか。
+    /// 現在のシーンが保存禁止（読み取り専用・閲覧専用）かどうか。
     /// null なら保存可、非 null なら理由メッセージ。
+    /// 判断は Scene/EditorReadOnlyPolicy（別のエディタのロック＝従来の読み取り専用と、端末の一時停止の写しの表示中＝
+    /// 閲覧専用。§20.17）。タイトルの印も同じ判断から出す（UpdateTitle）。
     /// </summary>
-    internal string? SceneSaveDenialReason
-        => _sceneReadOnly
-            ? string.Format(SEEDEditor.Scene.SceneLock.DENY_LOCKED_FORMAT,
-                            _sceneLockHolder?.Describe() ?? "別プロセス")
-            : null;
+    internal string? SceneSaveDenialReason => CurrentReadOnlyState.SaveDenialReason;
 
     /// <summary>
     /// 現在のシーンパスを確定させる**唯一の場所**。
@@ -583,6 +582,8 @@ public partial class MainWindow
     /// <summary>シーンを読み込む（ダーティチェック済みの場合に直接呼ぶ）。</summary>
     private void LoadScene(string path)
     {
+        // 端末の一時停止の写しの表示中は別のシーンを開かない（編集中のシーンは退避中。再開・停止で戻る。§20.17）
+        if (RefuseSceneSwitchIfSnapshotView()) return;
         _isDirty = false;
         SEEDEditor.ProjectSettings.RecentScenesManager.AddScene(path);
         // LOAD_SCENE はランタイムへ非同期に届くが IPC の順序は保たれるため、

@@ -11,6 +11,8 @@
 //         pause      … PAUSE（端末のゲームの時間・物理・スクリプトを止める。画面はゲームのまま）
 //         resume     … RESUME
 //         screenshot … SCREENSHOT:game,<端末のパス> → 応答を待って run-as で PNG を取り出す（--out。省略時はカレントに日時の名前）
+//         snapshot   … SNAPSHOT_SCENE:<端末のパス> → 応答を待って run-as で .scene を取り出す（シーンのいまの状態の写し。
+//                      --out。省略時はカレントに日時の名前。エディタの一時停止と同じ中核 Android/Ipc/AndroidIpcSnapshot。§20.17）
 //    5. DETACH（意図した切り離し）を送ってから閉じ、forward を外す
 //       → 端末のランタイムは一時停止を据え置く（pause の効果が切断で消えない。黙って切れた場合だけ再開する）
 //
@@ -30,11 +32,20 @@ using SEEDEditor.Ipc;
 
 namespace SEEDEditor.Tools.SeedAndroid.Commands;
 
-/// <summary>pause / resume / screenshot。</summary>
+/// <summary>pause / resume / screenshot / snapshot。</summary>
 public static class AppControlCommand
 {
     /// <summary>--out を省いたときのスクリーンショットのファイル名の書式（{0}=日時）。</summary>
     private const string DefaultScreenshotNameFormat = "android_screenshot_{0}.png";
+
+    /// <summary>--out を省いたときの写しのファイル名の書式（{0}=日時）。</summary>
+    private const string DefaultSnapshotNameFormat = "android_snapshot_{0}.scene";
+
+    /// <summary>端末での所要ミリ秒の表示の書式（小数 1 桁）。</summary>
+    private const string MillisecondsFormat = "F1";
+
+    /// <summary>全体の所要秒の表示の書式（小数 2 桁）。</summary>
+    private const string SecondsFormat = "F2";
 
     /// <summary>既定のファイル名に入れる日時の書式。</summary>
     private const string ScreenshotTimestampFormat = "yyyyMMdd_HHmmss";
@@ -64,6 +75,7 @@ public static class AppControlCommand
                     $"{applicationId} を一時停止しました（{session.Serial}）。切り離しても一時停止のままです（再開は resume）。"),
                 SeedAndroidCommand.Resume => SendOne(session, RuntimeIpcCommands.Resume,
                     $"{applicationId} の一時停止を解きました（{session.Serial}）。"),
+                SeedAndroidCommand.Snapshot => await SnapshotAsync(session, applicationId, line.OutputPath, cancellationToken),
                 _ => await ScreenshotAsync(session, applicationId, line.OutputPath, cancellationToken),
             };
         }
@@ -88,6 +100,46 @@ public static class AppControlCommand
         }
         Console.Out.WriteLine(doneMessage);
         return SeedAndroidExitCodes.Success;
+    }
+
+    /// <summary>
+    /// シーンのいまの状態の写しを書き出させて PC のファイルへ取り出す（docs/android.md §20.17）。
+    /// 所要時間（端末での書き出し・全体）とアクタの数・飛ばした数・メインカメラの位置と向きを出す。
+    /// </summary>
+    /// <param name="session">通信路。</param>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <param name="outputPath">書き先（null なら カレントに日時の名前）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>終了コード。</returns>
+    private static async Task<int> SnapshotAsync(
+        AndroidIpcSession session, string applicationId, string? outputPath, CancellationToken cancellationToken)
+    {
+        var path = string.IsNullOrWhiteSpace(outputPath)
+            ? Path.Combine(Environment.CurrentDirectory, string.Format(CultureInfo.InvariantCulture, DefaultSnapshotNameFormat,
+                DateTime.Now.ToString(ScreenshotTimestampFormat, CultureInfo.InvariantCulture)))
+            : outputPath;
+        try
+        {
+            var result = await AndroidIpcSnapshot.FetchAsync(
+                session.Adb, session.Serial, applicationId, session, path, AndroidIpcSnapshot.DefaultReplyTimeout, cancellationToken);
+            var reply = result.Reply;
+            var camera = reply.Camera is { } pose ? $"メインカメラ {pose.Describe()}" : "メインカメラなし";
+            Console.Out.WriteLine(
+                $"写しを保存しました: {result.LocalPath}（アクタ {reply.Actors}・飛ばした {reply.Skipped}・{result.Bytes} バイト・" +
+                $"端末 {reply.RuntimeMilliseconds.ToString(MillisecondsFormat, CultureInfo.InvariantCulture)} ms・" +
+                $"合計 {result.Elapsed.TotalSeconds.ToString(SecondsFormat, CultureInfo.InvariantCulture)} 秒・{camera}）");
+            return SeedAndroidExitCodes.Success;
+        }
+        catch (AndroidIpcException ex)
+        {
+            Console.Error.WriteLine($"エラー: {ex.Message}");
+            return SeedAndroidExitCodes.DeviceOperation;
+        }
+        catch (Exception ex) when (ex is SEEDEditor.Android.Adb.AdbCommandException or IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"エラー: 写しを取り出せませんでした: {ex.Message}");
+            return SeedAndroidExitCodes.DeviceOperation;
+        }
     }
 
     /// <summary>スクリーンショットを撮って PC のファイルへ書く。</summary>

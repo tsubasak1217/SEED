@@ -53,6 +53,21 @@ public interface IAndroidRunBackend
     /// <returns>つながった通信路。</returns>
     /// <exception cref="AndroidIpcException">時間内につながらない（古い APK 等）・断られた。</exception>
     Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, string token, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 一時停止中の端末のシーンの写しを取り出す（docs/android.md §20.17）: 通信路で SNAPSHOT_SCENE を送って端末のアプリに
+    /// 書き出させ、run-as で PC のファイルへ写し、端末のファイルを消す。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <param name="link">つながっている通信路（一時停止を送ったもの）。</param>
+    /// <param name="localPath">PC の書き先。</param>
+    /// <param name="cancellationToken">中断の合図（再開・停止で取り消す）。</param>
+    /// <returns>取り出した結果。</returns>
+    /// <exception cref="AndroidIpcException">命令が届かない・応答が無い・端末が書き出せなかった。</exception>
+    /// <exception cref="Android.Adb.AdbCommandException">端末から取り出せなかった。</exception>
+    Task<AndroidSceneSnapshotResult> FetchSceneSnapshotAsync(
+        string serial, string applicationId, IAndroidIpcLink link, string localPath, CancellationToken cancellationToken);
 }
 
 /// <summary>本番の入口（中核の AndroidRunPipeline / AndroidDeviceActions をそのまま呼ぶ）。</summary>
@@ -89,4 +104,9 @@ public sealed class AndroidRunBackend : IAndroidRunBackend
     /// <inheritdoc />
     public async Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, string token, CancellationToken cancellationToken) =>
         await _deviceActions.ConnectIpcAsync(serial, devicePort, token, AndroidIpcTimings.Default, cancellationToken).ConfigureAwait(false);
+
+    /// <inheritdoc />
+    public Task<AndroidSceneSnapshotResult> FetchSceneSnapshotAsync(
+        string serial, string applicationId, IAndroidIpcLink link, string localPath, CancellationToken cancellationToken) =>
+        _deviceActions.FetchSceneSnapshotAsync(serial, applicationId, link, localPath, AndroidIpcSnapshot.DefaultReplyTimeout, cancellationToken);
 }

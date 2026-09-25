@@ -122,6 +122,12 @@ public static class AndroidRuntimeContract
     /// </summary>
     public const string RemoteScreenshotPath = "cache/seed_ipc_screenshot.png";
 
+    /// <summary>
+    /// 一時停止中の端末のシーンの写し（IPC の SNAPSHOT_SCENE）を端末に置く場所（内部データフォルダからの相対。アプリのキャッシュ。
+    /// 取り出した後に消す。docs/android.md §20.17）。拡張子はランタイムが受け付ける .scene。
+    /// </summary>
+    public const string RemoteSnapshotPath = "cache/seed_ipc_snapshot.scene";
+
     // ── logcat ────────────────────────────────────────────
 
     /// <summary>

@@ -59,6 +59,11 @@ public enum SeedAndroidCommand
     /// <summary>動いているアプリの画面を撮って PC へ取り出す（IPC の SCREENSHOT。段階D-1）。</summary>
     Screenshot,
 
+    /// <summary>
+    /// 動いているアプリのシーンのいまの状態を写しとして PC へ取り出す（IPC の SNAPSHOT_SCENE → run-as。docs/android.md §20.17）。
+    /// </summary>
+    Snapshot,
+
     /// <summary>動いているアプリへ差し替えを頼む（IPC の RELOAD_SCENE / RELOAD_SCRIPTS / RELOAD_ASSET。docs/android.md §23）。</summary>
     Reload,
 
@@ -218,6 +223,7 @@ public static class SeedAndroidArguments
         ["pause"]      = SeedAndroidCommand.Pause,
         ["resume"]     = SeedAndroidCommand.Resume,
         ["screenshot"] = SeedAndroidCommand.Screenshot,
+        ["snapshot"]   = SeedAndroidCommand.Snapshot,
         ["reload"]     = SeedAndroidCommand.Reload,
         ["keystore"]   = SeedAndroidCommand.Keystore,
         ["check"]      = SeedAndroidCommand.Check,
@@ -295,7 +301,7 @@ public static class SeedAndroidArguments
     /// <summary>端末のランタイムが IPC を待ち受けるポート（段階D-1）。</summary>
     public const string IpcPortOption = "--ipc-port";
 
-    /// <summary>screenshot の書き先（段階D-1）。</summary>
+    /// <summary>screenshot・snapshot の書き先（段階D-1・§20.17）。</summary>
     public const string OutOption = "--out";
 
     /// <summary>push で端末の上書き層へ差分だけを送るフォルダ（§23）。</summary>
@@ -371,12 +377,15 @@ public static class SeedAndroidArguments
           pause     動いているアプリを一時停止する（adb forward → IPC の PAUSE → 切り離して閉じる。一時停止のまま残る）
           resume    動いているアプリの一時停止を解く（IPC の RESUME）
           screenshot 動いているアプリの画面を撮って PC へ取り出す（IPC の SCREENSHOT → run-as で PNG を取り出す。--out）
+          snapshot  動いているアプリのシーンのいまの状態（スクリプトが生成したアクタ・現在の Transform・メインカメラ）を
+                    写しとして PC へ取り出す（IPC の SNAPSHOT_SCENE → run-as で .scene を取り出す。--out。
+                    エディタは一時停止したときに同じ写しをシーンパネルへ閲覧専用で出す。docs/android.md §20.17）
           reload scene | reload scripts | reload asset <相対パス>
                     動いているアプリへ差し替えを頼む（実行中の差し替え。docs/android.md §23）
                       scene   … 今のシーンをディスク（上書き層 files/assets → APK の pak）から読み直す（RELOAD_SCENE）
                       scripts … SeedPak --scripts-only で DLL を作り直して files/bin/ へ送り、読み直す（RELOAD_SCRIPTS）
                       asset   … そのアセットのキャッシュを捨てて取り込み直す（RELOAD_ASSET。先に push --assets で送る）
-                    （pause / resume / screenshot / reload は run / push で起動したアプリだけ。起動の工程がプロジェクトの
+                    （pause / resume / screenshot / snapshot / reload は run / push で起動したアプリだけ。起動の工程がプロジェクトの
                      cache/android/run_state.json に記録した接続トークンでつなぐ。エディタの実行中はエディタが使うので使えない）
           keystore create --keystore <パス> [--key-alias <別名>] [--cert-name <名前>] [--project <フォルダ>]
                     配布用の鍵（アップロード鍵）のキーストアを keytool で新しく作る（PKCS12・RSA 2048・10000 日。
@@ -431,7 +440,8 @@ public static class SeedAndroidArguments
           --since <時刻>            logcat の起点（端末の時刻 "MM-dd HH:mm:ss.fff"。省略時は今）
           --ipc-port <ポート>       端末のランタイムが一時停止などの IPC を待ち受けるポート（run / push が起動オプションで渡す。
                                     省略時は 52735、0 なら渡さない。pause / resume / screenshot は省略時に起動の記録のポートへつなぐ）
-          --out <パス>              screenshot の書き先（省略時はカレントフォルダの android_screenshot_<日時>.png）
+          --out <パス>              screenshot の書き先（省略時はカレントフォルダの android_screenshot_<日時>.png）・
+                                    snapshot の書き先（.scene。省略時はカレントフォルダの android_snapshot_<日時>.scene）
           --assets <フォルダ>       push: 端末と違うアセットだけを上書き層 files/assets へ送る（アセットルートかその中。
                                     今 pak を作ると入るもの＋全シーンから辿れるもののうち、手元の中身が端末〈送った記録 → APK の pak〉と
                                     違うものだけ。--project が無ければこのフォルダからプロジェクトを探す。--assets-dir とは別物で同時に使えない）
@@ -588,11 +598,11 @@ public static class SeedAndroidArguments
         if (AndroidDeviceTarget.IsAutoSerial(line.Serial) && OperatesRunningDevice(command))
         {
             return Fail($"{SerialOption} {AndroidDeviceTarget.AutoSerial} は build / install / run / push で使えます" +
-                        "（stop / logcat / pause / resume / screenshot / reload にはシリアルを指定してください）");
+                        "（stop / logcat / pause / resume / screenshot / snapshot / reload にはシリアルを指定してください）");
         }
-        if (line.OutputPath is not null && command != SeedAndroidCommand.Screenshot)
+        if (line.OutputPath is not null && command is not (SeedAndroidCommand.Screenshot or SeedAndroidCommand.Snapshot))
         {
-            return Fail($"{OutOption} は screenshot で使います");
+            return Fail($"{OutOption} は screenshot・snapshot で使います");
         }
         // ── 実行中の差し替え（§23）──
         if (command == SeedAndroidCommand.Reload)
@@ -691,7 +701,8 @@ public static class SeedAndroidArguments
     /// <returns>そうなら true。</returns>
     public static bool OperatesRunningDevice(SeedAndroidCommand command) => command is
         SeedAndroidCommand.Stop or SeedAndroidCommand.Logcat or
-        SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot or SeedAndroidCommand.Reload;
+        SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot or SeedAndroidCommand.Snapshot
+        or SeedAndroidCommand.Reload;
 
     /// <summary>
     /// 設定 JSON の値（無ければ既定値）の上にコマンドラインの指定を重ね、サブコマンドの目的を入れる。

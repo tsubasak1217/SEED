@@ -269,6 +269,12 @@ private static readonly double CloseButtonVerticalBleed = Math.Max(
 | 警告アイコン | `#3A3212` | `#D7BA36` | 6.67 |
 | 帯の下線（文字ではないので 3:1 基準） | `#1E1E1E` | `#8A7828` | 3.81 |
 
+同じ色で、**シーンパネルの上の「閲覧専用」の帯**（`Controls/ReadOnlyViewBanner.cs`。先頭のアイコンは `Icon.Lock`）も出す。
+Android の一時停止中に端末のシーンの写しをシーンパネルへ出している間だけ出る（[android.md](android.md) §20.17）。帯はビューポートの
+HwndHost とは別の行（地形ツールバーと同じ行）に置く（WPF の要素は HwndHost の上に描けないため）。文言は判断側（`EditorReadOnlyPolicy`）が決める。
+閲覧専用の間は、インスペクタ・ヒエラルキーの編集の部品・ギズモの移動/回転/拡縮のボタン・地形モードの切り替え・アクタータブを
+`IsEnabled = false`（共通の無効の見た目）にし、理由はツールチップに出す（`ToolTipService.ShowOnDisabled`）。値の一覧のスクロールと選択は止めない。
+
 ---
 
 ## 5. 仕組み（変更するときに知っておくこと）

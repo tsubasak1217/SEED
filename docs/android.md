@@ -2005,6 +2005,8 @@ Output パネルへ流す。停止ボタンで端末のアプリを止める。2
 段階D-1 で、端末のアプリとの IPC（`Ipc/`・`AdbClient.ForwardTcpAsync` 等・`AndroidDeviceActions.ConnectIpcAsync`・`AndroidRunRequest.IpcPort`・起動の extra `seed.ipc_port`）と、
 エディタ側の行の送受信の共通化（`editor/src/Ipc/IpcLineChannel.cs`）・実行バーの一時停止・再開（`AndroidRunController.TryPause` / `TryResume`・`PlayBarPolicy`）を足した
 （§21。単体テストは `AndroidPipelineTests` の `IpcTests`・`AndroidRunUiTests` の `IpcPauseTests`）。
+2026-09-26 に、一時停止中に端末のシーンの写しをシーンパネルへ閲覧専用で出す仕組み（`Ipc/AndroidIpcSnapshot`・`editor/src/SceneSnapshot/`・
+`AndroidRun/AndroidPauseSnapshotViewCoordinator` ほか。§20.17・命令は §21.13）を足した（単体テストは `AndroidRunUiTests` の `PauseSnapshotTests`・`SnapshotViewTests`）。
 
 ### 20.2 実行先セレクタ
 
@@ -2382,11 +2384,11 @@ PC の Play / Edit の表示は変えない（Android が動いていなけれ�
 | Idle | PC のランタイム（従来どおり） | — |
 | Building | 隠して案内 | `Android 向けにビルド中（端末: Pixel_6a（実機））` |
 | Running | 隠して案内 | `Android で実行中（端末: Pixel_6a（実機））` |
-| Paused | 隠して案内 | `Android で一時停止中（端末: Pixel_6a（実機））` |
+| Paused | 端末のシーンの写しを閲覧専用で見せる（取り出し・読み込みの途中と、取り出せなかったときは隠して案内。§20.17） | 写しの間はビューポートの上のバナー `端末の一時停止の写し（閲覧専用）— Pixel_6a（実機）。再開・停止で編集中のシーンへ戻ります` |
 | Stopping | 隠して案内 | `Android の実行を止めています（端末: Pixel_6a（実機））` |
 
 - 判断は WPF 非依存の `editor/src/AndroidRun/AndroidViewportPolicy.cs`（状態ごとの表 `PhaseTable`。単体テスト `AndroidRunUiTests` の `ViewportPolicyTests`）。
-  次の作業の「一時停止中に端末のシーンの写しをビューポートに出す」は、`ViewportContent` に種類を足して Paused の行を差し替えるだけで済む形にしてある。
+  Paused の行は §20.17 で「一時停止中の場面の表 `PausedTable`」に差し替えた（`ViewportContent.AndroidSnapshot` を足した）。
 - 当てるのは `MainWindow.AndroidRun.cs` の `ApplyAndroidViewport`（Android の状態の変化と、PC の状態遷移 `ApplyUiState` の最後から呼ぶ）。
   隠し方は起動時スプラッシュの保持と同じ（子ウィンドウとホスト `ViewportDocumentContent` の両方を隠す。ホストを残すと WPF の描画に穴が開き案内が黒く抜ける）。
   隠している間は子ウィンドウに描画の依頼（WM_PAINT）が届かないので、PC の Edit の描画も止まる。
@@ -2396,9 +2398,160 @@ PC の Play / Edit の表示は変えない（Android が動いていなけれ�
   （起動時スプラッシュの解除と同じ手順）。PC のランタイムが作り直しの途中（Building / Launching / Idle）なら、その状態の表示を `ApplyUiState` で当て直す。
 - 確認: 判断は単体テスト（84 / 84）、エディタは別の出力先でビルド（エラー 0）。**エディタの画面での見た目は未確認**（エージェントはエディタを起動しない）。
 
----
+### 20.17 一時停止中に端末のシーンの写しをシーンパネルへ出す（閲覧専用。2026-09-26）
 
-## 21. 実行バーからの一時停止・再開（エディタとの IPC を TCP で。段階D-1・2026-09-25）
+利用者の要望「Android の実行を一時停止したら、PC の一時停止と同じように、端末のシーンの状態をエディタのシーンパネルに写し、
+メインカメラの位置からデバッグカメラを動かせるようにする」。実行バーで一時停止すると、端末のシーンの**いまの状態**
+（スクリプトが生成したアクタを含む全アクタ・現在の Transform とコンポーネントの値・メインカメラの位置と向き）を IPC で書き出させて PC へ取り出し、
+エディタの編集用ランタイム（シーンパネル）に**閲覧専用**で読み込む。デバッグカメラは端末のメインカメラの位置と向きから始まり、PC の Edit と同じ操作で動かせる。
+再開・停止（アプリの終了・切断を含む）で、一時停止の前に退避した編集中のシーンへ戻す。写しへの編集を端末へ反映する機能は無い（backlog）。
+
+**流れ**
+
+```
+実行バーの一時停止（ANDROID PAUSE。§21）
+  1. PAUSE（従来どおり。端末のゲームの時間・物理・スクリプトを止める）
+  2. 同じ通信路で SNAPSHOT_SCENE:/data/user/0/<ID>/cache/seed_ipc_snapshot.scene（§21.13）
+       → 端末のランタイムがいまの世界を既存のシーン形式で書く → SNAPSHOT_DONE:<パス>|actors=…|skipped=…|ms=…|cam=<位置>,<向き>
+  3. adb exec-out run-as <ID> cat … → <プロジェクト>/cache/android/snapshot/paused.scene（一時停止のたびに上書き）→ 端末のファイルを消す
+  4. エディタの編集用ランタイムへ SNAPSHOT_VIEW_BEGIN:<paused.scene>[|file_ok]（§21.13）
+       → 編集中のシーンをメモリへ退避（埋め込み Play の開始時と同じ完全版: シーン JSON・地形の実データ・アクター編集タブ・デバッグカメラ・
+         Undo 履歴・ツール）→ 写しを読み込む（ツールは選択に固定）→ SNAPSHOT_VIEW_READY
+  5. CAM_TRANSFORM:<端末のメインカメラの位置と向き>（既存のカメラの命令。写しのファイルの debug_camera 節にも同じ視点を埋めてある）
+  6. ビューポートを見せ、上に閲覧専用のバナー。インスペクタ・ヒエラルキー・ギズモ・地形モード・アクタータブは無効表示
+再開・停止・切断・アプリの終了（Paused を出る）
+  7. SNAPSHOT_VIEW_END → 退避した編集中のシーンへ戻す（ファイルを読まない）→ SNAPSHOT_VIEW_ENDED:memory|<シーン>
+  8. 未保存フラグを一時停止の前の値へ戻し、ビューポートの設定を送り直す
+```
+
+- 取り出せなかった（端末が書き出せない・応答が無い・run-as の失敗）ときは、一時停止は成功のまま、ビューポートは「Android で一時停止中」の案内のまま、
+  理由を Output に出す（黄）。写しを出せなかった（読み込めない・編集用ランタイムが Edit でない）ときも同じ。
+- 所要時間を Output に出す（端末での書き出しのミリ秒・取り出しの合計秒・シーンパネルへ出すまでの秒・戻すまでの秒）。
+
+**構成**（判断はすべて WPF 非依存。単体テスト `AndroidRunUiTests` の `PauseSnapshotTests`・`SnapshotViewTests`、`AndroidPipelineTests` の `IpcTests`）
+
+| 場所 | 役割 |
+|---|---|
+| `runtime/src/engine/core/app_base/scene_snapshot/`（`wire.rs`・`collect.rs`） | 命令と応答の書式（正典）・書き出すアクタの集め方（保存できないアクタは子孫ごと飛ばす）・メインカメラの姿勢 |
+| `runtime/…/app/scene_snapshot_ops.rs` | `SNAPSHOT_SCENE`: いまの世界を書き出す（読み込み中のシーンのパスは変えない・地形のファイルは書かない・書き先は `.scene` の絶対パスだけ） |
+| `runtime/…/app/snapshot_view_ops.rs` | `SNAPSHOT_VIEW_BEGIN / END`（退避・読み込み・戻し）と、表示中に保存・編集の命令を捨てる判断 `snapshot_view_refusal` |
+| `runtime/…/app/play_snapshot.rs` の `capture_edit_stash` | 編集中のシーンを埋め込み Play の開始時と同じ形（`PlayStartState`）で退避する。戻しは既存の `restore_from_play_start` |
+| `editor/src/Android/Ipc/AndroidIpcSnapshot.cs` | 端末で書き出させて run-as で取り出す（SeedAndroid の `snapshot` と共有）。`AndroidDeviceActions.FetchSceneSnapshotAsync` |
+| `editor/src/SceneSnapshot/` | 命令と応答の文字列（`SceneSnapshotWire`）・応答の読み方・メインカメラの姿勢・**写しを編集用ランタイムへ出して戻す独立したクラス `SceneSnapshotViewSession`** |
+| `editor/src/AndroidRun/AndroidRunController.cs`・`AndroidRunStateMachine.cs` | PAUSE の後に取り出す・再開等で取り消す・状態 `AndroidRunSnapshot.PauseSnapshot`（None / Fetching / Ready / Failed と回数） |
+| `editor/src/AndroidRun/AndroidPauseSnapshotViewCoordinator.cs` | 一時停止に合わせて出す・戻す段取り（同じ回は 2 度出さない・退避できなければ保存を尋ねる・未保存フラグ） |
+| `editor/src/AndroidRun/AndroidViewportPolicy.cs`・`AndroidPauseSnapshotOutputFormatter.cs`・`AndroidPauseSnapshotFiles.cs` | ビューポートの場面（Paused の表）・Output の行・PC の置き場 |
+| `editor/src/Scene/EditorReadOnlyPolicy.cs` | 閲覧専用・読み取り専用の判断を 1 か所に（写しの表示とシーンのロック。保存・編集・シーンの切り替え・バナー・タイトルの印） |
+| `editor/src/MainWindow.AndroidSnapshot.cs`（WPF） | 結線（窓口 `IAndroidSnapshotViewHost`・編集用ランタイムの窓口・閉じる前に戻す・保存の確認）。バナー `Controls/ReadOnlyViewBanner.cs` |
+| `editor/src/Panels/InspectorPanel.ReadOnly.cs`・`HierarchyPanel.ReadOnly.cs`（WPF） | 無効表示（値は見られて選べる・スクロールできるが、変えられない） |
+
+**写しの形式**: 既存の `.scene`（`Scene::to_json_with_actors`。保存と同じ変換）。PC の `SEED.exe` でそのまま読める（Play で開くと端末の見た目が出る）。
+シーンの世界線（world_line 0）のアクタだけを書く（アクター編集タブは `.scene` の形式に入らない）。アクタ 1 体ずつ（子を外した本体）を JSON にして
+読み戻せるかを確かめ、読み戻せない（Transform 等に NaN・無限大。JSON では null になり読み込めない）アクタは子孫ごと飛ばして続ける（親や兄弟は残る。
+数は応答の `skipped`、名前は端末の logcat の `[SEED SNAPSHOT]`）。メインカメラ（`is_main` のカメラ。Transform はワールド空間）は応答の `cam` と、
+ファイルの `debug_camera` 節（共有されない複製なので埋めてよい。`scene.rs` の `SceneDataRef::debug_camera` の規約）に載せる。地形は `.scene` と同じくチャンクのアクタとして書き、
+読み込む側（PC）はプロジェクトの地形フォルダの `.tvox` から作り直す（端末の地形は pak の中身＝ディスクと同じ）。
+
+**退避と復元（設計判断）**: 合意では「編集用ランタイムの現在の状態を一時ファイルへ SAVE_SCENE し、戻すときに LOAD_SCENE する」だったが、コードを読んで
+**メモリへの退避**に変えた（同じ目的＝未保存の変更を守り、プロジェクトのファイルに書かない、をより確実に満たすため）:
+
+| 一時ファイル＋LOAD_SCENE の場合 | メモリへの退避（採用） |
+|---|---|
+| `SAVE_SCENE_COPY` は地形の未保存の変更をプロジェクトの `.tvox` へ書き出す（`save_scene_with_terrain`）＝プロジェクトのファイルに書く | ファイルを書かない |
+| 書き出さない形にすると、戻すときの `LOAD_SCENE` が地形を `.tvox` から読み直し、未保存のスカルプトが消える | 地形の実データを move で退避して戻す（`restore_from_play_start` と同じ） |
+| 戻した後の「読み込み中のシーンのパス」が一時ファイルになり、次の Ctrl+S が `path_mismatch` で拒否される | 読み込み中のパスも元へ戻す |
+| `LOAD_SCENE` は Undo 履歴を捨てる | Undo 履歴・ツールも戻す |
+
+- 退避の中身は埋め込み Play の停止と同じ仕組み（`PlayStartState`＋`restore_from_play_start`。Play 中のシーン遷移からの完全復元で使っているもの）。
+- **退避できなかったときだけ保存を促す**（直列化の失敗・シーンが無い等。応答 `SNAPSHOT_VIEW_FAILED:…|stash|…`。未保存の変更があるときだけ）。
+  3 択の窓（`保存して表示 / 表示しない / キャンセル`。[editor_ui_style.md](editor_ui_style.md) 8 章）で「保存して表示」なら保存してから、
+  `file_ok`（メモリへ退避できなければ、戻すときに保存済みのファイルを読み直してよい）を付けてもう 1 度だけ出す。それ以外なら出さない（一時停止は続く）。
+  未保存の変更が無いときは最初から `file_ok` を付ける。メモリから戻せなかったときは保存済みのファイルを読み直す（`SNAPSHOT_VIEW_ENDED:file`。黄の行）。
+- 戻せなかった（ファイルも読めない）ときは赤の行を出す。そのとき編集用ランタイムの「読み込み中のシーンのパス」は写しのパスのままなので、
+  元のシーンへの上書き保存は `path_mismatch` で拒否される（写しの内容で元のシーンを上書きしない）。
+- エディタを閉じる操作は、写しを出していれば先に戻してから閉じ直す（「保存しますか」を元のシーンについて尋ねる）。
+- 写しを出している間に編集用ランタイムが落ちた・作り直された（Edit でなくなった）ときは、退避も失われたので出していない状態へ戻し、その旨を黄の行で出す
+  （ランタイムは従来どおり保存済みのシーンで起動し直す）。
+
+**閲覧専用**
+
+| どこで | 何を止めるか |
+|---|---|
+| エディタの保存の入口（`RefuseSaveIfReadOnly`・`SceneSaveDenialReason`。判断は `EditorReadOnlyPolicy`） | 上書き保存・Ctrl+S・名前を付けて保存（ダイアログを出す前に止める）。トースト「端末の写し（閲覧専用）は保存できません」 |
+| シーンを開く・アクター編集タブを開く・シーンの自動再読込 | 止める（トースト。自動再読込は見送りの理由を状態表示へ） |
+| インスペクタ | 値の欄・アクティブ/表示の切り替え・コンポーネントの追加を無効表示（値は見られる・スクロールできる・選んだアクタに追従する） |
+| ヒエラルキー | 追加ボタンの列を無効・右クリックのメニュー・名前の変更（F2・再クリック）・ドラッグでの並べ替え・ドロップを受け付けない（選択・開閉はできる） |
+| シーンビュー | ギズモの移動・回転・拡縮のボタンを無効（ランタイムもツールを選択に固定）・地形モードを抜けて切り替えを無効・アクタータブを無効 |
+| タイトル | `[端末の写し・閲覧専用]`（従来のロックは `[読み取り専用]`） |
+| **ランタイム**（`snapshot_view_refusal`。二重の守り。AI ツール・キーの転送もここで止まる） | 保存・書き出し（`SAVE_SCENE*`・`SAVE_ACTOR`・`TERRAIN_SAVE*`・`EXPORT_ACTOR`。相手の待ち合わせを解く応答も返す）・`LOAD_SCENE`・`ENTER_PLAY`・アクター編集タブ・ツールの切り替え・モーダルの変形・配置・ドロップ・ツリーの編集・Undo/Redo・貼り付け・地形の編集・インスペクタの値の編集（`field_edit.rs` の分類）・AI の編集。捨てたら `SNAPSHOT_VIEW_REFUSED:<名前>`（エディタは 2 秒に 1 回まで Output とトーストへ） |
+
+- 見るための操作（カメラ・選択・問い合わせ・表示の設定・撮影）は通す。従来の「別のエディタが開いている」読み取り専用（保存だけ拒否）は変えていない。
+
+**ビューポート**（`AndroidViewportPolicy` の一時停止中の表 `PausedTable`）
+
+| 場面 | ビューポート | 文言（例） |
+|---|---|---|
+| 写しを取り出している | 隠して案内 | `Android で一時停止中 — 端末のシーンの写しを取り出しています（端末: Pixel_6a（実機））` |
+| 取り出した写しを読み込んでいる | 隠して案内 | `Android で一時停止中 — 写しをシーンパネルへ読み込んでいます（端末: …）` |
+| 写しを出している | **PC のランタイム（写し）を見せる**＋バナー | `端末の一時停止の写し（閲覧専用）— Pixel_6a（実機）。再開・停止で編集中のシーンへ戻ります` |
+| 取り出せなかった・出せなかった | 隠して案内 | `Android で一時停止中（端末: …）` |
+| 再開・停止の直後（戻している途中） | Running / Stopping の行（隠して案内） | — |
+
+バナーはビューポートの上の行（地形ツールバーと同じ行。写しを出すときは地形モードを抜ける）に置く（WPF の要素は HwndHost の上に描けないため。Airspace）。
+色はスクリプトエディタの通知帯と同じ `NOTICE_BAR_*`（`Theme/SeedColorTable.cs`）。
+
+**Output の例**（端末での数値は未計測のため「…」。シーンパネルへ出す・戻す時間は PC の Edit の `SEED.exe` での実測）
+
+```
+[Android] 一時停止しました（Pixel_6a（実機）。ゲームの時間・物理・スクリプトを止めています。実行ボタンで再開）。
+[Android] 一時停止中の端末のシーンを写しとして取り出しています（Pixel_6a（実機））…
+[Android] 写しを取り出しました: アクタ 304（保存できずに飛ばした 0）・0.63 MB（端末 … ms・合計 … 秒）。端末のメインカメラ: 位置 (…)・向き (…)
+[Android] 写しをシーンパネルに出しました（閲覧専用・アクタ 304・1.7 秒）。デバッグカメラは端末のメインカメラの位置から動かせます。編集中のシーンは退避してあり、再開・停止で戻ります。
+[Android] 再開しました（Pixel_6a（実機））。
+[Android] 写しの表示をやめ、編集中のシーンへ戻しました（0.3 秒）。
+```
+
+**SeedAndroid の `snapshot`**（エディタ無しで確かめる。§21.5 と同じくつないで 1 命令送って DETACH で切る）
+
+```powershell
+dotnet run --project editor/tools/SeedAndroid -- pause    --project <プロジェクト> --serial <実機>
+dotnet run --project editor/tools/SeedAndroid -- snapshot --project <プロジェクト> --serial <実機> --out paused.scene
+# → 写しを保存しました: …\paused.scene（アクタ 304・飛ばした 0・658609 バイト・端末 … ms・合計 … 秒・メインカメラ 位置 (…)・向き (…)）
+```
+
+**確認結果（2026-09-26）**
+
+| 項目 | 結果 |
+|---|---|
+| Rust の単体テスト | 新規 14（書式の解釈と応答 5・集め方〈生成したアクタのいまの Transform・編集タブを入れない・NaN のアクタだけ子孫ごと飛ばす〉2・メインカメラの姿勢 1・書き出しのファイル〈生成したアクタとメインカメラの視点・応答の書式〉2・閲覧中に捨てる命令の表 3・read_loop の解釈 1）。`cargo test --lib`（不安定な `missing_path_is_cached_as_failure`・`set_save_int_writes_flag_and_keeps_other_keys`・`font::inline` を除く）2732 成功・0 失敗 |
+| C# の単体テスト | `AndroidRunUiTests` 101 / 101（新規 17: 状態機械・段取り〈取り出し・失敗・再開で取り消し〉・ビューポートの場面・Output・応答の読み方・カメラの姿勢・編集用ランタイムへの段取り〈出す・戻す・file_ok・失敗・時間切れ〉・一時停止に合わせた段取り〈表・出す／戻す・保存の確認・出せない状態・ランタイムの終わり〉・閲覧専用の判断）。`AndroidPipelineTests` 138 / 138（新規 1: 端末の書き先・run-as の引数・応答待ちの失敗／切断／時間切れ・SeedAndroid の `snapshot`） |
+| ビルド | `cargo build`（PC）・libSEED.so（arm64・debug。SeedAndroid の build の中・51 秒）とも、変更したファイルに警告なし。エディタ（別の出力先）エラー 0・警告 25（変更前と同じ）。SeedAndroid 警告 0 |
+| PC: Play の `SEED.exe` で `SNAPSHOT_SCENE`（TCP の通信路。わらしべフィッシングの MainGame を 25 秒動かして一時停止） | `SNAPSHOT_DONE:…\|actors=304\|skipped=0\|ms=29.6〜35.3\|cam=59.01,9.96,-13.92,1.19,-11.08,0`（往復 47〜53 ms・658,609 バイト）。`.txt` の書き先は `SNAPSHOT_FAILED:…\|書き先の拡張子は .scene にしてください` |
+| PC: 写しを別の `SEED.exe`（Play）で読み込む | 一時停止したときと同じ構図・同じ状態の画面（キャラクターの位置・会話の吹き出し）を描いた |
+| PC: Edit の `SEED.exe` で閲覧（読み込み → 写し → 戻し） | 未保存のアクタを足した編集中のシーン → `SNAPSHOT_VIEW_READY:…\|actors=304\|ms=1722〜1733`（写しのヒエラルキーに未保存のアクタは無い・デバッグカメラは端末のメインカメラの位置）→ 表示中の `SAVE_SCENE` は `SAVE_ERROR:snapshot_view`・`TOOL:MOVE` は `TOOL_MODE:SELECT`＋`SNAPSHOT_VIEW_REFUSED:SET_TOOL_MODE`・`DELETE` は `…REFUSED:DELETE` → `SNAPSHOT_VIEW_ENDED:memory\|…MainGame.scene\|ms=332`（未保存のアクタが戻る・カメラも元の位置・同じ視点で見ると元のシーン〈地形の島・キャラクターは編集の位置〉）→ 2 回目の END は `none`。シーンのファイルの更新時刻は変わらない。編集用ランタイムのメモリ 788 MB → 表示中 840 MB → 戻した後 812 MB |
+| エディタの段取り（WPF 抜きのプローブ。本物の `AndroidPauseSnapshotViewCoordinator`・`SceneSnapshotViewSession` と、PC の Edit の `SEED.exe`〈TCP〉。端末の代わりに「一時停止・写しあり」の状態を与える） | 1 回目: 出す 1.74 秒（`SNAPSHOT_VIEW_READY … ms=1679.5`・カメラを `CAM_TRANSFORM` で端末のメインカメラへ・写しに未保存のアクタは無い）→ 表示中の保存は `SAVE_ERROR:snapshot_view`・捨てた知らせは 2 回目を間引く → 再開で戻す（`SNAPSHOT_VIEW_ENDED:memory … ms=325`・未保存のアクタが戻る・未保存フラグは元の true）。2 回目: 出す 1.74 秒 → 停止で戻す 0.38 秒 |
+| 実機（Pixel 6a） | **未実施**。端末の画面が消えたまま（`mWakefulness=Dozing`）で、06:06〜06:27 と 07:04〜07:25 の 2 回、それぞれ 20 分待ったが前面がランチャーにならなかった。手順は用意した（下の「実機で確かめる」） |
+| エディタの画面（バナー・無効表示・ビューポートの切り替え・トースト） | **未確認**（エージェントはエディタを起動しない。判断は単体テスト、段取りは WPF 抜きのプローブで確かめた。利用者が画面で確かめる） |
+
+**実機で確かめる**（2026-09-26 は端末の画面が消えたままで未実施。確かめる項目と手順）
+
+1. SeedAndroid で `run`（`--scene mainGame/MainGame.scene`）→ `pause` → `snapshot --out <PC>.scene`（所要時間・アクタ数・飛ばした数・メインカメラ）→ `resume`。
+   端末の logcat に `[SEED SNAPSHOT] 写しを書き出しました`、端末の `cache/` に `seed_ipc_snapshot.scene` が残らないこと。
+2. 取り出した写しを PC の `SEED.exe` の Play で読み込んで撮り、端末の一時停止中の画面（`screenshot`）と構図・状態が同じこと。
+   Edit の `SEED.exe` で `SNAPSHOT_VIEW_BEGIN` → `SNAPSHOT_VIEW_END` が通ること（未保存のアクタが戻る）。
+3. エディタの段取り（`AndroidRunController`＋本物の中核＋写しの段取り＋PC の Edit の `SEED.exe`）で「一時停止 → 写しの取り出し → 退避 → 読み込み →
+   再開 → 復元」と「一時停止 → 停止 → 復元」が通り、所要時間（一時停止のクリックから写しが出るまで）を測る。
+
+**制限・持ち越し**（[backlog.md](backlog.md) の「Android」節）
+
+- **実機では未確認**（上の「実機で確かめる」。端末での書き出しの時間・run-as の取り出し・端末の絵との比較）。
+- 写しへの編集を端末へ反映する機能は無い（閲覧専用）。足すときは `SceneSnapshotViewSession` の外に作る（写しの読み込みと表示は独立したクラス）。
+- 写しは「シーンの状態」だけ。スクリプトのフィールドのうちシーンに保存しないもの（private の実行時の変数）・物理の速度・アニメーションの再生位置・
+  パーティクル・2D の UI（キャンバス）の描画状態は写らない（Edit のシーンパネルはアニメーション・スクリプトを動かさない）。
+- 端末と PC のデバッグカメラは画角・縦横比が違うので、同じ位置と向きでも見える範囲は違う（画角はシーン設定の値のまま）。
+- 一時停止のたびに取り出す（設定で止める手段は無い）。大きなシーンでは端末での書き出しと PC での読み込みに時間がかかる（端末の debug の .so で測った値は上）。
+- 写しを出している間の編集用ランタイムは、編集中のシーン（地形の実データを含む）と写しの両方をメモリに持つ（上の計測で +52 MB）。
+
 
 Android の実行中も、**PC の Play と同じ実行バー**（実行ボタン＝一時停止／再開・停止ボタン）で端末のゲームを一時停止・再開できるようにした。
 PC の Play と同じ IPC の命令（1 行 1 命令の文字列。`PAUSE` / `RESUME` / `SCREENSHOT:` …。書式の正典は `runtime/src/engine/core/app_base/ipc.rs`）を、
@@ -2530,6 +2683,7 @@ IPC の中身（行の解釈 `read_loop`・書き込み `write_loop`）は通信
 # run（または push）で起動した後に（別のターミナルからでもよい）
 dotnet run --project editor/tools/SeedAndroid -- pause      --project D:\path\to\Project --serial <実機>
 dotnet run --project editor/tools/SeedAndroid -- screenshot --project D:\path\to\Project --serial <実機> --out paused.png
+dotnet run --project editor/tools/SeedAndroid -- snapshot   --project D:\path\to\Project --serial <実機> --out paused.scene   # シーンの写し（§20.17）
 dotnet run --project editor/tools/SeedAndroid -- resume     --project D:\path\to\Project --serial <実機>
 ```
 
@@ -2649,6 +2803,26 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 | 実機: 一時停止中の画面・一時停止の効き目 | 段階D-1 の時点では未確認（端末の画面が消えてロック中で、描画が止まっていた）→ **2026-09-26 に確認**。Pixel 6a・`proj_probe`・開発用の APK（debug の .so・targetSdk 36）を `run` で起動し、SeedAndroid で `screenshot`（実行中）→ `pause` → `screenshot` ×2（6 秒あけて）→ `resume` → `screenshot`（再開後）。**4 枚とも画素一致**（8 階調を超える差 0 画素・PNG の MD5 も同じ）＝一時停止中もゲームのカメラのまま・グリッド無し。スクリプトの毎秒のログは一時停止の直前が `t=36.1s`、15 秒止めて再開した直後が `t=37.1s`（止めている間は出ず、ゲームの時間も進まない）。一時停止中も描画は続く（`[SEED HEARTBEAT]` が増え続ける）。終わった後の `adb forward --list` は空 |
 
 - 最後の状態: `com.seedengine.runtime`（段階D-1 の追加の APK）を入れて止めた（`pidof` 空）。adb forward は残していない。Gradle のデーモンは止めた。エミュレータは起動していない。
+
+### 21.13 シーンの写しの命令（SNAPSHOT_SCENE / SNAPSHOT_VIEW_*。2026-09-26。使い方は §20.17）
+
+書式の正典はランタイムの `runtime/src/engine/core/app_base/scene_snapshot/wire.rs`（エディタ側の文字列は `editor/src/SceneSnapshot/SceneSnapshotWire.cs`）。
+ほかの命令と同じ 1 行 1 命令で、PC の名前付きパイプと Android の TCP の両方で動く（PC の `SEED.exe --mode=play --ipc-port=… --ipc-token=…` でも確かめた）。
+応答の欄の区切りは `|`（差し替えの応答と同じ。Windows のファイル名に使えない文字なのでパスと混ざらない）。名前付きの欄は順番に依らず読み、知らない欄は読み飛ばす。
+
+| 命令 | どこで | 何をするか | 応答 |
+|---|---|---|---|
+| `SNAPSHOT_SCENE:<絶対パス>.scene` | Play 中のランタイム（端末のアプリ・PC の Play。Edit でも動く） | いまの世界（スクリプトが生成したアクタを含む・現在の Transform とコンポーネントの値）を既存のシーン形式で書く。読み込み中のシーンのパスは変えない・地形のファイルは書かない・書きかけのファイルは残さない（`.tmp` に書いてから名前を変える）。保存できないアクタは子孫ごと飛ばす | `SNAPSHOT_DONE:<パス>\|actors=<書いた数（子を含む）>\|skipped=<飛ばした数>\|ms=<所要ミリ秒>\|cam=<px>,<py>,<pz>,<ex>,<ey>,<ez>`（メインカメラが無ければ `cam=none`）／`SNAPSHOT_FAILED:<パス>\|<理由>` |
+| `SNAPSHOT_VIEW_BEGIN:<写しのパス>[\|file_ok]` | エディタの編集用ランタイム（Edit のときだけ） | 編集中のシーンをメモリへ退避して写しを閲覧専用で読み込む（`file_ok`: メモリへ退避できなければ戻すときに保存済みのファイルを読み直してよい）。既に表示していれば退避は取り直さずに写しだけを差し替える | `SNAPSHOT_VIEW_READY:<パス>\|actors=<数>\|ms=<所要ミリ秒>`／`SNAPSHOT_VIEW_FAILED:<パス>\|<段階 mode / load / stash>\|<理由>`（何も変えていない） |
+| `SNAPSHOT_VIEW_END` | 同上 | 退避した編集中のシーンへ戻す（メモリ → だめなら保存済みのファイル） | `SNAPSHOT_VIEW_ENDED:<memory / file / none / failed>\|<戻したシーンのパス、または理由>\|ms=<所要ミリ秒>` |
+
+- 写しを表示している間に届いた保存・編集・シーンの切り替えの命令は捨て、`SNAPSHOT_VIEW_REFUSED:<命令の名前>` を返す（保存は加えて `SAVE_ERROR:snapshot_view`、
+  地形の保存は `TERRAIN_SAVE_ERROR:…`、書き出しは `EXPORT_ACTOR_ERR:…`、`LOAD_SCENE` は `LOAD_ERROR:…`、`ENTER_PLAY` は `PLAY_EXITED`、ツールは `TOOL_MODE:SELECT`、
+  モーダルの変形は `MODAL_STATE:0` を返して相手の待ち合わせを解く）。表は `app/snapshot_view_ops.rs` の `snapshot_view_refusal`（単体テスト付き）。
+- 書き先はシーンのファイルだけ（絶対パスで拡張子が `.scene`）。ほかのファイルを取り違えて上書きしないため。端末では
+  `/data/user/0/<アプリ ID>/cache/seed_ipc_snapshot.scene`（`AndroidRuntimeContract.RemoteSnapshotPath`。取り出した後に run-as で消す）。
+- 表示中の編集用ランタイムの「読み込み中のシーンのパス」は写しのパスになる（保存は上の表で止めるが、すり抜けても元のシーンへの上書きは `path_mismatch` で拒否される）。
+  戻すと元のパスへ戻る。`SCENE_LOADED` は送らない（エディタの現在シーンパスは変わらない）。代わりに `HIERARCHY_RESET`・`HIERARCHY`・`SELECTED`・`CAM_STATE`・`TOOL_MODE` を送る。
 
 ---
 

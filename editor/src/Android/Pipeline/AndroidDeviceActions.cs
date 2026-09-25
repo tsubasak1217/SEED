@@ -180,6 +180,25 @@ public sealed class AndroidDeviceActions
         AndroidIpcConnector.ConnectAsync(CreateAdb(), serial, devicePort, token, timings ?? AndroidIpcTimings.Default, cancellationToken);
 
     /// <summary>
+    /// 一時停止中の端末のシーンの写しを取り出す（つながっている通信路で SNAPSHOT_SCENE を送り、run-as で PC へ写す。
+    /// docs/android.md §20.17。エディタの実行バーの一時停止が使う）。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID（検査済みの値）。</param>
+    /// <param name="link">端末のアプリとつながった通信路。</param>
+    /// <param name="localPath">PC の書き先。</param>
+    /// <param name="replyTimeout">応答待ちの上限。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>取り出した写し。</returns>
+    /// <exception cref="AndroidPipelineException">adb が無い。</exception>
+    /// <exception cref="AndroidIpcException">命令が届かない・応答が無い・端末が書き出せなかった。</exception>
+    /// <exception cref="AdbCommandException">端末から取り出せなかった。</exception>
+    public Task<AndroidSceneSnapshotResult> FetchSceneSnapshotAsync(
+        string serial, string applicationId, IAndroidIpcLink link, string localPath, TimeSpan replyTimeout,
+        CancellationToken cancellationToken) =>
+        AndroidIpcSnapshot.FetchAsync(CreateAdb(), serial, applicationId, link, localPath, replyTimeout, cancellationToken);
+
+    /// <summary>
     /// 操作する端末を決める（シリアルの指定、無ければ使える端末がちょうど 1 台のときそれ。SeedAndroid の pause 等が
     /// 記録の照合の前に使う）。
     /// </summary>

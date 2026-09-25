@@ -6,7 +6,27 @@
 //  WPF に依存しない（editor/tests/AndroidRunUiTests からリンクされる）。
 // ============================================================
 
+using SEEDEditor.SceneSnapshot;
+
 namespace SEEDEditor.AndroidRun;
+
+/// <summary>
+/// 一時停止中の端末のシーンの写しの状態（docs/android.md §20.17。不変）。
+/// </summary>
+/// <param name="Status">状態。</param>
+/// <param name="Generation">何回目の取り出しか（一時停止のたびに進む。遅れて届いた古い結果を捨て、エディタが同じ写しを二度出さないために使う）。</param>
+/// <param name="LocalPath">PC に写したファイル（Ready のときだけ）。</param>
+/// <param name="Camera">端末のメインカメラの位置と向き（Ready で、メインカメラがあったときだけ）。</param>
+/// <param name="Note">取り出せなかった理由（Failed のときだけ）。</param>
+public sealed record AndroidPauseSnapshotState(
+    AndroidPauseSnapshotStatus Status, int Generation, string? LocalPath, SceneSnapshotCameraPose? Camera, string? Note)
+{
+    /// <summary>取り出していない状態。</summary>
+    public static readonly AndroidPauseSnapshotState None = new(AndroidPauseSnapshotStatus.None, 0, null, null, null);
+
+    /// <summary>取り出せていてファイルがあるか。</summary>
+    public bool IsReady => Status == AndroidPauseSnapshotStatus.Ready && LocalPath is not null;
+}
 
 /// <summary>Android の実行のいまの写し。</summary>
 public sealed record AndroidRunSnapshot
@@ -54,6 +74,9 @@ public sealed record AndroidRunSnapshot
     /// IPC の状態の補足（つながらなかった理由・使わない理由。実行ボタンのツールチップに出す。無ければ null）。
     /// </summary>
     public string? IpcNote { get; init; }
+
+    /// <summary>一時停止中の端末のシーンの写し（docs/android.md §20.17。Paused の間だけ意味を持つ）。</summary>
+    public AndroidPauseSnapshotState PauseSnapshot { get; init; } = AndroidPauseSnapshotState.None;
 
     /// <summary>動いているか（Idle 以外）。</summary>
     public bool IsActive => Phase != AndroidRunPhase.Idle;

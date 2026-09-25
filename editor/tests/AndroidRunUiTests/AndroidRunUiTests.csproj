@@ -89,6 +89,13 @@
     <Compile Include="..\..\src\Ipc\RuntimeIpcCommands.cs">
       <Link>Linked\Ipc\RuntimeIpcCommands.cs</Link>
     </Compile>
+    <!-- 一時停止中の端末のシーンの写し（命令・応答・写しを閲覧専用で出す段取り）と閲覧専用の判断（§20.17） -->
+    <Compile Include="..\..\src\SceneSnapshot\**\*.cs">
+      <Link>Linked\SceneSnapshot\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Scene\EditorReadOnlyPolicy.cs">
+      <Link>Linked\Scene\EditorReadOnlyPolicy.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\ProjectSettings\ScreenOrientationSetting.cs">
       <Link>Linked\ProjectSettings\ScreenOrientationSetting.cs</Link>
     </Compile>

@@ -83,6 +83,7 @@ public static class Program
                 SeedAndroidCommand.Logcat  => await LogcatCommand.RunAsync(toolchain, line, config, cancellation.Token),
                 // 動いているアプリへ IPC で 1 命令（段階D-1）
                 SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot
+                    or SeedAndroidCommand.Snapshot
                                            => await AppControlCommand.RunAsync(toolchain, line, config, cancellation.Token),
                 // 実行中の差し替え（docs/android.md §23）: 差し替えを頼む・端末と違うアセットだけを送る
                 SeedAndroidCommand.Reload  => await ReloadCommand.RunAsync(toolchain, line, config, cancellation.Token),

@@ -450,6 +450,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::ReloadScripts
         // 実行中の差し替え（キャッシュの破棄・シーンの読み直し）はディスクの内容を取り込み直すだけで、シーンの編集ではない。
         | IpcCommand::HotReload(..)
+        // シーンの写しの書き出し・閲覧（退避と戻し）は Undo 履歴を自分で退避・復元する（app/snapshot_view_ops.rs）。
+        | IpcCommand::SceneSnapshot(..)
         | IpcCommand::AnimPreview { .. }
         | IpcCommand::AnimPreviewStop { .. }
         | IpcCommand::AnimReload { .. }

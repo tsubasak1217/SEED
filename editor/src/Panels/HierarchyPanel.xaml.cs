@@ -1077,6 +1077,13 @@ public partial class HierarchyPanel : UserControl
         _pendingDeselect   = false;
         _pendingDeselectId = -1;
 
+        // 閲覧専用（端末の写しの表示中）は編集のメニューを出さない（HierarchyPanel.ReadOnly.cs）
+        if (IsReadOnlyView)
+        {
+            ActorTree.ContextMenu = null;
+            return;
+        }
+
         var pos  = e.GetPosition(ActorTree);
         var hit  = ActorTree.InputHitTest(pos) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
@@ -1794,6 +1801,13 @@ public partial class HierarchyPanel : UserControl
 
     private void OnTreeDragOver(object sender, DragEventArgs e)
     {
+        // 閲覧専用（端末の写しの表示中）は並べ替え・親子の付け替えを受け付けない（HierarchyPanel.ReadOnly.cs）
+        if (IsReadOnlyView)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
         if (!e.Data.GetDataPresent("DragIds"))
         {
             e.Effects = DragDropEffects.None;
@@ -2109,6 +2123,12 @@ public partial class HierarchyPanel : UserControl
         DropIndicator.Visibility = Visibility.Collapsed;
         HideDropReject();
         StopAutoScroll();
+        // 閲覧専用（端末の写しの表示中）はドロップを反映しない（HierarchyPanel.ReadOnly.cs）
+        if (IsReadOnlyView)
+        {
+            e.Handled = true;
+            return;
+        }
 
         if (!e.Data.GetDataPresent("DragIds")) return;
         var dragIds = (List<int>)e.Data.GetData("DragIds");
@@ -2330,6 +2350,8 @@ public partial class HierarchyPanel : UserControl
 
     private void StartRename(int nodeId)
     {
+        // 閲覧専用（端末の写しの表示中）は名前を変えさせない（HierarchyPanel.ReadOnly.cs）
+        if (IsReadOnlyView) return;
         var item = FindTreeItemById(ActorTree.Items, nodeId);
         if (item?.Tag is not ActorNode node) return;
 
