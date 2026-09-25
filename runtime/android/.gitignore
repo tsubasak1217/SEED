@@ -24,3 +24,7 @@ app/src/main/assets/
 
 # APK に同梱する .NET（SeedAndroid が runtime/android/dotnet_runtime.json と NuGet のパックから組み立てる。docs/android.md §17）
 app/src/seedDotnet/
+
+# デバッグ版だけのマニフェスト（INTERNET 権限。IPC の TCP 待ち受けに必要。docs/android.md §21）。
+# ルートの .gitignore の Debug/（Windows では大小文字を区別しない）に当たるので、ここで除外を打ち消す。
+!app/src/debug/

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  デバッグ版の APK だけに足すマニフェスト（Gradle が debug のビルドで src/main/AndroidManifest.xml と合わせる。段階D-1）。
+
+  ・INTERNET … エディタとの IPC（一時停止・再開など）のため、ランタイムが 127.0.0.1:<ポート> で TCP を待ち受ける
+    （runtime/src/engine/core/app_base/ipc_transport/tcp.rs）。Android はループバックでも AF_INET のソケットに
+    この権限が要る（無いと bind が Permission denied）。待ち受けは 127.0.0.1 だけで、PC からは adb forward だけが届く。
+    ポートはエディタ／SeedAndroid が起動オプション（am start の extra seed.ipc_port）で渡し、起動オプションは
+    デバッグ版の APK でしかネイティブへ渡らない（MainActivity）。配布版（release）には入らない。
+  詳細は docs/android.md §21。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+</manifest>
