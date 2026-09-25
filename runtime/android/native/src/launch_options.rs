@@ -32,7 +32,11 @@ pub fn receive(bytes: Option<Vec<u8>>) {
     };
     match String::from_utf8(bytes) {
         Ok(json) => {
-            logcat::info(&format!("{LOG_PREFIX} 起動オプションを受け取りました: {json}"));
+            // 接続トークン（ipc_token）の値は logcat へ出さない（段階D-1）
+            logcat::info(&format!(
+                "{LOG_PREFIX} 起動オプションを受け取りました: {}",
+                LaunchOptions::masked_json_for_log(&json)
+            ));
             if let Ok(mut slot) = RECEIVED.lock() {
                 *slot = Some(json);
             }
@@ -48,7 +52,10 @@ pub fn take() -> LaunchOptions {
         return LaunchOptions::default();
     };
     LaunchOptions::from_json(&json).unwrap_or_else(|err| {
-        logcat::warn(&format!("{LOG_PREFIX} 起動オプションの JSON を読めません（既定のまま起動します）: {err}  JSON: {json}"));
+        logcat::warn(&format!(
+            "{LOG_PREFIX} 起動オプションの JSON を読めません（既定のまま起動します）: {err}  JSON: {}",
+            LaunchOptions::masked_json_for_log(&json)
+        ));
         LaunchOptions::default()
     })
 }

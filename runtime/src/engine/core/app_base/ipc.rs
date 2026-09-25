@@ -1189,14 +1189,25 @@ impl IpcClient {
     /// 127.0.0.1:<ポート> で待ち受ける（Android。エディタ／SeedAndroid が adb forward 越しにつなぐ。段階D-1）。
     ///
     /// すぐ戻る（つながるのを待たない）。つながるまでは `send` した行を捨てる（IPC 無しの Play と同じ）。
-    /// つながったら挨拶の 1 行（READY:0）を書き、切れたら `IpcCommand::EditorDisconnected` を積んで次の接続を待つ。
+    /// 接続の最初の行 `HELLO:<トークン>` が `token` と一致したら挨拶の 1 行（READY:0）を書いて命令を受け付け
+    /// （一致しなければ断って閉じる。ipc_transport/auth.rs）、切れたら `IpcCommand::EditorDisconnected` を積んで次の接続を待つ。
     ///
     /// # 引数
-    /// * `port` - 待ち受けるポート（0 なら OS が空きポートを選ぶ。`tcp_local_addr` で分かる）
-    pub fn listen_tcp(port: u16) -> std::io::Result<Self> {
+    /// * `port`  - 待ち受けるポート（0 なら OS が空きポートを選ぶ。`tcp_local_addr` で分かる）
+    /// * `token` - 接続トークン（起動オプションの ipc_token）
+    pub fn listen_tcp(port: u16, token: String) -> std::io::Result<Self> {
+        Self::listen_tcp_with_auth(port, ipc_transport::TcpAuth::new(token))
+    }
+
+    /// `listen_tcp` の照合の設定（HELLO の待ち時間）まで指定できる版（単体テストで待ち時間を縮めるのに使う）。
+    ///
+    /// # 引数
+    /// * `port` - 待ち受けるポート
+    /// * `auth` - 照合の設定
+    pub(crate) fn listen_tcp_with_auth(port: u16, auth: ipc_transport::TcpAuth) -> std::io::Result<Self> {
         let (write_tx, write_rx) = mpsc::channel::<String>();
         let (tx, rx) = mpsc::channel();
-        let listening = ipc_transport::tcp::listen(port, tx, write_rx)?;
+        let listening = ipc_transport::tcp::listen(port, auth, tx, write_rx)?;
         Ok(Self {
             commands: rx,
             write_tx,

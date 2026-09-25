@@ -113,7 +113,8 @@ public sealed class AndroidIpcSession : IAndroidIpcLink, IAsyncDisposable
                 throw new AndroidIpcException(AndroidIpcFailureKind.Disconnected, $"端末のアプリへ命令を送れません（通信路が切れています）: {command}");
             }
             var winner = await Task.WhenAny(reply.Task, Closed, Task.Delay(_timings.ReplyTimeout, cancellationToken)).ConfigureAwait(false);
-            if (winner == reply.Task) return await reply.Task.ConfigureAwait(false);
+            // 応答の直後に閉じられたときは、どちらの続きが先に走るかがスレッドの都合で入れ替わるので、応答が届いているかを先に見る
+            if (reply.Task.IsCompletedSuccessfully) return reply.Task.Result;
             cancellationToken.ThrowIfCancellationRequested();
             throw winner == Closed
                 ? new AndroidIpcException(AndroidIpcFailureKind.Disconnected, "応答の前に端末のアプリとの通信路が切れました（アプリが終わった等）。")

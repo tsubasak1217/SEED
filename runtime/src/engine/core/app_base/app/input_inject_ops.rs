@@ -82,7 +82,8 @@ impl App {
         // 一時停止中に時計を進めると、再開した瞬間に溜まったイベントが
         // 1 フレームへ雪崩れ込み、意図した操作にならない。
         let playing = self.mode == RuntimeMode::Play;
-        let outcome = self.input.tick_injection(playing, self.paused);
+        // 一時停止は PC の PAUSE と端末の PAUSE（段階D-1）の両方
+        let outcome = self.input.tick_injection(playing, self.is_simulation_paused());
 
         if outcome.sequence_finished {
             if let Some(ipc) = &self.ipc {

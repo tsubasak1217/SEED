@@ -34,7 +34,8 @@ impl App {
     /// frame_renderer のゲームロジックブロック先頭（スクリプト更新より前）で呼ばれる。
     /// dt はゲーム時間の delta（Time API と同源の ctx.delta_time）。
     pub(super) fn update_animations(&mut self, dt: f32) {
-        if self.mode != RuntimeMode::Play || self.paused {
+        // 一時停止は PC の PAUSE と端末の PAUSE（段階D-1）の両方
+        if self.mode != RuntimeMode::Play || self.is_simulation_paused() {
             return;
         }
 

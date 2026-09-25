@@ -37,9 +37,10 @@
 //  判断そのものは engine::platform::launch_options::choose_scene（純粋な処理・単体テスト付き）。
 //
 //  【エディタとの通信路（段階D-1）】
-//  起動オプションに ipc_port（am start の extra seed.ipc_port）があれば LaunchArgs.ipc_port に入れ、エンジンが
-//  127.0.0.1:<ポート> で待ち受ける（エディタ／SeedAndroid が adb forward 越しにつなぎ、一時停止・再開を送る。
-//  engine::core::app_base::ipc_transport）。無ければ待ち受けない（従来どおり）。読めない値は警告して待ち受けない。
+//  起動オプションに ipc_port と ipc_token（am start の extra seed.ipc_port・seed.ipc_token）があれば LaunchArgs へ入れ、
+//  エンジンが 127.0.0.1:<ポート> で待ち受ける（エディタ／SeedAndroid が adb forward 越しにつなぎ、最初の行でトークンを
+//  照合してから一時停止・再開を送る。engine::core::app_base::ipc_transport）。無ければ待ち受けない（従来どおり）。
+//  読めない値は警告して待ち受けない（トークンの値は logcat へ出さない）。
 // ============================================================
 
 use std::path::{Path, PathBuf};
@@ -63,6 +64,15 @@ const PROJECT_SETTINGS_FILE_NAME: &str = "project_settings.json";
 /// ログに出すバイト数を MiB へ直す除数。
 const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
+/// 起動オプションから決めた、エディタとの IPC の待ち受け（段階D-1）。
+#[derive(Debug, Clone, Default)]
+struct IpcLaunch {
+    /// 待ち受けるポート（None なら待ち受けない）。
+    port: Option<u16>,
+    /// 接続トークン（None ならポートがあっても待ち受けない）。
+    token: Option<String>,
+}
+
 /// 起動モードを決めて、エンジンの起動引数を組み立てる。
 ///
 /// 端末上では常にゲームとして起動する（エディタ埋め込み・名前付きパイプ・親プロセス監視は無い）。
@@ -72,12 +82,12 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
     let internal = app.internal_data_path();
     // JNI で受け取った起動オプション（MainActivity.onCreate が android_main より前に渡す）
     let options = launch_options::take();
-    let ipc_port = ipc_port_logged(&options);
+    let ipc = ipc_endpoint_logged(&options);
 
     // ── 1. APK に配布物の pak があればパッケージ実行 ──
     let package = ApkPackageSource::new(app.asset_manager());
     if let Some(probe) = package.probe_pak() {
-        return packaged_launch_args(internal.as_deref(), package, &probe, &options, ipc_port);
+        return packaged_launch_args(internal.as_deref(), package, &probe, &options, ipc);
     }
     logcat::info(&format!(
         "APK に {} がありません。開発用の置き場（アプリ専用フォルダの assets/）から読みます",
@@ -107,7 +117,7 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
     let scene_path = choose_scene_logged(&options, |relative| {
         assets_root.as_deref().is_some_and(|root| root.join(relative).is_file())
     });
-    play_launch_args(assets_root, None, scene_path, ipc_port)
+    play_launch_args(assets_root, None, scene_path, ipc)
 }
 
 /// パッケージ実行（APK 内の pak）の起動引数を組み立てる。
@@ -117,13 +127,13 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
 /// * `package`  - APK の配布物の読み口（エンジンの asset_fs へ渡す）
 /// * `probe`    - pak を調べた結果（ログ用）
 /// * `options`  - 起動オプション（起動するシーン）
-/// * `ipc_port` - エディタとの IPC を待ち受けるポート（無ければ待ち受けない）
+/// * `ipc`      - エディタとの IPC の待ち受け（ポートとトークン。無ければ待ち受けない）
 fn packaged_launch_args(
     internal: Option<&Path>,
     package: ApkPackageSource,
     probe: &PakProbe,
     options: &LaunchOptions,
-    ipc_port: Option<u16>,
+    ipc: IpcLaunch,
 ) -> LaunchArgs {
     let location = package.describe(package_layout::PAK_FILE_NAME);
     match probe.uncompressed_offset {
@@ -153,7 +163,7 @@ fn packaged_launch_args(
         packaged_scene_exists(&package, assets_root.as_deref(), relative)
     });
     let package: Arc<dyn PackageSource> = Arc::new(package);
-    play_launch_args(assets_root, Some(package), scene_path, ipc_port)
+    play_launch_args(assets_root, Some(package), scene_path, ipc)
 }
 
 /// ゲームとして起動する LaunchArgs を組み立てる（両モード共通）。
@@ -162,19 +172,20 @@ fn packaged_launch_args(
 /// * `assets_root`    - アセットルート（ファイルシステム）
 /// * `package_source` - 配布物の読み口（パッケージ実行のときだけ Some）
 /// * `scene_path`     - 起動するシーン（仮想パス。None なら project_settings.json の start_scene）
-/// * `ipc_port`       - エディタとの IPC を待ち受けるポート（127.0.0.1 だけ。None なら待ち受けない）
+/// * `ipc`            - エディタとの IPC の待ち受け（127.0.0.1 だけ。ポートとトークンが揃わなければ待ち受けない）
 fn play_launch_args(
     assets_root: Option<PathBuf>,
     package_source: Option<Arc<dyn PackageSource>>,
     scene_path: Option<String>,
-    ipc_port: Option<u16>,
+    ipc: IpcLaunch,
 ) -> LaunchArgs {
     LaunchArgs {
         parent_hwnd: None,
         parent_pid: None,
         mode: RuntimeMode::Play,
         pipe_name: None,
-        ipc_port,
+        ipc_port: ipc.port,
+        ipc_token: ipc.token,
         assets_root: assets_root.map(|path| path.to_string_lossy().into_owned()),
         package_source,
         editor_resources: None,
@@ -212,28 +223,40 @@ fn choose_scene_logged(options: &LaunchOptions, exists: impl Fn(&str) -> bool) -
     choice.scene_path()
 }
 
-/// 起動オプションの IPC のポートを確かめ、決めた内容を logcat へ残す（段階D-1）。
+/// 起動オプションの IPC のポートと接続トークンを確かめ、決めた内容を logcat へ残す（段階D-1。トークンの値は出さない）。
 ///
 /// # 引数
 /// * `options` - 起動オプション
 ///
 /// # 戻り値
-/// 待ち受けるポート（指定なし・読めない値なら None ＝ 待ち受けない）。
-fn ipc_port_logged(options: &LaunchOptions) -> Option<u16> {
-    match options.ipc_port() {
+/// 待ち受け（ポートとトークン。指定なし・読めない値なら None ＝ 待ち受けない）。
+fn ipc_endpoint_logged(options: &LaunchOptions) -> IpcLaunch {
+    let port = match options.ipc_port() {
         None => {
             logcat::info("エディタとの通信路: 起動オプションに ipc_port が無いため待ち受けません（一時停止などのエディタからの操作は使えません）");
-            None
+            return IpcLaunch::default();
         }
-        Some(Ok(port)) => {
-            logcat::info(&format!("エディタとの通信路: 127.0.0.1:{port} で待ち受けます（起動オプションの ipc_port。adb forward 越しにつなぐ）"));
-            Some(port)
-        }
+        Some(Ok(port)) => port,
         Some(Err(reason)) => {
             logcat::warn(&format!("エディタとの通信路を開きません: {reason}"));
-            None
+            return IpcLaunch::default();
         }
-    }
+    };
+    let token = match options.ipc_token() {
+        Some(Ok(token)) => token,
+        Some(Err(reason)) => {
+            logcat::warn(&format!("エディタとの通信路を開きません（接続トークン）: {reason}"));
+            return IpcLaunch::default();
+        }
+        None => {
+            logcat::warn("エディタとの通信路を開きません: 起動オプションに接続トークン（ipc_token）が無いため待ち受けません（エディタ／SeedAndroid の run で起動し直してください）");
+            return IpcLaunch::default();
+        }
+    };
+    logcat::info(&format!(
+        "エディタとの通信路: 127.0.0.1:{port} で待ち受けます（起動オプションの ipc_port。adb forward 越しにつなぎ、接続トークンを照合する）"
+    ));
+    IpcLaunch { port: Some(port), token: Some(token) }
 }
 
 /// パッケージ実行で、相対パスのシーンがあるか（エンジンの asset_fs が仮想パスを読むのと同じ順に見る）。

@@ -247,7 +247,8 @@ public static class SeedAndroidArguments
           pause     動いているアプリを一時停止する（adb forward → IPC の PAUSE → 切り離して閉じる。一時停止のまま残る）
           resume    動いているアプリの一時停止を解く（IPC の RESUME）
           screenshot 動いているアプリの画面を撮って PC へ取り出す（IPC の SCREENSHOT → run-as で PNG を取り出す。--out）
-                    （pause / resume / screenshot は run / push で起動したアプリだけ。エディタの実行中はエディタが使うので使えない）
+                    （pause / resume / screenshot は run / push で起動したアプリだけ。起動の工程がプロジェクトの
+                     cache/android/run_state.json に記録した接続トークンでつなぐ。エディタの実行中はエディタが使うので使えない）
 
         オプション:
           --project <フォルダ>      プロジェクト（.seedproj か assets/ を持つフォルダ、またはアセットルートそのもの）。
@@ -279,8 +280,8 @@ public static class SeedAndroidArguments
           --app-id <ID>             stop / pause / resume / screenshot の対象のアプリ（省略時は --project の設定から。
                                     無ければ com.seedengine.runtime）
           --since <時刻>            logcat の起点（端末の時刻 "MM-dd HH:mm:ss.fff"。省略時は今）
-          --ipc-port <ポート>       端末のランタイムが一時停止などの IPC を待ち受けるポート（run / push が起動オプションで渡し、
-                                    pause / resume / screenshot がつなぐ。省略時は 52735、0 なら渡さない）
+          --ipc-port <ポート>       端末のランタイムが一時停止などの IPC を待ち受けるポート（run / push が起動オプションで渡す。
+                                    省略時は 52735、0 なら渡さない。pause / resume / screenshot は省略時に起動の記録のポートへつなぐ）
           --out <パス>              screenshot の書き先（省略時はカレントフォルダの android_screenshot_<日時>.png）
           --json                    devices の出力を JSON にする
           --help, -h                この説明を表示する

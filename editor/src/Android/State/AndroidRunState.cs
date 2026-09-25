@@ -13,6 +13,8 @@
 //    installs    … 端末（シリアル）ごとに、最後に自分が入れた APK の SHA-256 と、入れた直後の pm path
 //                   （インストールを飛ばしてよいかの判断。Plan/AndroidBuildPlan.cs）
 //    last_run    … 最後の実行の結果（工程ごとの判断・所要時間・その時の入力の指紋）
+//    ipc_launches … 端末（シリアル）ごとに、最後に起動したアプリの IPC のポートと接続トークン（段階D-1。起動の工程が
+//                   起動の直後に書く。SeedAndroid の pause / resume / screenshot がつなぐときに使う。起動のたびに変わる）
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
@@ -23,6 +25,8 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SEEDEditor.Android.Plan;
+using SEEDEditor.Android.Project;
+using SEEDEditor.Android.Toolchain;
 
 namespace SEEDEditor.Android.State;
 
@@ -62,6 +66,22 @@ public sealed record AndroidInstallStateRecord
 
     /// <summary>入れた日時。</summary>
     [JsonPropertyName("installed_at")] public DateTimeOffset InstalledAt { get; init; }
+}
+
+/// <summary>端末で最後に起動したアプリの IPC の記録（段階D-1。起動のたびに書き換わる）。</summary>
+public sealed record AndroidIpcLaunchRecord
+{
+    /// <summary>起動したアプリ ID。</summary>
+    [JsonPropertyName("application_id")] public required string ApplicationId { get; init; }
+
+    /// <summary>端末のランタイムが待ち受けるポート。</summary>
+    [JsonPropertyName("ipc_port")] public required int IpcPort { get; init; }
+
+    /// <summary>接続トークン（起動ごとの使い捨て。接続の最初の行 HELLO:&lt;トークン&gt; で照合される）。</summary>
+    [JsonPropertyName("ipc_token")] public required string IpcToken { get; init; }
+
+    /// <summary>起動した日時。</summary>
+    [JsonPropertyName("launched_at")] public DateTimeOffset LaunchedAt { get; init; }
 }
 
 /// <summary>最後の実行の 1 工程。</summary>
@@ -153,10 +173,38 @@ public sealed class AndroidRunState
     [JsonPropertyName("last_run")]
     public AndroidLastRunRecord? LastRun { get; set; }
 
+    /// <summary>
+    /// シリアル → 最後に起動したアプリの IPC のポートと接続トークン（段階D-1）。項目を足しただけなので書式の版は変えない
+    /// （古い記録は空として読む）。
+    /// </summary>
+    [JsonPropertyName("ipc_launches")]
+    public Dictionary<string, AndroidIpcLaunchRecord> IpcLaunches { get; set; } = new(StringComparer.Ordinal);
+
     /// <summary>プロジェクトのルートから記録のファイルの場所を決める。</summary>
     /// <param name="projectRoot">プロジェクトのルート。</param>
     /// <returns>記録のファイル。</returns>
     public static string PathForProject(string projectRoot) => Path.Combine(projectRoot, ProjectRelativePath);
+
+    /// <summary>
+    /// 記録のファイルの場所を決める（プロジェクトがあればその cache/、無ければエンジン側の置き場）。
+    /// 中核の実行（AndroidRunPipeline）と SeedAndroid の pause / resume / screenshot が同じ場所を使う。
+    /// </summary>
+    /// <param name="project">プロジェクト（無ければ null）。</param>
+    /// <param name="engine">エンジン側の置き場。</param>
+    /// <returns>記録のファイル。</returns>
+    public static string PathFor(AndroidProjectInfo? project, AndroidEnginePaths engine) =>
+        project is not null ? PathForProject(project.Folder.ProjectRoot) : engine.FallbackRunStatePath;
+
+    /// <summary>
+    /// その端末で最後に起動したアプリの IPC の記録（アプリ ID が違えば無いものとする）。
+    /// </summary>
+    /// <param name="serial">シリアル。</param>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <returns>記録（無ければ null）。</returns>
+    public AndroidIpcLaunchRecord? IpcLaunchFor(string serial, string applicationId) =>
+        IpcLaunches.TryGetValue(serial, out var record) && string.Equals(record.ApplicationId, applicationId, StringComparison.Ordinal)
+            ? record
+            : null;
 
     /// <summary>
     /// 記録を読む（無い・壊れている・版が違うときは空の記録）。

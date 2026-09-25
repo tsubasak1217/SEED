@@ -124,7 +124,7 @@ impl App {
             // シーン未ロードでは Play しても意味がないが、エディタの状態機械を進めるため
             // 応答は返す（アクター無しの空 Play）。
             self.mode = RuntimeMode::Play;
-            self.paused = false;
+            self.clear_pause();
             self.reset_time_scale_for_play();
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_ENTERED"); }
             return;
@@ -198,7 +198,7 @@ impl App {
         // 時間スケール（SEED.Time.Scale）も等速へ戻す。前回 Play で
         // ヒットストップ中に停止した場合でも、次の Play は必ず等速で始まる。
         self.reset_time_scale_for_play();
-        self.paused = false;
+        self.clear_pause();
         self.mode   = RuntimeMode::Play;
 
         // 【高速化の本体】地形（TerrainState・チャンクメッシュ・GPU）・散布・

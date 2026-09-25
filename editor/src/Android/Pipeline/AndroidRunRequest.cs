@@ -137,4 +137,12 @@ public sealed record AndroidRunRequest
     /// </summary>
     [JsonPropertyName("ipc_port")]
     public int? IpcPort { get; init; }
+
+    /// <summary>
+    /// 端末のランタイムとの IPC の接続トークン（起動ごとの使い捨て。段階D-1）。起動の工程が am start の extra seed.ipc_token で
+    /// 渡し、プロジェクトの run_state.json（ipc_launches）へ記録する。null なら中核が作る（SeedAndroid の run）。
+    /// エディタは実行ごとに作って入れる（同じ値でつなぐため。AndroidRunController）。書式は Ipc/AndroidIpcToken。
+    /// </summary>
+    [JsonPropertyName("ipc_token")]
+    public string? IpcToken { get; init; }
 }

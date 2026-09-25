@@ -599,6 +599,10 @@ pub struct LaunchArgs {
     /// PC でも --ipc-port=<ポート> で試せる。`pipe_name` があればそちらが優先（ipc_transport/endpoint.rs）。
     /// None なら待ち受けない（従来どおり IPC 無しの Play）。
     pub ipc_port:         Option<u16>,
+    /// TCP の IPC の接続トークン（起動ごとの使い捨て。接続の最初の行 HELLO:<トークン> と照合する。
+    /// Android は起動オプション seed.ipc_token、PC の検証用は --ipc-token=）。
+    /// `ipc_port` があってもこれが無ければ待ち受けない（ipc_transport/endpoint.rs・auth.rs）。
+    pub ipc_token:        Option<String>,
     /// アセットルートディレクトリの絶対パス（Play / パッケージモードで使用）。
     /// None の場合は実行ファイルの隣に assets/ or assets.pak があると仮定する。
     pub assets_root:      Option<String>,
@@ -711,7 +715,11 @@ pub struct App {
     parent_hwnd:  Option<isize>,
     mode:         RuntimeMode,
     ipc:          Option<IpcClient>,
+    /// PC の PAUSE（ゲームを止め、描画をエディタの見た目＝デバッグカメラ・グリッド・ギズモに切り替える）。
     paused:       bool,
+    /// 端末の PAUSE（TCP の通信路。ゲームの時間・物理・スクリプトだけを止め、描画はゲームのカメラのまま。段階D-1）。
+    /// ゲームを進めるかの判断は `is_simulation_paused`（paused か remote_paused）で見る（app/ipc_handler.rs）。
+    remote_paused: bool,
     /// TCP の通信路（Android）が切れたときに一時停止をどう扱うか（DETACH の印。段階D-1。
     /// 名前付きパイプでは切断が積まれないので使われない。ipc_transport/session_policy.rs）。
     ipc_session:  IpcSessionPolicy,
@@ -1495,6 +1503,7 @@ impl App {
         let ipc = ipc_transport::open_endpoint(&ipc_transport::choose_endpoint(
             args.pipe_name.as_deref(),
             args.ipc_port,
+            args.ipc_token.as_deref(),
         ));
 
         // 実行環境フラグを確定させる（スクリプト API SEED.Application の判定源）。
@@ -1542,6 +1551,7 @@ impl App {
             mode:         args.mode,
             ipc,
             paused:        false,
+            remote_paused: false,
             ipc_session:   IpcSessionPolicy::default(),
             render_paused: false,
             window_focused: true,

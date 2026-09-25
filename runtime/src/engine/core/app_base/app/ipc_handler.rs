@@ -6,7 +6,7 @@
 // ============================================================
 
 use crate::engine::core::app_base::ipc::IpcCommand;
-use crate::engine::core::app_base::ipc_transport::IpcTransportKind;
+use crate::engine::core::app_base::ipc_transport::{self, IpcTransportKind};
 use crate::engine::core::app_base::ipc_transport::session_policy::DisconnectAction;
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
 use crate::engine::core::app_base::app::RuntimeMode;
@@ -48,7 +48,7 @@ const IPC_PUMP_INTERVAL_MS: u64 = 16;
 const REMOTE_IPC_LOG_PREFIX: &str = "[SEED IPC]";
 
 /// PAUSE を受けて一時停止したときのログ。
-const REMOTE_PAUSED_LOG: &str = "一時停止しました（PAUSE。ゲームの時間・物理・スクリプトを止めています）";
+const REMOTE_PAUSED_LOG: &str = "一時停止しました（PAUSE。ゲームの時間・物理・スクリプトを止めています。画面はゲームのカメラのまま）";
 
 /// RESUME を受けて再開したときのログ。
 const REMOTE_RESUMED_LOG: &str = "再開しました（RESUME）";
@@ -76,14 +76,34 @@ impl App {
     /// 黙って切れたなら一時停止を解いて Play を続け、DETACH の後なら一時停止のまま据え置く
     /// （判断は ipc_transport/session_policy.rs）。
     fn handle_ipc_disconnected(&mut self) {
-        match self.ipc_session.on_disconnected(self.paused) {
+        match self.ipc_session.on_disconnected(self.is_simulation_paused()) {
             DisconnectAction::Nothing => {}
             DisconnectAction::Resume => {
-                self.paused = false;
+                self.clear_pause();
                 self.log_remote_ipc(REMOTE_DISCONNECT_RESUMED_LOG);
             }
             DisconnectAction::KeepPaused => self.log_remote_ipc(REMOTE_DETACHED_KEEP_PAUSED_LOG),
         }
+    }
+
+    /// PAUSE を、画面をゲームのカメラのまま止める形で扱うか（TCP＝Android の端末なら true。PC は従来どおり false）。
+    /// 判断は ipc_transport/session_policy.rs の pause_keeps_game_view。
+    fn pause_keeps_game_view(&self) -> bool {
+        self.ipc.as_ref().is_some_and(|ipc| ipc_transport::pause_keeps_game_view(ipc.transport()))
+    }
+
+    /// ゲームの時間・物理・スクリプト・アニメーションを止めているか（PC の PAUSE か、端末の PAUSE。段階D-1）。
+    ///
+    /// ゲームを進めるかの判断（frame_renderer の time_running・物理の同期・アニメーション・入力の注入）はこれを見る。
+    /// 描画をエディタの見た目（デバッグカメラ・グリッド・ギズモ）にするかの判断は、従来どおり `paused`（PC の PAUSE）だけを見る。
+    pub(super) fn is_simulation_paused(&self) -> bool {
+        self.paused || self.remote_paused
+    }
+
+    /// 一時停止を解く（PC の PAUSE と端末の PAUSE の両方）。
+    pub(super) fn clear_pause(&mut self) {
+        self.paused = false;
+        self.remote_paused = false;
     }
 
     /// フレームループが止まっている間だけ、イベントループ側から IPC を処理する。
@@ -169,16 +189,22 @@ impl App {
                 IpcCommand::SaveData(payload) => self.handle_save_data(payload),
                 IpcCommand::ScriptDebug { name, arg } => self.handle_script_debug(name, arg),
                 IpcCommand::Pause => {
-                    // Play モード中にメインカメラが存在する場合、
-                    // デバッグカメラをその視点に同期してから Pause に入る。
-                    if self.mode == RuntimeMode::Play {
-                        self.sync_debug_camera_to_main_camera();
+                    if self.pause_keeps_game_view() {
+                        // TCP（Android の端末）: ゲームの時間・物理・スクリプトだけを止め、画面はゲームのカメラのまま
+                        // （端末ではデバッグカメラを動かせないので、エディタの見た目へ切り替えない。段階D-1）
+                        self.remote_paused = true;
+                    } else {
+                        // Play モード中にメインカメラが存在する場合、
+                        // デバッグカメラをその視点に同期してから Pause に入る。
+                        if self.mode == RuntimeMode::Play {
+                            self.sync_debug_camera_to_main_camera();
+                        }
+                        self.paused = true;
                     }
-                    self.paused = true;
                     self.log_remote_ipc(REMOTE_PAUSED_LOG);
                 }
                 IpcCommand::Resume             => {
-                    self.paused = false;
+                    self.clear_pause();
                     self.log_remote_ipc(REMOTE_RESUMED_LOG);
                 }
                 // ── TCP の通信路（Android）の切り離し・切断（段階D-1。扱いの正典は ipc_transport/session_policy.rs）──
@@ -1020,7 +1046,8 @@ impl App {
                                 self.stop_physics();
                                 self.stop_physics_2d();
                                 self.clock = crate::engine::core::clock::Clock::new();
-                                self.paused = false;
+                                // PC の PAUSE・端末の PAUSE（段階D-1）の両方を解く
+                                self.clear_pause();
                             }
                             // 「いま何を読み込んでいるか」を確定させる唯一の場所。
                             // エディタはこの応答に載ったパスだけを現在シーンパスとして採用し、

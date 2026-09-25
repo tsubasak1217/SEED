@@ -22,6 +22,9 @@ public static class IpcTests
     /// <summary>テストのアプリ ID。</summary>
     private const string AppId = "com.seedengine.runtime";
 
+    /// <summary>テストの接続トークン（起動の工程が端末へ渡すもの）。</summary>
+    private const string Token = "0123456789abcdef0123456789abcdef";
+
     /// <summary>待ち合わせの上限（遅い PC でも通るよう長めにとる。通常は数ミリ秒で満たされる）。</summary>
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
 
@@ -37,8 +40,11 @@ public static class IpcTests
         harness.Add("adb forward: tcp:0 tcp:<端末> で張り、出力の数字を PC 側のポートとして読む・--remove tcp:<PC 側>", BuildsForwardArguments);
         harness.Add("起動の extra: seed.ipc_port を 10 進の文字列で渡す（シーンと並べる・0 の指定なら渡さない）・キーはランタイムと一致", LaunchExtrasCarryIpcPort);
         harness.Add("行の送受信: 1 行ずつ前後の空白を落として届き、受け手の例外で止まらず、相手が閉じると Closed", LineChannelSendsAndReceives);
-        harness.Add("接続: 挨拶（READY:）が届くまでやり直す（起動の途中は閉じられる）・挨拶の後の行も届く", HandshakeRetriesUntilGreeting);
+        harness.Add("接続: 最初の行で HELLO:<トークン> を示し、挨拶（READY:）が届くまでやり直す（起動の途中は閉じられる）・挨拶の後の行も届く", HandshakeRetriesUntilGreeting);
         harness.Add("接続: 待ち受けていない／挨拶が来ない（別の接続がつながっている）は時間内に理由付きで諦める", HandshakeGivesUpWithReason);
+        harness.Add("接続トークン: 断られたら（IPC_DENIED:）やり直さず理由付きで諦める", HandshakeStopsOnDenial);
+        harness.Add("接続トークン: 128 ビットの乱数の 16 進（毎回違う）・書式の検査・起動の extra に入れて表示では伏せる", TokenIsCreatedPassedAndMasked);
+        harness.Add("接続トークン: 起動の記録（run_state.json の ipc_launches）の往復と、端末・アプリ ID での引き当て", RunStateRecordsIpcLaunch);
         harness.Add("スクリーンショット: 端末の書き先（アプリのキャッシュ）と応答（DONE の幅・高さ・ERROR の理由）の読み方", ParsesScreenshotReply);
         harness.Add("SeedAndroid: pause / resume / screenshot・--ipc-port（0〜65535）・--out は screenshot だけ・auto は使えない", ParsesControlArguments);
     }
@@ -144,28 +150,132 @@ public static class IpcTests
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        // 偽のランタイム: 1 本目は挨拶せずに閉じる（adb forward の先で誰も待ち受けていない＝起動の途中）、2 本目で挨拶する
+        // 偽のランタイム: 1 本目は挨拶せずに閉じる（adb forward の先で誰も待ち受けていない＝起動の途中）、
+        // 2 本目は最初の行（HELLO:<トークン>）を読んでから挨拶する
         var fake = Task.Run(() =>
         {
             using (var first = listener.AcceptTcpClient()) { }
             var second = listener.AcceptTcpClient();
             var stream = second.GetStream();
+            var hello = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1, leaveOpen: true).ReadLine();
             stream.Write(Encoding.UTF8.GetBytes("READY:0\nFPS:30.0\n"));
-            return second;
+            return (second, hello);
         });
 
-        var (client, channel) = AndroidIpcConnector.HandshakeWithRetryAsync(port, 52735, FastTimings, CancellationToken.None).Result;
+        var (client, channel) = AndroidIpcConnector.HandshakeWithRetryAsync(port, 52735, Token, FastTimings, CancellationToken.None).Result;
         using (client)
         using (channel)
         {
             var received = new System.Collections.Concurrent.ConcurrentQueue<string>();
             channel.MessageReceived += received.Enqueue;
-            var second = fake.Result;
+            var (second, hello) = fake.Result;
+            Check.Equal($"HELLO:{Token}", hello, "最初の行で接続トークンを示す");
             second.GetStream().Write(Encoding.UTF8.GetBytes("SCREENSHOT_ERROR:test\n"));
             WaitUntil(() => received.Contains("SCREENSHOT_ERROR:test"), "挨拶の後の行も同じ受信で届く");
             Check.True(!channel.IsClosed, "つながったまま");
             second.Dispose();
         }
+    }
+
+    /// <summary>断られたらやり直さない。</summary>
+    private static void HandshakeStopsOnDenial()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var accepted = 0;
+        // 偽のランタイム: 最初の行を読んで IPC_DENIED:token を返して閉じる（何度来ても断る）
+        using var stop = new CancellationTokenSource();
+        var fake = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                TcpClient connection;
+                try
+                {
+                    connection = await listener.AcceptTcpClientAsync(stop.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                using (connection)
+                {
+                    Interlocked.Increment(ref accepted);
+                    var stream = connection.GetStream();
+                    new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1, leaveOpen: true).ReadLine();
+                    stream.Write(Encoding.UTF8.GetBytes("IPC_DENIED:token\n"));
+                    connection.Client.Shutdown(SocketShutdown.Send);
+                }
+            }
+        });
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var error = CatchIpc(() => AndroidIpcConnector.HandshakeWithRetryAsync(port, 52735, "ffffffffffffffffffffffffffffffff", FastTimings, CancellationToken.None).Wait());
+        stop.Cancel();
+        fake.Wait(Wait);
+        Check.Equal(AndroidIpcFailureKind.Denied, error.Kind, "断られた");
+        Check.Equal(1, Volatile.Read(ref accepted), "断られたらやり直さない（接続は 1 回だけ）");
+        Check.True(watch.Elapsed < FastTimings.ConnectTimeout, $"上限まで待たない（{watch.Elapsed.TotalSeconds:F2} 秒）");
+        Check.True(error.Message.Contains("token") && error.Message.Contains("run / push"), $"理由と直し方: {error.Message}");
+        Check.True(!error.Message.Contains("ffffffff"), "説明にトークンを含めない");
+    }
+
+    /// <summary>トークンの作り方・書式・起動の extra と表示。</summary>
+    private static void TokenIsCreatedPassedAndMasked()
+    {
+        var first = AndroidIpcToken.Create();
+        var second = AndroidIpcToken.Create();
+        Check.Equal(AndroidIpcToken.RandomByteCount * 2, first.Length, "128 ビットを 16 進で 32 文字");
+        Check.True(first != second, "毎回違う");
+        Check.True(AndroidIpcToken.IsValid(first) && first.All(c => char.IsAsciiHexDigitLower(c) || char.IsAsciiDigit(c)), "16 進の小文字");
+        Check.True(AndroidIpcToken.Validate(null) is null, "指定なしは中核が作るので正しい");
+        foreach (var bad in new[] { "short", new string('a', AndroidIpcToken.MaxLength + 1), "0123456789abcdef;rm -rf /", "0123456789abcdef 0123" })
+        {
+            Check.True(!AndroidIpcToken.IsValid(bad), $"書式の誤り: {bad}");
+            Check.True(AndroidIpcToken.Validate(bad) is { } message && !message.Contains(bad), "説明に値を含めない");
+        }
+
+        Check.Equal("ipc_token", AndroidRuntimeContract.LaunchOptionIpcTokenKey, "runtime/src/engine/platform/launch_options.rs の IPC_TOKEN_KEY と一致");
+        Check.Equal("seed.ipc_token", AndroidRuntimeContract.IpcTokenExtraName, "extra の名前");
+        var extras = LaunchStep.LaunchExtras("scenes/Main.scene", 52735, Token);
+        Check.Equal("seed.scene,seed.ipc_port,seed.ipc_token", string.Join(",", extras.Select(extra => extra.Key)), "シーン・ポート・トークンの順");
+        Check.Equal(Token, extras[2].Value, "実際に渡すのはトークンそのもの");
+        Check.Equal(0, LaunchStep.LaunchExtras(null, null, Token).Count, "ポートを使わないならトークンも渡さない");
+
+        var shown = string.Join(" ", AdbClient.AmStartArguments("com.seedengine.runtime/com.seedengine.runtime.MainActivity", LaunchStep.MaskSecrets(extras)));
+        Check.True(!shown.Contains(Token) && shown.Contains("--es seed.ipc_token '***'"), $"表示では伏せる: {shown}");
+        Check.True(shown.Contains("--es seed.ipc_port '52735'"), "ポートはそのまま");
+    }
+
+    /// <summary>起動の記録の往復。</summary>
+    private static void RunStateRecordsIpcLaunch()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("cache/android/run_state.json");
+        var state = new SEEDEditor.Android.State.AndroidRunState();
+        state.IpcLaunches["2B011JEGR02535"] = new SEEDEditor.Android.State.AndroidIpcLaunchRecord
+        {
+            ApplicationId = AppId, IpcPort = 52735, IpcToken = Token, LaunchedAt = DateTimeOffset.Now,
+        };
+        state.EditorTarget = "auto";
+        state.Save(path);
+
+        var loaded = SEEDEditor.Android.State.AndroidRunState.Load(path);
+        var record = loaded.IpcLaunchFor("2B011JEGR02535", AppId);
+        Check.True(record is not null, "端末とアプリ ID で引ける");
+        Check.Equal(Token, record!.IpcToken, "トークン");
+        Check.Equal(52735, record.IpcPort, "ポート");
+        Check.True(loaded.IpcLaunchFor("2B011JEGR02535", "com.example.other") is null, "別のアプリの記録は使わない");
+        Check.True(loaded.IpcLaunchFor("emulator-5554", AppId) is null, "別の端末の記録は使わない");
+        Check.Equal("auto", loaded.EditorTarget, "他の項目は保つ");
+        Check.True(File.ReadAllText(path).Contains("\"ipc_launches\""), "キーは ipc_launches");
+
+        // 古い記録（ipc_launches の無いもの）も読める
+        File.WriteAllText(path, "{ \"format_version\": 1, \"editor_target\": \"pc\" }");
+        var old = SEEDEditor.Android.State.AndroidRunState.Load(path);
+        Check.Equal("pc", old.EditorTarget, "古い記録の他の項目");
+        Check.Equal(0, old.IpcLaunches.Count, "ipc_launches が無ければ空");
     }
 
     /// <summary>時間内に諦める。</summary>
@@ -191,7 +301,7 @@ public static class IpcTests
                     }
                 }
             });
-            var error = CatchIpc(() => AndroidIpcConnector.HandshakeWithRetryAsync(port, 52735, FastTimings, CancellationToken.None).Wait());
+            var error = CatchIpc(() => AndroidIpcConnector.HandshakeWithRetryAsync(port, 52735, Token, FastTimings, CancellationToken.None).Wait());
             stop.Cancel();
             closer.Wait(Wait);
             Check.Equal(AndroidIpcFailureKind.NotListening, error.Kind, "閉じられ続けたら「待ち受けていない」");
@@ -203,7 +313,7 @@ public static class IpcTests
         {
             busy.Start();
             var port = ((IPEndPoint)busy.LocalEndpoint).Port;
-            var error = CatchIpc(() => AndroidIpcConnector.HandshakeWithRetryAsync(port, 52735, FastTimings, CancellationToken.None).Wait());
+            var error = CatchIpc(() => AndroidIpcConnector.HandshakeWithRetryAsync(port, 52735, Token, FastTimings, CancellationToken.None).Wait());
             Check.Equal(AndroidIpcFailureKind.NoGreeting, error.Kind, "挨拶が来なければ「応答しない」");
             Check.True(error.Message.Contains("1 本だけ"), $"別の接続の可能性を伝える: {error.Message}");
         }

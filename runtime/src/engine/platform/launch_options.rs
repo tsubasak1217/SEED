@@ -19,6 +19,9 @@
 //  【ipc_port（段階D-1）】エディタとの IPC を TCP で待ち受けるポート（127.0.0.1 だけ）。エディタ／SeedAndroid が
 //  am start の extra seed.ipc_port で渡し、launch.rs が parse_ipc_port で確かめて LaunchArgs.ipc_port へ入れる
 //  （無い・読めなければ待ち受けない。読めない値はシーンの指定を巻き込まず、その項目だけ警告して無視する）。
+//  【ipc_token（段階D-1 の追加）】起動ごとの使い捨ての接続トークン（seed.ipc_token）。TCP の接続の最初の行
+//  HELLO:<トークン> と照合する（ipc_transport/auth.rs）。無ければ ipc_port があっても待ち受けない。
+//  logcat へ起動オプションを出すときは値を伏せる（masked_json_for_log）。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -33,8 +36,21 @@ pub const SCENE_KEY: &str = "scene";
 /// フィールド名 `ipc_port` がそのままキーになる。一致はテストで確かめる。段階D-1）。
 pub const IPC_PORT_KEY: &str = "ipc_port";
 
+/// IPC の接続トークンの JSON のキー（C# の AndroidRuntimeContract.LaunchOptionIpcTokenKey と一致させる。
+/// フィールド名 `ipc_token` がそのままキーになる。一致はテストで確かめる。段階D-1）。
+pub const IPC_TOKEN_KEY: &str = "ipc_token";
+
 /// 待ち受けに使えるポートの最小値（0 は「OS に選ばせる」なので、エディタが forward できず使えない）。
 const MIN_IPC_PORT: u16 = 1;
+
+/// 接続トークンの最短の長さ（C# の AndroidIpcToken.MinLength と一致させる。当て推量で当たらない長さ）。
+pub const MIN_IPC_TOKEN_LENGTH: usize = 16;
+
+/// 接続トークンの最長の長さ（C# の AndroidIpcToken.MaxLength と一致させる。HELLO の行の上限に収まる長さ）。
+pub const MAX_IPC_TOKEN_LENGTH: usize = 128;
+
+/// ログに出すときに伏せた値の代わりに書く文字列。
+pub const MASKED_VALUE: &str = "***";
 
 /// 相対パスの区切り（pak のエントリ・仮想パスと同じ）。
 const SEPARATOR: char = '/';
@@ -61,6 +77,10 @@ pub struct LaunchOptions {
     /// 無ければ待ち受けない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipc_port: Option<String>,
+    /// TCP の IPC の接続トークン（受け取ったままの文字列。確かめ方は `parse_ipc_token`。段階D-1）。
+    /// 無ければ ipc_port があっても待ち受けない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipc_token: Option<String>,
 }
 
 impl LaunchOptions {
@@ -84,6 +104,9 @@ impl LaunchOptions {
         if options.ipc_port.as_deref().is_some_and(|port| port.trim().is_empty()) {
             options.ipc_port = None;
         }
+        if options.ipc_token.as_deref().is_some_and(|token| token.trim().is_empty()) {
+            options.ipc_token = None;
+        }
         Ok(options)
     }
 
@@ -99,6 +122,53 @@ impl LaunchOptions {
     /// None = 指定なし（待ち受けない）／Some(Ok(ポート))／Some(Err(読めない理由))。
     pub fn ipc_port(&self) -> Option<Result<u16, String>> {
         self.ipc_port.as_deref().map(parse_ipc_port)
+    }
+
+    /// IPC の接続トークン（指定が無ければ None、あれば確かめた結果）。
+    ///
+    /// # 戻り値
+    /// None = 指定なし／Some(Ok(トークン))／Some(Err(使えない理由。値そのものは含めない))。
+    pub fn ipc_token(&self) -> Option<Result<String, String>> {
+        self.ipc_token.as_deref().map(parse_ipc_token)
+    }
+
+    /// ログへ出すための JSON（接続トークンの値を伏せる）【純関数】。
+    ///
+    /// # 引数
+    /// * `json` - 受け取った起動オプションの JSON
+    ///
+    /// # 戻り値
+    /// ipc_token の値を `***` にした JSON。オブジェクトとして読めなければ、中身を出さずに大きさだけを書く
+    /// （読めない JSON にトークンが入っていても logcat へ出さないため）。
+    pub fn masked_json_for_log(json: &str) -> String {
+        match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                if let Some(token) = map.get_mut(IPC_TOKEN_KEY) {
+                    *token = serde_json::Value::String(MASKED_VALUE.to_string());
+                }
+                serde_json::Value::Object(map).to_string()
+            }
+            _ => format!("<JSON として読めません: {} バイト>", json.len()),
+        }
+    }
+}
+
+/// IPC の接続トークンの文字列を確かめる【純関数】（前後の空白は許す）。
+///
+/// 16〜128 文字の英数字・`_`・`-` だけ（C# の AndroidIpcToken が作るのは 32 文字の 16 進）。
+///
+/// # 戻り値
+/// トークンか、使えない理由（値そのものは含めない。ログへ出るため）。
+pub fn parse_ipc_token(text: &str) -> Result<String, String> {
+    let trimmed = text.trim();
+    let allowed = trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if allowed && (MIN_IPC_TOKEN_LENGTH..=MAX_IPC_TOKEN_LENGTH).contains(&trimmed.len()) {
+        Ok(trimmed.to_string())
+    } else {
+        Err(format!(
+            "IPC の接続トークンの書式が違います（{MIN_IPC_TOKEN_LENGTH}〜{MAX_IPC_TOKEN_LENGTH} 文字の英数字・_・-。{} 文字でした）",
+            trimmed.chars().count()
+        ))
     }
 }
 
@@ -226,6 +296,7 @@ mod tests {
         let options = LaunchOptions {
             scene: Some("scenes/Main.scene".to_string()),
             ipc_port: Some("52735".to_string()),
+            ..Default::default()
         };
         let json = options.to_json();
         assert!(json.contains(&format!("\"{IPC_PORT_KEY}\"")), "キーは IPC_PORT_KEY: {json}");
@@ -234,6 +305,40 @@ mod tests {
         assert_eq!(from_java.ipc_port(), Some(Ok(52735)));
         assert_eq!(LaunchOptions::default().ipc_port(), None, "指定が無ければ待ち受けない");
         assert_eq!(LaunchOptions::from_json("{\"ipc_port\":\"  \"}").unwrap().ipc_port, None, "空白だけは指定なし");
+    }
+
+    /// 接続トークンは IPC_TOKEN_KEY の文字列で届き、16〜128 文字の英数字・_・- だけを受け付ける。
+    /// 使えない理由には値そのものを含めない（ログへ出るため）。
+    #[test]
+    fn ipc_token_uses_its_key_and_is_validated() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let options = LaunchOptions::from_json(&format!("{{\"ipc_port\":\"52735\",\"ipc_token\":\"{token}\"}}")).unwrap();
+        assert_eq!(options.ipc_token(), Some(Ok(token.to_string())));
+        assert!(options.to_json().contains(&format!("\"{IPC_TOKEN_KEY}\"")), "キーは IPC_TOKEN_KEY");
+        assert_eq!(LaunchOptions::default().ipc_token(), None, "指定が無ければ None");
+        assert_eq!(LaunchOptions::from_json("{\"ipc_token\":\" \"}").unwrap().ipc_token, None, "空白だけは指定なし");
+
+        assert_eq!(parse_ipc_token(&format!(" {token} ")), Ok(token.to_string()), "前後の空白は許す");
+        assert!(parse_ipc_token(&"a".repeat(MIN_IPC_TOKEN_LENGTH)).is_ok());
+        assert!(parse_ipc_token(&"a".repeat(MAX_IPC_TOKEN_LENGTH)).is_ok());
+        for bad in ["short", "0123456789abcdef 0123", "0123456789abcdef;rm -rf", "トークントークントークントークン"] {
+            let error = parse_ipc_token(bad).unwrap_err();
+            assert!(!error.contains(bad), "理由に値を含めない: {error}");
+        }
+        assert!(parse_ipc_token(&"a".repeat(MAX_IPC_TOKEN_LENGTH + 1)).is_err(), "長すぎる");
+    }
+
+    /// ログへ出す JSON はトークンの値だけを伏せる（読めない JSON は中身を出さない）。
+    #[test]
+    fn masked_json_hides_only_the_token() {
+        let masked = LaunchOptions::masked_json_for_log(
+            "{\"scene\":\"scenes\\/Main.scene\",\"ipc_port\":\"52735\",\"ipc_token\":\"0123456789abcdef0123456789abcdef\"}",
+        );
+        assert!(!masked.contains("0123456789abcdef"), "トークンを出さない: {masked}");
+        assert!(masked.contains(MASKED_VALUE) && masked.contains("scenes/Main.scene") && masked.contains("52735"), "他の項目は出す: {masked}");
+        assert_eq!(LaunchOptions::masked_json_for_log("{\"scene\":\"a.scene\"}"), "{\"scene\":\"a.scene\"}", "トークンが無ければそのまま");
+        let broken = LaunchOptions::masked_json_for_log("{\"ipc_token\":\"0123456789abcdef0123456789abcdef\"");
+        assert!(!broken.contains("0123456789abcdef"), "読めない JSON は中身を出さない: {broken}");
     }
 
     /// ポートは 1〜65535 の整数だけ。読めない値はその項目だけの誤りで、シーンの指定は巻き込まない。

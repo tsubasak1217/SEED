@@ -6,7 +6,8 @@
 //            Output パネルの行（AndroidRunOutputFormatter）へ流す
 //    - 見張り: 起動に成功したら（Running）、数秒おきに pidof でアプリが動いているかを確かめ、続けて見つからなければ
 //              「アプリが終わった」として中断の合図を送る（logcat は止めても成功扱いなので、パイプラインはすぐ戻る）
-//    - 一時停止（段階D-1）: 起動に成功したら、端末のアプリの IPC（adb forward ＋ TCP）へつなぐ（中核の Ipc/）。
+//    - 一時停止（段階D-1）: 実行ごとに接続トークンを作って指定に入れ（起動の工程が端末へ渡す）、起動に成功したら
+//              そのトークンを示して端末のアプリの IPC（adb forward ＋ TCP）へつなぐ（中核の Ipc/）。
 //              つながれば実行バーから PAUSE / RESUME を送る（TryPause / TryResume。PC の Play と同じ命令）。
 //              つながらなければ（古い APK 等）一時停止は使えないまま実行を続ける（理由を Output とツールチップへ）。
 //              通信路が切れたら、すぐ pidof で確かめ、アプリが終わっていれば「アプリが終わった」（見張りより先に気付く）、
@@ -66,6 +67,9 @@ public sealed class AndroidRunController : IDisposable
     /// <summary>いまの実行で端末のランタイムが IPC を待ち受けるポート（null なら使わない。段階D-1）。</summary>
     private int? _ipcDevicePort;
 
+    /// <summary>いまの実行の IPC の接続トークン（実行ごとに作って指定に入れ、同じ値でつなぐ。段階D-1）。</summary>
+    private string? _ipcToken;
+
     /// <summary>つながっている IPC（つながっていなければ null）。</summary>
     private IAndroidIpcLink? _ipcLink;
 
@@ -120,6 +124,8 @@ public sealed class AndroidRunController : IDisposable
         TaskCompletionSource done;
         // 「自動」はまだ端末が決まっていない（準備で決まったら AndroidPrepared で入る）
         var serial = AndroidDeviceTarget.IsAutoSerial(request.Serial) ? null : request.Serial;
+        // 接続トークンはこの実行のために作って指定に入れる（起動の工程が端末へ渡すのと同じ値でつなぐ。段階D-1）
+        request = request with { IpcToken = request.IpcToken ?? AndroidIpcToken.Create() };
         lock (_gate)
         {
             if (_disposed || !_machine.Start(targetText, serial)) return false;
@@ -131,6 +137,7 @@ public sealed class AndroidRunController : IDisposable
             _ipcDevicePort = AndroidIpcSettings.Validate(request.IpcPort) is null
                 ? AndroidIpcSettings.ResolveDevicePort(request.IpcPort)
                 : null;
+            _ipcToken = request.IpcToken;
         }
         RaiseStateChanged();
         Emit(AndroidRunOutputFormatter.Started(targetText, request.ProjectDir));
@@ -429,10 +436,10 @@ public sealed class AndroidRunController : IDisposable
         lock (_gate)
         {
             if (_disposed || !_machine.Snapshot.IsAppAlive || _machine.Serial is null) return;
-            if (_ipcDevicePort is { } devicePort && _machine.BeginIpcConnect())
+            if (_ipcDevicePort is { } devicePort && _ipcToken is { } token && _machine.BeginIpcConnect())
             {
                 var cancellation = new CancellationTokenSource();
-                plan = new IpcConnectPlan(_machine.Serial, devicePort, ++_ipcGeneration, cancellation, _ipcCancellation);
+                plan = new IpcConnectPlan(_machine.Serial, devicePort, token, ++_ipcGeneration, cancellation, _ipcCancellation);
                 _ipcCancellation = cancellation;
             }
             else
@@ -447,25 +454,26 @@ public sealed class AndroidRunController : IDisposable
             return;
         }
         TryCancel(plan.Previous);
-        _ = Task.Run(() => ConnectIpcAsync(plan.Serial, plan.DevicePort, plan.Generation, plan.Cancellation.Token));
+        _ = Task.Run(() => ConnectIpcAsync(plan.Serial, plan.DevicePort, plan.Token, plan.Generation, plan.Cancellation.Token));
     }
 
     /// <summary>IPC のつなぎ始めの材料（ロックの中で決め、ロックの外で使う）。</summary>
     /// <param name="Serial">端末のシリアル。</param>
     /// <param name="DevicePort">端末側のポート。</param>
+    /// <param name="Token">接続トークン（この実行の指定に入れたもの）。</param>
     /// <param name="Generation">この接続の世代。</param>
     /// <param name="Cancellation">この接続の中断の合図。</param>
     /// <param name="Previous">前の接続の途中の合図（取り消す。無ければ null）。</param>
     private sealed record IpcConnectPlan(
-        string Serial, int DevicePort, int Generation, CancellationTokenSource Cancellation, CancellationTokenSource? Previous);
+        string Serial, int DevicePort, string Token, int Generation, CancellationTokenSource Cancellation, CancellationTokenSource? Previous);
 
     /// <summary>IPC へつなぐ（スレッドプール）。つながったら切断を見張り、つながらなければ理由を出す。</summary>
-    private async Task ConnectIpcAsync(string serial, int devicePort, int generation, CancellationToken cancellationToken)
+    private async Task ConnectIpcAsync(string serial, int devicePort, string token, int generation, CancellationToken cancellationToken)
     {
         IAndroidIpcLink link;
         try
         {
-            link = await _backend.ConnectIpcAsync(serial, devicePort, cancellationToken).ConfigureAwait(false);
+            link = await _backend.ConnectIpcAsync(serial, devicePort, token, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

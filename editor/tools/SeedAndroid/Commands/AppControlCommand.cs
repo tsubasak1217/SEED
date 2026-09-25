@@ -3,15 +3,18 @@
 //
 //  【流れ】（エディタの実行バーと同じ中核 editor/src/Android/Ipc/ を使う）
 //    1. アプリ ID を決める（--app-id か --project の設定。TargetApplication）・端末を決める（--serial か使える 1 台）
-//    2. adb forward tcp:0 tcp:<端末のポート>（--ipc-port。省略時は既定 52735）→ TCP でつなぎ、挨拶（READY:）を待つ
-//    3. 命令を 1 つ送る
-//         pause      … PAUSE（端末のゲームの時間・物理・スクリプトを止める）
+//    2. 起動の記録（run / push の起動の工程がプロジェクトの cache/android/run_state.json の ipc_launches へ書いた、
+//       その端末・そのアプリの IPC のポートと接続トークン）を読む。無ければ「run / push で起動し直して」と伝えて終わる
+//    3. adb forward tcp:0 tcp:<端末のポート>（--ipc-port があればそれ、無ければ記録のポート）→ TCP でつなぎ、
+//       最初の行で HELLO:<接続トークン> を送って挨拶（READY:）を待つ（トークンが違えば端末が断る＝IPC_DENIED:）
+//    4. 命令を 1 つ送る
+//         pause      … PAUSE（端末のゲームの時間・物理・スクリプトを止める。画面はゲームのまま）
 //         resume     … RESUME
 //         screenshot … SCREENSHOT:game,<端末のパス> → 応答を待って run-as で PNG を取り出す（--out。省略時はカレントに日時の名前）
-//    4. DETACH（意図した切り離し）を送ってから閉じ、forward を外す
+//    5. DETACH（意図した切り離し）を送ってから閉じ、forward を外す
 //       → 端末のランタイムは一時停止を据え置く（pause の効果が切断で消えない。黙って切れた場合だけ再開する）
 //
-//  【前提】端末のアプリが段階D-1 以降の APK（run で入れ直したもの）で、run / push の起動（seed.ipc_port を渡す）で動いていること。
+//  【前提】端末のアプリが run / push（エディタの実行を含む）で起動したもので、その起動の記録が同じ run_state.json にあること。
 //  エディタの実行中はエディタがつながっているので使えない（1 本だけ受け付ける。時間切れで理由を出す）。
 // ============================================================
 
@@ -22,6 +25,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Pipeline;
+using SEEDEditor.Android.Project;
+using SEEDEditor.Android.State;
 using SEEDEditor.Android.Toolchain;
 using SEEDEditor.Ipc;
 
@@ -53,16 +58,36 @@ public static class AppControlCommand
             Console.Error.WriteLine($"エラー: {error}");
             return SeedAndroidExitCodes.InvalidRequest;
         }
-        if (AndroidIpcSettings.ResolveDevicePort(request.IpcPort) is not { } devicePort)
+        if (request.IpcPort == AndroidIpcSettings.DisabledPort)
         {
             Console.Error.WriteLine($"エラー: {SeedAndroidArguments.IpcPortOption} {AndroidIpcSettings.DisabledPort} では端末のアプリへ命令を送れません。");
             return SeedAndroidExitCodes.InvalidRequest;
         }
+        var engine = AndroidEnginePaths.Locate(AppContext.BaseDirectory, Environment.CurrentDirectory);
+        if (engine is null)
+        {
+            Console.Error.WriteLine("エラー: SEED のリポジトリ（runtime/Cargo.toml と runtime/android/gradlew.bat）が見つかりません。リポジトリの中で実行してください。");
+            return SeedAndroidExitCodes.Toolchain;
+        }
+
+        // ── 端末と、その端末で最後に起動したアプリの IPC の記録（接続トークン）──
+        var actions = new AndroidDeviceActions(toolchain);
+        var device = await actions.ResolveDeviceAsync(request.Serial, cancellationToken);
+        var runStatePath = AndroidRunState.PathFor(AndroidProjectResolver.Resolve(request.ProjectDir, request.AssetsDir), engine);
+        var launch = AndroidRunState.Load(runStatePath).IpcLaunchFor(device.Serial, applicationId);
+        if (launch is null)
+        {
+            Console.Error.WriteLine(
+                $"エラー: {device.DisplayName} で {applicationId} を起動した記録（接続トークン）がありません（{runStatePath}）。" +
+                "同じ --project で run / push を行ってアプリを起動してから使ってください（接続トークンは起動のたびに変わります）。");
+            return SeedAndroidExitCodes.DeviceOperation;
+        }
+        var devicePort = request.IpcPort ?? launch.IpcPort;
 
         AndroidIpcSession session;
         try
         {
-            session = await new AndroidDeviceActions(toolchain).ConnectIpcAsync(request.Serial, devicePort, null, cancellationToken);
+            session = await actions.ConnectIpcAsync(device.Serial, devicePort, launch.IpcToken, null, cancellationToken);
         }
         catch (AndroidIpcException ex)
         {

@@ -93,6 +93,15 @@ public static class AndroidRuntimeContract
     /// <summary>IPC のポートの extra の名前（seed.ipc_port）。</summary>
     public const string IpcPortExtraName = LaunchOptionExtraPrefix + LaunchOptionIpcPortKey;
 
+    /// <summary>
+    /// 起動オプション「IPC の接続トークン」の JSON のキー（起動ごとの使い捨て。段階D-1）。
+    /// runtime/src/engine/platform/launch_options.rs の IPC_TOKEN_KEY と一致させる。
+    /// </summary>
+    public const string LaunchOptionIpcTokenKey = "ipc_token";
+
+    /// <summary>IPC の接続トークンの extra の名前（seed.ipc_token。Output の表示では値を伏せる）。</summary>
+    public const string IpcTokenExtraName = LaunchOptionExtraPrefix + LaunchOptionIpcTokenKey;
+
     // ── アプリの内部データフォルダ（run-as の作業フォルダ）の絶対パス ──────────────
 
     /// <summary>

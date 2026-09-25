@@ -143,7 +143,7 @@ public sealed class AndroidRunPipeline
         log.Info($"画面の向き（{AndroidProjectSettingsReader.ScreenOrientationKey}）: {orientation}" +
                  (project is { Settings.Found: true } ? $"  ← {project.Settings.SettingsPath}" : "  ← 既定値"));
 
-        var runStatePath = project is not null ? AndroidRunState.PathForProject(project.Folder.ProjectRoot) : _engine.FallbackRunStatePath;
+        var runStatePath = AndroidRunState.PathFor(project, _engine);
         var runState = AndroidRunState.Load(runStatePath);
 
         // ── 起動するシーン（起動の工程があるときだけ。端末を用意する前に指定の誤りを弾く）──
@@ -157,14 +157,17 @@ public sealed class AndroidRunPipeline
 
         // ── 今の指紋と前回の記録 ──
         var stamps = AndroidStepStamps.Load(_engine.StepStampsPath);
+        var ipcDevicePort = AndroidIpcSettings.ResolveDevicePort(request.IpcPort);
         var context = new AndroidPipelineContext
         {
             Request = request, Engine = _engine, Toolchain = _toolchain, Project = project, Identity = identity,
             ScreenOrientation = orientation, Abis = abis, Device = device, Adb = adb,
             Stamps = stamps, RunState = runState, RunStatePath = runStatePath, LaunchScene = launchScene,
             PakExtraScenes = pakExtraScenes,
-            // エディタとの IPC のポート（起動の工程が am start の extra seed.ipc_port で渡す。段階D-1）
-            IpcDevicePort = AndroidIpcSettings.ResolveDevicePort(request.IpcPort),
+            // エディタとの IPC のポートと接続トークン（起動の工程が am start の extra seed.ipc_port・seed.ipc_token で渡す。段階D-1）。
+            // トークンは指定（エディタ）が無ければここで作る（起動ごとの使い捨て）
+            IpcDevicePort = ipcDevicePort,
+            IpcToken = ipcDevicePort is null ? null : request.IpcToken ?? AndroidIpcToken.Create(),
         };
         var buildScope = request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
         if (buildScope)
@@ -233,6 +236,10 @@ public sealed class AndroidRunPipeline
         if (AndroidIpcSettings.Validate(request.IpcPort) is { } ipcPortError)
         {
             throw new AndroidPipelineException(AndroidFailureKind.InvalidRequest, ipcPortError);
+        }
+        if (AndroidIpcToken.Validate(request.IpcToken) is { } ipcTokenError)
+        {
+            throw new AndroidPipelineException(AndroidFailureKind.InvalidRequest, ipcTokenError);
         }
     }
 

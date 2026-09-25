@@ -5,6 +5,7 @@
 //    listen: 127.0.0.1:<ポート> に bind する（ループバックだけ。端末の外からは届かず、PC からは adb forward だけが届く）
 //    受け付けスレッド（seed-ipc-tcp-accept）:
 //      accept（1 本だけ。つながっている間は次を accept しない＝後から来た接続は OS の待ち行列で待つ）
+//        → 最初の 1 行 HELLO:<トークン> を照合する（auth.rs。一致しなければ IPC_DENIED:<理由> を書いて閉じ、次の accept へ）
 //        → 挨拶の 1 行（READY:0）を書く → 書き込み口を「いまの接続」に据える
 //        → ipc.rs の read_loop で 1 行ずつコマンドにして App へ（切断まで戻らない）
 //        → 書き込み口を外して閉じる → App へ EditorDisconnected を積む（一時停止中なら再開。session_policy.rs）
@@ -27,13 +28,14 @@
 //  相手が閉じた後に書いても SIGPIPE でプロセスが落ちない（エラーとして返る）。
 // ============================================================
 
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use super::auth::{check_hello, denied_line, HelloRejection, TcpAuth, MAX_HELLO_LINE_BYTES};
 use crate::engine::core::app_base::ipc::{read_loop, IpcCommand, ReadLoopEnd};
 
 /// つながったら最初に書く挨拶の行（READY:{ウィンドウハンドル}。Android にウィンドウハンドルは無いので 0）。
@@ -119,6 +121,7 @@ enum AfterConnection {
 ///
 /// # 引数
 /// * `port`     - 待ち受けるポート（0 なら OS が空きポートを選ぶ）
+/// * `auth`     - 接続トークンの照合の設定（auth.rs。最初の行の HELLO が一致した接続だけを受け付ける）
 /// * `commands` - 受け取ったコマンドを App へ渡す送り口
 /// * `outgoing` - App が送る行（IpcClient::send）の受け口
 ///
@@ -126,6 +129,7 @@ enum AfterConnection {
 /// 実際に待ち受けたアドレスと、つながっているかの印。
 pub(crate) fn listen(
     port: u16,
+    auth: TcpAuth,
     commands: mpsc::Sender<IpcCommand>,
     outgoing: mpsc::Receiver<String>,
 ) -> io::Result<Listening> {
@@ -143,16 +147,16 @@ pub(crate) fn listen(
         .spawn(move || write_to_current(&writer_shared, &outgoing))?;
     thread::Builder::new()
         .name(ACCEPT_THREAD_NAME.to_string())
-        .spawn(move || accept_loop(&listener, &shared, &commands))?;
+        .spawn(move || accept_loop(&listener, &shared, &auth, &commands))?;
     Ok(Listening { local, connected })
 }
 
 /// 受け付けスレッドの本体（App が居なくなるまで、1 本ずつ接続を受け付けて読む）。
-fn accept_loop(listener: &TcpListener, shared: &Shared, commands: &mpsc::Sender<IpcCommand>) {
+fn accept_loop(listener: &TcpListener, shared: &Shared, auth: &TcpAuth, commands: &mpsc::Sender<IpcCommand>) {
     loop {
         match listener.accept() {
             Ok((stream, peer)) => {
-                if serve_connection(stream, peer, shared, commands) == AfterConnection::Stop {
+                if serve_connection(stream, peer, shared, auth, commands) == AfterConnection::Stop {
                     return;
                 }
             }
@@ -164,22 +168,38 @@ fn accept_loop(listener: &TcpListener, shared: &Shared, commands: &mpsc::Sender<
     }
 }
 
-/// 1 本の接続を扱う（挨拶 → 読み取り → 後始末）。切断まで戻らない。
+/// 1 本の接続を扱う（照合 → 挨拶 → 読み取り → 後始末）。切断まで戻らない。
 ///
 /// # 引数
 /// * `stream`   - 受け付けた接続
 /// * `peer`     - 相手のアドレス（ログ用。adb forward なら 127.0.0.1 の adbd）
 /// * `shared`   - いまの接続の書き込み口と、つながっているかの印
+/// * `auth`     - 接続トークンの照合の設定
 /// * `commands` - App への送り口
 fn serve_connection(
     stream: TcpStream,
     peer: SocketAddr,
     shared: &Shared,
+    auth: &TcpAuth,
     commands: &mpsc::Sender<IpcCommand>,
 ) -> AfterConnection {
     // 命令は 1 行ずつ即座に届けたい（Nagle で溜めない）。書き込みには時間切れを付ける。
     let _ = stream.set_nodelay(true);
     let _ = stream.set_write_timeout(Some(Duration::from_secs(WRITE_TIMEOUT_SECS)));
+
+    // ── 照合: 最初の 1 行が HELLO:<トークン> で一致したときだけ受け付ける（auth.rs）──
+    // 読み取りは BufReader 越し。最初の行と一緒に届いた後続の行は、この BufReader に残ったまま read_loop へ渡す。
+    let mut reader = BufReader::new(&stream);
+    if let Err(rejection) = authenticate(&stream, &mut reader, auth) {
+        eprintln!(
+            "{LOG_PREFIX} 接続を断りました（{peer}・理由 {}）。起動オプションのトークンを知っている接続（エディタ／SeedAndroid）だけを受け付けます",
+            rejection.reason()
+        );
+        // 断った理由の行の後に送り側だけ閉じる（FIN）。読み残しは照合の BufReader が持っているので、閉じても RST になりにくい
+        let _ = write_line(&mut &stream, &denied_line(rejection));
+        let _ = stream.shutdown(Shutdown::Write);
+        return AfterConnection::AcceptNext;
+    }
 
     let writer = match stream.try_clone() {
         Ok(writer) => writer,
@@ -198,7 +218,7 @@ fn serve_connection(
     eprintln!("{LOG_PREFIX} エディタとつながりました（{peer}）");
 
     // 切断まで 1 行ずつコマンドにして App へ渡す（書式は ipc.rs の read_loop が正典）
-    let end = read_loop(&stream, commands.clone());
+    let end = read_loop(reader, commands.clone());
 
     // 後始末: 書き込み口を外して閉じる（書き込みスレッドが先に閉じていれば何もしない）
     shared.detach();
@@ -211,6 +231,28 @@ fn serve_connection(
         return AfterConnection::Stop;
     }
     AfterConnection::AcceptNext
+}
+
+/// 最初の 1 行（`HELLO:<トークン>`）を時間切れ付きで読み、照合する。
+///
+/// 時間内に来ない・読めない・長すぎる（改行が無い）行は HELLO でないとみなす。照合の後は読み取りの時間切れを外す
+/// （以降は切断まで待つ）。
+///
+/// # 引数
+/// * `stream` - 受け付けた接続（読み取りの時間切れを付け外しする）
+/// * `reader` - 接続の読み取り口（読み残しは read_loop が続けて読む）
+/// * `auth`   - 照合の設定
+fn authenticate(stream: &TcpStream, reader: &mut BufReader<&TcpStream>, auth: &TcpAuth) -> Result<(), HelloRejection> {
+    if stream.set_read_timeout(Some(auth.hello_timeout)).is_err() {
+        return Err(HelloRejection::NotHello);
+    }
+    let mut line = String::new();
+    let read = reader.by_ref().take(MAX_HELLO_LINE_BYTES).read_line(&mut line);
+    let _ = stream.set_read_timeout(None);
+    match read {
+        Ok(0) | Err(_) => Err(HelloRejection::NotHello),
+        Ok(_) => check_hello(&line, &auth.token),
+    }
 }
 
 /// 書き込みスレッドの本体（App が送った行を、いまの接続へ書く。つながっていなければ捨てる）。
@@ -256,7 +298,6 @@ mod tests {
     use crate::engine::core::app_base::ipc::IpcClient;
     use crate::engine::core::app_base::ipc_transport::session_policy::{DisconnectAction, IpcSessionPolicy};
     use crate::engine::core::app_base::ipc_transport::IpcTransportKind;
-    use std::io::{BufRead, BufReader};
     use std::time::Instant;
 
     /// 待ち合わせの上限（遅い PC でも通るよう長めにとる。通常は数ミリ秒で満たされる）。
@@ -268,19 +309,45 @@ mod tests {
     /// 「挨拶が来ない」ことを確かめる待ち時間（1 本目がつながっている間の 2 本目）。
     const NO_GREETING_WAIT: Duration = Duration::from_millis(300);
 
-    /// ポート 0（OS が空きポートを選ぶ）で待ち受け、選ばれたアドレスを返す。
+    /// テストの接続トークン（起動オプションの ipc_token にあたる）。
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+    /// テストの HELLO の待ち時間（黙った接続を素早く断るのを確かめる）。
+    const TEST_HELLO_TIMEOUT: Duration = Duration::from_millis(300);
+
+    /// ポート 0（OS が空きポートを選ぶ）で、テストのトークンで待ち受け、選ばれたアドレスを返す。
     fn listen_any() -> (IpcClient, SocketAddr) {
-        let client = IpcClient::listen_tcp(0).expect("127.0.0.1 で待ち受けられる");
+        let auth = TcpAuth { token: TOKEN.to_string(), hello_timeout: TEST_HELLO_TIMEOUT };
+        let client = IpcClient::listen_tcp_with_auth(0, auth).expect("127.0.0.1 で待ち受けられる");
         let address = client.tcp_local_addr().expect("TCP なら待ち受けたアドレスがある");
         (client, address)
     }
 
-    /// エディタ役としてつなぐ（読み取りの時間切れ付き）。
-    fn connect(address: SocketAddr, read_timeout: Duration) -> (TcpStream, BufReader<TcpStream>) {
+    /// つなぐだけ（HELLO は送らない。読み取りの時間切れ付き）。
+    fn connect_raw(address: SocketAddr, read_timeout: Duration) -> (TcpStream, BufReader<TcpStream>) {
         let stream = TcpStream::connect(address).expect("つながる");
         stream.set_read_timeout(Some(read_timeout)).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
         (stream, reader)
+    }
+
+    /// エディタ役としてつなぎ、最初の行で正しいトークンの HELLO を送る。
+    fn connect(address: SocketAddr, read_timeout: Duration) -> (TcpStream, BufReader<TcpStream>) {
+        let (mut stream, reader) = connect_raw(address, read_timeout);
+        stream.write_all(format!("HELLO:{TOKEN}\n").as_bytes()).unwrap();
+        (stream, reader)
+    }
+
+    /// 閉じられるまで読み、閉じられたことを確かめる（断られた接続）。
+    fn assert_closed(reader: &mut BufReader<TcpStream>) {
+        let mut rest = String::new();
+        let closed = match reader.read_line(&mut rest) {
+            Ok(0) => true,
+            Ok(_) => false,
+            // 相手が閉じた後の読み取りは、OS によって「リセットされた」の失敗になる
+            Err(err) => err.kind() != io::ErrorKind::WouldBlock && err.kind() != io::ErrorKind::TimedOut,
+        };
+        assert!(closed, "断った後は閉じる（残り: {rest:?}）");
     }
 
     /// 1 行読む（行末の改行を落とす）。
@@ -406,5 +473,61 @@ mod tests {
         assert_eq!(read_line(&mut reader).unwrap(), GREETING, "挨拶が必ず最初");
         client.send("FPS:59.9");
         assert_eq!(read_line(&mut reader).unwrap(), "FPS:59.9", "つながる前の行は届かない");
+    }
+
+    // ── 接続トークンの照合（auth.rs）──────────────────────────────
+
+    /// HELLO と同じ書き込みで続けて送った命令も落とさない（照合の読み取りの読み残しを read_loop が引き継ぐ）。
+    #[test]
+    fn commands_sent_right_after_hello_are_kept() {
+        let (client, address) = listen_any();
+        let (mut stream, mut reader) = connect_raw(address, WAIT);
+        stream.write_all(format!("HELLO:{TOKEN}\nPAUSE\nRESUME\n").as_bytes()).unwrap();
+        assert_eq!(read_line(&mut reader).unwrap(), GREETING);
+        assert!(matches!(next_command(&client), IpcCommand::Pause));
+        assert!(matches!(next_command(&client), IpcCommand::Resume));
+    }
+
+    /// トークンが違えば IPC_DENIED:token を書いて閉じ、その接続の命令は App へ 1 行も渡さない。
+    /// 断った接続は「つながった」に数えない（切断も積まない）。その後の正しい接続は受け付ける。
+    #[test]
+    fn rejects_wrong_token_without_delivering_commands() {
+        let (client, address) = listen_any();
+        let (mut stream, mut reader) = connect_raw(address, WAIT);
+        stream.write_all(b"HELLO:ffffffffffffffffffffffffffffffff\nPAUSE\nSTOP\n").unwrap();
+        assert_eq!(read_line(&mut reader).unwrap(), "IPC_DENIED:token", "理由だけを返す");
+        assert_closed(&mut reader);
+        thread::sleep(NO_GREETING_WAIT);
+        assert!(client.try_recv().is_none(), "断った接続の PAUSE・STOP は App へ届かない（切断も積まない）");
+
+        let (mut good, mut good_reader) = connect(address, WAIT);
+        assert_eq!(read_line(&mut good_reader).unwrap(), GREETING, "正しいトークンの接続は受け付ける");
+        good.write_all(b"PAUSE\n").unwrap();
+        assert!(matches!(next_command(&client), IpcCommand::Pause));
+    }
+
+    /// 最初の行が HELLO でない（いきなり命令を送った）接続は IPC_DENIED:hello で断る。
+    #[test]
+    fn rejects_commands_before_hello() {
+        let (client, address) = listen_any();
+        let (mut stream, mut reader) = connect_raw(address, WAIT);
+        stream.write_all(format!("PAUSE\nHELLO:{TOKEN}\n").as_bytes()).unwrap();
+        assert_eq!(read_line(&mut reader).unwrap(), "IPC_DENIED:hello");
+        assert_closed(&mut reader);
+        thread::sleep(NO_GREETING_WAIT);
+        assert!(client.try_recv().is_none(), "HELLO より前の命令は受け付けない");
+    }
+
+    /// 何も送らない接続は、HELLO の待ち時間が過ぎたら断って閉じる（1 本だけの受け付けを塞ぎ続けない）。
+    #[test]
+    fn rejects_silent_connection_after_timeout() {
+        let (client, address) = listen_any();
+        let (_silent, mut silent_reader) = connect_raw(address, WAIT);
+        assert_eq!(read_line(&mut silent_reader).unwrap(), "IPC_DENIED:hello", "待ち時間の後に断る");
+        assert_closed(&mut silent_reader);
+
+        let (_stream, mut reader) = connect(address, WAIT);
+        assert_eq!(read_line(&mut reader).unwrap(), GREETING, "次の接続は受け付ける");
+        assert!(client.try_recv().is_none());
     }
 }

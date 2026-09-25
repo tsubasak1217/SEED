@@ -379,7 +379,7 @@ dotnet run --project editor/tools/SeedAndroid -- resume --project D:\path\to\Pro
 | `push` | スクリプトの DLL（と `--assets-dir` のアセット）の転送 ＋ 起動 ＋ logcat |
 | `stop` | `am force-stop <アプリ ID>`（アプリ ID は `--app-id`、無ければ `--project` / `--assets-dir` の設定から） |
 | `logcat` | logcat（`--since <端末の時刻>` から。省略時は今から） |
-| `pause` / `resume` | 動いているアプリへ IPC の `PAUSE` / `RESUME` を送る（adb forward → TCP → 命令 → `DETACH` → forward を外す。`pause` の後も一時停止のまま。段階D-1・§21.5） |
+| `pause` / `resume` | 動いているアプリへ IPC の `PAUSE` / `RESUME` を送る（adb forward → TCP → 起動の記録〈同じ --project の run_state.json〉の接続トークンで `HELLO:` → 命令 → `DETACH` → forward を外す。`pause` の後も一時停止のまま。段階D-1・§21.5・§21.11） |
 | `screenshot` | 動いているアプリの画面を IPC の `SCREENSHOT` で撮り、run-as で PC へ取り出す（`--out`。§21.6） |
 
 | オプション | 意味 |
@@ -609,7 +609,7 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
 | **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声（鳴ることの確認・背面での停止・音声フォーカス・音量キー。**2026-09-24 実装・§16**）、logcat の整備 |
 | **B** | スクリプト: **PC も Android も .NET 10 の CoreCLR に揃える**（PC は全 C# プロジェクトを `net10.0` へ移行済み。Android は `android-*` ランタイムパック＋同じ版の bionic パックの hostfxr / hostpolicy。§11）。ScriptPackager の事前コンパイル DLL とランタイムを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う（**2026-09-25 実装・§17**。Mono へ切り替え可）。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: **C-1（2026-09-25 実装・§4.6・§5・§18）** ビルド・配置・起動の手順を C# の中核（`editor/src/Android/`）とコンソールツール `SeedAndroid` に移し、変わっていない工程の自動の省略・アプリの識別情報のプロジェクト設定化。**C-2（2026-09-25 実装・§20）** 実行ボタンの隣の実行先セレクタ（PC／実機／エミュレータ）、中核を呼んでビルド → install → 起動 → logcat を Output パネルへ・停止ボタン・アプリ側の終了の検知、パッケージ化ウィンドウの Android 出力の実働化（デバッグ署名の APK）。pak/DLL だけ push する高速経路のエディタへの組み込みは持ち越し（backlog） |
-| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`）。Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
+| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`。接続トークンで照合し、一時停止中もゲームの画面のまま）。Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
 
 ---
 
@@ -2330,31 +2330,36 @@ Android の実行中も、**PC の Play と同じ実行バー**（実行ボタ�
 PC の Play と同じ IPC の命令（1 行 1 命令の文字列。`PAUSE` / `RESUME` / `SCREENSHOT:` …。書式の正典は `runtime/src/engine/core/app_base/ipc.rs`）を、
 名前付きパイプの代わりに **adb forward 越しの TCP** で送る。Android 専用のボタンは作らない（利用者の決定）。ワイヤレスデバッグ（Wi-Fi の adb）は対象外（USB の adb だけで確かめた）。
 
+**段階D-1 の追加（同日）**: TCP の接続は起動ごとに使い捨ての**接続トークン**で照合する（同じ端末の他のアプリは命令を送れない。§21.11）。
+端末の一時停止中の画面は**ゲームの画面のまま**にした（PC の PAUSE のエディタの見た目〈デバッグカメラ・グリッド〉には切り替えない。§21.4）。
+
 ### 21.1 通信路（ランタイム側。`runtime/src/engine/core/app_base/ipc_transport/`）
 
 IPC の中身（行の解釈 `read_loop`・書き込み `write_loop`）は通信路に依存しない形（`Read` / `Write` を満たすもの）にし、通信路の違いだけをこのフォルダに閉じ込めた。
 
 | | 名前付きパイプ（PC。従来どおり） | TCP（Android。段階D-1） |
 |---|---|---|
-| 選び方（`endpoint.rs`） | 起動引数 `--pipe=<名前>`（あれば最優先） | 起動オプション `ipc_port`（Android）・起動引数 `--ipc-port=<ポート>`（PC での検証用） |
+| 選び方（`endpoint.rs`） | 起動引数 `--pipe=<名前>`（あれば最優先） | 起動オプション `ipc_port` と `ipc_token`（Android）・起動引数 `--ipc-port=<ポート>` と `--ipc-token=<トークン>`（PC での検証用）。**ポートとトークンが揃ったときだけ**待ち受ける |
 | つなぐ向き | ランタイム → エディタ（起動時に 1 回。20 回 × 100 ms まで待つ） | エディタ → ランタイム（`127.0.0.1:<ポート>` で listen し、**1 本ずつ** accept） |
 | つながる前 | —（つながらなければ IPC 無し） | IPC 無しの Play と同じ（`IpcClient::send` はつながっていなければ積まずに捨てる） |
-| つながったとき | — | ランタイムが最初に**挨拶の 1 行 `READY:0`** を書く（下の「挨拶」） |
+| つながったとき | —（トークンは無い。従来どおり） | 相手が最初の行で `HELLO:<トークン>` を送り、合えばランタイムが**挨拶の 1 行 `READY:0`** を書く（下の「挨拶」）。合わない・5 秒来ないときは `IPC_DENIED:<理由>` を書いて閉じる（`auth.rs`。§21.11） |
 | 読み取り（`pipe.rs` / `tcp.rs`） | PeekNamedPipe で「読めるデータがある」ときだけ ReadFile（従来の方式。1 回の読み取りごとに確かめるようにした） | ふつうの TcpStream（読みと書きは別の複製で並行） |
 | 切れたとき | 何もしない（従来どおり） | `IpcCommand::EditorDisconnected` を App へ積み、次の接続を待つ → **一時停止中なら再開**（`session_policy.rs`） |
+| 一時停止（`PAUSE`） | `paused`: 時間・物理・スクリプトを止め、描画はデバッグカメラ・グリッドのエディタの見た目（従来どおり） | `remote_paused`: 時間・物理・スクリプトだけを止め、**描画はゲームのカメラのまま**（§21.4。`session_policy::pause_keeps_game_view`） |
 
 - **bind はループバック（127.0.0.1）だけ**。端末の外（Wi-Fi 等）からは届かず、PC からは adb forward だけが届く。
 - **1 本だけ受け付ける**: つながっている間は次を accept しない（後から来た接続は OS の待ち行列で待ち、挨拶が来ない）。前の接続が切れたら次を受け付ける。
 - **挨拶**: adb forward は、端末で誰も待ち受けていなくても PC 側の接続をいったん受け付け、その後に閉じる。そのためエディタは「TCP でつながった」だけでは
-  ランタイムとつながったか分からない。受け付けた直後にランタイムが `READY:0`（`READY:{ウィンドウハンドル}` と同じ書式。Android にハンドルは無いので 0）を
-  書き、エディタはこの 1 行が届いたら「つながった」、届く前に閉じられたら「まだ待ち受けていない」と見分ける。
+  ランタイムとつながったか分からない。接続トークンの照合（`HELLO:`）が通った直後にランタイムが `READY:0`（`READY:{ウィンドウハンドル}` と同じ書式。
+  Android にハンドルは無いので 0）を書き、エディタはこの 1 行が届いたら「つながった」、届く前に閉じられたら「まだ待ち受けていない」、
+  `IPC_DENIED:` が届いたら「断られた」（やり直さない）と見分ける。
 - **切断と一時停止**（`session_policy.rs`。純粋な処理・単体テスト付き）:
   - 相手が**黙って切れた**（エディタを閉じた・落ちた・USB が外れた・エディタの実行を止めた）→ 一時停止中なら再開して Play を続ける（端末のゲームが誰にも解けない
     一時停止のまま残らないように）。
   - 相手が切る前に **`DETACH`**（意図した切り離し。段階D-1 で足した命令）を送っていた → 一時停止のまま据え置く（SeedAndroid の `pause` が「つないで 1 命令送って切る」ため）。
     印は 1 回の切断で消える（次の接続へ持ち越さない）。
 - ランタイムのログ（タグ SEED。TCP のときだけ出す。PC の Output は変えない）: `[SEED IPC] エディタとの通信路: 127.0.0.1:52735 で待ち受けます…`・`エディタとつながりました`・
-  `一時停止しました（PAUSE…）`・`再開しました（RESUME）`・`エディタとの接続が切れました（次の接続を待ちます）`・`…一時停止を解いて Play を続けます`・
+  `接続を断りました（<相手>・理由 token）…`・`一時停止しました（PAUSE。…画面はゲームのカメラのまま）`・`再開しました（RESUME）`・`エディタとの接続が切れました（次の接続を待ちます）`・`…一時停止を解いて Play を続けます`・
   `切り離し（DETACH）の後の切断なので一時停止のままにします`。
 - 書き込みは標準ライブラリの TcpStream（Linux / Android では `send` に `MSG_NOSIGNAL`）なので、相手が閉じた後に書いても SIGPIPE でプロセスは落ちない。
   書き込みの時間切れは 10 秒（相手が読まなくなった接続は閉じる）。
@@ -2370,16 +2375,20 @@ IPC の中身（行の解釈 `read_loop`・書き込み `write_loop`）は通信
 指定（AndroidRunRequest.IpcPort。null=既定 52735 ／ 0=使わない ／ 1〜65535）
   エディタ … 環境設定 editor_preferences.json の "android": { "ipc_port": … }（未設定なら既定。設定の画面は無い）
   SeedAndroid … --ipc-port <ポート>（設定 JSON の ipc_port）
-  └ 起動の工程（Steps/LaunchStep）: am start … --es seed.ipc_port '52735'（シーンの extra と並べる。0 の指定なら渡さない）
-      └ MainActivity: seed.* の文字列の extra を JSON にまとめる（{"scene":"…","ipc_port":"52735"}。変更なし）
-          └ engine::platform::launch_options（IPC_PORT_KEY。1〜65535 の整数だけ。読めない値は警告してその項目だけ無視＝シーンは使う）
-              └ runtime/android/native/src/launch.rs → LaunchArgs.ipc_port → App::new が 127.0.0.1:<ポート> で待ち受ける
-エディタ／SeedAndroid … adb -s <シリアル> forward tcp:0 tcp:52735（PC 側の空きポートは adb が選んで返す）→ 127.0.0.1:<PC 側> へ TCP
+  └ 起動の工程（Steps/LaunchStep）: am start … --es seed.ipc_port '52735' --es seed.ipc_token '<トークン>'
+      （シーンの extra と並べる。0 の指定ならどちらも渡さない。Output の表示ではトークンを '***' に伏せる）
+      ├ 起動の直後に、同じトークンをプロジェクトの cache/android/run_state.json の ipc_launches へ記録（§21.11）
+      └ MainActivity: seed.* の文字列の extra を JSON にまとめる（{"scene":"…","ipc_port":"52735","ipc_token":"…"}。変更なし）
+          └ engine::platform::launch_options（IPC_PORT_KEY: 1〜65535 の整数だけ／IPC_TOKEN_KEY: 16〜128 文字の英数字・_・-。
+              読めない値は警告してその項目だけ無視＝シーンは使う。logcat へ出す JSON はトークンを "***" に伏せる）
+              └ runtime/android/native/src/launch.rs → LaunchArgs.ipc_port・ipc_token（両方が正しいときだけ）→ App::new が 127.0.0.1:<ポート> で待ち受ける
+エディタ／SeedAndroid … adb -s <シリアル> forward tcp:0 tcp:52735（PC 側の空きポートは adb が選んで返す）→ 127.0.0.1:<PC 側> へ TCP → 最初の行で HELLO:<トークン>
 ```
 
 - 既定の端末側のポートは **52735**（`Android/Ipc/AndroidIpcSettings.DefaultDevicePort`。40000 台＝本番の Lore のポートの並びを避けた）。端末の中だけで使うので PC のポートとは
   ぶつからない。PC 側は adb が OS の動的ポート（Windows は 49152〜65535）から選ぶので、Lore（41337 等）・AI ブリッジ（7234）とはぶつからない。
-- JSON のキー `ipc_port` は Rust の `IPC_PORT_KEY` と C# の `AndroidRuntimeContract.LaunchOptionIpcPortKey` で一致させる（両方のテストで確かめる）。
+- JSON のキー `ipc_port` / `ipc_token` は Rust の `IPC_PORT_KEY` / `IPC_TOKEN_KEY` と C# の `AndroidRuntimeContract.LaunchOptionIpcPortKey` /
+  `LaunchOptionIpcTokenKey` で一致させる（両方のテストで確かめる）。
 - 起動の工程が extra を渡すのは `run` / `push`（アプリを起動する目的）。ランチャーから起動したときは extra が無いので待ち受けない（一時停止は使えない）。
 
 ### 21.3 接続の流れ（エディタ・SeedAndroid。`editor/src/Android/Ipc/`）
@@ -2387,8 +2396,10 @@ IPC の中身（行の解釈 `read_loop`・書き込み `write_loop`）は通信
 | ファイル | 役割 |
 |---|---|
 | `editor/src/Ipc/IpcLineChannel.cs` | **行の送受信（通信路に依存しない）**。PC の名前付きパイプ（`PipeServer`）と Android の TCP（`AndroidIpcSession`）が同じこのクラスで読み書きする（受信ループ・1 行ごとの前後の空白の除去・受け手の例外で止めない・UTF-8・`Closed`）。段階D-1 の前の PipeServer の振る舞いをそのまま移した |
-| `editor/src/Ipc/RuntimeIpcCommands.cs` | 命令と応答の文字列（`PAUSE` / `RESUME` / `DETACH` / `READY:` / `SCREENSHOT:` …）。`RuntimeManager`（PC の Play）と Android で共有 |
-| `Android/Ipc/AndroidIpcConnector.cs` | adb forward → TCP → 挨拶（`READY:`）を待つ、を上限まで繰り返す。つながらなければ理由付きの `AndroidIpcException`（forward は外す） |
+| `editor/src/Ipc/RuntimeIpcCommands.cs` | 命令と応答の文字列（`PAUSE` / `RESUME` / `DETACH` / `HELLO:` / `READY:` / `IPC_DENIED:` / `SCREENSHOT:` …）。`RuntimeManager`（PC の Play）と Android で共有 |
+| `Android/Ipc/AndroidIpcConnector.cs` | adb forward → TCP → 最初の行で `HELLO:<トークン>` → 挨拶（`READY:`）を待つ、を上限まで繰り返す。つながらなければ理由付きの `AndroidIpcException`（forward は外す）。断られたら（`IPC_DENIED:`）やり直さずに諦める |
+| `Android/Ipc/AndroidIpcToken.cs` | 接続トークン（起動ごとに使い捨て。暗号用の乱数 128 ビットの 16 進 32 文字）・書式の検査・伏せた表示（`***`）。§21.11 |
+| `Android/State/AndroidRunState.cs` | 起動の記録 `ipc_launches`（端末のシリアル → アプリ ID・ポート・トークン・時刻）。起動の工程が書き、SeedAndroid の pause / resume / screenshot が読む |
 | `Android/Ipc/AndroidIpcSession.cs`（`IAndroidIpcLink`） | つながった通信路。`Send`・`RequestAsync`（応答を待つ）・`CloseAsync(detach)`（DETACH を送るか、黙って閉じる。どちらも自分が張った forward を外す） |
 | `Android/Ipc/AndroidIpcSettings.cs`・`AndroidIpcTimings.cs` | ポートの決まり・時間の決まり（接続の上限 20 秒・やり直し 0.5 秒・1 回の挨拶待ち 3 秒・応答待ち 20 秒） |
 | `Android/Ipc/AndroidIpcScreenshot.cs` | スクリーンショット（§21.6） |
@@ -2401,6 +2412,7 @@ IPC の中身（行の解釈 `read_loop`・書き込み `write_loop`）は通信
 | 挨拶の前に閉じられ続けた | 端末のアプリがポートで待ち受けていない | アプリが起動しているか・段階D-1 より前の APK（`run` で入れ直す）・INTERNET 権限の無い APK でないか |
 | 挨拶が来ない | 待ち受けているが応答しない | 別の接続（エディタの実行・SeedAndroid）がつながっている間はつなげない（1 本だけ） |
 | PC 側のポートへつながらない | adb forward が外れた | adb のサーバーが再起動された等 |
+| 断られた（`IPC_DENIED:token`。`DescribeDenial`） | 接続トークンが違う（やり直さない） | 記録より後に別の run / push（エディタの実行を含む）で起動し直した・ランチャーから起動した → run / push で起動し直す |
 
 **エディタの段取り**（`AndroidRun/AndroidRunController.cs`。状態の遷移の正典は `AndroidRunStateMachine.cs`）
 
@@ -2417,6 +2429,9 @@ IPC の中身（行の解釈 `read_loop`・書き込み `write_loop`）は通信
 エディタを閉じる … 通信路を黙って閉じる（端末のゲームは一時停止を解いて続く）。forward の解除は待たない
 ```
 
+- 接続トークンは実行ごとに `AndroidRunController.TryStart` が作って起動の指定（`AndroidRunRequest.IpcToken`）に入れ、同じ値でつなぐ
+  （1 回の実行の中のつなぎ直しも同じ値。次の実行では作り直す）。指定の無い起動（SeedAndroid の run / push）は中核（`AndroidRunPipeline`）が作る。
+
 ### 21.4 実行バー（`AndroidRun/PlayBarPolicy.cs`。画面の色の規約は [editor_ui_style.md](editor_ui_style.md) 8 章）
 
 | 状態 | 状態表示 | 実行ボタン | 停止ボタン |
@@ -2427,8 +2442,13 @@ IPC の中身（行の解釈 `read_loop`・書き込み `write_loop`）は通信
 | Running・つながらない／使わない指定 | `ANDROID RUN`（水色） | 一時停止の絵柄で押せない（「一時停止できません: <理由>」） | 同上 |
 
 - 進捗の表示は `<端末> で実行中` ／ `<端末> で一時停止中`。実行先セレクタは Android の実行中は変えられない（従来どおり）。
-- **一時停止中の端末の画面は PC の PAUSE と同じ扱い**（ランタイムの `paused`。ゲームの時間・物理・スクリプトが止まり、描画はデバッグカメラ〈メインカメラの位置に合わせる〉の
-  エディタの見た目になる。§21.9 の確認結果）。
+- **一時停止中の端末の画面はゲームの画面のまま**（段階D-1 の追加。段階D-1 の時点では PC の PAUSE と同じくエディタの見た目になっていた。§21.9）。
+  ランタイムは TCP の `PAUSE` を `remote_paused` として扱い、ゲームの時間・物理（3D / 2D）・スクリプト・アニメーション・入力の注入だけを止める
+  （判定は `App::is_simulation_paused()` ＝ `paused || remote_paused`）。描画の条件（`mode == Play && !paused`: デバッグカメラ・グリッド・ギズモ・ビューポート・
+  速度バッファの連続性）に使う `paused` は PC の PAUSE（名前付きパイプ）だけが立てるので、PC の PAUSE は従来どおりエディタの見た目。
+  どちらにするかは通信路の種類で決める（`ipc_transport::pause_keeps_game_view(IpcTransportKind)`。TCP だけ true）。`RESUME`・切断での再開・シーンの読み直し・
+  Play の開始／終了は両方を下ろす（`clear_pause`）。
+- 時間で動くシェーダ（水面等）は一時停止中も壁時計（`ambient_time`）で動き続ける（PC の PAUSE と同じ規則。`frame_renderer.rs` の `shader_time`。backlog）。
 
 ### 21.5 SeedAndroid の pause / resume / screenshot（エディタ無しで確かめる）
 
@@ -2439,9 +2459,13 @@ dotnet run --project editor/tools/SeedAndroid -- screenshot --project D:\path\to
 dotnet run --project editor/tools/SeedAndroid -- resume     --project D:\path\to\Project --serial <実機>
 ```
 
-- どれも「adb forward を張る → TCP でつないで挨拶を待つ → 命令を 1 つ送る → `DETACH` を送って閉じる → forward を外す」。`DETACH` の後の切断なので、
+- どれも「adb forward を張る → TCP でつなぎ、起動の記録の接続トークンを示して（`HELLO:`）挨拶を待つ → 命令を 1 つ送る → `DETACH` を送って閉じる →
+  forward を外す」。`DETACH` の後の切断なので、
   `pause` の後もゲームは一時停止のまま（再開は `resume`。黙って切れた場合だけランタイムが自分で再開する）。
-- アプリ ID は `--app-id`、無ければ `--project` の設定から（`stop` と同じ。`Commands/TargetApplication`）。端末側のポートは `--ipc-port`（省略時 52735）。
+- アプリ ID は `--app-id`、無ければ `--project` の設定から（`stop` と同じ。`Commands/TargetApplication`）。端末側のポートは `--ipc-port`（省略時は起動の記録のポート）。
+- 接続トークンは、同じ `--project` の `run` / `push`（エディタの実行を含む）の起動の工程がプロジェクトの `cache/android/run_state.json`（`ipc_launches`。
+  端末のシリアルごとにアプリ ID・ポート・トークン・時刻）に記録したものを使う（`Commands/AppControlCommand`）。記録が無ければ理由付きのエラー（終了コード 5）。
+  記録より後にアプリを別の方法で起動し直した（トークンが変わった）ときは `IPC_DENIED:token` で断られる（終了コード 5・理由付き）。
 - `--serial auto` は使えない（既にある端末を操作するだけのため）。エディタで実行している間はエディタがつながっているので使えない（挨拶が来ずに理由付きのエラー・終了コード 5）。
 - ステップ実行（1 フレームだけ進める）は無い（§21.7）。
 
@@ -2478,7 +2502,8 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 
 - エディタの画面では: 実行先を端末にして実行 → Output に「…のアプリとつながりました…」→ 状態表示が `ANDROID PLAY` → 実行ボタン（一時停止）→ `ANDROID PAUSE`・
   端末の画面が止まる → 実行ボタン（再開）→ `ANDROID PLAY` → 停止ボタン。
-- PC でも `SEED.exe --mode=play --ipc-port=<ポート>` で同じ TCP の通信路を試せる（標準エラーに `[SEED IPC] …で待ち受けます`）。
+- PC でも `SEED.exe --mode=play --ipc-port=<ポート> --ipc-token=<16 文字以上の英数字>` で同じ TCP の通信路を試せる（標準エラーに `[SEED IPC] …で待ち受けます`。
+  つないだら最初の行で `HELLO:<トークン>`。トークンが無いと待ち受けない）。
 - adb の振る舞いの注意: `adb forward --remove` は**張った後の接続を切らない**（PC 側で新しい接続を受けなくなるだけ）。エディタ／SeedAndroid は
   TCP の接続を閉じてから forward を外す。切断の確かめに forward を外しても切れない（実機で確かめた）。
 
@@ -2499,7 +2524,7 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 | 実機: SeedAndroid の pause → screenshot → resume → screenshot | `pause`（1.6 秒）→ `[SEED IPC] 一時停止しました` → `DETACH の後の切断なので一時停止のままにします`。毎秒のログは 19:29:52.8（t=62.8s）で止まり、`resume` の後 19:30:10.7（**t=63.8s**）から再開（17 秒の一時停止の間ゲームの時間は進まない）。一時停止中もフレームは約 17.7 fps で描かれ続けた。`screenshot` は一時停止中・再開後とも 1080x2400 の PNG（1.5〜1.6 MB）を取り出し、端末の PNG は消した。各コマンドの後の `adb forward --list` は空 |
 | 実機: エディタと同じ段取り（`AndroidRunController`＋本物の中核。WPF 抜きの一時のプローブ） | 実行 → 起動の 0.1 秒後につながる（`ANDROID RUN`→`ANDROID PLAY`）→ `TryPause` で `ANDROID PAUSE`・6 秒で 0 行 → `TryResume` で 5 行 → 一時停止中に通信路を外から黙って閉じる → 端末は `一時停止を解いて Play を続けます`、エディタは pidof でアプリが動いているのを確かめて 0.1 秒でつなぎ直し（`Running`・6 行）→ 一時停止 → 停止ボタン → `Idle`・`pidof` 空・forward 無し |
 | 実機: アプリの終了（一時停止中に自分のアプリを外から `am force-stop`） | 通信路の切断からすぐ pidof で確かめ、**0.32 秒**で「端末でアプリが終わったので実行を終えました」→ `Idle`（pidof の見張りだけなら 2〜4 秒）。forward 無し |
-| 一時停止中の端末の画面 | メインカメラと同じ構図のまま、エディタのグリッドが重なる（PC の PAUSE と同じくデバッグカメラ・エディタの見た目に切り替わる。再開すると元のゲームの画面）。backlog |
+| 一時停止中の端末の画面 | メインカメラと同じ構図のまま、エディタのグリッドが重なる（PC の PAUSE と同じくデバッグカメラ・エディタの見た目に切り替わる。再開すると元のゲームの画面）。→ 段階D-1 の追加でゲームの画面のままに変えた（§21.4・§21.12） |
 | エディタの画面（実行バー・Output・ツールチップ） | **未確認**（エージェントはエディタを起動しない。判断はすべて単体テストと、実機での段取りのプローブのプレイバーの判断の記録で確かめた。利用者が画面で確かめる） |
 
 - 最後の状態: `com.seedengine.runtime`（段階D-1 の APK・`proj_probe`）を入れて止めた（`pidof` 空・前面はランチャー）。adb forward は残していない。
@@ -2507,12 +2532,45 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 
 ### 21.10 制限・持ち越し（詳細は [backlog.md](backlog.md) の「Android」節）
 
-- **一時停止中の画面がエディタの見た目**（グリッド・デバッグカメラ）になる。端末ではデバッグカメラを動かせないので、ゲームの画面のまま止めるかは要判断。
+- ~~一時停止中の画面がエディタの見た目になる~~ → 段階D-1 の追加でゲームの画面のままにした（§21.4）。時間で動くシェーダは一時停止中も動く（PC と同じ）。
 - **ステップ実行は無い**（PC にも無い。§21.7）。
 - **エディタの AI ツールから Android の実行は撮れない・操作できない**（撮影は SeedAndroid の `screenshot` だけ）。
 - **1 本だけ受け付ける**（エディタの実行中は SeedAndroid の `pause` 等が使えない。あきらめた接続は待ち行列に残り、後で受け付けられてすぐ切れる＝一時停止中なら再開）。
-- **端末の他のアプリからも 127.0.0.1:52735 へつなげる**（デバッグ版の APK を `run` / `push` で起動したときだけ。bind は端末の外からは届かないが、
-  同じ端末で INTERNET 権限を持つアプリは届く）。つながると IPC の命令（一時停止・入力の注入・セーブデータ・スクリーンショットの書き先の指定等）を送れる。
-  起動オプションで 1 回きりのトークンを渡し、最初の行で照合する対策は backlog。
+- ~~端末の他のアプリからも命令を送れる~~ → 段階D-1 の追加で接続トークンを照合するようにした（§21.11）。ただし他のアプリが先につなぐと、ランタイムは
+  HELLO の時間切れ（5 秒）までその接続を持つので、その間はエディタがつなげない（1 本だけのため。つながるまでやり直す上限は 20 秒）。
 - ランチャーから起動したアプリにはつなげない（起動オプションが無い）。`SEED.Application.IsEditorPlay` は Android では false のまま。
 - ワイヤレスデバッグ（Wi-Fi の adb）では確かめていない。エディタの画面での操作は未確認（上の表）。
+
+### 21.11 接続トークン（段階D-1 の追加。`ipc_transport/auth.rs`・`Android/Ipc/AndroidIpcToken.cs`）
+
+ランタイムは 127.0.0.1 で待ち受けるので端末の外からは届かないが、同じ端末で INTERNET 権限を持つアプリは届く。そこで起動ごとに使い捨ての
+トークンを作って起動オプションで渡し、TCP の接続の最初の行で照合する（名前付きパイプ〈PC〉は従来どおりトークン無し）。
+
+| 誰が | すること |
+|---|---|
+| エディタ（`AndroidRunController.TryStart`）・中核（`AndroidRunPipeline`。指定が無ければ作る） | 実行ごとに新しいトークン（暗号用の乱数 128 ビットの 16 進 32 文字）を作る |
+| 起動の工程（`Steps/LaunchStep`） | `am start … --es seed.ipc_token '<トークン>'`（Output の表示は `'***'`）。起動の直後にプロジェクトの `cache/android/run_state.json` の `ipc_launches` へ記録する（端末のシリアル → アプリ ID・ポート・トークン・時刻。IPC を使わない起動ではその端末の古い記録を消す） |
+| ランタイム（`auth.rs`・`tcp.rs`） | 受け付けた接続の最初の行（256 バイトまで・5 秒まで待つ）が `HELLO:<トークン>` で一致したときだけ `READY:0` を書いて命令を受け付ける。違えば `IPC_DENIED:token`、HELLO でない・来なければ `IPC_DENIED:hello` を書いて閉じ、次の接続を待つ（断った接続の行は 1 行も命令として扱わない）。比較は長さと中身を一定の手間で比べる。logcat・標準エラーにトークンの値は出さない（起動オプションの JSON は `"ipc_token":"***"` に伏せる） |
+| エディタ・SeedAndroid（`AndroidIpcConnector`） | つないだら最初に `HELLO:<トークン>` を送り、`READY:` を待つ。`IPC_DENIED:` が来たらやり直さずに理由付きで諦める。SeedAndroid の pause / resume / screenshot は run_state.json の記録のトークンを使う（§21.5） |
+
+- トークンの書式は 16〜128 文字の英数字・`_`・`-`（Rust の `parse_ipc_token` と C# の `AndroidIpcToken.IsValid` が同じ規則）。読めない値の起動、ポートだけでトークンが無い起動は
+  **待ち受けない**（IPC 無しの Play。logcat に理由）。
+- run_state.json のトークンは平文（PC のプロジェクトの `cache/` の中）。ランタイムはトークンをファイルに書かない。
+- 断った後もランタイムは次の接続を待つ。他のアプリが先につないで何も送らないと、その接続を HELLO の時間切れ（5 秒）まで持つので、その間はエディタがつなげない
+  （エディタはつながるまで 20 秒やり直す。§21.10）。
+
+### 21.12 確認結果（段階D-1 の追加・2026-09-25）
+
+| 項目 | 結果 |
+|---|---|
+| Rust の単体テスト | `cargo test --lib -- ipc launch_options` 57 / 57（新規 12: 照合〈一致だけ受け付ける・一定の手間の比較・断りの行・HELLO の前の命令〉4・ループバックの TCP 4〈HELLO の直後の命令も届く・違うトークンは命令を 1 つも届けずに断る・HELLO の前の PAUSE は断る・黙った接続は時間切れで断る〉・通信路の選び方〈トークンの無いポートは待ち受けない〉1・一時停止の見た目〈TCP だけゲームの画面のまま〉1・起動オプションの `ipc_token`〈キー・書式・伏せた JSON〉2）。`cargo test --lib`（不安定な 3 つを除く）2640 成功・0 失敗 |
+| C# の単体テスト | `AndroidPipelineTests` 91 / 91（新規 3: 断られたらやり直さない・トークンの作成と extra と表示の伏せ・run_state.json の記録の往復）。`AndroidRunUiTests` 65 / 65（新規 1: トークンは実行ごとに作り直す）。どちらも既存のテストの HELLO の確認を含む |
+| ビルド | エディタ（別の出力先）エラー 0・警告 25（変更前と同じ。変更したファイルに警告なし）。SeedAndroid 警告 0。libSEED.so（arm64。run の中）成功 |
+| PC の Play（名前付きパイプ）が従来どおり | トークン無しで READY → `PAUSE` で止まる → `RESUME` → `SCREENSHOT` → `STOP`。一時停止中の絵はエディタの見た目（実行中の絵と比べて、8 階調より大きく違う画素が画面の 10.1%・画面全体。グリッドが出る） |
+| PC で TCP の通信路（`--ipc-port=0 --ipc-token=…`） | 違うトークン → `IPC_DENIED:token`（その後に送った `PAUSE` は効かず、スクリプトの毎秒のログは続く）・正しいトークンで `READY:0`（3 回）・`PAUSE` で止まる・黙った切断で再開・`DETACH` の後は据え置き・`RESUME`。一時停止中の絵は実行中とほぼ同じ（8 階調より大きく違う画素 15 個＝0.0007%。一時停止中の 2 枚どうしは 0 個）＝ゲームのカメラのまま・グリッド無し。ログにトークンの文字列 0 件 |
+| 実機: run | .so・pak・Gradle・インストールをやり直し（174 秒）。表示 `am start … --es seed.ipc_port '52735' --es seed.ipc_token '***'` → logcat `起動オプションを受け取りました: {"ipc_port":"52735","ipc_token":"***"}` → `127.0.0.1:52735 で待ち受けます（…接続トークンを照合して受け付けます）`。run_state.json に 32 文字のトークンを記録。SeedAndroid の出力・logcat にトークンの値 0 件 |
+| 実機: 照合（自分で張った adb forward から素の TCP） | 違うトークン → `IPC_DENIED:token`（0.06 秒で閉じられる）・HELLO の代わりに `PAUSE` → `IPC_DENIED:hello`・何も送らない → 5.05 秒で `IPC_DENIED:hello`。logcat に `接続を断りました（…理由 token）` 1 行・`理由 hello` 2 行。forward は外した |
+| 実機: SeedAndroid の pause / resume（run_state.json のトークン） | どちらも `つながりました`（`READY:0`）→ 終了コード 0。logcat に `エディタとつながりました` 2 回。各コマンドの後の `adb forward --list` は空 |
+| 実機: 一時停止中の画面・一時停止の効き目 | **未確認**。端末の画面が消えてロック中（`screenState=SCREEN_STATE_OFF`・前面はロック画面）で、アプリは描画できなかった（`presented_frames total=0`・サーフェスは 10 秒で手放した）。メインループが回らないので `PAUSE` / `RESUME` は積まれたまま処理されず、撮影もできない。画面の点灯・ロックの解除は私物の端末の操作になるので行っていない。PC の TCP の通信路（上）で確かめた |
+
+- 最後の状態: `com.seedengine.runtime`（段階D-1 の追加の APK）を入れて止めた（`pidof` 空）。adb forward は残していない。Gradle のデーモンは止めた。エミュレータは起動していない。

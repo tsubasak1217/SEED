@@ -81,6 +81,12 @@ public sealed class AndroidPipelineContext
     /// </summary>
     public int? IpcDevicePort { get; init; }
 
+    /// <summary>
+    /// IPC の接続トークン（ポートを渡すときだけ。指定のトークンか、無ければ準備で作ったもの。段階D-1）。起動の工程が
+    /// am start の extra（seed.ipc_token）にして渡し、実行状態（run_state.json の ipc_launches）へ記録する。
+    /// </summary>
+    public string? IpcToken { get; init; }
+
     /// <summary>対象の端末（無ければ例外）。</summary>
     /// <returns>端末。</returns>
     public AdbDevice RequireDevice() =>

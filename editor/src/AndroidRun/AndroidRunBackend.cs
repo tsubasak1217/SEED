@@ -44,14 +44,15 @@ public interface IAndroidRunBackend
     Task<bool> IsAppRunningAsync(string serial, string applicationId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// 端末のアプリの IPC へつなぐ（adb forward ＋ TCP。挨拶まで確かめる。段階D-1）。
+    /// 端末のアプリの IPC へつなぐ（adb forward ＋ TCP。接続トークンを示し、挨拶まで確かめる。段階D-1）。
     /// </summary>
     /// <param name="serial">端末のシリアル。</param>
     /// <param name="devicePort">端末でランタイムが待ち受けているポート。</param>
+    /// <param name="token">接続トークン（この実行の指定に入れて端末へ渡したもの）。</param>
     /// <param name="cancellationToken">中断の合図（実行を止めたら取り消す）。</param>
     /// <returns>つながった通信路。</returns>
-    /// <exception cref="AndroidIpcException">時間内につながらない（古い APK 等）。</exception>
-    Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, CancellationToken cancellationToken);
+    /// <exception cref="AndroidIpcException">時間内につながらない（古い APK 等）・断られた。</exception>
+    Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, string token, CancellationToken cancellationToken);
 }
 
 /// <summary>本番の入口（中核の AndroidRunPipeline / AndroidDeviceActions をそのまま呼ぶ）。</summary>
@@ -86,6 +87,6 @@ public sealed class AndroidRunBackend : IAndroidRunBackend
         _deviceActions.IsAppRunningAsync(serial, applicationId, cancellationToken);
 
     /// <inheritdoc />
-    public async Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, CancellationToken cancellationToken) =>
-        await _deviceActions.ConnectIpcAsync(serial, devicePort, AndroidIpcTimings.Default, cancellationToken).ConfigureAwait(false);
+    public async Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, string token, CancellationToken cancellationToken) =>
+        await _deviceActions.ConnectIpcAsync(serial, devicePort, token, AndroidIpcTimings.Default, cancellationToken).ConfigureAwait(false);
 }

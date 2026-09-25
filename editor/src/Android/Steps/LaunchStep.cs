@@ -10,8 +10,10 @@
 //  MainActivity が「seed.」で始まる文字列の extra を JSON にまとめてネイティブへ渡し、runtime/android/native の
 //  launch.rs が LaunchArgs.scene_path に入れる（pak に無ければ logcat に警告を出して開始シーンで起動する）。
 //  毎回アプリを止めてから起動するので、extra は必ず新しいプロセスの onCreate に届く。
-//  段階D-1 から、エディタとの IPC を待ち受けるポート（--es seed.ipc_port '<ポート>'。0 の指定なら渡さない）も渡す。
-//  端末のランタイムが 127.0.0.1:<ポート> で待ち受け、エディタ／SeedAndroid が adb forward 越しにつなぐ（Ipc/）。
+//  段階D-1 から、エディタとの IPC を待ち受けるポート（--es seed.ipc_port '<ポート>'。0 の指定なら渡さない）と、
+//  起動ごとの使い捨ての接続トークン（--es seed.ipc_token '<トークン>'。表示では伏せる）も渡す。端末のランタイムが
+//  127.0.0.1:<ポート> で待ち受け、エディタ／SeedAndroid が adb forward 越しにつないで最初の行でトークンを示す（Ipc/）。
+//  起動の直後にポートとトークンを実行状態（run_state.json の ipc_launches）へ書く（SeedAndroid の pause 等が使う）。
 //  APK の pak はプロジェクト設定の開始シーン・シーン一覧から参照をたどって作り、シーンマネージャに未登録の起動シーンは
 //  準備で収録の起点に足す（段階C-4。Project/AndroidPakSceneSeeds → SeedPak --extra-scene）。それでも入っていないのは
 //  収録に失敗したか、pak を作り直さなかった（push・--skip-gradle）とき。その保険として、起動の直前に置き場の pak
@@ -33,9 +35,11 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Android.Plan;
 using SEEDEditor.Android.Project;
+using SEEDEditor.Android.State;
 using SEEDEditor.Packaging;
 
 namespace SEEDEditor.Android.Steps;
@@ -82,7 +86,7 @@ public sealed class LaunchStep : IAndroidPipelineStep
     {
         var adb = context.RequireAdb();
         var device = context.RequireDevice();
-        var extras = LaunchExtras(context.LaunchScene, context.IpcDevicePort);
+        var extras = LaunchExtras(context.LaunchScene, context.IpcDevicePort, context.IpcToken);
         WarnIfSceneNotInPak(context, log);
         try
         {
@@ -90,10 +94,14 @@ public sealed class LaunchStep : IAndroidPipelineStep
             await adb.ForceStopAsync(device.Serial, context.Identity.ApplicationId, cancellationToken).ConfigureAwait(false);
             // 止めた後・起動の前に、push で置いた DLL の上書きを消す（run は APK の内容を正とする）
             await ClearPushedScriptsAsync(context, adb, device.Serial, log, cancellationToken).ConfigureAwait(false);
-            var shown = string.Join(" ", AdbClient.AmStartArguments(context.LaunchComponent, extras).Skip(1));
+            // 表示では接続トークンの値を伏せる（Output・エディタのログに残さない）
+            var shown = string.Join(" ", AdbClient.AmStartArguments(context.LaunchComponent, MaskSecrets(extras)).Skip(1));
             log.Info($"{shown}（logcat はこの時刻から: {context.LogcatSince}）");
             var lines = await adb.StartActivityAsync(device.Serial, context.LaunchComponent, extras, cancellationToken).ConfigureAwait(false);
             foreach (var line in lines) log.Info("  " + line);
+            // 起動したアプリの IPC のポートと接続トークンを記録する（SeedAndroid の pause 等が使う。起動の直後に書き、
+            // 実行の最後まで待たない＝logcat を流している間に別のターミナルから使える）
+            RecordIpcLaunch(context, device.Serial, log);
             var summary = string.Join(" ", lines
                 .Select(line => line.Trim())
                 .Where(line => SummaryLinePrefixes.Any(prefix => line.StartsWith(prefix, StringComparison.Ordinal))));
@@ -188,12 +196,14 @@ public sealed class LaunchStep : IAndroidPipelineStep
 
     /// <summary>
     /// 起動オプションを am start の extra にする（純粋な処理）。「起動するシーン」（seed.scene）と、エディタとの IPC を
-    /// 待ち受けるポート（seed.ipc_port。段階D-1。値は 10 進の文字列＝Java は文字列の extra だけを渡す）。
+    /// 待ち受けるポート（seed.ipc_port。段階D-1。値は 10 進の文字列＝Java は文字列の extra だけを渡す）と接続トークン
+    /// （seed.ipc_token。ポートと一緒のときだけ）。
     /// </summary>
     /// <param name="launchScene">起動するシーン（アセットルートからの相対パス。null なら開始シーン＝extra なし）。</param>
     /// <param name="ipcDevicePort">IPC のポート（null なら渡さない＝端末は待ち受けない）。</param>
+    /// <param name="ipcToken">IPC の接続トークン（ポートがあるときだけ渡す）。</param>
     /// <returns>extra の並び。</returns>
-    public static IReadOnlyList<AdbIntentExtra> LaunchExtras(string? launchScene, int? ipcDevicePort = null)
+    public static IReadOnlyList<AdbIntentExtra> LaunchExtras(string? launchScene, int? ipcDevicePort = null, string? ipcToken = null)
     {
         var extras = new List<AdbIntentExtra>();
         if (!string.IsNullOrWhiteSpace(launchScene))
@@ -203,7 +213,53 @@ public sealed class LaunchStep : IAndroidPipelineStep
         if (ipcDevicePort is { } port)
         {
             extras.Add(new AdbIntentExtra(AndroidRuntimeContract.IpcPortExtraName, port.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            if (!string.IsNullOrEmpty(ipcToken))
+            {
+                extras.Add(new AdbIntentExtra(AndroidRuntimeContract.IpcTokenExtraName, ipcToken));
+            }
         }
         return extras.Count == 0 ? NoExtras : extras;
+    }
+
+    /// <summary>
+    /// 表示用に、接続トークンの値を伏せた extra の並びを作る（純粋な処理。実際に渡すのは元の並び）。
+    /// </summary>
+    /// <param name="extras">extra の並び。</param>
+    /// <returns>伏せた並び。</returns>
+    public static IReadOnlyList<AdbIntentExtra> MaskSecrets(IReadOnlyList<AdbIntentExtra> extras) =>
+        extras.Select(extra => extra.Key == AndroidRuntimeContract.IpcTokenExtraName ? extra with { Value = AndroidIpcToken.MaskedValue } : extra)
+            .ToArray();
+
+    /// <summary>
+    /// 起動したアプリの IPC のポートと接続トークンを実行状態（run_state.json の ipc_launches）へ記録して書く（段階D-1）。
+    /// IPC を使わない起動なら、その端末の古い記録を消す（前回のトークンでつなぎに行かないように）。書けなくても起動は続ける。
+    /// </summary>
+    /// <param name="context">共有の値（ポート・トークン・アプリ ID・実行状態）。</param>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="log">起動の工程のログ。</param>
+    private static void RecordIpcLaunch(AndroidPipelineContext context, string serial, AndroidPhaseLog log)
+    {
+        if (context.IpcDevicePort is { } port && context.IpcToken is { } token)
+        {
+            context.RunState.IpcLaunches[serial] = new AndroidIpcLaunchRecord
+            {
+                ApplicationId = context.Identity.ApplicationId,
+                IpcPort = port,
+                IpcToken = token,
+                LaunchedAt = DateTimeOffset.Now,
+            };
+        }
+        else if (!context.RunState.IpcLaunches.Remove(serial))
+        {
+            return;
+        }
+        try
+        {
+            context.RunState.Save(context.RunStatePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            log.Warn($"IPC の接続トークンを実行状態へ書けません（SeedAndroid の pause 等でつなげません）: {context.RunStatePath}（{ex.Message}）");
+        }
     }
 }

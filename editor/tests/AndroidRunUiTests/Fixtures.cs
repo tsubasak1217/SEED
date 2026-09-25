@@ -141,16 +141,16 @@ public sealed class FakeBackend : IAndroidRunBackend
     public Func<int, CancellationToken, Task<IAndroidIpcLink>> ConnectIpc { get; set; } =
         (_, _) => Task.FromException<IAndroidIpcLink>(new AndroidIpcException(AndroidIpcFailureKind.NotListening, "テスト: 待ち受けていません"));
 
-    /// <summary>IPC の接続の呼ばれ方（シリアル・端末側のポート）。</summary>
-    public ConcurrentQueue<(string Serial, int DevicePort)> IpcConnects { get; } = new();
+    /// <summary>IPC の接続の呼ばれ方（シリアル・端末側のポート・接続トークン）。</summary>
+    public ConcurrentQueue<(string Serial, int DevicePort, string Token)> IpcConnects { get; } = new();
 
     /// <summary>IPC の接続が呼ばれた回数（Interlocked）。</summary>
     private int _ipcConnects;
 
     /// <inheritdoc />
-    public Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, CancellationToken cancellationToken)
+    public Task<IAndroidIpcLink> ConnectIpcAsync(string serial, int devicePort, string token, CancellationToken cancellationToken)
     {
-        IpcConnects.Enqueue((serial, devicePort));
+        IpcConnects.Enqueue((serial, devicePort, token));
         return ConnectIpc(Interlocked.Increment(ref _ipcConnects), cancellationToken);
     }
 }

@@ -41,6 +41,29 @@ public static class IpcPauseTests
         harness.Add("段取り（D-1）: 切断でアプリが終わっていれば pidof の見張りより先に Idle へ（一時停止中でも）", DisconnectDetectsAppExit);
         harness.Add("段取り（D-1）: 切断でもアプリが動いていれば一時停止を解いた扱いにしてつなぎ直す", DisconnectReconnectsWhileAppAlive);
         harness.Add("段取り（D-1）: PAUSE を送れなければ実行中へ戻す", PauseSendFailureRevertsToRunning);
+        harness.Add("段取り（D-1）: 接続トークンは実行ごとに作り直す（前の実行のトークンを使い回さない）", TokenIsFreshPerRun);
+    }
+
+    /// <summary>実行ごとに違うトークン。</summary>
+    private static void TokenIsFreshPerRun()
+    {
+        var backend = new FakeBackend
+        {
+            Run = (_, progress, token) => PipelineScript.RunUntilCanceledAsync(progress, token),
+            ConnectIpc = (_, _) => Task.FromResult<IAndroidIpcLink>(new FakeIpcLink()),
+        };
+        using var controller = new AndroidRunController(backend, FastTimings);
+        var tokens = new List<string>();
+        for (var run = 0; run < 2; run++)
+        {
+            controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null), "Pixel_6a（実機）");
+            Fixtures.WaitUntil(() => controller.Snapshot.Ipc == AndroidIpcStatus.Connected, "つながる");
+            Fixtures.Await(controller.StopAsync(), "停止");
+            tokens.Add(backend.IpcConnects.Last().Token);
+        }
+        Check.True(tokens.All(AndroidIpcToken.IsValid), "トークンの書式");
+        Check.True(tokens[0] != tokens[1], "実行ごとに違うトークン");
+        Check.Equal(string.Join(",", tokens), string.Join(",", backend.Requests.Select(request => request.IpcToken)), "指定のトークンでつなぐ");
     }
 
     /// <summary>材料を作る。</summary>
@@ -185,6 +208,10 @@ public static class IpcPauseTests
         var connect = backend.IpcConnects.Single();
         Check.Equal(Fixtures.PhoneSerial, connect.Serial, "準備で決まった端末へつなぐ");
         Check.Equal(AndroidIpcSettings.DefaultDevicePort, connect.DevicePort, "既定のポート（起動の工程が渡すのと同じ）");
+        // 接続トークン: 実行ごとに作って中核への指定に入れ（起動の工程が端末へ渡す）、同じ値でつなぐ
+        var passedToken = backend.Requests.Single().IpcToken;
+        Check.True(AndroidIpcToken.IsValid(passedToken), $"実行ごとの接続トークンを指定に入れる: {passedToken}");
+        Check.Equal(passedToken, connect.Token, "端末へ渡したのと同じトークンでつなぐ");
 
         Check.True(controller.TryPause(), "一時停止");
         Check.Equal(AndroidRunPhase.Paused, controller.Snapshot.Phase, "Paused");

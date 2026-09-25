@@ -10,7 +10,15 @@
 //
 //  App（app/ipc_handler.rs）が IpcCommand::Detach と IpcCommand::EditorDisconnected を受けたときに呼ぶ。
 //  名前付きパイプ（PC）では EditorDisconnected は積まれないので、PC の Play の振る舞いは変わらない。
+//
+//  【一時停止中の見た目（pause_keeps_game_view）】
+//  PC（名前付きパイプ）の PAUSE は、ランタイムの paused を立てて描画をエディタの見た目（デバッグカメラ・グリッド・ギズモ）に
+//  切り替える（エディタは一時停止中のランタイムのウィンドウをビューポートへ埋め込み、デバッグカメラで見回す）。
+//  TCP（Android の端末）ではデバッグカメラを動かす手段が無いので、ゲームの時間・物理・スクリプトだけを止め、
+//  画面はゲームのカメラのまま止める（App の remote_paused。app/ipc_handler.rs）。
 // ============================================================
+
+use super::IpcTransportKind;
 
 /// 切断・切り離しの扱い（App が 1 つ持つ）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,6 +36,20 @@ pub enum DisconnectAction {
     Resume,
     /// 一時停止のまま据え置く（DETACH の後の切断）。
     KeepPaused,
+}
+
+/// PAUSE を受けたときに、画面をゲームのカメラのまま止めるか【純関数】。
+///
+/// # 引数
+/// * `transport` - PAUSE が届いた通信路の種類
+///
+/// # 戻り値
+/// true ならゲームの画面のまま止める（TCP＝Android の端末）。false なら従来どおりエディタの見た目に切り替える（名前付きパイプ＝PC）。
+pub fn pause_keeps_game_view(transport: IpcTransportKind) -> bool {
+    match transport {
+        IpcTransportKind::NamedPipe => false,
+        IpcTransportKind::TcpListener => true,
+    }
 }
 
 impl IpcSessionPolicy {
@@ -60,6 +82,13 @@ mod tests {
         let mut policy = IpcSessionPolicy::default();
         assert_eq!(policy.on_disconnected(true), DisconnectAction::Resume);
         assert_eq!(policy.on_disconnected(false), DisconnectAction::Nothing);
+    }
+
+    /// PC（名前付きパイプ）の一時停止は従来どおりエディタの見た目、TCP（端末）はゲームの画面のまま。
+    #[test]
+    fn only_tcp_pause_keeps_game_view() {
+        assert!(!pause_keeps_game_view(IpcTransportKind::NamedPipe), "PC の PAUSE の見た目は変えない");
+        assert!(pause_keeps_game_view(IpcTransportKind::TcpListener), "端末ではデバッグカメラへ切り替えない");
     }
 
     /// DETACH の後の切断は一時停止のまま。印は 1 回の切断で消え、次の接続へ持ち越さない。

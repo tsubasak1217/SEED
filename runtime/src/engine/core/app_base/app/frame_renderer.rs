@@ -719,7 +719,8 @@ impl App {
             self.step_physics_playback();
         } else {
             let is_edit_physics_stepping = self.should_step_edit_physics();
-            let should_update_physics = (self.mode == RuntimeMode::Play && !self.paused)
+            // 一時停止は PC の PAUSE と端末の PAUSE（段階D-1。画面はゲームのまま）の両方（is_simulation_paused）
+            let should_update_physics = (self.mode == RuntimeMode::Play && !self.is_simulation_paused())
                 || (self.mode == RuntimeMode::Edit && self.edit_physics_enabled && is_edit_physics_stepping);
             if should_update_physics {
                 perf_physics_active = true;
@@ -746,7 +747,7 @@ impl App {
             // ── 2D 物理同期（Play フレームまたは編集時 2D 物理シミュレーション有効時）─────
             // 2D 物理はタイムラインと連動する（3D タイムラインと同期）
             let is_edit_physics_stepping = self.should_step_edit_physics();
-            let should_update_physics_2d = (self.mode == RuntimeMode::Play && !self.paused)
+            let should_update_physics_2d = (self.mode == RuntimeMode::Play && !self.is_simulation_paused())
                 || (self.mode == RuntimeMode::Edit && self.edit_physics_2d_enabled && is_edit_physics_stepping);
             if should_update_physics_2d {
                 perf_physics_active = true;
@@ -760,7 +761,9 @@ impl App {
         mark_frame_stage(FrameStage::PhysicsDone);
 
         // ── 時間 ──────────────────────────────────────
-        let time_running = self.mode == RuntimeMode::Play && !self.paused;
+        // 端末の PAUSE（段階D-1。remote_paused）でもゲームの時間・スクリプトは止める。描画の見た目（下の in_editor 等）は
+        // 従来どおり PC の PAUSE（paused）だけで切り替えるので、端末ではゲームのカメラの画面のまま止まる。
+        let time_running = self.mode == RuntimeMode::Play && !self.is_simulation_paused();
         // ── 時間スケール（SEED.Time.Scale）をフレーム先頭で 1 度だけ確定させる ──
         // スクリプトはフレーム中に何度でも Scale を書き換えられるが、それを即座に
         // 反映すると「同じフレーム内でサブシステムごとに違う dt が配られる」ことになる。
@@ -9651,7 +9654,7 @@ impl App {
         // 物理スレッドが 60Hz で走り続け、1 秒分の先行が生じる。
         // フレーム末尾（GPU present 後）に起動することで、次フレームまでの ~16ms しか
         // 物理が進まないため、初期位置のズレが発生しない。
-        if self.mode == RuntimeMode::Play && !self.paused {
+        if self.mode == RuntimeMode::Play && !self.is_simulation_paused() {
             if self.physics_thread.is_none() {
                 eprintln!("[PHYS3D] 初回フレーム末に 3D 物理スレッドを起動");
                 self.start_physics();

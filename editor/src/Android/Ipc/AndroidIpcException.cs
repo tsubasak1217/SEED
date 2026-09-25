@@ -20,6 +20,9 @@ public enum AndroidIpcFailureKind
     /// <summary>つながったが挨拶が来ない（別の接続＝エディタや SeedAndroid がつながっている・アプリが止まっている）。</summary>
     NoGreeting,
 
+    /// <summary>端末のアプリが接続を断った（接続トークンが違う＝別の起動の記録を使った等。段階D-1）。</summary>
+    Denied,
+
     /// <summary>通信路が切れた（命令を送れない・応答の前に切れた）。</summary>
     Disconnected,
 

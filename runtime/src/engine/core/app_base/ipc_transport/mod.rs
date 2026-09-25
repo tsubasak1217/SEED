@@ -14,14 +14,19 @@
 //  【通信路ごとの違い】
 //                     名前付きパイプ                    TCP
 //    つなぐ向き       ランタイム → エディタ（起動時に 1 回）  エディタ → ランタイム（127.0.0.1 で listen し 1 本ずつ accept）
+//    照合             —（トークン無し。従来どおり）      最初の行 HELLO:<トークン> が起動オプションの ipc_token と一致した接続だけ（auth.rs）
 //    つながる前       —（つながらなければ IPC 無し）    IPC 無しの Play と同じ（送る行は捨てる）
-//    つながったとき   —                                 ランタイムが最初に挨拶の 1 行（READY:0）を書く
+//    つながったとき   —                                 ランタイムが挨拶の 1 行（READY:0）を書く
 //    切れたとき       何もしない（従来どおり）           EditorDisconnected を App へ積み、次の接続を待つ
 //                                                       → 一時停止中なら再開（session_policy.rs。DETACH の後の切断は据え置き）
+//    一時停止の見た目 エディタの見た目（デバッグカメラ・グリッド。PC は一時停止中にビューポートで見回す）
+//                                                     ゲームの画面のまま止める（端末ではデバッグカメラを動かせない。session_policy.rs）
 //
 //  どの通信路を使うかは起動引数だけで決める（endpoint.rs。純粋な処理）。
 // ============================================================
 
+/// TCP の通信路の接続トークンの照合（純粋な処理）。
+pub mod auth;
 /// 起動引数から通信路を選ぶ（純粋な処理）と、選んだ通信路を開く。
 pub mod endpoint;
 /// 名前付きパイプ（Windows。PC のエディタ）。
@@ -31,8 +36,9 @@ pub mod session_policy;
 /// TCP（127.0.0.1 で待ち受ける。Android の adb forward 越しの接続）。
 pub(crate) mod tcp;
 
+pub use auth::TcpAuth;
 pub use endpoint::{choose_endpoint, open_endpoint, IpcEndpoint};
-pub use session_policy::IpcSessionPolicy;
+pub use session_policy::{pause_keeps_game_view, IpcSessionPolicy};
 
 /// 開いた IPC の通信路の種類（ログの出し分け・実行環境フラグの判定に使う）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

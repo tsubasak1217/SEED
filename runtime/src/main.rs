@@ -20,6 +20,9 @@ pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 /// エディタとの IPC を TCP で待ち受けるポートの起動引数（検証用。`--ipc-port=<ポート>`。段階D-1）。
 const IPC_PORT_ARG: &str = "--ipc-port=";
 
+/// TCP の IPC の接続トークンの起動引数（検証用。`--ipc-token=<トークン>`。段階D-1）。
+const IPC_TOKEN_ARG: &str = "--ipc-token=";
+
 fn main() {
     // アセット形式のマイグレーション系サブコマンド。
     //   - `--upgrade-project <パス> [--dry-run]` … プロジェクト配下の一括アップグレード
@@ -115,6 +118,13 @@ fn parse_args() -> LaunchArgs {
         .find(|a| a.starts_with(IPC_PORT_ARG))
         .and_then(|a| a[IPC_PORT_ARG.len()..].parse::<u16>().ok());
 
+    // 検証用: TCP の接続トークン（接続の最初の行 HELLO:<トークン> と照合する。無ければ --ipc-port でも待ち受けない）。
+    // 書式は Android の起動オプションと同じ規則で確かめる（engine::platform::launch_options::parse_ipc_token）。
+    let ipc_token = raw
+        .iter()
+        .find(|a| a.starts_with(IPC_TOKEN_ARG))
+        .and_then(|a| engine::platform::launch_options::parse_ipc_token(&a[IPC_TOKEN_ARG.len()..]).ok());
+
     let assets_root = raw
         .iter()
         .find(|a| a.starts_with("--assets-root="))
@@ -139,6 +149,7 @@ fn parse_args() -> LaunchArgs {
         mode,
         pipe_name,
         ipc_port,
+        ipc_token,
         assets_root,
         // デスクトップの配布物は実行ファイルの隣の assets.pak をファイルとして開く（init_asset_fs）。
         package_source: None,
