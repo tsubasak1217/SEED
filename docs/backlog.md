@@ -1880,7 +1880,7 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   TCP の `PAUSE` はランタイムの `remote_paused`（ゲームの時間・物理・スクリプト・アニメーション・入力の注入だけを止める。判定は `App::is_simulation_paused()`）にし、
   描画の条件の `paused` は PC の PAUSE（名前付きパイプ）だけが立てる → 端末はゲームの画面のまま、PC の PAUSE は従来どおりエディタの見た目
   （`ipc_transport::pause_keeps_game_view`。docs/android.md §21.4）。PC の TCP の通信路で、一時停止中の絵が実行中とほぼ同じ（グリッド無し）なのを確かめた。
-  **実機の画面では未確認**（確認のとき端末の画面が消えてロック中で、描画が止まっていた。下の「実機で一時停止中の画面を確かめていない」）。以下は記載時のメモ。
+  ~~実機の画面では未確認~~ → 2026-09-26 に実機（Pixel 6a）でも確かめた（下の「実機で一時停止中の画面を確かめていない」）。以下は記載時のメモ。
   一時停止はランタイムの `paused`（PC の PAUSE と同じ）なので、描画がデバッグカメラ（一時停止の瞬間のメインカメラの位置・向きに合わせる）と
   エディタの見た目に切り替わる。実機の `proj_probe` では、構図はそのままでエディタのグリッドが床に重なった（docs/android.md §21.9。画角・ビューポートが
   メインカメラと違うシーンでは構図も変わり得る）。PC は一時停止でウィンドウをビューポートへ埋め込み、デバッグカメラで見回せるが、端末ではデバッグカメラを動かせない。
@@ -1896,7 +1896,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   デバッグ版の APK を `run` / `push` で起動したときだけ）。対策案: エディタ／SeedAndroid が実行ごとに作る使い捨てのトークンを起動オプション
   （`seed.ipc_token`）で渡し、ランタイムは最初の 1 行（例 `HELLO:<トークン>`）が合うまで挨拶も命令も受けない。SeedAndroid の `pause` 等は
   プロジェクトの `cache/android/run_state.json` に残したトークンを使う。
-- [ ] **実機で一時停止中の画面（ゲームの画面のまま・グリッド無し）を確かめていない** — 2026-09-25（段階D-1 の追加）。確認のとき実機（Pixel 6a）の画面が消えて
+- [x] **実機で一時停止中の画面（ゲームの画面のまま・グリッド無し）を確かめていない** — 2026-09-25 記載（段階D-1 の追加）/ 2026-09-26 対応。Pixel 6a・`proj_probe`・
+  開発用の APK（debug の .so・targetSdk 36）で `run` → `screenshot`（実行中）→ `pause` → `screenshot` ×2（6 秒あけて）→ `resume` → `screenshot`（再開後）。4 枚が画素一致
+  （8 階調を超える差 0 画素）＝一時停止中もゲームのカメラのまま・グリッド無し。スクリプトの毎秒のログは一時停止中に止まり（直前 `t=36.1s` → 15 秒後の再開の直後
+  `t=37.1s`）、描画は続いた。docs/android.md §21.12。以下は記載時のメモ。確認のとき実機（Pixel 6a）の画面が消えて
   ロック中で、アプリが描画できなかった（`presented_frames total=0`。メインループが回らないので `PAUSE` / `RESUME` も処理されない）。接続トークンの照合は実機で
   確かめた（照合は受け付けのスレッドで行うので描画が止まっていても動く）。次に実機のロックが解けて前面がランチャーのときに、SeedAndroid で
   `run` → `pause` → `screenshot` → グリッドが無いこと（段階D-1 の時点の絵〈グリッドあり〉と比べる）→ `resume` → `stop` を行う。
@@ -1911,6 +1914,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   ランタイム（`RuntimeManager` のパイプ）へだけ送る。Android の実行中に同じ命令を TCP の通信路（`AndroidRunController` が持つ `IAndroidIpcLink`）へ回すには、
   AI ホスト（`MainWindow.AiHost.cs`）の送り先を実行先で切り替え、端末のパスとの受け渡し（スクリーンショットは端末に書いて run-as で取り出す。
   `Android/Ipc/AndroidIpcScreenshot.cs` を使える）を足す。SeedAndroid の `screenshot` は使える。
+- [ ] **IPC の撮影（`SCREENSHOT`）のたびにメインループが止まる（低優先）** — 2026-09-26（実機確認で気付いた）。Pixel 6a・1080x2400 で、開発用（debug の .so）は
+  1 回あたり約 0.46〜0.59 秒（5 回）、最適化した .so では約 0.14〜0.31 秒（4 回）。その間の fps（`[SEED HEARTBEAT]`・スクリプトの `Time`）が下がるので、fps を測るときは
+  撮らない。GPU からの読み戻しの完了を待つこと（`renderer/screenshot.rs` は `map_async` の後に `device.poll(Wait)` で待つ作り）と PNG の書き出しが効いていると
+  見られる（内訳は未計測）。直すなら読み戻しの完了を次のフレームで拾い、PNG の符号化と書き出しを別スレッドへ回す。docs/android.md §21.10。
 - [ ] **Android の IPC は 1 本だけ（エディタの実行中は SeedAndroid の pause 等が使えない）・待ち行列に残った古い接続** — 2026-09-25（段階D-1・低優先）。
   ランタイムは 1 本ずつ accept するので、2 本目は挨拶が来ずに時間切れ（理由付きのエラー）になる。あきらめて閉じた 2 本目は OS の待ち行列に残り、1 本目が切れた後に
   受け付けられてすぐ切れる（黙って切れた扱いなので、一時停止中なら再開する）。複数の接続を受ける・新しい接続で古い接続を置き換える、のどちらかにするなら
@@ -1927,7 +1934,8 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   デバッグ版は端末の内部 `files/assets` を pak より先に読む上書き層にし（`asset_fs::FilesystemLayer::Overlay`）、エディタは Android の実行中に保存したシーンと
   参照するアセットのうち端末と違うものだけを run-as で送って `RELOAD_SCENE:<相対パス>` を送る（アセットは `RELOAD_ASSET:<相対パス>`、スクリプトは DLL を
   `files/bin` へ送って `RELOAD_SCRIPTS`）。ランタイムは要求をフレームの境界でまとめて適用する（シーンの読み直しは 1 回）。`run` は上書きを消す。
-  SeedAndroid に `push --assets` / `reload`。正典は docs/android.md §23。PC の TCP と実機（Pixel 6a。SeedAndroid）で確かめた（エディタの画面からは未確認）。
+  SeedAndroid に `push --assets` / `reload`。正典は docs/android.md §23。PC の TCP と実機（Pixel 6a。SeedAndroid と、エディタの段取りを WPF 抜きで動かすプローブ）で
+  確かめた（エディタの画面〈WPF〉からは未確認）。
   以下は記載時のメモ。PC の `LOAD_SCENE` と同じ命令を送れば読み直せるが、端末の APK の pak にある版を読むだけ（エディタで保存した最新の内容は届かない。
   届けるには pak の差し替えかアセットの転送が要る）。
 - [x] **実行中の差し替えを実機で確かめていない** — 2026-09-25 記載（段階D の実行中の差し替え）/ 2026-09-26 対応。Pixel 6a・`proj_probe`・SeedAndroid で、
@@ -1935,9 +1943,15 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   （応答 39 ms・端末 15.2 ms）、スクリプトの文言 v2 → v3 → `reload scripts`（11.2 秒。ほぼ SeedPak と 9.1 MB の転送。端末の読み直し 29.7 ms）で同じプロセスのまま
   `[PROBE v3]`。上書きの解除はインストールの工程（APK を入れ直した run）と起動の工程（同じ APK の run）の両方で 2 行が出て、`files/` に `assets`・`bin` が無く、
   画面は最初と同一（PNG の MD5 一致）。docs/android.md §23.10。
-- [ ] **実行中の差し替えをエディタの画面から確かめていない** — 2026-09-26（段階D の実行中の差し替え）。エディタを起動しない制約のため、
+- [x] **実行中の差し替えをエディタの画面から確かめていない** — 2026-09-26 記載（段階D の実行中の差し替え）/ 同日対応（エディタの段取りを実機で。画面〈WPF〉の
+  目視は下の「実行中の差し替えをエディタの画面（WPF）で目視していない」へ分けた）。WPF 抜きのプローブで `AndroidRunController`＋`AndroidHotReloadController`＋
+  本物の中核を動かし、Pixel 6a・`proj_probe` でモデル（保存から差し替え完了まで 1.04 秒・端末 15.5 ms）→ シーン（0.83 秒・端末 9.6 ms）→ スクリプト（5.17 秒・
+  同じプロセスのまま `[PROBE v4] OnStart`）の順に保存した。Output の行は docs/android.md §23.7 の書式どおり（§23.10）。以下は記載時のメモ。エディタを起動しない制約のため、
   Android の実行中に保存 → 0.6 秒後に Output へ「差し替え: …」「反映: …」が出て端末の画面が変わる、を画面で見ていない（WPF 非依存の段取りは
   `AndroidRunUiTests`、実機の差し替えは SeedAndroid で確認済み）。確かめる手順は docs/android.md §23.7。
+- [ ] **実行中の差し替えをエディタの画面（WPF）で目視していない** — 2026-09-26（上の項目の残り）。段取り（`AndroidRunController`・`AndroidHotReloadController`）は
+  実機で確かめたが、`MainWindow.AndroidRun.cs` の配線そのもの・Output パネルの色・端末の画面の変化をエディタの画面で見ていない（エージェントはエディタを起動しない）。
+  利用者が Android の実行中にシーン・モデル・スクリプトを保存し、Output の行（docs/android.md §23.7）と端末の画面を確かめる。
 - [ ] **実行中の差し替えの制限（画像を参照するモデル・一部のキャッシュ・削除）** — 2026-09-25（段階D の実行中の差し替え）。
   (1) モデルが外部の画像を参照している（`.gltf` の外部 `uri`・`.mtl`）とき、画像だけを差し替えてもモデルのテクスチャは変わらない（画像は `InPlace`＝スプライト等の
   キャッシュだけを捨てる。モデルを保存し直すと入る）。直すならモデルの読み込みが使った画像を記録し、画像の差し替えで依存するモデルも捨てる。
@@ -2049,11 +2063,18 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   配布用（release）のビルド（アップロード鍵で署名・debuggable でない・INTERNET なし・Rust は --release。鍵が無ければビルドしない）、`keystore create`、
   アイコンの生成、ビルドの前と後の要件チェック（`check`）、targetSdk 36（Google Play は 2026-08-31 以降 36 以上）。配布物の .so の LOAD の 16 KB 整列を
   毎回確かめる。確認結果は docs/android.md §24.11。
-- [ ] **配布用（release）を実機で動かしていない** — 2026-09-26（段階D）。確認の 20 分間、実機（Pixel 6a）が利用中で前面がランチャーにならなかった。
+- [x] **配布用（release）を実機で動かしていない** — 2026-09-26 記載（段階D）/ 同日対応。bundletool の `install-apks`（`base`・`config.arm64_v8a`・`config.ja`・
+  `config.xxhdpi`・DEBUGGABLE なし）→ 起動（`am start` の TotalTime 552 ms・最初の提示まで約 4.3 秒〈同梱 .NET の展開とパイプライン生成 3.2 秒を含む〉。ホームで
+  キャッシュを保存した後の 2 回目は 290 ms・約 1.1 秒）→ `[SEED QUALITY] preset=mobile`・fps 59.2〜59.5（開発用 58.8〜59.1。どちらも 60 Hz で頭打ち。CPU 時間は
+  1 コアあたり 69% 対 75.5〜79.4%）→ 戻るキーは targetSdk 36 でも Escape として届き、アプリは終了しない（開発用も同じ）→ アンインストール。SeedAndroid の
+  `install --variant release` でも入って動いた。docs/android.md §24.11。targetSdk 36 の開発用 APK の回転・安全領域・音声フォーカスは下の新しい項目へ分けた。
+  以下は記載時のメモ。確認の 20 分間、実機（Pixel 6a）が利用中で前面がランチャーにならなかった。
   AAB → bundletool の `build-apks`（済み）→ `install-apks` → 起動（`com.seedengine.release_probe`）→ logcat の `[SEED HEARTBEAT]` の fps と
   CLR の起動・スクリプトの読み込みの所要時間を開発用（debug の .so）と比べる → 戻るキー（`input keyevent KEYCODE_BACK`。targetSdk 36 でも
   アプリが前面のまま＝KEYCODE_BACK がネイティブへ届く）→ アンインストール、を行う。SeedAndroid の `install --variant release` の経路も同じ機会に。
   targetSdk 36 にした開発用の APK（戻るキー・回転・安全領域・音声フォーカス）も実機で一通り確かめ直す。
+- [ ] **targetSdk 36 の開発用 APK で回転・安全領域・音声フォーカスを実機で確かめ直していない** — 2026-09-26（上の項目の残り）。戻るキーは確かめた
+  （Escape として届き、アプリは終了しない）。回転・安全領域（docs/android.md §15）と音声フォーカス（§16）は targetSdk 36 に上げる前の確認のまま。
 - [ ] **NativeAOT で配布用のスクリプトを動かす（評価済み・未実装）** — 2026-09-26（段階D の評価。docs/android.md §24.12）。ILC で `linux-bionic-arm64` の
   .so へ変換できることと、Android の入口だけを根にすれば 2.5 MB（今の同梱 .NET は APK の約 31 MB）になることを確かめた。必要な変更: ユーザースクリプトを
   同じ .so へ組み込み登録する入口（`AssemblyLoadContext.LoadFromStream` は使えない）・Roslyn の分離・公開シンボルと Rust の `dlopen` の経路・
@@ -2082,6 +2103,13 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   ビルドの種類で欄が出入りすること。エージェントはエディタを起動しないため、利用者が目で確かめる（判断は単体テスト `AndroidRunUiTests`）。
 - [ ] **versionCode の記録は PC ごと（`cache/android/release_history.json`）** — 2026-09-26（低優先）。別の PC・別の人のビルドは知らない。
   本当の正は Play Console の最後の versionCode（Play Developer API で読めるが、認証が要る）。
+- [ ] **NativeBuildStep の修正（cargo ndk の前に jniLibs の .so を消す）に単体テストが無い** — 2026-09-26（実機確認で見つけた不具合の修正）。cargo-ndk が
+  コピーを飛ばして別のプロファイルの .so が APK に入る不具合（docs/android.md §10）を `Steps/NativeBuildStep.cs` で直し、実際のビルドで両方向（配布用の後の
+  開発用 `run --rebuild` → debug の .so、debug の成果物を新しくした後の配布用 `build` → release の .so）を確かめたが、単体テストは足していない。
+  `AndroidPipelineTests` に、一時フォルダと偽の cargo で「前の .so を消してから呼ぶ」「消せないときは理由付きのビルドの失敗」を足す。
+- [ ] **`--skip-rust` は jniLibs の .so のプロファイル違いを警告しない（低優先）** — 2026-09-26。`--skip-rust` は jniLibs の .so をそのまま使うので、配布用の
+  ビルドに debug の .so が入っても（逆も）気づかない。案: .so の工程の記録（`step_stamps.json`）に作ったプロファイルを残し、`--skip-rust` のときに今回と違えば
+  警告する（配布用なら止める）。
 
 ## .NET 10 への統一（2026-09-24 段階B-0 実装時の残件）
 

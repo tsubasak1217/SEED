@@ -693,6 +693,11 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
   切り替えた後はシステムバーの高さが古いまま残ることがあり、`wm density <別の値>` → `wm density reset` で読み直される（§15.4）。
 - bash（Git Bash）から adb に `/sdcard/...` を渡すとパス変換で壊れる。`MSYS_NO_PATHCONV=1` を付けるか pwsh を使う。
 - 同じ NDK でもパスの表記（`/` と `\`）が違うと cc 系の依存（oboe-sys 等）が再ビルドされる。スクリプト経由に揃えるとよい。
+- **cargo-ndk（4.1.2 で確認）は、コピー先（`jniLibs/<ABI>/libSEED.so`）の更新時刻がビルドの成果物と同じか新しいとコピーを飛ばす**（`is_fresh`。
+  Windows のコピーは元の更新時刻を引き継ぐ）。Rust に変更が無いまま配布用（release）と開発用（debug）を切り替えると、cargo ndk は成功しても
+  別のプロファイルの .so が jniLibs に残り、そのまま APK に入る（2026-09-26 に実機で確認: 配布用のビルドの後の開発用の `run` で、開発用の APK に
+  release の .so が入った。逆向きでは配布用の APK / AAB に debug の .so が入りうる）。SeedAndroid は cargo ndk の前に、作る ABI の jniLibs の .so を
+  消す（`Steps/NativeBuildStep.cs`）。`--skip-rust` は jniLibs の .so をそのまま使うので、プロファイルの違いに気づかない（backlog）。
 - **Mali-G78（Pixel 6a）は Vulkan の `multiDrawIndirect` を持たない**。wgpu の `MULTI_DRAW_INDIRECT` を無条件に要求すると
   `request_device` が `UnsupportedFeature` で失敗する。エンジンで間接描画を使うのはメッシュレットカリングの
   `multi_draw_indexed_indirect_count`（wgpu 25 では `MULTI_DRAW_INDIRECT_COUNT` だけを要求）だけなので、
@@ -2577,6 +2582,7 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 - ~~一時停止中の画面がエディタの見た目になる~~ → 段階D-1 の追加でゲームの画面のままにした（§21.4）。時間で動くシェーダは一時停止中も動く（PC と同じ）。
 - **ステップ実行は無い**（PC にも無い。§21.7）。
 - **エディタの AI ツールから Android の実行は撮れない・操作できない**（撮影は SeedAndroid の `screenshot` だけ）。
+- **撮影（`SCREENSHOT`）のたびにメインループが止まる**（開発用の debug の .so で 1 回あたり約 0.5 秒〈0.46〜0.59 秒・5 回〉、最適化した .so では 0.14〜0.31 秒。その間の fps は下がる。2026-09-26 の実機確認・backlog）。
 - **1 本だけ受け付ける**（エディタの実行中は SeedAndroid の `pause` 等が使えない。あきらめた接続は待ち行列に残り、後で受け付けられてすぐ切れる＝一時停止中なら再開）。
 - ~~端末の他のアプリからも命令を送れる~~ → 段階D-1 の追加で接続トークンを照合するようにした（§21.11）。ただし他のアプリが先につなぐと、ランタイムは
   HELLO の時間切れ（5 秒）までその接続を持つので、その間はエディタがつなげない（1 本だけのため。つながるまでやり直す上限は 20 秒）。
@@ -2613,7 +2619,7 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 | 実機: run | .so・pak・Gradle・インストールをやり直し（174 秒）。表示 `am start … --es seed.ipc_port '52735' --es seed.ipc_token '***'` → logcat `起動オプションを受け取りました: {"ipc_port":"52735","ipc_token":"***"}` → `127.0.0.1:52735 で待ち受けます（…接続トークンを照合して受け付けます）`。run_state.json に 32 文字のトークンを記録。SeedAndroid の出力・logcat にトークンの値 0 件 |
 | 実機: 照合（自分で張った adb forward から素の TCP） | 違うトークン → `IPC_DENIED:token`（0.06 秒で閉じられる）・HELLO の代わりに `PAUSE` → `IPC_DENIED:hello`・何も送らない → 5.05 秒で `IPC_DENIED:hello`。logcat に `接続を断りました（…理由 token）` 1 行・`理由 hello` 2 行。forward は外した |
 | 実機: SeedAndroid の pause / resume（run_state.json のトークン） | どちらも `つながりました`（`READY:0`）→ 終了コード 0。logcat に `エディタとつながりました` 2 回。各コマンドの後の `adb forward --list` は空 |
-| 実機: 一時停止中の画面・一時停止の効き目 | **未確認**。端末の画面が消えてロック中（`screenState=SCREEN_STATE_OFF`・前面はロック画面）で、アプリは描画できなかった（`presented_frames total=0`・サーフェスは 10 秒で手放した）。メインループが回らないので `PAUSE` / `RESUME` は積まれたまま処理されず、撮影もできない。画面の点灯・ロックの解除は私物の端末の操作になるので行っていない。PC の TCP の通信路（上）で確かめた |
+| 実機: 一時停止中の画面・一時停止の効き目 | 段階D-1 の時点では未確認（端末の画面が消えてロック中で、描画が止まっていた）→ **2026-09-26 に確認**。Pixel 6a・`proj_probe`・開発用の APK（debug の .so・targetSdk 36）を `run` で起動し、SeedAndroid で `screenshot`（実行中）→ `pause` → `screenshot` ×2（6 秒あけて）→ `resume` → `screenshot`（再開後）。**4 枚とも画素一致**（8 階調を超える差 0 画素・PNG の MD5 も同じ）＝一時停止中もゲームのカメラのまま・グリッド無し。スクリプトの毎秒のログは一時停止の直前が `t=36.1s`、15 秒止めて再開した直後が `t=37.1s`（止めている間は出ず、ゲームの時間も進まない）。一時停止中も描画は続く（`[SEED HEARTBEAT]` が増え続ける）。終わった後の `adb forward --list` は空 |
 
 - 最後の状態: `com.seedengine.runtime`（段階D-1 の追加の APK）を入れて止めた（`pidof` 空）。adb forward は残していない。Gradle のデーモンは止めた。エミュレータは起動していない。
 
@@ -2788,7 +2794,7 @@ adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|
   目立つため、`mobile` を 0.75、`mobile_high` を 1.0 にした（`runtime/config/render_presets.json`。`mobile_low` は 0.5 のまま）。
 - 描画スケールを下げても約 4.5 ms の固定分が残る（§22.8）。
 - 座標: タップの位置・`SafeArea` とも `desktop` と `mobile` で一致した（§22.5 の「描画スケールで変わらない」）。
-- 未計測: 横向き、動くシーン（このシーンは静止しているので影の深度パスは静的スキップで省略されている）、release の .so。
+- 未計測: 横向き、動くシーン（このシーンは静止しているので影の深度パスは静的スキップで省略されている）。release の .so は 2026-09-26 に `proj_probe` で測った（§22.8・§24.11）。
 - 実行中の差し替え（§23）の実機確認でも、`proj_probe`（BrainStem 1 体・平行光）で `[SEED QUALITY] preset=mobile render_scale=0.75 …`・約 59 fps だった。
 
 ### 22.8 制限・持ち越し（詳細は [backlog.md](backlog.md) の「Android」節）
@@ -2798,7 +2804,10 @@ adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|
   シャドウのサンプリングのどれが効いているか。シェーディングアセット（L3）や SSGI を使うゲームが `deferred: true` へ戻すと効いてくる）。
 - **固定分 約 4.5 ms の削減**（クラスタ構築 約 1 ms・トーンマップ 約 1.9 ms・UI・提示のコピー。描画スケールに関係なく画面の解像度で走る）。
   トーンマップ後の LDR 中間（Rgba16Float）と提示のコピーは論理サイズ（フル解像度）のまま（UI が無いときにトーンマップと提示をまとめる余地）。
-- **横向き・動くシーン・影ありの計測**（`proj_bench` は静止しているので影の深度パスは省略されていた）と release の .so での計測。
+- **横向き・動くシーン・影ありの計測**（`proj_bench` は静止しているので影の深度パスは省略されていた）。
+  ~~release の .so での計測~~ → 2026-09-26 に `proj_probe`（BrainStem 1 体・平行光）で測った（§24.11）: fps は release 59.2〜59.5・debug 58.8〜59.1 で、
+  どちらも 60 Hz の垂直同期で頭打ち。差は CPU に出る（1 コアあたりの CPU 時間は release 約 69%・debug 75.5〜79.4%、メインスレッドの 1 フレームの処理は
+  release 3.0〜3.5 ms・debug 5.1 ms）。重いシーン（`proj_bench`）の release の .so は未計測。
 - 重いシーンで 60 fps を割るなら `mobile` の描画スケールを 0.6 へ（0.75 との差は GPU 約 1.3 ms）。
 - テクスチャの最大解像度・クラスタの分割数・Hi-Z・カスケード数（3 固定）のつまみは入れていない（計測で必要と分かったら足す）。
 - 背景ゾーンのキャンバスと 3D 空間のキャンバスは描画解像度で描かれる（前面の UI だけが論理サイズ）。
@@ -3010,6 +3019,7 @@ dotnet run --project editor/tests/AndroidRunUiTests
 | 実機・シーン | 太陽の色を青に変えて保存 → `push --assets`（0.9 秒・1 ファイル）→ `reload scene`（応答 39 ms・端末 15.2 ms）→ 光が青くなった |
 | 実機・スクリプト | 文言 v2 → v3 → `reload scripts`（全体 11.2 秒＝SeedPak `--scripts-only` と 5 ファイル 9.1 MB の転送 10.5 秒・応答 54 ms）。同じプロセスのまま logcat に `[SEED] スクリプトを読み直しました: 1 型・再生成 1 件（…/files/bin/SEEDUserScripts.dll・14 KiB・29.7 ms）` と `[PROBE v3] OnStart` |
 | 実機・上書きの解除 | 手元を元に戻して `run` → pak・Gradle をやり直し（63.7 秒）、**インストールの工程**で DLL とアセットの解除の 2 行 → `run-as … ls files` に `assets`・`bin` が無い・スクリプトの置き場は `apk:seed/bin/`・`[PROBE v2]`・画面は最初のスクリーンショットと同一（PNG の MD5 一致）。続けて上書きを作り直し（`push --assets`・`reload scripts`）、同じ APK のまま `run`（13.6 秒）→ インストールは飛ばし、**起動の工程**で同じ 2 行 → 同じく元どおり（MD5 一致） |
+| 実機・エディタの段取り（2026-09-26） | 作業の一時フォルダの WPF 抜きのプローブで `AndroidRunController`＋`AndroidHotReloadController`＋本物の中核を動かし（組み方は `MainWindow.AndroidRun.cs` に合わせたもの。配線そのものは画面で確かめていない）、Pixel 6a・`proj_probe` でモデル → シーン → スクリプトの順に保存した。実行の開始から 15.8 秒（.so の写し直し・pak・Gradle・インストールを含む。起動の完了から 0.2 秒）でつながり監視を開始。**モデル**（`BrainStem.glb` を `camera.glb` で上書き・2 回続けて保存 → 1 組）: 保存から差し替え完了まで **1.04 秒**（中核 0.21 秒・送ったのは 1 ファイル・端末でキャッシュ 2 件を捨ててシーンを読み直し **15.5 ms**）。**シーン**（光を青に）: **0.83 秒**（中核 0.18 秒・1 ファイル・端末 **9.6 ms**）。**スクリプト**（v2 → v4）: **5.17 秒**（中核 4.48 秒＝SeedPak `--scripts-only` 1.5 秒と 5 ファイル 9.1 MB の転送・端末の読み直し 23.4 ms）で、同じプロセスのまま `[PROBE v4] OnStart`。Output の行（`差し替え: 1 件の変更（…）を端末へ送ります` → `アセット: … を送りました` / `スクリプト: DLL を作り直して送りました` → `反映: …` → `差し替え完了（…秒）`）は §23.7 の書式どおり。撮影でモデルの差し替えと光の色の変化を確かめた。停止で `Idle` |
 | エディタの画面からの操作 | 未確認（エディタを起動しない制約。WPF 非依存の段取りは単体テストで、実行時の配線は `MainWindow.AndroidRun.cs` の読み合わせのみ） |
 
 ### 23.11 制限・持ち越し（[backlog.md](backlog.md) の「Android」節）
@@ -3027,7 +3037,7 @@ dotnet run --project editor/tests/AndroidRunUiTests
 - アプリが背面にあると、端末のフレームが回らないので命令は前面へ戻るまで処理されない（エディタは 60 秒で「応答なし」）。
 - シーンの読み直しはゲームの状態をシーンの開始時へ戻す（スクリプトの変数・位置。PC の Play の自動再読み込みと同じ）。
   スクリプトの差し替えは全インスタンスの作り直し（`OnStart` の再実行）。
-- エディタの画面からの確認（Android の実行中に保存 → Output の行）は未実施（§23.10。実機の差し替えは SeedAndroid で確かめた）。
+- エディタの画面（WPF）からの確認（Android の実行中に保存 → Output の行）は未実施（§23.10。実機の差し替えは SeedAndroid と、エディタの段取りを WPF 抜きで動かすプローブで確かめた）。
 
 ---
 
@@ -3243,7 +3253,25 @@ adb -s <シリアル> shell am start -n <アプリ ID>/com.seedengine.runtime.Ma
 | 単体テスト | `AndroidPipelineTests` 137 件（新規 33: 署名 11・要件 13・アイコン 9）・`AndroidRunUiTests` 79 件（新規 5・道具の一覧の並びを更新）・`ProjectSystemTests` 63 件（新規 2）・`PackagingCollectorTests` 48 件。すべて成功 |
 | ビルド | エディタ（別の出力先）エラー 0・新しいファイルの警告 0。SeedAndroid・`cargo build`（Windows。Rust は変更なし）成功 |
 | アイコン | 生成した前景（xxxhdpi 432 画素）を背景色に重ね、円形の切り抜き（72dp の見える範囲）でも欠けないこと・従来型（192 画素）を画像で確かめた。APK の `aapt2 dump resources` に `mipmap/ic_launcher`（5 密度＋アダプティブ）・`mipmap/ic_launcher_foreground`・`color/ic_launcher_background #ff1b2a3a` |
-| **実機（Pixel 6a）** | **未実施**。確認の 20 分間ずっと端末が利用中（前面が別のアプリ）で、前面がランチャーにならなかったため（私物の端末なので割り込まない）。bundletool の `install-apks` → 起動 → fps・起動の所要時間 → 戻るキー（targetSdk 36）→ 開発用との比較 → アンインストール、の手順を用意した（作業の一時フォルダの `device_release_test.sh`。backlog） |
+| **実機（Pixel 6a）** | 2026-09-26 に確認（下の表）。bundletool 1.18.3 の `install-apks` で分けた APK（`base`・`config.arm64_v8a`・`config.ja`・`config.xxhdpi`）が入り、`pkgFlags` に DEBUGGABLE なし・versionCode 2 / 1.0.2・targetSdk 36。起動して `[SEED QUALITY] preset=mobile render_scale=0.75 …`・スクリプト（`[PROBE v2] OnStart`）も動いた。**戻るキー**（`input keyevent KEYCODE_BACK`）は targetSdk 36 でも Escape として届き（`[SEED KEY FRAME] f=1652 Escape:down`・`f=1653 Escape:up`）、アプリは終了しない（3 秒後・8 秒後とも前面と pid が同じ。開発用〈targetSdk 36〉でも同じ）。ホームで背面へ回すとパイプラインキャッシュを保存（618 KiB）。SeedAndroid の `install --variant release`（28.4 秒・要件の不合格 0）でも入って起動した。確かめた後にアンインストールした |
+
+**実機の起動と fps（2026-09-26）** Pixel 6a・`proj_release`（`proj_probe` の写し。BrainStem 1 体・平行光・確認用スクリプト）。どれも前面がランチャーの状態から
+`am start -W` で起動し、起動の直前の端末の時刻と自分のプロセスの logcat の時刻の差で測った（1 回ずつ）。「最初の提示」は最初の `[SEED HEARTBEAT]` の累計から
+逆算した上限。開発用は同じ手順（起動オプションなし）の、debug の .so の APK（`proj_probe`）。
+
+| | 配布用・インストール直後 | 配布用・2 回目 | 開発用（debug の .so） |
+|---|---|---|---|
+| `am start -W` の TotalTime | 552 ms | 290 ms | 506 ms |
+| パイプライン生成 | 3225 ms（キャッシュなし。同梱 .NET の展開もあり） | 447 ms | 557 ms |
+| 最初のフレームの更新（スクリプトの `OnStart`） | +3.91 秒 | +0.89 秒 | +1.36 秒 |
+| 最初の提示（遅くとも） | +4.32 秒 | +1.11 秒 | +1.59 秒 |
+| fps（`[SEED HEARTBEAT]`。起動直後の 2 回を除く平均） | 59.5 | 59.2 | 58.8（`run` での実行中は 59.1） |
+| CPU 時間（1 コアあたり・10 秒） | 68.9% | 69.0% | 79.4%（`run` での実行中は 75.5%） |
+| メインスレッドの 1 フレームの処理（`[PERF]` の total − bf − finish の平均） | 3.0 ms | 3.5 ms | 5.1 ms |
+
+- fps はどれも 60 Hz の垂直同期で頭打ち（このシーンは軽い）なので差は出ない。release の .so の効き目は CPU 時間とフレームの処理の短さに出る。
+- 配布用のインストール直後の起動が遅いのは、同梱 .NET の展開（BCL 65.2 MiB）とパイプラインの生成（キャッシュなし）のため。ホームで背面へ回して
+  キャッシュを保存した後の 2 回目は、開発用より速かった。
 
 ### 24.12 NativeAOT の評価（実装はしない。2026-09-26）
 
