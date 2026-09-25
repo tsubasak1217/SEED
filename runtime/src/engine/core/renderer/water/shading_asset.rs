@@ -718,6 +718,20 @@ impl WaterShadingAssetCache {
         self.built.borrow_mut().clear();
         self.paths.borrow_mut().clear();
     }
+
+    /// パスが条件に合う水面シェーダの追跡状態を捨てる（実行中の差し替え。§23。L3-a の同名メソッドと同じ扱い）。
+    ///
+    /// # 引数
+    /// * `refers` - アセットのパスが差し替え対象を指すか
+    ///
+    /// # 戻り値
+    /// 捨てた件数。
+    pub fn forget_matching(&self, refers: &dyn Fn(&str) -> bool) -> usize {
+        let mut paths = self.paths.borrow_mut();
+        let before = paths.len();
+        paths.retain(|path, _| !refers(path));
+        before - paths.len()
+    }
 }
 
 // ============================================================

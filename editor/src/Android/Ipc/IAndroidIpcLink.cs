@@ -7,6 +7,7 @@
 //  WPF に依存しない（SeedAndroid・単体テストからリンクされる）。
 // ============================================================
 
+using System;
 using System.Threading.Tasks;
 
 namespace SEEDEditor.Android.Ipc;
@@ -14,6 +15,11 @@ namespace SEEDEditor.Android.Ipc;
 /// <summary>端末のアプリとつながった IPC の通信路。</summary>
 public interface IAndroidIpcLink
 {
+    /// <summary>
+    /// 端末のアプリから 1 行届いた（受信のスレッドから。実行中の差し替えの応答 RELOAD_DONE: 等を待つのに使う。§23）。
+    /// </summary>
+    event Action<string>? MessageReceived;
+
     /// <summary>
     /// 1 行の命令を送る（RuntimeIpcCommands.Pause 等）。
     /// </summary>

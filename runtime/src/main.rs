@@ -192,5 +192,7 @@ fn parse_args() -> LaunchArgs {
         embedded_clr: None,
         render_quality,
         gpu_timing,
+        // 上書き層（pak より先にアセットルートを読む）は Android のデバッグ版の差し替え専用。PC は従来の読む順のまま（§23）。
+        asset_overlay: false,
     }
 }

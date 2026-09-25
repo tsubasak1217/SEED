@@ -183,15 +183,29 @@ public static class ScriptAssemblyManager
     /// </summary>
     /// <param name="bytes">SEEDUserScripts.dll の中身。</param>
     /// <param name="sourceName">ログ用の出どころ（パスや apk:seed/bin/… 。末尾のファイル名だけをログに出す）。</param>
-    /// <returns>解決可能になったスクリプト型の数。失敗時は -1。</returns>
+    /// <returns>解決可能になったスクリプト型の数。失敗時は -1（旧アセンブリは維持する）。</returns>
+    /// <remarks>
+    /// 新しいアセンブリを別のロードコンテキストへ読めてから旧アセンブリをアンロードする（<see cref="CompileAndLoad"/> と同じく、
+    /// 失敗したときは旧アセンブリのまま）。Android の実行中の差し替え（RELOAD_SCRIPTS で files/bin/ の DLL を読み直す。
+    /// docs/android.md §23）で、壊れた DLL を送ってもゲームのスクリプトが丸ごと消えないようにするため。
+    /// 起動時の 1 回目（旧アセンブリが無い）の振る舞いは従来と同じ。
+    /// </remarks>
     public static int LoadPrecompiledBytes(byte[] bytes, string sourceName)
     {
+        AssemblyLoadContext? loadedContext = null;
         try
         {
-            Unload();
-            _context = CreateLoadContext();
+            // ── 新しいアセンブリを別のロードコンテキストへ読む（読めなければ旧アセンブリには触れない）──
+            loadedContext = CreateLoadContext();
+            Assembly loadedAssembly;
             using (var ms = new MemoryStream(bytes, writable: false))
-                _assembly = _context.LoadFromStream(ms);
+                loadedAssembly = loadedContext.LoadFromStream(ms);
+
+            // ── 読めたので旧アセンブリをアンロードして入れ替える ──
+            Unload();
+            _context  = loadedContext;
+            _assembly = loadedAssembly;
+            loadedContext = null;
 
             var typeCount = RegisterPrecompiledTypes(_assembly, sourceName);
             Console.WriteLine($"{LogPrefix}loaded {typeCount} precompiled script type(s) from {Path.GetFileName(sourceName)}");
@@ -199,6 +213,8 @@ public static class ScriptAssemblyManager
         }
         catch (Exception ex)
         {
+            // 入れ替える前に失敗した: 読みかけのコンテキストだけを捨てる（旧アセンブリ・解決テーブルはそのまま）
+            loadedContext?.Unload();
             Console.Error.WriteLine($"{LogPrefix}LoadPrecompiled failed: {ex}");
             return CompileFailureCode;
         }

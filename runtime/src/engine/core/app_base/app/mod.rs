@@ -637,6 +637,13 @@ pub struct LaunchArgs {
     ///
     /// PC は --gpu-timing か環境変数 SEED_GPU_TIMING=1、Android は起動オプション seed.gpu_timing=1。
     pub gpu_timing: bool,
+    /// アセットルート（ファイルシステム）を「上書き層」として pak より先に読むか（実行中の差し替え。docs/android.md §23）。
+    ///
+    /// Android の糊（runtime/android/native の launch.rs）が「デバッグ版の APK のパッケージ実行」のときだけ true にする
+    /// （開発中に run-as で内部フォルダ files/assets へ送ったアセットを APK 内の pak より優先させる。置いたファイルだけが
+    /// 優先され、無いものは pak から読む）。配布版・PC は常に false（従来どおり pak → 配布物の PAK 外 → ファイルシステムの順。
+    /// engine::asset_fs::FilesystemLayer）。
+    pub asset_overlay: bool,
 }
 
 // ============================================================
@@ -756,6 +763,14 @@ pub struct App {
     /// 配布物の読み口（LaunchArgs.package_source。Android の APK 内 pak のときだけ Some）。
     /// `init_asset_fs` が asset_fs へ渡す。
     package_source: Option<Arc<dyn crate::engine::package_source::PackageSource>>,
+    /// アセットルートを上書き層として pak より先に読むか（LaunchArgs.asset_overlay。`init_asset_fs` が asset_fs へ渡す。§23）。
+    asset_overlay: bool,
+    /// 実行中の差し替え（RELOAD_SCENE / RELOAD_ASSET）の、このフレームに届いた要求（フレームの境界でまとめて適用する。
+    /// hot_reload_ops.rs。docs/android.md §23）。
+    hot_reload_batch: crate::engine::core::app_base::hot_reload::HotReloadBatch,
+    /// 同梱 .NET（Android）で RELOAD_SCRIPTS のときにユーザースクリプトの DLL を読み直す置き場と、起動時のスクリプトホストの指紋
+    /// （LaunchArgs.embedded_clr から作る。PC は None ＝従来どおりその場で再コンパイル。script_ops.rs）。
+    script_reload_source: Option<crate::engine::core::scripting::script_reload::ScriptReloadSource>,
     /// エディタリソースディレクトリ（カメラギズモモデル等の読み込みに使用）。
     editor_resources: Option<String>,
     /// Play モードで読み込むシーンパス。None なら project_settings.json の start_scene を使う。
@@ -1555,6 +1570,10 @@ impl App {
         if let Some(host) = &scripting_host {
             Self::load_user_scripts(host, &args);
         }
+        // 同梱 .NET（Android）のスクリプトの読み直しの置き場（RELOAD_SCRIPTS。起動材料があるときだけ。script_boot.rs）
+        let script_reload_source = scripting_host
+            .as_ref()
+            .and_then(|_| Self::script_reload_source(&args));
 
         Self {
             window:         None,
@@ -1589,6 +1608,9 @@ impl App {
             last_ipc_pump_at: std::time::Instant::now(),
             assets_root:      args.assets_root,
             package_source:   args.package_source,
+            asset_overlay:    args.asset_overlay,
+            hot_reload_batch: Default::default(),
+            script_reload_source,
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,
             // 実際に読み込んだシーンのパスはロード成功時にだけ入る（起動直後は未確定）。
@@ -1911,6 +1933,8 @@ mod actor_utils;
 mod platform_utils;
 mod slot_ops;
 mod script_ops;
+/// 実行中の差し替え（RELOAD_SCENE / RELOAD_ASSET）の適用（キャッシュの破棄・シーンの読み直し・応答。docs/android.md §23）。
+mod hot_reload_ops;
 /// シェーディングアセット WGSL のインメモリ検証（エディタの未保存バッファ → 診断）。
 mod shading_validate_ops;
 /// L3 シェーディングアセットのパラメータ編集（カメラ添付・シーン添付）。

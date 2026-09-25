@@ -19,6 +19,8 @@ pub mod clr_host;
 pub mod embedded_runtime;
 // スクリプトの DLL 一式（SEEDScripting.dll・SEEDUserScripts.dll・runtimeconfig）の読み口と置き場の選び方
 pub mod script_binaries;
+// 同梱 .NET（Android）で実行中にユーザースクリプトの DLL を読み直す置き場と、スクリプトホストの照合（RELOAD_SCRIPTS。§23）
+pub mod script_reload;
 // C# → Rust のコンポーネントアクセスブリッジ
 pub mod host_api;
 // アクタ参照文字列（"./Child" / "../Sibling" / 絶対パス / 素の名前）のパス解決

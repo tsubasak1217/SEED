@@ -41,11 +41,19 @@
 //  エンジンが 127.0.0.1:<ポート> で待ち受ける（エディタ／SeedAndroid が adb forward 越しにつなぎ、最初の行でトークンを
 //  照合してから一時停止・再開を送る。engine::core::app_base::ipc_transport）。無ければ待ち受けない（従来どおり）。
 //  読めない値は警告して待ち受けない（トークンの値は logcat へ出さない）。
+//
+//  【上書き層（実行中の差し替え。docs/android.md §23）】
+//  デバッグ版の APK（起動オプションが届いた＝launch_options::was_delivered）のパッケージ実行では、内部フォルダ
+//  files/assets を pak より先に読む「上書き層」にする（LaunchArgs.asset_overlay。エディタ／SeedAndroid が run-as で送った
+//  差し替えのアセットを優先させる。置いたファイルだけが優先され、無いものは従来どおり pak から読む。起動の後に送られても効く）。
+//  配布版は従来どおり pak → APK の PAK 外 → files/assets。判断は engine::asset_fs::overlay_allowed（純粋な処理・単体テスト付き）。
+//  上書きは run（APK の内容を正とする）が起動の前に消す。
 // ============================================================
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use seed_engine::engine::asset_fs;
 use seed_engine::engine::core::app_base::{LaunchArgs, RuntimeMode};
 use seed_engine::engine::core::package_layout;
 use seed_engine::engine::package_source::{self, PackageSource};
@@ -133,7 +141,8 @@ fn launch_args_for(app: &AndroidApp, options: &LaunchOptions) -> LaunchArgs {
     let scene_path = choose_scene_logged(options, |relative| {
         assets_root.as_deref().is_some_and(|root| root.join(relative).is_file())
     });
-    play_launch_args(assets_root, None, scene_path, ipc)
+    // pak が無いので files/assets は元から唯一の層（上書き層にする意味が無い）
+    play_launch_args(assets_root, None, scene_path, ipc, false)
 }
 
 /// パッケージ実行（APK 内の pak）の起動引数を組み立てる。
@@ -175,11 +184,38 @@ fn packaged_launch_args(
         logcat::info(&format!("アセットルート（PAK に無いアセットのフォールバック先）: {}", path.display()));
     }
 
+    // 上書き層: デバッグ版で files/assets があれば pak より先に読む（差し替え。§23）。シーンの有無の確かめ方も同じ順になる
+    let asset_overlay = overlay_logged(assets_root.as_deref());
     let scene_path = choose_scene_logged(options, |relative| {
         packaged_scene_exists(&package, assets_root.as_deref(), relative)
     });
     let package: Arc<dyn PackageSource> = Arc::new(package);
-    play_launch_args(assets_root, Some(package), scene_path, ipc)
+    play_launch_args(assets_root, Some(package), scene_path, ipc, asset_overlay)
+}
+
+/// パッケージ実行で上書き層（files/assets を pak より先に読む）を使うかを決め、決めた内容を logcat へ残す。
+///
+/// # 引数
+/// * `assets_root` - 内部フォルダの assets/（上書き層の置き場。取得できなければ None＝使えない）
+///
+/// # 戻り値
+/// 使うなら true（デバッグ版の APK のときだけ。判断は engine::asset_fs::overlay_allowed）。
+fn overlay_logged(assets_root: Option<&Path>) -> bool {
+    let debug_build = launch_options::was_delivered();
+    let Some(root) = assets_root else {
+        return false;
+    };
+    let overlay = asset_fs::overlay_allowed(debug_build, true);
+    if overlay {
+        let state = if root.is_dir() { "差し替えが置かれています" } else { "まだ差し替えはありません" };
+        logcat::info(&format!(
+            "上書き層: {} に置いたアセットを pak より先に読みます（デバッグ版の差し替え・{state}。run で起動し直すと消えます。docs/android.md §23）",
+            root.display()
+        ));
+    } else {
+        logcat::info("上書き層: 使いません（配布版の APK。pak を優先します）");
+    }
+    overlay
 }
 
 /// ゲームとして起動する LaunchArgs を組み立てる（両モード共通）。
@@ -189,11 +225,13 @@ fn packaged_launch_args(
 /// * `package_source` - 配布物の読み口（パッケージ実行のときだけ Some）
 /// * `scene_path`     - 起動するシーン（仮想パス。None なら project_settings.json の start_scene）
 /// * `ipc`            - エディタとの IPC の待ち受け（127.0.0.1 だけ。ポートとトークンが揃わなければ待ち受けない）
+/// * `asset_overlay`  - アセットルートを上書き層として pak より先に読むか（実行中の差し替え。§23）
 fn play_launch_args(
     assets_root: Option<PathBuf>,
     package_source: Option<Arc<dyn PackageSource>>,
     scene_path: Option<String>,
     ipc: IpcLaunch,
+    asset_overlay: bool,
 ) -> LaunchArgs {
     LaunchArgs {
         parent_hwnd: None,
@@ -212,6 +250,7 @@ fn play_launch_args(
         // 描画品質の指定・GPU 計測は launch_args が起動オプションから入れる（起動モードとは独立）。
         render_quality: Default::default(),
         gpu_timing: false,
+        asset_overlay,
     }
 }
 

@@ -12,6 +12,8 @@
 //         … build_and_run.ps1 -ProjectDir（SeedPak --scripts）が APK に入れたもの（配布版と同じ形）
 //  「SEEDScripting.dll がある最初の置き場」を使い、SEEDUserScripts.dll と runtimeconfig も同じ置き場から読む。
 //  差し替えを消せば（rm -r files/bin）APK の中のものへ戻る。
+//  候補の並び（全部）も返す: 実行中の差し替え（RELOAD_SCRIPTS）で、起動の後に files/bin/ へ送られた DLL を選び直すため
+//  （エンジンの scripting/script_reload.rs。docs/android.md §23）。
 // ============================================================
 
 use std::path::Path;
@@ -27,6 +29,14 @@ use winit::platform::android::activity::AndroidApp;
 
 use crate::logcat;
 
+/// 選んだスクリプトの DLL の置き場と、候補の並び。
+pub struct ScriptSourceChoice {
+    /// 選んだ置き場（CLR の起動・ユーザースクリプトの読み込みに使う）。
+    pub chosen: Arc<dyn ScriptBinarySource>,
+    /// 候補の並び（優先順。実行中の差し替えで置き場を選び直すのに使う）。
+    pub candidates: Vec<Arc<dyn ScriptBinarySource>>,
+}
+
 /// スクリプトの DLL の置き場を選ぶ。
 ///
 /// # 引数
@@ -34,8 +44,8 @@ use crate::logcat;
 /// * `package` - APK の assets/seed/ の読み口（3 番目の候補）
 ///
 /// # 戻り値
-/// 選んだ置き場。どこにも SEEDScripting.dll が無ければ None（スクリプト無しで起動する）。
-pub fn choose(app: &AndroidApp, package: Arc<dyn PackageSource>) -> Option<Arc<dyn ScriptBinarySource>> {
+/// 選んだ置き場と候補の並び。どこにも SEEDScripting.dll が無ければ None（スクリプト無しで起動する）。
+pub fn choose(app: &AndroidApp, package: Arc<dyn PackageSource>) -> Option<ScriptSourceChoice> {
     let mut candidates: Vec<Arc<dyn ScriptBinarySource>> = Vec::new();
     for data_dir in [app.internal_data_path(), app.external_data_path()].into_iter().flatten() {
         let bin_dir = package_layout::bin_dir(&data_dir);
@@ -53,13 +63,13 @@ pub fn choose(app: &AndroidApp, package: Arc<dyn PackageSource>) -> Option<Arc<d
     }
     match script_binaries::choose_binaries(&candidates) {
         Some(index) => {
-            let chosen = candidates.swap_remove(index);
+            let chosen = Arc::clone(&candidates[index]);
             logcat::info(&format!(
                 "[SEED DOTNET] スクリプトの置き場: {}（{} がある最初の候補）",
                 chosen.describe(""),
                 SCRIPTING_HOST_DLL_NAME
             ));
-            Some(chosen)
+            Some(ScriptSourceChoice { chosen, candidates })
         }
         None => {
             logcat::warn(&format!(

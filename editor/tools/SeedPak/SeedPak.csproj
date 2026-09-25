@@ -55,6 +55,10 @@
     <Compile Include="..\..\src\Packaging\Pak\PakWriter.cs">
       <Link>Linked\Packaging\Pak\PakWriter.cs</Link>
     </Compile>
+    <!-- pak に入れるときの中身（パス書き換えの要否と手順。Android の実行中の差し替えと共有） -->
+    <Compile Include="..\..\src\Packaging\Pak\PakEntryContent.cs">
+      <Link>Linked\Packaging\Pak\PakEntryContent.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Packaging\Pak\AssetPakBuilder.cs">
       <Link>Linked\Packaging\Pak\AssetPakBuilder.cs</Link>
     </Compile>

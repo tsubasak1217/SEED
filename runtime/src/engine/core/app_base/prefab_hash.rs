@@ -35,8 +35,16 @@ pub const PREFAB_HASH_HEX_DIGITS: usize = 16;
 
 /// 文字列の内容ハッシュを 16 桁の 16 進数文字列で返す（FNV-1a 64bit）。
 pub fn content_hash(text: &str) -> String {
+    content_hash_bytes(text.as_bytes())
+}
+
+/// バイト列の内容ハッシュを 16 桁の 16 進数文字列で返す（FNV-1a 64bit。`content_hash` と同じ値の求め方）。
+///
+/// テキストでないもの（実行中の差し替えで、スクリプトホストの DLL が起動時と同じかを確かめる。
+/// scripting/script_reload.rs）にも使う。
+pub fn content_hash_bytes(bytes: &[u8]) -> String {
     let mut hash = FNV_OFFSET_BASIS_64;
-    for byte in text.as_bytes() {
+    for byte in bytes {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(FNV_PRIME_64);
     }

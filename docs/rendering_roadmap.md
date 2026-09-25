@@ -1595,6 +1595,11 @@ TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判
 デスクトップ向けの描画経路を、端末の性能に合わせて**データの差し替えだけで**軽くする仕組み。
 モバイル（Android）での計測・プリセットの効果は [android.md](android.md) §22 が正典。
 
+**実機の計測（段階D-3・2026-09-25。表は android.md §22.7）** Pixel 6a（Mali-G78）・縦 1080x2400・debug の .so で、`desktop` 16.4 fps（GPU 59.2 ms）→ `mobile` 59.2 fps（GPU 10.5 ms）。
+最大の要因はデファードのライティング（等倍 41.5 ms。前方描画の約 5 倍。原因は未調査）と SSGI（11 ms）で、前方描画にするだけで等倍でも 59 fps に届く。
+前方描画の上では描画スケール 0.5 と 0.75 の差が GPU 約 2 ms しかなく、0.5 はぼけが目立つので `mobile` を 0.75・`mobile_high` を 1.0 にした。
+描画スケールに関係なく画面の解像度で走る固定分（クラスタ構築・トーンマップ・UI・提示）が約 4.5 ms 残る（backlog）。
+
 ### 構成
 
 | 置き場 | 役割 |
@@ -1617,7 +1622,7 @@ TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判
 ```jsonc
 "render_quality": {
   "desktop": { "preset": "desktop" },                       // 省略時も desktop（何も下げない）
-  "android": { "preset": "mobile", "render_scale": 0.75 }   // 省略時は mobile
+  "android": { "preset": "mobile", "render_scale": 0.6 }    // 省略時は mobile（描画スケール 0.75）。重いゲームは 0.6 へ
 }
 ```
 

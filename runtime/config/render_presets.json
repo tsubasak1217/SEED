@@ -11,9 +11,9 @@
     {
       "name": "mobile",
       "label": "モバイル（軽量）",
-      "description": "スマートフォン向け（Android の既定）。ゲーム画面を画面の 0.5 倍の解像度で描いて拡大し（UI は画面の解像度のまま）、G-Buffer を使わない前方描画にして、画面全体の重い後処理（SSGI・AO・反射・ブルーム）と水面の反射・コースティクスを止め、影を軽くする。",
+      "description": "スマートフォン向け（Android の既定）。ゲーム画面を画面の 0.75 倍の解像度で描いて拡大し（UI は画面の解像度のまま）、G-Buffer を使わない前方描画にして、画面全体の重い後処理（SSGI・AO・反射・ブルーム）と水面の反射・コースティクスを止め、影を軽くする。Pixel 6a（Mali-G78）の実測で 59 fps（GPU 約 10.5 ms / フレーム。0.5 倍にしても約 2 ms しか減らず見た目の劣化が大きいため 0.75）。重いシーンで 60 fps を割るなら 0.6 へ。",
       "knobs": {
-        "render_scale": 0.5,
+        "render_scale": 0.75,
         "deferred": false,
         "gi": "flat",
         "ao": "off",
@@ -31,9 +31,9 @@
     {
       "name": "mobile_high",
       "label": "モバイル（高画質）",
-      "description": "性能に余裕のある端末向け。モバイルより描画解像度を上げ（0.75 倍）、影を 2048 に戻す。重い後処理は止めたまま。",
+      "description": "性能に余裕のある端末向け。描画解像度を等倍に戻し、影を 2048 に戻す。重い後処理は止めたまま（Pixel 6a の実測で等倍の前方描画は 59 fps・GPU 約 12.3 ms）。",
       "knobs": {
-        "render_scale": 0.75,
+        "render_scale": 1.0,
         "deferred": false,
         "gi": "flat",
         "ao": "off",

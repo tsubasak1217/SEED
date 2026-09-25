@@ -566,6 +566,23 @@ impl AudioManager {
         self.component_voices.retain(|_, v| !v.empty());
     }
 
+    /// パスが条件に合う音声のキャッシュ（生バイト列・デコード済み PCM）を捨てる（実行中の差し替え。§23）。
+    ///
+    /// 次に鳴らすときにディスク（Android は上書き層 → pak）から読み直す。いま鳴っている音は鳴り終わるまで古いまま。
+    /// デコード中のもの（初回デコードのスレッド）は止めない（取り込まれた古い PCM は次の差し替えまで残り得る。§23 の制限）。
+    ///
+    /// # 引数
+    /// * `refers` - 音声のパスが差し替え対象を指すか
+    ///
+    /// # 戻り値
+    /// 捨てた件数（生バイト列と PCM の合計）。
+    pub fn forget_matching(&mut self, refers: &dyn Fn(&str) -> bool) -> usize {
+        let before = self.cache.len() + self.pcm_cache.len();
+        self.cache.retain(|path, _| !refers(path));
+        self.pcm_cache.retain(|path, _| !refers(path));
+        before - (self.cache.len() + self.pcm_cache.len())
+    }
+
     // ─── コンポーネント音源（AudioComponent）────────────────────
 
     /// コンポーネント音源を再生する（既に同スロットで再生中なら停止して置き換える）。

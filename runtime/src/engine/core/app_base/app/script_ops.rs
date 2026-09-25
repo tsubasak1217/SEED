@@ -5,6 +5,8 @@
 //  - handle_set_script_field : [SerializeField] フィールド値の設定
 //  - handle_reload_scripts   : ユーザースクリプトの再コンパイルと全再生成
 //                              （ホットリロード。スクリプトの実行状態は失われる）
+//                              同梱 .NET（Android）は再コンパイルの代わりに、files/bin/ 等の事前コンパイル DLL を
+//                              読み直す（scripting/script_reload.rs。実行中の差し替え §23）
 // ============================================================
 
 use std::collections::BTreeMap;
@@ -14,6 +16,19 @@ use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 
 use super::{App, find_actor_by_dfs};
+
+/// スクリプトの読み直しの応答の接頭辞（SCRIPTS_RELOADED:{型数},{再生成数} / SCRIPTS_RELOADED:-1,{理由}）。
+/// エディタの RuntimeManager（PC）と Android の差し替え（editor/src/Ipc/RuntimeIpcCommands.cs）が読む。
+const SCRIPTS_RELOADED_PREFIX: &str = "SCRIPTS_RELOADED:";
+
+/// 読み直せなかったときに型数の欄へ入れる値（負値＝失敗。C# のコンパイル失敗の -1 と同じ）。
+const RELOAD_FAILED_COUNT: i32 = -1;
+
+/// バイト → KiB（ログ用）。
+const BYTES_PER_KIB: usize = 1024;
+
+/// 秒 → ミリ秒（ログ用）。
+const MILLIS_PER_SECOND: f64 = 1000.0;
 
 /// リロード時に収集するスクリプトスロット 1 件分の情報。
 struct ScriptSlotInfo {
@@ -68,13 +83,31 @@ impl App {
     /// ユーザースクリプトを再コンパイルし、シーン内の全スクリプトを再生成する。
     ///
     /// 【手順】
+    /// 0. （同梱 .NET のときだけ）読み直す DLL を先に読む。読めない・スクリプトホストが起動時と違うときは、
+    ///    今のスクリプトに触れずに `SCRIPTS_RELOADED:-1,<理由>` を返す（ゲームは今のスクリプトのまま続く）
     /// 1. 全スクリプトスロット（Script / Placeholder）のパスとフィールド値を収集
     /// 2. 旧 ScriptComponent を World から除去（Drop で CLR インスタンス破棄）
-    /// 3. CLR 側で再コンパイル（collectible ALC により旧アセンブリはアンロード）
+    /// 3. CLR 側で再コンパイル（PC）か、0 で読んだ DLL のロード（同梱 .NET）。collectible ALC により旧アセンブリはアンロード
     /// 4. 新アセンブリでインスタンスを再生成し、フィールド値を復元
     ///
     /// スクリプトのプライベート状態（実行中の変数など）は失われる。
     pub(super) fn handle_reload_scripts(&mut self) {
+        let started = std::time::Instant::now();
+        // 0. 同梱 .NET（Android）: 読み直す DLL を先に読む。読めない・スクリプトホストが起動時と違うなら、
+        //    今のスクリプト（インスタンス・カーソルロック等）に一切触れずに理由を返す（ゲームは今のまま続く）。
+        let prepared = match &self.script_reload_source {
+            Some(source) => match source.read_user_scripts() {
+                Ok(scripts) => Some(scripts),
+                Err(reason) => {
+                    eprintln!("[SEED] スクリプトを読み直せません（今のスクリプトのまま続けます）: {reason}");
+                    if let Some(ipc) = &self.ipc {
+                        ipc.send(&format!("{SCRIPTS_RELOADED_PREFIX}{RELOAD_FAILED_COUNT},{reason}"));
+                    }
+                    return;
+                }
+            },
+            None => None,
+        };
         // 再コンパイルでスクリプトインスタンスが作り直されるため、
         // 旧インスタンスが張ったカーソルロックはここで解除する（解除者がいなくなるため）。
         self.release_script_cursor_lock();
@@ -94,6 +127,12 @@ impl App {
             return;
         };
         let Some(scene) = self.scene.as_mut() else {
+            // 同梱 .NET（実行中の差し替え）では応答を待つ相手がいるので理由を返す（PC は従来どおり黙って戻る）
+            if prepared.is_some() {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("{SCRIPTS_RELOADED_PREFIX}{RELOAD_FAILED_COUNT},読み込み中のシーンがありません"));
+                }
+            }
             return;
         };
 
@@ -141,8 +180,11 @@ impl App {
             scene.world.remove::<PlaceholderScriptSlot>(info.entity);
         }
 
-        // 3. 再コンパイル
-        let count = host.compile_scripts(&assets_root);
+        // 3. 再コンパイル（PC）か、0 で読んだ事前コンパイル DLL のロード（同梱 .NET）
+        let count = match &prepared {
+            Some(scripts) => host.load_precompiled_scripts_from_bytes(&scripts.assembly, &scripts.location),
+            None => host.compile_scripts(&assets_root),
+        };
 
         // 4. 再生成（失敗したスロットは Placeholder として保持する）
         let mut restored = 0usize;
@@ -203,7 +245,16 @@ impl App {
         // スクリプト型キャッシュ（[SerializeField] 定義の抽出結果）を破棄するため、
         // 後続の ACTOR_COMPONENTS は必ず**新しい定義**で UI を組み直せる。
         if let Some(ipc) = &self.ipc {
-            ipc.send(&format!("SCRIPTS_RELOADED:{count},{restored}"));
+            ipc.send(&format!("{SCRIPTS_RELOADED_PREFIX}{count},{restored}"));
+        }
+        // 同梱 .NET（実行中の差し替え）: どこから読み、何件を作り直したかを残す（logcat。PC は従来どおり C# 側の 1 行だけ）
+        if let Some(scripts) = &prepared {
+            eprintln!(
+                "[SEED] スクリプトを読み直しました: {count} 型・再生成 {restored} 件（{}・{} KiB・{:.1} ms）",
+                scripts.location,
+                scripts.assembly.len() / BYTES_PER_KIB,
+                started.elapsed().as_secs_f64() * MILLIS_PER_SECOND
+            );
         }
 
         // 再コンパイルに成功したときだけ、選択中アクタの ACTOR_COMPONENTS を送り直し、

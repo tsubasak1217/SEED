@@ -115,19 +115,17 @@ public static class PakWriter
         for (int i = 0; i < assets.Count; i++)
         {
             var asset = assets[i];
-            var ext   = AssetPathUtil.GetExtensionLower(asset.RelPath);
 
-            if (!PackagingRules.PathRewriteExtensions.Contains(ext))
+            // 書き換えの要否と手順は PakEntryContent が正典（Android の差し替えで送る中身もこれと同じにするため）
+            if (!PakEntryContent.NeedsRewrite(asset.RelPath))
             {
                 sizes[i] = asset.SizeBytes;
                 continue;
             }
 
-            var abs = AssetPathUtil.ToAbsolute(assetsRoot, asset.RelPath);
             try
             {
-                var text  = File.ReadAllText(abs, Encoding.UTF8);
-                var bytes = Encoding.UTF8.GetBytes(AssetPathRewriter.ToVirtual(text, assetsRoot));
+                var bytes = PakEntryContent.ReadRewritten(assetsRoot, asset.RelPath);
                 rewritten[asset.RelPath] = bytes;
                 sizes[i] = bytes.Length;
             }

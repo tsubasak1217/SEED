@@ -1,7 +1,7 @@
 // ============================================================
 //  AppControlCommand.cs — pause / resume / screenshot（動いている端末のアプリへ IPC で 1 命令送る。段階D-1）
 //
-//  【流れ】（エディタの実行バーと同じ中核 editor/src/Android/Ipc/ を使う）
+//  【流れ】（エディタの実行バーと同じ中核 editor/src/Android/Ipc/ を使う。1〜3 は reload と共有の RunningAppConnector）
 //    1. アプリ ID を決める（--app-id か --project の設定。TargetApplication）・端末を決める（--serial か使える 1 台）
 //    2. 起動の記録（run / push の起動の工程がプロジェクトの cache/android/run_state.json の ipc_launches へ書いた、
 //       その端末・そのアプリの IPC のポートと接続トークン）を読む。無ければ「run / push で起動し直して」と伝えて終わる
@@ -25,8 +25,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Pipeline;
-using SEEDEditor.Android.Project;
-using SEEDEditor.Android.State;
 using SEEDEditor.Android.Toolchain;
 using SEEDEditor.Ipc;
 
@@ -52,52 +50,14 @@ public static class AppControlCommand
     public static async Task<int> RunAsync(
         AndroidToolchain toolchain, SeedAndroidCommandLine line, AndroidRunRequest? config, CancellationToken cancellationToken)
     {
-        var request = SeedAndroidArguments.ToRequest(line, config);
-        if (!TargetApplication.TryResolve(line, request, out var applicationId, out var error))
-        {
-            Console.Error.WriteLine($"エラー: {error}");
-            return SeedAndroidExitCodes.InvalidRequest;
-        }
-        if (request.IpcPort == AndroidIpcSettings.DisabledPort)
-        {
-            Console.Error.WriteLine($"エラー: {SeedAndroidArguments.IpcPortOption} {AndroidIpcSettings.DisabledPort} では端末のアプリへ命令を送れません。");
-            return SeedAndroidExitCodes.InvalidRequest;
-        }
-        var engine = AndroidEnginePaths.Locate(AppContext.BaseDirectory, Environment.CurrentDirectory);
-        if (engine is null)
-        {
-            Console.Error.WriteLine("エラー: SEED のリポジトリ（runtime/Cargo.toml と runtime/android/gradlew.bat）が見つかりません。リポジトリの中で実行してください。");
-            return SeedAndroidExitCodes.Toolchain;
-        }
-
-        // ── 端末と、その端末で最後に起動したアプリの IPC の記録（接続トークン）──
-        var actions = new AndroidDeviceActions(toolchain);
-        var device = await actions.ResolveDeviceAsync(request.Serial, cancellationToken);
-        var runStatePath = AndroidRunState.PathFor(AndroidProjectResolver.Resolve(request.ProjectDir, request.AssetsDir), engine);
-        var launch = AndroidRunState.Load(runStatePath).IpcLaunchFor(device.Serial, applicationId);
-        if (launch is null)
-        {
-            Console.Error.WriteLine(
-                $"エラー: {device.DisplayName} で {applicationId} を起動した記録（接続トークン）がありません（{runStatePath}）。" +
-                "同じ --project で run / push を行ってアプリを起動してから使ってください（接続トークンは起動のたびに変わります）。");
-            return SeedAndroidExitCodes.DeviceOperation;
-        }
-        var devicePort = request.IpcPort ?? launch.IpcPort;
-
-        AndroidIpcSession session;
-        try
-        {
-            session = await actions.ConnectIpcAsync(device.Serial, devicePort, launch.IpcToken, null, cancellationToken);
-        }
-        catch (AndroidIpcException ex)
-        {
-            Console.Error.WriteLine($"エラー: 端末のアプリ（{applicationId}）とつながりません: {ex.Message}");
-            return SeedAndroidExitCodes.DeviceOperation;
-        }
+        // ── 1〜3. アプリ ID・端末・起動の記録（接続トークン）を決めてつなぐ（reload と共有。RunningAppConnector）──
+        var (connection, exitCode) = await RunningAppConnector.ConnectAsync(toolchain, line, config, cancellationToken);
+        if (connection is null) return exitCode;
+        var session = connection.Session;
+        var applicationId = connection.ApplicationId;
 
         try
         {
-            Console.Error.WriteLine($"端末のアプリとつながりました（{session.Serial}・端末のポート {devicePort}・PC 側のポート {session.LocalPort}）。");
             return line.Command switch
             {
                 SeedAndroidCommand.Pause => SendOne(session, RuntimeIpcCommands.Pause,

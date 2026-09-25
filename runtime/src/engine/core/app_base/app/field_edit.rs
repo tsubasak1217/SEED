@@ -448,6 +448,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::EnterPlay
         | IpcCommand::ExitPlay
         | IpcCommand::ReloadScripts
+        // 実行中の差し替え（キャッシュの破棄・シーンの読み直し）はディスクの内容を取り込み直すだけで、シーンの編集ではない。
+        | IpcCommand::HotReload(..)
         | IpcCommand::AnimPreview { .. }
         | IpcCommand::AnimPreviewStop { .. }
         | IpcCommand::AnimReload { .. }

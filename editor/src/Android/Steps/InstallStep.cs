@@ -4,6 +4,11 @@
 //  入れた後に pm path（base.apk の場所。インストールのたびに変わる）と APK の SHA-256 をプロジェクトの実行状態へ
 //  記録する。次回、同じ APK がその場所のまま入っていればインストールを飛ばす（Plan/AndroidBuildPlan.cs）。
 //
+//  【上書きの解除】adb install -r はアプリのデータを残すので、push で置いた DLL（files/bin/）と差し替えで送ったアセット
+//  （files/assets/）は入れ直しても残り、新しい APK の中身より優先される。入れ直したら、run の起動の前と同じ規則で消す
+//  （あったときだけ Output に 1 行。PushedOverrides の AfterInstall。docs/android.md §17.7・§23.4）。インストールを飛ばした
+//  （同じ APK が入っている）ときは消さない。
+//
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
 
@@ -77,6 +82,11 @@ public sealed class InstallStep : IAndroidPipelineStep
         {
             log.Warn($"インストールの後に pm path {context.Identity.ApplicationId} が場所を返しませんでした（次回もインストールします）。");
         }
+
+        // 入れ直した APK の中身を正とし、push・差し替えで置いた上書きを消す（アプリのデータは install -r で残るため）
+        await PushedOverrides.ClearAsync(
+            PushedOverrideScope.For(context, device.Serial, PushedOverrideMoment.AfterInstall),
+            PushedOverrides.RunAs(adb, device.Serial, context.Identity.ApplicationId), log, cancellationToken).ConfigureAwait(false);
         return $"{context.Identity.ApplicationId} を {device.DisplayName} へ入れました";
     }
 }

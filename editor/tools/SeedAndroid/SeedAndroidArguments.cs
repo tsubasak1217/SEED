@@ -52,6 +52,22 @@ public enum SeedAndroidCommand
 
     /// <summary>動いているアプリの画面を撮って PC へ取り出す（IPC の SCREENSHOT。段階D-1）。</summary>
     Screenshot,
+
+    /// <summary>動いているアプリへ差し替えを頼む（IPC の RELOAD_SCENE / RELOAD_SCRIPTS / RELOAD_ASSET。docs/android.md §23）。</summary>
+    Reload,
+}
+
+/// <summary>reload の対象（docs/android.md §23）。</summary>
+public enum SeedAndroidReloadTarget
+{
+    /// <summary>今のシーンを読み直す（RELOAD_SCENE）。</summary>
+    Scene,
+
+    /// <summary>スクリプトの DLL を作り直して送り、読み直す（SeedPak --scripts-only → files/bin/ → RELOAD_SCRIPTS）。</summary>
+    Scripts,
+
+    /// <summary>アセットを差し替える（RELOAD_ASSET:{相対パス}。先に push --assets で送っておく）。</summary>
+    Asset,
 }
 
 /// <summary>コマンドラインで指定された値（指定されなかったものは null / false）。</summary>
@@ -98,6 +114,17 @@ public sealed record SeedAndroidCommandLine
 
     /// <summary>--out の値（screenshot の書き先。段階D-1）。</summary>
     public string? OutputPath { get; init; }
+
+    /// <summary>
+    /// push の --assets の値（端末の上書き層 files/assets へ、端末と違うアセットだけを送るフォルダ。アセットルートかその中。§23）。
+    /// </summary>
+    public string? OverlayAssetsDir { get; init; }
+
+    /// <summary>reload の対象（reload のときだけ）。</summary>
+    public SeedAndroidReloadTarget? ReloadTarget { get; init; }
+
+    /// <summary>reload asset のアセット（アセットルートからの相対パス）。</summary>
+    public string? ReloadPath { get; init; }
 
     /// <summary>--release。</summary>
     public bool Release { get; init; }
@@ -151,7 +178,19 @@ public static class SeedAndroidArguments
         ["pause"]      = SeedAndroidCommand.Pause,
         ["resume"]     = SeedAndroidCommand.Resume,
         ["screenshot"] = SeedAndroidCommand.Screenshot,
+        ["reload"]     = SeedAndroidCommand.Reload,
     };
+
+    /// <summary>reload の対象の名前 → 対象。</summary>
+    private static readonly Dictionary<string, SeedAndroidReloadTarget> ReloadTargets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["scene"]   = SeedAndroidReloadTarget.Scene,
+        ["scripts"] = SeedAndroidReloadTarget.Scripts,
+        ["asset"]   = SeedAndroidReloadTarget.Asset,
+    };
+
+    /// <summary>オプションの接頭辞（これで始まらない語は reload の対象・アセットのパス）。</summary>
+    private const string OptionPrefix = "--";
 
     /// <summary>ヘルプを求める語（サブコマンドの位置）。</summary>
     private const string HelpCommand = "help";
@@ -196,6 +235,9 @@ public static class SeedAndroidArguments
 
     /// <summary>screenshot の書き先（段階D-1）。</summary>
     public const string OutOption = "--out";
+
+    /// <summary>push で端末の上書き層へ差分だけを送るフォルダ（§23）。</summary>
+    public const string OverlayAssetsOption = "--assets";
 
     // ── オプションの名前（値を取らないもの）──────────────────────
 
@@ -242,12 +284,19 @@ public static class SeedAndroidArguments
           install   build ＋ 端末へ入れる
           run       install ＋ 起動 ＋ logcat（一気通貫。Ctrl+C で logcat を止めて終える）
           push      スクリプトの DLL（と --assets-dir のアセット）だけを送って起動し直す（APK は作り直さない）
+                    push --assets <フォルダ> は、端末と違うアセットだけを上書き層 files/assets へ送る（起動し直さない。
+                    差し替えの差分転送。取り込ませるのは reload。docs/android.md §23）
           stop      アプリを止める（am force-stop）
           logcat    logcat を流す（タグ SEED・DOTNET ほか。Ctrl+C で止める）
           pause     動いているアプリを一時停止する（adb forward → IPC の PAUSE → 切り離して閉じる。一時停止のまま残る）
           resume    動いているアプリの一時停止を解く（IPC の RESUME）
           screenshot 動いているアプリの画面を撮って PC へ取り出す（IPC の SCREENSHOT → run-as で PNG を取り出す。--out）
-                    （pause / resume / screenshot は run / push で起動したアプリだけ。起動の工程がプロジェクトの
+          reload scene | reload scripts | reload asset <相対パス>
+                    動いているアプリへ差し替えを頼む（実行中の差し替え。docs/android.md §23）
+                      scene   … 今のシーンをディスク（上書き層 files/assets → APK の pak）から読み直す（RELOAD_SCENE）
+                      scripts … SeedPak --scripts-only で DLL を作り直して files/bin/ へ送り、読み直す（RELOAD_SCRIPTS）
+                      asset   … そのアセットのキャッシュを捨てて取り込み直す（RELOAD_ASSET。先に push --assets で送る）
+                    （pause / resume / screenshot / reload は run / push で起動したアプリだけ。起動の工程がプロジェクトの
                      cache/android/run_state.json に記録した接続トークンでつなぐ。エディタの実行中はエディタが使うので使えない）
 
         オプション:
@@ -283,6 +332,9 @@ public static class SeedAndroidArguments
           --ipc-port <ポート>       端末のランタイムが一時停止などの IPC を待ち受けるポート（run / push が起動オプションで渡す。
                                     省略時は 52735、0 なら渡さない。pause / resume / screenshot は省略時に起動の記録のポートへつなぐ）
           --out <パス>              screenshot の書き先（省略時はカレントフォルダの android_screenshot_<日時>.png）
+          --assets <フォルダ>       push: 端末と違うアセットだけを上書き層 files/assets へ送る（アセットルートかその中。
+                                    今 pak を作ると入るもの＋全シーンから辿れるもののうち、手元の中身が端末〈送った記録 → APK の pak〉と
+                                    違うものだけ。--project が無ければこのフォルダからプロジェクトを探す。--assets-dir とは別物で同時に使えない）
           --json                    devices の出力を JSON にする
           --help, -h                この説明を表示する
 
@@ -327,9 +379,30 @@ public static class SeedAndroidArguments
                 case JsonOption:        line = line with { Json = true }; continue;
             }
 
+            // reload の対象（scene / scripts / asset）とアセットのパス（オプションでない語。§23）
+            if (command == SeedAndroidCommand.Reload && !arg.StartsWith(OptionPrefix, StringComparison.Ordinal))
+            {
+                if (line.ReloadTarget is null)
+                {
+                    if (!ReloadTargets.TryGetValue(arg, out var target))
+                    {
+                        return Fail($"reload の対象は {string.Join(" / ", ReloadTargets.Keys)} のどれかです: {arg}");
+                    }
+                    line = line with { ReloadTarget = target };
+                    continue;
+                }
+                if (line.ReloadTarget == SeedAndroidReloadTarget.Asset && line.ReloadPath is null)
+                {
+                    line = line with { ReloadPath = arg };
+                    continue;
+                }
+                return Fail($"reload の余分な引数です: {arg}");
+            }
+
             // 以降のオプションはすべて値を 1 つ取る
             if (arg is not (ConfigOption or ProjectOption or AssetsDirOption or SerialOption or AbiOption or LogcatSecondsOption
-                or LogFileOption or ApplicationIdOption or SinceOption or AvdOption or SceneOption or IpcPortOption or OutOption))
+                or LogFileOption or ApplicationIdOption or SinceOption or AvdOption or SceneOption or IpcPortOption or OutOption
+                or OverlayAssetsOption))
             {
                 return Fail($"不明な引数です: {arg}");
             }
@@ -350,6 +423,7 @@ public static class SeedAndroidArguments
                 case AvdOption:           line = line with { Avd = value }; break;
                 case SceneOption:         line = line with { ScenePath = value }; break;
                 case OutOption:           line = line with { OutputPath = value }; break;
+                case OverlayAssetsOption: line = line with { OverlayAssetsDir = value }; break;
                 case IpcPortOption:
                     if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var ipcPort)
                         || AndroidIpcSettings.Validate(ipcPort) is { } ipcPortError)
@@ -382,11 +456,38 @@ public static class SeedAndroidArguments
         if (AndroidDeviceTarget.IsAutoSerial(line.Serial) && OperatesRunningDevice(command))
         {
             return Fail($"{SerialOption} {AndroidDeviceTarget.AutoSerial} は build / install / run / push で使えます" +
-                        "（stop / logcat / pause / resume / screenshot にはシリアルを指定してください）");
+                        "（stop / logcat / pause / resume / screenshot / reload にはシリアルを指定してください）");
         }
         if (line.OutputPath is not null && command != SeedAndroidCommand.Screenshot)
         {
             return Fail($"{OutOption} は screenshot で使います");
+        }
+        // ── 実行中の差し替え（§23）──
+        if (command == SeedAndroidCommand.Reload)
+        {
+            if (line.ReloadTarget is null)
+            {
+                return Fail($"reload には対象（{string.Join(" / ", ReloadTargets.Keys)}）を指定してください");
+            }
+            if (line.ReloadTarget == SeedAndroidReloadTarget.Asset && string.IsNullOrWhiteSpace(line.ReloadPath))
+            {
+                return Fail("reload asset には差し替えるアセット（アセットルートからの相対パス）を指定してください");
+            }
+        }
+        if (line.OverlayAssetsDir is not null)
+        {
+            if (command != SeedAndroidCommand.Push)
+            {
+                return Fail($"{OverlayAssetsOption} は push で使います");
+            }
+            if (line.AssetsDir is not null)
+            {
+                return Fail($"{OverlayAssetsOption}（差分の転送）と {AssetsDirOption}（開発用の APK）は同時に指定できません");
+            }
+            if (AndroidDeviceTarget.IsAutoSerial(line.Serial))
+            {
+                return Fail($"push {OverlayAssetsOption} では {SerialOption} {AndroidDeviceTarget.AutoSerial} を使えません（動いている端末へ送るだけのため）");
+            }
         }
         return new SeedAndroidParseResult(line, ShowHelp: false, Error: null);
     }
@@ -396,7 +497,7 @@ public static class SeedAndroidArguments
     /// <returns>そうなら true。</returns>
     public static bool OperatesRunningDevice(SeedAndroidCommand command) => command is
         SeedAndroidCommand.Stop or SeedAndroidCommand.Logcat or
-        SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot;
+        SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot or SeedAndroidCommand.Reload;
 
     /// <summary>
     /// 設定 JSON の値（無ければ既定値）の上にコマンドラインの指定を重ね、サブコマンドの目的を入れる。

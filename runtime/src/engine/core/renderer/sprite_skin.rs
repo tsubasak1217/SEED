@@ -569,6 +569,25 @@ impl SpriteSkinCache {
         self.warned.borrow_mut().clear();
     }
 
+    /// パスが条件に合うメッシュと、それを使っている変形資源を捨てる（実行中の差し替え。§23）。
+    ///
+    /// 変形資源はメッシュのパスが変わったときしか作り直さないので、同じパスの中身を差し替えたときは
+    /// ここで一緒に捨てる（次の prepare_instance で新しいメッシュから作り直す）。警告の既出も忘れて、直した結果を再評価させる。
+    ///
+    /// # 引数
+    /// * `refers` - メッシュのパスが差し替え対象を指すか
+    ///
+    /// # 戻り値
+    /// 捨てたメッシュの件数。
+    pub fn forget_matching(&self, refers: &dyn Fn(&str) -> bool) -> usize {
+        let mut meshes = self.meshes.borrow_mut();
+        let before = meshes.len();
+        meshes.retain(|path, _| !refers(path));
+        self.instances.borrow_mut().retain(|_, inst| !refers(&inst.mesh_path));
+        self.warned.borrow_mut().clear();
+        before - meshes.len()
+    }
+
     /// 1 体ぶんのスキニングを準備して、描画に必要なハンドルを返す。
     ///
     /// 具体的には:

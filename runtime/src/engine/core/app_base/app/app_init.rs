@@ -416,12 +416,17 @@ impl App {
     /// - 未指定の場合は実行ファイルの隣にある assets/ フォルダを使う
     /// - 配布物の読み口（`self.package_source`。Android の APK）があれば、その assets.pak で PAK モードにする
     /// - そうでなく assets.pak が実行ファイルの隣（アセットルートの親）にあれば PAK モードで初期化する
+    /// - `self.asset_overlay`（Android のデバッグ版の APK のパッケージ実行。実行中の差し替え。docs/android.md §23）ならアセットルートを
+    ///   上書き層として PAK より先に読む（asset_fs::FilesystemLayer::Overlay。配布版・PC は常に従来の順）
     fn init_asset_fs(&self) {
-        use crate::engine::asset_fs;
+        use crate::engine::asset_fs::{self, FilesystemLayer};
         use crate::engine::core::package_layout;
         use crate::engine::package_source;
         use crate::engine::pak::PakReader;
         use std::path::PathBuf;
+
+        // ファイルシステムの層（アセットルート）を読む位置。上書き層は起動引数で明示されたときだけ（§23）。
+        let filesystem = if self.asset_overlay { FilesystemLayer::Overlay } else { FilesystemLayer::Fallback };
 
         // アセットルートを決定する
         let assets_root: PathBuf = if let Some(root) = &self.assets_root {
@@ -440,7 +445,13 @@ impl App {
         if let Some(package) = &self.package_source {
             let location = package.describe(package_layout::PAK_FILE_NAME);
             let pak = open_pak_logged(|| package_source::open_pak(package.as_ref()), &location);
-            asset_fs::init_with(assets_root, pak, Some(Arc::clone(package)));
+            if filesystem == FilesystemLayer::Overlay {
+                eprintln!(
+                    "[SEED INIT] asset_fs: 上書き層 {} を pak より先に読みます（デバッグ版の差し替え。docs/android.md §23）",
+                    assets_root.display()
+                );
+            }
+            asset_fs::init_with(assets_root, pak, Some(Arc::clone(package)), filesystem);
             return;
         }
 
@@ -474,7 +485,7 @@ impl App {
         let pak = pak_path.as_deref().and_then(|path| {
             open_pak_logged(|| PakReader::open(path), &path.display().to_string())
         });
-        asset_fs::init_with(assets_root, pak, None);
+        asset_fs::init_with(assets_root, pak, None, filesystem);
     }
 
     /// プロジェクトのプラグインフォルダからプラグインをロードする。

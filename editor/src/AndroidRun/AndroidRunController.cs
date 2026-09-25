@@ -31,6 +31,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.HotReload;
 using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Ipc;
@@ -109,6 +110,24 @@ public sealed class AndroidRunController : IDisposable
         get
         {
             lock (_gate) return _completion;
+        }
+    }
+
+    /// <summary>
+    /// 実行中の差し替えの相手（端末でアプリが動いていて、IPC がつながっているときだけ。無ければ null。docs/android.md §23）。
+    /// 差し替え（AndroidHotReloadController）はこの通信路で RELOAD_* を送り、応答を待つ（一時停止・再開と同じ 1 本の接続）。
+    /// </summary>
+    public AndroidHotReloadTarget? HotReloadTarget
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _ipcLink is { } link && _machine.Snapshot.IsAppAlive
+                       && _machine.Serial is { } serial && _machine.ApplicationId is { } applicationId
+                    ? new AndroidHotReloadTarget(serial, applicationId, link)
+                    : null;
+            }
         }
     }
 

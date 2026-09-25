@@ -15,14 +15,18 @@
 //    ③ assets_root なし（PC の配布物）… 実行ファイルの bin/SEEDUserScripts.dll を読むだけ
 //  ①〜③のどれでも、見つからない・失敗したときは理由を 1 行残してスクリプト無しで起動を続ける。
 //
+//  【実行中の読み直し（RELOAD_SCRIPTS。§23）】① の同梱 .NET のときだけ、置き場の候補と起動時のスクリプトホストの指紋を
+//  ScriptReloadSource として App に持たせる（script_reload_source）。読み直しは app/script_ops.rs。
+//
 //  以前は App::new の中にあった処理（②③と 2 の分岐は同じ内容のまま移した）。
 // ============================================================
 
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::engine::core::scripting::script_reload::ScriptReloadSource;
 use crate::engine::core::scripting::{
-    self, EmbeddedClrHost, ScriptingHost, PRECOMPILED_SCRIPTS_DLL_NAME,
+    self, EmbeddedClrHost, ScriptingHost, PRECOMPILED_SCRIPTS_DLL_NAME, SCRIPTING_HOST_DLL_NAME,
 };
 use crate::engine::platform::{self, ScriptHostSource};
 
@@ -136,6 +140,39 @@ impl App {
             }
             None => Self::load_precompiled_user_scripts(host),
         }
+    }
+
+    /// 同梱 .NET（Android）で、実行中にユーザースクリプトを読み直す置き場を用意する（RELOAD_SCRIPTS。§23）。
+    ///
+    /// 起動材料が無い（PC）ときは None（RELOAD_SCRIPTS は従来どおりその場で再コンパイルする）。
+    /// 起動時に読んだスクリプトホストの中身を指紋として持ち、読み直すときに置き場のホストと照合する
+    /// （scripting/script_reload.rs）。ホストを読めなければ None（読み直しは「使えない」と応答する）。
+    ///
+    /// # 引数
+    /// * `args` - 起動引数（同梱 .NET の起動材料）
+    pub(super) fn script_reload_source(args: &LaunchArgs) -> Option<ScriptReloadSource> {
+        let embedded = args.embedded_clr.as_ref()?;
+        let boot_host = match embedded.binaries.read(SCRIPTING_HOST_DLL_NAME) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!(
+                    "[SEED] 実行中のスクリプトの差し替えに使う {} を読めません: {err}（RELOAD_SCRIPTS は使えません）",
+                    embedded.binaries.describe(SCRIPTING_HOST_DLL_NAME)
+                );
+                return None;
+            }
+        };
+        // 候補が渡されていなければ、起動に使った置き場だけを候補にする（古い糊でも読み直しは起動時の置き場から行える）
+        let candidates = if embedded.reload_candidates.is_empty() {
+            vec![Arc::clone(&embedded.binaries)]
+        } else {
+            embedded.reload_candidates.clone()
+        };
+        Some(ScriptReloadSource::new(
+            candidates,
+            &boot_host,
+            embedded.binaries.describe(SCRIPTING_HOST_DLL_NAME),
+        ))
     }
 
     /// 同梱 .NET の起動材料の置き場（files/bin/ か APK の bin/）から SEEDUserScripts.dll を読む。

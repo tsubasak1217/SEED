@@ -30,6 +30,8 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
     android/run_state.json  Android の実行状態（前回の実行先・端末へ入れた APK・前回の実行の結果と指紋）。
                        SeedAndroid／エディタの実行先「実機・エミュレータ」が書く（docs/android.md §4.6）。
                        失っても前回の実行先が選ばれない・APK を入れ直すだけ
+    android/asset_overlay.json  実行中の差し替えで端末の上書き層（files/assets）へ送ったファイルの指紋（端末ごと。docs/android.md §23.5）。
+                       失っても送ったことの無いものとして多めに送るだけ（run のたびに空へ戻る）
   save/                セーブデータ（ランタイムが生成）
   logs/                ゲーム実行ログ
   build/               パッケージ化の出力（build/windows など）

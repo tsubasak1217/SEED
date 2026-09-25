@@ -84,6 +84,10 @@ public static class Program
                 // 動いているアプリへ IPC で 1 命令（段階D-1）
                 SeedAndroidCommand.Pause or SeedAndroidCommand.Resume or SeedAndroidCommand.Screenshot
                                            => await AppControlCommand.RunAsync(toolchain, line, config, cancellation.Token),
+                // 実行中の差し替え（docs/android.md §23）: 差し替えを頼む・端末と違うアセットだけを送る
+                SeedAndroidCommand.Reload  => await ReloadCommand.RunAsync(toolchain, line, config, cancellation.Token),
+                SeedAndroidCommand.Push when line.OverlayAssetsDir is not null
+                                           => await AssetPushCommand.RunAsync(toolchain, line, config, cancellation.Token),
                 _                          => await PipelineCommand.RunAsync(toolchain, line, config, cancellation.Token),
             };
         }

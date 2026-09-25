@@ -26,6 +26,14 @@ using System.Threading.Tasks;
 
 namespace SEEDEditor.Android.Adb;
 
+/// <summary>
+/// tar に入れる 1 ファイル（中身はメモリ上のバイト列か、ディスクのファイルのどちらか。実行中の差し替えの上書き層へ送る。§23）。
+/// </summary>
+/// <param name="Name">tar の中の名前（送り先からの相対パス。区切り /）。</param>
+/// <param name="Content">中身（メモリ上。null なら <paramref name="SourcePath"/> を読む）。</param>
+/// <param name="SourcePath">中身のファイル（<paramref name="Content"/> が null のとき）。</param>
+public sealed record RunAsTarPayload(string Name, byte[]? Content, string? SourcePath);
+
 /// <summary>run-as で送る tar のストリームを作る。</summary>
 public static class RunAsTarArchive
 {
@@ -64,6 +72,70 @@ public static class RunAsTarArchive
     public static Task<(int Files, long Bytes)> WriteFilesAsync(
         IEnumerable<FileInfo> files, Stream output, CancellationToken cancellationToken) =>
         WriteEntriesAsync(files.Select(file => ((FileSystemInfo)file, file.Name)).ToList(), output, cancellationToken);
+
+    /// <summary>
+    /// 指定の中身を、フォルダ構造ごと tar にしてストリームへ書く（親フォルダのエントリを先に書く。実行中の差し替えで
+    /// 上書き層 files/assets へ、書き換え済みの中身〈パスを assets:// にしたシーン等〉も含めて送る。§23）。
+    /// </summary>
+    /// <param name="payloads">送るもの（名前の重複は呼び出し側で除いておく）。</param>
+    /// <param name="output">書き込み先（adb の標準入力）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>書いたファイルの数と合計バイト数。</returns>
+    public static async Task<(int Files, long Bytes)> WritePayloadsAsync(
+        IReadOnlyList<RunAsTarPayload> payloads, Stream output, CancellationToken cancellationToken)
+    {
+        var fileCount = 0;
+        var byteCount = 0L;
+        var writtenDirectories = new HashSet<string>(StringComparer.Ordinal);
+        await using (var writer = new TarWriter(output, TarEntryFormat.Gnu, leaveOpen: true))
+        {
+            foreach (var payload in payloads)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                // 親フォルダを浅い順に（まだ書いていないものだけ）書く
+                foreach (var directory in ParentDirectories(payload.Name))
+                {
+                    if (!writtenDirectories.Add(directory)) continue;
+                    var directoryEntry = new GnuTarEntry(TarEntryType.Directory, directory + TarPathSeparator)
+                    {
+                        Mode             = DirectoryPermissions,
+                        ModificationTime = DateTimeOffset.UtcNow,
+                    };
+                    await writer.WriteEntryAsync(directoryEntry, cancellationToken).ConfigureAwait(false);
+                }
+
+                await using var content = payload.Content is { } bytes
+                    ? new MemoryStream(bytes, writable: false)
+                    : (Stream)new FileStream(
+                        payload.SourcePath ?? throw new ArgumentException($"中身の無いエントリです: {payload.Name}", nameof(payloads)),
+                        FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 1, useAsync: true);
+                var fileEntry = new GnuTarEntry(TarEntryType.RegularFile, payload.Name)
+                {
+                    Mode             = FilePermissions,
+                    ModificationTime = DateTimeOffset.UtcNow,
+                    DataStream       = content,
+                };
+                await writer.WriteEntryAsync(fileEntry, cancellationToken).ConfigureAwait(false);
+                fileCount++;
+                byteCount += content.Length;
+            }
+        }
+        await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return (fileCount, byteCount);
+    }
+
+    /// <summary>名前の親フォルダを浅い順に並べる（"a/b/c.png" → "a", "a/b"）。</summary>
+    /// <param name="name">tar の中の名前（区切り /）。</param>
+    /// <returns>親フォルダの並び。</returns>
+    private static IEnumerable<string> ParentDirectories(string name)
+    {
+        var index = name.IndexOf(TarPathSeparator);
+        while (index > 0)
+        {
+            yield return name[..index];
+            index = name.IndexOf(TarPathSeparator, index + 1);
+        }
+    }
 
     /// <summary>フォルダを辿ってエントリを集める（名前順。フォルダはその中身より前）。</summary>
     /// <param name="root">送るフォルダ（相対パスの基準）。</param>

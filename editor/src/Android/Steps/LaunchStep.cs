@@ -19,11 +19,10 @@
 //  収録に失敗したか、pak を作り直さなかった（push・--skip-gradle）とき。その保険として、起動の直前に置き場の pak
 //  （今の APK の中身と同じ）を引き、入っていなければ理由と直し方を警告の 1 行で出す（端末も警告して開始シーンで起動する）。
 //
-//  【push した DLL の上書きの解除（段階C-4）】
-//  端末はスクリプトの DLL を「内部の files/bin/ → APK の bin/」の順に探すので、push で置いた files/bin/ が残っていると、
-//  その後の run で APK を作り直しても古い push の DLL で動く。run（APK の内容を正とする）では、止めた後・起動の前に
-//  自分のアプリの files/bin/ を run-as で消す（あったときだけ Output に 1 行）。push と run --push-scripts（これから置く・
-//  置いた）、開発用の --assets-dir（APK に bin/ が無く、files/bin/ が唯一の置き場）は消さない（ClearsPushedScripts）。
+//  【端末に置いた上書きの解除（段階C-4・実行中の差し替え。docs/android.md §17.7・§23.4）】
+//  push で置いた DLL（files/bin/）と差し替えで送ったアセット（files/assets/）は APK の中身より優先されるので、run（APK の
+//  内容を正とする。--project）では止めた後・起動の前に消す（あったときだけ Output に 1 行）。APK を入れ直した直後
+//  （インストールの工程）も同じ規則で消す。規則・消し方・上書き層の記録の作り直しは PushedOverrides（BeforeLaunch）。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
@@ -69,14 +68,6 @@ public sealed class LaunchStep : IAndroidPipelineStep
     private const string ReasonPushKeepsApk =
         "push はスクリプトの DLL だけを送り、APK の pak は作り直しません。run で実行すると、このシーンを収録の起点に足して作り直します";
 
-    /// <summary>push した DLL の上書き（端末の files/bin/）を消したときの Output の 1 行。</summary>
-    public const string PushedScriptsClearedMessage =
-        "push した DLL の上書きを解除しました（端末の " + AndroidRuntimeContract.RemoteScriptsDir + "/ を消し、APK の bin/ のスクリプトで起動します）。";
-
-    /// <summary>push した DLL の上書きを消せなかったときの警告の書式（{0}=理由）。</summary>
-    private const string PushedScriptsNotClearedFormat =
-        "push した DLL の上書きを解除できませんでした（端末の " + AndroidRuntimeContract.RemoteScriptsDir + "/ の DLL が APK の bin/ より優先されます）: {0}";
-
     /// <inheritdoc />
     public AndroidPipelinePhase Phase => AndroidPipelinePhase.Launch;
 
@@ -92,8 +83,11 @@ public sealed class LaunchStep : IAndroidPipelineStep
         {
             context.LogcatSince = await adb.GetLogcatSinceAsync(device.Serial, cancellationToken).ConfigureAwait(false);
             await adb.ForceStopAsync(device.Serial, context.Identity.ApplicationId, cancellationToken).ConfigureAwait(false);
-            // 止めた後・起動の前に、push で置いた DLL の上書きを消す（run は APK の内容を正とする）
-            await ClearPushedScriptsAsync(context, adb, device.Serial, log, cancellationToken).ConfigureAwait(false);
+            // 止めた後・起動の前に、push で置いた DLL と差し替えで送ったアセットの上書きを消し、上書き層の記録を今の pak で
+            // 作り直す（run は APK の内容を正とする。§17.7・§23.4）
+            await PushedOverrides.ClearAsync(
+                PushedOverrideScope.For(context, device.Serial, PushedOverrideMoment.BeforeLaunch),
+                PushedOverrides.RunAs(adb, device.Serial, context.Identity.ApplicationId), log, cancellationToken).ConfigureAwait(false);
             // 表示では接続トークンの値を伏せる（Output・エディタのログに残さない）
             var shown = string.Join(" ", AdbClient.AmStartArguments(context.LaunchComponent, MaskSecrets(extras)).Skip(1));
             log.Info($"{shown}（logcat はこの時刻から: {context.LogcatSince}）");
@@ -112,42 +106,6 @@ public sealed class LaunchStep : IAndroidPipelineStep
             throw new AndroidPipelineException(AndroidFailureKind.DeviceOperation, $"起動できませんでした: {ex.Message}", ex);
         }
     }
-
-    /// <summary>
-    /// run の起動の前に、push で置いた DLL の上書き（自分のアプリの内部 files/bin/）を消す（<see cref="ClearsPushedScripts"/> が
-    /// 真のときだけ）。あって消したときだけ Output に 1 行出す。消せなくても起動は続ける（警告を出す。上書きの DLL で動く）。
-    /// </summary>
-    /// <param name="context">共有の値（指定・プロジェクト・アプリ ID）。</param>
-    /// <param name="adb">adb。</param>
-    /// <param name="serial">端末のシリアル。</param>
-    /// <param name="log">起動の工程のログ。</param>
-    /// <param name="cancellationToken">中断の合図。</param>
-    private static async Task ClearPushedScriptsAsync(
-        AndroidPipelineContext context, AdbClient adb, string serial, AndroidPhaseLog log, CancellationToken cancellationToken)
-    {
-        if (!ClearsPushedScripts(context.Request, context.Project)) return;
-        try
-        {
-            var removed = await adb.RunAsRemoveDirectoryAsync(
-                serial, context.Identity.ApplicationId, AndroidRuntimeContract.RemoteScriptsDir, cancellationToken).ConfigureAwait(false);
-            if (removed) log.Info(PushedScriptsClearedMessage);
-        }
-        catch (AdbCommandException ex)
-        {
-            log.Warn(string.Format(PushedScriptsNotClearedFormat, ex.Message));
-        }
-    }
-
-    /// <summary>
-    /// 起動の前に push した DLL の上書き（端末の files/bin/）を消すか（純粋な処理）。run（APK の内容を正とする）で、
-    /// APK にスクリプトを入れる（--project）ときだけ消す。push と run --push-scripts はこれから files/bin/ に置く（置いた）ので、
-    /// 開発用の --assets-dir は APK に bin/ が無く files/bin/ が唯一のスクリプトの置き場なので、消さない。
-    /// </summary>
-    /// <param name="request">指定。</param>
-    /// <param name="project">プロジェクト（無ければ null）。</param>
-    /// <returns>消すなら true。</returns>
-    public static bool ClearsPushedScripts(AndroidRunRequest request, AndroidProjectInfo? project) =>
-        request.Goal == AndroidRunGoal.Run && !request.PushScripts && project is { Mode: AndroidProjectMode.Packaged };
 
     /// <summary>
     /// 起動するシーンがディスクにはあるのに APK の pak に入っていなければ、理由と直し方を警告する（段階C-4 からは

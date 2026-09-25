@@ -66,6 +66,13 @@ public sealed class AdbClient
     private const string ExtractScriptFormat =
         "rm -rf {0} && mkdir -p {0} && tar -xf - -C {0} && chmod -R u+rwX,go-rwx {0}";
 
+    /// <summary>
+    /// 転送先のフォルダを残したまま tar を展開する（置いてあるものは消さず、同じパスは上書き）スクリプト（{0} = 置き場）。
+    /// 実行中の差し替えで、上書き層 files/assets へ変わったアセットだけを足すのに使う（docs/android.md §23）。
+    /// </summary>
+    private const string ExtractIntoScriptFormat =
+        "mkdir -p {0} && tar -xf - -C {0} && chmod -R u+rwX,go-rwx {0}";
+
     /// <summary>転送後に「置けたか」を確かめるスクリプト（{0} = 確かめるファイル）。</summary>
     private const string CheckScriptFormat = "test -f {0} && echo " + CheckOkMarker;
 
@@ -193,7 +200,50 @@ public sealed class AdbClient
     /// <param name="writeTar">tar のストリームを書く処理。</param>
     /// <param name="cancellationToken">中断の合図。</param>
     /// <exception cref="AdbCommandException">転送できなかったとき。</exception>
-    public async Task RunAsExtractTarAsync(
+    public Task RunAsExtractTarAsync(
+        string serial,
+        string applicationId,
+        string remoteDir,
+        string checkFile,
+        Func<Stream, CancellationToken, Task> writeTar,
+        CancellationToken cancellationToken) =>
+        RunAsExtractWithScriptAsync(ExtractScriptFormat, serial, applicationId, remoteDir, checkFile, writeTar, cancellationToken);
+
+    /// <summary>
+    /// run-as でアプリの権限になり、tar のストリームをアプリの内部データフォルダへ展開する（置いてあるものは消さない。
+    /// 同じパスは上書き）。実行中の差し替えで、上書き層 files/assets へ変わったアセットだけを足すのに使う（§23）。
+    /// デバッグ版の APK だけが使える。展開の後、確かめるファイルがあるかを見る。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <param name="remoteDir">送り先（内部データフォルダからの相対。例 files/assets）。</param>
+    /// <param name="checkFile">送り先の中に今回置いたはずのファイル（送り先からの相対。区切り /）。</param>
+    /// <param name="writeTar">tar のストリームを書く処理。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <exception cref="AdbCommandException">転送できなかったとき。</exception>
+    public Task RunAsExtractTarIntoAsync(
+        string serial,
+        string applicationId,
+        string remoteDir,
+        string checkFile,
+        Func<Stream, CancellationToken, Task> writeTar,
+        CancellationToken cancellationToken) =>
+        RunAsExtractWithScriptAsync(ExtractIntoScriptFormat, serial, applicationId, remoteDir, checkFile, writeTar, cancellationToken);
+
+    /// <summary>
+    /// run-as で tar のストリームを展開する（展開のスクリプトを選べる本体）。展開の後、確かめるファイルがあるかを見る
+    /// （exec-in は端末側の失敗を終了コードで返さないことがあるため）。
+    /// </summary>
+    /// <param name="scriptFormat">展開のスクリプトの書式（{0} = 置き場）。</param>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <param name="remoteDir">送り先（内部データフォルダからの相対）。</param>
+    /// <param name="checkFile">送り先の中に必ずあるはずのファイル。</param>
+    /// <param name="writeTar">tar のストリームを書く処理。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <exception cref="AdbCommandException">転送できなかったとき。</exception>
+    private async Task RunAsExtractWithScriptAsync(
+        string scriptFormat,
         string serial,
         string applicationId,
         string remoteDir,
@@ -201,7 +251,9 @@ public sealed class AdbClient
         Func<Stream, CancellationToken, Task> writeTar,
         CancellationToken cancellationToken)
     {
-        var extract = string.Format(System.Globalization.CultureInfo.InvariantCulture, ExtractScriptFormat, remoteDir);
+        RequireRelativeRemotePath(remoteDir, nameof(remoteDir));
+        RequireRelativeRemotePath(checkFile, nameof(checkFile));
+        var extract = string.Format(System.Globalization.CultureInfo.InvariantCulture, scriptFormat, remoteDir);
         var capture = await ChildProcessRunner.CaptureAsync(
             Spec(serial, "exec-in", "run-as", applicationId, "sh", "-c", extract), cancellationToken, writeTar).ConfigureAwait(false);
         if (capture.ExitCode != 0)
@@ -210,7 +262,8 @@ public sealed class AdbClient
                 $"run-as での転送が失敗しました（終了コード {capture.ExitCode}。デバッグ版の APK が入っているか確認してください）: {capture.AllOutputText}");
         }
 
-        var check = string.Format(System.Globalization.CultureInfo.InvariantCulture, CheckScriptFormat, $"{remoteDir}/{checkFile}");
+        // 確かめるファイルの名前は空白・日本語を含み得る（差し替えのアセット）ので、端末のシェルへ 1 語として渡す
+        var check = string.Format(System.Globalization.CultureInfo.InvariantCulture, CheckScriptFormat, ShellQuote($"{remoteDir}/{checkFile}"));
         var verify = await ChildProcessRunner.CaptureAsync(
             Spec(serial, "exec-out", "run-as", applicationId, "sh", "-c", check), cancellationToken).ConfigureAwait(false);
         if (verify.StandardOutputText.Trim() != CheckOkMarker)

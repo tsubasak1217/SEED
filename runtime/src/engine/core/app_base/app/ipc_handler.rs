@@ -1290,6 +1290,11 @@ impl App {
                 IpcCommand::ReloadScripts => {
                     self.handle_reload_scripts();
                 }
+                // 実行中の差し替え: その場では適用せず貯め、このフレームの IPC を処理し終えたところ（フレームの境界）で
+                // まとめて適用する（シーンの読み直しは何件あっても 1 回。hot_reload_ops.rs）。
+                IpcCommand::HotReload(request) => {
+                    self.hot_reload_batch.push(request);
+                }
                 IpcCommand::DuplicateComponent { actor_dfs_id, slot_idx } => {
                     self.handle_duplicate_component(actor_dfs_id, slot_idx);
                 }
@@ -1941,6 +1946,11 @@ impl App {
         //   1 回だけ再メッシュする。IPC 応答（TERRAIN_BRUSH_OK 等）は各コマンド処理時に
         //   既に返してあるので、ここで送信タイミング・文言が変わることはない。
         self.flush_terrain_pending_remesh();
+
+        // ── 実行中の差し替え（RELOAD_SCENE / RELOAD_ASSET）をフレームの境界でまとめて適用する ──
+        //   このフレームに届いた要求を 1 つの計画にし、キャッシュの破棄 → シーンの読み直し（要れば 1 回）→ 応答の順に行う。
+        //   ここはゲームロジック（スクリプトの Update）より前なので、読み直したシーンはこのフレームから動く（hot_reload_ops.rs）。
+        self.apply_pending_hot_reload();
 
         // ── 入力注入のシーケンスを実時間で進める ──
         //   process_ipc はフレーム先頭（およびフレーム途絶中のポンプ）から

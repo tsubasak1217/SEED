@@ -9,6 +9,8 @@
 //    - Android の実行（端末の用意〈要ればエミュレータを起動〉→ ビルド → インストール → 起動 → logcat → 停止・
 //      アプリの終了の検知・実行バーからの一時停止と再開〈段階D-1。端末のアプリと adb forward ＋ TCP の IPC でつなぐ〉）
 //      … AndroidRunController（中核への指定は AndroidEditorRunRequests）
+//    - 実行中の差し替え（端末のアプリが動いている間、保存したアセット・シーン・スクリプトを送って取り込ませる。§23）
+//      … AndroidHotReloadController（監視・デバウンス・Output）→ 中核の Android/HotReload/AndroidHotReloadApplier
 //    - 起動するシーン（PC の Play と同じ「開いているシーン」）… AndroidRunSceneChoice
 //    - 未保存の変更の確認（保存して実行 / 保存せず実行 / キャンセル）… AndroidUnsavedChangesPrompt
 //    - Output パネルの行                        … AndroidRunOutputFormatter の行を色付きで EditorLog へ
@@ -31,6 +33,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using SEEDEditor.Android.HotReload;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Android.Toolchain;
 using SEEDEditor.AndroidRun;
@@ -88,6 +91,12 @@ public partial class MainWindow
     /// <summary>Android の実行（エンジンのリポジトリが見つからなければ null）。</summary>
     private AndroidRunController? _androidRun;
 
+    /// <summary>
+    /// Android の実行中の差し替え（保存したアセット・シーン・スクリプトを動いている端末へ送って取り込ませる。docs/android.md §23）。
+    /// エンジンのリポジトリが見つからなければ null。
+    /// </summary>
+    private AndroidHotReloadController? _androidHotReload;
+
     /// <summary>実行先の一覧と選択（コンボに出しているもの）。</summary>
     private RunTargetCatalog _runTargets = RunTargetCatalogBuilder.PcOnly;
 
@@ -144,9 +153,33 @@ public partial class MainWindow
         if (environment.Engine is { } engine)
         {
             var controller = new AndroidRunController(new AndroidRunBackend(engine, toolchain), AndroidRunTimings.Default);
-            controller.StateChanged += () => Dispatcher.BeginInvoke(() => ApplyPlayBar());
+            // 実行中の差し替え（§23）: 端末のアプリが動いている間だけアセットルートを監視し、保存を端末へ送る
+            var projectDir = string.IsNullOrWhiteSpace(ProjectContext.RootDir) ? AssetsPath : ProjectContext.RootDir;
+            var hotReload = new AndroidHotReloadController(
+                new AndroidHotReloadBackend(toolchain, engine, projectDir),
+                () => controller.HotReloadTarget,
+                pollInterval: AndroidHotReloadController.DefaultPollInterval,
+                // スクリプト・シーンは PC の自動再読込の設定（表示メニュー）がオフなら差し替えない。ほかのアセットはいつも
+                kindEnabled: kind => kind switch
+                {
+                    AndroidHotReloadKind.Scripts => EditorPreferences.Instance.AutoReloadScripts,
+                    AndroidHotReloadKind.Scene => EditorPreferences.Instance.AutoReloadScene,
+                    _ => true,
+                });
+            hotReload.OutputWritten += line => EditorLog.Write(line.Text, line.Style);
+            hotReload.InfoWritten += text =>
+            {
+                var line = AndroidHotReloadOutputFormatter.Info(text);
+                EditorLog.Write(line.Text, line.Style);
+            };
+            controller.StateChanged += () => Dispatcher.BeginInvoke(() =>
+            {
+                ApplyPlayBar();
+                _androidHotReload?.OnRunStateChanged(controller.Snapshot, AssetsPath);
+            });
             controller.OutputWritten += line => EditorLog.Write(line.Text, line.Style);
             _androidRun = controller;
+            _androidHotReload = hotReload;
         }
         if (!environment.Availability.IsAvailable)
         {
@@ -168,6 +201,7 @@ public partial class MainWindow
     /// </summary>
     private void ShutdownAndroidRun()
     {
+        _androidHotReload?.Dispose();
         _androidRun?.Dispose();
         try
         {

@@ -61,7 +61,8 @@ impl App {
             // 「ヒットストップ中に遷移して戻し忘れ、次のシーンが永久にスロー」という
             // 復帰不能な事故を構造的に防ぐ（カーソルロック解除と同じ考え方）。
             self.reset_time_scale_for_play();
-            self.apply_script_transition_scene(&name);
+            // 失敗（読めないシーン）は中で [Script] の 1 行を出して旧シーンのまま続ける（戻り値は差し替えの応答用）
+            let _ = self.apply_script_transition_scene(&name);
             self.send_hierarchy();
             return;
         }
@@ -234,28 +235,36 @@ impl App {
     /// 地形 LOD の事前収束・各種キャッシュの初期化）は 3 経路共通の
     /// `install_loaded_scene`（app_init.rs）に委譲する。
     /// パスは assets:// 仮想パスのまま Scene::load へ渡す（PAK モード対応）。
-    fn apply_script_transition_scene(&mut self, name_or_path: &str) {
-        if self.draw_ctx.is_none() { return; }
+    ///
+    /// 実行中の差し替えの「今のシーンの読み直し」（hot_reload_ops.rs）もこの経路を使う（Play 中のシーンの入れ替えを
+    /// スクリプトの遷移と同じ手順・同じ後始末にそろえるため）。
+    ///
+    /// # 戻り値
+    /// 切り替えたシーンのパス。読めなかったら理由（旧シーンのまま。スクリプトの遷移ではログの 1 行だけで続ける）。
+    pub(super) fn apply_script_transition_scene(&mut self, name_or_path: &str) -> Result<String, String> {
+        if self.draw_ctx.is_none() {
+            return Err("描画の準備ができていないためシーンを読めません".to_string());
+        }
         let path = self.resolve_scene_ref(name_or_path);
 
         // 事前読み込み済みならそれを消費し、なければここで読み込む（自動 Load）
         let loaded = match self.preloaded_scene.take() {
-            Some((p, scene, cam)) if p == path => Some((scene, cam)),
+            Some((p, scene, cam)) if p == path => Ok((scene, cam)),
             other => {
                 // 別シーンの事前読み込みが残っていた場合は破棄する
                 drop(other);
                 let host = self.scripting_host.clone();
                 let ctx  = self.draw_ctx.as_ref().unwrap();
                 match Scene::load(std::path::Path::new(&path), ctx, host.as_ref()) {
-                    Ok((scene, cam)) => Some((scene, cam)),
+                    Ok((scene, cam)) => Ok((scene, cam)),
                     Err(e) => {
                         eprintln!("[Script] Scene.Transition 失敗 ({name_or_path} → {path}): {e}");
-                        None
+                        Err(format!("シーン {path} を読めません: {e}"))
                     }
                 }
             }
         };
-        let Some((new_scene, cam_data)) = loaded else { return };
+        let (new_scene, cam_data) = loaded?;
 
         // ── Play 開始状態の保全（シーン差し替えの直前に必ず行う）──────────────
         // `install_loaded_scene` は旧 World を捨て、`rebuild_terrain_after_load` が
@@ -320,6 +329,7 @@ impl App {
         self.actor_virtual_selected_slot_idx = 0;
         self.send_selected();
         self.send_hierarchy_reset();
+        Ok(path)
     }
 
     /// 物理イベント（衝突・トリガー）をスクリプトのコールバックへ配信する。

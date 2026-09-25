@@ -82,7 +82,21 @@ Play 中は常に保留される。
 詳細と制約（同一フレーム内で同じ名前を 2 回要求すると 2 つ作られる等）は
 `docs/scripting_api.md` の `SpawnOnce` の節を参照。
 
-## 6. 関連ファイル
+## 6. Android の実行中の差し替え（端末へ送る）
+
+Android の実行中（端末のアプリが動いていて IPC がつながっている間）は、上の PC 向けの自動再読込とは**別の監視**
+（`editor/src/AndroidRun/AndroidHotReloadController.cs`）が保存を拾い、端末へ送って取り込ませる。正典は
+[android.md](android.md) §23。
+
+- **保留しない。** Android の実行は「動かしたまま直したものを反映する」ための機能なので、端末のゲームが動いていても
+  すぐに差し替える（第 1 節の副作用＝スクリプトの差し替えは `OnStart` の再実行、シーンの読み直しはシーンの開始時へ戻る、は同じ）。
+- 設定は PC と共通: 「スクリプトを自動再読込」がオフなら `.cs` を、「シーンを自動再読込」がオフなら `.scene` を端末へ送らない
+  （判定は変更を覚える時点。画像・モデル等のアセットは常に送る）。「Play 中もスクリプトを即時反映する」は Android には効かない。
+- シーンは開いているシーンに限らず、保存された `.scene` を送る（端末の今のシーンなら読み直し、違えば送っただけで遷移したときに反映）。
+  未保存の編集は送らない（保存したときに送られる）。
+- PC 側の自動再読込（第 2〜3 節）は Android の実行中もそのまま動く（エディタの Edit のワールドは PC の規則で更新される）。
+
+## 7. 関連ファイル
 
 | ファイル | 役割 |
 | --- | --- |
@@ -94,3 +108,5 @@ Play 中は常に保留される。
 | `editor/src/MainWindow.xaml.cs` | スクリプト側の依存注入・メニュートグル |
 | `editor/src/MainWindow.Camera.cs` | `OnStateChanged` での保留分の消化 |
 | `editor/src/EditorPreferences.cs` | `auto_reload_scripts` / `auto_reload_scene` / `play_script_hot_reload` |
+| `editor/src/AndroidRun/AndroidHotReloadController.cs` | Android の実行中の監視・まとめ・差し替えの呼び出し（第 6 節） |
+| `editor/src/MainWindow.AndroidRun.cs` | 上記の依存注入（種類ごとの設定の参照・Output への配線） |

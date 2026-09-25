@@ -1259,6 +1259,23 @@ impl ShadingAssetCache {
         self.built.borrow_mut().clear();
         self.paths.borrow_mut().clear();
     }
+
+    /// パスが条件に合うアセットの追跡状態を捨てる（実行中の差し替え。§23）。
+    ///
+    /// 次の `resolve` で「初回」として必ず読み直す（mtime のポーリング間隔・ホットリロードの可否を待たない）。
+    /// ビルド結果は内容ハッシュが鍵なので残してよい（中身が同じなら使い回し、違えば新しくビルドする）。
+    ///
+    /// # 引数
+    /// * `refers` - アセットのパスが差し替え対象を指すか
+    ///
+    /// # 戻り値
+    /// 捨てた件数。
+    pub fn forget_matching(&self, refers: &dyn Fn(&str) -> bool) -> usize {
+        let mut paths = self.paths.borrow_mut();
+        let before = paths.len();
+        paths.retain(|path, _| !refers(path));
+        before - paths.len()
+    }
 }
 
 // ============================================================

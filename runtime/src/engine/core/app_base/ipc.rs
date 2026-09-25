@@ -1,3 +1,4 @@
+use crate::engine::core::app_base::hot_reload::wire as hot_reload_wire;
 use crate::engine::core::app_base::ipc_transport::{self, IpcTransportKind};
 use crate::engine::core::input::inject::{parse_inject_command, INJECT_COMMAND_PREFIX};
 
@@ -523,6 +524,10 @@ pub enum IpcCommand {
     /// ユーザースクリプトを再コンパイルし、全 ScriptComponent を再生成する（ホットリロード）
     /// フォーマット: RELOAD_SCRIPTS
     ReloadScripts,
+    /// 実行中の差し替え（RELOAD_SCENE / RELOAD_SCENE:{相対パス} / RELOAD_ASSET:{相対パス}。docs/android.md §23）。
+    /// 書式と応答（RELOAD_DONE: / RELOAD_SKIPPED: / RELOAD_FAILED:）の正典は hot_reload/wire.rs。
+    /// App はフレームの境界でまとめて適用する（app/hot_reload_ops.rs）。
+    HotReload(crate::engine::core::app_base::hot_reload::HotReloadRequest),
     /// コンポーネントスロットを複製する
     /// フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
     DuplicateComponent { actor_dfs_id: u32, slot_idx: u32 },
@@ -2308,6 +2313,9 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                                 })
                         }
                         "RELOAD_SCRIPTS" => Some(IpcCommand::ReloadScripts),
+                        // 実行中の差し替え（RELOAD_SCENE[:相対パス] / RELOAD_ASSET:相対パス。書式の正典は hot_reload/wire.rs。
+                        // 受け付けないパスも Invalid として積み、応答で理由を返す＝相手を応答待ちのまま待たせない）
+                        s if hot_reload_wire::is_reload_line(s) => hot_reload_wire::parse(s).map(IpcCommand::HotReload),
                         s if s.starts_with("DUPLICATE_COMPONENT:") => {
                             // フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
                             parse2u(&s["DUPLICATE_COMPONENT:".len()..])
@@ -3367,6 +3375,29 @@ mod tests {
         assert!(matches!(commands[1], IpcCommand::Resume));
         assert!(matches!(commands[2], IpcCommand::Detach));
         assert!(matches!(commands[3], IpcCommand::Stop), "最後の行は改行が無くても読む");
+    }
+
+    /// 実行中の差し替えの命令（RELOAD_SCENE[:パス] / RELOAD_ASSET:パス）が HotReload になり、従来の RELOAD_SCRIPTS は
+    /// そのまま ReloadScripts になる。受け付けないパスも Invalid として届く（応答で理由を返すため。§23）。
+    #[test]
+    fn read_loop_parses_hot_reload_commands() {
+        use crate::engine::core::app_base::hot_reload::HotReloadRequest;
+        let (commands, _) = read_all(
+            "RELOAD_SCRIPTS\nRELOAD_SCENE\nRELOAD_SCENE:scenes/Main.scene\nRELOAD_ASSET:assets://ui\\a.png\nRELOAD_ASSET:../x\n",
+        );
+        assert_eq!(commands.len(), 5);
+        assert!(matches!(commands[0], IpcCommand::ReloadScripts));
+        let requests: Vec<&HotReloadRequest> = commands[1..]
+            .iter()
+            .map(|command| match command {
+                IpcCommand::HotReload(request) => request,
+                _ => panic!("HotReload を期待した"),
+            })
+            .collect();
+        assert_eq!(*requests[0], HotReloadRequest::Scene { only_if: None });
+        assert_eq!(*requests[1], HotReloadRequest::Scene { only_if: Some("scenes/Main.scene".to_string()) });
+        assert_eq!(*requests[2], HotReloadRequest::Asset { relative: "ui/a.png".to_string() });
+        assert!(matches!(requests[3], HotReloadRequest::Invalid { .. }));
     }
 
     /// 受け手（App）が居なくなったら ReceiverGone で終わる（TCP の受け付けスレッドが受け付けをやめる合図）。

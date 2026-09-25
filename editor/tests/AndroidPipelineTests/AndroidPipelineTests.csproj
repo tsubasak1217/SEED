@@ -62,6 +62,38 @@
     <Compile Include="..\..\src\Packaging\PackageLayout.cs">
       <Link>Linked\Packaging\PackageLayout.cs</Link>
     </Compile>
+    <!-- 実行中の差し替え（§23）: 収録の規則（参照の閉包）と pak に入れるときの中身（パス書き換え）。SeedPak と同じファイル -->
+    <Compile Include="..\..\src\Packaging\PackagingData.cs">
+      <Link>Linked\Packaging\PackagingData.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
+      <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
+      <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\Collect\AssetCollector.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\AssetPathRewriter.cs">
+      <Link>Linked\Packaging\Pak\AssetPathRewriter.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\PakEntryContent.cs">
+      <Link>Linked\Packaging\Pak\PakEntryContent.cs</Link>
+    </Compile>
+    <!-- テストだけが使う: 差し替えで送る中身と pak の中身が同じ形であることを、実物の PakWriter で作った pak と比べて確かめる -->
+    <Compile Include="..\..\src\Packaging\Pak\PakWriter.cs">
+      <Link>Linked\Packaging\Pak\PakWriter.cs</Link>
+    </Compile>
     <!-- SeedAndroid の引数解釈と設定 JSON（純粋な処理・ファイルの読み込みだけ） -->
     <Compile Include="..\..\tools\SeedAndroid\SeedAndroidArguments.cs">
       <Link>Linked\Tools\SeedAndroid\SeedAndroidArguments.cs</Link>

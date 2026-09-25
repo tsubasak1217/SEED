@@ -66,7 +66,9 @@ pub fn prepare(app: &AndroidApp) -> Option<EmbeddedClrHost> {
     let manifest = read_manifest(package.as_ref(), abi)?;
 
     // ── 3. スクリプトの DLL の置き場（展開より先に決める。どこにも無ければ .NET を展開する意味が無いので何もしない）──
-    let binaries = script_sources::choose(app, package.clone())?;
+    //    候補の並びは実行中の差し替え（RELOAD_SCRIPTS）で置き場を選び直すのにエンジンへ渡す（§23）
+    let script_choice = script_sources::choose(app, package.clone())?;
+    let binaries = Arc::clone(&script_choice.chosen);
 
     // ── 2. 展開 ──
     let installed = install_runtime(app, package.as_ref(), abi, &manifest)?;
@@ -108,6 +110,7 @@ pub fn prepare(app: &AndroidApp) -> Option<EmbeddedClrHost> {
         runtime_config_path,
         runtime_properties: manifest.runtime_properties.clone().into_iter().collect(),
         binaries,
+        reload_candidates: script_choice.candidates,
         label: manifest.describe(),
     })
 }

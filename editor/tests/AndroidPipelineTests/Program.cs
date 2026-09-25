@@ -17,6 +17,8 @@ namespace AndroidPipelineTests;
 ///   8. run の起動の前に push した DLL の上書き（files/bin/）を消す判断・run-as の引数・出力の読み方（PushOverrideTests。段階C-4）
 ///   9. 端末のアプリとの IPC（ポート・adb forward・起動の extra・行の送受信・挨拶までのやり直し・スクリーンショット・
 ///      SeedAndroid の pause / resume / screenshot の引数。IpcTests。段階D-1）
+///  10. 実行中の差し替え（拡張子 → 命令の表・命令と応答の照合・差分の選び方〈pak と同じ形で読み、送った記録 → APK の pak と比べる〉・
+///      上書き層の記録・tar・命令の送り方・run での上書きの解除・SeedAndroid の reload / push --assets。HotReloadTests。§23）
 /// 端末・adb・cargo・Gradle は使わない（IPC はループバックの偽のランタイム）。
 /// </summary>
 public static class Program
@@ -35,6 +37,7 @@ public static class Program
         PakSceneSeedTests.Register(harness);
         PushOverrideTests.Register(harness);
         IpcTests.Register(harness);
+        HotReloadTests.Register(harness);
         return harness.Run();
     }
 }

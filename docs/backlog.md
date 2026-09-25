@@ -1539,25 +1539,42 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 
 - [x] **実機の描画が重い（GPU 待ちが支配的と見られる・段階D）** — 2026-09-24 記載 / 2026-09-25 対応（D-2。docs/android.md §22）。
   描画品質プリセット（`runtime/config/render_presets.json`・`renderer/quality/`）を入れ、Android の既定を `mobile`
-  （ゲーム画面を 0.5 倍で描いて拡大・前方描画・SSGI／AO／反射／ブルーム・水面反射なし・影 1024。UI は画面の解像度のまま）にした。
+  （ゲーム画面を 0.5 倍〈段階D-3 で 0.75 倍に見直し〉で描いて拡大・前方描画・SSGI／AO／反射／ブルーム・水面反射なし・影 1024。UI は画面の解像度のまま）にした。
   パスごとの GPU タイムスタンプ計測（`renderer/gpu_timing/`・`seed.gpu_timing=1`）も入れた。デスクトップの既定 `desktop` は何も下げない
-  （PC の Play は画素一致で確認）。**実機での効果の計測は未実施**（下の「D-2 の実機計測」）。以下は記載時のメモ。
+  （PC の Play は画素一致で確認）。実機の効果は段階D-3 で計測した（`desktop` 16.4 fps → `mobile` 59.2 fps。下の「D-2 の実機計測」）。以下は記載時のメモ。
   Pixel 6a（Mali-G78・ドライバ r54p1）の debug ビルドで
   縦 約 18〜19 fps／横 約 37〜39 fps。`[PERF]` では 1 フレーム約 50 ms のうち提示待ち（`finish`）28〜41 ms・
   `begin_frame` 最大 19 ms で、CPU 側は数 ms。デスクトップ向けの描画経路（deferred・MRT 5 枚・シャドウ 2048・SSGI）を
   端末の実解像度 1080x2400 のまま回しているため。モバイル向け描画プリセット（描画解像度スケール・重い後処理の既定オフ）で
   対処する。縦より横が速い理由は未調査（描画する画素数は同じ）。関連: `runtime/src/engine/core/renderer/`、
   project_settings の `render_resolution`。
-- [ ] **D-2 の実機計測と `mobile` の見直し** — 2026-09-25（段階D-2 で未実施）。実装・PC での確認・APK の作成と導入まで済んだが、
-  確認の時間中ずっと端末の画面が消えていて（`mWakefulness=Dozing`）、実機のプリセットごとの fps・GPU の内訳・スクリーンショット・
-  座標（タッチ・UI の当たり判定が描画スケールで変わらないこと）を測れていない。docs/android.md §22.6 の手順（`am start --es seed.gpu_timing 1
-  --es seed.quality <名前> --es seed.quality_overrides '<キー=値>'` → `[SEED GPU]` / `[SEED HEARTBEAT]`）で `desktop`・`mobile`・
-  つまみ 1 つずつ（`render_scale` 0.5/0.75・`deferred=false`・`gi=flat`・`shadows=false`）を測り、`mobile` の中身を数値で決め直す。
-  目標 60 fps（少なくとも 30 fps 安定）。debug の .so で CPU 律速になれば release の .so（`--release`）でも測る。関連: `runtime/config/render_presets.json`。
-- [ ] **描画スケールを下げてもフル解像度で残るパス（低優先）** — 2026-09-25（D-2）。トーンマップ後の LDR 中間（Rgba16Float）・UI・提示のコピーは
-  論理サイズ（画面の解像度）のまま。UI が無いフレームはトーンマップを提示先へ直接書けば 1 パスと 1 枚ぶんの帯域を減らせる。
-  LDR 中間を 8bit にする案もある（パイプラインのカラー形式が HDR 前提なので別パイプラインが要る）。実機の内訳（`tonemap`・`ui`・`present`）を見てから。
-  関連: `app/frame_renderer.rs` のトーンマップ・`RenderFrame::present_to_swapchain`。
+- [x] **D-2（段階D）の実機計測と `mobile` の見直し** — 2026-09-25 記載（段階D-2 で未実施）/ 同日対応（段階D-3）。
+  Pixel 6a・縦 1080x2400・debug の .so・`proj_bench`（DamagedHelmet 9 体・影ありの平行光・点光源 4・床・UI）で、組み合わせごとに 25 秒測った
+  （表は docs/android.md §22.7）。`desktop` 16.4 fps（GPU 59.2 ms。lighting 41.5・ssgi 11.0）→ `mobile` 59.2 fps（GPU 10.5 ms）。
+  最大の要因はデファードのライティング（等倍 41.5 ms。前方描画の約 5 倍）と SSGI（11 ms）。前方描画の上では描画スケール 0.5 と 0.75 の差が
+  GPU 約 2 ms しかなく、0.5 は床の縁や細部のぼけが目立つため `mobile` を 0.5 → 0.75、`mobile_high` を 0.75 → 1.0 にした
+  （`runtime/config/render_presets.json`）。座標はタップの位置・`SafeArea` とも `desktop` / `mobile` で一致。残りは下の 4 件。以下は記載時のメモ。
+  実装・PC での確認・APK の作成と導入まで済んだが、確認の時間中ずっと端末の画面が消えていて（`mWakefulness=Dozing`）、実機のプリセットごとの
+  fps・GPU の内訳・スクリーンショット・座標（タッチ・UI の当たり判定が描画スケールで変わらないこと）を測れていない。docs/android.md §22.6 の手順
+  （`am start --es seed.gpu_timing 1 --es seed.quality <名前> --es seed.quality_overrides '<キー=値>'` → `[SEED GPU]` / `[SEED HEARTBEAT]`）で
+  `desktop`・`mobile`・つまみ 1 つずつ（`render_scale` 0.5/0.75・`deferred=false`・`gi=flat`・`shadows=false`）を測り、`mobile` の中身を数値で決め直す。
+- [ ] **デファードのライティングが Mali で前方描画の約 5 倍重い原因の調査** — 2026-09-25（段階D-3 の実機計測）。Pixel 6a（Mali-G78）の等倍で
+  lighting 41.5 ms（前方描画の forward 8.0 ms）。描画スケール 0.5 でも 10.8 ms。G-Buffer（MRT 5 枚・36 byte/画素）の読み・クラスタのライト走査・
+  シャドウのサンプリングのどれが効いているかを、区間を分けて（`renderer/gpu_timing/`）か、つまみ（影なし・点光源なし）で切り分ける。
+  `mobile` は前方描画なので今は効かないが、シェーディングアセット（L3）・SSGI を使うゲームが `deferred: true` へ戻すと効いてくる。
+  関連: `renderer/deferred.rs`・`renderer/gbuffer.rs`・`renderer/clustered.rs`・docs/android.md §22.7・§22.8。
+- [ ] **固定分 約 4.5 ms（クラスタ構築・トーンマップ・UI・提示）の削減** — 2026-09-25 記載（D-2 の「描画スケールを下げてもフル解像度で残るパス」を
+  段階D-3 の実測で置き換え）。クラスタ構築 約 1 ms・トーンマップ 約 1.9 ms・UI・提示のコピーは描画スケールに関係なく画面の解像度で走り、
+  `mobile` の GPU 10.5 ms のうち約 4.5 ms を占める。トーンマップ後の LDR 中間（Rgba16Float）・UI・提示のコピーは論理サイズ（画面の解像度）のまま。
+  UI が無いフレームはトーンマップを提示先へ直接書けば 1 パスと 1 枚ぶんの帯域を減らせる。LDR 中間を 8bit にする案もある（パイプラインの
+  カラー形式が HDR 前提なので別パイプラインが要る）。クラスタ構築は静止したシーンでは毎フレーム作り直さずに済む余地。
+  関連: `app/frame_renderer.rs` のトーンマップ・`RenderFrame::present_to_swapchain`・`renderer/clustered.rs`。
+- [ ] **横向き・動くシーン・影ありの実機計測** — 2026-09-25（段階D-3 の残り）。計測は縦・静止した `proj_bench` だけで、影の深度パスは
+  静的スキップで省略されていた（動くシーンでは毎フレーム影を描く）。横向き（§7 で縦より速かった理由も未調査）・アニメーションするモデル・
+  動くカメラで、`mobile` の fps と GPU の内訳（`shadow` 区間）を測る。debug の .so で CPU が律速になれば release の .so（`--release`）でも測る。
+- [ ] **重いシーンで 60 fps を割るなら `mobile` の描画スケールを 0.6 へ** — 2026-09-25（段階D-3・判断の保留）。`proj_bench` では 0.75 で 59.2 fps
+  （GPU 10.5 ms）だが、実ゲーム（わらしべフィッシングの水面・地形・パーティクル）で 60 fps を割るなら 0.6（GPU 9.2 ms・0.75 との差 約 1.3 ms）へ
+  下げる（`runtime/config/render_presets.json` の 1 行。プロジェクトごとなら `render_quality.android.render_scale`）。
 - [ ] **品質のつまみの残り（テクスチャの最大解像度・クラスタの分割数・カスケード数）** — 2026-09-25（D-2）。候補に挙がったが入れていない。
   テクスチャは読み込み時にミップの上段を捨てる形が素直（`loader/asset_cache` と GPU への積み込み）。クラスタの分割数（16×9×24）と
   CSM のカスケード数（3）はシェーダの定数なので、変えるならシェーダの差し替えが要る。実機の内訳で必要と分かったら足す。
@@ -1905,9 +1922,33 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [ ] **Android でエディタから実行しても `SEED.Application.IsEditorPlay` は false** — 2026-09-25（段階D-1・要判断）。判定は「Play かつ名前付きパイプでつながった」
   （`app_env.rs`）のままにした（TCP は起動の時点ではつながっていない。段階D-1 の前と同じ）。エディタからの Android の実行でもデバッグ表示を出したいなら、
   起動オプションに「エディタからの実行」を足して判定に使う。
-- [ ] **Android の実行中のシーンの読み直し（IPC）が無い** — 2026-09-25（段階C-3 の「一時停止が無い」の項目から分けた）。IPC の通信路（段階D-1）はできたので、
-  PC の `LOAD_SCENE` と同じ命令を送れば読み直せるが、端末の APK の pak にある版を読むだけ（エディタで保存した最新の内容は届かない。届けるには pak の差し替えか
-  アセットの転送が要る）。
+- [x] **Android の実行中のシーンの読み直し（IPC）が無い** — 2026-09-25（段階C-3 の「一時停止が無い」の項目から分けた）/ 同日対応（段階D の実行中の差し替え）。
+  デバッグ版は端末の内部 `files/assets` を pak より先に読む上書き層にし（`asset_fs::FilesystemLayer::Overlay`）、エディタは Android の実行中に保存したシーンと
+  参照するアセットのうち端末と違うものだけを run-as で送って `RELOAD_SCENE:<相対パス>` を送る（アセットは `RELOAD_ASSET:<相対パス>`、スクリプトは DLL を
+  `files/bin` へ送って `RELOAD_SCRIPTS`）。ランタイムは要求をフレームの境界でまとめて適用する（シーンの読み直しは 1 回）。`run` は上書きを消す。
+  SeedAndroid に `push --assets` / `reload`。正典は docs/android.md §23。PC の TCP と実機（Pixel 6a。SeedAndroid）で確かめた（エディタの画面からは未確認）。
+  以下は記載時のメモ。PC の `LOAD_SCENE` と同じ命令を送れば読み直せるが、端末の APK の pak にある版を読むだけ（エディタで保存した最新の内容は届かない。
+  届けるには pak の差し替えかアセットの転送が要る）。
+- [x] **実行中の差し替えを実機で確かめていない** — 2026-09-25 記載（段階D の実行中の差し替え）/ 2026-09-26 対応。Pixel 6a・`proj_probe`・SeedAndroid で、
+  モデルの上書き → `push --assets`（0.9 秒・1 ファイル）→ `reload asset`（応答 58 ms・端末 42.1 ms）で画面のモデルが変わり、シーンの光の色 → `reload scene`
+  （応答 39 ms・端末 15.2 ms）、スクリプトの文言 v2 → v3 → `reload scripts`（11.2 秒。ほぼ SeedPak と 9.1 MB の転送。端末の読み直し 29.7 ms）で同じプロセスのまま
+  `[PROBE v3]`。上書きの解除はインストールの工程（APK を入れ直した run）と起動の工程（同じ APK の run）の両方で 2 行が出て、`files/` に `assets`・`bin` が無く、
+  画面は最初と同一（PNG の MD5 一致）。docs/android.md §23.10。
+- [ ] **実行中の差し替えをエディタの画面から確かめていない** — 2026-09-26（段階D の実行中の差し替え）。エディタを起動しない制約のため、
+  Android の実行中に保存 → 0.6 秒後に Output へ「差し替え: …」「反映: …」が出て端末の画面が変わる、を画面で見ていない（WPF 非依存の段取りは
+  `AndroidRunUiTests`、実機の差し替えは SeedAndroid で確認済み）。確かめる手順は docs/android.md §23.7。
+- [ ] **実行中の差し替えの制限（画像を参照するモデル・一部のキャッシュ・削除）** — 2026-09-25（段階D の実行中の差し替え）。
+  (1) モデルが外部の画像を参照している（`.gltf` の外部 `uri`・`.mtl`）とき、画像だけを差し替えてもモデルのテクスチャは変わらない（画像は `InPlace`＝スプライト等の
+  キャッシュだけを捨てる。モデルを保存し直すと入る）。直すならモデルの読み込みが使った画像を記録し、画像の差し替えで依存するモデルも捨てる。
+  (2) 空（スカイボックス）・パーティクルの形状等、キャッシュを捨てる対象に入れていないものがある（`app/hot_reload_ops.rs` の `forget_asset_caches`）。
+  (3) 削除したファイルは端末へ伝えない（上書き層に残る。`run` で消える）。(4) フォント・`project_settings.json`・スクリプトホスト（`scripting/`）は差し替えられない。
+  (5) `run` 以外で端末のアプリのデータを消すと送った記録（`cache/android/asset_overlay.json`）が古くなり、手元で変えていないファイルは送られない
+  （差し替えの前に `files/assets` の有無を見る等で防げる）。
+  ~~(6) 上書き（`files/assets`）を消すのは起動する `run` だけなので、`install`・`run --no-launch` の後にランチャーから起動すると、残った上書きが新しい pak より
+  優先される~~ → 同日対応: APK を入れ直した直後（インストールの工程）でも `files/assets`・`files/bin` を run と同じ規則で消し、Output に 1 行出す
+  （`editor/src/Android/Steps/PushedOverrides.cs`・`InstallStep.cs`。単体テスト `PushOverrideTests`。docs/android.md §17.7・§23.4）。
+  残り: 同じ APK が入っていてインストールを飛ばした `install`（と `run --no-launch`）では消さないので、その後ランチャーから起動すると差し替えた内容のまま動く（低優先）。
+  関連: `runtime/src/engine/core/app_base/hot_reload/`・`editor/src/Android/HotReload/`・`editor/src/Android/Steps/PushedOverrides.cs`。
 - [ ] **Android の IPC のポートの設定の画面が無い** — 2026-09-25（段階D-1・低優先）。エディタの設定 `editor/settings/editor_preferences.json` の
   `"android": { "ipc_port": … }`（未設定なら 52735、0 で使わない）を手で書く。上の「AVD を選ぶ設定の画面」と一緒に作る。
 - [ ] **Android の IPC をワイヤレスデバッグ（adb の Wi-Fi 接続）で確かめていない** — 2026-09-25（段階D-1）。仕組みは adb forward なので同じはずだが、
@@ -1944,12 +1985,15 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [x] **`push` した DLL は端末の `files/bin/` に残り、その後の `run`（APK の `bin/`）より優先される** — 2026-09-25（段階C-4 の実機確認で気付いた）/ 同日対応（段階C-4 の追加修正）。
   `run`（`Goal = Run`・`--project`・`--push-scripts` なし。エディタの実行ボタンも同じ）は APK の内容を正とし、起動の工程でアプリを止めた後・起動の前に
   自分のアプリの `files/bin/` を run-as で消す（あったときだけ Output に「push した DLL の上書きを解除しました…」の 1 行。消せなければ警告して起動は続ける）。
-  `push`・`run --push-scripts`・開発用の `--assets-dir`（`files/bin/` が唯一の置き場）は消さない。判断は `Steps/LaunchStep.ClearsPushedScripts`、
+  `push`・`run --push-scripts`・開発用の `--assets-dir`（`files/bin/` が唯一の置き場）は消さない。判断は `Steps/LaunchStep.ClearsPushedScripts`（段階D で `Steps/PushedOverrides.ClearsScripts` へ移した）、
   消去は `AdbClient.RunAsRemoveDirectoryAsync`（相対パスだけ・`..` 不可）。単体テスト `AndroidPipelineTests` の `PushOverrideTests`。docs/android.md §17.7・§20.3。
-  **実機での確認は未実施**（作業中は端末の前面が利用者のほかのアプリで、15 分待ってもランチャーに戻らなかった）。端末が空いているときに
-  `push --project <proj_probe>` → `run --project <proj_probe>` で、Output の「push した DLL の上書きを解除しました」・logcat の `スクリプトの置き場: apk:seed/bin/`・
+  ~~**実機での確認は未実施**~~ → 2026-09-26 に実機で確かめた（段階D の実行中の差し替えの確認で、`files/bin` に DLL を置いた状態から `run` → 起動の工程で
+  「push した DLL の上書きを解除しました」・logcat の `スクリプトの置き場: apk:seed/bin/`・`run-as … ls files` に `bin` が無い。docs/android.md §23.10）。
+  記載時の手順: `push --project <proj_probe>` → `run --project <proj_probe>` で、Output の「push した DLL の上書きを解除しました」・logcat の `スクリプトの置き場: apk:seed/bin/`・
   `adb exec-out run-as com.seedengine.runtime ls files` に `bin` が無いことを確かめる。
-  残り: `install` だけ（起動しない）では消さないので、その後ランチャーから起動すると `push` の DLL で動く（低優先）。以下は記載時のメモ。
+  ~~残り: `install` だけ（起動しない）では消さないので、その後ランチャーから起動すると `push` の DLL で動く（低優先）。~~ → 段階D（実行中の差し替え）で対応:
+  APK を入れ直した直後（`install`・`run` のインストールの工程）でも同じ規則で消す（判断は `Steps/PushedOverrides.ClearsScripts`。同じ APK でインストールを
+  飛ばしたときは消さない）。以下は記載時のメモ。
   端末は `files/bin/` → APK の `bin/` の順に探すので、`push` の後に `.cs` を直して `run` しても（APK の DLL は新しくなるのに）古い `push` の DLL で動く
   （docs/android.md §17.7 の「差し替えを消すと APK の中のものへ戻る」を忘れると気付きにくい）。`run`（`--push-scripts` なし）のときに `files/bin/` を消す、
   か残っていれば警告する。エディタの実行は `push` を使わないが、SeedAndroid と併用すると起きる。関連: `editor/src/Android/Steps/PushScriptsStep.cs`・`LaunchStep.cs`。

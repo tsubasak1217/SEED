@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）、段階B の C# スクリプトの実行（APK に同梱した .NET 10 の CoreCLR。§17）、段階C-1 のビルド・配置・起動の C# 化（中核 `editor/src/Android/` とコンソールツール `SeedAndroid`。§4.6・§5）とアプリの識別情報（§18）、段階C-2 のエディタからの実行（実行ボタンの実行先セレクタ・Output パネル・停止・パッケージ化ウィンドウの Android 出力。§20）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）、段階B の C# スクリプトの実行（APK に同梱した .NET 10 の CoreCLR。§17）、段階C-1 のビルド・配置・起動の C# 化（中核 `editor/src/Android/` とコンソールツール `SeedAndroid`。§4.6・§5）とアプリの識別情報（§18）、段階C-2 のエディタからの実行（実行ボタンの実行先セレクタ・Output パネル・停止・パッケージ化ウィンドウの Android 出力。§20）、段階D の IPC の TCP 化と一時停止（§21）・描画プリセット（§22）・実行中の差し替え（§23）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -507,7 +507,7 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
 | `[SEED TOUCH FRAME] f=.. n=.. #0:Began(x,y)d(dx,dy) ... \| mouse=(x,y) L=PD-` | 入力状態（`Input.TouchCount` / `GetTouch` とタッチ由来のマウス）のフレーム末の値（`app/touch_diag.rs`） | 変化のあったフレームだけ 1 行。`L` は左ボタンの押下中 P / 押した瞬間 D / 離した瞬間 U（§12.3） |
 | `[SEED TOUCH TEST] Started id=0x5eed000N ...` | 検証用の合成タッチ列（`debug.seed.touch_test=1` のときだけ。§12.3） | 合成したイベントそのもの。反映結果は `[SEED TOUCH FRAME]` で見る |
 | `[SEED HEARTBEAT] presented_frames total=N +d in 3.0s (x fps)` | 生存確認（3 秒ごと） | バックグラウンド中は `+0`、復帰で再び増える |
-| `[SEED QUALITY] preset=mobile render_scale=0.5 …` / `[SEED QUALITY][WARN] …` | 描画品質プリセットの決定（`app/render_quality.rs`。§22） | 使うプリセットと実効のつまみ。知らないプリセット名・読めないつまみは WARN。`[SEED FEATURES]` の `(品質上限)` は上限で下がった機能 |
+| `[SEED QUALITY] preset=mobile render_scale=0.75 …` / `[SEED QUALITY][WARN] …` | 描画品質プリセットの決定（`app/render_quality.rs`。§22） | 使うプリセットと実効のつまみ。知らないプリセット名・読めないつまみは WARN。`[SEED FEATURES]` の `(品質上限)` は上限で下がった機能 |
 | `[SEED GPU] 3.0s cpu_frames=… \| cpu frame=… acquire=… present=… \| gpu total=… shadow=… …` | パスごとの GPU 時間（起動オプション `seed.gpu_timing=1` のときだけ。§22.6） | 3 秒ごとの平均（ms）。`present` は提示待ちの目安、`gpu` の各区間は描画の節目ごとの GPU 時間 |
 | `書き込み先: データ（セーブ）=… / キャッシュ=…`・`環境変数 TMPDIR=…` | 書き込み先の設定（app_dirs.rs） | §14.1 |
 | `[SEED SAVE] save file: …` / `suspended: …` / `onDestroy（プロセス終了前）: …` | セーブの置き場と自動書き出しの結果 | 「未書き出しの変更を書き出しました」「未書き出しの変更なし」「セーブ未使用」（§14.2） |
@@ -599,9 +599,10 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
   戻ると再開する（段階A-5。§16）。出力デバイスの切り替え（ヘッドホン・Bluetooth）からの復帰は未対応・未確認（§16.7）。
 - **実機の描画は重い**。Pixel 6a の debug ビルドで縦 約 18〜19 fps（GPU 待ちが支配的と見られる）。デスクトップ向けの描画経路
   （deferred・MRT 5 枚・シャドウ 2048・SSGI 等）を端末の実解像度 1080x2400 でそのまま回しているため。
-  → 段階D-2 でモバイル向けの描画品質プリセットを入れた（§22。Android の既定は `mobile`＝ゲーム画面を 0.5 倍で描いて拡大・
+  → 段階D-2 でモバイル向けの描画品質プリセットを入れた（§22。Android の既定は `mobile`＝ゲーム画面を 0.75 倍で描いて拡大・
   前方描画・SSGI／AO／反射／ブルーム・水面反射なし・影を軽く。UI は画面の解像度のまま）。パスごとの GPU 時間の計測
-  （`seed.gpu_timing=1`）も入れたが、**実機での効果の計測は未実施**（確認の時間中ずっと端末の画面が消えていた。§22.7 に手順）。
+  （`seed.gpu_timing=1`）で段階D-3 に実機で測り、`proj_bench`（縦）で `desktop` 16.4 fps（GPU 59.2 ms）→ `mobile` 59.2 fps（GPU 10.5 ms）
+  になった（最大の要因はデファードのライティングと SSGI。§22.7）。
 
 ---
 
@@ -613,7 +614,7 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
 | **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声（鳴ることの確認・背面での停止・音声フォーカス・音量キー。**2026-09-24 実装・§16**）、logcat の整備 |
 | **B** | スクリプト: **PC も Android も .NET 10 の CoreCLR に揃える**（PC は全 C# プロジェクトを `net10.0` へ移行済み。Android は `android-*` ランタイムパック＋同じ版の bionic パックの hostfxr / hostpolicy。§11）。ScriptPackager の事前コンパイル DLL とランタイムを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う（**2026-09-25 実装・§17**。Mono へ切り替え可）。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: **C-1（2026-09-25 実装・§4.6・§5・§18）** ビルド・配置・起動の手順を C# の中核（`editor/src/Android/`）とコンソールツール `SeedAndroid` に移し、変わっていない工程の自動の省略・アプリの識別情報のプロジェクト設定化。**C-2（2026-09-25 実装・§20）** 実行ボタンの隣の実行先セレクタ（PC／実機／エミュレータ）、中核を呼んでビルド → install → 起動 → logcat を Output パネルへ・停止ボタン・アプリ側の終了の検知、パッケージ化ウィンドウの Android 出力の実働化（デバッグ署名の APK）。pak/DLL だけ push する高速経路のエディタへの組み込みは持ち越し（backlog） |
-| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`。接続トークンで照合し、一時停止中もゲームの画面のまま）。**D-2（2026-09-25 実装・§22）** モバイル向けの描画品質プリセット（データドリブン。`runtime/config/render_presets.json`。Android の既定 `mobile`＝描画スケール 0.5・前方描画・重い後処理なし。UI は画面の解像度のまま）とパスごとの GPU タイムスタンプ計測（実機での効果の計測は未実施）。Wi-Fi 実行、実行中の差し替え、署名／AAB／16KB ページの最終確認、NativeAOT |
+| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`。接続トークンで照合し、一時停止中もゲームの画面のまま）。**D-2（2026-09-25 実装・§22）** モバイル向けの描画品質プリセット（データドリブン。`runtime/config/render_presets.json`。Android の既定 `mobile`＝描画スケール 0.5・前方描画・重い後処理なし。UI は画面の解像度のまま）とパスごとの GPU タイムスタンプ計測。**D-3（2026-09-25・§22.7）** 実機（Pixel 6a・縦）で計測し、`desktop` 16.4 fps → `mobile` 59.2 fps（GPU 59.2 → 10.5 ms。最大の要因はデファードのライティングと SSGI）。`mobile` の描画スケールを 0.5 → 0.75、`mobile_high` を 0.75 → 1.0 に見直した。**実行中の差し替え（2026-09-25 実装・§23）** Android の実行中にシーン・アセット・スクリプトを保存すると、違うものだけを端末の上書き層 `files/assets`（デバッグ版は pak より先に読む）・`files/bin` へ送り、`RELOAD_SCENE` / `RELOAD_ASSET` / `RELOAD_SCRIPTS` でフレームの境界に取り込む（SeedAndroid の `push --assets` / `reload`。実機でモデル・シーン・スクリプトの差し替えと解除を確かめた。エディタの画面からは未確認）。Wi-Fi 実行、署名／AAB／16KB ページの最終確認、NativeAOT |
 
 ---
 
@@ -1719,14 +1720,18 @@ hostfxr / hostpolicy / CoreCLR は dotnet-root 形式のフォルダに .so が�
 - 差し替えを消すと APK の中のものへ戻る: `adb exec-out run-as com.seedengine.runtime rm -rf files/bin`
 - **`run` は APK の内容を正とする**（段階C-4）: `--project` の `run`（エディタの実行ボタンも同じ `Goal = Run`）は、起動の工程で
   アプリを止めた後・起動の前に、自分のアプリの `files/bin/` を run-as で消す（`if [ -e files/bin ]; then rm -rf files/bin && echo removed; fi`。
-  `AdbClient.RunAsRemoveDirectoryAsync`）。あって消したときだけ `push した DLL の上書きを解除しました（端末の files/bin/ を消し、APK の bin/ のスクリプトで起動します）。`
+  `AdbClient.RunAsRemoveDirectoryAsync`）。あって消したときだけ `push した DLL の上書きを解除しました（端末の files/bin/ を消し、APK の bin/ のスクリプトを使います）。`
   の 1 行を出す（消せなければ警告して、そのまま起動する）。以前は `push` の後に `.cs` を直して `run` しても、残った `push` の DLL で動いていた。
-  消さないのは `push`・`run --push-scripts`（これから置く・置いた）と、開発用の `--assets-dir`（APK に `bin/` が無く `files/bin/` が唯一の置き場）。
-  判断は `Steps/LaunchStep.ClearsPushedScripts`（単体テスト `PushOverrideTests`）。`install` だけ（起動しない）では消さない。
+  **APK を入れ直したとき**（`install`・`run` のインストールの工程が APK を入れた直後。`adb install -r` はアプリのデータを残すため）も同じ規則で消す
+  （段階D の追加。同じ APK が入っていてインストールを飛ばしたときは消さない）。
+  消さないのは `push`・`--push-scripts`（これから置く・置いた）と、開発用の `--assets-dir`（APK に `bin/` が無く `files/bin/` が唯一の置き場）。
+  判断と消し方は `Steps/PushedOverrides`（`ClearsScripts`。場面は `AfterInstall` / `BeforeLaunch`。単体テスト `PushOverrideTests`）。
+  差し替えで送ったアセット（`files/assets/`）も同じ場面で消す（§23.4）。
 - 当初は外部アプリ専用フォルダへ `adb push` する形にしたが、実機では §4.5 と同じ理由（adb push が作ったフォルダは shell の所有）で
   アプリから読めなかったため、run-as の内部フォルダへ変えた。外部フォルダは手で置く場合の候補として残した（エミュレータでは使える）。
 - Android ではその場コンパイル（.cs から）をしない（Roslyn の参照アセンブリが端末に無い）。`bin/` には PC と同じく Roslyn の DLL（約 9 MB）も
-  入るが、Android では読み込まれない（backlog）。スクリプトのホットリロードは無い（DLL を差し替えて再起動する）。
+  入るが、Android では読み込まれない（backlog）。動かしたままの差し替えは §23（`files/bin/` へ送った DLL を `RELOAD_SCRIPTS` で読み直す。
+  SeedAndroid の `reload scripts`、エディタは Android の実行中に `.cs` を保存したとき）。`push` は従来どおり DLL を送って起動し直す。
 
 ### 17.8 暗号 API（JNI の初期化）
 
@@ -2105,7 +2110,7 @@ Android の実行の行は書き手が色と出どころを決めて出す（`An
 
 - 端末での一気通貫（実行・停止・アプリの終了の検知・logcat の色分け）は端末で未確認。
 - pak とスクリプトは SeedPak を子プロセスで呼ぶまま（エディタの中の `AssetPakBuilder` / `ScriptPackager` を直接呼ぶ高速化はしていない）。DLL だけを送る `Push` の
-  高速経路もエディタには出していない（SeedAndroid の `push` は使える）。
+  高速経路もエディタには出していない（SeedAndroid の `push` は使える。実行中に `.cs` を保存したときは §23 の差し替えが DLL だけを送る）。
 - 端末の一覧はコンボを開いたときだけ取り直す（`adb track-devices` による接続・切断の自動検知は無い）。
 - エディタの実行は Rust を debug で作る（ツールバーのビルド構成と連動しない）。開始シーンからしか起動できない・未保存の変更は警告だけ、は段階C-3 で直した（§20.10・§20.11）。
 - エディタを閉じても端末のアプリは止めない。AI ツールの `seed_play` は PC だけを扱う（Android の実行の MCP ツールは無い）。
@@ -2323,7 +2328,7 @@ Gradle は各手順の後に `gradlew --stop` で止めたので、Gradle の時
 - `--skip-gradle`・`push` は pak を作り直さないので、前回の pak に無いシーンは開始シーンで起動する（起動の直前に理由付きの警告）。
 - エディタの画面からの Android の実行（実行先セレクタ・Output・停止・未保存の確認）は、実機でも**未確認**（エージェントはエディタを起動しない）。
 - 追加修正（§20.3・§17.7）: `run` は起動の前に `push` の上書き（`files/bin/`）を消すようにした。`install` だけ（起動しない）では消さないので、
-  その後ランチャーから起動すると `push` の DLL で動く。アプリの終了の文言から「戻るキー」を外した（「最近のタスクから消した」でプロセスが終わることは、
+  その後ランチャーから起動すると `push` の DLL で動く（→ 段階D で、APK を入れ直したときも消すようにした。§17.7・§23.4）。アプリの終了の文言から「戻るキー」を外した（「最近のタスクから消した」でプロセスが終わることは、
   私物の端末のシステムの画面を操作しない約束のため実機では確かめていない〈AOSP の既定の振る舞い〉）。
 
 ---
@@ -2586,20 +2591,23 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 デスクトップ向けに作った描画経路（デファード・MRT 5 枚・SSGI・シャドウ 2048 等）を端末の実解像度のまま回していたため、
 実機（Pixel 6a・Mali-G78・1080x2400）は縦 18〜19 fps・横 37〜39 fps で、1 フレーム約 50 ms のうち提示待ちが 28〜41 ms の GPU 律速だった（§7）。
 段階D-2 では、描画を**データの差し替えだけで**軽くする「描画品質プリセット」と、どのパスが重いかを実機で測る
-「パスごとの GPU タイムスタンプ計測」を入れた。設計の正典は [rendering_roadmap.md](rendering_roadmap.md) の「描画品質プリセット」。
+「パスごとの GPU タイムスタンプ計測」を入れた。段階D-3 で実機で測り、`mobile` の描画スケールを 0.5 → 0.75 に見直した（§22.7）。
+設計の正典は [rendering_roadmap.md](rendering_roadmap.md) の「描画品質プリセット」。
 
 ### 22.1 結論
 
 - プリセットの定義は `runtime/config/render_presets.json`（ランタイムとエディタが同じファイルを埋め込む）。
   既定は**デスクトップ `desktop`（何も下げない＝従来の描画そのもの）・Android `mobile`**（`PlatformTraits::default_render_quality`）。
-- `mobile` は、ゲーム画面（3D）を**画面の 0.5 倍の解像度で描いて拡大**し（UI は画面の解像度のまま）、G-Buffer を使わない**前方描画**、
+- `mobile` は、ゲーム画面（3D）を**画面の 0.75 倍の解像度で描いて拡大**し（UI は画面の解像度のまま）、G-Buffer を使わない**前方描画**、
   SSGI・AO・反射・ブルーム・水面反射・コースティクスを止め、影を 1024・50 m・4 タップへ下げる。
 - スクリプトから見える座標（`Screen.Width` / `Height` / `SafeArea`・`Input.MousePosition`・`GetTouch`・キャンバス UI）は
-  **描画スケールで変わらない**（論理サイズ＝従来の描画解像度のまま。§22.5）。
+  **描画スケールで変わらない**（論理サイズ＝従来の描画解像度のまま。§22.5）。実機でもタップの位置・`SafeArea` が `desktop` と `mobile` で一致した。
 - PC の Play は従来と画素単位で同じ（§22.7）。
-- **実機での効果の計測は未実施**。確認の時間中（21:24〜22:00。最初の 20 分は 2 分おき、その後も作業の合間に確認）端末の画面が消えたまま（`mWakefulness=Dozing`・
-  前面は `NotificationShade`）で、アプリが描画できる状態にならなかった。APK（`proj_bench`・計測機能入り）は入れてある。
-  手順は §22.6、持ち越しは §22.8。`mobile` の中身は下の理由（§22.3）で選んだ推定であり、実機の数値で見直す前提。
+- **実機（Pixel 6a・縦 1080x2400・debug の .so・`proj_bench`）で `desktop` 16.4 fps（GPU 59.2 ms/フレーム）→ `mobile` 59.2 fps（GPU 10.5 ms）**
+  （段階D-3。§22.7）。最大の要因は**デファードのライティング**（等倍で 41.5 ms。前方描画の約 5 倍。原因は未調査）と **SSGI**（11.0 ms）で、
+  前方描画にするだけで等倍でも 59.3 fps（GPU 12.3 ms）になる。描画スケール 0.5 と 0.75 の差は GPU 約 2 ms で、0.5 は床の縁や細部のぼけが
+  目立つため `mobile` を 0.75（`mobile_high` は等倍）にした。残りの約 4.5 ms は描画スケールに関係なく画面の解像度で走る固定分
+  （クラスタ構築・トーンマップ・UI・提示のコピー）。横向き・動くシーン・影の深度パスは未計測（§22.8）。
 
 ### 22.2 構成
 
@@ -2621,18 +2629,23 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 | プリセット | 既定の対象 | 中身（つまみ） |
 |---|---|---|
 | `desktop`（デスクトップ（従来どおり）） | Windows | 何も下げない |
-| `mobile`（モバイル（軽量）） | Android | `render_scale` 0.5・`deferred` false・`gi` flat・`ao` off・`reflection` off・`translucency` raster・`shadow` shadowmap・`shadow_resolution` 1024・`shadow_distance` 50・`shadow_pcf_taps` 4・`bloom` false・`water_reflection` false・`water_caustics` false |
-| `mobile_high`（モバイル（高画質）） | — | `mobile` の `render_scale` を 0.75・`shadow_resolution` 2048・`shadow_pcf_taps` 8 に（`shadow_distance` は設定のまま） |
-| `mobile_low`（モバイル（最軽量）） | — | `mobile` に加えて `shadows` false・`fxaa` false・`target_fps` 30（`shadow_*` の上限は影を描かないので無し） |
+| `mobile`（モバイル（軽量）） | Android | `render_scale` 0.75・`deferred` false・`gi` flat・`ao` off・`reflection` off・`translucency` raster・`shadow` shadowmap・`shadow_resolution` 1024・`shadow_distance` 50・`shadow_pcf_taps` 4・`bloom` false・`water_reflection` false・`water_caustics` false |
+| `mobile_high`（モバイル（高画質）） | — | `mobile` の `render_scale` を 1.0（等倍）・`shadow_resolution` 2048・`shadow_pcf_taps` 8 に（`shadow_distance` は設定のまま） |
+| `mobile_low`（モバイル（最軽量）） | — | `mobile` の `render_scale` を 0.5 に下げ、`shadows` false・`fxaa` false・`target_fps` 30（`shadow_*` の上限は影を描かないので無し） |
 
 つまみの意味・当て方（上限は重い要求だけを下げ、`false` は止めるだけで動かしはしない）は rendering_roadmap.md の表。
+段階D-2 の当初は `mobile` 0.5・`mobile_high` 0.75 だった（実機の計測で見直した。§22.7）。
 
-**つまみを選んだ理由（推定。実機の数値で見直す）**
+**つまみを選んだ理由（実機の計測で確かめた。数値は §22.7 の表）**
 - 1080x2400 は約 2.6 M 画素。描画スケール 0.5 で 3D のすべてのフルスクリーンの処理（G-Buffer の書き込み・ライティング・SSGI・
-  トーンマップの入力）の画素数が 1/4 になる。GPU 律速（§7 の提示待ち）の第一の打ち手。UI は拡大でぼけると読みにくいので論理サイズのまま。
+  トーンマップの入力）の画素数が 1/4 になる。UI は拡大でぼけると読みにくいので論理サイズのまま。
+  実測: デファードのまま 0.5 にすると GPU 59.2 → 19.6 ms（39.9 fps）。前方描画の上では 1.0 → 0.75 → 0.6 → 0.5 で GPU 11.6 → 10.5 → 9.2 → 8.5 ms と
+  差が小さく（どれも 59 fps）、0.5 は床の縁や細部のぼけが目立つので `mobile` は 0.75 にした。重いシーンで 60 fps を割るなら 0.6 へ下げる。
 - デファードの G-Buffer は MRT 5 枚・36 byte/画素（`gbuffer::GBUFFER_BYTES_PER_SAMPLE`）で、タイルベースの GPU ではタイルメモリに
   収まらず帯域を食いやすい。前方描画（クラスタ化ライティングは前方でも効く）にすると G-Buffer・フルスクリーンのライティングが無くなる。
   代わりに SSGI・AO・反射・コースティクス・水面反射は（デファード専用なので）自動的に止まる。
+  実測: `deferred=false` だけで等倍でも 16.4 → 59.3 fps（GPU 12.3 ms）。デファードのライティングは等倍で 41.5 ms と、前方描画のパス
+  （forward 8.0 ms）の約 5 倍（Mali で重い原因は未調査。§22.8）。`mobile` に `deferred=true` を戻すと（0.5 で）GPU 14.8 ms・57.8 fps。
   **シェーディングアセット（L3。[shading_asset.md](shading_asset.md)）もデファードのライティング専用なので効かなくなる**
   （要求されていれば起動後に `[SEED QUALITY][WARN] … シェーディングアセット … は効きません` を 1 回出す）。
   使うゲームは `render_quality.android` に `"deferred": true` を書いて戻す（その分は描画スケールで稼ぐ）。
@@ -2646,19 +2659,19 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
   「プリセット」（既定＝プラットフォームの既定・定義済みのプリセット）、「描画スケール」（プリセットのまま／1〜0.5 倍）、
   「影」（プリセットのまま／描く／描かない）を選ぶ。選んだプリセットの説明と中身が下に出る。
 - **JSON**: `project_settings.json` の `render_quality`（[project_system.md](project_system.md) §1）。例:
-  `"render_quality": { "android": { "preset": "mobile", "render_scale": 0.75, "gi": "ssgi" } }`。
+  `"render_quality": { "android": { "preset": "mobile", "render_scale": 0.6, "gi": "ssgi" } }`。
   画面に出ないつまみ（`gi`・`deferred`・`bloom` 等）も書け、エディタで保存しても失われない。
 - **起動オプション（計測・検証用。プロジェクト設定より優先）**:
   `am start … --es seed.quality mobile_high --es seed.quality_overrides 'render_scale=0.6,shadows=false'`。PC は
   `SEED.exe --render-quality=mobile --render-quality-overrides=render_scale=0.75`。
-- 反映: 起動時に 1 回だけ読む（起動ログ `[SEED QUALITY] preset=mobile render_scale=0.5 …` と `[SEED FEATURES] … gi=flat(品質上限) …`）。
+- 反映: 起動時に 1 回だけ読む（起動ログ `[SEED QUALITY] preset=mobile render_scale=0.75 …` と `[SEED FEATURES] … gi=flat(品質上限) …`）。
   Android は project_settings.json が APK の pak に入るので、変えたら APK を作り直す（実行ボタン・SeedAndroid の `run` は入力の変化を見て作り直す）。
 
 ### 22.5 描画スケールと座標・UI
 
 - **論理サイズ**＝従来の描画解像度（Android はサーフェス＝画面の実寸。内部解像度固定ならその内部解像度）。UI のオーバーレイ・
   トーンマップ後の LDR・提示の基準で、スクリプト・入力・安全領域・キャンバスのレイアウトと当たり判定はこの座標のまま。
-- **描画解像度**＝論理サイズ × `render_scale`（Pixel 6a の縦なら 540x1200）。3D の深度・HDR と、影以外の 3D の RT すべて。
+- **描画解像度**＝論理サイズ × `render_scale`（Pixel 6a の縦なら `mobile` の 0.75 で 810x1800、`mobile_low` の 0.5 で 540x1200）。3D の深度・HDR と、影以外の 3D の RT すべて。
 - 流れ: 3D を描画解像度で描く → トーンマップが論理サイズの LDR へ**拡大しながら**書く（バイリニア）→ UI（前面のキャンバス）を
   論理サイズで重ねる（UI 用の深度は論理サイズで別に持つ）→ 画面へ出す。
 - ゲームのビューポート（カメラのスケーリングモードの帯）は論理サイズで決め、3D のパスへ渡す直前に描画解像度のピクセルへ写す
@@ -2710,22 +2723,276 @@ adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|
 | PC で `mobile`（`--render-quality=mobile`） | 3D は半分の解像度で描かれ（輪郭がやや粗い）、UI のスプライトの内側は `desktop` の絵と**画素一致**（UI は論理サイズのまま）。帯（正方形のウィンドウ）の位置も正しい。内部解像度固定（fixed 1280x720）＋描画スケール 0.75 も検証エラーなし |
 | PC の GPU 計測（RTX 3060・1280x720・`proj_bench`） | `desktop`: gpu total 1.4 ms（lighting 0.85・gbuffer 0.20・rt 0.17）。`mobile`: 0.38 ms（forward 0.23・tonemap 0.06）。静止シーンでは影の深度パスは静的スキップで 0 |
 | エディタの画面（レンダリング品質） | エディタは起動せず、一時のプローブ（別の出力先の SEEDEditor.dll を参照してウィンドウをオフスクリーンで描く）で確認: 2 プラットフォームの小節・プリセットの説明の切り替え・一覧に無い中間の描画スケール（0.65）の表示、選択を変えて収集 → 保存で `render_quality` 節が書かれ、画面に出さない `gi` が残ること |
-| **実機の fps・内訳・スクリーンショット・座標** | **未実施**。端末は USB でつながり APK も入れたが、21:24〜22:00 のあいだ（最初の 20 分は 2 分おき）見ても画面が消えたまま（`mWakefulness=Dozing`・前面 `NotificationShade`）。画面の点灯・ロックの解除は私物の端末の操作になるので行っていない。§22.6 の手順で測る |
+| 実機の fps・内訳・スクリーンショット・座標 | 段階D-2 の時点では未実施（端末の画面が消えたままだった）。**段階D-3 で計測した（下の表）** |
 | arm64 の .so・APK（最終のコード） | SeedAndroid の `install`（`proj_bench`）で libSEED.so（debug・72 秒）・pak・Gradle をやり直して入れた（75.7 MB・`com.seedengine.runtime`）。起動はしていない |
 
-- 最後の状態: `com.seedengine.runtime`（`proj_bench`・段階D-2 の APK）を入れたまま（起動はしていない）。adb forward は張っていない。
+- 段階D-2 の終わりの状態: `com.seedengine.runtime`（`proj_bench`・段階D-2 の APK）を入れたまま（起動はしていない）。adb forward は張っていない。
   Gradle のデーモン・dotnet のビルドサーバーは止めた。エミュレータは起動していない。
+
+**実機の計測（段階D-3・2026-09-25）** Pixel 6a（Mali-G78）・縦 1080x2400・debug の .so・`proj_bench`（DamagedHelmet 9 体・影ありの平行光・点光源 4・床・UI）。
+§22.6 の手順で、組み合わせごとに 25 秒。fps は起動と撮影の区間を除いた平均、時間は ms の平均（`[SEED GPU]`）。
+「固定分」＝クラスタ構築（約 1 ms）＋トーンマップ（約 1.9 ms）＋UI＋提示のコピー（描画スケールに関係なく画面の解像度で走る）。
+「CPU の提示待ち」＝`cpu present`（提出と提示の待ち）。「mobile」は計測の時点の `mobile`（描画スケール 0.5）を指す。
+
+| 組み合わせ | fps | GPU 合計 | lighting | ssgi | gbuffer | forward | 固定分 | CPU の提示待ち |
+|---|---|---|---|---|---|---|---|---|
+| desktop | 16.4 | 59.2 | 41.5 | 11.0 | 2.1 | 0.7 | 3.5 | 38.7 |
+| desktop + gi=flat | 20.3 | 47.9 | 41.3 | 0 | 2.2 | 0.3 | 3.7 | 29.2 |
+| desktop + render_scale=0.5 | 39.9 | 19.6 | 10.8 | 5.0 | 0.7 | 0.4 | 2.7 | 7.1 |
+| desktop + deferred=false（等倍） | 59.3 | 12.3 | 0 | 0 | 0 | 8.0 | 3.9 | 4.0 |
+| mobile（旧 0.5） | 59.3 | 8.5 | 0 | 0 | 0 | 3.1 | 5.2 | 2.7 |
+| mobile + render_scale=0.6 | 59.3 | 9.2 | 0 | 0 | 0 | 3.9 | 4.9 | 3.1 |
+| mobile + render_scale=0.75（**新しい mobile**） | 59.2 | 10.5 | 0 | 0 | 0 | 5.6 | 4.5 | 3.2 |
+| mobile + render_scale=1.0（**新しい mobile_high 相当**） | 59.3 | 11.6 | 0 | 0 | 0 | 7.1 | 4.1 | 3.7 |
+| mobile + shadows=false | 59.2 | 7.7 | 0 | 0 | 0 | 2.5 | 4.9 | 3.0 |
+| mobile + deferred=true | 57.8 | 14.8 | 10.9 | 0 | 0.8 | 0.2 | 2.8 | 5.9 |
+| mobile_high（旧 0.75・影 2048） | 59.2 | 10.3 | 0 | 0 | 0 | 5.3 | 4.5 | 3.2 |
+| mobile_low（30 fps 上限） | 29.7 | 8.9 | 0 | 0 | 0 | 2.1 | 5.9 | 6.1 |
+
+- 最大の要因は**デファードのライティング**（等倍で 41.5 ms。前方描画のパスの約 5 倍。Mali で重い原因は未調査）と **SSGI**（11.0 ms）。
+  前方描画にするだけで等倍でも 59.3 fps（垂直同期の上限）に届く。デファードのまま描画スケール 0.5 にしても 39.9 fps。
+- 前方描画の上では描画スケールの効きは小さい（1.0 → 0.5 で GPU 11.6 → 8.5 ms。0.75 との差は約 2 ms）。0.5 は床の縁や細部のぼけが
+  目立つため、`mobile` を 0.75、`mobile_high` を 1.0 にした（`runtime/config/render_presets.json`。`mobile_low` は 0.5 のまま）。
+- 描画スケールを下げても約 4.5 ms の固定分が残る（§22.8）。
+- 座標: タップの位置・`SafeArea` とも `desktop` と `mobile` で一致した（§22.5 の「描画スケールで変わらない」）。
+- 未計測: 横向き、動くシーン（このシーンは静止しているので影の深度パスは静的スキップで省略されている）、release の .so。
+- 実行中の差し替え（§23）の実機確認でも、`proj_probe`（BrainStem 1 体・平行光）で `[SEED QUALITY] preset=mobile render_scale=0.75 …`・約 59 fps だった。
 
 ### 22.8 制限・持ち越し（詳細は [backlog.md](backlog.md) の「Android」節）
 
-- **実機での計測と `mobile` の見直し**が残っている（§22.6）。GPU の内訳で重い区間を確かめ、つまみ（特に `render_scale`・`deferred`）を数値で決め直す。
-  目標は 60 fps（少なくとも 30 fps 以上を安定）。debug ビルドで GPU が軽くなると CPU（最適化なしの Rust）が律速になり得るので、release の .so でも測る。
+- ~~実機での計測と `mobile` の見直し~~ → 段階D-3 で計測し、`mobile` を 0.75・`mobile_high` を 1.0 に見直した（§22.7）。残りは次のとおり。
+- **デファードのライティングが Mali で前方描画の約 5 倍重い原因の調査**（等倍で 41.5 ms。G-Buffer の読み・クラスタのライト走査・
+  シャドウのサンプリングのどれが効いているか。シェーディングアセット（L3）や SSGI を使うゲームが `deferred: true` へ戻すと効いてくる）。
+- **固定分 約 4.5 ms の削減**（クラスタ構築 約 1 ms・トーンマップ 約 1.9 ms・UI・提示のコピー。描画スケールに関係なく画面の解像度で走る）。
+  トーンマップ後の LDR 中間（Rgba16Float）と提示のコピーは論理サイズ（フル解像度）のまま（UI が無いときにトーンマップと提示をまとめる余地）。
+- **横向き・動くシーン・影ありの計測**（`proj_bench` は静止しているので影の深度パスは省略されていた）と release の .so での計測。
+- 重いシーンで 60 fps を割るなら `mobile` の描画スケールを 0.6 へ（0.75 との差は GPU 約 1.3 ms）。
 - テクスチャの最大解像度・クラスタの分割数・Hi-Z・カスケード数（3 固定）のつまみは入れていない（計測で必要と分かったら足す）。
-- トーンマップ後の LDR 中間（Rgba16Float）と提示のコピーは論理サイズ（フル解像度）のままなので、描画スケールを下げても
-  フルスクリーン 2〜3 枚ぶんの帯域は残る（UI が無いときにトーンマップと提示をまとめる余地）。
 - 背景ゾーンのキャンバスと 3D 空間のキャンバスは描画解像度で描かれる（前面の UI だけが論理サイズ）。
 - `mobile` は前方描画なので、シェーディングアセット（L3）・水面反射・コースティクス・SSGI／AO／反射は効かない（見た目が変わる）。
   シェーディングアセットを要求していれば警告を 1 回出す。見た目を優先するゲームは `deferred: true` で戻す。
 - 目標 fps の上限（`target_fps`）は起動時に 1 回だけ当てる（`SEED.Application.TargetFps` は上限を当てた後の値を返す）。
 - SeedAndroid / エディタの実行は品質の起動オプションを渡さない（計測は `am start` を直接使う）。
 - 縦より横が速い理由（§7）は未調査のまま。
+
+---
+
+## 23. 実行中の差し替え（ホットリロード。段階D・2026-09-25）
+
+端末でアプリを動かしたまま、保存したシーン・アセット・スクリプトを送って取り込ませる（利用者の要望「実機で動かしたまま、直したものを
+すぐ反映したい」。段階D の項目「実行中の差し替え」）。エディタの Android の実行中（端末のアプリと IPC がつながっている＝§21）は、
+**保存するだけで**端末へ届く。エディタ無しでも SeedAndroid の `push --assets` と `reload` で同じことができる（§23.8）。
+命令は PC の Play と同じ 1 行 1 命令の形で、PC のランタイムでも使える（TCP・名前付きパイプとも。PC のエディタは従来どおり自分の経路を使う）。
+
+### 23.1 全体の流れ
+
+```
+エディタ（Android の実行中・IPC がつながっている）
+  アセットルートの監視（AndroidRun/AndroidHotReloadController。FileSystemWatcher。実行中〈Running / Paused〉だけ）
+    → 変わったファイルを表で分ける（Android/HotReload/AndroidHotReloadTable。関係ないものは落とす）
+    → 最後の変更から 0.6 秒静かになったら 1 組にまとめる（AndroidHotReloadChangeQueue。連続保存は最後の 1 回に）
+  差し替え（Android/HotReload/AndroidHotReloadApplier）
+    .cs        → SeedPak --scripts-only で DLL を作り直す → run-as で files/bin/ へ（Steps/ScriptBinaryPusher）→ RELOAD_SCRIPTS
+    .scene・他 → 変わったファイルから参照をたどる（AssetCollector.CollectFrom）→ 端末の中身と違うものだけを選ぶ（AndroidOverlayPlanner）
+               → run-as で files/assets/ へ足す（AndroidAssetOverlaySync。置いてあるものは消さない）
+               → 送ったものごとに RELOAD_SCENE:<相対パス>（シーン）／RELOAD_ASSET:<相対パス>（他）
+    → 命令をまとめて送り、応答を待つ（AndroidReloadCommandSender）→ Output に結果と所要時間
+端末（ランタイム）
+  IPC の受信（ipc.rs）→ 差し替えの要求を貯める → フレームの境界（process_ipc の最後。ゲームロジックの前）でまとめて適用（app/hot_reload_ops.rs）
+    差し替えたアセットのキャッシュを捨てる → 要れば今のシーンを 1 回だけ読み直す（スクリプトのシーン遷移と同じ経路）→ 応答
+  RELOAD_SCRIPTS … files/bin/ の SEEDUserScripts.dll を読み直す（collectible な AssemblyLoadContext の入れ替え。scripting/script_reload.rs）
+  アセットの読み順 … デバッグ版は 上書き層 files/assets → APK の pak → APK の PAK 外（asset_fs::FilesystemLayer::Overlay。§23.4）
+```
+
+### 23.2 命令と応答（書式の正典はランタイムの `runtime/src/engine/core/app_base/hot_reload/wire.rs`）
+
+| 命令 | 何をするか | 応答の宛先 |
+|---|---|---|
+| `RELOAD_SCENE` | 今のシーンをディスクから読み直す（無条件） | `scene` |
+| `RELOAD_SCENE:<相対パス>` | 今のシーンがそのパスのときだけ読み直す（エディタがシーンを保存したとき。違うシーンなら送っただけで、そのシーンへ遷移したときに反映） | `scene:<相対パス>` |
+| `RELOAD_ASSET:<相対パス>` | そのアセットのキャッシュを捨て、種類に応じて取り込み直す（§23.3） | `asset:<相対パス>` |
+| `RELOAD_SCRIPTS`（従来の命令） | PC: その場で再コンパイル（従来どおり）。Android（同梱 .NET）: files/bin/ 等の DLL を読み直す（§23.6） | 応答は従来の `SCRIPTS_RELOADED:<型数>,<再生成数>`（失敗は `SCRIPTS_RELOADED:-1,<理由>`） |
+
+- `<相対パス>` はアセットルートからの相対パス（区切りは `/` か `\`、`assets://` 付きでもよい）。**絶対パス・`..` は受け付けない**
+  （アプリのアセットの外を指させない）。受け付けないときも `RELOAD_FAILED` で理由を返す（相手を応答待ちのまま待たせない）。
+- 応答（欄の区切りは `|`。Windows のファイル名に使えない文字なのでパスと混ざらない）:
+  `RELOAD_DONE:<宛先>|<端末での所要ミリ秒>|<詳細>`（詳細は `inplace` か `scene:<読み直したシーン>`）／
+  `RELOAD_SKIPPED:<宛先>|<理由>`（適用しなかった。失敗ではない）／`RELOAD_FAILED:<宛先>|<理由>`。
+- **同じフレームに届いた要求はまとめて適用する**（シーンの読み直しは何件あっても 1 回。宛先が重なった要求の応答は 1 行）。
+  状態の流れ（受付 → 計画 → 適用 → 応答）と規則は `hot_reload/batch.rs`（単体テスト付き）。
+- 一時停止（`PAUSE`）中に差し替えても一時停止のまま（新しいシーンの `OnStart` は再開してから走る）。
+- Edit モード（PC のエディタの埋め込みランタイム）ではシーンを読み直さない（`RELOAD_SKIPPED`。エディタは自分の `LOAD_SCENE` を使う）。
+  キャッシュを捨てるだけの差し替えは Edit でも効く。
+- エディタ側の文字列は `editor/src/Ipc/RuntimeIpcCommands.cs`、応答の照合は `Android/HotReload/AndroidReloadReply.cs`。
+
+### 23.3 アセットの種類と取り込み方（ランタイムの表 `hot_reload/asset_kind.rs`）
+
+| 種類 | 拡張子（例） | 取り込み方 | ゲームの状態 |
+|---|---|---|---|
+| 画像 | png・jpg・jpeg・bmp・tga・webp・gif・ktx2・dds | キャッシュを捨てるだけ（スプライト・UI・インライン画像は次のフレームで読み直す） | 保つ |
+| シェーダ | wgsl・shading | シェーディングアセット・水面シェーダの追跡状態を捨てる（次のフレームで読み直してビルド） | 保つ |
+| スプライトのポスト・スキンメッシュ・アイコン集 | postfx・sprite_mesh・icons | キャッシュを捨てるだけ | 保つ |
+| 音声 | wav・ogg・mp3・flac | キャッシュを捨てるだけ（次に鳴らすときに読み直す。鳴っている音は鳴り終わるまで古いまま） | 保つ |
+| モデル | glb・gltf・obj・mtl・bin | CPU モデル・非同期ロードの完成品・統合バッチ・RT の BLAS を捨て、**今のシーンを読み直す** | シーンの開始時へ |
+| プレハブ・マテリアル・アニメーション・入力マップ・地形 | actor・actor2d・mat・anim・inputmap・tvox・tscatter・tcover | 今のシーンを読み直す | シーンの開始時へ |
+| シーン | scene | 今のシーンならシーンを読み直す（違えば `RELOAD_SKIPPED`） | シーンの開始時へ |
+| フォント・プロジェクト設定 | ttf・otf・ttc・`project_settings.json` | 差し替えられない（起動時に 1 回だけ読む。`RELOAD_SKIPPED`。アプリを起動し直す） | — |
+| スクリプト | cs | `RELOAD_ASSET` では扱わない（`RELOAD_SCRIPTS`） | — |
+| 表に無いもの | — | 今のシーンを読み直す（取り込み方が分からないものは、シーンごと読み直すのが確実） | シーンの開始時へ |
+
+- 小さく読み直しが安いプロセス全体のキャッシュ（マテリアルの定義・`.postfx` の定義・インライン画像）は、どの差し替えでも丸ごと捨てる。
+  スクリプトの `Scene.Preload` で読んでおいたシーンも捨てる（古い中身のため）。
+- キャッシュのキーの表記揺れ（`assets://`・アセットルート内の絶対パス・相対パス・区切り・大文字小文字）は `hot_reload/asset_key.rs` が吸収する。
+- 表だけを直せば種類を足せる（`ASSET_KIND_TABLE`・`FILE_NAME_TABLE`）。エディタ側の「どの変更で何の命令を送るか」は別の表
+  （`Android/HotReload/AndroidHotReloadTable.cs`: `.cs`＝スクリプト・`.scene`＝シーン・`packaging_settings.json`・`obj/`・`bin/`・一時ファイル＝無視・他＝アセット）。
+
+### 23.4 上書き層（`files/assets` を pak より先に読む）
+
+| APK | 仮想パス `assets://<相対パス>` を読む順 |
+|---|---|
+| デバッグ版（run-as で送れる APK。SeedAndroid・エディタが作るもの）のパッケージ実行 | **上書き層 `files/assets/<相対パス>`** → APK の pak → APK の PAK 外 |
+| 配布版・PC の配布物 | 従来どおり pak → APK の PAK 外 → `files/assets`（読む順は変えない） |
+| pak の無い開発用の APK（`--assets-dir`） | 従来どおり `files/assets` だけ（元から唯一の層） |
+
+- 上書き層に**置いたファイルだけ**が pak より優先される（無いものは従来どおり pak から読む）。読むたびにファイルの有無を見るので、
+  起動の後に送ったものも次に読むときから効く（`run` は起動の前に上書きを消すので、起動の時点では空がふつう）。
+- 「デバッグ版か」は、MainActivity がデバッグ版の APK（FLAG_DEBUGGABLE）のときだけ必ず起動オプションを渡す（§20.10）ことで見分ける
+  （`runtime/android/native/src/launch_options.rs` の `was_delivered`。判断は `engine::asset_fs::overlay_allowed`。単体テスト付き）。
+  起動ログ: `上書き層: …/files/assets に置いたアセットを pak より先に読みます（デバッグ版の差し替え・…）`・
+  `[SEED INIT] asset_fs: 上書き層 … を pak より先に読みます`。
+- 読む順は `engine::asset_fs::read_virtual_layers`（`FilesystemLayer::Fallback` / `Overlay`）。上書き層あり・なし・送った後に現れるファイル・
+  どこにも無いときのエラーを単体テストで固定した。
+- **解除**: APK の内容を正とする場面（`--project`）では、`files/bin/`（§17.7）と同じ規則で自分のアプリの `files/assets/` を消す
+  （あれば Output に `差し替えで送ったアセットの上書きを解除しました（端末の files/assets/ を消し、APK の pak のアセットを使います）。` の 1 行）。
+  場面は 2 つ: **APK を入れ直した直後**（`install`・`run` のインストールの工程。`adb install -r` はアプリのデータを残すため）と、
+  **`run` の起動の前**（止めた後。APK を入れ直さなかった `run` でも消す）。同じ APK が入っていてインストールを飛ばした `install` では消さない。
+  `push`・開発用の `--assets-dir` は消さない。規則・消し方・記録の作り直しは `Steps/PushedOverrides`（単体テスト `PushOverrideTests`・`HotReloadTests`）。
+  消せなかったときは警告の 1 行を出して続け、送った記録（§23.5）は残す（端末に残った上書きと記録が合ったまま＝差分を取り違えない）。
+  手で消すなら `adb exec-out run-as <アプリ ID> rm -rf files/assets`。
+
+### 23.5 差分の選び方（`Android/HotReload/AndroidAssetOverlaySync`・`AndroidOverlayPlanner`）
+
+1. 候補: エディタの差し替えは、変わったファイルを起点に参照をたどった閉包（`AssetCollector.CollectFrom`。シーンを保存したら、
+   シーンと参照するアセット）。SeedAndroid の `push --assets <フォルダ>` は、今 pak を作ると入るもの＋アセットの中の全シーンから辿れるもの
+   （SeedPak と同じ収録の規則）のうち、そのフォルダの中。
+2. 手元の中身は **pak に入れるときと同じ形**で読む（シーン・プレハブ・`.json` 等は中の絶対パスを `assets://` へ書き換える。書き換えの正典は
+   `Packaging/Pak/PakEntryContent`。PakWriter と共有）。指紋は SHA-256。
+3. 端末の中身の指紋は、上書き層へ送った記録（`<プロジェクト>/cache/android/asset_overlay.json`。端末ごと）→ 無ければ APK の pak のエントリ
+   （置き場の `runtime/android/app/src/main/assets/seed/assets.pak` を、必要なエントリだけ読んで SHA-256。`AndroidPakContentIndex`）。
+4. 端末に無い・中身が違うものだけを送る。同じもの（保存し直しただけ・参照先の変わっていないアセット）は送らない。
+- APK の pak と比べるのは、記録の土台の pak（上書きを消したとき〈§23.4〉に大きさと更新時刻を記録する）が今の置き場の pak と同じときだけ。
+  記録が無い・その後にビルドして置き場の pak が変わったときは pak と比べず、送ったことの無いものを送る（多めに送るだけで、古いものが残ることはない。
+  Output に黄色の 1 行で理由）。
+- 送った記録は上書きを消したとき（APK を入れ直した直後・`run` の起動の前）に「送ったもの無し」に戻る。`asset_overlay.json` は `run_state.json` と別のファイル
+  （エディタの実行中は中核が `run_state.json` を持ったまま最後に書き戻すため）。
+- 削除したファイルは端末へ伝えない（上書き層に残れば使われ続ける。`run` で消える。§23.11）。
+
+### 23.6 スクリプトの差し替え（`RELOAD_SCRIPTS`）
+
+- エディタ: `.cs` を保存したら SeedPak `--scripts-only`（`push` と同じ中身。`scripting/` もビルドする）で DLL を作り直し、run-as で
+  `files/bin/` へ送ってから `RELOAD_SCRIPTS`（コンパイルエラーなら送らずに Output に理由。端末は今のスクリプトのまま）。
+- ランタイム（同梱 .NET）: 起動のときと同じ候補（`files/bin/` → 外部の `files/bin/` → APK の `bin/`）から「SEEDScripting.dll がある最初の置き場」を
+  選び直し、そこの `SEEDUserScripts.dll` を読む（起動の後に送った `files/bin/` が選ばれる。`scripting/script_reload.rs`）。
+  - **スクリプトホスト（SEEDScripting.dll）が起動時と違えば読まない**（`SCRIPTS_RELOADED:-1,スクリプトホスト…が起動時と違います…`）。
+    ホストは起動時に Default の AssemblyLoadContext へ読むので差し替えられず、ユーザースクリプトはそのビルドのホストに対してコンパイルされるため。
+    `scripting/` を変えたときはアプリを起動し直す（`run` / `push`）。照合は FNV-1a 64bit（`prefab_hash::content_hash_bytes`）。
+  - DLL を**先に読んでから**今のスクリプトのインスタンスを捨てる（読めないときは今のスクリプトのまま続く）。
+  - C# 側 `ScriptAssemblyManager.LoadPrecompiledBytes` は、新しい DLL を別のロードコンテキストへ読めてから旧アセンブリをアンロードするようにした
+    （壊れた DLL では旧アセンブリのまま＝`CompileAndLoad` と同じ。起動時の 1 回目の振る舞いは変わらない。`ScriptPrecompileTests` に 1 件追加）。
+  - ログ: `[SEED] スクリプトを読み直しました: N 型・再生成 M 件（<置き場>/SEEDUserScripts.dll・K KiB・T ms）`。
+- PC の `RELOAD_SCRIPTS` は従来どおり（その場で再コンパイル。同梱 .NET の起動材料が無いときの経路）。
+- スクリプトの差し替えは全インスタンスの作り直し（`OnStart` の再実行。PC の Play 中の自動再読み込みを既定で保留にしている理由と同じ副作用。
+  [editor_auto_reload.md](editor_auto_reload.md) §1）。Android の差し替えは「動かしたまま反映する」機能なので保留しない。
+
+### 23.7 エディタの段取り（`AndroidRun/AndroidHotReloadController`。WPF 非依存・単体テスト `AndroidRunUiTests`）
+
+- Android の実行で端末のアプリが動いている間（Running / Paused）だけアセットルートを監視する（書き込み・作成・名前の変更）。
+  実行が終わったら監視を止め、覚えた変更を捨てる。
+- 変更は相対パスごとに 1 回だけ覚え、最後の変更から 0.6 秒静かになったら 1 組にする（`AndroidHotReloadChangeQueue`。ScriptAutoReloader と同じ間隔）。
+  差し替えの途中に来た変更は覚えておき、終わった後に次の組にする（同時に 2 組は走らせない）。
+- 端末のアプリとつながっていなければ（段階D-1 より前の APK・起動の途中）、差し替えずに警告の 1 行を出して捨てる。
+- スクリプト・シーンは、エディタの設定「表示 > スクリプト > スクリプトを自動再読込」「表示 > シーン > シーンを自動再読込」がオフなら差し替えない。
+  そのほかのアセットはいつも差し替える。
+- シーンはディスク上のファイルから送る（未保存の変更は送らない。保存したときに送られる）。
+- PC の Play の自動再読み込み（ScriptAutoReloader・SceneAutoReloader）と、PC の Play の振る舞いは変えていない。
+- Output の行（`AndroidRun/AndroidHotReloadOutputFormatter`。色の規約は [editor_ui_style.md](editor_ui_style.md) 7 章）:
+
+```
+[Android] 差し替え: 2 件の変更（scenes/Main.scene ほか）を端末へ送ります                         … 水色
+[Android]     > SeedPak --project … --out … --scripts-only                                  … 黄（途中の説明・SeedPak の出力）
+[Android]     スクリプト: DLL を作り直して送りました（5 ファイル・9.1 MB を送りました（…）・6.2 秒）  … 灰
+[Android]     アセット: 1 ファイル・0.0 MB を送りました（候補 3・端末と同じ 2・0.4 秒）             … 灰
+[Android]     反映: スクリプト — スクリプトを読み直しました（1 型・再生成 1 件）                     … 水色
+[Android]     反映: scenes/Main.scene — シーンを読み直しました（assets://scenes/Main.scene）（端末 123.4 ms） … 水色
+[Android]     反映しませんでした: fonts/a.ttf — 起動時に 1 回だけ読むアセットのため…                 … 黄
+[Android]     失敗: models/a.glb — …                                                          … 赤
+[Android] 差し替え完了（7.5 秒）／差し替えで失敗がありました（…）                                  … 水色／赤
+```
+
+### 23.8 SeedAndroid の `push --assets` と `reload`（エディタ無しで確かめる）
+
+```powershell
+# run（か push）で起動したアプリへ（接続トークンは run_state.json の起動の記録。pause / resume と同じ）
+# 1) 端末と違うアセットだけを上書き層へ送る（起動し直さない。アセットルートかその中のフォルダ）
+dotnet run --project editor/tools/SeedAndroid -- push --assets D:\path\to\Project\assets --project D:\path\to\Project --serial <実機>
+# 2) 取り込ませる
+dotnet run --project editor/tools/SeedAndroid -- reload scene   --project D:\path\to\Project --serial <実機>
+dotnet run --project editor/tools/SeedAndroid -- reload asset models/Fish.glb --project D:\path\to\Project --serial <実機>
+# 3) スクリプト: DLL を作り直して files/bin/ へ送り、読み直す（SeedPak --scripts-only → RELOAD_SCRIPTS）
+dotnet run --project editor/tools/SeedAndroid -- reload scripts --project D:\path\to\Project --serial <実機>
+```
+
+- `push --assets` は `--project` が無ければフォルダからプロジェクトを探す。`--assets-dir`（開発用の APK）とは別物で同時に使えない。`--serial auto` は使えない。
+  アプリが動いていなくても送れる（次に起動したときから上書き層として読まれる）。
+- `reload` の終了コード: 適用した・適用しなかった（`RELOAD_SKIPPED`。理由を出す）は 0、失敗・応答なしは 5、DLL の作り直しの失敗は 4。
+  最後に `DETACH` を送ってから閉じる（端末の一時停止は据え置く）。エディタの実行中はエディタがつながっているので使えない（1 本だけ。§21.10）。
+
+### 23.9 確認方法
+
+```powershell
+# 1) ランタイムの単体テスト（読む順・命令の解釈・フレーム内のまとめ方・キャッシュのキーの照合・スクリプトの置き場の選び直し）
+cd runtime; cargo test --lib -- hot_reload asset_fs script_reload read_loop
+# 2) エディタ側の単体テスト（表・応答の照合・差分の選び方〈PakWriter の pak と同じ指紋〉・記録・tar・命令の送り方・引数／まとめ方・監視・Output）
+dotnet run --project editor/tests/AndroidPipelineTests
+dotnet run --project editor/tests/AndroidRunUiTests
+# 3) PC で TCP 越しに（SEED.exe --mode=play --assets-root=<assets> --ipc-port=<ポート> --ipc-token=<16 文字以上>。つないだら HELLO:<トークン>）
+#    ファイルを書き換えて RELOAD_SCENE / RELOAD_SCRIPTS / RELOAD_ASSET:<相対パス> を送り、SCREENSHOT:game,<パス> で撮る
+# 4) 実機（§23.8 の順。run で起動したデバッグ版のアプリへ）
+#    アセットを書き換え → push --assets <P>\assets → reload asset <相対パス>（か reload scene）→ screenshot で見た目を比べる
+#    スクリプトを書き換え → reload scripts → logcat にスクリプトの新しい文言
+#    最後に通常の run → Output に「差し替えで送ったアセットの上書きを解除しました」、元の見た目・文言に戻る
+```
+
+### 23.10 確認結果（2026-09-25〜26）
+
+| 確認 | 結果 |
+|---|---|
+| ランタイムの単体テスト | 命令の解釈（6）・種類の表（4）・キャッシュのキーの照合（4）・フレーム内のまとめ方と応答の状態（8）・上書き層の読む順と許可（新規 6＋既存の順のテスト）・スクリプトの置き場の選び直し（3）・IPC の受信（1）。`cargo test --lib` 全体も通過（既知の不安定なテストを除く） |
+| エディタ側の単体テスト | `AndroidPipelineTests` 104 件（差し替え 12 件と上書きの解除 1 件を追加。差分の選び方・pak と同じ指紋・記録の大小無視・tar の親フォルダ・命令と応答の照合・応答待ちの時間切れ・インストールの後／起動の前の解除と記録の合わせ方）、`AndroidRunUiTests` 74 件（9 件を追加。0.6 秒のまとめ・差し替え中の変更の持ち越し・接続なしの警告・設定オフの種類の除外・Output の書式）、`PackagingCollectorTests` 48 件、`ScriptPrecompileTests` 16 件（1 件を追加。壊れた DLL の読み直しで旧アセンブリが残る） |
+| PC・TCP（`SEED.exe --mode=play --ipc-port --ipc-token`、Windows） | `RELOAD_SCENE`: 太陽の色・モデルの配置を変えたシーンを読み直し、画面が変わった（端末内 33.1 ms・往復 37 ms）。`RELOAD_ASSET:models/BrainStem.glb`: 別のモデルで上書きしたファイルに差し替わった（キャッシュ 2 件を捨てシーンを読み直し 15.1 ms）。`RELOAD_SCRIPTS`: 文言 v2 → v3 に変わった（往復 335 ms。PC は従来の再コンパイル）。3 件を 1 フレームに送ると読み直しは 1 回（5.1 ms・応答 3 行）。一時停止中の差し替えは一時停止のまま（RESUME の後に新しいシーンの `OnStart`）。不正なパス（`..`）は `RELOAD_FAILED`、フォント・今でないシーン・`.cs` は `RELOAD_SKIPPED` |
+| PC の Play（名前付きパイプ）が変わらないこと | エディタと同じ `PipeServer` から `RELOAD_SCRIPTS` → `SCRIPTS_RELOADED:1,1`（288 ms）、`LOAD_SCENE` → `SCENE_LOADED`（48 ms）、終了コード 0 |
+| ビルド | ランタイム（Windows）・arm64 の `libSEED.so`（`cargo ndk`・111 秒）・デバッグ APK、エディタ（エラー 0・警告はすべて既存のファイル）、SeedAndroid・SeedPak |
+| 実機の起動（Pixel 6a・`proj_probe`・SeedAndroid） | `run`（インストールと起動。27.7 秒）。logcat に `上書き層: …/files/assets に置いたアセットを pak より先に読みます（…まだ差し替えはありません…）`・`[SEED QUALITY] preset=mobile render_scale=0.75 …`・約 59 fps。インストールの工程が、前から端末に残っていた `files/assets` を消した（`差し替えで送ったアセットの上書きを解除しました…` の 1 行。以前の開発用の `--assets-dir` の実行の残りと見られる） |
+| 実機・モデル | `models/BrainStem.glb` を別のモデル（`camera.glb`）で上書き → `push --assets`（0.9 秒。候補 4・端末と同じ 3・送ったのは 1 ファイル 3,948 バイト）→ `reload asset models/BrainStem.glb`（応答 58 ms・端末でキャッシュ 2 件を捨ててシーンを読み直し 42.1 ms）→ 画面のモデルが差し替わった |
+| 実機・シーン | 太陽の色を青に変えて保存 → `push --assets`（0.9 秒・1 ファイル）→ `reload scene`（応答 39 ms・端末 15.2 ms）→ 光が青くなった |
+| 実機・スクリプト | 文言 v2 → v3 → `reload scripts`（全体 11.2 秒＝SeedPak `--scripts-only` と 5 ファイル 9.1 MB の転送 10.5 秒・応答 54 ms）。同じプロセスのまま logcat に `[SEED] スクリプトを読み直しました: 1 型・再生成 1 件（…/files/bin/SEEDUserScripts.dll・14 KiB・29.7 ms）` と `[PROBE v3] OnStart` |
+| 実機・上書きの解除 | 手元を元に戻して `run` → pak・Gradle をやり直し（63.7 秒）、**インストールの工程**で DLL とアセットの解除の 2 行 → `run-as … ls files` に `assets`・`bin` が無い・スクリプトの置き場は `apk:seed/bin/`・`[PROBE v2]`・画面は最初のスクリーンショットと同一（PNG の MD5 一致）。続けて上書きを作り直し（`push --assets`・`reload scripts`）、同じ APK のまま `run`（13.6 秒）→ インストールは飛ばし、**起動の工程**で同じ 2 行 → 同じく元どおり（MD5 一致） |
+| エディタの画面からの操作 | 未確認（エディタを起動しない制約。WPF 非依存の段取りは単体テストで、実行時の配線は `MainWindow.AndroidRun.cs` の読み合わせのみ） |
+
+### 23.11 制限・持ち越し（[backlog.md](backlog.md) の「Android」節）
+
+- モデルが外部の画像を参照している（`.gltf` の外部 `uri`・`.mtl` の画像）とき、画像だけを差し替えてもモデルのテクスチャは変わらない
+  （画像は `InPlace` でスプライト等のキャッシュだけを捨てる）。モデルかシーンを保存し直すと入る。
+- 空（スカイボックス）・パーティクルの形状など、今回キャッシュを捨てる対象に入れていないものがある（シーンの読み直しで作り直すものは入る）。
+- フォント・`project_settings.json`・スクリプトホスト（`scripting/`）の変更は差し替えられない（アプリを起動し直す）。
+- 削除したファイルは端末へ伝えない（上書き層に残れば使われ続ける。`run` で消える）。
+- 同じ APK が入っていてインストールを飛ばした `install`（と `run --no-launch`）では上書きを消さないので、その後ランチャーから起動すると
+  差し替えた内容のまま動く（APK を入れ直すか、`run` で起動し直せば消える。§23.4）。
+- `run` 以外で端末のアプリのデータを消した（設定からのデータ消去・手でのアンインストール）後は送った記録が古くなり、手元で変えていないファイルは送られない
+  （`run` をやり直すと揃う）。
+- 端末で展開している最中に同じファイルが読まれると途中の中身を読みうる（命令は展開の後に送るので、ふつうは起きない）。
+- アプリが背面にあると、端末のフレームが回らないので命令は前面へ戻るまで処理されない（エディタは 60 秒で「応答なし」）。
+- シーンの読み直しはゲームの状態をシーンの開始時へ戻す（スクリプトの変数・位置。PC の Play の自動再読み込みと同じ）。
+  スクリプトの差し替えは全インスタンスの作り直し（`OnStart` の再実行）。
+- エディタの画面からの確認（Android の実行中に保存 → Output の行）は未実施（§23.10。実機の差し替えは SeedAndroid で確かめた）。
+

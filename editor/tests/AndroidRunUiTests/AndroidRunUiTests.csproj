@@ -58,6 +58,25 @@
     <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
       <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
     </Compile>
+    <!-- 実行中の差し替え（§23）: 収録の規則（参照の閉包）と pak に入れるときの中身（パス書き換え） -->
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
+      <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
+      <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\Collect\AssetCollector.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\AssetPathRewriter.cs">
+      <Link>Linked\Packaging\Pak\AssetPathRewriter.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\PakEntryContent.cs">
+      <Link>Linked\Packaging\Pak\PakEntryContent.cs</Link>
+    </Compile>
 
     <!-- 中核（editor/src/Android/。AndroidPipelineTests・SeedAndroid と同じ取り込み方） -->
     <Compile Include="..\..\src\Android\**\*.cs">

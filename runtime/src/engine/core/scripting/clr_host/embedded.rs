@@ -42,6 +42,9 @@ pub struct EmbeddedClrHost {
     pub runtime_properties: Vec<(String, String)>,
     /// スクリプトの DLL 一式の読み口（SEEDScripting.dll・SEEDUserScripts.dll）。
     pub binaries: Arc<dyn ScriptBinarySource>,
+    /// 置き場の候補（優先順。`binaries` はこの中から選んだもの）。実行中の差し替え（RELOAD_SCRIPTS）で、起動の後に
+    /// files/bin/ へ送られた DLL を選び直すのに使う（scripting/script_reload.rs。§23）。空なら `binaries` だけを候補にする。
+    pub reload_candidates: Vec<Arc<dyn ScriptBinarySource>>,
     /// ログ用の説明（例 `coreclr 10.0.12（x86_64）`）。
     pub label: String,
 }

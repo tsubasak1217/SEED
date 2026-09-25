@@ -55,6 +55,9 @@
     <Compile Include="..\..\src\Packaging\Pak\PakWriter.cs">
       <Link>Linked\Packaging\Pak\PakWriter.cs</Link>
     </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\PakEntryContent.cs">
+      <Link>Linked\Packaging\Pak\PakEntryContent.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Packaging\Pak\AssetPakBuilder.cs">
       <Link>Linked\Packaging\Pak\AssetPakBuilder.cs</Link>
     </Compile>

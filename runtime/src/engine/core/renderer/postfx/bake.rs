@@ -75,6 +75,20 @@ impl SpritePostfxCache {
     pub fn clear(&self) {
         self.map.borrow_mut().clear();
     }
+
+    /// 元テクスチャか .postfx のパスが条件に合う焼き込みを捨てる（実行中の差し替え。§23）。
+    ///
+    /// # 引数
+    /// * `refers` - パスが差し替え対象を指すか
+    ///
+    /// # 戻り値
+    /// 捨てた件数。
+    pub fn invalidate_matching(&self, refers: &dyn Fn(&str) -> bool) -> usize {
+        let mut map = self.map.borrow_mut();
+        let before = map.len();
+        map.retain(|(texture, postfx), _| !refers(texture) && !refers(postfx));
+        before - map.len()
+    }
 }
 
 // ============================================================

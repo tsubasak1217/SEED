@@ -172,6 +172,14 @@ public sealed class FakeIpcLink : IAndroidIpcLink
     /// <summary>送るのを失敗させるか（切れている扱い）。</summary>
     public bool FailSend { get; set; }
 
+    /// <summary>
+    /// 命令を送ったときに端末の代わりに返す行（null なら返さない。実行中の差し替えの応答を模す。§23）。
+    /// </summary>
+    public Func<string, string?>? Reply { get; set; }
+
+    /// <inheritdoc />
+    public event Action<string>? MessageReceived;
+
     /// <inheritdoc />
     public Task Closed => _closed.Task;
 
@@ -180,8 +188,13 @@ public sealed class FakeIpcLink : IAndroidIpcLink
     {
         if (FailSend || _closed.Task.IsCompleted) return false;
         Sent.Enqueue(command);
+        if (Reply?.Invoke(command) is { } line) MessageReceived?.Invoke(line);
         return true;
     }
+
+    /// <summary>端末から 1 行届いたことにする。</summary>
+    /// <param name="line">行。</param>
+    public void Receive(string line) => MessageReceived?.Invoke(line);
 
     /// <inheritdoc />
     public Task CloseAsync(bool detach)

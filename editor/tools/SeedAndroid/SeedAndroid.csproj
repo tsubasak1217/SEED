@@ -14,7 +14,8 @@
     pak とスクリプトの DLL は SeedPak を子プロセス（dotnet run）で作るので、scripting/ は参照しない。
 
     実行方法（リポジトリのルートで。XML のコメントにハイフン 2 つを書けないため引数の書式は SeedAndroidArguments.cs 参照）:
-      dotnet run (project=editor/tools/SeedAndroid) の後ろに、サブコマンド（devices / build / install / run / push / stop / logcat）
+      dotnet run (project=editor/tools/SeedAndroid) の後ろに、サブコマンド（devices / build / install / run / push / stop / logcat /
+      pause / resume / screenshot / reload）
     詳細は docs/android.md の 5 章。
   -->
   <PropertyGroup>
@@ -61,6 +62,35 @@
     <!-- 配布物のフォルダ構成（assets.pak・bin の名前） -->
     <Compile Include="..\..\src\Packaging\PackageLayout.cs">
       <Link>Linked\Packaging\PackageLayout.cs</Link>
+    </Compile>
+    <!-- 実行中の差し替え（docs/android.md §23）: 変わったアセットから参照をたどる収録の規則と、pak に入れるときの中身
+         （パス書き換え）。SeedPak・パッケージ化ウィンドウと同じファイル（端末へ送る中身を pak と同じ形にするため） -->
+    <Compile Include="..\..\src\Packaging\PackagingData.cs">
+      <Link>Linked\Packaging\PackagingData.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
+      <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
+      <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\Collect\AssetCollector.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\AssetPathRewriter.cs">
+      <Link>Linked\Packaging\Pak\AssetPathRewriter.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\PakEntryContent.cs">
+      <Link>Linked\Packaging\Pak\PakEntryContent.cs</Link>
     </Compile>
   </ItemGroup>
 

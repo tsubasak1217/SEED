@@ -46,6 +46,57 @@ public static class RuntimeIpcCommands
     /// <summary>命令の引数の区切り。</summary>
     public const char ArgumentSeparator = ',';
 
+    // ── 実行中の差し替え（docs/android.md §23。書式の正典はランタイムの hot_reload/wire.rs）──
+
+    /// <summary>
+    /// スクリプトの読み直し（PC はその場で再コンパイル、Android は files/bin/ の事前コンパイル DLL を読み直す）。
+    /// 応答は <see cref="ScriptsReloadedPrefix"/>。
+    /// </summary>
+    public const string ReloadScripts = "RELOAD_SCRIPTS";
+
+    /// <summary>今のシーンを読み直す（無条件。応答の宛先は <see cref="ReloadSceneTarget"/>）。</summary>
+    public const string ReloadScene = "RELOAD_SCENE";
+
+    /// <summary>今のシーンが指定のシーンのときだけ読み直す命令の接頭辞（RELOAD_SCENE:{アセットルートからの相対パス}）。</summary>
+    public const string ReloadScenePrefix = "RELOAD_SCENE:";
+
+    /// <summary>アセットを差し替える命令の接頭辞（RELOAD_ASSET:{アセットルートからの相対パス}）。</summary>
+    public const string ReloadAssetPrefix = "RELOAD_ASSET:";
+
+    /// <summary>差し替えの応答: 適用した（RELOAD_DONE:{宛先}|{所要ミリ秒}|{詳細}）。</summary>
+    public const string ReloadDonePrefix = "RELOAD_DONE:";
+
+    /// <summary>差し替えの応答: 適用しなかった（RELOAD_SKIPPED:{宛先}|{理由}。失敗ではない）。</summary>
+    public const string ReloadSkippedPrefix = "RELOAD_SKIPPED:";
+
+    /// <summary>差し替えの応答: 失敗した（RELOAD_FAILED:{宛先}|{理由}）。</summary>
+    public const string ReloadFailedPrefix = "RELOAD_FAILED:";
+
+    /// <summary>差し替えの応答の欄の区切り（Windows のファイル名に使えない文字）。</summary>
+    public const char ReloadFieldSeparator = '|';
+
+    /// <summary>無条件のシーンの読み直しの応答の宛先。</summary>
+    public const string ReloadSceneTarget = "scene";
+
+    /// <summary>条件付きのシーンの読み直しの応答の宛先の接頭辞（scene:{相対パス}）。</summary>
+    public const string ReloadSceneTargetPrefix = "scene:";
+
+    /// <summary>アセットの差し替えの応答の宛先の接頭辞（asset:{相対パス}）。</summary>
+    public const string ReloadAssetTargetPrefix = "asset:";
+
+    /// <summary>スクリプトの読み直しの応答の接頭辞（SCRIPTS_RELOADED:{型数},{再生成数} ／ 失敗は SCRIPTS_RELOADED:-1,{理由}）。</summary>
+    public const string ScriptsReloadedPrefix = "SCRIPTS_RELOADED:";
+
+    /// <summary>今のシーンが指定のシーンのときだけ読み直す命令を作る。</summary>
+    /// <param name="relative">アセットルートからの相対パス（区切り /）。</param>
+    /// <returns>1 行の命令。</returns>
+    public static string ReloadSceneIfCurrent(string relative) => ReloadScenePrefix + relative;
+
+    /// <summary>アセットを差し替える命令を作る。</summary>
+    /// <param name="relative">アセットルートからの相対パス（区切り /）。</param>
+    /// <returns>1 行の命令。</returns>
+    public static string ReloadAsset(string relative) => ReloadAssetPrefix + relative;
+
     // ── ランタイム → エディタ ─────────────────────────────
 
     /// <summary>

@@ -517,6 +517,23 @@ impl RamModelCache {
         Some(e.model)
     }
 
+    /// パスが条件に合うものをすべて捨てる（実行中の差し替えで、差し替えたモデルの古い完成品を使わないため。§23）。
+    ///
+    /// # 引数
+    /// * `refers` - キャッシュのキー（パス）が差し替え対象を指すか
+    ///
+    /// # 戻り値
+    /// 捨てた件数。
+    pub fn remove_matching(&mut self, refers: &dyn Fn(&str) -> bool) -> usize {
+        let victims: Vec<String> = self.map.keys().filter(|key| refers(key)).cloned().collect();
+        for key in &victims {
+            if let Some(e) = self.map.remove(key) {
+                self.bytes = self.bytes.saturating_sub(e.bytes);
+            }
+        }
+        victims.len()
+    }
+
     /// 上限に収まるまで最終アクセスが古いものから捨てる。
     fn evict_to_budget(&mut self) {
         while self.bytes > self.budget_bytes && !self.map.is_empty() {
@@ -814,6 +831,21 @@ impl ModelStreamer {
     /// このパスの読み込みが失敗済みか。
     pub fn is_failed(&self, path: &str) -> bool {
         self.failed.lock().unwrap().contains(path)
+    }
+
+    /// パスが条件に合う完成品と失敗の記憶を捨てる（実行中の差し替え。§23）。
+    ///
+    /// 次に要求されたときはディスク（Android は上書き層 → pak）から読み直す。読み込み中のジョブは止めない
+    /// （そのジョブも読むのは差し替えの後のファイル）。
+    ///
+    /// # 引数
+    /// * `refers` - キャッシュのキー（パス）が差し替え対象を指すか
+    ///
+    /// # 戻り値
+    /// 捨てた完成品の件数。
+    pub fn forget_matching(&self, refers: &dyn Fn(&str) -> bool) -> usize {
+        self.failed.lock().unwrap().retain(|path| !refers(path));
+        self.ready.lock().unwrap().remove_matching(refers)
     }
 
     /// RAM キャッシュの (件数, バイト数)。

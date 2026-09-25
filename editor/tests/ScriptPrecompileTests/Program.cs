@@ -178,6 +178,28 @@ public static class Program
             Check.Equal(-1, count, "壊れた DLL のロード結果");
         });
 
+        h.Add("読み直し（Android の RELOAD_SCRIPTS）で壊れた中身を渡しても、読み込み済みのスクリプトの型は残る", () =>
+        {
+            // 実行中の差し替え（docs/android.md §23）: files/bin/ の DLL を読み直すとき、新しい DLL が読めなければ
+            // 旧アセンブリのまま（CompileAndLoad と同じ）。ランタイムは古い型でスクリプトを作り直し、ゲームが続く。
+            using var fx = new ScriptFixture();
+            fx.BuildStandardTree();
+            var dll = fx.OutputPath(PrecompiledScriptArtifact.AssemblyFileName);
+            Check.True(ScriptAssemblyManager.CompileToFile(fx.Root, dll, BuildReferences()).Success, "前提のコンパイルに失敗した");
+            Check.Equal(StandardTreeScriptTypeCount,
+                ScriptAssemblyManager.LoadPrecompiledBytes(File.ReadAllBytes(dll), "files/bin/" + PrecompiledScriptArtifact.AssemblyFileName),
+                "最初の読み込み");
+
+            Check.Equal(-1, ScriptAssemblyManager.LoadPrecompiledBytes([0x4D, 0x5A, 0x00], "files/bin/broken.dll"), "壊れた DLL の読み直し");
+            Check.Equal("Alpha.Foo", ScriptAssemblyManager.Resolve("assets://a/Foo.cs")?.FullName,
+                "読み直しに失敗しても、読み込み済みの型で解決できる");
+
+            Check.Equal(StandardTreeScriptTypeCount,
+                ScriptAssemblyManager.LoadPrecompiledBytes(File.ReadAllBytes(dll), "files/bin/" + PrecompiledScriptArtifact.AssemblyFileName),
+                "その後の正しい DLL の読み直しは入れ替わる");
+            Check.Equal("Beta.Foo", ScriptAssemblyManager.Resolve("assets://b/Foo.cs")?.FullName, "入れ替えた後も解決できる");
+        });
+
         h.Add("スクリプトではない型は型マップに載らない", () =>
         {
             using var fx = new ScriptFixture();

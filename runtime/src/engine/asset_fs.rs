@@ -20,11 +20,19 @@
 //  デスクトップの配布物は 2 を持たない（PAK 外のアセット＝実行ファイルの隣の assets/ が
 //  そのまま 3 のアセットルートなので、従来どおり 1 → 3 の順になる）。
 //
+//  【上書き層（段階D の実行中の差し替え。Android のデバッグ版。docs/android.md §23）】
+//  ファイルシステムの層の位置は `FilesystemLayer` で決める（既定は `Fallback` ＝上の 3 番目。従来どおり）。
+//  `Overlay` のときはファイルシステムを **最初に** 読む（3 → 1 → 2）。Android のデバッグ版で、開発中に
+//  run-as で内部フォルダ files/assets へ送ったアセットを APK 内の pak より優先させるため
+//  （runtime/android/native の launch.rs が「デバッグ版の APK のパッケージ実行」のときだけ選ぶ。配布版は常に Fallback。
+//  判断は overlay_allowed）。上書き層に無いアセットは従来どおり PAK → 配布物の PAK 外から読む（上書き層に置いたものだけが
+//  入れ替わる。読むたびにファイルの有無を見るので、起動の後に送ったものも次に読むときから効く）。
+//
 //  【初期化】
 //  アプリ起動時に一度だけ、次のどちらかを呼ぶ（App::init_asset_fs）。
 //  - `init(assets_root, pak_path)` … assets.pak をファイルパスで開く（開けなければ黙って PAK 無し）
-//  - `init_with(assets_root, pak, package)` … 開いた PAK と配布物の読み口を直接渡す
-//    （Android の APK 内 pak。デスクトップの起動も開けなかった理由をログに残すためこちらを使う）
+//  - `init_with(assets_root, pak, package, filesystem)` … 開いた PAK と配布物の読み口とファイルシステムの層の
+//    位置を直接渡す（Android の APK 内 pak。デスクトップの起動も開けなかった理由をログに残すためこちらを使う）
 // ============================================================
 
 use std::path::{Path, PathBuf};
@@ -53,8 +61,22 @@ static PAK: OnceLock<Option<Mutex<PakReader>>> = OnceLock::new();
 /// `PackageSource` は `Send + Sync`（同時に呼ばれてよい）なので Mutex では包まない。
 static PACKAGE: OnceLock<Option<Arc<dyn PackageSource>>> = OnceLock::new();
 
+/// ファイルシステムの層（アセットルート）を読む位置（実行中の差し替え。§23）。未初期化なら `Fallback` とみなす。
+static FILESYSTEM_LAYER: OnceLock<FilesystemLayer> = OnceLock::new();
+
 /// 仮想パスのスキーム文字列。
 pub const ASSETS_SCHEME: &str = "assets://";
+
+/// ファイルシステムの層（`<アセットルート>/<相対パス>`）を、PAK・配布物の PAK 外と比べてどこで読むか（実行中の差し替え。§23）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilesystemLayer {
+    /// 最後に読む（PAK → 配布物の PAK 外 → ファイルシステム）。従来どおり・配布版・PC はいつもこれ。
+    #[default]
+    Fallback,
+    /// 最初に読む（ファイルシステム → PAK → 配布物の PAK 外）。Android のデバッグ版で、run-as で送った
+    /// 内部フォルダ files/assets を APK 内の pak より優先させる「上書き層」（差し替え。docs/android.md §23）。
+    Overlay,
+}
 
 // ============================================================
 //  初期化
@@ -71,24 +93,47 @@ pub fn init(assets_root: PathBuf, pak_path: Option<&Path>) {
     let pak = pak_path
         .filter(|p| p.exists())
         .and_then(|p| PakReader::open(p).ok());
-    init_with(assets_root, pak, None);
+    init_with(assets_root, pak, None, FilesystemLayer::Fallback);
 }
 
 /// 開いた PAK と配布物の読み口を直接渡して初期化する。アプリ起動時に一度だけ呼ぶこと。
 ///
-/// - `assets_root`: アセットフォルダの絶対パス（ファイルシステムへのフォールバック先）
+/// - `assets_root`: アセットフォルダの絶対パス（ファイルシステムの層）
 /// - `pak`:         開いた assets.pak（無ければ None ＝パッケージ実行ではない）
 /// - `package`:     配布物の読み口（PAK 外のアセットを配布物から読む場合だけ Some。Android の APK）
+/// - `filesystem`:  ファイルシステムの層を読む位置（既定は `Fallback`。Android のデバッグ版の差し替えだけ `Overlay`）
 ///
 /// 2 回目以降の呼び出しは無視される（`OnceLock`。最初の 1 回だけが効く）。
 pub fn init_with(
     assets_root: PathBuf,
     pak: Option<PakReader>,
     package: Option<Arc<dyn PackageSource>>,
+    filesystem: FilesystemLayer,
 ) {
     let _ = ASSETS_ROOT.set(assets_root);
     let _ = PAK.set(pak.map(Mutex::new));
     let _ = PACKAGE.set(package);
+    let _ = FILESYSTEM_LAYER.set(filesystem);
+}
+
+/// ファイルシステムの層を読む位置（未初期化なら `Fallback`）。
+pub fn filesystem_layer() -> FilesystemLayer {
+    FILESYSTEM_LAYER.get().copied().unwrap_or_default()
+}
+
+/// 上書き層を使うか（Android で、アセットルート＝内部フォルダ files/assets を pak より先に読むか）【純関数】。
+///
+/// デバッグ版の APK（run-as で files/assets へ送れるのはデバッグ版だけ）のパッケージ実行（APK に pak がある）のときだけ使う。
+/// 配布版は常に使わない（配布版の読む順を変えない。§23）。pak の無い開発用の APK は files/assets が元から唯一の層なので要らない。
+///
+/// フォルダ（files/assets）の有無では決めない。差し替えは起動の後に送られる（run は起動の前に消す）ので、起動の時点では
+/// 無いのがふつう。読むたびにファイルがあるかを見る（無ければ pak へ進む）ので、置いたファイルだけが pak より優先される。
+///
+/// # 引数
+/// * `debug_build` - デバッグ版の APK か（MainActivity が起動オプションを渡したか。runtime/android/native の launch_options.rs）
+/// * `packaged`    - パッケージ実行か（APK に pak がある）
+pub fn overlay_allowed(debug_build: bool, packaged: bool) -> bool {
+    debug_build && packaged
 }
 
 // ============================================================
@@ -204,12 +249,14 @@ pub fn mtime(path: &str) -> u64 {
 /// 1. PAK に存在すれば PAK から読む
 /// 2. 配布物の読み口があれば、配布物の PAK 外（`assets/<相対パス>`）から読む（Android の APK）
 /// 3. どちらにも無ければファイルシステムから読む（エディタモード兼フォールバック）
+///
+/// ファイルシステムの層が `Overlay`（Android のデバッグ版の差し替え。§23）なら 3 を最初に読む。
 pub fn read_bytes(path: &str) -> std::io::Result<Vec<u8>> {
     // 仮想パスの場合は相対パスを取り出す
     if let Some(rel) = path.strip_prefix(ASSETS_SCHEME) {
         let pak = PAK.get().and_then(Option::as_ref);
         let package = PACKAGE.get().and_then(Option::as_ref).map(|p| p.as_ref());
-        return read_virtual_layers(rel, pak, package, &resolve(path));
+        return read_virtual_layers(rel, pak, package, &resolve(path), filesystem_layer());
     }
 
     // 絶対パスの場合はそのまま読む（エディタモード・後方互換）
@@ -222,17 +269,29 @@ pub fn read_bytes(path: &str) -> std::io::Result<Vec<u8>> {
 /// Android の配布物＝PAK と APK とファイルシステム、エディタ＝ファイルシステムのみ）を単体テストで検証できる。
 /// `read_bytes` はグローバルの層を渡すだけ。
 ///
+/// `filesystem` が `Overlay` のときはファイルシステムを最初に読み、無ければ（読めなければ）PAK → 配布物の PAK 外へ進む
+/// （上書き層。§23）。どこにも無いときは、`Fallback` と同じくファイルシステムの結果（NotFound 等）を返す。
+///
 /// # 引数
-/// * `rel`     - `assets://` を外した相対パス（区切り・大文字小文字は PAK 側が吸収する）
-/// * `pak`     - PAK（パッケージ実行でなければ None）
-/// * `package` - 配布物の読み口（APK など。デスクトップ・エディタは None）
-/// * `fs_path` - ファイルシステム上の実パス（`resolve` の結果）
+/// * `rel`        - `assets://` を外した相対パス（区切り・大文字小文字は PAK 側が吸収する）
+/// * `pak`        - PAK（パッケージ実行でなければ None）
+/// * `package`    - 配布物の読み口（APK など。デスクトップ・エディタは None）
+/// * `fs_path`    - ファイルシステム上の実パス（`resolve` の結果）
+/// * `filesystem` - ファイルシステムの層を読む位置
 fn read_virtual_layers(
     rel: &str,
     pak: Option<&Mutex<PakReader>>,
     package: Option<&dyn PackageSource>,
     fs_path: &Path,
+    filesystem: FilesystemLayer,
 ) -> std::io::Result<Vec<u8>> {
+    // ── 0. 上書き層（Overlay のときだけ。ファイルシステムを最初に読む）──
+    //   読めなければ（無い・読み取り失敗）黙って次の層へ進み、どこにも無いときの最終的なエラーは下の 3 で返す。
+    if filesystem == FilesystemLayer::Overlay {
+        if let Ok(data) = std::fs::read(fs_path) {
+            return Ok(data);
+        }
+    }
     // ── 1. PAK ──
     if let Some(pak_mutex) = pak {
         if let Ok(mut pak) = pak_mutex.lock() {
@@ -502,7 +561,8 @@ mod tests {
         let pak = memory_pak(&[("a.txt", b"pak")]);
         let package = MemoryPackage::new(&[("assets/a.txt", b"apk")]);
 
-        let data = read_virtual_layers("a.txt", Some(&pak), Some(&package), &fs_file).unwrap();
+        let data =
+            read_virtual_layers("a.txt", Some(&pak), Some(&package), &fs_file, FilesystemLayer::Fallback).unwrap();
         assert_eq!(data, b"pak");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -515,8 +575,14 @@ mod tests {
         let pak = memory_pak(&[("other.txt", b"pak")]);
         let package = MemoryPackage::new(&[("assets/dir/b.txt", b"apk")]);
 
-        let data =
-            read_virtual_layers("dir\\b.txt", Some(&pak), Some(&package), &dir.join("missing.txt")).unwrap();
+        let data = read_virtual_layers(
+            "dir\\b.txt",
+            Some(&pak),
+            Some(&package),
+            &dir.join("missing.txt"),
+            FilesystemLayer::Fallback,
+        )
+        .unwrap();
         assert_eq!(data, b"apk");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -530,7 +596,8 @@ mod tests {
         let pak = memory_pak(&[("other.txt", b"pak")]);
         let package = MemoryPackage::new(&[]);
 
-        let data = read_virtual_layers("c.txt", Some(&pak), Some(&package), &fs_file).unwrap();
+        let data =
+            read_virtual_layers("c.txt", Some(&pak), Some(&package), &fs_file, FilesystemLayer::Fallback).unwrap();
         assert_eq!(data, b"fs");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -544,9 +611,10 @@ mod tests {
         let pak = memory_pak(&[("Models/E.glb", b"glb")]);
 
         // PAK の検索は大文字小文字・区切りを問わない（従来の挙動）。
-        let from_pak = read_virtual_layers("models\\e.glb", Some(&pak), None, &dir.join("x")).unwrap();
+        let from_pak =
+            read_virtual_layers("models\\e.glb", Some(&pak), None, &dir.join("x"), FilesystemLayer::Fallback).unwrap();
         assert_eq!(from_pak, b"glb");
-        let from_fs = read_virtual_layers("d.txt", Some(&pak), None, &fs_file).unwrap();
+        let from_fs = read_virtual_layers("d.txt", Some(&pak), None, &fs_file, FilesystemLayer::Fallback).unwrap();
         assert_eq!(from_fs, b"fs");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -557,10 +625,116 @@ mod tests {
         let dir = layer_temp_dir("none");
         let pak = memory_pak(&[]);
         let package = MemoryPackage::new(&[]);
-        let err = read_virtual_layers("none.txt", Some(&pak), Some(&package), &dir.join("none.txt"))
-            .err()
-            .expect("どこにも無いのでエラー");
+        let err = read_virtual_layers(
+            "none.txt",
+            Some(&pak),
+            Some(&package),
+            &dir.join("none.txt"),
+            FilesystemLayer::Fallback,
+        )
+        .err()
+        .expect("どこにも無いのでエラー");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 上書き層（FilesystemLayer::Overlay。実行中の差し替え。§23）─────────────
+
+    /// 上書き層では、3 層すべてにあるアセットをファイルシステム（run-as で送った files/assets）から読むこと。
+    /// Fallback（従来・配布版）では同じ置き方で PAK が勝つ（layers_prefer_pak）ので、違いは層の位置だけ。
+    #[test]
+    fn overlay_layers_prefer_filesystem() {
+        let dir = layer_temp_dir("overlay_first");
+        let fs_file = dir.join("a.txt");
+        std::fs::write(&fs_file, b"pushed").unwrap();
+        let pak = memory_pak(&[("a.txt", b"pak")]);
+        let package = MemoryPackage::new(&[("assets/a.txt", b"apk")]);
+
+        let overlay =
+            read_virtual_layers("a.txt", Some(&pak), Some(&package), &fs_file, FilesystemLayer::Overlay).unwrap();
+        assert_eq!(overlay, b"pushed");
+        let fallback =
+            read_virtual_layers("a.txt", Some(&pak), Some(&package), &fs_file, FilesystemLayer::Fallback).unwrap();
+        assert_eq!(fallback, b"pak", "Fallback（配布版）は従来どおり PAK が勝つ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上書き層に無いアセットは、従来どおり PAK → 配布物の PAK 外の順で読むこと（上書きしたものだけが入れ替わる）。
+    #[test]
+    fn overlay_layers_fall_back_to_pak_then_package() {
+        let dir = layer_temp_dir("overlay_missing");
+        let pak = memory_pak(&[("in_pak.txt", b"pak")]);
+        let package = MemoryPackage::new(&[("assets/in_apk.txt", b"apk")]);
+
+        let from_pak = read_virtual_layers(
+            "in_pak.txt",
+            Some(&pak),
+            Some(&package),
+            &dir.join("in_pak.txt"),
+            FilesystemLayer::Overlay,
+        )
+        .unwrap();
+        assert_eq!(from_pak, b"pak");
+        let from_apk = read_virtual_layers(
+            "in_apk.txt",
+            Some(&pak),
+            Some(&package),
+            &dir.join("in_apk.txt"),
+            FilesystemLayer::Overlay,
+        )
+        .unwrap();
+        assert_eq!(from_apk, b"apk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上書き層でも、どの層にも無ければファイルシステムのエラー（NotFound）を返すこと（Fallback と同じ）。
+    #[test]
+    fn overlay_layers_report_not_found() {
+        let dir = layer_temp_dir("overlay_none");
+        let pak = memory_pak(&[]);
+        let package = MemoryPackage::new(&[]);
+        let err = read_virtual_layers(
+            "none.txt",
+            Some(&pak),
+            Some(&package),
+            &dir.join("none.txt"),
+            FilesystemLayer::Overlay,
+        )
+        .err()
+        .expect("どこにも無いのでエラー");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 未初期化・既定の層の位置は Fallback（配布版・PC の挙動を変えない）。
+    #[test]
+    fn filesystem_layer_defaults_to_fallback() {
+        assert_eq!(FilesystemLayer::default(), FilesystemLayer::Fallback);
+    }
+
+    /// 上書き層はデバッグ版のパッケージ実行だけ。配布版は pak を優先し、pak の無い開発用の APK には要らない。
+    #[test]
+    fn overlay_is_allowed_only_for_debug_packaged_runs() {
+        assert!(overlay_allowed(true, true));
+        assert!(!overlay_allowed(true, false), "pak の無い開発用の APK は files/assets が元から唯一の層");
+        assert!(!overlay_allowed(false, true), "配布版は files/assets があっても pak を優先する");
+        assert!(!overlay_allowed(false, false));
+    }
+
+    /// 上書き層でも、上書き層にファイルが無ければ pak から読む（起動の後に送られるまでは pak のまま）。
+    /// 送った後（同じパスにファイルが現れた後）はそちらを読む。
+    #[test]
+    fn overlay_picks_up_files_pushed_after_start() {
+        let dir = layer_temp_dir("overlay_late");
+        let fs_file = dir.join("late.txt");
+        let _ = std::fs::remove_file(&fs_file);
+        let pak = memory_pak(&[("late.txt", b"pak")]);
+
+        let before = read_virtual_layers("late.txt", Some(&pak), None, &fs_file, FilesystemLayer::Overlay).unwrap();
+        assert_eq!(before, b"pak");
+        std::fs::write(&fs_file, b"pushed").unwrap();
+        let after = read_virtual_layers("late.txt", Some(&pak), None, &fs_file, FilesystemLayer::Overlay).unwrap();
+        assert_eq!(after, b"pushed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

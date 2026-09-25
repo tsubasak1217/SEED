@@ -348,7 +348,7 @@ OutputPanel の表 1 か所にある。種類と出どころ（表示フィル�
   - **`EditorLog.Write(本文, 見た目)`** … 書き手が色と出どころを決める（Android の実行の行。`AndroidRun/AndroidRunOutputFormatter.cs`。
     logcat のタグ `DOTNET` はゲーム）。
 - 警告の色を分けたくなったら、OutputPanel の「色の種類 → ブラシ」の表だけを直す（書き手は `Warning` を出している）。
-- Android の実行の行の書式は [android.md](android.md) §20.4。
+- Android の実行の行の書式は [android.md](android.md) §20.4（実行中の差し替えの行は §23.7。`AndroidRun/AndroidHotReloadOutputFormatter.cs`）。
 
 ## 8. プレイバーの実行先セレクタ
 
