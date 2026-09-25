@@ -18,6 +18,7 @@
 // ============================================================
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using SEEDEditor.Packaging.Collect;
 
@@ -57,13 +58,19 @@ public static class AssetPakBuilder
     /// runtime/src の絶対パス。エンジンに焼き込まれた assets:// 参照を起点に加える。null なら省略。
     /// </param>
     /// <param name="log">進行状況の出力先（省略可）。</param>
+    /// <param name="extraSeeds">
+    /// 既定の起点（project_settings.json・登録シーンほか）に足す追加の起点（省略・空なら従来どおり）。
+    /// SeedPak の <c>--extra-scene</c>（Android の実行で、シーンマネージャに未登録の開いているシーンを pak に入れる）が使う。
+    /// パッケージ化ウィンドウは渡さない（配布物は登録シーンから作る）。
+    /// </param>
     /// <returns>収録一覧・欠落一覧・除外統計。</returns>
     public static AssetCollectionResult Collect(
         string assetsRoot,
         AssetPackagingSettings settings,
         string? runtimeSourceRoot,
-        Action<string>? log) =>
-        new AssetCollector(assetsRoot, settings, runtimeSourceRoot, log).Collect();
+        Action<string>? log,
+        IReadOnlyCollection<string>? extraSeeds = null) =>
+        new AssetCollector(assetsRoot, settings, runtimeSourceRoot, log).Collect(extraSeeds ?? Array.Empty<string>());
 
     // ============================================================
     //  2. 収集結果の報告

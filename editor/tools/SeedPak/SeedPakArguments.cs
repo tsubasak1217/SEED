@@ -6,6 +6,7 @@
 //  （フォルダの実在確認やアセットルートの決定は PakInputResolver の責務）。
 // ============================================================
 
+using System;
 using System.Collections.Generic;
 
 namespace SEEDEditor.Tools.SeedPak;
@@ -36,6 +37,12 @@ public sealed record SeedPakOptions(
     string? RuntimeSourceDir,
     SeedPakContent Content = SeedPakContent.PakOnly)
 {
+    /// <summary>
+    /// --extra-scene の値（指定の順。無ければ空）。project_settings.json の登録シーンに加えて収録の起点にするシーン
+    /// （Android の実行で、シーンマネージャに未登録の開いているシーンを pak に入れるため）。
+    /// </summary>
+    public IReadOnlyList<string> ExtraScenes { get; init; } = Array.Empty<string>();
+
     /// <summary>assets.pak を作るか。</summary>
     public bool WritesPak => Content != SeedPakContent.ScriptsOnly;
 
@@ -72,6 +79,12 @@ public static class SeedPakArguments
     /// <summary>bin/ だけを作る（PAK は作らない。値を取らない）。</summary>
     public const string ScriptsOnlyOption = "--scripts-only";
 
+    /// <summary>
+    /// 登録シーンに加えて収録の起点にするシーン（値を 1 つ取る。繰り返し指定できる）。
+    /// Android の実行（SeedAndroid・エディタ）が、シーンマネージャに未登録の開いているシーンを pak に入れるのに使う。
+    /// </summary>
+    public const string ExtraSceneOption = "--extra-scene";
+
     /// <summary>使い方を表示する。</summary>
     public const string HelpOption = "--help";
 
@@ -86,6 +99,7 @@ public static class SeedPakArguments
           dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ>
           dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --out <出力フォルダ>
           dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ> --scripts
+          dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ> --extra-scene scenes/Stage2.scene
 
         オプション:
           --project <フォルダ>      プロジェクトフォルダ。<フォルダ>/assets をアセットルートにする
@@ -97,6 +111,10 @@ public static class SeedPakArguments
                                     アセット配下の .cs を事前コンパイルした SEEDUserScripts.dll と、スクリプトホスト
                                     SEEDScripting.dll・依存 DLL・runtimeconfig。ホストは scripting/bin/Debug/net10.0 から写す）
           --scripts-only            bin/ だけを作る（PAK は作らない。Android の DLL の差し替え用）
+          --extra-scene <シーン>    project_settings.json の登録シーンに加えて収録の起点にするシーン（繰り返し指定できる）。
+                                    アセットルートからの相対パス・assets://…・アセットルート内の絶対パス。そのシーンと
+                                    そこから参照をたどれるものを PAK に入れる（Android の実行で、シーンマネージャに未登録の
+                                    開いているシーンから起動するため）。無いシーンは警告して飛ばす。--scripts-only とは併用できない
           --help, -h                この説明を表示する
 
         収録ルールはパッケージ化ウィンドウと同じく <アセットルート>/packaging_settings.json を読む（無ければ既定値）。
@@ -115,6 +133,7 @@ public static class SeedPakArguments
     {
         string? project = null, assets = null, output = null, runtimeSource = null;
         var content = SeedPakContent.PakOnly;
+        var extraScenes = new List<string>();
 
         for (int i = 0; i < args.Count; i++)
         {
@@ -133,7 +152,7 @@ public static class SeedPakArguments
             }
 
             // 以降のオプションはすべて値を 1 つ取る
-            if (arg is not (ProjectOption or AssetsOption or OutOption or RuntimeSourceOption))
+            if (arg is not (ProjectOption or AssetsOption or OutOption or RuntimeSourceOption or ExtraSceneOption))
                 return Fail($"不明な引数です: {arg}");
             if (i + 1 >= args.Count || string.IsNullOrWhiteSpace(args[i + 1]))
                 return Fail($"{arg} には値が必要です");
@@ -145,6 +164,7 @@ public static class SeedPakArguments
                 case AssetsOption:        assets        = value; break;
                 case OutOption:           output        = value; break;
                 case RuntimeSourceOption: runtimeSource = value; break;
+                case ExtraSceneOption:    extraScenes.Add(value); break;   // 繰り返し指定できる（指定の順に積む）
             }
         }
 
@@ -154,9 +174,13 @@ public static class SeedPakArguments
             return Fail($"{ProjectOption} と {AssetsOption} は同時に指定できません");
         if (output is null)
             return Fail($"{OutOption} を指定してください");
+        // 追加の起点は PAK の収録にだけ効く。PAK を作らない指定と一緒なら、指定の食い違いとして知らせる
+        if (extraScenes.Count > 0 && content == SeedPakContent.ScriptsOnly)
+            return Fail($"{ExtraSceneOption} は {ScriptsOnlyOption} と同時に指定できません（PAK を作らないため）");
 
         return new SeedPakParseResult(
-            new SeedPakOptions(project, assets, output, runtimeSource, content), ShowHelp: false, Error: null);
+            new SeedPakOptions(project, assets, output, runtimeSource, content) { ExtraScenes = extraScenes },
+            ShowHelp: false, Error: null);
     }
 
     /// <summary>エラーの解釈結果を作る。</summary>

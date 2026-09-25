@@ -21,6 +21,20 @@ namespace SEEDEditor.Android.Steps;
 /// <summary>SeedPak の呼び出し。</summary>
 public static class SeedPakProcess
 {
+    // ── SeedPak の引数の名前（正典は editor/tools/SeedPak/SeedPakArguments.cs。SeedAndroid はそのファイルをリンクしないので写す）──
+
+    /// <summary>プロジェクトフォルダ。</summary>
+    public const string ProjectOption = "--project";
+
+    /// <summary>出力フォルダ。</summary>
+    public const string OutOption = "--out";
+
+    /// <summary>assets.pak に加えて bin/（スクリプト）も作る。</summary>
+    public const string ScriptsOption = "--scripts";
+
+    /// <summary>登録シーンに加えて収録の起点にするシーン（段階C-4。繰り返し指定できる）。</summary>
+    public const string ExtraSceneOption = "--extra-scene";
+
     /// <summary>SeedPak の終了コード: スクリプトのコンパイル・同梱の失敗（editor/tools/SeedPak/Program.cs）。</summary>
     private const int ScriptsFailedExitCode = 4;
 

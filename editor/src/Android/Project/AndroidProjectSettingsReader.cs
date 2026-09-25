@@ -4,7 +4,9 @@
 //  【読むもの】
 //    screen_orientation … 画面の向き（both / portrait / landscape。値の表はエディタの ScreenOrientationSetting）
 //    android            … アプリの識別情報（AndroidAppSettings）
-//  エディタの ProjectSettingsData（形式の変換・保存まで持つ）は使わず、JSON から 2 つのキーだけを読む
+//    start_scene / scenes[].path … シーンマネージャに登録したシーン（段階C-4。APK の pak の収録の起点と同じもの。
+//                                  起動するシーンが未登録なら pak の起点に足す判断に使う。Project/AndroidPakSceneSeeds）
+//  エディタの ProjectSettingsData（形式の変換・保存まで持つ）は使わず、JSON から必要なキーだけを読む
 //  （ビルドではファイルを書き換えないし、古い形式の変換にランタイムの exe を起こす必要も無い）。
 //  ファイルが無い・JSON として読めないときは既定値（警告付き）。従来の build_and_run.ps1 と同じ扱い。
 //
@@ -34,13 +36,30 @@ public sealed record AndroidProjectSettings(
     bool Found,
     string ScreenOrientation,
     AndroidAppSettings? Android,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings)
+{
+    /// <summary>
+    /// シーンマネージャに登録したシーン（start_scene と scenes[].path。書かれた表記のまま・書かれた順。無ければ空）。
+    /// APK の pak はこれらを起点に参照をたどって作る（Packaging/Collect/AssetCollector と同じキー）ので、
+    /// 起動するシーンを pak の収録の起点に足すかの判断に使う（Project/AndroidPakSceneSeeds。段階C-4）。
+    /// </summary>
+    public IReadOnlyList<string> RegisteredScenes { get; init; } = Array.Empty<string>();
+}
 
 /// <summary>project_settings.json から APK に焼き込む値だけを読む。</summary>
 public static class AndroidProjectSettingsReader
 {
     /// <summary>画面の向きのキー（エディタの ProjectSettingsData.ScreenOrientation と同じ）。</summary>
     public const string ScreenOrientationKey = "screen_orientation";
+
+    /// <summary>開始シーンのキー（エディタの ProjectSettingsData・AssetCollector と同じ）。</summary>
+    public const string StartSceneKey = "start_scene";
+
+    /// <summary>シーン一覧のキー（配列。要素は name / path を持つオブジェクト）。</summary>
+    public const string ScenesKey = "scenes";
+
+    /// <summary>シーン一覧の要素のうち、シーンのパスのキー。</summary>
+    public const string ScenePathKey = "path";
 
     /// <summary>
     /// アセットルートの project_settings.json を読む（アセットルートが無ければ既定値）。
@@ -107,8 +126,39 @@ public static class AndroidProjectSettingsReader
                 android = androidElement.Deserialize<AndroidAppSettings>();
             }
 
-            return new AndroidProjectSettings(path, true, orientation, android, warnings);
+            return new AndroidProjectSettings(path, true, orientation, android, warnings)
+            {
+                RegisteredScenes = ReadRegisteredScenes(root),
+            };
         }
+    }
+
+    /// <summary>
+    /// 登録シーン（start_scene と scenes[].path）を書かれた表記のまま読む（AssetCollector の起点の読み方と同じ。
+    /// 文字列でない値・空は読み飛ばす）。
+    /// </summary>
+    /// <param name="root">project_settings.json のルート（オブジェクト）。</param>
+    /// <returns>登録シーンの並び。</returns>
+    private static IReadOnlyList<string> ReadRegisteredScenes(JsonElement root)
+    {
+        var scenes = new List<string>();
+        if (root.TryGetProperty(StartSceneKey, out var start) && start.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(start.GetString()))
+        {
+            scenes.Add(start.GetString()!);
+        }
+        if (root.TryGetProperty(ScenesKey, out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in list.EnumerateArray())
+            {
+                if (entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty(ScenePathKey, out var scenePath)
+                    && scenePath.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(scenePath.GetString()))
+                {
+                    scenes.Add(scenePath.GetString()!);
+                }
+            }
+        }
+        return scenes;
     }
 
     /// <summary>プロジェクト設定のファイル名。</summary>

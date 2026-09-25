@@ -65,6 +65,13 @@ public sealed class AndroidPipelineContext
     /// </summary>
     public string? LaunchScene { get; init; }
 
+    /// <summary>
+    /// APK の pak の収録の起点に足すシーン（アセットルートからの相対パス。無ければ空）。起動するシーンがシーンマネージャに
+    /// 未登録のとき準備で決め（Project/AndroidPakSceneSeeds）、pak とスクリプトの工程が SeedPak の --extra-scene で渡す。
+    /// pak の指紋にも入る（段階C-4）。
+    /// </summary>
+    public IReadOnlyList<string> PakExtraScenes { get; init; } = System.Array.Empty<string>();
+
     /// <summary>logcat の起点の端末の時刻（起動の直前に控える）。</summary>
     public string? LogcatSince { get; set; }
 

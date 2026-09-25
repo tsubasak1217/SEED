@@ -113,6 +113,7 @@ Android の APK へ同梱する形は §10。
 |---|---|
 | `project_settings.json` | ランタイムが必ず読む。常に同梱する |
 | `start_scene` / `scenes[].path` | 登録シーン。実体が無いものは警告して飛ばす |
+| 追加の起点（SeedPak の `--extra-scene`。段階C-4） | 呼び出し側が足すシーン。登録シーンと同じく、そのシーンと参照先を入れる。**パッケージ化ウィンドウは使わない**（配布物は登録シーンから作る）。Android の実行（エディタ・SeedAndroid）が、シーンマネージャに未登録の起動シーン（開いているシーン）を APK の pak に入れるために渡す（§10.2・[android.md](android.md) §20.10）。実体が無いもの・アセットルートの外は欠落（参照元 `(指定された起点)`）として報告して飛ばす |
 | エンジン内蔵参照 | `runtime/src` の `.rs` に書かれた `assets://` のうち**実在するもの**（`terrain/layers.json` など）。テスト用ダミーは実在しないので自然に落ちる |
 | 追加同梱フォルダ | 設定で指定したフォルダを丸ごと（§3 の逃げ道） |
 | 常時同梱拡張子 | 既定は空（`.cs` は事前コンパイル DLL で配るため。§3 参照）。設定した場合は除外ルールに従う |
@@ -681,6 +682,7 @@ WPF に依存し始めるとこのツールのビルドが壊れて気付ける�
 ```
 dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ>
 dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --out <出力フォルダ>
+dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ> --extra-scene scenes/Stage2.scene
 ```
 
 | 引数 | 意味 |
@@ -691,6 +693,7 @@ dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --
 | `--runtime-src <フォルダ>` | エンジンのソース `runtime/src`（エンジン内蔵の `assets://` 参照を起点に加える。§2）。既定はツールの位置・カレントから上へ辿ったリポジトリの `runtime/src`。見つからなければ省略して続ける |
 | `--scripts` | 加えて `<出力フォルダ>/bin/` にスクリプトを作る。パッケージ化ウィンドウと同じ `ScriptPackager`（§5）で、アセット配下の `.cs` を `SEEDUserScripts.dll` へ事前コンパイルし、スクリプトホスト（`SEEDScripting.dll`・`SEEDScripting.runtimeconfig.json`・`.deps.json`・Roslyn）を `scripting/bin/Debug/net10.0/` から写す。スクリプトホストの場所は `--runtime-src` の親（`runtime/`）から探す |
 | `--scripts-only` | `bin/` だけを作る（PAK は作らない。Android の `-PushScripts` で DLL だけを差し替えるとき） |
+| `--extra-scene <シーン>` | 段階C-4。`project_settings.json` の登録シーンに加えて**収録の起点にするシーン**（繰り返し指定できる）。アセットルートからの相対パス・`assets://…`・アセットルート内の絶対パス（登録シーンと同じ書き方）。そのシーンと、そこから参照をたどれるものを PAK に入れる（`AssetPakBuilder.Collect` の `extraSeeds` → `AssetCollector.Collect(extraSeeds)`。既定の起点は 1 つも減らさない）。無いシーン・アセットルートの外は `⚠ 追加の起点の実体がありません（スキップ）` と欠落の報告（参照元 `(指定された起点)`）を出して飛ばす（終了コードは変えない）。`--scripts-only` とは併用できない（引数の誤り） |
 
 - 収録ルールはパッケージ化ウィンドウと同じ `<アセットルート>/packaging_settings.json` の `assets`（無ければ既定値）。
 - アセットルートは**エディタが使うパスと同じ表記**で渡すこと（§7 と同じ注意。シーン内の絶対パス参照の照合と
@@ -703,6 +706,9 @@ dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --
 - Android の APK へ入れるときは SeedAndroid（`editor/tools/SeedAndroid`。[android.md](android.md) §5。`runtime/android/build_and_run.ps1` は
   そのラッパー）の `--project <フォルダ>` がこのツールを `--out runtime/android/app/src/main/assets/seed --scripts` で呼ぶ
   （`push`・`--push-scripts` では `--scripts-only`）。アセット・パッケージ化のコードが前回から変わっていなければ呼ばない。
+  起動するシーン（エディタの開いているシーン・SeedAndroid の `--scene`）がシーンマネージャに未登録なら、そのシーンを `--extra-scene` で渡す
+  （判断は `editor/src/Android/Project/AndroidPakSceneSeeds.cs`。足すシーンは pak の指紋にも入るので、未登録のシーンへ切り替えた最初の実行だけ
+  pak・APK を作り直す。[android.md](android.md) §20.10）。パッケージ化ウィンドウの Android 出力はシーンを渡さないので、登録シーンだけから作る。
 
 2026-09-24 に最小アセット（BrainStem.glb ＋ 平行光・3 ファイル）で、SeedPak の出力と「変更前のパッケージ化ウィンドウと
 同じ呼び出し（`AssetCollector` → `PakWriter` の直呼び）」の出力の SHA-256 が一致することを確かめた。

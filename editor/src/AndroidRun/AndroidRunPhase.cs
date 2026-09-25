@@ -36,7 +36,7 @@ public enum AndroidRunStopReason
     /// <summary>停止ボタン。</summary>
     User,
 
-    /// <summary>端末でアプリが終わった（戻るキー・クラッシュ等。pidof で見つける）。</summary>
+    /// <summary>端末でアプリが終わった（最近のタスクから消した・強制停止・クラッシュ等。pidof で見つける。戻るキーでは終わらない）。</summary>
     AppExited,
 
     /// <summary>エディタを閉じる。</summary>

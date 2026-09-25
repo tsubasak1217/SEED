@@ -231,7 +231,9 @@ public static class SeedAndroidArguments
                                     emulator -list-avds の先頭）
           --scene <シーン>          起動するシーン（アセットルートからの相対パス 例 scenes/Main.scene・assets://…・
                                     アセットルートの中の絶対パス。省略時は project_settings.json の開始シーン。
-                                    pak に無ければ端末が警告を出して開始シーンで起動する）
+                                    シーンマネージャに未登録のシーンは pak の収録の起点に足す〈SeedPak --extra-scene。
+                                    切り替えた最初の run は pak・APK を作り直す〉。プロジェクトに無いシーンは
+                                    端末が警告を出して開始シーンで起動する）
           --abi <ABI[,ABI]>         arm64-v8a / x86_64（省略時は端末から判定。端末が無ければ両方）
           --release                 Rust 側を --release でビルドする（APK はデバッグ署名のまま）
           --config <JSON>           指定をまとめた設定 JSON（キーは project / assets_dir / serial / emulator_fallback / avd /

@@ -1,6 +1,7 @@
 using SEEDEditor.Android;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Pipeline;
+using SEEDEditor.Android.Project;
 using SEEDEditor.AndroidRun;
 using SEEDEditor.Logging;
 using SpriteRigTests;
@@ -10,6 +11,7 @@ namespace AndroidRunUiTests;
 /// <summary>
 /// 段階C-3 のエディタ側の判断: Android（自動）・エミュレータへの切り替えの状態と表示、起動するシーン（開いているシーン）、
 /// 未保存の変更の確認（保存して実行 / 保存せず実行 / キャンセル）の文言と Output の行。
+/// 段階C-4: 開いているシーンがシーンマネージャに未登録なら、エディタの指定（ForPlay の ScenePath）から中核が pak の収録の起点に足す。
 /// </summary>
 public static class AutoTargetAndSceneTests
 {
@@ -29,6 +31,40 @@ public static class AutoTargetAndSceneTests
         harness.Add("起動するシーン: 開いているシーンを相対パスで・「開始シーンからプレイ」・保存前の新規・アセットの外", SceneChoice);
         harness.Add("未保存の確認: 他の確認と同じ言い回し・ボタンは 保存して実行／保存せず実行／キャンセル・変更があるときだけ", UnsavedPrompt);
         harness.Add("Output: 起動するシーン・保存して実行・保存に失敗・保存せず実行・キャンセルの行と色", OutputLines);
+        harness.Add("pak の起点: 開いている未登録のシーンは ForPlay の指定から足す・登録済み・「開始シーンからプレイ」・パッケージ化は足さない", OpenSceneBecomesPakSeed);
+    }
+
+    /// <summary>開いているシーン → エディタの指定 → 中核の pak の起点の判断（段階C-4）。</summary>
+    private static void OpenSceneBecomesPakSeed()
+    {
+        using var temp = new AndroidPipelineTests.TempDir();
+        temp.WriteFile("Game/assets/project_settings.json",
+            "{ \"start_scene\": \"assets://scenes/Main.scene\", \"scenes\": [ { \"name\": \"Main\", \"path\": \"assets://scenes/Main.scene\" } ] }");
+        temp.WriteFile("Game/assets/scenes/Main.scene", "{}");
+        temp.WriteFile("Game/assets/scenes/Draft 1.scene", "{}");
+        var assetsRoot = temp.Combine("Game/assets");
+        var project = AndroidProjectResolver.Resolve(temp.Combine("Game"), null)!;
+        var auto = RunTargetCatalogBuilder.AndroidAuto(null);
+
+        // 開いている未登録のシーン（名前に空白を含む。相対パスのまま 1 つの起点になる）
+        var draft = AndroidRunSceneChoice.Decide(false, Path.Combine(assetsRoot, "scenes", "Draft 1.scene"), assetsRoot);
+        var request = AndroidEditorRunRequests.ForPlay(temp.Combine("Game"), auto, draft.ScenePath, null);
+        var decision = AndroidPakSceneSeeds.Decide(request.ScenePath, project);
+        Check.Equal(AndroidPakSceneSeedStatus.AddedAsSeed, decision.Status, "未登録の開いているシーンは足す");
+        Check.Equal("scenes/Draft 1.scene", string.Join("|", decision.ExtraScenes), "足すのは開いているシーン");
+
+        var main = AndroidRunSceneChoice.Decide(false, Path.Combine(assetsRoot, "scenes", "Main.scene"), assetsRoot);
+        Check.Equal(AndroidPakSceneSeedStatus.Registered,
+            AndroidPakSceneSeeds.Decide(AndroidEditorRunRequests.ForPlay(temp.Combine("Game"), auto, main.ScenePath, null).ScenePath, project).Status,
+            "登録済みのシーンは足さない（pak を作り直さない）");
+
+        var byOption = AndroidRunSceneChoice.Decide(true, Path.Combine(assetsRoot, "scenes", "Draft 1.scene"), assetsRoot);
+        Check.Equal(AndroidPakSceneSeedStatus.NoLaunchScene,
+            AndroidPakSceneSeeds.Decide(AndroidEditorRunRequests.ForPlay(temp.Combine("Game"), auto, byOption.ScenePath, null).ScenePath, project).Status,
+            "「開始シーンからプレイ」は足さない");
+
+        var package = AndroidEditorRunRequests.ForPackage(temp.Combine("Game"), new[] { "arm64-v8a" }, release: false);
+        Check.True(package.ScenePath is null, "パッケージ化ウィンドウはシーンを渡さない（pak は登録シーンだけから作る）");
     }
 
     /// <summary>自動: 準備で端末が決まる。</summary>

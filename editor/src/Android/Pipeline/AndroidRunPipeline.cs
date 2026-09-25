@@ -2,7 +2,8 @@
 //  AndroidRunPipeline.cs — Android のビルド・配置・起動の本体（段階C。従来の runtime/android/build_and_run.ps1 の中身）
 //
 //  【流れ】
-//    準備: 指定の検査 → プロジェクト（アセットルート・画面の向き・アプリの識別情報）→ 起動するシーン →
+//    準備: 指定の検査 → プロジェクト（アセットルート・画面の向き・アプリの識別情報）→ 起動するシーン
+//          （シーンマネージャに未登録なら pak の収録の起点に足す。段階C-4）→
 //          端末（「自動」等なら要ればエミュレータを起動して待つ。段階C-3）と ABI →
 //          各工程の今の指紋と前回の記録 → 実行計画（Plan/AndroidBuildPlan.cs。飛ばす工程と理由）
 //    工程: libSEED.so（cargo ndk）→ pak とスクリプト（SeedPak）→ 同梱 .NET → APK（Gradle）→ インストール →
@@ -146,6 +147,8 @@ public sealed class AndroidRunPipeline
 
         // ── 起動するシーン（起動の工程があるときだけ。端末を用意する前に指定の誤りを弾く）──
         var launchScene = ResolveLaunchScene(request, project, log);
+        // ── 起動するシーンがシーンマネージャに未登録なら、pak の収録の起点に足す（段階C-4）──
+        var pakExtraScenes = DecidePakExtraScenes(request, launchScene, project, log);
 
         // ── 端末と ABI ──
         var (device, adb) = await ResolveDeviceAsync(request, runState, log, cancellationToken).ConfigureAwait(false);
@@ -158,6 +161,7 @@ public sealed class AndroidRunPipeline
             Request = request, Engine = _engine, Toolchain = _toolchain, Project = project, Identity = identity,
             ScreenOrientation = orientation, Abis = abis, Device = device, Adb = adb,
             Stamps = stamps, RunState = runState, RunStatePath = runStatePath, LaunchScene = launchScene,
+            PakExtraScenes = pakExtraScenes,
         };
         var buildScope = request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
         if (buildScope)
@@ -167,7 +171,7 @@ public sealed class AndroidRunPipeline
             {
                 context.CurrentFingerprints[AndroidStepKeys.Native(abi)] = AndroidStepFingerprints.Native(_engine, abi, request.Release, ndkPath);
             }
-            context.CurrentFingerprints[AndroidStepKeys.PackageContent] = AndroidStepFingerprints.PackageContent(_engine, project);
+            context.CurrentFingerprints[AndroidStepKeys.PackageContent] = AndroidStepFingerprints.PackageContent(_engine, project, pakExtraScenes);
             context.CurrentFingerprints[AndroidStepKeys.DotnetBundle] = AndroidStepFingerprints.DotnetBundle(_engine, abis);
             context.CurrentFingerprints[AndroidStepKeys.Gradle] = AndroidStepFingerprints.Gradle(_engine, GradleBuildStep.Parameters(context, ndkPath));
         }
@@ -242,8 +246,9 @@ public sealed class AndroidRunPipeline
 
     /// <summary>
     /// 起動するシーンを決める（起動の工程が無ければ見ない）。指定の形の誤り（アセットフォルダの外・..）は何もしないうちに弾き、
-    /// プロジェクトに無いシーンは警告だけ出してそのまま渡す（端末が警告を出して開始シーンで起動する。pak の収録の設定で
-    /// 外れたシーンも端末側で同じ扱いになるので、判断は端末に 1 本化する）。
+    /// プロジェクトに無いシーンは警告だけ出してそのまま渡す（端末が警告を出して開始シーンで起動する。pak に入らなかった
+    /// シーンも端末側で同じ扱いになるので、判断は端末に 1 本化する）。シーンマネージャに未登録のシーンを pak に入れるのは
+    /// 次の <see cref="DecidePakExtraScenes"/>（段階C-4）。
     /// </summary>
     /// <param name="request">指定。</param>
     /// <param name="project">プロジェクト（無ければ null）。</param>
@@ -269,6 +274,33 @@ public sealed class AndroidRunPipeline
             log.Warn($"シーン {scene.Relative} がプロジェクトのアセット（{assetsRoot ?? "指定なし"}）にありません。端末は警告を出して開始シーンで起動します。");
         }
         return scene.Relative;
+    }
+
+    /// <summary>
+    /// 起動するシーンがシーンマネージャに未登録なら、APK の pak の収録の起点に足すシーンとして返す（段階C-4。判断は
+    /// Project/AndroidPakSceneSeeds）。pak を作る目的（Build・Install・Run）のときだけ見る（Push は pak を作らない）。
+    /// 足したシーンは pak の指紋に入るので、未登録のシーンへ切り替えた最初の実行で pak・APK・インストールをやり直す。
+    /// </summary>
+    /// <param name="request">指定。</param>
+    /// <param name="launchScene">起動するシーン（アセットルートからの相対パス。開始シーンなら null）。</param>
+    /// <param name="project">プロジェクト（無ければ null）。</param>
+    /// <param name="log">準備のログ。</param>
+    /// <returns>pak の収録の起点に足すシーン（無ければ空）。</returns>
+    private static IReadOnlyList<string> DecidePakExtraScenes(
+        AndroidRunRequest request, string? launchScene, AndroidProjectInfo? project, AndroidPhaseLog log)
+    {
+        var buildsPak = request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
+        if (!buildsPak) return Array.Empty<string>();
+
+        var decision = AndroidPakSceneSeeds.Decide(launchScene, project);
+        if (decision.Status == AndroidPakSceneSeedStatus.AddedAsSeed)
+        {
+            log.Info(request.SkipGradle
+                ? $"シーン {launchScene} はシーンマネージャに未登録です（APK の作成を飛ばす指定のため pak は作り直しません。前回の pak に無ければ端末は開始シーンで起動します）。"
+                : $"シーン {launchScene} はシーンマネージャに未登録のため、pak の収録の起点に足します（SeedPak {SeedPakProcess.ExtraSceneOption}。" +
+                  "未登録のシーンへ切り替えた最初の実行は pak・APK・インストールをやり直します）。");
+        }
+        return decision.ExtraScenes;
     }
 
     /// <summary>

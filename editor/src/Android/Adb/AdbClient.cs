@@ -1,5 +1,5 @@
 // ============================================================
-//  AdbClient.cs — adb の呼び出し（端末の一覧・インストール・run-as での転送・起動・停止・logcat・
+//  AdbClient.cs — adb の呼び出し（端末の一覧・インストール・run-as での転送と消去・起動・停止・logcat・
 //                 エミュレータの AVD 名と起動の完了の確認）
 //
 //  【触ってよいもの】
@@ -68,6 +68,21 @@ public sealed class AdbClient
 
     /// <summary>転送後に「置けたか」を確かめるスクリプト（{0} = 確かめるファイル）。</summary>
     private const string CheckScriptFormat = "test -f {0} && echo " + CheckOkMarker;
+
+    /// <summary>run-as でフォルダを消したときに端末が返す文字列。</summary>
+    private const string RemovedMarker = "removed";
+
+    /// <summary>
+    /// アプリの内部データフォルダの中のフォルダを、あれば消して「消した」と返すスクリプト（{0} = 内部データフォルダからの相対パス）。
+    /// 無ければ何も出さない（exec-out は端末側の終了コードを返さないことがあるので、出力で見分ける）。
+    /// </summary>
+    private const string RemoveIfExistsScriptFormat = "if [ -e {0} ]; then rm -rf {0} && echo " + RemovedMarker + "; fi";
+
+    /// <summary>相対パスの区切り（端末のパス）。</summary>
+    private const char RemotePathSeparator = '/';
+
+    /// <summary>親フォルダを表す区切り（アプリのデータフォルダの外へ出るので受け付けない）。</summary>
+    private const string RemoteParentSegment = "..";
 
     /// <summary>adb の実行ファイル。</summary>
     public string AdbPath { get; }
@@ -194,6 +209,65 @@ public sealed class AdbClient
             throw new AdbCommandException(
                 $"転送の後に {remoteDir}/{checkFile} が見つかりません（{capture.AllOutputText} {verify.AllOutputText}）".TrimEnd());
         }
+    }
+
+    /// <summary>
+    /// run-as でアプリの権限になり、アプリの内部データフォルダの中のフォルダを消す（あれば。段階C-4: run の起動の前に
+    /// push で置いた DLL の上書き files/bin を消すのに使う）。デバッグ版の APK だけが使える。
+    /// run-as の作業フォルダはそのアプリのデータフォルダ（/data/user/0/&lt;アプリ ID&gt;）で、権限もそのアプリのものなので、
+    /// 消せるのは <paramref name="applicationId"/> のアプリの中だけ（<paramref name="remoteDir"/> は相対パスに限る）。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="applicationId">アプリ ID（検査済みの値）。</param>
+    /// <param name="remoteDir">消すフォルダ（内部データフォルダからの相対。例 files/bin）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>消したら true、もともと無ければ false。</returns>
+    /// <exception cref="AdbCommandException">消せなかった・run-as が失敗したとき（アプリが入っていない・デバッグ版でない等）。</exception>
+    public async Task<bool> RunAsRemoveDirectoryAsync(
+        string serial, string applicationId, string remoteDir, CancellationToken cancellationToken)
+    {
+        var capture = await ChildProcessRunner.CaptureAsync(
+            Spec(serial, RunAsRemoveArguments(applicationId, remoteDir)), cancellationToken).ConfigureAwait(false);
+        var removed = ParseRunAsRemoveOutput(capture.StandardOutputText);
+        if (capture.ExitCode != 0 || removed is null)
+        {
+            throw new AdbCommandException(
+                $"run-as で {remoteDir} を消せませんでした（終了コード {capture.ExitCode}。デバッグ版の APK が入っているか確認してください）: {capture.AllOutputText}".TrimEnd());
+        }
+        return removed.Value;
+    }
+
+    /// <summary>
+    /// run-as でフォルダを消す adb の引数を作る（純粋な処理）: exec-out run-as &lt;ID&gt; sh -c 'if [ -e &lt;dir&gt; ]; then rm -rf &lt;dir&gt; &amp;&amp; echo removed; fi'。
+    /// exec-out は引数を 1 つずつ端末へ渡すので、スクリプトは 1 引数のまま渡す。
+    /// </summary>
+    /// <param name="applicationId">アプリ ID。</param>
+    /// <param name="remoteDir">消すフォルダ（内部データフォルダからの相対。絶対パス・.. は受け付けない）。</param>
+    /// <returns>adb の引数（-s は含まない）。</returns>
+    /// <exception cref="ArgumentException">remoteDir が空・絶対パス・.. を含むとき（アプリのデータフォルダの外を指さないように）。</exception>
+    public static string[] RunAsRemoveArguments(string applicationId, string remoteDir)
+    {
+        if (string.IsNullOrWhiteSpace(remoteDir) || remoteDir.StartsWith(RemotePathSeparator)
+            || remoteDir.Split(RemotePathSeparator).Contains(RemoteParentSegment))
+        {
+            throw new ArgumentException($"消すフォルダはアプリのデータフォルダからの相対パスにしてください（{RemoteParentSegment} も使えません）: {remoteDir}", nameof(remoteDir));
+        }
+        var script = string.Format(System.Globalization.CultureInfo.InvariantCulture, RemoveIfExistsScriptFormat, remoteDir);
+        return new[] { "exec-out", "run-as", applicationId, "sh", "-c", script };
+    }
+
+    /// <summary>
+    /// run-as でフォルダを消した出力を読む（純粋な処理）。exec-out は端末の標準エラーも同じ出力に混ぜて返すので、
+    /// 「removed」の行があれば消した（rm が成功したときだけ echo する）、何も無ければもともと無かった、
+    /// それ以外（run-as・rm のエラーの文言だけ）は失敗とみなす。
+    /// </summary>
+    /// <param name="output">adb の標準出力。</param>
+    /// <returns>消したら true、無かったら false、失敗なら null。</returns>
+    public static bool? ParseRunAsRemoveOutput(string output)
+    {
+        var lines = output.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
+        if (lines.Count == 0) return false;
+        return lines.Contains(RemovedMarker, StringComparer.Ordinal) ? true : null;
     }
 
     /// <summary>アプリを止める（am force-stop。自分のアプリだけ）。</summary>

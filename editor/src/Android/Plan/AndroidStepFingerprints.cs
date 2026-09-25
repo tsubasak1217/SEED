@@ -20,6 +20,9 @@ namespace SEEDEditor.Android.Plan;
 /// <summary>各ビルド工程の指紋の計算。</summary>
 public static class AndroidStepFingerprints
 {
+    /// <summary>pak の指紋の材料で、収録の起点に足すシーン 1 つを表す名前（段階C-4）。</summary>
+    private const string ExtraSceneMaterialKey = "extra_scene";
+
     /// <summary>
     /// libSEED.so（1 つの ABI）の指紋。入力はエンジンのソースとビルドのパラメータ、出力は jniLibs の .so。
     /// </summary>
@@ -45,8 +48,13 @@ public static class AndroidStepFingerprints
     /// </summary>
     /// <param name="engine">エンジン側の置き場。</param>
     /// <param name="project">プロジェクト（無ければ null）。</param>
+    /// <param name="extraScenes">
+    /// pak の収録の起点に足すシーン（未登録の起動シーン。段階C-4。Project/AndroidPakSceneSeeds）。足すシーンが変われば pak の中身が
+    /// 変わるので材料に入れる。空なら材料に足さない（足さないときの指紋は段階C-3 までと同じ式）。
+    /// </param>
     /// <returns>指紋。</returns>
-    public static AndroidStepFingerprint PackageContent(AndroidEnginePaths engine, AndroidProjectInfo? project)
+    public static AndroidStepFingerprint PackageContent(
+        AndroidEnginePaths engine, AndroidProjectInfo? project, IReadOnlyList<string>? extraScenes = null)
     {
         var builder = new AndroidFingerprintBuilder();
         if (project is { Mode: AndroidProjectMode.Packaged })
@@ -57,6 +65,11 @@ public static class AndroidStepFingerprints
                 // プロジェクトのアセットは生成物の名前（build 等）でも中身なので除外しない
                 .AddTree("assets", project.Folder.AssetsRoot);
             AddRepositoryTrees(builder, engine, AndroidBuildInputs.PackageToolSources);
+            if (extraScenes is { Count: > 0 })
+            {
+                // 1 つずつ別の材料にする（区切り文字を含むパスでも、別の組み合わせと同じ材料にならないように）
+                foreach (var scene in extraScenes) builder.AddValue(ExtraSceneMaterialKey, scene);
+            }
         }
         else
         {

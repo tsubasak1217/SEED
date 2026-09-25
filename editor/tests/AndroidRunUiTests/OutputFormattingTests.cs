@@ -171,7 +171,11 @@ public static class OutputFormattingTests
         Check.Equal("[Android] 工程: 2 を行い、1 を飛ばしました（始めてから 15.2 秒）", stopped[1].Text, "工程の数（準備は数えない）");
 
         Check.True(Lines(AndroidRunOutcome.BuildCanceled)[0].Text.Contains("ビルドを中止しました"), "中止");
-        Check.True(Lines(AndroidRunOutcome.AppExited)[0].Text.Contains("アプリが終わった"), "アプリの終了");
+        var appExited = Lines(AndroidRunOutcome.AppExited)[0];
+        Check.Equal("[Android] 端末でアプリが終わったので実行を終えました（最近のタスクから消した・強制停止・クラッシュ等。直前の logcat を確認してください）。",
+            appExited.Text, "アプリの終了（プロセスが終わる操作を挙げる）");
+        Check.True(!appExited.Text.Contains("戻るキー"), "戻るキーではアプリは終わらないので理由に挙げない（段階C-4 に実機で確認）");
+        Check.Equal(OutputTone.Runtime, appExited.Style.Tone, "アプリの終了は実行先の通知の色");
         Check.Equal(OutputTone.Warning, Lines(AndroidRunOutcome.LogcatEnded)[0].Style.Tone, "logcat の終わりは黄");
         Check.Equal(OutputTone.Error, Lines(AndroidRunOutcome.StoppedByUser, stopError: "timeout")[0].Style.Tone, "アプリを止められないのは赤");
 

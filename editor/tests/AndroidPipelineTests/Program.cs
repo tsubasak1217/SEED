@@ -13,6 +13,8 @@ namespace AndroidPipelineTests;
 ///   5. 指紋・tar・行の読み取り・記録・道具の解決・プロジェクトの読み取り・SeedAndroid の引数（InfrastructureTests）
 ///   6. 実行先の決め方（自動・エミュレータへの切り替え）・エミュレータの起動と待ち合わせ・AVD・起動するシーンの受け渡し
 ///      （EmulatorAndSceneTests。段階C-3）
+///   7. 未登録の起動シーンを pak の収録の起点に足す判断・指紋・SeedPak の引数・pak に無いときの警告（PakSceneSeedTests。段階C-4）
+///   8. run の起動の前に push した DLL の上書き（files/bin/）を消す判断・run-as の引数・出力の読み方（PushOverrideTests。段階C-4）
 /// 端末・adb・cargo・Gradle は使わない。
 /// </summary>
 public static class Program
@@ -28,6 +30,8 @@ public static class Program
         DotnetBundleTests.Register(harness);
         InfrastructureTests.Register(harness);
         EmulatorAndSceneTests.Register(harness);
+        PakSceneSeedTests.Register(harness);
+        PushOverrideTests.Register(harness);
         return harness.Run();
     }
 }

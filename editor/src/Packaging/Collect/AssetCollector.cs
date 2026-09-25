@@ -9,6 +9,7 @@
 //  1. ディスク上の全ファイルを 1 度だけ列挙してインデックス化する
 //     （以降の実在チェックはハッシュ参照だけで済み、I/O が起きない）。
 //  2. 起点を積む: project_settings.json / start_scene / scenes[].path /
+//     呼び出し側が足す追加の起点（Collect(extraSeeds)。Android の実行で開いている未登録のシーン等）/
 //     ランタイムに焼き込まれた assets:// パス / 追加フォルダ / 常時同梱拡張子 /
 //     除外ルールに当たらない全 .cs（走査専用。同梱はしない。下記【型参照対策】参照）。
 //  3. ワークリスト方式で閉包を取る。テキスト系ファイルは中身を走査して
@@ -22,6 +23,9 @@
 //
 //  【2 つの入口】
 //  ・Collect()     … パッケージ化用。上記の既定の起点（project_settings.json ほか）から辿る。
+//                    Collect(extraSeeds) は既定の起点に「追加の起点」を足す版（SeedPak の --extra-scene。
+//                    Android の実行で、シーンマネージャに登録していない開いているシーンを pak に入れるため）。
+//                    追加が空なら Collect() と同じ結果（パッケージ化ウィンドウは追加を渡さない）。
 //  ・CollectFrom() … 任意の起点から辿る汎用版。呼び出し側が渡したパスだけを起点にし、
 //                    project_settings.json も登録シーンもスクリプト全走査も行わない。
 //                    テンプレートライブラリのインポート（editor/src/Templates/）が使う。
@@ -184,7 +188,28 @@ public sealed class AssetCollector
 
     /// <summary>参照グラフを辿って収録ファイルを決定する。</summary>
     /// <returns>収録一覧・欠落一覧・除外統計を含む結果。</returns>
-    public AssetCollectionResult Collect()
+    public AssetCollectionResult Collect() => Collect(Array.Empty<string>());
+
+    /// <summary>
+    /// 既定の起点（<see cref="AddSeeds"/>）に「追加の起点」を足して、参照グラフを辿って収録ファイルを決定する。
+    ///
+    /// <para>
+    /// 追加の起点は、project_settings.json に登録していないが PAK に入れたいファイル（SeedPak の <c>--extra-scene</c>。
+    /// Android の実行で、シーンマネージャに未登録の開いているシーンから起動するため）。登録シーンと同じく、
+    /// そのファイル自身を収録し、そこから参照をたどる。既定の起点は 1 つも減らさないので、結果は
+    /// 「<see cref="Collect()"/> の結果 ＋ 追加の起点から辿れるもの」になる（追加が空なら同じ結果）。
+    /// </para>
+    /// <para>
+    /// <see cref="AssetPackagingSettings.IncludeAllFiles"/>（全ファイル同梱）のときは、どのみち全部入るので見ない。
+    /// </para>
+    /// </summary>
+    /// <param name="extraSeeds">
+    /// 追加の起点（ファイル）。アセットルートからの相対パス・<c>assets://</c> の仮想パス・アセットルート内の絶対パス
+    /// （登録シーンの書き方と同じ）。実在しないもの・アセットルートの外のものは欠落参照
+    /// （参照元 = <see cref="SeedSourceLabel"/>）として報告して飛ばす。
+    /// </param>
+    /// <returns>収録一覧・欠落一覧・除外統計を含む結果。</returns>
+    public AssetCollectionResult Collect(IEnumerable<string> extraSeeds)
     {
         var missingScenes = new List<string>();
 
@@ -207,7 +232,7 @@ public sealed class AssetCollector
         }
 
         // ── 起点を積む ─────────────────────────────────────────
-        AddSeeds(missingScenes);
+        AddSeeds(missingScenes, extraSeeds);
 
         // ── 閉包を取って結果にする ─────────────────────────────
         return RunClosureAndBuildResult(missingScenes);
@@ -223,7 +248,7 @@ public sealed class AssetCollector
     /// 呼び出し側が指定した起点だけから参照の閉包を取る汎用版。
     ///
     /// <para>
-    /// <see cref="Collect"/> と違い、<c>project_settings.json</c>・登録シーン・
+    /// <see cref="Collect(IEnumerable{string})"/> と違い、<c>project_settings.json</c>・登録シーン・
     /// ランタイム内蔵参照・追加同梱フォルダ・常時同梱拡張子・全 .cs の走査といった
     /// 「パッケージ化のための既定の起点」（<see cref="AddSeeds"/>）を **一切積まない**。
     /// 渡されたパスから辿れるものだけが結果に入る。
@@ -271,7 +296,7 @@ public sealed class AssetCollector
 
     /// <summary>
     /// 積まれた起点から参照の閉包を取り、結果オブジェクトを組み立てる。
-    /// <see cref="Collect"/> と <see cref="CollectFrom"/> の共通後半部分。
+    /// <see cref="Collect(IEnumerable{string})"/> と <see cref="CollectFrom"/> の共通後半部分。
     /// </summary>
     /// <param name="missingScenes">実体の無い登録シーン（<see cref="CollectFrom"/> では常に空）。</param>
     /// <returns>収録一覧・欠落一覧・除外統計を含む結果。</returns>
@@ -318,7 +343,8 @@ public sealed class AssetCollector
 
     /// <summary>参照グラフの起点となるファイルをキューへ積む。</summary>
     /// <param name="missingScenes">実体の無いシーン登録を書き戻す先。</param>
-    private void AddSeeds(List<string> missingScenes)
+    /// <param name="extraSeeds">呼び出し側が足す追加の起点（<see cref="Collect(IEnumerable{string})"/>。無ければ空）。</param>
+    private void AddSeeds(List<string> missingScenes, IEnumerable<string> extraSeeds)
     {
         // ── 1. project_settings.json 本体（ランタイムが必ず読む） ──
         const string projectSettingsName = "project_settings.json";
@@ -337,6 +363,9 @@ public sealed class AssetCollector
             missingScenes.Add(scenePath);
             Log($"⚠ 登録シーンの実体がありません（スキップ）: {scenePath}");
         }
+
+        // ── 2b. 呼び出し側が足す追加の起点（Android の実行で開いている未登録のシーン等）──
+        AddExtraSeeds(extraSeeds);
 
         // ── 3. ランタイムに焼き込まれた assets:// パス ──────────
         int builtin = 0;
@@ -382,6 +411,37 @@ public sealed class AssetCollector
 
         // ── 6. 型参照対策（走査専用の起点） ──────────────────────
         AddScriptScanSeeds();
+    }
+
+    /// <summary>
+    /// 呼び出し側が足す追加の起点（ファイル）を積む。登録シーンと同じく、そのファイル自身を収録して参照をたどる。
+    ///
+    /// <para>
+    /// 書き方は登録シーンと同じ（<see cref="ToRelativeReference"/>: <c>assets://</c>・アセットルート内の絶対パス・
+    /// ルート相対）。実在しないもの・アセットルートの外のものは黙って捨てず、欠落参照（参照元 =
+    /// <see cref="SeedSourceLabel"/>。<see cref="CollectFrom"/> と同じ扱い）として報告して飛ばす。
+    /// 既に登録シーン等で収録済みのものを渡しても結果は変わらない（<see cref="Include"/> は重複を無視する）。
+    /// </para>
+    /// </summary>
+    /// <param name="extraSeeds">追加の起点。</param>
+    private void AddExtraSeeds(IEnumerable<string> extraSeeds)
+    {
+        foreach (var raw in extraSeeds)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+
+            var rel = ToRelativeReference(raw);
+            if (rel.Length > 0 && _filesOnDisk.ContainsKey(rel))
+            {
+                Include(rel);
+                Log($"追加の起点: {CanonicalDiskPath(rel)}");
+                continue;
+            }
+
+            // 実在しない（アセットルートの外を含む）起点は、呼び出し側の指定ミスとして見えるように残す
+            AddMissing(rel.Length > 0 ? rel : raw.Trim(), raw, SeedSourceLabel);
+            Log($"⚠ 追加の起点の実体がありません（スキップ）: {raw}");
+        }
     }
 
     /// <summary>C# スクリプトの拡張子。走査専用の起点判定に使う。</summary>

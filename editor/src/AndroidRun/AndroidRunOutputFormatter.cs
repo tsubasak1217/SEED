@@ -303,6 +303,13 @@ public static class AndroidRunOutputFormatter
         return lines;
     }
 
+    /// <summary>
+    /// 端末でアプリのプロセスが終わったとき（pidof の見張りで見つけた）の終わり方の本文。プロセスが終わるのは、
+    /// 最近のタスクから消した・アプリ情報の強制停止・クラッシュ等（戻るキー・ホームでは終わらない）。
+    /// </summary>
+    public const string AppExitedText =
+        "端末でアプリが終わったので実行を終えました（最近のタスクから消した・強制停止・クラッシュ等。直前の logcat を確認してください）。";
+
     /// <summary>終わり方の 1 行。</summary>
     private static AndroidRunOutputLine DescribeOutcome(AndroidRunCompletion completion, string? stopAppError) => completion.Outcome switch
     {
@@ -310,7 +317,8 @@ public static class AndroidRunOutputFormatter
             Notice(OutputTone.Error, $"logcat は止めましたが、端末のアプリを止められませんでした: {stopAppError}"),
         AndroidRunOutcome.StoppedByUser => Notice(OutputTone.Runtime, "停止しました（端末のアプリを止めました）。"),
         AndroidRunOutcome.BuildCanceled => Notice(OutputTone.Runtime, "ビルドを中止しました（端末のアプリには触っていません）。"),
-        AndroidRunOutcome.AppExited => Notice(OutputTone.Runtime, "端末でアプリが終わったので実行を終えました（戻るキー・クラッシュ等。直前の logcat を確認してください）。"),
+        // 戻るキー・ホームではアプリのプロセスは終わらない（戻るキーはスクリプトへ Escape として渡るだけ。docs/android.md §14.5）ので挙げない
+        AndroidRunOutcome.AppExited => Notice(OutputTone.Runtime, AppExitedText),
         AndroidRunOutcome.LogcatEnded => Notice(OutputTone.Warning, "logcat が終わりました（端末が外れた・adb が終了した等）。実行を終えます。"),
         AndroidRunOutcome.Canceled => Notice(OutputTone.Warning, "中断しました。"),
         _ => Notice(OutputTone.Error, DescribeFailure(completion.Result)),

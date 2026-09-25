@@ -16,9 +16,12 @@
 //  （Windows はパッケージ化ウィンドウの DotnetRuntimeBundler、Android は SeedAndroid の DotnetRuntimeBundle が NuGet から組み立てる）。
 //  Android の APK へ同梱するときは SeedAndroid（editor/tools/SeedAndroid。build_and_run.ps1 はそのラッパー）の --project が
 //  このツールを --scripts 付きで呼び、DLL だけの差し替え（push / --push-scripts）では --scripts-only で呼ぶ。
+//  起動するシーンがシーンマネージャに未登録なら、SeedAndroid はそのシーンを --extra-scene で渡し、登録シーンに加えて
+//  収録の起点にさせる（AssetPakBuilder.Collect の extraSeeds。登録シーンと同じく、そのシーンから参照をたどる）。
 // ============================================================
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using SEEDEditor.Packaging;
 using SEEDEditor.Packaging.Pak;
@@ -80,7 +83,7 @@ public static class Program
 
         if (options.WritesPak)
         {
-            var pakResult = WritePak(inputs);
+            var pakResult = WritePak(inputs, options.ExtraScenes);
             if (pakResult != ExitSuccess) return pakResult;
         }
 
@@ -98,19 +101,23 @@ public static class Program
     /// assets.pak を作る（パッケージ化ウィンドウの「収録アセットの収集」「PAK 書き出し」と同じコード・同じログ）。
     /// </summary>
     /// <param name="inputs">確定した入力。</param>
+    /// <param name="extraScenes">--extra-scene の値（登録シーンに加えて収録の起点にするシーン。無ければ空）。</param>
     /// <returns>終了コード（成功なら <see cref="ExitSuccess"/>）。</returns>
-    private static int WritePak(PakInputs inputs)
+    private static int WritePak(PakInputs inputs, IReadOnlyList<string> extraScenes)
     {
         Console.WriteLine(inputs.SettingsFound
             ? $"収録ルール: {inputs.SettingsPath}"
             : $"収録ルール: 既定値（{inputs.SettingsPath} が無いため）");
+        if (extraScenes.Count > 0)
+            Console.WriteLine($"追加の起点（{SeedPakArguments.ExtraSceneOption}）: {string.Join(" / ", extraScenes)}");
         var pakPath = PackageLayout.PakPath(inputs.OutDir);
         var watch   = System.Diagnostics.Stopwatch.StartNew();
 
-        // ── 3. 収録アセットの収集（パッケージ化ウィンドウと同じ手順・同じログ）──
+        // ── 3. 収録アセットの収集（パッケージ化ウィンドウと同じ手順・同じログ。追加の起点はそこに足すだけ）──
         Console.WriteLine();
         Console.WriteLine("── 収録アセットの収集 ──");
-        var result = AssetPakBuilder.Collect(inputs.AssetsRoot, inputs.Settings, inputs.RuntimeSourceRoot, Console.WriteLine);
+        var result = AssetPakBuilder.Collect(
+            inputs.AssetsRoot, inputs.Settings, inputs.RuntimeSourceRoot, Console.WriteLine, extraScenes);
         AssetPakBuilder.ReportCollection(result, Console.WriteLine);
         if (!AssetPakBuilder.HasContent(result))
         {

@@ -11,6 +11,8 @@
 //   4. AssetPathRewriter     : 絶対パス 4 形式の書き換え
 //   5. DotnetRuntimeBundler  : 同梱する .NET の選択と出力先レイアウト
 //   6. PackageLayout         : 配布物のフォルダ構成と旧レイアウトの後始末の判定
+//   7. 追加の起点            : Collect(extraSeeds)・AssetPakBuilder の extraSeeds・SeedPak の --extra-scene
+//                              （Android の実行で未登録のシーンを pak に入れる。段階C-4。ExtraSeedTests.cs）
 // ============================================================
 
 using System;
@@ -64,6 +66,7 @@ public static class Program
         RegisterPakTests(h);
         RegisterRuleTests(h);
         RegisterDotnetBundlerTests(h);
+        ExtraSeedTests.Register(h);
 
         return h.Run();
     }
