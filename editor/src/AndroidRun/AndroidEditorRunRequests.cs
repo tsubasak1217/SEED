@@ -19,6 +19,8 @@
 using System.Collections.Generic;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Pipeline;
+using SEEDEditor.Android.Signing;
+using SEEDEditor.Packaging;
 
 namespace SEEDEditor.AndroidRun;
 
@@ -67,5 +69,32 @@ public static class AndroidEditorRunRequests
         ProjectDir = projectDir,
         Abis = abis,
         Release = release,
+    };
+
+    /// <summary>
+    /// パッケージ化ウィンドウの配布用（release）の指定（段階D。端末を使わずに APK / AAB を作る。Rust は常に --release）。
+    /// キーストア・別名は指定が無ければ中核がプロジェクトの packaging_settings.json の android.signing から読む。
+    /// パスワードはエディタの保護保存から取り出したもの（無ければ中核が環境変数を見る）。
+    /// </summary>
+    /// <param name="projectDir">プロジェクトのルート。</param>
+    /// <param name="abis">詰める ABI の名前。</param>
+    /// <param name="format">形式。</param>
+    /// <param name="keystorePath">キーストア（null なら設定ファイルから）。</param>
+    /// <param name="keyAlias">別名（null なら設定ファイルから）。</param>
+    /// <param name="secrets">パスワード（null なら環境変数）。</param>
+    /// <returns>指定。</returns>
+    public static AndroidRunRequest ForReleasePackage(
+        string projectDir, IReadOnlyList<string> abis, AndroidPackageFormat format,
+        string? keystorePath, string? keyAlias, AndroidSigningSecrets? secrets) => new()
+    {
+        Goal = AndroidRunGoal.Build,
+        ProjectDir = projectDir,
+        Abis = abis,
+        Release = true,
+        Variant = AndroidBuildVariant.Release,
+        Format = format,
+        KeystorePath = string.IsNullOrWhiteSpace(keystorePath) ? null : keystorePath.Trim(),
+        KeyAlias = string.IsNullOrWhiteSpace(keyAlias) ? null : keyAlias.Trim(),
+        SigningSecrets = secrets,
     };
 }

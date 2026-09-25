@@ -1,7 +1,7 @@
 # Android 対応（正典）
 
 SEED のランタイム（Rust の `runtime/`）を Android 端末で動かすための、構成・手順・現状・ロードマップの正典。
-段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）、段階B の C# スクリプトの実行（APK に同梱した .NET 10 の CoreCLR。§17）、段階C-1 のビルド・配置・起動の C# 化（中核 `editor/src/Android/` とコンソールツール `SeedAndroid`。§4.6・§5）とアプリの識別情報（§18）、段階C-2 のエディタからの実行（実行ボタンの実行先セレクタ・Output パネル・停止・パッケージ化ウィンドウの Android 出力。§20）、段階D の IPC の TCP 化と一時停止（§21）・描画プリセット（§22）・実行中の差し替え（§23）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
+段階0（2026-09-24）と、段階A のうち複数指タッチの入力基盤（§12）・APK 内 pak からの起動（§13）・保存先の振り替え／セーブの保護／起動基盤（§14）・画面の向きと安全領域（§15）・音声（背面での停止・音声フォーカス・音量キー。§16）、段階B の C# スクリプトの実行（APK に同梱した .NET 10 の CoreCLR。§17）、段階C-1 のビルド・配置・起動の C# 化（中核 `editor/src/Android/` とコンソールツール `SeedAndroid`。§4.6・§5）とアプリの識別情報（§18）、段階C-2 のエディタからの実行（実行ボタンの実行先セレクタ・Output パネル・停止・パッケージ化ウィンドウの Android 出力。§20）、段階D の IPC の TCP 化と一時停止（§21）・描画プリセット（§22）・実行中の差し替え（§23）・配布（署名付きの release APK / AAB・アイコン・Google Play の要件・NativeAOT の評価。§24）までの内容。未着手・保留の課題は [backlog.md](backlog.md) の「Android」節に集約する。
 
 ---
 
@@ -22,9 +22,9 @@ SEED で作ったゲームを、そのまま Android 端末で動かせるよう
 |---|---|---|
 | ABI | 配布は **arm64-v8a のみ**。x86_64 は PC のエミュレータで開発するためだけに作る | 現行の Android 実機はほぼ arm64 |
 | 最低 OS | **Android 10（API 29）** | `minSdk = 29`。Vulkan 1.1 がほぼ行き渡る世代 |
-| 対象 API | API 35（Android 15） | `targetSdk = compileSdk = 35` |
+| 対象 API | API 36（Android 16。段階D で 35 から上げた） | `targetSdk = compileSdk = 36`。Google Play は 2026-08-31 以降の新規・更新に 36 以上を求める（§24.2） |
 | GPU | **Vulkan 1.1 必須**（wgpu の Vulkan バックエンド。GLES へは落とさない） | マニフェストで `android.hardware.vulkan.version` 0x401000 を必須宣言 |
-| 16KB ページ | 対応済み（NDK r28 の既定で LOAD セグメントが 16KB 整列） | `llvm-readelf -l libSEED.so` で `0x4000` を確認済み。最終確認は段階D |
+| 16KB ページ | 対応済み（NDK r28 の既定で LOAD セグメントが 16KB 整列） | 配布用のビルドの要件チェックが、できた APK / AAB の中のすべての .so の LOAD の整列を毎回確かめる（§24.8） |
 | 開発用端末 | 実機 Pixel 6a（Android 16 / API 36・arm64・Mali-G78）／AVD `seed_pixel6_api35`（API 35・Google APIs・x86_64・GPU host） | どちらも段階0 の項目を確認済み（§7） |
 
 ---
@@ -36,8 +36,8 @@ SEED で作ったゲームを、そのまま Android 端末で動かせるよう
 | Rust | 1.98 | `rustup target add aarch64-linux-android x86_64-linux-android` |
 | cargo-ndk | 4.1.2 | `cargo install cargo-ndk`。NDK の clang をリンカとして差し込み、`-o` で jniLibs へ .so を写す |
 | Android NDK | r28（28.2.13676358） | 環境変数 `ANDROID_NDK_HOME`。r28 は 16KB ページ整列が既定 |
-| Android SDK | platform 35 / build-tools 35 / platform-tools | 環境変数 `ANDROID_SDK_ROOT`（または `ANDROID_HOME`） |
-| JDK | Android Studio 同梱の JBR（25） | 環境変数 `JAVA_HOME` |
+| Android SDK | platform 36（段階D。以前は 35）/ build-tools 36（要件チェックの aapt2・zipalign・apksigner。段階D）/ platform-tools | 環境変数 `ANDROID_SDK_ROOT`（または `ANDROID_HOME`） |
+| JDK | Android Studio 同梱の JBR（25） | 環境変数 `JAVA_HOME`。`keytool`（配布用の鍵の作成・確かめ。段階D）も JDK のもの |
 | Gradle | 9.3.1（wrapper 同梱） | `runtime/android/gradlew.bat` |
 | Android Gradle Plugin | **9.1.0** | AGP 9.1.0 は Gradle **9.3.1 以上**が必須（9.2.1 は 9.4.1 以上を要求するため採らなかった） |
 | GameActivity | `androidx.games:games-activity:4.4.0` | winit 0.30 が使う android-activity 0.6.1 が同梱する C 側 GameActivity が 4.4.0。**必ず一致させる** |
@@ -55,6 +55,8 @@ SEED で作ったゲームを、そのまま Android 端末で動かせるよう
 | JDK | `JAVA_HOME` → Android Studio 同梱の JBR（`%ProgramFiles%\Android\Android Studio\jbr`） |
 | cargo | `PATH` → `CARGO_HOME\bin` → `%USERPROFILE%\.cargo\bin`（cargo-ndk の有無は libSEED.so のビルドの直前に `cargo ndk --version` で確かめる） |
 | dotnet | `DOTNET_HOST_PATH` → `PATH` → `%ProgramFiles%\dotnet` |
+| keytool | 見つけた JDK の `bin\keytool.exe`（段階D） |
+| build-tools | SDK の `build-tools\` のうち `aapt2.exe` がある最新版（段階D。配布物の要件チェック） |
 
 見つけた SDK と JDK は gradlew の環境変数 `ANDROID_HOME` / `JAVA_HOME` として、NDK は cargo ndk の `ANDROID_NDK_HOME` と
 Gradle の `-Pseed.ndkPath=...` として渡す（同じ表記に揃える。表記が変わると cc 系の依存が作り直されるため。§10）。
@@ -112,11 +114,12 @@ runtime/                      パッケージ SEED
 runtime/android/
   build_and_run.ps1          SeedAndroid（§5）を従来の引数で呼ぶだけの互換ラッパー（pwsh 7。手順の中身は §4.6 の中核）
   dotnet_runtime.json        APK に同梱する .NET の設定（版・パック名・coreclr / mono の切り替え。§17.2）
+  play_requirements.json     Google Play の要件の表（targetSdk の下限・16 KB・予約された ID 等。要件チェックが読む。段階D・§24.8）
   settings.gradle.kts        リポジトリ（google / mavenCentral）と :app
   build.gradle.kts           AGP 9.1.0
   gradle.properties          AndroidX 等（マシン固有パスは書かない）
   gradlew / gradlew.bat / gradle/wrapper/   Gradle 9.3.1 の wrapper
-  app/build.gradle.kts       minSdk 29 / targetSdk 35 / abiFilters arm64-v8a, x86_64 / 依存
+  app/build.gradle.kts       minSdk 29 / targetSdk 36 / abiFilters arm64-v8a, x86_64 / release の署名（seed.signing.*）/ 依存
   app/src/main/AndroidManifest.xml
   app/src/main/java/com/seedengine/runtime/MainActivity.java   GameActivity 派生（薄い）
   app/src/main/java/com/seedengine/runtime/ScreenReporter.java 安全領域と画面の回転を集めてネイティブへ渡す（§15）
@@ -127,13 +130,21 @@ runtime/android/
   app/src/main/assets/seed/assets.pak      ← SeedPak の出力（--project のときだけ。生成物・追跡しない。§13）
   app/src/main/assets/seed/bin/            ← SeedPak --scripts の出力（スクリプトの DLL。--project のときだけ。§17.7）
   app/src/seedDotnet/                      ← 同梱 .NET（jniLibs/<ABI>/・assets/seed/dotnet/<ABI>/・libs/*.jar。生成物・追跡しない。§17.3）
+  app/src/seedIcon/res/                    ← ランチャーのアイコン（mipmap-*・values の背景色。生成物・追跡しない。段階D・§24.7）
   app/build/seed/                          ← SeedAndroid の作業フォルダ（置き場の記録 step_stamps.json・NuGet の取り寄せ・DLL の差し替え用。§4.6）
+  app/build/outputs/apk/{debug,release}/   ← 開発用・配布用の APK（段階D で release を追加）
+  app/build/outputs/bundle/release/        ← 配布用の AAB（段階D）
   native/                    §4.1 の cdylib クレート
 ```
 
 - pak は `androidResources { noCompress += "pak" }` で非圧縮（STORED）のまま APK に入れる（§13.2）。
 - `packaging.jniLibs.useLegacyPackaging = true`（段階B）。.so をインストール時に nativeLibraryDir へ展開させる（同梱 .NET の .so を
-  dotnet-root から参照するため。§17.4）。その分 APK の .so は圧縮され、インストール時に展開される。
+  dotnet-root から参照するため。§17.4）。その分 APK の .so は圧縮され、インストール時に展開される。AAB・Google Play でも使える（根拠は §24.6）。
+- ビルドの種類（段階D・§24.4）: debug（デバッグ用の鍵・debuggable・`src/debug/` の INTERNET）と release（`isDebuggable = false`・
+  `isMinifyEnabled = false`・`signingConfigs.release`。署名の材料 `seed.signing.*` が揃わなければ `preReleaseBuild` で止める）。
+- ランチャーのアイコン（段階D・§24.7）: `android:icon="${seedAppIcon}"`。`seed.launcherIcon=generated` なら `@mipmap/ic_launcher`
+  （`src/seedIcon/res/`）、無ければシステムの既定のアイコン。
+- `android:enableOnBackInvokedCallback="false"`（段階D）: targetSdk 36 の予測型の「戻る」を使わず、戻るキーをネイティブへ届ける（§24.2）。
 
 - `applicationId`・`versionCode`・`versionName`・ランチャーの名前（`android:label="${seedAppLabel}"`）はプロジェクト設定の
   `android` 節から Gradle のプロジェクトプロパティで受け取る（§18。渡されなければ `com.seedengine.runtime` / `SEED Runtime` 等）。
@@ -272,10 +283,14 @@ editor/src/Android/
               AndroidAppIdentityResolver（アプリの識別情報の既定値と検査。§18）・AndroidScenePath（起動するシーンの指定を揃える。§20.10）・
               AndroidPakSceneSeeds（未登録の起動シーンを pak の収録の起点に足すか。段階C-4。§20.10）・PakEntryIndex（pak のエントリ名）
   Dotnet/     DotnetRuntimeSettings（dotnet_runtime.json）・NuGetRuntimePackRestorer・DotnetRuntimeBundle（dotnet-root への組み立てと目録。§17）
-  Gradle/     GradleInvocation（gradlew の引数と -P／環境変数の組み立て）
+  Gradle/     GradleInvocation（gradlew のタスク〈debug / release・APK / AAB〉と -P／環境変数の組み立て。パスワードは必ず環境変数）
+  Signing/    AndroidSigningResolver（配布用の鍵の決め方）・AndroidSigningSecrets（パスワード。伏せ字）・AndroidKeystoreTool（keytool で作る・開けるか確かめる）（段階D・§24）
+  Icons/      PngDecoder / PngEncoder / ImageResampler（.NET 標準だけの PNG と縮小）・LauncherIconGenerator / LauncherIconStager（アイコンの生成と置き場）（段階D・§24.7）
+  Release/    PlayRequirements（要件の表）・AndroidRequirementChecks（ビルドの前の判定）・AndroidArtifactInspector / AndroidArtifactChecks
+              （配布物の読み直しと判定）・ElfAlignmentReader・AndroidReleaseHistory（versionCode の記録）・AndroidRequirementsCheckRunner（check）（段階D・§24.8）
   Plan/       AndroidBuildPlan（どの工程を飛ばすか。純粋な処理）・AndroidStepFingerprints / AndroidFingerprint（指紋）・AndroidBuildInputs（入力の表）
   State/      AndroidStepStamps（置き場の中身の記録。エンジン側）・AndroidRunState（プロジェクトの実行状態）
-  Steps/      工程ごとの実装（NativeBuild・PackageContent・DotnetBundle・GradleBuild・Install・PushAssets・PushScripts・Launch・Logcat）
+  Steps/      工程ごとの実装（NativeBuild・PackageContent・DotnetBundle・GradleBuild・ReleaseCheck・Install・PushAssets・PushScripts・Launch・Logcat）
   Pipeline/   AndroidRunPipeline（本体）・AndroidRunRequest（指定）・AndroidPipelineEvent（進み具合）・
               AndroidDeviceActions（一覧・端末の用意・停止・logcat）
 ```
@@ -368,12 +383,18 @@ dotnet run --project editor/tools/SeedAndroid -- logcat --serial emulator-5554
 dotnet run --project editor/tools/SeedAndroid -- pause --project D:\path\to\Project --serial <実機>
 dotnet run --project editor/tools/SeedAndroid -- screenshot --project D:\path\to\Project --serial <実機> --out paused.png
 dotnet run --project editor/tools/SeedAndroid -- resume --project D:\path\to\Project --serial <実機>
+
+# 配布用（段階D・§24）: 鍵を作る → AAB（Google Play へ出す形）を作る → ビルドをせずに要件を確かめる
+# パスワードは環境変数 SEED_ANDROID_KEYSTORE_PASSWORD（無ければ対話で聞く。コマンドラインには書かない）
+dotnet run --project editor/tools/SeedAndroid -- keystore create --keystore D:\keys\mygame_upload.jks --key-alias upload
+dotnet run --project editor/tools/SeedAndroid -- build --release --format aab --project D:\path\to\Project --keystore D:\keys\mygame_upload.jks --key-alias upload
+dotnet run --project editor/tools/SeedAndroid -- check --project D:\path\to\Project --format aab
 ```
 
 | サブコマンド | 行う工程 |
 |---|---|
 | `devices` | 端末の一覧（`--json` で JSON。使える端末は ABI も読む） |
-| `build` | libSEED.so → pak とスクリプト → 同梱 .NET → APK |
+| `build` | libSEED.so → pak とスクリプト → 同梱 .NET → APK（配布用は APK / AAB と Google Play の要件の確認。§24） |
 | `install` | build ＋ インストール（Gradle の `installDebug` と同じく、要ればビルドする） |
 | `run` | install ＋（`--assets-dir` のアセット・`--push-scripts` の DLL の転送）＋ 起動 ＋ logcat。`--project` で `--push-scripts` なしなら、起動の前に `push` で置いた DLL の上書き（端末の `files/bin/`）を消す（段階C-4。§17.7） |
 | `push` | スクリプトの DLL（と `--assets-dir` のアセット）の転送 ＋ 起動 ＋ logcat |
@@ -381,6 +402,8 @@ dotnet run --project editor/tools/SeedAndroid -- resume --project D:\path\to\Pro
 | `logcat` | logcat（`--since <端末の時刻>` から。省略時は今から） |
 | `pause` / `resume` | 動いているアプリへ IPC の `PAUSE` / `RESUME` を送る（adb forward → TCP → 起動の記録〈同じ --project の run_state.json〉の接続トークンで `HELLO:` → 命令 → `DETACH` → forward を外す。`pause` の後も一時停止のまま。段階D-1・§21.5・§21.11） |
 | `screenshot` | 動いているアプリの画面を IPC の `SCREENSHOT` で撮り、run-as で PC へ取り出す（`--out`。§21.6） |
+| `keystore create` | 配布用の鍵（アップロード鍵）のキーストアを keytool で作る（`--keystore` 必須・`--key-alias`〈既定 `upload`〉・`--cert-name`・`--project`〈アセットの中に作らない検査〉。既にあるファイルは上書きしない。段階D・§24.3） |
+| `check` | ビルドをせずに Google Play の要件を確かめる（設定＋`--artifact` か前回の配布用の出力。既定は配布用・`--format`。不合格があれば終了コード 6。段階D・§24.8） |
 
 | オプション | 意味 |
 |---|---|
@@ -391,8 +414,12 @@ dotnet run --project editor/tools/SeedAndroid -- resume --project D:\path\to\Pro
 | `--avd <AVD>` | `--serial auto`（と `emulator_fallback`）でエミュレータを起動するときの AVD。省略時は `emulator -list-avds` の一覧に `seed_pixel6_api35` があればそれ、無ければ先頭。一覧に無い名前はエラー（別の AVD を勝手に起動しない） |
 | `--scene <シーン>` | 端末で起動するシーン（段階C-3。§20.10）。アセットルートからの相対パス（`scenes/Main.scene`）・`assets://…`・アセットルートの中の絶対パス。起動の工程が `am start --es seed.scene '<相対パス>'` で渡す。省略時は `project_settings.json` の開始シーン。アセットルートの外・`..` は指定の誤り（終了コード 1）。シーンマネージャに未登録のシーンは pak の収録の起点に足す（段階C-4。SeedPak `--extra-scene`。切り替えた最初の `run` は pak・APK・インストールをやり直す）。プロジェクトに無いシーンは警告を出して渡し、端末が logcat に警告を出して開始シーンで起動する |
 | `--abi <ABI[,ABI]>` | `arm64-v8a` / `x86_64`。省略時は端末の `ro.product.cpu.abilist` の先頭から選ぶ（端末が決まらなければ両方） |
-| `--release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
-| `--config <JSON>` | 指定をまとめた設定 JSON（キーは `AndroidRunRequest` の snake_case: `project` / `assets_dir` / `serial` / `emulator_fallback` / `avd` / `scene` / `abis` / `release` / `skip_rust_build` / `skip_gradle` / `no_install` / `no_launch` / `no_logcat` / `push_scripts` / `rebuild` / `logcat_seconds` / `log_file` / `ipc_port`。`project`・`assets_dir`・`log_file` の相対パスは JSON のフォルダから、`scene` はアセットルートから。コマンドラインが優先） |
+| `--release` | Rust 側を `--release` でビルド（開発用の APK はデバッグ署名のまま。配布用は常に `--release`） |
+| `--variant <debug\|release>` | ビルドの種類（段階D・§24.4）。既定 `debug`。`release` は debuggable でない・INTERNET なし・アップロード鍵で署名（`push`・`--push-scripts`・`--assets-dir` と一緒に使えない）。書かずに `--format aab` か `--keystore` / `--key-alias` を指定すると `release` とみなす |
+| `--format <apk\|aab>` | 形式（段階D）。既定 `apk`。`aab` は配布用の `build` だけ（端末へは直接入れられない） |
+| `--keystore <パス>` / `--key-alias <別名>` | 配布用の署名の鍵（段階D。省略時はプロジェクトの `packaging_settings.json` の `android.signing`）。パスワードは環境変数 `SEED_ANDROID_KEYSTORE_PASSWORD`（キーが違えば `SEED_ANDROID_KEY_PASSWORD`）か対話の入力（§24.5） |
+| `--cert-name <名前>` / `--artifact <パス>` | `keystore create` の証明書の名前（CN）／ `check` で確かめる APK / AAB（段階D） |
+| `--config <JSON>` | 指定をまとめた設定 JSON（キーは `AndroidRunRequest` の snake_case: `project` / `assets_dir` / `serial` / `emulator_fallback` / `avd` / `scene` / `abis` / `release` / `skip_rust_build` / `skip_gradle` / `no_install` / `no_launch` / `no_logcat` / `push_scripts` / `rebuild` / `logcat_seconds` / `log_file` / `ipc_port` / `variant` / `format` / `keystore` / `key_alias`。`project`・`assets_dir`・`log_file`・`keystore` の相対パスは JSON のフォルダから、`scene` はアセットルートから。パスワードは JSON から読まない。コマンドラインが優先） |
 | `--skip-rust` / `--skip-gradle` / `--no-install` / `--no-launch` / `--no-logcat` | 工程を飛ばす（`--skip-gradle` は pak とスクリプト・同梱 .NET・Gradle をまとめて飛ばす） |
 | `--push-scripts` | `run` でもスクリプトの DLL を作り直して `files/bin/` へ送る |
 | `--rebuild` | 変更の有無で工程を自動で飛ばさない（すべて作り直し、入れ直す） |
@@ -402,7 +429,8 @@ dotnet run --project editor/tools/SeedAndroid -- resume --project D:\path\to\Pro
 | `--out <パス>` | `screenshot` の書き先（省略時はカレントフォルダの `android_screenshot_<日時>.png`） |
 
 - 入力が前回から変わっていない工程は自動で飛ばす（§4.6）。準備の段階で「行う／飛ばす」と理由を一覧で出し、最後に工程ごとの結果と所要時間をまとめる。
-- 終了コード: `0` 成功 / `1` 指定の誤り / `2` 道具が無い / `3` 端末が無い・選べない / `4` ビルドの失敗 / `5` 端末の操作の失敗 / `130` 中断（Ctrl+C）。
+- 終了コード: `0` 成功 / `1` 指定の誤り / `2` 道具が無い / `3` 端末が無い・選べない / `4` ビルドの失敗 / `5` 端末の操作の失敗 /
+  `6` Google Play の要件に不合格がある（配布用の `build`・`check`。配布物はできている。段階D）/ `130` 中断（Ctrl+C）。
 - Ctrl+C は中断の合図として、自分が起動した子プロセス（cargo・Gradle・adb）とその子孫を止めて終わる。logcat を流している間の Ctrl+C は「止めた」＝成功。
 - 子プロセスの出力は行ごとに「厳密な UTF-8 として読めるか」で文字コードを見分ける（Gradle・dotnet が ANSI コードページで書く行も化けない）。
   SeedAndroid 自身の出力をファイル・パイプへ向けたときと logcat の保存（`--log-file`）は UTF-8（以前の `-LogFile` の文字化けは解消）。
@@ -614,7 +642,7 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
 | **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声（鳴ることの確認・背面での停止・音声フォーカス・音量キー。**2026-09-24 実装・§16**）、logcat の整備 |
 | **B** | スクリプト: **PC も Android も .NET 10 の CoreCLR に揃える**（PC は全 C# プロジェクトを `net10.0` へ移行済み。Android は `android-*` ランタイムパック＋同じ版の bionic パックの hostfxr / hostpolicy。§11）。ScriptPackager の事前コンパイル DLL とランタイムを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う（**2026-09-25 実装・§17**。Mono へ切り替え可）。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: **C-1（2026-09-25 実装・§4.6・§5・§18）** ビルド・配置・起動の手順を C# の中核（`editor/src/Android/`）とコンソールツール `SeedAndroid` に移し、変わっていない工程の自動の省略・アプリの識別情報のプロジェクト設定化。**C-2（2026-09-25 実装・§20）** 実行ボタンの隣の実行先セレクタ（PC／実機／エミュレータ）、中核を呼んでビルド → install → 起動 → logcat を Output パネルへ・停止ボタン・アプリ側の終了の検知、パッケージ化ウィンドウの Android 出力の実働化（デバッグ署名の APK）。pak/DLL だけ push する高速経路のエディタへの組み込みは持ち越し（backlog） |
-| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`。接続トークンで照合し、一時停止中もゲームの画面のまま）。**D-2（2026-09-25 実装・§22）** モバイル向けの描画品質プリセット（データドリブン。`runtime/config/render_presets.json`。Android の既定 `mobile`＝描画スケール 0.5・前方描画・重い後処理なし。UI は画面の解像度のまま）とパスごとの GPU タイムスタンプ計測。**D-3（2026-09-25・§22.7）** 実機（Pixel 6a・縦）で計測し、`desktop` 16.4 fps → `mobile` 59.2 fps（GPU 59.2 → 10.5 ms。最大の要因はデファードのライティングと SSGI）。`mobile` の描画スケールを 0.5 → 0.75、`mobile_high` を 0.75 → 1.0 に見直した。**実行中の差し替え（2026-09-25 実装・§23）** Android の実行中にシーン・アセット・スクリプトを保存すると、違うものだけを端末の上書き層 `files/assets`（デバッグ版は pak より先に読む）・`files/bin` へ送り、`RELOAD_SCENE` / `RELOAD_ASSET` / `RELOAD_SCRIPTS` でフレームの境界に取り込む（SeedAndroid の `push --assets` / `reload`。実機でモデル・シーン・スクリプトの差し替えと解除を確かめた。エディタの画面からは未確認）。Wi-Fi 実行、署名／AAB／16KB ページの最終確認、NativeAOT |
+| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`。接続トークンで照合し、一時停止中もゲームの画面のまま）。**D-2（2026-09-25 実装・§22）** モバイル向けの描画品質プリセット（データドリブン。`runtime/config/render_presets.json`。Android の既定 `mobile`＝描画スケール 0.5・前方描画・重い後処理なし。UI は画面の解像度のまま）とパスごとの GPU タイムスタンプ計測。**D-3（2026-09-25・§22.7）** 実機（Pixel 6a・縦）で計測し、`desktop` 16.4 fps → `mobile` 59.2 fps（GPU 59.2 → 10.5 ms。最大の要因はデファードのライティングと SSGI）。`mobile` の描画スケールを 0.5 → 0.75、`mobile_high` を 0.75 → 1.0 に見直した。**実行中の差し替え（2026-09-25 実装・§23）** Android の実行中にシーン・アセット・スクリプトを保存すると、違うものだけを端末の上書き層 `files/assets`（デバッグ版は pak より先に読む）・`files/bin` へ送り、`RELOAD_SCENE` / `RELOAD_ASSET` / `RELOAD_SCRIPTS` でフレームの境界に取り込む（SeedAndroid の `push --assets` / `reload`。実機でモデル・シーン・スクリプトの差し替えと解除を確かめた。エディタの画面からは未確認）。**配布（2026-09-26 実装・§24）** 配布用（release）の APK / AAB（アップロード鍵で署名・debuggable でない・INTERNET なし・Rust は --release。鍵が無ければビルドしない）、鍵の作成（`keystore create`）、アイコンの生成、Google Play の要件チェック（ビルドの前と後。`check`）、targetSdk 36、16 KB ページの確認、NativeAOT の評価（実装はしない）。Wi-Fi 実行・Play Console への実際の提出は持ち越し |
 
 ---
 
@@ -2076,16 +2104,21 @@ Android の実行の行は書き手が色と出どころを決めて出す（`An
 
 ### 20.6 パッケージ化ウィンドウの Android 出力
 
-「パッケージ化」→ Android で「ビルド開始」を押すと、中核を `Goal = Build`（端末は使わない）で呼び、できた APK を出力フォルダへ写す。
+「パッケージ化」→ Android で「ビルド開始」を押すと、中核を `Goal = Build`（端末は使わない）で呼び、できた APK / AAB を出力フォルダへ写す。
+段階D で配布用（release）を足した（欄の実装は `editor/src/Packaging/PackagingWindow.AndroidRelease.cs`。選んだビルドの種類に関係の無い欄は出さない）。
 
 | 項目 | 内容 |
 |---|---|
-| 出力 | `{出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-debug.apk`（ABI が両方なら `arm64-v8a+x86_64`）。出力フォルダが空なら `<プロジェクト>/build/android`（[packaging.md](packaging.md)） |
+| 出力 | `{出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-{debug\|release}.{apk\|aab}`（ABI が両方なら `arm64-v8a+x86_64`。配布用の APK と AAB は並べて置ける）。出力フォルダが空なら `<プロジェクト>/build/android`（[packaging.md](packaging.md)） |
+| ビルドの種類 | `開発用（デバッグ署名。端末で試す）`（既定）／`配布用（release。アップロード鍵で署名）`（段階D） |
+| 形式 | 配布用だけ: `APK`／`AAB（Google Play へ出す）`（段階D） |
 | ABI | `arm64-v8a（実機・配布用）`（既定）／`x86_64（PC のエミュレータ用）`／`両方` |
-| Rust の最適化 | `Release`（`cargo --release`。初回は数分）／`Debug` |
-| 署名 | **デバッグ署名の APK**（Android の debug 版と同じく、この PC のデバッグ用の鍵）。端末へ入れて試せるがストアへは出せない。配布用の署名・AAB は段階D。画面にも明記 |
+| Rust の最適化 | 開発用だけ: `Release`（`cargo --release`。初回は数分）／`Debug`。配布用は常に Release |
+| 署名 | 開発用は**デバッグ署名の APK**（この PC のデバッグ用の鍵。端末へ入れて試せるがストアへは出せない。画面に明記）。配布用は「署名」の欄: キーストア（参照）・別名・パスワード（「保存」でエディタの保護保存。§24.5）・「この場所に新しいキーストアを作る」（確認用のパスワード・証明書の名前）・鍵の保管の注意 |
+| アイコン | プロジェクト設定の `android.icon` / `icon_background` の今の値と誤り（設定はプロジェクト設定ウィンドウ。§24.7） |
+| Google Play の要件 | 配布用だけ: 「要件を確認」（ビルドをせずに設定と前回の配布物を確かめる）と、ビルドの結果の一覧（合格・知らせ・注意・不合格をアイコンと色で。§24.8） |
 | アプリの識別情報・画面の向き | プロジェクト設定の「Android アプリ情報（モバイル）」「画面の向き（モバイル）」（§15・§18） |
-| 道具 | 「道具」の欄に SDK・NDK・adb・JDK・cargo・dotnet の見つかった場所か、見つからない理由と対処（赤）を出す（`AndroidToolchainReport`） |
+| 道具 | 「道具」の欄に SDK・NDK・adb・JDK・cargo・dotnet・keytool・build-tools の見つかった場所か、見つからない理由と対処（赤）を出す（`AndroidToolchainReport`） |
 | ログ | ウィンドウの「ビルドログ」に Output パネルと同じ書式で出す。ウィンドウを閉じると作成を中断する（子プロセスごと止める） |
 
 - 以前の「Android NDK パス」の欄と設定（`packaging_settings.json` の `android.ndk_path`）は廃止した（道具の場所は §3 のとおり自動で探す。マシン固有のパスをプロジェクトに書かない）。
@@ -2995,4 +3028,277 @@ dotnet run --project editor/tests/AndroidRunUiTests
 - シーンの読み直しはゲームの状態をシーンの開始時へ戻す（スクリプトの変数・位置。PC の Play の自動再読み込みと同じ）。
   スクリプトの差し替えは全インスタンスの作り直し（`OnStart` の再実行）。
 - エディタの画面からの確認（Android の実行中に保存 → Output の行）は未実施（§23.10。実機の差し替えは SeedAndroid で確かめた）。
+
+---
+
+## 24. 配布（署名付きの release APK / AAB・アイコン・Google Play の要件・NativeAOT の評価。段階D・2026-09-26）
+
+Google Play へ出せる配布物を作れるようにした。**開発用（debug）**は従来どおりデバッグ用の鍵で署名した APK（run-as・push・差し替え・IPC が使える）、
+**配布用（release）**は debuggable にせず・INTERNET 権限を入れず・アップロード鍵で署名した APK / AAB（Rust は常に `--release`）。
+手順の中身は中核（`editor/src/Android/`）にあり、SeedAndroid とパッケージ化ウィンドウが同じクラスを使う（§4.6）。
+
+### 24.1 結論
+
+- 配布用のビルドは `SeedAndroid build --variant release --format aab --project <P> --keystore <キーストア> --key-alias <別名>`
+  （パスワードは環境変数 `SEED_ANDROID_KEYSTORE_PASSWORD` か対話の入力）か、パッケージ化ウィンドウの「ビルドの種類 = 配布用」。
+  鍵の場所はプロジェクトの `packaging_settings.json` の `android.signing` にも置ける（パスワードは置かない）。
+- **鍵が無い・開けないときはビルドを始めない**（デバッグ署名・無署名の配布物は作らない。中核の準備で `keytool -list` まで確かめる。
+  Gradle 側も `preReleaseBuild` で止める二重の守り）。
+- **targetSdk を 35 → 36 に上げた**（Google Play は 2026-08-31 以降の新規・更新に API 36 以上を求める。§24.2）。Android 16 の
+  予測型の「戻る」で KEYCODE_BACK が届かなくなるのを `android:enableOnBackInvokedCallback="false"` で止めた（戻るキー → Escape は従来どおり。§14.5）。
+- アイコンはプロジェクト設定 `android.icon`（PNG）から各密度の mipmap とアダプティブアイコン（前景＋背景色 `android.icon_background`）を
+  ビルドのときに生成する（NuGet を足さない .NET 標準だけの PNG の読み書き。§24.7）。
+- 配布用のビルドは、ビルドの前（設定）と後（できた配布物を aapt2・zipalign・apksigner / keytool・ELF で読み直す）に Google Play の要件を
+  確かめて一覧に出す（§24.8）。不合格があっても配布物は作り、SeedAndroid は終了コード 6 で知らせる。
+
+### 24.2 Google Play の要件（2026-09-26 に公式のページで確かめた。表は `runtime/android/play_requirements.json`）
+
+| 要件 | 内容 | SEED の対応 | 出どころ |
+|---|---|---|---|
+| targetSdk | **2026-08-31 以降の新規アプリ・更新は Android 16（API 36）以上**（延長を申請すれば 2026-11-01 まで）。既存アプリが新しい利用者に見え続けるには API 35 以上 | `seedTargetSdk = 36`（`compileSdk` も 36） | [target-sdk](https://developer.android.com/google/play/requirements/target-sdk) |
+| 形式 | 新しいアプリは AAB（Play App Signing が前提。アップロード鍵で署名して出し、配る APK は Google が署名する） | `--format aab`（`bundleRelease`） | Play Console |
+| 64 bit | 32 bit の .so を入れるなら 64 bit 版も必須 | 64 bit だけを作る（配布の既定は arm64-v8a） | Play Console |
+| 16 KB ページ | Android 15 以上を対象とするアプリは 64 bit 端末の 16 KB ページに対応（対応していない更新は 2027-02-01 から出せない）。.so の LOAD の整列と、非圧縮の .so の zip 内の位置 | NDK r28 の既定で 0x4000 整列。.so は圧縮して入れる（`useLegacyPackaging`。§24.6） | [page-sizes](https://developer.android.com/guide/practices/page-sizes) |
+| debuggable | debuggable の APK / AAB は受け付けない | release の `isDebuggable = false` | Play Console |
+| アプリ ID | `com.example` で始まる ID は受け付けない（Play Console の「"com.example" is restricted」） | 要件チェックで不合格。エンジンの既定 ID `com.seedengine.runtime` は注意 | Play Console のエラー |
+
+targetSdk 36 で効く動作の変更（[behavior-changes-16](https://developer.android.com/about/versions/16/behavior-changes-16)）と対処:
+
+| 変更 | 影響 | 対処 |
+|---|---|---|
+| 予測型の「戻る」が既定になり、`onBackPressed` が呼ばれず `KEYCODE_BACK` がアプリへ届かない | GameActivity が戻るキーをネイティブへ渡せず、スクリプトの `Input.GetKeyDown(KeyCode.Escape)`（§14.5）が効かなくなる | マニフェストの `<application android:enableOnBackInvokedCallback="false">`（公式の一時的な回避。将来の Android で効かなくなったら `OnBackInvokedCallback` へ移す。backlog） |
+| エッジツーエッジの無効化（`windowOptOutEdgeToEdgeEnforcement`）の廃止 | 無し（35 で既に強制。無効化はしていない。安全領域は §15） | — |
+| 最小幅 600dp 以上の画面で向き・サイズ変更・縦横比の制限を無視 | ゲーム（`android:appCategory="game"`）は対象外 | 既に `appCategory="game"` |
+| その他（`elegantTextHeight`・JobScheduler・健康の権限・Bluetooth 等） | SEED は使っていない | — |
+
+targetSdk 36 の APK（開発用・配布用とも）は、ビルド・マニフェストの中身（`aapt2`）・lint vital までは確かめたが、**実機での動作（戻るキーが
+アプリへ届くこと等）は未確認**（§24.11・backlog）。
+
+### 24.3 鍵（キーストア）の作成と保管
+
+```powershell
+# 新しいアップロード鍵を作る（PKCS12・RSA 2048・10000 日。既にあるファイルは上書きしない。アセットフォルダの中には作らない）
+$env:SEED_ANDROID_KEYSTORE_PASSWORD = '<パスワード>'     # 省略すると対話で 2 回聞く（画面に出さない）
+dotnet run --project editor/tools/SeedAndroid -- keystore create --keystore D:\keys\mygame_upload.jks --key-alias upload --cert-name "My Game"
+```
+
+- 中身は `keytool -genkeypair … -storepass:env / -keypass:env`（パスワードは子プロセスの環境変数だけで渡す。コマンドラインに出さない）。
+  パッケージ化ウィンドウの「この場所に新しいキーストアを作る」も同じ関数（`Signing/AndroidKeystoreTool.CreateAsync`）で、作ったらパスワードを保護保存する。
+- これが Google Play の **アップロード鍵**になる。失うと Google に鍵の再設定を頼むまで更新を出せない:
+  キーストアとパスワードを別々の安全な場所に控える・リポジトリとプロジェクトのアセットフォルダに置かない
+  （アセットの中は中核が拒む。プロジェクトのフォルダの中は警告。`runtime/android/.gitignore` は `*.jks` / `*.keystore` を追跡しない）。
+- PKCS12 のキーストアはキーとキーストアのパスワードが同じ（keytool は違う `-keypass` を無視する）。キーのパスワードを省くとキーストアと同じものを使う。
+
+### 24.4 配布用のビルド
+
+```powershell
+$env:SEED_ANDROID_KEYSTORE_PASSWORD = '<パスワード>'
+# AAB（Google Play へ出す）。--format aab か --keystore があれば --variant release は省ける。--release は Rust の最適化（配布用は常に）
+dotnet run --project editor/tools/SeedAndroid -- build --release --format aab --project D:\path\to\Game --keystore D:\keys\mygame_upload.jks --key-alias upload
+# 配布用の APK（Google Play 以外・手元の端末で試す。開発用とは署名が違うので同じアプリ ID の開発用とは共存できない）
+dotnet run --project editor/tools/SeedAndroid -- install --variant release --project D:\path\to\Game --serial <実機>
+# ビルドをせずに確かめる（設定と、前回の配布物）
+dotnet run --project editor/tools/SeedAndroid -- check --project D:\path\to\Game --format aab
+```
+
+| 項目 | 開発用（debug） | 配布用（release） |
+|---|---|---|
+| Gradle のタスク | `assembleDebug` | `assembleRelease`（APK）/ `bundleRelease`（AAB） |
+| 出力 | `app/build/outputs/apk/debug/app-debug.apk` | `app/build/outputs/apk/release/app-release.apk` / `app/build/outputs/bundle/release/app-release.aab` |
+| 署名 | この PC のデバッグ用の鍵 | アップロード鍵（`seed.signing.*`。無ければ止める） |
+| debuggable・INTERNET | あり（`src/debug/` のマニフェスト） | なし |
+| Rust | `--release` を付けたときだけ最適化 | 常に `--release`（AGP が .so のシンボルを削る） |
+| ABI の既定 | 端末から判定（無ければ両方） | `build` は arm64-v8a（たまたまつながっている端末で変えない）。`install` / `run` は入れる端末の ABI |
+| 起動オプション（シーン・IPC）・run-as・push・差し替え | 使える | 使えない（MainActivity は debuggable のときだけ起動オプションを渡す。push・`--assets-dir`・`--push-scripts` は指定の誤り） |
+| 記録のキー（`step_stamps.json`） | `gradle`（従来） | `gradle/release_apk`・`gradle/release_aab`（出力が別なので切り替えても互いを作り直さない） |
+
+- 準備で決めたこと（署名の鍵・証明書の SHA-256・ビルドの前の要件の一覧）は Output / コンソールに出る。パスワードは `********`。
+- AAB は端末へ直接入れられないので `install` / `run` と `--format aab` は一緒に使えない（試すなら §24.10 の bundletool）。
+- 配布用の APK を `install` すると、署名の違う同じ ID の開発用が入っている端末では `INSTALL_FAILED_UPDATE_INCOMPATIBLE` になる。中核は
+  勝手にアンインストールしない（データが消えるため。エラーに `adb uninstall` の案内を出す）。
+
+### 24.5 パスワードの受け渡し（ファイル・コマンドラインに残さない）
+
+| 出どころ | 使う場面 | 置き場・渡し方 |
+|---|---|---|
+| エディタの保護保存 | パッケージ化ウィンドウの「署名」の「保存」 | `editor/settings/android_signing_secrets.json`（追跡しない）。キーストアの絶対パス × 別名ごとに DPAPI（CurrentUser）で包んだ Base64（`Settings/AndroidSigningSecretStore`・`AndroidSigningDpapiProtector`。アカウントの秘密鍵と同じ仕組みで、追加エントロピーは別の文字列）。この PC のこの Windows ユーザーだけが解ける |
+| 環境変数 | SeedAndroid・CI | `SEED_ANDROID_KEYSTORE_PASSWORD`（キーが違えば `SEED_ANDROID_KEY_PASSWORD`） |
+| 対話の入力 | SeedAndroid（環境変数が無く、標準入力がコンソールのとき） | 画面に出さずに読む（`ConsoleSecretPrompt`） |
+
+- 中核はパスワードを `AndroidRunRequest.SigningSecrets`（`[JsonIgnore]`・`ToString` は伏せ字）でメモリの中だけで持ち、Gradle へは
+  環境変数 `ORG_GRADLE_PROJECT_seed.signing.storePassword` / `keyPassword`（Gradle の仕様で `-P` と同じプロジェクトプロパティ）で渡す。
+  ログの一覧と `step_stamps.json` の指紋には伏せ字だけが載る（ハッシュも残さない）。keytool へは `-storepass:env` で子プロセスの環境変数から読ませる。
+- Gradle のデーモンはビルドのたびにクライアントの環境変数に合わせるため、配布用のビルドの後も次のビルドまでデーモンの環境にパスワードが残る
+  （同じ Windows ユーザーのプロセスからは読める。DPAPI と同じ前提）。気になるときは `gradlew --stop`（backlog: 配布用だけ `--no-daemon`）。
+
+### 24.6 AAB と `useLegacyPackaging`（.so を圧縮して入れる設定を配布でも使う根拠）
+
+同梱 .NET は dotnet-root 形式のフォルダの実ファイル（nativeLibraryDir へのシンボリックリンク）を前提にするので、.so をインストール時に
+nativeLibraryDir へ展開させる `packaging.jniLibs.useLegacyPackaging = true` を使っている（§17.4）。これは配布（AAB・Google Play）でも使える:
+
+- AGP の公式の設定（AGP 4.2 の「Use the DSL to package compressed C/C++ libraries」。`extractNativeLibs` の置き換え。
+  [release notes](https://developer.android.com/build/releases/past-releases/agp-4-2-0-release-notes)）。非圧縮（既定）を勧めるのは
+  インストールの大きさ・読み込みの速さのためで、圧縮を禁じてはいない。
+- 16 KB ページの公式の手引き（[page-sizes](https://developer.android.com/guide/practices/page-sizes)）も、圧縮した .so を 16 KB 対応の
+  方法の 1 つとして挙げている（zip の中の位置の 16 KB 整列が要るのは **非圧縮の** .so だけ。圧縮した .so はインストール時にファイルへ展開される）。
+  .so の LOAD の 16 KB 整列（NDK r28 の既定）は圧縮の有無に関係なく要る → 要件チェックで ELF を読んで確かめる（§24.8）。
+- AAB から端末ごとの APK を作る bundletool（Google Play と同じ道具）で APKs にすると、master の APK は `extractNativeLibs=true` のまま、
+  ABI の分の APK の .so も圧縮のまま（＝端末はインストール時に nativeLibraryDir へ展開する。開発用の APK と同じ形）であることを確かめた（§24.11）。
+  **実機へ入れて同梱 .NET が起動するところは未確認**（§24.11・backlog）。開発用の APK は同じ形で実機で動いている（§17）。
+- 代わり（`useLegacyPackaging = false`）にするには、.so を APK の中から直接読ませる形へ同梱 .NET の置き方を変える必要がある
+  （hostfxr / CoreCLR がファイルの dotnet-root を前提にするため。backlog）。
+
+### 24.7 アイコン（プロジェクト設定 `android.icon` / `android.icon_background`）
+
+| キー | 意味 |
+|---|---|
+| `icon` | 元の PNG（アセットルートからの相対パス・`assets://…`・絶対パス）。空ならシステムの既定のアイコン（従来どおり） |
+| `icon_background` | アダプティブアイコンの背景色（`#RRGGBB` / `#AARRGGBB`。既定は白） |
+
+ビルドのたびに（APK の工程の Gradle の前）`app/src/seedIcon/res/`（生成物・追跡しない）へ次を置き、`-Pseed.launcherIcon=generated` で
+マニフェストの `android:icon` を `@mipmap/ic_launcher` にする（渡さなければ `@android:drawable/sym_def_app_icon`＝従来と同じ見た目）。
+
+| 生成物 | 大きさ | 中身 |
+|---|---|---|
+| `mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png` | 48dp（48・72・96・144・192 画素） | 背景色の正方形に元の画像を縦横比を保って全体に収めたもの（従来型） |
+| `mipmap-*/ic_launcher_foreground.png` | 108dp（108・162・216・324・432 画素） | 透明な正方形の中央の安全域 66dp（66・99・132・198・264 画素）に元の画像を収めたもの（どの形に切り抜かれても欠けない） |
+| `mipmap-anydpi-v26/ic_launcher.xml` | — | アダプティブアイコン（`@color/ic_launcher_background` ＋ 前景）。minSdk 29 なので端末は常にこれを使う |
+| `values/ic_launcher_background.xml` | — | 背景色 |
+
+- 画像の縮小は **.NET 標準の範囲**で行う（`editor/src/Android/Icons/`: PNG の読み取り〈全部の色の種類・ビットの深さ・Adam7〉と書き出し、
+  面積平均の縮小・双線形の拡大〈乗算済みアルファ〉を `System.IO.Compression.ZLibStream` だけで書いた）。WPF の `BitmapDecoder` はエディタ限定、
+  `System.Drawing` は Windows 専用の NuGet、Rust の小さなツールは cargo のビルドとワークスペースの変更が要り、事前生成の要求は利用者の手間が大きいため。
+  中核（SeedAndroid・エディタ）と単体テストが同じコードを使え、寸法・安全域をテストで固定できる。
+- 同じ画像からは同じバイト列を書き、中身が同じファイルは書かない（更新時刻を変えず Gradle の差分のビルドを邪魔しない）。設定を消すと置き場ごと消す。
+- 元の画像は 512x512 以上の正方形を勧める（小さい・正方形でないときは警告）。Google Play のストアの掲載用の 512x512 のアイコンは Play Console で別に登録する。
+- 設定はプロジェクト設定 → 解像度設定 → 「Android アプリ情報（モバイル）」の「アイコン（PNG）」「アイコンの背景色」（保存のときにビルドと同じ検査）。
+  パッケージ化ウィンドウの Android の「アイコン」の欄は今の値と誤りを出すだけ（設定の置き場への案内）。
+
+### 24.8 Google Play の要件チェック（`editor/src/Android/Release/`）
+
+| 項目 | ビルドの前（設定から） | ビルドの後（できた配布物から） |
+|---|---|---|
+| `target_sdk` | エンジンの値（`AndroidRuntimeContract.TargetApiLevel`）≥ 表の下限 | aapt2 で読んだ targetSdk |
+| `version_code` | 前回の同じアプリ・形式の配布用ビルド（`<プロジェクト>/cache/android/release_history.json`）より大きいか。小さい＝不合格、同じ＝注意、記録なし＝知らせ | — |
+| `abi_64bit` | 64 bit だけ・arm64-v8a を含む（x86_64 だけは注意、AAB に両方は BCL が両方配られるので注意） | 中の `lib/<ABI>/` |
+| `application_id` | `com.example.` は不合格・エンジンの既定 ID は注意 | 中のアプリ ID・versionCode・versionName が指定どおりか（`artifact_identity`） |
+| `signing` / `certificate` | 鍵が決まり keytool で開けたか | 署名を確かめ（APK: `apksigner verify --print-certs`・AAB: `keytool -printcert -jarfile`）、デバッグ用の鍵でない・指定の鍵の SHA-256 と同じ |
+| `format` / `icon` | AAB か（APK は知らせ）・アイコンを設定したか（未設定は注意） | — |
+| `debuggable` / `permissions` | — | debuggable でない（不合格）・INTERNET が無い（あれば注意） |
+| `page_size_elf` / `page_size_zip` | — | すべての .so の LOAD の p_align ≥ 0x4000（zip の中の先頭だけを読む `ElfAlignmentReader`）・APK は `zipalign -c -P 16 4`（AAB は Google Play が整列する） |
+
+- AAB のマニフェストは proto 形式なので、`base/manifest/AndroidManifest.xml`・`base/resources.pb`・`base/res/` を proto 形式の APK として並べ直し、
+  `aapt2 convert --output-format binary` で変えてから `aapt2 dump badging` で読む（bundletool を使わない）。
+- 道具で調べられなかったことは「調べられなかった」として不合格にする（確かめていないものを合格にしない）。
+- 判定の表は `runtime/android/play_requirements.json`（毎年 8 月末に targetSdk の下限が上がる。上がったら表と `seedTargetSdk` を直す）。
+  単体テストが、表の下限 ≤ エンジンの targetSdk、`build.gradle.kts` の値 = 中核の定数、を確かめる（ずれたらテストが落ちる）。
+- SeedAndroid の `build`（配布用）と `check` は不合格があれば終了コード 6。パッケージ化ウィンドウは「Google Play の要件」の欄に色とアイコンで並べる。
+
+### 24.9 Google Play Console への提出の流れ（初めてのアプリ）
+
+1. 鍵を作る（§24.3）。キーストアとパスワードを控える。
+2. プロジェクト設定の Android アプリ情報で、自分のアプリ ID（公開後は変えられない）・名前・バージョン番号・アイコンを決める。
+3. `build --variant release --format aab`（パッケージ化ウィンドウなら ビルドの種類＝配布用・形式＝AAB）。要件の一覧に不合格が無いことを確かめる。
+4. Play Console でアプリを作り、「内部テスト」のリリースに AAB をアップロードする。**Play App Signing** を使う（Google がアプリ署名鍵を持ち、
+   今回の鍵はアップロード鍵として登録される。アップロード鍵を失ったら Play Console から再設定を頼める）。
+5. ストアの掲載情報（512x512 のアイコン・スクリーンショット・説明）・コンテンツのレーティング・データ セーフティ・対象年齢などを埋める。
+6. 内部テスト → クローズド / オープン テスト → 製品版へ進める。更新のたびにバージョン番号（versionCode）を上げる（要件チェックが前回と比べる）。
+
+未確認: 実際の Play Console へのアップロード（アカウントが要る。backlog）。
+
+### 24.10 bundletool で AAB を端末で試す（Google Play と同じ分け方で APKs を作る）
+
+```powershell
+# bundletool（jar）は https://github.com/google/bundletool/releases から。リポジトリには入れない
+java -jar bundletool-all-1.18.3.jar build-apks --bundle app-release.aab --output app.apks `
+     --ks D:\keys\mygame_upload.jks --ks-key-alias upload --ks-pass file:<パスワードのファイル> --connected-device --device-id <シリアル>
+java -jar bundletool-all-1.18.3.jar install-apks --apks app.apks --device-id <シリアル>
+adb -s <シリアル> shell am start -n <アプリ ID>/com.seedengine.runtime.MainActivity
+```
+
+- `--ks-pass file:` のファイルは作業が終わったら消す（パスワードをファイルに残さない）。
+- `bundletool dump config --bundle app-release.aab` で `uncompressNativeLibraries`（`useLegacyPackaging` なら無効）とページの整列を見られる。
+
+### 24.11 確認結果（2026-09-26）
+
+検証用のプロジェクト（段階B の `proj_probe` の写し。BrainStem 1 体・平行光・確認用スクリプト）に、アプリ ID `com.seedengine.release_probe`・
+名前 Release Probe・版 2 / 1.0.2・アイコン（512x512 の PNG）・背景色 `#1B2A3A` を設定し、一時のキーストア（`keystore create` で作成）で確かめた。
+ログ・配布物は作業の一時フォルダ（リポジトリの外）に置いた。
+
+| 確認 | 結果 |
+|---|---|
+| `keystore create` | PKCS12・RSA 2048・SHA384withRSA・10000 日（期限 2054-02-11）の鍵を作り、証明書の SHA-256 を表示。アセットフォルダの中を指定すると作らずに誤り。パスワードは環境変数から（コマンドラインに出ない） |
+| 配布用の APK（`build --variant release`） | 全体 570 秒（libSEED.so の release ビルド 489.5 秒〈依存込みの初回〉・SeedPak 5.9 秒・同梱 .NET は変更なしで飛ばし・Gradle 73.1 秒〈lint vital を含む〉・要件の確認 0.8 秒）。`app-release.apk` 51.2 MB（.so 14 MB・同梱 .NET の BCL 24 MB・`bin/` 3 MB〈どれも圧縮後〉） |
+| 配布用の AAB（`build --release --format aab`） | .so・pak・同梱 .NET は変更なしで飛ばし、Gradle（`bundleRelease`）9.7 秒・全体 12.0 秒。`app-release.aab` 56.5 MB |
+| `apksigner verify --print-certs -v`（APK） | `Verifies`・v2 で署名・`Signer #1 certificate DN: CN=Release Probe`・SHA-256 が `keystore create` の表示と同じ（v1 は minSdk 29 のため無し） |
+| `aapt2 dump badging`（APK） | `package: name='com.seedengine.release_probe' versionCode='2' versionName='1.0.2'`・`minSdkVersion:'29'`・`targetSdkVersion:'36'`・**`application-debuggable` の行なし**・**INTERNET なし**（権限は AndroidX の `…DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` だけ）・`application-label:'Release Probe'`・アイコンは全密度でアダプティブアイコンの XML・`native-code: 'arm64-v8a'` |
+| `zipalign -c -P 16 -v 4`（APK） | `Verification successful`（.so 9 個はすべて `OK - compressed`） |
+| APK の中の `libSEED.so` | 圧縮 10.3 MB／展開 24.9 MB（jniLibs の release の .so 34.7 MB から AGP が `.symtab` を削った。debug の .so はシンボルを削っても 43〜53 MB）。`llvm-readelf -l` の LOAD 4 つがすべて `Align 0x4000` |
+| bundletool 1.18.3（AAB） | `validate` が通る。`dump config` は `uncompressNativeLibraries` が無効（`useLegacyPackaging`）・`alignment: PAGE_ALIGNMENT_16K`・`pak` は非圧縮。`build-apks`（アップロード鍵で署名）で分けた APK は master（targetSdk 36・`extractNativeLibs=true`・`enableOnBackInvokedCallback=false`）＋ ABI の分（.so 9 個は圧縮のまま）＋密度・言語。Pixel 6a 向けに落ちてくる大きさは master 37.3 MB＋arm64 14.9 MB＋密度 48 KB＋言語 8 KB |
+| SeedAndroid の要件チェック | APK: 合格 11・知らせ 2（versionCode の記録なし・形式が APK）・注意 0・不合格 0。AAB: 合格 12・知らせ 1。配布物から読み直した中身（ID・版・minSdk 29・targetSdk 36）・debuggable・権限・16 KB（9 個の .so）・署名（指定の鍵の SHA-256 と一致）がすべて合格。AAB のマニフェストは aapt2 convert の経路で読めた |
+| `check`（ビルドなし） | パスワードありで不合格 0・終了コード 0。パスワードなし（非対話）は「配布用の署名」が不合格・終了コード 6 |
+| 失敗の経路 | パスワードなし・違うパスワード（`keystore password was incorrect`）・キーストアの指定なし → どれも準備で止まり（0.1 秒）終了コード 1、何もビルドしない。手で `gradlew assembleRelease`（署名の材料なし）→ `:app:preReleaseBuild FAILED` と §24.4 の説明 |
+| 開発用の APK（`--skip-rust` で Gradle だけ） | `application-debuggable`・INTERNET あり・targetSdk 36・アイコンあり・`enableOnBackInvokedCallback=false`。アイコンの生成物は中身が同じなので書き直さなかった（書いた 0・同じ 12） |
+| 配布用ビルドの記録 | `cache/android/release_history.json` に APK と AAB を別々に記録（versionCode 2・SHA-256） |
+| 単体テスト | `AndroidPipelineTests` 137 件（新規 33: 署名 11・要件 13・アイコン 9）・`AndroidRunUiTests` 79 件（新規 5・道具の一覧の並びを更新）・`ProjectSystemTests` 63 件（新規 2）・`PackagingCollectorTests` 48 件。すべて成功 |
+| ビルド | エディタ（別の出力先）エラー 0・新しいファイルの警告 0。SeedAndroid・`cargo build`（Windows。Rust は変更なし）成功 |
+| アイコン | 生成した前景（xxxhdpi 432 画素）を背景色に重ね、円形の切り抜き（72dp の見える範囲）でも欠けないこと・従来型（192 画素）を画像で確かめた。APK の `aapt2 dump resources` に `mipmap/ic_launcher`（5 密度＋アダプティブ）・`mipmap/ic_launcher_foreground`・`color/ic_launcher_background #ff1b2a3a` |
+| **実機（Pixel 6a）** | **未実施**。確認の 20 分間ずっと端末が利用中（前面が別のアプリ）で、前面がランチャーにならなかったため（私物の端末なので割り込まない）。bundletool の `install-apks` → 起動 → fps・起動の所要時間 → 戻るキー（targetSdk 36）→ 開発用との比較 → アンインストール、の手順を用意した（作業の一時フォルダの `device_release_test.sh`。backlog） |
+
+### 24.12 NativeAOT の評価（実装はしない。2026-09-26）
+
+**結論**: 配布用（release）だけを NativeAOT にする価値はある（同梱 .NET が APK の約 6 割を占め、それが 1〜3 MB の .so 1 つになる。初回起動の展開と
+CLR の起動も無くなる）。ただし今のスクリプト基盤は「DLL をバイト列から読み込む・入口を hostfxr で取り出す・その場コンパイル（Roslyn）」が前提なので、
+配布用のビルドの形と Rust 側の入口を足す必要がある。開発用（run・push・差し替え・デバッガ）は CoreCLR のまま（動的に読み直すため）。見積もり 2〜3 週間。
+
+**小さな検証**（作業の一時フォルダ・実機では動かしていない）: この段階の配布用の APK の `bin/` にある `SEEDScripting.dll`・`SEEDUserScripts.dll`・
+Roslyn を参照に、`linux-bionic-arm64` の共有ライブラリ（`PublishAot`・`NativeLib=Shared`・`DisableUnsupportedError=true`・
+`PublishAotUsingRuntimePack=true`・NDK r28 の clang を PATH に）へ変換した（ILCompiler 10.0.12 のパック 184 MB は一時フォルダへ取得。Windows からの
+クロスコンパイルは公式の手引き〈[android-bionic.md](https://github.com/dotnet/runtime/blob/main/src/coreclr/nativeaot/docs/android-bionic.md)〉どおり動いた。
+`objcopy` が無いという注意が出るだけ）。
+
+| 変換の形 | .so（展開／deflate） | trim・AOT の警告（重複を除く） | 所要時間 |
+|---|---|---|---|
+| A. 今のまま（`SEEDScripting` と `SEEDUserScripts` を丸ごと根にする＝Roslyn も入る） | 28.4 MB／11.6 MB | 48 件（SEED 32・Roslyn / DiaSymReader 16） | 約 2 分（ILC 1 スレッド） |
+| B. Android で使う入口（`ScriptBridge` の 21 個。`CompileScripts`・パス指定の `LoadPrecompiledScripts` を除く）＋ユーザースクリプトだけを根にする | **2.5 MB／1.1 MB** | 27 件（すべて SEED） | 約 1 分 |
+
+- 公開シンボル: `[UnmanagedCallersOnly(EntryPoint = "seed_aot_entry_points")]` の関数が `.dynsym` に出て、`ScriptBridge` の入口の関数ポインタの表を返せた
+  （`&ScriptBridge.CreateComponent` 等）。LOAD は 0x4000 整列（16 KB）・NEEDED は libc / libm / libdl / liblog / libz だけ。
+- 比べる相手（今の CoreCLR の同梱。§24.11 の APK）: 同梱 .NET の .so 4 MB＋BCL 24 MB＋`bin/` 3 MB（いずれも圧縮後）で APK の約 31 MB。展開後は BCL 65 MB＋.so 12 MB＋
+  `bin/` 9 MB。B の形なら APK は約 30 MB（約 6 割）、端末の展開後は約 80 MB 小さくなる見込み。
+
+**壊れる所・直す所**（警告と今のコードから）:
+
+| 今の作り | NativeAOT での扱い | 必要な変更 |
+|---|---|---|
+| ユーザースクリプトを `AssemblyLoadContext`（collectible）へ `LoadFromStream` で読み、読み直しで Unload（`ScriptAssemblyManager`。IL2026） | 動的な読み込みは使えない（実行時に PlatformNotSupportedException） | 配布用のビルドで `SEEDUserScripts.dll` を同じ .so へ一緒に変換し、読み込みの代わりに「組み込み済みのアセンブリから型を登録する」入口を足す。`push`・`RELOAD_SCRIPTS` は配布用では使えない（もともと debuggable の開発用だけ） |
+| Roslyn でのその場コンパイル（`ScriptAssemblyEmitter`・`ScriptSourceCompiler`。Android では元から使わない） | 丸ごと根にすると .so が 11 倍（A と B の差）・警告 16 件 | Android の入口から Roslyn に届かないように分ける（B の形。`CompileScripts` を別アセンブリか条件付きビルドへ） |
+| 入口の取り出しは hostfxr の `get_function_pointer`（`UnmanagedCallersOnly` に名前なし。Rust の `clr_host/`） | hostfxr・CoreCLR が無い | 公開シンボル（`EntryPoint` 付き、または表を返す 1 関数）を足し、Rust 側に `dlopen` / `dlsym` の経路（`clr_host/` に AOT 用の実装）を足す。同梱 .NET の展開（`embedded_runtime/`）は配布用では不要になる |
+| リフレクションで型・フィールド・プロパティ・メソッドを探す（`GetTypes`・`GetFields`・`Activator.CreateInstance`・`GetCustomAttributesData`。IL2070 / 2075 / 2067 / 2072 など 19 件） | 型の情報が残っていれば動く（ユーザーのアセンブリを丸ごと根にすれば残る） | `TrimmerRootAssembly`（ユーザー）と SEED 側の `DynamicallyAccessedMembers` の注記で警告を消す。動作は実機で全 API を確かめ直す |
+| `MakeGenericType(List<>)`・`MakeGenericMethod`（`ScriptArray`・`ScriptStructArray`・`ScriptReference`。IL3050 4 件） | 事前に作られていない値型の組み合わせは実行時に失敗し得る | 値型の配列・構造体の配列を `Array.CreateInstance` 等に置き換えるか、使う型の組み合わせを生成コードで事前に作る |
+| 暗号 API（今は Android の JNI 版の暗号ライブラリ。§17.8） | linux-bionic の NativeAOT は OpenSSL を使う（手引きに「アプリが用意する」とある） | OpenSSL を同梱するか、スクリプトの暗号 API を使わない決まりにする |
+| ヒープポインタのタグ付け（§17.5） | 未確認（CoreCLR / Mono と同じ問題が出るかは実機で確かめる） | マニフェストの属性と `mallopt` はそのまま残す |
+
+**効果の見込み**: APK 約 30 MB 減・展開後約 80 MB 減（上の表）。起動は、初回の BCL の展開（実機 0.5〜0.8 秒）・CLR の起動（61〜175 ms）・JIT
+（ユーザースクリプトの読み込み 10〜24 ms とその後の最初の呼び出し）が無くなる（数百 ms〜1 秒弱。実機では未計測）。R2R の DLL をアプリのデータフォルダから
+実行する方式（SELinux の auditallow の対象。§17.4）も無くなるので、将来の Android での禁止への備えにもなる。
+
+**工数の見積もり**（合計 2〜3 週間）: Roslyn の分離と組み込み済みアセンブリの登録（1〜2 日）、公開シンボルと Rust の `dlopen` の経路（2〜3 日）、
+SeedPak / SeedAndroid に ILC の工程（ABI ごと・パックの取得・NDK のリンク・指紋）（2〜3 日）、リフレクションと総称の修正・注記と全 API の実機確認（3〜5 日）、
+暗号の方針（1 日〜）。backlog に載せた。
+
+### 24.13 制限・持ち越し（[backlog.md](backlog.md) の「Android」節）
+
+- Google Play Console への実際の提出（内部テストへのアップロード）は未確認（アカウントが要る）。
+- 予測型の「戻る」の無効化（`enableOnBackInvokedCallback="false"`）は公式にも一時的な回避。将来の Android で効かなくなる前に `OnBackInvokedCallback` で
+  戻るをネイティブへ渡す形に移す。
+- Gradle のデーモンが配布用のビルドの後も次のビルドまで署名のパスワードを環境に持つ（§24.5）。
+- ネイティブのデバッグシンボル（`ndk.debugSymbolLevel`）を AAB に入れていないので、Play Console のクラッシュのスタックに関数名が出ない。
+- アセットフォルダの中にアイコンの PNG を置くと、`project_settings.json` から参照されているとみなされ pak にも入る（数十 KB）。気になるならアセットの外に置いて `../` で指定する。
+- AAB に x86_64 も入れると同梱 .NET の BCL（assets）が ABI で分けられず全端末に両方配られる（要件チェックが注意を出す）。
+- `useLegacyPackaging`（.so を圧縮）はインストール後の大きさが増える。やめるには同梱 .NET の置き方を変えるか NativeAOT（§24.12）。
+- アイコンのモノクロ層（Android 13 のテーマアイコン）・前景の余白の設定は無い（前景は安全域 66dp に収めるだけ）。
+- bundletool は SeedAndroid に組み込んでいない（AAB を端末で試すのは §24.10 の手作業）。`build_and_run.ps1`（run の互換ラッパー）に配布用の引数は足していない。
+- パッケージ化ウィンドウの配布用の欄（署名・要件の一覧・キーストアの作成）はエディタを起動して目で確かめていない（WPF 非依存の判断は単体テスト）。
+- versionCode の記録はプロジェクトの `cache/`（PC ごと）。チームで作るなら Play Console の最後の versionCode を正とする。
 

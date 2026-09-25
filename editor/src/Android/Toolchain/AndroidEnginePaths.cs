@@ -55,6 +55,34 @@ public sealed class AndroidEnginePaths
     /// <summary>Gradle の出力（デバッグ版 APK）。</summary>
     public string DebugApkPath => Path.Combine(AndroidDir, "app", "build", "outputs", "apk", "debug", "app-debug.apk");
 
+    /// <summary>Gradle の出力（配布用の APK。assembleRelease。段階D）。</summary>
+    public string ReleaseApkPath => Path.Combine(AndroidDir, "app", "build", "outputs", "apk", "release", "app-release.apk");
+
+    /// <summary>Gradle の出力（配布用の AAB。bundleRelease。段階D）。</summary>
+    public string ReleaseBundlePath => Path.Combine(AndroidDir, "app", "build", "outputs", "bundle", "release", "app-release.aab");
+
+    /// <summary>
+    /// ランチャーのアイコンの生成物の置き場（app/src/seedIcon/。build.gradle.kts の sourceSets が res として足す。生成物。段階D）。
+    /// </summary>
+    public string LauncherIconStagingDir => Path.Combine(AndroidDir, "app", "src", "seedIcon");
+
+    /// <summary>ランチャーのアイコンの res（mipmap-*・values。<see cref="LauncherIconStagingDir"/> の下）。</summary>
+    public string LauncherIconResDir => Path.Combine(LauncherIconStagingDir, "res");
+
+    /// <summary>Google Play の要件の表（段階D。Release/PlayRequirements.cs が読む）。</summary>
+    public string PlayRequirementsPath => Path.Combine(AndroidDir, "play_requirements.json");
+
+    /// <summary>
+    /// ビルドの種類と形式ごとの Gradle の出力（debug の AAB は作らないので、指定されても debug の APK を返す）。
+    /// </summary>
+    /// <param name="variant">ビルドの種類。</param>
+    /// <param name="format">形式。</param>
+    /// <returns>出力のパス。</returns>
+    public string ArtifactPath(SEEDEditor.Packaging.AndroidBuildVariant variant, SEEDEditor.Packaging.AndroidPackageFormat format) =>
+        variant == SEEDEditor.Packaging.AndroidBuildVariant.Release
+            ? format == SEEDEditor.Packaging.AndroidPackageFormat.Aab ? ReleaseBundlePath : ReleaseApkPath
+            : DebugApkPath;
+
     /// <summary>このツール群の作業用の生成物の置き場（app/build/seed/。gradlew clean で消える）。</summary>
     public string WorkDir => Path.Combine(AndroidDir, "app", "build", "seed");
 

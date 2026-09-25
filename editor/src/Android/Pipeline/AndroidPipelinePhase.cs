@@ -22,8 +22,11 @@ public enum AndroidPipelinePhase
     /// <summary>同梱 .NET（CoreCLR / Mono）を組み立てる。</summary>
     DotnetBundle,
 
-    /// <summary>Gradle で APK を作る。</summary>
+    /// <summary>Gradle で APK を作る（配布用は APK / AAB。段階D）。</summary>
     Gradle,
+
+    /// <summary>配布用（release）の APK / AAB を Google Play の要件で確かめる（段階D。Steps/ReleaseCheckStep）。</summary>
+    ReleaseCheck,
 
     /// <summary>adb install で端末へ入れる。</summary>
     Install,
@@ -57,6 +60,7 @@ public static class AndroidPipelinePhaseNames
         AndroidPipelinePhase.PackageContent => "APK に入れる pak とスクリプト（SeedPak）",
         AndroidPipelinePhase.DotnetBundle   => "同梱 .NET の組み立て",
         AndroidPipelinePhase.Gradle         => "APK の作成（Gradle）",
+        AndroidPipelinePhase.ReleaseCheck   => "Google Play の要件の確認",
         AndroidPipelinePhase.Install        => "インストール（adb install）",
         AndroidPipelinePhase.PushAssets     => "アセットの転送（run-as）",
         AndroidPipelinePhase.PushScripts    => "スクリプトの DLL の転送（run-as）",

@@ -68,7 +68,10 @@ public static class EnvironmentAndPackagingTests
     {
         using var temp = new AndroidPipelineTests.TempDir();
         var statuses = AndroidToolchainReport.Build(Toolchain(temp, withAdb: true));
-        Check.Equal("Android SDK,Android NDK,adb,JDK,cargo,dotnet", string.Join(",", statuses.Select(s => s.Name)), "道具の並び");
+        // 段階D で配布用の鍵（keytool）と配布物の要件チェック（build-tools）を足した
+        Check.Equal("Android SDK,Android NDK,adb,JDK,cargo,dotnet,keytool,build-tools", string.Join(",", statuses.Select(s => s.Name)), "道具の並び");
+        var keytool = statuses.Single(s => s.Name == "keytool");
+        Check.True(!keytool.Found && keytool.Detail.Contains("keytool"), $"偽の JDK には keytool が無い: {keytool.Detail}");
         var sdk = statuses.Single(s => s.Name == "Android SDK");
         Check.True(sdk.Found && sdk.Detail == temp.Combine("sdk"), "SDK の場所");
         var ndk = statuses.Single(s => s.Name == "Android NDK");

@@ -62,6 +62,63 @@ public enum AndroidArch
     Both,
 }
 
+/// <summary>
+/// Android のビルドの種類（Gradle のビルドタイプ。段階D。docs/android.md §24）。
+/// パッケージ化ウィンドウ・SeedAndroid（--variant）・中核（editor/src/Android/ の AndroidRunRequest.Variant）が同じ値を使う。
+/// </summary>
+public enum AndroidBuildVariant
+{
+    /// <summary>開発用（assembleDebug）。デバッグ用の鍵で署名・debuggable・INTERNET 権限（エディタとの IPC）。端末で試す・push・差し替えができる。</summary>
+    Debug,
+
+    /// <summary>
+    /// 配布用（assembleRelease / bundleRelease）。debuggable=false・INTERNET なし・アップロード鍵で署名・Rust は必ず --release。
+    /// 鍵（<see cref="AndroidSigningSettings"/> とパスワード）が無ければビルドを止める（デバッグ署名にはしない）。
+    /// </summary>
+    Release,
+}
+
+/// <summary>Android の配布物の形式（段階D。docs/android.md §24）。</summary>
+public enum AndroidPackageFormat
+{
+    /// <summary>APK（端末へ直接入れられる。Google Play 以外での配布・手元での確認）。</summary>
+    Apk,
+
+    /// <summary>
+    /// Android App Bundle（Google Play へ出す形。新しいアプリは AAB 必須）。配布用（<see cref="AndroidBuildVariant.Release"/>）だけ。
+    /// 端末へは直接入れられない（bundletool で APKs にする。Google Play は端末ごとの APK をここから作る）。
+    /// </summary>
+    Aab,
+}
+
+/// <summary>
+/// 配布用（release）の署名の鍵の場所（packaging_settings.json の android.signing。段階D。docs/android.md §24）。
+///
+/// <para>
+/// パスワードはここに書かない（プロジェクトのファイルはバージョン管理に入り得るため）。パスワードはエディタの保護保存
+/// （editor/settings/ の DPAPI。この PC のこの Windows ユーザーだけが解ける）か、環境変数
+/// SEED_ANDROID_KEYSTORE_PASSWORD / SEED_ANDROID_KEY_PASSWORD（SeedAndroid・CI）から渡す（editor/src/Android/Signing/）。
+/// キーストア自体もアセットルートの中に置いてはいけない（pak に入って配られ得る。中核が止める）。
+/// </para>
+/// </summary>
+public class AndroidSigningSettings
+{
+    /// <summary>
+    /// キーストアのファイル（.jks / .keystore / PKCS12）。絶対パスか、プロジェクトのルート（.seedproj のあるフォルダ）からの相対パス。
+    /// 空なら未設定。
+    /// </summary>
+    [JsonPropertyName("keystore_path")]
+    public string KeystorePath { get; set; } = "";
+
+    /// <summary>キーストアの中のキーの別名（keytool の -alias）。空なら未設定。</summary>
+    [JsonPropertyName("key_alias")]
+    public string KeyAlias { get; set; } = "";
+
+    /// <summary>何も設定されていないか。</summary>
+    [JsonIgnore]
+    public bool IsEmpty => string.IsNullOrWhiteSpace(KeystorePath) && string.IsNullOrWhiteSpace(KeyAlias);
+}
+
 // ─── プラットフォームごとの設定 ───────────────────────────────
 
 /// <summary>Windows パッケージング設定。</summary>
@@ -91,12 +148,15 @@ public class MacOsSettings
 }
 
 /// <summary>
-/// Android パッケージング設定（段階C-2 で実働化。中核 editor/src/Android/ の Goal = Build で APK を作る）。
+/// Android パッケージング設定（段階C-2 で実働化。中核 editor/src/Android/ の Goal = Build で APK / AAB を作る）。
 ///
 /// <para>
 /// 以前あった NDK のパス（ndk_path）は段階C-2 で廃止した。道具の場所は環境変数と既定の場所から自動で探す
 /// （editor/src/Android/Toolchain/AndroidToolchain.cs。マシン固有のパスをプロジェクトの設定に書かない）。
 /// 古い設定ファイルの ndk_path は読み飛ばし、次の保存で消える。
+/// </para>
+/// <para>
+/// 段階D で配布用のビルド（variant・format・signing）を足した。既定は従来どおりデバッグ署名の APK（debug・apk）。
 /// </para>
 /// </summary>
 public class AndroidSettings
@@ -104,13 +164,28 @@ public class AndroidSettings
     [JsonPropertyName("output_path")]
     public string OutputPath { get; set; } = "";
 
-    /// <summary>Rust（libSEED.so）の最適化。Release は cargo --release。APK はどちらもデバッグ署名（配布用の署名は段階D）。</summary>
+    /// <summary>
+    /// Rust（libSEED.so）の最適化（開発用のビルドのとき。Release は cargo --release）。
+    /// 配布用（<see cref="Variant"/> = Release）は常に --release（この値は使わない）。
+    /// </summary>
     [JsonPropertyName("build_type")]
     public BuildType BuildType { get; set; } = BuildType.Release;
 
-    /// <summary>APK に詰める ABI。</summary>
+    /// <summary>APK / AAB に詰める ABI。</summary>
     [JsonPropertyName("arch")]
     public AndroidArch Arch { get; set; } = AndroidArch.Arm64V8a;
+
+    /// <summary>ビルドの種類（開発用＝デバッグ署名 / 配布用＝アップロード鍵で署名。段階D）。</summary>
+    [JsonPropertyName("variant")]
+    public AndroidBuildVariant Variant { get; set; } = AndroidBuildVariant.Debug;
+
+    /// <summary>配布物の形式（APK / AAB。AAB は配布用だけ。段階D）。</summary>
+    [JsonPropertyName("format")]
+    public AndroidPackageFormat Format { get; set; } = AndroidPackageFormat.Apk;
+
+    /// <summary>配布用の署名の鍵の場所（パスワードは持たない。段階D）。</summary>
+    [JsonPropertyName("signing")]
+    public AndroidSigningSettings Signing { get; set; } = new();
 }
 
 /// <summary>iOS パッケージング設定。</summary>
@@ -189,8 +264,12 @@ public class PackagingData
         try
         {
             var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<PackagingData>(json, SerializeOptions)
-                   ?? new PackagingData();
+            var data = JsonSerializer.Deserialize<PackagingData>(json, SerializeOptions)
+                       ?? new PackagingData();
+            // 手で "android": null・"signing": null と書かれても参照側が落ちないよう、節を必ず持たせる（段階D の signing も同じ）
+            data.Android ??= new AndroidSettings();
+            data.Android.Signing ??= new AndroidSigningSettings();
+            return data;
         }
         catch { return new PackagingData(); }
     }

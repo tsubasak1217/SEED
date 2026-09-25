@@ -30,6 +30,9 @@ public sealed class InstallStep : IAndroidPipelineStep
     /// <summary>adb install の失敗の行頭（"Failure [INSTALL_FAILED_…]"）。</summary>
     private const string FailurePrefix = "Failure";
 
+    /// <summary>署名の違う同じアプリ ID を上書きしようとしたときの失敗の印（段階D）。</summary>
+    private const string UpdateIncompatibleCode = "INSTALL_FAILED_UPDATE_INCOMPATIBLE";
+
     /// <summary>1 MiB（大きさの表示用）。</summary>
     private const double BytesPerMegabyte = 1024.0 * 1024.0;
 
@@ -42,13 +45,14 @@ public sealed class InstallStep : IAndroidPipelineStep
     {
         var adb = context.RequireAdb();
         var device = context.RequireDevice();
-        var apk = context.Engine.DebugApkPath;
+        // 開発用はデバッグ版の APK、配布用（release）はアップロード鍵で署名した APK（AAB は入れられない。指定の検査で弾いてある。段階D）
+        var apk = context.ArtifactPath;
         if (!File.Exists(apk))
         {
             throw new AndroidPipelineException(AndroidFailureKind.DeviceOperation,
                 $"APK がありません: {apk}（APK の作成を飛ばさずに実行してください）");
         }
-        var sha256 = ApkFile.Sha256(apk, context.Stamps.Apk)!;
+        var sha256 = ApkFile.Sha256(apk, context.Stamps.ArtifactFor(context.GradleKey))!;
 
         log.Info($"adb -s {device.Serial} install -r {apk}（{new FileInfo(apk).Length / BytesPerMegabyte:F1} MB）");
         var lines = new List<string>();
@@ -62,8 +66,15 @@ public sealed class InstallStep : IAndroidPipelineStep
         lock (gate) snapshot = lines.ToList();
         if (exitCode != 0 || snapshot.Any(line => line.TrimStart().StartsWith(FailurePrefix, StringComparison.Ordinal)))
         {
+            // 署名の違う同じ ID のアプリ（開発用とデバッグ用の鍵・配布用とアップロード鍵）は上書きできない。データが消えるので
+            // 勝手にアンインストールはしない（段階D）
+            var signatureMismatch = snapshot.Any(line => line.Contains(UpdateIncompatibleCode, StringComparison.Ordinal));
             throw new AndroidPipelineException(AndroidFailureKind.DeviceOperation,
-                $"adb install が失敗しました（終了コード {exitCode}）: {string.Join(" / ", snapshot)}");
+                $"adb install が失敗しました（終了コード {exitCode}）: {string.Join(" / ", snapshot)}" +
+                (signatureMismatch
+                    ? $"。端末に署名の違う {context.Identity.ApplicationId} が入っています（開発用＝デバッグ用の鍵と配布用＝アップロード鍵は共存できません）。" +
+                      $"入れ替えるなら、端末のデータが消えてよいことを確かめてから adb uninstall {context.Identity.ApplicationId} してください。"
+                    : string.Empty));
         }
 
         // 入れた APK と、その場所を記録する（場所はインストールのたびに変わる＝他の人が入れ直せば分かる）

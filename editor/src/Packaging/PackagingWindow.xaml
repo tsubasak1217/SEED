@@ -52,6 +52,18 @@
             <Setter Property="Height"          Value="24"/>
         </Style>
 
+        <!-- パスワード入力（Android の配布用の署名。段階D。見た目は SettingTextBox と同じ） -->
+        <Style x:Key="SettingPasswordBox" TargetType="PasswordBox">
+            <Setter Property="Background"      Value="#2A2A2A"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="BorderBrush"     Value="#444444"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="4,2"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="CaretBrush"      Value="#CCCCCC"/>
+            <Setter Property="Height"          Value="24"/>
+        </Style>
+
         <!-- コンボボックス（配色はアプリ共通のダークテーマ暗黙スタイルを継承し、寸法のみ指定） -->
         <Style x:Key="SettingCombo" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
             <Setter Property="FontSize" Value="11"/>

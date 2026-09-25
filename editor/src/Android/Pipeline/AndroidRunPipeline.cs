@@ -6,8 +6,11 @@
 //          （シーンマネージャに未登録なら pak の収録の起点に足す。段階C-4）→
 //          端末（「自動」等なら要ればエミュレータを起動して待つ。段階C-3）と ABI →
 //          各工程の今の指紋と前回の記録 → 実行計画（Plan/AndroidBuildPlan.cs。飛ばす工程と理由）
-//    工程: libSEED.so（cargo ndk）→ pak とスクリプト（SeedPak）→ 同梱 .NET → APK（Gradle）→ インストール →
-//          開発用の転送（アセット・スクリプトの DLL）→ 起動 → logcat（Steps/ の各クラス）
+//    工程: libSEED.so（cargo ndk）→ pak とスクリプト（SeedPak）→ 同梱 .NET → APK / AAB（Gradle。アイコンの生成も）→
+//          （配布用だけ）Google Play の要件の確認 → インストール → 開発用の転送（アセット・スクリプトの DLL）→ 起動 → logcat
+//          （Steps/ の各クラス）
+//    配布用（release。段階D）: 準備で署名の鍵を決めて keytool で開けるかを確かめ（無ければ・開けなければビルドを始めない）、
+//          ビルドの前の要件の判定を出す（Release/AndroidRequirementChecks）。
 //    後始末: 置き場の記録（工程ごと。エンジン側）とプロジェクトの実行状態（前回の実行先・入れた APK・結果）を保存
 //
 //  【呼び出し側への約束】
@@ -29,10 +32,13 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Plan;
 using SEEDEditor.Android.Processes;
 using SEEDEditor.Android.Project;
+using SEEDEditor.Android.Release;
+using SEEDEditor.Android.Signing;
 using SEEDEditor.Android.State;
 using SEEDEditor.Android.Steps;
 using SEEDEditor.Android.Toolchain;
@@ -63,7 +69,7 @@ public sealed class AndroidRunPipeline
         _toolchain = toolchain;
         var steps = new IAndroidPipelineStep[]
         {
-            new NativeBuildStep(), new PackageContentStep(), new DotnetBundleStep(), new GradleBuildStep(),
+            new NativeBuildStep(), new PackageContentStep(), new DotnetBundleStep(), new GradleBuildStep(), new ReleaseCheckStep(),
             new InstallStep(), new PushAssetsStep(), new PushScriptsStep(), new LaunchStep(), new LogcatStep(),
         };
         _steps = steps.ToDictionary(step => step.Phase);
@@ -120,7 +126,13 @@ public sealed class AndroidRunPipeline
 
         // ── 工程 ──
         result = await ExecuteAsync(context, plan, outcomes, progress, cancellationToken).ConfigureAwait(false);
-        result = result with { Elapsed = total.Elapsed, Plan = plan, Device = context.Device, Identity = context.Identity };
+        var builds = context.Request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
+        result = result with
+        {
+            Elapsed = total.Elapsed, Plan = plan, Device = context.Device, Identity = context.Identity,
+            ArtifactPath = builds ? context.ArtifactPath : null,
+            RequirementReport = context.RequirementReport,
+        };
         SaveRunState(context, result, startedAt, prepareLog);
         return result;
     }
@@ -145,9 +157,22 @@ public sealed class AndroidRunPipeline
 
         var runStatePath = AndroidRunState.PathFor(project, _engine);
         var runState = AndroidRunState.Load(runStatePath);
+        var buildScope = request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
+
+        // ── ランチャーのアイコン（APK を作るときだけ。設定の誤りは何もしないうちに弾く。段階D）──
+        var launcherIcon = buildScope ? ResolveLauncherIcon(project, log) : null;
+
+        // ── 配布用（release）の署名と、ビルドの前の Google Play の要件の判定（段階D）──
+        var release = request.Variant == AndroidBuildVariant.Release
+            ? await PrepareReleaseAsync(request, project, log, cancellationToken).ConfigureAwait(false)
+            : null;
 
         // ── 起動するシーン（起動の工程があるときだけ。端末を用意する前に指定の誤りを弾く）──
         var launchScene = ResolveLaunchScene(request, project, log);
+        if (release is not null && launchScene is not null)
+        {
+            log.Warn("配布用（release）の APK は起動オプション（起動するシーン・IPC）を受け取りません（MainActivity は debuggable のときだけ渡す）。開始シーンで起動します。");
+        }
         // ── 起動するシーンがシーンマネージャに未登録なら、pak の収録の起点に足す（段階C-4）──
         var pakExtraScenes = DecidePakExtraScenes(request, launchScene, project, log);
 
@@ -157,7 +182,8 @@ public sealed class AndroidRunPipeline
 
         // ── 今の指紋と前回の記録 ──
         var stamps = AndroidStepStamps.Load(_engine.StepStampsPath);
-        var ipcDevicePort = AndroidIpcSettings.ResolveDevicePort(request.IpcPort);
+        // 配布用の APK は起動オプション（MainActivity が debuggable のときだけネイティブへ渡す）を受け取らないので IPC のポートを渡さない
+        var ipcDevicePort = request.Variant == AndroidBuildVariant.Release ? null : AndroidIpcSettings.ResolveDevicePort(request.IpcPort);
         var context = new AndroidPipelineContext
         {
             Request = request, Engine = _engine, Toolchain = _toolchain, Project = project, Identity = identity,
@@ -168,19 +194,28 @@ public sealed class AndroidRunPipeline
             // トークンは指定（エディタ）が無ければここで作る（起動ごとの使い捨て）
             IpcDevicePort = ipcDevicePort,
             IpcToken = ipcDevicePort is null ? null : request.IpcToken ?? AndroidIpcToken.Create(),
+            LauncherIcon = launcherIcon,
+            Signing = release?.Signing,
+            SigningCertificate = release?.Certificate,
+            PlayRequirements = release?.Requirements,
+            RequirementReport = release?.Report,
+            ReleaseHistoryPath = AndroidReleaseHistory.PathFor(project, _engine),
         };
-        var buildScope = request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
         if (buildScope)
         {
             var ndkPath = TryGetNdk();
             foreach (var abi in abis)
             {
-                context.CurrentFingerprints[AndroidStepKeys.Native(abi)] = AndroidStepFingerprints.Native(_engine, abi, request.Release, ndkPath);
+                context.CurrentFingerprints[AndroidStepKeys.Native(abi)] = AndroidStepFingerprints.Native(_engine, abi, request.OptimizesNative, ndkPath);
             }
             context.CurrentFingerprints[AndroidStepKeys.PackageContent] = AndroidStepFingerprints.PackageContent(_engine, project, pakExtraScenes);
             context.CurrentFingerprints[AndroidStepKeys.DotnetBundle] = AndroidStepFingerprints.DotnetBundle(_engine, abis);
-            context.CurrentFingerprints[AndroidStepKeys.Gradle] = AndroidStepFingerprints.Gradle(_engine, GradleBuildStep.Parameters(context, ndkPath));
+            context.CurrentFingerprints[context.GradleKey] =
+                AndroidStepFingerprints.Gradle(_engine, GradleBuildStep.Parameters(context, ndkPath), launcherIcon);
         }
+
+        // ── ビルドの前の要件の判定（ABI が決まってから。配布用だけ）──
+        if (release is not null) EvaluatePreBuildRequirements(context, release, log);
 
         // ── インストールの判断の材料（端末に入っている APK の場所と、前回自分が入れた記録）──
         AndroidInstallFacts? install = null;
@@ -188,11 +223,11 @@ public sealed class AndroidRunPipeline
         if (installScope && device is not null && adb is not null && !request.NoInstall)
         {
             var gradleMaySkip = request.SkipGradle
-                || (stamps.Steps.TryGetValue(AndroidStepKeys.Gradle, out var recordedGradle)
-                    && context.CurrentFingerprints.TryGetValue(AndroidStepKeys.Gradle, out var currentGradle)
+                || (stamps.Steps.TryGetValue(context.GradleKey, out var recordedGradle)
+                    && context.CurrentFingerprints.TryGetValue(context.GradleKey, out var currentGradle)
                     && recordedGradle == currentGradle);
             // APK を作り直すならどのみち入れ直すので、APK の SHA-256（60〜110 MB を読む）は計算しない
-            var localSha = gradleMaySkip ? ApkFile.Sha256(_engine.DebugApkPath, stamps.Apk) : null;
+            var localSha = gradleMaySkip ? ApkFile.Sha256(context.ArtifactPath, stamps.ArtifactFor(context.GradleKey)) : null;
             var installedPath = await adb.GetInstalledApkPathAsync(device.Serial, identity.ApplicationId, cancellationToken).ConfigureAwait(false);
             install = new AndroidInstallFacts(identity.ApplicationId, localSha, installedPath, runState.InstallRecordFor(device.Serial));
         }
@@ -204,7 +239,7 @@ public sealed class AndroidRunPipeline
             Current = context.CurrentFingerprints,
             Recorded = stamps.Steps,
             Install = install,
-            RecordedApkAbis = stamps.Apk?.Abis,
+            RecordedApkAbis = stamps.ArtifactFor(context.GradleKey)?.Abis,
             StagedPakPresent = File.Exists(Path.Combine(_engine.ApkPackageDir, PackageLayout.PakFileName)),
         });
         foreach (var step in plan.Steps)
@@ -241,6 +276,130 @@ public sealed class AndroidRunPipeline
         {
             throw new AndroidPipelineException(AndroidFailureKind.InvalidRequest, ipcTokenError);
         }
+        if (ValidateVariant(request) is { } variantError)
+        {
+            throw new AndroidPipelineException(AndroidFailureKind.InvalidRequest, variantError);
+        }
+    }
+
+    /// <summary>
+    /// ビルドの種類・形式・署名の指定の食い違い（段階D。純粋な処理。問題が無ければ null）。
+    /// </summary>
+    /// <param name="request">指定。</param>
+    /// <returns>問題の説明。</returns>
+    public static string? ValidateVariant(AndroidRunRequest request)
+    {
+        var release = request.Variant == AndroidBuildVariant.Release;
+        if (request.Format == AndroidPackageFormat.Aab && !release)
+        {
+            return "AAB は配布用（release）のビルドだけで作ります（SeedAndroid は --variant release、パッケージ化ウィンドウは「ビルドの種類」を配布用に）。";
+        }
+        if (request.Format == AndroidPackageFormat.Aab && request.Goal != AndroidRunGoal.Build)
+        {
+            return "AAB は端末へ直接入れられません。build で作り、Google Play へ出す（端末で試すなら bundletool で APKs にしてから入れる。docs/android.md §24）か、" +
+                   "形式を APK にしてください。";
+        }
+        if (release && (request.Goal == AndroidRunGoal.Push || request.PushScripts || !string.IsNullOrWhiteSpace(request.AssetsDir)))
+        {
+            return "配布用（release）の APK は debuggable でないため run-as が使えず、開発用の転送（push・--push-scripts・--assets-dir）はできません。";
+        }
+        if (!release && (!string.IsNullOrWhiteSpace(request.KeystorePath) || !string.IsNullOrWhiteSpace(request.KeyAlias) || request.SigningSecrets is not null))
+        {
+            return "署名の指定（キーストア・別名・パスワード）は配布用（release）のビルドで使います（開発用はデバッグ用の鍵で署名します）。";
+        }
+        return null;
+    }
+
+    /// <summary>ランチャーのアイコンの元を決めてログへ出す（設定の誤りは例外。段階D）。</summary>
+    private static LauncherIconSource? ResolveLauncherIcon(AndroidProjectInfo? project, AndroidPhaseLog log)
+    {
+        var icon = LauncherIconSettings.Resolve(project?.Settings.Android, project?.Folder.AssetsRoot);
+        log.Info(icon is null
+            ? $"アイコン: 設定なし（システムの既定のアイコン。プロジェクト設定 {AndroidAppSettings.SectionKey}.{AndroidAppSettings.IconKey}）"
+            : $"アイコン: {icon.IconPath}（背景色 {icon.Background.ToAndroidHex()}。各密度の mipmap とアダプティブアイコンを生成）");
+        return icon;
+    }
+
+    /// <summary>配布用ビルドの準備で決まったもの（段階D）。</summary>
+    /// <param name="Signing">署名。</param>
+    /// <param name="Certificate">鍵の証明書の要点。</param>
+    /// <param name="Requirements">要件の表（読めなければ null）。</param>
+    /// <param name="RequirementsError">要件の表を読めなかった理由。</param>
+    /// <param name="Report">要件チェックの結果（ビルドの前の判定を後で入れる）。</param>
+    private sealed record ReleasePreparation(
+        AndroidSigningConfig Signing, AndroidKeystoreCertificate Certificate, PlayRequirements? Requirements, string? RequirementsError,
+        AndroidRequirementReport Report);
+
+    /// <summary>
+    /// 配布用（release）の準備: 署名の鍵を決め、keytool で開けるか（パスワード・別名）を確かめ、要件の表を読む（段階D）。
+    /// 鍵が無い・開けないときは、数分かかるビルドを始める前に止める（デバッグ署名にはしない）。
+    /// </summary>
+    private async Task<ReleasePreparation> PrepareReleaseAsync(
+        AndroidRunRequest request, AndroidProjectInfo? project, AndroidPhaseLog log, CancellationToken cancellationToken)
+    {
+        log.Info($"ビルドの種類: 配布用（release・{request.Format.ToString().ToUpperInvariant()}。debuggable にしない・INTERNET なし・" +
+                 "アップロード鍵で署名・Rust は --release）");
+        var signing = AndroidSigningResolver.Resolve(SigningInputs(request, project));
+        foreach (var warning in signing.Warnings) log.Warn(warning);
+        log.Info($"署名: {signing.Describe()}");
+        var certificate = await AndroidKeystoreTool.ReadAsync(
+            _toolchain.RequireKeytool(), signing.KeystorePath, signing.KeyAlias, signing.Secrets, cancellationToken).ConfigureAwait(false);
+        log.Info($"  {certificate.Describe()}");
+
+        var requirements = PlayRequirements.Load(_engine.PlayRequirementsPath, out var requirementsError);
+        return new ReleasePreparation(signing, certificate, requirements, requirementsError, new AndroidRequirementReport());
+    }
+
+    /// <summary>署名の鍵を決める材料（指定 → プロジェクトの packaging_settings.json の android.signing）。</summary>
+    /// <param name="request">指定。</param>
+    /// <param name="project">プロジェクト（無ければ null）。</param>
+    /// <returns>材料。</returns>
+    public static AndroidSigningInputs SigningInputs(AndroidRunRequest request, AndroidProjectInfo? project)
+    {
+        AndroidSigningSettings? settings = null;
+        if (project is not null)
+        {
+            settings = PackagingData.LoadFrom(Path.Combine(project.Folder.AssetsRoot, PackagingData.SettingsFileName)).Android.Signing;
+        }
+        return new AndroidSigningInputs(
+            request.KeystorePath, request.KeyAlias, request.SigningSecrets, settings, project?.Folder.ProjectRoot, project?.Folder.AssetsRoot);
+    }
+
+    /// <summary>ビルドの前の Google Play の要件の判定を行い、一覧をログへ出す（段階D）。</summary>
+    private static void EvaluatePreBuildRequirements(AndroidPipelineContext context, ReleasePreparation release, AndroidPhaseLog log)
+    {
+        var report = release.Report;
+        if (release.Requirements is null)
+        {
+            report.Put(AndroidRequirementChecks.TableMissing(release.RequirementsError ?? string.Empty));
+        }
+        else
+        {
+            var history = AndroidReleaseHistory.Load(context.ReleaseHistoryPath);
+            var facts = new AndroidPreBuildFacts
+            {
+                Format = context.Request.Format,
+                TargetApiLevel = AndroidRuntimeContract.TargetApiLevel,
+                Abis = context.Abis,
+                Identity = context.Identity,
+                PreviousRelease = history.Last(context.Identity.ApplicationId, context.Request.Format),
+                Signing = release.Signing,
+                LauncherIcon = context.LauncherIcon is not null,
+            };
+            foreach (var item in AndroidRequirementChecks.Evaluate(release.Requirements, facts)) report.Put(item);
+        }
+        log.Info($"Google Play の要件（ビルドの前。{report.Summary()}）:");
+        foreach (var item in report.Items) LogRequirement(log, item);
+    }
+
+    /// <summary>要件の判定 1 件をログへ出す（不合格・注意は警告の色）。</summary>
+    /// <param name="log">ログ。</param>
+    /// <param name="item">判定。</param>
+    public static void LogRequirement(AndroidPhaseLog log, AndroidRequirementItem item)
+    {
+        var line = "  " + item.Describe();
+        if (item.Severity is AndroidRequirementSeverity.Failure or AndroidRequirementSeverity.Warning) log.Warn(line);
+        else log.Info(line);
     }
 
     /// <summary>決まったプロジェクトをログへ出す（設定の読み取りの警告も）。</summary>
@@ -340,7 +499,8 @@ public sealed class AndroidRunPipeline
 
         // 「自動」でも端末の工程が無ければ、指定なしと同じ（ABI を決める端末が 1 台に決まれば使う）
         var serial = target.Mode == AndroidDeviceTargetMode.Auto ? null : target.Serial;
-        var wantsAbiFromDevice = request.Abis is null && request.Goal == AndroidRunGoal.Build;
+        // 配布用のビルドは、たまたまつながっている端末で ABI を変えない（エミュレータの x86_64 だけの配布物を作らないため。段階D）
+        var wantsAbiFromDevice = request.Abis is null && request.Goal == AndroidRunGoal.Build && request.Variant == AndroidBuildVariant.Debug;
         if (!needsDevice && !wantsAbiFromDevice && string.IsNullOrWhiteSpace(serial)) return (null, null);
 
         AdbClient adb;
@@ -421,6 +581,12 @@ public sealed class AndroidRunPipeline
         {
             abis = new[] { deviceAbi };
             log.Info($"ABI: {deviceAbi.Name}（端末から判定）");
+        }
+        else if (request.Variant == AndroidBuildVariant.Release)
+        {
+            // 配布は実機向けの arm64-v8a だけ（docs/android.md §2。x86_64 も入れると同梱 .NET の BCL が両方の分配られる。段階D）
+            abis = new[] { AndroidAbis.Arm64 };
+            log.Info($"ABI: {AndroidAbis.Arm64.Name}（配布用の既定。変えるなら --abi）");
         }
         else
         {

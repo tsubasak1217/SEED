@@ -10,6 +10,9 @@
 //  空欄は「既定値を使う」（節から消える）。既定値はビルドのときと同じ関数（AndroidAppIdentityResolver）で作り、
 //  各欄の下に表示する（ID は .seedproj の名前から com.seedengine.<英数字化した名前>、名前はプロジェクトの表示名、
 //  版は 1 / "1.0"）。値の検査もビルドと同じ関数で行い、誤りがあれば保存を止める。
+//
+//  【アイコン（段階D）】icon（元の PNG。アセットルートからの相対パスか絶対パス）と icon_background（#RRGGBB）。
+//  ビルドのときに各密度の mipmap とアダプティブアイコンを生成する（editor/src/Android/Icons/。検査は LauncherIconSettings）。
 // ============================================================
 
 using System.Collections.Generic;
@@ -18,6 +21,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Project;
 using SEEDEditor.Project;
 
@@ -71,6 +75,12 @@ public partial class ProjectSettingsWindow
     /// <summary>バージョン名の入力欄。</summary>
     private TextBox? _tbAndroidVersionName;
 
+    /// <summary>アイコンの元の PNG の入力欄（段階D）。</summary>
+    private TextBox? _tbAndroidIcon;
+
+    /// <summary>アイコンの背景色の入力欄（段階D）。</summary>
+    private TextBox? _tbAndroidIconBackground;
+
     /// <summary>
     /// バージョン番号の欄に入力された文字列（整数として読めなかったものも保存前の検査のために持つ）。
     /// null はまだ欄を表示していない。
@@ -107,6 +117,11 @@ public partial class ProjectSettingsWindow
         _tbAndroidVersionName = AddAndroidTextRow(panel, "バージョン名", android?.VersionName,
             $"空欄なら {AndroidAppIdentityResolver.DefaultVersionName}（人が読む版。例 1.0.3）");
         _androidVersionCodeText = _tbAndroidVersionCode.Text;
+        _tbAndroidIcon = AddAndroidTextRow(panel, "アイコン（PNG）", android?.Icon,
+            "空欄ならシステムの既定のアイコン。アセットルートからの相対パス（例 icons/app_icon.png）か絶対パス。" +
+            $"{LauncherIconGenerator.RecommendedSourceSize}x{LauncherIconGenerator.RecommendedSourceSize} 以上の正方形を推奨（ビルドで各密度とアダプティブアイコンを生成）");
+        _tbAndroidIconBackground = AddAndroidTextRow(panel, "アイコンの背景色", android?.IconBackground,
+            $"空欄なら {RgbaColor.White.ToAndroidHex()}（アダプティブアイコンの背景。#RRGGBB か #AARRGGBB）");
 
         panel.Children.Add(new TextBlock
         {
@@ -135,6 +150,9 @@ public partial class ProjectSettingsWindow
         android.ApplicationId = AndroidAppSettings.NormalizeText(_tbAndroidApplicationId.Text);
         android.AppName       = AndroidAppSettings.NormalizeText(_tbAndroidAppName.Text);
         android.VersionName   = AndroidAppSettings.NormalizeText(_tbAndroidVersionName.Text);
+        // アイコン（段階D。欄が無い古い画面の状態でも値を消さない）
+        if (_tbAndroidIcon is not null) android.Icon = AndroidAppSettings.NormalizeText(_tbAndroidIcon.Text);
+        if (_tbAndroidIconBackground is not null) android.IconBackground = AndroidAppSettings.NormalizeText(_tbAndroidIconBackground.Text);
 
         _androidVersionCodeText = _tbAndroidVersionCode.Text;
         var codeText = AndroidAppSettings.NormalizeText(_androidVersionCodeText);
@@ -162,6 +180,8 @@ public partial class ProjectSettingsWindow
             errors.Add($"バージョン番号「{codeText}」は整数ではありません。");
         }
         errors.AddRange(AndroidAppIdentityResolver.Validate(_data.Android));
+        // アイコン（ビルドと同じ検査。相対パスはアセットルートから）
+        errors.AddRange(LauncherIconSettings.Validate(_data.Android, _assetsPath));
         return errors;
     }
 

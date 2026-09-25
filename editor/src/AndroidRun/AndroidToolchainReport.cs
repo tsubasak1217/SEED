@@ -35,7 +35,7 @@ public static class AndroidToolchainReport
     /// 道具ごとに見つかったか調べる。
     /// </summary>
     /// <param name="toolchain">道具の場所。</param>
-    /// <returns>道具ごとの結果（Android SDK・NDK・adb・JDK・cargo・dotnet の順）。</returns>
+    /// <returns>道具ごとの結果（Android SDK・NDK・adb・JDK・cargo・dotnet・keytool・build-tools の順）。</returns>
     public static IReadOnlyList<AndroidToolStatus> Build(AndroidToolchain toolchain) => new[]
     {
         Probe("Android SDK", toolchain.RequireSdk),
@@ -44,6 +44,9 @@ public static class AndroidToolchainReport
         Probe("JDK", toolchain.RequireJavaHome),
         Probe("cargo", toolchain.RequireCargo),
         Probe("dotnet", toolchain.RequireDotnet),
+        // 段階D: 配布用の鍵の作成・確かめ（keytool）と、配布物の要件チェック（build-tools の aapt2・zipalign・apksigner）
+        Probe("keytool", toolchain.RequireKeytool),
+        Probe("build-tools", toolchain.RequireBuildTools),
     };
 
     /// <summary>一覧を複数行の文字列にする（説明欄用）。</summary>

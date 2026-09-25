@@ -27,6 +27,9 @@ public static class SeedAndroidExitCodes
     /// <summary>端末の操作の失敗（インストール・転送・起動・停止）。</summary>
     public const int DeviceOperation = 5;
 
+    /// <summary>Google Play の要件に不合格がある（配布用の build・check。配布物はできている。段階D）。</summary>
+    public const int RequirementsNotMet = 6;
+
     /// <summary>中断（Ctrl+C。シェルの慣習 128 + SIGINT）。</summary>
     public const int Canceled = 130;
 

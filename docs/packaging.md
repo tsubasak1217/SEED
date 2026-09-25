@@ -510,11 +510,12 @@ dotnet run --project editor/tests/PackagingCollectorTests
 - 新しいアセット形式を足したときは、`PackagingRules` の
   `ScannableExtensions` / `SiblingExtensions` / `FolderCompanions` の追従を忘れないこと。
   登録漏れは**ビルドエラーにならず**、パッケージ版だけが壊れる形で出る。
-- **Android の APK はデバッグ署名まで**（2026-09-25。§10.3）。APK 内の `assets.pak` から起動し、スクリプトは段階B で APK に同梱した
-  .NET 10 の CoreCLR で動く（[android.md](android.md) §17）。セーブ・キャッシュの書き込みは端末のアプリ専用フォルダへ振り替えてある
+- **Android は開発用（デバッグ署名の APK）と配布用（アップロード鍵で署名した APK / AAB。2026-09-26・段階D）**（§10.3・[android.md](android.md) §24）。
+  APK 内の `assets.pak` から起動し、スクリプトは段階B で APK に同梱した .NET 10 の CoreCLR で動く（[android.md](android.md) §17）。
+  セーブ・キャッシュの書き込みは端末のアプリ専用フォルダへ振り替えてある
   （セーブ `files/save/`・キャッシュ `/data/user/0/<パッケージ名>/cache`。[android.md](android.md) §14）。
-  パッケージ化ウィンドウの Android 出力は段階C-2 で実働した（中核 `editor/src/Android/` の `Goal = Build` で APK を作って出力フォルダへ写す。§10.3）。
-  ストアへ出す配布用の署名・AAB は段階D。
+  パッケージ化ウィンドウの Android 出力は段階C-2 で実働し（中核 `editor/src/Android/` の `Goal = Build`）、段階D で配布用・AAB・アイコン・
+  Google Play の要件チェックを足した。実際の Google Play Console への提出は未確認（backlog）。
 
 ### 8.1 配布版の動作に効くプロジェクト設定
 
@@ -531,7 +532,7 @@ dotnet run --project editor/tests/PackagingCollectorTests
 | `game_name` | 空 | ウィンドウタイトル（未設定なら `"SEED"`） |
 | `streaming` | （省略可） | モデルの非同期ロード（ワーカースレッド・先読み・GPU アップロード予算・バッチ常駐時間）。キーの一覧と既定値は [docs/model_streaming.md](model_streaming.md) 6 章 |
 | `screen_orientation` | `"both"` | **Android の APK だけ**に効く画面の向き。`"both"`（縦横 4 方向に追従）/ `"portrait"`（縦に固定）/ `"landscape"`（横に固定）。エディタでは「プロジェクト設定 → 解像度設定 → 画面の向き（モバイル）」。起動時に読む値ではなく、APK を作るときにマニフェストの `screenOrientation` へ焼き込む（SeedAndroid → `app/build.gradle.kts` の変換表。**書き換えたら APK を作り直す**）。デスクトップには効かない。[android.md](android.md) §15 |
-| `android` | （無し） | **Android の APK だけ**に効くアプリの識別情報 `application_id` / `app_name` / `version_code` / `version_name`（どれも省略可。既定は `.seedproj` の名前から `com.seedengine.<英数字化した名前>`・プロジェクトの表示名・`1`・`"1.0"`）。エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」。APK を作るときに `applicationId` / ランチャーの名前 / `versionCode` / `versionName` へ焼き込む（**書き換えたら APK を作り直す**。ID を変えると端末では別のアプリになる）。デスクトップには効かない。[android.md](android.md) §18 |
+| `android` | （無し） | **Android の APK だけ**に効くアプリの識別情報 `application_id` / `app_name` / `version_code` / `version_name`（どれも省略可。既定は `.seedproj` の名前から `com.seedengine.<英数字化した名前>`・プロジェクトの表示名・`1`・`"1.0"`）と、ランチャーのアイコン `icon`（元の PNG。アセットルートからの相対パス・`assets://`・絶対パス。省略時はシステムの既定のアイコン）・`icon_background`（アダプティブアイコンの背景色 `#RRGGBB`。既定は白）（段階D）。エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」。APK を作るときに `applicationId` / ランチャーの名前 / `versionCode` / `versionName` / 各密度のアイコンへ焼き込む（**書き換えたら APK を作り直す**。ID を変えると端末では別のアプリになる）。デスクトップには効かない。[android.md](android.md) §18・§24.7 |
 | `render_quality` | （無し） | 描画品質プリセットの選び方（プラットフォームごと。段階D-2）。`{"desktop": {"preset": …}, "android": {"preset": …, "render_scale": 0.75, …}}`。節もキーも省略でき、省略時はデスクトップ `desktop`（何も下げない＝従来どおり）・Android `mobile`（軽量）。節の中の `preset` 以外のキーはプリセットのつまみの上書き（`render_scale` 0.5〜1.0・`shadows`・`gi` 等。一覧は [rendering_roadmap.md](rendering_roadmap.md) の「描画品質プリセット」）。エディタでは「プロジェクト設定 → グラフィックス → レンダリング品質」。起動時に 1 回読む（起動ログ `[SEED QUALITY]`）。Android は pak に入るので書き換えたら APK を作り直す。[android.md](android.md) §22 |
 
 遅いドライブ（USB 外付け・低速 SSD）で「プレイ中に時々カクつく」と言われたら、まず
@@ -714,18 +715,19 @@ dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォ
 2026-09-24 に最小アセット（BrainStem.glb ＋ 平行光・3 ファイル）で、SeedPak の出力と「変更前のパッケージ化ウィンドウと
 同じ呼び出し（`AssetCollector` → `PakWriter` の直呼び）」の出力の SHA-256 が一致することを確かめた。
 
-### 10.3 パッケージ化ウィンドウの Android 出力（段階C-2・2026-09-25）
+### 10.3 パッケージ化ウィンドウの Android 出力（段階C-2・2026-09-25、配布用は段階D・2026-09-26）
 
 「パッケージ化」→ Android →「ビルド開始」は、Windows の流れ（`cargo build` → 実行ファイル・`bin/`・`assets.pak` を並べる）を通らず、
 Android のビルド・配置・起動の中核（`editor/src/Android/`。SeedAndroid・エディタの Android 実行と同じクラス）を `Goal = Build`（端末は使わない）で呼び、
-できた APK（`runtime/android/app/build/outputs/apk/debug/app-debug.apk`）を出力フォルダへ写す。詳細は [android.md](android.md) §20.6。
+できた APK / AAB（`runtime/android/app/build/outputs/` の下。中核の結果の `ArtifactPath`）を出力フォルダへ写す。詳細は [android.md](android.md) §20.6・§24。
 
 | 項目 | 内容 |
 |---|---|
-| 出力 | `{出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-debug.apk`（名前の決まりは `editor/src/Packaging/AndroidApkOutput.cs`） |
-| 設定（`packaging_settings.json` の `android`） | `output_path`・`arch`（`Arm64V8a` / `X86_64` / `Both`。画面では「ABI」）・`build_type`（画面では「Rust の最適化」。Release は `cargo --release`） |
-| 署名 | デバッグ署名（配布用の署名・AAB は段階D。画面に明記） |
-| APK の中身 | `assets.pak` と `bin/`（SeedPak `--scripts`。収録は同じ `assets` の設定）・同梱 .NET（常に入る。「.NET ランタイムを同梱」の切り替えは Android では出さない）・`libSEED.so` |
+| 出力 | `{出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-{debug\|release}.{apk\|aab}`（名前の決まりは `editor/src/Packaging/AndroidApkOutput.cs`。配布用の APK と AAB は並べて置ける） |
+| 設定（`packaging_settings.json` の `android`） | `output_path`・`arch`（`Arm64V8a` / `X86_64` / `Both`。画面では「ABI」）・`build_type`（画面では「Rust の最適化」。開発用だけ。Release は `cargo --release`）・`variant`（`Debug` / `Release`。画面では「ビルドの種類」。段階D）・`format`（`Apk` / `Aab`。配布用だけ。段階D）・`signing`（`keystore_path`〈絶対パスかプロジェクトのルートからの相対パス〉・`key_alias`。**パスワードは書かない**。段階D） |
+| 署名 | 開発用はデバッグ署名。配布用はアップロード鍵（パスワードはエディタの保護保存〈`editor/settings/android_signing_secrets.json`・DPAPI〉か環境変数 `SEED_ANDROID_KEYSTORE_PASSWORD`。無ければビルドしない） |
+| APK の中身 | `assets.pak` と `bin/`（SeedPak `--scripts`。収録は同じ `assets` の設定）・同梱 .NET（常に入る。「.NET ランタイムを同梱」の切り替えは Android では出さない）・`libSEED.so`・（設定があれば）アイコン |
+| 配布用の確認 | Google Play の要件の一覧（ビルドの前と後。「要件を確認」でビルドせずにも）。[android.md](android.md) §24.8 |
 
 - 以前の `android.ndk_path`（NDK のパス）は廃止した。道具の場所は環境変数と既定の場所から自動で探す（[android.md](android.md) §3）。
   古い設定ファイルの `ndk_path` は読み飛ばし、次の保存で消える。

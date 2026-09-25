@@ -25,6 +25,13 @@ app/src/main/assets/
 # APK に同梱する .NET（SeedAndroid が runtime/android/dotnet_runtime.json と NuGet のパックから組み立てる。docs/android.md §17）
 app/src/seedDotnet/
 
+# ランチャーのアイコン（SeedAndroid がプロジェクト設定 android.icon の PNG から各密度の mipmap とアダプティブアイコンを生成する。docs/android.md §24）
+app/src/seedIcon/
+
+# 配布用の署名の鍵（キーストア）は置かない（誤って置いても追跡しない。保管の仕方は docs/android.md §24）
+*.jks
+*.keystore
+
 # デバッグ版だけのマニフェスト（INTERNET 権限。IPC の TCP 待ち受けに必要。docs/android.md §21）。
 # ルートの .gitignore の Debug/（Windows では大小文字を区別しない）に当たるので、ここで除外を打ち消す。
 !app/src/debug/

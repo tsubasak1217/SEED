@@ -10,8 +10,11 @@
 
 using System.Collections.Generic;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Plan;
 using SEEDEditor.Android.Project;
+using SEEDEditor.Android.Release;
+using SEEDEditor.Android.Signing;
 using SEEDEditor.Android.State;
 using SEEDEditor.Android.Toolchain;
 
@@ -86,6 +89,35 @@ public sealed class AndroidPipelineContext
     /// am start の extra（seed.ipc_token）にして渡し、実行状態（run_state.json の ipc_launches）へ記録する。
     /// </summary>
     public string? IpcToken { get; init; }
+
+    /// <summary>
+    /// ランチャーのアイコンの元（プロジェクト設定 android.icon。無ければ null＝システムの既定のアイコン。段階D）。
+    /// APK の工程が Gradle の前に生成物を置く（Icons/LauncherIconStager）。
+    /// </summary>
+    public LauncherIconSource? LauncherIcon { get; init; }
+
+    /// <summary>配布用（release）の署名（開発用のビルドでは null。段階D）。</summary>
+    public AndroidSigningConfig? Signing { get; init; }
+
+    /// <summary>配布用の署名の鍵の証明書の要点（keytool で確かめたもの。開発用のビルドでは null。段階D）。</summary>
+    public AndroidKeystoreCertificate? SigningCertificate { get; init; }
+
+    /// <summary>Google Play の要件の表（配布用のビルドだけ。読めなければ null。段階D）。</summary>
+    public PlayRequirements? PlayRequirements { get; init; }
+
+    /// <summary>
+    /// Google Play の要件チェックの結果（配布用のビルドだけ。準備でビルドの前の判定を入れ、要件の確認の工程ができた配布物の判定で上書きする。段階D）。
+    /// </summary>
+    public AndroidRequirementReport? RequirementReport { get; init; }
+
+    /// <summary>配布用ビルドの記録の置き場（versionCode の単調増加の材料。段階D）。</summary>
+    public required string ReleaseHistoryPath { get; init; }
+
+    /// <summary>今回の Gradle の出力（ビルドの種類と形式ごと。段階D）。</summary>
+    public string ArtifactPath => Engine.ArtifactPath(Request.Variant, Request.Format);
+
+    /// <summary>今回の Gradle の出力の記録のキー（Plan/AndroidStepKeys.GradleFor。段階D）。</summary>
+    public string GradleKey => AndroidStepKeys.GradleFor(Request.Variant, Request.Format);
 
     /// <summary>対象の端末（無ければ例外）。</summary>
     /// <returns>端末。</returns>

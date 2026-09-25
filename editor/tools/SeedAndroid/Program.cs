@@ -88,6 +88,9 @@ public static class Program
                 SeedAndroidCommand.Reload  => await ReloadCommand.RunAsync(toolchain, line, config, cancellation.Token),
                 SeedAndroidCommand.Push when line.OverlayAssetsDir is not null
                                            => await AssetPushCommand.RunAsync(toolchain, line, config, cancellation.Token),
+                // 配布用の鍵を作る・Google Play の要件を確かめる（段階D。docs/android.md §24）
+                SeedAndroidCommand.Keystore => await KeystoreCommand.RunAsync(toolchain, line, cancellation.Token),
+                SeedAndroidCommand.Check    => await CheckCommand.RunAsync(toolchain, line, config, cancellation.Token),
                 _                          => await PipelineCommand.RunAsync(toolchain, line, config, cancellation.Token),
             };
         }

@@ -12,6 +12,7 @@ using System.Globalization;
 using System.IO;
 using SEEDEditor.Android.Dotnet;
 using SEEDEditor.Android.Gradle;
+using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Project;
 using SEEDEditor.Android.Toolchain;
 
@@ -95,13 +96,15 @@ public static class AndroidStepFingerprints
     }
 
     /// <summary>
-    /// APK（Gradle）の指紋。入力は上流の出力（.so・pak の置き場・同梱 .NET の置き場）・Gradle のソース・渡すプロパティ、
-    /// 出力は APK。
+    /// APK / AAB（Gradle）の指紋。入力は上流の出力（.so・pak の置き場・同梱 .NET の置き場）・Gradle のソース・渡すプロパティ
+    /// （パスワードは伏せ字のまま。値そのものは材料にしない）、配布用はキーストアのファイル、アイコンを作るならその元の PNG と作り方の版と
+    /// 置き場。出力はビルドの種類と形式ごとの配布物（段階D）。
     /// </summary>
     /// <param name="engine">エンジン側の置き場。</param>
     /// <param name="parameters">Gradle へ渡す値。</param>
+    /// <param name="launcherIcon">アイコンの元（作らないなら null）。</param>
     /// <returns>指紋。</returns>
-    public static AndroidStepFingerprint Gradle(AndroidEnginePaths engine, GradleBuildParameters parameters)
+    public static AndroidStepFingerprint Gradle(AndroidEnginePaths engine, GradleBuildParameters parameters, LauncherIconSource? launcherIcon = null)
     {
         var builder = new AndroidFingerprintBuilder();
         foreach (var property in GradleInvocation.Build(parameters).Properties)
@@ -114,8 +117,20 @@ public static class AndroidStepFingerprints
         }
         builder.AddValue("package", AndroidOutputIdentity.OfDirectory(engine.ApkPackageDir))
             .AddValue("dotnet", AndroidOutputIdentity.OfDirectory(engine.DotnetStagingDir));
+        if (parameters.Signing is { } signing)
+        {
+            // 鍵を差し替えたら作り直す（中身は読まず、大きさと更新時刻。パスワードは材料にしない）
+            builder.AddValue("keystore", AndroidOutputIdentity.OfFile(signing.KeystorePath));
+        }
+        if (launcherIcon is not null)
+        {
+            builder.AddValue("icon_source", AndroidOutputIdentity.OfFile(launcherIcon.IconPath))
+                .AddValue("icon_background", launcherIcon.Background.ToAndroidHex())
+                .AddValue("icon_revision", LauncherIconStager.GeneratorRevision.ToString(CultureInfo.InvariantCulture))
+                .AddValue("icon_staging", AndroidOutputIdentity.OfDirectory(engine.LauncherIconStagingDir));
+        }
         AddRepositoryTrees(builder, engine, AndroidBuildInputs.GradleSources);
-        return new AndroidStepFingerprint(builder.Build(), AndroidOutputIdentity.OfFile(engine.DebugApkPath));
+        return new AndroidStepFingerprint(builder.Build(), AndroidOutputIdentity.OfFile(engine.ArtifactPath(parameters.Variant, parameters.Format)));
     }
 
     /// <summary>リポジトリのルートからの相対パスの表を材料に足す（生成物のフォルダは辿らない）。</summary>

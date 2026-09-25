@@ -7,6 +7,9 @@
 //    adb         … SDK の platform-tools\adb.exe
 //    emulator    … SDK の emulator\emulator.exe（段階C-3。端末が無いときに AVD を起動する。Emulator/EmulatorLauncher.cs）
 //    JDK         … JAVA_HOME（bin\java.exe があること）→ Android Studio 同梱の JBR（%ProgramFiles%\Android\Android Studio\jbr）
+//    keytool     … JDK の bin\keytool.exe（段階D。配布用の鍵の作成・確かめ。Signing/AndroidKeystoreTool.cs）
+//    build-tools … SDK の build-tools\ の最新版（aapt2.exe があること。段階D。できた APK / AAB の要件チェックで
+//                  aapt2・zipalign・apksigner を使う。Release/AndroidArtifactInspector.cs）
 //    cargo       … PATH → CARGO_HOME\bin → %USERPROFILE%\.cargo\bin
 //    dotnet      … DOTNET_HOST_PATH（dotnet から起動されたとき）→ PATH → %ProgramFiles%\dotnet
 //  マシン固有のパスはリポジトリに書かない（従来の build_and_run.ps1 と同じ方針）。
@@ -83,6 +86,21 @@ public sealed class AndroidToolchain
     /// <summary>NDK のフォルダであることの目印。</summary>
     private const string NdkMarkerFileName = "source.properties";
 
+    /// <summary>SDK の中の build-tools のフォルダ名。</summary>
+    private const string BuildToolsDirName = "build-tools";
+
+    /// <summary>build-tools のフォルダであることの目印（APK の中身を読む道具。要件チェックで使う）。</summary>
+    public const string Aapt2FileName = "aapt2.exe";
+
+    /// <summary>zip の整列を確かめる道具（build-tools）。</summary>
+    public const string ZipalignFileName = "zipalign.exe";
+
+    /// <summary>APK の署名を確かめる道具（build-tools。バッチファイルで、中で java を呼ぶ）。</summary>
+    public const string ApksignerFileName = "apksigner.bat";
+
+    /// <summary>JDK の鍵の道具（段階D）。</summary>
+    private const string KeytoolFileName = "keytool.exe";
+
     // ── 解決結果 ───────────────────────────────────────────
 
     /// <summary>1 つの道具の解決結果（場所か、見つからない理由）。</summary>
@@ -98,6 +116,8 @@ public sealed class AndroidToolchain
     private readonly Resolved _javaHome;
     private readonly Resolved _cargo;
     private readonly Resolved _dotnet;
+    private readonly Resolved _buildTools;
+    private readonly Resolved _keytool;
 
     private AndroidToolchain(
         Resolved sdk, Resolved ndk, Resolved adb, Resolved emulator, Resolved javaHome, Resolved cargo, Resolved dotnet)
@@ -109,6 +129,8 @@ public sealed class AndroidToolchain
         _javaHome = javaHome;
         _cargo = cargo;
         _dotnet = dotnet;
+        _buildTools = ResolveBuildTools(sdk);
+        _keytool = ResolveKeytool(javaHome);
     }
 
     /// <summary>
@@ -164,6 +186,14 @@ public sealed class AndroidToolchain
     /// <summary>dotnet.exe（無ければ例外）。</summary>
     /// <returns>dotnet の絶対パス。</returns>
     public string RequireDotnet() => Require(_dotnet);
+
+    /// <summary>SDK の build-tools の最新版のフォルダ（無ければ例外。段階D の要件チェックで使う）。</summary>
+    /// <returns>build-tools\&lt;版&gt; のフォルダ。</returns>
+    public string RequireBuildTools() => Require(_buildTools);
+
+    /// <summary>JDK の keytool.exe（無ければ例外。段階D の鍵の作成・確かめで使う）。</summary>
+    /// <returns>keytool の絶対パス。</returns>
+    public string RequireKeytool() => Require(_keytool);
 
     /// <summary>見つかった場所を返すか、理由付きの例外を投げる。</summary>
     /// <param name="resolved">解決結果。</param>
@@ -243,6 +273,32 @@ public sealed class AndroidToolchain
         return File.Exists(emulator)
             ? new Resolved(emulator, null)
             : new Resolved(null, $"Android Emulator が見つかりません: {emulator}（SDK Manager で Android Emulator を入れるか、実機を USB でつないでください）");
+    }
+
+    /// <summary>SDK の build-tools の最新版を探す（aapt2.exe があるフォルダのうち版が最も新しいもの）。</summary>
+    private static Resolved ResolveBuildTools(Resolved sdk)
+    {
+        if (sdk.Path is null) return new Resolved(null, sdk.Problem);
+        var parent = Path.Combine(sdk.Path, BuildToolsDirName);
+        var latest = Directory.Exists(parent)
+            ? Directory.EnumerateDirectories(parent)
+                .Where(dir => File.Exists(Path.Combine(dir, Aapt2FileName)))
+                .OrderByDescending(dir => ParseVersion(Path.GetFileName(dir)))
+                .FirstOrDefault()
+            : null;
+        return latest is not null
+            ? new Resolved(Normalize(latest), null)
+            : new Resolved(null, $"Android SDK の build-tools が見つかりません: {parent}（SDK Manager で Android SDK Build-Tools を入れてください。APK / AAB の要件チェックに使います）");
+    }
+
+    /// <summary>keytool を探す（見つけた JDK の bin）。</summary>
+    private static Resolved ResolveKeytool(Resolved javaHome)
+    {
+        if (javaHome.Path is null) return new Resolved(null, javaHome.Problem);
+        var keytool = Path.Combine(javaHome.Path, "bin", KeytoolFileName);
+        return File.Exists(keytool)
+            ? new Resolved(keytool, null)
+            : new Resolved(null, $"keytool が見つかりません: {keytool}（JDK の bin にあるはずです。{JavaHomeVariable} を確かめてください）");
     }
 
     /// <summary>JDK を探す（JAVA_HOME → Android Studio 同梱の JBR）。</summary>

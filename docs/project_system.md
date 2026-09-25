@@ -16,11 +16,12 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   <Name>.seedproj      プロジェクトファイル（JSON。この 1 枚が入口）
   assets/              ゲームのアセット。assets:// のルート
     project_settings.json     ゲーム名・開始シーン・シーン一覧・解像度・画面の向き（Android）・Android アプリ情報
-                              （android 節。アプリ ID・名前・版。docs/android.md §18）・描画品質プリセット
+                              （android 節。アプリ ID・名前・版・アイコン〈icon / icon_background。段階D〉。docs/android.md §18・§24.7）・描画品質プリセット
                               （render_quality 節。プラットフォームごとのプリセット名とつまみの上書き。docs/android.md §22・
                               docs/rendering_roadmap.md「描画品質プリセット」）・プラグイン有効化
                               （キーの一覧は docs/packaging.md §8.1）
-    packaging_settings.json   パッケージ化の設定
+    packaging_settings.json   パッケージ化の設定（android 節の variant / format / signing〈キーストアの場所・別名。パスワードは書かない〉。
+                              docs/packaging.md §10.3・docs/android.md §24）
     scenes/Main.scene         新規作成時に置かれる開始シーン
   plugins/             ネイティブプラグイン DLL
 
@@ -32,6 +33,9 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
                        失っても前回の実行先が選ばれない・APK を入れ直すだけ
     android/asset_overlay.json  実行中の差し替えで端末の上書き層（files/assets）へ送ったファイルの指紋（端末ごと。docs/android.md §23.5）。
                        失っても送ったことの無いものとして多めに送るだけ（run のたびに空へ戻る）
+    android/release_history.json  配布用（release）のビルドの記録（アプリ ID・形式ごとの最後の versionCode・版・SHA-256。段階D）。
+                       Google Play の要件チェックの「versionCode の単調増加」の材料（docs/android.md §24.8）。
+                       失っても「記録なし」と知らせるだけ（本当の正は Play Console の最後の versionCode）
   save/                セーブデータ（ランタイムが生成）
   logs/                ゲーム実行ログ
   build/               パッケージ化の出力（build/windows など）
@@ -82,6 +86,29 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   `ExtraData` に保ち、保存で失わない。型の違う値は未設定として読む（`ProjectSettingsData` 全体の読み込みを失敗させない）。
 - 何も設定していなければ節ごと保存しない。ランタイムは起動時に 1 回読み、`[SEED QUALITY] preset=… …` を起動ログへ出す。
 - 往復・空の節・型違い・プリセット一覧の既定は `editor/tests/ProjectSystemTests` で固定。
+
+### project_settings.json の `android` 節（Android アプリ情報。2026-09-25、アイコンは 2026-09-26・段階D）
+
+```jsonc
+"android": {
+  "application_id": "com.studio.mygame",
+  "app_name": "私のゲーム",
+  "version_code": 3,
+  "version_name": "1.0.3",
+  "icon": "icons/app_icon.png",
+  "icon_background": "#1B2A3A"
+}
+```
+
+| キー | 意味 |
+|---|---|
+| `application_id` / `app_name` / `version_code` / `version_name` | アプリの識別情報（既定値と検査は docs/android.md §18。型は `editor/src/ProjectSettings/AndroidAppSettings.cs`） |
+| `icon` | ランチャーのアイコンの元の PNG（アセットルートからの相対パス・`assets://…`・絶対パス。512x512 以上の正方形を推奨）。空ならシステムの既定のアイコン。ビルドで各密度の mipmap とアダプティブアイコンを生成する（docs/android.md §24.7） |
+| `icon_background` | アダプティブアイコンの背景色（`#RRGGBB` / `#AARRGGBB`。空なら白） |
+
+- どれも省略でき、何も設定していなければ節ごと保存しない。型の違う値は未設定として読み、知らないキーは保存で失わない。
+- エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」。保存のときにビルドと同じ検査（`AndroidAppIdentityResolver`・
+  `LauncherIconSettings`）を行い、誤りがあれば保存しない。往復は `editor/tests/ProjectSystemTests` で固定。
 
 ---
 

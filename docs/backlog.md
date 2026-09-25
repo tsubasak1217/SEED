@@ -1756,6 +1756,7 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `files/dotnet/` から実行可能として読み込まれ、SELinux は許可しつつ記録する（`avc: granted { execute } … app_data_file`。ファイルごとに 1 行）。
   auditallow は「監視中」の印で、将来禁止されると hostfxr ＋ ファイルの dotnet-root の方式は使えない。そのときは .NET for Android と同じく
   アセンブリをメモリから渡す自前のホスト（`coreclr_initialize` ＋ 外部アセンブリのプローブ）か NativeAOT（段階D）へ移る。
+  2026-09-26 追記: NativeAOT は評価した（docs/android.md §24.12。配布用だけ AOT にすれば `.so` 1 つで済み、この方式の心配も無くなる。未実装）。
   あわせて、この記録で logcat が埋まる（起動ごとに十数行）。
 - [ ] **TLS（SslStream・HttpClient の https）と X509 を Android で確かめていない** — 2026-09-25（段階B）。暗号ライブラリの JNI の初期化
   （`DotnetJniLibraries.java` の `System.loadLibrary` ＋ パックの .jar）で SHA256・RandomNumberGenerator は動いた。TLS は `DotnetProxyTrustManager` を
@@ -2041,6 +2042,46 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   未確認（cmd.exe・Gradle のデーモンが同じコンソールの Ctrl+C を受けたときの振る舞い）。
 - [ ] **ps1 ラッパー・SeedAndroid の `dotnet run` のたびにツールのビルドの確認が走る（2〜4 秒）** — 2026-09-25（段階C-1・低優先）。
   ビルド済みの `editor/tools/SeedAndroid/bin/Debug/net10.0/SeedAndroid.exe` を直接呼べば省ける（中核を変えたら作り直しが要る）。
+
+### 配布（段階D・2026-09-26。正典: docs/android.md §24）
+
+- [x] **署名付きの release APK / AAB・アイコン・Google Play の要件・16 KB ページの最終確認** — 2026-09-25 記載（段階D のロードマップ）/ 2026-09-26 対応。
+  配布用（release）のビルド（アップロード鍵で署名・debuggable でない・INTERNET なし・Rust は --release。鍵が無ければビルドしない）、`keystore create`、
+  アイコンの生成、ビルドの前と後の要件チェック（`check`）、targetSdk 36（Google Play は 2026-08-31 以降 36 以上）。配布物の .so の LOAD の 16 KB 整列を
+  毎回確かめる。確認結果は docs/android.md §24.11。
+- [ ] **配布用（release）を実機で動かしていない** — 2026-09-26（段階D）。確認の 20 分間、実機（Pixel 6a）が利用中で前面がランチャーにならなかった。
+  AAB → bundletool の `build-apks`（済み）→ `install-apks` → 起動（`com.seedengine.release_probe`）→ logcat の `[SEED HEARTBEAT]` の fps と
+  CLR の起動・スクリプトの読み込みの所要時間を開発用（debug の .so）と比べる → 戻るキー（`input keyevent KEYCODE_BACK`。targetSdk 36 でも
+  アプリが前面のまま＝KEYCODE_BACK がネイティブへ届く）→ アンインストール、を行う。SeedAndroid の `install --variant release` の経路も同じ機会に。
+  targetSdk 36 にした開発用の APK（戻るキー・回転・安全領域・音声フォーカス）も実機で一通り確かめ直す。
+- [ ] **NativeAOT で配布用のスクリプトを動かす（評価済み・未実装）** — 2026-09-26（段階D の評価。docs/android.md §24.12）。ILC で `linux-bionic-arm64` の
+  .so へ変換できることと、Android の入口だけを根にすれば 2.5 MB（今の同梱 .NET は APK の約 31 MB）になることを確かめた。必要な変更: ユーザースクリプトを
+  同じ .so へ組み込み登録する入口（`AssemblyLoadContext.LoadFromStream` は使えない）・Roslyn の分離・公開シンボルと Rust の `dlopen` の経路・
+  リフレクション / `MakeGenericType` の注記と修正・暗号（OpenSSL）の方針。見積もり 2〜3 週間。開発用は CoreCLR のまま。
+- [ ] **Google Play Console へ実際に出していない** — 2026-09-26。内部テストへの AAB のアップロード・Play App Signing の登録・事前審査の警告
+  （ネイティブのデバッグシンボル等）は未確認（アカウントが要る）。docs/android.md §24.9 の手順で最初の 1 回を確かめる。
+- [ ] **予測型の「戻る」の無効化は一時的な回避** — 2026-09-26。targetSdk 36 で KEYCODE_BACK が届かなくなるのを `android:enableOnBackInvokedCallback="false"`
+  で止めている（公式にも一時的な回避とある）。将来の Android で効かなくなる前に、`OnBackInvokedCallback`（`MainActivity`）で戻るを受けてネイティブの
+  Escape へ渡す形へ移す（予測型の戻るのアニメーションにも対応できる）。
+- [ ] **Gradle のデーモンが配布用のビルドの後も署名のパスワードを環境に持つ（低優先）** — 2026-09-26。デーモンはビルドのたびにクライアントの環境変数に
+  合わせるので、次のビルドまで `ORG_GRADLE_PROJECT_seed.signing.*` が残る（同じ Windows ユーザーのプロセスからは読める。DPAPI と同じ前提）。
+  配布用だけ `--no-daemon` にするか、ビルドの後に一時的なデーモンを止める案（起動が 10〜20 秒遅くなる）。
+- [ ] **ネイティブのデバッグシンボルを AAB に入れていない** — 2026-09-26。Play Console のクラッシュ（ANR・ネイティブの落ち）のスタックに関数名が出ない。
+  release に `ndk { debugSymbolLevel = "SYMBOL_TABLE" }` を足すと AAB の BUNDLE-METADATA に入る（AAB は大きくなるが配られる APK は変わらない）。
+- [ ] **アセットの中のアイコンの PNG が pak にも入る（低優先）** — 2026-09-26。`project_settings.json` の `android.icon` が参照走査で拾われ、
+  使わない PNG（数十 KB）が pak に入る。収録の規則で `android.icon` を起点から外すか、アセットの外に置く案内だけにするか。
+- [ ] **AAB に x86_64 も入れると BCL が全端末に 2 ABI 分配られる** — 2026-09-26。同梱 .NET の BCL は assets なので ABI で分けられない（要件チェックが注意を出す）。
+  配布は arm64-v8a だけにする決まりで回避。分けるなら BCL を ABI ごとの asset pack にするか NativeAOT。
+- [ ] **`useLegacyPackaging`（.so を圧縮）でインストール後の大きさが増える** — 2026-09-26。Google Play でも使える（docs/android.md §24.6）が、非圧縮の .so を
+  APK から直接読む既定より端末の容量を使う。同梱 .NET が dotnet-root の実ファイルを前提にしているため。NativeAOT にすれば .so は 1 つで済む。
+- [ ] **アイコンのモノクロ層（テーマアイコン）と前景の余白の設定が無い（低優先）** — 2026-09-26。前景は安全域 66dp に収めるだけ。ロゴが小さく見えるなら
+  前景の倍率の設定（`android.icon_foreground_scale` 等）やモノクロ用の PNG の設定を足す。
+- [ ] **bundletool を SeedAndroid に組み込んでいない（低優先）** — 2026-09-26。AAB を端末で試すのは手作業（docs/android.md §24.10）。`install --format aab` で
+  `build-apks --connected-device` → `install-apks` を行う案（jar の取得場所・Java の場所・署名のパスワードの渡し方を決める）。`build_and_run.ps1` にも配布用の引数は無い。
+- [ ] **パッケージ化ウィンドウの配布用の欄を画面で確かめていない** — 2026-09-26。署名（参照・保存・消す・新しいキーストアを作る）・要件の一覧（アイコンと色）・
+  ビルドの種類で欄が出入りすること。エージェントはエディタを起動しないため、利用者が目で確かめる（判断は単体テスト `AndroidRunUiTests`）。
+- [ ] **versionCode の記録は PC ごと（`cache/android/release_history.json`）** — 2026-09-26（低優先）。別の PC・別の人のビルドは知らない。
+  本当の正は Play Console の最後の versionCode（Play Developer API で読めるが、認証が要る）。
 
 ## .NET 10 への統一（2026-09-24 段階B-0 実装時の残件）
 

@@ -7,6 +7,9 @@
 //    app_name       … ランチャーに出る名前（マニフェストの android:label）
 //    version_code   … 整数の版（大きいほど新しい。ストアの更新判定に使われる）
 //    version_name   … 人が読む版の文字列
+//    icon           … ランチャーのアイコンの元の PNG（アセットルートからの相対パスか絶対パス。段階D。
+//                      ビルド時に各密度の mipmap とアダプティブアイコンを生成する。editor/src/Android/Icons/。無ければシステムの既定のアイコン）
+//    icon_background … アダプティブアイコンの背景色（#RRGGBB / #AARRGGBB。省略時は白。段階D）
 //  どれも省略できる。省略したものはビルド時に既定値になる（既定値の作り方と値の検査は
 //  editor/src/Android/Project/AndroidAppIdentityResolver.cs。ID は .seedproj の名前から
 //  com.seedengine.<英数字化した名前>、名前はプロジェクトの表示名、版は 1 / "1.0"）。
@@ -51,6 +54,12 @@ public sealed class AndroidAppSettings
     /// <summary>版の文字列のキー。</summary>
     public const string VersionNameKey = "version_name";
 
+    /// <summary>ランチャーのアイコンの元の PNG のキー（段階D）。</summary>
+    public const string IconKey = "icon";
+
+    /// <summary>アダプティブアイコンの背景色のキー（段階D）。</summary>
+    public const string IconBackgroundKey = "icon_background";
+
     /// <summary>アプリ ID（例 com.example.mygame）。null / 空なら既定値。</summary>
     public string? ApplicationId { get; set; }
 
@@ -63,6 +72,14 @@ public sealed class AndroidAppSettings
     /// <summary>版の文字列（例 1.0.3）。null / 空なら既定値。</summary>
     public string? VersionName { get; set; }
 
+    /// <summary>
+    /// ランチャーのアイコンの元の PNG（アセットルートからの相対パスか絶対パス。例 icons/app_icon.png）。null / 空ならシステムの既定のアイコン（段階D）。
+    /// </summary>
+    public string? Icon { get; set; }
+
+    /// <summary>アダプティブアイコンの背景色（#RRGGBB / #AARRGGBB）。null / 空なら白（段階D）。</summary>
+    public string? IconBackground { get; set; }
+
     /// <summary>このクラスが知らないキー（新しいエディタが足したもの）。保存で失わないために持つ。</summary>
     public Dictionary<string, JsonElement> ExtraData { get; set; } = new();
 
@@ -73,6 +90,8 @@ public sealed class AndroidAppSettings
         && string.IsNullOrWhiteSpace(AppName)
         && VersionCode is null
         && string.IsNullOrWhiteSpace(VersionName)
+        && string.IsNullOrWhiteSpace(Icon)
+        && string.IsNullOrWhiteSpace(IconBackground)
         && ExtraData.Count == 0;
 
     /// <summary>
@@ -116,6 +135,12 @@ internal sealed class AndroidAppSettingsJsonConverter : JsonConverter<AndroidApp
                 case AndroidAppSettings.VersionNameKey:
                     settings.VersionName = ReadText(property.Value);
                     break;
+                case AndroidAppSettings.IconKey:
+                    settings.Icon = ReadText(property.Value);
+                    break;
+                case AndroidAppSettings.IconBackgroundKey:
+                    settings.IconBackground = ReadText(property.Value);
+                    break;
                 default:
                     // 知らないキーはそのまま保つ（Clone で JsonDocument の寿命から切り離す）
                     settings.ExtraData[property.Name] = property.Value.Clone();
@@ -136,6 +161,8 @@ internal sealed class AndroidAppSettingsJsonConverter : JsonConverter<AndroidApp
         WriteTextIfSet(writer, AndroidAppSettings.AppNameKey, value.AppName);
         if (value.VersionCode is int versionCode) writer.WriteNumber(AndroidAppSettings.VersionCodeKey, versionCode);
         WriteTextIfSet(writer, AndroidAppSettings.VersionNameKey, value.VersionName);
+        WriteTextIfSet(writer, AndroidAppSettings.IconKey, value.Icon);
+        WriteTextIfSet(writer, AndroidAppSettings.IconBackgroundKey, value.IconBackground);
         foreach (var (key, element) in value.ExtraData)
         {
             writer.WritePropertyName(key);

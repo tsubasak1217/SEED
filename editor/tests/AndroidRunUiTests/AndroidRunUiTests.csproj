@@ -111,6 +111,14 @@
       <Link>Linked\Packaging\PackageLayout.cs</Link>
     </Compile>
 
+    <!-- 配布用の署名のパスワードの保護保存（段階D。包み方は偽物を渡す。DPAPI の実装は WPF 側のエディタだけ） -->
+    <Compile Include="..\..\src\Settings\AndroidSigningSecretStore.cs">
+      <Link>Linked\Settings\AndroidSigningSecretStore.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Accounts\Storage\ISecretProtector.cs">
+      <Link>Linked\Accounts\Storage\ISecretProtector.cs</Link>
+    </Compile>
+
     <!-- テストランナーは SpriteRigTests のもの、一時フォルダは AndroidPipelineTests のものを共有する -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

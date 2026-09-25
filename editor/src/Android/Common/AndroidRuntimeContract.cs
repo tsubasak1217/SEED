@@ -34,6 +34,13 @@ public static class AndroidRuntimeContract
     /// <summary>cargo ndk がリンクする Android API レベル（build.gradle.kts の seedMinSdk と同じ）。</summary>
     public const int MinApiLevel = 29;
 
+    /// <summary>
+    /// APK の targetSdk（build.gradle.kts の seedTargetSdk と同じ。段階D で Google Play の要件に合わせて 36 へ上げた）。
+    /// ビルド前の要件チェック（Release/AndroidRequirementChecks）の材料。ビルド後はできた APK / AAB から読み直して確かめる
+    /// （Release/AndroidArtifactInspector。2 か所の値がずれていれば、そちらが不合格を出す）。
+    /// </summary>
+    public const int TargetApiLevel = 36;
+
     /// <summary>エンジンの共有ライブラリのファイル名（runtime/android/native の [lib] name と MainActivity の loadLibrary）。</summary>
     public const string NativeLibraryFileName = "libSEED.so";
 

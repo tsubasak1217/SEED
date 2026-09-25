@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using SEEDEditor.Headless;
+using SEEDEditor.Packaging;
 using SEEDEditor.Project;
 using SEEDEditor.ProjectSettings;
 using SEEDEditor.Startup;
@@ -110,6 +111,8 @@ public static class Program
         harness.Add("android 節は保存 → 読み込みで往復し、知らないキーも保つ",   AndroidSectionRoundTrip);
         harness.Add("android 節は空なら保存しない（既存のファイルに空の節を増やさない）", AndroidSectionOmittedWhenEmpty);
         harness.Add("android 節の型の違う値でも他の設定は読める",               AndroidSectionWrongTypesDoNotBreakLoading);
+        harness.Add("android 節のアイコン（icon / icon_background）の往復と、アイコンだけでも節を書く（段階D）", AndroidSectionIconRoundTrip);
+        harness.Add("packaging_settings.json の android の配布用（variant / format / signing）の往復・パスワードの欄は無い（段階D）", PackagingAndroidReleaseRoundTrip);
 
         // ── プロジェクトフォルダ → アセットルート（SeedPak / SeedAndroid 共通の規則）──
         harness.Add("プロジェクトフォルダの解決: .seedproj → assets/ → フォルダ自体", ProjectFolderResolverRules);
@@ -302,6 +305,47 @@ public static class Program
         Check.Equal("Keep", loaded.GameName, "他の設定は読める");
         Check.True(loaded.Android?.VersionCode is null, "読めない版は未設定");
         Check.Equal("12", loaded.Android?.AppName, "数値の名前は文字列として");
+    }
+
+    /// <summary>アイコンのキー（段階D）。</summary>
+    private static void AndroidSectionIconRoundTrip()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        var data = new ProjectSettingsData { GameName = "G", Android = new AndroidAppSettings { Icon = " icons/app.png ", IconBackground = "#102030" } };
+        Check.True(!data.Android.IsEmpty, "アイコンだけでも空ではない");
+        data.SaveTo(path);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(path)))
+        {
+            var android = doc.RootElement.GetProperty(AndroidAppSettings.SectionKey);
+            Check.Equal("icons/app.png", android.GetProperty(AndroidAppSettings.IconKey).GetString(), "icon（前後の空白は落とす）");
+            Check.Equal("#102030", android.GetProperty(AndroidAppSettings.IconBackgroundKey).GetString(), "icon_background");
+        }
+        var loaded = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("icons/app.png", loaded.Android?.Icon, "icon を読み戻す");
+        Check.Equal("#102030", loaded.Android?.IconBackground, "icon_background を読み戻す");
+        Check.Equal("G", loaded.GameName, "他の設定");
+    }
+
+    /// <summary>packaging_settings.json の配布用（段階D）。</summary>
+    private static void PackagingAndroidReleaseRoundTrip()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("packaging_settings.json");
+        var data = new PackagingData();
+        Check.True(data.Android.Variant == AndroidBuildVariant.Debug && data.Android.Format == AndroidPackageFormat.Apk, "既定は開発用の APK");
+        data.Android.Variant = AndroidBuildVariant.Release;
+        data.Android.Format = AndroidPackageFormat.Aab;
+        data.Android.Signing.KeystorePath = @"D:\keys\upload.jks";
+        data.Android.Signing.KeyAlias = "upload";
+        data.SaveTo(path);
+        var text = File.ReadAllText(path);
+        Check.True(!text.Contains("password", StringComparison.OrdinalIgnoreCase), "パスワードの欄は無い");
+        var loaded = PackagingData.LoadFrom(path);
+        Check.True(loaded.Android.Variant == AndroidBuildVariant.Release && loaded.Android.Format == AndroidPackageFormat.Aab, "種類と形式");
+        Check.Equal(@"D:\keys\upload.jks", loaded.Android.Signing.KeystorePath, "キーストア");
+        Check.Equal("upload", loaded.Android.Signing.KeyAlias, "別名");
+        Check.Equal(data.Assets.IncludeAllFiles, loaded.Assets.IncludeAllFiles, "他の設定は変わらない");
     }
 
     /// <summary>プロジェクトフォルダの解決の規則（SeedPak の --project・SeedAndroid の --project と同じ）。</summary>

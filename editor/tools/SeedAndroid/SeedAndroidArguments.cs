@@ -8,6 +8,11 @@
 //  【重ね方】
 //  設定 JSON の値を土台にし、コマンドラインで指定したものだけで上書きする（文字列は指定があれば置き換え、
 //  スイッチは指定があれば true にする）。目的（goal）はサブコマンドで決まる。
+//
+//  【配布用（段階D。docs/android.md §24）】
+//  --variant release（配布用）/ debug（開発用・既定）。--variant を書かずに --format aab か --keystore を指定したら配布用とみなす
+//  （AAB と署名の鍵は配布用にしか使わないため。例 build --release --format aab --keystore upload.jks --key-alias upload）。
+//  --release は従来どおり「Rust を --release で作る」の意味（配布用は常に --release）。
 // ============================================================
 
 using System;
@@ -17,6 +22,7 @@ using SEEDEditor.Android;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Pipeline;
+using SEEDEditor.Packaging;
 
 namespace SEEDEditor.Tools.SeedAndroid;
 
@@ -55,6 +61,19 @@ public enum SeedAndroidCommand
 
     /// <summary>動いているアプリへ差し替えを頼む（IPC の RELOAD_SCENE / RELOAD_SCRIPTS / RELOAD_ASSET。docs/android.md §23）。</summary>
     Reload,
+
+    /// <summary>配布用の鍵（キーストア）を扱う（keystore create。段階D）。</summary>
+    Keystore,
+
+    /// <summary>配布物（とプロジェクトの設定）を Google Play の要件で確かめる（段階D）。</summary>
+    Check,
+}
+
+/// <summary>keystore の操作（段階D）。</summary>
+public enum SeedAndroidKeystoreAction
+{
+    /// <summary>新しいキーストアを作る（keytool -genkeypair。既にあるファイルは上書きしない）。</summary>
+    Create,
 }
 
 /// <summary>reload の対象（docs/android.md §23）。</summary>
@@ -126,6 +145,27 @@ public sealed record SeedAndroidCommandLine
     /// <summary>reload asset のアセット（アセットルートからの相対パス）。</summary>
     public string? ReloadPath { get; init; }
 
+    /// <summary>--variant の値（null なら --format aab・--keystore から決める。段階D）。</summary>
+    public AndroidBuildVariant? Variant { get; init; }
+
+    /// <summary>--format の値（段階D）。</summary>
+    public AndroidPackageFormat? Format { get; init; }
+
+    /// <summary>--keystore の値（配布用の署名のキーストア。段階D）。</summary>
+    public string? KeystorePath { get; init; }
+
+    /// <summary>--key-alias の値（段階D）。</summary>
+    public string? KeyAlias { get; init; }
+
+    /// <summary>--cert-name の値（keystore create の証明書の名前 CN。段階D）。</summary>
+    public string? CertificateName { get; init; }
+
+    /// <summary>--artifact の値（check で確かめる APK / AAB。段階D）。</summary>
+    public string? ArtifactPath { get; init; }
+
+    /// <summary>keystore の操作（keystore のときだけ。段階D）。</summary>
+    public SeedAndroidKeystoreAction? KeystoreAction { get; init; }
+
     /// <summary>--release。</summary>
     public bool Release { get; init; }
 
@@ -179,6 +219,28 @@ public static class SeedAndroidArguments
         ["resume"]     = SeedAndroidCommand.Resume,
         ["screenshot"] = SeedAndroidCommand.Screenshot,
         ["reload"]     = SeedAndroidCommand.Reload,
+        ["keystore"]   = SeedAndroidCommand.Keystore,
+        ["check"]      = SeedAndroidCommand.Check,
+    };
+
+    /// <summary>keystore の操作の名前 → 操作（段階D）。</summary>
+    private static readonly Dictionary<string, SeedAndroidKeystoreAction> KeystoreActions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["create"] = SeedAndroidKeystoreAction.Create,
+    };
+
+    /// <summary>--variant の値 → ビルドの種類（段階D）。</summary>
+    private static readonly Dictionary<string, AndroidBuildVariant> Variants = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["debug"]   = AndroidBuildVariant.Debug,
+        ["release"] = AndroidBuildVariant.Release,
+    };
+
+    /// <summary>--format の値 → 形式（段階D）。</summary>
+    private static readonly Dictionary<string, AndroidPackageFormat> Formats = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["apk"] = AndroidPackageFormat.Apk,
+        ["aab"] = AndroidPackageFormat.Aab,
     };
 
     /// <summary>reload の対象の名前 → 対象。</summary>
@@ -239,6 +301,24 @@ public static class SeedAndroidArguments
     /// <summary>push で端末の上書き層へ差分だけを送るフォルダ（§23）。</summary>
     public const string OverlayAssetsOption = "--assets";
 
+    /// <summary>ビルドの種類（debug / release。段階D）。</summary>
+    public const string VariantOption = "--variant";
+
+    /// <summary>形式（apk / aab。段階D）。</summary>
+    public const string FormatOption = "--format";
+
+    /// <summary>配布用の署名のキーストア（段階D）。</summary>
+    public const string KeystoreOption = "--keystore";
+
+    /// <summary>配布用の署名のキーの別名（段階D）。</summary>
+    public const string KeyAliasOption = "--key-alias";
+
+    /// <summary>keystore create の証明書の名前（CN。段階D）。</summary>
+    public const string CertificateNameOption = "--cert-name";
+
+    /// <summary>check で確かめる配布物（段階D）。</summary>
+    public const string ArtifactOption = "--artifact";
+
     // ── オプションの名前（値を取らないもの）──────────────────────
 
     /// <summary>--release。</summary>
@@ -298,6 +378,19 @@ public static class SeedAndroidArguments
                       asset   … そのアセットのキャッシュを捨てて取り込み直す（RELOAD_ASSET。先に push --assets で送る）
                     （pause / resume / screenshot / reload は run / push で起動したアプリだけ。起動の工程がプロジェクトの
                      cache/android/run_state.json に記録した接続トークンでつなぐ。エディタの実行中はエディタが使うので使えない）
+          keystore create --keystore <パス> [--key-alias <別名>] [--cert-name <名前>] [--project <フォルダ>]
+                    配布用の鍵（アップロード鍵）のキーストアを keytool で新しく作る（PKCS12・RSA 2048・10000 日。
+                    既にあるファイルは上書きしない。アセットフォルダの中には作らない。パスワードは環境変数
+                    SEED_ANDROID_KEYSTORE_PASSWORD か対話の入力。docs/android.md §24）
+          check     配布物を Google Play の要件で確かめる（--artifact <APK / AAB> か、無ければ --project の前回の配布用ビルドの
+                    出力。ビルドの前に分かること〈targetSdk・versionCode・署名・アイコン等〉も一緒に。不合格があれば終了コード 6）
+
+        配布用（release）のビルド（docs/android.md §24）:
+          build --variant release --format aab --project <フォルダ> [--keystore <パス> --key-alias <別名>]
+                    アップロード鍵で署名した AAB（Google Play へ出す形）を作る。--format aab か --keystore を書けば
+                    --variant release は省ける。鍵の場所は packaging_settings.json の android.signing でもよい。
+                    パスワードは環境変数 SEED_ANDROID_KEYSTORE_PASSWORD（キーが違えば SEED_ANDROID_KEY_PASSWORD）、
+                    無ければ対話で聞く（コマンドラインには書かない）。できた配布物は Google Play の要件で確かめる
 
         オプション:
           --project <フォルダ>      プロジェクト（.seedproj か assets/ を持つフォルダ、またはアセットルートそのもの）。
@@ -314,7 +407,14 @@ public static class SeedAndroidArguments
                                     切り替えた最初の run は pak・APK を作り直す〉。プロジェクトに無いシーンは
                                     端末が警告を出して開始シーンで起動する）
           --abi <ABI[,ABI]>         arm64-v8a / x86_64（省略時は端末から判定。端末が無ければ両方）
-          --release                 Rust 側を --release でビルドする（APK はデバッグ署名のまま）
+          --release                 Rust 側を --release でビルドする（開発用の APK はデバッグ署名のまま。配布用は常に --release）
+          --variant <debug|release> ビルドの種類（既定 debug＝開発用。release＝配布用: debuggable でない・INTERNET なし・
+                                    アップロード鍵で署名。release は push・--push-scripts・--assets-dir と一緒に使えない）
+          --format <apk|aab>        形式（既定 apk。aab は配布用の build だけ。端末へは直接入れられない）
+          --keystore <パス>         配布用の署名のキーストア（省略時は packaging_settings.json の android.signing.keystore_path）
+          --key-alias <別名>        配布用の署名のキーの別名（省略時は android.signing.key_alias。keystore create の既定は upload）
+          --cert-name <名前>        keystore create の証明書の名前（CN。省略時は SEED Upload Key）
+          --artifact <パス>         check で確かめる APK / AAB
           --config <JSON>           指定をまとめた設定 JSON（キーは project / assets_dir / serial / emulator_fallback / avd /
                                     scene / abis / release / skip_rust_build / skip_gradle / no_install / no_launch / no_logcat /
                                     push_scripts / rebuild / logcat_seconds / log_file / ipc_port。project・assets_dir・log_file の相対パスは
@@ -340,7 +440,8 @@ public static class SeedAndroidArguments
 
         入力が前回から変わっていない工程（libSEED.so・pak・同梱 .NET・APK・インストール）は自動で飛ばす。
 
-        終了コード: 0 成功 / 1 指定の誤り / 2 道具が無い / 3 端末が無い・選べない / 4 ビルドの失敗 / 5 端末の操作の失敗 / 130 中断
+        終了コード: 0 成功 / 1 指定の誤り / 2 道具が無い / 3 端末が無い・選べない / 4 ビルドの失敗 / 5 端末の操作の失敗 /
+                    6 Google Play の要件に不合格がある（配布用の build・check。配布物はできている）/ 130 中断
         """;
 
     /// <summary>
@@ -379,6 +480,18 @@ public static class SeedAndroidArguments
                 case JsonOption:        line = line with { Json = true }; continue;
             }
 
+            // keystore の操作（create。オプションでない最初の語。段階D）
+            if (command == SeedAndroidCommand.Keystore && !arg.StartsWith(OptionPrefix, StringComparison.Ordinal))
+            {
+                if (line.KeystoreAction is not null) return Fail($"keystore の余分な引数です: {arg}");
+                if (!KeystoreActions.TryGetValue(arg, out var action))
+                {
+                    return Fail($"keystore の操作は {string.Join(" / ", KeystoreActions.Keys)} です: {arg}");
+                }
+                line = line with { KeystoreAction = action };
+                continue;
+            }
+
             // reload の対象（scene / scripts / asset）とアセットのパス（オプションでない語。§23）
             if (command == SeedAndroidCommand.Reload && !arg.StartsWith(OptionPrefix, StringComparison.Ordinal))
             {
@@ -402,7 +515,8 @@ public static class SeedAndroidArguments
             // 以降のオプションはすべて値を 1 つ取る
             if (arg is not (ConfigOption or ProjectOption or AssetsDirOption or SerialOption or AbiOption or LogcatSecondsOption
                 or LogFileOption or ApplicationIdOption or SinceOption or AvdOption or SceneOption or IpcPortOption or OutOption
-                or OverlayAssetsOption))
+                or OverlayAssetsOption or VariantOption or FormatOption or KeystoreOption or KeyAliasOption or CertificateNameOption
+                or ArtifactOption))
             {
                 return Fail($"不明な引数です: {arg}");
             }
@@ -424,6 +538,24 @@ public static class SeedAndroidArguments
                 case SceneOption:         line = line with { ScenePath = value }; break;
                 case OutOption:           line = line with { OutputPath = value }; break;
                 case OverlayAssetsOption: line = line with { OverlayAssetsDir = value }; break;
+                case KeystoreOption:        line = line with { KeystorePath = value }; break;
+                case KeyAliasOption:        line = line with { KeyAlias = value }; break;
+                case CertificateNameOption: line = line with { CertificateName = value }; break;
+                case ArtifactOption:        line = line with { ArtifactPath = value }; break;
+                case VariantOption:
+                    if (!Variants.TryGetValue(value, out var variant))
+                    {
+                        return Fail($"{VariantOption} は {string.Join(" / ", Variants.Keys)} のどれかです: {value}");
+                    }
+                    line = line with { Variant = variant };
+                    break;
+                case FormatOption:
+                    if (!Formats.TryGetValue(value, out var format))
+                    {
+                        return Fail($"{FormatOption} は {string.Join(" / ", Formats.Keys)} のどれかです: {value}");
+                    }
+                    line = line with { Format = format };
+                    break;
                 case IpcPortOption:
                     if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var ipcPort)
                         || AndroidIpcSettings.Validate(ipcPort) is { } ipcPortError)
@@ -489,7 +621,69 @@ public static class SeedAndroidArguments
                 return Fail($"push {OverlayAssetsOption} では {SerialOption} {AndroidDeviceTarget.AutoSerial} を使えません（動いている端末へ送るだけのため）");
             }
         }
+        // ── 配布用のビルド・鍵・要件チェック（段階D）──
+        if (ValidateDistribution(line) is { } distributionError) return Fail(distributionError);
         return new SeedAndroidParseResult(line, ShowHelp: false, Error: null);
+    }
+
+    /// <summary>
+    /// 配布用のビルド・keystore・check の指定の検査（段階D。問題が無ければ null）。
+    /// </summary>
+    /// <param name="line">解釈した指定。</param>
+    /// <returns>問題の説明。</returns>
+    private static string? ValidateDistribution(SeedAndroidCommandLine line)
+    {
+        var command = line.Command;
+        if (command == SeedAndroidCommand.Keystore)
+        {
+            if (line.KeystoreAction is null) return $"keystore には操作（{string.Join(" / ", KeystoreActions.Keys)}）を指定してください";
+            if (string.IsNullOrWhiteSpace(line.KeystorePath)) return $"keystore create には {KeystoreOption} <作るファイル> を指定してください";
+        }
+        else if (line.CertificateName is not null)
+        {
+            return $"{CertificateNameOption} は keystore create で使います";
+        }
+        if (line.ArtifactPath is not null && command != SeedAndroidCommand.Check) return $"{ArtifactOption} は check で使います";
+
+        // 配布用の指定（--variant / --format / --keystore / --key-alias）は build / install / run / check で使う
+        var distributionFlags = line.Variant is not null || line.Format is not null
+            || (command != SeedAndroidCommand.Keystore && (line.KeystorePath is not null || line.KeyAlias is not null));
+        if (distributionFlags && command is not (SeedAndroidCommand.Build or SeedAndroidCommand.Install or SeedAndroidCommand.Run or SeedAndroidCommand.Check))
+        {
+            return $"{VariantOption}・{FormatOption}・{KeystoreOption}・{KeyAliasOption} は build / install / run / check で使います";
+        }
+        var variant = VariantFor(line);
+        if (variant == AndroidBuildVariant.Debug && (line.KeystorePath is not null || line.KeyAlias is not null) && command != SeedAndroidCommand.Keystore)
+        {
+            return $"{KeystoreOption}・{KeyAliasOption} は配布用（{VariantOption} release）で使います";
+        }
+        if (line.Format == AndroidPackageFormat.Aab)
+        {
+            if (variant != AndroidBuildVariant.Release) return $"{FormatOption} aab は配布用（{VariantOption} release）だけで使えます";
+            if (command is SeedAndroidCommand.Install or SeedAndroidCommand.Run)
+            {
+                return "AAB は端末へ直接入れられません（build で作り、Google Play へ出すか bundletool で APKs にしてから入れます。docs/android.md §24）";
+            }
+        }
+        if (variant == AndroidBuildVariant.Release && (line.PushScripts || line.AssetsDir is not null))
+        {
+            return $"配布用（release）の APK は run-as が使えないため {PushScriptsOption}・{AssetsDirOption} と一緒に使えません";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// ビルドの種類（--variant。書かなければ --format aab・--keystore・--key-alias から配布用とみなし、それも無ければ null）。
+    /// check は配布物を確かめるので既定を配布用にする。
+    /// </summary>
+    /// <param name="line">解釈した指定。</param>
+    /// <returns>ビルドの種類（決まらなければ null＝設定 JSON か既定の開発用）。</returns>
+    public static AndroidBuildVariant? VariantFor(SeedAndroidCommandLine line)
+    {
+        if (line.Variant is { } explicitVariant) return explicitVariant;
+        if (line.Format == AndroidPackageFormat.Aab) return AndroidBuildVariant.Release;
+        if (line.Command != SeedAndroidCommand.Keystore && (line.KeystorePath is not null || line.KeyAlias is not null)) return AndroidBuildVariant.Release;
+        return line.Command == SeedAndroidCommand.Check ? AndroidBuildVariant.Release : null;
     }
 
     /// <summary>既にある端末（動いているアプリ）を操作するだけのサブコマンドか（ビルド・インストールをしない）。</summary>
@@ -530,6 +724,11 @@ public static class SeedAndroidArguments
             LogcatSeconds   = line.LogcatSeconds ?? baseline.LogcatSeconds,
             LogFile         = line.LogFile ?? baseline.LogFile,
             IpcPort         = line.IpcPort ?? baseline.IpcPort,
+            // 配布用（段階D）: --variant（無ければ --format aab・--keystore から）→ 設定 JSON の variant → 開発用
+            Variant         = VariantFor(line) ?? baseline.Variant,
+            Format          = line.Format ?? baseline.Format,
+            KeystorePath    = line.KeystorePath ?? baseline.KeystorePath,
+            KeyAlias        = line.KeyAlias ?? baseline.KeyAlias,
         };
     }
 
@@ -541,6 +740,8 @@ public static class SeedAndroidArguments
         SeedAndroidCommand.Build   => AndroidRunGoal.Build,
         SeedAndroidCommand.Install => AndroidRunGoal.Install,
         SeedAndroidCommand.Push    => AndroidRunGoal.Push,
+        // check は作らずに確かめる（中核の準備の材料は build と同じ）
+        SeedAndroidCommand.Check   => AndroidRunGoal.Build,
         _                          => AndroidRunGoal.Run,
     };
 

@@ -57,7 +57,8 @@ public sealed class NativeBuildStep : IAndroidPipelineStep
         {
             "-P", AndroidRuntimeContract.MinApiLevel.ToString(CultureInfo.InvariantCulture), "-o", context.Engine.JniLibsDir, "build",
         });
-        if (context.Request.Release) arguments.Add("--release");
+        // --release の指定か、配布用（release）のビルド（段階D。配布物は常に最適化した .so）
+        if (context.Request.OptimizesNative) arguments.Add("--release");
 
         var spec = new ChildProcessSpec
         {

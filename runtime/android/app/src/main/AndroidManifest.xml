@@ -9,6 +9,12 @@
     docs/android.md §11.4・§17）。ランタイムも CLR の起動直前に mallopt で同じ無効化を行う（二重の対策）。
   ・android:label="${seedAppLabel}" … ランチャーに出る名前。プロジェクト設定の android.app_name（無ければプロジェクトの表示名）から
     ビルド時に決まる（app/build.gradle.kts。値が無ければ @string/app_name = SEED Runtime。docs/android.md §18）。
+  ・android:icon="${seedAppIcon}" … ランチャーのアイコン。プロジェクト設定の android.icon があれば SeedAndroid が生成した
+    @mipmap/ic_launcher（各密度の mipmap とアダプティブアイコン）、無ければシステムの既定のアイコン（docs/android.md §24）。
+  ・android:enableOnBackInvokedCallback="false" … targetSdk 36（Android 16）で既定になった予測型の「戻る」を使わない。
+    使うと Android 16 以降の端末で KEYCODE_BACK がアプリへ届かなくなり、戻るキー → Escape（スクリプトの
+    Input.GetKeyDown(KeyCode.Escape)。docs/android.md §14.5）が効かなくなるため（公式の一時的な回避。§24）。
+  ・android:appCategory="game" … ゲームとして分類する。Android 16 の「大画面で向き・サイズ変更の制限を無視する」変更の対象外にもなる。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -21,6 +27,8 @@
         android:allowBackup="false"
         android:allowNativeHeapPointerTagging="false"
         android:appCategory="game"
+        android:enableOnBackInvokedCallback="false"
+        android:icon="${seedAppIcon}"
         android:label="${seedAppLabel}"
         android:theme="@style/Theme.SeedRuntime">
 

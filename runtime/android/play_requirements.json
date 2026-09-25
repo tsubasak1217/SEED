@@ -1,0 +1,29 @@
+{
+  "comment": [
+    "Google Play へ出す配布物（release の APK / AAB）の要件の表（唯一の置き場）。読むのは SeedAndroid・エディタの要件チェック",
+    "（editor/src/Android/Release/PlayRequirements.cs → AndroidRequirementChecks・AndroidArtifactInspector。docs/android.md §24）。",
+    "Google Play の方針は毎年変わる（特に targetSdk は毎年 8 月末に 1 つ上がる）。変わったらこの表と、必要なら",
+    "runtime/android/app/build.gradle.kts の seedTargetSdk（と AndroidRuntimeContract.TargetApiLevel）を直す。",
+    "各値の出どころは sources（2026-09-26 に公式のページで確かめた）。"
+  ],
+  "target_sdk": {
+    "min_api_level": 36,
+    "required_since": "2026-08-31",
+    "extension_until": "2026-11-01",
+    "note": "新規アプリ・更新は Android 16（API 36）以上。延長を申請すれば 2026-11-01 まで。既存アプリが新しい利用者に見え続けるには API 35 以上"
+  },
+  "required_abis": [ "arm64-v8a" ],
+  "only_64bit_abis": true,
+  "page_size_bytes": 16384,
+  "page_size_note": "Android 15 以上を対象とするアプリは 64 bit 端末の 16 KB ページに対応する（対応していない更新は 2027-02-01 から出せない）。.so の LOAD セグメントの整列（NDK r28 の既定）と、非圧縮で入れる .so の zip 内の位置の 16 KB 整列",
+  "reserved_application_id_prefixes": [ "com.example." ],
+  "engine_default_application_ids": [ "com.seedengine.runtime" ],
+  "release_unexpected_permissions": [ "android.permission.INTERNET" ],
+  "debug_certificate_subject_marker": "CN=Android Debug",
+  "sources": {
+    "target_sdk": "https://developer.android.com/google/play/requirements/target-sdk",
+    "page_sizes": "https://developer.android.com/guide/practices/page-sizes",
+    "behavior_changes_16": "https://developer.android.com/about/versions/16/behavior-changes-16",
+    "compressed_native_libraries": "https://developer.android.com/build/releases/past-releases/agp-4-2-0-release-notes"
+  }
+}

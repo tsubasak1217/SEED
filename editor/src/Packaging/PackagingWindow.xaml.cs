@@ -9,7 +9,8 @@
 //  ・Windows   — このマシンから直接ビルド可能
 //  ・macOS     — macOS 上でのビルドが必要（CI / osxcross）
 //  ・Android   — 中核 editor/src/Android/（SeedAndroid・エディタの Android 実行と共通）の Goal = Build で
-//                デバッグ署名の APK を作り、出力フォルダへ写す（段階C-2。Android SDK / NDK / JDK / cargo-ndk / .NET SDK が必要）
+//                デバッグ署名の APK（開発用）か、アップロード鍵で署名した APK / AAB（配布用。段階D。欄は
+//                PackagingWindow.AndroidRelease.cs）を作り、出力フォルダへ写す（Android SDK / NDK / JDK / cargo-ndk / .NET SDK が必要）
 //  ・iOS       — macOS + Xcode でのビルドが必要
 //  ・PS5       — ライセンス契約が必要
 //  ・Switch    — ライセンス契約が必要
@@ -91,7 +92,7 @@ public partial class PackagingWindow : Window
             "Android", "Icon.Platform.Android",
             PlatformAvailability.RequiresSetup,
             "Android SDK・NDK・JDK・Rust（cargo-ndk）・.NET SDK が必要です（場所は環境変数と既定の場所から自動で探します。下の「道具」の欄）。" +
-            "できる APK はデバッグ署名です（配布用の署名・AAB は段階D）。"),
+            "開発用はデバッグ署名の APK、配布用はアップロード鍵で署名した APK / AAB（Google Play へ出す形）を作ります。"),
         new(TargetPlatform.iOS,
             "iOS", "Icon.Platform.iOS",
             PlatformAvailability.RequiresOtherOS,
@@ -483,32 +484,36 @@ public partial class PackagingWindow : Window
 
     /// <summary>Android の出力の説明（名前の決まりは AndroidApkOutput.cs）。</summary>
     private const string AndroidOutputNote =
-        "出力: {出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-debug.apk（ABI が両方なら arm64-v8a+x86_64）";
+        "出力: {出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-{debug|release}.{apk|aab}（ABI が両方なら arm64-v8a+x86_64。" +
+        "配布用の APK と AAB は同じフォルダに並べて置けます）";
 
-    /// <summary>Android の署名の説明（画面に明記する）。</summary>
+    /// <summary>Android の開発用の署名の説明（画面に明記する）。</summary>
     private const string AndroidSigningNote =
-        "できる APK はデバッグ署名です（Android の debug 版と同じく、この PC のデバッグ用の鍵で署名）。" +
-        "端末へ入れて試せますが、ストアへは出せません。配布用の署名・AAB は段階D で対応します。";
+        "開発用の APK はデバッグ署名です（Android の debug 版と同じく、この PC のデバッグ用の鍵で署名）。" +
+        "端末へ入れて試せますが、ストアへは出せません。ストアへ出すなら「ビルドの種類」を配布用にします。";
 
     /// <summary>Android のアプリの識別情報の置き場の説明。</summary>
     private const string AndroidIdentityNote =
         "アプリ ID・ランチャーの名前・版・画面の向きは、プロジェクト設定 → 解像度設定 の\n" +
         "「Android アプリ情報（モバイル）」「画面の向き（モバイル）」で設定します（docs/android.md §15・§18）。";
 
-    /// <summary>Android の APK の作り方の説明。</summary>
+    /// <summary>Android の APK / AAB の作り方の説明。</summary>
     private const string AndroidBuildStepsNote =
-        "1. libSEED.so（cargo ndk）\n" +
+        "1. libSEED.so（cargo ndk。配布用は常に --release）\n" +
         "2. APK に入れる pak とスクリプト（SeedPak。下の「アセット収録」の設定を使う）\n" +
         "3. 同梱 .NET の組み立て\n" +
-        "4. APK の作成（Gradle）\n" +
-        "5. 出力フォルダへ写す\n\n" +
+        "4. アイコンの生成と APK / AAB の作成（Gradle。配布用はアップロード鍵で署名）\n" +
+        "5. （配布用）Google Play の要件の確認\n" +
+        "6. 出力フォルダへ写す\n\n" +
         "変更の無い工程は飛ばします（エディタの Android 実行・SeedAndroid と置き場を共有）。\n" +
-        "Rust の最適化を Release にすると、初回の libSEED.so のビルドに数分かかります。";
+        "Rust を Release で作ると、初回の libSEED.so のビルドに数分〜十数分かかります。";
 
     /// <summary>
-    /// Android の設定欄（段階C-2 で実働化）。
-    /// APK は中核（editor/src/Android/。SeedAndroid・エディタの Android 実行と共通）の Goal = Build で作る。
+    /// Android の設定欄（段階C-2 で実働化・段階D で配布用を追加）。
+    /// APK / AAB は中核（editor/src/Android/。SeedAndroid・エディタの Android 実行と共通）の Goal = Build で作る。
     /// 道具の場所は自動で探すので、以前の「Android NDK パス」の欄は廃止した（マシン固有のパスをプロジェクトに書かない）。
+    /// 選んだビルドの種類に関係の無い欄（開発用の Rust の最適化・配布用の形式・署名・要件）は出さない
+    /// （配布用の欄は PackagingWindow.AndroidRelease.cs）。
     /// </summary>
     private void BuildAndroidSettings()
     {
@@ -518,20 +523,31 @@ public partial class PackagingWindow : Window
         SettingsPane.Children.Add(BuildInfoBlock(AndroidOutputNote));
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
+        AddAndroidVariantRows();
         SettingsPane.Children.Add(BuildComboRow("ABI",
             AndroidApkOutput.ArchChoices.Select(choice => choice.Label).ToArray(),
             AndroidApkOutput.LabelFor(_data.Android.Arch),
             v => _data.Android.Arch = AndroidApkOutput.ArchFor(v)));
-        SettingsPane.Children.Add(BuildComboRow("Rust の最適化",
-            ["Release", "Debug"],
-            _data.Android.BuildType == BuildType.Debug ? "Debug" : "Release",
-            v => _data.Android.BuildType = v == "Debug" ? BuildType.Debug : BuildType.Release));
+        var release = _data.Android.Variant == AndroidBuildVariant.Release;
+        if (!release)
+        {
+            // 開発用だけ: Rust の最適化を選べる（配布用は常に Release）
+            SettingsPane.Children.Add(BuildComboRow("Rust の最適化",
+                ["Release", "Debug"],
+                _data.Android.BuildType == BuildType.Debug ? "Debug" : "Release",
+                v => _data.Android.BuildType = v == "Debug" ? BuildType.Debug : BuildType.Release));
+            SettingsPane.Children.Add(BuildSectionSubHeader("署名"));
+            SettingsPane.Children.Add(BuildNoteBlock(AndroidSigningNote, PlatformAvailability.RequiresSetup));
+        }
+        else
+        {
+            AddAndroidSigningSection();
+        }
 
-        SettingsPane.Children.Add(BuildSectionSubHeader("署名"));
-        SettingsPane.Children.Add(BuildNoteBlock(AndroidSigningNote, PlatformAvailability.RequiresSetup));
-
+        AddAndroidIconSection();
         SettingsPane.Children.Add(BuildSectionSubHeader("アプリの識別情報"));
         SettingsPane.Children.Add(BuildInfoBlock(AndroidIdentityNote));
+        if (release) AddAndroidRequirementsSection();
 
         // 道具が見つかったか（ファイルの有無だけ。見つからない道具は赤で理由と対処）
         SettingsPane.Children.Add(BuildSectionSubHeader("道具（環境変数 → 既定の場所から自動で探す）"));
@@ -1164,13 +1180,20 @@ public partial class PackagingWindow : Window
     /// <para>
     /// 工程（libSEED.so → pak とスクリプト → 同梱 .NET → APK）は SeedAndroid・エディタの Android 実行と同じクラスが行い、
     /// 変更の無い工程は自動で飛ばす（置き場を共有するので、実行で作った APK と入力が同じならすぐ終わる）。
-    /// ログの書式は Output パネルの Android の行と同じ（AndroidRunOutputFormatter）。できる APK はデバッグ署名（段階D で配布用の署名）。
+    /// ログの書式は Output パネルの Android の行と同じ（AndroidRunOutputFormatter）。開発用はデバッグ署名の APK、
+    /// 配布用はアップロード鍵で署名した APK / AAB（段階D。Google Play の要件の一覧を「Google Play の要件」の欄へ出す）。
     /// </para>
     /// </summary>
     /// <param name="outputPath">出力フォルダ。</param>
     private async Task RunAndroidBuildAsync(string outputPath)
     {
-        AppendLog("═══ ビルド開始: Android（デバッグ署名の APK） ═══");
+        var variant = _data.Android.Variant;
+        // AAB は配布用だけ（開発用に AAB が残っていても APK にする）
+        var format = variant == AndroidBuildVariant.Release ? _data.Android.Format : AndroidPackageFormat.Apk;
+        var kind = variant == AndroidBuildVariant.Release
+            ? $"配布用の {format.ToString().ToUpperInvariant()}（アップロード鍵で署名）"
+            : "デバッグ署名の APK";
+        AppendLog($"═══ ビルド開始: Android（{kind}） ═══");
         AppendLog($"出力先: {outputPath}");
         AppendLog("");
 
@@ -1186,8 +1209,12 @@ public partial class PackagingWindow : Window
 
         var abis = AndroidApkOutput.AbisFor(_data.Android.Arch);
         var projectDir = string.IsNullOrWhiteSpace(ProjectContext.RootDir) ? _assetsPath : ProjectContext.RootDir;
-        var request = AndroidEditorRunRequests.ForPackage(projectDir, abis, _data.Android.BuildType == BuildType.Release);
-        AppendLog($"ABI: {string.Join(", ", abis)}・Rust: {(request.Release ? "Release（--release）" : "Debug")}・プロジェクト: {projectDir}");
+        // 配布用は、キーストア・別名を中核がプロジェクトの packaging_settings.json（直前に保存した）から読む。
+        // パスワードはエディタの保護保存から取り出して渡す（無ければ中核が環境変数を見て、それも無ければ理由付きで止まる）
+        var request = variant == AndroidBuildVariant.Release
+            ? AndroidEditorRunRequests.ForReleasePackage(projectDir, abis, format, null, null, LoadStoredAndroidSecrets())
+            : AndroidEditorRunRequests.ForPackage(projectDir, abis, _data.Android.BuildType == BuildType.Release);
+        AppendLog($"ABI: {string.Join(", ", abis)}・Rust: {(request.OptimizesNative ? "Release（--release）" : "Debug")}・プロジェクト: {projectDir}");
 
         SetStatus("Android の APK を作成中…");
         SetProgress(ProgressAndroidStart);
@@ -1216,24 +1243,31 @@ public partial class PackagingWindow : Window
             return;
         }
 
-        // できた APK（runtime/android/app/build/outputs/apk/debug/app-debug.apk）を出力フォルダへ写す
-        var destination = AndroidApkOutput.DestinationPath(outputPath, GetGameName(), abis);
+        // できた配布物（runtime/android/app/build/outputs/ の下。ビルドの種類と形式ごと）を出力フォルダへ写す
+        var destination = AndroidApkOutput.DestinationPath(outputPath, GetGameName(), abis, variant, format);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            File.Copy(engine.DebugApkPath, destination, overwrite: true);
+            File.Copy(result.ArtifactPath ?? engine.ArtifactPath(variant, format), destination, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            AppendLog($"APK を出力フォルダへ写せませんでした: {ex.Message}");
+            AppendLog($"配布物を出力フォルダへ写せませんでした: {ex.Message}");
             SetStatus("コピー失敗");
             SetProgress(0);
             return;
         }
 
+        // 配布用は Google Play の要件の一覧を欄へ出す（不合格があっても配布物は写す。直し方は一覧の説明）
+        if (result.RequirementReport is { } report)
+        {
+            ShowAndroidRequirements(report, $"ビルド（{Path.GetFileName(destination)}）");
+            AppendLog($"Google Play の要件: {report.Summary()}" + (report.HasFailures ? "（不合格があります。「Google Play の要件」の欄を確かめてください）" : string.Empty));
+        }
+
         var megabytes = new FileInfo(destination).Length / BytesPerMegabyte;
         AppendLog("");
-        AppendLog($"ビルド完了: {destination}（{megabytes:F1} MB・{string.Join(", ", abis)}・デバッグ署名。合計 {result.Elapsed.TotalSeconds:F1} 秒）");
+        AppendLog($"ビルド完了: {destination}（{megabytes:F1} MB・{string.Join(", ", abis)}・{kind}。合計 {result.Elapsed.TotalSeconds:F1} 秒）");
         SetProgress(ProgressComplete);
         SetStatus($"ビルド完了 → {destination}");
 

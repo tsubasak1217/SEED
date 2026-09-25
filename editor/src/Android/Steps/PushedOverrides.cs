@@ -141,7 +141,8 @@ public static class PushedOverrides
     {
         true => true,
         false => false,
-        null => moment == PushedOverrideMoment.BeforeLaunch && request.Goal == AndroidRunGoal.Run,
+        // 配布用（release）は上書き層を使わない（run-as で置けない）ので記録も触らない（段階D）
+        null => moment == PushedOverrideMoment.BeforeLaunch && request.Goal == AndroidRunGoal.Run && request.Variant == AndroidBuildVariant.Debug,
     };
 
     /// <summary>
@@ -204,12 +205,16 @@ public static class PushedOverrides
         };
     }
 
-    /// <summary>その場面で工程が扱う目的か（インストールの後＝install・run、起動の前＝run）。</summary>
-    private static bool AppliesTo(AndroidRunRequest request, PushedOverrideMoment moment) => moment switch
-    {
-        PushedOverrideMoment.AfterInstall => request.Goal is AndroidRunGoal.Install or AndroidRunGoal.Run,
-        _ => request.Goal == AndroidRunGoal.Run,
-    };
+    /// <summary>
+    /// その場面で工程が扱う目的か（インストールの後＝install・run、起動の前＝run）。配布用（release）の APK は debuggable でなく
+    /// run-as が使えない（push・差し替えも置けない）ので扱わない（段階D）。
+    /// </summary>
+    private static bool AppliesTo(AndroidRunRequest request, PushedOverrideMoment moment) =>
+        request.Variant == AndroidBuildVariant.Debug && moment switch
+        {
+            PushedOverrideMoment.AfterInstall => request.Goal is AndroidRunGoal.Install or AndroidRunGoal.Run,
+            _ => request.Goal == AndroidRunGoal.Run,
+        };
 
     /// <summary>
     /// 端末のフォルダを 1 つ消す。あって消したときだけ Output に 1 行、消せなければ警告の 1 行。

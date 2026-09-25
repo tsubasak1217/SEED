@@ -56,9 +56,34 @@ public sealed class AndroidStepStamps
     [JsonPropertyName("steps")]
     public Dictionary<string, AndroidStepFingerprint> Steps { get; set; } = new(StringComparer.Ordinal);
 
-    /// <summary>最後に作った APK。</summary>
+    /// <summary>最後に作った APK（開発用＝debug の APK）。</summary>
     [JsonPropertyName("apk")]
     public AndroidApkStamp? Apk { get; set; }
+
+    /// <summary>
+    /// 最後に作った配布用（release）の APK / AAB（キーは Plan/AndroidStepKeys.GradleFor。段階D。古い記録には無い＝空）。
+    /// </summary>
+    [JsonPropertyName("artifacts")]
+    public Dictionary<string, AndroidApkStamp> Artifacts { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// その Gradle の出力のキーの配布物の記録（debug の APK は <see cref="Apk"/>。無ければ null）。
+    /// </summary>
+    /// <param name="gradleKey">Plan/AndroidStepKeys.GradleFor のキー。</param>
+    /// <returns>記録。</returns>
+    public AndroidApkStamp? ArtifactFor(string gradleKey) =>
+        gradleKey == AndroidStepKeys.Gradle ? Apk : Artifacts.GetValueOrDefault(gradleKey);
+
+    /// <summary>
+    /// その Gradle の出力のキーの配布物の記録を書く（debug の APK は <see cref="Apk"/>）。
+    /// </summary>
+    /// <param name="gradleKey">Plan/AndroidStepKeys.GradleFor のキー。</param>
+    /// <param name="stamp">記録。</param>
+    public void SetArtifact(string gradleKey, AndroidApkStamp stamp)
+    {
+        if (gradleKey == AndroidStepKeys.Gradle) Apk = stamp;
+        else Artifacts[gradleKey] = stamp;
+    }
 
     /// <summary>
     /// 記録を読む（無い・壊れている・版が違うときは空の記録）。
@@ -71,7 +96,10 @@ public sealed class AndroidStepStamps
         {
             if (!File.Exists(path)) return new AndroidStepStamps();
             var loaded = JsonSerializer.Deserialize<AndroidStepStamps>(File.ReadAllText(path), JsonOptions);
-            return loaded is { FormatVersion: CurrentFormatVersion } ? loaded : new AndroidStepStamps();
+            if (loaded is not { FormatVersion: CurrentFormatVersion }) return new AndroidStepStamps();
+            // 段階D より前の記録には artifacts が無い（null で読まれる）
+            loaded.Artifacts ??= new Dictionary<string, AndroidApkStamp>(StringComparer.Ordinal);
+            return loaded;
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or NotSupportedException)
         {

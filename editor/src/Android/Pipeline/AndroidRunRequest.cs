@@ -9,6 +9,12 @@
 //  どの工程も、入力が前回から変わっていなければ自動で飛ばす（Plan/AndroidBuildPlan.cs）。
 //  明示の Skip*・No* は自動判定より強い。Rebuild は自動で飛ばすのをやめる（明示の Skip* はそれでも効く）。
 //
+//  【ビルドの種類と形式（段階D。docs/android.md §24）】
+//    Variant = Debug（既定。デバッグ用の鍵・debuggable）/ Release（配布用。アップロード鍵で署名・Rust は --release）
+//    Format  = Apk（既定）/ Aab（配布用の Build だけ）
+//    署名の鍵は KeystorePath・KeyAlias（無ければ packaging_settings.json の android.signing）、パスワードは SigningSecrets
+//    （メモリだけ。JSON に読み書きしない。無ければ環境変数）。食い違いの検査は AndroidRunPipeline.ValidateVariant。
+//
 //  コンソールツールの引数・設定 JSON（--config）・エディタの実行先セレクタ（段階C-2）が同じこの型を作る。
 //  JSON のキーは snake_case（設定 JSON の書式）。
 //
@@ -17,6 +23,8 @@
 
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
+using SEEDEditor.Android.Signing;
+using SEEDEditor.Packaging;
 
 namespace SEEDEditor.Android.Pipeline;
 
@@ -91,9 +99,50 @@ public sealed record AndroidRunRequest
     [JsonPropertyName("abis")]
     public IReadOnlyList<string>? Abis { get; init; }
 
-    /// <summary>Rust 側を --release でビルドする（APK はデバッグ署名のまま）。</summary>
+    /// <summary>
+    /// Rust 側を --release でビルドする（開発用のビルドでも最適化した .so で試すとき。APK はデバッグ署名のまま）。
+    /// 配布用（<see cref="Variant"/> = Release）は指定に関わらず --release（<see cref="OptimizesNative"/>）。
+    /// </summary>
     [JsonPropertyName("release")]
     public bool Release { get; init; }
+
+    /// <summary>
+    /// ビルドの種類（段階D。docs/android.md §24）。Debug（既定）はデバッグ署名の開発用、Release は配布用
+    /// （debuggable=false・INTERNET なし・アップロード鍵で署名・Rust は --release）。Release は端末で run-as が使えないので、
+    /// 開発用の転送（--assets-dir・--push-scripts・push）とは一緒に使えない。
+    /// </summary>
+    [JsonPropertyName("variant")]
+    [JsonConverter(typeof(JsonStringEnumConverter<AndroidBuildVariant>))]
+    public AndroidBuildVariant Variant { get; init; } = AndroidBuildVariant.Debug;
+
+    /// <summary>
+    /// 配布物の形式（段階D）。Apk（既定）か Aab（Google Play へ出す形。配布用だけ。端末へは直接入れられないので build だけ）。
+    /// </summary>
+    [JsonPropertyName("format")]
+    [JsonConverter(typeof(JsonStringEnumConverter<AndroidPackageFormat>))]
+    public AndroidPackageFormat Format { get; init; } = AndroidPackageFormat.Apk;
+
+    /// <summary>
+    /// 配布用の署名のキーストア（段階D。null ならプロジェクトの packaging_settings.json の android.signing.keystore_path。
+    /// 決め方は Signing/AndroidSigningResolver）。
+    /// </summary>
+    [JsonPropertyName("keystore")]
+    public string? KeystorePath { get; init; }
+
+    /// <summary>配布用の署名のキーの別名（段階D。null なら android.signing.key_alias）。</summary>
+    [JsonPropertyName("key_alias")]
+    public string? KeyAlias { get; init; }
+
+    /// <summary>
+    /// 配布用の署名のパスワード（段階D。メモリの中だけ。JSON には読み書きしない。null なら環境変数
+    /// SEED_ANDROID_KEYSTORE_PASSWORD / SEED_ANDROID_KEY_PASSWORD）。エディタは保護保存から、SeedAndroid は対話の入力から入れる。
+    /// </summary>
+    [JsonIgnore]
+    public AndroidSigningSecrets? SigningSecrets { get; init; }
+
+    /// <summary>libSEED.so を --release で作るか（<see cref="Release"/> の指定か、配布用のビルド）。</summary>
+    [JsonIgnore]
+    public bool OptimizesNative => Release || Variant == AndroidBuildVariant.Release;
 
     /// <summary>libSEED.so のビルドを飛ばす。</summary>
     [JsonPropertyName("skip_rust_build")]

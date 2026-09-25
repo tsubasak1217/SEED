@@ -14,6 +14,7 @@ namespace AndroidRunUiTests;
 ///   6. Android（自動）・エミュレータへの切り替えの表示、起動するシーン、未保存の変更の確認（AutoTargetAndSceneTests。段階C-3）
 ///   7. Android の実行中の一時停止・再開（端末のアプリとの IPC。プレイバー・状態機械・段取り。IpcPauseTests。段階D-1）
 ///   8. Android の実行中の差し替え（変わったファイルのまとめ方・監視の始め方と止め方・Output。HotReloadControllerTests。§23）
+///   9. パッケージ化の配布用（release の APK / AAB の名前・選択肢・中核への指定・署名のパスワードの保護保存。ReleasePackagingTests。§24）
 /// 端末・adb・cargo・Gradle は使わない。
 /// </summary>
 public static class Program
@@ -32,6 +33,7 @@ public static class Program
         AutoTargetAndSceneTests.Register(harness);
         IpcPauseTests.Register(harness);
         HotReloadControllerTests.Register(harness);
+        ReleasePackagingTests.Register(harness);
         return harness.Run();
     }
 }

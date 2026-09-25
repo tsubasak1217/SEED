@@ -17,6 +17,8 @@
 //       そのときの場所のまま端末に入っている」ときだけ飛ばす（場所はインストールのたびに変わるので、
 //       他の人・他のプロジェクトが入れ直していれば分かる）
 //    7. 開発用の転送・起動・logcat は指定どおり（変更の有無では飛ばさない）
+//    8. 配布用（release）は Gradle の後に Google Play の要件の確認を必ず行う（段階D）。Gradle の記録はビルドの種類と
+//       形式ごとに別のキー（AndroidStepKeys.GradleFor。出力のファイルが別なので、切り替えても互いを作り直さない）
 //
 //  WPF に依存しない（単体テストからリンクされる）。
 // ============================================================
@@ -26,6 +28,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization;
 using SEEDEditor.Android.Pipeline;
+using SEEDEditor.Packaging;
 
 namespace SEEDEditor.Android.Plan;
 
@@ -38,13 +41,25 @@ public static class AndroidStepKeys
     /// <summary>同梱 .NET。</summary>
     public const string DotnetBundle = "dotnet_bundle";
 
-    /// <summary>APK（Gradle）。</summary>
+    /// <summary>APK（Gradle。開発用＝debug の APK。段階C からのキーのまま）。</summary>
     public const string Gradle = "gradle";
+
+    /// <summary>配布用（release）の Gradle の出力のキーの頭（gradle/release_apk・gradle/release_aab。段階D）。</summary>
+    private const string ReleaseGradlePrefix = "gradle/release_";
 
     /// <summary>libSEED.so（ABI ごと）。</summary>
     /// <param name="abi">ABI。</param>
     /// <returns>キー。</returns>
     public static string Native(AndroidAbi abi) => $"native_build/{abi.Name}";
+
+    /// <summary>
+    /// ビルドの種類と形式ごとの Gradle の出力のキー（出力のファイルが別なので別々に記録する。debug は従来の "gradle"）。
+    /// </summary>
+    /// <param name="variant">ビルドの種類。</param>
+    /// <param name="format">形式。</param>
+    /// <returns>キー。</returns>
+    public static string GradleFor(AndroidBuildVariant variant, AndroidPackageFormat format) =>
+        variant == AndroidBuildVariant.Release ? ReleaseGradlePrefix + format.ToString().ToLowerInvariant() : Gradle;
 }
 
 /// <summary>工程の入力の指紋と出力の同一性（今の値、または前回の記録）。</summary>
@@ -182,9 +197,15 @@ public sealed record AndroidBuildPlan(IReadOnlyList<AndroidStepDecision> Steps, 
             }
             else
             {
-                gradle = Compare(AndroidPipelinePhase.Gradle, AndroidStepKeys.Gradle, input);
+                gradle = Compare(AndroidPipelinePhase.Gradle, AndroidStepKeys.GradleFor(request.Variant, request.Format), input);
             }
             steps.AddRange(new[] { native, package, dotnet, gradle });
+
+            // 配布用（release）は、できた（前回のままの）配布物を毎回 Google Play の要件で確かめる（道具で読むだけで数秒。段階D）
+            if (request.Variant == AndroidBuildVariant.Release)
+            {
+                steps.Add(Run(AndroidPipelinePhase.ReleaseCheck, "配布物を Google Play の要件で確かめる", input.Abis));
+            }
 
             if (installScope) steps.Add(DecideInstall(input, gradle));
         }

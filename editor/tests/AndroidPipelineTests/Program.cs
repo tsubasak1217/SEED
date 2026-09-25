@@ -19,6 +19,10 @@ namespace AndroidPipelineTests;
 ///      SeedAndroid の pause / resume / screenshot の引数。IpcTests。段階D-1）
 ///  10. 実行中の差し替え（拡張子 → 命令の表・命令と応答の照合・差分の選び方〈pak と同じ形で読み、送った記録 → APK の pak と比べる〉・
 ///      上書き層の記録・tar・命令の送り方・run での上書きの解除・SeedAndroid の reload / push --assets。HotReloadTests。§23）
+///  11. 配布用（release）の署名: 鍵の決め方・Gradle へのパスワードの受け渡し（環境変数だけ）・keytool の出力・計画・指定の検査・
+///      SeedAndroid の --variant / --format / --keystore / keystore create / check（ReleaseSigningTests。段階D・§24）
+///  12. Google Play の要件チェック: 表と契約・ビルドの前の判定・配布物の判定・道具の出力・ELF・記録（ReleaseRequirementTests。§24）
+///  13. ランチャーのアイコン: PNG の読み書き・縮小・各密度の寸法と安全域・置き場・設定の検査（LauncherIconTests。§24）
 /// 端末・adb・cargo・Gradle は使わない（IPC はループバックの偽のランタイム）。
 /// </summary>
 public static class Program
@@ -38,6 +42,9 @@ public static class Program
         PushOverrideTests.Register(harness);
         IpcTests.Register(harness);
         HotReloadTests.Register(harness);
+        ReleaseSigningTests.Register(harness);
+        ReleaseRequirementTests.Register(harness);
+        LauncherIconTests.Register(harness);
         return harness.Run();
     }
 }

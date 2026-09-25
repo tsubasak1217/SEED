@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Android.Toolchain;
+using SEEDEditor.Packaging;
 
 namespace SEEDEditor.Tools.SeedAndroid.Commands;
 
@@ -33,6 +34,11 @@ public static class PipelineCommand
         }
 
         var request = SeedAndroidArguments.ToRequest(line, config);
+        // 配布用（段階D）: パスワードが環境変数に無ければ対話で聞く（聞けなければ中核が「パスワードがありません」と止める）
+        if (request.Variant == AndroidBuildVariant.Release && request.SigningSecrets is null)
+        {
+            request = request with { SigningSecrets = ConsoleSecretPrompt.AskIfNeeded(request.KeystorePath) };
+        }
         var pipeline = new AndroidRunPipeline(engine, toolchain);
         var result = await pipeline.RunAsync(request, new ConsoleEventPrinter(), cancellationToken);
 
@@ -48,8 +54,22 @@ public static class PipelineCommand
         {
             Console.Out.WriteLine($"  {AndroidPipelinePhaseNames.Title(step.Phase),-36} {Label(step.Outcome),-6} {step.Elapsed.TotalSeconds,6:F1} 秒  {step.Summary}");
         }
+        if (result.Succeeded && result.ArtifactPath is { } artifact && request.Goal == AndroidRunGoal.Build)
+        {
+            Console.Out.WriteLine($"成果物: {artifact}");
+        }
 
-        if (result.Succeeded) return SeedAndroidExitCodes.Success;
+        // 配布用（段階D）: Google Play の要件の一覧（不合格があれば終了コード 6。配布物はできている）
+        if (result.RequirementReport is { } report)
+        {
+            Console.Out.WriteLine($"Google Play の要件（{report.Summary()}）:");
+            foreach (var item in report.Items) CheckCommand.Write(item);
+        }
+
+        if (result.Succeeded)
+        {
+            return result.RequirementReport is { HasFailures: true } ? SeedAndroidExitCodes.RequirementsNotMet : SeedAndroidExitCodes.Success;
+        }
         if (result.Canceled) return SeedAndroidExitCodes.Canceled;
         return SeedAndroidExitCodes.For(result.FailureKind ?? AndroidFailureKind.Build);
     }

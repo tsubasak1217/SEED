@@ -1,8 +1,9 @@
 // ============================================================
 //  RunRequestConfig.cs — 設定 JSON（--config）を AndroidRunRequest として読む
 //
-//  キーは AndroidRunRequest の JsonPropertyName（snake_case）。相対パス（project / assets_dir / log_file）は
+//  キーは AndroidRunRequest の JsonPropertyName（snake_case）。相対パス（project / assets_dir / log_file / keystore）は
 //  設定 JSON のあるフォルダからの相対として絶対パスへ直す（どこから実行しても同じ意味になるように）。
+//  署名のパスワードは JSON から読まない（AndroidRunRequest.SigningSecrets は JsonIgnore。環境変数か対話の入力で渡す）。
 //  goal はサブコマンドで決まるので、書いてあっても使わない。
 // ============================================================
 
@@ -57,9 +58,11 @@ public static class RunRequestConfig
         var baseDir = Path.GetDirectoryName(fullPath)!;
         return request with
         {
-            ProjectDir = Absolute(baseDir, request.ProjectDir),
-            AssetsDir  = Absolute(baseDir, request.AssetsDir),
-            LogFile    = Absolute(baseDir, request.LogFile),
+            ProjectDir   = Absolute(baseDir, request.ProjectDir),
+            AssetsDir    = Absolute(baseDir, request.AssetsDir),
+            LogFile      = Absolute(baseDir, request.LogFile),
+            // 配布用の署名のキーストア（段階D。パスワードは JSON に書かない＝読まない）
+            KeystorePath = Absolute(baseDir, request.KeystorePath),
         };
     }
 

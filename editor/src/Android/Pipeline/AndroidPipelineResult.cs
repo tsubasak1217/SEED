@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Plan;
 using SEEDEditor.Android.Project;
+using SEEDEditor.Android.Release;
 
 namespace SEEDEditor.Android.Pipeline;
 
@@ -48,4 +49,13 @@ public sealed record AndroidPipelineResult
 
     /// <summary>アプリの識別情報（準備で失敗したときは null）。</summary>
     public AndroidAppIdentity? Identity { get; init; }
+
+    /// <summary>
+    /// 今回の Gradle の出力（APK / AAB。ビルドの目的でなければ・準備で失敗したときは null。段階D）。
+    /// パッケージ化ウィンドウはこれを出力フォルダへ写す。
+    /// </summary>
+    public string? ArtifactPath { get; init; }
+
+    /// <summary>Google Play の要件チェックの結果（配布用のビルドだけ。段階D）。</summary>
+    public AndroidRequirementReport? RequirementReport { get; init; }
 }

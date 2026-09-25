@@ -1,20 +1,30 @@
 // ============================================================
-//  app/build.gradle.kts — SEED ランタイムの APK（段階0〜C）
+//  app/build.gradle.kts — SEED ランタイムの APK / AAB（段階0〜D）
 //
 //  中身は「Java の薄い Activity（MainActivity）＋ cargo ndk が作った libSEED.so」と、
 //  パッケージ実行のときだけ「配布物（assets/seed/assets.pak と bin/ のスクリプト DLL）」、
 //  それに同梱 .NET（段階B。.so と BCL・目録 bundle.json）。
 //  置き場へ置くのは SeedAndroid（editor/src/Android/。build_and_run.ps1 はそれを呼ぶだけのラッパー）:
-//    .so       … app/src/main/jniLibs/<ABI>/libSEED.so（AGP の既定の置き場）
-//    配布物    … --project のとき app/src/main/assets/seed/（AGP の既定の assets の置き場）
-//    同梱 .NET … runtime/android/dotnet_runtime.json から app/src/seedDotnet/ へ組み立てる
-//               （下の sourceSets で jniLibs・assets の置き場として足す。生成物・追跡しない。docs/android.md §17）
+//    .so         … app/src/main/jniLibs/<ABI>/libSEED.so（AGP の既定の置き場）
+//    配布物      … --project のとき app/src/main/assets/seed/（AGP の既定の assets の置き場）
+//    同梱 .NET   … runtime/android/dotnet_runtime.json から app/src/seedDotnet/ へ組み立てる
+//                 （下の sourceSets で jniLibs・assets の置き場として足す。生成物・追跡しない。docs/android.md §17）
+//    アイコン    … プロジェクト設定 android.icon から app/src/seedIcon/res/ へ各密度の mipmap とアダプティブアイコンを生成する
+//                 （下の sourceSets で res の置き場として足す。生成物・追跡しない。docs/android.md §24）
 //  プロジェクト設定から決まる値は Gradle のプロジェクトプロパティ（-Pseed.* か環境変数 ORG_GRADLE_PROJECT_seed.*）で受け取り、
-//  下の変換で APK へ焼き込む（値の変換はこのファイルの 1 か所。docs/android.md §15.1・§18）:
+//  下の変換で APK へ焼き込む（値の変換はこのファイルの 1 か所。docs/android.md §15.1・§18・§24）:
 //    seed.orientation                  … screen_orientation → マニフェストの screenOrientation（変換表）
 //    seed.applicationId / seed.appName … android.application_id / app_name → applicationId・android:label
 //    seed.versionCode / seed.versionName … android.version_code / version_name → versionCode・versionName
-//  渡されなければ既定値（com.seedengine.runtime・SEED Runtime 等。手で gradlew を叩いたときもこれ）。
+//    seed.launcherIcon                 … generated なら生成したアイコン（@mipmap/ic_launcher）→ android:icon
+//    seed.signing.*                    … 配布用（release）の署名。キーストアの場所・別名・パスワード（パスワードは必ず環境変数。
+//                                        SeedAndroid の Signing/。このファイル・gradle.properties・コマンドラインには書かない）
+//  渡されなければ既定値（com.seedengine.runtime・SEED Runtime・システムの既定のアイコン等。手で gradlew を叩いたときもこれ）。
+//
+//  【ビルドの種類（docs/android.md §24）】
+//    debug   … assembleDebug。デバッグ用の鍵で署名・debuggable・INTERNET（src/debug/ のマニフェスト。エディタとの IPC）。開発用
+//    release … assembleRelease（APK）/ bundleRelease（AAB。Google Play へ出す形）。debuggable=false・INTERNET なし・
+//              アップロード鍵で署名（seed.signing.* が揃っていなければデバッグ署名・無署名にはせずビルドを止める）
 // ============================================================
 
 plugins {
@@ -24,8 +34,18 @@ plugins {
 /** 最低 Android バージョン（API 29 = Android 10）。Vulkan 1.1 がほぼ行き渡る世代を下限にする。 */
 val seedMinSdk = 29
 
-/** ビルド時に使う SDK と、動作を合わせる対象の API（35 = Android 15）。 */
-val seedTargetSdk = 35
+/**
+ * ビルド時に使う SDK と、動作を合わせる対象の API（36 = Android 16）。
+ * Google Play は 2026-08-31 以降の新規アプリ・更新に API 36 以上を求める（延長の申請で 2026-11-01 まで。
+ * https://developer.android.com/google/play/requirements/target-sdk。要件の表は runtime/android/play_requirements.json）。
+ * 36 にしたことで効く動作の変更と対処（docs/android.md §24）:
+ *   ・予測型の「戻る」… 既定で有効になり KEYCODE_BACK がアプリへ届かなくなる → マニフェストの
+ *     android:enableOnBackInvokedCallback="false" で従来どおり届ける（戻るキー → Escape。§14.5）
+ *   ・大画面（最小幅 600dp 以上）での向き・サイズ変更の制限の無視 … ゲーム（android:appCategory="game"）は対象外
+ *   ・エッジツーエッジの無効化の廃止 … 35 の時点で既に強制（安全領域は ScreenReporter で扱い済み）
+ * SeedAndroid の AndroidRuntimeContract.TargetApiLevel と一致させる（要件チェックの材料）。
+ */
+val seedTargetSdk = 36
 
 /** Java のソース／バイトコードの版（AGP 9 の既定に合わせる）。 */
 val seedJavaVersion = JavaVersion.VERSION_17
@@ -130,6 +150,52 @@ val seedVersionCode = seedProperty("versionCode")?.let { text ->
 /** このビルドの版の文字列（-Pseed.versionName）。 */
 val seedVersionName = seedProperty("versionName") ?: defaultVersionName
 
+// ── ランチャーのアイコン（プロジェクト設定 android.icon / icon_background。docs/android.md §24）──────────
+// SeedAndroid（editor/src/Android/Icons/）が PNG から各密度の mipmap（ic_launcher.png）とアダプティブアイコン
+// （mipmap-anydpi-v26/ic_launcher.xml ＋ 前景 ic_launcher_foreground.png ＋ 背景色 @color/ic_launcher_background）を
+// src/seedIcon/res/ へ生成し、-Pseed.launcherIcon=generated を渡す。渡されなければ（アイコン未設定・手で gradlew を叩いた）
+// 従来どおりシステムの既定のアイコン。
+
+/** seed.launcherIcon がこの値なら、生成したアイコンを使う。 */
+val generatedLauncherIconMarker = "generated"
+
+/** 生成したアイコンのリソース（src/seedIcon/res/mipmap-*）。 */
+val generatedLauncherIcon = "@mipmap/ic_launcher"
+
+/** アイコンを生成していないときのアイコン（android:icon を書かないときと同じシステムの既定のアイコン）。 */
+val defaultLauncherIcon = "@android:drawable/sym_def_app_icon"
+
+/** このビルドのランチャーのアイコン（マニフェストの android:icon へ ${seedAppIcon} として入る）。 */
+val seedAppIcon = if (seedProperty("launcherIcon") == generatedLauncherIconMarker) generatedLauncherIcon else defaultLauncherIcon
+
+// ── 配布用（release）の署名（docs/android.md §24）─────────────────────────────
+// SeedAndroid（editor/src/Android/Signing/・Gradle/GradleInvocation.cs）がプロジェクトの packaging_settings.json の
+// android.signing（キーストアの場所・別名）と、パスワード（エディタの保護保存か環境変数 SEED_ANDROID_KEYSTORE_PASSWORD /
+// SEED_ANDROID_KEY_PASSWORD）を、環境変数 ORG_GRADLE_PROJECT_seed.signing.*（-P と同じプロジェクトプロパティ）で渡す。
+// パスワードはコマンドラインにもログにも出さない。揃っていなければ release のビルドを止める（下の preReleaseBuild）。
+
+/** キーストアのファイル（絶対パス）。 */
+val seedSigningStoreFile = seedProperty("signing.storeFile")
+
+/** キーの別名。 */
+val seedSigningKeyAlias = seedProperty("signing.keyAlias")
+
+/** キーストアのパスワード（前後の空白もパスワードの一部なので trim しない）。 */
+val seedSigningStorePassword = providers.gradleProperty("seed.signing.storePassword").orNull?.takeIf { it.isNotEmpty() }
+
+/** キーのパスワード（PKCS12 のキーストアはキーストアのパスワードと同じ。SeedAndroid が同じ値を入れて渡す）。 */
+val seedSigningKeyPassword = providers.gradleProperty("seed.signing.keyPassword").orNull?.takeIf { it.isNotEmpty() }
+
+/** release の署名の材料が揃っているか（揃っていなければ release のビルドを止める）。 */
+val seedReleaseSigningReady = seedSigningStoreFile != null && seedSigningKeyAlias != null &&
+    seedSigningStorePassword != null && seedSigningKeyPassword != null
+
+/** 署名の材料が無いまま release を作ろうとしたときの説明。 */
+val missingReleaseSigningMessage =
+    "SEED: 配布用（release）の署名の材料がありません（seed.signing.storeFile / keyAlias / storePassword / keyPassword）。" +
+        "デバッグ署名・無署名の release は作りません。SeedAndroid の build --variant release --keystore <キーストア> --key-alias <別名> と" +
+        "環境変数 SEED_ANDROID_KEYSTORE_PASSWORD、またはエディタのパッケージ化ウィンドウの「署名」で指定してください（docs/android.md §24）。"
+
 android {
     // Java の名前空間（R クラス等）。applicationId と同じにしておく。
     namespace = "com.seedengine.runtime"
@@ -154,8 +220,23 @@ android {
         manifestPlaceholders["seedScreenOrientation"] = seedScreenOrientation
         // AndroidManifest.xml の ${seedAppLabel} を置き換える（ランチャーに出る名前）。
         manifestPlaceholders["seedAppLabel"] = seedAppLabel
+        // AndroidManifest.xml の ${seedAppIcon} を置き換える（ランチャーのアイコン。上の「ランチャーのアイコン」）。
+        manifestPlaceholders["seedAppIcon"] = seedAppIcon
         logger.lifecycle("SEED: screen_orientation=$seedOrientationSetting → screenOrientation=$seedScreenOrientation")
         logger.lifecycle("SEED: applicationId=$seedApplicationId label=$seedAppLabel versionCode=$seedVersionCode versionName=$seedVersionName")
+        logger.lifecycle("SEED: targetSdk=$seedTargetSdk icon=$seedAppIcon releaseSigning=${if (seedReleaseSigningReady) "ready" else "none"}")
+    }
+
+    signingConfigs {
+        // 配布用（release）の署名。材料が揃っているときだけ中身を入れる（パスワードは環境変数で受け取った値。ログに出さない）。
+        create("release") {
+            if (seedReleaseSigningReady) {
+                storeFile = file(seedSigningStoreFile!!)
+                storePassword = seedSigningStorePassword
+                keyAlias = seedSigningKeyAlias
+                keyPassword = seedSigningKeyPassword
+            }
+        }
     }
 
     compileOptions {
@@ -187,14 +268,30 @@ android {
             // 無ければ何も足されない（.NET の無い APK。端末はスクリプト無しで起動する）。
             jniLibs.srcDir("src/seedDotnet/jniLibs")
             assets.srcDir("src/seedDotnet/assets")
+            // SeedAndroid が生成するランチャーのアイコン（生成物。mipmap-*・values の背景色）。無ければ何も足されない。
+            res.srcDir("src/seedIcon/res")
         }
     }
 
     buildTypes {
         getByName("release") {
-            // 段階0 は配布しない（署名・AAB・難読化は段階D）。
+            // 配布用（段階D。docs/android.md §24）。debuggable にしない（Google Play は debuggable の APK / AAB を受け付けない）。
+            // INTERNET 権限は src/debug/ のマニフェストにだけあるので release には入らない。
+            isDebuggable = false
+            // R8（難読化・縮小）は使わない。Java は薄い Activity だけで、JNI から名前で呼ばれるクラス・メソッド
+            // （MainActivity・ScreenReporter・暗号ライブラリの net.dot.android.crypto.* 等）を消されると起動しなくなるため。
             isMinifyEnabled = false
+            // 署名は材料が揃っているときだけ。揃っていなければ下の preReleaseBuild でビルドを止める（デバッグ署名にしない）。
+            signingConfig = if (seedReleaseSigningReady) signingConfigs.getByName("release") else null
         }
+    }
+}
+
+// 署名の材料が無いまま release（assembleRelease / bundleRelease）を作ろうとしたら、最初の工程で止める
+// （無署名・デバッグ署名の配布物を作らない。SeedAndroid は Gradle を呼ぶ前に同じ検査をしている）。
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    doFirst {
+        if (!seedReleaseSigningReady) throw GradleException(missingReleaseSigningMessage)
     }
 }
 
