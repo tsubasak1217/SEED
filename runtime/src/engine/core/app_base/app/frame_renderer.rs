@@ -3280,7 +3280,7 @@ impl App {
                         //  （旧実装＝フォワード小窓＋白プレースホルダ地形は撤去）
                         //
                         //  なぜ Deferred か:
-                        //   ・地形のレイヤブレンド（terrain_gbuffer_write.wgsl の triplanar）と草
+                        //   ・地形のレイヤブレンド（terrain_layer_blend.wgsl の triplanar の G-Buffer 版）と草
                         //     （grass_gbuffer.wgsl）は **G-Buffer MRT へ焼くパイプラインでしか描けない**。
                         //     フォワード小窓では構造的に描けず、旧実装は地形を白い簡易材質で誤魔化し、
                         //     草は非表示だった。
@@ -6235,6 +6235,13 @@ impl App {
                             // （`self` の可変借用中に `self.mode` を読めないため）。
                             let water_shader_hot_reload =
                                 self.mode == RuntimeMode::Edit || self.play_shader_hot_reload;
+                            // 水面反射パスが走らないフレーム（前方描画・品質で水面反射 off）に水面へ映す空。
+                            // 反射パスが走るフレーム（デファードの既定）は None＝従来どおり反射 RT だけを使う
+                            // （規則は water::sky_fallback::fallback_source。スカイボックスが無いシーンも None）。
+                            let water_sky_fallback = crate::engine::core::renderer::water::sky_fallback::fallback_source(
+                                water_reflection_view.is_some(),
+                                self.skybox_system.reflection_sky_source(),
+                            );
                             let water = self.water_renderer.as_mut()
                                 .expect("water_renderer は直前に構築済み");
                             water_prepared = water.prepare(
@@ -6264,6 +6271,8 @@ impl App {
                                     water_reflection_view
                                         .unwrap_or(&draw_ctx.pipelines.water_reflection.dummy_view)
                                 },
+                                // 反射パスが走らないフレームの空のフォールバック（上で決めたもの）。
+                                water_sky_fallback.as_ref(),
                                 // 水面シェーディングアセット（Phase W8）のビルド結果キャッシュ。
                                 // `surface_shader` を設定した水域がある場合だけ触られる。
                                 &draw_ctx.water_shading_asset_cache,
@@ -7302,6 +7311,11 @@ impl App {
                                             scene_wireframe,
                                             // メインパスはマテリアル差し替え無し（従来どおり）。
                                             None,
+                                            // 地形チャンク（terrain://）は地形の前方描画パイプラインで
+                                            // レイヤブレンドして描く（G-Buffer 版と同じ見た目。
+                                            // 渡さないと頂点カラー＝レイヤ重みが赤・緑で塗られる）。
+                                            // 地形が未初期化なら None＝従来どおり汎用メッシュ。
+                                            self.terrain.layer_resources.as_ref(),
                                         );
                                     }
                                 }
@@ -8193,7 +8207,8 @@ impl App {
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     // エディタギズモアイコンはワイヤ化しない（従来どおり塗りで表示）。
                                     &draw_ctx.pipelines, None, false, false,
-                                    None,
+                                    // マテリアル差し替え無し・地形ではない（汎用メッシュで描く）。
+                                    None, None,
                                 );
                             }
                         }
@@ -8205,7 +8220,7 @@ impl App {
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines, None, false, false,
-                                    None,
+                                    None, None,
                                 );
                             }
                         }
@@ -8217,7 +8232,7 @@ impl App {
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines, None, false, false,
-                                    None,
+                                    None, None,
                                 );
                             }
                         }

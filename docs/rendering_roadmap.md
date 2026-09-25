@@ -883,7 +883,11 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
 
   **deferred=false（フォールバック）**: `PostFxSettings.deferred` が false のときは
   上記 1〜3 を一切スキップし、従来どおり `begin_scene_pass_to`（Clear）から不透明を
-  `draw_model_indirect` で直接 HDR へ描く完全フォワード経路になる（コード的に無改変）。
+  `draw_model_indirect` で直接 HDR へ描く完全フォワード経路になる。
+  2026-09-26 から、地形チャンク（`Material::terrain_layers`）はこの経路でも地形の前方描画パイプライン
+  （`terrain_forward.rs`。レイヤブレンドは G-Buffer 版と同じ `terrain_layer_blend.wgsl`）で描き、
+  水面は反射パスの代わりに天球を映す（下の「描画品質プリセット」の「前方描画で描くもの」）。
+  それまでは地形が汎用メッシュのシェーダで描かれ、レイヤの重み（頂点カラー）が赤・緑に見えていた。
   デファードはメインカメラの不透明・Lit のみが対象で、Unlit／ワイヤーフレーム表示・
   2D シーンビューは `deferred_active` 判定により常にフォワードへフォールバックする
   （`frame_renderer.rs` の `deferred_active` 算出コメント参照）。
@@ -1640,7 +1644,7 @@ Android が `am start --es seed.quality <名前> --es seed.quality_overrides '�
 | `shadow_resolution` | 1024 / 2048 / 4096 | 上限（小さい方） | 起動時のシャドウ品質（`set_shadow_quality` の前） |
 | `shadow_distance` | m | 上限 | 同上 |
 | `shadow_pcf_taps` | 1〜16 | 上限 | 同上 |
-| `deferred` | bool | `false` で止める | 前方描画（G-Buffer・AO・SSGI・反射・コースティクス・水面反射・**シェーディングアセット（L3）**が効かない。アセットを要求していれば `[SEED QUALITY][WARN]` を 1 回） |
+| `deferred` | bool | `false` で止める | 前方描画（G-Buffer・AO・SSGI・反射・コースティクス・水面反射・**シェーディングアセット（L3）**が効かない。アセットを要求していれば `[SEED QUALITY][WARN]` を 1 回）。地形・水面は前方描画用の経路で描く（下の「前方描画で描くもの」） |
 | `bloom` / `fxaa` / `vignette` | bool | `false` で止める | 後処理のゲート |
 | `water_reflection` / `water_caustics` | bool | `false` で止める | 水面反射 RT・水中コースティクス |
 | `target_fps` | 1 以上 | 上限（無制限は上限の値へ） | `frame_pacing::cap_target_fps`（起動時） |
@@ -1652,6 +1656,21 @@ Android が `am start --es seed.quality <名前> --es seed.quality_overrides '�
 - **デスクトップの既定 `desktop` はつまみを 1 つも持たない**。どの経路も従来と同じ値になる
   （`FeatureCaps::NONE` での `resolve_with_caps == resolve` の全組み合わせ・`desktop` が空・`render_ratio==(1,1)` を単体テストで固定。
   PC の Play の画素一致は android.md §22.6）。
+
+### 前方描画で描くもの（`deferred=false`。`mobile` 系の既定。2026-09-26）
+
+`mobile` を実機（Pixel 6a）で使ったところ、地形が赤・緑のベタ塗り、水面が平坦な青一色になった（デファードでは正常）。
+前方描画に地形のレイヤブレンドと水面の反射の代わりが無かったためで、次のように前方描画の枠内で直した
+（デファードの経路・`desktop` の見た目は変えていない。静止シーンのスクリーンショットで画素一致を確かめた。android.md §22.9）。
+
+| 対象 | 以前の前方描画 | 直した後 | 置き場 |
+|---|---|---|---|
+| 地形（レイヤブレンド） | 汎用メッシュのシェーダ＝頂点カラー（レイヤの重み）を色として乗算 → 赤・緑 | 地形の前方描画パイプラインで、G-Buffer 版と**同じ関数**でレイヤをブレンドし、フォワードの `evaluate_lighting`（GI・クラスタのライト・影・PBR）で照らす | `terrain_forward.rs` / `terrain_forward.wgsl` / 共有の `terrain_layer_blend.wgsl`（[terrain.md](terrain.md) §12.5a） |
+| 水面（反射） | 反射 RT が黒ダミー（強度 0）＝深場の色と屈折だけ → 平坦な一色 | 反射パスが走らないフレームだけ、波法線で反射した方向の空を天球から 1 回サンプルして反射像にする（強度は水域の反射強度・同じフレネル） | `renderer/water/sky_fallback.rs` / `water_surface.wgsl`（[water_interaction_roadmap.md](water_interaction_roadmap.md) W5.2 の既知の制限） |
+
+- 前方描画でも効かないまま（デファード専用）: SSAO・SSGI・画面の反射（D6）・水面の物体の映り込みと粗さのぼけ・水中コースティクス・
+  RT ソフト影マスク・シェーディングアセット（L3）。`mobile` はもともとこれらを止める設計（重い）なので、見た目の差として残る。
+- まだ前方描画で描かれないもの: 地形の散布の草（kind=grass）と散布モデル（kind=model）の不透明部分（backlog の「Android」節）。
 
 ### 描画スケール（ゲーム画面だけを縮小して描く）
 

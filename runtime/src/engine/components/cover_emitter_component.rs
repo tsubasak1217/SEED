@@ -8,7 +8,7 @@
 //  本コンポーネントは「範囲種別・範囲パラメータ・素材 ID・強度」の *データのみ* を持つ。
 //    ・シーンからの収集とワールド解決 … `app/terrain_cover_ops.rs::collect_cover_emitters`
 //    ・積算アルゴリズム               … `engine::terrain::cover::accumulate_chunk`（純粋関数）
-//    ・頂点への焼き込みと描画         … `app/terrain_cover_ops.rs` ＋ terrain_gbuffer_write.wgsl
+//    ・頂点への焼き込みと描画         … `app/terrain_cover_ops.rs` ＋ terrain_layer_blend.wgsl
 //  エミッタは地形もカバー場も一切知らない。
 //
 //  ## 位置はアクターの Transform から取る

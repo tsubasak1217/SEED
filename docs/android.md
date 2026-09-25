@@ -1980,6 +1980,7 @@ Output パネルへ流す。停止ボタンで端末のアプリを止める。2
 | `editor/src/AndroidRun/RunTargetEntry.cs`・`RunTargetCatalog.cs` | 実行先の 1 行と一覧の組み立て（PC + Android（自動）+ 端末・選べない状態・案内の行・選んでおく行） |
 | `editor/src/AndroidRun/RunTargetSelectionStore.cs` | 前回の選択の読み書き（プロジェクトの `cache/android/run_state.json` の `editor_target` / `last_target`） |
 | `editor/src/AndroidRun/PlayBarPolicy.cs` | プレイバー（状態表示・実行／停止ボタン・実行先セレクタ・進捗）の判断。PC の状態ごとの表示（従来の `ApplyUiState` の表）もここ |
+| `editor/src/AndroidRun/AndroidViewportPolicy.cs` | Android の実行中のビューポート（PC のランタイムを隠して「Android で実行中（端末: …）」を出す）の判断（§20.16。2026-09-26） |
 | `editor/src/AndroidRun/AndroidRunStateMachine.cs`・`AndroidRunPhase.cs`・`AndroidRunSnapshot.cs` | 状態機械（§20.3） |
 | `editor/src/AndroidRun/AndroidRunController.cs`・`AndroidRunBackend.cs`・`AndroidRunTimings.cs` | 実行・アプリの見張り（pidof）・停止の段取り。中核の入口は `IAndroidRunBackend`（テストは偽物） |
 | `editor/src/AndroidRun/AndroidRunOutputFormatter.cs`・`LogcatLineParser.cs` | Output パネルの行（本文・色・出どころ）。§20.4 |
@@ -2368,6 +2369,32 @@ Gradle は各手順の後に `gradlew --stop` で止めたので、Gradle の時
 - 追加修正（§20.3・§17.7）: `run` は起動の前に `push` の上書き（`files/bin/`）を消すようにした。`install` だけ（起動しない）では消さないので、
   その後ランチャーから起動すると `push` の DLL で動く（→ 段階D で、APK を入れ直したときも消すようにした。§17.7・§23.4）。アプリの終了の文言から「戻るキー」を外した（「最近のタスクから消した」でプロセスが終わることは、
   私物の端末のシステムの画面を操作しない約束のため実機では確かめていない〈AOSP の既定の振る舞い〉）。
+
+### 20.16 Android の実行中はビューポート（シーンパネル）に案内を出す（2026-09-26）
+
+Android で実行している間も、エディタのビューポートには PC の Edit のシーンが映り続けていて、端末のゲームと並んで紛らわしかった
+（利用者の実機確認での指摘）。Android の実行が動いている間は、PC のランタイム（ビューポートに埋め込んだ子ウィンドウ）を隠し、
+起動中の画面（`ViewportLoadingOverlay`。空の絵）の右下に案内を出す。停止（アプリの終了・失敗を含む）で Idle に戻ったら元に戻す。
+PC の Play / Edit の表示は変えない（Android が動いていなければ何もしない）。
+
+| Android の状態 | ビューポート | 案内（例: 実行先が `Pixel_6a（実機）`） |
+|---|---|---|
+| Idle | PC のランタイム（従来どおり） | — |
+| Building | 隠して案内 | `Android 向けにビルド中（端末: Pixel_6a（実機））` |
+| Running | 隠して案内 | `Android で実行中（端末: Pixel_6a（実機））` |
+| Paused | 隠して案内 | `Android で一時停止中（端末: Pixel_6a（実機））` |
+| Stopping | 隠して案内 | `Android の実行を止めています（端末: Pixel_6a（実機））` |
+
+- 判断は WPF 非依存の `editor/src/AndroidRun/AndroidViewportPolicy.cs`（状態ごとの表 `PhaseTable`。単体テスト `AndroidRunUiTests` の `ViewportPolicyTests`）。
+  次の作業の「一時停止中に端末のシーンの写しをビューポートに出す」は、`ViewportContent` に種類を足して Paused の行を差し替えるだけで済む形にしてある。
+- 当てるのは `MainWindow.AndroidRun.cs` の `ApplyAndroidViewport`（Android の状態の変化と、PC の状態遷移 `ApplyUiState` の最後から呼ぶ）。
+  隠し方は起動時スプラッシュの保持と同じ（子ウィンドウとホスト `ViewportDocumentContent` の両方を隠す。ホストを残すと WPF の描画に穴が開き案内が黒く抜ける）。
+  隠している間は子ウィンドウに描画の依頼（WM_PAINT）が届かないので、PC の Edit の描画も止まる。
+- 案内を出している間は、ランタイムの READY・最初のフレーム・READY から 3 秒の保険・起動時スプラッシュの解除でもホストを出さず案内も閉じない
+  （`MainWindow.Input.cs` の `UpdateViewportHostVisibility` ほか。フラグ `_androidViewportNoticeShown`）。
+- 戻すとき: PC が Edit でランタイムが準備済みなら、子ウィンドウとホストを出し直し、コンテナへ合わせ直して案内を閉じる
+  （起動時スプラッシュの解除と同じ手順）。PC のランタイムが作り直しの途中（Building / Launching / Idle）なら、その状態の表示を `ApplyUiState` で当て直す。
+- 確認: 判断は単体テスト（84 / 84）、エディタは別の出力先でビルド（エラー 0）。**エディタの画面での見た目は未確認**（エージェントはエディタを起動しない）。
 
 ---
 
@@ -2813,9 +2840,61 @@ adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|
 - 背景ゾーンのキャンバスと 3D 空間のキャンバスは描画解像度で描かれる（前面の UI だけが論理サイズ）。
 - `mobile` は前方描画なので、シェーディングアセット（L3）・水面反射・コースティクス・SSGI／AO／反射は効かない（見た目が変わる）。
   シェーディングアセットを要求していれば警告を 1 回出す。見た目を優先するゲームは `deferred: true` で戻す。
+  （2026-09-26: 前方描画で地形が赤・緑、水面が平坦になっていた不具合は直した。水面は反射パスの代わりに空を映す。§22.9）
 - 目標 fps の上限（`target_fps`）は起動時に 1 回だけ当てる（`SEED.Application.TargetFps` は上限を当てた後の値を返す）。
 - SeedAndroid / エディタの実行は品質の起動オプションを渡さない（計測は `am start` を直接使う）。
 - 縦より横が速い理由（§7）は未調査のまま。
+
+### 22.9 前方描画での地形・水面（不具合の修正。2026-09-26）
+
+**症状**: わらしべフィッシングを Pixel 6a の `mobile` で動かすと、島の地形が**赤と緑のベタ塗り**、海が**平坦な青一色**になった
+（小屋・ヤシの木・キャラは正常。PC の `desktop` では正常）。PC で `SEED.exe --mode=play --render-quality=mobile` にすると同じ絵になった
+（Android 固有ではなく**前方描画**の問題。PC の `desktop` のまま `--render-quality-overrides=deferred=false` にしても同じ絵になった。
+プロジェクト・シーンの `deferred: false` も同じ経路を通る）。
+
+**原因**
+- 地形: 前方描画のメインパスは地形チャンクを**汎用メッシュのシェーダ**（`shader_fragment.wgsl`）で描いていた。地形の頂点カラーはレイヤの**重み**
+  （R＝スロット 0＝砂の `beach`、G＝スロット 1＝葉の `new_layer`）で、汎用メッシュはそれをベースカラーへ乗算するので赤・緑になった
+  （地形マテリアルはテクスチャ無しの G-Buffer 専用の材質）。デファードは地形専用の G-Buffer 書き込み（レイヤのテクスチャを triplanar でブレンド）を通るので正常だった。
+- 水面: 反射は独立した水面反射パス（SSR / RT。デファード専用・つまみ `water_reflection`）が焼いた RT を読むだけで、`mobile` ではこのパスが走らず
+  反射 RT が黒ダミー（強度 0）になり、水面の色が「深場の色 × 屈折の背景」だけになっていた（空の色も波の揺らぎも映らない）。
+
+**修正**（前方描画の枠内。デファードの経路と `desktop` の見た目は変えていない）
+
+| 置き場 | 役割 |
+|---|---|
+| `renderer/shaders/terrain_layer_blend.wgsl`（新規） | 地形のレイヤブレンド本体（`terrain_blend_surface`）。旧 `terrain_gbuffer_write.wgsl` から関数ごと移した（中身はバイト単位で同じ） |
+| `renderer/shaders/terrain_gbuffer_write.wgsl` | G-Buffer 版のエントリだけ（ブレンド結果を MRT へ焼く） |
+| `renderer/shaders/terrain_forward.wgsl`・`renderer/terrain_forward.rs`（新規） | 地形の前方描画パイプライン（非 RT 影・RT 影の 2 変種 × カリング面 3 種）。同じブレンド結果から Surface を組み、フォワードの `evaluate_lighting` で照らす |
+| `methods/drawer/model_drawer.rs` | `draw_model_indirect` に地形レイヤ（`Option<&TerrainLayerResources>`）を足し、渡されたときだけ地形のプリミティブを上のパイプラインで描く（前方描画のメインパスだけが渡す） |
+| `renderer/water/sky_fallback.rs`（新規）・`renderer/water/mod.rs`・`shaders/water_surface.wgsl`・`pipelines/water_surface.toml` | 反射パスが走らないフレームだけ、代表スカイボックスを水面パスの group1 binding8〜10 に挿し、波法線で反射した方向の空を天球から 1 回サンプルして反射像にする（強度は水域の反射強度・同じフレネル） |
+
+詳細は [terrain.md](terrain.md) §12.5a・[rendering_roadmap.md](rendering_roadmap.md) の「前方描画で描くもの」・[water_interaction_roadmap.md](water_interaction_roadmap.md) W5.2 の既知の制限。
+
+**確認（PC。RTX 3060・複製したプロジェクト `WarashibeFishing`）**
+- 再現と改善: `--render-quality=mobile` で MainGame（「はじめの一歩」のシーン）のフレーム 600 を撮り、修正前は地形が赤・緑・海が平坦、修正後は砂と葉のレイヤ・
+  空を映した海（雲の映り込みと波の揺らぎ・岸の透け）になった。検証用の静止シーン（MainGame からスクリプト・アニメーター・UI を外し、波・岸波・波紋を 0 にした
+  `StaticCheck`）で `desktop` と比べると、海の平均色は 1〜2 階調差（例: 沖 R/G/B 79/187/234 対 81/188/235）、砂は 4〜9 階調暗い
+（178/147/114 対 187/154/118。前方描画は GI がフラットで SSAO も無い）。
+  前方描画の映り込みは反射のぼけが無いぶん雲の輪郭がくっきりする（画素のばらつきはデファードの約 2 倍）。
+- **`desktop`（デファード）は不変**: 静止シーンのフレーム 300・600 を修正前と修正後で撮り、**画素一致**（同じ修正前の exe を 2 回走らせても 0.001% の画素が
+  最大 27 階調ずれる非決定の揺れがあり、そのうち 1 回とは完全一致）。
+- RT 影の変種: `desktop` のまま `deferred=false` にし、シーンの影を `rt` にして前方描画＋RT 影で描いた（DDGI・RT 影が地形に乗る。検証エラーなし）。
+- PC の GPU（`--gpu-timing`・`mobile`・静止シーン・描画 960x540）: forward 0.76〜0.81 → 0.92〜0.95 ms（地形のテクスチャのサンプルぶん +0.15 ms）、water は変わらず 0.58〜0.62 ms。
+- 単体テスト: `cargo test --lib`（不安定な 3 件を除外）2718 / 2718。新規: 前方描画の地形の WGSL（非 RT・RT）の naga 検証、連結がメッシュの TOML と一致すること、
+  空のフォールバックの選び方（反射パスがあれば使わない・スカイボックスが無ければ使わない）と WGSL の門（有効フラグ・水上だけ・強度は水域の反射強度・binding 番号）。
+  水面パイプラインの実 GPU での生成（`water_pipelines_build_on_gpu`）も通った。
+
+**実機（Pixel 6a）: 未実施**。修正後の APK（arm64・debug・`com.seedengine.warashibefishing`・複製したプロジェクト）は SeedAndroid の `build` で作ったが、
+2026-09-26 05:33〜05:54 の間ずっと端末の画面が消えたまま（`mWakefulness=Dozing`）で、前面がランチャーにならなかったため、入れていない・起動していない
+（端末には何も触れていない）。手順は計測用のスクリプトにまとめてある（前面がランチャーになるまで待つ → いま入っているアプリのデータを run-as の tar で
+PC へ控える → 修正前〈いま入っているアプリ〉の計測 → SeedAndroid `run --scene mainGame/MainGame.scene --logcat-seconds 30` → `screenshot` →
+修正後の計測〈`mobile`・`render_scale=0.6`・`shadows=false`・`mobile_high`・`desktop`〉）。**わらしべフィッシングの実機の fps と 60 fps に届くか、
+届かなければどのつまみで届くかは未計測**（PC の GPU では前方描画の地形が +0.15 ms。段階D-3 の `proj_bench` は `mobile` で GPU 10.5 ms・59.2 fps）。
+
+**残る見た目の差**（デファード専用の機能。`mobile` はもともと重いので止めている）: SSAO・DDGI／SSGI の照り返し（陰が暗い。MainGame のアンビエントは 0.05）・
+画面の反射・水面の物体（島・小屋）の映り込みと反射のぼけ・水中コースティクス・影の解像度（1024・50 m）。地形の散布の草・散布モデルの不透明部分は
+前方描画でまだ描かれない（わらしべフィッシングは使っていない。[backlog.md](backlog.md)）。
 
 ---
 

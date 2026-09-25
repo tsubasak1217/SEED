@@ -350,7 +350,7 @@ pub fn rebuild_terrain_model_with_colors(
 ///
 ///   色・粗さの側は逆にシェーダで解決する。頂点へ焼くと素材の粗さが運べず、
 ///   地形レイヤとのブレンドもできないためである。頂点は「量」と「素材番号」だけを
-///   運び（未使用だった `uv0` を転用）、実際の合成は terrain_gbuffer_write.wgsl が行う。
+///   運び（未使用だった `uv0` を転用）、実際の合成は terrain_layer_blend.wgsl が行う。
 ///     uv0.x = 実効の量（0..1）… 0 のとき従来と完全に同一の絵になる
 ///     uv0.y = 素材添字        … フラグメント側で round() して uniform の素材表を引く
 ///     uv1.x = 踏み固めの暗さ（0..1。I3.2）… 0 のとき従来と完全に同一の絵になる
@@ -690,7 +690,7 @@ fn build_terrain_model(
     //
     //   【なぜ両面描画を止めたか】
     //   両面（cull_face=None）だと地表フラグメントが裏面判定になり、
-    //   terrain_gbuffer_write.wgsl の front_facing 反転（facing_sign = -1）で
+    //   terrain_layer_blend.wgsl の front_facing 反転（facing_sign = -1）で
     //   法線が丸ごと反転する。結果、ライト方向に対する陰影が逆転し
     //   （上向きライトで地形が明るくなる）、シャドウの法線オフセットバイアスも
     //   逆方向に効いて斑状のシャドウアクネを生む。片面に戻すことが本質的な修正。
@@ -825,7 +825,7 @@ mod tests {
         }
     }
 
-    /// GPU 側（terrain_gbuffer_write.wgsl）と同じ手順で
+    /// GPU 側（terrain_layer_blend.wgsl）と同じ手順で
     /// 「頂点カラー（スロット重み）＋パレット」からレイヤ別の重みを復元する。
     ///
     /// シェーダは `weight[slot]` を `layers[palette[slot]]` へ適用するだけなので、

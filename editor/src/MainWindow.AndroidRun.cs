@@ -14,6 +14,8 @@
 //    - 起動するシーン（PC の Play と同じ「開いているシーン」）… AndroidRunSceneChoice
 //    - 未保存の変更の確認（保存して実行 / 保存せず実行 / キャンセル）… AndroidUnsavedChangesPrompt
 //    - Output パネルの行                        … AndroidRunOutputFormatter の行を色付きで EditorLog へ
+//    - Android の実行中のビューポート（PC のランタイムを隠して「Android で実行中（端末: …）」を出す）
+//      … AndroidViewportPolicy（当てるのは ApplyAndroidViewport）
 //  PC の実行（従来の Play）は OnPlayPause / OnStop のまま。実行・停止ボタンの Click はここで行き先を振り分ける。
 //  エミュレータの AVD はエディタの設定 android.emulator_avd（EditorPreferences.Android。設定の画面は無い）。
 //
@@ -137,6 +139,13 @@ public partial class MainWindow
     /// <summary>Android の実行が動いているか（Building / Running / Stopping）。</summary>
     private bool IsAndroidRunActive => _androidRun?.Snapshot.IsActive ?? false;
 
+    /// <summary>
+    /// ビューポートに Android の実行の案内を出している（PC のランタイムを隠している）か。
+    /// true の間は、ランタイムの READY・最初のフレーム・起動時スプラッシュの解除でも
+    /// ランタイムの子ウィンドウを出さず、案内も閉じない（MainWindow.Input.cs の各所が見る）。
+    /// </summary>
+    private bool _androidViewportNoticeShown;
+
     // ── 初期化・後始末 ───────────────────────────────────────
 
     /// <summary>
@@ -175,6 +184,8 @@ public partial class MainWindow
             controller.StateChanged += () => Dispatcher.BeginInvoke(() =>
             {
                 ApplyPlayBar();
+                // ビューポート: 動いている間は PC のランタイムを隠して案内を出し、Idle に戻ったら元に戻す
+                ApplyAndroidViewport();
                 _androidHotReload?.OnRunStateChanged(controller.Snapshot, AssetsPath);
             });
             controller.OutputWritten += line => EditorLog.Write(line.Text, line.Style);
@@ -380,6 +391,69 @@ public partial class MainWindow
         TxtAndroidRunProgress.Text         = view.ProgressText ?? string.Empty;
         PbAndroidRun.Visibility            = view.ProgressFraction is null ? Visibility.Collapsed : Visibility.Visible;
         PbAndroidRun.Value                 = view.ProgressFraction ?? 0;
+    }
+
+    // ── ビューポート（Android の実行中の案内）────────────────────
+
+    /// <summary>
+    /// Android の実行の状態に合わせてビューポート（シーンパネル）を当てる（判断は AndroidViewportPolicy。UI スレッド）。
+    /// 動いている間は PC のランタイムの子ウィンドウとホストを隠し、起動中画面（ViewportLoadingOverlay）に
+    /// 「Android で実行中（端末: …）」などの案内を出す。Idle に戻ったら PC の状態の表示へ戻す。
+    /// Android が動いていないうちは何もしない（PC の Play / Edit の表示は ApplyUiState が当てたまま）。
+    /// Android の状態の変化（StateChanged）と PC の状態遷移（ApplyUiState の最後）から呼ぶ。
+    /// </summary>
+    /// <param name="pcState">PC の状態（ApplyUiState から渡す。null ならランタイムの今の状態）。</param>
+    private void ApplyAndroidViewport(EditorState? pcState = null)
+    {
+        var view = AndroidViewportPolicy.Compute(_androidRun?.Snapshot ?? AndroidRunSnapshot.Idle);
+        if (view.HidesRuntime)
+        {
+            var first = !_androidViewportNoticeShown;
+            _androidViewportNoticeShown = true;
+            // ホストごと隠す（子ウィンドウだけを隠すとホストの HWND が WPF の描画に穴を開けたままで案内が黒く抜ける。
+            // 起動時スプラッシュの保持と同じ隠し方）。判定は UpdateViewportHostVisibility が _androidViewportNoticeShown を見る
+            if (first) _runtimeManager?.SetRuntimeWindowVisible(false);
+            UpdateViewportHostVisibility();
+            TxtViewportStatus.Text            = view.NoticeText ?? string.Empty;
+            ViewportLoadingOverlay.Visibility = Visibility.Visible;
+            return;
+        }
+
+        if (!_androidViewportNoticeShown) return;
+        _androidViewportNoticeShown = false;
+        RestorePcViewportAfterAndroid(pcState ?? _runtimeManager?.State ?? EditorState.Idle);
+    }
+
+    /// <summary>
+    /// Android の案内を閉じて、PC の状態の表示へ戻す。
+    /// Edit でランタイムが準備済みなら子ウィンドウを出し直して案内を閉じる（起動時スプラッシュの解除と同じ手順）。
+    /// それ以外（ランタイムの作り直し・起動中など）は ApplyUiState でその状態の表示を当て直す
+    /// （Android の実行中は PC の Play を始められないので、ここへ来る PC の状態は Edit かランタイムの準備中だけ）。
+    /// </summary>
+    /// <param name="pcState">PC の状態。</param>
+    private void RestorePcViewportAfterAndroid(EditorState pcState)
+    {
+        if (pcState != EditorState.Edit)
+        {
+            // 案内を出すときに隠した子ウィンドウを出し直しておく（ホストは準備ができるまで隠れたままなので見えない。
+            // 起動時スプラッシュの保持中は保持の解除に任せる）。表示はその状態の表で当て直す
+            if (!_startupSplashHold) _runtimeManager?.SetRuntimeWindowVisible(true);
+            ApplyUiState(pcState);
+            return;
+        }
+        UpdateViewportHostVisibility();
+        if (_startupSplashHold)
+        {
+            // 起動時スプラッシュの保持中なら、子ウィンドウを出すのも案内を閉じるのも保持の解除に任せる
+            TxtViewportStatus.Text = StartupSplashStatusText;
+            return;
+        }
+        _runtimeManager?.SetRuntimeWindowVisible(true);
+        // 隠している間にレイアウトが変わっていても、子ウィンドウをコンテナに合わせ直す
+        _runtimeManager?.ResizeRuntimeToContainer();
+        TxtViewportStatus.Text = string.Empty;
+        // ランタイムがまだ READY でなければ起動中画面のまま（READY・最初のフレームで閉じる）
+        if (_viewportRuntimeReady) ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
     }
 
     /// <summary>

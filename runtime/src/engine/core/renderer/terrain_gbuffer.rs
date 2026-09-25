@@ -12,6 +12,11 @@
 //  合成済みの base_color / normal / roughness / metallic を通常の G-Buffer レイアウトへ
 //  出すため、ライティング・シャドウ・SSAO・RT 反射・SSGI は既存パスがそのまま効く。
 //
+//  ## 前方描画（deferred=false）との共有
+//  レイヤブレンドの WGSL 本体は terrain_layer_blend.wgsl に切り出してあり、前方描画の地形
+//  パイプライン（terrain_forward.rs）も同じ関数を連結する。group3 のレイアウト（`layer_bgl`）と
+//  `TerrainLayerResources`（パレット別のバインドグループ）も前方描画がそのまま借りる。
+//
 //  ## バインドグループ
 //    group0 = camera / group1 = model / group2 = material  … MeshPipeline から借りる
 //    group3 = 地形レイヤ定義（本ファイルが定義する専用レイアウト）
@@ -364,7 +369,7 @@ pub struct TerrainGBufferPipelines {
 ///
 /// surface.wgsl / surface_gather.wgsl は連結しない（Surface を経由せず直接 MRT を作る）。
 /// naga 検証テストはこの並びと一致させること。
-pub fn terrain_gbuffer_shader_sources() -> [&'static str; 5] {
+pub fn terrain_gbuffer_shader_sources() -> [&'static str; 6] {
     [
         "shader_common.wgsl",
         // 速度バッファ（モーションベクタ）: 純関数と group4 の前フレーム行列。
@@ -373,6 +378,8 @@ pub fn terrain_gbuffer_shader_sources() -> [&'static str; 5] {
         "velocity_common.wgsl",
         // G-Buffer 専用の頂点シェーダ（フォワードと共有の shader_static_vertex ではない）。
         "gbuffer_static_vertex.wgsl",
+        // レイヤブレンド本体（前方描画の terrain_forward.wgsl と共有する）。エントリより前に置く。
+        "terrain_layer_blend.wgsl",
         "terrain_gbuffer_write.wgsl",
     ]
 }
@@ -578,22 +585,22 @@ mod tests {
     use super::*;
     use crate::engine::terrain::layers::DetileMode;
 
-    /// WGSL ソース（連結前の地形フラグメント）。
+    /// WGSL ソース（レイヤ数・detile コード等の定数を持つ共有モジュール）。
+    /// レイヤブレンド本体は G-Buffer 版と前方描画版で共有する terrain_layer_blend.wgsl にある。
     fn shader_src() -> &'static str {
-        include_str!("shaders/terrain_gbuffer_write.wgsl")
+        include_str!("shaders/terrain_layer_blend.wgsl")
     }
 
     /// 地形 G-Buffer 連結 WGSL を naga で parse + validate する。
-    /// 連結順は terrain_gbuffer_shader_sources() と一致させること。
+    /// 連結は実際のパイプライン生成と同じ `terrain_gbuffer_shader_sources()` から組む
+    /// （並びを手で書き写すと、リストだけ変えたときにテストが古い並びを検証し続けるため）。
     #[test]
     fn terrain_gbuffer_shader_parses_and_validates() {
-        let common   = include_str!("shaders/shader_common.wgsl");
-        let vmath    = include_str!("shaders/velocity_math.wgsl");
-        let vcommon  = include_str!("shaders/velocity_common.wgsl");
-        let static_v = include_str!("shaders/gbuffer_static_vertex.wgsl");
-        let terrain  = shader_src();
-
-        let src = [common, vmath, vcommon, static_v, terrain].join("\n");
+        let src = terrain_gbuffer_shader_sources()
+            .iter()
+            .map(|n| get_shader_source(n))
+            .collect::<Vec<_>>()
+            .join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[terrain_gbuffer] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
@@ -619,7 +626,7 @@ mod tests {
         ] {
             assert!(
                 src.contains(&expected),
-                "terrain_gbuffer_write.wgsl に `{expected}` が無い（Rust 側定数と不一致）"
+                "terrain_layer_blend.wgsl に `{expected}` が無い（Rust 側定数と不一致）"
             );
         }
     }
@@ -636,7 +643,7 @@ mod tests {
             let expected = format!("const {name}: u32 = {}u;", mode.to_gpu_code());
             assert!(
                 src.contains(&expected),
-                "terrain_gbuffer_write.wgsl に `{expected}` が無い（DetileMode と不一致）"
+                "terrain_layer_blend.wgsl に `{expected}` が無い（DetileMode と不一致）"
             );
         }
     }

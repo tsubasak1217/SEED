@@ -940,9 +940,13 @@ T2b の核心である（詳細は §12.7）。
 
 新しいライティングは**一切書かない**。G-Buffer 書き込み段だけを差し替える。
 
-- シェーダ: `runtime/src/engine/core/renderer/shaders/terrain_gbuffer_write.wgsl`（entry `fs_terrain_gbuffer`）
+- シェーダ: レイヤブレンドの本体は `runtime/src/engine/core/renderer/shaders/terrain_layer_blend.wgsl`
+  （`terrain_blend_surface` が「面の情報」＝アルベド・法線・メタリック・ラフネス・轍のキャビティを作る。定数・group3 の宣言・
+  triplanar／detile／法線シャープネスの関数もここ）。G-Buffer への書き出しは `terrain_gbuffer_write.wgsl`（entry `fs_terrain_gbuffer`。
+  結果を MRT へ焼くだけ）。2026-09-26 に 1 本から 2 本へ分けた（前方描画の地形 §12.5a と同じ関数を通すため。デスクトップの画素は不変）
 - パイプライン: `runtime/src/engine/core/renderer/terrain_gbuffer.rs`（`TerrainGBufferPipelines`）
-- 連結順: `["shader_common.wgsl", "shader_static_vertex.wgsl", "terrain_gbuffer_write.wgsl"]`
+- 連結順（正典は `terrain_gbuffer_shader_sources()`）: `["shader_common.wgsl", "velocity_math.wgsl", "velocity_common.wgsl",
+  "gbuffer_static_vertex.wgsl", "terrain_layer_blend.wgsl", "terrain_gbuffer_write.wgsl"]`
   （`surface.wgsl` / `surface_gather.wgsl` は連結しない。Surface を経由せず直接 MRT を作る）
 - バインドグループ: `group0=camera / 1=model / 2=material`（`MeshPipeline` から借用）＋
   **`group3` = 地形レイヤ定義**。**T2b でレイアウトが変わり**、レイヤテクスチャは個別バインディングではなく
@@ -960,6 +964,32 @@ T2b の核心である（詳細は §12.7）。
 `gbuffer.rs::draw_gbuffer_indirect` が `GpuModel::primitive_terrain_layers()` を見て振り分ける。
 このフラグを立てるのは `terrain_mesh_build.rs` だけ。
 レイヤ定義の BindGroup が未用意（地形が無いシーン・GPU 未初期化）のときは切り替えず、通常マテリアル描画へ倒す。
+
+### 12.5a 前方描画（deferred=false）の地形（2026-09-26）
+
+描画品質プリセット `mobile`（Android の既定。[android.md](android.md) §22）や、プロジェクト・シーンで `deferred: false` にしたとき、
+地形は G-Buffer を通らず前方描画のメインパスで描かれる。以前はここで**汎用メッシュのシェーダ**（`shader_fragment.wgsl`）を
+使っていたため、頂点カラー＝レイヤの**重み**（R=スロット 0・G=スロット 1…）がそのままベースカラーに乗算され、
+地形が赤・緑のベタ塗りに見えていた（Pixel 6a の `mobile` で発覚。PC でも `--render-quality=mobile` で再現した）。
+
+- パイプライン: `runtime/src/engine/core/renderer/terrain_forward.rs`（`TerrainForwardPipelines`。`DrawPipelines::terrain_forward`）。
+  非 RT 影と RT 影（RT 対応 GPU のみ）の 2 変種 × カリング面 3 種。
+- シェーダ: `terrain_forward.wgsl`（entry `fs_terrain_forward`）。`terrain_blend_surface`（G-Buffer 版と**同じ関数**）の結果から
+  Surface を組み、フォワードの不透明メッシュと同じ `evaluate_lighting`（アンビエント／GI・クラスタのライト・影・PBR）へ渡す。
+  連結はフォワードの `pipelines/mesh.toml`（RT 影は `mesh_rt.toml`）の `shader_sources` を**その場で読み**、
+  `surface_gather.wgsl` を外して `shader_fragment.wgsl` を `terrain_layer_blend.wgsl` ＋ `terrain_forward.wgsl` に差し替える
+  （ライティング側の連結がメッシュと常に一致する。単体テストで固定）。
+- バインドグループ: `group0〜2` と `group4`（ライト＋シャドウ。RT 変種は TLAS 入り）は `MeshPipeline` / `RtMeshPipelines` の BGL、
+  `group3` は G-Buffer 版の `layer_bgl`。パレット別のバインドグループ（`TerrainLayerResources`）もそのまま使う。
+- 振り分け: `draw_model_indirect`（`methods/drawer/model_drawer.rs`）に地形レイヤ（`Option<&TerrainLayerResources>`）を渡したときだけ、
+  `terrain_layers` のプリミティブをこのパイプラインで描く。渡すのは前方描画のメインパスの不透明ループだけ（ギズモ等は `None`）。
+  ワイヤーフレーム表示中は従来どおり線で描く。
+- デファードとの対応: 幾何法線（geo_gate）はデファードの authored 法線（RT1.w=1）と同じく合成済みの法線を使う。
+  SSAO・SSGI・RT ソフト影マスク・水中コースティクスはデファード専用なので効かない（`mobile` はもともと止めている）。
+- エディタのシーンビューの「アンリット」表示（前方描画で描く）も同じ振り分けを通るので、地形はレイヤの色になるはず
+  （`evaluate_lighting` の表示モードの分岐がアルベドを返すため。コード上の帰結で、エディタでの目視は未確認）。
+- まだ前方描画で描かれないもの: 散布の草（kind=grass。G-Buffer 専用シェーダ）と散布モデル（kind=model）の不透明部分
+  （[backlog.md](backlog.md) の「Android」節）。
 
 ### 12.6 ペイントブラシ
 
@@ -1004,8 +1034,8 @@ T2 の「拡張余地」では『レイヤ数を 4 を超えて増やすには�
   GPU 側のレイヤテクスチャ配列の枚数上限と一致。
 
 どちらも `runtime/src/engine/terrain/layers.rs` の定数で、WGSL 側
-`terrain_gbuffer_write.wgsl` の同名 `const` と一致必須（`terrain_gbuffer.rs` のテストが
-文字列一致で検証する）。
+`terrain_layer_blend.wgsl`（2026-09-26 までは `terrain_gbuffer_write.wgsl`）の同名 `const` と一致必須
+（`terrain_gbuffer.rs` のテストが文字列一致で検証する）。
 
 ### パレットの決め方（`terrain_mesh_build.rs` の 2 パス）
 
@@ -2443,7 +2473,8 @@ Rust ↔ WGSL の定数一致は `sharpness_tangent_bias_matches_shader` テス�
 
 ### 19.3 シェーディング — 面法線は dFdx/dFdy の外積から作る
 
-`terrain_gbuffer_write.wgsl` のフラグメント冒頭で、G-Buffer へ書く法線を決める。
+`terrain_layer_blend.wgsl` の `terrain_blend_surface` の冒頭（G-Buffer 版と前方描画版が共有。2026-09-26 までは
+`terrain_gbuffer_write.wgsl` のフラグメント冒頭）で、書く法線を決める。
 
 ```wgsl
 let smooth_n = normalize(in.world_normal) * facing_sign;   // SDF 勾配（従来の法線）

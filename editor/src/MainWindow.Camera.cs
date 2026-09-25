@@ -1011,6 +1011,10 @@ public partial class MainWindow
 
         // 実行・停止ボタン・状態表示・実行先コンボを当てる（MainWindow.AndroidRun.cs。判断は PlayBarPolicy）
         ApplyPlayBar(state);
+
+        // Android の実行中は、上で当てた PC のビューポートの表示より「Android で実行中」の案内を優先する
+        // （MainWindow.AndroidRun.cs。判断は AndroidViewportPolicy。Android が動いていなければ何もしない）
+        ApplyAndroidViewport(state);
     }
 
     /// <summary>ランタイムからFPS通知を受け取ったときにUI上の表示を更新する。</summary>

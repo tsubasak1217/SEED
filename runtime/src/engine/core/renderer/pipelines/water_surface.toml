@@ -30,12 +30,17 @@
 #                                  water/shading_asset.rs の WATER_DISPATCH_SOURCE_NAME も直すこと。
 #                                  差し替え時は「生成した var<private> 宣言 ＋ アセット本体 ＋
 #                                  生成した water_shade_entry」の 3 要素へ広がる（W8.2）。
-#   5. water_surface.wgsl          頂点/フラグメント本体（材料を集めて契約へ渡す）
+#   5. sky_reflection_common.wgsl  天球テクスチャを方向でサンプルする共有関数（ReflectionSkyUniform /
+#                                  sky_refl_sample。バインディングを持たない）。水面反射パスが走らない
+#                                  フレーム（前方描画・水面反射 off）に空を映すフォールバックで使う
+#                                  （group1 binding8〜10 は water_surface.wgsl が宣言する）。
+#   6. water_surface.wgsl          頂点/フラグメント本体（材料を集めて契約へ渡す）
 shader_sources  = [
     "water_height_field.wgsl",
     "water_shading_contract.wgsl",
     "water_shade_params.wgsl",
     "water_shade_dispatch.wgsl",
+    "sky_reflection_common.wgsl",
     "water_surface.wgsl",
 ]
 vertex_entry    = "vs_water"

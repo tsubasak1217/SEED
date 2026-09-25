@@ -149,8 +149,12 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "gbuffer_debug.wgsl"         => include_str!("shaders/gbuffer_debug.wgsl"),
         // G-Buffer 書き込み（Phase D3: Deferred 化 Phase A）。
         "gbuffer_write.wgsl"         => include_str!("shaders/gbuffer_write.wgsl"),
+        // 地形レイヤブレンドの共有本体（G-Buffer 書き込みと前方描画の両方が、エントリより前に連結する）。
+        "terrain_layer_blend.wgsl"   => include_str!("shaders/terrain_layer_blend.wgsl"),
         // 地形レイヤブレンド G-Buffer 書き込み（Terrain T2・terrain_gbuffer.rs が連結する）。
         "terrain_gbuffer_write.wgsl" => include_str!("shaders/terrain_gbuffer_write.wgsl"),
+        // 地形の前方描画（deferred=false のフレーム。terrain_forward.rs が連結する）。
+        "terrain_forward.wgsl"       => include_str!("shaders/terrain_forward.wgsl"),
         // プロシージャル草の G-Buffer 書き込み（grass_gbuffer.rs が単体で使う）。
         // 自己完結シェーダのため他ソースと連結しない（CameraUniform を自前宣言している）。
         "grass_gbuffer.wgsl"         => include_str!("shaders/grass_gbuffer.wgsl"),
@@ -1851,6 +1855,10 @@ pub struct DrawPipelines {
     /// G-Buffer 書き込みパイプライン一式（Phase D3: Deferred 化 Phase A）。
     /// Phase A 時点ではフレームループへ未接続（Phase B で接続予定）。
     pub gbuffer:              super::gbuffer::GBufferPipelines,
+    /// 地形の前方描画パイプライン一式（deferred=false のフレーム用。mobile プリセット等）。
+    /// レイヤブレンドは G-Buffer 版と同じ WGSL を共有し、group3 は `gbuffer.terrain.layer_bgl` を借りる。
+    /// 描画の振り分けは `draw_model_indirect`（地形レイヤを渡されたときだけ）が行う。
+    pub terrain_forward:      super::terrain_forward::TerrainForwardPipelines,
     /// デファードのフルスクリーン・ライティング復元パイプライン一式（Phase D3 Phase A）。
     /// Phase A 時点ではフレームループへ未接続（Phase B で接続予定）。
     pub deferred:             super::deferred::DeferredLightingPipelines,
@@ -1955,6 +1963,11 @@ impl DrawPipelines {
         // G-Buffer 書き込み（Phase D3 Phase A）。mesh/skinned_mesh の BGL を借りて構築するため
         // それらの構築後に呼ぶ（モジュール冒頭コメントの BGL 再利用方針を参照）。
         let gbuffer              = super::gbuffer::GBufferPipelines::new(device, &mesh, &skinned_mesh, df, cache);
+        // 地形の前方描画（deferred=false のフレーム）。mesh の BGL と G-Buffer 版の地形レイヤ BGL を
+        // 借りるので両者の後に作る。RT 影の変種は RT 対応 GPU（rt=Some）でだけ作る。
+        let terrain_forward      = super::terrain_forward::TerrainForwardPipelines::new(
+            device, &mesh, rt.as_ref().map(|r| &r.lights_bgl), &gbuffer.terrain.layer_bgl, sf, df, cache,
+        );
         // デファードのフルスクリーン・ライティング復元（Phase D3 Phase A）。
         // sf（シーン HDR）へ出力する（PostPipeline 等と同じ HDR オフスクリーン規約）。
         let deferred              = super::deferred::DeferredLightingPipelines::new(device, queue, sf, df, cache);
@@ -1992,6 +2005,6 @@ impl DrawPipelines {
         let shadow_mask           = rt.as_ref().map(|r| {
             super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
         });
-        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, skin_deform, sprite_skin, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask, caustics, water_reflection }
+        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, skin_deform, sprite_skin, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, terrain_forward, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask, caustics, water_reflection }
     }
 }

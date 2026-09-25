@@ -56,6 +56,8 @@
 //             binding3 = シーン深度（DepthOnly ビュー。textureLoad のみ。本ファイル）
 //             binding4/5 = ショアフィールド配列とサンプラー（**共有モジュール**）
 //             binding6 = 水面反射 RT（Phase W5.2。反射パスが焼いた反射色＋強度。本ファイル）
+//             binding7 = アセットのパラメータ注釈（W8.2。water_shade_params.wgsl）
+//             binding8/9/10 = 空のフォールバック用の天球（uniform・テクスチャ・サンプラー。本ファイル）
 //    group 2: インタラクションフィールド一式（**共有モジュール**）
 //
 //  ## 反射（Phase W5.2）
@@ -63,6 +65,16 @@
 //  同じ格子・同じ波法線でレイを飛ばして焼いた RT を、ここでは 1 枚読んで
 //  フレネルで混ぜるだけである（水面パイプラインのバインドグループが上限に達しており、
 //  TLAS・ライト・GI をここへ足せないため）。
+//
+//  ## 反射パスが走らないフレームの「空の映り込み」（前方描画のフォールバック）
+//  描画品質プリセット `mobile`（前方描画・水面反射 off）では反射パスが走らず、反射 RT が
+//  黒ダミー（強度 0）になるため、以前は水面が深場の色だけの平坦な一色に見えていた。
+//  そこで**反射パスが走らないフレームに限り**、CPU 側が天球（代表スカイボックス）を
+//  binding8〜10 に挿し（uniform の有効フラグ = 1）、ここで「波法線で反射した方向の空」を
+//  天球テクスチャから 1 回だけサンプルして反射像の代わりにする（物体の映り込み・粗さのぼけは無い）。
+//  反射パスが走るフレーム（デファードの既定）は無効フラグの uniform が挿さり、分岐に入らないので
+//  従来と同じ値のままである（デスクトップの見た目は変わらない）。
+//  UV 変換・色調整・実効色は反射パスのミス経路と同じ `sky_refl_sample`（sky_reflection_common.wgsl）。
 // ============================================================
 
 // ─── Group 0: カメラ ─────────────────────────────────────────
@@ -101,6 +113,15 @@ struct CameraUniform {
 /// 反射パスが走らないフレームは 1x1 の黒ダミーが挿さり、範囲外 textureLoad は
 /// WGSL 仕様でゼロを返す＝**全画面が「反射なし」**になる（分岐が要らない）。
 @group(1) @binding(6) var t_water_reflection: texture_2d<f32>;
+
+// ─── Group 1（続き）: 空のフォールバック用の天球（反射パスが走らないフレームだけ有効）─────
+/// 天球の逆回転・実効色・有効フラグ（`tint_enabled.w`）。反射パスが走るフレームと
+/// スカイボックスが無いシーンでは無効（0）が挿さり、`sky_refl_sample` はサンプルしない。
+@group(1) @binding(8) var<uniform> u_surface_sky: ReflectionSkyUniform;
+/// equirectangular の天球テクスチャ（無効なフレームは 1x1 のダミー）。
+@group(1) @binding(9) var t_surface_sky: texture_2d<f32>;
+/// 天球のサンプラー（経度方向 Repeat。clamp すると経度 0°の継ぎ目に縦線が出る）。
+@group(1) @binding(10) var s_surface_sky: sampler;
 
 // ─── 合成専用の定数（マジックナンバー禁止のため全て命名する）───
 
@@ -291,8 +312,22 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     //    反射パスが走らなかったフレーム・水域の強度 0・非対応 GPU はいずれも a = 0 になり、
     //    契約側の混合式は `color` を素通しする＝反射なしの水になる。
     let reflection   = textureLoad(t_water_reflection, vec2<i32>(in.clip.xy), 0);
-    let refl_rgb     = reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN);
-    let refl_strength = clamp(reflection.a, 0.0, 1.0);
+    var refl_rgb      = reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN);
+    var refl_strength = clamp(reflection.a, 0.0, 1.0);
+
+    // ⑥' 空の映り込み（反射パスが走らないフレームのフォールバック。冒頭コメント参照）
+    //     天球が有効（CPU が挿したのは反射パスの無いフレームだけ）かつ水上から見ているときに、
+    //     波法線で反射した方向の空を反射像にする。強度は反射パスの出力と同じ水域の反射強度
+    //     （reflection.x）なので、フレネル・反射強度の効き方は反射パスがあるときと同じ式になる。
+    //     水中から見上げた水面の内側の反射は空ではない（水中の景色）ので出さない。
+    if (!underwater && u_surface_sky.tint_enabled.w >= SKY_REFL_ENABLED_EPS) {
+        let sky_dir = reflect(-normalize(u_camera.position - in.world_pos), n);
+        let sky     = sky_refl_sample(u_surface_sky, t_surface_sky, s_surface_sky, sky_dir);
+        if (sky.valid) {
+            refl_rgb      = sky.color;
+            refl_strength = clamp(p.reflection.x, 0.0, 1.0);
+        }
+    }
 
     // ⑦ シェーディング契約への引き渡し（Phase W8）
     //    ここまでで「色を作るのに必要な値」はすべて揃っている。最終色の決定は

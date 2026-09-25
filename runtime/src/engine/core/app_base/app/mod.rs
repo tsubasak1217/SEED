@@ -263,7 +263,7 @@ struct CameraPreviewResources {
     /// プレビュー専用 G-Buffer 4 枚（案A: ミニデファード）。
     ///
     /// カメラプレビューを「本番と同じ Deferred（G-Buffer → ライティング）」で描くための
-    /// 小さな G-Buffer 一式。地形のレイヤブレンド（terrain_gbuffer_write.wgsl）と草
+    /// 小さな G-Buffer 一式。地形のレイヤブレンド（terrain_layer_blend.wgsl の G-Buffer 版）と草
     /// （grass_gbuffer.wgsl）は G-Buffer MRT へ焼くパイプラインでしか描けないため、
     /// フォワード小窓ではなくここへ焼いてからフルスクリーン・ライティングで復元する。
     /// テクスチャ本体は所有し続ける必要があるため（ビューは借用）フィールドで保持する。

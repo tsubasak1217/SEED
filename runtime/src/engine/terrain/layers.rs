@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// 1 頂点／1 チャンクで同時にブレンドできる地形レイヤ数（＝スロット数）。
 ///
 /// 頂点カラー（vec4）にスプラット重みを載せる設計上の上限であり、
-/// WGSL 側 `TERRAIN_BLEND_SLOTS`（terrain_gbuffer_write.wgsl）と一致必須。
+/// WGSL 側 `TERRAIN_BLEND_SLOTS`（terrain_layer_blend.wgsl）と一致必須。
 pub const TERRAIN_BLEND_SLOTS: usize = 4;
 
 /// layers.json に定義できるレイヤ数の上限。

@@ -65,6 +65,8 @@ pub mod shade_params;
 pub mod shading_asset;
 /// 地形レイヤブレンド用 G-Buffer パイプライン（Terrain T2）。
 pub(crate) mod terrain_gbuffer;
+/// 地形の前方描画パイプライン（deferred=false のフレーム。レイヤブレンドは G-Buffer 版と共有）。
+pub(crate) mod terrain_forward;
 
 /// プロシージャル草の GPU インスタンシング パイプライン（G-Buffer 書き込み）。
 pub(crate) mod grass_gbuffer;

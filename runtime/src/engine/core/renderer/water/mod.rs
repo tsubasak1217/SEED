@@ -53,6 +53,8 @@ pub mod params;
 /// 水面側は `WATER_DIALECT` を渡して使う。
 pub use crate::engine::core::renderer::shade_params;
 pub mod shading_asset;
+/// 水面反射パスが走らないフレーム（前方描画・水面反射 off）の「空の映り込み」の資源と規則。
+pub mod sky_fallback;
 pub mod tessellation;
 pub mod wave_noise;
 
@@ -100,6 +102,9 @@ pub(super) fn resolve_water_shader(name: &str) -> &'static str {
         // **水面パスにだけ**足すため、ここでしか連結しない。
         "water_shade_params.wgsl"     => include_str!("../shaders/water_shade_params.wgsl"),
         "water_shade_dispatch.wgsl"   => include_str!("../shaders/water_shade_dispatch.wgsl"),
+        // 天球の方向サンプル（反射パスが走らないフレームの空のフォールバック）。
+        // 正典は renderer 共通のリゾルバ（不透明反射 D6・水面反射 W5.2・天球描画と同じ 1 本）へ委譲する。
+        "sky_reflection_common.wgsl"  => super::pipeline::get_shader_source(name),
         "water_surface.wgsl"          => include_str!("../shaders/water_surface.wgsl"),
         "water_id.wgsl"               => include_str!("../shaders/water_id.wgsl"),
         other => panic!("water: unknown shader source: {other}"),
@@ -262,6 +267,10 @@ pub struct WaterRenderer {
     shore_uploaded: HashMap<u32, u64>,
     /// 上限超過の警告を出したか（毎フレームのログ氾濫を防ぐため 1 回だけ出す）。
     warned_overflow: bool,
+
+    /// 水面反射パスが走らないフレームの「空の映り込み」用の天球資源（group1 binding8〜10）。
+    /// 反射パスが走るフレームは無効値の uniform とダミーが挿さる（見た目は従来どおり）。
+    sky_fallback: sky_fallback::WaterSkyFallback,
 }
 
 impl WaterRenderer {
@@ -410,6 +419,7 @@ impl WaterRenderer {
             fallback_shore_view,
             shore_sampler,
             shore_uploaded:   HashMap::new(),
+            sky_fallback:     sky_fallback::WaterSkyFallback::new(device),
         }
     }
 
@@ -511,6 +521,9 @@ impl WaterRenderer {
     ///
     /// `shore` は岸波のショアフィールド集合（Phase W1.5）。焼かれていない水域は
     /// パラメータのレイヤ番号が負になり、シェーダが岸波を完全にスキップする。
+    ///
+    /// `sky_fallback` は水面反射パスが走らないフレームに水面へ映す空（代表スカイボックス）。
+    /// 選び方は `sky_fallback::fallback_source`（反射パスが走るフレームは必ず None＝従来どおり）。
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
@@ -525,6 +538,7 @@ impl WaterRenderer {
         field:      Option<&super::interaction::InteractionFieldRenderer>,
         shore:      &ShoreFieldSet,
         reflection_view: &wgpu::TextureView,
+        sky_fallback:    Option<&super::reflection_sky::ReflectionSkySource<'_>>,
         shader_cache:    &shading_asset::WaterShadingAssetCache,
         allow_hot_reload: bool,
     ) -> bool {
@@ -795,6 +809,9 @@ impl WaterRenderer {
         }
         let grab_view = self.grab_view.as_ref().expect("water: grab view 未確保");
 
+        // ── 空のフォールバック（反射パスが走らないフレームだけ有効値。それ以外は無効値＝従来どおり）──
+        self.sky_fallback.update(queue, sky_fallback);
+
         // ── group1 BindGroup（深度ビューがフレーム依存のため毎フレーム生成）──
         self.frame_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Water Resources BG"),
@@ -823,6 +840,17 @@ impl WaterRenderer {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(reflection_view),
+                },
+                // 空のフォールバック（反射パスが走らないフレームの天球。water_surface.wgsl の binding8〜10）。
+                // 使わないフレームは無効値の uniform と 1x1 のダミーが挿さる（レイアウトは常に同じ）。
+                wgpu::BindGroupEntry { binding: 8, resource: self.sky_fallback.uniform_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(self.sky_fallback.view(sky_fallback)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::Sampler(self.sky_fallback.sampler()),
                 },
             ],
         }));

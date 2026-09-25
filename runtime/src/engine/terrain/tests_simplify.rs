@@ -666,7 +666,7 @@ fn fuzz_watertight() {
 /// 規約は `marching_cubes::push_triangle` が全三角形に課しているもので、
 /// `dot(cross(b-a, c-a), 頂点法線の平均) <= 0`。
 /// これが正のものは背面カリングで抜けて見え、下から覗くとその面だけが見える。
-/// `terrain_gbuffer_write.wgsl` の front_facing 判定もこの規約に依存している。
+/// `terrain_layer_blend.wgsl` の front_facing 判定もこの規約に依存している。
 ///
 /// マーチングキューブスの出力は構成上この違反が 0 枚なので、
 /// デシメート後に 1 枚でも出たらデシメートが裏返したということ。

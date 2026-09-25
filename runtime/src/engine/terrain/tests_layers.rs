@@ -630,7 +630,7 @@ fn tvox_v1_is_readable_and_defaults_to_rule_generated_splat() {
 //  6. triplanar ブレンドの CPU 参照
 // ============================================================
 
-/// terrain_gbuffer_write.wgsl の `triplanar_blend_weights` の CPU 参照実装。
+/// terrain_layer_blend.wgsl の `triplanar_blend_weights` の CPU 参照実装。
 ///
 /// シェーダ側と式を 1:1 に保つ（pow(|n|, sharpness) を総和で正規化）。
 /// シェーダを書き換えたらこちらも合わせること。

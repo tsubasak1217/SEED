@@ -11,6 +11,8 @@ use super::{
     pipeline::{DrawPipelines, RtMeshPipelines},
 };
 use crate::engine::core::loader::model::CullFace;
+use crate::engine::core::renderer::terrain_gbuffer::TerrainLayerResources;
+use crate::engine::terrain::layers::TERRAIN_BLEND_SLOTS;
 
 // ============================================================
 //  draw_model_indirect — LOD + 視錐台カリング描画
@@ -52,6 +54,13 @@ pub fn draw_model_indirect<'pass>(
     // None（既定）のときは従来どおりプリミティブ固有マテリアルを使う（全既存呼び出しと一致）。
     // 差し替え BindGroup は必ず mesh パイプラインの material_bgl と同一レイアウトで作ること。
     material_override: Option<&'pass wgpu::BindGroup>,
+    // 地形レイヤの GPU リソース（group3）。**前方描画のメインパスだけが Some を渡す**
+    // （deferred=false のフレーム。mobile プリセット等）。
+    // Some のとき、地形マテリアル（`Material::terrain_layers`）のプリミティブは汎用メッシュではなく
+    // 地形の前方描画パイプライン（terrain_forward.rs。レイヤブレンドは G-Buffer 版と同じ WGSL）で描く。
+    // None（ギズモ・プレビュー等）のときは従来どおり汎用メッシュで描く（全既存呼び出しと一致）。
+    // ワイヤーフレーム表示中は無視する（地形も他のメッシュと同じ線で描く）。
+    terrain_layers: Option<&'pass TerrainLayerResources>,
 ) {
     if batch.n_prims == 0 { return; }
 
@@ -63,6 +72,16 @@ pub fn draw_model_indirect<'pass>(
     let mesh_pipelines    = rt_pipes.map_or(&pipelines.mesh.pipelines,         |r| &r.mesh);
     let skinned_pipelines = rt_pipes.map_or(&pipelines.skinned_mesh.pipelines, |r| &r.skinned);
     let empty_bg3         = rt_pipes.map_or(&pipelines.mesh.empty_bg3,         |r| &r.empty_bg3);
+
+    // 地形の前方描画パイプライン（RT 影の有無は mesh と同じ選び方）とレイヤリソースの組。
+    // 地形レイヤが渡されない・ワイヤ表示・RT 変種が無い（起きない想定）ときは None＝汎用メッシュで描く。
+    let terrain_forward = if wireframe {
+        None
+    } else {
+        terrain_layers.and_then(|res| {
+            pipelines.terrain_forward.select(rt_pipes.is_some()).map(|pipes| (pipes, res))
+        })
+    };
 
     // ワイヤ用パイプライン（対応 GPU かつ wireframe 指定時のみ Some）。
     // Some のとき set_pipeline はカリング面バリアントの代わりにこの単一パイプラインを使う。
@@ -78,6 +97,10 @@ pub fn draw_model_indirect<'pass>(
         // ソート済みのため、同じカリング面が連続する区間では set_pipeline を省略できる。
         let mut cur_cull:    Option<CullFace>               = None;
         let mut cur_mat_ptr: Option<*const wgpu::BindGroup> = None;
+        // 直前のドローが地形の前方描画パイプラインだったか（パイプライン切り替え判定に使う）。
+        let mut cur_terrain: Option<bool>                   = None;
+        // 直前に group3 へバインドした地形パレット（パレットが変わると group3 の BG も変わる）。
+        let mut cur_palette: Option<[u32; TERRAIN_BLEND_SLOTS]> = None;
 
         // LOD のジョイント BG（スキンなしの場合は None）
         let joint_bg = batch.joint_vs_bg(lod);
@@ -119,13 +142,36 @@ pub fn draw_model_indirect<'pass>(
             // このプリミティブのマテリアルのカリング面（オーバーライド適用後の実効値）。
             let cull = gpu_model.primitive_cull_face(draw.material_idx);
 
+            // ── 地形レイヤブレンド対象か（前方描画のメインパスのみ）─────────
+            //   スキンメッシュは地形になり得ないため、地形判定はスキン判定より優先する
+            //   （gbuffer.rs の draw_gbuffer_indirect と同じ判定）。
+            let is_terrain = terrain_forward.is_some()
+                && !draw.is_skinned
+                && gpu_model.primitive_terrain_layers(draw.material_idx);
+            // このプリミティブの地形パレット（非地形なら None）。
+            let palette = if is_terrain {
+                Some(gpu_model.primitive_terrain_palette(draw.material_idx))
+            } else {
+                None
+            };
+
             // ── パイプライン切り替え ──────────────────────────────
-            // スキン有無・カリング面のどちらかが変わったときだけ set_pipeline する。
-            // カリング面だけが変わる場合でもレイアウトは同一だが、group 0/3/4 の再設定は
-            // 従来どおりまとめて行う（数回/フレームのコストであり、レイアウト無効化の
+            // スキン有無・カリング面・地形か否か（地形ならパレット）のどれかが変わったときだけ
+            // set_pipeline する。カリング面だけが変わる場合でもレイアウトは同一だが、group 0/3/4 の
+            // 再設定は従来どおりまとめて行う（数回/フレームのコストであり、レイアウト無効化の
             // ルールを場合分けするより安全側に倒す）。
-            if cur_skinned != Some(draw.is_skinned) || cur_cull != Some(cull) {
-                if draw.is_skinned {
+            if cur_skinned != Some(draw.is_skinned)
+                || cur_cull != Some(cull)
+                || cur_terrain != Some(is_terrain)
+                || (is_terrain && cur_palette != palette)
+            {
+                cur_palette = palette;
+                if let (true, Some((terrain_pipes, layers)), Some(p)) = (is_terrain, terrain_forward, palette) {
+                    // 地形: レイヤブレンド＋ライティングを 1 パスで行うパイプライン。
+                    // group3 = 地形レイヤ定義（パレット別。G-Buffer 版と同じバインドグループ）。
+                    render_pass.set_pipeline(&terrain_pipes[cull.index()]);
+                    render_pass.set_bind_group(3, layers.bind_group(p), &[]);
+                } else if draw.is_skinned {
                     // ワイヤ用があればそれを、なければ従来のカリング面バリアントを使う。
                     render_pass.set_pipeline(wire_skinned.unwrap_or(&skinned_pipelines[cull.index()]));
                     // GPU スキニング: コンピュートシェーダが書き込んだ joint BG を設定
@@ -153,6 +199,7 @@ pub fn draw_model_indirect<'pass>(
                 render_pass.set_bind_group(4, lights_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
                 cur_cull    = Some(cull);
+                cur_terrain = Some(is_terrain);
                 cur_mat_ptr = None;
             }
 

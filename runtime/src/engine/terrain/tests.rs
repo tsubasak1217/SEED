@@ -126,7 +126,7 @@ fn sphere_normals_point_outward() {
 /// 球 SDF のメッシュ全三角形がこの条件を満たすことを固定する。
 ///
 /// この向きが逆だと地形フラグメントが全面裏面判定になり、
-/// terrain_gbuffer_write.wgsl の front_facing 反転で法線が丸ごと反転する
+/// terrain_layer_blend.wgsl の front_facing 反転で法線が丸ごと反転する
 /// （＝ライト方向に対して陰影が逆転し、シャドウアクネが出る）。
 #[test]
 fn sphere_winding_matches_engine_front_face_convention() {

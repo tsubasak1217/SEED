@@ -405,6 +405,8 @@ pub struct Material {
     /// 地形専用パイプライン（terrain_gbuffer.rs / terrain_gbuffer_write.wgsl）を選び、
     /// 頂点カラー（= レイヤ重み 4 成分）と group3 のレイヤ定義から triplanar で
     /// base_color / roughness / metallic を合成して G-Buffer へ焼く。
+    /// 前方描画（deferred=false）のメインパスでは地形の前方描画パイプライン
+    /// （terrain_forward.rs / terrain_forward.wgsl。合成は同じ terrain_layer_blend.wgsl）を選ぶ。
     /// 地形メッシュ以外がこのフラグを立てることは想定していない
     /// （terrain_mesh_build.rs だけが true を設定する）。
     ///

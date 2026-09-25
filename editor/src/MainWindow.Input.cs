@@ -61,7 +61,9 @@ public partial class MainWindow
             // スプラッシュ保持中は保持側（SCENE_LOADED かタイムアウト）が閉じるので触らない。
             Task.Delay(FirstFrameFallbackMs).ContinueWith(_ => Dispatcher.BeginInvoke(() =>
             {
-                if (_startupSplashHold) return;
+                // Android の実行中はオーバーレイが「Android で実行中」の案内なので閉じない
+                // （案内を閉じるのは Android が止まったときの ApplyAndroidViewport）。
+                if (_startupSplashHold || _androidViewportNoticeShown) return;
                 if (ViewportLoadingOverlay.Visibility != Visibility.Collapsed)
                     ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
             }));
@@ -77,7 +79,8 @@ public partial class MainWindow
         Dispatcher.BeginInvoke(() =>
         {
             // 起動シーンの読み込みを待っている間は閉じない（空のシーンの最初のフレームなので）。
-            if (_startupSplashHold) return;
+            // Android の実行中も閉じない（オーバーレイは「Android で実行中」の案内）。
+            if (_startupSplashHold || _androidViewportNoticeShown) return;
             ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
         });
     }
@@ -113,14 +116,14 @@ public partial class MainWindow
 
     /// <summary>
     /// HwndHost（<c>ViewportDocumentContent</c>）の表示を決める唯一の場所。
-    /// ランタイム未接続、または起動時スプラッシュ保持中は Hidden にして、
-    /// WPF のオーバーレイ（起動中画面）がその領域に描けるようにする
+    /// ランタイム未接続、起動時スプラッシュ保持中、または Android の実行中（案内を出している間）は
+    /// Hidden にして、WPF のオーバーレイ（起動中画面）がその領域に描けるようにする
     /// （表示中の HwndHost は WPF の描画に穴を開け、空のコンテナは白く映る）。
     /// Play 中の表示判定は ApplyUiState の Play ケースが別途行う。
     /// </summary>
     private void UpdateViewportHostVisibility()
     {
-        var show = _viewportRuntimeReady && !_startupSplashHold;
+        var show = _viewportRuntimeReady && !_startupSplashHold && !_androidViewportNoticeShown;
         ViewportDocumentContent.Visibility = show ? Visibility.Visible : Visibility.Hidden;
     }
 
@@ -176,6 +179,13 @@ public partial class MainWindow
         _startupSplashHold      = false;
         _startupSplashScenePath = null;
         UpdateViewportHostVisibility();
+        if (_androidViewportNoticeShown)
+        {
+            // Android の実行中は子ウィンドウを出さず、案内も閉じない（Android が止まったときに
+            // ApplyAndroidViewport が子ウィンドウを出し直して案内を閉じる）。
+            EditorLog.Write($"起動時スプラッシュ解除 — {reason}（Android の実行中のため表示は案内のまま）");
+            return;
+        }
         _runtimeManager?.SetRuntimeWindowVisible(true);
         // 隠している間にレイアウトが変わっていても、子ウィンドウをコンテナに合わせ直す。
         _runtimeManager?.ResizeRuntimeToContainer();

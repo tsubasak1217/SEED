@@ -895,7 +895,9 @@ mod tests {
         let surface = super::super::water::resolve_water_shader("water_surface.wgsl");
         assert!(surface.contains("reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN)"),
             "水面パスがプリマルチプライドを割り戻していない（反射が強度倍に暗く／明るくなる）");
-        assert!(surface.contains("let refl_strength = clamp(reflection.a, 0.0, 1.0);"),
+        // 既定は反射 RT の a。反射パスが走らないフレームだけ空のフォールバックが上書きするので
+        // `var` で受ける（上書きの約束は water/sky_fallback.rs のテストが固定する）。
+        assert!(surface.contains("var refl_strength = clamp(reflection.a, 0.0, 1.0);"),
             "水面パスが反射強度（a）を契約入力として取り出していない");
         assert!(surface.contains("si.reflection_strength = refl_strength;"),
             "反射強度がシェーディング契約へ渡されていない");

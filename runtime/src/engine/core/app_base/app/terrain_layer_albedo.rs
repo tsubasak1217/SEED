@@ -20,7 +20,7 @@
 //  CPU で焼き、マテリアルの平均アルベドへ書き込む。灰色 → 土色／草色になる。
 //
 //  ## 平均色の定義（GPU の合成式と一致させること）
-//  terrain_gbuffer_write.wgsl のベースカラー合成は
+//  terrain_layer_blend.wgsl（G-Buffer 版・前方描画版が共有）のベースカラー合成は
 //      albedo = Σ_slot  slot_weight × ( layer.base_color × [テクスチャがあればその値] )
 //  である。よって「テクスチャ値」をテクスチャ全体のアルファ加重平均で置き換えた
 //      chunk_avg = Σ_slot  mean(slot_weight) × ( layer.base_color × layer_tex_avg )
