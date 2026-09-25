@@ -175,6 +175,46 @@ internal static class EditorDialogs
     }
 
     /// <summary>
+    /// 「A する / B する / キャンセル」の 3 択を尋ねるモーダルを表示する（ヘッドレス時はログ出力のみ）。
+    /// 標準の MessageBox と違い、ボタンに「押すと何が起きるか」を書ける（例: 保存して実行 / 保存せず実行）。
+    ///
+    /// <para>
+    /// ヘッドレス時は <see cref="SEEDEditor.Dialogs.ActionChoice.Cancel"/>（＝何もしない）を返す。
+    /// 「勝手に既定値で進めない」の原則（<see cref="Show"/> の YesNoCancel と同じ）。
+    /// </para>
+    /// </summary>
+    /// <param name="body">本文。</param>
+    /// <param name="caption">タイトル。</param>
+    /// <param name="primaryText">主操作のボタンの文言。</param>
+    /// <param name="secondaryText">もう 1 つの操作のボタンの文言。</param>
+    /// <param name="cancelText">取り消しのボタンの文言。</param>
+    /// <param name="owner">親ウィンドウ（中央に出すために使う）。</param>
+    /// <returns>選ばれた操作。取り消し・ヘッドレス時は取り消し。</returns>
+    public static SEEDEditor.Dialogs.ActionChoice ShowActionChoice(
+        string body,
+        string caption,
+        string primaryText,
+        string secondaryText,
+        string cancelText,
+        Window? owner = null)
+    {
+        if (EditorStartupOptions.IsHeadless)
+        {
+            var flat = body.Replace("\r\n", " / ").Replace("\n", " / ");
+            EditorLog.Write($"{LOG_PREFIX} {caption}: {flat}  → 既定応答={cancelText}");
+            return SEEDEditor.Dialogs.ActionChoice.Cancel;
+        }
+
+        var window = new SEEDEditor.Dialogs.ActionChoiceWindow(caption, body, primaryText, secondaryText, cancelText)
+        {
+            Owner = owner ?? Application.Current?.MainWindow,
+        };
+
+        window.ShowDialog();
+        return window.Choice;
+    }
+
+    /// <summary>
     /// ボタン構成ごとの、ヘッドレス時の既定応答を返す。
     /// 「勝手に破壊的な操作を承諾しない」を原則にする。
     /// </summary>

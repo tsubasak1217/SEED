@@ -237,10 +237,46 @@ public static class AndroidRunOutputFormatter
         _ => Notice(OutputTone.Runtime, "停止しています…（ビルド中なら子プロセスの終了を待ちます）"),
     };
 
-    /// <summary>未保存の変更がある警告（APK はディスク上のファイルから作る）。</summary>
+    /// <summary>未保存の変更を保存せずに実行する警告（APK はディスク上のファイルから作る）。</summary>
     /// <returns>行。</returns>
     public static AndroidRunOutputLine UnsavedChangesWarning() =>
-        Notice(OutputTone.Warning, "警告: 未保存の変更があります。APK はディスク上のファイルから作るため、保存していない変更は Android の実行に含まれません。");
+        Notice(OutputTone.Warning, "警告: 保存せずに実行します。APK はディスク上のファイルから作るため、保存していない変更は Android の実行に含まれません。");
+
+    /// <summary>保存してから実行する行（保存が終わると実行を始める。段階C-3）。</summary>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine SavingBeforeRun() =>
+        Notice(OutputTone.Runtime, "保存してから Android で実行します（保存が終わると実行を始めます）…");
+
+    /// <summary>保存に失敗して実行を取りやめた行。</summary>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine SaveFailedRunCanceled() =>
+        Notice(OutputTone.Warning, "保存に失敗したため、Android の実行を取りやめました。");
+
+    /// <summary>保存を始められず（読み取り専用・ロック・名前を付けて保存の取り消し等）実行を取りやめた行。</summary>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine SaveNotStartedRunCanceled() =>
+        Notice(OutputTone.Warning, "保存しなかった（読み取り専用・ロック・名前を付けて保存の取り消し等）ため、Android の実行を取りやめました。");
+
+    /// <summary>未保存の変更の確認でキャンセルした行。</summary>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine UnsavedPromptCanceled() =>
+        Notice(OutputTone.Default, "Android の実行を取りやめました（未保存の変更の確認でキャンセル）。");
+
+    /// <summary>
+    /// 起動するシーンの行（開いているシーン・開始シーンと、開始シーンにした理由。段階C-3）。
+    /// </summary>
+    /// <param name="choice">起動するシーン。</param>
+    /// <returns>行。</returns>
+    public static AndroidRunOutputLine SceneChosen(AndroidRunSceneChoice choice) => choice.Source switch
+    {
+        AndroidRunSceneSource.OpenScene =>
+            Notice(OutputTone.Runtime, $"起動するシーン: {choice.ScenePath}（開いているシーン。PC の Play と同じ）"),
+        AndroidRunSceneSource.StartSceneByOption =>
+            Notice(OutputTone.Runtime, "起動するシーン: 開始シーン（「開始シーンからプレイ」がオン）"),
+        AndroidRunSceneSource.StartSceneUnsaved =>
+            Notice(OutputTone.Warning, "開いているシーンはまだファイルに保存されていないため、開始シーンで起動します。"),
+        _ => Notice(OutputTone.Warning, $"開いているシーンを端末で開けないため、開始シーンで起動します: {choice.Detail}"),
+    };
 
     /// <summary>実行を始められなかった行（動いている途中など）。</summary>
     /// <param name="reason">理由。</param>

@@ -363,24 +363,28 @@ public partial class MainWindow
 
     // ── シーン保存ロジック ────────────────────────────────────────
 
-    /// <summary>Ctrl+S: アクター編集中はアクターを、それ以外はシーンを上書き保存する。</summary>
-    private void DoQuickSave()
+    /// <summary>
+    /// Ctrl+S: アクター編集中はアクターを、それ以外はシーンを上書き保存する。
+    /// 保存は非同期（完了は OnSaveCompleted）。戻り値は「保存の要求を送ったか」（読み取り専用・ロック・
+    /// 名前を付けて保存の取り消し等で送らなかったら false。Android の「保存して実行」が続きを待つかの判断に使う）。
+    /// </summary>
+    /// <returns>保存の要求を送ったら true。</returns>
+    private bool DoQuickSave()
     {
-        if (_runtimeManager?.State != EditorState.Edit) return;
+        if (_runtimeManager?.State != EditorState.Edit) return false;
         // 別インスタンスがこのシーンを開いている間は保存させない
         //（後から保存した方が相手の変更を丸ごと消してしまうため）。
-        if (RefuseSaveIfReadOnly()) return;
+        if (RefuseSaveIfReadOnly()) return false;
         // キャンバス編集タブ表示中の保存はシーン保存として扱う。
         // タブを閉じてアクターをシーンへ戻してから保存する（開いたまま SAVE_SCENE
         // するとアクターが編集用世界線に居るため正しく書き出されない）。
         CloseActiveSceneCanvasTab();
         EndInactiveSceneCanvasTabs();
         if (_activeActorPath != null)
-            ExecuteActorSave(_activeActorPath);
-        else if (_currentScenePath != null)
-            ExecuteSave(_currentScenePath);
-        else
-            ShowSaveAsDialog();
+            return ExecuteActorSave(_activeActorPath);
+        if (_currentScenePath != null)
+            return ExecuteSave(_currentScenePath);
+        return ShowSaveAsDialog();
     }
 
     /// <summary>
@@ -426,9 +430,10 @@ public partial class MainWindow
     }
 
     /// <summary>Ctrl+Shift+S / 名前を付けて保存。</summary>
-    private void ShowSaveAsDialog()
+    /// <returns>保存の要求を送ったら true（取り消した・送れなかったら false）。</returns>
+    private bool ShowSaveAsDialog()
     {
-        if (_runtimeManager?.State != EditorState.Edit) return;
+        if (_runtimeManager?.State != EditorState.Edit) return false;
         // キャンバス編集タブ表示中の保存はシーン保存として扱う（DoQuickSave と同じ理由）
         CloseActiveSceneCanvasTab();
         EndInactiveSceneCanvasTabs();
@@ -443,11 +448,9 @@ public partial class MainWindow
                 OverwritePrompt  = true,
                 FileName         = System.IO.Path.GetFileName(_activeActorPath),
             };
-            if (dlg.ShowDialog(this) == true)
-            {
-                _activeActorPath = dlg.FileName;
-                ExecuteActorSave(dlg.FileName);
-            }
+            if (dlg.ShowDialog(this) != true) return false;
+            _activeActorPath = dlg.FileName;
+            return ExecuteActorSave(dlg.FileName);
         }
         else
         {
@@ -462,8 +465,7 @@ public partial class MainWindow
             if (_currentScenePath != null)
                 dlg.FileName = System.IO.Path.GetFileName(_currentScenePath);
 
-            if (dlg.ShowDialog(this) == true)
-                ExecuteSaveAs(dlg.FileName);
+            return dlg.ShowDialog(this) == true && ExecuteSaveAs(dlg.FileName);
         }
     }
 
@@ -477,21 +479,24 @@ public partial class MainWindow
     /// <see cref="ExecuteSaveAs"/> を使う。
     /// </para>
     /// </summary>
-    private void ExecuteSave(string path)
+    /// <returns>保存の要求を送ったら true（読み取り専用・競合・ロックで弾いたら false）。</returns>
+    private bool ExecuteSave(string path)
     {
-        if (RefuseSaveIfReadOnly()) return;
-        if (RefuseSaveIfConflicted(path)) return;
+        if (RefuseSaveIfReadOnly()) return false;
+        if (RefuseSaveIfConflicted(path)) return false;
         // チーム内のロック（Lore）のゲート。他の人が編集中なら、ここで止まる。
         // 機械内の多重編集を防ぐ RefuseSaveIfReadOnly とは目的が違うので両方通す
         //（docs/editor_version_control.md「2 つのロックの関係」）。
-        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return;
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return false;
+        if (_runtimeManager is null) return false;
 
         // シーン自動再読込へ「これから自分が書き込む」と伝える。
         // 実際に .scene を書き出すのはランタイム（SAVE_SCENE の非同期処理）のため、
         // 保存完了通知（OnSaveCompleted）までを 1 つの自己書き込み窓として扱う。
         _sceneAutoReloader?.NotifySelfSaveStarted();
-        _runtimeManager?.SendToRuntime($"SAVE_SCENE:{path}");
+        _runtimeManager.SendToRuntime($"SAVE_SCENE:{path}");
         EditorLog.Write($"ExecuteSave — SAVE_SCENE:{path}");
+        return true;
     }
 
     /// <summary>
@@ -501,13 +506,15 @@ public partial class MainWindow
     /// 「読み込み中のシーン」として採用する。エディタ側もビュー状態の保存キーと
     /// 自動再読込の監視対象を新しいパスへ移す。
     /// </summary>
-    private void ExecuteSaveAs(string path)
+    /// <returns>保存の要求を送ったら true（読み取り専用・ロックで弾いたら false）。</returns>
+    private bool ExecuteSaveAs(string path)
     {
-        if (RefuseSaveIfReadOnly()) return;
+        if (RefuseSaveIfReadOnly()) return false;
         // ★ロックのゲートは **現在シーンパスを差し替えるより前**に通す。
         //   差し替えてから止めると、保存していないのにエディタだけ新しいシーンを
         //   指した状態になり、次の Ctrl+S が別のファイルを書いてしまう。
-        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return;
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return false;
+        if (_runtimeManager is null) return false;
 
         // 保存先が変わる場合は、ビュー状態の保存キーも新しいパスへ移す。
         // 移さないと、この後の操作が旧シーンのエントリへ書き込まれてしまう。
@@ -526,21 +533,25 @@ public partial class MainWindow
         }
 
         _sceneAutoReloader?.NotifySelfSaveStarted();
-        _runtimeManager?.SendToRuntime($"SAVE_SCENE_AS:{path}");
+        _runtimeManager.SendToRuntime($"SAVE_SCENE_AS:{path}");
         EditorLog.Write($"ExecuteSaveAs — SAVE_SCENE_AS:{path}");
+        return true;
     }
 
     /// <summary>IPC でアクター保存コマンドを送出する。</summary>
-    private void ExecuteActorSave(string path)
+    /// <returns>保存の要求を送ったら true（ロックで弾いたら false）。</returns>
+    private bool ExecuteActorSave(string path)
     {
         // アクター（プレハブ）もチーム内では奪い合う資産なので、シーンと同じゲートを通す。
-        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return;
+        if (!SEEDEditor.VersionControl.Locking.LockGatekeeper.EnsureWritable(path)) return false;
+        if (_runtimeManager is null) return false;
 
         _isSavingActor = true;
         // 保存完了（SAVE_OK）後にシーン内インスタンスへ自動反映するため、対象パスを覚えておく。
         NotifyActorSaveStarted(path);
-        _runtimeManager?.SendToRuntime($"SAVE_ACTOR:{path}");
+        _runtimeManager.SendToRuntime($"SAVE_ACTOR:{path}");
         EditorLog.Write($"ExecuteActorSave — SAVE_ACTOR:{path}");
+        return true;
     }
 
     private void OnSaveCompleted(bool ok, string errorMsg)
@@ -580,6 +591,9 @@ public partial class MainWindow
                     _pendingSceneLoad = null;
                     LoadScene(path);
                 }
+
+                // 保存→Android で実行（「保存して実行」。MainWindow.AndroidRun.cs）
+                ContinuePendingAndroidRun(saved: true);
             }
             else
             {
@@ -587,6 +601,8 @@ public partial class MainWindow
                 // 保存に失敗したので自動反映もしない（覚えていたパスを捨てる）。
                 _savingActorPath = null;
                 _pendingSceneLoad = null;
+                // 「保存して実行」の続きも取りやめる（保存していない内容で実行しない）
+                ContinuePendingAndroidRun(saved: false);
                 EditorLog.Write($"OnSaveCompleted — 保存失敗: {errorMsg}");
                 SEEDEditor.Headless.EditorDialogs.Show(
                     $"保存に失敗しました:\n{DescribeSaveError(errorMsg)}", "SEED Editor",

@@ -182,6 +182,13 @@ public sealed class EditorPreferences
     [JsonPropertyName("runtime_build_config_id")]
     public string? RuntimeBuildConfigId { get; set; }
 
+    /// <summary>
+    /// Android の実行に関する設定（"android" 節。段階C-3）。
+    /// 今は <c>emulator_avd</c>（端末が無いときに起動する AVD）だけ。設定の画面は無い（docs/backlog.md）。
+    /// </summary>
+    [JsonPropertyName("android")]
+    public Settings.AndroidEditorPreferences Android { get; set; } = new();
+
     // ── シングルトン・永続化 ──────────────────────────────────
 
     /// <summary>読み込み済みの環境設定（Init 前は既定値）。</summary>
@@ -211,6 +218,8 @@ public sealed class EditorPreferences
         }
         // 範囲外の値（手編集等）をクランプして正規化する
         Instance.TouchpadScrollScale = Math.Clamp(Instance.TouchpadScrollScale, ScrollScaleMin, ScrollScaleMax);
+        // 手編集で "android": null にされても参照側が落ちないよう、節を必ず持たせる
+        Instance.Android ??= new Settings.AndroidEditorPreferences();
     }
 
     /// <summary>現在の設定をファイルへ保存する。</summary>

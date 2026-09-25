@@ -3,16 +3,19 @@
 //
 //  【一覧の並び】
 //    1. PC（常に先頭。既定の実行先）
-//    2. adb に見える端末（adb devices -l の順）。使えない状態（unauthorized / offline 等）と ABI が合わない端末は
+//    2. Android（自動）（Android を使えるときだけ。Android の既定。段階C-3）: 実行するときに
+//       実機（前回使ったものを優先）→ 起動中のエミュレータ → どちらも無ければ AVD を起動、の順で決める
+//    3. adb に見える端末（adb devices -l の順）。使えない状態（unauthorized / offline 等）と ABI が合わない端末は
 //       「選べない行」にしてツールチップに理由と対処を書く
-//    3. 前回選んだが見えなくなった端末（Keep のときだけ。選択を勝手に PC へ変えないため）
-//    4. 案内の行（端末を探している・見つからない・一覧を取れない・Android を使えない理由）
+//    4. 前回選んだが見えなくなった端末（Keep のときだけ。選択を勝手に変えないため。実行するとエミュレータで実行する）
+//    5. 案内の行（端末を探している・見つからない・一覧を取れない・Android を使えない理由）
 //
 //  【どれを選ぶか】
-//    Restore（エディタの起動時。前回の選択を戻す）… 前回の端末が見えていて使える状態ならそれ、それ以外は PC
+//    Restore（エディタの起動時。前回の選択を戻す）… 前回が端末: 見えていて使える状態ならそれ、それ以外は
+//                                                  Android（自動）（前回 Android を使っていたので Android の既定へ）
 //    Keep（一覧の取り直し。いまの選択を保つ）      … 見えていればその行（使えない状態でも選んだまま）、
 //                                                  見えなければ「未接続」の行を足してそれを選んだままにする
-//  PC を選んでいれば常に PC。
+//  PC を選んでいれば常に PC、Android（自動）を選んでいれば常に Android（自動）。Android を使えない環境では常に PC。
 //
 //  Android を使えない環境（SDK / adb が無い・エンジンのリポジトリが無い・プロジェクトが無い）では PC と理由の行だけ
 //  （エラーにはしない）。
@@ -25,6 +28,7 @@ using System.Collections.Generic;
 using System.Linq;
 using SEEDEditor.Android;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Emulator;
 using SEEDEditor.Android.Pipeline;
 
 namespace SEEDEditor.AndroidRun;
@@ -76,6 +80,12 @@ public sealed record RunTargetCatalogInput
 
     /// <summary>選び方。</summary>
     public RunTargetSelectionMode Mode { get; init; } = RunTargetSelectionMode.Keep;
+
+    /// <summary>
+    /// エミュレータを起動するときの AVD（エディタの設定 android.emulator_avd。未設定なら null）。
+    /// Android（自動）の行のツールチップに出す。
+    /// </summary>
+    public string? EmulatorAvd { get; init; }
 }
 
 /// <summary>組み立てた一覧と選んでおく行。</summary>
@@ -152,7 +162,24 @@ public static class RunTargetCatalogBuilder
 
     /// <summary>見えなくなった端末のツールチップの書式（{0}=シリアル）。</summary>
     private const string MissingToolTipFormat =
-        "前回選んだ端末 {0} が adb に見えません。実機は USB（USB デバッグ）を、エミュレータは起動を確かめてから、一覧を開き直してください。";
+        "前回選んだ端末 {0} が adb に見えません。このまま実行すると、起動中のエミュレータ（無ければ AVD を起動）で実行します。\n" +
+        "この端末で実行するには、実機は USB（USB デバッグ）を、エミュレータは起動を確かめてから、一覧を開き直してください。";
+
+    /// <summary>Android（自動）の行の文言。</summary>
+    public const string AndroidAutoText = "Android（自動）";
+
+    /// <summary>Android（自動）の行のツールチップの書式（{0}=AVD の説明）。</summary>
+    private const string AndroidAutoToolTipFormat =
+        "実行するときに Android の端末を自動で選びます（Android の既定）。\n" +
+        "1. つながっている実機（前回使ったものを優先）\n" +
+        "2. 起動中のエミュレータ\n" +
+        "3. どちらも無ければ AVD {0} を起動し、起動が終わるのを待って実行します（初回・スナップショットが無いときは 1〜3 分）";
+
+    /// <summary>AVD の設定があるときの AVD の説明の書式（{0}=AVD）。</summary>
+    private const string ConfiguredAvdFormat = "「{0}」（エディタの設定 android.emulator_avd）";
+
+    /// <summary>AVD の設定が無いときの AVD の説明の書式（{0}=既定の AVD）。</summary>
+    private const string DefaultAvdFormat = "（設定なし: {0} があればそれ、無ければ一覧の先頭）";
 
     /// <summary>Android を使えない行の文言。</summary>
     public const string UnavailableText = "Android の端末は使えません";
@@ -168,7 +195,8 @@ public static class RunTargetCatalogBuilder
 
     /// <summary>端末が無い行のツールチップ。</summary>
     private const string NoDevicesToolTip =
-        "実機は USB でつなぎ「USB デバッグ」を許可してください。エミュレータは Android Studio の Device Manager 等で起動してから、この一覧を開き直してください。";
+        "実機は USB でつなぎ「USB デバッグ」を許可してください。エミュレータは Android Studio の Device Manager 等で起動してから、この一覧を開き直してください。\n" +
+        "「" + AndroidAutoText + "」で実行すると、端末が無ければ AVD からエミュレータを起動して実行します。";
 
     /// <summary>一覧を取れなかった行の文言。</summary>
     public const string ListErrorText = "端末の一覧を取れません";
@@ -199,6 +227,24 @@ public static class RunTargetCatalogBuilder
     public static RunTargetCatalog PcOnly { get; } = new(new[] { Pc }, Pc);
 
     /// <summary>
+    /// Android（自動）の行を作る。
+    /// </summary>
+    /// <param name="emulatorAvd">エミュレータを起動するときの AVD（エディタの設定。未設定なら null）。</param>
+    /// <returns>行。</returns>
+    public static RunTargetEntry AndroidAuto(string? emulatorAvd) => new()
+    {
+        Id = RunTargetEntry.AndroidAutoId,
+        Kind = RunTargetKind.AndroidAuto,
+        Name = AndroidAutoText,
+        Text = AndroidAutoText,
+        ToolTip = string.Format(AndroidAutoToolTipFormat, string.IsNullOrWhiteSpace(emulatorAvd)
+            ? string.Format(DefaultAvdFormat, EmulatorAvdChooser.PreferredAvdName)
+            : string.Format(ConfiguredAvdFormat, emulatorAvd.Trim())),
+        CanRun = true,
+        IconKey = AndroidIconKey,
+    };
+
+    /// <summary>
     /// 一覧と選んでおく行を組み立てる。
     /// </summary>
     /// <param name="input">材料。</param>
@@ -214,6 +260,8 @@ public static class RunTargetCatalogBuilder
         }
         else
         {
+            // Android（自動）は端末の一覧を取らなくても選べる（実行するときに決める）
+            entries.Add(AndroidAuto(input.EmulatorAvd));
             if (input.Devices is not null) entries.AddRange(input.Devices.Select(FromDevice));
             if (input.Refreshing)
             {
@@ -247,16 +295,20 @@ public static class RunTargetCatalogBuilder
         {
             return Pc;
         }
+        var auto = entries.First(entry => entry.IsAndroidAuto);
+        if (preferred == RunTargetEntry.AndroidAutoId) return auto;
 
-        var match = entries.FirstOrDefault(entry => entry.IsAndroid && string.Equals(entry.Serial, preferred, StringComparison.Ordinal));
+        var match = entries.FirstOrDefault(entry => entry.Kind == RunTargetKind.AndroidDevice
+                                                    && string.Equals(entry.Serial, preferred, StringComparison.Ordinal));
         if (match is not null)
         {
-            // 起動時は使える端末だけを戻す（使えない状態の端末を選んだまま起動すると、実行ボタンが理由なく押せないように見える）
-            return input.Mode == RunTargetSelectionMode.Restore && !match.CanRun ? Pc : match;
+            // 起動時は使える端末だけを戻す（使えない状態の端末を選んだまま起動すると、実行ボタンが理由なく押せないように見える）。
+            // 戻せなければ Android の既定（自動）にする（前回 Android を使っていたので PC へは戻さない）
+            return input.Mode == RunTargetSelectionMode.Restore && !match.CanRun ? auto : match;
         }
-        if (input.Mode == RunTargetSelectionMode.Restore) return Pc;
+        if (input.Mode == RunTargetSelectionMode.Restore) return auto;
 
-        // Keep: いま見えない端末も選んだままにする（勝手に PC で実行してしまわないように。実行ボタンは理由付きで押せない）
+        // Keep: いま見えない端末も選んだままにする（勝手に別の実行先へ変えない。実行するとエミュレータで実行する）
         var missing = Missing(preferred, input.PreferredName);
         entries.Add(missing);
         return missing;
@@ -320,7 +372,15 @@ public static class RunTargetCatalogBuilder
     public static string DisplayName(AdbDevice device) =>
         device.Kind == AdbDeviceKind.Emulator ? device.Serial : device.Model ?? device.Serial;
 
-    /// <summary>見えなくなった端末の行を作る。</summary>
+    /// <summary>
+    /// 端末の表示名と種類（例「Pixel_6a（実機）」「emulator-5554（エミュレータ）」。使える端末の行の文言と同じ形）。
+    /// 実行を始めてから決まった端末（自動・エミュレータへの切り替え）を進捗と Output に出すのに使う。
+    /// </summary>
+    /// <param name="device">端末。</param>
+    /// <returns>文言。</returns>
+    public static string DeviceText(AdbDevice device) => string.Format(TextWithNoteFormat, DisplayName(device), device.KindLabel);
+
+    /// <summary>見えなくなった端末の行を作る（実行するとエミュレータで実行する。段階C-3）。</summary>
     /// <param name="serial">シリアル。</param>
     /// <param name="name">名前（機種。無ければシリアル）。</param>
     /// <returns>行。</returns>
@@ -334,7 +394,7 @@ public static class RunTargetCatalogBuilder
             Name = shown,
             Text = string.Format(TextWithNoteFormat, shown, MissingNote),
             ToolTip = string.Format(MissingToolTipFormat, serial),
-            CanRun = false,
+            CanRun = true,
             IconKey = AndroidIconKey,
             Serial = serial,
             IsMissing = true,

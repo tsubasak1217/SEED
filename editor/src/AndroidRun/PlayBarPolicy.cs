@@ -148,6 +148,12 @@ public static class PlayBarPolicy
     /// <summary>Android の実行ボタンのツールチップの書式（{0}=実行先）。</summary>
     private const string AndroidPlayToolTipFormat = "{0} で実行（ビルド → インストール → 起動 → logcat を Output パネルへ。変更の無い工程は飛ばします）";
 
+    /// <summary>見えなくなった端末を選んでいるときに、実行ボタンのツールチップへ足す注記（段階C-3）。</summary>
+    private const string MissingTargetPlayNote = "\nこの端末は今 adb に見えないため、エミュレータ（起動中のもの、無ければ AVD を起動）で実行します。";
+
+    /// <summary>Android（自動）を選んでいるときに、実行ボタンのツールチップへ足す注記（段階C-3）。</summary>
+    private const string AutoTargetPlayNote = "\n実機（前回使ったものを優先）→ 起動中のエミュレータ → AVD を起動、の順で端末を決めます。";
+
     /// <summary>PC のランタイムが Play の起動中などで Android の実行を始められない理由。</summary>
     private const string PcBusyForAndroidToolTip = "PC で実行中は Android の実行を始められません（PC の実行を止めてから）。";
 
@@ -170,7 +176,8 @@ public static class PlayBarPolicy
     private const string AndroidStoppingToolTip = "停止しています…";
 
     /// <summary>実行先セレクタのツールチップ（変えられるとき）。</summary>
-    public const string TargetSelectorToolTip = "実行先（PC／Android の実機・エミュレータ）。一覧を開くと adb で端末を探し直します。";
+    public const string TargetSelectorToolTip =
+        "実行先（PC／Android（自動）／Android の実機・エミュレータ）。一覧を開くと adb で端末を探し直します。";
 
     /// <summary>Android の実行中の実行先セレクタのツールチップ。</summary>
     private const string TargetLockedByAndroidToolTip = "Android で実行中は実行先を変えられません（停止してから）。";
@@ -202,6 +209,9 @@ public static class PlayBarPolicy
 
     /// <summary>準備中（工程の数がまだ分からない）の進捗。</summary>
     public const string PreparingProgressText = "準備中…";
+
+    /// <summary>準備中の詳細（エミュレータの起動待ち等）がある進捗の書式（{0}=詳細）。</summary>
+    private const string PreparingDetailFormat = "準備中: {0}";
 
     /// <summary>ビルド中の進捗の書式（{0}=割合 %、{1}=何番目、{2}=工程の数、{3}=工程の表示名）。</summary>
     private const string BuildingProgressFormat = "{0}% [{1}/{2}] {3}";
@@ -286,7 +296,8 @@ public static class PlayBarPolicy
         }
         else
         {
-            playToolTip = string.Format(AndroidPlayToolTipFormat, target.Text);
+            playToolTip = string.Format(AndroidPlayToolTipFormat, target.Text)
+                          + (target.IsMissing ? MissingTargetPlayNote : target.IsAndroidAuto ? AutoTargetPlayNote : string.Empty);
             canStart = true;
         }
 
@@ -354,13 +365,18 @@ public static class PlayBarPolicy
     };
 
     /// <summary>
-    /// ビルド中の進捗の文言（工程の数が分かる前は「準備中…」）。
+    /// ビルド中の進捗の文言（工程の数が分かる前は「準備中…」。エミュレータの起動待ちなど準備の詳細があれば「準備中: 詳細」）。
     /// </summary>
     /// <param name="android">Android の実行の写し。</param>
     /// <returns>文言。</returns>
     public static string BuildingProgressText(AndroidRunSnapshot android)
     {
-        if (android.StepCount <= 0 || android.StepIndex <= 0 || android.StepTitle is null) return PreparingProgressText;
+        if (android.StepCount <= 0 || android.StepIndex <= 0 || android.StepTitle is null)
+        {
+            return string.IsNullOrWhiteSpace(android.PrepareDetail)
+                ? PreparingProgressText
+                : string.Format(PreparingDetailFormat, android.PrepareDetail);
+        }
         var percent = (int)Math.Round(android.Fraction * PercentScale, MidpointRounding.AwayFromZero);
         return string.Format(CultureInfo.InvariantCulture, BuildingProgressFormat, percent, android.StepIndex, android.StepCount, android.StepTitle);
     }

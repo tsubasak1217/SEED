@@ -11,6 +11,7 @@ namespace AndroidRunUiTests;
 ///   3. 状態機械の遷移（StateMachineTests）と、停止・アプリの終了・失敗の段取り（ControllerTests。偽の中核）
 ///   4. Output パネルへ出す文言と色（OutputFormattingTests）
 ///   5. Android の実行先を使えるか・道具の一覧・パッケージ化の出力・中核への指定（EnvironmentAndPackagingTests）
+///   6. Android（自動）・エミュレータへの切り替えの表示、起動するシーン、未保存の変更の確認（AutoTargetAndSceneTests。段階C-3）
 /// 端末・adb・cargo・Gradle は使わない。
 /// </summary>
 public static class Program
@@ -26,6 +27,7 @@ public static class Program
         ControllerTests.Register(harness);
         OutputFormattingTests.Register(harness);
         EnvironmentAndPackagingTests.Register(harness);
+        AutoTargetAndSceneTests.Register(harness);
         return harness.Run();
     }
 }

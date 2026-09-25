@@ -3,6 +3,7 @@
 //
 //  【行の種類】
 //    Pc            … この PC（従来の Play。エディタに埋め込んだランタイム）
+//    AndroidAuto   … Android（自動）: 実機（前回使ったものを優先）→ 起動中のエミュレータ → AVD を起動（段階C-3。Android の既定）
 //    AndroidDevice … adb に見える Android の実機・エミュレータ（状態が device 以外・ABI が合わない端末は「選べない行」）
 //    Notice        … 選べない案内の行（端末を探している・見つからない・Android を使えない理由）
 //  行を作るのは RunTargetCatalogBuilder（純粋な処理）。表示（アイコン＋文言・ツールチップ・選べるか）は
@@ -22,6 +23,9 @@ public enum RunTargetKind
     /// <summary>この PC（従来の Play）。</summary>
     Pc,
 
+    /// <summary>Android（自動）: 実行するときに端末を決める（要ればエミュレータを起動する）。</summary>
+    AndroidAuto,
+
     /// <summary>Android の端末（実機・エミュレータ）。</summary>
     AndroidDevice,
 
@@ -35,7 +39,12 @@ public sealed record RunTargetEntry
     /// <summary>PC の行の識別子（プロジェクトの実行状態へ「PC を選んだ」と記録する値と同じ）。</summary>
     public const string PcId = AndroidRunState.EditorPcTarget;
 
-    /// <summary>識別子（PC は <see cref="PcId"/>、端末はシリアル、案内の行は "notice:…"）。</summary>
+    /// <summary>
+    /// Android（自動）の行の識別子（実行状態へ記録する値。中核へ渡すシリアルの "auto" と同じ）。
+    /// </summary>
+    public const string AndroidAutoId = AndroidRunState.EditorAutoTarget;
+
+    /// <summary>識別子（PC は <see cref="PcId"/>、自動は <see cref="AndroidAutoId"/>、端末はシリアル、案内の行は "notice:…"）。</summary>
     public required string Id { get; init; }
 
     /// <summary>行の種類。</summary>
@@ -65,11 +74,16 @@ public sealed record RunTargetEntry
     /// <summary>この端末向けにビルドする ABI（端末の行で分かっているときだけ）。</summary>
     public string? BuildAbi { get; init; }
 
-    /// <summary>前回選んだが、いま adb に見えない端末の行か（選択を保つためだけに残す行）。</summary>
+    /// <summary>
+    /// 前回選んだが、いま adb に見えない端末の行か（選択を保つための行。実行するとエミュレータで実行する。段階C-3）。
+    /// </summary>
     public bool IsMissing { get; init; }
 
-    /// <summary>Android の端末の行か。</summary>
-    public bool IsAndroid => Kind == RunTargetKind.AndroidDevice;
+    /// <summary>Android の行か（自動・端末）。</summary>
+    public bool IsAndroid => Kind is RunTargetKind.AndroidDevice or RunTargetKind.AndroidAuto;
+
+    /// <summary>Android（自動）の行か。</summary>
+    public bool IsAndroidAuto => Kind == RunTargetKind.AndroidAuto;
 
     /// <summary>コンボの閉じた状態・読み上げに使う文字列（ItemTemplate の無い場面の既定表示）。</summary>
     /// <returns>文言。</returns>

@@ -78,6 +78,15 @@ public static class AdbDeviceListParser
         return devices;
     }
 
+    /// <summary>
+    /// シリアルがローカルのエミュレータの形（emulator-5554 など）か。端末が一覧に無いとき
+    /// （実行先で選んだ端末が見えないときの文言）にも種類を見分けるのに使う。
+    /// </summary>
+    /// <param name="serial">シリアル。</param>
+    /// <returns>エミュレータの形なら true。</returns>
+    public static bool IsEmulatorSerial(string serial) =>
+        serial.StartsWith(EmulatorSerialPrefix, StringComparison.Ordinal);
+
     /// <summary>1 行を解釈する（シリアルと状態が無ければ null）。</summary>
     /// <param name="line">前後の空白を落とした 1 行。</param>
     /// <returns>端末。</returns>
@@ -115,7 +124,7 @@ public static class AdbDeviceListParser
         attributes.TryGetValue("model", out var model);
         attributes.TryGetValue("device", out var deviceName);
         attributes.TryGetValue("transport_id", out var transportId);
-        var kind = serial.StartsWith(EmulatorSerialPrefix, StringComparison.Ordinal)
+        var kind = IsEmulatorSerial(serial)
                    || (product?.StartsWith(EmulatorProductPrefix, StringComparison.Ordinal) ?? false)
             ? AdbDeviceKind.Emulator
             : AdbDeviceKind.Physical;

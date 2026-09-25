@@ -49,7 +49,7 @@ public static class ControllerTests
         var stateChanges = 0;
         controller.StateChanged += () => Interlocked.Increment(ref stateChanges);
 
-        var request = AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial);
+        var request = AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null);
         Check.True(controller.TryStart(request, "Pixel_6a（実機）"), "始められる");
         Fixtures.WaitUntil(() => controller.Snapshot.Phase == AndroidRunPhase.Running, "Running");
         var running = controller.Snapshot;
@@ -102,7 +102,7 @@ public static class ControllerTests
         };
         using var controller = new AndroidRunController(backend, FastTimings);
         var lines = Collect(controller);
-        controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial), "Pixel_6a（実機）");
+        controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null), "Pixel_6a（実機）");
         Fixtures.WaitUntil(() => controller.Snapshot.StepTitle == "APK の作成（Gradle）", "Gradle の工程");
         Check.Equal(AndroidRunPhase.Building, controller.Snapshot.Phase, "Building");
 
@@ -128,7 +128,7 @@ public static class ControllerTests
         };
         using var controller = new AndroidRunController(backend, FastTimings);
         var lines = Collect(controller);
-        Check.True(controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial), "Pixel_6a（実機）"), "始める");
+        Check.True(controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null), "Pixel_6a（実機）"), "始める");
         // TryStart が戻った時点で Completion はこの実行の完了を表す
         Fixtures.Await(controller.Completion, "アプリの終了による Idle");
         Check.Equal(AndroidRunPhase.Idle, controller.Snapshot.Phase, "Idle");
@@ -149,7 +149,7 @@ public static class ControllerTests
             Running = count => count switch { 1 => false, 2 => null, _ => true },
         };
         using var controller = new AndroidRunController(backend, FastTimings);
-        controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial), "t");
+        controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null), "t");
         Fixtures.WaitUntil(() => backend.RunningQueries >= 6, "何度か確かめる");
         Check.Equal(AndroidRunPhase.Running, controller.Snapshot.Phase, "止めない");
         Fixtures.Await(controller.StopAsync(), "停止");
@@ -178,7 +178,7 @@ public static class ControllerTests
         };
         using var controller = new AndroidRunController(backend, FastTimings);
         var lines = Collect(controller);
-        Check.True(controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial), "t"), "始める");
+        Check.True(controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null), "t"), "始める");
         Fixtures.Await(controller.Completion, "失敗");
         Check.Equal(AndroidRunPhase.Idle, controller.Snapshot.Phase, "Idle へ戻る");
         Check.Equal(0, backend.StopCalls.Count, "アプリには触らない");
@@ -208,7 +208,7 @@ public static class ControllerTests
         };
         using var controller = new AndroidRunController(backend, FastTimings);
         var lines = Collect(controller);
-        Check.True(controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial), "t"), "始める");
+        Check.True(controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null), "t"), "始める");
         Fixtures.Await(controller.Completion, "logcat の終わり");
         Check.Equal(AndroidRunPhase.Idle, controller.Snapshot.Phase, "Idle");
         var text = Texts(lines);
@@ -227,7 +227,7 @@ public static class ControllerTests
         };
         using var controller = new AndroidRunController(backend, FastTimings);
         var lines = Collect(controller);
-        controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial), "t");
+        controller.TryStart(AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null), "t");
         Fixtures.WaitUntil(() => controller.Snapshot.Phase == AndroidRunPhase.Running, "Running");
         Fixtures.Await(controller.StopAsync(), "停止");
         Check.Equal(AndroidRunPhase.Idle, controller.Snapshot.Phase, "止められなくても Idle へ戻る");
@@ -242,7 +242,7 @@ public static class ControllerTests
         var backend = new FakeBackend { Run = (_, progress, token) => PipelineScript.RunUntilCanceledAsync(progress, token) };
         var controller = new AndroidRunController(backend, FastTimings);
         var lines = Collect(controller);
-        var request = AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial);
+        var request = AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), null, null);
         Check.True(controller.TryStart(request, "t"), "1 回目は始める");
         Check.True(!controller.TryStart(request, "t"), "動いている途中は始めない");
         Fixtures.WaitUntil(() => controller.Snapshot.Phase == AndroidRunPhase.Running, "Running");

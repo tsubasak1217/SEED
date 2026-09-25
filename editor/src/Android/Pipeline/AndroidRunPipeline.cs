@@ -2,7 +2,8 @@
 //  AndroidRunPipeline.cs — Android のビルド・配置・起動の本体（段階C。従来の runtime/android/build_and_run.ps1 の中身）
 //
 //  【流れ】
-//    準備: 指定の検査 → プロジェクト（アセットルート・画面の向き・アプリの識別情報）→ 端末と ABI →
+//    準備: 指定の検査 → プロジェクト（アセットルート・画面の向き・アプリの識別情報）→ 起動するシーン →
+//          端末（「自動」等なら要ればエミュレータを起動して待つ。段階C-3）と ABI →
 //          各工程の今の指紋と前回の記録 → 実行計画（Plan/AndroidBuildPlan.cs。飛ばす工程と理由）
 //    工程: libSEED.so（cargo ndk）→ pak とスクリプト（SeedPak）→ 同梱 .NET → APK（Gradle）→ インストール →
 //          開発用の転送（アセット・スクリプトの DLL）→ 起動 → logcat（Steps/ の各クラス）
@@ -143,6 +144,9 @@ public sealed class AndroidRunPipeline
         var runStatePath = project is not null ? AndroidRunState.PathForProject(project.Folder.ProjectRoot) : _engine.FallbackRunStatePath;
         var runState = AndroidRunState.Load(runStatePath);
 
+        // ── 起動するシーン（起動の工程があるときだけ。端末を用意する前に指定の誤りを弾く）──
+        var launchScene = ResolveLaunchScene(request, project, log);
+
         // ── 端末と ABI ──
         var (device, adb) = await ResolveDeviceAsync(request, runState, log, cancellationToken).ConfigureAwait(false);
         var abis = await ResolveAbisAsync(request, device, adb, log, cancellationToken).ConfigureAwait(false);
@@ -153,7 +157,7 @@ public sealed class AndroidRunPipeline
         {
             Request = request, Engine = _engine, Toolchain = _toolchain, Project = project, Identity = identity,
             ScreenOrientation = orientation, Abis = abis, Device = device, Adb = adb,
-            Stamps = stamps, RunState = runState, RunStatePath = runStatePath,
+            Stamps = stamps, RunState = runState, RunStatePath = runStatePath, LaunchScene = launchScene,
         };
         var buildScope = request.Goal is AndroidRunGoal.Build or AndroidRunGoal.Install or AndroidRunGoal.Run;
         if (buildScope)
@@ -237,21 +241,68 @@ public sealed class AndroidRunPipeline
     }
 
     /// <summary>
+    /// 起動するシーンを決める（起動の工程が無ければ見ない）。指定の形の誤り（アセットフォルダの外・..）は何もしないうちに弾き、
+    /// プロジェクトに無いシーンは警告だけ出してそのまま渡す（端末が警告を出して開始シーンで起動する。pak の収録の設定で
+    /// 外れたシーンも端末側で同じ扱いになるので、判断は端末に 1 本化する）。
+    /// </summary>
+    /// <param name="request">指定。</param>
+    /// <param name="project">プロジェクト（無ければ null）。</param>
+    /// <param name="log">準備のログ。</param>
+    /// <returns>アセットルートからの相対パス（開始シーンなら null）。</returns>
+    private static string? ResolveLaunchScene(AndroidRunRequest request, AndroidProjectInfo? project, AndroidPhaseLog log)
+    {
+        var launches = (request.Goal is AndroidRunGoal.Run or AndroidRunGoal.Push) && !request.NoLaunch;
+        if (!launches) return null;
+
+        var assetsRoot = project?.Folder.AssetsRoot;
+        var scene = AndroidScenePath.Normalize(request.ScenePath, assetsRoot);
+        if (scene.Error is not null) throw new AndroidPipelineException(AndroidFailureKind.InvalidRequest, scene.Error);
+        if (scene.Relative is null)
+        {
+            log.Info("起動するシーン: 開始シーン（project_settings.json の start_scene）");
+            return null;
+        }
+
+        log.Info($"起動するシーン: {scene.Relative}（am start の extra {AndroidRuntimeContract.SceneExtraName} で渡す）");
+        if (assetsRoot is null || !AndroidScenePath.ExistsUnder(assetsRoot, scene.Relative))
+        {
+            log.Warn($"シーン {scene.Relative} がプロジェクトのアセット（{assetsRoot ?? "指定なし"}）にありません。端末は警告を出して開始シーンで起動します。");
+        }
+        return scene.Relative;
+    }
+
+    /// <summary>
     /// 端末を決める。端末の工程を行うなら必須。ビルドだけでも、ABI を決めるために 1 台に決まる端末があれば使う。
+    /// 「自動」「選んだ端末が見えなければエミュレータ」（段階C-3）で端末の工程を行うなら、要ればエミュレータを起動して待つ
+    /// （AndroidDeviceActions.EnsureDeviceAsync）。
     /// </summary>
     private async Task<(AdbDevice? Device, AdbClient? Adb)> ResolveDeviceAsync(
         AndroidRunRequest request, AndroidRunState runState, AndroidPhaseLog log, CancellationToken cancellationToken)
     {
         var needsDevice = NeedsDevice(request);
+        var target = AndroidDeviceTarget.From(request.Serial, request.EmulatorFallback);
+
+        // ── 自動・エミュレータへの切り替え（端末の工程を行うときだけ。ビルドだけのためにエミュレータを起動しない）──
+        if (needsDevice && target.MayLaunchEmulator)
+        {
+            var provisioningAdb = new AdbClient(_toolchain.RequireAdb());
+            var provisioned = await new AndroidDeviceActions(_toolchain)
+                .EnsureDeviceAsync(target, runState.LastTarget?.Serial, request.Avd, log, cancellationToken).ConfigureAwait(false);
+            log.Info($"端末: {provisioned.Serial}（{provisioned.KindLabel}・{provisioned.Model ?? "機種不明"}）");
+            return (provisioned, provisioningAdb);
+        }
+
+        // 「自動」でも端末の工程が無ければ、指定なしと同じ（ABI を決める端末が 1 台に決まれば使う）
+        var serial = target.Mode == AndroidDeviceTargetMode.Auto ? null : target.Serial;
         var wantsAbiFromDevice = request.Abis is null && request.Goal == AndroidRunGoal.Build;
-        if (!needsDevice && !wantsAbiFromDevice && string.IsNullOrWhiteSpace(request.Serial)) return (null, null);
+        if (!needsDevice && !wantsAbiFromDevice && string.IsNullOrWhiteSpace(serial)) return (null, null);
 
         AdbClient adb;
         try
         {
             adb = new AdbClient(_toolchain.RequireAdb());
         }
-        catch (AndroidPipelineException) when (!needsDevice && string.IsNullOrWhiteSpace(request.Serial))
+        catch (AndroidPipelineException) when (!needsDevice && string.IsNullOrWhiteSpace(serial))
         {
             // ビルドだけなら adb が無くても続ける（ABI は既定の両方）
             return (null, null);
@@ -264,14 +315,14 @@ public sealed class AndroidRunPipeline
         }
         catch (Exception ex) when (ex is AdbCommandException or ChildProcessStartException)
         {
-            if (!needsDevice && string.IsNullOrWhiteSpace(request.Serial)) return (null, null);
+            if (!needsDevice && string.IsNullOrWhiteSpace(serial)) return (null, null);
             throw new AndroidPipelineException(AndroidFailureKind.Device, $"端末の一覧を取れません: {ex.Message}", ex);
         }
 
-        var selection = AndroidDeviceSelector.Select(devices, request.Serial, runState.LastTarget?.Serial);
+        var selection = AndroidDeviceSelector.Select(devices, serial, runState.LastTarget?.Serial);
         if (selection.Device is null)
         {
-            if (!needsDevice && string.IsNullOrWhiteSpace(request.Serial))
+            if (!needsDevice && string.IsNullOrWhiteSpace(serial))
             {
                 log.Info("ABI を決める端末が 1 台に決まりません（端末が無い・2 台以上）。");
                 return (null, null);

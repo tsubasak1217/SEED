@@ -260,18 +260,23 @@ Android の一連の手順（段階B までは `runtime/android/build_and_run.ps
 ```
 editor/src/Android/
   Common/     AndroidRuntimeContract（端末側のコード・Gradle と一致させる名前と値）・AndroidAbi（ABI の表と端末の abilist からの選び方）
-  Toolchain/  AndroidToolchain（SDK / NDK / adb / JDK / cargo / dotnet の場所。§3）・AndroidEnginePaths（リポジトリの置き場）
-  Processes/  ChildProcessRunner（子プロセスの起動・行単位の出力・標準入力・中断で子孫ごと終了）・MixedEncodingLineReader（UTF-8 と ANSI の混在）
-  Adb/        AdbClient（devices -l・getprop・install・pm path・run-as の tar 展開・am start / force-stop・logcat）・AdbDeviceListParser・
-              AndroidDeviceSelector・RunAsTarArchive（.NET の TarWriter。外部の tar は使わない）・AndroidLogcatSession
+  Toolchain/  AndroidToolchain（SDK / NDK / adb / emulator / JDK / cargo / dotnet の場所。§3）・AndroidEnginePaths（リポジトリの置き場）
+  Processes/  ChildProcessRunner（子プロセスの起動・行単位の出力・標準入力・中断で子孫ごと終了）・MixedEncodingLineReader（UTF-8 と ANSI の混在）・
+              DetachedProcess（切り離した起動。CreateProcessW・ハンドルを継承させない。エミュレータ用）・WindowsCommandLine（引数の引用）
+  Adb/        AdbClient（devices -l・getprop・install・pm path・run-as の tar 展開・am start（起動オプションの extra 付き）/ force-stop・logcat・
+              emu avd name・sys.boot_completed）・AdbDeviceListParser・AndroidDeviceSelector（端末の決め方。自動の規則も）・
+              AndroidDeviceTarget / AndroidDeviceDecision・RunAsTarArchive（.NET の TarWriter。外部の tar は使わない）・AndroidLogcatSession
+  Emulator/   AndroidDeviceProvisioner（端末の用意: 選ぶ・要ればエミュレータを起動して起動の完了を待つ。段階C-3。§20.9）・
+              EmulatorLauncher（emulator -list-avds・切り離した起動）・EmulatorAvdChooser（AVD の決め方）・EmulatorHost・EmulatorTimings・WaitClock
   Project/    AndroidProjectResolver（--project / --assets-dir）・AndroidProjectSettingsReader（screen_orientation と android 節）・
-              AndroidAppIdentityResolver（アプリの識別情報の既定値と検査。§18）
+              AndroidAppIdentityResolver（アプリの識別情報の既定値と検査。§18）・AndroidScenePath（起動するシーンの指定を揃える。§20.10）
   Dotnet/     DotnetRuntimeSettings（dotnet_runtime.json）・NuGetRuntimePackRestorer・DotnetRuntimeBundle（dotnet-root への組み立てと目録。§17）
   Gradle/     GradleInvocation（gradlew の引数と -P／環境変数の組み立て）
   Plan/       AndroidBuildPlan（どの工程を飛ばすか。純粋な処理）・AndroidStepFingerprints / AndroidFingerprint（指紋）・AndroidBuildInputs（入力の表）
   State/      AndroidStepStamps（置き場の中身の記録。エンジン側）・AndroidRunState（プロジェクトの実行状態）
   Steps/      工程ごとの実装（NativeBuild・PackageContent・DotnetBundle・GradleBuild・Install・PushAssets・PushScripts・Launch・Logcat）
-  Pipeline/   AndroidRunPipeline（本体）・AndroidRunRequest（指定）・AndroidPipelineEvent（進み具合）・AndroidDeviceActions（一覧・停止・logcat）
+  Pipeline/   AndroidRunPipeline（本体）・AndroidRunRequest（指定）・AndroidPipelineEvent（進み具合）・
+              AndroidDeviceActions（一覧・端末の用意・停止・logcat）
 ```
 
 **入口（段階C-2 のエディタ統合で使うもの。エディタ側の使い方は §20）**
@@ -285,7 +290,9 @@ editor/src/Android/
 | 停止ボタン | `ct` を取り消す（子プロセスを止める。logcat の途中なら「止めた」＝成功）＋ `AndroidDeviceActions.StopAppAsync(serial, result.Identity.ApplicationId, ct)`（取り消していない新しい `ct` で） |
 | アプリが端末で終わったか（C-2 で追加） | `AndroidDeviceActions.IsAppRunningAsync(serial, applicationId, ct)`（`adb shell pidof`。`AdbClient.GetProcessIdsAsync`） |
 | 準備で決まった端末・アプリ ID・ABI（C-2 で追加） | イベント `AndroidPrepared`（準備を終えたときに 1 回。工程より前に届く） |
-| 前回の実行先（セレクタの既定値） | `AndroidRunState.Load(AndroidRunState.PathForProject(projectRoot)).LastTarget`、エディタで選んだもの（PC を含む）は同じ記録の `EditorTarget`（C-2 で追加） |
+| 前回の実行先（セレクタの既定値） | `AndroidRunState.Load(AndroidRunState.PathForProject(projectRoot)).LastTarget`、エディタで選んだもの（PC・自動を含む）は同じ記録の `EditorTarget`（C-2 で追加） |
+| 端末が無ければエミュレータを起動して実行（C-3 で追加） | 指定の `Serial = "auto"`（実機 → 起動中のエミュレータ → AVD を起動）か、`Serial = <シリアル>` ＋ `EmulatorFallback = true`（見えなければエミュレータ）。`Avd` で AVD を指定。準備の中で `AndroidDeviceActions.EnsureDeviceAsync` が呼ばれ、待っている旨はログと `AndroidProgressChanged`（工程は準備）で届く（§20.9） |
+| 開いているシーンから起動（C-3 で追加） | 指定の `ScenePath`（アセットルートからの相対パス）。起動の工程が `am start --es seed.scene '<パス>'` で渡す（§20.10） |
 
 - `RunAsync` は全体をスレッドプールで動かし（UI スレッドから `await` しても止めない）、失敗しても例外は投げず `AndroidPipelineResult`
   （`Succeeded` / `Canceled` / `FailureKind` / `FailureMessage` / 工程ごとの結果 / 計画 / 端末 / アプリの識別情報）を返す。
@@ -339,6 +346,9 @@ dotnet run --project editor/tools/SeedAndroid -- run --project D:\path\to\Projec
 # 20 秒ぶんの logcat を UTF-8 で保存して終える
 dotnet run --project editor/tools/SeedAndroid -- run --project D:\path\to\Project --serial <実機> --logcat-seconds 20 --log-file logcat.txt
 
+# 端末を自動で決める（実機 → 起動中のエミュレータ → どちらも無ければ AVD を起動して待つ。段階C-3）。起動するシーンも指定
+dotnet run --project editor/tools/SeedAndroid -- run --project D:\path\to\Project --serial auto --scene scenes/Stage2.scene
+
 # APK を作るだけ（端末が 1 台に決まればその ABI、決まらなければ両方）／作って入れるまで
 dotnet run --project editor/tools/SeedAndroid -- build --project D:\path\to\Project --abi arm64-v8a
 dotnet run --project editor/tools/SeedAndroid -- install --project D:\path\to\Project --serial <実機>
@@ -368,10 +378,13 @@ dotnet run --project editor/tools/SeedAndroid -- logcat --serial emulator-5554
 |---|---|
 | `--project <フォルダ>` | プロジェクト（`.seedproj` か `assets/` を持つフォルダ、またはアセットルートそのもの。規則は SeedPak と共有の `ProjectFolderResolver`）。APK に pak とスクリプトを入れる（パッケージ実行。§13・§17）。画面の向き・アプリの識別情報（§18）もここの `project_settings.json` から読む |
 | `--assets-dir <フォルダ>` | 開発用: pak の無い APK にして、このアセットフォルダを run-as で端末の `files/assets` へ送る（`--project` と排他。端末は APK の pak を優先するため） |
-| `--serial <シリアル>` | 対象の端末。省略時は使える端末がちょうど 1 台のときそれ（2 台以上ならエラー。前回の実行先を添える。私物の実機へ勝手に入れないため） |
+| `--serial <シリアル>` | 対象の端末。省略時は使える端末がちょうど 1 台のときそれ（2 台以上ならエラー。前回の実行先を添える。私物の実機へ勝手に入れないため）。見えなければエラー（エミュレータへは切り替えない。切り替えるのは設定 JSON の `emulator_fallback: true`＝エディタで端末を選んだときの動き） |
+| `--serial auto` | 端末を自動で決める（段階C-3。規則は §20.9）: 使える実機（前回使ったものを優先。前回のものが無く 2 台以上ならエラー）→ 起動中のエミュレータ（前回優先）→ 起動の途中のエミュレータ（完了を待つ）→ どれも無ければ AVD を起動して `sys.boot_completed` まで待つ（時間切れ 300 秒）。`install` / `run` / `push` で使える。`build` では端末を起動しない（1 台に決まる端末があれば ABI に使う）。`stop` / `logcat` では使えない（誤りの終了コード 1） |
+| `--avd <AVD>` | `--serial auto`（と `emulator_fallback`）でエミュレータを起動するときの AVD。省略時は `emulator -list-avds` の一覧に `seed_pixel6_api35` があればそれ、無ければ先頭。一覧に無い名前はエラー（別の AVD を勝手に起動しない） |
+| `--scene <シーン>` | 端末で起動するシーン（段階C-3。§20.10）。アセットルートからの相対パス（`scenes/Main.scene`）・`assets://…`・アセットルートの中の絶対パス。起動の工程が `am start --es seed.scene '<相対パス>'` で渡す。省略時は `project_settings.json` の開始シーン。アセットルートの外・`..` は指定の誤り（終了コード 1）。プロジェクトに無いシーンは警告を出して渡し、端末が logcat に警告を出して開始シーンで起動する |
 | `--abi <ABI[,ABI]>` | `arm64-v8a` / `x86_64`。省略時は端末の `ro.product.cpu.abilist` の先頭から選ぶ（端末が決まらなければ両方） |
 | `--release` | Rust 側を `--release` でビルド（APK はデバッグ署名のまま） |
-| `--config <JSON>` | 指定をまとめた設定 JSON（キーは `AndroidRunRequest` の snake_case: `project` / `assets_dir` / `serial` / `abis` / `release` / `skip_rust_build` / `skip_gradle` / `no_install` / `no_launch` / `no_logcat` / `push_scripts` / `rebuild` / `logcat_seconds` / `log_file`。相対パスは JSON のフォルダから。コマンドラインが優先） |
+| `--config <JSON>` | 指定をまとめた設定 JSON（キーは `AndroidRunRequest` の snake_case: `project` / `assets_dir` / `serial` / `emulator_fallback` / `avd` / `scene` / `abis` / `release` / `skip_rust_build` / `skip_gradle` / `no_install` / `no_launch` / `no_logcat` / `push_scripts` / `rebuild` / `logcat_seconds` / `log_file`。`project`・`assets_dir`・`log_file` の相対パスは JSON のフォルダから、`scene` はアセットルートから。コマンドラインが優先） |
 | `--skip-rust` / `--skip-gradle` / `--no-install` / `--no-launch` / `--no-logcat` | 工程を飛ばす（`--skip-gradle` は pak とスクリプト・同梱 .NET・Gradle をまとめて飛ばす） |
 | `--push-scripts` | `run` でもスクリプトの DLL を作り直して `files/bin/` へ送る |
 | `--rebuild` | 変更の有無で工程を自動で飛ばさない（すべて作り直し、入れ直す） |
@@ -1547,8 +1560,8 @@ APK に .NET 10 の CoreCLR（Android 版）を同梱し、PC と同じスクリ
   APK（Steps/GradleBuildStep）… Gradle（useLegacyPackaging = true。.so をインストール時に nativeLibraryDir へ展開させる）
 端末
   MainActivity の static 初期化: System.loadLibrary("SEED") → DotnetJniLibraries（暗号ライブラリを System.loadLibrary。JNI_OnLoad。§17.8）
-  MainActivity.onCreate: 環境変数 TMPDIR / HOME / DOTNET_EnableDiagnostics=0（§17.6）
-  android_main → launch::launch_args → dotnet_runtime::prepare（runtime/android/native/src/dotnet_runtime/）
+  MainActivity.onCreate: 環境変数 TMPDIR / HOME / DOTNET_EnableDiagnostics=0（§17.6）・起動オプション（seed.* の extra。§20.10）
+  android_main → launch::launch_args（起動するシーンもここで決める）→ dotnet_runtime::prepare（runtime/android/native/src/dotnet_runtime/）
       1. APK の assets/seed/dotnet/<ABI>/bundle.json を読む（無ければ「.NET の無い APK」としてスクリプト無し）
       2. スクリプトの DLL の置き場を選ぶ（files/bin → 外部の files/bin → APK の bin/。SEEDScripting.dll がある最初の置き場。
          どこにも無ければ .NET を展開せずにスクリプト無し）
@@ -1884,12 +1897,17 @@ project_settings.json の android 節（＋ .seedproj の name / display_name）
 
 ---
 
-## 20. エディタからの実行（段階C-2・2026-09-25）
+## 20. エディタからの実行（段階C-2・C-3・2026-09-25）
 
-エディタの実行ボタンの隣に **実行先セレクタ**（`PC` と adb に見える実機・エミュレータ）を置いた。端末を選んで実行ボタンを押すと、
+エディタの実行ボタンの隣に **実行先セレクタ**（`PC`・`Android（自動）`・adb に見える実機・エミュレータ）を置いた。Android を選んで実行ボタンを押すと、
 §4.6 の中核（SeedAndroid と同じクラス）で ビルド → pak とスクリプト → インストール → 起動 → logcat を一気通貫で行い、進み具合と logcat を
 Output パネルへ流す。停止ボタンで端末のアプリを止める。2 回目以降は変更の無い工程を飛ばす（§4.6）。パッケージ化ウィンドウの Android 出力も
 同じ中核で APK を作るようにした（§20.6）。
+
+段階C-3 で次の 3 つを足した（利用者が実機で試して出た要望）:
+- **端末が無ければエミュレータを自動で起動して実行する**（`Android（自動）`。選んだ端末が見えないときも同じ。§20.9）
+- **PC の Play と同じく「開いているシーン」から起動する**（§20.10）
+- 実行の前に**未保存の変更を「保存して実行 / 保存せず実行 / キャンセル」で尋ねる**（§20.11）
 
 ### 20.1 構成（UI と WPF 非依存の分け方）
 
@@ -1898,13 +1916,16 @@ Output パネルへ流す。停止ボタンで端末のアプリを止める。2
 
 | 場所 | 役割 |
 |---|---|
-| `editor/src/AndroidRun/RunTargetEntry.cs`・`RunTargetCatalog.cs` | 実行先の 1 行と一覧の組み立て（PC + 端末・選べない状態・案内の行・選んでおく行） |
+| `editor/src/AndroidRun/RunTargetEntry.cs`・`RunTargetCatalog.cs` | 実行先の 1 行と一覧の組み立て（PC + Android（自動）+ 端末・選べない状態・案内の行・選んでおく行） |
 | `editor/src/AndroidRun/RunTargetSelectionStore.cs` | 前回の選択の読み書き（プロジェクトの `cache/android/run_state.json` の `editor_target` / `last_target`） |
 | `editor/src/AndroidRun/PlayBarPolicy.cs` | プレイバー（状態表示・実行／停止ボタン・実行先セレクタ・進捗）の判断。PC の状態ごとの表示（従来の `ApplyUiState` の表）もここ |
 | `editor/src/AndroidRun/AndroidRunStateMachine.cs`・`AndroidRunPhase.cs`・`AndroidRunSnapshot.cs` | 状態機械（§20.3） |
 | `editor/src/AndroidRun/AndroidRunController.cs`・`AndroidRunBackend.cs`・`AndroidRunTimings.cs` | 実行・アプリの見張り（pidof）・停止の段取り。中核の入口は `IAndroidRunBackend`（テストは偽物） |
 | `editor/src/AndroidRun/AndroidRunOutputFormatter.cs`・`LogcatLineParser.cs` | Output パネルの行（本文・色・出どころ）。§20.4 |
-| `editor/src/AndroidRun/AndroidEditorRunRequests.cs` | 中核への指定（実行ボタン＝`Run`、パッケージ化＝`Build`） |
+| `editor/src/AndroidRun/AndroidEditorRunRequests.cs` | 中核への指定（実行ボタン＝`Run`〈自動は `serial=auto`、端末は `emulator_fallback`・シーン・AVD〉、パッケージ化＝`Build`） |
+| `editor/src/AndroidRun/AndroidRunSceneChoice.cs` | 端末で起動するシーン（開いているシーン／「開始シーンからプレイ」／開けないときは開始シーン。§20.10。C-3） |
+| `editor/src/AndroidRun/AndroidUnsavedChangesPrompt.cs`・`editor/src/Dialogs/ActionChoiceWindow.cs` | 未保存の変更の確認の文言と選択肢（純粋な処理）と、ボタンの文言を決められる 3 択ダイアログ（WPF。§20.11。C-3） |
+| `editor/src/Settings/AndroidEditorPreferences.cs` | エディタの設定の `android` 節（`emulator_avd`。§20.9。C-3） |
 | `editor/src/AndroidRun/AndroidRunEnvironment.cs`・`AndroidToolchainReport.cs` | Android の実行先を使えるか（プロジェクト・リポジトリ・adb）と道具の一覧 |
 | `editor/src/Logging/OutputLineStyle.cs`・`OutputLineClassifier.cs` | Output パネルの行の色の種類と出どころ。見た目の指定が無い従来の行は本文の印から決める（従来の判定をそのまま表にした） |
 | `editor/src/Runtime/EditorState.cs` | PC のランタイムの状態（`RuntimeManager.cs` から切り出した。プレイバーの判断をテストから使うため） |
@@ -1914,23 +1935,29 @@ Output パネルへ流す。停止ボタンで端末のアプリを止める。2
 
 中核に足したもの: `AdbClient.GetProcessIdsAsync`（pidof）・`AndroidDeviceActions.IsAppRunningAsync`・イベント `AndroidPrepared`・
 `AndroidRunState.EditorTarget`・`AndroidBuildPlan.UnchangedReason`（単体テストは `AndroidPipelineTests` に追加）。
+段階C-3 で `AndroidDeviceActions.EnsureDeviceAsync`・`Emulator/`・`AndroidRunRequest.ScenePath` / `EmulatorFallback` / `Avd`・
+`AndroidScenePath`・`DetachedProcess` を足した（§4.6。単体テストは `AndroidPipelineTests` の `EmulatorAndSceneTests`）。
 
 ### 20.2 実行先セレクタ
 
 | 行 | 文言（例） | 選べるか | ツールチップ |
 |---|---|---|---|
 | PC | `PC` | いつも | この PC で実行（従来の Play） |
+| Android（自動）（C-3。Android の既定） | `Android（自動）` | いつも（Android を使える環境なら。端末の一覧が無くても） | 決め方（実機 → 起動中のエミュレータ → AVD を起動）と起動する AVD（設定の値か既定の規則。§20.9） |
 | 使える端末 | `Pixel_6a（実機）`・`emulator-5554（エミュレータ）`（実機は機種、エミュレータはシリアル） | ○ | 種類・機種・シリアル・ビルドする ABI |
 | 使えない状態の端末 | `R58M…（未許可）`・`emulator-5556（応答なし）`・`（権限なし）`・`（接続中）` | × | 状態ごとの理由と対処（`AndroidDeviceSelector.DescribeNotReady`） |
 | ABI が合わない端末 | `Old_Phone（ABI 非対応）` | × | 端末の ABI とビルドできる ABI |
-| 見えなくなった端末 | `Pixel_6a（未接続）` | ×（選んだまま残す） | USB・エミュレータの起動を確かめて一覧を開き直す |
-| 案内 | `端末を探しています…` / `Android の端末が見つかりません` / `端末の一覧を取れません` / `Android の端末は使えません` | × | 理由と対処 |
+| 見えなくなった端末 | `Pixel_6a（未接続）` | ○（C-3 から。選んだまま残し、実行するとエミュレータで実行する） | 今は見えないのでエミュレータで実行する旨と、この端末で実行するための対処 |
+| 案内 | `端末を探しています…` / `Android の端末が見つかりません` / `端末の一覧を取れません` / `Android の端末は使えません` | × | 理由と対処（見つからないときは「Android（自動）ならエミュレータを起動して実行できる」旨も） |
 
 - **一覧はコンボを開くたびに `ListDevicesAsync` で取り直す**（取り直している間は「探しています…」の行。前回の一覧は残す）。接続・切断の自動検知はしない。
-- **前回の選択はプロジェクトごとに覚える**（`cache/android/run_state.json` の `editor_target`。PC を選んだことも覚える）。エディタの起動時は、前回が端末で、
-  その端末が見えていて使える状態なら戻し、それ以外は PC。`editor_target` が無ければ最後に Android で実行した端末（`last_target`。SeedAndroid で実行した分も入る）を前回とみなす。
-  前回が PC のときは起動時に adb を呼ばない（adb のサーバーを無用に起こさない）。
-- 一覧を取り直したときは、いまの選択を保つ。選んでいた端末が見えなくなったら「未接続」の行で選んだまま残し、実行ボタンは理由付きで押せなくする（勝手に PC で実行しない）。
+- **前回の選択はプロジェクトごとに覚える**（`cache/android/run_state.json` の `editor_target`。`pc`・`auto`・端末のシリアル。PC を選んだことも覚える）。
+  エディタの起動時は、前回が PC なら PC、Android（自動）なら Android（自動）。前回が端末なら、その端末が見えていて使える状態なら戻し、
+  それ以外は **Android（自動）**（前回 Android を使っていたので Android の既定へ。C-2 までは PC だった）。`editor_target` が無ければ最後に Android で
+  実行した端末（`last_target`。SeedAndroid で実行した分も入る）を前回とみなす。前回が PC・Android（自動）のときは起動時に adb を呼ばない
+  （adb のサーバーを無用に起こさない）。
+- 一覧を取り直したときは、いまの選択を保つ。選んでいた端末が見えなくなったら「未接続」の行で選んだまま残す（勝手に別の実行先へ変えない）。
+  C-3 からはこの行でも実行でき、実行すると「実機 <シリアル> が見えないためエミュレータで実行します」と Output に 1 行出してエミュレータで実行する（§20.9）。
 - **Android を使えない環境**（プロジェクトが無い・エンジンのリポジトリ `runtime/android` が見つからない・Android SDK / adb が無い）では、PC と理由の行だけを出す（エラーにしない）。
   NDK・JDK・cargo・dotnet が無いことはセレクタでは見ない（実行したときに対処付きのエラーとして Output パネルへ出る）。
 
@@ -1944,8 +1971,8 @@ Idle ──実行ボタン──▶ Building ──起動の工程が成功─�
 
 | 状態 | 状態表示 | 実行ボタン | 停止ボタン | 実行先セレクタ | 進捗の表示 |
 |---|---|---|---|---|---|
-| Idle（実行先が端末） | PC の表示（EDIT 等） | その端末で実行（選べない端末・PC の実行中は理由付きで無効） | 無効 | 変えられる | なし |
-| Building | `ANDROID BUILD...`（黄） | 無効（ビルド中の旨） | **ビルドを中止** | 変えられない | バー＋`43% [4/7] APK の作成（Gradle）` |
+| Idle（実行先が Android） | PC の表示（EDIT 等） | その実行先で実行（選べない端末・PC の実行中は理由付きで無効） | 無効 | 変えられる | なし |
+| Building | `ANDROID BUILD...`（黄） | 無効（ビルド中の旨） | **ビルドを中止**（エミュレータの起動待ちも止める。エミュレータは残す） | 変えられない | バー＋`43% [4/7] APK の作成（Gradle）`（工程の前は `準備中…`、エミュレータの起動待ちは `準備中: エミュレータの起動を待っています（45 秒）`） |
 | Running | `ANDROID RUN`（水色・Android のアイコン） | 一時停止の絵柄で無効（**Android では一時停止できない**旨） | **端末のアプリを止める** | 変えられない | `Pixel_6a（実機） で実行中` |
 | Stopping | `STOPPING...`（橙） | 無効 | 無効 | 変えられない | `停止しています…` |
 
@@ -1957,10 +1984,12 @@ Idle ──実行ボタン──▶ Building ──起動の工程が成功─�
 - **アプリ側の終了**: Running の間、2 秒おきに `pidof <アプリ ID>` で確かめ、2 回続けて見つからなければ「アプリが終わった」として logcat を止めて Idle へ戻す
   （戻るキー・クラッシュ。直前の logcat で理由が分かる）。adb の失敗（端末が外れた等）は数えない（そのときは logcat が自分で終わって Idle へ戻る）。
   間隔・回数は `AndroidRunTimings`。
-- 実行の指定は `Goal = Run`・プロジェクトのルート・選んだ端末のシリアル・ABI は端末から・Rust は debug・logcat は止めるまで（`AndroidEditorRunRequests.ForPlay`）。
+- 実行の指定は `Goal = Run`・プロジェクトのルート・実行先（Android（自動）は `serial = auto`、端末はそのシリアル＋`emulator_fallback`）・
+  起動するシーン（§20.10）・エミュレータの AVD（§20.9）・ABI は端末から・Rust は debug・logcat は止めるまで（`AndroidEditorRunRequests.ForPlay`）。
   ツールバーのビルド構成（Debug / Develop / Release）は PC のランタイム用で、Android の実行には効かない。
-- Android の APK はディスク上のファイルから作るので、**未保存の変更は含まれない**（Output パネルに警告を 1 行出す）。起動するシーンはプロジェクト設定の開始シーン
-  （PC の Play のような「編集中のシーンから」は無い）。
+- 進捗・Output の「〜で実行中」「〜でアプリが動いています」は、準備で決まった端末の名前（Android（自動）やエミュレータへの切り替えでは
+  `emulator-5554（エミュレータ）` 等）にする。
+- Android の APK はディスク上のファイルから作るので、未保存の変更があれば実行の前に尋ねる（§20.11）。起動するシーンは PC の Play と同じ「開いているシーン」（§20.10）。
 
 ### 20.4 Output パネルの見方
 
@@ -2042,6 +2071,156 @@ Android の実行の行は書き手が色と出どころを決めて出す（`An
 - pak とスクリプトは SeedPak を子プロセスで呼ぶまま（エディタの中の `AssetPakBuilder` / `ScriptPackager` を直接呼ぶ高速化はしていない）。DLL だけを送る `Push` の
   高速経路もエディタには出していない（SeedAndroid の `push` は使える）。
 - 端末の一覧はコンボを開いたときだけ取り直す（`adb track-devices` による接続・切断の自動検知は無い）。
-- エディタの実行は Rust を debug で作る（ツールバーのビルド構成と連動しない）・開始シーンから起動する・未保存の変更は含まれない（警告だけ。保存を促すダイアログは無い）。
+- エディタの実行は Rust を debug で作る（ツールバーのビルド構成と連動しない）。開始シーンからしか起動できない・未保存の変更は警告だけ、は段階C-3 で直した（§20.10・§20.11）。
 - エディタを閉じても端末のアプリは止めない。AI ツールの `seed_play` は PC だけを扱う（Android の実行の MCP ツールは無い）。
 - Gradle のデーモンは実行の後も残る（Gradle の既定。`gradlew --stop` で止まる）。
+
+### 20.9 Android（自動）とエミュレータの自動起動（段階C-3）
+
+**実行先の決め方**（純粋な処理 `Adb/AndroidDeviceSelector.DecideForRun`。単体テスト `EmulatorAndSceneTests`）
+
+| 実行先 | 中核への指定 | 決め方 |
+|---|---|---|
+| `Android（自動）` | `serial = "auto"` | 1. 使える実機（前回使った実機を優先。前回のものが無く 2 台以上なら選ばずにエラー＝私物の端末へ勝手に入れない）→ 2. 起動中のエミュレータ（前回使ったものを優先、無ければ一覧の先頭）→ 3. 起動の途中のエミュレータ（adb の状態 offline・connecting・authorizing。完了を待つ）→ 4. どれも無ければ AVD を起動して待つ。使えない状態の実機（未許可等）は理由付きの警告を出して飛ばす |
+| 特定の端末（`Pixel_6a（実機）` 等・`（未接続）` の行） | `serial = <シリアル>`・`emulator_fallback = true` | 見えていて使えればそれ。起動の途中のエミュレータなら完了を待つ。つながっているが使えない実機（未許可等）は理由付きのエラー（許可すれば使えるので切り替えない）。**見えなければ**「実機 <シリアル> が見えないためエミュレータで実行します。」と警告の 1 行を出し、上の 2〜4 へ |
+| SeedAndroid の `--serial <シリアル>` / 指定なし | 従来どおり（`emulator_fallback` は立てない） | 見えなければエラー／使える端末がちょうど 1 台ならそれ（§5.1） |
+
+- エミュレータを起動するのは端末の工程（インストール・起動・転送）を行うときだけ。`build` のために起動しない。
+- エミュレータは実機より後。実機が USB につながっていれば、`Android（自動）` は実機で実行する（前回使った実機が優先）。
+
+**エミュレータの起動と待ち合わせ**（`Emulator/AndroidDeviceProvisioner`。外の世界は `IEmulatorHost`、時間は `WaitClock` 越しに触り、単体テストは偽物）
+
+1. AVD を決める（`Emulator/EmulatorAvdChooser`）: エディタの設定 `android.emulator_avd`（SeedAndroid は `--avd`）→ 設定なしなら `emulator -list-avds` に
+   `seed_pixel6_api35` があればそれ → 無ければ一覧の先頭。設定した名前が一覧に無ければ起動せずにエラー（別の AVD を勝手に起動しない）。一覧が空でもエラー。
+2. `emulator -avd <AVD> -gpu host` を**切り離して**起動する（`Processes/DetachedProcess`: CreateProcessW で、ハンドルを継承させない・コンソールの窓を出さない・
+   Ctrl+C を受けない・呼び出し元のジョブから外れる。quick boot は AVD の既定のまま）。.NET の `Process.Start` はハンドルを継承させるため、
+   SeedAndroid の出力をパイプへつないでいるとエミュレータが書き口を握り続けて読み手が終わらない、という問題を避ける。
+3. 起動前から動いていたエミュレータを除き、新しく adb に現れた `emulator-*` を `adb -s <シリアル> emu avd name` で照合して自分が起動したものを見分ける
+   （別の AVD のものは「使いません」の 1 行を出して以後聞かない。コンソールがまだ応答しなければ次の確認で聞き直す）。
+4. adb の状態が `device` かつ `getprop sys.boot_completed` が `1` になるまで待つ（`device` になっても起動の途中は install が失敗するため）。
+   動いているエミュレータを使うときも、この完了だけは確かめる（終わっていれば待たない）。
+5. 確認は 2 秒おき、10 秒おきに Output へ「エミュレータの起動を待っています（N 秒・状態）…」、ツールバーの進捗へ「準備中: エミュレータの起動を待っています（N 秒）」
+   （`AndroidProgressChanged`。工程は準備）。時間の決まりは `Emulator/EmulatorTimings`（起動待ちの上限 300 秒）。
+
+| 起きたこと | 振る舞い |
+|---|---|
+| 300 秒以内に起動が終わらない | エラー（種類「端末」）: 「…起動が 300 秒以内に終わりませんでした（最後の状態）。エミュレータはそのまま残します。起動が終わってから、もう一度実行してください」 |
+| emulator.exe が 0 以外の終了コードで終わった | すぐエラー（終了コードと、Device Manager から同じ AVD を起動して原因〈メモリ不足・仮想化支援〉を確かめる旨）。0 で終わったら本体へ引き継いだとみなして待ち続ける |
+| 待っていたエミュレータが adb から消えた | エラー（閉じられた・起動に失敗した） |
+| 停止ボタン・Ctrl+C（待っている途中） | 待つのをやめる（中断）。起動を始めたエミュレータは**止めない**（次の実行で「起動中のエミュレータ」として使う） |
+| emulator.exe が無い | エラー（種類「道具」）: SDK Manager で Android Emulator を入れるか実機をつなぐ |
+
+- **起動したエミュレータは実行の後も止めない**（起動に時間がかかるので、2 回目以降の実行で使い回す）。止めるときはエミュレータの窓を閉じるか
+  `adb -s <シリアル> emu kill`。PC のメモリが少ないときは、使い終わったら閉じる（AVD `seed_pixel6_api35` は RAM 2 GB）。
+- **AVD の設定**（エディタ）: `editor/settings/editor_preferences.json` の `"android": { "emulator_avd": "<AVD>" }`（`Settings/AndroidEditorPreferences`）。
+  設定の画面はまだ無い（backlog）。手で書くときはエディタを閉じてから（開いている間は環境設定の保存で上書きされる）。
+  `Android（自動）` の行のツールチップに、使う AVD（設定の値、または既定の規則）を出す。SeedAndroid はこの設定を読まない（`--avd` で指定）。
+
+Output の例（端末が無い状態から `Android（自動）` で実行）:
+
+```
+[Android] 実行を始めます: Android（自動）（プロジェクト D:\…）。ビルド → インストール → 起動 → logcat
+[Android] [準備] 道具・プロジェクト・端末を確かめ、実行計画を立てます
+[Android]     起動するシーン: scenes/Stage2.scene（am start の extra seed.scene で渡す）
+[Android]     つながっている実機が無いため、エミュレータで実行します。
+[Android]     使える端末が無いため、AVD からエミュレータを起動します。
+[Android]     AVD: seed_pixel6_api35（指定なし: 開発用の既定の AVD seed_pixel6_api35）
+[Android]     エミュレータを起動します: emulator -avd seed_pixel6_api35 -gpu host（スナップショットが無いと 1〜3 分かかります）
+[Android]     起動したエミュレータ emulator-5554（AVD seed_pixel6_api35）が adb に現れました（offline）。
+[Android]     エミュレータの起動を待っています（12 秒・adb の状態 offline）…
+[Android]     エミュレータの起動を待っています（22 秒・起動の完了（sys.boot_completed）を待っています）…
+[Android]     エミュレータ emulator-5554 の起動が終わりました（33 秒待ちました）。
+[Android]     端末: emulator-5554（エミュレータ・sdk_gphone64_x86_64）
+[Android] 端末: emulator-5554（エミュレータ・sdk_gphone64_x86_64）・ABI: x86_64・アプリ ID: com.seedengine.…
+…
+[Android] emulator-5554（エミュレータ） でアプリが動いています。logcat を流します（停止ボタンでアプリを止めます）。
+```
+
+### 20.10 起動するシーン（開いているシーンから。段階C-3）
+
+エディタの Android の実行は、PC の Play と同じく**開いているシーン**から起動する（`AndroidRun/AndroidRunSceneChoice`）。
+
+| 状態 | 起動するシーン | Output |
+|---|---|---|
+| 「開始シーンからプレイ」がオン | 開始シーン（`project_settings.json` の `start_scene`） | `起動するシーン: 開始シーン（「開始シーンからプレイ」がオン）` |
+| 開いているシーンがアセットフォルダの中 | そのシーン（アセットルートからの相対パス。例 `scenes/Stage2.scene`） | `起動するシーン: scenes/Stage2.scene（開いているシーン。PC の Play と同じ）` |
+| まだファイルに保存していない新規シーン | 開始シーン（APK に入らないため） | 警告の色で理由を 1 行 |
+| アセットフォルダの外のシーン | 開始シーン（APK に入らないため） | 警告の色で理由を 1 行 |
+
+**受け渡し**（中核 → 端末）
+
+```
+AndroidRunRequest.ScenePath（相対パス・assets://…・アセットルート内の絶対パス。Project/AndroidScenePath で相対パスに揃える。外・.. は指定の誤り）
+  └ 起動の工程（Steps/LaunchStep）: adb shell am start -W -n <ID>/com.seedengine.runtime.MainActivity --es seed.scene '<相対パス>'
+      （adb shell は引数をつないで端末のシェルへ渡すので、値は単一引用符で囲む。' は '\'' にする。空白・日本語もそのまま届く）
+      └ MainActivity.onCreate の最初（super.onCreate より前。TMPDIR / HOME の設定と同じ位置）: 「seed.」で始まる文字列の extra を
+        JSON 1 つにまとめる（{"scene":"scenes/Stage2.scene"}）→ nativeSetLaunchOptions(UTF-8 の byte[])。**デバッグ版の APK だけ**
+        （配布版では他のアプリの Intent で途中のシーンへ飛べないよう何も渡さない）
+          └ libSEED.so の jni_exports.rs → launch_options.rs（android_main まで預かる。byte[] は jni_env.rs が JNIEnv の関数表で読む）
+              └ launch.rs: engine::platform::launch_options::choose_scene（純粋な処理・cargo test 付き）で決め、
+                LaunchArgs.scene_path = "assets://<相対パス>"（エンジンの load_play_scene が開始シーンの代わりに読む）
+```
+
+- 端末は、エンジンが読むのと同じ順（APK の pak のエントリ → APK の PAK 外 `assets/seed/assets/` → アプリ専用フォルダの `assets/`。開発用の
+  `--assets-dir` の APK はアプリ専用フォルダだけ）でシーンがあるかを確かめ、**どこにも無ければ logcat に警告を出して開始シーンで起動する**。
+  判断は端末に 1 本化し、PC 側はそのまま渡したうえで理由を Output に出す:
+  - 準備: プロジェクトのアセットに無ければ「シーン X がプロジェクトのアセット（…）にありません。端末は警告を出して開始シーンで起動します」
+  - 起動の直前: ディスクにはあるのに APK の pak に入っていなければ（`Project/PakEntryIndex` で置き場の pak の表を引く）
+    「シーン X は APK の pak に入っていません（…）。このシーンから起動するには、プロジェクト設定のシーンマネージャに登録してから実行してください」
+- **pak に入るシーン**: pak はプロジェクト設定の開始シーン・シーン一覧（`scenes[]`）から参照をたどって作る（`Packaging/Collect/AssetCollector`。
+  パッケージ化ウィンドウ・SeedPak と同じ）。**シーンマネージャに登録していない・どこからも参照されていないシーンは、開いていても pak に入らない**ので
+  開始シーンで起動する（上の警告）。登録すれば次の実行で pak を作り直して（入力が変わる）そのシーンから起動する。
+- logcat（タグ SEED）: `[SEED LAUNCH] 起動オプションを受け取りました: {"scene":"scenes\/Stage2.scene"}` → `起動するシーン: assets://scenes/Stage2.scene（起動オプションの指定。…）`
+  → `[SEED INIT] load_play_scene start  scene_path=Some("assets://scenes/Stage2.scene")`。無いシーンは
+  `起動オプションのシーン scenes/NoSuch.scene が見つかりません（pak・APK・アプリ専用フォルダのどれにもありません）。開始シーンで起動します`。
+- シーンは起動の指定なので、シーンを変えても工程（.so・pak・APK・インストール）は作り直さない（起動し直すだけ）。毎回アプリを止めてから起動するので
+  extra は必ず新しいプロセスの onCreate に届く。ランチャーから起動したときは extra が無いので開始シーン。
+- 起動オプションの JSON の書式と、知らないキーを読み飛ばすこと・オブジェクトでない JSON を誤りにすることはエンジンの `platform/launch_options.rs` が正典
+  （Java は名前を見ずに `seed.*` をすべて渡すので、オプションを足すときは Rust の `LaunchOptions` と C# の `AndroidRuntimeContract` だけを直す）。
+
+### 20.11 未保存の変更（段階C-3）
+
+PC の Play は保存しなくても編集中の状態で動く（埋め込み Play はその場で Play 化、ウィンドウ Play は一時ファイル `_play_temp.scene`）が、
+Android は保存済みのファイルから APK（pak）を作る。そこで実行ボタンを押したときに未保存の変更があれば、エディタの他の確認（シーンの切り替え・終了の
+「未保存の変更があります。…保存しますか？」）と同じ言い回しで尋ねる（文言は `AndroidRun/AndroidUnsavedChangesPrompt`、窓は `Dialogs/ActionChoiceWindow`）。
+
+| ボタン | 振る舞い |
+|---|---|
+| **保存して実行**（主操作・Enter） | Ctrl+S と同じ保存（アクターの編集中はアクター、名前の無い新規シーンは「名前を付けて保存」）。保存は非同期なので、保存が終わってから実行を始める（`OnSaveCompleted` → `ContinuePendingAndroidRun`）。保存したファイルの指紋が変わるので pak を作り直す。保存に失敗・読み取り専用・ロック等で保存できなければ実行を取りやめ、その旨を Output に 1 行 |
+| 保存せず実行 | 保存済みの内容で実行する（Output に「保存せずに実行します…保存していない変更は Android の実行に含まれません」の警告を 1 行） |
+| キャンセル（Escape・閉じる） | 何もしない（Output に取りやめた旨を 1 行）。ヘッドレス起動では常にこれ（`EditorDialogs.ShowActionChoice`） |
+
+- 事前の確認の順: アセットフォルダ → スクリプトのコンパイル → 未保存の変更 → 実行（PC の Play と同じ前の 2 つ）。保存が終わった後の実行でも前の 2 つをやり直す。
+- 保存が終わるまでの間に実行先が PC へ変わった・PC の実行が始まった等なら、プレイバーの判断（`PlayBarPolicy`）に従って始めない。
+
+### 20.12 確認結果（段階C-3・2026-09-25）
+
+エミュレータ（AVD `seed_pixel6_api35`・x86_64・RAM 2 GB・quick boot）と、段階B の確認用プロジェクトの写しにシーンを 2 つ足したもの
+（`Main`＝アクタ 2・`Second`＝3・`日本語 シーン`＝4）で、SeedAndroid から確かめた。**作業中は実機 Pixel 6a が USB につながっていた**ため、
+`--serial auto` で走らせると実機を選んでしまう（規則どおり）。実機には触らない約束なので、エミュレータの自動起動は同じ経路の
+「選んだ端末が見えなければエミュレータ」（設定 JSON の `serial` に存在しないシリアル＋`emulator_fallback: true`）で確かめた
+（`auto` と違うのは、実機を探す段だけ。そこは単体テストで確かめた）。
+
+| 項目 | 結果 |
+|---|---|
+| エミュレータの自動起動（端末・エミュレータとも動いていない状態から） | 「実機 SEED-C3-NOT-CONNECTED が見えないためエミュレータで実行します。」→ AVD `seed_pixel6_api35`（既定）→ `emulator -avd seed_pixel6_api35 -gpu host` を切り離して起動 → `emulator-5554` を AVD 名で見分け（offline）→ 待っている旨を 10 秒ごと → 起動完了まで **33 秒**。続けてインストール 43.9・起動 3.3・logcat 30 秒（全体 110.4 秒）。emulator.exe は SeedAndroid が終わった後も qemu の親として動き続けた（`adb emu kill` で止めると約 18 秒で qemu ごと終了） |
+| 開いているシーン（`Second`）から起動 | logcat: `[SEED LAUNCH] 起動オプションを受け取りました: {"scene":"scenes\/Second.scene"}` → `起動するシーン: assets://scenes/Second.scene` → `load_play_scene start scene_path=Some("assets://scenes/Second.scene")` → `done actors=3`。スクリプトも動いた（`[PROBE v2] OnStart`） |
+| 起動中のエミュレータの使い回し | 2 回目以降は「起動中のエミュレータ emulator-5554 で実行します。」で新しく起動せず、工程を飛ばして 11.7〜18.1 秒 |
+| 日本語と空白を含むシーン（`scenes/日本語 シーン.scene`） | `am start … --es seed.scene 'scenes/日本語 シーン.scene'` のまま端末の JSON に届いた（Windows → adb → 端末のシェル → Java → JNI → Rust で化けない）。シーンマネージャに未登録の間は pak に入らず、PC の「pak に入っていません」の警告と端末の警告で開始シーン（actors=2）。登録すると pak・APK を作り直して（SeedPak 6.6・Gradle 22.6・install 1.8 秒）`load_play_scene start scene_path=Some("assets://scenes/日本語 シーン.scene")` → `actors=4` |
+| 無いシーン（CLI `--scene scenes/NoSuch.scene --serial emulator-5554`） | 準備で「プロジェクトのアセットにありません」の警告 → 端末の logcat に `W SEED: 起動オプションのシーン scenes/NoSuch.scene が見つかりません（…）。開始シーンで起動します` → `scene_path=None`・`actors=2` |
+| シーンの指定なし | JSON は `{}`・`起動するシーン: 開始シーン（…起動オプションにシーンの指定なし）`・`scene_path=None` |
+| 単体テスト | `AndroidPipelineTests` 71 / 71（決め方の規則・偽の adb と仮の時計での起動待ち〈見分け・時間切れ・起動直後の終了・中断・動いているエミュレータ〉・AVD・シーンのパス・am start の extra と引用・コマンドラインの引用〈CommandLineToArgvW で往復〉・切り離した起動〈cmd /c exit 3 の終了コード〉・pak の表・SeedAndroid の引数）。`AndroidRunUiTests` 54 / 54（自動の行・復元・未接続の行・進捗の文言・状態機械の実行先の表示・シーンの決め方・未保存の確認の文言）。`ProjectSystemTests` 55 / 55。Rust の `cargo test --lib`（`platform::launch_options` の JSON の往復・シーンの判断、`PakReader::contains`）18 / 18 |
+| ビルド | エディタ（別の出力先・`--no-incremental`）エラー 0・警告 25（変更前と同じ）。SeedAndroid 警告 0。Rust の `cargo build`（PC）と libSEED.so（x86_64）は変更したファイルに警告なし |
+| 未保存の確認のダイアログ | 実物の部品（`ActionChoiceWindow`・`SeedDialogTheme`・共通ボタン書式）で組み立てて PNG に描いて確かめた（本文の折り返し・主操作の色・ボタン 3 つ）。エディタの画面での操作（保存して実行 → 保存の完了 → 実行）は**未確認**（エージェントはエディタを起動しない） |
+| エディタの実行先セレクタ・Output の表示 | **未確認**（判断はすべて単体テスト。画面は利用者が確かめる） |
+
+### 20.13 制限・持ち越し（段階C-3。詳細は [backlog.md](backlog.md) の「Android」節）
+
+- **シーンマネージャに登録していないシーンは、開いていても端末では開始シーンで起動する**（pak に入らないため。Output と logcat に理由を出す）。
+  開いているシーンを pak の起点に足す（シーンを変えるたびに pak・APK を作り直す）か、エディタの実行だけ全シーンを pak に入れるかは未決（backlog）。
+- `Android（自動）` の「実機を優先」する経路（実機がつながっているときの選び方）は単体テストだけで確かめた（作業中の実機には触らない約束のため）。
+- AVD の設定の画面が無い（`editor_preferences.json` を手で書く）。SeedAndroid はエディタの設定を読まない（`--avd`）。
+- エミュレータの一時停止・Android の実行の一時停止は無い（実行ボタンは一時停止の絵柄で無効のまま。段階D で IPC を TCP にするときに扱う）。
+- 起動したエミュレータの標準出力（エミュレータ自身のログ）は捨てている（見えないコンソールへ）。起動に失敗したときは終了コードと Device Manager での確認を案内するだけ。
+- `Android（自動）` は実機が 2 台以上つながっていて前回のものが無いと選ばない（エラー）。エミュレータは一覧の先頭を選ぶ。
+- エミュレータの起動待ちの間の「状態」は adb の状態と `sys.boot_completed` だけ（起動画面の進み具合までは分からない）。

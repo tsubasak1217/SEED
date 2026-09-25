@@ -28,6 +28,13 @@
 //    2. 外部アプリ専用フォルダ（/sdcard/Android/data/<パッケージ名>/files）
 //       … 手で adb push した場合の置き場。エミュレータでは読めるが、実機（Android 11 以降）では
 //         adb push が作ったフォルダは shell の所有になりアプリから読めない（Permission denied）。
+//
+//  【起動するシーン（段階C-3）】
+//  起動オプション（am start の extra seed.scene → MainActivity → JNI。launch_options.rs）にシーンがあれば、
+//  そのシーン（assets://<相対パス>）を LaunchArgs.scene_path に入れる（エディタの「開いているシーンから実行」）。
+//  あるかは、エンジンが読むのと同じ順（pak → APK の PAK 外 → アプリ専用フォルダの assets/）で確かめ、
+//  どこにも無い・パスが読めないときは logcat に警告を出して開始シーン（project_settings.json の start_scene）で起動する。
+//  判断そのものは engine::platform::launch_options::choose_scene（純粋な処理・単体テスト付き）。
 // ============================================================
 
 use std::path::{Path, PathBuf};
@@ -35,11 +42,12 @@ use std::sync::Arc;
 
 use seed_engine::engine::core::app_base::{LaunchArgs, RuntimeMode};
 use seed_engine::engine::core::package_layout;
-use seed_engine::engine::package_source::PackageSource;
+use seed_engine::engine::package_source::{self, PackageSource};
+use seed_engine::engine::platform::launch_options::{self as options_rules, LaunchOptions, SceneChoice};
 use winit::platform::android::activity::AndroidApp;
 
 use crate::apk_package::{ApkPackageSource, PakProbe};
-use crate::logcat;
+use crate::{launch_options, logcat};
 
 /// データルート直下のアセットルートのフォルダ名（PC のプロジェクトの assets/ と同じ名前）。
 const ASSETS_DIR_NAME: &str = "assets";
@@ -53,14 +61,17 @@ const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 /// 起動モードを決めて、エンジンの起動引数を組み立てる。
 ///
 /// 端末上では常にゲームとして起動する（エディタ埋め込み・IPC・親プロセス監視は無い）。
-/// 開始シーンは project_settings.json の start_scene に任せる（パッケージ実行では PAK の中のもの）。
+/// 起動するシーンは起動オプションのシーン（あれば）、無ければ project_settings.json の start_scene
+/// （パッケージ実行では PAK の中のもの）。
 pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
     let internal = app.internal_data_path();
+    // JNI で受け取った起動オプション（MainActivity.onCreate が android_main より前に渡す）
+    let options = launch_options::take();
 
     // ── 1. APK に配布物の pak があればパッケージ実行 ──
     let package = ApkPackageSource::new(app.asset_manager());
     if let Some(probe) = package.probe_pak() {
-        return packaged_launch_args(internal.as_deref(), package, &probe);
+        return packaged_launch_args(internal.as_deref(), package, &probe, &options);
     }
     logcat::info(&format!(
         "APK に {} がありません。開発用の置き場（アプリ専用フォルダの assets/）から読みます",
@@ -86,7 +97,11 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
         None => logcat::warn("アプリ専用データフォルダが取得できません。アセット無しの既定値で起動します"),
     }
 
-    play_launch_args(assets_root, None)
+    // 開発用の置き場では、シーンはアセットルート（run-as で送ったフォルダ）のファイル
+    let scene_path = choose_scene_logged(&options, |relative| {
+        assets_root.as_deref().is_some_and(|root| root.join(relative).is_file())
+    });
+    play_launch_args(assets_root, None, scene_path)
 }
 
 /// パッケージ実行（APK 内の pak）の起動引数を組み立てる。
@@ -95,7 +110,13 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
 /// * `internal` - 内部アプリ専用フォルダ（アセットルートのフォールバック先を作るのに使う）
 /// * `package`  - APK の配布物の読み口（エンジンの asset_fs へ渡す）
 /// * `probe`    - pak を調べた結果（ログ用）
-fn packaged_launch_args(internal: Option<&Path>, package: ApkPackageSource, probe: &PakProbe) -> LaunchArgs {
+/// * `options`  - 起動オプション（起動するシーン）
+fn packaged_launch_args(
+    internal: Option<&Path>,
+    package: ApkPackageSource,
+    probe: &PakProbe,
+    options: &LaunchOptions,
+) -> LaunchArgs {
     let location = package.describe(package_layout::PAK_FILE_NAME);
     match probe.uncompressed_offset {
         Some(offset) => logcat::info(&format!(
@@ -120,8 +141,11 @@ fn packaged_launch_args(internal: Option<&Path>, package: ApkPackageSource, prob
         logcat::info(&format!("アセットルート（PAK に無いアセットのフォールバック先）: {}", path.display()));
     }
 
+    let scene_path = choose_scene_logged(options, |relative| {
+        packaged_scene_exists(&package, assets_root.as_deref(), relative)
+    });
     let package: Arc<dyn PackageSource> = Arc::new(package);
-    play_launch_args(assets_root, Some(package))
+    play_launch_args(assets_root, Some(package), scene_path)
 }
 
 /// ゲームとして起動する LaunchArgs を組み立てる（両モード共通）。
@@ -129,9 +153,11 @@ fn packaged_launch_args(internal: Option<&Path>, package: ApkPackageSource, prob
 /// # 引数
 /// * `assets_root`    - アセットルート（ファイルシステム）
 /// * `package_source` - 配布物の読み口（パッケージ実行のときだけ Some）
+/// * `scene_path`     - 起動するシーン（仮想パス。None なら project_settings.json の start_scene）
 fn play_launch_args(
     assets_root: Option<PathBuf>,
     package_source: Option<Arc<dyn PackageSource>>,
+    scene_path: Option<String>,
 ) -> LaunchArgs {
     LaunchArgs {
         parent_hwnd: None,
@@ -141,11 +167,60 @@ fn play_launch_args(
         assets_root: assets_root.map(|path| path.to_string_lossy().into_owned()),
         package_source,
         editor_resources: None,
-        scene_path: None,
+        scene_path,
         play_collider_draw: false,
         // 同梱 .NET の起動材料は entry.rs が dotnet_runtime::prepare で作って入れる（起動モードとは独立）。
         embedded_clr: None,
     }
+}
+
+/// 起動するシーンを決め、決めた内容を logcat へ残す。
+///
+/// # 引数
+/// * `options` - 起動オプション
+/// * `exists`  - アセットルートからの相対パスのシーンがあるか（起動モードごとの確かめ方）
+///
+/// # 戻り値
+/// LaunchArgs.scene_path へ入れる仮想パス（開始シーンで起動するなら None）。
+fn choose_scene_logged(options: &LaunchOptions, exists: impl Fn(&str) -> bool) -> Option<String> {
+    let choice = options_rules::choose_scene(options, exists);
+    match &choice {
+        SceneChoice::StartScene => {
+            logcat::info("起動するシーン: 開始シーン（project_settings.json の start_scene。起動オプションにシーンの指定なし）");
+        }
+        SceneChoice::Requested { virtual_path } => {
+            logcat::info(&format!("起動するシーン: {virtual_path}（起動オプションの指定。エディタで開いているシーン）"));
+        }
+        SceneChoice::Missing { relative } => logcat::warn(&format!(
+            "起動オプションのシーン {relative} が見つかりません（pak・APK・アプリ専用フォルダのどれにもありません）。開始シーンで起動します"
+        )),
+        SceneChoice::Invalid { requested, reason } => logcat::warn(&format!(
+            "起動オプションのシーン {requested} を使えません（{reason}）。開始シーンで起動します"
+        )),
+    }
+    choice.scene_path()
+}
+
+/// パッケージ実行で、相対パスのシーンがあるか（エンジンの asset_fs が仮想パスを読むのと同じ順に見る）。
+///
+/// 1. APK 内の pak のエントリ（大文字小文字・区切りを問わない）
+/// 2. APK の PAK 外（assets/seed/assets/<相対パス>）
+/// 3. アプリ専用フォルダの assets/<相対パス>
+///
+/// pak のエントリ表はここで 1 回読む（中身は読まない。シーンの指定があるときだけ呼ばれる）。
+fn packaged_scene_exists(package: &ApkPackageSource, assets_root: Option<&Path>, relative: &str) -> bool {
+    match package_source::open_pak(package) {
+        Ok(pak) if pak.contains(relative) => return true,
+        Ok(_) => {}
+        Err(err) => logcat::warn(&format!(
+            "シーンを確かめるために {} を開けませんでした: {err}",
+            package.describe(package_layout::PAK_FILE_NAME)
+        )),
+    }
+    if package.open(&package_source::loose_asset_path(relative)).is_ok() {
+        return true;
+    }
+    assets_root.is_some_and(|root| root.join(relative).is_file())
 }
 
 /// データルートを選ぶ【純関数】。

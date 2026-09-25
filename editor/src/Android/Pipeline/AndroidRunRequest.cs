@@ -58,9 +58,34 @@ public sealed record AndroidRunRequest
     [JsonPropertyName("assets_dir")]
     public string? AssetsDir { get; init; }
 
-    /// <summary>対象端末のシリアル（null なら、使える端末がちょうど 1 台のときそれ）。</summary>
+    /// <summary>
+    /// 対象端末のシリアル（null なら、使える端末がちょうど 1 台のときそれ）。
+    /// "auto"（<see cref="Adb.AndroidDeviceTarget.AutoSerial"/>）なら、実機（前回使ったものを優先）→ 起動中のエミュレータ →
+    /// AVD を起動、の順で決める（段階C-3。端末の工程を行うときだけエミュレータを起動する）。
+    /// </summary>
     [JsonPropertyName("serial")]
     public string? Serial { get; init; }
+
+    /// <summary>
+    /// <see cref="Serial"/> の端末が adb に見えないとき、エミュレータ（起動中のもの、無ければ AVD を起動）で実行するか
+    /// （段階C-3。エディタの実行先セレクタで特定の端末を選んだときに true。SeedAndroid の --serial は従来どおりエラー）。
+    /// </summary>
+    [JsonPropertyName("emulator_fallback")]
+    public bool EmulatorFallback { get; init; }
+
+    /// <summary>
+    /// エミュレータを起動するときの AVD 名（null なら emulator -list-avds の一覧から既定の規則で選ぶ。
+    /// Emulator/EmulatorAvdChooser.cs）。エディタはエディタの設定 android.emulator_avd を渡す。
+    /// </summary>
+    [JsonPropertyName("avd")]
+    public string? Avd { get; init; }
+
+    /// <summary>
+    /// 端末で起動するシーン（アセットルートからの相対パス・assets:// の仮想パス・アセットルート内の絶対パス。
+    /// null なら project_settings.json の開始シーン）。起動の工程で am start の extra（seed.scene）として渡す（段階C-3）。
+    /// </summary>
+    [JsonPropertyName("scene")]
+    public string? ScenePath { get; init; }
 
     /// <summary>ビルドする ABI（null なら端末から決める。端末が無ければ両方）。</summary>
     [JsonPropertyName("abis")]

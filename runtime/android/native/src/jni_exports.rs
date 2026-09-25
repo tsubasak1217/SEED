@@ -1,5 +1,6 @@
 // ============================================================
 //  jni_exports.rs — Java（MainActivity・ScreenReporter・AudioFocusController）から呼ばれるネイティブ関数（JNI）
+//                   （セーブの書き出し・安全領域と回転・音声フォーカス・起動オプション）
 //
 //  【仕組み】
 //  MainActivity は static 初期化子で System.loadLibrary("SEED") している。同じパッケージの Java クラスの
@@ -25,6 +26,11 @@
 //  UI スレッドから呼ぶ。エンジン側の置き場（platform::audio_focus。原子変数）へ入れるだけで、出力の一時停止・
 //  再開・全体音量にはエンジンのイベントループの次の周回で反映される（app/audio_output_sync.rs）。
 //  番号の対応は AudioFocus::from_code。
+//
+//  【nativeSetLaunchOptions（MainActivity。段階C-3）】
+//  起動の Intent の「seed.」で始まる文字列の extra を JSON 1 つ（UTF-8 の byte[]）にして、onCreate の最初
+//  （super.onCreate より前。android_main のスレッドが立つ前）に UI スレッドから呼ぶ。launch_options.rs に預け、
+//  android_main（launch.rs）が起動するシーン等に使う。byte[] の中身は JNIEnv の関数で読む（jni_env.rs）。
 // ============================================================
 
 use std::ffi::c_void;
@@ -33,7 +39,7 @@ use seed_engine::engine::core::save;
 use seed_engine::engine::platform::audio_focus::{self, AudioFocus};
 use seed_engine::engine::platform::screen::report::{self, EdgeInsets, ScreenReport};
 
-use crate::logcat;
+use crate::{jni_env, launch_options, logcat};
 
 /// `MainActivity.nativeFlushSaveData()`（Java の `private static native void`）の実体。
 ///
@@ -136,6 +142,27 @@ pub extern "system" fn Java_com_seedengine_runtime_AudioFocusController_nativeOn
         // 同じ状態の繰り返し（何も変わらない）。
         Ok(false) => {}
         Err(_) => logcat::error("[SEED AUDIO] 音声フォーカスの報告の受け取り中に panic しました"),
+    }
+}
+
+/// `MainActivity.nativeSetLaunchOptions(byte[])`（Java の `private static native void`）の実体。
+///
+/// # 引数
+/// * `env`          - JNIEnv*（byte[] の中身を読むのに使う）
+/// * `_class`       - MainActivity の jclass（使わない）
+/// * `options_utf8` - 起動オプションの JSON（UTF-8 の byte[]。null 可）
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_seedengine_runtime_MainActivity_nativeSetLaunchOptions(
+    env: *mut c_void,
+    _class: *mut c_void,
+    options_utf8: *mut c_void,
+) {
+    // SAFETY: env は JNI がこの呼び出しのスレッドへ渡した JNIEnv*、options_utf8 は同じ呼び出しの引数の byte[]（null 可）。
+    // 読むのはこの呼び出しの間だけ（参照を持ち越さない）。
+    let bytes = unsafe { jni_env::read_byte_array(env, options_utf8) };
+    // JNI の境界を panic で越えないよう受け止める（ログだけ残し、起動は既定のまま続ける）。
+    if std::panic::catch_unwind(move || launch_options::receive(bytes)).is_err() {
+        logcat::error("[SEED LAUNCH] 起動オプションの受け取り中に panic しました（既定のまま起動します）");
     }
 }
 

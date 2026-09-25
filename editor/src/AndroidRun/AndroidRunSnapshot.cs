@@ -38,6 +38,12 @@ public sealed record AndroidRunSnapshot
     /// <summary>全体の進み具合（0〜1。工程を終えるたびに進む）。</summary>
     public double Fraction { get; init; }
 
+    /// <summary>
+    /// 準備の途中の詳細（例「エミュレータの起動を待っています（45 秒）」。準備の工程の進み具合のイベントの説明。段階C-3）。
+    /// 工程が始まる前だけ進捗の表示に使う。
+    /// </summary>
+    public string? PrepareDetail { get; init; }
+
     /// <summary>止める理由（止めていなければ None）。</summary>
     public AndroidRunStopReason StopReason { get; init; }
 

@@ -67,6 +67,23 @@ public static class AndroidRuntimeContract
     /// </summary>
     public static readonly IReadOnlyList<string> ScriptBinaryPatterns = new[] { "*.dll", "*.runtimeconfig.json" };
 
+    // ── 起動オプション（段階C-3。am start の extra → MainActivity → ネイティブ）──────────────
+
+    /// <summary>
+    /// am start の文字列の extra のうち、起動オプションとしてネイティブへ渡すものの接頭辞。
+    /// MainActivity.java の LAUNCH_OPTION_EXTRA_PREFIX と一致させる（この接頭辞を外した名前が、ネイティブへ渡す JSON のキーになる）。
+    /// </summary>
+    public const string LaunchOptionExtraPrefix = "seed.";
+
+    /// <summary>
+    /// 起動オプション「起動するシーン」の JSON のキー（値はアセットルートからの相対パス。例 scenes/Main.scene）。
+    /// runtime/src/engine/platform/launch_options.rs の SCENE_KEY と一致させる。
+    /// </summary>
+    public const string LaunchOptionSceneKey = "scene";
+
+    /// <summary>起動するシーンの extra の名前（seed.scene）。</summary>
+    public const string SceneExtraName = LaunchOptionExtraPrefix + LaunchOptionSceneKey;
+
     // ── logcat ────────────────────────────────────────────
 
     /// <summary>

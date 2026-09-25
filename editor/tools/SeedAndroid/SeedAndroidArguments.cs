@@ -14,6 +14,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using SEEDEditor.Android;
+using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Pipeline;
 
 namespace SEEDEditor.Tools.SeedAndroid;
@@ -58,8 +59,14 @@ public sealed record SeedAndroidCommandLine
     /// <summary>--assets-dir の値。</summary>
     public string? AssetsDir { get; init; }
 
-    /// <summary>--serial の値。</summary>
+    /// <summary>--serial の値（"auto" は自動。段階C-3）。</summary>
     public string? Serial { get; init; }
+
+    /// <summary>--avd の値（エミュレータを起動するときの AVD。段階C-3）。</summary>
+    public string? Avd { get; init; }
+
+    /// <summary>--scene の値（起動するシーン。アセットルートからの相対パス等。段階C-3）。</summary>
+    public string? ScenePath { get; init; }
 
     /// <summary>--abi の値（カンマ区切りを分けたもの）。</summary>
     public IReadOnlyList<string>? Abis { get; init; }
@@ -159,6 +166,12 @@ public static class SeedAndroidArguments
     /// <summary>logcat の起点。</summary>
     public const string SinceOption = "--since";
 
+    /// <summary>エミュレータを起動するときの AVD。</summary>
+    public const string AvdOption = "--avd";
+
+    /// <summary>起動するシーン。</summary>
+    public const string SceneOption = "--scene";
+
     // ── オプションの名前（値を取らないもの）──────────────────────
 
     /// <summary>--release。</summary>
@@ -211,12 +224,20 @@ public static class SeedAndroidArguments
           --project <フォルダ>      プロジェクト（.seedproj か assets/ を持つフォルダ、またはアセットルートそのもの）。
                                     APK に pak とスクリプトを入れる。アプリの識別情報・画面の向きもここから読む
           --assets-dir <フォルダ>   開発用: pak の無い APK にして、このアセットフォルダを run-as で端末へ送る（--project と排他）
-          --serial <シリアル>       対象の端末（省略時は使える端末がちょうど 1 台のときそれ）
+          --serial <シリアル>       対象の端末（省略時は使える端末がちょうど 1 台のときそれ）。
+                                    auto: 実機（前回使ったものを優先）→ 起動中のエミュレータ → どちらも無ければ AVD を起動して
+                                    起動の完了を待つ（install / run / push。build では端末を起動しない。stop / logcat には使えない）
+          --avd <AVD>               auto でエミュレータを起動するときの AVD（省略時は seed_pixel6_api35、無ければ
+                                    emulator -list-avds の先頭）
+          --scene <シーン>          起動するシーン（アセットルートからの相対パス 例 scenes/Main.scene・assets://…・
+                                    アセットルートの中の絶対パス。省略時は project_settings.json の開始シーン。
+                                    pak に無ければ端末が警告を出して開始シーンで起動する）
           --abi <ABI[,ABI]>         arm64-v8a / x86_64（省略時は端末から判定。端末が無ければ両方）
           --release                 Rust 側を --release でビルドする（APK はデバッグ署名のまま）
-          --config <JSON>           指定をまとめた設定 JSON（キーは project / assets_dir / serial / abis / release /
-                                    skip_rust_build / skip_gradle / no_install / no_launch / no_logcat / push_scripts /
-                                    rebuild / logcat_seconds / log_file。相対パスは JSON のフォルダから。コマンドラインが優先）
+          --config <JSON>           指定をまとめた設定 JSON（キーは project / assets_dir / serial / emulator_fallback / avd /
+                                    scene / abis / release / skip_rust_build / skip_gradle / no_install / no_launch / no_logcat /
+                                    push_scripts / rebuild / logcat_seconds / log_file。project・assets_dir・log_file の相対パスは
+                                    JSON のフォルダから、scene はアセットルートから。コマンドラインが優先）
           --skip-rust               libSEED.so のビルドを飛ばす
           --skip-gradle             APK の作成（pak とスクリプト・同梱 .NET・Gradle）を飛ばす
           --no-install / --no-launch / --no-logcat   インストール / 起動 / logcat を飛ばす
@@ -272,7 +293,7 @@ public static class SeedAndroidArguments
 
             // 以降のオプションはすべて値を 1 つ取る
             if (arg is not (ConfigOption or ProjectOption or AssetsDirOption or SerialOption or AbiOption or LogcatSecondsOption
-                or LogFileOption or ApplicationIdOption or SinceOption))
+                or LogFileOption or ApplicationIdOption or SinceOption or AvdOption or SceneOption))
             {
                 return Fail($"不明な引数です: {arg}");
             }
@@ -290,6 +311,8 @@ public static class SeedAndroidArguments
                 case LogFileOption:       line = line with { LogFile = value }; break;
                 case ApplicationIdOption: line = line with { ApplicationId = value }; break;
                 case SinceOption:         line = line with { Since = value }; break;
+                case AvdOption:           line = line with { Avd = value }; break;
+                case SceneOption:         line = line with { ScenePath = value }; break;
                 case AbiOption:
                     AndroidAbis.ParseList(value, out var abiError);
                     if (abiError is not null) return Fail($"{AbiOption}: {abiError}");
@@ -308,6 +331,11 @@ public static class SeedAndroidArguments
         if (line.ProjectDir is not null && line.AssetsDir is not null)
         {
             return Fail($"{ProjectOption} と {AssetsDirOption} は同時に指定できません（端末は APK の pak を優先します）");
+        }
+        // 「自動」は端末を用意する（要ればエミュレータを起動する）経路なので、既にある端末を操作するだけのサブコマンドでは使わない
+        if (AndroidDeviceTarget.IsAutoSerial(line.Serial) && (command is SeedAndroidCommand.Stop or SeedAndroidCommand.Logcat))
+        {
+            return Fail($"{SerialOption} {AndroidDeviceTarget.AutoSerial} は build / install / run / push で使えます（stop / logcat にはシリアルを指定してください）");
         }
         return new SeedAndroidParseResult(line, ShowHelp: false, Error: null);
     }
@@ -329,6 +357,8 @@ public static class SeedAndroidArguments
             ProjectDir      = cliChoosesSource ? line.ProjectDir : baseline.ProjectDir,
             AssetsDir       = cliChoosesSource ? line.AssetsDir : baseline.AssetsDir,
             Serial          = line.Serial ?? baseline.Serial,
+            Avd             = line.Avd ?? baseline.Avd,
+            ScenePath       = line.ScenePath ?? baseline.ScenePath,
             Abis            = line.Abis ?? baseline.Abis,
             Release         = line.Release || baseline.Release,
             SkipNativeBuild = line.SkipNativeBuild || baseline.SkipNativeBuild,

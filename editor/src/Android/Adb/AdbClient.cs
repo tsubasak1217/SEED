@@ -1,5 +1,6 @@
 // ============================================================
-//  AdbClient.cs — adb の呼び出し（端末の一覧・インストール・run-as での転送・起動・停止・logcat）
+//  AdbClient.cs — adb の呼び出し（端末の一覧・インストール・run-as での転送・起動・停止・logcat・
+//                 エミュレータの AVD 名と起動の完了の確認）
 //
 //  【触ってよいもの】
 //  端末は共用・私物のことがある。ここから行う操作は「自分のアプリ（アプリ ID を引数で受け取る）と、そのデータフォルダ」
@@ -36,6 +37,21 @@ public sealed class AdbClient
 {
     /// <summary>端末の ABI の並び（優先順）を持つシステムプロパティ。</summary>
     public const string AbiListProperty = "ro.product.cpu.abilist";
+
+    /// <summary>起動が終わった（パッケージマネージャ等が使える）ことを表すシステムプロパティ。</summary>
+    public const string BootCompletedProperty = "sys.boot_completed";
+
+    /// <summary><see cref="BootCompletedProperty"/> の「起動が終わった」の値。</summary>
+    private const string BootCompletedValue = "1";
+
+    /// <summary>adb emu（エミュレータのコンソール）の応答の終わりの行。</summary>
+    private const string EmulatorConsoleOkLine = "OK";
+
+    /// <summary>端末のシェルで単一引用符の中に単一引用符を入れるための置き換え（' → '\''）。</summary>
+    private const string ShellSingleQuoteEscape = "'\\''";
+
+    /// <summary>am start の文字列の extra の指定。</summary>
+    private const string AmStringExtraOption = "--es";
 
     /// <summary>pm path の出力の行頭（package:/data/app/…/base.apk）。</summary>
     private const string PackagePathPrefix = "package:";
@@ -229,23 +245,97 @@ public sealed class AdbClient
             .ToArray();
 
     /// <summary>
-    /// Activity を起動して表示されるまで待つ（am start -W -n）。出力（LaunchState・TotalTime 等）を返す。
+    /// Activity を起動して表示されるまで待つ（am start -W -n。起動オプションは --es の extra で渡す）。
+    /// 出力（LaunchState・TotalTime 等）を返す。
     /// </summary>
     /// <param name="serial">端末のシリアル。</param>
     /// <param name="component">&lt;アプリ ID&gt;/&lt;Activity の完全修飾名&gt;。</param>
+    /// <param name="extras">文字列の extra（起動オプション。無ければ空）。</param>
     /// <param name="cancellationToken">中断の合図。</param>
     /// <returns>am start の出力。</returns>
     /// <exception cref="AdbCommandException">起動できなかったとき。</exception>
-    public async Task<IReadOnlyList<string>> StartActivityAsync(string serial, string component, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<string>> StartActivityAsync(
+        string serial, string component, IReadOnlyList<AdbIntentExtra> extras, CancellationToken cancellationToken)
     {
         var capture = await ChildProcessRunner.CaptureAsync(
-            Spec(serial, "shell", "am", "start", "-W", "-n", component), cancellationToken).ConfigureAwait(false);
+            Spec(serial, AmStartArguments(component, extras)), cancellationToken).ConfigureAwait(false);
         var lines = capture.StandardOutput.Concat(capture.StandardError).ToList();
         if (capture.ExitCode != 0 || lines.Any(line => line.TrimStart().StartsWith(AmStartErrorPrefix, StringComparison.Ordinal)))
         {
             throw new AdbCommandException($"am start が失敗しました（終了コード {capture.ExitCode}）: {string.Join(" / ", lines)}");
         }
         return lines;
+    }
+
+    /// <summary>
+    /// am start の adb の引数を作る（純粋な処理）: shell am start -W -n &lt;component&gt; [--es &lt;キー&gt; '&lt;値&gt;' …]。
+    /// adb shell は 2 つ目以降の引数を空白でつないで端末のシェルに解釈させるので、値は単一引用符で囲む
+    /// （空白・日本語・記号を含むシーンのパスもそのまま 1 つの引数として届く）。
+    /// </summary>
+    /// <param name="component">&lt;アプリ ID&gt;/&lt;Activity の完全修飾名&gt;（検査済みの値。引用しない）。</param>
+    /// <param name="extras">文字列の extra。</param>
+    /// <returns>adb の引数（-s は含まない）。</returns>
+    public static string[] AmStartArguments(string component, IReadOnlyList<AdbIntentExtra> extras)
+    {
+        var arguments = new List<string> { "shell", "am", "start", "-W", "-n", component };
+        foreach (var extra in extras)
+        {
+            arguments.Add(AmStringExtraOption);
+            arguments.Add(extra.Key);
+            arguments.Add(ShellQuote(extra.Value));
+        }
+        return arguments.ToArray();
+    }
+
+    /// <summary>
+    /// 端末のシェル（sh）へ 1 つの語として渡すために単一引用符で囲む（中の ' は '\'' にする。純粋な処理）。
+    /// </summary>
+    /// <param name="value">値。</param>
+    /// <returns>引用した値。</returns>
+    public static string ShellQuote(string value) =>
+        "'" + value.Replace("'", ShellSingleQuoteEscape, StringComparison.Ordinal) + "'";
+
+    /// <summary>
+    /// エミュレータの AVD 名（adb -s &lt;シリアル&gt; emu avd name）。新しく起動したエミュレータを見分けるのに使う
+    /// （同じ PC で別の AVD が動いていることがあるため、現れた emulator-* の AVD 名を照合する）。
+    /// </summary>
+    /// <param name="serial">エミュレータのシリアル（emulator-5554 等）。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>AVD 名（コンソールにつながらない・読めなければ null）。</returns>
+    public async Task<string?> GetEmulatorAvdNameAsync(string serial, CancellationToken cancellationToken)
+    {
+        var capture = await ChildProcessRunner.CaptureAsync(Spec(serial, "emu", "avd", "name"), cancellationToken).ConfigureAwait(false);
+        return capture.ExitCode != 0 ? null : ParseEmulatorAvdName(capture.StandardOutput);
+    }
+
+    /// <summary>
+    /// adb emu avd name の出力（1 行目が AVD 名、最後に OK）から AVD 名を取り出す（純粋な処理）。
+    /// </summary>
+    /// <param name="lines">標準出力の行。</param>
+    /// <returns>AVD 名（無ければ null）。</returns>
+    public static string? ParseEmulatorAvdName(IEnumerable<string> lines) =>
+        lines.Select(line => line.Trim())
+            .FirstOrDefault(line => line.Length > 0 && !string.Equals(line, EmulatorConsoleOkLine, StringComparison.Ordinal));
+
+    /// <summary>
+    /// 起動が終わったか（getprop sys.boot_completed が 1）。adb の状態が device になっても、起動の途中は
+    /// パッケージマネージャが無くて install が失敗するので、エミュレータはこれを待ってから使う。
+    /// </summary>
+    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="cancellationToken">中断の合図。</param>
+    /// <returns>起動が終わっていれば true（問い合わせに失敗したら false）。</returns>
+    public async Task<bool> IsBootCompletedAsync(string serial, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var value = await GetPropertyAsync(serial, BootCompletedProperty, cancellationToken).ConfigureAwait(false);
+            return string.Equals(value, BootCompletedValue, StringComparison.Ordinal);
+        }
+        catch (AdbCommandException)
+        {
+            // offline のうちは getprop が失敗する（起動の途中）
+            return false;
+        }
     }
 
     /// <summary>

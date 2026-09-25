@@ -18,7 +18,7 @@ public static class EnvironmentAndPackagingTests
         harness.Add("道具の一覧: 見つかった場所と、見つからない理由と対処", ReportsToolchain);
         harness.Add("パッケージ化: ABI の選択肢と表示名の往復・ABI の名前", ArchChoices);
         harness.Add("パッケージ化: APK の名前（{ゲーム名}-{ABI}-debug.apk）と置き場（出力フォルダ/ゲーム名/）", ApkNames);
-        harness.Add("中核への指定: 実行ボタンは Run（端末・止めるまで logcat）、パッケージ化は Build（ABI・Release・端末なし）", EditorRequests);
+        harness.Add("中核への指定: 実行ボタンは Run（端末は見えなければエミュレータ・自動は auto・シーンと AVD・止めるまで logcat）、パッケージ化は Build（ABI・Release・端末なし）", EditorRequests);
     }
 
     /// <summary>道具の場所を偽の環境変数で作る。</summary>
@@ -110,13 +110,22 @@ public static class EnvironmentAndPackagingTests
     /// <summary>中核への指定。</summary>
     private static void EditorRequests()
     {
-        var play = AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneSerial);
+        var play = AndroidEditorRunRequests.ForPlay("D:/proj", Fixtures.PhoneTarget(), "scenes/Second.scene", null);
         Check.Equal(AndroidRunGoal.Run, play.Goal, "実行ボタンは Run");
         Check.Equal("D:/proj", play.ProjectDir, "プロジェクト（APK に pak とスクリプトを入れる）");
         Check.Equal(Fixtures.PhoneSerial, play.Serial, "選んだ端末");
+        Check.True(play.EmulatorFallback, "端末を選んだときは、見えなければエミュレータで実行する");
+        Check.Equal("scenes/Second.scene", play.ScenePath, "起動するシーン（開いているシーン）");
+        Check.True(play.Avd is null, "AVD の設定が無ければ null（中核の既定の規則）");
         Check.True(play.Abis is null, "ABI は端末から決める");
         Check.Equal(0, play.LogcatSeconds, "logcat は止めるまで");
         Check.True(!play.Release && !play.Rebuild && !play.PushScripts && play.AssetsDir is null, "debug・自動で飛ばす・開発用の転送なし");
+
+        var auto = AndroidEditorRunRequests.ForPlay("D:/proj", RunTargetCatalogBuilder.AndroidAuto(null), null, "  my_avd ");
+        Check.Equal("auto", auto.Serial, "Android（自動）は serial = auto");
+        Check.True(!auto.EmulatorFallback, "自動は切り替えの指定が要らない（規則にエミュレータが入っている）");
+        Check.True(auto.ScenePath is null, "開始シーンなら null");
+        Check.Equal("my_avd", auto.Avd, "エディタの設定の AVD（前後の空白は落とす）");
 
         var package = AndroidEditorRunRequests.ForPackage("D:/proj", new[] { "arm64-v8a" }, release: true);
         Check.Equal(AndroidRunGoal.Build, package.Goal, "パッケージ化は Build（端末を使わない）");

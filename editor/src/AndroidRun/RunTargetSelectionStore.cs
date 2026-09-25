@@ -2,7 +2,7 @@
 //  RunTargetSelectionStore.cs — 実行先セレクタの「前回の選択」をプロジェクトごとに覚える
 //
 //  【置き場】プロジェクトの実行状態 &lt;プロジェクト&gt;/cache/android/run_state.json（State/AndroidRunState.cs）の
-//    editor_target … エディタで最後に選んだもの（"pc" か端末のシリアル。PC を選んだことも覚える）
+//    editor_target … エディタで最後に選んだもの（"pc"・"auto"（Android（自動））・端末のシリアル。PC を選んだことも覚える）
 //    last_target   … 最後に Android で実行した端末（パイプラインが実行のたびに書く。SeedAndroid で実行した分も入る）
 //  を読む。editor_target が無ければ last_target を「前回の選択」とみなす（SeedAndroid だけで使っていたプロジェクトを
 //  エディタで開いたときも、前回の端末が既定になる）。
@@ -19,16 +19,19 @@ using SEEDEditor.Android.State;
 namespace SEEDEditor.AndroidRun;
 
 /// <summary>前回の選択。</summary>
-/// <param name="PreferredId">選んでおきたいもの（"pc" か端末のシリアル。記録が無ければ null）。</param>
+/// <param name="PreferredId">選んでおきたいもの（"pc"・"auto"・端末のシリアル。記録が無ければ null）。</param>
 /// <param name="PreferredName">端末の名前（機種。分かれば。見えなくなった端末の行の文言に使う）。</param>
 public sealed record RunTargetMemory(string? PreferredId, string? PreferredName)
 {
     /// <summary>記録なし。</summary>
     public static readonly RunTargetMemory None = new(null, null);
 
-    /// <summary>前回の選択が Android の端末か（起動時に端末の一覧を取りに行くかの判断に使う）。</summary>
+    /// <summary>
+    /// 前回の選択が特定の Android の端末か（起動時に端末の一覧を取りに行くかの判断に使う。PC と Android（自動）は
+    /// 一覧が無くても戻せるので adb を呼ばない）。
+    /// </summary>
     public bool PrefersAndroidDevice =>
-        !string.IsNullOrWhiteSpace(PreferredId) && PreferredId != RunTargetEntry.PcId;
+        !string.IsNullOrWhiteSpace(PreferredId) && PreferredId != RunTargetEntry.PcId && PreferredId != RunTargetEntry.AndroidAutoId;
 }
 
 /// <summary>実行先セレクタの前回の選択の読み書き。</summary>

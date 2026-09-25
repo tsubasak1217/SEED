@@ -127,6 +127,13 @@ impl PakReader {
         Some(buf)
     }
 
+    /// 相対パス（例: `"scenes/main.scene"`）のエントリがあるか（`read` と同じく区切り・大文字小文字を問わない）。
+    ///
+    /// 中身は読まない（エントリ表を引くだけ）。Android の起動オプションで指定されたシーンが pak にあるかの確かめに使う。
+    pub fn contains(&self, relative_path: &str) -> bool {
+        self.entries.contains_key(normalize_key(relative_path).as_str())
+    }
+
     /// PAK に含まれる全エントリの相対パスを返す（検索キーと同じく小文字化済み）。
     pub fn entry_paths(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(|s| s.as_str())

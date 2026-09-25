@@ -1,9 +1,11 @@
 // ============================================================
-//  AndroidDeviceActions.cs — ビルドを伴わない端末の操作（端末の一覧・アプリの停止・動いているかの確認・logcat）
+//  AndroidDeviceActions.cs — ビルドを伴わない端末の操作（端末の一覧・端末の用意・アプリの停止・動いているかの確認・logcat）
 //
 //  エディタの実行先セレクタ（段階C-2）が端末の一覧を出す・停止ボタンでアプリを止める・アプリ側の終了を見つける
 //  （pidof）・Output パネルへ logcat を流すのに使う。
 //  コンソールツールの devices / stop / logcat も同じ。触るのは自分のアプリ（アプリ ID）だけ。
+//  端末の用意（EnsureDeviceAsync。段階C-3）は、実行の準備（AndroidRunPipeline）が「自動」「選んだ端末が見えなければ
+//  エミュレータ」のときに呼ぶ（規則は AndroidDeviceSelector.DecideForRun、起動と待ち合わせは Emulator/AndroidDeviceProvisioner）。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
@@ -13,6 +15,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Adb;
+using SEEDEditor.Android.Emulator;
 using SEEDEditor.Android.Processes;
 using SEEDEditor.Android.Toolchain;
 
@@ -74,6 +77,25 @@ public sealed class AndroidDeviceActions
             entries.Add(new AndroidDeviceEntry(device, abiList, abiList is null ? null : AndroidAbis.ChooseForDevice(abiList)));
         }
         return entries;
+    }
+
+    /// <summary>
+    /// 実行先の端末を用意する（段階C-3）。決め方が「自動」なら 実機（前回使ったものを優先）→ 起動中のエミュレータ →
+    /// AVD を起動、「選んだ端末かエミュレータ」なら選んだ端末が見えないときに同じエミュレータの規則へ回る。
+    /// エミュレータは起動の完了（sys.boot_completed）まで待ってから返す。待っている旨は <paramref name="log"/> へ出す。
+    /// </summary>
+    /// <param name="target">決め方（AndroidDeviceTarget.From で作る）。</param>
+    /// <param name="lastUsedSerial">前回の実行先（優先する）。</param>
+    /// <param name="avd">エミュレータを起動するときの AVD（null なら既定の規則。Emulator/EmulatorAvdChooser.cs）。</param>
+    /// <param name="log">準備の工程のログ。</param>
+    /// <param name="cancellationToken">中断の合図（待つのをやめる。起動したエミュレータは止めない）。</param>
+    /// <returns>使える状態の端末。</returns>
+    /// <exception cref="AndroidPipelineException">adb が無い・決められない・起動できない・時間切れ。</exception>
+    public Task<AdbDevice> EnsureDeviceAsync(
+        AndroidDeviceTarget target, string? lastUsedSerial, string? avd, AndroidPhaseLog log, CancellationToken cancellationToken)
+    {
+        var provisioner = new AndroidDeviceProvisioner(new EmulatorHost(CreateAdb(), _toolchain), EmulatorTimings.Default);
+        return provisioner.EnsureAsync(target, lastUsedSerial, avd, log, cancellationToken);
     }
 
     /// <summary>

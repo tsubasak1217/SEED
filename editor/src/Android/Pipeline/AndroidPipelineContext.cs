@@ -59,6 +59,12 @@ public sealed class AndroidPipelineContext
     /// <summary>準備の時点の各工程の指紋（計画の材料。工程を終えたら新しい値で記録する）。</summary>
     public Dictionary<string, AndroidStepFingerprint> CurrentFingerprints { get; } = new();
 
+    /// <summary>
+    /// 端末で起動するシーン（アセットルートからの相対パス。null なら開始シーン）。起動の工程が am start の extra
+    /// （seed.scene）にして渡す（段階C-3）。
+    /// </summary>
+    public string? LaunchScene { get; init; }
+
     /// <summary>logcat の起点の端末の時刻（起動の直前に控える）。</summary>
     public string? LogcatSince { get; set; }
 

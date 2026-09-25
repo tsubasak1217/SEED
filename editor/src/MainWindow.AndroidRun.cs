@@ -1,13 +1,18 @@
 // ============================================================
-//  MainWindow.AndroidRun.cs — 実行先セレクタ（PC / Android の実機・エミュレータ）と Android での実行の結線（段階C-2）
+//  MainWindow.AndroidRun.cs — 実行先セレクタ（PC / Android（自動）/ Android の実機・エミュレータ）と Android での実行の結線
+//                             （段階C-2・C-3）
 //
 //  【役割】WPF の結線だけ。判断はすべて AndroidRun/ の WPF 非依存のクラス（単体テスト editor/tests/AndroidRunUiTests）:
 //    - 実行先コンボ（CmbRunTarget）の一覧と選択 … RunTargetCatalogBuilder（開くたびに adb で端末を探し直す）
 //    - 前回の選択（プロジェクトごと）           … RunTargetSelectionStore（cache/android/run_state.json）
 //    - 実行・停止ボタン・状態表示・進捗          … PlayBarPolicy（PC の表示もここから当てる。PC との排他もここ）
-//    - Android の実行（ビルド → インストール → 起動 → logcat → 停止・アプリの終了の検知）… AndroidRunController
+//    - Android の実行（端末の用意〈要ればエミュレータを起動〉→ ビルド → インストール → 起動 → logcat → 停止・
+//      アプリの終了の検知）… AndroidRunController（中核への指定は AndroidEditorRunRequests）
+//    - 起動するシーン（PC の Play と同じ「開いているシーン」）… AndroidRunSceneChoice
+//    - 未保存の変更の確認（保存して実行 / 保存せず実行 / キャンセル）… AndroidUnsavedChangesPrompt
 //    - Output パネルの行                        … AndroidRunOutputFormatter の行を色付きで EditorLog へ
 //  PC の実行（従来の Play）は OnPlayPause / OnStop のまま。実行・停止ボタンの Click はここで行き先を振り分ける。
+//  エミュレータの AVD はエディタの設定 android.emulator_avd（EditorPreferences.Android。設定の画面は無い）。
 //
 //  【スレッド】AndroidRunController のイベントは任意のスレッドから届く。状態の変化は Dispatcher へ回して
 //  プレイバーを当て直し、行は EditorLog.Write（スレッド安全）へそのまま流す。
@@ -106,6 +111,14 @@ public partial class MainWindow
     /// <summary>端末の一覧の取得の中断の合図（取り直していなければ null。エディタを閉じるときに止める）。</summary>
     private CancellationTokenSource? _runTargetListCancellation;
 
+    /// <summary>
+    /// 「保存して実行」で保存の完了を待っているか（保存が終わったら Android の実行を始める。失敗したら取りやめる）。
+    /// </summary>
+    private bool _pendingAndroidRun;
+
+    /// <summary>エミュレータを起動するときの AVD（エディタの設定 android.emulator_avd。未設定なら null）。</summary>
+    private static string? ConfiguredEmulatorAvd => EditorPreferences.Instance.Android?.EmulatorAvd;
+
     /// <summary>Android の実行が動いているか（Building / Running / Stopping）。</summary>
     private bool IsAndroidRunActive => _androidRun?.Snapshot.IsActive ?? false;
 
@@ -177,6 +190,7 @@ public partial class MainWindow
             PreferredId = preferredId,
             PreferredName = preferredName,
             Mode = mode,
+            EmulatorAvd = ConfiguredEmulatorAvd,
         });
 
     /// <summary>いまの選択を保ったまま一覧を組み立て直す。</summary>
@@ -359,29 +373,99 @@ public partial class MainWindow
     // ── Android の実行 ───────────────────────────────────────
 
     /// <summary>
-    /// 選んでいる端末で実行を始める（PC の Play と同じ事前確認: アセットフォルダ・スクリプトのコンパイル）。
+    /// 選んでいる実行先（Android（自動）か端末）で実行を始める（PC の Play と同じ事前確認: アセットフォルダ・
+    /// スクリプトのコンパイル）。未保存の変更があれば「保存して実行 / 保存せず実行 / キャンセル」を尋ねる。
+    /// 端末で起動するシーンは PC の Play と同じ「開いているシーン」（「開始シーンからプレイ」がオンなら開始シーン）。
     /// 進み具合とログは Output パネルへ流れる（パネルを前面へ出す）。
     /// </summary>
     private void StartAndroidRun()
     {
         var controller = _androidRun;
         var target = _runTargets.Selected;
-        if (controller is null || !target.IsAndroid || !target.CanRun || target.Serial is null) return;
+        if (controller is null || !target.IsAndroid || !target.CanRun) return;
+        if (!target.IsAndroidAuto && target.Serial is null) return;
 
         if (!CheckAssetsBeforeRun()) return;
         // APK にはスクリプトを事前コンパイルして入れる。エラーがあれば PC の Play と同じくここで止める
         if (!CheckScriptsBeforePlay()) return;
 
+        // APK は保存済みのファイルから作るので、未保存の変更は端末に届かない（PC の Play は編集中の状態で動く）
+        var runWithoutSaving = false;
+        if (AndroidUnsavedChangesPrompt.NeedsPrompt(_isDirty))
+        {
+            switch (AskUnsavedChangesBeforeAndroidRun())
+            {
+                case AndroidUnsavedChoice.SaveAndRun:
+                    // 保存は非同期（完了は OnSaveCompleted → ContinuePendingAndroidRun）。送れなければ取りやめる
+                    _pendingAndroidRun = true;
+                    if (DoQuickSave())
+                    {
+                        WriteAndroidLine(AndroidRunOutputFormatter.SavingBeforeRun());
+                    }
+                    else
+                    {
+                        _pendingAndroidRun = false;
+                        WriteAndroidLine(AndroidRunOutputFormatter.SaveNotStartedRunCanceled());
+                    }
+                    return;
+                case AndroidUnsavedChoice.RunWithoutSaving:
+                    runWithoutSaving = true;
+                    break;
+                default:
+                    WriteAndroidLine(AndroidRunOutputFormatter.UnsavedPromptCanceled());
+                    return;
+            }
+        }
+
         var projectDir = string.IsNullOrWhiteSpace(ProjectContext.RootDir) ? AssetsPath : ProjectContext.RootDir;
-        if (!controller.TryStart(AndroidEditorRunRequests.ForPlay(projectDir, target.Serial), target.Text))
+        var scene = AndroidRunSceneChoice.Decide(_playFromStartScene, _currentScenePath, AssetsPath);
+        var request = AndroidEditorRunRequests.ForPlay(projectDir, target, scene.ScenePath, ConfiguredEmulatorAvd);
+        if (!controller.TryStart(request, target.Text))
         {
             WriteAndroidLine(AndroidRunOutputFormatter.NotStarted(AndroidAlreadyRunningReason));
             return;
         }
-        // APK はディスク上のファイルから作るので、未保存の変更は含まれない（PC の Play は編集中のシーンで動く）
-        if (_isDirty) WriteAndroidLine(AndroidRunOutputFormatter.UnsavedChangesWarning());
+        if (runWithoutSaving) WriteAndroidLine(AndroidRunOutputFormatter.UnsavedChangesWarning());
+        WriteAndroidLine(AndroidRunOutputFormatter.SceneChosen(scene));
         ShowAnchorable("output", activate: false);
         ApplyPlayBar();
+    }
+
+    /// <summary>未保存の変更があるときに、Android で実行する前に保存するかを尋ねる（ヘッドレスではキャンセル）。</summary>
+    /// <returns>答え。</returns>
+    private AndroidUnsavedChoice AskUnsavedChangesBeforeAndroidRun()
+    {
+        var choice = SEEDEditor.Headless.EditorDialogs.ShowActionChoice(
+            AndroidUnsavedChangesPrompt.Message,
+            AndroidUnsavedChangesPrompt.Title,
+            AndroidUnsavedChangesPrompt.SaveAndRunText,
+            AndroidUnsavedChangesPrompt.RunWithoutSavingText,
+            AndroidUnsavedChangesPrompt.CancelText,
+            this);
+        return choice switch
+        {
+            SEEDEditor.Dialogs.ActionChoice.Primary   => AndroidUnsavedChoice.SaveAndRun,
+            SEEDEditor.Dialogs.ActionChoice.Secondary => AndroidUnsavedChoice.RunWithoutSaving,
+            _                                         => AndroidUnsavedChoice.Cancel,
+        };
+    }
+
+    /// <summary>
+    /// 「保存して実行」の続き（OnSaveCompleted から呼ぶ。UI スレッド）。保存できたら実行を始め、失敗したら取りやめる。
+    /// 待っていなければ何もしない。
+    /// </summary>
+    /// <param name="saved">保存に成功したか。</param>
+    private void ContinuePendingAndroidRun(bool saved)
+    {
+        if (!_pendingAndroidRun) return;
+        _pendingAndroidRun = false;
+        if (!saved)
+        {
+            WriteAndroidLine(AndroidRunOutputFormatter.SaveFailedRunCanceled());
+            return;
+        }
+        // 保存の間に実行先が PC へ変わった・PC の実行が始まった等なら、判断（PlayBarPolicy）に従って始めない
+        if (ComputePlayBarView().PlayAction == PlayBarAction.StartAndroid) StartAndroidRun();
     }
 
     /// <summary>Android の実行を止める（ビルド中は子プロセスの終了を待ち、起動後はアプリも止める）。</summary>

@@ -70,6 +70,9 @@ public sealed class AndroidRunStateMachine
     /// <summary>全体の進み具合（0〜1）。</summary>
     public double Fraction { get; private set; }
 
+    /// <summary>準備の途中の詳細（エミュレータの起動待ち等）。</summary>
+    public string? PrepareDetail { get; private set; }
+
     /// <summary>いまの写し。</summary>
     public AndroidRunSnapshot Snapshot => new()
     {
@@ -82,13 +85,14 @@ public sealed class AndroidRunStateMachine
         StepCount = StepCount,
         Fraction = Fraction,
         StopReason = StopReason,
+        PrepareDetail = PrepareDetail,
     };
 
     /// <summary>
     /// 実行を始める（Idle のときだけ）。
     /// </summary>
     /// <param name="targetText">実行先の表示名。</param>
-    /// <param name="serial">端末のシリアル。</param>
+    /// <param name="serial">端末のシリアル（Android（自動）のようにまだ決まっていなければ null）。</param>
     /// <returns>始めたら true（動いている途中なら false）。</returns>
     public bool Start(string targetText, string? serial)
     {
@@ -103,6 +107,7 @@ public sealed class AndroidRunStateMachine
         StepIndex = 0;
         StepCount = 0;
         Fraction = MinFraction;
+        PrepareDetail = null;
         return true;
     }
 
@@ -117,7 +122,16 @@ public sealed class AndroidRunStateMachine
         switch (pipelineEvent)
         {
             case AndroidPrepared prepared:
-                Serial = prepared.Device?.Serial ?? Serial;
+                if (prepared.Device is { } device)
+                {
+                    // 実行を始めてから決まった端末（Android（自動）・選んだ端末が見えずエミュレータへ切り替えた）は、
+                    // 進捗・Output の実行先の表示もその端末にする（段階C-3）
+                    if (!string.Equals(device.Serial, Serial, StringComparison.Ordinal))
+                    {
+                        TargetText = RunTargetCatalogBuilder.DeviceText(device);
+                    }
+                    Serial = device.Serial;
+                }
                 ApplicationId = prepared.Identity.ApplicationId;
                 return false;
 
@@ -130,6 +144,8 @@ public sealed class AndroidRunStateMachine
 
             case AndroidProgressChanged progress:
                 Fraction = Math.Clamp(progress.Fraction, MinFraction, MaxFraction);
+                // 準備の途中の知らせ（エミュレータの起動待ち等）は、工程が始まる前の進捗の文言に使う
+                if (progress.Phase == AndroidPipelinePhase.Prepare) PrepareDetail = progress.Message;
                 return false;
 
             case AndroidPhaseFinished finished:

@@ -23,6 +23,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Pipeline;
 
 namespace SEEDEditor.AndroidRun;
@@ -97,9 +98,11 @@ public sealed class AndroidRunController : IDisposable
     {
         CancellationTokenSource cancellation;
         TaskCompletionSource done;
+        // 「自動」はまだ端末が決まっていない（準備で決まったら AndroidPrepared で入る）
+        var serial = AndroidDeviceTarget.IsAutoSerial(request.Serial) ? null : request.Serial;
         lock (_gate)
         {
-            if (_disposed || !_machine.Start(targetText, request.Serial)) return false;
+            if (_disposed || !_machine.Start(targetText, serial)) return false;
             cancellation = new CancellationTokenSource();
             done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             _runCancellation = cancellation;

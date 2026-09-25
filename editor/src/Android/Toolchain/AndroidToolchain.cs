@@ -5,6 +5,7 @@
 //    Android SDK … ANDROID_SDK_ROOT → ANDROID_HOME → %LOCALAPPDATA%\Android\Sdk
 //    Android NDK … ANDROID_NDK_HOME（source.properties があること）→ SDK の ndk\ の最新版（その旨を知らせる）
 //    adb         … SDK の platform-tools\adb.exe
+//    emulator    … SDK の emulator\emulator.exe（段階C-3。端末が無いときに AVD を起動する。Emulator/EmulatorLauncher.cs）
 //    JDK         … JAVA_HOME（bin\java.exe があること）→ Android Studio 同梱の JBR（%ProgramFiles%\Android\Android Studio\jbr）
 //    cargo       … PATH → CARGO_HOME\bin → %USERPROFILE%\.cargo\bin
 //    dotnet      … DOTNET_HOST_PATH（dotnet から起動されたとき）→ PATH → %ProgramFiles%\dotnet
@@ -76,6 +77,9 @@ public sealed class AndroidToolchain
     /// <summary>dotnet の既定のインストール先（%ProgramFiles% からの相対）。</summary>
     private const string DefaultDotnetDirName = "dotnet";
 
+    /// <summary>Android Emulator の実行ファイル（SDK からの相対。SDK Manager の「Android Emulator」が入れる）。</summary>
+    private static readonly string EmulatorRelative = Path.Combine("emulator", "emulator.exe");
+
     /// <summary>NDK のフォルダであることの目印。</summary>
     private const string NdkMarkerFileName = "source.properties";
 
@@ -90,15 +94,18 @@ public sealed class AndroidToolchain
     private readonly Resolved _sdk;
     private readonly Resolved _ndk;
     private readonly Resolved _adb;
+    private readonly Resolved _emulator;
     private readonly Resolved _javaHome;
     private readonly Resolved _cargo;
     private readonly Resolved _dotnet;
 
-    private AndroidToolchain(Resolved sdk, Resolved ndk, Resolved adb, Resolved javaHome, Resolved cargo, Resolved dotnet)
+    private AndroidToolchain(
+        Resolved sdk, Resolved ndk, Resolved adb, Resolved emulator, Resolved javaHome, Resolved cargo, Resolved dotnet)
     {
         _sdk = sdk;
         _ndk = ndk;
         _adb = adb;
+        _emulator = emulator;
         _javaHome = javaHome;
         _cargo = cargo;
         _dotnet = dotnet;
@@ -117,6 +124,7 @@ public sealed class AndroidToolchain
             sdk,
             ResolveNdk(env, sdk.Path),
             ResolveAdb(sdk),
+            ResolveEmulator(sdk),
             ResolveJavaHome(env),
             ResolveCargo(env),
             ResolveDotnet(env));
@@ -124,7 +132,7 @@ public sealed class AndroidToolchain
 
     /// <summary>既定の場所を使った等の知らせ（見つかった道具のぶんだけ）。</summary>
     public IReadOnlyList<string> Notes =>
-        new[] { _sdk, _ndk, _adb, _javaHome, _cargo, _dotnet }
+        new[] { _sdk, _ndk, _adb, _emulator, _javaHome, _cargo, _dotnet }
             .Where(r => r.Path is not null && r.Note is not null)
             .Select(r => r.Note!)
             .ToList();
@@ -140,6 +148,10 @@ public sealed class AndroidToolchain
     /// <summary>adb.exe（無ければ例外）。</summary>
     /// <returns>adb の絶対パス。</returns>
     public string RequireAdb() => Require(_adb);
+
+    /// <summary>emulator.exe（無ければ例外。端末が無いときに AVD を起動する経路でだけ要る）。</summary>
+    /// <returns>emulator の絶対パス。</returns>
+    public string RequireEmulator() => Require(_emulator);
 
     /// <summary>JDK のフォルダ（無ければ例外）。</summary>
     /// <returns>JAVA_HOME に渡すフォルダ。</returns>
@@ -221,6 +233,16 @@ public sealed class AndroidToolchain
         return File.Exists(adb)
             ? new Resolved(adb, null)
             : new Resolved(null, $"adb が見つかりません: {adb}（SDK Manager で Platform-Tools を入れてください）");
+    }
+
+    /// <summary>Android Emulator を探す（SDK の emulator）。</summary>
+    private static Resolved ResolveEmulator(Resolved sdk)
+    {
+        if (sdk.Path is null) return new Resolved(null, sdk.Problem);
+        var emulator = Path.Combine(sdk.Path, EmulatorRelative);
+        return File.Exists(emulator)
+            ? new Resolved(emulator, null)
+            : new Resolved(null, $"Android Emulator が見つかりません: {emulator}（SDK Manager で Android Emulator を入れるか、実機を USB でつないでください）");
     }
 
     /// <summary>JDK を探す（JAVA_HOME → Android Studio 同梱の JBR）。</summary>

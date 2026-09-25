@@ -87,6 +87,18 @@ fn read_is_case_and_separator_insensitive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// contains は read と同じ規則（区切り・大文字小文字を問わない）でエントリの有無だけを答えること
+/// （Android の起動オプションのシーンが pak にあるかの確かめ。段階C-3）。
+#[test]
+fn contains_matches_read_rules_without_reading() {
+    let reader = PakReader::from_source(Cursor::new(build_pak_bytes(&sample_entries()))).unwrap();
+    assert!(reader.contains("scenes/Main.scene"));
+    assert!(reader.contains("SCENES\\MAIN.SCENE"));
+    assert!(reader.contains("empty/zero.txt"), "0 バイトのエントリも「有る」");
+    assert!(!reader.contains("scenes/Second.scene"));
+    assert!(!reader.contains("scenes"), "フォルダの名前だけではエントリではない");
+}
+
 /// メモリ上の Cursor（ファイル以外の読み口）から開いて読めること。
 #[test]
 fn opens_from_in_memory_cursor() {

@@ -361,3 +361,18 @@ OutputPanel の表 1 か所にある。種類と出どころ（表示フィル�
   （`ToolTipService.ShowOnDisabled = true`。無効の実行・停止ボタンも同じく押せない理由をツールチップに出す）。
 - 実行・停止ボタン（プレイバーの PNG アイコンのボタン）は 6 章の「意図的に共通書式へ寄せていないもの」のまま。有効/無効・絵柄・ツールチップ・
   状態表示の文言と色は `AndroidRun/PlayBarPolicy.cs` が決め、`MainWindow.AndroidRun.cs` の `ApplyPlayBar` が当てる。
+
+**項目の並びと見た目**（行を作るのは `AndroidRun/RunTargetCatalog.cs`。どの行も同じ ItemTemplate＝アイコン＋文言で、色は項目から継ぐ）
+
+| 行 | 文言 | アイコン | 選べるか |
+|---|---|---|---|
+| PC | `PC` | `Icon.Platform.Windows` | いつも |
+| Android（自動）（段階C-3・Android の既定） | `Android（自動）` | `Icon.Platform.Android` | Android を使える環境ならいつも（端末の一覧が無くても） |
+| 端末 | `Pixel_6a（実機）`・`emulator-5554（エミュレータ）` | `Icon.Platform.Android` | 使える状態なら |
+| 見えなくなった端末 | `Pixel_6a（未接続）` | `Icon.Platform.Android` | 選べる（段階C-3 から。実行するとエミュレータで実行する旨をツールチップに） |
+| 使えない端末・案内 | `（未許可）`・`端末を探しています…` 等 | 端末は `Icon.Platform.Android`、案内は `Icon.Info` / `Icon.Warning` | 選べない（理由をツールチップに） |
+
+- 並びは「PC → Android（自動） → 端末 → 見えなくなった端末 → 案内」で固定。自動の行を端末より前に置き、Android の既定であることを並びでも示す。
+- 実行の前の「未保存の変更」の確認（`保存して実行 / 保存せず実行 / キャンセル`）は、ボタンの文言を決められる 3 択の窓 `Dialogs/ActionChoiceWindow`
+  （`SeedDialogTheme` の色と部品・`Seed.Button.Dialog` / `Seed.Button.DialogPrimary`。主操作＝保存して実行が左・Enter、Escape はキャンセル）で出す。
+  標準の MessageBox（はい / いいえ）で「押すと何が起きるか」が分からない確認を増やさない。

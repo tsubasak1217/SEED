@@ -11,6 +11,8 @@ namespace AndroidPipelineTests;
 ///   3. Gradle の引数（-P と環境変数）とアプリの識別情報の既定値・検査（GradleAndIdentityTests）
 ///   4. 同梱 .NET の dotnet-root 形式への組み立て（DotnetBundleTests。一時フォルダの偽のパック）
 ///   5. 指紋・tar・行の読み取り・記録・道具の解決・プロジェクトの読み取り・SeedAndroid の引数（InfrastructureTests）
+///   6. 実行先の決め方（自動・エミュレータへの切り替え）・エミュレータの起動と待ち合わせ・AVD・起動するシーンの受け渡し
+///      （EmulatorAndSceneTests。段階C-3）
 /// 端末・adb・cargo・Gradle は使わない。
 /// </summary>
 public static class Program
@@ -25,6 +27,7 @@ public static class Program
         GradleAndIdentityTests.Register(harness);
         DotnetBundleTests.Register(harness);
         InfrastructureTests.Register(harness);
+        EmulatorAndSceneTests.Register(harness);
         return harness.Run();
     }
 }

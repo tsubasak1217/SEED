@@ -15,14 +15,14 @@ public static class PlayBarPolicyTests
         harness.Add("PC: 状態ごとのボタン・絵柄・状態表示が従来の ApplyUiState と同じ", PcTableMatchesLegacy);
         harness.Add("PC の実行中（Launching / Play / Pause）は実行先を変えられない・それ以外は変えられる", SelectorLockedWhilePcRuns);
         harness.Add("実行先 Android・何も動いていない: 実行＝その端末で実行・停止は押せない・状態表示は PC のまま", AndroidTargetIdle);
-        harness.Add("実行先 Android: 選べない端末（未許可・未接続）は理由をツールチップに出して押せない", AndroidTargetNotRunnable);
+        harness.Add("実行先 Android: 選べない端末（未許可）は理由を出して押せない・未接続と Android（自動）は押せる（エミュレータで実行）", AndroidTargetNotRunnable);
         harness.Add("実行先 Android でも PC の実行中は PC の一時停止・停止を優先し、Android は始めない", PcRunTakesPrecedence);
         harness.Add("PC のランタイムのビルド中・待機中でも Android の実行は始められる", AndroidStartsWhilePcBuildingOrIdle);
         harness.Add("Android のビルド中: 実行は押せず、停止＝ビルドの中止、実行先は変えられない、進捗を出す", AndroidBuilding);
         harness.Add("Android の実行中: 一時停止の絵柄で押せない（理由付き）、停止＝アプリを止める", AndroidRunning);
         harness.Add("Android の停止中: 実行も停止も押せない", AndroidStopping);
         harness.Add("Android の実行中は実行先が PC でも Android の表示が優先（PC の Play を始めさせない）", AndroidActiveOverridesPcTarget);
-        harness.Add("進捗の文言: 工程の数が分かる前は「準備中…」、分かれば「% [i/n] 工程名」", ProgressText);
+        harness.Add("進捗の文言: 工程の数が分かる前は「準備中…」（詳細があれば「準備中: 詳細」）、分かれば「% [i/n] 工程名」", ProgressText);
     }
 
     /// <summary>材料を作る。</summary>
@@ -84,7 +84,7 @@ public static class PlayBarPolicyTests
         Check.True(view.TargetSelectorEnabled, "実行先を変えられる");
     }
 
-    /// <summary>選べない端末。</summary>
+    /// <summary>選べない端末と、見えなくなった端末（エミュレータで実行する）。</summary>
     private static void AndroidTargetNotRunnable()
     {
         var unauthorized = RunTargetCatalogBuilder.FromDevice(Fixtures.NotReady(Fixtures.PhoneSerial, AdbDeviceState.Unauthorized, "unauthorized"));
@@ -92,6 +92,7 @@ public static class PlayBarPolicyTests
         Check.Equal(PlayBarAction.None, view.PlayAction, "押せない");
         Check.Equal(unauthorized.ToolTip, view.PlayToolTip, "理由（端末の行のツールチップ）");
 
+        // 段階C-3: 見えなくなった端末を選んだままでも実行でき、エミュレータで実行する旨をツールチップに出す
         var missing = RunTargetCatalogBuilder.Build(new RunTargetCatalogInput
         {
             Android = AndroidTargetAvailability.Available,
@@ -100,8 +101,13 @@ public static class PlayBarPolicyTests
             Mode = RunTargetSelectionMode.Keep,
         }).Selected;
         var missingView = PlayBarPolicy.Compute(Input(EditorState.Edit, missing));
-        Check.Equal(PlayBarAction.None, missingView.PlayAction, "未接続は押せない");
-        Check.True(missingView.PlayToolTip.Contains("見えません"), $"理由: {missingView.PlayToolTip}");
+        Check.Equal(PlayBarAction.StartAndroid, missingView.PlayAction, "未接続でも押せる（エミュレータで実行する）");
+        Check.True(missingView.PlayToolTip.Contains("エミュレータ"), $"エミュレータで実行する旨: {missingView.PlayToolTip}");
+
+        var auto = PlayBarPolicy.Compute(Input(EditorState.Edit, RunTargetCatalogBuilder.AndroidAuto(null)));
+        Check.Equal(PlayBarAction.StartAndroid, auto.PlayAction, "Android（自動）は端末の一覧が無くても押せる");
+        Check.True(auto.PlayToolTip.StartsWith("Android（自動） で実行") && auto.PlayToolTip.Contains("起動中のエミュレータ"),
+            $"自動の規則をツールチップに: {auto.PlayToolTip}");
     }
 
     /// <summary>PC の実行が優先。</summary>
@@ -190,6 +196,10 @@ public static class PlayBarPolicyTests
     {
         Check.Equal(PlayBarPolicy.PreparingProgressText,
             PlayBarPolicy.BuildingProgressText(new AndroidRunSnapshot { Phase = AndroidRunPhase.Building }), "工程が分かる前");
+        Check.Equal("準備中: エミュレータの起動を待っています（42 秒）", PlayBarPolicy.BuildingProgressText(new AndroidRunSnapshot
+        {
+            Phase = AndroidRunPhase.Building, PrepareDetail = "エミュレータの起動を待っています（42 秒）",
+        }), "準備の詳細（エミュレータの起動待ち。段階C-3）");
         Check.Equal("0% [1/7] libSEED.so のビルド（cargo ndk）", PlayBarPolicy.BuildingProgressText(new AndroidRunSnapshot
         {
             Phase = AndroidRunPhase.Building, StepIndex = 1, StepCount = 7, StepTitle = "libSEED.so のビルド（cargo ndk）",
