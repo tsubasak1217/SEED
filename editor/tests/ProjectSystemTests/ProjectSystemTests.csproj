@@ -75,6 +75,13 @@
     <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
       <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
     </Compile>
+    <!-- 描画品質の選び方（"render_quality" 節）とプリセット一覧（段階D-2。どちらも WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\RenderQualitySettings.cs">
+      <Link>Linked\ProjectSettings\RenderQualitySettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\RenderQualityPresetCatalog.cs">
+      <Link>Linked\ProjectSettings\RenderQualityPresetCatalog.cs</Link>
+    </Compile>
     <!-- プロジェクトフォルダ → アセットルートの規則（SeedPak / SeedAndroid と共有） -->
     <Compile Include="..\..\src\Project\ProjectFolderResolver.cs">
       <Link>Linked\Project\ProjectFolderResolver.cs</Link>
@@ -103,6 +110,15 @@
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>
     </Compile>
+  </ItemGroup>
+
+  <!-- 描画品質プリセットの定義（ランタイムと同じファイル）。エディタ本体と同じ論理名で埋め込む
+       （RenderQualityPresetCatalog.ResourceName。実行中のアセンブリから読むため）。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\..\runtime\config\render_presets.json">
+      <LogicalName>SEEDEditor.render_presets.json</LogicalName>
+      <Link>Linked\ProjectSettings\render_presets.json</Link>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

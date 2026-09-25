@@ -22,6 +22,22 @@ use crate::engine::components::ModelComponent;
 // プロファイラのスコープも同じ区間の開始で `ScopeGuard::new` を作り、既存タイマの終了行で
 // `drop(...)` して閉じる（`profile_scope!` と等価な RAII 計測をブロック境界に依存せず行う）。
 use crate::engine::core::profiling::{self, ScopeGuard};
+// パスごとの GPU 時間の計測（段階D-2）: 描画の節目の区間名。計測器が無いフレームでは gpu_mark は何もしない。
+use crate::engine::core::renderer::gpu_timing::{segments as gpu_segments, GpuPassTimer};
+
+/// パスごとの GPU 時間の節目を書く（計測器が無ければ何もしない。段階D-2）。
+///
+/// レンダーパスの外（エンコーダがパスに借りられていないところ）でだけ呼ぶこと。
+/// `segment` は「1 つ前の節目からここまで」の区間名（`renderer::gpu_timing::segments`）。
+fn gpu_mark(
+    timer: &mut Option<GpuPassTimer>,
+    encoder: &mut wgpu::CommandEncoder,
+    segment: &'static str,
+) {
+    if let Some(timer) = timer.as_mut() {
+        timer.mark(encoder, segment);
+    }
+}
 
 /// デバッグログ用フレームカウンター（ログを出力する最大フレーム数）。
 static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
@@ -1032,6 +1048,25 @@ impl App {
             self.update_joint_attachments();
         }
 
+        // ── 描画スケール（ゲーム画面だけを縮小して描く。描画品質プリセット。段階D-2）──────
+        // このフレームの 3D の描画解像度を決める（Play 中だけ品質プリセットの値。Edit・一時停止・撮影は等倍）。
+        // カメラの resolution ユニフォーム（下のカメラ更新）が描画解像度を要るので、カメラ更新より前に Renderer へ入れる。
+        // 等倍（デスクトップの既定）なら Renderer は何も変えない（render_ratio が (1.0, 1.0) ちょうどになる）。
+        let frame_render_scale = self.effective_render_scale();
+        // 論理サイズ（UI・提示・スクリプトの座標の基準）→ 3D の描画解像度の軸ごとの比率。等倍なら (1.0, 1.0)。
+        let render_ratio = match self.renderer.as_mut() {
+            Some(renderer) => {
+                renderer.set_render_scale(frame_render_scale);
+                let logical = renderer.logical_size();
+                let render = renderer.render_size();
+                crate::engine::core::renderer::quality::render_ratio(
+                    (logical.width, logical.height),
+                    (render.width, render.height),
+                )
+            }
+            None => (1.0, 1.0),
+        };
+
         // ── GPU カメラ・インスタンスバッファ更新 ──────
         // ウィンドウ（クライアント領域）の実ピクセルサイズ。
         // **スワップチェーンの再構成にだけ**使う（実寸でなければならない）。
@@ -1252,8 +1287,11 @@ impl App {
             // RT 全面で生成されるため）であり、深度→ワールド座標の復元には使わない。
             // 復元の正規化に使うのは下の `viewport`（NDC が写像される矩形）である
             // ―― この 2 つを混同すると Play のレターボックス時に復元座標が横滑りする。
+            // 描画スケール（段階D-2）が 1 未満なら、3D の描画ターゲットは論理サイズ × 比率なので
+            // resolution もその大きさにする（AO / SSGI / シャドウマスクのアドレッシングが実ターゲット基準のため）。
+            // 等倍なら比率は (1.0, 1.0) ちょうどで、従来と同じ値になる。
             let res = render_target_size.map_or([1280.0, 720.0], |s| {
-                [s.width as f32, s.height as f32]
+                [s.width as f32 * render_ratio.0, s.height as f32 * render_ratio.1]
             });
             // 逆 ViewProjection（デファードのライティングパスが深度→ワールド座標復元に使う）。
             // 特異行列（逆行列なし）の場合は単位行列へフォールバックする（パニックさせない）。
@@ -1888,6 +1926,12 @@ impl App {
             perf_begin_frame_ms = _perf_t_bf.elapsed().as_secs_f64() * 1000.0;
             match begin_frame_result {
                 Ok(mut frame) => {
+                    // パスごとの GPU 時間の計測（段階D-2。計測器があるときだけ）: 届いた読み戻しを集計し、
+                    // このフレームの基準のタイムスタンプを書く。以降は描画の節目ごとに gpu_mark で区間を切る。
+                    if let Some(timer) = self.gpu_timer.as_mut() {
+                        timer.begin_frame(&draw_ctx.device, frame.encoder_mut());
+                    }
+
                     // ここから「描画/フレーム準備」区間（プロファイラ計測）。
                     // シャドウ行列の確定・ライト配列の GPU アップロード・MC 収集・水ボリューム解決まで、
                     // どのレンダーパスも開けていない準備処理をまとめて 1 区間として測る。
@@ -1910,18 +1954,25 @@ impl App {
                     // 採用スロットの割り当てはカメラ非依存なので、両者の shadow_index は一致する。
                     let lights_before_shadow_assign = frame_lights.clone();
 
+                    // 影を描くか: キャスターがあり透視カメラであること（従来）に加え、描画品質プリセットが
+                    // 影を止めていない（shadows: false でない）こと（段階D-2。止めると全ライトの影が不採用になり、
+                    // シャドウ深度パスも走らない）。上限が無ければ従来と同じ判定。
                     let shadow_plan = draw_ctx.shadow.prepare_frame(
                         &draw_ctx.queue, &sv, sn, sf, sfov, sasp,
                         &mut frame_lights,
-                        shadow_has_casters && saved_shadow_cam.is_some(),
+                        shadow_has_casters && saved_shadow_cam.is_some()
+                            && self.render_quality.shadows_enabled(),
                     );
 
                     // 実効モード（GPU 対応可否で降格済み）を解決する。以降の RT 影 / GI / TLAS
                     // 構築ゲートはすべてこの resolved_features を参照する（生の render_features は見ない）。
+                    // 描画品質プリセットの機能の上限（段階D-2。gi=flat 等）もここで当てる（上限が無ければ resolve と同じ）。
                     // NOTE: self.resolved_features() だと &self 全体を借用し、上位の &mut self.renderer
                     //       借用と衝突する。render_features は Copy な単一フィールドなので disjoint 借用で解決。
-                    let resolved_features = self.render_features
-                        .resolve(crate::engine::core::renderer::rt_shadow::rt_shadows_supported());
+                    let resolved_features = self.render_features.resolve_with_caps(
+                        crate::engine::core::renderer::rt_shadow::rt_shadows_supported(),
+                        &self.render_quality.knobs.feature_caps(),
+                    );
                     // このフレームで RT 影を使うか（実効の影方式が Rt かつ RT 対応 GPU）。
                     // フラグメントの実行時分岐（LightMeta.rt_shadows）と、後段のメインパスでの
                     // RT パイプライン/複合 BindGroup 選択の両方に使う（Phase R8）。
@@ -5314,8 +5365,10 @@ impl App {
                     // （プレビューは別 LightMeta／別パスなので構造上も混ざらない）。
                     // ここで前倒し計算するのは、後段の透明収集・各種 RT 確保の要否判定へ
                     // このフラグを配るため（依存するのは self のフィールドのみでフレーム内不変）。
+                    // デファードの可否は描画品質プリセット（段階D-2）を通した実効値で見る（上限が無ければ設定どおり）。
+                    let deferred_setting = self.render_quality.deferred(self.post_fx.deferred);
                     let gbuffer_debug_channel = if self.mode == RuntimeMode::Edit
-                        && self.post_fx.deferred
+                        && deferred_setting
                         && !edit_view_2d
                     {
                         self.scene_view_mode.gbuffer_debug_channel()
@@ -5396,8 +5449,17 @@ impl App {
                     // scene_is_lit: Play 中・非 Edit は常に Lit 扱い（scene_view_mode_code と同じ規約、
                     // 972-980 行目参照）。Edit 中はシーンビューの表示モードに従う。
                     let scene_is_lit = self.mode != RuntimeMode::Edit || self.scene_view_mode.is_lit();
-                    let deferred_active = self.post_fx.deferred
+                    // deferred_setting は描画品質プリセットの可否を通した値（mobile は前方描画。段階D-2）。
+                    let deferred_active = deferred_setting
                         && !edit_view_2d && !scene_wireframe && scene_is_lit;
+                    // 品質が前方描画にしたためにシェーディングアセット（デファード専用）が効かなくなるなら 1 回だけ知らせる
+                    // （ライティングパスと同じ優先: メインカメラの指定 → シーン既定）。
+                    super::render_quality::warn_if_shading_asset_ignored(
+                        self.post_fx.deferred,
+                        deferred_setting,
+                        main_camera_shading_asset.as_deref().or(scene.shading_asset.as_deref()),
+                        &self.render_quality.preset,
+                    );
                     // 反射（Phase D6）: deferred 有効時のみ・resolved の実効反射モード。
                     // フォワード（deferred 無効）時は反射パスを一切走らせない（Off）。
                     // G-Buffer デバッグ表示中は反射合成も行わない（HDR へ加算されると生値が濁る）。
@@ -5437,15 +5499,20 @@ impl App {
                     // deferred のライティングへ入力する機能なので、フォワード時は走らせない。
                     // 実際に走らせるかは `prepare` の成否（＝描画インスタンスが 1 つ以上出たか）
                     // まで見て後段で確定する（caustics_active）。
-                    let caustics_possible = deferred_active && !gbuffer_debug_active && water_gate;
+                    // 描画品質プリセット（段階D-2）が水中コースティクスを止めていれば走らせない。
+                    let caustics_possible = deferred_active && !gbuffer_debug_active && water_gate
+                        && self.render_quality.water_caustics(true);
 
                     // G-Buffer デバッグ表示中はビネットも掛けない（画面端が暗くなると
                     // 「チャンネル値が小さい」のか「ビネットで暗い」のか区別できなくなる）。
-                    let vignette_on = self.post_vignette_enabled && !gbuffer_debug_active;
+                    // ビネット・ブルーム・FXAA は描画品質プリセット（段階D-2）の可否も通す（上限が無ければ設定どおり）。
+                    let vignette_on = self.render_quality.vignette(self.post_vignette_enabled)
+                        && !gbuffer_debug_active;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
                     // G-Buffer デバッグ表示中はブルームを掛けない（高輝度が滲むと生値が読めない）。
-                    let bloom_on = self.post_fx.bloom_enabled && !gbuffer_debug_active;
-                    let fxaa_on  = self.post_fx.fxaa_enabled;
+                    let bloom_on = self.render_quality.bloom(self.post_fx.bloom_enabled)
+                        && !gbuffer_debug_active;
+                    let fxaa_on  = self.render_quality.fxaa(self.post_fx.fxaa_enabled);
                     self.rt_pool.ensure(
                         &draw_ctx.device,
                         crate::engine::core::renderer::RT_SCENE_HDR,
@@ -5454,10 +5521,13 @@ impl App {
                     );
                     // R4: トーンマップ後 LDR 中間（常時確保）。2D オーバーレイをこの上へ描き、
                     //     最終段 FXAA／コピーでスワップチェーンへ出す（R3 の 2D 暗化課題を解消）。
+                    // 大きさは論理サイズ（段階D-2）: 描画スケールが 1 未満なら 3D（HDR）より大きく、トーンマップが
+                    // 拡大しながら書き、UI はこの解像度のまま重なる。等倍なら論理サイズ＝描画解像度で従来と同じ。
+                    let (ldr_w, ldr_h) = frame.logical_size();
                     self.rt_pool.ensure(
                         &draw_ctx.device,
                         crate::engine::core::renderer::RT_LDR,
-                        surf_w, surf_h,
+                        ldr_w, ldr_h,
                         crate::engine::core::renderer::HDR_FORMAT,
                     );
                     if vignette_on {
@@ -5572,7 +5642,9 @@ impl App {
                     //（実際にユーザーが「何も反射しない」を踏んだため切り離した）。
                     // 水面パスは結果を **textureLoad で 1:1 に読む**ので
                     // 半解像度にはしない（補間で反射像が滲むうえ、波の高周波が失われる）。
-                    let water_reflection_possible = deferred_active && water_gate;
+                    // 描画品質プリセット（段階D-2）が水面反射を止めていれば確保もパスも行わない（上限が無ければ従来どおり）。
+                    let water_reflection_possible = deferred_active && water_gate
+                        && self.render_quality.water_reflection(true);
                     if water_reflection_possible {
                         self.rt_pool.ensure(
                             &draw_ctx.device,
@@ -5739,6 +5811,8 @@ impl App {
                         // スポットへシャドウキャスターの深度を描画する。メインパスは group 4
                         // 複合 BG（binding 2〜5）経由でこの深度をサンプルする。
                         // キャスターが無ければ 0 コストでスキップ。
+                        // GPU 計測の節目: ここまで＝スキニング・パーティクル・カリング等の compute（段階D-2）。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::COMPUTE);
                         if shadow_plan.any() {
                             crate::profile_scope!("描画/シャドウ深度パス");
                             let mut shadow_casters: Vec<(
@@ -5765,6 +5839,8 @@ impl App {
                                 );
                             }
                         }
+                        // GPU 計測の節目: シャドウマップの深度パス。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::SHADOW);
 
                         // ── RT 影の加速構造ビルド（Phase R8, メインパス直前）──────────
                         // RT 影オン時（rt_on）のみ実行。BLAS（メッシュ単位, 初回のみキャッシュ）と
@@ -5962,6 +6038,8 @@ impl App {
                                 }
                             }
                         }
+                        // GPU 計測の節目: RT の加速構造・屈折背景・DDGI（RT 非対応 GPU ではほぼ 0）。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::RT);
 
                         // ── Play ビューポートの描画ターゲットへの集約クランプ（set_viewport 安全化）──
                         // ここまでの game_viewport は win_w_f/win_h_f（＝on_resize が surface を
@@ -5978,9 +6056,21 @@ impl App {
                         // set_viewport をスキップさせる（そのフレームはターゲット全面のデフォルト
                         // ビューポートで描く。リサイズ最中の一過性フレームのため実害はない）。
                         let (rt_surf_w, rt_surf_h) = frame.render_size();
+                        // 描画スケール（段階D-2）: game_viewport は論理サイズ（UI・スクリプトと同じ座標）で決めてあるので、
+                        // 3D のパスへ渡す前に描画解像度のピクセルへ写す（比率はこのフレームのターゲットの実寸から）。
+                        // 等倍なら比率は (1.0, 1.0) ちょうどで、logical_rect_to_render は矩形をそのまま返す（従来と同じ）。
+                        // 以降の game_viewport（全 set_viewport・カメラ UBO の viewport・クラスタ・パーティクル・WBOIT）は
+                        // 描画解像度のピクセル。UI のレイアウト（ここより前）は論理サイズのまま使い終えている。
+                        let frame_render_ratio = crate::engine::core::renderer::quality::render_ratio(
+                            frame.logical_size(),
+                            (rt_surf_w, rt_surf_h),
+                        );
                         let play_viewport_ok = if self.mode == RuntimeMode::Play && !self.paused {
+                            let scaled_viewport = crate::engine::core::renderer::quality::logical_rect_to_render(
+                                game_viewport, frame_render_ratio,
+                            );
                             match clamp_viewport_to_target(
-                                game_viewport, rt_surf_w as f32, rt_surf_h as f32,
+                                scaled_viewport, rt_surf_w as f32, rt_surf_h as f32,
                             ) {
                                 Some(clamped) => { game_viewport = clamped; true }
                                 None          => false,
@@ -6008,8 +6098,14 @@ impl App {
                             // 頂点シェーダーへ確定後のビューポート px を渡す必要がある。
                             // 行列は CPU 側の近平面クリップで使ったものと**同一**でなければ
                             // クリップ位置と描画位置がずれるため、saved_view_proj を使う。
+                            // 描画スケールが 1 未満でも線の太さは画面（論理）の px で保つため、ビューポートの
+                            // 大きさは論理サイズへ戻して渡す（等倍なら比率 1.0 で割るだけ＝従来と同じ値）。
                             if let Some(p3) = &self.primitive3d {
-                                p3.update_camera(&draw_ctx.queue, &saved_view_proj, [vp[2], vp[3]]);
+                                p3.update_camera(
+                                    &draw_ctx.queue,
+                                    &saved_view_proj,
+                                    [vp[2] / frame_render_ratio.0, vp[3] / frame_render_ratio.1],
+                                );
                             }
                         }
 
@@ -6034,10 +6130,14 @@ impl App {
                             // 実際に set_viewport する矩形。Play のレターボックス時はゲーム領域。
                             // frag_coord はフレームバッファ基準なので、タイル分割の正規化は
                             // この矩形で行わないと構築側（NDC 等分）とズレる。
+                            // Edit 側は RT 全面（描画スケールが効くのは Play だけなので比率は 1.0。念のため同じ規則で写す）。
                             let cluster_vp = if self.mode == RuntimeMode::Play && !self.paused {
                                 game_viewport
                             } else {
-                                (0.0, 0.0, win_w_f, win_h_f)
+                                crate::engine::core::renderer::quality::logical_rect_to_render(
+                                    (0.0, 0.0, win_w_f, win_h_f),
+                                    frame_render_ratio,
+                                )
                             };
                             let (cview, cnear, cfar, cfov, casp) = saved_shadow_cam
                                 .map(|(v, n, f, fo, a)| (v, n, f, fo, a))
@@ -6064,6 +6164,8 @@ impl App {
                                 );
                             }
                         }
+                        // GPU 計測の節目: クラスタ化ライティングのクラスタ構築。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::CLUSTER);
 
                         let clear_color = if self.mode == RuntimeMode::Play && !self.paused {
                             let [r, g, b, a] = game_clear_color;
@@ -6396,6 +6498,8 @@ impl App {
                                     }
                                 }
                             }
+                            // GPU 計測の節目: G-Buffer パス（MRT 5 枚）と Hi-Z。
+                            gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::GBUFFER);
 
                             // ── AO 生成パス + いもす法ブラー（Phase D4）─────────────────
                             // G-Buffer 完成後・deferred ライティング前に半解像度 ao_raw へ AO を焼き、
@@ -6599,6 +6703,9 @@ impl App {
                                     &shadow_mask_selection,
                                 );
                             }
+
+                            // GPU 計測の節目: AO・水中コースティクス・RT 影マスク。
+                            gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::AO);
 
                             // AO 結果ビュー（ライティングの group1 binding6 へ渡す）。AO=Off 時は白 1x1（ao=1.0）。
                             let ao_sampler = &draw_ctx.pipelines.ao.linear_sampler;
@@ -6866,6 +6973,8 @@ impl App {
                             }
 
                         }
+                        // GPU 計測の節目: デファードのフルスクリーン・ライティング（前方描画のときは 0）。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::LIGHTING);
 
                         // ── SSGI 生成パス（Phase SSGI, 1 フレーム遅延）────────────────
                         // deferred ライティング完了後・反射より前に、今フレームの scene_hdr（不透明
@@ -6917,6 +7026,8 @@ impl App {
                             // B. いもす法カラーブラー（ssgi_raw → ssgi_a/ssgi_b, 結果は必ず ssgi_b）。
                             sp.blur(&draw_ctx.device, frame.encoder_mut(), &self.ssgi_targets);
                         }
+                        // GPU 計測の節目: SSGI（生成＋ブラー）。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::SSGI);
 
                         // ── 反射（SSR / RT）パス（Phase D6）──────────────────────────
                         // deferred ライティング完了後・メインフォワード再開前に、G-Buffer＋scene_hdr から
@@ -7064,6 +7175,8 @@ impl App {
                                 draw_ctx.light_buffer.meta_main_buffer(), 12, bytemuck::bytes_of(&flag),
                             );
                         }
+                        // GPU 計測の節目: 反射（SSR / RT）と合成・屈折背景のミップ。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::REFLECTION);
 
                         // メインパス開始: デファード時は G-Buffer/ライティングパスが書いた HDR・深度・
                         // ステンシルを Load で保持（半透明・スカイボックス・ギズモをその上に重ねる）。
@@ -7079,22 +7192,26 @@ impl App {
                         // BarFillPipeline で上書きすることで正しい帯カラーを適用する。
                         if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok && uses_bar_mode {
                             let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                            // game_viewport はクランプ時に描画解像度のピクセルへ写してあるので（段階D-2 の描画スケール）、
+                            // NDC の基準の幅・高さも同じ比率を掛けた描画解像度にする（等倍なら比率 1.0 で従来と同じ値）。
+                            let bar_w = win_w_f * frame_render_ratio.0;
+                            let bar_h = win_h_f * frame_render_ratio.1;
                             // ピクセル座標 → NDC 変換
                             // ndc_x(px) = px / win_w * 2 - 1
                             // ndc_y(py) = 1 - py / win_h * 2  (ピクセル Y は上が 0、NDC Y は上が +1)
-                            let to_ndc_x = |px: f32| px / win_w_f * 2.0 - 1.0;
-                            let to_ndc_y = |py: f32| 1.0 - py / win_h_f * 2.0;
+                            let to_ndc_x = |px: f32| px / bar_w * 2.0 - 1.0;
+                            let to_ndc_y = |py: f32| 1.0 - py / bar_h * 2.0;
 
                             // 4 辺の帯候補（面積 0 の帯は描画スキップ）
                             let bar_rects = [
                                 // 上帯: Y=0〜vp_y
-                                (0.0, 0.0, win_w_f, vp_y),
+                                (0.0, 0.0, bar_w, vp_y),
                                 // 下帯: Y=(vp_y+vp_h)〜win_h
-                                (0.0, vp_y + vp_h, win_w_f, win_h_f),
+                                (0.0, vp_y + vp_h, bar_w, bar_h),
                                 // 左帯: X=0〜vp_x
-                                (0.0, 0.0, vp_x, win_h_f),
+                                (0.0, 0.0, vp_x, bar_h),
                                 // 右帯: X=(vp_x+vp_w)〜win_w
-                                (vp_x + vp_w, 0.0, win_w_f, win_h_f),
+                                (vp_x + vp_w, 0.0, bar_w, bar_h),
                             ];
                             for (px0, py0, px1, py1) in bar_rects {
                                 // 面積 0 の帯はスキップ（LetterBox なら左右帯が幅 0 になる等）
@@ -7229,6 +7346,8 @@ impl App {
                             if water_gate {
                                 // 水面パスは別レンダーパスなので、ここでメインパスを一旦閉じる。
                                 drop(pass);
+                                // GPU 計測の節目: ここまでの前方パス（スカイボックス・不透明）。残りは水面の後で同じ名前に足す。
+                                gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::FORWARD);
                                 let perf_t_water = std::time::Instant::now();
                                 let _prof_water = ScopeGuard::new("描画/水面パス");
                                 let water_ready = water_prepared;
@@ -7347,6 +7466,8 @@ impl App {
                                 }
                                 drop(_prof_water);
                                 perf_water_ms = perf_t_water.elapsed().as_secs_f64() * 1000.0;
+                                // GPU 計測の節目: 水面（屈折背景のグラブ・水面反射・水面パス）。
+                                gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::WATER);
 
                                 // メインパスを Load で再開する（以降の距離ソート半透明・
                                 // スプライト・オーバーレイはすべて水面の上に重なる）。
@@ -7565,6 +7686,8 @@ impl App {
                         //    ワイヤー／アイコン／選択アウトライン等）は、WBOIT 合成のフルスクリーン
                         //    no_depth クアッドに上書きされないよう、合成の「後」で別パスに描く。
                         drop(pass);
+                        // GPU 計測の節目: 前方パス（水面の後の半透明・スプライト等。水面が無ければ前方パス全体）。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::FORWARD);
 
                         // ── WBOIT 透明描画（Phase R5, WBOIT 方式かつ透明物ありのとき）──────
                         // メインパス drop 後・オーバーレイ前に、accum/reveal へ順序独立蓄積し、
@@ -7639,6 +7762,8 @@ impl App {
                                 );
                             }
                         }
+                        // GPU 計測の節目: WBOIT の半透明と合成。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::WBOIT);
 
                         // ── エディタオーバーレイパス（WBOIT 合成後・GPU パーティクル前）────
                         // 深度 = 共有深度を Load（不透明深度でテストのみ・パイプライン側 depth_write=false
@@ -8147,6 +8272,8 @@ impl App {
                         drop(pass);
                         drop(_prof_overlay);
                         perf_pass_drop_ms = _perf_t_drop.elapsed().as_secs_f64() * 1000.0;
+                        // GPU 計測の節目: エディタのオーバーレイと LineRenderer のリボン等。
+                        gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::OVERLAY);
                     }
 
                     // メインパス〜WBOIT 合成〜オーバーレイパスまでの合計時間（本ブロック全体）。
@@ -8220,6 +8347,8 @@ impl App {
                         vpass.set_bind_group(0, &vd_bg, &[]);
                         vpass.draw(0..3, 0..1);
                     }
+                    // GPU 計測の節目: GPU パーティクルの描画（と速度バッファのデバッグ表示）。
+                    gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::PARTICLES);
 
                     // ── ブルーム（Phase R4, 有効時のみ）───────────────────────────
                     // メインパス後・トーンマップ前に、シーン HDR から高輝度を抽出して
@@ -8237,8 +8366,13 @@ impl App {
                             &self.rt_pool, &bloom_targets, hdr_view, bloom_params,
                         );
                     }
+                    // GPU 計測の節目: ブルーム。
+                    gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::BLOOM);
 
                     // ── トーンマップ（HDR → LDR 中間, Phase R4）───────────────────
+                    // 描画スケールが 1 未満（段階D-2）のとき、HDR（描画解像度）→ LDR（論理サイズ）で
+                    // ここが拡大を兼ねる（トーンマップのシェーダは UV でリニアにサンプルするため、大きさの違う
+                    // 出力へそのまま書ける）。等倍なら入出力は同じ大きさで従来と同じ。
                     // R3 では直接スワップチェーンへ出していたが、R4 では 2D オーバーレイを
                     // トーンマップ後の LDR へ描くため、いったん LDR 中間 RT へ出す。
                     // ビネット有効時はトーンマップ前段に挿す（チェーン: hdr→ビネット→トーンマップ）。
@@ -8269,6 +8403,8 @@ impl App {
                             tonemap_operator,
                         );
                     }
+                    // GPU 計測の節目: ビネット・トーンマップ（描画スケールが 1 未満なら拡大を含む）。
+                    gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::TONEMAP);
 
                     // ── シーンキャンバスオーバーレイパス（シーンSS専用）──────────────
                     // 3D シーンのカラーを保持しつつ、2D キャンバス要素を最前面に合成する。
@@ -8386,6 +8522,8 @@ impl App {
                             }
                         }
                     }
+                    // GPU 計測の節目: UI（キャンバスのオーバーレイ。論理サイズで描く）。
+                    gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::UI);
 
                     // ── 最終段: FXAA／プレゼントコピー（LDR 中間 → スワップチェーン, Phase R4）
                     // トーンマップ済み LDR（＋2D オーバーレイ）をスワップチェーンへ書き出す。
@@ -8409,6 +8547,8 @@ impl App {
                             blit_pass.draw(0..6, 0..1);
                         }
                     }
+                    // GPU 計測の節目: FXAA／提示先へのコピーとカメラプレビュー（ID パス等のエディタ用は測らない）。
+                    gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::PRESENT);
 
                     // ── ID パス ────────────────────────────────────────────────
                     // 読み戻し要求の取り出し（ID パスの描画要否判定と、実際のコピー予約で共有する）。
@@ -9028,6 +9168,11 @@ impl App {
                     }
 
                     mark_frame_stage(FrameStage::EncodeDone);
+                    // パスごとの GPU 時間の計測（段階D-2）: このフレームのタイムスタンプを解いて読み戻し用へ写す
+                    // （提出の直前。コマンドはこのエンコーダの最後に積まれる）。
+                    if let Some(timer) = self.gpu_timer.as_mut() {
+                        timer.end_frame(frame.encoder_mut());
+                    }
                     let _perf_t_finish = std::time::Instant::now();
                     {
                         // encoder.finish() + queue.submit() + surface.present() の合計。
@@ -9037,6 +9182,19 @@ impl App {
                     }
                     perf_finish_ms = _perf_t_finish.elapsed().as_secs_f64() * 1000.0;
                     mark_frame_stage(FrameStage::PresentDone);
+                    // パスごとの GPU 時間の計測（段階D-2）: 提出の後に読み戻しのマップを予約し、CPU 側の値
+                    // （フレーム・取得待ち・提出と提示）も同じ集計へ足す。3 秒ごとに [SEED GPU] の 1 行を出す。
+                    if let Some(timer) = self.gpu_timer.as_mut() {
+                        timer.after_submit();
+                        timer.record_cpu(crate::engine::core::renderer::gpu_timing::CpuFrameSample {
+                            frame_ms: perf_t_total.elapsed().as_secs_f64() * 1000.0,
+                            acquire_ms: perf_begin_frame_ms,
+                            present_ms: perf_finish_ms,
+                        });
+                        if let Some(line) = timer.take_report(std::time::Instant::now()) {
+                            eprintln!("{line}");
+                        }
+                    }
 
                     // ── 図鑑サムネイル: 「1 枚描けた」ことをジョブへ伝える ──────
                     //   待機フレーム数は about_to_wait の回数ではなく実描画数で数える

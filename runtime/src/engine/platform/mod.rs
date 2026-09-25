@@ -87,7 +87,31 @@ pub struct PlatformTraits {
     /// Android は mdpi（160 dpi）を 1.0（densityDpi / 160）とする。掛け戻すと OS が報告する論理 DPI になる
     /// （Android は DisplayMetrics.densityDpi、Windows は 96 × 表示スケール）。
     pub reference_dpi: u32,
+
+    /// 描画品質の設定を引くときのプラットフォーム名（段階D-2）。
+    ///
+    /// project_settings.json の `render_quality.<この名前>`（プリセット名とつまみの上書き）を読む。
+    /// エディタのプロジェクト設定（レンダリング品質）の節の名前と一致させる。
+    pub quality_platform_key: &'static str,
+
+    /// 描画品質プリセットの既定（project_settings.json に指定が無いとき。段階D-2）。
+    ///
+    /// プリセットの中身は runtime/config/render_presets.json（renderer/quality/）。
+    /// デスクトップは何も下げない `desktop`（従来の描画そのもの）、Android は軽量の `mobile`。
+    pub default_render_quality: &'static str,
 }
+
+/// 描画品質の設定の節の名前（デスクトップ＝Windows）。
+pub const DESKTOP_QUALITY_KEY: &str = "desktop";
+
+/// 描画品質の設定の節の名前（Android）。
+pub const ANDROID_QUALITY_KEY: &str = "android";
+
+/// デスクトップの既定の描画品質プリセット（何も下げない）。
+pub const DESKTOP_DEFAULT_RENDER_QUALITY: &str = "desktop";
+
+/// Android の既定の描画品質プリセット（軽量）。
+pub const ANDROID_DEFAULT_RENDER_QUALITY: &str = "mobile";
 
 /// C# スクリプトのホスト（CLR と SEEDScripting.dll）の用意の仕方（起動材料が渡されていないとき）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +140,8 @@ pub const DESKTOP: PlatformTraits = PlatformTraits {
     mouse_simulates_touch: true,
     key_remap:             key_remap::DESKTOP_KEY_REMAP,
     reference_dpi:         DESKTOP_REFERENCE_DPI,
+    quality_platform_key:  DESKTOP_QUALITY_KEY,
+    default_render_quality: DESKTOP_DEFAULT_RENDER_QUALITY,
 };
 
 /// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力・戻るキー・画面情報 ＋ 段階B の同梱 .NET のスクリプト）。
@@ -128,6 +154,8 @@ pub const ANDROID: PlatformTraits = PlatformTraits {
     mouse_simulates_touch: false,
     key_remap:             key_remap::ANDROID_KEY_REMAP,
     reference_dpi:         ANDROID_REFERENCE_DPI,
+    quality_platform_key:  ANDROID_QUALITY_KEY,
+    default_render_quality: ANDROID_DEFAULT_RENDER_QUALITY,
 };
 
 /// 定義済みの全プラットフォームの特性（表全体への検査用）。
@@ -194,6 +222,17 @@ mod tests {
         assert!(ANDROID.touch_supported);
         assert!(ANDROID.touch_drives_mouse);
         assert!(!ANDROID.mouse_simulates_touch);
+    }
+
+    /// 描画品質の既定: デスクトップは何も下げない desktop、Android は軽量の mobile（段階D-2）。
+    /// 設定の節の名前はプラットフォームごとに別（同じ project_settings.json に両方を書ける）。
+    #[test]
+    fn render_quality_defaults_per_platform() {
+        assert_eq!(DESKTOP.default_render_quality, "desktop");
+        assert_eq!(ANDROID.default_render_quality, "mobile");
+        assert_eq!(DESKTOP.quality_platform_key, "desktop");
+        assert_eq!(ANDROID.quality_platform_key, "android");
+        assert_ne!(DESKTOP.quality_platform_key, ANDROID.quality_platform_key);
     }
 
     /// DPI の基準は winit の scale_factor の定義と同じ（Windows 96 / Android 160）。

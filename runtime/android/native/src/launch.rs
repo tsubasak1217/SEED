@@ -79,15 +79,31 @@ struct IpcLaunch {
 /// 起動するシーンは起動オプションのシーン（あれば）、無ければ project_settings.json の start_scene
 /// （パッケージ実行では PAK の中のもの）。起動オプションに IPC のポートがあれば TCP で待ち受ける（段階D-1）。
 pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
-    let internal = app.internal_data_path();
     // JNI で受け取った起動オプション（MainActivity.onCreate が android_main より前に渡す）
     let options = launch_options::take();
-    let ipc = ipc_endpoint_logged(&options);
+    let mut args = launch_args_for(app, &options);
+    // 計測・検証用の描画品質の指定（段階D-2。am start --es seed.quality / seed.quality_overrides / seed.gpu_timing）。
+    // どの起動モードでも同じに効く。無ければ project_settings.json の render_quality かプラットフォームの既定（mobile）。
+    args.render_quality = options.quality_launch();
+    args.gpu_timing = options.gpu_timing_enabled();
+    if args.render_quality != Default::default() || args.gpu_timing {
+        logcat::info(&format!(
+            "起動オプションの描画品質: プリセット={:?} つまみ={:?} GPU 計測={}",
+            args.render_quality.preset, args.render_quality.knobs, args.gpu_timing
+        ));
+    }
+    args
+}
+
+/// 起動オプション `options` から、起動モード（パッケージ実行／開発用の置き場）を決めて LaunchArgs を組み立てる。
+fn launch_args_for(app: &AndroidApp, options: &LaunchOptions) -> LaunchArgs {
+    let internal = app.internal_data_path();
+    let ipc = ipc_endpoint_logged(options);
 
     // ── 1. APK に配布物の pak があればパッケージ実行 ──
     let package = ApkPackageSource::new(app.asset_manager());
     if let Some(probe) = package.probe_pak() {
-        return packaged_launch_args(internal.as_deref(), package, &probe, &options, ipc);
+        return packaged_launch_args(internal.as_deref(), package, &probe, options, ipc);
     }
     logcat::info(&format!(
         "APK に {} がありません。開発用の置き場（アプリ専用フォルダの assets/）から読みます",
@@ -114,7 +130,7 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
     }
 
     // 開発用の置き場では、シーンはアセットルート（run-as で送ったフォルダ）のファイル
-    let scene_path = choose_scene_logged(&options, |relative| {
+    let scene_path = choose_scene_logged(options, |relative| {
         assets_root.as_deref().is_some_and(|root| root.join(relative).is_file())
     });
     play_launch_args(assets_root, None, scene_path, ipc)
@@ -193,6 +209,9 @@ fn play_launch_args(
         play_collider_draw: false,
         // 同梱 .NET の起動材料は entry.rs が dotnet_runtime::prepare で作って入れる（起動モードとは独立）。
         embedded_clr: None,
+        // 描画品質の指定・GPU 計測は launch_args が起動オプションから入れる（起動モードとは独立）。
+        render_quality: Default::default(),
+        gpu_timing: false,
     }
 }
 

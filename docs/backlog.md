@@ -1537,12 +1537,36 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 段階0（エミュレータで 1 枚絵・回転・ホーム復帰・タッチ受信・panic ログまで）で見つけた「今はやらない」課題。
 段階の区分（A / B / C / D）は docs/android.md §9。
 
-- [ ] **実機の描画が重い（GPU 待ちが支配的と見られる・段階D）** — 2026-09-24。Pixel 6a（Mali-G78・ドライバ r54p1）の debug ビルドで
+- [x] **実機の描画が重い（GPU 待ちが支配的と見られる・段階D）** — 2026-09-24 記載 / 2026-09-25 対応（D-2。docs/android.md §22）。
+  描画品質プリセット（`runtime/config/render_presets.json`・`renderer/quality/`）を入れ、Android の既定を `mobile`
+  （ゲーム画面を 0.5 倍で描いて拡大・前方描画・SSGI／AO／反射／ブルーム・水面反射なし・影 1024。UI は画面の解像度のまま）にした。
+  パスごとの GPU タイムスタンプ計測（`renderer/gpu_timing/`・`seed.gpu_timing=1`）も入れた。デスクトップの既定 `desktop` は何も下げない
+  （PC の Play は画素一致で確認）。**実機での効果の計測は未実施**（下の「D-2 の実機計測」）。以下は記載時のメモ。
+  Pixel 6a（Mali-G78・ドライバ r54p1）の debug ビルドで
   縦 約 18〜19 fps／横 約 37〜39 fps。`[PERF]` では 1 フレーム約 50 ms のうち提示待ち（`finish`）28〜41 ms・
   `begin_frame` 最大 19 ms で、CPU 側は数 ms。デスクトップ向けの描画経路（deferred・MRT 5 枚・シャドウ 2048・SSGI）を
   端末の実解像度 1080x2400 のまま回しているため。モバイル向け描画プリセット（描画解像度スケール・重い後処理の既定オフ）で
   対処する。縦より横が速い理由は未調査（描画する画素数は同じ）。関連: `runtime/src/engine/core/renderer/`、
   project_settings の `render_resolution`。
+- [ ] **D-2 の実機計測と `mobile` の見直し** — 2026-09-25（段階D-2 で未実施）。実装・PC での確認・APK の作成と導入まで済んだが、
+  確認の時間中ずっと端末の画面が消えていて（`mWakefulness=Dozing`）、実機のプリセットごとの fps・GPU の内訳・スクリーンショット・
+  座標（タッチ・UI の当たり判定が描画スケールで変わらないこと）を測れていない。docs/android.md §22.6 の手順（`am start --es seed.gpu_timing 1
+  --es seed.quality <名前> --es seed.quality_overrides '<キー=値>'` → `[SEED GPU]` / `[SEED HEARTBEAT]`）で `desktop`・`mobile`・
+  つまみ 1 つずつ（`render_scale` 0.5/0.75・`deferred=false`・`gi=flat`・`shadows=false`）を測り、`mobile` の中身を数値で決め直す。
+  目標 60 fps（少なくとも 30 fps 安定）。debug の .so で CPU 律速になれば release の .so（`--release`）でも測る。関連: `runtime/config/render_presets.json`。
+- [ ] **描画スケールを下げてもフル解像度で残るパス（低優先）** — 2026-09-25（D-2）。トーンマップ後の LDR 中間（Rgba16Float）・UI・提示のコピーは
+  論理サイズ（画面の解像度）のまま。UI が無いフレームはトーンマップを提示先へ直接書けば 1 パスと 1 枚ぶんの帯域を減らせる。
+  LDR 中間を 8bit にする案もある（パイプラインのカラー形式が HDR 前提なので別パイプラインが要る）。実機の内訳（`tonemap`・`ui`・`present`）を見てから。
+  関連: `app/frame_renderer.rs` のトーンマップ・`RenderFrame::present_to_swapchain`。
+- [ ] **品質のつまみの残り（テクスチャの最大解像度・クラスタの分割数・カスケード数）** — 2026-09-25（D-2）。候補に挙がったが入れていない。
+  テクスチャは読み込み時にミップの上段を捨てる形が素直（`loader/asset_cache` と GPU への積み込み）。クラスタの分割数（16×9×24）と
+  CSM のカスケード数（3）はシェーダの定数なので、変えるならシェーダの差し替えが要る。実機の内訳で必要と分かったら足す。
+- [ ] **背景ゾーン・3D 空間のキャンバスは描画スケールの解像度で描かれる** — 2026-09-25（D-2）。前面ゾーンの UI だけが論理サイズ
+  （画面の解像度）のまま重なる。背景ゾーンは 3D より奥に描くためメインパスの中にあり、3D のキャンバスは 3D の一部なので縮小される。
+  文字を背景ゾーンに置くとぼける。気になるなら背景ゾーンだけ別の論理サイズのパスで先に描いて 3D を重ねる構成を検討する。
+- [ ] **SeedAndroid / エディタの実行から品質の起動オプションを渡せない（低優先）** — 2026-09-25（D-2）。計測の `seed.quality` /
+  `seed.quality_overrides` / `seed.gpu_timing` は `am start` を直接打つ必要がある。`run` に `--quality` 等を足すと計測が楽になる
+  （`Steps/LaunchStep` の extras・`AndroidRunRequest`・SeedAndroid の引数）。
 - [ ] **実機 GPU の features / limits の余裕を一覧で出す診断（低優先）** — 2026-09-24。実機では `MULTI_DRAW_INDIRECT` が無く
   `request_device` が落ちたため、間接描画の 3 feature を「対応していれば要求」にして通した（Mali-G78 では
   `max_bind_groups: 5` 等の limits は足りていた）。wgpu の `check_limits` は超過した limit を最後の 1 件しか返さないので、

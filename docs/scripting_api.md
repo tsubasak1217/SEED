@@ -2660,7 +2660,7 @@ int n = SEED.Events.SubscriberCount("Bite");  // 現在の購読件数（デバ�
 public static bool IsPackaged;      // パッケージ実行（assets.pak 同梱の配布版）なら true
 public static bool IsEditorPlay;    // エディタから Play したゲーム実行中なら true
 public static bool IsDebugAllowed;  // デバッグ機能を有効にしてよいか（現在は !IsPackaged）
-public static int  TargetFps;       // プロジェクト設定の目標フレームレート（0 = 無制限）。設定値であって実測ではない
+public static int  TargetFps;       // プロジェクト設定の目標フレームレート（0 = 無制限。描画品質プリセットの target_fps の上限を当てた値）。設定値であって実測ではない
 public static bool VsyncEnabled;    // 垂直同期が実際に有効か（設定 "auto" の解決結果を含む）
 ```
 

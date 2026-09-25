@@ -60,7 +60,8 @@ public partial class ProjectSettingsWindow : Window
         new("graphics", "グラフィックス", new()
         {
             new("resolution",     "解像度設定", IsImplemented: true),
-            new("render_quality", "レンダリング品質"),
+            // 描画品質プリセット（プラットフォームごと。Android 段階D-2。中身は ProjectSettingsWindow.RenderQuality.cs）
+            new("render_quality", "レンダリング品質", IsImplemented: true),
             new("rt_shadows",     "RTシャドウ", IsImplemented: true),
             new("shadow_quality", "シャドウマップ品質", IsImplemented: true),
         }),
@@ -352,6 +353,7 @@ public partial class ProjectSettingsWindow : Window
             "game_name"      => BuildGameNamePanel(),
             "scene_manager"  => BuildSceneManagerPanel(),
             "resolution"     => BuildResolutionPanel(),
+            "render_quality" => BuildRenderQualityPanel(),
             "rt_shadows"     => BuildRtShadowsPanel(),
             "shadow_quality" => BuildShadowQualityPanel(),
             "plugin_manage"  => BuildPluginManagePanel(),
@@ -1558,6 +1560,10 @@ public partial class ProjectSettingsWindow : Window
 
         // 「Android アプリ情報（モバイル）」の入力値を収集する（空欄は既定値。ProjectSettingsWindow.Android.cs）
         CollectAndroidAppSettings();
+
+        // 「レンダリング品質」の選択値を収集する（プラットフォームごとのプリセット・描画スケール・影。
+        // 表示していなければ何もしない。ProjectSettingsWindow.RenderQuality.cs）
+        CollectRenderQualitySettings();
 
         // 「RTシャドウ」パネルのチェック状態を収集する
         if (_rtShadowsCheckBox is not null)

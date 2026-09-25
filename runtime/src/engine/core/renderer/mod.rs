@@ -144,6 +144,10 @@ pub(crate) mod refract_pyramid;
 pub(crate) mod bindless;
 /// 内部解像度固定（fixed）モードのレターボックス写像（描画ビューポート＋入力座標変換の共通式）
 pub mod letterbox;
+/// 描画品質プリセット（データドリブン。描画スケール・機能の上限・後処理の可否。Android 段階D-2）
+pub mod quality;
+/// パスごとの GPU 時間の計測（タイムスタンプ。計測用・既定オフ。Android 段階D-2）
+pub mod gpu_timing;
 
 /// 垂直同期（VSync）モードとプレゼントモード選択（純関数＋単体テスト）。
 pub mod present_mode;
@@ -239,7 +243,7 @@ pub use view_mode::{SceneViewMode, GBufferDebugChannel, set_wireframe_supported,
 pub use velocity_debug::{VelocityDebugPipeline, VELOCITY_DEBUG_ENABLED};
 pub use gbuffer_debug::GBufferDebugPipeline;
 pub use render_features::{RenderFeatures, ResolvedFeatures, ShadowMode, GiMode,
-                          ReflectionMode, AoMode, TranslucencyMode};
+                          ReflectionMode, AoMode, TranslucencyMode, FeatureCaps};
 
 // ============================================================
 //  Renderer 本体
@@ -342,6 +346,20 @@ pub struct Renderer {
     /// アスペクト維持で引き伸ばす（余白は黒帯）。
     /// スワップチェーンの configure は常にウィンドウ実サイズのまま（ここでは触らない）。
     fixed_render_size: Option<PhysicalSize<u32>>,
+    /// 描画スケール（ゲーム画面だけを縮小して描く比率。1.0 = 等倍＝従来どおり。段階D-2）。
+    ///
+    /// 3D の描画解像度（`render_size`）は「論理サイズ（`logical_size`）× この値」になり、
+    /// UI のオーバーレイと提示は論理サイズのまま。フレームごとに `set_render_scale` で決まる
+    /// （Play 中だけ品質プリセットの値。Edit・ポーズ中は 1.0）。計算は `quality::scale`。
+    render_scale: f32,
+    /// 描画スケールが 1 未満のときの、論理サイズの深度（UI のオーバーレイパス用）。
+    ///
+    /// 3D 用の深度（`depth_texture`）は縮小した描画解像度なので、論理サイズの LDR へ重ねる
+    /// UI のパスには使えない（アタッチメントの大きさが食い違う）。等倍のときは None で、
+    /// UI のパスは従来どおり 3D 用の深度を使う。
+    overlay_depth: Option<DepthTexture>,
+    /// GPU のタイムスタンプ計測（gpu_timing）に要る feature を要求できたか。
+    gpu_timing_supported: bool,
     /// サムネイル撮影フレームの最終カラー出力先（オフスクリーン）。
     ///
     /// `None` = まだ 1 度も撮っていない（要求されたときに初めて確保する）。
@@ -528,6 +546,20 @@ impl Renderer {
             eprintln!("[SEED VIEWMODE] ワイヤーフレーム: 非対応 → ワイヤ選択時は Unlit 表示にフォールバック");
         }
 
+        // ── GPU のタイムスタンプ計測（gpu_timing。計測用・既定オフ）─────────────────
+        // 要求されたとき（SEED_GPU_TIMING=1 / --gpu-timing / Android の起動オプション seed.gpu_timing）だけ、
+        // アダプタが対応していれば TIMESTAMP_QUERY と TIMESTAMP_QUERY_INSIDE_ENCODERS を要求する。
+        // 要求されていなければ feature を足さない（デバイスの作り方は従来と完全に同じ）。
+        let gpu_timing_supported = gpu_timing::requested()
+            && af.contains(gpu_timing::REQUIRED_FEATURES);
+        if gpu_timing::requested() {
+            if gpu_timing_supported {
+                eprintln!("[SEED GPU] タイムスタンプ計測: 有効（TIMESTAMP_QUERY + INSIDE_ENCODERS を要求）");
+            } else {
+                eprintln!("[SEED GPU] タイムスタンプ計測: このアダプタは非対応のため無効（CPU 側の計測だけ出します）");
+            }
+        }
+
         // G-Buffer の MRT 帯域（速度バッファ追加で 5 枚 = 36 byte/sample）。
         // アダプタが申告した上限をそのまま要求する（申告値は定義上必ず通る）。
         // 万一 G-Buffer が要求する量に届かないアダプタなら、パイプライン生成時に
@@ -565,7 +597,9 @@ impl Renderer {
                                        wgpu::Features::TEXTURE_BINDING_ARRAY
                                      | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
                                      | if supports_partially_bound { wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY } else { wgpu::Features::empty() }
-                                   } else { wgpu::Features::empty() },
+                                   } else { wgpu::Features::empty() }
+                                 // GPU のタイムスタンプ計測（要求されたときだけ。上の gpu_timing_supported）。
+                                 | if gpu_timing_supported { gpu_timing::REQUIRED_FEATURES } else { wgpu::Features::empty() },
                 required_limits:   wgpu::Limits {
                     // GPU スキニングの静的 BG が最大の消費者（storage 12 本）。
                     // 【なぜ複数アニメ対応でも 12 のままか】アニメテーブル（binding 12）は
@@ -693,6 +727,10 @@ impl Renderer {
             surface: Some(surface),
             device, queue, config, size, depth_texture,
             fixed_render_size: None,
+            // 描画スケールは等倍から始める（Play の品質プリセットはフレームごとに set_render_scale で入る）。
+            render_scale: quality::MAX_RENDER_SCALE,
+            overlay_depth: None,
+            gpu_timing_supported,
             // サムネイル用オフスクリーンは「最初に要求されたとき」に確保する。
             // 撮影を一度もしないセッションでフルスクリーン 1 枚ぶんを抱えないため。
             thumbnail_target: None,
@@ -840,14 +878,76 @@ impl Renderer {
         self.fixed_render_size = sanitized;
         let rs = self.render_size();
         self.depth_texture = DepthTexture::new(&self.device, rs.width, rs.height);
+        // UI 用の深度（描画スケールが 1 未満のときだけ）は論理サイズ＝内部解像度へ合わせる。
+        self.sync_overlay_depth();
     }
 
-    /// 描画ターゲットを確保すべき解像度を返す。
+    /// UI のオーバーレイと提示の基準の大きさ（論理サイズ）を返す。
     ///
     /// fixed なら内部解像度、それ以外（既定）はスワップチェーン実サイズ（＝従来の `size`）。
+    /// 描画スケールが等倍なら `render_size` と同じ（＝従来の描画解像度そのもの）。
+    #[inline]
+    pub fn logical_size(&self) -> PhysicalSize<u32> {
+        self.fixed_render_size.unwrap_or(self.size)
+    }
+
+    /// 3D のゲーム画面を描く解像度（描画ターゲットを確保すべき解像度）を返す。
+    ///
+    /// 論理サイズ × 描画スケール（`quality::scaled_render_size`）。描画スケールが等倍（既定）なら
+    /// 論理サイズそのもの＝従来と同じ値（fixed なら内部解像度、既定はスワップチェーン実サイズ）。
     #[inline]
     pub fn render_size(&self) -> PhysicalSize<u32> {
-        self.fixed_render_size.unwrap_or(self.size)
+        let logical = self.logical_size();
+        let (width, height) =
+            quality::scaled_render_size((logical.width, logical.height), self.render_scale);
+        PhysicalSize::new(width, height)
+    }
+
+    /// 描画スケール（ゲーム画面だけを縮小して描く比率）を設定する（段階D-2）。
+    ///
+    /// 値は `quality::sanitize_render_scale` で 0.5〜1.0 へ収める。変わったときだけ深度（3D 用と UI 用）を
+    /// 新しい大きさへ合わせる（他の RT は次のフレームの `RenderFrame::render_size()` 基準の ensure で追従する）。
+    /// フレームごとに呼んでよい（同じ値なら何もしない）。
+    pub fn set_render_scale(&mut self, scale: f32) {
+        let scale = quality::sanitize_render_scale(scale);
+        if self.render_scale == scale {
+            return;
+        }
+        self.render_scale = scale;
+        let rs = self.render_size();
+        if rs.width != self.depth_texture.width || rs.height != self.depth_texture.height {
+            self.depth_texture = DepthTexture::new(&self.device, rs.width, rs.height);
+        }
+        self.sync_overlay_depth();
+    }
+
+    /// 今の描画スケール（1.0 = 等倍）。
+    pub fn render_scale(&self) -> f32 {
+        self.render_scale
+    }
+
+    /// GPU のタイムスタンプ計測（gpu_timing）に要る feature をデバイスが持つか。
+    pub fn gpu_timing_supported(&self) -> bool {
+        self.gpu_timing_supported
+    }
+
+    /// UI 用の深度（論理サイズ）を、今の描画スケールに合わせて用意する・捨てる。
+    ///
+    /// 3D の描画解像度が論理サイズと同じ（等倍）なら要らない（UI も 3D 用の深度を使う＝従来どおり）。
+    fn sync_overlay_depth(&mut self) {
+        let logical = self.logical_size();
+        let render = self.render_size();
+        if logical == render {
+            self.overlay_depth = None;
+            return;
+        }
+        let matches = self
+            .overlay_depth
+            .as_ref()
+            .is_some_and(|d| d.width == logical.width && d.height == logical.height);
+        if !matches {
+            self.overlay_depth = Some(DepthTexture::new(&self.device, logical.width, logical.height));
+        }
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -860,10 +960,12 @@ impl Renderer {
             if let Some(surface) = &self.surface {
                 surface.configure(&self.device, &self.config);
             }
-            // 深度は「描画解像度」で確保する。fixed 無効（None）のときは
+            // 深度は「描画解像度」で確保する。fixed 無効（None）・描画スケール等倍のときは
             // render_size() == new_size なので従来と完全に同一の呼び出しになる。
             let rs = self.render_size();
             self.depth_texture = DepthTexture::new(&self.device, rs.width, rs.height);
+            // UI 用の深度（描画スケールが 1 未満のときだけ）も論理サイズへ合わせる。
+            self.sync_overlay_depth();
         }
     }
 
@@ -922,11 +1024,14 @@ impl Renderer {
                 height: surf_extent.height,
             };
         }
-        // ② 深度テクスチャは描画解像度（fixed なら内部解像度）に追従させる。
+        // ② 深度テクスチャは描画解像度（fixed なら内部解像度 × 描画スケール）に追従させる。
         let rs = self.render_size();
         if rs.width != self.depth_texture.width || rs.height != self.depth_texture.height {
             self.depth_texture = DepthTexture::new(&self.device, rs.width, rs.height);
         }
+        // ③ UI 用の深度は論理サイズに追従させる（描画スケールが 1 未満のときだけ持つ。等倍なら None）。
+        self.sync_overlay_depth();
+        let ls = self.logical_size();
 
         let color_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let encoder    = self.device.create_command_encoder(
@@ -938,8 +1043,15 @@ impl Renderer {
             color_view,
             depth_view:      &self.depth_texture.view,
             depth_only_view: &self.depth_texture.depth_only_view,
+            // UI のパスの深度: 描画スケールが 1 未満なら論理サイズの専用の深度、等倍なら 3D と共有（従来どおり）。
+            overlay_depth_view: self
+                .overlay_depth
+                .as_ref()
+                .map_or(&self.depth_texture.view, |depth| &depth.view),
             // 描画解像度をフレームへ焼き込む（フレーム中に変わらないことを保証するため）。
             render_px:       (rs.width, rs.height),
+            // 論理サイズ（UI・提示の基準）も同じく焼き込む。等倍なら render_px と同じ値。
+            logical_px:      (ls.width, ls.height),
             queue:           &self.queue,
             device:          &self.device,
         })
@@ -996,7 +1108,10 @@ impl Renderer {
             color_view,
             depth_view:      &self.depth_texture.view,
             depth_only_view: &self.depth_texture.depth_only_view,
+            // 撮影フレームは UI・提示も描画解像度のまま（ターゲットが描画解像度で 1 枚だけのため）。
+            overlay_depth_view: &self.depth_texture.view,
             render_px:       (width, height),
+            logical_px:      (width, height),
             queue:           &self.queue,
             device:          &self.device,
         })
@@ -1085,9 +1200,16 @@ pub struct RenderFrame<'r> {
     depth_view:      &'r wgpu::TextureView,
     /// DepthOnly aspect: Hi-Z テクスチャサンプリング用
     depth_only_view: &'r wgpu::TextureView,
-    /// このフレームの描画解像度（px）。fixed なら内部解像度、既定はスワップチェーン実サイズ。
+    /// UI（キャンバスのオーバーレイ）パスの深度（All aspect）。
+    /// 描画スケールが 1 未満なら論理サイズの専用の深度、等倍なら `depth_view` と同じもの（従来どおり）。
+    overlay_depth_view: &'r wgpu::TextureView,
+    /// このフレームの描画解像度（px）。fixed なら内部解像度、既定はスワップチェーン実サイズ
+    /// （描画スケールが 1 未満ならそれに比率を掛けたもの）。
     /// `Renderer::render_size()` の値をフレーム開始時に固定したもの。
     render_px:       (u32, u32),
+    /// このフレームの論理サイズ（px。UI のオーバーレイ・トーンマップ後の LDR・提示の基準）。
+    /// `Renderer::logical_size()` の値をフレーム開始時に固定したもの。描画スケールが等倍なら `render_px` と同じ。
+    logical_px:      (u32, u32),
     queue:           &'r wgpu::Queue,
     /// スクリーンショットの読み戻し（バッファ生成 + マップ完了待ち）に使う。
     device:          &'r wgpu::Device,
@@ -1229,6 +1351,15 @@ impl<'r> RenderFrame<'r> {
         self.render_px
     }
 
+    /// 論理サイズ（ピクセル）を返す（段階D-2）。
+    ///
+    /// UI（キャンバスのオーバーレイ）・トーンマップ後の LDR 中間・提示の基準の大きさ。
+    /// 描画スケールが等倍（既定）なら `render_size()` と同じ値。1 未満なら 3D の描画解像度より大きく、
+    /// トーンマップがその差を拡大する（HDR は `render_size`、LDR は `logical_size` で確保する）。
+    pub fn logical_size(&self) -> (u32, u32) {
+        self.logical_px
+    }
+
     /// スワップチェーンの実サーフェスサイズ（ピクセル）を返す。
     ///
     /// 最終プレゼント先の実寸。fixed では `render_size()` と一致しないため、
@@ -1291,6 +1422,9 @@ impl<'r> RenderFrame<'r> {
     ///
     /// `begin_canvas_overlay_pass` と同じ（カラー Load・深度 Clear）だが、カラーターゲットを
     /// 呼び出し側指定の HDR ビューへ差し替える（メインパスと同じ HDR へ合成する）。
+    ///
+    /// 深度は UI 用（`overlay_depth_view`）。描画スケールが 1 未満のとき、カラー（論理サイズの LDR）と
+    /// 大きさをそろえるため 3D 用の深度（縮小した描画解像度）とは別のものになる。等倍なら 3D と共有（従来どおり）。
     pub fn begin_canvas_overlay_pass_to<'f>(
         &'f mut self,
         color_view: &'f wgpu::TextureView,
@@ -1309,7 +1443,7 @@ impl<'r> RenderFrame<'r> {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: self.depth_view,
+                view: self.overlay_depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load:  wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
@@ -1964,9 +2098,11 @@ impl<'r> RenderFrame<'r> {
         ldr_view:     &wgpu::TextureView,
         fxaa_enabled: bool,
     ) {
-        // FXAA の inv_res は「入力 LDR の解像度」＝描画解像度でなければならない
+        // FXAA の inv_res は「入力 LDR の解像度」でなければならない
         //（サーフェス実サイズを渡すと fixed 時にテクセル歩幅がズレてボケる）。
-        let (w, h) = self.render_size();
+        // LDR 中間は論理サイズで確保する（描画スケールが 1 未満でもトーンマップが論理サイズへ拡大済み）。
+        // 等倍なら論理サイズ＝描画解像度なので従来と同じ値。
+        let (w, h) = self.logical_size();
         let (sw, sh) = self.swapchain_px();
         // window モードでは両者が必ず一致するので None ＝ 従来と同じ「ビューポート未指定」経路。
         //

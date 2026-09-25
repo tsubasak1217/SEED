@@ -23,6 +23,22 @@ const IPC_PORT_ARG: &str = "--ipc-port=";
 /// TCP の IPC の接続トークンの起動引数（検証用。`--ipc-token=<トークン>`。段階D-1）。
 const IPC_TOKEN_ARG: &str = "--ipc-token=";
 
+/// 描画品質のプリセット名の起動引数（検証用。`--render-quality=<名前>`。段階D-2）。
+/// project_settings.json の render_quality.desktop.preset より優先する（renderer/quality/resolve.rs）。
+const RENDER_QUALITY_ARG: &str = "--render-quality=";
+
+/// 描画品質のつまみの上書きの起動引数（検証用。`--render-quality-overrides=キー=値,キー=値`。段階D-2）。
+const RENDER_QUALITY_OVERRIDES_ARG: &str = "--render-quality-overrides=";
+
+/// パスごとの GPU 時間の計測を有効にする起動引数（計測用。段階D-2。renderer/gpu_timing）。
+const GPU_TIMING_ARG: &str = "--gpu-timing";
+
+/// パスごとの GPU 時間の計測を有効にする環境変数（値が 1 のとき。起動引数 --gpu-timing と同じ）。
+const GPU_TIMING_ENV: &str = "SEED_GPU_TIMING";
+
+/// GPU_TIMING_ENV を有効とみなす値。
+const GPU_TIMING_ENV_ON: &str = "1";
+
 fn main() {
     // アセット形式のマイグレーション系サブコマンド。
     //   - `--upgrade-project <パス> [--dry-run]` … プロジェクト配下の一括アップグレード
@@ -143,6 +159,22 @@ fn parse_args() -> LaunchArgs {
     // Play 起動時にエディタから渡されるフラグ。SyncViewportSettings の到着前から有効にする。
     let play_collider_draw = raw.iter().any(|a| a == "--play-collider-draw=1");
 
+    // 検証用: 描画品質のプリセット名とつまみの上書き（Android の起動オプション seed.quality / seed.quality_overrides と同じ。段階D-2）。
+    let render_quality = engine::core::renderer::quality::QualityLaunchOverrides {
+        preset: raw
+            .iter()
+            .find(|a| a.starts_with(RENDER_QUALITY_ARG))
+            .map(|a| a[RENDER_QUALITY_ARG.len()..].to_string()),
+        knobs: raw
+            .iter()
+            .find(|a| a.starts_with(RENDER_QUALITY_OVERRIDES_ARG))
+            .map(|a| a[RENDER_QUALITY_OVERRIDES_ARG.len()..].to_string()),
+    };
+
+    // 計測用: パスごとの GPU 時間（起動引数か環境変数。既定は無効）。
+    let gpu_timing = raw.iter().any(|a| a == GPU_TIMING_ARG)
+        || std::env::var(GPU_TIMING_ENV).is_ok_and(|v| v.trim() == GPU_TIMING_ENV_ON);
+
     LaunchArgs {
         parent_hwnd,
         parent_pid,
@@ -158,5 +190,7 @@ fn parse_args() -> LaunchArgs {
         play_collider_draw,
         // デスクトップはスクリプトホストを探して（開発ビルド出力・実行ファイルの bin/）起動する（app/script_boot.rs）。
         embedded_clr: None,
+        render_quality,
+        gpu_timing,
     }
 }

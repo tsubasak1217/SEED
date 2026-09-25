@@ -1925,7 +1925,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="api"><code class="sig">Application.IsPackaged</code><span class="desc">bool。パッケージ実行（assets.pak 同梱の配布版）なら true</span></div>
   <div class="api"><code class="sig">Application.IsEditorPlay</code><span class="desc">bool。エディタから Play したゲーム実行中なら true（Edit モードは false）</span></div>
   <div class="api"><code class="sig">Application.IsDebugAllowed</code><span class="desc">bool。デバッグ機能を有効にしてよいか（現在の定義は !IsPackaged）</span></div>
-  <div class="api"><code class="sig">Application.TargetFps</code><span class="desc">int。プロジェクト設定の目標フレームレート（0 = 無制限）。設定値であって実測ではない（実測は Time.Fps）</span></div>
+  <div class="api"><code class="sig">Application.TargetFps</code><span class="desc">int。プロジェクト設定の目標フレームレート（0 = 無制限。描画品質プリセットの target_fps の上限を当てた値）。設定値であって実測ではない（実測は Time.Fps）</span></div>
   <div class="api"><code class="sig">Application.VsyncEnabled</code><span class="desc">bool。垂直同期が実際に有効か（プロジェクト設定 "auto" の解決結果まで含んだ実際の値）</span></div>
 <pre><span class="c">// デバッグ HUD は開発中だけ出す</span>
 <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)

@@ -1590,6 +1590,98 @@ TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判
 
 ---
 
+## 描画品質プリセット（データドリブン。Android 段階D-2・2026-09-25）
+
+デスクトップ向けの描画経路を、端末の性能に合わせて**データの差し替えだけで**軽くする仕組み。
+モバイル（Android）での計測・プリセットの効果は [android.md](android.md) §22 が正典。
+
+### 構成
+
+| 置き場 | 役割 |
+|---|---|
+| `runtime/config/render_presets.json` | **プリセットの定義（データ）**。名前・表示名・説明・つまみ。ランタイムとエディタがビルド時に同じファイルを埋め込む |
+| `renderer/quality/knobs.rs` | つまみの集合 `QualityKnobs`（全部 `Option`。`None`＝設定のまま）と JSON からの読み取り・値域 |
+| `renderer/quality/catalog.rs` | 埋め込みの定義を 1 回だけ読む `builtin_catalog()`（壊れていたら空の一覧＋警告。起動は止めない） |
+| `renderer/quality/resolve.rs` | 実効の品質 `RenderQuality` を決める（プラットフォーム既定 ← プロジェクト設定 ← 起動オプション） |
+| `renderer/quality/apply.rs` | 可否（`false` で止める）・上限（小さい方）を既存の設定値へ当てる純関数 |
+| `renderer/quality/scale.rs` | 描画スケールの寸法計算（論理サイズ × スケール、論理→描画の矩形の写像） |
+| `platform/mod.rs` | `PlatformTraits::default_render_quality`（デスクトップ `desktop`／Android `mobile`）と節の名前 `quality_platform_key` |
+| `app/render_quality.rs` | 起動時の決定と `[SEED QUALITY]` ログ、フレームごとの描画スケールの判断（Play 中だけ） |
+| エディタ `ProjectSettings/RenderQuality*.cs` | プロジェクト設定「レンダリング品質」（プラットフォームごとのプリセット・描画スケール・影） |
+
+### 決め方（後に書いたものが勝つ）
+
+1. プリセット名 … 起動オプション ＞ `project_settings.json` の `render_quality.<プラットフォーム>.preset` ＞ プラットフォームの既定
+2. つまみ … プリセットのつまみ ← 同じ節のつまみ ← 起動オプションのつまみ
+
+```jsonc
+"render_quality": {
+  "desktop": { "preset": "desktop" },                       // 省略時も desktop（何も下げない）
+  "android": { "preset": "mobile", "render_scale": 0.75 }   // 省略時は mobile
+}
+```
+
+知らないプリセット名はプラットフォームの既定へ戻し、読めないつまみはそのつまみだけ捨てる（どちらも `[SEED QUALITY][WARN]`）。
+起動オプション（計測・検証用）は PC が `--render-quality=<名前>` / `--render-quality-overrides=キー=値,…`、
+Android が `am start --es seed.quality <名前> --es seed.quality_overrides 'キー=値,…'`。
+
+### つまみ（すべて省略可。省略＝プロジェクト・シーンの設定のまま）
+
+| キー | 値 | 当て方 | 効くところ |
+|---|---|---|---|
+| `render_scale` | 0.5〜1.0 | 置き換え | 3D の描画解像度＝論理サイズ × 値（下の「描画スケール」） |
+| `shadows` | bool | `false` で止める | `ShadowResources::prepare_frame` の has_casters（全ライトの影が不採用・深度パスなし） |
+| `shadow` / `gi` / `ao` / `reflection` / `translucency` | 方式名 | **上限**（重い要求だけ下げる） | `RenderFeatures::resolve_with_caps`（`FeatureCaps`） |
+| `shadow_resolution` | 1024 / 2048 / 4096 | 上限（小さい方） | 起動時のシャドウ品質（`set_shadow_quality` の前） |
+| `shadow_distance` | m | 上限 | 同上 |
+| `shadow_pcf_taps` | 1〜16 | 上限 | 同上 |
+| `deferred` | bool | `false` で止める | 前方描画（G-Buffer・AO・SSGI・反射・コースティクス・水面反射・**シェーディングアセット（L3）**が効かない。アセットを要求していれば `[SEED QUALITY][WARN]` を 1 回） |
+| `bloom` / `fxaa` / `vignette` | bool | `false` で止める | 後処理のゲート |
+| `water_reflection` / `water_caustics` | bool | `false` で止める | 水面反射 RT・水中コースティクス |
+| `target_fps` | 1 以上 | 上限（無制限は上限の値へ） | `frame_pacing::cap_target_fps`（起動時） |
+
+- **上限は上げない**: フラットを要求したシーンに SSGI を足したり、止めてあるブルームを動かしたりはしない。
+  より重い描画にしたいときはプロジェクト・シーンの設定で上げる。
+- 上限の後の方式は RT を要しない（上限 `rt` は「下げない」と同じ）ので、RT 降格（`resolve`）の後に当てても矛盾しない。
+  ログは `gi=flat(品質上限)` のように注記する（上限が無ければ従来の行と 1 文字も違わない）。
+- **デスクトップの既定 `desktop` はつまみを 1 つも持たない**。どの経路も従来と同じ値になる
+  （`FeatureCaps::NONE` での `resolve_with_caps == resolve` の全組み合わせ・`desktop` が空・`render_ratio==(1,1)` を単体テストで固定。
+  PC の Play の画素一致は android.md §22.6）。
+
+### 描画スケール（ゲーム画面だけを縮小して描く）
+
+- **論理サイズ**＝従来の描画解像度（ウィンドウ実寸。内部解像度固定ならその内部解像度）。UI（キャンバスのオーバーレイ）・
+  トーンマップ後の LDR 中間・提示の基準で、スクリプトの `Screen.Width`・`Input.MousePosition`・タッチ・`Screen.SafeArea`・
+  キャンバス UI のレイアウトと当たり判定の座標系はこれのまま（**スケールで変わらない**）。
+- **描画解像度**＝論理サイズ × `render_scale`（軸ごとに四捨五入）。深度・HDR・G-Buffer・AO・SSGI・反射・水・ブルームなど
+  3D の RT はすべてこの大きさ（`Renderer::render_size` / `RenderFrame::render_size`）。
+- 流れ: 3D を描画解像度で描く → **トーンマップが HDR（描画解像度）→ LDR（論理サイズ）へ拡大**しながら書く
+  （シェーダは UV でリニアにサンプルするので変更なし）→ UI を論理サイズの LDR へ重ねる（UI 用の深度 `overlay_depth` は
+  論理サイズで別に持つ）→ 提示（fixed ならここでレターボックス）。
+- ゲームのビューポート（カメラのスケーリングモードの矩形）は論理サイズで決め、3D のパスへ渡す直前（集約クランプの位置）で
+  描画解像度のピクセルへ写す（`quality::logical_rect_to_render`）。カメラの `resolution` ユニフォームも描画解像度。
+  スクリプト 3D プリミティブの線幅は論理サイズの px のまま（太さが変わらない）。
+- 効かせない条件（等倍で描く）: Edit、Play の一時停止（エディタの見た目・ID パスのピック）、サムネイル撮影、
+  `SEED_ID_PASS_IN_PLAY`（ID バッファは論理サイズ）。Android の IPC の一時停止（ゲームの画面のまま）は効かせたまま。
+- 論理サイズ＝描画解像度（等倍）のときは、UI 用の深度を持たず、比率はちょうど (1.0, 1.0) で、写像はすべて入力をそのまま返す
+  （＝従来と同じ呼び出し・同じ値）。
+
+### GPU タイムスタンプ計測（`renderer/gpu_timing/`。計測用・既定オフ）
+
+`SEED_GPU_TIMING=1`・`--gpu-timing`・Android の `seed.gpu_timing=1` で有効（有効なときだけ `TIMESTAMP_QUERY` と
+`TIMESTAMP_QUERY_INSIDE_ENCODERS` を要求する）。フレームループの節目（`gpu_segments::*`）でタイムスタンプを書き、
+3 秒ごとに `[SEED GPU] … | cpu frame=… acquire=… present=… | gpu total=… compute=… shadow=… gbuffer=… …`（ms の平均）を出す。
+区間は「1 つ前の節目からこの節目まで」。タイルベースの GPU（Mali 等）では区間の境目で仕事が前後へ少し漏れるので目安として読む。
+
+### プリセットを足す・変える
+
+`runtime/config/render_presets.json` の `presets` に要素を足すだけ（`name` / `label` / `description` / `knobs`）。
+ランタイム（`catalog.rs` の単体テスト）とエディタ（`ProjectSystemTests`）が書式・既定プリセットの存在を確かめる。
+新しいつまみを足すときは `knobs.rs`（キー・`QualityKnobs`・`apply_knob`・`KNOWN_KEYS`）、当てる場所（`apply.rs` か各所）、
+エディタの `RenderQualityPresetCatalog.DescribeKnob`（説明文）、本表を更新する。
+
+---
+
 ## フェーズ B: バインドレス基盤（RT ヒットシェーディングの土台）【状況: B1・B2・B3 実装済み（実機検証待ち）】
 
 ### 背景・目的

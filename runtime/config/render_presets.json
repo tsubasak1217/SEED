@@ -1,0 +1,71 @@
+{
+  "_comment": "描画品質プリセットの正典（データ）。ランタイム（runtime/src/engine/core/renderer/quality/catalog.rs）がビルド時に埋め込み、エディタ（プロジェクト設定 → レンダリング品質）も同じファイルを埋め込んで一覧を出す。つまみの意味・値域は docs/rendering_roadmap.md の「描画品質プリセット」節。knobs に書かないつまみは「プロジェクト・シーンの設定のまま（下げない）」。",
+  "format_version": 1,
+  "presets": [
+    {
+      "name": "desktop",
+      "label": "デスクトップ（従来どおり）",
+      "description": "何も下げない。プロジェクト設定・シーン設定のとおりに描く（Windows の既定）。",
+      "knobs": {}
+    },
+    {
+      "name": "mobile",
+      "label": "モバイル（軽量）",
+      "description": "スマートフォン向け（Android の既定）。ゲーム画面を画面の 0.5 倍の解像度で描いて拡大し（UI は画面の解像度のまま）、G-Buffer を使わない前方描画にして、画面全体の重い後処理（SSGI・AO・反射・ブルーム）と水面の反射・コースティクスを止め、影を軽くする。",
+      "knobs": {
+        "render_scale": 0.5,
+        "deferred": false,
+        "gi": "flat",
+        "ao": "off",
+        "reflection": "off",
+        "translucency": "raster",
+        "shadow": "shadowmap",
+        "shadow_resolution": 1024,
+        "shadow_distance": 50.0,
+        "shadow_pcf_taps": 4,
+        "bloom": false,
+        "water_reflection": false,
+        "water_caustics": false
+      }
+    },
+    {
+      "name": "mobile_high",
+      "label": "モバイル（高画質）",
+      "description": "性能に余裕のある端末向け。モバイルより描画解像度を上げ（0.75 倍）、影を 2048 に戻す。重い後処理は止めたまま。",
+      "knobs": {
+        "render_scale": 0.75,
+        "deferred": false,
+        "gi": "flat",
+        "ao": "off",
+        "reflection": "off",
+        "translucency": "raster",
+        "shadow": "shadowmap",
+        "shadow_resolution": 2048,
+        "shadow_pcf_taps": 8,
+        "bloom": false,
+        "water_reflection": false,
+        "water_caustics": false
+      }
+    },
+    {
+      "name": "mobile_low",
+      "label": "モバイル（最軽量）",
+      "description": "非力な端末・発熱を抑えたいとき向け。モバイルに加えて影を描かず、フレームレートの上限を 30 にする。",
+      "knobs": {
+        "render_scale": 0.5,
+        "deferred": false,
+        "gi": "flat",
+        "ao": "off",
+        "reflection": "off",
+        "translucency": "raster",
+        "shadow": "shadowmap",
+        "shadows": false,
+        "bloom": false,
+        "fxaa": false,
+        "water_reflection": false,
+        "water_caustics": false,
+        "target_fps": 30
+      }
+    }
+  ]
+}

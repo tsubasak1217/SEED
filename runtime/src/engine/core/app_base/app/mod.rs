@@ -113,6 +113,8 @@ mod app_init;
 mod script_boot;
 /// 描画解像度モード（window / fixed）の定義・パースと、fixed の有効判定
 mod render_resolution;
+/// 描画品質プリセットの App 側の窓口（起動時の決定・フレームごとの描画スケールの判断。段階D-2）
+mod render_quality;
 /// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）
 pub(crate) mod frame_pacing;
 mod event_handler;
@@ -625,6 +627,16 @@ pub struct LaunchArgs {
     /// Some ならスクリプトはこれで起動し、ユーザースクリプトは事前コンパイル DLL をバイト列で読む
     /// （その場コンパイルはしない）。None ならプラットフォームの既定（PC はファイルを探す。app/script_boot.rs）。
     pub embedded_clr: Option<crate::engine::core::scripting::EmbeddedClrHost>,
+    /// 描画品質の指定（計測・検証用。段階D-2）。
+    ///
+    /// プリセット名とつまみの上書きで、project_settings.json の render_quality より優先する。
+    /// PC は --render-quality= / --render-quality-overrides=、Android は起動オプション
+    /// seed.quality / seed.quality_overrides（renderer/quality/resolve.rs）。指定が無ければ既定（何も上書きしない）。
+    pub render_quality: crate::engine::core::renderer::quality::QualityLaunchOverrides,
+    /// パスごとの GPU 時間の計測を有効にするか（計測用。段階D-2。renderer/gpu_timing）。
+    ///
+    /// PC は --gpu-timing か環境変数 SEED_GPU_TIMING=1、Android は起動オプション seed.gpu_timing=1。
+    pub gpu_timing: bool,
 }
 
 // ============================================================
@@ -1407,6 +1419,23 @@ pub struct App {
     /// 実行中の切り替えは行わない（スワップチェーン再構成が必要なため）。
     pub(super) vsync_mode: crate::engine::core::renderer::VsyncMode,
 
+    /// 実効の描画品質（プリセット＋上書き。Android 段階D-2）。
+    ///
+    /// `handle_resumed` で一度だけ決める（プラットフォームの既定 ← project_settings.json の render_quality
+    /// ← 起動オプション。`renderer::quality::resolve_render_quality`）。デスクトップの既定は何も下げない。
+    /// 使い道: 描画スケール（`render_resolution::effective_render_scale`）・機能の上限（resolve_with_caps）・
+    /// デファード／後処理／水面の可否・影の品質と目標 fps の上限（起動時）。
+    pub(super) render_quality: crate::engine::core::renderer::quality::RenderQuality,
+
+    /// 起動オプションで渡された描画品質の指定（計測・検証用。`LaunchArgs::render_quality` の写し）。
+    pub(super) quality_launch: crate::engine::core::renderer::quality::QualityLaunchOverrides,
+
+    /// パスごとの GPU 時間の計測を起動オプションで要求されたか（`LaunchArgs::gpu_timing` の写し）。
+    pub(super) gpu_timing_launch: bool,
+
+    /// パスごとの GPU 時間の計測器（計測が要求され、デバイスが対応しているときだけ Some）。
+    pub(super) gpu_timer: Option<crate::engine::core::renderer::gpu_timing::GpuPassTimer>,
+
     /// フレーム統計（直近 1 秒の平均 fps・直近フレームの実時間）。
     /// `pace_frame` が毎フレーム更新し、スクリプト API（SEED.Time.Fps /
     /// FrameTimeMs）へ静的値として発行される。
@@ -1730,6 +1759,11 @@ impl App {
             // 同上。handle_resumed で project_settings.json から上書きされる。
             target_fps:  frame_pacing::DEFAULT_TARGET_FPS,
             vsync_mode:  crate::engine::core::renderer::VsyncMode::default(),
+            // 描画品質は handle_resumed で project_settings.json と起動オプションから決める（それまでは何も下げない）。
+            render_quality:    crate::engine::core::renderer::quality::RenderQuality::default(),
+            quality_launch:    args.render_quality,
+            gpu_timing_launch: args.gpu_timing,
+            gpu_timer:         None,
             frame_stats: frame_pacing::FrameStats::default(),
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),

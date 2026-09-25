@@ -293,6 +293,16 @@ public class ProjectSettingsData
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AndroidAppSettings? Android { get; set; }
 
+    /// <summary>
+    /// 描画品質プリセットの選び方（"render_quality" 節。プラットフォームごとのプリセット名とつまみの上書き。Android 段階D-2）。
+    /// null・空の節はランタイムの既定（デスクトップは何も下げない desktop、Android は軽量の mobile）。
+    /// ランタイムは起動時に 1 回だけ読む（runtime/src/engine/core/renderer/quality/resolve.rs）。Android は APK（pak）へ入るので、
+    /// 変えたら APK を作り直すと反映される。何も設定されていなければ節ごと保存しない。
+    /// </summary>
+    [JsonPropertyName(RenderQualitySettings.SectionKey)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RenderQualitySettings? RenderQuality { get; set; }
+
     // ── シーンマネージャ ─────────────────────────────────────
 
     /// <summary>
@@ -408,6 +418,8 @@ public class ProjectSettingsData
         FormatVersion = AssetFormats.ProjectSettings.CurrentVersion;
         // "android" 節は何も設定されていなければ書かない（空の節を増やさない。既定値はビルド時に決まる）。
         if (Android is { IsEmpty: true }) Android = null;
+        // "render_quality" 節も同じ（空ならランタイムの既定のプリセットが使われる）。
+        if (RenderQuality is { IsEmpty: true }) RenderQuality = null;
         var json = JsonSerializer.Serialize(this, JsonOptions);
         SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(
             path, json, Path.GetDirectoryName(Path.GetFullPath(path)));

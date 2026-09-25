@@ -532,6 +532,7 @@ dotnet run --project editor/tests/PackagingCollectorTests
 | `streaming` | （省略可） | モデルの非同期ロード（ワーカースレッド・先読み・GPU アップロード予算・バッチ常駐時間）。キーの一覧と既定値は [docs/model_streaming.md](model_streaming.md) 6 章 |
 | `screen_orientation` | `"both"` | **Android の APK だけ**に効く画面の向き。`"both"`（縦横 4 方向に追従）/ `"portrait"`（縦に固定）/ `"landscape"`（横に固定）。エディタでは「プロジェクト設定 → 解像度設定 → 画面の向き（モバイル）」。起動時に読む値ではなく、APK を作るときにマニフェストの `screenOrientation` へ焼き込む（SeedAndroid → `app/build.gradle.kts` の変換表。**書き換えたら APK を作り直す**）。デスクトップには効かない。[android.md](android.md) §15 |
 | `android` | （無し） | **Android の APK だけ**に効くアプリの識別情報 `application_id` / `app_name` / `version_code` / `version_name`（どれも省略可。既定は `.seedproj` の名前から `com.seedengine.<英数字化した名前>`・プロジェクトの表示名・`1`・`"1.0"`）。エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」。APK を作るときに `applicationId` / ランチャーの名前 / `versionCode` / `versionName` へ焼き込む（**書き換えたら APK を作り直す**。ID を変えると端末では別のアプリになる）。デスクトップには効かない。[android.md](android.md) §18 |
+| `render_quality` | （無し） | 描画品質プリセットの選び方（プラットフォームごと。段階D-2）。`{"desktop": {"preset": …}, "android": {"preset": …, "render_scale": 0.75, …}}`。節もキーも省略でき、省略時はデスクトップ `desktop`（何も下げない＝従来どおり）・Android `mobile`（軽量）。節の中の `preset` 以外のキーはプリセットのつまみの上書き（`render_scale` 0.5〜1.0・`shadows`・`gi` 等。一覧は [rendering_roadmap.md](rendering_roadmap.md) の「描画品質プリセット」）。エディタでは「プロジェクト設定 → グラフィックス → レンダリング品質」。起動時に 1 回読む（起動ログ `[SEED QUALITY]`）。Android は pak に入るので書き換えたら APK を作り直す。[android.md](android.md) §22 |
 
 遅いドライブ（USB 外付け・低速 SSD）で「プレイ中に時々カクつく」と言われたら、まず
 `streaming` を見る。配布版でも環境変数 `SEED_STREAMING=0` で非同期ロードを丸ごと切って

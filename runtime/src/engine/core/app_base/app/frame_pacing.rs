@@ -154,6 +154,20 @@ pub fn sanitize_target_fps(fps: u32) -> u32 {
     fps.clamp(TARGET_FPS_MIN, TARGET_FPS_MAX)
 }
 
+/// 目標 fps へ描画品質プリセットの上限を当てる純関数（段階D-2）。
+///
+/// - 上限なし（None）        → 設定値そのまま（デスクトップの既定）
+/// - 設定が無制限（0）       → 上限の値（無制限は「どれより大きい」とみなす）
+/// - それ以外                → 設定値と上限の小さい方（上限は設定を上げない）
+/// 結果は `sanitize_target_fps` の範囲へ収める。
+pub fn cap_target_fps(configured: u32, cap: Option<u32>) -> u32 {
+    match cap {
+        None => configured,
+        Some(limit) if configured == TARGET_FPS_UNLIMITED => sanitize_target_fps(limit),
+        Some(limit) => sanitize_target_fps(configured.min(limit)),
+    }
+}
+
 /// このフレームで実際に守るべき目標 fps を決める純関数。
 ///
 /// - `is_edit`  : Edit モード（エディタ埋め込みビューポート）かどうか。
@@ -333,6 +347,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── cap_target_fps（描画品質プリセットの上限。段階D-2）──────────
+
+    /// 上限なしは設定値そのまま・無制限は上限へ・それ以外は小さい方（上げない）。
+    #[test]
+    fn cap_target_fps_takes_the_smaller_value() {
+        assert_eq!(cap_target_fps(60, None), 60, "上限なし（デスクトップの既定）");
+        assert_eq!(cap_target_fps(TARGET_FPS_UNLIMITED, None), TARGET_FPS_UNLIMITED);
+        assert_eq!(cap_target_fps(60, Some(30)), 30);
+        assert_eq!(cap_target_fps(24, Some(30)), 24, "上限は設定を上げない");
+        assert_eq!(cap_target_fps(TARGET_FPS_UNLIMITED, Some(30)), 30, "無制限は上限へ");
+        assert_eq!(cap_target_fps(60, Some(TARGET_FPS_MAX + 1)), 60);
+    }
 
     // ── parse_target_fps ─────────────────────────────────────
 

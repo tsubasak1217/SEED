@@ -53,6 +53,10 @@
     <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
       <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
     </Compile>
+    <!-- ProjectSettingsData の "render_quality" 節（描画品質プリセットの選び方。段階D-2。WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\RenderQualitySettings.cs">
+      <Link>Linked\ProjectSettings\RenderQualitySettings.cs</Link>
+    </Compile>
 
     <!-- リポジトリルートとランタイム exe の探索（kind.rs の場所と SEED.exe を引くのに使う） -->
     <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfig.cs">

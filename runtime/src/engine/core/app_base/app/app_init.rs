@@ -79,6 +79,11 @@ impl App {
             self.render_resolution_mode.as_str(),
             self.project_resolution,
         );
+        // 描画品質（プリセット＋上書き。段階D-2）も同じ JSON から決める。
+        // プラットフォームの既定（デスクトップ desktop＝何も下げない／Android mobile）← project_settings.json の
+        // render_quality.<プラットフォーム> ← 起動オプション（計測・検証用）の順に重ねる（renderer/quality/resolve.rs）。
+        // シャドウ品質・目標 fps の上限に使うので、それらを読む前・Renderer::new より前に決める。
+        self.resolve_render_quality(&settings_json);
         // シャドウマップ品質（解像度・影距離・カスケード分割・バイアス・PCF）も同じ JSON から読む。
         //
         // 【ここで読む理由】直後の `Renderer::new`（→ DrawContext::new）が
@@ -86,10 +91,11 @@ impl App {
         //   - シャドウ深度パイプラインを `shadow.slope_bias` で組む（ShadowDepthPipelines::new）
         //   ため、**GPU 資源の生成より前**に確定していなければならない。
         //   `load_graphics_settings`（後段）ではもう手遅れになる。
+        // 描画品質の上限（解像度・距離・PCF タップ数）を当ててから格納する（上限が無ければ設定どおり）。
         let shadow_quality =
-            crate::engine::core::renderer::set_shadow_quality(
+            crate::engine::core::renderer::set_shadow_quality(self.render_quality.shadow_quality(
                 crate::engine::core::renderer::parse_shadow_quality(&settings_json),
-            );
+            ));
         // 影の見え方の相談で最初に見る値なので起動ログへ残す。
         eprintln!(
             "[SEED INIT] shadow quality  resolution={} distance={} split_lambda={} normal_offset={}tex depth_bias={}tex slope_bias={} pcf={}tex/{}taps",
@@ -105,7 +111,11 @@ impl App {
         // 目標フレームレート（0 = 無制限）と垂直同期モードも同じ JSON から読む。
         // どちらも起動時に一度だけ決まり、実行中に変わらない
         //（vsync はスワップチェーン再構成が必要なため、切り替えには再起動が要る）。
-        self.target_fps = super::frame_pacing::parse_target_fps(&settings_json);
+        // 描画品質の上限（プリセットの target_fps）があれば当てる（無ければ設定どおり）。
+        self.target_fps = super::frame_pacing::cap_target_fps(
+            super::frame_pacing::parse_target_fps(&settings_json),
+            self.render_quality.target_fps_cap(),
+        );
         // スクリプト（SEED.Application.TargetFps）が読めるようグローバルへも写す。
         super::frame_pacing::publish_configured_target_fps(self.target_fps);
         self.vsync_mode =
@@ -159,8 +169,23 @@ impl App {
         eprintln!("[SEED INIT] Renderer::new() start");
         // 垂直同期モードの解決に必要な「埋め込みかどうか」は起動引数 --parent-hwnd の
         // 有無（is_embedded）が唯一の判定源。Renderer 側はこの 2 値だけを見る。
+        // パスごとの GPU 時間の計測（起動オプション・--gpu-timing・SEED_GPU_TIMING）は、デバイスの feature を
+        // 要求するかに効くので Renderer::new より前に伝える（既定は無効＝従来どおり）。
+        crate::engine::core::renderer::gpu_timing::request(self.gpu_timing_launch);
         let mut renderer = Renderer::new(window.clone(), self.vsync_mode, self.is_embedded());
         eprintln!("[SEED INIT] Renderer::new() done");
+        // 計測が要求され、デバイスが対応していれば計測器を作る（フレームループが節目でタイムスタンプを書く）。
+        if renderer.gpu_timing_supported() {
+            let timer = crate::engine::core::renderer::gpu_timing::GpuPassTimer::new(
+                &renderer.device(),
+                &renderer.queue(),
+            );
+            eprintln!(
+                "[SEED GPU] 計測器を作りました（タイムスタンプ 1 つ = {} ns）。3 秒ごとに [SEED GPU] を出します",
+                timer.period_ns()
+            );
+            self.gpu_timer = Some(timer);
+        }
 
         // 内部解像度固定（fixed）モードの適用。window モード（既定）では None を渡すため
         // Renderer 側は生成時と同じ状態（従来動作）のままになる。
@@ -730,11 +755,16 @@ impl App {
         let rt_sup = crate::engine::core::renderer::rt_shadow::rt_shadows_supported();
         let key = (self.render_features, rt_sup);
         if self.features_log_state != Some(key) {
-            eprintln!("[SEED FEATURES] {}", self.render_features.log_line(rt_sup));
+            // 描画品質プリセットの上限（段階D-2）で下がった機能には (品質上限) が付く。上限が無ければ従来と同じ行。
+            let caps = self.render_quality.knobs.feature_caps();
+            eprintln!("[SEED FEATURES] {}", self.render_features.log_line_with_caps(rt_sup, &caps));
+            // deferred の実効値（描画品質プリセットが止めていれば false。上限が無ければ設定どおり）。
+            let deferred_on = self.render_quality.deferred(self.post_fx.deferred);
             // 反射は deferred（G-Buffer）有効時のみ動く独立パス。反射を要求していても
             // deferred が無効なら反射パスは一切走らないため、その旨を 1 行付記する（Phase D6）。
-            if self.render_features.reflection != crate::engine::core::renderer::ReflectionMode::Off
-                && !self.post_fx.deferred
+            if self.render_features.resolve_with_caps(rt_sup, &caps).reflection
+                != crate::engine::core::renderer::ReflectionMode::Off
+                && !deferred_on
             {
                 eprintln!(
                     "[SEED FEATURES] 反射:deferred無効のため停止（反射は G-Buffer 有効時のみ動作）"
@@ -742,9 +772,9 @@ impl App {
             }
             // SSGI も deferred（G-Buffer）有効時のみ動く独立パス。実効 GI が Ssgi でも deferred が
             // 無効なら SSGI は走らずフラットアンビエントで描画されるため、その旨を 1 行付記する（Phase SSGI）。
-            if self.render_features.resolve(rt_sup).gi
+            if self.render_features.resolve_with_caps(rt_sup, &caps).gi
                 == crate::engine::core::renderer::GiMode::Ssgi
-                && !self.post_fx.deferred
+                && !deferred_on
             {
                 eprintln!(
                     "[SEED FEATURES] GI(SSGI):deferred無効のため停止（フラットアンビエントで描画）"

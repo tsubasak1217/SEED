@@ -507,6 +507,8 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
 | `[SEED TOUCH FRAME] f=.. n=.. #0:Began(x,y)d(dx,dy) ... \| mouse=(x,y) L=PD-` | 入力状態（`Input.TouchCount` / `GetTouch` とタッチ由来のマウス）のフレーム末の値（`app/touch_diag.rs`） | 変化のあったフレームだけ 1 行。`L` は左ボタンの押下中 P / 押した瞬間 D / 離した瞬間 U（§12.3） |
 | `[SEED TOUCH TEST] Started id=0x5eed000N ...` | 検証用の合成タッチ列（`debug.seed.touch_test=1` のときだけ。§12.3） | 合成したイベントそのもの。反映結果は `[SEED TOUCH FRAME]` で見る |
 | `[SEED HEARTBEAT] presented_frames total=N +d in 3.0s (x fps)` | 生存確認（3 秒ごと） | バックグラウンド中は `+0`、復帰で再び増える |
+| `[SEED QUALITY] preset=mobile render_scale=0.5 …` / `[SEED QUALITY][WARN] …` | 描画品質プリセットの決定（`app/render_quality.rs`。§22） | 使うプリセットと実効のつまみ。知らないプリセット名・読めないつまみは WARN。`[SEED FEATURES]` の `(品質上限)` は上限で下がった機能 |
+| `[SEED GPU] 3.0s cpu_frames=… \| cpu frame=… acquire=… present=… \| gpu total=… shadow=… …` | パスごとの GPU 時間（起動オプション `seed.gpu_timing=1` のときだけ。§22.6） | 3 秒ごとの平均（ms）。`present` は提示待ちの目安、`gpu` の各区間は描画の節目ごとの GPU 時間 |
 | `書き込み先: データ（セーブ）=… / キャッシュ=…`・`環境変数 TMPDIR=…` | 書き込み先の設定（app_dirs.rs） | §14.1 |
 | `[SEED SAVE] save file: …` / `suspended: …` / `onDestroy（プロセス終了前）: …` | セーブの置き場と自動書き出しの結果 | 「未書き出しの変更を書き出しました」「未書き出しの変更なし」「セーブ未使用」（§14.2） |
 | `[SEED PIPELINE CACHE] 読込 N KiB → 採用後 M KiB` / `保存 …` / `変化なし …` | パイプラインキャッシュ（§14.3） | 起動時の生成時間は `[SEED INIT] DrawContext created (N ms)`・`描画パイプライン生成 合計 N ms` |
@@ -597,7 +599,9 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
   戻ると再開する（段階A-5。§16）。出力デバイスの切り替え（ヘッドホン・Bluetooth）からの復帰は未対応・未確認（§16.7）。
 - **実機の描画は重い**。Pixel 6a の debug ビルドで縦 約 18〜19 fps（GPU 待ちが支配的と見られる）。デスクトップ向けの描画経路
   （deferred・MRT 5 枚・シャドウ 2048・SSGI 等）を端末の実解像度 1080x2400 でそのまま回しているため。
-  モバイル向け描画プリセット（描画解像度スケール・重い後処理の既定オフ）は段階D。
+  → 段階D-2 でモバイル向けの描画品質プリセットを入れた（§22。Android の既定は `mobile`＝ゲーム画面を 0.5 倍で描いて拡大・
+  前方描画・SSGI／AO／反射／ブルーム・水面反射なし・影を軽く。UI は画面の解像度のまま）。パスごとの GPU 時間の計測
+  （`seed.gpu_timing=1`）も入れたが、**実機での効果の計測は未実施**（確認の時間中ずっと端末の画面が消えていた。§22.7 に手順）。
 
 ---
 
@@ -609,7 +613,7 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
 | **A** | スクリプト無しでシーンを動かす: APK 内 pak（AssetManager。**2026-09-24 実装・§13**）、保存先の振替・セーブの保護・パイプラインキャッシュ・背面での物理停止・戻るキー（**2026-09-24 実装・§14**）、縦横とサーフェス再生成の仕上げ、複数指タッチ（`Input.TouchCount` / `GetTouch(i)`。PC はマウス＝指 0。**2026-09-24 実装・§12**）、安全領域・画面の向き API（プロジェクト設定の向き・`SEED.Screen`。**2026-09-24 実装・§15**）、音声（鳴ることの確認・背面での停止・音声フォーカス・音量キー。**2026-09-24 実装・§16**）、logcat の整備 |
 | **B** | スクリプト: **PC も Android も .NET 10 の CoreCLR に揃える**（PC は全 C# プロジェクトを `net10.0` へ移行済み。Android は `android-*` ランタイムパック＋同じ版の bionic パックの hostfxr / hostpolicy。§11）。ScriptPackager の事前コンパイル DLL とランタイムを同梱し、既存の hostfxr 経路を `Hostfxr::load_from_path` で使う（**2026-09-25 実装・§17**。Mono へ切り替え可）。出荷時は NativeAOT を後で検討 |
 | **C** | エディタ「実行」統合: **C-1（2026-09-25 実装・§4.6・§5・§18）** ビルド・配置・起動の手順を C# の中核（`editor/src/Android/`）とコンソールツール `SeedAndroid` に移し、変わっていない工程の自動の省略・アプリの識別情報のプロジェクト設定化。**C-2（2026-09-25 実装・§20）** 実行ボタンの隣の実行先セレクタ（PC／実機／エミュレータ）、中核を呼んでビルド → install → 起動 → logcat を Output パネルへ・停止ボタン・アプリ側の終了の検知、パッケージ化ウィンドウの Android 出力の実働化（デバッグ署名の APK）。pak/DLL だけ push する高速経路のエディタへの組み込みは持ち越し（backlog） |
-| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`。接続トークンで照合し、一時停止中もゲームの画面のまま）。Wi-Fi 実行、実行中の差し替え、モバイル向け描画プリセット、署名／AAB／16KB ページの最終確認、NativeAOT |
+| **D** | **D-1（2026-09-25 実装・§21）** エディタとランタイムの IPC を TCP（adb forward）でも使えるようにし、Android の実行中も PC の Play と同じ実行バーから一時停止・再開（SeedAndroid の `pause` / `resume` / `screenshot`。接続トークンで照合し、一時停止中もゲームの画面のまま）。**D-2（2026-09-25 実装・§22）** モバイル向けの描画品質プリセット（データドリブン。`runtime/config/render_presets.json`。Android の既定 `mobile`＝描画スケール 0.5・前方描画・重い後処理なし。UI は画面の解像度のまま）とパスごとの GPU タイムスタンプ計測（実機での効果の計測は未実施）。Wi-Fi 実行、実行中の差し替え、署名／AAB／16KB ページの最終確認、NativeAOT |
 
 ---
 
@@ -2574,3 +2578,154 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
 | 実機: 一時停止中の画面・一時停止の効き目 | **未確認**。端末の画面が消えてロック中（`screenState=SCREEN_STATE_OFF`・前面はロック画面）で、アプリは描画できなかった（`presented_frames total=0`・サーフェスは 10 秒で手放した）。メインループが回らないので `PAUSE` / `RESUME` は積まれたまま処理されず、撮影もできない。画面の点灯・ロックの解除は私物の端末の操作になるので行っていない。PC の TCP の通信路（上）で確かめた |
 
 - 最後の状態: `com.seedengine.runtime`（段階D-1 の追加の APK）を入れて止めた（`pidof` 空）。adb forward は残していない。Gradle のデーモンは止めた。エミュレータは起動していない。
+
+---
+
+## 22. モバイル向けの描画プリセット（段階D-2・2026-09-25）
+
+デスクトップ向けに作った描画経路（デファード・MRT 5 枚・SSGI・シャドウ 2048 等）を端末の実解像度のまま回していたため、
+実機（Pixel 6a・Mali-G78・1080x2400）は縦 18〜19 fps・横 37〜39 fps で、1 フレーム約 50 ms のうち提示待ちが 28〜41 ms の GPU 律速だった（§7）。
+段階D-2 では、描画を**データの差し替えだけで**軽くする「描画品質プリセット」と、どのパスが重いかを実機で測る
+「パスごとの GPU タイムスタンプ計測」を入れた。設計の正典は [rendering_roadmap.md](rendering_roadmap.md) の「描画品質プリセット」。
+
+### 22.1 結論
+
+- プリセットの定義は `runtime/config/render_presets.json`（ランタイムとエディタが同じファイルを埋め込む）。
+  既定は**デスクトップ `desktop`（何も下げない＝従来の描画そのもの）・Android `mobile`**（`PlatformTraits::default_render_quality`）。
+- `mobile` は、ゲーム画面（3D）を**画面の 0.5 倍の解像度で描いて拡大**し（UI は画面の解像度のまま）、G-Buffer を使わない**前方描画**、
+  SSGI・AO・反射・ブルーム・水面反射・コースティクスを止め、影を 1024・50 m・4 タップへ下げる。
+- スクリプトから見える座標（`Screen.Width` / `Height` / `SafeArea`・`Input.MousePosition`・`GetTouch`・キャンバス UI）は
+  **描画スケールで変わらない**（論理サイズ＝従来の描画解像度のまま。§22.5）。
+- PC の Play は従来と画素単位で同じ（§22.7）。
+- **実機での効果の計測は未実施**。確認の時間中（21:24〜22:00。最初の 20 分は 2 分おき、その後も作業の合間に確認）端末の画面が消えたまま（`mWakefulness=Dozing`・
+  前面は `NotificationShade`）で、アプリが描画できる状態にならなかった。APK（`proj_bench`・計測機能入り）は入れてある。
+  手順は §22.6、持ち越しは §22.8。`mobile` の中身は下の理由（§22.3）で選んだ推定であり、実機の数値で見直す前提。
+
+### 22.2 構成
+
+| 置き場 | 役割 |
+|---|---|
+| `runtime/config/render_presets.json` | プリセットの定義（名前・表示名・説明・つまみ）。ここだけ書き換えればプリセットを足せる |
+| `runtime/src/engine/core/renderer/quality/` | つまみ（`knobs.rs`）・定義の読み込み（`catalog.rs`）・実効の品質の決定（`resolve.rs`）・既存設定への当て方（`apply.rs`）・描画スケールの寸法（`scale.rs`） |
+| `renderer/render_features.rs` | `FeatureCaps` と `RenderFeatures::resolve_with_caps`（機能の方式の上限。`ResolvedFeatures` の解決に品質を通す） |
+| `renderer/mod.rs` | `Renderer::set_render_scale` / `logical_size` / `render_size`、UI 用の深度 `overlay_depth`、`RenderFrame::logical_size` |
+| `renderer/gpu_timing/` | パスごとの GPU タイムスタンプ（`GpuPassTimer`・区間名・集計）。既定オフ |
+| `app/render_quality.rs` | 起動時の決定と `[SEED QUALITY]` ログ、フレームごとの描画スケールの判断 |
+| `app/app_init.rs` / `app/frame_renderer.rs` | 影の品質・目標 fps の上限（起動時）、描画スケール・機能の上限・前方描画／後処理／水面の可否・GPU の節目（毎フレーム） |
+| `platform/mod.rs` | `default_render_quality`（desktop / mobile）と設定の節の名前 `quality_platform_key`（desktop / android） |
+| `platform/launch_options.rs`・`android/native/src/launch.rs`・`main.rs` | 起動オプション `seed.quality` / `seed.quality_overrides` / `seed.gpu_timing`（PC は `--render-quality=` / `--render-quality-overrides=` / `--gpu-timing`・`SEED_GPU_TIMING=1`） |
+| エディタ `ProjectSettings/RenderQualitySettings.cs`・`RenderQualityPresetCatalog.cs`・`ProjectSettingsWindow.RenderQuality.cs` | `render_quality` 節の型（寛容な読み・知らないキーの保持）、埋め込みの定義の読み取り、プロジェクト設定「グラフィックス → レンダリング品質」 |
+
+### 22.3 プリセットとつまみ
+
+| プリセット | 既定の対象 | 中身（つまみ） |
+|---|---|---|
+| `desktop`（デスクトップ（従来どおり）） | Windows | 何も下げない |
+| `mobile`（モバイル（軽量）） | Android | `render_scale` 0.5・`deferred` false・`gi` flat・`ao` off・`reflection` off・`translucency` raster・`shadow` shadowmap・`shadow_resolution` 1024・`shadow_distance` 50・`shadow_pcf_taps` 4・`bloom` false・`water_reflection` false・`water_caustics` false |
+| `mobile_high`（モバイル（高画質）） | — | `mobile` の `render_scale` を 0.75・`shadow_resolution` 2048・`shadow_pcf_taps` 8 に（`shadow_distance` は設定のまま） |
+| `mobile_low`（モバイル（最軽量）） | — | `mobile` に加えて `shadows` false・`fxaa` false・`target_fps` 30（`shadow_*` の上限は影を描かないので無し） |
+
+つまみの意味・当て方（上限は重い要求だけを下げ、`false` は止めるだけで動かしはしない）は rendering_roadmap.md の表。
+
+**つまみを選んだ理由（推定。実機の数値で見直す）**
+- 1080x2400 は約 2.6 M 画素。描画スケール 0.5 で 3D のすべてのフルスクリーンの処理（G-Buffer の書き込み・ライティング・SSGI・
+  トーンマップの入力）の画素数が 1/4 になる。GPU 律速（§7 の提示待ち）の第一の打ち手。UI は拡大でぼけると読みにくいので論理サイズのまま。
+- デファードの G-Buffer は MRT 5 枚・36 byte/画素（`gbuffer::GBUFFER_BYTES_PER_SAMPLE`）で、タイルベースの GPU ではタイルメモリに
+  収まらず帯域を食いやすい。前方描画（クラスタ化ライティングは前方でも効く）にすると G-Buffer・フルスクリーンのライティングが無くなる。
+  代わりに SSGI・AO・反射・コースティクス・水面反射は（デファード専用なので）自動的に止まる。
+  **シェーディングアセット（L3。[shading_asset.md](shading_asset.md)）もデファードのライティング専用なので効かなくなる**
+  （要求されていれば起動後に `[SEED QUALITY][WARN] … シェーディングアセット … は効きません` を 1 回出す）。
+  使うゲームは `render_quality.android` に `"deferred": true` を書いて戻す（その分は描画スケールで稼ぐ）。
+- Mali は RT 非対応なので、既定の `gi_enabled`（＝`rt`）は SSGI へ降格して**毎フレーム走っていた**（§7 の `[SEED FEATURES]`）。`gi` flat で止める。
+- 影は 3 カスケード × 2048² の深度を描くので、1024・50 m・PCF 4 タップへ下げる（`mobile_low` は影なし）。
+- ブルームはフルスクリーンのダウン／アップサンプルの連鎖なので止める（プロジェクト・シーンで有効にしていた場合だけ効く）。
+
+### 22.4 設定の仕方
+
+- **エディタ**: プロジェクト設定 → グラフィックス → **レンダリング品質**。デスクトップ（Windows）と Android それぞれに
+  「プリセット」（既定＝プラットフォームの既定・定義済みのプリセット）、「描画スケール」（プリセットのまま／1〜0.5 倍）、
+  「影」（プリセットのまま／描く／描かない）を選ぶ。選んだプリセットの説明と中身が下に出る。
+- **JSON**: `project_settings.json` の `render_quality`（[project_system.md](project_system.md) §1）。例:
+  `"render_quality": { "android": { "preset": "mobile", "render_scale": 0.75, "gi": "ssgi" } }`。
+  画面に出ないつまみ（`gi`・`deferred`・`bloom` 等）も書け、エディタで保存しても失われない。
+- **起動オプション（計測・検証用。プロジェクト設定より優先）**:
+  `am start … --es seed.quality mobile_high --es seed.quality_overrides 'render_scale=0.6,shadows=false'`。PC は
+  `SEED.exe --render-quality=mobile --render-quality-overrides=render_scale=0.75`。
+- 反映: 起動時に 1 回だけ読む（起動ログ `[SEED QUALITY] preset=mobile render_scale=0.5 …` と `[SEED FEATURES] … gi=flat(品質上限) …`）。
+  Android は project_settings.json が APK の pak に入るので、変えたら APK を作り直す（実行ボタン・SeedAndroid の `run` は入力の変化を見て作り直す）。
+
+### 22.5 描画スケールと座標・UI
+
+- **論理サイズ**＝従来の描画解像度（Android はサーフェス＝画面の実寸。内部解像度固定ならその内部解像度）。UI のオーバーレイ・
+  トーンマップ後の LDR・提示の基準で、スクリプト・入力・安全領域・キャンバスのレイアウトと当たり判定はこの座標のまま。
+- **描画解像度**＝論理サイズ × `render_scale`（Pixel 6a の縦なら 540x1200）。3D の深度・HDR と、影以外の 3D の RT すべて。
+- 流れ: 3D を描画解像度で描く → トーンマップが論理サイズの LDR へ**拡大しながら**書く（バイリニア）→ UI（前面のキャンバス）を
+  論理サイズで重ねる（UI 用の深度は論理サイズで別に持つ）→ 画面へ出す。
+- ゲームのビューポート（カメラのスケーリングモードの帯）は論理サイズで決め、3D のパスへ渡す直前に描画解像度のピクセルへ写す
+  （帯の色塗り・クラスタの分割・カメラの `resolution` も同じ比率）。スクリプト 3D プリミティブの線幅は画面の px のまま。
+- 描画解像度で描かれる UI: **背景ゾーンのキャンバス**（3D より奥に描くのでメインパスの中）と **3D 空間に置いたキャンバス**。
+  前面ゾーン（通常の UI）だけが論理サイズで描かれる。
+- 等倍で描く条件: Edit、Play のエディタの一時停止（ID パスのピックが動く）、サムネイル撮影、`SEED_ID_PASS_IN_PLAY`。
+  Android の IPC の一時停止（ゲームの画面のまま。§21）は縮小のまま。
+
+### 22.6 計測の仕方（実機）
+
+```bash
+# 1) APK を作って入れる（計測したいプロジェクト。段階D-2 では計測用の proj_bench＝ヘルメット 9 体・影・点光源 4・UI を入れた）
+dotnet run --project editor/tools/SeedAndroid -- install --project <プロジェクト> --serial <実機>
+# 2) 端末の画面が点灯・ロック解除されていて前面がランチャーであることを確かめる
+adb -s <実機> shell dumpsys power | grep mWakefulness        # Awake
+adb -s <実機> shell dumpsys window | grep mCurrentFocus      # …launcher…
+# 3) 品質と GPU 計測を起動オプションで指定して起動し、20 秒ほど待って logcat を読む（プリセットごとに繰り返す）
+adb -s <実機> shell am force-stop com.seedengine.runtime
+adb -s <実機> shell am start -W -n com.seedengine.runtime/com.seedengine.runtime.MainActivity \
+    --es seed.gpu_timing 1 --es seed.quality desktop                       # 基準（従来の描画）
+#   … --es seed.quality mobile                                            # 既定の mobile
+#   … --es seed.quality desktop --es seed.quality_overrides 'deferred=false'   # つまみ 1 つずつの効き目
+adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|SEED GPU\]|HEARTBEAT"
+```
+
+- `[SEED HEARTBEAT] … (N fps)`（3 秒ごと。提示したフレーム数から）と、`[SEED GPU] 3.0s cpu_frames=… gpu_frames=… |
+  cpu frame=… acquire=… present=… | gpu total=… compute=… shadow=… rt=… cluster=… gbuffer=… ao=… lighting=… ssgi=… reflection=…
+  forward=… water=… wboit=… overlay=… particles=… bloom=… tonemap=… ui=… present=…`（3 秒ごと。ms の平均）。
+  `acquire` は描画先の取得待ち（[PERF] の bf）、`present` は提出と提示（[PERF] の finish）＝提示待ちの目安。
+  `gpu` の各区間は「1 つ前の節目からこの節目まで」に GPU が使った時間（区間名の意味は `renderer/gpu_timing/segments.rs`）。
+- 計測は Renderer が `TIMESTAMP_QUERY` + `TIMESTAMP_QUERY_INSIDE_ENCODERS` を要求したときだけ動く（`seed.gpu_timing` が無ければ
+  feature も要求しない）。Mali 等のタイルベースの GPU は隣り合うパスの仕事を重ねるので、区間の境目は目安（合計は正しい）。
+- アプリの画面だけを撮るには、起動オプションに `--es seed.ipc_port 52735 --es seed.ipc_token <16〜128 文字の英数字>` も付け、
+  adb forward 越しに `HELLO:<トークン>` → `SCREENSHOT:game,/data/user/0/com.seedengine.runtime/cache/<名前>.png` →
+  `adb exec-out run-as com.seedengine.runtime cat cache/<名前>.png > shot.png`（§21.6 と同じ。端末の画面全体は撮らない）。
+- 座標の確認: `proj_bench` の確認用スクリプトが毎秒 `[PROBE v2] … screen=WxH safe=(…)` と、タッチの `pos=(x,y)`、UI のボタン
+  （左上 80,120〜400,440）の押下 `[UIPROBE] down mouse=(x,y)` を出す。`desktop` と `mobile` で同じ場所を
+  `adb shell input tap 240 280`（ボタンの中）・`input tap 700 1500`（外）し、値と当たり判定が同じことを見る（前面が自分のアプリのときだけ）。
+
+### 22.7 確認結果（2026-09-25）
+
+| 項目 | 結果 |
+|---|---|
+| Rust の単体テスト | `cargo test --lib`（不安定な 3 件を除外）2678 / 2678。新規: 品質のつまみ（全キー・値域・読めない値）・定義（埋め込みの妥当性・desktop が空・mobile の中身・壊れた定義）・決定（プラットフォーム既定・他の節が漏れない・プロジェクトの上書き・起動オプションの優先・知らない名前）・当て方（可否・影の上限・何も変えない）・描画スケール（等倍は恒等・端末の寸法・比率・**論理と描画の点が同じ NDC**）・機能の上限（**上限なしは resolve と全組み合わせで同一**・重い要求だけ下げる・降格の後に当てる・ログの注記）・GPU 計測の集計・目標 fps の上限・起動オプションのキー・プラットフォームの既定 |
+| C# の単体テスト | `ProjectSystemTests` 61 / 61（新規 6: render_quality 節の往復〈画面に出さないつまみ・知らない節も保つ〉・空なら書かない・型違いでも読める・描画スケールの値域・埋め込みの一覧に各既定・定義の書式違い） |
+| ビルド | `cargo build`（Windows）成功・変更したファイルに新しい警告なし。libSEED.so（arm64・SeedAndroid の build）成功。エディタ（別の出力先）エラー 0・警告 25（変更前と同じ） |
+| PC の Play が従来どおり | 変更前の `SEED.exe`（develop・15:33 のもの）と変更後（debug）で `proj_bench` の同じフレームを撮って比べた: 通常（1280x720）フレーム 300 は画素一致、600 は変更前どうしの 2 回でも 0.031%（最大 3 階調）ずれる非決定の揺れがあり、そのうち 1 回とは画素一致。16:9 の帯付きカメラ（1280x720）・正方形のウィンドウ（1000x1000・上下に帯）もフレーム 300 / 600 とも画素一致。`[SEED QUALITY] preset=desktop （下げるつまみなし）`・`[SEED FEATURES]` は変更前と同じ行 |
+| PC で `mobile`（`--render-quality=mobile`） | 3D は半分の解像度で描かれ（輪郭がやや粗い）、UI のスプライトの内側は `desktop` の絵と**画素一致**（UI は論理サイズのまま）。帯（正方形のウィンドウ）の位置も正しい。内部解像度固定（fixed 1280x720）＋描画スケール 0.75 も検証エラーなし |
+| PC の GPU 計測（RTX 3060・1280x720・`proj_bench`） | `desktop`: gpu total 1.4 ms（lighting 0.85・gbuffer 0.20・rt 0.17）。`mobile`: 0.38 ms（forward 0.23・tonemap 0.06）。静止シーンでは影の深度パスは静的スキップで 0 |
+| エディタの画面（レンダリング品質） | エディタは起動せず、一時のプローブ（別の出力先の SEEDEditor.dll を参照してウィンドウをオフスクリーンで描く）で確認: 2 プラットフォームの小節・プリセットの説明の切り替え・一覧に無い中間の描画スケール（0.65）の表示、選択を変えて収集 → 保存で `render_quality` 節が書かれ、画面に出さない `gi` が残ること |
+| **実機の fps・内訳・スクリーンショット・座標** | **未実施**。端末は USB でつながり APK も入れたが、21:24〜22:00 のあいだ（最初の 20 分は 2 分おき）見ても画面が消えたまま（`mWakefulness=Dozing`・前面 `NotificationShade`）。画面の点灯・ロックの解除は私物の端末の操作になるので行っていない。§22.6 の手順で測る |
+| arm64 の .so・APK（最終のコード） | SeedAndroid の `install`（`proj_bench`）で libSEED.so（debug・72 秒）・pak・Gradle をやり直して入れた（75.7 MB・`com.seedengine.runtime`）。起動はしていない |
+
+- 最後の状態: `com.seedengine.runtime`（`proj_bench`・段階D-2 の APK）を入れたまま（起動はしていない）。adb forward は張っていない。
+  Gradle のデーモン・dotnet のビルドサーバーは止めた。エミュレータは起動していない。
+
+### 22.8 制限・持ち越し（詳細は [backlog.md](backlog.md) の「Android」節）
+
+- **実機での計測と `mobile` の見直し**が残っている（§22.6）。GPU の内訳で重い区間を確かめ、つまみ（特に `render_scale`・`deferred`）を数値で決め直す。
+  目標は 60 fps（少なくとも 30 fps 以上を安定）。debug ビルドで GPU が軽くなると CPU（最適化なしの Rust）が律速になり得るので、release の .so でも測る。
+- テクスチャの最大解像度・クラスタの分割数・Hi-Z・カスケード数（3 固定）のつまみは入れていない（計測で必要と分かったら足す）。
+- トーンマップ後の LDR 中間（Rgba16Float）と提示のコピーは論理サイズ（フル解像度）のままなので、描画スケールを下げても
+  フルスクリーン 2〜3 枚ぶんの帯域は残る（UI が無いときにトーンマップと提示をまとめる余地）。
+- 背景ゾーンのキャンバスと 3D 空間のキャンバスは描画解像度で描かれる（前面の UI だけが論理サイズ）。
+- `mobile` は前方描画なので、シェーディングアセット（L3）・水面反射・コースティクス・SSGI／AO／反射は効かない（見た目が変わる）。
+  シェーディングアセットを要求していれば警告を 1 回出す。見た目を優先するゲームは `deferred: true` で戻す。
+- 目標 fps の上限（`target_fps`）は起動時に 1 回だけ当てる（`SEED.Application.TargetFps` は上限を当てた後の値を返す）。
+- SeedAndroid / エディタの実行は品質の起動オプションを渡さない（計測は `am start` を直接使う）。
+- 縦より横が速い理由（§7）は未調査のまま。

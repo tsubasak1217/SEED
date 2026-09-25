@@ -139,6 +139,15 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- 描画品質プリセットの定義（ランタイムと同じファイル。Android 段階D-2）。                  -->
+  <!-- プロジェクト設定「レンダリング品質」の一覧に使う（RenderQualityPresetCatalog.ResourceName）。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\runtime\config\render_presets.json">
+      <LogicalName>SEEDEditor.render_presets.json</LogicalName>
+      <Link>ProjectSettings\render_presets.json</Link>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- スクリプト API リファレンス（AI インライン補完の正典）を出力ディレクトリへコピーし、 -->
   <!-- 実行時に ScriptApiReference が確実に読み込めるようにする。                          -->
   <ItemGroup>

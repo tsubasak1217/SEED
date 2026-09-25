@@ -114,7 +114,139 @@ public static class Program
         // ── プロジェクトフォルダ → アセットルート（SeedPak / SeedAndroid 共通の規則）──
         harness.Add("プロジェクトフォルダの解決: .seedproj → assets/ → フォルダ自体", ProjectFolderResolverRules);
 
+        // ── 描画品質（project_settings.json の render_quality 節。Android 段階D-2）──
+        harness.Add("render_quality 節は保存 → 読み込みで往復し、画面に出さないつまみ・知らない節も保つ", RenderQualitySectionRoundTrip);
+        harness.Add("render_quality 節は空なら保存しない",                          RenderQualitySectionOmittedWhenEmpty);
+        harness.Add("render_quality 節の型の違う値でも他の設定は読める",           RenderQualityWrongTypesDoNotBreakLoading);
+        harness.Add("描画スケールは 0.5〜1.0 に収める（NaN は未設定）",            RenderQualityScaleIsClamped);
+        harness.Add("埋め込みのプリセット一覧に各プラットフォームの既定がある",    RenderQualityCatalogHasPlatformDefaults);
+        harness.Add("プリセット定義の書式違いは空の一覧（重複・名前なしは飛ばす）", RenderQualityCatalogRejectsBrokenDefinitions);
+
         return harness.Run();
+    }
+
+    // ============================================================
+    //  描画品質（project_settings.json の render_quality 節。Android 段階D-2）
+    // ============================================================
+
+    /// <summary>書いた値が render_quality 節に入り、読み戻せる。画面に出さないつまみ（gi 等）・知らない節も保つ。</summary>
+    private static void RenderQualitySectionRoundTrip()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        File.WriteAllText(path,
+            "{ \"game_name\": \"G\", \"render_quality\": { \"android\": { \"preset\": \"mobile\", \"gi\": \"ssgi\" }, \"ios\": { \"preset\": \"mobile\" } } }");
+
+        var data = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("mobile", data.RenderQuality?.Android?.Preset, "preset を読む");
+        Check.True(data.RenderQuality!.Android!.ExtraData.ContainsKey("gi"), "画面に出さないつまみを読む");
+        Check.True(data.RenderQuality.ExtraData.ContainsKey("ios"), "知らない節を読む");
+        data.RenderQuality.Android.RenderScale = 0.75;
+        data.RenderQuality.Android.Shadows = false;
+        data.RenderQuality.Set(RenderQualitySettings.DesktopKey, new RenderQualityPlatformSettings { Preset = "mobile_high" });
+        data.SaveTo(path);
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(path)))
+        {
+            var section = doc.RootElement.GetProperty(RenderQualitySettings.SectionKey);
+            var android = section.GetProperty(RenderQualitySettings.AndroidKey);
+            Check.Equal("mobile", android.GetProperty("preset").GetString(), "preset");
+            Check.Equal(0.75, android.GetProperty("render_scale").GetDouble(), "render_scale は数");
+            Check.Equal(false, android.GetProperty("shadows").GetBoolean(), "shadows は真偽値");
+            Check.Equal("ssgi", android.GetProperty("gi").GetString(), "画面に出さないつまみを書き戻す");
+            Check.Equal("mobile_high", section.GetProperty(RenderQualitySettings.DesktopKey).GetProperty("preset").GetString(), "desktop");
+            Check.True(section.TryGetProperty("ios", out _), "知らない節を書き戻す");
+        }
+        var loaded = ProjectSettingsData.LoadFrom(path);
+        Check.Equal(0.75, loaded.RenderQuality?.Android?.RenderScale, "render_scale を読み戻す");
+        Check.Equal(false, loaded.RenderQuality?.Android?.Shadows, "shadows を読み戻す");
+        Check.Equal("G", loaded.GameName, "他の設定");
+    }
+
+    /// <summary>何も設定していなければ render_quality 節を書かない（既定＝プラットフォームの既定のプリセット）。</summary>
+    private static void RenderQualitySectionOmittedWhenEmpty()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        var settings = new RenderQualitySettings();
+        settings.Set(RenderQualitySettings.AndroidKey, new RenderQualityPlatformSettings());
+        new ProjectSettingsData { RenderQuality = settings }.SaveTo(path);
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        Check.True(!doc.RootElement.TryGetProperty(RenderQualitySettings.SectionKey, out _), "空の節は書かない");
+        Check.True(ProjectSettingsData.LoadFrom(path).RenderQuality is null, "読み戻すと null（既定）");
+    }
+
+    /// <summary>手で書いた型違いの値で ProjectSettingsData 全体の読み込みが失敗しない。</summary>
+    private static void RenderQualityWrongTypesDoNotBreakLoading()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        File.WriteAllText(path,
+            "{ \"game_name\": \"Keep\", \"render_quality\": { \"android\": { \"preset\": 3, \"render_scale\": \"0.6\", \"shadows\": \"no\" }, \"desktop\": \"mobile\" } }");
+        var loaded = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("Keep", loaded.GameName, "他の設定は読める");
+        Check.True(loaded.RenderQuality?.Android?.Preset is null, "読めない preset は未設定");
+        Check.Equal(0.6, loaded.RenderQuality?.Android?.RenderScale, "数として読める文字列は読む");
+        Check.True(loaded.RenderQuality?.Android?.Shadows is null, "読めない shadows は未設定");
+        Check.True(loaded.RenderQuality?.Desktop is null, "型の違う節は型付きでは読まない");
+        Check.True(loaded.RenderQuality?.ExtraData.ContainsKey("desktop") == true, "型の違う節は保つ（ランタイムは警告して無視する）");
+        // 文字列が空・無しのコンボ（画面を開かない保存）でもそのまま往復する
+        loaded.SaveTo(path);
+        Check.Equal("Keep", ProjectSettingsData.LoadFrom(path).GameName, "保存し直しても読める");
+
+        // 型の違う節を画面で設定し直すと、型付きの節だけが 1 回書かれる（同じキーを 2 回書かない）
+        var reloaded = ProjectSettingsData.LoadFrom(path);
+        reloaded.RenderQuality!.Set(RenderQualitySettings.DesktopKey, new RenderQualityPlatformSettings { Preset = "mobile" });
+        reloaded.SaveTo(path);
+        var text = File.ReadAllText(path);
+        Check.Equal(1, text.Split("\"desktop\"").Length - 1, "desktop のキーは 1 回だけ");
+        Check.Equal("mobile", ProjectSettingsData.LoadFrom(path).RenderQuality?.Desktop?.Preset, "型付きの節として読める");
+    }
+
+    /// <summary>描画スケールはランタイムの値域（0.5〜1.0）へ収める。</summary>
+    private static void RenderQualityScaleIsClamped()
+    {
+        Check.Equal(0.5, RenderQualityPlatformSettings.ClampRenderScale(0.1), "下限");
+        Check.Equal(1.0, RenderQualityPlatformSettings.ClampRenderScale(3.0), "上限");
+        Check.Equal(0.75, RenderQualityPlatformSettings.ClampRenderScale(0.75), "範囲内はそのまま");
+        Check.True(RenderQualityPlatformSettings.ClampRenderScale(double.NaN) is null, "NaN は未設定");
+        Check.True(RenderQualityPlatformSettings.ClampRenderScale(null) is null, "null は未設定");
+        Check.True(RenderQualityPlatformSettings.NormalizePreset("  ") is null, "空白だけのプリセット名は既定");
+        Check.Equal("mobile", RenderQualityPlatformSettings.NormalizePreset(" mobile "), "前後の空白を落とす");
+    }
+
+    /// <summary>
+    /// 埋め込みの runtime/config/render_presets.json（ランタイムと同じファイル）に、各プラットフォームの既定のプリセットがある。
+    /// デスクトップの既定は何も下げない（空）、Android の既定は描画スケールを下げる。
+    /// </summary>
+    private static void RenderQualityCatalogHasPlatformDefaults()
+    {
+        var presets = RenderQualityPresetCatalog.Presets;
+        Check.True(presets.Count >= 2, $"プリセットがある（{presets.Count} 件）");
+        var desktop = RenderQualityPresetCatalog.Find(RenderQualitySettings.DefaultPresetFor(RenderQualitySettings.DesktopKey));
+        var mobile = RenderQualityPresetCatalog.Find(RenderQualitySettings.DefaultPresetFor(RenderQualitySettings.AndroidKey));
+        Check.True(desktop is not null && desktop.Knobs.Count == 0, "desktop は何も下げない");
+        Check.True(mobile is not null && mobile.Knobs.TryGetValue(RenderQualityPlatformSettings.RenderScaleKey, out var scale)
+                   && scale.GetDouble() < RenderQualityPlatformSettings.MaxRenderScale, "mobile は描画スケールを下げる");
+        foreach (var preset in presets)
+        {
+            Check.True(!string.IsNullOrWhiteSpace(preset.Label) && !string.IsNullOrWhiteSpace(preset.Description),
+                $"{preset.Name} に表示名と説明がある");
+            Check.True(RenderQualityPresetCatalog.DescribeKnobs(preset.Knobs).Length > 0, $"{preset.Name} の中身を説明できる");
+        }
+        Check.True(RenderQualityPresetCatalog.Find(" MOBILE ") is not null, "名前は大文字小文字・空白を区別しない");
+    }
+
+    /// <summary>書式違い（版・配列なし・JSON の誤り）は空の一覧。重複した名前・名前なしは飛ばす。</summary>
+    private static void RenderQualityCatalogRejectsBrokenDefinitions()
+    {
+        Check.Equal(0, RenderQualityPresetCatalog.Parse("not json").Count, "JSON の誤り");
+        Check.Equal(0, RenderQualityPresetCatalog.Parse("{\"format_version\": 99, \"presets\": []}").Count, "版の違い");
+        Check.Equal(0, RenderQualityPresetCatalog.Parse("{\"format_version\": 1}").Count, "配列なし");
+        var partial = RenderQualityPresetCatalog.Parse(
+            "{\"format_version\": 1, \"presets\": [ {\"name\": \"a\", \"knobs\": {\"bloom\": false}}, {\"name\": \"A\"}, {\"label\": \"x\"} ]}");
+        Check.Equal(1, partial.Count, "重複・名前なしは飛ばす");
+        Check.Equal("ブルームなし", RenderQualityPresetCatalog.DescribeKnobs(partial[0].Knobs), "つまみの説明");
     }
 
     // ============================================================

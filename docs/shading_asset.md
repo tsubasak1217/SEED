@@ -784,7 +784,7 @@ Play 開始後に初めて解決されるパスは 1 回だけ読み込み＋ビ
 |---|---|
 | **半透明 / WBOIT / フォワードパスには効かない** | アセットの差し替えは deferred ライティングパスにしか適用されない（`frame_renderer.rs:4696` のブロック内でのみ `resolve` が呼ばれる）。フォワード・半透明・WBOIT のパイプライン（`mesh*.toml` / `transparent_*.toml` / `transparency.rs:316-330,517-530`）は常に `shading_dispatch.wgsl`（＝モデル 0 固定）を連結する。よって半透明マテリアルの `shading_model` を 1 にしても標準 PBR で描かれる |
 | **カメラプレビュー小窓は常に組み込み標準** | プレビューのライティングパスは `draw_ctx.pipelines.deferred.pipeline` を直に使う（`frame_renderer.rs:2287`）。アセットは経由しない |
-| **deferred が無効なフレームには効かない** | `deferred_active = false`（Edit のワイヤーフレーム表示・2D シーンビュー・`post_fx.deferred` オフ）のときは deferred ライティングパス自体が走らないため、アセットは効かない |
+| **deferred が無効なフレームには効かない** | `deferred_active = false`（Edit のワイヤーフレーム表示・2D シーンビュー・`post_fx.deferred` オフ・描画品質プリセットの `deferred: false`＝Android の既定 `mobile`）のときは deferred ライティングパス自体が走らないため、アセットは効かない。品質プリセットが止めた場合は `[SEED QUALITY][WARN]` を 1 回出す（戻すには `render_quality` の `deferred: true`。[android.md](android.md) §22） |
 | **パラメータは 1 アセットあたり 8 個まで** | GPU へ運ぶ uniform が `vec4` × 8 の固定長ブロックだから（`SHADE_PARAM_MAX`）。超過ぶんは無視され、理由が警告として通知される。増やすときは Rust の定数と生成 WGSL の配列長を同時に直す（テストが一致を固定している） |
 | **パラメータの型は `f32` と `vec3<f32>` の 2 種類のみ** | インスペクタの行の形（スライダー／数値／カラーピッカー）が決まる型だけを受け付ける。`i32` / `vec2` / `vec4` / テクスチャは非対応 |
 | **compose（画面全体の組み立て）は未対応** | ライト走査・アンビエント・影の適用・GI・反射の合成はエンジンが持つ。段階 **L3-b** の課題であり未実装 |

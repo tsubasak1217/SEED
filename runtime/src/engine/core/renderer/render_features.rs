@@ -21,6 +21,14 @@
 //    frame_renderer の TLAS 構築はこの 1 メソッドで判定するため、将来
 //    Reflection/AO/Translucency の Rt が resolve を通るようになれば、ゲート側は
 //    一切触らずに TLAS が構築されるようになる。
+//
+//  ■ 描画品質プリセットの上限（FeatureCaps。段階D-2）
+//    `resolve_with_caps(rt_supported, caps)` は、GPU 対応での降格（resolve）の後に
+//    品質プリセット（renderer/quality/）が決めた「これより重いモードは使わない」上限を当てる。
+//    各機能のモードは重さの順（Flat < Ssgi < Rt 等）に並べてあり、要求が上限より重ければ上限へ下げる。
+//    上限側のモードは必ず RT を要しない（上限 Rt は「下げない」と同じ）ので、降格の後に当てても
+//    RT 非対応 GPU で Rt が通ることは無い。上限が無い（`FeatureCaps::NONE`）ときは resolve と完全に同じ
+//    （デスクトップの既定。テストで固定）。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -213,6 +221,14 @@ impl RenderFeatures {
         }
     }
 
+    /// 要求モードを GPU 対応可否で解決したうえで、描画品質プリセットの上限（`caps`）を当てる。
+    ///
+    /// 実行時の分岐（frame_renderer）はこちらを使う。`caps` が `FeatureCaps::NONE` なら
+    /// `resolve(rt_supported)` と完全に同じ結果になる（デスクトップの既定＝従来どおり）。
+    pub fn resolve_with_caps(&self, rt_supported: bool, caps: &FeatureCaps) -> ResolvedFeatures {
+        self.resolve(rt_supported).capped(caps)
+    }
+
     /// [SEED FEATURES] ログ 1 行を生成する（要求と実効の差＝降格／未実装を注記する）。
     ///
     /// 例: shadow=rt gi=rt reflection=rt ao=ssao(rt非対応→ssao) translucency=rt(影=rt時のみ色付き影/屈折のみ)
@@ -221,31 +237,46 @@ impl RenderFeatures {
     ///   不発（屈折のみ有効）になる旨を注記する。
     /// - 反射・AO は実装済み。RT 非対応で SSR/SSAO へ降格したときだけ (rt非対応→ssr)/(rt非対応→ssao) を付ける。
     pub fn log_line(&self, rt_supported: bool) -> String {
-        let r = self.resolve(rt_supported);
-        // GI は実装済み（DDGI/SSGI/フラット）。RT 要求が RT 非対応で SSGI へ降格したときのみ注記する。
-        let gi_note = if self.gi == GiMode::Rt && r.gi == GiMode::Ssgi {
+        self.log_line_with_caps(rt_supported, &FeatureCaps::NONE)
+    }
+
+    /// `log_line` に品質プリセットの上限を加えた版。上限で下がった機能には `(品質上限)` を付ける。
+    ///
+    /// `caps` が `FeatureCaps::NONE` なら `log_line` と 1 文字も違わない（既存のログの読み方を変えない）。
+    pub fn log_line_with_caps(&self, rt_supported: bool, caps: &FeatureCaps) -> String {
+        // RT 対応での降格だけを当てた値（降格の注記はこちらで判断する）と、品質上限まで当てた実効値。
+        // 上限が無ければ両者は同じなので、注記も値も log_line の従来の出力と 1 文字も変わらない。
+        let uncapped = self.resolve(rt_supported);
+        let r = uncapped.capped(caps);
+        // 品質上限で下がった機能だけに付ける注記（上限が無い・下がっていなければ空）。
+        let cap_note = |lowered: bool| if lowered { QUALITY_CAP_NOTE } else { "" };
+        // GI は実装済み（DDGI/SSGI/フラット）。RT 要求が RT 非対応で SSGI へ降格したときのみ注記する
+        // （品質上限でさらに下がったときは上限の注記だけにする。降格の途中経過は読み手に要らない）。
+        let gi_note = if self.gi == GiMode::Rt && uncapped.gi == GiMode::Ssgi && r.gi == uncapped.gi {
             "(rt非対応→ssgi)"
         } else {
             ""
         };
         // 反射は実装済み（SSR/RT）。RT 要求が RT 非対応で SSR へ降格したときのみ注記する。
-        let refl_note =
-            if self.reflection == ReflectionMode::Rt && r.reflection == ReflectionMode::Ssr {
-                "(rt非対応→ssr)"
-            } else {
-                ""
-            };
+        let refl_note = if self.reflection == ReflectionMode::Rt
+            && uncapped.reflection == ReflectionMode::Ssr
+            && r.reflection == uncapped.reflection
+        {
+            "(rt非対応→ssr)"
+        } else {
+            ""
+        };
         // AO は実装済み（SSAO/RT）。RT 要求が RT 非対応で SSAO へ降格したときのみ注記する。
-        let ao_note = if self.ao == AoMode::Rt && r.ao == AoMode::Ssao {
+        let ao_note = if self.ao == AoMode::Rt && uncapped.ao == AoMode::Ssao && r.ao == uncapped.ao {
             "(rt非対応→ssao)"
         } else {
             ""
         };
         // 半透明は実装済み（Rt = 色付き影[RT]＋屈折[SS]）。RT 非対応で Raster へ降格したときは
-        // (rt非対応→raster) を付す。Rt が通っても影が RT でない（shadow!=rt）ときは、シャドウマップが
-        // 二値で色を持てないため色付き影は不発＝屈折のみ有効になる旨を注記する。
+        // (rt非対応→raster) を付す（品質上限で Raster になったときは付けない）。Rt が通っても影が RT でない
+        // （shadow!=rt）ときは、シャドウマップが二値で色を持てないため色付き影は不発＝屈折のみ有効になる旨を注記する。
         let trans_note = if self.translucency == TranslucencyMode::Rt
-            && r.translucency == TranslucencyMode::Raster
+            && uncapped.translucency == TranslucencyMode::Raster
         {
             "(rt非対応→raster)"
         } else if r.translucency == TranslucencyMode::Rt && r.shadow != ShadowMode::Rt {
@@ -254,17 +285,117 @@ impl RenderFeatures {
             ""
         };
         format!(
-            "shadow={} gi={}{} reflection={}{} ao={}{} translucency={}{}",
+            "shadow={}{} gi={}{}{} reflection={}{}{} ao={}{}{} translucency={}{}{}",
             mode_str_shadow(r.shadow),
+            cap_note(r.shadow != uncapped.shadow),
             mode_str_gi(r.gi),
             gi_note,
+            cap_note(r.gi != uncapped.gi),
             mode_str_reflection(r.reflection),
             refl_note,
+            cap_note(r.reflection != uncapped.reflection),
             mode_str_ao(r.ao),
             ao_note,
+            cap_note(r.ao != uncapped.ao),
             mode_str_translucency(r.translucency),
             trans_note,
+            cap_note(r.translucency != uncapped.translucency),
         )
+    }
+}
+
+/// 品質プリセットの上限で機能が下がったときにログへ付ける注記。
+const QUALITY_CAP_NOTE: &str = "(品質上限)";
+
+// ============================================================
+//  FeatureCaps — 描画品質プリセットが決める機能ごとの上限
+// ============================================================
+
+/// 描画品質プリセット（renderer/quality/）が決める「これより重いモードは使わない」上限。
+///
+/// `None` の機能は上限なし（要求どおり）。すべて `None`（`FeatureCaps::NONE`）なら
+/// `resolve_with_caps` は `resolve` と同じ結果を返す（デスクトップの既定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FeatureCaps {
+    /// 影の方式の上限（`shadowmap` にすると RT 影を使わない）。
+    pub shadow: Option<ShadowMode>,
+    /// GI の方式の上限（`flat` にすると SSGI・DDGI を使わない）。
+    pub gi: Option<GiMode>,
+    /// 反射の方式の上限（`off` にすると反射パスを走らせない）。
+    pub reflection: Option<ReflectionMode>,
+    /// AO の方式の上限（`off` にすると AO パスを走らせない）。
+    pub ao: Option<AoMode>,
+    /// 半透明の方式の上限（`raster` にすると RT 半透明を使わない）。
+    pub translucency: Option<TranslucencyMode>,
+}
+
+impl FeatureCaps {
+    /// 上限なし（すべての機能が要求どおり）。
+    pub const NONE: Self = Self {
+        shadow: None,
+        gi: None,
+        reflection: None,
+        ao: None,
+        translucency: None,
+    };
+}
+
+impl ResolvedFeatures {
+    /// 品質プリセットの上限を当てた実効モードを返す（上限より重い要求だけを上限へ下げる）。
+    ///
+    /// 重さの順は各 `*_weight` 関数が決める。上限と同じか軽い要求はそのまま残す
+    /// （上限は「上げる」ことはしない。フラットを要求したシーンに SSGI を足したりしない）。
+    pub fn capped(&self, caps: &FeatureCaps) -> Self {
+        Self {
+            shadow: cap_mode(self.shadow, caps.shadow, shadow_weight),
+            gi: cap_mode(self.gi, caps.gi, gi_weight),
+            reflection: cap_mode(self.reflection, caps.reflection, reflection_weight),
+            ao: cap_mode(self.ao, caps.ao, ao_weight),
+            translucency: cap_mode(self.translucency, caps.translucency, translucency_weight),
+        }
+    }
+}
+
+/// 要求 `requested` が上限 `cap` より重ければ上限を、そうでなければ要求を返す【純関数】。
+fn cap_mode<M: Copy>(requested: M, cap: Option<M>, weight: fn(M) -> u8) -> M {
+    match cap {
+        Some(limit) if weight(requested) > weight(limit) => limit,
+        _ => requested,
+    }
+}
+
+// ─── 機能ごとのモードの重さ（大きいほど重い）。上限の比較にだけ使う ─────────
+fn shadow_weight(m: ShadowMode) -> u8 {
+    match m {
+        ShadowMode::ShadowMap => 0,
+        ShadowMode::Rt => 1,
+    }
+}
+fn gi_weight(m: GiMode) -> u8 {
+    match m {
+        GiMode::Flat => 0,
+        GiMode::Ssgi => 1,
+        GiMode::Rt => 2,
+    }
+}
+fn reflection_weight(m: ReflectionMode) -> u8 {
+    match m {
+        ReflectionMode::Off => 0,
+        ReflectionMode::Ssr => 1,
+        ReflectionMode::Rt => 2,
+    }
+}
+fn ao_weight(m: AoMode) -> u8 {
+    match m {
+        AoMode::Off => 0,
+        AoMode::Ssao => 1,
+        AoMode::Rt => 2,
+    }
+}
+fn translucency_weight(m: TranslucencyMode) -> u8 {
+    match m {
+        TranslucencyMode::Raster => 0,
+        TranslucencyMode::Rt => 1,
     }
 }
 
@@ -589,6 +720,103 @@ mod tests {
         assert!(line.contains("translucency=rt"), "{line}");
         // どの機能にも「(未実装)」注記は付かない。
         assert!(!line.contains("(未実装)"), "全機能実装済み: {line}");
+    }
+
+    /// 上限なし（FeatureCaps::NONE）は resolve と完全に同じ（デスクトップの既定＝従来どおり）。
+    /// 全モードの組み合わせ × RT 対応／非対応で、実効値もログ行も 1 文字も変わらないこと。
+    #[test]
+    fn no_caps_is_identical_to_resolve() {
+        let shadows = [ShadowMode::Rt, ShadowMode::ShadowMap];
+        let gis = [GiMode::Rt, GiMode::Ssgi, GiMode::Flat];
+        let refls = [ReflectionMode::Rt, ReflectionMode::Ssr, ReflectionMode::Off];
+        let aos = [AoMode::Rt, AoMode::Ssao, AoMode::Off];
+        let trans = [TranslucencyMode::Rt, TranslucencyMode::Raster];
+        for &shadow in &shadows {
+            for &gi in &gis {
+                for &reflection in &refls {
+                    for &ao in &aos {
+                        for &translucency in &trans {
+                            let f = RenderFeatures { shadow, gi, reflection, ao, translucency };
+                            for rt in [false, true] {
+                                assert_eq!(f.resolve_with_caps(rt, &FeatureCaps::NONE), f.resolve(rt));
+                                assert_eq!(f.log_line_with_caps(rt, &FeatureCaps::NONE), f.log_line(rt));
+                                // 既定（Default）の上限も「上限なし」であること。
+                                assert_eq!(f.resolve_with_caps(rt, &FeatureCaps::default()), f.resolve(rt));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 上限は「重い要求だけを下げる」。軽い要求は上げない（フラットに SSGI を足したりしない）。
+    #[test]
+    fn caps_only_lower_heavier_requests() {
+        let caps = FeatureCaps {
+            shadow: Some(ShadowMode::ShadowMap),
+            gi: Some(GiMode::Ssgi),
+            reflection: Some(ReflectionMode::Off),
+            ao: Some(AoMode::Ssao),
+            translucency: Some(TranslucencyMode::Raster),
+        };
+        let heavy = RenderFeatures {
+            shadow: ShadowMode::Rt,
+            gi: GiMode::Rt,
+            reflection: ReflectionMode::Rt,
+            ao: AoMode::Rt,
+            translucency: TranslucencyMode::Rt,
+        };
+        let r = heavy.resolve_with_caps(true, &caps);
+        assert_eq!(r.shadow, ShadowMode::ShadowMap);
+        assert_eq!(r.gi, GiMode::Ssgi);
+        assert_eq!(r.reflection, ReflectionMode::Off);
+        assert_eq!(r.ao, AoMode::Ssao);
+        assert_eq!(r.translucency, TranslucencyMode::Raster);
+        // 上限を当てた結果は RT を要しない（TLAS も作らない）。
+        assert!(!r.needs_tlas());
+
+        // 軽い要求（既定＝フラット・オフ・ラスタ）は上限があってもそのまま。
+        let light = RenderFeatures::default();
+        assert_eq!(light.resolve_with_caps(true, &caps), light.resolve(true));
+
+        // 上限 Rt は「下げない」と同じ。
+        let rt_caps = FeatureCaps {
+            shadow: Some(ShadowMode::Rt),
+            gi: Some(GiMode::Rt),
+            reflection: Some(ReflectionMode::Rt),
+            ao: Some(AoMode::Rt),
+            translucency: Some(TranslucencyMode::Rt),
+        };
+        assert_eq!(heavy.resolve_with_caps(true, &rt_caps), heavy.resolve(true));
+    }
+
+    /// RT 非対応 GPU での降格の後に上限を当てる（上限が降格先より軽ければさらに下がる）。
+    #[test]
+    fn caps_apply_after_rt_downgrade() {
+        let f = RenderFeatures { gi: GiMode::Rt, ..Default::default() };
+        // 非対応: Rt → Ssgi（降格）→ 上限 Flat で Flat。
+        let caps = FeatureCaps { gi: Some(GiMode::Flat), ..FeatureCaps::NONE };
+        assert_eq!(f.resolve_with_caps(false, &caps).gi, GiMode::Flat);
+        // ログは上限の注記だけ（降格の途中経過は出さない）。
+        let line = f.log_line_with_caps(false, &caps);
+        assert!(line.contains("gi=flat(品質上限)"), "{line}");
+        assert!(!line.contains("rt非対応"), "{line}");
+        // 上限が降格先と同じなら下がっていない＝降格の注記だけ。
+        let caps_ssgi = FeatureCaps { gi: Some(GiMode::Ssgi), ..FeatureCaps::NONE };
+        let line = f.log_line_with_caps(false, &caps_ssgi);
+        assert!(line.contains("gi=ssgi(rt非対応→ssgi)"), "{line}");
+        assert!(!line.contains("品質上限"), "{line}");
+    }
+
+    /// 半透明を品質上限で Raster にしたときに「rt非対応」と誤って注記しない。
+    #[test]
+    fn translucency_cap_is_not_reported_as_rt_unsupported() {
+        let f = RenderFeatures { translucency: TranslucencyMode::Rt, ..Default::default() };
+        let caps = FeatureCaps { translucency: Some(TranslucencyMode::Raster), ..FeatureCaps::NONE };
+        let line = f.log_line_with_caps(true, &caps);
+        assert!(line.contains("translucency=raster(品質上限)"), "{line}");
+        assert!(!line.contains("rt非対応"), "{line}");
     }
 
     /// 半透明の降格表（Raster/Rt × rt対応/非対応 → 実効）。反射・AO・GI の手本と同型。

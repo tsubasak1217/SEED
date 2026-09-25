@@ -105,6 +105,8 @@ impl Renderer {
             self.depth_texture =
                 DepthTexture::new(&self.device, render_size.width, render_size.height);
         }
+        // UI 用の深度（描画スケールが 1 未満のときだけ）も論理サイズへ合わせる（回転で縦横が入れ替わる）。
+        self.sync_overlay_depth();
 
         eprintln!(
             "[SEED SURFACE] recreated {}x{} format={:?} present_mode={:?}",

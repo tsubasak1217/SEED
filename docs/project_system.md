@@ -16,7 +16,9 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   <Name>.seedproj      プロジェクトファイル（JSON。この 1 枚が入口）
   assets/              ゲームのアセット。assets:// のルート
     project_settings.json     ゲーム名・開始シーン・シーン一覧・解像度・画面の向き（Android）・Android アプリ情報
-                              （android 節。アプリ ID・名前・版。docs/android.md §18）・プラグイン有効化
+                              （android 節。アプリ ID・名前・版。docs/android.md §18）・描画品質プリセット
+                              （render_quality 節。プラットフォームごとのプリセット名とつまみの上書き。docs/android.md §22・
+                              docs/rendering_roadmap.md「描画品質プリセット」）・プラグイン有効化
                               （キーの一覧は docs/packaging.md §8.1）
     packaging_settings.json   パッケージ化の設定
     scenes/Main.scene         新規作成時に置かれる開始シーン
@@ -56,6 +58,28 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
 
 > `.seedproj` の `plugins_dir` を `"plugins"` 以外にすると、エディタは新しい名前を使うが
 > **ランタイムは `plugins/` を見続ける**（ランタイム側が固定のため）。既定のままにすること。
+
+### project_settings.json の `render_quality` 節（描画品質プリセット。2026-09-25）
+
+プラットフォームごとに「描画品質プリセット」とつまみの上書きを選ぶ（エディタ: プロジェクト設定 → グラフィックス → レンダリング品質）。
+
+```jsonc
+"render_quality": {
+  "desktop": { "preset": "desktop" },
+  "android": { "preset": "mobile", "render_scale": 0.75, "shadows": false }
+}
+```
+
+| キー | 意味 |
+|---|---|
+| `render_quality.<platform>` | `desktop`（Windows）/ `android`。ランタイムの `PlatformTraits::quality_platform_key`。無い節はプラットフォームの既定 |
+| `…preset` | プリセット名（`runtime/config/render_presets.json` の `name`）。省略時はデスクトップ `desktop`（何も下げない）・Android `mobile` |
+| `…<つまみ>` | プリセットのつまみの上書き（`render_scale` 0.5〜1.0・`shadows`・`gi`・`deferred` 等。一覧と当て方は docs/rendering_roadmap.md「描画品質プリセット」） |
+
+- 型を持つのはエディタの `RenderQualitySettings`（`preset` / `render_scale` / `shadows`）。画面に出さないつまみ・知らない節は
+  `ExtraData` に保ち、保存で失わない。型の違う値は未設定として読む（`ProjectSettingsData` 全体の読み込みを失敗させない）。
+- 何も設定していなければ節ごと保存しない。ランタイムは起動時に 1 回読み、`[SEED QUALITY] preset=… …` を起動ログへ出す。
+- 往復・空の節・型違い・プリセット一覧の既定は `editor/tests/ProjectSystemTests` で固定。
 
 ---
 

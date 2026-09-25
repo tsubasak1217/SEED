@@ -22,6 +22,10 @@
 //  【ipc_token（段階D-1 の追加）】起動ごとの使い捨ての接続トークン（seed.ipc_token）。TCP の接続の最初の行
 //  HELLO:<トークン> と照合する（ipc_transport/auth.rs）。無ければ ipc_port があっても待ち受けない。
 //  logcat へ起動オプションを出すときは値を伏せる（masked_json_for_log）。
+//  【quality / quality_overrides / gpu_timing（段階D-2。計測・検証用）】描画品質のプリセット名（seed.quality）・
+//  つまみの上書き（seed.quality_overrides。`キー=値,キー=値`）・パスごとの GPU 時間の計測（seed.gpu_timing=1）。
+//  エディタ・SeedAndroid は渡さない（手で am start するときだけ）。project_settings.json の render_quality より優先する
+//  （renderer/quality/resolve.rs）。読み方は launch.rs が quality_launch / gpu_timing_enabled で LaunchArgs へ入れる。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +43,18 @@ pub const IPC_PORT_KEY: &str = "ipc_port";
 /// IPC の接続トークンの JSON のキー（C# の AndroidRuntimeContract.LaunchOptionIpcTokenKey と一致させる。
 /// フィールド名 `ipc_token` がそのままキーになる。一致はテストで確かめる。段階D-1）。
 pub const IPC_TOKEN_KEY: &str = "ipc_token";
+
+/// 描画品質のプリセット名の JSON のキー（am start の extra seed.quality。段階D-2・計測用）。
+pub const QUALITY_KEY: &str = "quality";
+
+/// 描画品質のつまみの上書きの JSON のキー（am start の extra seed.quality_overrides。段階D-2・計測用）。
+pub const QUALITY_OVERRIDES_KEY: &str = "quality_overrides";
+
+/// パスごとの GPU 時間の計測の JSON のキー（am start の extra seed.gpu_timing。段階D-2・計測用）。
+pub const GPU_TIMING_KEY: &str = "gpu_timing";
+
+/// gpu_timing を有効とみなす値（Java は文字列の extra だけを渡す）。
+const GPU_TIMING_ON: &str = "1";
 
 /// 待ち受けに使えるポートの最小値（0 は「OS に選ばせる」なので、エディタが forward できず使えない）。
 const MIN_IPC_PORT: u16 = 1;
@@ -81,6 +97,15 @@ pub struct LaunchOptions {
     /// 無ければ ipc_port があっても待ち受けない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipc_token: Option<String>,
+    /// 描画品質のプリセット名（段階D-2・計測用。無ければ project_settings.json の指定かプラットフォームの既定）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    /// 描画品質のつまみの上書き（`キー=値,キー=値`。段階D-2・計測用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_overrides: Option<String>,
+    /// パスごとの GPU 時間を測るか（"1" で有効。段階D-2・計測用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_timing: Option<String>,
 }
 
 impl LaunchOptions {
@@ -107,7 +132,25 @@ impl LaunchOptions {
         if options.ipc_token.as_deref().is_some_and(|token| token.trim().is_empty()) {
             options.ipc_token = None;
         }
+        for text in [&mut options.quality, &mut options.quality_overrides, &mut options.gpu_timing] {
+            if text.as_deref().is_some_and(|value| value.trim().is_empty()) {
+                *text = None;
+            }
+        }
         Ok(options)
+    }
+
+    /// 描画品質の指定（プリセット名とつまみの上書き）を LaunchArgs の形にする（段階D-2）。
+    pub fn quality_launch(&self) -> crate::engine::core::renderer::quality::QualityLaunchOverrides {
+        crate::engine::core::renderer::quality::QualityLaunchOverrides {
+            preset: self.quality.clone(),
+            knobs: self.quality_overrides.clone(),
+        }
+    }
+
+    /// パスごとの GPU 時間を測るか（"1" のときだけ。段階D-2）。
+    pub fn gpu_timing_enabled(&self) -> bool {
+        self.gpu_timing.as_deref().is_some_and(|value| value.trim() == GPU_TIMING_ON)
     }
 
     /// JSON にする（Java 側が作る形と同じ。テストの往復と記録用）。
@@ -353,6 +396,30 @@ mod tests {
         let options = LaunchOptions::from_json("{\"scene\":\"scenes/Main.scene\",\"ipc_port\":\"abc\"}").unwrap();
         assert_eq!(options.scene.as_deref(), Some("scenes/Main.scene"), "シーンはそのまま使える");
         assert!(matches!(options.ipc_port(), Some(Err(_))), "ポートだけが誤り");
+    }
+
+    /// 描画品質の指定（段階D-2）: キーの名前・空白だけは指定なし・GPU 計測は "1" だけ有効。
+    #[test]
+    fn quality_options_use_their_keys() {
+        let options = LaunchOptions::from_json(
+            "{\"quality\":\"mobile\",\"quality_overrides\":\"render_scale=0.75,deferred=true\",\"gpu_timing\":\"1\"}",
+        )
+        .unwrap();
+        let launch = options.quality_launch();
+        assert_eq!(launch.preset.as_deref(), Some("mobile"));
+        assert_eq!(launch.knobs.as_deref(), Some("render_scale=0.75,deferred=true"));
+        assert!(options.gpu_timing_enabled());
+        let json = options.to_json();
+        for key in [QUALITY_KEY, QUALITY_OVERRIDES_KEY, GPU_TIMING_KEY] {
+            assert!(json.contains(&format!("\"{key}\"")), "キーは {key}: {json}");
+        }
+        assert_eq!(LaunchOptions::from_json(&json).unwrap(), options);
+
+        let blank = LaunchOptions::from_json("{\"quality\":\" \",\"quality_overrides\":\"\",\"gpu_timing\":\" \"}").unwrap();
+        assert_eq!(blank, LaunchOptions::default(), "空白だけは指定なし");
+        assert!(!LaunchOptions::default().gpu_timing_enabled());
+        assert!(!LaunchOptions::from_json("{\"gpu_timing\":\"0\"}").unwrap().gpu_timing_enabled());
+        assert_eq!(LaunchOptions::default().quality_launch(), Default::default(), "指定が無ければ上書きなし");
     }
 
     #[test]
