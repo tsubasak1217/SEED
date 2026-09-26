@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  W1-0 スパイク（使い捨て）: 確実に鳴る目覚ましの基盤（docs/app_platform_roadmap.md §2.2 の構成）を Java だけで確かめる。
+
+  プロセス:
+    メイン（既定）        … MainActivity / RingActivity（SEED の GameActivity の代役）/ DebugControlReceiver（エンジンの代役として adb から命令を受ける）
+    :seed_platform        … PlatformProvider（同期の命令。ContentResolver.call）/ AlarmReceiver / BootReceiver / RingService（前景サービス）/
+                            比較用の Messenger・AIDL のサービス / DebugPlatformReceiver
+  exported:
+    ・プラットフォーム層の部品はすべて exported=false（ロードマップ W1-P6）。
+    ・Debug*Receiver だけは adb（shell）から叩くため exported=true（スパイク専用。本番には入れない）。
+    ・RingActivity は SEED の MainActivity（ランチャー用に exported）の代役として exported=true にし、
+      信頼できる起動は exported=false の別名 RingEntry を通ったものだけとする（W1-P6 の試作）。
+  Direct Boot（E-10 の材料）:
+    ・:seed_platform の部品と RingActivity を directBootAware にし、予約の控えを端末保護ストレージに置く。
+      再起動の試験（ユーザーの許可待ち）で、ロック解除前に張り直され鳴るかを確かめるため。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 正確なアラーム: 13+ は USE_EXACT_ALARM（インストール時に許可）、12 系だけ SCHEDULE_EXACT_ALARM（ロードマップ §2.6 の形） -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 前景サービスの種類の比較（E-03）。実行時に startForeground へ渡す種類を extra で切り替える -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/ic_lock_idle_alarm"
+        android:label="PlatformSpike"
+        android:theme="@android:style/Theme.DeviceDefault">
+
+        <!-- 普通の起動（ランチャー）。起動のたびに予約を張り直す（強制停止の後の復旧の確認） -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 鳴動画面（SEED の MainActivity の代役）。showWhenLocked / turnScreenOn はコードで、信頼できる起動のときだけ上げる -->
+        <activity
+            android:name=".RingActivity"
+            android:directBootAware="true"
+            android:exported="true"
+            android:launchMode="singleTask" />
+
+        <!-- プラットフォーム層の PendingIntent だけが通る入口（exported=false。W1-P6 の PlatformEntry の試作） -->
+        <activity-alias
+            android:name=".RingEntry"
+            android:exported="false"
+            android:targetActivity=".RingActivity" />
+
+        <!-- AlarmManager.setAlarmClock の発火先 -->
+        <receiver
+            android:name=".AlarmReceiver"
+            android:directBootAware="true"
+            android:exported="false"
+            android:process=":seed_platform" />
+
+        <!-- 再起動・更新の後に控えから予約を張り直す（LOCKED_BOOT_COMPLETED はロック解除前） -->
+        <receiver
+            android:name=".BootReceiver"
+            android:directBootAware="true"
+            android:exported="false"
+            android:process=":seed_platform">
+            <intent-filter>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- スパイク専用: 予約を経ずに :seed_platform から前景サービスを起こす（背面からの起動制限の確認） -->
+        <receiver
+            android:name=".DebugPlatformReceiver"
+            android:exported="true"
+            android:process=":seed_platform">
+            <intent-filter>
+                <action android:name="com.seedengine.platformspike.RING_NOW" />
+            </intent-filter>
+        </receiver>
+
+        <!-- スパイク専用: エンジンの代役。adb の am broadcast で予約・停止・計測を命じる -->
+        <receiver
+            android:name=".DebugControlReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.seedengine.platformspike.SCHEDULE" />
+                <action android:name="com.seedengine.platformspike.CANCEL" />
+                <action android:name="com.seedengine.platformspike.CANCEL_ALL" />
+                <action android:name="com.seedengine.platformspike.STOP" />
+                <action android:name="com.seedengine.platformspike.STATUS" />
+                <action android:name="com.seedengine.platformspike.REARM" />
+                <action android:name="com.seedengine.platformspike.IPC_BENCH" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 鳴動の前景サービス。種類は実行時に選ぶ（既定 mediaPlayback） -->
+        <service
+            android:name=".RingService"
+            android:directBootAware="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback|systemExempted|specialUse"
+            android:process=":seed_platform">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="alarm_ringing_spike" />
+        </service>
+
+        <!-- IPC の比較用（Messenger / AIDL） -->
+        <service
+            android:name=".PlatformMessengerService"
+            android:exported="false"
+            android:process=":seed_platform" />
+        <service
+            android:name=".PlatformAidlService"
+            android:exported="false"
+            android:process=":seed_platform" />
+
+        <!-- 同期の命令と問い合わせ（ロードマップ §2.2 の PlatformProvider） -->
+        <provider
+            android:name=".PlatformProvider"
+            android:authorities="com.seedengine.platformspike.platform"
+            android:directBootAware="true"
+            android:exported="false"
+            android:process=":seed_platform" />
+    </application>
+
+</manifest>

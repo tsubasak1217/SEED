@@ -1,0 +1,166 @@
+app\src\main\java\com\seedengine\platformspike\IpcBench.java:237: Warning: Field requires API level 33 (current min is 29): android.content.Context#RECEIVER_NOT_EXPORTED [InlinedApi]
+                new Handler(thread.getLooper()), Context.RECEIVER_NOT_EXPORTED);
+                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingActivity.java:78: Warning: Field requires API level 33 (current min is 29): android.window.OnBackInvokedDispatcher#PRIORITY_DEFAULT [InlinedApi]
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> SpikeLog.mark("back_ignored", "id=" + alarmId));
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingActivity.java:142: Warning: Field requires API level 33 (current min is 29): android.content.Context#RECEIVER_NOT_EXPORTED [InlinedApi]
+                Context.RECEIVER_NOT_EXPORTED);
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingService.java:312: Warning: Field requires API level 31 (current min is 29): android.app.Notification#FOREGROUND_SERVICE_IMMEDIATE [InlinedApi]
+                .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingService.java:319: Warning: Field requires API level 34 (current min is 29): android.content.pm.ServiceInfo#FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED [InlinedApi]
+                return ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED;
+                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingService.java:321: Warning: Field requires API level 34 (current min is 29): android.content.pm.ServiceInfo#FOREGROUND_SERVICE_TYPE_SPECIAL_USE [InlinedApi]
+                return ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "InlinedApi":
+   This check scans through all the Android API field references in the
+   application and flags certain constants, such as static final integers and
+   Strings, which were introduced in later versions. These will actually be
+   copied into the class files rather than being referenced, which means that
+   the value is available even when running on older devices. In some cases
+   that's fine, and in other cases it can result in a runtime crash or
+   incorrect behavior. It depends on the context, so consider the code
+   carefully and decide whether it's safe and can be suppressed or whether the
+   code needs to be guarded.
+
+   If you really want to use this API and don't need to support older devices
+   just set the minSdkVersion in your build.gradle or AndroidManifest.xml
+   files.
+
+   If your code is deliberately accessing newer APIs, and you have ensured
+   (e.g. with conditional execution) that this code will only ever be called
+   on a supported platform, then you can annotate your class or method with
+   the @TargetApi annotation specifying the local minimum SDK to apply, such
+   as @TargetApi(11), such that this check considers 11 rather than your
+   manifest file's minimum SDK as the required API level.
+
+app\src\main\java\com\seedengine\platformspike\AlarmScheduler.java:26: Error: Call requires API level 31 (current min is 29): android.app.AlarmManager#canScheduleExactAlarms [NewApi]
+        return context.getSystemService(AlarmManager.class).canScheduleExactAlarms();
+                                                            ~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\AlarmScheduler.java:32: Error: Call requires API level 31 (current min is 29): android.app.AlarmManager#canScheduleExactAlarms [NewApi]
+        if (!alarms.canScheduleExactAlarms()) {
+                    ~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\AlarmStore.java:38: Error: Call requires API level 33 (current min is 29): java.io.InputStream#readAllBytes [NewApi]
+            byte[] bytes = in.readAllBytes();
+                              ~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\DeviceState.java:35: Error: Call requires API level 31 (current min is 29): android.app.AlarmManager#canScheduleExactAlarms [NewApi]
+        return "can_schedule_exact=" + alarms.canScheduleExactAlarms()
+                                              ~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingActivity.java:77: Error: Call requires API level 33 (current min is 29): android.app.Activity#getOnBackInvokedDispatcher [NewApi]
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingActivity.java:77: Error: Call requires API level 33 (current min is 29): android.window.OnBackInvokedDispatcher#registerOnBackInvokedCallback [NewApi]
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingService.java:76: Error: Exception requires API level 31 (current min is 29): android.app.ForegroundServiceStartNotAllowedException [NewApi]
+        } catch (ForegroundServiceStartNotAllowedException e) {
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingService.java:78: Error: Implicit cast from ForegroundServiceStartNotAllowedException to Throwable requires API level 31 (current min is 29) [NewApi]
+                    + SpikeLog.oneLine(e));
+                                       ~
+app\src\main\java\com\seedengine\platformspike\RingService.java:155: Error: Exception requires API level 31 (current min is 29): android.app.ForegroundServiceStartNotAllowedException [NewApi]
+        } catch (ForegroundServiceStartNotAllowedException e) {
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingService.java:156: Error: Implicit cast from ForegroundServiceStartNotAllowedException to Throwable requires API level 31 (current min is 29) [NewApi]
+            SpikeLog.mark("fgs_start_failed", "type=" + type + " where=startForeground error=" + SpikeLog.oneLine(e));
+                                                                                                                  ~
+app\src\main\java\com\seedengine\platformspike\RingService.java:312: Error: Call requires API level 31 (current min is 29): android.app.Notification.Builder#setForegroundServiceBehavior [NewApi]
+                .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "NewApi":
+   This check scans through all the Android API calls in the application and
+   warns about any calls that are not available on all versions targeted by
+   this application (according to its minimum SDK attribute in the manifest).
+
+   If you really want to use this API and don't need to support older devices
+   just set the minSdkVersion in your build.gradle or AndroidManifest.xml
+   files.
+
+   If your code is deliberately accessing newer APIs, and you have ensured
+   (e.g. with conditional execution) that this code will only ever be called
+   on a supported platform, then you can annotate your class or method with
+   the @TargetApi annotation specifying the local minimum SDK to apply, such
+   as @TargetApi(11), such that this check considers 11 rather than your
+   manifest file's minimum SDK as the required API level.
+
+   If you are deliberately setting android: attributes in style definitions,
+   make sure you place this in a values-vNN folder in order to avoid running
+   into runtime conflicts on certain devices where manufacturers have added
+   custom attributes whose ids conflict with the new ones on later platforms.
+
+   Similarly, you can use tools:targetApi="11" in an XML file to indicate that
+   the element will only be inflated in an adequate context.
+
+gradle\wrapper\gradle-wrapper.properties:3: Warning: A newer version of Gradle than 9.3.1 is available: 9.8.0 [AndroidGradlePluginVersion]
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.3.1-all.zip
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "AndroidGradlePluginVersion":
+   This detector looks for usage of the Android Gradle Plugin where the
+   version you are using is not the current stable release. Using older
+   versions is fine, and there are cases where you deliberately want to stick
+   with an older version. However, you may simply not be aware that a more
+   recent version is available, and that is what this lint check helps find.
+
+app\src\main\AndroidManifest.xml:85: Warning: Exported receiver does not require permission [ExportedReceiver]
+        <receiver
+         ~~~~~~~~
+app\src\main\AndroidManifest.xml:95: Warning: Exported receiver does not require permission [ExportedReceiver]
+        <receiver
+         ~~~~~~~~
+
+   Explanation for issues of type "ExportedReceiver":
+   Exported receivers (receivers which either set exported=true or contain an
+   intent-filter and do not specify exported=false) should define a permission
+   that an entity must have in order to launch the receiver or bind to it.
+   Without this, any application can use this receiver.
+
+   https://goo.gle/ExportedReceiver
+
+app\src\main\AndroidManifest.xml:36: Warning: The attribute android:allowBackup is deprecated from Android 12 and higher and may be removed in future versions. Consider adding the attribute android:dataExtractionRules specifying an @xml resource which configures cloud backups and device transfers on Android 12 and higher. [DataExtractionRules]
+        android:allowBackup="false"
+                             ~~~~~
+
+   Explanation for issues of type "DataExtractionRules":
+   Before Android 12, the attributes android:allowBackup and
+   android:fullBackupContent were used to configure all forms of backup,
+   including cloud backups, device-to-device transfers and adb backup.
+
+   In Android 12 and higher, these attributes have been deprecated and will
+   only apply to cloud backups. You should instead use the attribute
+   android:dataExtractionRules, specifying an @xml resource that configures
+   which files to back up, for cloud backups and for device-to-device
+   transfers, separately. If your minSdkVersion supports older versions,
+   you'll still want to specify an android:fullBackupContent resource if the
+   default behavior is not right for your app.
+
+   https://developer.android.com/about/versions/12/backup-restore#xml-changes
+   https://goo.gle/DataExtractionRules
+
+app\src\main\java\com\seedengine\platformspike\MainActivity.java:16: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+        view.setText("PlatformSpike（W1-0）: 状態を取得中…");
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\src\main\java\com\seedengine\platformspike\RingActivity.java:52: Warning: Do not concatenate text displayed with setText. Use resource string with placeholders. [SetTextI18n]
+            elapsedView.setText("鳴動から " + seconds + " 秒\nid=" + alarmId);
+                                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "SetTextI18n":
+   When calling TextView#setText
+   * Never call Number#toString() to format numbers; it will not handle
+   fraction separators and locale-specific digits properly. Consider using
+   String#format with proper format specifications (%d or %f) instead.
+   * Do not pass a string literal (e.g. "Hello") to display text. Hardcoded
+   text can not be properly translated to other languages. Consider using
+   Android resource strings instead.
+   * Do not build messages by concatenating text chunks. Such messages can not
+   be properly translated.
+
+   https://developer.android.com/guide/topics/resources/localization.html
+
+11 errors, 12 warnings

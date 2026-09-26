@@ -1,0 +1,8 @@
+# ============================================================
+#  platform_spike — 計測の生ログは追跡しない
+#  （logcat・dumpsys は私物端末の他のアプリの情報を含むため。まとめの summary.md と lint の結果だけ残す）
+#  ビルドの生成物（app/build/・.gradle/）と local.properties は runtime/android/.gitignore が除外する
+# ============================================================
+results/*
+!results/summary.md
+!results/lint-results-debug.txt

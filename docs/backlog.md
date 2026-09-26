@@ -2234,17 +2234,51 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 
 ### W1: Android サービス層（`SEED.Platform`）
 
-- [ ] **W1-0 スパイク: 別プロセスの鳴動サービスとフルスクリーン通知からの冷えた起動** — 2026-09-27。Java だけの `:seed_platform`
-  プロセスに前景サービス（`mediaPlayback`・`USAGE_ALARM`）と `setAlarmClock` の予約を置き、Pixel 6a で (a) ロック中に鳴ってロック画面の上に
-  GameActivity が出るまでの秒数 (b) 最近のタスクから消しても鳴り続ける (c) Doze の下で時刻どおり (d) 再起動後の張り直し (e) `ContentResolver.call`
-  の往復時間を測る。結果で未決 E-01〜E-03（別プロセス・JNI の手段・前景サービスの種類）を決める。docs/app_platform_roadmap.md §6.1。
+- [x] **W1-0 スパイク: 別プロセスの鳴動サービスとフルスクリーン通知からの冷えた起動** — 2026-09-27 記載 / 同日実施。Java だけの
+  使い捨てアプリ（`runtime/android/spikes/platform_spike/`）で、Pixel 6a（Android 16）の画面オフ・ロック中に、両プロセスが無い状態から
+  予定時刻 +0.73 s で音・+0.95 s でロック画面の上に鳴動画面が出る、最近のタスクから消しても音が続く、強制停止で予約が消え停止状態からの
+  復帰で `BootReceiver` が張り直す、`ContentResolver.call` の往復 0.64〜0.87 ms、`mediaPlayback`・`systemExempted` とも予約経由で起動できる、
+  を確かめ、E-01〜E-03・E-10 を決めた。結果の正典は docs/app_platform_roadmap.md §2.9.1。残りは下の 3 件（W1-0 の残り 2 件と、W1-4 の頭へ
+  移した実 GameActivity の計測）。
+- [ ] **W1-0 の残り: Doze の下の時刻精度の再試験** — 2026-09-27。1 回目は `force-idle` の後、発火の前に利用者が端末を使い始めて Doze を
+  抜けたので無効（配信は +1 ms だったが INACTIVE のとき）。端末を使っていない時間に `runtime/android/spikes/platform_spike/scripts/t3_doze.sh` で
+  測り直す（使い始めたら予約を取り消して中止する）。AC-1 の後半・roadmap §2.2 の (4)。
+- [ ] **W1-0 の残り: 再起動の後の張り直しと Direct Boot（ロック解除前に鳴るか）** — 2026-09-27。`adb reboot` は利用者の許可が要るので未実施。
+  許可の後に `scripts/t7_reboot_procedure.sh --reboot-permitted` で、`LOCKED_BOOT_COMPLETED` での張り直しと、ロックを解除しないまま鳴るか・
+  directBootAware の鳴動画面が出るかを見る。AC-4・E-10・W1-9 の前提。
+- [ ] **実際の GameActivity をフルスクリーン通知から冷えた状態で出す計測（W1-4 の頭で）** — 2026-09-27（W1-0 から移した）。W1-0 の鳴動画面は
+  Java だけの Activity（予定時刻から +0.95 s）で、SEED の冷えた起動（.NET の展開・CLR・GPU・シーン。X-1）を含む時間は測っていない。
+  `PlatformEntry` と起動理由を作った直後に測り、AC-12（フルスクリーン通知から 3 秒以内）と AC-1（予定時刻から画面 3 秒以内）に届くかを見る。
+- [ ] **Android 17 の背面の音の制限への対応（X-7）** — 2026-09-27（W1-0）。Android 17 は、見えている画面も前景サービスも無いアプリの音・
+  音声フォーカス・音量の変更を黙って失敗させ、targetSdk 37 では背面の前景サービスに「使用中」の権能を求める（例外は正確なアラームの権限＋
+  `USAGE_ALARM`。https://developer.android.com/about/versions/17/changes/bg-audio ）。Android 16 の実機でも、画面の無い鳴動中に
+  `AudioHardening … would be muted … level: full` が記録された（今は記録だけ）。鳴動は `USAGE_ALARM` に固定し、`ForceVolume`・`KeepVolume` の
+  音量の変更と v2 の読み上げが免除に入るかを Android 17 で確かめる。targetSdk を 37 に上げる前に済ませる。roadmap §2.6・§4。
+- [ ] **`adb install` が Play Protect の確認で止まる（初めてのパッケージ）** — 2026-09-27（W1-0）。ロック画面の裏に出た「アプリをスキャンに
+  送信しますか」の確認で約 43 分止まった（利用者は操作しておらず、確認の画面が出たまま完了）。自動の実機試験と、SeedAndroid の `install`
+  （新しい applicationId を初めて入れるとき）でも起こりうる（未確認）。インストールに上限時間を付け、止まったら端末で確認に答えるよう案内する。
+- [ ] **W1-0 の後片付け: 端末に `com.seedengine.platformspike` が残っている** — 2026-09-27。試験の終盤（04:32 ごろ）に端末が USB から外れ、
+  アンインストールできなかった（予約・前景サービス・Doze と電池の模擬は外れる前に戻してあることを 04:12 の記録で確認）。再接続して
+  `runtime/android/spikes/platform_spike/scripts/cleanup.sh` を流す。
+- [x] **app_platform_roadmap.md §2.6 の誤り 2 件** — 2026-09-27 記載 / 同日対応（W1-0）。「サイドロードではフルスクリーン通知が既定で無効」は
+  誤りで、Play 以外のインストールでは既定で有効（AOSP の記述と実機）。adb の `am broadcast -a …`（`-n`/`-p` なし）はマニフェストの受信機に
+  届かない（手順に `-n` を足した）。§2.6・§2.9 を直した。
 - [ ] **W1-1 橋渡し（native → Java の呼び出しが 1 つも無い）** — 2026-09-27。`SeedPlatform.invoke(module, method, byte[] json)` と
   `nativeOnPlatformEvent(byte[] json)` の 2 本、`ScriptHostApi` の新カテゴリ、C# の `SEED.Platform` の骨組み、デスクトップの模擬。
   ネイティブのスレッドからの `FindClass` はアプリのクラスが見えない（android.md §17.8）ので、Java からクラスを渡して GlobalRef で持つ。
+  W1-0 で決めた手段（E-02）: `ContentProviderClient` を持ち続けて `call`（0.36〜0.51 ms）、`:seed_platform` からの知らせは Binder の
+  コールバック（放送は受け手が別の放送を処理中だと 5 秒待たされた）、JNI は `jni` クレート 0.22（Rust 側は未試作。最初に往復を 1 本通す）。
+  最初の `call` は `:seed_platform` の起動で約 120 ms 待つので描画のスレッドから呼ばない。
 - [ ] **W1-2 機能の opt-in（`android.features`・`deep_links`・`system_bars`・`app_category`）** — 2026-09-27。SeedAndroid → Gradle →
   生成したマニフェストの断片。Play の要件チェック（`AndroidRequirementChecks`・`play_requirements.json`）に権限と前景サービスの申告の注意を足す。
+  断片の差し込み方（AGP の variant API か library module か）は W1-0 で試していないので、ここで確かめる。
 - [ ] **W1-3 目覚ましの予約（setAlarmClock・予約の控え・再起動／時刻・タイムゾーン／更新／権限の変化で張り直す・音源の書き出し）** — 2026-09-27。
+  W1-0: `BootReceiver` は強制停止からの復帰（Android 15+ は停止状態から出たときに `BOOT_COMPLETED`。実機では `LOCKED_BOOT_COMPLETED` も）も兼ねる。
+  張り直しは必ず `setAlarmClock`（`BOOT_COMPLETED` から直接鳴らさない）。
 - [ ] **W1-4 鳴動（前景サービス・音量の指定と漸増・バイブ・WakeLock・音声フォーカスの喪失で止めない・安全弁・重なりを捨てない・フルスクリーン通知・起動理由・信頼できる起動での showWhenLocked）** — 2026-09-27。
+  W1-0 からの見直し: 頭で実 GameActivity の冷えた起動を測る（上の項目）。`AlarmReceiver` は真っ先に `startForegroundService`（配信に付く一時許可は
+  10 秒）し、控えの fsync はその後。音の準備を前倒しする（冷えたプロセスでは `startForeground` から音まで約 340 ms）。端末の使用中はヘッドアップ通知に
+  なるので、本文のタップから鳴動画面へ行けるようにする。音は `USAGE_ALARM` 固定（X-7）。
 - [ ] **W1-5 通知と権限（チャネル・常駐・ボタン・トランポリン無し・実行時権限の結果イベント・正確なアラーム／フルスクリーン通知の状態と設定画面）** — 2026-09-27。
 - [ ] **W1-6 画面とアプリ（`Window.SetShowWhenLocked`・`SetKeepScreenOn`・`SetSystemBarsVisible`・`App.MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク）** — 2026-09-27。
   「アプリを終える API が無い」（Android 節）は `MoveTaskToBack`（閉じずに背面へ）で目覚ましアプリの用は足りるが、終える API もここで一緒に決める。
@@ -2252,7 +2286,9 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [ ] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。
 - [ ] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27。Wake or Pay の起床確認「振る」を v1 に残すなら（アプリ仕様 §10 U-04）。
 - [ ] **（任意）W1-9 Direct Boot（再起動後・ロック解除前の鳴動）** — 2026-09-27。夜中の自動更新の再起動の後でも鳴らすため。
-  予約の控えと既定の音を端末保護ストレージに置き、受信機と鳴動サービスを `directBootAware` にする案（記憶に基づく・要確認）。
+  予約の控えと既定の音を端末保護ストレージに置き、受信機と鳴動サービスを `directBootAware` にする案。W1-0 で、exported=false・directBootAware の
+  受信機に `LOCKED_BOOT_COMPLETED` が届き端末保護ストレージから張り直せることは確認（強制停止からの復帰で観測）。再起動での確認とロック解除前の
+  鳴動画面は未確認。解除前は Java だけの鳴動画面か、音と通知だけにする（E-10 の決定）。
 
 ### W2: UI 部品群
 
