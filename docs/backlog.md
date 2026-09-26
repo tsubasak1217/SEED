@@ -2177,6 +2177,11 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   見送り（状態表示に理由）、戻した後の次の変更通知までは読み直さない（「ディスクから再読込」で取り込める）。
 - [ ] **写しの表示（バナー・無効表示・ビューポートの切り替え・保存の確認の窓）をエディタの画面で確かめていない** — 2026-09-26（§20.17）。
   エージェントはエディタを起動しないため、判断は単体テスト、段取りは WPF 抜きのプローブ（実機＋PC の Edit の SEED.exe）で確かめた。利用者が画面で確かめる。
+- [ ] **`app/build.gradle.kts` の `sourceSets` の `srcDir` が AGP 9.1.0 で非推奨の警告を出す（低優先）** — 2026-09-27（W1-2 の作業中に気付いた既存の警告）。
+  Gradle の構成の段階で `'fun srcDir(srcDir: Any): Any' is deprecated. Use 'directories' mutable set instead.` が 3 行出る（`main` の
+  `jniLibs.srcDir("src/seedDotnet/jniLibs")`・`assets.srcDir("src/seedDotnet/assets")`・`res.srcDir("src/seedIcon/res")`）。ビルドは通る。
+  `directories` へ書き換えるか、W1-2 の機能の断片と同じく `androidComponents.onVariants` の `addStaticSourceDirectory` へ寄せる
+  （res の層が main と別になる違いがあるので、アイコンの `@mipmap/ic_launcher` の解決を確かめてから）。
 
 ## .NET 10 への統一（2026-09-24 段階B-0 実装時の残件）
 
@@ -2223,14 +2228,21 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   デバッグ版だけ（他のアプリの Intent で途中のシーンへ飛べないため）で、`onNewIntent` も無い。目覚まし・通知のボタン・ディープリンクで
   起きたことをスクリプトが知れない。W1-P6（エクスポートしない activity-alias 経由の Intent だけを信用する）で解く。関連:
   `runtime/android/app/src/main/java/com/seedengine/runtime/MainActivity.java:192-233`。
-- [ ] **プロジェクトごとに権限・サービス・受信機・intent-filter を足す仕組みが無い** — 2026-09-27（W0）。main のマニフェストには
+- [x] **プロジェクトごとに権限・サービス・受信機・intent-filter を足す仕組みが無い** — 2026-09-27（W0）記載 / 同日 W1-2 で対応。main のマニフェストには
   `<uses-permission>`・`<service>`・`<receiver>`・`<provider>` が 1 つも無く、`INTERNET` はデバッグ版のマニフェストだけ。
   `AndroidAppSettings.ExtraData` は保存で消えないだけで、ビルドのどこからも読まれない。W1-2（`android.features` → マニフェストの断片）で解く。
-  配布版でネットワークを使うゲームも今は作れない（Flutter 版の Wake or Pay で「リリース版だけ INTERNET が無い」事故があった）。
+  → W1-2 で `android.features` → 機能の表（`runtime/android/platform_features.json`）→ 生成したマニフェストの断片（`app/src/seedFeatures/`）の
+  仕組みができた（権限と `<application>` の下の要素の木。受信機・サービスは W1-3・W1-4 で表に行を足す。docs/android.md §25.10）。
+  配布版の `INTERNET` は下の別項目（機能の表に行を足すだけで済む形になった）。
   関連: `runtime/android/app/src/main/AndroidManifest.xml`、`src/debug/AndroidManifest.xml`、`editor/src/Android/Gradle/GradleInvocation.cs`。
-- [ ] **アプリ向けの既定を選べない（システムバーを常に隠す・`appCategory="game"` 固定）** — 2026-09-27（W0）。`MainActivity` は常に
-  システムバーを隠し（`hideSystemBars`）、マニフェストは `android:appCategory="game"` 固定。時刻や電池が見えるべきアプリには向かない。
-  W1-2・W1-6 の `system_bars`・`app_category` で選べるようにする。関連: `MainActivity.java:281-288`、AndroidManifest.xml。
+- [ ] **配布版でネットワークを使うゲーム・アプリが作れない（`INTERNET` はデバッグ版だけ）** — 2026-09-27（W0 の上の項目から分けた）。
+  Flutter 版の Wake or Pay で「リリース版だけ INTERNET が無い」事故があった。W1-2 の機能の表に `internet`（`android.permission.INTERNET`）の行を
+  足せば `android.features` で opt-in できるが、W1 の語彙（alarm / notifications / deep_links）に無いので足していない。足すときは
+  要件チェックの `release_unexpected_permissions`（INTERNET を「配布用には要らない」と注意する）を、features に internet があれば出さないように直す。
+- [x] **アプリ向けの既定を選べない（システムバーを常に隠す・`appCategory="game"` 固定）** — 2026-09-27（W0）記載 / 同日 W1-2 で起動時の既定を対応。
+  `MainActivity` は常にシステムバーを隠し（`hideSystemBars`）、マニフェストは `android:appCategory="game"` 固定。時刻や電池が見えるべきアプリには向かない。
+  → W1-2 で `android.system_bars`（`SystemBarsController.java` が生成した bool を読む）と `android.app_category`（`-Pseed.appCategory` →
+  `manifestPlaceholders`）で選べるようにした。実行中の切り替え（`Window.SetSystemBarsVisible`）とバーの文字色は W1-6。実機の見た目は下の W1-2 の項目。
 
 ### W1: Android サービス層（`SEED.Platform`）
 
@@ -2284,15 +2296,38 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   描画のスレッドで待たないための形だが、アプリの API（W1-3 の `Alarms.Schedule` など）が起動の直後に失敗しうる。W1-2 の `android.features` に
   機能が書かれたプロジェクトでは、起動時（Activity の onCreate の後）に背面で接続を始め、最初のフレームまでにつながっている形を検討する
   （機能を使わないゲームは今どおり起こさない）。あわせてスクリプトから「つながっているか」を IPC 無しで読む手段（今はイベントで知るだけ）。
+  W1-2 では手を付けていない（範囲外）。機能を APK へ焼き込む仕組み（生成する `res/values/seed_platform.xml`）はできたので、W1-3 で
+  「起動時に接続する」bool を機能の表から生成し、MainActivity が読む形にできる。
 - [ ] **`DeadObjectException` の後の呼び直しは冪等な命令が前提** — 2026-09-27（W1-1）。`PlatformConnection.invoke` は `:seed_platform` の死を
   知ると client を閉じて接続し直す（待ってよい呼び出し元は同じ命令をもう一度送る）。死んだ瞬間に処理済みだった命令は 2 回走りうる。
   W1-3 の命令（予約・取り消し・停止）は同じ ID で置き換える冪等な形にする。
 - [ ] **`DebugPlatformReceiver` を権限で守っていない（デバッグ版だけ）** — 2026-09-27（W1-1）。exported=true・permission なしなので、
   デバッグ版の APK が入った端末では他のアプリからも ping・試験イベントを送れる（害は小さい）。androidx の `ProfileInstallReceiver` と同じく
   `android:permission="android.permission.DUMP"`（adb のシェルは持つ）で守れる見込みだが、実機で adb から届くことを確かめてから変える。
-- [ ] **W1-2 機能の opt-in（`android.features`・`deep_links`・`system_bars`・`app_category`）** — 2026-09-27。SeedAndroid → Gradle →
-  生成したマニフェストの断片。Play の要件チェック（`AndroidRequirementChecks`・`play_requirements.json`）に権限と前景サービスの申告の注意を足す。
-  断片の差し込み方（AGP の variant API か library module か）は W1-0 で試していないので、ここで確かめる。
+- [x] **W1-2 機能の opt-in（`android.features`・`deep_links`・`system_bars`・`app_category`）** — 2026-09-27 記載 / 同日実装（実機の確認は下の項目）。
+  エディタのモデル（`AndroidAppSettings`・`AndroidDeepLinkSetting`・`AndroidSystemBarsSetting`・`AndroidAppCategorySetting`）とプロジェクト設定ウィンドウ
+  （「Android のプラットフォーム機能（アプリ向け）」。判断は WPF 非依存の `AndroidPlatformSettingsEditor`）、機能の表 `runtime/android/platform_features.json`、
+  SeedAndroid の断片の生成（`editor/src/Android/Platform/`。APK の工程の Gradle の前に `app/src/seedFeatures/` へ。空でも必ず書く・追跡しない・
+  中身の指紋で APK を作り直す）、Gradle の `androidComponents.onVariants`（`addStaticManifestFile`・`addStaticSourceDirectory`。E-04）と
+  `seed.appCategory`、`SystemBarsController.java`、Play の要件チェック（`AndroidPlatformFeatureChecks`・`permission_policies`）。
+  単体テスト（`AndroidPipelineTests` の `PlatformFeatureTests`・`PlatformSettingsTests`、`ProjectSystemTests`）と Wake or Pay の実ビルドの aapt2 で確認。
+  正典は docs/android.md §25.10。
+- [ ] **W1-2 の実機の確認（システムバーを出したままの起動・安全領域・生成した権限）** — 2026-09-27（W1-2）。実装した日は Pixel 6a が USB に無かった。
+  Wake or Pay（`system_bars: "visible"`・`app_category: "productivity"`・`features: ["alarm", "notifications"]`）を `SeedAndroid run --scene scenes/PlatformSmoke.scene`
+  で起動し、ステータスバーとナビゲーションバーが出たままか（`dumpsys window` の InsetsSource の visible か screenshot）、logcat の
+  `[SEED SCREEN] Java 報告` の insets にバーの分が入るか（ScreenReporter が `systemBars()` を足す。コードを読んだだけ）、`システムバー: 出したまま` の
+  起動ログ、`dumpsys package com.wakeorpay.seed` の権限（USE_EXACT_ALARM は許可済み・POST_NOTIFICATIONS は未許可のはず）を見る。
+  上の W1-1 の実機の確認（§25.7）と一緒に行う。結果を android.md §25.10.6 と roadmap §2.10 へ。
+- [ ] **プロジェクト設定ウィンドウの「Android のプラットフォーム機能」小節の目視** — 2026-09-27（W1-2）。WPF の画面はエージェントが見られないので、
+  チェックボックス・コンボ・ディープリンクの行（追加・削除・`deep_links` の機能を切るとたたまれる）・注意と誤りの行の見た目と、保存で止まる動きを
+  利用者が確かめる。判断と値の出し入れは単体テスト済み。関連: `editor/src/ProjectSettings/ProjectSettingsWindow.AndroidPlatform.cs`。
+- [ ] **前景サービスの種類が `<service>` に宣言されているかの要件チェック（W1-4 で）** — 2026-09-27（W1-2 から持ち越し）。roadmap §2.5 は
+  「前景サービスの種類が宣言されているか」も挙げていたが、W1-2 の時点ではサービスが無いので、`FOREGROUND_SERVICE_MEDIA_PLAYBACK` の Play Console の
+  申告の注意だけを足した。`RingService` を機能の表に足す W1-4 で、配布物のマニフェスト（`aapt2 dump xmltree`）の `android:foregroundServiceType` と
+  `FOREGROUND_SERVICE_<種類>` の権限の組を確かめる項目を `AndroidPlatformFeatureChecks` に足す。
+- [ ] **システムバーを出したままのときの文字色（明暗）を選べない** — 2026-09-27（W1-2）。テーマの既定のまま（暗い AppCompat のテーマなので白い文字の見込み。
+  推論・実機で未確認）。明るい画面のアプリではステータスバーの時刻・電池が見えにくい。W1-6 の `Window` の API（と必要ならプロジェクト設定）で
+  `WindowInsetsControllerCompat.setAppearanceLightStatusBars` を選べるようにする。
 - [ ] **W1-3 目覚ましの予約（setAlarmClock・予約の控え・再起動／時刻・タイムゾーン／更新／権限の変化で張り直す・音源の書き出し）** — 2026-09-27。
   W1-0: `BootReceiver` は強制停止からの復帰（Android 15+ は停止状態から出たときに `BOOT_COMPLETED`。実機では `LOCKED_BOOT_COMPLETED` も）も兼ねる。
   張り直しは必ず `setAlarmClock`（`BOOT_COMPLETED` から直接鳴らさない）。

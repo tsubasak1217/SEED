@@ -75,6 +75,10 @@
     <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
       <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
     </Compile>
+    <!-- "android" 節のディープリンク 1 件（W1-2。AndroidAppSettings が参照する。WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\AndroidDeepLinkSetting.cs">
+      <Link>Linked\ProjectSettings\AndroidDeepLinkSetting.cs</Link>
+    </Compile>
     <!-- 描画品質の選び方（"render_quality" 節）とプリセット一覧（段階D-2。どちらも WPF 非依存） -->
     <Compile Include="..\..\src\ProjectSettings\RenderQualitySettings.cs">
       <Link>Linked\ProjectSettings\RenderQualitySettings.cs</Link>

@@ -13,6 +13,9 @@
 //
 //  【アイコン（段階D）】icon（元の PNG。アセットルートからの相対パスか絶対パス）と icon_background（#RRGGBB）。
 //  ビルドのときに各密度の mipmap とアダプティブアイコンを生成する（editor/src/Android/Icons/。検査は LauncherIconSettings）。
+//
+//  【アプリ向けのプラットフォーム機能（W1-2）】features・system_bars・app_category・deep_links は下に続く別の小節
+//  （ProjectSettingsWindow.AndroidPlatform.cs）。値の収集と保存前の検査はここから呼ぶ。
 // ============================================================
 
 using System.Collections.Generic;
@@ -133,6 +136,10 @@ public partial class ProjectSettingsWindow
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(AndroidLabelColumnWidth, AndroidRowBottomMargin, 0, 0),
         });
+
+        // アプリ向けのプラットフォーム機能（features・system_bars・app_category・deep_links。W1-2。
+        // 中身は ProjectSettingsWindow.AndroidPlatform.cs）
+        panel.Children.Add(BuildAndroidPlatformPanel());
         return panel;
     }
 
@@ -164,6 +171,8 @@ public partial class ProjectSettingsWindow
         {
             android.VersionCode = code;
         }
+        // アプリ向けのプラットフォーム機能（W1-2。小節を表示していなければ値を変えない）
+        CollectAndroidPlatformSettings(android);
         _data.Android = android.IsEmpty ? null : android;
     }
 
@@ -182,6 +191,8 @@ public partial class ProjectSettingsWindow
         errors.AddRange(AndroidAppIdentityResolver.Validate(_data.Android));
         // アイコン（ビルドと同じ検査。相対パスはアセットルートから）
         errors.AddRange(LauncherIconSettings.Validate(_data.Android, _assetsPath));
+        // プラットフォーム機能（W1-2。ディープリンクの形などビルドと同じ検査）
+        errors.AddRange(ValidateAndroidPlatformInputs());
         return errors;
     }
 

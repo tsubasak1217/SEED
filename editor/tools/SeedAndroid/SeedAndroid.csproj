@@ -56,6 +56,16 @@
     <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
       <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
     </Compile>
+    <!-- アプリのプラットフォーム機能の設定（W1-2。ディープリンク 1 件・システムバー・アプリの分類の値の表） -->
+    <Compile Include="..\..\src\ProjectSettings\AndroidDeepLinkSetting.cs">
+      <Link>Linked\ProjectSettings\AndroidDeepLinkSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidSystemBarsSetting.cs">
+      <Link>Linked\ProjectSettings\AndroidSystemBarsSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidAppCategorySetting.cs">
+      <Link>Linked\ProjectSettings\AndroidAppCategorySetting.cs</Link>
+    </Compile>
     <!-- プロジェクトフォルダ → アセットルート・プロジェクト名（SeedPak と同じ規則） -->
     <Compile Include="..\..\src\Project\EditorVersion.cs">
       <Link>Linked\Project\EditorVersion.cs</Link>
@@ -102,6 +112,14 @@
     <Compile Include="..\..\src\Packaging\Pak\PakEntryContent.cs">
       <Link>Linked\Packaging\Pak\PakEntryContent.cs</Link>
     </Compile>
+  </ItemGroup>
+
+  <!-- アプリのプラットフォーム機能の表（W1-2。エディタ本体と同じ論理名で埋め込む。AndroidPlatformFeatureCatalog.ResourceName） -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\..\runtime\android\platform_features.json">
+      <LogicalName>SEEDEditor.platform_features.json</LogicalName>
+      <Link>Linked\Android\Platform\platform_features.json</Link>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

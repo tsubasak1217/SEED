@@ -148,6 +148,15 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- アプリのプラットフォーム機能の表（W1-2。Android の android.features → マニフェストの断片）。                 -->
+  <!-- プロジェクト設定の機能のチェックボックスと Android のビルドが同じ表を使う（AndroidPlatformFeatureCatalog.ResourceName）。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\runtime\android\platform_features.json">
+      <LogicalName>SEEDEditor.platform_features.json</LogicalName>
+      <Link>Android\Platform\platform_features.json</Link>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- スクリプト API リファレンス（AI インライン補完の正典）を出力ディレクトリへコピーし、 -->
   <!-- 実行時に ScriptApiReference が確実に読み込めるようにする。                          -->
   <ItemGroup>

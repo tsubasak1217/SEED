@@ -278,7 +278,8 @@ Android の一連の手順（段階B までは `runtime/android/build_and_run.ps
 
 ```
 editor/src/Android/
-  Common/     AndroidRuntimeContract（端末側のコード・Gradle と一致させる名前と値）・AndroidAbi（ABI の表と端末の abilist からの選び方）
+  Common/     AndroidRuntimeContract（端末側のコード・Gradle と一致させる名前と値）・AndroidAbi（ABI の表と端末の abilist からの選び方）・
+              GeneratedFileSync（生成物を置き場へ同期する共通処理。中身の違うファイルだけ書き・古いものを消す。アイコンと機能の断片で共有）
   Toolchain/  AndroidToolchain（SDK / NDK / adb / emulator / JDK / cargo / dotnet の場所。§3）・AndroidEnginePaths（リポジトリの置き場）
   Processes/  ChildProcessRunner（子プロセスの起動・行単位の出力・標準入力・中断で子孫ごと終了）・MixedEncodingLineReader（UTF-8 と ANSI の混在）・
               DetachedProcess（切り離した起動。CreateProcessW・ハンドルを継承させない。エミュレータ用）・WindowsCommandLine（引数の引用）
@@ -294,8 +295,11 @@ editor/src/Android/
   Gradle/     GradleInvocation（gradlew のタスク〈debug / release・APK / AAB〉と -P／環境変数の組み立て。パスワードは必ず環境変数）
   Signing/    AndroidSigningResolver（配布用の鍵の決め方）・AndroidSigningSecrets（パスワード。伏せ字）・AndroidKeystoreTool（keytool で作る・開けるか確かめる）（段階D・§24）
   Icons/      PngDecoder / PngEncoder / ImageResampler（.NET 標準だけの PNG と縮小）・LauncherIconGenerator / LauncherIconStager（アイコンの生成と置き場）（段階D・§24.7）
+  Platform/   AndroidPlatformFeatureCatalog（機能の表 platform_features.json）・AndroidPlatformFeatureResolver（設定 → 機能）・AndroidDeepLinkRules・
+              AndroidPlatformManifestWriter（マニフェストの断片と values）・AndroidPlatformFeatureStager（置き場）・AndroidPlatformFeatureBuildInput（W1-2・§25.10）
   Release/    PlayRequirements（要件の表）・AndroidRequirementChecks（ビルドの前の判定）・AndroidArtifactInspector / AndroidArtifactChecks
-              （配布物の読み直しと判定）・ElfAlignmentReader・AndroidReleaseHistory（versionCode の記録）・AndroidRequirementsCheckRunner（check）（段階D・§24.8）
+              （配布物の読み直しと判定）・ElfAlignmentReader・AndroidReleaseHistory（versionCode の記録）・AndroidRequirementsCheckRunner（check）（段階D・§24.8）・
+              AndroidPlatformFeatureChecks（機能と権限・権限ごとの Google Play の方針。W1-2・§25.10）
   Plan/       AndroidBuildPlan（どの工程を飛ばすか。純粋な処理）・AndroidStepFingerprints / AndroidFingerprint（指紋）・AndroidBuildInputs（入力の表）
   State/      AndroidStepStamps（置き場の中身の記録。エンジン側）・AndroidRunState（プロジェクトの実行状態）
   Steps/      工程ごとの実装（NativeBuild・PackageContent・DotnetBundle・GradleBuild・ReleaseCheck・Install・PushAssets・PushScripts・Launch・Logcat）
@@ -3498,6 +3502,8 @@ nativeLibraryDir へ展開させる `packaging.jniLibs.useLegacyPackaging = true
 | `format` / `icon` | AAB か（APK は知らせ）・アイコンを設定したか（未設定は注意） | — |
 | `debuggable` / `permissions` | — | debuggable でない（不合格）・INTERNET が無い（あれば注意） |
 | `page_size_elf` / `page_size_zip` | — | すべての .so の LOAD の p_align ≥ 0x4000（zip の中の先頭だけを読む `ElfAlignmentReader`）・APK は `zipalign -c -P 16 4`（AAB は Google Play が整列する） |
+| `platform_features`（W1-2・§25.10） | `android.features` から決まる権限の一覧（知らない機能は注意） | 配布物の権限と比べる: features の機能の権限が無い＝不合格（機能が端末で動かない）・features に無い機能の権限がある＝注意（機能の表のどれかの機能の権限だけを見る。表に無い権限〈INTERNET・androidx の権限等〉は見ない。依存ライブラリが機能と同じ権限を足した場合は区別できないので注意どまり） |
+| `play_policy/<権限>`（W1-2） | features から決まる権限のうち、表の `permission_policies` にあるものの注意 | 配布物の権限について同じ（USE_EXACT_ALARM＝目覚まし・カレンダーのアプリとしての申告と説明・USE_FULL_SCREEN_INTENT＝通話・目覚ましが中核でないと取り上げられる・FOREGROUND_SERVICE_MEDIA_PLAYBACK＝前景サービスの申告。すべて注意） |
 
 - AAB のマニフェストは proto 形式なので、`base/manifest/AndroidManifest.xml`・`base/resources.pb`・`base/res/` を proto 形式の APK として並べ直し、
   `aapt2 convert --output-format binary` で変えてから `aapt2 dump badging` で読む（bundletool を使わない）。
@@ -3733,7 +3739,9 @@ PC の Play（エディタ埋め込み・単体起動の SEED.exe）では、And
 
 - `PlatformProvider` は main の `AndroidManifest.xml` に常設（`android:process=":seed_platform"`・`exported=false`・
   `android:authorities="${applicationId}.seed_platform"`。アプリ ID ごとに変わるので、Java は `context.getPackageName()` から作る）。
-  機能ごとの出し入れ（`android.features` → マニフェストの断片。E-04）は W1-2。
+  W1-2 で常設のままと決めた（`:seed_platform` は最初の呼び出しまで起動しないので害が無く、`android.features` が空でもスクリプトの
+  `Platform.IsSupported` が実機で一貫する）。権限・受信機・サービス・intent-filter の機能ごとの出し入れは §25.10（`android.features` →
+  マニフェストの断片。E-04）。
 - `DebugPlatformReceiver` は `src/debug/AndroidManifest.xml` だけ（exported=true・intent-filter なし。配布版には入らない）。
 - 権限は足していない（W1-1 は ContentProvider と Binder だけで、どちらも権限が要らない）。
 
@@ -3776,9 +3784,150 @@ MSYS_NO_PATHCONV=1 "$ADB" shell am broadcast -n $APP/com.seedengine.runtime.plat
 - 実機での確認（§25.7）が残っている。
 - 記録（EventJournal）はメモリの中だけで、取り出した時点で既読にする（取り出した直後にメインプロセスが死ぬと、そのイベントはスクリプトへ届かない）。
   永続化（端末保護ストレージ）は W1-3、エンジンの受け取りの確認（ack）と前面へ戻ったとき（onResume）の未読の取り直しは W1-4 で決める。
-- 最初の呼び出しは `connecting` で失敗する（アプリの API の使い勝手）。W1-2 の `android.features` に機能が書かれたプロジェクトでは、起動時に背面で接続する
-  （起動の直後から同期で呼べる）形を検討する。
+- 最初の呼び出しは `connecting` で失敗する（アプリの API の使い勝手）。`android.features` に機能が書かれたプロジェクトでは、起動時に背面で接続する
+  （起動の直後から同期で呼べる）形を検討する（W1-2 では手を付けていない。機能の有無を APK へ焼き込む仕組み〈§25.10 の values〉はできたので、
+  W1-3 で `seed_platform.xml` に「起動時に接続する」bool を足せば MainActivity が読める）。
 - `DeadObjectException` の後の呼び直しは「命令が届いていない」前提（死んだ瞬間に処理済みだった命令は 2 回走りうる）。W1-3 の命令（予約など）は同じ ID で
   置き換える冪等な形にする。
 - `DebugPlatformReceiver` は権限で守っていない（デバッグ版だけ。他のアプリから ping・試験イベントを送れる）。
+
+### 25.10 機能の opt-in と生成されるマニフェストの断片（W1-2・2026-09-27）
+
+プロジェクト設定 `android.features` に書いた機能だけが、権限（と W1-3・W1-4 で足す受信機・サービス）として APK のマニフェストに入る（W1-P4。
+使わない機能の権限は Google Play の審査の対象になるため入れない）。あわせて `deep_links`・`system_bars`・`app_category` を足した。
+キーと語彙は [project_system.md](project_system.md) の `android` 節、設計は [app_platform_roadmap.md](app_platform_roadmap.md) §2.5・E-04。
+何も書かないプロジェクト（ゲーム）は従来どおり（機能の権限なし・システムバーを隠す・`appCategory="game"`）。
+
+#### 25.10.1 設定 → APK
+
+| キー | 反映先 | 仕組み |
+|---|---|---|
+| `features` | 生成するマニフェストの断片の `<uses-permission>`（と `<application>` の下の部品） | 機能 → 権限・部品の対応は機能の表 `runtime/android/platform_features.json` の 1 か所（データ。W1-3・W1-4 は行を足すだけ）。表はエディタと SeedAndroid に埋め込みリソースとして入る（`Platform/AndroidPlatformFeatureCatalog`） |
+| `deep_links` | 断片の `<activity android:name="com.seedengine.runtime.MainActivity">` の intent-filter（1 件 1 つ） | `features` に `deep_links` があるときだけ。1 つの intent-filter の中の `<data>` は掛け合わされる（developer.android.com「`<data>`」）ので件ごとに分ける。`autoVerify` は `auto_verify` が true のときだけ |
+| `system_bars` | 断片と同じ置き場の `res/values/seed_platform.xml` の `<bool name="seed_system_bars_visible">` | main の `res/values/seed_platform_defaults.xml`（false）を上書きする。`MainActivity` → `SystemBarsController` が起動時に読む（§25.10.4） |
+| `app_category` | `android:appCategory` | SeedAndroid が `-Pseed.appCategory=<値>`（既定の `game` は渡さない）→ `build.gradle.kts` の語彙の表 `appCategoryValues` で確かめ → `manifestPlaceholders["seedAppCategory"]` → main のマニフェストの `android:appCategory="${seedAppCategory}"` |
+
+機能の表（W1-2 の時点。部品の宣言はまだ無い。存在しないクラスを宣言すると起動時に落ちるので、W1-3・W1-4 でクラスと同時に足す。単体テストが
+宣言した `com.seedengine.runtime.*` のクラスの Java のソースの有無を確かめる）:
+
+| 機能 | 権限 |
+|---|---|
+| `alarm` | `USE_EXACT_ALARM`、`SCHEDULE_EXACT_ALARM`（`maxSdkVersion="32"`）、`RECEIVE_BOOT_COMPLETED`、`WAKE_LOCK`、`VIBRATE`、`USE_FULL_SCREEN_INTENT`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`POST_NOTIFICATIONS` |
+| `notifications` | `POST_NOTIFICATIONS` |
+| `deep_links` | （なし。intent-filter だけ） |
+
+- `PlatformProvider` は機能によらず main に常設（§25.6）。
+- 表に無い名前はビルドで注意を出して無視する（保存では消さない）。ディープリンクの形の誤り（scheme が無い・大文字・`path_prefix` が `/` で始まらない・
+  `path_prefix` があるのに host が無い〈host が無いと Android は path を照合しない〉等）はビルドを何もしないうちに止め、プロジェクト設定ウィンドウの
+  保存も止める（同じ関数 `AndroidPlatformFeatureResolver` / `AndroidDeepLinkRules`）。
+
+#### 25.10.2 断片の差し込み方（E-04 の結論。AGP 9.1.0）
+
+`app/build.gradle.kts` の `androidComponents { onVariants { … } }` で、variant ごとに次の 2 つを足す:
+
+```kotlin
+androidComponents {
+    onVariants { variant ->
+        if (file("src/seedFeatures/AndroidManifest.xml").isFile) {
+            variant.sources.manifests.addStaticManifestFile("src/seedFeatures/AndroidManifest.xml")
+        }
+        variant.sources.res?.addStaticSourceDirectory("src/seedFeatures/res")
+    }
+}
+```
+
+- **API は実物で確かめた**: Gradle のキャッシュの `gradle-api-9.1.0.jar` を `javap` で読み、`Sources.getManifests(): ManifestFiles`・
+  `ManifestFiles.addStaticManifestFile(String)`・`Sources.getRes(): SourceDirectories.Layered`・`SourceDirectories.addStaticSourceDirectory(String)` を確認。
+  実装（`gradle-9.1.0.jar` の `ManifestFilesImpl`・`SourcesImpl.manifestOverlayFiles`・`LayeredSourceDirectoriesImpl`）も `javap -c` で読み、
+  足したマニフェストは build type の `src/debug/AndroidManifest.xml` の後ろに並ぶ上書き（overlay）のマニフェストになること、足した res は
+  `"variant"` という名前の独立した層として末尾に入ることを確かめた（バイトコードを読んだだけ。優先度の意味づけは下の実ビルドで確かめた範囲）。
+- **実ビルドで確かめた**（2026-09-27、手書きの断片で `gradlew assembleDebug`・aapt2）: 権限が入り、断片の `MainActivity` の intent-filter が
+  main の `MainActivity` と 1 つの `<activity>` に合流した。main の既定値（false）と同じ名前の bool が `true` に上書きされた（Duplicate にならない）。
+  **`sourceSets.main` の `res.srcDir` に足すと main と同じ層になり `Duplicate resources` でビルドが止まった**（(b) を退けた実験）。
+  無いマニフェストを `addStaticManifestFile` で足しても AGP 9.1.0 のマージは通った（それでも版の違いに備えて、あるときだけ足す）。
+  置き場が無い（手で gradlew を叩いた）ときもビルドは通り、機能なし・`false`・`game` になった。
+- **退けた候補**: (b) 生成先を独立したソースセットにする … main のソースセットはマニフェストを 1 つしか持てず、res を main に足すと上の
+  Duplicate になる。build type のソースセット（debug / release）へ足す手もあるが、debug は既に `src/debug/AndroidManifest.xml` を持つ
+  （試していない）。独自のソースセットは product flavor にしないと variant に入らず、flavor にするとタスク名と出力の場所
+  （`assembleDebug`・`app-debug.apk`）が変わって中核が壊れる（推論。試していない）。(c) ライブラリモジュール … モジュール・名前空間・
+  `settings.gradle.kts` の include が要り、`android.nonTransitiveRClass=true` ではリソースがライブラリの R になる。ディープリンクのように
+  プロジェクトごとに値が違うので結局生成が要る（推論。試していない）。
+
+#### 25.10.3 ビルドの流れ
+
+```
+project_settings.json の android 節（features / deep_links / system_bars / app_category）
+  └ 準備: Platform/AndroidPlatformFeatureBuildInput.Resolve（埋め込みの機能の表を読む → AndroidPlatformFeatureResolver）
+      ├ 誤り（ディープリンクの形等）→ 何もビルドしないうちに止める（AndroidFailureKind.InvalidRequest）。表が読めない → Build
+      ├ 注意（知らない機能・値、一覧と機能の食い違い等）→ ログの警告
+      └ AndroidPlatformManifestWriter.Render（UTF-8・BOM なし・LF。同じ設定からは同じバイト列）→ 中身の SHA-256 を APK の工程の指紋へ
+  └ APK の工程（Steps/GradleBuildStep。Gradle の前）
+      ├ AndroidPlatformFeatureStager.Stage → runtime/android/app/src/seedFeatures/{AndroidManifest.xml, res/values/seed_platform.xml}
+      │   （機能が空でも中身の無い <manifest/> と false を必ず書く＝前のプロジェクトの権限を残さない。中身が同じファイルは書かない）
+      └ gradlew assembleDebug … -Pseed.appCategory=productivity（既定の game は渡さない）
+          └ build.gradle.kts: androidComponents.onVariants で断片を足す・manifestPlaceholders["seedAppCategory"]
+```
+
+- 生成物の置き場は `.gitignore`（`app/src/seedFeatures/`）で追跡しない（`git status` に出ないことを確かめた）。
+- 機能を変えると断片の中身の指紋が変わり、APK の作り直しとインストールが走る。変えなければ飛ばす（2 回目のビルドで 4 工程とも「変更なし」を確かめた）。
+  置き場を消した場合も作り直す。
+- 手で `gradlew` を叩いたときは、最後に SeedAndroid が置いた断片がそのまま使われる（jniLibs・assets・seedDotnet と同じく「置き場の中身」を使う）。
+  一度も置いていなければ機能なし。
+- Google Play の要件チェック（配布用のビルドと `check`）は、ビルドの前に features から決まる権限を、ビルドの後に配布物の権限を見る（§24.8 の
+  `platform_features`・`play_policy/<権限>`。方針の文言は `play_requirements.json` の `permission_policies`）。
+
+#### 25.10.4 システムバー（`SystemBarsController.java`）
+
+- `hidden`（既定）: 従来どおり `WindowInsetsControllerCompat.hide(systemBars())`（端からのスワイプで一時的に出せる）。フォーカスが戻ったら隠し直す。
+- `visible`: テーマ（`Theme.SeedRuntime`）の `android:windowFullscreen` が窓に付ける `FLAG_FULLSCREEN` を外してから `show(systemBars())`。
+  フォーカスが戻っても何もしない。起動ログに `システムバー: 出したまま（system_bars=visible）` が出る。
+- 安全領域: 描画面はエッジツーエッジ（targetSdk 35 以降の強制）のままバーの裏まで広がる。`ScreenReporter` は見えているバー
+  （`WindowInsetsCompat.Type.systemBars()`）と切り欠きの和を安全領域として `nativeOnScreenChanged` で渡し、`onApplyWindowInsets` のたびに
+  報告し直すので、バーが見えている間はステータスバーとナビゲーションバーの分が `Screen.SafeArea` から外れる（**コードを読んで確かめた。
+  実機では未確認**）。UI を安全領域へ自動で寄せる仕組みは無い（既存の backlog「安全領域の自動反映」）ので、スクリプト・UI 側で避ける。
+- 実行中にスクリプトから切り替える API（`Window.SetSystemBarsVisible`）とバーの文字色（明暗）の指定は W1-6。
+
+#### 25.10.5 確かめ方
+
+```bash
+# Git Bash。APK は SeedAndroid build の出力（runtime/android/app/build/outputs/apk/debug/app-debug.apk）
+AAPT2="$LOCALAPPDATA/Android/Sdk/build-tools/36.0.0/aapt2.exe"
+APK=runtime/android/app/build/outputs/apk/debug/app-debug.apk
+dotnet run --project editor/tools/SeedAndroid -- build --project 'D:\SEED_projects\WakeOrPay' --abi arm64-v8a
+cat runtime/android/app/src/seedFeatures/AndroidManifest.xml            # 生成した断片
+"$AAPT2" dump badging "$APK" | grep uses-permission                        # 権限（maxSdkVersion も出る）
+"$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" | grep -E "appCategory|intent-filter|android:scheme|android:host|PlatformProvider"
+"$AAPT2" dump resources "$APK" | grep -A1 bool/seed_system_bars_visible   # () true / () false
+# Google Play の要件チェック（ビルドなし。--artifact で任意の APK / AAB を読ませられる）
+dotnet run --project editor/tools/SeedAndroid -- check --project 'D:\SEED_projects\WakeOrPay' --format apk --artifact <APK>
+```
+
+`appCategory` は aapt2 では数値で出る（attrs_manifest.xml の enum: game=0・audio=1・video=2・image=3・social=4・news=5・maps=6・productivity=7・accessibility=8）。
+
+#### 25.10.6 確認結果（2026-09-27）
+
+- 単体テスト: `AndroidPipelineTests` 161 件（新規 `PlatformFeatureTests` 15・`PlatformSettingsTests` 8 を含む）・`ProjectSystemTests` 64 件（新規 1）がすべて通った。
+  エディタ（`SEEDEditor.csproj`）・SeedAndroid・`MigrationTests`・`AndroidRunUiTests` のビルドはエラー 0。
+- Wake or Pay（`features: ["alarm", "notifications", "deep_links"]`・`deep_links: [{ "scheme": "wakeorpay", "host": "alarm" }]`・`system_bars: "visible"`・
+  `app_category: "productivity"`）を `SeedAndroid build --abi arm64-v8a`: aapt2 で権限 9（`SCHEDULE_EXACT_ALARM` は `maxSdkVersion='32'`）＋ デバッグ版の
+  `INTERNET` ＋ androidx の `…DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`、`appCategory=7`、`MainActivity` に VIEW・DEFAULT・BROWSABLE・
+  `scheme="wakeorpay" host="alarm"` の intent-filter と従来の MAIN・LAUNCHER、`PlatformProvider`（`:seed_platform`）、`bool/seed_system_bars_visible = true`。
+- 同じプロジェクトの写しで `features: []`（`deep_links` は残し、`system_bars`・`app_category` は消した）: 権限は `INTERNET` と androidx の 1 つだけ、
+  `appCategory=0`（game）、VIEW の intent-filter なし（ログに「deep_links に 1 件ありますが、features に deep_links が無いため intent-filter を入れません」）、
+  `PlatformProvider` は残る、`bool = false`、断片は中身の無い `<manifest … />`。
+- `check --artifact`: 機能ありの APK では `[合格] プラットフォーム機能の権限`・申告の `[注意]` 3 件（USE_EXACT_ALARM・USE_FULL_SCREEN_INTENT・mediaPlayback）。
+  機能なしの APK を alarm の設定で読ませると `[不合格] … の権限が配布物にありません`。
+- 配布用（release の APK / AAB）のビルドでは確かめていない（この PC のプロジェクトにアップロード鍵が無い）。Gradle の設定の段階のログで、
+  release の variant にも断片が足されること（`SEED: release: platform features fragment=src/seedFeatures/AndroidManifest.xml`）までは見た。
+- **実機（Pixel 6a）は未実施**（`adb devices` に端末が無かった）。システムバーを出したまま起動したときの見た目・安全領域の値と、§25.7 の W1-1 の確認が残っている。
+- プロジェクト設定ウィンドウの新しい小節は、エージェントが WPF を目視できないため見た目を確かめていない（判断と値の出し入れは単体テスト）。
+
+#### 25.10.7 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機での確認（上）とエディタの画面の目視。
+- 受信機・サービス・`activity-alias PlatformEntry` の宣言は W1-3・W1-4 で機能の表に行を足す（クラスと同時に）。前景サービスの種類が
+  `<service android:foregroundServiceType>` に宣言されているかの要件チェックは、`RingService` を足す W1-4 で配布物のマニフェスト（`aapt2 dump xmltree`）から見る。
+- 手で `gradlew` を叩くと、最後に置いた断片（別のプロジェクトのものでも）がそのまま入る（上の 25.10.3）。
+- システムバーを出したままのときのバーの文字色（明暗）は選べない（テーマの既定のまま。暗い AppCompat のテーマなので白い文字になる見込み＝推論・
+  実機で未確認）。明るい画面のアプリでは見えにくい（W1-6）。
 

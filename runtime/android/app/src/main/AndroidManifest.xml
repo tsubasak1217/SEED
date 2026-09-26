@@ -14,11 +14,14 @@
   ・android:enableOnBackInvokedCallback="false" … targetSdk 36（Android 16）で既定になった予測型の「戻る」を使わない。
     使うと Android 16 以降の端末で KEYCODE_BACK がアプリへ届かなくなり、戻るキー → Escape（スクリプトの
     Input.GetKeyDown(KeyCode.Escape)。docs/android.md §14.5）が効かなくなるため（公式の一時的な回避。§24）。
-  ・android:appCategory="game" … ゲームとして分類する。Android 16 の「大画面で向き・サイズ変更の制限を無視する」変更の対象外にもなる。
+  ・android:appCategory="${seedAppCategory}" … アプリの分類。プロジェクト設定の android.app_category からビルド時に決まる
+    （app/build.gradle.kts の語彙の表。無ければ game＝従来の固定値。W1-2・docs/android.md §25.10）。game は Android 16 の
+    「大画面で向き・サイズ変更の制限を無視する」変更の対象外にもなる（それ以外の分類では大画面で制限が無視される）。
   ・PlatformProvider（android:process=":seed_platform"）… アプリのプラットフォーム機能（SEED.Platform）の Java だけの別プロセスの窓口
-    （W1-1。docs/android.md §25）。W1-1 では全プロジェクトに常設で入れる: :seed_platform のプロセスは最初の接続（スクリプトが
-    SEED.Platform を初めて呼んだとき）まで起動しないので、使わないゲームには影響しない。権限・サービス・受信機を機能ごとに
-    出し入れする仕組み（android.features → マニフェストの断片。E-04）は W1-2 で作り、そのときこの宣言も断片へ移すか決める。
+    （W1-1。docs/android.md §25）。W1-2 の決定で全プロジェクトに常設のまま: :seed_platform のプロセスは最初の接続（スクリプトが
+    SEED.Platform を初めて呼んだとき）まで起動しないので、使わないゲームには影響せず、android.features が空でもスクリプトの
+    Platform.IsSupported が実機で一貫する。権限・受信機・サービス・MainActivity の intent-filter は機能ごとの断片
+    （android.features → SeedAndroid が生成する src/seedFeatures/AndroidManifest.xml。E-04）で出し入れする。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -30,7 +33,7 @@
     <application
         android:allowBackup="false"
         android:allowNativeHeapPointerTagging="false"
-        android:appCategory="game"
+        android:appCategory="${seedAppCategory}"
         android:enableOnBackInvokedCallback="false"
         android:icon="${seedAppIcon}"
         android:label="${seedAppLabel}"

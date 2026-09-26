@@ -2,11 +2,11 @@
 //  AndroidRunPipeline.cs — Android のビルド・配置・起動の本体（段階C。従来の runtime/android/build_and_run.ps1 の中身）
 //
 //  【流れ】
-//    準備: 指定の検査 → プロジェクト（アセットルート・画面の向き・アプリの識別情報）→ 起動するシーン
+//    準備: 指定の検査 → プロジェクト（アセットルート・画面の向き・アプリの識別情報・プラットフォーム機能〈W1-2〉）→ 起動するシーン
 //          （シーンマネージャに未登録なら pak の収録の起点に足す。段階C-4）→
 //          端末（「自動」等なら要ればエミュレータを起動して待つ。段階C-3）と ABI →
 //          各工程の今の指紋と前回の記録 → 実行計画（Plan/AndroidBuildPlan.cs。飛ばす工程と理由）
-//    工程: libSEED.so（cargo ndk）→ pak とスクリプト（SeedPak）→ 同梱 .NET → APK / AAB（Gradle。アイコンの生成も）→
+//    工程: libSEED.so（cargo ndk）→ pak とスクリプト（SeedPak）→ 同梱 .NET → APK / AAB（Gradle。アイコンと機能の断片の生成も）→
 //          （配布用だけ）Google Play の要件の確認 → インストール → 開発用の転送（アセット・スクリプトの DLL）→ 起動 → logcat
 //          （Steps/ の各クラス）
 //    配布用（release。段階D）: 準備で署名の鍵を決めて keytool で開けるかを確かめ（無ければ・開けなければビルドを始めない）、
@@ -35,6 +35,7 @@ using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Ipc;
 using SEEDEditor.Android.Plan;
+using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Processes;
 using SEEDEditor.Android.Project;
 using SEEDEditor.Android.Release;
@@ -162,6 +163,9 @@ public sealed class AndroidRunPipeline
         // ── ランチャーのアイコン（APK を作るときだけ。設定の誤りは何もしないうちに弾く。段階D）──
         var launcherIcon = buildScope ? ResolveLauncherIcon(project, log) : null;
 
+        // ── プラットフォーム機能（APK を作るときだけ。android.features 等 → マニフェストの断片。誤りは何もしないうちに弾く。W1-2）──
+        var platformFeatures = buildScope ? ResolvePlatformFeatures(project, log) : AndroidPlatformFeatureSet.Empty;
+
         // ── 配布用（release）の署名と、ビルドの前の Google Play の要件の判定（段階D）──
         var release = request.Variant == AndroidBuildVariant.Release
             ? await PrepareReleaseAsync(request, project, log, cancellationToken).ConfigureAwait(false)
@@ -195,6 +199,8 @@ public sealed class AndroidRunPipeline
             IpcDevicePort = ipcDevicePort,
             IpcToken = ipcDevicePort is null ? null : request.IpcToken ?? AndroidIpcToken.Create(),
             LauncherIcon = launcherIcon,
+            PlatformFeatures = platformFeatures,
+            PlatformFeatureFiles = AndroidPlatformManifestWriter.Render(platformFeatures),
             Signing = release?.Signing,
             SigningCertificate = release?.Certificate,
             PlayRequirements = release?.Requirements,
@@ -210,8 +216,8 @@ public sealed class AndroidRunPipeline
             }
             context.CurrentFingerprints[AndroidStepKeys.PackageContent] = AndroidStepFingerprints.PackageContent(_engine, project, pakExtraScenes);
             context.CurrentFingerprints[AndroidStepKeys.DotnetBundle] = AndroidStepFingerprints.DotnetBundle(_engine, abis);
-            context.CurrentFingerprints[context.GradleKey] =
-                AndroidStepFingerprints.Gradle(_engine, GradleBuildStep.Parameters(context, ndkPath), launcherIcon);
+            context.CurrentFingerprints[context.GradleKey] = AndroidStepFingerprints.Gradle(
+                _engine, GradleBuildStep.Parameters(context, ndkPath), launcherIcon, context.PlatformFeatureFiles);
         }
 
         // ── ビルドの前の要件の判定（ABI が決まってから。配布用だけ）──
@@ -320,6 +326,19 @@ public sealed class AndroidRunPipeline
         return icon;
     }
 
+    /// <summary>
+    /// プラットフォーム機能を決めてログへ出す（W1-2。表が読めない・設定に誤りがあれば例外。注意はログの警告）。
+    /// 決まった機能は APK の工程が app/src/seedFeatures/ へマニフェストの断片として置く（機能が空でも置く）。
+    /// </summary>
+    private static AndroidPlatformFeatureSet ResolvePlatformFeatures(AndroidProjectInfo? project, AndroidPhaseLog log)
+    {
+        var features = AndroidPlatformFeatureBuildInput.Resolve(project);
+        foreach (var warning in features.Warnings) log.Warn(warning);
+        log.Info($"プラットフォーム機能（{AndroidAppSettings.SectionKey}.{AndroidAppSettings.FeaturesKey} ほか）: {features.Describe()}" +
+                 (project is { Settings.Found: true } ? $"  ← {project.Settings.SettingsPath}" : "  ← 既定値"));
+        return features;
+    }
+
     /// <summary>配布用ビルドの準備で決まったもの（段階D）。</summary>
     /// <param name="Signing">署名。</param>
     /// <param name="Certificate">鍵の証明書の要点。</param>
@@ -385,6 +404,7 @@ public sealed class AndroidRunPipeline
                 PreviousRelease = history.Last(context.Identity.ApplicationId, context.Request.Format),
                 Signing = release.Signing,
                 LauncherIcon = context.LauncherIcon is not null,
+                PlatformFeatures = context.PlatformFeatures,
             };
             foreach (var item in AndroidRequirementChecks.Evaluate(release.Requirements, facts)) report.Put(item);
         }

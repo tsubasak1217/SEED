@@ -16,7 +16,8 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   <Name>.seedproj      プロジェクトファイル（JSON。この 1 枚が入口）
   assets/              ゲームのアセット。assets:// のルート
     project_settings.json     ゲーム名・開始シーン・シーン一覧・解像度・画面の向き（Android）・Android アプリ情報
-                              （android 節。アプリ ID・名前・版・アイコン〈icon / icon_background。段階D〉。docs/android.md §18・§24.7）・描画品質プリセット
+                              （android 節。アプリ ID・名前・版・アイコン〈icon / icon_background。段階D〉・プラットフォーム機能
+                              〈features / deep_links / system_bars / app_category。W1-2〉。docs/android.md §18・§24.7・§25.10）・描画品質プリセット
                               （render_quality 節。プラットフォームごとのプリセット名とつまみの上書き。docs/android.md §22・
                               docs/rendering_roadmap.md「描画品質プリセット」）・プラグイン有効化
                               （キーの一覧は docs/packaging.md §8.1）
@@ -87,7 +88,7 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
 - 何も設定していなければ節ごと保存しない。ランタイムは起動時に 1 回読み、`[SEED QUALITY] preset=… …` を起動ログへ出す。
 - 往復・空の節・型違い・プリセット一覧の既定は `editor/tests/ProjectSystemTests` で固定。
 
-### project_settings.json の `android` 節（Android アプリ情報。2026-09-25、アイコンは 2026-09-26・段階D）
+### project_settings.json の `android` 節（Android アプリ情報。2026-09-25、アイコンは 2026-09-26・段階D、プラットフォーム機能は 2026-09-27・W1-2）
 
 ```jsonc
 "android": {
@@ -96,7 +97,12 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   "version_code": 3,
   "version_name": "1.0.3",
   "icon": "icons/app_icon.png",
-  "icon_background": "#1B2A3A"
+  "icon_background": "#1B2A3A",
+  // ── アプリ向けのプラットフォーム機能（W1-2。ゲームは書かなくてよい）──
+  "features": ["alarm", "notifications", "deep_links"],
+  "deep_links": [ { "scheme": "https", "host": "example.com", "path_prefix": "/wake", "auto_verify": true } ],
+  "system_bars": "visible",
+  "app_category": "productivity"
 }
 ```
 
@@ -105,10 +111,18 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
 | `application_id` / `app_name` / `version_code` / `version_name` | アプリの識別情報（既定値と検査は docs/android.md §18。型は `editor/src/ProjectSettings/AndroidAppSettings.cs`） |
 | `icon` | ランチャーのアイコンの元の PNG（アセットルートからの相対パス・`assets://…`・絶対パス。512x512 以上の正方形を推奨）。空ならシステムの既定のアイコン。ビルドで各密度の mipmap とアダプティブアイコンを生成する（docs/android.md §24.7） |
 | `icon_background` | アダプティブアイコンの背景色（`#RRGGBB` / `#AARRGGBB`。空なら白） |
+| `features` | アプリのプラットフォーム機能の opt-in（文字列の配列。W1-2）。語彙は機能の表 `runtime/android/platform_features.json`: `alarm`（目覚まし。正確なアラーム・前景サービス・フルスクリーン通知などの権限 9 つ）・`notifications`（`POST_NOTIFICATIONS`）・`deep_links`（下の `deep_links` を intent-filter にする）。書いた機能の権限・部品だけが APK のマニフェストに入る。大文字小文字・前後の空白は問わない。表に無い名前はビルドで注意を出して無視する（保存では消さない）。空・無しなら機能なし（docs/android.md §25.10） |
+| `deep_links` | アプリを開く URL の一覧（オブジェクトの配列。W1-2）。各要素は `scheme`（必須・小文字）・`host`（任意・小文字。`*.example.com` 可。`path_prefix` を書くなら必須）・`path_prefix`（任意・`/` で始まる）・`auto_verify`（真偽。true なら `android:autoVerify="true"`。https / http と host があるときだけ検証される）。`features` に `deep_links` があるときだけ、1 件ごとに MainActivity の intent-filter（VIEW・DEFAULT・BROWSABLE）になる。形の誤りはビルドと保存を止める |
+| `system_bars` | 起動したときのシステムバー（ステータスバー・ナビゲーションバー）。`hidden`（既定。従来のゲームの振る舞い。端からのスワイプで一時的に出せる）/ `visible`（出したまま。アプリ向け。描画はバーの裏まで広がるので UI は `Screen.SafeArea` で避ける）。知らない値は注意を出して `hidden` |
+| `app_category` | マニフェストの `android:appCategory`。`game`（既定。従来の固定値）/ `productivity` / `audio` / `video` / `image` / `social` / `news` / `maps` / `accessibility`（SDK の attrs_manifest.xml の enum と同じ語彙）。知らない値は注意を出して `game` |
 
-- どれも省略でき、何も設定していなければ節ごと保存しない。型の違う値は未設定として読み、知らないキーは保存で失わない。
-- エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」。保存のときにビルドと同じ検査（`AndroidAppIdentityResolver`・
-  `LauncherIconSettings`）を行い、誤りがあれば保存しない。往復は `editor/tests/ProjectSystemTests` で固定。
+- どれも省略でき、何も設定していなければ節ごと保存しない。型の違う値は未設定として読み、知らないキーは保存で失わない
+  （`deep_links` の各要素の知らないキーも保つ。`features` に文字列 1 つを書いたときは 1 要素の配列として読む）。
+- エディタでは「プロジェクト設定 → 解像度設定 → Android アプリ情報（モバイル）」と、その下の「Android のプラットフォーム機能（アプリ向け）」
+  （機能のチェックボックス・システムバーとアプリの分類のコンボ・ディープリンクの一覧。ディープリンクの一覧は `deep_links` の機能を有効にしたときだけ出る）。
+  既定値（`hidden`・`game`）を選ぶとキーごと省く。保存のときにビルドと同じ検査（`AndroidAppIdentityResolver`・`LauncherIconSettings`・
+  `AndroidPlatformFeatureResolver`）を行い、誤りがあれば保存しない。往復は `editor/tests/ProjectSystemTests`、編集の判断は
+  `editor/tests/AndroidPipelineTests`（`PlatformSettingsTests`）で固定。
 
 ---
 

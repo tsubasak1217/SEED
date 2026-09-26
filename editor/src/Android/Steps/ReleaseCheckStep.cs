@@ -14,6 +14,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Android.Plan;
+using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Release;
 
 namespace SEEDEditor.Android.Steps;
@@ -39,7 +40,12 @@ public sealed class ReleaseCheckStep : IAndroidPipelineStep
         var facts = await AndroidArtifactInspector.InspectAsync(
             context.Toolchain, context.ArtifactPath, context.Request.Format, requirements, cancellationToken).ConfigureAwait(false);
         var expectation = new AndroidArtifactExpectation(
-            context.Identity, SignerCertificateParser.NormalizeFingerprint(context.SigningCertificate?.Sha256));
+            context.Identity, SignerCertificateParser.NormalizeFingerprint(context.SigningCertificate?.Sha256))
+        {
+            // features と配布物の権限の一致・権限の Google Play の方針（W1-2。機能の表は準備で読めている）
+            PlatformFeatures = context.PlatformFeatures,
+            FeatureCatalog = AndroidPlatformFeatureBuildInput.LoadCatalog(),
+        };
         foreach (var item in AndroidArtifactChecks.Evaluate(requirements, facts, expectation)) report.Put(item);
 
         log.Info($"Google Play の要件（{report.Summary()}）:");

@@ -112,6 +112,7 @@ public static class Program
         harness.Add("android 節は空なら保存しない（既存のファイルに空の節を増やさない）", AndroidSectionOmittedWhenEmpty);
         harness.Add("android 節の型の違う値でも他の設定は読める",               AndroidSectionWrongTypesDoNotBreakLoading);
         harness.Add("android 節のアイコン（icon / icon_background）の往復と、アイコンだけでも節を書く（段階D）", AndroidSectionIconRoundTrip);
+        harness.Add("android 節のプラットフォーム機能（features / deep_links / system_bars / app_category）の往復と、型違いでも他の設定は読める（W1-2）", AndroidSectionPlatformRoundTrip);
         harness.Add("packaging_settings.json の android の配布用（variant / format / signing）の往復・パスワードの欄は無い（段階D）", PackagingAndroidReleaseRoundTrip);
 
         // ── プロジェクトフォルダ → アセットルート（SeedPak / SeedAndroid 共通の規則）──
@@ -325,6 +326,40 @@ public static class Program
         Check.Equal("icons/app.png", loaded.Android?.Icon, "icon を読み戻す");
         Check.Equal("#102030", loaded.Android?.IconBackground, "icon_background を読み戻す");
         Check.Equal("G", loaded.GameName, "他の設定");
+    }
+
+    /// <summary>プラットフォーム機能のキー（W1-2。ProjectSettingsData の保存・読み込みを通す）。</summary>
+    private static void AndroidSectionPlatformRoundTrip()
+    {
+        using var temp = new TempDir();
+        var path = temp.Combine("project_settings.json");
+        File.WriteAllText(path,
+            "{ \"game_name\": \"W\", \"android\": { \"application_id\": \"com.wakeorpay.seed\", \"features\": [\"alarm\", \"notifications\", \"future_x\"], " +
+            "\"deep_links\": [ { \"scheme\": \"wakeorpay\", \"host\": \"open\", \"future_field\": 1 } ], \"system_bars\": \"visible\", \"app_category\": \"productivity\" } }");
+
+        var data = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("alarm,notifications,future_x", string.Join(",", data.Android?.Features ?? new()), "features を読む（知らない名前も保つ）");
+        Check.Equal("open", data.Android?.DeepLinks?.Single().Host, "deep_links を読む");
+        data.Android!.AppCategory = "audio";
+        data.SaveTo(path);
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(path)))
+        {
+            var android = doc.RootElement.GetProperty(AndroidAppSettings.SectionKey);
+            Check.Equal(3, android.GetProperty(AndroidAppSettings.FeaturesKey).GetArrayLength(), "features を書き戻す");
+            var link = android.GetProperty(AndroidAppSettings.DeepLinksKey)[0];
+            Check.Equal("wakeorpay", link.GetProperty(AndroidDeepLinkSetting.SchemeKey).GetString(), "deep_links を書き戻す");
+            Check.Equal(1, link.GetProperty("future_field").GetInt32(), "ディープリンクの知らないキーも保つ");
+            Check.Equal("visible", android.GetProperty(AndroidAppSettings.SystemBarsKey).GetString(), "system_bars");
+            Check.Equal("audio", android.GetProperty(AndroidAppSettings.AppCategoryKey).GetString(), "app_category を変えて保存");
+            Check.True(!android.TryGetProperty("future_key", out _), "余計なキーを増やさない");
+        }
+
+        // 型違いの値でも他の設定は読める（読めない値は未設定）
+        File.WriteAllText(path, "{ \"game_name\": \"Keep\", \"android\": { \"features\": 5, \"deep_links\": {}, \"system_bars\": [] } }");
+        var broken = ProjectSettingsData.LoadFrom(path);
+        Check.Equal("Keep", broken.GameName, "他の設定は読める");
+        Check.True(broken.Android?.Features is null && broken.Android?.DeepLinks is null && broken.Android?.SystemBars is null, "読めない値は未設定");
     }
 
     /// <summary>packaging_settings.json の配布用（段階D）。</summary>

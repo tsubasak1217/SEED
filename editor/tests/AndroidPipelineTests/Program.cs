@@ -23,6 +23,9 @@ namespace AndroidPipelineTests;
 ///      SeedAndroid の --variant / --format / --keystore / keystore create / check（ReleaseSigningTests。段階D・§24）
 ///  12. Google Play の要件チェック: 表と契約・ビルドの前の判定・配布物の判定・道具の出力・ELF・記録（ReleaseRequirementTests。§24）
 ///  13. ランチャーのアイコン: PNG の読み書き・縮小・各密度の寸法と安全域・置き場・設定の検査（LauncherIconTests。§24）
+///  14. アプリのプラットフォーム機能の opt-in: 機能の表・設定 → 機能・マニフェストの断片・置き場・Gradle の値と指紋・
+///      リポジトリとの取り決め（PlatformFeatureTests。W1-2・§25.10）
+///  15. 同じく設定の読み書き・設定ウィンドウの編集の状態・Google Play の要件チェック（PlatformSettingsTests。W1-2）
 /// 端末・adb・cargo・Gradle は使わない（IPC はループバックの偽のランタイム）。
 /// </summary>
 public static class Program
@@ -45,6 +48,8 @@ public static class Program
         ReleaseSigningTests.Register(harness);
         ReleaseRequirementTests.Register(harness);
         LauncherIconTests.Register(harness);
+        PlatformFeatureTests.Register(harness);
+        PlatformSettingsTests.Register(harness);
         return harness.Run();
     }
 }

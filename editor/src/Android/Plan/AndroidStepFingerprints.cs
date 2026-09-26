@@ -13,6 +13,7 @@ using System.IO;
 using SEEDEditor.Android.Dotnet;
 using SEEDEditor.Android.Gradle;
 using SEEDEditor.Android.Icons;
+using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Project;
 using SEEDEditor.Android.Toolchain;
 
@@ -98,13 +99,19 @@ public static class AndroidStepFingerprints
     /// <summary>
     /// APK / AAB（Gradle）の指紋。入力は上流の出力（.so・pak の置き場・同梱 .NET の置き場）・Gradle のソース・渡すプロパティ
     /// （パスワードは伏せ字のまま。値そのものは材料にしない）、配布用はキーストアのファイル、アイコンを作るならその元の PNG と作り方の版と
-    /// 置き場。出力はビルドの種類と形式ごとの配布物（段階D）。
+    /// 置き場、プラットフォーム機能の断片の中身と置き場（W1-2）。出力はビルドの種類と形式ごとの配布物（段階D）。
     /// </summary>
     /// <param name="engine">エンジン側の置き場。</param>
     /// <param name="parameters">Gradle へ渡す値。</param>
     /// <param name="launcherIcon">アイコンの元（作らないなら null）。</param>
+    /// <param name="platformFeatureFiles">
+    /// プラットフォーム機能の断片（W1-2。中身の SHA-256 と置き場の同一性を材料にする。機能を変えたら・置き場を消したら作り直す）。
+    /// null なら材料に足さない（断片を扱わない古い呼び出し・単体テスト）。
+    /// </param>
     /// <returns>指紋。</returns>
-    public static AndroidStepFingerprint Gradle(AndroidEnginePaths engine, GradleBuildParameters parameters, LauncherIconSource? launcherIcon = null)
+    public static AndroidStepFingerprint Gradle(
+        AndroidEnginePaths engine, GradleBuildParameters parameters, LauncherIconSource? launcherIcon = null,
+        AndroidPlatformFeatureFiles? platformFeatureFiles = null)
     {
         var builder = new AndroidFingerprintBuilder();
         foreach (var property in GradleInvocation.Build(parameters).Properties)
@@ -128,6 +135,11 @@ public static class AndroidStepFingerprints
                 .AddValue("icon_background", launcherIcon.Background.ToAndroidHex())
                 .AddValue("icon_revision", LauncherIconStager.GeneratorRevision.ToString(CultureInfo.InvariantCulture))
                 .AddValue("icon_staging", AndroidOutputIdentity.OfDirectory(engine.LauncherIconStagingDir));
+        }
+        if (platformFeatureFiles is not null)
+        {
+            builder.AddValue("platform_features", platformFeatureFiles.Digest)
+                .AddValue("platform_features_staging", AndroidOutputIdentity.OfDirectory(engine.PlatformFeaturesStagingDir));
         }
         AddRepositoryTrees(builder, engine, AndroidBuildInputs.GradleSources);
         return new AndroidStepFingerprint(builder.Build(), AndroidOutputIdentity.OfFile(engine.ArtifactPath(parameters.Variant, parameters.Format)));

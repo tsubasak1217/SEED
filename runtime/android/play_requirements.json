@@ -20,10 +20,40 @@
   "engine_default_application_ids": [ "com.seedengine.runtime" ],
   "release_unexpected_permissions": [ "android.permission.INTERNET" ],
   "debug_certificate_subject_marker": "CN=Android Debug",
+  "permission_policies_comment": [
+    "権限ごとの Google Play の方針の注意（W1-2。editor/src/Android/Release/AndroidPlatformFeatureChecks.cs）。配布物に（ビルドの前は",
+    "プロジェクト設定 android.features から決まる権限に）この権限があれば、要件チェックの一覧に severity（info / warning）で出す。",
+    "どの権限がどの機能のものかは runtime/android/platform_features.json。出どころは docs/app_platform_roadmap.md §2.6（2026-09-27 に確かめた）。"
+  ],
+  "permission_policies": [
+    {
+      "permission": "android.permission.USE_EXACT_ALARM",
+      "severity": "warning",
+      "title": "Google Play の申告（USE_EXACT_ALARM）",
+      "note": "USE_EXACT_ALARM は、目覚まし・カレンダーが中核機能のアプリだけが宣言できる（審査あり。当てはまらないアプリは公開できない）。Play Console で目覚まし・カレンダーのアプリとして申告し、USE_EXACT_ALARM を使う理由（正確な時刻に鳴らすことがアプリの中核である旨）を説明する",
+      "source": "Play Console ヘルプ「Permissions and APIs that Access Sensitive Information」"
+    },
+    {
+      "permission": "android.permission.USE_FULL_SCREEN_INTENT",
+      "severity": "warning",
+      "title": "Google Play の申告（USE_FULL_SCREEN_INTENT）",
+      "note": "Android 14 以降、Google Play は通話・目覚ましが中核でないアプリから USE_FULL_SCREEN_INTENT を取り上げる（Play Console での申告。2025-01-22 以降）。取り上げられるとロック画面の上に鳴動画面が出ない（音は鳴る）。Play Console でフルスクリーンの通知の用途を申告し、アプリは NotificationManager.canUseFullScreenIntent() で確かめて設定画面へ案内する",
+      "source": "https://support.google.com/googleplay/android-developer/answer/13392821"
+    },
+    {
+      "permission": "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+      "severity": "warning",
+      "title": "Google Play の申告（前景サービス mediaPlayback）",
+      "note": "targetSdk 34 以降の前景サービスは、Play Console で種類（mediaPlayback）ごとに機能の説明・遅延／中断されたときの影響・動画を申告する",
+      "source": "https://support.google.com/googleplay/android-developer/answer/13392821"
+    }
+  ],
   "sources": {
     "target_sdk": "https://developer.android.com/google/play/requirements/target-sdk",
     "page_sizes": "https://developer.android.com/guide/practices/page-sizes",
     "behavior_changes_16": "https://developer.android.com/about/versions/16/behavior-changes-16",
-    "compressed_native_libraries": "https://developer.android.com/build/releases/past-releases/agp-4-2-0-release-notes"
+    "compressed_native_libraries": "https://developer.android.com/build/releases/past-releases/agp-4-2-0-release-notes",
+    "fsi_limits": "https://source.android.com/docs/core/permissions/fsi-limits",
+    "foreground_service_types": "https://developer.android.com/develop/background-work/services/fgs/service-types"
   }
 }

@@ -73,48 +73,10 @@ public static class LauncherIconStager
         }
 
         var output = LauncherIconGenerator.Generate(image, source.Background);
-        var (written, unchanged) = WriteChanged(resDir, output.Files);
-        var removedStale = RemoveStale(resDir, output.Files.Keys);
+        // 中身が違うファイルだけを書き、一覧に無いファイル（前の版の生成物）は消す（W1-2 の機能の断片と共通の処理）
+        var (written, unchanged) = GeneratedFileSync.WriteChanged(resDir, output.Files);
+        var removedStale = GeneratedFileSync.RemoveStale(resDir, output.Files.Keys);
         return new LauncherIconStageResult(true, written, unchanged, removedStale, (image.Width, image.Height), output.Warnings);
-    }
-
-    /// <summary>中身が違うファイルだけを書く。</summary>
-    private static (int Written, int Unchanged) WriteChanged(string resDir, IReadOnlyDictionary<string, byte[]> files)
-    {
-        var written = 0;
-        var unchanged = 0;
-        foreach (var (relative, content) in files)
-        {
-            var path = Path.Combine(resDir, relative.Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(path) && File.ReadAllBytes(path).AsSpan().SequenceEqual(content))
-            {
-                unchanged++;
-                continue;
-            }
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllBytes(path, content);
-            written++;
-        }
-        return (written, unchanged);
-    }
-
-    /// <summary>一覧に無いファイル（前の版の生成物）を消し、空になったフォルダも消す。</summary>
-    private static int RemoveStale(string resDir, IEnumerable<string> keep)
-    {
-        if (!Directory.Exists(resDir)) return 0;
-        var keepSet = new HashSet<string>(keep.Select(k => k.Replace('/', Path.DirectorySeparatorChar)), StringComparer.OrdinalIgnoreCase);
-        var removed = 0;
-        foreach (var file in Directory.EnumerateFiles(resDir, "*", SearchOption.AllDirectories).ToList())
-        {
-            if (keepSet.Contains(Path.GetRelativePath(resDir, file))) continue;
-            File.Delete(file);
-            removed++;
-        }
-        foreach (var dir in Directory.EnumerateDirectories(resDir, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length).ToList())
-        {
-            if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
-        }
-        return removed;
     }
 
     /// <summary>フォルダの中のファイルの数（無ければ 0）。</summary>

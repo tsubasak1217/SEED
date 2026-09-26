@@ -10,6 +10,11 @@
 //      （Icons/LauncherIconStager。中身の違うファイルだけを書く）。生成したら seed.launcherIcon=generated を渡す
 //    - 配布用（release）: 署名のキーストア・別名・パスワードを環境変数 ORG_GRADLE_PROJECT_seed.signing.* で渡す（パスワードは
 //      ログ・コマンドラインに出さない）。できた配布物を記録し、配布用ビルドの記録（versionCode）を書く
+//  【W1-2 で足したこと】
+//    - プラットフォーム機能の断片: Gradle の前に、準備で決めた機能（android.features / deep_links / system_bars）から
+//      app/src/seedFeatures/ へ AndroidManifest.xml と res/values/seed_platform.xml を置く（Platform/AndroidPlatformFeatureStager。
+//      機能が空でも中身の無いマニフェストを必ず置く）。build.gradle.kts が variant の API で main へ重ねる
+//    - アプリの分類: android.app_category を seed.appCategory で渡す（既定の game は渡さない）
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
@@ -24,6 +29,7 @@ using SEEDEditor.Android.Gradle;
 using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Android.Plan;
+using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Processes;
 using SEEDEditor.Android.Release;
 using SEEDEditor.Android.State;
@@ -52,6 +58,7 @@ public sealed class GradleBuildStep : IAndroidPipelineStep
             Format = context.Request.Format,
             Signing = context.Signing,
             LauncherIcon = context.LauncherIcon is not null,
+            AppCategory = context.PlatformFeatures.AppCategory,
         };
 
     /// <inheritdoc />
@@ -66,6 +73,10 @@ public sealed class GradleBuildStep : IAndroidPipelineStep
         var icon = LauncherIconStager.Stage(context.Engine.LauncherIconResDir, context.LauncherIcon);
         log.Info(icon.Describe());
         foreach (var warning in icon.Warnings) log.Warn(warning);
+
+        // ── プラットフォーム機能の断片（W1-2。機能が空でも必ず置き直す。古い生成物を残さない）──
+        var features = AndroidPlatformFeatureStager.Stage(context.Engine.PlatformFeaturesStagingDir, context.PlatformFeatureFiles);
+        log.Info($"プラットフォーム機能の断片を置きました（{context.PlatformFeatures.Describe()}。{features.Describe()}）→ {context.Engine.PlatformFeaturesStagingDir}");
 
         var parameters = Parameters(context, ndk);
         var command = GradleInvocation.Build(parameters);
@@ -109,7 +120,8 @@ public sealed class GradleBuildStep : IAndroidPipelineStep
         // 記録: 入力は上流の工程を作り直した後の値で計算し直す（.so・pak・同梱 .NET・アイコンの今の出力を含むため）
         var identity = AndroidOutputIdentity.OfFile(artifact);
         var sha256 = ApkFile.ComputeSha256(artifact);
-        context.Stamps.Steps[context.GradleKey] = AndroidStepFingerprints.Gradle(context.Engine, parameters, context.LauncherIcon);
+        context.Stamps.Steps[context.GradleKey] = AndroidStepFingerprints.Gradle(
+            context.Engine, parameters, context.LauncherIcon, context.PlatformFeatureFiles);
         context.Stamps.SetArtifact(context.GradleKey,
             new AndroidApkStamp(identity, sha256, context.Abis.Select(abi => abi.Name).ToArray(), context.Identity.ApplicationId));
         if (context.Request.Variant == AndroidBuildVariant.Release) RecordRelease(context, sha256, log);

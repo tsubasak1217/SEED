@@ -69,6 +69,13 @@ public sealed class AndroidEnginePaths
     /// <summary>ランチャーのアイコンの res（mipmap-*・values。<see cref="LauncherIconStagingDir"/> の下）。</summary>
     public string LauncherIconResDir => Path.Combine(LauncherIconStagingDir, "res");
 
+    /// <summary>
+    /// プラットフォーム機能の断片の置き場（app/src/seedFeatures/。AndroidManifest.xml と res/values/seed_platform.xml。
+    /// build.gradle.kts の androidComponents が variant の API で足す。生成物・追跡しない。W1-2・docs/android.md §25.10）。
+    /// build.gradle.kts の seedFeaturesDir と一致させる。
+    /// </summary>
+    public string PlatformFeaturesStagingDir => Path.Combine(AndroidDir, "app", "src", "seedFeatures");
+
     /// <summary>Google Play の要件の表（段階D。Release/PlayRequirements.cs が読む）。</summary>
     public string PlayRequirementsPath => Path.Combine(AndroidDir, "play_requirements.json");
 

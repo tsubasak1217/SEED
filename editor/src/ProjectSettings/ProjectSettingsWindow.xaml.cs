@@ -1456,7 +1456,7 @@ public partial class ProjectSettingsWindow : Window
         if (androidErrors.Count > 0)
         {
             MessageBox.Show(
-                "Android アプリ情報に誤りがあります（解像度設定 → Android アプリ情報）:\n\n" + string.Join("\n", androidErrors),
+                "Android アプリ情報に誤りがあります（解像度設定 → Android アプリ情報・Android のプラットフォーム機能）:\n\n" + string.Join("\n", androidErrors),
                 "入力エラー",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);

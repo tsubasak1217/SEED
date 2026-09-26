@@ -7,7 +7,8 @@
 //    ・環境変数 TMPDIR / HOME をアプリのフォルダへ向け、同梱 .NET の診断機能を止める（理由は setAppDirectoryEnvironment のコメント）
 //    ・起動の Intent の「seed.」で始まる文字列の extra（起動するシーン等）を JSON にしてネイティブへ渡す
 //      （デバッグ版の APK だけ。理由は forwardLaunchOptions のコメント。段階C-3）
-//    ・全画面（システムバーを隠す）
+//    ・システムバーの既定の出し方（隠す＝ゲーム向けの既定／出す＝アプリ向け。プロジェクト設定 android.system_bars。
+//      中身は SystemBarsController。契機の受け口だけここ。W1-2）
 //    ・安全領域と画面の回転をネイティブへ知らせる（中身は ScreenReporter。契機の受け口だけここ）
 //    ・音量キーの対象をメディアの音量にし、音声フォーカスを前面で要求・前面を離れるときに手放す
 //      （中身は AudioFocusController。契機の受け口だけここ）
@@ -35,9 +36,7 @@ import java.nio.charset.StandardCharsets;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
-import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.google.androidgamesdk.GameActivity;
 
@@ -111,6 +110,9 @@ public class MainActivity extends GameActivity {
     /** 音声フォーカスの要求・放棄と変化の通知（UI スレッド専用。システムサービスを使うので onCreate で作る）。 */
     private AudioFocusController audioFocus;
 
+    /** システムバーの既定の出し方（UI スレッド専用。リソースを読むので onCreate で作る。W1-2）。 */
+    private SystemBarsController systemBars;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
@@ -121,7 +123,10 @@ public class MainActivity extends GameActivity {
         // ここで待たない。つなぐのはスクリプトが最初に呼んだとき・背面のスレッドで。platform/PlatformConnection）。
         SeedPlatform.init(this);
         super.onCreate(savedInstanceState);
-        hideSystemBars();
+        // システムバーの既定（プロジェクト設定 android.system_bars。隠す＝従来のゲーム・出す＝アプリ）。
+        systemBars = new SystemBarsController(this);
+        systemBars.applyDefault();
+        Log.i(LOG_TAG, "システムバー: " + (systemBars.isVisibleByDefault() ? "出したまま（system_bars=visible）" : "隠す（system_bars=hidden）"));
         // 音量キーは常にメディアの音量（ゲームの音が属する STREAM_MUSIC）を上げ下げする。指定しないと
         // 何も鳴っていない瞬間の対象が端末の既定（端末によっては着信音量）になるため固定する。
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
@@ -243,9 +248,9 @@ public class MainActivity extends GameActivity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        // 通知の引き下ろし等でシステムバーが出た後、フォーカスが戻ったら再び隠す。
-        if (hasFocus) {
-            hideSystemBars();
+        // 通知の引き下ろし等でシステムバーが出た後、フォーカスが戻ったら再び隠す（隠す設定のときだけ。SystemBarsController）。
+        if (hasFocus && systemBars != null) {
+            systemBars.onFocusRegained();
         }
     }
 
@@ -284,14 +289,5 @@ public class MainActivity extends GameActivity {
         Process.killProcess(Process.myPid());
         // killProcess は通常戻らない。万一戻った場合に備えて本来の後始末へ進む。
         super.onDestroy();
-    }
-
-    /** ステータスバー・ナビゲーションバーを隠す（端からのスワイプで一時的に出せる）。 */
-    private void hideSystemBars() {
-        WindowInsetsControllerCompat controller =
-                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
-        controller.setSystemBarsBehavior(
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-        controller.hide(WindowInsetsCompat.Type.systemBars());
     }
 }

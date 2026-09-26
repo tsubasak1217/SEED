@@ -131,7 +131,7 @@ W1・W2 がつなぐ先。根拠はコードと android.md（W0 で読んだも�
 - **最初の呼び出し**: :seed_platform が居なければ、最初の `call` はプロセスの起動を待つ（W1-0 で 123 ms）。描画のスレッドからは呼ばない（W1-1）。
   W1-1 の実装: つながっていないときの `invoke` は背面のスレッドで接続を始めて**すぐ** `{"ok":false,"error":"connecting"}` を返し、つながったら
   `platform.connected` のイベントを送る（docs/android.md §25.3）。client は unstable で取る（安定な取得は :seed_platform の死でゲームのプロセスまで片付けられる）。
-- **マニフェスト**: 上のコンポーネントの宣言は機能ごとの断片として `android.features` で出し入れし（E-04・§2.5）、Java のコードは常に APK に入れる。断片の差し込み方（AGP の variant API で静的なマニフェストを足すか、library module か。記憶に基づく候補）は W1-2 で確かめる（W1-0 では試していない）。
+- **マニフェスト**: 上のコンポーネントの宣言は機能ごとの断片として `android.features` で出し入れし（E-04・§2.5）、Java のコードは常に APK に入れる。`PlatformProvider` だけは機能によらず main に常設（W1-2 の決定）。断片の差し込み方は W1-2 で確かめて **AGP の variant API**（`androidComponents.onVariants` の `sources.manifests.addStaticManifestFile` と `sources.res.addStaticSourceDirectory`）に決めた（E-04・docs/android.md §25.10）。
 - **音源**: 予約のときに、スクリプトが渡した `assets://` の音をエンジン側が `files/seed_platform/sounds/<内容のハッシュ>.<拡張子>` へ書き出し、絶対パスを予約の控えに入れる（pak は :seed_platform から読めないため）。読めなければ **モジュールに同梱した既定の音**で鳴らす（無音にしない。Flutter 版も未知の音は bell に落とした）。
 - **既存の音声との関係**: エンジンの音声は前面で `AUDIOFOCUS_GAIN`（USAGE_GAME）を要求する（`AudioFocusController.java`、android.md §16.3）。鳴動画面が前に出るとエンジンがフォーカスを取り、鳴動側は失う。**鳴動側は音声フォーカスの喪失で止まらない**ことを必須にする（止めると鳴動画面を開いた瞬間に鳴り止む）。鳴動の音は **`USAGE_ALARM` に固定**する（Android 17 の背面の音の制限の免除の条件。§2.6・X-7）。
 
@@ -260,22 +260,24 @@ public static class Haptics { public static void Tap(); public static void Vibra
 
 `project_settings.json` の `android` 節に足すキー（エディタのモデルは `editor/src/ProjectSettings/AndroidAppSettings.cs`。今も知らないキーは `ExtraData` で保たれる）:
 
-| キー | 例 | マニフェスト・Gradle への反映 |
-|---|---|---|
-| `features` | `["alarm", "notifications"]` | SeedAndroid が `-Pseed.features=alarm,notifications` を渡し、`build.gradle.kts` が該当する**機能ごとのマニフェスト断片**（Gradle のライブラリモジュール、または生成したソースセット）を加える。マニフェストのマージで MainActivity への intent-filter・権限・サービス・受信機が入る |
-| `deep_links` | `[{ "scheme": "…", "host": "…" }]` | 生成したマニフェスト断片の MainActivity の intent-filter |
-| `system_bars` | `"visible"`（アプリ）／`"hidden"`（既定。今のゲームの振る舞い） | MainActivity の起動時の既定（スクリプトから `Window.SetSystemBarsVisible` で変えられる） |
-| `app_category` | `"productivity"` | `android:appCategory`（今は `game` 固定。AndroidManifest.xml） |
+W1-2 で実装した（2026-09-27。正典は docs/android.md §25.10、キーと語彙は docs/project_system.md の `android` 節）:
 
-機能ごとに入るもの（案）:
+| キー | 例 | マニフェスト・Gradle への反映（実装） |
+|---|---|---|
+| `features` | `["alarm", "notifications"]` | SeedAndroid が機能の表 `runtime/android/platform_features.json` から**マニフェストの断片**を `runtime/android/app/src/seedFeatures/AndroidManifest.xml` へ生成し（機能が空でも中身の無い断片を毎回書く）、`build.gradle.kts` が variant の API で main へ重ねる（E-04）。`-Pseed.features` は渡さない（断片の中身が正本）。表に無い名前は注意を出して無視 |
+| `deep_links` | `[{ "scheme": "…", "host": "…", "path_prefix": "…", "auto_verify": false }]` | 機能 `deep_links` があるときだけ、断片の MainActivity に 1 件 1 つの intent-filter（VIEW・DEFAULT・BROWSABLE）。形の誤りはビルドと保存を止める |
+| `system_bars` | `"visible"`（アプリ）／`"hidden"`（既定。今のゲームの振る舞い） | 断片と同じ置き場の `res/values/seed_platform.xml` の bool `seed_system_bars_visible`（main の既定値 false を上書き）→ MainActivity（`SystemBarsController`）の起動時の既定。スクリプトからの切り替え（`Window.SetSystemBarsVisible`）は W1-6 |
+| `app_category` | `"productivity"` | `-Pseed.appCategory`（既定の game は渡さない）→ `manifestPlaceholders` の `seedAppCategory` → `android:appCategory`（語彙は SDK の attrs_manifest.xml の 9 つ） |
+
+機能ごとに入るもの（W1-2 の実装。部品は W1-3・W1-4 で機能の表の `application_elements` に行を足す）:
 
 | 機能 | 権限 | コンポーネント |
 |---|---|---|
-| `alarm` | `USE_EXACT_ALARM`、`SCHEDULE_EXACT_ALARM`（maxSdkVersion 32）、`RECEIVE_BOOT_COMPLETED`、`WAKE_LOCK`、`VIBRATE`、`USE_FULL_SCREEN_INTENT`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`（E-03。予備の `_SYSTEM_EXEMPTED` は入れない）、`POST_NOTIFICATIONS` | `PlatformProvider`・`AlarmReceiver`・`BootReceiver`・`RingService`（`android:process=":seed_platform"`）、`activity-alias PlatformEntry` |
+| `alarm` | `USE_EXACT_ALARM`、`SCHEDULE_EXACT_ALARM`（maxSdkVersion 32）、`RECEIVE_BOOT_COMPLETED`、`WAKE_LOCK`、`VIBRATE`、`USE_FULL_SCREEN_INTENT`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`（E-03。予備の `_SYSTEM_EXEMPTED` は入れない）、`POST_NOTIFICATIONS` | W1-2 では宣言しない（存在しないクラスを宣言すると起動時に落ちる）。W1-3・W1-4 で `AlarmReceiver`・`BootReceiver`・`RingService`（`android:process=":seed_platform"`）、`activity-alias PlatformEntry` を足す。**`PlatformProvider` は機能の断片ではなく main に常設**（`:seed_platform` は最初の呼び出しまで起動しないので害が無く、features が空でもスクリプトの `Platform.IsSupported` が実機で一貫する） |
 | `notifications` | `POST_NOTIFICATIONS` | （通知のボタンは `PlatformEntry` 行きの PendingIntent。Android 12+ はトランポリン禁止なので受信機を挟まない） |
-| `deep_links` | — | intent-filter |
+| `deep_links` | — | MainActivity の intent-filter（`deep_links` の 1 件ごと） |
 
-`SeedAndroid` の Google Play の要件チェック（`editor/src/Android/Release/`、`runtime/android/play_requirements.json`。android.md §24.8）に、「宣言した機能と権限が一致しているか」「前景サービスの種類が宣言されているか」「`USE_EXACT_ALARM` を使うなら目覚まし・カレンダーのアプリとして申告が要る」の注意を足す。
+`SeedAndroid` の Google Play の要件チェック（`editor/src/Android/Release/AndroidPlatformFeatureChecks`、`runtime/android/play_requirements.json` の `permission_policies`。android.md §24.8）に次を足した: 「features の機能の権限が配布物にそろっているか（無ければ不合格）／features に無い機能の権限が入っていないか（あれば注意）」「`USE_EXACT_ALARM` は目覚まし・カレンダーのアプリとしての申告と説明が要る」「`USE_FULL_SCREEN_INTENT` は通話・目覚ましが中核でないと取り上げられる」「`FOREGROUND_SERVICE_MEDIA_PLAYBACK` は前景サービスの申告が要る」（方針の 3 つは注意）。「前景サービスの種類が `<service>` に宣言されているか」は、サービスを足す W1-4 で配布物のマニフェストから見る（backlog）。
 
 ### 2.6 Google Play と Android の制約（2026-09-27 に公式のページで確かめたものは「確認済み」。W1-0 の実機の結果は「実機 W1-0」と併記）
 
@@ -414,7 +416,7 @@ Java だけの使い捨てアプリ（applicationId `com.seedengine.platformspik
 |---|---|---|
 | W1-0 | スパイク: 別プロセスの前景サービス・フルスクリーン通知から GameActivity・`ContentResolver.call`・Doze・再起動（§2.2 の 5 点）。JNI の手段（今の流儀の延長か jni クレートか）を決める。**済（2026-09-27。§2.9.1）**: 別プロセスの鳴動・最近のタスク・強制停止・プロセス間の呼び出し・前景サービスの種類を確かめ、E-01〜E-03・E-10 を決めた。**残り**: Doze の再試験、再起動と Direct Boot の試験（利用者の許可待ち）。実 GameActivity の冷えた起動の計測は W1-4 の頭へ移した | 1〜2（済）＋残り 0.5 |
 | W1-1 | 橋渡し: `SeedPlatform.invoke`・`nativeOnPlatformEvent`・イベントキュー・`ScriptHostApi` の新カテゴリ・C# の `SEED.Platform` の骨組み・デスクトップの模擬。**採用（E-02）**: プロセスの間は `ContentProviderClient` を持ち続けて `call`、`:seed_platform` からの知らせは Binder のコールバック（`call` の `putBinder` で登録）、JNI は `jni` クレート 0.22（Rust 側はここで初めて試すので、最初に `invoke` の往復を 1 本通す）。最初の呼び出しは `:seed_platform` の起動で約 120 ms 待つので、描画のスレッドから外す。**済（2026-09-27。実機の確認は残り。docs/android.md §25）**: JNI は 2 本＋登録 1 本（`invoke`・`nativeOnPlatformEvent`・`nativeRegisterPlatformBridge(Class)`）。jni 0.22.4 は Cargo.lock の版をそのまま使え（新しい依存なし）、受け手は `EnvUnowned`/`JClass`/`JByteArray` を引数に取って `with_env`、呼ぶ側は `attach_current_thread`（ローカルフレームと Java の例外の後始末を任せられる）で、Android 向けのコンパイルは最初の 1 回で通った。分かったこと: ① client は **unstable** で取る（安定な取得は `:seed_platform` の死でゲームのプロセスまで片付けられる。AOSP の説明）。② 「最初の呼び出しを描画のスレッドから外す」は、つながっていない呼び出しが背面で接続を始めて**すぐ `connecting` で失敗**し、つながったら `platform.connected` のイベントを送る形にした（スクリプトは待って呼び直す）。③ 知らせは「呼び鈴（oneway・未読あり）→ メインが `platform.poll_events` で取り出す」にし、記録を正本にした（取りこぼしても次の呼び鈴か接続で取れる）。④ スパイクには `putBinder` のコールバックの実装が無かった（W1-0 は放送で測った）ので、ここで新しく書いた。PC の模擬で ping 0.04〜0.11 ms（初回 15 ms は JIT）、試験イベントが次のフレームでスクリプトへ届いた。**実機の往復・呼び鈴は未確認**（端末が USB に無かった） | 2 |
-| W1-2 | 機能の opt-in: `android.features` など新キー → SeedAndroid → Gradle → マニフェストの断片、`appCategory`・`system_bars`、Play の要件チェック。断片の差し込み方（AGP の variant API か library module か）をここで確かめる（W1-0 では試していない） | 1〜2 |
+| W1-2 | 機能の opt-in: `android.features` など新キー → SeedAndroid → Gradle → マニフェストの断片、`appCategory`・`system_bars`、Play の要件チェック。断片の差し込み方（AGP の variant API か library module か）をここで確かめる（W1-0 では試していない）。**済（2026-09-27。docs/android.md §25.10）**: 新キー 4 つ（`features`・`deep_links`・`system_bars`・`app_category`）をエディタのモデルとプロジェクト設定ウィンドウ（機能のチェックボックス・コンボ・ディープリンクの一覧。判断は WPF 非依存の `AndroidPlatformSettingsEditor`）に足し、SeedAndroid が APK の工程の Gradle の前に `runtime/android/app/src/seedFeatures/`（断片のマニフェストと `res/values/seed_platform.xml`。追跡しない・空でも必ず書く）を生成する。機能 → 権限の対応は機能の表 `runtime/android/platform_features.json`（データ。W1-3・W1-4 は行を足すだけ）。差し込み方は **AGP の variant API**（E-04）。`appCategory` は `-Pseed.appCategory`。システムバーは生成した bool を `SystemBarsController` が読む。Play の要件チェックに機能と権限の一致・権限ごとの申告の注意を足した。Wake or Pay の実ビルドを aapt2 で確かめた（権限 9・appCategory=7・intent-filter・bool=true、features を空にした写しでは権限なし・game・false）。**実機は未確認**（端末が USB に無かった）。`PlatformProvider` は main に常設のまま | 1〜2（済） |
 | W1-3 | 目覚まし: `AlarmStore`・`AlarmScheduler`（setAlarmClock）・`AlarmReceiver`・`BootReceiver`（時刻・タイムゾーン・更新・権限の変化）・音源の書き出し。`BootReceiver` は**強制停止からの復帰も兼ねる**（Android 15+ は停止状態から出たときに `BOOT_COMPLETED` を届ける。実機では `LOCKED_BOOT_COMPLETED` も届いた）。張り直しは必ず `setAlarmClock`（`BOOT_COMPLETED` から直接鳴らさない。E-10） | 2 |
 | W1-4 | **頭で、実 GameActivity をフルスクリーン通知から冷えた状態で出す計測**（AC-12・X-1。W1-0 から移した）。鳴動: `RingService`（音・バイブ・WakeLock・フォーカス喪失で止めない・安全弁）・フルスクリーン通知・`PlatformEntry`・起動理由・onCreate での showWhenLocked。W1-0 からの見直し: `AlarmReceiver` は真っ先に `startForegroundService`（一時許可は 10 秒）し、**控えの fsync はその後**。**音の開始を早める**（冷えたプロセスでは `startForeground` から音まで約 340 ms。`MediaPlayer` の準備を前倒し）。端末の使用中はヘッドアップ通知になるので、**本文のタップから鳴動画面へ**行けるようにする。音は `USAGE_ALARM` 固定（X-7） | 2〜3 |
 | W1-5 | 通知と権限: チャネル・常駐とボタン・トランポリン無しの起動・実行時権限と結果・特別なアクセスの状態と設定画面 | 2 |
@@ -559,7 +561,7 @@ Java だけの使い捨てアプリ（applicationId `com.seedengine.platformspik
 |---|---|---|---|
 | X-1 | **冷えた起動を速く・止まらなくする**（起動の初期化と .NET の展開を android_main から外し、ANR を避ける） | 目覚ましでアプリが起きる瞬間は、端末がスリープから戻った直後で負荷が高い。今は初回の展開（0.5〜0.8 秒）・CLR の起動・GPU とシーンの初期化が同期で走り、APK の更新直後に 44 秒かかって ANR の後に落ちた記録がある（backlog「起動の初期化が android_main スレッドで同期に走る」「同梱 .NET の展開と CLR の起動が android_main で同期に走る」）。音は W1 の別プロセスが鳴らすので止まらないが、鳴動画面が出ない | W1 の受け入れ基準 AC-12 の前提。既存の backlog 項目を W1 と同時に進める |
 | X-2 | **描かなくてよいときは描かない**（W2-P7） | アプリの画面はほとんど止まっている。今は前面で毎フレーム描き続け、UI と提示だけで Pixel 6a の GPU 約 4.5 ms を毎フレーム使う | W2-10 |
-| X-3 | **アプリとしての既定**: ステータスバーを表示、`appCategory` を選べる、戻るの最上位は閉じずに背面へ | 今のテンプレートはゲーム向けの固定（システムバーを常に隠す・`appCategory="game"`・閉じる API が無い） | W1-2・W1-6 |
+| X-3 | **アプリとしての既定**: ステータスバーを表示、`appCategory` を選べる、戻るの最上位は閉じずに背面へ | 今のテンプレートはゲーム向けの固定（システムバーを常に隠す・`appCategory="game"`・閉じる API が無い） | W1-2（起動時のシステムバーの既定 `system_bars` と `app_category`。**済** 2026-09-27・実機は未確認）・W1-6（実行中の切り替え・バーの文字色・戻る） |
 | X-4 | **保存の耐久性**（§2.7） | お金と履歴 | W1-S |
 | X-5 | **デスクトップで作り込める** | 画面づくりの大半はエディタの Play。`SEED.Platform` の模擬（W1-P7）と縦長の Play ウィンドウ（プロジェクト設定 `window_width`/`window_height`） | W1-1・W2-1 |
 | X-6 | **docs の同期** | スクリプト API の正典は `docs/scripting_api.md`（と手で同期する html）。Android の節は `docs/android.md` に足す（例 §25「アプリのプラットフォーム機能」）。プロジェクト設定のキーは `docs/project_system.md` | 各段階の完了の条件 |
@@ -572,7 +574,7 @@ Java だけの使い捨てアプリ（applicationId `com.seedengine.platformspik
 | E-01 | 鳴動の置き場所 | (a) Java だけの別プロセス `:seed_platform`（§2.2） (b) 同じプロセスのまま、前景サービスがある間は `onDestroy` でプロセスを殺さない | **決定（2026-09-27 W1-0）: (a) 別プロセス**。鳴動中に鳴動画面のタスクを消しても `:seed_platform` の音は続いた（§2.9.1 の 2）。消したとき同じプロセスの Activity に `onDestroy` が来ることも観測したので、`onDestroy` で `Process.killProcess` する今の SEED で (b) にすると止まる（コードからの推論）。(b) は同じプロセスで Activity を作り直せない（winit の EventLoop は 1 回だけ）問題も残る。別プロセスの費用（冷えた状態から音まで +0.73 s、最初の呼び出しの 123 ms）は許容できる |
 | E-02 | native → Java の呼び出しの手段 | (a) 今の流儀（jni クレートを足さず、JNIEnv の関数表を番号で呼ぶ）を広げる (b) `jni` クレートを入れる | **決定（2026-09-27 W1-0）**: プロセスの間は **`ContentProvider.call`**（同期・Binder。`ContentProviderClient` を持ち続けて 0.36〜0.51 ms、毎回の `ContentResolver.call` で 0.64〜0.87 ms。AIDL は 0.24〜0.26 ms だがバインドの手続きが要る）。`:seed_platform` → エンジンの知らせは **Binder のコールバック**（`call` の `Bundle.putBinder` で登録）と、前面へ戻ったときの未読の取得（放送は受け手の処理中の放送の後ろで 5 秒待たされた。§2.9.1 の F-3）。最初の呼び出しは `:seed_platform` の起動で 123 ms 同期で待つので、描画のスレッドでは呼ばない。JNI は **(b) `jni` クレート 0.22**（android-activity 0.6.1 経由で既に `Cargo.lock` にあり新しい依存が増えない。attach・GlobalRef・例外の定型を任せられる。cpal・oboe が使う 0.21 とは API の形が違う）。**Rust 側は未試作**（W1-0 は Java だけ。W1-1 の最初に `invoke` の往復を 1 本通して確かめる）。**W1-1（2026-09-27）で Rust 側を実装**: jni 0.22.4 で Android 向けのコンパイルと APK の作成まで通り、PC の模擬で往復とイベントを確かめた。実機での往復は未確認（§2.10） |
 | E-03 | 鳴動の前景サービスの種類 | `mediaPlayback` / `systemExempted` | **決定（2026-09-27 W1-0）: `mediaPlayback`＋音は `USAGE_ALARM` 必須**。予約経由の起動が 3 回とも `ALARM_MANAGER_ALARM_CLOCK` で許可された（§2.9.1 の 6）。`USAGE_ALARM` は Android 17 の背面の音の制限の免除の条件（§2.6・X-7）。`systemExempted` は予備（予約経由で動作を確認。Play の申告での扱いは未確認）。`specialUse` は使わない |
-| E-04 | 機能ごとのマニフェストの入れ方 | (a) 機能ごとの Gradle のライブラリモジュール（マニフェストのマージで入る） (b) SeedAndroid が生成するマニフェストの断片（生成したソースセット） | ディープリンクのように値がプロジェクトごとに違うものがあるので **(b)**（生成物は `src/seedIcon/res` と同じく追跡しない）。Java のコードは常に APK に入れ、コンポーネントの宣言だけを機能で出し入れする |
+| E-04 | 機能ごとのマニフェストの入れ方 | (a) 機能ごとの Gradle のライブラリモジュール（マニフェストのマージで入る） (b) SeedAndroid が生成するマニフェストの断片（生成したソースセット） | ディープリンクのように値がプロジェクトごとに違うものがあるので **(b)**（生成物は `src/seedIcon/res` と同じく追跡しない）。Java のコードは常に APK に入れ、コンポーネントの宣言だけを機能で出し入れする。**決定（2026-09-27 W1-2）: 生成物 `app/src/seedFeatures/` を AGP 9.1.0 の variant API で足す**（`androidComponents.onVariants` で `variant.sources.manifests.addStaticManifestFile("src/seedFeatures/AndroidManifest.xml")` と `variant.sources.res?.addStaticSourceDirectory("src/seedFeatures/res")`）。API は Gradle のキャッシュの `gradle-api-9.1.0.jar` を `javap` で読んで確かめ、実ビルドと aapt2 で、断片の権限が入ること・断片の MainActivity の intent-filter が main の activity に合流すること・res が独立した層になり main の既定値（`seed_system_bars_visible=false`）を上書きできることを確かめた。**`sourceSets.main` の `res.srcDir` に足すと main と同じ層になり `Duplicate resources` で止まる**（実ビルドで確認）ので「生成したソースセットを main に足す」形は退けた。ライブラリモジュール（a）は、モジュール・名前空間・include が増え、`nonTransitiveRClass` でリソースの R が分かれ、値がプロジェクトごとに違う以上は生成が要るので退けた（推論）。詳細は docs/android.md §25.10.2 |
 | E-05 | W2 の分担 | Rust（ECS のコンポーネントとシステム）と C#（`SEED.UI`）の割り振り | §3.2 の W2-P1 のとおり: レイアウト・クリップ・当たり判定・ジェスチャー・IME・描画の要否は Rust、部品の振る舞いは C#、見た目はプレハブとテーマ |
 | E-06 | Android の文字入力 | (a) GameActivity の文字入力（android-activity の API を winit の外から使う） (b) Java の `EditText` を画面の上に重ねる | **(a) を W2-0 で試す**。(b) は見た目がゲームの UI と揃わない |
 | E-07 | テーマのデータの形 | (a) JSON のアセット（`Assets.ReadText`） (b) `AudioDictionary` と同じ形の辞書コンポーネント（インスペクタで編集） | **(a)**（実行中の差し替え・アプリのテーマ交換・テキストでの差分管理に向く）。エディタでの編集が要るなら (b) を後から足す |
@@ -601,6 +603,7 @@ Java だけの使い捨てアプリ（applicationId `com.seedengine.platformspik
 4. **残り**: Doze の再試験と、再起動・Direct Boot の試験（利用者の許可待ち）は W1-0 の残りとして行う。実 GameActivity の冷えた起動の計測は W1-4 の頭へ移した（§2.10）。
 5. **次の一歩**: W1-1（橋渡し）。最初に `jni` クレート 0.22 で `SeedPlatform.invoke` の往復を 1 本通し、Rust 側の試作が無い E-02 の JNI の部分を確かめる。
    → 2026-09-27 に W1-1 を実装（§2.10）。残りは実機での往復・呼び鈴の確認（docs/android.md §25.7 の手順）。
+   → 同日に W1-2（機能の opt-in。docs/android.md §25.10）を実装。次は W1-3（目覚ましの予約。機能の表の alarm に受信機の行を足す）。
 
 ## 7. backlog との対応
 

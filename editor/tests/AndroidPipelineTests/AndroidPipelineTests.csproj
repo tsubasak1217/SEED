@@ -10,6 +10,7 @@
       - GradleInvocation                           : gradlew の引数と -P / 環境変数の組み立て
       - AndroidAppIdentityResolver / AndroidAppSettings : 既定のアプリ識別情報・検査・"android" 節の寛容な読み取り
       - DotnetRuntimeBundle                        : 同梱 .NET の dotnet-root 形式への組み立て（一時フォルダ）
+      - Android/Platform・AndroidPlatformSettingsEditor : アプリのプラットフォーム機能の opt-in（機能の表・断片の生成・置き場・設定ウィンドウの判断・要件チェック。W1-2）
       - 指紋・tar・行の読み取り・記録・道具の解決・SeedAndroid の引数
 
     PackagingCollectorTests / ProjectSystemTests と同じ流儀:
@@ -56,6 +57,19 @@
     </Compile>
     <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
       <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
+    </Compile>
+    <!-- アプリのプラットフォーム機能の設定（W1-2）と、プロジェクト設定ウィンドウの編集の状態（WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\AndroidDeepLinkSetting.cs">
+      <Link>Linked\ProjectSettings\AndroidDeepLinkSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidSystemBarsSetting.cs">
+      <Link>Linked\ProjectSettings\AndroidSystemBarsSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidAppCategorySetting.cs">
+      <Link>Linked\ProjectSettings\AndroidAppCategorySetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidPlatformSettingsEditor.cs">
+      <Link>Linked\ProjectSettings\AndroidPlatformSettingsEditor.cs</Link>
     </Compile>
     <Compile Include="..\..\src\Project\EditorVersion.cs">
       <Link>Linked\Project\EditorVersion.cs</Link>
@@ -115,6 +129,14 @@
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>
     </Compile>
+  </ItemGroup>
+
+  <!-- アプリのプラットフォーム機能の表（W1-2。エディタ本体と同じ論理名で埋め込む。実物の表をテストで確かめる） -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\..\runtime\android\platform_features.json">
+      <LogicalName>SEEDEditor.platform_features.json</LogicalName>
+      <Link>Linked\Android\Platform\platform_features.json</Link>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

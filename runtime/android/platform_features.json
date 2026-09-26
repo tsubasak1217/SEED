@@ -1,0 +1,54 @@
+{
+  "comment": [
+    "アプリのプラットフォーム機能（SEED.Platform。W1）の機能ごとの表（唯一の置き場。docs/android.md §25.10・docs/app_platform_roadmap.md §2.5）。",
+    "プロジェクト設定 android.features に書いた機能だけが、ここの権限・部品として、SeedAndroid が生成するマニフェストの断片",
+    "（runtime/android/app/src/seedFeatures/AndroidManifest.xml）に入る（W1-P4・E-04）。表に無い名前はビルドで警告して無視する。",
+    "読むのは editor/src/Android/Platform/AndroidPlatformFeatureCatalog.cs（エディタ本体・SeedAndroid・単体テストに埋め込みリソースとして入る）。",
+    "欄: name（features に書く名前。小文字英数字と _）・label / description（プロジェクト設定ウィンドウの表示）・",
+    "    permissions（<uses-permission>。max_sdk_version は android:maxSdkVersion）・",
+    "    application_elements（<application> の下に置く要素の木。{ tag, attributes: { \"android:name\": … }, children: [ … ] }）・",
+    "    deep_link_filters（true なら project_settings.json の android.deep_links を 1 件ずつ MainActivity の intent-filter にする）。",
+    "W1-3 / W1-4 で受信機・サービス・activity-alias（AlarmReceiver・BootReceiver・RingService・PlatformEntry）を足すときは",
+    "application_elements に行を足す。Java のクラスが無い部品を宣言すると起動時に落ちるので、クラスを足すのと同じ変更で足すこと",
+    "（単体テスト AndroidPipelineTests が、宣言した com.seedengine.runtime.* のクラスの Java のソースがあるかを確かめる）。",
+    "PlatformProvider は機能によらず main のマニフェストに常設（:seed_platform は最初の呼び出しまで起動しないので害が無く、",
+    "features が空でもスクリプトの Platform.IsSupported が実機で一貫する）。Google Play の方針に関わる注意は play_requirements.json の permission_policies。"
+  ],
+  "format_version": 1,
+  "features": [
+    {
+      "name": "alarm",
+      "label": "目覚まし（正確なアラーム・鳴動）",
+      "description": "決まった時刻に確実に鳴らす（setAlarmClock・別プロセスの鳴動・フルスクリーン通知・再起動後の張り直し）。Google Play では目覚まし・カレンダーが中核のアプリだけが使える権限を含む。受信機・鳴動サービスの宣言は W1-3・W1-4 で足す。",
+      "permissions": [
+        { "name": "android.permission.USE_EXACT_ALARM" },
+        { "name": "android.permission.SCHEDULE_EXACT_ALARM", "max_sdk_version": 32 },
+        { "name": "android.permission.RECEIVE_BOOT_COMPLETED" },
+        { "name": "android.permission.WAKE_LOCK" },
+        { "name": "android.permission.VIBRATE" },
+        { "name": "android.permission.USE_FULL_SCREEN_INTENT" },
+        { "name": "android.permission.FOREGROUND_SERVICE" },
+        { "name": "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" },
+        { "name": "android.permission.POST_NOTIFICATIONS" }
+      ],
+      "application_elements": []
+    },
+    {
+      "name": "notifications",
+      "label": "通知",
+      "description": "通知を出す（Android 13 以降は実行時の許可が要る）。通知のボタンからの起動・チャネルは W1-5。",
+      "permissions": [
+        { "name": "android.permission.POST_NOTIFICATIONS" }
+      ],
+      "application_elements": []
+    },
+    {
+      "name": "deep_links",
+      "label": "ディープリンク",
+      "description": "URL（下のディープリンクの一覧）からアプリを開く。1 件ごとに MainActivity への intent-filter を入れる。スクリプトで URL を受け取る API は W1-6。",
+      "permissions": [],
+      "application_elements": [],
+      "deep_link_filters": true
+    }
+  ]
+}

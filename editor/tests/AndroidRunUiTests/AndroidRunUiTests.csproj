@@ -102,6 +102,16 @@
     <Compile Include="..\..\src\ProjectSettings\AndroidAppSettings.cs">
       <Link>Linked\ProjectSettings\AndroidAppSettings.cs</Link>
     </Compile>
+    <!-- アプリのプラットフォーム機能の設定（W1-2。中核の Android/Platform が使う） -->
+    <Compile Include="..\..\src\ProjectSettings\AndroidDeepLinkSetting.cs">
+      <Link>Linked\ProjectSettings\AndroidDeepLinkSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidSystemBarsSetting.cs">
+      <Link>Linked\ProjectSettings\AndroidSystemBarsSetting.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\AndroidAppCategorySetting.cs">
+      <Link>Linked\ProjectSettings\AndroidAppCategorySetting.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Project\EditorVersion.cs">
       <Link>Linked\Project\EditorVersion.cs</Link>
     </Compile>

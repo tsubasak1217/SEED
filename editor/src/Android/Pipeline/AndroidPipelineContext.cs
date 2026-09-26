@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Plan;
+using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Project;
 using SEEDEditor.Android.Release;
 using SEEDEditor.Android.Signing;
@@ -95,6 +96,18 @@ public sealed class AndroidPipelineContext
     /// APK の工程が Gradle の前に生成物を置く（Icons/LauncherIconStager）。
     /// </summary>
     public LauncherIconSource? LauncherIcon { get; init; }
+
+    /// <summary>
+    /// このビルドのプラットフォーム機能（プロジェクト設定 android.features / deep_links / system_bars / app_category。W1-2）。
+    /// プロジェクトが無ければ機能なし・既定。app_category は Gradle へ seed.appCategory で渡し、Google Play の要件チェックも見る。
+    /// </summary>
+    public AndroidPlatformFeatureSet PlatformFeatures { get; init; } = AndroidPlatformFeatureSet.Empty;
+
+    /// <summary>
+    /// マニフェストの断片のファイル一式（<see cref="PlatformFeatures"/> から作ったもの。W1-2）。APK の工程が Gradle の前に
+    /// app/src/seedFeatures/ へ置き（Platform/AndroidPlatformFeatureStager。機能が空でも必ず置く）、中身の SHA-256 は APK の指紋の材料。
+    /// </summary>
+    public AndroidPlatformFeatureFiles PlatformFeatureFiles { get; init; } = AndroidPlatformManifestWriter.Render(AndroidPlatformFeatureSet.Empty);
 
     /// <summary>配布用（release）の署名（開発用のビルドでは null。段階D）。</summary>
     public AndroidSigningConfig? Signing { get; init; }

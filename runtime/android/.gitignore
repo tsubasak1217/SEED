@@ -28,6 +28,10 @@ app/src/seedDotnet/
 # ランチャーのアイコン（SeedAndroid がプロジェクト設定 android.icon の PNG から各密度の mipmap とアダプティブアイコンを生成する。docs/android.md §24）
 app/src/seedIcon/
 
+# プラットフォーム機能の断片（SeedAndroid がプロジェクト設定 android.features / deep_links / system_bars から毎回生成する
+# AndroidManifest.xml と res/values/seed_platform.xml。W1-2・docs/android.md §25.10）
+app/src/seedFeatures/
+
 # 配布用の署名の鍵（キーストア）は置かない（誤って置いても追跡しない。保管の仕方は docs/android.md §24）
 *.jks
 *.keystore

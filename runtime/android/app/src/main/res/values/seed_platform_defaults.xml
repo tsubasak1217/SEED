@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  アプリのプラットフォーム機能（W1-2）の既定値。docs/android.md §25.10。
+
+  SeedAndroid はビルドのたびにプロジェクト設定 android.system_bars から app/src/seedFeatures/res/values/seed_platform.xml を
+  生成し、同じ名前の値を優先度の高い res の層（app/build.gradle.kts の androidComponents で足す "variant" の層）で上書きする。
+  生成物が無い（手で gradlew を叩いた・一度も SeedAndroid を通していない）ときは、ここの既定値が使われる。
+
+  ・seed_system_bars_visible … true ならシステムバー（ステータスバー・ナビゲーションバー）を隠さない（アプリ向け）。
+    既定の false は従来のゲームの振る舞い（全画面・端からのスワイプで一時的に出せる）。MainActivity → SystemBarsController が読む。
+-->
+<resources>
+    <bool name="seed_system_bars_visible">false</bool>
+</resources>

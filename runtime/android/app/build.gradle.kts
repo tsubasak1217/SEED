@@ -11,15 +11,19 @@
 //                 （下の sourceSets で jniLibs・assets の置き場として足す。生成物・追跡しない。docs/android.md §17）
 //    アイコン    … プロジェクト設定 android.icon から app/src/seedIcon/res/ へ各密度の mipmap とアダプティブアイコンを生成する
 //                 （下の sourceSets で res の置き場として足す。生成物・追跡しない。docs/android.md §24）
+//    機能の断片  … プロジェクト設定 android.features / deep_links / system_bars から app/src/seedFeatures/ へ
+//                 AndroidManifest.xml（権限・MainActivity の intent-filter）と res/values/seed_platform.xml を生成する
+//                 （下の androidComponents.onVariants で variant の API から足す。生成物・追跡しない。W1-2・docs/android.md §25.10）
 //  プロジェクト設定から決まる値は Gradle のプロジェクトプロパティ（-Pseed.* か環境変数 ORG_GRADLE_PROJECT_seed.*）で受け取り、
 //  下の変換で APK へ焼き込む（値の変換はこのファイルの 1 か所。docs/android.md §15.1・§18・§24）:
 //    seed.orientation                  … screen_orientation → マニフェストの screenOrientation（変換表）
 //    seed.applicationId / seed.appName … android.application_id / app_name → applicationId・android:label
 //    seed.versionCode / seed.versionName … android.version_code / version_name → versionCode・versionName
 //    seed.launcherIcon                 … generated なら生成したアイコン（@mipmap/ic_launcher）→ android:icon
+//    seed.appCategory                  … android.app_category → android:appCategory（語彙の表。W1-2）
 //    seed.signing.*                    … 配布用（release）の署名。キーストアの場所・別名・パスワード（パスワードは必ず環境変数。
 //                                        SeedAndroid の Signing/。このファイル・gradle.properties・コマンドラインには書かない）
-//  渡されなければ既定値（com.seedengine.runtime・SEED Runtime・システムの既定のアイコン等。手で gradlew を叩いたときもこれ）。
+//  渡されなければ既定値（com.seedengine.runtime・SEED Runtime・システムの既定のアイコン・appCategory=game 等。手で gradlew を叩いたときもこれ）。
 //
 //  【ビルドの種類（docs/android.md §24）】
 //    debug   … assembleDebug。デバッグ用の鍵で署名・debuggable・INTERNET（src/debug/ のマニフェスト。エディタとの IPC）。開発用
@@ -168,6 +172,52 @@ val defaultLauncherIcon = "@android:drawable/sym_def_app_icon"
 /** このビルドのランチャーのアイコン（マニフェストの android:icon へ ${seedAppIcon} として入る）。 */
 val seedAppIcon = if (seedProperty("launcherIcon") == generatedLauncherIconMarker) generatedLauncherIcon else defaultLauncherIcon
 
+// ── アプリの分類（プロジェクト設定 android.app_category。W1-2・docs/android.md §25.10）──────────
+// SeedAndroid（editor/src/ProjectSettings/AndroidAppCategorySetting.cs）が正規化して -Pseed.appCategory=<値> で渡す。
+// マニフェストの android:appCategory="${seedAppCategory}" へ入る。渡されなければ従来どおり game。
+
+/**
+ * android:appCategory の語彙（SDK の platforms/android-36/data/res/values/attrs_manifest.xml の enum と同じ）。
+ * エディタの AndroidAppCategorySetting.Choices と一致させる（単体テスト AndroidPipelineTests が両者を突き合わせる）。
+ */
+val appCategoryValues = listOf("game", "audio", "video", "image", "social", "news", "maps", "productivity", "accessibility")
+
+/** app_category が無い・空のときの値（従来の固定値。ゲーム）。 */
+val defaultAppCategory = "game"
+
+/**
+ * このビルドの android:appCategory（前後の空白を落として小文字へ）。語彙に無い値は、設定ミスでビルドを止めるより
+ * 従来の動作へ倒すほうが安全なので、警告を出して既定値（game）にする（screen_orientation と同じ方針）。
+ */
+val seedAppCategory = seedProperty("appCategory")?.lowercase()?.let { value ->
+    if (value in appCategoryValues) value else {
+        logger.warn(
+            "SEED: seed.appCategory=\"$value\" は不明な値です（使える値: ${appCategoryValues.joinToString()}）。" +
+                "\"$defaultAppCategory\" として扱います。"
+        )
+        null
+    }
+} ?: defaultAppCategory
+
+// ── プラットフォーム機能の断片（プロジェクト設定 android.features / deep_links / system_bars。W1-2・E-04）──────────
+// SeedAndroid（editor/src/Android/Platform/）が Gradle の前に毎回 src/seedFeatures/ を生成し直す（機能が空でも中身の無い
+// マニフェストを書く。古い生成物を残さないため）。ここは生成物を variant の API で足すだけ（下の androidComponents）:
+//   AndroidManifest.xml … 機能ごとの <uses-permission> と MainActivity への intent-filter（ディープリンク）。main のマニフェストに
+//                         上書き（overlay）のマニフェストとしてマージされる（下の androidComponents のコメント。実ビルドで確かめた）
+//   res/values/seed_platform.xml … seed_system_bars_visible（main の res/values/seed_platform_defaults.xml の既定値 false を
+//                         独立した res の層で上書きする）
+// 生成物が無い（手で gradlew を叩いた・一度も SeedAndroid を通していない）ときは、マニフェストは足さず、res の層は空のまま
+// （＝機能なし・システムバーを隠す従来の振る舞い）。
+
+/** 生成物の置き場（app/ からの相対。SeedAndroid の AndroidEnginePaths.PlatformFeaturesStagingDir と同じ）。 */
+val seedFeaturesDir = "src/seedFeatures"
+
+/** 生成するマニフェストの断片。 */
+val seedFeaturesManifest = "$seedFeaturesDir/AndroidManifest.xml"
+
+/** 生成する res（values/seed_platform.xml）。 */
+val seedFeaturesRes = "$seedFeaturesDir/res"
+
 // ── 配布用（release）の署名（docs/android.md §24）─────────────────────────────
 // SeedAndroid（editor/src/Android/Signing/・Gradle/GradleInvocation.cs）がプロジェクトの packaging_settings.json の
 // android.signing（キーストアの場所・別名）と、パスワード（エディタの保護保存か環境変数 SEED_ANDROID_KEYSTORE_PASSWORD /
@@ -222,9 +272,11 @@ android {
         manifestPlaceholders["seedAppLabel"] = seedAppLabel
         // AndroidManifest.xml の ${seedAppIcon} を置き換える（ランチャーのアイコン。上の「ランチャーのアイコン」）。
         manifestPlaceholders["seedAppIcon"] = seedAppIcon
+        // AndroidManifest.xml の ${seedAppCategory} を置き換える（アプリの分類。上の「アプリの分類」。W1-2）。
+        manifestPlaceholders["seedAppCategory"] = seedAppCategory
         logger.lifecycle("SEED: screen_orientation=$seedOrientationSetting → screenOrientation=$seedScreenOrientation")
         logger.lifecycle("SEED: applicationId=$seedApplicationId label=$seedAppLabel versionCode=$seedVersionCode versionName=$seedVersionName")
-        logger.lifecycle("SEED: targetSdk=$seedTargetSdk icon=$seedAppIcon releaseSigning=${if (seedReleaseSigningReady) "ready" else "none"}")
+        logger.lifecycle("SEED: targetSdk=$seedTargetSdk icon=$seedAppIcon appCategory=$seedAppCategory releaseSigning=${if (seedReleaseSigningReady) "ready" else "none"}")
     }
 
     signingConfigs {
@@ -284,6 +336,30 @@ android {
             // 署名は材料が揃っているときだけ。揃っていなければ下の preReleaseBuild でビルドを止める（デバッグ署名にしない）。
             signingConfig = if (seedReleaseSigningReady) signingConfigs.getByName("release") else null
         }
+    }
+}
+
+// プラットフォーム機能の断片（上の「プラットフォーム機能の断片」）を variant ごとに足す（W1-2・E-04）。
+//  ・マニフェスト … ManifestFiles.addStaticManifestFile（app/ からの相対パス）。AGP 9.1.0 の SourcesImpl.manifestOverlayFiles では
+//                   build type の src/debug/AndroidManifest.xml の後ろに並ぶ上書き（overlay）のマニフェストになり、main へマージされる
+//                   （2026-09-27 に実ビルドで、権限と MainActivity への intent-filter が 1 つの activity に合流することを aapt2 で確かめた）。
+//                   AGP 9.1.0 は無いファイルを足してもマージが通る（実ビルドで確かめた）が、版による違いに備えて、あるときだけ足す
+//                   （SeedAndroid は Gradle の前に必ず生成するので、SeedAndroid 経由では常にある）。
+//  ・res … SourceDirectories.Layered.addStaticSourceDirectory。"variant" という名前の独立した層として末尾に入り、main の
+//          res/values/seed_platform_defaults.xml と同じ名前の値を上書きできる（実ビルドで bool が true になることを aapt2 で確かめた）。
+//          main の sourceSets の res.srcDir に足すと main と同じ層になり「Duplicate resources」でビルドが止まる（これも実ビルドで確かめた）。
+//          無いフォルダを足してもビルドは通る（空の層）。
+androidComponents {
+    onVariants { variant ->
+        val hasFeaturesManifest = file(seedFeaturesManifest).isFile
+        if (hasFeaturesManifest) {
+            variant.sources.manifests.addStaticManifestFile(seedFeaturesManifest)
+        }
+        variant.sources.res?.addStaticSourceDirectory(seedFeaturesRes)
+        logger.lifecycle(
+            "SEED: ${variant.name}: platform features fragment=" +
+                if (hasFeaturesManifest) seedFeaturesManifest else "なし（機能なし・システムバーを隠す既定）"
+        )
     }
 }
 
