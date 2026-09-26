@@ -3814,6 +3814,11 @@ pub struct ScriptHostApi {
     // 画面情報（SEED.Screen.Width / Height / SafeArea / Orientation / DPI。実体は screen_bridge.rs）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     screen:                  unsafe extern "system" fn(i32, *mut f32, i32) -> i32,
+    // アプリのプラットフォーム機能（SEED.Platform。W1-1。実体は platform_bridge.rs → engine/platform/bridge/）。
+    // (op, module, moduleLen, method, methodLen, json, jsonLen, out, cap) と (out, cap)。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    platform_invoke:         unsafe extern "system" fn(i32, *const u8, i32, *const u8, i32, *const u8, i32, *mut u8, i32) -> i32,
+    platform_poll_events:    unsafe extern "system" fn(*mut u8, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3862,6 +3867,8 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     app_env:                 ffi_app_env,
     input_touch:             ffi_input_touch,
     screen:                  super::screen_bridge::ffi_screen,
+    platform_invoke:         super::platform_bridge::ffi_platform_invoke,
+    platform_poll_events:    super::platform_bridge::ffi_platform_poll_events,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

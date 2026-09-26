@@ -895,6 +895,9 @@ impl App {
             // 画面情報（SEED.Screen）をこのフレームの値へ差し替える。ポインタイベント・スクリプトの
             // どのフェーズより前に 1 回だけ行うので、フレームの中で値が変わらない（screen_publish.rs）。
             self.publish_screen_snapshot();
+            // プラットフォーム機能（SEED.Platform）のイベントを基盤（Android の Java・デスクトップの模擬）から取り出し、
+            // スクリプトへ見せる箱へ移す。C# の PlatformEvents.Poll が BeginFrame（フレームに 1 回）で配る（W1-1）。
+            crate::engine::core::scripting::platform_bridge::publish_platform_events();
             // アニメーション評価（スクリプト更新より前に実行し、スクリプトが上書き可能にする）。
             // AnimatorComponent のクリップを進めて対象アクターの Transform 等へ書き込む。
             {

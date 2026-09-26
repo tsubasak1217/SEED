@@ -2803,6 +2803,65 @@ var ratio = new SEED.Vector2(t.Position.x / SEED.Screen.Width, t.Position.y / SE
 
 ---
 
+## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み）
+
+目覚まし・通知・権限など **OS の機能**をスクリプトから使うための入口です（名前空間 `SEED.Platform`）。
+W1-1 では橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）だけがあり、型付きの機能（`Alarms`・`Notifications` など）は
+後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
+デスクトップ（エディタの Play・単体起動）ではエンジンの中の**模擬**へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
+
+```csharp
+using SEED.Platform;   // 名前空間とクラス名が同じなので using を推奨（修飾するなら SEED.Platform.Platform.IsSupported）
+
+// 状態
+Platform.IsSupported       // bool: 使えるか（Android で Java 側の準備が済んでいる、またはデスクトップの模擬）。毎フレーム読んでよい
+Platform.IsSimulated       // bool: デスクトップの模擬で動いているか
+Platform.LastError         // string: 直前の呼び出しの失敗の理由（成功なら ""）
+Platform.ErrorConnecting   // "connecting"           … Android の最初の呼び出し（:seed_platform へ接続中）。platform.connected を待って呼び直す
+Platform.ErrorUnavailable  // "platform_unavailable" … 基盤が無い（Android で Java 側の準備が無い）
+Platform.ErrorInvalidReply // "invalid_reply"        … 返答が約束の JSON でない（版の食い違い）
+
+// 確かめ（往復とイベントの経路）
+PlatformPingResult r = PlatformDiagnostics.Ping();    // 往復を 1 回計測（例外を投げない。送った合言葉が echo で返るかも確かめる）
+r.Ok  r.RoundTripMs  r.ServicePid  r.ServiceUptimeMs  r.Simulated  r.Error   // r.ToString() でログ向けの 1 行
+bool accepted = PlatformDiagnostics.EmitTestEvent("hello"); // 試験イベント platform.test_event を 1 つ流す（次のフレーム以降に届く）
+
+// イベント（エンジンがフレームに 1 回、スクリプトの BeginFrame より前に配る）
+this.On(PlatformEvents.TestEvent, (string json) => { });     // 推奨: SEED.Events 経由（名前 = "platform.…"・引数 = イベントの JSON 全体）
+PlatformEvents.OnEvent += (string name, string json) => { }; // すべてのイベント（寿命に追従しない。OnDestroy で必ず -= する）
+PlatformEvents.Connected      // "platform.connected"      … :seed_platform へつながった（Android。data.connect_ms・data.pid）
+PlatformEvents.ConnectFailed  // "platform.connect_failed" … つなげなかった（Android。data.error）
+PlatformEvents.Disconnected   // "platform.disconnected"   … :seed_platform のプロセスが居なくなった（次の呼び出しでつなぎ直す）
+PlatformEvents.TestEvent      // "platform.test_event"     … 試験イベント（data.message・data.pid）
+
+// 例: 起動時に往復を確かめる（Android の最初の 1 回は接続を始めるだけで失敗し、つながると platform.connected が届く）
+public override void OnStart()
+{
+    this.On(SEED.Platform.PlatformEvents.Connected, (string json) => Measure());
+    Measure();
+}
+private void Measure()
+{
+    var r = SEED.Platform.PlatformDiagnostics.Ping();
+    if (!r.Ok && r.Error == SEED.Platform.Platform.ErrorConnecting) return;  // つながったら上の this.On で呼び直される
+    SEED.Debug.Log($"往復 {r.RoundTripMs:0.00} ms（答えたプロセス {r.ServicePid}）");
+}
+```
+
+| 項目 | Android | デスクトップ（模擬） |
+|---|---|---|
+| `IsSupported` / `IsSimulated` | true / false（APK の Java 側の準備が済んでいれば） | true / true |
+| 最初の呼び出し | `:seed_platform` の起動（約 120 ms）を描画のスレッドで待たず、`LastError == "connecting"` で失敗。背面でつながると `platform.connected` | すぐ答える |
+| 往復の時間（`Ping`） | 温まっていれば 1 ms 未満（Binder の往復 1 回） | 0.1 ms 程度（プロセスの中。最初の 1 回は JIT で遅い） |
+| `ServicePid` / `ServiceUptimeMs` | `:seed_platform` の pid・起動からの ms | SEED.exe の pid・模擬を作ってからの ms |
+| イベントの JSON | `{"name":"platform.…","seq":番号,"time_ms":UTC の epoch ミリ秒,"data":{…}}`（接続の知らせは seq 0） | 同じ形（seq は模擬の中の番号） |
+
+> **重要**: SEED.Platform の呼び出しは**同期**で、スクリプトのフレームの中で動きます。Android では温まっていれば 1 ms 未満ですが、`:seed_platform` がまだ起きていない**最初の呼び出しは待たずに失敗**します（`Platform.LastError == Platform.ErrorConnecting`）。`PlatformEvents.Connected` のイベントを受けてから呼び直してください。
+
+> **重要**: イベントはすぐには届きません。エンジンがフレームの頭で取り出し、次の BeginFrame で配ります（`EmitTestEvent` を呼んだフレームの中では見えません）。受け口は `this.On("platform.…", (string json) => …)` を推奨します（スクリプトの破棄で自動的に外れる）。`PlatformEvents.OnEvent` に足したハンドラは `OnDestroy` で必ず外してください（ホットリロードではエンジンが全部外します）。
+
+---
+
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
 
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。

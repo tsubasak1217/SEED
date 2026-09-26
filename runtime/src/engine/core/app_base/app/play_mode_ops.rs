@@ -98,6 +98,8 @@ impl App {
         // 前回 Play の取り残しのデバッグコマンド（SCRIPT_DEBUG）を捨てる。
         // 残すと、Play を開始した瞬間に前回送った指示が突然走ってしまう。
         self.clear_script_debug_commands();
+        // 前回 Play のプラットフォームのイベント（デスクトップの模擬の試験イベント等）と預かった返答も捨てる（W1-1）。
+        crate::engine::core::scripting::platform_bridge::clear_platform_events();
         // JointAttach 子孫の相対ローカルは Play 開始時点の姿勢から採り直す
         // （Edit で竿先を動かした結果を必ず反映させるため）。
         self.joint_attach_child_locals.clear();
@@ -272,6 +274,8 @@ impl App {
         self.joint_attach_child_locals.clear();
         // 誰にも配られなかったデバッグコマンドを捨てる（次の Play へ持ち越さない）。
         self.clear_script_debug_commands();
+        // 配られなかったプラットフォームのイベントも捨てる（次の Play へ持ち越さない。W1-1）。
+        crate::engine::core::scripting::platform_bridge::clear_platform_events();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         // 開始状態の記録も必ず捨てる（次の Play へ持ち越さない）。
         if self.mode != RuntimeMode::Play {

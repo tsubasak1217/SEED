@@ -8,9 +8,19 @@
     ポートはエディタ／SeedAndroid が起動オプション（am start の extra seed.ipc_port）で渡し、起動オプションは
     デバッグ版の APK でしかネイティブへ渡らない（MainActivity）。配布版（release）には入らない。
   詳細は docs/android.md §21。
+
+  ・DebugPlatformReceiver … プラットフォーム機能（SEED.Platform）を adb から確かめる受信機（W1-1。docs/android.md §25）。
+    adb の am broadcast から届くよう exported=true（intent-filter は持たせない。暗黙の放送は届かないので -n で部品を指定する）。
+    メインプロセスで動き、ping の往復の計測と試験イベントの送出を行う。配布版（release）には入らない。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <application>
+        <receiver
+            android:name="com.seedengine.runtime.platform.DebugPlatformReceiver"
+            android:exported="true" />
+    </application>
 
 </manifest>

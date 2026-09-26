@@ -16,12 +16,15 @@
 //  安全領域・画面の向きのように実行中に何度も変わる値は screen/ に持つ。
 //  音声フォーカス（他のアプリとの音の譲り合い）の最新の状態は audio_focus.rs に持つ。
 //  OS が起動のときに渡す起動オプション（Android の Intent の extras。起動するシーン）の読み方は launch_options.rs。
+//  アプリのプラットフォーム機能（SEED.Platform。目覚まし・通知などの OS の機能への橋渡し）は bridge/。
 //
 //  Android 対応の全体像は docs/android.md を参照。
 // ============================================================
 
 /// OS の音声フォーカスの最新の報告（Android の糊が JNI で書き、App がフレームごとに読む）。
 pub mod audio_focus;
+/// アプリのプラットフォーム機能（SEED.Platform）の橋渡し（Android の JNI・デスクトップの模擬。W1-1）。
+pub mod bridge;
 /// OS が起動のときに渡す起動オプション（Android の Intent の extras。起動するシーン。段階C-3）。
 pub mod launch_options;
 /// プラットフォームが与える書き込み先（セーブ・キャッシュの置き場。起動時に 1 回設定する）。
@@ -99,6 +102,13 @@ pub struct PlatformTraits {
     /// プリセットの中身は runtime/config/render_presets.json（renderer/quality/）。
     /// デスクトップは何も下げない `desktop`（従来の描画そのもの）、Android は軽量の `mobile`。
     pub default_render_quality: &'static str,
+
+    /// OS の糊がプラットフォーム機能（SEED.Platform）の実装を登録していないときにどうするか（W1-1）。
+    ///
+    /// デスクトップは模擬（`bridge::DesktopSimBridge`。PC の Play で API の流れを試せる。W1-P7）。
+    /// Android は「無し」: 実装は糊（runtime/android/native の platform_bridge/）が起動時に登録し、
+    /// 登録が無い（古い糊・Java 側の登録の失敗）ときに成功を装わない。
+    pub platform_bridge_fallback: bridge::PlatformBridgeFallback,
 }
 
 /// 描画品質の設定の節の名前（デスクトップ＝Windows）。
@@ -142,6 +152,7 @@ pub const DESKTOP: PlatformTraits = PlatformTraits {
     reference_dpi:         DESKTOP_REFERENCE_DPI,
     quality_platform_key:  DESKTOP_QUALITY_KEY,
     default_render_quality: DESKTOP_DEFAULT_RENDER_QUALITY,
+    platform_bridge_fallback: bridge::PlatformBridgeFallback::DesktopSim,
 };
 
 /// Android の特性（段階0 の 1 枚絵 ＋ 段階A のタッチ入力・戻るキー・画面情報 ＋ 段階B の同梱 .NET のスクリプト）。
@@ -156,6 +167,7 @@ pub const ANDROID: PlatformTraits = PlatformTraits {
     reference_dpi:         ANDROID_REFERENCE_DPI,
     quality_platform_key:  ANDROID_QUALITY_KEY,
     default_render_quality: ANDROID_DEFAULT_RENDER_QUALITY,
+    platform_bridge_fallback: bridge::PlatformBridgeFallback::Unavailable,
 };
 
 /// 定義済みの全プラットフォームの特性（表全体への検査用）。

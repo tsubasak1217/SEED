@@ -21,7 +21,7 @@ use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 
-use crate::{app_dirs, debug_hooks, debug_save_test, device_info, dotnet_runtime, heartbeat, launch, logcat};
+use crate::{app_dirs, debug_hooks, debug_save_test, device_info, dotnet_runtime, heartbeat, launch, logcat, platform_bridge};
 
 /// android_main に一度入ったか（同一プロセスでの 2 回目を検出する）。
 static ANDROID_MAIN_ENTERED: AtomicBool = AtomicBool::new(false);
@@ -52,6 +52,10 @@ fn android_main(app: AndroidApp) {
     // セーブ・キャッシュの書き込み先をアプリ専用フォルダ（files・cache）に設定する。
     // エンジンがセーブやキャッシュの置き場を初めて決めるより前（＝App を作る前）に行う。
     app_dirs::init(&app);
+
+    // アプリのプラットフォーム機能（SEED.Platform）の Android の橋渡しをエンジンへ登録する（App を作る前。W1-1）。
+    // Java 側（SeedPlatform.init）は MainActivity.onCreate が super.onCreate の前に済ませている。:seed_platform はまだ起こさない。
+    platform_bridge::install();
 
     // 検証用: システムプロパティ debug.seed.panic_test=1 のときだけ意図的に panic する
     //（panic が logcat に残ることの確認用。通常起動では何もしない）。

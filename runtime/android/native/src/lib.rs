@@ -13,6 +13,8 @@
 //    jni_exports   … Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し・安全領域と回転の報告・
 //                    音声フォーカスの報告・起動オプション）
 //    jni_env       … JNIEnv の関数表から使う関数（byte[] の読み取り）だけを番号で呼ぶ
+//    platform_bridge/ … アプリのプラットフォーム機能（SEED.Platform）の橋渡し（W1-1。native → Java の SeedPlatform.invoke と
+//                    Java → native のイベント。jni クレート 0.22 を使うのはここだけ）
 //    device_info   … 起動時に端末情報（SDK・ABI・機種）をログへ残す
 //    heartbeat     … 描画ループの生存確認（提示フレーム数を一定間隔でログへ）
 //    debug_hooks   … 検証用フック（システムプロパティで意図的 panic・複数指の合成タッチ列）
@@ -40,4 +42,5 @@ mod jni_exports;
 mod launch;
 mod launch_options;
 mod logcat;
+mod platform_bridge;
 mod sysprop;

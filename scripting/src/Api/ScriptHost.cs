@@ -1197,6 +1197,114 @@ public static unsafe class ScriptHost
         int v = _api.AppEnv(kind);
         return v < 0 ? fallback : v;
     }
+
+    // -- アプリのプラットフォーム機能（SEED.Platform。W1-1）------------------
+    // op・状態の番号は Rust 側 runtime/src/engine/core/scripting/platform_bridge.rs の PLATFORM_OP_* / PLATFORM_STATUS_* と一致させる。
+
+    /// <summary>PlatformInvoke の op: 命令を送って返答を受け取る。</summary>
+    internal const int PlatformOpInvoke = 0;
+
+    /// <summary>PlatformInvoke の op: 入れ物に収まらず預かってもらった返答を受け取る。</summary>
+    internal const int PlatformOpTakeReply = 1;
+
+    /// <summary>PlatformInvoke の op: 基盤の状態を問い合わせる（IPC も JNI も通らない）。</summary>
+    internal const int PlatformOpStatus = 2;
+
+    /// <summary>基盤の状態: 使えない（Android で Java 側の登録が無い等）。</summary>
+    internal const int PlatformStatusUnavailable = 0;
+
+    /// <summary>基盤の状態: 実機（Android）につながっている。</summary>
+    internal const int PlatformStatusDevice = 1;
+
+    /// <summary>基盤の状態: デスクトップの模擬。</summary>
+    internal const int PlatformStatusSimulated = 2;
+
+    /// <summary>返答を受け取る最初の入れ物のバイト数（ping の返答が収まる大きさ。足りなければ預かった返答を取りに行く）。</summary>
+    private const int PlatformReplyInitialCapacity = 1024;
+
+    /// <summary>
+    /// プラットフォームの基盤の状態（<see cref="PlatformStatusUnavailable"/> / <see cref="PlatformStatusDevice"/> /
+    /// <see cref="PlatformStatusSimulated"/>）。ホスト API 未登録は「使えない」。
+    /// </summary>
+    internal static int PlatformStatus()
+    {
+        if (!_available || _api.PlatformInvoke == null) return PlatformStatusUnavailable;
+        int status = _api.PlatformInvoke(PlatformOpStatus, null, 0, null, 0, null, 0, null, 0);
+        return status < 0 ? PlatformStatusUnavailable : status;
+    }
+
+    /// <summary>
+    /// プラットフォームの命令を 1 つ送り、返答の JSON を受け取る（SEED.Platform.Platform.TryInvoke の実体）。
+    ///
+    /// 返答が最初の入れ物に収まらなければ、Rust 側が預かった返答を必要な大きさで受け取り直す
+    /// （命令をもう一度送ると 2 回走ってしまうため、呼び直しではなく「預かり」を取りに行く）。
+    /// 届かなかったとき（基盤が無い・名前の誤り）も Rust 側が {"ok":false,"error":…} の返答にするので、
+    /// false になるのはホスト API が未登録のときと FFI の約束が崩れたときだけ。
+    /// </summary>
+    /// <param name="module">モジュールの名前（小文字英数字と _）。</param>
+    /// <param name="method">メソッドの名前（小文字英数字と _）。</param>
+    /// <param name="json">引数の JSON（空なら {} とみなされる）。</param>
+    /// <param name="reply">返答の JSON（受け取れなければ空文字）。</param>
+    /// <returns>返答を受け取れたら true（中身の ok は呼び出し側が読む）。</returns>
+    internal static bool PlatformInvoke(string module, string method, string json, out string reply)
+    {
+        reply = string.Empty;
+        if (!_available || _api.PlatformInvoke == null) return false;
+
+        byte[] moduleBytes = Encoding.UTF8.GetBytes(module ?? string.Empty);
+        byte[] methodBytes = Encoding.UTF8.GetBytes(method ?? string.Empty);
+        // 引数の JSON は長くなりうる（W1-3 の予約の payload など）ので、スタックではなくヒープに置く（stackalloc の溢れを避ける）
+        byte[] jsonBytes = Encoding.UTF8.GetBytes(json ?? string.Empty);
+        byte[] buffer = new byte[PlatformReplyInitialCapacity];
+
+        // 1 回目: 命令を送る。返り値は返答のバイト数（入れ物より大きければ書かれておらず、Rust 側が預かっている）
+        int length;
+        fixed (byte* mp = moduleBytes)
+        fixed (byte* hp = methodBytes)
+        fixed (byte* jp = jsonBytes)
+        fixed (byte* bp = buffer)
+            length = _api.PlatformInvoke(PlatformOpInvoke, mp, moduleBytes.Length, hp, methodBytes.Length,
+                                         jp, jsonBytes.Length, bp, buffer.Length);
+        if (length < 0) return false;
+
+        // 2 回目（収まらなかったときだけ）: 預かった返答をちょうどの大きさで受け取る
+        if (length > buffer.Length)
+        {
+            buffer = new byte[length];
+            int taken;
+            fixed (byte* bp = buffer)
+                taken = _api.PlatformInvoke(PlatformOpTakeReply, null, 0, null, 0, null, 0, bp, buffer.Length);
+            if (taken < 0 || taken > buffer.Length) return false;
+            length = taken;
+        }
+        reply = Encoding.UTF8.GetString(buffer, 0, length);
+        return true;
+    }
+
+    /// <summary>
+    /// スクリプトへ見せる箱の先頭のプラットフォームのイベント（JSON）を 1 件取り出す（SEED.Platform.PlatformEvents.Poll の供給源）。
+    ///
+    /// まず入れ物無しで長さだけを聞き（空なら何も確保しない。毎フレーム呼ばれるため）、その長さの入れ物で取り出す。
+    /// 箱はスクリプトのスレッドだけが触るので、2 回の呼び出しの間に中身が変わることは無い。
+    /// </summary>
+    /// <param name="json">取り出したイベントの JSON（無ければ空文字）。</param>
+    /// <returns>取り出せたら true、箱が空・ホスト API 未登録なら false。</returns>
+    internal static bool TryTakePlatformEvent(out string json)
+    {
+        json = string.Empty;
+        if (!_available || _api.PlatformPollEvents == null) return false;
+
+        int needed = _api.PlatformPollEvents(null, 0);
+        if (needed < 0) return false;                 // 空
+
+        byte[] buffer = new byte[needed];
+        int taken;
+        fixed (byte* bp = buffer)
+            taken = _api.PlatformPollEvents(bp, buffer.Length);
+        if (taken < 0 || taken > buffer.Length) return false;
+        json = Encoding.UTF8.GetString(buffer, 0, taken);
+        return true;
+    }
 }
 
 /// <summary>
@@ -1295,4 +1403,8 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, int, float*, int, int> InputTouch;
     /// <summary>(kind, out float*, cap) → 書いた要素数（kind 0=寸法 2 要素 / 1=安全領域 4 要素 / 2=向き 1 要素 / 3=DPI 1 要素。未知・容量不足=0）（画面情報。SEED.Screen）</summary>
     public delegate* unmanaged[Cdecl]<int, float*, int, int> Screen;
+    /// <summary>(op, module, moduleLen, method, methodLen, json, jsonLen, out buf, cap) → op 0=呼び出し / 1=預かった返答の受け取り: 返答のバイト数（cap 超なら書いていない。op 1 で返答が無ければ -1）/ op 2=状態（0=使えない 1=実機 2=模擬）/ 未知の op=-1（プラットフォーム機能。SEED.Platform。W1-1）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, byte*, int, byte*, int, int> PlatformInvoke;
+    /// <summary>(out buf, cap) → -1=空 / 0以上=先頭のイベントの JSON のバイト数（cap 以下のときだけ書いて取り出す）（SEED.Platform.PlatformEvents）</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> PlatformPollEvents;
 }

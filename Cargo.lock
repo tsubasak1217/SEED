@@ -3274,6 +3274,7 @@ version = "0.1.0"
 dependencies = [
  "SEED",
  "android_logger",
+ "jni 0.22.4",
  "libc",
  "log",
  "winit",

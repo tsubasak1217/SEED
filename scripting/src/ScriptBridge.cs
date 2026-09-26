@@ -150,8 +150,34 @@ public static unsafe class ScriptBridge
     public static void BeginFrame(nint h, NativeFrameContext* ctx)
     {
         DispatchDebugCommandsOncePerFrame(ctx);
+        DispatchPlatformEventsOncePerFrame(ctx);
         InvokePhase(h, ctx, ScriptCallback.BeginFrame);
     }
+
+    /// <summary>
+    /// このフレームでまだ配っていなければ、プラットフォーム機能のイベント（SEED.Platform。W1-1）を
+    /// <see cref="SEED.Platform.PlatformEvents"/> と SEED.Events へ配る。
+    ///
+    /// エンジンはフレームの頭（スクリプトのフェーズより前）で基盤からイベントを取り出してスクリプトの箱へ移している
+    /// （runtime/src/engine/core/scripting/platform_bridge.rs）。<c>BeginFrame</c> はスクリプトの数だけ呼ばれるので、
+    /// デバッグコマンドと同じくフレームの実時間が変わったときだけ動かす。
+    /// </summary>
+    private static void DispatchPlatformEventsOncePerFrame(NativeFrameContext* ctx)
+    {
+        float now = ctx->UnscaledElapsedTime;
+        if (now == _lastPlatformDispatchTime) { return; }
+        _lastPlatformDispatchTime = now;
+
+        try { SEED.Platform.PlatformEvents.Poll(); }
+        catch (Exception ex)
+        {
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            Console.Error.WriteLine($"[SEEDScripting] プラットフォームのイベントの配信で例外: {ex}");
+        }
+    }
+
+    /// <summary>プラットフォームのイベントを最後に配ったフレームの実時間（同一フレームの二重配信よけ）。</summary>
+    private static float _lastPlatformDispatchTime = float.NaN;
 
     /// <summary>
     /// このフレームでまだ配っていなければ、外部から届いたデバッグコマンド
@@ -325,6 +351,8 @@ public static unsafe class ScriptBridge
             // 購読テーブルは静的なので、旧アセンブリのメソッドを指すデリゲートを
             // 握ったままだとアンロード可能な ALC が解放されず、ホットリロードが破綻する。
             SEED.Events.ClearAll();
+            // 同じ理由で、プラットフォームのイベントの静的なハンドラ（PlatformEvents.OnEvent）も外す（W1-1）。
+            SEED.Platform.PlatformEvents.ResetHandlers();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }
@@ -356,6 +384,7 @@ public static unsafe class ScriptBridge
             // 旧インスタンスに紐づく例外抑制状態と名前付きイベント購読をここで全消去する。
             ClearAllErrorState();
             SEED.Events.ClearAll();
+            SEED.Platform.PlatformEvents.ResetHandlers();
             var path = Encoding.UTF8.GetString(pathPtr, pathLen);
             return ScriptAssemblyManager.LoadPrecompiled(path);
         }
@@ -387,6 +416,7 @@ public static unsafe class ScriptBridge
             // LoadPrecompiledScripts と同じ前処理（旧インスタンスの例外抑制状態・名前付きイベント購読の全消去）。
             ClearAllErrorState();
             SEED.Events.ClearAll();
+            SEED.Platform.PlatformEvents.ResetHandlers();
             // Rust 側のバッファは呼び出しの間だけ有効なので、ここで配列へ写してから渡す。
             var bytes = new ReadOnlySpan<byte>(dataPtr, dataLen).ToArray();
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);

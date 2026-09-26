@@ -31,6 +31,10 @@
 //  起動の Intent の「seed.」で始まる文字列の extra を JSON 1 つ（UTF-8 の byte[]）にして、onCreate の最初
 //  （super.onCreate より前。android_main のスレッドが立つ前）に UI スレッドから呼ぶ。launch_options.rs に預け、
 //  android_main（launch.rs）が起動するシーン等に使う。byte[] の中身は JNIEnv の関数で読む（jni_env.rs）。
+//
+//  【プラットフォーム機能（SEED.Platform）の 2 本は別の場所】
+//  SeedPlatform.nativeRegisterPlatformBridge / nativeOnPlatformEvent は platform_bridge/jni_exports.rs（W1-1）。
+//  あちらは native → Java の呼び出しも要るので jni クレート 0.22 の型で受ける（E-02）。この 4 本は従来の流儀のまま。
 // ============================================================
 
 use std::ffi::c_void;

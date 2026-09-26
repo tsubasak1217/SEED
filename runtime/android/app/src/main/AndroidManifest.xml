@@ -15,6 +15,10 @@
     使うと Android 16 以降の端末で KEYCODE_BACK がアプリへ届かなくなり、戻るキー → Escape（スクリプトの
     Input.GetKeyDown(KeyCode.Escape)。docs/android.md §14.5）が効かなくなるため（公式の一時的な回避。§24）。
   ・android:appCategory="game" … ゲームとして分類する。Android 16 の「大画面で向き・サイズ変更の制限を無視する」変更の対象外にもなる。
+  ・PlatformProvider（android:process=":seed_platform"）… アプリのプラットフォーム機能（SEED.Platform）の Java だけの別プロセスの窓口
+    （W1-1。docs/android.md §25）。W1-1 では全プロジェクトに常設で入れる: :seed_platform のプロセスは最初の接続（スクリプトが
+    SEED.Platform を初めて呼んだとき）まで起動しないので、使わないゲームには影響しない。権限・サービス・受信機を機能ごとに
+    出し入れする仕組み（android.features → マニフェストの断片。E-04）は W1-2 で作り、そのときこの宣言も断片へ移すか決める。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -60,6 +64,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          プラットフォーム機能の同期の命令の窓口（Java だけの別プロセス :seed_platform。W1-1）。
+          authorities はアプリ ID ごとに変わる（${applicationId} は Gradle が置き換える。Java の PlatformContract.authority と一致）。
+          exported=false … 同じアプリのプロセスからだけ呼べる（メインプロセスの PlatformConnection が ContentProviderClient.call で呼ぶ）。
+        -->
+        <provider
+            android:name=".platform.service.PlatformProvider"
+            android:authorities="${applicationId}.seed_platform"
+            android:exported="false"
+            android:process=":seed_platform" />
     </application>
 
 </manifest>

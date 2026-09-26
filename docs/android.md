@@ -78,6 +78,8 @@ runtime/                      パッケージ SEED
     src/app_dirs.rs           アプリ専用フォルダ（files・cache）をセーブ・キャッシュの書き込み先としてエンジンへ設定（§14.1）
     src/jni_exports.rs        Java から呼ばれるネイティブ関数（onDestroy 前のセーブ書き出し。§14.2／安全領域と回転の報告。§15／
                               音声フォーカスの報告。§16）
+    src/platform_bridge/      アプリのプラットフォーム機能（SEED.Platform）の橋渡し（native → Java の SeedPlatform.invoke と
+                              Java → native のイベント。jni クレート 0.22 を使うのはここだけ。§25）
     src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
     src/dotnet_runtime/       同梱 .NET の展開（files/dotnet/）・スクリプトの DLL の置き場の選択 → CLR の起動材料（LaunchArgs.embedded_clr。§17）
     src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
@@ -125,6 +127,9 @@ runtime/android/
   app/src/main/java/com/seedengine/runtime/ScreenReporter.java 安全領域と画面の回転を集めてネイティブへ渡す（§15）
   app/src/main/java/com/seedengine/runtime/AudioFocusController.java 音声フォーカスの要求・放棄と、変化のネイティブへの通知（§16）
   app/src/main/java/com/seedengine/runtime/DotnetJniLibraries.java 同梱 .NET の暗号ライブラリを System.loadLibrary する（JNI_OnLoad。§17.8）
+  app/src/main/java/com/seedengine/runtime/platform/          SEED.Platform のメインプロセス側（JNI の入口 SeedPlatform・:seed_platform への接続。§25）
+  app/src/main/java/com/seedengine/runtime/platform/service/  SEED.Platform の :seed_platform プロセス側（Java だけ。PlatformProvider ほか。§25）
+  app/src/debug/java/com/seedengine/runtime/platform/         デバッグ版だけの adb の入口（DebugPlatformReceiver。§25.7）
   app/src/main/res/values/{strings,themes}.xml
   app/src/main/jniLibs/<ABI>/libSEED.so    ← cargo ndk の出力（生成物・追跡しない）
   app/src/main/assets/seed/assets.pak      ← SeedPak の出力（--project のときだけ。生成物・追跡しない。§13）
@@ -163,11 +168,13 @@ runtime/android/
 ```
 MainActivity（Java）: static { System.loadLibrary("SEED"); DotnetJniLibraries.loadAvailable() … 同梱 .NET の暗号ライブラリ（§17.8） }
   onCreate の最初（super.onCreate の前）: 環境変数 TMPDIR＝cache・HOME＝files・DOTNET_EnableDiagnostics=0（Os.setenv。§14.1・§17.6）
+      ・SeedPlatform.init（SEED.Platform の JNI の入口の準備とクラスの登録。:seed_platform は起こさない。§25）
   └ GameActivity.onCreate … android.app.lib_name=SEED を読み、GameActivity_onCreate（Rust 側 glue）へ
       └ android-activity が専用スレッドで android_main(app) を呼ぶ（runtime/android/native/src/entry.rs）
           1. logcat::init()            … android_logger・panic フック・標準出力/標準エラーの付け替え
           2. device_info::log          … SDK・機種・ABI・データパス
           2b. app_dirs::init           … セーブ（files/save）・キャッシュ（cache）の書き込み先をエンジンへ設定（§14.1）
+          2c. platform_bridge::install … SEED.Platform の Android の橋渡しをエンジンへ登録（§25）
           3. launch::launch_args       … APK に seed/assets.pak があればパッケージ実行（配布物の読み口 package_source 付き。§13）、
                                          無ければ <アプリ専用フォルダ>/assets をアセットルートにした LaunchArgs（mode=Play。§4.5）
           3b. dotnet_runtime::prepare  … 同梱 .NET を files/dotnet/ へ展開（初回）し、スクリプトの DLL の置き場を選んで
@@ -203,6 +210,7 @@ OS ごとの「振る舞いの差」は cfg を散らさず、`runtime/src/engin
 | `mouse_simulates_touch` | true | false | マウス左ボタンで指を 1 本合成するか（同上。`touch_drives_mouse` と排他） |
 | `key_remap` | 空 | 戻るキー → Escape | OS 固有のキーをエンジンの KeyCode へ置き換える表（`core/input/key_remap.rs`。§14.5） |
 | `reference_dpi` | 96 | 160 | 表示倍率 1.0 に当たる DPI。スクリプトの `Screen.DPI` = winit の scale_factor × この値（§15.3） |
+| `platform_bridge_fallback` | `DesktopSim` | `Unavailable` | SEED.Platform の実装が登録されていないときにどうするか。PC はエンジンの中の模擬、Android は「使えない」（実装は糊が起動時に登録する。§25） |
 
 実行時にしか分からない値（Android のアプリ専用フォルダ）は特性表ではなく `platform/paths.rs` の `PlatformPaths`
 （起動時に 1 回だけ設定する値）に持つ。Android の糊が設定し、デスクトップは設定しない（§14.1）。
@@ -3623,4 +3631,154 @@ SeedPak / SeedAndroid に ILC の工程（ABI ごと・パックの取得・NDK 
 - bundletool は SeedAndroid に組み込んでいない（AAB を端末で試すのは §24.10 の手作業）。`build_and_run.ps1`（run の互換ラッパー）に配布用の引数は足していない。
 - パッケージ化ウィンドウの配布用の欄（署名・要件の一覧・キーストアの作成）はエディタを起動して目で確かめていない（WPF 非依存の判断は単体テスト）。
 - versionCode の記録はプロジェクトの `cache/`（PC ごと）。チームで作るなら Play Console の最後の versionCode を正とする。
+
+---
+
+## 25. アプリのプラットフォーム機能（`SEED.Platform`。W1-1 橋渡し・2026-09-27）
+
+ゲームではないアプリ（最初の利用者は目覚ましアプリ Wake or Pay）が OS の機能（目覚まし・通知・権限など）を使うための土台。
+設計と段階の正典は [app_platform_roadmap.md](app_platform_roadmap.md)（W1）、スクリプトの API は [scripting_api.md](scripting_api.md) §7.13。
+W1-1 は**橋渡し**だけ: スクリプトの命令が Java の別プロセス `:seed_platform` まで同期で届いて返り、`:seed_platform` で起きたことが
+イベントとしてスクリプトまで届く骨組みと、デスクトップの模擬。目覚まし・通知・権限の中身は W1-3 以降。
+
+### 25.1 構成
+
+```
+[メインプロセス（ゲームのプロセス）]
+ C# SEED.Platform（Platform・PlatformDiagnostics・PlatformEvents。scripting/src/Api/Platform/）
+   → host_api の新カテゴリ platform_invoke / platform_poll_events（runtime/src/engine/core/scripting/platform_bridge.rs）
+   → engine::platform::bridge（trait PlatformBridge・イベントの箱・JSON の約束 wire.rs。runtime/src/engine/platform/bridge/）
+       ├ Android: 糊の AndroidPlatformBridge（runtime/android/native/src/platform_bridge/。jni クレート 0.22）
+       │    invoke → JNI → Java の SeedPlatform.invoke（同期・例外を投げない）
+       │           → PlatformConnection（unstable な ContentProviderClient を持ち続けて call）──Binder──→ :seed_platform
+       │    イベント ← nativeOnPlatformEvent ← PlatformConnection（背面のスレッド SEEDPlatform）← Binder の呼び鈴（oneway）
+       └ デスクトップ: DesktopSimBridge（エンジンの中の模擬。§25.5）
+[:seed_platform プロセス（Java だけ。libSEED.so を読み込まない）] app/src/main/java/com/seedengine/runtime/platform/service/
+ PlatformProvider（ContentProvider・exported=false）… call("<module>.<method>") をモジュールの表で振り分ける
+   └ CorePlatformModule（"platform"）… ping / version / register_callback / emit_test_event / poll_events
+ EventJournal        … 記録（未読をエンジンが取りに来る。W1-1 はメモリの中だけ）
+ EventDoorbellClient … 登録された呼び鈴へ oneway で「未読あり」を知らせる
+```
+
+| ファイル | 役割 |
+|---|---|
+| `platform/PlatformContract.java` | 両プロセス共通の名前・キー・理由（Rust の `wire.rs`・C# の `SEED.Platform` と一致させる） |
+| `platform/PlatformJson.java` | 返答・イベントの JSON の組み立てと引数の読み取り（org.json） |
+| `platform/SeedPlatform.java` | JNI の入口（`invoke`・`nativeOnPlatformEvent`・`nativeRegisterPlatformBridge`）。`MainActivity.onCreate` が `init` を呼ぶ |
+| `platform/PlatformConnection.java` | `:seed_platform` への接続（unstable な client・遅延の接続・呼び鈴を受けて未読を取り出す） |
+| `platform/EventDoorbell.java` | `:seed_platform` からの「未読あり」を受ける Binder（同じ UID 以外は無視） |
+| `platform/service/PlatformProvider.java` | `:seed_platform` の命令の窓口（モジュールの表） |
+| `platform/service/PlatformModule.java`・`CorePlatformModule.java` | モジュールの約束と "platform" モジュール |
+| `platform/service/EventJournal.java`・`EventDoorbellClient.java` | 記録と呼び鈴 |
+| `src/debug/java/…/platform/DebugPlatformReceiver.java` | デバッグ版だけの adb の入口（§25.7） |
+| `native/src/platform_bridge/{mod,android_bridge,java_bridge,inbox,jni_exports}.rs` | 糊（エンジンへの登録・JNI の持ち物・イベントの箱・2 本の JNI 関数） |
+
+### 25.2 JNI の面（W1-P3: 機能が増えても関数は増やさない）
+
+| 向き | 関数 | 呼ばれるスレッド | 中身 |
+|---|---|---|---|
+| native → Java | `SeedPlatform.invoke(String module, String method, byte[] json) → byte[] json` | 呼び出し元（スクリプト＝android_main） | 同期。例外を投げず `{"ok":false,"error":…}` を返す |
+| Java → native | `nativeOnPlatformEvent(byte[] json)` | Java の SEEDPlatform スレッド | 形を確かめて糊の箱へ積むだけ（上限 256 件・古いものから捨てる） |
+| Java → native | `nativeRegisterPlatformBridge(Class)` | UI スレッド（`onCreate`・super.onCreate の前） | 1 回。JavaVM・SeedPlatform の GlobalRef・invoke のメソッド ID を持つ |
+
+- **ネイティブのスレッドの `FindClass` を使わない**: システムのクラスローダーになり APK のクラスが見えない（§17.8）ので、Java からクラスを渡してもらい
+  `env.new_global_ref` で `Global<JClass<'static>>` にして持つ。メソッド ID は `get_static_method_id(class, jni_str!("invoke"),
+  jni_sig!("(Ljava/lang/String;Ljava/lang/String;[B)[B"))`（署名はコンパイル時に検査される）。JavaVM は `env.get_java_vm()`。
+- **jni クレート 0.22 の実際**（E-02。`~/.cargo/registry` の jni-0.22.4 の実ソースで確かめて書いた）:
+  - 受け手（Java → native）は引数の型に `EnvUnowned<'caller>`・`JClass<'caller>`・`JByteArray<'caller>` をそのまま使える（JNI の生の値と同じ並びの包み）。
+    `unowned_env.with_env(|env| …)` で `Env` を得る（中の panic は受け止められる）。結果は `into_outcome()` の Ok / Err / Panic を自分でログへ出し、
+    失敗の途中の Java の例外は `exception_clear` で消す（Java 側へ例外を残さない）。
+  - 呼ぶ側（native → Java）は `vm.attach_current_thread(|env| …)`。android_main のスレッドは GameActivity が既に attach 済みなので安い
+    （android-activity 0.6.1 が同じ jni 0.22.4 を使い、JavaVM の singleton も共有）。呼ぶたびにローカルフレームを積んで閉じるので、長く生きるスレッドで
+    ローカル参照が溜まらない。Java の例外は消されて `Err(CaughtJavaException)` になる。呼び出しは `call_static_method_unchecked(&global_class, method_id,
+    ReturnType::Array, &args)`、返りの `byte[]` は `cast_local::<JByteArray>` → `convert_byte_array`。
+  - 既存の 4 関数（`jni_exports.rs`。生ポインタで受ける流儀）はそのまま。jni クレートを使うのは `platform_bridge/` だけで、エンジン本体には入れない。
+- 名前（module・method）は小文字英数字と `_` の 1〜64 文字（Java で `<module>.<method>` を ContentProvider の method にするので `.` を含めない）。
+  エンジン・Java の両端で確かめる。JSON は UTF-8 の byte[] で渡す（修正 UTF-8 の JNI 文字列を避ける。module・method の文字列は ASCII だけ）。
+
+### 25.3 接続（プロセスの起動を描画のスレッドで待たない）
+
+- `:seed_platform` のプロセスは**最初の接続まで起動しない**（使わないゲームには影響しない）。起動の待ちは約 120 ms（W1-0 で 123 ms）。
+- `invoke` がつながっていないとき: 背面のスレッド SEEDPlatform で接続を始め、**すぐ** `{"ok":false,"error":"connecting"}` を返す。
+  つながると `platform.connected`（data.connect_ms・data.pid）、つなげなければ `platform.connect_failed`（data.error）のイベントが届く。
+  スクリプトは `platform.connected` を受けて呼び直す（scripting_api.md §7.13 の例）。
+- 接続 = `ContentResolver.acquireUnstableContentProviderClient("<applicationId>.seed_platform")` ＋ `platform.register_callback`
+  （`Bundle.putBinder` で呼び鈴の Binder〈EventDoorbell〉を渡す）。client は持ち続ける（毎回の `ContentResolver.call` より速い。W1-0 で 0.36〜0.51 ms 対 0.64〜0.87 ms）。
+- **unstable を使う理由**: 安定な取得（`acquireContentProviderClient`）は、プロバイダのプロセスが死ぬと、依存するプロセス（＝ゲームの本体）まで
+  システムに片付けられる（AOSP の `ContentResolver.acquireUnstableContentProviderClient` の説明）。unstable なら `DeadObjectException` で死を知り、
+  閉じて取り直せばよい。死を知ったら `platform.disconnected` を送り、次の呼び出しで接続し直す（その呼び出しは `connecting`）。
+- 待ってよい呼び出し元（デバッグの受信機など、描画のスレッドでないもの）は接続を待てる（上限 10 秒）。
+
+### 25.4 イベント
+
+- **記録（EventJournal）が正本、呼び鈴は「未読あり」の知らせ**。`:seed_platform` が記録を足す → 登録された呼び鈴へ oneway の Binder の呼び出し
+  （Parcel は最新の seq 1 つ。相手を待たない）→ メインプロセスの SEEDPlatform スレッドが `platform.poll_events`（最大 64 件・`has_more`）で取り出す →
+  1 件ずつ `nativeOnPlatformEvent` → 糊の箱 → エンジンがフレームの頭（スクリプトより前）で取り出し、スクリプトの箱へ移す →
+  C# の `PlatformEvents.Poll`（BeginFrame でフレームに 1 回）が `PlatformEvents.OnEvent` と `SEED.Events`（名前 `platform.…`・引数は JSON）へ配る。
+- 呼び鈴の登録は接続のたび（`:seed_platform` が作り直されると登録が消えるため）。登録のときに未読があればすぐ鳴らす（エンジンが居ない間の記録も取れる）。
+  メインプロセスが死ぬと `linkToDeath` で登録を外す。エンジンが居なければ `:seed_platform` は何もしない（メインプロセスを起こさない）。
+- 自パッケージ宛ての放送を使わないのは、受け手が別の放送を処理している間 5 秒待たされたため（W1-0 の F-3）。
+- 形: `{"name":"platform.…","seq":番号,"time_ms":UTC の epoch ミリ秒,"data":{…}}`。seq は記録の通し番号（1 から）。メインプロセスの中で作る
+  接続の知らせ（`platform.connected` など）は seq 0。
+- 箱（糊・スクリプト）はどちらも上限 256 件で、あふれたら古いものから捨ててログに残す。
+
+### 25.5 デスクトップの模擬（W1-P7）
+
+PC の Play（エディタ埋め込み・単体起動の SEED.exe）では、Android の糊が登録しないので、プラットフォームの特性表 `platform_bridge_fallback = DesktopSim`（§4.4）
+に従ってエンジンの中の `DesktopSimBridge` が答える（`IsSimulated == true`）。命令は表（`SIM_COMMANDS`）の 1 行ずつで、W1-1 は `platform.ping`（pid は SEED.exe）・
+`platform.version`・`platform.emit_test_event`（イベントは模擬の箱に積まれ、次のフレームでスクリプトへ届く）。W1-3 以降の模擬（目覚ましをタイマーで鳴らす等）は
+表に行を足し、時刻で起きるものは `poll_events`（フレームの頭）の中で積む。エディタの Play の開始・停止では、前の回のイベントを捨てる（`play_mode_ops.rs`）。
+
+### 25.6 マニフェスト
+
+- `PlatformProvider` は main の `AndroidManifest.xml` に常設（`android:process=":seed_platform"`・`exported=false`・
+  `android:authorities="${applicationId}.seed_platform"`。アプリ ID ごとに変わるので、Java は `context.getPackageName()` から作る）。
+  機能ごとの出し入れ（`android.features` → マニフェストの断片。E-04）は W1-2。
+- `DebugPlatformReceiver` は `src/debug/AndroidManifest.xml` だけ（exported=true・intent-filter なし。配布版には入らない）。
+- 権限は足していない（W1-1 は ContentProvider と Binder だけで、どちらも権限が要らない）。
+
+### 25.7 確かめ方（adb）
+
+```bash
+# Git Bash の例。APP はプロジェクト設定の android.application_id（Wake or Pay は com.wakeorpay.seed）
+APP=com.wakeorpay.seed
+ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
+# 1. 確かめ用のシーンで起動（D:\SEED_projects\WakeOrPay の scenes/PlatformSmoke.scene。PlatformSmoke.cs が ping 3 回と試験イベント）
+dotnet run --project editor/tools/SeedAndroid -- run --project 'D:\SEED_projects\WakeOrPay' --serial <端末> --scene scenes/PlatformSmoke.scene --logcat-seconds 30
+# 2. adb から ping（1 回目は :seed_platform の起動込み）と試験イベント（-n で部品を指定する。暗黙の放送は届かない）
+MSYS_NO_PATHCONV=1 "$ADB" shell am broadcast -n $APP/com.seedengine.runtime.platform.DebugPlatformReceiver -a com.seedengine.runtime.platform.PING --ei count 5
+MSYS_NO_PATHCONV=1 "$ADB" shell am broadcast -n $APP/com.seedengine.runtime.platform.DebugPlatformReceiver -a com.seedengine.runtime.platform.EMIT_TEST_EVENT --es message hello
+# 3. ログ（エンジンは SEED の [SEED PLATFORM]、Java は SEEDPlatform、スクリプトは [Script] [PlatformSmoke]）
+"$ADB" logcat -s SEED SEEDPlatform
+# 4. :seed_platform のプロセス（最初の接続まで居ないこと・接続の後は居ること）
+"$ADB" shell ps -A | grep $APP
+```
+
+期待するログ（順に）: `[SEED PLATFORM] Java の SeedPlatform を登録しました` → `[PlatformSmoke] IsSupported=True IsSimulated=False` →
+`ping 1/3: 失敗 … error=connecting` → SEEDPlatform の `PlatformProvider を作りました（com.wakeorpay.seed:seed_platform・pid …）`・
+`:seed_platform へつながりました（N ms・pid …）` → `[PlatformSmoke] イベント platform.connected` → `ping 1/3: ok … pid=<:seed_platform の pid>`（3 回）→
+`試験イベントを流しました: 受け付けられた` → `イベント platform.test_event`。adb の PING は `[debug] ping 1/5（冷: 接続込み）ok=true rtt_us=…`。
+
+### 25.8 確認結果（2026-09-27）
+
+- Rust の単体テスト 35 件が通った（新規 28 件＋特性表の既存 7 件。`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests`。
+  JSON の約束・箱の上限と 2 段階の受け渡し・模擬の命令と試験イベント・FFI の op と預かった返答・模擬の試験イベントがフレームの公開を経て
+  スクリプトの箱から取れること）。
+- PC の Play（SEED.exe・Wake or Pay の `scenes/PlatformSmoke.scene`）: `IsSupported=True IsSimulated=True`、模擬の ping 3 回が ok（15.2 ms〈初回の JIT〉・
+  0.109 ms・0.043 ms）、試験イベントが次のフレームの BeginFrame で `PlatformEvents.OnEvent` と `SEED.Events` の両方へ届いた。
+- APK（arm64-v8a・debug・`com.wakeorpay.seed`）が作れた。マージ後のマニフェストに `PlatformProvider`（authorities `com.wakeorpay.seed.seed_platform`・
+  process `:seed_platform`・exported=false）と `DebugPlatformReceiver`（exported=true）が入り、libSEED.so に `nativeOnPlatformEvent`・
+  `nativeRegisterPlatformBridge` が書き出され（既存の 4 関数もそのまま）、dex に platform の Java のクラスが入っていることを確かめた。
+- **実機（Pixel 6a）は未実施**（端末が USB に無かった）。JNI の往復・`Bundle.putBinder` の呼び鈴・unstable な client の死の扱いは、実機でまだ一度も通していない。
+
+### 25.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機での確認（§25.7）が残っている。
+- 記録（EventJournal）はメモリの中だけで、取り出した時点で既読にする（取り出した直後にメインプロセスが死ぬと、そのイベントはスクリプトへ届かない）。
+  永続化（端末保護ストレージ）は W1-3、エンジンの受け取りの確認（ack）と前面へ戻ったとき（onResume）の未読の取り直しは W1-4 で決める。
+- 最初の呼び出しは `connecting` で失敗する（アプリの API の使い勝手）。W1-2 の `android.features` に機能が書かれたプロジェクトでは、起動時に背面で接続する
+  （起動の直後から同期で呼べる）形を検討する。
+- `DeadObjectException` の後の呼び直しは「命令が届いていない」前提（死んだ瞬間に処理済みだった命令は 2 回走りうる）。W1-3 の命令（予約など）は同じ ID で
+  置き換える冪等な形にする。
+- `DebugPlatformReceiver` は権限で守っていない（デバッグ版だけ。他のアプリから ping・試験イベントを送れる）。
 

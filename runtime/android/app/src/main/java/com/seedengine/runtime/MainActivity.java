@@ -11,6 +11,8 @@
 //    ・安全領域と画面の回転をネイティブへ知らせる（中身は ScreenReporter。契機の受け口だけここ）
 //    ・音量キーの対象をメディアの音量にし、音声フォーカスを前面で要求・前面を離れるときに手放す
 //      （中身は AudioFocusController。契機の受け口だけここ）
+//    ・アプリのプラットフォーム機能（SEED.Platform）の JNI の入口の準備（中身は platform/SeedPlatform。W1-1。
+//      :seed_platform のプロセスはここでは起動しない。最初の呼び出しまで遅らせる）
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
@@ -38,6 +40,8 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.google.androidgamesdk.GameActivity;
+
+import com.seedengine.runtime.platform.SeedPlatform;
 
 /**
  * SEED ランタイムの唯一の Activity。
@@ -112,6 +116,10 @@ public class MainActivity extends GameActivity {
         // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
         setAppDirectoryEnvironment();
         forwardLaunchOptions();
+        // SEED.Platform の JNI の入口を用意し、ネイティブへ SeedPlatform のクラスを渡す（エンジンが最初のフレームから
+        // IsSupported を正しく読めるよう android_main より前に）。:seed_platform は呼ばない（プロセスの起動の約 120 ms を
+        // ここで待たない。つなぐのはスクリプトが最初に呼んだとき・背面のスレッドで。platform/PlatformConnection）。
+        SeedPlatform.init(this);
         super.onCreate(savedInstanceState);
         hideSystemBars();
         // 音量キーは常にメディアの音量（ゲームの音が属する STREAM_MUSIC）を上げ下げする。指定しないと

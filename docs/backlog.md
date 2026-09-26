@@ -2263,12 +2263,33 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [x] **app_platform_roadmap.md §2.6 の誤り 2 件** — 2026-09-27 記載 / 同日対応（W1-0）。「サイドロードではフルスクリーン通知が既定で無効」は
   誤りで、Play 以外のインストールでは既定で有効（AOSP の記述と実機）。adb の `am broadcast -a …`（`-n`/`-p` なし）はマニフェストの受信機に
   届かない（手順に `-n` を足した）。§2.6・§2.9 を直した。
-- [ ] **W1-1 橋渡し（native → Java の呼び出しが 1 つも無い）** — 2026-09-27。`SeedPlatform.invoke(module, method, byte[] json)` と
-  `nativeOnPlatformEvent(byte[] json)` の 2 本、`ScriptHostApi` の新カテゴリ、C# の `SEED.Platform` の骨組み、デスクトップの模擬。
-  ネイティブのスレッドからの `FindClass` はアプリのクラスが見えない（android.md §17.8）ので、Java からクラスを渡して GlobalRef で持つ。
-  W1-0 で決めた手段（E-02）: `ContentProviderClient` を持ち続けて `call`（0.36〜0.51 ms）、`:seed_platform` からの知らせは Binder の
-  コールバック（放送は受け手が別の放送を処理中だと 5 秒待たされた）、JNI は `jni` クレート 0.22（Rust 側は未試作。最初に往復を 1 本通す）。
-  最初の `call` は `:seed_platform` の起動で約 120 ms 待つので描画のスレッドから呼ばない。
+- [x] **W1-1 橋渡し（native → Java の呼び出しが 1 つも無い）** — 2026-09-27 記載 / 同日実装（実機の確認は下の項目）。`SeedPlatform.invoke(module, method, byte[] json)` と
+  `nativeOnPlatformEvent(byte[] json)` の 2 本（＋起動時の `nativeRegisterPlatformBridge(Class)`）、`ScriptHostApi` の新カテゴリ（`platform_invoke`・
+  `platform_poll_events`）、C# の `SEED.Platform`（`Platform`・`PlatformDiagnostics`・`PlatformEvents`）、デスクトップの模擬（`DesktopSimBridge`）、
+  `:seed_platform` の `PlatformProvider`（ping・version・register_callback・emit_test_event・poll_events）と `EventJournal`、デバッグ版の
+  `DebugPlatformReceiver`。JNI は `jni` クレート 0.22.4（Cargo.lock の版を共有）。client は unstable で取り、最初の呼び出しは背面で接続を始めて
+  `connecting` で失敗し、つながると `platform.connected` が届く。Rust の単体テスト（新規 28 件）・PC の Play（模擬の ping と試験イベント）・APK の作成まで確認。
+  正典は docs/android.md §25。
+- [ ] **W1-1 の実機の確認（JNI の往復・`Bundle.putBinder` の呼び鈴・unstable な client）** — 2026-09-27。実装した日は Pixel 6a が USB に無く、
+  実機では一度も通していない。docs/android.md §25.7 の手順で、Wake or Pay の `scenes/PlatformSmoke.scene` を `SeedAndroid run --scene` で起動し、
+  `connecting` → `platform.connected` → ping 3 回（`:seed_platform` の pid・1 ms 未満か）→ 試験イベントの到達を logcat で見る。あわせて adb の
+  `DebugPlatformReceiver`（PING・EMIT_TEST_EVENT）、`:seed_platform` が最初の接続まで居ないこと、`run-as … kill -9 <:seed_platform の pid>` の後に
+  `platform.disconnected` → 次の呼び出しで接続し直すこと（ゲームのプロセスが道連れにならないこと）を確かめる。結果を roadmap §2.10 と android.md §25.8 へ。
+- [ ] **プラットフォームの記録の永続化と「既読」の扱い（W1-1 の割り切り）** — 2026-09-27（W1-1）。`EventJournal` はメモリの中だけで、
+  `platform.poll_events` で取り出した時点で既読にして捨てる。`:seed_platform` が死ぬと未読が消え、取り出した直後にメインプロセスが死ぬと
+  そのイベントはスクリプトへ届かない。目覚ましの記録（鳴った・止めた）は取りこぼせないので、W1-3 で端末保護ストレージへ書き、W1-4 で
+  エンジンの受け取りの確認（ack）と、前面へ戻ったとき（onResume）の未読の取り直し（呼び鈴の取りこぼしの保険。roadmap §2.2）を決める。
+  関連: `runtime/android/app/src/main/java/com/seedengine/runtime/platform/service/EventJournal.java`。
+- [ ] **最初の SEED.Platform の呼び出しが `connecting` で失敗する（使い勝手）** — 2026-09-27（W1-1）。`:seed_platform` の起動（約 120 ms）を
+  描画のスレッドで待たないための形だが、アプリの API（W1-3 の `Alarms.Schedule` など）が起動の直後に失敗しうる。W1-2 の `android.features` に
+  機能が書かれたプロジェクトでは、起動時（Activity の onCreate の後）に背面で接続を始め、最初のフレームまでにつながっている形を検討する
+  （機能を使わないゲームは今どおり起こさない）。あわせてスクリプトから「つながっているか」を IPC 無しで読む手段（今はイベントで知るだけ）。
+- [ ] **`DeadObjectException` の後の呼び直しは冪等な命令が前提** — 2026-09-27（W1-1）。`PlatformConnection.invoke` は `:seed_platform` の死を
+  知ると client を閉じて接続し直す（待ってよい呼び出し元は同じ命令をもう一度送る）。死んだ瞬間に処理済みだった命令は 2 回走りうる。
+  W1-3 の命令（予約・取り消し・停止）は同じ ID で置き換える冪等な形にする。
+- [ ] **`DebugPlatformReceiver` を権限で守っていない（デバッグ版だけ）** — 2026-09-27（W1-1）。exported=true・permission なしなので、
+  デバッグ版の APK が入った端末では他のアプリからも ping・試験イベントを送れる（害は小さい）。androidx の `ProfileInstallReceiver` と同じく
+  `android:permission="android.permission.DUMP"`（adb のシェルは持つ）で守れる見込みだが、実機で adb から届くことを確かめてから変える。
 - [ ] **W1-2 機能の opt-in（`android.features`・`deep_links`・`system_bars`・`app_category`）** — 2026-09-27。SeedAndroid → Gradle →
   生成したマニフェストの断片。Play の要件チェック（`AndroidRequirementChecks`・`play_requirements.json`）に権限と前景サービスの申告の注意を足す。
   断片の差し込み方（AGP の variant API か library module か）は W1-0 で試していないので、ここで確かめる。

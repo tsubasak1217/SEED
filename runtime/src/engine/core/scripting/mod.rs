@@ -29,6 +29,8 @@ pub mod actor_ref_path;
 pub mod input_bridge;
 // 画面情報 API（SEED.Screen）の FFI とフレームごとの写しの公開口
 pub mod screen_bridge;
+// アプリのプラットフォーム機能 API（SEED.Platform）の FFI とスクリプトへ見せるイベントの箱（W1-1。実体は engine/platform/bridge/）
+pub mod platform_bridge;
 // ControlPoint パス評価（時刻 → ワールド位置／進行方向）の純関数層
 pub mod path_query;
 // カメラのワールド→スクリーン射影（Camera.WorldToScreen / WorldToCanvas）の純関数層
