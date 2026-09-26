@@ -1,5 +1,5 @@
 // ============================================================
-//  platform/bridge/desktop_sim.rs — デスクトップの模擬（DesktopSimBridge。W1-P7）
+//  platform/bridge/desktop_sim/mod.rs — デスクトップの模擬（DesktopSimBridge。W1-P7。W1-3 で目覚ましを追加）
 //
 //  【役割】
 //  PC の Play（エディタ埋め込み・単体起動）で SEED.Platform のスクリプトを動かすための、プロセスの中だけで完結する
@@ -14,16 +14,32 @@
 //    platform.ping            … 受け取った JSON を echo に入れて返す＋pid（SEED.exe のもの）・模擬を作ってからの ms・simulated=true
 //    platform.version         … プロトコルの版と使えるモジュール
 //    platform.emit_test_event … 試験イベント platform.test_event を 1 つ積む（次のフレームでスクリプトへ届く）
+//  【W1-3 の命令】（Java の AlarmModule と同じ意味。中身は alarm_commands.rs・予約表は alarm_book.rs）
+//    alarm.schedule / cancel / cancel_all / list / can_schedule_exact … 予約表はプロセスの中だけ。壁時計（wall_clock.rs）が
+//    予定時刻を過ぎたら poll_events で platform.alarm.fired を積む。エディタの Play の区切り（reset_session）で空にする。
+//
+//  【ファイル】mod.rs（表と共通）・alarm_book.rs（模擬の予約表）・alarm_commands.rs（目覚ましの命令と発火）・
+//  wall_clock.rs（壁時計。テストで進める）
 // ============================================================
 
+/// 模擬の目覚ましの予約表。
+mod alarm_book;
+/// 模擬の目覚ましの命令と発火。
+mod alarm_commands;
+/// 壁時計（テストで差し替える）。
+mod wall_clock;
+
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
 use super::event_queue::{PlatformEventQueue, DEFAULT_EVENT_QUEUE_CAPACITY};
-use super::wire::{self, METHOD_EMIT_TEST_EVENT, METHOD_PING, METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME};
+use super::wire::{self, alarm as alarm_names, METHOD_EMIT_TEST_EVENT, METHOD_PING, METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME};
 use super::{PlatformBridge, PlatformBridgeKind};
+use alarm_book::SimAlarmBook;
+pub use wall_clock::{SystemWallClock, WallClock};
 
 /// 試験イベントの引数に message が無いときの文言。
 const DEFAULT_TEST_MESSAGE: &str = "test";
@@ -34,8 +50,30 @@ const KEY_MESSAGE: &str = "message";
 /// 最初に払い出す試験イベントの通し番号（Java の EventJournal と同じく 1 から）。
 const FIRST_EVENT_SEQ: u64 = 1;
 
-/// 命令 1 つの結果（成功なら返答の中身、失敗なら理由の名前）。
-type SimResult = Result<Map<String, Value>, &'static str>;
+/// 命令 1 つの結果（成功なら返答の中身、失敗なら理由の名前と説明）。
+type SimResult = Result<Map<String, Value>, SimFailure>;
+
+/// 命令の失敗（返答の error と detail。Java の PlatformJson.errorReply と同じ形にする）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SimFailure {
+    /// 理由の名前（wire::ERROR_* / wire::alarm::ERROR_*）。
+    reason: &'static str,
+    /// 説明（無ければ None）。
+    detail: Option<String>,
+}
+
+impl SimFailure {
+    /// 引数の値の誤り（invalid_argument。説明つき）。
+    fn invalid_argument(detail: String) -> Self {
+        Self { reason: alarm_names::ERROR_INVALID_ARGUMENT, detail: Some(detail) }
+    }
+}
+
+impl From<&'static str> for SimFailure {
+    fn from(reason: &'static str) -> Self {
+        Self { reason, detail: None }
+    }
+}
 
 /// 命令 1 つの処理。
 type SimHandler = fn(&DesktopSimBridge, &Value) -> SimResult;
@@ -55,6 +93,15 @@ const SIM_COMMANDS: &[SimCommand] = &[
     SimCommand { module: MODULE_PLATFORM, method: METHOD_PING, handler: DesktopSimBridge::handle_ping },
     SimCommand { module: MODULE_PLATFORM, method: METHOD_VERSION, handler: DesktopSimBridge::handle_version },
     SimCommand { module: MODULE_PLATFORM, method: METHOD_EMIT_TEST_EVENT, handler: DesktopSimBridge::handle_emit_test_event },
+    SimCommand { module: alarm_names::MODULE, method: alarm_names::METHOD_SCHEDULE, handler: DesktopSimBridge::handle_alarm_schedule },
+    SimCommand { module: alarm_names::MODULE, method: alarm_names::METHOD_CANCEL, handler: DesktopSimBridge::handle_alarm_cancel },
+    SimCommand { module: alarm_names::MODULE, method: alarm_names::METHOD_CANCEL_ALL, handler: DesktopSimBridge::handle_alarm_cancel_all },
+    SimCommand { module: alarm_names::MODULE, method: alarm_names::METHOD_LIST, handler: DesktopSimBridge::handle_alarm_list },
+    SimCommand {
+        module: alarm_names::MODULE,
+        method: alarm_names::METHOD_CAN_SCHEDULE_EXACT,
+        handler: DesktopSimBridge::handle_alarm_can_schedule_exact,
+    },
 ];
 
 /// デスクトップの模擬の PlatformBridge。
@@ -66,6 +113,10 @@ pub struct DesktopSimBridge {
     next_seq: AtomicU64,
     /// 模擬を作った時刻（ping の uptime_ms の起点。Android の :seed_platform の「プロセスの起動から」に当たる）。
     started_at: Instant,
+    /// 模擬の目覚ましの予約表（W1-3）。
+    alarms: SimAlarmBook,
+    /// 予定時刻と比べる壁時計（テストでは手で進める時計）。
+    clock: Arc<dyn WallClock>,
 }
 
 impl Default for DesktopSimBridge {
@@ -75,13 +126,25 @@ impl Default for DesktopSimBridge {
 }
 
 impl DesktopSimBridge {
-    /// 空の模擬を作る。
+    /// 空の模擬を作る（本物の壁時計）。
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(SystemWallClock))
+    }
+
+    /// 壁時計を指定して空の模擬を作る（単体テストで時刻を進めるため）。
+    pub fn with_clock(clock: Arc<dyn WallClock>) -> Self {
         Self {
             events: PlatformEventQueue::new(DEFAULT_EVENT_QUEUE_CAPACITY),
             next_seq: AtomicU64::new(FIRST_EVENT_SEQ),
             started_at: Instant::now(),
+            alarms: SimAlarmBook::new(),
+            clock,
         }
+    }
+
+    /// 模擬のイベントの通し番号を 1 つ払い出す（試験イベントと目覚ましで共通）。
+    fn next_event_seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::Relaxed)
     }
 
     /// platform.ping: 受け取った JSON をそのまま echo に入れ、pid と模擬を作ってからの ms を添える。
@@ -109,7 +172,7 @@ impl DesktopSimBridge {
     /// platform.emit_test_event: 試験イベントを 1 つ積む（引数の message を data に入れる）。
     fn handle_emit_test_event(&self, request: &Value) -> SimResult {
         let message = request.get(KEY_MESSAGE).and_then(Value::as_str).unwrap_or(DEFAULT_TEST_MESSAGE);
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let seq = self.next_event_seq();
         let data = json!({ KEY_MESSAGE: message, "pid": std::process::id(), "simulated": true });
         self.events.push(wire::event_json(TEST_EVENT_NAME, seq, now_utc_millis(), data));
         let mut fields = Map::new();
@@ -139,12 +202,24 @@ impl PlatformBridge for DesktopSimBridge {
         };
         Ok(match (command.handler)(self, &request) {
             Ok(fields) => wire::ok_reply(fields),
-            Err(reason) => wire::error_reply(reason),
+            Err(SimFailure { reason, detail: Some(detail) }) => {
+                eprintln!("{} {module}.{method} を断りました: {reason}（{detail}）", super::LOG_PREFIX);
+                wire::error_reply_with_detail(reason, &detail)
+            }
+            Err(SimFailure { reason, detail: None }) => wire::error_reply(reason),
         })
     }
 
     fn poll_events(&self) -> Vec<String> {
+        // 時刻を過ぎた予約を先に積んでから取り出す（フレームの頭で呼ばれるので、次のスクリプトのフレームで届く）
+        self.fire_due_alarms();
         self.events.drain()
+    }
+
+    fn reset_session(&self) {
+        // Play の区切り: 予約と積んだイベントを捨てる（Play を止めれば模擬の予約は消える）
+        self.alarms.clear();
+        self.events.clear();
     }
 }
 
@@ -195,14 +270,14 @@ mod tests {
         assert_eq!(reply["echo"], json!({}));
     }
 
-    /// version: プロトコルの版と platform モジュール。
+    /// version: プロトコルの版と、模擬が知っているモジュール（名前の順。W1-3 で alarm が加わった）。
     #[test]
     fn version_reports_protocol() {
         let sim = DesktopSimBridge::new();
         let reply = parse(&sim.invoke(MODULE_PLATFORM, METHOD_VERSION, "{}").unwrap());
         assert_eq!(reply[wire::KEY_OK], Value::Bool(true));
         assert_eq!(reply["protocol"], Value::from(wire::PROTOCOL_VERSION));
-        assert_eq!(reply["modules"], json!([MODULE_PLATFORM]));
+        assert_eq!(reply["modules"], json!([alarm_names::MODULE, MODULE_PLATFORM]));
     }
 
     /// emit_test_event: 積んだイベントが poll_events で順に出て、通し番号が 1 から増える。取り出した後は空。

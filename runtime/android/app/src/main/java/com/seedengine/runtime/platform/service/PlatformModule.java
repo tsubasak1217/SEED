@@ -1,5 +1,5 @@
 // ============================================================
-//  PlatformModule.java — :seed_platform の命令のモジュール 1 つ分の約束（W1-1）
+//  PlatformModule.java — :seed_platform の命令のモジュール 1 つ分の約束（W1-1。W1-3 で alarm/ から実装するため public に）
 //
 //  PlatformProvider は ContentProvider の call の method（"<module>.<method>"）をモジュールの名前で振り分け、
 //  モジュールがメソッドの名前で処理を選ぶ。機能を増やすときは、このインターフェースを実装したモジュールを
@@ -14,7 +14,7 @@ import android.os.Bundle;
 /**
  * 命令のモジュール（:seed_platform の Binder のスレッドから同時に呼ばれうる。状態を持つなら自分で同期する）。
  */
-interface PlatformModule {
+public interface PlatformModule {
 
     /**
      * モジュールの名前（PlatformContract.isValidName を満たす。call の method の "." より前）。

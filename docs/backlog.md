@@ -2291,6 +2291,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `platform.poll_events` で取り出した時点で既読にして捨てる。`:seed_platform` が死ぬと未読が消え、取り出した直後にメインプロセスが死ぬと
   そのイベントはスクリプトへ届かない。目覚ましの記録（鳴った・止めた）は取りこぼせないので、W1-3 で端末保護ストレージへ書き、W1-4 で
   エンジンの受け取りの確認（ack）と、前面へ戻ったとき（onResume）の未読の取り直し（呼び鈴の取りこぼしの保険。roadmap §2.2）を決める。
+  → **W1-3 で永続化は済み**（端末保護ストレージの `seed_platform/journal.json` へ足す・取り出すたびに原子的に書く。docs/android.md §25.11.6）。
+  残りは ack と onResume の取り直し（W1-4）。取り出した直後にメインプロセスが死ぬと届かないのは変わらない。
   関連: `runtime/android/app/src/main/java/com/seedengine/runtime/platform/service/EventJournal.java`。
 - [ ] **最初の SEED.Platform の呼び出しが `connecting` で失敗する（使い勝手）** — 2026-09-27（W1-1）。`:seed_platform` の起動（約 120 ms）を
   描画のスレッドで待たないための形だが、アプリの API（W1-3 の `Alarms.Schedule` など）が起動の直後に失敗しうる。W1-2 の `android.features` に
@@ -2298,9 +2300,10 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   （機能を使わないゲームは今どおり起こさない）。あわせてスクリプトから「つながっているか」を IPC 無しで読む手段（今はイベントで知るだけ）。
   W1-2 では手を付けていない（範囲外）。機能を APK へ焼き込む仕組み（生成する `res/values/seed_platform.xml`）はできたので、W1-3 で
   「起動時に接続する」bool を機能の表から生成し、MainActivity が読む形にできる。
-- [ ] **`DeadObjectException` の後の呼び直しは冪等な命令が前提** — 2026-09-27（W1-1）。`PlatformConnection.invoke` は `:seed_platform` の死を
-  知ると client を閉じて接続し直す（待ってよい呼び出し元は同じ命令をもう一度送る）。死んだ瞬間に処理済みだった命令は 2 回走りうる。
-  W1-3 の命令（予約・取り消し・停止）は同じ ID で置き換える冪等な形にする。
+- [x] **`DeadObjectException` の後の呼び直しは冪等な命令が前提** — 2026-09-27（W1-1）記載 / 同日 W1-3 で目覚ましの命令を冪等にした。
+  `PlatformConnection.invoke` は `:seed_platform` の死を知ると client を閉じて接続し直す（待ってよい呼び出し元は同じ命令をもう一度送る）。
+  死んだ瞬間に処理済みだった命令は 2 回走りうる。→ `alarm.schedule` は同じ ID で置き換え、`alarm.cancel` は無い ID でも成功、`cancel_all` も
+  何度でも同じ結果（docs/android.md §25.11）。W1-4 の停止（`StopRinging`）も同じ形にする。
 - [ ] **`DebugPlatformReceiver` を権限で守っていない（デバッグ版だけ）** — 2026-09-27（W1-1）。exported=true・permission なしなので、
   デバッグ版の APK が入った端末では他のアプリからも ping・試験イベントを送れる（害は小さい）。androidx の `ProfileInstallReceiver` と同じく
   `android:permission="android.permission.DUMP"`（adb のシェルは持つ）で守れる見込みだが、実機で adb から届くことを確かめてから変える。
@@ -2328,13 +2331,39 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [ ] **システムバーを出したままのときの文字色（明暗）を選べない** — 2026-09-27（W1-2）。テーマの既定のまま（暗い AppCompat のテーマなので白い文字の見込み。
   推論・実機で未確認）。明るい画面のアプリではステータスバーの時刻・電池が見えにくい。W1-6 の `Window` の API（と必要ならプロジェクト設定）で
   `WindowInsetsControllerCompat.setAppearanceLightStatusBars` を選べるようにする。
-- [ ] **W1-3 目覚ましの予約（setAlarmClock・予約の控え・再起動／時刻・タイムゾーン／更新／権限の変化で張り直す・音源の書き出し）** — 2026-09-27。
+- [x] **W1-3 目覚ましの予約（setAlarmClock・予約の控え・再起動／時刻・タイムゾーン／更新／権限の変化で張り直す・音源の書き出し）** — 2026-09-27 記載 / 同日実装（実機の確認は下の項目）。
   W1-0: `BootReceiver` は強制停止からの復帰（Android 15+ は停止状態から出たときに `BOOT_COMPLETED`。実機では `LOCKED_BOOT_COMPLETED` も）も兼ねる。
   張り直しは必ず `setAlarmClock`（`BOOT_COMPLETED` から直接鳴らさない）。
+  → `:seed_platform` の `platform/service/alarm/`（`AlarmModule`・`AlarmStore`〈端末保護ストレージの `seed_platform/alarms.json`・一時ファイル → fsync →
+  rename〉・`AlarmScheduler`〈要求コード固定＋data の URI で予約ごとの PendingIntent〉・`AlarmBook`・`AlarmReceiver`・`BootReceiver`〈6 つの放送〉）、
+  機能の表の `alarm` に受信機 2 つ、`EventJournal` の永続化、`platform.paths` とメインプロセスの音源の書き出し（`bridge/alarm/sound_export.rs`・
+  糊の `alarm_prep.rs`）、デスクトップの模擬（`desktop_sim/alarm_*`）、C# の `Alarms`・`AlarmRequest`・`ScheduledAlarm`・`AlarmFiredEvent` 等。
+  Rust の単体テスト・`AndroidPipelineTests`・PC の Play（5 秒後の予約 → `platform.alarm.fired` → 控えが空）・APK の aapt2 と dexdump まで確認。正典は docs/android.md §25.11。
+- [ ] **W1-3 の実機の確認（予約・dumpsys alarm・発火の記録・BootReceiver・音源の書き出し）** — 2026-09-27（W1-3）。実装した日は Pixel 6a が USB に
+  無かった。docs/android.md §25.11.7 の手順で、`scenes/PlatformSmoke.scene` の 5 秒後の予約が `dumpsys alarm` に alarm clock として出ること・
+  `platform.alarm.fired` が届き控えが空になること・強制停止 → 開き直しで `BootReceiver` が過ぎた予約を `platform.alarm.missed`（device_off）に
+  すること・`run-as` で端末保護ストレージ（`/data/user_de/0/<APP>/files/seed_platform/`）の控え・記録が読めることを見る。`sound_asset` の書き出しは
+  Wake or Pay に音のアセットがまだ無いので、音を足してから確かめる。W1-1・W1-2 の実機の確認（上）と一緒に行う。
+- [ ] **目覚ましの音源の書き出しに掃除が無い** — 2026-09-27（W1-3）。`files/seed_platform/sounds/<内容のハッシュ>.<拡張子>` は内容が変わるたびに増え、
+  消さない（予約から外れた音も残る）。書き出しはメインプロセス、控えは `:seed_platform` にあり、掃除をどちらがいつ行うか（控えのどの予約からも
+  指されていないファイルを、予約の直後の書き出しとぶつからない時機に消す）を決める。音は小さい見込みなので急がない。関連:
+  `runtime/src/engine/platform/bridge/alarm/sound_export.rs`。
+- [ ] **Android 10〜14 で強制停止の後に予約が戻らない（起動のたびの張り直しが無い）** — 2026-09-27（W1-3）。強制停止で予約も PendingIntent も消え、
+  Android 15+ は停止状態から出たときに `BOOT_COMPLETED` が届いて `BootReceiver` が張り直すが、14 以前は次の再起動まで届かない（公式「Android 15 の
+  動作の変更」）。roadmap §2.6 の「保険として起動のたびの全予約の張り直し」は W1-3 では入れていない（`:seed_platform` の起き方〈プロバイダの
+  onCreate・受信機〉と `BootReceiver` の記録が二重にならない入れ方を決める必要がある）。W1-4 か W1-7 で、エンジンの接続（`register_callback`）の
+  ときに控えの予約で張られていないもの（`FLAG_NO_CREATE` で PendingIntent が無いもの）だけを張り直す案で入れる。
+- [ ] **再起動で `platform.alarms.rescheduled`（boot）が 2 回記録されうる** — 2026-09-27（W1-3）。`LOCKED_BOOT_COMPLETED` と `BOOT_COMPLETED` の
+  両方で張り直すため（2 回目は `missed` 0 で張り直すだけ）。アプリの処理は冪等に書けば害は無いが、同じプロセスで直前に張り直したなら 2 回目の記録を
+  省く形を W1-7 で検討する。
 - [ ] **W1-4 鳴動（前景サービス・音量の指定と漸増・バイブ・WakeLock・音声フォーカスの喪失で止めない・安全弁・重なりを捨てない・フルスクリーン通知・起動理由・信頼できる起動での showWhenLocked）** — 2026-09-27。
   W1-0 からの見直し: 頭で実 GameActivity の冷えた起動を測る（上の項目）。`AlarmReceiver` は真っ先に `startForegroundService`（配信に付く一時許可は
   10 秒）し、控えの fsync はその後。音の準備を前倒しする（冷えたプロセスでは `startForeground` から音まで約 340 ms）。端末の使用中はヘッドアップ通知に
   なるので、本文のタップから鳴動画面へ行けるようにする。音は `USAGE_ALARM` 固定（X-7）。
+  W1-3 からの持ち越し: `RingService` の起動は `AlarmReceiver.onReceive` の先頭の印のところへ（`AlarmBook.fire` より前）。`AlarmClockInfo` の
+  showIntent（`AlarmScheduler.showIntent`。今はランチャーと同じ起動）を `PlatformEntry` 行きに替える。`AlarmReceiver` は directBootAware なので、
+  ロック解除の前に鳴ったときの `RingService`（directBootAware にするか・Java だけの鳴動画面か）を W1-9 と合わせて決める。既定の音（`res/raw`）と、
+  `sound_path` が読めないときの落とし方。控えの鳴らし方の欄（`force_volume` 等）はここで初めて使う。
 - [ ] **W1-5 通知と権限（チャネル・常駐・ボタン・トランポリン無し・実行時権限の結果イベント・正確なアラーム／フルスクリーン通知の状態と設定画面）** — 2026-09-27。
 - [ ] **W1-6 画面とアプリ（`Window.SetShowWhenLocked`・`SetKeepScreenOn`・`SetSystemBarsVisible`・`App.MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク）** — 2026-09-27。
   「アプリを終える API が無い」（Android 節）は `MoveTaskToBack`（閉じずに背面へ）で目覚ましアプリの用は足りるが、終える API もここで一緒に決める。

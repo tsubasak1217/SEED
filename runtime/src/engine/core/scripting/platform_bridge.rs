@@ -86,8 +86,9 @@ pub fn publish_platform_events() {
 
 /// 前の回のイベントと預かった返答を捨てる（エディタの Play の開始・停止で持ち越さないため）。
 ///
-/// 基盤の側に溜まっている分（デスクトップの模擬の箱）も取り出して捨てる。
+/// 基盤の側の前の回の状態（デスクトップの模擬の目覚ましの予約表と箱。W1-3）も捨て、残っていれば取り出して捨てる。
 pub fn clear_platform_events() {
+    bridge::reset_session();
     let _ = bridge::poll_events();
     SCRIPT_EVENTS.with(|queue| queue.clear());
     PENDING_REPLY.with(|slot| slot.borrow_mut().take());

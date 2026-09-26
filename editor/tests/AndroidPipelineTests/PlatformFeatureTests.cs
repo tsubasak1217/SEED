@@ -24,6 +24,27 @@ public static class PlatformFeatureTests
     /// <summary>Android の XML の名前空間（XDocument で属性を引く）。</summary>
     private static readonly XNamespace AndroidNs = AndroidPlatformManifestWriter.AndroidNamespace;
 
+    /// <summary>目覚ましの発火の受信機（W1-3。runtime/android/app/src/main/java の service/alarm/AlarmReceiver.java）。</summary>
+    private const string AlarmReceiverClass = "com.seedengine.runtime.platform.service.alarm.AlarmReceiver";
+
+    /// <summary>目覚ましの張り直しの受信機（W1-3）。</summary>
+    private const string BootReceiverClass = "com.seedengine.runtime.platform.service.alarm.BootReceiver";
+
+    /// <summary>BootReceiver の intent-filter の中身（表の順。"要素名:android:name"）。</summary>
+    private static readonly string[] BootReceiverActions =
+    {
+        "action:android.intent.action.LOCKED_BOOT_COMPLETED",
+        "action:android.intent.action.BOOT_COMPLETED",
+        "action:android.intent.action.MY_PACKAGE_REPLACED",
+        "action:android.intent.action.TIME_SET",
+        "action:android.intent.action.TIMEZONE_CHANGED",
+        "action:android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED",
+    };
+
+    /// <summary>機能の表の要素の属性の値（無ければ null）。</summary>
+    private static string? Attr(AndroidManifestElement element, string name) =>
+        element.Attributes.Where(a => a.Key == name).Select(a => a.Value).FirstOrDefault();
+
     /// <summary>テストを登録する。</summary>
     /// <param name="harness">テストランナー。</param>
     public static void Register(TestHarness harness)
@@ -63,7 +84,21 @@ public static class PlatformFeatureTests
         Check.Equal(string.Join(",", expected), string.Join(",", alarm.Permissions.Select(p => p.Name)), "alarm の権限");
         Check.Equal(32, alarm.Permissions.Single(p => p.Name.EndsWith("SCHEDULE_EXACT_ALARM")).MaxSdkVersion, "SCHEDULE_EXACT_ALARM の maxSdkVersion");
         Check.True(alarm.Permissions.Where(p => !p.Name.EndsWith("SCHEDULE_EXACT_ALARM")).All(p => p.MaxSdkVersion is null), "ほかは maxSdkVersion なし");
-        Check.Equal(0, alarm.ApplicationElements.Count, "W1-2 では部品を宣言しない（AlarmReceiver 等は W1-3・W1-4）");
+        // W1-3: 予約の受信機 2 つ（発火・張り直し）。どちらも :seed_platform・exported=false・directBootAware（RingService 等は W1-4）
+        Check.Equal("receiver,receiver", string.Join(",", alarm.ApplicationElements.Select(e => e.Tag)), "alarm の部品は受信機 2 つ");
+        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass,
+            string.Join(",", alarm.ApplicationElements.Select(e => Attr(e, "android:name"))), "受信機の名前（完全修飾）");
+        foreach (var receiver in alarm.ApplicationElements)
+        {
+            Check.Equal(":seed_platform", Attr(receiver, "android:process"), $"{Attr(receiver, "android:name")} は :seed_platform");
+            Check.Equal("false", Attr(receiver, "android:exported"), $"{Attr(receiver, "android:name")} は exported=false");
+            Check.Equal("true", Attr(receiver, "android:directBootAware"), $"{Attr(receiver, "android:name")} は directBootAware");
+        }
+        Check.Equal(0, alarm.ApplicationElements[0].Children.Count, "AlarmReceiver は intent-filter を持たない（アプリの PendingIntent だけが届く）");
+        var bootFilter = alarm.ApplicationElements[1].Children.Single();
+        Check.Equal("intent-filter", bootFilter.Tag, "BootReceiver の intent-filter");
+        Check.Equal(string.Join(",", BootReceiverActions),
+            string.Join(",", bootFilter.Children.Select(a => $"{a.Tag}:{Attr(a, "android:name")}")), "BootReceiver が受ける放送");
 
         Check.Equal("android.permission.POST_NOTIFICATIONS", catalog.Find("notifications")!.Permissions.Single().Name, "notifications の権限");
         var deepLinks = catalog.Find(" Deep_Links ")!;
@@ -89,8 +124,8 @@ public static class PlatformFeatureTests
                 checkedCount++;
             }
         }
-        // 表に部品が無い今（W1-2）は 0 件。W1-3 で行を足したら自動で確かめられる
-        Check.True(checkedCount >= 0, "確かめた数");
+        // W1-3 で alarm の受信機 2 つ（AlarmReceiver・BootReceiver）。W1-4 で行を足しても自動で確かめられる
+        Check.True(checkedCount >= 2, $"確かめた数 {checkedCount}");
 
         // 確かめ方そのものが働くこと（main に常設の PlatformProvider のソースは見つかる）
         var provider = Path.Combine(javaRoot, "com", "seedengine", "runtime", "platform", "service", "PlatformProvider.java");
@@ -285,7 +320,17 @@ public static class PlatformFeatureTests
         Check.Equal(9, permissions.Count, "権限 9");
         var schedule = permissions.Single(p => (string?)p.Attribute(AndroidNs + "name") == "android.permission.SCHEDULE_EXACT_ALARM");
         Check.Equal("32", (string?)schedule.Attribute(AndroidNs + "maxSdkVersion"), "maxSdkVersion");
-        Check.True(manifest.Element("application") is null, "部品もディープリンクも無ければ <application> を書かない");
+        // alarm の受信機 2 つ（W1-3）。ディープリンクが無いので MainActivity の要素は書かない
+        var application = manifest.Element("application")!;
+        Check.True(application.Element("activity") is null, "ディープリンクが無ければ MainActivity を書かない");
+        var receivers = application.Elements("receiver").ToList();
+        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass,
+            string.Join(",", receivers.Select(r => (string?)r.Attribute(AndroidNs + "name"))), "受信機（表の順）");
+        Check.True(receivers.All(r => (string?)r.Attribute(AndroidNs + "process") == ":seed_platform"
+                                      && (string?)r.Attribute(AndroidNs + "exported") == "false"
+                                      && (string?)r.Attribute(AndroidNs + "directBootAware") == "true"), "受信機の属性");
+        var actions = receivers[1].Element("intent-filter")!.Elements("action").Select(a => "action:" + (string?)a.Attribute(AndroidNs + "name"));
+        Check.Equal(string.Join(",", BootReceiverActions), string.Join(",", actions), "BootReceiver の intent-filter");
         Check.True(files.ManifestText.Contains("機能: alarm, notifications"), "頭のコメントに機能");
         Check.Equal("true", XDocument.Parse(files.ValuesText).Root!.Element("bool")!.Value, "visible は true");
     }

@@ -3675,9 +3675,12 @@ W1-1 は**橋渡し**だけ: スクリプトの命令が Java の別プロセス
 | `platform/EventDoorbell.java` | `:seed_platform` からの「未読あり」を受ける Binder（同じ UID 以外は無視） |
 | `platform/service/PlatformProvider.java` | `:seed_platform` の命令の窓口（モジュールの表） |
 | `platform/service/PlatformModule.java`・`CorePlatformModule.java` | モジュールの約束と "platform" モジュール |
-| `platform/service/EventJournal.java`・`EventDoorbellClient.java` | 記録と呼び鈴 |
+| `platform/service/EventJournal.java`・`EventDoorbellClient.java` | 記録（W1-3 から端末保護ストレージの `seed_platform/journal.json` へ永続化）と呼び鈴 |
+| `platform/service/EventRecorder.java`・`PlatformStorage.java`・`DurableFile.java` | 記録＋呼び鈴の窓口・端末保護ストレージの置き場・原子的な書き込み（W1-3） |
+| `platform/service/alarm/*.java` | 目覚ましの予約（W1-3。§25.11）: `AlarmModule`・`AlarmRequestReader`・`AlarmEntry`・`AlarmStore`・`AlarmScheduler`・`AlarmBook`・`AlarmRearmPlan`・`AlarmEvents`・`AlarmReceiver`・`BootReceiver` |
 | `src/debug/java/…/platform/DebugPlatformReceiver.java` | デバッグ版だけの adb の入口（§25.7） |
 | `native/src/platform_bridge/{mod,android_bridge,java_bridge,inbox,jni_exports}.rs` | 糊（エンジンへの登録・JNI の持ち物・イベントの箱・2 本の JNI 関数） |
+| `native/src/platform_bridge/alarm_prep.rs` | `alarm.schedule` を送る前に音源（`assets://`）を書き出す（W1-3。中身はエンジンの `bridge/alarm/sound_export.rs`） |
 
 ### 25.2 JNI の面（W1-P3: 機能が増えても関数は増やさない）
 
@@ -3782,13 +3785,14 @@ MSYS_NO_PATHCONV=1 "$ADB" shell am broadcast -n $APP/com.seedengine.runtime.plat
 ### 25.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
 
 - 実機での確認（§25.7）が残っている。
-- 記録（EventJournal）はメモリの中だけで、取り出した時点で既読にする（取り出した直後にメインプロセスが死ぬと、そのイベントはスクリプトへ届かない）。
-  永続化（端末保護ストレージ）は W1-3、エンジンの受け取りの確認（ack）と前面へ戻ったとき（onResume）の未読の取り直しは W1-4 で決める。
+- 記録（EventJournal）は取り出した時点で既読にする（取り出した直後にメインプロセスが死ぬと、そのイベントはスクリプトへ届かない）。
+  永続化（端末保護ストレージの `seed_platform/journal.json`）は W1-3 で入れた（§25.11.6）。エンジンの受け取りの確認（ack）と
+  前面へ戻ったとき（onResume）の未読の取り直しは W1-4 で決める。
 - 最初の呼び出しは `connecting` で失敗する（アプリの API の使い勝手）。`android.features` に機能が書かれたプロジェクトでは、起動時に背面で接続する
   （起動の直後から同期で呼べる）形を検討する（W1-2 では手を付けていない。機能の有無を APK へ焼き込む仕組み〈§25.10 の values〉はできたので、
   W1-3 で `seed_platform.xml` に「起動時に接続する」bool を足せば MainActivity が読める）。
-- `DeadObjectException` の後の呼び直しは「命令が届いていない」前提（死んだ瞬間に処理済みだった命令は 2 回走りうる）。W1-3 の命令（予約など）は同じ ID で
-  置き換える冪等な形にする。
+- `DeadObjectException` の後の呼び直しは「命令が届いていない」前提（死んだ瞬間に処理済みだった命令は 2 回走りうる）。W1-3 の目覚ましの命令は
+  同じ ID で置き換える・無い ID の取り消しも成功する冪等な形にした（§25.11）。
 - `DebugPlatformReceiver` は権限で守っていない（デバッグ版だけ。他のアプリから ping・試験イベントを送れる）。
 
 ### 25.10 機能の opt-in と生成されるマニフェストの断片（W1-2・2026-09-27）
@@ -3931,3 +3935,177 @@ dotnet run --project editor/tools/SeedAndroid -- check --project 'D:\SEED_projec
 - システムバーを出したままのときのバーの文字色（明暗）は選べない（テーマの既定のまま。暗い AppCompat のテーマなので白い文字になる見込み＝推論・
   実機で未確認）。明るい画面のアプリでは見えにくい（W1-6）。
 
+
+### 25.11 目覚ましの予約（W1-3・2026-09-27）
+
+スクリプトの `SEED.Platform.Alarms`（[scripting_api.md](scripting_api.md) §7.13）の Android 側。W1-3 は**予約の基盤**（予約の控え・
+`setAlarmClock`・再起動などでの張り直し・発火の記録・音源の書き出し）で、**鳴動（音・前景サービス・フルスクリーン通知・鳴動画面）は W1-4**。
+設計は [app_platform_roadmap.md](app_platform_roadmap.md) §2.2・§2.3・E-10。APK に機能 `alarm` が要る（§25.10。受信機 2 つと権限が入る）。
+
+#### 25.11.1 構成
+
+```
+[メインプロセス]
+ C# Alarms.Schedule / Cancel / CancelAll / GetScheduled / CanScheduleExact（scripting/src/Api/Platform/Alarms/）
+   → host_api → engine::platform::bridge::invoke("alarm", …)
+   → AndroidPlatformBridge（native/src/platform_bridge/android_bridge.rs）
+       └ alarm.schedule だけ alarm_prep.rs で前処理: 初回だけ platform.paths で sounds_dir を聞き、
+         engine::platform::bridge::alarm::sound_export が sound_asset（assets://…）を asset_fs で読んで
+         sounds/<内容のハッシュ>.<拡張子> へ書き、sound_path（絶対パス）に置き換える
+   → Java の SeedPlatform.invoke → PlatformConnection → :seed_platform
+[:seed_platform] platform/service/alarm/
+ AlarmModule（"alarm"）… schedule / cancel / cancel_all / list / can_schedule_exact（機能 alarm が無い APK は feature_not_enabled）
+   ├ AlarmRequestReader … 引数の検査・正規化（Rust の bridge/alarm/request.rs と同じ規則）
+   └ AlarmBook … 控えと AlarmManager を 1 つの lock で組み合わせる
+       ├ AlarmStore     … 予約の控え（端末保護ストレージの seed_platform/alarms.json。DurableFile で原子的に書く）
+       ├ AlarmScheduler … AlarmManager.setAlarmClock（PendingIntent の見分け方は §25.11.2）
+       ├ AlarmRearmPlan … 張り直しの振り分け（純粋な処理）
+       └ AlarmEvents    … platform.alarm.fired / platform.alarm.missed / platform.alarms.rescheduled を EventRecorder へ
+ AlarmReceiver（exported=false・directBootAware）… 発火 → AlarmBook.fire（記録 → 控えから消す）。W1-4 はここで真っ先に RingService
+ BootReceiver（exported=false・directBootAware）… 6 つの放送 → AlarmBook.rearm（§25.11.3）
+ EventRecorder → EventJournal（W1-3 から seed_platform/journal.json へ永続化）＋ EventDoorbellClient（エンジンへの呼び鈴）
+[デスクトップ] engine::platform::bridge::desktop_sim（alarm_commands.rs・alarm_book.rs・wall_clock.rs）… 同じ命令に同じ形で答え、
+ 壁時計が予定時刻を過ぎたらフレームの頭の poll_events で platform.alarm.fired を積む。エディタの Play の区切りで予約表を空にする
+```
+
+JSON の名前は `wire.rs` の `wire::alarm` と `PlatformContract.java` の `*ALARM*`（C# は `AlarmJson.cs`）で揃え、Rust の単体テスト
+`wire::tests::java_contract_matches_wire` が Java の定数と突き合わせる。
+
+#### 25.11.2 予約の控えと PendingIntent
+
+- **控えが正本**。`{"format_version":1,"alarms":[{ id, trigger_at_utc_ms, sound_path, vibrate, force_volume, keep_volume, fade_in_seconds,
+  max_ring_minutes, title, body, payload_json, created_at_utc_ms }]}`（`created_at_utc_ms` は予約を受け付けた時刻。イベントの
+  `scheduled_at_utc_ms`〈鳴るはずだった時刻 = `trigger_at_utc_ms`〉とは別物）。置き場は**端末保護ストレージ**
+  （`createDeviceProtectedStorageContext().getFilesDir()/seed_platform/`。再起動の後・最初のロック解除の前でも読み書きできる）。
+- **書き方**: 一時ファイル（`<名前>.tmp`）へ書く → `FileDescriptor.sync()`（fsync）→ `File.renameTo`（同じフォルダの rename(2) は原子的）→
+  フォルダを `Os.open`＋`Os.fsync`（`DurableFile.java`）。読めない・壊れた控えは空として扱い警告する（行ごとに壊れていればその行だけ捨てる）。
+- **順序の決まり**（落ちたときに「失う」より「二重に知らせる」側へ倒す）: 予約 = 控えに書く → 張る（張れなければ控えを戻す）／
+  取り消し = 控えから消す → 外す／発火 = 記録する → 控えから消す／張り直し = 鳴らなかった記録 → 控えから消す。
+- **PendingIntent の見分け方（要求コードの決め方）**: 発火の PendingIntent は要求コードを定数 0 に固定し、予約ごとの区別は Intent の data の
+  URI `seedalarm://alarm/<ID を URI の規則で符号化>` で付ける（同一性は「要求コード＋`Intent.filterEquals`」で extras は含まない）。
+  同じ ID は同じ PendingIntent になり、「同じ PendingIntent の予約は前の予約を置き換える」（公式「Schedule alarms」）で置き換えが成り立つ。
+  取り消しは同じ要求コード・同じ Intent を `FLAG_NO_CREATE` で作り直して `AlarmManager.cancel` と `PendingIntent.cancel`。ID の hashCode は使わない
+  （衝突すると別の予約を消す。Flutter 版の教訓）。extras の予定時刻は「予約し直された後に届いた古い配信」を捨てる版の印。
+- **ステータスバーの目覚ましの印**（`AlarmClockInfo` の showIntent）は W1-3 ではランチャーと同じ起動（MAIN/LAUNCHER の
+  `com.seedengine.runtime.MainActivity` をクラス名の文字列で指す。クラスを参照すると `libSEED.so` を読み込むので触らない。
+  `getLaunchIntentForPackage` はロック解除の前に directBootAware でない MainActivity を解決できない見込み〈推論〉なので使わない）。
+  W1-4 で `activity-alias PlatformEntry` 行きに替える。
+- **正確なアラームの許可**: `canScheduleExactAlarms()`（API 31+。30 以下は常に true）が false なら予約せず `exact_alarm_not_allowed`
+  （控えにも書かない。黙って不正確な予約に落とさない）。
+- **上限**: 予約 64 件（新しい ID だけ断る。`too_many_alarms`）・ID 128 文字・title/body 4096 文字・payload_json 16384 文字（符号位置の数）。
+
+#### 25.11.3 張り直し（`BootReceiver`）
+
+| 放送 | `alarms.rescheduled` の理由 | 過ぎた予約の `alarm.missed` の理由 |
+|---|---|---|
+| `LOCKED_BOOT_COMPLETED`・`BOOT_COMPLETED`（再起動。Android 15+ は強制停止の後にアプリが停止状態から出たときも） | `boot` | `device_off` |
+| `MY_PACKAGE_REPLACED`（アプリの更新） | `package_replaced` | `device_off` |
+| `TIME_SET`・`TIMEZONE_CHANGED`（端末の時刻・タイムゾーン） | `time_changed` | `device_off` |
+| `AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED`（正確なアラームの許可。取り消しでは届かずアプリが止められる） | `permission_changed` | `permission_revoked` |
+
+- `LOCKED_BOOT_COMPLETED`・`BOOT_COMPLETED`・`TIME_SET`・`TIMEZONE_CHANGED` はマニフェストの受信機にも届く暗黙の放送の例外
+  （公式「Implicit broadcast exceptions」を 2026-09-27 に確認）。`MY_PACKAGE_REPLACED` と許可の放送はこのアプリ宛て。
+- 振り分け（`AlarmRearmPlan`）: 予定時刻がまだ先 → `setAlarmClock` で張り直す（同じ PendingIntent なので既存の予約は置き換わるだけ）／
+  過ぎたが発火の PendingIntent が残っていて過ぎてから 60 秒以内 → AlarmManager が配信している途中（時刻を進めたとき等）とみなして触らない／
+  それ以外の過ぎた予約 → **鳴らさずに** `platform.alarm.missed` を記録して控えから外す（受信機から直接鳴らさない。E-10）。
+  許可が無くて張れなかった予約は控えに残し（`failed`）、許可が戻ったとき（`permission_changed`）に張る。
+- 控えに予約があれば `platform.alarms.rescheduled { reason, count, missed, failed }` を記録する（空なら記録しない）。
+  再起動では `LOCKED_BOOT_COMPLETED` と `BOOT_COMPLETED` の両方が届くので、2 回記録されうる（2 回目は張り直すだけで `missed` は 0）。
+
+#### 25.11.4 発火（`AlarmReceiver`）
+
+1. 発火の Intent（action `com.seedengine.runtime.platform.action.ALARM_FIRE`）の ID と予定時刻で控えを引く。控えに無い（取り消し済み・
+   鳴らなかった扱いにした後）、または予定時刻が違う（配信の途中で同じ ID が予約し直された）なら何もしない。
+2. `platform.alarm.fired { id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json }` を記録する（端末保護ストレージ）。
+3. 控えから消し（一回限り）、配信済みの PendingIntent を片付ける。記録と同時にエンジンへ呼び鈴を鳴らす（エンジンが居なければ、
+   次にアプリが SEED.Platform へつないだときの `platform.register_callback` で未読として届く）。
+
+**W1-4 の差し込み位置**: `AlarmReceiver.onReceive` の先頭（コメントで明示）。`setAlarmClock` の配信に付く前景サービス起動の一時許可は
+10 秒（W1-0）なので、`RingService` の `startForegroundService` は控えの読み書き・fsync より前に呼ぶ。
+
+#### 25.11.5 音源の書き出し
+
+- スクリプトの `SoundAsset` が `assets://…`（とアセットルート相対のパス）なら、メインプロセスのエンジンが `asset_fs::read_bytes`
+  （pak → APK → 上書き層）で読み、`<端末保護ストレージの files>/seed_platform/sounds/<FNV-1a 64bit の 16 桁>.<拡張子（小文字の英数字 8 文字まで。
+  それ以外は bin）>` へ書く（一時ファイル → `sync_all` → rename → フォルダの `sync_all`）。同じ名前・同じ大きさのファイルがあれば書かない。
+  書き出し先は `:seed_platform` の `platform.paths`（`sounds_dir`）で最初の 1 回だけ聞く（同じアプリの UID なのでメインプロセスも書ける）。
+- `/` で始まる端末のファイルの絶対パスはそのまま `sound_path` へ。空なら既定の音。
+- 書き出せない（書き出し先が分からない・アセットが無い・書けない）ときは `sound_path = ""`（既定の音）にして警告し、予約そのものは送る。
+  書き出し先を聞く呼び出しが `connecting` なら、予約も送らずに `connecting` を返す（スクリプトは `platform.connected` の後に呼び直す）。
+- 書き出しは予約を呼んだスクリプトのフレームの中で同期に行う（音源が大きいと最初の 1 回だけフレームが延びる）。書き出したファイルの掃除はまだ無い（backlog）。
+
+#### 25.11.6 記録の永続化（EventJournal）
+
+W1-1 ではメモリの中だけだった記録を、W1-3 から端末保護ストレージの `seed_platform/journal.json`
+（`{"format_version":1,"next_seq":…,"dropped":…,"events":[…]}`）へ、足す・取り出すたびに原子的に書く。`:seed_platform` が起きたとき
+（最初の `EventJournal.get`）に読み、通し番号は戻さない。エンジンが居ない間に鳴った・鳴らなかった・張り直した記録が、次の起動で届く。
+取り出した時点で既読にする割り切りは W1-1 のまま（受け取りの確認〈ack〉は W1-4）。
+
+#### 25.11.7 確かめ方（adb・実機）
+
+```bash
+# Git Bash。端末は画面が点いてロックが解除され、前面がランチャーのときだけ使う（私物の端末。エミュレータは使わない）
+APP=com.wakeorpay.seed
+SERIAL=2B011JEGR02535
+ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
+"$ADB" devices -l
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window | grep -E "mCurrentFocus|isKeyguardShowing|mDreamingLockscreen"
+# 1. 確かめ用のシーンで起動（PlatformSmoke.cs: 5 秒後の予約 smoke_fire・1 時間後の予約 smoke_cancel の取り消し・発火の受信・控えが空になること）
+dotnet run --project editor/tools/SeedAndroid -- run --project 'D:\SEED_projects\WakeOrPay' --serial $SERIAL --scene scenes/PlatformSmoke.scene --logcat-seconds 40
+# 2. 起動から 5 秒以内: 予約が AlarmManager に入ったか（setAlarmClock は alarm clock として出る。action は …ALARM_FIRE）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys alarm | grep -B2 -A10 "$APP"
+# 3. 控え・記録・書き出した音源（デバッグ版だけ run-as で読める。端末保護ストレージ = /data/user_de/0/<APP>/files。run-as で読めるかは未確認）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell run-as $APP cat /data/user_de/0/$APP/files/seed_platform/alarms.json
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell run-as $APP cat /data/user_de/0/$APP/files/seed_platform/journal.json
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell run-as $APP ls -l /data/user_de/0/$APP/files/seed_platform/sounds
+# 4. ログ（エンジンは SEED の [SEED PLATFORM]、Java は SEEDPlatform、スクリプトは [Script] [PlatformSmoke]）
+"$ADB" -s $SERIAL logcat -d -s SEED SEEDPlatform | grep -E "PlatformSmoke|目覚まし|BootReceiver|AlarmReceiver"
+```
+
+期待するログ: `[PlatformSmoke] 目覚まし: IsSupported=True CanScheduleExact=True` → `smoke_fire を 5 秒後に予約 ok`（SEEDPlatform の
+`目覚まし smoke_fire を予約しました`）→ `予約の後（2 件のはず）: 控え 2 件` → `取り消しの後（1 件のはず）: 控え 1 件` → 約 5 秒後に SEEDPlatform の
+`目覚まし smoke_fire が鳴りました（予定から N ms・seq …・呼び鈴 鳴らした）` → `[PlatformSmoke] 目覚ましが鳴りました: smoke_fire …（payload {"smoke":"fire"}・模擬 False）`
+→ `鳴った後（0 件のはず）: 控え 0 件` → `目覚ましの確かめ: OK`。**音は鳴らない**（W1-4）。
+
+**`BootReceiver` は adb の `am broadcast` では起こせない**: exported=false（shell の UID はこのアプリでもシステムでもない）うえ、
+`BOOT_COMPLETED`・`TIME_SET` などはシステムだけが送れる保護された放送。代わりに本物の放送を起こす:
+
+```bash
+# (a) 強制停止（予約も PendingIntent も消える）→ 開き直す。Android 15+ は停止状態から出るときに LOCKED_BOOT_COMPLETED・BOOT_COMPLETED を
+#     届ける（W1-0 で exported=false の受信機に届いた）。上の 1 の起動から 5 秒以内に止め、10 秒待ってから開くと、smoke_fire が
+#     過ぎた予約として platform.alarm.missed（device_off）になり、アプリの [PlatformSmoke] に「鳴らなかった目覚まし」が出る
+"$ADB" -s $SERIAL shell am force-stop $APP
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am start -W -n $APP/com.seedengine.runtime.MainActivity --es seed.scene 'scenes/PlatformSmoke.scene'
+"$ADB" -s $SERIAL logcat -d -s SEEDPlatform | grep BootReceiver     # 「… で張り直しました（控え 1・張り直し 0・失敗 0・鳴らなかった 1・配信待ち 0）」
+# (b) 同じ APK を入れ直す → MY_PACKAGE_REPLACED（未確認）
+"$ADB" -s $SERIAL install -r runtime/android/app/build/outputs/apk/debug/app-debug.apk
+# (c) 再起動（adb reboot。利用者の許可が要る。LOCKED_BOOT_COMPLETED で張り直るかは W1-0 の残りと一緒に確かめる）
+```
+
+#### 25.11.8 確認結果（2026-09-27）
+
+- Rust の単体テスト 56 件が通った（`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests`。新規は
+  引数の検査 6・音源の書き出し 8・模擬の目覚まし 6・Java と wire.rs の名前の突き合わせ 1。模擬は手で進める時計で「予約 → 予定時刻の 1 ms 前は鳴らない →
+  過ぎたら `platform.alarm.fired` が 1 回だけ → 一覧から消える」・置き換え・取り消し・予定時刻の順・上限・Play の区切りで消えることを確かめた）。
+- `AndroidPipelineTests` 161 件が通った（機能の表の `alarm` の受信機 2 つ・属性・`BootReceiver` の 6 つの放送・断片の `<application>`・
+  宣言したクラスの Java のソースがあること）。`SEEDScripting.csproj` のビルドは警告 0・エラー 0。Java の `platform` パッケージは `javac -Xlint:all`
+  （android-36 の android.jar）で警告 0。使った API の版は SDK の `api-versions.xml` で確かめた（`canScheduleExactAlarms`・
+  `ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED` は 31、`createDeviceProtectedStorageContext`・`ACTION_LOCKED_BOOT_COMPLETED` は 24、
+  `setAlarmClock` は 21、`Files.readAllBytes` は 26）。
+- PC の Play（`SEED.exe --mode=play --assets-root=D:\SEED_projects\WakeOrPay\assets --scene=assets://scenes/PlatformSmoke.scene`）: 予約 2 件 →
+  取り消しで 1 件 → 約 5 秒後に `platform.alarm.fired`（予定から 11 ms・payload がそのまま）→ 控え 0 件 → `目覚ましの確かめ: OK`。
+- APK（Wake or Pay・arm64-v8a・debug）: aapt2 でマージ後のマニフェストに `AlarmReceiver`・`BootReceiver`（どちらも `:seed_platform`・exported=false・
+  directBootAware=true）と `BootReceiver` の intent-filter（6 つの action）、権限 9 がそろい、dexdump で `platform/service/alarm/` の 10 クラスと
+  `EventRecorder`・`PlatformStorage`・`DurableFile` が dex に入っていることを確かめた。
+- **実機（Pixel 6a）は未実施**（`adb devices` に端末が無かった）。§25.11.7 の手順が残っている。
+
+#### 25.11.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機での確認（§25.11.7）。`run-as` で `/data/user_de/0/<APP>/` を読めるかも未確認。
+- 鳴動（W1-4）: `RingService` は `AlarmReceiver.onReceive` の先頭の印のところで起動する。showIntent を `PlatformEntry` 行きに替える。
+  `AlarmReceiver` は directBootAware なので、ロック解除の前に鳴ったときの扱い（`RingService` も directBootAware にするか・Java だけの鳴動画面か）を
+  W1-9 と合わせて決める。記録の ack と onResume の取り直しも W1-4。
+- Android 10〜14 では強制停止の後、次の再起動まで予約が戻らない（起動のたびの張り直しの保険が無い）。
+- 書き出した音源の掃除が無い。再起動で `platform.alarms.rescheduled`（boot）が 2 回記録されうる。
+- Java の純粋な部分（`AlarmRearmPlan`・`AlarmRequestReader`）の JVM の単体テストは W1-7（今は Rust の模擬と同じ規則であることを読み合わせと
+  名前の突き合わせのテストで保っている）。

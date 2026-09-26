@@ -8,7 +8,8 @@
 //
 //  【呼ばれ方】call(method = "<module>.<method>", arg = 未使用, extras = { json: UTF-8 の byte[], callback: Binder（登録のときだけ） })
 //  返答は Bundle { json: UTF-8 の byte[] }。中身は {"ok":true,…} / {"ok":false,"error":理由}。例外は投げない。
-//  モジュールの表（下の buildModules）に行を足せば命令が増える。
+//  モジュールの表（下の buildModules）に行を足せば命令が増える。今の表: "platform"（CorePlatformModule）・
+//  "alarm"（alarm/AlarmModule。W1-3。機能 alarm の無い APK では feature_not_enabled で断る）。
 //
 //  【マニフェスト】main の AndroidManifest.xml に exported=false・android:process=":seed_platform" で常設（W1-1）。
 //  プロバイダのプロセスは最初の接続まで起動しないので、使わないゲームには影響しない。機能ごとの宣言の出し入れ（E-04）は W1-2。
@@ -29,6 +30,7 @@ import android.util.Log;
 
 import com.seedengine.runtime.platform.PlatformContract;
 import com.seedengine.runtime.platform.PlatformJson;
+import com.seedengine.runtime.platform.service.alarm.AlarmModule;
 
 import org.json.JSONException;
 
@@ -59,6 +61,7 @@ public final class PlatformProvider extends ContentProvider {
         Map<String, PlatformModule> table = new LinkedHashMap<>();
         // version の返答に表の名前を出すため、表を後から読む形で渡す（表が出来上がった後に呼ばれる）
         register(table, new CorePlatformModule(() -> modules.keySet()));
+        register(table, new AlarmModule());
         return Collections.unmodifiableMap(table);
     }
 

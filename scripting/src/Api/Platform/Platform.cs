@@ -7,7 +7,7 @@ namespace SEED.Platform;
 /// スクリプト → エンジン（Rust）→ Android では JNI → Java の SeedPlatform → 別プロセス :seed_platform、
 /// デスクトップではエンジンの中の模擬（DesktopSimBridge）へ届く。どちらも同じ形の JSON で答える
 /// （docs/android.md §25・docs/app_platform_roadmap.md §2.2）。
-/// 型付きの API（Alarms・Notifications など）は W1-3 以降にこの上へ作る。W1-1 のスクリプト向けは
+/// 型付きの API はこの上へ作る（W1-3 で <see cref="Alarms"/>。Notifications などは W1-5 以降）。W1-1 のスクリプト向けは
 /// <see cref="IsSupported"/>・<see cref="IsSimulated"/>・<see cref="LastError"/>・<see cref="PlatformDiagnostics"/>・
 /// <see cref="PlatformEvents"/> だけで、生の命令（TryInvoke）は公開しない。
 /// </para>
@@ -49,7 +49,7 @@ public static class Platform
     /// 主な値: <see cref="ErrorConnecting"/> / <see cref="ErrorUnavailable"/> / "unknown_method" / "invalid_json" /
     /// "provider_unavailable" / "internal_error"。
     /// </summary>
-    public static string LastError { get; private set; } = string.Empty;
+    public static string LastError { get; internal set; } = string.Empty;
 
     /// <summary>
     /// 命令を 1 つ同期で送り、返答の JSON を受け取る（内部用。型付きの API が包む）。

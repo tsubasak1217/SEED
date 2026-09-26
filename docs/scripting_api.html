@@ -2032,12 +2032,12 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 </section>
 
 <!-- ════════════════ 7.13 Platform ════════════════ -->
-<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1">
-  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み）</h2>
+<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1 Alarms AlarmRequest ScheduledAlarm Schedule Cancel CancelAll GetScheduled CanScheduleExact 予約 setAlarmClock AlarmFiredEvent AlarmMissedEvent AlarmsRescheduledEvent platform.alarm.fired platform.alarm.missed platform.alarms.rescheduled 張り直し 再起動 TriggerAtUtcMs PayloadJson SoundAsset exact_alarm_not_allowed feature_not_enabled W1-3">
+  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし）</h2>
   <p class="section-note">
     目覚まし・通知・権限など <b>OS の機能</b>をスクリプトから使うための入口です（名前空間 <code>SEED.Platform</code>）。
-    W1-1 では橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）だけがあり、型付きの機能（<code>Alarms</code>・<code>Notifications</code> など）は
-    後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
+    W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で<b>目覚ましの予約</b>（<code>Alarms</code>。この節の後半）が加わりました。
+    鳴動（音・通知・鳴動画面）・通知・権限などは後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
     デスクトップ（エディタの Play・単体起動）ではエンジンの中の<b>模擬</b>へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
     名前空間とクラス名が同じなので <code>using SEED.Platform;</code> を推奨します（修飾するなら <code>SEED.Platform.Platform.IsSupported</code>）。
   </p>
@@ -2080,6 +2080,55 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     イベントはすぐには届きません。エンジンがフレームの頭で取り出し、次の BeginFrame で配ります（<code>EmitTestEvent</code> を呼んだフレームの中では見えません）。
     受け口は <code>this.On("platform.…", (string json) =&gt; …)</code> を推奨します（スクリプトの破棄で自動的に外れる）。
     <code>PlatformEvents.OnEvent</code> に足したハンドラは <code>OnDestroy</code> で必ず外してください（ホットリロードではエンジンが全部外します）。
+  </div>
+
+  <h3>目覚まし（Alarms。W1-3 は予約の基盤）</h3>
+  <p class="section-note">
+    決まった時刻に確実に鳴らすための<b>予約</b>です。Android では別プロセス <code>:seed_platform</code> が予約の控え（端末保護ストレージ）を持ち、
+    <code>AlarmManager.setAlarmClock</code> で張ります（Doze でも時刻どおり・ステータスバーに目覚ましの印）。再起動・時刻の変更・アプリの更新・
+    正確なアラームの許可で控えから張り直し、電源断などで過ぎた予約は<b>鳴らさずに</b> <code>platform.alarm.missed</code> を記録します。
+    <b>W1-3 では音・通知・鳴動画面はまだありません</b>（W1-4）。鳴ったことはイベント <code>platform.alarm.fired</code> で届きます。
+    Android では APK に機能 <code>alarm</code> が要ります（<code>project_settings.json</code> の <code>android.features</code> に <code>"alarm"</code>。docs/android.md §25.10）。
+  </p>
+  <div class="api"><code class="sig">new AlarmRequest { Id, TriggerAtUtcMs, SoundAsset, Vibrate, ForceVolume, KeepVolume, FadeInSeconds, MaxRingMinutes, Title, Body, PayloadJson }</code><span class="desc">予約 1 件。Id は 1〜128 文字（同じ ID は置き換え）。時刻は UTC の epoch ミリ秒。SoundAsset は "assets://…" か端末の絶対パス（空なら既定の音）。鳴らし方の欄は W1-4 で使う（W1-3 は控えに持つだけ）。PayloadJson はイベントにそのまま戻る</span></div>
+  <div class="api"><code class="sig">Alarms.Schedule(request)</code><span class="desc">bool。予約（控えにも書く。再起動の後も残る）。false なら Platform.LastError</span></div>
+  <div class="api"><code class="sig">Alarms.Cancel(id) / Alarms.CancelAll()</code><span class="desc">bool。取り消し（無い ID でも true。冪等）</span></div>
+  <div class="api"><code class="sig">Alarms.GetScheduled()</code><span class="desc">ScheduledAlarm[]。控えの一覧（予定時刻の順。a.Id / TriggerAtUtcMs / PayloadJson / Title / Body / Sound / CreatedAtUtcMs）。失敗は空の配列</span></div>
+  <div class="api"><code class="sig">Alarms.IsSupported / Alarms.CanScheduleExact</code><span class="desc">使えるか（IPC なし。APK に機能 alarm が無いと分かった後は false）／正確なアラームを張れるか（:seed_platform へ問い合わせる。毎フレーム読まない）</span></div>
+  <div class="api"><code class="sig">AlarmFiredEvent / AlarmMissedEvent / AlarmsRescheduledEvent .TryParse(json, out e)</code><span class="desc">イベントの JSON（SEED.Events の引数）を型付きの値にする。名前は各型の Name 定数</span></div>
+  <div class="api"><code class="sig">Alarms.ErrorExactAlarmNotAllowed / ErrorFeatureNotEnabled / ErrorInvalidArgument / ErrorTooManyAlarms / ErrorStoreWriteFailed / ErrorScheduleFailed</code><span class="desc">"exact_alarm_not_allowed"（Android 12 系で特別なアクセスが無い。黙って不正確な予約にしない）/ "feature_not_enabled"（APK に機能 alarm が無い）/ "invalid_argument" / "too_many_alarms"（64 件）/ "store_write_failed" / "schedule_failed"</span></div>
+<pre><span class="k">using</span> SEED.Platform;
+
+<span class="k">var</span> request = <span class="k">new</span> <span class="t">AlarmRequest</span>
+{
+    Id = <span class="s">"morning"</span>,
+    TriggerAtUtcMs = <span class="t">DateTimeOffset</span>.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds(), <span class="c">// UTC の epoch ミリ秒</span>
+    Title = <span class="s">"起きる時間"</span>,
+    PayloadJson = <span class="s">"{\"alarm\":\"morning\"}"</span>,
+};
+<span class="k">bool</span> ok = <span class="t">Alarms</span>.Schedule(request);   <span class="c">// false なら Platform.LastError</span>
+<span class="k">this</span>.On(<span class="t">AlarmFiredEvent</span>.Name, (<span class="k">string</span> json) =&gt;
+{
+    <span class="k">if</span> (<span class="t">AlarmFiredEvent</span>.TryParse(json, <span class="k">out</span> <span class="t">AlarmFiredEvent</span> e))
+        <span class="t">SEED.Debug</span>.Log(<span class="s">$"{e.Id} が鳴った（予定 {e.ScheduledAtUtcMs}・配信 {e.FiredAtUtcMs}）"</span>);
+});</pre>
+  <table>
+    <tr><th>イベント（SEED.Events の名前）</th><th>型（TryParse）</th><th>中身</th><th>いつ届くか</th></tr>
+    <tr><td>platform.alarm.fired</td><td>AlarmFiredEvent</td><td>Id・ScheduledAtUtcMs（鳴るはずだった時刻）・FiredAtUtcMs・PayloadJson・Simulated</td><td>予定時刻に配信された。予約は控えから消える（一回限り）。アプリが動いていなければ、次に SEED.Platform へつないだとき</td></tr>
+    <tr><td>platform.alarm.missed</td><td>AlarmMissedEvent</td><td>Id・ScheduledAtUtcMs・Reason（DeviceOff / PermissionRevoked / Unknown）・ReasonName・PayloadJson</td><td>電源断・強制停止・更新・許可の取り消しの間に予定時刻を過ぎていた（鳴らさずに控えから消した）</td></tr>
+    <tr><td>platform.alarms.rescheduled</td><td>AlarmsRescheduledEvent</td><td>Reason（Boot / TimeChanged / PackageReplaced / PermissionChanged / Unknown）・ReasonName・Count・Missed・Failed</td><td>控えから張り直した（控えが空なら届かない）。TimeChanged ではアプリが次の時刻を計算し直す</td></tr>
+  </table>
+  <table>
+    <tr><th>項目</th><th>Android</th><th>デスクトップ（模擬）</th></tr>
+    <tr><td>予約の持ち方</td><td>:seed_platform の控え（端末保護ストレージの seed_platform/alarms.json）＋ setAlarmClock。閉じても・再起動しても残る</td><td>プロセスの中の予約表。Play を止めると消える</td></tr>
+    <tr><td>鳴ったとき</td><td>platform.alarm.fired を記録（端末保護ストレージ）。W1-3 は音なし</td><td>壁時計が予定時刻を過ぎた次のフレームで platform.alarm.fired（Simulated == true）。音なし</td></tr>
+    <tr><td>CanScheduleExact</td><td>Android 12 系は特別なアクセス次第。13 以降（USE_EXACT_ALARM）と 11 以前は true</td><td>true</td></tr>
+    <tr><td>音源（SoundAsset）</td><td>assets://… はエンジンが files/seed_platform/sounds/&lt;内容のハッシュ&gt;.&lt;拡張子&gt; へ書き出してから予約（読めなければ既定の音）</td><td>控えに持つだけ</td></tr>
+  </table>
+  <div class="warn">
+    予約は <b>UTC の絶対時刻</b>の一回限りです。「毎朝 7:00」のような繰り返しはアプリが次の 1 回を計算して予約し、鳴った・鳴らなかった・時刻が変わった
+    （platform.alarms.rescheduled の TimeChanged）ときに次を予約し直してください。Android の最初の呼び出しは <code>Platform.ErrorConnecting</code> で失敗するので、
+    <code>PlatformEvents.Connected</code> の後に呼び直します。
   </div>
 </section>
 

@@ -1,10 +1,12 @@
 // ============================================================
-//  PlatformContract.java — アプリのプラットフォーム機能（SEED.Platform）の約束の置き場（W1-1）
+//  PlatformContract.java — アプリのプラットフォーム機能（SEED.Platform）の約束の置き場（W1-1・W1-3 で目覚ましを追加）
 //
 //  メインプロセス（SeedPlatform・PlatformConnection）と :seed_platform プロセス（service/ の PlatformProvider 等）の
 //  両方が使う名前・キー・理由の名前を 1 か所に集める（マジックナンバー・文字列を散らさない）。
-//  エンジン側（Rust）の対になる正典は runtime/src/engine/platform/bridge/wire.rs、C# 側は scripting/src/Api/Platform/。
-//  値を変えるときは 3 か所を必ず揃える。全体像は docs/android.md §25。
+//  エンジン側（Rust）の対になる正典は runtime/src/engine/platform/bridge/wire.rs（目覚ましは wire::alarm）、
+//  C# 側は scripting/src/Api/Platform/（目覚ましは Alarms/AlarmJson.cs）。値を変えるときは 3 か所を必ず揃える
+//  （Rust の単体テスト wire::tests::java_contract_matches_wire が、このファイルの文字列の定数と wire.rs を突き合わせる）。
+//  全体像は docs/android.md §25（目覚ましは §25.11）。
 // ============================================================
 
 package com.seedengine.runtime.platform;
@@ -63,6 +65,11 @@ public final class PlatformContract {
     public static final String METHOD_EMIT_TEST_EVENT = "emit_test_event";
     /** 未読の記録を取り出す（知らせを受けたメインプロセスが呼ぶ）。 */
     public static final String METHOD_POLL_EVENTS = "poll_events";
+    /**
+     * :seed_platform の置き場（端末保護ストレージ）の絶対パスを返す（W1-3）。メインプロセス（エンジンの Android の糊）が
+     * 最初に要るときに 1 回呼び、目覚ましの音源（assets:// の中身）を書き出す先（sounds_dir）を知る。
+     */
+    public static final String METHOD_PATHS = "paths";
 
     // ── JSON のキー ──
 
@@ -108,6 +115,122 @@ public final class PlatformContract {
     public static final String KEY_CONNECT_MS = "connect_ms";
     /** 知らせ・返答: 記録の知らせ（Binder）を送れたか。 */
     public static final String KEY_DOORBELL = "doorbell";
+    /** paths の返答: 端末保護ストレージの files の絶対パス（createDeviceProtectedStorageContext().getFilesDir()）。 */
+    public static final String KEY_DEVICE_PROTECTED_FILES_DIR = "device_protected_files_dir";
+    /** paths の返答: 目覚ましの音源の書き出し先の絶対パス（…/files/seed_platform/sounds。返す前にフォルダを作る）。 */
+    public static final String KEY_SOUNDS_DIR = "sounds_dir";
+
+    // ── :seed_platform の置き場（端末保護ストレージの files の下。再起動の後・最初のロック解除の前でも読み書きできる）──
+
+    /** :seed_platform が使うフォルダの名前（files/seed_platform）。予約の控え・記録・音源を置く。 */
+    public static final String STORAGE_DIR_NAME = "seed_platform";
+    /** 目覚ましの音源のフォルダの名前（files/seed_platform/sounds。メインプロセスが「内容のハッシュ.拡張子」で書き出す）。 */
+    public static final String SOUNDS_DIR_NAME = "sounds";
+
+    // ── 目覚まし（モジュール "alarm"。W1-3。機能 alarm を入れた APK だけで使える）──
+
+    /** 目覚ましのモジュール。 */
+    public static final String MODULE_ALARM = "alarm";
+    /** 予約する（同じ ID は置き換え。控えに書き、AlarmManager.setAlarmClock で張る）。 */
+    public static final String METHOD_ALARM_SCHEDULE = "schedule";
+    /** 予約を 1 つ取り消す（無い ID でも成功。冪等）。 */
+    public static final String METHOD_ALARM_CANCEL = "cancel";
+    /** 予約を全部取り消す。 */
+    public static final String METHOD_ALARM_CANCEL_ALL = "cancel_all";
+    /** 控えの一覧（予定時刻の順）。 */
+    public static final String METHOD_ALARM_LIST = "list";
+    /** 正確なアラームを張れるか（Android 12 系の特別なアクセス。11 以前は常に true）。 */
+    public static final String METHOD_ALARM_CAN_SCHEDULE_EXACT = "can_schedule_exact";
+
+    /** 予約・控え: 予約の ID（アプリが決める。同じ ID は置き換え）。 */
+    public static final String KEY_ALARM_ID = "id";
+    /** 予約・控え: 鳴らす時刻（UTC の epoch ミリ秒。壁時計の計算はアプリがする）。 */
+    public static final String KEY_ALARM_TRIGGER_AT_UTC_MS = "trigger_at_utc_ms";
+    /** 予約の引数: スクリプトが渡した音源（"assets://…" か端末のファイルの絶対パス）。メインプロセスが sound_path に置き換えて送る。 */
+    public static final String KEY_ALARM_SOUND_ASSET = "sound_asset";
+    /** 予約・控え: 音源の端末のファイルの絶対パス（空なら既定の音）。 */
+    public static final String KEY_ALARM_SOUND_PATH = "sound_path";
+    /** 予約・控え: バイブするか。 */
+    public static final String KEY_ALARM_VIBRATE = "vibrate";
+    /** 予約・控え: 鳴っている間のアラームの音量（0..1。負 = 触らない）。 */
+    public static final String KEY_ALARM_FORCE_VOLUME = "force_volume";
+    /** 予約・控え: 利用者が音量を下げても戻すか。 */
+    public static final String KEY_ALARM_KEEP_VOLUME = "keep_volume";
+    /** 予約・控え: 音量の漸増の秒（0 = 最初から）。 */
+    public static final String KEY_ALARM_FADE_IN_SECONDS = "fade_in_seconds";
+    /** 予約・控え: 鳴り続ける上限の分（安全弁）。 */
+    public static final String KEY_ALARM_MAX_RING_MINUTES = "max_ring_minutes";
+    /** 予約・控え: 鳴動の通知の題。 */
+    public static final String KEY_ALARM_TITLE = "title";
+    /** 予約・控え: 鳴動の通知の本文。 */
+    public static final String KEY_ALARM_BODY = "body";
+    /** 予約・控え・イベント: アプリの任意の JSON（文字列のまま返す）。 */
+    public static final String KEY_ALARM_PAYLOAD_JSON = "payload_json";
+    /** 控え: 予約を受け付けた時刻（UTC の epoch ミリ秒。診断用。イベントの scheduled_at_utc_ms〈予定時刻〉とは別物）。 */
+    public static final String KEY_ALARM_CREATED_AT_UTC_MS = "created_at_utc_ms";
+    /** list の返答: 控えの配列。 */
+    public static final String KEY_ALARMS = "alarms";
+    /** schedule の返答: 同じ ID の予約を置き換えたか。 */
+    public static final String KEY_ALARM_REPLACED = "replaced";
+    /** cancel の返答: その ID の予約があったか。 */
+    public static final String KEY_ALARM_EXISTED = "existed";
+    /** cancel_all の返答・alarms.rescheduled: 件数。 */
+    public static final String KEY_COUNT = "count";
+    /** can_schedule_exact の返答: 正確なアラームを張れるか。 */
+    public static final String KEY_CAN_SCHEDULE_EXACT = "can_schedule_exact";
+    /** イベント: 鳴るはずだった時刻（予約の trigger_at_utc_ms。UTC の epoch ミリ秒）。 */
+    public static final String KEY_ALARM_SCHEDULED_AT_UTC_MS = "scheduled_at_utc_ms";
+    /** イベント alarm.fired: 発火を受けた時刻（UTC の epoch ミリ秒）。 */
+    public static final String KEY_ALARM_FIRED_AT_UTC_MS = "fired_at_utc_ms";
+    /** イベント: 理由（下の MISSED_REASON_* / RESCHEDULE_REASON_*）。 */
+    public static final String KEY_REASON = "reason";
+    /** イベント alarms.rescheduled: 鳴らさずに「鳴らなかった」と記録した件数。 */
+    public static final String KEY_MISSED = "missed";
+    /** イベント alarms.rescheduled: 張り直せなかった件数（正確なアラームの許可が無い等。控えには残す）。 */
+    public static final String KEY_FAILED = "failed";
+
+    /** 目覚ましが鳴った（予定時刻に AlarmManager から配信された。W1-3 は記録だけ。鳴動は W1-4）。 */
+    public static final String EVENT_ALARM_FIRED = "platform.alarm.fired";
+    /** 目覚ましが鳴らなかった（電源断・強制停止・許可の取り消しの間に予定時刻を過ぎた。張り直すときに見つける）。 */
+    public static final String EVENT_ALARM_MISSED = "platform.alarm.missed";
+    /** 予約を張り直した（再起動・時刻／タイムゾーンの変更・アプリの更新・正確なアラームの許可）。控えが空なら記録しない。 */
+    public static final String EVENT_ALARMS_RESCHEDULED = "platform.alarms.rescheduled";
+
+    /** alarm.missed の理由: 端末の電源断・強制停止・更新などで、予約が OS から消えていた間に予定時刻を過ぎた。 */
+    public static final String MISSED_REASON_DEVICE_OFF = "device_off";
+    /** alarm.missed の理由: 正確なアラームの許可が取り消されていた間に予定時刻を過ぎた。 */
+    public static final String MISSED_REASON_PERMISSION_REVOKED = "permission_revoked";
+    /** alarms.rescheduled の理由: 再起動（LOCKED_BOOT_COMPLETED / BOOT_COMPLETED。強制停止からの復帰でも届く）。 */
+    public static final String RESCHEDULE_REASON_BOOT = "boot";
+    /** alarms.rescheduled の理由: 端末の時刻・タイムゾーンが変わった（アプリは次の時刻を計算し直す）。 */
+    public static final String RESCHEDULE_REASON_TIME_CHANGED = "time_changed";
+    /** alarms.rescheduled の理由: アプリが更新された（MY_PACKAGE_REPLACED）。 */
+    public static final String RESCHEDULE_REASON_PACKAGE_REPLACED = "package_replaced";
+    /** alarms.rescheduled の理由: 正確なアラームの特別なアクセスが許可された。 */
+    public static final String RESCHEDULE_REASON_PERMISSION_CHANGED = "permission_changed";
+
+    /** 予約の ID の最大の長さ（Unicode の符号位置の数）。 */
+    public static final int MAX_ALARM_ID_LENGTH = 128;
+    /** title・body の最大の長さ（Unicode の符号位置の数）。 */
+    public static final int MAX_ALARM_TEXT_LENGTH = 4096;
+    /** payload_json の最大の長さ（Unicode の符号位置の数。控えと Binder の返答を膨らませないため）。 */
+    public static final int MAX_ALARM_PAYLOAD_LENGTH = 16384;
+    /** 控えに持てる予約の数の上限（新しい ID の予約だけを断る。置き換えは通す）。 */
+    public static final int MAX_SCHEDULED_ALARMS = 64;
+    /** vibrate の既定値。 */
+    public static final boolean DEFAULT_ALARM_VIBRATE = true;
+    /** force_volume の「音量に触らない」の値（負の値はすべてこれにそろえる）。 */
+    public static final double ALARM_VOLUME_UNCHANGED = -1.0;
+    /** force_volume の上限。 */
+    public static final double MAX_ALARM_FORCE_VOLUME = 1.0;
+    /** keep_volume の既定値。 */
+    public static final boolean DEFAULT_ALARM_KEEP_VOLUME = false;
+    /** fade_in_seconds の既定値。 */
+    public static final double DEFAULT_ALARM_FADE_IN_SECONDS = 5.0;
+    /** max_ring_minutes の既定値（安全弁）。 */
+    public static final int DEFAULT_ALARM_MAX_RING_MINUTES = 60;
+    /** max_ring_minutes の下限（これより小さい値はこれにそろえる）。 */
+    public static final int MIN_ALARM_MAX_RING_MINUTES = 1;
 
     // ── イベントの名前（スクリプトの SEED.Events にもこの名前で流れる）──
 
@@ -152,6 +275,18 @@ public final class PlatformContract {
     public static final String ERROR_FORBIDDEN = "forbidden";
     /** register_callback に Binder が無い。 */
     public static final String ERROR_MISSING_CALLBACK = "missing_callback";
+    /** 正確なアラームを張れない（Android 12 系で SCHEDULE_EXACT_ALARM が許可されていない）。黙って不正確な予約に落とさない。 */
+    public static final String ERROR_EXACT_ALARM_NOT_ALLOWED = "exact_alarm_not_allowed";
+    /** 引数の値が約束に合わない（detail にどの欄か）。 */
+    public static final String ERROR_INVALID_ARGUMENT = "invalid_argument";
+    /** 予約の数が上限（MAX_SCHEDULED_ALARMS）に達している。 */
+    public static final String ERROR_TOO_MANY_ALARMS = "too_many_alarms";
+    /** 予約の控えを書けなかった（空き容量など。予約は張らない）。 */
+    public static final String ERROR_STORE_WRITE_FAILED = "store_write_failed";
+    /** AlarmManager が予約を受け付けなかった（SecurityException・上限など。detail に例外）。 */
+    public static final String ERROR_SCHEDULE_FAILED = "schedule_failed";
+    /** APK に機能 alarm が入っていない（project_settings.json の android.features に "alarm" が無い）。 */
+    public static final String ERROR_FEATURE_NOT_ENABLED = "feature_not_enabled";
 
     /** module / method の名前の最大の長さ（文字）。Rust の wire::MAX_NAME_LEN と一致させる。 */
     public static final int MAX_NAME_LENGTH = 64;

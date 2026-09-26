@@ -1,11 +1,12 @@
 // ============================================================
-//  platform/bridge/wire.rs — プラットフォーム機能（SEED.Platform）の JSON の約束（W1-1）
+//  platform/bridge/wire.rs — プラットフォーム機能（SEED.Platform）の JSON の約束（W1-1・W1-3 で目覚まし wire::alarm を追加）
 //
 //  【役割】
 //  エンジン・Java（メインプロセスの SeedPlatform と :seed_platform の PlatformProvider）・C#（SEED.Platform）の
 //  3 者が同じ形で読み書きする JSON の「名前・形・エラーの理由」をこのファイル 1 か所に集める（Rust 側の正典）。
 //  Java 側の対になる定数は runtime/android/app/src/main/java/com/seedengine/runtime/platform/PlatformContract.java、
-//  C# 側は scripting/src/Api/Platform/。値を変えるときは 3 か所を必ず揃える。
+//  C# 側は scripting/src/Api/Platform/。値を変えるときは 3 か所を必ず揃える（Java とはこのファイルの単体テスト
+//  java_contract_matches_wire が突き合わせる。C# の目覚ましの名前は scripting/src/Api/Platform/Alarms/AlarmJson.cs）。
 //
 //  【形】
 //    命令     : invoke(module, method, json)。module・method は小文字英数字と _ の名前（is_valid_name）
@@ -31,6 +32,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const KEY_OK: &str = "ok";
 /// 返答: 失敗の理由の名前（文字列。ERROR_* のどれか、または Java 側の理由）。
 pub const KEY_ERROR: &str = "error";
+/// 返答: 失敗の詳しい説明（ログ用。スクリプトの LastError には入らない）。
+pub const KEY_DETAIL: &str = "detail";
 /// イベント: 名前（`platform.` で始まる）。
 pub const KEY_NAME: &str = "name";
 /// イベント: 通し番号。
@@ -58,6 +61,14 @@ pub const METHOD_VERSION: &str = "version";
 pub const METHOD_EMIT_TEST_EVENT: &str = "emit_test_event";
 /// 試験イベントの名前。
 pub const TEST_EVENT_NAME: &str = "platform.test_event";
+/// 端末保護ストレージの置き場の絶対パス（W1-3。Android の糊が目覚ましの音源の書き出し先を知るために 1 回呼ぶ）。
+pub const METHOD_PATHS: &str = "paths";
+/// paths の返答: 端末保護ストレージの files の絶対パス。
+pub const KEY_DEVICE_PROTECTED_FILES_DIR: &str = "device_protected_files_dir";
+/// paths の返答: 目覚ましの音源の書き出し先の絶対パス（…/files/seed_platform/sounds）。
+pub const KEY_SOUNDS_DIR: &str = "sounds_dir";
+/// :seed_platform へつないでいる途中（Android の最初の呼び出し。Java の ERROR_CONNECTING）。
+pub const ERROR_CONNECTING: &str = "connecting";
 
 // ── エラーの理由（Java の PlatformContract.ERROR_* と一致させる。C# の Platform.LastError に入る）──
 
@@ -87,6 +98,11 @@ pub fn is_valid_name(name: &str) -> bool {
 /// 失敗の返答 `{"ok": false, "error": <理由>}` を作る。
 pub fn error_reply(reason: &str) -> String {
     json!({ KEY_OK: false, KEY_ERROR: reason }).to_string()
+}
+
+/// 失敗の返答 `{"ok": false, "error": <理由>, "detail": <説明>}` を作る（Java の PlatformJson.errorReply(reason, detail) と同じ形）。
+pub fn error_reply_with_detail(reason: &str, detail: &str) -> String {
+    json!({ KEY_OK: false, KEY_ERROR: reason, KEY_DETAIL: detail }).to_string()
 }
 
 /// 成功の返答を作る（`fields` の先頭に `"ok": true` を足す）。
@@ -139,6 +155,131 @@ pub fn parse_request(json_text: &str) -> Result<Value, &'static str> {
         return Ok(Value::Object(Map::new()));
     }
     serde_json::from_str(json_text).map_err(|_| ERROR_INVALID_JSON)
+}
+
+/// 目覚まし（モジュール "alarm"。W1-3）の名前・欄・理由・上限（Java の PlatformContract の *ALARM*・C# の AlarmJson と一致させる）。
+///
+/// 予約の形: `{ id, trigger_at_utc_ms, sound_asset | sound_path, vibrate, force_volume, keep_volume, fade_in_seconds,
+/// max_ring_minutes, title, body, payload_json }`。イベントの `scheduled_at_utc_ms` は「鳴るはずだった時刻」
+/// （予約の trigger_at_utc_ms）で、控えの `created_at_utc_ms`（予約を受け付けた時刻）とは別物。
+pub mod alarm {
+    /// 目覚ましのモジュール。
+    pub const MODULE: &str = "alarm";
+    /// 予約する（同じ ID は置き換え）。
+    pub const METHOD_SCHEDULE: &str = "schedule";
+    /// 1 つ取り消す（無い ID でも成功）。
+    pub const METHOD_CANCEL: &str = "cancel";
+    /// 全部取り消す。
+    pub const METHOD_CANCEL_ALL: &str = "cancel_all";
+    /// 控えの一覧（予定時刻の順）。
+    pub const METHOD_LIST: &str = "list";
+    /// 正確なアラームを張れるか。
+    pub const METHOD_CAN_SCHEDULE_EXACT: &str = "can_schedule_exact";
+
+    /// 予約の ID。
+    pub const KEY_ID: &str = "id";
+    /// 鳴らす時刻（UTC の epoch ミリ秒）。
+    pub const KEY_TRIGGER_AT_UTC_MS: &str = "trigger_at_utc_ms";
+    /// スクリプトが渡した音源（"assets://…" か端末のファイルの絶対パス）。Android の糊が sound_path に置き換えて送る。
+    pub const KEY_SOUND_ASSET: &str = "sound_asset";
+    /// 音源の端末のファイルの絶対パス（空なら既定の音）。
+    pub const KEY_SOUND_PATH: &str = "sound_path";
+    /// バイブするか。
+    pub const KEY_VIBRATE: &str = "vibrate";
+    /// 鳴っている間のアラームの音量（0..1。負 = 触らない）。
+    pub const KEY_FORCE_VOLUME: &str = "force_volume";
+    /// 利用者が音量を下げても戻すか。
+    pub const KEY_KEEP_VOLUME: &str = "keep_volume";
+    /// 音量の漸増の秒。
+    pub const KEY_FADE_IN_SECONDS: &str = "fade_in_seconds";
+    /// 鳴り続ける上限の分（安全弁）。
+    pub const KEY_MAX_RING_MINUTES: &str = "max_ring_minutes";
+    /// 鳴動の通知の題。
+    pub const KEY_TITLE: &str = "title";
+    /// 鳴動の通知の本文。
+    pub const KEY_BODY: &str = "body";
+    /// アプリの任意の JSON（文字列のまま返す）。
+    pub const KEY_PAYLOAD_JSON: &str = "payload_json";
+    /// 控え: 予約を受け付けた時刻。
+    pub const KEY_CREATED_AT_UTC_MS: &str = "created_at_utc_ms";
+    /// list の返答: 控えの配列。
+    pub const KEY_ALARMS: &str = "alarms";
+    /// schedule の返答: 置き換えたか。
+    pub const KEY_REPLACED: &str = "replaced";
+    /// cancel の返答: その ID の予約があったか。
+    pub const KEY_EXISTED: &str = "existed";
+    /// cancel_all の返答・alarms.rescheduled: 件数。
+    pub const KEY_COUNT: &str = "count";
+    /// can_schedule_exact の返答。
+    pub const KEY_CAN_SCHEDULE_EXACT: &str = "can_schedule_exact";
+    /// イベント: 鳴るはずだった時刻（予約の trigger_at_utc_ms）。
+    pub const KEY_SCHEDULED_AT_UTC_MS: &str = "scheduled_at_utc_ms";
+    /// イベント alarm.fired: 発火を受けた時刻。
+    pub const KEY_FIRED_AT_UTC_MS: &str = "fired_at_utc_ms";
+    /// イベント: 理由。
+    pub const KEY_REASON: &str = "reason";
+    /// イベント alarms.rescheduled: 鳴らなかったと記録した件数。
+    pub const KEY_MISSED: &str = "missed";
+    /// イベント alarms.rescheduled: 張り直せなかった件数。
+    pub const KEY_FAILED: &str = "failed";
+    /// 模擬の返答・イベント: 模擬が作ったか。
+    pub const KEY_SIMULATED: &str = "simulated";
+
+    /// 目覚ましが鳴った。
+    pub const EVENT_FIRED: &str = "platform.alarm.fired";
+    /// 目覚ましが鳴らなかった（電源断・強制停止・許可の取り消しの間に予定時刻を過ぎた）。
+    pub const EVENT_MISSED: &str = "platform.alarm.missed";
+    /// 予約を張り直した。
+    pub const EVENT_RESCHEDULED: &str = "platform.alarms.rescheduled";
+
+    /// alarm.missed の理由: 電源断・強制停止・更新などで予約が OS から消えていた。
+    pub const MISSED_REASON_DEVICE_OFF: &str = "device_off";
+    /// alarm.missed の理由: 正確なアラームの許可が取り消されていた。
+    pub const MISSED_REASON_PERMISSION_REVOKED: &str = "permission_revoked";
+    /// alarms.rescheduled の理由: 再起動（強制停止からの復帰を含む）。
+    pub const RESCHEDULE_REASON_BOOT: &str = "boot";
+    /// alarms.rescheduled の理由: 端末の時刻・タイムゾーンの変更。
+    pub const RESCHEDULE_REASON_TIME_CHANGED: &str = "time_changed";
+    /// alarms.rescheduled の理由: アプリの更新。
+    pub const RESCHEDULE_REASON_PACKAGE_REPLACED: &str = "package_replaced";
+    /// alarms.rescheduled の理由: 正確なアラームの許可。
+    pub const RESCHEDULE_REASON_PERMISSION_CHANGED: &str = "permission_changed";
+
+    /// 正確なアラームを張れない（黙って不正確な予約に落とさない）。
+    pub const ERROR_EXACT_ALARM_NOT_ALLOWED: &str = "exact_alarm_not_allowed";
+    /// 引数の値が約束に合わない。
+    pub const ERROR_INVALID_ARGUMENT: &str = "invalid_argument";
+    /// 予約の数が上限に達している。
+    pub const ERROR_TOO_MANY_ALARMS: &str = "too_many_alarms";
+    /// 予約の控えを書けなかった。
+    pub const ERROR_STORE_WRITE_FAILED: &str = "store_write_failed";
+    /// AlarmManager が予約を受け付けなかった。
+    pub const ERROR_SCHEDULE_FAILED: &str = "schedule_failed";
+    /// APK に機能 alarm が入っていない。
+    pub const ERROR_FEATURE_NOT_ENABLED: &str = "feature_not_enabled";
+
+    /// 予約の ID の最大の長さ（Unicode の符号位置の数）。
+    pub const MAX_ID_LENGTH: usize = 128;
+    /// title・body の最大の長さ（Unicode の符号位置の数）。
+    pub const MAX_TEXT_LENGTH: usize = 4096;
+    /// payload_json の最大の長さ（Unicode の符号位置の数）。
+    pub const MAX_PAYLOAD_LENGTH: usize = 16384;
+    /// 控えに持てる予約の数の上限。
+    pub const MAX_SCHEDULED_ALARMS: usize = 64;
+    /// vibrate の既定値。
+    pub const DEFAULT_VIBRATE: bool = true;
+    /// force_volume の「触らない」の値。
+    pub const VOLUME_UNCHANGED: f64 = -1.0;
+    /// force_volume の上限。
+    pub const MAX_FORCE_VOLUME: f64 = 1.0;
+    /// keep_volume の既定値。
+    pub const DEFAULT_KEEP_VOLUME: bool = false;
+    /// fade_in_seconds の既定値。
+    pub const DEFAULT_FADE_IN_SECONDS: f64 = 5.0;
+    /// max_ring_minutes の既定値。
+    pub const DEFAULT_MAX_RING_MINUTES: i64 = 60;
+    /// max_ring_minutes の下限。
+    pub const MIN_MAX_RING_MINUTES: i64 = 1;
 }
 
 // ============================================================
@@ -201,5 +342,79 @@ mod tests {
         assert_eq!(parse_request("  ").unwrap(), json!({}));
         assert_eq!(parse_request(r#"{"a":1}"#).unwrap(), json!({ "a": 1 }));
         assert_eq!(parse_request("{").unwrap_err(), ERROR_INVALID_JSON);
+    }
+
+    /// Java の PlatformContract.java の定数（`public static final <型> 名前 = 値;`）の値を取り出す（テスト用）。
+    fn java_constant(source: &str, name: &str) -> String {
+        let marker = format!(" {name} = ");
+        let start = source.find(&marker).unwrap_or_else(|| panic!("PlatformContract.java に {name} がありません")) + marker.len();
+        let end = source[start..].find(';').expect("定数の終わりの ; が無い") + start;
+        source[start..end].trim().trim_matches('"').to_string()
+    }
+
+    /// Java の PlatformContract.java と wire.rs の名前・上限・既定値が一致する（食い違うと実機で黙って動かない）。
+    #[test]
+    fn java_contract_matches_wire() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/android/app/src/main/java/com/seedengine/runtime/platform/PlatformContract.java"
+        );
+        let source = std::fs::read_to_string(path).expect("PlatformContract.java が読めない");
+        let strings: &[(&str, &str)] = &[
+            ("MODULE_PLATFORM", MODULE_PLATFORM), ("METHOD_PING", METHOD_PING), ("METHOD_VERSION", METHOD_VERSION),
+            ("METHOD_EMIT_TEST_EVENT", METHOD_EMIT_TEST_EVENT), ("EVENT_TEST", TEST_EVENT_NAME), ("METHOD_PATHS", METHOD_PATHS),
+            ("KEY_DEVICE_PROTECTED_FILES_DIR", KEY_DEVICE_PROTECTED_FILES_DIR), ("KEY_SOUNDS_DIR", KEY_SOUNDS_DIR),
+            ("KEY_OK", KEY_OK), ("KEY_ERROR", KEY_ERROR), ("KEY_DETAIL", KEY_DETAIL), ("KEY_NAME", KEY_NAME),
+            ("KEY_SEQ", KEY_SEQ), ("KEY_TIME_MS", KEY_TIME_MS), ("KEY_DATA", KEY_DATA), ("EVENT_PREFIX", EVENT_NAME_PREFIX),
+            ("ERROR_UNKNOWN_METHOD", ERROR_UNKNOWN_METHOD), ("ERROR_INVALID_NAME", ERROR_INVALID_NAME),
+            ("ERROR_INVALID_JSON", ERROR_INVALID_JSON), ("ERROR_CONNECTING", ERROR_CONNECTING),
+            ("MODULE_ALARM", alarm::MODULE), ("METHOD_ALARM_SCHEDULE", alarm::METHOD_SCHEDULE),
+            ("METHOD_ALARM_CANCEL", alarm::METHOD_CANCEL), ("METHOD_ALARM_CANCEL_ALL", alarm::METHOD_CANCEL_ALL),
+            ("METHOD_ALARM_LIST", alarm::METHOD_LIST), ("METHOD_ALARM_CAN_SCHEDULE_EXACT", alarm::METHOD_CAN_SCHEDULE_EXACT),
+            ("KEY_ALARM_ID", alarm::KEY_ID), ("KEY_ALARM_TRIGGER_AT_UTC_MS", alarm::KEY_TRIGGER_AT_UTC_MS),
+            ("KEY_ALARM_SOUND_ASSET", alarm::KEY_SOUND_ASSET), ("KEY_ALARM_SOUND_PATH", alarm::KEY_SOUND_PATH),
+            ("KEY_ALARM_VIBRATE", alarm::KEY_VIBRATE), ("KEY_ALARM_FORCE_VOLUME", alarm::KEY_FORCE_VOLUME),
+            ("KEY_ALARM_KEEP_VOLUME", alarm::KEY_KEEP_VOLUME), ("KEY_ALARM_FADE_IN_SECONDS", alarm::KEY_FADE_IN_SECONDS),
+            ("KEY_ALARM_MAX_RING_MINUTES", alarm::KEY_MAX_RING_MINUTES), ("KEY_ALARM_TITLE", alarm::KEY_TITLE),
+            ("KEY_ALARM_BODY", alarm::KEY_BODY), ("KEY_ALARM_PAYLOAD_JSON", alarm::KEY_PAYLOAD_JSON),
+            ("KEY_ALARM_CREATED_AT_UTC_MS", alarm::KEY_CREATED_AT_UTC_MS), ("KEY_ALARMS", alarm::KEY_ALARMS),
+            ("KEY_ALARM_REPLACED", alarm::KEY_REPLACED), ("KEY_ALARM_EXISTED", alarm::KEY_EXISTED), ("KEY_COUNT", alarm::KEY_COUNT),
+            ("KEY_CAN_SCHEDULE_EXACT", alarm::KEY_CAN_SCHEDULE_EXACT),
+            ("KEY_ALARM_SCHEDULED_AT_UTC_MS", alarm::KEY_SCHEDULED_AT_UTC_MS), ("KEY_ALARM_FIRED_AT_UTC_MS", alarm::KEY_FIRED_AT_UTC_MS),
+            ("KEY_REASON", alarm::KEY_REASON), ("KEY_MISSED", alarm::KEY_MISSED), ("KEY_FAILED", alarm::KEY_FAILED),
+            ("EVENT_ALARM_FIRED", alarm::EVENT_FIRED), ("EVENT_ALARM_MISSED", alarm::EVENT_MISSED),
+            ("EVENT_ALARMS_RESCHEDULED", alarm::EVENT_RESCHEDULED),
+            ("MISSED_REASON_DEVICE_OFF", alarm::MISSED_REASON_DEVICE_OFF),
+            ("MISSED_REASON_PERMISSION_REVOKED", alarm::MISSED_REASON_PERMISSION_REVOKED),
+            ("RESCHEDULE_REASON_BOOT", alarm::RESCHEDULE_REASON_BOOT),
+            ("RESCHEDULE_REASON_TIME_CHANGED", alarm::RESCHEDULE_REASON_TIME_CHANGED),
+            ("RESCHEDULE_REASON_PACKAGE_REPLACED", alarm::RESCHEDULE_REASON_PACKAGE_REPLACED),
+            ("RESCHEDULE_REASON_PERMISSION_CHANGED", alarm::RESCHEDULE_REASON_PERMISSION_CHANGED),
+            ("ERROR_EXACT_ALARM_NOT_ALLOWED", alarm::ERROR_EXACT_ALARM_NOT_ALLOWED),
+            ("ERROR_INVALID_ARGUMENT", alarm::ERROR_INVALID_ARGUMENT), ("ERROR_TOO_MANY_ALARMS", alarm::ERROR_TOO_MANY_ALARMS),
+            ("ERROR_STORE_WRITE_FAILED", alarm::ERROR_STORE_WRITE_FAILED), ("ERROR_SCHEDULE_FAILED", alarm::ERROR_SCHEDULE_FAILED),
+            ("ERROR_FEATURE_NOT_ENABLED", alarm::ERROR_FEATURE_NOT_ENABLED),
+        ];
+        for (java, rust) in strings {
+            assert_eq!(java_constant(&source, java), *rust, "PlatformContract.{java} と wire.rs が食い違う");
+        }
+        let numbers: &[(&str, f64)] = &[
+            ("PROTOCOL_VERSION", f64::from(PROTOCOL_VERSION)), ("MAX_NAME_LENGTH", MAX_NAME_LEN as f64),
+            ("LOCAL_EVENT_SEQ", LOCAL_EVENT_SEQ as f64), ("MAX_ALARM_ID_LENGTH", alarm::MAX_ID_LENGTH as f64),
+            ("MAX_ALARM_TEXT_LENGTH", alarm::MAX_TEXT_LENGTH as f64), ("MAX_ALARM_PAYLOAD_LENGTH", alarm::MAX_PAYLOAD_LENGTH as f64),
+            ("MAX_SCHEDULED_ALARMS", alarm::MAX_SCHEDULED_ALARMS as f64), ("ALARM_VOLUME_UNCHANGED", alarm::VOLUME_UNCHANGED),
+            ("MAX_ALARM_FORCE_VOLUME", alarm::MAX_FORCE_VOLUME), ("DEFAULT_ALARM_FADE_IN_SECONDS", alarm::DEFAULT_FADE_IN_SECONDS),
+            ("DEFAULT_ALARM_MAX_RING_MINUTES", alarm::DEFAULT_MAX_RING_MINUTES as f64),
+            ("MIN_ALARM_MAX_RING_MINUTES", alarm::MIN_MAX_RING_MINUTES as f64),
+        ];
+        for (java, rust) in numbers {
+            let value: f64 = java_constant(&source, java).parse().unwrap_or_else(|_| panic!("{java} が数でない"));
+            assert_eq!(value, *rust, "PlatformContract.{java} と wire.rs が食い違う");
+        }
+        let flags: &[(&str, bool)] =
+            &[("DEFAULT_ALARM_VIBRATE", alarm::DEFAULT_VIBRATE), ("DEFAULT_ALARM_KEEP_VOLUME", alarm::DEFAULT_KEEP_VOLUME)];
+        for (java, rust) in flags {
+            assert_eq!(java_constant(&source, java), rust.to_string(), "PlatformContract.{java} と wire.rs が食い違う");
+        }
     }
 }

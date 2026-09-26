@@ -20,9 +20,14 @@
 //  すぐ {"ok":false,"error":"connecting"} を返す（プロセスの起動の約 120 ms を描画のスレッドで待たない）。
 //  つながったら platform.connected のイベントが届く（docs/android.md §25）。
 //
-//  JSON の形とエラーの理由の名前は wire.rs。
+//  JSON の形とエラーの理由の名前は wire.rs。目覚まし（W1-3）の共通部品（引数の検査・音源の書き出し）は alarm/。
+//
+//  【Play の区切り】エディタの Play の開始・停止で reset_session を呼び、実装ごとの「前の回の状態」を捨てる
+//  （デスクトップの模擬は予約表とイベント。Android の実機の予約は Play と関係ないので触らない）。
 // ============================================================
 
+/// 目覚ましの共通部品（引数の検査・音源の書き出し。W1-3）。
+pub mod alarm;
 /// デスクトップの模擬（W1-P7）。
 pub mod desktop_sim;
 /// イベントの待ち行列（上限つき）。
@@ -90,6 +95,12 @@ pub trait PlatformBridge: Send + Sync {
 
     /// 届いているイベント（JSON）を届いた順にすべて取り出す（エンジンがフレームの頭で 1 回呼ぶ）。
     fn poll_events(&self) -> Vec<String>;
+
+    /// エディタの Play の区切り（開始・停止）で、前の回の状態を捨てる（既定は何もしない）。
+    ///
+    /// デスクトップの模擬は目覚ましの予約表と積んだイベントを空にする（Play を止めれば予約は消える）。
+    /// Android は実機の予約を Play と関係なく持つので何もしない。
+    fn reset_session(&self) {}
 }
 
 /// OS の糊が登録した実装（プロセスで 1 つ。最初の登録だけが有効）。
@@ -154,6 +165,16 @@ pub fn invoke(module: &str, method: &str, json: &str) -> Result<String, String> 
         eprintln!("{LOG_PREFIX} {module}.{method} の呼び出し中に panic しました");
         Err(wire::ERROR_INTERNAL_PANIC.to_string())
     })
+}
+
+/// Play の区切りで、今の実装の前の回の状態を捨てる（基盤が無ければ何もしない。panic は受け止めてログだけ）。
+pub fn reset_session() {
+    let Some(bridge) = current_bridge() else {
+        return;
+    };
+    if panic::catch_unwind(AssertUnwindSafe(|| bridge.reset_session())).is_err() {
+        eprintln!("{LOG_PREFIX} Play の区切りの片付けの途中で panic しました");
+    }
 }
 
 /// 届いているイベントを取り出す（エンジンがフレームの頭で 1 回呼ぶ）。基盤が無ければ空。

@@ -9,7 +9,8 @@
 //      → SeedPlatform.nativeOnPlatformEvent（jni_exports.rs）→ inbox（箱）→ エンジンがフレームの頭で取り出してスクリプトへ
 //
 //  【構成】
-//    android_bridge … エンジンの trait PlatformBridge の Android の実装（下の 2 つをつなぐだけ）
+//    android_bridge … エンジンの trait PlatformBridge の Android の実装（下をつなぐだけ）
+//    alarm_prep     … alarm.schedule を送る前の前処理（音源〈assets://〉を :seed_platform が読める実ファイルへ書き出す。W1-3）
 //    java_bridge    … native → Java（SeedPlatform のクラスの GlobalRef・invoke のメソッド ID・スレッドの attach）
 //    inbox          … Java → native のイベントの箱（形の検査つき）
 //    jni_exports    … Java から呼ばれる 2 本（nativeRegisterPlatformBridge・nativeOnPlatformEvent）
@@ -17,6 +18,7 @@
 //  jni クレートはこのクレート（Android の糊）だけが使い、エンジン本体（seed_engine）には入れない。
 // ============================================================
 
+mod alarm_prep;
 mod android_bridge;
 mod inbox;
 mod java_bridge;

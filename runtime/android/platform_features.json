@@ -8,8 +8,8 @@
     "    permissions（<uses-permission>。max_sdk_version は android:maxSdkVersion）・",
     "    application_elements（<application> の下に置く要素の木。{ tag, attributes: { \"android:name\": … }, children: [ … ] }）・",
     "    deep_link_filters（true なら project_settings.json の android.deep_links を 1 件ずつ MainActivity の intent-filter にする）。",
-    "W1-3 / W1-4 で受信機・サービス・activity-alias（AlarmReceiver・BootReceiver・RingService・PlatformEntry）を足すときは",
-    "application_elements に行を足す。Java のクラスが無い部品を宣言すると起動時に落ちるので、クラスを足すのと同じ変更で足すこと",
+    "W1-3 で alarm に AlarmReceiver・BootReceiver（:seed_platform・exported=false・directBootAware）を足した。W1-4 で RingService・",
+    "activity-alias PlatformEntry を足すときも application_elements に行を足す。Java のクラスが無い部品を宣言すると起動時に落ちるので、クラスを足すのと同じ変更で足すこと",
     "（単体テスト AndroidPipelineTests が、宣言した com.seedengine.runtime.* のクラスの Java のソースがあるかを確かめる）。",
     "PlatformProvider は機能によらず main のマニフェストに常設（:seed_platform は最初の呼び出しまで起動しないので害が無く、",
     "features が空でもスクリプトの Platform.IsSupported が実機で一貫する）。Google Play の方針に関わる注意は play_requirements.json の permission_policies。"
@@ -19,7 +19,7 @@
     {
       "name": "alarm",
       "label": "目覚まし（正確なアラーム・鳴動）",
-      "description": "決まった時刻に確実に鳴らす（setAlarmClock・別プロセスの鳴動・フルスクリーン通知・再起動後の張り直し）。Google Play では目覚まし・カレンダーが中核のアプリだけが使える権限を含む。受信機・鳴動サービスの宣言は W1-3・W1-4 で足す。",
+      "description": "決まった時刻に確実に鳴らす（setAlarmClock・別プロセスの鳴動・フルスクリーン通知・再起動後の張り直し）。Google Play では目覚まし・カレンダーが中核のアプリだけが使える権限を含む。予約の受信機（発火・張り直し）は W1-3、鳴動サービスは W1-4。",
       "permissions": [
         { "name": "android.permission.USE_EXACT_ALARM" },
         { "name": "android.permission.SCHEDULE_EXACT_ALARM", "max_sdk_version": 32 },
@@ -31,7 +31,39 @@
         { "name": "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" },
         { "name": "android.permission.POST_NOTIFICATIONS" }
       ],
-      "application_elements": []
+      "application_elements": [
+        {
+          "tag": "receiver",
+          "attributes": {
+            "android:name": "com.seedengine.runtime.platform.service.alarm.AlarmReceiver",
+            "android:directBootAware": true,
+            "android:exported": false,
+            "android:process": ":seed_platform"
+          }
+        },
+        {
+          "tag": "receiver",
+          "attributes": {
+            "android:name": "com.seedengine.runtime.platform.service.alarm.BootReceiver",
+            "android:directBootAware": true,
+            "android:exported": false,
+            "android:process": ":seed_platform"
+          },
+          "children": [
+            {
+              "tag": "intent-filter",
+              "children": [
+                { "tag": "action", "attributes": { "android:name": "android.intent.action.LOCKED_BOOT_COMPLETED" } },
+                { "tag": "action", "attributes": { "android:name": "android.intent.action.BOOT_COMPLETED" } },
+                { "tag": "action", "attributes": { "android:name": "android.intent.action.MY_PACKAGE_REPLACED" } },
+                { "tag": "action", "attributes": { "android:name": "android.intent.action.TIME_SET" } },
+                { "tag": "action", "attributes": { "android:name": "android.intent.action.TIMEZONE_CHANGED" } },
+                { "tag": "action", "attributes": { "android:name": "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" } }
+              ]
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "notifications",
