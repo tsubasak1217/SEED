@@ -2500,15 +2500,15 @@ PC の Play / Edit の表示は変えない（Android が動いていなけれ�
 バナーはビューポートの上の行（地形ツールバーと同じ行。写しを出すときは地形モードを抜ける）に置く（WPF の要素は HwndHost の上に描けないため。Airspace）。
 色はスクリプトエディタの通知帯と同じ `NOTICE_BAR_*`（`Theme/SeedColorTable.cs`）。
 
-**Output の例**（端末での数値は未計測のため「…」。シーンパネルへ出す・戻す時間は PC の Edit の `SEED.exe` での実測）
+**Output の例**（2026-09-26 の実機〈Pixel 6a・debug の .so・わらしべフィッシング〉で、エディタの段取りのプローブが出した実際の行。シーンパネルは PC の Edit の `SEED.exe`）
 
 ```
 [Android] 一時停止しました（Pixel_6a（実機）。ゲームの時間・物理・スクリプトを止めています。実行ボタンで再開）。
 [Android] 一時停止中の端末のシーンを写しとして取り出しています（Pixel_6a（実機））…
-[Android] 写しを取り出しました: アクタ 304（保存できずに飛ばした 0）・0.63 MB（端末 … ms・合計 … 秒）。端末のメインカメラ: 位置 (…)・向き (…)
-[Android] 写しをシーンパネルに出しました（閲覧専用・アクタ 304・1.7 秒）。デバッグカメラは端末のメインカメラの位置から動かせます。編集中のシーンは退避してあり、再開・停止で戻ります。
+[Android] 写しを取り出しました: アクタ 304（保存できずに飛ばした 0）・0.63 MB（端末 65 ms・合計 0.3 秒）。端末のメインカメラ: 位置 (59.01, 9.96, -13.93)・向き (1.2°, -11.1°, 0.0°)
+[Android] 写しをシーンパネルに出しました（閲覧専用・アクタ 304・1.9 秒）。デバッグカメラは端末のメインカメラの位置から動かせます。編集中のシーンは退避してあり、再開・停止で戻ります。
 [Android] 再開しました（Pixel_6a（実機））。
-[Android] 写しの表示をやめ、編集中のシーンへ戻しました（0.3 秒）。
+[Android] 写しの表示をやめ、編集中のシーンへ戻しました（0.4 秒）。
 ```
 
 **SeedAndroid の `snapshot`**（エディタ無しで確かめる。§21.5 と同じくつないで 1 命令送って DETACH で切る）
@@ -2516,7 +2516,7 @@ PC の Play / Edit の表示は変えない（Android が動いていなけれ�
 ```powershell
 dotnet run --project editor/tools/SeedAndroid -- pause    --project <プロジェクト> --serial <実機>
 dotnet run --project editor/tools/SeedAndroid -- snapshot --project <プロジェクト> --serial <実機> --out paused.scene
-# → 写しを保存しました: …\paused.scene（アクタ 304・飛ばした 0・658609 バイト・端末 … ms・合計 … 秒・メインカメラ 位置 (…)・向き (…)）
+# → 写しを保存しました: …\paused.scene（アクタ 304・飛ばした 0・658782 バイト・端末 76.6 ms・合計 0.31 秒・メインカメラ 位置 (59.01, 9.96, -13.92)・向き (1.2°, -11.1°, 0.0°)）
 ```
 
 **確認結果（2026-09-26）**
@@ -2530,10 +2530,12 @@ dotnet run --project editor/tools/SeedAndroid -- snapshot --project <プロジ�
 | PC: 写しを別の `SEED.exe`（Play）で読み込む | 一時停止したときと同じ構図・同じ状態の画面（キャラクターの位置・会話の吹き出し）を描いた |
 | PC: Edit の `SEED.exe` で閲覧（読み込み → 写し → 戻し） | 未保存のアクタを足した編集中のシーン → `SNAPSHOT_VIEW_READY:…\|actors=304\|ms=1722〜1733`（写しのヒエラルキーに未保存のアクタは無い・デバッグカメラは端末のメインカメラの位置）→ 表示中の `SAVE_SCENE` は `SAVE_ERROR:snapshot_view`・`TOOL:MOVE` は `TOOL_MODE:SELECT`＋`SNAPSHOT_VIEW_REFUSED:SET_TOOL_MODE`・`DELETE` は `…REFUSED:DELETE` → `SNAPSHOT_VIEW_ENDED:memory\|…MainGame.scene\|ms=332`（未保存のアクタが戻る・カメラも元の位置・同じ視点で見ると元のシーン〈地形の島・キャラクターは編集の位置〉）→ 2 回目の END は `none`。シーンのファイルの更新時刻は変わらない。編集用ランタイムのメモリ 788 MB → 表示中 840 MB → 戻した後 812 MB |
 | エディタの段取り（WPF 抜きのプローブ。本物の `AndroidPauseSnapshotViewCoordinator`・`SceneSnapshotViewSession` と、PC の Edit の `SEED.exe`〈TCP〉。端末の代わりに「一時停止・写しあり」の状態を与える） | 1 回目: 出す 1.74 秒（`SNAPSHOT_VIEW_READY … ms=1679.5`・カメラを `CAM_TRANSFORM` で端末のメインカメラへ・写しに未保存のアクタは無い）→ 表示中の保存は `SAVE_ERROR:snapshot_view`・捨てた知らせは 2 回目を間引く → 再開で戻す（`SNAPSHOT_VIEW_ENDED:memory … ms=325`・未保存のアクタが戻る・未保存フラグは元の true）。2 回目: 出す 1.74 秒 → 停止で戻す 0.38 秒 |
-| 実機（Pixel 6a） | **未実施**。端末の画面が消えたまま（`mWakefulness=Dozing`）で、06:06〜06:27 と 07:04〜07:25 の 2 回、それぞれ 20 分待ったが前面がランチャーにならなかった。手順は用意した（下の「実機で確かめる」） |
+| 実機: SeedAndroid の `pause` → `snapshot` → `resume`（Pixel 6a・Android 16・debug の .so・複製したわらしべフィッシング・`run --scene mainGame/MainGame.scene`。2026-09-26） | `写しを保存しました`（アクタ 304・飛ばした 0・658,782 バイト・**端末 76.6 ms・合計 0.31 秒**・メインカメラ 位置 (59.01, 9.96, -13.92)・向き (1.2°, -11.1°, 0.0°)）。端末の logcat に `[SEED SNAPSHOT] 写しを書き出しました`。端末の `cache/` に `seed_ipc_snapshot.scene` は残らない（取り出した後に消える）。一時停止中も写しの後も端末の画面はゲームのまま、`resume` で再開（heartbeat が戻る） |
+| 実機の写しを PC の `SEED.exe` で読み込む | Play（`--scene=<写し>`）: 端末の一時停止中の画面と同じ物・状態（会話の吹き出し・鳥・キャラクター・小屋・ヤシの木）を描いた（10 秒動かしてから撮ったので、カメラの傾きはわずかに違う。PC だけの試験と同じ）。Edit: `SNAPSHOT_VIEW_READY:…\|actors=304\|ms=1970.5`（端末のメインカメラを `CAM_TRANSFORM`）→ 表示中の `SAVE_SCENE` は `SAVE_ERROR:snapshot_view`・`TOOL:MOVE` は `…REFUSED:SET_TOOL_MODE`・`DELETE` は `…REFUSED:DELETE` → `SNAPSHOT_VIEW_ENDED:memory\|…MainGame.scene\|ms=360.9`（未保存のアクタが戻る・シーンのファイルの更新時刻は変わらない）。メモリ 788 → 841 → 813 MB |
+| 実機: エディタの段取り（プローブ。本物の `AndroidRunController`＋中核で端末へ `run`、`AndroidPauseSnapshotViewCoordinator`＋`SceneSnapshotViewSession`＋PC の Edit の `SEED.exe`） | 1 回目: 一時停止から写しの取り出しまで 0.37 秒（端末 65 ms）→ **シーンパネルに出るまで 2.25 秒**（`SNAPSHOT_VIEW_READY … ms=1896.2`）→ 表示中の保存は `SAVE_ERROR:snapshot_view`・写しに未保存のアクタは無い → **再開で 0.39 秒で戻す**（`SNAPSHOT_VIEW_ENDED:memory … ms=367.5`・未保存のアクタが戻る・未保存フラグは元の true）。2 回目: 取り出し 0.31 秒（端末 59 ms）・出るまで 2.35 秒 → 一時停止中の停止で 0.50 秒で戻す。端末の向きは縦（SeedAndroid）・横（プローブ）のどちらでも取れた |
 | エディタの画面（バナー・無効表示・ビューポートの切り替え・トースト） | **未確認**（エージェントはエディタを起動しない。判断は単体テスト、段取りは WPF 抜きのプローブで確かめた。利用者が画面で確かめる） |
 
-**実機で確かめる**（2026-09-26 は端末の画面が消えたままで未実施。確かめる項目と手順）
+**実機で確かめる手順**（2026-09-26 にこの手順で確かめた。結果は上の表）
 
 1. SeedAndroid で `run`（`--scene mainGame/MainGame.scene`）→ `pause` → `snapshot --out <PC>.scene`（所要時間・アクタ数・飛ばした数・メインカメラ）→ `resume`。
    端末の logcat に `[SEED SNAPSHOT] 写しを書き出しました`、端末の `cache/` に `seed_ipc_snapshot.scene` が残らないこと。
@@ -2544,7 +2546,8 @@ dotnet run --project editor/tools/SeedAndroid -- snapshot --project <プロジ�
 
 **制限・持ち越し**（[backlog.md](backlog.md) の「Android」節）
 
-- **実機では未確認**（上の「実機で確かめる」。端末での書き出しの時間・run-as の取り出し・端末の絵との比較）。
+- ~~実機では未確認~~ → 2026-09-26 に実機（Pixel 6a・debug の .so）で確かめた（上の表）。
+- 一時停止中も時間で動くシェーダ（水面等）は端末の画面で動き続ける（一時停止中に 2 枚撮ると、海を中心に約 3% の画素が違う。§21.4・backlog の既存の項目）。
 - 写しへの編集を端末へ反映する機能は無い（閲覧専用）。足すときは `SceneSnapshotViewSession` の外に作る（写しの読み込みと表示は独立したクラス）。
 - 写しは「シーンの状態」だけ。スクリプトのフィールドのうちシーンに保存しないもの（private の実行時の変数）・物理の速度・アニメーションの再生位置・
   パーティクル・2D の UI（キャンバス）の描画状態は写らない（Edit のシーンパネルはアニメーション・スクリプトを動かさない）。
@@ -2552,6 +2555,9 @@ dotnet run --project editor/tools/SeedAndroid -- snapshot --project <プロジ�
 - 一時停止のたびに取り出す（設定で止める手段は無い）。大きなシーンでは端末での書き出しと PC での読み込みに時間がかかる（端末の debug の .so で測った値は上）。
 - 写しを出している間の編集用ランタイムは、編集中のシーン（地形の実データを含む）と写しの両方をメモリに持つ（上の計測で +52 MB）。
 
+---
+
+## 21. 実行バーからの一時停止・再開（エディタとの IPC を TCP で。段階D-1・2026-09-25）
 
 Android の実行中も、**PC の Play と同じ実行バー**（実行ボタン＝一時停止／再開・停止ボタン）で端末のゲームを一時停止・再開できるようにした。
 PC の Play と同じ IPC の命令（1 行 1 命令の文字列。`PAUSE` / `RESUME` / `SCREENSHOT:` …。書式の正典は `runtime/src/engine/core/app_base/ipc.rs`）を、
@@ -2847,7 +2853,8 @@ adb -s <実機> logcat -d -s SEED DOTNET | Select-String "SEED IPC|PROBE"   # �
   （段階D-3。§22.7）。最大の要因は**デファードのライティング**（等倍で 41.5 ms。前方描画の約 5 倍。原因は未調査）と **SSGI**（11.0 ms）で、
   前方描画にするだけで等倍でも 59.3 fps（GPU 12.3 ms）になる。描画スケール 0.5 と 0.75 の差は GPU 約 2 ms で、0.5 は床の縁や細部のぼけが
   目立つため `mobile` を 0.75（`mobile_high` は等倍）にした。残りの約 4.5 ms は描画スケールに関係なく画面の解像度で走る固定分
-  （クラスタ構築・トーンマップ・UI・提示のコピー）。横向き・動くシーン・影の深度パスは未計測（§22.8）。
+  （クラスタ構築・トーンマップ・UI・提示のコピー）。
+- **ただし実ゲーム（わらしべフィッシングの MainGame。動くシーン・影あり）は `mobile` で 60 fps に届かない**（縦 38.2・横 44.6 fps。`render_scale=0.6,shadows=false` でも縦 58.2・横 53.5、release の .so でも上がらない。GPU か提示の側が主因と推定・未実証。2026-09-26。§22.10）。
 
 ### 22.2 構成
 
@@ -3005,11 +3012,11 @@ adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|
   シャドウのサンプリングのどれが効いているか。シェーディングアセット（L3）や SSGI を使うゲームが `deferred: true` へ戻すと効いてくる）。
 - **固定分 約 4.5 ms の削減**（クラスタ構築 約 1 ms・トーンマップ 約 1.9 ms・UI・提示のコピー。描画スケールに関係なく画面の解像度で走る）。
   トーンマップ後の LDR 中間（Rgba16Float）と提示のコピーは論理サイズ（フル解像度）のまま（UI が無いときにトーンマップと提示をまとめる余地）。
-- **横向き・動くシーン・影ありの計測**（`proj_bench` は静止しているので影の深度パスは省略されていた）。
+- ~~**横向き・動くシーン・影ありの計測**~~ → 2026-09-26 にわらしべフィッシング（縦・横・debug と release の .so）で測った（§22.10）。**実ゲームは `mobile` で 60 fps に届かない**（縦 38.2・横 44.6）。主因は GPU か提示の側と推定（未実証。backlog）。
   ~~release の .so での計測~~ → 2026-09-26 に `proj_probe`（BrainStem 1 体・平行光）で測った（§24.11）: fps は release 59.2〜59.5・debug 58.8〜59.1 で、
   どちらも 60 Hz の垂直同期で頭打ち。差は CPU に出る（1 コアあたりの CPU 時間は release 約 69%・debug 75.5〜79.4%、メインスレッドの 1 フレームの処理は
-  release 3.0〜3.5 ms・debug 5.1 ms）。重いシーン（`proj_bench`）の release の .so は未計測。
-- 重いシーンで 60 fps を割るなら `mobile` の描画スケールを 0.6 へ（0.75 との差は GPU 約 1.3 ms）。
+  release 3.0〜3.5 ms・debug 5.1 ms）。`proj_bench` の release の .so は未計測（わらしべフィッシングでは release でも fps は上がらなかった。§22.10）。
+- 重いシーンで 60 fps を割るなら `mobile` の描画スケールを 0.6 へ（0.75 との差は GPU 約 1.3 ms）。わらしべフィッシングでは 0.6 だけでは届かなかった（縦 42.5・横 44.4。影も止めると縦 58.2・横 53.5。§22.10）。
 - テクスチャの最大解像度・クラスタの分割数・Hi-Z・カスケード数（3 固定）のつまみは入れていない（計測で必要と分かったら足す）。
 - 背景ゾーンのキャンバスと 3D 空間のキャンバスは描画解像度で描かれる（前面の UI だけが論理サイズ）。
 - `mobile` は前方描画なので、シェーディングアセット（L3）・水面反射・コースティクス・SSGI／AO／反射は効かない（見た目が変わる）。
@@ -3017,7 +3024,7 @@ adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|
   （2026-09-26: 前方描画で地形が赤・緑、水面が平坦になっていた不具合は直した。水面は反射パスの代わりに空を映す。§22.9）
 - 目標 fps の上限（`target_fps`）は起動時に 1 回だけ当てる（`SEED.Application.TargetFps` は上限を当てた後の値を返す）。
 - SeedAndroid / エディタの実行は品質の起動オプションを渡さない（計測は `am start` を直接使う）。
-- 縦より横が速い理由（§7）は未調査のまま。
+- 縦より横が速い理由（§7）は未調査のまま（わらしべフィッシングの `mobile` でも、3D の画素が約 3 倍の横が 44.6 fps・縦が 38.2 fps。§22.10）。
 
 ### 22.9 前方描画での地形・水面（不具合の修正。2026-09-26）
 
@@ -3059,16 +3066,50 @@ adb -s <実機> logcat -d -v time -s SEED | grep -E "SEED QUALITY|SEED FEATURES|
   空のフォールバックの選び方（反射パスがあれば使わない・スカイボックスが無ければ使わない）と WGSL の門（有効フラグ・水上だけ・強度は水域の反射強度・binding 番号）。
   水面パイプラインの実 GPU での生成（`water_pipelines_build_on_gpu`）も通った。
 
-**実機（Pixel 6a）: 未実施**。修正後の APK（arm64・debug・`com.seedengine.warashibefishing`・複製したプロジェクト）は SeedAndroid の `build` で作ったが、
-2026-09-26 05:33〜05:54 の間ずっと端末の画面が消えたまま（`mWakefulness=Dozing`）で、前面がランチャーにならなかったため、入れていない・起動していない
-（端末には何も触れていない）。手順は計測用のスクリプトにまとめてある（前面がランチャーになるまで待つ → いま入っているアプリのデータを run-as の tar で
-PC へ控える → 修正前〈いま入っているアプリ〉の計測 → SeedAndroid `run --scene mainGame/MainGame.scene --logcat-seconds 30` → `screenshot` →
-修正後の計測〈`mobile`・`render_scale=0.6`・`shadows=false`・`mobile_high`・`desktop`〉）。**わらしべフィッシングの実機の fps と 60 fps に届くか、
-届かなければどのつまみで届くかは未計測**（PC の GPU では前方描画の地形が +0.15 ms。段階D-3 の `proj_bench` は `mobile` で GPU 10.5 ms・59.2 fps）。
+**実機（Pixel 6a・2026-09-26）**: 複製したわらしべフィッシングを SeedAndroid の `run --scene mainGame/MainGame.scene`（debug の .so・`com.seedengine.warashibefishing`）で入れ、§22.6 の手順（`seed.gpu_timing 1`・IPC の撮影）で 45 秒ずつ動かして確かめた。
+- 見た目: 修正前の APK（利用者のプロジェクトから 04:47 に入れられていたもの）は地形が赤・緑のベタ塗り・海が平坦な青一色（利用者のスクリーンショットと同じ）。修正後は地形が砂と葉のレイヤの色になり、海に空（雲）と波の揺らぎが映る（縦・横とも。横は利用者のスクリーンショットと同じ場面・構図）。
+- ログ: `[SEED QUALITY] preset=mobile render_scale=0.75 … deferred=false … water_reflection=false water_caustics=false`、`[SEED FEATURES] shadow=shadowmap gi=flat(品質上限) reflection=off(品質上限) ao=off(品質上限) translucency=raster(rt非対応→raster)`。検証エラー・パニックなし。
+- GPU（縦・`mobile`・45 秒の平均。修正前 → 修正後）: forward 3.05 → 3.58 ms（**+0.53**）・water 3.69 → 4.09 ms（**+0.40**）・合計 13.80 → 14.76 ms（地形のレイヤのサンプルと空の映り込みのぶんとみられる。PC では forward +0.15 ms・water は変わらずだった）。fps は修正前 41.7・修正後 38.2（計測の順と温度の差を含む）で、**どちらも 60 fps に届かない**（§22.10）。
 
 **残る見た目の差**（デファード専用の機能。`mobile` はもともと重いので止めている）: SSAO・DDGI／SSGI の照り返し（陰が暗い。MainGame のアンビエントは 0.05）・
 画面の反射・水面の物体（島・小屋）の映り込みと反射のぼけ・水中コースティクス・影の解像度（1024・50 m）。地形の散布の草・散布モデルの不透明部分は
 前方描画でまだ描かれない（わらしべフィッシングは使っていない。[backlog.md](backlog.md)）。
+
+### 22.10 実ゲーム（わらしべフィッシング）の実機の fps（2026-09-26）
+
+**結論**: ベンチ（§22.7 の `proj_bench`。静止・ヘルメット 9 体）は `mobile` で 59.2 fps だったが、**利用者のゲーム（わらしべフィッシングの MainGame。スクリプト・アニメーション・水面・地形・影が毎フレーム動く）は `mobile` で 60 fps に届かない**（縦 38.2・横 44.6 fps）。いちばん近いのは `render_scale=0.6,shadows=false`（縦 58.2・横 53.5）。release の .so にしても上がらない。**主因は CPU ではなく GPU か提示の側と推定（未実証）**。調べる候補は [backlog.md](backlog.md) の「Android」節。
+
+**条件**: Pixel 6a（Mali-G78・Android 16・1080x2400）。複製したプロジェクトを SeedAndroid の `run --scene mainGame/MainGame.scene` で入れた APK（debug の .so・§22.9 の修正後）。組み合わせごとに `am start`（`--es seed.gpu_timing 1`・`seed.quality`／`seed.quality_overrides`・`seed.scene`）で起動し直し、開始位置（「はじめの一歩」の場面）のまま操作せずに 45 秒。fps は `[SEED HEARTBEAT]` のうち最初にフレームが出た区間から 3 区間（約 9 秒）と最後の 1 区間を除いた平均、時間は `[SEED GPU]`（30 フレーム以上の行の先頭 2 行を除いた平均・ms）。3D はプロジェクトの内部解像度固定（1280x720）の 16:9 の帯に描く（縦は 1080x607、横は 1920x1080。横は縦の約 3 倍の画素）。横は端末の回転の設定を変えずに測るため、複製の `project_settings.json` に一時的に `"screen_orientation": "landscape"` を足して APK を作り直した（測った後に戻した）。1 組み合わせ 1 回（再計測を除く）。
+
+| 組み合わせ | 縦 fps | 横 fps | 横・release の .so |
+|---|---|---|---|
+| `mobile`（既定・描画スケール 0.75） | 38.2（再計測 37.6） | 44.6（再計測 43.7・36.9） | 39.0（再計測 40.2） |
+| `mobile` + `render_scale=0.6` | 42.5 | 44.4 | 39.8 |
+| `mobile` + `shadows=false` | 55.8 | 44.1 | 43.1 |
+| `mobile` + `render_scale=0.6,shadows=false` | **58.2**（58.0〜58.3） | **53.5**（45.3〜57.0） | 47.9（最後の 15 秒は 56〜58） |
+| `mobile_low`（`target_fps` 30 の上限どおり） | 29.8 | 29.8 | — |
+| `mobile_high` | 40.0 | — | 37.9 |
+| `desktop` | 19.5 | — | — |
+| 修正前の APK（§22.9 の修正の前・`mobile`） | 41.7 | — | — |
+
+CPU と GPU の内訳（ms。「待ちを除く CPU」＝CPU の 1 フレーム − 描画先の取得待ち〈`acquire`〉− 提出と提示の待ち〈`present`〉。GPU の列は `[SEED GPU]` の区間）:
+
+| 組み合わせ | fps | CPU の 1 フレーム | 取得待ち | 提示待ち | 待ちを除く CPU | GPU 合計 | compute | shadow | forward | water | tonemap | ui | present |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 縦 `mobile` | 38.2 | 25.7 | 0.4 | 7.4 | 18.0 | 14.76 | 3.55 | 1.44 | 3.58 | 4.09 | 0.58 | 0.42 | 0.75 |
+| 縦 `mobile` + 影なし | 55.8 | 16.6 | 0.1 | 3.2 | 13.3 | 11.8 | 3.06 | 0 | 3.38 | 3.62 | 0.44 | 0.34 | 0.67 |
+| 縦 `mobile` + 0.6＋影なし | 58.2 | 15.1 | 0.1 | 2.3 | 12.7 | 11.0 | 3.06 | 0 | 3.20 | 3.09 | 0.34 | 0.34 | 0.72 |
+| 横 `mobile` | 44.6 | 22.2 | 0.2 | 6.0 | 15.9 | 12.8 | 2.65 | 1.24 | 3.02 | 3.37 | 0.53 | 0.35 | 1.40 |
+| 横 `mobile` + 0.6＋影なし | 53.5 | 18.4 | 0.1 | 4.2 | 14.0 | 10.9 | 3.30 | 0 | 2.58 | 2.54 | 0.40 | 0.36 | 1.39 |
+| 横 `mobile`・release | 39.0 | 25.2 | 3.4 | 11.0 | 10.8 | 14.4 | 2.81 | 1.52 | 3.26 | 3.55 | 0.93 | 0.42 | 1.51 |
+| 横 0.6＋影なし・release | 47.9 | 18.8 | 3.0 | 7.6 | 8.2 | 11.9 | 3.58 | 0 | 2.80 | 2.64 | 0.69 | 0.41 | 1.47 |
+| 縦 `desktop` | 19.5 | 51.1 | 0.1 | 21.6 | 29.4 | 44.4 | 0.88 | 3.10 | 0.56 | 12.60 | 0.84 | 0.21 | 0.51 |
+
+- 縦の `mobile` の GPU 14.76 ms は compute 3.55（フレームの頭〜影の前: スキニング・パーティクルのシミュレーション・メッシュレットカリング等）・shadow 1.44・forward 3.58・water 4.09・tonemap 0.58・ui 0.42・present 0.75（残りは cluster 0.05・overlay 0.27 等）。`proj_bench`（10.5 ms）に無かった水面（4.1 ms）と compute（3.5 ms。`proj_bench` は 0.04 ms）が重い。`desktop` の残りの大きい区間は lighting 9.55・ao 4.71・ssgi 3.99・bloom 3.81・gbuffer 1.86・reflection 1.62。
+- **GPU の合計は `mobile`（つまみ違いを含む）で 11〜15 ms と 16.7 ms に収まるのに 60 fps に届かない**。release の .so では待ちを除く CPU が 8〜11 ms（debug は 13〜18 ms）に減るのに fps は上がらず（横 39.0 / 39.8 / 43.1 / 47.9）、**1 フレーム約 25 ms のうち描画先の取得待ちと提示待ちが約 14 ms**（取得 3.4＋提示 11.0。debug の `mobile` では 6〜8 ms）に増える。CPU を速くしても空いた時間が待ちに回るだけなので、60 fps を妨げているのは GPU か提示の側（タイムスタンプに出ない GPU の仕事・提示の間隔〈垂直同期。端末は Fifo〉・熱による GPU のクロックの低下など）と推定する（未実証）。
+- 影を止めると、縦では待ちを除く CPU が 18.0 → 13.3 ms・提示待ちが 7.4 → 3.2 ms に減って 55.8 fps になるが、横では変わらなかった（44.1 fps。横は熱状態 1 に入った後の計測で、途中で 40 → 50 fps と上がるなどばらつく）。
+- 3D の画素が約 3 倍の横の方が縦より速い（`mobile` で 44.6 対 38.2 fps）。理由は未調査（§7・§22.8 と同じ傾向）。
+- **熱**: 約 40 分続けて測る間に電池の温度が 29.1 → 最高 36.5 ℃ になり、途中から熱状態 1（軽度）になった。後半の再計測は下がることがある（横の `mobile` 44.6 → 36.9 fps。少し冷ました後は 43.7。縦 38.2 → 37.6）。表の値は計測の順と温度の差を含む。
 
 ---
 
