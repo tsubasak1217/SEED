@@ -2194,3 +2194,82 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   この PC の `tools/netcoredbg/` には `dbgshim.dll`（9.0.13）等だけがあり `netcoredbg.exe` 本体が無いため、アタッチ・ブレークポイントを
   試せていない。netcoredbg を配置したら、.NET 10 対応の版か（必要なら新しい版へ差し替え）を確かめる。関連: docs/scripting_debugger.md、
   `editor/src/Debugger/NetcoredbgLocator.cs`。
+
+## アプリ基盤（W1 Android サービス層 / W2 UI 部品群）— 2026-09-27 W0 設計時（正典: docs/app_platform_roadmap.md）
+
+目覚ましアプリ Wake or Pay（`D:\SEED_projects\WakeOrPay`、アプリの正典は `docs/WAKEORPAY_SEED_SPEC.md`）を SEED で作るために、
+エンジン本体へ足す汎用機能。段階・受け入れ基準・検証方法は docs/app_platform_roadmap.md。ここには着手前の作業単位と、
+W0 の調査で見つかった既存の不具合・制限を置く。関連する既存の項目は「Android」節（起動の初期化の同期・同梱 .NET の展開の同期・
+アプリを終える API が無い・安全領域の自動反映・縦画面の自動スケール・ジェスチャー・指0 だけのポインタイベント）。
+
+### W0 の調査で見つかった既存の不具合・制限
+
+- [ ] **SaveData の書き出しに「既存の save.json を消してから rename」の隙間がある** — 2026-09-27（W0）。`store.rs::flush` は
+  一時ファイルへ書いた後、既存を `remove_file` してから `rename` する（コメント「Windows の rename は上書き不可」）。削除と rename の間に
+  落ちると save.json が無くなり、読み込みは `.tmp` から自動で戻らない（空のセーブで始まり、次の保存で上書きされる）。Rust の
+  `std::fs::rename` は Unix・Windows とも既存の宛先を置き換える（標準ライブラリの文書で確認）ので、削除は要らない。あわせて fsync が無い・
+  壊れたファイルを空として読んで上書きする（前の世代が無い）。お金と履歴を持つアプリには足りない。直し方は docs/app_platform_roadmap.md §2.7
+  （W1-S）。関連: `runtime/src/engine/core/save/store.rs:136-165,269-289`、`save/mod.rs:163-180`。
+- [ ] **`SaveData.SetString` が値をスタックに確保する（大きな値でプロセスが落ちうる）** — 2026-09-27（W0）。`ScriptHost.SaveSetString` は
+  値の UTF-8 を `stackalloc byte[vl]`（上限なし）で確保してから FFI へ渡す。数百 KB〜MB の JSON を 1 キーに入れる使い方（Wake or Pay の保存の設計）では
+  スタックが溢れ、.NET のスタックオーバーフローは捕まえられないのでプロセスごと落ちる（溢れる大きさはスレッドのスタック次第で未測定）。
+  一定の長さを超えたら `ArrayPool<byte>` を使う。読み取り側（`SaveGetString`）は必要長の 2 段階でヒープへ切り替えているので問題ない。
+  文字列を渡す他の FFI も同じ形か点検する。関連: `scripting/src/Api/ScriptHost.cs:826-841`、`runtime/src/engine/core/scripting/host_api.rs::ffi_save_string`。
+- [ ] **UI スレッドからの自動書き出しが、スクリプトの複数キーの更新の途中を書きうる** — 2026-09-27（W0）。`MainActivity.onDestroy` は
+  UI スレッドから `nativeFlushSaveData` を呼ぶ。ストアの Mutex が守るのは 1 回の Set と 1 回の書き出しだけなので、スクリプトがキーを
+  順に書き換えている最中に入ると半端な組み合わせがディスクに残りうる（推測。実測はしていない）。`SaveData.Batch` を足すか、
+  「1 文書を 1 キーに入れる」使い方を scripting_api.md に書く。関連: `runtime/android/native/src/jni_exports.rs`、`save/mod.rs`。
+- [ ] **配布版で起動の理由（Intent）を受け取る経路が無い** — 2026-09-27（W0）。`MainActivity.forwardLaunchOptions` は
+  デバッグ版だけ（他のアプリの Intent で途中のシーンへ飛べないため）で、`onNewIntent` も無い。目覚まし・通知のボタン・ディープリンクで
+  起きたことをスクリプトが知れない。W1-P6（エクスポートしない activity-alias 経由の Intent だけを信用する）で解く。関連:
+  `runtime/android/app/src/main/java/com/seedengine/runtime/MainActivity.java:192-233`。
+- [ ] **プロジェクトごとに権限・サービス・受信機・intent-filter を足す仕組みが無い** — 2026-09-27（W0）。main のマニフェストには
+  `<uses-permission>`・`<service>`・`<receiver>`・`<provider>` が 1 つも無く、`INTERNET` はデバッグ版のマニフェストだけ。
+  `AndroidAppSettings.ExtraData` は保存で消えないだけで、ビルドのどこからも読まれない。W1-2（`android.features` → マニフェストの断片）で解く。
+  配布版でネットワークを使うゲームも今は作れない（Flutter 版の Wake or Pay で「リリース版だけ INTERNET が無い」事故があった）。
+  関連: `runtime/android/app/src/main/AndroidManifest.xml`、`src/debug/AndroidManifest.xml`、`editor/src/Android/Gradle/GradleInvocation.cs`。
+- [ ] **アプリ向けの既定を選べない（システムバーを常に隠す・`appCategory="game"` 固定）** — 2026-09-27（W0）。`MainActivity` は常に
+  システムバーを隠し（`hideSystemBars`）、マニフェストは `android:appCategory="game"` 固定。時刻や電池が見えるべきアプリには向かない。
+  W1-2・W1-6 の `system_bars`・`app_category` で選べるようにする。関連: `MainActivity.java:281-288`、AndroidManifest.xml。
+
+### W1: Android サービス層（`SEED.Platform`）
+
+- [ ] **W1-0 スパイク: 別プロセスの鳴動サービスとフルスクリーン通知からの冷えた起動** — 2026-09-27。Java だけの `:seed_platform`
+  プロセスに前景サービス（`mediaPlayback`・`USAGE_ALARM`）と `setAlarmClock` の予約を置き、Pixel 6a で (a) ロック中に鳴ってロック画面の上に
+  GameActivity が出るまでの秒数 (b) 最近のタスクから消しても鳴り続ける (c) Doze の下で時刻どおり (d) 再起動後の張り直し (e) `ContentResolver.call`
+  の往復時間を測る。結果で未決 E-01〜E-03（別プロセス・JNI の手段・前景サービスの種類）を決める。docs/app_platform_roadmap.md §6.1。
+- [ ] **W1-1 橋渡し（native → Java の呼び出しが 1 つも無い）** — 2026-09-27。`SeedPlatform.invoke(module, method, byte[] json)` と
+  `nativeOnPlatformEvent(byte[] json)` の 2 本、`ScriptHostApi` の新カテゴリ、C# の `SEED.Platform` の骨組み、デスクトップの模擬。
+  ネイティブのスレッドからの `FindClass` はアプリのクラスが見えない（android.md §17.8）ので、Java からクラスを渡して GlobalRef で持つ。
+- [ ] **W1-2 機能の opt-in（`android.features`・`deep_links`・`system_bars`・`app_category`）** — 2026-09-27。SeedAndroid → Gradle →
+  生成したマニフェストの断片。Play の要件チェック（`AndroidRequirementChecks`・`play_requirements.json`）に権限と前景サービスの申告の注意を足す。
+- [ ] **W1-3 目覚ましの予約（setAlarmClock・予約の控え・再起動／時刻・タイムゾーン／更新／権限の変化で張り直す・音源の書き出し）** — 2026-09-27。
+- [ ] **W1-4 鳴動（前景サービス・音量の指定と漸増・バイブ・WakeLock・音声フォーカスの喪失で止めない・安全弁・重なりを捨てない・フルスクリーン通知・起動理由・信頼できる起動での showWhenLocked）** — 2026-09-27。
+- [ ] **W1-5 通知と権限（チャネル・常駐・ボタン・トランポリン無し・実行時権限の結果イベント・正確なアラーム／フルスクリーン通知の状態と設定画面）** — 2026-09-27。
+- [ ] **W1-6 画面とアプリ（`Window.SetShowWhenLocked`・`SetKeepScreenOn`・`SetSystemBarsVisible`・`App.MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク）** — 2026-09-27。
+  「アプリを終える API が無い」（Android 節）は `MoveTaskToBack`（閉じずに背面へ）で目覚ましアプリの用は足りるが、終える API もここで一緒に決める。
+- [ ] **W1-S 保存の耐久性** — 2026-09-27。上の「SaveData の書き出しに…隙間がある」「UI スレッドからの自動書き出し…」を直す。
+- [ ] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。
+- [ ] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27。Wake or Pay の起床確認「振る」を v1 に残すなら（アプリ仕様 §10 U-04）。
+- [ ] **（任意）W1-9 Direct Boot（再起動後・ロック解除前の鳴動）** — 2026-09-27。夜中の自動更新の再起動の後でも鳴らすため。
+  予約の控えと既定の音を端末保護ストレージに置き、受信機と鳴動サービスを `directBootAware` にする案（記憶に基づく・要確認）。
+
+### W2: UI 部品群
+
+- [ ] **W2-0 スパイク: Android の文字入力（GameActivity の IME を winit の外から使えるか）・クリップの描画・描かないときのイベントループ** — 2026-09-27。
+  今の SEED には Windows・Android とも文字入力・IME の経路が無い（`core/input/mod.rs` は `WindowEvent::Ime` を扱わない）。
+- [ ] **W2-1 土台（dp・レイアウト〈Stack・Wrap・Grid〉・安全領域の部品・クリップ・当たり判定のクリップ対応）** — 2026-09-27。
+  前提として「2D ノードのレイアウト計算が 5 か所に重複コピーされている」（上の「2D キャンバス」節）を 1 つに寄せる。縦画面の `auto_scale` に頼らない。
+- [ ] **W2-2 ジェスチャーアリーナ（タップ・長押し・ドラッグ・フリック・押下の取り消し・指ごとの捕捉・タッチの時刻）** — 2026-09-27。
+- [ ] **W2-3 スクロールと一覧（慣性・跳ね返り・入れ子・行の再利用・左スワイプの操作）** — 2026-09-27。
+- [ ] **W2-4 基本の部品（ボタン・トグル・スライダ＋数値欄・選択・進捗・グラデーション・9 スライス・円の切り抜き）** — 2026-09-27。
+  Draw にグラデーションが無く、9 スライスも `batch2d.rs:19` の TODO のまま。
+- [ ] **W2-5 時刻ホイール（24 時間・ループ・スナップ・触感）** — 2026-09-27。
+- [ ] **W2-6 文字入力と IME・文字の寸法（`Text.Measure`）・グリフの追い出し** — 2026-09-27。
+  グリフのアトラス（4096²・約 2,500 字）はあふれると追い出さずに描かない（`font/atlas.rs:17-19,183-194`）。日本語のアプリでは足りなくなりうる。
+- [ ] **W2-7 画面の組み立て（タブ・画面のスタック・ダイアログ・シート・戻るの段・トースト）** — 2026-09-27。
+- [ ] **W2-8 グラフ（折れ線・積み上げ棒・軸・吹き出し・パンとズーム）** — 2026-09-27。
+- [ ] **W2-9 テーマ（トークンの JSON・実行中の切り替え）と `templates/ui/` の見本・ギャラリー** — 2026-09-27。
+- [ ] **W2-10 描かなくてよいときは描かない** — 2026-09-27。前面では毎フレーム描き続け、UI と提示だけで Pixel 6a の GPU 約 4.5 ms を使う
+  （上の「固定分 約 4.5 ms」の項目）。止まっている画面の多いアプリの電池に効く。
+- [ ] **W2-11 通しの確認（UC-1〜12）** — 2026-09-27。
