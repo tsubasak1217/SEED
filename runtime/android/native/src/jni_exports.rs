@@ -14,6 +14,8 @@
 //  セーブの未書き出し分を同期でディスクへ書く保険。通常は背面へ回った時点（suspended。
 //  エンジンの app/background_lifecycle.rs）で書き出し済みで、ここでは「変更なし」になる。
 //  セーブのストアは Mutex で守られているので、UI スレッドから呼んでも android_main のスレッドと競合しない。
+//  スクリプトが `SaveData.Batch` の途中なら書かずに戻る（半端な組み合わせを書かない。W1-S の save/batch.rs。
+//  ログは「…待たせました」。その直後にプロセスが終わると、Batch より前の未書き出しの変更も書かれない）。
 //  ログは標準エラーの転送スレッドを経由せず liblog へ直接書く（直後にプロセスが終わっても消えないように）。
 //
 //  【nativeOnScreenChanged（ScreenReporter）】

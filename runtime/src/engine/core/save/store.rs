@@ -2,112 +2,58 @@
 //  save/store.rs — セーブデータのキー・バリューストア本体
 //
 //  【役割】
-//  キー（文字列）→ 値（整数 / 浮動小数 / 文字列）のマップを保持し、
-//  JSON テキストとの相互変換とファイル入出力を担う。
+//  キー（文字列）→ 値（整数 / 浮動小数 / 文字列）のマップをメモリ上に保持し、
+//  「いつディスクへ書くか」（明示保存・自動保存・Batch の待たせ）を決める。
+//  値の型（value.rs）・本文の変換（codec.rs）・書き出しの順序（durable_file.rs）・
+//  読み込みと復旧（recovery.rs）・Batch の状態（batch.rs）はそれぞれの層に任せ、ここは束ねるだけ。
 //
-//  【JSON 形式】
-//  素直な 1 階層のオブジェクト（人が読める・手で書き換えられる）:
-//    {
-//      "money": 1200,
-//      "rod_level": 3,
-//      "best_size_bass": 41.5,
-//      "player_name": "kani"
-//    }
-//  JSON の数値はそのまま整数 / 実数として読み分ける（小数点や指数が無く
-//  i64 に収まるものを整数、それ以外を実数とみなす）。
-//  真偽値・null・配列・オブジェクトはこのストアの型に無いため**読み飛ばす**
-//  （手書きで壊れた値が混ざってもロード全体を失敗させない）。
+//  【書き出しの要求】
+//  - `request_save`       … 明示の Save（変更が無くても書く）
+//  - `request_auto_flush` … 自動保存（Play 終了・アプリ終了・Android の背面・onDestroy。変更があるときだけ）
+//  どちらも Batch の途中なら書かずに要求を覚え、最も外側の `end_batch` で 1 回だけ書く（batch.rs）。
 //
-//  【型不一致時の方針】
-//  - 整数 ⇄ 実数 は相互変換する（`SetFloat(2.0)` → `GetInt` = 2、切り捨て）。
-//  - 文字列 → 数値、数値 → 文字列 は**変換しない**（`None` = 既定値を返す）。
-//    暗黙のパースは「保存し忘れ」と「本当に文字列だった」を見分けられなくし、
-//    バグを既定値で覆い隠すため。
+//  【復旧したとき】
+//  1 世代前から読んだ・読めずに空で始めたときは未書き出し（dirty）として始める。次の書き出しで
+//  本体（save.json）を作り直し、以後の起動で毎回「復旧した」と出続けないようにするため。
 // ============================================================
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
+use super::batch::{BatchEnd, BatchState, PendingFlush};
+use super::codec;
+use super::durable_file::{self, PrimaryHandling};
+use super::file_set::SaveFileSet;
+use super::recovery::{self, LoadSource};
+use super::value::SaveValue;
 
-// ─── SaveValue ────────────────────────────────────────────────
+/// ログの行頭（セーブの他のログと同じ印）。
+const LOG_TAG: &str = "[SEED SAVE]";
 
-/// セーブデータが保持できる値の型。
-#[derive(Debug, Clone, PartialEq)]
-pub enum SaveValue {
-    /// 整数（資金・レベル・カウント）。
-    Int(i64),
-    /// 実数（記録サイズ・進捗率）。内部は f64 で保持し、FFI では f32 に丸める。
-    Float(f64),
-    /// 文字列（プレイヤー名・最後に釣った魚の ID）。
-    Str(String),
+/// 書き出しの要求（明示保存・自動保存）に対して何をしたか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushOutcome {
+    /// ディスクへ書いた。
+    Written,
+    /// 書く必要が無かった（自動保存で、未書き出しの変更が無い）。
+    Clean,
+    /// Batch の途中なので書かずに要求を覚えた（最も外側の Batch の終わりに書く）。
+    Deferred,
 }
 
-impl SaveValue {
-    /// 整数として解釈する。実数は切り捨て、文字列は変換しない。
-    pub fn as_int(&self) -> Option<i64> {
-        match self {
-            SaveValue::Int(v) => Some(*v),
-            // 実数 → 整数は切り捨て（trunc）。NaN / 範囲外は変換不能として None。
-            SaveValue::Float(v) => {
-                if v.is_finite() && *v >= i64::MIN as f64 && *v <= i64::MAX as f64 {
-                    Some(v.trunc() as i64)
-                } else {
-                    None
-                }
-            }
-            SaveValue::Str(_) => None,
-        }
-    }
-
-    /// 実数として解釈する。整数は昇格、文字列は変換しない。
-    pub fn as_float(&self) -> Option<f32> {
-        match self {
-            SaveValue::Int(v) => Some(*v as f32),
-            SaveValue::Float(v) => Some(*v as f32),
-            SaveValue::Str(_) => None,
-        }
-    }
-
-    /// 文字列として解釈する。数値は変換しない（意図しない既定値化を防ぐ）。
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            SaveValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        }
-    }
-
-    /// JSON 値へ変換する。
-    fn to_json(&self) -> JsonValue {
-        match self {
-            SaveValue::Int(v) => JsonValue::Number(JsonNumber::from(*v)),
-            // 非有限（NaN / ∞）は JSON で表現できないため 0 として書く
-            // （書き出し全体を失敗させるより、値 1 つを潰すほうが被害が小さい）。
-            SaveValue::Float(v) => JsonNumber::from_f64(*v)
-                .map(JsonValue::Number)
-                .unwrap_or_else(|| JsonValue::Number(JsonNumber::from(0))),
-            SaveValue::Str(s) => JsonValue::String(s.clone()),
-        }
-    }
-
-    /// JSON 値から変換する。対応しない型（bool / null / 配列 / オブジェクト）は `None`。
-    fn from_json(v: &JsonValue) -> Option<SaveValue> {
-        match v {
-            JsonValue::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Some(SaveValue::Int(i))
-                } else {
-                    n.as_f64().map(SaveValue::Float)
-                }
-            }
-            JsonValue::String(s) => Some(SaveValue::Str(s.clone())),
-            _ => None,
-        }
-    }
+/// Batch を 1 段終えた結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchEndOutcome {
+    /// Batch が開いていなかった（Begin と End の数が合わない）。何もしていない。
+    NotOpen,
+    /// まだ外側の Batch が開いている（書き出しは外側の終わりで）。
+    StillOpen,
+    /// 最も外側の Batch が閉じた。待たせた要求が無かった（または変更が無かった）ので書いていない。
+    ClosedWithoutWrite,
+    /// 最も外側の Batch が閉じ、待たせていた書き出しを 1 回行った。
+    ClosedAndWritten,
 }
-
-// ─── SaveStore ────────────────────────────────────────────────
 
 /// セーブデータのキー・バリューストア。
 ///
@@ -115,62 +61,63 @@ impl SaveValue {
 /// セーブファイルの差分が読める＝手動デバッグしやすいため）。
 #[derive(Debug)]
 pub struct SaveStore {
-    /// 保存先ファイルの絶対パス。
-    path: PathBuf,
+    /// 本体（save.json）と仲間のファイル（.tmp・.bak・.corrupt-*）のパス。
+    files: SaveFileSet,
     /// キー → 値。
     values: BTreeMap<String, SaveValue>,
-    /// 最後のフラッシュ以降に変更があったか。
+    /// 最後の書き出し以降に変更があったか。
     dirty: bool,
+    /// 本体の場所に、退避できなかった壊れた本体が残っているか（.bak へ回してはいけない）。
+    primary_untrusted: bool,
+    /// ロードのときにどこから読んだか（`SaveData.RecoveredFrom`）。
+    load_source: LoadSource,
+    /// Batch の深さと、待たせている書き出しの要求。
+    batch: BatchState,
 }
 
 impl SaveStore {
     /// 空のストアを作る（ファイルは読まない。テスト用）。
+    #[cfg(test)]
     pub fn new_empty(path: PathBuf) -> Self {
         Self {
-            path,
+            files: SaveFileSet::new(path),
             values: BTreeMap::new(),
             dirty: false,
+            primary_untrusted: false,
+            load_source: LoadSource::Fresh,
+            batch: BatchState::default(),
         }
     }
 
-    /// ファイルからロードする。存在しない / 壊れている場合は空のストアを返す。
+    /// ファイルからロードする（本体 → 1 世代前 → 空の順。recovery.rs）。どの場合も失敗させない。
     ///
-    /// 壊れたファイルでゲームが起動しなくなるほうが害が大きいので、
-    /// パース失敗はログを出して空扱いにする（上書き保存で自動的に直る）。
-    pub fn load_or_empty(path: PathBuf) -> Self {
-        let mut store = Self::new_empty(path);
-        match std::fs::read_to_string(&store.path) {
-            Ok(text) => {
-                let (values, skipped) = parse_json(&text);
-                if skipped > 0 {
-                    eprintln!(
-                        "[SEED SAVE] {} 件の非対応な値を読み飛ばしました ({})",
-                        skipped,
-                        store.path.display()
-                    );
-                }
-                store.values = values;
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                // 初回起動: セーブが無いのは正常。ログも出さない。
-            }
-            Err(e) => {
-                eprintln!(
-                    "[SEED SAVE] 読み込みに失敗しました ({}): {e}",
-                    store.path.display()
-                );
-            }
+    /// 壊れたファイルでゲームが起動しなくなるほうが害が大きいので、読めなければ 1 世代前か空で始める。
+    /// 壊れた本体は上書きせずに `save.json.corrupt-<時刻>` として残る。
+    pub fn load(path: PathBuf) -> Self {
+        let files = SaveFileSet::new(path);
+        let outcome = recovery::load(&files);
+        Self {
+            files,
+            values: outcome.values,
+            // 復旧したときは次の書き出しで本体を作り直す（ファイル先頭のコメント）
+            dirty: outcome.source.is_recovery(),
+            primary_untrusted: outcome.primary_untrusted,
+            load_source: outcome.source,
+            batch: BatchState::default(),
         }
-        store.dirty = false;
-        store
     }
 
-    /// 保存先パス。
+    /// 保存先（本体）のパス。
     pub fn path(&self) -> &Path {
-        &self.path
+        self.files.primary()
     }
 
-    /// 最後のフラッシュ以降に変更があったか。
+    /// ロードのときにどこから読んだか。
+    pub fn load_source(&self) -> LoadSource {
+        self.load_source
+    }
+
+    /// 最後の書き出し以降に変更があったか。
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -248,69 +195,104 @@ impl SaveStore {
         }
     }
 
+    // ── 書き出しの要求 ───────────────────────────────────────
+
+    /// 明示の Save。変更が無くても書く（スクリプトが明示的に `Save()` を呼んだ意図を尊重する）。
+    /// Batch の途中なら書かずに要求を覚え、最も外側の Batch の終わりに書く。
+    pub fn request_save(&mut self) -> io::Result<FlushOutcome> {
+        if self.batch.is_open() {
+            self.batch.defer(PendingFlush::Always);
+            return Ok(FlushOutcome::Deferred);
+        }
+        self.write_now()?;
+        Ok(FlushOutcome::Written)
+    }
+
+    /// 自動保存。未書き出しの変更があるときだけ書く。Batch の途中なら書かずに要求を覚える。
+    pub fn request_auto_flush(&mut self) -> io::Result<FlushOutcome> {
+        if !self.dirty {
+            return Ok(FlushOutcome::Clean);
+        }
+        if self.batch.is_open() {
+            self.batch.defer(PendingFlush::IfDirty);
+            return Ok(FlushOutcome::Deferred);
+        }
+        self.write_now()?;
+        Ok(FlushOutcome::Written)
+    }
+
+    // ── Batch ────────────────────────────────────────────────
+
+    /// Batch を 1 段始める（入れ子は数える）。
+    pub fn begin_batch(&mut self) {
+        self.batch.begin();
+    }
+
+    /// Batch を 1 段終える。最も外側が閉じ、途中に書き出しの要求があったら 1 回だけ書く。
+    ///
+    /// # 戻り値
+    /// 何をしたか。書き出しに失敗したら `Err`（変更は未書き出しのまま残り、次の書き出しで再び試す）。
+    pub fn end_batch(&mut self) -> io::Result<BatchEndOutcome> {
+        let pending = match self.batch.end() {
+            BatchEnd::NotOpen => return Ok(BatchEndOutcome::NotOpen),
+            BatchEnd::StillOpen => return Ok(BatchEndOutcome::StillOpen),
+            BatchEnd::Closed(pending) => pending,
+        };
+        let should_write = match pending {
+            PendingFlush::None => false,
+            PendingFlush::IfDirty => self.dirty,
+            PendingFlush::Always => true,
+        };
+        if !should_write {
+            return Ok(BatchEndOutcome::ClosedWithoutWrite);
+        }
+        self.write_now()?;
+        Ok(BatchEndOutcome::ClosedAndWritten)
+    }
+
     // ── 永続化 ───────────────────────────────────────────────
 
-    /// JSON テキストへシリアライズする（改行・インデント付き）。
-    pub fn to_json_string(&self) -> String {
-        let mut map = JsonMap::new();
-        for (k, v) in &self.values {
-            map.insert(k.clone(), v.to_json());
-        }
-        // pretty で書き出す（セーブファイルは手で覗いて直せることに価値がある）
-        serde_json::to_string_pretty(&JsonValue::Object(map))
-            .unwrap_or_else(|_| String::from("{}"))
-    }
-
-    /// ディスクへ書き出す（親ディレクトリが無ければ作る）。
+    /// 今の内容をすぐにディスクへ書く（Batch を見ない。呼び出し元が Batch の外であることを確かめる）。
     ///
-    /// 書き込みは一時ファイル → リネームの 2 段で行う。
-    /// 直接上書きすると、書き込み中の異常終了でセーブが半端な状態になり
-    /// 次回起動時にパースできなくなる（＝進行が全損する）。
-    pub fn flush(&mut self) -> io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
+    /// 本文を組み立て（codec.rs）、本体を置き換える（durable_file.rs の順序）。
+    fn write_now(&mut self) -> io::Result<()> {
+        let text = codec::encode(&self.values)?;
+        let handling = self.primary_handling();
+        let report = durable_file::replace_primary(&self.files, text.as_bytes(), handling)?;
+        for warning in &report.warnings {
+            eprintln!("{LOG_TAG} 警告: {warning}");
         }
-        let text = self.to_json_string();
-
-        // 一時ファイル名は保存先と同じディレクトリに置く
-        // （別ドライブだと rename がコピーになり原子性が失われるため）。
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text.as_bytes())?;
-        // Windows の rename は上書き不可なので、既存を消してから置き換える。
-        // 消してから rename までの間に落ちると save.json が消えるが、
-        // .tmp が残るため手動復旧は可能。
-        if self.path.exists() {
-            std::fs::remove_file(&self.path)?;
-        }
-        std::fs::rename(&tmp, &self.path)?;
-
         self.dirty = false;
+        // 本体は自分で書いた正しい世代になった（次からは .bak へ回してよい）
+        self.primary_untrusted = false;
         Ok(())
     }
-}
 
-// ─── JSON パース ──────────────────────────────────────────────
-
-/// JSON テキストをキー・バリューへ変換する。
-///
-/// 戻り値: (読めた値のマップ, 読み飛ばした件数)。
-/// トップレベルがオブジェクトでない・パース不能なら空のマップを返す。
-fn parse_json(text: &str) -> (BTreeMap<String, SaveValue>, usize) {
-    let mut out = BTreeMap::new();
-    let mut skipped = 0usize;
-
-    let Ok(JsonValue::Object(map)) = serde_json::from_str::<JsonValue>(text) else {
-        return (out, 0);
-    };
-    for (k, v) in map {
-        match SaveValue::from_json(&v) {
-            Some(sv) => {
-                out.insert(k, sv);
+    /// 今の本体をどう扱って置き換えるかを決める。
+    ///
+    /// ロードのときに退避できなかった壊れた本体が残っていれば、もう一度退避を試す。
+    /// それでも退避できなければ .bak へ回さずに置き換える（壊れた本体で正しい 1 世代前を消さないため）。
+    fn primary_handling(&mut self) -> PrimaryHandling {
+        if !self.primary_untrusted {
+            return PrimaryHandling::RotateToBackup;
+        }
+        match recovery::quarantine_primary(&self.files) {
+            Ok(kept) => {
+                eprintln!("{LOG_TAG} 警告: 壊れた本体を {} へ退避しました", kept.display());
+                self.primary_untrusted = false;
+                PrimaryHandling::RotateToBackup
             }
-            None => skipped += 1,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // もう本体が無い（誰かが消した）。回すものも無い。
+                self.primary_untrusted = false;
+                PrimaryHandling::RotateToBackup
+            }
+            Err(e) => {
+                eprintln!("{LOG_TAG} 警告: 壊れた本体をまだ退避できません。1 世代前を残したまま本体を置き換えます: {e}");
+                PrimaryHandling::ReplaceInPlace
+            }
         }
     }
-    (out, skipped)
 }
 
 // ============================================================
@@ -320,11 +302,61 @@ fn parse_json(text: &str) -> (BTreeMap<String, SaveValue>, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// テスト用の空ストア（パスは実在しなくてよい）。
     fn empty() -> SaveStore {
         SaveStore::new_empty(PathBuf::from("__test__/save.json"))
     }
+
+    /// テストごとの一時フォルダ（終わったら消す。panic しても Drop で消える）。
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        /// 他のテスト・他のプロセスと重ならない名前で作る。
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!("seed_save_store_{tag}_{}_{nanos}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("一時フォルダを作れない");
+            Self(dir)
+        }
+
+        /// このフォルダの save.json のパス。
+        fn primary(&self) -> PathBuf {
+            self.0.join("save.json")
+        }
+
+        /// このフォルダのファイル一式。
+        fn files(&self) -> SaveFileSet {
+            SaveFileSet::new(self.primary())
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// ファイルを本文として読む（テストの検証用。読めなければ panic）。
+    fn read_values(path: &Path) -> BTreeMap<String, SaveValue> {
+        let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{} を読めない: {e}", path.display()));
+        codec::decode(&text).unwrap_or_else(|e| panic!("{} が壊れている: {e}", path.display())).values
+    }
+
+    /// 1 キーだけのセーブを書いたストアを作る（世代を作る下ごしらえ）。
+    fn store_with_generation(dir: &TestDir, generation: i64) -> SaveStore {
+        let mut store = SaveStore::load(dir.primary());
+        store.set("generation", SaveValue::Int(generation));
+        store.request_save().expect("書き出しに失敗した");
+        store
+    }
+
+    // ── キー・バリューの基本 ──────────────────────────────────
 
     /// 未設定キーの読み取りはすべて None（＝ C# 側が既定値を返す）。
     #[test]
@@ -375,16 +407,6 @@ mod tests {
         assert_eq!(s.get_string("money"), None);
     }
 
-    /// 非有限な実数は整数へ変換できない（既定値へ落ちる）。
-    #[test]
-    fn non_finite_float_is_not_convertible_to_int() {
-        let mut s = empty();
-        s.set("nan", SaveValue::Float(f64::NAN));
-        s.set("inf", SaveValue::Float(f64::INFINITY));
-        assert_eq!(s.get_int("nan"), None);
-        assert_eq!(s.get_int("inf"), None);
-    }
-
     /// 同じキーへ別の型を書くと型ごと置き換わる。
     #[test]
     fn set_overwrites_type() {
@@ -430,107 +452,262 @@ mod tests {
         assert!(!s2.is_dirty());
     }
 
-    /// JSON 直列化 → パースの往復で値が保たれる。
+    /// 存在しないファイルのロードは空ストア（エラーにしない・復旧ではない）。
     #[test]
-    fn json_roundtrip_preserves_values() {
-        let mut s = empty();
-        s.set("money", SaveValue::Int(1200));
-        s.set("best", SaveValue::Float(41.5));
-        s.set("name", SaveValue::Str("鯉".into())); // 非 ASCII も往復すること
-        let text = s.to_json_string();
-
-        let (map, skipped) = parse_json(&text);
-        assert_eq!(skipped, 0);
-        assert_eq!(map.get("money"), Some(&SaveValue::Int(1200)));
-        assert_eq!(map.get("best"), Some(&SaveValue::Float(41.5)));
-        assert_eq!(map.get("name"), Some(&SaveValue::Str("鯉".into())));
+    fn load_missing_file_is_empty() {
+        let dir = TestDir::new("missing");
+        let s = SaveStore::load(dir.primary());
+        assert!(s.is_empty());
+        assert!(!s.is_dirty());
+        assert_eq!(s.load_source(), LoadSource::Fresh);
+        assert_eq!(s.load_source().recovery_code(), recovery::RECOVERY_CODE_NONE);
     }
 
-    /// 壊れた JSON は空として扱う（起動不能にしない）。
-    #[test]
-    fn broken_json_loads_as_empty() {
-        let (map, skipped) = parse_json("{ this is not json");
-        assert!(map.is_empty());
-        assert_eq!(skipped, 0);
-    }
+    // ── 壊れ方ごとの試験（W1-S。docs/app_platform_roadmap.md §2.7）──────────
 
-    /// トップレベルが配列でも空として扱う。
+    /// (a) 通常の書き出し → 読み戻し。フォルダが無くても作られ、一時ファイルは残らない。
     #[test]
-    fn non_object_json_loads_as_empty() {
-        let (map, _) = parse_json("[1, 2, 3]");
-        assert!(map.is_empty());
-    }
+    fn a_flush_then_load_roundtrip() {
+        let dir = TestDir::new("a_roundtrip");
+        let path = dir.0.join("nested").join("save.json");
 
-    /// 非対応な型（bool / null / 配列 / オブジェクト）は読み飛ばし、
-    /// 他のキーは生き残る。
-    #[test]
-    fn unsupported_values_are_skipped_but_others_survive() {
-        let text = r#"{ "ok": 5, "flag": true, "nil": null, "arr": [1], "obj": {"x":1} }"#;
-        let (map, skipped) = parse_json(text);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("ok"), Some(&SaveValue::Int(5)));
-        assert_eq!(skipped, 4);
-    }
-
-    /// JSON の整数リテラルは Int、小数リテラルは Float として読み分ける。
-    #[test]
-    fn json_number_kind_is_detected() {
-        let (map, _) = parse_json(r#"{ "i": 42, "f": 42.0, "neg": -7 }"#);
-        assert_eq!(map.get("i"), Some(&SaveValue::Int(42)));
-        assert_eq!(map.get("f"), Some(&SaveValue::Float(42.0)));
-        assert_eq!(map.get("neg"), Some(&SaveValue::Int(-7)));
-    }
-
-    /// 非有限な実数は JSON で表現できないため 0 として書き出される
-    /// （書き出し全体が失敗しないこと）。
-    #[test]
-    fn non_finite_float_serializes_as_zero() {
-        let mut s = empty();
-        s.set("nan", SaveValue::Float(f64::NAN));
-        let text = s.to_json_string();
-        let (map, _) = parse_json(&text);
-        assert_eq!(map.get("nan"), Some(&SaveValue::Int(0)));
-    }
-
-    /// 実ファイルへの書き出し → 読み込み往復（一時ディレクトリを使う）。
-    #[test]
-    fn file_flush_and_load_roundtrip() {
-        let dir = std::env::temp_dir().join(format!(
-            "seed_save_test_{}_{}",
-            std::process::id(),
-            "flush"
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("save.json");
-
-        let mut s = SaveStore::new_empty(path.clone());
+        let mut s = SaveStore::load(path.clone());
         s.set("money", SaveValue::Int(999));
         s.set("name", SaveValue::Str("angler".into()));
-        s.flush().expect("flush should succeed");
-        assert!(!s.is_dirty(), "flush 後は dirty が下りる");
+        assert_eq!(s.request_save().unwrap(), FlushOutcome::Written);
+        assert!(!s.is_dirty(), "書き出し後は dirty が下りる");
         assert!(path.exists(), "親ディレクトリごと作られる");
+        assert!(!SaveFileSet::new(path.clone()).temp().exists(), "一時ファイルが残った");
 
-        let loaded = SaveStore::load_or_empty(path.clone());
+        let loaded = SaveStore::load(path.clone());
         assert_eq!(loaded.get_int("money"), Some(999));
         assert_eq!(loaded.get_string("name"), Some("angler".to_string()));
         assert!(!loaded.is_dirty(), "ロード直後は dirty ではない");
+        assert_eq!(loaded.load_source(), LoadSource::Primary);
+        assert_eq!(loaded.load_source().recovery_code(), recovery::RECOVERY_CODE_NONE);
 
-        // 上書き保存（既存ファイルがある状態での rename 経路）
-        let mut s2 = SaveStore::load_or_empty(path.clone());
-        s2.set("money", SaveValue::Int(1));
-        s2.flush().expect("overwrite flush should succeed");
-        let reloaded = SaveStore::load_or_empty(path.clone());
-        assert_eq!(reloaded.get_int("money"), Some(1));
-
-        let _ = std::fs::remove_dir_all(&dir);
+        // 自動保存は変更が無ければ書かない
+        let mut again = SaveStore::load(path.clone());
+        assert_eq!(again.request_auto_flush().unwrap(), FlushOutcome::Clean);
     }
 
-    /// 存在しないファイルのロードは空ストア（エラーにしない）。
+    /// (b) 書き出しの途中で落ちた跡（半端な .tmp）が残っていても、前の save.json が読める。
+    /// 完全な .tmp（sync の後・rename の前に落ちた跡）も読まない（書き出しが済んでいない世代）。
     #[test]
-    fn load_missing_file_is_empty() {
-        let path = std::env::temp_dir().join("seed_save_test_definitely_missing/save.json");
-        let s = SaveStore::load_or_empty(path);
+    fn b_leftover_temp_does_not_hide_previous_save() {
+        let dir = TestDir::new("b_temp");
+        store_with_generation(&dir, 1);
+        let files = dir.files();
+
+        // 半端な一時ファイル（閉じ括弧の前で切れた）
+        fs::write(files.temp(), "{\n  \"generation\": 2").unwrap();
+        let loaded = SaveStore::load(dir.primary());
+        assert_eq!(loaded.get_int("generation"), Some(1));
+        assert_eq!(loaded.load_source(), LoadSource::Primary);
+        assert!(!loaded.is_dirty());
+
+        // 完全な一時ファイルでも本体を優先する
+        fs::write(files.temp(), "{\n  \"generation\": 3\n}").unwrap();
+        let mut loaded = SaveStore::load(dir.primary());
+        assert_eq!(loaded.get_int("generation"), Some(1));
+
+        // 次の書き出しは残った一時ファイルを作り直して成功し、一時ファイルは残らない
+        loaded.set("generation", SaveValue::Int(4));
+        loaded.request_save().unwrap();
+        assert!(!files.temp().exists());
+        assert_eq!(read_values(files.primary()).get("generation"), Some(&SaveValue::Int(4)));
+        assert_eq!(read_values(files.backup()).get("generation"), Some(&SaveValue::Int(1)));
+    }
+
+    /// (c) save.json が無く .bak がある（本体を .bak へ回した直後に落ちた跡）→ .bak から読み、Backup と報告する。
+    /// 次の自動保存で本体を作り直し、.bak は残る。
+    #[test]
+    fn c_missing_primary_recovers_from_backup() {
+        let dir = TestDir::new("c_backup");
+        let files = dir.files();
+        fs::write(files.backup(), "{\n  \"money\": 500\n}").unwrap();
+        // 完全な一時ファイル（新しい世代）も残っている＝書き出しの 2 と 3 の間で落ちた形
+        fs::write(files.temp(), "{\n  \"money\": 700\n}").unwrap();
+
+        let mut s = SaveStore::load(dir.primary());
+        assert_eq!(s.get_int("money"), Some(500));
+        assert_eq!(s.load_source(), LoadSource::Backup);
+        assert_eq!(s.load_source().recovery_code(), recovery::RECOVERY_CODE_BACKUP);
+        assert!(s.is_dirty(), "復旧したら次の書き出しで本体を作り直す");
+
+        assert_eq!(s.request_auto_flush().unwrap(), FlushOutcome::Written);
+        assert_eq!(read_values(files.primary()).get("money"), Some(&SaveValue::Int(500)));
+        assert_eq!(read_values(files.backup()).get("money"), Some(&SaveValue::Int(500)), ".bak が消えた");
+
+        // 作り直した後の起動は普段どおり
+        assert_eq!(SaveStore::load(dir.primary()).load_source(), LoadSource::Primary);
+    }
+
+    /// (d) save.json が壊れている（途中で切れた JSON）→ .bak から読み、壊れた本体は .corrupt-* へ退避される。
+    /// 次の書き出しで .bak が壊れた本体に置き換わらない。
+    #[test]
+    fn d_truncated_primary_falls_back_to_backup_and_is_quarantined() {
+        let dir = TestDir::new("d_corrupt");
+        let files = dir.files();
+        let truncated = "{\n  \"money\": 12";
+        fs::write(files.primary(), truncated).unwrap();
+        fs::write(files.backup(), "{\n  \"money\": 300\n}").unwrap();
+
+        let mut s = SaveStore::load(dir.primary());
+        assert_eq!(s.get_int("money"), Some(300));
+        assert_eq!(s.load_source(), LoadSource::Backup);
+        assert!(!files.primary().exists(), "壊れた本体が本体の場所に残った");
+        let corrupt = files.existing_corrupt_files();
+        assert_eq!(corrupt.len(), 1, "退避ファイルは 1 つ: {corrupt:?}");
+        assert_eq!(fs::read_to_string(&corrupt[0]).unwrap(), truncated, "壊れた中身がそのまま残る");
+
+        s.set("money", SaveValue::Int(310));
+        s.request_save().unwrap();
+        assert_eq!(read_values(files.primary()).get("money"), Some(&SaveValue::Int(310)));
+        assert_eq!(read_values(files.backup()).get("money"), Some(&SaveValue::Int(300)), ".bak が壊れた本体で上書きされた");
+    }
+
+    /// (d') 退避ファイルは 1 つだけ残す（古いものは消え、新しいものが残る）。
+    #[test]
+    fn d_only_one_corrupt_file_is_kept() {
+        let dir = TestDir::new("d_one_corrupt");
+        let files = dir.files();
+        let old = files.corrupt_path("20000101-000000");
+        fs::write(&old, "old garbage").unwrap();
+        fs::write(files.primary(), "new garbage").unwrap();
+
+        let s = SaveStore::load(dir.primary());
+        assert_eq!(s.load_source(), LoadSource::Unrecoverable);
+        let corrupt = files.existing_corrupt_files();
+        assert_eq!(corrupt.len(), 1, "{corrupt:?}");
+        assert_ne!(corrupt[0], old, "古い退避ファイルが残った");
+        assert_eq!(fs::read_to_string(&corrupt[0]).unwrap(), "new garbage");
+    }
+
+    /// (d'') 本体が壊れていて .bak も無い → 空で始め、Lost（番号 2）と報告する。次の書き出しで本体ができる。
+    #[test]
+    fn d_corrupt_primary_without_backup_is_unrecoverable() {
+        let dir = TestDir::new("d_lost");
+        let files = dir.files();
+        fs::write(files.primary(), "").unwrap(); // 0 バイト（電源断で中身が届かなかった形）
+
+        let mut s = SaveStore::load(dir.primary());
         assert!(s.is_empty());
+        assert_eq!(s.load_source(), LoadSource::Unrecoverable);
+        assert_eq!(s.load_source().recovery_code(), recovery::RECOVERY_CODE_LOST);
+        assert_eq!(files.existing_corrupt_files().len(), 1);
+
+        assert_eq!(s.request_auto_flush().unwrap(), FlushOutcome::Written);
+        assert!(read_values(files.primary()).is_empty());
+        assert_eq!(SaveStore::load(dir.primary()).load_source(), LoadSource::Primary);
+    }
+
+    /// (e) 書き出すたびに、直前の本体が .bak（1 世代前）になる。
+    #[test]
+    fn e_each_flush_rotates_previous_generation_into_backup() {
+        let dir = TestDir::new("e_rotate");
+        let files = dir.files();
+        let mut s = store_with_generation(&dir, 1);
+        assert!(!files.backup().exists(), "初回は 1 世代前が無い");
+
+        s.set("generation", SaveValue::Int(2));
+        s.request_save().unwrap();
+        assert_eq!(read_values(files.primary()).get("generation"), Some(&SaveValue::Int(2)));
+        assert_eq!(read_values(files.backup()).get("generation"), Some(&SaveValue::Int(1)));
+
+        s.set("generation", SaveValue::Int(3));
+        s.request_save().unwrap();
+        assert_eq!(read_values(files.primary()).get("generation"), Some(&SaveValue::Int(3)));
+        assert_eq!(read_values(files.backup()).get("generation"), Some(&SaveValue::Int(2)));
+    }
+
+    /// (f) Batch の途中の書き出しの要求（自動保存・明示の Save）は書かれず、最も外側の Batch の終わりに 1 回だけ書かれる。
+    #[test]
+    fn f_batch_defers_flush_until_outermost_end() {
+        let dir = TestDir::new("f_batch");
+        let files = dir.files();
+        let mut s = store_with_generation(&dir, 1);
+
+        s.begin_batch();
+        s.set("money", SaveValue::Int(100));
+        // UI スレッドの onDestroy に当たる自動保存: 書かれない
+        assert_eq!(s.request_auto_flush().unwrap(), FlushOutcome::Deferred);
+        assert_eq!(read_values(files.primary()).get("money"), None, "Batch の途中で書かれた");
+
+        s.begin_batch(); // 入れ子
+        s.set("history", SaveValue::Str("[\"paid 100\"]".into()));
+        assert_eq!(s.request_save().unwrap(), FlushOutcome::Deferred);
+        assert_eq!(s.end_batch().unwrap(), BatchEndOutcome::StillOpen);
+        assert_eq!(read_values(files.primary()).get("money"), None, "内側の Batch の終わりで書かれた");
+
+        assert_eq!(s.end_batch().unwrap(), BatchEndOutcome::ClosedAndWritten);
+        let primary = read_values(files.primary());
+        assert_eq!(primary.get("money"), Some(&SaveValue::Int(100)));
+        assert_eq!(primary.get("history"), Some(&SaveValue::Str("[\"paid 100\"]".into())));
+        // 1 回だけ書いた証拠: .bak が Batch より前の世代（2 回書いていれば .bak も新しい内容になる）
+        let backup = read_values(files.backup());
+        assert_eq!(backup.get("generation"), Some(&SaveValue::Int(1)));
+        assert_eq!(backup.get("money"), None);
         assert!(!s.is_dirty());
+    }
+
+    /// (f') Batch の間に書き出しの要求が無ければ、終わりでも書かない（変更は未書き出しのまま残る）。
+    #[test]
+    fn f_batch_without_request_does_not_write() {
+        let dir = TestDir::new("f_no_request");
+        let files = dir.files();
+        let mut s = store_with_generation(&dir, 1);
+
+        s.begin_batch();
+        s.set("generation", SaveValue::Int(2));
+        assert_eq!(s.end_batch().unwrap(), BatchEndOutcome::ClosedWithoutWrite);
+        assert_eq!(read_values(files.primary()).get("generation"), Some(&SaveValue::Int(1)));
+        assert!(s.is_dirty(), "変更は次の書き出しで書かれる");
+        // Batch の外に出たので自動保存は書く
+        assert_eq!(s.request_auto_flush().unwrap(), FlushOutcome::Written);
+        assert_eq!(read_values(files.primary()).get("generation"), Some(&SaveValue::Int(2)));
+    }
+
+    /// (f'') 開いていない Batch を終えても何も書かない（Begin と End の数の食い違い）。
+    #[test]
+    fn f_end_without_begin_is_ignored() {
+        let dir = TestDir::new("f_unbalanced");
+        let mut s = SaveStore::load(dir.primary());
+        s.set("money", SaveValue::Int(1));
+        assert_eq!(s.end_batch().unwrap(), BatchEndOutcome::NotOpen);
+        assert!(!dir.primary().exists());
+        assert!(s.is_dirty());
+    }
+
+    /// 後方互換: W1-S より前の形式の save.json（1 階層の JSON）をそのまま読み、書き戻しても同じ形になる。
+    #[test]
+    fn previous_format_save_is_read_and_rewritten_in_same_format() {
+        let dir = TestDir::new("compat");
+        // 旧実装（to_string_pretty・キーは辞書順）が書いた形そのもの
+        let old = "{\n  \"best_size_bass\": 41.5,\n  \"money\": 1200,\n  \"player_name\": \"kani\",\n  \"rod_level\": 3\n}";
+        fs::write(dir.primary(), old).unwrap();
+
+        let mut s = SaveStore::load(dir.primary());
+        assert_eq!(s.load_source(), LoadSource::Primary);
+        assert_eq!(s.get_int("money"), Some(1200));
+        assert_eq!(s.get_int("rod_level"), Some(3));
+        assert_eq!(s.get_float("best_size_bass"), Some(41.5));
+        assert_eq!(s.get_string("player_name"), Some("kani".to_string()));
+
+        s.request_save().unwrap();
+        assert_eq!(fs::read_to_string(dir.primary()).unwrap(), old, "書き戻した本文の形が変わった");
+        assert_eq!(fs::read_to_string(dir.files().backup()).unwrap(), old);
+    }
+
+    /// 大きな文字列（2 MB の 1 文書）も往復する。
+    #[test]
+    fn large_string_roundtrips_through_file() {
+        const LARGE_LEN: usize = 2 * 1024 * 1024;
+        let dir = TestDir::new("large");
+        let large: String = "記録".repeat(LARGE_LEN / "記録".len());
+        let mut s = SaveStore::load(dir.primary());
+        s.set("doc", SaveValue::Str(large.clone()));
+        s.request_save().unwrap();
+        assert_eq!(SaveStore::load(dir.primary()).get_string("doc"), Some(large));
     }
 }

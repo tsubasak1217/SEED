@@ -57,17 +57,14 @@ public static unsafe class ScriptHost
     {
         if (!_available || _api.GetFloats == null || !e.IsValid) return 0;
 
-        int cl = Encoding.UTF8.GetByteCount(component);
-        int fl = Encoding.UTF8.GetByteCount(field);
-        Span<byte> cb = stackalloc byte[cl];
-        Span<byte> fb = stackalloc byte[fl];
-        Encoding.UTF8.GetBytes(component, cb);
-        Encoding.UTF8.GetBytes(field, fb);
+        // 文字列は短ければスタック、長ければ ArrayPool（Utf8Arg。上限なしの stackalloc でスタックを溢れさせない）
+        using var cb = new Utf8Arg(component, stackalloc byte[Utf8Arg.StackBytesFor(component)]);
+        using var fb = new Utf8Arg(field, stackalloc byte[Utf8Arg.StackBytesFor(field)]);
 
-        fixed (byte* cp = cb)
-        fixed (byte* fp = fb)
+        fixed (byte* cp = cb.Bytes)
+        fixed (byte* fp = fb.Bytes)
         fixed (float* bp = buf)
-            return _api.GetFloats(e.Index, e.Generation, cp, cl, fp, fl, bp, buf.Length);
+            return _api.GetFloats(e.Index, e.Generation, cp, cb.Length, fp, fb.Length, bp, buf.Length);
     }
 
     /// <summary>
@@ -82,17 +79,13 @@ public static unsafe class ScriptHost
         // 上限は書き込み用の MaxFloatWriteLen で判定する（Rust 側と同じ基準）。
         if (values.Length is <= 0 or > MaxFloatWriteLen) return false;
 
-        int cl = Encoding.UTF8.GetByteCount(component);
-        int fl = Encoding.UTF8.GetByteCount(field);
-        Span<byte> cb = stackalloc byte[cl];
-        Span<byte> fb = stackalloc byte[fl];
-        Encoding.UTF8.GetBytes(component, cb);
-        Encoding.UTF8.GetBytes(field, fb);
+        using var cb = new Utf8Arg(component, stackalloc byte[Utf8Arg.StackBytesFor(component)]);
+        using var fb = new Utf8Arg(field, stackalloc byte[Utf8Arg.StackBytesFor(field)]);
 
-        fixed (byte* cp = cb)
-        fixed (byte* fp = fb)
+        fixed (byte* cp = cb.Bytes)
+        fixed (byte* fp = fb.Bytes)
         fixed (float* vp = values)
-            return _api.SetFloats(e.Index, e.Generation, cp, cl, fp, fl, vp, values.Length) != 0;
+            return _api.SetFloats(e.Index, e.Generation, cp, cb.Length, fp, fb.Length, vp, values.Length) != 0;
     }
 
     // ── 型付きヘルパ: float / bool / Vector2 / Vector3 ──────────
@@ -192,20 +185,16 @@ public static unsafe class ScriptHost
         value = "";
         if (!_available || _api.GetString == null || !e.IsValid) return false;
 
-        int cl = Encoding.UTF8.GetByteCount(component);
-        int fl = Encoding.UTF8.GetByteCount(field);
-        Span<byte> cb = stackalloc byte[cl];
-        Span<byte> fb = stackalloc byte[fl];
-        Encoding.UTF8.GetBytes(component, cb);
-        Encoding.UTF8.GetBytes(field, fb);
+        using var cb = new Utf8Arg(component, stackalloc byte[Utf8Arg.StackBytesFor(component)]);
+        using var fb = new Utf8Arg(field, stackalloc byte[Utf8Arg.StackBytesFor(field)]);
 
-        // 1 回目: 初期バッファで試す（パス程度なら通常ここで完了する）
+        // 1 回目: 初期バッファで試す（パス程度なら通常ここで完了する。大きさは定数なのでスタックでよい）
         Span<byte> stack = stackalloc byte[InitialStringBufferSize];
         int needed;
-        fixed (byte* cp = cb)
-        fixed (byte* fp = fb)
+        fixed (byte* cp = cb.Bytes)
+        fixed (byte* fp = fb.Bytes)
         fixed (byte* sp = stack)
-            needed = _api.GetString(e.Index, e.Generation, cp, cl, fp, fl, sp, stack.Length);
+            needed = _api.GetString(e.Index, e.Generation, cp, cb.Length, fp, fb.Length, sp, stack.Length);
 
         if (needed < 0) return false;                       // フィールド未対応
         if (needed <= stack.Length)
@@ -217,10 +206,10 @@ public static unsafe class ScriptHost
         // 2 回目: 必要長ちょうどのヒープバッファで再取得する
         var heap = new byte[needed];
         int written;
-        fixed (byte* cp = cb)
-        fixed (byte* fp = fb)
+        fixed (byte* cp = cb.Bytes)
+        fixed (byte* fp = fb.Bytes)
         fixed (byte* hp = heap)
-            written = _api.GetString(e.Index, e.Generation, cp, cl, fp, fl, hp, heap.Length);
+            written = _api.GetString(e.Index, e.Generation, cp, cb.Length, fp, fb.Length, hp, heap.Length);
 
         if (written < 0 || written > heap.Length) return false;
         value = Encoding.UTF8.GetString(heap, 0, written);
@@ -233,21 +222,15 @@ public static unsafe class ScriptHost
         if (!_available || _api.SetString == null || !e.IsValid) return false;
         value ??= "";
 
-        int cl = Encoding.UTF8.GetByteCount(component);
-        int fl = Encoding.UTF8.GetByteCount(field);
-        int vl = Encoding.UTF8.GetByteCount(value);
-        Span<byte> cb = stackalloc byte[cl];
-        Span<byte> fb = stackalloc byte[fl];
-        // 値は長くなり得るため、長い場合だけヒープを使う
-        Span<byte> vb = vl <= InitialStringBufferSize ? stackalloc byte[vl] : new byte[vl];
-        Encoding.UTF8.GetBytes(component, cb);
-        Encoding.UTF8.GetBytes(field, fb);
-        Encoding.UTF8.GetBytes(value, vb);
+        using var cb = new Utf8Arg(component, stackalloc byte[Utf8Arg.StackBytesFor(component)]);
+        using var fb = new Utf8Arg(field, stackalloc byte[Utf8Arg.StackBytesFor(field)]);
+        // 値は長くなり得る（Text.Content など）。長い場合は Utf8Arg が ArrayPool を使う
+        using var vb = new Utf8Arg(value, stackalloc byte[Utf8Arg.StackBytesFor(value)]);
 
-        fixed (byte* cp = cb)
-        fixed (byte* fp = fb)
-        fixed (byte* vp = vb)
-            return _api.SetString(e.Index, e.Generation, cp, cl, fp, fl, vp, vl) != 0;
+        fixed (byte* cp = cb.Bytes)
+        fixed (byte* fp = fb.Bytes)
+        fixed (byte* vp = vb.Bytes)
+            return _api.SetString(e.Index, e.Generation, cp, cb.Length, fp, fb.Length, vp, vb.Length) != 0;
     }
 
     // ── コンポーネント保持判定 ───────────────────────────────────
@@ -257,11 +240,9 @@ public static unsafe class ScriptHost
     {
         if (!_available || _api.HasComponent == null || !e.IsValid) return false;
 
-        int cl = Encoding.UTF8.GetByteCount(component);
-        Span<byte> cb = stackalloc byte[cl];
-        Encoding.UTF8.GetBytes(component, cb);
-        fixed (byte* cp = cb)
-            return _api.HasComponent(e.Index, e.Generation, cp, cl) != 0;
+        using var cb = new Utf8Arg(component, stackalloc byte[Utf8Arg.StackBytesFor(component)]);
+        fixed (byte* cp = cb.Bytes)
+            return _api.HasComponent(e.Index, e.Generation, cp, cb.Length) != 0;
     }
 
     // ── GetComponent<T> スロット解決 ─────────────────────────────
@@ -277,20 +258,16 @@ public static unsafe class ScriptHost
         slot = Entity.None;
         if (!_available || _api.ResolveComponentSlot == null || !actor.IsValid) return false;
 
-        int kl = Encoding.UTF8.GetByteCount(kind);
-        Span<byte> kb = stackalloc byte[kl];
-        Encoding.UTF8.GetBytes(kind, kb);
+        using var kb = new Utf8Arg(kind, stackalloc byte[Utf8Arg.StackBytesFor(kind)]);
 
-        // 名前指定なしは長さ 0 で渡す（Rust 側は name_len<=0 を index 選択とみなす）
-        int nl = string.IsNullOrEmpty(name) ? 0 : Encoding.UTF8.GetByteCount(name);
-        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
-        if (nl > 0) Encoding.UTF8.GetBytes(name!, nb);
+        // 名前指定なしは長さ 0 で渡す（Rust 側は name_len<=0 を index 選択とみなす。null も空も長さ 0 になる）
+        using var nb = new Utf8Arg(name, stackalloc byte[Utf8Arg.StackBytesFor(name)]);
 
         uint* outBuf = stackalloc uint[2];
         int ok;
-        fixed (byte* kp = kb)
-        fixed (byte* np = nb)
-            ok = _api.ResolveComponentSlot(actor.Index, actor.Generation, kp, kl, np, nl, index, outBuf);
+        fixed (byte* kp = kb.Bytes)
+        fixed (byte* np = nb.Bytes)
+            ok = _api.ResolveComponentSlot(actor.Index, actor.Generation, kp, kb.Length, np, nb.Length, index, outBuf);
 
         if (ok == 0) return false;
         slot = new Entity(outBuf[0], outBuf[1]);
@@ -317,20 +294,16 @@ public static unsafe class ScriptHost
         handle = 0;
         if (!_available || _api.ResolveScriptInstance == null || !actor.IsValid) return false;
 
-        int tl = Encoding.UTF8.GetByteCount(typeName);
-        Span<byte> tb = stackalloc byte[tl];
-        Encoding.UTF8.GetBytes(typeName, tb);
+        using var tb = new Utf8Arg(typeName, stackalloc byte[Utf8Arg.StackBytesFor(typeName)]);
 
-        // スロット名指定なしは長さ 0 で渡す（Rust 側は slot_len<=0 を「型名のみ」とみなす）
-        int sl = string.IsNullOrEmpty(slotName) ? 0 : Encoding.UTF8.GetByteCount(slotName);
-        Span<byte> sb = sl > 0 ? stackalloc byte[sl] : default;
-        if (sl > 0) Encoding.UTF8.GetBytes(slotName!, sb);
+        // スロット名指定なしは長さ 0 で渡す（Rust 側は slot_len<=0 を「型名のみ」とみなす。null も空も長さ 0 になる）
+        using var sb = new Utf8Arg(slotName, stackalloc byte[Utf8Arg.StackBytesFor(slotName)]);
 
         nint outHandle = 0;
         int ok;
-        fixed (byte* tp = tb)
-        fixed (byte* sp = sb)
-            ok = _api.ResolveScriptInstance(actor.Index, actor.Generation, tp, tl, sp, sl, &outHandle);
+        fixed (byte* tp = tb.Bytes)
+        fixed (byte* sp = sb.Bytes)
+            ok = _api.ResolveScriptInstance(actor.Index, actor.Generation, tp, tb.Length, sp, sb.Length, &outHandle);
 
         if (ok == 0) return false;
         handle = outHandle;
@@ -347,38 +320,29 @@ public static unsafe class ScriptHost
     public static bool InputAction(Entity slot, int kind, string name)
     {
         if (!_available || _api.InputAction == null || !slot.IsValid) return false;
-        name ??= "";
-        int nl = Encoding.UTF8.GetByteCount(name);
-        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
-        if (nl > 0) Encoding.UTF8.GetBytes(name, nb);
-        fixed (byte* np = nb)
-            return _api.InputAction(slot.Index, slot.Generation, kind, np, nl) != 0;
+        using var nb = new Utf8Arg(name, stackalloc byte[Utf8Arg.StackBytesFor(name)]);
+        fixed (byte* np = nb.Bytes)
+            return _api.InputAction(slot.Index, slot.Generation, kind, np, nb.Length) != 0;
     }
 
     /// <summary>InputMap の Axis1D アクションを評価する（[-1,1]）。失敗時は 0。</summary>
     public static float InputActionAxis1D(Entity slot, string name)
     {
         if (!_available || _api.InputActionAxis == null || !slot.IsValid) return 0f;
-        name ??= "";
-        int nl = Encoding.UTF8.GetByteCount(name);
-        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
-        if (nl > 0) Encoding.UTF8.GetBytes(name, nb);
+        using var nb = new Utf8Arg(name, stackalloc byte[Utf8Arg.StackBytesFor(name)]);
         float* buf = stackalloc float[1];
-        fixed (byte* np = nb)
-            return _api.InputActionAxis(slot.Index, slot.Generation, np, nl, buf, 1) == 1 ? buf[0] : 0f;
+        fixed (byte* np = nb.Bytes)
+            return _api.InputActionAxis(slot.Index, slot.Generation, np, nb.Length, buf, 1) == 1 ? buf[0] : 0f;
     }
 
     /// <summary>InputMap の Vector2 アクションを評価する。失敗時は Zero。</summary>
     public static Vector2 InputActionVector2(Entity slot, string name)
     {
         if (!_available || _api.InputActionAxis == null || !slot.IsValid) return Vector2.Zero;
-        name ??= "";
-        int nl = Encoding.UTF8.GetByteCount(name);
-        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
-        if (nl > 0) Encoding.UTF8.GetBytes(name, nb);
+        using var nb = new Utf8Arg(name, stackalloc byte[Utf8Arg.StackBytesFor(name)]);
         float* buf = stackalloc float[2];
-        fixed (byte* np = nb)
-            return _api.InputActionAxis(slot.Index, slot.Generation, np, nl, buf, 2) == 2
+        fixed (byte* np = nb.Bytes)
+            return _api.InputActionAxis(slot.Index, slot.Generation, np, nb.Length, buf, 2) == 2
                 ? new Vector2(buf[0], buf[1])
                 : Vector2.Zero;
     }
@@ -395,14 +359,12 @@ public static unsafe class ScriptHost
         entity = Entity.None;
         if (!_available || _api.Instantiate == null || string.IsNullOrEmpty(actorPath)) return false;
 
-        int pl = Encoding.UTF8.GetByteCount(actorPath);
-        Span<byte> pb = stackalloc byte[pl];
-        Encoding.UTF8.GetBytes(actorPath, pb);
+        using var pb = new Utf8Arg(actorPath, stackalloc byte[Utf8Arg.StackBytesFor(actorPath)]);
 
         uint* outBuf = stackalloc uint[2];
         int ok;
-        fixed (byte* pp = pb)
-            ok = _api.Instantiate(pp, pl, outBuf);
+        fixed (byte* pp = pb.Bytes)
+            ok = _api.Instantiate(pp, pb.Length, outBuf);
 
         if (ok == 0) return false;
         entity = new Entity(outBuf[0], outBuf[1]);
@@ -429,14 +391,12 @@ public static unsafe class ScriptHost
         entity = Entity.None;
         if (!_available || _api.InstantiateUnder == null || string.IsNullOrEmpty(actorPath)) return false;
 
-        int pl = Encoding.UTF8.GetByteCount(actorPath);
-        Span<byte> pb = stackalloc byte[pl];
-        Encoding.UTF8.GetBytes(actorPath, pb);
+        using var pb = new Utf8Arg(actorPath, stackalloc byte[Utf8Arg.StackBytesFor(actorPath)]);
 
         uint* outBuf = stackalloc uint[2];
         int ok;
-        fixed (byte* pp = pb)
-            ok = _api.InstantiateUnder(pp, pl, parent.Index, parent.Generation, outBuf);
+        fixed (byte* pp = pb.Bytes)
+            ok = _api.InstantiateUnder(pp, pb.Length, parent.Index, parent.Generation, outBuf);
 
         if (ok == 0) return false;
         entity = new Entity(outBuf[0], outBuf[1]);
@@ -669,13 +629,10 @@ public static unsafe class ScriptHost
     public static bool AudioCommand(int kind, string path, float volume, int flag)
     {
         if (!_available || _api.Audio == null) return false;
-        path ??= "";
 
-        int pl = Encoding.UTF8.GetByteCount(path);
-        Span<byte> pb = pl > 0 ? stackalloc byte[pl] : default;
-        if (pl > 0) Encoding.UTF8.GetBytes(path, pb);
-        fixed (byte* pp = pb)
-            return _api.Audio(kind, pp, pl, volume, flag) != 0;
+        using var pb = new Utf8Arg(path, stackalloc byte[Utf8Arg.StackBytesFor(path)]);
+        fixed (byte* pp = pb.Bytes)
+            return _api.Audio(kind, pp, pb.Length, volume, flag) != 0;
     }
 
     /// <summary>
@@ -713,13 +670,10 @@ public static unsafe class ScriptHost
     public static bool AnimatorComponentAction(int action, Entity e, string clipName, float speed, float fade)
     {
         if (!_available || _api.AnimatorComponent == null || !e.IsValid) return false;
-        clipName ??= "";
 
-        int nl = Encoding.UTF8.GetByteCount(clipName);
-        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
-        if (nl > 0) Encoding.UTF8.GetBytes(clipName, nb);
-        fixed (byte* np = nb)
-            return _api.AnimatorComponent(action, e.Index, e.Generation, np, nl, speed, fade) != 0;
+        using var nb = new Utf8Arg(clipName, stackalloc byte[Utf8Arg.StackBytesFor(clipName)]);
+        fixed (byte* np = nb.Bytes)
+            return _api.AnimatorComponent(action, e.Index, e.Generation, np, nb.Length, speed, fade) != 0;
     }
 
     /// <summary>
@@ -746,11 +700,9 @@ public static unsafe class ScriptHost
     {
         if (!_available || _api.Scene == null || string.IsNullOrEmpty(sceneName)) return false;
 
-        int pl = Encoding.UTF8.GetByteCount(sceneName);
-        Span<byte> pb = stackalloc byte[pl];
-        Encoding.UTF8.GetBytes(sceneName, pb);
-        fixed (byte* pp = pb)
-            return _api.Scene(kind, pp, pl) != 0;
+        using var pb = new Utf8Arg(sceneName, stackalloc byte[Utf8Arg.StackBytesFor(sceneName)]);
+        fixed (byte* pp = pb.Bytes)
+            return _api.Scene(kind, pp, pb.Length) != 0;
     }
 
     // ── プロファイラ（手動スコープ計測）────────────────────────────
@@ -768,11 +720,9 @@ public static unsafe class ScriptHost
         if (string.IsNullOrEmpty(name))
             return _api.Profiler(kind, null, 0) != 0;
 
-        int nl = Encoding.UTF8.GetByteCount(name);
-        Span<byte> nb = stackalloc byte[nl];
-        Encoding.UTF8.GetBytes(name, nb);
-        fixed (byte* np = nb)
-            return _api.Profiler(kind, np, nl) != 0;
+        using var nb = new Utf8Arg(name, stackalloc byte[Utf8Arg.StackBytesFor(name)]);
+        fixed (byte* np = nb.Bytes)
+            return _api.Profiler(kind, np, nb.Length) != 0;
     }
 
     // ── セーブデータ（SEED.SaveData の低レベル層）─────────────────
@@ -790,14 +740,12 @@ public static unsafe class ScriptHost
         result = 0;
         if (!_available || _api.SaveInt == null || string.IsNullOrEmpty(key)) return false;
 
-        int kl = Encoding.UTF8.GetByteCount(key);
-        Span<byte> kb = stackalloc byte[kl];
-        Encoding.UTF8.GetBytes(key, kb);
+        using var kb = new Utf8Arg(key, stackalloc byte[Utf8Arg.StackBytesFor(key)]);
 
         long r = 0;
         int ok;
-        fixed (byte* kp = kb)
-            ok = _api.SaveInt(kind, kp, kl, value, &r);
+        fixed (byte* kp = kb.Bytes)
+            ok = _api.SaveInt(kind, kp, kb.Length, value, &r);
         result = r;
         return ok != 0;
     }
@@ -810,34 +758,32 @@ public static unsafe class ScriptHost
         result = 0f;
         if (!_available || _api.SaveFloat == null || string.IsNullOrEmpty(key)) return false;
 
-        int kl = Encoding.UTF8.GetByteCount(key);
-        Span<byte> kb = stackalloc byte[kl];
-        Encoding.UTF8.GetBytes(key, kb);
+        using var kb = new Utf8Arg(key, stackalloc byte[Utf8Arg.StackBytesFor(key)]);
 
         float r = 0f;
         int ok;
-        fixed (byte* kp = kb)
-            ok = _api.SaveFloat(kind, kp, kl, value, &r);
+        fixed (byte* kp = kb.Bytes)
+            ok = _api.SaveFloat(kind, kp, kb.Length, value, &r);
         result = r;
         return ok != 0;
     }
 
-    /// <summary>セーブデータへ文字列を書き込む。成功時 true。</summary>
+    /// <summary>
+    /// セーブデータへ文字列を書き込む。成功時 true。
+    /// 値の長さに上限は無い（数 MB の JSON 文書も可）。長い値は Utf8Arg が ArrayPool のヒープに置く
+    /// （以前は値の長さのまま stackalloc していて、大きな値でスタックが溢れプロセスごと落ちた。W1-S）。
+    /// </summary>
     public static bool SaveSetString(string key, string value)
     {
         if (!_available || _api.SaveString == null || string.IsNullOrEmpty(key)) return false;
 
-        int kl = Encoding.UTF8.GetByteCount(key);
-        int vl = Encoding.UTF8.GetByteCount(value ?? "");
-        Span<byte> kb = stackalloc byte[kl];
-        Encoding.UTF8.GetBytes(key, kb);
-        // 空文字列も「空を書く」として有効。長さ 0 の stackalloc は避けて 1 バイト確保する。
-        Span<byte> vb = stackalloc byte[vl > 0 ? vl : 1];
-        if (vl > 0) Encoding.UTF8.GetBytes(value!, vb);
+        using var kb = new Utf8Arg(key, stackalloc byte[Utf8Arg.StackBytesFor(key)]);
+        // 空文字列も「空を書く」として有効（長さ 0 で渡す。Rust 側は value_len=0 を空文字として書く）
+        using var vb = new Utf8Arg(value, stackalloc byte[Utf8Arg.StackBytesFor(value)]);
 
-        fixed (byte* kp = kb)
-        fixed (byte* vp = vb)
-            return _api.SaveString(SaveStringKindSet, kp, kl, vp, vl, null, 0) != 0;
+        fixed (byte* kp = kb.Bytes)
+        fixed (byte* vp = vb.Bytes)
+            return _api.SaveString(SaveStringKindSet, kp, kb.Length, vp, vb.Length, null, 0) != 0;
     }
 
     /// <summary>
@@ -849,16 +795,14 @@ public static unsafe class ScriptHost
         value = "";
         if (!_available || _api.SaveString == null || string.IsNullOrEmpty(key)) return false;
 
-        int kl = Encoding.UTF8.GetByteCount(key);
-        Span<byte> kb = stackalloc byte[kl];
-        Encoding.UTF8.GetBytes(key, kb);
+        using var kb = new Utf8Arg(key, stackalloc byte[Utf8Arg.StackBytesFor(key)]);
 
-        // 1 回目: 初期バッファで試す
+        // 1 回目: 初期バッファで試す（大きさは定数なのでスタックでよい。足りなければ 2 回目はヒープ）
         Span<byte> stack = stackalloc byte[InitialStringBufferSize];
         int needed;
-        fixed (byte* kp = kb)
+        fixed (byte* kp = kb.Bytes)
         fixed (byte* sp = stack)
-            needed = _api.SaveString(SaveStringKindGet, kp, kl, null, 0, sp, stack.Length);
+            needed = _api.SaveString(SaveStringKindGet, kp, kb.Length, null, 0, sp, stack.Length);
 
         if (needed < 0) return false;                       // キーが無い / 文字列でない
         if (needed <= stack.Length)
@@ -870,9 +814,9 @@ public static unsafe class ScriptHost
         // 2 回目: 必要長ちょうどのヒープバッファで再取得する
         var heap = new byte[needed];
         int written;
-        fixed (byte* kp = kb)
+        fixed (byte* kp = kb.Bytes)
         fixed (byte* hp = heap)
-            written = _api.SaveString(SaveStringKindGet, kp, kl, null, 0, hp, heap.Length);
+            written = _api.SaveString(SaveStringKindGet, kp, kb.Length, null, 0, hp, heap.Length);
 
         if (written < 0 || written > heap.Length) return false;
         value = Encoding.UTF8.GetString(heap, 0, written);
@@ -881,8 +825,8 @@ public static unsafe class ScriptHost
 
     /// <summary>
     /// セーブデータの制御操作。
-    /// kind: 0=Has / 1=DeleteKey / 2=DeleteAll / 3=Save。
-    /// DeleteAll と Save は key を使わない（null 可）。
+    /// kind: 0=Has / 1=DeleteKey / 2=DeleteAll / 3=Save / 4=BatchBegin / 5=BatchEnd（Rust 側 SAVE_CTL_* と一致）。
+    /// Has と DeleteKey 以外は key を使わない（null 可）。
     /// </summary>
     public static bool SaveControl(int kind, string? key)
     {
@@ -891,11 +835,19 @@ public static unsafe class ScriptHost
         if (string.IsNullOrEmpty(key))
             return _api.SaveCtl(kind, null, 0) != 0;
 
-        int kl = Encoding.UTF8.GetByteCount(key);
-        Span<byte> kb = stackalloc byte[kl];
-        Encoding.UTF8.GetBytes(key, kb);
-        fixed (byte* kp = kb)
-            return _api.SaveCtl(kind, kp, kl) != 0;
+        using var kb = new Utf8Arg(key, stackalloc byte[Utf8Arg.StackBytesFor(key)]);
+        fixed (byte* kp = kb.Bytes)
+            return _api.SaveCtl(kind, kp, kb.Length) != 0;
+    }
+
+    /// <summary>
+    /// セーブデータの制御操作のうち、真偽ではなく番号を返すもの（kind 6=RecoveredFrom。Rust 側 SAVE_CTL_RECOVERED_FROM）。
+    /// key は使わない。ホスト API が未登録なら -1。
+    /// </summary>
+    public static int SaveControlCode(int kind)
+    {
+        if (!_available || _api.SaveCtl == null) return -1;
+        return _api.SaveCtl(kind, null, 0);
     }
 
     /// <summary>SaveString の kind: 書き込み（Rust 側 SAVE_STR_KIND_SET と一致）。</summary>
@@ -1007,19 +959,17 @@ public static unsafe class ScriptHost
         entity = Entity.None;
         if (!_available || _api.FindActorFrom == null || string.IsNullOrEmpty(path)) return false;
 
-        int nl = Encoding.UTF8.GetByteCount(path);
-        Span<byte> nb = stackalloc byte[nl];
-        Encoding.UTF8.GetBytes(path, nb);
+        using var nb = new Utf8Arg(path, stackalloc byte[Utf8Arg.StackBytesFor(path)]);
 
         uint* outBuf = stackalloc uint[2];
         int ok;
-        fixed (byte* np = nb)
+        fixed (byte* np = nb.Bytes)
             // 未束縛（default / None）の所有者は index=uint.MaxValue で「所有者なし」を伝える。
             // default(Entity) は Index==0（実在しうる値）なので IsValid で判別すること。
             ok = _api.FindActorFrom(
                 owner.IsValid ? owner.Index : uint.MaxValue, owner.Generation,
                 subtreeOnly ? RefScopeSubtree : RefScopeReference,
-                np, nl, outBuf);
+                np, nb.Length, outBuf);
 
         if (ok == 0) return false;
         entity = new Entity(outBuf[0], outBuf[1]);
@@ -1087,14 +1037,12 @@ public static unsafe class ScriptHost
         entity = Entity.None;
         if (!_available || _api.FindActor == null || string.IsNullOrEmpty(name)) return false;
 
-        int nl = Encoding.UTF8.GetByteCount(name);
-        Span<byte> nb = stackalloc byte[nl];
-        Encoding.UTF8.GetBytes(name, nb);
+        using var nb = new Utf8Arg(name, stackalloc byte[Utf8Arg.StackBytesFor(name)]);
 
         uint* outBuf = stackalloc uint[2];
         int ok;
-        fixed (byte* np = nb)
-            ok = _api.FindActor(np, nl, outBuf);
+        fixed (byte* np = nb.Bytes)
+            ok = _api.FindActor(np, nb.Length, outBuf);
 
         if (ok == 0) return false;
         entity = new Entity(outBuf[0], outBuf[1]);
@@ -1124,16 +1072,14 @@ public static unsafe class ScriptHost
         value = "";
         if (!_available || _api.AssetText == null || string.IsNullOrEmpty(path)) return false;
 
-        int pl = Encoding.UTF8.GetByteCount(path);
-        Span<byte> pb = stackalloc byte[pl];
-        Encoding.UTF8.GetBytes(path, pb);
+        using var pb = new Utf8Arg(path, stackalloc byte[Utf8Arg.StackBytesFor(path)]);
 
         // 1 回目: 初期バッファで試す（更新時刻や短いファイルはここで完結する）
         Span<byte> stack = stackalloc byte[InitialStringBufferSize];
         int needed;
-        fixed (byte* pp = pb)
+        fixed (byte* pp = pb.Bytes)
         fixed (byte* sp = stack)
-            needed = _api.AssetText(kind, pp, pl, sp, stack.Length);
+            needed = _api.AssetText(kind, pp, pb.Length, sp, stack.Length);
 
         if (needed < 0) return false;                       // 読めなかった
         if (needed <= stack.Length)
@@ -1145,9 +1091,9 @@ public static unsafe class ScriptHost
         // 2 回目: 必要長ちょうどのヒープバッファで再取得する
         var heap = new byte[needed];
         int written;
-        fixed (byte* pp = pb)
+        fixed (byte* pp = pb.Bytes)
         fixed (byte* hp = heap)
-            written = _api.AssetText(kind, pp, pl, hp, heap.Length);
+            written = _api.AssetText(kind, pp, pb.Length, hp, heap.Length);
 
         if (written < 0 || written > heap.Length) return false;
         value = Encoding.UTF8.GetString(heap, 0, written);
@@ -1369,7 +1315,7 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, byte*, int, float, float*, int> SaveFloat;
     /// <summary>(kind, key, keyLen, value, valueLen, out byte*, cap) → Set:1/0 Get:必要バイト長（失敗=-1）。kind: 0=Set/1=Get</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, byte*, int, int> SaveString;
-    /// <summary>(kind, key, keyLen) → 1/0（セーブデータ制御。kind: 0=Has/1=DeleteKey/2=DeleteAll/3=Save）</summary>
+    /// <summary>(kind, key, keyLen) → 1/0（セーブデータ制御。kind: 0=Has/1=DeleteKey/2=DeleteAll/3=Save/4=BatchBegin/5=BatchEnd）/ 番号（kind 6=RecoveredFrom: 0=None/1=Backup/2=Lost）</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, int> SaveCtl;
     /// <summary>(idx, gen, kind, time, out float*, cap) → 書き込んだ要素数（3）/失敗=0。ControlPoint 経路の時刻サンプル（kind: 0=位置/1=進行方向）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, int, float, float*, int, int> PathSample;

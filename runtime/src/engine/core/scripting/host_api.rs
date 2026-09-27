@@ -3475,8 +3475,16 @@ const SAVE_CTL_HAS: i32 = 0;
 const SAVE_CTL_DELETE_KEY: i32 = 1;
 /// `ffi_save_ctl` の `kind`: 全キーを削除。
 const SAVE_CTL_DELETE_ALL: i32 = 2;
-/// `ffi_save_ctl` の `kind`: ディスクへ書き出す（明示保存）。
+/// `ffi_save_ctl` の `kind`: ディスクへ書き出す（明示保存。Batch の途中なら Batch の終わりまで待たせて 1）。
 const SAVE_CTL_SAVE: i32 = 3;
+/// `ffi_save_ctl` の `kind`: `SaveData.Batch` を 1 段始める（入れ子は数える）。戻り値 1。
+const SAVE_CTL_BATCH_BEGIN: i32 = 4;
+/// `ffi_save_ctl` の `kind`: `SaveData.Batch` を 1 段終える（最も外側なら待たせた書き出しを 1 回だけ行う）。
+/// 書き出しが要らなかった・成功した=1 / 失敗した・Batch が開いていなかった=0。
+const SAVE_CTL_BATCH_END: i32 = 5;
+/// `ffi_save_ctl` の `kind`: ロードのときにどこから読んだか（`SaveData.RecoveredFrom`）。
+/// 戻り値は番号（`save::recovery::RECOVERY_CODE_*`。C# の `SaveRecovery` と一致）。
+const SAVE_CTL_RECOVERED_FROM: i32 = 6;
 
 /// セーブデータの整数値を読み書きする。
 ///
@@ -3563,10 +3571,10 @@ unsafe extern "system" fn ffi_save_string(
     }
 }
 
-/// セーブデータの制御操作（存在判定・削除・保存）。
+/// セーブデータの制御操作（存在判定・削除・保存・Batch・復旧の問い合わせ）。
 ///
-/// 戻り値: 1 = 真 / 成功、0 = 偽 / 失敗。
-/// `SAVE_CTL_DELETE_ALL` と `SAVE_CTL_SAVE` は `key` を使わない。
+/// 戻り値: 1 = 真 / 成功、0 = 偽 / 失敗（`SAVE_CTL_RECOVERED_FROM` だけは番号）。
+/// `SAVE_CTL_HAS` と `SAVE_CTL_DELETE_KEY` 以外は `key` を使わない。
 unsafe extern "system" fn ffi_save_ctl(kind: i32, key: *const u8, key_len: i32) -> i32 {
     use crate::engine::core::save;
     let key_s = str_from(key, key_len);
@@ -3581,6 +3589,9 @@ unsafe extern "system" fn ffi_save_ctl(kind: i32, key: *const u8, key_len: i32) 
         }
         SAVE_CTL_DELETE_ALL => { save::delete_all(); 1 }
         SAVE_CTL_SAVE       => save::save() as i32,
+        SAVE_CTL_BATCH_BEGIN => { save::begin_batch(); 1 }
+        SAVE_CTL_BATCH_END   => save::end_batch() as i32,
+        SAVE_CTL_RECOVERED_FROM => save::recovered_from().recovery_code(),
         _ => 0,
     }
 }

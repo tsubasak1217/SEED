@@ -2196,7 +2196,18 @@ SaveData.DeleteKey("money");  // bool（削除した=true / 元から無かっ�
 SaveData.DeleteAll();         // ニューゲーム用（全キー削除）
 
 // ディスクへ書き出す（明示保存）
-SaveData.Save();              // bool（成功=true）
+SaveData.Save();              // bool（成功=true。Batch の中では Batch の終わりまで待たされて true）
+
+// 複数キーの書き換えを 1 まとまりにする（その間は自動保存も Save も書かず、終わりに 1 回だけ書く）
+bool ok = SaveData.Batch(() => { /* SetLong / SetString … / Save() */ });  // bool（終わりの書き出しが不要・成功=true）
+
+// 起動して最初に読んだとき、どこから読んだか（壊れた・無い save.json からの復旧を利用者へ知らせる）
+SaveRecovery from = SaveData.RecoveredFrom;  // SaveRecovery.None / Backup / Lost
+
+// SaveRecovery
+SaveRecovery.None     // 普段どおり save.json を読めた・初めての起動
+SaveRecovery.Backup   // save.json が無い・壊れていて save.json.bak（1 つ前の世代）から読んだ（直前の保存が失われた可能性）
+SaveRecovery.Lost     // save.json か .bak が有ったのに読めず、空で始めた（壊れた本体は save.json.corrupt-<時刻> に残る）
 ```
 
 ```csharp
@@ -2212,18 +2223,55 @@ void OnCatch(string fishId, float sizeCm, int price)
 }
 ```
 
+```csharp
+// 例: お金と履歴のように「片方だけ残ると困る」組は、1 つの文書（JSON）を 1 つのキーに入れる（推奨）。
+//     1 キーの書き換えは常に丸ごと入れ替わるので、半端な組み合わせがディスクに残らない。長さの上限は無い（数 MB も可）。
+string wallet = SaveData.GetString("wallet_doc", "{}");      // JSON 文書（中身の形はアプリが決める）
+wallet = AppendPayment(wallet, amount: 100);                   // アプリ側で文書を組み立て直す
+SaveData.SetString("wallet_doc", wallet);
+SaveData.Save();
+
+// 例: キーを分けたまま 1 まとまりにしたいときは Batch で包む（入れ子にしてよい）
+bool written = SaveData.Batch(() =>
+{
+    SaveData.SetLong("money", SaveData.GetLong("money", 0) - 100);
+    SaveData.SetString("history", historyJson);
+    SaveData.Save();   // Batch の中では待たされ、Batch の終わりに 1 回だけ書かれる
+});
+
+// 例: 起動時に復旧を知らせる（AppendPayment・historyJson・ShowNotice はアプリ側で用意するもの。SEED の API ではない）
+switch (SaveData.RecoveredFrom)
+{
+    case SaveRecovery.Backup: ShowNotice("前回の保存の一部が失われた可能性があります"); break;
+    case SaveRecovery.Lost:   ShowNotice("保存データを読めなかったため、初期状態で始めます"); break;
+}
+```
+
 > **重要**: `Set*` はメモリ上のストアを書き換えるだけです。ディスクへ書き出すのは `Save()` を呼んだときと、Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で `Save()` を呼んでください。Android ではこれに加えて、バックグラウンドへ回るとき（ホーム・アプリ切り替え・画面オフ）とアプリを閉じるときにも自動保存します（Android は背面のアプリを予告なく終了させることがあるため）。
 
 > **重要**: 整数と実数は相互に読み替えられます（実数 → 整数は 0 方向へ切り捨て）。文字列と数値は**相互変換しません** — 型を間違えた読み取りは既定値を返すので、書いたときと同じ型で読んでください。
 
+> **重要**（耐久性）: 書き出しは「一時ファイル `save.json.tmp` へ書いてディスクまで届ける（sync）→ 今の `save.json` を `save.json.bak` へ回す → 一時ファイルを `save.json` にする（→ Android はフォルダも sync）」の順で、どこで落ちても・電源が切れても `save.json` か 1 つ前の世代 `save.json.bak` のどちらかから読めます。読み込みは `save.json` → 無い・壊れていれば `save.json.bak` → どちらも無ければ空。壊れた `save.json` は上書きせずに `save.json.corrupt-<UTC の時刻>` として 1 つだけ残します。復旧したときは `SaveData.RecoveredFrom` が `Backup`（1 世代前から読んだ。直前の保存が失われた可能性）か `Lost`（読めるものが無く空で始めた）になり、次の書き出しで `save.json` が作り直されます。
+
+> **重要**（Batch）: `SaveData.Batch(action)` の間は、自動保存（Android の背面・アプリを閉じるときの別スレッドからの書き出しを含む）と `Save()` をディスクへ書かず、最も外側の Batch の終わりに 1 回だけ書きます（Batch の間に書き出しの要求が無ければ書きません）。**取り消しはしません** — `action` が例外を投げても Batch は終わりますが、それまでに書き換えたキーは戻りません。中は短く保ち、待ち（非同期・長い計算）を入れないでください。Batch の途中でプロセスが終わると、Batch より前の未書き出しの変更も書かれません（ディスクは前回の書き出しのまま）。「お金と履歴」のような組は、1 つの文書を 1 つのキーに入れる形が最も単純で確実です。
+
+> **重要**（大きな文字列）: `SetString` の値の長さに上限はありません（数 MB の JSON も可。1 KB を超える文字列はスタックではなくヒープを経由して渡すので、スタックは溢れません）。ただし書き出しは毎回ファイル全体を書き直すので、大きな文書ほど `Save()` は重くなります（PC のデバッグビルドで 2.4 MB の save.json が約 0.1 秒）。
+
 | 保存先 | パス |
 |---|---|
 | パッケージ実行（配布ビルド） | 実行ファイルと同じ階層の `saved/save.json` |
-| エディタから Play | `runtime/save/save.json`（Git 追跡外） |
+| エディタから Play | アセットルートの親の `save/save.json`（リポジトリの既定のアセットなら `runtime/save/save.json`、プロジェクトなら `<プロジェクト>/save/save.json`。Git 追跡外） |
 | Android（APK 内 pak でも開発用の置き場でも同じ） | アプリの内部データ `/data/user/0/<パッケージ名>/files/save/save.json`（デバッグ版 APK なら `adb exec-out run-as <パッケージ名> cat files/save/save.json` で見られる） |
 | 環境変数 `SEED_SAVE_DIR` 指定時 | そのディレクトリの `save.json`（最優先） |
 
-> **重要**: セーブデータは Play を終了して Edit へ戻しても**巻き戻りません**（ゲームの進行であってシーンの編集データではないため）。テストで初期状態へ戻したいときは `SaveData.DeleteAll()` + `SaveData.Save()` を呼ぶか、保存先の `save.json` を削除してください。
+| 保存先のフォルダのファイル | 中身 |
+|---|---|
+| `save.json` | 今の世代（本体） |
+| `save.json.bak` | 1 つ前の世代（書き出しのたびに直前の `save.json` がここへ回る） |
+| `save.json.tmp` | 書き出しの途中の一時ファイル（書き出しの最中に落ちた跡。読まれず、次の書き出しで作り直される） |
+| `save.json.corrupt-<時刻>` | 読めなかった `save.json` を上書きせずに残したもの（1 つだけ。時刻は UTC の `yyyyMMdd-HHmmss`） |
+
+> **重要**: セーブデータは Play を終了して Edit へ戻しても**巻き戻りません**（ゲームの進行であってシーンの編集データではないため）。テストで初期状態へ戻したいときは `SaveData.DeleteAll()` + `SaveData.Save()` を呼ぶか、保存先の `save.json` と `save.json.bak` を削除してください（`save.json` だけを消すと、次の起動で `save.json.bak` から復旧します）。
 
 ---
 

@@ -2212,18 +2212,25 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 
 ### W0 の調査で見つかった既存の不具合・制限
 
-- [ ] **SaveData の書き出しに「既存の save.json を消してから rename」の隙間がある** — 2026-09-27（W0）。`store.rs::flush` は
+- [x] **SaveData の書き出しに「既存の save.json を消してから rename」の隙間がある** — 2026-09-27（W0）記載 / 同日 W1-S で対応。
+  削除をやめて rename だけにし、一時ファイルの `sync_all`・Android のフォルダの sync・1 世代前（`save.json.bak`）・壊れた本体の退避
+  （`save.json.corrupt-<時刻>`）・`SaveData.RecoveredFrom` を入れた（`runtime/src/engine/core/save/durable_file.rs`・`recovery.rs`。
+  docs/app_platform_roadmap.md §2.7 の「実装」の表）。以下は記載時のメモ。`store.rs::flush` は
   一時ファイルへ書いた後、既存を `remove_file` してから `rename` する（コメント「Windows の rename は上書き不可」）。削除と rename の間に
   落ちると save.json が無くなり、読み込みは `.tmp` から自動で戻らない（空のセーブで始まり、次の保存で上書きされる）。Rust の
   `std::fs::rename` は Unix・Windows とも既存の宛先を置き換える（標準ライブラリの文書で確認）ので、削除は要らない。あわせて fsync が無い・
   壊れたファイルを空として読んで上書きする（前の世代が無い）。お金と履歴を持つアプリには足りない。直し方は docs/app_platform_roadmap.md §2.7
   （W1-S）。関連: `runtime/src/engine/core/save/store.rs:136-165,269-289`、`save/mod.rs:163-180`。
-- [ ] **`SaveData.SetString` が値をスタックに確保する（大きな値でプロセスが落ちうる）** — 2026-09-27（W0）。`ScriptHost.SaveSetString` は
+- [x] **`SaveData.SetString` が値をスタックに確保する（大きな値でプロセスが落ちうる）** — 2026-09-27（W0）記載 / 同日 W1-S で対応。
+  共通の入れ物 `scripting/src/Api/Interop/Utf8Arg.cs`（最大長が 1 KB 以下と保証できる文字列だけスタック、それ以外は `ArrayPool<byte>`）に
+  `ScriptHost.cs` の文字列を渡す FFI 24 か所をすべて乗せ替えた。PC の Play で 2 MB の往復を確認。以下は記載時のメモ。`ScriptHost.SaveSetString` は
   値の UTF-8 を `stackalloc byte[vl]`（上限なし）で確保してから FFI へ渡す。数百 KB〜MB の JSON を 1 キーに入れる使い方（Wake or Pay の保存の設計）では
   スタックが溢れ、.NET のスタックオーバーフローは捕まえられないのでプロセスごと落ちる（溢れる大きさはスレッドのスタック次第で未測定）。
   一定の長さを超えたら `ArrayPool<byte>` を使う。読み取り側（`SaveGetString`）は必要長の 2 段階でヒープへ切り替えているので問題ない。
   文字列を渡す他の FFI も同じ形か点検する。関連: `scripting/src/Api/ScriptHost.cs:826-841`、`runtime/src/engine/core/scripting/host_api.rs::ffi_save_string`。
-- [ ] **UI スレッドからの自動書き出しが、スクリプトの複数キーの更新の途中を書きうる** — 2026-09-27（W0）。`MainActivity.onDestroy` は
+- [x] **UI スレッドからの自動書き出しが、スクリプトの複数キーの更新の途中を書きうる** — 2026-09-27（W0）記載 / 同日 W1-S で対応。
+  `SaveData.Batch(Action)`（深さと待たせた書き出しの要求をストアと同じ Mutex に持ち、Batch の途中の書き出しは最も外側の終わりに 1 回だけ）と、
+  scripting_api.md §7.7 の「1 文書を 1 キーに入れる」例の両方。残る割り切りは下の W1-S の節。以下は記載時のメモ。`MainActivity.onDestroy` は
   UI スレッドから `nativeFlushSaveData` を呼ぶ。ストアの Mutex が守るのは 1 回の Set と 1 回の書き出しだけなので、スクリプトがキーを
   順に書き換えている最中に入ると半端な組み合わせがディスクに残りうる（推測。実測はしていない）。`SaveData.Batch` を足すか、
   「1 文書を 1 キーに入れる」使い方を scripting_api.md に書く。関連: `runtime/android/native/src/jni_exports.rs`、`save/mod.rs`。
@@ -2523,7 +2530,29 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [ ] **`Haptics` の Android 12L 以前（API 29〜32）は振動の種類が付かない** — 2026-09-27（W1-6）。`VibrationAttributes.createForUsage` と `vibrate(effect, attributes)` が
   API 33 からなので、それより前は `vibrate(effect)`（種類なし）。利用者の「タッチの触感」の設定が効くかは未確認（Pixel 6a は Android 16 なので確かめられない。
   エミュレータ API 29〜32 で見る）。関連: `platform/haptics/HapticFeedback.java`。
-- [ ] **W1-S 保存の耐久性** — 2026-09-27。上の「SaveData の書き出しに…隙間がある」「UI スレッドからの自動書き出し…」を直す。
+- [x] **W1-S 保存の耐久性** — 2026-09-27 記載 / 同日対応。上の「SaveData の書き出しに…隙間がある」「SetString が値をスタックに…」「UI スレッドからの自動書き出し…」を
+  直した（docs/app_platform_roadmap.md §2.7・§2.10）。実機の `kill -9` の繰り返し（AC-10）は W1-7 で行う。W1-S で見つけた、今はやらないことは下の 5 件。
+- [ ] **`SaveData.Batch` に取り消し（ロールバック）が無い** — 2026-09-27（W1-S）。`action` が途中で例外を投げると、それまでに書き換えたキーは
+  メモリに残り、次の書き出しでディスクへ届く（「お金は減ったが履歴は無い」がありうる）。Batch の間に書き換えたキーの元の値を覚える取り消しの記録
+  （最初の書き換えのときだけ元の値を控える）を足せば、例外のときに元へ戻せる。今は「Batch は小さく」の方針と、Wake or Pay が「1 文書を 1 キー」で作る前提で入れていない。
+  関連: `runtime/src/engine/core/save/batch.rs`・`store.rs`、`scripting/src/Api/SaveData.cs::Batch`。
+- [ ] **Batch の途中に onDestroy の書き出しが来ると、Batch より前の未書き出しの変更も失われる** — 2026-09-27（W1-S）。UI スレッドの `nativeFlushSaveData` は
+  Batch の途中なら書かずに戻り、Java はすぐ `Process.killProcess` するので、Batch の終わりの書き出しは来ない（ディスクは前回の書き出しのまま＝半端にはならない）。
+  改善案: (a) UI スレッドから来たときだけ Batch の終わりを短い上限つき（例 200 ms）で待つ（android_main がその Batch の中で UI スレッドを待つと詰まるので上限は必須）、
+  (b) 上の取り消しの記録を使い、Batch の前の状態を書く。Batch はスクリプトのスレッドで同期に終わるので窓は短い（実測はしていない）。関連: `save/mod.rs::flush_if_dirty`、
+  `runtime/android/native/src/jni_exports.rs`。
+- [ ] **（検討）書き出しの 2 と 3 の間で落ちたとき、完全な `.tmp` があっても 1 世代前から読む** — 2026-09-27（W1-S）。本体を .bak へ回した直後・
+  .tmp を本体にする前に落ちると、sync 済みの完全な `.tmp`（新しい世代）が残るが、読み込みは `.bak`（前の世代）を使う（`RecoveredFrom = Backup`）。
+  `Save()` が戻る前に落ちたので「保存は済んでいない」として一貫しているが、`.tmp` が JSON として読めるなら新しい世代を採る選択もある
+  （そのときは `RecoveredFrom` に別の値が要る）。W1-S の仕様（本体 → .bak → 空）どおりにしてある。関連: `save/recovery.rs`・`durable_file.rs` の先頭の表。
+- [ ] **大きなセーブほど `Save()` が重い（毎回ファイル全体を書き直し、sync で待つ）** — 2026-09-27（W1-S）。PC のデバッグビルドで 2.4 MB の save.json の
+  `Save()` が約 0.1 秒（SaveSmoke の実測。組み立て・書き込み・`FlushFileBuffers` を含む）。スクリプトのスレッドで同期に走るので、そのフレームが止まる。
+  端末（フラッシュへの fsync）では未計測。数 MB の文書を頻繁に保存するなら、キーを分けて小さく保つか、書き出しを別スレッドへ出す仕組みが要る。関連: `save/store.rs::write_now`。
+- [ ] **`safe_write::write_atomic`（シーン・アクター・地形の書き込み）に、W1-S の前の SaveData と同じ問題がある** — 2026-09-27（W1-S で見つけた。範囲外なので直していない）。
+  (1) 「Windows の rename は置換先が存在すると失敗する」という古いコメント（Rust の `rename` は置き換える）、(2) rename に失敗したら置換先を消してから rename し直し、
+  それも失敗すると一時ファイルまで消す（元のファイルと新しい内容の両方を失いうる。`write_atomic_with_backup` の呼び出しは `.backup` の複製が残るが、
+  `write_atomic` だけの呼び出し〈地形の被覆・散布・エディタの表示状態〉には残らない）、(3) sync が無い。`save/durable_file.rs` の順序に揃えるのが素直。
+  関連: `runtime/src/engine/core/app_base/safe_write.rs:59-80`。
 - [ ] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。
 - [ ] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27。Wake or Pay の起床確認「振る」を v1 に残すなら（アプリ仕様 §10 U-04）。
 - [ ] **（任意）W1-9 Direct Boot（再起動後・ロック解除前の鳴動）** — 2026-09-27。夜中の自動更新の再起動の後でも鳴らすため。

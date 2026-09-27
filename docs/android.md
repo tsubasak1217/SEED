@@ -252,6 +252,9 @@ PC の開発時レイアウト（`<Project>/assets`）を、端末のアプリ�
       project_settings.json
       scenes/Main.scene ...
     save/save.json        セーブデータ（パッケージ実行でも同じ。§14.1）
+    save/save.json.bak    1 つ前の世代（書き出しのたびに直前の save.json がここへ回る。W1-S・§14.2）
+    save/save.json.tmp    書き出しの途中の一時ファイル（書き出しの最中に落ちた跡。読まれない）
+    save/save.json.corrupt-<時刻>  読めなかった save.json を上書きせずに残したもの（1 つだけ。UTC）
   cache/                  派生データキャッシュ（モデルの .smdl・パイプラインキャッシュ）。環境変数 TMPDIR。
                           OS が容量不足のときに消すことがある（消えても再生成される）
 ```
@@ -550,7 +553,8 @@ SeedAndroid（と build_and_run.ps1）も起動直前の端末の時刻を控え
 | `[SEED QUALITY] preset=mobile render_scale=0.75 …` / `[SEED QUALITY][WARN] …` | 描画品質プリセットの決定（`app/render_quality.rs`。§22） | 使うプリセットと実効のつまみ。知らないプリセット名・読めないつまみは WARN。`[SEED FEATURES]` の `(品質上限)` は上限で下がった機能 |
 | `[SEED GPU] 3.0s cpu_frames=… \| cpu frame=… acquire=… present=… \| gpu total=… shadow=… …` | パスごとの GPU 時間（起動オプション `seed.gpu_timing=1` のときだけ。§22.6） | 3 秒ごとの平均（ms）。`present` は提示待ちの目安、`gpu` の各区間は描画の節目ごとの GPU 時間 |
 | `書き込み先: データ（セーブ）=… / キャッシュ=…`・`環境変数 TMPDIR=…` | 書き込み先の設定（app_dirs.rs） | §14.1 |
-| `[SEED SAVE] save file: …` / `suspended: …` / `onDestroy（プロセス終了前）: …` | セーブの置き場と自動書き出しの結果 | 「未書き出しの変更を書き出しました」「未書き出しの変更なし」「セーブ未使用」（§14.2） |
+| `[SEED SAVE] save file: …` / `suspended: …` / `onDestroy（プロセス終了前）: …` | セーブの置き場と自動書き出しの結果 | 「未書き出しの変更を書き出しました」「未書き出しの変更なし」「セーブ未使用」「SaveData.Batch の途中なので…待たせました」（§14.2） |
+| `[SEED SAVE] 警告: 本体（…）を読めません` / `壊れた本体を …corrupt-… へ退避しました` / `…1 世代前（…）から読みました` / `…空のセーブで始めます` | セーブの復旧（W1-S。§14.2 の「耐久性」） | 起動して最初にセーブを読んだときだけ。スクリプトは `SaveData.RecoveredFrom`（Backup / Lost）で知れる |
 | `[SEED PIPELINE CACHE] 読込 N KiB → 採用後 M KiB` / `保存 …` / `変化なし …` | パイプラインキャッシュ（§14.3） | 起動時の生成時間は `[SEED INIT] DrawContext created (N ms)`・`描画パイプライン生成 合計 N ms` |
 | `[SEED LIFECYCLE] background / foreground: …` / `[SEED PHYSICS] 3D 物理スレッド: …` | 背面での停止・前面での再開（§14.4） | 物理スレッドは止めた・再開したを 1 回ずつ出す |
 | `[SEED AUDIO] 出力ストリームを開きました（2ch・44100 Hz・F32）` | 音声の出力を初めて使ったとき（`core/audio/output/`。§16.1） | 開けた設定。開けなければ `出力ストリームを開けません: …` |
@@ -1149,6 +1153,16 @@ dotnet run --project editor/tools/SeedPak -- --project D:\path\to\Project --out 
 | バックグラウンドへ回る（ホーム・アプリ切り替え・画面オフ・最近のタスク） | winit の `suspended` → `app/background_lifecycle.rs` の `enter_background` → `save::flush_if_dirty()` | 同期で書く。android-activity の glue はこの処理が終わるまで UI スレッドを待たせるので、直後にプロセスが殺されても残る |
 | Activity の破棄（アプリを閉じる・最近のタスクから消す） | `MainActivity.onDestroy` → JNI `nativeFlushSaveData`（`jni_exports.rs`）→ `save::flush_if_dirty()` → `Process.killProcess` | 保険。通常は onStop（ウィンドウ破棄 → suspended）で書き出し済みで「未書き出しの変更なし」になる |
 | スクリプトの `SaveData.Save()` | 従来どおり | 段階B |
+| `SaveData.Batch(…)` の途中に来た上の 3 つ | 書かずに要求を覚え、最も外側の Batch の終わりに 1 回だけ書く（`save/batch.rs`） | W1-S。Batch の深さはストアと同じ Mutex の中にあるので、UI スレッドの onDestroy からの書き出しも Batch の途中の半端な組み合わせを書かない（ログは「SaveData.Batch の途中なので…待たせました」）。その直後にプロセスが終わると、Batch より前の未書き出しの変更も書かれない |
+
+**耐久性（W1-S。2026-09-27）**: 書き出しは「`save.json.tmp` へ書いて `sync_all` → 今の `save.json` を `save.json.bak` へ rename →
+`save.json.tmp` を `save.json` へ rename → フォルダを `sync_all`（Android＝Unix だけ。Windows はフォルダの sync が無い）」の順
+（`save/durable_file.rs`。落ちる位置ごとに残るファイルの表もそこ）。既存の `save.json` を削除してから rename する手順はやめた
+（`std::fs::rename` は Unix でも Windows でも既存の宛先を置き換える）。読み込みは `save.json` → 無い・壊れていれば `save.json.bak` →
+どちらも無ければ空（`save/recovery.rs`）。壊れた `save.json` は上書きせずに `save.json.corrupt-<UTC の時刻>` へ rename で退避し、1 つだけ残す。
+復旧したときは `[SEED SAVE] 警告:` の行が出て、スクリプトの `SaveData.RecoveredFrom` が `Backup` / `Lost` になり、次の書き出しで `save.json` を作り直す。
+デバッグ版なら `adb exec-out run-as <パッケージ名> ls -la files/save` で 4 種のファイルが見える（`.tmp` と `.corrupt-*` は普段は無い）。
+実機での `kill -9` の繰り返し試験（AC-10）は W1-7 で行う。
 
 - JNI は命名規則（`Java_com_seedengine_runtime_MainActivity_nativeFlushSaveData`）で結び付く（`System.loadLibrary` 済みのため）。
   JNIEnv を触らないので jni クレートは使っていない。UI スレッドから呼ぶが、セーブのストアは Mutex で守られている。

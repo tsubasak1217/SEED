@@ -325,6 +325,10 @@ dotnet build scripting/SEEDScripting.csproj
 - **「メンテナ向け」見出し以降へ利用者向け情報を書いた**: 第 8 節以降は `Compact()` が丸ごと破棄する。利用者向けは必ず第 7 節（第 8 節より前）に。
 - **html の同期漏れ**: md だけ更新して `docs/scripting_api.html` を忘れる。API ガイドボタンから開く HTML が古くなる。
 - **FFI 構造体を不要に触った**: フィールド追加で `ScriptHostApi` / `HOST_API` / `ffi_*` を変更する必要はない。触っていたら設計を見直す。
+- **FFI へ渡す文字列を長さのまま `stackalloc` した**: 新しい FFI 関数（新カテゴリ API）を `ScriptHost.cs` に足すとき、文字列は必ず
+  `using var b = new Utf8Arg(s, stackalloc byte[Utf8Arg.StackBytesFor(s)]);` → `fixed (byte* p = b.Bytes)` → 長さは `b.Length` で渡す
+  （`scripting/src/Api/Interop/Utf8Arg.cs`。1 KB を超えうる文字列は ArrayPool のヒープへ回る）。`stackalloc byte[文字列の長さ]` は
+  長い文字列でスタックが溢れ、.NET では捕まえられずプロセスごと落ちる（W1-S で全箇所を直した）。
 - **要素数ミスマッチ**: Vec3 フィールドに `take::<1>` を使う等。Rust 側 `take::<N>` の N と `put(out, &[..])` の要素数、C# 側 `TryGetVec3`(=3要素) 等を一致させる。
 - **参照フィールド対応の取りこぼし**: 新ハンドル型に `IsValid` を実装し忘れる／スロット格納型なのに
   `ScriptReferenceCatalog.cs` への 2 行を忘れる（§3-3）。参照は D&D できるのに生存判定・スロット絞り込みが

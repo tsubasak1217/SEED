@@ -1588,7 +1588,7 @@ SolvePath();
 </section>
 
 <!-- ════════════════ 7.7 SaveData ════════════════ -->
-<section id="sec-savedata" data-keywords="SaveData セーブ セーブデータ 保存 ロード 永続化 進行 資金 お金 money ハイスコア 図鑑 強化 レベル SetInt GetInt SetFloat GetFloat SetString GetString SetBool GetBool Has DeleteKey DeleteAll Save JSON save.json SEED_SAVE_DIR">
+<section id="sec-savedata" data-keywords="SaveData セーブ セーブデータ 保存 ロード 永続化 進行 資金 お金 money ハイスコア 図鑑 強化 レベル 履歴 SetInt GetInt SetFloat GetFloat SetString GetString SetBool GetBool Has DeleteKey DeleteAll Save Batch まとめて 原子 RecoveredFrom SaveRecovery 復旧 バックアップ 壊れた 耐久性 電源断 JSON save.json save.json.bak corrupt SEED_SAVE_DIR">
   <h2>7.7 SaveData（セーブデータ：ゲーム進行の永続化）</h2>
   <p class="section-note">
     資金・強化レベル・図鑑・ハイスコアのように「シーンを切り替えても、ゲームを終了して起動し直しても残したい値」を
@@ -1598,7 +1598,7 @@ SolvePath();
   <div class="api"><code class="sig">SaveData.SetInt(key, value)</code><span class="desc">整数を保存（同じキーの既存値は型ごと置き換え）</span></div>
   <div class="api"><code class="sig">SaveData.SetLong(key, value)</code><span class="desc">64bit 整数を保存（累計スコアなど int に収まらない値用）</span></div>
   <div class="api"><code class="sig">SaveData.SetFloat(key, value)</code><span class="desc">実数を保存</span></div>
-  <div class="api"><code class="sig">SaveData.SetString(key, value)</code><span class="desc">文字列を保存</span></div>
+  <div class="api"><code class="sig">SaveData.SetString(key, value)</code><span class="desc">文字列を保存（長さの上限なし。数 MB の JSON 文書も可）</span></div>
   <div class="api"><code class="sig">SaveData.SetBool(key, value)</code><span class="desc">真偽値を保存（内部表現は整数 0/1）</span></div>
   <div class="api"><code class="sig">SaveData.GetInt(key, default = 0)</code><span class="desc">int。キーが無い / 文字列が入っている場合は default</span></div>
   <div class="api"><code class="sig">SaveData.GetLong(key, default = 0)</code><span class="desc">long</span></div>
@@ -1608,7 +1608,12 @@ SolvePath();
   <div class="api"><code class="sig">SaveData.Has(key)</code><span class="desc">bool（型は問わずキーの有無）</span></div>
   <div class="api"><code class="sig">SaveData.DeleteKey(key)</code><span class="desc">bool（削除した=true / 元から無かった=false）</span></div>
   <div class="api"><code class="sig">SaveData.DeleteAll()</code><span class="desc">全キー削除（ニューゲーム用）。ファイルは Save するまで残る</span></div>
-  <div class="api"><code class="sig">SaveData.Save()</code><span class="desc">bool（ディスクへ書き出す明示保存。成功=true）</span></div>
+  <div class="api"><code class="sig">SaveData.Save()</code><span class="desc">bool（ディスクへ書き出す明示保存。成功=true。Batch の中では Batch の終わりまで待たされて true）</span></div>
+  <div class="api"><code class="sig">SaveData.Batch(action)</code><span class="desc">bool。複数キーの書き換えを 1 まとまりにする（その間は自動保存も Save も書かず、最も外側の終わりに 1 回だけ書く。入れ子可。終わりの書き出しが不要・成功=true）</span></div>
+  <div class="api"><code class="sig">SaveData.RecoveredFrom</code><span class="desc">SaveRecovery。起動して最初に読んだとき、どこから読んだか</span></div>
+  <div class="api"><code class="sig">SaveRecovery.None</code><span class="desc">普段どおり save.json を読めた・初めての起動</span></div>
+  <div class="api"><code class="sig">SaveRecovery.Backup</code><span class="desc">save.json が無い・壊れていて save.json.bak（1 つ前の世代）から読んだ（直前の保存が失われた可能性）</span></div>
+  <div class="api"><code class="sig">SaveRecovery.Lost</code><span class="desc">save.json か .bak が有ったのに読めず、空で始めた（壊れた本体は save.json.corrupt-&lt;時刻&gt; に残る）</span></div>
 <pre><span class="c">// 魚を釣った瞬間に図鑑と資金を更新して保存する</span>
 <span class="k">void</span> OnCatch(<span class="t">string</span> fishId, <span class="t">float</span> sizeCm, <span class="t">int</span> price)
 {
@@ -1619,6 +1624,26 @@ SolvePath();
     <span class="t">SaveData</span>.SetInt(<span class="s">"money"</span>, <span class="t">SaveData</span>.GetInt(<span class="s">"money"</span>, 0) + price);
     <span class="t">SaveData</span>.Save();   <span class="c">// 区切りの良いところで明示保存する</span>
 }</pre>
+<pre><span class="c">// お金と履歴のように「片方だけ残ると困る」組は、1 つの文書（JSON）を 1 つのキーに入れる（推奨。長さの上限なし）</span>
+<span class="t">string</span> wallet = <span class="t">SaveData</span>.GetString(<span class="s">"wallet_doc"</span>, <span class="s">"{}"</span>);
+wallet = AppendPayment(wallet, amount: 100);   <span class="c">// アプリ側で文書を組み立て直す</span>
+<span class="t">SaveData</span>.SetString(<span class="s">"wallet_doc"</span>, wallet);
+<span class="t">SaveData</span>.Save();
+
+<span class="c">// キーを分けたまま 1 まとまりにしたいときは Batch で包む（入れ子にしてよい）</span>
+<span class="t">bool</span> written = <span class="t">SaveData</span>.Batch(() =&gt;
+{
+    <span class="t">SaveData</span>.SetLong(<span class="s">"money"</span>, <span class="t">SaveData</span>.GetLong(<span class="s">"money"</span>, 0) - 100);
+    <span class="t">SaveData</span>.SetString(<span class="s">"history"</span>, historyJson);
+    <span class="t">SaveData</span>.Save();   <span class="c">// Batch の中では待たされ、Batch の終わりに 1 回だけ書かれる</span>
+});
+
+<span class="c">// 起動時に復旧を知らせる（AppendPayment・historyJson・ShowNotice はアプリ側で用意するもの。SEED の API ではない）</span>
+<span class="k">switch</span> (<span class="t">SaveData</span>.RecoveredFrom)
+{
+    <span class="k">case</span> <span class="t">SaveRecovery</span>.Backup: ShowNotice(<span class="s">"前回の保存の一部が失われた可能性があります"</span>); <span class="k">break</span>;
+    <span class="k">case</span> <span class="t">SaveRecovery</span>.Lost:   ShowNotice(<span class="s">"保存データを読めなかったため、初期状態で始めます"</span>); <span class="k">break</span>;
+}</pre>
   <div class="warn">
     <b>Set* はメモリ上のストアを書き換えるだけです。</b> ディスクへ書き出すのは <code>Save()</code> を呼んだときと、
     Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で <code>Save()</code> を呼んでください。
@@ -1626,14 +1651,35 @@ SolvePath();
     <b>整数と実数は相互に読み替えられます</b>（実数 → 整数は 0 方向へ切り捨て）。
     <b>文字列と数値は相互変換しません</b> — 型を間違えた読み取りは既定値を返すので、書いたときと同じ型で読んでください。<br>
     セーブデータは Play を終了して Edit へ戻しても<b>巻き戻りません</b>（ゲームの進行であってシーンの編集データではないため）。
-    初期状態へ戻すには <code>SaveData.DeleteAll()</code> + <code>SaveData.Save()</code> か、保存先の <code>save.json</code> を削除します。
+    初期状態へ戻すには <code>SaveData.DeleteAll()</code> + <code>SaveData.Save()</code> か、保存先の <code>save.json</code> と <code>save.json.bak</code> を削除します
+    （<code>save.json</code> だけを消すと、次の起動で <code>save.json.bak</code> から復旧します）。
+  </div>
+  <div class="warn">
+    <b>耐久性:</b> 書き出しは「一時ファイル <code>save.json.tmp</code> へ書いてディスクまで届ける（sync）→ 今の <code>save.json</code> を
+    <code>save.json.bak</code> へ回す → 一時ファイルを <code>save.json</code> にする（→ Android はフォルダも sync）」の順で、どこで落ちても・電源が切れても
+    <code>save.json</code> か 1 つ前の世代 <code>save.json.bak</code> のどちらかから読めます。読み込みは <code>save.json</code> → 無い・壊れていれば
+    <code>save.json.bak</code> → どちらも無ければ空。壊れた <code>save.json</code> は上書きせずに <code>save.json.corrupt-&lt;UTC の時刻&gt;</code> として 1 つだけ残します。
+    復旧したときは <code>SaveData.RecoveredFrom</code> が <code>Backup</code> か <code>Lost</code> になり、次の書き出しで <code>save.json</code> が作り直されます。<br>
+    <b>Batch:</b> <code>SaveData.Batch(action)</code> の間は、自動保存（Android の背面・アプリを閉じるときの別スレッドからの書き出しを含む）と <code>Save()</code> を
+    ディスクへ書かず、最も外側の Batch の終わりに 1 回だけ書きます（Batch の間に書き出しの要求が無ければ書きません）。<b>取り消しはしません</b> —
+    <code>action</code> が例外を投げても Batch は終わりますが、それまでに書き換えたキーは戻りません。中は短く保ってください。
+    Batch の途中でプロセスが終わると、Batch より前の未書き出しの変更も書かれません（ディスクは前回の書き出しのまま）。<br>
+    <b>大きな文字列:</b> <code>SetString</code> の値の長さに上限はありません（1 KB を超える文字列はスタックではなくヒープを経由して渡します）。
+    ただし書き出しは毎回ファイル全体を書き直すので、大きな文書ほど <code>Save()</code> は重くなります（PC のデバッグビルドで 2.4 MB が約 0.1 秒）。
   </div>
   <table>
     <tr><th>実行のしかた</th><th>保存先</th></tr>
     <tr><td>パッケージ実行（配布ビルド）</td><td>実行ファイルと同じ階層の <code>saved/save.json</code></td></tr>
-    <tr><td>エディタから Play</td><td><code>runtime/save/save.json</code>（Git 追跡外）</td></tr>
+    <tr><td>エディタから Play</td><td>アセットルートの親の <code>save/save.json</code>（リポジトリの既定のアセットなら <code>runtime/save/save.json</code>、プロジェクトなら <code>&lt;プロジェクト&gt;/save/save.json</code>。Git 追跡外）</td></tr>
     <tr><td>Android（APK 内 pak でも開発用の置き場でも同じ）</td><td>アプリの内部データ <code>/data/user/0/&lt;パッケージ名&gt;/files/save/save.json</code>（デバッグ版 APK なら <code>adb exec-out run-as &lt;パッケージ名&gt; cat files/save/save.json</code> で見られる）</td></tr>
     <tr><td>環境変数 <code>SEED_SAVE_DIR</code> 指定時</td><td>そのディレクトリの <code>save.json</code>（最優先）</td></tr>
+  </table>
+  <table>
+    <tr><th>保存先のフォルダのファイル</th><th>中身</th></tr>
+    <tr><td><code>save.json</code></td><td>今の世代（本体）</td></tr>
+    <tr><td><code>save.json.bak</code></td><td>1 つ前の世代（書き出しのたびに直前の <code>save.json</code> がここへ回る）</td></tr>
+    <tr><td><code>save.json.tmp</code></td><td>書き出しの途中の一時ファイル（書き出しの最中に落ちた跡。読まれず、次の書き出しで作り直される）</td></tr>
+    <tr><td><code>save.json.corrupt-&lt;時刻&gt;</code></td><td>読めなかった <code>save.json</code> を上書きせずに残したもの（1 つだけ。時刻は UTC の <code>yyyyMMdd-HHmmss</code>）</td></tr>
   </table>
 </section>
 
