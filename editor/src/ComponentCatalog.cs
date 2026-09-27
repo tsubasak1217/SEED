@@ -79,6 +79,7 @@ public static class ComponentCatalog
             new("SpriteComponent", "Sprite", "Sprite", "2D スプライト画像をキャンバスに表示", ComponentActorTarget.Common),
             new("SkinnedSpriteComponent", "Skinned Sprite", "SkinnedSprite", ".sprite_mesh のメッシュを子アクター（ボーン）で変形して表示する 2D スプライト", ComponentActorTarget.Common),
             new("TextComponent", "Text", "Text", "キャンバスに文字列を表示（HUD の数値・ラベル）。内容はスクリプトから毎フレーム差し替えられる", ComponentActorTarget.Common),
+            new("CanvasClipComponent", "Canvas Clip", "CanvasClip", "子を切り抜く。このノードのキャンバス領域（無ければ最初のスプライトの矩形）からはみ出した子孫を描かず、押せなくする（スクロール領域・一覧用）", ComponentActorTarget.Actor2D),
         }),
         ("ライト", new List<ComponentEntry>
         {

@@ -3,10 +3,10 @@
 //
 //  GPU ID パスを使わず、カーソル位置をキャンバス空間（ortho）に変換し
 //  各アクターの Sprite / Canvas 矩形（向き付き境界ボックス）との
-//  ヒットテストを CPU 上で行う。表示（collect_canvas_rects /
-//  collect_sprite_items）と完全に同一の変換チェーン（design_space・
-//  自動解像度上書き・eff_viewport・スケールモード）を使うことで、
-//  「見た目の矩形」と「クリック判定」を一致させる。
+//  ヒットテストを CPU 上で行う。レイアウト（design_space・自動解像度上書き・
+//  eff_viewport・スケールモード）は描画と同じ canvas_layout の表から読むので、
+//  「見た目の矩形」と「クリック判定」が一致する（W2-1a で一本化）。
+//  切り抜き（CanvasClipComponent）の外の点は当たらない（描画の scissor と同じ領域）。
 //
 //  【選択優先度（重なり時）】
 //  1. Sprite（表示物）を Canvas より最優先（canvas は補助）
@@ -19,8 +19,8 @@
 use std::collections::HashMap;
 
 use crate::engine::components::{
-    AspectRatioAxis, CanvasComponent, CanvasDrawZone, CanvasTransform, ComponentKind,
-    SkinnedSpriteComponent, SpriteComponent, TextComponent, Transform,
+    CanvasComponent, CanvasDrawZone, ComponentKind, SkinnedSpriteComponent, SpriteComponent,
+    TextComponent, Transform,
 };
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
 use crate::engine::core::renderer::sprite_skin::build_bone_matrices;
@@ -31,8 +31,10 @@ use crate::engine::structs::objects::Actor;
 
 use super::App;
 use super::canvas_text_bounds::TextBoundsMap;
-use super::canvas_collect::{
-    canvas_node_is_transparent, child_anchor_basis, node_anchor_offset, skip_dfs_subtree,
+use crate::engine::core::canvas_layout::clip::point_inside_clip_chain;
+use crate::engine::core::canvas_layout::{
+    AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind,
+    CanvasParentFrame,
 };
 
 /// 巡回選択で「同一地点クリック」とみなすスクリーン座標の許容誤差（ピクセル）。
@@ -354,7 +356,7 @@ pub(super) fn hit_test_local_box_2d(
 ///
 /// GPU の ID パスも変形後頂点でメッシュ形状のまま ID を描くため、この判定と
 /// GPU ピックは同じ形になる（＝ どちらの経路でもクリック判定が見た目と一致する）。
-fn hit_test_mesh_2d(
+pub(super) fn hit_test_mesh_2d(
     px: f32,
     py: f32,
     m: &[[f32; 4]; 4],
@@ -407,14 +409,19 @@ fn point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool
     !(has_neg && has_pos)
 }
 
-// ── 候補収集ウォーク（collect_canvas_rects と同一の変換チェーン）──────────────
+// ── 候補収集（レイアウトの表を読む）──────────────────────────────────────
 
-/// アクターツリーを DFS ウォークし、クリック点に当たる Sprite/Canvas 候補を集める。
+/// アクターツリーの 2D レイアウトの表を作り、クリック点に当たる Sprite/Canvas 候補を集める
+/// （旧 API と同じ引数。表を作って `pick_candidates_from_table` を呼ぶだけの薄い入口）。
 ///
-/// collect_canvas_rects / collect_sprite_items と完全に同じ変換チェーン
-/// （design_space・自動解像度上書き・eff_viewport・スケールモード）を使うことで、
-/// 描画される矩形とヒット判定を一致させる。SS ピック専用のため canvas_scale=1・
-/// y_sign=1（ortho 空間）で計算する。
+/// レイアウトは描画と同じ `canvas_layout` の走査で作るため、描画される矩形とヒット判定が一致する。
+/// SS ピック専用のため canvas_scale=1・y_sign=1（ortho 空間）で計算する。
+/// 自動スケールの割り算は旧実装どおり分母を `f32::EPSILON` 以上にする（AutoScaleDivisor::GuardEpsilon）。
+///
+/// # 引数（旧 API と同じ）
+/// * `counter` - 表の添字 0 の DFS 番号。走査したノードの数だけ進める
+/// * `parent_world_rs` / `parent_cumul_scale` / `parent_canvas_size` / `parent_zone` - ルートが受け取る文脈
+/// * `depth`   - ルートの深さ（呼び出し側は 0）
 #[allow(clippy::too_many_arguments)]
 pub(super) fn walk_pick_candidates_2d(
     actors: &[Actor],
@@ -441,173 +448,70 @@ pub(super) fn walk_pick_candidates_2d(
     filter: PickFilter2d,
     out: &mut Vec<PickCand2d>,
 ) {
-    for actor in actors {
-        if actor.world_line != wl {
+    let env = CanvasLayoutEnv {
+        viewport_size,
+        viewport_overrides: overrides,
+        root_auto_sizes,
+        design_space,
+        auto_scale_divisor: AutoScaleDivisor::GuardEpsilon,
+    };
+    let table = CanvasLayoutPass::run(
+        actors,
+        world,
+        wl,
+        CanvasParentFrame::new(parent_canvas_size, parent_world_rs, parent_cumul_scale, parent_zone),
+        &env,
+    );
+    pick_candidates_from_table(
+        &table, actors, world, canvas_x, canvas_y, *counter, depth, mesh_of, text_boxes, filter, out,
+    );
+    *counter += table.len() as u32;
+}
+
+/// レイアウトの表を読み、クリック点に当たる Sprite/Canvas 候補を集める。
+///
+/// 対象のノードは旧 walk_pick_candidates_2d と同じ規則で選ぶ:
+///   - 実効非表示（自身または祖先が visible=false）は、経路（filter）に関わらず常に除く
+///     （visible は「スクリプトも物理も動くが描画だけ止める」フラグ。描画されない以上ピックもされない）
+///   - 非アクティブはポインタイベント（respect_active）のときだけ除く（エディタ選択は従来どおり選べる）
+///   - フォルダは候補にしない（矩形を持たない）。CanvasTransform を持たないノードの配下は扱わない
+/// さらに W2-1a から、**切り抜き（CanvasClipComponent）の外の点は当たらない**
+/// （ノードの祖先のすべての切り抜きの領域の内側のときだけ判定する。描画の scissor と同じ AABB）。
+///
+/// # 引数
+/// * `dfs_base`   - 表の添字 0 の DFS 番号
+/// * `depth_base` - ルートの深さ（表の depth に足す）
+#[allow(clippy::too_many_arguments)]
+pub(super) fn pick_candidates_from_table(
+    table: &CanvasLayoutTable,
+    actors: &[Actor],
+    world: &World,
+    canvas_x: f32,
+    canvas_y: f32,
+    dfs_base: u32,
+    depth_base: u32,
+    mesh_of: &dyn Fn(&str) -> Option<std::sync::Arc<SpriteMesh>>,
+    text_boxes: &TextBoundsMap,
+    filter: PickFilter2d,
+    out: &mut Vec<PickCand2d>,
+) {
+    for (index, (node, actor)) in table.iter_with_actors(actors).enumerate() {
+        if !node.is_pickable(filter.respect_active) {
             continue;
         }
-        let my_dfs = *counter as usize;
-        *counter += 1;
-
-        // 実効非表示アクター（自身または祖先が visible=false）: エディタ選択・ポインタ
-        // イベントの両方で、常に自身と全子孫を候補から外す。
-        // 描画（collect_sprite_items / collect_canvas_id_items 等）が同じ条件で
-        // サブツリーごと省くため、「見えていないものはクリックできない」を描画と一致させる。
-        // 3D 側の ID ピックは元々非表示を除外済みなので、ここで 2D 側もそれに揃える。
-        // visible は「スクリプトも物理も動くが描画だけ止める」フラグであり、経路（filter）に
-        // よらず描画されない以上ピックもされない、という一意の規則にするため filter を見ない
-        // （active は経路で意味が違う＝下の respect_active でエディタのみ無視するのに対し、
-        // visible にそのような使い分けの要求はなく、常に除外が正しい）。
-        // DFS 番号だけは正典どおり消費する（番号ズレ = 誤配信の原因）。
-        if !actor.visible {
-            skip_dfs_subtree(&actor.children, counter);
+        let CanvasNodeKind::Placed(placement) = &node.kind else {
+            continue;
+        };
+        // 切り抜かれて見えない所は押せない（祖先の切り抜きの外なら、このノードは何も当たらない）
+        if !point_inside_clip_chain(&table.clip_regions, node.clip, [canvas_x, canvas_y]) {
             continue;
         }
-
-        // 非アクティブアクター（ポインタイベント時のみ。エディタ選択では従来どおり
-        // 非アクティブでも選択できる）: 自身と全子孫を候補から外す。
-        // DFS 番号だけは正典どおり消費する（番号ズレ = 誤配信の原因）。
-        if filter.respect_active && !actor.active {
-            skip_dfs_subtree(&actor.children, counter);
-            continue;
-        }
-
-        // フォルダノード: レイアウト透明（canvas_node_is_transparent）。
-        // 自身はサイズを持たないためヒット候補にせず（フォルダは決してピックされない）、
-        // 子へは親の文脈をそのまま渡して再帰する。depth も進めない
-        // （深さは重なり解決の優先度に使うため、階層に現れないフォルダで増やさない）。
-        if canvas_node_is_transparent(actor) {
-            walk_pick_candidates_2d(
-                &actor.children,
-                world,
-                wl,
-                canvas_x,
-                canvas_y,
-                counter,
-                parent_world_rs,
-                parent_cumul_scale,
-                parent_canvas_size,
-                depth,
-                parent_zone,
-                viewport_size,
-                overrides,
-                root_auto_sizes,
-                design_space,
-                mesh_of,
-                text_boxes,
-                filter,
-                out,
-            );
-            continue;
-        }
-
-        let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
-        let Some(ct) = ct_opt else {
-            // CanvasTransform なし（Actor3D 等）: ヒット対象外だが、DFS 番号は
-            // find_actor_by_dfs と同じ規則（子孫も含めて全カウント）で消費する。
-            // ここで子孫の番号を消費しないと以降の DFS ID がズレて、
-            // ビューポートタブのクリックでワールドの別アクターが選択されてしまう。
-            skip_dfs_subtree(&actor.children, counter);
-            continue;
-        };
-
-        // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化
-        let root_auto = if parent_canvas_size.is_none() {
-            root_auto_sizes.get(&actor.entity).copied()
-        } else {
-            None
-        };
-        let ct = if root_auto.is_some() {
-            CanvasTransform::default()
-        } else {
-            ct
-        };
-        // スケールモードはこのノード自身の CanvasTransform から読み取る
-        let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-            ct.scale_transform,
-            ct.scale_size,
-            ct.keep_aspect_ratio,
-            matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
-        );
-
-        // アンカーオフセット（collect_canvas_rects と同一。Camera 参照を優先）
-        let eff_viewport = if parent_canvas_size.is_none() {
-            overrides.get(&actor.entity).copied().or(viewport_size)
-        } else {
-            viewport_size
-        };
-        // アンカーオフセットは描画（canvas_collect）と同じ共通ヘルパーを使う。
-        let [anchor_off_x, anchor_off_y] = node_anchor_offset(
-            parent_canvas_size,
-            ct.anchor,
-            parent_cumul_scale,
-            eff_viewport,
-            design_space,
-        );
-
-        let eff_pos = if sm_transform {
-            [
-                ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
-            ]
-        } else {
-            [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
-        };
-        let eff_ct = CanvasTransform {
-            position: eff_pos,
-            rotation: ct.rotation,
-            scale: ct.scale,
-            pivot: ct.pivot,
-            anchor: [0.0, 0.0],
-            ..ct.clone()
-        };
-
-        let my_canvas = actor
-            .slots()
-            .iter()
-            .filter(|s| s.kind == ComponentKind::Canvas)
-            .find_map(|s| world.get::<CanvasComponent>(s.entity));
-
-        // 描画ゾーン（ルートは自身、子は親から継承）
-        let my_zone = if parent_canvas_size.is_none() {
-            my_canvas.map(|cc| cc.draw_zone).unwrap_or(parent_zone)
-        } else {
-            parent_zone
-        };
-
-        // スケールモードに応じた有効サイズ係数（アスペクト比維持を考慮）
-        let size_sc_x = if sm_size {
-            if keep_aspect && !is_width_axis {
-                parent_cumul_scale[1]
-            } else {
-                parent_cumul_scale[0]
-            }
-        } else {
-            1.0
-        };
-        let size_sc_y = if sm_size {
-            if keep_aspect && is_width_axis {
-                parent_cumul_scale[0]
-            } else {
-                parent_cumul_scale[1]
-            }
-        } else {
-            1.0
-        };
-        let (my_eff_w, my_eff_h) = my_canvas
-            .map(|cc| {
-                let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
-                (bw * size_sc_x, bh * size_sc_y)
-            })
-            .unwrap_or((1.0, 1.0));
-
-        let self_world_rs = mat4x4_mul(
-            parent_world_rs,
-            CanvasTransform {
-                scale: [1.0, 1.0],
-                ..eff_ct.clone()
-            }
-            .to_mat4_sized(my_eff_w, my_eff_h),
-        );
+        let my_dfs = dfs_base as usize + index;
+        let depth = depth_base + node.depth;
+        let parent_world_rs = node.frame.world_rs;
+        let eff_ct = &placement.eff_transform;
+        let [size_sc_x, size_sc_y] = placement.size_scale;
+        let my_zone = placement.zone;
 
         // ── Sprite ヒット（最優先候補）────────────────────────────────────────
         for slot in actor.slots() {
@@ -640,9 +544,7 @@ pub(super) fn walk_pick_candidates_2d(
         }
 
         // ── SkinnedSprite ヒット（変形後メッシュの三角形で判定）──────────────
-        // 矩形スプライトと同じ優先度（PickKind2d::Sprite）で積む。
-        // 判定形状は GPU ID パスと同じ「変形後メッシュ」なので、CPU ピック
-        // （アクター編集 2D タブ）と GPU ピックでクリック結果が一致する。
+        // 矩形スプライトと同じ優先度（PickKind2d::Sprite）で積む。判定形状は GPU ID パスと同じ「変形後メッシュ」。
         for slot in actor.slots() {
             if slot.kind != ComponentKind::SkinnedSprite || !slot.enabled {
                 continue;
@@ -674,20 +576,13 @@ pub(super) fn walk_pick_candidates_2d(
         }
 
         // ── Text ヒット（テキストのレイアウト枠）────────────────────────────
-        // 判定形状は描画と同じ「実測したブロック枠」を to_mesh_mat4 でキャンバス空間へ
-        // 写したもの（スキンスプライトと同じチェーン。フォントサイズは行列側で拡縮する）。
-        // 優先度はスプライトと同一（PickKind2d::Sprite・layer は TextComponent.layer）。
-        //
-        // ポインタイベント（require_raycast_target）では対象外。TextComponent は
-        // raycast_target を持たない＝オプトインできないため、勝手に当たり判定を
-        // 増やさない（Play 中の入力挙動を変えない）。
+        // 判定形状は描画と同じ「実測したブロック枠」を to_mesh_mat4 でキャンバス空間へ写したもの。
+        // ポインタイベント（require_raycast_target）では対象外（TextComponent は raycast_target を持たない）。
         if !filter.require_raycast_target {
             for slot in actor.slots() {
                 if slot.kind != ComponentKind::Text {
                     continue;
                 }
-                // スロット無効（enabled=false）もポインタイベント経路（respect_active=true）
-                // でのみ除外する。エディタ選択は従来どおり無効スロットも選択対象に含める。
                 if filter.respect_active && !slot.enabled {
                     continue;
                 }
@@ -697,8 +592,7 @@ pub(super) fn walk_pick_candidates_2d(
                 let Some(tc) = world.get::<TextComponent>(slot.entity) else {
                     continue;
                 };
-                // 枠モード（box_width > 0）は pivot を枠矩形へ焼き込み済みなので、
-                // 行列側では pivot を効かせない（描画・ID パスと同一の規約）。
+                // 枠モード（box_width > 0）は pivot を枠矩形へ焼き込み済みなので、行列側では pivot を効かせない。
                 let m = mat4x4_mul(
                     parent_world_rs,
                     if bx.zero_pivot {
@@ -721,7 +615,8 @@ pub(super) fn walk_pick_candidates_2d(
         }
 
         // ── Canvas 矩形ヒット（補助候補）──────────────────────────────────────
-        if filter.include_canvas && my_canvas.is_some() {
+        if filter.include_canvas && placement.canvas_base.is_some() {
+            let [my_eff_w, my_eff_h] = placement.eff_size;
             let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
             if hit_test_rect_2d(canvas_x, canvas_y, &m, my_eff_w, my_eff_h) {
                 out.push(PickCand2d {
@@ -734,57 +629,6 @@ pub(super) fn walk_pick_candidates_2d(
                 });
             }
         }
-
-        // ── 子への継承情報を計算して再帰する（collect_canvas_rects と同一）─────
-        // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-        let child_info =
-            my_canvas.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
-        let child_anchor_basis_size = child_anchor_basis(child_info.map(|(sz, _)| sz));
-        let auto_scale_factor = if parent_canvas_size.is_none() {
-            if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
-                [
-                    vw / my_eff_w.max(f32::EPSILON),
-                    vh / my_eff_h.max(f32::EPSILON),
-                ]
-            } else {
-                [1.0f32, 1.0]
-            }
-        } else {
-            [1.0f32, 1.0]
-        };
-        let child_cumul_scale = if sm_transform {
-            [
-                parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
-                parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1],
-            ]
-        } else {
-            [
-                ct.scale[0] * auto_scale_factor[0],
-                ct.scale[1] * auto_scale_factor[1],
-            ]
-        };
-
-        walk_pick_candidates_2d(
-            &actor.children,
-            world,
-            wl,
-            canvas_x,
-            canvas_y,
-            counter,
-            self_world_rs,
-            child_cumul_scale,
-            child_anchor_basis_size,
-            depth + 1,
-            my_zone,
-            viewport_size,
-            overrides,
-            root_auto_sizes,
-            design_space,
-            mesh_of,
-            text_boxes,
-            filter,
-            out,
-        );
     }
 }
 
@@ -929,7 +773,7 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::components::CanvasComponent;
+    use crate::engine::components::{CanvasComponent, CanvasTransform};
     use crate::engine::core::font::text_layout::TextLocalBox;
     use crate::engine::core::loader::sprite_mesh::IDENTITY_MAT4;
     use crate::engine::structs::objects::Actor;
@@ -1485,5 +1329,70 @@ mod tests {
             !wrong_hits.iter().any(|c| c.dfs == 2),
             "ビューポート基準のずれた位置で当たってはならない"
         );
+    }
+
+    // ── 切り抜き（CanvasClipComponent）の当たり判定（W2-1a）────────────────
+    //
+    //  切り抜かれて見えない所は押せない: 祖先の切り抜きの領域の外の点では、
+    //  子のスプライトの矩形の中でも当たらない。
+
+    /// 切り抜きの枠（ClipBox: 200x100 のキャンバス・位置 (100,100)）の中に、左右へはみ出す
+    /// 子のスプライト（400x20）を置いたシーンを作る。`clip` が false なら切り抜きを付けない。
+    fn build_clip_scene(clip: bool) -> (Vec<Actor>, World) {
+        use crate::engine::components::CanvasClipComponent;
+        let mut world = World::new();
+        let root_entity = world.spawn();
+        world.insert(root_entity, CanvasTransform::default());
+        let root_slot = world.spawn();
+        world.insert(
+            root_slot,
+            CanvasComponent { width: UI_CANVAS[0], height: UI_CANVAS[1], ..CanvasComponent::default() },
+        );
+        let mut root = Actor::new_2d(root_entity, "Root");
+        root.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, root_slot);
+
+        let box_entity = world.spawn();
+        world.insert(box_entity, CanvasTransform { position: [100.0, 100.0], ..CanvasTransform::default() });
+        let box_slot = world.spawn();
+        world.insert(box_slot, CanvasComponent { width: 200.0, height: 100.0, ..CanvasComponent::default() });
+        let mut clip_box = Actor::new_2d(box_entity, "ClipBox");
+        clip_box.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, box_slot);
+        if clip {
+            let clip_slot = world.spawn();
+            world.insert(clip_slot, CanvasClipComponent { enabled: true });
+            clip_box.add_slot_typed::<CanvasClipComponent>("CanvasClip", ComponentKind::CanvasClip, clip_slot);
+        }
+
+        let bar_entity = world.spawn();
+        world.insert(bar_entity, CanvasTransform { position: [-100.0, 40.0], ..CanvasTransform::default() });
+        let bar_slot = world.spawn();
+        world.insert(
+            bar_slot,
+            SpriteComponent { width: 400.0, height: 20.0, raycast_target: true, ..SpriteComponent::default() },
+        );
+        let mut bar = Actor::new_2d(bar_entity, "Bar");
+        bar.add_slot_typed::<SpriteComponent>("Sprite", ComponentKind::Sprite, bar_slot);
+
+        clip_box.add_child(bar);
+        root.add_child(clip_box);
+        (vec![root], world)
+    }
+
+    /// 切り抜きの中の点は当たり、はみ出した（切り抜かれて見えない）所の点は当たらない。
+    #[test]
+    fn clipped_part_of_a_sprite_is_not_hit() {
+        // バーはキャンバス空間で x 0..400・y 140..160。ClipBox は x 100..300・y 100..200。
+        let inside = [150.0, 150.0];
+        let clipped_away = [50.0, 150.0];
+        for clip in [false, true] {
+            let (actors, world) = build_clip_scene(clip);
+            let bar_hit = |pt: [f32; 2]| {
+                editor_hits(&actors, &world, pt)
+                    .iter()
+                    .any(|c| c.dfs == 2 && c.kind == PickKind2d::Sprite)
+            };
+            assert!(bar_hit(inside), "clip={clip}: 切り抜きの中は当たる");
+            assert_eq!(bar_hit(clipped_away), !clip, "clip={clip}: はみ出した所は切り抜きがあるときだけ当たらない");
+        }
     }
 }

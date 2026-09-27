@@ -164,6 +164,8 @@ CATALOG = [
     ("Icon.Component.Sprite", "image-outline"),
     ("Icon.Component.Text", "format-text"),
     ("Icon.Component.SkinnedSprite", "vector-polygon"),
+    # 子を切り抜く（CanvasClipComponent。W2-1a）。枠の外を切り落とす＝トリミングの記号。
+    ("Icon.Component.CanvasClip", "crop"),
     ("Icon.File.SpriteMesh", "vector-triangle"),
     # スキンスプライトのボーン操作（インスペクタの「ボーンアクターを生成」ボタン等）。
     # Icon.Component.JointAttach と同じ mdi:bone だが、用途が別なのでキーを分ける。

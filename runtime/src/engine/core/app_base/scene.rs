@@ -1027,6 +1027,13 @@ pub fn build_actor(
                 world.insert(slot_entity, WaterLinkComponent::from_data(wl_data));
                 actor.add_slot_typed::<WaterLinkComponent>(slot_name, ComponentKind::WaterLink, slot_entity);
             }
+            ComponentData::CanvasClipComponent(cc_data) => {
+                // 子を切り抜く（W2-1a）を ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::CanvasClipComponent;
+                world.insert(slot_entity, CanvasClipComponent::from_data(cc_data));
+                actor.add_slot_typed::<CanvasClipComponent>(
+                    slot_name, ComponentKind::CanvasClip, slot_entity);
+            }
             ComponentData::InteractionSourceComponent(is_data) => {
                 // インタラクションソースを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::InteractionSourceComponent;

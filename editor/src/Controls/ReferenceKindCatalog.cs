@@ -123,6 +123,8 @@ internal static class ReferenceKindCatalog
         ["LineRenderer"]    = "LineRendererComponent",
         ["Skybox"]          = "SkyboxComponent",
         ["Text"]            = "TextComponent",
+        // 子を切り抜く（W2-1a。スクリプトの SEED.CanvasClip）
+        ["CanvasClip"]      = "CanvasClipComponent",
         ["Animator"]        = "AnimatorComponent",
         ["ParticleEmitter"] = "ParticleEmitterComponent",
         ["InputMap"]        = "InputMapComponent",
@@ -152,6 +154,7 @@ internal static class ReferenceKindCatalog
         ["LineRenderer"]      = "LineRenderer",
         ["Skybox"]            = "Skybox",
         ["Text"]              = "Text",
+        ["CanvasClip"]        = "CanvasClip（子を切り抜く）",
         ["Animator"]          = "Animator",
         ["ParticleEmitter"]   = "ParticleEmitter",
         ["InputMap"]          = "InputMap",

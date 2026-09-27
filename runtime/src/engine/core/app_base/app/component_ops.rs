@@ -540,6 +540,13 @@ impl App {
                         d.shadow_softness,
                     ))
                 }
+                ComponentData::CanvasClipComponent(d) => {
+                    // 子を切り抜く（W2-1a）: 有効フラグをインスペクタへ送る。
+                    // 【重要】キー名は "clip_enabled"。スロット共通ラッパが既に "enabled"（数値 0/1、
+                    // slot_data.enabled）を持つため、"enabled" で送ると同一 JSON 内のキー重複になり
+                    // C# の GetBoolean() が例外 → インスペクタ全体が表示不能になる（InteractionSource で起きた罠）。
+                    ("CanvasClipComponent", format!(r#","clip_enabled":{}"#, d.enabled))
+                }
                 ComponentData::InteractionSourceComponent(d) => {
                     // インタラクションソース: 半径・強さ・有効フラグをインスペクタへ送る。
                     // 【重要】キー名は "source_enabled"。スロット共通ラッパが既に
@@ -1295,6 +1302,37 @@ impl App {
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<CoverEmitterComponent>(
                             name, ComponentKind::CoverEmitter, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "CanvasClipComponent" => {
+                // 子を切り抜く（W2-1a）: 既定（有効）で追加する。付けた瞬間から子孫が
+                // このノードのキャンバス領域（無ければ最初のスプライト）で切り抜かれる。
+                use crate::engine::components::CanvasClipComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, CanvasClipComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<CanvasClipComponent>(
+                            name, ComponentKind::CanvasClip, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

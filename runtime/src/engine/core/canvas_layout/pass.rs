@@ -1,0 +1,252 @@
+// ============================================================
+//  canvas_layout/pass.rs — アクター木を 1 回たどってレイアウトの表を作る走査
+//
+//  旧実装の 5 つの走査がそれぞれ持っていた「木のたどり方」と「親 → 子の文脈の受け渡し」を
+//  ここに 1 つだけ置く。ノードごとの計算は placement.rs の純関数 `resolve` に任せ、
+//  ここでは次だけを行う:
+//    - ルートの世界線での絞り込みと、深さ優先の並び（find_actor_by_dfs と同じ規則）
+//    - フォルダ（レイアウト透明）は文脈をそのまま子へ渡す
+//    - CanvasTransform を持たないノードは 2D レイアウト木の外にする（描画・当たり判定は打ち切る。
+//      2D 物理だけが子孫をたどるので、文脈は旧 collect_actor2d_contexts と同じ規則で素通しする）
+//    - 祖先までの世界線・active・visible をフラグにする（読み手ごとの打ち切り規則を表で表す）
+//    - 切り抜き（CanvasClipComponent）の領域を積み、各ノードへ切り抜きの番号を持たせる
+// ============================================================
+
+use crate::engine::components::{
+    CanvasClipComponent, CanvasComponent, CanvasTransform, ComponentKind, SpriteComponent,
+};
+use crate::engine::core::renderer::ui_clip::UiClipId;
+use crate::engine::ecs::World;
+use crate::engine::structs::objects::Actor;
+
+use super::clip::{canvas_area_corners, has_room, sprite_rect_corners, CanvasClipRegion, ClipRectSource};
+use super::frame::{CanvasLayoutEnv, CanvasParentFrame};
+use super::placement::{pass_through_frame, resolve, CanvasNodeInput, CanvasNodePlacement};
+use super::table::{CanvasLayoutNode, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};
+
+/// 最上位ノードの深さ（当たり判定の「子を優先」の順位の起点）。
+const ROOT_DEPTH: u32 = 0;
+
+/// ルートが受け取るフラグ（祖先が居ないので、すべて真から始める）。
+const ROOT_FLAGS: CanvasNodeFlags = CanvasNodeFlags {
+    world_line_chain: true,
+    active_chain: true,
+    visible_chain: true,
+    in_2d_tree: true,
+};
+
+/// レイアウトの表を作る走査。
+pub struct CanvasLayoutPass;
+
+impl CanvasLayoutPass {
+    /// アクター木を 1 回たどってレイアウトの表を作る。
+    ///
+    /// # 引数
+    /// * `roots`      - 走査のルートの並び（シーンの全アクター、または 3D ワールドキャンバスの子）
+    /// * `world`      - コンポーネントの置き場
+    /// * `world_line` - 対象の世界線（ルートだけ絞り込む。子は世界線を問わず表に入り、フラグで区別する）
+    /// * `root_frame` - ルートが受け取る文脈（2D キャンバスは `CanvasParentFrame::viewport_root`）
+    /// * `env`        - 走査全体の入力
+    ///
+    /// # 戻り値
+    /// 深さ優先の並びの表（添字 = DFS 番号）と切り抜きの領域の表。
+    pub fn run(
+        roots: &[Actor],
+        world: &World,
+        world_line: u32,
+        root_frame: CanvasParentFrame,
+        env: &CanvasLayoutEnv<'_>,
+    ) -> CanvasLayoutTable {
+        let mut builder = TableBuilder {
+            world,
+            env,
+            world_line,
+            table: CanvasLayoutTable {
+                nodes: Vec::new(),
+                clip_regions: Vec::new(),
+                world_line,
+            },
+        };
+        for root in roots.iter().filter(|a| a.world_line == world_line) {
+            builder.visit(root, None, root_frame, ROOT_DEPTH, ROOT_FLAGS, None);
+        }
+        builder.table
+    }
+}
+
+/// 表を組み立てる間の状態。
+struct TableBuilder<'w, 'e> {
+    /// コンポーネントの置き場。
+    world: &'w World,
+    /// 走査全体の入力。
+    env: &'w CanvasLayoutEnv<'e>,
+    /// 対象の世界線。
+    world_line: u32,
+    /// 組み立て中の表。
+    table: CanvasLayoutTable,
+}
+
+impl<'w, 'e> TableBuilder<'w, 'e> {
+    /// ノード 1 つを表へ積み、子孫をたどる。
+    ///
+    /// # 引数
+    /// * `actor`        - ノード
+    /// * `parent`       - 親の行の添字
+    /// * `frame`        - 親から受け取った文脈
+    /// * `depth`        - 階層の深さ（フォルダを数えない）
+    /// * `parent_flags` - 親までのフラグ
+    /// * `parent_clip`  - 親から受け継いだ切り抜きの番号（このノード自身の描画アイテムが入る領域）
+    fn visit(
+        &mut self,
+        actor: &Actor,
+        parent: Option<u32>,
+        frame: CanvasParentFrame,
+        depth: u32,
+        parent_flags: CanvasNodeFlags,
+        parent_clip: Option<UiClipId>,
+    ) {
+        let index = self.table.nodes.len() as u32;
+        let flags = CanvasNodeFlags {
+            world_line_chain: parent_flags.world_line_chain && actor.world_line == self.world_line,
+            active_chain: parent_flags.active_chain && actor.active,
+            visible_chain: parent_flags.visible_chain && actor.visible,
+            in_2d_tree: parent_flags.in_2d_tree,
+        };
+
+        // ── ノードの種類ごとに、配置と子へ渡す文脈を決める ──
+        let (kind, child_frame, child_depth, child_in_2d_tree) = if actor.is_folder() {
+            // フォルダ: レイアウト上は存在しないものとして、文脈をそのまま子へ渡す（深さも進めない）
+            (CanvasNodeKind::Folder, frame, depth, flags.in_2d_tree)
+        } else if let Some(transform) = self.world.get::<CanvasTransform>(actor.entity) {
+            let placement = resolve(
+                &frame,
+                &CanvasNodeInput {
+                    entity: actor.entity,
+                    transform,
+                    canvas: layout_canvas_of(actor, self.world),
+                },
+                self.env,
+            );
+            let child_frame = placement.child_frame;
+            (CanvasNodeKind::Placed(placement), child_frame, depth + 1, flags.in_2d_tree)
+        } else {
+            // CanvasTransform なし: 2D レイアウト木の外（描画・当たり判定はここで打ち切る）。
+            // 2D 物理のために文脈だけ素通しする（アンカー基準は自身の CanvasComponent）。
+            let canvas_base = layout_canvas_of(actor, self.world).map(|cc| {
+                let root_auto = if frame.is_root() {
+                    self.env.root_auto_sizes.get(&actor.entity).copied()
+                } else {
+                    None
+                };
+                root_auto.unwrap_or([cc.width, cc.height])
+            });
+            let child_frame = pass_through_frame(&frame, canvas_base);
+            (CanvasNodeKind::NoTransform { child_frame }, child_frame, depth + 1, false)
+        };
+
+        // ── 切り抜きの領域（2D レイアウト木の中で、切り抜きのコンポーネントが有効なノードだけ）──
+        let own_clip_region = match &kind {
+            CanvasNodeKind::Placed(placement) if flags.in_2d_tree && clips_children(actor, self.world) => {
+                self.push_clip_region(actor, index, &frame, placement, parent_clip)
+            }
+            _ => None,
+        };
+
+        self.table.nodes.push(CanvasLayoutNode {
+            entity: actor.entity,
+            parent,
+            // 子孫を積み終えたら下で書き直す
+            subtree_end: index + 1,
+            depth,
+            frame,
+            kind,
+            flags,
+            clip: parent_clip,
+            own_clip_region,
+        });
+
+        let child_flags = CanvasNodeFlags {
+            in_2d_tree: child_in_2d_tree,
+            ..flags
+        };
+        let child_clip = own_clip_region.or(parent_clip);
+        for child in &actor.children {
+            self.visit(child, Some(index), child_frame, child_depth, child_flags, child_clip);
+        }
+        let end = self.table.nodes.len() as u32;
+        self.table.nodes[index as usize].subtree_end = end;
+    }
+
+    /// 切り抜きの領域を 1 つ積む（矩形が決まらない・表が一杯なら積まない）。
+    ///
+    /// # 戻り値
+    /// 積んだ領域の番号。
+    fn push_clip_region(
+        &mut self,
+        actor: &Actor,
+        owner: u32,
+        frame: &CanvasParentFrame,
+        placement: &CanvasNodePlacement,
+        parent_clip: Option<UiClipId>,
+    ) -> Option<UiClipId> {
+        if !has_room(&self.table.clip_regions) {
+            return None;
+        }
+        let (corners, source) = if placement.canvas_base.is_some() {
+            // 1. キャンバス領域（エディタのキャンバス枠と同じ矩形）
+            (
+                canvas_area_corners(frame.world_rs, &placement.eff_transform, placement.eff_size),
+                ClipRectSource::CanvasArea,
+            )
+        } else {
+            // 2. 最初の有効なスプライトの矩形（W2-0 の試作と同じ）。無ければ切らない
+            let sprite = actor
+                .slots()
+                .iter()
+                .filter(|s| s.kind == ComponentKind::Sprite && s.enabled)
+                .find_map(|s| self.world.get::<SpriteComponent>(s.entity))?;
+            (
+                sprite_rect_corners(
+                    frame.world_rs,
+                    &placement.eff_transform,
+                    [
+                        sprite.width * placement.size_scale[0],
+                        sprite.height * placement.size_scale[1],
+                    ],
+                ),
+                ClipRectSource::FirstSprite,
+            )
+        };
+        let id = self.table.clip_regions.len() as UiClipId;
+        self.table.clip_regions.push(CanvasClipRegion {
+            corners,
+            parent: parent_clip,
+            owner,
+            source,
+        });
+        Some(id)
+    }
+}
+
+/// レイアウトに使う CanvasComponent（Canvas スロットのうち最初にコンポーネントが引けたもの）。
+///
+/// 旧実装の描画・枠・ID 描画・当たり判定と同じ引き方（スロットの有効・無効は見ない）。
+pub fn layout_canvas_of<'w>(actor: &Actor, world: &'w World) -> Option<&'w CanvasComponent> {
+    actor
+        .slots()
+        .iter()
+        .filter(|s| s.kind == ComponentKind::Canvas)
+        .find_map(|s| world.get::<CanvasComponent>(s.entity))
+}
+
+/// ノードが子孫を切り抜くか（有効な CanvasClipComponent のスロットを持ち、コンポーネントも有効か）。
+///
+/// スロットの有効・無効（インスペクタの見出しの切り替え）と、コンポーネントの `enabled`
+/// （スクリプトから切り替える）の両方が有効のときだけ切り抜く。
+pub fn clips_children(actor: &Actor, world: &World) -> bool {
+    actor
+        .slots()
+        .iter()
+        .filter(|s| s.kind == ComponentKind::CanvasClip && s.enabled)
+        .any(|s| world.get::<CanvasClipComponent>(s.entity).is_some_and(|c| c.enabled))
+}

@@ -1424,6 +1424,10 @@ impl App {
                 IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_interaction_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetCanvasClipField { actor_dfs_id, slot_idx, key, value } => {
+                    // 子を切り抜く（W2-1a）のインスペクタ更新
+                    self.handle_set_canvas_clip_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetJointAttachField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_jointattach_field(actor_dfs_id, slot_idx, &key, &value);
                 }

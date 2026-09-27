@@ -8,7 +8,7 @@
 //      WaitUntil の時刻での 1 フレーム（pump_idle_wake。render.rs の about_to_wait）
 //  - PC の文字入力（ui_spike の ime）: ウィンドウに IME を許可し（allow_desktop_ime_if_requested）、
 //      winit の Ime イベントをログへ出す（log_desktop_ime_event）。Android の IME は runtime/android/native の ui_spike が受け持つ
-//  - 切り抜きの計測（ui_spike の clip=）: ランの数をまれにログへ出す（log_clip_runs）
+//  （切り抜きの試作〈clip=〉は W2-1a で本番の CanvasClipComponent に置き換えて外した）
 //  どれも指定が無ければ bool を 1 つ見て抜けるだけで、従来の経路（毎フレーム request_redraw・IME は許可しない）を変えない。
 //
 //  【試作の制限】（W2-10 で決める。§3.8）
@@ -17,7 +17,6 @@
 //  - エディタに埋め込んだ実行（IPC がフレームの中でしか処理されない）と Edit モードでは使わない（Play の単体実行だけ）
 // ============================================================
 
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use winit::event::{Ime, WindowEvent};
@@ -27,9 +26,6 @@ use crate::engine::core::ui_spike::idle_redraw::{IdleRedrawGate, NextFrame};
 use crate::engine::core::ui_spike::{LOG_PREFIX, UiSpikeConfig};
 
 use super::{App, RuntimeMode, play_diag, surface_lifecycle};
-
-/// 切り抜きの計測のログを出す最小の間隔（毎フレーム出すとログが埋まるため）。
-const CLIP_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 /// 秒 → ミリ秒（ログの表示用）。
 const MILLIS_PER_SEC: f64 = 1_000.0;
@@ -41,30 +37,12 @@ const IME_SPIKE_CURSOR_POS: (i32, i32) = (100, 100);
 /// PC の IME の候補窓を避ける矩形の大きさ（試作。物理 px）。
 const IME_SPIKE_CURSOR_SIZE: (u32, u32) = (200, 40);
 
-/// 切り抜きの計測のログを最後に出した時刻。
-static CLIP_LOG_LAST: Mutex<Option<Instant>> = Mutex::new(None);
-
 /// 指定から「描かなくてよいときは描かない」の判定を作る（idle= が無ければ無効な判定）。
 pub(super) fn idle_gate_from(config: &UiSpikeConfig) -> IdleRedrawGate {
     IdleRedrawGate::new(
         config.idle_after_frames,
         config.idle_wake_ms.map(|ms| Duration::from_millis(u64::from(ms))),
     )
-}
-
-/// 切り抜きの計測（試作）: 切り抜きの領域の数・ランの数・切り抜きのあるランの数を、まれにログへ出す。
-///
-/// ランの数は描画呼び出しの数の目安（スプライトはさらにテクスチャの境目で分かれる）。
-pub(super) fn log_clip_runs(regions: usize, runs: usize, clipped_runs: usize) {
-    let Ok(mut last) = CLIP_LOG_LAST.lock() else { return };
-    let now = Instant::now();
-    if last.is_some_and(|at| now.duration_since(at) < CLIP_LOG_INTERVAL) {
-        return;
-    }
-    *last = Some(now);
-    eprintln!(
-        "{LOG_PREFIX} clip: 切り抜きの領域 {regions} 個・2D のラン {runs} 本（うち切り抜きあり {clipped_runs} 本）"
-    );
 }
 
 impl App {

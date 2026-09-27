@@ -734,6 +734,9 @@ pub enum IpcCommand {
     /// InteractionSourceComponent のフィールドを更新する（interaction_ops.rs が処理）。
     /// key: radius / strength / enabled。value は数値または "true"/"false"。
     SetInteractionField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// CanvasClipComponent（子を切り抜く。W2-1a）のフィールドを更新する（canvas_clip_ops.rs が処理）。
+    /// key: enabled。value は "true"/"false"。
+    SetCanvasClipField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// JointAttachComponent のフィールドを更新する
     /// （key: joint_name / offset_pos / offset_rot / offset_scale。offset_* は "x,y,z" 形式）
     SetJointAttachField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -2706,6 +2709,17 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                             })
                         }
                         s if s == "CONTROL_POINT_DRAG_END" => Some(IpcCommand::ControlPointDragEnd),
+                        s if s.starts_with("SET_CANVAS_CLIP_FIELD:") => {
+                            // フォーマット: SET_CANVAS_CLIP_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value は bool だけだが、将来の欄（角丸の半径など。W2-4）に備えて tail 方式で切る。
+                            parse2u_tail(&s["SET_CANVAS_CLIP_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetCanvasClipField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
                         s if s.starts_with("SET_INTERACTION_FIELD:") => {
                             // フォーマット: SET_INTERACTION_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value に "," は含まれない（スカラーと bool のみ）が、

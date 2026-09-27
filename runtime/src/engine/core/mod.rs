@@ -1,5 +1,7 @@
 pub mod app_base;
 pub mod audio;
+/// 2D キャンバスノードのレイアウト計算（配置の純関数・木を 1 回たどる走査・切り抜きの領域。W2-1a）。
+pub mod canvas_layout;
 /// アプリがバックグラウンドにいるか（Android の suspended〜resumed）の共有状態と、その間スレッドを眠らせる待機。
 pub mod background_gate;
 pub mod clock;

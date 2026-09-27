@@ -165,6 +165,9 @@ pub fn default_component_data(current: &ComponentData) -> Option<ComponentData> 
                 CoverEmitterComponent::default().to_data()),
         ComponentData::ControlPointComponent(_) =>
             ComponentData::ControlPointComponent(ControlPointComponent::default().to_data()),
+        // 子を切り抜く（W2-1a）: 既定は有効
+        ComponentData::CanvasClipComponent(_) =>
+            ComponentData::CanvasClipComponent(CanvasClipComponent::default().to_data()),
     };
     Some(d)
 }
@@ -587,6 +590,7 @@ mod tests {
                 InteractionSourceComponent::default().to_data()),
             ComponentData::CoverEmitterComponent(CoverEmitterComponent::default().to_data()),
             ComponentData::ControlPointComponent(ControlPointComponent::default().to_data()),
+            ComponentData::CanvasClipComponent(CanvasClipComponent::default().to_data()),
         ];
         for d in &supported {
             assert!(

@@ -36,7 +36,7 @@ use crate::engine::core::scripting::debug_command;
 
 use crate::engine::components::{
     AnimClipKind, AnimatorComponent, AudioComponent, AudioDictionaryComponent, CameraComponent,
-    CanvasTransform,
+    CanvasClipComponent, CanvasTransform,
     ComponentKind, ControlPointComponent, InputMapComponent, ScriptComponent,
     LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
     SkyboxComponent, SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform,
@@ -555,6 +555,8 @@ const KIND_MODEL: &str = "Model";
 const KIND_SKYBOX: &str = "Skybox";
 /// テキスト（スロット格納型）。C# `SEED.Text` の ComponentKindName と一致。
 const KIND_TEXT: &str = "Text";
+/// 子を切り抜く（スロット格納型。W2-1a）。C# `SEED.CanvasClip` の ComponentKindName と一致。
+const KIND_CANVAS_CLIP: &str = "CanvasClip";
 /// 水位グラフのリンク（スロット格納型）。C# `SEED.WaterLink` の ComponentKindName と一致。
 const KIND_WATER_LINK: &str = "WaterLink";
 /// 水ボリューム（スロット格納型）。C# `SEED.WaterVolume` の ComponentKindName と一致。
@@ -595,6 +597,7 @@ fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
         KIND_MODEL => world.get::<ModelComponent>(slot.entity).is_some(),
         KIND_SKYBOX => world.get::<SkyboxComponent>(slot.entity).is_some(),
         KIND_TEXT => world.get::<TextComponent>(slot.entity).is_some(),
+        KIND_CANVAS_CLIP => world.get::<CanvasClipComponent>(slot.entity).is_some(),
         KIND_WATER_LINK => world.get::<WaterLinkComponent>(slot.entity).is_some(),
         KIND_WATER_VOLUME => world.get::<WaterVolumeComponent>(slot.entity).is_some(),
         _ => false,
@@ -958,6 +961,16 @@ fn read_floats(
                 // ポインタイベントのヒットテスト対象か（bool = 0/1）
                 "raycast_target" => put(out, &[if s.raycast_target { 1.0 } else { 0.0 }]),
                 _        => None,
+            }
+        }
+        // ── 子を切り抜く（スロット格納型: locate で解決。W2-1a）──
+        "CanvasClip" => {
+            let e = locate::<CanvasClipComponent>(world, entity)?;
+            let c = world.get::<CanvasClipComponent>(e)?;
+            match field {
+                // 有効フラグ（bool = 0/1）
+                "enabled" => put(out, &[if c.enabled { 1.0 } else { 0.0 }]),
+                _         => None,
             }
         }
         // ── キャンバステキスト（スロット格納型: locate で解決）──
@@ -1377,6 +1390,16 @@ fn write_floats(
                     take::<1>(v).map(|a| s.raycast_target = a[0] != 0.0).is_some()
                 }
                 _        => false,
+            }
+        }
+        // ── 子を切り抜く（スロット格納型: locate で解決。W2-1a）──
+        "CanvasClip" => {
+            let Some(e) = locate::<CanvasClipComponent>(world, entity) else { return false };
+            let Some(c) = world.get_mut::<CanvasClipComponent>(e) else { return false };
+            match field {
+                // 有効フラグ（0/1 → bool）
+                "enabled" => take::<1>(v).map(|a| c.enabled = a[0] != 0.0).is_some(),
+                _         => false,
             }
         }
         // ── キャンバステキスト（スロット格納型: locate で解決）──
@@ -1907,6 +1930,8 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "LineRenderer"    => locate::<LineRendererComponent>(world, entity).is_some(),
         "Skybox"          => locate::<SkyboxComponent>(world, entity).is_some(),
         "Text"            => locate::<TextComponent>(world, entity).is_some(),
+        // 子を切り抜く（W2-1a）
+        "CanvasClip"      => locate::<CanvasClipComponent>(world, entity).is_some(),
         // 水位グラフ（Phase W2.5）
         "WaterLink"       => locate::<WaterLinkComponent>(world, entity).is_some(),
         "WaterVolume"     => locate::<WaterVolumeComponent>(world, entity).is_some(),

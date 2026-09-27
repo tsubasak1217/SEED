@@ -18,11 +18,13 @@
 //  最悪ケース（1 アイテムごとにレイヤーと種別が入れ替わる UI）でのみ
 //  アイテム数と同数のドローコールになる。
 //
-//  【切り抜き（W2-0 の試作。renderer/ui_clip.rs）】
-//  アイテムが切り抜きの番号（clip）を持つとき、ランを番号の変わり目でさらに分け、
-//  ランごとに scissor の矩形を持たせる。切り抜きが 1 つも無ければ従来と同じラン・同じ描画。
-//  scissor を張るのは `draw` に描画先の大きさ（clip_target）が渡されたときだけ
-//  （今はシーンのスクリーンスペースのオーバーレイパスだけ。メインパスは従来どおり切り抜かない）。
+//  【切り抜き（W2-1a で本番化。renderer/ui_clip.rs・engine/core/canvas_layout/clip.rs）】
+//  アイテム（スプライト・テキスト・2D パーティクル・SEED.Draw の図形）が切り抜きの番号を持つとき、
+//  ランを番号の変わり目でさらに分け、ランごとに scissor の矩形を持たせる。
+//  図形の番号は座標空間（PrimitiveSpace.clip）から引く（スクリーンスペースの図形は切り抜かない）。
+//  切り抜きが 1 つも無ければ従来と同じラン・同じ描画（scissor に触らない）。
+//  scissor を張るのは `draw` にパスの画素の文脈（ClipTarget）が渡されたときだけ。メインパスは
+//  set_viewport の矩形へ写してパスの元の scissor と交差させ、描き終えたら元の scissor へ戻す。
 // ============================================================
 
 use crate::engine::core::font::GpuTextBatch;
@@ -38,7 +40,8 @@ use crate::engine::core::renderer::primitive2d::{
 use crate::engine::core::renderer::particle_system::ParticleSystem;
 use crate::engine::core::renderer::pipeline::ParticlePipelines;
 use crate::engine::core::renderer::ui_clip::{
-    clip_ndc_rect, scissor_px, split_run_by_clip, NdcRect, ScissorRect, UiClipId, UiClipRegion,
+    clip_ndc_rect, scissor_in_target, split_run_by_clip, ClipTarget, NdcRect, ScissorRect, UiClipId,
+    UiClipRegion,
 };
 use crate::engine::core::renderer::ui_draw_order::{merge_ui_draw_runs, UiDrawKind, UiDrawRun};
 use crate::engine::components::CanvasDrawZone;
@@ -65,6 +68,8 @@ pub struct Particle2dDrawItem {
     pub zone: CanvasDrawZone,
     /// 描画優先度レイヤー（大きいほど手前）。スプライトと同じレイヤー空間。
     pub layer: i32,
+    /// 切り抜きの番号（エミッタを持つノードと同じ。レイアウトの表の領域。無ければ None）。
+    pub clip: Option<UiClipId>,
 }
 
 // ─── 入力セグメント ──────────────────────────────────────────
@@ -150,7 +155,7 @@ pub struct UiZoneBuildParams<'a> {
     pub prim_depth_tested: bool,
     /// テキストを NDC 化するビュー射影行列（行優先）。
     pub text_view_proj: &'a [[f32; 4]; 4],
-    /// 切り抜きの領域の表（アイテムの `clip` 番号の参照先。切り抜きを扱わないゾーンは空。W2-0 の試作）。
+    /// 切り抜きの領域の表（アイテムの `clip` 番号の参照先。切り抜きを扱わないゾーンは空）。
     pub clip_regions: &'a [UiClipRegion],
     /// 切り抜きの領域を NDC へ射影するビュー射影行列（行優先。スプライトを描くカメラと同じもの）。
     pub clip_view_proj: &'a [[f32; 4]; 4],
@@ -176,7 +181,7 @@ impl UiZoneDraw {
     ) -> Self {
         // ── 1) 描画順（セグメント番号 + ラン + 切り抜きの番号）を決める ──────────────
         // レイヤー値だけを取り出して純ロジックへ渡す。
-        // 切り抜き（W2-0 の試作）: ランを切り抜きの番号が変わるところでさらに分ける
+        // 切り抜き: ランを切り抜きの番号が変わるところでさらに分ける
         // （切り抜きが 1 つも無いゾーンではランは分かれず、従来と同じ並びになる）。
         let mut ordered: Vec<(usize, UiDrawRun, Option<UiClipId>)> = Vec::new();
         for (si, seg) in segments.iter().enumerate() {
@@ -190,11 +195,15 @@ impl UiZoneDraw {
                 &part_layers,
                 &text_layers,
             ) {
-                // 2D パーティクルとスクリプトの図形は試作では切り抜かない（常に None）
+                // 図形は座標空間の持ち主のノードの切り抜きに入る（スクリーンスペース〈space = None〉は切り抜かない）
                 let pieces = split_run_by_clip(run, |index| match run.kind {
                     UiDrawKind::Sprite => seg.sprites[index].clip,
                     UiDrawKind::Text => seg.texts[index].clip,
-                    UiDrawKind::Primitive | UiDrawKind::Particle => None,
+                    UiDrawKind::Particle => seg.particles[index].clip,
+                    UiDrawKind::Primitive => seg.primitives[index]
+                        .space
+                        .and_then(|space| params.prim_spaces.get(&space))
+                        .and_then(|space| space.clip),
                 });
                 for (piece, clip) in pieces {
                     ordered.push((si, piece, clip));
@@ -290,7 +299,7 @@ impl UiZoneDraw {
         Self { runs, text_gpu }
     }
 
-    /// 切り抜きの矩形を持つランの数（[PERF]・試作の計測用。W2-0）。
+    /// 切り抜きの矩形を持つランの数（描画呼び出しの増え方の計測用）。
     pub fn clipped_run_count(&self) -> usize {
         self.runs.iter().filter(|entry| entry.clip.is_some()).count()
     }
@@ -325,9 +334,9 @@ impl UiZoneDraw {
     /// - `inst_buf`: `build` で使った `InstanceStream` の GPU バッファ。
     /// - `particles`: 2D パーティクルを描くための (システム, パイプライン)。
     ///   `None` を渡すとパーティクルランは黙って飛ばされる（描画順は変わらない）。
-    /// - `clip_target`: 描画先の大きさ（px）。Some のときだけ切り抜きのあるランに scissor を張り、
-    ///   描き終えたら描画先の全体へ戻す（パスにビューポート・scissor を張っていないことが前提）。
-    ///   None なら scissor に触らない（切り抜きのあるランも切り抜かずに描く＝従来どおり）。
+    /// - `clip_target`: パスの画素の文脈（NDC が写る矩形と、パスがもともと張っている scissor）。
+    ///   Some のときだけ切り抜きのあるランに scissor を張り、描き終えたらパスの元の scissor へ戻す。
+    ///   None なら scissor に触らない（切り抜きのあるランも切り抜かずに描く）。
     #[allow(clippy::too_many_arguments)]
     pub fn draw<'rp>(
         &'rp self,
@@ -338,20 +347,20 @@ impl UiZoneDraw {
         primitive2d: Option<&'rp Primitive2dRenderer>,
         canvas_text: Option<&'rp CanvasTextRenderer>,
         particles: Option<(&'rp ParticleSystem, &'rp ParticlePipelines)>,
-        clip_target: Option<[u32; 2]>,
+        clip_target: Option<ClipTarget>,
     ) {
         // 切り抜きのあるランが 1 本も無ければ scissor に触らない（従来と同じ描画コマンド列）
         let clip_target = clip_target.filter(|_| self.clipped_run_count() > 0);
-        // 今パスに張っている scissor（パスの既定＝描画先の全体から始める）
-        let mut current_scissor: Option<ScissorRect> = clip_target.map(ScissorRect::full);
+        // 今パスに張っている scissor（パスの元の scissor から始める）
+        let mut current_scissor: Option<ScissorRect> = clip_target.map(|target| target.base);
         for entry in &self.runs {
             if let Some(target) = clip_target {
-                let wanted = entry.clip.map(|rect| scissor_px(&rect, target));
+                let wanted = entry.clip.map(|rect| scissor_in_target(&rect, &target));
                 // 切り抜きの中に 1 画素も残らないランは描かない
                 if wanted.is_some_and(|rect| rect.is_empty()) {
                     continue;
                 }
-                let wanted = wanted.unwrap_or_else(|| ScissorRect::full(target));
+                let wanted = wanted.unwrap_or(target.base);
                 if current_scissor != Some(wanted) {
                     pass.set_scissor_rect(wanted.x, wanted.y, wanted.width, wanted.height);
                     current_scissor = Some(wanted);
@@ -383,11 +392,11 @@ impl UiZoneDraw {
                 }
             }
         }
-        // 後に同じパスへ描くもの（アウトライン・孤児粒子など）を切り抜かないよう、描画先の全体へ戻す
+        // 後に同じパスへ描くもの（アウトライン・孤児粒子など）を切り抜かないよう、パスの元の scissor へ戻す
         if let Some(target) = clip_target {
-            let full = ScissorRect::full(target);
-            if current_scissor != Some(full) {
-                pass.set_scissor_rect(full.x, full.y, full.width, full.height);
+            let base = target.base;
+            if current_scissor != Some(base) {
+                pass.set_scissor_rect(base.x, base.y, base.width, base.height);
             }
         }
     }

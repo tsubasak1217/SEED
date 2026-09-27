@@ -43,6 +43,7 @@ internal static class ComponentIcons
         ["SpriteComponent"]             = "Icon.Component.Sprite",
         ["SkinnedSpriteComponent"]      = "Icon.Component.SkinnedSprite",
         ["TextComponent"]               = "Icon.Component.Text",
+        ["CanvasClipComponent"]         = "Icon.Component.CanvasClip",
         // ライト
         ["LightComponent"]              = "Icon.Component.Light",
         ["JointAttachComponent"]        = "Icon.Component.JointAttach",

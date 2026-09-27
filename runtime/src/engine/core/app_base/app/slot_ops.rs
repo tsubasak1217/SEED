@@ -540,6 +540,11 @@ impl App {
                         use crate::engine::components::InteractionSourceComponent;
                         scene.world.remove::<InteractionSourceComponent>(slot_entity);
                     }
+                    ComponentKind::CanvasClip => {
+                        // 子を切り抜く（W2-1a）
+                        use crate::engine::components::CanvasClipComponent;
+                        scene.world.remove::<CanvasClipComponent>(slot_entity);
+                    }
                     ComponentKind::CoverEmitter => {
                         // カバーエミッタ（I3.1）
                         use crate::engine::components::CoverEmitterComponent;
@@ -1054,6 +1059,18 @@ impl App {
                 } else {
                     scene.world.despawn(slot_entity);
                 }
+                true
+            }
+            ComponentData::CanvasClipComponent(cc_data) => {
+                // 子を切り抜く（W2-1a）を複製する（新しいスロット専用エンティティへ挿入）
+                use crate::engine::components::CanvasClipComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, CanvasClipComponent::from_data(cc_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<CanvasClipComponent>(
+                        slot_data.name, ComponentKind::CanvasClip, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
                 true
             }
             ComponentData::InteractionSourceComponent(is_data) => {
@@ -1577,6 +1594,13 @@ impl App {
                         ComponentKind::Text,
                         slot_entity,
                     ));
+                }
+                ComponentData::CanvasClipComponent(cc_data) => {
+                    // 子を切り抜く（W2-1a）をスロット専用エンティティへ復元する
+                    use crate::engine::components::CanvasClipComponent;
+                    scene.world.insert(slot_entity, CanvasClipComponent::from_data(cc_data));
+                    new_slots.push(ComponentSlot::new::<CanvasClipComponent>(
+                        slot_data.name, ComponentKind::CanvasClip, slot_entity));
                 }
                 ComponentData::InteractionSourceComponent(is_data) => {
                     // インタラクションソースをスロット専用エンティティへ復元する

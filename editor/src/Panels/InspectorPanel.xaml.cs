@@ -1145,6 +1145,9 @@ public partial class InspectorPanel : UserControl
         string InteractionStampMaskPath = "",
         float InteractionStampSizeX = InteractionStampSizeXDefault,
         float InteractionStampSizeZ = InteractionStampSizeZDefault,
+        // ── CanvasClipComponent 用フィールド（W2-1a）──
+        // 有効フラグ（既定 true。Rust 側 CanvasClipComponentData と一致）。
+        bool CanvasClipEnabled = CanvasClipEnabledDefault,
         // ── ControlPointComponent 用フィールド（フェーズB）──────
         // 制御点配列は「生 JSON 文字列」のまま保持する。1 点が position/rotation/time/interp の
         // 4 属性を持つため、独自の区切り記法（"x,y,z;..." 等）を作るとエスケープと拡張で破綻する。
@@ -1796,6 +1799,10 @@ public partial class InspectorPanel : UserControl
             var stampMaskPath = comp.TryGetProperty("stamp_mask_path", out var ismp) ? ismp.GetString() ?? "" : "";
             var stampSizeX    = comp.TryGetProperty("stamp_size_x",    out var issx) ? issx.GetSingle() : InteractionStampSizeXDefault;
             var stampSizeZ    = comp.TryGetProperty("stamp_size_z",    out var issz) ? issz.GetSingle() : InteractionStampSizeZDefault;
+            // CanvasClipComponent 用（W2-1a）: 有効フラグ。
+            // 【重要】キーは "clip_enabled"。スロット共通の "enabled"(数値0/1)とキー重複させると
+            // GetProperty が数値側を返し GetBoolean() が例外になる（InteractionSource の既往リグレッション）。
+            var canvasClipEnabled = comp.TryGetProperty("clip_enabled", out var cce) ? cce.GetBoolean() : CanvasClipEnabledDefault;
             // ControlPointComponent 用（フェーズB）: 制御点配列を生 JSON のまま保持する。
             // 要素は {"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"..."}。欠落時は空配列。
             var controlPointsJson = comp.TryGetProperty("points", out var cpp) ? cpp.GetRawText() : "[]";
@@ -1966,6 +1973,8 @@ public partial class InspectorPanel : UserControl
                 InteractionStampMaskPath: stampMaskPath,
                 InteractionStampSizeX: stampSizeX,
                 InteractionStampSizeZ: stampSizeZ,
+                // CanvasClipComponent 用フィールド（W2-1a）
+                CanvasClipEnabled: canvasClipEnabled,
                 // ControlPointComponent 用フィールド
                 ControlPointsJson: controlPointsJson,
                 ControlPointClosed: controlPointClosed,
@@ -2103,6 +2112,7 @@ public partial class InspectorPanel : UserControl
         "ControlPointComponent" => Color.FromRgb(0x24, 0x1E, 0x38), // 暗い紫（汎用パス。水の暗青・草の暗緑と識別できる色）
         "LineRendererComponent" => Color.FromRgb(0x1E, 0x2E, 0x24), // 暗い青緑（線描画。パス系の紫と区別する）
         "TextComponent"       => Color.FromRgb(0x2A, 0x24, 0x38), // 暗い藤色（UI 系。Sprite と並べても識別できるトーン）
+        "CanvasClipComponent" => Color.FromRgb(0x24, 0x2A, 0x38), // 暗い青灰（UI 系。Text の藤色と区別できるトーン）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -2132,6 +2142,7 @@ public partial class InspectorPanel : UserControl
         "ControlPointComponent" => "Control Point",
         "LineRendererComponent" => "Line Renderer",
         "TextComponent"       => "Text",
+        "CanvasClipComponent" => "Canvas Clip",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -2402,6 +2413,7 @@ public partial class InspectorPanel : UserControl
             "ControlPointComponent" => BuildControlPointSlotContent(info),
             "LineRendererComponent" => BuildLineRendererSlotContent(info),
             "TextComponent" => BuildTextSlotContent(info),
+            "CanvasClipComponent" => BuildCanvasClipSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),

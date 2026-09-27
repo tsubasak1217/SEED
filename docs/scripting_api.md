@@ -1809,6 +1809,23 @@ public void Update()
 
 > **重要 — バインドが設定されているスロットでは、`SetSlotText` / `SetSlotNumber` の値はフォールバックになります**（バインドが解決できたらそちらが優先されます）。スクリプトから毎フレーム値を入れるなら、そのスロットのバインドは空のままにしてください。
 
+### CanvasClip（子を切り抜く：スクロール領域・一覧の枠）
+
+2D キャンバスのノードに **CanvasClip**（インスペクタの「コンポーネント追加 → UI → Canvas Clip」）を付けると、そのノードの矩形からはみ出した**子孫を描かず、押せなくします**（W2-1a）。矩形は CanvasComponent があればキャンバス領域、無ければ最初の有効な Sprite の矩形です。スクリプトからは有効・無効だけを切り替えます。
+
+```csharp
+if (gameObject.GetComponent<CanvasClip>() is { } clip)
+{
+    clip.Enabled        // bool（get/set。既定 true。false の間は子孫を切り抜かない。次のフレームの描画から効く）
+    clip.IsValid        // bool（この参照が生きているか）
+}
+gameObject.HasComponent("CanvasClip")   // 付いているか
+```
+
+> **重要**: 切り抜くのは**子孫だけ**で、CanvasClip を付けたノード自身の Sprite（枠の背景の板）は切りません。スプライト・テキスト（インライン画像を含む）・2D パーティクル・`SEED.Draw` の図形（`space` に子孫の CanvasTransform を渡したもの）が切り抜かれ、ポインタイベント（`OnPointer*`）も切り抜かれて見えない所では届きません。
+
+> **重要**: 入れ子にすると外側の枠との重なりで切ります（深さの上限なし）。回転したノードは 4 隅の外接矩形で切ります。3D ワールドキャンバス（Actor3D + Canvas）の配下と、`SEED.Draw` のスクリーンスペース（`space: null`）の図形は切り抜きません。スロットの見出しの有効・無効と `Enabled` の両方が有効のときだけ切り抜きます。
+
 ### Skybox（天球の色調整：時間帯・天候の演出）
 
 equirectangular 画像 1 枚を天球として描く `Skybox` コンポーネントを、実行時に読み書きします。
@@ -1986,6 +2003,7 @@ public class FishingLine : SEEDScript
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
 | `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・フォント（assets:// の .otf/.ttf）・サイズ・色・**縁取り**（太さ・色）・**枠と自動折り返し**（BoxWidth/BoxHeight/Wrap）・**太さ**（Weight）・**ドロップシャドウ**（ShadowOffset/ShadowColor/ShadowSoftness）・整列・行送り・レイヤー |
+| `CanvasClip` | `gameObject.GetComponent<CanvasClip>()` | 子を切り抜く（ノードの矩形からはみ出した子孫を描かず、押せなくする）。有効・無効（Enabled） |
 | `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
 | `ControlPointPath` | `gameObject.GetComponent<ControlPointPath>()` | コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用） |
 

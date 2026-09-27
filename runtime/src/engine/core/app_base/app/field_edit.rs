@@ -150,6 +150,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetSkyboxField", key),
         IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetInteractionField", key),
+        IpcCommand::SetCanvasClipField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetCanvasClipField", key),
         IpcCommand::SetCoverField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetCoverField", key),
         // 制御点の **点列** は control_point_ops.rs が自前で Undo を積むが、
@@ -789,6 +791,11 @@ pub(super) fn apply_component_data_in_place(
             world.insert(entity, InteractionSourceComponent::from_data(d));
             SlotApply::Applied
         }
+        // 子を切り抜く（W2-1a）は有効フラグだけの純データ。値の詰め替えで復元できる。
+        ComponentData::CanvasClipComponent(d) => {
+            world.insert(entity, CanvasClipComponent::from_data(d.clone()));
+            SlotApply::Applied
+        }
         // カバーエミッタ（I3.1）は純粋な値の詰め替えだけで復元できる
         // （GPU 資源も CLR インスタンスも持たない）。
         ComponentData::CoverEmitterComponent(d) => {
@@ -1101,6 +1108,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::ControlPointComponent(_) => ComponentKind::ControlPoint,
         ComponentData::LineRendererComponent(_) => ComponentKind::LineRenderer,
         ComponentData::TextComponent(_) => ComponentKind::Text,
+        ComponentData::CanvasClipComponent(_) => ComponentKind::CanvasClip,
     }
 }
 

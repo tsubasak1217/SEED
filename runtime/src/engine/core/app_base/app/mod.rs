@@ -119,6 +119,9 @@ mod render_quality;
 pub(crate) mod frame_pacing;
 // アプリ基盤 W2-0 のスパイク（描かないときの判定・PC の IME のログ・切り抜きの計測。既定で無効）
 mod ui_spike_hooks;
+/// レイアウトの一本化（W2-1a）の同値の性質テスト（旧 5 か所の写しと新しい表の突き合わせ。テスト専用）。
+#[cfg(test)]
+mod canvas_layout_equivalence;
 mod event_handler;
 mod drag_handler;
 mod physics_ops;
@@ -152,6 +155,8 @@ mod water_ops;
 mod water_link_ops;
 /// インタラクションソース（InteractionSourceComponent）のインスペクタ更新（SET_INTERACTION_FIELD）
 mod interaction_ops;
+/// 子を切り抜く（CanvasClipComponent）のインスペクタ更新（SET_CANVAS_CLIP_FIELD。W2-1a）
+mod canvas_clip_ops;
 /// コントロールポイント（ControlPointComponent）の編集・点選択（SET_CONTROL_POINT*）
 pub(crate) mod control_point_ops;
 /// コントロールポイントのビューポート可視化（点キューブ＋区間ライン。Edit モード限定）

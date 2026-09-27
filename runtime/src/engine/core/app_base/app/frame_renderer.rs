@@ -257,6 +257,7 @@ use super::canvas_collect::{
     canvas_mat_to_gpu, root_anchor_offset,
     collect_3d_canvas_child_id_items, sprite_world_corners,
     compute_game_viewport, clamp_viewport_to_target, build_ss_layout_maps_free,
+    build_main_canvas_layout, build_world_canvas_layout,
 };
 
 /// カメラプレビューのテクスチャ幅（ピクセル）。
@@ -3136,27 +3137,26 @@ impl App {
                                     // このキャンバス内の追加分をレイヤー昇順で安定ソートする
                                     // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
                                     let canvas_start = items.len();
+                                    // このワールドキャンバスの子のレイアウトの表（キャンバスが親。自動解像度の対象外・
+                                    // ゾーン概念なし。親の大きさが Some なのでルートの分岐に入らず design_space は無関係）
+                                    let canvas_layout = build_world_canvas_layout(
+                                        &actor.children, &s.world, wl, [cc.width, cc.height], ctw,
+                                    );
                                     collect_sprite_items(
-                                        &actor.children, &s.world, wl, draw_ctx,
-                                        Some([cc.width, cc.height]),
-                                        ctw, [1.0, 1.0],
+                                        &canvas_layout, &actor.children, &s.world, draw_ctx,
                                         1.0, 1.0,
-                                        // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
-                                        None, &std::collections::HashMap::new(),
-                                        &std::collections::HashMap::new(),
-                                        // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
+                                        // 3D ワールドキャンバスは切り抜かない（透視では scissor で正しく切れない）
+                                        false,
+                                        &mut items,
                                         // カメラプレビュー（インスペクタの小窓）はテキストを描かない。
                                         // フォントバッチの構築コストをプレビューのためだけに毎フレーム
                                         // 払う価値がないため、収集先は捨てバッファにする。
-                                        CanvasDrawZone::Foreground, false, &mut items,
                                         &mut Vec::new(),
                                         // カメラプレビューはスクリプトプリミティブを描かないため
                                         // 座標空間も捨てる（本描画側で改めて収集される）。
                                         &mut crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector::new(),
                                         // カメラプレビューは 2D パーティクルも描かない（捨てバッファ）。
                                         &mut Vec::new(),
-                                        // 3D ワールドキャンバスは切り抜きを扱わない（W2-0 の試作の範囲外）。
-                                        &mut crate::engine::core::renderer::ui_clip::UiClipCollector::disabled(),
                                     );
                                     items[canvas_start..].sort_by_key(|it| it.layer);
                                 }
@@ -4443,6 +4443,27 @@ impl App {
                     // 「描画/コライダー・ピック面生成」区間ここまで。
                     drop(_prof_collider);
 
+                    // ── 2D キャンバスのレイアウトの表（W2-1a。フレームに 1 回作り、スプライト等の収集・
+                    //    キャンバス枠・（エディタでは）ID 描画で使い回す。文脈は 3 者とも同じ）──
+                    // レイアウト（アンカー・自動解像度・スケールモード・ワールド行列・切り抜きの領域）の計算は
+                    // canvas_layout の 1 か所にあり、読み手はこの表を読むだけ。
+                    let canvas_layout_2d: Option<crate::engine::core::canvas_layout::CanvasLayoutTable> =
+                        if is_canvas {
+                            self.scene.as_ref().map(|scene| {
+                                let wl = self.active_world_line;
+                                let is_scene_ss = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
+                                let vp_w = window_size.map_or(1280.0, |s| s.width as f32);
+                                let vp_h = window_size.map_or(720.0, |s| s.height as f32);
+                                let play_gvp = if is_scene_ss && !in_editor { Some(game_viewport) } else { None };
+                                build_main_canvas_layout(
+                                    &scene.actors, &scene.world, wl, is_scene_ss, [vp_w, vp_h], play_gvp,
+                                    self.project_resolution, edit_view_2d,
+                                )
+                            })
+                        } else {
+                            None
+                        };
+
                     let (
                         items_2d_bg, items_2d_fg, canvas3d_segments,
                         text_items_2d_bg, text_items_2d_fg,
@@ -4452,17 +4473,15 @@ impl App {
                         // スクリプト 2D プリミティブ（SEED.Draw）の座標空間マップと
                         // スクリーンスペース用モデル行列。
                         prim_spaces, prim_screen_model,
-                        // 2D キャンバスの切り抜きの領域の表（W2-0 の試作。根の指定が無ければ空）。
+                        // 2D キャンバスの切り抜きの領域の表（CanvasClipComponent。無ければ空）。
                         clip_regions_2d,
                     ) = {
                         crate::profile_scope!("描画/スプライト収集・ソート");
                         // 2D キャンバスアクターのスプライト（オルソ／ワールドスペース 2D 用）
                         let mut items_2d = Vec::new();
-                        // 切り抜きの領域の収集（W2-0 の試作。根は ui_spike の clip=<名前> で指定した
-                        // キャンバスノード。指定が無ければ何も積まず、従来と同じ描画になる。renderer/ui_clip.rs）。
-                        let mut clip_collector = crate::engine::core::renderer::ui_clip::UiClipCollector::new(
-                            &crate::engine::core::ui_spike::config().clip_actor_names,
-                        );
+                        // 切り抜きの領域（描画のワールド座標。表のキャンバス空間の領域を写したもの）
+                        let mut clip_regions_2d: Vec<crate::engine::core::renderer::ui_clip::UiClipRegion> =
+                            Vec::new();
                         // 3D Canvas（Actor3D + CanvasComponent）ごとの描画セグメント。
                         // ワールドキャンバスはレイヤー空間がキャンバス内で完結するため、
                         // 「キャンバス 1 つ = セグメント 1 つ」として分けて持ち、
@@ -4521,45 +4540,33 @@ impl App {
                             let wl = self.active_world_line;
 
                             // ── 2D キャンバス世界線のスプライト ──────────────────────────
-                            if is_canvas {
+                            if let Some(canvas_layout) = canvas_layout_2d.as_ref() {
                                 // ワールドスペース時はキャンバス座標をワールドユニットへスケールする
                                 let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
-                                // 単位行列・初期累積スケール（ルートレベル用）
-                                const IDENTITY: [[f32; 4]; 4] = [
-                                    [1.0, 0.0, 0.0, 0.0],
-                                    [0.0, 1.0, 0.0, 0.0],
-                                    [0.0, 0.0, 1.0, 0.0],
-                                    [0.0, 0.0, 0.0, 1.0],
-                                ];
-                                // Y 軸符号とビューポートサイズを決定する
+                                // Y 軸符号（ワールドスペースは Y を反転）
                                 let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
-                                let is_scene_ss = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
-                                let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
-                                let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
-                                let viewport_size = if is_scene_ss { Some([vp_w, vp_h]) } else { None };
-                                let play_gvp = if is_scene_ss && !in_editor { Some(game_viewport) } else { None };
-                                // ビューポート上書き + ルート自動解像度マップ
-                                // （シーン SS レイアウト時のみ。アクター編集タブは保存値のまま）
-                                let (canvas_vp_overrides, root_auto_sizes) = if is_scene_ss {
-                                    build_ss_layout_maps_free(
-                                        &scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp,
-                                        self.project_resolution, edit_view_2d)
-                                } else {
-                                    (std::collections::HashMap::new(), std::collections::HashMap::new())
-                                };
                                 // 2D キャンバス配下はスクリーンスペース合成（World3d ではない）
                                 prim_spaces.world3d = false;
                                 collect_sprite_items(
-                                    &scene.actors, &scene.world, wl, draw_ctx,
-                                    None, IDENTITY, [1.0, 1.0],
-                                    canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
-                                    &root_auto_sizes, CanvasDrawZone::Foreground, edit_view_2d, &mut items_2d,
+                                    canvas_layout, &scene.actors, &scene.world, draw_ctx,
+                                    canvas_scale, y_sign,
+                                    // 2D キャンバスは切り抜く（CanvasClipComponent の領域）
+                                    true,
+                                    &mut items_2d,
                                     &mut text_items_2d,
                                     &mut prim_spaces,
                                     &mut particle_items_2d,
-                                    &mut clip_collector,
                                 );
-
+                                // 切り抜きの領域を描画のワールド座標へ写す（スプライトと同じ canvas_scale・y_sign）
+                                clip_regions_2d = canvas_layout
+                                    .clip_regions
+                                    .iter()
+                                    .map(|region| {
+                                        crate::engine::core::canvas_layout::clip::to_render_region(
+                                            region, canvas_scale, y_sign,
+                                        )
+                                    })
+                                    .collect();
                             }
 
                             // ── 3D Canvas のスプライト（is_canvas に関わらず常に収集）──
@@ -4616,21 +4623,19 @@ impl App {
                                 // 同じセグメントへ振り分けられるようにする。
                                 prim_spaces.world3d = true;
                                 prim_spaces.world3d_group = canvas3d_segments.len() as u32;
+                                // このワールドキャンバスの子のレイアウトの表（キャンバスが親。自動解像度の対象外・ゾーン概念なし）
+                                let world_canvas_layout = build_world_canvas_layout(
+                                    &actor.children, &scene.world, wl, [cc.width, cc.height], canvas_to_world,
+                                );
                                 collect_sprite_items(
-                                    &actor.children, &scene.world, wl, draw_ctx,
-                                    Some([cc.width, cc.height]),
-                                    canvas_to_world, [1.0, 1.0],
+                                    &world_canvas_layout, &actor.children, &scene.world, draw_ctx,
                                     1.0, 1.0,
-                                    // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
-                                    None, &std::collections::HashMap::new(),
-                                    &std::collections::HashMap::new(),
-                                    // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
-                                    CanvasDrawZone::Foreground, false, &mut seg_sprites,
+                                    // 3D ワールドキャンバスは切り抜かない（透視では scissor で正しく切れない。§3.8）
+                                    false,
+                                    &mut seg_sprites,
                                     &mut seg_texts,
                                     &mut prim_spaces,
                                     &mut seg_particles,
-                                    // 3D ワールドキャンバスは切り抜きを扱わない（透視では scissor で正しく切れない。§3.8）。
-                                    &mut crate::engine::core::renderer::ui_clip::UiClipCollector::disabled(),
                                 );
                                 prim_spaces.world3d = false;
                                 seg_sprites.sort_by_key(|it| it.layer);
@@ -4682,7 +4687,7 @@ impl App {
                          text_2d_bg, text_2d_fg,
                          part_2d_bg, part_2d_fg,
                          prim_spaces, prim_screen_model,
-                         clip_collector.into_regions())
+                         clip_regions_2d)
                     };
 
                     // CanvasComponent 矩形アウトラインバッチ（エディタモード + 2D キャンバス世界線のみ）
@@ -4694,31 +4699,9 @@ impl App {
                             let rect_col: [f32; 4] = [0.85, 0.95, 1.0, 0.9];
                             // ワールドスペース時はキャンバス座標をワールドユニットへスケールする
                             let canvas_scale_rect = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
-
-
-                            const IDENTITY_RECT: [[f32; 4]; 4] = [
-                                [1.0, 0.0, 0.0, 0.0],
-                                [0.0, 1.0, 0.0, 0.0],
-                                [0.0, 0.0, 1.0, 0.0],
-                                [0.0, 0.0, 0.0, 1.0],
-                            ];
-                            let mut counter: u32 = 0;
-                            // rect アウトライン用 y_sign と viewport_size
+                            // rect アウトライン用 y_sign とビューポートの高さ（リング間隔の換算用）
                             let y_sign_rect = if use_screen_space { 1.0f32 } else { -1.0 };
-                            let is_scene_ss_rect = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
-                            let vp_w_r = window_size.map_or(1280.0, |s| s.width  as f32);
                             let vp_h_r = window_size.map_or(720.0,  |s| s.height as f32);
-                            let viewport_size_rect = if is_scene_ss_rect { Some([vp_w_r, vp_h_r]) } else { None };
-                            // Camera 参照のルートキャンバスはビューポートオーバーライドマップを使用する
-                            let play_gvp_r = if is_scene_ss_rect && !in_editor { Some(game_viewport) } else { None };
-                            // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
-                            let (canvas_vp_overrides_r, root_auto_sizes_r) = if is_scene_ss_rect {
-                                build_ss_layout_maps_free(
-                                    &scene.actors, &scene.world, wl, vp_w_r, vp_h_r, play_gvp_r,
-                                    self.project_resolution, edit_view_2d)
-                            } else {
-                                (std::collections::HashMap::new(), std::collections::HashMap::new())
-                            };
                             // アウトラインのリング間隔（描画空間の単位）:
                             // 太線はリングを重ねて表現するため、間隔を「画面 1px 相当」に
                             // 揃えることでズームに依らず隙間なく密着し 1 本の太線に見える。
@@ -4749,15 +4732,16 @@ impl App {
                             } else {
                                 None
                             };
-                            collect_canvas_rects(
-                                &scene.actors, &scene.world, wl, &mut lb, rect_col,
-                                &self.selected_actor_dfs_ids, &mut counter,
-                                None, IDENTITY_RECT, [1.0, 1.0],
-                                canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
-                                &root_auto_sizes_r, edit_view_2d, outline_step,
-                                bone_ctx.as_ref(),
-                                &text_bounds_pre,
-                            );
+                            // 描画と同じ表（同じ文脈＝ビューポート・自動解像度・設計空間表示）を読む
+                            if let Some(canvas_layout) = canvas_layout_2d.as_ref() {
+                                collect_canvas_rects(
+                                    canvas_layout, &scene.actors, &scene.world, &mut lb, rect_col,
+                                    &self.selected_actor_dfs_ids, 0,
+                                    canvas_scale_rect, y_sign_rect, outline_step,
+                                    bone_ctx.as_ref(),
+                                    &text_bounds_pre,
+                                );
+                            }
                             // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
                             // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）
                             for (from, to, col) in &drag_hover_highlight_lines {
@@ -5109,7 +5093,7 @@ impl App {
                                 prim_view_proj: &vp_2d_prim,
                                 prim_depth_tested: false,
                                 text_view_proj: &vp_2d_text,
-                                // 切り抜き（W2-0 の試作）: スプライト・テキストと同じカメラで射影する
+                                // 切り抜き: スプライト・テキストと同じカメラで射影する
                                 clip_regions: &clip_regions_2d,
                                 clip_view_proj: &vp_2d_text,
                             },
@@ -5136,14 +5120,6 @@ impl App {
                                 clip_view_proj: &vp_2d_text,
                             },
                         );
-                        // 試作の計測: 切り抜きがあるときだけ、ランの数（描画呼び出しの目安）をまれに出す
-                        if !clip_regions_2d.is_empty() {
-                            super::ui_spike_hooks::log_clip_runs(
-                                clip_regions_2d.len(),
-                                zone_fg.run_count() + zone_bg.run_count(),
-                                zone_fg.clipped_run_count() + zone_bg.clipped_run_count(),
-                            );
-                        }
                         // 3D ワールドキャンバス（キャンバスごとに 1 セグメント）。
                         // レイヤーはキャンバス内で完結し、キャンバス同士はヒエラルキー順に前後する。
                         let segs_3d: Vec<UiDrawSegment> = canvas3d_segments
@@ -5169,7 +5145,7 @@ impl App {
                                 // 3D ワールドキャンバスの図形だけ深度テスト付き
                                 prim_depth_tested: true,
                                 text_view_proj: &saved_view_proj,
-                                // 3D ワールドキャンバスは切り抜きを扱わない（W2-0 の試作の範囲外）
+                                // 3D ワールドキャンバスは切り抜かない（透視では scissor で正しく切れない）
                                 clip_regions: &[],
                                 clip_view_proj: &saved_view_proj,
                             },
@@ -7221,6 +7197,15 @@ impl App {
                         // GPU 計測の節目: 反射（SSR / RT）と合成・屈折背景のミップ。
                         gpu_mark(&mut self.gpu_timer, frame.encoder_mut(), gpu_segments::REFLECTION);
 
+                        // 2D キャンバス UI の切り抜きの scissor の基準（W2-1a）: このパスの NDC が写る矩形と、パスの元の scissor。
+                        // Play（下でゲーム領域へ set_viewport・set_scissor_rect する）ならゲーム領域、それ以外は描画先（HDR）の全体。
+                        let main_pass_clip_target = if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                            crate::engine::core::renderer::ui_clip::ClipTarget::with_viewport(game_viewport)
+                        } else {
+                            let (target_w, target_h) = frame.render_size();
+                            crate::engine::core::renderer::ui_clip::ClipTarget::full([target_w, target_h])
+                        };
+
                         // メインパス開始: デファード時は G-Buffer/ライティングパスが書いた HDR・深度・
                         // ステンシルを Load で保持（半透明・スカイボックス・ギズモをその上に重ねる）。
                         // フォワード時は従来どおりクリアして開始する。
@@ -7317,8 +7302,8 @@ impl App {
                                     self.canvas_text.as_ref(),
                                     // 2D パーティクルは UI と同じ描画列（レイヤー順）で描く。
                                     Some((&self.particle_system, &draw_ctx.pipelines.particles)),
-                                    // メインパス（ビューポート・scissor を張ることがある）では切り抜かない（W2-0 の試作の範囲外）
-                                    None,
+                                    // メインパス: ゲーム領域（ビューポート）へ写し、パスの元の scissor と交差させて切り抜く
+                                    Some(main_pass_clip_target),
                                 );
                             }
                         }
@@ -7729,8 +7714,8 @@ impl App {
                                     self.primitive2d.as_ref(),
                                     self.canvas_text.as_ref(),
                                     Some((&self.particle_system, &draw_ctx.pipelines.particles)),
-                                    // メインパス（エディタのビュー・ワールドスペース）では切り抜かない（W2-0 の試作の範囲外）
-                                    None,
+                                    // メインパス（エディタのビュー・ワールドスペース）も同じ規則で切り抜く
+                                    Some(main_pass_clip_target),
                                 );
                             }
                         }
@@ -8469,7 +8454,7 @@ impl App {
                     // HDR フォーマットのまま（LDR 中間も物理は Rgba16Float のため変更不要）。
                     if scene_canvas_ss {
                         if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
-                            // 切り抜き（W2-0 の試作）の scissor の基準＝このパスの描画先（LDR 中間）の大きさ。
+                            // 切り抜きの scissor の基準＝このパスの描画先（LDR 中間）の大きさ。
                             // オーバーレイパスはビューポートも scissor も張らないので、NDC は描画先の全体に対応する。
                             let (overlay_w, overlay_h) = frame.logical_size();
                             // トーンマップ後の LDR 中間へ 2D 要素を直描き（トーンマップ非適用）。
@@ -8493,8 +8478,9 @@ impl App {
                                     self.primitive2d.as_ref(),
                                     self.canvas_text.as_ref(),
                                     Some((&self.particle_system, &draw_ctx.pipelines.particles)),
-                                    // 切り抜きのあるランだけ scissor を張る（無ければ従来と同じ）
-                                    Some([overlay_w, overlay_h]),
+                                    // 切り抜きのあるランだけ scissor を張る（無ければ従来と同じ）。
+                                    // オーバーレイパスはビューポートも scissor も張らない＝NDC は描画先の全体
+                                    Some(crate::engine::core::renderer::ui_clip::ClipTarget::full([overlay_w, overlay_h])),
                                 );
                             }
                             // 2D 由来の孤児粒子（エミッタは消えたが寿命が残っている粒子群）。
@@ -8711,42 +8697,32 @@ impl App {
                                             let wl = self.active_world_line;
                                             let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
                                             let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
-                                            let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
-                                            let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
-                                            // SS レイアウト時（2D シーンビュー含む）は描画と同じ
-                                            // ビューポート基準レイアウトで ID を配置する
-                                            let viewport_size: Option<[f32; 2]> =
-                                                if ss_layout { Some([vp_w, vp_h]) } else { None };
-                                            // Camera 参照のルートキャンバス用ビューポートオーバーライドマップ
-                                            let play_gvp_id = if ss_layout && !in_editor { Some(game_viewport) } else { None };
-                                            // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
-                                            let (canvas_vp_overrides_id, root_auto_sizes_id) = if ss_layout {
-                                                build_ss_layout_maps_free(
-                                                    &scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp_id,
-                                                    self.project_resolution, edit_view_2d)
-                                            } else {
-                                                (std::collections::HashMap::new(), std::collections::HashMap::new())
+                                            // レイアウトの表: エディタでは描画と文脈が同じ（Play のゲーム領域を使わない）なので、
+                                            // フレームの表を使い回す。Play（ID 描画を有効にしたとき）は、描画の後でゲーム領域が
+                                            // 描画解像度へ写されている（game_viewport が変わる）ので、旧実装どおりその値で作り直す。
+                                            let rebuilt_layout;
+                                            let canvas_layout = match canvas_layout_2d.as_ref() {
+                                                Some(table) if in_editor => table,
+                                                _ => {
+                                                    let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                                                    let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                                    // Camera 参照のルートキャンバス用ビューポートオーバーライドマップ
+                                                    let play_gvp_id = if ss_layout && !in_editor { Some(game_viewport) } else { None };
+                                                    rebuilt_layout = build_main_canvas_layout(
+                                                        &scene.actors, &scene.world, wl, ss_layout, [vp_w, vp_h], play_gvp_id,
+                                                        self.project_resolution, edit_view_2d,
+                                                    );
+                                                    &rebuilt_layout
+                                                }
                                             };
 
                                             let mut items = Vec::new();
-                                            let mut ctr   = 0u32;
-                                            const IDENTITY: [[f32; 4]; 4] = [
-                                                [1.0, 0.0, 0.0, 0.0],
-                                                [0.0, 1.0, 0.0, 0.0],
-                                                [0.0, 0.0, 1.0, 0.0],
-                                                [0.0, 0.0, 0.0, 1.0],
-                                            ];
                                             collect_canvas_id_items(
-                                                &scene.actors, &scene.world, wl,
-                                                &mut ctr, None, IDENTITY,
-                                                [1.0, 1.0],
-                                                canvas_scale, y_sign, viewport_size,
-                                                &canvas_vp_overrides_id,
-                                                &root_auto_sizes_id,
+                                                canvas_layout, &scene.actors, &scene.world, 0,
+                                                canvas_scale, y_sign,
                                                 canvas_id_offset,
-                                                // トップレベルは SS サブツリー扱い
-                                                // （Actor3D 通過で false になり 3D キャンバス子を除外）
-                                                CanvasDrawZone::Foreground, true, edit_view_2d, draw_ctx,
+                                                // 本フレームの描画収集で変形済みのスキンメッシュを引く（再変形はしない）
+                                                &|slot_entity| draw_ctx.sprite_skin.draw_handle(slot_entity),
                                                 // 選択枠・CPU ピックと同一の実測テキスト枠を渡す
                                                 // （Text アクターを GPU ピックでも掴めるようにする）
                                                 &text_bounds_pre,

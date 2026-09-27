@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use super::queue::PrimitiveCommand;
 use super::tessellate::tessellate;
 use crate::engine::components::CanvasDrawZone;
+use crate::engine::core::renderer::ui_clip::UiClipId;
 use crate::engine::ecs::Entity;
 
 // ─── 定数 ────────────────────────────────────────────────────
@@ -113,6 +114,9 @@ pub struct PrimitiveSpace {
     /// そのため「どのキャンバス配下の図形か」をここで持ち回る。
     /// `Canvas2d` では常に 0（未使用）。
     pub world3d_group: u32,
+    /// この空間へ描く図形の切り抜きの番号（空間の持ち主のノードと同じ。レイアウトの表の領域。W2-1a）。
+    /// 3D ワールドキャンバス配下は切り抜かないので常に None。
+    pub clip: Option<UiClipId>,
 }
 
 /// キャンバスアクター entity → 座標空間のマップ。
@@ -143,7 +147,14 @@ impl PrimitiveSpaceCollector {
     /// 1 アクターぶんの座標空間を記録する。
     ///
     /// `zone` は 2D キャンバスの描画ゾーン（`world3d = true` のときは無視される）。
-    pub fn insert(&mut self, entity: Entity, model: [[f32; 4]; 4], zone: CanvasDrawZone) {
+    /// `clip` はこの空間へ描く図形の切り抜きの番号（`world3d = true` のときは無視して None にする）。
+    pub fn insert(
+        &mut self,
+        entity: Entity,
+        model: [[f32; 4]; 4],
+        zone: CanvasDrawZone,
+        clip: Option<UiClipId>,
+    ) {
         let target = if self.world3d {
             PrimitiveSpaceTarget::World3d
         } else {
@@ -157,6 +168,8 @@ impl PrimitiveSpaceCollector {
                 model,
                 target,
                 world3d_group,
+                // 3D ワールドキャンバス（透視）は scissor で正しく切れないので切り抜かない
+                clip: if self.world3d { None } else { clip },
             },
         );
     }
@@ -534,10 +547,10 @@ mod tests {
         let mut c = PrimitiveSpaceCollector::new();
         // 2D キャンバス配下（ゾーンがそのまま保持される）
         c.world3d = false;
-        c.insert(e2d, M, CanvasDrawZone::Background);
+        c.insert(e2d, M, CanvasDrawZone::Background, None);
         // 3D ワールドキャンバス配下（ゾーン指定を渡してもワールドスペースになる）
         c.world3d = true;
-        c.insert(e3d, M, CanvasDrawZone::Background);
+        c.insert(e3d, M, CanvasDrawZone::Background, None);
 
         assert_eq!(
             c.map[&e2d].target,

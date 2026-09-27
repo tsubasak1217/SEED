@@ -5,9 +5,9 @@
 //    idle=<N>        … 入力の無いフレームが N 回続いたら描画を止める（描かなくてよいときは描かない。X-2）
 //    wake_ms=<M>     … 止めている間も M ミリ秒ごとに 1 フレームだけ描く（時計の表示のような定期の更新の模擬）。
 //                      指定しなければ入力が来るまで眠る（ControlFlow::Wait）
-//    clip=<名前>     … その名前のキャンバスノード（最初の有効なスプライトの矩形）で子孫を切り抜く（何度でも書ける）
 //    ime             … 文字入力（IME）の試作を有効にする（PC: winit の Ime イベントのログ、Android: native の ime_probe）
-//  例: "idle=30,wake_ms=1000"、"clip=ClipBox"、"ime,idle=60"
+//  例: "idle=30,wake_ms=1000"、"ime,idle=60"
+//  （W2-0 の clip=<名前> は W2-1a で本番の CanvasClipComponent に置き換えて外した。今は知らない項目として警告になる）
 //
 //  【読めない項目】起動を止めない（スパイクのための指定で本番の振る舞いに関わらないため）。
 //  読めた項目だけを採り、読めなかった項目は警告の文にして返す（呼び出し側がログへ出す）。
@@ -28,9 +28,6 @@ const KEY_IDLE: &str = "idle";
 /// 止めている間に起こす間隔（ミリ秒）のキー。
 const KEY_WAKE_MS: &str = "wake_ms";
 
-/// 切り抜きの根にするキャンバスノードの名前のキー。
-const KEY_CLIP: &str = "clip";
-
 /// 文字入力（IME）の試作の旗。
 const FLAG_IME: &str = "ime";
 
@@ -47,8 +44,6 @@ pub struct UiSpikeConfig {
     pub idle_after_frames: Option<u32>,
     /// 止めている間に起こす間隔（ミリ秒。None = 入力が来るまで起こさない）。
     pub idle_wake_ms: Option<u32>,
-    /// 子孫を切り抜くキャンバスノードの名前（空 = 切り抜かない）。
-    pub clip_actor_names: Vec<String>,
     /// 文字入力（IME）の試作を有効にするか。
     pub ime: bool,
 }
@@ -56,7 +51,7 @@ pub struct UiSpikeConfig {
 impl UiSpikeConfig {
     /// どれか 1 つでも有効か（ログの要否の判断用）。
     pub fn any_enabled(&self) -> bool {
-        self.idle_after_frames.is_some() || !self.clip_actor_names.is_empty() || self.ime
+        self.idle_after_frames.is_some() || self.ime
     }
 
     /// 指定の文字列を読む【純関数】。
@@ -90,13 +85,6 @@ impl UiSpikeConfig {
                                 "{KEY_WAKE_MS} は {MIN_WAKE_MS} 以上の整数（ミリ秒）にしてください（受け取った値: {value:?}）"
                             )),
                         },
-                        KEY_CLIP => {
-                            if value.is_empty() {
-                                warnings.push(format!("{KEY_CLIP} にノードの名前がありません"));
-                            } else if !config.clip_actor_names.iter().any(|name| name == value) {
-                                config.clip_actor_names.push(value.to_string());
-                            }
-                        }
                         other => warnings.push(format!("知らない項目です: {other:?}")),
                     }
                 }
@@ -136,20 +124,20 @@ mod tests {
     #[test]
     fn parses_all_items() {
         let (config, warnings) =
-            UiSpikeConfig::parse_lenient(" idle=30 ; wake_ms = 1000, clip=ClipBox,clip=Inner, ime ");
+            UiSpikeConfig::parse_lenient(" idle=30 ; wake_ms = 1000, ime ");
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(config.idle_after_frames, Some(30));
         assert_eq!(config.idle_wake_ms, Some(1000));
-        assert_eq!(config.clip_actor_names, vec!["ClipBox".to_string(), "Inner".to_string()]);
         assert!(config.ime);
         assert!(config.any_enabled());
     }
 
-    /// 同じ名前の clip は 1 つにまとめる。
+    /// W2-0 の clip=<名前> は外した（本番の CanvasClipComponent へ置き換えた）ので、知らない項目の警告になる。
     #[test]
-    fn duplicate_clip_names_are_merged() {
-        let (config, _) = UiSpikeConfig::parse_lenient("clip=A,clip=A");
-        assert_eq!(config.clip_actor_names, vec!["A".to_string()]);
+    fn removed_clip_item_is_a_warning() {
+        let (config, warnings) = UiSpikeConfig::parse_lenient("clip=A,idle=5");
+        assert_eq!(config.idle_after_frames, Some(5), "読めた項目は有効");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
     /// 読めない値・知らない項目は警告にし、読めた項目は活かす。
@@ -158,7 +146,6 @@ mod tests {
         let (config, warnings) = UiSpikeConfig::parse_lenient("idle=0,wake_ms=-5,clip=,bogus,foo=1,ime");
         assert_eq!(config.idle_after_frames, None, "0 は認めない");
         assert_eq!(config.idle_wake_ms, None, "負は認めない");
-        assert!(config.clip_actor_names.is_empty());
         assert!(config.ime, "読めた項目は有効");
         assert_eq!(warnings.len(), 5, "{warnings:?}");
     }

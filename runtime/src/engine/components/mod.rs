@@ -13,6 +13,8 @@ pub mod canvas_transform;
 pub mod model_component;
 pub mod script_component;
 pub mod canvas_component;
+/// 「子を切り抜く」コンポーネント（UI の切り抜き。W2-1a）
+pub mod canvas_clip_component;
 pub mod sprite_component;
 /// メッシュ変形スキニング 2D スプライト（Phase A1: Spine 風メッシュ変形の土台）
 pub mod skinned_sprite_component;
@@ -61,6 +63,7 @@ pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };
 pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone};
+pub use canvas_clip_component::{CanvasClipComponent, CanvasClipComponentData};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use skinned_sprite_component::{SkinnedSpriteComponent, SkinnedSpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
@@ -181,6 +184,8 @@ pub enum ComponentKind {
     LineRenderer,
     /// キャンバス用テキスト表示（HUD の数値・ラベル）
     Text,
+    /// 子を切り抜く（ノードのレイアウトの矩形で子孫を切り抜く。UI のスクロール領域・一覧用。W2-1a）
+    CanvasClip,
 }
 
 impl ComponentKind {
@@ -213,6 +218,7 @@ impl ComponentKind {
             Self::ControlPoint => "ControlPointComponent",
             Self::LineRenderer => "LineRendererComponent",
             Self::Text        => "TextComponent",
+            Self::CanvasClip  => "CanvasClipComponent",
         }
     }
 }
@@ -271,4 +277,6 @@ pub enum ComponentData {
     LineRendererComponent(LineRendererComponentData),
     /// キャンバス用テキスト表示（HUD の数値・ラベル）
     TextComponent(TextComponentData),
+    /// 子を切り抜く（UI の切り抜き。W2-1a）
+    CanvasClipComponent(CanvasClipComponentData),
 }

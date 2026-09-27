@@ -250,7 +250,9 @@ fn rewrite_refs_in_slots(
             | ComponentKind::CoverEmitter
             | ComponentKind::ControlPoint
             // 3D ポリラインは点列と色しか持たず、アクター名参照は無い。
-            | ComponentKind::LineRenderer => {}
+            | ComponentKind::LineRenderer
+            // 子を切り抜く（W2-1a）は有効フラグだけで、アクター名参照は無い。
+            | ComponentKind::CanvasClip => {}
         }
     }
 

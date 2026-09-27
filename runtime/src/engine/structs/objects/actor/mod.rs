@@ -506,6 +506,11 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
             world.get::<crate::engine::components::WaterLinkComponent>(slot.entity)
                 .map(|wl| ComponentData::WaterLinkComponent(wl.to_data()))
         }
+        ComponentKind::CanvasClip => {
+            // 子を切り抜く（W2-1a）をシリアライズ用データに変換する
+            world.get::<crate::engine::components::CanvasClipComponent>(slot.entity)
+                .map(|cc| ComponentData::CanvasClipComponent(cc.to_data()))
+        }
         ComponentKind::InteractionSource => {
             // インタラクションソースをシリアライズ用データに変換する
             world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)

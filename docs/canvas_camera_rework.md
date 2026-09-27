@@ -75,6 +75,50 @@ world/viewport 概念（docs/editor_2d3d_tabs.md）に続くキャンバス・�
 - スクリプト API: `gameObject.Sprite.Layer`（get/set）を追加し
   docs/scripting_api.md 第 7 節へ追記（host_api の "Sprite" レジストリに layer を追加）
 
+## 6. レイアウトの走査と切り抜き（W2-1a・2026-09-27。実装の正典）
+
+§1〜§5 の後に入れた、2D キャンバスのレイアウト計算の置き場と、UI の切り抜きの規則。
+コードの正典は `runtime/src/engine/core/canvas_layout/`（各ファイルの冒頭の説明）。
+
+### 6.1 レイアウトの計算は 1 か所（`canvas_layout`）
+
+以前は描画（`collect_sprite_items`）・キャンバス枠（`collect_canvas_rects`）・GPU の ID 描画
+（`collect_canvas_id_items`）・当たり判定（`pick_2d::walk_pick_candidates_2d`）・2D 物理とギズモ
+（`physics2d_ops::collect_actor2d_contexts`）の 5 か所が同じ計算を複製していた。今は次の 2 つに寄せてある。
+
+| 部品 | 役割 |
+|---|---|
+| `placement::resolve(parent, node, env)` | ノード 1 つの配置を求める**純関数**。root_auto の上書き → 基準ビューポート（Camera 参照の上書き優先）→ アンカー → 有効位置（scale_transform）→ 描画ゾーン → サイズ倍率（scale_size・アスペクト比維持）→ 自身のワールド行列 → 子へ渡す文脈（アンカー基準・累積スケール・自動スケール）。浮動小数の演算の順序も旧実装と同じ |
+| `CanvasLayoutPass::run(roots, world, wl, root_frame, env)` | 木を 1 回たどって**表**（`CanvasLayoutTable`）を作る。行は `find_actor_by_dfs` と同じ深さ優先の並び（添字 = DFS 番号）。フォルダは文脈をそのまま子へ渡し、CanvasTransform を持たないノードの子孫は 2D レイアウト木の外にする。祖先までの世界線・active・visible をフラグにする |
+
+読み手は表を読むだけにする。どのノードを扱うかは旧実装の打ち切り規則をフラグで表す
+（描画・枠・ID 描画 = `is_drawn`、当たり判定 = `is_pickable`〈エディタの選択は非アクティブも選べる〉、
+2D 物理 = すべてのノード〈active だけ追う〉）。フレームの描画は、メインの 2D キャンバスの表を
+**フレームに 1 回**作り、スプライト等の収集とキャンバス枠と（エディタでは）ID 描画で使い回す。
+文脈（ビューポート・自動解像度・設計空間表示）が違う読み手（エディタのクリック選択・Play のポインタイベント・
+2D 物理・3D ワールドキャンバスの子）は同じ走査で自分の文脈の表を作る。
+
+**アンカーの規則**（`anchor.rs`）: 最上位ノードはビューポートを仮想親とし（設計空間表示では左上が原点、
+Play・SS 合成では中央が原点）、子は**親の CanvasComponent の領域 × anchor**（親までの累積スケールが掛かる）。
+CanvasComponent を持たない親（Sprite だけのノード等）の子では anchor は効かない（基準 0）。
+
+**同値の保証**: 置き換えの前に旧 5 か所をテスト用に写し（`app/canvas_layout_equivalence/legacy.rs`）、
+ランダムな木 3,000 個（12 万ノード）で旧実装と新しい表の結果が**浮動小数のビット単位で一致**することを確かめた
+（`legacy_walks_equal_layout_table_on_random_trees`）。旧実装どうしの食い違い（2D 物理の独自の計算・自動スケールの
+割り算の扱い）は、読み手ごとの結果を変えないよう残してある（docs/backlog.md「W2-1a で見つけた旧実装の食い違い」）。
+
+### 6.2 切り抜き（`CanvasClipComponent`）
+
+| 項目 | 規則 |
+|---|---|
+| 付け方 | 2D キャンバスのノードに CanvasClipComponent（インスペクタ「UI → Canvas Clip」）。スロットの有効・無効と、コンポーネントの `enabled`（スクリプトの `CanvasClip.Enabled`）の両方が有効のときだけ切る |
+| 矩形 | CanvasComponent があればキャンバス領域（エディタのキャンバス枠と同じ）、無ければ最初の有効な SpriteComponent の矩形、どちらも無ければ切らない |
+| 切るもの | **子孫だけ**（ノード自身の描画は切らない）。スプライト・スキンスプライト・テキスト（インライン画像を含む）・2D パーティクル・`SEED.Draw` の図形（`space` の持ち主のノードと同じ切り抜き）。スクリーンスペースの図形（`space: null`）は切らない |
+| 入れ子 | 外側の領域を親に持ち、描画は祖先との積（AABB の交差）で切る。深さの上限なし（番号は u16） |
+| 描画 | 描画順のランを切り抜きの番号の変わり目で分け、ランごとに `set_scissor_rect`（`renderer/ui_clip.rs`）。オーバーレイパスは描画先の全体、メインパスは set_viewport の矩形（Play のゲーム領域）へ写してパスの元の scissor と交差させ、描き終えたら元の scissor へ戻す。1 画素も残らないランは描かない。切り抜きが無ければ従来と同じラン・同じ描画 |
+| 当たり判定 | `pick_2d`（エディタの 2D の選択と Play のポインタイベント）は、点が祖先のすべての切り抜きの AABB の内側のときだけ判定する（切られて見えない所は押せない） |
+| 制限 | 回転したノードは 4 隅の外接矩形で切る。3D ワールドキャンバス（透視）は切らない。エディタの GPU の ID 描画（3D ビューでのキャンバスの選択）は切り抜きを見ない（W2-1b）。角丸・円の切り抜きは W2-4（シェーダーの SDF） |
+
 ## 段階実装計画
 
 1. **Phase A（カメラ）**: インスペクタの表記変更・アスペクト比 UI・

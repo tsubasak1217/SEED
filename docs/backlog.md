@@ -240,9 +240,17 @@
 
 - [ ] **CanvasComponent を持たないノードの pivot は「基準サイズ 1x1」で解決される** — 2026-09-07。`collect_sprite_items` / `collect_canvas_rects` / `pick_2d` は、自ノードに CanvasComponent が無いとき `to_mat4_sized(1.0, 1.0)` で子への座標系原点（`self_world_rs`）を作る。このため pivot が `pivot × 1px` の平行移動として残り、Sprite（例: pivot=(0.5,0.5)）の子は**最大 1px** 親の中心からずれる。目視できない量だが規約としては誤り。「Canvas 領域を持たないノードの pivot は子の座標系に影響しない（＝ 0 基準）」へ寄せるのが筋。影響が全入れ子 2D に及ぶため単独タスクで実施する。関連: `runtime/src/engine/core/app_base/app/canvas_collect.rs`（`my_eff_w/h` の `.unwrap_or((1.0, 1.0))`）、`physics2d_ops.rs`（`canvas_eff_w/h`）。
 
-- [ ] **2D ノードのレイアウト計算が 5 か所に重複コピーされている** — 2026-09-07。`collect_sprite_items` / `collect_canvas_rects` / `collect_canvas_id_items` / `pick_2d::walk_pick_candidates_2d` / `physics2d_ops::collect_actor2d_contexts` が、root_auto 上書き → eff_viewport → アンカー → eff_ct → size_scale → self_world_rs → 子への継承、という同じ 60〜80 行をそれぞれ持っている。今回の「子のアンカー基準サイズ」バグは、この重複のうち 1 か所（`physics2d_ops` のギズモ用アンカー）だけ挙動が違ったせいで「ギズモは正しいのに描画がずれる」という形で表面化した。アンカー部分は共通ヘルパー（`node_anchor_offset` / `child_anchor_basis`）へ切り出したが、残りは未統合。`CanvasNodePlacement::resolve()` のような純関数へ一本化したい。関連: 上記 5 ファイル。
+- [x] **2D ノードのレイアウト計算が 5 か所に重複コピーされている** — 2026-09-07。
+  → **2026-09-27 に W2-1a で完了**。`runtime/src/engine/core/canvas_layout/`（純関数 `placement::resolve`・木を 1 回たどる
+  `CanvasLayoutPass`・表 `CanvasLayoutTable`）へ一本化し、5 か所は表を読むだけにした（描画は `drawn_nodes`、枠・ID 描画は
+  `is_drawn`、当たり判定は `is_pickable`、2D 物理は `physics_contexts_from_table`）。旧 5 か所をテスト用に写した
+  `app/canvas_layout_equivalence/legacy.rs` とランダムな木 3,000 個（12 万ノード）で**ビット単位の一致**を確認。
+  旧実装どうしの食い違いは直さずに残した（下の W2 節「W2-1a で見つけた旧実装の食い違い」）。3D ワールドキャンバスの子の走査
+  （`walk_3d_canvas_children_id`・`collect_3d_canvas_child_outlines`）は別の 2 か所として残っている（同じ W2 節）。以下は当時の記述。`collect_sprite_items` / `collect_canvas_rects` / `collect_canvas_id_items` / `pick_2d::walk_pick_candidates_2d` / `physics2d_ops::collect_actor2d_contexts` が、root_auto 上書き → eff_viewport → アンカー → eff_ct → size_scale → self_world_rs → 子への継承、という同じ 60〜80 行をそれぞれ持っている。今回の「子のアンカー基準サイズ」バグは、この重複のうち 1 か所（`physics2d_ops` のギズモ用アンカー）だけ挙動が違ったせいで「ギズモは正しいのに描画がずれる」という形で表面化した。アンカー部分は共通ヘルパー（`node_anchor_offset` / `child_anchor_basis`）へ切り出したが、残りは未統合。`CanvasNodePlacement::resolve()` のような純関数へ一本化したい。関連: 上記 5 ファイル。
 
-- [ ] **入れ子 2D の anchor 仕様がドキュメント化されていない** — 2026-09-07。「anchor は**親の CanvasComponent 領域**に対する比率で、Canvas 領域を持たない親（Sprite など）の子では anchor は効かない（親の原点＝親の position 点が基準）」という規則を docs 側に明記する。エディタのインスペクタでも、親が Canvas 領域を持たないときは anchor 欄をグレーアウトするのが親切。
+- [ ] **入れ子 2D の anchor 仕様がドキュメント化されていない** — 2026-09-07。
+  → 2026-09-27（W2-1a）: 規則は docs/canvas_camera_rework.md §6.1 に書いた（コードの正典は `canvas_layout/anchor.rs`）。
+  残りはインスペクタのグレーアウト。以下は当時の記述。「anchor は**親の CanvasComponent 領域**に対する比率で、Canvas 領域を持たない親（Sprite など）の子では anchor は効かない（親の原点＝親の position 点が基準）」という規則を docs 側に明記する。エディタのインスペクタでも、親が Canvas 領域を持たないときは anchor 欄をグレーアウトするのが親切。
 
 ## MCP 安全機構（2026-09-07 のシーン上書き事故対応の残件）
 
@@ -2692,6 +2700,9 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **W2-0 の試作のコードを本番に置き換えたら消す** — 2026-09-27。`runtime/src/engine/core/ui_spike/`・`app/ui_spike_hooks.rs`・
   `runtime/android/native/src/ui_spike/`・`app/.../spike/ImeSpikeLog.java`（MainActivity の 4 つの上書きの中の呼び出し）・`LaunchArgs.ui_spike`・
   起動オプション `ui_spike`。`renderer/ui_clip.rs` と `ui_draw_pass.rs` の切り抜き（ランの分割・scissor）は W2-1 で本番の形にする前提で残す。
+  → 2026-09-27（W2-1a）: **切り抜きの分は済**（名前で根を指定する `UiClipCollector`・`ui_spike` の `clip=`・計測のログ `log_clip_runs` を消し、
+  `ui_clip.rs`・`ui_draw_pass.rs` を本番の形にした）。残りは描かないとき（`idle=`・`wake_ms=`。W2-10a で本番化）と文字入力（`ime`。
+  roadmap §3.8.6 の実機確認〈W2-6a の頭〉で使うので残した）。
 - [ ] **winit 0.30 は Android の文字入力のイベント（`TextEvent`・`TextAction`）を読み捨てる** — 2026-09-27（W2-0 で読んだ）。android-activity は
   glue のフラグから 1 度だけ取り出す作りなので、winit が先に取ると SEED は受け取れない（特に完了などのアクション）。W2-6 は MainActivity の
   `stateChanged`・`onEditorAction` の上書きで受け取る（roadmap §3.8.1 の I-1・I-5）。winit を上げるときに扱いを見直す。
@@ -2699,7 +2710,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   — 2026-09-27（W2-0 で読んだ）。W2-6 の受け口で UTF-8 の境界へ変換する。`set_text_input_state` へ渡す添字も UTF-16（§3.8.1 の I-6）。
 - [ ] **UI スレッド以外で `text_input_state()` を読むと途中の本文を読みうる**（GameTextInput の本文のバッファはロックの外で上書きされる）
   — 2026-09-27（W2-0 で読んだ）。本番は Java の上書きで状態を受け取り、ネイティブからは読まない（§3.8.1 の I-7）。
-- [ ] **切り抜きの試作の制限** — 2026-09-27（W2-0）。2D パーティクル・スクリプトの図形（`SEED.Draw`）・メインパスで描くもの（背景ゾーン・エディタのビュー。
+- [x] **切り抜きの試作の制限** — 2026-09-27（W2-0）。
+  → 2026-09-27 に W2-1a で解消: 根は `CanvasClipComponent`、2D パーティクル・`SEED.Draw` の図形（座標空間の表に番号）も切り、
+  メインパスはビューポート（Play のゲーム領域）の内側へ交差させ、当たり判定（`pick_2d`）も同じ領域で切る。残る制限
+  （回転したノードの AABB・3D ワールドキャンバス・GPU の ID 描画）は下の「W2-1a の切り抜きの残りの制限」。以下は当時の記述。2D パーティクル・スクリプトの図形（`SEED.Draw`）・メインパスで描くもの（背景ゾーン・エディタのビュー。
   ビューポートの内側に交差させる必要がある）・3D ワールドキャンバスは切り抜かない。回転したノードは 4 隅の AABB になる。当たり判定（`pick_2d`）は
   切り抜きを見ない。根は名前の指定。W2-1 でコンポーネントにし、描画と当たり判定で同じ領域の表を使う（§3.8.2 の C-5・§3.8.4）。
 - [ ] **描かない試作の制限** — 2026-09-27（W2-0）。起こす理由が WindowEvent だけで、JNI で届くプラットフォームのイベント・文字入力・IPC・スクリプトの
@@ -2711,8 +2725,39 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **Windows の IME はエディタに埋め込んだ Play（WPF の子ウィンドウ）での候補窓の位置・WPF の IME との取り合いが未確認** — 2026-09-27（W2-0）。
   今の SEED は `set_ime_allowed` を呼ばない（winit の既定で IME は切り離されたまま）ので、Play の窓では日本語を入力できない。単体の SEED.exe での
   許可と候補窓の位置の指定は試作の `ime` で通したが、日本語の実入力は W2-6 で確かめる（§3.8.1 の I-11）。
-- [ ] **W2-1 土台（dp・レイアウト〈Stack・Wrap・Grid〉・安全領域の部品・クリップ・当たり判定のクリップ対応）** — 2026-09-27。
-  前提として「2D ノードのレイアウト計算が 5 か所に重複コピーされている」（上の「2D キャンバス」節）を 1 つに寄せる。縦画面の `auto_scale` に頼らない。
+- [x] **W2-1a レイアウト計算の一本化と切り抜きの本番化** — 2026-09-27 に完了（roadmap §3.8.5 の W2-1 行・docs/canvas_camera_rework.md §6）。
+  `canvas_layout`（純関数と 1 回の走査・表）、`CanvasClipComponent`（インスペクタ・スクリプト `SEED.CanvasClip`）、描画の scissor
+  （スプライト・テキスト・2D パーティクル・Draw の図形・メインパスのビューポートとの交差）と当たり判定の切り抜き。
+  WarashibeFishing の画面（図鑑は画素一致、会話の画面は UI の範囲で一致）とボタンの押せる範囲（56 点の探り）は不変。
+- [ ] **W2-1b 土台の残り（dp・レイアウト〈Stack・Wrap・Grid〉・安全領域の部品）** — 2026-09-27。W2-1a の表（`CanvasLayoutTable`）の上に作る。
+  縦画面の `auto_scale` に頼らない。エディタの GPU の ID 描画の切り抜きもここで足す（下の「W2-1a の切り抜きの残りの制限」）。
+- [ ] **W2-1a で見つけた旧実装の食い違い（2D 物理・ギズモ・`ScreenPosition` と描画の間）** — 2026-09-27（W2-1a の同値の検査で読んだ）。
+  一本化では**振る舞いを変えないことを優先して直していない**（`physics2d_ops.rs` の `PhysicsFrame` に閉じ込めた）。どれも旧
+  `collect_actor2d_contexts` だけの計算で、描画・当たり判定と位置が食い違いうる:
+  1. 子のアンカー基準にサイズ倍率を掛けている（描画は掛けない）。scale_size のキャンバスの子孫の anchor が、親の累積スケールが 1 でないとき
+     （例: ルートの auto_scale でウィンドウ ≠ 設計解像度）描画とずれる。scale_transform=true の子ではスケールが二重に掛かる
+  2. 子のワールド原点の pivot の基準の大きさがアスペクト比維持（keep_aspect_ratio）を見ない
+  3. 回転を角度の和と sin/cos で積み上げる（描画は行列の積。浮動小数の丸めが違う）
+  4. CanvasTransform を持たないノード（3D アクター等）の下もたどり、visible を見ない（描画・当たり判定はそこで打ち切る／見る）。
+     CanvasComponent の引き方が「最初の Canvas スロット」（描画は「コンポーネントが引ける最初の Canvas スロット」。壊れたデータでだけ差が出る）
+  影響するのはギズモの位置・ドラッグの書き戻し・2D 物理のボディ位置・スクリプトの `CanvasTransform.ScreenPosition`。WarashibeFishing は
+  2D 物理と ScreenPosition を使っていない（2026-09-27 に確かめた）。直すなら表の `world_rs` と `anchor_offset` を読むだけにできる（1〜3 が消える）が、
+  既存のプロジェクトの物理・ギズモの位置が変わるので、利用者の判断で別の作業にする。
+- [ ] **自動スケールの割り算の扱いが読み手ごとに違う（大きさ 0 のルートキャンバス）** — 2026-09-27（W2-1a）。描画・枠・ID 描画はビューポート ÷ 大きさを
+  そのまま割り（無限大）、当たり判定・2D 物理は分母を `f32::EPSILON` 以上にする（巨大な倍率）。大きさ 0 で auto_scale のルートキャンバスという退化した入力
+  でだけ差が出る。W2-1a では `AutoScaleDivisor` で読み手ごとの旧実装の結果を保った。大きさ 0 をインスペクタで禁止するか、どちらかに揃える。
+- [ ] **世界線が親と違う子の DFS 番号の数え方（旧実装の枠・ID 描画・当たり判定だけ違っていた）** — 2026-09-27（W2-1a）。旧実装の枠・ID 描画・当たり判定は
+  世界線が違う子をサブツリーごと**数えずに**飛ばし、`find_actor_by_dfs`（子は世界線を問わず数える）と番号がずれていた（＝選択が別のアクターに付く）。
+  W2-1a の表は `find_actor_by_dfs` と同じ数え方にそろえた（**ここだけ旧実装と違う**）。エディタの操作（`set_world_line_recursive`）と
+  `.scene` の読み込みは子の世界線を親と同じにするので、この形のデータは普通は作られない（同値の性質テストもこの不変条件の木で行った）。
+- [ ] **3D ワールドキャンバスの子の走査が 2 か所に残っている** — 2026-09-27（W2-1a）。`canvas_collect.rs` の `walk_3d_canvas_children_id`（GPU の ID 描画）と
+  `collect_3d_canvas_child_outlines`（エディタの枠）は、描画（W2-1a の表を読む `collect_sprite_items`）と同じ計算を別に持つ。しかも
+  CanvasTransform を持たないノードの下も素通しでたどる（描画はそこで打ち切る）ので、そういう木では描画と ID・枠が食い違う。表（`build_world_canvas_layout`）
+  を読む形へ寄せる。
+- [ ] **W2-1a の切り抜きの残りの制限** — 2026-09-27。(1) 回転したノードは 4 隅の外接矩形で切る（正確に切るにはオーバーレイパスのステンシル。§3.8.4）。
+  (2) 3D ワールドキャンバス（透視）の配下は切らない。(3) **エディタの GPU の ID 描画（3D ビューでのキャンバスの選択）は切り抜きを見ない**
+  （切り抜かれて見えない子もクリックで選べる。エディタの 2D ビューの選択と Play のポインタイベントは CPU の `pick_2d` なので切り抜く）。
+  ID 描画のアイテムに切り抜きの番号を持たせ、`draw_canvas_id_items` で scissor を張る（W2-1b）。(4) 角丸・円の切り抜きは W2-4（シェーダーの SDF）。
 - [ ] **W2-2 ジェスチャーアリーナ（タップ・長押し・ドラッグ・フリック・押下の取り消し・指ごとの捕捉・タッチの時刻）** — 2026-09-27。
 - [ ] **W2-3 スクロールと一覧（慣性・跳ね返り・入れ子・行の再利用・左スワイプの操作）** — 2026-09-27。
 - [ ] **W2-4 基本の部品（ボタン・トグル・スライダ＋数値欄・選択・進捗・グラデーション・9 スライス・円の切り抜き）** — 2026-09-27。
