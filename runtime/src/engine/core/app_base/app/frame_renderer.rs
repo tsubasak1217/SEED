@@ -3155,6 +3155,8 @@ impl App {
                                         &mut crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector::new(),
                                         // カメラプレビューは 2D パーティクルも描かない（捨てバッファ）。
                                         &mut Vec::new(),
+                                        // 3D ワールドキャンバスは切り抜きを扱わない（W2-0 の試作の範囲外）。
+                                        &mut crate::engine::core::renderer::ui_clip::UiClipCollector::disabled(),
                                     );
                                     items[canvas_start..].sort_by_key(|it| it.layer);
                                 }
@@ -4450,10 +4452,17 @@ impl App {
                         // スクリプト 2D プリミティブ（SEED.Draw）の座標空間マップと
                         // スクリーンスペース用モデル行列。
                         prim_spaces, prim_screen_model,
+                        // 2D キャンバスの切り抜きの領域の表（W2-0 の試作。根の指定が無ければ空）。
+                        clip_regions_2d,
                     ) = {
                         crate::profile_scope!("描画/スプライト収集・ソート");
                         // 2D キャンバスアクターのスプライト（オルソ／ワールドスペース 2D 用）
                         let mut items_2d = Vec::new();
+                        // 切り抜きの領域の収集（W2-0 の試作。根は ui_spike の clip=<名前> で指定した
+                        // キャンバスノード。指定が無ければ何も積まず、従来と同じ描画になる。renderer/ui_clip.rs）。
+                        let mut clip_collector = crate::engine::core::renderer::ui_clip::UiClipCollector::new(
+                            &crate::engine::core::ui_spike::config().clip_actor_names,
+                        );
                         // 3D Canvas（Actor3D + CanvasComponent）ごとの描画セグメント。
                         // ワールドキャンバスはレイヤー空間がキャンバス内で完結するため、
                         // 「キャンバス 1 つ = セグメント 1 つ」として分けて持ち、
@@ -4548,6 +4557,7 @@ impl App {
                                     &mut text_items_2d,
                                     &mut prim_spaces,
                                     &mut particle_items_2d,
+                                    &mut clip_collector,
                                 );
 
                             }
@@ -4619,6 +4629,8 @@ impl App {
                                     &mut seg_texts,
                                     &mut prim_spaces,
                                     &mut seg_particles,
+                                    // 3D ワールドキャンバスは切り抜きを扱わない（透視では scissor で正しく切れない。§3.8）。
+                                    &mut crate::engine::core::renderer::ui_clip::UiClipCollector::disabled(),
                                 );
                                 prim_spaces.world3d = false;
                                 seg_sprites.sort_by_key(|it| it.layer);
@@ -4669,7 +4681,8 @@ impl App {
                         (items_2d_bg, items_2d_fg, canvas3d_segments,
                          text_2d_bg, text_2d_fg,
                          part_2d_bg, part_2d_fg,
-                         prim_spaces, prim_screen_model)
+                         prim_spaces, prim_screen_model,
+                         clip_collector.into_regions())
                     };
 
                     // CanvasComponent 矩形アウトラインバッチ（エディタモード + 2D キャンバス世界線のみ）
@@ -4944,6 +4957,8 @@ impl App {
                                     mesh:  None,
                                     zone:  CanvasDrawZone::Foreground,
                                     layer: 0,
+                                    // エディタの選択アウトラインは切り抜かない
+                                    clip:  None,
                                 });
                             }
                             items
@@ -5094,6 +5109,9 @@ impl App {
                                 prim_view_proj: &vp_2d_prim,
                                 prim_depth_tested: false,
                                 text_view_proj: &vp_2d_text,
+                                // 切り抜き（W2-0 の試作）: スプライト・テキストと同じカメラで射影する
+                                clip_regions: &clip_regions_2d,
+                                clip_view_proj: &vp_2d_text,
                             },
                         );
                         // 2D 前面ゾーン（スクリーンスペースのプリミティブもここに含まれる）
@@ -5114,8 +5132,18 @@ impl App {
                                 prim_view_proj: &vp_2d_prim,
                                 prim_depth_tested: false,
                                 text_view_proj: &vp_2d_text,
+                                clip_regions: &clip_regions_2d,
+                                clip_view_proj: &vp_2d_text,
                             },
                         );
+                        // 試作の計測: 切り抜きがあるときだけ、ランの数（描画呼び出しの目安）をまれに出す
+                        if !clip_regions_2d.is_empty() {
+                            super::ui_spike_hooks::log_clip_runs(
+                                clip_regions_2d.len(),
+                                zone_fg.run_count() + zone_bg.run_count(),
+                                zone_fg.clipped_run_count() + zone_bg.clipped_run_count(),
+                            );
+                        }
                         // 3D ワールドキャンバス（キャンバスごとに 1 セグメント）。
                         // レイヤーはキャンバス内で完結し、キャンバス同士はヒエラルキー順に前後する。
                         let segs_3d: Vec<UiDrawSegment> = canvas3d_segments
@@ -5141,6 +5169,9 @@ impl App {
                                 // 3D ワールドキャンバスの図形だけ深度テスト付き
                                 prim_depth_tested: true,
                                 text_view_proj: &saved_view_proj,
+                                // 3D ワールドキャンバスは切り抜きを扱わない（W2-0 の試作の範囲外）
+                                clip_regions: &[],
+                                clip_view_proj: &saved_view_proj,
                             },
                         );
                         (zone_bg, zone_fg, zone_3d)
@@ -7286,6 +7317,8 @@ impl App {
                                     self.canvas_text.as_ref(),
                                     // 2D パーティクルは UI と同じ描画列（レイヤー順）で描く。
                                     Some((&self.particle_system, &draw_ctx.pipelines.particles)),
+                                    // メインパス（ビューポート・scissor を張ることがある）では切り抜かない（W2-0 の試作の範囲外）
+                                    None,
                                 );
                             }
                         }
@@ -7659,6 +7692,8 @@ impl App {
                                 self.primitive2d.as_ref(),
                                 self.canvas_text.as_ref(),
                                 Some((&self.particle_system, &draw_ctx.pipelines.particles)),
+                                // 3D ワールドキャンバスは切り抜かない
+                                None,
                             );
                         }
 
@@ -7694,6 +7729,8 @@ impl App {
                                     self.primitive2d.as_ref(),
                                     self.canvas_text.as_ref(),
                                     Some((&self.particle_system, &draw_ctx.pipelines.particles)),
+                                    // メインパス（エディタのビュー・ワールドスペース）では切り抜かない（W2-0 の試作の範囲外）
+                                    None,
                                 );
                             }
                         }
@@ -8432,6 +8469,9 @@ impl App {
                     // HDR フォーマットのまま（LDR 中間も物理は Rgba16Float のため変更不要）。
                     if scene_canvas_ss {
                         if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
+                            // 切り抜き（W2-0 の試作）の scissor の基準＝このパスの描画先（LDR 中間）の大きさ。
+                            // オーバーレイパスはビューポートも scissor も張らないので、NDC は描画先の全体に対応する。
+                            let (overlay_w, overlay_h) = frame.logical_size();
                             // トーンマップ後の LDR 中間へ 2D 要素を直描き（トーンマップ非適用）。
                             let mut overlay_pass = frame.begin_canvas_overlay_pass_to(ldr_view);
 
@@ -8453,6 +8493,8 @@ impl App {
                                     self.primitive2d.as_ref(),
                                     self.canvas_text.as_ref(),
                                     Some((&self.particle_system, &draw_ctx.pipelines.particles)),
+                                    // 切り抜きのあるランだけ scissor を張る（無ければ従来と同じ）
+                                    Some([overlay_w, overlay_h]),
                                 );
                             }
                             // 2D 由来の孤児粒子（エミッタは消えたが寿命が残っている粒子群）。
@@ -9899,7 +9941,9 @@ impl App {
         // 遮蔽時の present 即時リターンによる暴走ループを防ぐ。
         // 判定・待ち方の詳細はすべて frame_pacing.rs に集約してある。
         self.pace_frame(perf_t_total);
-        if let Some(window) = &self.window { window.request_redraw(); }
+        // 次のフレームを要求する。既定は従来どおり毎フレーム request_redraw。
+        // W2-0 の試作（ui_spike の idle=）のときだけ、入力の無いフレームが続いたら要求をやめる（ui_spike_hooks.rs）。
+        self.request_next_frame(event_loop);
     }
 }
 

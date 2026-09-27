@@ -56,6 +56,10 @@ pub const GPU_TIMING_KEY: &str = "gpu_timing";
 /// gpu_timing を有効とみなす値（Java は文字列の extra だけを渡す）。
 const GPU_TIMING_ON: &str = "1";
 
+/// アプリ基盤 W2-0 のスパイクの指定の JSON のキー（am start の extra seed.ui_spike。検証用。
+/// 書式は engine::core::ui_spike::config。既定では渡さない＝何もしない）。
+pub const UI_SPIKE_KEY: &str = "ui_spike";
+
 /// 待ち受けに使えるポートの最小値（0 は「OS に選ばせる」なので、エディタが forward できず使えない）。
 const MIN_IPC_PORT: u16 = 1;
 
@@ -106,6 +110,10 @@ pub struct LaunchOptions {
     /// パスごとの GPU 時間を測るか（"1" で有効。段階D-2・計測用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_timing: Option<String>,
+    /// アプリ基盤 W2-0 のスパイクの指定（検証用。フィールド名 `ui_spike` がそのままキー＝UI_SPIKE_KEY）。
+    /// 無ければ何もしない（従来どおり）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_spike: Option<String>,
 }
 
 impl LaunchOptions {
@@ -132,7 +140,12 @@ impl LaunchOptions {
         if options.ipc_token.as_deref().is_some_and(|token| token.trim().is_empty()) {
             options.ipc_token = None;
         }
-        for text in [&mut options.quality, &mut options.quality_overrides, &mut options.gpu_timing] {
+        for text in [
+            &mut options.quality,
+            &mut options.quality_overrides,
+            &mut options.gpu_timing,
+            &mut options.ui_spike,
+        ] {
             if text.as_deref().is_some_and(|value| value.trim().is_empty()) {
                 *text = None;
             }
@@ -506,5 +519,15 @@ mod tests {
         );
         assert!(matches!(invalid, SceneChoice::Invalid { ref requested, .. } if requested == "../outside.scene"));
         assert_eq!(invalid.scene_path(), None);
+    }
+
+    /// W2-0 のスパイクの指定は UI_SPIKE_KEY で届き、空白だけは指定なし（何もしない）。
+    #[test]
+    fn ui_spike_uses_its_key() {
+        let options = LaunchOptions::from_json("{\"ui_spike\":\"idle=30,ime\"}").unwrap();
+        assert_eq!(options.ui_spike.as_deref(), Some("idle=30,ime"));
+        assert!(options.to_json().contains(&format!("\"{UI_SPIKE_KEY}\"")));
+        assert_eq!(LaunchOptions::from_json("{\"ui_spike\":\"  \"}").unwrap().ui_spike, None);
+        assert_eq!(LaunchOptions::default().ui_spike, None, "既定では渡さない");
     }
 }

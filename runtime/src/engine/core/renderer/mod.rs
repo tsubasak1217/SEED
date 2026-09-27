@@ -27,6 +27,8 @@ pub(crate) mod batch2d;
 pub mod ui_draw_order;
 /// UI 1 ゾーン分の統合描画列（ラン列）の構築と描画
 pub mod ui_draw_pass;
+/// UI の切り抜き（クリップ）: 切り抜きの領域の収集・ランの分割・scissor の矩形の計算（W2-0 の試作。純関数・単体テストあり）
+pub mod ui_clip;
 /// GPU パーティクル シミュレーション＋描画（Phase RP）
 pub(crate) mod particle_system;
 /// GPU パーティクルの組込み形状メッシュ（Point/Sphere/Box/Plane/Model）

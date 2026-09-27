@@ -66,6 +66,8 @@ impl ApplicationHandler for App {
         self.poll_screenshot_outcomes();
         // 図鑑サムネイル生成ジョブを 1 段進める（完了時に応答を返し、状態を復帰する）。
         self.poll_thumbnail_job();
+        // W2-0 の試作: 描画を止めている間、wake_ms の時刻が来たら 1 フレームだけ描く（既定で無効。ui_spike_hooks.rs）。
+        self.pump_idle_wake(event_loop);
     }
 
     /// ウィンドウイベントを処理する（キー入力・マウス・リサイズ・メインループ）。
@@ -80,6 +82,8 @@ impl ApplicationHandler for App {
         super::play_diag::note_window_event(classify_window_event(&event));
         // サーフェス・リサイズ・タッチの診断ログ（Android のみ。デスクトップでは即 return）。
         super::lifecycle_diag::observe_window_event(&event);
+        // W2-0 の試作: 描画を止めていたら、入力などの WindowEvent で再開する（既定で無効。ui_spike_hooks.rs）。
+        self.note_window_event_for_idle(&event, event_loop);
 
         match event {
             WindowEvent::CloseRequested if !self.is_embedded() => {
@@ -129,8 +133,16 @@ impl ApplicationHandler for App {
                 self.on_touch(touch);
             }
 
+            // 文字入力（IME）。今は W2-0 の試作のログだけ（ui_spike の ime のときだけ出す。既定では何もしない）。
+            // IME を許可しない限り（既定）winit は Ime を送ってこない（ui_spike_hooks.rs の allow_desktop_ime_if_requested）。
+            WindowEvent::Ime(ime) => {
+                self.log_desktop_ime_event(&ime);
+            }
+
             // ── メインループ ──────────────────────────────────
             WindowEvent::RedrawRequested => {
+                // W2-0 の試作: 描画を止めていたのを入力で起こした直後なら、起こしてからの遅れをログへ（既定で無効）。
+                self.log_idle_wake_latency();
                 // 検証用の合成タッチ（debug.seed.touch_test。要求が無ければ何もしない）。
                 self.pump_touch_test_sequence();
                 self.handle_redraw_requested(event_loop);

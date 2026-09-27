@@ -17,6 +17,12 @@
 //  UI では従来と同じドローコール数（種別ごとに 1 本）で済み、
 //  最悪ケース（1 アイテムごとにレイヤーと種別が入れ替わる UI）でのみ
 //  アイテム数と同数のドローコールになる。
+//
+//  【切り抜き（W2-0 の試作。renderer/ui_clip.rs）】
+//  アイテムが切り抜きの番号（clip）を持つとき、ランを番号の変わり目でさらに分け、
+//  ランごとに scissor の矩形を持たせる。切り抜きが 1 つも無ければ従来と同じラン・同じ描画。
+//  scissor を張るのは `draw` に描画先の大きさ（clip_target）が渡されたときだけ
+//  （今はシーンのスクリーンスペースのオーバーレイパスだけ。メインパスは従来どおり切り抜かない）。
 // ============================================================
 
 use crate::engine::core::font::GpuTextBatch;
@@ -31,7 +37,10 @@ use crate::engine::core::renderer::primitive2d::{
 };
 use crate::engine::core::renderer::particle_system::ParticleSystem;
 use crate::engine::core::renderer::pipeline::ParticlePipelines;
-use crate::engine::core::renderer::ui_draw_order::{merge_ui_draw_runs, UiDrawKind};
+use crate::engine::core::renderer::ui_clip::{
+    clip_ndc_rect, scissor_px, split_run_by_clip, NdcRect, ScissorRect, UiClipId, UiClipRegion,
+};
+use crate::engine::core::renderer::ui_draw_order::{merge_ui_draw_runs, UiDrawKind, UiDrawRun};
 use crate::engine::components::CanvasDrawZone;
 use crate::engine::ecs::Entity;
 
@@ -107,14 +116,22 @@ enum UiZoneRun {
     Text(TextDrawRange),
 }
 
+/// 切り抜きの矩形付きの 1 ラン。
+struct UiZoneRunEntry {
+    /// GPU 資源まで解決済みのラン。
+    run: UiZoneRun,
+    /// 切り抜きの NDC の矩形（祖先との交差済み。None = 切り抜かない）。
+    clip: Option<NdcRect>,
+}
+
 /// 1 ゾーン分の統合描画列。
 ///
 /// `build` で GPU へ積み、`draw` でレンダーパスへ流す。
 /// テキストの頂点バッファはゾーンにつき 1 本だけ作り、ランは区間で参照する。
 #[derive(Default)]
 pub struct UiZoneDraw {
-    /// 描画順に並んだラン列。
-    runs: Vec<UiZoneRun>,
+    /// 描画順に並んだラン列（切り抜きの矩形付き）。
+    runs: Vec<UiZoneRunEntry>,
     /// このゾーンのテキスト頂点バッチ（テキストが 1 文字も無ければ None）。
     text_gpu: Option<GpuTextBatch>,
 }
@@ -133,6 +150,10 @@ pub struct UiZoneBuildParams<'a> {
     pub prim_depth_tested: bool,
     /// テキストを NDC 化するビュー射影行列（行優先）。
     pub text_view_proj: &'a [[f32; 4]; 4],
+    /// 切り抜きの領域の表（アイテムの `clip` 番号の参照先。切り抜きを扱わないゾーンは空。W2-0 の試作）。
+    pub clip_regions: &'a [UiClipRegion],
+    /// 切り抜きの領域を NDC へ射影するビュー射影行列（行優先。スプライトを描くカメラと同じもの）。
+    pub clip_view_proj: &'a [[f32; 4]; 4],
 }
 
 impl UiZoneDraw {
@@ -153,10 +174,11 @@ impl UiZoneDraw {
         queue: &wgpu::Queue,
         params: &UiZoneBuildParams<'_>,
     ) -> Self {
-        // ── 1) 描画順（セグメント番号 + ラン）を決める ──────────────
+        // ── 1) 描画順（セグメント番号 + ラン + 切り抜きの番号）を決める ──────────────
         // レイヤー値だけを取り出して純ロジックへ渡す。
-        let mut ordered: Vec<(usize, crate::engine::core::renderer::ui_draw_order::UiDrawRun)> =
-            Vec::new();
+        // 切り抜き（W2-0 の試作）: ランを切り抜きの番号が変わるところでさらに分ける
+        // （切り抜きが 1 つも無いゾーンではランは分かれず、従来と同じ並びになる）。
+        let mut ordered: Vec<(usize, UiDrawRun, Option<UiClipId>)> = Vec::new();
         for (si, seg) in segments.iter().enumerate() {
             let sprite_layers: Vec<i32> = seg.sprites.iter().map(|it| it.layer).collect();
             let prim_layers: Vec<i32> = seg.primitives.iter().map(|c| c.layer).collect();
@@ -168,12 +190,27 @@ impl UiZoneDraw {
                 &part_layers,
                 &text_layers,
             ) {
-                ordered.push((si, run));
+                // 2D パーティクルとスクリプトの図形は試作では切り抜かない（常に None）
+                let pieces = split_run_by_clip(run, |index| match run.kind {
+                    UiDrawKind::Sprite => seg.sprites[index].clip,
+                    UiDrawKind::Text => seg.texts[index].clip,
+                    UiDrawKind::Primitive | UiDrawKind::Particle => None,
+                });
+                for (piece, clip) in pieces {
+                    ordered.push((si, piece, clip));
+                }
             }
         }
         if ordered.is_empty() {
             return Self::default();
         }
+        // 切り抜きの番号 → NDC の矩形（同じ番号は 1 度だけ射影する）
+        let mut clip_rects: Vec<Option<Option<NdcRect>>> = vec![None; params.clip_regions.len()];
+        let mut resolve_clip = |clip: Option<UiClipId>| -> Option<NdcRect> {
+            let id = clip?;
+            let slot = clip_rects.get_mut(id as usize)?;
+            *slot.get_or_insert_with(|| clip_ndc_rect(params.clip_regions, id, params.clip_view_proj))
+        };
 
         // ── 2) テキストを 1 本のバッチへ焼く（ランごとの区間付き）────
         // グループはラン順に並べるので、後段でラン列と 1:1 に取り出せる。
@@ -182,8 +219,8 @@ impl UiZoneDraw {
         if let Some(ct) = canvas_text {
             let groups: Vec<&[CanvasTextItem]> = ordered
                 .iter()
-                .filter(|(_, r)| r.kind == UiDrawKind::Text)
-                .map(|(si, r)| &segments[*si].texts[r.start..r.end])
+                .filter(|(_, r, _)| r.kind == UiDrawKind::Text)
+                .map(|(si, r, _)| &segments[*si].texts[r.start..r.end])
                 .collect();
             if !groups.is_empty() {
                 if let Some((gpu, ranges)) =
@@ -204,14 +241,15 @@ impl UiZoneDraw {
         // ── 4) ラン順に GPU へ積む ─────────────────────────────────
         let mut primitive2d = primitive2d;
         let mut text_cursor = 0usize;
-        let mut runs: Vec<UiZoneRun> = Vec::with_capacity(ordered.len());
-        for (si, run) in &ordered {
+        let mut runs: Vec<UiZoneRunEntry> = Vec::with_capacity(ordered.len());
+        for (si, run, clip_id) in &ordered {
+            let clip = resolve_clip(*clip_id);
             match run.kind {
                 UiDrawKind::Sprite => {
                     // このランのぶんだけイテレータから取り出して push する。
                     // → テクスチャ融合はラン内で閉じる（ランを跨いだ融合は起きない）。
                     let list = sprite_stream.push(sprite_iters[*si].by_ref().take(run.len()));
-                    runs.push(UiZoneRun::Sprite(list));
+                    runs.push(UiZoneRunEntry { run: UiZoneRun::Sprite(list), clip });
                 }
                 UiDrawKind::Primitive => {
                     if let Some(p) = primitive2d.as_deref_mut() {
@@ -222,24 +260,27 @@ impl UiZoneDraw {
                             params.prim_view_proj,
                             params.prim_depth_tested,
                         );
-                        runs.push(UiZoneRun::Primitive(range));
+                        runs.push(UiZoneRunEntry { run: UiZoneRun::Primitive(range), clip });
                     }
                 }
                 UiDrawKind::Particle => {
                     // パーティクルは GPU 資源をエミッタ側（ParticleSystem）が持つため、
                     // ここでは描画順に並んだ entity 列を控えるだけでよい。
-                    runs.push(UiZoneRun::Particle(
-                        segments[*si].particles[run.start..run.end]
-                            .iter()
-                            .map(|it| it.emitter)
-                            .collect(),
-                    ));
+                    runs.push(UiZoneRunEntry {
+                        run: UiZoneRun::Particle(
+                            segments[*si].particles[run.start..run.end]
+                                .iter()
+                                .map(|it| it.emitter)
+                                .collect(),
+                        ),
+                        clip,
+                    });
                 }
                 UiDrawKind::Text => {
                     // テキストランはグループと同順で並んでいる。
                     // バッチ構築に失敗した場合（フォント未初期化等）は区間が無いので飛ばす。
                     if let Some(range) = text_ranges.get(text_cursor).copied() {
-                        runs.push(UiZoneRun::Text(range));
+                        runs.push(UiZoneRunEntry { run: UiZoneRun::Text(range), clip });
                     }
                     text_cursor += 1;
                 }
@@ -247,6 +288,16 @@ impl UiZoneDraw {
         }
 
         Self { runs, text_gpu }
+    }
+
+    /// 切り抜きの矩形を持つランの数（[PERF]・試作の計測用。W2-0）。
+    pub fn clipped_run_count(&self) -> usize {
+        self.runs.iter().filter(|entry| entry.clip.is_some()).count()
+    }
+
+    /// ランの総数（描画呼び出しの数の目安。スプライトはテクスチャ境界でさらに分かれる）。
+    pub fn run_count(&self) -> usize {
+        self.runs.len()
     }
 
     /// 描くものが 1 つも無いか。
@@ -258,8 +309,8 @@ impl UiZoneDraw {
     pub fn sprite_stats(&self) -> (usize, usize) {
         let mut draws = 0usize;
         let mut insts = 0usize;
-        for r in &self.runs {
-            if let UiZoneRun::Sprite(list) = r {
+        for entry in &self.runs {
+            if let UiZoneRun::Sprite(list) = &entry.run {
                 draws += list.batches.len();
                 insts += list.batches.iter().map(|b| b.count as usize).sum::<usize>();
             }
@@ -274,6 +325,9 @@ impl UiZoneDraw {
     /// - `inst_buf`: `build` で使った `InstanceStream` の GPU バッファ。
     /// - `particles`: 2D パーティクルを描くための (システム, パイプライン)。
     ///   `None` を渡すとパーティクルランは黙って飛ばされる（描画順は変わらない）。
+    /// - `clip_target`: 描画先の大きさ（px）。Some のときだけ切り抜きのあるランに scissor を張り、
+    ///   描き終えたら描画先の全体へ戻す（パスにビューポート・scissor を張っていないことが前提）。
+    ///   None なら scissor に触らない（切り抜きのあるランも切り抜かずに描く＝従来どおり）。
     #[allow(clippy::too_many_arguments)]
     pub fn draw<'rp>(
         &'rp self,
@@ -284,9 +338,26 @@ impl UiZoneDraw {
         primitive2d: Option<&'rp Primitive2dRenderer>,
         canvas_text: Option<&'rp CanvasTextRenderer>,
         particles: Option<(&'rp ParticleSystem, &'rp ParticlePipelines)>,
+        clip_target: Option<[u32; 2]>,
     ) {
-        for run in &self.runs {
-            match run {
+        // 切り抜きのあるランが 1 本も無ければ scissor に触らない（従来と同じ描画コマンド列）
+        let clip_target = clip_target.filter(|_| self.clipped_run_count() > 0);
+        // 今パスに張っている scissor（パスの既定＝描画先の全体から始める）
+        let mut current_scissor: Option<ScissorRect> = clip_target.map(ScissorRect::full);
+        for entry in &self.runs {
+            if let Some(target) = clip_target {
+                let wanted = entry.clip.map(|rect| scissor_px(&rect, target));
+                // 切り抜きの中に 1 画素も残らないランは描かない
+                if wanted.is_some_and(|rect| rect.is_empty()) {
+                    continue;
+                }
+                let wanted = wanted.unwrap_or_else(|| ScissorRect::full(target));
+                if current_scissor != Some(wanted) {
+                    pass.set_scissor_rect(wanted.x, wanted.y, wanted.width, wanted.height);
+                    current_scissor = Some(wanted);
+                }
+            }
+            match &entry.run {
                 UiZoneRun::Sprite(list) => {
                     draw_sprite_batches(pass, sprite_pipeline, camera_bg, inst_buf, list);
                 }
@@ -310,6 +381,13 @@ impl UiZoneDraw {
                         ct.draw_range(gpu, range, pass);
                     }
                 }
+            }
+        }
+        // 後に同じパスへ描くもの（アウトライン・孤児粒子など）を切り抜かないよう、描画先の全体へ戻す
+        if let Some(target) = clip_target {
+            let full = ScissorRect::full(target);
+            if current_scissor != Some(full) {
+                pass.set_scissor_rect(full.x, full.y, full.width, full.height);
             }
         }
     }

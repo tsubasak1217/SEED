@@ -702,6 +702,162 @@ Android 17 になった（その後の試験はすべて Android 17。W1-4b ま�
 | W2-11 | 通しの確認（UC-1〜12）・docs・backlog | 2 |
 
 **合計の目安: 22〜32 段階相当 ≒ エージェント作業で 5〜8 日。** 根拠: 部品の数が多いうえ、**クリップ・文字入力（IME）・レイアウトの土台**という描画と入力の基盤から作る必要がある（W1 のように「Android の決まった API を包む」作業ではない）。特に IME（Android は winit の外の経路になる見込み）と、レイアウト計算の重複の整理（backlog にある 5 か所）が上振れしやすい。W3 と並べて進めるなら、W2-1〜W2-4 と W2-7 ができた時点でアプリの画面づくりを始められる（グラフ・ホイール・文字入力は後から差し替え）。
+→ **W2-0 の結果で見直した段階と見積もりは §3.8.5**。
+
+### 3.8 W2-0 スパイクの結果（2026-09-27）
+
+W2 でいちばん不確かな 3 点（Android の文字入力・切り抜きの描画・描かないときのイベントループ）を、**本番の振る舞いを変えない試作**で試した。
+試作は既定で無効で、起動の指定 `ui_spike` があるときだけ動く（PC は `SEED.exe --ui-spike=<指定>` か環境変数 `SEED_UI_SPIKE`、Android はデバッグ版の APK を
+`am start … --es seed.ui_spike '<指定>'`。書式は `runtime/src/engine/core/ui_spike/config.rs` の `idle=<N>`・`wake_ms=<M>`・`clip=<ノード名>`・`ime`）。
+試験用のプロジェクト `UiSpike` は作業フォルダの使い捨て（WakeOrPay の `.seedproj`・`project_settings.json` を写し、アプリ ID `com.seedengine.uispike`・機能なし・
+540×1200 のキャンバスに切り抜きの試験の UI。リポジトリには入れていない）。PC は Windows 11・`runtime/target/debug/SEED.exe`（RTX 3060）。
+**実機（Pixel 6a）は、この回は adb が `unauthorized`（USB デバッグの許可待ち）のまま 1 時間以上戻らず、行えなかった**。Android 側の試作は
+`cargo ndk`（arm64-v8a）と SeedAndroid の `build`（`com.seedengine.uispike` の APK 58.1 MB。MainActivity の上書きの javac を含む）まで通してある。
+実機での手順は §3.8.6。表の「根拠」の **実行** は動かして確かめたもの、**読んだ** はソース（`~/.cargo/registry` の android-activity 0.6.1・winit 0.30.13・
+同梱の GameActivity／GameTextInput 4.4.0 の C++、Gradle のキャッシュの games-activity 4.4.0 の `javap -c`）を読んで確かめたもの。
+
+#### 3.8.1 Android の文字入力（E-06）
+
+| # | 試したこと | 結果 | 根拠 |
+|---|---|---|---|
+| I-1 | winit が文字入力のイベントをどう扱うか | **読み捨てる**。winit の `handle_input_event` は MotionEvent と KeyEvent だけを扱い、`TextEvent`（状態が変わった）と `TextAction`（完了・次へ）は `warn!("Unknown android_activity input event …")` で捨てる。android-activity はこの 2 つを glue の「フラグ 1 つ」（`textInputState`・`pendingEditorAction`）から `input_events_iter` で 1 度だけ取り出す作りなので、winit が先に取った後は SEED から見えない。状態は `text_input_state()` で後から読めるが、**アクションは取り戻せない**。winit の `warn!` は `tracing`（`Cargo.lock` で log 機能なし）なので logcat へは出ない＝入力した文字列がログへ漏れることは無い | 読んだ: winit `platform_impl/android/mod.rs` の 311-481 行、android-activity `game_activity/mod.rs` の 1068-1101 行・`android_native_app_glue.c` の 677-737 行 |
+| I-2 | winit の IME の API | Android では `set_ime_allowed(true)` が `show_soft_input(true)`（SHOW_IMPLICIT）を呼ぶだけで、`set_ime_cursor_area`・`set_ime_purpose` は何もしない。`WindowEvent::Ime` は出さない。**winit の API では Android の文字入力は組めない** | 読んだ: winit `platform_impl/android/mod.rs` の 916-926 行 |
+| I-3 | winit の外から、複製した `AndroidApp` で API を呼べるか | **ビルドまで確かめた・実機は未確認**。`AndroidApp` は `Clone`（中身は `Arc`）で、`android_main` で複製して試作のスレッドへ渡し、元を `with_android_app` へ渡す形で `cargo ndk` が通った。`show_soft_input` などは `&self` で UI スレッドの作業の列へ積むだけ（I-4）、`run_on_java_main_thread` は Java のメインのルーパーの eventfd で動く（android-activity `main_callbacks.rs`）ので、winit が同じ `AndroidApp` を持っていても取り合わない（読んだ）。ソフトキーボードが実際に出るか・入力が届くかは §3.8.6 の手順で確かめる | 実行（ビルド）・読んだ |
+| I-4 | android-activity の操作がどのスレッドで効くか | `show_soft_input`・`hide_soft_input`・`set_text_input_state`・`set_ime_editor_info` は GameActivity の UI スレッドの作業の列（work pipe）へ積まれ、**UI スレッドで順に**実行される（どのスレッドから呼んでもよい）。`set_ime_editor_info` は EditorInfo を書き換えるだけで、IME が読み直すのは次の `restartInput`（＝`show_soft_input` の中の `setSoftKeyboardActive(true)`）。**EditorInfo → 表示の順に呼ぶ** | 読んだ: `GameActivity.cpp` の 340-367・415-440・825-829 行、`javap`（`InputConnection.setSoftKeyboardActive`・`GameActivity.setImeEditorInfoFields`） |
+| I-5 | 完了・次へのアクションの経路 | IME のアクションのボタンは `InputConnection.performEditorAction(action)` → action が 0 以外なら `GameActivity.onEditorAction(action)` → ネイティブ（I-1 で winit が捨てる）。1 行の入力でのハードウェアの Enter は `processKeyEvent` が `EditorInfo.actionId` のアクションにする。**Java の `onEditorAction` を上書きすれば確実に取れる** | 読んだ: `javap`（`InputConnection.performEditorAction`・`sendEditorAction`・`processKeyEvent`） |
+| I-6 | 添字の単位 | GameTextInput は Java の `State` の添字（`String` の添字＝**UTF-16 の単位**）を変換せずにネイティブへ渡す（本文は修正 UTF-8）。android-activity の `TextSpan` の説明と `text_input_state()` の丸めはバイト数を前提にしていて食い違う。`set_text_input_state` の添字もそのまま Java へ渡る。**SEED は UTF-16 の添字として扱う** | 読んだ: `gametextinput.cpp` の 335-352 行、android-activity `game_activity/mod.rs` の 714-742 行（実機での日本語の値は未確認。試作の `native state` のログが UTF-8・UTF-16・文字の数を並べて出すので §3.8.6 で見る） |
+| I-7 | ネイティブから状態を読むときのスレッド | GameTextInput の `getState` は状態の構造体をロックの中で写すが、本文は固定長のバッファを指したままで、UI スレッドがロックの外で上書きする。**UI スレッド以外で読むと途中の本文を読みうる**。試作は `AndroidApp::run_on_java_main_thread` で UI スレッドで読んだ。本番は Java の `stateChanged` の上書きで受け取る（読む側が要らない） | 読んだ: `gametextinput.cpp` の 40-80・225-275 行 |
+| I-8 | キーの取り合い | ソフトキーボードが有効な間は、描画面（SurfaceView）の `OnKeyListener`（GameTextInput の `InputConnection.onKey`）が先にキーを見て、文字・削除・左右・Home/End・1 行の Enter（アクション）の**押下**を本文へ入れる（エンジンへ届かない）。それ以外（**戻る**など）と離す操作はそのまま GameActivity → winit の `KeyboardInput` へ届く。無効な間は今と同じ | 読んだ: `javap`（`InputConnection.onKey`・`processKeyEvent`） |
+| I-9 | ソフトキーボードの表示・高さ | 表示の変化（`onSoftwareKeyboardVisibilityChanged`）は glue の `APP_CMD_SOFTWARE_KB_VIS_CHANGED` になるが android-activity が捨てる（イベントにしない）。IME の範囲は GameActivity の `onImeInsetsChanged` がログを出すだけ。GameTextInput は窓を `setDecorFitsSystemWindows(false)` にする（IME で窓は縮まない）。**高さは Java の WindowInsets（`Type.ime()`）から取り、入力欄をずらすのはエンジン側** | 読んだ: android-activity `game_activity/mod.rs` の 578-584 行、`javap`（`GameActivity.onImeInsetsChanged`・`InputConnection` の構築子） |
+| I-10 | 眠っているイベントループを起こすか | glue の文字入力とアクションの受け口は `notifyInput`（`ALooper_wake`）でイベントループを起こす。ただし winit は WindowEvent を出さないので、W2-10 の「描かない」ではエンジン側が「文字入力があった」を見て再描画を要求する必要がある | 読んだ: `android_native_app_glue.c` の 530-541・677-685 行 |
+| I-11 | PC（Windows）の今 | winit はウィンドウを作るときに IME を切り離し（`ImmAssociateContextEx(IACE_CHILDREN)`）、`set_ime_allowed(true)` で既定の文脈へ戻す。`Ime::Enabled` は許可された窓の `WM_IME_STARTCOMPOSITION` でだけ出る。**SEED は `set_ime_allowed` を呼ばず `WindowEvent::Ime` も扱わない＝今の Play の窓では日本語の IME を使えず、`Ime::Enabled` も来ない**。候補窓の位置は `set_ime_cursor_area`（窓のクライアント座標。`CFS_EXCLUDE` で矩形を避け、変換中の文字は矩形の下）。試作の `ime` で許可と位置の指定まで動かした（落ちない・ログが出る）。日本語の実入力は行っていない | 読んだ: winit `platform_impl/windows/window.rs` の 1161 行・`ime.rs` の 115-150 行・`event_loop.rs` の 1513-1607 行、grep（SEED に `set_ime_allowed` が無い）。実行: `--ui-spike=ime` |
+
+#### 3.8.2 切り抜き（クリップ）の描画
+
+試作: 名前で指定したキャンバスノード（`clip=<名前>`。矩形はそのノードの最初の有効なスプライト）に入ったら、その矩形（ワールド座標の 4 隅）を表へ積み、
+子孫のスプライト・テキスト（インライン画像を含む）へ表の番号を持たせる（`renderer/ui_clip.rs` の `UiClipCollector`）。描画順のランを番号の変わり目で分け
+（`split_run_by_clip`）、ランごとに 4 隅を射影した AABB と祖先の交差を画素の矩形にして `set_scissor_rect` する（`scissor_px`。描画先の外は切り詰め、端は外側へ丸める。
+描き終えたら全体へ戻す）。シェーダー・パイプライン・頂点の形は変えていない。scissor を張るのはシーンのスクリーンスペースのオーバーレイパスだけ。
+
+| # | 試したこと | 結果・数値 | 根拠 |
+|---|---|---|---|
+| C-1 | 400×300 の枠（ClipBox）の中の子（左右にはみ出す 500×80 の赤・上下にはみ出す 80×420 の緑・右へはみ出す文字）と、入れ子の枠（InnerClip 200×120。自身も ClipBox の右下へはみ出す）の中の 300×60 の黄 | **画素単位で切れた**。赤 x=20〜519 → 70〜469、緑 y=140〜559 → 200〜499、黄 x=280〜539 → 320〜469（InnerClip と ClipBox の交差）。切り抜きの外の同じレイヤーの紫の帯と題の文字は切れない | 実行: PC のスクリーンショット（IPC の `SCREENSHOT:game`）を PIL で測った |
+| C-2 | 描画呼び出しの増え方 | 試験のシーン（切り抜き 2 つ）で、2D のラン **3 → 8 本**（切り抜きあり 4 本。3 本は切り抜きなしのときのレイヤーと種別の並びから数えた値、8 本はログ）、スプライトの描画呼び出し **2 → 5 回**（`[PERF] sprites=6枚/2draws → 5draws`。どちらも計測）。増えるのは「レイヤーと種別で並べた列の中で、切り抜きの番号が変わる回数」だけ（同じ切り抜きの中の同じ種別は従来どおり 1 本）。`set_scissor_rect` は Vulkan の動的な状態で安い | 実行: `[SEED UI SPIKE] clip: …` のログと `[PERF]` |
+| C-3 | 既定の描画が変わらないか | 指定なし（切り抜きなし）の同じシーンの画面が、変更前の `SEED.exe`（`runtime/target/develop`・2026-09-26 のビルド）と**画素一致**。切り抜きが無ければランは分かれず、scissor にも触らない | 実行: 2 つのスクリーンショットの差分 0 画素 |
+| C-4 | 単体テスト | `ui_clip` 6 件（根の判定・入れ子の親・交差・NDC → 画素・外側への丸め・ランの分割）と既存の `ui_draw_order`・`canvas_collect` などが通る | 実行: `cargo test --lib`（対象を絞った 109 件） |
+| C-5 | 試作の制限 | 2D パーティクル・スクリプトの図形（`SEED.Draw`）・メインパスで描くもの（背景ゾーン・エディタのビュー）・3D ワールドキャンバスは切り抜かない。回転したノードは 4 隅の AABB になる（正確には切れない）。当たり判定は切り抜きを見ない | 読んだ（試作のコード） |
+
+#### 3.8.3 描かなくてよいときは描かない（X-2・W2-10 の前提）
+
+今のイベントループ（読んだ）: 前面では `ControlFlow::Poll`（`surface_lifecycle.rs` の `ACTIVE_CONTROL_FLOW`）で、`handle_redraw_requested` の末尾で `pace_frame`
+（`target_fps` まで待つ）→ `request_redraw` を毎フレーム繰り返す。背面（`suspended`）だけ `ControlFlow::Wait`。winit 0.30.13 の Android の `request_redraw` は
+フラグを立ててルーパーを起こし、同じ周回の終わりで `RedrawRequested` を配る（`platform_impl/android/mod.rs` の 110-128・340-356・543-608 行）。
+
+試作（`idle=<N>`・`wake_ms=<M>`。`engine/core/ui_spike/idle_redraw.rs` の純粋な判定と `app/ui_spike_hooks.rs`）: フレームの末尾の要求を 1 か所
+（`request_next_frame`）にまとめ、WindowEvent（入力・大きさ・フォーカス）の無いフレームが N 回続いたら要求をやめて `ControlFlow::Wait`（`wake_ms` があれば
+`WaitUntil` で M ミリ秒ごとに 1 フレーム）にする。WindowEvent が来たら `request_redraw` して `Poll` へ戻す。意図して止めている間はフレームの凍結の見張り
+（`[PLAY_WD]`）を黙らせる。エディタに埋め込んだ実行と Edit では使わない。
+
+| # | 試したこと | 結果・数値 | 根拠 |
+|---|---|---|---|
+| D-1 | PC: `idle=30,wake_ms=1000` | 30 フレームの後に止まり、以後は **約 1,016 ms ごとに 1 フレーム**（`[PLAY_HB] gap=1016〜1018ms`）。`[PLAY_WD]` は出ない。IPC の命令（`SCREENSHOT`・`STOP`）はフレームの中でしか処理されないので、次に起きるまで（最大 1 秒）遅れた | 実行: PC の SEED.exe のログ（`[SEED UI SPIKE] idle: …`・`[PLAY_HB]`） |
+| D-2 | 実機: 止めたときの fps・CPU・GPU と、入力での再開 | **未実施**（adb が `unauthorized`）。winit の Android は `Wait` でルーパーを時間切れ無しで待ち、入力（`notifyInput`）・`request_redraw`（waker）で起きて同じ周回で `RedrawRequested` を配るので、PC と同じ振る舞いになる見込み（読んだ。推論）。§3.8.6 の手順で測る | 読んだ |
+| D-3 | 止めている間も CPU を使い続けるもの（W2-10 で扱う） | 読んだ範囲で、フレームと独立に回るのは 3D・2D の物理のスレッド（Play の最初のフレームの末尾で起動）、生存確認（3 秒ごと）、フレームの凍結の見張り（0.5 秒ごと）、音声の出力（rodio／AAudio）。物理のスレッドは描画を止めても自分の周期で進むので、W2-10 では止めている間は物理も止める（背面の `background_gate` と同じ扱い）かを決める | 読んだ: `physics/thread.rs`・`physics/background_pause.rs`・`frame_renderer.rs` の末尾・`heartbeat.rs`・`play_diag.rs`（音声は android.md §16） |
+
+#### 3.8.4 決定
+
+**E-06（Android の文字入力）: (a) GameActivity の文字入力を使う。形は「操作は android-activity の API、知らせは MainActivity の上書き」。**
+
+- **操作（エンジン → IME）**: runtime/android/native が `android_main` で受け取った `AndroidApp` を複製して持ち（winit へは元を渡す。同じ Activity を指す）、
+  `set_ime_editor_info`（入力の種類・アクション・`IME_FLAG_NO_FULLSCREEN`）→ `show_soft_input(false)`、`hide_soft_input(false)`、エンジンが本文を変えたとき
+  （消去・プログラムからの設定）は `set_text_input_state` を呼ぶ。どれも UI スレッドの作業の列に順に積まれるので、エンジンのスレッドから呼んでよい（I-4）。
+- **知らせ（IME → エンジン）**: `MainActivity` が `stateChanged`・`onEditorAction`・`onSoftwareKeyboardVisibilityChanged` を上書きし（super を先に呼ぶ）、
+  `onApplyWindowInsets` で IME の高さ（`WindowInsetsCompat.Type.ime()` の bottom）を取り、今の JNI の流儀（Java → native・UTF-8 の byte[]・数値。§1.2）で
+  エンジンの置き場へ渡す。winit が捨てる `TextEvent`・`TextAction` には頼らない（I-1）。ネイティブから `text_input_state()` を読むこともしない（I-7）。
+  受けた JNI はイベントループを起こす（W2-10。I-10）。
+- **本文の持ち主**: Android は IME（GameTextInput の Editable）が本文・選択・変換中の区間を持ち、エンジンは受けた状態で写しを丸ごと置き換える。
+  Windows は winit の `Ime::Preedit`（変換中の文字とカーソルのバイト位置）・`Ime::Commit` をエンジンの本文へ当てる（入力欄にフォーカスが来たら
+  `set_ime_allowed(true)` と `set_ime_cursor_area`、外れたら `false`）。エンジンの入力欄の状態（本文・選択・変換中の区間）を 1 つの形にそろえ、
+  プラットフォームの差は受け口で吸収する。添字は受け口で UTF-8 の境界へそろえる（Android は UTF-16 で届く。I-6）。
+- (b) Java の `EditText` を重ねる案は採らない（見た目がゲームの UI と揃わない・描画面の上の View の位置合わせと重なりの管理が要る）。
+- 残る確認（W2-6a の頭）: ソフトキーボードが実際に出ること・入力が状態に届くこと・日本語の変換（Gboard のかな入力）の変換中の区間・数字のキーボード・
+  キーボードの高さの値・戻るでキーボードが閉じた後の状態は、W2-0 では実機が使えず未確認。§3.8.6 の手順で確かめる。崩れたときの退路は (b)。
+
+**切り抜き: 軸に沿った矩形は GPU の scissor（C-1〜C-3）、角丸・円はシェーダーの SDF。**
+
+- 矩形: 試作の形（領域の表・ランの分割・`set_scissor_rect`）を W2-1 で本番にする。根は名前ではなくコンポーネント（レイアウトの矩形＋「子を切り抜く」）。
+  **入れ子の深さに上限は設けない**（祖先の鎖で AABB の交差を取るだけ。表の番号は u16）。メインパスで描くとき（エディタのビュー）はパスのビューポートの内側へ交差させる。
+- 角丸・円（アイコン・カード）: スプライトのシェーダーに角丸の矩形の SDF を足す（インスタンスごとに角の半径。円は短い辺の半分。境界は `fwidth` でぼかす）。
+  **子を角丸で切るのは、いちばん内側の角丸の祖先 1 つだけ**を、フレームバッファの画素座標の SDF で行う（スクリーンスペースで回転が無ければ逆行列が要らない）。
+  外側の角丸の祖先は矩形として scissor で切る（W2-4）。
+- 当たり判定（`pick_2d`）も同じ領域の表を使う（押した点がすべての祖先の切り抜きの内側のときだけ当たる）。レイアウト・描画・当たり判定の座標の計算は
+  W2-1 で 1 つの走査にまとめ（backlog「2D ノードのレイアウト計算が 5 か所に重複」）、その出力に切り抜きの番号を入れる。
+- 回転したノード・3D ワールドキャンバス・任意の形はこの方式では正確に切れない。要るときはオーバーレイパスに既にあるステンシル（`overlay_depth_view` は
+  ステンシル付き）で行う（今は作らない）。
+- 描画呼び出しは「レイヤーと種別で並べた列の中で切り抜きの番号が変わる回数」だけ増える（C-2）。スクロール領域 1 つの画面で数本〜十数本の見込み（推論）。
+  行ごとに切り抜きを作らない（一覧全体で 1 つ）。画面外の行は描画アイテムにしない（W2-3 の行の再利用）。
+
+**描かない（W2-10）: 次のフレームの要求をフレームの末尾の 1 か所で決め、止めている間は `ControlFlow::Wait`（次の予定があれば `WaitUntil`）。**
+
+- 「描く理由」（どれかがあれば次のフレームを要求する）: 入力の WindowEvent、JNI で届くプラットフォームのイベント（受け口がルーパーを起こす）、
+  文字入力（I-10）、IPC（読み取りのスレッドが EventLoopProxy で起こす）、スクリプトの要求（1 フレーム・時刻を指定）、動いているもの
+  （アニメーション・スクロールの慣性・画面の遷移）の「動いている」の申告。部品（C# の `SEED.UI`）は動いている間だけ申告する。
+- **スクリプトの `Update` は止まっている間は呼ばない**（フレームを回さない）。時間で何かをするスクリプト（時計の表示・タイマー）は次に起きる時刻を申告する
+  （`WaitUntil`）。目覚まし・`SEED.Platform` のイベントは今どおり待ち行列に残り、起きた最初のフレームで配る（落とさない。JNI の受け口が起こすので遅れない）。
+  センサーを読む画面・鳴動画面のように毎フレーム動かしたい画面は「動いている」を持ち続ける。
+- 止まっていた時間はゲームの時間へ入れない（背面から戻ったときと同じく dt を切り詰める）。フレームの凍結の見張りは、意図して止めている間は黙る（試作と同じ）。
+- 既定: アプリのプロジェクト設定で有効にする（ゲームは今のまま毎フレーム描く）。エディタに埋め込んだ実行では IPC が起こせるようになるまで無効。
+
+#### 3.8.5 W2-1〜W2-11 の見直し
+
+| 段階 | W2-0 を受けて変えたこと | 規模（旧 → 新） |
+|---|---|---|
+| W2-1 | 切り抜きは試作（`ui_clip.rs`・ランの分割・scissor）を本番にする: 根のコンポーネント、図形（`SEED.Draw`）と 2D パーティクルの切り抜き（座標空間の表に番号を持たせる）、メインパスのビューポートとの交差、当たり判定。レイアウトの重複の整理と同じ走査に入れる | 3〜4 → 3〜4（切り抜きの仕組みは済んだが、図形・パーティクル・当たり判定の対応を足した） |
+| W2-2 | 変わらず | 2 |
+| **W2-10a（新）** | 「描く理由」の API と判定だけを先に作る（既定で無効のプロジェクト設定・スクリプトの要求・「動いている」の申告・JNI と IPC の起こし）。W2-3 以降の部品がこれに沿って作れるように、W2-2 の後に置く | 1 |
+| W2-3 | 変わらず（切り抜きは W2-1 で済む）。画面外の行を描画アイテムにしない | 2〜3 |
+| W2-4 | 角丸・円の切り抜き＝スプライトのシェーダーの SDF（インスタンスの形・パイプライン・テストが変わる） | 2〜3 → 2.5〜3.5 |
+| W2-5 | 変わらず | 1 |
+| W2-6 | 経路が決まった（E-06）ので 3 つに分ける: **W2-6a** 受け口（MainActivity の上書き・JNI・Windows の `Ime`・エンジンの入力欄の状態・添字の変換・スクリプトの API）1.5〜2、**W2-6b** 入力欄の部品（カーソル・選択・変換中の下線・キーボードを避ける・数字のキーボード・貼り付けの禁止）1〜1.5、**W2-6c** 文字の寸法・グリフの追い出し 1 | 3〜4 → 3.5〜4.5 |
+| W2-7 | 変わらず | 2〜3 |
+| W2-8 | 変わらず | 2 |
+| W2-9 | 変わらず | 1〜2 |
+| W2-10 | 残り: 部品と画面ができた後に通しで詰める（dt の切り詰め・止める判定のフレーム数・時計の表示の 1 秒ごとの更新・UC-10 の計測） | 1〜2 → 1 |
+| W2-11 | 変わらず | 2 |
+
+**合計の目安（W2-0 を除く）: 21〜28 → 23〜29 段階相当**（§3.7 の表の W2-1〜W2-11 の和との比較。W2-10a と W2-4・W2-6 の分だけ増えた）。
+上振れしやすい所は、レイアウトの重複の整理（W2-1）と、日本語の変換中の表示（W2-6b）に移った。IME の経路の不確かさ（E-06）は解けた。
+
+**最初に着手すべき段階: W2-1（土台）**。すべての部品がレイアウト・切り抜き・当たり判定に乗るため。順は (1) 2D ノードのレイアウトの計算を 1 つの走査に寄せ、
+その出力（ノードの矩形・切り抜きの番号・レイヤー）を描画と当たり判定で共有する → (2) 切り抜きのコンポーネント（試作の本番化）→ (3) `UiRect`・`Stack`・`Wrap`・`Grid`・
+dp → (4) 安全領域の部品。**W2-6a（文字入力の受け口）は触る場所（Java・JNI・入力）が W2-1 と重ならないので、別の worktree で並べて進められる。**
+
+#### 3.8.6 実機での確かめ方（W2-0 では未実施。W2-6a・W2-10a の頭で行う）
+
+試作は既定で無効のまま残してあるので、デバッグ版の APK を起動オプションで起動すればそのまま確かめられる（Git Bash。`MSYS_NO_PATHCONV=1`）。
+前面が自分のアプリ・ランチャー・ロック画面のときだけ操作する。`logcat -c` はしない（起動の直前の端末の時刻を控えて `-T`）。
+
+```bash
+S=<シリアル>; APP=com.seedengine.uispike; ACT=$APP/com.seedengine.runtime.MainActivity   # アプリ ID は試験のプロジェクトの設定
+dotnet run --project editor/tools/SeedAndroid -- install --project <試験のプロジェクト> --serial $S
+# ── 文字入力（ime）: 命令は files/ui_spike/ime_cmd に 1 行（show_text / show_number / show_multiline / hide / set <文字列> / clear / dump）
+adb -s $S shell am start -W -n $ACT --es seed.ui_spike ime
+adb -s $S shell "run-as $APP sh -c 'mkdir -p files/ui_spike && echo show_text > files/ui_spike/ime_cmd'"   # キーボードが出る
+adb -s $S shell input text abc          # 押下が GameTextInput の本文に入る（processKeyEvent の経路）
+adb -s $S shell input keyevent 66       # 1 行の Enter → onEditorAction action=6（完了）
+#   キーボードのキーを input tap で押すと IME の commitText / setComposingText の経路（英字の変換中の区間も見える）。日本語の変換は人の手で
+adb -s $S logcat -d -v threadtime -T "<起動の時刻>" SEED:V SEEDImeSpike:V gti.InputConnection:V '*:S' | grep -E "IME SPIKE|SEEDImeSpike|performEditorAction"
+#   見るもの: [SEED IME SPIKE] native state …（UI スレッドで読んだ状態・UTF-8 / UTF-16 / 文字の数）と SEEDImeSpike の stateChanged・onEditorAction・
+#   onSoftwareKeyboardVisibilityChanged・WindowInsets ime.bottom。日本語で selection と compose の値が UTF-16 の単位か（I-6）
+# ── 描かない（idle）: gpu_timing で [SEED GPU] の 1 フレームの GPU 時間とフレーム数、[SEED HEARTBEAT] の fps
+adb -s $S shell am start -W -n $ACT --es seed.gpu_timing 1                                   # 基準（毎フレーム）
+adb -s $S shell am start -W -n $ACT --es seed.gpu_timing 1 --es seed.ui_spike idle=30        # 30 フレームの後に止まる
+adb -s $S shell am start -W -n $ACT --es seed.gpu_timing 1 --es seed.ui_spike idle=30,wake_ms=1000
+#   CPU: run-as で /proc/<pid>/task/*/stat の utime+stime を 15 秒あけて 2 回読む（android.md §14.6 と同じ）
+#   入力での再開: 止まっている間に input tap（アプリの空いた所）→ [SEED UI SPIKE] idle: 入力で描画を再開します（Touch）と
+#   「入力から最初のフレームの頭まで N ms」、[SEED HEARTBEAT] の fps が戻ること
+adb -s $S shell am force-stop $APP
+```
 
 ## 4. W1・W2 にまたがる要件
 
@@ -723,8 +879,8 @@ Android 17 になった（その後の試験はすべて Android 17。W1-4b ま�
 | E-02 | native → Java の呼び出しの手段 | (a) 今の流儀（jni クレートを足さず、JNIEnv の関数表を番号で呼ぶ）を広げる (b) `jni` クレートを入れる | **決定（2026-09-27 W1-0）**: プロセスの間は **`ContentProvider.call`**（同期・Binder。`ContentProviderClient` を持ち続けて 0.36〜0.51 ms、毎回の `ContentResolver.call` で 0.64〜0.87 ms。AIDL は 0.24〜0.26 ms だがバインドの手続きが要る）。`:seed_platform` → エンジンの知らせは **Binder のコールバック**（`call` の `Bundle.putBinder` で登録）と、前面へ戻ったときの未読の取得（放送は受け手の処理中の放送の後ろで 5 秒待たされた。§2.9.1 の F-3）。最初の呼び出しは `:seed_platform` の起動で 123 ms 同期で待つので、描画のスレッドでは呼ばない。JNI は **(b) `jni` クレート 0.22**（android-activity 0.6.1 経由で既に `Cargo.lock` にあり新しい依存が増えない。attach・GlobalRef・例外の定型を任せられる。cpal・oboe が使う 0.21 とは API の形が違う）。**Rust 側は未試作**（W1-0 は Java だけ。W1-1 の最初に `invoke` の往復を 1 本通して確かめる）。**W1-1（2026-09-27）で Rust 側を実装**: jni 0.22.4 で Android 向けのコンパイルと APK の作成まで通り、PC の模擬で往復とイベントを確かめた。実機での往復は未確認（§2.10） |
 | E-03 | 鳴動の前景サービスの種類 | `mediaPlayback` / `systemExempted` | **決定（2026-09-27 W1-0）: `mediaPlayback`＋音は `USAGE_ALARM` 必須**。予約経由の起動が 3 回とも `ALARM_MANAGER_ALARM_CLOCK` で許可された（§2.9.1 の 6）。`USAGE_ALARM` は Android 17 の背面の音の制限の免除の条件（§2.6・X-7）。`systemExempted` は予備（予約経由で動作を確認。Play の申告での扱いは未確認）。`specialUse` は使わない |
 | E-04 | 機能ごとのマニフェストの入れ方 | (a) 機能ごとの Gradle のライブラリモジュール（マニフェストのマージで入る） (b) SeedAndroid が生成するマニフェストの断片（生成したソースセット） | ディープリンクのように値がプロジェクトごとに違うものがあるので **(b)**（生成物は `src/seedIcon/res` と同じく追跡しない）。Java のコードは常に APK に入れ、コンポーネントの宣言だけを機能で出し入れする。**決定（2026-09-27 W1-2）: 生成物 `app/src/seedFeatures/` を AGP 9.1.0 の variant API で足す**（`androidComponents.onVariants` で `variant.sources.manifests.addStaticManifestFile("src/seedFeatures/AndroidManifest.xml")` と `variant.sources.res?.addStaticSourceDirectory("src/seedFeatures/res")`）。API は Gradle のキャッシュの `gradle-api-9.1.0.jar` を `javap` で読んで確かめ、実ビルドと aapt2 で、断片の権限が入ること・断片の MainActivity の intent-filter が main の activity に合流すること・res が独立した層になり main の既定値（`seed_system_bars_visible=false`）を上書きできることを確かめた。**`sourceSets.main` の `res.srcDir` に足すと main と同じ層になり `Duplicate resources` で止まる**（実ビルドで確認）ので「生成したソースセットを main に足す」形は退けた。ライブラリモジュール（a）は、モジュール・名前空間・include が増え、`nonTransitiveRClass` でリソースの R が分かれ、値がプロジェクトごとに違う以上は生成が要るので退けた（推論）。詳細は docs/android.md §25.10.2 |
-| E-05 | W2 の分担 | Rust（ECS のコンポーネントとシステム）と C#（`SEED.UI`）の割り振り | §3.2 の W2-P1 のとおり: レイアウト・クリップ・当たり判定・ジェスチャー・IME・描画の要否は Rust、部品の振る舞いは C#、見た目はプレハブとテーマ |
-| E-06 | Android の文字入力 | (a) GameActivity の文字入力（android-activity の API を winit の外から使う） (b) Java の `EditText` を画面の上に重ねる | **(a) を W2-0 で試す**。(b) は見た目がゲームの UI と揃わない |
+| E-05 | W2 の分担 | Rust（ECS のコンポーネントとシステム）と C#（`SEED.UI`）の割り振り | §3.2 の W2-P1 のとおり: レイアウト・クリップ・当たり判定・ジェスチャー・IME・描画の要否は Rust、部品の振る舞いは C#、見た目はプレハブとテーマ。**W2-0 で細部を決めた（2026-09-27。§3.8.4）**: 切り抜きは描画のランの分割と scissor（Rust の描画）、IME の知らせは Java（MainActivity の上書き）→ JNI → Rust の入力欄の状態、「描く理由」の判定は Rust（部品は C# から「動いている」を申告するだけ） |
+| E-06 | Android の文字入力 | (a) GameActivity の文字入力（android-activity の API を winit の外から使う） (b) Java の `EditText` を画面の上に重ねる | **決定（2026-09-27 W2-0）: (a)。操作は android-activity の API（複製した `AndroidApp` の `set_ime_editor_info` → `show_soft_input`・`hide_soft_input`・`set_text_input_state`）、知らせは MainActivity の上書き（`stateChanged`・`onEditorAction`・`onSoftwareKeyboardVisibilityChanged`・WindowInsets の IME の高さ）→ JNI**。winit 0.30 は android-activity の `TextEvent`・`TextAction` を読み捨てる（完了などのアクションを取り戻せない）ので、それには頼らない。添字は UTF-16 で届く。根拠は §3.8.1・§3.8.4（ソースを読んだ結果とビルドまで。**実機での確認は W2-0 で行えず W2-6a の頭に回した**。§3.8.6）。(b) は見た目がゲームの UI と揃わない |
 | E-07 | テーマのデータの形 | (a) JSON のアセット（`Assets.ReadText`） (b) `AudioDictionary` と同じ形の辞書コンポーネント（インスペクタで編集） | **(a)**（実行中の差し替え・アプリのテーマ交換・テキストでの差分管理に向く）。エディタでの編集が要るなら (b) を後から足す |
 | E-08 | `SEED.UI` の置き場所 | (a) SEEDScripting（エンジンに同梱。更新が全プロジェクトに届く） (b) テンプレートとしてプロジェクトへコピー | 振る舞いは **(a)**、見た目（プレハブ・テーマの見本）は **(b)** |
 | E-09 | 画面なしでスクリプトを動かすか（v2 の寝坊連絡の送信を、アプリが死んでいても行うため） | (a) :seed_platform から CLR を画面なしで起動する (b) 送信をネイティブ（Java）に寄せる | W5 で決める。Flutter 版は Dart のバックグラウンド isolate で送っていた |

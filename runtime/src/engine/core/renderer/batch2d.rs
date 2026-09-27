@@ -48,6 +48,9 @@ pub struct SpriteDrawItem {
     pub zone: CanvasDrawZone,
     /// 描画優先度レイヤー（大きいほど手前）。
     pub layer: i32,
+    /// 切り抜きの領域の番号（renderer/ui_clip.rs の表の添字。None = 切り抜かない）。
+    /// 2D キャンバスの収集だけが付ける（W2-0 の試作。それ以外の経路は常に None）。
+    pub clip: Option<crate::engine::core::renderer::ui_clip::UiClipId>,
 }
 
 // ============================================================

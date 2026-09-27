@@ -26,6 +26,7 @@ use crate::engine::core::font::text_layout::{TextLayoutSpec, resolve_layout_with
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
 use crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector;
 use crate::engine::core::renderer::SpriteDrawItem;
+use crate::engine::core::renderer::ui_clip::UiClipCollector;
 use crate::engine::core::renderer::ui_draw_pass::Particle2dDrawItem;
 use crate::engine::core::renderer::sprite_skin::{SkinnedSpriteDraw, resolve_bone};
 use crate::engine::ecs::{Entity, World};
@@ -719,6 +720,8 @@ fn push_inline_image_rects(
             zone,
             // レイヤーはテキストと同じ値（同じレイヤー位置に出す）。
             layer: tc.layer,
+            // 切り抜きは呼び出し側（collect_sprite_items）がテキストと同じ番号を後から付ける。
+            clip: None,
         });
     }
 }
@@ -795,6 +798,11 @@ pub(super) fn collect_sprite_items(
     // 粒子の実体（GPU プール）は ParticleSystem 側が持つため、ここでは
     // 「どのエミッタを・どの行列で・どのゾーンの・どのレイヤーへ描くか」だけを集める。
     particle_out: &mut Vec<Particle2dDrawItem>,
+    // 切り抜き（クリップ）の領域の収集（W2-0 の試作。renderer/ui_clip.rs）。
+    // 切り抜きの根のノードに入ったら矩形を積み、子孫のスプライト・テキストへ番号を持たせる。
+    // 切り抜きを扱わない経路（カメラプレビュー・3D ワールドキャンバス）は UiClipCollector::disabled() を渡す。
+    // 2D パーティクルとスクリプトの図形（SEED.Draw）は試作では切り抜かない（§3.8 の制限）。
+    clip_out: &mut UiClipCollector<'_>,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -841,6 +849,7 @@ pub(super) fn collect_sprite_items(
                 text_out,
                 space_out,
                 particle_out,
+                clip_out,
             );
             continue;
         }
@@ -997,6 +1006,12 @@ pub(super) fn collect_sprite_items(
                 });
             }
 
+            // このノードの最初の有効なスプライトの GPU 行列（切り抜きの根になったときの矩形。W2-0 の試作）。
+            let mut first_sprite_gpu_mat: Option<[[f32; 4]; 4]> = None;
+            // このノード自身の描画アイテムに付ける切り抜きの番号（祖先の切り抜きの中なら Some）。
+            // ノード自身が根でも、自分のスプライト（＝切り抜きの矩形そのもの）は切り抜かない。
+            let node_clip = clip_out.current();
+
             // SpriteComponent スロットを走査して GPU 行列とテクスチャを収集する
             // （enabled=false のスロットは非表示）
             for slot in actor.slots() {
@@ -1082,6 +1097,8 @@ pub(super) fn collect_sprite_items(
                                 }
                             }
                         }
+                        // 切り抜きの根の矩形の候補（最初の有効なスプライト）を控える
+                        first_sprite_gpu_mat.get_or_insert(gpu_mat);
                         // 描画ゾーン（ルートキャンバス継承）とレイヤー（スプライト個別）を添付する
                         out.push(SpriteDrawItem {
                             model: gpu_mat,
@@ -1090,6 +1107,7 @@ pub(super) fn collect_sprite_items(
                             mesh: None,
                             zone: my_zone,
                             layer: sc.layer,
+                            clip: node_clip,
                         });
                     }
                 }
@@ -1139,6 +1157,7 @@ pub(super) fn collect_sprite_items(
                     mesh: Some(mesh_draw),
                     zone: my_zone,
                     layer: ss.layer,
+                    clip: node_clip,
                 });
             }
 
@@ -1182,6 +1201,7 @@ pub(super) fn collect_sprite_items(
                 // 本文とスロットの展開結果（フレーム内キャッシュ）。
                 // インライン画像の収集とテキスト頂点生成が同じ実体を共有する。
                 let expanded = expanded_for(slot.entity, tc);
+                let inline_start = out.len();
                 collect_inline_image_sprites(
                     draw_ctx,
                     tc,
@@ -1193,6 +1213,10 @@ pub(super) fn collect_sprite_items(
                     my_zone,
                     out,
                 );
+                // インライン画像もテキストと同じ切り抜きの中に入れる（W2-0 の試作）
+                for image in &mut out[inline_start..] {
+                    image.clip = node_clip;
+                }
                 text_out.push(CanvasTextItem {
                     doc: expanded.doc.clone(),
                     color_runs: expanded.runs.clone(),
@@ -1222,6 +1246,7 @@ pub(super) fn collect_sprite_items(
                     shadow_offset: [tc.shadow_offset_x, tc.shadow_offset_y],
                     shadow_color: tc.shadow_color,
                     shadow_softness: tc.shadow_softness,
+                    clip: node_clip,
                 });
             }
 
@@ -1255,6 +1280,8 @@ pub(super) fn collect_sprite_items(
                     ct.scale[1] * auto_scale_factor[1],
                 ]
             };
+            // 切り抜きの根なら、子孫を集める間だけその矩形の中に入る（W2-0 の試作。根でなければ何もしない）
+            let entered_clip = clip_out.enter_node(&actor.name, first_sprite_gpu_mat.as_ref());
             collect_sprite_items(
                 &actor.children,
                 world,
@@ -1274,7 +1301,11 @@ pub(super) fn collect_sprite_items(
                 text_out,
                 space_out,
                 particle_out,
+                clip_out,
             );
+            if entered_clip {
+                clip_out.exit_node();
+            }
         }
     }
 }

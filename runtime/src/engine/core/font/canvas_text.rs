@@ -87,6 +87,8 @@ pub struct CanvasTextItem {
     pub shadow_color: [f32; 4],
     /// ドロップシャドウのぼかし幅（キャンバスピクセル。0 = シャープ）。
     pub shadow_softness: f32,
+    /// 切り抜きの領域の番号（renderer/ui_clip.rs の表の添字。None = 切り抜かない。W2-0 の試作）。
+    pub clip: Option<crate::engine::core::renderer::ui_clip::UiClipId>,
 }
 
 impl CanvasTextItem {

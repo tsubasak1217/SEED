@@ -222,6 +222,15 @@ const WD_POLL_INTERVAL_MS: u64 = 500;
 /// 監視スレッドを 1 度だけ spawn するためのフラグ。
 static WD_SPAWNED: AtomicBool = AtomicBool::new(false);
 
+/// 描画を意図して止めているか（W2-0 の試作「描かなくてよいときは描かない」。app/ui_spike_hooks.rs）。
+/// true の間はフレームが途絶えても凍結の警告（[PLAY_WD]）を出さない。既定は false（従来どおり）。
+static INTENTIONALLY_IDLE: AtomicBool = AtomicBool::new(false);
+
+/// 描画を意図して止めた・再開したことを監視スレッドへ知らせる。
+pub(super) fn set_intentionally_idle(idle: bool) {
+    INTENTIONALLY_IDLE.store(idle, Ordering::Relaxed);
+}
+
 /// HWND が可視かどうか（Windows のみ実 API・他は常に true 相当）。
 #[cfg(target_os = "windows")]
 fn is_window_visible(hwnd: isize) -> bool {
@@ -254,6 +263,7 @@ pub(super) fn ensure_frame_watchdog() {
                 let gap  = now.saturating_sub(done);
                 if gap >= WD_STUCK_THRESHOLD_MS
                     && now.saturating_sub(last_warn_ms) >= WD_WARN_INTERVAL_MS
+                    && !INTENTIONALLY_IDLE.load(Ordering::Relaxed)
                 {
                     let stage   = frame_stage_name(FRAME_STAGE.load(Ordering::Relaxed));
                     let atw     = ATW_TICKS.load(Ordering::Relaxed);

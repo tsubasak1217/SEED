@@ -20,6 +20,8 @@
 //    debug_hooks   … 検証用フック（システムプロパティで意図的 panic・複数指の合成タッチ列）
 //    debug_save_test … 検証用フック（セーブの書き出しタイミングの確認。debug.seed.save_test）
 //    sysprop       … Android システムプロパティの読み取り
+//    ui_spike/     … アプリ基盤 W2-0 のスパイク（文字入力〈GameTextInput〉を android-activity の API で試す。
+//                    起動オプション seed.ui_spike に ime があるときだけ。既定で無効）
 //
 //  全体像・ビルド手順は docs/android.md を参照。
 // ============================================================
@@ -44,3 +46,4 @@ mod launch_options;
 mod logcat;
 mod platform_bridge;
 mod sysprop;
+mod ui_spike;

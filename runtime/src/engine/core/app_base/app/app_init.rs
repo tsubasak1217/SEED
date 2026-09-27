@@ -382,6 +382,9 @@ impl App {
             w.request_redraw();
         }
         eprintln!("[SEED INIT] window set_visible + request_redraw");
+        // W2-0 の試作（ui_spike の ime。PC だけ）: ウィンドウに IME を許可して Ime イベントを観察する。
+        // 指定が無ければ何もしない（winit の既定どおり IME は切り離されたまま）。ui_spike_hooks.rs
+        self.allow_desktop_ime_if_requested();
 
         let hwnd = self.window_hwnd();
         if let Some(ipc) = &self.ipc {

@@ -25,6 +25,8 @@
 //    ・鳴動の音量の後始末（中身は platform/LeftoverVolumeNudge。W1-7）: onResume で、:seed_platform が戻せずに残した
 //      force_volume の前の音量があれば、前面にいる今のうちに戻させる（Android 17 は背面からの音量の変更を無視する）
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
+//    ・アプリ基盤 W2-0 のスパイク（文字入力の通知の観察。中身は spike/ImeSpikeLog。デバッグ版の APK を seed.ui_spike に ime で
+//      起動したときだけ。既定では各受け口は super を呼ぶだけで従来どおり）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
 
@@ -46,9 +48,11 @@ import java.nio.charset.StandardCharsets;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import androidx.core.graphics.Insets;
 import androidx.core.view.WindowInsetsCompat;
 
 import com.google.androidgamesdk.GameActivity;
+import com.google.androidgamesdk.gametextinput.State;
 
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.LeftoverVolumeNudge;
@@ -56,6 +60,7 @@ import com.seedengine.runtime.platform.SeedPlatform;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
 import com.seedengine.runtime.platform.sensor.SensorFeeds;
 import com.seedengine.runtime.platform.window.SystemBarsHost;
+import com.seedengine.runtime.spike.ImeSpikeLog;
 
 /**
  * SEED ランタイムの唯一の Activity。
@@ -133,6 +138,8 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
         // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
         setAppDirectoryEnvironment();
         forwardLaunchOptions();
+        // W2-0 のスパイク: seed.ui_spike に ime があるデバッグ版の起動だけ、文字入力の通知を logcat へ出す（既定で無効）
+        ImeSpikeLog.configure(this);
         // SEED.Platform の JNI の入口を用意し、ネイティブへ SeedPlatform のクラスを渡す（エンジンが最初のフレームから
         // IsSupported を正しく読めるよう android_main より前に）。:seed_platform は呼ばない（プロセスの起動の約 120 ms を
         // ここで待たない。つなぐのはスクリプトが最初に呼んだとき・背面のスレッドで。platform/PlatformConnection）。
@@ -212,7 +219,43 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     public WindowInsetsCompat onApplyWindowInsets(View view, WindowInsetsCompat insets) {
         WindowInsetsCompat result = super.onApplyWindowInsets(view, insets);
         screenReporter.reportAfterLayout();
+        // W2-0 のスパイク: IME の範囲（キーボードの高さ）の取り方の確かめ（既定では何もしない）
+        ImeSpikeLog.onWindowInsets(insets);
         return result;
+    }
+
+    /**
+     * 文字入力の状態が変わった（GameTextInput の InputConnection から。UI スレッド）。
+     * super がネイティブへ渡す（onTextInputEventNative）。W2-0 のスパイクでは中身を logcat へ出す（既定では何もしない）。
+     */
+    @Override
+    public void stateChanged(State newState, boolean dismissed) {
+        super.stateChanged(newState, dismissed);
+        ImeSpikeLog.onState(newState, dismissed);
+    }
+
+    /**
+     * 完了などのアクションが来た（UI スレッド）。super がネイティブへ渡す（onEditorActionNative）が、
+     * winit はそれを読み捨てる（docs/app_platform_roadmap.md §3.8）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。
+     */
+    @Override
+    public void onEditorAction(int action) {
+        super.onEditorAction(action);
+        ImeSpikeLog.onEditorAction(action);
+    }
+
+    /** ソフトキーボードの表示が変わった（UI スレッド）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。 */
+    @Override
+    public void onSoftwareKeyboardVisibilityChanged(boolean visible) {
+        super.onSoftwareKeyboardVisibilityChanged(visible);
+        ImeSpikeLog.onKeyboardVisibility(visible);
+    }
+
+    /** IME の占める範囲が変わった（UI スレッド）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。 */
+    @Override
+    public void onImeInsetsChanged(Insets insets) {
+        super.onImeInsetsChanged(insets);
+        ImeSpikeLog.onImeInsets(insets);
     }
 
     /** 描画面のレイアウトが確定した（回転・リサイズの後に来る）。大きさ・安全領域・回転を知らせる。 */

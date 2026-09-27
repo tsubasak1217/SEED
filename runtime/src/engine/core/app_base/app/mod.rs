@@ -117,6 +117,8 @@ mod render_resolution;
 mod render_quality;
 /// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）
 pub(crate) mod frame_pacing;
+// アプリ基盤 W2-0 のスパイク（描かないときの判定・PC の IME のログ・切り抜きの計測。既定で無効）
+mod ui_spike_hooks;
 mod event_handler;
 mod drag_handler;
 mod physics_ops;
@@ -648,6 +650,11 @@ pub struct LaunchArgs {
     /// 優先され、無いものは pak から読む）。配布版・PC は常に false（従来どおり pak → 配布物の PAK 外 → ファイルシステムの順。
     /// engine::asset_fs::FilesystemLayer）。
     pub asset_overlay: bool,
+    /// アプリ基盤 W2-0 のスパイクの指定（既定で無効の試作。書式は engine::core::ui_spike::config）。
+    ///
+    /// PC は --ui-spike=<指定> か環境変数 SEED_UI_SPIKE、Android は起動オプション seed.ui_spike
+    /// （起動オプションを渡すのはデバッグ版の APK だけ）。None なら何もしない（従来どおり）。
+    pub ui_spike: Option<String>,
 }
 
 // ============================================================
@@ -1460,6 +1467,10 @@ pub struct App {
     /// FrameTimeMs）へ静的値として発行される。
     pub(super) frame_stats: frame_pacing::FrameStats,
 
+    /// 「描かなくてよいときは描かない」の判定（W2-0 の試作。ui_spike の idle= を指定したときだけ有効）。
+    /// 無効（既定）なら毎フレーム次のフレームを要求する従来の経路のまま（app/ui_spike_hooks.rs）。
+    pub(super) ui_spike_idle: crate::engine::core::ui_spike::idle_redraw::IdleRedrawGate,
+
     // ── アニメーション Edit プレビュー ───────────────────────────────
     /// Edit モードのアニメーションプレビュー（ANIM_PREVIEW）用クリップキャッシュ。
     /// キー = .anim アセットパス。ANIM_RELOAD 受信時にエントリを破棄し、
@@ -1584,6 +1595,10 @@ impl App {
         let script_reload_source = scripting_host
             .as_ref()
             .and_then(|_| Self::script_reload_source(&args));
+
+        // アプリ基盤 W2-0 のスパイクの指定（既定で無効。指定が無ければ何もしない。engine::core::ui_spike）
+        let ui_spike = crate::engine::core::ui_spike::install(args.ui_spike.as_deref());
+        let ui_spike_idle = ui_spike_hooks::idle_gate_from(ui_spike);
 
         Self {
             window:         None,
@@ -1797,6 +1812,7 @@ impl App {
             gpu_timing_launch: args.gpu_timing,
             gpu_timer:         None,
             frame_stats: frame_pacing::FrameStats::default(),
+            ui_spike_idle,
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
