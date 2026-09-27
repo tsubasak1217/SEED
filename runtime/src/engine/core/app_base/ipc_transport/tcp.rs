@@ -230,6 +230,8 @@ fn serve_connection(
     if commands.send(IpcCommand::EditorDisconnected).is_err() {
         return AfterConnection::Stop;
     }
+    // 描画を止めている間（W2-10a）でも切断の扱い（一時停止の解除）が次のフレームで走るよう、イベントループを起こす
+    crate::engine::core::redraw::wake::raise(crate::engine::core::redraw::RedrawReason::Ipc);
     AfterConnection::AcceptNext
 }
 

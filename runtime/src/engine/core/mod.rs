@@ -15,6 +15,8 @@ pub mod package_layout;
 pub mod parent_guard;
 /// フレーム内セクション別 CPU 時間プロファイラ（エディタのプロファイラパネル用）。
 pub mod profiling;
+/// 「描く理由」の判定（render_policy の on_demand で、理由の無いフレームが続いたら描画を止める。W2-10a）。
+pub mod redraw;
 pub mod renderer;
 /// セーブデータ（スクリプト API `SEED.SaveData` の実体・JSON 永続化）。
 pub mod save;
@@ -22,7 +24,7 @@ pub mod scripting;
 /// 配布パッケージ版の起動ログ（標準出力のファイル化）と panic 通知。
 pub mod startup_log;
 pub mod transform_sync;
-/// アプリ基盤 W2-0 のスパイク（描かないときの判定・切り抜きの根の指定・IME の試作。既定で無効）。
+/// アプリ基盤 W2-0 のスパイク（IME の試作。既定で無効。描かないときの判定は redraw、切り抜きは canvas_layout へ本番化した）。
 pub mod ui_spike;
 pub mod window;
 

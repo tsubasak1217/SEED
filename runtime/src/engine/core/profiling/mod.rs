@@ -140,6 +140,12 @@ pub fn begin_dump(secs: f64) {
     });
 }
 
+/// ダンプ窓が進行中か（満了はフレームの末尾で判定するので、進行中はフレームを回し続ける必要がある。
+/// render_policy の on_demand で描画を止める判定が読む。W2-10a）。
+pub fn dump_active() -> bool {
+    lock_dump().is_some()
+}
+
 /// 満了済みのダンプ結果を取り出す（無ければ `None`）。取り出すと消える。
 pub fn take_finished_dump() -> Option<String> {
     let mut guard = match FINISHED_DUMP.lock() {

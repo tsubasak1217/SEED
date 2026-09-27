@@ -108,6 +108,16 @@ pub trait PlatformBridge: Send + Sync {
     /// 届いているイベント（JSON）を届いた順にすべて取り出す（エンジンがフレームの頭で 1 回呼ぶ）。
     fn poll_events(&self) -> Vec<String>;
 
+    /// 時刻で起こる次の出来事（poll_events の中で時刻を見て積むイベント）までの残り（ミリ秒。過ぎていれば 0）。
+    /// 無ければ None（既定）。
+    ///
+    /// デスクトップの模擬は目覚ましの予定と鳴動の安全弁を poll_events の中で自分の壁時計と比べて積むので、描画を止めている間
+    /// （render_policy の on_demand。W2-10a）はその時刻に起きる必要がある。残りは実装が自分の時計で測る（時計を取り違えない）。
+    /// Android はイベントが JNI で届き、受け口がイベントループを起こすので None のまま。
+    fn next_timed_event_delay_ms(&self) -> Option<u64> {
+        None
+    }
+
     /// エディタの Play の区切り（開始・停止）で、前の回の状態を捨てる（既定は何もしない）。
     ///
     /// デスクトップの模擬は目覚ましの予約表と積んだイベントを空にする（Play を止めれば予約は消える）。
@@ -187,6 +197,27 @@ pub fn reset_session() {
     if panic::catch_unwind(AssertUnwindSafe(|| bridge.reset_session())).is_err() {
         eprintln!("{LOG_PREFIX} Play の区切りの片付けの途中で panic しました");
     }
+}
+
+/// 既にある実装（登録済み、またはスクリプトが使って作られた模擬）。まだ無ければ作らずに None。
+///
+/// フレームごとの問い合わせ（next_timed_event_utc_ms）で、SEED.Platform を使わないプロジェクトに模擬を作らないため。
+fn existing_bridge() -> Option<&'static dyn PlatformBridge> {
+    if let Some(bridge) = REGISTERED.get() {
+        return Some(bridge.as_ref());
+    }
+    DESKTOP_SIM.get().map(|sim| sim as &dyn PlatformBridge)
+}
+
+/// 時刻で起こる次の出来事までの残り（ミリ秒。描画を止めている間の起きる予定。W2-10a）。基盤が無い・予定が無ければ None。
+///
+/// 描画を止める判定がフレームごとに呼ぶので、まだ作られていない模擬は作らない（予定も無い）。
+pub fn next_timed_event_delay_ms() -> Option<u64> {
+    let bridge = existing_bridge()?;
+    panic::catch_unwind(AssertUnwindSafe(|| bridge.next_timed_event_delay_ms())).unwrap_or_else(|_| {
+        eprintln!("{LOG_PREFIX} 次の予定の問い合わせ中に panic しました（予定なしとして扱います）");
+        None
+    })
 }
 
 /// 届いているイベントを取り出す（エンジンがフレームの頭で 1 回呼ぶ）。基盤が無ければ空。

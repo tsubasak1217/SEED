@@ -200,6 +200,20 @@ impl App {
         rest_3d && rest_2d
     }
 
+    /// Play で物理のボディが動いているか（「動いている」の申告。render_policy の on_demand で描画を止めない理由。W2-10a）。
+    ///
+    /// 物理のスレッドが最後に報告した全 Dynamic ボディの最大並進・角速度（update_physics(_2d) が Play でも毎フレーム退避する）が、
+    /// 静止の閾値（編集時の収束停止と同じ値）以上なら true。起動していない側（3D・2D）は見ない。
+    /// 止めている間も物理のスレッドは進み続ける（止めるかは W2-10 で決める）ので、動いている間は描き続けて見た目を追わせる。
+    pub(super) fn play_physics_bodies_moving(&self) -> bool {
+        let moving = |lin: &AtomicU32, ang: &AtomicU32| {
+            f32::from_bits(lin.load(Ordering::Relaxed)) >= REST_LINEAR_SPEED_EPSILON
+                || f32::from_bits(ang.load(Ordering::Relaxed)) >= REST_ANGULAR_SPEED_EPSILON
+        };
+        (self.physics_thread.is_some() && moving(&LAST_MAX_LIN_SPEED_3D, &LAST_MAX_ANG_SPEED_3D))
+            || (self.physics_thread_2d.is_some() && moving(&LAST_MAX_LIN_SPEED_2D, &LAST_MAX_ANG_SPEED_2D))
+    }
+
     /// 収束停止用の速度スナップショットを「移動中」（∞）へ初期化する。
     /// ライブシミュレーション開始・再開時に呼ぶ。物理スレッドが最初の実測速度を
     /// 報告するまでは edit_physics_bodies_at_rest() が false を返すため、

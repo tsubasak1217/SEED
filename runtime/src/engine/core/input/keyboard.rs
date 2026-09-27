@@ -66,6 +66,10 @@ impl KeyboardState {
     pub fn is_press_any(&self) -> bool {
         !self.held.is_empty()
     }
+    /// 押しているキーの一覧（検証用のログ。W2-10a の SEED_REDRAW_LOG）。
+    pub fn held_debug(&self) -> String {
+        format!("{:?}", self.held)
+    }
     /// いずれかのキーが押された瞬間（C++: IsTriggerAnyKey）
     #[inline]
     pub fn is_trigger_any(&self) -> bool {

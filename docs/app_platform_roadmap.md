@@ -574,7 +574,7 @@ W1-7 の 16:04 の APK をそのまま使った（ビルドもコードの変更
 | M4 | メインプロセスだけを `run-as kill -9`（`:seed_platform` は残す）→ 本文をタップ（AC-7） | **冷えた起動で `alarm` を読めた** | 発火のときエンジンは居ない（`呼び鈴 相手なし`）→ ヘッドアップ通知 → `notification_clicked` +2.66 s → メインプロセスの起動 → `起動理由: alarm ac7c` → スクリプトの `App.LaunchReason` = `alarm ac7c（Kind=Alarm・予定 …）` |
 | M5 | 普通に起動したアプリを前面にしたまま、利用者が電源ボタンで消して点け直す（AC-5） | **ロック画面が出た** | `isKeyguardShowing=true`・`mKeyguardOccluded=false`・前面は `NotificationShade`（ロック画面）。スクリーンショットでも指紋のアイコンのあるロック画面 |
 | M6 | ロック中（画面点灯）に 1 回目を鳴らす → 2 回目の通知をタップ（G-4 の記録） | **フルスクリーン通知で上に出て、2 回目のタップは解除を求めた** | 1 回目: `sysui_fullscreen_notification` → `PlatformEntry` へ `onNewIntent`（`alarm`・+139 ms）→ ロック画面の上（`setOccluded`）。2 回目: アプリがロック画面の上にいるのでヘッドアップ通知 → タップ（本文）で `dismissKeyguardThenExecute` → 指紋の alternate bouncer → 認証 → `START … PlatformEntry` → `alarm ac7l2`。W1-4b の T6 の「開く」と同じく、本文のタップも解除が要る |
-| M7 | 通知の設定画面で「すべての通知」をオフ → 戻る（AC-8） | **Android がアプリを止め、`PermissionChanged` は届かない** | `POST_NOTIFICATIONS` が `granted=false`・直後に `Killing …:seed_platform … PermissionHelper`・`Killing …com.wakeorpay.seed … PermissionHelper`。戻るとメインプロセスが起動し直し（起動理由 `launcher`）、前回の状態が無いので比べる相手が無い |
+| M7 | 通知の設定画面で「すべての通知」をオフ → 戻る（AC-8） | **Android がアプリを止め、`PermissionChanged` は届かない** | `POST_NOTIFICATIONS` が `granted=false`・直後に `Killing …:seed_platform … PermissionHelper`・`Killing …com.wakeorpay.seed … PermissionHelper`。戻るとメインプロセスが起動し直し（起動理由 `launcher`）、前回の状態が無いので比べる相手が無い。→ **2026-09-28 に修正**: 前回の状態をメインプロセスの SharedPreferences に保存し、起動し直した最初の onResume でも比べて `granted → denied` を流す（docs/android.md §25.14.5。JVM で 14 項目。**直した後の実機の確認は未実施**。手順は §25.14.7） |
 | M8 | もう一度設定画面でオン → 戻る（AC-8） | **`PermissionChanged` が届いた** | 同じプロセスのまま（許可では止められない）`権限 post_notifications の状態が変わりました: denied → granted`。`POST_NOTIFICATIONS` は `granted=true`（フラグも試験の前と同じ）・アプリの通知は `importance=DEFAULT`・チャネル `seed_platform_alarm` は `mImportance=4` のまま |
 
 **端末の最終状態（02:12）**: `am force-stop` 済みでプロセスなし・このアプリの予約 0（見張りも 0）・鳴動なし・`ringing.json` なし・STREAM_ALARM speaker 5（試験の前と同じ）・
@@ -731,7 +731,8 @@ W1-7 の 16:04 の APK をそのまま使った（ビルドもコードの変更
 W2 でいちばん不確かな 3 点（Android の文字入力・切り抜きの描画・描かないときのイベントループ）を、**本番の振る舞いを変えない試作**で試した。
 試作は既定で無効で、起動の指定 `ui_spike` があるときだけ動く（PC は `SEED.exe --ui-spike=<指定>` か環境変数 `SEED_UI_SPIKE`、Android はデバッグ版の APK を
 `am start … --es seed.ui_spike '<指定>'`。書式は `runtime/src/engine/core/ui_spike/config.rs` の `idle=<N>`・`wake_ms=<M>`・`clip=<ノード名>`・`ime`。
-`clip=` は 2026-09-27 の W2-1a で本番の `CanvasClipComponent` に置き換えて外した。複数の根は `clip=A;clip=B` のように項目を分けて書く形だった）。
+`clip=` は 2026-09-27 の W2-1a で本番の `CanvasClipComponent` に置き換えて外した。複数の根は `clip=A;clip=B` のように項目を分けて書く形だった。
+`idle=`・`wake_ms=` は 2026-09-28 の W2-10a で本番の `render_policy`〈docs/redraw_policy.md〉に置き換えて外した。残るのは `ime` だけ）。
 試験用のプロジェクト `UiSpike` は作業フォルダの使い捨て（WakeOrPay の `.seedproj`・`project_settings.json` を写し、アプリ ID `com.seedengine.uispike`・機能なし・
 540×1200 のキャンバスに切り抜きの試験の UI。リポジトリには入れていない）。PC は Windows 11・`runtime/target/debug/SEED.exe`（RTX 3060）。
 実機（Pixel 6a）は 2026-09-27 には adb が `unauthorized` のまま戻らず、**翌 2026-09-28 に、W2-0 のときに作った APK の控え（`com.seedengine.uispike`）を
@@ -834,6 +835,9 @@ W2 でいちばん不確かな 3 点（Android の文字入力・切り抜きの
   センサーを読む画面・鳴動画面のように毎フレーム動かしたい画面は「動いている」を持ち続ける。
 - 止まっていた時間はゲームの時間へ入れない（背面から戻ったときと同じく dt を切り詰める）。フレームの凍結の見張りは、意図して止めている間は黙る（試作と同じ）。
 - 既定: アプリのプロジェクト設定で有効にする（ゲームは今のまま毎フレーム描く）。エディタに埋め込んだ実行では IPC が起こせるようになるまで無効。
+- → **2026-09-28 の W2-10a で実装**（docs/redraw_policy.md）。IPC の読み取りのスレッドが起こすようになったので、エディタに埋め込んだ Play でも
+  on_demand を使う（Edit とエディタの PAUSE〈デバッグカメラ〉は常に毎フレーム描く）。埋め込んだ Play での動きは未確認（W2-10）。
+  実キーボードのキーの押しっぱなしは理由にしない（Windows の日本語キーボードの「半角/全角」キーが押されたまま残るため。redraw_policy.md §3）。
 
 #### 3.8.5 W2-1〜W2-11 の見直し
 
@@ -841,7 +845,7 @@ W2 でいちばん不確かな 3 点（Android の文字入力・切り抜きの
 |---|---|---|
 | W2-1 | **済**（2026-09-27〜28。W2-1a・W2-1b）。**W2-1a（済）**: 2D ノードのレイアウト計算を `engine/core/canvas_layout`（純関数 `resolve` と木を 1 回たどる `CanvasLayoutPass`・表 `CanvasLayoutTable`）へ一本化し、描画・キャンバス枠・ID 描画・当たり判定・2D 物理はこの表を読むだけにした（旧 5 か所とランダムな木 3,000 個でビット単位の一致を確認。WarashibeFishing の画面と当たり判定は不変）。切り抜きを本番化: `CanvasClipComponent`（インスペクタ・スクリプト `SEED.CanvasClip.Enabled`）、スプライト・テキスト・2D パーティクル・`SEED.Draw` の図形を scissor で切り、メインパスはビューポートと交差、当たり判定も切り抜きの内側だけ（docs/canvas_camera_rework.md §6）。**W2-1b（済）**: レイアウトのコンテナ `CanvasStack`・`CanvasWrap`・`CanvasGrid` と子の側の指定 `CanvasLayoutItem`（伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる）を `CanvasLayoutPass` の中で測って並べる（2 段の計算を 1 回の走査の中で。測る回数はノード数に比例）。コンテナの配置は子のアンカー・位置より優先し、伸ばした軸は子の Sprite も矩形いっぱいに描く。dp はルートキャンバスの `CanvasComponent.unit`（px 既定・dp）。安全領域の部品 `CanvasSafeAreaComponent`（辺ごと。フレームごとの画面の写しから読むので回転・システムバーに追従）。エディタの GPU の ID 描画も切り抜く。3D ワールドキャンバスの子の ID・枠の走査も表を読む形へ寄せた。インスペクタ・シリアライズ・IPC・スクリプト（`SEED.CanvasStack` など）まで通した。PC の検証用に `SEED_SIM_SAFE_AREA`・`SEED_SIM_SCALE_FACTOR`（docs/canvas_camera_rework.md §6.3〜6.5） | 3〜4 → 3〜4（1a で約 2、1b で約 2） |
 | W2-2 | **済**（2026-09-28）。ジェスチャーアリーナを `engine/core/input/gesture/`（純ロジック）に置いた: `CanvasGestureComponent`（タップ・長押し・ドラッグ・フリックの旗・ドラッグの軸・押下の見た目・最小のヒット領域 48 dp）を付けたノードだけが、指ごとに押した位置の経路（子 → 親。W2-1 のレイアウトの表・切り抜き）で競い、最初に勝ちを申し出た 1 つが勝つ（ドラッグ 8 dp・長押し 500ms・離したときの最初のタップ）。勝ったドラッグは指を捕捉、押下の見た目は PressDown / PressCancel / PressUp（スクロールの中は 100ms 待つ・入れ子は内側だけ）、複数指・外へ出た・アプリが背面へで取り消し、フリックは直近 100ms・20 標本の最小二乗。判定は入力イベントの時刻（`Input` が時刻つきで記録。PC は受け取った時刻・注入は予定の時刻。**Android は winit が MotionEvent の時刻を渡さないので受け取った時刻で代用**）。閾値は名前付きの定数と `project_settings.json` の `"gestures"`。スクリプトは `SEEDScript.OnGesture*`（`SEED.GestureEvent`）・`SEED.CanvasGesture`、インスペクタ・シリアライズ・IPC まで通した。付けていないノードの `OnPointer*` は不変（WarashibeFishing の 56 点のクリックが一致）、両方あるノードは `OnPointerDown/Up/Click` をジェスチャーへ譲る。「動いている」の申告（`GestureArenaSet::activity`）を W2-10a 向けに用意。正典は docs/input_gestures.md。単体テスト（合成の指の列）と PC の注入で確認、実機は未実施 | 2 → 2 |
-| **W2-10a（新）** | 「描く理由」の API と判定だけを先に作る（既定で無効のプロジェクト設定・スクリプトの要求・「動いている」の申告・JNI と IPC の起こし）。W2-3 以降の部品がこれに沿って作れるように、W2-2 の後に置く | 1 |
+| **W2-10a（新）** | **済**（2026-09-28。正典は docs/redraw_policy.md）。判定を `engine/core/redraw/`（純ロジック）に置いた: フレームの末尾で「描く理由」（入力・押している指とボタン・注入の再生・ジェスチャー〈`GestureArenaSet::activity`〉・文字入力・動いているもの〈Animator の再生・パーティクル・読み込み中のモデル・物理のボディの速度〉・スクリプト・IPC・`SEED.Platform` のイベント・画面・音声フォーカス・撮影・区切り・予定の時刻）を集め、理由の無いフレームが `render_idle_frames`（既定 10）回続いたら次のフレームを要求せず `ControlFlow::Wait`（予定〈`RequestAfter`・ジェスチャーの期限・模擬の目覚ましと鳴動の安全弁〉があれば `WaitUntil`）。起こす口は `EventLoopProxy`（`redraw::wake`。IPC の `read_loop`・Android の JNI〈`nativeOnPlatformEvent`・`nativeOnScreenChanged`・`nativeOnAudioFocusChanged`・新しい `RedrawWaker.nativeRequestRedraw`〈MainActivity の文字入力の受け口〉〉）と `user_event`。起きた最初のフレームの dt は 1/60 秒で切り詰め（`Clock::limit_next_delta`）、止めている間は `Update` を呼ばない。有効にするのはプロジェクト設定 `render_policy: "on_demand"`（**既定 `continuous` は今までどおり毎フレーム描く**）とスクリプト `SEED.Redraw.Policy`。スクリプトの API `SEED.Redraw`（`Request`〈どのスレッドからでも〉・`RequestAfter`・`KeepAlive`・`SetContinuous`・`Policy`）。止めている間に物理の結果の待ち行列が伸び続けないよう上限 120 件（物理のスレッドは止めない＝W2-10）。W2-0 の試作 `idle=`・`wake_ms=` は外した。PC で止まる（12 秒で Update 10 回・CPU 2.3〜5.3% ⇔ continuous 18.6〜23.6%）・IPC が遅れない（`SCRIPT_DEBUG` 0.0〜0.6 ms・`SCREENSHOT` 69〜80 ms ⇔ continuous 70〜78 ms）・`Request`/`KeepAlive`/`RequestAfter`・押している間・模擬のイベントと目覚ましで起きる、を確かめ、WarashibeFishing の複製の 56 点のクリックと図鑑の画素が変更前と一致。**実機は未実施**（手順は docs/redraw_policy.md §9） | 1 |
 | W2-3 | 変わらず（切り抜きは W2-1 で済む）。画面外の行を描画アイテムにしない | 2〜3 |
 | W2-4 | 角丸・円の切り抜き＝スプライトのシェーダーの SDF（インスタンスの形・パイプライン・テストが変わる） | 2〜3 → 2.5〜3.5 |
 | W2-5 | 変わらず | 1 |
@@ -849,13 +853,13 @@ W2 でいちばん不確かな 3 点（Android の文字入力・切り抜きの
 | W2-7 | 変わらず | 2〜3 |
 | W2-8 | 変わらず | 2 |
 | W2-9 | 変わらず | 1〜2 |
-| W2-10 | 残り: 部品と画面ができた後に通しで詰める（dt の切り詰め・止める判定のフレーム数・時計の表示の 1 秒ごとの更新・UC-10 の計測） | 1〜2 → 1 |
+| W2-10 | 残り: 部品と画面ができた後に通しで詰める（dt の切り詰め・止める判定のフレーム数・時計の表示の 1 秒ごとの更新・UC-10 の計測）。W2-10a からの持ち越し: 止めている間の物理のスレッドを止めるか（背面の `background_pause` と同じ扱い。実機の止めている間の CPU 6% の大半）・止めていた後の最初のフレームの重さ（R-13）・シェーダーの時間で動くもの・ファイルの保存の検知（1 秒ごとの更新時刻の確認）は申告しない・エディタに埋め込んだ Play での確認・エディタの画面の `render_policy` の欄・実機での確認（docs/redraw_policy.md §7・§9） | 1〜2 → 1 |
 | W2-11 | 変わらず | 2 |
 
 **合計の目安（W2-0 を除く）: 21〜28 → 23〜29 段階相当**（§3.7 の表の W2-1〜W2-11 の和との比較。W2-10a と W2-4・W2-6 の分だけ増えた）。
 上振れしやすい所は、レイアウトの重複の整理（W2-1）と、日本語の変換中の表示（W2-6b）に移った。IME の経路の不確かさ（E-06）は解けた。
 
-**最初に着手すべき段階: W2-1（土台）**（2026-09-27 に W2-1a として (1)(2)、2026-09-28 に W2-1b として (3)(4) を済ませた。2026-09-28 に W2-2 の入力も済。次は W2-10a）。すべての部品がレイアウト・切り抜き・当たり判定に乗るため。順は (1) 2D ノードのレイアウトの計算を 1 つの走査に寄せ、
+**最初に着手すべき段階: W2-1（土台）**（2026-09-27 に W2-1a として (1)(2)、2026-09-28 に W2-1b として (3)(4) を済ませた。2026-09-28 に W2-2 の入力と W2-10a の「描く理由」も済。次は W2-3）。すべての部品がレイアウト・切り抜き・当たり判定に乗るため。順は (1) 2D ノードのレイアウトの計算を 1 つの走査に寄せ、
 その出力（ノードの矩形・切り抜きの番号・レイヤー）を描画と当たり判定で共有する → (2) 切り抜きのコンポーネント（試作の本番化）→ (3) `UiRect`・`Stack`・`Wrap`・`Grid`・
 dp → (4) 安全領域の部品。**W2-6a（文字入力の受け口）は触る場所（Java・JNI・入力）が W2-1 と重ならないので、別の worktree で並べて進められる。**
 
@@ -879,6 +883,8 @@ adb -s $S logcat -d -v threadtime -T "<起動の時刻>" SEED:V SEEDImeSpike:V g
 #   見るもの: [SEED IME SPIKE] native state …（UI スレッドで読んだ状態・UTF-8 / UTF-16 / 文字の数）と SEEDImeSpike の stateChanged・onEditorAction・
 #   onSoftwareKeyboardVisibilityChanged・WindowInsets ime.bottom。日本語で selection と compose の値が UTF-16 の単位か（I-6）
 # ── 描かない（idle）: gpu_timing で [SEED GPU] の 1 フレームの GPU 時間とフレーム数、[SEED HEARTBEAT] の fps
+#    （2026-09-28 の W2-10a で idle=・wake_ms= を外した。今の APK では project_settings.json の render_policy: "on_demand" で確かめる。
+#     手順は docs/redraw_policy.md §9。下の 3 行は W2-0 の APK の控え〈この試作の入った版〉でだけ動く）
 adb -s $S shell am start -W -n $ACT --es seed.gpu_timing 1                                   # 基準（毎フレーム）
 adb -s $S shell am start -W -n $ACT --es seed.gpu_timing 1 --es seed.ui_spike idle=30        # 30 フレームの後に止まる
 adb -s $S shell am start -W -n $ACT --es seed.gpu_timing 1 --es seed.ui_spike idle=30,wake_ms=1000
@@ -922,7 +928,7 @@ W2-0 のときに作った APK の控え（`com.seedengine.uispike`・デバッ�
 | # | 要件 | 理由・根拠 | どこで |
 |---|---|---|---|
 | X-1 | **冷えた起動を速く・止まらなくする**（起動の初期化と .NET の展開を android_main から外し、ANR を避ける） | 目覚ましでアプリが起きる瞬間は、端末がスリープから戻った直後で負荷が高い。今は初回の展開（0.5〜0.8 秒）・CLR の起動・GPU とシーンの初期化が同期で走り、APK の更新直後に 44 秒かかって ANR の後に落ちた記録がある（backlog「起動の初期化が android_main スレッドで同期に走る」「同梱 .NET の展開と CLR の起動が android_main で同期に走る」）。音は W1 の別プロセスが鳴らすので止まらないが、鳴動画面が出ない | W1 の受け入れ基準 AC-12 の前提。既存の backlog 項目を W1 と同時に進める |
-| X-2 | **描かなくてよいときは描かない**（W2-P7） | アプリの画面はほとんど止まっている。今は前面で毎フレーム描き続け、UI と提示だけで Pixel 6a の GPU 約 4.5 ms を毎フレーム使う | W2-10 |
+| X-2 | **描かなくてよいときは描かない**（W2-P7） | アプリの画面はほとんど止まっている。今は前面で毎フレーム描き続け、UI と提示だけで Pixel 6a の GPU 約 4.5 ms を毎フレーム使う | W2-10a（**済** 2026-09-28。「描く理由」の API と判定。プロジェクト設定 `render_policy: "on_demand"` で有効。docs/redraw_policy.md）・W2-10（通しで詰める） |
 | X-3 | **アプリとしての既定**: ステータスバーを表示、`appCategory` を選べる、戻るの最上位は閉じずに背面へ | 今のテンプレートはゲーム向けの固定（システムバーを常に隠す・`appCategory="game"`・閉じる API が無い） | W1-2（起動時のシステムバーの既定 `system_bars` と `app_category`。**済** 2026-09-27・実機は未確認）・W1-6（実行中の切り替え `Window.SetSystemBarsVisible` と戻るの最上位の `App.MoveTaskToBack`。**済** 2026-09-27・実機は未確認。**バーの文字色は持ち越し**〈backlog〉。戻るの段〈覆い → 画面のスタック → 最上位で背面へ〉は W2-P4） |
 | X-4 | **保存の耐久性**（§2.7） | お金と履歴 | W1-S（**済** 2026-09-27） |
 | X-5 | **デスクトップで作り込める** | 画面づくりの大半はエディタの Play。`SEED.Platform` の模擬（W1-P7）と縦長の Play ウィンドウ（プロジェクト設定 `window_width`/`window_height`） | W1-1・W2-1 |

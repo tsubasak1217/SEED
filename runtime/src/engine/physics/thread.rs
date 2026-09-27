@@ -26,6 +26,8 @@ use rapier3d::prelude::*;
 use nalgebra::UnitQuaternion;
 use std::collections::{HashMap, HashSet};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, RecvTimeoutError, unbounded};
+
+use super::result_backlog::{ResultBacklog, MAX_PENDING_RESULTS};
 use std::time::{Duration, Instant};
 
 // SEED 側の物理型（Rapier の CollisionEvent と名前が衝突するため別名でインポートする）
@@ -82,9 +84,11 @@ impl PhysicsThread {
     pub fn spawn() -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<PhysicsCommand>();
         let (res_tx, res_rx) = unbounded::<PhysicsResult>();
+        // 結果の待ち行列に上限を設ける（フレームが取り出さない間＝描画を止めている間に際限なく伸ばさない。W2-10a）
+        let results = ResultBacklog::new(res_tx, res_rx.clone(), MAX_PENDING_RESULTS, "3D");
 
         let handle = std::thread::spawn(move || {
-            run_physics_loop(cmd_rx, res_tx);
+            run_physics_loop(cmd_rx, results);
         });
 
         PhysicsThread { cmd_tx, res_rx, handle: Some(handle) }
@@ -171,7 +175,7 @@ struct StaticColliderData {
 /// 結果をメインスレッドへ送り続ける。`Stop` コマンドを受信したら終了する。
 fn run_physics_loop(
     cmd_rx: Receiver<PhysicsCommand>,
-    res_tx: Sender<PhysicsResult>,
+    mut res_tx: ResultBacklog<PhysicsResult>,
 ) {
     // ── Rapier 物理ワールドオブジェクト ──────────────────────────────────────
     let mut rigid_body_set      = RigidBodySet::new();
@@ -416,7 +420,8 @@ fn run_physics_loop(
             &mut active_triggers,
         );
 
-        let _ = res_tx.send(result);
+        // 上限に届いていれば古い結果から捨てて送る（受け手は最新の 1 件しか使わない。result_backlog.rs）
+        res_tx.send(result);
     }
 }
 

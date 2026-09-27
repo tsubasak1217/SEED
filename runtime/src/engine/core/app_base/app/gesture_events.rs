@@ -67,8 +67,8 @@ impl GestureState {
         &self.thresholds
     }
 
-    /// 「動いている」かの申告（W2-10a の描く理由に使う）。
-    #[allow(dead_code)]
+    /// 「動いている」かの申告（W2-10a の描く理由。指が触れている間は描き続け、次の時刻の出来事で WaitUntil。
+    /// 読み手は app/redraw_hooks.rs のフレームの末尾の判定）。
     pub(super) fn activity(&self) -> crate::engine::core::input::gesture::GestureActivity {
         self.arenas.activity(&self.thresholds.metrics(current_canvas_screen().dp_scale()))
     }

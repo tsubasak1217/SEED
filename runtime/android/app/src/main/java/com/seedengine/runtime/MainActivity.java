@@ -27,6 +27,8 @@
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
 //    ・アプリ基盤 W2-0 のスパイク（文字入力の通知の観察。中身は spike/ImeSpikeLog。デバッグ版の APK を seed.ui_spike に ime で
 //      起動したときだけ。既定では各受け口は super を呼ぶだけで従来どおり）
+//    ・描画を止めている間（render_policy の on_demand。W2-10a）の起こし: 文字入力の受け口（stateChanged など）は winit が
+//      WindowEvent にしないので、redraw/RedrawWaker でネイティブのイベントループを起こす（on_demand でなければ理由を積むだけ）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
 
@@ -60,6 +62,7 @@ import com.seedengine.runtime.platform.SeedPlatform;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
 import com.seedengine.runtime.platform.sensor.SensorFeeds;
 import com.seedengine.runtime.platform.window.SystemBarsHost;
+import com.seedengine.runtime.redraw.RedrawWaker;
 import com.seedengine.runtime.spike.ImeSpikeLog;
 
 /**
@@ -232,6 +235,8 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     public void stateChanged(State newState, boolean dismissed) {
         super.stateChanged(newState, dismissed);
         ImeSpikeLog.onState(newState, dismissed);
+        // 描画を止めている間（render_policy の on_demand）でも描き直すよう、ネイティブのイベントループを起こす（W2-10a）
+        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
     }
 
     /**
@@ -242,6 +247,7 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     public void onEditorAction(int action) {
         super.onEditorAction(action);
         ImeSpikeLog.onEditorAction(action);
+        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
     }
 
     /** ソフトキーボードの表示が変わった（UI スレッド）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。 */
@@ -249,6 +255,7 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     public void onSoftwareKeyboardVisibilityChanged(boolean visible) {
         super.onSoftwareKeyboardVisibilityChanged(visible);
         ImeSpikeLog.onKeyboardVisibility(visible);
+        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
     }
 
     /** IME の占める範囲が変わった（UI スレッド）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。 */
@@ -256,6 +263,7 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     public void onImeInsetsChanged(Insets insets) {
         super.onImeInsetsChanged(insets);
         ImeSpikeLog.onImeInsets(insets);
+        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
     }
 
     /** 描画面のレイアウトが確定した（回転・リサイズの後に来る）。大きさ・安全領域・回転を知らせる。 */

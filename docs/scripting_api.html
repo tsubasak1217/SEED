@@ -232,6 +232,7 @@
     <a href="#sec-application">Application（実行環境）</a>
     <a href="#sec-screen">Screen（画面・安全領域）</a>
     <a href="#sec-platform">Platform（OS の機能）</a>
+    <a href="#sec-redraw">Redraw（描く理由）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -2352,7 +2353,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="api"><code class="sig">Permissions.Check(kind)</code><span class="desc">PermissionStatus（Granted / Denied / DeniedPermanently / NeedsSettings / NotApplicable。失敗は Unknown＋Platform.LastError）。呼ぶたびに問い合わせる（軽い）</span></div>
   <div class="api"><code class="sig">Permissions.Request(kind)</code><span class="desc">int。すぐ要求の ID（1 以上）を返す（失敗は 0）。結果は PermissionResultEvent。通知（13+）は実行時の確認の画面、NeedsSettings の種類は設定の画面を開き、戻ったときの状態が結果。既に Granted・NotApplicable なら画面なしで次のフレームに届く</span></div>
   <div class="api"><code class="sig">Permissions.OpenSettings(kind)</code><span class="desc">bool。設定の画面（通知はアプリの通知の設定、正確なアラーム・フルスクリーン通知は特別なアクセスの画面、無ければアプリ情報）。結果のイベントは無い。案の void ではなく bool</span></div>
-  <div class="api"><code class="sig">PermissionResultEvent / PermissionChangedEvent .TryParse(json, out e)</code><span class="desc">"platform.permission_result"（e.RequestId・Kind・Status・KindName・StatusName・Simulated）/ "platform.permission_changed"（前面へ戻ったときに状態が前回と違った。e.Kind・Status。プロセスの最初の onResume では届かない。模擬では起きない）</span></div>
+  <div class="api"><code class="sig">PermissionResultEvent / PermissionChangedEvent .TryParse(json, out e)</code><span class="desc">"platform.permission_result"（e.RequestId・Kind・Status・KindName・StatusName・Simulated）/ "platform.permission_changed"（前面へ戻ったときに状態が前回と違った。e.Kind・Status。前回の状態は端末に保存されるので、設定で通知をオフにされてアプリが止められ起動し直した最初の onResume でも届く〈W1-7 の M7〉。インストール後の最初の onResume では届かない。起動し直した直後の分は最初のフレームで配られるので、起動時は Check でも確かめる。模擬では起きない）</span></div>
   <div class="api"><code class="sig">Permissions.Error*</code><span class="desc">ErrorFeatureNotEnabled "feature_not_enabled"（通知は notifications か alarm、ほかは alarm の機能が要る）/ ErrorInvalidArgument "invalid_argument" / ErrorNoActivity "no_activity"</span></div>
   <table>
     <tr><th>種類</th><th>Android の状態（Check）</th><th>Request のとき</th><th>OpenSettings の画面</th></tr>
@@ -2418,6 +2419,48 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     PeakMagnitude と SampleCount は<b>前回の Read からの分</b>で、読むと 0 から数え直します（1 フレームに 2 回読むと 2 回目は 0）。読む係を 1 つにし、毎フレーム 1 回だけ読んでください。
     出どころが accelerometer_lowpass の端末では、向きを素早く変えた直後に重力の差が一瞬だけ加速度に見えるので、1 回の山だけで成功にしないでください。
     Flutter 版と同じ「5 秒振り続ける（0.5 秒を超えて止まると 0 に戻す）」の書き方は md の例 2（仕組みは docs/android.md §25.16）。
+  </div>
+</section>
+
+<!-- ════════════════ 7.14 Redraw ════════════════ -->
+<section id="sec-redraw" data-keywords="Redraw 描く理由 再描画 描画を止める 止める 眠る 電池 省電力 バッテリー fps 0 on_demand continuous render_policy render_idle_frames RedrawPolicy Policy ResetPolicy Request RequestAfter KeepAlive SetContinuous IsContinuous WaitUntil 時計 タイマー 演出 アニメーション 部品 async 別スレッド W2-10a">
+  <h2>7.14 Redraw（描く理由の申告・描き方の方針。W2-10a）</h2>
+  <p class="section-note">
+    止まっている画面の多いアプリで電池を使わないための静的クラスです（名前空間 <code>SEED</code>）。プロジェクト設定 <code>project_settings.json</code> の
+    <code>"render_policy": "on_demand"</code>（既定は <code>"continuous"</code>＝毎フレーム描く）のとき、エンジンは入力・ジェスチャー・アニメーション・パーティクル・
+    SEED.Platform のイベント・IPC などを自分で「描く理由」にし、<b>理由の無いフレームが続いたら（既定 10 回）描画を止めて眠ります</b>。
+    止めている間は <b>Update などが呼ばれません</b>。エンジンが知らない動き（スクリプトで動かす演出・Draw の図形のアニメーション・時計の表示）は、ここで申告します。
+    方針が continuous なら毎フレーム描くので、呼んでも何も変わりません。
+  </p>
+  <div class="api"><code class="sig">Redraw.Request()</code><span class="desc">次の 1 フレームを描く（止めていれば起こす）。どのスレッドから呼んでもよい（async の続きなど）</span></div>
+  <div class="api"><code class="sig">Redraw.RequestAfter(float seconds) → bool</code><span class="desc">その秒数の後（実時間）に 1 フレームを描く。止めている間はその時刻に起きる。いちばん早い予定が効く。NaN・負は false</span></div>
+  <div class="api"><code class="sig">Redraw.KeepAlive(float seconds) → bool</code><span class="desc">その秒数の間は描き続ける（延ばすだけで縮めない）。NaN・負は false</span></div>
+  <div class="api"><code class="sig">Redraw.SetContinuous(bool) / IsContinuous</code><span class="desc">true の間は常に描く（ゲームの画面・センサーを読む画面・鳴動の画面）</span></div>
+  <div class="api"><code class="sig">Redraw.Policy（get/set）/ ResetPolicy()</code><span class="desc">RedrawPolicy.Continuous / OnDemand。書くと実行中だけプロジェクト設定を上書き。ResetPolicy で外す</span></div>
+<pre><span class="c">// 時計の表示（実時間で描き、次の秒の変わり目に起きる）</span>
+<span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+{
+    <span class="k">var</span> now = System.<span class="t">DateTime</span>.Now;
+    clockText.Content = now.ToString(<span class="s">"HH:mm:ss"</span>);
+    <span class="t">SEED.Redraw</span>.RequestAfter(1f - now.Millisecond / 1000f);
+}
+<span class="c">// 押下の演出（0.3 秒）の間だけ描き続ける</span>
+<span class="k">public override void</span> OnPointerDown() { <span class="t">SEED.Redraw</span>.KeepAlive(0.3f); }</pre>
+  <table>
+    <tr><th>描く理由（エンジンが自分で積む）</th><th>例</th></tr>
+    <tr><td>入力</td><td>タップ・クリック・カーソル・ホイール・キー（押している指・マウスのボタンの間は描き続ける。キーの押しっぱなしは OS の繰り返しで起きる）</td></tr>
+    <tr><td>ジェスチャー</td><td>指が触れている間。長押しの期限で起きる</td></tr>
+    <tr><td>動いているもの</td><td>Animator の再生中・パーティクル・読み込み中のモデル・動いている物理のボディ</td></tr>
+    <tr><td>知らせ</td><td>SEED.Platform のイベント（目覚まし・通知・権限）・IPC の命令・画面の大きさ・向き・安全領域・Android の文字入力と音声フォーカス</td></tr>
+  </table>
+  <div class="warn">
+    止めていた時間は<b>ゲームの時間に入りません</b>。起きた最初のフレームの Time.DeltaTime は 1/60 秒で切り詰められ、ElapsedTime・Unscaled* も止めていた分だけ実時間より遅れます。
+    時刻で何かをするスクリプトは実時間（System.DateTime など）で判定し、次に起きる時刻を RequestAfter で申告してください。
+  </div>
+  <div class="warn">
+    申告されない動き（水面の波・草の風・シェーダーの時間で動く見た目・Draw の図形のアニメーション）は、止めている間は止まって見えます。そういう画面では SetContinuous(true) にしてください。
+    Play の開始・停止で要求（KeepAlive・SetContinuous・方針の上書き・予定）はすべて外れます。Edit・エディタの PAUSE は常に毎フレーム描きます。
+    設定・仕組み・描く理由の全一覧・検証の数値は docs/redraw_policy.md。
   </div>
 </section>
 

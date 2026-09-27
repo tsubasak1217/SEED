@@ -125,6 +125,9 @@ impl App {
         );
         // スクリプト（SEED.Application.TargetFps）が読めるようグローバルへも写す。
         super::frame_pacing::publish_configured_target_fps(self.target_fps);
+        // 描画の止め方（render_policy・render_idle_frames。W2-10a）も同じ JSON から読む。
+        // 既定（キーなし）は continuous＝今までどおり毎フレーム描く。
+        self.apply_redraw_settings(&settings_json);
         self.vsync_mode =
             crate::engine::core::renderer::parse_vsync_mode(&settings_json);
         // 「fps が出ない」「熱い」の相談で最初に見る値なので起動ログへ残す。

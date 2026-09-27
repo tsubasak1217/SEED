@@ -9966,8 +9966,8 @@ impl App {
         // 遮蔽時の present 即時リターンによる暴走ループを防ぐ。
         // 判定・待ち方の詳細はすべて frame_pacing.rs に集約してある。
         self.pace_frame(perf_t_total);
-        // 次のフレームを要求する。既定は従来どおり毎フレーム request_redraw。
-        // W2-0 の試作（ui_spike の idle=）のときだけ、入力の無いフレームが続いたら要求をやめる（ui_spike_hooks.rs）。
+        // 次のフレームを要求する。既定（render_policy の continuous）は従来どおり毎フレーム request_redraw。
+        // on_demand のときだけ、描く理由の無いフレームが続いたら要求をやめて眠る（W2-10a。redraw_hooks.rs）。
         self.request_next_frame(event_loop);
     }
 }

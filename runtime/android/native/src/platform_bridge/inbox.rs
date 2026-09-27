@@ -9,6 +9,8 @@
 //  形の検査（オブジェクトで、name が platform. で始まる）はエンジンの wire::validate_event_json（単体テスト付き）に任せる。
 // ============================================================
 
+use seed_engine::engine::core::redraw::wake as redraw_wake;
+use seed_engine::engine::core::redraw::RedrawReason;
 use seed_engine::engine::platform::bridge::{wire, PlatformEventQueue, PushOutcome, DEFAULT_EVENT_QUEUE_CAPACITY, LOG_PREFIX};
 
 use crate::logcat;
@@ -42,6 +44,9 @@ pub fn receive(bytes: Vec<u8>) {
         ));
     }
     logcat::info(&format!("{LOG_PREFIX} イベントを受け取りました: {name}"));
+    // 描画を止めている間（render_policy の on_demand。W2-10a）でも次のフレームでスクリプトへ届くよう、
+    // イベントループを起こす（起きていれば理由を積むだけ）。積んだ後に起こすので、起きたフレームは必ずこのイベントを取り出す。
+    redraw_wake::raise(RedrawReason::PlatformEvent);
 }
 
 /// 積まれたイベントを積まれた順にすべて取り出す（エンジンのスレッドから）。

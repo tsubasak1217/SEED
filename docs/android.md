@@ -80,6 +80,9 @@ runtime/                      パッケージ SEED
                               音声フォーカスの報告。§16）
     src/platform_bridge/      アプリのプラットフォーム機能（SEED.Platform）の橋渡し（native → Java の SeedPlatform.invoke と
                               Java → native のイベント。jni クレート 0.22 を使うのはここだけ。§25）
+    src/redraw_waker.rs       Java（MainActivity の文字入力の受け口 → redraw/RedrawWaker）から「描く理由」を積み、描画を止めている間の
+                              イベントループを起こす JNI（render_policy の on_demand。W2-10a。docs/redraw_policy.md）。画面・音声フォーカス・
+                              プラットフォームのイベントの JNI も、値の変化・受け取りのときに同じく起こす
     src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
     src/dotnet_runtime/       同梱 .NET の展開（files/dotnet/）・スクリプトの DLL の置き場の選択 → CLR の起動材料（LaunchArgs.embedded_clr。§17）
     src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
@@ -127,6 +130,7 @@ runtime/android/
   app/src/main/java/com/seedengine/runtime/ScreenReporter.java 安全領域と画面の回転を集めてネイティブへ渡す（§15）
   app/src/main/java/com/seedengine/runtime/AudioFocusController.java 音声フォーカスの要求・放棄と、変化のネイティブへの通知（§16）
   app/src/main/java/com/seedengine/runtime/DotnetJniLibraries.java 同梱 .NET の暗号ライブラリを System.loadLibrary する（JNI_OnLoad。§17.8）
+  app/src/main/java/com/seedengine/runtime/redraw/RedrawWaker.java 描く理由をネイティブへ知らせて、描画を止めている間のイベントループを起こす（W2-10a。docs/redraw_policy.md）
   app/src/main/java/com/seedengine/runtime/platform/          SEED.Platform のメインプロセス側（JNI の入口 SeedPlatform・:seed_platform への接続。§25）
   app/src/main/java/com/seedengine/runtime/platform/service/  SEED.Platform の :seed_platform プロセス側（Java だけ。PlatformProvider ほか。§25）
   app/src/debug/java/com/seedengine/runtime/platform/         デバッグ版だけの adb の入口（DebugPlatformReceiver。§25.7）
@@ -4585,7 +4589,10 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys notification --noredact | gre
  local/HostActivity          … Activity（弱参照）に加えてアプリの Context（Activity が無くても check できる）
  permission/PermissionKind        … 種類（wire の名前・扱うか・機能の名前・マニフェストの権限）
  permission/PermissionStatusProbe … 状態の判定表（下）
- permission/PermissionHistory     … 「はっきり拒否された」の覚え（SharedPreferences seed_platform_permissions。メインプロセスだけ）
+ permission/PermissionPreferences … 覚えの置き場（SharedPreferences seed_platform_permissions。メインプロセスだけ）を開く
+ permission/PermissionHistory     … 「はっきり拒否された」の覚え（キー denied.<種類>）
+ permission/PermissionChangeTracker … 前の onResume で見た状態と比べる純粋な Java（Store を差し替えて JVM で検査する。M7）
+ permission/PermissionStatusMemory  … 前の onResume で見た状態の置き場（キー last_status.<種類>。commit で同期に書く。M7）
  permission/PermissionRequests    … 要求の ID・確認の画面（requestPermissions）・設定の画面の待ち・permission_result
  permission/PermissionSettings    … 種類ごとの設定の画面（開けなければアプリ情報）
  permission/PermissionMonitor     … onResume のたびに前回と比べて permission_changed
@@ -4648,8 +4655,15 @@ MainActivity … onResume（super・音声フォーカスの後）で Permission
 
 #### 25.14.5 前面へ戻ったときの変化（`platform.permission_changed`）
 
-- `MainActivity.onResume` のたびに、APK に機能がある 3 種の状態を調べ、前の onResume で見た状態（プロセスの中の表。UI スレッドだけ）と違えば
-  `platform.permission_changed {kind, status}`（seq 0）。プロセスの最初の onResume は覚えるだけ。スクリプトの `Check` は表を書き換えない（流れを決めるため）。
+- `MainActivity.onResume` のたびに、APK に機能がある 3 種の状態を調べ、前の onResume で見た状態と違えば
+  `platform.permission_changed {kind, status}`（seq 0）。前回が無い（インストール後の最初の onResume）ときは覚えるだけ。スクリプトの `Check` は前回の状態を
+  書き換えない（流れを決めるため）。比べるのは `PermissionChangeTracker`（純粋な Java）。
+- **前回の状態は端末に保存する（M7。2026-09-28）**: メインプロセスの SharedPreferences（`seed_platform_permissions` の `last_status.<種類>`。
+  `PermissionStatusMemory`）。利用者が端末の設定で「すべての通知」をオフにすると `POST_NOTIFICATIONS` が取り消され、Android がアプリの両プロセスを止める
+  （W1-7 の手作業の確認 M7。roadmap §2.9.2）。以前は前回の状態がプロセスの中の表だけで、起動し直すと比べる相手が無く `granted → denied` が届かなかった。
+  今は起動し直した最初の onResume でも保存した値と比べて流す。書くのは状態が変わったときだけで、`commit`（同期）にした（止められる前にディスクへ届いたかを
+  言い切るため。`apply` は Activity の停止のときに Android が待つはずだが確かめていない）。
+  起動し直した直後に流したイベントは最初のフレームで配られるので、それより後に `On` するスクリプトは受け取れないことがある（推論。スクリプトは起動時に `Check` でも確かめる）。
 - 確認の画面で許可したときは、`permission_result`（onRequestPermissionsResult）→ `permission_changed`（直後の onResume）の順に両方届く（結果は onResume より先に配られる
   という順序は記憶による。実機で確かめる）。
 - 機能の無いゲームでは宣言の一覧（1 回読んで持つ）を見るだけで、システムのサービスへは問い合わせない。
@@ -4678,6 +4692,25 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell appops get $APP USE_FULL_SCREEN_INTEN
   `権限 post_notifications の要求 1 の結果: …` → `[PlatformSmoke] 権限: 結果 要求 1: post_notifications → …` → `通知と権限の確かめ: OK`。既に許可済みなら画面なしで `granted`。
 - 設定の画面から戻る確かめ（手で）: `Permissions.OpenSettings(PermissionKind.FullScreenIntent)` → 設定で切り替えて戻る → SEEDPlatform の
   `権限 full_screen_intent の状態が変わりました: granted → needs_settings` → `platform.permission_changed`。
+- **M7 の確かめ（通知をオフにされてプロセスが止められた後。利用者の手作業が要る）**: 通知の機能（`notifications` か `alarm`）のある APK で、
+
+```bash
+# 0. 前提: 通知が許可されている。起動して前面にし、前回の状態が保存されたことを見る（読むだけ）
+T0=$(MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell 'date +%s.%3N')
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am start -W -n $APP/com.seedengine.runtime.MainActivity
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell "run-as $APP cat shared_prefs/seed_platform_permissions.xml"   # last_status.post_notifications = granted
+# 1. 利用者に頼む: 設定 → アプリ → 通知 →「すべての通知」をオフ（端末の設定の変更なので了承を得てから。1 回に 1 つずつ頼む）
+#    → Android がアプリを止める（logcat の ActivityManager に Killing … PermissionHelper）
+# 2. 利用者に頼む: 戻る（またはランチャーからアプリを開く）→ 新しいプロセスで起動し直す
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL logcat -d -v epoch -T "$T0" SEEDPlatform:V SEED:V ActivityManager:I '*:S' | grep -E "Killing .*PermissionHelper|権限 post_notifications|permission_changed|PermissionChanged"
+#    期待: Killing …（両プロセス）→ 起動し直し → 権限 post_notifications の状態が変わりました: granted → denied →
+#          スクリプト（PlatformSmoke など）に platform.permission_changed {kind: post_notifications, status: denied}
+# 3. 利用者に頼む: 通知をオンに戻す → 戻る（同じプロセスのまま）→ denied → granted が届く（W1-7 の M8 と同じ）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell "run-as $APP cat shared_prefs/seed_platform_permissions.xml"   # last_status.post_notifications = granted に戻る
+```
+
+  比べる部分だけは端末なしで確かめられる: `runtime/android/tools/jvm_checks/run_jvm_checks.sh`（`PermissionChangeTracker` の 14 項目。
+  「起動し直しても保存した前回と比べる」を同じ置き場で係を作り直して真似する）。
 
 #### 25.14.8 確認結果（2026-09-27）
 
@@ -4691,6 +4724,10 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell appops get $APP USE_FULL_SCREEN_INTEN
   `Manifest.permission` の定数は文字列がコンパイル時に埋め込まれるので古い端末でも名前として比べられる）。
 - **実機（Pixel 6a）は未実施**（`adb devices` に端末が無かった）。確認の画面の出方・rationale の実際の値・設定の画面から戻ったときの `permission_changed`・
   `onRequestPermissionsResult` と `onResume` の順序は、実機でまだ一度も通していない。
+  → 2026-09-28 の W1-7 の手作業の確認（roadmap §2.9.2 の M1〜M8）で、設定の画面から戻ったときの `permission_changed`（M8: `denied → granted`）は実機で届いた。
+  通知をオフにしたとき（M7）はプロセスが止められて届かなかったので、前回の状態を保存する形に直した（§25.14.5。**直した後の実機の確認は未実施**。手順は §25.14.7）。
+- M7 の修正（2026-09-28・W2-10a と同じ回）: `PermissionChangeTracker` を JVM で動かし 14 項目が期待どおり（`run_jvm_checks.sh`。`javac --release 17 -Xlint:all` の注意なし）。
+  アプリの Java 全体（112 ファイル＋仮の R）の `javac -Xlint:all` は注意 156 件で、W1-8 と同じ（AAR の classfile と MainActivity の this-escape だけ）。
 
 #### 25.14.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
 

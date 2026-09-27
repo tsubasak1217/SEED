@@ -29,6 +29,10 @@
 //  再開・全体音量にはエンジンのイベントループの次の周回で反映される（app/audio_output_sync.rs）。
 //  番号の対応は AudioFocus::from_code。
 //
+//  【描画を止めている間（render_policy の on_demand。W2-10a）】
+//  nativeOnScreenChanged と nativeOnAudioFocusChanged は、値が変わったときに engine::core::redraw::wake::raise で
+//  イベントループを起こす（眠っていなければ理由を積むだけ）。文字入力の知らせの起こしは redraw_waker.rs。
+//
 //  【nativeSetLaunchOptions（MainActivity。段階C-3）】
 //  起動の Intent の「seed.」で始まる文字列の extra を JSON 1 つ（UTF-8 の byte[]）にして、onCreate の最初
 //  （super.onCreate より前。android_main のスレッドが立つ前）に UI スレッドから呼ぶ。launch_options.rs に預け、
@@ -41,6 +45,8 @@
 
 use std::ffi::c_void;
 
+use seed_engine::engine::core::redraw::wake as redraw_wake;
+use seed_engine::engine::core::redraw::RedrawReason;
 use seed_engine::engine::core::save;
 use seed_engine::engine::platform::audio_focus::{self, AudioFocus};
 use seed_engine::engine::platform::screen::report::{self, EdgeInsets, ScreenReport};
@@ -105,18 +111,23 @@ pub extern "system" fn Java_com_seedengine_runtime_ScreenReporter_nativeOnScreen
     };
     // Mutex への書き込みだけだが、JNI の境界を panic で越えないよう念のため受け止める。
     match std::panic::catch_unwind(|| report::submit(screen_report)) {
-        Ok(true) => logcat::info(&format!(
-            "[SEED SCREEN] 報告を受け取りました: frame={}x{} insets=({},{},{},{}) rotation={} natural={}x{}",
-            screen_report.frame_width,
-            screen_report.frame_height,
-            screen_report.insets.left,
-            screen_report.insets.top,
-            screen_report.insets.right,
-            screen_report.insets.bottom,
-            screen_report.rotation_quarter_turns,
-            screen_report.natural_width,
-            screen_report.natural_height,
-        )),
+        Ok(true) => {
+            logcat::info(&format!(
+                "[SEED SCREEN] 報告を受け取りました: frame={}x{} insets=({},{},{},{}) rotation={} natural={}x{}",
+                screen_report.frame_width,
+                screen_report.frame_height,
+                screen_report.insets.left,
+                screen_report.insets.top,
+                screen_report.insets.right,
+                screen_report.insets.bottom,
+                screen_report.rotation_quarter_turns,
+                screen_report.natural_width,
+                screen_report.natural_height,
+            ));
+            // 描画を止めている間（render_policy の on_demand。W2-10a）でも新しい安全領域・向きで描き直すよう、
+            // イベントループを起こす（180° の回転・システムバーの出し入れは winit の WindowEvent を伴わないことがある）。
+            redraw_wake::raise(RedrawReason::Screen);
+        }
         // 同じ内容の報告の繰り返し（何も変わらない）。
         Ok(false) => {}
         Err(_) => logcat::error("[SEED SCREEN] 画面の報告の受け取り中に panic しました"),
@@ -141,10 +152,15 @@ pub extern "system" fn Java_com_seedengine_runtime_AudioFocusController_nativeOn
     };
     // 原子変数への書き込みだけだが、JNI の境界を panic で越えないよう念のため受け止める。
     match std::panic::catch_unwind(|| audio_focus::report(focus)) {
-        Ok(true) => logcat::info(&format!(
-            "[SEED AUDIO] 音声フォーカスの報告を受け取りました: {}（エンジンが次の周回で出力へ反映）",
-            focus.describe()
-        )),
+        Ok(true) => {
+            logcat::info(&format!(
+                "[SEED AUDIO] 音声フォーカスの報告を受け取りました: {}（エンジンが次の周回で出力へ反映）",
+                focus.describe()
+            ));
+            // 反映はイベントループの 1 周（about_to_wait の sync_audio_output）なので、描画を止めている間
+            // （render_policy の on_demand。W2-10a）でも着信などで音を止め遅れないよう、イベントループを起こす。
+            redraw_wake::raise(RedrawReason::SystemEvent);
+        }
         // 同じ状態の繰り返し（何も変わらない）。
         Ok(false) => {}
         Err(_) => logcat::error("[SEED AUDIO] 音声フォーカスの報告の受け取り中に panic しました"),

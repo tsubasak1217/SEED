@@ -19,7 +19,8 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
                               （android 節。アプリ ID・名前・版・アイコン〈icon / icon_background。段階D〉・プラットフォーム機能
                               〈features / deep_links / system_bars / app_category。W1-2〉。docs/android.md §18・§24.7・§25.10）・描画品質プリセット
                               （render_quality 節。プラットフォームごとのプリセット名とつまみの上書き。docs/android.md §22・
-                              docs/rendering_roadmap.md「描画品質プリセット」）・プラグイン有効化
+                              docs/rendering_roadmap.md「描画品質プリセット」）・描画の止め方（render_policy・render_idle_frames。
+                              docs/redraw_policy.md）・プラグイン有効化
                               （キーの一覧は docs/packaging.md §8.1）
     packaging_settings.json   パッケージ化の設定（android 節の variant / format / signing〈キーストアの場所・別名。パスワードは書かない〉。
                               docs/packaging.md §10.3・docs/android.md §24）
@@ -87,6 +88,26 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   `ExtraData` に保ち、保存で失わない。型の違う値は未設定として読む（`ProjectSettingsData` 全体の読み込みを失敗させない）。
 - 何も設定していなければ節ごと保存しない。ランタイムは起動時に 1 回読み、`[SEED QUALITY] preset=… …` を起動ログへ出す。
 - 往復・空の節・型違い・プリセット一覧の既定は `editor/tests/ProjectSystemTests` で固定。
+
+### project_settings.json の `render_policy`・`render_idle_frames`（描画の止め方。2026-09-28・W2-10a）
+
+止まっている画面の多いアプリで、描く理由の無いフレームが続いたら描画を止める（電池のため）。**既定は今までどおり毎フレーム描く**ので、
+キーを書かないプロジェクト（ゲーム）の動きは変わらない。正典は [redraw_policy.md](redraw_policy.md)。
+
+```jsonc
+"render_policy": "on_demand",   // 既定 "continuous"（毎フレーム描く）
+"render_idle_frames": 10        // on_demand で、理由の無いフレームがこの回数続いたら止める（1〜600。既定 10）
+```
+
+| キー | 意味 |
+|---|---|
+| `render_policy` | `"continuous"`（既定）/ `"on_demand"`。大文字小文字・前後の空白は問わない。知らない値・文字列でない値は `continuous` として動き、起動ログに `[SEED REDRAW][WARN]` |
+| `render_idle_frames` | on_demand で止めるまでの理由の無いフレームの数（1〜600 の整数。範囲外・整数でなければ既定の 10 と警告） |
+
+- ランタイムは起動時に 1 回読み（`redraw/policy.rs` の `parse_redraw_settings`）、`[SEED INIT] render_policy=… render_idle_frames=…` を起動ログへ出す。
+  実行中の差し替えは無い（スクリプトの `SEED.Redraw.Policy` で実行中だけ上書きできる）。Android は pak に入るので書き換えたら APK を作り直す。
+- エディタのプロジェクト設定の画面には欄が無い（JSON を直接書く）。エディタの型に無いキーは `ProjectSettingsData.ExtraData` に保たれ、保存しても消えない
+  （`editor/tests/MigrationTests` の `ProjectSettingsKeepsUnknownKeys` と同じ仕組み）。
 
 ### project_settings.json の `android` 節（Android アプリ情報。2026-09-25、アイコンは 2026-09-26・段階D、プラットフォーム機能は 2026-09-27・W1-2）
 

@@ -3339,7 +3339,7 @@ if (Permissions.Check(PermissionKind.ExactAlarm) == PermissionStatus.NeedsSettin
 | `RecordAudio` / `SendSms` | `NotApplicable`（v2 の予約） | すぐ `NotApplicable` | アプリ情報 |
 
 - `Request` の結果: 既に `Granted`・`NotApplicable` なら画面を出さずに次のフレームで届く。確認の画面・設定の画面なら、利用者が答えて（戻って）から届く。同じ種類を重ねて求めると、出ている画面の結果がそれぞれの ID で届く。
-- `PermissionChangedEvent`: 前面へ戻るたび（Android の onResume）に、APK に機能がある 3 種を前回の onResume と比べ、違えば届く（確認の画面で許可したときも `PermissionResultEvent` の後に届く）。プロセスの最初の onResume では届かない。
+- `PermissionChangedEvent`: 前面へ戻るたび（Android の onResume）に、APK に機能がある 3 種を前回の onResume と比べ、違えば届く（確認の画面で許可したときも `PermissionResultEvent` の後に届く）。前回の状態は端末に保存されるので、**設定で通知をオフにされて Android がアプリを止め、起動し直した最初の onResume でも届く**（`granted → denied`。W1-7 の M7 を直した）。インストール後の最初の onResume（前回の状態が無い）では届かない。起動し直した直後の分は最初のフレームで配られるので、それより後に `On` するスクリプトは受け取れないことがある（起動時は `Check` でも確かめる）。
 - 模擬: `Check` は v1 の 3 種が `Granted`（v2 は `NotApplicable`）、`Request` は画面を出さずに次のフレームで `permission_result`、`OpenSettings` はログだけ、`PermissionChangedEvent` は起きない。
 - `Check` の失敗は案（roadmap §2.3）に無い `PermissionStatus.Unknown`、`OpenSettings` は void ではなく bool を返す（失敗を見分けるため）。
 
@@ -3477,6 +3477,55 @@ private void Accumulate(SensorSample s, long nowMs)   // nowMs = DateTimeOffset.
 
 - 使い終わったら（画面を離れるとき）`Stop` してください。Android では前面にいる間は登録したままです（背面では自動で外れる）。
 - 仕組み（命令・出どころの選び方・スレッド・前面の出入り・時刻の換算・adb での確かめ方）は docs/android.md §25.16。
+
+---
+
+## 7.14 Redraw（描く理由の申告・描き方の方針。W2-10a）
+
+止まっている画面の多いアプリで電池を使わないための静的クラスです（名前空間 `SEED`）。プロジェクト設定 `project_settings.json` の
+`"render_policy": "on_demand"`（既定は `"continuous"`＝毎フレーム描く）のとき、エンジンは入力・ジェスチャー・アニメーション・パーティクル・
+`SEED.Platform` のイベント・IPC などを自分で「描く理由」にし、**理由の無いフレームが続いたら（既定 10 回）描画を止めて眠ります**。
+止めている間は **`Update` などが呼ばれません**。エンジンが知らない動き（スクリプトで動かす演出・`Draw` の図形のアニメーション・時計の表示）は、ここで申告します。
+方針が `continuous` なら毎フレーム描くので、呼んでも何も変わりません。
+
+```csharp
+SEED.Redraw.Request();                    // 次の 1 フレームを描く（止めていれば起こす）。どのスレッドから呼んでもよい（async の続きなど）
+bool ok = SEED.Redraw.RequestAfter(1.0f); // 1 秒後（実時間）に 1 フレームを描く。止めている間はその時刻に起きる。いちばん早い予定が効く。NaN・負は false
+bool ok2 = SEED.Redraw.KeepAlive(0.3f);   // 0.3 秒の間は描き続ける（延ばすだけで縮めない）。NaN・負は false
+SEED.Redraw.SetContinuous(true);          // true の間は常に描く（ゲームの画面・センサーを読む画面・鳴動の画面）。false で外す
+bool c = SEED.Redraw.IsContinuous;        // SetContinuous(true) の中か
+SEED.Redraw.Policy                        // RedrawPolicy（get/set）: 今の方針。書くと実行中だけプロジェクト設定を上書き
+SEED.Redraw.ResetPolicy();                // 上書きを外してプロジェクト設定へ戻す
+// SEED.RedrawPolicy.Continuous（毎フレーム描く・既定）/ OnDemand（描く理由があるときだけ描く）
+
+// 例: 時計の表示（実時間で描き、次の秒の変わり目に起きる）
+public override void Update(ref NativeFrameContext ctx)
+{
+    var now = System.DateTime.Now;
+    clockText.Content = now.ToString("HH:mm:ss");
+    SEED.Redraw.RequestAfter(1f - now.Millisecond / 1000f);
+}
+
+// 例: 押下の演出（0.3 秒）の間だけ描き続ける
+public override void OnPointerDown() { SEED.Redraw.KeepAlive(0.3f); }
+
+// 例: 通信の完了（別スレッド）から画面を更新させる
+async void Fetch() { data = await client.GetStringAsync(url); SEED.Redraw.Request(); }
+```
+
+| 描く理由（エンジンが自分で積む） | 例 |
+|---|---|
+| 入力 | タップ・クリック・カーソル・ホイール・キー（押している指・マウスのボタンの間は描き続ける。キーボードのキーの押しっぱなしは OS の繰り返しで起きる） |
+| ジェスチャー | 指が触れている間。長押しの期限で起きる |
+| 動いているもの | Animator の再生中・パーティクル・読み込み中のモデル・動いている物理のボディ |
+| 知らせ | `SEED.Platform` のイベント（目覚まし・通知・権限）・IPC の命令・画面の大きさ・向き・安全領域・Android の文字入力と音声フォーカス |
+
+> **重要**: 止めていた時間は**ゲームの時間に入りません**。起きた最初のフレームの `Time.DeltaTime` は 1/60 秒で切り詰められ、`ElapsedTime`・`Unscaled*` も止めていた分だけ実時間より遅れます。時刻で何かをするスクリプトは実時間（`System.DateTime` など）で判定し、次に起きる時刻を `RequestAfter` で申告してください。`DeltaTime` を足し上げた時計は止まって見えます。
+
+> **重要**: 申告されない動き（水面の波・草の風・シェーダーの時間で動く見た目・`Draw` の図形のアニメーション）は、止めている間は止まって見えます。そういう画面では `SetContinuous(true)` にしてください。Play の開始・停止で要求（`KeepAlive`・`SetContinuous`・方針の上書き・予定）はすべて外れます。
+
+- Edit・エディタの PAUSE（デバッグカメラ）は常に毎フレーム描きます。止める判定を使うのは Play だけです。
+- 設定・仕組み・描く理由の全一覧・検証の数値は docs/redraw_policy.md。
 
 ---
 

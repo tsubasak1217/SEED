@@ -487,6 +487,41 @@ impl Input {
         self.is_active && (self.mouse.is_any() || self.injection.state().has_mouse_input())
     }
 
+    /// マウスのボタン・指のどれかを押している（触れている）か、注入でキー・ボタンを押しているか。
+    ///
+    /// 描画を止める判定（render_policy の on_demand。W2-10a）の「押している間は描き続ける」に使う。
+    /// 押しっぱなしを毎フレーム読むスクリプト（長押しでためる等）が、指を動かさない間も Update を受けられるようにする。
+    /// フォーカスが無い間（`is_active` が false）は押していない扱い（スクリプトの判定と同じ）。
+    ///
+    /// **実キーボードのキーは数えない**: Windows の日本語キーボードの「半角/全角」キーは押下だけが届いて離しが届かず、
+    /// winit の Backquote が押されたまま残る（2026-09-28 に PC で確かめた。触っていないのに keys={Backquote}）。
+    /// 数えると on_demand が永久に止まらない。キーを押している間は OS の自動の繰り返し（KeyboardInput）が届くので、
+    /// それが入力の理由として描画を起こす（最初の繰り返しまでの約 0.5 秒は止まりうる）。
+    pub fn is_any_input_held(&self) -> bool {
+        self.is_active
+            && (self.mouse.is_press_any()
+                || self.touch.down_count() > 0
+                || self.injection.state().any_key_held()
+                || self.injection.state().any_button_held())
+    }
+
+    /// 押している入力の内訳（検証用のログ。W2-10a の SEED_REDRAW_LOG で「押している」が理由になったときに出す）。
+    pub fn held_input_summary(&self) -> String {
+        format!(
+            "keys={} mouse={} touches_down={} injected_keys={} injected_buttons={}",
+            self.keyboard.held_debug(),
+            self.mouse.held_debug(),
+            self.touch.down_count(),
+            self.injection.state().any_key_held(),
+            self.injection.state().any_button_held(),
+        )
+    }
+
+    /// 注入の入力の列（`INPUT_SEQUENCE`）を再生中か（予定の時刻の操作を落とさないために描き続ける判定。W2-10a）。
+    pub fn is_injected_sequence_playing(&self) -> bool {
+        self.injection.is_sequence_playing()
+    }
+
     // ─── タッチ API ────────────────────────────────────────────
 
     /// このフレームの指の本数（スクリプトの `Input.TouchCount`）。

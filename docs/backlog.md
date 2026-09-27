@@ -2668,7 +2668,12 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   「W1-7 の手作業の確認」M1〜M8）。AC-7（鳴動の通知の「開く」・本文を、生きているとき・メインプロセスが死んでいるときの両方）・AC-2 の後半（タスクを消した後に
   通知からアプリへ戻る）・AC-5（普通の起動で電源ボタン → ロック画面）を満たし、ロック中のヘッドアップ通知のタップが指紋の解除を求めることを記録した。
   残り: W1-5 のアプリの通知（`Notifications.Show` のボタン・payload）のタップ、実行時の確認の画面・`appops` の拒否（AC-8 の残り）、戻る／ホーム／スワイプで止まらないこと（AC-3）。
-- [ ] **W1-7 で見つけたこと: 通知をオフにするとアプリが止められ、`PermissionChanged` が届かない** — 2026-09-28（W1-7 の手作業の確認 M7）。
+- [x] **W1-7 で見つけたこと: 通知をオフにするとアプリが止められ、`PermissionChanged` が届かない** — 2026-09-28（W1-7 の手作業の確認 M7）。
+  → **2026-09-28 に直した**（W2-10a と同じ回）: 前回の状態をメインプロセスの SharedPreferences（`seed_platform_permissions` の `last_status.<種類>`・
+  `PermissionStatusMemory`。commit で同期に書く）に保存し、起動し直した最初の onResume でも比べて `granted → denied` を流す。比べる部分を純粋な Java の
+  `PermissionChangeTracker` に分け、JVM の検査（`runtime/android/tools/jvm_checks/run_jvm_checks.sh`）で 14 項目。docs は android.md §25.14.5・§25.14.7 と
+  scripting_api.md の `PermissionChangedEvent`。**直した後の実機の確認は未実施**（利用者が通知のスイッチを切り替える手作業が要る。手順は android.md §25.14.7）。
+  以下は記載時のメモ。
   端末の通知の設定で「すべての通知」をオフにすると `POST_NOTIFICATIONS` が取り消され、Android がアプリの両プロセスを止めた（`Killing … PermissionHelper`。
   鳴動中なら `:seed_platform` ごと止まる＝見張りの予約は残るので戻せる見込み。試していない）。戻ると新しいプロセスで起動し直し、`PermissionMonitor` の前回の状態は
   メモリにしかないので比べる相手が無く、`platform.permission_changed`（granted → denied）は届かない。オンに戻したとき（denied → granted）はプロセスが止められず届いた。
@@ -2728,6 +2733,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   → 2026-09-27（W2-1a）: **切り抜きの分は済**（名前で根を指定する `UiClipCollector`・`ui_spike` の `clip=`・計測のログ `log_clip_runs` を消し、
   `ui_clip.rs`・`ui_draw_pass.rs` を本番の形にした）。残りは描かないとき（`idle=`・`wake_ms=`。W2-10a で本番化）と文字入力（`ime`。
   roadmap §3.8.6 の実機確認〈W2-6a の頭〉で使うので残した）。
+  → 2026-09-28（W2-10a）: **描かないときの分も済**（`ui_spike/idle_redraw.rs`・`ui_spike_hooks.rs` の描かない部分・`idle=`・`wake_ms=` を消し、
+  本番の `engine/core/redraw`・`app/redraw_hooks.rs` に置き換えた。`idle=` などは知らない項目として警告になる）。残りは文字入力（`ime`）だけ。
 - [ ] **winit 0.30 は Android の文字入力のイベント（`TextEvent`・`TextAction`）を読み捨てる** — 2026-09-27（W2-0 で読んだ）。android-activity は
   glue のフラグから 1 度だけ取り出す作りなので、winit が先に取ると SEED は受け取れない（特に完了などのアクション）。W2-6 は MainActivity の
   `stateChanged`・`onEditorAction` の上書きで受け取る（roadmap §3.8.1 の I-1・I-5）。winit を上げるときに扱いを見直す。
@@ -2741,12 +2748,16 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （回転したノードの AABB・3D ワールドキャンバス・GPU の ID 描画）は下の「W2-1a の切り抜きの残りの制限」。以下は当時の記述。2D パーティクル・スクリプトの図形（`SEED.Draw`）・メインパスで描くもの（背景ゾーン・エディタのビュー。
   ビューポートの内側に交差させる必要がある）・3D ワールドキャンバスは切り抜かない。回転したノードは 4 隅の AABB になる。当たり判定（`pick_2d`）は
   切り抜きを見ない。根は名前の指定。W2-1 でコンポーネントにし、描画と当たり判定で同じ領域の表を使う（§3.8.2 の C-5・§3.8.4）。
-- [ ] **描かない試作の制限** — 2026-09-27（W2-0）。起こす理由が WindowEvent だけで、JNI で届くプラットフォームのイベント・文字入力・IPC・スクリプトの
+- [x] **描かない試作の制限** — 2026-09-27（W2-0）。起こす理由が WindowEvent だけで、JNI で届くプラットフォームのイベント・文字入力・IPC・スクリプトの
   要求では起きない（次の入力か `wake_ms` まで遅れる）。止まっていた時間がそのまま次のフレームの dt に入る。エディタに埋め込んだ実行と Edit では無効。
   W2-10 で起こす理由を足し、dt を切り詰める（§3.8.3・§3.8.4）。
-- [ ] **IPC の命令はフレームの中でしか処理されない** — 2026-09-27（W2-0 の PC の試作で確認）。描画を止めている間は `SCREENSHOT`・`STOP` などが
+  → **2026-09-28 の W2-10a で解消**（docs/redraw_policy.md）: IPC・JNI（プラットフォームのイベント・文字入力・画面・音声フォーカス）・スクリプト（どのスレッドからでも）が
+  `EventLoopProxy` で起こし、起きた最初のフレームの dt を 1/60 秒で切り詰める。エディタに埋め込んだ Play でも使う（Edit は毎フレーム描く）。
+- [x] **IPC の命令はフレームの中でしか処理されない** — 2026-09-27（W2-0 の PC の試作で確認）。描画を止めている間は `SCREENSHOT`・`STOP` などが
   次のフレームまで遅れた（`wake_ms=1000` で最大 1 秒）。`about_to_wait` の `pump_ipc_while_frames_stalled` は、`Wait` で眠っている間は呼ばれない。
   W2-10 で IPC の読み取りのスレッドがイベントループを起こす（EventLoopProxy）。
+  → **2026-09-28 の W2-10a で解消**: `read_loop` が命令を積むたびに `redraw::wake::raise(Ipc)`。止めている間の `SCRIPT_DEBUG` の往復 0.0〜0.6 ms・
+  `SCREENSHOT` 69〜80 ms（毎フレーム描いているときの 70〜78 ms と同じ）を PC で確かめた（redraw_policy.md §8）。
 - [ ] **Windows の IME はエディタに埋め込んだ Play（WPF の子ウィンドウ）での候補窓の位置・WPF の IME との取り合いが未確認** — 2026-09-27（W2-0）。
   今の SEED は `set_ime_allowed` を呼ばない（winit の既定で IME は切り離されたまま）ので、Play の窓では日本語を入力できない。単体の SEED.exe での
   許可と候補窓の位置の指定は試作の `ime` で通したが、日本語の実入力は W2-6 で確かめる（§3.8.1 の I-11）。
@@ -2802,7 +2813,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （`platform_impl/android/mod.rs` の `handle_input_event` を読んだ）。移動は vsync ごとにまとめて届くので、速度の推定は 1 フレームに 1 標本・受け取りの揺れを含む。
   直すなら winit を上げる（時刻が渡るようになったら）か、MainActivity の `dispatchTouchEvent` で eventTime を JNI で控えて突き合わせる。
   (3) **閾値の表はプロジェクト設定の JSON（`"gestures"`）だけ**（エディタのプロジェクト設定の画面に欄が無い）。(4) **「動いている」の申告
-  （`GestureArenaSet::activity`）は呼び出し元が無い**（W2-10a で「描く理由」へつなぐ）。(5) **W2-3 への申し送り**: 行の再利用で押している行のノードが
+  （`GestureArenaSet::activity`）は呼び出し元が無い**（W2-10a で「描く理由」へつなぐ → 2026-09-28 につないだ。済）。(5) **W2-3 への申し送り**: 行の再利用で押している行のノードが
   消えると PressCancel の配り先が無い（部品側で戻す）。スクロールの慣性中のタップで止める・慣性中の押下の見た目の扱いは部品側。
   (6) ピンチ・ダブルタップ・3D ワールドキャンバスのノードは無い。(7) 内部解像度固定（レターボックス）では dp を画面の DPI から求めるので、slop・最小の
   ヒット領域が内部解像度の画素で少しずれる。(8) **動いているエディタでのインスペクタの目視は未確認**（ビルドとエディタのテストは通る）。
@@ -2821,6 +2832,31 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **W2-10 描かなくてよいときは描かない** — 2026-09-27。前面では毎フレーム描き続け、UI と提示だけで Pixel 6a の GPU 約 4.5 ms を使う
   （上の「固定分 約 4.5 ms」の項目）。止まっている画面の多いアプリの電池に効く。
   → W2-0 で方式を決めた（roadmap §3.8.3・§3.8.4）。部品を作り始める前に「描く理由」の API だけ先に決める（§3.8.5）。
+  → **2026-09-28 に W2-10a（「描く理由」の API と判定。既定で無効）が済**（正典 docs/redraw_policy.md。roadmap §3.8.5）。残りは下の「W2-10a の残り」と、
+  部品と画面ができた後に通しで詰めること（止める判定のフレームの数・時計の表示・UC-10 の計測）。
+- [ ] **W2-10a の残り（描く理由）** — 2026-09-28。(1) **実機（Pixel 6a）で未確認**（止めたときの CPU・GPU・タップ・文字入力〈`RedrawWaker`〉・
+  プラットフォームのイベント・音声フォーカス・回転で起きること。手順は redraw_policy.md §9）。(2) **止めている間も物理のスレッドは進む**（W2-0 の実機で
+  止めている間の CPU 6% の大半）。背面の `background_pause` と同じく止めるかを W2-10 で決める（結果の待ち行列には上限 120 件を付けた。`physics/result_backlog.rs`）。
+  (3) **シェーダーの時間で動くもの**（水面・草の風・L3 の time・コースティクス）・インタラクション場・地表カバー・水位・DDGI などの時間の積み上げ・地形の LOD の
+  積み残しは「動いている」を申告しない（使う画面は `SetContinuous`）。(4) **ファイルの保存の検知**（Play 中のシェーダーのホットリロード・水面・アイコン・InputMap の
+  1 秒ごとの更新時刻の確認）は止めている間は止まる（IPC の `RELOAD_*` は起こす）。(5) ゲームパッドの操作では起きない（フレームの頭で読む）。
+  (6) **エディタに埋め込んだ Play での動きは未確認**（単体の SEED.exe の TCP の IPC で確かめた。名前付きパイプも同じ `read_loop` を通る）。
+  (7) エディタのプロジェクト設定の画面に `render_policy` の欄が無い（JSON を直接書く。保存しても `ExtraData` で消えない）。(8) 止めていた後の最初のフレームが重い
+  （W2-0 の R-13）。(9) スクリプトの `Invoke`（遅れて呼ぶ）の仕組みが SEED に無い（`RequestAfter` が申告の代わり。W2-3 以降の部品が要るなら作る）。
+  関連: `runtime/src/engine/core/redraw/`・`app/redraw_hooks.rs`。
+- [ ] **Windows の日本語キーボードの「半角/全角」キーが押されたまま残る（`Input` の既存の不具合）** — 2026-09-28（W2-10a の PC の確認で発見）。
+  UiSpike を前面に出さずに起動しただけ（キーボードに触っていない）で、`KeyboardState` の押しているキーに `Backquote` が入ったまま消えなかった
+  （`SEED_REDRAW_LOG=1` の `押している: keys={Backquote}`）。JIS 配列の「半角/全角」は winit では `Backquote` の位置のキーで、Windows がこのキーの離しを送らない
+  ため（と見られる。推論。winit がフォーカスを得たときに押されているキーを合成するときにも入りうる）。影響: スクリプトの `Input.IsPressAnyKey`・
+  `Input.GetKey(Backquote)` が押しっぱなしに見える。W2-10a では実キーボードのキーを「押している」の理由から外して避けた（redraw_policy.md §3）。
+  直すなら `KeyboardInput` の `KeyCode::Backquote`（と IME の切り替えのキー）を押しっぱなしの集合へ入れない、かフォーカスを失ったときに集合を空にする。
+  関連: `runtime/src/engine/core/input/keyboard.rs`・`app/event_handler.rs`。
+- [ ] **AI 補完へ届くスクリプト API の文書が §2 の途中で切れている（既存）** — 2026-09-28（W2-10a の調査で見つけた。数えたのは調べたエージェント）。
+  `editor/src/Panels/ScriptEditor/InlineCompletion/ScriptApiReference.cs:32` の `MaxChars = 12000` で打ち切るため、`Compact()` の後の約 125,000 字のうち AI に届くのは md の 518 行付近
+  （第 2 節）まで。§7.12 以降（Screen・Platform・W2-10a の Redraw）は補完に届いていない。上限を上げるか、節ごとに要るものだけを選んで渡す。
+- [ ] **add-script-api の Skill に「新しい種類の FFI（`ScriptHostApi` の欄）を足す手順」が無い（既存）** — 2026-09-28（W2-10a）。W1-1 の `SEED.Platform`・
+  W2-10a の `SEED.Redraw` は、`host_api.rs` の構造体と `HOST_API` の末尾・`ScriptHost.cs` の構造体の末尾に同じ順で 1 欄ずつ足し、別ファイルに
+  `pub(super) extern "system" fn ffi_xxx` を置く形で足した（サイズや版の照合は無いので、両方のビルドが要る）。Skill に節を足す。
 - [ ] **W2-11 通しの確認（UC-1〜12）** — 2026-09-27。
 - [ ] **PC の Play のスクリプトのコンパイルで `System.Text.Json` を参照できない** — 2026-09-27（Wake or Pay の W3-D で発見）。`using System.Text.Json;` が `CS0234: 'Json' does not exist in the namespace 'System.Text'` で失敗する。Play のコンパイル（ScriptAssemblyManager の Roslyn）が「その時点で読み込まれているアセンブリ」だけを参照に入れるため、共有フレームワークの `System.Text.Json.dll` が参照に入らない。Wake or Pay は反射なしの小さな JSON（`assets/scripts/Json/`）を自作して回避した。直し方の案: 参照の集合を「読み込み済み」ではなく、同梱の .NET の `shared/Microsoft.NETCore.App/<版>/` の参照用アセンブリ一式（または許可リスト）から作る。Android の同梱 CoreCLR と SeedPak の事前コンパイル（`--scripts`）の参照も同じ集合にそろえる。関連: `scripting/` の Compilation、`docs/scripting_api.md`（使える .NET の範囲を明記する）。
 - [ ] **SEED.exe を前面に出さずに起動する引数が無い（自動の見た目の検査が利用者の画面を奪う）** — 2026-09-27（W2-1a の画素比較で発見。利用者から「頻繁に起動しているのはなぜ？」）。今は STARTUPINFO の SW_SHOWNOACTIVATE で起動し最背面へ送って凌いでいる。案: `--window=hidden|offscreen|minimized` と、描画をオフスクリーンのテクスチャに向けてスクリーンショットだけ撮る `--headless-render`（決まったフレーム数で撮って終了）。W2 以降の見た目の回帰検査（UC の自動化）と CI で使う。関連: `runtime/src/main.rs`、IPC の SCREENSHOT。

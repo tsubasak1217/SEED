@@ -117,6 +117,11 @@ pub struct Clock {
     /// true の間だけ `DEBUG_PAUSE_THRESHOLD` によるブレークポイント停止ガードが働く。
     /// エディタから DBG_GUARD IPC で切り替える。通常プレイ（非デバッグ）では常に false。
     debug_guard:       bool,
+    /// 次の `tick` の delta の上限（秒。1 回だけ効く）。
+    ///
+    /// 描画を止めていた（render_policy の on_demand。W2-10a）後に起きた最初のフレームで、止めていた時間を
+    /// ゲームの時間へ入れないために使う（`limit_next_delta`）。None なら切り詰めない（従来どおり）。
+    next_delta_cap:    Option<f32>,
 }
 
 impl Clock {
@@ -128,11 +133,24 @@ impl Clock {
             unscaled_anim_time: 0.0,
             fixed_accumulator: 0.0,
             debug_guard:       false,
+            next_delta_cap:    None,
         }
     }
 
     /// デバッグセッションのアタッチ/デタッチに合わせてブレークポイント停止ガードを切り替える。
     pub fn set_debug_guard(&mut self, on: bool) { self.debug_guard = on; }
+
+    /// 次の `tick` の delta（壁時計の経過）を `max_secs` 以下に切り詰める（1 回だけ効く）。
+    ///
+    /// 描画を止めていた（render_policy の on_demand。W2-10a）後に起きた最初のフレームで呼ぶ。止めていた間は
+    /// フレームが回らないので、そのまま `tick` すると最初のフレームの delta が止めていた時間（数秒〜数時間）になり、
+    /// ゲームの時間が一気に進んで固定ステップ（ConstantUpdate）が取り戻しで連続して回る。背面から戻ったときの
+    /// `forget_elapsed` と同じ考えで、止めていた時間はゲームの時間に入れない。
+    /// 複数回呼んだら小さい方の上限が効く。負・NaN は 0 とみなす。
+    pub fn limit_next_delta(&mut self, max_secs: f32) {
+        let cap = if max_secs.is_nan() { 0.0 } else { max_secs.max(0.0) };
+        self.next_delta_cap = Some(self.next_delta_cap.map_or(cap, |existing| existing.min(cap)));
+    }
 
     /// 前フレームからの経過時間を捨てる（次の `tick` の delta を「今から」の時間にする）。
     ///
@@ -170,6 +188,11 @@ impl Clock {
         // 1 フレーム分（FIXED_DELTA）に丸めて、この暴走を防ぐ。
         if self.debug_guard && delta_time > DEBUG_PAUSE_THRESHOLD {
             delta_time = FIXED_DELTA;
+        }
+
+        // 描画を止めていた後の最初のフレーム（W2-10a）: 止めていた時間をゲームの時間へ入れない（1 回だけ）。
+        if let Some(cap) = self.next_delta_cap.take() {
+            delta_time = delta_time.min(cap);
         }
 
         // ── 時間スケールの適用 ────────────────────────────────────────
@@ -441,5 +464,44 @@ mod tests {
         // 固定ステップは delta ぶんだけ（背面の 60 秒ぶん＝3600 回を取り戻さない）。
         let max_steps = (MAX_RESUMED_DELTA / FIXED_DELTA).ceil() as usize + 1;
         assert!(c.drain_fixed().count() <= max_steps);
+    }
+
+    /// 描画を止めていた後の最初のフレーム（W2-10a）: limit_next_delta で止めていた時間を捨て、次の tick にだけ効く。
+    #[test]
+    fn limit_next_delta_caps_one_tick_only() {
+        /// 止めていた時間（仮）。
+        const IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+        let mut c = Clock::new();
+        let Some(long_ago) = Instant::now().checked_sub(IDLE) else { return };
+
+        // 切り詰めた tick: delta は上限（1/60 秒）、固定ステップは多くて 1 回、ゲームの時間も上限ぶんだけ
+        c.last_frame = long_ago;
+        c.limit_next_delta(FIXED_DELTA);
+        let resumed = c.tick(true, TIME_SCALE_DEFAULT);
+        assert!(resumed.delta_time <= FIXED_DELTA, "delta={}", resumed.delta_time);
+        assert!(resumed.unscaled_delta_time <= FIXED_DELTA);
+        assert!(c.anim_time() <= FIXED_DELTA);
+        assert!(c.drain_fixed().count() <= 1);
+
+        // 次の tick には効かない（1 回だけ）
+        c.last_frame = long_ago;
+        let next = c.tick(true, TIME_SCALE_DEFAULT);
+        assert!(next.delta_time >= IDLE.as_secs_f32(), "上限が残っている: {}", next.delta_time);
+    }
+
+    /// limit_next_delta を重ねたら小さい方、負・NaN は 0。
+    #[test]
+    fn limit_next_delta_keeps_the_smaller_cap() {
+        let mut c = Clock::new();
+        c.limit_next_delta(0.5);
+        c.limit_next_delta(0.1);
+        c.limit_next_delta(0.3);
+        assert_eq!(c.next_delta_cap, Some(0.1));
+        let mut c = Clock::new();
+        c.limit_next_delta(-1.0);
+        assert_eq!(c.next_delta_cap, Some(0.0));
+        let mut c = Clock::new();
+        c.limit_next_delta(f32::NAN);
+        assert_eq!(c.next_delta_cap, Some(0.0));
     }
 }

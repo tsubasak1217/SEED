@@ -116,6 +116,15 @@ impl MouseState {
     pub fn is_release(&self, button: MouseButton) -> bool {
         self.just_released.contains(&button)
     }
+    /// どれかのボタンを押しているか（描く理由の「押している」。W2-10a）。
+    #[inline]
+    pub fn is_press_any(&self) -> bool {
+        !self.held.is_empty()
+    }
+    /// 押しているボタンの一覧（検証用のログ。W2-10a の SEED_REDRAW_LOG）。
+    pub fn held_debug(&self) -> String {
+        format!("{:?}", self.held)
+    }
 
     // ─── 座標・移動量 クエリ ───────────────────────────────────
 

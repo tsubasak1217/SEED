@@ -86,7 +86,7 @@ impl DesktopSimBridge {
                 names::KEY_SIMULATED: true,
             });
             let time_ms = u64::try_from(now).unwrap_or_default();
-            self.events.push(wire::event_json(names::EVENT_FIRED, seq, time_ms, data));
+            self.queue_event(wire::event_json(names::EVENT_FIRED, seq, time_ms, data));
             eprintln!(
                 "{LOG_PREFIX} 模擬の目覚まし {} が鳴りました（予定から {} ms・音は鳴らしません）",
                 request.id,
@@ -164,6 +164,34 @@ mod tests {
         assert!(listed_ids(&sim).is_empty(), "鳴った予約が残っている（一回限り）");
         clock.advance(DELAY_MS);
         assert!(sim.poll_events().is_empty(), "2 回鳴った");
+    }
+
+    /// 次の予定までの残り（W2-10a の WaitUntil）: 予約が無ければ None、いちばん早い予定、過ぎていれば 0、
+    /// 鳴ったら安全弁の時刻、止めて取り消したら None。
+    #[test]
+    fn next_timed_event_follows_schedule_and_ringing() {
+        /// 安全弁（分）。
+        const MAX_RING_MINUTES: i64 = 1;
+        let (sim, clock) = sim();
+        assert_eq!(sim.next_timed_event_delay_ms(), None, "予約なし");
+        let mut late = request("late", START_MS + 2 * DELAY_MS);
+        late[names::KEY_MAX_RING_MINUTES] = Value::from(MAX_RING_MINUTES);
+        call(&sim, names::METHOD_SCHEDULE, late);
+        let mut early = request("early", START_MS + DELAY_MS);
+        early[names::KEY_MAX_RING_MINUTES] = Value::from(MAX_RING_MINUTES);
+        call(&sim, names::METHOD_SCHEDULE, early);
+        assert_eq!(sim.next_timed_event_delay_ms(), Some(DELAY_MS as u64), "いちばん早い予定");
+        clock.advance(DELAY_MS + 1);
+        assert_eq!(sim.next_timed_event_delay_ms(), Some(0), "過ぎていれば 0（すぐ起きる）");
+        assert_eq!(sim.poll_events().len(), 1, "early が鳴る");
+        // 鳴動中: 安全弁の時刻（鳴り始め＋1 分）と、残りの予約（late）の早い方
+        let now = START_MS + DELAY_MS + 1;
+        let ring_deadline = now + MAX_RING_MINUTES * names::MILLIS_PER_MINUTE;
+        let expected = (START_MS + 2 * DELAY_MS).min(ring_deadline) - now;
+        assert_eq!(sim.next_timed_event_delay_ms(), Some(expected as u64));
+        call(&sim, names::METHOD_STOP_RINGING, json!({}));
+        call(&sim, names::METHOD_CANCEL_ALL, json!({}));
+        assert_eq!(sim.next_timed_event_delay_ms(), None, "止めて取り消したら予定なし");
     }
 
     /// 同じ ID は置き換え（前の時刻では鳴らず、新しい時刻で 1 回）。

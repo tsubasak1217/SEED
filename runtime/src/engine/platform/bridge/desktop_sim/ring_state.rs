@@ -183,6 +183,13 @@ impl SimRingState {
         self.lock().current.clone()
     }
 
+    /// 今鳴っている鳴動を安全弁で止める時刻（UTC の epoch ミリ秒）。鳴っていなければ None。
+    ///
+    /// 描画を止めている間（render_policy の on_demand。W2-10a）も、この時刻に起きて安全弁を効かせる（WaitUntil）ために使う。
+    pub fn next_deadline_utc_ms(&self) -> Option<i64> {
+        self.lock().current.as_ref().map(SimRinging::deadline_utc_ms)
+    }
+
     /// 空にする（Play の区切り。通し番号は戻さない）。
     pub fn clear(&self) {
         let mut inner = self.lock();

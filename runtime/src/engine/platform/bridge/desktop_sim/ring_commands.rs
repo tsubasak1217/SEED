@@ -108,7 +108,7 @@ impl DesktopSimBridge {
     pub(super) fn push_event(&self, name: &str, now_utc_ms: i64, data: Value) {
         let seq = self.next_event_seq();
         let time_ms = u64::try_from(now_utc_ms).unwrap_or_default();
-        self.events.push(wire::event_json(name, seq, time_ms, data));
+        self.queue_event(wire::event_json(name, seq, time_ms, data));
     }
 }
 

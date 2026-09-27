@@ -120,6 +120,13 @@ impl SimAlarmBook {
         due
     }
 
+    /// いちばん早い予定時刻（UTC の epoch ミリ秒）。予約が無ければ None。
+    ///
+    /// 描画を止めている間（render_policy の on_demand。W2-10a）も、この時刻に起きて発火させる（WaitUntil）ために使う。
+    pub fn next_trigger_utc_ms(&self) -> Option<i64> {
+        self.lock().iter().map(|alarm| alarm.request.trigger_at_utc_ms).min()
+    }
+
     /// 空にする（Play の区切り）。
     pub fn clear(&self) {
         self.lock().clear();

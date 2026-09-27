@@ -125,7 +125,13 @@ impl App {
         // present されないので、セッションを畳んだあとに**必ず 1 枚提示して**
         // 元のシーンの絵へ戻す必要があり、そのフレームをここで保証する。
         let thumbnail_active = self.thumbnail_job.is_some() || self.thumbnail_session.is_some();
-        if !*HEADLESS && !screenshot::has_pending_request() && !thumbnail_active {
+        let capture_pending = screenshot::has_pending_request() || thumbnail_active;
+        if !*HEADLESS && !capture_pending {
+            return;
+        }
+        // ヘッドレスでも、描画を止めている間（render_policy の on_demand。W2-10a）は回さない（撮影が残っていれば回す）。
+        // 起こす理由（IPC など）が来れば redraw_hooks.rs が起きた扱いにし、次の周回からまたここで回る。
+        if !capture_pending && self.redraw_is_idle() {
             return;
         }
         // 初期化前・終了中はフレームを回せない。
@@ -136,6 +142,8 @@ impl App {
         if (self.last_frame_at.elapsed().as_millis() as u64) < FORCED_FRAME_INTERVAL_MS {
             return;
         }
+        // RedrawRequested の頭と同じく、止めていた後のフレームなら起きた扱いにする（dt の切り詰め。W2-10a）
+        self.on_redraw_frame_start(event_loop);
         self.handle_redraw_requested(event_loop);
     }
 }

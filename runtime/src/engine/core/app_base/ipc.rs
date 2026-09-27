@@ -2,6 +2,8 @@ use crate::engine::core::app_base::hot_reload::wire as hot_reload_wire;
 use crate::engine::core::app_base::ipc_transport::{self, IpcTransportKind};
 use crate::engine::core::app_base::scene_snapshot::wire as scene_snapshot_wire;
 use crate::engine::core::input::inject::{parse_inject_command, INJECT_COMMAND_PREFIX};
+use crate::engine::core::redraw::wake as redraw_wake;
+use crate::engine::core::redraw::RedrawReason;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
@@ -3360,6 +3362,9 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                 };
                 if let Some(cmd) = cmd {
                     if tx.send(cmd).is_err() { return ReadLoopEnd::ReceiverGone; }
+                    // 描画を止めている間（render_policy の on_demand。W2-10a）でも次のフレームで処理されるよう、
+                    // イベントループを起こす（起きていれば理由を積むだけ。パイプ・TCP の両方がこの read_loop を通る）。
+                    redraw_wake::raise(RedrawReason::Ipc);
                 }
             }
         }

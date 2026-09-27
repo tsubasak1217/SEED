@@ -443,6 +443,40 @@ public static unsafe class ScriptHost
         return result;
     }
 
+    // ── 描画の要求（SEED.Redraw。W2-10a）──────────────────────────
+    // op の番号と結果は Rust 側 runtime/src/engine/core/scripting/redraw_bridge.rs の REDRAW_OP_* / REDRAW_RESULT_* と一致させる。
+
+    /// <summary>次の 1 フレームを描く（value は使わない）。</summary>
+    internal const int RedrawOpRequest = 0;
+    /// <summary>value 秒後に 1 フレームを描く。</summary>
+    internal const int RedrawOpRequestAfter = 1;
+    /// <summary>value 秒の間は描き続ける。</summary>
+    internal const int RedrawOpKeepAlive = 2;
+    /// <summary>value が 0 以外なら常に描く・0 なら外す。</summary>
+    internal const int RedrawOpSetContinuous = 3;
+    /// <summary>常に描く要求の中なら 1、でなければ 0。</summary>
+    internal const int RedrawOpIsContinuous = 4;
+    /// <summary>value を方針の番号として上書きする（-1 で上書きを外す）。</summary>
+    internal const int RedrawOpSetPolicy = 5;
+    /// <summary>今の方針の番号（上書き → プロジェクト設定の順）。</summary>
+    internal const int RedrawOpGetPolicy = 6;
+    /// <summary>受け付けた。</summary>
+    internal const int RedrawResultOk = 0;
+    /// <summary>知らない op・読めない値（FFI が使えないときもこれ）。</summary>
+    internal const int RedrawResultInvalid = -1;
+    /// <summary>SetPolicy の「上書きを外す」の番号。</summary>
+    internal const int RedrawPolicyClearOverride = -1;
+
+    /// <summary>
+    /// 描画の要求（op は RedrawOp*）。戻り値は op ごとの値（Rust 側 redraw_bridge.rs の表）。
+    /// FFI が使えないときは <see cref="RedrawResultInvalid"/>（例外にしない。要求は何もしない＝従来どおり毎フレーム描く）。
+    /// </summary>
+    public static int RedrawOp(int op, float value)
+    {
+        if (!_available || _api.Redraw == null) return RedrawResultInvalid;
+        return _api.Redraw(op, value);
+    }
+
     // ── カメラ射影（SEED.Camera.WorldToScreen）──────────────────
 
     /// <summary>
@@ -1353,4 +1387,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, byte*, int, byte*, int, int> PlatformInvoke;
     /// <summary>(out buf, cap) → -1=空 / 0以上=先頭のイベントの JSON のバイト数（cap 以下のときだけ書いて取り出す）（SEED.Platform.PlatformEvents）</summary>
     public delegate* unmanaged[Cdecl]<byte*, int, int> PlatformPollEvents;
+    /// <summary>(op, value) → op ごとの値（op 0=Request / 1=RequestAfter(秒) / 2=KeepAlive(秒) / 3=SetContinuous(0 以外で真) は 0、4=IsContinuous は 1/0、5=SetPolicy(番号・-1 で外す) は 0、6=GetPolicy は方針の番号。知らない op・読めない値=-1）（描画の要求。SEED.Redraw。W2-10a）</summary>
+    public delegate* unmanaged[Cdecl]<int, float, int> Redraw;
 }

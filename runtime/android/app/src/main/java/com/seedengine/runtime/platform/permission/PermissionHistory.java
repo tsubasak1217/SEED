@@ -9,6 +9,7 @@
 //
 //  置き場はメインプロセスの SharedPreferences（seed_platform_permissions.xml。資格情報で保護された置き場。MainActivity はロック解除の後に
 //  しか動かないので足りる）。:seed_platform からは使わない（SharedPreferences はプロセスをまたいで同期しない）。
+//  開き方は PermissionPreferences（前の onResume で見た状態〈PermissionStatusMemory〉と同じファイル。キーの接頭辞で分ける）。
 // ============================================================
 
 package com.seedengine.runtime.platform.permission;
@@ -23,9 +24,6 @@ final class PermissionHistory {
 
     private PermissionHistory() {
     }
-
-    /** SharedPreferences の名前（shared_prefs/seed_platform_permissions.xml）。 */
-    private static final String PREFERENCES_NAME = "seed_platform_permissions";
 
     /** 「拒否された」のキーの接頭辞（後ろに種類の wire の名前）。 */
     private static final String DENIED_KEY_PREFIX = "denied.";
@@ -69,7 +67,7 @@ final class PermissionHistory {
 
     /** 置き場。 */
     private static SharedPreferences preferences(Context context) {
-        return context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
+        return PermissionPreferences.open(context);
     }
 
     /** 種類のキー。 */

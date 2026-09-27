@@ -3885,6 +3885,10 @@ pub struct ScriptHostApi {
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     platform_invoke:         unsafe extern "system" fn(i32, *const u8, i32, *const u8, i32, *const u8, i32, *mut u8, i32) -> i32,
     platform_poll_events:    unsafe extern "system" fn(*mut u8, i32) -> i32,
+    // スクリプトの描画の要求（SEED.Redraw。W2-10a。実体は redraw_bridge.rs → engine/core/redraw/script_requests.rs）。
+    // (op, value) → op ごとの値（-1 = 知らない op・読めない値）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    redraw:                  unsafe extern "system" fn(i32, f32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3935,6 +3939,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     screen:                  super::screen_bridge::ffi_screen,
     platform_invoke:         super::platform_bridge::ffi_platform_invoke,
     platform_poll_events:    super::platform_bridge::ffi_platform_poll_events,
+    redraw:                  super::redraw_bridge::ffi_redraw,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

@@ -256,6 +256,11 @@ struct EmitterCpuState {
     emitted_total: u64,
     /// initial_delay の残り秒（playing 立ち上がりでセットし、消化してから放出開始）。
     delay_left: f32,
+    /// 最後に放出した粒子が必ず消えるまでの残り秒（放出のたびに寿命の上限＋余裕へ戻し、毎ステップ dt ずつ減らす）。
+    ///
+    /// 描画を止める判定（render_policy の on_demand。W2-10a）の「粒子が動いている」に使う。GPU の読み戻しは使わない
+    /// （孤児の TTL と同じ考え: 寿命の上限が過ぎれば必ず全滅している）。
+    particles_alive_secs: f32,
 }
 
 impl EmitterCpuState {
@@ -266,6 +271,7 @@ impl EmitterCpuState {
             prev_playing: false,
             emitted_total: 0,
             delay_left: 0.0,
+            particles_alive_secs: 0.0,
         }
     }
 }
@@ -540,6 +546,9 @@ pub struct ParticleSystem {
     frame: Vec<EmitterFrameDesc>,
     /// フレームカウンタ（frame_nonce の生成に使う。乱数系列をフレームで変える）。
     frame_counter: u64,
+    /// 直近の collect_and_consume の時点で粒子が動いているか（これから放出する・生きている粒子がある・孤児がいる）。
+    /// 描画を止める判定（render_policy の on_demand。W2-10a）の「動いている」の申告に使う。
+    animating: bool,
 }
 
 /// 収集時にシーンから抜き出すエミッタのスナップショット（World の借用を跨がないため）。
@@ -597,6 +606,7 @@ impl ParticleSystem {
             shapes: None,
             frame: Vec::new(),
             frame_counter: 0,
+            animating: false,
         }
     }
 
@@ -604,6 +614,14 @@ impl ParticleSystem {
     /// （追加コストゼロ判定）。孤児＝エミッタは消えたが寿命が残っている粒子群。
     pub fn has_emitters(&self) -> bool {
         !self.frame.is_empty() || !self.orphans.is_empty()
+    }
+
+    /// 粒子が動いているか（直近の collect_and_consume の時点。W2-10a の「動いている」の申告）。
+    ///
+    /// これから放出する再生中のエミッタ（initial_delay の待ちを含む）・寿命の残っている粒子・孤児のどれかがあれば true。
+    /// 停止中のエミッタや、放出を終えて粒子が消えた Once / Count のエミッタだけなら false（描画を止めてよい）。
+    pub fn is_animating(&self) -> bool {
+        self.animating
     }
 
     /// 全パーティクル資源（エミッタ・孤児とも）を即時解放する。
@@ -616,6 +634,7 @@ impl ParticleSystem {
         self.gpu.clear();
         self.seeds.clear();
         self.orphans.clear();
+        self.animating = false;
     }
 
     /// プール容量からディスパッチするワークグループ数を求める（エミッタ／孤児で共用）。
@@ -638,6 +657,8 @@ impl ParticleSystem {
         // フレームリストを毎フレーム作り直す（前フレームの残骸を持ち越さない）。
         self.frame.clear();
         self.frame_counter = self.frame_counter.wrapping_add(1);
+        // 「動いている」は各エミッタ（process_emitter）と孤児（下の ③ の後）で立て直す。
+        self.animating = false;
 
         // ① シーンを走査してエミッタのスナップショットを収集し、pending_burst を消費する。
         let mut raws: Vec<RawEmitter> = Vec::new();
@@ -656,6 +677,8 @@ impl ParticleSystem {
         // ④ シーンから消えたエミッタの GPU リソースを孤児プールへ移譲する。
         //    （即破棄すると発射済みの粒子まで消えてしまうため。放出のみ止める）
         self.orphan_removed_emitters(&present);
+        // 孤児（寿命の残っている粒子。このフレームに孤児になったものを含む）がいる間は動いている。
+        self.animating |= !self.orphans.is_empty();
 
         // ⑤ 消えたエミッタの CPU 状態・スナップショットを破棄する。
         //    GPU 状態は ④ で移譲済み（孤児にならなかったものは ④ 内で drop される）。
@@ -769,16 +792,43 @@ impl ParticleSystem {
         }
 
         // emit_mode による累計上限（Loop=無制限 / Once=プール一巡 / Count=指定数）。
-        let limit: u64 = match mode {
-            EmitMode::Loop => u64::MAX,
-            EmitMode::Once => max as u64,
-            EmitMode::Count { total } => total as u64,
-        };
+        let limit = Self::emission_limit(mode, max);
         if cpu.emitted_total >= limit {
             return 0;
         }
         let remaining = (limit - cpu.emitted_total).min(u32::MAX as u64) as u32;
         emits.min(remaining)
+    }
+
+    /// emit_mode による累計の放出の上限（Loop=無制限 / Once=プール一巡 / Count=指定数）。
+    fn emission_limit(mode: EmitMode, max: u32) -> u64 {
+        match mode {
+            EmitMode::Loop => u64::MAX,
+            EmitMode::Once => max as u64,
+            EmitMode::Count { total } => total as u64,
+        }
+    }
+
+    /// 再生中のエミッタがこれからも放出するか（W2-10a の「動いている」の判定）。
+    ///
+    /// 1 回の放出の数が 0 なら放出しない。Once / Count は累計が上限に届いたら放出を終える（再生し直すまで）。
+    fn will_emit(cpu: &EmitterCpuState, playing: bool, per_emit: u32, mode: EmitMode, max: u32) -> bool {
+        playing && per_emit > 0 && cpu.emitted_total < Self::emission_limit(mode, max)
+    }
+
+    /// 放出した粒子が必ず消えるまでの残り秒を進める（W2-10a の「動いている」の判定）【純関数】。
+    ///
+    /// # 引数
+    /// * `alive_secs`   - これまでの残り秒
+    /// * `emitted`      - このステップ（プリウォームを含む）で放出したか
+    /// * `lifetime_max` - 粒子の寿命の上限（秒）
+    /// * `dt`           - このステップの秒
+    fn advance_alive_secs(alive_secs: f32, emitted: bool, lifetime_max: f32, dt: f32) -> f32 {
+        if emitted {
+            lifetime_max.max(0.0) + ORPHAN_TTL_MARGIN_SECS
+        } else {
+            (alive_secs - dt.max(0.0)).max(0.0)
+        }
     }
 
     /// 1 エミッタの放出個数・リングカーソル・パラメータを決定して frame へ積む。
@@ -911,6 +961,12 @@ impl ParticleSystem {
         let ring_start = cpu.spawn_cursor % max;
         cpu.spawn_cursor = (cpu.spawn_cursor + count) % max;
         cpu.emitted_total = cpu.emitted_total.saturating_add(count as u64);
+
+        // 「動いている」の申告（W2-10a）: 放出した粒子の寿命の残りと、これからも放出するかを見る。
+        let emitted = count > 0 || prewarm_params.iter().any(|p| p.emit_count > 0);
+        cpu.particles_alive_secs = Self::advance_alive_secs(cpu.particles_alive_secs, emitted, raw.lifetime[1], dt);
+        let will_emit = Self::will_emit(cpu, raw.playing, raw.particles_per_emit, raw.emit_mode, max);
+        self.animating |= will_emit || cpu.particles_alive_secs > 0.0;
 
         let params = make_params(dt, count, ring_start, frame_nonce);
 
@@ -1923,5 +1979,62 @@ mod shader_tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("[{name}] WGSL validate 失敗: {e:?}"));
         }
+    }
+}
+
+// ─── 「動いている」の申告の判定（W2-10a）──────────────────────────
+//
+// render_policy の on_demand で描画を止めてよいかを、GPU の読み戻しなしで決める部分の検査。
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+
+    /// 粒子の寿命の上限（試験用。秒）。
+    const LIFETIME_MAX: f32 = 1.5;
+    /// 1 ステップの秒（試験用）。
+    const DT: f32 = 0.5;
+
+    /// 放出したステップで寿命の上限＋余裕へ戻り、放出しないステップは dt ずつ減って 0 で止まる。
+    #[test]
+    fn alive_secs_resets_on_emit_and_decays() {
+        let reset = ParticleSystem::advance_alive_secs(0.0, true, LIFETIME_MAX, DT);
+        assert_eq!(reset, LIFETIME_MAX + ORPHAN_TTL_MARGIN_SECS);
+        let mut alive = reset;
+        let mut steps = 0;
+        while alive > 0.0 {
+            alive = ParticleSystem::advance_alive_secs(alive, false, LIFETIME_MAX, DT);
+            steps += 1;
+            assert!(steps < 100, "0 へ届かない");
+        }
+        assert_eq!(alive, 0.0, "負にならない");
+        assert_eq!(steps, ((LIFETIME_MAX + ORPHAN_TTL_MARGIN_SECS) / DT).ceil() as i32);
+        // 寿命が負の設定でも余裕ぶんだけ（負の残りにならない）
+        assert_eq!(ParticleSystem::advance_alive_secs(0.0, true, -1.0, DT), ORPHAN_TTL_MARGIN_SECS);
+    }
+
+    /// これからも放出するか: 停止中・1 回の数 0・Once / Count の上限に届いたら放出しない。Loop は続く。
+    #[test]
+    fn will_emit_follows_playing_and_limits() {
+        /// プールの容量（試験用）。
+        const MAX: u32 = 8;
+        let mut cpu = EmitterCpuState::new();
+        assert!(ParticleSystem::will_emit(&cpu, true, 1, EmitMode::Loop, MAX));
+        assert!(!ParticleSystem::will_emit(&cpu, false, 1, EmitMode::Loop, MAX), "停止中");
+        assert!(!ParticleSystem::will_emit(&cpu, true, 0, EmitMode::Loop, MAX), "1 回の数が 0");
+        cpu.emitted_total = u64::from(MAX);
+        assert!(!ParticleSystem::will_emit(&cpu, true, 1, EmitMode::Once, MAX), "Once はプール一巡で終わり");
+        assert!(ParticleSystem::will_emit(&cpu, true, 1, EmitMode::Loop, MAX), "Loop は続く");
+        assert!(ParticleSystem::will_emit(&cpu, true, 1, EmitMode::Count { total: MAX + 1 }, MAX));
+        assert!(!ParticleSystem::will_emit(&cpu, true, 1, EmitMode::Count { total: MAX }, MAX));
+    }
+
+    /// 何も無いシステムは動いていない（clear_all の後も）。
+    #[test]
+    fn empty_system_is_not_animating() {
+        let mut system = ParticleSystem::new();
+        assert!(!system.is_animating());
+        system.animating = true;
+        system.clear_all();
+        assert!(!system.is_animating());
     }
 }

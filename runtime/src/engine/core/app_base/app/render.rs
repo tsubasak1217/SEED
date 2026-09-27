@@ -1,8 +1,9 @@
 // ============================================================
-//  render.rs — ApplicationHandler 実装（resumed / window_event / device_event）
+//  render.rs — ApplicationHandler 実装（resumed / window_event / device_event / user_event）
 //
 //  winit イベントループへの応答処理の入口。
 //  実際のフレームレンダリングは frame_renderer.rs の handle_redraw_requested に委譲する。
+//  user_event は他のスレッドがイベントループを起こした知らせ（描く理由。W2-10a の redraw_hooks.rs）。
 // ============================================================
 
 use winit::application::ApplicationHandler;
@@ -24,6 +25,8 @@ impl ApplicationHandler for App {
         if self.renderer.is_some() {
             if self.handle_surface_resumed(event_loop) {
                 self.enter_foreground();
+                // 描画を止めていた状態（render_policy の on_demand）を捨て、前面へ戻った直後のフレームを描く（W2-10a）
+                self.on_redraw_foreground();
             }
             return;
         }
@@ -69,8 +72,17 @@ impl ApplicationHandler for App {
         self.poll_screenshot_outcomes();
         // 図鑑サムネイル生成ジョブを 1 段進める（完了時に応答を返し、状態を復帰する）。
         self.poll_thumbnail_job();
-        // W2-0 の試作: 描画を止めている間、wake_ms の時刻が来たら 1 フレームだけ描く（既定で無効。ui_spike_hooks.rs）。
-        self.pump_idle_wake(event_loop);
+        // 描画を止めている間（render_policy の on_demand。W2-10a）、予定の時刻（WaitUntil）が来ていたら再開する。
+        // 止めていなければ何もしない（redraw_hooks.rs）。
+        self.pump_redraw_deadline(event_loop);
+    }
+
+    /// 他のスレッド（IPC の読み取り・Android の JNI・別スレッドのスクリプト）が EventLoopProxy で起こした（W2-10a）。
+    ///
+    /// 積まれた「描く理由」を読み、描画を止めていれば再開する（予定の変更だけなら起きる時刻を決め直す。redraw_hooks.rs）。
+    /// 知らせ自体には中身が無い（理由は engine::core::redraw::wake の原子変数に積まれている）。
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        self.handle_redraw_wake_signal(event_loop);
     }
 
     /// ウィンドウイベントを処理する（キー入力・マウス・リサイズ・メインループ）。
@@ -85,8 +97,9 @@ impl ApplicationHandler for App {
         super::play_diag::note_window_event(classify_window_event(&event));
         // サーフェス・リサイズ・タッチの診断ログ（Android のみ。デスクトップでは即 return）。
         super::lifecycle_diag::observe_window_event(&event);
-        // W2-0 の試作: 描画を止めていたら、入力などの WindowEvent で再開する（既定で無効。ui_spike_hooks.rs）。
-        self.note_window_event_for_idle(&event, event_loop);
+        // 描画を止めていたら（render_policy の on_demand。W2-10a）、入力・画面の変化などの WindowEvent で再開する。
+        // 止めていなければ理由を積むだけ（redraw_hooks.rs。RedrawRequested は数えない）。
+        self.note_window_event_for_redraw(&event, event_loop);
 
         match event {
             WindowEvent::CloseRequested if !self.is_embedded() => {
@@ -144,8 +157,8 @@ impl ApplicationHandler for App {
 
             // ── メインループ ──────────────────────────────────
             WindowEvent::RedrawRequested => {
-                // W2-0 の試作: 描画を止めていたのを入力で起こした直後なら、起こしてからの遅れをログへ（既定で無効）。
-                self.log_idle_wake_latency();
+                // 描画を止めていたのに描くフレーム（OS の再描画の要求）なら起きた扱いにし、起こした直後なら遅れをログへ（W2-10a）。
+                self.on_redraw_frame_start(event_loop);
                 // 検証用の合成タッチ（debug.seed.touch_test。要求が無ければ何もしない）。
                 self.pump_touch_test_sequence();
                 self.handle_redraw_requested(event_loop);
@@ -158,10 +171,12 @@ impl ApplicationHandler for App {
     /// デバイスイベントを処理する（マウス移動 → カメラ入力）。
     fn device_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        // マウスの生の移動でも、描画を止めていれば再開する（カーソルを閉じ込めた視点操作。W2-10a）。
+        self.note_device_event_for_redraw(&event, event_loop);
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
             self.input.process_mouse_motion(dx, dy);
             self.cam_input.mouse_dx += dx as f32;

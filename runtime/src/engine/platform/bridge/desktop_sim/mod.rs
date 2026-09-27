@@ -9,6 +9,8 @@
 //  【命令の足し方（データ駆動）】
 //  命令は下の表 SIM_COMMANDS の 1 行（module・method・処理の関数）。W1-3 以降の模擬（目覚ましの予約をタイマーで鳴らす等）は、
 //  表に行を足し、時間で起きるものは poll_events（エンジンがフレームの頭で呼ぶ）の中で「時刻が来たらイベントを積む」形にする。
+//  その時刻は next_timed_event_delay_ms で知らせる（render_policy の on_demand で描画を止めている間も、その時刻に起きて
+//  poll_events を回すため。W2-10a）。イベントは queue_event で積む（描く理由 platform_event も一緒に積む）。
 //
 //  【W1-1 の命令】（Java の CorePlatformModule と同じ意味）
 //    platform.ping            … 受け取った JSON を echo に入れて返す＋pid（SEED.exe のもの）・模擬を作ってからの ms・simulated=true
@@ -315,6 +317,20 @@ impl DesktopSimBridge {
         self.next_seq.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// 模擬のイベントを 1 つ積み、描く理由（PlatformEvent）を積む（模擬のイベントはすべてここを通す）。
+    ///
+    /// 描画を止めている間（render_policy の on_demand。W2-10a）でも、次のフレームでスクリプトへ届くようにする
+    /// （Android の JNI の受け口 inbox.rs と同じ扱い。起きていれば理由を積むだけ）。
+    fn queue_event(&self, event_json: String) {
+        self.events.push(event_json);
+        crate::engine::core::redraw::wake::raise(crate::engine::core::redraw::RedrawReason::PlatformEvent);
+    }
+
+    /// 時刻で起こる次の出来事（目覚ましの予定・鳴動の安全弁）の時刻（UTC の epoch ミリ秒）。無ければ None。
+    fn next_timed_event_at_utc_ms(&self) -> Option<i64> {
+        [self.alarms.next_trigger_utc_ms(), self.ringing.next_deadline_utc_ms()].into_iter().flatten().min()
+    }
+
     /// platform.ping: 受け取った JSON をそのまま echo に入れ、pid と模擬を作ってからの ms を添える。
     fn handle_ping(&self, request: &Value) -> SimResult {
         let mut fields = Map::new();
@@ -342,7 +358,7 @@ impl DesktopSimBridge {
         let message = request.get(KEY_MESSAGE).and_then(Value::as_str).unwrap_or(DEFAULT_TEST_MESSAGE);
         let seq = self.next_event_seq();
         let data = json!({ KEY_MESSAGE: message, "pid": std::process::id(), "simulated": true });
-        self.events.push(wire::event_json(TEST_EVENT_NAME, seq, now_utc_millis(), data));
+        self.queue_event(wire::event_json(TEST_EVENT_NAME, seq, now_utc_millis(), data));
         let mut fields = Map::new();
         fields.insert(wire::KEY_SEQ.into(), Value::from(seq));
         Ok(fields)
@@ -384,6 +400,12 @@ impl PlatformBridge for DesktopSimBridge {
         self.fire_due_alarms();
         self.check_ring_timeouts();
         self.events.drain()
+    }
+
+    fn next_timed_event_delay_ms(&self) -> Option<u64> {
+        // 模擬の壁時計（単体テストでは手で進める時計）で残りを測る。過ぎていれば 0（すぐ起きて poll_events で積む）
+        let due = self.next_timed_event_at_utc_ms()?;
+        Some(u64::try_from(due.saturating_sub(self.clock.now_utc_ms())).unwrap_or(0))
     }
 
     fn reset_session(&self) {

@@ -35,6 +35,8 @@ pub mod input_bridge;
 pub mod screen_bridge;
 // アプリのプラットフォーム機能 API（SEED.Platform）の FFI とスクリプトへ見せるイベントの箱（W1-1。実体は engine/platform/bridge/）
 pub mod platform_bridge;
+// スクリプトの描画の要求 API（SEED.Redraw）の FFI（W2-10a。実体は engine/core/redraw/script_requests.rs）
+pub mod redraw_bridge;
 // ControlPoint パス評価（時刻 → ワールド位置／進行方向）の純関数層
 pub mod path_query;
 // カメラのワールド→スクリーン射影（Camera.WorldToScreen / WorldToCanvas）の純関数層

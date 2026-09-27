@@ -20,6 +20,8 @@ pub(crate) mod types;
 mod types2d;
 mod shape;
 mod background_pause;
+/// 物理の結果の待ち行列の上限（フレームが取り出さない間に際限なく伸ばさない。W2-10a）。
+mod result_backlog;
 pub mod thread;
 pub mod char_world;
 pub mod char_gravity;

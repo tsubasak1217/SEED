@@ -905,6 +905,11 @@ RT 半透明パイプラインの構築条件は `transparency.rs:378`:
   `[SEED INIT] vsync=… embedded=… present_mode=…` を出す。「fps が出ない」「PC が熱い」
   の相談ではまずこの 2 行を見る。
 
+**描く理由の無いフレームで止める（`render_policy`。W2-10a・2026-09-28）** — 正典は [redraw_policy.md](redraw_policy.md)。
+`pace_frame` の後の `request_next_frame`（`app/redraw_hooks.rs`）が次のフレームを要求するかを決める唯一の入口。既定の `continuous` は
+今までどおり毎フレーム要求し、`on_demand` のプロジェクトだけが、描く理由の無いフレームが続いたら要求をやめて `ControlFlow::Wait` で眠る
+（「fps が 0 になった」の相談では起動ログの `[SEED INIT] render_policy=…` と `[SEED REDRAW]` の行を見る）。
+
 ---
 
 ## 5. レンダリングの3層モデル（設計判断の基準）

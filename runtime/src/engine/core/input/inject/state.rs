@@ -192,6 +192,11 @@ impl InjectedInputState {
     pub fn is_button_released(&self, button: MouseButton) -> bool {
         self.buttons_released.contains(&button)
     }
+    /// 注入でどれかのマウスボタンを押しているか（描く理由の「押している」。W2-10a）。
+    #[inline]
+    pub fn any_button_held(&self) -> bool {
+        !self.buttons_held.is_empty()
+    }
 
     // ─── クエリ（座標・移動量・スクロール）─────────────────────
 

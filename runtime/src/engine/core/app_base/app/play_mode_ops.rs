@@ -102,6 +102,8 @@ impl App {
         self.clear_script_debug_commands();
         // 前回 Play のプラットフォームのイベント（デスクトップの模擬の試験イベント等）と預かった返答も捨てる（W1-1）。
         crate::engine::core::scripting::platform_bridge::clear_platform_events();
+        // 前回 Play のスクリプトの描画の要求（KeepAlive・常に描く・方針の上書き）を捨て、描画を止めていれば起こす（W2-10a）。
+        self.reset_redraw_for_play_session();
         // JointAttach 子孫の相対ローカルは Play 開始時点の姿勢から採り直す
         // （Edit で竿先を動かした結果を必ず反映させるため）。
         self.joint_attach_child_locals.clear();
@@ -280,6 +282,8 @@ impl App {
         self.clear_script_debug_commands();
         // 配られなかったプラットフォームのイベントも捨てる（次の Play へ持ち越さない。W1-1）。
         crate::engine::core::scripting::platform_bridge::clear_platform_events();
+        // スクリプトの描画の要求を捨て、描画を止めていれば起こす（Edit は毎フレーム描く。W2-10a）。
+        self.reset_redraw_for_play_session();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         // 開始状態の記録も必ず捨てる（次の Play へ持ち越さない）。
         if self.mode != RuntimeMode::Play {

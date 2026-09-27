@@ -17,6 +17,8 @@
 // ============================================================
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
+
+use super::result_backlog::{ResultBacklog, MAX_PENDING_RESULTS};
 use rapier2d::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -66,9 +68,11 @@ impl PhysicsThread2d {
     pub fn spawn() -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<PhysicsCommand2d>();
         let (res_tx, res_rx) = unbounded::<PhysicsResult2d>();
+        // 結果の待ち行列に上限を設ける（フレームが取り出さない間＝描画を止めている間に際限なく伸ばさない。W2-10a）
+        let results = ResultBacklog::new(res_tx, res_rx.clone(), MAX_PENDING_RESULTS, "2D");
 
         let handle = std::thread::spawn(move || {
-            run_physics_loop_2d(cmd_rx, res_tx);
+            run_physics_loop_2d(cmd_rx, results);
         });
 
         PhysicsThread2d {
@@ -142,7 +146,7 @@ struct StaticColliderData2d {
 // ─── メインループ ────────────────────────────────────────────────────────────
 
 /// 2D 物理スレッドのメインループ。
-fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<PhysicsResult2d>) {
+fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, mut res_tx: ResultBacklog<PhysicsResult2d>) {
     // ── Rapier2D 物理ワールドオブジェクト ────────────────────────────────────
     let mut rigid_body_set = RigidBodySet::new();
     let mut collider_set = ColliderSet::new();
@@ -321,7 +325,8 @@ fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<Physic
             &mut active_triggers,
         );
 
-        let _ = res_tx.send(result);
+        // 上限に届いていれば古い結果から捨てて送る（受け手は最新の 1 件しか使わない。result_backlog.rs）
+        res_tx.send(result);
     }
 }
 

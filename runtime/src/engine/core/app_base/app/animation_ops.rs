@@ -70,6 +70,9 @@ impl App {
             collect_animator_jobs(root, &mut jobs);
         }
 
+        // 再生を続けているクリップがあるか（「動いている」の申告。render_policy の on_demand で描画を止めない理由。W2-10a）
+        let mut any_playing = false;
+
         for (owner, slot_entity) in jobs {
             // ── 現在クリップの参照情報（名前・状態）を読み出す ──
             let (current_name, mut time, playing, speed) =
@@ -135,6 +138,7 @@ impl App {
                         a.time = time;
                         a.playing = playing && still_playing;
                     }
+                    any_playing |= playing && still_playing;
                 }
 
                 // ── (b) Model クリップ: glTF 内蔵アニメを anim_drive 経由で駆動 ──
@@ -248,8 +252,14 @@ impl App {
                             a.fade_rate = 0.0;
                         }
                     }
+                    any_playing |= playing && still_playing;
                 }
             }
+        }
+
+        // 再生中のクリップがあれば次のフレームも描く（止めるとアニメーションが途中で止まって見える。W2-10a）
+        if any_playing {
+            self.declare_redraw_reason(crate::engine::core::redraw::RedrawReason::Motion);
         }
     }
 

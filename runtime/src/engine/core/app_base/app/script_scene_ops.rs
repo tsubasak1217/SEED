@@ -40,6 +40,10 @@ impl App {
         let commands = take_scene_commands();
         if commands.is_empty() { return; }
 
+        // アクタの生成・破棄・シーンの切り替えの後は、新しいアクタの Start・アニメーターの初期化などが次のフレームで走るので、
+        // 描く理由にする（render_policy の on_demand で、理由の無いフレームの数え直し。W2-10a）。
+        self.declare_redraw_reason(crate::engine::core::redraw::RedrawReason::Lifecycle);
+
         // Instantiate / Destroy / シーン遷移でアクタ構成（＝辞書の集合）が変わるため、
         // 音声辞書のキー索引を作り直す印を付ける。
         self.mark_audio_dictionary_dirty();

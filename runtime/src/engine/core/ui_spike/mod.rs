@@ -3,24 +3,23 @@
 //
 //  【目的】
 //  W2（UI 部品群）でいちばん不確かな 3 点を、本番の振る舞いを変えずに小さく試すための指定と判定を集める
-//  （切り抜きは W2-1a で本番の CanvasClipComponent に置き換えたので、ここに残るのは 1 と 3 だけ）。
-//    1. 描かなくてよいときは描かない（X-2・W2-10 の前提）… idle_redraw.rs（入力の無いフレームが続いたら次のフレームを要求しない）
-//       App への組み込みは app/ui_spike_hooks.rs
+//  （切り抜きは W2-1a、描かないときは W2-10a で本番に置き換えたので、ここに残るのは 3 だけ）。
+//    1. （描かなくてよいときは描かない）… W2-10a で本番化して外した（engine/core/redraw・app/redraw_hooks.rs。
+//       project_settings.json の render_policy と SEED.Redraw）
 //    2. （切り抜き）… W2-1a で本番化して外した（renderer/ui_clip.rs・engine/core/canvas_layout/clip.rs）
 //    3. 文字入力（IME）… PC は winit の Ime イベントのログ（app/ui_spike_hooks.rs）、
-//       Android は runtime/android/native/src/ui_spike/（android-activity の API を winit の外から使う）
+//       Android は runtime/android/native/src/ui_spike/（android-activity の API を winit の外から使う）。W2-6a の頭の実機確認で使う
 //
 //  【有効にする方法】（どれも指定しなければ何もしない＝従来どおり）
 //    PC      : SEED.exe --ui-spike=<指定>  か 環境変数 SEED_UI_SPIKE=<指定>
 //    Android : am start … --es seed.ui_spike '<指定>'（起動オプションを渡すのはデバッグ版の APK だけ）
-//  指定の書式は config.rs（例: "idle=30,wake_ms=1000"、"ime"）。
+//  指定の書式は config.rs（例: "ime"）。
 //
 //  【指定の受け渡し】起動時に 1 回だけ `install` し、以後は `config()` で読むだけ（実行中に変わらない）。
 //  App を参照できない場所からも読めるよう、プロセスで 1 つの置き場にしている。
 // ============================================================
 
 pub mod config;
-pub mod idle_redraw;
 
 use std::sync::OnceLock;
 
@@ -86,8 +85,8 @@ mod tests {
     /// 起動引数が環境変数より優先し、どちらも無ければ None。
     #[test]
     fn desktop_spec_prefers_cli_arg() {
-        let args = vec!["SEED.exe".to_string(), "--ui-spike=idle=5".to_string()];
-        assert_eq!(spec_from_desktop(&args, Some("ime".into())).as_deref(), Some("idle=5"));
+        let args = vec!["SEED.exe".to_string(), "--ui-spike=ime;cli".to_string()];
+        assert_eq!(spec_from_desktop(&args, Some("ime".into())).as_deref(), Some("ime;cli"));
         let args = vec!["SEED.exe".to_string()];
         assert_eq!(spec_from_desktop(&args, Some("ime".into())).as_deref(), Some("ime"));
         assert_eq!(spec_from_desktop(&args, None), None);

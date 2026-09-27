@@ -123,8 +123,10 @@ mod render_resolution;
 mod render_quality;
 /// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）
 pub(crate) mod frame_pacing;
-// アプリ基盤 W2-0 のスパイク（描かないときの判定・PC の IME のログ・切り抜きの計測。既定で無効）
+// アプリ基盤 W2-0 のスパイク（PC の IME のログ。既定で無効。描かないときの試作は W2-10a で redraw_hooks へ置き換えた）
 mod ui_spike_hooks;
+/// 「描く理由」の判定（render_policy の on_demand。W2-10a）を App とイベントループへつなぐ所
+mod redraw_hooks;
 /// レイアウトの一本化（W2-1a）の同値の性質テスト（旧 5 か所の写しと新しい表の突き合わせ。テスト専用）。
 #[cfg(test)]
 mod canvas_layout_equivalence;
@@ -1487,9 +1489,9 @@ pub struct App {
     /// FrameTimeMs）へ静的値として発行される。
     pub(super) frame_stats: frame_pacing::FrameStats,
 
-    /// 「描かなくてよいときは描かない」の判定（W2-0 の試作。ui_spike の idle= を指定したときだけ有効）。
-    /// 無効（既定）なら毎フレーム次のフレームを要求する従来の経路のまま（app/ui_spike_hooks.rs）。
-    pub(super) ui_spike_idle: crate::engine::core::ui_spike::idle_redraw::IdleRedrawGate,
+    /// 描画の止め方（render_policy。既定 continuous＝毎フレーム描く。on_demand なら描く理由の無いフレームが続いたら止める。
+    /// W2-10a。判定は engine::core::redraw、つなぎは app/redraw_hooks.rs）。
+    redraw: redraw_hooks::RedrawState,
 
     // ── アニメーション Edit プレビュー ───────────────────────────────
     /// Edit モードのアニメーションプレビュー（ANIM_PREVIEW）用クリップキャッシュ。
@@ -1616,9 +1618,9 @@ impl App {
             .as_ref()
             .and_then(|_| Self::script_reload_source(&args));
 
-        // アプリ基盤 W2-0 のスパイクの指定（既定で無効。指定が無ければ何もしない。engine::core::ui_spike）
-        let ui_spike = crate::engine::core::ui_spike::install(args.ui_spike.as_deref());
-        let ui_spike_idle = ui_spike_hooks::idle_gate_from(ui_spike);
+        // アプリ基盤 W2-0 のスパイクの指定（既定で無効。指定が無ければ何もしない。engine::core::ui_spike。
+        // 残っているのは文字入力の ime だけ。PC は ui_spike_hooks.rs が config() を読む）
+        crate::engine::core::ui_spike::install(args.ui_spike.as_deref());
 
         Self {
             window:         None,
@@ -1833,7 +1835,8 @@ impl App {
             gpu_timing_launch: args.gpu_timing,
             gpu_timer:         None,
             frame_stats: frame_pacing::FrameStats::default(),
-            ui_spike_idle,
+            // 描画の止め方は handle_resumed で project_settings.json から決める（それまでは既定の continuous）
+            redraw: redraw_hooks::RedrawState::default(),
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
@@ -1863,6 +1866,9 @@ impl App {
     /// 呼び出し側（runtime/android/native）に任せ、ここは実行だけを担う。
     pub fn run_with_event_loop(event_loop: EventLoop<()>, args: LaunchArgs) {
         event_loop.set_control_flow(surface_lifecycle::ACTIVE_CONTROL_FLOW);
+        // 他のスレッド（IPC の読み取り・JNI）が眠っているイベントループを起こせるよう、起こし手を登録する（W2-10a）。
+        // winit 0.30 は EventLoopProxy を EventLoop からしか作れず、run_app が EventLoop を消費するのでここで作る。
+        Self::install_redraw_waker(&event_loop);
         let mut app = App::new(args);
         event_loop.run_app(&mut app).expect("Failed to run app");
     }
