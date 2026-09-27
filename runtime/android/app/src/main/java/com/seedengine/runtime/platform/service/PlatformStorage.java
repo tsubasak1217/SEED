@@ -9,6 +9,10 @@
 //  【置くもの】（すべて <端末保護ストレージの files>/seed_platform/ の下）
 //    alarms.json  … 目覚ましの予約の控え（service/alarm/AlarmStore）
 //    journal.json … イベントの記録（EventJournal。エンジンが取りに来るまでの未読）
+//    ringing.json … 鳴動中の状態（鳴っている予約・待ち行列・force_volume の前の音量。service/alarm/ring/RingStateStore。W1-7。
+//                   鳴っていない間は無い）
+//    boot_rearm.json … 張り直しを済ませた起動の番号（Settings.Global.BOOT_COUNT。service/alarm/BootRearmGate。W1-7。
+//                   同じ起動で重ねて届く BOOT_COMPLETED を見分ける）
 //    sounds/      … 目覚ましの音源（メインプロセスのエンジンが「内容のハッシュ.拡張子」で書き出す。platform.paths で教える）
 //  書き手は :seed_platform の 1 プロセスだけ（sounds/ だけはメインプロセスが書く。ファイルが別なのでぶつからない）。
 // ============================================================
@@ -35,6 +39,12 @@ public final class PlatformStorage {
 
     /** イベントの記録のファイルの名前。 */
     public static final String JOURNAL_FILE_NAME = "journal.json";
+
+    /** 鳴動中の状態の控えのファイルの名前（W1-7）。 */
+    public static final String RINGING_FILE_NAME = "ringing.json";
+
+    /** 張り直しを済ませた起動の番号のファイルの名前（W1-7）。 */
+    public static final String BOOT_REARM_FILE_NAME = "boot_rearm.json";
 
     /** 端末保護ストレージの files（一度求めたら変わらないので持つ。null = まだ求めていない）。 */
     private static volatile File deviceProtectedFilesDir;
@@ -93,6 +103,26 @@ public final class PlatformStorage {
      */
     public static File journalFile(Context context) {
         return new File(platformDir(context), JOURNAL_FILE_NAME);
+    }
+
+    /**
+     * 鳴動中の状態の控えのファイル（W1-7）。
+     *
+     * @param context どの Context でもよい
+     * @return ファイル（鳴っていない間は無い）
+     */
+    public static File ringingFile(Context context) {
+        return new File(platformDir(context), RINGING_FILE_NAME);
+    }
+
+    /**
+     * 張り直しを済ませた起動の番号のファイル（W1-7）。
+     *
+     * @param context どの Context でもよい
+     * @return ファイル（無いこともある）
+     */
+    public static File bootRearmFile(Context context) {
+        return new File(platformDir(context), BOOT_REARM_FILE_NAME);
     }
 
     /**

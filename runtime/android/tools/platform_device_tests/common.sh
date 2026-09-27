@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 # ============================================================
-#  W1-4b の実機の計測の共通部（Git Bash で source して使う）。W1-0 のスパイクの scripts/common.sh を
-#  SEED の APK（com.wakeorpay.seed・DebugPlatformReceiver・PlatformEntry）へ向け直したもの。
+#  SEED.Platform の実機の試験の共通部（Git Bash で source して使う。W1-4b で作り、W1-7 で整えた）。
+#  W1-0 のスパイクの scripts/common.sh を SEED の APK（com.wakeorpay.seed・DebugPlatformReceiver・PlatformEntry）へ向け直したもの。
 #
-#  端末: Pixel 6a（2B011JEGR02535・Android 16）。約束:
+#  使い方: 結果の置き場（リポジトリの外）を環境変数で渡してから source する。
+#    export SEED_DEVICE_TEST_RESULTS=/c/…/results   # 生ログは私物の端末の他のアプリの情報を含むのでリポジトリに入れない
+#    SERIAL・ADB・PKG は環境変数で変えられる（既定は Pixel 6a・SDK の adb・Wake or Pay のデバッグ版）
+#
+#  端末: Pixel 6a（2B011JEGR02535。W1-4b は Android 16、W1-7 の T4 の再起動で Android 17 に更新された）。約束:
 #    ・端末の設定・音量は変えない（Doze の試験の battery unplug / deviceidle force-idle は必ず戻す）
 #    ・adb kill-server・logcat -c・pm grant/revoke・appops set はしない
-#    ・予約は必ず max_ring_minutes 1（端末が外れても 1 分で止まる）
+#    ・予約は必ず max_ring_minutes 1（端末が外れても 1 分で止まる）。音は最小（schedule_quiet）
 #    ・利用者が使い始めたら（画面が点き・ロックが外れ・前面がランチャーでも自アプリでもない）予約を取り消して中止し、
 #      2 分おきに最大 20 分待つ
 #    ・端末が adb devices に無ければ、待ち続けずにその試験を「未実施（端末が外れた）」にする
+#  デバッグ受信機の命令（SCHEDULE / CANCEL_ALL / STOP_RINGING / GET_RINGING / LIST / PING / EMIT_TEST_EVENT）は ctl に集約する。
+#  受信機は送り手に android.permission.DUMP を求める（W1-7）。adb の shell は持つので、この ctl からは届く。
 # ============================================================
 export MSYS_NO_PATHCONV=1
 ADB="${ADB:-C:/Users/k023g/AppData/Local/Android/Sdk/platform-tools/adb.exe}"
 SERIAL="${SERIAL:-2B011JEGR02535}"
-PKG="com.wakeorpay.seed"
+PKG="${PKG:-com.wakeorpay.seed}"
 PLATFORM_PROC="$PKG:seed_platform"
-ROOT="/c/Users/k023g/.claude/jobs/434062fd/tmp/wop_w1_4b"
-RESULTS="$ROOT/results"
+# 結果の置き場（必須）。生ログは私物端末の他のアプリの情報を含むので、リポジトリの外を指す（W1-7 で固定のパスをやめた）
+RESULTS="${SEED_DEVICE_TEST_RESULTS:?SEED_DEVICE_TEST_RESULTS に結果の置き場（リポジトリの外のディレクトリ）を指定してください}"
+mkdir -p "$RESULTS"
 LAUNCHER_PKG="com.google.android.apps.nexuslauncher"
 TAG="SEEDPlatform"
 RECEIVER="$PKG/com.seedengine.runtime.platform.DebugPlatformReceiver"
@@ -199,8 +206,12 @@ flinger_active_lines() { dsh "dumpsys media.audio_flinger" | grep -E "^\s+(Yes|N
 # 結果の key=value を書き足す
 put() { echo "$2=$3" >> "$1"; }
 
-# 保留中の（まだ配信されていない）予約の数（Alarm{... <pkg>} の行だけを数える。統計の欄は数えない）
-pending_alarms() { dsh "dumpsys alarm" | grep -cE "Alarm\{[^}]* $PKG\}" || true; }
+# 保留中の（まだ配信されていない）予約の数（Alarm{<id> … <pkg>} の id の種類を数える。同じ予約が「Next wake from idle」にも
+# 出るので行の数ではない〈W1-7 の T4 で 1 件を 2 と数えた〉。統計の欄は数えない）。見張りの予約（RING_WATCHDOG）も数に入る
+pending_alarms() { dsh "dumpsys alarm" | grep -oE "Alarm\{[0-9a-f]+ [^}]* $PKG\}" | awk '{print $1}' | sort -u | wc -l | tr -d ' '; }
+
+# 保留中の鳴動の見張りの予約（W1-7。RingWatchdog）の数（tag の行の前の行が Alarm{…} のものだけ。統計の欄の tag は数えない）
+watchdog_pending() { dsh "dumpsys alarm" | grep -B1 -E 'tag=\*walarm\*:com\.seedengine\.runtime\.platform\.action\.RING_WATCHDOG' | grep -cE 'Alarm\{' || true; }
 
 # 両プロセスを落とす（am kill → 残れば run-as で kill -9。force-stop は予約を消すので使わない）
 kill_app_processes() {
@@ -227,10 +238,12 @@ cleanup_alarms() {
 # 画面を消す（ロック中で利用者が使っていないときだけ。KEYCODE_SLEEP は画面を消すだけで点けない）。
 # この端末は「充電中は画面を消さない」（stay_on_while_plugged_in=15）なので、目覚ましが点けた画面は利用者が消すまで点いたまま。
 # 利用者が置いた状態（画面オフ・ロック）へ戻し、「画面オフ・ロック中」の試験の前提を作るために使う。設定は変えない。
+# キーの送信は利用者の許可が要るので、ALLOW_KEYEVENT_SLEEP=1 のときだけ送る（W1-7 は許可が無いので送らない。無ければ 1 を返す）
 sleep_screen_if_locked() {
   [ "$(wakefulness)" = "Awake" ] || return 0
   [ "$(keyguard_showing)" = "true" ] || return 1
   user_operating && return 1
+  [ "${ALLOW_KEYEVENT_SLEEP:-0}" = "1" ] || return 1
   dsh "input keyevent KEYCODE_SLEEP" > /dev/null 2>&1
   local t=0
   while [ "$(wakefulness)" = "Awake" ] && [ "$t" -lt 10 ]; do sleep 1; t=$((t + 1)); done
@@ -240,6 +253,10 @@ sleep_screen_if_locked() {
 # ---- 音を小さくする（利用者の依頼。2026-09-27 11:58 以降のすべての予約）----
 # force_volume 0.0（AlarmStreamVolume が STREAM_ALARM の最小の段階〈この端末は 1/7〉に丸める。止めたら元へ戻す）・振動なし・漸増 60 秒
 QUIET_ARGS="--ef force_volume 0.0 --ez vibrate false --ef fade_in_seconds 60"
+# 静かな予約（音は最小・振動なし・漸増 60 秒・安全弁 1 分）: schedule_quiet <ID> <今からの秒> <題（空白を入れない。G-9）>
+schedule_quiet() {
+  ctl SCHEDULE --ei seconds "$2" --es id "$1" --ei max_ring_minutes 1 --es title "$3" --es body "$1" $QUIET_ARGS
+}
 # 予約の行（[debug] alarm.schedule の request）に静かな引数が入っているか
 quiet_request_ok() {
   local line; line="$(grep -m1 -E '\[debug\] alarm\.schedule' "$1")"
@@ -251,23 +268,37 @@ quiet_request_ok() {
 # アラームの音量（dumpsys audio の STREAM_ALARM の Current の行と streamVolume）
 alarm_volume_line() { dsh "dumpsys audio" | grep -E -A8 '^- STREAM_ALARM:' | grep -E '^   (Current|streamVolume):' | tr -s ' ' | tr '\n' ' '; }
 alarm_volume_speaker() { dsh "dumpsys audio" | grep -E -A8 '^- STREAM_ALARM:' | grep -m1 -oE '2 \(speaker\): [0-9]+' | grep -oE '[0-9]+$'; }
-# 試験の前の値（common.sh を読んだときに 1 回だけ。ALARM_VOLUME_BASELINE_FILE に残す）
+# 試験の前の値（結果の置き場ごとに 1 回だけ record_alarm_volume_baseline で残す。1 行目は見出し・2 行目は
+# alarm_volume_line・3 行目は speaker の段階）
 ALARM_VOLUME_BASELINE_FILE="$RESULTS/alarm_volume_baseline.txt"
-# 基準と今の値を比べ、違えば元の値へ戻す（利用者の依頼に基づく例外。元の値以外にはしない）。結果の行を返す
+record_alarm_volume_baseline() {
+  [ -s "$ALARM_VOLUME_BASELINE_FILE" ] && return 0
+  {
+    echo "# STREAM_ALARM の試験の前の値 device_ms=$(dev_now_ms) host=$(date '+%F %T')"
+    echo "$(alarm_volume_line)"
+    echo "$(alarm_volume_speaker)"
+  } > "$ALARM_VOLUME_BASELINE_FILE"
+}
+# 基準と今の値を比べ、違えば元の値へ戻す（利用者の依頼に基づく例外。元の値以外にはしない）。結果の行を返す。
+# 比べるのはスピーカーの段階だけ（Current の行は出力の機器の一覧〈bt_a2dp など〉が再起動で変わるので、行ごとは比べない。W1-7 の T4）
 verify_alarm_volume() {
   local base_line base_speaker now_line now_speaker
   base_line="$(sed -n '2p' "$ALARM_VOLUME_BASELINE_FILE")"
   base_speaker="$(sed -n '3p' "$ALARM_VOLUME_BASELINE_FILE")"
   now_line="$(alarm_volume_line)"
   now_speaker="$(alarm_volume_speaker)"
-  if [ "$now_line" = "$base_line" ]; then
+  if [ -n "$base_speaker" ] && [ "$now_speaker" = "$base_speaker" ]; then
     echo "alarm_volume=same speaker=$now_speaker"
     return 0
   fi
   echo "alarm_volume=changed now=[$now_line] base=[$base_line]"
   if [ -n "$base_speaker" ] && [ "$now_speaker" != "$base_speaker" ]; then
-    dsh "cmd media_session volume --stream 4 --set $base_speaker" > /dev/null 2>&1 \
-      || dsh "media volume --stream 4 --set $base_speaker" > /dev/null 2>&1
+    # Android 17 の Pixel 6a では「cmd media_session volume --stream 4 --set」が「will set」と出すだけで変わらなかった（W1-7。
+    # AudioHardening）。AudioService の shell 命令「cmd audio set-volume」（system_server の中で setStreamVolume）で戻す
+    dsh "cmd audio set-volume 4 $base_speaker" > /dev/null 2>&1
+    if [ "$(alarm_volume_speaker)" != "$base_speaker" ]; then
+      dsh "cmd media_session volume --stream 4 --set $base_speaker" > /dev/null 2>&1
+    fi
     echo "alarm_volume_restored_to=$base_speaker now=[$(alarm_volume_line)]"
   fi
 }

@@ -2259,6 +2259,10 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 
 ### W1: Android サービス層（`SEED.Platform`）
 
+**W1 は 2026-09-27 に完了（W1-7 の通しの確認。roadmap §2.8・§2.9.2）**。この節に残る `[ ]` は W1 の持ち越しで、W2 以降（W3 のアプリの作業で
+要る順）に扱う。手作業の要る実機の確認（通知のボタン・権限の画面・電源ボタン・戻る／ホーム／スワイプ・通知からアプリへ戻る）とリリース版での確認は
+roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除前の鳴動画面）は下の項目。
+
 - [x] **W1-0 スパイク: 別プロセスの鳴動サービスとフルスクリーン通知からの冷えた起動** — 2026-09-27 記載 / 同日実施。Java だけの
   使い捨てアプリ（`runtime/android/spikes/platform_spike/`）で、Pixel 6a（Android 16）の画面オフ・ロック中に、両プロセスが無い状態から
   予定時刻 +0.73 s で音・+0.95 s でロック画面の上に鳴動画面が出る、最近のタスクから消しても音が続く、強制停止で予約が消え停止状態からの
@@ -2272,7 +2276,12 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   （`device_idle: [0,alarm]`。`setAlarmClock` の予約が `min_time_to_alarm`〈この端末は 1 時間〉より近いと深い Doze に留まらない Android の仕組み）→ 発火は
   `device_idle_wake_from_idle`・`AlarmReceiver` の受信 +240 ms・音 +535 ms・エンジンの最初のフレーム +2128 ms。時刻どおりに鳴った。「発火の時点で IDLE」の
   状態は `setAlarmClock` では作れない（1 回目が INACTIVE だったのもこの仕組みの見込み。推論）。
-- [ ] **W1-0 の残り: 再起動の後の張り直しと Direct Boot（ロック解除前に鳴るか）** — 2026-09-27。`adb reboot` は利用者の許可が要るので未実施。
+- [x] **W1-0 の残り: 再起動の後の張り直しと Direct Boot（ロック解除前に鳴るか）** — 2026-09-27 記載 / 同日 W1-7 の T4 で実施（roadmap §2.9.2）。
+  **ロック解除の前に張り直して鳴った**: `LOCKED_BOOT_COMPLETED`（14:30:02・`RUNNING_LOCKED`）で `alarms.rescheduled(boot)`、予定から +26 ms で発火・
+  `RingService` が前景に入り（`ALARM_MANAGER_ALARM_CLOCK`）最小の音量で鳴動（利用者の耳でも確認）・60 秒後に安全弁で止まり音量が戻った。鳴動画面
+  （`MainActivity`。directBootAware でない）はフルスクリーン通知から起動されなかった（`START … PlatformEntry … result code=-92`。解除前の画面は W1-9）。
+  再起動の後は最初のロック解除まで adb が `unauthorized` のままで、Direct Boot の間は adb で見られない（端末保護ストレージの記録と logcat の
+  バッファで後から確かめた）。以下は記載時のメモ。`adb reboot` は利用者の許可が要るので未実施。
   許可の後に `scripts/t7_reboot_procedure.sh --reboot-permitted` で、`LOCKED_BOOT_COMPLETED` での張り直しと、ロックを解除しないまま鳴るか・
   directBootAware の鳴動画面が出るかを見る。AC-4・E-10・W1-9 の前提。
   → W1-4b（2026-09-27）で 1 回の許可は得たが見送った（試験の日は利用者が外出先で端末を使っていて、再起動で PIN の入力が要り、解除まで他のアプリの通知も
@@ -2341,7 +2350,10 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   死んだ瞬間に処理済みだった命令は 2 回走りうる。→ `alarm.schedule` は同じ ID で置き換え、`alarm.cancel` は無い ID でも成功、`cancel_all` も
   何度でも同じ結果（docs/android.md §25.11）。W1-4 の停止（`StopRinging`）も同じ形にする。
   → W1-4a で `alarm.stop_ringing` も冪等にした（鳴っていなければ `stopped:false` で成功。docs/android.md §25.12.3）。
-- [ ] **`DebugPlatformReceiver` を権限で守っていない（デバッグ版だけ）** — 2026-09-27（W1-1）。exported=true・permission なしなので、
+- [x] **`DebugPlatformReceiver` を権限で守っていない（デバッグ版だけ）** — 2026-09-27（W1-1）記載 / 同日 W1-7 で対応。`app/src/debug/AndroidManifest.xml` の
+  受信機に `android:permission="android.permission.DUMP"` を付けた。実機（Pixel 6a・T4 の後なので Android 17）の `dumpsys package android` で DUMP は
+  `prot=signature|privileged|development`、`com.android.shell` は `granted=true`。付けた後も adb の `am broadcast` の命令（`LIST`・`SCHEDULE`・`STOP_RINGING` など）は
+  すべて答えた。他のアプリから送れないことは、送り手のアプリが端末に無いので実機では試していない（保護の段階からの推論）。以下は記載時のメモ。exported=true・permission なしなので、
   デバッグ版の APK が入った端末では他のアプリからも ping・試験イベントを送れる（害は小さい）。androidx の `ProfileInstallReceiver` と同じく
   `android:permission="android.permission.DUMP"`（adb のシェルは持つ）で守れる見込みだが、実機で adb から届くことを確かめてから変える。
   → W1-4b（2026-09-27）で目覚ましの命令（`SCHEDULE`・`CANCEL_ALL`・`STOP_RINGING`・`GET_RINGING`・`LIST`）を足したので、デバッグ版では他のアプリから
@@ -2401,7 +2413,11 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   動作の変更」）。roadmap §2.6 の「保険として起動のたびの全予約の張り直し」は W1-3 では入れていない（`:seed_platform` の起き方〈プロバイダの
   onCreate・受信機〉と `BootReceiver` の記録が二重にならない入れ方を決める必要がある）。W1-4 か W1-7 で、エンジンの接続（`register_callback`）の
   ときに控えの予約で張られていないもの（`FLAG_NO_CREATE` で PendingIntent が無いもの）だけを張り直す案で入れる。
-- [ ] **再起動で `platform.alarms.rescheduled`（boot）が 2 回記録されうる** — 2026-09-27（W1-3）。`LOCKED_BOOT_COMPLETED` と `BOOT_COMPLETED` の
+- [x] **再起動で `platform.alarms.rescheduled`（boot）が 2 回記録されうる** — 2026-09-27（W1-3）記載 / 同日 W1-7 で対応。`BootRearmGate` が
+  張り直しを済ませた起動の番号（`Settings.Global.BOOT_COUNT`）を端末保護ストレージの `boot_rearm.json` に書き、同じ起動の 2 回目以降の起動の放送は
+  消えている予約だけを張り直して（`AlarmBook.reconcile`）、何かを張り直した・鳴らなかったときだけ記録する。実機（W1-7）: 強制停止の後に停止状態から出たとき
+  4 回（`LOCKED`・`BOOT`・`LOCKED`・`BOOT`）届き、1 回目だけ張り直し、残り 3 回は「同じ起動の 2 回目以降」で記録なし（予約 0 件の回）。
+  普通の再起動は T4 で `rescheduled(boot)` 1 件（`BOOT_COMPLETED` は解除後で、控えが空だったので記録なし）。以下は記載時のメモ。`LOCKED_BOOT_COMPLETED` と `BOOT_COMPLETED` の
   両方で張り直すため（2 回目は `missed` 0 で張り直すだけ）。アプリの処理は冪等に書けば害は無いが、同じプロセスで直前に張り直したなら 2 回目の記録を
   省く形を W1-7 で検討する。
   → W1-4b（2026-09-27）: 停止状態から出たとき（`adb install -r` の後の最初の放送〈`-f 0x20`〉）は、`LOCKED_BOOT_COMPLETED`・`BOOT_COMPLETED` が **2 回ずつ（計 4 回）**
@@ -2429,10 +2445,19 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   ロック画面の上（`mKeyguardOccluded=true`）。(a) タスクを消しても音は続いた。別名の `onNewIntent` は既存の MainActivity へ届いた（Activity は積まれない）。
   (c) はアプリが前面のときにヘッドアップ通知になり、利用者の「開く」のタップ（ロック中は指紋の解除を求めた）で `notification_action` が届いた。本文のタップは未確認。
   残りは下の新しい項目と W1-7。
-- [ ] **鳴動の待ち行列がプロセスの中だけ** — 2026-09-27（W1-4a）。鳴動中に配信された予約は `RingRegistry` の待ち行列にだけあり、控えからは消してある。
+- [x] **鳴動の待ち行列がプロセスの中だけ** — 2026-09-27（W1-4a）記載 / 同日 W1-7 で対応。鳴動の状態（鳴っている 1 つと待ち行列）を端末保護ストレージの
+  `ringing.json` に写し（`RingStateStore`）、殺されたら見張りの予約（`RingWatchdog`）で待ち行列ごと戻す（下の項目）。戻せないとき（強制停止・再起動）は
+  待ち行列の予約も `ring_stopped(error)` を記録する。待ち行列を含む復元は実機では試していない（1 件の鳴動で試した）。以下は記載時のメモ。
+  鳴動中に配信された予約は `RingRegistry` の待ち行列にだけあり、控えからは消してある。
   待っている間に `:seed_platform` が殺されると、その予約は黙って失われる（`ring_stopped` も `missed` も記録されない）。待ち行列を控えに残すか、
   端末保護ストレージへ書くかを W1-7 で決める。関連: `platform/service/alarm/ring/RingRegistry.java`。
-- [ ] **`:seed_platform` が殺されると鳴動が黙って止まる（`START_NOT_STICKY`）** — 2026-09-27（W1-4a）。低メモリ等でプロセスごと殺されると音が止まり、
+- [x] **`:seed_platform` が殺されると鳴動が黙って止まる（`START_NOT_STICKY`）** — 2026-09-27（W1-4a）記載 / 同日 W1-7 で対応（設計案の (b)）。
+  鳴動中は `ringing.json` に状態を控え、見張りの予約（`setExactAndAllowWhileIdle`・`ELAPSED_REALTIME_WAKEUP`・20 秒先・5 秒ごとに先へ送る）を張る。
+  殺されると見張りが発火し、`RingWatchdogReceiver` → `RingRecovery` が鳴動を戻す（前景サービスの起動は正確な予約の配信の一時許可で `Allowed`・理由
+  `ALARM_MANAGER_WHILE_IDLE`）。実機（W1-7 の T5。2 回）: `kill -9` から 19.8 s / 15.3 s で見張りが発火し、音が戻り（無音 20.1 s / 15.4 s）、`force_volume` を
+  控えの元の値でかけ直し、`STOP_RINGING` で止まって音量が 5 へ戻り `ringing.json` と見張りが消えた。戻した回数は 5 回まで（起動の直後に落ち続けるときに繰り返さない）。
+  安全弁の時刻は最初の鳴り始めから数える。強制停止・再起動では見張りも消えるので戻せず、次に `:seed_platform` が起きたときに `ring_stopped(error)` を記録する。
+  残る制限は下の「W1-7 で見つけたこと」。以下は記載時のメモ。低メモリ等でプロセスごと殺されると音が止まり、
   `ring_stopped` も記録されない。`START_REDELIVER_INTENT` で作り直すと、背面からの前景サービスの起動の制限に当たるかを含めて W1-4b の実機で確かめて決める
   （鳴らしている予約を端末保護ストレージへ書いておけば、作り直したときに続きを鳴らせる）。
   → **W1-4b の T5（2026-09-27）で実機で確かめた（直していない）**: 鳴り始め +4.4 s に `run-as … kill -9 <:seed_platform>` → 約 0.1 s でプロセスの死・
@@ -2444,13 +2469,23 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   (b) 鳴動中は数秒先の「見張りの予約」（`setAlarmClock`）を張り直し続け、止めたら取り消す。死ぬと見張りが発火して `AlarmReceiver` が ①から鳴動を戻す
   （`setAlarmClock` の配信が前景サービスの起動を許されるのは T1〜T3 で確かめた）。(b) を推す。③ 戻せないときは `alarm.ring_stopped{reason:"error"}` を記録する。
   ④ 起動時の照合（`AlarmStartup`）で ①の残りを見つけたら音量を戻す（下の項目）。どれも T5 をもう一度行って確かめる（音量を変える予約では行わない）。
-- [ ] **`:seed_platform` が鳴動中に死ぬと `force_volume` の音量が戻らない** — 2026-09-27（W1-4b。コードを読んで見つけた。実機では試していない）。
+- [x] **`:seed_platform` が鳴動中に死ぬと `force_volume` の音量が戻らない** — 2026-09-27（W1-4b）記載 / 同日 W1-7 で対応。変える**前に**元の音量を
+  `ringing.json` の volume の欄へ書き（`AlarmStreamVolume.force`）、戻したら消す。殺されて見張りで戻した鳴動は控えの元の値を「元」としてかけ直し、止めたときに戻す。
+  戻せなかったとき（強制停止・再起動の後）は `RingRecovery.onStartup` が戻す。ただし **Android 17（T4 の再起動で更新された端末）は受信機だけで起きた（前景サービスも見える画面も無い）
+  プロセスからの `setStreamVolume` を AudioHardening が無視した**（実機 W1-7。`AudioHardening volume control … ignored … level: partial`）。そこで戻ったことを
+  `getStreamVolume` で確かめ、戻っていなければ控えを残し、アプリが前面に出たとき（`MainActivity.onResume` → `LeftoverVolumeNudge` → `PlatformProvider.call`）か
+  次の鳴動で戻す（実機: 強制停止 → 背面の起動では 1 のまま → MainActivity を開いて約 0.1 s で 5 に戻った）。**アプリを開くか次の目覚ましが鳴るまでは
+  利用者のアラームの音量が下がったまま**（下の「W1-7 で見つけたこと」）。以下は記載時のメモ（コードを読んで見つけた。実機では試していない）。
   `AlarmStreamVolume.restore`（STREAM_ALARM を鳴る前の値へ戻す）は `RingAudio` の停止の経路（`stopOnAudioThread`）でしか呼ばれず、元の値はプロセスの中にしか無い。
   低メモリ・強制停止などで鳴動中に `:seed_platform` が消えると、利用者のアラームの音量が `force_volume` の値のまま残る（次の目覚ましが小さすぎる・大きすぎる）。
   直し方の案: 変える前の値を端末保護ストレージへ書き（上の項目の①）、`:seed_platform` の起動時の照合と `BootReceiver` で残っていれば戻して消す。
   W1-4b の実機の試験は、利用者の音量を守るため `force_volume` を使う予約では `:seed_platform` を殺していない（T5 は `force_volume` なしで行った）。
   関連: `platform/service/alarm/ring/AlarmStreamVolume.java`・`RingAudio.java`。
-- [ ] **既定の音のループの継ぎ目で音が途切れている見込み** — 2026-09-27（W1-4b）。`res/raw/seed_alarm_default.wav`（2.22 s）を `MediaPlayer.setLooping(true)` で
+- [x] **既定の音のループの継ぎ目で音が途切れている見込み** — 2026-09-27（W1-4b）記載 / 同日 W1-7 で対応。`RingLoopPlayer`（同じ音源の MediaPlayer を
+  `setNextMediaPlayer` で次々につなぐ。音源の形式を問わない〈予約の mp3・ogg にも効く〉。1 秒より短い音源は `setLooping` のまま）。実機の
+  `dumpsys media.audio_flinger` のトラックの記録で、`setLooping` の鳴動（W1-7 の T4・古い APK）は 21 s の間に継ぎ目ごとの `AT::remove … I` → `AT::add … A` が
+  8 回（途切れ 59〜68 ms・中央値 66 ms）、連鎖の鳴動（T7）は 12.8 s（継ぎ目 5 回ぶん）で最初の `add` と止めたときの `remove … T` の 2 行だけ（途切れ 0）。
+  聴いては確かめていない（音は最小）。以下は記載時のメモ。`res/raw/seed_alarm_default.wav`（2.22 s）を `MediaPlayer.setLooping(true)` で
   鳴らすと、`dumpsys media.audio_flinger` の履歴で AudioFlinger のトラックが約 2.4 s ごとに止まり（`AT::remove … I`）約 65〜70 ms で再開する（`AT::add … A`）。
   全試験で同じ形（T2 の 19 s の鳴動で 4 回）。聴いて確かめていない（利用者の依頼で音を小さくしていた）。直し方の案: `setNextMediaPlayer` で 2 つを交互に・
   `AudioTrack` の静的モードと `setLoopPoints`・音源の尾に無音を入れない書き出し、のどれかを試し、トラックが止まらないことを同じ履歴で確かめる。予約の音（`sound_path`）の
@@ -2541,22 +2576,82 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   改善案: (a) UI スレッドから来たときだけ Batch の終わりを短い上限つき（例 200 ms）で待つ（android_main がその Batch の中で UI スレッドを待つと詰まるので上限は必須）、
   (b) 上の取り消しの記録を使い、Batch の前の状態を書く。Batch はスクリプトのスレッドで同期に終わるので窓は短い（実測はしていない）。関連: `save/mod.rs::flush_if_dirty`、
   `runtime/android/native/src/jni_exports.rs`。
-- [ ] **（検討）書き出しの 2 と 3 の間で落ちたとき、完全な `.tmp` があっても 1 世代前から読む** — 2026-09-27（W1-S）。本体を .bak へ回した直後・
+- [x] **（検討）書き出しの 2 と 3 の間で落ちたとき、完全な `.tmp` があっても 1 世代前から読む** — 2026-09-27（W1-S）記載 / 同日 W1-7 で隙間そのものを無くした。
+  W1-7 の実機の `kill -9` × 100（AC-10）の 74 回目がちょうどこの隙間に当たり（`save.json` が無く `.bak` と完全な `.tmp`）、次の起動は `.bak` から
+  （`RecoveredFrom = Backup`）だった。手順 2 を「本体の写しを `.bak.new` に作り `.bak` へ rename」に変え、本体を動かさないようにした
+  （`durable_file.rs`。写しは PC では hard link、**Android では複製**: 最初に入れた hard link の方式は実機で SELinux に拒まれ〈`avc: denied { link }`・
+  `Permission denied`〉、rename へ戻っていた〈2 回目の × 100 は隙間に当たらず 0 件だっただけ〉ので、Android は hard link を試さず複製にした。
+  写しを作れないとき〈容量が足りない等〉だけ W1-S の rename に戻り、そのときだけ隙間が残る）。`.tmp` を読む案は採らない。以下は記載時のメモ。
+  本体を .bak へ回した直後・
   .tmp を本体にする前に落ちると、sync 済みの完全な `.tmp`（新しい世代）が残るが、読み込みは `.bak`（前の世代）を使う（`RecoveredFrom = Backup`）。
   `Save()` が戻る前に落ちたので「保存は済んでいない」として一貫しているが、`.tmp` が JSON として読めるなら新しい世代を採る選択もある
   （そのときは `RecoveredFrom` に別の値が要る）。W1-S の仕様（本体 → .bak → 空）どおりにしてある。関連: `save/recovery.rs`・`durable_file.rs` の先頭の表。
 - [ ] **大きなセーブほど `Save()` が重い（毎回ファイル全体を書き直し、sync で待つ）** — 2026-09-27（W1-S）。PC のデバッグビルドで 2.4 MB の save.json の
   `Save()` が約 0.1 秒（SaveSmoke の実測。組み立て・書き込み・`FlushFileBuffers` を含む）。スクリプトのスレッドで同期に走るので、そのフレームが止まる。
   端末（フラッシュへの fsync）では未計測。数 MB の文書を頻繁に保存するなら、キーを分けて小さく保つか、書き出しを別スレッドへ出す仕組みが要る。関連: `save/store.rs::write_now`。
+  → W1-7（2026-09-27）の実機: 2.4 MB の `Save()` は約 230 ms（W1-S の rename の方式）→ 約 290 ms（W1-7 の複製の方式。前の世代をもう 1 回書いて sync する）。
+  前の世代の中身はストアが直前に書いたものなので、メモリに持っておけば読み直しは省ける（書き直しと sync は残る）。
 - [ ] **`safe_write::write_atomic`（シーン・アクター・地形の書き込み）に、W1-S の前の SaveData と同じ問題がある** — 2026-09-27（W1-S で見つけた。範囲外なので直していない）。
   (1) 「Windows の rename は置換先が存在すると失敗する」という古いコメント（Rust の `rename` は置き換える）、(2) rename に失敗したら置換先を消してから rename し直し、
   それも失敗すると一時ファイルまで消す（元のファイルと新しい内容の両方を失いうる。`write_atomic_with_backup` の呼び出しは `.backup` の複製が残るが、
   `write_atomic` だけの呼び出し〈地形の被覆・散布・エディタの表示状態〉には残らない）、(3) sync が無い。`save/durable_file.rs` の順序に揃えるのが素直。
   関連: `runtime/src/engine/core/app_base/safe_write.rs:59-80`。
-- [ ] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。
+- [x] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27 記載 / 同日実施（結果の表は roadmap §2.8・§2.9.2。直したものは docs/android.md §25.12.11）。
+  再起動の試験（T4）・鳴動の復元（見張りの予約）・音量の控え・継ぎ目の無いループ・起動の放送の重なり・デバッグ受信機の保護・SaveData の hard link の書き出し（AC-10）を
+  行い、実機のスクリプトを `runtime/android/tools/platform_device_tests/` に整えた。確かめ用のシーンと Java の JVM 単体テストは作らなかった（下の項目）。
+  見つけたこと・残したことは下の「W1-7 で見つけたこと」。以下は記載時のメモ。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。
+- [ ] **W1-7 で見つけたこと: Android 17 の AudioHardening が背面のプロセスからの音量の変更を無視する** — 2026-09-27（W1-7 の T5 の強制停止。端末は T4 の再起動で Android 17 に更新されていた）。
+  `:seed_platform` が受信機だけで起きた（前景サービスも見える画面も無い）とき、`AudioManager.setStreamVolume` が無視された（logcat
+  `AS.HardeningEnforcer: AudioHardening volume control for api 100 ignored for com.wakeorpay.seed (10424), level: partial`。鳴動中〈前景サービスあり〉は
+  `would be ignored … level: full` の注意だけで変わった）。そのため鳴動中の強制停止・再起動で `force_volume` で下げた音量は、**アプリを開く
+  （`LeftoverVolumeNudge`）か次の目覚ましが止まるまで下がったまま**（その間、他のアプリの目覚ましも小さい）。W1-7 では控えを残して戻す機会を増やしただけ。
+  案: (a) 見張りの予約と同じく正確な予約の配信（前景サービスの一時許可）で短い前景サービスを起こして戻す（通知が一瞬出る。種類と Play の申告の確認が要る）、
+  (b) アプリの既定を `force_volume` なし（利用者の音量のまま鳴らす）にし、使うアプリには注意を書く、(c) Android 17 の背面の音の制限（X-7）と合わせて決める。
+  試験の道具も同じ制限を受け、`cmd media_session volume --stream 4 --set` は効かなかった（`cmd audio set-volume` は効いた）。関連: `ring/AlarmStreamVolume.java`・`RingRecovery.java`。
+- [ ] **W1-7 で見つけたこと: 見張りが発火するまで（最長 20 秒）鳴動が無音になる** — 2026-09-27（W1-7）。`RingWatchdog.DELAY_MS` = 20 秒・張り直し 5 秒ごと。
+  実機の `kill -9` で無音は 20.1 s / 15.4 s。短くすると張り直しが増える（AlarmManager の 5 秒の最小の先の時間より長くする）。目覚ましの用途で許せるかを
+  アプリの要件と合わせて決める。関連: `ring/RingWatchdog.java`。
+- [ ] **W1-7 で見つけたこと: 再起動をまたいだ鳴動は鳴らし直さない** — 2026-09-27（W1-7）。鳴動中に端末が再起動すると、起動の放送（`BootReceiver`）で
+  前の鳴動を `ring_stopped(error)` として終わらせ、音量を戻す（戻す試みは背面なので AudioHardening に無視されうる。上の項目）。起動の放送からは mediaPlayback の
+  前景サービスを起こせない（E-10）ので、続けるなら起動の放送で見張りの予約を数秒先に張り、その配信から鳴らし直す案（実機で許可されるかは未確認）。
+  Wake or Pay では「再起動で目覚ましを逃れる」使い方に関わるので、アプリの仕様と合わせて決める（アプリは `ring_stopped(error)` で知れる）。
+- [ ] **W1-7 で見つけたこと: 再起動の直後に端末の時計が約 75 秒進んでいた** — 2026-09-27（W1-7 の T4）。Pixel 6a の再起動の直後の時計（RTC）が
+  ネットワークの時刻より約 75 秒進んでいて、約 1.5 分後に `TIME_SET` で戻った（logcat の epoch が戻り、`alarms.rescheduled(time_changed)` が 2 件＝時計が
+  戻る前と後）。予約は UTC の絶対時刻なので、この間に来る予約は最大 75 秒早く鳴りうる（T4 の予約は後だったので影響なし）。端末の性質で直せない。記録だけ。
+- [ ] **W1-7 で見つけたこと: 見張りの復元で実機で試していない道** — 2026-09-27（W1-7）。待ち行列ごとの復元・戻した回数の上限（5 回）・殺されている間に
+  安全弁の時刻を過ぎた鳴動（`timeout` と繰り上げ）・前景サービスを起こせなかったとき・新しい目覚ましが先に鳴って前のプロセスの鳴動を置き換えたとき。
+  コードを読んで確かめただけ。Java の JVM 単体テスト（`RingRegistry`・`RingStateStore`・`RingRecovery` の規則）を足すと安く確かめられる（W1-4a からの持ち越しと合わせて）。
+- [ ] **W1-7 で見つけたこと: AC-9 の「デバッグ命令で panic」が無い** — 2026-09-27（W1-7）。エンジンをわざと落とす命令が無いので、T8 はメインプロセスを
+  `run-as … kill -9` した（panic はプロセスの abort になるので、どちらも「エンジンのプロセスが無くなる」）。panic の経路（Rust の panic → abort の後の
+  後始末・ログ）を確かめたいなら、デバッグ版だけの命令を足す。
+- [ ] **W1-7 で見つけたこと: 戻せない音量を戻す試みのログが重なる** — 2026-09-27（W1-7）。背面で起きた `:seed_platform` は、起動の放送 4 回と
+  `PlatformProvider.call` のたびに戻す試みをし、AudioHardening に無視されるたびに警告を 1 行ずつ出した（強制停止の試験で 8 行）。害はログだけ。
+- [ ] **W1-7 で見つけたこと: OS・アプリの更新の直後の最初の鳴動は、画面が 3 秒に間に合わない（パイプラインキャッシュ）** — 2026-09-27（W1-7 の T1）。
+  T4 の再起動で端末が Android 17 に更新され、描画のパイプラインキャッシュ（656 KiB）が捨てられた（`[SEED PIPELINE CACHE] 読込 656 KiB → 採用後 0 KiB`）。
+  その後の最初の冷えた起動は DrawContext 3249 ms・最初のフレーム +4608 ms（フルスクリーン通知から 4.30 s。AC-12 の 3 s を超える。音は +514 ms で間に合う）。
+  キャッシュを作り直して保存させると 504 ms・+1124 ms に戻った。キャッシュはエンジンが背面へ回るとき（`suspended`）にしか保存されないので、更新の後に
+  アプリを開かないまま目覚ましが鳴ると、その 1 回は画面が遅い（kill されて終わる起動が続くと、いつまでも保存されない）。案: 最初のフレームの後にも 1 回保存する・
+  鳴動画面のシーンのパイプラインを先に作る・画面が出るまでの窓の背景（G-2）。X-1 と合わせて決める。関連: `runtime/src/engine/core/app_base/background_lifecycle.rs`。
+- [ ] **W1-7 で見つけたこと: 鳴らす前の書き込みで音の開始が少し遅れた見込み** — 2026-09-27（W1-7 の T1）。直した後の冷えた起動の音（AudioFlinger の
+  トラックの開始）は +514 ms（1 回目。配信 +221 ms）/ +340 ms（2 回目）で、W1-4b の中央値 +368 ms と比べて 1 回目が遅い。配信そのものの遅れのほか、
+  鳴らす前に `ringing.json` を書く fsync（受信機の `announce` と、音声のスレッドの `force_volume` の前の音量の控え）が音の準備の前に入った。2 秒の基準には
+  十分間に合う。詰めるなら、音量の控えの書き込みと MediaPlayer の準備を並べる。計測は 2 回だけ（端末が Android 17 に変わった後）。
+- [ ] **W1-7 で見つけたこと: 再起動で保留中の OS の更新が当たることがある（試験の条件）** — 2026-09-27（W1-7 の T4）。`adb reboot` の起動が長く
+  （画面まで約 82 s）、Pixel 6a が Android 16（`CP1A.260405.005`）から **Android 17（SDK 37・`CP2A.260705.006`）** に変わっていた（エンジンのログ
+  「端末: Android=17」・`getprop ro.build.version.release`）。W1-7 の T4 の張り直し以降の結果はすべて Android 17 のもの。W1-4b までの数値（Android 16）と
+  並べるときは注意。再起動を伴う試験の前に、保留中の更新が無いかを利用者に確かめてもらうとよい。
+- [ ] **W1-7 で見つけたこと: Direct Boot の間は adb が使えない（試験の道具）** — 2026-09-27（W1-7 の T4）。再起動の後、最初のロック解除まで adb が
+  `unauthorized` のままだった。Direct Boot の間の振る舞いは、解除した後に端末保護ストレージの記録（`journal.json`）と logcat のバッファ（main は約 5 分で
+  消える。events・system は残っていた）から確かめた。W1-9 で解除前の鳴動画面を確かめるときも同じ（解除前の出来事を端末保護ストレージへ書き残す仕組みがあると楽）。
 - [x] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27 記載 / 同日対応（実機の確認を除く）。Wake or Pay の起床確認「振る」を v1 に残すと決まった（アプリ仕様 §10 U-04）ので
   `SEED.Platform.Sensors` を入れた（docs/android.md §25.16・scripting_api.md §7.13・app_platform_roadmap.md §2.10）。W1-8 で見つけた、今はやらないことは下の 7 件。
-- [ ] **W1-8 の実機の確認** — 2026-09-27（W1-8）。利用者の外出中で端末がロック・Dozing のままだったため、起動したエンジンが最初のフレームの前に suspended になり、
+- [ ] **W1-8 の実機の確認** — 2026-09-27（W1-8）。→ その後の実機の回で静置（1 秒に 49〜56 個・最大 0.0 m/s²）と振る（振り始め ≥ 2 m/s² を最大 180 秒待って
+  30 秒計測する方式。docs/android.md §25.16.7）を行い、**激しく振っている間は標本が 1 秒に約 19〜26 個に落ちた**（作業の記録の数値）。W1-7 の切り分け:
+  SEED の Java 層（`FeedListener` → `SampleAccumulator`）は受けた標本を全部数え、頻度に関わる処理は無い（捨てるのは有限でない値と古い登録の世代だけ）。
+  既定の重力を除いた加速度はセンサーハブの `Linear Acceleration Sensor | Google`（handle 0x01010009・連続）なので、端末側（ハブの融合の出力）の見込み（推論）。
+  確かめるには振りながら `LSM6DSR Accelerometer`（加速度）と同時に登録して 1 秒の数を比べる（手作業）。落ちても閾値 12 m/s² の判定には足りる数なら直さない。
+  鳴動画面（ロック画面の上）の前面で受け取れることと、加速度だけの端末は未確認のまま。以下は記載時のメモ。
+  利用者の外出中で端末がロック・Dozing のままだったため、起動したエンジンが最初のフレームの前に suspended になり、
   スクリプト（SensorSmoke）が走らなかった（`dumpsys sensorservice` に登録なし。docs/android.md §25.16.8）。画面が点いてロックが解除された状態で §25.16.7 の
   1〜3（静置: 最大 < 0.5 m/s²・2 秒で約 100 個・時刻の古さ 0〜1000 ms・登録の記録 `FeedListener`／振る: `scenes/ShakeSmoke.scene` で 10 秒振って最大 ≥ 12 m/s²）を行う。
   あわせて、ロック画面の上に出した鳴動画面の前面で受け取れること（W1-7 の通しの確認で）と、加速度だけの端末（`accelerometer_lowpass`）での振る舞い。
@@ -2577,6 +2672,9 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [ ] **`Sensors.Read` は毎フレーム JSON を作って読む** — 2026-09-27（W1-8）。W1 の他の API と同じ `platform_invoke` の経路（引数の JSON を作る → JNI → 返答の JSON を
   2 回読む）で、フレームごとに小さな割り当てがある。計測で重ければ、読むだけの専用の FFI（数を並べた構造体を返す）にする。
 - [ ] **（任意）W1-9 Direct Boot（再起動後・ロック解除前の鳴動）** — 2026-09-27。夜中の自動更新の再起動の後でも鳴らすため。
+  → W1-7 の T4（2026-09-27）で、**解除前に張り直して音は鳴る**（受信機・鳴動のサービス・控えは directBootAware・端末保護ストレージ。同梱の音）ことを確かめた。
+  残るのは解除前の鳴動画面: フルスクリーン通知からの `PlatformEntry`（MainActivity。directBootAware でない）の起動は `result code=-92` で失敗した
+  （画面は出ず、通知と音だけ）。アプリのスクリプトは解除まで動かないので、止めるのは安全弁か解除の後。以下は記載時のメモ。
   予約の控えと既定の音を端末保護ストレージに置き、受信機と鳴動サービスを `directBootAware` にする案。W1-0 で、exported=false・directBootAware の
   受信機に `LOCKED_BOOT_COMPLETED` が届き端末保護ストレージから張り直せることは確認（強制停止からの復帰で観測）。再起動での確認とロック解除前の
   鳴動画面は未確認。解除前は Java だけの鳴動画面か、音と通知だけにする（E-10 の決定）。

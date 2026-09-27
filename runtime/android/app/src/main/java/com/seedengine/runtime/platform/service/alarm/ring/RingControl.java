@@ -10,7 +10,9 @@
 //    ringingJson  … alarm.get_ringing の中身
 //    stop         … alarm.stop_ringing（止めて alarm.ring_stopped(stopped) を記録し、サービスを合わせ直す）
 //    onSafetyValve… 安全弁の時間切れ（RingService から。alarm.ring_stopped(timeout)）
-//  記録（EventRecorder の端末保護ストレージへの書き込み）は RingRegistry の lock の外で行う。
+//    persist      … RingRegistry の写しを ringing.json へ書く（W1-7。状態を変えた直後・記録の前に。殺されても見張りが戻せるように）
+//  記録（EventRecorder の端末保護ストレージへの書き込み）と写しの書き込みは RingRegistry の lock の外で行う。
+//  写しは「変えた → 書く → 記録する」の順（書く前に殺されたら記録も無いので、見張りが前の状態から鳴らし直しても食い違わない）。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm.ring;
@@ -24,6 +26,8 @@ import com.seedengine.runtime.platform.service.alarm.AlarmEntry;
 import com.seedengine.runtime.platform.service.alarm.AlarmEvents;
 
 import org.json.JSONObject;
+
+import java.util.List;
 
 /**
  * 鳴動の入口（static のみ）。
@@ -101,10 +105,26 @@ public final class RingControl {
      * @param handOver handOver の結果
      */
     public static void announce(Context context, AlarmEntry entry, HandOver handOver) {
+        // 渡した状態を控える（W1-7。ここから先に殺されても見張りが鳴らし直せる。handOver は AlarmBook の lock の中なので書けない）
+        persist(context);
         if (handOver.waitingFor != null) {
             AlarmEvents.recordQueued(context, entry, handOver.waitingFor);
         }
         RingService.requestSync();
+    }
+
+    /**
+     * 今の RingRegistry の写しを ringing.json へ書く（W1-7。状態を変えた直後に、lock の外で呼ぶ。版の古い写しは書かれない）。
+     * 前のプロセスの鳴動（見張りで戻す前）を新しい鳴動で置き換えたときは、その予約を「終わった（error）」と記録する。
+     *
+     * @param context :seed_platform の Context
+     */
+    static void persist(Context context) {
+        List<AlarmEntry> superseded = RingStateStore.saveRegistry(context, RingRegistry.snapshot());
+        for (AlarmEntry entry : superseded) {
+            Log.w(PlatformContract.LOG_TAG, "前のプロセスの鳴動 " + entry.id + " は戻す前に新しい鳴動に置き換わったので、終わったと記録します");
+            AlarmEvents.recordRingStopped(context, entry, PlatformContract.RING_STOP_REASON_ERROR);
+        }
     }
 
     /**
@@ -131,6 +151,8 @@ public final class RingControl {
             Log.i(PlatformContract.LOG_TAG, "鳴動を止める命令: 止めるものがありません（" + (idOrEmpty.isEmpty() ? "鳴動中のもの" : idOrEmpty) + "）");
             return new StopResult(false, idOrEmpty);
         }
+        // 変えた → 控える → 記録する（控える前に殺されたら記録も無いので、見張りが鳴らし直してもアプリの知る状態と食い違わない）
+        persist(context);
         AlarmEvents.recordRingStopped(context, stop.stopped, PlatformContract.RING_STOP_REASON_STOPPED);
         if (stop.wasRinging) {
             RingService.requestSync();
@@ -150,6 +172,7 @@ public final class RingControl {
             return;
         }
         Log.w(PlatformContract.LOG_TAG, "目覚まし " + stop.stopped.id + " は安全弁（" + stop.stopped.maxRingMinutes + " 分）で止めました");
+        persist(context);
         AlarmEvents.recordRingStopped(context, stop.stopped, PlatformContract.RING_STOP_REASON_TIMEOUT);
         RingService.requestSync();
     }

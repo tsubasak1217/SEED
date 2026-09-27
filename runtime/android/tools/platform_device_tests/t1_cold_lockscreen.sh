@@ -4,7 +4,9 @@
 #    画面オフ・ロック中に SCHEDULE で LEAD 秒後（既定 90 秒）を予約 → 両プロセスを落とす（am kill / run-as kill。
 #    force-stop は予約を消すので使わない）→ 発火 → 予定時刻からの各段階（配信・startForegroundService・:seed_platform の起動・
 #    startForeground・音・フルスクリーン通知の起動・MainActivity の Displayed・エンジンの最初のフレーム）を logcat の epoch で測る。
-#    鳴り始めから RING_DEADLINE_S 秒（既定 15 秒。上限 20 秒の約束）までに必ず止める。
+#    鳴り始めから RING_DEADLINE_S 秒（既定 15 秒。上限 20 秒の約束）までに必ず止める。音は最小（schedule_quiet。W1-7 から。
+#    W1-4b の 1〜4 回目は利用者の依頼の前なので音量を変えずに鳴らした）。試験の前後で STREAM_ALARM を比べ、違えば元へ戻す。
+#    kill_platform は W1-4b の T5（直す前の記録）。W1-7 の復元の試験は t5_ring_restore.sh。
 #    使い方: t1_cold_lockscreen.sh <予約 ID> [LEAD 秒] [出力のフォルダ名] [鳴動中の操作: none | task_remove | kill_platform | keep_activity]
 #      none          … T1。証拠を取って STOP_RINGING
 #      task_remove   … T2。am stack remove → 3 秒後・13 秒後（鳴り始め +17.5 秒で打ち切り）に音とプロセス → STOP_RINGING
@@ -35,6 +37,7 @@ T5_SECOND_CHECK_S=8
 put "$RES" mode "$MODE"
 
 device_present || { put "$RES" skipped device_absent; log "端末が無い"; exit 3; }
+record_alarm_volume_baseline
 wait_user_idle || { put "$RES" skipped user_operating_or_absent; exit 1; }
 # 前提: 画面オフかロック中（点灯・解除のままなら自動のロックを最大 5 分待つ）
 waited=0
@@ -54,7 +57,7 @@ put "$RES" screen_at_start "$(screen_state | tr ' ' ';')"
 dsh "dumpsys window" | grep -E 'mCurrentFocus|isKeyguardShowing|mKeyguardOccluded=|mDreamingLockscreen|mSleeping=' > "$OUT/0_before_window.txt"
 snap "$OUT" 0_before
 
-ctl SCHEDULE --ei seconds "$LEAD_S" --es id "$ID" --ei max_ring_minutes 1 --es title "W1-4b_measure" --es body "$ID" > "$OUT/schedule_broadcast.txt"
+schedule_quiet "$ID" "$LEAD_S" "W1-7_T1" > "$OUT/schedule_broadcast.txt"
 wait_mark "$since" '\[debug\] alarm\.schedule' 30 || log "schedule の結果が来ない"
 stream_since "$since" > "$OUT/.s.txt"
 trigger_at="$(trigger_of "$OUT/.s.txt")"
@@ -193,6 +196,7 @@ if [ "$MODE" != "keep_activity" ] && [ "$MODE" != "kill_platform" ]; then
   kill_app_processes
 fi
 sleep 1
+verify_alarm_volume > "$OUT/alarm_volume_after.txt"; put "$RES" alarm_volume_after "$(tr '\n' ';' < "$OUT/alarm_volume_after.txt")"
 stop_stream
 
 # 集計（予定時刻からの ms）

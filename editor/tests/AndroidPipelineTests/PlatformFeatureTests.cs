@@ -33,6 +33,9 @@ public static class PlatformFeatureTests
     /// <summary>目覚ましの鳴動の前景サービス（W1-4a。service/alarm/ring/RingService.java）。</summary>
     private const string RingServiceClass = "com.seedengine.runtime.platform.service.alarm.ring.RingService";
 
+    /// <summary>鳴動の見張りの予約の受信機（W1-7。service/alarm/ring/RingWatchdogReceiver.java。殺されたら鳴動を戻す）。</summary>
+    private const string RingWatchdogReceiverClass = "com.seedengine.runtime.platform.service.alarm.ring.RingWatchdogReceiver";
+
     /// <summary>信頼できる起動の入口（W1-4a。main の AndroidManifest.xml の activity-alias。Java の PlatformContract.PLATFORM_ENTRY_ALIAS）。</summary>
     private const string PlatformEntryAlias = "com.seedengine.runtime.platform.PlatformEntry";
 
@@ -90,9 +93,11 @@ public static class PlatformFeatureTests
         Check.Equal(string.Join(",", expected), string.Join(",", alarm.Permissions.Select(p => p.Name)), "alarm の権限");
         Check.Equal(32, alarm.Permissions.Single(p => p.Name.EndsWith("SCHEDULE_EXACT_ALARM")).MaxSdkVersion, "SCHEDULE_EXACT_ALARM の maxSdkVersion");
         Check.True(alarm.Permissions.Where(p => !p.Name.EndsWith("SCHEDULE_EXACT_ALARM")).All(p => p.MaxSdkVersion is null), "ほかは maxSdkVersion なし");
-        // W1-3: 予約の受信機 2 つ（発火・張り直し）、W1-4a: 鳴動の前景サービス。どれも :seed_platform・exported=false・directBootAware
-        Check.Equal("receiver,receiver,service", string.Join(",", alarm.ApplicationElements.Select(e => e.Tag)), "alarm の部品は受信機 2 つと鳴動のサービス");
-        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass + "," + RingServiceClass,
+        // W1-3: 予約の受信機 2 つ（発火・張り直し）、W1-4a: 鳴動の前景サービス、W1-7: 鳴動の見張りの受信機。
+        // どれも :seed_platform・exported=false・directBootAware
+        Check.Equal("receiver,receiver,service,receiver", string.Join(",", alarm.ApplicationElements.Select(e => e.Tag)),
+            "alarm の部品は受信機 2 つと鳴動のサービスと見張りの受信機");
+        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass + "," + RingServiceClass + "," + RingWatchdogReceiverClass,
             string.Join(",", alarm.ApplicationElements.Select(e => Attr(e, "android:name"))), "部品の名前（完全修飾）");
         foreach (var component in alarm.ApplicationElements)
         {
@@ -110,6 +115,8 @@ public static class PlatformFeatureTests
         Check.Equal("mediaPlayback", Attr(ringService, "android:foregroundServiceType"), "RingService の前景サービスの種類");
         Check.Equal(0, ringService.Children.Count, "RingService は intent-filter を持たない（アプリの中から起こすだけ）");
         Check.True(alarm.Permissions.Any(p => p.Name == "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"), "種類の権限も alarm にある");
+        // 見張りの受信機はアプリの PendingIntent（setExactAndAllowWhileIdle）だけが届けばよい
+        Check.Equal(0, alarm.ApplicationElements[3].Children.Count, "RingWatchdogReceiver は intent-filter を持たない");
 
         Check.Equal("android.permission.POST_NOTIFICATIONS", catalog.Find("notifications")!.Permissions.Single().Name, "notifications の権限");
         // W1-5: 通知は main に常設の PlatformProvider（:seed_platform）の NotificationModule が出すので、機能の部品は要らない
@@ -337,11 +344,11 @@ public static class PlatformFeatureTests
         Check.Equal(8, permissions.Count, "権限 8（W1-6 で VIBRATE は main の常設へ移した）");
         var schedule = permissions.Single(p => (string?)p.Attribute(AndroidNs + "name") == "android.permission.SCHEDULE_EXACT_ALARM");
         Check.Equal("32", (string?)schedule.Attribute(AndroidNs + "maxSdkVersion"), "maxSdkVersion");
-        // alarm の受信機 2 つ（W1-3）と鳴動の前景サービス（W1-4a）。ディープリンクが無いので MainActivity の要素は書かない
+        // alarm の受信機 2 つ（W1-3）と鳴動の前景サービス（W1-4a）と見張りの受信機（W1-7）。ディープリンクが無いので MainActivity の要素は書かない
         var application = manifest.Element("application")!;
         Check.True(application.Element("activity") is null, "ディープリンクが無ければ MainActivity を書かない");
         var receivers = application.Elements("receiver").ToList();
-        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass,
+        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass + "," + RingWatchdogReceiverClass,
             string.Join(",", receivers.Select(r => (string?)r.Attribute(AndroidNs + "name"))), "受信機（表の順）");
         Check.True(receivers.All(r => (string?)r.Attribute(AndroidNs + "process") == ":seed_platform"
                                       && (string?)r.Attribute(AndroidNs + "exported") == "false"

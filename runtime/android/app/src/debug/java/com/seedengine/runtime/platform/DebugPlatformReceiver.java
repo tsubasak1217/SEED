@@ -3,6 +3,8 @@
 //
 //  デバッグ版の APK（app/src/debug/）にだけ入る、exported の受信機（メインプロセス）。adb から命じて、
 //  メインプロセス → :seed_platform の往復と、:seed_platform → エンジンのイベントの経路を確かめる。
+//  送り手に android.permission.DUMP を求める（W1-7。app/src/debug/AndroidManifest.xml。adb の shell は持つが普通のアプリは持てないので、
+//  端末に入った他のアプリからは予約・停止を送れない）。
 //  暗黙の放送はマニフェストの受信機に届かないので、必ず -n で部品を指定する（docs/app_platform_roadmap.md §2.6）:
 //
 //    adb shell am broadcast -n <applicationId>/com.seedengine.runtime.platform.DebugPlatformReceiver \
@@ -19,7 +21,8 @@
 //          試験で鳴らしっぱなしにしないため）。題・本文・漸増・振動・音量は渡したときだけ入れる（無ければ本番の既定値）。
 //          音源は渡さない（既定の音。音源の書き出しはエンジンの仕事で、この受信機はエンジンを通らない）。
 //          私物の端末で音を小さくするなら --ef force_volume 0.0 --ez vibrate false --ef fade_in_seconds 60（最小の段階・漸増 60 秒。
-//          止めれば音量は元へ戻る。:seed_platform ごと殺されると戻らないので、その試験では force_volume を使わないこと）。
+//          止めれば音量は元へ戻る。W1-7 から :seed_platform ごと殺されても見張りで戻した鳴動が止めたときに戻す。強制停止では
+//          背面から戻せず〈Android 17 の AudioHardening〉、アプリを開くか次の鳴動で戻る）。
 //          title・body に空白を入れない（adb shell が 1 行の命令にして端末のシェルが空白で分けるため、後ろが切れる）
 //    -a com.seedengine.runtime.platform.CANCEL_ALL                    … 予約を全部取り消す（alarm.cancel_all）
 //    -a com.seedengine.runtime.platform.STOP_RINGING [--es id t1]     … 鳴動を止める（alarm.stop_ringing。id が無ければ今鳴っているもの）
@@ -32,7 +35,7 @@
 //  受信は UI スレッドなので goAsync で専用のスレッドへ移し、そこで接続を待ってよい（描画のスレッドではない）。
 //
 //  【注意】この受信機は directBootAware ではない（メインプロセス）。再起動の後、最初のロック解除の前は届かない
-//  （そのときに鳴っている鳴動を止めるには am force-stop。予約も消える）。
+//  （そのときに鳴っている鳴動は安全弁〈max_ring_minutes〉で止まる。W1-7 の T4 では解除まで adb も unauthorized だった）。
 //  エンジンが居ないメインプロセス（この受信機の放送だけで起きたプロセス）でも接続は呼び鈴を登録するので、その間に
 //  取り出した :seed_platform の記録（alarm.fired・alarm.ring_stopped など）は既読になって捨てられる（SeedPlatform.deliverEvent。
 //  受け取りの確認〈ack〉が無い間の割り切り。docs/backlog.md）。スクリプトで記録を受ける確かめと混ぜないこと。

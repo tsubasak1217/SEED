@@ -9,7 +9,8 @@
     "    application_elements（<application> の下に置く要素の木。{ tag, attributes: { \"android:name\": … }, children: [ … ] }）・",
     "    deep_link_filters（true なら project_settings.json の android.deep_links を 1 件ずつ MainActivity の intent-filter にする）。",
     "W1-3 で alarm に AlarmReceiver・BootReceiver（:seed_platform・exported=false・directBootAware）を、W1-4a で鳴動の前景サービス RingService",
-    "（mediaPlayback・:seed_platform・exported=false・directBootAware）を足した。Java のクラスが無い部品を宣言すると起動時に落ちるので、クラスを足すのと同じ変更で足すこと",
+    "（mediaPlayback・:seed_platform・exported=false・directBootAware）を、W1-7 で鳴動の見張りの予約の受信機 RingWatchdogReceiver（同じ 3 つの属性。",
+    ":seed_platform が鳴動中に殺されたら ringing.json から鳴動を戻す）を足した。Java のクラスが無い部品を宣言すると起動時に落ちるので、クラスを足すのと同じ変更で足すこと",
     "（単体テスト AndroidPipelineTests が、宣言した com.seedengine.runtime.* のクラスの Java のソースがあるかを確かめる）。",
     "PlatformProvider と activity-alias PlatformEntry（W1-4a）は機能によらず main のマニフェストに常設（:seed_platform は最初の呼び出しまで起動せず、",
     "PlatformEntry は exported=false で intent-filter も無いので害が無い）。Google Play の方針に関わる注意は play_requirements.json の permission_policies。",
@@ -21,7 +22,7 @@
     {
       "name": "alarm",
       "label": "目覚まし（正確なアラーム・鳴動）",
-      "description": "決まった時刻に確実に鳴らす（setAlarmClock・別プロセスの鳴動・フルスクリーン通知・再起動後の張り直し）。Google Play では目覚まし・カレンダーが中核のアプリだけが使える権限を含む。予約の受信機（発火・張り直し）は W1-3、鳴動の前景サービス（mediaPlayback）は W1-4a。",
+      "description": "決まった時刻に確実に鳴らす（setAlarmClock・別プロセスの鳴動・フルスクリーン通知・再起動後の張り直し）。Google Play では目覚まし・カレンダーが中核のアプリだけが使える権限を含む。予約の受信機（発火・張り直し）は W1-3、鳴動の前景サービス（mediaPlayback）は W1-4a、鳴動の見張りの受信機（殺されたら鳴動を戻す）は W1-7。",
       "permissions": [
         { "name": "android.permission.USE_EXACT_ALARM" },
         { "name": "android.permission.SCHEDULE_EXACT_ALARM", "max_sdk_version": 32 },
@@ -71,6 +72,15 @@
             "android:directBootAware": true,
             "android:exported": false,
             "android:foregroundServiceType": "mediaPlayback",
+            "android:process": ":seed_platform"
+          }
+        },
+        {
+          "tag": "receiver",
+          "attributes": {
+            "android:name": "com.seedengine.runtime.platform.service.alarm.ring.RingWatchdogReceiver",
+            "android:directBootAware": true,
+            "android:exported": false,
             "android:process": ":seed_platform"
           }
         }

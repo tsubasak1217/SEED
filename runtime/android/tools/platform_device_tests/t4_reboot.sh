@@ -4,9 +4,10 @@
 #    LEAD 秒後（既定 240 秒・max_ring_minutes 1）を予約 → 控え（端末保護ストレージの alarms.json）と dumpsys alarm を記録 →
 #    adb reboot → wait-for-device → 起動直後から logcat をファイルへ流す → ロックは解除しない（Direct Boot のまま）→
 #    BootReceiver が LOCKED_BOOT_COMPLETED で張り直すか（dumpsys alarm）・発火で RingService（directBootAware）が鳴るか・
-#    MainActivity（directBootAware でない）は出ないはず、を記録 → STOP_RINGING（受信機はメインプロセスなので解除前は届かない見込み。
-#    届かなければ am force-stop で止め、理由を記録）。
-#    --reboot-permitted が無ければ何もしない。
+#    MainActivity（directBootAware でない）は出ないはず、を記録 → STOP_RINGING（受信機はメインプロセス・directBootAware でないので
+#    解除前は届かない見込み。届かなければ安全弁〈max_ring_minutes 1〉で止まるのを待ち、理由を記録。安全弁でも止まらないときだけ
+#    最後の手段として am force-stop）。
+#    --reboot-permitted が無ければ何もしない。結果の置き場は環境変数 SEED_DEVICE_TEST_RESULTS（common.sh）。
 # ============================================================
 set -u
 source "$(dirname "$0")/common.sh"
@@ -22,16 +23,20 @@ BOOT_WAIT_S=300
 REARM_WAIT_S=180
 RING_WAIT_S=120
 STOP_CHECK_S=10
+# 安全弁（max_ring_minutes 1 = 60 秒）で止まるのを待つ上限（鳴り始めからの 60 秒＋余裕）
+VALVE_WAIT_S=90
 DE_DIR="/data/user_de/0/$PKG/files/seed_platform"
 user_state() { dsh "am get-started-user-state 0" 2>&1 | head -1; }
 
 device_present || { put "$RES" skipped device_absent; exit 3; }
 user_operating && { put "$RES" skipped user_operating; exit 1; }
 locked_or_off || { put "$RES" skipped not_locked; exit 1; }
+record_alarm_volume_baseline
+put "$RES" alarm_volume_baseline "$(sed -n '2,3p' "$ALARM_VOLUME_BASELINE_FILE" | tr '\n' ';')"
 since="$(dev_since)"
 start_stream "$OUT/stream_before_reboot.txt"
 put "$RES" screen_at_start "$(screen_state | tr ' ' ';')"
-ctl SCHEDULE --ei seconds "$LEAD_S" --es id "$ID" --ei max_ring_minutes 1 --es title "W1-4b_T4" --es body "$ID" $QUIET_ARGS > "$OUT/schedule_broadcast.txt"
+ctl SCHEDULE --ei seconds "$LEAD_S" --es id "$ID" --ei max_ring_minutes 1 --es title "W1-7_T4" --es body "$ID" $QUIET_ARGS > "$OUT/schedule_broadcast.txt"
 wait_mark "$since" '\[debug\] alarm\.schedule' 30 || log "schedule の結果が来ない"
 stream_since "$since" > "$OUT/.s.txt"
 trigger_at="$(trigger_of "$OUT/.s.txt")"
@@ -51,19 +56,21 @@ log "adb reboot（予定まで $(( (trigger_at - reboot_ms) / 1000 )) 秒）"
 adbs reboot > "$OUT/reboot_output.txt" 2>&1
 sleep 5
 timeout "$DEVICE_WAIT_S" "$ADB" -s "$SERIAL" wait-for-device || { put "$RES" aborted device_not_back; log "端末が戻らない"; exit 3; }
+put "$RES" device_back_host "$(date '+%F %T')"
+# 再起動で logcat は消えるので、端末が見えたらすぐ起動の頭から全部を流す（-T 1.000 = 端末の時計の最初から）
+STREAM_FILE="$OUT/stream_after_reboot.txt"; : > "$STREAM_FILE"
+"$ADB" -s "$SERIAL" logcat -v epoch -b main,system,crash,events -T 1.000 > "$STREAM_FILE" 2>/dev/null &
+STREAM_SINCE_LIST="1.000"
+STREAM_PID=$!
 waited=0
 until [ "$(dsh 'getprop sys.boot_completed')" = "1" ]; do
-  [ "$waited" -ge "$BOOT_WAIT_S" ] && { put "$RES" aborted boot_not_completed; exit 3; }
+  # 起動の完了が見えなくても中止しない（予約は鳴るので、止めるところまで続ける）
+  [ "$waited" -ge "$BOOT_WAIT_S" ] && { put "$RES" boot_completed_timeout true; break; }
   sleep 2; waited=$((waited + 2))
 done
 put "$RES" boot_completed_device_ms "$(dev_now_ms)"
 put "$RES" user_state_after_boot "$(user_state)"
 log "起動完了（$(user_state)）。ロックは解除しない"
-# 再起動で logcat は消えるので、起動の頭から全部を流す（-T を付けない）
-STREAM_FILE="$OUT/stream_after_reboot.txt"; : > "$STREAM_FILE"
-"$ADB" -s "$SERIAL" logcat -v epoch -b main,system,crash,events -T 1.000 > "$STREAM_FILE" 2>/dev/null &
-STREAM_SINCE_LIST="1.000"
-STREAM_PID=$!
 sleep 2
 wait_mark 0 "BootReceiver: android.intent.action.LOCKED_BOOT_COMPLETED" "$REARM_WAIT_S" && log "LOCKED_BOOT_COMPLETED で張り直した" || log "LOCKED_BOOT_COMPLETED の張り直しが見えない"
 sleep 2
@@ -93,8 +100,11 @@ ctl STOP_RINGING --es id "$ID" > "$OUT/stop_broadcast.txt" 2>&1
 put "$RES" stop_broadcast "$(tr '\n' ' ' < "$OUT/stop_broadcast.txt" | cut -c1-300)"
 if wait_mark "$s_stop" '\[debug\] alarm\.stop_ringing' "$STOP_CHECK_S"; then
   put "$RES" stopped_by "debug_receiver"
+elif wait_mark 0 "目覚まし $ID は安全弁" "$VALVE_WAIT_S"; then
+  # 受信機（directBootAware でない）は解除前に起動できないので、安全弁（1 分）で止まるのを待った
+  put "$RES" stopped_by "safety_valve（受信機の結果が $STOP_CHECK_S 秒で来ない。directBootAware でない受信機は解除前に起動できない見込み）"
 else
-  put "$RES" stopped_by "force_stop（受信機の結果が $STOP_CHECK_S 秒で来ない）"
+  put "$RES" stopped_by "force_stop（受信機の結果も安全弁も $((STOP_CHECK_S + VALVE_WAIT_S)) 秒で来ない）"
   dsh "am force-stop $PKG" > "$OUT/force_stop_output.txt" 2>&1
 fi
 sleep 2

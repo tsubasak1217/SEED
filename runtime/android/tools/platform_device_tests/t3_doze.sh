@@ -41,7 +41,7 @@ dsh "dumpsys deviceidle force-idle" > "$OUT/force_idle_output.txt" 2>&1
 put "$RES" force_idle_output "$(tr '\n' ' ' < "$OUT/force_idle_output.txt")"
 put "$RES" idle_after_force "$(idle_state)"
 
-ctl SCHEDULE --ei seconds "$LEAD_S" --es id "$ID" --ei max_ring_minutes 1 --es title "W1-4b_T3" --es body "$ID" $QUIET_ARGS > "$OUT/schedule_broadcast.txt"
+schedule_quiet "$ID" "$LEAD_S" "W1-7_T3" > "$OUT/schedule_broadcast.txt"
 wait_mark "$since" '\[debug\] alarm\.schedule' 30 || log "schedule の結果が来ない"
 stream_since "$since" > "$OUT/.s.txt"
 trigger_at="$(trigger_of "$OUT/.s.txt")"

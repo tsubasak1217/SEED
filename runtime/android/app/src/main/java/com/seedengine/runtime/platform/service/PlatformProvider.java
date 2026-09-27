@@ -19,6 +19,8 @@
 //
 //  【起動時の照合（W1-4a）】onCreate は :seed_platform のプロセスが起きた最初（受信機・サービスより前）に呼ばれるので、
 //  ここで目覚ましの控えと AlarmManager の照合を背面のスレッドで始める（alarm/AlarmStartup。Android 10〜14 の強制停止の後の保険）。
+//  【残した音量（W1-7）】call のたびに、鳴動の後始末で戻せずに残した force_volume の前の音量を戻してみる（AlarmStartup.onMainProcessCall。
+//  Android 17 は背面のプロセスからの音量の変更を無視するので、アプリが前面に出て呼んできたときに戻る）。
 // ============================================================
 
 package com.seedengine.runtime.platform.service;
@@ -98,6 +100,8 @@ public final class PlatformProvider extends ContentProvider {
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
+        // 戻せずに残した鳴動の音量（force_volume の前の値）を、アプリが呼んできたこの機会に戻してみる（W1-7。背面の制限。AlarmStartup）
+        AlarmStartup.onMainProcessCall(getContext());
         Bundle reply = new Bundle();
         reply.putByteArray(PlatformContract.BUNDLE_JSON, dispatch(method, extras));
         return reply;

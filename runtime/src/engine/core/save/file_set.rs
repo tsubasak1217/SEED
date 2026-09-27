@@ -8,7 +8,9 @@
 //  【ファイル】（すべて本体と同じフォルダ。別フォルダだと rename がコピーになり原子性が失われる）
 //    save.json                     本体（今の世代）
 //    save.json.tmp                 書き出しの途中の一時ファイル（書き終えて sync してから本体へ rename）
-//    save.json.bak                 1 つ前の世代（本体を置き換える直前に rename で回したもの）
+//    save.json.bak                 1 つ前の世代（本体を置き換える直前に、本体の写し〈hard link か複製〉を .bak.new に作って
+//                                  rename で置き換えたもの。写しを作れないときは本体を rename で回したもの。durable_file.rs）
+//    save.json.bak.new             1 つ前の世代の作りかけ（本体の写し。すぐ .bak へ rename する。W1-7）
 //    save.json.corrupt-<時刻>      読めなかった本体を上書きせずに退避したもの（1 つだけ残す）
 //  `.tmp` の名前は W1-S より前の実装（`with_extension("json.tmp")`）と同じ。
 // ============================================================
@@ -22,6 +24,9 @@ pub const TEMP_SUFFIX: &str = ".tmp";
 /// 1 つ前の世代に付ける接尾辞（本体のファイル名の後ろに足す）。
 pub const BACKUP_SUFFIX: &str = ".bak";
 
+/// 1 つ前の世代の作りかけに付ける接尾辞（本体のファイル名の後ろに足す。W1-7）。
+pub const BACKUP_STAGING_SUFFIX: &str = ".bak.new";
+
 /// 壊れた本体の退避ファイルに付ける印（本体のファイル名の後ろに足し、その後ろに時刻を付ける）。
 pub const CORRUPT_MARKER: &str = ".corrupt-";
 
@@ -34,6 +39,8 @@ pub struct SaveFileSet {
     temp: PathBuf,
     /// 1 つ前の世代。
     backup: PathBuf,
+    /// 1 つ前の世代の作りかけ（本体の写し）。
+    backup_staging: PathBuf,
 }
 
 impl SaveFileSet {
@@ -41,7 +48,8 @@ impl SaveFileSet {
     pub fn new(primary: PathBuf) -> Self {
         let temp = with_suffix(&primary, TEMP_SUFFIX);
         let backup = with_suffix(&primary, BACKUP_SUFFIX);
-        Self { primary, temp, backup }
+        let backup_staging = with_suffix(&primary, BACKUP_STAGING_SUFFIX);
+        Self { primary, temp, backup, backup_staging }
     }
 
     /// 本体（今の世代）のパス。
@@ -57,6 +65,11 @@ impl SaveFileSet {
     /// 1 つ前の世代のパス。
     pub fn backup(&self) -> &Path {
         &self.backup
+    }
+
+    /// 1 つ前の世代の作りかけ（本体の写しを置き、すぐ .bak へ rename する）のパス。
+    pub fn backup_staging(&self) -> &Path {
+        &self.backup_staging
     }
 
     /// ファイルを置くフォルダ。本体のパスがファイル名だけ（相対でフォルダ無し）ならカレント（`.`）。
@@ -116,6 +129,7 @@ mod tests {
         let files = SaveFileSet::new(PathBuf::from("dir/save.json"));
         assert_eq!(files.temp(), Path::new("dir/save.json.tmp"));
         assert_eq!(files.backup(), Path::new("dir/save.json.bak"));
+        assert_eq!(files.backup_staging(), Path::new("dir/save.json.bak.new"));
         assert_eq!(files.corrupt_path("20260927-101530"), PathBuf::from("dir/save.json.corrupt-20260927-101530"));
         assert_eq!(files.dir(), PathBuf::from("dir"));
     }

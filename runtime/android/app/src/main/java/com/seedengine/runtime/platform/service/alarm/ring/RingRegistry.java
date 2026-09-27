@@ -8,7 +8,9 @@
 //    RingService（UI スレッド）… 状態に合わせて音・振動・通知を出し入れする・安全弁で止める
 //  bindService の往復を挟むほどの隔たりは無いので、プロセスで 1 つの置き場を synchronized で守る（読み書きは値の出し入れだけで、
 //  音・ファイル・Binder には触らない＝lock を短く持つ）。記録（EventRecorder）は lock の外で呼び出し側が行う。
-//  プロセスが死ねば状態も消える（音も止まっているので食い違わない。get_ringing は null を返す）。
+//  プロセスが死ねばメモリの状態は消える。W1-7 から、変えた者（RingControl・RingService・RingRecovery）が lock の外で
+//  写し（snapshot。変えるたびに増える版つき）を ringing.json へ書き（RingStateStore）、見張り（RingWatchdog）の発火で
+//  restore へ読み戻して鳴らし直す（RingRecovery）。
 //
 //  【待ち行列（Flutter 版の「後の予約を黙って捨てる」を塞ぐ）】
 //  鳴動中に別の予約が配信されたら捨てずに待たせ（alarm.queued）、今の鳴動が止まったら（停止・安全弁）先頭を繰り上げて鳴らす。
@@ -101,6 +103,12 @@ final class RingRegistry {
     /** 次に払い出す鳴動の通し番号。 */
     private static long nextSerial = FIRST_SERIAL;
 
+    /** 状態の版（変えるたびに 1 増える。写し〈snapshot〉の新旧を比べる。W1-7）。 */
+    private static long version;
+
+    /** 最初の鳴動の「鳴らし直した回数」。 */
+    private static final int FIRST_RESTORE_COUNT = 0;
+
     /**
      * 配信された予約を渡す。何も鳴っていなければ鳴り始め、鳴っていれば待ち行列へ入れる（同じ ID は置き換え）。
      *
@@ -110,6 +118,7 @@ final class RingRegistry {
      * @return 結果
      */
     static synchronized Offer offer(AlarmEntry entry, long firedAtUtcMs, long nowUtcMs) {
+        version++;
         if (current == null) {
             current = newSession(entry, firedAtUtcMs, nowUtcMs);
             return new Offer(current, null);
@@ -122,6 +131,42 @@ final class RingRegistry {
             queue.set(index, waiting);
         }
         return new Offer(null, current.entry.id);
+    }
+
+    /**
+     * 前のプロセスの鳴動を戻す（見張りの発火。RingRecovery）。何も鳴っておらず待ち行列も空のときだけ戻す。
+     * 戻した鳴動は新しい通し番号で、鳴り始めの時刻は写しのまま（安全弁の時刻を延ばさない）。
+     *
+     * @param restored 鳴らす鳴動（restoreCount は呼び出し側が増やした値）
+     * @param waiting  待ち行列（配信の順）
+     * @return 戻した鳴動（既に何かが鳴っている・待っていれば null）
+     */
+    static synchronized RingSession restore(RingSnapshot.Current restored, List<RingSnapshot.Waiting> waiting) {
+        if (current != null || !queue.isEmpty()) {
+            return null;
+        }
+        version++;
+        current = new RingSession(nextSerial++, restored.entry, restored.firedAtUtcMs, restored.startedAtUtcMs,
+                restored.restoreCount);
+        for (RingSnapshot.Waiting row : waiting) {
+            queue.add(new Waiting(row.entry, row.firedAtUtcMs));
+        }
+        return current;
+    }
+
+    /**
+     * 今の状態の写し（版つき。RingStateStore が書く）。
+     *
+     * @return 写し
+     */
+    static synchronized RingSnapshot snapshot() {
+        RingSnapshot.Current head = current == null ? null
+                : new RingSnapshot.Current(current.entry, current.firedAtUtcMs, current.startedAtUtcMs, current.restoreCount);
+        List<RingSnapshot.Waiting> rows = new ArrayList<>();
+        for (Waiting waiting : queue) {
+            rows.add(new RingSnapshot.Waiting(waiting.entry, waiting.firedAtUtcMs));
+        }
+        return new RingSnapshot(version, head, rows);
     }
 
     /**
@@ -139,6 +184,7 @@ final class RingRegistry {
         if (index == NOT_FOUND) {
             return NOTHING;
         }
+        version++;
         return new Stop(queue.remove(index).entry, false, null);
     }
 
@@ -163,6 +209,9 @@ final class RingRegistry {
      */
     static synchronized List<AlarmEntry> abortAll() {
         List<AlarmEntry> aborted = new ArrayList<>();
+        if (current != null || !queue.isEmpty()) {
+            version++;
+        }
         if (current != null) {
             aborted.add(current.entry);
             current = null;
@@ -194,6 +243,7 @@ final class RingRegistry {
 
     /** 今鳴っているものを止め、待ち行列の先頭を繰り上げる（lock を持って呼ぶ）。 */
     private static Stop stopCurrent(long nowUtcMs) {
+        version++;
         AlarmEntry stopped = current.entry;
         current = null;
         if (!queue.isEmpty()) {
@@ -205,7 +255,7 @@ final class RingRegistry {
 
     /** 新しい鳴動を作る（lock を持って呼ぶ）。 */
     private static RingSession newSession(AlarmEntry entry, long firedAtUtcMs, long nowUtcMs) {
-        return new RingSession(nextSerial++, entry, firedAtUtcMs, nowUtcMs);
+        return new RingSession(nextSerial++, entry, firedAtUtcMs, nowUtcMs, FIRST_RESTORE_COUNT);
     }
 
     /** 待ち行列の中の ID の位置（lock を持って呼ぶ。無ければ NOT_FOUND）。 */

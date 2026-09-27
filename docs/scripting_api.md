@@ -2251,7 +2251,7 @@ switch (SaveData.RecoveredFrom)
 
 > **重要**: 整数と実数は相互に読み替えられます（実数 → 整数は 0 方向へ切り捨て）。文字列と数値は**相互変換しません** — 型を間違えた読み取りは既定値を返すので、書いたときと同じ型で読んでください。
 
-> **重要**（耐久性）: 書き出しは「一時ファイル `save.json.tmp` へ書いてディスクまで届ける（sync）→ 今の `save.json` を `save.json.bak` へ回す → 一時ファイルを `save.json` にする（→ Android はフォルダも sync）」の順で、どこで落ちても・電源が切れても `save.json` か 1 つ前の世代 `save.json.bak` のどちらかから読めます。読み込みは `save.json` → 無い・壊れていれば `save.json.bak` → どちらも無ければ空。壊れた `save.json` は上書きせずに `save.json.corrupt-<UTC の時刻>` として 1 つだけ残します。復旧したときは `SaveData.RecoveredFrom` が `Backup`（1 世代前から読んだ。直前の保存が失われた可能性）か `Lost`（読めるものが無く空で始めた）になり、次の書き出しで `save.json` が作り直されます。
+> **重要**（耐久性）: 書き出しは「一時ファイル `save.json.tmp` へ書いてディスクまで届ける（sync）→ 今の `save.json` の写し（Android は複製〈アプリは hard link を作れない〉、PC は hard link）を `save.json.bak.new` に作って `save.json.bak` へ置き換える（`save.json` は動かさない）→ 一時ファイルを `save.json` にする（既存を原子的に置き換える。→ Android はフォルダも sync）」の順で、**どの瞬間にも `save.json` があり**、どこで落ちても・電源が切れても `save.json` か 1 つ前の世代 `save.json.bak` のどちらかから読めます（写しを作れないとき〈容量が足りない等〉だけ `save.json` を `save.json.bak` へ rename で回す方式に戻り、その間だけ `save.json` が無い瞬間があります。そこで落ちると次の起動は `.bak` から読みます）。複製の分だけ、大きなセーブほど `Save()` は重くなります（前の世代をもう 1 回書く）。読み込みは `save.json` → 無い・壊れていれば `save.json.bak` → どちらも無ければ空。壊れた `save.json` は上書きせずに `save.json.corrupt-<UTC の時刻>` として 1 つだけ残します。復旧したときは `SaveData.RecoveredFrom` が `Backup`（1 世代前から読んだ。直前の保存が失われた可能性）か `Lost`（読めるものが無く空で始めた）になり、次の書き出しで `save.json` が作り直されます。
 
 > **重要**（Batch）: `SaveData.Batch(action)` の間は、自動保存（Android の背面・アプリを閉じるときの別スレッドからの書き出しを含む）と `Save()` をディスクへ書かず、最も外側の Batch の終わりに 1 回だけ書きます（Batch の間に書き出しの要求が無ければ書きません）。**取り消しはしません** — `action` が例外を投げても Batch は終わりますが、それまでに書き換えたキーは戻りません。中は短く保ち、待ち（非同期・長い計算）を入れないでください。Batch の途中でプロセスが終わると、Batch より前の未書き出しの変更も書かれません（ディスクは前回の書き出しのまま）。「お金と履歴」のような組は、1 つの文書を 1 つのキーに入れる形が最も単純で確実です。
 
@@ -2268,6 +2268,7 @@ switch (SaveData.RecoveredFrom)
 |---|---|
 | `save.json` | 今の世代（本体） |
 | `save.json.bak` | 1 つ前の世代（書き出しのたびに直前の `save.json` がここへ回る） |
+| `save.json.bak.new` | 1 つ前の世代の作りかけ（直前の `save.json` の写し。すぐ `save.json.bak` になる。書き出しの最中に落ちた跡。読まれず、次の書き出しで消える） |
 | `save.json.tmp` | 書き出しの途中の一時ファイル（書き出しの最中に落ちた跡。読まれず、次の書き出しで作り直される） |
 | `save.json.corrupt-<時刻>` | 読めなかった `save.json` を上書きせずに残したもの（1 つだけ。時刻は UTC の `yyyyMMdd-HHmmss`） |
 

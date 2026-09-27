@@ -5,6 +5,8 @@
 //  サービスの同期が「別の鳴動に入れ替わった後の古い知らせ」を見分けるために使う（同じ予約 ID でも鳴動が違えば別の番号）。
 //  get_ringing の返答の形（{id, scheduled_at_utc_ms, started_at_utc_ms, payload_json}）もここで作る
 //  （Rust の模擬 desktop_sim/ring_state.rs の SimRinging と同じ欄）。
+//  restoreCount（W1-7）は、:seed_platform が殺された後に見張り（RingWatchdog）で鳴らし直した回数。鳴らし直しても
+//  startedAtUtcMs は最初の鳴り始めのまま（安全弁の時刻・get_ringing の started_at を変えない）。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm.ring;
@@ -28,18 +30,22 @@ final class RingSession {
     final long firedAtUtcMs;
     /** 鳴り始めた時刻（UTC の epoch ミリ秒。待ち行列から繰り上がったときはその時刻）。 */
     final long startedAtUtcMs;
+    /** 見張りで鳴らし直した回数（最初の鳴動は 0。W1-7）。 */
+    final int restoreCount;
 
     /**
      * @param serial         通し番号
      * @param entry          予約
      * @param firedAtUtcMs   配信を受けた時刻
      * @param startedAtUtcMs 鳴り始めた時刻
+     * @param restoreCount   見張りで鳴らし直した回数
      */
-    RingSession(long serial, AlarmEntry entry, long firedAtUtcMs, long startedAtUtcMs) {
+    RingSession(long serial, AlarmEntry entry, long firedAtUtcMs, long startedAtUtcMs, int restoreCount) {
         this.serial = serial;
         this.entry = entry;
         this.firedAtUtcMs = firedAtUtcMs;
         this.startedAtUtcMs = startedAtUtcMs;
+        this.restoreCount = restoreCount;
     }
 
     /**

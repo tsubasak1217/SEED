@@ -14,6 +14,9 @@
     メインプロセスで動き、ping の往復の計測と試験イベントの送出、目覚ましの予約・取り消し・鳴動の停止と照会（W1-4b。
     SCHEDULE / CANCEL_ALL / STOP_RINGING / GET_RINGING / LIST）を行う。配布版（release）には入らない。
     directBootAware ではないので、再起動の後の最初のロック解除の前は届かない。
+    送り手に android.permission.DUMP を求める（W1-7）。DUMP は保護の段階が signature|privileged|development で、adb の shell
+    （uid 2000）は持つが普通のアプリは持てない（development は adb の pm grant でしか与えられない）。exported=true のままでも、
+    端末に入った他のアプリからは目覚ましの予約・停止を送れない（W1-4b の backlog「デバッグ受信機が他アプリから予約・停止できる」）。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -22,7 +25,8 @@
     <application>
         <receiver
             android:name="com.seedengine.runtime.platform.DebugPlatformReceiver"
-            android:exported="true" />
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 
 </manifest>

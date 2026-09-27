@@ -16,6 +16,11 @@
 //  受信機から直接鳴らさない（Android 15+ は BOOT_COMPLETED から mediaPlayback の前景サービスを起こせず、Android 17 は
 //  BOOT_COMPLETED から起こした前景サービスの音を抑える。E-10）。控えに予約があれば alarms.rescheduled を記録する
 //  （控えが空なら記録しない＝目覚ましを使わない間は何も残さない）。
+//  【同じ起動の 2 回目以降（W1-7。W1-4b の G-7）】LOCKED_BOOT_COMPLETED の後の BOOT_COMPLETED や、停止状態から出たときの
+//  重ねての配信は、BootRearmGate（Settings.Global.BOOT_COUNT）で見分け、消えている予約だけを張り直し（AlarmBook.reconcile）、
+//  何かを張り直した・鳴らなかったときだけ alarms.rescheduled を記録する（普通の再起動では記録は 1 回）。
+//  【鳴動の後始末（W1-7）】起動の放送では、再起動で途切れた前の鳴動の控え（ringing.json）があれば「終わった（error）」と記録し、
+//  force_volume の前の音量へ戻す（RingRecovery.onStartup。見張りの予約は再起動で消えているので戻せない）。
 //  adb の am broadcast では届かない（exported=false のうえ、BOOT_COMPLETED などはシステムだけが送れる保護された放送）。
 //  確かめ方は docs/android.md §25.11。
 // ============================================================
@@ -29,6 +34,7 @@ import android.content.Intent;
 import android.util.Log;
 
 import com.seedengine.runtime.platform.PlatformContract;
+import com.seedengine.runtime.platform.service.alarm.ring.RingRecovery;
 
 /**
  * 張り直しの受信機。
@@ -56,11 +62,37 @@ public final class BootReceiver extends BroadcastReceiver {
             Log.w(PlatformContract.LOG_TAG, "BootReceiver: 知らない放送なので無視します: " + action);
             return;
         }
-        AlarmBook.RearmResult result = AlarmBook.rearm(context, cause.missedReason, System.currentTimeMillis());
+        long now = System.currentTimeMillis();
+        boolean bootBroadcast = isBootBroadcast(action);
+        if (bootBroadcast) {
+            // 再起動（停止状態から出たときも）で途切れた鳴動の後始末（見張りの予約は消えているので戻せない。W1-7）
+            RingRecovery.onStartup(context);
+        }
+        if (bootBroadcast && !BootRearmGate.firstForThisBoot(context)) {
+            // 同じ起動の 2 回目以降: 消えている予約だけを張り直し、何か変わったときだけ記録する（W1-7。G-7）
+            AlarmBook.RearmResult repeat = AlarmBook.reconcile(context, now);
+            if (repeat.armed > 0 || repeat.missed > 0) {
+                AlarmEvents.recordRescheduled(context, cause.rescheduleReason, repeat.armed, repeat.missed, repeat.failed);
+            }
+            Log.i(PlatformContract.LOG_TAG, "BootReceiver: " + action + " は同じ起動の 2 回目以降なので、消えていた予約だけを張り直しました（"
+                    + repeat + (repeat.armed > 0 || repeat.missed > 0 ? "。記録した" : "。記録しない") + "）");
+            return;
+        }
+        AlarmBook.RearmResult result = AlarmBook.rearm(context, cause.missedReason, now);
         if (result.stored > 0) {
             AlarmEvents.recordRescheduled(context, cause.rescheduleReason, result.armed, result.missed, result.failed);
         }
         Log.i(PlatformContract.LOG_TAG, "BootReceiver: " + action + " で張り直しました（" + result + "）");
+    }
+
+    /**
+     * 起動の放送（LOCKED_BOOT_COMPLETED / BOOT_COMPLETED）か。
+     *
+     * @param action 放送の action（null 可）
+     * @return 起動の放送なら true
+     */
+    private static boolean isBootBroadcast(String action) {
+        return Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action) || Intent.ACTION_BOOT_COMPLETED.equals(action);
     }
 
     /**

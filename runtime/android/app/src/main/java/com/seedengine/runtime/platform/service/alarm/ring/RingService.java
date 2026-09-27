@@ -17,7 +17,10 @@
 //  別プロセスの音は続いた。
 //
 //  【種類】foregroundServiceType=mediaPlayback（E-03）。startForeground にも同じ種類を渡す（targetSdk 34+ の必須）。
-//  START_NOT_STICKY: プロセスごと殺されたら作り直さない（作り直しの振る舞いは W1-4b の実機で確かめて決める。backlog）。
+//  START_NOT_STICKY: プロセスごと殺されてもシステムには作り直させない（W1-4b の T5 で、殺されると黙って止まった）。
+//  代わりに W1-7 から、鳴動中は見張りの予約（RingWatchdog。RingWatchdog.DELAY_MS 先）を張り、RingWatchdog.REARM_INTERVAL_MS
+//  ごとに先へ送り続ける。殺されると見張りが発火し、RingRecovery が ringing.json（RingStateStore）から鳴動を戻す
+//  （正確な予約の配信に付く前景サービスの一時許可で起こし直す）。止めたら見張りを取り消す。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm.ring;
@@ -77,6 +80,9 @@ public final class RingService extends Service {
 
     /** 今の鳴動の安全弁（無ければ null）。 */
     private Runnable safetyValve;
+
+    /** 鳴動中に見張りの予約を先へ送り続ける処理（W1-7。UI スレッドのタイマー）。 */
+    private final Runnable watchdogRearm = this::rearmWatchdog;
 
     /**
      * 破棄されたか（UI スレッドだけが触る）。止まる途中のこのサービスへ投げられた同期（requestSync）が、onDestroy の後に
@@ -191,7 +197,7 @@ public final class RingService extends Service {
     private boolean beginSession(RingSession session) {
         AlarmEntry entry = session.entry;
         // 音を真っ先に（MediaPlayer の準備は専用のスレッドで、下の通知の組み立て・startForeground と並べて進む）
-        audio.start(entry);
+        audio.start(session);
         if (entry.vibrate) {
             vibration.start();
         } else {
@@ -215,10 +221,31 @@ public final class RingService extends Service {
         RingWakeLock.acquire(this, untilDeadline + RingWakeLock.DEADLINE_MARGIN_MS);
         scheduleSafetyValve(session, untilDeadline);
         activeSerial = session.serial;
+        // 殺されたら鳴動を戻す見張り（W1-7）。張って、鳴動の間ずっと先へ送り続ける
+        rearmWatchdog();
         Log.i(PlatformContract.LOG_TAG, "RingService: 目覚まし " + entry.id + " を鳴らしています（予定から "
                 + (session.startedAtUtcMs - entry.triggerAtUtcMs) + " ms・安全弁 " + entry.maxRingMinutes + " 分・振動 "
-                + entry.vibrate + (replacing ? "・待ち行列から繰り上げ" : "") + "）");
+                + entry.vibrate + (replacing ? "・待ち行列から繰り上げ" : "")
+                + (session.restoreCount > 0 ? "・見張りで鳴らし直し " + session.restoreCount + " 回目" : "") + "）");
         return foreground;
+    }
+
+    /**
+     * 見張りの予約を先へ送り、次の張り直しを仕掛ける（UI スレッド。鳴らしていなければ何もしない）。
+     */
+    private void rearmWatchdog() {
+        mainHandler.removeCallbacks(watchdogRearm);
+        if (activeSerial == NO_SESSION || destroyed) {
+            return;
+        }
+        RingWatchdog.arm(this);
+        mainHandler.postDelayed(watchdogRearm, RingWatchdog.REARM_INTERVAL_MS);
+    }
+
+    /** 見張りの予約をやめる（UI スレッド。止めた・続けられないとき）。 */
+    private void stopWatchdog() {
+        mainHandler.removeCallbacks(watchdogRearm);
+        RingWatchdog.disarm(this);
     }
 
     /**
@@ -247,6 +274,7 @@ public final class RingService extends Service {
      */
     private void finishRinging() {
         cancelSafetyValve();
+        stopWatchdog();
         audio.stop();
         vibration.stop();
         stopForeground(STOP_FOREGROUND_REMOVE);
@@ -264,10 +292,13 @@ public final class RingService extends Service {
      */
     private void abortAll() {
         List<AlarmEntry> aborted = RingRegistry.abortAll();
+        // 変えた → 控える（空にする）→ 記録する（RingControl と同じ順）
+        RingControl.persist(this);
         for (AlarmEntry entry : aborted) {
             AlarmEvents.recordRingStopped(this, entry, PlatformContract.RING_STOP_REASON_ERROR);
         }
         cancelSafetyValve();
+        stopWatchdog();
         audio.stop();
         vibration.stop();
         RingWakeLock.release();
@@ -293,6 +324,7 @@ public final class RingService extends Service {
         }
         destroyed = true;
         cancelSafetyValve();
+        mainHandler.removeCallbacks(watchdogRearm);
         audio.release();
         vibration.stop();
         if (instance == this) {

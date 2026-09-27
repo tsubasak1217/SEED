@@ -83,6 +83,24 @@ public final class DurableFile {
     }
 
     /**
+     * ファイルを消し、フォルダを fsync して消したこと（フォルダの項目の書き換え）も記憶装置へ届ける（W1-7。鳴動の状態の
+     * 控えを「鳴っていない間は何も残さない」ために消す。電源断で古い中身が生き返らないように）。無ければ何もしない。
+     *
+     * @param file 消すファイル
+     * @return 消した・もともと無かったなら true（消せなければ false）
+     */
+    public static boolean delete(File file) {
+        if (!file.exists()) {
+            return true;
+        }
+        if (!file.delete()) {
+            return false;
+        }
+        syncDirectory(file.getParentFile());
+        return true;
+    }
+
+    /**
      * フォルダを fsync する（rename の結果を記憶装置へ。できなくても続ける＝中身の置き換えそのものは済んでいる）。
      *
      * @param dir フォルダ（null なら何もしない）

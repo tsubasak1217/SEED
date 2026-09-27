@@ -6,6 +6,7 @@
 //  JSON の欄の名前は PlatformContract.KEY_ALARM_*（Rust の wire::alarm・C# の AlarmJson と一致させる）。
 //  鳴らし方の欄（sound_path・vibrate・force_volume・keep_volume・fade_in_seconds・max_ring_minutes・title・body）は
 //  鳴動（alarm/ring/ の RingService。W1-4a）が使う。ring/ は別のパッケージなので、型と欄は public（書き換えられない final）。
+//  JSON との相互変換（toJson・fromStoredJson）も、鳴動の状態の控え（ring/RingSnapshot の ringing.json。W1-7）が使うので public。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm;
@@ -69,7 +70,7 @@ public final class AlarmEntry {
      * @param other 比べる相手
      * @return 同じ予約なら true
      */
-    boolean isSameReservation(AlarmEntry other) {
+    public boolean isSameReservation(AlarmEntry other) {
         return other != null && id.equals(other.id) && triggerAtUtcMs == other.triggerAtUtcMs
                 && createdAtUtcMs == other.createdAtUtcMs;
     }
@@ -79,7 +80,7 @@ public final class AlarmEntry {
      *
      * @return JSON のオブジェクト
      */
-    JSONObject toJson() {
+    public JSONObject toJson() {
         JSONObject json = new JSONObject();
         PlatformJson.put(json, PlatformContract.KEY_ALARM_ID, id);
         PlatformJson.put(json, PlatformContract.KEY_ALARM_TRIGGER_AT_UTC_MS, triggerAtUtcMs);
@@ -103,7 +104,7 @@ public final class AlarmEntry {
      * @return 予約
      * @throws JSONException ID・予定時刻が無い
      */
-    static AlarmEntry fromStoredJson(JSONObject json) throws JSONException {
+    public static AlarmEntry fromStoredJson(JSONObject json) throws JSONException {
         return new AlarmEntry(
                 json.getString(PlatformContract.KEY_ALARM_ID),
                 json.getLong(PlatformContract.KEY_ALARM_TRIGGER_AT_UTC_MS),

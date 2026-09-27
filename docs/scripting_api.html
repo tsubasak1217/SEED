@@ -1655,9 +1655,11 @@ wallet = AppendPayment(wallet, amount: 100);   <span class="c">// アプリ側�
     （<code>save.json</code> だけを消すと、次の起動で <code>save.json.bak</code> から復旧します）。
   </div>
   <div class="warn">
-    <b>耐久性:</b> 書き出しは「一時ファイル <code>save.json.tmp</code> へ書いてディスクまで届ける（sync）→ 今の <code>save.json</code> を
-    <code>save.json.bak</code> へ回す → 一時ファイルを <code>save.json</code> にする（→ Android はフォルダも sync）」の順で、どこで落ちても・電源が切れても
-    <code>save.json</code> か 1 つ前の世代 <code>save.json.bak</code> のどちらかから読めます。読み込みは <code>save.json</code> → 無い・壊れていれば
+    <b>耐久性:</b> 書き出しは「一時ファイル <code>save.json.tmp</code> へ書いてディスクまで届ける（sync）→ 今の <code>save.json</code> の写し（Android は複製〈アプリは hard link を
+    作れない〉、PC は hard link）を <code>save.json.bak.new</code> に作って <code>save.json.bak</code> へ置き換える（<code>save.json</code> は動かさない）→
+    一時ファイルを <code>save.json</code> にする（既存を原子的に置き換える。→ Android はフォルダも sync）」の順で、<b>どの瞬間にも <code>save.json</code> があり</b>、
+    どこで落ちても・電源が切れても <code>save.json</code> か 1 つ前の世代 <code>save.json.bak</code> のどちらかから読めます（写しを作れないとき〈容量が足りない等〉
+    だけ rename で回す方式に戻り、その間だけ <code>save.json</code> が無い瞬間があります）。複製の分だけ、大きなセーブほど <code>Save()</code> は重くなります。読み込みは <code>save.json</code> → 無い・壊れていれば
     <code>save.json.bak</code> → どちらも無ければ空。壊れた <code>save.json</code> は上書きせずに <code>save.json.corrupt-&lt;UTC の時刻&gt;</code> として 1 つだけ残します。
     復旧したときは <code>SaveData.RecoveredFrom</code> が <code>Backup</code> か <code>Lost</code> になり、次の書き出しで <code>save.json</code> が作り直されます。<br>
     <b>Batch:</b> <code>SaveData.Batch(action)</code> の間は、自動保存（Android の背面・アプリを閉じるときの別スレッドからの書き出しを含む）と <code>Save()</code> を
@@ -1678,6 +1680,7 @@ wallet = AppendPayment(wallet, amount: 100);   <span class="c">// アプリ側�
     <tr><th>保存先のフォルダのファイル</th><th>中身</th></tr>
     <tr><td><code>save.json</code></td><td>今の世代（本体）</td></tr>
     <tr><td><code>save.json.bak</code></td><td>1 つ前の世代（書き出しのたびに直前の <code>save.json</code> がここへ回る）</td></tr>
+    <tr><td><code>save.json.bak.new</code></td><td>1 つ前の世代の作りかけ（直前の <code>save.json</code> の写し。すぐ <code>save.json.bak</code> になる。書き出しの最中に落ちた跡。読まれず、次の書き出しで消える）</td></tr>
     <tr><td><code>save.json.tmp</code></td><td>書き出しの途中の一時ファイル（書き出しの最中に落ちた跡。読まれず、次の書き出しで作り直される）</td></tr>
     <tr><td><code>save.json.corrupt-&lt;時刻&gt;</code></td><td>読めなかった <code>save.json</code> を上書きせずに残したもの（1 つだけ。時刻は UTC の <code>yyyyMMdd-HHmmss</code>）</td></tr>
   </table>
