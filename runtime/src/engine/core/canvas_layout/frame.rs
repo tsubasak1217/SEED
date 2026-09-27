@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use crate::engine::components::CanvasDrawZone;
 use crate::engine::ecs::Entity;
 
+use super::units::CanvasScreenEnv;
+
 /// 単位行列（行優先・列優先どちらでも同じ）。最上位ノードの親のワールド行列。
 pub const IDENTITY_MAT4: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],
@@ -108,6 +110,9 @@ pub struct CanvasLayoutEnv<'m> {
     pub design_space: bool,
     /// 自動スケールの割り算の扱い（読み手ごとの旧実装の違いを保つ）。
     pub auto_scale_divisor: AutoScaleDivisor,
+    /// 画面の情報（dp の倍率・安全領域。W2-1b）。使わない文脈は `CanvasScreenEnv::NONE`。
+    /// 描画・当たり判定・2D 物理の表が同じ値を使うこと（App::canvas_screen_env）。
+    pub screen: CanvasScreenEnv,
 }
 
 impl<'m> CanvasLayoutEnv<'m> {
@@ -126,6 +131,7 @@ impl<'m> CanvasLayoutEnv<'m> {
             root_auto_sizes: empty,
             design_space: false,
             auto_scale_divisor,
+            screen: CanvasScreenEnv::NONE,
         }
     }
 }

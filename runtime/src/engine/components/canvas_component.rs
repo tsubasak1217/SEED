@@ -84,6 +84,44 @@ pub enum CanvasDrawZone {
     Background,
 }
 
+// ─── CanvasUnit ───────────────────────────────────────────────────────────────
+
+/// キャンバスの寸法の単位（W2-1b。W2-P2「dp で組む」。正典は docs/canvas_camera_rework.md §6.4）。
+///
+/// **ビューポート所属のルートキャンバスだけ**に意味を持つ（子キャンバスはルートの単位に従う。
+/// 単位は座標系の性質なので木の途中で混ぜない）。
+///
+/// `Px`（既定・従来動作）: 位置・大きさは画素。ルートの大きさは自動解像度（プロジェクト設定 × カメラ）で、
+///   画面との差は auto_scale（縦横別の倍率）が吸収する。
+/// `Dp`: 位置・大きさは端末に依らない単位 dp。1 dp = 表示倍率（winit の scale_factor = 端末の DPI ÷
+///   `PlatformTraits::reference_dpi`）画素。Android は densityDpi ÷ 160（Pixel 6a の 420 dpi で 2.625 px）、
+///   PC は OS の表示スケール（100% で 1 px）。ルートの大きさは「実際の画面 ÷ 1 dp の画素数」（dp）になり、
+///   子の位置・大きさ・余白は縦横同じ倍率で画素へ換算される（auto_scale は使わない）。
+///   エディタの設計空間の表示と Edit では 1 dp = 1 px（設計解像度がそのまま dp の大きさ）。
+///
+/// # serde 互換性
+/// `#[serde(default)]` により、`unit` を持たない既存の保存データは `Px`（従来動作）として読み込む。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasUnit {
+    /// 画素（従来動作・既定）。
+    #[default]
+    Px,
+    /// 端末に依らない単位（1 dp = 表示倍率の画素）。
+    Dp,
+}
+
+impl CanvasUnit {
+    /// 既定の画素か（serde の skip_serializing_if 用）。
+    pub fn is_px(&self) -> bool {
+        *self == Self::Px
+    }
+}
+
+impl crate::engine::components::canvas_layout_params::IndexedEnum for CanvasUnit {
+    const ALL: &'static [Self] = &[Self::Px, Self::Dp];
+}
+
 // ─── CanvasViewportRef ────────────────────────────────────────────────────────
 
 /// キャンバスのアンカー計算・自動スケールで参照する基準領域の種別。
@@ -156,6 +194,11 @@ pub struct CanvasComponentData {
     /// Actor2D にアタッチした場合は無視される。
     #[serde(default)]
     pub pivot: [f32; 2],
+    /// 寸法の単位（ビューポート所属のルートキャンバスのみ有効。W2-1b）。
+    /// 旧データ互換のため #[serde(default)] で Px（従来動作）として読み込む。
+    /// 既定（Px）は書き出さない（既存のシーンを保存し直しても .scene の差分を増やさない）。
+    #[serde(default, skip_serializing_if = "CanvasUnit::is_px")]
+    pub unit: CanvasUnit,
 }
 
 fn default_auto_scale() -> bool {
@@ -216,6 +259,10 @@ pub struct CanvasComponent {
     /// Actor2D にアタッチした場合は無視される。
     #[serde(default)]
     pub pivot: [f32; 2],
+    /// 寸法の単位（ビューポート所属のルートキャンバスのみ有効。既定 Px。W2-1b）。
+    /// Dp のとき、ルートの大きさは「画面 ÷ 1 dp の画素数」になり、子は dp で並ぶ（auto_scale は使わない）。
+    #[serde(default)]
+    pub unit: CanvasUnit,
 }
 
 impl CanvasComponent {
@@ -230,6 +277,7 @@ impl CanvasComponent {
             gravity_mode: data.gravity_mode,
             draw_zone: data.draw_zone,
             pivot: data.pivot,
+            unit: data.unit,
         }
     }
 
@@ -243,6 +291,7 @@ impl CanvasComponent {
             gravity_mode: self.gravity_mode,
             draw_zone: self.draw_zone,
             pivot: self.pivot,
+            unit: self.unit,
         }
     }
 }
@@ -260,6 +309,8 @@ impl Default for CanvasComponent {
             // 新規作成時は従来どおり前面（オーバーレイ）
             draw_zone: CanvasDrawZone::Foreground,
             pivot: [0.0, 0.0],
+            // 新規作成時も従来どおり画素（dp はルートキャンバスで明示的に選ぶ）
+            unit: CanvasUnit::Px,
         }
     }
 }

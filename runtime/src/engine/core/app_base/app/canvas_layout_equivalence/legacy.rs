@@ -910,6 +910,8 @@ pub(super) fn legacy_collect_canvas_id_items(
                         zone: my_zone,
                         layer,
                         kind,
+                        // W2-1b で型に足した欄（旧実装は切り抜きを見ないので常に None。同値の比較には含めない）
+                        clip: None,
                     });
                 }
 

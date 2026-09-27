@@ -23,6 +23,8 @@ pub mod script_binaries;
 pub mod script_reload;
 // C# → Rust のコンポーネントアクセスブリッジ
 pub mod host_api;
+/// レイアウトの部品（CanvasStack・Wrap・Grid・LayoutItem・SafeArea。W2-1b）のスクリプト API の欄
+pub mod canvas_layout_api;
 // アクタ参照文字列（"./Child" / "../Sibling" / 絶対パス / 素の名前）のパス解決
 pub mod actor_ref_path;
 // スクリプト入力 API の ID ⇔ winit 型対応表

@@ -168,6 +168,15 @@ pub fn default_component_data(current: &ComponentData) -> Option<ComponentData> 
         // 子を切り抜く（W2-1a）: 既定は有効
         ComponentData::CanvasClipComponent(_) =>
             ComponentData::CanvasClipComponent(CanvasClipComponent::default().to_data()),
+        // レイアウトの部品（W2-1b の 5 種）: 既定値は canvas_layout_slots の表から
+        layout_data @ (ComponentData::CanvasStackComponent(_)
+        | ComponentData::CanvasWrapComponent(_)
+        | ComponentData::CanvasGridComponent(_)
+        | ComponentData::CanvasLayoutItemComponent(_)
+        | ComponentData::CanvasSafeAreaComponent(_)) => {
+            use crate::engine::structs::objects::actor::canvas_layout_slots;
+            return canvas_layout_slots::kind_of_data(layout_data).and_then(canvas_layout_slots::default_data);
+        }
     };
     Some(d)
 }
@@ -591,6 +600,11 @@ mod tests {
             ComponentData::CoverEmitterComponent(CoverEmitterComponent::default().to_data()),
             ComponentData::ControlPointComponent(ControlPointComponent::default().to_data()),
             ComponentData::CanvasClipComponent(CanvasClipComponent::default().to_data()),
+            ComponentData::CanvasStackComponent(crate::engine::components::CanvasStackComponent::default()),
+            ComponentData::CanvasWrapComponent(crate::engine::components::CanvasWrapComponent::default()),
+            ComponentData::CanvasGridComponent(crate::engine::components::CanvasGridComponent::default()),
+            ComponentData::CanvasLayoutItemComponent(crate::engine::components::CanvasLayoutItemComponent::default()),
+            ComponentData::CanvasSafeAreaComponent(crate::engine::components::CanvasSafeAreaComponent::default()),
         ];
         for d in &supported {
             assert!(

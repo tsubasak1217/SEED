@@ -80,6 +80,12 @@ public static class ComponentCatalog
             new("SkinnedSpriteComponent", "Skinned Sprite", "SkinnedSprite", ".sprite_mesh のメッシュを子アクター（ボーン）で変形して表示する 2D スプライト", ComponentActorTarget.Common),
             new("TextComponent", "Text", "Text", "キャンバスに文字列を表示（HUD の数値・ラベル）。内容はスクリプトから毎フレーム差し替えられる", ComponentActorTarget.Common),
             new("CanvasClipComponent", "Canvas Clip", "CanvasClip", "子を切り抜く。このノードのキャンバス領域（無ければ最初のスプライトの矩形）からはみ出した子孫を描かず、押せなくする（スクロール領域・一覧用）", ComponentActorTarget.Actor2D),
+            // レイアウトの部品（W2-1b）。規則の正典は docs/canvas_camera_rework.md §6.3〜6.5
+            new("CanvasStackComponent", "Canvas Stack", "CanvasStack", "子を縦・横に 1 列に並べる（間隔・余白・揃え・伸ばす・逆順）。子の位置はコンテナが決める", ComponentActorTarget.Actor2D),
+            new("CanvasWrapComponent", "Canvas Wrap", "CanvasWrap", "子を並べて、領域の幅に収まらなくなったら次の行へ折り返す（チップの並びなど）", ComponentActorTarget.Actor2D),
+            new("CanvasGridComponent", "Canvas Grid", "CanvasGrid", "子を格子のセルへ並べる（列数固定か、セルの最小幅で自動。セルの縦横比・間隔）", ComponentActorTarget.Actor2D),
+            new("CanvasLayoutItemComponent", "Canvas Layout Item", "CanvasLayoutItem", "コンテナの子の側の指定（伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる）", ComponentActorTarget.Actor2D),
+            new("CanvasSafeAreaComponent", "Canvas Safe Area", "CanvasSafeArea", "このノードのキャンバス領域を画面の安全領域（切り欠き・システムバーを避けた内側）へ縮める。辺ごとに選べる", ComponentActorTarget.Actor2D),
         }),
         ("ライト", new List<ComponentEntry>
         {

@@ -42,13 +42,20 @@ impl App {
         // 回転の直後は OS の報告と描画面の大きさが食い違うことがあるので、今の描画面の大きさの報告だけを使う
         // （選び方は report::select_for_frame。フレームごとに 1 回だけ呼ぶ前提の関数）。
         let report = window_size.and_then(|(width, height)| report::select_for_frame(width, height));
+        // PC の検証用: OS の報告が無ければ、環境変数 SEED_SIM_SAFE_AREA の模擬の安全領域を報告として使う（W2-1b）
+        let report = report.or_else(|| {
+            let insets = platform::screen::simulated::simulated_insets()?;
+            window_size.map(|size| platform::screen::simulated::simulated_report(insets, size))
+        });
         SnapshotInputs {
             target_size: self.render_target_size_for(window_px),
             window_size,
             // 入力のレターボックス写像（sync_input_view_map）と同じ条件・同じ内部解像度。
             letterbox_internal: self.fixed_render_resolution(),
             report,
-            scale_factor: self.window.as_ref().map(|window| window.scale_factor()),
+            // PC の検証用: 環境変数 SEED_SIM_SCALE_FACTOR があれば表示倍率を上書きする（端末の密度の模擬。W2-1b）
+            scale_factor: platform::screen::simulated::simulated_scale_factor()
+                .or_else(|| self.window.as_ref().map(|window| window.scale_factor())),
             reference_dpi: platform::CURRENT.reference_dpi as f32,
         }
     }

@@ -166,6 +166,13 @@ CATALOG = [
     ("Icon.Component.SkinnedSprite", "vector-polygon"),
     # 子を切り抜く（CanvasClipComponent。W2-1a）。枠の外を切り落とす＝トリミングの記号。
     ("Icon.Component.CanvasClip", "crop"),
+    # レイアウトの部品（W2-1b）。縦に積む＝並んだ帯、折り返し＝wrap、格子＝グリッド、
+    # 子の側の指定＝大きさを変える矢印、安全領域＝画面の内側に収める記号。
+    ("Icon.Component.CanvasStack", "view-sequential-outline"),
+    ("Icon.Component.CanvasWrap", "wrap"),
+    ("Icon.Component.CanvasGrid", "view-grid-outline"),
+    ("Icon.Component.CanvasLayoutItem", "resize"),
+    ("Icon.Component.CanvasSafeArea", "fit-to-screen-outline"),
     ("Icon.File.SpriteMesh", "vector-triangle"),
     # スキンスプライトのボーン操作（インスペクタの「ボーンアクターを生成」ボタン等）。
     # Icon.Component.JointAttach と同じ mdi:bone だが、用途が別なのでキーを分ける。

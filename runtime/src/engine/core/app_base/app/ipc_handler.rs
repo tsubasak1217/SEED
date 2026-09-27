@@ -1428,6 +1428,14 @@ impl App {
                     // 子を切り抜く（W2-1a）のインスペクタ更新
                     self.handle_set_canvas_clip_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetCanvasLayoutField { actor_dfs_id, slot_idx, key, value } => {
+                    // レイアウトの部品（W2-1b）のインスペクタ更新
+                    self.handle_set_canvas_layout_field(actor_dfs_id, slot_idx, &key, &value);
+                }
+                IpcCommand::SetCanvasUnit { actor_dfs_id, slot_idx, unit } => {
+                    // キャンバスの寸法の単位（px / dp。W2-1b）
+                    self.handle_set_canvas_unit(actor_dfs_id, slot_idx, &unit);
+                }
                 IpcCommand::SetJointAttachField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_jointattach_field(actor_dfs_id, slot_idx, &key, &value);
                 }

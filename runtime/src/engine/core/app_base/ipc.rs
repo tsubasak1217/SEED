@@ -737,6 +737,15 @@ pub enum IpcCommand {
     /// CanvasClipComponent（子を切り抜く。W2-1a）のフィールドを更新する（canvas_clip_ops.rs が処理）。
     /// key: enabled。value は "true"/"false"。
     SetCanvasClipField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// レイアウトの部品（CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea。W2-1b）の
+    /// 欄を更新する（canvas_layout_ops.rs が処理）。
+    /// フォーマット: SET_CANVAS_LAYOUT_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+    /// key は serde の欄の名前（入れ子は "/" 区切り。例 padding/left）。value は数値・true/false・列挙の名前。
+    SetCanvasLayoutField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// CanvasComponent の寸法の単位を設定する（ビューポート・ルートキャンバス用。W2-1b）
+    /// フォーマット: SET_CANVAS_UNIT:{actor_dfs_id},{slot_idx},{unit}
+    /// unit: "px"（画素・デフォルト）| "dp"（端末に依らない単位）
+    SetCanvasUnit { actor_dfs_id: u32, slot_idx: u32, unit: String },
     /// JointAttachComponent のフィールドを更新する
     /// （key: joint_name / offset_pos / offset_rot / offset_scale。offset_* は "x,y,z" 形式）
     SetJointAttachField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -2709,6 +2718,25 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                             })
                         }
                         s if s == "CONTROL_POINT_DRAG_END" => Some(IpcCommand::ControlPointDragEnd),
+                        s if s.starts_with("SET_CANVAS_LAYOUT_FIELD:") => {
+                            // フォーマット: SET_CANVAS_LAYOUT_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // key に "," は含まれない（serde の欄の名前）。value は最初の "," より後ろすべて。
+                            parse2u_tail(&s["SET_CANVAS_LAYOUT_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetCanvasLayoutField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_CANVAS_UNIT:") => {
+                            // フォーマット: SET_CANVAS_UNIT:{actor_dfs_id},{slot_idx},{unit}
+                            // unit: "px" | "dp"
+                            parse2u_tail(&s["SET_CANVAS_UNIT:".len()..])
+                                .map(|(a, sl, unit)| IpcCommand::SetCanvasUnit {
+                                    actor_dfs_id: a, slot_idx: sl, unit: unit.trim().to_string(),
+                                })
+                        }
                         s if s.starts_with("SET_CANVAS_CLIP_FIELD:") => {
                             // フォーマット: SET_CANVAS_CLIP_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value は bool だけだが、将来の欄（角丸の半径など。W2-4）に備えて tail 方式で切る。

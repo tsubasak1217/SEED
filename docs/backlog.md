@@ -1733,12 +1733,18 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   無視する）・切り欠きは `shortEdges`。プロジェクト設定からの向き指定、回転ロックの尊重（`fullUser`）、
   安全領域（切り欠き・ナビゲーションバー）を返す API が要る。内部解像度固定（`render_resolution=fixed`）と
   キャンバスの自動スケールが縦長画面で意図どおりかも未確認（どちらも project_settings の解像度基準）。
-- [ ] **キャンバス UI へ安全領域を自動で反映する仕組みが無い（段階A 以降）** — 2026-09-24（A-4 実装時）。`Screen.SafeArea` は読めるが、
+- [x] **キャンバス UI へ安全領域を自動で反映する仕組みが無い（段階A 以降）** — 2026-09-24（A-4 実装時）。
+  → **2026-09-28 に W2-1b で解消**: 安全領域の部品 `CanvasSafeAreaComponent`（パネルの領域を `Screen.SafeArea` の内側へ辺ごとに縮める。
+  子のアンカー・コンテナは縮めた領域を基準にする。フレームごとの画面の写しから読むので回転・システムバーに追従）。docs/canvas_camera_rework.md §6.5。
+  以下は当時の記述。`Screen.SafeArea` は読めるが、
   キャンバスのアンカー・パディングは描画面全体が基準のままで、四隅にアンカーした UI はカメラ穴・ジェスチャーバーに重なる
   （エミュレータの四隅スプライトで確認）。Unity の SafeArea 用 RectTransform のように、キャンバス（またはアンカー基準）に
   「安全領域の内側に合わせる」選択肢を足す。値は `core/scripting/screen_bridge.rs` の写しか `platform::screen::snapshot` を使えば、
   スクリプトと同じフレーム内で一貫する。関連: `app/canvas_collect.rs`（`build_canvas_viewport_map` / ルートの自動解像度）。
 - [ ] **縦画面でキャンバスの自動スケールが縦横別々に掛かる（縦持ち対応のゲームで見た目が崩れる）** — 2026-09-24（A-4 の確認時）。
+  → 2026-09-28（W2-1b）: アプリ向けには**ルートキャンバスの単位 dp**（`CanvasComponent.unit`。縦横同じ倍率＝表示倍率で画素へ換算）と
+  コンテナ・親に合わせる（`CanvasLayoutItem.fill_*`）で、縦横別の倍率に頼らずに組めるようになった（docs/canvas_camera_rework.md §6.3・§6.4）。
+  px の `auto_scale` の等倍スケールの選択肢（既存のゲーム向け）は未着手のまま。以下は当時の記述。
   `auto_scale` のルートキャンバス（1920x1080 基準）を 1080x2400 の縦画面に出すと、横 0.5625 倍・縦 2.22 倍になり、正方形のスプライトが
   縦長に伸びる（レイアウトの付き直し自体は回転に追従している）。縦持ちのゲームでは子の `keep_aspect_ratio` を使うか縦長の基準解像度で作る
   必要がある。「縦横で小さい方の倍率に合わせる」等の等倍スケールの選択肢を検討する。関連: `components/canvas_component.rs`（`auto_scale`）。
@@ -2729,8 +2735,14 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   `canvas_layout`（純関数と 1 回の走査・表）、`CanvasClipComponent`（インスペクタ・スクリプト `SEED.CanvasClip`）、描画の scissor
   （スプライト・テキスト・2D パーティクル・Draw の図形・メインパスのビューポートとの交差）と当たり判定の切り抜き。
   WarashibeFishing の画面（図鑑は画素一致、会話の画面は UI の範囲で一致）とボタンの押せる範囲（56 点の探り）は不変。
-- [ ] **W2-1b 土台の残り（dp・レイアウト〈Stack・Wrap・Grid〉・安全領域の部品）** — 2026-09-27。W2-1a の表（`CanvasLayoutTable`）の上に作る。
+- [x] **W2-1b 土台の残り（dp・レイアウト〈Stack・Wrap・Grid〉・安全領域の部品）** — 2026-09-27。W2-1a の表（`CanvasLayoutTable`）の上に作る。
   縦画面の `auto_scale` に頼らない。エディタの GPU の ID 描画の切り抜きもここで足す（下の「W2-1a の切り抜きの残りの制限」）。
+  → **2026-09-28 に完了**（roadmap §3.8.5 の W2-1 行・docs/canvas_camera_rework.md §6.3〜6.5）。`CanvasStack`・`CanvasWrap`・`CanvasGrid`・
+  `CanvasLayoutItem`（`canvas_layout/containers/`・`measure.rs`。測る → 並べるを 1 回の走査の中で。測る回数はノード数に比例）、
+  ルートキャンバスの単位 dp（`CanvasComponent.unit`）、`CanvasSafeAreaComponent`、エディタの GPU の ID 描画の切り抜き、
+  3D ワールドキャンバスの子の走査の表への寄せ、インスペクタ（`InspectorPanel.CanvasLayout.cs`）・IPC（`SET_CANVAS_LAYOUT_FIELD`・
+  `SET_CANVAS_UNIT`）・スクリプト（`SEED.CanvasStack` など）・PC の検証用の模擬（`SEED_SIM_SAFE_AREA`・`SEED_SIM_SCALE_FACTOR`）。
+  WarashibeFishing の画面（図鑑は画素一致）とボタンの押せる範囲（56 点の探り）は不変。残りは下の「W2-1b の残り」。
 - [ ] **W2-1a で見つけた旧実装の食い違い（2D 物理・ギズモ・`ScreenPosition` と描画の間）** — 2026-09-27（W2-1a の同値の検査で読んだ）。
   一本化では**振る舞いを変えないことを優先して直していない**（`physics2d_ops.rs` の `PhysicsFrame` に閉じ込めた）。どれも旧
   `collect_actor2d_contexts` だけの計算で、描画・当たり判定と位置が食い違いうる:
@@ -2750,11 +2762,15 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   世界線が違う子をサブツリーごと**数えずに**飛ばし、`find_actor_by_dfs`（子は世界線を問わず数える）と番号がずれていた（＝選択が別のアクターに付く）。
   W2-1a の表は `find_actor_by_dfs` と同じ数え方にそろえた（**ここだけ旧実装と違う**）。エディタの操作（`set_world_line_recursive`）と
   `.scene` の読み込みは子の世界線を親と同じにするので、この形のデータは普通は作られない（同値の性質テストもこの不変条件の木で行った）。
-- [ ] **3D ワールドキャンバスの子の走査が 2 か所に残っている** — 2026-09-27（W2-1a）。`canvas_collect.rs` の `walk_3d_canvas_children_id`（GPU の ID 描画）と
+- [x] **3D ワールドキャンバスの子の走査が 2 か所に残っている** — 2026-09-27（W2-1a）。
+  → **2026-09-28 に W2-1b で解消**: 2 か所とも表（`build_world_canvas_layout` / `CanvasLayoutPass`）を読む形へ寄せた。旧い走査の写し
+  （`canvas_layout_equivalence/legacy_world_canvas.rs`）とランダムな木 1,500 個で、CanvasTransform を持たないノードの下（描画と同じく出さなくなった）
+  以外はビット単位で一致（`world_canvas_walks.rs`）。以下は当時の記述。`canvas_collect.rs` の `walk_3d_canvas_children_id`（GPU の ID 描画）と
   `collect_3d_canvas_child_outlines`（エディタの枠）は、描画（W2-1a の表を読む `collect_sprite_items`）と同じ計算を別に持つ。しかも
   CanvasTransform を持たないノードの下も素通しでたどる（描画はそこで打ち切る）ので、そういう木では描画と ID・枠が食い違う。表（`build_world_canvas_layout`）
   を読む形へ寄せる。
-- [ ] **W2-1a の切り抜きの残りの制限** — 2026-09-27。(1) 回転したノードは 4 隅の外接矩形で切る（正確に切るにはオーバーレイパスのステンシル。§3.8.4）。
+- [ ] **W2-1a の切り抜きの残りの制限** — 2026-09-27。（2026-09-28 の W2-1b で (3) の GPU の ID 描画の切り抜きは済: アイテムに切り抜きの番号を持たせ
+  `draw_canvas_id_items` で scissor を張る。残りは (1)(2)(4)）。(1) 回転したノードは 4 隅の外接矩形で切る（正確に切るにはオーバーレイパスのステンシル。§3.8.4）。
   (2) 3D ワールドキャンバス（透視）の配下は切らない。(3) **エディタの GPU の ID 描画（3D ビューでのキャンバスの選択）は切り抜きを見ない**
   （切り抜かれて見えない子もクリックで選べる。エディタの 2D ビューの選択と Play のポインタイベントは CPU の `pick_2d` なので切り抜く）。
   ID 描画のアイテムに切り抜きの番号を持たせ、`draw_canvas_id_items` で scissor を張る（W2-1b）。(4) 角丸・円の切り抜きは W2-4（シェーダーの SDF）。
@@ -2774,4 +2790,15 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **W2-11 通しの確認（UC-1〜12）** — 2026-09-27。
 - [ ] **PC の Play のスクリプトのコンパイルで `System.Text.Json` を参照できない** — 2026-09-27（Wake or Pay の W3-D で発見）。`using System.Text.Json;` が `CS0234: 'Json' does not exist in the namespace 'System.Text'` で失敗する。Play のコンパイル（ScriptAssemblyManager の Roslyn）が「その時点で読み込まれているアセンブリ」だけを参照に入れるため、共有フレームワークの `System.Text.Json.dll` が参照に入らない。Wake or Pay は反射なしの小さな JSON（`assets/scripts/Json/`）を自作して回避した。直し方の案: 参照の集合を「読み込み済み」ではなく、同梱の .NET の `shared/Microsoft.NETCore.App/<版>/` の参照用アセンブリ一式（または許可リスト）から作る。Android の同梱 CoreCLR と SeedPak の事前コンパイル（`--scripts`）の参照も同じ集合にそろえる。関連: `scripting/` の Compilation、`docs/scripting_api.md`（使える .NET の範囲を明記する）。
 - [ ] **SEED.exe を前面に出さずに起動する引数が無い（自動の見た目の検査が利用者の画面を奪う）** — 2026-09-27（W2-1a の画素比較で発見。利用者から「頻繁に起動しているのはなぜ？」）。今は STARTUPINFO の SW_SHOWNOACTIVATE で起動し最背面へ送って凌いでいる。案: `--window=hidden|offscreen|minimized` と、描画をオフスクリーンのテクスチャに向けてスクリーンショットだけ撮る `--headless-render`（決まったフレーム数で撮って終了）。W2 以降の見た目の回帰検査（UC の自動化）と CI で使う。関連: `runtime/src/main.rs`、IPC の SCREENSHOT。
-- [ ] **`frame_renderer.rs` の未使用の import `sprite_world_corners`** — 2026-09-27（W2-1a の後に rust-analyzer が指摘）。警告の総数は変わっていないが、W2-1a で使われなくなった可能性。W2-1b で確かめて消す。
+- [x] **`frame_renderer.rs` の未使用の import `sprite_world_corners`** — 2026-09-27（W2-1a の後に rust-analyzer が指摘）。警告の総数は変わっていないが、W2-1a で使われなくなった可能性。W2-1b で確かめて消す。
+  → **2026-09-28 に W2-1b で消した**: rustc も `unused import` を出していた（W2-1a より前から、どこからも呼ばれていなかった）。import と、呼び手の無くなった
+  関数 `canvas_collect::sprite_world_corners` の本体を消した。
+- [ ] **W2-1b の残り（レイアウトの部品）** — 2026-09-28。(1) **枠の無い Text の大きさを測れない**: コンテナの子の自分の大きさは Text の枠（BoxWidth/BoxHeight）か
+  `CanvasLayoutItem.preferred_*` でしか決まらない（文字の寸法の計測は W2-6 の `Text.Measure`。測れるようになったら measure.rs の「自分の大きさ」へ足す）。
+  (2) **伸ばす子の下限・上限で余った分を配り直さない**（CSS の flex のような反復は無い。重みで分けて収めるだけ）。(3) **スキンスプライト・テキスト・
+  2D パーティクルは伸ばさない**（Sprite だけが矩形いっぱいに描かれる）。(4) **安全領域・親に合わせる・コンテナは回転していないノードを前提**
+  （回転したノードの安全領域は外接矩形）。(5) スクリプトから**ルートキャンバスの単位（dp）を読み書きできない**（C# に Canvas の型が無い。
+  インスペクタだけ）。スクリプトから **1 dp の画素数（dp の倍率）を読む API も無い**（入力の座標は画素のまま。W2-2 のジェスチャーで閾値を dp で持つときに要る）。
+  (6) **動いているエディタでの追加・編集の目視は未確認**（WPF のインスペクタは既存の書き方に倣っただけ。ビルドとエディタのテストは通る）。
+  (7) エディタの GPU の ID 描画の切り抜きは CPU の計算（`canvas_id_scissors`）までを単体テストで確かめただけで、3D ビューでの実際のクリックは未確認。
+  関連: `runtime/src/engine/core/canvas_layout/`・`editor/src/Panels/InspectorPanel.CanvasLayout.cs`・`scripting/src/Api/Canvas*.cs`。

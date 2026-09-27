@@ -24,6 +24,8 @@ pub mod orientation;
 pub mod report;
 /// スクリプトへ見せる 1 フレーム分の画面情報を作る純関数。
 pub mod snapshot;
+/// PC で安全領域を模擬する（環境変数 SEED_SIM_SAFE_AREA。検証用。W2-1b）。
+pub mod simulated;
 
 pub use orientation::ScreenOrientation;
 pub use report::{EdgeInsets, ScreenReport};

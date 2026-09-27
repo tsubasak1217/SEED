@@ -9,8 +9,12 @@
 //    random_tree.rs  … 決定的な乱数と、ランダムなシーン（World・アクター木・文脈）の生成
 //    legacy.rs       … 旧実装の写し（コミット 5fd3f5d1 の時点。直さないこと）
 //    equivalence.rs  … 突き合わせのテスト
+//    legacy_world_canvas.rs … 3D ワールドキャンバスの子の旧い走査 2 か所の写し（W2-1b で表へ寄せる前。直さないこと）
+//    world_canvas_walks.rs  … その突き合わせのテスト（W2-1b）
 // ============================================================
 
 mod equivalence;
 mod legacy;
+mod legacy_world_canvas;
 mod random_tree;
+mod world_canvas_walks;

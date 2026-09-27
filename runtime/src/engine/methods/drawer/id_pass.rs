@@ -34,6 +34,7 @@ use super::{
 };
 use crate::engine::core::loader::model::CullFace;
 use crate::engine::core::renderer::sprite_skin::SkinnedSpriteDraw;
+use crate::engine::core::renderer::ui_clip::ScissorRect;
 use std::sync::Arc;
 
 // ピクセルあたりのバイト数 (Rgba32Float = 4 × 4bytes)
@@ -247,6 +248,9 @@ impl IdBuffer {
 /// - `ss_items` / `ss_tex_bgs`: SS アイテムとテクスチャ BG（ortho カメラ使用）
 /// - `ws_camera_bg`: WS 用カメラ BG（perspective または 2D ortho）
 /// - `ss_camera_bg`: SS 用 2D ortho カメラ BG（None なら SS アイテムは描画しない）
+/// - `ws_scissors` / `ss_scissors`: アイテムごとの切り抜きの scissor（W2-1b。None = 切り抜かない。
+///   空の矩形のアイテムは描かない）。空のスライスなら全アイテム切り抜かない
+/// - `target_size`: ID バッファの大きさ（切り抜いた後に scissor を全体へ戻すため）
 #[allow(clippy::too_many_arguments)]
 pub fn draw_canvas_id_items<'pass>(
     render_pass:  &mut wgpu::RenderPass<'pass>,
@@ -261,8 +265,37 @@ pub fn draw_canvas_id_items<'pass>(
     ss_items:     &'pass [(wgpu::Buffer, wgpu::BindGroup)],
     ss_tex_bgs:   &[&'pass wgpu::BindGroup],
     ss_meshes:    &'pass [Option<Arc<SkinnedSpriteDraw>>],
+    ws_scissors:  &[Option<ScissorRect>],
+    ss_scissors:  &[Option<ScissorRect>],
+    target_size:  [u32; 2],
 ) {
     if ws_items.is_empty() && ss_items.is_empty() { return; }
+
+    // アイテムの切り抜き（W2-1b）: 描く前に scissor を張り、切り抜かないアイテムの前に全体へ戻す。
+    // 戻り値 false = 1 画素も残らないので描かない。
+    fn apply_scissor(
+        rp: &mut wgpu::RenderPass<'_>,
+        wanted: Option<ScissorRect>,
+        scissored: &mut bool,
+        target_size: [u32; 2],
+    ) -> bool {
+        match wanted {
+            Some(rect) if rect.is_empty() => false,
+            Some(rect) => {
+                rp.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
+                *scissored = true;
+                true
+            }
+            None => {
+                if *scissored {
+                    rp.set_scissor_rect(0, 0, target_size[0], target_size[1]);
+                    *scissored = false;
+                }
+                true
+            }
+        }
+    }
+    let mut scissored = false;
 
     render_pass.set_pipeline(&pipelines.canvas_id.pipeline);
 
@@ -304,6 +337,9 @@ pub fn draw_canvas_id_items<'pass>(
     if !ws_items.is_empty() {
         render_pass.set_bind_group(0, ws_camera_bg, &[]);
         for (i, ((_, bg), &tex_bg)) in ws_items.iter().zip(ws_tex_bgs.iter()).enumerate() {
+            if !apply_scissor(render_pass, ws_scissors.get(i).copied().flatten(), &mut scissored, target_size) {
+                continue;
+            }
             render_pass.set_bind_group(1, bg, &[]);
             render_pass.set_bind_group(2, tex_bg, &[]);
             draw_one(render_pass, pipelines,
@@ -316,6 +352,9 @@ pub fn draw_canvas_id_items<'pass>(
         if !ss_items.is_empty() {
             render_pass.set_bind_group(0, ss_bg, &[]);
             for (i, ((_, bg), &tex_bg)) in ss_items.iter().zip(ss_tex_bgs.iter()).enumerate() {
+                if !apply_scissor(render_pass, ss_scissors.get(i).copied().flatten(), &mut scissored, target_size) {
+                    continue;
+                }
                 render_pass.set_bind_group(1, bg, &[]);
                 render_pass.set_bind_group(2, tex_bg, &[]);
                 draw_one(render_pass, pipelines,
@@ -323,6 +362,9 @@ pub fn draw_canvas_id_items<'pass>(
             }
         }
     }
+
+    // 後続の描画（ギズモ等）へ切り抜きを持ち越さない
+    apply_scissor(render_pass, None, &mut scissored, target_size);
 }
 
 /// コライダーピック面クワッドを ID パスへ描画する。

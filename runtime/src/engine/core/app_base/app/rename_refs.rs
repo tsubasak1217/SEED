@@ -252,7 +252,13 @@ fn rewrite_refs_in_slots(
             // 3D ポリラインは点列と色しか持たず、アクター名参照は無い。
             | ComponentKind::LineRenderer
             // 子を切り抜く（W2-1a）は有効フラグだけで、アクター名参照は無い。
-            | ComponentKind::CanvasClip => {}
+            | ComponentKind::CanvasClip
+            // レイアウトの部品（W2-1b）は向き・間隔・揃え・辺の有無だけで、アクター名参照は無い。
+            | ComponentKind::CanvasStack
+            | ComponentKind::CanvasWrap
+            | ComponentKind::CanvasGrid
+            | ComponentKind::CanvasLayoutItem
+            | ComponentKind::CanvasSafeArea => {}
         }
     }
 

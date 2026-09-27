@@ -255,7 +255,7 @@ use crate::engine::core::font::canvas_text::CanvasTextItem;
 use super::canvas_collect::{
     collect_sprite_items, collect_canvas_rects, collect_canvas_id_items, CanvasIdItem,
     canvas_mat_to_gpu, root_anchor_offset,
-    collect_3d_canvas_child_id_items, sprite_world_corners,
+    collect_3d_canvas_child_id_items,
     compute_game_viewport, clamp_viewport_to_target, build_ss_layout_maps_free,
     build_main_canvas_layout, build_world_canvas_layout,
 };
@@ -887,6 +887,10 @@ impl App {
             }
         }
 
+        // キャンバスのレイアウトが読む画面の情報（dp の倍率・安全領域。W2-1b）をこのフレームの値へ差し替える。
+        // Edit は NONE、Play は画面の写しから（動いているフレームでは下で写しを更新した直後にもう一度作る）。
+        self.publish_canvas_screen_env();
+
         // ─ 1-6. ゲームロジック（Play 時のみ）─────────
         // Scene の Schedule に登録された ECS システム群（C# スクリプト駆動を含む）を
         // フェーズ順に実行する。
@@ -896,6 +900,8 @@ impl App {
             // 画面情報（SEED.Screen）をこのフレームの値へ差し替える。ポインタイベント・スクリプトの
             // どのフェーズより前に 1 回だけ行うので、フレームの中で値が変わらない（screen_publish.rs）。
             self.publish_screen_snapshot();
+            // キャンバスの画面の情報も同じ写しから作り直す（ポインタイベントと描画のレイアウトが同じ値を読む）
+            self.publish_canvas_screen_env();
             // プラットフォーム機能（SEED.Platform）のイベントを基盤（Android の Java・デスクトップの模擬）から取り出し、
             // スクリプトへ見せる箱へ移す。C# の PlatformEvents.Poll が BeginFrame（フレームに 1 回）で配る（W1-1）。
             crate::engine::core::scripting::platform_bridge::publish_platform_events();
@@ -8691,7 +8697,11 @@ impl App {
                                 // scene canvas モードのみ実行（actor edit 2D タブは CPU picking 専用）
                                 // DFS カウンタは find_actor_by_dfs と同じ規則で全アクターを数える。
                                 let canvas_id_is_ss = scene_canvas_ss;
-                                let canvas_id_raw_items: Vec<CanvasIdItem> =
+                                // 2 つ目の値はアイテムの切り抜きの番号が指す領域（描画のワールド座標。W2-1b）
+                                let (canvas_id_raw_items, canvas_id_clip_regions): (
+                                    Vec<CanvasIdItem>,
+                                    Vec<crate::engine::core::renderer::ui_clip::UiClipRegion>,
+                                ) =
                                     if is_canvas && !is_actor_edit_2d {
                                         if let Some(scene) = &self.scene {
                                             let wl = self.active_world_line;
@@ -8741,10 +8751,16 @@ impl App {
                                                     |it| it.zone == CanvasDrawZone::Background);
                                             id_bg.sort_by_key(|it| (it.layer, it.kind.draw_order()));
                                             id_fg.sort_by_key(|it| (it.layer, it.kind.draw_order()));
+                                            // 切り抜きの領域: 描画と同じ写像（canvas_scale・y_sign）で表の領域を写す
+                                            let regions = canvas_layout
+                                                .clip_regions
+                                                .iter()
+                                                .map(|r| crate::engine::core::canvas_layout::clip::to_render_region(r, canvas_scale, y_sign))
+                                                .collect();
                                             // ソート済みの描画順（背景 → 前面）で 1 本に連結する
-                                            id_bg.into_iter().chain(id_fg).collect()
-                                        } else { vec![] }
-                                    } else { vec![] };
+                                            (id_bg.into_iter().chain(id_fg).collect(), regions)
+                                        } else { (vec![], vec![]) }
+                                    } else { (vec![], vec![]) };
 
                                 // 3D Canvas 子スプライト ID アイテム収集
                                 // Actor3D + CanvasComponent を持つアクターの 2D 子スプライトを WS で pick できるようにする。
@@ -8966,6 +8982,22 @@ impl App {
                                         }))
                                     };
 
+                                // ── キャンバスの ID アイテムの切り抜き（W2-1b）──
+                                // 描画と同じカメラ（SS はオーバーレイ、それ以外はメインカメラ）で領域を射影し、
+                                // ID バッファの画素の scissor にする（切り抜かれて見えない所は ID を書かない）。
+                                // 射影できない領域（カメラの後ろ）は描画と同じく切り抜かない。
+                                let id_target_size = [id_buf.width, id_buf.height];
+                                let canvas_id_scissors = {
+                                    let clip_vp = if canvas_id_is_ss {
+                                        saved_canvas_overlay_vp.unwrap_or(saved_view_proj)
+                                    } else {
+                                        saved_view_proj
+                                    };
+                                    super::canvas_collect::canvas_id_scissors(
+                                        &canvas_id_raw_items, &canvas_id_clip_regions, &clip_vp, id_target_size,
+                                    )
+                                };
+
                                 let mut id_pass = frame.begin_id_pass(&id_buf.view);
 
                                 // ── コライダー面ピック描画（深度を加味して可視物と同等に選択）──
@@ -9130,6 +9162,8 @@ impl App {
                                         // 変形済み頂点で ID を描く（ピック形状 == 見た目）。
                                         &canvas_3d_child_id_meshes,
                                         &[], &[], &[],
+                                        // 3D ワールドキャンバスは切り抜かない（透視では scissor で正しく切れない）
+                                        &[], &[], id_target_size,
                                     );
                                 }
 
@@ -9144,6 +9178,8 @@ impl App {
                                         &camera_buf.bind_group, ss_camera_bg,
                                         &[], &[], &[],
                                         &canvas_id_bgs, &canvas_id_tex_bg_refs, &canvas_id_meshes,
+                                        // 切り抜き（W2-1b）: SS のアイテムごとの scissor
+                                        &[], &canvas_id_scissors, id_target_size,
                                     );
                                 } else {
                                     draw_canvas_id_items(
@@ -9151,6 +9187,8 @@ impl App {
                                         &camera_buf.bind_group, None,
                                         &canvas_id_bgs, &canvas_id_tex_bg_refs, &canvas_id_meshes,
                                         &[], &[], &[],
+                                        // 切り抜き（W2-1b）: WS のアイテムごとの scissor
+                                        &canvas_id_scissors, &[], id_target_size,
                                     );
                                 }
                             }

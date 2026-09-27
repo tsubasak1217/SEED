@@ -8,8 +8,8 @@
 //  レイアウト（アンカー・自動解像度・スケールモード・累積スケール・ワールド行列・切り抜き）は
 //  W2-1a から engine/core/canvas_layout の表（CanvasLayoutTable）が持ち、ここは表を読んで
 //  描画アイテム・枠・ID アイテムを組み立てるだけ（表はフレームに 1 回 build_main_canvas_layout で作る）。
-//  3D ワールドキャンバスの子の ID・枠の走査（walk_3d_canvas_children_id / collect_3d_canvas_child_outlines）は
-//  まだ表を読む形になっていない（docs/backlog.md「3D ワールドキャンバスの子の走査が 2 か所に残っている」）。
+//  3D ワールドキャンバスの子の ID・枠（walk_3d_canvas_children_id / collect_3d_canvas_child_outlines）も
+//  W2-1b から同じ表（build_world_canvas_layout / CanvasLayoutPass）を読む（描画と同じノード・同じ矩形）。
 // ============================================================
 
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::engine::core::renderer::ui_draw_order::UiDrawKind;
 use crate::engine::components::{
-    AspectRatioAxis, CameraComponent, CanvasComponent, CanvasDrawZone, CanvasTransform,
+    CameraComponent, CanvasComponent, CanvasDrawZone, CanvasTransform,
     CanvasViewportRef, ComponentKind, ParticleEmitterComponent, ScalingMode,
     SkinnedSpriteComponent, SpriteComponent, TextComponent, Transform as ActorTransform,
 };
@@ -837,9 +837,9 @@ fn collect_node_draw_items(
     for slot in actor.slots() {
         if slot.kind == ComponentKind::Sprite && slot.enabled {
             if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                // scale_size モードに応じたスプライト有効サイズ（アスペクト比維持を考慮）
-                let eff_w = sc.width * size_scale_x;
-                let eff_h = sc.height * size_scale_y;
+                // scale_size モードに応じたスプライト有効サイズ（アスペクト比維持を考慮）。
+                // レイアウトが伸ばした軸は矩形の大きさ（W2-1b。placement.sprite_size が 1 か所の規則）
+                let [eff_w, eff_h] = placement.sprite_size(sc.width, sc.height);
                 // スプライト行優先行列を親 world_rs と合成し、GPU 列優先に変換する
                 let sprite_world = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
                 // y_sign でキャンバス Y 軸（下向き）→ ワールド Y 軸（上向き）を反転する
@@ -1119,10 +1119,14 @@ pub(super) fn collect_canvas_rects(
                         } else {
                             OUTLINE_RINGS_THIN
                         };
-                        // アウトラインも自動解像度上書きを反映する（大きさはこのスロットの CanvasComponent）
-                        let [base_w, base_h] = root_auto.unwrap_or([cc.width, cc.height]);
-                        let eff_w = base_w * size_sc_x;
-                        let eff_h = base_h * size_sc_y;
+                        // アウトラインも自動解像度上書きを反映する（大きさはこのスロットの CanvasComponent）。
+                        // レイアウトの部品が矩形を決めたノード（W2-1b）は表の矩形（描画・切り抜きと同じ）
+                        let [eff_w, eff_h] = if placement.layout_adjusted {
+                            placement.eff_size
+                        } else {
+                            let [base_w, base_h] = root_auto.unwrap_or([cc.width, cc.height]);
+                            [base_w * size_sc_x, base_h * size_sc_y]
+                        };
                         let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
                         let csy = canvas_scale * y_sign;
                         let tp = |lx: f32, ly: f32| -> [f32; 3] {
@@ -1146,8 +1150,8 @@ pub(super) fn collect_canvas_rects(
                     // 選択色はキャンバス枠と共通のオレンジに統一する。
                     if selected_dfs_ids.contains(&my_dfs) {
                         if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                            let eff_w = sc.width * size_sc_x;
-                            let eff_h = sc.height * size_sc_y;
+                            // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ。W2-1b）
+                            let [eff_w, eff_h] = placement.sprite_size(sc.width, sc.height);
                             const SPRITE_OUTLINE_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
                             let m = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
                             let csy2 = canvas_scale * y_sign;
@@ -1275,6 +1279,9 @@ pub(super) struct CanvasIdItem {
     /// 「見た目で最前面のものがピックされる」が保証される。
     /// プリミティブは ID を持たないため、ここに現れるのは Sprite / Text のみ。
     pub kind: UiDrawKind,
+    /// 切り抜きの番号（祖先の CanvasClipComponent の中なら Some。W2-1b で ID 描画にも scissor を張る）。
+    /// 番号はこのアイテムを集めたレイアウトの表の `clip_regions` の添字。
+    pub clip: Option<UiClipId>,
 }
 
 /// キャンバスアクター ID アイテム（GPU ピッキング）をレイアウトの表から DFS 順に収集する。
@@ -1292,10 +1299,9 @@ pub(super) struct CanvasIdItem {
 /// 呼び出し側で描画と同一の順序（背景ゾーン → 前面ゾーン、各ゾーン内は
 /// 「レイヤー昇順 → 種別」の安定ソート）へ並べ替えることで、クリック時に視覚的最前面がピックされる。
 ///
-/// # 切り抜き（W2-1a の制限）
-/// GPU の ID 描画は切り抜き（CanvasClipComponent）を見ない（切り抜かれて見えない子も ID を書く）。
-/// エディタの 2D ビューの選択と Play のポインタイベントは CPU の当たり判定（pick_2d）が切り抜きを見る。
-/// ID 描画の scissor は W2-1b で足す（docs/backlog.md）。
+/// # 切り抜き（W2-1b）
+/// 各アイテムへ表の切り抜きの番号（`node.clip`）を持たせる。frame_renderer がアイテムごとの scissor を求め、
+/// `draw_canvas_id_items` が張る（切り抜かれて見えない所は ID を書かない＝3D ビューのクリックでも選べない）。
 ///
 /// # 引数
 /// * `table`    - `actors` から作ったレイアウトの表
@@ -1346,8 +1352,8 @@ pub(super) fn collect_canvas_id_items(
             // enabled=false のスプライトは非表示のためピック対象からも外す
             if slot.kind == ComponentKind::Sprite && slot.enabled {
                 if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                    let ew = sc.width * id_sc_x;
-                    let eh = sc.height * id_sc_y;
+                    // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ。W2-1b）
+                    let [ew, eh] = placement.sprite_size(sc.width, sc.height);
                     let sw = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(ew, eh));
                     // テクスチャなしは None → 白フォールバック（全面 alpha=1）
                     let tex_path = if sc.texture_path.is_empty() {
@@ -1443,9 +1449,39 @@ pub(super) fn collect_canvas_id_items(
                 zone: placement.zone,
                 layer,
                 kind,
+                clip: node.clip,
             });
         }
     }
+}
+
+/// ID 描画のアイテムごとの切り抜きの scissor（W2-1b）【純関数】。
+///
+/// 描画と同じ規則: アイテムの切り抜きの番号から祖先との交差を取った NDC の矩形を求め（`clip_ndc_rect`）、
+/// ID バッファの画素の scissor にする（`scissor_in_target`。ID パスはビューポートを張らないので描画先の全体へ写す）。
+/// 切り抜きの外のアイテム・射影できない領域（カメラの後ろ）は None（切り抜かない）。空の矩形は描かない印。
+///
+/// # 引数
+/// * `items`       - ID 描画のアイテム（`clip` は `regions` の添字）
+/// * `regions`     - 切り抜きの領域（描画のワールド座標。canvas_layout::clip::to_render_region で写したもの）
+/// * `view_proj`   - アイテムを描くカメラのビュー射影（行優先。SS はオーバーレイ、それ以外はメインカメラ）
+/// * `target_size` - ID バッファの大きさ（画素）
+pub(super) fn canvas_id_scissors(
+    items: &[CanvasIdItem],
+    regions: &[crate::engine::core::renderer::ui_clip::UiClipRegion],
+    view_proj: &[[f32; 4]; 4],
+    target_size: [u32; 2],
+) -> Vec<Option<crate::engine::core::renderer::ui_clip::ScissorRect>> {
+    use crate::engine::core::renderer::ui_clip::{clip_ndc_rect, scissor_in_target, ClipTarget};
+    let target = ClipTarget::full(target_size);
+    items
+        .iter()
+        .map(|it| {
+            it.clip
+                .and_then(|id| clip_ndc_rect(regions, id, view_proj))
+                .map(|rect| scissor_in_target(&rect, &target))
+        })
+        .collect()
 }
 
 // ============================================================
@@ -1575,11 +1611,10 @@ pub(super) fn collect_3d_canvas_child_id_items(
                         world,
                         wl,
                         counter,
-                        Some([cc.width, cc.height]),
+                        [cc.width, cc.height],
                         canvas_to_world,
-                        [1.0, 1.0],
                         mc_total,
-                        draw_ctx,
+                        &|slot_entity| draw_ctx.sprite_skin.draw_handle(slot_entity),
                         text_bounds,
                         &mut canvas_items,
                     );
@@ -1620,26 +1655,33 @@ pub(super) fn collect_3d_canvas_child_id_items(
     }
 }
 
-/// 3D Canvas 子アクターを再帰走査してスプライト ID アイテムを収集するヘルパー。
+/// 3D Canvas の子の ID アイテム（GPU ピッキング）をレイアウトの表から集める（W2-1b で表を読む形へ寄せた）。
 ///
-/// `parent_world_rs` は canvas_to_world（3D ワールド行列）で、
-/// 各子スプライトのモデル行列を 3D ワールド空間で構築する。
-/// 出力タプル末尾の `layer` は呼び出し側のキャンバス内レイヤーソートに使用する。
+/// 表（`build_world_canvas_layout`）は描画（`collect_sprite_items` の 3D ワールドキャンバスの文脈）と同じもの。
+/// ID を書くノードは描画と同じ規則（`is_drawn`）で選ぶ: 非アクティブ・非表示のサブツリーと、
+/// CanvasTransform を持たないノードの下は書かない（旧実装は CanvasTransform を持たないノードの下も素通しでたどって
+/// ID を書いていたので、描画されない物を選べた。docs/backlog.md「3D ワールドキャンバスの子の走査が 2 か所に残っている」）。
+/// それ以外の木では旧実装とビット単位で同じ（canvas_layout_equivalence の world_canvas_walks で確かめている）。
+///
+/// # 引数
+/// * `children`        - ワールドキャンバスの子
+/// * `counter`         - DFS 番号のカウンタ（最初の子の番号。表の行の数＝子孫の数だけ進める）
+/// * `canvas_size`     - ワールドキャンバスの大きさ（CanvasComponent の width・height）
+/// * `canvas_to_world` - キャンバス px → 3D ワールドの行列（行優先）
+/// * `skin_handle_of`  - スキンスプライトの変形済み頂点の描画ハンドルを引く（描画収集が作ったもの）
+/// * `text_bounds`     - テキストの実測枠
+/// * `out`             - (raw_id, GPU 行列, テクスチャパス, スキンメッシュ, レイヤー, 描画種別)
 #[allow(clippy::too_many_arguments)]
-fn walk_3d_canvas_children_id(
-    actors: &[Actor],
+pub(super) fn walk_3d_canvas_children_id(
+    children: &[Actor],
     world: &World,
     wl: u32,
     counter: &mut u32,
-    parent_canvas_size: Option<[f32; 2]>,
-    parent_world_rs: [[f32; 4]; 4],
-    parent_cumul_scale: [f32; 2],
+    canvas_size: [f32; 2],
+    canvas_to_world: [[f32; 4]; 4],
     mc_total: u32,
-    draw_ctx: &DrawContext,
-    // テキストの実測枠（Text スロット entity → ローカル境界矩形）
+    skin_handle_of: &dyn Fn(Entity) -> Option<Arc<SkinnedSpriteDraw>>,
     text_bounds: &TextBoundsMap,
-    // (raw_id, GPU 行列, テクスチャパス, スキンメッシュ, レイヤー, 描画種別)
-    // 描画種別は同一レイヤー内の前後関係（スプライト → テキスト）に使う。
     out: &mut Vec<(
         u32,
         [[f32; 4]; 4],
@@ -1649,221 +1691,108 @@ fn walk_3d_canvas_children_id(
         UiDrawKind,
     )>,
 ) {
-    for actor in actors {
-        if actor.world_line != wl {
+    let table = build_world_canvas_layout(children, world, wl, canvas_size, canvas_to_world);
+    let dfs_base = *counter;
+    // DFS 番号は表の行の数（＝世界線の一致する子とその子孫の数）だけ進める（find_actor_by_dfs と同じ数え方）
+    *counter += table.len() as u32;
+    // 3D ワールド行列 → GPU 列優先モデル行列（Z 成分を含めた 3D フルマトリクス）
+    let to_gpu_mat = |sw: [[f32; 4]; 4]| {
+        [
+            [sw[0][0], sw[1][0], sw[2][0], 0.0],
+            [sw[0][1], sw[1][1], sw[2][1], 0.0],
+            [sw[0][2], sw[1][2], sw[2][2], 0.0],
+            [sw[0][3], sw[1][3], sw[2][3], 1.0],
+        ]
+    };
+    for (index, (node, actor)) in table.iter_with_actors(children).enumerate() {
+        // 描画と同じ規則（世界線・active・visible が祖先まで真で、2D レイアウト木の中）
+        if !node.is_drawn() {
             continue;
         }
-        let my_dfs = *counter;
-        *counter += 1;
-
-        // 非アクティブアクター: ピック対象から外す（DFS 番号は子孫分も進める）
-        // 非表示（visible=false）も描画・ピックの対象外にする。
-        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
-        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
-        if !actor.active || !actor.visible {
-            skip_dfs_subtree(&actor.children, counter);
+        let CanvasNodeKind::Placed(placement) = &node.kind else {
             continue;
-        }
+        };
+        let my_dfs = dfs_base + index as u32;
+        let parent_world_rs = node.frame.world_rs;
+        let eff_ct = &placement.eff_transform;
+        let [size_sc_x, size_sc_y] = placement.size_scale;
 
-        let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
-
-        // フォルダノードはレイアウト透明（canvas_node_is_transparent）。
-        // 自身は何も出力せず、下の else 分岐と同じく親の文脈をそのまま子へ渡す。
-        let (next_canvas_size, next_world_rs, next_cumul_scale) =
-            if let (false, Some(ct)) = (canvas_node_is_transparent(actor), ct_opt) {
-            // スケールモードはこのノード自身の CanvasTransform から読み取る
-            let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-                ct.scale_transform,
-                ct.scale_size,
-                ct.keep_aspect_ratio,
-                matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
-            );
-            // アンカーオフセット（collect_sprite_items の 3D Canvas パスと同じロジック）
-            // 3D ワールドキャンバス配下は常に「子レベル」（最上位分岐なし）。
-            // 2D と同じ共通ヘルパーを使い、基準サイズの規則を 1 か所に保つ。
-            let [anchor_off_x, anchor_off_y] =
-                node_anchor_offset(parent_canvas_size, ct.anchor, parent_cumul_scale, None, false);
-
-            // 有効位置（スケールモードに応じて親累積スケールを適用する）
-            let eff_pos = if sm_transform {
-                [
-                    ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                    ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
-                ]
-            } else {
-                [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
-            };
-            let eff_ct = CanvasTransform {
-                position: eff_pos,
-                rotation: ct.rotation,
-                scale: ct.scale,
-                pivot: ct.pivot,
-                anchor: [0.0, 0.0],
-                ..ct.clone()
-            };
-
-            // 自アクターの CanvasComponent
-            let my_canvas = actor
-                .slots()
-                .iter()
-                .filter(|s| s.kind == ComponentKind::Canvas)
-                .find_map(|s| world.get::<CanvasComponent>(s.entity));
-
-            // sm_size による拡縮スケール（アスペクト比維持を考慮）
-            let size_sc_x = if sm_size {
-                if keep_aspect && !is_width_axis {
-                    parent_cumul_scale[1]
-                } else {
-                    parent_cumul_scale[0]
-                }
-            } else {
-                1.0
-            };
-            let size_sc_y = if sm_size {
-                if keep_aspect && is_width_axis {
-                    parent_cumul_scale[0]
-                } else {
-                    parent_cumul_scale[1]
-                }
-            } else {
-                1.0
-            };
-            let (my_eff_w, my_eff_h) = my_canvas
-                .map(|cc| (cc.width * size_sc_x, cc.height * size_sc_y))
-                .unwrap_or((1.0, 1.0));
-
-            // 自分のワールド RS 行列（CanvasComponent サイズで to_mat4_sized を使う）
-            let self_world_rs = mat4x4_mul(
-                parent_world_rs,
-                CanvasTransform {
-                    scale: [1.0, 1.0],
-                    ..eff_ct.clone()
-                }
-                .to_mat4_sized(my_eff_w, my_eff_h),
-            );
-
-            // SpriteComponent を持つアクターを ID アイテムとして追加する。
-            // テクスチャなし（単色）は白テクスチャフォールバックで全面選択可能にする。
-            // （enabled=false のスプライトは非表示のためピック対象外）
-            // 3D ワールド行列 → GPU 列優先モデル行列（Z 成分を含めた 3D フルマトリクス）
-            let to_gpu_mat = |sw: [[f32; 4]; 4]| {
-                [
-                    [sw[0][0], sw[1][0], sw[2][0], 0.0],
-                    [sw[0][1], sw[1][1], sw[2][1], 0.0],
-                    [sw[0][2], sw[1][2], sw[2][2], 0.0],
-                    [sw[0][3], sw[1][3], sw[2][3], 1.0],
-                ]
-            };
-            let mut pushed = false;
-            for slot in actor.slots() {
-                if slot.kind == ComponentKind::Sprite && slot.enabled {
-                    if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                        let ew = sc.width * size_sc_x;
-                        let eh = sc.height * size_sc_y;
-                        // 3D ワールド空間のスプライト行列（canvas_to_world 込み）
-                        let sw = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(ew, eh));
-                        // テクスチャなしは None → 白フォールバック（全面 alpha=1）
-                        let tex_path = if sc.texture_path.is_empty() {
-                            None
-                        } else {
-                            Some(sc.texture_path.clone())
-                        };
-                        // raw_id = canvas_id_offset + dfs_id（canvas_id_offset = mc_total）
-                        // layer は呼び出し側のキャンバス内レイヤーソートに使用する
-                        out.push((
-                            mc_total + my_dfs + 1, to_gpu_mat(sw), tex_path, None,
-                            sc.layer, UiDrawKind::Sprite,
-                        ));
-                        pushed = true;
-                        break;
-                    }
-                }
-            }
-            // 矩形スプライトが無いアクターのみ、スキンスプライトをピック対象にする
-            // （2D キャンバスの ID 収集 collect_canvas_id_items と同じ優先規約）。
-            // 変形済み頂点は本フレームの描画収集が既に作っているので、ここでは
-            // ハンドルを引くだけ（まだ作られていない＝描画対象でないならピック対象外）。
-            if !pushed {
-                for slot in actor.slots() {
-                    if slot.kind != ComponentKind::SkinnedSprite || !slot.enabled {
-                        continue;
-                    }
-                    let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
-                        continue;
-                    };
-                    let Some(mesh_draw) = draw_ctx.sprite_skin.draw_handle(slot.entity) else {
-                        continue;
-                    };
-                    // メッシュ頂点は既に実寸を持つので、掛けるのは追加スケールのみ
-                    let sw = mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y));
-                    let tex_path = if ss.texture_path.is_empty() {
+        // SpriteComponent を持つアクターを ID アイテムとして追加する（最初の有効なスプライト）。
+        // テクスチャなし（単色）は白テクスチャフォールバックで全面選択可能にする。
+        let mut pushed = false;
+        for slot in actor.slots() {
+            if slot.kind == ComponentKind::Sprite && slot.enabled {
+                if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
+                    // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ）
+                    let [ew, eh] = placement.sprite_size(sc.width, sc.height);
+                    // 3D ワールド空間のスプライト行列（canvas_to_world 込み）
+                    let sw = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(ew, eh));
+                    let tex_path = if sc.texture_path.is_empty() {
                         None
                     } else {
-                        Some(ss.texture_path.clone())
+                        Some(sc.texture_path.clone())
                     };
+                    // raw_id = canvas_id_offset + dfs_id（canvas_id_offset = mc_total）。
+                    // layer は呼び出し側のキャンバス内レイヤーソートに使用する
                     out.push((
-                        mc_total + my_dfs + 1,
-                        to_gpu_mat(sw),
-                        tex_path,
-                        Some(mesh_draw),
-                        ss.layer,
-                        UiDrawKind::Sprite,
+                        mc_total + my_dfs + 1, to_gpu_mat(sw), tex_path, None,
+                        sc.layer, UiDrawKind::Sprite,
                     ));
                     pushed = true;
                     break;
                 }
             }
-            // スプライト系が無いアクターのみテキストをピック対象にする
-            // （2D の collect_canvas_id_items と同一の優先規約・同一の枠形状）。
-            if !pushed {
-                if let Some(item) = text_id_item_local(actor, world, text_bounds) {
-                    // to_mesh_mat4（実寸 px ローカル）→ 枠のユニットクワッド化 の順に掛ける
-                    // 枠モードは pivot を枠矩形へ焼き込み済み＝行列側は pivot 無し。
-                    let node = if item.zero_pivot {
-                        eff_ct.to_mesh_mat4_no_pivot(size_sc_x, size_sc_y)
-                    } else {
-                        eff_ct.to_mesh_mat4(size_sc_x, size_sc_y)
-                    };
-                    let sw = mat4x4_mul(mat4x4_mul(parent_world_rs, node), item.local_box_mat);
-                    // テクスチャなし = 白フォールバック（枠全面 alpha=1）
-                    out.push((
-                        mc_total + my_dfs + 1, to_gpu_mat(sw), None, None,
-                        item.layer, UiDrawKind::Text,
-                    ));
+        }
+        // 矩形スプライトが無いアクターのみ、スキンスプライトをピック対象にする
+        // （2D キャンバスの ID 収集 collect_canvas_id_items と同じ優先規約）。
+        if !pushed {
+            for slot in actor.slots() {
+                if slot.kind != ComponentKind::SkinnedSprite || !slot.enabled {
+                    continue;
                 }
+                let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
+                    continue;
+                };
+                // 本フレームの描画収集で変形済みの頂点を引く（まだ無ければ描画対象でないのでピック対象外）
+                let Some(mesh_draw) = skin_handle_of(slot.entity) else {
+                    continue;
+                };
+                // メッシュ頂点は既に実寸を持つので、掛けるのは追加スケールのみ
+                let sw = mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y));
+                let tex_path = if ss.texture_path.is_empty() {
+                    None
+                } else {
+                    Some(ss.texture_path.clone())
+                };
+                out.push((
+                    mc_total + my_dfs + 1,
+                    to_gpu_mat(sw),
+                    tex_path,
+                    Some(mesh_draw),
+                    ss.layer,
+                    UiDrawKind::Sprite,
+                ));
+                pushed = true;
+                break;
             }
-
-            // 子への基準 Canvas サイズを計算する。
-            // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-            let child_anchor_basis_size = child_anchor_basis(my_canvas.map(|cc| [cc.width, cc.height]));
-            let child_cumul_scale = if sm_transform {
-                [
-                    parent_cumul_scale[0] * ct.scale[0],
-                    parent_cumul_scale[1] * ct.scale[1],
-                ]
-            } else {
-                [ct.scale[0], ct.scale[1]]
-            };
-            (child_anchor_basis_size, self_world_rs, child_cumul_scale)
-        } else {
-            // CanvasTransform なし: 親情報をそのまま引き継ぐ
-            (parent_canvas_size, parent_world_rs, parent_cumul_scale)
-        };
-
-        // 常に子に再帰する（DFS カウンタを全アクターで維持するため）
-        walk_3d_canvas_children_id(
-            &actor.children,
-            world,
-            wl,
-            counter,
-            next_canvas_size,
-            next_world_rs,
-            next_cumul_scale,
-            mc_total,
-            draw_ctx,
-            text_bounds,
-            out,
-        );
+        }
+        // スプライト系が無いアクターのみテキストをピック対象にする（2D と同一の優先規約・同一の枠形状）。
+        if !pushed {
+            if let Some(item) = text_id_item_local(actor, world, text_bounds) {
+                // 枠モードは pivot を枠矩形へ焼き込み済み＝行列側は pivot 無し
+                let node_mat = if item.zero_pivot {
+                    eff_ct.to_mesh_mat4_no_pivot(size_sc_x, size_sc_y)
+                } else {
+                    eff_ct.to_mesh_mat4(size_sc_x, size_sc_y)
+                };
+                let sw = mat4x4_mul(mat4x4_mul(parent_world_rs, node_mat), item.local_box_mat);
+                // テクスチャなし = 白フォールバック（枠全面 alpha=1）
+                out.push((
+                    mc_total + my_dfs + 1, to_gpu_mat(sw), None, None,
+                    item.layer, UiDrawKind::Text,
+                ));
+            }
+        }
     }
 }
 
@@ -1876,21 +1805,27 @@ fn walk_3d_canvas_children_id(
 ///
 /// # 目的
 /// 3D キャンバスの子キャンバス枠は、ルート 3D キャンバス枠パス（frame_renderer）が
-/// 子へ再帰しないため描画されていなかった。本関数はスプライトの子走査
-/// （`walk_3d_canvas_children_id` / `collect_sprite_items`）と**同一の変換連鎖**で
-/// 各ネストキャンバスの矩形を求めるため、枠が子キャンバスの描画スプライトと一致する。
+/// 子へ再帰しないため、ここで子孫のキャンバスの矩形を集める。
 ///
-/// # 変換の一致
-/// スプライトは `mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(W, H))` をユニット
-/// クワッドに適用して配置される。本関数の枠は `eff_ct.to_mat4_sized(W, H)` を
-/// `[0,W]×[0,H]` のコーナーに適用する。`to_mat4_sized(W,H)` を `(W*u, H*v)` に適用した
-/// 結果は `to_sprite_mat4(W,H)` を `(u,v)` に適用した結果と一致するため、枠 == スプライト。
+/// # レイアウト（W2-1b で表を読む形へ寄せた）
+/// 描画（collect_sprite_items）と同じレイアウトの表（`CanvasLayoutPass`）を作って読む。枠を出すノードは描画と同じ規則
+/// （`is_drawn`: 非アクティブ・非表示のサブツリーと CanvasTransform を持たないノードの下は出さない）で、
+/// 矩形はキャンバス領域（表の `eff_size`。レイアウトの部品が決めた大きさも反映する）。
+/// 旧実装（CanvasTransform を持たないノードの下も素通しでたどった）との違いはその 1 点だけ
+/// （canvas_layout_equivalence の world_canvas_walks で確かめている）。
 ///
 /// # DFS カウンタ
-/// `find_actor_by_dfs` の子ノード規則（world_line 無関係に子孫を全カウント）で `counter`
-/// を進めるため、返却する `dfs_id` は選択ハイライト（`selected_actor_dfs_ids`）と整合する。
+/// 表の並び（`find_actor_by_dfs` と同じ番号付け）で `counter` を進めるため、返却する `dfs_id` は
+/// 選択ハイライト（`selected_actor_dfs_ids`）と整合する。
 ///
 /// 出力タプル: `([TL, TR, BR, BL] の 3D ワールド座標, そのノードの dfs_id)`
+///
+/// # 引数
+/// * `actors`             - 走査のルートの並び（ワールドキャンバスの子）
+/// * `counter`            - DFS 番号のカウンタ（最初の子の番号。表の行の数だけ進める）
+/// * `parent_canvas_size` - 親（ワールドキャンバス）のアンカーの基準の大きさ
+/// * `parent_world_rs`    - 親の行列（キャンバス px → 3D ワールド）
+/// * `parent_cumul_scale` - 親までの累積スケール（呼び出し側は [1, 1]）
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_3d_canvas_child_outlines(
     actors: &[Actor],
@@ -1902,169 +1837,37 @@ pub(super) fn collect_3d_canvas_child_outlines(
     parent_cumul_scale: [f32; 2],
     out: &mut Vec<([[f32; 3]; 4], u32)>,
 ) {
-    for actor in actors {
-        // このノードの 0 始まり DFS 番号（find_actor_by_dfs の子規則と同一。
-        // 子ノードは world_line で除外せず全カウントする）。
-        let my_dfs = *counter;
-        *counter += 1;
-
-        // 非アクティブアクター: スプライトが描画されないため枠も描かない。
-        // DFS 番号は選択系と整合させるため子孫分も進める。
-        // 非表示（visible=false）も描画・ピックの対象外にする。
-        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
-        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
-        if !actor.active || !actor.visible {
-            skip_dfs_subtree(&actor.children, counter);
+    let empty: HashMap<Entity, [f32; 2]> = HashMap::new();
+    let env = CanvasLayoutEnv::without_viewport(&empty, AutoScaleDivisor::Raw);
+    let table = CanvasLayoutPass::run(
+        actors,
+        world,
+        wl,
+        CanvasParentFrame::new(parent_canvas_size, parent_world_rs, parent_cumul_scale, CanvasDrawZone::Foreground),
+        &env,
+    );
+    let dfs_base = *counter;
+    *counter += table.len() as u32;
+    for (index, (node, _actor)) in table.iter_with_actors(actors).enumerate() {
+        if !node.is_drawn() {
             continue;
         }
-
-        let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
-
-        // フォルダノードはレイアウト透明（canvas_node_is_transparent）。
-        // 自身は何も出力せず、下の else 分岐と同じく親の文脈をそのまま子へ渡す。
-        let (next_canvas_size, next_world_rs, next_cumul_scale) =
-            if let (false, Some(ct)) = (canvas_node_is_transparent(actor), ct_opt) {
-            // スケールモードはこのノード自身の CanvasTransform から読み取る
-            let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-                ct.scale_transform,
-                ct.scale_size,
-                ct.keep_aspect_ratio,
-                matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
-            );
-            // アンカーオフセット（walk_3d_canvas_children_id / collect_sprite_items と同じ）
-            // 3D ワールドキャンバス配下は常に「子レベル」（最上位分岐なし）。
-            // 2D と同じ共通ヘルパーを使い、基準サイズの規則を 1 か所に保つ。
-            let [anchor_off_x, anchor_off_y] =
-                node_anchor_offset(parent_canvas_size, ct.anchor, parent_cumul_scale, None, false);
-            // 有効位置（スケールモードに応じて親累積スケールを適用する）
-            let eff_pos = if sm_transform {
-                [
-                    ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                    ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
-                ]
-            } else {
-                [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
-            };
-            let eff_ct = CanvasTransform {
-                position: eff_pos,
-                rotation: ct.rotation,
-                scale: ct.scale,
-                pivot: ct.pivot,
-                anchor: [0.0, 0.0],
-                ..ct.clone()
-            };
-
-            // 自アクターの CanvasComponent
-            let my_canvas = actor
-                .slots()
-                .iter()
-                .filter(|s| s.kind == ComponentKind::Canvas)
-                .find_map(|s| world.get::<CanvasComponent>(s.entity));
-
-            // sm_size による拡縮スケール（アスペクト比維持を考慮）
-            let size_sc_x = if sm_size {
-                if keep_aspect && !is_width_axis {
-                    parent_cumul_scale[1]
-                } else {
-                    parent_cumul_scale[0]
-                }
-            } else {
-                1.0
-            };
-            let size_sc_y = if sm_size {
-                if keep_aspect && is_width_axis {
-                    parent_cumul_scale[0]
-                } else {
-                    parent_cumul_scale[1]
-                }
-            } else {
-                1.0
-            };
-            let (my_eff_w, my_eff_h) = my_canvas
-                .map(|cc| (cc.width * size_sc_x, cc.height * size_sc_y))
-                .unwrap_or((1.0, 1.0));
-
-            // 子伝播用のワールド RS 行列（scale=[1,1]。スプライト子走査と同一）
-            let self_world_rs = mat4x4_mul(
-                parent_world_rs,
-                CanvasTransform {
-                    scale: [1.0, 1.0],
-                    ..eff_ct.clone()
-                }
-                .to_mat4_sized(my_eff_w, my_eff_h),
-            );
-
-            // このノードが CanvasComponent を持つなら、その矩形アウトラインを出力する。
-            // 枠行列は eff_ct（scale 込み）× to_mat4_sized（2D collect_canvas_rects の枠と同一形）。
-            if my_canvas.is_some() {
-                let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
-                let tp = |cx: f32, cy: f32| -> [f32; 3] {
-                    [
-                        m[0][0] * cx + m[0][1] * cy + m[0][3],
-                        m[1][0] * cx + m[1][1] * cy + m[1][3],
-                        m[2][0] * cx + m[2][1] * cy + m[2][3],
-                    ]
-                };
-                out.push((
-                    [
-                        tp(0.0, 0.0),
-                        tp(my_eff_w, 0.0),
-                        tp(my_eff_w, my_eff_h),
-                        tp(0.0, my_eff_h),
-                    ],
-                    my_dfs,
-                ));
-            }
-
-            // 子への基準 Canvas サイズと累積スケール（walk_3d_canvas_children_id と同一）
-            let child_anchor_basis_size = child_anchor_basis(my_canvas.map(|cc| [cc.width, cc.height]));
-            let child_cumul_scale = if sm_transform {
-                [
-                    parent_cumul_scale[0] * ct.scale[0],
-                    parent_cumul_scale[1] * ct.scale[1],
-                ]
-            } else {
-                [ct.scale[0], ct.scale[1]]
-            };
-            (child_anchor_basis_size, self_world_rs, child_cumul_scale)
-        } else {
-            // CanvasTransform なし: 親情報をそのまま引き継ぐ
-            (parent_canvas_size, parent_world_rs, parent_cumul_scale)
+        // CanvasComponent を持つノードだけ（キャンバス領域の枠）
+        let Some(placement) = node.placement().filter(|p| p.canvas_base.is_some()) else {
+            continue;
         };
-
-        // 常に子に再帰する（DFS カウンタを全アクターで維持するため）
-        collect_3d_canvas_child_outlines(
-            &actor.children,
-            world,
-            wl,
-            counter,
-            next_canvas_size,
-            next_world_rs,
-            next_cumul_scale,
-            out,
-        );
+        let [w, h] = placement.eff_size;
+        // 枠行列は eff_ct（scale 込み）× to_mat4_sized（2D collect_canvas_rects の枠と同一形）
+        let m = mat4x4_mul(node.frame.world_rs, placement.eff_transform.to_mat4_sized(w, h));
+        let tp = |cx: f32, cy: f32| -> [f32; 3] {
+            [
+                m[0][0] * cx + m[0][1] * cy + m[0][3],
+                m[1][0] * cx + m[1][1] * cy + m[1][3],
+                m[2][0] * cx + m[2][1] * cy + m[2][3],
+            ]
+        };
+        out.push(([tp(0.0, 0.0), tp(w, 0.0), tp(w, h), tp(0.0, h)], dfs_base + index as u32));
     }
-}
-
-/// 3D Canvas 子スプライトのワールド空間コーナー座標を計算して返す。
-///
-/// 戻り値: `[TL, TR, BR, BL]` の 3D ワールド座標。
-/// `sprite_world` は `mat4x4_mul(canvas_to_world, eff_ct.to_sprite_mat4(w, h))` の行優先行列。
-pub(super) fn sprite_world_corners(sprite_world: &[[f32; 4]; 4]) -> [[f32; 3]; 4] {
-    // unit quad の各 UV コーナーに sprite_world を適用する
-    let corner = |u: f32, v: f32| -> [f32; 3] {
-        [
-            u * sprite_world[0][0] + v * sprite_world[0][1] + sprite_world[0][3],
-            u * sprite_world[1][0] + v * sprite_world[1][1] + sprite_world[1][3],
-            u * sprite_world[2][0] + v * sprite_world[2][1] + sprite_world[2][3],
-        ]
-    };
-    [
-        corner(0.0, 0.0),
-        corner(1.0, 0.0),
-        corner(1.0, 1.0),
-        corner(0.0, 1.0),
-    ]
 }
 
 // ============================================================
@@ -2463,13 +2266,16 @@ pub(super) fn build_main_canvas_layout(
     } else {
         (HashMap::new(), HashMap::new())
     };
+    let viewport_size = if is_scene_ss { Some(viewport) } else { None };
     let env = CanvasLayoutEnv {
-        viewport_size: if is_scene_ss { Some(viewport) } else { None },
+        viewport_size,
         viewport_overrides: &overrides,
         root_auto_sizes: &root_auto_sizes,
         design_space,
         // 描画・キャンバス枠・ID 描画は旧実装どおり自動スケールをそのまま割る
         auto_scale_divisor: AutoScaleDivisor::Raw,
+        // dp のルート・安全領域（フレームごとに公開された画面の情報。当たり判定・物理と同じ値。W2-1b）
+        screen: super::canvas_screen_env::screen_env_for(viewport_size, design_space),
     };
     CanvasLayoutPass::run(
         actors,
@@ -3070,6 +2876,7 @@ mod tests {
                 root_auto_sizes: &empty,
                 design_space,
                 auto_scale_divisor: AutoScaleDivisor::Raw,
+                screen: crate::engine::core::canvas_layout::CanvasScreenEnv::NONE,
             },
         );
         collect_canvas_rects(

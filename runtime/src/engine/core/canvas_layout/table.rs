@@ -111,6 +111,19 @@ impl CanvasLayoutNode {
     }
 }
 
+/// レイアウトの部品（W2-1b）が 1 回の走査でした仕事の数（性能のテストと診断用）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CanvasLayoutStats {
+    /// 並べたコンテナの数。
+    pub containers: u32,
+    /// レイアウトが矩形を割り当てて置いたノードの数（コンテナの子・親に合わせた子）。
+    pub placed_by_layout: u32,
+    /// 安全領域で縮めたノードの数。
+    pub safe_areas: u32,
+    /// 子の大きさを実際に測った回数（覚えた結果を引いただけの回数は含まない。ノード数に比例すること）。
+    pub measure_calls: u64,
+}
+
 /// レイアウトの表（1 フレーム・1 文脈ぶん）。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CanvasLayoutTable {
@@ -120,6 +133,8 @@ pub struct CanvasLayoutTable {
     pub clip_regions: Vec<CanvasClipRegion>,
     /// 表を作った世界線（アクター木と並べて読むときのルートの絞り込み）。
     pub world_line: u32,
+    /// レイアウトの部品の仕事の数（W2-1b）。
+    pub stats: CanvasLayoutStats,
 }
 
 impl CanvasLayoutTable {

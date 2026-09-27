@@ -44,6 +44,12 @@ internal static class ComponentIcons
         ["SkinnedSpriteComponent"]      = "Icon.Component.SkinnedSprite",
         ["TextComponent"]               = "Icon.Component.Text",
         ["CanvasClipComponent"]         = "Icon.Component.CanvasClip",
+        // レイアウトの部品（W2-1b）
+        ["CanvasStackComponent"]        = "Icon.Component.CanvasStack",
+        ["CanvasWrapComponent"]         = "Icon.Component.CanvasWrap",
+        ["CanvasGridComponent"]         = "Icon.Component.CanvasGrid",
+        ["CanvasLayoutItemComponent"]   = "Icon.Component.CanvasLayoutItem",
+        ["CanvasSafeAreaComponent"]     = "Icon.Component.CanvasSafeArea",
         // ライト
         ["LightComponent"]              = "Icon.Component.Light",
         ["JointAttachComponent"]        = "Icon.Component.JointAttach",

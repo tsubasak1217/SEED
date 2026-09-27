@@ -89,6 +89,8 @@ mod key_diag;
 mod screen_publish;
 /// 画面情報の診断ログ（公開した写しが変わったときだけ。lifecycle_diag_log が真のときだけ）。
 mod screen_diag;
+/// キャンバスのレイアウトが読む画面の情報（dp の倍率・安全領域）のフレームごとの公開（W2-1b）。
+pub(crate) mod canvas_screen_env;
 /// バックグラウンドへの出入り（Android の suspended / resumed）でのセーブ書き出し・パイプラインキャッシュ保存・
 /// シミュレーション停止・音声の停止。描画サーフェスの破棄・再生成（surface_lifecycle）とは別の責務。
 mod background_lifecycle;
@@ -122,6 +124,9 @@ mod ui_spike_hooks;
 /// レイアウトの一本化（W2-1a）の同値の性質テスト（旧 5 か所の写しと新しい表の突き合わせ。テスト専用）。
 #[cfg(test)]
 mod canvas_layout_equivalence;
+/// エディタの GPU の ID 描画の切り抜き（W2-1b）のテスト（アイテムの切り抜きの番号と画素の scissor）。
+#[cfg(test)]
+mod canvas_id_clip_tests;
 mod event_handler;
 mod drag_handler;
 mod physics_ops;
@@ -157,6 +162,9 @@ mod water_link_ops;
 mod interaction_ops;
 /// 子を切り抜く（CanvasClipComponent）のインスペクタ更新（SET_CANVAS_CLIP_FIELD。W2-1a）
 mod canvas_clip_ops;
+/// レイアウトの部品（CanvasStack・Wrap・Grid・LayoutItem・SafeArea）のインスペクタ更新
+/// （SET_CANVAS_LAYOUT_FIELD）とキャンバスの単位（SET_CANVAS_UNIT）。W2-1b
+mod canvas_layout_ops;
 /// コントロールポイント（ControlPointComponent）の編集・点選択（SET_CONTROL_POINT*）
 pub(crate) mod control_point_ops;
 /// コントロールポイントのビューポート可視化（点キューブ＋区間ライン。Edit モード限定）

@@ -17,10 +17,16 @@
 //  【構成】（1 ファイル 1 責務）
 //    anchor.rs    … アンカーの基準サイズとオフセットの規則（最上位＝ビューポート基準／子＝親キャンバス基準）
 //    frame.rs     … 親から子へ渡す文脈（CanvasParentFrame）と走査全体の入力（CanvasLayoutEnv）
-//    placement.rs … ノード 1 つの配置を求める純関数 resolve（副作用なし）
+//    placement.rs … ノード 1 つの配置を求める純関数 resolve（副作用なし）と、矩形への配置・箱の置き換え（W2-1b）
 //    clip.rs      … 切り抜きの領域（キャンバス空間の 4 隅と入れ子の親）と、点が切り抜きの内側かの判定
 //    table.rs     … 表の型（CanvasLayoutNode / CanvasLayoutTable）と、アクター木と表を並べて読む反復子
 //    pass.rs      … 木を 1 回たどって表を作る走査（CanvasLayoutPass）
+//    ── W2-1b（レイアウトの部品・dp・安全領域）──
+//    containers/  … コンテナの並べ方の純関数（stack.rs・wrap.rs・grid.rs）とコンポーネントからの指定（spec.rs）
+//    measure.rs   … ノードの「自分の大きさ」を測る（コンテナの 2 段の計算の 1 段目。結果を覚える）
+//    lookup.rs    … レイアウトの部品・スプライト・テキストの枠の引き方
+//    units.rs     … dp の換算と、走査が読む画面の情報（CanvasScreenEnv）
+//    safe_area.rs … 安全領域で箱を縮める純関数
 //
 //  【表の作り手と持ち主】（ECS の流儀: 表はフレームの文脈として作って読み手へ渡す）
 //    - フレームの描画（frame_renderer）は、メインの 2D キャンバスの表をフレームに 1 回作り、
@@ -35,17 +41,26 @@
 
 pub mod anchor;
 pub mod clip;
+pub mod containers;
 pub mod frame;
+pub mod lookup;
+pub mod measure;
 pub mod pass;
 pub mod placement;
+pub mod safe_area;
 pub mod table;
+pub mod units;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod layout_tests;
 
 pub use anchor::{child_anchor_basis, node_anchor_offset, root_anchor_offset, NO_ANCHOR_BASIS};
 pub use clip::{CanvasClipRegion, ClipRectSource};
 pub use frame::{AutoScaleDivisor, CanvasLayoutEnv, CanvasParentFrame, IDENTITY_MAT4};
 pub use pass::CanvasLayoutPass;
-pub use placement::{resolve, CanvasNodeInput, CanvasNodePlacement};
-pub use table::{CanvasLayoutNode, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};
+pub use placement::{resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement};
+pub use safe_area::CanvasRect;
+pub use table::{CanvasLayoutNode, CanvasLayoutStats, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};
+pub use units::{dp_scale_from_dpi, target_rect_to_canvas_world, CanvasScreenEnv};

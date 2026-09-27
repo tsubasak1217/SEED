@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // SCRIPT_DEBUG IPC で積まれたデバッグコマンドの待ち行列（ffi_script_debug_take が取り出す）
 use crate::engine::core::scripting::debug_command;
+use crate::engine::core::scripting::canvas_layout_api;
 
 use crate::engine::components::{
     AnimClipKind, AnimatorComponent, AudioComponent, AudioDictionaryComponent, CameraComponent,
@@ -511,6 +512,21 @@ fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Op
         .find(|&se| world.get::<T>(se).is_some())
 }
 
+/// レイアウトの部品（W2-1b）のスロットを解決する（`locate` と同じ探索順。型を名前で選ぶ版）。
+///
+/// 1. 指定エンティティ自身 → 2. 指定エンティティをルートに持つアクターのスロット群（最初にその部品を持つもの）。
+fn locate_canvas_layout(world: &World, entity: Entity, component: &str) -> Option<Entity> {
+    if canvas_layout_api::entity_has(world, entity, component) {
+        return Some(entity);
+    }
+    let actor = actor_index_lookup(entity, true)?;
+    actor
+        .slots()
+        .iter()
+        .map(|s| s.entity)
+        .find(|&se| canvas_layout_api::entity_has(world, se, component))
+}
+
 /// ルートエンティティが `entity` と一致する Actor を Actor ツリーから探す。
 ///
 /// Transform の書き込みで「子孫へ伝播する」ために Actor ツリー（親子関係）が必要になる。
@@ -581,6 +597,8 @@ const SHADER_PARAM_VEC3_PREFIX: &str = "shader_param_v3:";
 /// locate と同じ「実体があるか」の基準で一貫する）。
 fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
     match kind {
+        // レイアウトの部品（W2-1b の 5 種。種類ごとの判定は canvas_layout_api にまとめてある）
+        k if canvas_layout_api::is_layout_component(k) => canvas_layout_api::entity_has(world, slot.entity, k),
         KIND_SPRITE => world.get::<SpriteComponent>(slot.entity).is_some(),
         KIND_SKINNED_SPRITE => world.get::<SkinnedSpriteComponent>(slot.entity).is_some(),
         KIND_CAMERA => world.get::<CameraComponent>(slot.entity).is_some(),
@@ -962,6 +980,11 @@ fn read_floats(
                 "raycast_target" => put(out, &[if s.raycast_target { 1.0 } else { 0.0 }]),
                 _        => None,
             }
+        }
+        // ── レイアウトの部品（スロット格納型。W2-1b。欄の読み方は canvas_layout_api）──
+        c if canvas_layout_api::is_layout_component(c) => {
+            let e = locate_canvas_layout(world, entity, c)?;
+            canvas_layout_api::read(world, e, c, field, out)
         }
         // ── 子を切り抜く（スロット格納型: locate で解決。W2-1a）──
         "CanvasClip" => {
@@ -1391,6 +1414,11 @@ fn write_floats(
                 }
                 _        => false,
             }
+        }
+        // ── レイアウトの部品（スロット格納型。W2-1b。欄の書き方は canvas_layout_api）──
+        c if canvas_layout_api::is_layout_component(c) => {
+            let Some(e) = locate_canvas_layout(world, entity, c) else { return false };
+            canvas_layout_api::write(world, e, c, field, v)
         }
         // ── 子を切り抜く（スロット格納型: locate で解決。W2-1a）──
         "CanvasClip" => {
@@ -1932,6 +1960,8 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "Text"            => locate::<TextComponent>(world, entity).is_some(),
         // 子を切り抜く（W2-1a）
         "CanvasClip"      => locate::<CanvasClipComponent>(world, entity).is_some(),
+        // レイアウトの部品（W2-1b の 5 種）
+        c if canvas_layout_api::is_layout_component(c) => locate_canvas_layout(world, entity, c).is_some(),
         // 水位グラフ（Phase W2.5）
         "WaterLink"       => locate::<WaterLinkComponent>(world, entity).is_some(),
         "WaterVolume"     => locate::<WaterVolumeComponent>(world, entity).is_some(),

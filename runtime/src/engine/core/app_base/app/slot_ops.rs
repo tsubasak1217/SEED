@@ -545,6 +545,15 @@ impl App {
                         use crate::engine::components::CanvasClipComponent;
                         scene.world.remove::<CanvasClipComponent>(slot_entity);
                     }
+                    ComponentKind::CanvasStack
+                    | ComponentKind::CanvasWrap
+                    | ComponentKind::CanvasGrid
+                    | ComponentKind::CanvasLayoutItem
+                    | ComponentKind::CanvasSafeArea => {
+                        // レイアウトの部品（W2-1b の 5 種）
+                        crate::engine::structs::objects::actor::canvas_layout_slots::remove(
+                            &mut scene.world, kind, slot_entity);
+                    }
                     ComponentKind::CoverEmitter => {
                         // カバーエミッタ（I3.1）
                         use crate::engine::components::CoverEmitterComponent;
@@ -806,18 +815,8 @@ impl App {
             ComponentData::CanvasComponent(cc_data) => {
                 // CanvasComponent を複製して新スロット専用エンティティに insert
                 let slot_entity = scene.world.spawn();
-                scene.world.insert(
-                    slot_entity,
-                    CanvasComponent {
-                        width: cc_data.width,
-                        height: cc_data.height,
-                        auto_scale: cc_data.auto_scale,
-                        viewport_ref: cc_data.viewport_ref.clone(),
-                        gravity_mode: cc_data.gravity_mode,
-                        draw_zone: cc_data.draw_zone,
-                        pivot: cc_data.pivot,
-                    },
-                );
+                // 複製は from_data 経由（フィールドを足したときの写し漏れを防ぐ。W2-1b の unit で直した）
+                scene.world.insert(slot_entity, CanvasComponent::from_data(cc_data.clone()));
                 let mut c = 0u32;
                 if let Some(actor) =
                     find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
@@ -1071,6 +1070,23 @@ impl App {
                     actor.add_slot_typed::<CanvasClipComponent>(
                         slot_data.name, ComponentKind::CanvasClip, slot_entity);
                 } else { scene.world.despawn(slot_entity); }
+                true
+            }
+            layout_data @ (ComponentData::CanvasStackComponent(_)
+            | ComponentData::CanvasWrapComponent(_)
+            | ComponentData::CanvasGridComponent(_)
+            | ComponentData::CanvasLayoutItemComponent(_)
+            | ComponentData::CanvasSafeAreaComponent(_)) => {
+                // レイアウトの部品（W2-1b の 5 種）を複製する（新しいスロット専用エンティティへ挿入）
+                use crate::engine::structs::objects::actor::canvas_layout_slots;
+                let slot_entity = scene.world.spawn();
+                let slot = canvas_layout_slots::insert_from_data(
+                    &mut scene.world, slot_entity, slot_data.name, &layout_data);
+                let mut c = 0u32;
+                match (slot, find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)) {
+                    (Some(slot), Some(actor)) => actor.slots_mut().push(slot),
+                    _ => scene.world.despawn(slot_entity),
+                }
                 true
             }
             ComponentData::InteractionSourceComponent(is_data) => {
@@ -1601,6 +1617,19 @@ impl App {
                     scene.world.insert(slot_entity, CanvasClipComponent::from_data(cc_data));
                     new_slots.push(ComponentSlot::new::<CanvasClipComponent>(
                         slot_data.name, ComponentKind::CanvasClip, slot_entity));
+                }
+                layout_data @ (ComponentData::CanvasStackComponent(_)
+            | ComponentData::CanvasWrapComponent(_)
+            | ComponentData::CanvasGridComponent(_)
+            | ComponentData::CanvasLayoutItemComponent(_)
+            | ComponentData::CanvasSafeAreaComponent(_)) => {
+                    // レイアウトの部品（W2-1b の 5 種）をスロット専用エンティティへ復元する
+                    use crate::engine::structs::objects::actor::canvas_layout_slots;
+                    if let Some(slot) = canvas_layout_slots::insert_from_data(
+                        &mut scene.world, slot_entity, slot_data.name, &layout_data)
+                    {
+                        new_slots.push(slot);
+                    }
                 }
                 ComponentData::InteractionSourceComponent(is_data) => {
                     // インタラクションソースをスロット専用エンティティへ復元する

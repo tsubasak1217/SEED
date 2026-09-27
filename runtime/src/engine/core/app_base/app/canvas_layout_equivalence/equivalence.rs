@@ -121,6 +121,8 @@ fn build_table(rs: &RandomScene, frame: CanvasParentFrame, divisor: AutoScaleDiv
         root_auto_sizes: &rs.root_auto,
         design_space: rs.design_space,
         auto_scale_divisor: divisor,
+        // W2-1a の同値は画面の情報を使わない文脈で確かめる（dp・安全領域の部品を使わない木では結果に効かない）
+        screen: crate::engine::core::canvas_layout::CanvasScreenEnv::NONE,
     };
     CanvasLayoutPass::run(&rs.scene.actors, &rs.scene.world, TARGET_WORLD_LINE, frame, &env)
 }

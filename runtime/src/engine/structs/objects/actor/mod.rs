@@ -24,6 +24,8 @@
 // ============================================================
 
 pub mod visibility;
+/// レイアウトの部品（W2-1b の 5 種）のスロットの出し入れ（作成・保存・読込・削除・既定値・インスペクタの JSON）
+pub mod canvas_layout_slots;
 
 use std::any::TypeId;
 use serde::{Deserialize, Serialize};
@@ -511,6 +513,12 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
             world.get::<crate::engine::components::CanvasClipComponent>(slot.entity)
                 .map(|cc| ComponentData::CanvasClipComponent(cc.to_data()))
         }
+        // レイアウトの部品（W2-1b の 5 種）。種類ごとの変換は canvas_layout_slots にまとめてある
+        ComponentKind::CanvasStack
+        | ComponentKind::CanvasWrap
+        | ComponentKind::CanvasGrid
+        | ComponentKind::CanvasLayoutItem
+        | ComponentKind::CanvasSafeArea => canvas_layout_slots::to_data(world, slot),
         ComponentKind::InteractionSource => {
             // インタラクションソースをシリアライズ用データに変換する
             world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)

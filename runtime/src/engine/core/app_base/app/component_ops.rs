@@ -424,8 +424,13 @@ impl App {
                     // pivot: 3D キャンバス専用（Actor3D アタッチ時のみ有効）
                     // 注: スケールモード（scale_transform/scale_size/keep_aspect_ratio/
                     //     aspect_ratio_axis）は CanvasTransform 側へ移動したため、ここでは送らない。
+                    // unit: "px"（画素・デフォルト）| "dp"（端末に依らない単位。W2-1b）
+                    let unit_str = match d.unit {
+                        crate::engine::components::CanvasUnit::Px => "px",
+                        crate::engine::components::CanvasUnit::Dp => "dp",
+                    };
                     ("CanvasComponent", format!(
-                        r#","width":{:.4},"height":{:.4},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"gravity_mode":{gravity_mode_val},"draw_zone":"{draw_zone_str}","pivot_x":{:.4},"pivot_y":{:.4}{auto_size_json}"#,
+                        r#","width":{:.4},"height":{:.4},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"gravity_mode":{gravity_mode_val},"draw_zone":"{draw_zone_str}","unit":"{unit_str}","pivot_x":{:.4},"pivot_y":{:.4}{auto_size_json}"#,
                         d.width, d.height,
                         d.auto_scale       as u8,
                         d.pivot[0],
@@ -539,6 +544,17 @@ impl App {
                         d.shadow_color[2], d.shadow_color[3],
                         d.shadow_softness,
                     ))
+                }
+                layout_data @ (ComponentData::CanvasStackComponent(_)
+            | ComponentData::CanvasWrapComponent(_)
+            | ComponentData::CanvasGridComponent(_)
+            | ComponentData::CanvasLayoutItemComponent(_)
+            | ComponentData::CanvasSafeAreaComponent(_)) => {
+                    // レイアウトの部品（W2-1b の 5 種）: 値を serde の書式のまま "layout" の中へ入れて送る
+                    // （スロット共通の "enabled" と鍵がぶつからない。エディタは JSON を読むだけ）。
+                    crate::engine::structs::objects::actor::canvas_layout_slots::inspector_json(&layout_data)
+                        .map(|(type_name, json)| (type_name, json))
+                        .unwrap_or(("Unknown", String::new()))
                 }
                 ComponentData::CanvasClipComponent(d) => {
                     // 子を切り抜く（W2-1a）: 有効フラグをインスペクタへ送る。
@@ -1306,6 +1322,41 @@ impl App {
                     } else {
                         scene.world.despawn(slot_entity);
                         false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            type_name if crate::engine::structs::objects::actor::canvas_layout_slots::kind_of_type_name(type_name).is_some() => {
+                // レイアウトの部品（W2-1b の 5 種）: 既定値で追加する。種類ごとの既定値とスロットの作り方は
+                // canvas_layout_slots の表にある（付けた瞬間から、コンテナは子を並べ、安全領域は領域を縮める）。
+                use crate::engine::structs::objects::actor::canvas_layout_slots;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    let slot = canvas_layout_slots::kind_of_type_name(type_name)
+                        .and_then(canvas_layout_slots::default_data)
+                        .and_then(|data| canvas_layout_slots::insert_from_data(&mut scene.world, slot_entity, name, &data));
+                    let mut c = 0u32;
+                    match (slot, find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)) {
+                        (Some(slot), Some(actor)) => {
+                            actor.slots_mut().push(slot);
+                            true
+                        }
+                        _ => {
+                            scene.world.despawn(slot_entity);
+                            false
+                        }
                     }
                 };
                 if found {

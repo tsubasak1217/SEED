@@ -10,19 +10,37 @@
 //      2D 物理だけが子孫をたどるので、文脈は旧 collect_actor2d_contexts と同じ規則で素通しする）
 //    - 祖先までの世界線・active・visible をフラグにする（読み手ごとの打ち切り規則を表で表す）
 //    - 切り抜き（CanvasClipComponent）の領域を積み、各ノードへ切り抜きの番号を持たせる
+//    - レイアウトの部品（W2-1b）: ノードを置く順は
+//        1. 親のコンテナが割り当てた矩形があればそこへ（resolve_in_rect）。無ければ自分のアンカー・位置（resolve）
+//           で置き、CanvasLayoutItem の fill_* があれば親の領域に合わせる
+//        2. CanvasSafeArea があれば箱を安全領域の内側へ縮める（resize_box）
+//        3. コンテナ（CanvasStack・CanvasWrap・CanvasGrid）なら子を測って並べ（measure.rs・containers/）、
+//           子ごとの矩形を「割り当て待ち」に積む。fit の軸は箱を中身に合わせる
+//      子は必ずコンテナより後に訪ねる（深さ優先）ので、2 段の計算（測る → 並べる）が 1 回の走査の中で終わる。
+//      測った結果は覚えておき（LayoutMeasurer）、同じノードを同じ条件で 2 度測らない（ノード数に比例）。
+//      部品を使わない木では、従来とまったく同じ計算（resolve だけ）を通る。
 // ============================================================
+
+use std::collections::HashMap;
 
 use crate::engine::components::{
     CanvasClipComponent, CanvasComponent, CanvasTransform, ComponentKind, SpriteComponent,
 };
 use crate::engine::core::renderer::ui_clip::UiClipId;
-use crate::engine::ecs::World;
+use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
 use super::clip::{canvas_area_corners, has_room, sprite_rect_corners, CanvasClipRegion, ClipRectSource};
+use super::containers::spec::container_of;
+use super::containers::{clamp_size, Constraint, LayoutSlot, AXIS_X, AXIS_Y};
 use super::frame::{CanvasLayoutEnv, CanvasParentFrame};
-use super::placement::{pass_through_frame, resolve, CanvasNodeInput, CanvasNodePlacement};
-use super::table::{CanvasLayoutNode, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};
+use super::lookup::{layout_item_of, safe_area_of};
+use super::measure::{box_per_rect, container_inner, LayoutMeasurer};
+use super::placement::{
+    pass_through_frame, resize_box, resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement,
+};
+use super::safe_area::{inset_box, world_rect_to_local};
+use super::table::{CanvasLayoutNode, CanvasLayoutStats, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};
 
 /// 最上位ノードの深さ（当たり判定の「子を優先」の順位の起点）。
 const ROOT_DEPTH: u32 = 0;
@@ -65,11 +83,15 @@ impl CanvasLayoutPass {
                 nodes: Vec::new(),
                 clip_regions: Vec::new(),
                 world_line,
+                stats: CanvasLayoutStats::default(),
             },
+            pending_slots: HashMap::new(),
+            measurer: LayoutMeasurer::new(world),
         };
         for root in roots.iter().filter(|a| a.world_line == world_line) {
             builder.visit(root, None, root_frame, ROOT_DEPTH, ROOT_FLAGS, None);
         }
+        builder.table.stats.measure_calls = builder.measurer.measure_calls;
         builder.table
     }
 }
@@ -84,6 +106,10 @@ struct TableBuilder<'w, 'e> {
     world_line: u32,
     /// 組み立て中の表。
     table: CanvasLayoutTable,
+    /// コンテナが子へ割り当てた矩形（子を訪ねたときに取り出す。W2-1b）。
+    pending_slots: HashMap<Entity, LayoutSlot>,
+    /// ノードの大きさを測る道具（結果を覚えて、同じ条件で 2 度測らない。W2-1b）。
+    measurer: LayoutMeasurer<'w>,
 }
 
 impl<'w, 'e> TableBuilder<'w, 'e> {
@@ -118,14 +144,14 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
             // フォルダ: レイアウト上は存在しないものとして、文脈をそのまま子へ渡す（深さも進めない）
             (CanvasNodeKind::Folder, frame, depth, flags.in_2d_tree)
         } else if let Some(transform) = self.world.get::<CanvasTransform>(actor.entity) {
-            let placement = resolve(
+            let placement = self.place_node(
+                actor,
                 &frame,
                 &CanvasNodeInput {
                     entity: actor.entity,
                     transform,
                     canvas: layout_canvas_of(actor, self.world),
                 },
-                self.env,
             );
             let child_frame = placement.child_frame;
             (CanvasNodeKind::Placed(placement), child_frame, depth + 1, flags.in_2d_tree)
@@ -209,10 +235,8 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
                 sprite_rect_corners(
                     frame.world_rs,
                     &placement.eff_transform,
-                    [
-                        sprite.width * placement.size_scale[0],
-                        sprite.height * placement.size_scale[1],
-                    ],
+                    // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ。W2-1b）
+                    placement.sprite_size(sprite.width, sprite.height),
                 ),
                 ClipRectSource::FirstSprite,
             )
@@ -225,6 +249,152 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
             source,
         });
         Some(id)
+    }
+}
+
+impl<'w, 'e> TableBuilder<'w, 'e> {
+    /// CanvasTransform を持つノードの配置を決める（W2-1b のレイアウトの部品を含む）。
+    ///
+    /// 部品を使わないノード（割り当ても fill も安全領域もコンテナも無い）は `resolve` の結果そのまま。
+    fn place_node(
+        &mut self,
+        actor: &Actor,
+        frame: &CanvasParentFrame,
+        input: &CanvasNodeInput<'_>,
+    ) -> CanvasNodePlacement {
+        // ── 1. 親のコンテナの割り当て／自分のアンカー・位置（＋親に合わせる）──
+        let slot = self.pending_slots.remove(&actor.entity);
+        let mut placement = match &slot {
+            Some(slot) => {
+                self.table.stats.placed_by_layout += 1;
+                resolve_in_rect(frame, input, self.env, slot)
+            }
+            None => {
+                let resolved = resolve(frame, input, self.env);
+                match self.fill_parent_slot(actor, frame, &resolved) {
+                    Some(fill_slot) => {
+                        self.table.stats.placed_by_layout += 1;
+                        resolve_in_rect(frame, input, self.env, &fill_slot)
+                    }
+                    None => resolved,
+                }
+            }
+        };
+
+        // ── 2. 安全領域（CanvasComponent を持つノードの箱を縮める）──
+        let safe_applied = self.apply_safe_area(actor, frame, &mut placement);
+
+        // ── 3. コンテナ（子を測って並べ、子ごとの矩形を割り当て待ちに積む）──
+        let child_cumul = placement.child_frame.cumul_scale;
+        let Some(spec) = container_of(actor, self.world, child_cumul) else {
+            return placement;
+        };
+        self.table.stats.containers += 1;
+        let pad = spec.padding_sum();
+        let inner: Constraint = match (&slot, safe_applied) {
+            // 親のコンテナの下: 親が測ったときと同じ条件で箱を決める（測った結果の表を引ける）
+            (Some(slot), false) => {
+                let preferred = layout_item_of(actor, self.world).map_or([None, None], |it| it.preferred());
+                let tight: Constraint = [AXIS_X, AXIS_Y].map(|a| {
+                    slot.fill[a]
+                        .then_some(slot.size[a])
+                        .or(preferred[a].map(|p| p * placement.size_scale[a]))
+                });
+                let canvas_box = input.canvas.map(|cc| [cc.width * child_cumul[AXIS_X], cc.height * child_cumul[AXIS_Y]]);
+                container_inner(tight, canvas_box, &spec, box_per_rect(child_cumul, placement.size_scale))
+            }
+            // それ以外: 実際の箱（安全領域で縮めた・親に合わせた後）。fit の軸と箱の無い軸は中身に合わせる
+            _ => {
+                let assigned = placement.layout_rect.is_some();
+                let has_canvas = placement.canvas_base.is_some();
+                let box_size = placement.box_size();
+                [AXIS_X, AXIS_Y].map(|a| match box_size {
+                    Some(b) if assigned || (has_canvas && !spec.fit[a]) => Some((b[a] - pad[a]).max(0.0)),
+                    _ => None,
+                })
+            }
+        };
+        let (items, arrangement) = self.measurer.arrange_children(actor, &spec, child_cumul, inner);
+
+        // 中身に合わせる（CanvasComponent を持ち、親のコンテナの割り当てが無いときだけ。割り当てがあれば割り当てが勝つ）
+        if slot.is_none() && placement.canvas_base.is_some() && (spec.fit[AXIS_X] || spec.fit[AXIS_Y]) {
+            if let Some(box_size) = placement.box_size() {
+                let new_box = [AXIS_X, AXIS_Y].map(|a| if spec.fit[a] { arrangement.content[a] } else { box_size[a] });
+                placement = resize_box(&placement, frame, [0.0, 0.0], new_box);
+                // 中身に合わせた軸は、ノードのスプライト（背景の板）も新しい大きさで描く
+                for a in [AXIS_X, AXIS_Y] {
+                    if spec.fit[a] {
+                        placement.sprite_fill[a] = Some(placement.eff_size[a]);
+                    }
+                }
+            }
+        }
+
+        for (item, item_slot) in items.iter().zip(arrangement.slots) {
+            self.pending_slots.insert(item.entity, item_slot);
+        }
+        placement
+    }
+
+    /// 親に合わせる（CanvasLayoutItem.fill_*）ときの矩形（コンテナの外のノード。W2-1b）。
+    ///
+    /// 合わせる軸は親の箱（親の CanvasComponent の領域 × 累積スケール＝子のアンカーの基準と同じ）の全体、
+    /// 合わせない軸は自分の大きさで、`resolve` が決めた位置のまま。最上位（親が居ない）では使わない。
+    fn fill_parent_slot(
+        &mut self,
+        actor: &Actor,
+        frame: &CanvasParentFrame,
+        resolved: &CanvasNodePlacement,
+    ) -> Option<LayoutSlot> {
+        if frame.is_root() {
+            return None;
+        }
+        let item = layout_item_of(actor, self.world)?;
+        let fill = item.fill();
+        if !fill[AXIS_X] && !fill[AXIS_Y] {
+            return None;
+        }
+        let basis = frame.anchor_basis?;
+        let parent_box = [basis[AXIS_X] * frame.cumul_scale[AXIS_X], basis[AXIS_Y] * frame.cumul_scale[AXIS_Y]];
+        let natural = self.measurer.natural_size(actor, frame.cumul_scale);
+        let (min, max) = (item.min(), item.max());
+        let pos = resolved.eff_transform.position;
+        let pivot = resolved.eff_transform.pivot;
+        let size_scale = resolved.size_scale;
+        let mut slot = LayoutSlot { origin: [0.0; 2], size: [0.0; 2], fill };
+        for a in [AXIS_X, AXIS_Y] {
+            if fill[a] {
+                slot.size[a] = clamp_size(parent_box[a], min[a] * size_scale[a], max[a] * size_scale[a]);
+                slot.origin[a] = 0.0;
+            } else {
+                slot.size[a] = natural[a];
+                slot.origin[a] = pos[a] - pivot[a] * natural[a];
+            }
+        }
+        Some(slot)
+    }
+
+    /// 安全領域の部品があれば、ノードの箱を安全領域の内側へ縮める（W2-1b）。
+    ///
+    /// # 戻り値
+    /// 縮めた（部品が有効で、画面の安全領域があり、ノードが CanvasComponent を持つ）なら true。
+    fn apply_safe_area(
+        &mut self,
+        actor: &Actor,
+        frame: &CanvasParentFrame,
+        placement: &mut CanvasNodePlacement,
+    ) -> bool {
+        let Some(safe_world) = self.env.screen.safe_area else { return false };
+        if placement.canvas_base.is_none() {
+            return false;
+        }
+        let Some(component) = safe_area_of(actor, self.world) else { return false };
+        let Some(box_size) = placement.box_size() else { return false };
+        let safe_local = world_rect_to_local(&placement.world_rs, safe_world);
+        let rect = inset_box(box_size, safe_local, component.edges());
+        *placement = resize_box(placement, frame, rect.min, rect.size());
+        self.table.stats.safe_areas += 1;
+        true
     }
 }
 

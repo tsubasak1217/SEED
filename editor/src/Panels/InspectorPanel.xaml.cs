@@ -858,6 +858,9 @@ public partial class InspectorPanel : UserControl
         // CanvasComponent 用描画ゾーン（"foreground"=3Dワールドの手前・デフォルト / "background"=奥）
         // ビューポート所属のルートキャンバスのみ UI に表示する
         string DrawZone = "foreground",
+        // CanvasComponent 用寸法の単位（"px"=画素・デフォルト / "dp"=端末に依らない単位。W2-1b）
+        // ビューポート所属のルートキャンバスのみ UI に表示する
+        string CanvasUnit = CanvasUnitPx,
         // CanvasComponent 用自動解像度（ビューポート・ルートキャンバスのみランタイムが送信。
         // プロジェクト設定解像度×参照カメラのスケーリングモードから算出された読み取り専用値）
         float AutoW = 0f, float AutoH = 0f,
@@ -1148,6 +1151,9 @@ public partial class InspectorPanel : UserControl
         // ── CanvasClipComponent 用フィールド（W2-1a）──
         // 有効フラグ（既定 true。Rust 側 CanvasClipComponentData と一致）。
         bool CanvasClipEnabled = CanvasClipEnabledDefault,
+        // ── レイアウトの部品（CanvasStack・Wrap・Grid・LayoutItem・SafeArea。W2-1b）──
+        // ランタイムが serde の書式のまま "layout" に入れて送る値（生の JSON。InspectorPanel.CanvasLayout.cs が読む）。
+        string CanvasLayoutJson = CanvasLayoutEmptyJson,
         // ── ControlPointComponent 用フィールド（フェーズB）──────
         // 制御点配列は「生 JSON 文字列」のまま保持する。1 点が position/rotation/time/interp の
         // 4 属性を持つため、独自の区切り記法（"x,y,z;..." 等）を作るとエスケープと拡張で破綻する。
@@ -1493,6 +1499,8 @@ public partial class InspectorPanel : UserControl
             var gravityMode = comp.TryGetProperty("gravity_mode", out var gm)  ? gm.GetInt32()  : 0;
             // CanvasComponent 用: 描画ゾーン（"foreground" / "background"）
             var drawZone = comp.TryGetProperty("draw_zone", out var dzj) ? dzj.GetString() ?? "foreground" : "foreground";
+            // CanvasComponent 用: 寸法の単位（"px" / "dp"。W2-1b）
+            var canvasUnit = comp.TryGetProperty("unit", out var cuj) ? cuj.GetString() ?? CanvasUnitPx : CanvasUnitPx;
             // CanvasComponent 用: 自動解像度（ビューポート・ルートキャンバスのみ送信される）
             var autoW = comp.TryGetProperty("auto_w", out var awj) ? awj.GetSingle() : 0f;
             var autoH = comp.TryGetProperty("auto_h", out var ahj) ? ahj.GetSingle() : 0f;
@@ -1803,6 +1811,8 @@ public partial class InspectorPanel : UserControl
             // 【重要】キーは "clip_enabled"。スロット共通の "enabled"(数値0/1)とキー重複させると
             // GetProperty が数値側を返し GetBoolean() が例外になる（InteractionSource の既往リグレッション）。
             var canvasClipEnabled = comp.TryGetProperty("clip_enabled", out var cce) ? cce.GetBoolean() : CanvasClipEnabledDefault;
+            // レイアウトの部品（W2-1b）: 値の JSON を生のまま持つ（鍵 "layout" はスロット共通の "enabled" とぶつからない）
+            var canvasLayoutJson = comp.TryGetProperty(CanvasLayoutJsonKey, out var clj) ? clj.GetRawText() : CanvasLayoutEmptyJson;
             // ControlPointComponent 用（フェーズB）: 制御点配列を生 JSON のまま保持する。
             // 要素は {"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"..."}。欠落時は空配列。
             var controlPointsJson = comp.TryGetProperty("points", out var cpp) ? cpp.GetRawText() : "[]";
@@ -1832,6 +1842,7 @@ public partial class InspectorPanel : UserControl
                 VpRefType: vpRefType, VpRefActor: vpRefActor, VpRefSlot: vpRefSlot,
                 GravityMode: gravityMode,
                 DrawZone: drawZone,
+                CanvasUnit: canvasUnit,
                 AutoW: autoW, AutoH: autoH,
                 Canvas3dPivotX: canvas3dPivotX, Canvas3dPivotY: canvas3dPivotY,
                 TexturePath: texPath, SpriteR: sprR, SpriteG: sprG, SpriteB: sprB, SpriteA: sprA,
@@ -1975,6 +1986,8 @@ public partial class InspectorPanel : UserControl
                 InteractionStampSizeZ: stampSizeZ,
                 // CanvasClipComponent 用フィールド（W2-1a）
                 CanvasClipEnabled: canvasClipEnabled,
+                // レイアウトの部品（W2-1b）
+                CanvasLayoutJson: canvasLayoutJson,
                 // ControlPointComponent 用フィールド
                 ControlPointsJson: controlPointsJson,
                 ControlPointClosed: controlPointClosed,
@@ -2113,6 +2126,9 @@ public partial class InspectorPanel : UserControl
         "LineRendererComponent" => Color.FromRgb(0x1E, 0x2E, 0x24), // 暗い青緑（線描画。パス系の紫と区別する）
         "TextComponent"       => Color.FromRgb(0x2A, 0x24, 0x38), // 暗い藤色（UI 系。Sprite と並べても識別できるトーン）
         "CanvasClipComponent" => Color.FromRgb(0x24, 0x2A, 0x38), // 暗い青灰（UI 系。Text の藤色と区別できるトーン）
+        // レイアウトの部品（W2-1b）: UI 系の暗い青緑でまとめる（切り抜きの青灰・テキストの藤色と区別できるトーン）
+        "CanvasStackComponent" or "CanvasWrapComponent" or "CanvasGridComponent"
+            or "CanvasLayoutItemComponent" or "CanvasSafeAreaComponent" => Color.FromRgb(0x1E, 0x2C, 0x32),
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -2143,6 +2159,11 @@ public partial class InspectorPanel : UserControl
         "LineRendererComponent" => "Line Renderer",
         "TextComponent"       => "Text",
         "CanvasClipComponent" => "Canvas Clip",
+        "CanvasStackComponent" => "Canvas Stack",
+        "CanvasWrapComponent" => "Canvas Wrap",
+        "CanvasGridComponent" => "Canvas Grid",
+        "CanvasLayoutItemComponent" => "Canvas Layout Item",
+        "CanvasSafeAreaComponent" => "Canvas Safe Area",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -2414,6 +2435,12 @@ public partial class InspectorPanel : UserControl
             "LineRendererComponent" => BuildLineRendererSlotContent(info),
             "TextComponent" => BuildTextSlotContent(info),
             "CanvasClipComponent" => BuildCanvasClipSlotContent(info),
+            // レイアウトの部品（W2-1b。InspectorPanel.CanvasLayout.cs）
+            "CanvasStackComponent" => BuildCanvasStackSlotContent(info),
+            "CanvasWrapComponent" => BuildCanvasWrapSlotContent(info),
+            "CanvasGridComponent" => BuildCanvasGridSlotContent(info),
+            "CanvasLayoutItemComponent" => BuildCanvasLayoutItemSlotContent(info),
+            "CanvasSafeAreaComponent" => BuildCanvasSafeAreaSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -9676,6 +9703,9 @@ public partial class InspectorPanel : UserControl
                 _runtime?.SendToRuntime($"SET_CANVAS_DRAW_ZONE:{_currentActorId},{info.SlotIdx},{zone}");
             }
             cmbZone.SelectionChanged += (_, _) => CommitDrawZone();
+
+            // ── 寸法の単位（W2-1b。ルートキャンバスだけ。子キャンバスはルートの単位に従う）──
+            sp.Children.Add(BuildCanvasUnitSection(info));
         }
 
         // ── 自動スケール セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────

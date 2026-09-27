@@ -582,11 +582,11 @@ Android 17 になった（その後の試験はすべて Android 17。W1-4b ま�
 
 | 部品・機能 | 状態 | 根拠 |
 |---|---|---|
-| レイアウト（縦・横・グリッドの自動配置） | **無し**。`CanvasTransform` の位置とアンカーを 1 つずつ指定するだけ | `runtime/src/engine/components/canvas_transform.rs` |
+| レイアウト（縦・横・グリッドの自動配置） | **無し**。`CanvasTransform` の位置とアンカーを 1 つずつ指定するだけ → **W2-1b で `CanvasStack`・`CanvasWrap`・`CanvasGrid`・`CanvasLayoutItem`**（`canvas_layout/containers/`） | `runtime/src/engine/components/canvas_transform.rs` |
 | アンカーの伝わり方 | アンカーは親の `CanvasComponent` の領域に対する比率。**`CanvasComponent` を持たない親の子ではアンカーが効かない**。2D ノードのレイアウト計算が 5 か所に重複している | `app/canvas_collect.rs:62,106,126`、backlog「2D ノードのレイアウト計算が 5 か所に重複コピーされている」 |
 | 解像度への追従 | ルートキャンバスの `auto_scale`（基準 1920×1080）。**縦画面では縦横別々の倍率が掛かり形が崩れる**。基準より大きいキャンバスは縮小しない | `canvas_component.rs:130-265`、backlog（Android 節「縦画面でキャンバスの自動スケールが縦横別々に掛かる」・「キャンバスの `auto_scale` が…縮小しない」） |
-| DPI・dp | 換算は無い（`Screen.DPI` を返すだけ） | `Screen.cs:116-127` |
-| 安全領域 | 値は取れる（`Screen.SafeArea`）。**キャンバスへ自動では効かない** | scripting_api §7.12、backlog「キャンバス UI へ安全領域を自動で反映する仕組みが無い」 |
+| DPI・dp | 換算は無い（`Screen.DPI` を返すだけ）→ **W2-1b でルートキャンバスの単位 dp**（`CanvasComponent.unit`。1 dp = 表示倍率の画素） | `Screen.cs:116-127`・`canvas_layout/units.rs` |
+| 安全領域 | 値は取れる（`Screen.SafeArea`）。**キャンバスへ自動では効かない** → **W2-1b で `CanvasSafeAreaComponent`**（辺ごとに縮める。回転・システムバーに追従） | scripting_api §7.12、backlog「キャンバス UI へ安全領域を自動で反映する仕組みが無い」 |
 | クリップ（はみ出しの切り取り・シザー） | **無し**（Draw・スプライト・テキストのどれにも）→ **W2-1a で矩形の切り抜きを本番化**（`CanvasClipComponent`。スプライト・テキスト・2D パーティクル・Draw の図形・当たり判定） | `primitive2d/`・`ui_draw_pass.rs`・`canvas_layout/clip.rs` |
 | スクロール・慣性 | **無し**（前提のクリップも無い） | — |
 | 当たり判定 | Sprite / SkinnedSprite の `raycast_target` だけ（**Text は対象外**）。最前面の 1 つに `OnPointer*`。**指0 の 1 本だけ**。押下の取り消し（スクロールが始まったら押下をやめる）は無い | `pick_2d.rs:46-49,91-96`、`pointer_events.rs`、backlog「キャンバス UI のポインタイベントは指0 の 1 本だけ」 |
@@ -813,7 +813,7 @@ W2 でいちばん不確かな 3 点（Android の文字入力・切り抜きの
 
 | 段階 | W2-0 を受けて変えたこと | 規模（旧 → 新） |
 |---|---|---|
-| W2-1 | **1a 済・1b 残**（2026-09-27）。**W2-1a（済）**: 2D ノードのレイアウト計算を `engine/core/canvas_layout`（純関数 `resolve` と木を 1 回たどる `CanvasLayoutPass`・表 `CanvasLayoutTable`）へ一本化し、描画・キャンバス枠・ID 描画・当たり判定・2D 物理はこの表を読むだけにした（旧 5 か所とランダムな木 3,000 個でビット単位の一致を確認。WarashibeFishing の画面と当たり判定は不変）。切り抜きを本番化: `CanvasClipComponent`（インスペクタ・スクリプト `SEED.CanvasClip.Enabled`）、スプライト・テキスト・2D パーティクル・`SEED.Draw` の図形を scissor で切り、メインパスはビューポートと交差、当たり判定も切り抜きの内側だけ（docs/canvas_camera_rework.md §6）。**W2-1b（残）**: `Stack`・`Wrap`・`Grid`・dp・安全領域の部品、エディタの GPU の ID 描画の切り抜き | 3〜4 → 3〜4（1a で約 2、1b が残り 1.5〜2） |
+| W2-1 | **済**（2026-09-27〜28。W2-1a・W2-1b）。**W2-1a（済）**: 2D ノードのレイアウト計算を `engine/core/canvas_layout`（純関数 `resolve` と木を 1 回たどる `CanvasLayoutPass`・表 `CanvasLayoutTable`）へ一本化し、描画・キャンバス枠・ID 描画・当たり判定・2D 物理はこの表を読むだけにした（旧 5 か所とランダムな木 3,000 個でビット単位の一致を確認。WarashibeFishing の画面と当たり判定は不変）。切り抜きを本番化: `CanvasClipComponent`（インスペクタ・スクリプト `SEED.CanvasClip.Enabled`）、スプライト・テキスト・2D パーティクル・`SEED.Draw` の図形を scissor で切り、メインパスはビューポートと交差、当たり判定も切り抜きの内側だけ（docs/canvas_camera_rework.md §6）。**W2-1b（済）**: レイアウトのコンテナ `CanvasStack`・`CanvasWrap`・`CanvasGrid` と子の側の指定 `CanvasLayoutItem`（伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる）を `CanvasLayoutPass` の中で測って並べる（2 段の計算を 1 回の走査の中で。測る回数はノード数に比例）。コンテナの配置は子のアンカー・位置より優先し、伸ばした軸は子の Sprite も矩形いっぱいに描く。dp はルートキャンバスの `CanvasComponent.unit`（px 既定・dp）。安全領域の部品 `CanvasSafeAreaComponent`（辺ごと。フレームごとの画面の写しから読むので回転・システムバーに追従）。エディタの GPU の ID 描画も切り抜く。3D ワールドキャンバスの子の ID・枠の走査も表を読む形へ寄せた。インスペクタ・シリアライズ・IPC・スクリプト（`SEED.CanvasStack` など）まで通した。PC の検証用に `SEED_SIM_SAFE_AREA`・`SEED_SIM_SCALE_FACTOR`（docs/canvas_camera_rework.md §6.3〜6.5） | 3〜4 → 3〜4（1a で約 2、1b で約 2） |
 | W2-2 | 変わらず | 2 |
 | **W2-10a（新）** | 「描く理由」の API と判定だけを先に作る（既定で無効のプロジェクト設定・スクリプトの要求・「動いている」の申告・JNI と IPC の起こし）。W2-3 以降の部品がこれに沿って作れるように、W2-2 の後に置く | 1 |
 | W2-3 | 変わらず（切り抜きは W2-1 で済む）。画面外の行を描画アイテムにしない | 2〜3 |
@@ -829,7 +829,7 @@ W2 でいちばん不確かな 3 点（Android の文字入力・切り抜きの
 **合計の目安（W2-0 を除く）: 21〜28 → 23〜29 段階相当**（§3.7 の表の W2-1〜W2-11 の和との比較。W2-10a と W2-4・W2-6 の分だけ増えた）。
 上振れしやすい所は、レイアウトの重複の整理（W2-1）と、日本語の変換中の表示（W2-6b）に移った。IME の経路の不確かさ（E-06）は解けた。
 
-**最初に着手すべき段階: W2-1（土台）**（2026-09-27 に W2-1a として (1)(2) を済ませた。残りは (3)(4) の W2-1b）。すべての部品がレイアウト・切り抜き・当たり判定に乗るため。順は (1) 2D ノードのレイアウトの計算を 1 つの走査に寄せ、
+**最初に着手すべき段階: W2-1（土台）**（2026-09-27 に W2-1a として (1)(2)、2026-09-28 に W2-1b として (3)(4) を済ませた。次は W2-2 の入力）。すべての部品がレイアウト・切り抜き・当たり判定に乗るため。順は (1) 2D ノードのレイアウトの計算を 1 つの走査に寄せ、
 その出力（ノードの矩形・切り抜きの番号・レイヤー）を描画と当たり判定で共有する → (2) 切り抜きのコンポーネント（試作の本番化）→ (3) `UiRect`・`Stack`・`Wrap`・`Grid`・
 dp → (4) 安全領域の部品。**W2-6a（文字入力の受け口）は触る場所（Java・JNI・入力）が W2-1 と重ならないので、別の worktree で並べて進められる。**
 

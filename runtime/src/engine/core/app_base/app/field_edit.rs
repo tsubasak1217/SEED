@@ -152,6 +152,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetInteractionField", key),
         IpcCommand::SetCanvasClipField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetCanvasClipField", key),
+        IpcCommand::SetCanvasLayoutField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetCanvasLayoutField", key),
+        IpcCommand::SetCanvasUnit { actor_dfs_id, slot_idx, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetCanvasUnit", ""),
         IpcCommand::SetCoverField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetCoverField", key),
         // 制御点の **点列** は control_point_ops.rs が自前で Undo を積むが、
@@ -796,6 +800,15 @@ pub(super) fn apply_component_data_in_place(
             world.insert(entity, CanvasClipComponent::from_data(d.clone()));
             SlotApply::Applied
         }
+        // レイアウトの部品（W2-1b の 5 種）は値だけの純データ。値の詰め替えで復元できる。
+        ComponentData::CanvasStackComponent(_)
+        | ComponentData::CanvasWrapComponent(_)
+        | ComponentData::CanvasGridComponent(_)
+        | ComponentData::CanvasLayoutItemComponent(_)
+        | ComponentData::CanvasSafeAreaComponent(_) => {
+            crate::engine::structs::objects::actor::canvas_layout_slots::apply_in_place(world, entity, data);
+            SlotApply::Applied
+        }
         // カバーエミッタ（I3.1）は純粋な値の詰め替えだけで復元できる
         // （GPU 資源も CLR インスタンスも持たない）。
         ComponentData::CoverEmitterComponent(d) => {
@@ -1109,6 +1122,11 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::LineRendererComponent(_) => ComponentKind::LineRenderer,
         ComponentData::TextComponent(_) => ComponentKind::Text,
         ComponentData::CanvasClipComponent(_) => ComponentKind::CanvasClip,
+        ComponentData::CanvasStackComponent(_) => ComponentKind::CanvasStack,
+        ComponentData::CanvasWrapComponent(_) => ComponentKind::CanvasWrap,
+        ComponentData::CanvasGridComponent(_) => ComponentKind::CanvasGrid,
+        ComponentData::CanvasLayoutItemComponent(_) => ComponentKind::CanvasLayoutItem,
+        ComponentData::CanvasSafeAreaComponent(_) => ComponentKind::CanvasSafeArea,
     }
 }
 

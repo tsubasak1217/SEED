@@ -454,6 +454,8 @@ pub(super) fn walk_pick_candidates_2d(
         root_auto_sizes,
         design_space,
         auto_scale_divisor: AutoScaleDivisor::GuardEpsilon,
+        // dp のルート・安全領域は描画と同じ値（フレームごとに公開された画面の情報。W2-1b）
+        screen: super::canvas_screen_env::screen_env_for(viewport_size, design_space),
     };
     let table = CanvasLayoutPass::run(
         actors,
@@ -526,8 +528,8 @@ pub(super) fn pick_candidates_from_table(
                     if filter.require_raycast_target && !sc.raycast_target {
                         continue;
                     }
-                    let eff_w = sc.width * size_sc_x;
-                    let eff_h = sc.height * size_sc_y;
+                    // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ。W2-1b）
+                    let [eff_w, eff_h] = placement.sprite_size(sc.width, sc.height);
                     let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
                     if hit_test_rect_2d(canvas_x, canvas_y, &m, eff_w, eff_h) {
                         out.push(PickCand2d {

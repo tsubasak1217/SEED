@@ -935,15 +935,8 @@ pub fn build_actor(
             }
             ComponentData::CanvasComponent(cc_data) => {
                 use crate::engine::components::CanvasComponent;
-                world.insert(slot_entity, CanvasComponent {
-                    width:             cc_data.width,
-                    height:            cc_data.height,
-                    auto_scale:        cc_data.auto_scale,
-                    viewport_ref:      cc_data.viewport_ref.clone(),
-                    gravity_mode:      cc_data.gravity_mode,
-                    draw_zone:         cc_data.draw_zone,
-                    pivot:             cc_data.pivot,
-                });
+                // 復元は from_data 経由（フィールドを足したときの写し漏れを防ぐ。W2-1b の unit で直した）
+                world.insert(slot_entity, CanvasComponent::from_data(cc_data.clone()));
                 actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
             }
             ComponentData::SpriteComponent(sc_data) => {
@@ -1033,6 +1026,20 @@ pub fn build_actor(
                 world.insert(slot_entity, CanvasClipComponent::from_data(cc_data));
                 actor.add_slot_typed::<CanvasClipComponent>(
                     slot_name, ComponentKind::CanvasClip, slot_entity);
+            }
+            layout_data @ (ComponentData::CanvasStackComponent(_)
+            | ComponentData::CanvasWrapComponent(_)
+            | ComponentData::CanvasGridComponent(_)
+            | ComponentData::CanvasLayoutItemComponent(_)
+            | ComponentData::CanvasSafeAreaComponent(_)) => {
+                // レイアウトの部品（W2-1b の 5 種）を ECS ワールドに挿入してスロットを登録する
+                // （種類ごとの処理は canvas_layout_slots にまとめてある）
+                use crate::engine::structs::objects::actor::canvas_layout_slots;
+                if let Some(slot) =
+                    canvas_layout_slots::insert_from_data(world, slot_entity, slot_name, &layout_data)
+                {
+                    actor.slots_mut().push(slot);
+                }
             }
             ComponentData::InteractionSourceComponent(is_data) => {
                 // インタラクションソースを ECS ワールドに挿入してスロットを登録する

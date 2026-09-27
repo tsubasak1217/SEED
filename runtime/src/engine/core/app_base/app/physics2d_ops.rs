@@ -166,6 +166,8 @@ pub(crate) fn collect_actor2d_contexts(
         root_auto_sizes,
         design_space,
         auto_scale_divisor: AutoScaleDivisor::GuardEpsilon,
+        // dp のルート・安全領域は描画と同じ値（フレームごとに公開された画面の情報。W2-1b）
+        screen: super::canvas_screen_env::screen_env_for(viewport_size, design_space),
     };
     let table = CanvasLayoutPass::run(
         &scene.actors,
@@ -255,7 +257,11 @@ fn physics_contexts_from_table(
             placement.eff_viewport,
             design_space,
         );
-        let eff_pos_local = if sm_transform {
+        // レイアウトの部品（W2-1b）が矩形を決めたノードは、表の有効位置（コンテナ・安全領域が決めた位置）を使う。
+        // それ以外は旧 collect_actor2d_contexts の計算のまま（描画との食い違いは直さない。docs/backlog.md）
+        let eff_pos_local = if placement.layout_adjusted {
+            placement.eff_transform.position
+        } else if sm_transform {
             [
                 ct.position[0] * parent_cumul_scale[0] + anchor_off[0],
                 ct.position[1] * parent_cumul_scale[1] + anchor_off[1],
@@ -274,15 +280,20 @@ fn physics_contexts_from_table(
         let actor_world_rot = parent.world_rot + ct.rotation.to_radians();
 
         // ── 子への文脈（旧実装どおり: pivot の基準の大きさはアスペクト比維持を見ない）──
-        let (canvas_eff_w, canvas_eff_h) = placement
-            .canvas_base
-            .map(|[bw, bh]| {
-                (
-                    bw * if sm_size { parent_cumul_scale[0] } else { 1.0 },
-                    bh * if sm_size { parent_cumul_scale[1] } else { 1.0 },
-                )
-            })
-            .unwrap_or((1.0, 1.0));
+        let (canvas_eff_w, canvas_eff_h) = if placement.layout_adjusted {
+            // レイアウトが決めた矩形（W2-1b。表の行列の pivot の基準と同じ）
+            (placement.eff_size[0], placement.eff_size[1])
+        } else {
+            placement
+                .canvas_base
+                .map(|[bw, bh]| {
+                    (
+                        bw * if sm_size { parent_cumul_scale[0] } else { 1.0 },
+                        bh * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+                    )
+                })
+                .unwrap_or((1.0, 1.0))
+        };
         let pvx = ct.pivot[0] * canvas_eff_w;
         let pvy = ct.pivot[1] * canvas_eff_h;
         let (sin_a, cos_a) = actor_world_rot.sin_cos();
@@ -293,9 +304,12 @@ fn physics_contexts_from_table(
         // 旧実装どおり: 子のアンカー基準はサイズ倍率を掛けた大きさ
         let [phys_sc_x, phys_sc_y] = placement.size_scale;
         child_frames.push(PhysicsFrame {
-            anchor_basis: child_anchor_basis(
-                placement.canvas_base.map(|[bw, bh]| [bw * phys_sc_x, bh * phys_sc_y]),
-            ),
+            // レイアウトが矩形を決めたノード（W2-1b）は表のアンカーの基準（描画と同じ）
+            anchor_basis: if placement.layout_adjusted {
+                placement.child_frame.anchor_basis
+            } else {
+                child_anchor_basis(placement.canvas_base.map(|[bw, bh]| [bw * phys_sc_x, bh * phys_sc_y]))
+            },
             canvas_origin: child_canvas_origin,
             world_rot: actor_world_rot,
         });

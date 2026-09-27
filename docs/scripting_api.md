@@ -1826,6 +1826,95 @@ gameObject.HasComponent("CanvasClip")   // 付いているか
 
 > **重要**: 入れ子にすると外側の枠との重なりで切ります（深さの上限なし）。回転したノードは 4 隅の外接矩形で切ります。3D ワールドキャンバス（Actor3D + Canvas）の配下と、`SEED.Draw` のスクリーンスペース（`space: null`）の図形は切り抜きません。スロットの見出しの有効・無効と `Enabled` の両方が有効のときだけ切り抜きます。
 
+### CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem（レイアウトの部品：縦横の並び・折り返し・格子）
+
+2D キャンバスのノードに**コンテナ**（インスペクタの「コンポーネント追加 → UI → Canvas Stack / Canvas Wrap / Canvas Grid」）を付けると、
+子（フォルダの中の子も含む）の位置と大きさを**コンテナが決めます**（W2-1b）。子の `Anchor`・`Position` は使われません。
+子の大きさは「自分の大きさ」（CanvasComponent → 最初の Sprite → Text の枠 → `CanvasLayoutItem.PreferredSize`）か、
+「伸ばす」（`CanvasLayoutItem.Flex`・交差軸の `CrossAlign.Stretch`・Grid のセルいっぱい）です。伸ばした子の Sprite は矩形いっぱいに描かれます。
+大きさ・間隔・余白は**キャンバスの単位**（Sprite の幅・高さと同じ。dp のルートなら dp）。変更は次のフレームのレイアウトから効きます。
+
+```csharp
+// 縦・横に 1 列に並べる
+if (gameObject.GetComponent<CanvasStack>() is { } stack)
+{
+    stack.Enabled          // bool（get/set。既定 true。false の間は子が自分の Anchor・Position に戻る）
+    stack.Direction        // LayoutDirection（get/set。Vertical（既定）/ Horizontal）
+    stack.Spacing          // float（get/set。子の間隔）
+    stack.Padding          // CanvasPadding（get/set。内側の余白。new CanvasPadding(左, 上, 右, 下) / CanvasPadding.All(8)）
+    stack.MainAlign        // MainAlign（get/set。Start / Center / End / SpaceBetween / SpaceAround / SpaceEvenly）
+    stack.CrossAlign       // CrossAlign（get/set。Start / Center / End / Stretch（交差軸いっぱい））
+    stack.Reverse          // bool（get/set。逆順に並べる）
+    stack.FitWidth         // bool（get/set。CanvasComponent を持つコンテナの幅を中身に合わせる）
+    stack.FitHeight        // bool（get/set。同じく高さ。CanvasComponent が無いコンテナは常に中身の大きさ）
+    stack.HiddenChildren   // HiddenChildren（get/set。Collapse（既定・詰める）/ KeepSpace（場所を残す））
+    stack.IsValid          // bool（この参照が生きているか）
+}
+
+// 折り返して並べる（チップの 2 段など）
+if (gameObject.GetComponent<CanvasWrap>() is { } wrap)
+{
+    wrap.Direction         // LayoutDirection（get/set。既定 Horizontal = 左から右へ並べて下へ折り返す）
+    wrap.Spacing           // float（get/set。同じ行の子の間隔）
+    wrap.RunSpacing        // float（get/set。行の間隔）
+    wrap.Padding           // CanvasPadding（get/set）
+    wrap.MainAlign         // MainAlign（get/set。行の中の揃え）
+    wrap.CrossAlign        // CrossAlign（get/set。行の中の交差軸の揃え。Stretch は行の高さまで）
+    wrap.RunAlign          // MainAlign（get/set。行の塊の揃え）
+    wrap.Enabled / wrap.FitWidth / wrap.FitHeight / wrap.HiddenChildren   // Stack と同じ
+}
+
+// 格子に並べる（月の 3×4・庭の 8×6 など）
+if (gameObject.GetComponent<CanvasGrid>() is { } grid)
+{
+    grid.Columns           // int（get/set。1 以上で固定、0 でセルの最小幅から自動。既定 3）
+    grid.CellMinWidth      // float（get/set。自動の列数に使うセルの最小幅）
+    grid.CellAspectRatio   // float（get/set。セルの幅 ÷ 高さ。1 = 正方形、0 以下 = 行の高さは中身）
+    grid.Spacing           // Vector2（get/set。x = 列の間隔、y = 行の間隔）
+    grid.Padding           // CanvasPadding（get/set）
+    grid.CellAlign         // CrossAlign（get/set。セルの中の置き方。既定 Stretch = セルいっぱい）
+    grid.Enabled / grid.FitWidth / grid.FitHeight / grid.HiddenChildren   // Stack と同じ
+}
+
+// コンテナの子の側の指定（付けなくても子は自分の大きさ・コンテナの揃えで並ぶ）
+if (gameObject.GetComponent<CanvasLayoutItem>() is { } item)
+{
+    item.IgnoreLayout      // bool（get/set。コンテナに無視させる＝自分の Anchor・Position のまま）
+    item.Flex              // float（get/set。CanvasStack の主軸の余りを分ける重み。0 = 伸ばさない）
+    item.PreferredSize     // Vector2（get/set。大きさの指定。0 の軸は中身の大きさ）
+    item.MinSize           // Vector2（get/set。大きさの下限。0 = なし）
+    item.MaxSize           // Vector2（get/set。大きさの上限。0 = なし）
+    item.AlignSelf         // ItemAlign（get/set。Auto（既定・コンテナに従う）/ Start / Center / End / Stretch）
+    item.FillWidth         // bool（get/set。コンテナの外の子で使う。親の CanvasComponent の領域の幅いっぱい）
+    item.FillHeight        // bool（get/set。同じく高さ）
+}
+```
+
+> **重要**: 列挙の数値は固定です（`LayoutDirection` Vertical=0 / Horizontal=1、`MainAlign` Start=0〜SpaceEvenly=5、`CrossAlign` Start=0 / Center=1 / End=2 / Stretch=3、`ItemAlign` Auto=0〜Stretch=4、`HiddenChildren` Collapse=0 / KeepSpace=1）。範囲外の値の書き込みは無視されます。
+
+> **重要**: コンテナの下の子は、自分の `CanvasTransform.Anchor`・`Position` より**コンテナの配置が優先**します（`Rotation`・`Scale` は矩形の pivot の周りに掛かる見た目の変化として残る）。コンテナから外して自由に置きたい子は `CanvasLayoutItem.IgnoreLayout = true`。CanvasTransform を持たない子（3D アクター）は並べません。Text の大きさは枠（BoxWidth/BoxHeight）か `PreferredSize` で決めます（文字の寸法の自動の計測は W2-6）。
+
+### CanvasSafeArea（安全領域：切り欠き・ステータスバー・ジェスチャーバーを避ける）
+
+CanvasComponent を持つ 2D キャンバスのノード（パネル）に **CanvasSafeArea**（「コンポーネント追加 → UI → Canvas Safe Area」）を付けると、
+そのノードのキャンバス領域を `Screen.SafeArea` の内側へ縮めます（W2-1b）。子のアンカー・コンテナは縮めた領域を基準にします。
+画面の回転とシステムバーの出し入れ（`SEED.Platform.Window.SetSystemBarsVisible`）に次のフレームから追従します。
+
+```csharp
+if (gameObject.GetComponent<CanvasSafeArea>() is { } safe)
+{
+    safe.Enabled           // bool（get/set。既定 true）
+    safe.Left              // bool（get/set。左の辺を安全領域へ寄せる。既定 true）
+    safe.Top               // bool（get/set。上の辺。ステータスバー・カメラの穴）
+    safe.Right             // bool（get/set。右の辺）
+    safe.Bottom            // bool（get/set。下の辺。ナビゲーションバー・ジェスチャーバー）
+}
+```
+
+> **重要**: PC の Play とエディタでは安全領域は画面全体です（縮めない）。PC で確かめるときは環境変数 `SEED_SIM_SAFE_AREA=左,上,右,下`（画素）で模擬の切り欠きを出せます。Sprite の大きさは変わらないので、画面の端まで塗る背景は親のノード（`CanvasLayoutItem.FillWidth/FillHeight` で親いっぱい）に置いてください。
+
+> **重要**: ルートキャンバスの寸法の単位（インスペクタの「寸法の単位」px / dp）を **dp** にすると、ルートの大きさは「画面 ÷ 1 dp の画素数」になり、子の位置・大きさ・余白は縦横同じ倍率で画素へ換算されます（auto_scale は使わない）。1 dp = `Screen.DPI` ÷ 基準 DPI（Android は densityDpi ÷ 160、PC は OS の表示スケール）。PC では環境変数 `SEED_SIM_SCALE_FACTOR`（例 2.625 = Pixel 6a）で端末の密度を模擬できます。
+
 ### Skybox（天球の色調整：時間帯・天候の演出）
 
 equirectangular 画像 1 枚を天球として描く `Skybox` コンポーネントを、実行時に読み書きします。
@@ -2004,6 +2093,11 @@ public class FishingLine : SEEDScript
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
 | `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・フォント（assets:// の .otf/.ttf）・サイズ・色・**縁取り**（太さ・色）・**枠と自動折り返し**（BoxWidth/BoxHeight/Wrap）・**太さ**（Weight）・**ドロップシャドウ**（ShadowOffset/ShadowColor/ShadowSoftness）・整列・行送り・レイヤー |
 | `CanvasClip` | `gameObject.GetComponent<CanvasClip>()` | 子を切り抜く（ノードの矩形からはみ出した子孫を描かず、押せなくする）。有効・無効（Enabled） |
+| `CanvasStack` | `gameObject.GetComponent<CanvasStack>()` | 子を縦・横に 1 列に並べるコンテナ。向き・間隔・余白・主軸／交差軸の揃え・逆順・中身に合わせる・非表示の子の扱い |
+| `CanvasWrap` | `gameObject.GetComponent<CanvasWrap>()` | 子を並べて折り返すコンテナ。向き・子と行の間隔・余白・行の中と行の塊の揃え |
+| `CanvasGrid` | `gameObject.GetComponent<CanvasGrid>()` | 子を格子に並べるコンテナ。列数（0 = 最小幅から自動）・セルの縦横比・間隔・余白・セルの中の置き方 |
+| `CanvasLayoutItem` | `gameObject.GetComponent<CanvasLayoutItem>()` | コンテナの子の側の指定。伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる |
+| `CanvasSafeArea` | `gameObject.GetComponent<CanvasSafeArea>()` | ノードの領域を Screen.SafeArea の内側へ縮める。有効・辺ごとの適用（Left/Top/Right/Bottom） |
 | `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
 | `ControlPointPath` | `gameObject.GetComponent<ControlPointPath>()` | コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用） |
 

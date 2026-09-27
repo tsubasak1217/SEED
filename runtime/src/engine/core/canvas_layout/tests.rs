@@ -80,6 +80,7 @@ fn child_anchor_uses_parent_canvas_area() {
         root_auto_sizes: &empty,
         design_space: true,
         auto_scale_divisor: AutoScaleDivisor::Raw,
+        screen: CanvasScreenEnv::NONE,
     };
     let table = CanvasLayoutPass::run(&roots, &world, 0, CanvasParentFrame::viewport_root(CanvasDrawZone::Foreground), &env);
     let child = table.nodes[1].placement().expect("子は配置を持つ");

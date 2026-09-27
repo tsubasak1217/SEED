@@ -15,6 +15,18 @@ pub mod script_component;
 pub mod canvas_component;
 /// 「子を切り抜く」コンポーネント（UI の切り抜き。W2-1a）
 pub mod canvas_clip_component;
+/// レイアウトの部品が共有する値の型（向き・揃え・余白。W2-1b）
+pub mod canvas_layout_params;
+/// 縦・横に並べるコンテナ（W2-1b）
+pub mod canvas_stack_component;
+/// 折り返して並べるコンテナ（W2-1b）
+pub mod canvas_wrap_component;
+/// 格子に並べるコンテナ（W2-1b）
+pub mod canvas_grid_component;
+/// レイアウトの子の側の指定（伸ばす重み・大きさの上下限・揃えの上書き・無視・親に合わせる。W2-1b）
+pub mod canvas_layout_item_component;
+/// 安全領域の部品（ノードの領域を Screen.SafeArea の内側へ縮める。W2-1b）
+pub mod canvas_safe_area_component;
 pub mod sprite_component;
 /// メッシュ変形スキニング 2D スプライト（Phase A1: Spine 風メッシュ変形の土台）
 pub mod skinned_sprite_component;
@@ -62,8 +74,16 @@ pub use material_override::{MaterialOverride, MaterialOverrideKind, overrides_si
 pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };
-pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone};
+pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone, CanvasUnit};
 pub use canvas_clip_component::{CanvasClipComponent, CanvasClipComponentData};
+pub use canvas_layout_params::{
+    CanvasPadding, CrossAlign, HiddenChildren, IndexedEnum, ItemAlign, LayoutDirection, MainAlign,
+};
+pub use canvas_stack_component::{CanvasStackComponent, CanvasStackComponentData};
+pub use canvas_wrap_component::{CanvasWrapComponent, CanvasWrapComponentData};
+pub use canvas_grid_component::{CanvasGridComponent, CanvasGridComponentData};
+pub use canvas_layout_item_component::{CanvasLayoutItemComponent, CanvasLayoutItemComponentData};
+pub use canvas_safe_area_component::{CanvasSafeAreaComponent, CanvasSafeAreaComponentData};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use skinned_sprite_component::{SkinnedSpriteComponent, SkinnedSpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
@@ -186,6 +206,16 @@ pub enum ComponentKind {
     Text,
     /// 子を切り抜く（ノードのレイアウトの矩形で子孫を切り抜く。UI のスクロール領域・一覧用。W2-1a）
     CanvasClip,
+    /// 縦・横に並べるコンテナ（W2-1b）
+    CanvasStack,
+    /// 折り返して並べるコンテナ（W2-1b）
+    CanvasWrap,
+    /// 格子に並べるコンテナ（W2-1b）
+    CanvasGrid,
+    /// レイアウトの子の側の指定（W2-1b）
+    CanvasLayoutItem,
+    /// 安全領域の部品（W2-1b）
+    CanvasSafeArea,
 }
 
 impl ComponentKind {
@@ -219,6 +249,11 @@ impl ComponentKind {
             Self::LineRenderer => "LineRendererComponent",
             Self::Text        => "TextComponent",
             Self::CanvasClip  => "CanvasClipComponent",
+            Self::CanvasStack => "CanvasStackComponent",
+            Self::CanvasWrap  => "CanvasWrapComponent",
+            Self::CanvasGrid  => "CanvasGridComponent",
+            Self::CanvasLayoutItem => "CanvasLayoutItemComponent",
+            Self::CanvasSafeArea => "CanvasSafeAreaComponent",
         }
     }
 }
@@ -279,4 +314,14 @@ pub enum ComponentData {
     TextComponent(TextComponentData),
     /// 子を切り抜く（UI の切り抜き。W2-1a）
     CanvasClipComponent(CanvasClipComponentData),
+    /// 縦・横に並べるコンテナ（W2-1b）
+    CanvasStackComponent(CanvasStackComponentData),
+    /// 折り返して並べるコンテナ（W2-1b）
+    CanvasWrapComponent(CanvasWrapComponentData),
+    /// 格子に並べるコンテナ（W2-1b）
+    CanvasGridComponent(CanvasGridComponentData),
+    /// レイアウトの子の側の指定（W2-1b）
+    CanvasLayoutItemComponent(CanvasLayoutItemComponentData),
+    /// 安全領域の部品（W2-1b）
+    CanvasSafeAreaComponent(CanvasSafeAreaComponentData),
 }
