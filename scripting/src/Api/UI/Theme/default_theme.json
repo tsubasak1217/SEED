@@ -1,6 +1,6 @@
 {
   "_about": "SEED.UI の既定のテーマ（W2-4）。部品はここにあるトークン（例 color.primary・radius.button）の値で見た目を決める。W2-9 でプロジェクトのテーマ JSON への差し替え・実行中の切り替えを本格化する。書式: グループ（color・radius・space・size・text・motion・opacity）の中に名前 → 値。色は sRGB の #RRGGBB か #RRGGBBAA（読み込むときに線形へ直す）、それ以外は数。長さはキャンバスの単位（dp のキャンバスなら dp）、時間は秒。先頭が _ の鍵は説明で、読まない。正典は docs/ui_components.md §5。",
-  "_source": "色は Wake or Pay の既定のテーマ midnight（themes.json の seedColor #6C4BFF・dark）から作った暗い配色。大きさ・時間は Material Design 3 の部品の寸法（押せる大きさ 48、スイッチ 52×32、チェックボックス 18 の枠を 24 の中に等）と Android の既定の動きの時間を目安にした。",
+  "_source": "色は Wake or Pay の既定のテーマ midnight（themes.json の seedColor #6C4BFF・dark）から作った暗い配色。大きさ・時間は Material Design 3 の部品の寸法（押せる大きさ 48、スイッチ 52×32、チェックボックス 18 の枠を 24 の中に等）と Android の既定の動きの時間を目安にした。ホイール（W2-5）の行の高さ 32・文字 21・帯の角丸 8 と余白 9・帯の外の濃さ 0.447・動きの 0.3 秒と 0.2 秒は Flutter の CupertinoDatePicker・CupertinoPicker（2026-09-28 に master のソースで確かめた）。",
   "name": "default",
   "color": {
     "primary": "#7C5CFF",
@@ -28,7 +28,8 @@
     "field": 12,
     "segment": 20,
     "checkbox": 4,
-    "progress": 4
+    "progress": 4,
+    "wheel_band": 8
   },
   "space": {
     "xs": 4,
@@ -51,24 +52,30 @@
     "ring_thickness": 6,
     "radio_dot": 10,
     "shadow_blur": 8,
-    "shadow_offset": 2
+    "shadow_offset": 2,
+    "wheel_item": 32,
+    "wheel_band_inset": 9
   },
   "text": {
     "title": 20,
     "body": 16,
     "label": 14,
-    "caption": 12
+    "caption": 12,
+    "wheel": 21
   },
   "motion": {
     "short": 0.15,
     "medium": 0.25,
     "repeat_interval": 0.12,
     "repeat_min_interval": 0.03,
-    "repeat_accel": 0.5
+    "repeat_accel": 0.5,
+    "wheel": 0.3,
+    "wheel_correct": 0.2
   },
   "opacity": {
     "pressed": 0.16,
     "disabled": 0.38,
-    "shadow": 0.35
+    "shadow": 0.35,
+    "wheel_dim": 0.447
   }
 }

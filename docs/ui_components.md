@@ -1,9 +1,9 @@
-# 形と塗り・基本の部品（W2-4 の正典。2026-09-28）
+# 形と塗り・基本の部品・時刻ホイール（W2-4・W2-5 の正典。2026-09-28）
 
 キャンバス UI の**形と塗り**（スプライトの角丸・楕円・弧・縁の線・グラデーション・9 スライス・ぼかしの影、角丸・楕円の切り抜き、
 形に合わせた当たり判定）と、**基本の部品**（`SEED.UI` のボタン・トグル・チェックボックス・スライダ・数値欄・セグメント・チップ・ラジオ・
-進捗の棒と輪）、部品が読む**テーマのトークン**の規則。背景と段階は [app_platform_roadmap.md](app_platform_roadmap.md) §3.3 の
-「ボタン」〜「形と塗り」・§3.8.4（切り抜きの決定）・§3.8.5 の W2-4。
+進捗の棒と輪）、部品が読む**テーマのトークン**、**ホイールと時刻ホイール**（W2-5。§11）の規則。背景と段階は [app_platform_roadmap.md](app_platform_roadmap.md) §3.3 の
+「ボタン」〜「形と塗り」「時刻ホイール」・§3.8.4（切り抜きの決定）・§3.8.5 の W2-4・W2-5。
 
 | 置き場 | 役割 |
 |---|---|
@@ -22,6 +22,8 @@
 | `scripting/src/Api/UI/Theme/` | テーマ（`UiTokens` = トークンの名前・`default_theme.json` = 既定の値の表・`UiThemeData`・`UiTheme`・`UiColorMath`） |
 | `scripting/src/Api/UI/Looks/` | 状態 → 見た目と値の計算（純粋な計算。`editor/tests/UiComponentsTests` で検算） |
 | `scripting/src/Api/UI/Widgets/` | 部品のスクリプト（`UiWidget` の派生。部品ごとに 1 ファイル） |
+| `scripting/src/Api/UI/Wheel/` | ホイールの純粋な計算（W2-5。行の曲面の見た目 `WheelLook`・その値の組 `WheelLookParams`・循環の添字と位置 `WheelLoop`・時刻の 12/24 時間と連動と分の刻み `TimeWheelMath`） |
+| `scripting/src/Api/UI/Widgets/WheelPicker.cs`・`WheelRows.cs`・`WheelFocus.cs`・`TimeWheel.cs` | ホイールの列・行の使い回しと見た目の当て方・キーボードの相手・時刻ホイール（W2-5。§11） |
 | `templates/ui/` | 部品のプレハブ（`prefabs/`）・ギャラリー（`scenes/ui_gallery.scene`・`scripts/UiGalleryDemo.cs`）・画像（`textures/`） |
 
 ---
@@ -120,6 +122,9 @@ JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`
 | `text.title` / `body` / `label` / `caption` | 20 / 16 / 14 / 12 | 文字の大きさ |
 | `motion.short` / `medium` | 0.15 / 0.25 | つまみ・進捗の動き（秒） |
 | `motion.repeat_interval` / `repeat_min_interval` / `repeat_accel` | 0.12 / 0.03 / 0.5 | 数値欄の長押しの連続（最初の間隔・最短の間隔・1 秒ごとに何倍になるか） |
+| `size.wheel_item` / `text.wheel` | 32 / 21 | ホイールの行の高さ（1 行ぶんのスクロール・スナップの間隔）／行の文字（W2-5。§11） |
+| `radius.wheel_band` / `size.wheel_band_inset` / `opacity.wheel_dim` | 8 / 9 / 0.447 | ホイールの中央の帯の角丸・左右の余白／帯の外の行の濃さ（帯の色は `color.surface_variant`、文字は `color.on_surface`・選べない行は `color.on_disabled`） |
+| `motion.wheel` / `motion.wheel_correct` | 0.3 / 0.2 | ホイールをタップ・スクリプト・キーで動かす時間と午前/午後の連動／選べない行から戻す時間 |
 
 ## 6. 基本の部品（`SEED.UI`。部品ごとの状態と見た目）
 
@@ -140,6 +145,8 @@ JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`
 | `RadioGroup` | `radio_group.actor`（Radio0..〈SelectItem: 輪・Dot・Label〉） | 1 つ選ぶ・選べない | 選んだ: 輪 primary・点を出す、選んでいない: 輪 on_surface_muted | タップで選ぶ |
 | `ProgressBar` | `progress_bar.actor`（溝・Fill・Label〈任意〉） | 値（0..1）・無効 | 溝 surface_variant・塗り primary・角丸 radius.progress | 値の変化は motion.medium 秒で伸び縮み |
 | `ProgressRing` | `progress_ring.actor`（溝〈弧 360〉・Arc・Label〈任意〉） | 値（0..1）・無効 | 溝 surface_variant、弧 primary（端を丸く・太さ size.ring_thickness） | 弧の角度 = 値 × 360（形と塗りの弧＝毎フレーム `SEED.Draw` を呼ばない） |
+| `WheelPicker`（W2-5） | `wheel_picker.actor`（当たり・Band・Viewport〈切り抜き・スクロール〉・Blocker）＋行 `wheel_row.actor` | 中央の項目・動いている・無効 | 帯 surface_variant・radius.wheel_band、文字 on_surface（選べない行 on_disabled）、帯の外 opacity.wheel_dim | 上下のドラッグ・慣性・行ごとのスナップ・端をつなげる・タップした行へ・キーの上下。§11 |
+| `TimeWheel`（W2-5） | `time_wheel.actor`（全列の帯・Meridiem・Hour・Minute〈WheelPicker〉） | 値（TimeOnly）・24/12 時間・分の刻み | 同上 | 12 時間表記の午前/午後の連動。§11 |
 
 選択の項目（`SelectItem`）はタップ・押下をグループへ渡すだけで、見た目はグループが `SelectionLooks` で決めて当てる。選べない項目（`Disabled`）は灰色で、押しても変わらない。
 選び方（`SelectionModel`）: Single（選んだ項目を押しても同じ）/ SingleOptional（押すと外れる）/ Multiple（切り替え）。
@@ -198,5 +205,172 @@ JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`
 - **弧は円だけ**（楕円の弧は無い）。影は形ごとのぼかしの近似（広がり〈spread〉・内側の影は無い）。放射グラデーションの中心・半径は割合だけ
 - **インスペクタの ⟲**: 形と塗りの欄の行には既定値へ戻すボタンが無い（入れ子の欄は既定の JSON に無いので、共通のリセットが効かない）
 - **部品の見た目のアニメーション**: 押下の色は即座に切り替わる（色の補間なし）。スイッチ・進捗は動く
-- **W2-5 以降**: 時刻ホイール（W2-5）、文字入力の欄（W2-6。数値欄のキーボード入力は `TrySetText` だけ用意）、テーマの交換とギャラリーの切り替え（W2-9）、
+- **W2-5 以降**: 時刻ホイール（W2-5 で済。§11）、文字入力の欄（W2-6。数値欄のキーボード入力は `TrySetText` だけ用意）、テーマの交換とギャラリーの切り替え（W2-9）、
   部品の押下の見た目の `Recycled` での戻し（一覧の行に部品を置くとき）
+
+## 11. ホイールと時刻ホイール（W2-5。2026-09-28）
+
+Wake or Pay のアラーム編集の中心の部品（Flutter 版は `CupertinoDatePicker` の時刻）。列が上下に流れ、窓の中央の行が選ばれる。
+汎用の列 `SEED.UI.WheelPicker`（数の範囲か、項目の数と文字を渡す）と、それを 2〜3 列並べた `SEED.UI.TimeWheel`（値は `TimeOnly`）。
+使い方は [scripting_api.md](scripting_api.md) §7.17。値・式の出典は Flutter の master のソース（`cupertino/picker.dart`・`cupertino/date_picker.dart`・
+`widgets/list_wheel_scroll_view.dart`・`rendering/list_wheel_viewport.dart`・`painting/matrix_utils.dart`・`cupertino/text_theme.dart`。2026-09-28 に取得して確かめた）。
+
+### 11.1 作りと分担
+
+```
+WheelPicker（Sprite = 列の大きさ〈透明〉・CanvasGesture〈タップ・押下の見た目なし〉・SEED.UI.WheelPicker）
+├─ Band（Sprite = 中央の帯〈角丸〉。ShowBand = false の列には無い）
+├─ Viewport（Sprite〈透明〉・CanvasClip・CanvasScroll〈縦・Interval のスナップ・入れ子で渡さない・中身は Fixed〉）
+│   └─（行: ListView が wheel_row.actor〈WheelRow └ Label〈Text・pivot 0.5〉〉から作って使い回す）
+└─ Blocker（Sprite〈透明〉・受けるジェスチャーの無い CanvasGesture＝遮る板。表示しない。無効の間だけ見せる）
+
+TimeWheel（Sprite = 全体〈透明〉・SEED.UI.TimeWheel）
+├─ Band（全列にまたがる中央の帯）
+└─ Meridiem・Hour・Minute（上の WheelPicker の作りで ShowBand = false。位置と幅は TimeWheel が全体の幅を等分して決める）
+```
+
+| 側 | 受け持つもの |
+|---|---|
+| Rust（W2-3 の `CanvasScroll`。**W2-5 で変えていない**） | 指のドラッグ・離した後の慣性・端の跳ね返り・**行の高さごとのスナップ**（`snap: interval`・`snap_interval` = 行の高さ。止まる位置に最も近い倍数へ `FrictionSimulation.through`、遅ければばね。終わりは目標にちょうどそろえる）・動いている途中に触れて止める（Held）・「動いている」の申告 |
+| C#（`SEED.UI`） | 行の並びと端をつなげる循環（`WheelLoop`）・行の曲面の見た目（`WheelLook` を `WheelRows` が行ごとに当てる）・中央の帯・中央の項目のイベントと触感・選べない行・タップ・キーボード・スクリプトからの値・時刻の組み立て（`TimeWheelMath`） |
+
+**並び**: 先頭と末尾の余白 =（窓の高さ − 行の高さ）/ 2。こうするとスクロールの位置 p = 行 × 行の高さ のとき、その行がちょうど窓の中央に来る
+（Flutter の `_topScrollMarginExtent` と同じ置き方。CanvasScroll の Interval のスナップ〈位置 0 から数えた倍数〉がそのまま「行の中央」になる）。
+中央の行 = round(p ÷ 行の高さ)（半分は先の行＝Dart の round）。行の高さは `size.wheel_item`（または `ItemExtent`）、窓の高さは前のフレームの描画が測った値。
+
+### 11.2 行の見た目（曲面の近似。`WheelLook.Resolve`）
+
+行は平らに並べたまま、**見た目だけ**円柱に巻いたように映す（行の根は ListView が平らな位置に置き、子の Label〈Text〉の位置・倍率・色だけを毎フレーム変える）。
+入力は行の中心と窓の中心の平らな距離 d（下が正）。Flutter の `RenderListWheelViewport._paintTransformedChild` と
+`MatrixUtils.createCylindricalProjectionTransform`（遠近 × 視点 × X 軸の回転 × 半径ぶんの平行移動）を行の中心 1 点で展開した閉じた式:
+
+| 量 | 式 |
+|---|---|
+| 窓の端に当たる角度 θmax | 直径の比 < 1 ? π/2 : asin(1 / 直径の比)（Flutter の `_maxVisibleRadian`） |
+| 行の角度 θ | (d ÷ (窓の高さ / 2)) × θmax ÷ 詰め具合（Flutter の angle と符号だけ逆） |
+| 円柱の半径 r・遠近の割り算 w | r = 窓の高さ × 直径の比 / 2、w = 1 + 遠近 × r × (1 − cos θ) |
+| 映る位置（窓の中心から） | r sin θ / w |
+| 縦の倍率 | (cos θ × w − 遠近 × r × sin²θ) / w²（映る位置の微分。0 になる角度 cos θ = a/(1+a)〈a = 遠近 × r〉で映る位置が最も外へ出て、その先は裏側＝描かない） |
+| 横の倍率 | 1 / w |
+| 帯の中の度合い e | max(0, 1 − |d| ÷ 行の高さ) |
+| 拡大 | 1 + (拡大の倍率 − 1) × e（縦横の倍率に掛ける） |
+| 濃さ | (帯の外の濃さ + (1 − 帯の外の濃さ) × e) × (1 + (cos θ − 1) × 面の傾きの暗さ) |
+
+| 値（`WheelPicker` のフィールド／トークン） | 既定 | 出典 |
+|---|---|---|
+| 円柱の直径の比（`DiameterRatio`） | 1.07 | `picker.dart` `_kDefaultDiameterRatio` |
+| 遠近（`Perspective`） | 0.003（上限 0.01） | `_kDefaultPerspective`（上限は `RenderListWheelViewport`） |
+| 詰め具合（`Squeeze`） | 1.25 | `date_picker.dart` `_kSqueeze`（CupertinoPicker の既定は 1.45） |
+| 中央の拡大（`Magnification`） | 2.35 / 2.1 ≈ 1.119 | `date_picker.dart` `_kMagnification` |
+| 帯の外の濃さ（`opacity.wheel_dim`） | 0.447 | `picker.dart` `_kOverAndUnderCenterOpacity` |
+| 面の傾きの暗さ（`EdgeShade`） | 1 | SEED の足し分（面の向きの余弦＝ランバートの近似。0 で無効） |
+| 行の高さ（`size.wheel_item`）・文字（`text.wheel`） | 32・21 | `date_picker.dart` `_kItemExtent`・`text_theme.dart` `_kDefaultDateTimePickerTextStyle` |
+| 帯の角丸（`radius.wheel_band`）・左右の余白（`size.wheel_band_inset`）・帯の高さ | 8・9・行の高さ × 拡大 | `CupertinoPickerDefaultSelectionOverlay` の 8・9、`_buildSelectionOverlay` の itemExtent × magnification |
+
+- **Flutter との違い**: Flutter は中央の帯の中と外を切り抜いて 2 度描く（帯の中は拡大・不透明、外は 0.447 の濃さ）。SEED は行ごとに 1 度だけ描くので、
+  帯の中の度合い e で拡大と濃さを連続に補間する（行が帯の境を越える間は中間の濃さ）。窓の高さ 190・行 32 で、中央の 1 行下は映る位置 32.0・縦 0.90、
+  2 行下は 58.0・0.65、3 行下は 74.2・0.33、描ける上限は平らな距離 131（映る位置 80）。
+- 式は単体テストで Flutter の 4×4 の行列を実際に掛けた値と照合している（映る位置・縦の倍率が 1/1000 以内で一致）。
+- 行の文字の枠は列の幅 × 行の高さ（中央揃え・pivot 0.5 で倍率の中心が文字の中心）。書き込みは前の値から変わったものだけ（止まっている行は何も書かない）。
+
+### 11.3 端をつなげる（循環。`WheelLoop`）
+
+無限の一覧は作らず、項目を cycles 回くり返した count × cycles 行を ListView に並べ（中身の長さ ≒ 200,000 単位。周の数は奇数・下限 3）、
+**真ん中の周**から始める（行 r の項目 = r mod count。負でも 0..count−1）。見えている行と前後の余白（円柱の裏へ回る手前まで＋1 行）だけを作って使い回すので、
+60 分の列でも作る行は十数行。
+
+- 位置は float（スクリプトの Vector2）で渡るため、中身の長さを 20 万に抑える（2^17 付近で 1/64 単位の刻み。dp のキャンバスで 2.625 倍でも 0.05 画素未満）。
+  真ん中から片側 10 万ぶん＝最速のフリック（跳ね返りの慣性で約 4,000）の 25 回ぶんは端に着かない。
+- **止まったとき**、真ん中の行から「全体の行の数 × 1/4」より離れていれば、同じ項目の真ん中の周の行へ見えない飛び方をする（並びは周ごとに同じなので見た目は変わらない。
+  指・慣性・スクリプトの動きの途中には飛ばない＝動きを止めない）。
+- スクリプト・キー・タップで項目へ動かすときは、今の行（動きの途中なら行き先の行）から**近い向き**へ回る（59 → 00 は 1 行進む。ちょうど半周は進む向き）。
+- 端をつながない列（午前/午後・数のホイール）は行 = 項目で、端では跳ね返る（CanvasScroll の Bounce）。
+
+### 11.4 イベントと触感
+
+| イベント | いつ |
+|---|---|
+| `WheelPicker.SelectionChanged(列, 項目)` | 中央の項目が変わるたび（指・慣性・スナップ・タップ・キー・スクリプトの動きの途中も。1 フレームに 2 行進んだら最後の項目で 1 回） |
+| `WheelPicker.Settled(列, 項目)` | 止まったとき（選べない行に止まったときは戻り終えてから）。止まるたびに出す |
+| `TimeWheel.ValueChanged(時刻ホイール, 値)` | 値が変わるたび（指で回している途中も）。スクリプトの `SetValue` では 1 回だけ（列が動いている途中の値は出さない） |
+| `TimeWheel.ValueSettled(時刻ホイール, 値)` | 全列が止まったとき |
+
+- **触感**（`SEED.Platform.Haptics.Tap`。`Haptic` で切れる）: 中央の項目が変わったとき、**指のドラッグとその慣性の間だけ**（スクロールの段階が Dragging・Ballistic）、
+  1 フレームに 1 回まで。タップ・キー・スクリプトの動き（Animating）では鳴らさない（Flutter の tap-to-scroll と同じ）。Flutter は iOS だけで鳴らすが、
+  SEED は Android の端末で鳴らす（デスクトップは模擬＝ログだけ）。強さ・間隔は実機で詰める（§11.9）。
+- 値の変化で他の部品は作り直さない（中央の行が変わっても、書くのはその列の行の Label だけ。ギャラリーの `ui,stats` で、フリックの前後の
+  `UiWidget.RefreshCount` が変わらないことを確かめた）。
+
+### 11.5 選べない行・タップ・キーボード・スクリプト
+
+- **選べない行**（数の範囲なら `LimitSelectable` と `SelectableMin`〜`SelectableMax`、Configure した列は `SetItemEnabled(述語)`）: 文字は `color.on_disabled`。
+  止まった行が選べなければ最も近い選べる行へ `motion.wheel_correct` 秒で戻る（同じ近さなら進む向き。Flutter の CupertinoDatePicker の 200ms）。タップしても動かない。
+  キーの 1 歩は選べない行を飛ばす。
+- **タップ**: 止まっている列の行をタップするとその行へ `motion.wheel` 秒で動く（Flutter の `_kCupertinoPickerTapToScrollDuration` 300ms・easeInOut）。
+  押した位置が映っている行は、見た目の式の逆（映る位置 → 平らな距離。二分法）で求める。**動いている間のタップは止めるだけ**（前のフレームも止まっていた列だけが受ける。
+  慣性の途中の窓は触れた指で止まる＝W2-3 の Held）。
+- **キーボード**: 最後に指で触れた（またはスクリプトが `Focus()` した）ホイール 1 つだけが上下の矢印で 1 つずつ動く（`WheelFocus`）。時刻ホイールは左右の矢印で自分の列の間を移す。
+  連続で押すと行き先を積み上げる。入力欄のフォーカス（W2-6）・画面のスタック（W2-7）ができたらそちらへ寄せる（backlog）。
+- **スクリプト**: `SelectIndex(項目, animate)`・`SetValue(値, animate)`・`StepBy(n)`。animate = true は `motion.wheel` 秒の ScrollTo（easeInOut）、false はすぐ移す。
+  最初の描画の前（窓の大きさ・中身の長さが分かる前）に呼んだら、分かったときに黙って置く（イベントを出さない）。`Configure(数, 文字, 端をつなげる, 項目)` で作り直すときも黙って置き直す。
+- **無効**（`Interactable = false`）: 文字・帯を `opacity.disabled` で薄くし、遮る板（Blocker）を見せて窓のスクロールに指を渡さない（CanvasScroll の `enabled = false` は位置を 0 にするので使わない）。
+- **準備の待ち**: 窓の大きさ・中身の長さ・行の作成を待つ間は描き続けを頼むが、上限 60 フレーム（祖先が隠れて測れない・行のプレハブが無いときに on_demand の描画を止められなくなるのを防ぐ。
+  行が作れなければ 1 度だけ警告）。
+
+### 11.6 時刻ホイール（`TimeWheel`）
+
+| 項目 | 規則 |
+|---|---|
+| 列 | 24 時間表記: 時（24 行・つなげる）・分（60 ÷ 刻み 行・つなげる）。12 時間表記: ＋午前/午後（2 行・つながない。`MeridiemOnLeft` で左〈既定。日本語の「午前 7:30」〉か右） |
+| 時の文字 | 24 時間表記は 0〜23（`HourFormat` 既定 "0"。Flutter の日本語と同じくゼロ埋めなし）、12 時間表記は 12, 1, …, 11（午前の半日）・12, 1, …, 11（午後の半日）＝24 行。分は `MinuteFormat` 既定 "00" |
+| 午前/午後の連動 | Flutter の `_CupertinoDatePickerDateTimeState` と同じ: 時の列の中央の行の半日（region = 項目 ÷ 12）と選んでいる午前/午後（amPm）を別に持ち、時 = region ≠ amPm ? (項目 + 12) mod 24 : 項目。時の列が 11 ↔ 12・23 ↔ 0 を越えたら amPm も入れ替え、午前/午後の列を `motion.wheel` 秒で動かす（Flutter は 300ms・easeOut。SEED の ScrollTo は easeInOut）。午前/午後の列を指で変えると時が 12 ずれる（時の列の表示は 12 時間で同じなので動かさない）。午前/午後の列に指があるときは連動で動かさない |
+| 分の刻み | 1 時間を割り切る数（1・5 など。それ以外は 1）。刻みに合わない時刻は最も近い刻みへ（ちょうど間は遅い方。23:58 を 5 分刻み → 0:00＝時・日をまたいで繰り上がる）。分の 59 → 00 で時は変えない（iOS・Flutter と同じ独立の列） |
+| 値の設定 | `SetValue(TimeOnly, animate)`: 丸めてから各列を近い向きへ動かす。動いている途中は連動も値の変化も出さず、全列が止まったら（か指で触れたら）列の見た目から値を確かめ直す |
+| 切り替え | `SetUse24Hour(bool)`（値はそのまま。午前/午後の列を隠し・列を並べ直す）・`SetMinuteStep(int)`（値を丸める） |
+
+### 11.7 描く理由
+
+列が動いている間は CanvasScroll が「動いている」（motion）を申告するので、`render_policy: on_demand` でも慣性・スナップ・スクリプトの動きの途中で止まらない。
+止まって 10 フレームで描画が止まる。スクリプトの値の設定・タップ・キーは `Redraw.Request()` で次のフレームを頼む。
+
+### 11.8 検証（2026-09-28・PC）
+
+- **単体テスト（C#）** `dotnet run --project editor/tests/UiComponentsTests`（30 件。うち W2-5 の 15 件）: 行の見た目（中央はそのまま・拡大・不透明、
+  映る位置と縦の倍率が Flutter の 4×4 の行列の積と 1/1000 以内で一致、離れるほど縮み・薄く・外へ寄る・上下対称、描ける距離の上限の内外、窓が 0 なら平ら、
+  壊れた値で NaN を出さない）、映る位置 → 平らな距離の往復、循環の添字（−1 → 59・int の最大と最小）、周の数（奇数・下限 3）、近い向きの行（59 → 00・00 → 59・半周・一覧の端）、
+  真ん中の周へ戻す判定、位置 ↔ 行（半分は先の行）、選べる項目の探し方とキーの 1 歩、12/24 時間の表示、11 → 12・23 → 0 の連動、午前/午後の列の変更と列の見た目からの作り直し、
+  分の刻みの正規化と丸め（繰り上がり・日をまたぐ・秒を捨てる）。既定のテーマが新しいトークンを持つことも既存のテストで確かめる。
+- **Rust**: 変えていない（`cargo test -p SEED --lib -- canvas_scroll` 24 件・`cargo build`・`cargo ndk -t arm64-v8a -P 29 build` が通る）。
+- **ギャラリー**（`templates/ui` をプロジェクトの `assets/ui` へ写し、PC の Play〈540×1200・on_demand〉を IPC の入力の注入とデバッグの命令で操作。ログ `[UI] …`）:
+  24 時間の分を 2 行ゆっくり → 7:32（止まった値も 7:32）、7:59 から 1 行 → 7:00（分の循環・時は不変）、23:00 から時を 1 行 → 0:00、
+  分のフリック → 0:01〜0:28 を流れて行の上に止まり（途中で 1 フレーム 2 行の所は 1 回）、止まって 10 フレーム後に `[SEED REDRAW] 描画を止めます`、
+  フリックの前後で `UiWidget.RefreshCount` 57 → 57（他の部品は作り直されない）、12 時間の時を 11 → 12 → 午後へ連動して 12:55、5 分刻みの 55 → 00 → 12:00、
+  午前/午後の列を午前へ → 0:00、時を 12 → 11 → 午後へ連動して 23:00、スクリプトの 19:45（動きあり: time は 1 回）と 6:05（すぐ）、
+  中央の 1 つ下の行のタップ → 7:05、映る位置 −70 のタップ → 曲面の逆で 3 行上の 4:05、選べない 25 分 → 20 分へ戻る（スクリプト・指の両方）、
+  選べない行のタップは動かない、キーの ↓↓↑ → +1 分・← で時へ → +1 時、12 時間 ↔ 24 時間の切り替え（列が 3 ↔ 2）、分の刻みを 5 へ（5:06 → 5:05）、
+  全部を無効にしてドラッグ → 動かない、フリックの途中のタップ → 止めるだけ（2 行下を選ばない）、分の列を 40 周先へ飛ばして 1 行動かす → 止まった所で真ん中の周へ戻る
+  （位置 175,840 → 99,072 = 行 3,096 = 真ん中の周の 36 分）、テーマの差し替え（行の高さ 40・文字 26・帯の角丸 14）→ 値はそのままで並び直す。
+  触感の模擬は指の動きの間だけ（タップ・キー・スクリプトでは 0 回）。`SEED_SIM_SCALE_FACTOR=1.5` でも行・帯・文字が dp の倍率どおり。
+- **回帰**（WarashibeFishing の複製。変更前の SEEDScripting.dll〈HEAD〉と変更後で撮った）: 図鑑の画面 3 フレームとも差 0 画素、図鑑のボタンの縁の 56 点のクリックは
+  当たり 34・外れ 22 で、各クリックの後の画面まで変更前と一致。
+
+### 11.9 実機での確かめ方（Pixel 6a。W2-5 の時点で未実施）
+
+利用者と一緒に行う（手触りと触感は指でしか分からない）。ギャラリーのプロジェクト（§9 と同じ作り）を SeedAndroid の `run` で入れ、`[UI] time …` を logcat で見る。
+
+1. 分の列をゆっくり引いて離す → 最寄りの行へ吸い付く。速く払う → 慣性で流れて行の上に止まり、止まって 10 フレームで `[SEED REDRAW] 描画を止めます`
+2. 行が変わるたびの触感（EFFECT_CLICK）が強すぎ・多すぎないか（速いフリックでは 1 フレーム 1 回＝60 回/秒まで）。強ければ間隔の下限を足す（backlog）
+3. 23:59 → 0:00（分・時がそれぞれつながる）、12 時間表記の 11 → 12 で午前/午後が動く・午前/午後の列を指で変える
+4. 曲面の見た目（2.625 倍で文字が滲まない・上下の縮み・帯の外の薄さ）を iOS／Flutter 版と見比べる。詰め具合・拡大・面の傾きの暗さはフィールドで詰める
+5. 動いている途中のタップで止まるだけ・止まっている列の行のタップでその行へ・選べない行へ止めると戻る
+6. `SEED.Time.Fps` でホイールを回している間 60 fps（UC-4 の「他の部分が作り直されない」は §11.8 の RefreshCount で確認済み）
+
+### 11.10 制限と持ち越し
+
+- **Flutter の拡大鏡の 2 度描き**はしない（帯の中の度合いで連続に補間）。帯の境をまたぐ行は帯の中も外も中間の濃さ（iOS は帯の中だけ濃い）
+- **オフアクシス**（`offAxisFraction`。列ごとに左右へ傾ける）・**遠近の横の歪み**（行の中での横の倍率の変化）は無い（行ごとに一様な倍率）
+- **無限のスクロールではない**: 中身の長さ ≒ 20 万の中で止まるたびに真ん中へ戻す。止めずに 25 回以上最速でフリックし続けると端に着く（跳ね返る）
+- **最小・最大の時刻**（CupertinoDatePicker の minimumDate/maximumDate。時の列・分の列の選べない行が値で変わる）は無い（列ごとの `SetItemEnabled` で作れる。backlog）
+- **キーボードのフォーカス**は仮（最後に触れたホイール）。W2-6/W2-7 のフォーカスへ寄せる。マウスのホイールで回す操作は無い（backlog）
+- **読み上げ**（アクセシビリティ）は無い
+- **実機の手触り・触感**: 未確認（§11.9）

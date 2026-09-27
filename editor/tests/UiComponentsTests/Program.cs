@@ -255,6 +255,9 @@ public static class Program
             Check.Close(1, tw.Value, Eps, "すぐ行き先");
         });
 
+        // ── 時刻ホイール（W2-5）─────────────────────────────────
+        WheelTests.Register(h);
+
         return h.Run();
     }
 }

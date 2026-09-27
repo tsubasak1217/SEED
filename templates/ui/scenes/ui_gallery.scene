@@ -6735,6 +6735,2154 @@
       }
      ],
      "children": []
+    },
+    {
+     "name": "H_Wheels",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       20.0,
+       936.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "時刻ホイール",
+         "font_size": 14.0,
+         "color": [
+          0.396755,
+          0.361307,
+          0.47932,
+          1.0
+         ],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 300.0,
+         "box_height": 16.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "C_Time24",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       20.0,
+       956.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "24 時間",
+         "font_size": 12.0,
+         "color": [
+          0.396755,
+          0.361307,
+          0.47932,
+          1.0
+         ],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 150.0,
+         "box_height": 14.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "C_Time12",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       186.0,
+       956.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "12 時間・5 分刻み",
+         "font_size": 12.0,
+         "color": [
+          0.396755,
+          0.361307,
+          0.47932,
+          1.0
+         ],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 210.0,
+         "box_height": 14.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "C_Snooze",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       412.0,
+       956.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "スヌーズ（1〜20 分）",
+         "font_size": 12.0,
+         "color": [
+          0.396755,
+          0.361307,
+          0.47932,
+          1.0
+         ],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 108.0,
+         "box_height": 14.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Time24Island",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       20.0,
+       974.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.012983,
+          0.01096,
+          0.019382,
+          1.0
+         ],
+         "width": 150.0,
+         "height": 190.0,
+         "layer": 0,
+         "shape": {
+          "kind": "rect",
+          "corner_radii": [
+           20.0,
+           20.0,
+           20.0,
+           20.0
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Time12Island",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       186.0,
+       974.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.012983,
+          0.01096,
+          0.019382,
+          1.0
+         ],
+         "width": 210.0,
+         "height": 190.0,
+         "layer": 0,
+         "shape": {
+          "kind": "rect",
+          "corner_radii": [
+           20.0,
+           20.0,
+           20.0,
+           20.0
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "SnoozeIsland",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       412.0,
+       974.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.012983,
+          0.01096,
+          0.019382,
+          1.0
+         ],
+         "width": 108.0,
+         "height": 190.0,
+         "layer": 0,
+         "shape": {
+          "kind": "rect",
+          "corner_radii": [
+           20.0,
+           20.0,
+           20.0,
+           20.0
+          ]
+         }
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Time24",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       20.0,
+       974.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+         ],
+         "width": 150.0,
+         "height": 190.0,
+         "layer": 0
+        }
+       }
+      },
+      {
+       "name": "TimeWheel",
+       "component": {
+        "type": "ScriptComponent",
+        "data": {
+         "type_name": "SEED.UI.TimeWheel",
+         "fields": {
+          "Use24Hour": "true",
+          "MinuteStep": "1",
+          "Hour": "7",
+          "Minute": "30"
+         }
+        }
+       }
+      }
+     ],
+     "children": [
+      {
+       "name": "Band",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         9.0,
+         77.095
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.027321,
+            0.023153,
+            0.042311,
+            1.0
+           ],
+           "width": 132.0,
+           "height": 35.81,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             8.0,
+             8.0,
+             8.0,
+             8.0
+            ]
+           }
+          }
+         }
+        }
+       ],
+       "children": []
+      },
+      {
+       "name": "Meridiem",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 75.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Gesture",
+         "component": {
+          "type": "CanvasGestureComponent",
+          "data": {
+           "tap": true,
+           "press_feedback": false
+          }
+         }
+        },
+        {
+         "name": "WheelPicker",
+         "component": {
+          "type": "ScriptComponent",
+          "data": {
+           "type_name": "SEED.UI.WheelPicker",
+           "fields": {
+            "ShowBand": "false",
+            "RowPrefab": "assets://ui/prefabs/wheel_row.actor",
+            "Min": "0",
+            "Max": "1",
+            "Value": "0",
+            "Looping": "false"
+           }
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Viewport",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 75.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Clip",
+           "component": {
+            "type": "CanvasClipComponent",
+            "data": {
+             "enabled": true
+            }
+           }
+          },
+          {
+           "name": "Scroll",
+           "component": {
+            "type": "CanvasScrollComponent",
+            "data": {
+             "enabled": true,
+             "direction": "vertical",
+             "edge": "bounce",
+             "inertia": true,
+             "snap": "interval",
+             "snap_interval": 32.0,
+             "hand_off_to_parent": false,
+             "content_size": "fixed"
+            }
+           }
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Blocker",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 75.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Gesture",
+           "component": {
+            "type": "CanvasGestureComponent",
+            "data": {
+             "tap": false,
+             "press_feedback": false,
+             "min_hit_size_dp": 0.0
+            }
+           }
+          }
+         ],
+         "children": [],
+         "visible": false
+        }
+       ],
+       "visible": false
+      },
+      {
+       "name": "Hour",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 75.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Gesture",
+         "component": {
+          "type": "CanvasGestureComponent",
+          "data": {
+           "tap": true,
+           "press_feedback": false
+          }
+         }
+        },
+        {
+         "name": "WheelPicker",
+         "component": {
+          "type": "ScriptComponent",
+          "data": {
+           "type_name": "SEED.UI.WheelPicker",
+           "fields": {
+            "ShowBand": "false",
+            "RowPrefab": "assets://ui/prefabs/wheel_row.actor",
+            "Min": "0",
+            "Max": "23",
+            "Value": "7",
+            "Format": "0"
+           }
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Viewport",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 75.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Clip",
+           "component": {
+            "type": "CanvasClipComponent",
+            "data": {
+             "enabled": true
+            }
+           }
+          },
+          {
+           "name": "Scroll",
+           "component": {
+            "type": "CanvasScrollComponent",
+            "data": {
+             "enabled": true,
+             "direction": "vertical",
+             "edge": "bounce",
+             "inertia": true,
+             "snap": "interval",
+             "snap_interval": 32.0,
+             "hand_off_to_parent": false,
+             "content_size": "fixed"
+            }
+           }
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Blocker",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 75.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Gesture",
+           "component": {
+            "type": "CanvasGestureComponent",
+            "data": {
+             "tap": false,
+             "press_feedback": false,
+             "min_hit_size_dp": 0.0
+            }
+           }
+          }
+         ],
+         "children": [],
+         "visible": false
+        }
+       ]
+      },
+      {
+       "name": "Minute",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         75.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 75.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Gesture",
+         "component": {
+          "type": "CanvasGestureComponent",
+          "data": {
+           "tap": true,
+           "press_feedback": false
+          }
+         }
+        },
+        {
+         "name": "WheelPicker",
+         "component": {
+          "type": "ScriptComponent",
+          "data": {
+           "type_name": "SEED.UI.WheelPicker",
+           "fields": {
+            "ShowBand": "false",
+            "RowPrefab": "assets://ui/prefabs/wheel_row.actor",
+            "Min": "0",
+            "Max": "59",
+            "Step": "1",
+            "Value": "30"
+           }
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Viewport",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 75.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Clip",
+           "component": {
+            "type": "CanvasClipComponent",
+            "data": {
+             "enabled": true
+            }
+           }
+          },
+          {
+           "name": "Scroll",
+           "component": {
+            "type": "CanvasScrollComponent",
+            "data": {
+             "enabled": true,
+             "direction": "vertical",
+             "edge": "bounce",
+             "inertia": true,
+             "snap": "interval",
+             "snap_interval": 32.0,
+             "hand_off_to_parent": false,
+             "content_size": "fixed"
+            }
+           }
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Blocker",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 75.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Gesture",
+           "component": {
+            "type": "CanvasGestureComponent",
+            "data": {
+             "tap": false,
+             "press_feedback": false,
+             "min_hit_size_dp": 0.0
+            }
+           }
+          }
+         ],
+         "children": [],
+         "visible": false
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Time12",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       186.0,
+       974.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+         ],
+         "width": 210.0,
+         "height": 190.0,
+         "layer": 0
+        }
+       }
+      },
+      {
+       "name": "TimeWheel",
+       "component": {
+        "type": "ScriptComponent",
+        "data": {
+         "type_name": "SEED.UI.TimeWheel",
+         "fields": {
+          "Use24Hour": "false",
+          "MinuteStep": "5",
+          "Hour": "11",
+          "Minute": "55"
+         }
+        }
+       }
+      }
+     ],
+     "children": [
+      {
+       "name": "Band",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         9.0,
+         77.095
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.027321,
+            0.023153,
+            0.042311,
+            1.0
+           ],
+           "width": 192.0,
+           "height": 35.81,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             8.0,
+             8.0,
+             8.0,
+             8.0
+            ]
+           }
+          }
+         }
+        }
+       ],
+       "children": []
+      },
+      {
+       "name": "Meridiem",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 70.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Gesture",
+         "component": {
+          "type": "CanvasGestureComponent",
+          "data": {
+           "tap": true,
+           "press_feedback": false
+          }
+         }
+        },
+        {
+         "name": "WheelPicker",
+         "component": {
+          "type": "ScriptComponent",
+          "data": {
+           "type_name": "SEED.UI.WheelPicker",
+           "fields": {
+            "ShowBand": "false",
+            "RowPrefab": "assets://ui/prefabs/wheel_row.actor",
+            "Min": "0",
+            "Max": "1",
+            "Value": "0",
+            "Looping": "false"
+           }
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Viewport",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 70.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Clip",
+           "component": {
+            "type": "CanvasClipComponent",
+            "data": {
+             "enabled": true
+            }
+           }
+          },
+          {
+           "name": "Scroll",
+           "component": {
+            "type": "CanvasScrollComponent",
+            "data": {
+             "enabled": true,
+             "direction": "vertical",
+             "edge": "bounce",
+             "inertia": true,
+             "snap": "interval",
+             "snap_interval": 32.0,
+             "hand_off_to_parent": false,
+             "content_size": "fixed"
+            }
+           }
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Blocker",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 70.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Gesture",
+           "component": {
+            "type": "CanvasGestureComponent",
+            "data": {
+             "tap": false,
+             "press_feedback": false,
+             "min_hit_size_dp": 0.0
+            }
+           }
+          }
+         ],
+         "children": [],
+         "visible": false
+        }
+       ]
+      },
+      {
+       "name": "Hour",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         70.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 70.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Gesture",
+         "component": {
+          "type": "CanvasGestureComponent",
+          "data": {
+           "tap": true,
+           "press_feedback": false
+          }
+         }
+        },
+        {
+         "name": "WheelPicker",
+         "component": {
+          "type": "ScriptComponent",
+          "data": {
+           "type_name": "SEED.UI.WheelPicker",
+           "fields": {
+            "ShowBand": "false",
+            "RowPrefab": "assets://ui/prefabs/wheel_row.actor",
+            "Min": "0",
+            "Max": "23",
+            "Value": "11",
+            "Format": "0"
+           }
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Viewport",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 70.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Clip",
+           "component": {
+            "type": "CanvasClipComponent",
+            "data": {
+             "enabled": true
+            }
+           }
+          },
+          {
+           "name": "Scroll",
+           "component": {
+            "type": "CanvasScrollComponent",
+            "data": {
+             "enabled": true,
+             "direction": "vertical",
+             "edge": "bounce",
+             "inertia": true,
+             "snap": "interval",
+             "snap_interval": 32.0,
+             "hand_off_to_parent": false,
+             "content_size": "fixed"
+            }
+           }
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Blocker",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 70.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Gesture",
+           "component": {
+            "type": "CanvasGestureComponent",
+            "data": {
+             "tap": false,
+             "press_feedback": false,
+             "min_hit_size_dp": 0.0
+            }
+           }
+          }
+         ],
+         "children": [],
+         "visible": false
+        }
+       ]
+      },
+      {
+       "name": "Minute",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         140.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 70.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Gesture",
+         "component": {
+          "type": "CanvasGestureComponent",
+          "data": {
+           "tap": true,
+           "press_feedback": false
+          }
+         }
+        },
+        {
+         "name": "WheelPicker",
+         "component": {
+          "type": "ScriptComponent",
+          "data": {
+           "type_name": "SEED.UI.WheelPicker",
+           "fields": {
+            "ShowBand": "false",
+            "RowPrefab": "assets://ui/prefabs/wheel_row.actor",
+            "Min": "0",
+            "Max": "59",
+            "Step": "5",
+            "Value": "55"
+           }
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Viewport",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 70.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Clip",
+           "component": {
+            "type": "CanvasClipComponent",
+            "data": {
+             "enabled": true
+            }
+           }
+          },
+          {
+           "name": "Scroll",
+           "component": {
+            "type": "CanvasScrollComponent",
+            "data": {
+             "enabled": true,
+             "direction": "vertical",
+             "edge": "bounce",
+             "inertia": true,
+             "snap": "interval",
+             "snap_interval": 32.0,
+             "hand_off_to_parent": false,
+             "content_size": "fixed"
+            }
+           }
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Blocker",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+             ],
+             "width": 70.0,
+             "height": 190.0,
+             "layer": 0
+            }
+           }
+          },
+          {
+           "name": "Gesture",
+           "component": {
+            "type": "CanvasGestureComponent",
+            "data": {
+             "tap": false,
+             "press_feedback": false,
+             "min_hit_size_dp": 0.0
+            }
+           }
+          }
+         ],
+         "children": [],
+         "visible": false
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Snooze",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       412.0,
+       974.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+         ],
+         "width": 108.0,
+         "height": 190.0,
+         "layer": 0
+        }
+       }
+      },
+      {
+       "name": "Gesture",
+       "component": {
+        "type": "CanvasGestureComponent",
+        "data": {
+         "tap": true,
+         "press_feedback": false
+        }
+       }
+      },
+      {
+       "name": "WheelPicker",
+       "component": {
+        "type": "ScriptComponent",
+        "data": {
+         "type_name": "SEED.UI.WheelPicker",
+         "fields": {
+          "ShowBand": "true",
+          "RowPrefab": "assets://ui/prefabs/wheel_row.actor",
+          "Min": "1",
+          "Max": "30",
+          "Step": "1",
+          "Value": "10",
+          "Format": "0",
+          "Suffix": "分",
+          "Looping": "false",
+          "LimitSelectable": "true",
+          "SelectableMin": "1",
+          "SelectableMax": "20"
+         }
+        }
+       }
+      }
+     ],
+     "children": [
+      {
+       "name": "Band",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         9.0,
+         77.095
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.027321,
+            0.023153,
+            0.042311,
+            1.0
+           ],
+           "width": 90.0,
+           "height": 35.81,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             8.0,
+             8.0,
+             8.0,
+             8.0
+            ]
+           }
+          }
+         }
+        }
+       ],
+       "children": []
+      },
+      {
+       "name": "Viewport",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 108.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Clip",
+         "component": {
+          "type": "CanvasClipComponent",
+          "data": {
+           "enabled": true
+          }
+         }
+        },
+        {
+         "name": "Scroll",
+         "component": {
+          "type": "CanvasScrollComponent",
+          "data": {
+           "enabled": true,
+           "direction": "vertical",
+           "edge": "bounce",
+           "inertia": true,
+           "snap": "interval",
+           "snap_interval": 32.0,
+           "hand_off_to_parent": false,
+           "content_size": "fixed"
+          }
+         }
+        }
+       ],
+       "children": []
+      },
+      {
+       "name": "Blocker",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+           ],
+           "width": 108.0,
+           "height": 190.0,
+           "layer": 0
+          }
+         }
+        },
+        {
+         "name": "Gesture",
+         "component": {
+          "type": "CanvasGestureComponent",
+          "data": {
+           "tap": false,
+           "press_feedback": false,
+           "min_hit_size_dp": 0.0
+          }
+         }
+        }
+       ],
+       "children": [],
+       "visible": false
+      }
+     ]
     }
    ]
   }

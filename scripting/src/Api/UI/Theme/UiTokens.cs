@@ -63,6 +63,8 @@ public static class UiTokens
     public const string RadiusCheckbox = "radius.checkbox";
     /// <summary>進捗の棒。</summary>
     public const string RadiusProgress = "radius.progress";
+    /// <summary>ホイールの中央の帯（W2-5。Flutter の選択の帯の角丸 8）。</summary>
+    public const string RadiusWheelBand = "radius.wheel_band";
 
     // ── 余白（キャンバスの単位）──────────────────────────────
     /// <summary>とても小さい。</summary>
@@ -105,6 +107,10 @@ public static class UiTokens
     public const string SizeShadowBlur = "size.shadow_blur";
     /// <summary>影のずれ（下へ）。</summary>
     public const string SizeShadowOffset = "size.shadow_offset";
+    /// <summary>ホイールの行の高さ（W2-5。Flutter の CupertinoDatePicker の itemExtent 32）。</summary>
+    public const string SizeWheelItem = "size.wheel_item";
+    /// <summary>ホイールの中央の帯の左右の余白（W2-5。Flutter の選択の帯の余白 9）。</summary>
+    public const string SizeWheelBandInset = "size.wheel_band_inset";
 
     // ── 文字の大きさ ────────────────────────────────────────
     /// <summary>見出し。</summary>
@@ -115,6 +121,8 @@ public static class UiTokens
     public const string TextLabel = "text.label";
     /// <summary>注記。</summary>
     public const string TextCaption = "text.caption";
+    /// <summary>ホイールの行の文字（W2-5。Flutter の日時のホイールの文字 21）。</summary>
+    public const string TextWheel = "text.wheel";
 
     // ── 動き（秒）────────────────────────────────────────────
     /// <summary>短い動き（スイッチのつまみ・押下の色）。</summary>
@@ -127,6 +135,10 @@ public static class UiTokens
     public const string MotionRepeatMinInterval = "motion.repeat_min_interval";
     /// <summary>長押しの連続の間隔が 1 秒ごとに何倍になるか（1 未満で速くなる）。</summary>
     public const string MotionRepeatAccel = "motion.repeat_accel";
+    /// <summary>ホイールをタップ・スクリプト・キーボードで動かす時間と、時刻ホイールの午前/午後の連動（W2-5。Flutter の 300ms）。</summary>
+    public const string MotionWheel = "motion.wheel";
+    /// <summary>ホイールが選べない行に止まったとき、選べる行へ戻す時間（W2-5。Flutter の CupertinoDatePicker の 200ms）。</summary>
+    public const string MotionWheelCorrect = "motion.wheel_correct";
 
     // ── 濃さ（0..1）──────────────────────────────────────────
     /// <summary>押下の重ね色の濃さ。</summary>
@@ -135,6 +147,8 @@ public static class UiTokens
     public const string OpacityDisabled = "opacity.disabled";
     /// <summary>影の濃さ。</summary>
     public const string OpacityShadow = "opacity.shadow";
+    /// <summary>ホイールの中央の帯の外の行の濃さ（W2-5。Flutter の _kOverAndUnderCenterOpacity 0.447）。</summary>
+    public const string OpacityWheelDim = "opacity.wheel_dim";
 
     /// <summary>部品が読むすべてのトークン（ギャラリー・テストが既定のテーマに揃っているかを確かめる）。</summary>
     public static readonly string[] All =
@@ -142,13 +156,14 @@ public static class UiTokens
         ColorPrimary, ColorOnPrimary, ColorBackground, ColorSurface, ColorSurfaceVariant, ColorOnSurface,
         ColorOnSurfaceMuted, ColorOutline, ColorSelected, ColorOnSelected, ColorKnob, ColorKnobOff,
         ColorStateLayer, ColorDisabled, ColorOnDisabled, ColorShadow, ColorError,
-        RadiusButton, RadiusChip, RadiusCard, RadiusField, RadiusSegment, RadiusCheckbox, RadiusProgress,
+        RadiusButton, RadiusChip, RadiusCard, RadiusField, RadiusSegment, RadiusCheckbox, RadiusProgress, RadiusWheelBand,
         SpaceXs, SpaceS, SpaceM, SpaceL, SpaceXl,
         SizeTouchMin, SizeBorder, SizeCheckBorder, SizeToggleKnob, SizeToggleKnobOff, SizeToggleInset,
         SizeSliderTrack, SizeSliderThumb, SizeSliderThumbPressed, SizeProgressBar, SizeRingThickness,
-        SizeRadioDot, SizeShadowBlur, SizeShadowOffset,
-        TextTitle, TextBody, TextLabel, TextCaption,
+        SizeRadioDot, SizeShadowBlur, SizeShadowOffset, SizeWheelItem, SizeWheelBandInset,
+        TextTitle, TextBody, TextLabel, TextCaption, TextWheel,
         MotionShort, MotionMedium, MotionRepeatInterval, MotionRepeatMinInterval, MotionRepeatAccel,
-        OpacityPressed, OpacityDisabled, OpacityShadow,
+        MotionWheel, MotionWheelCorrect,
+        OpacityPressed, OpacityDisabled, OpacityShadow, OpacityWheelDim,
     };
 }

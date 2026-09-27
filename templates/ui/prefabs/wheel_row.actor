@@ -1,0 +1,82 @@
+{
+ "name": "WheelRow",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [],
+ "children": [
+  {
+   "name": "Label",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     40.0,
+     16.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.5,
+     0.5
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "00",
+       "font_size": 21.0,
+       "color": [
+        0.838799,
+        0.791298,
+        0.913099,
+        1.0
+       ],
+       "align": "center",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 80.0,
+       "box_height": 32.0,
+       "wrap": false
+      }
+     }
+    }
+   ],
+   "children": []
+  }
+ ]
+}

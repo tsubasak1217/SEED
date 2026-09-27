@@ -3860,6 +3860,93 @@ UiTheme.Use(UiThemeData.Parse(json, UiTheme.Default, out var error))
 
 > **重要**: 部品は見た目を変えたとき `SEED.Redraw.Request()`、動いている間は `Redraw.KeepAlive` を呼ぶので、`render_policy: on_demand` でも止まりません。全トークンの表と既定値は docs/ui_components.md §5。
 
+```csharp
+UiWidget.RefreshCount      // long: 全部品が見た目を作り直した回数（計測用。ホイールを回している間に他の部品が作り直されないことを見る）
+```
+
+## 7.17 UI 部品（SEED.UI：ホイール・時刻ホイール。W2-5）
+
+上下に流れて窓の中央の行が選ばれる**ホイールの列**（`WheelPicker`）と、それを並べた**時刻ホイール**（`TimeWheel`。値は `System.TimeOnly`）。
+見本は `templates/ui/prefabs/wheel_picker.actor`・`time_wheel.actor`（行は `wheel_row.actor`）とギャラリー。スクロール（ドラッグ・慣性・行ごとのスナップ）は
+エンジンの CanvasScroll、行の曲面の見た目・端をつなげる循環・イベント・触感は部品が受け持ちます。規則の正典は docs/ui_components.md §11。
+
+```csharp
+using System;
+using SEED.UI;
+
+public class AlarmEditScreen : SEEDScript
+{
+    private TimeWheel? wheel;
+
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        // 部品は別のスクリプトなので、登録簿から引く（相手の OnStart の前は null。見つかるまで引き直してよい）
+        if (wheel is null && UiWidget.Of<TimeWheel>(gameObject.FindChild("TimeWheel")) is { } w)
+        {
+            wheel = w;
+            wheel.SetValue(TimeOnly.FromDateTime(DateTime.Now), animate: false);   // 新規の初期値は現在時刻
+            wheel.ValueChanged += (_, t) => { /* 回している途中も届く（同じ時刻のアラームの警告など） */ };
+            wheel.ValueSettled += (_, t) => SEED.Debug.Log($"alarm {t:HH:mm}");  // 全列が止まった
+        }
+    }
+}
+```
+
+### TimeWheel（時刻ホイール）
+
+```csharp
+// プレハブ: TimeWheel（Sprite〈透明〉・SEED.UI.TimeWheel）├ Band（全列の中央の帯）├ Meridiem ├ Hour └ Minute（それぞれ WheelPicker の列）
+timeWheel.Value                        // TimeOnly（今の値。秒は 0）
+timeWheel.SetValue(t, animate: true)   // 分の刻みへ丸めて各列を近い向きへ動かす（false = すぐ）。ValueChanged は 1 回だけ
+timeWheel.ValueChanged                 // event Action<TimeWheel, TimeOnly>（値が変わるたび。指で回している途中も）
+timeWheel.ValueSettled                 // event Action<TimeWheel, TimeOnly>（全列が止まった）
+timeWheel.Use24Hour / SetUse24Hour(false)   // 24 時間表記（false = 12 時間表記＋午前/午後の列。値はそのまま）
+timeWheel.MinuteStep / SetMinuteStep(5)     // 分の刻み（1 時間を割り切る数。値は最も近い刻みへ丸める。23:58 → 0:00）
+timeWheel.HourFormat / MinuteFormat    // string（既定 "0" / "00"）
+timeWheel.AmLabel / PmLabel / MeridiemOnLeft   // 午前/午後の文字（既定「午前」「午後」）・列を左に置く（既定 true）
+timeWheel.HourColumn / MinuteColumn / MeridiemColumn   // WheelPicker?（列。キーボードの Focus などに）
+timeWheel.IsMoving                     // bool（どれかの列が動いている）
+```
+
+- 12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えると午前/午後の列が動き、午前/午後の列を指で変えると時が 12 ずれます（Flutter の CupertinoDatePicker と同じ）。
+- 分の 59 → 00・時の 23 → 0 はそれぞれの列の中でつながります（分が一周しても時は変わりません）。
+
+### WheelPicker（ホイールの列）
+
+```csharp
+// プレハブ: WheelPicker（Sprite〈透明〉・CanvasGesture〈タップ〉・SEED.UI.WheelPicker）├ Band ├ Viewport（CanvasClip・CanvasScroll）└ Blocker
+// 数の範囲（インスペクタで作れる）: Min / Max / Step / Value / Format / Suffix / Looping / LimitSelectable / SelectableMin / SelectableMax
+wheel.SelectedIndex / SelectedValue    // int（中央の項目の番号 / 数の範囲なら値）
+wheel.Count / IsLooping / IsMoving / IsUserInteracting / IsReady
+wheel.SelectIndex(i, animate: true)    // 項目を中央へ（つなげる列は近い向きへ回る。最初の描画の前なら置けるようになったとき黙って置く）
+wheel.SetValue(15, animate: true)      // 数の範囲の値へ
+wheel.StepBy(+1)                       // 選べる項目を 1 つ進める（キーボードの ↓ と同じ）
+wheel.Focus()                          // キーボード（↑↓）の相手にする（既定は最後に指で触れたホイール）
+wheel.SelectionChanged                 // event Action<WheelPicker, int>（中央の項目が変わるたび。動きの途中も）
+wheel.Settled                          // event Action<WheelPicker, int>（止まった。選べない行からは戻り終えてから）
+wheel.Configure(count, i => label, looping, selectedIndex)   // 項目の数と文字を渡して作り直す（数の範囲の代わり）
+wheel.SetLabels(i => label)            // 文字だけ作り直す
+wheel.SetItemEnabled(i => i <= 20)     // 選べる項目（灰色で表示・止まると最も近い選べる項目へ戻る・タップでは動かない）
+wheel.Haptic                           // bool（中央の行が変わるたびの軽い触感。指とその慣性の間だけ。既定 true）
+wheel.Keyboard / ShowBand              // bool（キーの上下で動かす / 中央の帯を描く）
+wheel.ItemExtent / TextSize            // float（0 = テーマの size.wheel_item〈32〉/ text.wheel〈21〉）
+wheel.DiameterRatio / Perspective / Squeeze / Magnification / EdgeShade   // 曲面の見た目（既定は Flutter の CupertinoDatePicker）
+wheel.RowPrefab                        // string（行のプレハブ。子に Label〈Text〉を持つ .actor。既定 assets://ui/prefabs/wheel_row.actor）
+```
+
+| トークン | 既定 | 使う所 |
+|---|---|---|
+| `size.wheel_item`・`text.wheel` | 32・21 | 行の高さ（スナップの間隔）・行の文字 |
+| `radius.wheel_band`・`size.wheel_band_inset` | 8・9 | 中央の帯の角丸・左右の余白（帯の色は `color.surface_variant`） |
+| `opacity.wheel_dim` | 0.447 | 中央の帯の外の行の濃さ |
+| `motion.wheel`・`motion.wheel_correct` | 0.3・0.2 | タップ・キー・スクリプト・午前/午後の連動の動き（秒）・選べない行から戻る動き |
+
+純粋な計算（エディタのテストで検算）: `WheelLook.Resolve(距離, 窓の高さ, 行の高さ, WheelLookParams)`（行の見た目）・`WheelLook.DistanceAtOffset`（逆）・
+`WheelLoop`（循環の添字・近い向きの行・位置）・`TimeWheelMath`（12/24 時間・午前/午後の連動・分の刻み）。
+
+> **重要**: ホイールの値の変化で他の部品は作り直されません（書くのはその列の行の文字だけ）。列が動いている間はエンジンが「動いている」を申告するので
+> `render_policy: on_demand` でも止まらず、止まって 10 フレームで描画が止まります。
+
 ---
 
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順

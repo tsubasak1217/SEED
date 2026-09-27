@@ -81,9 +81,16 @@ public abstract class UiWidget : SEEDScript
         OnWidgetUpdate(ctx.DeltaTime);
     }
 
+    /// <summary>
+    /// 全部品が見た目を作り直した回数（計測用。W2-5: 時刻ホイールを回している間に他の部品が作り直されない〈UC-4〉ことを
+    /// ギャラリーの `ui,stats` で確かめる）。
+    /// </summary>
+    public static long RefreshCount { get; private set; }
+
     /// <summary>見た目を作り直して描き直しを頼む。</summary>
     protected void Refresh()
     {
+        RefreshCount++;
         ApplyLook();
         Redraw.Request();
     }

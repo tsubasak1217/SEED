@@ -2869,7 +2869,25 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   なり、字面の中心が指定の位置より約 0.9 × 文字の大きさ上に出る（14 の文字で約 13 画素）。枠あり（`box_width` > 0）は枠の中で正しく揃うので、W2-4 の部品のプレハブは
   すべて枠ありの Text にした。既存のゲームが今の位置に合わせて置いているので、直すなら版を上げて既存のシーンの位置を補正するか、枠なしの揃え方を新しい欄にする。
   関連: `runtime/src/engine/core/font/text_layout.rs`・`canvas_text.rs`。
-- [ ] **W2-5 時刻ホイール（24 時間・ループ・スナップ・触感）** — 2026-09-27。
+- [x] **W2-5 時刻ホイール（24 時間・ループ・スナップ・触感）** — 2026-09-27。
+  → **2026-09-28 に済**（正典 docs/ui_components.md §11。roadmap §3.8.5）。C# の `SEED.UI.WheelPicker`（列）・`SEED.UI.TimeWheel`（時・分・午前/午後。値は TimeOnly）。
+  スクロールは W2-3 の CanvasScroll の Interval のスナップをそのまま使い **Rust は変えていない**。行の曲面の見た目は Flutter の ListWheelViewport の式の純関数（`WheelLook`）、
+  端をつなげる循環は ListView の使い回し（約 20 万単位の並びの真ん中から始め、止まるたびに遠ければ真ん中へ）、触感は指とその慣性の間だけ。見本は `templates/ui/prefabs/`
+  の `wheel_row.actor`・`wheel_picker.actor`・`time_wheel.actor` とギャラリーの段。残りは下の「W2-5 の残り」。
+- [ ] **W2-5 の残り（時刻ホイール）** — 2026-09-28。(1) **実機（Pixel 6a）の手触り・触感は未確認**（手順は ui_components.md §11.9）。触感は中央の行が変わるたびに
+  1 フレーム 1 回まで鳴らす（速いフリックで最大 60 回/秒）ので、Android の EFFECT_CLICK が強すぎ・多すぎなら間隔の下限を足す。(2) **Flutter の拡大鏡の 2 度描き**
+  （帯の中だけ拡大・不透明、外は 0.447）はせず、帯の中の度合いで連続に補間している（帯の境をまたぐ行は中間の濃さ）。オフアクシス（列ごとの左右の傾き）と
+  行の中での遠近の横の歪みも無い。(3) **最小・最大の時刻**（CupertinoDatePicker の minimumDate/maximumDate。値で時・分の列の選べない行が変わる）が TimeWheel に無い
+  （列の `SetItemEnabled` で作れる）。(4) **キーボードのフォーカスは仮**（`WheelFocus` = 最後に触れたホイール）。W2-6（入力欄）・W2-7（画面のスタック）の
+  フォーカスへ寄せる。PC でマウスのホイール（`Input.MouseScroll`）で回す操作も無い。(5) **無限のスクロールではない**（中身 ≒ 20 万単位の中で止まるたびに真ん中へ戻す。
+  止めずに最速のフリックを 25 回以上続けると端で跳ね返る）。(6) ScrollTo の曲線は easeInOut だけ（Flutter の午前/午後の連動は easeOut）。(7) 読み上げ（アクセシビリティ）が無い。
+  関連: `scripting/src/Api/UI/Wheel/`・`scripting/src/Api/UI/Widgets/WheelPicker.cs`・`TimeWheel.cs`・`templates/ui/`。
+- [ ] **一覧の行の使い回しがシーン操作のコマンド（ヒエラルキーの送信つき）になる（既存・W2-3）** — 2026-09-28（W2-5 の確かめで `SEED_REDRAW_LOG=1` の
+  理由に `motion+lifecycle` が 1 フレームおきに出ることから見つけた。直していない）。ListView が行を付け替えるたびの `GameObject.Visible`・`CancelGestures`
+  （と W2-5 の行の文字の表示の切り替え）は、スクリプトのシーン操作のコマンド（`apply_script_scene_commands`）として当たり、描く理由の `lifecycle` を申告し、
+  エディタへヒエラルキーを送る（Play は 400ms に 1 回へ間引き）。一覧・ホイールを回している間、IPC がつながっていれば 400ms ごとにシーン全体の木を JSON にして送る。
+  直すなら表示・取り消しのコマンドではヒエラルキーを送らない（木の形は変わらない）、か表示の変化だけ差分で送る。関連: `app/script_scene_ops.rs`・`app/hierarchy_sync.rs`・
+  `scripting/src/Api/UI/ListView.cs`。
 - [ ] **W2-6 文字入力と IME・文字の寸法（`Text.Measure`）・グリフの追い出し** — 2026-09-27。
   グリフのアトラス（4096²・約 2,500 字）はあふれると追い出さずに描かない（`font/atlas.rs:17-19,183-194`）。日本語のアプリでは足りなくなりうる。
 - [ ] **W2-7 画面の組み立て（タブ・画面のスタック・ダイアログ・シート・戻るの段・トースト）** — 2026-09-27。

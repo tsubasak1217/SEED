@@ -13,6 +13,8 @@
     既定のテーマが部品の読むトークンをすべて持つこと、ボタン・スイッチ・チェックボックス・選択の項目の見た目（押下・無効・選択）、
     スライダの値（段階・範囲・指の位置）、数値欄（増減・文字の解釈・長押しの連続の間隔）、進捗、選択の状態（1 つ・外せる・複数・選べない）、
     動き（UiTween の途中の行き先の変更）。
+    W2-5: ホイールの行の見た目（距離 → 位置・縮み・拡大・濃さ。Flutter の円柱の投影の行列と照合）と逆算（タップ）、循環の添字（負・大きな値）と
+    近い向きの行・真ん中の周へ戻す判定、位置 ↔ 行、選べる行の探し方、12/24 時間の変換と午前/午後の連動、分の刻みの丸め。
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -52,6 +54,10 @@
     </Compile>
     <Compile Include="..\..\..\scripting\src\Api\UI\SwipeMath.cs">
       <Link>Linked\SwipeMath.cs</Link>
+    </Compile>
+    <!-- W2-5: ホイールの純粋な計算（行の曲面の見た目・循環の添字と位置・時刻の 12/24 時間と連動と分の刻み） -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\Wheel\*.cs">
+      <Link>Linked\Wheel\%(Filename)%(Extension)</Link>
     </Compile>
     <!-- 既定のテーマのデータ（SEEDScripting に埋め込むものと同じファイル）を出力へ写す -->
     <None Include="..\..\..\scripting\src\Api\UI\Theme\default_theme.json">

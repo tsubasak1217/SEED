@@ -235,6 +235,7 @@
     <a href="#sec-redraw">Redraw（描く理由）</a>
     <a href="#sec-ui">UI 部品（ListView・SwipeActions）</a>
     <a href="#sec-ui-widgets">UI 部品（ボタン・トグル・スライダ…）</a>
+    <a href="#sec-ui-wheel">UI 部品（時刻ホイール）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -2621,8 +2622,37 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="api"><code class="sig">bar.SetValue(t) / ring.SetValue(t)</code><span class="desc">ProgressBar・ProgressRing（0..1。motion.medium 秒で動く。輪は形と塗りの弧）</span></div>
   <div class="api"><code class="sig">UiTheme.Current / Color(token) / Number(token) / LoadAsset(path) / Use(theme)</code><span class="desc">テーマ（既定は埋め込みの default_theme.json。#RRGGBB は sRGB → 線形。差し替えると部品は次のフレームで作り直す）</span></div>
   <div class="api"><code class="sig">UiTokens.ColorPrimary / RadiusButton / SizeTouchMin / TextLabel / MotionShort / OpacityPressed …</code><span class="desc">トークンの名前（color.* / radius.* / space.* / size.* / text.* / motion.* / opacity.*）</span></div>
+  <div class="api"><code class="sig">UiWidget.RefreshCount</code><span class="desc">long: 全部品が見た目を作り直した回数（計測用。ホイールを回している間に他の部品が作り直されないことを見る。W2-5）</span></div>
 <pre><span class="k">if</span> (<span class="t">UiWidget</span>.Of&lt;<span class="t">Button</span>&gt;(gameObject.FindChild(<span class="s">"Save"</span>)) <span class="k">is</span> { } save)
     save.Clicked += b =&gt; { b.Busy = <span class="k">true</span>; <span class="c">/* 保存 → 終わったら b.Busy = false */</span> };</pre>
+</section>
+
+<section id="sec-ui-wheel" data-keywords="UI部品 SEED.UI ホイール 時刻ホイール ピッカー ドラム WheelPicker TimeWheel TimeOnly 時刻 時間 分 午前 午後 12時間 24時間 AM PM 分の刻み MinuteStep Use24Hour SetUse24Hour SetMinuteStep SelectIndex SetValue StepBy Focus SelectionChanged Settled ValueChanged ValueSettled Configure SetLabels SetItemEnabled 選べない 循環 ループ 端をつなげる 触感 Haptics キーボード 矢印 曲面 円柱 CupertinoDatePicker WheelLook WheelLoop TimeWheelMath size.wheel_item text.wheel radius.wheel_band opacity.wheel_dim motion.wheel W2-5">
+  <h2>7.17 UI 部品（SEED.UI：ホイール・時刻ホイール。W2-5）</h2>
+  <p>上下に流れて窓の中央の行が選ばれる<strong>ホイールの列</strong>（<code>WheelPicker</code>）と、それを並べた<strong>時刻ホイール</strong>（<code>TimeWheel</code>。値は <code>System.TimeOnly</code>）。見本は <code>templates/ui/prefabs/wheel_picker.actor</code>・<code>time_wheel.actor</code>（行は <code>wheel_row.actor</code>）とギャラリー。スクロール（ドラッグ・慣性・行ごとのスナップ）はエンジンの CanvasScroll、行の曲面の見た目・端をつなげる循環・イベント・触感は部品が受け持ちます。正典は docs/ui_components.md §11。</p>
+  <div class="api"><code class="sig">timeWheel.Value / SetValue(t, animate) / ValueChanged / ValueSettled</code><span class="desc">TimeOnly。SetValue は分の刻みへ丸めて各列を近い向きへ動かす（ValueChanged は 1 回）。ValueChanged は回している途中も届き、ValueSettled は全列が止まったとき</span></div>
+  <div class="api"><code class="sig">timeWheel.Use24Hour / SetUse24Hour(bool) / MinuteStep / SetMinuteStep(int)</code><span class="desc">24 時間表記（false = 12 時間表記＋午前/午後の列）・分の刻み（1 時間を割り切る数。値は最も近い刻みへ。23:58 → 0:00）</span></div>
+  <div class="api"><code class="sig">timeWheel.HourFormat / MinuteFormat / AmLabel / PmLabel / MeridiemOnLeft / HourColumn / MinuteColumn / MeridiemColumn / IsMoving</code><span class="desc">書式（既定 "0" / "00"）・午前/午後の文字と位置（既定は左）・列（WheelPicker）・動いているか</span></div>
+  <div class="api"><code class="sig">wheel.SelectIndex(i, animate) / SetValue(v, animate) / StepBy(n) / Focus()</code><span class="desc">中央へ動かす（つなげる列は近い向きへ回る。最初の描画の前は置けるようになったとき黙って置く）・選べる項目を進める・キーボード（↑↓）の相手にする</span></div>
+  <div class="api"><code class="sig">wheel.SelectionChanged / Settled</code><span class="desc">event Action&lt;WheelPicker, int&gt;: 中央の項目が変わるたび（動きの途中も）／止まった（選べない行からは戻り終えてから）</span></div>
+  <div class="api"><code class="sig">wheel.Configure(count, labelOf, looping, selected) / SetLabels / SetItemEnabled(pred)</code><span class="desc">項目の数と文字で作り直す（数の範囲 Min / Max / Step / Value / Format / Suffix の代わり）・選べる項目（灰色・止まると戻る・タップで動かない）</span></div>
+  <div class="api"><code class="sig">wheel.SelectedIndex / SelectedValue / Count / IsLooping / IsMoving / IsUserInteracting / IsReady</code><span class="desc">中央の項目と値・状態</span></div>
+  <div class="api"><code class="sig">wheel.Haptic / Keyboard / ShowBand / ItemExtent / TextSize / RowPrefab</code><span class="desc">触感（指とその慣性の間だけ・1 フレーム 1 回）・キーの上下・中央の帯・行の高さと文字（0 = テーマ）・行のプレハブ</span></div>
+  <div class="api"><code class="sig">wheel.DiameterRatio / Perspective / Squeeze / Magnification / EdgeShade</code><span class="desc">曲面の見た目（既定は Flutter の CupertinoDatePicker: 1.07 / 0.003 / 1.25 / 2.35÷2.1 と面の傾きの暗さ 1）</span></div>
+  <table>
+    <tr><th>トークン</th><th>既定</th><th>使う所</th></tr>
+    <tr><td><code>size.wheel_item</code>・<code>text.wheel</code></td><td>32・21</td><td>行の高さ（スナップの間隔）・行の文字</td></tr>
+    <tr><td><code>radius.wheel_band</code>・<code>size.wheel_band_inset</code></td><td>8・9</td><td>中央の帯の角丸・左右の余白（帯の色は <code>color.surface_variant</code>）</td></tr>
+    <tr><td><code>opacity.wheel_dim</code></td><td>0.447</td><td>中央の帯の外の行の濃さ</td></tr>
+    <tr><td><code>motion.wheel</code>・<code>motion.wheel_correct</code></td><td>0.3・0.2</td><td>タップ・キー・スクリプト・午前/午後の連動の動き（秒）・選べない行から戻る動き</td></tr>
+  </table>
+<pre><span class="k">if</span> (wheel <span class="k">is null</span> &amp;&amp; <span class="t">UiWidget</span>.Of&lt;<span class="t">TimeWheel</span>&gt;(gameObject.FindChild(<span class="s">"TimeWheel"</span>)) <span class="k">is</span> { } w)
+{
+    wheel = w;
+    wheel.SetValue(<span class="t">TimeOnly</span>.FromDateTime(<span class="t">DateTime</span>.Now), animate: <span class="k">false</span>);  <span class="c">// 新規の初期値は現在時刻</span>
+    wheel.ValueSettled += (_, t) =&gt; SEED.<span class="t">Debug</span>.Log(<span class="s">$"alarm {t:HH:mm}"</span>);  <span class="c">// 全列が止まった</span>
+}</pre>
+  <p>12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えると午前/午後の列が動き、午前/午後の列を指で変えると時が 12 ずれます（Flutter の CupertinoDatePicker と同じ）。分の 59 → 00・時の 23 → 0 はそれぞれの列の中でつながります。値の変化で他の部品は作り直されず、列が動いている間はエンジンが「動いている」を申告するので <code>render_policy: on_demand</code> でも止まりません。</p>
 </section>
 
 
