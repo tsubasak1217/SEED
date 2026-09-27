@@ -2078,15 +2078,15 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 </section>
 
 <!-- ════════════════ 7.13 Platform ════════════════ -->
-<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1 Alarms AlarmRequest ScheduledAlarm Schedule Cancel CancelAll GetScheduled CanScheduleExact 予約 setAlarmClock AlarmFiredEvent AlarmMissedEvent AlarmsRescheduledEvent platform.alarm.fired platform.alarm.missed platform.alarms.rescheduled 張り直し 再起動 TriggerAtUtcMs PayloadJson SoundAsset exact_alarm_not_allowed feature_not_enabled W1-3 鳴動 GetRinging StopRinging RingingAlarm AlarmRingStoppedEvent AlarmRingStopReason AlarmQueuedEvent platform.alarm.ring_stopped platform.alarm.queued 待ち行列 安全弁 MaxRingMinutes start_failed StartFailed App LaunchReason LaunchInfo LaunchKind 起動理由 platform.launch PlatformEntry Window SetShowWhenLocked ロック画面 フルスクリーン通知 no_activity W1-4a Notifications NotificationRequest NotificationAction NotificationImportance EnsureChannel Show AreEnabled チャネル 常駐 Ongoing ボタン notifications_disabled channel_not_found NotificationTap NotificationAction Permissions PermissionKind PermissionStatus Check Request OpenSettings PermissionResultEvent PermissionChangedEvent platform.permission_result platform.permission_changed PostNotifications ExactAlarm FullScreenIntent DeniedPermanently NeedsSettings NotApplicable 実行時の許可 設定の画面 W1-5 SetKeepScreenOn SetSystemBarsVisible システムバー 画面を点けたまま MoveTaskToBack 背面 戻る OpenUrl URL ブラウザ OpenAppSettings アプリ情報 no_handler scheme_not_allowed Haptics Tap Vibrate 触感 振動 no_vibrator DeepLink Uri ディープリンク 忘れ対策 SEED_PLATFORM_SIM_NO_OPEN W1-6">
-  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感）</h2>
+<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1 Alarms AlarmRequest ScheduledAlarm Schedule Cancel CancelAll GetScheduled CanScheduleExact 予約 setAlarmClock AlarmFiredEvent AlarmMissedEvent AlarmsRescheduledEvent platform.alarm.fired platform.alarm.missed platform.alarms.rescheduled 張り直し 再起動 TriggerAtUtcMs PayloadJson SoundAsset exact_alarm_not_allowed feature_not_enabled W1-3 鳴動 GetRinging StopRinging RingingAlarm AlarmRingStoppedEvent AlarmRingStopReason AlarmQueuedEvent platform.alarm.ring_stopped platform.alarm.queued 待ち行列 安全弁 MaxRingMinutes start_failed StartFailed App LaunchReason LaunchInfo LaunchKind 起動理由 platform.launch PlatformEntry Window SetShowWhenLocked ロック画面 フルスクリーン通知 no_activity W1-4a Notifications NotificationRequest NotificationAction NotificationImportance EnsureChannel Show AreEnabled チャネル 常駐 Ongoing ボタン notifications_disabled channel_not_found NotificationTap NotificationAction Permissions PermissionKind PermissionStatus Check Request OpenSettings PermissionResultEvent PermissionChangedEvent platform.permission_result platform.permission_changed PostNotifications ExactAlarm FullScreenIntent DeniedPermanently NeedsSettings NotApplicable 実行時の許可 設定の画面 W1-5 SetKeepScreenOn SetSystemBarsVisible システムバー 画面を点けたまま MoveTaskToBack 背面 戻る OpenUrl URL ブラウザ OpenAppSettings アプリ情報 no_handler scheme_not_allowed Haptics Tap Vibrate 触感 振動 no_vibrator DeepLink Uri ディープリンク 忘れ対策 SEED_PLATFORM_SIM_NO_OPEN W1-6 Sensors SensorKind LinearAcceleration SensorSample Acceleration TimestampMs PeakMagnitude SampleCount Start Stop Read GetSource SimulateSample センサー 加速度 重力 振る シェイク shake linear_acceleration accelerometer_lowpass not_supported not_started register_failed W1-8">
+  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感／W1-8 のセンサー）</h2>
   <p class="section-note">
     目覚まし・通知・権限など <b>OS の機能</b>をスクリプトから使うための入口です（名前空間 <code>SEED.Platform</code>）。
     W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で<b>目覚ましの予約</b>（<code>Alarms</code>。この節の後半）、
     W1-4a で<b>鳴動</b>（<code>Alarms.GetRinging</code> / <code>StopRinging</code>・音と通知）と<b>起動理由</b>（<code>App.LaunchReason</code>）・<code>Window.SetShowWhenLocked</code>、
     W1-5 で<b>通知</b>（<code>Notifications</code>）と<b>権限</b>（<code>Permissions</code>）が加わりました。
     W1-6 で<b>画面・アプリ・触感</b>（<code>Window.SetKeepScreenOn</code> / <code>SetSystemBarsVisible</code>・<code>App.MoveTaskToBack</code> / <code>OpenUrl</code> / <code>OpenAppSettings</code>・<code>Haptics</code>）と
-    <b>ディープリンク</b>（<code>LaunchKind.DeepLink</code>・<code>LaunchInfo.Uri</code>）が加わりました（この節の最後。docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
+    <b>ディープリンク</b>（<code>LaunchKind.DeepLink</code>・<code>LaunchInfo.Uri</code>）、W1-8 で<b>センサー</b>（<code>Sensors</code>。重力を除いた加速度）が加わりました（この節の最後。docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
     デスクトップ（エディタの Play・単体起動）ではエンジンの中の<b>模擬</b>へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
     名前空間とクラス名が同じなので <code>using SEED.Platform;</code> を推奨します（修飾するなら <code>SEED.Platform.Platform.IsSupported</code>）。
   </p>
@@ -2304,6 +2304,32 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     scheme・host・パスを検査し、お金やデータを動かす操作は URL だけで行わず、画面で利用者に確かめてから行ってください。
     目覚ましで上がった SetShowWhenLocked を下ろし忘れても、ランチャー・最近のタスクから開き直したときはエンジンが下ろします（W1-6）。ただしアプリを開いたまま
     電源ボタンを押したときは下ろし忘れのままなので、鳴動を片付けたら <code>SetShowWhenLocked(false)</code> を呼ぶ約束は変わりません。
+  </div>
+  <h3>センサー（Sensors。W1-8）</h3>
+  <p class="section-note">
+    端末を振る・揺らすの判定に使う<b>重力を除いた加速度</b>です。Android ではメインプロセスが SensorManager の TYPE_LINEAR_ACCELERATION（無い端末は加速度から
+    低域通過で重力を引いた値）を専用のスレッドで受け、たまった標本を <code>Read</code> で返します（IPC なし・権限なし・機能の opt-in なし）。<b>標本ごとのイベントは流れません</b>（毎フレーム Read する）。
+    アプリが前面から外れると登録を外し、戻ると登録し直します。デスクトップは模擬で値は 0（<code>SimulateSample</code> で入れた標本だけ）。Play の区切りで止まります。
+  </p>
+  <div class="api"><code class="sig">Sensors.Start(kind, rateHz = 50)</code><span class="desc">bool。受け取りを始める（1〜200 Hz。大きい値は 200 にそろえる。動いていれば標本を捨てて始め直す）。端末にセンサーが無ければ Sensors.ErrorNotSupported "not_supported"、OS が登録を断れば ErrorRegisterFailed "register_failed"</span></div>
+  <div class="api"><code class="sig">Sensors.Read(kind, out SensorSample s)</code><span class="desc">bool。毎フレーム呼んでよい。s.Acceleration（最新の標本・m/s²）・s.TimestampMs（その時刻・UTC の epoch ミリ秒）・s.PeakMagnitude と s.SampleCount（<b>前回の Read からの</b>最大の大きさと数。読むと 0 に戻る）。Start 前・Stop 後は ErrorNotStarted "not_started"</span></div>
+  <div class="api"><code class="sig">Sensors.Stop(kind)</code><span class="desc">bool。止める（動いていなくても true。たまった標本は捨てる）</span></div>
+  <div class="api"><code class="sig">Sensors.IsSupported(kind) / Sensors.GetSource(kind)</code><span class="desc">IPC なし。使えるか（Start が not_supported で失敗した後は false）/ 最後に成功した Start の出どころ（"linear_acceleration" / "accelerometer_lowpass" / "simulated"）</span></div>
+  <div class="api"><code class="sig">Sensors.SimulateSample(kind, vector)</code><span class="desc">bool。模擬だけ: 標本を 1 つ入れる（PC で振りの判定を試す）。Android では false（"unknown_method"）</span></div>
+<pre><span class="c">// 例: PeakMagnitude が閾値を超えたら 1 回と数え、N 回で成功（閾値・回数はアプリのデータ。判定はアプリの純粋ロジック）</span>
+<span class="k">public override void</span> OnStart() =&gt; <span class="t">Sensors</span>.Start(<span class="t">SensorKind</span>.LinearAcceleration);
+<span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+{
+    <span class="k">if</span> (!<span class="t">Sensors</span>.Read(<span class="t">SensorKind</span>.LinearAcceleration, <span class="k">out</span> <span class="t">SensorSample</span> s)) <span class="k">return</span>;
+    <span class="k">bool</span> above = s.PeakMagnitude &gt; ShakeThreshold;          <span class="c">// 例 12 m/s²（Flutter 版と同じ閾値）</span>
+    <span class="k">if</span> (above &amp;&amp; !_wasAbove &amp;&amp; ++_shakes &gt;= RequiredShakes) OnShaken();   <span class="c">// 超えた瞬間だけ数える</span>
+    _wasAbove = above;
+}
+<span class="k">public override void</span> OnDestroy() =&gt; <span class="t">Sensors</span>.Stop(<span class="t">SensorKind</span>.LinearAcceleration);</pre>
+  <div class="warn">
+    PeakMagnitude と SampleCount は<b>前回の Read からの分</b>で、読むと 0 から数え直します（1 フレームに 2 回読むと 2 回目は 0）。読む係を 1 つにし、毎フレーム 1 回だけ読んでください。
+    出どころが accelerometer_lowpass の端末では、向きを素早く変えた直後に重力の差が一瞬だけ加速度に見えるので、1 回の山だけで成功にしないでください。
+    Flutter 版と同じ「5 秒振り続ける（0.5 秒を超えて止まると 0 に戻す）」の書き方は md の例 2（仕組みは docs/android.md §25.16）。
   </div>
 </section>
 

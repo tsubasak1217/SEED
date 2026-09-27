@@ -2851,14 +2851,14 @@ var ratio = new SEED.Vector2(t.Position.x / SEED.Screen.Width, t.Position.y / SE
 
 ---
 
-## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感）
+## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感／W1-8 のセンサー）
 
 目覚まし・通知・権限など **OS の機能**をスクリプトから使うための入口です（名前空間 `SEED.Platform`）。
 W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で**目覚ましの予約**（`Alarms`。この節の後半）、
 W1-4a で**鳴動**（`Alarms.GetRinging` / `StopRinging`・音と通知）と**起動理由**（`App.LaunchReason`）・`Window.SetShowWhenLocked`、
 W1-5 で**通知**（`Notifications`）と**権限**（`Permissions`）、W1-6 で**画面・アプリ・触感**（`Window.SetKeepScreenOn` / `SetSystemBarsVisible`・
-`App.MoveTaskToBack` / `OpenUrl` / `OpenAppSettings`・`Haptics`）と**ディープリンク**（`LaunchKind.DeepLink`・`LaunchInfo.Uri`）が加わりました
-（この節の最後。設計は docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
+`App.MoveTaskToBack` / `OpenUrl` / `OpenAppSettings`・`Haptics`）と**ディープリンク**（`LaunchKind.DeepLink`・`LaunchInfo.Uri`）、
+W1-8 で**センサー**（`Sensors`。重力を除いた加速度）が加わりました（この節の最後。設計は docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
 デスクトップ（エディタの Play・単体起動）ではエンジンの中の**模擬**へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
 
 ```csharp
@@ -3199,6 +3199,80 @@ public override void Update(ref NativeFrameContext ctx)
 
 - `MoveTaskToBack`・`OpenAppSettings`・`Haptics.Tap` / `Vibrate`・`SetKeepScreenOn`・`SetSystemBarsVisible` は、案（roadmap §2.3）の void ではなく bool を返します（失敗を見分けるため）。`LaunchKind.DeepLink` は列挙の末尾に足しました（既存の値の番号は変えない）。
 - 仕組み（命令・URL の規則・パッケージの可視性・振動の種類）は docs/android.md §25.15。
+
+### センサー（`Sensors`。W1-8）
+
+端末を振る・揺らすの判定に使う**重力を除いた加速度**です。Android ではメインプロセスが `SensorManager` の `TYPE_LINEAR_ACCELERATION`
+（無い端末は加速度から低域通過で重力を引いた値）を専用のスレッドで受け、たまった標本を `Read` で返します（IPC なし＝最初の呼び出しでも
+`connecting` にならない。権限・機能〈`android.features`〉の opt-in は要らない）。**標本ごとのイベントは流れません**（毎フレーム `Read` する）。
+アプリが前面から外れると登録を外し（背面で電池を使わない）、戻ると同じ頻度で登録し直します。デスクトップは模擬で、PC にセンサーは無いので値は 0 です
+（`SimulateSample` で入れた標本だけ）。
+
+```csharp
+using SEED.Platform;
+
+bool ok = Sensors.Start(SensorKind.LinearAcceleration);       // 既定 50 Hz（Sensors.DefaultRateHz。1〜200。大きい値は 200 にそろえる。動いていれば始め直す）
+Sensors.IsSupported(SensorKind.LinearAcceleration)            // bool: 使えるか（IPC なし。Start が not_supported で失敗した後は false。最初の Start の前は true）
+Sensors.GetSource(SensorKind.LinearAcceleration)              // 最後に成功した Start の出どころ: "linear_acceleration" / "accelerometer_lowpass" / "simulated"
+if (Sensors.Read(SensorKind.LinearAcceleration, out SensorSample s))   // 毎フレーム呼んでよい（Android でも IPC なし）
+{
+    SEED.Vector3 a = s.Acceleration; // 最新の標本（m/s²。重力を除いた加速度・端末の座標系。静置でほぼ 0）
+    long t = s.TimestampMs;          // 最新の標本の時刻（UTC の epoch ミリ秒。まだ無ければ 0）
+    float peak = s.PeakMagnitude;    // 前回の Read からの標本の大きさ √(x²+y²+z²) の最大（m/s²）… 読むと 0 から数え直す
+    int n = s.SampleCount;           // 前回の Read からの標本の数（前面から外れている間は 0）
+}
+Sensors.Stop(SensorKind.LinearAcceleration);                  // 止める（動いていなくても true。たまった標本は捨てる。以後の Read は not_started）
+Sensors.SimulateSample(SensorKind.LinearAcceleration, new SEED.Vector3(0f, 0f, 15f)); // 模擬だけ: 標本を 1 つ入れる（PC で振りを試す。Android は false・"unknown_method"）
+
+// 失敗の理由（Platform.LastError）
+Sensors.ErrorNotSupported    // "not_supported"    … 端末にセンサーが無い（Start。以後 IsSupported は false。次に成功すれば true に戻る）
+Sensors.ErrorNotStarted      // "not_started"      … Start していない種類を Read した（Stop の後も）
+Sensors.ErrorRegisterFailed  // "register_failed"  … OS が登録を受け付けなかった（Android。Start をやり直せる）
+Sensors.ErrorInvalidArgument // "invalid_argument" … 種類が約束に無い・頻度が 1 未満
+
+// 例 1: PeakMagnitude が閾値を超えたら 1 回と数え、N 回で成功（閾値・回数はアプリのデータ。判定はアプリの純粋ロジック）
+private const float ShakeThreshold = 12f;   // m/s²（Wake or Pay の Flutter 版 ShakeDetector と同じ閾値）
+private const int RequiredShakes = 10;
+private int _shakes;
+private bool _wasAbove;
+public override void OnStart() => Sensors.Start(SensorKind.LinearAcceleration);
+public override void Update(ref NativeFrameContext ctx)
+{
+    if (!Sensors.Read(SensorKind.LinearAcceleration, out SensorSample s)) return;
+    bool above = s.PeakMagnitude > ShakeThreshold;
+    if (above && !_wasAbove && ++_shakes >= RequiredShakes) OnShaken();  // 超えた瞬間だけ数える（1 回の振りが数フレームにまたがっても 1 回）
+    _wasAbove = above;
+}
+public override void OnDestroy() => Sensors.Stop(SensorKind.LinearAcceleration);
+
+// 例 2: Flutter 版と同じ「5 秒振り続ける（0.5 秒を超えて止まると 0 に戻す）」— 閾値以上のフレームの間の時間を積む
+private long _lastAboveMs, _heldMs;
+private void Accumulate(SensorSample s, long nowMs)   // nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+{
+    if (s.PeakMagnitude >= ShakeThreshold)
+    {
+        if (_lastAboveMs > 0) _heldMs = nowMs - _lastAboveMs > 500 ? 0 : _heldMs + (nowMs - _lastAboveMs);
+        _lastAboveMs = nowMs;
+        if (_heldMs >= 5000) OnShaken();
+    }
+    else if (_lastAboveMs > 0 && nowMs - _lastAboveMs > 500) { _heldMs = 0; _lastAboveMs = 0; }
+}
+```
+
+| 項目 | Android | デスクトップ（模擬） |
+|---|---|---|
+| `Start` | `TYPE_LINEAR_ACCELERATION` を登録（無ければ `TYPE_ACCELEROMETER`＋低域通過。どちらも無ければ `not_supported`）。前面にいなければ前面へ戻ったときに登録 | 受け付けて状態を持つ（出どころ `simulated`・`IsSupported` は true） |
+| 標本 | 専用のスレッドで受ける。頻度は OS への希望で、実際の数は `SampleCount` で分かる（希望より速いことがある） | `SimulateSample` で入れたものだけ（入れなければ値も数も 0） |
+| 前面から外れる | 登録を外す（`Start` の状態とたまった標本は残り、戻ると登録し直す。外れている間の標本は無い） | 関係なし |
+| `TimestampMs` | `SensorEvent.timestamp`（端末の起動からの時計）を読んだときの壁時計で UTC の epoch ミリ秒に換算 | 標本を入れた時刻 |
+| Play の区切り | — | 止まる（次の回の `Read` は `not_started`） |
+
+> **重要**: `PeakMagnitude` と `SampleCount` は**前回の `Read` からの分**で、読むと 0 から数え直します（フレームの間に来た振りの頂点を落とさないため）。1 フレームに 2 回読むと 2 回目は 0 です。読む係を 1 つのスクリプトにし、毎フレーム 1 回だけ読んでください。最新の値だけ（`Acceleration`）で判定すると、フレームの境目の間の振りを見落とします。
+
+> **重要**: 出どころが `accelerometer_lowpass` の端末（ジャイロの無い端末など）では、重力を時定数 0.25 秒の低域通過で見積もって引くため、端末の向きを素早く変えた直後は重力の差が一瞬だけ加速度に見えます（式を JVM で動かした計算: 50 Hz で 90 度を一瞬で回すと約 12.8 m/s² が 1 標本〈20 ms〉。実機では未確認）。閾値を超えた回数・時間で判定し、1 回の山だけで成功にしないでください。
+
+- 使い終わったら（画面を離れるとき）`Stop` してください。Android では前面にいる間は登録したままです（背面では自動で外れる）。
+- 仕組み（命令・出どころの選び方・スレッド・前面の出入り・時刻の換算・adb での確かめ方）は docs/android.md §25.16。
 
 ---
 

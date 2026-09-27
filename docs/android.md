@@ -3699,6 +3699,8 @@ W1-1 は**橋渡し**だけ: スクリプトの命令が Java の別プロセス
 | `platform/DeclaredPermissions.java` | APK が宣言している権限（両プロセス。機能 notifications・権限の命令の「機能の有無」の判定。W1-5） |
 | `platform/window/*.java`・`platform/app/*.java`・`platform/haptics/HapticFeedback.java`・`platform/DeviceVibrator.java` | 画面とアプリ（W1-6。§25.15）: `LockScreenPresence`・`SystemBarsHost`・`UrlPolicy`・`UrlLauncher`・`AppSettingsScreen`・触感と共通の振動子。`local/` に `WindowToggleCommand` と 7 命令 |
 | `runtime/src/engine/platform/bridge/{app,haptics}/`・`desktop_sim/{window_*,haptics_*,app_commands,url_opener,launch_uri}.rs` | エンジン側の URL・振動の長さの規則と、画面とアプリの模擬（W1-6。§25.15.8） |
+| `platform/sensor/*.java`・`platform/local/Sensor*.java` | センサー（W1-8。§25.16。メインプロセス）: `SensorFeeds`・`SensorFeed`・`SensorKind`・`SensorSource`・`FeedListener`・`GravityFilter`・`SampleAccumulator`・`SensorReading`・`SensorStartResult`。`local/` に 3 命令と `SensorArguments` |
+| `runtime/src/engine/platform/bridge/sensor/`・`desktop_sim/sensor_{state,commands}.rs` | エンジン側のセンサーの引数の規則と模擬（W1-8。§25.16.6） |
 | `src/debug/java/…/platform/DebugPlatformReceiver.java` | デバッグ版だけの adb の入口（§25.7） |
 | `native/src/platform_bridge/{mod,android_bridge,java_bridge,inbox,jni_exports}.rs` | 糊（エンジンへの登録・JNI の持ち物・イベントの箱・2 本の JNI 関数） |
 | `native/src/platform_bridge/alarm_prep.rs` | `alarm.schedule` を送る前に音源（`assets://`）を書き出す（W1-3。中身はエンジンの `bridge/alarm/sound_export.rs`） |
@@ -4850,3 +4852,162 @@ SEED の `システムバー: 隠す（Window.SetSystemBarsVisible）`・`[SEED 
 - `Haptics` は Android 12L 以前（API 29〜32）で振動の種類が付かない。
 - デスクトップの模擬が PC で開くのは `http` / `https` / `mailto` だけ（独自の scheme・`tel` は判定だけ）。Windows の `ShellExecuteW` の経路は実行して確かめていない。
 - App Links（`autoVerify` と `assetlinks.json`）は W5。アプリを終える API は入れていない（MoveTaskToBack で足りる。backlog の Android 節）。
+
+### 25.16 センサー（重力を除いた加速度。W1-8・2026-09-27）
+
+スクリプトの `Sensors`（[scripting_api.md](scripting_api.md) §7.13）の Android 側。Wake or Pay の起床確認「振る」（アプリ仕様 §10 U-04 で v1 に残すと決めた）に要る
+重力を除いた加速度を出す。メインプロセスの `local/` の命令（IPC なし。`:seed_platform` を起こさず、最初の呼び出しでも `connecting` にならない）で、
+権限も機能（`android.features`）の opt-in も要らない。「振った」の判定（閾値・回数・時間）はアプリの純粋ロジックで、エンジンは作らない。
+設計は [app_platform_roadmap.md](app_platform_roadmap.md) §2.3・§2.10 の W1-8。
+
+#### 25.16.1 構成
+
+```
+[メインプロセス] app/src/main/java/com/seedengine/runtime/platform/
+ local/MainProcessCommands … 表に 3 行（sensor.start / stop / read）と「メインプロセスだけのモジュール」（LOCAL_MODULES = sensor。
+                              表に無い sensor.*〈模擬だけの sim_inject など〉は :seed_platform へ送らず unknown_method）
+   SensorStartCommand・SensorStopCommand・SensorReadCommand … 返答の JSON を作る
+   SensorArguments          … kind・rate_hz の規則（Rust の bridge/sensor/mod.rs と同じ）
+ sensor/SensorFeeds          … 窓口（種類ごとの SensorFeed・センサーのスレッド SEEDSensor〈HandlerThread〉・前面か。登録の状態を lock 1 つで守る）
+ sensor/SensorFeed           … 種類 1 つ（出どころの選択・registerListener・止める・読む・前面の出入り）
+ sensor/SensorKind・SensorSource … 種類と出どころの候補の表（linear_acceleration → TYPE_LINEAR_ACCELERATION → TYPE_ACCELEROMETER＋低域通過）
+ sensor/FeedListener         … 1 回の登録の SensorEventListener（センサーのスレッド。値を写し取ってたまりへ足すだけ）
+ sensor/GravityFilter        … 加速度から重力を見積もって引く一次の低域通過（時定数 0.25 秒）
+ sensor/SampleAccumulator    … 標本のたまり（最新の標本・前回の read からの最大の大きさと数・世代）。SensorReading（読んだ値）・SensorStartResult
+[MainActivity] onResume → SensorFeeds.onHostResumed（start 中のものを登録し直す）・onPause → onHostPaused（全部の登録を外す）
+[AndroidManifest.xml（main）] <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />（常設）
+[エンジン] runtime/src/engine/platform/bridge/
+ wire.rs … wire::sensor（名前・上限・理由）。wire::tests::java_contract_matches_wire に文字列 21 組・数 3 組を足した
+ sensor/mod.rs … read_kind・read_rate_hz・read_sample（模擬）・magnitude
+ desktop_sim/sensor_state.rs・sensor_commands.rs … 模擬（25.16.6）
+[C#] scripting/src/Api/Platform/Sensors/ Sensors.cs・SensorKind.cs・SensorSample.cs・SensorJson.cs
+```
+
+#### 25.16.2 命令（メインプロセスで答える）
+
+| 命令 | 引数 → 返答 | 中身 | 失敗の理由 |
+|---|---|---|---|
+| `sensor.start` | `{kind, rate_hz}` → `{kind, supported: true, source, rate_hz}` | 出どころを選び（25.16.3）、動いていれば登録を外して標本を捨て（新しい世代）、前面にいれば `registerListener`。前面にいなければ onResume で登録（成功で返る） | `invalid_argument`・`not_initialized`・`not_supported`（センサーが無い）・`register_failed`（`registerListener` が false） |
+| `sensor.stop` | `{kind}` → `{kind, stopped}` | 登録を外し、標本を捨てる。動いていなくても成功（`stopped` が false） | `invalid_argument` |
+| `sensor.read` | `{kind}` → `{kind, x, y, z, timestamp_ms, peak_magnitude, sample_count}` | 最新の標本と時刻（25.16.3）、前回の read からの最大の大きさ √(x²+y²+z²) と標本の数（読むと 0 に戻す）。ログは出さない（毎フレーム呼ばれる） | `invalid_argument`・`not_started`（start 前・stop 後） |
+
+- 規則（Java の `SensorArguments`・Rust の `bridge/sensor`）: `kind` は必須の文字列で約束の種類（今は `linear_acceleration` だけ）。`rate_hz` は無い・null なら 50、
+  数でない・有限でない・1 未満は `invalid_argument`、小数は切り捨て、200 を超えたら 200 にそろえる。
+- 標本ごとのイベントは流さない（JSON の往復を 50〜200 Hz で起こさない。スクリプトは read で取る）。
+- `peak_magnitude` と `sample_count` を返すのは、フレーム（60 fps で約 17 ms）の間に来た標本の山を 1 つも落とさないため（最新の値だけを毎フレーム読むと、
+  フレームの境目の間の振りの頂点を見落とす）。
+
+#### 25.16.3 出どころ・頻度・時刻
+
+- **出どころ**: 最初の start で `SensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)`（=10・API 9）を探し、無ければ `TYPE_ACCELEROMETER`（=1・API 3）に
+  `GravityFilter` を掛けたもの、どちらも無ければ `not_supported`（端末のセンサーは変わらないので、選んだものを覚える）。start の返答の `source`
+  （`linear_acceleration` / `accelerometer_lowpass`）でスクリプトへ知らせる（C# の `Sensors.GetSource`）。値の定数は android-36 の android.jar を `javap -constants` で読んだ。
+- **低域通過（`accelerometer_lowpass`）**: developer.android.com「Motion sensors」の例と同じ式（重力 = α·重力 + (1−α)·加速度、重力を除いた加速度 = 加速度 − 重力、
+  α = t / (t + dT)）。例は α = 0.8 に固定しているが、頻度はスクリプトが決め、間隔も揺れるので、標本の時刻の差から毎回 α を計算する。時定数 t = 0.25 秒
+  （遮断 ≈ 0.64 Hz。振り〈2〜5 Hz〉を重力の見積もりに取り込みにくく、向きを変えた後は約 0.75 秒で追いつく）。最初の標本（と時刻が戻ったとき）は
+  その値を重力の見積もりにして 0 を出す（0 から始めると登録の直後に約 9.8 m/s² の偽の振りが出る）。登録し直すたびに作り直す。
+  式を JVM で動かした結果（50 Hz）: 静置 2 秒の出力は 0、3 Hz・振幅 15 m/s² の振りは最大 14.1 m/s²（一次の高域通過の理論値 14.7）、2 Hz は 13.8 m/s²、
+  90 度を一瞬で回すと最大 12.8 m/s²（12 m/s² 以上は 1 標本＝20 ms）。実機の加速度だけの端末では未確認。
+- **頻度**: `registerListener(listener, sensor, samplingPeriodUs, handler)`（API 3）の第 3 引数は**マイクロ秒**の間隔（0〜3 は `SENSOR_DELAY_*` の定数と
+  みなされるが、1〜200 Hz は 1,000,000〜5,000 µs なので入らない）。既定 50 Hz = 20,000 µs は `SENSOR_DELAY_GAME` と同じ（公式の「Sensors overview」:
+  GAME は 20,000 µs、指定は「希望」で、システムと他のアプリで変わる）。上限 200 Hz は targetSdk 31 以降の `registerListener` の上限（同「Sensor rate limiting」）で、
+  AOSP の `SystemSensorManager`（main）は `CAPPED_SAMPLING_PERIOD_US = 5000` と比べ `rateUs < 5000` かつデバッグ可能な APK で `HIGH_SAMPLING_RATE_SENSORS` が
+  無ければ `SecurityException` を投げる（ソースを読んだ）。200 Hz ちょうどは通る。実際の標本の数は read の `sample_count` で分かる。
+- **時刻**: `SensorEvent.timestamp` は「ナノ秒・`SystemClock.elapsedRealtimeNanos()` と同じ時計」（AOSP の `SensorEvent.java` の説明を読んだ）。read で
+  `timestamp_ms = System.currentTimeMillis() − (elapsedRealtimeNanos() − timestamp) / 1,000,000` に換算する（読んだときの壁時計に揃う。古さが負なら 0）。
+  標本がまだ無ければ 0。実機での換算の確かめ（最新の標本の古さが 0〜1000 ms）は SensorSmoke の確かめに入れてある（25.16.7。未実施）。
+
+#### 25.16.4 スレッドと同期
+
+- 標本はセンサーのスレッド **SEEDSensor**（`HandlerThread`。最初の start で作り、プロセスの間ずっと使う）で受ける（UI スレッドの込み具合で標本が遅れない）。
+- 登録の状態（どの種類が start され、今登録しているか・前面か）は `SensorFeeds` の lock 1 つで守る。start / stop / read（エンジンのスレッド）と
+  onPause / onResume（UI スレッド）が同時に来ても、前面から外れた後に登録が残らない。`registerListener` / `unregisterListener` は sensorservice への
+  Binder の呼び出しで、この lock を持ったまま呼ぶ（前面の出入りと start / stop のときだけ）。
+- 標本は `SampleAccumulator` が自分の lock で守る（record はセンサーのスレッド、drain はエンジンのスレッド。大きさの平方根は lock の外）。
+  センサーのスレッドは `SensorFeeds` の lock を取らないので、lock の順は「`SensorFeeds` → `SampleAccumulator`」の 1 通りだけ。
+- **世代**: start・stop のたびに上げる。登録を外した後に配送の待ち行列に残っていた古い登録の標本は数えない。有限でない成分の標本は数えない（返答の JSON に NaN を入れられない）。
+- 同じ listener を同じセンサーへ 2 回登録すると `addSensor` が false を返す（AOSP の `BaseEventQueue` を読んだ）ので、登録のたびに新しい `FeedListener` を作る。
+
+#### 25.16.5 前面の出入り（onPause / onResume）
+
+- onPause で全部の登録を外す（背面で電池を使わない。公式の「Sensors overview」も onPause で外すよう勧める）。start の状態とたまった標本は残し、
+  onResume で同じ頻度・同じ世代で登録し直す（重力を引く係は作り直す）。外れている間の read は標本の数 0 で返る。
+- プロセスの最初の onResume より前の start は、登録を onResume まで待つ（成功で返る）。
+- 画面が消える・ロックされると onPause で止まる。目覚ましの鳴動画面（ロック画面の上に出した Activity）は前面にいるので受け取れる見込み（推論。実機で未確認）。
+- 端末がロック・Dozing のまま起動しても Activity は前面に来ず、エンジンは最初のフレームの前に止まる（25.16.8。スクリプトの start が呼ばれない）。
+
+#### 25.16.6 デスクトップの模擬
+
+| 命令 | 模擬の振る舞い |
+|---|---|
+| `sensor.start` / `stop` / `read` | 同じ規則で受け付けて種類ごとの状態を持つ（`source` は `simulated`・`supported` は true）。PC にセンサーは無いので値は 0・標本の数も 0 |
+| `sensor.sim_inject` | **模擬だけ**。`{kind, x, y, z}`（有限の数）で標本を 1 つ入れる（時刻は模擬の壁時計）。返答 `{kind, sample_count}`。動いていなければ `not_started`。Android では `unknown_method`（`LOCAL_MODULES`） |
+
+- 最大と数の規則は Java の `SampleAccumulator` と同じ（`desktop_sim/sensor_state.rs`）。エディタの Play の区切りで止まる（次の回の read は `not_started`）。
+- C# の `Sensors.SimulateSample` がこれを呼ぶ（PC で振りの判定を試す。例: キーを押したら 15 m/s² の標本を入れる）。
+
+#### 25.16.7 確かめ方（adb・実機）
+
+```bash
+# Git Bash。APP・SERIAL・ADB は §25.12.8 と同じ。端末は画面が点いてロックが解除され、前面がランチャーのときだけ使う（私物の端末）
+APP=com.wakeorpay.seed
+SERIAL=2B011JEGR02535
+ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window | grep -E "mCurrentFocus|isKeyguardShowing"
+# 1. 静置（音・振動・権限の画面なし）。PlatformSmoke.cs を名前 SensorSmoke のアクタに付けたシーン。端末を机に置いたまま
+dotnet run --project editor/tools/SeedAndroid -- run --project 'D:\SEED_projects\WakeOrPay' --serial $SERIAL --scene scenes/SensorSmoke.scene --logcat-seconds 30
+#    期待: SEEDPlatform の「センサー linear_acceleration を始めました: 出どころ linear_acceleration（…）・50 Hz（間隔 20000 µs）・登録しました」、
+#          [PlatformSmoke] の「2000 ms 前後・… PeakMagnitude の最大 < 0.5 m/s²・SampleCount の合計 約 100・最新の標本の古さ 0〜1000 ms」→「センサーの確かめ: OK」
+# 2. 読んでいる 2 秒の間（と振りの 10 秒の間）に登録が見えること。登録の記録の名前は listener のクラス名（AOSP の SystemSensorManager）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys sensorservice | grep -i linear
+#    期待: 「+ 0x01010009 pid=<pid> … samplingPeriod=   20000us … (Linear Acceleration Sensor , com.seedengine.runtime.platform.sensor.FeedListener)」、
+#          止めた後に「- 0x01010009 … FeedListener」
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys sensorservice | grep -i -E "seedengine|wakeorpay"
+# 3. 振る（利用者が手で持って行う）。名前 ShakeSmoke のアクタのシーン。「これから 10 秒の間、端末を振ってください」のログの後に 10 秒振る
+dotnet run --project editor/tools/SeedAndroid -- run --project 'D:\SEED_projects\WakeOrPay' --serial $SERIAL --scene scenes/ShakeSmoke.scene --logcat-seconds 40
+#    期待: 1 秒ごとの「振り: … この区間の PeakMagnitude の最大 …（振っている秒は 12 を超える）・標本 約 50 個」、最後に「閾値 12 m/s² を上に越えた回数 N」
+#          「振った（… ≥ 12・越えた回数 ≥ 1）ok」→「センサーの確かめ: OK」。途中でホームへ戻すと SEEDPlatform の「前面から外れたので登録を外しました」、
+#          戻すと「前面へ戻ったので登録し直しました（50 Hz）」
+# 4. ログだけ見るとき・後片付け
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL logcat -v time -s SEED SEEDPlatform | grep -E "センサー|振り|\[PlatformSmoke\]"
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am force-stop $APP
+```
+
+#### 25.16.8 確認結果（2026-09-27）
+
+- Rust: `cargo build` が通り、変えたファイルに警告は無い。`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests` が 110 件
+  すべて通った（新規 10 件: 引数の規則 5・模擬のセンサー 5〈start / read / stop の往復・標本を入れた最大と数と read で 0 に戻る・始め直しと頻度の上限・誤りの引数・
+  Play の区切り〉。`version_reports_protocol` のモジュールの一覧に `sensor`、`java_contract_matches_wire` に文字列 21 組・数 3 組を足した）。
+- Java: `javac -Xlint:all`（android-36 の android.jar・`--release 17`・AAR の classes.jar・仮の R）で main・debug の全 98 ファイルが通り、SEED のソースの注意は既存の
+  `MainActivity` の this-escape だけ（ほかは AAR の Kotlin のメタデータの注意で W1-6 と同じ数）。使った API の版は `api-versions.xml` で確かめた（`TYPE_LINEAR_ACCELERATION` 9、
+  `TYPE_ACCELEROMETER`・`getDefaultSensor`・`registerListener(…, Handler)`・`unregisterListener`・`SensorEvent.timestamp` 3、`elapsedRealtimeNanos` 17、
+  `Context.getSystemService(Class)` 23、`Float.isFinite` 24。どれも minSdk 29 以下）。`SampleAccumulator`・`GravityFilter`・間隔の換算を JVM で動かし 11 項目が期待どおり
+  （最大と数・read で 0 に戻り最新は残る・古い世代と NaN・無限大を数えない・reset・静置で 0・3 Hz の振りの大きさ・同じ時刻の標本・時刻が戻ったとき・50 / 200 / 1 Hz の µs）、
+  ほかに 2 Hz の振りと 90 度の回転の過渡を計測した（25.16.3）。
+- C#: `SEEDScripting.csproj` は警告 0・エラー 0。
+- PC の Play（`SEED.exe --mode=play --assets-root=D:/SEED_projects/WakeOrPay/assets`、`SEED_PLATFORM_SIM_NO_OPEN=1`。`timeout` で止め、SEED.exe は残っていない）:
+  `scenes/PlatformSmoke.scene` で「2003 ms・119 フレームで PeakMagnitude の最大 0.000・SampleCount の合計 0」→ 模擬の標本 3 個の後の Read が「peak 13.00・3 個・最新 (1, 1, 1)」→
+  続けての Read が 0 → Stop・Stop 後の Read は `not_started`・Stop は冪等・`Start(…, 0)` は `invalid_argument` →「センサーの確かめ: OK」。W1-3〜W1-6 の確かめもすべて OK のまま。
+  `scenes/SensorSmoke.scene` はセンサーだけ（目覚まし・通知・画面・触感のログが出ない）で OK、`scenes/ShakeSmoke.scene` は模擬の振り（3 Hz・3 秒）で
+  1 秒ごとの最大 15.0 m/s²・閾値を越えた回数 18（2 回 × 3 Hz × 3 秒）→ OK。
+- APK（Wake or Pay・arm64-v8a・debug。SeedAndroid build 93 秒）: aapt2 の badging に `uses-feature-not-required: name='android.hardware.sensor.accelerometer'`、
+  xmltree に `required=false`。dexdump で `sensor/` の 9 クラスと `local/` の `SensorStartCommand`・`SensorStopCommand`・`SensorReadCommand`・`SensorArguments` があり、
+  `MainActivity.onPause` / `onResume` が `SensorFeeds.onHostPaused` / `onHostResumed` を呼んでいる。
+- **実機（Pixel 6a・Android 16）: 静置の確かめは未確認**。利用者が外出中で、端末はロック・Dozing（`isKeyguardShowing=true`・`mWakefulness=Dozing`・前面の
+  アプリはキーガードの後ろのランチャー）のまま `SeedAndroid run --scene scenes/SensorSmoke.scene` で入れて起動した（COLD 985 ms）。ActivityTaskManager の
+  `Activity top resumed state loss timeout`・`Activity pause timeout` の後、エンジンは初期化（DrawContext 6744 ms）とシーンの読み込みを終えたところで
+  `[SEED LIFECYCLE] suspended: 描画サーフェスを破棄して復帰を待ちます` になり、40 秒の間 `presented_frames total=0` のまま（スクリプトの OnStart が走らず、
+  `[PlatformSmoke]` のログは無い）。約 2.5 秒ごとに 30 回読んだ `dumpsys sensorservice` にこのアプリの登録は無かった（端末には `Linear Acceleration Sensor | Google |
+  type: android.sensor.linear_acceleration(10)` があり、他のアプリの登録は `samplingPeriod= 20000us … (Linear Acceleration Sensor , <listener のクラス名>)` の形で見えた）。
+  最後に `am force-stop` し、プロセスとこのアプリの予約が無いこと・端末の状態が変わっていないこと（ロック・Dozing）を見た。音・振動は出していない（センサーだけのシーン）。
+
+#### 25.16.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機で残っている確認: 静置（25.16.7 の 1・2）と振る（同 3）。鳴動画面（ロック画面の上）の前面で受け取れること。加速度だけの端末（`accelerometer_lowpass`）。
+- 種類は `linear_acceleration` だけ。精度（`onAccuracyChanged`）・まとめ配信（`maxReportLatencyUs`）は使っていない。
+- `accelerometer_lowpass` は向きを素早く変えた直後に重力の差が一瞬だけ加速度に見える（時定数は固定の 0.25 秒）。
+- デスクトップの模擬は頻度に合わせた標本を作らない（`SimulateSample` しなければ `SampleCount` は 0 のまま）。
+- スクリプトの差し替え（`RELOAD_SCRIPTS`）でも、アプリが `Stop` しない限りセンサーは動いたまま（前面にいる間）。
+- `Sensors.Read` は毎フレーム JSON の文字列を作って読む（W1 の他の API と同じ経路。専用の FFI にはしていない）。
+- メインプロセスだけのモジュール（表に無い命令を `:seed_platform` へ送らない）は `sensor` だけ。W1-6 までの `window`・`app`・`haptics`・`permission` の
+  表に無い命令は従来どおり `:seed_platform` へ送られ、最初は `connecting`、つながると `unknown_method`。

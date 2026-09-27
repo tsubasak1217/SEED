@@ -2554,7 +2554,28 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `write_atomic` だけの呼び出し〈地形の被覆・散布・エディタの表示状態〉には残らない）、(3) sync が無い。`save/durable_file.rs` の順序に揃えるのが素直。
   関連: `runtime/src/engine/core/app_base/safe_write.rs:59-80`。
 - [ ] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。
-- [ ] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27。Wake or Pay の起床確認「振る」を v1 に残すなら（アプリ仕様 §10 U-04）。
+- [x] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27 記載 / 同日対応（実機の確認を除く）。Wake or Pay の起床確認「振る」を v1 に残すと決まった（アプリ仕様 §10 U-04）ので
+  `SEED.Platform.Sensors` を入れた（docs/android.md §25.16・scripting_api.md §7.13・app_platform_roadmap.md §2.10）。W1-8 で見つけた、今はやらないことは下の 7 件。
+- [ ] **W1-8 の実機の確認** — 2026-09-27（W1-8）。利用者の外出中で端末がロック・Dozing のままだったため、起動したエンジンが最初のフレームの前に suspended になり、
+  スクリプト（SensorSmoke）が走らなかった（`dumpsys sensorservice` に登録なし。docs/android.md §25.16.8）。画面が点いてロックが解除された状態で §25.16.7 の
+  1〜3（静置: 最大 < 0.5 m/s²・2 秒で約 100 個・時刻の古さ 0〜1000 ms・登録の記録 `FeedListener`／振る: `scenes/ShakeSmoke.scene` で 10 秒振って最大 ≥ 12 m/s²）を行う。
+  あわせて、ロック画面の上に出した鳴動画面の前面で受け取れること（W1-7 の通しの確認で）と、加速度だけの端末（`accelerometer_lowpass`）での振る舞い。
+- [ ] **メインプロセスだけのモジュールが `sensor` だけ** — 2026-09-27（W1-8）。`local/MainProcessCommands` の `LOCAL_MODULES` に入れたモジュールは、表に無い命令を
+  `:seed_platform` へ送らずに `unknown_method` で答える。W1-6 までの `window`・`app`・`haptics`・`permission` は入れていない（振る舞いを変えないため）ので、
+  表に無い命令は `:seed_platform` を起こし、最初は `connecting`、つながると `unknown_method`。揃えるなら 4 つを足すだけ（呼び出し側の振る舞いの変化として docs に書く）。
+- [ ] **センサー: 種類が `linear_acceleration` だけ・精度とまとめ配信を使っていない** — 2026-09-27（W1-8）。`SensorKind`／`SensorSource` の表に足せば増やせる
+  （ジャイロ・重力・回転ベクトル等）。`onAccuracyChanged` の精度はスクリプトへ出していない。`registerListener` の `maxReportLatencyUs`（まとめ配信で電池を減らす）も使っていない。
+- [ ] **センサー: `accelerometer_lowpass` の向きの変化の過渡・時定数が固定** — 2026-09-27（W1-8）。加速度だけの端末では重力を時定数 0.25 秒の低域通過で見積もるので、
+  向きを素早く変えた直後に重力の差が一瞬だけ加速度に見える（式の計算で 90 度を一瞬で回すと約 12.8 m/s² が 1 標本）。時定数をアプリのデータにするか、
+  重力のセンサー（`TYPE_GRAVITY`）がある端末ではそれを引くかは、実機の加速度だけの端末で確かめてから決める。関連: `platform/sensor/GravityFilter.java`。
+- [ ] **センサー: デスクトップの模擬は頻度に合わせた標本を作らない** — 2026-09-27（W1-8）。PC では `Sensors.SimulateSample` しない限り `SampleCount` が 0 のまま
+  （Android の静置では約 50 Hz で 0 に近い値が来る）。`SampleCount > 0` を「センサーが生きている」の目安にするアプリは PC と実機で振る舞いが変わる。
+  模擬の壁時計で rate_hz ぶんの 0 の標本を数える案。関連: `desktop_sim/sensor_state.rs`。
+- [ ] **センサー: スクリプトの差し替え（`RELOAD_SCRIPTS`）でも止まらない** — 2026-09-27（W1-8）。Android では `Sensors.Stop` を呼ばない限り、前面にいる間は登録したまま
+  （背面では自動で外れる）。実行中の差し替えで古いスクリプトが Stop せずに消えると、新しいスクリプトが Start し直すまで（か背面へ回るまで）動き続ける。
+  差し替えのときに `sensor.*` を全部止める口（エンジンの Play の区切りに当たるもの）を Android にも用意する案。
+- [ ] **`Sensors.Read` は毎フレーム JSON を作って読む** — 2026-09-27（W1-8）。W1 の他の API と同じ `platform_invoke` の経路（引数の JSON を作る → JNI → 返答の JSON を
+  2 回読む）で、フレームごとに小さな割り当てがある。計測で重ければ、読むだけの専用の FFI（数を並べた構造体を返す）にする。
 - [ ] **（任意）W1-9 Direct Boot（再起動後・ロック解除前の鳴動）** — 2026-09-27。夜中の自動更新の再起動の後でも鳴らすため。
   予約の控えと既定の音を端末保護ストレージに置き、受信機と鳴動サービスを `directBootAware` にする案。W1-0 で、exported=false・directBootAware の
   受信機に `LOCKED_BOOT_COMPLETED` が届き端末保護ストレージから張り直せることは確認（強制停止からの復帰で観測）。再起動での確認とロック解除前の

@@ -2,7 +2,7 @@
 //  platform/bridge/wire.rs — プラットフォーム機能（SEED.Platform）の JSON の約束（W1-1・W1-3 で目覚まし wire::alarm・
 //  W1-4a で鳴動〈wire::alarm の get_ringing / stop_ringing 等〉・起動理由 wire::launch・画面 wire::window を追加・
 //  W1-5 で通知 wire::notification・権限 wire::permission を追加・W1-6 で画面の切り替え・ディープリンク〈wire::launch の uri〉・
-//  アプリ wire::app・触感 wire::haptics を追加）
+//  アプリ wire::app・触感 wire::haptics を追加・W1-8 でセンサー wire::sensor を追加）
 //
 //  【役割】
 //  エンジン・Java（メインプロセスの SeedPlatform と :seed_platform の PlatformProvider）・C#（SEED.Platform）の
@@ -558,6 +558,77 @@ pub mod permission {
     pub const FIRST_REQUEST_ID: i64 = 1;
 }
 
+/// センサー（W1-8。モジュール "sensor"。Android はメインプロセスの Java〈platform/sensor/〉が SensorManager から受けて答える。IPC なし）の
+/// 名前・欄・上限・理由（Java の PlatformContract の *SENSOR*・C# の SensorJson と一致させる）。
+///
+/// 命令: `start { kind, rate_hz }` → `{ kind, supported, source, rate_hz }`・`stop { kind }` → `{ kind, stopped }`・
+/// `read { kind }` → `{ kind, x, y, z, timestamp_ms, peak_magnitude, sample_count }`。x・y・z は最新の標本（m/s²）、timestamp_ms は
+/// その時刻（UTC の epoch ミリ秒。まだ無ければ 0）、peak_magnitude と sample_count は**前回の read からの**最大の大きさと標本の数で、
+/// read のたびに 0 へ戻る（フレームの間に来た振りを見落とさないため。標本ごとのイベントは流さない）。
+/// 模擬だけ `sim_inject { kind, x, y, z }` → `{ kind, sample_count }`（標本を 1 つ入れる。Android には無く unknown_method）。
+/// 失敗の理由のうち `invalid_argument` は目覚ましと同じ文字列（wire::alarm の ERROR_INVALID_ARGUMENT）。規則は bridge::sensor。
+pub mod sensor {
+    /// センサーのモジュール。
+    pub const MODULE: &str = "sensor";
+    /// 受け取りを始める（動いていれば標本を捨てて始め直す）。
+    pub const METHOD_START: &str = "start";
+    /// 受け取りを止める（動いていなくても成功。冪等）。
+    pub const METHOD_STOP: &str = "stop";
+    /// 最新の標本と、前回の read からの最大の大きさ・標本の数を読む（読むと最大と数は 0 に戻る）。
+    pub const METHOD_READ: &str = "read";
+    /// 標本を 1 つ入れる（デスクトップの模擬だけ。単体テストと PC の確かめで振りを作る）。
+    pub const METHOD_SIM_INJECT: &str = "sim_inject";
+
+    /// 引数・返答: センサーの種類（KIND_*）。
+    pub const KEY_KIND: &str = "kind";
+    /// start の引数・返答: 受け取りの頻度（Hz。返答はそろえた後の値）。
+    pub const KEY_RATE_HZ: &str = "rate_hz";
+    /// start の返答: 使えるか（成功の返答では常に true。使えなければ ERROR_NOT_SUPPORTED の失敗の返答）。
+    pub const KEY_SUPPORTED: &str = "supported";
+    /// start の返答: 値の出どころ（SOURCE_*）。
+    pub const KEY_SOURCE: &str = "source";
+    /// stop の返答: 動いていたものを止めたか（動いていなければ false。それでも ok=true）。
+    pub const KEY_STOPPED: &str = "stopped";
+    /// read の返答・sim_inject の引数: 最新の標本の x 成分（m/s²。端末の座標系）。
+    pub const KEY_X: &str = "x";
+    /// read の返答・sim_inject の引数: 最新の標本の y 成分（m/s²）。
+    pub const KEY_Y: &str = "y";
+    /// read の返答・sim_inject の引数: 最新の標本の z 成分（m/s²）。
+    pub const KEY_Z: &str = "z";
+    /// read の返答: 最新の標本の時刻（UTC の epoch ミリ秒。まだ標本が無ければ 0）。
+    pub const KEY_TIMESTAMP_MS: &str = "timestamp_ms";
+    /// read の返答: 前回の read からの標本の大きさ √(x²+y²+z²) の最大（m/s²。標本が無ければ 0）。
+    pub const KEY_PEAK_MAGNITUDE: &str = "peak_magnitude";
+    /// read の返答: 前回の read からの標本の数（sim_inject の返答は入れた後の数）。
+    pub const KEY_SAMPLE_COUNT: &str = "sample_count";
+
+    /// 種類: 重力を除いた加速度（Android の TYPE_LINEAR_ACCELERATION に当たる。m/s²）。
+    pub const KIND_LINEAR_ACCELERATION: &str = "linear_acceleration";
+    /// 約束の種類の一覧（これ以外は invalid_argument）。
+    pub const KINDS: [&str; 1] = [KIND_LINEAR_ACCELERATION];
+
+    /// 出どころ: 端末の重力を除いた加速度のセンサー（Android の TYPE_LINEAR_ACCELERATION）。
+    pub const SOURCE_LINEAR_ACCELERATION: &str = "linear_acceleration";
+    /// 出どころ: 加速度のセンサー（TYPE_ACCELEROMETER）から低域通過で重力を見積もって引いた値（上が無い端末の代わり）。
+    pub const SOURCE_ACCELEROMETER_LOWPASS: &str = "accelerometer_lowpass";
+    /// 出どころ: デスクトップの模擬（値は sim_inject で入れた標本だけ。入れなければ 0）。
+    pub const SOURCE_SIMULATED: &str = "simulated";
+
+    /// rate_hz の既定値（Android の SENSOR_DELAY_GAME＝20,000 µs と同じ 50 Hz）。
+    pub const DEFAULT_RATE_HZ: i64 = 50;
+    /// rate_hz の下限（これより小さい値は invalid_argument）。
+    pub const MIN_RATE_HZ: i64 = 1;
+    /// rate_hz の上限（これより大きい値はこれにそろえる。Android 12 以降の registerListener の上限 200 Hz）。
+    pub const MAX_RATE_HZ: i64 = 200;
+
+    /// 端末にその種類を出せるセンサーが無い（重力を除いた加速度も加速度も無い）。
+    pub const ERROR_NOT_SUPPORTED: &str = "not_supported";
+    /// start していない種類を read した・標本を入れようとした。
+    pub const ERROR_NOT_STARTED: &str = "not_started";
+    /// センサーの登録を OS が受け付けなかった（Android の registerListener が false）。
+    pub const ERROR_REGISTER_FAILED: &str = "register_failed";
+}
+
 // ============================================================
 //  ユニットテスト
 // ============================================================
@@ -746,6 +817,19 @@ mod tests {
             ("PERMISSION_STATUS_NEEDS_SETTINGS", permission::STATUS_NEEDS_SETTINGS),
             ("PERMISSION_STATUS_NOT_APPLICABLE", permission::STATUS_NOT_APPLICABLE),
             ("EVENT_PERMISSION_RESULT", permission::EVENT_RESULT), ("EVENT_PERMISSION_CHANGED", permission::EVENT_CHANGED),
+            // W1-8: センサー（sim_inject と SOURCE_SIMULATED は模擬だけなので Java には無い）
+            ("MODULE_SENSOR", sensor::MODULE), ("METHOD_SENSOR_START", sensor::METHOD_START),
+            ("METHOD_SENSOR_STOP", sensor::METHOD_STOP), ("METHOD_SENSOR_READ", sensor::METHOD_READ),
+            ("KEY_SENSOR_KIND", sensor::KEY_KIND), ("KEY_SENSOR_RATE_HZ", sensor::KEY_RATE_HZ),
+            ("KEY_SENSOR_SUPPORTED", sensor::KEY_SUPPORTED), ("KEY_SENSOR_SOURCE", sensor::KEY_SOURCE),
+            ("KEY_SENSOR_STOPPED", sensor::KEY_STOPPED), ("KEY_SENSOR_X", sensor::KEY_X), ("KEY_SENSOR_Y", sensor::KEY_Y),
+            ("KEY_SENSOR_Z", sensor::KEY_Z), ("KEY_SENSOR_TIMESTAMP_MS", sensor::KEY_TIMESTAMP_MS),
+            ("KEY_SENSOR_PEAK_MAGNITUDE", sensor::KEY_PEAK_MAGNITUDE), ("KEY_SENSOR_SAMPLE_COUNT", sensor::KEY_SAMPLE_COUNT),
+            ("SENSOR_KIND_LINEAR_ACCELERATION", sensor::KIND_LINEAR_ACCELERATION),
+            ("SENSOR_SOURCE_LINEAR_ACCELERATION", sensor::SOURCE_LINEAR_ACCELERATION),
+            ("SENSOR_SOURCE_ACCELEROMETER_LOWPASS", sensor::SOURCE_ACCELEROMETER_LOWPASS),
+            ("ERROR_NOT_SUPPORTED", sensor::ERROR_NOT_SUPPORTED), ("ERROR_NOT_STARTED", sensor::ERROR_NOT_STARTED),
+            ("ERROR_REGISTER_FAILED", sensor::ERROR_REGISTER_FAILED),
         ];
         for (java, rust) in strings {
             assert_eq!(java_constant(&source, java), *rust, "PlatformContract.{java} と wire.rs が食い違う");
@@ -768,6 +852,9 @@ mod tests {
             // W1-6: URL の長さ・振動の長さ
             ("MAX_URL_LENGTH", MAX_URL_LENGTH as f64),
             ("MIN_VIBRATE_MS", haptics::MIN_VIBRATE_MS as f64), ("MAX_VIBRATE_MS", haptics::MAX_VIBRATE_MS as f64),
+            // W1-8: センサーの頻度
+            ("DEFAULT_SENSOR_RATE_HZ", sensor::DEFAULT_RATE_HZ as f64), ("MIN_SENSOR_RATE_HZ", sensor::MIN_RATE_HZ as f64),
+            ("MAX_SENSOR_RATE_HZ", sensor::MAX_RATE_HZ as f64),
         ];
         for (java, rust) in numbers {
             // Java の数の書き方（桁区切りの _・long の L）を落としてから読む

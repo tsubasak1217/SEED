@@ -20,6 +20,8 @@
 //      ロック画面の上に出して画面を点ける。onNewIntent ではイベント platform.launch を流す
 //    ・権限（中身は platform/permission/PermissionLifecycle。W1-5）: onResume で設定の画面から戻った要求に結果を返し、
 //      権限の状態が前回と違えば platform.permission_changed を流す。onRequestPermissionsResult で実行時の確認の画面の結果を渡す
+//    ・センサー（中身は platform/sensor/SensorFeeds。W1-8）: onPause でスクリプトが始めたセンサーの登録を外し（背面で電池を使わない）、
+//      onResume で登録し直す
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
@@ -49,6 +51,7 @@ import com.google.androidgamesdk.GameActivity;
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.SeedPlatform;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
+import com.seedengine.runtime.platform.sensor.SensorFeeds;
 import com.seedengine.runtime.platform.window.SystemBarsHost;
 
 /**
@@ -161,12 +164,14 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     /**
      * 前面に来た。音声フォーカスを要求する（得られるまでネイティブは音声を止めたまま）。
      * 権限の設定の画面から戻ったときの結果と、権限の状態の変化の知らせもここ（W1-5。中身は PermissionLifecycle）。
+     * スクリプトが始めていたセンサーを登録し直す（W1-8。中身は SensorFeeds）。
      */
     @Override
     protected void onResume() {
         super.onResume();
         audioFocus.request();
         PermissionLifecycle.onResume(this);
+        SensorFeeds.onHostResumed();
     }
 
     /**
@@ -183,11 +188,15 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
         PermissionLifecycle.onRequestPermissionsResult(this, requestCode, permissions, grantResults);
     }
 
-    /** 前面を離れる。音声フォーカスを手放す（ネイティブは音声を止める）。 */
+    /**
+     * 前面を離れる。音声フォーカスを手放す（ネイティブは音声を止める）。
+     * センサーの登録を外す（W1-8。背面で電池を使わない。start の状態は残り、onResume で登録し直す）。
+     */
     @Override
     protected void onPause() {
         super.onPause();
         audioFocus.abandon();
+        SensorFeeds.onHostPaused();
     }
 
     /**

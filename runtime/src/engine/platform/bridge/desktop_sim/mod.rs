@@ -33,12 +33,16 @@
 //    app.open_url … Android と同じ URL の規則（bridge::app）で判定し、http / https / mailto だけを PC の既定のアプリで開く
 //        （url_opener.rs。シェルを通さない。単体テストと SEED_PLATFORM_SIM_NO_OPEN=1 は判定だけ）
 //    haptics.tap / vibrate … 記録してログだけ（PC は振動しない。haptics_commands.rs・haptics_state.rs）
+//  【W1-8 の命令】（Java のメインプロセスの local/Sensor*Command と同じ意味）
+//    sensor.start / stop / read … 受け付けて種類ごとの状態を持つ（source は "simulated"）。PC にセンサーは無いので、値は
+//        sensor.sim_inject（模擬だけの命令。Android では unknown_method）で入れた標本だけ。read は前回の read からの最大の大きさと
+//        標本の数を返して 0 に戻す（sensor_commands.rs・sensor_state.rs）
 //
 //  【ファイル】mod.rs（表と共通）・alarm_book.rs（模擬の予約表）・alarm_commands.rs（目覚ましの命令と発火）・
 //  ring_state.rs（鳴動の状態）・ring_commands.rs（鳴動の命令とイベント）・app_commands.rs（起動理由・アプリ）・
 //  launch_uri.rs（起動引数のディープリンク）・url_opener.rs（URL を PC で開く係）・window_state.rs / window_commands.rs（画面）・
 //  haptics_state.rs / haptics_commands.rs（触感）・notification_state.rs（通知の状態）・notification_commands.rs（通知の命令）・
-//  permission_commands.rs（権限の命令）・wall_clock.rs（壁時計。テストで進める）
+//  permission_commands.rs（権限の命令）・sensor_state.rs / sensor_commands.rs（センサー）・wall_clock.rs（壁時計。テストで進める）
 // ============================================================
 
 /// 模擬の目覚ましの予約表。
@@ -63,6 +67,10 @@ mod permission_commands;
 mod ring_commands;
 /// 模擬の鳴動の状態（W1-4a）。
 mod ring_state;
+/// 模擬のセンサーの命令（W1-8）。
+mod sensor_commands;
+/// 模擬のセンサーの状態（W1-8）。
+mod sensor_state;
 /// URL を PC の既定のアプリで開く係（W1-6）。
 mod url_opener;
 /// 壁時計（テストで差し替える）。
@@ -81,14 +89,15 @@ use serde_json::{json, Map, Value};
 use super::event_queue::{PlatformEventQueue, DEFAULT_EVENT_QUEUE_CAPACITY};
 use super::wire::{
     self, alarm as alarm_names, app as app_names, haptics as haptics_names, launch as launch_names,
-    notification as notification_names, permission as permission_names, window as window_names, METHOD_EMIT_TEST_EVENT,
-    METHOD_PING, METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME,
+    notification as notification_names, permission as permission_names, sensor as sensor_names, window as window_names,
+    METHOD_EMIT_TEST_EVENT, METHOD_PING, METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME,
 };
 use super::{PlatformBridge, PlatformBridgeKind};
 use alarm_book::SimAlarmBook;
 use haptics_state::SimHapticsLog;
 use notification_state::SimNotificationBoard;
 use ring_state::SimRingState;
+use sensor_state::SimSensorBoard;
 use window_state::SimWindowState;
 pub use haptics_state::SimHapticsSnapshot;
 pub use launch_uri::set_desktop_launch_uri;
@@ -214,6 +223,15 @@ const SIM_COMMANDS: &[SimCommand] = &[
         method: permission_names::METHOD_OPEN_SETTINGS,
         handler: DesktopSimBridge::handle_permission_open_settings,
     },
+    // W1-8: センサー（sim_inject は模擬だけ）
+    SimCommand { module: sensor_names::MODULE, method: sensor_names::METHOD_START, handler: DesktopSimBridge::handle_sensor_start },
+    SimCommand { module: sensor_names::MODULE, method: sensor_names::METHOD_STOP, handler: DesktopSimBridge::handle_sensor_stop },
+    SimCommand { module: sensor_names::MODULE, method: sensor_names::METHOD_READ, handler: DesktopSimBridge::handle_sensor_read },
+    SimCommand {
+        module: sensor_names::MODULE,
+        method: sensor_names::METHOD_SIM_INJECT,
+        handler: DesktopSimBridge::handle_sensor_sim_inject,
+    },
 ];
 
 /// デスクトップの模擬の PlatformBridge。
@@ -237,6 +255,8 @@ pub struct DesktopSimBridge {
     window: SimWindowState,
     /// 模擬の触感の記録（W1-6）。
     haptics: SimHapticsLog,
+    /// 模擬のセンサー（動いている種類と、sim_inject で入れた標本。W1-8）。
+    sensors: SimSensorBoard,
     /// app.open_url の URL を PC の既定のアプリへ渡す係（W1-6。単体テストでは判定だけ・記録だけの係）。
     url_opener: Arc<dyn UrlOpener>,
     /// 単体起動の起動引数 --deep-link=<URI>（W1-6。無ければ None ＝ launcher）。Play の区切りでも消さない（プロセスの起動引数）。
@@ -283,6 +303,7 @@ impl DesktopSimBridge {
             next_permission_request_id: AtomicI64::new(permission_names::FIRST_REQUEST_ID),
             window: SimWindowState::new(),
             haptics: SimHapticsLog::new(),
+            sensors: SimSensorBoard::new(),
             url_opener,
             launch_uri,
             clock,
@@ -366,13 +387,14 @@ impl PlatformBridge for DesktopSimBridge {
     }
 
     fn reset_session(&self) {
-        // Play の区切り: 予約・鳴動・通知（チャネルも）・画面の状態・触感の記録・積んだイベントを捨てる
-        // （Play を止めれば模擬の予約も鳴動も通知も消え、画面は既定へ戻る。起動引数のディープリンクはプロセスのものなので残す）
+        // Play の区切り: 予約・鳴動・通知（チャネルも）・画面の状態・触感の記録・センサー（W1-8）・積んだイベントを捨てる
+        // （Play を止めれば模擬の予約も鳴動も通知も消え、画面は既定へ戻り、センサーは止まる。起動引数のディープリンクはプロセスのものなので残す）
         self.alarms.clear();
         self.ringing.clear();
         self.notifications.clear();
         self.window.clear();
         self.haptics.clear();
+        self.sensors.clear();
         self.events.clear();
     }
 }
@@ -425,7 +447,7 @@ mod tests {
     }
 
     /// version: プロトコルの版と、模擬が知っているモジュール（名前の順。W1-3 で alarm、W1-4a で window、
-    /// W1-5 で notification・permission、W1-6 で app・haptics が加わった）。
+    /// W1-5 で notification・permission、W1-6 で app・haptics、W1-8 で sensor が加わった）。
     #[test]
     fn version_reports_protocol() {
         let sim = DesktopSimBridge::new();
@@ -441,6 +463,7 @@ mod tests {
                 notification_names::MODULE,
                 permission_names::MODULE,
                 MODULE_PLATFORM,
+                sensor_names::MODULE,
                 window_names::MODULE
             ])
         );

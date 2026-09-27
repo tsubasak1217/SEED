@@ -17,10 +17,10 @@
 //  :seed_platform を呼ばない（プロセスの起動は最初の invoke まで遅らせる。描画のスレッドで待たない仕組みは PlatformConnection）。
 //  R8 は使っていない（app/build.gradle.kts）ので、JNI から名前で呼ぶ invoke が消されることは無い。
 //
-//  【メインプロセスで答える命令（W1-4a・W1-5）】
+//  【メインプロセスで答える命令（W1-4a・W1-5・W1-6・W1-8）】
 //  invoke はまず local/MainProcessCommands の表を引き、起動理由（platform.launch_reason）・画面の操作
-//  （window.set_show_when_locked）・権限（permission.check / request / open_settings。W1-5）はその場で答える
-//  （IPC に行かない）。それ以外を :seed_platform へ送る。
+//  （window.*）・権限（permission.check / request / open_settings。W1-5）・アプリと触感（app.*・haptics.*。W1-6）・
+//  センサー（sensor.*。W1-8）はその場で答える（IPC に行かない）。それ以外を :seed_platform へ送る。
 //  「この起動の理由」（LaunchReason が onCreate・onNewIntent で決めたもの）はここに預かる。
 // ============================================================
 

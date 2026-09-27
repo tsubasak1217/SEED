@@ -22,7 +22,7 @@
 //
 //  JSON の形とエラーの理由の名前は wire.rs。目覚まし（W1-3）の共通部品（引数の検査・音源の書き出し）は alarm/、
 //  通知（W1-5）の引数の検査は notification/、権限（W1-5）の種類の語彙は permission/、アプリ（W1-6）の URL の規則は app/、
-//  触感（W1-6）の引数の検査は haptics/。
+//  触感（W1-6）の引数の検査は haptics/、センサー（W1-8）の引数の検査と標本の大きさは sensor/。
 //
 //  【Play の区切り】エディタの Play の開始・停止で reset_session を呼び、実装ごとの「前の回の状態」を捨てる
 //  （デスクトップの模擬は予約表とイベント。Android の実機の予約は Play と関係ないので触らない）。
@@ -42,6 +42,8 @@ pub mod haptics;
 pub mod notification;
 /// 権限の共通部品（種類の語彙と引数の読み取り。W1-5）。
 pub mod permission;
+/// センサーの共通部品（種類・頻度・模擬の標本の読み取りと標本の大きさ。W1-8）。
+pub mod sensor;
 /// JSON の約束（名前・形・エラーの理由）。
 pub mod wire;
 

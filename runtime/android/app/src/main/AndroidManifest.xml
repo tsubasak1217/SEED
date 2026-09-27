@@ -27,6 +27,10 @@
   ・VIBRATE … 触感（SEED.Platform の Haptics.Tap / Vibrate。W1-6）と目覚ましの鳴動の振動（RingVibration。W1-4a）。normal 権限
     （インストール時に自動で許可され、利用者への確認も Google Play の申告も無い）で、ゲームの触感にも使うので機能（android.features）に
     よらず常設する（W1-6 で機能 alarm の権限から移した。docs/android.md §25.10・§25.15）。
+  ・uses-feature android.hardware.sensor.accelerometer（required="false"）… SEED.Platform の Sensors（重力を除いた加速度。W1-8）。
+    加速度のセンサーを「使うが、無くても動く」と Google Play へ知らせる（required="true" にすると加速度の無い端末へ配られなくなる。
+    公式の「Sensors overview」の Google Play のフィルタの節）。権限は要らない。無い端末ではスクリプトの Sensors.Start が not_supported。
+    機能（android.features）によらず常設する（ゲームの傾き操作などにも使えるため。docs/android.md §25.16）。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -34,6 +38,11 @@
         android:name="android.hardware.vulkan.version"
         android:version="0x401000"
         android:required="true" />
+
+    <!-- センサー（W1-8。加速度を使うが無くても動く。上の説明）。 -->
+    <uses-feature
+        android:name="android.hardware.sensor.accelerometer"
+        android:required="false" />
 
     <!-- 触感と鳴動の振動（W1-6 から常設。上の説明）。 -->
     <uses-permission android:name="android.permission.VIBRATE" />

@@ -1,8 +1,9 @@
 // ============================================================
-//  MainProcessCommands.java — メインプロセスで答える命令の表（IPC に行かない命令。W1-4a・W1-5 で権限・W1-6 で画面・アプリ・触感を追加）
+//  MainProcessCommands.java — メインプロセスで答える命令の表（IPC に行かない命令。W1-4a・W1-5 で権限・W1-6 で画面・アプリ・触感・
+//  W1-8 でセンサーを追加）
 //
 //  SeedPlatform.invoke がまずここを引き、載っている命令はその場で答える（:seed_platform を起こさない・待たない）。
-//  メインプロセスの持ち物（起動の Intent・Activity の窓とタスク・実行時の許可の確認の画面・振動子）を扱う命令だけを置く:
+//  メインプロセスの持ち物（起動の Intent・Activity の窓とタスク・実行時の許可の確認の画面・振動子・センサー）を扱う命令だけを置く:
 //    platform.launch_reason          … この起動の理由（LaunchReasonCommand）
 //    window.set_show_when_locked     … ロック画面の上に出す＋画面を点ける の切り替え（ShowWhenLockedCommand）
 //    window.set_keep_screen_on       … 画面を点けたままにする の切り替え（KeepScreenOnCommand。W1-6）
@@ -14,8 +15,12 @@
 //    permission.check                … 権限の今の状態（PermissionCheckCommand。W1-5）
 //    permission.request              … 権限を求める（PermissionRequestCommand。結果は platform.permission_result。W1-5）
 //    permission.open_settings        … 権限の設定の画面を開く（PermissionOpenSettingsCommand。W1-5）
+//    sensor.start / stop / read      … センサーの受け取り（SensorStartCommand・SensorStopCommand・SensorReadCommand。W1-8）
 //  命令を足すときは、この表に 1 行と、Rust の wire.rs・デスクトップの模擬（desktop_sim の SIM_COMMANDS）に同じ名前を足す。
 //  "platform" モジュールの他の命令（ping など）は :seed_platform の CorePlatformModule が答える（表は module と method の組で引く）。
+//  【メインプロセスだけのモジュール】（LOCAL_MODULES。W1-8 の sensor から）表に無い命令も :seed_platform へ送らず unknown_method で
+//  答える（模擬だけの sensor.sim_inject を実機で呼んでも :seed_platform を起こさず、connecting にもならない）。W1-6 までの
+//  window・app・haptics・permission は従来どおり（表に無い命令は :seed_platform へ送られ、そこで unknown_method）。
 // ============================================================
 
 package com.seedengine.runtime.platform.local;
@@ -28,6 +33,7 @@ import org.json.JSONException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * メインプロセスで答える命令の表（static のみ）。
@@ -39,6 +45,9 @@ public final class MainProcessCommands {
 
     /** "<module>.<method>" → 命令（作った後は変えない。どのスレッドから読んでもよい）。 */
     private static final Map<String, MainProcessCommand> TABLE = buildTable();
+
+    /** メインプロセスだけが持つモジュール（表に無い命令も :seed_platform へ送らず unknown_method。W1-8）。 */
+    private static final Set<String> LOCAL_MODULES = Collections.singleton(PlatformContract.MODULE_SENSOR);
 
     /**
      * 表を作る（命令を足すときはここへ 1 行）。
@@ -72,6 +81,13 @@ public final class MainProcessCommands {
                 new PermissionRequestCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_PERMISSION, PlatformContract.METHOD_PERMISSION_OPEN_SETTINGS),
                 new PermissionOpenSettingsCommand());
+        // W1-8: センサー
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_SENSOR, PlatformContract.METHOD_SENSOR_START),
+                new SensorStartCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_SENSOR, PlatformContract.METHOD_SENSOR_STOP),
+                new SensorStopCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_SENSOR, PlatformContract.METHOD_SENSOR_READ),
+                new SensorReadCommand());
         return Collections.unmodifiableMap(table);
     }
 
@@ -81,12 +97,14 @@ public final class MainProcessCommands {
      * @param module   モジュールの名前
      * @param method   メソッドの名前
      * @param jsonUtf8 引数の JSON（UTF-8。null は {}）
-     * @return 返答の JSON（UTF-8）。表に無い命令なら null（呼び出し側が :seed_platform へ送る）
+     * @return 返答の JSON（UTF-8）。表に無い命令なら null（呼び出し側が :seed_platform へ送る）。ただしメインプロセスだけの
+     *         モジュール（LOCAL_MODULES）の表に無い命令は unknown_method の返答
      */
     public static byte[] tryHandle(String module, String method, byte[] jsonUtf8) {
         MainProcessCommand command = TABLE.get(PlatformContract.providerMethod(module, method));
         if (command == null) {
-            return null;
+            // メインプロセスだけのモジュールの知らない命令（模擬だけの sensor.sim_inject など）は :seed_platform を起こさずに断る
+            return LOCAL_MODULES.contains(module) ? PlatformJson.errorReply(PlatformContract.ERROR_UNKNOWN_METHOD) : null;
         }
         Object request;
         try {

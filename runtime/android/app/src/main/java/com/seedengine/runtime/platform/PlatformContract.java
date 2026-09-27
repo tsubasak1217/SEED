@@ -1,16 +1,16 @@
 // ============================================================
 //  PlatformContract.java — アプリのプラットフォーム機能（SEED.Platform）の約束の置き場（W1-1・W1-3 で目覚まし・
-//  W1-4a で鳴動・起動理由・画面の命令・W1-5 で通知・権限・W1-6 で画面の切り替え・アプリ・触感・ディープリンクを追加）
+//  W1-4a で鳴動・起動理由・画面の命令・W1-5 で通知・権限・W1-6 で画面の切り替え・アプリ・触感・ディープリンク・W1-8 でセンサーを追加）
 //
 //  メインプロセス（SeedPlatform・PlatformConnection）と :seed_platform プロセス（service/ の PlatformProvider 等）の
 //  両方が使う名前・キー・理由の名前を 1 か所に集める（マジックナンバー・文字列を散らさない）。
 //  エンジン側（Rust）の対になる正典は runtime/src/engine/platform/bridge/wire.rs（目覚ましは wire::alarm、起動理由は
 //  wire::launch、画面は wire::window、通知は wire::notification、権限は wire::permission、アプリは wire::app、触感は
-//  wire::haptics）、C# 側は scripting/src/Api/Platform/（目覚ましは Alarms/AlarmJson.cs、起動理由は App/LaunchJson.cs、
+//  wire::haptics、センサーは wire::sensor）、C# 側は scripting/src/Api/Platform/（目覚ましは Alarms/AlarmJson.cs、起動理由は App/LaunchJson.cs、
 //  アプリは App/AppJson.cs、画面は Window/Window.cs、触感は Haptics/Haptics.cs、通知は Notifications/NotificationJson.cs、権限は
-//  Permissions/PermissionJson.cs）。値を変えるときは 3 か所を必ず揃える（Rust の単体テスト wire::tests::java_contract_matches_wire が、
-//  このファイルの文字列の定数と wire.rs を突き合わせる）。
-//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12、通知は §25.13、権限は §25.14、画面とアプリは §25.15）。
+//  Permissions/PermissionJson.cs、センサーは Sensors/SensorJson.cs）。値を変えるときは 3 か所を必ず揃える（Rust の単体テスト
+//  wire::tests::java_contract_matches_wire が、このファイルの文字列の定数と wire.rs を突き合わせる）。
+//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12、通知は §25.13、権限は §25.14、画面とアプリは §25.15、センサーは §25.16）。
 // ============================================================
 
 package com.seedengine.runtime.platform;
@@ -363,6 +363,54 @@ public final class PlatformContract {
     /** vibrate の ms の上限（これより大きい値はこれにそろえる）。Rust の wire::haptics::MAX_VIBRATE_MS と一致させる。 */
     public static final long MAX_VIBRATE_MS = 5000L;
 
+    // ── センサー（W1-8。モジュール "sensor"。メインプロセスで答える〈local/Sensor*Command → sensor/SensorFeeds〉。IPC なし・権限なし）──
+
+    /** センサーのモジュール（メインプロセスだけが持つ。表に無い sensor.* も :seed_platform へ送らず unknown_method）。 */
+    public static final String MODULE_SENSOR = "sensor";
+    /** 受け取りを始める（動いていれば標本を捨てて始め直す）。引数 { kind, rate_hz }。返答 { kind, supported, source, rate_hz }。 */
+    public static final String METHOD_SENSOR_START = "start";
+    /** 受け取りを止める（動いていなくても成功）。引数 { kind }。返答 { kind, stopped }。 */
+    public static final String METHOD_SENSOR_STOP = "stop";
+    /** 最新の標本と、前回の read からの最大の大きさ・標本の数（読むと 0 に戻る）。引数 { kind }。 */
+    public static final String METHOD_SENSOR_READ = "read";
+    /** 引数・返答: センサーの種類（SENSOR_KIND_*）。 */
+    public static final String KEY_SENSOR_KIND = "kind";
+    /** start の引数・返答: 受け取りの頻度（Hz。返答はそろえた後の値）。 */
+    public static final String KEY_SENSOR_RATE_HZ = "rate_hz";
+    /** start の返答: 使えるか（成功の返答では常に true。使えなければ ERROR_NOT_SUPPORTED の失敗の返答）。 */
+    public static final String KEY_SENSOR_SUPPORTED = "supported";
+    /** start の返答: 値の出どころ（SENSOR_SOURCE_*）。 */
+    public static final String KEY_SENSOR_SOURCE = "source";
+    /** stop の返答: 動いていたものを止めたか。 */
+    public static final String KEY_SENSOR_STOPPED = "stopped";
+    /** read の返答: 最新の標本の x 成分（m/s²。端末の座標系）。 */
+    public static final String KEY_SENSOR_X = "x";
+    /** read の返答: 最新の標本の y 成分（m/s²）。 */
+    public static final String KEY_SENSOR_Y = "y";
+    /** read の返答: 最新の標本の z 成分（m/s²）。 */
+    public static final String KEY_SENSOR_Z = "z";
+    /** read の返答: 最新の標本の時刻（UTC の epoch ミリ秒。SensorEvent.timestamp〈elapsedRealtimeNanos の時計〉から換算。まだ無ければ 0）。 */
+    public static final String KEY_SENSOR_TIMESTAMP_MS = "timestamp_ms";
+    /** read の返答: 前回の read からの標本の大きさ √(x²+y²+z²) の最大（m/s²。標本が無ければ 0）。 */
+    public static final String KEY_SENSOR_PEAK_MAGNITUDE = "peak_magnitude";
+    /** read の返答: 前回の read からの標本の数。 */
+    public static final String KEY_SENSOR_SAMPLE_COUNT = "sample_count";
+    /** 種類: 重力を除いた加速度（m/s²）。 */
+    public static final String SENSOR_KIND_LINEAR_ACCELERATION = "linear_acceleration";
+    /** 出どころ: 端末の重力を除いた加速度のセンサー（Sensor.TYPE_LINEAR_ACCELERATION）。 */
+    public static final String SENSOR_SOURCE_LINEAR_ACCELERATION = "linear_acceleration";
+    /** 出どころ: 加速度のセンサー（Sensor.TYPE_ACCELEROMETER）から低域通過で重力を見積もって引いた値（上が無い端末の代わり）。 */
+    public static final String SENSOR_SOURCE_ACCELEROMETER_LOWPASS = "accelerometer_lowpass";
+    /** rate_hz の既定値（SENSOR_DELAY_GAME＝20,000 µs と同じ 50 Hz）。Rust の wire::sensor::DEFAULT_RATE_HZ と一致させる。 */
+    public static final int DEFAULT_SENSOR_RATE_HZ = 50;
+    /** rate_hz の下限（これより小さい値は invalid_argument）。Rust の wire::sensor::MIN_RATE_HZ と一致させる。 */
+    public static final int MIN_SENSOR_RATE_HZ = 1;
+    /**
+     * rate_hz の上限（これより大きい値はこれにそろえる）。Rust の wire::sensor::MAX_RATE_HZ と一致させる。
+     * targetSdk 31 以降の registerListener の上限（200 Hz。HIGH_SAMPLING_RATE_SENSORS が無いと、デバッグ版では 5000 µs 未満で SecurityException）。
+     */
+    public static final int MAX_SENSOR_RATE_HZ = 200;
+
     // ── 鳴動の通知（W1-4a。:seed_platform の RingService）──
 
     /** 鳴動の通知チャネルの ID（重要度 HIGH・チャネルの音なし＝音は RingService が USAGE_ALARM で鳴らす）。 */
@@ -553,6 +601,12 @@ public final class PlatformContract {
     public static final String ERROR_SCHEME_NOT_ALLOWED = "scheme_not_allowed";
     /** 触感: 端末に振動子が無い（W1-6。Vibrator.hasVibrator が false）。 */
     public static final String ERROR_NO_VIBRATOR = "no_vibrator";
+    /** センサー: 端末にその種類を出せるセンサーが無い（W1-8。重力を除いた加速度も加速度も無い）。 */
+    public static final String ERROR_NOT_SUPPORTED = "not_supported";
+    /** センサー: start していない種類を read した（W1-8）。 */
+    public static final String ERROR_NOT_STARTED = "not_started";
+    /** センサー: SensorManager.registerListener が false を返した（W1-8）。 */
+    public static final String ERROR_REGISTER_FAILED = "register_failed";
 
     /** module / method の名前の最大の長さ（文字）。Rust の wire::MAX_NAME_LEN と一致させる。 */
     public static final int MAX_NAME_LENGTH = 64;
