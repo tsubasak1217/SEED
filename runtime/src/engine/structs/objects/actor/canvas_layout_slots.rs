@@ -2,12 +2,15 @@
 //  actor/canvas_layout_slots.rs — キャンバス UI の純データの部品のスロットの出し入れを 1 か所にまとめる
 //
 //  W2-1b で足した 5 種（CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea）と、
-//  W2-2 で足した CanvasGesture（ジェスチャーを受けるノード）は、どれも「値だけの純データ」で、スロットの作成・
+//  W2-2 で足した CanvasGesture（ジェスチャーを受けるノード）、W2-3 で足した CanvasScroll（スクロールの領域の設定）は、
+//  どれも「値だけの純データ」で、スロットの作成・
 //  保存・読込・複製・削除・既定値・インスペクタへの送信の手順がまったく同じになる。各連携点（scene.rs の
 //  build_actor・slot_ops.rs・component_ops.rs・component_reset_ops.rs・field_edit.rs・slot_to_data）に種類ごとの
 //  腕を並べる代わりに、連携点はここの関数を 1 行呼ぶだけにする（種類を足すときの直し漏れを防ぐ。
 //  種類ごとの違いはこのファイルの表だけ）。名前の「layout」は W2-1b の名残（インスペクタの鍵・IPC の
-//  SET_CANVAS_LAYOUT_FIELD も同じ。W2-2 の CanvasGesture もこの鍵・命令で編集する）。
+//  SET_CANVAS_LAYOUT_FIELD も同じ。W2-2 の CanvasGesture・W2-3 の CanvasScroll もこの鍵・命令で編集する）。
+//  CanvasScroll だけは実行中の状態（CanvasScrollState。保存しない）を同じエンティティに持つので、Undo の復元は設定だけを
+//  差し替え（状態＝位置は残す）、削除は状態も外す。
 //
 //  【種類の表】`LAYOUT_KINDS`（エディタの "type" 名 ⇔ ComponentKind）。match の腕はこのファイルの中だけにある。
 // ============================================================
@@ -16,8 +19,9 @@ use serde::Serialize;
 
 use crate::engine::components::{
     CanvasGestureComponent, CanvasGridComponent, CanvasLayoutItemComponent, CanvasSafeAreaComponent,
-    CanvasStackComponent, CanvasWrapComponent, ComponentData, ComponentKind,
+    CanvasScrollComponent, CanvasStackComponent, CanvasWrapComponent, ComponentData, ComponentKind,
 };
+use crate::engine::core::canvas_scroll::CanvasScrollState;
 use crate::engine::ecs::{Entity, World};
 
 use super::ComponentSlot;
@@ -26,7 +30,7 @@ use super::ComponentSlot;
 pub const INSPECTOR_KEY: &str = "layout";
 
 /// キャンバス UI の純データの部品の種類の表（エディタの "type" 名 ⇔ ComponentKind）。
-pub const LAYOUT_KINDS: [(&str, ComponentKind); 6] = [
+pub const LAYOUT_KINDS: [(&str, ComponentKind); 7] = [
     ("CanvasStackComponent", ComponentKind::CanvasStack),
     ("CanvasWrapComponent", ComponentKind::CanvasWrap),
     ("CanvasGridComponent", ComponentKind::CanvasGrid),
@@ -34,6 +38,8 @@ pub const LAYOUT_KINDS: [(&str, ComponentKind); 6] = [
     ("CanvasSafeAreaComponent", ComponentKind::CanvasSafeArea),
     // ジェスチャーを受けるノード（W2-2）
     ("CanvasGestureComponent", ComponentKind::CanvasGesture),
+    // スクロールの領域（W2-3）
+    ("CanvasScrollComponent", ComponentKind::CanvasScroll),
 ];
 
 /// レイアウトの部品の種類か。
@@ -55,6 +61,7 @@ pub fn kind_of_data(data: &ComponentData) -> Option<ComponentKind> {
         ComponentData::CanvasLayoutItemComponent(_) => Some(ComponentKind::CanvasLayoutItem),
         ComponentData::CanvasSafeAreaComponent(_) => Some(ComponentKind::CanvasSafeArea),
         ComponentData::CanvasGestureComponent(_) => Some(ComponentKind::CanvasGesture),
+        ComponentData::CanvasScrollComponent(_) => Some(ComponentKind::CanvasScroll),
         _ => None,
     }
 }
@@ -98,6 +105,10 @@ pub fn insert_from_data(
             world.insert(slot_entity, CanvasGestureComponent::from_data(d.clone()));
             ComponentSlot::new::<CanvasGestureComponent>(name, ComponentKind::CanvasGesture, slot_entity)
         }
+        ComponentData::CanvasScrollComponent(d) => {
+            world.insert(slot_entity, CanvasScrollComponent::from_data(d.clone()));
+            ComponentSlot::new::<CanvasScrollComponent>(name, ComponentKind::CanvasScroll, slot_entity)
+        }
         _ => return None,
     };
     Some(slot)
@@ -120,6 +131,10 @@ pub fn apply_in_place(world: &mut World, slot_entity: Entity, data: &ComponentDa
         }
         ComponentData::CanvasGestureComponent(d) => {
             world.insert(slot_entity, CanvasGestureComponent::from_data(d.clone()))
+        }
+        // 設定だけを差し替える（同じエンティティの CanvasScrollState＝位置と動きは残る）
+        ComponentData::CanvasScrollComponent(d) => {
+            world.insert(slot_entity, CanvasScrollComponent::from_data(d.clone()))
         }
         _ => return false,
     }
@@ -148,6 +163,9 @@ pub fn to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentData> {
         ComponentKind::CanvasGesture => world
             .get::<CanvasGestureComponent>(slot.entity)
             .map(|c| ComponentData::CanvasGestureComponent(c.to_data())),
+        ComponentKind::CanvasScroll => world
+            .get::<CanvasScrollComponent>(slot.entity)
+            .map(|c| ComponentData::CanvasScrollComponent(c.to_data())),
         _ => None,
     }
 }
@@ -176,6 +194,11 @@ pub fn remove(world: &mut World, kind: ComponentKind, slot_entity: Entity) -> bo
         ComponentKind::CanvasGesture => {
             world.remove::<CanvasGestureComponent>(slot_entity);
         }
+        ComponentKind::CanvasScroll => {
+            // 実行中の状態（保存しない）も一緒に外す
+            world.remove::<CanvasScrollComponent>(slot_entity);
+            world.remove::<CanvasScrollState>(slot_entity);
+        }
         _ => return false,
     }
     true
@@ -195,6 +218,9 @@ pub fn default_data(kind: ComponentKind) -> Option<ComponentData> {
         }
         ComponentKind::CanvasGesture => {
             ComponentData::CanvasGestureComponent(CanvasGestureComponent::default().to_data())
+        }
+        ComponentKind::CanvasScroll => {
+            ComponentData::CanvasScrollComponent(CanvasScrollComponent::default().to_data())
         }
         _ => return None,
     })
@@ -217,6 +243,7 @@ pub fn inspector_json(data: &ComponentData) -> Option<(&'static str, String)> {
         ComponentData::CanvasLayoutItemComponent(d) => ("CanvasLayoutItemComponent", fragment(d)),
         ComponentData::CanvasSafeAreaComponent(d) => ("CanvasSafeAreaComponent", fragment(d)),
         ComponentData::CanvasGestureComponent(d) => ("CanvasGestureComponent", fragment(d)),
+        ComponentData::CanvasScrollComponent(d) => ("CanvasScrollComponent", fragment(d)),
         _ => return None,
     };
     Some((type_name, json))
@@ -252,5 +279,24 @@ mod tests {
         }
         assert!(!is_layout_kind(ComponentKind::Sprite));
         assert!(kind_of_type_name("SpriteComponent").is_none());
+    }
+
+    /// CanvasScroll: Undo の復元（設定の差し替え）で実行中の状態（位置）は残り、削除で状態も外れる。
+    #[test]
+    fn scroll_state_survives_apply_and_is_removed_with_slot() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        let data = default_data(ComponentKind::CanvasScroll).unwrap();
+        insert_from_data(&mut world, entity, "Scroll", &data).unwrap();
+        world.insert(entity, CanvasScrollState { position: [0.0, 120.0], ..CanvasScrollState::default() });
+        let edited = ComponentData::CanvasScrollComponent(CanvasScrollComponent {
+            inertia: false,
+            ..CanvasScrollComponent::default()
+        });
+        assert!(apply_in_place(&mut world, entity, &edited));
+        assert!(!world.get::<CanvasScrollComponent>(entity).unwrap().inertia);
+        assert_eq!(world.get::<CanvasScrollState>(entity).unwrap().position, [0.0, 120.0], "位置は残る");
+        assert!(remove(&mut world, ComponentKind::CanvasScroll, entity));
+        assert!(world.get::<CanvasScrollState>(entity).is_none(), "状態も外れる");
     }
 }

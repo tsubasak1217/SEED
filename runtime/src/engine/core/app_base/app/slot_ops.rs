@@ -550,7 +550,8 @@ impl App {
                     | ComponentKind::CanvasGrid
                     | ComponentKind::CanvasLayoutItem
                     | ComponentKind::CanvasSafeArea
-                    | ComponentKind::CanvasGesture => {
+                    | ComponentKind::CanvasGesture
+                    | ComponentKind::CanvasScroll => {
                         // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）
                         crate::engine::structs::objects::actor::canvas_layout_slots::remove(
                             &mut scene.world, kind, slot_entity);
@@ -1078,7 +1079,8 @@ impl App {
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
             | ComponentData::CanvasSafeAreaComponent(_)
-            | ComponentData::CanvasGestureComponent(_)) => {
+            | ComponentData::CanvasGestureComponent(_)
+            | ComponentData::CanvasScrollComponent(_)) => {
                 // キャンバス UI の純データの部品（W2-1b の 5 種と W2-2 の CanvasGesture）を複製する（新しいスロット専用エンティティへ挿入）
                 use crate::engine::structs::objects::actor::canvas_layout_slots;
                 let slot_entity = scene.world.spawn();
@@ -1625,7 +1627,8 @@ impl App {
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
             | ComponentData::CanvasSafeAreaComponent(_)
-            | ComponentData::CanvasGestureComponent(_)) => {
+            | ComponentData::CanvasGestureComponent(_)
+            | ComponentData::CanvasScrollComponent(_)) => {
                     // キャンバス UI の純データの部品（W2-1b の 5 種と W2-2 の CanvasGesture）をスロット専用エンティティへ復元する
                     use crate::engine::structs::objects::actor::canvas_layout_slots;
                     if let Some(slot) = canvas_layout_slots::insert_from_data(

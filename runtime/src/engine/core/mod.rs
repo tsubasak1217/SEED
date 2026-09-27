@@ -2,6 +2,8 @@ pub mod app_base;
 pub mod audio;
 /// 2D キャンバスノードのレイアウト計算（配置の純関数・木を 1 回たどる走査・切り抜きの領域。W2-1a）。
 pub mod canvas_layout;
+/// スクロールの本体（慣性・跳ね返り・スナップ・入れ子・見える範囲の外を飛ばす。W2-3。docs/ui_scroll_list.md）。
+pub mod canvas_scroll;
 /// アプリがバックグラウンドにいるか（Android の suspended〜resumed）の共有状態と、その間スレッドを眠らせる待機。
 pub mod background_gate;
 pub mod clock;

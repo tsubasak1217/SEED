@@ -141,6 +141,18 @@ public abstract class SEEDScript : IScriptComponent
     /// <summary>押下の見た目を戻すときに呼ばれる（タップ・長押しとして離した）。</summary>
     public virtual void OnGesturePressUp(SEED.GestureEvent e) {}
 
+    // ── スクロールのコールバック（W2-3）──────────────────
+    // Play 中、自分のアクターが **CanvasScroll**（スクロールの領域）を持つときだけ届く（スクリプトフェーズより前）。
+    // 1 フレームに最大で OnScrollStart → OnScroll → OnScrollEnd の順。位置の書き込み（すぐ移す）でも 3 つが届く。
+    // 規則の正典は docs/ui_scroll_list.md。
+
+    /// <summary>スクロールが始まったときに呼ばれる（ドラッグ・慣性・ScrollTo・すぐ移す）。</summary>
+    public virtual void OnScrollStart(SEED.ScrollEvent e) {}
+    /// <summary>スクロールの位置が変わったときに呼ばれる（1 フレームに 1 回まで。<c>e.Delta</c> は前に知らせた位置からの差）。</summary>
+    public virtual void OnScroll(SEED.ScrollEvent e) {}
+    /// <summary>スクロールが終わったときに呼ばれる（止まった・指で触れて止めた）。</summary>
+    public virtual void OnScrollEnd(SEED.ScrollEvent e) {}
+
     // ── 名前付きイベント（SEED.Events）の購読ヘルパ ────────────
     // Events.Subscribe を直接呼ぶと解除はスクリプト側の責任になるが、
     // ここ（this.On）経由なら購読ハンドルをインスタンスが保持し、

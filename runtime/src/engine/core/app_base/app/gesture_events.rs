@@ -11,6 +11,11 @@
 //  一時停止のフレームでは、触れている指をすべて取り消し、取り消しのイベント（PressCancel・DragEnd）は
 //  再開した最初のフレームで配る（スクリプトが動かないフレームでは配らない）。
 //
+//  【スクロール（W2-3）】CanvasScrollComponent を持つノードも参加する（gesture_scene.rs の participation_of）。
+//  配る前に、ドラッグ・フリックのイベントと触れた指の経路をスクロールのシステムへ渡す（scroll_events.rs の update_scrolls が
+//  同じフレームのスクリプトより前に使う）。一覧の行を使い回すときの取り消し（GameObject.CancelGestures）は
+//  `cancel_gestures_under` が行と子孫の押下・ドラッグを取り消し、イベントは次のフレームの配り残しとして届く。
+//
 //  【既存のポインタのイベントとの関係】（docs/input_gestures.md §6）
 //    - CanvasGestureComponent を付けていないノードは参加しない。OnPointer* の判定（pointer_events.rs）は従来のまま
 //    - 両方あるノード（raycast_target の Sprite と有効な CanvasGesture）は、OnPointerDown / Up / Click を受けない
@@ -18,7 +23,7 @@
 //      クリックが起きる取り違えを防ぐ）。OnPointerEnter / Exit（カーソルが乗った・外れた）は従来どおり届く
 // ============================================================
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::engine::components::{CanvasGestureComponent, ComponentKind, ScriptComponent};
@@ -67,6 +72,12 @@ impl GestureState {
         &self.thresholds
     }
 
+    /// ノード（行とその子孫）の押下・ドラッグを取り消し、取り消しのイベントを配り残しへ積む（W2-3。次のフレームで配る）。
+    pub(super) fn cancel_nodes(&mut self, nodes: &HashSet<Entity>) {
+        let emits = self.arenas.cancel_nodes(nodes, pointer_clock_now());
+        self.pending.extend(emits);
+    }
+
     /// 「動いている」かの申告（W2-10a の描く理由。指が触れている間は描き続け、次の時刻の出来事で WaitUntil。
     /// 読み手は app/redraw_hooks.rs のフレームの末尾の判定）。
     pub(super) fn activity(&self) -> crate::engine::core::input::gesture::GestureActivity {
@@ -90,7 +101,7 @@ pub(super) fn entries_to_canvas(entries: Vec<PointerLogEntry>, window: [f32; 2])
 
 /// world_line 内の全アクターについて「ルートエンティティ → 有効スクリプト群」を作る（pointer_events.rs と同じ規約。
 /// 実効非アクティブなスクリプト（`sc.active = false`）へは配らない）。
-fn build_entity_script_map(actors: &[Actor], world: &World, wl: u32) -> HashMap<Entity, Vec<(Arc<ScriptingHost>, isize)>> {
+pub(super) fn build_entity_script_map(actors: &[Actor], world: &World, wl: u32) -> HashMap<Entity, Vec<(Arc<ScriptingHost>, isize)>> {
     /// 再帰走査（子は世界線を問わずたどる）。
     fn walk(actor: &Actor, world: &World, map: &mut HashMap<Entity, Vec<(Arc<ScriptingHost>, isize)>>) {
         let handles: Vec<_> = actor
@@ -156,6 +167,8 @@ impl App {
         // （ジェスチャーを使わないゲームでは、記録を取り出して捨てるだけ。レイアウトの表も作らない）
         let idle = self.gestures.arenas.is_idle() && self.gestures.pending.is_empty();
         if idle && (entries.is_empty() || !self.scene_has_gesture_nodes()) {
+            // 触れている指が無い（スクロールの「触れて止めた」窓は指を離したものとして扱える。W2-3）
+            self.canvas_scroll.receive_gestures(&[], self.gestures.arenas.take_touched(), HashSet::new());
             return;
         }
         let now = pointer_clock_now();
@@ -163,6 +176,7 @@ impl App {
         let Some(window) = self.compute_viewport_size_2d() else {
             let mut emits = std::mem::take(&mut self.gestures.pending);
             emits.extend(self.gestures.arenas.cancel_all(now));
+            self.canvas_scroll.receive_gestures(&emits, self.gestures.arenas.take_touched(), HashSet::new());
             self.dispatch_gesture_events(emits, &GestureHitScene::default(), [0.0, 0.0]);
             return;
         };
@@ -171,7 +185,28 @@ impl App {
         let entries = entries_to_canvas(entries, window);
         let mut emits = std::mem::take(&mut self.gestures.pending);
         emits.extend(self.gestures.arenas.process(&entries, now, &scene, &metrics));
+        // スクロールのシステムへ（ドラッグ・フリック・触れた指。W2-3）
+        let touched = self.gestures.arenas.take_touched();
+        let under = self.gestures.arenas.nodes_under_pointers();
+        self.canvas_scroll.receive_gestures(&emits, touched, under);
         self.dispatch_gesture_events(emits, &scene, window);
+    }
+
+    /// アクター（一覧の行）とその子孫の押下・ドラッグを取り消す（GameObject.CancelGestures。W2-3）。
+    /// 取り消しのイベント（PressCancel・取り消しの DragEnd）は次のフレームの配達で届く。
+    pub(super) fn cancel_gestures_under(&mut self, root: Entity) {
+        /// 部分木のエンティティを集める。
+        fn collect(actor: &Actor, out: &mut HashSet<Entity>) {
+            out.insert(actor.entity);
+            for child in &actor.children {
+                collect(child, out);
+            }
+        }
+        let Some(scene) = self.scene.as_ref() else { return };
+        let Some(actor) = find_actor(&scene.actors, root) else { return };
+        let mut nodes = HashSet::new();
+        collect(actor, &mut nodes);
+        self.gestures.cancel_nodes(&nodes);
     }
 
     /// 一時停止のフレーム: 触れている指をすべて取り消す（取り消しのイベントは次に動いたフレームで配る）。
@@ -190,11 +225,13 @@ impl App {
         build_gesture_hit_scene(&scene.actors, &scene.world, wl, window, &overrides, &root_auto, dp_scale)
     }
 
-    /// シーンに CanvasGestureComponent が 1 つでもあるか（無効なものも数える。ストレージを 1 つ引くだけ）。
+    /// シーンに CanvasGestureComponent か CanvasScrollComponent（W2-3。スクロールの窓も参加する）が 1 つでもあるか
+    /// （無効なものも数える。ストレージを引くだけ）。
     fn scene_has_gesture_nodes(&self) -> bool {
         self.scene
             .as_ref()
             .is_some_and(|s| s.world.query::<CanvasGestureComponent>().next().is_some())
+            || self.scene_has_scroll_nodes()
     }
 
     /// ノードが有効な CanvasGesture を持つか（ポインタのイベントの絞り込み用）。

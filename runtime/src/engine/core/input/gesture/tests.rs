@@ -497,3 +497,62 @@ fn activity_reports_pointers_and_next_deadline() {
     r.frame(&[up(1, 50.0, 50.0, 1.1)], 1.1);
     assert!(!r.set.activity(&r.metrics).is_active());
 }
+
+// ─── スクロールの窓との組み合わせ（W2-3）─────────────────────
+
+/// 縦スクロールの窓（ノード 1）の中のボタン（ノード 2）。
+fn scroll_with_button() -> Vec<GestureHitNode> {
+    let mut child = node(2, [0.0, 0.0, 400.0, 100.0], 1, button());
+    child.ancestors = vec![0];
+    vec![node(1, [0.0, 0.0, 400.0, 400.0], 0, scroller(GestureDragAxis::Vertical)), child]
+}
+
+/// 慣性中のスクロールの窓（吸い込むノード）は、触れた指を中の子へ渡さない（タップは起きない）。
+/// 触れた指の経路（take_touched）には窓が入る（スクロールのシステムが「触れて止める」）。
+#[test]
+fn absorbing_scroll_window_keeps_children_from_the_pointer() {
+    let mut r = Rig::new(scroll_with_button(), 1.0);
+    let taps = r.run(&[down(1, 50.0, 50.0, 0.0), up(1, 50.0, 50.0, 0.05)], 0.05);
+    assert_eq!(taps, vec![(2, PressDown), (2, PressUp), (2, Tap)], "止まっている窓の中のボタンは押せる");
+    let window = crate::engine::ecs::Entity::from_raw(1, 0);
+    let mut r = Rig::new(scroll_with_button(), 1.0);
+    r.scene = r.scene.clone().with_absorbing(std::iter::once(window).collect());
+    let out = r.run(&[down(1, 50.0, 50.0, 0.0)], 0.0);
+    assert!(out.is_empty(), "ボタンは参加しない: {out:?}");
+    assert_eq!(r.set.take_touched(), vec![window]);
+    assert!(r.set.nodes_under_pointers().contains(&window));
+    assert!(r.run(&[up(1, 50.0, 50.0, 0.05)], 0.05).is_empty(), "離してもタップにならない");
+    assert!(r.set.nodes_under_pointers().is_empty());
+    // 触れた指がそのまま動けば、窓のドラッグになる
+    let mut r = Rig::new(scroll_with_button(), 1.0);
+    r.scene = r.scene.clone().with_absorbing(std::iter::once(window).collect());
+    let out = r.run(&[down(1, 50.0, 50.0, 0.0), mv(1, 50.0, 70.0, 0.05)], 0.05);
+    assert_eq!(out, vec![(1, DragStart)]);
+}
+
+/// 行の使い回し（cancel_nodes）: 押しているボタンは PressCancel で戻り、その後に離しても Tap にならない。
+#[test]
+fn cancel_nodes_cancels_press_and_prevents_tap() {
+    let mut r = Rig::new(scroll_with_button(), 1.0);
+    // スクロールの中のボタンは押下の待ち（100ms）の後に PressDown
+    let out = r.run(&[down(1, 50.0, 50.0, 0.0)], 0.15);
+    assert_eq!(out, vec![(2, PressDown)]);
+    let row = crate::engine::ecs::Entity::from_raw(2, 0);
+    let canceled = r.set.cancel_nodes(&std::iter::once(row).collect(), 0.2);
+    assert_eq!(summary(&canceled), vec![(2, PressCancel)]);
+    assert!(r.run(&[up(1, 50.0, 50.0, 0.25)], 0.25).is_empty(), "取り消した押下は Tap にならない");
+}
+
+/// 行の使い回し（cancel_nodes）: 行が捕捉しているドラッグ（スワイプ）は取り消しの DragEnd で終わり、以後の移動は届かない。
+#[test]
+fn cancel_nodes_ends_captured_drag() {
+    let swipe = CanvasGestureComponent { tap: false, drag: true, fling: true, drag_axis: GestureDragAxis::Horizontal, ..button() };
+    let mut r = Rig::new(vec![node(3, [0.0, 0.0, 400.0, 100.0], 0, swipe)], 1.0);
+    let out = r.run(&[down(1, 50.0, 50.0, 0.0), mv(1, 80.0, 50.0, 0.05)], 0.05);
+    assert_eq!(out, vec![(3, DragStart)]);
+    let canceled = r.set.cancel_nodes(&std::iter::once(crate::engine::ecs::Entity::from_raw(3, 0)).collect(), 0.06);
+    assert_eq!(summary(&canceled), vec![(3, DragEnd)]);
+    assert!(canceled[0].canceled);
+    assert!(r.run(&[mv(1, 120.0, 50.0, 0.08), up(1, 120.0, 50.0, 0.1)], 0.1).is_empty());
+    assert!(r.set.is_idle());
+}

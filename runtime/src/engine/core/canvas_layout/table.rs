@@ -21,6 +21,7 @@ use crate::engine::structs::objects::Actor;
 use super::clip::CanvasClipRegion;
 use super::frame::CanvasParentFrame;
 use super::placement::CanvasNodePlacement;
+use super::scroll_view::CanvasScrollRegion;
 
 /// 表とアクター木の並びが食い違ったことを 1 度だけ警告したか（ログ爆発防止）。
 static MISMATCH_WARNED: AtomicBool = AtomicBool::new(false);
@@ -74,6 +75,9 @@ pub struct CanvasLayoutNode {
     pub clip: Option<UiClipId>,
     /// このノードが子孫を切り抜く領域の番号（切り抜きのコンポーネントが有効で矩形が決まったときだけ Some）。
     pub own_clip_region: Option<UiClipId>,
+    /// スクロールの見える範囲の外として飛ばした（W2-3。このノードと子孫の描画アイテム・当たり判定を作らない）。
+    /// 祖先のスクロールが切り抜きと一緒に「見える範囲の外を飛ばす」を有効にしているときだけ立つ（切り抜きの外なので見た目は変わらない）。
+    pub culled: bool,
 }
 
 impl CanvasLayoutNode {
@@ -109,6 +113,19 @@ impl CanvasLayoutNode {
         let f = &self.flags;
         f.world_line_chain && f.visible_chain && f.in_2d_tree && (!respect_active || f.active_chain)
     }
+
+    /// 描画アイテム（スプライト・テキスト・パーティクル）と ID 描画を作るか（`is_drawn` かつスクロールの見える範囲の中。W2-3）。
+    /// キャンバス枠・SEED.Draw の座標空間の登録は `is_drawn` のまま（範囲の外でも空間は引ける）。
+    #[inline]
+    pub fn is_drawn_in_view(&self) -> bool {
+        self.is_drawn() && !self.culled
+    }
+
+    /// 当たり判定の対象か（`is_pickable` かつスクロールの見える範囲の中。W2-3）。
+    #[inline]
+    pub fn is_pickable_in_view(&self, respect_active: bool) -> bool {
+        self.is_pickable(respect_active) && !self.culled
+    }
 }
 
 /// レイアウトの部品（W2-1b）が 1 回の走査でした仕事の数（性能のテストと診断用）。
@@ -122,6 +139,10 @@ pub struct CanvasLayoutStats {
     pub safe_areas: u32,
     /// 子の大きさを実際に測った回数（覚えた結果を引いただけの回数は含まない。ノード数に比例すること）。
     pub measure_calls: u64,
+    /// スクロールの領域の数（W2-3）。
+    pub scrolls: u32,
+    /// スクロールの見える範囲の外として飛ばしたノードの数（W2-3。性能の診断）。
+    pub culled: u32,
 }
 
 /// レイアウトの表（1 フレーム・1 文脈ぶん）。
@@ -135,6 +156,8 @@ pub struct CanvasLayoutTable {
     pub world_line: u32,
     /// レイアウトの部品の仕事の数（W2-1b）。
     pub stats: CanvasLayoutStats,
+    /// スクロールの領域（W2-3。窓・中身の大きさと換算。フレームの描画がスクロールの状態の `metrics` へ写す）。
+    pub scroll_regions: Vec<CanvasScrollRegion>,
 }
 
 impl CanvasLayoutTable {

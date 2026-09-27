@@ -1032,7 +1032,8 @@ pub fn build_actor(
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
             | ComponentData::CanvasSafeAreaComponent(_)
-            | ComponentData::CanvasGestureComponent(_)) => {
+            | ComponentData::CanvasGestureComponent(_)
+            | ComponentData::CanvasScrollComponent(_)) => {
                 // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）を
                 // ECS ワールドに挿入してスロットを登録する
                 // （種類ごとの処理は canvas_layout_slots にまとめてある）

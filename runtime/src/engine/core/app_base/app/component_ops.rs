@@ -550,7 +550,8 @@ impl App {
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
             | ComponentData::CanvasSafeAreaComponent(_)
-            | ComponentData::CanvasGestureComponent(_)) => {
+            | ComponentData::CanvasGestureComponent(_)
+            | ComponentData::CanvasScrollComponent(_)) => {
                     // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）:
                     // 値を serde の書式のまま "layout" の中へ入れて送る
                     // （スロット共通の "enabled" と鍵がぶつからない。エディタは JSON を読むだけ）。

@@ -19,6 +19,11 @@
 //      子は必ずコンテナより後に訪ねる（深さ優先）ので、2 段の計算（測る → 並べる）が 1 回の走査の中で終わる。
 //      測った結果は覚えておき（LayoutMeasurer）、同じノードを同じ条件で 2 度測らない（ノード数に比例）。
 //      部品を使わない木では、従来とまったく同じ計算（resolve だけ）を通る。
+//    - スクロールの窓（W2-3。scroll_view.rs）: CanvasScrollComponent を持つノードは、子へ渡す文脈をスクロールの位置だけ
+//      平行移動し（コンテナなら スクロールの軸は箱の長さを決めずに並べる）、窓・中身の大きさを `scroll_regions` へ積む。
+//      切り抜きと「見える範囲の外を飛ばす」が有効なら、子孫の部分木の範囲（キャンバス空間）を集めて、見える範囲
+//      （切り抜き + cache_extent）と交わらない部分木に `culled` を立てる（canvas_scroll/visibility.rs）。
+//      スクロールを使わない木では範囲を集めない（費用は増えない）。
 // ============================================================
 
 use std::collections::HashMap;
@@ -30,7 +35,7 @@ use crate::engine::core::renderer::ui_clip::UiClipId;
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
-use super::clip::{canvas_area_corners, has_room, sprite_rect_corners, CanvasClipRegion, ClipRectSource};
+use super::clip::{canvas_area_corners, corners_aabb, has_room, sprite_rect_corners, CanvasClipRegion, ClipRectSource};
 use super::containers::spec::container_of;
 use super::containers::{clamp_size, Constraint, LayoutSlot, AXIS_X, AXIS_Y};
 use super::frame::{CanvasLayoutEnv, CanvasParentFrame};
@@ -40,7 +45,13 @@ use super::placement::{
     pass_through_frame, resize_box, resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement,
 };
 use super::safe_area::{inset_box, world_rect_to_local};
+use super::scroll_view::{
+    axis_directions, expand, local_far_edge, node_bounds, offset_px, scroll_of, translate_frame, union, viewport_size,
+    CanvasScrollRegion, ClipAabb, ScrollNode,
+};
 use super::table::{CanvasLayoutNode, CanvasLayoutStats, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};
+use crate::engine::components::ScrollContentSize;
+use crate::engine::core::canvas_scroll::visibility::cull_outside;
 
 /// 最上位ノードの深さ（当たり判定の「子を優先」の順位の起点）。
 const ROOT_DEPTH: u32 = 0;
@@ -84,9 +95,13 @@ impl CanvasLayoutPass {
                 clip_regions: Vec::new(),
                 world_line,
                 stats: CanvasLayoutStats::default(),
+                scroll_regions: Vec::new(),
             },
             pending_slots: HashMap::new(),
             measurer: LayoutMeasurer::new(world),
+            bounds_depth: 0,
+            subtree_bounds: HashMap::new(),
+            scroll_container_content: HashMap::new(),
         };
         for root in roots.iter().filter(|a| a.world_line == world_line) {
             builder.visit(root, None, root_frame, ROOT_DEPTH, ROOT_FLAGS, None);
@@ -110,6 +125,12 @@ struct TableBuilder<'w, 'e> {
     pending_slots: HashMap<Entity, LayoutSlot>,
     /// ノードの大きさを測る道具（結果を覚えて、同じ条件で 2 度測らない。W2-1b）。
     measurer: LayoutMeasurer<'w>,
+    /// 見える範囲の外を飛ばすスクロールの窓の中にいる深さ（0 より大きい間だけ部分木の範囲を集める。W2-3）。
+    bounds_depth: u32,
+    /// 行 → 部分木の範囲（キャンバス空間。飛ばす窓の子孫だけ。W2-3）。
+    subtree_bounds: HashMap<u32, ClipAabb>,
+    /// コンテナでもあるスクロールの窓が並べた中身の大きさ（窓のローカルの画素・余白を含む。W2-3）。
+    scroll_container_content: HashMap<Entity, [f32; 2]>,
 }
 
 impl<'w, 'e> TableBuilder<'w, 'e> {
@@ -122,6 +143,9 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
     /// * `depth`        - 階層の深さ（フォルダを数えない）
     /// * `parent_flags` - 親までのフラグ
     /// * `parent_clip`  - 親から受け継いだ切り抜きの番号（このノード自身の描画アイテムが入る領域）
+    ///
+    /// # 戻り値
+    /// 部分木の範囲（キャンバス空間。見える範囲の外を飛ばすスクロールの窓の中にいるときだけ Some。W2-3）。
     fn visit(
         &mut self,
         actor: &Actor,
@@ -130,7 +154,7 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         depth: u32,
         parent_flags: CanvasNodeFlags,
         parent_clip: Option<UiClipId>,
-    ) {
+    ) -> Option<ClipAabb> {
         let index = self.table.nodes.len() as u32;
         let flags = CanvasNodeFlags {
             world_line_chain: parent_flags.world_line_chain && actor.world_line == self.world_line,
@@ -138,9 +162,11 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
             visible_chain: parent_flags.visible_chain && actor.visible,
             in_2d_tree: parent_flags.in_2d_tree,
         };
+        // 祖先のスクロールの窓が見える範囲の外を飛ばす（このノードの部分木の範囲が要る。W2-3）
+        let tracking_bounds = self.bounds_depth > 0;
 
         // ── ノードの種類ごとに、配置と子へ渡す文脈を決める ──
-        let (kind, child_frame, child_depth, child_in_2d_tree) = if actor.is_folder() {
+        let (mut kind, mut child_frame, child_depth, child_in_2d_tree) = if actor.is_folder() {
             // フォルダ: レイアウト上は存在しないものとして、文脈をそのまま子へ渡す（深さも進めない）
             (CanvasNodeKind::Folder, frame, depth, flags.in_2d_tree)
         } else if let Some(transform) = self.world.get::<CanvasTransform>(actor.entity) {
@@ -170,6 +196,18 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
             (CanvasNodeKind::NoTransform { child_frame }, child_frame, depth + 1, false)
         };
 
+        // ── スクロールの窓（W2-3）: 子へ渡す文脈を位置だけ平行移動する（表の配置の child_frame も同じ値にそろえる）──
+        let scroll: Option<ScrollNode<'w>> = match &kind {
+            CanvasNodeKind::Placed(_) if flags.in_2d_tree => scroll_of(actor, self.world),
+            _ => None,
+        };
+        let mut scroll_offset = [0.0, 0.0];
+        if let (Some(s), CanvasNodeKind::Placed(placement)) = (&scroll, &mut kind) {
+            scroll_offset = offset_px(s.settings, s.position, placement.child_frame.cumul_scale);
+            translate_frame(&mut placement.child_frame, scroll_offset);
+            child_frame = placement.child_frame;
+        }
+
         // ── 切り抜きの領域（2D レイアウト木の中で、切り抜きのコンポーネントが有効なノードだけ）──
         let own_clip_region = match &kind {
             CanvasNodeKind::Placed(placement) if flags.in_2d_tree && clips_children(actor, self.world) => {
@@ -189,18 +227,139 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
             flags,
             clip: parent_clip,
             own_clip_region,
+            culled: false,
         });
+
+        // ── 見える範囲の外を飛ばす範囲（切り抜きと cull_outside が両方有効な窓。切り抜きの AABB + cache_extent）──
+        let cull_view = match (&scroll, own_clip_region) {
+            (Some(s), Some(id)) if s.settings.cull_outside => {
+                let region = &self.table.clip_regions[id as usize];
+                let margin = s.settings.cache_extent_units();
+                let cumul = child_frame.cumul_scale;
+                Some(expand(corners_aabb(&region.corners), [margin * cumul[0].abs(), margin * cumul[1].abs()]))
+            }
+            _ => None,
+        };
+        if cull_view.is_some() {
+            self.bounds_depth += 1;
+        }
 
         let child_flags = CanvasNodeFlags {
             in_2d_tree: child_in_2d_tree,
             ..flags
         };
         let child_clip = own_clip_region.or(parent_clip);
+        let mut children_bounds: Option<ClipAabb> = None;
+        // 窓の直接の子の行（中身の大きさを測る。窓でなければ集めない）
+        let mut child_rows: Vec<u32> = Vec::new();
         for child in &actor.children {
-            self.visit(child, Some(index), child_frame, child_depth, child_flags, child_clip);
+            let child_row = self.table.nodes.len() as u32;
+            let bounds = self.visit(child, Some(index), child_frame, child_depth, child_flags, child_clip);
+            children_bounds = union(children_bounds, bounds);
+            if scroll.is_some() {
+                child_rows.push(child_row);
+            }
         }
         let end = self.table.nodes.len() as u32;
         self.table.nodes[index as usize].subtree_end = end;
+
+        if let Some(view) = cull_view {
+            self.bounds_depth -= 1;
+            let culled = cull_outside(&mut self.table.nodes, index as usize + 1, end as usize, &self.subtree_bounds, view);
+            self.table.stats.culled += culled;
+        }
+        if let Some(s) = &scroll {
+            self.push_scroll_region(actor, index, s, scroll_offset, own_clip_region, &child_rows);
+        }
+
+        // ── 部分木の範囲（祖先の窓が飛ばす判定に使う）──
+        if !tracking_bounds {
+            return None;
+        }
+        let own = match &self.table.nodes[index as usize].kind {
+            CanvasNodeKind::Placed(placement) => Some(node_bounds(actor, self.world, &frame, placement)),
+            _ => None,
+        };
+        let subtree = union(own, children_bounds);
+        if let Some(bounds) = subtree {
+            self.subtree_bounds.insert(index, bounds);
+        }
+        subtree
+    }
+
+    /// スクロールの領域を 1 つ積む（窓・中身の大きさと換算。W2-3）。
+    ///
+    /// # 引数
+    /// * `actor`      - 窓のノード
+    /// * `index`      - 窓の行
+    /// * `scroll`     - 窓のスクロール
+    /// * `offset`     - 子へ当てた平行移動（窓のローカルの画素）
+    /// * `own_clip`   - 窓の切り抜きの番号
+    /// * `child_rows` - 直接の子の行（`actor.children` と同じ並び）
+    fn push_scroll_region(
+        &mut self,
+        actor: &Actor,
+        index: u32,
+        scroll: &ScrollNode<'_>,
+        offset: [f32; 2],
+        own_clip: Option<UiClipId>,
+        child_rows: &[u32],
+    ) {
+        let CanvasNodeKind::Placed(placement) = &self.table.nodes[index as usize].kind else { return };
+        let cumul = placement.child_frame.cumul_scale;
+        let viewport = viewport_size(actor, self.world, placement);
+        let axis_dirs = axis_directions(&placement.world_rs);
+        let content = match scroll.settings.content_size {
+            ScrollContentSize::Fixed => {
+                let fixed = scroll.settings.fixed_content();
+                [fixed[0] * cumul[0].abs(), fixed[1] * cumul[1].abs()]
+            }
+            ScrollContentSize::Auto => {
+                let mut far = [0.0f32; 2];
+                for (child, &row) in actor.children.iter().zip(child_rows) {
+                    self.accumulate_far_edge(child, row, &mut far);
+                }
+                if let Some(content) = self.scroll_container_content.remove(&actor.entity) {
+                    far = [far[0].max(content[0]), far[1].max(content[1])];
+                }
+                far
+            }
+        };
+        let view = own_clip
+            .and_then(|id| self.table.clip_regions.get(id as usize))
+            .map(|region| corners_aabb(&region.corners));
+        self.table.scroll_regions.push(CanvasScrollRegion {
+            owner: index,
+            node: actor.entity,
+            slot: scroll.slot,
+            viewport_px: viewport,
+            content_px: content,
+            px_per_unit: [cumul[0].abs(), cumul[1].abs()],
+            axis_dirs,
+            offset_px: offset,
+            view,
+            dp_scale: self.env.screen.dp_scale(),
+        });
+        self.table.stats.scrolls += 1;
+    }
+
+    /// 窓の子（フォルダは中へ入る）の矩形のいちばん遠い端を `far` へ足し込む（見えている・有効な子だけ。W2-3）。
+    fn accumulate_far_edge(&self, actor: &Actor, row: u32, far: &mut [f32; 2]) {
+        let Some(node) = self.table.nodes.get(row as usize) else { return };
+        match &node.kind {
+            CanvasNodeKind::Folder => {
+                let mut child_row = row + 1;
+                for child in &actor.children {
+                    self.accumulate_far_edge(child, child_row, far);
+                    child_row = self.table.nodes.get(child_row as usize).map_or(child_row + 1, |n| n.subtree_end);
+                }
+            }
+            CanvasNodeKind::Placed(placement) if node.flags.visible_chain && node.flags.active_chain => {
+                let edge = local_far_edge(actor, self.world, placement);
+                *far = [far[0].max(edge[0]), far[1].max(edge[1])];
+            }
+            _ => {}
+        }
     }
 
     /// 切り抜きの領域を 1 つ積む（矩形が決まらない・表が一杯なら積まない）。
@@ -314,7 +473,17 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
                 })
             }
         };
+        // スクロールの窓でもあるコンテナ（W2-3）: スクロールの軸は箱の長さを決めずに並べる（中身は窓より長くてよい）。
+        // 並べた中身の大きさ（余白を含む）は、窓の中身の大きさ（Auto）に使う
+        let scroll_settings = scroll_of(actor, self.world).map(|s| s.settings);
+        let inner: Constraint = match scroll_settings {
+            Some(settings) => [AXIS_X, AXIS_Y].map(|a| if settings.direction.scrolls_axis(a) { None } else { inner[a] }),
+            None => inner,
+        };
         let (items, arrangement) = self.measurer.arrange_children(actor, &spec, child_cumul, inner);
+        if scroll_settings.is_some() {
+            self.scroll_container_content.insert(actor.entity, arrangement.content);
+        }
 
         // 中身に合わせる（CanvasComponent を持ち、親のコンテナの割り当てが無いときだけ。割り当てがあれば割り当てが勝つ）
         if slot.is_none() && placement.canvas_base.is_some() && (spec.fit[AXIS_X] || spec.fit[AXIS_Y]) {

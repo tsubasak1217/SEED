@@ -73,7 +73,7 @@ W2-0 の試作（起動の指定 `ui_spike` の `idle=`・`wake_ms=`）はこの
 | 注入の再生 `injected_input` | IPC の `INPUT_SEQUENCE` の再生中 | `Input::is_injected_sequence_playing` |
 | ジェスチャー `gesture` | アリーナに参加している指がある（長押し・押下の待ちの期限は次の予定へ） | `GestureArenaSet::activity`（[input_gestures.md](input_gestures.md) §9） |
 | 文字入力 `text_input` | Android の IME の本文の変化・完了などのアクション・キーボードの表示と高さ | `MainActivity` の上書き → `RedrawWaker`（JNI） |
-| 動いている `motion` | Animator のクリップの再生中・パーティクル（これから放出する・寿命の残る粒子・孤児）・読み込み中のモデル・物理のボディが動いている（最大速度が静止の閾値 0.03 以上） | `animation_ops.rs`・`ParticleSystem::is_animating`・`model_streaming::pending_count`・`play_physics_bodies_moving` |
+| 動いている `motion` | Animator のクリップの再生中・パーティクル（これから放出する・寿命の残る粒子・孤児）・読み込み中のモデル・物理のボディが動いている（最大速度が静止の閾値 0.03 以上）・スクロールのドラッグ・慣性・跳ね返り・ScrollTo・スクリプトの位置の要求の処理待ち（W2-3） | `animation_ops.rs`・`ParticleSystem::is_animating`・`model_streaming::pending_count`・`play_physics_bodies_moving`・`scroll_motion_active`（`CanvasScrollState::is_active`） |
 | スクリプト `script_request` | `SEED.Redraw.Request()`、`RequestAfter` の時刻が来た | `script_requests.rs`（`Request` はどのスレッドからでも起こす） |
 | `script_keep_alive` | `SEED.Redraw.KeepAlive(秒)` の期限の内 | 同上 |
 | `script_continuous` | `SEED.Redraw.SetContinuous(true)` の間 | 同上 |
@@ -108,7 +108,7 @@ Android の目覚ましは `:seed_platform` が鳴らし、イベントが JNI �
 
 Play の開始・停止（エディタ）で要求（`KeepAlive`・`SetContinuous`・方針の上書き・予定）はすべて外れる。
 
-**W2-3 以降の部品（`SEED.UI`）の約束**: 動いている間（スクロールの慣性・跳ね返り・トランジション・トースト）は毎フレーム `Redraw.Request()`
+**W2-3 以降の部品（`SEED.UI`）の約束**: スクロール（CanvasScroll）の慣性・跳ね返り・ScrollTo はエンジンが自分で申告する（W2-3。部品は何もしなくてよい）。それ以外の動いている間（スワイプの開閉・トランジション・トースト）は毎フレーム `Redraw.Request()`
 を呼ぶか、始めに長さの分かる演出なら `KeepAlive(長さ)` を 1 回呼ぶ。止まったら何もしない（呼ばなければ `render_idle_frames` の後に止まる）。
 時計の表示のように時刻で変わるものは、実時間（`DateTime`）で描き、次の変わり目を `RequestAfter` で申告する。
 

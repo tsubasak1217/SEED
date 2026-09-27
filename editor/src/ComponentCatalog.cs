@@ -88,6 +88,8 @@ public static class ComponentCatalog
             new("CanvasSafeAreaComponent", "Canvas Safe Area", "CanvasSafeArea", "このノードのキャンバス領域を画面の安全領域（切り欠き・システムバーを避けた内側）へ縮める。辺ごとに選べる", ComponentActorTarget.Actor2D),
             // ジェスチャー（W2-2）。規則の正典は docs/input_gestures.md
             new("CanvasGestureComponent", "Canvas Gesture", "CanvasGesture", "タップ・長押し・ドラッグ・フリックを受ける（指ごとに子 → 親で競い、押下の見た目の取り消しと最小 48 dp のヒット領域つき）。スクリプトの OnGesture* で受ける", ComponentActorTarget.Actor2D),
+            // スクロールの領域（W2-3）。規則の正典は docs/ui_scroll_list.md
+            new("CanvasScrollComponent", "Canvas Scroll", "CanvasScroll", "中身（子）をずらして見せるスクロールの窓（縦・横・両方、慣性・端の跳ね返りか止める・スナップ・入れ子）。CanvasClip と一緒に付けると窓の外の子を描画と当たり判定から外す。スクリプトの OnScroll* で受ける", ComponentActorTarget.Actor2D),
         }),
         ("ライト", new List<ComponentEntry>
         {

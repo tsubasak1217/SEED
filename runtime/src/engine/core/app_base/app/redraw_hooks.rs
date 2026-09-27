@@ -291,6 +291,8 @@ impl App {
         self.particle_system.is_animating()
             || model_streaming::pending_count() > 0
             || self.play_physics_bodies_moving()
+            // スクロールの慣性・跳ね返り・ScrollTo・スクリプトの位置の要求の処理待ち（W2-3）
+            || self.scroll_motion_active()
     }
 
     /// 撮影・サムネイルの生成・プロファイラの一発計測が進行中か（フレームが要る）。

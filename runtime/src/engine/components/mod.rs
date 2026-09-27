@@ -29,6 +29,8 @@ pub mod canvas_layout_item_component;
 pub mod canvas_safe_area_component;
 /// ジェスチャーを受けるノード（タップ・長押し・ドラッグ・フリックの旗・ドラッグの軸・押下の見た目・最小のヒット領域。W2-2）
 pub mod canvas_gesture_component;
+/// スクロールの領域（向き・端の跳ね返りか止める・慣性・スナップ・入れ子・中身の大きさ・見える範囲の外を飛ばす。W2-3）
+pub mod canvas_scroll_component;
 pub mod sprite_component;
 /// メッシュ変形スキニング 2D スプライト（Phase A1: Spine 風メッシュ変形の土台）
 pub mod skinned_sprite_component;
@@ -88,6 +90,9 @@ pub use canvas_layout_item_component::{CanvasLayoutItemComponent, CanvasLayoutIt
 pub use canvas_safe_area_component::{CanvasSafeAreaComponent, CanvasSafeAreaComponentData};
 pub use canvas_gesture_component::{
     CanvasGestureComponent, CanvasGestureComponentData, GestureDragAxis, DEFAULT_MIN_HIT_SIZE_DP,
+};
+pub use canvas_scroll_component::{
+    CanvasScrollComponent, CanvasScrollComponentData, ScrollContentSize, ScrollDirection, ScrollEdge, ScrollSnap,
 };
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use skinned_sprite_component::{SkinnedSpriteComponent, SkinnedSpriteComponentData};
@@ -223,6 +228,8 @@ pub enum ComponentKind {
     CanvasSafeArea,
     /// ジェスチャーを受けるノード（W2-2）
     CanvasGesture,
+    /// スクロールの領域（W2-3）
+    CanvasScroll,
 }
 
 impl ComponentKind {
@@ -262,6 +269,7 @@ impl ComponentKind {
             Self::CanvasLayoutItem => "CanvasLayoutItemComponent",
             Self::CanvasSafeArea => "CanvasSafeAreaComponent",
             Self::CanvasGesture => "CanvasGestureComponent",
+            Self::CanvasScroll => "CanvasScrollComponent",
         }
     }
 }
@@ -334,4 +342,6 @@ pub enum ComponentData {
     CanvasSafeAreaComponent(CanvasSafeAreaComponentData),
     /// ジェスチャーを受けるノード（W2-2）
     CanvasGestureComponent(CanvasGestureComponentData),
+    /// スクロールの領域（W2-3）
+    CanvasScrollComponent(CanvasScrollComponentData),
 }

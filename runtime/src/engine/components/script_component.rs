@@ -756,6 +756,20 @@ impl ScriptComponent {
         true
     }
 
+    /// スクロールのイベント（開始・位置・終了。W2-3）をスクリプトへ通知する。
+    ///
+    /// SEEDScripting.dll に入口（ScriptBridge.OnScrollEvent）が無ければ何もしない（戻り値 false）。
+    /// run_gesture_event_raw と同じく、呼び出し側は World への参照を保持せずに呼ぶこと。
+    pub(crate) fn run_scroll_event_raw(
+        host:   &ScriptingHost,
+        handle: isize,
+        event:  &crate::engine::core::scripting::scroll_ffi::RawScrollEvent,
+    ) -> bool {
+        let Some(scroll_fn) = host.scroll_event_fn else { return false };
+        unsafe { scroll_fn(handle, event) };
+        true
+    }
+
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> ScriptComponentData {
         ScriptComponentData {

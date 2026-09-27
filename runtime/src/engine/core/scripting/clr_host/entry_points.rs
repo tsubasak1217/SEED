@@ -77,6 +77,8 @@ macro_rules! assemble_scripting_host {
             physics_event_fn:   bridge_fn!(fn(isize, *const RawPhysicsEvent),      "OnPhysicsEvent"),
             gesture_event_fn:
                 bridge_fn_optional!(fn(isize, *const $crate::engine::core::scripting::gesture_ffi::RawGestureEvent), "OnGestureEvent"),
+            scroll_event_fn:
+                bridge_fn_optional!(fn(isize, *const $crate::engine::core::scripting::scroll_ffi::RawScrollEvent), "OnScrollEvent"),
             compile_fn:         bridge_fn!(fn(*const u8, i32) -> i32,              "CompileScripts"),
             load_precompiled_fn: bridge_fn!(fn(*const u8, i32) -> i32,             "LoadPrecompiledScripts"),
             load_precompiled_bytes_fn:

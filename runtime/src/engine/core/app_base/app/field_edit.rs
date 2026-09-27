@@ -807,7 +807,9 @@ pub(super) fn apply_component_data_in_place(
         | ComponentData::CanvasLayoutItemComponent(_)
         | ComponentData::CanvasSafeAreaComponent(_)
         // ジェスチャーを受けるノード（W2-2）も値だけの純データ
-        | ComponentData::CanvasGestureComponent(_) => {
+        | ComponentData::CanvasGestureComponent(_)
+        // スクロールの領域の設定（W2-3）: 設定だけを差し替え、実行中の状態（位置）は残す
+        | ComponentData::CanvasScrollComponent(_) => {
             crate::engine::structs::objects::actor::canvas_layout_slots::apply_in_place(world, entity, data);
             SlotApply::Applied
         }
@@ -1130,6 +1132,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::CanvasLayoutItemComponent(_) => ComponentKind::CanvasLayoutItem,
         ComponentData::CanvasSafeAreaComponent(_) => ComponentKind::CanvasSafeArea,
         ComponentData::CanvasGestureComponent(_) => ComponentKind::CanvasGesture,
+        ComponentData::CanvasScrollComponent(_) => ComponentKind::CanvasScroll,
     }
 }
 

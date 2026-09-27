@@ -377,6 +377,43 @@ public static unsafe class ScriptBridge
         }
     }
 
+    // ─── スクロールのイベント（W2-3）───────────────────────
+
+    /// <summary>
+    /// スクロールのイベント（開始・位置・終了）をスクリプトへ通知する。
+    /// Rust の update_scrolls（app/scroll_events.rs）が呼ぶ。自エンティティを束縛してから、種類に応じたコールバックを呼ぶ。
+    /// Rust 側は省略可能な入口として取り出す（この関数が無い古い DLL でも CLR の起動は失敗しない）。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void OnScrollEvent(nint h, NativeScrollEvent* ev)
+    {
+        try
+        {
+            if (Get(h) is not SEEDScript ss) return;
+            ss.BindEntity(ev->SelfIndex, ev->SelfGeneration);
+            var e = new SEED.ScrollEvent(
+                (SEED.ScrollEventKind)ev->Kind,
+                new SEED.Vector2(ev->PositionX, ev->PositionY),
+                new SEED.Vector2(ev->DeltaX, ev->DeltaY),
+                new SEED.Vector2(ev->VelocityX, ev->VelocityY),
+                new SEED.Vector2(ev->MaxX, ev->MaxY),
+                new SEED.Vector2(ev->ViewportW, ev->ViewportH),
+                new SEED.Vector2(ev->ContentW, ev->ContentH),
+                ev->Dragging != 0);
+            switch (e.Kind)
+            {
+                case SEED.ScrollEventKind.Start:  ss.OnScrollStart(e); break;
+                case SEED.ScrollEventKind.Update: ss.OnScroll(e);      break;
+                case SEED.ScrollEventKind.End:    ss.OnScrollEnd(e);   break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            ReportScriptException(h, ScriptCallback.OnScrollEvent, ex);
+        }
+    }
+
     // ─── スクリプトコンパイル ─────────────────────────────────
 
     /// <summary>
@@ -1363,6 +1400,7 @@ public static unsafe class ScriptBridge
         OnDestroy,
         OnPhysicsEvent,
         OnGestureEvent,
+        OnScrollEvent,
     }
 
     /// <summary>

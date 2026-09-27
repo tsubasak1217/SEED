@@ -896,6 +896,8 @@ impl App {
             self.pointer.reset();
             // ジェスチャーの指とアリーナも捨てる（旧シーンのノードへ取り消しを配らない。W2-2）
             self.gestures.reset();
+            // スクロールのシステムの受け渡しも捨てる（W2-3）
+            self.canvas_scroll.reset();
         }
         // コンポーネント音源を停止し、play_on_start の発火記録をリセットする
         // （新シーンの play_on_start を再発火させるため。BGM は継続する）。

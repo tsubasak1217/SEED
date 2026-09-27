@@ -175,6 +175,9 @@ CATALOG = [
     ("Icon.Component.CanvasSafeArea", "fit-to-screen-outline"),
     # ジェスチャーを受けるノード（CanvasGestureComponent。W2-2）。指で触れる記号。
     ("Icon.Component.CanvasGesture", "gesture-tap"),
+    # スクロールの領域（CanvasScrollComponent。W2-3）。中身を上下（左右）にずらす動きを表す双方向矢印。
+    # 指のジェスチャー（gesture-tap）とは別の抽象記号にして、CanvasGesture と見分けやすくする。
+    ("Icon.Component.CanvasScroll", "arrow-up-down"),
     ("Icon.File.SpriteMesh", "vector-triangle"),
     # スキンスプライトのボーン操作（インスペクタの「ボーンアクターを生成」ボタン等）。
     # Icon.Component.JointAttach と同じ mdi:bone だが、用途が別なのでキーを分ける。

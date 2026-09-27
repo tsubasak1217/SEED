@@ -97,6 +97,8 @@ impl App {
         self.pointer.reset();
         // ジェスチャーの指とアリーナも捨てる（前回 Play のノードは破棄済み。W2-2）
         self.gestures.reset();
+        // スクロールのシステムの受け渡しも捨てる（W2-3）
+        self.canvas_scroll.reset();
         // 前回 Play の取り残しのデバッグコマンド（SCRIPT_DEBUG）を捨てる。
         // 残すと、Play を開始した瞬間に前回送った指示が突然走ってしまう。
         self.clear_script_debug_commands();
@@ -271,6 +273,8 @@ impl App {
         self.pointer.reset();
         // ジェスチャーの指とアリーナも捨てる（W2-2）
         self.gestures.reset();
+        // スクロールのシステムの受け渡しも捨てる（W2-3）
+        self.canvas_scroll.reset();
         // スクリプトが張ったカーソルロックを必ず解除する（Play 停止で自動解放）。
         // 解除しないと Edit へ戻ってもカーソルが隠れたまま中央へワープし続け、
         // エディタが操作不能になる。未処理の要求も同時に捨てる。

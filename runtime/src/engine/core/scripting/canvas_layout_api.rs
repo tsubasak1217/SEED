@@ -1,9 +1,10 @@
 // ============================================================
-//  canvas_layout_api.rs — レイアウトの部品（W2-1b）と CanvasGesture（W2-2）のスクリプト API（host_api のコンポーネントレジストリの一部）
+//  canvas_layout_api.rs — レイアウトの部品（W2-1b）と CanvasGesture（W2-2）・CanvasScroll（W2-3）のスクリプト API（host_api のコンポーネントレジストリの一部）
 //
 //  C# の SEED.CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea・CanvasGesture が名前指定で読み書きする欄を、
 //  host_api.rs の read_floats / write_floats / has_component / slot_is_kind から 1 行で呼べるようにまとめる
 //  （5 種ぶんの分岐を host_api.rs へ並べない）。どれもスロット格納型なので locate でスロットを解決する。
+//  CanvasScroll の欄（設定と実行中の状態）は canvas_scroll_api.rs にある（ここは名前の振り分けだけ）。
 //
 //  【データ表現】（host_api.rs 冒頭の規約どおり、すべて f32 の配列）
 //    - bool            … 0 / 1
@@ -34,6 +35,8 @@ pub const KIND_CANVAS_LAYOUT_ITEM: &str = "CanvasLayoutItem";
 pub const KIND_CANVAS_SAFE_AREA: &str = "CanvasSafeArea";
 /// C# `SEED.CanvasGesture` の ComponentKindName（W2-2）。
 pub const KIND_CANVAS_GESTURE: &str = "CanvasGesture";
+/// C# `SEED.CanvasScroll` の ComponentKindName（W2-3。欄は canvas_scroll_api.rs）。
+pub use super::canvas_scroll_api::KIND_CANVAS_SCROLL;
 
 /// 余白の要素数（左・上・右・下）。
 const PADDING_LEN: usize = 4;
@@ -50,6 +53,7 @@ pub fn is_layout_component(component: &str) -> bool {
             | KIND_CANVAS_LAYOUT_ITEM
             | KIND_CANVAS_SAFE_AREA
             | KIND_CANVAS_GESTURE
+            | KIND_CANVAS_SCROLL
     )
 }
 
@@ -62,6 +66,7 @@ pub fn entity_has(world: &World, entity: Entity, component: &str) -> bool {
         KIND_CANVAS_LAYOUT_ITEM => world.get::<CanvasLayoutItemComponent>(entity).is_some(),
         KIND_CANVAS_SAFE_AREA => world.get::<CanvasSafeAreaComponent>(entity).is_some(),
         KIND_CANVAS_GESTURE => world.get::<CanvasGestureComponent>(entity).is_some(),
+        KIND_CANVAS_SCROLL => world.get::<crate::engine::components::CanvasScrollComponent>(entity).is_some(),
         _ => false,
     }
 }
@@ -184,6 +189,8 @@ pub fn read(world: &World, entity: Entity, component: &str, field: &str, out: &m
                 _ => None,
             }
         }
+        // スクロールの領域（W2-3。設定と実行中の状態）
+        KIND_CANVAS_SCROLL => super::canvas_scroll_api::read(world, entity, field, out),
         _ => None,
     }
 }
@@ -364,6 +371,8 @@ pub fn write(world: &mut World, entity: Entity, component: &str, field: &str, v:
                 _ => false,
             }
         }
+        // スクロールの領域（W2-3。位置の書き込みはすぐ移す・scroll_to は次のフレームから動かす）
+        KIND_CANVAS_SCROLL => super::canvas_scroll_api::write(world, entity, field, v),
         _ => false,
     }
 }

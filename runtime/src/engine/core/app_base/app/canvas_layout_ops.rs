@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::engine::components::{
     CanvasComponent, CanvasGestureComponent, CanvasGridComponent, CanvasLayoutItemComponent,
-    CanvasSafeAreaComponent, CanvasStackComponent, CanvasUnit, CanvasWrapComponent, ComponentKind,
+    CanvasSafeAreaComponent, CanvasScrollComponent, CanvasStackComponent, CanvasUnit, CanvasWrapComponent, ComponentKind,
 };
 use crate::engine::ecs::{Entity, World};
 
@@ -85,6 +85,8 @@ fn set_layout_field(world: &mut World, kind: ComponentKind, entity: Entity, key:
         ComponentKind::CanvasSafeArea => apply::<CanvasSafeAreaComponent>(world, entity, key, value),
         // ジェスチャーを受けるノード（W2-2）: 旗・軸（any / horizontal / vertical）・最小のヒット領域
         ComponentKind::CanvasGesture => apply::<CanvasGestureComponent>(world, entity, key, value),
+        // スクロールの領域の設定（W2-3。設定だけを差し替える＝同じエンティティの実行中の状態は残る）
+        ComponentKind::CanvasScroll => apply::<CanvasScrollComponent>(world, entity, key, value),
         _ => false,
     }
 }

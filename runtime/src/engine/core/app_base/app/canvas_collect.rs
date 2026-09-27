@@ -667,6 +667,8 @@ pub(super) enum DrawnNode<'t, 'a> {
         placement: &'t CanvasNodePlacement,
         /// 切り抜きの番号（祖先の切り抜きの中なら Some）。
         clip: Option<UiClipId>,
+        /// スクロールの見える範囲の外（W2-3。切り抜きを当てる描画では SEED.Draw の座標空間だけを登録し、描画アイテムを作らない）。
+        culled: bool,
     },
 }
 
@@ -695,6 +697,7 @@ where
                 frame: &node.frame,
                 placement,
                 clip: node.clip,
+                culled: node.culled,
             }),
             // CanvasTransform を持たないノード（3D アクター等）は描かない（子孫も木の外）
             CanvasNodeKind::NoTransform { .. } => None,
@@ -755,7 +758,7 @@ pub(super) fn collect_sprite_items(
                     clip.filter(|_| clip_enabled),
                 );
             }
-            DrawnNode::Placed { actor, frame, placement, clip } => {
+            DrawnNode::Placed { actor, frame, placement, clip, culled } => {
                 collect_node_draw_items(
                     actor,
                     world,
@@ -763,6 +766,8 @@ pub(super) fn collect_sprite_items(
                     frame.world_rs,
                     placement,
                     clip.filter(|_| clip_enabled),
+                    // スクロールの見える範囲の外（W2-3）: 切り抜きを当てる描画だけ飛ばす（当てない描画＝3D ワールドキャンバスでは見えるので描く）
+                    culled && clip_enabled,
                     canvas_scale,
                     y_sign,
                     out,
@@ -789,6 +794,7 @@ fn collect_node_draw_items(
     parent_world_rs: [[f32; 4]; 4],
     placement: &CanvasNodePlacement,
     node_clip: Option<UiClipId>,
+    space_only: bool,
     canvas_scale: f32,
     y_sign: f32,
     out: &mut Vec<SpriteDrawItem>,
@@ -812,6 +818,10 @@ fn collect_node_draw_items(
     // スクリプト 2D プリミティブの座標空間として登録する
     // （`SEED.Draw.*(space: canvasTransform)` がこの行列を引く。切り抜きもこのノードと同じ）。
     space_out.insert(actor.entity, node_mesh_gpu_mat, my_zone, node_clip);
+    // スクロールの見える範囲の外（W2-3）: 座標空間だけを登録し、スプライト・テキスト・パーティクルは作らない
+    if space_only {
+        return;
+    }
 
     // ── 2D パーティクルエミッタ（ParticleEmitterComponent）─────────
     // スクリプトプリミティブと同じ `node_mesh_gpu_mat` をそのまま渡す（粒子のローカル座標は px・Y 下向き）。
@@ -1325,7 +1335,8 @@ pub(super) fn collect_canvas_id_items(
     out: &mut Vec<CanvasIdItem>,
 ) {
     for (index, (node, actor)) in table.iter_with_actors(actors).enumerate() {
-        if !node.is_drawn() {
+        // スクロールの見える範囲の外（W2-3）は切り抜きの外なので ID も書かない（見えない所は選べない）
+        if !node.is_drawn_in_view() {
             continue;
         }
         let CanvasNodeKind::Placed(placement) = &node.kind else {

@@ -498,7 +498,8 @@ pub(super) fn pick_candidates_from_table(
     out: &mut Vec<PickCand2d>,
 ) {
     for (index, (node, actor)) in table.iter_with_actors(actors).enumerate() {
-        if !node.is_pickable(filter.respect_active) {
+        // スクロールの見える範囲の外（W2-3）は切り抜きの外なので当たらない（判定を省く）
+        if !node.is_pickable_in_view(filter.respect_active) {
             continue;
         }
         let CanvasNodeKind::Placed(placement) = &node.kind else {

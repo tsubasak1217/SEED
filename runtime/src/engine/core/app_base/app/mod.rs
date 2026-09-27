@@ -79,6 +79,8 @@ mod pointer_events;
 mod gesture_events;
 /// レイアウトの表からジェスチャーの当たり判定の材料を作る（W2-2）。
 mod gesture_scene;
+/// Play 中のスクロール（ドラッグ・慣性・跳ね返り・入れ子・ScrollTo を進めて OnScroll* を配る。W2-3）。
+mod scroll_events;
 mod canvas_drop;
 mod render;
 /// 描画サーフェスの破棄・再生成（Android の suspended / resumed）とイベントループの待機切替。
@@ -850,6 +852,9 @@ pub struct App {
     /// Play 中のジェスチャーの状態（指ごとのアリーナ・閾値の表・配り残し。W2-2）。
     /// ポインタ状態と同じく Play 開始／終了・シーン遷移でリセットする。
     gestures:           gesture_events::GestureState,
+    /// Play 中のスクロールのシステムの状態（ジェスチャーから受けたドラッグ・触れた指・ドラッグの受け渡し。W2-3）。
+    /// ジェスチャーと同じく Play 開始／終了・シーン遷移でリセットする（位置などの状態はシーンのコンポーネントが持つ）。
+    canvas_scroll:      scroll_events::ScrollSystemState,
     /// 直前フレームのカーソル座標（ビューポートローカル）。
     last_cursor_pos:    Option<(f32, f32)>,
     /// ギズモ描画用の単位行列モデルバッファ。
@@ -1671,6 +1676,7 @@ impl App {
             pick_2d_cycle:      None,
             pointer:            pointer_events::PointerState::default(),
             gestures:           gesture_events::GestureState::default(),
+            canvas_scroll:      scroll_events::ScrollSystemState::default(),
             last_cursor_pos:    None,
             line_model_buf:     None,
             tool_mode:          ToolMode::Select,

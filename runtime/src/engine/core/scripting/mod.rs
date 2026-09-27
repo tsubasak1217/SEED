@@ -23,10 +23,14 @@ pub mod script_binaries;
 pub mod script_reload;
 // C# → Rust のコンポーネントアクセスブリッジ
 pub mod host_api;
-/// レイアウトの部品（CanvasStack・Wrap・Grid・LayoutItem・SafeArea。W2-1b）と CanvasGesture（W2-2）のスクリプト API の欄
+/// レイアウトの部品（CanvasStack・Wrap・Grid・LayoutItem・SafeArea。W2-1b）と CanvasGesture（W2-2）・CanvasScroll（W2-3）のスクリプト API の欄
 pub mod canvas_layout_api;
+/// CanvasScroll（W2-3）のスクリプト API の欄（設定と実行中の状態。canvas_layout_api から呼ぶ）
+pub mod canvas_scroll_api;
 /// ジェスチャーのイベントを C# へ渡す FFI の型（W2-2）
 pub mod gesture_ffi;
+/// スクロールのイベント（開始・位置・終了）を C# へ渡す FFI の型（W2-3）
+pub mod scroll_ffi;
 // アクタ参照文字列（"./Child" / "../Sibling" / 絶対パス / 素の名前）のパス解決
 pub mod actor_ref_path;
 // スクリプト入力 API の ID ⇔ winit 型対応表
@@ -289,6 +293,9 @@ pub struct ScriptingHost {
     /// ジェスチャーのイベント（タップ・長押し・ドラッグ・フリック・押下の見た目。W2-2）の通知。
     /// 古い SEEDScripting.dll には無いので省略可能（None ならジェスチャーのイベントは届かない）。
     pub(crate) gesture_event_fn: Option<gesture_ffi::GestureEventFn>,
+    /// スクロールのイベント（開始・位置・終了。W2-3）の通知。古い SEEDScripting.dll には無いので省略可能
+    /// （None ならスクロールのイベントは届かない。スクロール自体は動く）。
+    pub(crate) scroll_event_fn: Option<scroll_ffi::ScrollEventFn>,
     pub(crate) compile_fn:   CompileFn,
     /// 事前コンパイル済みユーザースクリプト DLL のロード（パッケージ版の起動経路）
     pub(crate) load_precompiled_fn: LoadPrecompiledFn,

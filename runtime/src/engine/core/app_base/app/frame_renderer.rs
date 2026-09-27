@@ -927,6 +927,13 @@ impl App {
                 crate::profile_scope!("UI/ジェスチャー");
                 self.update_gestures();
             }
+            // スクロール（W2-3。ドラッグ・慣性・跳ね返り・入れ子・ScrollTo を進めて OnScroll* を配る）。
+            // ジェスチャーの直後・**スクリプトフェーズより前**（このフレームの Update から新しい位置が見え、一覧の行を同じフレームで置ける）。
+            // 物理は実時間（Time.Scale の影響を受けない）。CanvasScroll が無ければ何もしない。
+            {
+                crate::profile_scope!("UI/スクロール");
+                self.update_scrolls(f64::from(ctx.unscaled_delta_time));
+            }
             // スクリプトの Input API 用に入力状態への読み取り専用ポインタを公開する。
             // 入力イベントの処理はイベントハンドラ側で行われるため、
             // フェーズ実行中に self.input が変更されることはない。
@@ -4480,6 +4487,11 @@ impl App {
                         } else {
                             None
                         };
+                    // スクロールの窓・中身の大きさを控える（W2-3。次のフレームの update_scrolls が状態の metrics へ写し、物理が範囲に使う。
+                    // ここではシーンを借りられないので、表の行を写して持つだけ）
+                    if let Some(table) = canvas_layout_2d.as_ref() {
+                        self.canvas_scroll.store_layout_regions(table);
+                    }
 
                     let (
                         items_2d_bg, items_2d_fg, canvas3d_segments,
@@ -4574,6 +4586,10 @@ impl App {
                                     &mut prim_spaces,
                                     &mut particle_items_2d,
                                 );
+                                // 診断（SEED_SCROLL_LOG=1。W2-3 の性能の確認）: 2D の描画アイテムの数（変わったときだけ）
+                                if !canvas_layout.scroll_regions.is_empty() {
+                                    super::scroll_events::log_draw_item_counts(items_2d.len(), text_items_2d.len());
+                                }
                                 // 切り抜きの領域を描画のワールド座標へ写す（スプライトと同じ canvas_scale・y_sign）
                                 clip_regions_2d = canvas_layout
                                     .clip_regions

@@ -88,6 +88,10 @@ impl App {
                 ScriptSceneCommand::SetName { entity, name } => {
                     self.apply_script_set_name(entity, &name);
                 }
+                ScriptSceneCommand::CancelGestures { entity } => {
+                    // 行とその子孫の押下・ドラッグを取り消す（イベントは次のフレームのジェスチャーの配達で届く。W2-3）
+                    self.cancel_gestures_under(entity);
+                }
                 ScriptSceneCommand::PreloadScene { name_or_path } => {
                     self.apply_script_preload_scene(&name_or_path);
                 }

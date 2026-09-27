@@ -18,7 +18,16 @@
 //
 //  【「動いている」の申告】（W2-10a の「描く理由」の口）`activity` が、触れている指の数・ドラッグ中の指の数・
 //  次に時刻で起こる出来事の時刻を返す。何も触れていなければ止まっていてよい。
+//
+//  【スクロールへの知らせ（W2-3）】
+//    - `take_touched` … このフレームに触れた指の経路のノード（慣性中のスクロールを「触れて止める」ため。同じフレームの中で
+//      押して離した速いタップも拾う）
+//    - `nodes_under_pointers` … 今触れている指の経路のノード（触れて止めたスクロールを、指を離したら再び動かすため）
+//    - `cancel_nodes` … 一覧の行を使い回すとき、その行（と子孫）の押下とドラッグを取り消す（PressCancel・取り消しの DragEnd を出す。
+//      押している行が消えて PressCancel の届け先が無くなる W2-2 の持ち越しへの手当て）
 // ============================================================
+
+use std::collections::HashSet;
 
 use crate::engine::ecs::Entity;
 
@@ -26,6 +35,7 @@ use super::arena::{NodeBlock, PointerArena};
 use super::events::{coalesce_drag_updates, GestureEmit};
 use super::pointer_log::{PointerInputEvent, PointerKey, PointerLogEntry, PointerPhase};
 use super::pointer_track::PointerTrack;
+use super::recognizers::MemberState;
 use super::scene::GestureScene;
 use super::thresholds::GestureMetrics;
 
@@ -52,6 +62,8 @@ impl GestureActivity {
 pub struct GestureArenaSet {
     /// 触れている指のアリーナ（触れた順）。
     arenas: Vec<PointerArena>,
+    /// 前に `take_touched` してから触れた指の経路のノード（W2-3）。
+    touched: Vec<Entity>,
 }
 
 impl GestureArenaSet {
@@ -63,6 +75,55 @@ impl GestureArenaSet {
     /// すべて捨てる（イベントは出さない。Play の開始・終了・シーンの切り替え）。
     pub fn reset(&mut self) {
         self.arenas.clear();
+        self.touched.clear();
+    }
+
+    /// 前に呼んでから触れた指の経路のノードを取り出す（W2-3。同じノードが何度も入りうる）。
+    pub fn take_touched(&mut self) -> Vec<Entity> {
+        std::mem::take(&mut self.touched)
+    }
+
+    /// 今触れている指の経路のノード（W2-3）。
+    pub fn nodes_under_pointers(&self) -> HashSet<Entity> {
+        self.arenas.iter().flat_map(|a| a.nodes.iter().map(|n| n.key)).collect()
+    }
+
+    /// ノードの押下とドラッグを取り消す（W2-3。一覧の行を使い回すとき）。取り消しのイベントを返す。
+    ///
+    /// - 勝ったのが集合のノードの指 … その指のアリーナごと取り消す（押していれば PressCancel、ドラッグ中なら取り消しの DragEnd）
+    /// - まだ競っている指 … 集合のノードの参加者を負けにする（押していれば PressCancel。離しても Tap にならない）
+    ///
+    /// # 引数
+    /// * `nodes` - 取り消すノード（行とその子孫）
+    /// * `time`  - 時刻（秒。pointer_log の時計）
+    pub fn cancel_nodes(&mut self, nodes: &HashSet<Entity>, time: f64) -> Vec<GestureEmit> {
+        let mut out = Vec::new();
+        if nodes.is_empty() {
+            return out;
+        }
+        let mut keep = Vec::with_capacity(self.arenas.len());
+        for mut arena in std::mem::take(&mut self.arenas) {
+            let winner_in_set = arena
+                .winner
+                .is_some_and(|w| nodes.contains(&arena.nodes[arena.members[w].node].key));
+            if winner_in_set {
+                arena.cancel(time, &mut out);
+                continue;
+            }
+            for i in 0..arena.members.len() {
+                let member = arena.members[i];
+                if member.state == MemberState::Possible && nodes.contains(&arena.nodes[member.node].key) {
+                    arena.lose(i, time, &mut out);
+                }
+            }
+            arena.refresh_press(time, &mut out);
+            // 勝者も競っている参加者も居なくなったアリーナは捨てる（その指の続きは何も起こさない）
+            if arena.winner.is_some() || arena.members.iter().any(|m| m.state == MemberState::Possible) {
+                keep.push(arena);
+            }
+        }
+        self.arenas = keep;
+        out
     }
 
     /// 触れている指が無いか。
@@ -168,6 +229,8 @@ impl GestureArenaSet {
         if path.is_empty() {
             return;
         }
+        // スクロールへの知らせ（W2-3）: 触れたノード（慣性中のスクロールを触れて止める）
+        self.touched.extend(path.iter().map(|(key, _)| *key));
         // 別の指がドラッグで捕捉しているノードのうち、経路で最も根に近いもの（経路は葉 → 根なので添字が最大のもの）。
         // そのノードと、その子孫（経路でそれより前）には、この指は参加しない
         let captured_up_to = path

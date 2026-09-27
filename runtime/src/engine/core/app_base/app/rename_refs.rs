@@ -260,7 +260,9 @@ fn rewrite_refs_in_slots(
             | ComponentKind::CanvasLayoutItem
             | ComponentKind::CanvasSafeArea
             // ジェスチャーを受けるノード（W2-2）は旗・軸・大きさだけで、アクター名参照は無い。
-            | ComponentKind::CanvasGesture => {}
+            | ComponentKind::CanvasGesture
+            // スクロールの領域（W2-3）は向き・数値・旗だけで、アクター名参照は無い。
+            | ComponentKind::CanvasScroll => {}
         }
     }
 

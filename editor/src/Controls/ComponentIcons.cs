@@ -52,6 +52,8 @@ internal static class ComponentIcons
         ["CanvasSafeAreaComponent"]     = "Icon.Component.CanvasSafeArea",
         // ジェスチャーを受けるノード（W2-2）
         ["CanvasGestureComponent"]      = "Icon.Component.CanvasGesture",
+        // スクロールの領域（W2-3）
+        ["CanvasScrollComponent"]       = "Icon.Component.CanvasScroll",
         // ライト
         ["LightComponent"]              = "Icon.Component.Light",
         ["JointAttachComponent"]        = "Icon.Component.JointAttach",

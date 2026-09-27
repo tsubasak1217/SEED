@@ -213,9 +213,7 @@ WarashibeFishing は CanvasGesture を使っていないので影響が無い（
 
 ## 11. 制限と持ち越し
 
-- **W2-3（スクロールと一覧）**: スクロールの物理（慣性・跳ね返り・スナップ）は C# の部品で、DragUpdate の `Delta` と Fling の `Velocity` から作る。
-  行の再利用で行のノードが入れ替わるときは、押している行が消えると PressCancel が届かない（ノードが消えた＝配り先が無い）ので、部品側で押下の見た目を戻す。
-  スクロールの途中のタップで慣性を止める（Flutter の「押したら止まる」）は部品側で PressDown / DragStart を見て行う
+- **W2-3（スクロールと一覧）**: → **2026-09-28 に済**（[ui_scroll_list.md](ui_scroll_list.md)）。スクロールの物理は予定を変えて **Rust**（`CanvasScrollComponent`。窓は CanvasGesture 無しで向きのドラッグとフリックでアリーナに参加する）。行の再利用で押している行が消える問題は、一覧が使い回す前に `GameObject.CancelGestures`（`GestureArenaSet::cancel_nodes`。行と子孫の押下・ドラッグを取り消し、PressCancel・取り消しの DragEnd を次のフレームに配る）で手当てした。慣性・ScrollTo の途中のタップはエンジンが止め、その指を中の行へ渡さない（`GestureHitScene::with_absorbing`。経路で動いている窓より葉の側を外す）。スクロールのシステムはこのフレームに触れた指の経路（`take_touched`）と今触れている経路（`nodes_under_pointers`）で「触れて止める」を決める
 - **W2-10a**: §9 の申告を「描く理由」へつないだ（2026-09-28。済）。止まっている間に届いた指は WindowEvent が起こし、起きた最初のフレームで処理される（記録は捨てない）
 - ピンチ（2 本指の拡大）・ダブルタップ・ホバー（マウスの乗る・外れる）はアリーナに無い（W2-8 でピンチ。ホバーは OnPointerEnter / Exit）
 - 3D ワールドキャンバスのノードは参加しない（ポインタのイベントと同じ）

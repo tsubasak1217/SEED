@@ -414,6 +414,10 @@ pub enum ScriptSceneCommand {
     /// 名前で他アクタを参照している側（参照フィールド等）の文字列は書き換えないので、
     /// **シーンに元からあるアクタの改名には使わない**こと。
     SetName { entity: Entity, name: String },
+    /// 指定ルートエンティティの Actor とその子孫の、ジェスチャーの押下・ドラッグを取り消す（GameObject.CancelGestures。W2-3）。
+    /// 一覧の行を使い回す前に呼ぶ（押している行が別のデータに変わっても、元の押下の Tap が新しい行へ届かないように。
+    /// PressCancel・取り消しの DragEnd は次のフレームのジェスチャーの配達で行へ届く）。
+    CancelGestures { entity: Entity },
     /// シーンを事前読み込みする（遷移はしない）。
     /// Transition 前に呼んでおくことで、遷移時のロード時間をなくせる。
     /// name_or_path はシーンマネージャ登録名または assets:// パス。
@@ -535,6 +539,15 @@ fn locate_canvas_layout(world: &World, entity: Entity, component: &str) -> Optio
 ///
 /// 戻り値の参照はフェーズ内でのみ有効。呼び出し側は即座に使い切ること。
 /// ツリーが未公開（ポインタが null）の場合は None。
+/// このフレームにスクリプトが Instantiate したばかりで、まだ構築されていない（フレーム末尾に構築される）アクターか（W2-3）。
+fn is_pending_instantiate(entity: Entity) -> bool {
+    SCENE_COMMANDS.with(|q| {
+        q.borrow()
+            .iter()
+            .any(|c| matches!(c, ScriptSceneCommand::Instantiate { entity: e, .. } if *e == entity))
+    })
+}
+
 fn actor_of_entity<'a>(entity: Entity) -> Option<&'a Actor> {
     // 索引引き当て（O(1)）。旧実装は呼び出しごとに Actor ツリー全体を DFS していたため、
     // Transform の書き込みだけで O(アクタ数) を毎回支払っていた。
@@ -1317,12 +1330,23 @@ fn write_floats(
                     let Some(a) = take::<1>(v) else { return false };
                     // 対象がアクターのルートエンティティであることを確認してから積む
                     // （スロット entity や破棄済みハンドルを黙って受理しない）。
-                    if actor_of_entity(entity).is_none() { return false; }
+                    // 同じフレームに Instantiate したばかりのアクター（構築はフレーム末尾）も受ける: コマンドは発行順に
+                    // 当たるので、生成の後に表示フラグが当たる（一覧の行を隠したまま作る。W2-3）。
+                    if actor_of_entity(entity).is_none() && !is_pending_instantiate(entity) { return false; }
                     let visible = a[0] != 0.0;
                     visible_pending::set(entity, visible);
                     SCENE_COMMANDS.with(|q| {
                         q.borrow_mut().push(ScriptSceneCommand::SetVisible { entity, visible })
                     });
+                    true
+                }
+                // ジェスチャーの取り消し（W2-3。GameObject.CancelGestures。値は 1 要素で、真のときだけ積む）
+                "cancel_gestures" => {
+                    let Some(a) = take::<1>(v) else { return false };
+                    if actor_of_entity(entity).is_none() { return false; }
+                    if a[0] != 0.0 {
+                        SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::CancelGestures { entity }));
+                    }
                     true
                 }
                 _ => false,

@@ -27,6 +27,8 @@
 //    lookup.rs    … レイアウトの部品・スプライト・テキストの枠の引き方
 //    units.rs     … dp の換算と、走査が読む画面の情報（CanvasScreenEnv）
 //    safe_area.rs … 安全領域で箱を縮める純関数
+//    ── W2-3（スクロール）──
+//    scroll_view.rs … スクロールの窓の平行移動・窓と中身の大きさ・ノードの範囲（見える範囲の外を飛ばす判定の材料）
 //
 //  【表の作り手と持ち主】（ECS の流儀: 表はフレームの文脈として作って読み手へ渡す）
 //    - フレームの描画（frame_renderer）は、メインの 2D キャンバスの表をフレームに 1 回作り、
@@ -48,6 +50,7 @@ pub mod measure;
 pub mod pass;
 pub mod placement;
 pub mod safe_area;
+pub mod scroll_view;
 pub mod table;
 pub mod units;
 
@@ -55,6 +58,8 @@ pub mod units;
 mod tests;
 #[cfg(test)]
 mod layout_tests;
+#[cfg(test)]
+mod scroll_tests;
 
 pub use anchor::{child_anchor_basis, node_anchor_offset, root_anchor_offset, NO_ANCHOR_BASIS};
 pub use clip::{CanvasClipRegion, ClipRectSource};
@@ -62,5 +67,6 @@ pub use frame::{AutoScaleDivisor, CanvasLayoutEnv, CanvasParentFrame, IDENTITY_M
 pub use pass::CanvasLayoutPass;
 pub use placement::{resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement};
 pub use safe_area::CanvasRect;
+pub use scroll_view::CanvasScrollRegion;
 pub use table::{CanvasLayoutNode, CanvasLayoutStats, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};
 pub use units::{dp_scale_from_dpi, target_rect_to_canvas_world, CanvasScreenEnv};

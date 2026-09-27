@@ -2131,6 +2131,9 @@ public partial class InspectorPanel : UserControl
             or "CanvasLayoutItemComponent" or "CanvasSafeAreaComponent" => Color.FromRgb(0x1E, 0x2C, 0x32),
         // ジェスチャーを受けるノード（W2-2）: UI の入力系。レイアウトの青緑と区別できる暗い紫紺
         "CanvasGestureComponent" => Color.FromRgb(0x28, 0x24, 0x3A),
+        // スクロールの領域（W2-3）: UI 系だが「動き・流れ」を連想する深いティール緑。
+        // レイアウトの青緑（0x1E2C32）・ジェスチャーの紫紺（0x28243A）のどちらとも色相で区別できる
+        "CanvasScrollComponent" => Color.FromRgb(0x12, 0x36, 0x30),
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -2167,6 +2170,7 @@ public partial class InspectorPanel : UserControl
         "CanvasLayoutItemComponent" => "Canvas Layout Item",
         "CanvasSafeAreaComponent" => "Canvas Safe Area",
         "CanvasGestureComponent" => "Canvas Gesture",
+        "CanvasScrollComponent" => "Canvas Scroll",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -2446,6 +2450,8 @@ public partial class InspectorPanel : UserControl
             "CanvasSafeAreaComponent" => BuildCanvasSafeAreaSlotContent(info),
             // ジェスチャーを受けるノード（W2-2。InspectorPanel.CanvasGesture.cs）
             "CanvasGestureComponent" => BuildCanvasGestureSlotContent(info),
+            // スクロールの領域（W2-3。InspectorPanel.CanvasScroll.cs）
+            "CanvasScrollComponent" => BuildCanvasScrollSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),

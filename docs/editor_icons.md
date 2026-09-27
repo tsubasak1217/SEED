@@ -343,6 +343,7 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `Icon.Component.CanvasLayoutItem` | `resize` |
 | `Icon.Component.CanvasSafeArea` | `fit-to-screen-outline` |
 | `Icon.Component.CanvasGesture` | `gesture-tap` |
+| `Icon.Component.CanvasScroll` | `arrow-up-down` |
 | `Icon.Component.Light` | `lightbulb-on-outline` |
 | `Icon.Component.JointAttach` | `bone` |
 | `Icon.Component.ParticleEmitter` | `shimmer` |

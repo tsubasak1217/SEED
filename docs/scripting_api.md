@@ -543,6 +543,35 @@ public class RowButton : SEEDScript
 | 切り抜き | CanvasClip の外で押した指は参加しない |
 | 閾値 | `project_settings.json` の `"gestures"`（`touch_slop_dp`・`tap_slop_dp`・`long_press_ms`・`press_delay_ms`・`tap_max_ms`・`min_fling_velocity_dp`・`max_fling_velocity_dp`・`velocity_*`）で上書きできる |
 
+### スクロールコールバック（CanvasScroll：OnScrollStart / OnScroll / OnScrollEnd。W2-3）
+
+自分のアクター（2D キャンバスのノード）に **CanvasScroll**（「コンポーネント追加 → UI → Canvas Scroll」。§7）を付けると、そのノードが中身（子）をずらして
+見せるスクロールの窓になり、Play 中のスクロールが以下のコールバックで届きます（スクリプトフェーズより前。このフレームの `Update` から新しい位置が見える）。
+指のドラッグ・離した後の慣性・端の跳ね返り・スナップ・入れ子はエンジンが動かします（C# で位置を動かす必要は無い）。規則の正典は `docs/ui_scroll_list.md`。
+
+```csharp
+// SEEDScript の override（引数はすべて SEED.ScrollEvent）。1 フレームに最大で Start → Scroll → End の順
+public override void OnScrollStart(SEED.ScrollEvent e)  // スクロールが始まった（ドラッグ・慣性・ScrollTo・位置の書き込み）
+public override void OnScroll(SEED.ScrollEvent e)       // 位置が変わった（1 フレームに 1 回まで）
+public override void OnScrollEnd(SEED.ScrollEvent e)    // スクロールが終わった（止まった・指で触れて止めた）
+
+// SEED.ScrollEvent（値型。値はキャンバスの単位＝dp のキャンバスなら dp）
+e.Kind          // ScrollEventKind: Start / Update / End
+e.Position      // Vector2: 今の位置（0 = 中身の先頭が窓の先頭。下・右へスクロールすると増える）
+e.Delta         // Vector2: 前に知らせた位置からの差（Update だけ）
+e.Velocity      // Vector2: 速度（単位/秒・位置の向き）
+e.MaxPosition   // Vector2: 位置の最大（中身 − 窓）
+e.ViewportSize  // Vector2: 窓の大きさ
+e.ContentSize   // Vector2: 中身の大きさ
+e.IsDragging    // bool: 指でドラッグしているか
+
+// 例: スクロールが始まったら、開いているスワイプの行を閉じる（SEED.UI.SwipeGroup。§7.15）
+public override void OnScrollStart(SEED.ScrollEvent e) => SEED.UI.SwipeGroup.For(gameObject).CloseAll();
+```
+
+> **重要**: 位置の書き込み（`CanvasScroll.Position` / `JumpTo`）でも、止まったまま位置が変わるので **Start → Scroll → End の 3 つが同じフレームに**届きます。
+> 慣性で動いている窓に指で触れると止まり（End）、その指は中の行へ届きません（慣性の途中のタップで行が押されない。Flutter・Android と同じ）。
+
 > **重要**: ジェスチャーのコールバックは **CanvasGesture を付けたアクター**にだけ届きます（付けていないアクターは参加しない）。呼ばれるのはスクリプトフェーズ（`Update` 等）より前で、同じフレームの `Update` から結果を参照できます。3D ワールド内のキャンバスには届きません。
 
 > **重要**: 受けるジェスチャーを全部外した CanvasGesture は「遮る板」になります（後ろのノードへ指を渡さない）。ダイアログの板・覆いに付けると、後ろのボタンが押されません。ジェスチャーを受けない Sprite は遮りません。
@@ -1058,6 +1087,16 @@ bool v = gameObject.Visible;  // bool（get/set。自分自身のフラグ）
 | アクティブとの違い | 非アクティブ（`active=false`）は更新も描画も止めます。`Visible` は**描画だけ**を止めます |
 
 > **重要**: `Visible` はシーン／`.actor` ファイルへ `"visible": false` として保存されます（`true` は省略）。エディタのヒエラルキー各行の目アイコン、およびインスペクタのアクタ名の横のトグルと同じフラグです。
+
+### ジェスチャーの取り消し（GameObject.CancelGestures。W2-3）
+
+```csharp
+row.CancelGestures();   // この行と子孫の、ジェスチャーの押下とドラッグを取り消す（一覧の行を使い回す前）
+```
+
+押している最中の行を別のデータへ使い回しても、元の押下の `Tap` が新しい行へ届かないようにします。押していたノードへは `OnGesturePressCancel`、
+ドラッグ中（スワイプ）なら取り消しの `OnGestureDragEnd`（`e.Canceled = true`）が**次のフレーム**に届きます（押下の見た目を戻す）。
+取り消し自体はフレーム末尾に行われます（`Visible` と同じ遅延の流儀）。`SEED.UI.ListView` は行を使い回すときに自分で呼びます。
 
 ### アクター名（GameObject.Name）
 
@@ -2005,6 +2044,65 @@ if (gameObject.GetComponent<CanvasGesture>() is { } g)
 
 > **重要**: 変更は**次に触れた指から**効きます（触れている指は押したときの値のまま）。スクリプトから CanvasGesture を付けたプレハブを生成しても、次の指から参加します。
 
+### CanvasScroll（スクロールの領域：一覧・横の帯・ページ送り・ホイール）
+
+2D キャンバスのノードに **CanvasScroll**（「コンポーネント追加 → UI → Canvas Scroll」）を付けると、そのノードが中身（子）をずらして見せる窓になります（W2-3）。
+窓の大きさは CanvasComponent があればキャンバスの箱、無ければ最初の Sprite の矩形。窓の外を切るには同じノードに **CanvasClip** を付けます
+（付けると、窓の外の子を描画アイテムと当たり判定から外します＝1,000 行でも見えている行の分しか描かない）。指のドラッグは CanvasGesture を
+付けなくても受けます（向きに合わせた軸のドラッグとフリック。中の行のボタンは W2-2 のアリーナで 100ms 待ってから押下になる）。
+
+```csharp
+if (gameObject.GetComponent<CanvasScroll>() is { } s)
+{
+    // 設定（get/set。インスペクタと同じ欄）
+    s.Enabled          // bool（既定 true）
+    s.Direction        // ScrollDirection: Vertical（既定）/ Horizontal / Both
+    s.Edge             // ScrollEdge: Bounce（既定。端を越えて引っぱれ、ばねで戻る）/ Clamp（端で止まる）
+    s.Inertia          // bool（既定 true。指を離した後も流れる）
+    s.Snap             // ScrollSnap: None（既定）/ Page（1 回のフリックで最大 1 ページ）/ Interval（止まる位置に最も近い間隔の倍数へ）
+    s.SnapInterval     // float（スナップの長さ。Page で 0 なら窓の長さ）
+    s.HandOffToParent  // bool（既定 true。同じ向きの外側のスクロールへ、端に達した残りのドラッグとフリックを渡す）
+    s.ContentSizeMode  // ScrollContentSize: Auto（既定。子の矩形のいちばん遠い端）/ Fixed（FixedContentSize）
+    s.FixedContentSize // Vector2（Fixed のときの中身の大きさ。一覧の仮想化で全体の長さを決める）
+    s.CullOutside      // bool（既定 true。CanvasClip があるとき、見える範囲の外の子を描画と当たり判定から外す）
+    s.CacheExtent      // float（既定 250。見える範囲の外として飛ばす判定の余白）
+    s.FlingFriction    // float（Clamp の慣性の摩擦。既定 0.015）
+    s.BounceDrag       // float（Bounce の慣性の減衰。既定 0.135）
+
+    // 状態
+    s.Position         // Vector2（get/set。書くと動きを止めてすぐ移す＝範囲へ収める）
+    s.Velocity         // Vector2（単位/秒）
+    s.Phase            // ScrollPhase: Idle / Dragging / Ballistic（慣性・跳ね返り・スナップ）/ Animating（ScrollTo）/ Held（触れて止めた）
+    s.IsScrolling      // bool（ドラッグ・慣性・ScrollTo の間）
+    s.IsDragging       // bool
+    s.HasMetrics       // bool（窓と中身の大きさが分かったか。Play の最初の描画の後）
+    s.ViewportSize     // Vector2（窓の大きさ）
+    s.ContentSize      // Vector2（中身の大きさ）
+    s.MaxPosition      // Vector2（位置の最大 = 中身 − 窓）
+
+    // 操作
+    s.ScrollTo(new Vector2(0, 1200), 0.3f);  // 時間をかけて動かす（Curves.easeInOut。次のフレームから。指で触れると止まる）
+    s.JumpTo(new Vector2(0, 0));             // すぐ移す（Position への書き込みと同じ）
+}
+
+// 例: 縦の一覧（窓: Canvas + CanvasClip + CanvasScroll、中身: Stack の縦の並び）
+// ListRoot（Canvas 360×640・CanvasClip・CanvasScroll 縦）
+// └─ Content（Canvas・CanvasStack 縦・fit_height・CanvasLayoutItem fill_width）… 行を縦に並べる。窓の中身の大きさは Content の高さ
+//    ├─ Row0 …
+// 窓自身に CanvasStack を付けてもよい（スクロールの軸は箱の長さを決めずに並べる＝行は縮まない）
+```
+
+| 規則 | 内容 |
+|---|---|
+| 慣性 | Bounce: Flutter の BouncingScrollSimulation（1 秒で速度 0.135 倍の減衰・端を越えたらばね）。Clamp: Flutter の ClampingScrollSimulation（= Android の OverScroller。1000 dp/秒で 194 dp・0.46 秒） |
+| 端 | Bounce は端の外へ摩擦つきで引っぱれ（0.52 × (1 − はみ出し/窓)²）、離すとばね（質量 0.5・硬さ 100・減衰比 1.1）で戻る。Clamp は端で止まる（端の光・伸びの表示は無い） |
+| 入れ子 | 向きの違う入れ子（縦の一覧の中の横の帯）は最初の指の動きの向きで持ち主が決まる。同じ向きは内側が先に使い、端に達した残りを外側へ（`HandOffToParent`） |
+| 触れて止める | 慣性・ScrollTo の途中で触れると止まり（`OnScrollEnd`・Phase は Held）、その指は中の行へ届かない。ドラッグすれば続きのスクロールになる |
+| 描く理由 | 動いている間（ドラッグ・慣性・ScrollTo・位置の要求の処理待ち）はエンジンが「動いている」を申告する（`render_policy: on_demand` でも止まらず、止まったら描画も止まる。§7.14） |
+| 単位 | 値はキャンバスの単位（dp のキャンバスなら dp）。物理の定数は dp で決まっているので、端末の表示倍率に依らず同じ手触り |
+
+> **重要**: 窓と中身の大きさは**前のフレームの描画**が測った値です（Play の最初の描画までは `HasMetrics = false`・`ViewportSize` などは 0）。中身の大きさが変わったフレームは 1 フレーム遅れて範囲に効きます。
+
 ### Skybox（天球の色調整：時間帯・天候の演出）
 
 equirectangular 画像 1 枚を天球として描く `Skybox` コンポーネントを、実行時に読み書きします。
@@ -2189,6 +2287,7 @@ public class FishingLine : SEEDScript
 | `CanvasLayoutItem` | `gameObject.GetComponent<CanvasLayoutItem>()` | コンテナの子の側の指定。伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる |
 | `CanvasSafeArea` | `gameObject.GetComponent<CanvasSafeArea>()` | ノードの領域を Screen.SafeArea の内側へ縮める。有効・辺ごとの適用（Left/Top/Right/Bottom） |
 | `CanvasGesture` | `gameObject.GetComponent<CanvasGesture>()` | ジェスチャーを受けるノード（W2-2）。タップ・長押し・ドラッグ・フリックの旗・ドラッグの軸・押下の見た目・最小のヒット領域（dp）。イベントは `OnGesture*` |
+| `CanvasScroll` | `gameObject.GetComponent<CanvasScroll>()` | スクロールの領域（W2-3）。向き・端（跳ね返る・止める）・慣性・スナップ・入れ子・中身の大きさ・見える範囲の外を飛ばす。位置の読み書き・`ScrollTo`。イベントは `OnScroll*` |
 | `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
 | `ControlPointPath` | `gameObject.GetComponent<ControlPointPath>()` | コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用） |
 
@@ -3517,7 +3616,7 @@ async void Fetch() { data = await client.GetStringAsync(url); SEED.Redraw.Reques
 |---|---|
 | 入力 | タップ・クリック・カーソル・ホイール・キー（押している指・マウスのボタンの間は描き続ける。キーボードのキーの押しっぱなしは OS の繰り返しで起きる） |
 | ジェスチャー | 指が触れている間。長押しの期限で起きる |
-| 動いているもの | Animator の再生中・パーティクル・読み込み中のモデル・動いている物理のボディ |
+| 動いているもの | Animator の再生中・パーティクル・読み込み中のモデル・動いている物理のボディ・スクロールの慣性・跳ね返り・ScrollTo（W2-3） |
 | 知らせ | `SEED.Platform` のイベント（目覚まし・通知・権限）・IPC の命令・画面の大きさ・向き・安全領域・Android の文字入力と音声フォーカス |
 
 > **重要**: 止めていた時間は**ゲームの時間に入りません**。起きた最初のフレームの `Time.DeltaTime` は 1/60 秒で切り詰められ、`ElapsedTime`・`Unscaled*` も止めていた分だけ実時間より遅れます。時刻で何かをするスクリプトは実時間（`System.DateTime` など）で判定し、次に起きる時刻を `RequestAfter` で申告してください。`DeltaTime` を足し上げた時計は止まって見えます。
@@ -3526,6 +3625,89 @@ async void Fetch() { data = await client.GetStringAsync(url); SEED.Redraw.Reques
 
 - Edit・エディタの PAUSE（デバッグカメラ）は常に毎フレーム描きます。止める判定を使うのは Play だけです。
 - 設定・仕組み・描く理由の全一覧・検証の数値は docs/redraw_policy.md。
+
+---
+
+## 7.15 UI 部品（SEED.UI：ListView・SwipeActions。W2-3）
+
+部品の振る舞いは C# の `SEED.UI` 名前空間（SEEDScripting に同梱。エンジンを更新すれば全プロジェクトに届く）、見た目はプレハブ（行の形）とテーマです。
+スクロール自体（位置・慣性・窓の外を飛ばす）はエンジン（`CanvasScroll`）が動かします。規則の正典は `docs/ui_scroll_list.md`。
+
+### ListView（行の多い一覧：見えている行だけを作って使い回す）
+
+```csharp
+using SEED.UI;
+
+public class AlarmList : SEEDScript
+{
+    private ListView list;
+
+    public override void OnStart()
+    {
+        // 窓（このノード: Canvas + CanvasClip + CanvasScroll 縦）に、行のプレハブで 1,000 件の一覧を作る
+        list = new ListView(gameObject, "assets://ui/alarm_row.actor", count: 1000, rowExtent: 72f, (row, i) =>
+        {
+            if (row.FindChild("Label").GetComponent<SEED.Text>() is { } t) t.Content = $"Alarm {i}";
+        })
+        {
+            Spacing = 8f,                                     // 行と行の間隔
+            Recycled = (row, oldIndex) => { /* 押下の見た目・スワイプを戻す */ },
+        };
+    }
+
+    public override void Update(ref NativeFrameContext ctx) => list.Update();   // 毎フレーム呼ぶ（変化が無ければ何もしない）
+}
+
+list.SetCount(n);                   // 行の数を変える（次の Update で入れ直す）
+list.SetExtentOf(i => i % 2 == 0 ? 56f : 96f);  // 行ごとの長さ（null で固定へ戻す）
+list.Refresh();                     // データが変わった: 付いている行の中身を入れ直す
+list.ScrollToIndex(500, 0.3f, 0f);  // 行 500 を窓の先頭へ（揃え 0 = 先頭・0.5 = 中央・1 = 終わり。時間 0 はすぐ移す）
+list.RowOf(500)                     // GameObject?: 行 500 に付いている行（見えていなければ null）
+list.IndexOf(row)                   // int: 行が付いている番号（−1 = 付いていない）
+list.VisibleRange                   // ListRange: 見えている行の範囲（First・Last・Count・IsEmpty）
+list.CreatedRowCount                // int: 作った行の数（使い回しの入れ物。見えている行 + 前後の余白の分で止まる）
+```
+
+| 規則 | 内容 |
+|---|---|
+| 作る行 | 窓の長さ + 前後の `CacheExtent`（既定はスクロールの 250）と交わる行だけ。足りなければプレハブから作り（**次のフレームから使える**。作る間は隠す）、以後は使い回す |
+| 使い回し | 窓の外へ出た行を、新しく見えた行へ付け替える（位置を合わせて `bind` を呼ぶ）。付いたままの行は作り直さない。付け替える前に `CancelGestures` で押下・ドラッグを取り消し、`Recycled` を呼ぶ |
+| 中身の長さ | 行の数と長さ（と間隔・余白）から決めて、スクロールを `Fixed` の中身の大きさにする |
+| 行のプレハブ | anchor (0,0)・スクロールの軸の pivot 0 を推奨。横いっぱいにするなら `CanvasLayoutItem` の `fill_width`。行は窓（か `content`）の子として作る |
+
+### SwipeActions（行を横へずらすと削除・編集のボタンが出る）
+
+```csharp
+// 行のプレハブ: Row（CanvasGesture: tap=false・drag・fling・drag_axis=horizontal）
+//              ├─ Actions（右端の削除ボタン）  └─ Front（ずらす見た目。受けるジェスチャーの無い CanvasGesture＝遮る板）
+public class AlarmRow : SEEDScript
+{
+    private SwipeActions swipe;
+    public override void OnStart()
+    {
+        swipe = new SwipeActions(gameObject.FindChild("Front"), actionsExtent: 96f)   // 左へ 96 ずらすと右の操作が見える
+        {
+            Group = SwipeGroup.For(gameObject.Parent),   // 同じ一覧の行は開いているのを 1 つにする
+            Opened = s => { }, Closed = s => { },
+        };
+    }
+    public override void OnGestureDragStart(SEED.GestureEvent e)  => swipe.OnDragStart(e);
+    public override void OnGestureDragUpdate(SEED.GestureEvent e) => swipe.OnDragUpdate(e);
+    public override void OnGestureDragEnd(SEED.GestureEvent e)    => swipe.OnDragEnd(e);
+    public override void Update(ref NativeFrameContext ctx)       => swipe.Update(SEED.Time.UnscaledDeltaTime);
+}
+
+swipe.Open(); swipe.Close(); swipe.Reset();   // 開く・閉じる（動きつき）・すぐ閉じる（行の使い回し）
+swipe.IsOpen / swipe.Offset / swipe.IsDragging / swipe.IsAnimating
+SwipeGroup.For(listNode).CloseAll();          // 一覧のスクロールが始まったら（OnScrollStart から）
+```
+
+| 規則 | 内容（出典: Android の ItemTouchHelper。2026-09-28 に androidx のソースで確認） |
+|---|---|
+| 開く・閉じる | 離したときの横の速さが 120 dp/秒以上なら向きで決める。それより遅ければ、開いた量の半分以上ずらしていれば開く |
+| 動き | 250ms・Material の fastOutSlowIn。動いている間は `Redraw.Request()`（on_demand でも止まらない） |
+| 組 | ある行のドラッグが始まると、同じ組の他の開いている行が閉じる |
+| 軸 | 縦の一覧の中では、最初の指の動きが横ならスワイプ、縦なら一覧のスクロール（W2-2 のアリーナの軸の競い） |
 
 ---
 

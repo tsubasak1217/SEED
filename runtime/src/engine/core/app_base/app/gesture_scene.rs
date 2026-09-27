@@ -17,13 +17,20 @@
 //    - 祖先: 表の親をたどり、ジェスチャーを受けるノードだけを近い順に
 //    - 手前・奥: 描画ゾーン → 最初の有効な Sprite のレイヤー（無ければ 0）→ 表の並び（DFS）
 //  ジェスチャーを受けるノードが無い木では、表を作っても空の材料になる（呼び出し側は指が無ければ作らない）。
+//
+//  【スクロールの窓（W2-3）】CanvasScrollComponent を持つノードは、CanvasGesture が無くても参加する（`participation_of`）:
+//  スクロールの向きのドラッグとフリック（縦 → 縦だけ・横 → 横だけ・両方 → 全方向）。CanvasGesture もあれば、タップ・長押し・
+//  押下の見た目・最小のヒット領域はそちらの設定。指に触れずに動いている窓（慣性・ScrollTo）は「吸い込むノード」にして、
+//  触れた指を中の子へ渡さない（input/gesture/scene.rs）。スクロールの見える範囲の外として飛ばした行は参加しない。
 // ============================================================
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::engine::components::{
-    CanvasDrawZone, CanvasGestureComponent, ComponentKind, SpriteComponent,
+    CanvasDrawZone, CanvasGestureComponent, ComponentKind, GestureDragAxis, ScrollDirection, SpriteComponent,
 };
+use crate::engine::core::canvas_layout::scroll_view::scroll_of;
+use crate::engine::core::canvas_scroll::CanvasScrollState;
 use crate::engine::core::canvas_layout::clip::corners_aabb;
 use crate::engine::core::canvas_layout::{
     AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind, CanvasParentFrame,
@@ -51,6 +58,43 @@ pub(super) fn gesture_of<'w>(actor: &Actor, world: &'w World) -> Option<&'w Canv
         .filter(|c| c.enabled)
 }
 
+/// スクロールの向きに合うドラッグの軸（W2-3）。
+fn drag_axis_of(direction: ScrollDirection) -> GestureDragAxis {
+    match direction {
+        ScrollDirection::Vertical => GestureDragAxis::Vertical,
+        ScrollDirection::Horizontal => GestureDragAxis::Horizontal,
+        ScrollDirection::Both => GestureDragAxis::Any,
+    }
+}
+
+/// ノードがアリーナに参加するときの設定と、触れた指を吸い込むか（W2-3。CanvasGesture と CanvasScroll をまとめる）。
+///
+/// - CanvasGesture だけ … その設定（吸い込まない）
+/// - CanvasScroll がある … スクロールの向きのドラッグとフリックを受ける（CanvasGesture が無ければタップ・長押し・押下の見た目なし・
+///   ヒット領域を広げない）。窓が指に触れずに動いている（慣性・ScrollTo）なら吸い込む
+/// - どちらも無い … 参加しない
+pub(super) fn participation_of(actor: &Actor, world: &World) -> Option<(CanvasGestureComponent, bool)> {
+    let gesture = gesture_of(actor, world);
+    let Some(scroll) = scroll_of(actor, world) else {
+        return gesture.map(|g| (g.clone(), false));
+    };
+    let base = gesture.cloned().unwrap_or(CanvasGestureComponent {
+        tap: false,
+        long_press: false,
+        press_feedback: false,
+        min_hit_size_dp: 0.0,
+        ..CanvasGestureComponent::default()
+    });
+    let settings = CanvasGestureComponent {
+        drag: true,
+        fling: true,
+        drag_axis: drag_axis_of(scroll.settings.direction),
+        ..base
+    };
+    let absorbs = world.get::<CanvasScrollState>(scroll.slot).is_some_and(|s| s.phase.moves_by_itself());
+    Some((settings, absorbs))
+}
+
 /// ノードの最初の有効な Sprite。
 fn first_sprite<'w>(actor: &Actor, world: &'w World) -> Option<&'w SpriteComponent> {
     actor
@@ -66,17 +110,28 @@ fn first_sprite<'w>(actor: &Actor, world: &'w World) -> Option<&'w SpriteCompone
 /// * `table`  - レイアウトの表（`actors` から作ったもの）
 /// * `actors` - 表を作ったのと同じルートの並び
 /// * `world`  - コンポーネントの置き場
-pub(super) fn gesture_nodes_from_table(table: &CanvasLayoutTable, actors: &[Actor], world: &World) -> Vec<GestureHitNode> {
+///
+/// # 戻り値
+/// (材料, 触れた指を吸い込むノード＝指に触れずに動いているスクロールの窓。W2-3)
+pub(super) fn gesture_nodes_from_table(
+    table: &CanvasLayoutTable,
+    actors: &[Actor],
+    world: &World,
+) -> (Vec<GestureHitNode>, HashSet<Entity>) {
     let mut nodes: Vec<GestureHitNode> = Vec::new();
+    let mut absorbing: HashSet<Entity> = HashSet::new();
     // 表の行 → 材料の添字（祖先を引くため。祖先は必ず子より先に訪ねる）
     let mut by_row: HashMap<u32, usize> = HashMap::new();
     for (row, (node, actor)) in table.iter_with_actors(actors).enumerate() {
-        // Play のポインタイベントと同じ対象（非アクティブ・非表示・世界線の外・2D 木の外は除く）
-        if !node.is_pickable(true) {
+        // Play のポインタイベントと同じ対象（非アクティブ・非表示・世界線の外・2D 木の外・スクロールの見える範囲の外は除く）
+        if !node.is_pickable_in_view(true) {
             continue;
         }
         let CanvasNodeKind::Placed(placement) = &node.kind else { continue };
-        let Some(settings) = gesture_of(actor, world) else { continue };
+        let Some((settings, absorbs)) = participation_of(actor, world) else { continue };
+        if absorbs {
+            absorbing.insert(actor.entity);
+        }
         let sprite = first_sprite(actor, world);
         // 見た目の矩形（ローカルの大きさ）
         let size = if placement.canvas_base.is_some() {
@@ -118,11 +173,11 @@ pub(super) fn gesture_nodes_from_table(table: &CanvasLayoutTable, actors: &[Acto
             clip_aabbs,
             ancestors,
             paint,
-            settings: settings.clone(),
+            settings,
             unit_scale: placement.size_scale,
         });
     }
-    nodes
+    (nodes, absorbing)
 }
 
 /// Play の文脈（ポインタイベントと同じ引数）でレイアウトの表を作り、ジェスチャーの当たり判定の材料にする。
@@ -156,7 +211,8 @@ pub(super) fn build_gesture_hit_scene(
         CanvasParentFrame::viewport_root(CanvasDrawZone::Foreground),
         &env,
     );
-    GestureHitScene::new(gesture_nodes_from_table(&table, actors, world), dp_scale)
+    let (nodes, absorbing) = gesture_nodes_from_table(&table, actors, world);
+    GestureHitScene::new(nodes, dp_scale).with_absorbing(absorbing)
 }
 
 // ============================================================
@@ -263,5 +319,56 @@ mod tests {
         }
         let (scene, _) = b.build();
         assert_eq!(scene.nodes.len(), 1, "On だけ");
+    }
+
+    /// スクロールの窓（W2-3）: CanvasGesture が無くても縦のドラッグで参加し、スクロールした行は位置のずれた所で当たる。
+    /// 窓（切り抜き）の外へ出た行・見える範囲の外として飛ばした行は押せない。動いている窓は触れた指を吸い込む。
+    #[test]
+    fn scroll_window_joins_and_scrolled_rows_hit_only_inside_the_clip() {
+        use crate::engine::components::CanvasScrollComponent;
+        use crate::engine::core::canvas_scroll::ScrollPhase;
+        /// 行の高さ。
+        const ROW: f32 = 60.0;
+        /// スクロールの位置（行 10 が窓の先頭）。
+        const POSITION: f64 = 600.0;
+        let mut b = SceneBuilder::new();
+        let mut window = b.sprite_node("Window", [0.0, 0.0, 400.0, 300.0], None, true);
+        let scroll_slot = b.world.spawn();
+        b.world.insert(scroll_slot, CanvasScrollComponent::default());
+        window.add_slot_typed::<CanvasScrollComponent>("Scroll", ComponentKind::CanvasScroll, scroll_slot);
+        let window_key = window.entity;
+        let mut row_keys = Vec::new();
+        for i in 0..50 {
+            let row = b.sprite_node(&format!("Row{i}"), [0.0, i as f32 * ROW, 400.0, ROW], Some(CanvasGestureComponent::default()), false);
+            row_keys.push(row.entity);
+            window.children_mut().push(row);
+        }
+        b.root.children_mut().push(window);
+        b.world.insert(scroll_slot, CanvasScrollState { position: [0.0, POSITION], ..CanvasScrollState::default() });
+        let actors = vec![b.root];
+        let empty = HashMap::new();
+        let scene = build_gesture_hit_scene(&actors, &b.world, 0, VIEWPORT, &empty, &empty, 1.0);
+        // 窓は縦のドラッグとフリックで参加する（タップ・押下の見た目なし）
+        let w = scene.node(window_key).expect("窓が参加する");
+        assert!(w.settings.drag && w.settings.fling && !w.settings.tap && !w.settings.press_feedback);
+        assert_eq!(w.settings.drag_axis, GestureDragAxis::Vertical);
+        // 窓の中の (200, 30)（キャンバスの画素は中央原点）→ 行 10（位置 600 = 行 10 の上端）
+        let inside = [-400.0 + 200.0, -300.0 + 30.0];
+        let path: Vec<Entity> = scene.hit_path(inside).iter().map(|(e, _)| *e).collect();
+        assert_eq!(path, vec![row_keys[10], window_key]);
+        // 窓の外（下）: スクロールで窓の外へ出た行はそこに置かれているが、切り抜きの外なので押せない
+        let below = [-400.0 + 200.0, -300.0 + 330.0];
+        assert!(scene.hit_path(below).is_empty());
+        // 見える範囲（窓 + 250）の外の行は材料にも入らない（行 0 は上端 −600）
+        assert!(scene.node(row_keys[0]).is_none());
+        assert!(scene.node(row_keys[12]).is_some());
+        // 動いている窓（慣性）は触れた指を吸い込む: 経路は窓だけ
+        b.world.insert(
+            scroll_slot,
+            CanvasScrollState { position: [0.0, POSITION], phase: ScrollPhase::Ballistic, ..CanvasScrollState::default() },
+        );
+        let scene = build_gesture_hit_scene(&actors, &b.world, 0, VIEWPORT, &empty, &empty, 1.0);
+        let path: Vec<Entity> = scene.hit_path(inside).iter().map(|(e, _)| *e).collect();
+        assert_eq!(path, vec![window_key]);
     }
 }

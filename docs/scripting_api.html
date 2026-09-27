@@ -233,6 +233,7 @@
     <a href="#sec-screen">Screen（画面・安全領域）</a>
     <a href="#sec-platform">Platform（OS の機能）</a>
     <a href="#sec-redraw">Redraw（描く理由）</a>
+    <a href="#sec-ui">UI 部品（ListView・SwipeActions）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -442,7 +443,7 @@
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
-<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー 例外 エラー クラッシュ 落ちる SCRIPT ERROR NullReference 未処理例外 スタックトレース デバッガ ポインタ ポインター クリック ボタン UI OnPointerEnter OnPointerExit OnPointerDown OnPointerUp OnPointerClick raycast_target ポインタ判定 マウス タイトル リザルト ショップ ジェスチャー ジェスチャ gesture OnGestureTap OnGestureLongPress OnGestureDragStart OnGestureDragUpdate OnGestureDragEnd OnGestureFling OnGesturePressDown OnGesturePressCancel OnGesturePressUp GestureEvent GestureKind タップ 長押し ドラッグ フリック スワイプ 押下 取り消し スクロール 捕捉 slop アリーナ">
+<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー 例外 エラー クラッシュ 落ちる SCRIPT ERROR NullReference 未処理例外 スタックトレース デバッガ ポインタ ポインター クリック ボタン UI OnPointerEnter OnPointerExit OnPointerDown OnPointerUp OnPointerClick raycast_target ポインタ判定 マウス タイトル リザルト ショップ ジェスチャー ジェスチャ gesture OnGestureTap OnGestureLongPress OnGestureDragStart OnGestureDragUpdate OnGestureDragEnd OnGestureFling OnGesturePressDown OnGesturePressCancel OnGesturePressUp GestureEvent GestureKind タップ 長押し ドラッグ フリック スワイプ 押下 取り消し スクロール 捕捉 slop アリーナ スクロールコールバック OnScrollStart OnScroll OnScrollEnd ScrollEvent ScrollEventKind CanvasScroll 慣性 跳ね返り バウンス スナップ ScrollTo JumpTo ViewportSize ContentSize MaxPosition IsDragging ListView SwipeActions">
   <h2>2. ライフサイクル関数</h2>
   <p class="section-note"><code>SEEDScript</code> を継承して override。1 フレーム内で以下の順に呼ばれます。不要なものは override 不要。</p>
   <div class="api"><code class="sig">BeginFrame(ref ctx)</code><span class="desc">フレーム開始時。入力取得や状態リセット向け</span></div>
@@ -558,6 +559,20 @@
     <span class="k">public override void</span> OnGestureTap(<span class="t">SEED.GestureEvent</span> e)         =&gt; <span class="t">SEED.Debug</span>.Log(<span class="s">"押された"</span>);
 }</pre>
   <div class="warn"><b>重要</b>: ジェスチャーのコールバックは <b>CanvasGesture を付けたアクター</b>にだけ届きます。受けるジェスチャーを全部外した CanvasGesture は「遮る板」になります（後ろのノードへ指を渡さない。ジェスチャーを受けない Sprite は遮らない）。</div>
+
+  <h3 id="lc-scroll">スクロールコールバック（CanvasScroll：OnScrollStart / OnScroll / OnScrollEnd。W2-3）</h3>
+  <p class="section-note">自分のアクター（2D キャンバスのノード）に <b>CanvasScroll</b>（「コンポーネント追加 → UI → Canvas Scroll」）を付けると、そのノードが中身（子）をずらして見せるスクロールの窓になり、Play 中のスクロールが以下のコールバックで届きます（スクリプトフェーズより前。このフレームの <code>Update</code> から新しい位置が見える）。指のドラッグ・離した後の慣性・端の跳ね返り・スナップ・入れ子はエンジンが動かします（C# で位置を動かす必要は無い）。規則の正典は <code>docs/ui_scroll_list.md</code>。</p>
+  <div class="api"><code class="sig">OnScrollStart(ScrollEvent e)</code><span class="desc">スクロールが始まった（ドラッグ・慣性・ScrollTo・位置の書き込み）</span></div>
+  <div class="api"><code class="sig">OnScroll(ScrollEvent e)</code><span class="desc">位置が変わった（1 フレームに 1 回まで）</span></div>
+  <div class="api"><code class="sig">OnScrollEnd(ScrollEvent e)</code><span class="desc">スクロールが終わった（止まった・指で触れて止めた）</span></div>
+  <div class="api"><code class="sig">e.Kind</code><span class="desc">ScrollEventKind（Start / Update / End）</span></div>
+  <div class="api"><code class="sig">e.Position / e.Delta</code><span class="desc">Vector2（今の位置。0 = 中身の先頭が窓の先頭・下/右へスクロールすると増える ／ 前に知らせた位置からの差。Delta は Update だけ）</span></div>
+  <div class="api"><code class="sig">e.Velocity</code><span class="desc">Vector2（速度。単位/秒・位置の向き）</span></div>
+  <div class="api"><code class="sig">e.MaxPosition / e.ViewportSize / e.ContentSize</code><span class="desc">Vector2（位置の最大 = 中身 − 窓 ／ 窓の大きさ ／ 中身の大きさ）</span></div>
+  <div class="api"><code class="sig">e.IsDragging</code><span class="desc">bool（指でドラッグしているか）</span></div>
+<pre><span class="c">// 例: スクロールが始まったら、開いているスワイプの行を閉じる（SEED.UI.SwipeGroup）</span>
+<span class="k">public override void</span> OnScrollStart(<span class="t">SEED.ScrollEvent</span> e) =&gt; <span class="t">SEED.UI.SwipeGroup</span>.For(gameObject).CloseAll();</pre>
+  <div class="warn"><b>重要</b>: 位置の書き込み（<code>CanvasScroll.Position</code> / <code>JumpTo</code>）でも、止まったまま位置が変わるので <b>Start → Scroll → End の 3 つが同じフレームに</b>届きます。慣性で動いている窓に指で触れると止まり（End）、その指は中の行へ届きません（慣性の途中のタップで行が押されない。Flutter・Android と同じ）。</div>
 
   <h3>スクリプト例外の扱い</h3>
   <p class="section-note">ライフサイクル関数・物理イベントコールバックの中で<b>未処理の例外</b>（<code>Nullable</code> の <code>.Value</code>、<code>NullReferenceException</code>、<code>IndexOutOfRangeException</code> など）が発生しても、<b>ランタイムプロセスは落ちません</b>。エンジンがすべてのコールバック境界で例外を捕捉します。</p>
@@ -966,7 +981,7 @@ icon.SetParent(<span class="k">null</span>);     <span class="c">// シーンの
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="AudioDictionary 音声辞書 辞書 キー グループ 用途 TryGetPath DefaultVolume PlayDict 素材差し替え DictionaryKey RayTracingExcluded レイトレ レイトレーシング 対象外 除外 BLAS TLAS 反射 GI AO 影 負荷 軽量化 rt_exclude Visible 表示 非表示 表示切替 隠す 可視 可視性 目アイコン eye 描画停止 レンダラー Renderer.enabled visible Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst Tint 色味 着色 ティント アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed WorldToScreen WorldToCanvas ワールド スクリーン 画面座標 スクリーン座標 キャンバス座標 射影 変換 頭上UI HPバー ダメージ表示 ミニマップ プレースホルダ 差し込み スロット slot num string image color 記法 バインド Bindable 番号指定 エスケープ 四捨五入 SetSlotText SetSlotNumber SetSlotImage SetSlotColor SlotCount フォールバック transform.GameObject ct.GameObject 所有アクタ アクタ取得 参照から辿る ルート直付け 他コンポーネントを辿る CanvasClip 切り抜き クリップ clip scissor はみ出し スクロール領域 マスク CanvasStack CanvasWrap CanvasGrid CanvasLayoutItem CanvasSafeArea レイアウト layout 並べる 縦 横 スタック 折り返し wrap グリッド 格子 セル 列数 間隔 余白 padding spacing 揃え align stretch 伸ばす flex 中身に合わせる fit 親に合わせる fill 安全領域 SafeArea 切り欠き ノッチ ステータスバー ジェスチャーバー dp 密度 DPI LayoutDirection MainAlign CrossAlign ItemAlign HiddenChildren CanvasPadding CanvasGesture GestureDragAxis ジェスチャー タップ 長押し ドラッグ フリック ボタン スライダ シート 最小のヒット領域 48dp MinHitSizeDp PressFeedback 押下 遮る">
+<section id="sec-components" data-keywords="AudioDictionary 音声辞書 辞書 キー グループ 用途 TryGetPath DefaultVolume PlayDict 素材差し替え DictionaryKey RayTracingExcluded レイトレ レイトレーシング 対象外 除外 BLAS TLAS 反射 GI AO 影 負荷 軽量化 rt_exclude Visible 表示 非表示 表示切替 隠す 可視 可視性 目アイコン eye 描画停止 レンダラー Renderer.enabled visible Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst Tint 色味 着色 ティント アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed WorldToScreen WorldToCanvas ワールド スクリーン 画面座標 スクリーン座標 キャンバス座標 射影 変換 頭上UI HPバー ダメージ表示 ミニマップ プレースホルダ 差し込み スロット slot num string image color 記法 バインド Bindable 番号指定 エスケープ 四捨五入 SetSlotText SetSlotNumber SetSlotImage SetSlotColor SlotCount フォールバック transform.GameObject ct.GameObject 所有アクタ アクタ取得 参照から辿る ルート直付け 他コンポーネントを辿る CanvasClip 切り抜き クリップ clip scissor はみ出し スクロール領域 マスク CanvasStack CanvasWrap CanvasGrid CanvasLayoutItem CanvasSafeArea レイアウト layout 並べる 縦 横 スタック 折り返し wrap グリッド 格子 セル 列数 間隔 余白 padding spacing 揃え align stretch 伸ばす flex 中身に合わせる fit 親に合わせる fill 安全領域 SafeArea 切り欠き ノッチ ステータスバー ジェスチャーバー dp 密度 DPI LayoutDirection MainAlign CrossAlign ItemAlign HiddenChildren CanvasPadding CanvasGesture GestureDragAxis ジェスチャー タップ 長押し ドラッグ フリック ボタン スライダ シート 最小のヒット領域 48dp MinHitSizeDp PressFeedback 押下 遮る CancelGestures ジェスチャーの取り消し 取り消し 行の使い回し ListView PressCancel DragEnd Canceled CanvasScroll スクロールの領域 一覧 横の帯 ページ送り ホイール ScrollDirection ScrollEdge Bounce Clamp Inertia ScrollSnap SnapInterval HandOffToParent ScrollContentSize FixedContentSize CullOutside CacheExtent FlingFriction BounceDrag ScrollPhase Idle Dragging Ballistic Animating Held IsScrolling HasMetrics ViewportSize ContentSize MaxPosition ScrollTo JumpTo W2-3">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-visible">GameObject.Visible（アクターの表示 / 非表示）</h3>
@@ -974,6 +989,12 @@ icon.SetParent(<span class="k">null</span>);     <span class="c">// シーンの
 <pre><span class="c">// 例: 残機が 0 になったら HUD のハートを隠す</span>
 gameObject.Visible = <span class="k">false</span>;</pre>
   <p class="section-note">止まるのはモデル・スプライト・Text・SkinnedSprite・パーティクル・ライト・スカイボックス・<code>SEED.Draw</code> の座標空間参照です。非表示のアクターはポインタイベントのヒット判定にも当たりません。祖先が 1 つでも非表示なら子孫も非表示になります（実効表示 = 祖先すべて Visible かつ自分 Visible）。get が返すのは<b>自分自身のフラグ</b>で（Unity の <code>activeSelf</code> と同じ流儀）、set の実反映はフレーム末尾ですが同フレームの get は設定した値を返します。値はシーン／<code>.actor</code> へ <code>"visible": false</code> として保存され、エディタのヒエラルキーの目アイコン・インスペクタのトグルと同じフラグです。</p>
+
+  <h3 id="cmp-cancelgestures">ジェスチャーの取り消し（GameObject.CancelGestures。W2-3）</h3>
+  <div class="api"><code class="sig">gameObject.CancelGestures()</code><span class="desc">void: この行と子孫の、ジェスチャーの押下とドラッグを取り消す（一覧の行を使い回す前に呼ぶ）</span></div>
+<pre><span class="c">// 一覧の行を使い回す前に呼ぶ</span>
+row.CancelGestures();</pre>
+  <p class="section-note">押している最中の行を別のデータへ使い回しても、元の押下の <code>Tap</code> が新しい行へ届かないようにします。押していたノードへは <code>OnGesturePressCancel</code>、ドラッグ中（スワイプ）なら取り消しの <code>OnGestureDragEnd</code>（<code>e.Canceled = true</code>）が<b>次のフレーム</b>に届きます（押下の見た目を戻す）。取り消し自体はフレーム末尾に行われます（<code>Visible</code> と同じ遅延の流儀）。<code>SEED.UI.ListView</code> は行を使い回すときに自分で呼びます。</p>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
   <div class="api"><code class="sig">transform.Position</code><span class="desc">Vector3（get/set）。ワールド絶対座標</span></div>
@@ -1412,6 +1433,40 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">g.PressFeedback</code><span class="desc">bool（get/set。PressDown / PressCancel / PressUp を受ける。既定 true）</span></div>
   <div class="api"><code class="sig">g.MinHitSizeDp</code><span class="desc">float（get/set。最小のヒット領域 dp。既定 48。0 = 広げない）</span></div>
   <p class="section-note">付け方の例: ボタン＝既定のまま、縦スクロール＝Tap=false・Drag=true・Fling=true・DragAxis=Vertical（枠に CanvasClip）、左スワイプの行・横のスライダ＝Tap=true・Drag=true・DragAxis=Horizontal、遮る板＝Tap=false（旗をすべて外す）。</p>
+
+  <h3 id="cmp-canvasscroll">CanvasScroll（スクロールの領域：一覧・横の帯・ページ送り・ホイール）</h3>
+  <p>2D キャンバスのノードに付けると、そのノードが中身（子）をずらして見せる窓になります（W2-3。<a href="#lc-scroll">スクロールコールバック</a>）。窓の大きさは CanvasComponent があればキャンバスの箱、無ければ最初の Sprite の矩形。窓の外を切るには同じノードに <a href="#cmp-canvasclip">CanvasClip</a> を付けます（付けると、窓の外の子を描画アイテムと当たり判定から外します＝1,000 行でも見えている行の分しか描かない）。指のドラッグは <a href="#cmp-canvasgesture">CanvasGesture</a> を付けなくても受けます（向きに合わせた軸のドラッグとフリック。中の行のボタンは W2-2 のアリーナで 100ms 待ってから押下になる）。</p>
+  <div class="api"><code class="sig">s.Enabled</code><span class="desc">bool（get/set。既定 true）</span></div>
+  <div class="api"><code class="sig">s.Direction</code><span class="desc">ScrollDirection（get/set）: Vertical（既定）/ Horizontal / Both</span></div>
+  <div class="api"><code class="sig">s.Edge</code><span class="desc">ScrollEdge（get/set）: Bounce（既定。端を越えて引っぱれ、ばねで戻る）/ Clamp（端で止まる）</span></div>
+  <div class="api"><code class="sig">s.Inertia</code><span class="desc">bool（get/set。既定 true。指を離した後も流れる）</span></div>
+  <div class="api"><code class="sig">s.Snap / s.SnapInterval</code><span class="desc">ScrollSnap（get/set）: None（既定）/ Page（1 回のフリックで最大 1 ページ）/ Interval（止まる位置に最も近い間隔の倍数へ） ／ float（スナップの長さ。Page で 0 なら窓の長さ）</span></div>
+  <div class="api"><code class="sig">s.HandOffToParent</code><span class="desc">bool（get/set。既定 true。同じ向きの外側のスクロールへ、端に達した残りのドラッグとフリックを渡す）</span></div>
+  <div class="api"><code class="sig">s.ContentSizeMode / s.FixedContentSize</code><span class="desc">ScrollContentSize（get/set）: Auto（既定。子の矩形のいちばん遠い端）/ Fixed（FixedContentSize を使う） ／ Vector2（Fixed のときの中身の大きさ。一覧の仮想化で全体の長さを決める）</span></div>
+  <div class="api"><code class="sig">s.CullOutside / s.CacheExtent</code><span class="desc">bool（既定 true。CanvasClip があるとき、見える範囲の外の子を描画と当たり判定から外す） ／ float（既定 250。見える範囲の外として飛ばす判定の余白）</span></div>
+  <div class="api"><code class="sig">s.FlingFriction / s.BounceDrag</code><span class="desc">float（Clamp の慣性の摩擦。既定 0.015） ／ float（Bounce の慣性の減衰。既定 0.135）</span></div>
+  <div class="api"><code class="sig">s.Position</code><span class="desc">Vector2（get/set。書くと動きを止めてすぐ移す＝範囲へ収める）</span></div>
+  <div class="api"><code class="sig">s.Velocity / s.Phase</code><span class="desc">Vector2（単位/秒） ／ ScrollPhase: Idle / Dragging / Ballistic（慣性・跳ね返り・スナップ）/ Animating（ScrollTo）/ Held（触れて止めた）</span></div>
+  <div class="api"><code class="sig">s.IsScrolling / s.IsDragging / s.HasMetrics</code><span class="desc">bool（ドラッグ・慣性・ScrollTo の間） ／ bool ／ bool（窓と中身の大きさが分かったか。Play の最初の描画の後）</span></div>
+  <div class="api"><code class="sig">s.ViewportSize / s.ContentSize / s.MaxPosition</code><span class="desc">Vector2（窓の大きさ） ／ Vector2（中身の大きさ） ／ Vector2（位置の最大 = 中身 − 窓）</span></div>
+  <div class="api"><code class="sig">s.ScrollTo(Vector2 pos, float seconds)</code><span class="desc">時間をかけて動かす（Curves.easeInOut。次のフレームから。指で触れると止まる）</span></div>
+  <div class="api"><code class="sig">s.JumpTo(Vector2 pos)</code><span class="desc">すぐ移す（Position への書き込みと同じ）</span></div>
+<pre><span class="c">// 例: 縦の一覧（窓: Canvas + CanvasClip + CanvasScroll、中身: Stack の縦の並び）</span>
+<span class="c">// ListRoot（Canvas 360×640・CanvasClip・CanvasScroll 縦）</span>
+<span class="c">// └─ Content（Canvas・CanvasStack 縦・fit_height・CanvasLayoutItem fill_width）… 行を縦に並べる。窓の中身の大きさは Content の高さ</span>
+<span class="c">//    ├─ Row0 …</span>
+<span class="c">// 窓自身に CanvasStack を付けてもよい（スクロールの軸は箱の長さを決めずに並べる＝行は縮まない）</span></pre>
+  <table>
+    <tr><th>規則</th><th>内容</th></tr>
+    <tr><td>慣性</td><td>Bounce: Flutter の BouncingScrollSimulation（1 秒で速度 0.135 倍の減衰・端を越えたらばね）。Clamp: Flutter の ClampingScrollSimulation（= Android の OverScroller。1000 dp/秒で 194 dp・0.46 秒）</td></tr>
+    <tr><td>端</td><td>Bounce は端の外へ摩擦つきで引っぱれ（0.52 × (1 − はみ出し/窓)²）、離すとばね（質量 0.5・硬さ 100・減衰比 1.1）で戻る。Clamp は端で止まる（端の光・伸びの表示は無い）</td></tr>
+    <tr><td>入れ子</td><td>向きの違う入れ子（縦の一覧の中の横の帯）は最初の指の動きの向きで持ち主が決まる。同じ向きは内側が先に使い、端に達した残りを外側へ（<code>HandOffToParent</code>）</td></tr>
+    <tr><td>触れて止める</td><td>慣性・ScrollTo の途中で触れると止まり（<code>OnScrollEnd</code>・Phase は Held）、その指は中の行へ届かない。ドラッグすれば続きのスクロールになる</td></tr>
+    <tr><td>描く理由</td><td>動いている間（ドラッグ・慣性・ScrollTo・位置の要求の処理待ち）はエンジンが「動いている」を申告する（<code>render_policy: on_demand</code> でも止まらず、止まったら描画も止まる。<a href="#sec-redraw">§7.14</a>）</td></tr>
+    <tr><td>単位</td><td>値はキャンバスの単位（dp のキャンバスなら dp）。物理の定数は dp で決まっているので、端末の表示倍率に依らず同じ手触り</td></tr>
+  </table>
+  <div class="warn"><b>重要</b>: 窓と中身の大きさは<b>前のフレームの描画</b>が測った値です（Play の最初の描画までは <code>HasMetrics = false</code>・<code>ViewportSize</code> などは 0）。中身の大きさが変わったフレームは 1 フレーム遅れて範囲に効きます。</div>
+
   <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>
   <p class="section-note">点列を結ぶ 1 本の線をワールド空間に描きます。太さは<b>ワールド単位（m）</b>で、線は常にカメラを向くリボンとして描かれます（遠いほど細く見えます）。点列は毎フレーム <code>SetPoints</code> で丸ごと差し替える使い方が基本です。</p>
   <div class="api"><code class="sig">line.Width</code><span class="desc">float（get/set。線の太さ。ワールド単位 m。0 で非表示）</span></div>
@@ -1532,6 +1587,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
     <tr><td><code>CanvasLayoutItem</code></td><td><code>gameObject.GetComponent&lt;CanvasLayoutItem&gt;()</code></td><td>コンテナの子の側の指定。伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる</td></tr>
     <tr><td><code>CanvasSafeArea</code></td><td><code>gameObject.GetComponent&lt;CanvasSafeArea&gt;()</code></td><td>ノードの領域を Screen.SafeArea の内側へ縮める。有効・辺ごとの適用</td></tr>
     <tr><td><code>CanvasGesture</code></td><td><code>gameObject.GetComponent&lt;CanvasGesture&gt;()</code></td><td>ジェスチャーを受けるノード（W2-2）。タップ・長押し・ドラッグ・フリックの旗・ドラッグの軸・押下の見た目・最小のヒット領域。イベントは OnGesture*</td></tr>
+    <tr><td><code>CanvasScroll</code></td><td><code>gameObject.GetComponent&lt;CanvasScroll&gt;()</code></td><td>スクロールの領域（W2-3）。向き・端（跳ね返る・止める）・慣性・スナップ・入れ子・中身の大きさ・見える範囲の外を飛ばす。位置の読み書き・ScrollTo。イベントは OnScroll*</td></tr>
     <tr><td><code>Text</code></td><td><code>gameObject.GetComponent&lt;Text&gt;()</code></td><td>キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・縁取り・枠と自動折り返し（BoxWidth/BoxHeight/Wrap）・太さ（Weight）・ドロップシャドウ（ShadowOffset/ShadowColor/ShadowSoftness）・整列・行送り・レイヤー</td></tr>
     <tr><td><code>ControlPointPath</code></td><td><code>gameObject.GetComponent&lt;ControlPointPath&gt;()</code></td><td>コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用）</td></tr>
   </table>
@@ -2450,7 +2506,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <tr><th>描く理由（エンジンが自分で積む）</th><th>例</th></tr>
     <tr><td>入力</td><td>タップ・クリック・カーソル・ホイール・キー（押している指・マウスのボタンの間は描き続ける。キーの押しっぱなしは OS の繰り返しで起きる）</td></tr>
     <tr><td>ジェスチャー</td><td>指が触れている間。長押しの期限で起きる</td></tr>
-    <tr><td>動いているもの</td><td>Animator の再生中・パーティクル・読み込み中のモデル・動いている物理のボディ</td></tr>
+    <tr><td>動いているもの</td><td>Animator の再生中・パーティクル・読み込み中のモデル・動いている物理のボディ・スクロールの慣性・跳ね返り・ScrollTo（W2-3）</td></tr>
     <tr><td>知らせ</td><td>SEED.Platform のイベント（目覚まし・通知・権限）・IPC の命令・画面の大きさ・向き・安全領域・Android の文字入力と音声フォーカス</td></tr>
   </table>
   <div class="warn">
@@ -2462,6 +2518,78 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     Play の開始・停止で要求（KeepAlive・SetContinuous・方針の上書き・予定）はすべて外れます。Edit・エディタの PAUSE は常に毎フレーム描きます。
     設定・仕組み・描く理由の全一覧・検証の数値は docs/redraw_policy.md。
   </div>
+</section>
+
+<!-- ════════════════ 7.15 UI 部品 ════════════════ -->
+<section id="sec-ui" data-keywords="UI部品 SEED.UI ListView SwipeActions 一覧 リスト 行 仮想化 使い回し リサイクル recycle Recycled bind SetCount SetExtentOf Refresh ScrollToIndex RowOf IndexOf VisibleRange CreatedRowCount CacheExtent スワイプ swipe 削除 編集 ボタン SwipeGroup Open Close Reset IsOpen Offset IsDragging IsAnimating CloseAll ItemTouchHelper actionsExtent CanvasScroll CanvasGesture CancelGestures 一覧の行 行のプレハブ W2-3">
+  <h2>7.15 UI 部品（SEED.UI：ListView・SwipeActions。W2-3）</h2>
+  <p class="section-note">部品の振る舞いは C# の <code>SEED.UI</code> 名前空間（SEEDScripting に同梱。エンジンを更新すれば全プロジェクトに届く）、見た目はプレハブ（行の形）とテーマです。スクロール自体（位置・慣性・窓の外を飛ばす）はエンジン（<a href="#cmp-canvasscroll">CanvasScroll</a>）が動かします。規則の正典は <code>docs/ui_scroll_list.md</code>。</p>
+
+  <h3 id="ui-listview">ListView（行の多い一覧：見えている行だけを作って使い回す）</h3>
+<pre><span class="k">using</span> SEED.UI;
+
+<span class="k">public class</span> <span class="t">AlarmList</span> : <span class="t">SEEDScript</span>
+{
+    <span class="k">private</span> <span class="t">ListView</span> list;
+
+    <span class="k">public override void</span> OnStart()
+    {
+        <span class="c">// 窓（このノード: Canvas + CanvasClip + CanvasScroll 縦）に、行のプレハブで 1,000 件の一覧を作る</span>
+        list = <span class="k">new</span> <span class="t">ListView</span>(gameObject, <span class="s">"assets://ui/alarm_row.actor"</span>, count: 1000, rowExtent: 72f, (row, i) =&gt;
+        {
+            <span class="k">if</span> (row.FindChild(<span class="s">"Label"</span>).GetComponent&lt;<span class="t">SEED.Text</span>&gt;() <span class="k">is</span> { } t) t.Content = <span class="s">$"Alarm {i}"</span>;
+        })
+        {
+            Spacing = 8f,                                     <span class="c">// 行と行の間隔</span>
+            Recycled = (row, oldIndex) =&gt; { <span class="c">/* 押下の見た目・スワイプを戻す */</span> },
+        };
+    }
+
+    <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx) =&gt; list.Update();   <span class="c">// 毎フレーム呼ぶ（変化が無ければ何もしない）</span>
+}</pre>
+  <div class="api"><code class="sig">list.SetCount(int n)</code><span class="desc">行の数を変える（次の Update で入れ直す）</span></div>
+  <div class="api"><code class="sig">list.SetExtentOf(Func&lt;int, float&gt; extent)</code><span class="desc">行ごとの長さ（null で固定へ戻す）</span></div>
+  <div class="api"><code class="sig">list.Refresh()</code><span class="desc">データが変わった: 付いている行の中身を入れ直す</span></div>
+  <div class="api"><code class="sig">list.ScrollToIndex(int i, float seconds, float align)</code><span class="desc">行 i を窓の先頭へ（揃え 0 = 先頭・0.5 = 中央・1 = 終わり。時間 0 はすぐ移す）</span></div>
+  <div class="api"><code class="sig">list.RowOf(int i) / list.IndexOf(GameObject row)</code><span class="desc">GameObject?（行 i に付いている行。見えていなければ null） ／ int（行が付いている番号。−1 = 付いていない）</span></div>
+  <div class="api"><code class="sig">list.VisibleRange / list.CreatedRowCount</code><span class="desc">ListRange（見えている行の範囲。First・Last・Count・IsEmpty） ／ int（作った行の数。見えている行 + 前後の余白の分で止まる）</span></div>
+  <table>
+    <tr><th>規則</th><th>内容</th></tr>
+    <tr><td>作る行</td><td>窓の長さ + 前後の <code>CacheExtent</code>（既定はスクロールの 250）と交わる行だけ。足りなければプレハブから作り（<b>次のフレームから使える</b>。作る間は隠す）、以後は使い回す</td></tr>
+    <tr><td>使い回し</td><td>窓の外へ出た行を、新しく見えた行へ付け替える（位置を合わせて <code>bind</code> を呼ぶ）。付いたままの行は作り直さない。付け替える前に <a href="#cmp-cancelgestures"><code>CancelGestures</code></a> で押下・ドラッグを取り消し、<code>Recycled</code> を呼ぶ</td></tr>
+    <tr><td>中身の長さ</td><td>行の数と長さ（と間隔・余白）から決めて、スクロールを <code>Fixed</code> の中身の大きさにする</td></tr>
+    <tr><td>行のプレハブ</td><td>anchor (0,0)・スクロールの軸の pivot 0 を推奨。横いっぱいにするなら <code>CanvasLayoutItem</code> の <code>fill_width</code>。行は窓（か <code>content</code>）の子として作る</td></tr>
+  </table>
+
+  <h3 id="ui-swipeactions">SwipeActions（行を横へずらすと削除・編集のボタンが出る）</h3>
+<pre><span class="c">// 行のプレハブ: Row（CanvasGesture: tap=false・drag・fling・drag_axis=horizontal）</span>
+<span class="c">//              ├─ Actions（右端の削除ボタン）  └─ Front（ずらす見た目。受けるジェスチャーの無い CanvasGesture＝遮る板）</span>
+<span class="k">public class</span> <span class="t">AlarmRow</span> : <span class="t">SEEDScript</span>
+{
+    <span class="k">private</span> <span class="t">SwipeActions</span> swipe;
+    <span class="k">public override void</span> OnStart()
+    {
+        swipe = <span class="k">new</span> <span class="t">SwipeActions</span>(gameObject.FindChild(<span class="s">"Front"</span>), actionsExtent: 96f)   <span class="c">// 左へ 96 ずらすと右の操作が見える</span>
+        {
+            Group = <span class="t">SwipeGroup</span>.For(gameObject.Parent),   <span class="c">// 同じ一覧の行は開いているのを 1 つにする</span>
+            Opened = s =&gt; { }, Closed = s =&gt; { },
+        };
+    }
+    <span class="k">public override void</span> OnGestureDragStart(<span class="t">SEED.GestureEvent</span> e)  =&gt; swipe.OnDragStart(e);
+    <span class="k">public override void</span> OnGestureDragUpdate(<span class="t">SEED.GestureEvent</span> e) =&gt; swipe.OnDragUpdate(e);
+    <span class="k">public override void</span> OnGestureDragEnd(<span class="t">SEED.GestureEvent</span> e)    =&gt; swipe.OnDragEnd(e);
+    <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)       =&gt; swipe.Update(<span class="t">SEED.Time</span>.UnscaledDeltaTime);
+}</pre>
+  <div class="api"><code class="sig">swipe.Open() / swipe.Close() / swipe.Reset()</code><span class="desc">開く・閉じる（動きつき）・すぐ閉じる（行の使い回し）</span></div>
+  <div class="api"><code class="sig">swipe.IsOpen / swipe.Offset / swipe.IsDragging / swipe.IsAnimating</code><span class="desc">今の開閉状態・ずらし量・ドラッグ中か・アニメ中か</span></div>
+  <div class="api"><code class="sig">SwipeGroup.For(GameObject listNode).CloseAll()</code><span class="desc">同じ組の開いている行をすべて閉じる（一覧の <a href="#lc-scroll">OnScrollStart</a> から呼ぶ）</span></div>
+  <table>
+    <tr><th>規則</th><th>内容（出典: Android の ItemTouchHelper。2026-09-28 に androidx のソースで確認）</th></tr>
+    <tr><td>開く・閉じる</td><td>離したときの横の速さが 120 dp/秒以上なら向きで決める。それより遅ければ、開いた量の半分以上ずらしていれば開く</td></tr>
+    <tr><td>動き</td><td>250ms・Material の fastOutSlowIn。動いている間は <a href="#sec-redraw"><code>Redraw.Request()</code></a>（on_demand でも止まらない）</td></tr>
+    <tr><td>組</td><td>ある行のドラッグが始まると、同じ組の他の開いている行が閉じる</td></tr>
+    <tr><td>軸</td><td>縦の一覧の中では、最初の指の動きが横ならスワイプ、縦なら一覧のスクロール（W2-2 のアリーナの軸の競い）</td></tr>
+  </table>
 </section>
 
 <!-- ════════════════ 8. シェーディングアセット (WGSL) ════════════════ -->

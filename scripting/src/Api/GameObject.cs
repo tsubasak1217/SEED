@@ -102,6 +102,18 @@ public readonly struct GameObject
         set => ScriptHost.TrySetString(_entity, ActorComp, "name", value);
     }
 
+    // ── ジェスチャーの取り消し（W2-3）─────────────────────────
+
+    /// <summary>
+    /// この GameObject とその子孫の、ジェスチャーの押下とドラッグを取り消す（一覧の行を使い回す前に呼ぶ）。
+    ///
+    /// 押している最中の行が別のデータに変わっても、元の押下の Tap が新しい行へ届かないようにする。
+    /// 押していたノードには <see cref="SEEDScript.OnGesturePressCancel"/>、ドラッグ中（スワイプ）なら取り消しの
+    /// <see cref="SEEDScript.OnGestureDragEnd"/>（<c>Canceled = true</c>）が**次のフレーム**に届く（押下の見た目を戻す）。
+    /// 実際の取り消しはフレーム末尾に行われる（<see cref="Visible"/> と同じ遅延の流儀）。
+    /// </summary>
+    public void CancelGestures() => ScriptHost.TrySetBool(_entity, ActorComp, "cancel_gestures", true);
+
     // ── シーン操作（静的 API）────────────────────────────────
 
     /// <summary>
