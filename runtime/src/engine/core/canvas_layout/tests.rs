@@ -136,6 +136,7 @@ fn point_inside_nested_clip_chain() {
         parent,
         owner: 0,
         source: ClipRectSource::CanvasArea,
+        shape: crate::engine::core::renderer::ui_shape::UiClipShape::NONE,
     };
     let regions = vec![region([0.0, 0.0], [100.0, 100.0], None), region([50.0, 50.0], [200.0, 200.0], Some(0))];
     assert!(point_inside_clip_chain(&regions, None, [500.0, 500.0]), "切り抜きの外のノードは常に内側");
@@ -151,7 +152,7 @@ fn point_inside_nested_clip_chain() {
 /// 切り抜きのコンポーネントのスロットを足す（`enabled` はコンポーネントの旗、`slot_enabled` はスロットの旗）。
 fn add_clip(world: &mut World, actor: &mut Actor, enabled: bool, slot_enabled: bool) {
     let slot = world.spawn();
-    world.insert(slot, CanvasClipComponent { enabled });
+    world.insert(slot, CanvasClipComponent { enabled, ..CanvasClipComponent::default() });
     actor.add_slot_typed::<CanvasClipComponent>("CanvasClip", ComponentKind::CanvasClip, slot);
     if !slot_enabled {
         if let Some(last) = actor.slots_mut().last_mut() {

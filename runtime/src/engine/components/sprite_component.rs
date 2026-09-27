@@ -12,6 +12,9 @@
 //  - Canvas の子アクターを選択して追加 → 選択アクターに直接追加
 // ============================================================
 
+use crate::engine::components::sprite_style::{
+    is_plain_style, SpriteFill, SpriteNineSlice, SpriteShadow, SpriteShape,
+};
 use crate::engine::ecs::Component;
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +44,19 @@ pub struct SpriteComponentData {
     /// 既定 false（オプトイン）。旧データ互換のため #[serde(default)]。
     #[serde(default)]
     pub raycast_target: bool,
+    /// 形（矩形の四隅の角丸・楕円・弧）と縁の線（W2-4。既定 = 直角の矩形・縁なし）。
+    /// 既定なら保存しない（既存のシーンを保存し直してもファイルは変わらない）。
+    #[serde(default, skip_serializing_if = "SpriteShape::is_default")]
+    pub shape: SpriteShape,
+    /// 塗り（単色・線形・放射のグラデーション。W2-4。既定 = 単色）。
+    #[serde(default, skip_serializing_if = "SpriteFill::is_default")]
+    pub fill: SpriteFill,
+    /// 画像の 9 スライス（W2-4。既定 = 使わない）。
+    #[serde(default, skip_serializing_if = "SpriteNineSlice::is_default")]
+    pub nine_slice: SpriteNineSlice,
+    /// ぼかしの影（W2-4。既定 = 描かない）。
+    #[serde(default, skip_serializing_if = "SpriteShadow::is_default")]
+    pub shadow: SpriteShadow,
 }
 
 // ─── SpriteComponent ─────────────────────────────────────────────────────────
@@ -80,6 +96,19 @@ pub struct SpriteComponent {
     /// エディタの選択ピッキングには影響しない（そちらは常に全スプライトが対象）。
     #[serde(default)]
     pub raycast_target: bool,
+    /// 形（矩形の四隅の角丸・楕円・弧）と縁の線（W2-4。既定 = 直角の矩形・縁なし）。
+    /// 既定なら保存しない（既存のシーンを保存し直してもファイルは変わらない）。
+    #[serde(default, skip_serializing_if = "SpriteShape::is_default")]
+    pub shape: SpriteShape,
+    /// 塗り（単色・線形・放射のグラデーション。W2-4。既定 = 単色）。
+    #[serde(default, skip_serializing_if = "SpriteFill::is_default")]
+    pub fill: SpriteFill,
+    /// 画像の 9 スライス（W2-4。既定 = 使わない）。
+    #[serde(default, skip_serializing_if = "SpriteNineSlice::is_default")]
+    pub nine_slice: SpriteNineSlice,
+    /// ぼかしの影（W2-4。既定 = 描かない）。
+    #[serde(default, skip_serializing_if = "SpriteShadow::is_default")]
+    pub shadow: SpriteShadow,
 }
 
 impl SpriteComponent {
@@ -94,6 +123,10 @@ impl SpriteComponent {
             layer: data.layer,
             postfx_path: data.postfx_path,
             raycast_target: data.raycast_target,
+            shape: data.shape,
+            fill: data.fill,
+            nine_slice: data.nine_slice,
+            shadow: data.shadow,
         }
     }
 
@@ -107,7 +140,18 @@ impl SpriteComponent {
             layer: self.layer,
             postfx_path: self.postfx_path.clone(),
             raycast_target: self.raycast_target,
+            shape: self.shape.clone(),
+            fill: self.fill.clone(),
+            nine_slice: self.nine_slice.clone(),
+            shadow: self.shadow.clone(),
         }
+    }
+}
+
+impl SpriteComponent {
+    /// 形と塗りの欄（W2-4）がすべて既定か（＝従来のパイプラインで今と画素単位で同じに描く）。
+    pub fn is_plain_style(&self) -> bool {
+        is_plain_style(&self.shape, &self.fill, &self.nine_slice, &self.shadow)
     }
 }
 
@@ -122,6 +166,10 @@ impl Default for SpriteComponent {
             layer: 0,
             postfx_path: String::new(),
             raycast_target: false,
+            shape: SpriteShape::default(),
+            fill: SpriteFill::default(),
+            nine_slice: SpriteNineSlice::default(),
+            shadow: SpriteShadow::default(),
         }
     }
 }

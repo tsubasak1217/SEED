@@ -1,0 +1,595 @@
+{
+ "name": "Radios",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "RadioGroup",
+   "component": {
+    "type": "ScriptComponent",
+    "data": {
+     "type_name": "SEED.UI.RadioGroup",
+     "fields": {
+      "InitialSelection": "[0]"
+     }
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Radio0",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+       ],
+       "width": 20.0,
+       "height": 20.0,
+       "layer": 0,
+       "shape": {
+        "kind": "ellipse",
+        "border_width": 2.0,
+        "border_color": [
+         0.396755,
+         0.361307,
+         0.47932,
+         1.0
+        ]
+       }
+      }
+     }
+    },
+    {
+     "name": "Gesture",
+     "component": {
+      "type": "CanvasGestureComponent",
+      "data": {
+       "tap": true
+      }
+     }
+    },
+    {
+     "name": "SelectItem",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.SelectItem",
+       "fields": {
+        "Index": "0",
+        "Disabled": "false"
+       }
+      }
+     }
+    }
+   ],
+   "children": [
+    {
+     "name": "Dot",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       5.0,
+       5.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.201556,
+          0.107023,
+          1.0,
+          1.0
+         ],
+         "width": 10.0,
+         "height": 10.0,
+         "layer": 0,
+         "shape": {
+          "kind": "ellipse"
+         }
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Label",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       32.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "音",
+         "font_size": 14.0,
+         "color": [
+          0.838799,
+          0.791298,
+          0.913099,
+          1.0
+         ],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 160.0,
+         "box_height": 20.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    }
+   ]
+  },
+  {
+   "name": "Radio1",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     36.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+       ],
+       "width": 20.0,
+       "height": 20.0,
+       "layer": 0,
+       "shape": {
+        "kind": "ellipse",
+        "border_width": 2.0,
+        "border_color": [
+         0.396755,
+         0.361307,
+         0.47932,
+         1.0
+        ]
+       }
+      }
+     }
+    },
+    {
+     "name": "Gesture",
+     "component": {
+      "type": "CanvasGestureComponent",
+      "data": {
+       "tap": true
+      }
+     }
+    },
+    {
+     "name": "SelectItem",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.SelectItem",
+       "fields": {
+        "Index": "1",
+        "Disabled": "false"
+       }
+      }
+     }
+    }
+   ],
+   "children": [
+    {
+     "name": "Dot",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       5.0,
+       5.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.201556,
+          0.107023,
+          1.0,
+          1.0
+         ],
+         "width": 10.0,
+         "height": 10.0,
+         "layer": 0,
+         "shape": {
+          "kind": "ellipse"
+         }
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Label",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       32.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "振動",
+         "font_size": 14.0,
+         "color": [
+          0.838799,
+          0.791298,
+          0.913099,
+          1.0
+         ],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 160.0,
+         "box_height": 20.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    }
+   ]
+  },
+  {
+   "name": "Radio2",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     72.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+       ],
+       "width": 20.0,
+       "height": 20.0,
+       "layer": 0,
+       "shape": {
+        "kind": "ellipse",
+        "border_width": 2.0,
+        "border_color": [
+         0.396755,
+         0.361307,
+         0.47932,
+         1.0
+        ]
+       }
+      }
+     }
+    },
+    {
+     "name": "Gesture",
+     "component": {
+      "type": "CanvasGestureComponent",
+      "data": {
+       "tap": true
+      }
+     }
+    },
+    {
+     "name": "SelectItem",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.SelectItem",
+       "fields": {
+        "Index": "2",
+        "Disabled": "false"
+       }
+      }
+     }
+    }
+   ],
+   "children": [
+    {
+     "name": "Dot",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       5.0,
+       5.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [
+          0.201556,
+          0.107023,
+          1.0,
+          1.0
+         ],
+         "width": 10.0,
+         "height": 10.0,
+         "layer": 0,
+         "shape": {
+          "kind": "ellipse"
+         }
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Label",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       32.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "両方",
+         "font_size": 14.0,
+         "color": [
+          0.838799,
+          0.791298,
+          0.913099,
+          1.0
+         ],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 160.0,
+         "box_height": 20.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    }
+   ]
+  }
+ ]
+}

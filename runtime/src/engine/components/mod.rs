@@ -32,6 +32,8 @@ pub mod canvas_gesture_component;
 /// スクロールの領域（向き・端の跳ね返りか止める・慣性・スナップ・入れ子・中身の大きさ・見える範囲の外を飛ばす。W2-3）
 pub mod canvas_scroll_component;
 pub mod sprite_component;
+/// スプライトの形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影。W2-4）。
+pub mod sprite_style;
 /// メッシュ変形スキニング 2D スプライト（Phase A1: Spine 風メッシュ変形の土台）
 pub mod skinned_sprite_component;
 pub mod inputmap_component;
@@ -79,7 +81,7 @@ pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };
 pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone, CanvasUnit};
-pub use canvas_clip_component::{CanvasClipComponent, CanvasClipComponentData};
+pub use canvas_clip_component::{CanvasClipComponent, CanvasClipComponentData, ClipShapeMode};
 pub use canvas_layout_params::{
     CanvasPadding, CrossAlign, HiddenChildren, IndexedEnum, ItemAlign, LayoutDirection, MainAlign,
 };
@@ -95,6 +97,9 @@ pub use canvas_scroll_component::{
     CanvasScrollComponent, CanvasScrollComponentData, ScrollContentSize, ScrollDirection, ScrollEdge, ScrollSnap,
 };
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
+pub use sprite_style::{
+    NineSliceMode, SpriteFill, SpriteFillKind, SpriteNineSlice, SpriteShadow, SpriteShape, SpriteShapeKind,
+};
 pub use skinned_sprite_component::{SkinnedSpriteComponent, SkinnedSpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
 pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode, CameraProjection};

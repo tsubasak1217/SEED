@@ -1,0 +1,182 @@
+{
+ "name": "Card",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [
+      0.012983,
+      0.01096,
+      0.019382,
+      1.0
+     ],
+     "width": 220.0,
+     "height": 120.0,
+     "layer": 0,
+     "shape": {
+      "kind": "rect",
+      "corner_radii": [
+       20.0,
+       20.0,
+       20.0,
+       20.0
+      ]
+     },
+     "shadow": {
+      "enabled": true,
+      "color": [
+       0.0,
+       0.0,
+       0.0,
+       0.45
+      ],
+      "offset": [
+       0.0,
+       4.0
+      ],
+      "blur": 12.0
+     }
+    }
+   }
+  },
+  {
+   "name": "Clip",
+   "component": {
+    "type": "CanvasClipComponent",
+    "data": {
+     "enabled": true,
+     "shape": "sprite_shape"
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Image",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     -10.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "assets://ui/textures/avatar.png",
+       "color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+       ],
+       "width": 220.0,
+       "height": 72.0,
+       "layer": 0
+      }
+     }
+    }
+   ],
+   "children": []
+  },
+  {
+   "name": "Title",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     14.0,
+     86.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "角丸のカード",
+       "font_size": 14.0,
+       "color": [
+        0.838799,
+        0.791298,
+        0.913099,
+        1.0
+       ],
+       "align": "left",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 192.0,
+       "box_height": 24.0,
+       "wrap": false
+      }
+     }
+    }
+   ],
+   "children": []
+  }
+ ]
+}

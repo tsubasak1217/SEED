@@ -29,6 +29,8 @@ pub mod ui_draw_order;
 pub mod ui_draw_pass;
 /// UI の切り抜き（クリップ）: 切り抜きの領域の収集・ランの分割・scissor の矩形の計算（W2-0 の試作。純関数・単体テストあり）
 pub mod ui_clip;
+/// スプライトの形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影）と角丸・楕円の切り抜き（W2-4）。
+pub mod ui_shape;
 /// GPU パーティクル シミュレーション＋描画（Phase RP）
 pub(crate) mod particle_system;
 /// GPU パーティクルの組込み形状メッシュ（Point/Sphere/Box/Plane/Model）
@@ -241,7 +243,7 @@ pub use transparency::{TransparencyMode, TransparentPipelines,
                        WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
 pub use sprite_skin::{SpriteSkinCache, SpriteSkinPipeline, SkinnedSpriteDraw, GpuSpriteMesh};
 pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList, SpriteDrawItem,
-                  SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
+                  SpriteStreamGpu, SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
 pub use postfx::{PostfxContext, SpritePostfxCache};
 pub use view_mode::{SceneViewMode, GBufferDebugChannel, set_wireframe_supported, wireframe_supported};
 pub use velocity_debug::{VelocityDebugPipeline, VELOCITY_DEBUG_ENABLED};

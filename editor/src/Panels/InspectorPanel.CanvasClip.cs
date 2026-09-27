@@ -13,7 +13,7 @@ namespace SEEDEditor.Panels;
 ///   描かれず、ポインタイベントも当たらない。ノード自身の Sprite（背景の板）は切らない。
 ///
 /// ■ 欄
-///   有効フラグ 1 つだけ（角丸・円の切り抜きの欄は W2-4 で足す）。変更時は
+///   有効フラグと、形（矩形・角丸・楕円・スプライトの形に合わせる。W2-4）・角丸の半径。有効フラグの変更時は
 ///   <c>SET_CANVAS_CLIP_FIELD:{actor},{slot},enabled,{true|false}</c> を送る（Undo はランタイム側の共通機構）。
 ///   スロットの見出しの有効・無効とは別の旗で、両方が有効のときだけ切り抜く
 ///   （この旗はスクリプトの <c>CanvasClip.Enabled</c> から切り替えられる）。
@@ -52,6 +52,9 @@ public partial class InspectorPanel
         // 有効フラグ（スクリプトの CanvasClip.Enabled と同じ旗）
         body.Children.Add(BuildCheckRow("子を切り抜く", info.CanvasClipEnabled,
             v => SendField("enabled", v ? "true" : "false")));
+
+        // 切り抜きの形（W2-4。角丸は RoundedRect のときだけ出す＝関係のない欄は隠す）
+        AddCanvasClipShapeRows(body, info, SendField);
 
         body.Children.Add(new TextBlock
         {

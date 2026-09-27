@@ -61,6 +61,7 @@ templates/
   terrain/   HeightMap/, layers.json, props.json, …
   input/     playerInput.inputmap, …
   scripts/   FollowCamera.cs, …
+  ui/        prefabs/（UI 部品のプレハブ）・scenes/ui_gallery.scene・scripts/・textures/（W2-4。docs/ui_components.md）
 ```
 
 - `templates/shaders/toon.wgsl` は、プロジェクトへは **`assets/shaders/toon.wgsl`** としてコピーされる。
@@ -81,6 +82,7 @@ templates/
 | `models` | モデル | | `terrain` | 地形 |
 | `textures` | テクスチャ | | `input` | 入力設定 |
 | `shaders` | シェーダ | | `scripts` | スクリプト |
+| `ui` | UI 部品（W2-4） | | | |
 
 **表に無いフォルダはフォルダ名のまま表示される**（既知カテゴリの後ろに並ぶ）。
 フォルダを 1 つ足せばカテゴリが 1 つ増えるので、走査やインポートのコードは触らなくてよい。

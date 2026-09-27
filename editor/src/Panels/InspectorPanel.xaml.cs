@@ -875,6 +875,9 @@ public partial class InspectorPanel : UserControl
         // Sprite / SkinnedSprite 用: ポインタイベント（OnPointerEnter/Down/Click 等）の判定対象か。
         // 既定 false のオプトイン。true のスプライトだけが Play 中のクリック判定に参加する。
         bool SpriteRaycastTarget = false,
+        // SpriteComponent 用: 形と塗り（W2-4。ランタイムが serde の書式のまま "sprite_style" に入れて送る生の JSON。
+        // InspectorPanel.SpriteStyle.cs が読む）
+        string SpriteStyleJson = SpriteStyleEmptyJson,
         // SpriteComponent 用: テクスチャ単位ポストエフェクト（.postfx アセット）参照。空文字列 = 未設定
         string PostFxPath = "",
         // SkinnedSpriteComponent 用: メッシュアセット（.sprite_mesh）参照。空文字列 = 未設定
@@ -1151,6 +1154,8 @@ public partial class InspectorPanel : UserControl
         // ── CanvasClipComponent 用フィールド（W2-1a）──
         // 有効フラグ（既定 true。Rust 側 CanvasClipComponentData と一致）。
         bool CanvasClipEnabled = CanvasClipEnabledDefault,
+        // 切り抜きの形（W2-4。"clip_style" の生の JSON。{"shape":"…","corner_radii":[…]}）
+        string CanvasClipStyleJson = SpriteStyleEmptyJson,
         // ── レイアウトの部品（CanvasStack・Wrap・Grid・LayoutItem・SafeArea。W2-1b）──
         // ランタイムが serde の書式のまま "layout" に入れて送る値（生の JSON。InspectorPanel.CanvasLayout.cs が読む）。
         string CanvasLayoutJson = CanvasLayoutEmptyJson,
@@ -1521,6 +1526,8 @@ public partial class InspectorPanel : UserControl
             var sprLayer = comp.TryGetProperty("layer", out var slj) ? slj.GetInt32() : 0;
             // Sprite / SkinnedSprite 用: ポインタイベントの判定対象か（オプトイン・既定 false）
             var sprRaycast = comp.TryGetProperty("raycast_target", out var srt) && ReadJsonBool(srt, false);
+            // SpriteComponent 用: 形と塗り（W2-4）。生の JSON のまま持つ（鍵 "sprite_style" はスロット共通の欄とぶつからない）
+            var sprStyleJson = comp.TryGetProperty(SpriteStyleJsonKey, out var ssj) ? ssj.GetRawText() : SpriteStyleEmptyJson;
             // SkinnedSpriteComponent 用: メッシュパス・ボーン対応表の件数
             var skinMeshPath = comp.TryGetProperty("mesh_path", out var smp) ? smp.GetString() ?? "" : "";
             var skinBoneOverrides = comp.TryGetProperty("bone_override_count", out var sboc) ? sboc.GetInt32() : 0;
@@ -1811,6 +1818,8 @@ public partial class InspectorPanel : UserControl
             // 【重要】キーは "clip_enabled"。スロット共通の "enabled"(数値0/1)とキー重複させると
             // GetProperty が数値側を返し GetBoolean() が例外になる（InteractionSource の既往リグレッション）。
             var canvasClipEnabled = comp.TryGetProperty("clip_enabled", out var cce) ? cce.GetBoolean() : CanvasClipEnabledDefault;
+            // 切り抜きの形（W2-4）
+            var canvasClipStyleJson = comp.TryGetProperty(CanvasClipStyleJsonKey, out var ccs) ? ccs.GetRawText() : SpriteStyleEmptyJson;
             // レイアウトの部品（W2-1b）: 値の JSON を生のまま持つ（鍵 "layout" はスロット共通の "enabled" とぶつからない）
             var canvasLayoutJson = comp.TryGetProperty(CanvasLayoutJsonKey, out var clj) ? clj.GetRawText() : CanvasLayoutEmptyJson;
             // ControlPointComponent 用（フェーズB）: 制御点配列を生 JSON のまま保持する。
@@ -1849,6 +1858,7 @@ public partial class InspectorPanel : UserControl
                 SpriteW: sprW, SpriteH: sprH,
                 SpriteLayer: sprLayer,
                 SpriteRaycastTarget: sprRaycast,
+                SpriteStyleJson: sprStyleJson,
                 PostFxPath: postFxPath,
                 SkinMeshPath: skinMeshPath, SkinBoneOverrideCount: skinBoneOverrides,
                 SkinBonesRaw: skinBones, SkinBoneCandidatesRaw: skinBoneCands,
@@ -1986,6 +1996,7 @@ public partial class InspectorPanel : UserControl
                 InteractionStampSizeZ: stampSizeZ,
                 // CanvasClipComponent 用フィールド（W2-1a）
                 CanvasClipEnabled: canvasClipEnabled,
+                CanvasClipStyleJson: canvasClipStyleJson,
                 // レイアウトの部品（W2-1b）
                 CanvasLayoutJson: canvasLayoutJson,
                 // ControlPointComponent 用フィールド
@@ -5438,6 +5449,9 @@ public partial class InspectorPanel : UserControl
             raycastFe.ToolTip =
                 "ON にすると Play 中のマウス判定対象になり、\nこのアクターのスクリプトへ OnPointerEnter / Down / Up / Click / Exit が届きます。\n判定は最前面の 1 枚だけに届きます（既定 OFF）。";
         sp.Children.Add(rowRaycast);
+
+        // 形と塗り（W2-4。角丸・楕円・弧・縁・グラデーション・9 スライス・影。InspectorPanel.SpriteStyle.cs）
+        AddSpriteStyleSections(sp, info);
 
         return sp;
     }

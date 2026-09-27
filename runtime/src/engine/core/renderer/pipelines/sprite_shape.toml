@@ -1,0 +1,18 @@
+shader_sources  = ["sprite_shape.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+# スプライトの形と塗り（W2-4）。slot0 = ユニットクワッドの位置（sprite.toml と同じバッファ）, slot1 = ShapeInstance
+vertex_slots    = ["sprite_pos", "shape_instance"]
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# sprite.toml と同じ深度の規則（深度書き込みなし・3D ワールドキャンバスでは LessEqual で前後を解く）
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+# シェーダーが乗算済みアルファで出す（sprite.toml の AlphaBlending と同じ合成結果）
+blend           = "PremultipliedAlpha"
+write_mask      = "all"

@@ -13,9 +13,16 @@
 //       x の祖先でないなら x は遮られて外れる（覆いの板・ダイアログの後ろへは届かない）
 //    R4 近い方: 残った葉のうち、点から見た目の矩形までの距離（中なら 0）が最小のもの。同じなら手前のもの
 //    経路: 選んだ葉と、その祖先のうち候補であるもの（近い順）。アリーナは経路の順（葉が先）に認識器を並べる
+//
+//  【形（W2-4）】見た目が Sprite の矩形のノードは、Sprite の形（角丸・楕円・弧）を `shape` に持つ。
+//  R1 の「広げた矩形」は「広げた形」（renderer/ui_shape/shape_hit.rs の contains_expanded。円のボタンの角は押せない）、
+//  R3・R4 の「見た目の矩形」は「見た目の形」になる。切り抜きは祖先の AABB に加え、いちばん内側の形のある切り抜きの
+//  形（`clip_shape`）の内側だけが候補（描画の SDF と同じ規則）。
 // ============================================================
 
 use crate::engine::components::CanvasGestureComponent;
+use crate::engine::core::renderer::ui_shape::shape_hit::contains_expanded;
+use crate::engine::core::renderer::ui_shape::{ClipSdf, ShapeGeom};
 use crate::engine::ecs::Entity;
 
 /// 行列（行優先 4×4。キャンバスのレイアウトの表と同じ形）。
@@ -38,6 +45,15 @@ pub struct PaintOrder {
 /// 切り抜きの領域の AABB（キャンバスの画素。min, max）。
 pub type ClipAabb = ([f32; 2], [f32; 2]);
 
+/// ノードの見た目の形（W2-4。Sprite の角丸・楕円・弧）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeHitShape {
+    /// 形（形の空間＝キャンバスの単位）。
+    pub geom: ShapeGeom,
+    /// ローカルの 1 画素が形の空間で何単位か（縦横。形の空間の大きさ ÷ ローカルの大きさ）。
+    pub units_per_local: [f32; 2],
+}
+
 /// ジェスチャーの当たり判定の材料（ノード 1 つ）。
 #[derive(Clone, Debug)]
 pub struct GestureHitNode {
@@ -57,6 +73,10 @@ pub struct GestureHitNode {
     pub settings: CanvasGestureComponent,
     /// ローカルの画素 ÷ キャンバスの単位（イベントの LocalPosition をノードの単位にする倍率。dp のキャンバスなら dp）。
     pub unit_scale: [f32; 2],
+    /// 見た目の形（W2-4。None = 矩形）。
+    pub shape: Option<NodeHitShape>,
+    /// いちばん内側の形のある切り抜き（W2-4。キャンバスの画素の空間。None = AABB だけ）。
+    pub clip_shape: Option<ClipSdf>,
 }
 
 impl GestureHitNode {
@@ -102,11 +122,22 @@ impl GestureHitNode {
         let Some(local) = self.to_local(p) else { return false };
         let expand = self.expansion(dp_scale);
         let scale = self.axis_scale();
-        (0..2).all(|a| {
+        let margins = [0, 1].map(|a| {
             let extra = if scale[a] > AXIS_EPSILON { extra_px.max(0.0) / scale[a] } else { 0.0 };
-            let margin = expand[a] + extra;
+            expand[a] + extra
+        });
+        // 見た目の形があれば、形を同じだけ広げて調べる（W2-4。円のボタンの角は押せない）
+        if let Some(shape) = &self.shape {
+            let u = shape.units_per_local;
+            return contains_expanded(
+                &shape.geom,
+                [local[0] * u[0], local[1] * u[1]],
+                [margins[0] * u[0], margins[1] * u[1]],
+            );
+        }
+        (0..2).all(|a| {
             let (lo, hi) = (self.size[a].min(0.0), self.size[a].max(0.0));
-            local[a] >= lo - margin && local[a] <= hi + margin
+            local[a] >= lo - margins[a] && local[a] <= hi + margins[a]
         })
     }
 
@@ -114,6 +145,16 @@ impl GestureHitNode {
     pub fn visual_distance(&self, p: [f32; 2]) -> f32 {
         let Some(local) = self.to_local(p) else { return f32::INFINITY };
         let scale = self.axis_scale();
+        // 見た目の形があれば形までの距離（W2-4）。形の空間の距離を縦横の倍率の平均で画面の画素へ直す（近似）
+        if let Some(shape) = &self.shape {
+            let u = shape.units_per_local;
+            let d = shape.geom.distance([local[0] * u[0], local[1] * u[1]]);
+            if d <= 0.0 {
+                return 0.0;
+            }
+            let px_per_unit = [0, 1].map(|a| if u[a].abs() > AXIS_EPSILON { scale[a] / u[a].abs() } else { scale[a] });
+            return d * (px_per_unit[0] + px_per_unit[1]) * 0.5;
+        }
         let d = [0, 1].map(|a| {
             let (lo, hi) = (self.size[a].min(0.0), self.size[a].max(0.0));
             let outside = (lo - local[a]).max(local[a] - hi).max(0.0);
@@ -127,6 +168,8 @@ impl GestureHitNode {
         self.clip_aabbs
             .iter()
             .all(|(min, max)| p[0] >= min[0] && p[0] <= max[0] && p[1] >= min[1] && p[1] <= max[1])
+            // いちばん内側の形のある切り抜きの形の内側か（W2-4。描画の SDF と同じ規則）
+            && self.clip_shape.is_none_or(|clip| clip.contains(p))
     }
 
     /// 点を切り抜きの内側で、広げたヒット領域に含むか（R1 の候補の条件）。
@@ -211,6 +254,8 @@ pub(crate) mod tests {
             paint: PaintOrder { zone_front: 1, layer: 0, dfs },
             settings: CanvasGestureComponent::default(),
             unit_scale: [1.0, 1.0],
+            shape: None,
+            clip_shape: None,
         }
     }
 
@@ -293,5 +338,36 @@ pub(crate) mod tests {
         let mut n = rect_node(3, 10.0, 20.0, 100.0, 100.0, 0);
         n.unit_scale = [2.0, 2.0];
         assert_eq!(n.local_position_in_units([30.0, 60.0]), [10.0, 20.0]);
+    }
+    /// 円のボタン（W2-4）: 見た目の形の外（外接矩形の角）は候補にならず、48 dp まで広げても広げた円の外は外れる。
+    #[test]
+    fn round_button_corners_are_not_hit() {
+        use crate::engine::core::renderer::ui_shape::ShapeGeom;
+        // 左上 (100, 100)・直径 60 の円（48 dp より大きいので広げない）
+        let mut n = rect_node(1, 100.0, 100.0, 60.0, 60.0, 0);
+        n.shape = Some(NodeHitShape { geom: ShapeGeom::ellipse([60.0, 60.0]), units_per_local: [1.0, 1.0] });
+        assert!(n.is_candidate([130.0, 130.0], 1.0), "中心");
+        assert!(n.is_candidate([130.0, 101.0], 1.0), "上の縁の内側");
+        assert!(!n.is_candidate([103.0, 103.0], 1.0), "外接矩形の左上の角は押せない");
+        assert!(n.visual_distance([103.0, 103.0]) > 0.0, "角は見た目の外（遮らない）");
+        // 直径 30 の円は 48 まで広げても角は外れる（広げた円の縁の内側は当たる）
+        let mut small = rect_node(2, 0.0, 0.0, 30.0, 30.0, 0);
+        small.shape = Some(NodeHitShape { geom: ShapeGeom::ellipse([30.0, 30.0]), units_per_local: [1.0, 1.0] });
+        assert!(small.is_candidate([15.0, -8.5], 1.0), "上へ 8.5 はみ出した点（広げた円の中）");
+        assert!(!small.is_candidate([-8.0, -8.0], 1.0), "広げた矩形の角");
+    }
+
+    /// 形のある切り抜き（W2-4）: 楕円の切り抜きの外接矩形の角で押しても当たらない。
+    #[test]
+    fn round_clip_rejects_corners() {
+        use crate::engine::core::renderer::ui_shape::{ClipSdf, UiClipShape};
+        let mut n = rect_node(1, 0.0, 0.0, 100.0, 100.0, 0);
+        n.clip_aabbs = vec![([0.0, 0.0], [100.0, 100.0])];
+        n.clip_shape = ClipSdf::new(
+            &[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [100.0, 100.0, 0.0]],
+            &UiClipShape::ellipse([100.0, 100.0]),
+        );
+        assert!(n.is_candidate([50.0, 50.0], 1.0));
+        assert!(!n.is_candidate([4.0, 4.0], 1.0), "切り抜きの円の外");
     }
 }

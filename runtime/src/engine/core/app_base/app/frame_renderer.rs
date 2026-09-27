@@ -4976,6 +4976,8 @@ impl App {
                                     layer: 0,
                                     // エディタの選択アウトラインは切り抜かない
                                     clip:  None,
+                                    // アウトラインは形と塗りを持たない（W2-4）
+                                    style: None,
                                 });
                             }
                             items
@@ -7688,7 +7690,7 @@ impl App {
                                 &draw_ctx.pipelines.sprite,
                                 &draw_ctx.pipelines.sprite_outline,
                                 &camera_buf.bind_group,
-                                &main_inst_buf,
+                                &main_inst_buf.quad,
                                 &sprite_3d_outline_list,
                             );
                         }

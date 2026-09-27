@@ -1,0 +1,141 @@
+{
+ "name": "RoundButton",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [
+      0.201556,
+      0.107023,
+      1.0,
+      1.0
+     ],
+     "width": 56.0,
+     "height": 56.0,
+     "layer": 0,
+     "shape": {
+      "kind": "ellipse"
+     },
+     "shadow": {
+      "enabled": true,
+      "color": [
+       0.0,
+       0.0,
+       0.0,
+       0.35
+      ],
+      "offset": [
+       0.0,
+       3.0
+      ],
+      "blur": 8.0
+     }
+    }
+   }
+  },
+  {
+   "name": "Gesture",
+   "component": {
+    "type": "CanvasGestureComponent",
+    "data": {
+     "tap": true,
+     "long_press": true
+    }
+   }
+  },
+  {
+   "name": "Button",
+   "component": {
+    "type": "ScriptComponent",
+    "data": {
+     "type_name": "SEED.UI.Button",
+     "fields": {
+      "Variant": "Filled",
+      "LabelSize": "text.title"
+     }
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Label",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "+",
+       "font_size": 20.0,
+       "color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+       ],
+       "align": "center",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 56.0,
+       "box_height": 56.0,
+       "wrap": false
+      }
+     }
+    }
+   ],
+   "children": []
+  }
+ ]
+}

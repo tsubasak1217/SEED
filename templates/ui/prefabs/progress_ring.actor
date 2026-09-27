@@ -1,0 +1,120 @@
+{
+ "name": "ProgressRing",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [
+      0.027321,
+      0.023153,
+      0.042311,
+      1.0
+     ],
+     "width": 64.0,
+     "height": 64.0,
+     "layer": 0,
+     "shape": {
+      "kind": "arc",
+      "arc_sweep": 360.0,
+      "arc_thickness": 6.0
+     }
+    }
+   }
+  },
+  {
+   "name": "ProgressRing",
+   "component": {
+    "type": "ScriptComponent",
+    "data": {
+     "type_name": "SEED.UI.ProgressRing",
+     "fields": {
+      "Value": "0.7"
+     }
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Arc",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [
+        0.201556,
+        0.107023,
+        1.0,
+        1.0
+       ],
+       "width": 64.0,
+       "height": 64.0,
+       "layer": 0,
+       "shape": {
+        "kind": "arc",
+        "arc_sweep": 251.99999999999997,
+        "arc_thickness": 6.0,
+        "arc_round_caps": true
+       }
+      }
+     }
+    }
+   ],
+   "children": []
+  }
+ ]
+}

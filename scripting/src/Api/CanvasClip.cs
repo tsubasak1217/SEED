@@ -38,4 +38,22 @@ public readonly struct CanvasClip : IComponentHandle<CanvasClip>
         get => ScriptHost.TryGetBool(_entity, Comp, "enabled", out var b) && b;
         set => ScriptHost.TrySetBool(_entity, Comp, "enabled", value);
     }
+
+    /// <summary>
+    /// 切り抜きの形（W2-4。既定 Rect）。角丸・楕円はいちばん内側の 1 つだけを画素単位（SDF）で切り、
+    /// 外側の角丸・楕円の祖先は外接矩形で切る。SDF で切るのはスプライト（画像・形）だけで、テキスト・図形は外接矩形。
+    /// 当たり判定も同じ形（丸い切り抜きの外は押せない）。
+    /// </summary>
+    public ClipShape Shape
+    {
+        get => CanvasLayoutFieldAccess.GetEnum(_entity, Comp, "shape", ClipShape.Rect);
+        set => CanvasLayoutFieldAccess.SetEnum(_entity, Comp, "shape", value);
+    }
+
+    /// <summary>四隅の角丸（左上・右上・右下・左下。ノードのキャンバスの単位）。Shape が RoundedRect のときだけ効く。</summary>
+    public CornerRadii CornerRadii
+    {
+        get => SpriteStyleFieldAccess.GetRadii(_entity, Comp, "corner_radii");
+        set => SpriteStyleFieldAccess.SetRadii(_entity, Comp, "corner_radii", value);
+    }
 }

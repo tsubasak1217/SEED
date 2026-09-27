@@ -41,6 +41,8 @@ public static class TemplateCategoryNames
             ["terrain"]  = "地形",
             ["input"]    = "入力設定",
             ["scripts"]  = "スクリプト",
+            // UI の部品のプレハブ・ギャラリーのシーン・テーマ（W2-4。templates/ui/）
+            ["ui"]       = "UI 部品",
         };
 
     /// <summary>

@@ -322,6 +322,39 @@ pub(super) fn hit_test_rect_2d(
     lx >= 0.0 && lx <= eff_w && ly >= 0.0 && ly <= eff_h
 }
 
+/// キャンバス空間の点 (px, py) が、スプライトの見た目の形（角丸・楕円・弧）の中か（W2-4）。
+///
+/// 形の無い矩形（既定）は常に true（矩形の判定 `hit_test_rect_2d` だけで決まる＝従来どおり）。
+/// 形の決め方はジェスチャーの当たり判定と同じ（gesture_scene.rs の `sprite_hit_shape`）。
+///
+/// # 引数
+/// * `m`          - ローカル [0, w]×[0, h] → キャンバス空間の行列（`hit_test_rect_2d` と同じもの）
+/// * `size`       - スプライトの矩形の大きさ（ローカルの画素）
+/// * `size_scale` - サイズ倍率（ローカルの画素 ÷ キャンバスの単位）
+pub(super) fn sprite_shape_contains(
+    sc: &SpriteComponent,
+    m: &[[f32; 4]; 4],
+    size: [f32; 2],
+    size_scale: [f32; 2],
+    px: f32,
+    py: f32,
+) -> bool {
+    let Some(shape) = super::gesture_scene::sprite_hit_shape(sc, size, size_scale) else {
+        return true;
+    };
+    let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    if det.abs() < 1e-9 {
+        return false;
+    }
+    let dx = px - m[0][3];
+    let dy = py - m[1][3];
+    // クラメールの公式で逆変換（hit_test_rect_2d と同じ）
+    let lx = (dx * m[1][1] - dy * m[0][1]) / det;
+    let ly = (m[0][0] * dy - m[1][0] * dx) / det;
+    let u = shape.units_per_local;
+    crate::engine::core::renderer::ui_shape::shape_hit::contains(&shape.geom, [lx * u[0], ly * u[1]])
+}
+
 /// キャンバス空間の点 (px, py) が、ローカル境界矩形 [min, max] に入るか判定する。
 ///
 /// `hit_test_rect_2d` は原点が矩形の左上である前提（スプライト・キャンバス）だが、
@@ -532,7 +565,10 @@ pub(super) fn pick_candidates_from_table(
                     // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ。W2-1b）
                     let [eff_w, eff_h] = placement.sprite_size(sc.width, sc.height);
                     let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
-                    if hit_test_rect_2d(canvas_x, canvas_y, &m, eff_w, eff_h) {
+                    // 矩形の中で、さらに見た目の形（角丸・楕円・弧）の中だけ当たる（W2-4。円のボタンの角は当たらない）
+                    if hit_test_rect_2d(canvas_x, canvas_y, &m, eff_w, eff_h)
+                        && sprite_shape_contains(sc, &m, [eff_w, eff_h], placement.size_scale, canvas_x, canvas_y)
+                    {
                         out.push(PickCand2d {
                             dfs: my_dfs,
                             entity: actor.entity,
@@ -1362,7 +1398,7 @@ mod tests {
         clip_box.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, box_slot);
         if clip {
             let clip_slot = world.spawn();
-            world.insert(clip_slot, CanvasClipComponent { enabled: true });
+            world.insert(clip_slot, CanvasClipComponent { enabled: true, ..CanvasClipComponent::default() });
             clip_box.add_slot_typed::<CanvasClipComponent>("CanvasClip", ComponentKind::CanvasClip, clip_slot);
         }
 

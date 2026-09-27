@@ -502,6 +502,7 @@ impl App {
     ///
     /// 対応キー:
     /// - `raycast_target`: ポインタイベント（OnPointerEnter/Down/Click 等）の判定対象か（"0" / "1"）
+    /// - 形と塗りの欄（W2-4。shape・corner_radii・fill・nine_slice・shadow など。sprite_style_ipc.rs）
     ///
     /// 未知のキーは黙って無視する（エディタ側の実装ミスでシーンを壊さないため）。
     pub(super) fn handle_set_sprite_field(
@@ -529,7 +530,12 @@ impl App {
                     let Ok(v) = value.trim().parse::<i32>() else { return };
                     sc.raycast_target = v != 0;
                 }
-                _ => return,
+                // 形と塗りの欄（W2-4。欄名・値の書き方は sprite_style_ipc.rs）
+                _ => {
+                    if !super::sprite_style_ipc::apply_sprite_style_field(sc, key, value) {
+                        return;
+                    }
+                }
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

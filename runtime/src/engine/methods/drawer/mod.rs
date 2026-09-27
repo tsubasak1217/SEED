@@ -244,7 +244,7 @@ impl DrawContext {
             None
         };
         // スプライトバッチャ（Phase R6）: 永続インスタンスバッファを初期容量で確保する。
-        let sprites = RefCell::new(SpriteBatcher::new(&device));
+        let sprites = RefCell::new(SpriteBatcher::new(&device, &pipelines.sprite.shape.params_bgl));
         let sprite_skin = crate::engine::core::renderer::SpriteSkinCache::new();
         Self {
             device,

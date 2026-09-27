@@ -1,0 +1,74 @@
+{
+  "_about": "SEED.UI の既定のテーマ（W2-4）。部品はここにあるトークン（例 color.primary・radius.button）の値で見た目を決める。W2-9 でプロジェクトのテーマ JSON への差し替え・実行中の切り替えを本格化する。書式: グループ（color・radius・space・size・text・motion・opacity）の中に名前 → 値。色は sRGB の #RRGGBB か #RRGGBBAA（読み込むときに線形へ直す）、それ以外は数。長さはキャンバスの単位（dp のキャンバスなら dp）、時間は秒。先頭が _ の鍵は説明で、読まない。正典は docs/ui_components.md §5。",
+  "_source": "色は Wake or Pay の既定のテーマ midnight（themes.json の seedColor #6C4BFF・dark）から作った暗い配色。大きさ・時間は Material Design 3 の部品の寸法（押せる大きさ 48、スイッチ 52×32、チェックボックス 18 の枠を 24 の中に等）と Android の既定の動きの時間を目安にした。",
+  "name": "default",
+  "color": {
+    "primary": "#7C5CFF",
+    "on_primary": "#FFFFFF",
+    "background": "#121018",
+    "surface": "#1E1B26",
+    "surface_variant": "#2E2A3A",
+    "on_surface": "#ECE6F5",
+    "on_surface_muted": "#A9A2B8",
+    "outline": "#6E6780",
+    "selected": "#4A3AA8",
+    "on_selected": "#EDE7FF",
+    "knob": "#FFFFFF",
+    "knob_off": "#A9A2B8",
+    "state_layer": "#FFFFFF",
+    "disabled": "#3A3645",
+    "on_disabled": "#7C7689",
+    "shadow": "#000000",
+    "error": "#FF5252"
+  },
+  "radius": {
+    "button": 12,
+    "chip": 16,
+    "card": 20,
+    "field": 12,
+    "segment": 20,
+    "checkbox": 4,
+    "progress": 4
+  },
+  "space": {
+    "xs": 4,
+    "s": 8,
+    "m": 12,
+    "l": 16,
+    "xl": 24
+  },
+  "size": {
+    "touch_min": 48,
+    "border": 1,
+    "check_border": 2,
+    "toggle_knob": 24,
+    "toggle_knob_off": 16,
+    "toggle_inset": 4,
+    "slider_track": 4,
+    "slider_thumb": 20,
+    "slider_thumb_pressed": 24,
+    "progress_bar": 8,
+    "ring_thickness": 6,
+    "radio_dot": 10,
+    "shadow_blur": 8,
+    "shadow_offset": 2
+  },
+  "text": {
+    "title": 20,
+    "body": 16,
+    "label": 14,
+    "caption": 12
+  },
+  "motion": {
+    "short": 0.15,
+    "medium": 0.25,
+    "repeat_interval": 0.12,
+    "repeat_min_interval": 0.03,
+    "repeat_accel": 0.5
+  },
+  "opacity": {
+    "pressed": 0.16,
+    "disabled": 0.38,
+    "shadow": 0.35
+  }
+}

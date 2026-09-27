@@ -54,7 +54,12 @@ impl App {
                 Some(v) => clip.enabled = v,
                 None => return,
             },
-            _ => return,
+            // 切り抜きの形・角丸（W2-4。sprite_style_ipc.rs）
+            _ => {
+                if !super::sprite_style_ipc::apply_clip_shape_field(clip, key, value) {
+                    return;
+                }
+            }
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

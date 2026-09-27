@@ -1387,8 +1387,42 @@ if (gameObject.GetComponent<Sprite>() is { } sprite)   // Sprite?（未アタッ
 
     // 例: 点滅させる
     sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedTime, 1f));
+
+    // ── 形と塗り（W2-4。長さはキャンバスの単位＝Width と同じ。docs/ui_components.md）──
+    sprite.Shape           // SpriteShapeKind（get/set。Rect=0〈既定〉/ Ellipse=1〈内接する楕円・正方形なら円〉/ Arc=2〈弧・リング〉）
+    sprite.CornerRadii     // CornerRadii（get/set。四隅の角丸 new CornerRadii(左上, 右上, 右下, 左下) / CornerRadii.All(r)。Rect のとき）
+    sprite.CornerRadius    // float（get/set。四隅を同じ半径に。読むと左上）
+    sprite.BorderWidth     // float（get/set。縁の太さ。0 = 縁なし。形の内側に引く）
+    sprite.BorderColor     // Color（get/set。縁の色。Color〈塗り〉とは独立＝塗りを透明にしても縁は見える）
+    sprite.ArcStart        // float（get/set。弧の開始角〈度〉。0 = +X・時計回り。既定 -90 = 真上）
+    sprite.ArcSweep        // float（get/set。弧の角度〈度〉。0〜360。進捗の輪なら 値 × 360）
+    sprite.ArcThickness    // float（get/set。弧の太さ）
+    sprite.ArcRoundCaps    // bool（get/set。弧の端を丸く）
+    sprite.Fill            // SpriteFillKind（get/set。Solid=0〈既定・Color で塗る〉/ Linear=1 / Radial=2）
+    sprite.GradientColors  // Color[]（get/set。2〜4 色。Color が掛かる。範囲外の数の代入は無視）
+    sprite.GradientStops   // float[]（get/set。色の位置 0..1・昇順。空 = 等間隔）
+    sprite.GradientAngle   // float（get/set。線形の角度〈度〉。0 = 左→右、90 = 上→下〈既定〉）
+    sprite.RadialCenter    // Vector2（get/set。放射の中心〈矩形に対する割合〉。既定 (0.5, 0.5)）
+    sprite.RadialRadius    // Vector2（get/set。放射の半径〈幅・高さに対する割合〉。既定 (0.5, 0.5) = 内接する楕円）
+    sprite.SetGradient(SpriteFillKind.Linear, c0, c1, c2)   // 種類と 2〜4 色をまとめて（色の位置は等間隔へ）
+    sprite.NineSlice       // bool（get/set。画像を 9 スライスで描く。テクスチャがあるときだけ効く）
+    sprite.NineSliceBorder // NineSliceBorder（get/set。枠の 4 辺 new NineSliceBorder(左, 上, 右, 下)。テクスチャの画素）
+    sprite.NineSliceScale  // float（get/set。描く枠の倍率〈キャンバスの単位 ÷ テクスチャの画素〉。既定 1）
+    sprite.NineSliceEdgeMode   // NineSliceMode（get/set。辺: Stretch=0 / Repeat=1〈回数を丸めて端で切れない〉）
+    sprite.NineSliceCenterMode // NineSliceMode（get/set。中央）
+    sprite.NineSliceFillCenter // bool（get/set。中央を描くか。false = 枠だけ）
+    sprite.Shadow          // bool（get/set。ぼかしの影を形の後ろに描く）
+    sprite.ShadowColor     // Color（get/set。影の色。Color とは独立）
+    sprite.ShadowOffset    // Vector2（get/set。影のずれ〈X 右・Y 下〉）
+    sprite.ShadowBlur      // float（get/set。ぼかしの幅。0 = くっきり）
+
+    // 例: 角丸のカード（半径 16・枠 1・影）と、上 → 下の 2 色のグラデーション
+    sprite.CornerRadius = 16f; sprite.BorderWidth = 1f; sprite.Shadow = true;
+    sprite.SetGradient(SpriteFillKind.Linear, new SEED.Color(0.5f, 0.3f, 1f), new SEED.Color(0f, 0.7f, 0.8f));
 }
 ```
+
+> **重要**: 形と塗りの欄がすべて既定（直角の矩形・縁なし・単色・9 スライスなし・影なし）のスプライトは、従来とまったく同じ描き方（同じ画素）です。角丸・楕円・弧の外は描かれず、**押せません**（ポインタイベント・ジェスチャーの当たり判定も形に合わせる。円のボタンの角は当たらない）。長さはキャンバスの単位（dp のルートなら dp）で、端末の倍率に依らず同じ形です。
 
 ### SkinnedSprite（メッシュ変形 2D スプライト）
 
@@ -1918,9 +1952,13 @@ if (gameObject.GetComponent<CanvasClip>() is { } clip)
 {
     clip.Enabled        // bool（get/set。既定 true。false の間は子孫を切り抜かない。次のフレームの描画から効く）
     clip.IsValid        // bool（この参照が生きているか）
+    clip.Shape          // ClipShape（get/set。Rect=0〈既定〉/ RoundedRect=1 / Ellipse=2 / SpriteShape=3〈最初の Sprite の角丸・楕円に合わせる〉。W2-4）
+    clip.CornerRadii    // CornerRadii（get/set。Shape が RoundedRect のときの四隅の角丸）
 }
 gameObject.HasComponent("CanvasClip")   // 付いているか
 ```
+
+> **重要**: 角丸・楕円の切り抜き（W2-4）は、**いちばん内側の 1 つだけ**を画素単位（シェーダーの SDF）で切り、外側の角丸・楕円の祖先は外接矩形で切ります。画素単位で切るのは**スプライト（画像・形）だけ**で、テキスト・`SEED.Draw` の図形・2D パーティクルは外接矩形で切ります。当たり判定も同じ形（丸い切り抜きの外は押せない）。丸いアイコンは「Sprite の Shape = Ellipse ＋画像」、角丸のカードは「Sprite の角丸 ＋ CanvasClip.Shape = SpriteShape」で作れます。
 
 > **重要**: 切り抜くのは**子孫だけ**で、CanvasClip を付けたノード自身の Sprite（枠の背景の板）は切りません。スプライト・テキスト（インライン画像を含む）・2D パーティクル・`SEED.Draw` の図形（`space` に子孫の CanvasTransform を渡したもの）が切り抜かれ、ポインタイベント（`OnPointer*`）も切り抜かれて見えない所では届きません。
 
@@ -2268,7 +2306,7 @@ public class FishingLine : SEEDScript
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
 | `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）・レイトレ除外（`RayTracingExcluded`）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
-| `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget） |
+| `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget）・形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影。W2-4） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・**音声辞書のキー**・音量・ループ・3D 減衰・パン + Play/Stop |
@@ -2280,7 +2318,7 @@ public class FishingLine : SEEDScript
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
 | `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・フォント（assets:// の .otf/.ttf）・サイズ・色・**縁取り**（太さ・色）・**枠と自動折り返し**（BoxWidth/BoxHeight/Wrap）・**太さ**（Weight）・**ドロップシャドウ**（ShadowOffset/ShadowColor/ShadowSoftness）・整列・行送り・レイヤー |
-| `CanvasClip` | `gameObject.GetComponent<CanvasClip>()` | 子を切り抜く（ノードの矩形からはみ出した子孫を描かず、押せなくする）。有効・無効（Enabled） |
+| `CanvasClip` | `gameObject.GetComponent<CanvasClip>()` | 子を切り抜く（ノードの矩形からはみ出した子孫を描かず、押せなくする）。有効・無効（Enabled）・形（Shape: 角丸・楕円。W2-4） |
 | `CanvasStack` | `gameObject.GetComponent<CanvasStack>()` | 子を縦・横に 1 列に並べるコンテナ。向き・間隔・余白・主軸／交差軸の揃え・逆順・中身に合わせる・非表示の子の扱い |
 | `CanvasWrap` | `gameObject.GetComponent<CanvasWrap>()` | 子を並べて折り返すコンテナ。向き・子と行の間隔・余白・行の中と行の塊の揃え |
 | `CanvasGrid` | `gameObject.GetComponent<CanvasGrid>()` | 子を格子に並べるコンテナ。列数（0 = 最小幅から自動）・セルの縦横比・間隔・余白・セルの中の置き方 |
@@ -3708,6 +3746,119 @@ SwipeGroup.For(listNode).CloseAll();          // 一覧のスクロールが始�
 | 動き | 250ms・Material の fastOutSlowIn。動いている間は `Redraw.Request()`（on_demand でも止まらない） |
 | 組 | ある行のドラッグが始まると、同じ組の他の開いている行が閉じる |
 | 軸 | 縦の一覧の中では、最初の指の動きが横ならスワイプ、縦なら一覧のスクロール（W2-2 のアリーナの軸の競い） |
+
+## 7.16 UI 部品（SEED.UI：ボタン・トグル・スライダ・数値欄・選択・進捗とテーマ。W2-4）
+
+部品は**アクタ（プレハブ）に付けるスクリプト**です。ScriptComponent の型名に `SEED.UI.Button` のように書いて付けます
+（見本のプレハブは `templates/ui/prefabs/`、全部を並べたギャラリーは `templates/ui/scenes/ui_gallery.scene`）。
+見た目はプレハブの子（Sprite・Text の色・形・位置）で、部品は「状態（値・無効・押下）→ 見た目」を 1 か所で決めて当てます。
+色・角丸・大きさ・文字の大きさ・動きの時間は**テーマのトークン**（`UiTokens`）から取ります。規則の正典は `docs/ui_components.md`。
+
+```csharp
+using SEED.UI;
+
+public class AlarmEditScreen : SEEDScript
+{
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        // 部品は別のスクリプトなので、登録簿から引く（相手の OnStart の前は null。見つかるまで引き直してよい）
+        if (UiWidget.Of<Button>(gameObject.FindChild("Save")) is { } save && !bound)
+        {
+            bound = true;
+            save.Clicked += b => { b.Busy = true; /* 保存 → 終わったら b.Busy = false */ };
+        }
+    }
+    private bool bound;
+}
+
+UiWidget.Of<T>(gameObject)          // T?: そのアクタに付いた部品（Button・Toggle・Slider・NumberField・Checkbox・…）
+widget.Interactable                 // bool（get/set。false = 無効の見た目・操作を受けない）
+widget.SetInteractable(false)       // 無効にする（見た目もすぐ変える）
+widget.IsEnabled                    // bool: 操作を受けるか（Interactable と部品ごとの条件）
+widget.Owner                        // GameObject: 部品のアクタ
+UiRegistry.Version                  // int: 部品の登録・解除で増える（引き直しの合図）
+```
+
+### Button（ボタン）
+
+```csharp
+// プレハブ: Button（Sprite〈背景・角丸〉・CanvasGesture〈タップ・長押し〉・SEED.UI.Button）└ Label（Text）└ Icon（Sprite。任意）
+button.Variant       // ButtonVariant（Filled=0〈既定〉/ Tonal=1 / Outlined=2 / Text=3）
+button.Clicked       // event Action<Button>（タップ。押下がスクロールに負けたら来ない）
+button.LongPressed   // event Action<Button>（長押し 500ms）
+button.Released      // event Action<Button>（押下の終わり＝離した・取り消された）
+button.IsPressed     // bool（押下の見た目の間）
+button.Busy          // bool（get/set。処理中は押せない＝二重押しの防止）
+button.SetText("保存")
+button.Haptic        // bool（タップで端末を震わせる。Android だけ。既定 true）
+button.LabelSize     // string（文字の大きさのトークン。既定 "text.label"。空ならプレハブのまま）
+```
+
+### Toggle・Checkbox（スイッチ・チェックボックス）
+
+```csharp
+toggle.IsOn                          // bool（オンか）
+toggle.SetOn(true, animate: true)    // つまみは motion.short 秒で動く（動く間は Redraw.KeepAlive）
+toggle.Changed                       // event Action<Toggle, bool>
+checkbox.IsChecked / checkbox.SetChecked(true) / checkbox.Changed   // event Action<Checkbox, bool>
+```
+
+### Slider・NumberField（スライダ・数値欄）
+
+```csharp
+slider.Min / slider.Max / slider.Step / slider.Value   // float（Step 0 = 連続。max も止まれる位置）
+slider.SetValue(30f)                  // 範囲・段階へ寄せる（同じ値なら知らせない）
+slider.ValueChanged                   // event Action<Slider, float>
+number.Min / number.Max / number.Step / number.Value / number.Format / number.Suffix   // 例 Format "0"・Suffix "分"
+number.SetValue(15f); number.StepBy(+1)
+number.TrySetText("42")               // bool: 数でない入力は捨てる・範囲の外は収める
+number.ValueChanged                   // event Action<NumberField, float>
+// 同期: slider.ValueChanged += (_, v) => number.SetValue(v); number.ValueChanged += (_, v) => slider.SetValue(v);
+```
+
+### SegmentedControl・ChipGroup・RadioGroup（選択）
+
+```csharp
+// プレハブ: グループ（SEED.UI.SegmentedControl など）└ 項目（Sprite・CanvasGesture・SEED.UI.SelectItem〈Index・Disabled〉・Label・Dot）
+group.SelectedIndex        // int（最初に選んでいる項目の並びの番号。無ければ -1）
+group.SelectedIndices      // IReadOnlyList<int>
+group.Select(2)            // プログラムから選ぶ（選べない項目は変わらない）
+group.SelectionChanged     // event Action<SelectionGroup>
+group.InitialSelection     // int[]（最初に選ぶ項目の Index）
+chips.Multiple             // bool（ChipGroup。true = 複数〈既定〉/ false = 1 つ〈もう一度押すと外れる〉）
+item.Disabled              // bool（SelectItem。選べない項目＝灰色）
+```
+
+### ProgressBar・ProgressRing（進捗）
+
+```csharp
+bar.SetValue(0.35f)        // 0..1。塗りの幅が motion.medium 秒で伸び縮み（Animate = false ならすぐ）
+ring.SetValue(0.7f)        // 弧の角度 = 値 × 360（真上から時計回り・端は丸い）。形と塗りの弧で描く
+```
+
+### UiTheme・UiTokens（テーマのトークン）
+
+```csharp
+UiTheme.Current            // UiThemeData（今のテーマ。既定は SEEDScripting に埋め込んだ default_theme.json）
+UiTheme.Color(UiTokens.ColorPrimary)        // Color（線形。JSON の #RRGGBB は sRGB で書き、読むときに線形へ直す）
+UiTheme.Number(UiTokens.RadiusButton)       // float
+UiTheme.LoadAsset("assets://ui/theme/my_theme.json")   // bool: 差し替える（書いていないトークンは既定のテーマ）。部品は次のフレームで作り直す
+UiTheme.Use(UiThemeData.Parse(json, UiTheme.Default, out var error))
+```
+
+| トークン（例） | 使う所 |
+|---|---|
+| `color.primary`・`color.on_primary` | 塗りのボタン・オンのスイッチ・スライダ・進捗 |
+| `color.surface`・`color.surface_variant`・`color.on_surface` | 面・溝・台・文字 |
+| `color.selected`・`color.on_selected`・`color.outline` | 選んだ項目・枠 |
+| `color.disabled`・`color.on_disabled`・`color.state_layer` | 無効・押下の重ね色 |
+| `radius.button`・`radius.chip`・`radius.card`・`radius.segment` | 角丸 |
+| `size.touch_min`・`size.toggle_knob`・`size.slider_thumb`・`size.ring_thickness` | 大きさ |
+| `text.title`・`text.body`・`text.label`・`text.caption` | 文字の大きさ |
+| `motion.short`・`motion.medium`・`motion.repeat_interval` | 動きの時間（秒） |
+| `opacity.pressed`・`opacity.disabled` | 濃さ |
+
+> **重要**: 部品は見た目を変えたとき `SEED.Redraw.Request()`、動いている間は `Redraw.KeepAlive` を呼ぶので、`render_policy: on_demand` でも止まりません。全トークンの表と既定値は docs/ui_components.md §5。
 
 ---
 

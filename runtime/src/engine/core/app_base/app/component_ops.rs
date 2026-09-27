@@ -441,8 +441,10 @@ impl App {
                     // テクスチャパス・カラー・サイズ・レイヤー・ポストエフェクト参照をインスペクター用に送信する
                     let path_json   = serde_json::to_string(&d.texture_path).unwrap_or_default();
                     let postfx_json = serde_json::to_string(&d.postfx_path).unwrap_or_default();
+                    // 形と塗り（W2-4）: serde の書式のまま "sprite_style" に入れる（既定の欄も省かない）
+                    let style_json  = super::sprite_style_ipc::style_json(&SpriteComponent::from_data(d.clone()));
                     ("SpriteComponent", format!(
-                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{},"postfx_path":{postfx_json},"raycast_target":{}"#,
+                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{},"postfx_path":{postfx_json},"raycast_target":{},"sprite_style":{style_json}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3], d.width, d.height,
                         d.layer,
                         d.raycast_target as u8,
@@ -564,7 +566,9 @@ impl App {
                     // 【重要】キー名は "clip_enabled"。スロット共通ラッパが既に "enabled"（数値 0/1、
                     // slot_data.enabled）を持つため、"enabled" で送ると同一 JSON 内のキー重複になり
                     // C# の GetBoolean() が例外 → インスペクタ全体が表示不能になる（InteractionSource で起きた罠）。
-                    ("CanvasClipComponent", format!(r#","clip_enabled":{}"#, d.enabled))
+                    // 切り抜きの形（W2-4）: "clip_style" に形と角丸（キーはスロット共通の "enabled" とぶつからない名前）
+                    let clip_style = super::sprite_style_ipc::clip_style_json(&crate::engine::components::CanvasClipComponent::from_data(d.clone()));
+                    ("CanvasClipComponent", format!(r#","clip_enabled":{},"clip_style":{clip_style}"#, d.enabled))
                 }
                 ComponentData::InteractionSourceComponent(d) => {
                     // インタラクションソース: 半径・強さ・有効フラグをインスペクタへ送る。

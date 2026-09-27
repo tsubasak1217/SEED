@@ -127,6 +127,8 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "outline.wgsl"               => include_str!("shaders/outline.wgsl"),
         "sprite.wgsl"                => include_str!("shaders/sprite.wgsl"),
         "sprite_outline.wgsl"        => include_str!("shaders/sprite_outline.wgsl"),
+        // スプライトの形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影・角丸の切り抜き。W2-4）
+        "sprite_shape.wgsl"          => include_str!("shaders/sprite_shape.wgsl"),
         "canvas_id.wgsl"             => include_str!("shaders/canvas_id.wgsl"),
         "camera_preview_blit.wgsl"   => include_str!("shaders/camera_preview_blit.wgsl"),
         // トーンマップ演算子（純関数）。カメラプレビューブリットが HDR プレビューを
@@ -949,6 +951,41 @@ pub struct SpritePipeline {
     pub white_fallback_bg:  wgpu::BindGroup,
     /// ユニットクワッド頂点バッファ ([0,1]×[0,1], 2 三角形 = 6 頂点)
     pub unit_quad_vbuf:     wgpu::Buffer,
+    /// 形と塗りのパイプライン（W2-4。欄がすべて既定のスプライトは使わない）
+    pub shape:              SpriteShapePipeline,
+}
+
+/// スプライトの形と塗りのパイプライン（W2-4。pipelines/sprite_shape.toml・shaders/sprite_shape.wgsl）。
+///
+/// group 0 = カメラ・group 1 = テクスチャ（SpritePipeline と同じレイアウト）・group 2 = 形のパラメータの表
+/// （ストレージバッファ。renderer/ui_shape/params.rs の ShapeParamsGpu）。頂点は slot0 = ユニットクワッド
+/// （SpritePipeline::unit_quad_vbuf を共有。位置だけ読む）、slot1 = ShapeInstance（行列 + パラメータの番号）。
+pub struct SpriteShapePipeline {
+    /// レンダーパイプライン（合成は乗算済みアルファ）
+    pub pipeline:   wgpu::RenderPipeline,
+    /// Group 2: 形のパラメータの表のバインドグループレイアウト（InstanceStream が同じものでバインドグループを作る）
+    pub params_bgl: wgpu::BindGroupLayout,
+}
+
+impl SpriteShapePipeline {
+    /// TOML とリフレクションからパイプラインを作る（色・深度の形式は SpritePipeline と同じ）。
+    fn new(
+        device: &wgpu::Device,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let (pipeline, bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/sprite_shape.toml"), sf, df)
+                .with_cache(cache)
+                .build(get_shader_source);
+        // group 番号順 (0, 1, 2)。0・1 は SpritePipeline と同じ内容のレイアウト（カメラ・テクスチャ）
+        let params_bgl = bgls
+            .into_iter()
+            .nth(2)
+            .expect("sprite_shape.wgsl の group 2（形のパラメータの表）が無い");
+        Self { pipeline, params_bgl }
+    }
 }
 
 impl SpritePipeline {
@@ -1034,7 +1071,10 @@ impl SpritePipeline {
             usage:    wgpu::BufferUsages::VERTEX,
         });
 
-        Self { pipeline, tex_bgl, sampler, white_fallback_bg, unit_quad_vbuf }
+        // 形と塗りのパイプライン（W2-4）
+        let shape = SpriteShapePipeline::new(device, sf, df, cache);
+
+        Self { pipeline, tex_bgl, sampler, white_fallback_bg, unit_quad_vbuf, shape }
     }
 }
 

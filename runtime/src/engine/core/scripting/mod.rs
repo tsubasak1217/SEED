@@ -27,6 +27,8 @@ pub mod host_api;
 pub mod canvas_layout_api;
 /// CanvasScroll（W2-3）のスクリプト API の欄（設定と実行中の状態。canvas_layout_api から呼ぶ）
 pub mod canvas_scroll_api;
+/// スプライトの形と塗り・切り抜きの形（W2-4）のスクリプト API の欄（host_api の Sprite・CanvasClip から呼ぶ）
+pub mod sprite_style_api;
 /// ジェスチャーのイベントを C# へ渡す FFI の型（W2-2）
 pub mod gesture_ffi;
 /// スクロールのイベント（開始・位置・終了）を C# へ渡す FFI の型（W2-3）

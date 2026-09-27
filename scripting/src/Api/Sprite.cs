@@ -89,4 +89,204 @@ public readonly struct Sprite : IComponentHandle<Sprite>
         get => ScriptHost.TryGetBool(_entity, Comp, "raycast_target", out var b) && b;
         set => ScriptHost.TrySetBool(_entity, Comp, "raycast_target", value);
     }
+
+    // ============================================================
+    //  形と塗り（W2-4。docs/ui_components.md）
+    //  長さはキャンバスの単位（Width・Height と同じ）。欄がすべて既定なら従来と同じ見た目・同じ描画経路。
+    // ============================================================
+
+    // ── 形 ─────────────────────────────────────────────
+
+    /// <summary>形（矩形・楕円・弧）。既定 Rect。</summary>
+    public SpriteShapeKind Shape
+    {
+        get => CanvasLayoutFieldAccess.GetEnum(_entity, Comp, "shape", SpriteShapeKind.Rect);
+        set => CanvasLayoutFieldAccess.SetEnum(_entity, Comp, "shape", value);
+    }
+
+    /// <summary>四隅の角丸（左上・右上・右下・左下）。Rect のときだけ効く。辺より大きい指定は描くときに縮む。</summary>
+    public CornerRadii CornerRadii
+    {
+        get => SpriteStyleFieldAccess.GetRadii(_entity, Comp, "corner_radii");
+        set => SpriteStyleFieldAccess.SetRadii(_entity, Comp, "corner_radii", value);
+    }
+
+    /// <summary>四隅を同じ半径にする簡易プロパティ（読むと左上の半径）。</summary>
+    public float CornerRadius
+    {
+        get => CornerRadii.TopLeft;
+        set => CornerRadii = CornerRadii.All(value);
+    }
+
+    /// <summary>縁の線の太さ（0 = 縁なし）。形の内側に引く。</summary>
+    public float BorderWidth
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "border_width", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "border_width", value);
+    }
+
+    /// <summary>縁の線の色（Color〈塗りの色〉とは独立。塗りを透明にしても縁は見える）。</summary>
+    public Color BorderColor
+    {
+        get => ScriptHost.TryGetColor(_entity, Comp, "border_color", out var c) ? c : Color.Black;
+        set => ScriptHost.TrySetColor(_entity, Comp, "border_color", value);
+    }
+
+    /// <summary>弧の開始角（度。0 = +X・時計回り。既定 -90 = 真上）。Arc のときだけ効く。</summary>
+    public float ArcStart
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "arc_start", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "arc_start", value);
+    }
+
+    /// <summary>弧の角度（度。0〜360。360 は一周のリング）。Arc のときだけ効く（進捗の輪は 値 × 360）。</summary>
+    public float ArcSweep
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "arc_sweep", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "arc_sweep", value);
+    }
+
+    /// <summary>弧の太さ。Arc のときだけ効く。</summary>
+    public float ArcThickness
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "arc_thickness", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "arc_thickness", value);
+    }
+
+    /// <summary>弧の端を丸くするか。Arc のときだけ効く。</summary>
+    public bool ArcRoundCaps
+    {
+        get => ScriptHost.TryGetBool(_entity, Comp, "arc_round_caps", out var b) && b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "arc_round_caps", value);
+    }
+
+    // ── 塗り ───────────────────────────────────────────
+
+    /// <summary>塗り（単色・線形・放射）。既定 Solid（= Color）。グラデーションの色にも Color が掛かる。</summary>
+    public SpriteFillKind Fill
+    {
+        get => CanvasLayoutFieldAccess.GetEnum(_entity, Comp, "fill", SpriteFillKind.Solid);
+        set => CanvasLayoutFieldAccess.SetEnum(_entity, Comp, "fill", value);
+    }
+
+    /// <summary>グラデーションの色（2〜4 色。範囲外の数の代入は無視される）。</summary>
+    public Color[] GradientColors
+    {
+        get => SpriteStyleFieldAccess.GetGradientColors(_entity, Comp);
+        set => SpriteStyleFieldAccess.SetGradientColors(_entity, Comp, value);
+    }
+
+    /// <summary>グラデーションの色の位置（0..1・昇順。空 = 等間隔）。</summary>
+    public float[] GradientStops
+    {
+        get => SpriteStyleFieldAccess.GetStops(_entity, Comp);
+        set => SpriteStyleFieldAccess.SetStops(_entity, Comp, value ?? System.Array.Empty<float>());
+    }
+
+    /// <summary>線形グラデーションの角度（度。0 = 左 → 右、90 = 上 → 下）。</summary>
+    public float GradientAngle
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "fill_angle", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "fill_angle", value);
+    }
+
+    /// <summary>放射グラデーションの中心（矩形に対する割合。0,0 = 左上）。</summary>
+    public Vector2 RadialCenter
+    {
+        get => ScriptHost.TryGetVec2(_entity, Comp, "fill_center", out var v) ? v : new Vector2(0.5f, 0.5f);
+        set => ScriptHost.TrySetVec2(_entity, Comp, "fill_center", value);
+    }
+
+    /// <summary>放射グラデーションの半径（幅・高さに対する割合。0.5 = 内接する楕円の縁で最後の色）。</summary>
+    public Vector2 RadialRadius
+    {
+        get => ScriptHost.TryGetVec2(_entity, Comp, "fill_radius", out var v) ? v : new Vector2(0.5f, 0.5f);
+        set => ScriptHost.TrySetVec2(_entity, Comp, "fill_radius", value);
+    }
+
+    /// <summary>
+    /// グラデーションをまとめて設定する（種類と 2〜4 色。色の位置は等間隔へ戻す）。
+    /// </summary>
+    /// <param name="kind">Linear か Radial（Solid なら色は変えずに単色へ）。</param>
+    /// <param name="colors">2〜4 色。</param>
+    public void SetGradient(SpriteFillKind kind, params Color[] colors)
+    {
+        if (kind != SpriteFillKind.Solid && !SpriteStyleFieldAccess.SetGradientColors(_entity, Comp, colors)) return;
+        SpriteStyleFieldAccess.SetStops(_entity, Comp, System.ReadOnlySpan<float>.Empty);
+        Fill = kind;
+    }
+
+    // ── 9 スライス ─────────────────────────────────────
+
+    /// <summary>画像を 9 スライスで描くか（テクスチャがあるときだけ効く）。</summary>
+    public bool NineSlice
+    {
+        get => ScriptHost.TryGetBool(_entity, Comp, "nine_slice", out var b) && b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "nine_slice", value);
+    }
+
+    /// <summary>9 スライスの枠の 4 辺の幅（テクスチャの画素）。</summary>
+    public NineSliceBorder NineSliceBorder
+    {
+        get => SpriteStyleFieldAccess.GetBorder(_entity, Comp, "nine_slice_border");
+        set => SpriteStyleFieldAccess.SetBorder(_entity, Comp, "nine_slice_border", value);
+    }
+
+    /// <summary>9 スライスの描く枠の倍率（キャンバスの単位 ÷ テクスチャの画素。2 倍の画像なら 0.5）。</summary>
+    public float NineSliceScale
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "nine_slice_scale", out var v) ? v : 1f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "nine_slice_scale", value);
+    }
+
+    /// <summary>9 スライスの辺（上下左右の帯）の埋め方。</summary>
+    public NineSliceMode NineSliceEdgeMode
+    {
+        get => CanvasLayoutFieldAccess.GetEnum(_entity, Comp, "nine_slice_edge", NineSliceMode.Stretch);
+        set => CanvasLayoutFieldAccess.SetEnum(_entity, Comp, "nine_slice_edge", value);
+    }
+
+    /// <summary>9 スライスの中央の埋め方。</summary>
+    public NineSliceMode NineSliceCenterMode
+    {
+        get => CanvasLayoutFieldAccess.GetEnum(_entity, Comp, "nine_slice_center", NineSliceMode.Stretch);
+        set => CanvasLayoutFieldAccess.SetEnum(_entity, Comp, "nine_slice_center", value);
+    }
+
+    /// <summary>9 スライスの中央を描くか（false = 枠だけ）。</summary>
+    public bool NineSliceFillCenter
+    {
+        get => !ScriptHost.TryGetBool(_entity, Comp, "nine_slice_fill_center", out var b) || b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "nine_slice_fill_center", value);
+    }
+
+    // ── 影 ─────────────────────────────────────────────
+
+    /// <summary>ぼかしの影を描くか（形と同じ形を後ろに描く）。</summary>
+    public bool Shadow
+    {
+        get => ScriptHost.TryGetBool(_entity, Comp, "shadow", out var b) && b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "shadow", value);
+    }
+
+    /// <summary>影の色（Color〈塗りの色〉とは独立）。</summary>
+    public Color ShadowColor
+    {
+        get => ScriptHost.TryGetColor(_entity, Comp, "shadow_color", out var c) ? c : Color.Black;
+        set => ScriptHost.TrySetColor(_entity, Comp, "shadow_color", value);
+    }
+
+    /// <summary>影のずれ（X 右・Y 下）。</summary>
+    public Vector2 ShadowOffset
+    {
+        get => ScriptHost.TryGetVec2(_entity, Comp, "shadow_offset", out var v) ? v : Vector2.Zero;
+        set => ScriptHost.TrySetVec2(_entity, Comp, "shadow_offset", value);
+    }
+
+    /// <summary>影のぼかしの幅（0 = くっきり）。</summary>
+    public float ShadowBlur
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "shadow_blur", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "shadow_blur", value);
+    }
 }

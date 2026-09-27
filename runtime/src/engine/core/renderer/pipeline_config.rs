@@ -762,6 +762,20 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         VA { format: VF::Float32x4, offset: 64, shader_location: 6 },  // color
     ];
 
+    // 形と塗り（W2-4）: ユニットクワッドの位置だけ（SpriteVertex と同じ 16 bytes の刻みで uv は読まない）
+    static SPRITE_POS_ATTRS: &[VA] = &[
+        VA { format: VF::Float32x2, offset: 0, shader_location: 0 },
+    ];
+    // ShapeInstance（W2-4）: モデル行列（location 1〜4）+ パラメータの番号（location 5・u32）= 80 bytes
+    // （renderer/ui_shape/params.rs の ShapeInstance・sprite_shape.wgsl の VertIn と一致必須）
+    static SHAPE_INSTANCE_ATTRS: &[VA] = &[
+        VA { format: VF::Float32x4, offset: 0,  shader_location: 1 },  // model col0
+        VA { format: VF::Float32x4, offset: 16, shader_location: 2 },  // model col1
+        VA { format: VF::Float32x4, offset: 32, shader_location: 3 },  // model col2
+        VA { format: VF::Float32x4, offset: 48, shader_location: 4 },  // model col3
+        VA { format: VF::Uint32,    offset: 64, shader_location: 5 },  // params index
+    ];
+
     match name {
         "mesh_vertex"   => VertexBufferLayout { array_stride: 72, step_mode: VertexStepMode::Vertex, attributes: MESH_ATTRS },
         "skin_vertex"   => VertexBufferLayout { array_stride: 24, step_mode: VertexStepMode::Vertex, attributes: SKIN_ATTRS },
@@ -772,6 +786,9 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         "sprite_vertex" => VertexBufferLayout { array_stride: 16, step_mode: VertexStepMode::Vertex, attributes: SPRITE_ATTRS },
         // 80 bytes / インスタンス・step_mode=Instance（Phase R6）
         "sprite_instance" => VertexBufferLayout { array_stride: 80, step_mode: VertexStepMode::Instance, attributes: SPRITE_INSTANCE_ATTRS },
+        // 形と塗り（W2-4）: ユニットクワッドの位置だけ・ShapeInstance（80 bytes / インスタンス）
+        "sprite_pos"      => VertexBufferLayout { array_stride: 16, step_mode: VertexStepMode::Vertex, attributes: SPRITE_POS_ATTRS },
+        "shape_instance"  => VertexBufferLayout { array_stride: 80, step_mode: VertexStepMode::Instance, attributes: SHAPE_INSTANCE_ATTRS },
         other => panic!("unknown vertex slot preset: {other}"),
     }
 }

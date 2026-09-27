@@ -170,6 +170,8 @@ mod water_link_ops;
 mod interaction_ops;
 /// 子を切り抜く（CanvasClipComponent）のインスペクタ更新（SET_CANVAS_CLIP_FIELD。W2-1a）
 mod canvas_clip_ops;
+/// スプライトの形と塗り・切り抜きの形の欄のエディタからの編集とインスペクタへの JSON（W2-4）。
+mod sprite_style_ipc;
 /// レイアウトの部品（CanvasStack・Wrap・Grid・LayoutItem・SafeArea）のインスペクタ更新
 /// （SET_CANVAS_LAYOUT_FIELD）とキャンバスの単位（SET_CANVAS_UNIT）。W2-1b
 mod canvas_layout_ops;

@@ -15,10 +15,17 @@
 //  描画はワールド座標（canvas_scale と y_sign を掛けたもの）へ写して renderer/ui_clip.rs の scissor へ、
 //  当たり判定はキャンバス空間のまま「祖先のすべての領域の AABB の内側」を調べる。
 //  回転したノードは 4 隅の AABB で切る（scissor と同じ。正確に切るのはステンシルが要る。roadmap §3.8.4）。
+//
+//  【形（W2-4）】CanvasClipComponent の `shape`（角丸の矩形・楕円・スプライトの形に合わせる）を領域の形
+//  （`UiClipShape`。ローカルの大きさ・半径）にして積む。描画は外接矩形の scissor に加えて、いちばん内側の形のある
+//  領域をシェーダーの SDF で切る（スプライトだけ）。当たり判定（`point_inside_clip_chain`）は全祖先の AABB に加えて、
+//  同じ「いちばん内側の形のある領域」の形の内側かを調べる（描画と同じ規則。外側の形は AABB だけ）。
 // ============================================================
 
-use crate::engine::components::CanvasTransform;
+use crate::engine::components::{ClipShapeMode, CanvasTransform, SpriteShape, SpriteShapeKind};
 use crate::engine::core::renderer::ui_clip::{UiClipId, UiClipRegion, MAX_CLIP_REGIONS};
+use crate::engine::core::renderer::ui_shape::clip_sdf::innermost_clip_sdf;
+use crate::engine::core::renderer::ui_shape::UiClipShape;
 use crate::engine::methods::gizmo_interact::mat4x4_mul;
 
 /// 領域の 4 隅を取るローカル座標の割合（(0,0)・(1,0)・(0,1)・(1,1)。renderer/ui_clip.rs と同じ並び）。
@@ -44,6 +51,34 @@ pub struct CanvasClipRegion {
     pub owner: u32,
     /// 矩形の出どころ。
     pub source: ClipRectSource,
+    /// 領域の形（W2-4。形なしなら矩形だけ）。
+    pub shape: UiClipShape,
+}
+
+/// 切り抜きの形の欄から領域の形を決める【純関数】（W2-4）。
+///
+/// # 引数
+/// * `mode`         - CanvasClipComponent の形
+/// * `corner_radii` - CanvasClipComponent の角丸（RoundedRect のとき）
+/// * `sprite`       - ノードの最初の有効なスプライトの形（SpriteShape のとき。無ければ形なし）
+/// * `local_size`   - 領域のローカルの大きさ（キャンバスの単位）
+pub fn clip_shape_of(
+    mode: ClipShapeMode,
+    corner_radii: [f32; 4],
+    sprite: Option<&SpriteShape>,
+    local_size: [f32; 2],
+) -> UiClipShape {
+    match mode {
+        ClipShapeMode::Rect => UiClipShape::NONE,
+        ClipShapeMode::RoundedRect => UiClipShape::rounded_rect(local_size, corner_radii),
+        ClipShapeMode::Ellipse => UiClipShape::ellipse(local_size),
+        ClipShapeMode::SpriteShape => match sprite {
+            Some(shape) if shape.kind == SpriteShapeKind::Ellipse => UiClipShape::ellipse(local_size),
+            Some(shape) if shape.kind == SpriteShapeKind::Rect => UiClipShape::rounded_rect(local_size, shape.corner_radii),
+            // 弧・スプライトなしは形なし（矩形）
+            _ => UiClipShape::NONE,
+        },
+    }
 }
 
 /// 行優先の行列で、ローカルの矩形 [0,w]×[0,h] の 4 隅をキャンバス空間へ写す【純関数】。
@@ -110,6 +145,7 @@ pub fn corners_aabb(corners: &[[f32; 3]; 4]) -> ([f32; 2], [f32; 2]) {
 ///
 /// 当たり判定（pick_2d・ポインタイベント）が使う。描画の scissor と同じく各領域の 4 隅の AABB で調べ、
 /// 境界上は内側とみなす（スプライトの当たり判定 `hit_test_rect_2d` と同じ）。
+/// W2-4 から、いちばん内側の形のある領域（角丸・楕円）の形の外も当たらない（描画の SDF と同じ規則）。
 ///
 /// # 引数
 /// * `regions` - 領域の表
@@ -132,7 +168,11 @@ pub fn point_inside_clip_chain(
         }
         current = region.parent;
     }
-    true
+    // いちばん内側の形のある領域の形の内側か（形が無ければ AABB だけで決まる）
+    innermost_clip_sdf(regions.len(), clip, |id| {
+        regions.get(id as usize).map(|r| (&r.corners, &r.shape, r.parent))
+    })
+    .is_none_or(|sdf| sdf.contains(point))
 }
 
 /// 領域を描画のワールド座標の領域へ写す【純関数】（`canvas_collect::canvas_mat_to_gpu` と同じ写像）。
@@ -148,6 +188,8 @@ pub fn to_render_region(region: &CanvasClipRegion, canvas_scale: f32, y_sign: f3
             .corners
             .map(|[x, y, z]| [x * canvas_scale, y * csy, z]),
         parent: region.parent,
+        // 形のローカルの大きさ・半径はキャンバスの単位のまま（写像は 4 隅から作るのでワールドでも同じ形になる）
+        shape: region.shape,
     }
 }
 

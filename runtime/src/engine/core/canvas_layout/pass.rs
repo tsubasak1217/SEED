@@ -35,7 +35,9 @@ use crate::engine::core::renderer::ui_clip::UiClipId;
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
-use super::clip::{canvas_area_corners, corners_aabb, has_room, sprite_rect_corners, CanvasClipRegion, ClipRectSource};
+use super::clip::{
+    canvas_area_corners, clip_shape_of, corners_aabb, has_room, sprite_rect_corners, CanvasClipRegion, ClipRectSource,
+};
 use super::containers::spec::container_of;
 use super::containers::{clamp_size, Constraint, LayoutSlot, AXIS_X, AXIS_Y};
 use super::frame::{CanvasLayoutEnv, CanvasParentFrame};
@@ -377,35 +379,45 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         if !has_room(&self.table.clip_regions) {
             return None;
         }
-        let (corners, source) = if placement.canvas_base.is_some() {
+        let sprite = actor
+            .slots()
+            .iter()
+            .filter(|s| s.kind == ComponentKind::Sprite && s.enabled)
+            .find_map(|s| self.world.get::<SpriteComponent>(s.entity));
+        // 領域の 4 隅と、ローカルの大きさ（画素の大きさ ÷ サイズ倍率 = キャンバスの単位。角丸の半径と同じ単位。W2-4）
+        let (corners, source, eff) = if placement.canvas_base.is_some() {
             // 1. キャンバス領域（エディタのキャンバス枠と同じ矩形）
             (
                 canvas_area_corners(frame.world_rs, &placement.eff_transform, placement.eff_size),
                 ClipRectSource::CanvasArea,
+                placement.eff_size,
             )
         } else {
             // 2. 最初の有効なスプライトの矩形（W2-0 の試作と同じ）。無ければ切らない
-            let sprite = actor
-                .slots()
-                .iter()
-                .filter(|s| s.kind == ComponentKind::Sprite && s.enabled)
-                .find_map(|s| self.world.get::<SpriteComponent>(s.entity))?;
+            let sprite = sprite?;
+            // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ。W2-1b）
+            let size = placement.sprite_size(sprite.width, sprite.height);
             (
-                sprite_rect_corners(
-                    frame.world_rs,
-                    &placement.eff_transform,
-                    // レイアウトが伸ばした軸は矩形の大きさ（描画と同じ。W2-1b）
-                    placement.sprite_size(sprite.width, sprite.height),
-                ),
+                sprite_rect_corners(frame.world_rs, &placement.eff_transform, size),
                 ClipRectSource::FirstSprite,
+                size,
             )
         };
+        let local_size = [0, 1].map(|a| {
+            let scale = placement.size_scale[a];
+            if scale.abs() > f32::EPSILON { eff[a] / scale } else { eff[a] }
+        });
+        // 切り抜きの形（W2-4。有効な CanvasClip の最初のもの。既定の矩形なら形なし）
+        let shape = clip_component_of(actor, self.world)
+            .map(|clip| clip_shape_of(clip.shape, clip.corner_radii, sprite.map(|s| &s.shape), local_size))
+            .unwrap_or_default();
         let id = self.table.clip_regions.len() as UiClipId;
         self.table.clip_regions.push(CanvasClipRegion {
             corners,
             parent: parent_clip,
             owner,
             source,
+            shape,
         });
         Some(id)
     }
@@ -576,6 +588,15 @@ pub fn layout_canvas_of<'w>(actor: &Actor, world: &'w World) -> Option<&'w Canva
         .iter()
         .filter(|s| s.kind == ComponentKind::Canvas)
         .find_map(|s| world.get::<CanvasComponent>(s.entity))
+}
+
+/// ノードの有効な CanvasClipComponent（スロットもコンポーネントも有効な最初のもの。W2-4 で形を読むため）。
+pub fn clip_component_of<'w>(actor: &Actor, world: &'w World) -> Option<&'w CanvasClipComponent> {
+    actor
+        .slots()
+        .iter()
+        .filter(|s| s.kind == ComponentKind::CanvasClip && s.enabled)
+        .find_map(|s| world.get::<CanvasClipComponent>(s.entity).filter(|c| c.enabled))
 }
 
 /// ノードが子孫を切り抜くか（有効な CanvasClipComponent のスロットを持ち、コンポーネントも有効か）。

@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // SCRIPT_DEBUG IPC で積まれたデバッグコマンドの待ち行列（ffi_script_debug_take が取り出す）
 use crate::engine::core::scripting::debug_command;
 use crate::engine::core::scripting::canvas_layout_api;
+use crate::engine::core::scripting::sprite_style_api;
 
 use crate::engine::components::{
     AnimClipKind, AnimatorComponent, AudioComponent, AudioDictionaryComponent, CameraComponent,
@@ -991,7 +992,8 @@ fn read_floats(
                 "layer"  => put(out, &[s.layer as f32]),
                 // ポインタイベントのヒットテスト対象か（bool = 0/1）
                 "raycast_target" => put(out, &[if s.raycast_target { 1.0 } else { 0.0 }]),
-                _        => None,
+                // 形と塗りの欄（W2-4。欄名の表は sprite_style_api.rs の冒頭）
+                _        => sprite_style_api::read_sprite(s, field, out),
             }
         }
         // ── レイアウトの部品（スロット格納型。W2-1b。欄の読み方は canvas_layout_api）──
@@ -1006,7 +1008,8 @@ fn read_floats(
             match field {
                 // 有効フラグ（bool = 0/1）
                 "enabled" => put(out, &[if c.enabled { 1.0 } else { 0.0 }]),
-                _         => None,
+                // 切り抜きの形・角丸（W2-4）
+                _         => sprite_style_api::read_clip(c, field, out),
             }
         }
         // ── キャンバステキスト（スロット格納型: locate で解決）──
@@ -1436,7 +1439,8 @@ fn write_floats(
                 "raycast_target" => {
                     take::<1>(v).map(|a| s.raycast_target = a[0] != 0.0).is_some()
                 }
-                _        => false,
+                // 形と塗りの欄（W2-4。欄名の表は sprite_style_api.rs の冒頭）
+                _        => sprite_style_api::write_sprite(s, field, v),
             }
         }
         // ── レイアウトの部品（スロット格納型。W2-1b。欄の書き方は canvas_layout_api）──
@@ -1451,7 +1455,8 @@ fn write_floats(
             match field {
                 // 有効フラグ（0/1 → bool）
                 "enabled" => take::<1>(v).map(|a| c.enabled = a[0] != 0.0).is_some(),
-                _         => false,
+                // 切り抜きの形・角丸（W2-4）
+                _         => sprite_style_api::write_clip(c, field, v),
             }
         }
         // ── キャンバステキスト（スロット格納型: locate で解決）──

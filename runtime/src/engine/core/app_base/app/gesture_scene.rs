@@ -16,6 +16,8 @@
 //    - 切り抜き: ノードの祖先の切り抜きの領域の AABB（点がすべての内側のときだけ当たる）
 //    - 祖先: 表の親をたどり、ジェスチャーを受けるノードだけを近い順に
 //    - 手前・奥: 描画ゾーン → 最初の有効な Sprite のレイヤー（無ければ 0）→ 表の並び（DFS）
+//    - 形（W2-4）: 見た目が Sprite の矩形のノードは Sprite の形（角丸・楕円・弧）、切り抜きはいちばん内側の形のある
+//      領域の形（`clip_shape`）も材料にする（円のボタンの角・丸い切り抜きの外は押せない）
 //  ジェスチャーを受けるノードが無い木では、表を作っても空の材料になる（呼び出し側は指が無ければ作らない）。
 //
 //  【スクロールの窓（W2-3）】CanvasScrollComponent を持つノードは、CanvasGesture が無くても参加する（`participation_of`）:
@@ -36,6 +38,9 @@ use crate::engine::core::canvas_layout::{
     AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind, CanvasParentFrame,
 };
 use crate::engine::core::input::gesture::{ClipAabb, GestureHitNode, GestureHitScene, PaintOrder};
+use crate::engine::core::input::gesture::hit_slop::NodeHitShape;
+use crate::engine::core::renderer::ui_shape::clip_sdf::innermost_clip_sdf;
+use crate::engine::core::renderer::ui_shape::{ShapeGeom, ShapeGeomKind};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::gizmo_interact::mat4x4_mul;
 use crate::engine::structs::objects::Actor;
@@ -104,6 +109,23 @@ fn first_sprite<'w>(actor: &Actor, world: &'w World) -> Option<&'w SpriteCompone
         .find_map(|s| world.get::<SpriteComponent>(s.entity))
 }
 
+/// Sprite の見た目の形（W2-4。直角の矩形・縁だけの矩形は None＝矩形の判定）【純関数】。
+///
+/// # 引数
+/// * `sc`         - ノードの最初の有効な Sprite
+/// * `size`       - 見た目の矩形の大きさ（ローカルの画素。レイアウトが伸ばした軸は矩形の大きさ）
+/// * `size_scale` - サイズ倍率（ローカルの画素 ÷ キャンバスの単位）
+pub(super) fn sprite_hit_shape(sc: &SpriteComponent, size: [f32; 2], size_scale: [f32; 2]) -> Option<NodeHitShape> {
+    let space = [0, 1].map(|a| super::canvas_collect::shape_space_axis(size[a], size_scale[a]));
+    let geom = ShapeGeom::from_sprite_shape(&sc.shape, space);
+    // 形の無い矩形（縁だけの矩形も外形は矩形）は従来の矩形の判定のまま
+    if matches!(geom.kind, ShapeGeomKind::None) || (geom.kind == ShapeGeomKind::RoundedRect && geom.radii == [0.0; 4]) {
+        return None;
+    }
+    let units_per_local = [0, 1].map(|a| if size[a].abs() > f32::EPSILON { space[a] / size[a] } else { 1.0 });
+    Some(NodeHitShape { geom, units_per_local })
+}
+
 /// レイアウトの表からジェスチャーの当たり判定の材料を作る【純関数】。
 ///
 /// # 引数
@@ -133,11 +155,12 @@ pub(super) fn gesture_nodes_from_table(
             absorbing.insert(actor.entity);
         }
         let sprite = first_sprite(actor, world);
-        // 見た目の矩形（ローカルの大きさ）
-        let size = if placement.canvas_base.is_some() {
-            placement.eff_size
+        // 見た目の矩形（ローカルの大きさ）と、Sprite の矩形なら Sprite の形（W2-4）
+        let (size, shape) = if placement.canvas_base.is_some() {
+            (placement.eff_size, None)
         } else if let Some(sc) = sprite {
-            placement.sprite_size(sc.width, sc.height)
+            let size = placement.sprite_size(sc.width, sc.height);
+            (size, sprite_hit_shape(sc, size, placement.size_scale))
         } else {
             continue;
         };
@@ -151,6 +174,10 @@ pub(super) fn gesture_nodes_from_table(
             clip_aabbs.push(corners_aabb(&region.corners));
             current = region.parent;
         }
+        // いちばん内側の形のある切り抜き（W2-4。描画の SDF と同じ規則）
+        let clip_shape = innermost_clip_sdf(table.clip_regions.len(), node.clip, |id| {
+            table.clip_regions.get(id as usize).map(|r| (&r.corners, &r.shape, r.parent))
+        });
         // 祖先のうちジェスチャーを受けるノード（近い順）
         let mut ancestors = Vec::new();
         let mut parent = node.parent;
@@ -175,6 +202,8 @@ pub(super) fn gesture_nodes_from_table(
             paint,
             settings,
             unit_scale: placement.size_scale,
+            shape,
+            clip_shape,
         });
     }
     (nodes, absorbing)

@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SEED.UI の基本の部品（W2-4）の「状態 → 見た目」と値の計算の単体テスト。
+
+    UiListViewTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness を共有）
+      2. SEEDScripting 本体（ランタイム FFI に依存）を参照せず、対象ソースをリンクで取り込む
+         → 見た目の決め方・値の計算がエンジンの API に依存し始めた瞬間に本テストがビルドできなくなる
+           （＝部品のスクリプトから純粋な計算として分けてあることの検知器）
+
+    確かめること: テーマの JSON の読み方（グループの平坦化・sRGB → 線形・説明の鍵を読まない・壊れた JSON・代わりのテーマ）、
+    既定のテーマが部品の読むトークンをすべて持つこと、ボタン・スイッチ・チェックボックス・選択の項目の見た目（押下・無効・選択）、
+    スライダの値（段階・範囲・指の位置）、数値欄（増減・文字の解釈・長押しの連続の間隔）、進捗、選択の状態（1 つ・外せる・複数・選べない）、
+    動き（UiTween の途中の行き先の変更）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.UiComponents</RootNamespace>
+    <AssemblyName>UiComponentsTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 色の型（純粋な値型） -->
+    <Compile Include="..\..\..\scripting\src\Api\Color.cs">
+      <Link>Linked\Color.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\Mathf.cs">
+      <Link>Linked\Mathf.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\Vector2.cs">
+      <Link>Linked\Vector2.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\Vector3.cs">
+      <Link>Linked\Vector3.cs</Link>
+    </Compile>
+    <!-- テスト対象（SEED.UI のテーマ・見た目・値の計算） -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\Theme\UiTokens.cs">
+      <Link>Linked\UiTokens.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\UI\Theme\UiThemeData.cs">
+      <Link>Linked\UiThemeData.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\UI\Theme\UiColorMath.cs">
+      <Link>Linked\UiColorMath.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\UI\Looks\*.cs">
+      <Link>Linked\Looks\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\UI\SwipeMath.cs">
+      <Link>Linked\SwipeMath.cs</Link>
+    </Compile>
+    <!-- 既定のテーマのデータ（SEEDScripting に埋め込むものと同じファイル）を出力へ写す -->
+    <None Include="..\..\..\scripting\src\Api\UI\Theme\default_theme.json">
+      <Link>default_theme.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

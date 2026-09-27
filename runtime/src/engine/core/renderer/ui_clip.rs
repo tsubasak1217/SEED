@@ -11,7 +11,9 @@
 //    3. 描画: ランごとに、番号から画素の矩形（4 隅を射影した AABB と祖先の交差）を求めて set_scissor_rect する。
 //       画素の矩形は、パスの NDC が写る矩形（set_viewport したならその矩形）へ写し、パスがもともと張っている
 //       scissor（Play のレターボックスならゲーム領域）と交差させる（ClipTarget / scissor_in_target）
-//  角丸・円の切り抜きは scissor ではできないので、シェーダーの SDF で行う（W2-4。ここでは扱わない）。
+//  角丸・円の切り抜きは scissor ではできないので、シェーダーの SDF で行う（W2-4。領域は形〈UiClipShape〉を持ち、
+//  ここでは従来どおり外接矩形の scissor を張る。いちばん内側の形のある領域だけを renderer/ui_shape の形と塗りの
+//  パイプラインが画素ごとに切る＝ui_draw_pass.rs の `clip_sdf_table`）。
 //  回転したノードは 4 隅の AABB になり正確に切れない。3D ワールドキャンバス（透視）は切り抜かない（§3.8.4）。
 //
 //  【座標の規約】（primitive2d/pass.rs・font/canvas_text.rs の project と同じ）
@@ -21,6 +23,7 @@
 // ============================================================
 
 use crate::engine::core::renderer::ui_draw_order::UiDrawRun;
+use crate::engine::core::renderer::ui_shape::UiClipShape;
 
 /// 切り抜きの領域の番号（1 フレームの表の添字）。
 pub type UiClipId = u16;
@@ -44,6 +47,8 @@ pub struct UiClipRegion {
     pub corners: [[f32; 3]; 4],
     /// 外側の切り抜き（入れ子の親。無ければ None）。描画の直前に交差を取る。
     pub parent: Option<UiClipId>,
+    /// 領域の形（W2-4。角丸・楕円。形なしなら矩形の scissor だけ）。
+    pub shape: UiClipShape,
 }
 
 /// NDC の軸に沿った矩形（min が左下・max が右上）。
@@ -253,8 +258,8 @@ mod tests {
     #[test]
     fn nested_rect_is_intersection() {
         let regions = vec![
-            UiClipRegion { corners: rect_corners(-0.5, -0.5, 1.0, 1.0), parent: None },
-            UiClipRegion { corners: rect_corners(0.0, 0.0, 1.0, 1.0), parent: Some(0) },
+            UiClipRegion { corners: rect_corners(-0.5, -0.5, 1.0, 1.0), parent: None, shape: UiClipShape::NONE },
+            UiClipRegion { corners: rect_corners(0.0, 0.0, 1.0, 1.0), parent: Some(0), shape: UiClipShape::NONE },
         ];
         let rect = clip_ndc_rect(&regions, 1, &IDENTITY).unwrap();
         assert_eq!(rect, NdcRect { min: [0.0, 0.0], max: [0.5, 0.5] });

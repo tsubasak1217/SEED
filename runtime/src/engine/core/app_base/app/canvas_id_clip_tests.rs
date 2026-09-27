@@ -72,7 +72,7 @@ fn id_items_inside_a_clip_get_the_clip_scissor() {
     world.insert(bg, SpriteComponent { width: 200.0, height: 100.0, ..SpriteComponent::default() });
     panel.add_slot_typed::<SpriteComponent>("Bg", ComponentKind::Sprite, bg);
     let clip = world.spawn();
-    world.insert(clip, CanvasClipComponent { enabled: true });
+    world.insert(clip, CanvasClipComponent { enabled: true, ..CanvasClipComponent::default() });
     panel.add_slot_typed::<CanvasClipComponent>("Clip", ComponentKind::CanvasClip, clip);
     // 右へはみ出す子（400 幅）
     panel.add_child(sprite(&mut world, "Wide", [0.0, 0.0], [400.0, 40.0]));

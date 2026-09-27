@@ -12,6 +12,7 @@
 //  W2-1b から同じ表（build_world_canvas_layout / CanvasLayoutPass）を読む（描画と同じノード・同じ矩形）。
 // ============================================================
 
+use crate::engine::core::renderer::ui_shape::SpriteStyleDraw;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -635,8 +636,18 @@ fn push_inline_image_rects(
             layer: tc.layer,
             // 切り抜きは呼び出し側（collect_sprite_items）がテキストと同じ番号を後から付ける。
             clip: None,
+            // インライン画像は形と塗りを持たない（W2-4）
+            style: None,
         });
     }
+}
+
+/// 形の空間の 1 軸の長さ（キャンバスの単位）【純関数】（W2-4）。
+///
+/// スプライトの描く長さ（画素・レイアウトが伸ばした軸は矩形の大きさ）をサイズ倍率で割り戻す。
+/// 角丸の半径・縁の太さはキャンバスの単位なので、dp のキャンバスでも端末の倍率に依らず同じ形になる。
+pub(super) fn shape_space_axis(eff: f32, size_scale: f32) -> f32 {
+    if size_scale.abs() > f32::EPSILON { eff / size_scale } else { eff }
 }
 
 // ============================================================
@@ -921,6 +932,17 @@ fn collect_node_draw_items(
                         }
                     }
                 }
+                // 形と塗り（W2-4）: 欄がすべて既定なら None（従来のパイプラインで今と同じに描く）。
+                // 形の空間 = スプライトの大きさをキャンバスの単位で（レイアウトが伸ばした軸は矩形 ÷ サイズ倍率）
+                let style = if sc.is_plain_style() {
+                    None
+                } else {
+                    let space = [
+                        shape_space_axis(eff_w, size_scale_x),
+                        shape_space_axis(eff_h, size_scale_y),
+                    ];
+                    SpriteStyleDraw::for_sprite(sc, space, &gpu_mat, canvas_scale)
+                };
                 // 描画ゾーン（ルートキャンバス継承）とレイヤー（スプライト個別）を添付する
                 out.push(SpriteDrawItem {
                     model: gpu_mat,
@@ -930,6 +952,7 @@ fn collect_node_draw_items(
                     zone: my_zone,
                     layer: sc.layer,
                     clip: node_clip,
+                    style,
                 });
             }
         }
@@ -970,6 +993,8 @@ fn collect_node_draw_items(
             zone: my_zone,
             layer: ss.layer,
             clip: node_clip,
+            // スキンスプライトは形と塗りを持たない（W2-4）
+            style: None,
         });
     }
 

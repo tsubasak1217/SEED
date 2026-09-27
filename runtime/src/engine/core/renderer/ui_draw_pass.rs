@@ -25,13 +25,19 @@
 //  切り抜きが 1 つも無ければ従来と同じラン・同じ描画（scissor に触らない）。
 //  scissor を張るのは `draw` にパスの画素の文脈（ClipTarget）が渡されたときだけ。メインパスは
 //  set_viewport の矩形へ写してパスの元の scissor と交差させ、描き終えたら元の scissor へ戻す。
+//
+//  【角丸・楕円の切り抜き（W2-4）】領域に形があれば、スプライトのアイテムを「いちばん内側の形のある領域」の
+//  SDF で切る（`clip_sdf_table` → `InstanceStream::push_clipped` が形と塗りの経路へ回す）。scissor は従来どおり
+//  外接矩形で張る。テキスト・図形・パーティクルは外接矩形の scissor だけ（docs/ui_components.md の制限）。
 // ============================================================
 
 use crate::engine::core::font::GpuTextBatch;
 use crate::engine::core::font::canvas_text::{CanvasTextItem, CanvasTextRenderer, TextDrawRange};
 use crate::engine::core::renderer::batch2d::{
-    draw_sprite_batches, InstanceStream, SpriteBatchList, SpriteDrawItem,
+    draw_sprite_batches, InstanceStream, SpriteBatchList, SpriteDrawItem, SpriteStreamGpu,
 };
+use crate::engine::core::renderer::ui_shape::clip_sdf::innermost_clip_sdf;
+use crate::engine::core::renderer::ui_shape::ClipSdf;
 use crate::engine::core::renderer::pipeline::SpritePipeline;
 use crate::engine::core::renderer::primitive2d::pass::PrimitiveSpaceMap;
 use crate::engine::core::renderer::primitive2d::{
@@ -70,6 +76,22 @@ pub struct Particle2dDrawItem {
     pub layer: i32,
     /// 切り抜きの番号（エミッタを持つノードと同じ。レイアウトの表の領域。無ければ None）。
     pub clip: Option<UiClipId>,
+}
+
+/// 切り抜きの番号ごとの「いちばん内側の形のある領域の SDF」の表【純関数】（W2-4）。
+///
+/// 形のある領域が 1 つも無ければ空（＝どの番号も None。従来の描画と同じ）。
+pub fn clip_sdf_table(regions: &[UiClipRegion]) -> Vec<Option<ClipSdf>> {
+    if !regions.iter().any(|r| r.shape.has_shape()) {
+        return Vec::new();
+    }
+    (0..regions.len())
+        .map(|id| {
+            innermost_clip_sdf(regions.len(), Some(id as UiClipId), |i| {
+                regions.get(i as usize).map(|r| (&r.corners, &r.shape, r.parent))
+            })
+        })
+        .collect()
 }
 
 // ─── 入力セグメント ──────────────────────────────────────────
@@ -241,6 +263,12 @@ impl UiZoneDraw {
             }
         }
 
+        // ── 2.5) 角丸・楕円の切り抜き（W2-4）: 番号 → いちばん内側の形のある領域の SDF ──
+        let clip_sdfs = clip_sdf_table(params.clip_regions);
+        let clip_of = |id: Option<UiClipId>| -> Option<ClipSdf> {
+            id.and_then(|i| clip_sdfs.get(i as usize).copied().flatten())
+        };
+
         // ── 3) スプライトをセグメントごとに取り出す（ラン順に消費する）──
         let mut sprite_iters: Vec<std::vec::IntoIter<SpriteDrawItem>> = segments
             .iter_mut()
@@ -257,7 +285,8 @@ impl UiZoneDraw {
                 UiDrawKind::Sprite => {
                     // このランのぶんだけイテレータから取り出して push する。
                     // → テクスチャ融合はラン内で閉じる（ランを跨いだ融合は起きない）。
-                    let list = sprite_stream.push(sprite_iters[*si].by_ref().take(run.len()));
+                    // 角丸・楕円の切り抜きの中のスプライトは形と塗りの経路で画素ごとに切る（W2-4）
+                    let list = sprite_stream.push_clipped(sprite_iters[*si].by_ref().take(run.len()), &clip_of);
                     runs.push(UiZoneRunEntry { run: UiZoneRun::Sprite(list), clip });
                 }
                 UiDrawKind::Primitive => {
@@ -331,7 +360,7 @@ impl UiZoneDraw {
     ///
     /// - `camera_bg`: スプライトパイプラインの group 0（プリミティブ／テキストの
     ///   頂点は CPU で NDC 化済みのためカメラバインドグループを使わない）。
-    /// - `inst_buf`: `build` で使った `InstanceStream` の GPU バッファ。
+    /// - `inst_buf`: `build` で使った `InstanceStream` の GPU バッファの組（形と塗りのバッファを含む。W2-4）。
     /// - `particles`: 2D パーティクルを描くための (システム, パイプライン)。
     ///   `None` を渡すとパーティクルランは黙って飛ばされる（描画順は変わらない）。
     /// - `clip_target`: パスの画素の文脈（NDC が写る矩形と、パスがもともと張っている scissor）。
@@ -343,7 +372,7 @@ impl UiZoneDraw {
         pass: &mut wgpu::RenderPass<'rp>,
         sprite_pipeline: &'rp SpritePipeline,
         camera_bg: &'rp wgpu::BindGroup,
-        inst_buf: &'rp wgpu::Buffer,
+        inst_buf: &'rp SpriteStreamGpu,
         primitive2d: Option<&'rp Primitive2dRenderer>,
         canvas_text: Option<&'rp CanvasTextRenderer>,
         particles: Option<(&'rp ParticleSystem, &'rp ParticlePipelines)>,

@@ -318,7 +318,7 @@ fn container_with_clip_puts_children_inside_the_clip() {
     let mut world = World::new();
     let mut list = canvas_node(&mut world, "List", CanvasTransform { position: [10.0, 10.0], ..CanvasTransform::default() }, [100.0, 50.0]);
     add_stack(&mut world, &mut list, vstack());
-    add(&mut world, &mut list, ComponentKind::CanvasClip, CanvasClipComponent { enabled: true });
+    add(&mut world, &mut list, ComponentKind::CanvasClip, CanvasClipComponent { enabled: true, ..CanvasClipComponent::default() });
     for i in 0..4 {
         list.add_child(sprite_node(&mut world, &format!("Row{i}"), CanvasTransform::default(), [100.0, 30.0]));
     }
