@@ -2772,3 +2772,6 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （上の「固定分 約 4.5 ms」の項目）。止まっている画面の多いアプリの電池に効く。
   → W2-0 で方式を決めた（roadmap §3.8.3・§3.8.4）。部品を作り始める前に「描く理由」の API だけ先に決める（§3.8.5）。
 - [ ] **W2-11 通しの確認（UC-1〜12）** — 2026-09-27。
+- [ ] **PC の Play のスクリプトのコンパイルで `System.Text.Json` を参照できない** — 2026-09-27（Wake or Pay の W3-D で発見）。`using System.Text.Json;` が `CS0234: 'Json' does not exist in the namespace 'System.Text'` で失敗する。Play のコンパイル（ScriptAssemblyManager の Roslyn）が「その時点で読み込まれているアセンブリ」だけを参照に入れるため、共有フレームワークの `System.Text.Json.dll` が参照に入らない。Wake or Pay は反射なしの小さな JSON（`assets/scripts/Json/`）を自作して回避した。直し方の案: 参照の集合を「読み込み済み」ではなく、同梱の .NET の `shared/Microsoft.NETCore.App/<版>/` の参照用アセンブリ一式（または許可リスト）から作る。Android の同梱 CoreCLR と SeedPak の事前コンパイル（`--scripts`）の参照も同じ集合にそろえる。関連: `scripting/` の Compilation、`docs/scripting_api.md`（使える .NET の範囲を明記する）。
+- [ ] **SEED.exe を前面に出さずに起動する引数が無い（自動の見た目の検査が利用者の画面を奪う）** — 2026-09-27（W2-1a の画素比較で発見。利用者から「頻繁に起動しているのはなぜ？」）。今は STARTUPINFO の SW_SHOWNOACTIVATE で起動し最背面へ送って凌いでいる。案: `--window=hidden|offscreen|minimized` と、描画をオフスクリーンのテクスチャに向けてスクリーンショットだけ撮る `--headless-render`（決まったフレーム数で撮って終了）。W2 以降の見た目の回帰検査（UC の自動化）と CI で使う。関連: `runtime/src/main.rs`、IPC の SCREENSHOT。
+- [ ] **`frame_renderer.rs` の未使用の import `sprite_world_corners`** — 2026-09-27（W2-1a の後に rust-analyzer が指摘）。警告の総数は変わっていないが、W2-1a で使われなくなった可能性。W2-1b で確かめて消す。
