@@ -5,14 +5,15 @@ using System.Text.Json;
 namespace SEED.Platform;
 
 /// <summary>
-/// 目覚まし（決まった時刻に確実に鳴らす。W1-3 は予約の基盤）。
+/// 目覚まし（決まった時刻に確実に鳴らす。W1-3 の予約の基盤＋W1-4a の鳴動）。
 ///
 /// <para><b>仕組み</b><br/>
 /// Android では別プロセス :seed_platform（Java）が予約の控え（端末保護ストレージ）を持ち、AlarmManager.setAlarmClock で張る
 /// （Doze でも時刻どおり。ステータスバーに目覚ましの印）。再起動・時刻の変更・アプリの更新・権限の変化で控えから張り直し、
 /// 電源断などで過ぎた予約は鳴らさずに <see cref="AlarmMissedEvent"/> を記録する。鳴ったら <see cref="AlarmFiredEvent"/>。
-/// デスクトップ（エディタの Play・単体起動）はエンジンの中の模擬が壁時計で鳴らす（Play を止めると予約は消える）。
-/// W1-3 では音・通知・鳴動画面は無い（W1-4 の RingService）。
+/// 鳴ると同じ :seed_platform の前景サービスが音（USAGE_ALARM）・振動・フルスクリーン通知を出し、<see cref="StopRinging"/> か
+/// 安全弁（MaxRingMinutes）まで鳴り続ける（エンジンが落ちても・最近のタスクから消しても止まらない）。
+/// デスクトップ（エディタの Play・単体起動）はエンジンの中の模擬が壁時計で鳴らす（音は鳴らさない。Play を止めると予約も鳴動も消える）。
 /// </para>
 ///
 /// <para><b>呼び方</b><br/>
@@ -126,6 +127,30 @@ public static class Alarms
             return Array.Empty<ScheduledAlarm>();
         }
     }
+
+    /// <summary>
+    /// 鳴動中の目覚まし（W1-4a）。鳴っていなければ null（<see cref="Platform.LastError"/> は空）。
+    /// 失敗したときも null（<see cref="Platform.LastError"/> に理由）。呼ぶたびに :seed_platform へ問い合わせる（毎フレーム読まない）。
+    /// </summary>
+    public static RingingAlarm? GetRinging()
+    {
+        if (!Invoke(AlarmJson.MethodGetRinging, PlatformJson.StringObject(), out string reply))
+        {
+            return null;
+        }
+        return AlarmJson.TryReadReplyObject(reply, AlarmJson.KeyRinging, RingingAlarm.FromJson, out RingingAlarm ringing)
+            ? ringing
+            : null;
+    }
+
+    /// <summary>
+    /// 鳴動を止める（解除・スヌーズ。W1-4a）。音・振動・鳴動の通知が止まり、<see cref="AlarmRingStoppedEvent"/>（Stopped）が届く。
+    /// 待ち行列に次の予約があれば続けて鳴り始める。鳴っていなくても true（冪等）。
+    /// </summary>
+    /// <param name="id">止める予約の ID（null・空なら今鳴っているもの。待ち行列にいる予約の ID なら鳴らさずに外す）。</param>
+    /// <returns>受け付けたら true（false なら <see cref="Platform.LastError"/>）。</returns>
+    public static bool StopRinging(string? id = null) =>
+        Invoke(AlarmJson.MethodStopRinging, AlarmJson.IdObject(id ?? string.Empty), out _);
 
     /// <summary>命令を送り、機能の有無を覚える（feature_not_enabled なら以後 <see cref="IsSupported"/> は false）。</summary>
     private static bool Invoke(string method, string json, out string reply)

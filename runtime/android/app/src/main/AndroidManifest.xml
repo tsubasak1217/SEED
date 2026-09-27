@@ -22,6 +22,8 @@
     SEED.Platform を初めて呼んだとき）まで起動しないので、使わないゲームには影響せず、android.features が空でもスクリプトの
     Platform.IsSupported が実機で一貫する。権限・受信機・サービス・MainActivity の intent-filter は機能ごとの断片
     （android.features → SeedAndroid が生成する src/seedFeatures/AndroidManifest.xml。E-04）で出し入れする。
+  ・activity-alias PlatformEntry（exported=false・targetActivity=MainActivity）… プラットフォーム層の PendingIntent だけが通る
+    起動の入口（W1-4a。docs/android.md §25.12）。PlatformProvider と同じく常設。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -67,6 +69,26 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          PlatformEntry … 信頼できる起動の入口（W1-4a。docs/android.md §25.12）。:seed_platform が作る Activity 行きの PendingIntent
+          （目覚ましのフルスクリーン通知・鳴動の通知のタップと「開く」・ステータスバーの目覚ましの印）はすべてこの別名を通る。
+          exported=false なので他のアプリは起動できず、MainActivity（platform/LaunchReason）は起動の Intent の部品名がこの別名の
+          ときだけ extras の起動理由を信用する（W1-P6。リリース版でも取れ、偽造できない）。W1-1 の PlatformProvider と同じく
+          機能によらず常設（exported=false で intent-filter も無いので、使わないゲームには何も起きない）。
+          meta-data の android.app.lib_name … GameActivity は起動の Intent の部品（＝この別名）の ActivityInfo から lib_name を読み、
+          無ければ libmain.so を探して IllegalArgumentException で落ちる（games-activity 4.4.0 の GameActivity.onCreate を javap で
+          確かめた）。別名は対象の meta-data を受け継がない見込み（推論）なので、MainActivity と同じ値をここにも置く。
+        -->
+        <activity-alias
+            android:name=".platform.PlatformEntry"
+            android:exported="false"
+            android:targetActivity=".MainActivity">
+
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="SEED" />
+        </activity-alias>
 
         <!--
           プラットフォーム機能の同期の命令の窓口（Java だけの別プロセス :seed_platform。W1-1）。

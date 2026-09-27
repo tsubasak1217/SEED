@@ -5,7 +5,7 @@
 //  （ここは作った後に変えない値と、控えのファイル・list の返答の JSON との相互変換だけを持つ）。
 //  JSON の欄の名前は PlatformContract.KEY_ALARM_*（Rust の wire::alarm・C# の AlarmJson と一致させる）。
 //  鳴らし方の欄（sound_path・vibrate・force_volume・keep_volume・fade_in_seconds・max_ring_minutes・title・body）は
-//  W1-3 では控えに持つだけで、鳴動（RingService）が W1-4 で使う。
+//  鳴動（alarm/ring/ の RingService。W1-4a）が使う。ring/ は別のパッケージなので、型と欄は public（書き換えられない final）。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm;
@@ -17,34 +17,34 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * 予約 1 件（不変）。
+ * 予約 1 件（不変。作るのはこのパッケージの AlarmRequestReader と控えの読み込みだけ）。
  */
-final class AlarmEntry {
+public final class AlarmEntry {
 
     /** 予約の ID（アプリが決める。同じ ID は置き換え）。 */
-    final String id;
+    public final String id;
     /** 鳴らす時刻（UTC の epoch ミリ秒）。 */
-    final long triggerAtUtcMs;
+    public final long triggerAtUtcMs;
     /** 音源の端末のファイルの絶対パス（空なら既定の音）。 */
-    final String soundPath;
+    public final String soundPath;
     /** バイブするか。 */
-    final boolean vibrate;
+    public final boolean vibrate;
     /** 鳴っている間のアラームの音量（0..1。PlatformContract.ALARM_VOLUME_UNCHANGED なら触らない）。 */
-    final double forceVolume;
+    public final double forceVolume;
     /** 利用者が音量を下げても戻すか。 */
-    final boolean keepVolume;
+    public final boolean keepVolume;
     /** 音量の漸増の秒（0 以上）。 */
-    final double fadeInSeconds;
+    public final double fadeInSeconds;
     /** 鳴り続ける上限の分（1 以上）。 */
-    final int maxRingMinutes;
+    public final int maxRingMinutes;
     /** 鳴動の通知の題。 */
-    final String title;
+    public final String title;
     /** 鳴動の通知の本文。 */
-    final String body;
+    public final String body;
     /** アプリの任意の JSON（文字列のまま返す）。 */
-    final String payloadJson;
+    public final String payloadJson;
     /** 予約を受け付けた時刻（UTC の epoch ミリ秒。診断と、同じ ID の予約の見分けに使う）。 */
-    final long createdAtUtcMs;
+    public final long createdAtUtcMs;
 
     /** 控えの欄をそのまま並べて作る（値の検査・正規化は AlarmRequestReader が済ませてから呼ぶ）。 */
     AlarmEntry(String id, long triggerAtUtcMs, String soundPath, boolean vibrate, double forceVolume, boolean keepVolume,

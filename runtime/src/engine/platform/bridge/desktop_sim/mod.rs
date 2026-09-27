@@ -17,8 +17,14 @@
 //  【W1-3 の命令】（Java の AlarmModule と同じ意味。中身は alarm_commands.rs・予約表は alarm_book.rs）
 //    alarm.schedule / cancel / cancel_all / list / can_schedule_exact … 予約表はプロセスの中だけ。壁時計（wall_clock.rs）が
 //    予定時刻を過ぎたら poll_events で platform.alarm.fired を積む。エディタの Play の区切り（reset_session）で空にする。
+//  【W1-4a の命令】（Java の RingService・AlarmModule・メインプロセスの MainProcessCommands と同じ意味）
+//    alarm.get_ringing / stop_ringing … 発火した予約は鳴動の状態（ring_state.rs）へ渡り、鳴動中なら待ち行列（platform.alarm.queued）。
+//        止める・安全弁（poll_events の中で max_ring_minutes を見る）で platform.alarm.ring_stopped。音は鳴らさない（ring_commands.rs）
+//    platform.launch_reason … 常に launcher（app_commands.rs）
+//    window.set_show_when_locked … 受け付けてログだけ（app_commands.rs）
 //
 //  【ファイル】mod.rs（表と共通）・alarm_book.rs（模擬の予約表）・alarm_commands.rs（目覚ましの命令と発火）・
+//  ring_state.rs（鳴動の状態）・ring_commands.rs（鳴動の命令とイベント）・app_commands.rs（起動理由・画面）・
 //  wall_clock.rs（壁時計。テストで進める）
 // ============================================================
 
@@ -26,6 +32,12 @@
 mod alarm_book;
 /// 模擬の目覚ましの命令と発火。
 mod alarm_commands;
+/// 模擬の起動理由と画面の命令（W1-4a）。
+mod app_commands;
+/// 模擬の鳴動の命令とイベント（W1-4a）。
+mod ring_commands;
+/// 模擬の鳴動の状態（W1-4a）。
+mod ring_state;
 /// 壁時計（テストで差し替える）。
 mod wall_clock;
 
@@ -36,9 +48,13 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 
 use super::event_queue::{PlatformEventQueue, DEFAULT_EVENT_QUEUE_CAPACITY};
-use super::wire::{self, alarm as alarm_names, METHOD_EMIT_TEST_EVENT, METHOD_PING, METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME};
+use super::wire::{
+    self, alarm as alarm_names, launch as launch_names, window as window_names, METHOD_EMIT_TEST_EVENT, METHOD_PING,
+    METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME,
+};
 use super::{PlatformBridge, PlatformBridgeKind};
 use alarm_book::SimAlarmBook;
+use ring_state::SimRingState;
 pub use wall_clock::{SystemWallClock, WallClock};
 
 /// 試験イベントの引数に message が無いときの文言。
@@ -102,6 +118,18 @@ const SIM_COMMANDS: &[SimCommand] = &[
         method: alarm_names::METHOD_CAN_SCHEDULE_EXACT,
         handler: DesktopSimBridge::handle_alarm_can_schedule_exact,
     },
+    SimCommand { module: alarm_names::MODULE, method: alarm_names::METHOD_GET_RINGING, handler: DesktopSimBridge::handle_alarm_get_ringing },
+    SimCommand { module: alarm_names::MODULE, method: alarm_names::METHOD_STOP_RINGING, handler: DesktopSimBridge::handle_alarm_stop_ringing },
+    SimCommand {
+        module: MODULE_PLATFORM,
+        method: launch_names::METHOD_LAUNCH_REASON,
+        handler: DesktopSimBridge::handle_platform_launch_reason,
+    },
+    SimCommand {
+        module: window_names::MODULE,
+        method: window_names::METHOD_SET_SHOW_WHEN_LOCKED,
+        handler: DesktopSimBridge::handle_window_set_show_when_locked,
+    },
 ];
 
 /// デスクトップの模擬の PlatformBridge。
@@ -115,6 +143,8 @@ pub struct DesktopSimBridge {
     started_at: Instant,
     /// 模擬の目覚ましの予約表（W1-3）。
     alarms: SimAlarmBook,
+    /// 模擬の鳴動の状態（今鳴っている 1 つと待ち行列。W1-4a）。
+    ringing: SimRingState,
     /// 予定時刻と比べる壁時計（テストでは手で進める時計）。
     clock: Arc<dyn WallClock>,
 }
@@ -138,6 +168,7 @@ impl DesktopSimBridge {
             next_seq: AtomicU64::new(FIRST_EVENT_SEQ),
             started_at: Instant::now(),
             alarms: SimAlarmBook::new(),
+            ringing: SimRingState::new(),
             clock,
         }
     }
@@ -211,14 +242,17 @@ impl PlatformBridge for DesktopSimBridge {
     }
 
     fn poll_events(&self) -> Vec<String> {
-        // 時刻を過ぎた予約を先に積んでから取り出す（フレームの頭で呼ばれるので、次のスクリプトのフレームで届く）
+        // 時刻を過ぎた予約を先に積み（鳴動へ渡す）、鳴動の安全弁を見てから取り出す
+        // （フレームの頭で呼ばれるので、次のスクリプトのフレームで届く）
         self.fire_due_alarms();
+        self.check_ring_timeouts();
         self.events.drain()
     }
 
     fn reset_session(&self) {
-        // Play の区切り: 予約と積んだイベントを捨てる（Play を止めれば模擬の予約は消える）
+        // Play の区切り: 予約・鳴動・積んだイベントを捨てる（Play を止めれば模擬の予約も鳴動も消える）
         self.alarms.clear();
+        self.ringing.clear();
         self.events.clear();
     }
 }
@@ -270,14 +304,14 @@ mod tests {
         assert_eq!(reply["echo"], json!({}));
     }
 
-    /// version: プロトコルの版と、模擬が知っているモジュール（名前の順。W1-3 で alarm が加わった）。
+    /// version: プロトコルの版と、模擬が知っているモジュール（名前の順。W1-3 で alarm、W1-4a で window が加わった）。
     #[test]
     fn version_reports_protocol() {
         let sim = DesktopSimBridge::new();
         let reply = parse(&sim.invoke(MODULE_PLATFORM, METHOD_VERSION, "{}").unwrap());
         assert_eq!(reply[wire::KEY_OK], Value::Bool(true));
         assert_eq!(reply["protocol"], Value::from(wire::PROTOCOL_VERSION));
-        assert_eq!(reply["modules"], json!([alarm_names::MODULE, MODULE_PLATFORM]));
+        assert_eq!(reply["modules"], json!([alarm_names::MODULE, MODULE_PLATFORM, window_names::MODULE]));
     }
 
     /// emit_test_event: 積んだイベントが poll_events で順に出て、通し番号が 1 から増える。取り出した後は空。

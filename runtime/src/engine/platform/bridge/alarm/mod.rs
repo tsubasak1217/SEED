@@ -15,4 +15,4 @@ pub mod request;
 /// 音源の書き出し（assets:// → 端末保護ストレージの sounds/<内容のハッシュ>.<拡張子>）。
 pub mod sound_export;
 
-pub use request::{read_id, read_schedule, AlarmRequest};
+pub use request::{read_id, read_optional_id, read_schedule, AlarmRequest};

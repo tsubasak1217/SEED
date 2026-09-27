@@ -14,6 +14,9 @@
 //      （中身は AudioFocusController。契機の受け口だけここ）
 //    ・アプリのプラットフォーム機能（SEED.Platform）の JNI の入口の準備（中身は platform/SeedPlatform。W1-1。
 //      :seed_platform のプロセスはここでは起動しない。最初の呼び出しまで遅らせる）
+//    ・起動理由（中身は platform/LaunchReason。W1-4a）: onCreate（super.onCreate の前）と onNewIntent で Intent を見て、
+//      信頼できる入口 PlatformEntry（exported=false の activity-alias）経由なら起動理由を読み、目覚ましの鳴動なら
+//      ロック画面の上に出して画面を点ける。onNewIntent ではイベント platform.launch を流す
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
@@ -40,6 +43,7 @@ import androidx.core.view.WindowInsetsCompat;
 
 import com.google.androidgamesdk.GameActivity;
 
+import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.SeedPlatform;
 
 /**
@@ -122,6 +126,9 @@ public class MainActivity extends GameActivity {
         // IsSupported を正しく読めるよう android_main より前に）。:seed_platform は呼ばない（プロセスの起動の約 120 ms を
         // ここで待たない。つなぐのはスクリプトが最初に呼んだとき・背面のスレッドで。platform/PlatformConnection）。
         SeedPlatform.init(this);
+        // 起動理由（PlatformEntry 経由の目覚まし・通知の操作か、ランチャーか）。目覚ましの鳴動なら、最初のフレームより前に
+        // ロック画面の上に出して画面を点ける（setShowWhenLocked・setTurnScreenOn。W1-4a）
+        LaunchReason.onCreate(this);
         super.onCreate(savedInstanceState);
         // システムバーの既定（プロジェクト設定 android.system_bars。隠す＝従来のゲーム・出す＝アプリ）。
         systemBars = new SystemBarsController(this);
@@ -133,6 +140,17 @@ public class MainActivity extends GameActivity {
         audioFocus = new AudioFocusController(this);
         // 描画面（SurfaceView）は super.onCreate の中で作られる。以降、安全領域・回転の変化を知らせる。
         screenReporter.attach(mSurfaceView);
+    }
+
+    /**
+     * 起動済みの Activity に Intent が届いた（launchMode="singleTask" なので、目覚まし・通知の操作で開き直されたときもここ）。
+     * getIntent が新しい Intent を返すように差し替え、起動理由を決め直してイベント platform.launch を流す（W1-4a）。
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        LaunchReason.onNewIntent(this, intent);
     }
 
     /** 前面に来た。音声フォーカスを要求する（得られるまでネイティブは音声を止めたまま）。 */

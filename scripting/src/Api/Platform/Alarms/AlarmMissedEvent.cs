@@ -1,12 +1,13 @@
 namespace SEED.Platform;
 
 /// <summary>
-/// 目覚ましが鳴らなかったイベント "platform.alarm.missed" の中身（不変値型。W1-3）。
+/// 目覚ましが鳴らなかったイベント "platform.alarm.missed" の中身（不変値型。W1-3。W1-4a で StartFailed を追加）。
 ///
 /// <para>
 /// 再起動・強制停止・正確なアラームの許可の取り消しなどで、予約が OS から消えていた間に予定時刻を過ぎた予約を、
-/// 張り直すとき（:seed_platform の BootReceiver）に見つけて記録したもの。鳴らさずに控えから消している
-/// （受信機から直接鳴らさない）。アプリは「鳴らなかった朝」をどう扱うかをここで決める。
+/// 張り直すとき（:seed_platform の BootReceiver・プロセスの起動時の照合）に見つけて記録したもの。鳴らさずに控えから消している
+/// （受信機から直接鳴らさない）。配信は届いたのに鳴動の前景サービスを起こせなかったとき（<see cref="AlarmMissedReason.StartFailed"/>）も
+/// これが届く。アプリは「鳴らなかった朝」をどう扱うかをここで決める。
 /// </para>
 /// </summary>
 public readonly struct AlarmMissedEvent
@@ -19,6 +20,9 @@ public readonly struct AlarmMissedEvent
 
     /// <summary>理由の文字列: 正確なアラームの許可の取り消し。</summary>
     public const string ReasonPermissionRevoked = "permission_revoked";
+
+    /// <summary>理由の文字列: 配信は届いたが、鳴動の前景サービスを起こせなかった（W1-4a）。</summary>
+    public const string ReasonStartFailed = "start_failed";
 
     /// <summary>予約の ID。</summary>
     public string Id { get; }
@@ -45,6 +49,7 @@ public readonly struct AlarmMissedEvent
         {
             ReasonDeviceOff => AlarmMissedReason.DeviceOff,
             ReasonPermissionRevoked => AlarmMissedReason.PermissionRevoked,
+            ReasonStartFailed => AlarmMissedReason.StartFailed,
             _ => AlarmMissedReason.Unknown,
         };
         PayloadJson = payloadJson;

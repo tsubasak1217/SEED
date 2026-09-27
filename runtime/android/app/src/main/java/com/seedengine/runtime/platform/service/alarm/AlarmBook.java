@@ -2,15 +2,18 @@
 //  AlarmBook.java — 予約の控え（AlarmStore）と AlarmManager（AlarmScheduler）を食い違わないように組み合わせる（W1-3）
 //
 //  :seed_platform の中で予約を触るのは、命令（AlarmModule。Binder のスレッド）・発火（AlarmReceiver）・張り直し（BootReceiver。
-//  どちらも UI スレッド）の 3 か所。すべてこのクラスの static synchronized を通し、「控えを読む → 決める → 書く → 張る」を
-//  1 つの lock の中で行う（別スレッドの割り込みで控えと AlarmManager が食い違わないように）。
+//  どちらも UI スレッド）・起動時の照合（AlarmStartup。背面のスレッド。W1-4a）の 4 か所。すべてこのクラスの static synchronized を
+//  通し、「控えを読む → 決める → 書く → 張る」を 1 つの lock の中で行う（別スレッドの割り込みで控えと AlarmManager が食い違わないように）。
 //
 //  【順序の決まり（落ちたときに「失う」より「二重に知らせる」側へ倒す）】
 //    予約     : 控えに書く → 張る。張れなければ控えを元へ戻す（控えに無い予約は鳴っても無視されるので、先に控え）
 //    取り消し : 控えから消す → 外す（先に外して控えの書き込みに失敗すると、次の張り直しで復活してしまう）
-//    発火     : 記録する（alarm.fired）→ 控えから消す（間で落ちると、次の張り直しで alarm.missed も記録されうる）
+//    発火     : 鳴動へ渡す（W1-4a）→ 記録する（alarm.fired。鳴動の前景サービスを起こせなかったら渡さずに
+//               alarm.missed(start_failed)）→ 控えから消す（間で落ちると、次の張り直しで alarm.missed も記録されうる）
 //    張り直し : 過ぎた予約を記録する（alarm.missed）→ 控えから消す
-//  lock の順は AlarmBook → EventJournal（記録）だけで、逆向きは無い（行き詰まらない）。
+//    照合     : 張り直しと同じ。ただし PendingIntent が残っている予約（張ってある）には触らない（W1-4a）
+//  lock の順は AlarmBook → RingRegistry（発火の鳴動への受け渡し。W1-4a）・AlarmBook → EventJournal（記録）だけで、
+//  逆向きは無い（行き詰まらない。RingRegistry は AlarmBook を呼ばない）。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm;
@@ -23,6 +26,7 @@ import com.seedengine.runtime.platform.PlatformContract;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * 予約の操作（static のみ。プロセスで 1 つの lock）。
@@ -184,15 +188,21 @@ final class AlarmBook {
     }
 
     /**
-     * 発火を処理する（AlarmReceiver から）: 控えの予約を確かめ、alarm.fired を記録し、控えから消す（一回限り）。
+     * 発火を処理する（AlarmReceiver から）: 控えの予約を確かめ、鳴動へ渡し（handOff。W1-4a）、alarm.fired（鳴動の
+     * 前景サービスを起こせなかったなら handOff を呼ばずに alarm.missed(start_failed)）を記録し、控えから消す（一回限り）。
      *
-     * @param context        :seed_platform の Context
-     * @param id             発火の Intent の予約 ID（null 可）
+     * <p>鳴動へ渡すのを記録より先にするのは、alarm.fired を受けたアプリが GetRinging を呼んだとき必ずその鳴動が返るようにするため
+     * （記録と同時にエンジンへ呼び鈴が鳴る）。handOff は値の出し入れだけで、ファイルには触らないこと（この lock の中で呼ぶ）。</p>
+     *
+     * @param context         :seed_platform の Context
+     * @param id              発火の Intent の予約 ID（null 可）
      * @param intentTriggerAt 発火の Intent の予定時刻（AlarmScheduler.UNKNOWN_TRIGGER_AT なら確かめない）
-     * @param nowUtcMs       配信を受けた時刻
+     * @param nowUtcMs        配信を受けた時刻
+     * @param handOff         鳴動へ渡す処理（鳴動の前景サービスを起こせなかったなら null。W1-4a）
      * @return 鳴った予約（控えに無い・古い配信なら null＝何もしない）
      */
-    static synchronized AlarmEntry fire(Context context, String id, long intentTriggerAt, long nowUtcMs) {
+    static synchronized AlarmEntry fire(Context context, String id, long intentTriggerAt, long nowUtcMs,
+                                        Consumer<AlarmEntry> handOff) {
         if (id == null) {
             Log.w(PlatformContract.LOG_TAG, "予約 ID の無い発火を捨てました");
             return null;
@@ -211,7 +221,13 @@ final class AlarmBook {
                     + "・控え " + entry.triggerAtUtcMs + "）");
             return null;
         }
-        AlarmEvents.recordFired(context, entry, nowUtcMs);
+        if (handOff != null) {
+            handOff.accept(entry);
+            AlarmEvents.recordFired(context, entry, nowUtcMs);
+        } else {
+            // 配信は届いたが鳴らせない（前景サービスを起こせなかった）。「鳴った」とは知らせない
+            AlarmEvents.recordMissed(context, entry, PlatformContract.MISSED_REASON_START_FAILED);
+        }
         entries.remove(index);
         if (!AlarmStore.save(context, entries)) {
             Log.w(PlatformContract.LOG_TAG, "鳴った目覚まし " + id + " を控えから消せませんでした（次の張り直しで鳴らなかった扱いになりえます）");
@@ -231,6 +247,37 @@ final class AlarmBook {
      * @return 結果（控えが空なら全部 0）
      */
     static synchronized RearmResult rearm(Context context, String missedReason, long nowUtcMs) {
+        return applyRearm(context, missedReason, nowUtcMs, false);
+    }
+
+    /**
+     * 起動時の照合（:seed_platform のプロセスが起きたとき。AlarmStartup から。W1-4a）。控えのまだ先の予約のうち、
+     * 発火の PendingIntent が無い（FLAG_NO_CREATE で null＝AlarmManager から消えている）ものだけを張り直し、過ぎた予約は
+     * 鳴らさずに alarm.missed(device_off) を記録して控えから外す。張ってある予約には触らない。
+     *
+     * <p>Android 10〜14 は強制停止の後、次の再起動まで BOOT_COMPLETED が届かない（15 以降は停止状態から出たときに届く）。
+     * その間に予約が AlarmManager から消えたままになるのを、アプリが次に :seed_platform を起こしたとき（最初の SEED.Platform の
+     * 呼び出し・目覚ましの配信など）に直す保険。配信の途中の予約（過ぎてから 60 秒以内で PendingIntent が残っている）には
+     * 触らないので、配信でプロセスが起きたときに鳴らす予約を「鳴らなかった」にしない（AlarmRearmPlan）。</p>
+     *
+     * @param context  :seed_platform の Context
+     * @param nowUtcMs 今の時刻
+     * @return 結果（控えが空なら全部 0）
+     */
+    static synchronized RearmResult reconcile(Context context, long nowUtcMs) {
+        return applyRearm(context, PlatformContract.MISSED_REASON_DEVICE_OFF, nowUtcMs, true);
+    }
+
+    /**
+     * 控えから張り直す（rearm と reconcile の共通。lock を持って呼ぶ）。
+     *
+     * @param context          :seed_platform の Context
+     * @param missedReason     過ぎた予約の理由
+     * @param nowUtcMs         今の時刻
+     * @param skipAlreadyArmed 張ってある（PendingIntent が残っている）予約は張り直さない（照合）
+     * @return 結果
+     */
+    private static RearmResult applyRearm(Context context, String missedReason, long nowUtcMs, boolean skipAlreadyArmed) {
         List<AlarmEntry> entries = AlarmStore.load(context);
         if (entries.isEmpty()) {
             return new RearmResult(0, 0, 0, 0, 0);
@@ -242,6 +289,9 @@ final class AlarmBook {
         int armed = 0;
         int failed = 0;
         for (AlarmEntry entry : plan.toArm) {
+            if (skipAlreadyArmed && AlarmScheduler.isArmed(context, entry.id)) {
+                continue;
+            }
             AlarmScheduler.ArmResult result = canExact
                     ? AlarmScheduler.arm(context, entry)
                     : null;

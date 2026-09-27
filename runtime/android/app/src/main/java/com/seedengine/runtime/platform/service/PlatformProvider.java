@@ -14,6 +14,9 @@
 //  【マニフェスト】main の AndroidManifest.xml に exported=false・android:process=":seed_platform" で常設（W1-1）。
 //  プロバイダのプロセスは最初の接続まで起動しないので、使わないゲームには影響しない。機能ごとの宣言の出し入れ（E-04）は W1-2。
 //  このクラスは Java だけのプロセスで動く（libSEED.so を読み込まない。SeedPlatform・MainActivity を参照しないこと）。
+//
+//  【起動時の照合（W1-4a）】onCreate は :seed_platform のプロセスが起きた最初（受信機・サービスより前）に呼ばれるので、
+//  ここで目覚ましの控えと AlarmManager の照合を背面のスレッドで始める（alarm/AlarmStartup。Android 10〜14 の強制停止の後の保険）。
 // ============================================================
 
 package com.seedengine.runtime.platform.service;
@@ -31,6 +34,7 @@ import android.util.Log;
 import com.seedengine.runtime.platform.PlatformContract;
 import com.seedengine.runtime.platform.PlatformJson;
 import com.seedengine.runtime.platform.service.alarm.AlarmModule;
+import com.seedengine.runtime.platform.service.alarm.AlarmStartup;
 
 import org.json.JSONException;
 
@@ -82,6 +86,9 @@ public final class PlatformProvider extends ContentProvider {
     public boolean onCreate() {
         Log.i(PlatformContract.LOG_TAG, "PlatformProvider を作りました（" + Application.getProcessName()
                 + "・pid " + Process.myPid() + "・モジュール " + modules.keySet() + "）");
+        // :seed_platform が起きた最初（受信機・サービスより前）。目覚ましの控えと AlarmManager を照合する（W1-4a。背面のスレッドで。
+        // 配信でプロセスが起きたときの AlarmReceiver の startForegroundService を遅らせない。AlarmStartup）
+        AlarmStartup.reconcileInBackground(getContext());
         return true;
     }
 

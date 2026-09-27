@@ -2258,9 +2258,11 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [ ] **W1-0 の残り: 再起動の後の張り直しと Direct Boot（ロック解除前に鳴るか）** — 2026-09-27。`adb reboot` は利用者の許可が要るので未実施。
   許可の後に `scripts/t7_reboot_procedure.sh --reboot-permitted` で、`LOCKED_BOOT_COMPLETED` での張り直しと、ロックを解除しないまま鳴るか・
   directBootAware の鳴動画面が出るかを見る。AC-4・E-10・W1-9 の前提。
-- [ ] **実際の GameActivity をフルスクリーン通知から冷えた状態で出す計測（W1-4 の頭で）** — 2026-09-27（W1-0 から移した）。W1-0 の鳴動画面は
+- [ ] **実際の GameActivity をフルスクリーン通知から冷えた状態で出す計測（W1-4b で）** — 2026-09-27（W1-0 から移した）。W1-0 の鳴動画面は
   Java だけの Activity（予定時刻から +0.95 s）で、SEED の冷えた起動（.NET の展開・CLR・GPU・シーン。X-1）を含む時間は測っていない。
   `PlatformEntry` と起動理由を作った直後に測り、AC-12（フルスクリーン通知から 3 秒以内）と AC-1（予定時刻から画面 3 秒以内）に届くかを見る。
+  → 2026-09-27 W1-4a で `PlatformEntry` と起動理由はできた（docs/android.md §25.12）。端末が USB に無いので計測は W1-4b（§25.12.8 の (b)）。
+  `LaunchInfo.FiredAtUtcMs`（配信を受けた時刻）をスクリプトから読めるので、最初のフレームまでの遅れをスクリプトのログでも出せる。
 - [ ] **Android 17 の背面の音の制限への対応（X-7）** — 2026-09-27（W1-0）。Android 17 は、見えている画面も前景サービスも無いアプリの音・
   音声フォーカス・音量の変更を黙って失敗させ、targetSdk 37 では背面の前景サービスに「使用中」の権能を求める（例外は正確なアラームの権限＋
   `USAGE_ALARM`。https://developer.android.com/about/versions/17/changes/bg-audio ）。Android 16 の実機でも、画面の無い鳴動中に
@@ -2293,6 +2295,7 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   エンジンの受け取りの確認（ack）と、前面へ戻ったとき（onResume）の未読の取り直し（呼び鈴の取りこぼしの保険。roadmap §2.2）を決める。
   → **W1-3 で永続化は済み**（端末保護ストレージの `seed_platform/journal.json` へ足す・取り出すたびに原子的に書く。docs/android.md §25.11.6）。
   残りは ack と onResume の取り直し（W1-4）。取り出した直後にメインプロセスが死ぬと届かないのは変わらない。
+  → W1-4a（2026-09-27）の範囲に入れなかったので、ack と onResume の取り直しは W1-4b 以降（W1-5 の通知の操作の知らせと合わせて決める）。
   関連: `runtime/android/app/src/main/java/com/seedengine/runtime/platform/service/EventJournal.java`。
 - [ ] **最初の SEED.Platform の呼び出しが `connecting` で失敗する（使い勝手）** — 2026-09-27（W1-1）。`:seed_platform` の起動（約 120 ms）を
   描画のスレッドで待たないための形だが、アプリの API（W1-3 の `Alarms.Schedule` など）が起動の直後に失敗しうる。W1-2 の `android.features` に
@@ -2304,6 +2307,7 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `PlatformConnection.invoke` は `:seed_platform` の死を知ると client を閉じて接続し直す（待ってよい呼び出し元は同じ命令をもう一度送る）。
   死んだ瞬間に処理済みだった命令は 2 回走りうる。→ `alarm.schedule` は同じ ID で置き換え、`alarm.cancel` は無い ID でも成功、`cancel_all` も
   何度でも同じ結果（docs/android.md §25.11）。W1-4 の停止（`StopRinging`）も同じ形にする。
+  → W1-4a で `alarm.stop_ringing` も冪等にした（鳴っていなければ `stopped:false` で成功。docs/android.md §25.12.3）。
 - [ ] **`DebugPlatformReceiver` を権限で守っていない（デバッグ版だけ）** — 2026-09-27（W1-1）。exported=true・permission なしなので、
   デバッグ版の APK が入った端末では他のアプリからも ping・試験イベントを送れる（害は小さい）。androidx の `ProfileInstallReceiver` と同じく
   `android:permission="android.permission.DUMP"`（adb のシェルは持つ）で守れる見込みだが、実機で adb から届くことを確かめてから変える。
@@ -2328,6 +2332,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   「前景サービスの種類が宣言されているか」も挙げていたが、W1-2 の時点ではサービスが無いので、`FOREGROUND_SERVICE_MEDIA_PLAYBACK` の Play Console の
   申告の注意だけを足した。`RingService` を機能の表に足す W1-4 で、配布物のマニフェスト（`aapt2 dump xmltree`）の `android:foregroundServiceType` と
   `FOREGROUND_SERVICE_<種類>` の権限の組を確かめる項目を `AndroidPlatformFeatureChecks` に足す。
+  → W1-4a（2026-09-27）で `RingService`（`mediaPlayback`）を機能の表に足したが、この要件チェックは範囲外として入れていない（機能の表の
+  単体テストと aapt2 の手の確認で種類と権限の組を確かめた）。W1-4b か W1-7 で足す。
 - [ ] **システムバーを出したままのときの文字色（明暗）を選べない** — 2026-09-27（W1-2）。テーマの既定のまま（暗い AppCompat のテーマなので白い文字の見込み。
   推論・実機で未確認）。明るい画面のアプリではステータスバーの時刻・電池が見えにくい。W1-6 の `Window` の API（と必要ならプロジェクト設定）で
   `WindowInsetsControllerCompat.setAppearanceLightStatusBars` を選べるようにする。
@@ -2348,7 +2354,10 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   消さない（予約から外れた音も残る）。書き出しはメインプロセス、控えは `:seed_platform` にあり、掃除をどちらがいつ行うか（控えのどの予約からも
   指されていないファイルを、予約の直後の書き出しとぶつからない時機に消す）を決める。音は小さい見込みなので急がない。関連:
   `runtime/src/engine/platform/bridge/alarm/sound_export.rs`。
-- [ ] **Android 10〜14 で強制停止の後に予約が戻らない（起動のたびの張り直しが無い）** — 2026-09-27（W1-3）。強制停止で予約も PendingIntent も消え、
+- [x] **Android 10〜14 で強制停止の後に予約が戻らない（起動のたびの張り直しが無い）** — 2026-09-27（W1-3）記載 / 同日 W1-4a で対応
+  （`PlatformProvider.onCreate` → `AlarmStartup` が背面のスレッドで `AlarmBook.reconcile`: 控えのまだ先の予約で PendingIntent が無いものだけを張り直し、
+  過ぎた予約は `alarm.missed(device_off)`。docs/android.md §25.12.6。アプリが `:seed_platform` を起こすまでは戻らないのは同じ。実機は未確認）。
+  強制停止で予約も PendingIntent も消え、
   Android 15+ は停止状態から出たときに `BOOT_COMPLETED` が届いて `BootReceiver` が張り直すが、14 以前は次の再起動まで届かない（公式「Android 15 の
   動作の変更」）。roadmap §2.6 の「保険として起動のたびの全予約の張り直し」は W1-3 では入れていない（`:seed_platform` の起き方〈プロバイダの
   onCreate・受信機〉と `BootReceiver` の記録が二重にならない入れ方を決める必要がある）。W1-4 か W1-7 で、エンジンの接続（`register_callback`）の
@@ -2356,7 +2365,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [ ] **再起動で `platform.alarms.rescheduled`（boot）が 2 回記録されうる** — 2026-09-27（W1-3）。`LOCKED_BOOT_COMPLETED` と `BOOT_COMPLETED` の
   両方で張り直すため（2 回目は `missed` 0 で張り直すだけ）。アプリの処理は冪等に書けば害は無いが、同じプロセスで直前に張り直したなら 2 回目の記録を
   省く形を W1-7 で検討する。
-- [ ] **W1-4 鳴動（前景サービス・音量の指定と漸増・バイブ・WakeLock・音声フォーカスの喪失で止めない・安全弁・重なりを捨てない・フルスクリーン通知・起動理由・信頼できる起動での showWhenLocked）** — 2026-09-27。
+- [x] **W1-4 鳴動（前景サービス・音量の指定と漸増・バイブ・WakeLock・音声フォーカスの喪失で止めない・安全弁・重なりを捨てない・フルスクリーン通知・起動理由・信頼できる起動での showWhenLocked）** — 2026-09-27 記載 /
+  同日 W1-4a（実機の計測を除く部分）を実装。正典は docs/android.md §25.12。実機の計測と調整は下の「W1-4b」。
   W1-0 からの見直し: 頭で実 GameActivity の冷えた起動を測る（上の項目）。`AlarmReceiver` は真っ先に `startForegroundService`（配信に付く一時許可は
   10 秒）し、控えの fsync はその後。音の準備を前倒しする（冷えたプロセスでは `startForeground` から音まで約 340 ms）。端末の使用中はヘッドアップ通知に
   なるので、本文のタップから鳴動画面へ行けるようにする。音は `USAGE_ALARM` 固定（X-7）。
@@ -2364,8 +2374,27 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   showIntent（`AlarmScheduler.showIntent`。今はランチャーと同じ起動）を `PlatformEntry` 行きに替える。`AlarmReceiver` は directBootAware なので、
   ロック解除の前に鳴ったときの `RingService`（directBootAware にするか・Java だけの鳴動画面か）を W1-9 と合わせて決める。既定の音（`res/raw`）と、
   `sound_path` が読めないときの落とし方。控えの鳴らし方の欄（`force_volume` 等）はここで初めて使う。
+- [ ] **W1-4b 鳴動の実機の確認と計測（端末が USB に戻ってから）** — 2026-09-27（W1-4a）。docs/android.md §25.12.8 の手順で、PlatformSmoke の
+  1 回の予約が鳴って 3 秒で止まること（`dumpsys activity services` の RingService・`dumpsys media.audio_flinger` の USAGE_ALARM・`dumpsys notification` の
+  `seed_platform_alarm`）、`LaunchReason` のログ、`window.set_show_when_locked` を見る。続けて (a) 最近のタスクから消しても鳴る（AC-2。`am stack remove`）、
+  (b) 画面オフ・ロック中の冷えた起動（AC-1・AC-12。フルスクリーン通知 → `PlatformEntry` → GameActivity。別名に置いた lib_name の meta-data が要るか・
+  別名の `onNewIntent` の部品名もここで確かめる）、(c) 使用中のヘッドアップ通知の本文のタップ・「開く」。音の開始の速さ（専用のスレッドでの準備）も測る。
+  実機では `force_volume` を試さない（端末の音量を変えない約束）。
+- [ ] **鳴動の待ち行列がプロセスの中だけ** — 2026-09-27（W1-4a）。鳴動中に配信された予約は `RingRegistry` の待ち行列にだけあり、控えからは消してある。
+  待っている間に `:seed_platform` が殺されると、その予約は黙って失われる（`ring_stopped` も `missed` も記録されない）。待ち行列を控えに残すか、
+  端末保護ストレージへ書くかを W1-7 で決める。関連: `platform/service/alarm/ring/RingRegistry.java`。
+- [ ] **`:seed_platform` が殺されると鳴動が黙って止まる（`START_NOT_STICKY`）** — 2026-09-27（W1-4a）。低メモリ等でプロセスごと殺されると音が止まり、
+  `ring_stopped` も記録されない。`START_REDELIVER_INTENT` で作り直すと、背面からの前景サービスの起動の制限に当たるかを含めて W1-4b の実機で確かめて決める
+  （鳴らしている予約を端末保護ストレージへ書いておけば、作り直したときに続きを鳴らせる）。
+- [ ] **鳴動の通知を利用者がスワイプで消せる（Android 14+）** — 2026-09-27（W1-4a）。前景サービスの通知でも Android 14 以降は消せる（公式の変更。記憶・要確認）。
+  消しても鳴動は続くが、通知からアプリへ戻れなくなる。`setDeleteIntent` で出し直すか、アプリの鳴動画面への別の入口（ステータスバーの目覚ましの印）で
+  足りるかを W1-5 で決める。
+- [ ] **目覚ましで起動したアプリがロック画面の上に残る（`SetShowWhenLocked(false)` の呼び忘れ）** — 2026-09-27（W1-4a）。`alarm` の起動では
+  エンジンが showWhenLocked を上げ、下ろすのはアプリ（scripting_api.md §7.13 に明記）。呼び忘れると AC-5 に反する。鳴動が止まった（`ring_stopped`）後に
+  エンジンが自動で下ろす既定を足すかを W1-6 で決める（鳴動画面を出したまま解除の後の画面を続けたいアプリもあるので、今は自動にしていない）。
 - [ ] **W1-5 通知と権限（チャネル・常駐・ボタン・トランポリン無し・実行時権限の結果イベント・正確なアラーム／フルスクリーン通知の状態と設定画面）** — 2026-09-27。
 - [ ] **W1-6 画面とアプリ（`Window.SetShowWhenLocked`・`SetKeepScreenOn`・`SetSystemBarsVisible`・`App.MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク）** — 2026-09-27。
+  → `Window.SetShowWhenLocked` と `App.LaunchReason`（起動理由）は W1-4a で先に入れた（docs/android.md §25.12.5）。残りはこの段階で。
   「アプリを終える API が無い」（Android 節）は `MoveTaskToBack`（閉じずに背面へ）で目覚ましアプリの用は足りるが、終える API もここで一緒に決める。
 - [ ] **W1-S 保存の耐久性** — 2026-09-27。上の「SaveData の書き出しに…隙間がある」「UI スレッドからの自動書き出し…」を直す。
 - [ ] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。

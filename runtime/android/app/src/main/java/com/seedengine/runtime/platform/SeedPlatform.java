@@ -16,6 +16,11 @@
 //  MainActivity.onCreate（super.onCreate より前。android_main のスレッドが立つ前）に init を呼ぶ。init は
 //  :seed_platform を呼ばない（プロセスの起動は最初の invoke まで遅らせる。描画のスレッドで待たない仕組みは PlatformConnection）。
 //  R8 は使っていない（app/build.gradle.kts）ので、JNI から名前で呼ぶ invoke が消されることは無い。
+//
+//  【メインプロセスで答える命令（W1-4a）】
+//  invoke はまず local/MainProcessCommands の表を引き、起動理由（platform.launch_reason）・画面の操作
+//  （window.set_show_when_locked）はその場で答える（IPC に行かない）。それ以外を :seed_platform へ送る。
+//  「この起動の理由」（LaunchReason が onCreate・onNewIntent で決めたもの）はここに預かる。
 // ============================================================
 
 package com.seedengine.runtime.platform;
@@ -23,6 +28,11 @@ package com.seedengine.runtime.platform;
 import android.app.Activity;
 import android.content.Context;
 import android.util.Log;
+
+import com.seedengine.runtime.platform.local.HostActivity;
+import com.seedengine.runtime.platform.local.MainProcessCommands;
+
+import org.json.JSONObject;
 
 /**
  * JNI の入口（static のみ）。プロセスで 1 つの PlatformConnection を持つ。
@@ -38,15 +48,20 @@ public final class SeedPlatform {
     /** :seed_platform への接続（最初に要るときに作る。プロセスの間ずっと同じもの）。 */
     private static PlatformConnection connection;
 
+    /** この起動の理由（最後に Activity へ届いた Intent の理由。既定はランチャー。W1-4a）。 */
+    private static volatile LaunchInfo launchReason = LaunchInfo.LAUNCHER;
+
     /**
      * 起動時の準備（MainActivity.onCreate から。super.onCreate より前に呼ぶ）。
      *
-     * <p>接続の入れ物を作り、ネイティブへこのクラスを渡す。:seed_platform には触らない（起動させない）。</p>
+     * <p>接続の入れ物を作り、画面の命令が操作する Activity を覚え、ネイティブへこのクラスを渡す。
+     * :seed_platform には触らない（起動させない）。</p>
      *
-     * @param activity 起動した Activity（アプリの Context だけを使う）
+     * @param activity 起動した Activity（接続にはアプリの Context だけを使う）
      */
     public static void init(Activity activity) {
         connection(activity.getApplicationContext());
+        HostActivity.attach(activity);
         try {
             nativeRegisterPlatformBridge(SeedPlatform.class);
         } catch (UnsatisfiedLinkError e) {
@@ -83,6 +98,11 @@ public final class SeedPlatform {
      */
     static byte[] invoke(String module, String method, byte[] jsonUtf8) {
         try {
+            // メインプロセスで答える命令（起動理由・画面）は IPC に行かない
+            byte[] local = MainProcessCommands.tryHandle(module, method, jsonUtf8);
+            if (local != null) {
+                return local;
+            }
             PlatformConnection current;
             synchronized (CONNECTION_LOCK) {
                 current = connection;
@@ -99,7 +119,37 @@ public final class SeedPlatform {
     }
 
     /**
-     * 届いたイベントをエンジンへ渡す（PlatformConnection の背面のスレッドから）。
+     * この起動の理由を預ける（LaunchReason から。onCreate・onNewIntent）。
+     *
+     * @param info 起動理由
+     */
+    static void setLaunchReason(LaunchInfo info) {
+        launchReason = info;
+    }
+
+    /**
+     * この起動の理由（platform.launch_reason の返答。まだ決まっていなければランチャー）。
+     *
+     * @return 起動理由
+     */
+    public static LaunchInfo launchReason() {
+        return launchReason;
+    }
+
+    /**
+     * メインプロセスの中で作ったイベント（seq 0）をエンジンへ渡す（LaunchReason の platform.launch など）。
+     *
+     * @param name 名前（PlatformContract.EVENT_*）
+     * @param data 中身
+     */
+    static void emitLocalEvent(String name, JSONObject data) {
+        JSONObject event = PlatformJson.event(name, PlatformContract.LOCAL_EVENT_SEQ, System.currentTimeMillis(), data);
+        deliverEvent(PlatformJson.utf8(event.toString()));
+    }
+
+    /**
+     * 届いたイベントをエンジンへ渡す（PlatformConnection の背面のスレッド・onNewIntent の UI スレッドから。
+     * ネイティブ側は箱へ積むだけなので、どのスレッドから呼んでもよい）。
      *
      * <p>エンジン（libSEED.so）が読み込まれていないプロセス（デバッグの受信機だけで起きたプロセス）では捨てる。</p>
      *

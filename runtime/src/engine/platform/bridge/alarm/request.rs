@@ -11,6 +11,7 @@
 //    max_ring_minutes  … 任意の数（小数は切り捨て）。1 未満は 1
 //    title / body      … 任意の文字列（MAX_TEXT_LENGTH 文字まで）
 //    payload_json      … 任意の文字列（MAX_PAYLOAD_LENGTH 文字まで。中身は検査しない）
+//    stop_ringing の id … 任意（W1-4a。無い・null・空文字は「今鳴っているもの」。あれば id と同じ規則）
 //  欄があるのに型が違うときは Err(説明)（返答は invalid_argument。detail に説明）。
 // ============================================================
 
@@ -83,6 +84,17 @@ pub fn read_schedule(request: &Value) -> Result<AlarmRequest, String> {
 /// alarm.cancel の引数（ID だけ）を読む。
 pub fn read_id(request: &Value) -> Result<String, String> {
     required_id(request)
+}
+
+/// alarm.stop_ringing の引数（任意の ID。W1-4a）を読む。無い・null・空文字は空文字（＝今鳴っているもの）。
+///
+/// 文字列でない・長すぎるときは Err（Java の AlarmRequestReader.readOptionalId と同じ規則）。
+pub fn read_optional_id(request: &Value) -> Result<String, String> {
+    match request.get(names::KEY_ID) {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(text)) if text.is_empty() => Ok(String::new()),
+        Some(_) => required_id(request),
+    }
 }
 
 /// 必須の ID（1〜MAX_ID_LENGTH 文字の文字列）。
@@ -204,6 +216,18 @@ mod tests {
             assert!(read_id(&bad).is_err(), "{bad}");
         }
         assert_eq!(read_id(&json!({ "id": "あ".repeat(names::MAX_ID_LENGTH) })).unwrap().chars().count(), names::MAX_ID_LENGTH);
+    }
+
+    /// 任意の ID（stop_ringing）: 無い・null・空は空文字（今鳴っているもの）、文字列でない・長すぎは誤り。
+    #[test]
+    fn optional_id_rules() {
+        for empty in [json!({}), json!({ "id": null }), json!({ "id": "" })] {
+            assert_eq!(read_optional_id(&empty).unwrap(), "", "{empty}");
+        }
+        assert_eq!(read_optional_id(&json!({ "id": "morning" })).unwrap(), "morning");
+        for bad in [json!({ "id": 7 }), json!({ "id": "x".repeat(names::MAX_ID_LENGTH + 1) })] {
+            assert!(read_optional_id(&bad).is_err(), "{bad}");
+        }
     }
 
     /// 予定時刻の誤り: 無い・0・負・文字列。

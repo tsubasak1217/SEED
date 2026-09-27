@@ -3677,7 +3677,9 @@ W1-1 は**橋渡し**だけ: スクリプトの命令が Java の別プロセス
 | `platform/service/PlatformModule.java`・`CorePlatformModule.java` | モジュールの約束と "platform" モジュール |
 | `platform/service/EventJournal.java`・`EventDoorbellClient.java` | 記録（W1-3 から端末保護ストレージの `seed_platform/journal.json` へ永続化）と呼び鈴 |
 | `platform/service/EventRecorder.java`・`PlatformStorage.java`・`DurableFile.java` | 記録＋呼び鈴の窓口・端末保護ストレージの置き場・原子的な書き込み（W1-3） |
-| `platform/service/alarm/*.java` | 目覚ましの予約（W1-3。§25.11）: `AlarmModule`・`AlarmRequestReader`・`AlarmEntry`・`AlarmStore`・`AlarmScheduler`・`AlarmBook`・`AlarmRearmPlan`・`AlarmEvents`・`AlarmReceiver`・`BootReceiver` |
+| `platform/service/alarm/*.java` | 目覚ましの予約（W1-3。§25.11）: `AlarmModule`・`AlarmRequestReader`・`AlarmEntry`・`AlarmStore`・`AlarmScheduler`・`AlarmBook`・`AlarmRearmPlan`・`AlarmEvents`・`AlarmReceiver`・`BootReceiver`（W1-4a で `AlarmStartup`） |
+| `platform/service/alarm/ring/*.java`・`platform/service/PlatformEntryIntents.java` | 鳴動（W1-4a。§25.12）: `RingService`・`RingControl`・`RingRegistry`・`RingSession`・`RingAudio`・`RingSoundSource`・`AlarmStreamVolume`・`RingVibration`・`RingNotification`・`RingWakeLock` と PlatformEntry 行きの PendingIntent |
+| `platform/LaunchReason.java`・`LaunchInfo.java`・`platform/local/*.java` | 起動理由とメインプロセスで答える命令（W1-4a。§25.12.4・§25.12.5） |
 | `src/debug/java/…/platform/DebugPlatformReceiver.java` | デバッグ版だけの adb の入口（§25.7） |
 | `native/src/platform_bridge/{mod,android_bridge,java_bridge,inbox,jni_exports}.rs` | 糊（エンジンへの登録・JNI の持ち物・イベントの箱・2 本の JNI 関数） |
 | `native/src/platform_bridge/alarm_prep.rs` | `alarm.schedule` を送る前に音源（`assets://`）を書き出す（W1-3。中身はエンジンの `bridge/alarm/sound_export.rs`） |
@@ -3961,7 +3963,7 @@ dotnet run --project editor/tools/SeedAndroid -- check --project 'D:\SEED_projec
        ├ AlarmScheduler … AlarmManager.setAlarmClock（PendingIntent の見分け方は §25.11.2）
        ├ AlarmRearmPlan … 張り直しの振り分け（純粋な処理）
        └ AlarmEvents    … platform.alarm.fired / platform.alarm.missed / platform.alarms.rescheduled を EventRecorder へ
- AlarmReceiver（exported=false・directBootAware）… 発火 → AlarmBook.fire（記録 → 控えから消す）。W1-4 はここで真っ先に RingService
+ AlarmReceiver（exported=false・directBootAware）… 発火 → 真っ先に RingService を前景で起動（W1-4a）→ AlarmBook.fire（鳴動へ渡す → 記録 → 控えから消す）
  BootReceiver（exported=false・directBootAware）… 6 つの放送 → AlarmBook.rearm（§25.11.3）
  EventRecorder → EventJournal（W1-3 から seed_platform/journal.json へ永続化）＋ EventDoorbellClient（エンジンへの呼び鈴）
 [デスクトップ] engine::platform::bridge::desktop_sim（alarm_commands.rs・alarm_book.rs・wall_clock.rs）… 同じ命令に同じ形で答え、
@@ -3989,7 +3991,7 @@ JSON の名前は `wire.rs` の `wire::alarm` と `PlatformContract.java` の `*
 - **ステータスバーの目覚ましの印**（`AlarmClockInfo` の showIntent）は W1-3 ではランチャーと同じ起動（MAIN/LAUNCHER の
   `com.seedengine.runtime.MainActivity` をクラス名の文字列で指す。クラスを参照すると `libSEED.so` を読み込むので触らない。
   `getLaunchIntentForPackage` はロック解除の前に directBootAware でない MainActivity を解決できない見込み〈推論〉なので使わない）。
-  W1-4 で `activity-alias PlatformEntry` 行きに替える。
+  W1-4a で `activity-alias PlatformEntry` 行き（起動理由 `alarm_clock_info`）に替えた（§25.12.4）。
 - **正確なアラームの許可**: `canScheduleExactAlarms()`（API 31+。30 以下は常に true）が false なら予約せず `exact_alarm_not_allowed`
   （控えにも書かない。黙って不正確な予約に落とさない）。
 - **上限**: 予約 64 件（新しい ID だけ断る。`too_many_alarms`）・ID 128 文字・title/body 4096 文字・payload_json 16384 文字（符号位置の数）。
@@ -4020,8 +4022,8 @@ JSON の名前は `wire.rs` の `wire::alarm` と `PlatformContract.java` の `*
 3. 控えから消し（一回限り）、配信済みの PendingIntent を片付ける。記録と同時にエンジンへ呼び鈴を鳴らす（エンジンが居なければ、
    次にアプリが SEED.Platform へつないだときの `platform.register_callback` で未読として届く）。
 
-**W1-4 の差し込み位置**: `AlarmReceiver.onReceive` の先頭（コメントで明示）。`setAlarmClock` の配信に付く前景サービス起動の一時許可は
-10 秒（W1-0）なので、`RingService` の `startForegroundService` は控えの読み書き・fsync より前に呼ぶ。
+**W1-4a で差し込んだ**: `AlarmReceiver.onReceive` の先頭で `RingService` の `startForegroundService`（`setAlarmClock` の配信に付く
+前景サービス起動の一時許可は 10 秒〈W1-0〉なので、控えの読み書き・fsync より前）。順序の全体は §25.12.2。
 
 #### 25.11.5 音源の書き出し
 
@@ -4065,7 +4067,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell run-as $APP ls -l /data/user_de/0/$AP
 期待するログ: `[PlatformSmoke] 目覚まし: IsSupported=True CanScheduleExact=True` → `smoke_fire を 5 秒後に予約 ok`（SEEDPlatform の
 `目覚まし smoke_fire を予約しました`）→ `予約の後（2 件のはず）: 控え 2 件` → `取り消しの後（1 件のはず）: 控え 1 件` → 約 5 秒後に SEEDPlatform の
 `目覚まし smoke_fire が鳴りました（予定から N ms・seq …・呼び鈴 鳴らした）` → `[PlatformSmoke] 目覚ましが鳴りました: smoke_fire …（payload {"smoke":"fire"}・模擬 False）`
-→ `鳴った後（0 件のはず）: 控え 0 件` → `目覚ましの確かめ: OK`。**音は鳴らない**（W1-4）。
+→ `鳴った後（0 件のはず）: 控え 0 件` → `目覚ましの確かめ: OK`。W1-3 の時点では**音は鳴らなかった**（W1-4a から鳴る。§25.12.8 の手順）。
 
 **`BootReceiver` は adb の `am broadcast` では起こせない**: exported=false（shell の UID はこのアプリでもシステムでもない）うえ、
 `BOOT_COMPLETED`・`TIME_SET` などはシステムだけが送れる保護された放送。代わりに本物の放送を起こす:
@@ -4102,10 +4104,209 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am start -W -n $APP/com.seedengine.ru
 #### 25.11.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
 
 - 実機での確認（§25.11.7）。`run-as` で `/data/user_de/0/<APP>/` を読めるかも未確認。
-- 鳴動（W1-4）: `RingService` は `AlarmReceiver.onReceive` の先頭の印のところで起動する。showIntent を `PlatformEntry` 行きに替える。
-  `AlarmReceiver` は directBootAware なので、ロック解除の前に鳴ったときの扱い（`RingService` も directBootAware にするか・Java だけの鳴動画面か）を
-  W1-9 と合わせて決める。記録の ack と onResume の取り直しも W1-4。
-- Android 10〜14 では強制停止の後、次の再起動まで予約が戻らない（起動のたびの張り直しの保険が無い）。
+- ~~鳴動（W1-4）: `RingService` の起動・showIntent の `PlatformEntry` 行き~~ → W1-4a で済（§25.12）。ロック解除の前に鳴ったときの画面
+  （`RingService` は directBootAware にした。鳴動画面の `MainActivity` は directBootAware でない）は W1-9。記録の ack と onResume の取り直しは W1-4b 以降（backlog）。
+- ~~Android 10〜14 では強制停止の後、次の再起動まで予約が戻らない~~ → W1-4a で `:seed_platform` の起動時の照合を足した（§25.12.6。次にアプリが
+  `:seed_platform` を起こしたときに直る。起こさない限り戻らないのは同じ）。
 - 書き出した音源の掃除が無い。再起動で `platform.alarms.rescheduled`（boot）が 2 回記録されうる。
 - Java の純粋な部分（`AlarmRearmPlan`・`AlarmRequestReader`）の JVM の単体テストは W1-7（今は Rust の模擬と同じ規則であることを読み合わせと
   名前の突き合わせのテストで保っている）。
+
+### 25.12 鳴動（RingService・通知・PlatformEntry・起動理由。W1-4a・2026-09-27）
+
+スクリプトの `Alarms.GetRinging` / `StopRinging`・`App.LaunchReason`・`Window.SetShowWhenLocked`（[scripting_api.md](scripting_api.md) §7.13）の
+Android 側。予約の時刻が来ると `:seed_platform` の前景サービスが音・振動・フルスクリーン通知を出し、アプリのスクリプトが止めるか安全弁まで鳴り続ける。
+W1-4a は**実機での計測を除く部分**で、実 GameActivity をフルスクリーン通知から冷えた状態で出す計測（AC-12・X-1）と実機での調整は W1-4b
+（端末が USB に戻ってから）。設計は [app_platform_roadmap.md](app_platform_roadmap.md) §2.2（鳴動の方針）・§2.6・E-01・E-03・X-7。APK に機能 `alarm` が要る。
+
+#### 25.12.1 構成
+
+```
+[:seed_platform] platform/service/alarm/
+ AlarmReceiver … 発火 → ① RingControl.startService（真っ先に startForegroundService）→ ② AlarmBook.fire（鳴動へ渡す → 記録 → 控えから消す）
+                  → ③ RingControl.announce（待たせたなら alarm.queued）
+ AlarmStartup  … PlatformProvider.onCreate から、起動時の照合を背面のスレッドで（§25.12.6）
+ AlarmModule   … alarm.get_ringing / alarm.stop_ringing を足した（中身は ring/RingControl）
+ ring/
+   RingControl       … 外からの入口（受信機・モジュール）。startService・handOver・announce・ringingJson・stop・安全弁
+   RingRegistry      … 鳴動の状態の正本（今鳴っている 1 つ＋待ち行列。static synchronized。プロセスの中だけ）
+   RingSession       … 鳴動 1 回（通し番号・予約・配信の時刻・鳴り始め）
+   RingService       … 前景サービス（mediaPlayback）。RingRegistry に合わせて音・振動・通知・ウェイクロックを出し入れする
+   RingAudio         … MediaPlayer（USAGE_ALARM 固定・ループ・漸増）。専用のスレッド SEEDRingAudio で準備する
+   RingSoundSource   … 音源の候補（予約の音 → 同梱の既定の音 → 端末の既定のアラーム音）
+   AlarmStreamVolume … force_volume / keep_volume（STREAM_ALARM を鳴動中だけ変え、止めたら戻す）
+   RingVibration     … 繰り返しの振動（API 31+ は VibratorManager。種類はアラーム）
+   RingNotification  … チャネル seed_platform_alarm と鳴動の通知（フルスクリーン通知・本文のタップ・「開く」）
+   RingWakeLock      … 部分ウェイクロック（受信機からの引き継ぎ・鳴動の長さ＋余裕）
+ platform/service/PlatformEntryIntents … PlatformEntry 行きの PendingIntent と起動理由の JSON（要求コードの表）
+[メインプロセス] platform/
+ LaunchReason・LaunchInfo … 起動の Intent → 起動理由（onCreate・onNewIntent）。SeedPlatform が「この起動の理由」を預かる
+ local/MainProcessCommands … IPC に行かない命令の表（platform.launch_reason・window.set_show_when_locked）。SeedPlatform.invoke が先に引く
+ AndroidManifest.xml（main）… activity-alias PlatformEntry（exported=false・targetActivity=MainActivity・lib_name の meta-data）を常設
+ res/raw/seed_alarm_default.wav（runtime/android/tools/gen_alarm_default_tone.py で作る）・res/values/seed_platform_strings.xml（チャネル名など）
+```
+
+機能の表（`platform_features.json`）の `alarm` に `<service RingService>`（`:seed_platform`・exported=false・directBootAware・
+`foregroundServiceType="mediaPlayback"`）を足した。権限（`FOREGROUND_SERVICE`・`FOREGROUND_SERVICE_MEDIA_PLAYBACK`・`WAKE_LOCK`・`VIBRATE`・
+`USE_FULL_SCREEN_INTENT`・`POST_NOTIFICATIONS`）は W1-2 から入っている。名前は `wire.rs` の `wire::alarm`・`wire::launch`・`wire::window` と
+`PlatformContract.java` で揃え、`wire::tests::java_contract_matches_wire` が突き合わせる。
+
+#### 25.12.2 発火から鳴動まで（順序）
+
+1. `AlarmReceiver.onReceive` の**先頭**で `startForegroundService(RingService)`。`setAlarmClock` の配信に付く一時許可は 10 秒（W1-0 の F-7）なので、
+   控えの読み書き・fsync より前。例外（`ForegroundServiceStartNotAllowedException`〈API 31。型は名前で参照しない〉・`SecurityException`）は捕まえて、
+   2 で `alarm.fired` の代わりに `alarm.missed{reason:"start_failed"}` を記録する。起こせたら引き継ぎのウェイクロック（30 秒）を取る。
+2. `AlarmBook.fire`（AlarmBook の lock の中）: 控えの予約を確かめ → **鳴動へ渡す**（`RingRegistry.offer`。鳴っていなければ鳴り始め、鳴動中なら待ち行列）→
+   `alarm.fired` を記録（呼び鈴）→ 控えから消す。渡すのを記録より先にするので、`fired` を受けたアプリの `GetRinging` は必ずその鳴動を返す。
+3. 待たせたなら `alarm.queued{id, scheduled_at_utc_ms, waiting_for, payload_json}` を記録（`fired` の後に並ぶ）。
+4. `onReceive` が返ると、同じ UI スレッドで `RingService.onStartCommand`: 新しい鳴動なら**音の準備を真っ先に**（`RingAudio` の専用のスレッドへ投げる）→
+   振動 → `startForeground(通知, FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)` → ウェイクロック（安全弁の時刻＋60 秒）→ 安全弁のタイマー。
+   鳴らすものが無い（取り消しと配信が重なった古い配信）ときも、`startForegroundService` の約束どおり仮の通知で前景に入ってからすぐ止まる。
+
+#### 25.12.3 鳴動の中身
+
+| 項目 | 振る舞い |
+|---|---|
+| 音 | `MediaPlayer`・`AudioAttributes` は `USAGE_ALARM` + `CONTENT_TYPE_SONIFICATION` 固定（Android 17 の背面の音の制限の免除の条件。X-7）・ループ。音声フォーカスは**要求しない**（鳴動画面のエンジンが `AUDIOFOCUS_GAIN` を取っても止まらない）。途中で再生に失敗したら次の音源で鳴らし直す |
+| 音源 | 予約の `sound_path`（読めなければ次）→ 同梱の `res/raw/seed_alarm_default.wav`（16 kHz・モノラル・16 bit・2.22 秒のループ・71 KB。APK の中で無圧縮〈`unzip -v` で Stored〉なので `openRawResourceFd` で渡せる）→ 端末の既定のアラーム音（`RingtoneManager.TYPE_ALARM`） |
+| 漸増 | `fade_in_seconds` の間、`MediaPlayer.setVolume` を 0 → 1 へ直線で（100 ms ごと）。0 秒なら最初から 1 |
+| 音量 | `force_volume`（0..1）なら `STREAM_ALARM` を「最大 × 値」（端末の最小〜最大に収める）にして元の値を覚え、止めたら戻す。`keep_volume` なら 1 秒ごとに戻す（`force_volume` が負なら効かない）。音量が固定の端末は触らない |
+| 振動 | `vibrate` なら 800 ms 振動・600 ms 休みの繰り返し。API 33+ は `VibrationAttributes.USAGE_ALARM`、それより前は `AudioAttributes` の `USAGE_ALARM` |
+| 通知 | チャネル `seed_platform_alarm`（重要度 HIGH・チャネルの音と振動なし・ロック画面で中身を出す・おやすみモードの例外は要求しない。名前は `seed_platform_strings.xml`）。題と本文は予約の `title` / `body`（題が空なら「目覚まし」）・`CATEGORY_ALARM`・常駐・`setOnlyAlertOnce`・API 31+ は `FOREGROUND_SERVICE_IMMEDIATE`。フルスクリーン通知と本文のタップは起動理由 `alarm`、「開く」の操作は `notification_action`（`action_id` = `open`）。**止めるボタンは無い**（止めるのはスクリプト） |
+| 通知の許可が無い | Android 13+ で `POST_NOTIFICATIONS` が無くても前景サービスは動く（通知が出ないだけ。音と振動は続く）。ログで警告。`canUseFullScreenIntent()` が false（Android 14+）も警告（ヘッドアップ通知になる） |
+| 安全弁 | 鳴り始め＋`max_ring_minutes` で自動で止め、`alarm.ring_stopped{reason:"timeout"}` |
+| 待ち行列 | 鳴動中に配信された予約は捨てずに待たせ（`alarm.queued`）、今の鳴動が止まったら先頭を繰り上げて鳴らす（鳴り始めはそのときの時刻）。通知は別の ID（2 つを交互）で出し直すので、新しい通知として知らせ直され、フルスクリーン通知ももう一度起きる。同じ ID の配信は置き換え |
+| 止める | `alarm.stop_ringing{id}`（空なら今鳴っているもの。待ち行列の ID なら鳴らさずに外す）→ `alarm.ring_stopped{id, reason:"stopped", scheduled_at_utc_ms, payload_json}`。鳴っていなくても `ok`（`stopped:false`）。前景にできなかった等は `reason:"error"` |
+| 止めないもの | 音声フォーカスの喪失・最近のタスクから消されたこと（`onTaskRemoved` は記録だけ）・通知のスワイプ・エンジン（メインプロセス）の死 |
+| サービスとモジュールの間 | 同じ `:seed_platform` のプロセスなので、`bindService` を使わず static な `RingRegistry` を正本にする。Binder のスレッドの `stop_ringing` は状態を変えて記録し、UI スレッドのサービスへ「合わせ直し」を投げる |
+
+`START_NOT_STICKY`（`:seed_platform` ごと殺されたら作り直さない。作り直しの振る舞いは W1-4b の実機で確かめて決める）。
+
+#### 25.12.4 PlatformEntry と起動理由
+
+- `activity-alias PlatformEntry`（`com.seedengine.runtime.platform.PlatformEntry`・exported=false・targetActivity=MainActivity）を main のマニフェストに常設。
+  `:seed_platform` が作る Activity 行きの PendingIntent は**すべて**これを通る（フルスクリーン通知・通知の本文・「開く」・ステータスバーの目覚ましの印）。
+  通知の操作は受信機を挟まず Activity を直接開く（Android 12+ の通知のトランポリンの禁止）。
+- Intent の extra `com.seedengine.runtime.platform.extra.LAUNCH` に起動理由の JSON `{kind, id, action_id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json}`。
+  extra の名前を `seed.` で始めないのは、デバッグ版の `MainActivity.forwardLaunchOptions` が `seed.` の extra を起動オプションとしてネイティブへ丸ごと渡すため。
+- PendingIntent は部品も action も data も同じなので、同一性は要求コードだけで決まる（`PlatformEntryIntents` の表: 1 = 目覚ましの印・2 = フルスクリーン通知・
+  3 = 本文のタップ・4 = 「開く」。`FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE`）。
+- **別名にも `android.app.lib_name` の meta-data を置く**: GameActivity（games-activity 4.4.0）は `onCreate` で起動の Intent の部品（＝別名）の `ActivityInfo` から
+  `lib_name` を読み、無ければ `libmain.so` を探して `IllegalArgumentException` で落ちる（`javap -c` で確かめた）。別名が対象の meta-data を受け継ぐかは
+  確かめていない（推論では受け継がない）ので、MainActivity と同じ値を置いた（`AndroidPipelineTests` が一致を確かめる）。
+- `LaunchReason`（メインプロセス）: 部品名が別名のときだけ extra を信用し、種類が `alarm` / `notification_tap` / `notification_action` /
+  `alarm_clock_info` 以外なら `other`。それ以外の起動は action が MAIN（か無し）なら `launcher`、ほかは `other`。最近のタスクからの開き直し
+  （`FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`）は、タスクの元の Intent（目覚ましで起きたタスクなら鳴動の起動理由）がもう一度届くので `launcher` にする。
+- `MainActivity.onCreate`（`super.onCreate` の前）: 起動理由を決めて `SeedPlatform` に預け、`alarm` なら `setShowWhenLocked(true)`・`setTurnScreenOn(true)`
+  （API 27。最初のフレームより前にロック画面の上に出す。ロックは解除しない）。`onNewIntent`: `setIntent` → 同じく決めて預け、`alarm` なら上げ、
+  イベント `platform.launch`（seq 0・data = 起動理由）を流す。起動のときの理由はイベントにしない（`App.LaunchReason` で読む。二重に扱わせない）。
+- **`launchMode` は既に `singleTask`**（段階0 から。2 つ目のインスタンスで android_main が同じプロセスで再び呼ばれて落ちるのを防ぐため）。別名の起動も
+  既存の MainActivity へ `onNewIntent` で届く（singleTask の照合は別名の対象の部品で行われる〈AOSP の記憶。W1-4b の実機で確かめる〉）ので、鳴動画面を
+  出すときに Activity が重なる問題は起きない見込み。変えていない。
+- 上げた showWhenLocked は、アプリが鳴動を片付けた後に `window.set_show_when_locked{on:false}` で下ろす（下ろさないと AC-5 に反する）。
+
+#### 25.12.5 メインプロセスで答える命令（IPC なし）
+
+`SeedPlatform.invoke` は `local/MainProcessCommands` の表を先に引き、載っている命令はその場で答える（`:seed_platform` を起こさない・`connecting` にならない）。
+
+| 命令 | 引数 → 返答 | 中身 |
+|---|---|---|
+| `platform.launch_reason` | `{}` → `{launch: {kind, id, action_id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json}}` | `SeedPlatform` が預かった「この起動の理由」（最後に届いた Intent の理由。既定は `launcher`） |
+| `window.set_show_when_locked` | `{on: 真偽}` → `{on}` | `Activity.runOnUiThread` で `setShowWhenLocked(on)`・`setTurnScreenOn(on)`（すぐ返る）。`on` が真偽でなければ `invalid_argument`、Activity が無ければ `no_activity` |
+
+#### 25.12.6 起動時の照合（W1-3 の持ち越し）
+
+`PlatformProvider.onCreate`（`:seed_platform` のプロセスが起きた最初。受信機・サービスより前に UI スレッドで呼ばれる）から、`AlarmStartup` が
+**背面のスレッド**で `AlarmBook.reconcile` を行う: 控えのまだ先の予約のうち発火の PendingIntent が無い（`FLAG_NO_CREATE` で null）ものだけを張り直し、
+過ぎた予約は鳴らさずに `alarm.missed{reason:"device_off"}` を記録して控えから外す（張ってある予約・配信の途中の予約〈過ぎてから 60 秒以内で
+PendingIntent が残っている〉には触らない。`AlarmRearmPlan`）。Android 10〜14 は強制停止の後、次の再起動まで `BOOT_COMPLETED` が届かないので、
+その間に消えた予約を、アプリが次に `:seed_platform` を起こしたとき（最初の SEED.Platform の呼び出し）に直す保険。UI スレッドで行わないのは、
+目覚ましの配信でプロセスが起きたときの `startForegroundService` を控えの読み書き・fsync で遅らせないため（AlarmBook の lock で発火と直列になる）。
+
+#### 25.12.7 デスクトップの模擬
+
+`desktop_sim/ring_state.rs`（鳴動の状態。規則は `RingRegistry` と同じ）・`ring_commands.rs`（`get_ringing`・`stop_ringing`・発火の後の鳴動への受け渡し・
+安全弁）・`app_commands.rs`（`launch_reason` は常に `launcher`・`set_show_when_locked` は受け付けてログだけ）。発火（フレームの頭の `poll_events`）の後に
+鳴動の状態へ渡し、鳴動中なら `platform.alarm.queued`、安全弁は同じ `poll_events` の中で見る。**音は鳴らさない**（`[SEED PLATFORM]` のログ）。
+エディタの Play の区切りで予約・鳴動・イベントを捨てる。
+
+#### 25.12.8 確かめ方（adb・実機。**音が鳴る**）
+
+```bash
+# Git Bash。端末は画面が点いてロックが解除され、前面がランチャーのときだけ使う（私物の端末。エミュレータは使わない）
+# 既定の音はアラームの音量（小さくない）で鳴る。予約は 1 回（PlatformSmoke の smoke_fire。MaxRingMinutes=1・漸増 1 秒）で、3 秒後にスクリプトが止める
+APP=com.wakeorpay.seed
+SERIAL=2B011JEGR02535
+ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
+"$ADB" devices -l
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window | grep -E "mCurrentFocus|isKeyguardShowing|mDreamingLockscreen"
+# 0. 試験の間ずっとログをファイルへ（main バッファは約 5 分で消える。F-5）。別の端末で
+"$ADB" -s $SERIAL logcat -v epoch -b main,system,crash,events > ring_logcat.txt
+# 1. 入れて確かめ用のシーンで起動（起動理由 → ping → 予約 → 約 5 秒後に鳴る → 3 秒後に StopRinging → ring_stopped → SetShowWhenLocked(false)）
+dotnet run --project editor/tools/SeedAndroid -- run --project 'D:\SEED_projects\WakeOrPay' --serial $SERIAL --scene scenes/PlatformSmoke.scene --logcat-seconds 40
+# 2. 鳴っている間（起動から 5〜8 秒）に: 前景サービス・音（USAGE_ALARM）・通知
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys activity services $APP | grep -E -A4 "RingService"
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys media.audio_flinger | grep -i -E "usage|USAGE_ALARM|alarm" | head -20
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys notification --noredact | grep -E -A12 "seed_platform_alarm" | head -40
+# 3. ログ（エンジンは SEED の [SEED PLATFORM]、Java は SEEDPlatform、スクリプトは [Script] [PlatformSmoke]）
+"$ADB" -s $SERIAL logcat -d -s SEED SEEDPlatform | grep -E "PlatformSmoke|RingService|鳴動|目覚まし|起動理由|AlarmReceiver"
+# 止まらないときの緊急停止（アプリごと止める。:seed_platform も止まり音が止まる。予約も消える）
+"$ADB" -s $SERIAL shell am force-stop $APP
+```
+
+期待するログ: `[PlatformSmoke] 起動理由: launcher …` → ping → `smoke_fire を 5 秒後に予約 ok` → SEEDPlatform の `AlarmReceiver: smoke_fire の発火を処理しました
+（… 前景サービスの要求まで N ms …）`・`RingService: 起こされました`・`目覚まし smoke_fire を鳴らし始めました（音源 BUNDLED_DEFAULT・USAGE_ALARM・漸増 1.0 秒）`・
+`RingService: 目覚まし smoke_fire を鳴らしています` → `[PlatformSmoke] 鳴動: GetRinging = smoke_fire …` → `StopRinging(smoke_fire) ok` → SEEDPlatform の
+`目覚まし smoke_fire の鳴動が終わりました（理由 stopped …）`・`RingService: 鳴動を片付けました` → `[PlatformSmoke] 鳴動が終わりました: smoke_fire（stopped）`
+→ `画面: SetShowWhenLocked(false) ok` → `鳴動の確かめ: OK`。通知の許可（Android 13+）が無いと SEEDPlatform に「通知が許可されていない」の警告が出る
+（音は鳴る。許可は利用者の了承を得てから `pm grant $APP android.permission.POST_NOTIFICATIONS`。W1-5 で実行時の許可の API）。
+
+W1-4b（実機で行う。音が 1 分まで鳴りうるので、MaxRingMinutes=1 のまま・利用者が近くにいるときだけ）:
+
+```bash
+# (a) 最近のタスクから消しても鳴り続ける（AC-2）: 鳴っている間に
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am stack list | grep -B1 -A2 $APP      # taskId を調べる
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am stack remove <taskId>               # 音が続き、RingService: タスクが消されましたが鳴らし続けます
+# (b) 画面オフ・ロック中の冷えた起動（AC-1・AC-12）: 予約した直後に電源ボタンで消灯・両プロセスを落とし、フルスクリーン通知から
+#     MainActivity（GameActivity）がロック画面の上に出るまでを logcat の epoch で測る（予定時刻 → 音 → 最初のフレーム）。
+#     W1-0 の scripts/（t1 系）をパッケージ名 $APP と PlatformEntry に向け直して使う
+# (c) 使用中はヘッドアップ通知 → 本文のタップで起動理由 alarm、「開く」で notification_action/open（onNewIntent なら platform.launch）
+```
+
+#### 25.12.9 確認結果（2026-09-27）
+
+- Rust の単体テスト 68 件が通った（`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests`。W1-3 の 56 件＋
+  新規 12 件: 鳴動の状態 4（待ち行列の繰り上げ・待ち行列の予約の取り外しと置き換え・安全弁は鳴り始めから・Play の区切り）、模擬の命令 5
+  〈発火 → 鳴動 → 停止 → ring_stopped(stopped)・安全弁でちょうど timeout・1 秒差の 2 件の queued と繰り上げ・Play の区切りで消える・引数の誤り〉、
+  起動理由と画面 2、stop_ringing の任意の ID 1。`java_contract_matches_wire` に鳴動・起動理由・画面の名前 28 組と `MILLIS_PER_MINUTE` を足した）。
+- `AndroidPipelineTests` 161 件が通った（機能の表の `alarm` に RingService〈`mediaPlayback`・`:seed_platform`・exported=false・directBootAware〉・断片の `<service>`・
+  宣言したクラスの Java のソース・main のマニフェストの PlatformEntry〈exported=false・対象・lib_name が MainActivity と同じ・Java の定数と同じ名前〉）。
+- `SEEDScripting.csproj` のビルドは警告 0・エラー 0。Java は `javac -Xlint:all`（android-36 の android.jar・`--release 17`・R は仮のもの）で `platform` パッケージ
+  42 ファイル＋デバッグの受信機が警告 0。`MainActivity` を含む全体（AAR の classes.jar を並べた classpath）でも、新しい警告は無い（既存の `SystemBarsController` の
+  非推奨・`MainActivity` の this-escape の 2 件だけ）。使った API の版は `api-versions.xml` で確かめた（`startForeground(int,Notification,int)` 29・
+  `setForegroundServiceBehavior` 31・`VibratorManager` 31・`VibrationAttributes.createForUsage` 33・`canUseFullScreenIntent` 34・`setShowWhenLocked` 27・
+  `FLAG_IMMUTABLE` 23・`startForegroundService` 26・`getStreamMinVolume` 28 など。minSdk 29 より新しいものは版で分けた）。
+- PC の Play（`SEED.exe --mode=play --assets-root=D:\SEED_projects\WakeOrPay\assets --scene=assets://scenes/PlatformSmoke.scene`）: 起動理由 `launcher` →
+  `smoke_fire` が予定から 14 ms で `fired` → `GetRinging = smoke_fire` → 3011 ms 後に `StopRinging` → `ring_stopped(stopped)` → `GetRinging` なし →
+  待ち行列（2 件目が `queued`・`waiting_for` = 1 件目 → 1 件目を止めると 2 件目が繰り上がって鳴る → 止める）→ `SetShowWhenLocked(false) ok` →
+  `鳴動の確かめ: OK`。`timeout` で止めた後に SEED.exe は残っていない。
+- APK（Wake or Pay・arm64-v8a・debug。SeedAndroid build 110 秒）: aapt2 でマージ後のマニフェストに `RingService`（`foregroundServiceType=0x2`＝mediaPlayback・
+  `:seed_platform`・exported=false・directBootAware=true）と `activity-alias PlatformEntry`（exported=false・targetActivity=MainActivity・lib_name=SEED）、
+  権限（`FOREGROUND_SERVICE_MEDIA_PLAYBACK` など）、`res/raw/seed_alarm_default.wav`（Stored）と文言 4 つ。dexdump で `alarm/ring/` の 10 クラス
+  （と内部クラス）・`LaunchReason`・`LaunchInfo`・`local/` の 5 クラス・`PlatformEntryIntents`・`AlarmStartup` が dex に入っている。
+- **実機（Pixel 6a）は未実施**（`adb devices` に端末が無かった）。§25.12.8 の手順が残っている。
+
+#### 25.12.10 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機での確認すべて（§25.12.8）と W1-4b（実 GameActivity の冷えた起動の計測〈AC-12〉・音の開始の速さ・ヘッドアップ通知からの起動・
+  別名での `onNewIntent` の部品名・`START_NOT_STICKY` で `:seed_platform` が殺されたときの振る舞い）。
+- `force_volume` / `keep_volume` の音量の変更が Android 17 の背面の音の制限の免除に入るか（X-7。実機では試さない約束なので未確認）。
+- ロック解除の前（Direct Boot）: `RingService` は directBootAware だが、鳴動画面の `MainActivity` は directBootAware でないのでフルスクリーン通知から
+  開けない見込み。端末の既定のアラーム音も読めない見込み（同梱の音は読める）。W1-9。
+- 待ち行列はプロセスの中だけ（控えからは消してある）。待っている間に `:seed_platform` が殺されると、その予約は黙って失われる。
+- 鳴動の通知は Android 14+ で利用者がスワイプで消せる（前景サービスは続く）。消されたときに出し直す仕組みは無い。
+- 記録の受け取りの確認（ack）と onResume の未読の取り直し（W1-3 からの持ち越し）。
+- 配布物の前景サービスの種類の宣言の要件チェック（W1-2 からの持ち越し。Play の要件チェックはまだ権限だけを見る）。
+- `RingRegistry`・`PlatformEntryIntents` の JVM の単体テストは W1-7（今は Rust の模擬が同じ規則を単体テストで持つ）。
+- 起動時の照合と `BootReceiver` は同じ放送で起きたプロセスで並んで走る（AlarmBook の lock で直列）。正確なアラームの許可の放送で起きたとき、
+  照合が先に過ぎた予約を見つけると、理由が `permission_revoked` ではなく `device_off` になる（どちらが先かは決まらない。害は理由の違いだけ）。

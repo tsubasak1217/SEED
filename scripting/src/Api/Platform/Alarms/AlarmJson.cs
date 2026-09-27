@@ -30,6 +30,12 @@ internal static class AlarmJson
     /// <summary>正確なアラームを張れるか。</summary>
     internal const string MethodCanScheduleExact = "can_schedule_exact";
 
+    /// <summary>鳴動中の予約（W1-4a）。</summary>
+    internal const string MethodGetRinging = "get_ringing";
+
+    /// <summary>鳴動を止める（W1-4a）。</summary>
+    internal const string MethodStopRinging = "stop_ringing";
+
     // ── 欄の名前 ──
     internal const string KeyId = "id";
     internal const string KeyTriggerAtUtcMs = "trigger_at_utc_ms";
@@ -53,6 +59,11 @@ internal static class AlarmJson
     internal const string KeyMissed = "missed";
     internal const string KeyFailed = "failed";
     internal const string KeySimulated = "simulated";
+    // W1-4a: 鳴動
+    internal const string KeyRinging = "ringing";
+    internal const string KeyStartedAtUtcMs = "started_at_utc_ms";
+    internal const string KeyWaitingFor = "waiting_for";
+    internal const string KeyStopped = "stopped";
 
     /// <summary>イベント: 中身。</summary>
     internal const string KeyData = "data";
@@ -112,6 +123,37 @@ internal static class AlarmJson
     /// <summary>オブジェクトの真偽の欄（無い・真偽でなければ false）。</summary>
     internal static bool GetBool(JsonElement obj, string key) =>
         obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(key, out JsonElement value) && value.ValueKind == JsonValueKind.True;
+
+    /// <summary>
+    /// 返答の JSON のオブジェクトの欄を読んで値にする（欄が無い・null・オブジェクトでなければ false）。
+    /// </summary>
+    /// <typeparam name="T">値の型。</typeparam>
+    /// <param name="reply">返答の JSON。</param>
+    /// <param name="key">欄の名前。</param>
+    /// <param name="read">オブジェクトから値を作る関数。</param>
+    /// <param name="value">読めた値（読めなければ既定値）。</param>
+    /// <returns>オブジェクトがあれば true。</returns>
+    internal static bool TryReadReplyObject<T>(string reply, string key, System.Func<JsonElement, T> read, out T value)
+        where T : struct
+    {
+        value = default;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(reply);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(key, out JsonElement element)
+                || element.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+            value = read(element);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>返答の JSON の真偽の欄（読めなければ false）。</summary>
     internal static bool ReadReplyBool(string reply, string key)

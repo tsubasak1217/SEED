@@ -11,4 +11,10 @@ public enum AlarmMissedReason
 
     /// <summary>"permission_revoked": 正確なアラームの許可が取り消されていた間に予定時刻を過ぎた（Android 12 系）。</summary>
     PermissionRevoked,
+
+    /// <summary>
+    /// "start_failed": 配信は届いたが、鳴動の前景サービスを起こせなかった（W1-4a。背面からの前景サービス起動の制限など）。
+    /// このときは <see cref="AlarmFiredEvent"/> の代わりにこれが届く。
+    /// </summary>
+    StartFailed,
 }

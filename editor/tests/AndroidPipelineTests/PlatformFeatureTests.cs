@@ -30,6 +30,12 @@ public static class PlatformFeatureTests
     /// <summary>目覚ましの張り直しの受信機（W1-3）。</summary>
     private const string BootReceiverClass = "com.seedengine.runtime.platform.service.alarm.BootReceiver";
 
+    /// <summary>目覚ましの鳴動の前景サービス（W1-4a。service/alarm/ring/RingService.java）。</summary>
+    private const string RingServiceClass = "com.seedengine.runtime.platform.service.alarm.ring.RingService";
+
+    /// <summary>信頼できる起動の入口（W1-4a。main の AndroidManifest.xml の activity-alias。Java の PlatformContract.PLATFORM_ENTRY_ALIAS）。</summary>
+    private const string PlatformEntryAlias = "com.seedengine.runtime.platform.PlatformEntry";
+
     /// <summary>BootReceiver の intent-filter の中身（表の順。"要素名:android:name"）。</summary>
     private static readonly string[] BootReceiverActions =
     {
@@ -63,7 +69,7 @@ public static class PlatformFeatureTests
         harness.Add("断片: 同じ設定からは同じバイト列（features の順によらない）・設定が変われば指紋も変わる", WriterIsDeterministic);
         harness.Add("置き場: 機能が空でも書く・同じ中身は書かない・古いファイルは消す", StagerWritesAndCleans);
         harness.Add("Gradle: seed.appCategory は既定の game 以外だけ渡す・断片の中身は APK の指紋に入る", GradlePropertyAndFingerprint);
-        harness.Add("取り決め: build.gradle.kts の語彙・置き場・main のマニフェスト・Java のリソース名が中核と一致", ContractsMatchRepository);
+        harness.Add("取り決め: build.gradle.kts の語彙・置き場・main のマニフェスト（PlatformProvider・PlatformEntry）・Java のリソース名が中核と一致", ContractsMatchRepository);
     }
 
     // ── 機能の表 ────────────────────────────────────────────
@@ -84,21 +90,26 @@ public static class PlatformFeatureTests
         Check.Equal(string.Join(",", expected), string.Join(",", alarm.Permissions.Select(p => p.Name)), "alarm の権限");
         Check.Equal(32, alarm.Permissions.Single(p => p.Name.EndsWith("SCHEDULE_EXACT_ALARM")).MaxSdkVersion, "SCHEDULE_EXACT_ALARM の maxSdkVersion");
         Check.True(alarm.Permissions.Where(p => !p.Name.EndsWith("SCHEDULE_EXACT_ALARM")).All(p => p.MaxSdkVersion is null), "ほかは maxSdkVersion なし");
-        // W1-3: 予約の受信機 2 つ（発火・張り直し）。どちらも :seed_platform・exported=false・directBootAware（RingService 等は W1-4）
-        Check.Equal("receiver,receiver", string.Join(",", alarm.ApplicationElements.Select(e => e.Tag)), "alarm の部品は受信機 2 つ");
-        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass,
-            string.Join(",", alarm.ApplicationElements.Select(e => Attr(e, "android:name"))), "受信機の名前（完全修飾）");
-        foreach (var receiver in alarm.ApplicationElements)
+        // W1-3: 予約の受信機 2 つ（発火・張り直し）、W1-4a: 鳴動の前景サービス。どれも :seed_platform・exported=false・directBootAware
+        Check.Equal("receiver,receiver,service", string.Join(",", alarm.ApplicationElements.Select(e => e.Tag)), "alarm の部品は受信機 2 つと鳴動のサービス");
+        Check.Equal(AlarmReceiverClass + "," + BootReceiverClass + "," + RingServiceClass,
+            string.Join(",", alarm.ApplicationElements.Select(e => Attr(e, "android:name"))), "部品の名前（完全修飾）");
+        foreach (var component in alarm.ApplicationElements)
         {
-            Check.Equal(":seed_platform", Attr(receiver, "android:process"), $"{Attr(receiver, "android:name")} は :seed_platform");
-            Check.Equal("false", Attr(receiver, "android:exported"), $"{Attr(receiver, "android:name")} は exported=false");
-            Check.Equal("true", Attr(receiver, "android:directBootAware"), $"{Attr(receiver, "android:name")} は directBootAware");
+            Check.Equal(":seed_platform", Attr(component, "android:process"), $"{Attr(component, "android:name")} は :seed_platform");
+            Check.Equal("false", Attr(component, "android:exported"), $"{Attr(component, "android:name")} は exported=false");
+            Check.Equal("true", Attr(component, "android:directBootAware"), $"{Attr(component, "android:name")} は directBootAware");
         }
         Check.Equal(0, alarm.ApplicationElements[0].Children.Count, "AlarmReceiver は intent-filter を持たない（アプリの PendingIntent だけが届く）");
         var bootFilter = alarm.ApplicationElements[1].Children.Single();
         Check.Equal("intent-filter", bootFilter.Tag, "BootReceiver の intent-filter");
         Check.Equal(string.Join(",", BootReceiverActions),
             string.Join(",", bootFilter.Children.Select(a => $"{a.Tag}:{Attr(a, "android:name")}")), "BootReceiver が受ける放送");
+        // 鳴動の前景サービスの種類は mediaPlayback（E-03。FOREGROUND_SERVICE_MEDIA_PLAYBACK の権限と対）。intent-filter は持たない
+        var ringService = alarm.ApplicationElements[2];
+        Check.Equal("mediaPlayback", Attr(ringService, "android:foregroundServiceType"), "RingService の前景サービスの種類");
+        Check.Equal(0, ringService.Children.Count, "RingService は intent-filter を持たない（アプリの中から起こすだけ）");
+        Check.True(alarm.Permissions.Any(p => p.Name == "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"), "種類の権限も alarm にある");
 
         Check.Equal("android.permission.POST_NOTIFICATIONS", catalog.Find("notifications")!.Permissions.Single().Name, "notifications の権限");
         var deepLinks = catalog.Find(" Deep_Links ")!;
@@ -124,8 +135,8 @@ public static class PlatformFeatureTests
                 checkedCount++;
             }
         }
-        // W1-3 で alarm の受信機 2 つ（AlarmReceiver・BootReceiver）。W1-4 で行を足しても自動で確かめられる
-        Check.True(checkedCount >= 2, $"確かめた数 {checkedCount}");
+        // W1-3 で alarm の受信機 2 つ（AlarmReceiver・BootReceiver）、W1-4a で RingService。行を足しても自動で確かめられる
+        Check.True(checkedCount >= 3, $"確かめた数 {checkedCount}");
 
         // 確かめ方そのものが働くこと（main に常設の PlatformProvider のソースは見つかる）
         var provider = Path.Combine(javaRoot, "com", "seedengine", "runtime", "platform", "service", "PlatformProvider.java");
@@ -320,7 +331,7 @@ public static class PlatformFeatureTests
         Check.Equal(9, permissions.Count, "権限 9");
         var schedule = permissions.Single(p => (string?)p.Attribute(AndroidNs + "name") == "android.permission.SCHEDULE_EXACT_ALARM");
         Check.Equal("32", (string?)schedule.Attribute(AndroidNs + "maxSdkVersion"), "maxSdkVersion");
-        // alarm の受信機 2 つ（W1-3）。ディープリンクが無いので MainActivity の要素は書かない
+        // alarm の受信機 2 つ（W1-3）と鳴動の前景サービス（W1-4a）。ディープリンクが無いので MainActivity の要素は書かない
         var application = manifest.Element("application")!;
         Check.True(application.Element("activity") is null, "ディープリンクが無ければ MainActivity を書かない");
         var receivers = application.Elements("receiver").ToList();
@@ -331,6 +342,12 @@ public static class PlatformFeatureTests
                                       && (string?)r.Attribute(AndroidNs + "directBootAware") == "true"), "受信機の属性");
         var actions = receivers[1].Element("intent-filter")!.Elements("action").Select(a => "action:" + (string?)a.Attribute(AndroidNs + "name"));
         Check.Equal(string.Join(",", BootReceiverActions), string.Join(",", actions), "BootReceiver の intent-filter");
+        var service = application.Elements("service").Single();
+        Check.Equal(RingServiceClass, (string?)service.Attribute(AndroidNs + "name"), "鳴動のサービス");
+        Check.True((string?)service.Attribute(AndroidNs + "process") == ":seed_platform"
+                   && (string?)service.Attribute(AndroidNs + "exported") == "false"
+                   && (string?)service.Attribute(AndroidNs + "directBootAware") == "true"
+                   && (string?)service.Attribute(AndroidNs + "foregroundServiceType") == "mediaPlayback", "鳴動のサービスの属性");
         Check.True(files.ManifestText.Contains("機能: alarm, notifications"), "頭のコメントに機能");
         Check.Equal("true", XDocument.Parse(files.ValuesText).Root!.Element("bool")!.Value, "visible は true");
     }
@@ -465,6 +482,24 @@ public static class PlatformFeatureTests
         var manifest = File.ReadAllText(Path.Combine(engine.AndroidDir, "app", "src", "main", "AndroidManifest.xml"));
         Check.True(manifest.Contains("android:appCategory=\"${seedAppCategory}\""), "main のマニフェストの appCategory");
         Check.True(manifest.Contains("android:name=\".platform.service.PlatformProvider\""), "PlatformProvider は main に常設");
+
+        // 信頼できる起動の入口 PlatformEntry（W1-4a）: main に常設の activity-alias・exported=false・対象は MainActivity・
+        // GameActivity が起動の部品の ActivityInfo から読む lib_name を別名にも持つ・Java の定数と同じ名前
+        var mainDoc = XDocument.Parse(manifest);
+        var alias = mainDoc.Root!.Element("application")!.Elements("activity-alias").Single();
+        var namespaceName = "com.seedengine.runtime";
+        var aliasName = (string?)alias.Attribute(AndroidNs + "name");
+        Check.Equal(PlatformEntryAlias, aliasName!.StartsWith('.') ? namespaceName + aliasName : aliasName, "PlatformEntry の名前");
+        Check.Equal("false", (string?)alias.Attribute(AndroidNs + "exported"), "PlatformEntry は exported=false");
+        Check.Equal(".MainActivity", (string?)alias.Attribute(AndroidNs + "targetActivity"), "PlatformEntry の対象は MainActivity");
+        Check.True(!alias.Elements("intent-filter").Any(), "PlatformEntry は intent-filter を持たない");
+        var libName = alias.Elements("meta-data").SingleOrDefault(m => (string?)m.Attribute(AndroidNs + "name") == "android.app.lib_name");
+        var mainLibName = mainDoc.Root.Element("application")!.Element("activity")!.Elements("meta-data")
+            .Single(m => (string?)m.Attribute(AndroidNs + "name") == "android.app.lib_name");
+        Check.Equal((string?)mainLibName.Attribute(AndroidNs + "value"), (string?)libName?.Attribute(AndroidNs + "value"),
+            "PlatformEntry にも MainActivity と同じ lib_name（無いと GameActivity が libmain.so を探して落ちる）");
+        var contract = File.ReadAllText(Path.Combine(engine.AndroidDir, "app", "src", "main", "java", "com", "seedengine", "runtime", "platform", "PlatformContract.java"));
+        Check.True(contract.Contains($"PLATFORM_ENTRY_ALIAS = \"{PlatformEntryAlias}\""), "Java の PlatformContract.PLATFORM_ENTRY_ALIAS と一致");
 
         // bool のリソース名（main の既定値・Java・生成物）
         var defaults = XDocument.Load(Path.Combine(engine.AndroidDir, "app", "src", "main", "res", "values", "seed_platform_defaults.xml"));

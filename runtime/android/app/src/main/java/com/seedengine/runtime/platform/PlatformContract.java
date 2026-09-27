@@ -1,12 +1,14 @@
 // ============================================================
-//  PlatformContract.java — アプリのプラットフォーム機能（SEED.Platform）の約束の置き場（W1-1・W1-3 で目覚ましを追加）
+//  PlatformContract.java — アプリのプラットフォーム機能（SEED.Platform）の約束の置き場（W1-1・W1-3 で目覚まし・
+//  W1-4a で鳴動・起動理由・画面の命令を追加）
 //
 //  メインプロセス（SeedPlatform・PlatformConnection）と :seed_platform プロセス（service/ の PlatformProvider 等）の
 //  両方が使う名前・キー・理由の名前を 1 か所に集める（マジックナンバー・文字列を散らさない）。
-//  エンジン側（Rust）の対になる正典は runtime/src/engine/platform/bridge/wire.rs（目覚ましは wire::alarm）、
-//  C# 側は scripting/src/Api/Platform/（目覚ましは Alarms/AlarmJson.cs）。値を変えるときは 3 か所を必ず揃える
-//  （Rust の単体テスト wire::tests::java_contract_matches_wire が、このファイルの文字列の定数と wire.rs を突き合わせる）。
-//  全体像は docs/android.md §25（目覚ましは §25.11）。
+//  エンジン側（Rust）の対になる正典は runtime/src/engine/platform/bridge/wire.rs（目覚ましは wire::alarm、起動理由は
+//  wire::launch、画面は wire::window）、C# 側は scripting/src/Api/Platform/（目覚ましは Alarms/AlarmJson.cs、起動理由は
+//  App/LaunchJson.cs）。値を変えるときは 3 か所を必ず揃える（Rust の単体テスト wire::tests::java_contract_matches_wire が、
+//  このファイルの文字列の定数と wire.rs を突き合わせる）。
+//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12）。
 // ============================================================
 
 package com.seedengine.runtime.platform;
@@ -189,8 +191,25 @@ public final class PlatformContract {
     /** イベント alarms.rescheduled: 張り直せなかった件数（正確なアラームの許可が無い等。控えには残す）。 */
     public static final String KEY_FAILED = "failed";
 
-    /** 目覚ましが鳴った（予定時刻に AlarmManager から配信された。W1-3 は記録だけ。鳴動は W1-4）。 */
+    /** 鳴動中の目覚まし（W1-4a）: 今鳴っている予約を返す（無ければ ringing が null）。 */
+    public static final String METHOD_ALARM_GET_RINGING = "get_ringing";
+    /** 鳴動を止める（W1-4a）: 引数の id が空・無しなら今鳴っているもの。待ち行列の予約も id で止められる。 */
+    public static final String METHOD_ALARM_STOP_RINGING = "stop_ringing";
+    /** get_ringing の返答: 鳴動中の予約（{id, scheduled_at_utc_ms, started_at_utc_ms, payload_json}。無ければ null）。 */
+    public static final String KEY_ALARM_RINGING = "ringing";
+    /** get_ringing の返答: 鳴り始めた時刻（UTC の epoch ミリ秒。待ち行列から繰り上がったときはその時刻）。 */
+    public static final String KEY_ALARM_STARTED_AT_UTC_MS = "started_at_utc_ms";
+    /** イベント alarm.queued: 今鳴っていて、止まるのを待っている予約の ID。 */
+    public static final String KEY_ALARM_WAITING_FOR = "waiting_for";
+    /** stop_ringing の返答: 何かを止めたか（鳴っていなければ false。それでも ok=true＝冪等）。 */
+    public static final String KEY_ALARM_STOPPED = "stopped";
+
+    /** 目覚ましが鳴った（予定時刻に AlarmManager から配信され、鳴動のサービスへ渡した。鳴り始めたか待ち行列に入った）。 */
     public static final String EVENT_ALARM_FIRED = "platform.alarm.fired";
+    /** 鳴動が終わった（W1-4a。reason = stopped〈StopRinging〉/ timeout〈安全弁〉/ error〈前景にできない等〉）。 */
+    public static final String EVENT_ALARM_RING_STOPPED = "platform.alarm.ring_stopped";
+    /** 別の予約の鳴動中に時刻が来たので待たせた（W1-4a。捨てずに、今の鳴動が止まったら続けて鳴らす）。 */
+    public static final String EVENT_ALARM_QUEUED = "platform.alarm.queued";
     /** 目覚ましが鳴らなかった（電源断・強制停止・許可の取り消しの間に予定時刻を過ぎた。張り直すときに見つける）。 */
     public static final String EVENT_ALARM_MISSED = "platform.alarm.missed";
     /** 予約を張り直した（再起動・時刻／タイムゾーンの変更・アプリの更新・正確なアラームの許可）。控えが空なら記録しない。 */
@@ -200,6 +219,17 @@ public final class PlatformContract {
     public static final String MISSED_REASON_DEVICE_OFF = "device_off";
     /** alarm.missed の理由: 正確なアラームの許可が取り消されていた間に予定時刻を過ぎた。 */
     public static final String MISSED_REASON_PERMISSION_REVOKED = "permission_revoked";
+    /**
+     * alarm.missed の理由: 配信は届いたが、鳴動の前景サービスを起こせなかった（W1-4a。ForegroundServiceStartNotAllowedException など。
+     * このときは alarm.fired の代わりにこれを記録する）。
+     */
+    public static final String MISSED_REASON_START_FAILED = "start_failed";
+    /** alarm.ring_stopped の理由: アプリが止めた（alarm.stop_ringing）。 */
+    public static final String RING_STOP_REASON_STOPPED = "stopped";
+    /** alarm.ring_stopped の理由: 安全弁（max_ring_minutes）で自動で止めた。 */
+    public static final String RING_STOP_REASON_TIMEOUT = "timeout";
+    /** alarm.ring_stopped の理由: 鳴らし続けられなかった（前景にできない・サービスが作り直された等）。 */
+    public static final String RING_STOP_REASON_ERROR = "error";
     /** alarms.rescheduled の理由: 再起動（LOCKED_BOOT_COMPLETED / BOOT_COMPLETED。強制停止からの復帰でも届く）。 */
     public static final String RESCHEDULE_REASON_BOOT = "boot";
     /** alarms.rescheduled の理由: 端末の時刻・タイムゾーンが変わった（アプリは次の時刻を計算し直す）。 */
@@ -231,6 +261,61 @@ public final class PlatformContract {
     public static final int DEFAULT_ALARM_MAX_RING_MINUTES = 60;
     /** max_ring_minutes の下限（これより小さい値はこれにそろえる）。 */
     public static final int MIN_ALARM_MAX_RING_MINUTES = 1;
+    /** 1 分のミリ秒（安全弁の max_ring_minutes をミリ秒にする）。 */
+    public static final long MILLIS_PER_MINUTE = 60_000L;
+
+    // ── 起動理由（W1-4a。メインプロセスで答える命令 platform.launch_reason とイベント platform.launch）──
+
+    /**
+     * 信頼できる起動の入口（exported=false の activity-alias。main の AndroidManifest.xml に常設。targetActivity は MainActivity）。
+     * :seed_platform が作る Activity 行きの PendingIntent はすべてこの別名を通す（W1-P6）。他のアプリはこの部品を起動できないので、
+     * 起動の Intent の部品名がこれなら、中の起動理由（EXTRA_LAUNCH）はプラットフォーム層が自分で作ったものと信用できる。
+     */
+    public static final String PLATFORM_ENTRY_ALIAS = "com.seedengine.runtime.platform.PlatformEntry";
+    /**
+     * PlatformEntry 行きの Intent の extra: 起動理由の JSON（文字列。{kind, id, action_id, scheduled_at_utc_ms, fired_at_utc_ms,
+     * payload_json}）。名前を "seed." で始めないのは、デバッグ版の MainActivity が "seed." の extra を起動オプションとして
+     * ネイティブへ丸ごと渡す（forwardLaunchOptions）ため。
+     */
+    public static final String EXTRA_LAUNCH = "com.seedengine.runtime.platform.extra.LAUNCH";
+    /** この起動の理由を返す（メインプロセスで答える。IPC なし）。返答 { launch: {kind, …} }。 */
+    public static final String METHOD_LAUNCH_REASON = "launch_reason";
+    /** 起動した後に届いた Intent（singleTask の onNewIntent）の理由。data は起動理由の JSON と同じ形。 */
+    public static final String EVENT_LAUNCH = "platform.launch";
+    /** launch_reason の返答: 起動理由のオブジェクト。 */
+    public static final String KEY_LAUNCH = "launch";
+    /** 起動理由: 種類（下の LAUNCH_KIND_*）。 */
+    public static final String KEY_LAUNCH_KIND = "kind";
+    /** 起動理由: 通知の操作の ID（notification_action のとき。例 open）。 */
+    public static final String KEY_LAUNCH_ACTION_ID = "action_id";
+    /** 起動の種類: ランチャー・普通の起動（プラットフォーム層を通らない起動はすべてこれか other）。 */
+    public static final String LAUNCH_KIND_LAUNCHER = "launcher";
+    /** 起動の種類: 目覚ましの鳴動（フルスクリーン通知・鳴動の通知の本文のタップ）。ロック画面の上に出し画面を点ける。 */
+    public static final String LAUNCH_KIND_ALARM = "alarm";
+    /** 起動の種類: 通知の本文のタップ（W1-5 の通知。W1-4a では作らない）。 */
+    public static final String LAUNCH_KIND_NOTIFICATION_TAP = "notification_tap";
+    /** 起動の種類: 通知の操作（ボタン）。action_id に操作の ID。 */
+    public static final String LAUNCH_KIND_NOTIFICATION_ACTION = "notification_action";
+    /** 起動の種類: ステータスバー・ロック画面の「次の目覚まし」の表示を押した（AlarmClockInfo の showIntent）。 */
+    public static final String LAUNCH_KIND_ALARM_CLOCK_INFO = "alarm_clock_info";
+    /** 起動の種類: それ以外（ランチャー以外の action で起動された・プラットフォーム層の Intent が読めなかった）。 */
+    public static final String LAUNCH_KIND_OTHER = "other";
+    /** 通知の操作の ID: 鳴動の通知の「開く」。 */
+    public static final String LAUNCH_ACTION_OPEN = "open";
+
+    // ── 画面（W1-4a。モジュール "window"。メインプロセスで答える。IPC なし）──
+
+    /** 画面のモジュール（メインプロセスの Activity を操作する）。 */
+    public static final String MODULE_WINDOW = "window";
+    /** ロック画面の上に出す＋画面を点ける（setShowWhenLocked・setTurnScreenOn）の切り替え。引数 { on }。 */
+    public static final String METHOD_WINDOW_SET_SHOW_WHEN_LOCKED = "set_show_when_locked";
+    /** set_show_when_locked の引数・返答: 上げるか。 */
+    public static final String KEY_WINDOW_ON = "on";
+
+    // ── 鳴動の通知（W1-4a。:seed_platform の RingService）──
+
+    /** 鳴動の通知チャネルの ID（重要度 HIGH・チャネルの音なし＝音は RingService が USAGE_ALARM で鳴らす）。 */
+    public static final String NOTIFICATION_CHANNEL_ALARM = "seed_platform_alarm";
 
     // ── イベントの名前（スクリプトの SEED.Events にもこの名前で流れる）──
 
@@ -287,6 +372,8 @@ public final class PlatformContract {
     public static final String ERROR_SCHEDULE_FAILED = "schedule_failed";
     /** APK に機能 alarm が入っていない（project_settings.json の android.features に "alarm" が無い）。 */
     public static final String ERROR_FEATURE_NOT_ENABLED = "feature_not_enabled";
+    /** 画面の命令: 操作する Activity が無い（破棄された・まだ作られていない）。 */
+    public static final String ERROR_NO_ACTIVITY = "no_activity";
 
     /** module / method の名前の最大の長さ（文字）。Rust の wire::MAX_NAME_LEN と一致させる。 */
     public static final int MAX_NAME_LENGTH = 64;

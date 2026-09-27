@@ -1,5 +1,6 @@
 // ============================================================
-//  platform/bridge/wire.rs — プラットフォーム機能（SEED.Platform）の JSON の約束（W1-1・W1-3 で目覚まし wire::alarm を追加）
+//  platform/bridge/wire.rs — プラットフォーム機能（SEED.Platform）の JSON の約束（W1-1・W1-3 で目覚まし wire::alarm・
+//  W1-4a で鳴動〈wire::alarm の get_ringing / stop_ringing 等〉・起動理由 wire::launch・画面 wire::window を追加）
 //
 //  【役割】
 //  エンジン・Java（メインプロセスの SeedPlatform と :seed_platform の PlatformProvider）・C#（SEED.Platform）の
@@ -175,6 +176,10 @@ pub mod alarm {
     pub const METHOD_LIST: &str = "list";
     /// 正確なアラームを張れるか。
     pub const METHOD_CAN_SCHEDULE_EXACT: &str = "can_schedule_exact";
+    /// 鳴動中の予約を返す（W1-4a。無ければ ringing が null）。
+    pub const METHOD_GET_RINGING: &str = "get_ringing";
+    /// 鳴動を止める（W1-4a。引数の id が空・無しなら今鳴っているもの。待ち行列の予約も id で外せる）。
+    pub const METHOD_STOP_RINGING: &str = "stop_ringing";
 
     /// 予約の ID。
     pub const KEY_ID: &str = "id";
@@ -224,18 +229,38 @@ pub mod alarm {
     pub const KEY_FAILED: &str = "failed";
     /// 模擬の返答・イベント: 模擬が作ったか。
     pub const KEY_SIMULATED: &str = "simulated";
+    /// get_ringing の返答: 鳴動中の予約（{id, scheduled_at_utc_ms, started_at_utc_ms, payload_json}。無ければ null）。
+    pub const KEY_RINGING: &str = "ringing";
+    /// get_ringing の返答: 鳴り始めた時刻（待ち行列から繰り上がったときはその時刻）。
+    pub const KEY_STARTED_AT_UTC_MS: &str = "started_at_utc_ms";
+    /// イベント alarm.queued: 今鳴っていて、止まるのを待っている予約の ID。
+    pub const KEY_WAITING_FOR: &str = "waiting_for";
+    /// stop_ringing の返答: 何かを止めたか（鳴っていなければ false。それでも ok=true）。
+    pub const KEY_STOPPED: &str = "stopped";
 
-    /// 目覚ましが鳴った。
+    /// 目覚ましが鳴った（配信され、鳴動へ渡した。鳴り始めたか待ち行列に入った）。
     pub const EVENT_FIRED: &str = "platform.alarm.fired";
-    /// 目覚ましが鳴らなかった（電源断・強制停止・許可の取り消しの間に予定時刻を過ぎた）。
+    /// 目覚ましが鳴らなかった（電源断・強制停止・許可の取り消しの間に予定時刻を過ぎた・鳴動を始められなかった）。
     pub const EVENT_MISSED: &str = "platform.alarm.missed";
     /// 予約を張り直した。
     pub const EVENT_RESCHEDULED: &str = "platform.alarms.rescheduled";
+    /// 鳴動が終わった（W1-4a。reason = stopped / timeout / error）。
+    pub const EVENT_RING_STOPPED: &str = "platform.alarm.ring_stopped";
+    /// 別の予約の鳴動中に時刻が来たので待たせた（W1-4a。今の鳴動が止まったら続けて鳴らす）。
+    pub const EVENT_QUEUED: &str = "platform.alarm.queued";
 
     /// alarm.missed の理由: 電源断・強制停止・更新などで予約が OS から消えていた。
     pub const MISSED_REASON_DEVICE_OFF: &str = "device_off";
     /// alarm.missed の理由: 正確なアラームの許可が取り消されていた。
     pub const MISSED_REASON_PERMISSION_REVOKED: &str = "permission_revoked";
+    /// alarm.missed の理由: 配信は届いたが鳴動の前景サービスを起こせなかった（W1-4a。alarm.fired の代わりに記録する）。
+    pub const MISSED_REASON_START_FAILED: &str = "start_failed";
+    /// alarm.ring_stopped の理由: アプリが止めた（stop_ringing）。
+    pub const RING_STOP_REASON_STOPPED: &str = "stopped";
+    /// alarm.ring_stopped の理由: 安全弁（max_ring_minutes）で止めた。
+    pub const RING_STOP_REASON_TIMEOUT: &str = "timeout";
+    /// alarm.ring_stopped の理由: 鳴らし続けられなかった。
+    pub const RING_STOP_REASON_ERROR: &str = "error";
     /// alarms.rescheduled の理由: 再起動（強制停止からの復帰を含む）。
     pub const RESCHEDULE_REASON_BOOT: &str = "boot";
     /// alarms.rescheduled の理由: 端末の時刻・タイムゾーンの変更。
@@ -280,6 +305,53 @@ pub mod alarm {
     pub const DEFAULT_MAX_RING_MINUTES: i64 = 60;
     /// max_ring_minutes の下限。
     pub const MIN_MAX_RING_MINUTES: i64 = 1;
+    /// 1 分のミリ秒（安全弁の max_ring_minutes をミリ秒にする）。
+    pub const MILLIS_PER_MINUTE: i64 = 60_000;
+}
+
+/// 起動理由（W1-4a。モジュール "platform" の launch_reason とイベント platform.launch。Android はメインプロセスが答える）の名前
+/// （Java の PlatformContract の *LAUNCH*・C# の LaunchJson と一致させる）。
+///
+/// 起動理由の形: `{ kind, id, action_id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json }`。id・scheduled_at_utc_ms・
+/// fired_at_utc_ms・payload_json は目覚ましと同じ名前の欄（wire::alarm の KEY_*）。
+pub mod launch {
+    /// この起動の理由を返す（モジュールは wire::MODULE_PLATFORM）。返答 `{ launch: {…} }`。
+    pub const METHOD_LAUNCH_REASON: &str = "launch_reason";
+    /// 起動した後に届いた Intent（singleTask の onNewIntent）の理由。data は起動理由と同じ形。
+    pub const EVENT_LAUNCH: &str = "platform.launch";
+    /// launch_reason の返答: 起動理由のオブジェクト。
+    pub const KEY_LAUNCH: &str = "launch";
+    /// 起動理由: 種類（KIND_*）。
+    pub const KEY_KIND: &str = "kind";
+    /// 起動理由: 通知の操作の ID。
+    pub const KEY_ACTION_ID: &str = "action_id";
+    /// 種類: ランチャー・普通の起動。
+    pub const KIND_LAUNCHER: &str = "launcher";
+    /// 種類: 目覚ましの鳴動（フルスクリーン通知・鳴動の通知の本文のタップ）。
+    pub const KIND_ALARM: &str = "alarm";
+    /// 種類: 通知の本文のタップ（W1-5）。
+    pub const KIND_NOTIFICATION_TAP: &str = "notification_tap";
+    /// 種類: 通知の操作（ボタン）。
+    pub const KIND_NOTIFICATION_ACTION: &str = "notification_action";
+    /// 種類: ステータスバー・ロック画面の「次の目覚まし」の表示を押した。
+    pub const KIND_ALARM_CLOCK_INFO: &str = "alarm_clock_info";
+    /// 種類: それ以外。
+    pub const KIND_OTHER: &str = "other";
+    /// 通知の操作の ID: 鳴動の通知の「開く」。
+    pub const ACTION_OPEN: &str = "open";
+}
+
+/// 画面（W1-4a。モジュール "window"。Android はメインプロセスが Activity を操作して答える）の名前
+/// （Java の PlatformContract の *WINDOW*・C# の Window と一致させる）。
+pub mod window {
+    /// 画面のモジュール。
+    pub const MODULE: &str = "window";
+    /// ロック画面の上に出す＋画面を点ける の切り替え。引数 `{ on }`。
+    pub const METHOD_SET_SHOW_WHEN_LOCKED: &str = "set_show_when_locked";
+    /// set_show_when_locked の引数・返答: 上げるか。
+    pub const KEY_ON: &str = "on";
+    /// 操作する Activity が無い（Android）。
+    pub const ERROR_NO_ACTIVITY: &str = "no_activity";
 }
 
 // ============================================================
@@ -394,6 +466,25 @@ mod tests {
             ("ERROR_INVALID_ARGUMENT", alarm::ERROR_INVALID_ARGUMENT), ("ERROR_TOO_MANY_ALARMS", alarm::ERROR_TOO_MANY_ALARMS),
             ("ERROR_STORE_WRITE_FAILED", alarm::ERROR_STORE_WRITE_FAILED), ("ERROR_SCHEDULE_FAILED", alarm::ERROR_SCHEDULE_FAILED),
             ("ERROR_FEATURE_NOT_ENABLED", alarm::ERROR_FEATURE_NOT_ENABLED),
+            // W1-4a: 鳴動
+            ("METHOD_ALARM_GET_RINGING", alarm::METHOD_GET_RINGING), ("METHOD_ALARM_STOP_RINGING", alarm::METHOD_STOP_RINGING),
+            ("KEY_ALARM_RINGING", alarm::KEY_RINGING), ("KEY_ALARM_STARTED_AT_UTC_MS", alarm::KEY_STARTED_AT_UTC_MS),
+            ("KEY_ALARM_WAITING_FOR", alarm::KEY_WAITING_FOR), ("KEY_ALARM_STOPPED", alarm::KEY_STOPPED),
+            ("EVENT_ALARM_RING_STOPPED", alarm::EVENT_RING_STOPPED), ("EVENT_ALARM_QUEUED", alarm::EVENT_QUEUED),
+            ("MISSED_REASON_START_FAILED", alarm::MISSED_REASON_START_FAILED),
+            ("RING_STOP_REASON_STOPPED", alarm::RING_STOP_REASON_STOPPED), ("RING_STOP_REASON_TIMEOUT", alarm::RING_STOP_REASON_TIMEOUT),
+            ("RING_STOP_REASON_ERROR", alarm::RING_STOP_REASON_ERROR),
+            // W1-4a: 起動理由
+            ("METHOD_LAUNCH_REASON", launch::METHOD_LAUNCH_REASON), ("EVENT_LAUNCH", launch::EVENT_LAUNCH),
+            ("KEY_LAUNCH", launch::KEY_LAUNCH), ("KEY_LAUNCH_KIND", launch::KEY_KIND), ("KEY_LAUNCH_ACTION_ID", launch::KEY_ACTION_ID),
+            ("LAUNCH_KIND_LAUNCHER", launch::KIND_LAUNCHER), ("LAUNCH_KIND_ALARM", launch::KIND_ALARM),
+            ("LAUNCH_KIND_NOTIFICATION_TAP", launch::KIND_NOTIFICATION_TAP),
+            ("LAUNCH_KIND_NOTIFICATION_ACTION", launch::KIND_NOTIFICATION_ACTION),
+            ("LAUNCH_KIND_ALARM_CLOCK_INFO", launch::KIND_ALARM_CLOCK_INFO), ("LAUNCH_KIND_OTHER", launch::KIND_OTHER),
+            ("LAUNCH_ACTION_OPEN", launch::ACTION_OPEN),
+            // W1-4a: 画面
+            ("MODULE_WINDOW", window::MODULE), ("METHOD_WINDOW_SET_SHOW_WHEN_LOCKED", window::METHOD_SET_SHOW_WHEN_LOCKED),
+            ("KEY_WINDOW_ON", window::KEY_ON), ("ERROR_NO_ACTIVITY", window::ERROR_NO_ACTIVITY),
         ];
         for (java, rust) in strings {
             assert_eq!(java_constant(&source, java), *rust, "PlatformContract.{java} と wire.rs が食い違う");
@@ -406,9 +497,13 @@ mod tests {
             ("MAX_ALARM_FORCE_VOLUME", alarm::MAX_FORCE_VOLUME), ("DEFAULT_ALARM_FADE_IN_SECONDS", alarm::DEFAULT_FADE_IN_SECONDS),
             ("DEFAULT_ALARM_MAX_RING_MINUTES", alarm::DEFAULT_MAX_RING_MINUTES as f64),
             ("MIN_ALARM_MAX_RING_MINUTES", alarm::MIN_MAX_RING_MINUTES as f64),
+            ("MILLIS_PER_MINUTE", alarm::MILLIS_PER_MINUTE as f64),
         ];
         for (java, rust) in numbers {
-            let value: f64 = java_constant(&source, java).parse().unwrap_or_else(|_| panic!("{java} が数でない"));
+            // Java の数の書き方（桁区切りの _・long の L）を落としてから読む
+            let literal = java_constant(&source, java).replace('_', "");
+            let value: f64 =
+                literal.trim_end_matches(['L', 'l']).parse().unwrap_or_else(|_| panic!("{java} が数でない: {literal}"));
             assert_eq!(value, *rust, "PlatformContract.{java} と wire.rs が食い違う");
         }
         let flags: &[(&str, bool)] =

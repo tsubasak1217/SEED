@@ -132,6 +132,25 @@ final class AlarmRequestReader {
         }
     }
 
+    /**
+     * alarm.stop_ringing の引数（任意の ID。W1-4a）を読む。無い・null・空文字は空文字（＝今鳴っているもの）。
+     * 文字列でない・長すぎるときは invalid_argument（Rust の模擬 bridge/alarm/request.rs の read_optional_id と同じ規則）。
+     *
+     * @param request 引数
+     * @return 結果（成功なら id。空文字は「今鳴っているもの」）
+     */
+    static Result readOptionalId(JSONObject request) {
+        Object value = request.opt(PlatformContract.KEY_ALARM_ID);
+        if (value == null || value == JSONObject.NULL || EMPTY.equals(value)) {
+            return Result.ofId(EMPTY);
+        }
+        try {
+            return Result.ofId(requiredId(request));
+        } catch (FieldException e) {
+            return Result.invalid(e.getMessage());
+        }
+    }
+
     /** 必須の ID（1〜MAX_ALARM_ID_LENGTH 文字の文字列）。 */
     private static String requiredId(JSONObject request) throws FieldException {
         Object value = request.opt(PlatformContract.KEY_ALARM_ID);

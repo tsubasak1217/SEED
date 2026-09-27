@@ -15,12 +15,13 @@
 //  extras には ID と予定時刻を入れる（予定時刻は「予約し直された後に届いた古い配信」を見分ける版の印。AlarmReceiver）。
 //
 //  【ステータスバーの印を押したとき（AlarmClockInfo の showIntent）】
-//  W1-3 はランチャーと同じ起動（MAIN/LAUNCHER で MainActivity を開く）。W1-4 で、信頼できる起動の入口
-//  activity-alias PlatformEntry 行きに替える（起動理由を読めるように）。MainActivity は**クラス名の文字列**で指す:
-//    ・クラスを参照すると static 初期化子が libSEED.so を読み込む（Java だけのこのプロセスで触ってはいけない）
+//  W1-4a から、信頼できる起動の入口 activity-alias PlatformEntry 行き（起動理由 alarm_clock_info。PlatformEntryIntents）。
+//  W1-3 はランチャーと同じ起動（MAIN/LAUNCHER）だった。部品は**名前の文字列**で指す:
+//    ・MainActivity のクラスを参照すると static 初期化子が libSEED.so を読み込む（Java だけのこのプロセスで触ってはいけない）
 //    ・getLaunchIntentForPackage は PackageManager で解決するので、再起動の後・最初のロック解除の前（BootReceiver の
 //      LOCKED_BOOT_COMPLETED）は directBootAware でない MainActivity が見えず null になりうる（推論。Direct Boot の間は
 //      端末保護ストレージを使える部品だけが解決される）。名前で作れば解決しないので、いつでも同じ PendingIntent になる
+//  showIntent は全予約で 1 つを共有する（要求コードが同じ・FLAG_UPDATE_CURRENT）ので、予約ごとの値（ID など）は入れない。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm;
@@ -34,6 +35,9 @@ import android.os.Build;
 
 import com.seedengine.runtime.platform.PlatformContract;
 import com.seedengine.runtime.platform.PlatformJson;
+import com.seedengine.runtime.platform.service.PlatformEntryIntents;
+
+import org.json.JSONObject;
 
 /**
  * AlarmManager の操作（static のみ）。
@@ -63,15 +67,6 @@ final class AlarmScheduler {
 
     /** 発火の PendingIntent の要求コード（全予約で共通。区別は data の URI）。 */
     private static final int REQUEST_CODE_ALARM_FIRE = 0;
-
-    /** ステータスバーの目覚ましの印を押したときの PendingIntent の要求コード（全予約で共通の「アプリを開く」）。 */
-    private static final int REQUEST_CODE_ALARM_SHOW = 1;
-
-    /**
-     * ランチャーの Activity のクラス名（Java の名前空間は applicationId によらず com.seedengine.runtime のまま。
-     * app/build.gradle.kts の namespace・main の AndroidManifest.xml の .MainActivity と一致させる）。
-     */
-    private static final String LAUNCH_ACTIVITY_CLASS = "com.seedengine.runtime.MainActivity";
 
     /** 予約の結果（error が null なら成功）。 */
     static final class ArmResult {
@@ -205,17 +200,15 @@ final class AlarmScheduler {
     }
 
     /**
-     * ステータスバーの目覚ましの印を押したときに開く画面（W1-3 はランチャーと同じ起動。W1-4 で PlatformEntry 行きに替える）。
+     * ステータスバーの目覚ましの印を押したときに開く画面（PlatformEntry 経由のアプリ。起動理由 alarm_clock_info。W1-4a）。
      *
      * @param context :seed_platform の Context
      * @return PendingIntent
      */
     private static PendingIntent showIntent(Context context) {
-        Intent launch = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_LAUNCHER)
-                .setClassName(context.getPackageName(), LAUNCH_ACTIVITY_CLASS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        return PendingIntent.getActivity(context, REQUEST_CODE_ALARM_SHOW, launch,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        JSONObject launch = PlatformEntryIntents.launchJson(PlatformContract.LAUNCH_KIND_ALARM_CLOCK_INFO,
+                PlatformEntryIntents.NO_TEXT, PlatformEntryIntents.NO_TEXT, PlatformEntryIntents.NO_TIME,
+                PlatformEntryIntents.NO_TIME, PlatformEntryIntents.NO_TEXT);
+        return PlatformEntryIntents.activity(context, PlatformEntryIntents.REQUEST_ALARM_CLOCK_INFO, launch, false);
     }
 }

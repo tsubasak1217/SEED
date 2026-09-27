@@ -6,9 +6,10 @@
 //    alarm.cancel / cancel_all / list … 予約表の操作
 //    alarm.can_schedule_exact … 常に true（デスクトップには権限が無い）
 //  発火: エンジンがフレームの頭で呼ぶ poll_events の中で、壁時計が予定時刻を過ぎた予約を取り出して
-//  platform.alarm.fired { id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json, simulated } を積む（一回限り）。
+//  platform.alarm.fired { id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json, simulated } を積み（一回限り）、
+//  鳴動の状態へ渡す（W1-4a。ring_commands.rs の start_ringing。鳴動中なら待ち行列と platform.alarm.queued）。
 //  エディタの Play の中だけで進む（Play していない・一時停止中はフレームが回らないので鳴らない。止めれば予約は消える）。
-//  音は鳴らさない（W1-4 の鳴動の模擬はログか音声の再生で別に決める）。
+//  音は鳴らさない（[SEED PLATFORM] のログだけ）。
 // ============================================================
 
 use serde_json::{json, Map, Value};
@@ -71,7 +72,7 @@ impl DesktopSimBridge {
         Ok(fields)
     }
 
-    /// 壁時計が予定時刻を過ぎた予約を取り出し、platform.alarm.fired を積む（poll_events の頭で呼ぶ）。
+    /// 壁時計が予定時刻を過ぎた予約を取り出し、platform.alarm.fired を積んで鳴動へ渡す（poll_events の頭で呼ぶ）。
     pub(super) fn fire_due_alarms(&self) {
         let now = self.clock.now_utc_ms();
         for alarm in self.alarms.take_due(now) {
@@ -91,6 +92,8 @@ impl DesktopSimBridge {
                 request.id,
                 now - request.trigger_at_utc_ms
             );
+            // 鳴動へ渡す（実機の AlarmReceiver → RingControl.handOver と同じ。鳴動中なら待ち行列）
+            self.start_ringing(alarm, now, now);
         }
     }
 }
@@ -195,7 +198,8 @@ mod tests {
         assert!(sim.poll_events().is_empty(), "取り消した予約が鳴った");
     }
 
-    /// 一覧は予定時刻の順。同時に過ぎた予約は予定時刻の順に、通し番号が増えながら鳴る。
+    /// 一覧は予定時刻の順。同時に過ぎた予約は予定時刻の順に、通し番号が増えながら鳴る
+    /// （W1-4a から、2 件目以降は 1 件目の鳴動を待つので alarm.queued も続く。ここでは fired だけを見る）。
     #[test]
     fn list_and_fire_in_trigger_order() {
         let (sim, clock) = sim();
@@ -205,10 +209,13 @@ mod tests {
         assert_eq!(listed_ids(&sim), vec!["early", "middle", "late"]);
         clock.advance(3 * DELAY_MS);
         let events: Vec<Value> = sim.poll_events().iter().map(|e| serde_json::from_str(e).unwrap()).collect();
-        let ids: Vec<&str> = events.iter().map(|e| e[wire::KEY_DATA][names::KEY_ID].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["early", "middle", "late"]);
         let seqs: Vec<u64> = events.iter().map(|e| e[wire::KEY_SEQ].as_u64().unwrap()).collect();
         assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "通し番号が増えていない: {seqs:?}");
+        let fired: Vec<&Value> = events.iter().filter(|e| e[wire::KEY_NAME] == Value::from(names::EVENT_FIRED)).collect();
+        let ids: Vec<&str> = fired.iter().map(|e| e[wire::KEY_DATA][names::KEY_ID].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["early", "middle", "late"]);
+        let queued = events.iter().filter(|e| e[wire::KEY_NAME] == Value::from(names::EVENT_QUEUED)).count();
+        assert_eq!(queued, 2, "鳴動中に届いた 2 件は待ち行列へ");
     }
 
     /// 引数の誤りは invalid_argument（detail つき）。上限を超える新しい ID は too_many_alarms（置き換えは通る）。

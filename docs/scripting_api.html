@@ -2032,12 +2032,13 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 </section>
 
 <!-- ════════════════ 7.13 Platform ════════════════ -->
-<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1 Alarms AlarmRequest ScheduledAlarm Schedule Cancel CancelAll GetScheduled CanScheduleExact 予約 setAlarmClock AlarmFiredEvent AlarmMissedEvent AlarmsRescheduledEvent platform.alarm.fired platform.alarm.missed platform.alarms.rescheduled 張り直し 再起動 TriggerAtUtcMs PayloadJson SoundAsset exact_alarm_not_allowed feature_not_enabled W1-3">
-  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし）</h2>
+<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1 Alarms AlarmRequest ScheduledAlarm Schedule Cancel CancelAll GetScheduled CanScheduleExact 予約 setAlarmClock AlarmFiredEvent AlarmMissedEvent AlarmsRescheduledEvent platform.alarm.fired platform.alarm.missed platform.alarms.rescheduled 張り直し 再起動 TriggerAtUtcMs PayloadJson SoundAsset exact_alarm_not_allowed feature_not_enabled W1-3 鳴動 GetRinging StopRinging RingingAlarm AlarmRingStoppedEvent AlarmRingStopReason AlarmQueuedEvent platform.alarm.ring_stopped platform.alarm.queued 待ち行列 安全弁 MaxRingMinutes start_failed StartFailed App LaunchReason LaunchInfo LaunchKind 起動理由 platform.launch PlatformEntry Window SetShowWhenLocked ロック画面 フルスクリーン通知 no_activity W1-4a">
+  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由）</h2>
   <p class="section-note">
     目覚まし・通知・権限など <b>OS の機能</b>をスクリプトから使うための入口です（名前空間 <code>SEED.Platform</code>）。
-    W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で<b>目覚ましの予約</b>（<code>Alarms</code>。この節の後半）が加わりました。
-    鳴動（音・通知・鳴動画面）・通知・権限などは後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
+    W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で<b>目覚ましの予約</b>（<code>Alarms</code>。この節の後半）、
+    W1-4a で<b>鳴動</b>（<code>Alarms.GetRinging</code> / <code>StopRinging</code>・音と通知）と<b>起動理由</b>（<code>App.LaunchReason</code>）・<code>Window.SetShowWhenLocked</code> が加わりました。
+    通知・権限などは後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
     デスクトップ（エディタの Play・単体起動）ではエンジンの中の<b>模擬</b>へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
     名前空間とクラス名が同じなので <code>using SEED.Platform;</code> を推奨します（修飾するなら <code>SEED.Platform.Platform.IsSupported</code>）。
   </p>
@@ -2087,10 +2088,10 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     決まった時刻に確実に鳴らすための<b>予約</b>です。Android では別プロセス <code>:seed_platform</code> が予約の控え（端末保護ストレージ）を持ち、
     <code>AlarmManager.setAlarmClock</code> で張ります（Doze でも時刻どおり・ステータスバーに目覚ましの印）。再起動・時刻の変更・アプリの更新・
     正確なアラームの許可で控えから張り直し、電源断などで過ぎた予約は<b>鳴らさずに</b> <code>platform.alarm.missed</code> を記録します。
-    <b>W1-3 では音・通知・鳴動画面はまだありません</b>（W1-4）。鳴ったことはイベント <code>platform.alarm.fired</code> で届きます。
+    鳴ったことはイベント <code>platform.alarm.fired</code> で届き、同時に<b>鳴動</b>が始まります（W1-4a。後の「鳴動と起動理由」）。
     Android では APK に機能 <code>alarm</code> が要ります（<code>project_settings.json</code> の <code>android.features</code> に <code>"alarm"</code>。docs/android.md §25.10）。
   </p>
-  <div class="api"><code class="sig">new AlarmRequest { Id, TriggerAtUtcMs, SoundAsset, Vibrate, ForceVolume, KeepVolume, FadeInSeconds, MaxRingMinutes, Title, Body, PayloadJson }</code><span class="desc">予約 1 件。Id は 1〜128 文字（同じ ID は置き換え）。時刻は UTC の epoch ミリ秒。SoundAsset は "assets://…" か端末の絶対パス（空なら既定の音）。鳴らし方の欄は W1-4 で使う（W1-3 は控えに持つだけ）。PayloadJson はイベントにそのまま戻る</span></div>
+  <div class="api"><code class="sig">new AlarmRequest { Id, TriggerAtUtcMs, SoundAsset, Vibrate, ForceVolume, KeepVolume, FadeInSeconds, MaxRingMinutes, Title, Body, PayloadJson }</code><span class="desc">予約 1 件。Id は 1〜128 文字（同じ ID は置き換え）。時刻は UTC の epoch ミリ秒。SoundAsset は "assets://…" か端末の絶対パス（空・読めなければ同梱の既定の音）。Vibrate は鳴動中の振動、ForceVolume（0..1。負 = 触らない）と KeepVolume はアラームの音量を鳴動中だけ変える・1 秒ごとに戻す、FadeInSeconds は音量の漸増、MaxRingMinutes は安全弁、Title / Body は鳴動の通知。PayloadJson はイベントにそのまま戻る</span></div>
   <div class="api"><code class="sig">Alarms.Schedule(request)</code><span class="desc">bool。予約（控えにも書く。再起動の後も残る）。false なら Platform.LastError</span></div>
   <div class="api"><code class="sig">Alarms.Cancel(id) / Alarms.CancelAll()</code><span class="desc">bool。取り消し（無い ID でも true。冪等）</span></div>
   <div class="api"><code class="sig">Alarms.GetScheduled()</code><span class="desc">ScheduledAlarm[]。控えの一覧（予定時刻の順。a.Id / TriggerAtUtcMs / PayloadJson / Title / Body / Sound / CreatedAtUtcMs）。失敗は空の配列</span></div>
@@ -2114,21 +2115,66 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 });</pre>
   <table>
     <tr><th>イベント（SEED.Events の名前）</th><th>型（TryParse）</th><th>中身</th><th>いつ届くか</th></tr>
-    <tr><td>platform.alarm.fired</td><td>AlarmFiredEvent</td><td>Id・ScheduledAtUtcMs（鳴るはずだった時刻）・FiredAtUtcMs・PayloadJson・Simulated</td><td>予定時刻に配信された。予約は控えから消える（一回限り）。アプリが動いていなければ、次に SEED.Platform へつないだとき</td></tr>
-    <tr><td>platform.alarm.missed</td><td>AlarmMissedEvent</td><td>Id・ScheduledAtUtcMs・Reason（DeviceOff / PermissionRevoked / Unknown）・ReasonName・PayloadJson</td><td>電源断・強制停止・更新・許可の取り消しの間に予定時刻を過ぎていた（鳴らさずに控えから消した）</td></tr>
+    <tr><td>platform.alarm.fired</td><td>AlarmFiredEvent</td><td>Id・ScheduledAtUtcMs（鳴るはずだった時刻）・FiredAtUtcMs・PayloadJson・Simulated</td><td>予定時刻に配信され、鳴動が始まった（か待ち行列に入った）。予約は控えから消える（一回限り）。この時点で GetRinging はその鳴動を返す。アプリが動いていなければ、次に SEED.Platform へつないだとき</td></tr>
+    <tr><td>platform.alarm.missed</td><td>AlarmMissedEvent</td><td>Id・ScheduledAtUtcMs・Reason（DeviceOff / PermissionRevoked / StartFailed / Unknown）・ReasonName・PayloadJson</td><td>電源断・強制停止・更新・許可の取り消しの間に予定時刻を過ぎていた（鳴らさずに控えから消した）。StartFailed は配信は届いたが鳴動の前景サービスを起こせなかった（fired の代わりに届く）</td></tr>
     <tr><td>platform.alarms.rescheduled</td><td>AlarmsRescheduledEvent</td><td>Reason（Boot / TimeChanged / PackageReplaced / PermissionChanged / Unknown）・ReasonName・Count・Missed・Failed</td><td>控えから張り直した（控えが空なら届かない）。TimeChanged ではアプリが次の時刻を計算し直す</td></tr>
+    <tr><td>platform.alarm.ring_stopped</td><td>AlarmRingStoppedEvent</td><td>Id・Reason（Stopped / Timeout / Error / Unknown）・ReasonName・ScheduledAtUtcMs・PayloadJson・Simulated</td><td>鳴動が終わった（W1-4a。StopRinging・安全弁・鳴らし続けられなかった）。待ち行列に次があれば続けて鳴る</td></tr>
+    <tr><td>platform.alarm.queued</td><td>AlarmQueuedEvent</td><td>Id・ScheduledAtUtcMs・WaitingFor・PayloadJson・Simulated</td><td>別の予約の鳴動中に時刻が来た（W1-4a）。捨てずに待たせ、今の鳴動が止まったら続けて鳴らす</td></tr>
+    <tr><td>platform.launch</td><td>LaunchInfo（TryParseEvent）</td><td>Kind・Id・ActionId・ScheduledAtUtcMs・FiredAtUtcMs・PayloadJson</td><td>アプリが動いている間に目覚まし・通知の操作で開き直された（Android の onNewIntent。W1-4a）</td></tr>
   </table>
   <table>
     <tr><th>項目</th><th>Android</th><th>デスクトップ（模擬）</th></tr>
     <tr><td>予約の持ち方</td><td>:seed_platform の控え（端末保護ストレージの seed_platform/alarms.json）＋ setAlarmClock。閉じても・再起動しても残る</td><td>プロセスの中の予約表。Play を止めると消える</td></tr>
-    <tr><td>鳴ったとき</td><td>platform.alarm.fired を記録（端末保護ストレージ）。W1-3 は音なし</td><td>壁時計が予定時刻を過ぎた次のフレームで platform.alarm.fired（Simulated == true）。音なし</td></tr>
+    <tr><td>鳴ったとき</td><td>platform.alarm.fired を記録し、:seed_platform の前景サービスが音（USAGE_ALARM）・振動・フルスクリーン通知を出す（W1-4a）</td><td>壁時計が予定時刻を過ぎた次のフレームで platform.alarm.fired（Simulated == true）と鳴動の状態。音なし（ログだけ）</td></tr>
     <tr><td>CanScheduleExact</td><td>Android 12 系は特別なアクセス次第。13 以降（USE_EXACT_ALARM）と 11 以前は true</td><td>true</td></tr>
-    <tr><td>音源（SoundAsset）</td><td>assets://… はエンジンが files/seed_platform/sounds/&lt;内容のハッシュ&gt;.&lt;拡張子&gt; へ書き出してから予約（読めなければ既定の音）</td><td>控えに持つだけ</td></tr>
+    <tr><td>音源（SoundAsset）</td><td>assets://… はエンジンが files/seed_platform/sounds/&lt;内容のハッシュ&gt;.&lt;拡張子&gt; へ書き出してから予約（読めなければ同梱の既定の音、それも駄目なら端末の既定のアラーム音）</td><td>控えに持つだけ</td></tr>
   </table>
   <div class="warn">
     予約は <b>UTC の絶対時刻</b>の一回限りです。「毎朝 7:00」のような繰り返しはアプリが次の 1 回を計算して予約し、鳴った・鳴らなかった・時刻が変わった
     （platform.alarms.rescheduled の TimeChanged）ときに次を予約し直してください。Android の最初の呼び出しは <code>Platform.ErrorConnecting</code> で失敗するので、
     <code>PlatformEvents.Connected</code> の後に呼び直します。
+  </div>
+
+  <h3>鳴動と起動理由（Alarms.GetRinging / StopRinging・App.LaunchReason・Window.SetShowWhenLocked。W1-4a）</h3>
+  <p class="section-note">
+    予約の時刻が来ると<b>鳴動</b>が始まり、<code>StopRinging</code> か安全弁（<code>MaxRingMinutes</code>）まで鳴り続けます。Android では別プロセス <code>:seed_platform</code> の
+    前景サービスが鳴らすので、<b>エンジンが落ちても・最近のタスクからアプリを消しても・通知をスワイプしても止まりません</b>（止めるのはスクリプトの <code>StopRinging</code> だけ）。
+    鳴り始めるとフルスクリーン通知が出て、画面オフ・ロック中ならアプリがロック画面の上に起動し、端末の使用中ならヘッドアップ通知になります（本文のタップでアプリへ）。
+    どちらの起動でも <code>App.LaunchReason.Kind == LaunchKind.Alarm</code> になるので、スクリプトは鳴動画面を出します。
+  </p>
+  <div class="api"><code class="sig">Alarms.GetRinging()</code><span class="desc">RingingAlarm?。鳴動中の予約（r.Id / ScheduledAtUtcMs / StartedAtUtcMs / PayloadJson / Simulated）。鳴っていなければ null（失敗も null。Platform.LastError）。毎フレーム読まない</span></div>
+  <div class="api"><code class="sig">Alarms.StopRinging(id = null)</code><span class="desc">bool。鳴動を止める（解除・スヌーズ）。音・振動・鳴動の通知が止まり ring_stopped(Stopped) が届く。id を省くと今鳴っているもの。待ち行列にいる予約の ID なら鳴らさずに外す。鳴っていなくても true（冪等）</span></div>
+  <div class="api"><code class="sig">AlarmRingStoppedEvent / AlarmQueuedEvent .TryParse(json, out e)</code><span class="desc">"platform.alarm.ring_stopped"（e.Reason: Stopped / Timeout / Error）/ "platform.alarm.queued"（e.WaitingFor）。AlarmMissedReason に StartFailed</span></div>
+  <div class="api"><code class="sig">App.LaunchReason</code><span class="desc">LaunchInfo。この起動の理由（Kind: Launcher / Alarm / NotificationTap / NotificationAction / AlarmClockInfo / Other・Id・ActionId・ScheduledAtUtcMs・FiredAtUtcMs・PayloadJson）。Android でも IPC なし。デスクトップは常に Launcher</span></div>
+  <div class="api"><code class="sig">LaunchInfo.EventName / LaunchInfo.TryParseEvent(json, out e)</code><span class="desc">"platform.launch"。アプリが動いている間に目覚まし・通知の操作で開き直された。LaunchInfo.ActionOpen == "open"（鳴動の通知の「開く」）</span></div>
+  <div class="api"><code class="sig">Window.SetShowWhenLocked(on)</code><span class="desc">bool。ロック画面の上に出す＋画面を点ける の切り替え（ロックは解除しない）。目覚ましで起動したときは自動で上がるので、鳴動を片付けたら false で下ろす。Window.ErrorNoActivity == "no_activity"</span></div>
+<pre><span class="k">public override void</span> OnStart()
+{
+    <span class="t">LaunchInfo</span> launch = <span class="t">App</span>.LaunchReason;
+    <span class="k">if</span> (launch.Kind == <span class="t">LaunchKind</span>.Alarm) ShowRingScreen(launch.Id, launch.PayloadJson);
+    <span class="k">this</span>.On(<span class="t">LaunchInfo</span>.EventName, (<span class="k">string</span> json) =&gt;
+    {
+        <span class="k">if</span> (<span class="t">LaunchInfo</span>.TryParseEvent(json, <span class="k">out</span> <span class="t">LaunchInfo</span> e) &amp;&amp; e.Kind == <span class="t">LaunchKind</span>.Alarm) ShowRingScreen(e.Id, e.PayloadJson);
+    });
+}
+<span class="k">private void</span> OnDismissPressed(<span class="k">string</span> id)
+{
+    <span class="t">Alarms</span>.StopRinging(id);             <span class="c">// 音を止める</span>
+    <span class="t">Window</span>.SetShowWhenLocked(<span class="k">false</span>);    <span class="c">// ロック画面の上から降りる（電源ボタンでロック画面が出るように）</span>
+}</pre>
+  <table>
+    <tr><th>項目</th><th>Android</th><th>デスクトップ（模擬）</th></tr>
+    <tr><td>音</td><td>USAGE_ALARM 固定（アラームの音量）・ループ・FadeInSeconds で漸増・音声フォーカスは取らない（エンジンの音が鳴っても止まらない）</td><td>鳴らさない（ログだけ）</td></tr>
+    <tr><td>振動・通知</td><td>Vibrate なら繰り返しの振動。チャネル seed_platform_alarm（重要度 HIGH・チャネルの音なし）にフルスクリーン通知・常駐・「開く」。通知の許可（Android 13+）が無いと通知は出ない（音と振動は続く）</td><td>なし</td></tr>
+    <tr><td>安全弁</td><td>MaxRingMinutes で自動で止まり ring_stopped(Timeout)</td><td>同じ（フレームの頭で見る）</td></tr>
+    <tr><td>鳴動中に次の予約の時刻</td><td>捨てずに待ち行列（queued）。今の鳴動が止まったら続けて鳴る</td><td>同じ</td></tr>
+    <tr><td>起動理由</td><td>exported=false の入口 PlatformEntry 経由の起動だけを Alarm などとして信用（偽造できない）。最近のタスクからの開き直しは Launcher</td><td>常に Launcher</td></tr>
+    <tr><td>ロック画面の上</td><td>Alarm で起動したときは自動で上がる。下ろすのはアプリ（Window.SetShowWhenLocked(false)）</td><td>何もしない</td></tr>
+  </table>
+  <div class="warn">
+    目覚ましで起動したアプリは、ロック画面の上に出たままになります。鳴動を片付けたら必ず <code>Window.SetShowWhenLocked(false)</code> で下ろしてください
+    （下ろさないと、アプリを開いたまま電源ボタンを押してもロック画面が出ません）。ロックは解除しないので、鳴動画面より先へ進むときは利用者にロックを解除してもらう設計にしてください。
+    鳴動はスクリプトが <code>StopRinging</code> を呼ぶまで続きます（通知に「止める」ボタンはありません）。
   </div>
 </section>
 

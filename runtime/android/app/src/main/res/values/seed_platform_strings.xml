@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  アプリのプラットフォーム機能（SEED.Platform）が利用者に見せる文言（W1-4a。docs/android.md §25.12）。
+
+  ・seed_platform_alarm_channel_name / _description … 鳴動の通知チャネル（端末の設定の「通知」に出る名前と説明）。
+    :seed_platform の RingNotification がチャネルを作るときに読む。
+  ・seed_platform_alarm_default_title … 予約の title が空のときの鳴動の通知の題。
+  ・seed_platform_alarm_action_open   … 鳴動の通知の「開く」の操作（起動理由 notification_action・action_id "open"）。
+  言語ごとの文言は res/values-<言語>/ に同じ名前で置けば OS が選ぶ（今は日本語だけ）。
+-->
+<resources>
+    <string name="seed_platform_alarm_channel_name">目覚まし</string>
+    <string name="seed_platform_alarm_channel_description">目覚ましが鳴っている間の通知（音は別に鳴ります）</string>
+    <string name="seed_platform_alarm_default_title">目覚まし</string>
+    <string name="seed_platform_alarm_action_open">開く</string>
+</resources>

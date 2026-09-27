@@ -1,11 +1,15 @@
 // ============================================================
-//  AlarmModule.java — 目覚ましのモジュール "alarm"（:seed_platform の命令。W1-3）
+//  AlarmModule.java — 目覚ましのモジュール "alarm"（:seed_platform の命令。W1-3・W1-4a で鳴動の 2 つを追加）
 //
 //    alarm.schedule           … 予約（同じ ID は置き換え）。返答 { id, trigger_at_utc_ms, replaced, sound_path }
 //    alarm.cancel             … 1 つ取り消す（無い ID でも成功）。返答 { id, existed }
 //    alarm.cancel_all         … 全部取り消す。返答 { count }
 //    alarm.list               … 控えの一覧（予定時刻の順）。返答 { alarms: [ {id, trigger_at_utc_ms, …}, … ] }
 //    alarm.can_schedule_exact … 正確なアラームを張れるか。返答 { can_schedule_exact }
+//    alarm.get_ringing        … 鳴動中の予約（W1-4a）。返答 { ringing: {id, scheduled_at_utc_ms, started_at_utc_ms, payload_json} | null }
+//    alarm.stop_ringing       … 鳴動を止める（W1-4a。引数 { id }。空・無しなら今鳴っているもの。待ち行列の予約も ID で外せる）。
+//                               返答 { id, stopped }（鳴っていなければ stopped=false でも ok＝冪等）。止めたら alarm.ring_stopped(stopped)
+//  鳴動の状態は同じプロセスの ring/RingRegistry が持つ（RingControl を通して触る）。
 //  APK に機能 alarm が入っていない（AlarmReceiver がマニフェストに無い）ときは、どの命令も feature_not_enabled で断る
 //  （権限も受信機も無いので、張れても鳴らない。project_settings.json の android.features に "alarm" を足す）。
 //  命令は冪等（同じ ID の予約は置き換え・取り消しは何度でも同じ結果）なので、:seed_platform が死んだ瞬間に処理済みだった
@@ -24,6 +28,7 @@ import android.os.Bundle;
 import com.seedengine.runtime.platform.PlatformContract;
 import com.seedengine.runtime.platform.PlatformJson;
 import com.seedengine.runtime.platform.service.PlatformModule;
+import com.seedengine.runtime.platform.service.alarm.ring.RingControl;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -64,9 +69,34 @@ public final class AlarmModule implements PlatformModule {
                 return list(context);
             case PlatformContract.METHOD_ALARM_CAN_SCHEDULE_EXACT:
                 return canScheduleExact(context);
+            case PlatformContract.METHOD_ALARM_GET_RINGING:
+                return getRinging();
+            case PlatformContract.METHOD_ALARM_STOP_RINGING:
+                return stopRinging(context, arguments);
             default:
                 return PlatformJson.errorReply(PlatformContract.ERROR_UNKNOWN_METHOD);
         }
+    }
+
+    /** get_ringing: 鳴動中の予約（無ければ ringing が null）。 */
+    private static byte[] getRinging() {
+        JSONObject ringing = RingControl.ringingJson();
+        JSONObject fields = new JSONObject();
+        PlatformJson.put(fields, PlatformContract.KEY_ALARM_RINGING, ringing != null ? ringing : JSONObject.NULL);
+        return PlatformJson.okReply(fields);
+    }
+
+    /** stop_ringing: 鳴動を止める（id が空・無しなら今鳴っているもの）。 */
+    private static byte[] stopRinging(Context context, JSONObject arguments) {
+        AlarmRequestReader.Result read = AlarmRequestReader.readOptionalId(arguments);
+        if (!read.ok()) {
+            return PlatformJson.errorReply(read.error, read.detail);
+        }
+        RingControl.StopResult result = RingControl.stop(context, read.id);
+        JSONObject fields = new JSONObject();
+        PlatformJson.put(fields, PlatformContract.KEY_ALARM_ID, result.id);
+        PlatformJson.put(fields, PlatformContract.KEY_ALARM_STOPPED, result.stopped);
+        return PlatformJson.okReply(fields);
     }
 
     /** schedule: 引数を検査して予約する。 */
@@ -140,7 +170,7 @@ public final class AlarmModule implements PlatformModule {
      * @param context どの Context でもよい
      * @return 入っていれば true
      */
-    private static boolean isFeatureEnabled(Context context) {
+    static boolean isFeatureEnabled(Context context) {
         Boolean cached = featureEnabled;
         if (cached != null) {
             return cached;
