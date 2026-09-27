@@ -79,6 +79,42 @@ internal static class PlatformJson
     }
 
     /// <summary>
+    /// 真偽 1 つだけのオブジェクトの JSON を作る（例 {"on":true}。W1-4a の Window の内部の関数を W1-6 で共通化）。
+    /// </summary>
+    /// <param name="key">キー。</param>
+    /// <param name="value">値。</param>
+    /// <returns>JSON の文字列。</returns>
+    internal static string BoolObject(string key, bool value)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteBoolean(key, value);
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    /// <summary>
+    /// 整数 1 つだけのオブジェクトの JSON を作る（例 {"ms":40}。W1-6 の Haptics.Vibrate）。
+    /// </summary>
+    /// <param name="key">キー。</param>
+    /// <param name="value">値。</param>
+    /// <returns>JSON の文字列。</returns>
+    internal static string Int32Object(string key, int value)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber(key, value);
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    /// <summary>
     /// 文字列の値だけを持つオブジェクトの JSON を作る（例 {"nonce":"ping-1"}）。
     /// </summary>
     /// <param name="fields">キーと値の組。</param>

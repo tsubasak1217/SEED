@@ -1,6 +1,6 @@
 namespace SEED.Platform;
 
-/// <summary>起動の種類（<see cref="LaunchInfo.Kind"/>。W1-4a）。</summary>
+/// <summary>起動の種類（<see cref="LaunchInfo.Kind"/>。W1-4a・W1-6 で <see cref="DeepLink"/>。値の並びは変えない〈後ろへ足す〉）。</summary>
 public enum LaunchKind
 {
     /// <summary>"launcher": ランチャー・普通の起動（プラットフォーム層を通らない起動。デスクトップは常にこれ）。</summary>
@@ -23,4 +23,11 @@ public enum LaunchKind
 
     /// <summary>"other": それ以外（ランチャー以外の action で起動された・知らない種類）。</summary>
     Other,
+
+    /// <summary>
+    /// "deep_link": URL（ディープリンク）で開かれた（W1-6）。<see cref="LaunchInfo.Uri"/> にその URL。Android では機能 deep_links の
+    /// intent-filter に合った URL のほか、他のアプリが明示して送った URL も同じに見えるので、<b>中身を検査してから使う</b>
+    /// （お金・データを動かす操作をそのまま行わない）。最近のタスクからの開き直しは <see cref="Launcher"/>（同じ URL を二度処理しない）。
+    /// </summary>
+    DeepLink,
 }

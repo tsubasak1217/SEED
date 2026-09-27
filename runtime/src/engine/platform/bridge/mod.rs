@@ -21,7 +21,8 @@
 //  つながったら platform.connected のイベントが届く（docs/android.md §25）。
 //
 //  JSON の形とエラーの理由の名前は wire.rs。目覚まし（W1-3）の共通部品（引数の検査・音源の書き出し）は alarm/、
-//  通知（W1-5）の引数の検査は notification/、権限（W1-5）の種類の語彙は permission/。
+//  通知（W1-5）の引数の検査は notification/、権限（W1-5）の種類の語彙は permission/、アプリ（W1-6）の URL の規則は app/、
+//  触感（W1-6）の引数の検査は haptics/。
 //
 //  【Play の区切り】エディタの Play の開始・停止で reset_session を呼び、実装ごとの「前の回の状態」を捨てる
 //  （デスクトップの模擬は予約表とイベント。Android の実機の予約は Play と関係ないので触らない）。
@@ -29,10 +30,14 @@
 
 /// 目覚ましの共通部品（引数の検査・音源の書き出し。W1-3）。
 pub mod alarm;
+/// アプリの共通部品（app.open_url の URL の規則。W1-6）。
+pub mod app;
 /// デスクトップの模擬（W1-P7）。
 pub mod desktop_sim;
 /// イベントの待ち行列（上限つき）。
 pub mod event_queue;
+/// 触感の共通部品（haptics.vibrate の引数の検査。W1-6）。
+pub mod haptics;
 /// 通知の共通部品（引数の検査。W1-5）。
 pub mod notification;
 /// 権限の共通部品（種類の語彙と引数の読み取り。W1-5）。
@@ -45,7 +50,7 @@ use std::sync::OnceLock;
 
 use crate::engine::platform;
 
-pub use desktop_sim::DesktopSimBridge;
+pub use desktop_sim::{set_desktop_launch_uri, DesktopSimBridge};
 pub use event_queue::{FrontTake, PlatformEventQueue, PushOutcome, DEFAULT_EVENT_QUEUE_CAPACITY};
 
 /// ログの印（`[SEED PLATFORM]`。Android の logcat でもこの印で探す）。

@@ -24,6 +24,9 @@
     （android.features → SeedAndroid が生成する src/seedFeatures/AndroidManifest.xml。E-04）で出し入れする。
   ・activity-alias PlatformEntry（exported=false・targetActivity=MainActivity）… プラットフォーム層の PendingIntent だけが通る
     起動の入口（W1-4a。docs/android.md §25.12）。PlatformProvider と同じく常設。
+  ・VIBRATE … 触感（SEED.Platform の Haptics.Tap / Vibrate。W1-6）と目覚ましの鳴動の振動（RingVibration。W1-4a）。normal 権限
+    （インストール時に自動で許可され、利用者への確認も Google Play の申告も無い）で、ゲームの触感にも使うので機能（android.features）に
+    よらず常設する（W1-6 で機能 alarm の権限から移した。docs/android.md §25.10・§25.15）。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -31,6 +34,9 @@
         android:name="android.hardware.vulkan.version"
         android:version="0x401000"
         android:required="true" />
+
+    <!-- 触感と鳴動の振動（W1-6 から常設。上の説明）。 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:allowBackup="false"

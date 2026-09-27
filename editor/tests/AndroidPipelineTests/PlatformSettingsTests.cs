@@ -196,7 +196,8 @@ public static class PlatformSettingsTests
         PermissionPolicies = new[]
         {
             new PlayPermissionPolicy { Permission = "android.permission.USE_EXACT_ALARM", Note = "申告が要る", Source = "help" },
-            new PlayPermissionPolicy { Permission = "android.permission.VIBRATE", Severity = "info", Note = "知らせ" },
+            // info の知らせの例（W1-6 で VIBRATE が alarm から main の常設へ移ったので、alarm に残る WAKE_LOCK にした）
+            new PlayPermissionPolicy { Permission = "android.permission.WAKE_LOCK", Severity = "info", Note = "知らせ" },
         },
     };
 
@@ -214,7 +215,7 @@ public static class PlatformSettingsTests
         Check.True(items[0].Detail.Contains("USE_EXACT_ALARM") && items[0].Detail.Contains("zzz"), items[0].Detail);
         var exact = items.Single(i => i.Id == AndroidRequirementIds.PlayPolicy("android.permission.USE_EXACT_ALARM"));
         Check.True(exact.Severity == AndroidRequirementSeverity.Warning && exact.Detail.Contains("申告が要る") && exact.Detail.Contains("help"), "方針の注意と出どころ");
-        Check.Equal(AndroidRequirementSeverity.Info, items.Single(i => i.Id.EndsWith("VIBRATE")).Severity, "info は知らせ");
+        Check.Equal(AndroidRequirementSeverity.Info, items.Single(i => i.Id.EndsWith("WAKE_LOCK")).Severity, "info は知らせ");
 
         // 実物の表では alarm に申告の注意が 3 件（USE_EXACT_ALARM・USE_FULL_SCREEN_INTENT・FOREGROUND_SERVICE_MEDIA_PLAYBACK）
         var engine = AndroidEnginePaths.Locate(System.AppContext.BaseDirectory, System.Environment.CurrentDirectory)!;

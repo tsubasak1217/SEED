@@ -13,7 +13,8 @@
     "（単体テスト AndroidPipelineTests が、宣言した com.seedengine.runtime.* のクラスの Java のソースがあるかを確かめる）。",
     "PlatformProvider と activity-alias PlatformEntry（W1-4a）は機能によらず main のマニフェストに常設（:seed_platform は最初の呼び出しまで起動せず、",
     "PlatformEntry は exported=false で intent-filter も無いので害が無い）。Google Play の方針に関わる注意は play_requirements.json の permission_policies。",
-    "notifications は権限だけ（W1-5。通知は常設の PlatformProvider の NotificationModule が出し、Java は POST_NOTIFICATIONS の宣言の有無で機能を判定する）。"
+    "notifications は権限だけ（W1-5。通知は常設の PlatformProvider の NotificationModule が出し、Java は POST_NOTIFICATIONS の宣言の有無で機能を判定する）。",
+    "VIBRATE（normal 権限）は W1-6 で alarm から main のマニフェストへ移した（触感 Haptics はゲームにも使うので機能によらず常設。鳴動の振動も同じ権限で動く）。"
   ],
   "format_version": 1,
   "features": [
@@ -26,7 +27,6 @@
         { "name": "android.permission.SCHEDULE_EXACT_ALARM", "max_sdk_version": 32 },
         { "name": "android.permission.RECEIVE_BOOT_COMPLETED" },
         { "name": "android.permission.WAKE_LOCK" },
-        { "name": "android.permission.VIBRATE" },
         { "name": "android.permission.USE_FULL_SCREEN_INTENT" },
         { "name": "android.permission.FOREGROUND_SERVICE" },
         { "name": "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" },
@@ -88,7 +88,7 @@
     {
       "name": "deep_links",
       "label": "ディープリンク",
-      "description": "URL（下のディープリンクの一覧）からアプリを開く。1 件ごとに MainActivity への intent-filter を入れる。スクリプトで URL を受け取る API は W1-6。",
+      "description": "URL（下のディープリンクの一覧）からアプリを開く。1 件ごとに MainActivity への intent-filter を入れる。受け取った URL はスクリプトの App.LaunchReason（Kind が DeepLink・Uri）と、動いている間はイベント platform.launch で読める（W1-6）。",
       "permissions": [],
       "application_elements": [],
       "deep_link_filters": true

@@ -1,8 +1,8 @@
 // ============================================================
 //  RingVibration.java — 鳴動の振動（繰り返しのパターン。予約の vibrate が true のとき。:seed_platform。W1-4a）
 //
-//  端末の既定の振動子を、Android 12（API 31）以降は VibratorManager.getDefaultVibrator、それより前は
-//  getSystemService(Vibrator.class) で取る。振動の種類はアラーム（API 33 以降は VibrationAttributes.USAGE_ALARM、
+//  端末の既定の振動子は platform/DeviceVibrator（Android 12〈API 31〉以降は VibratorManager.getDefaultVibrator、それより前は
+//  getSystemService(Vibrator.class)。W1-6 でメインプロセスの触感と共通化）で取る。振動の種類はアラーム（API 33 以降は VibrationAttributes.USAGE_ALARM、
 //  それより前は AudioAttributes の USAGE_ALARM。どちらもおやすみモード等でアラームとして扱われる）。
 //  パターンは「振動 VIBRATE_ON_MS → 休み VIBRATE_OFF_MS」の繰り返し（止めるまで続ける）。
 // ============================================================
@@ -15,9 +15,9 @@ import android.os.Build;
 import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
-import android.os.VibratorManager;
 import android.util.Log;
 
+import com.seedengine.runtime.platform.DeviceVibrator;
 import com.seedengine.runtime.platform.PlatformContract;
 import com.seedengine.runtime.platform.PlatformJson;
 
@@ -48,7 +48,7 @@ final class RingVibration {
      * @param context どの Context でもよい
      */
     RingVibration(Context context) {
-        this.vibrator = defaultVibrator(context.getApplicationContext());
+        this.vibrator = DeviceVibrator.defaultVibrator(context.getApplicationContext());
     }
 
     /**
@@ -93,19 +93,5 @@ final class RingVibration {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build();
         vibrator.vibrate(effect, attributes);
-    }
-
-    /**
-     * 端末の既定の振動子を取る。
-     *
-     * @param context アプリの Context
-     * @return 振動子（取れなければ null）
-     */
-    private static Vibrator defaultVibrator(Context context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            VibratorManager manager = context.getSystemService(VibratorManager.class);
-            return manager != null ? manager.getDefaultVibrator() : null;
-        }
-        return context.getSystemService(Vibrator.class);
     }
 }

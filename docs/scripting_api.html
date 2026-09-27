@@ -2032,14 +2032,15 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 </section>
 
 <!-- ════════════════ 7.13 Platform ════════════════ -->
-<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1 Alarms AlarmRequest ScheduledAlarm Schedule Cancel CancelAll GetScheduled CanScheduleExact 予約 setAlarmClock AlarmFiredEvent AlarmMissedEvent AlarmsRescheduledEvent platform.alarm.fired platform.alarm.missed platform.alarms.rescheduled 張り直し 再起動 TriggerAtUtcMs PayloadJson SoundAsset exact_alarm_not_allowed feature_not_enabled W1-3 鳴動 GetRinging StopRinging RingingAlarm AlarmRingStoppedEvent AlarmRingStopReason AlarmQueuedEvent platform.alarm.ring_stopped platform.alarm.queued 待ち行列 安全弁 MaxRingMinutes start_failed StartFailed App LaunchReason LaunchInfo LaunchKind 起動理由 platform.launch PlatformEntry Window SetShowWhenLocked ロック画面 フルスクリーン通知 no_activity W1-4a Notifications NotificationRequest NotificationAction NotificationImportance EnsureChannel Show AreEnabled チャネル 常駐 Ongoing ボタン notifications_disabled channel_not_found NotificationTap NotificationAction Permissions PermissionKind PermissionStatus Check Request OpenSettings PermissionResultEvent PermissionChangedEvent platform.permission_result platform.permission_changed PostNotifications ExactAlarm FullScreenIntent DeniedPermanently NeedsSettings NotApplicable 実行時の許可 設定の画面 W1-5">
-  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限）</h2>
+<section id="sec-platform" data-keywords="Platform プラットフォーム OS の機能 SEED.Platform IsSupported IsSimulated LastError ErrorConnecting connecting ErrorUnavailable platform_unavailable PlatformDiagnostics Ping 往復 ping EmitTestEvent 試験イベント PlatformPingResult RoundTripMs ServicePid ServiceUptimeMs PlatformEvents OnEvent Connected ConnectFailed Disconnected TestEvent platform.connected platform.test_event イベント 模擬 シミュレーション Android seed_platform 目覚まし アラーム 通知 権限 JNI W1 Alarms AlarmRequest ScheduledAlarm Schedule Cancel CancelAll GetScheduled CanScheduleExact 予約 setAlarmClock AlarmFiredEvent AlarmMissedEvent AlarmsRescheduledEvent platform.alarm.fired platform.alarm.missed platform.alarms.rescheduled 張り直し 再起動 TriggerAtUtcMs PayloadJson SoundAsset exact_alarm_not_allowed feature_not_enabled W1-3 鳴動 GetRinging StopRinging RingingAlarm AlarmRingStoppedEvent AlarmRingStopReason AlarmQueuedEvent platform.alarm.ring_stopped platform.alarm.queued 待ち行列 安全弁 MaxRingMinutes start_failed StartFailed App LaunchReason LaunchInfo LaunchKind 起動理由 platform.launch PlatformEntry Window SetShowWhenLocked ロック画面 フルスクリーン通知 no_activity W1-4a Notifications NotificationRequest NotificationAction NotificationImportance EnsureChannel Show AreEnabled チャネル 常駐 Ongoing ボタン notifications_disabled channel_not_found NotificationTap NotificationAction Permissions PermissionKind PermissionStatus Check Request OpenSettings PermissionResultEvent PermissionChangedEvent platform.permission_result platform.permission_changed PostNotifications ExactAlarm FullScreenIntent DeniedPermanently NeedsSettings NotApplicable 実行時の許可 設定の画面 W1-5 SetKeepScreenOn SetSystemBarsVisible システムバー 画面を点けたまま MoveTaskToBack 背面 戻る OpenUrl URL ブラウザ OpenAppSettings アプリ情報 no_handler scheme_not_allowed Haptics Tap Vibrate 触感 振動 no_vibrator DeepLink Uri ディープリンク 忘れ対策 SEED_PLATFORM_SIM_NO_OPEN W1-6">
+  <h2>7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感）</h2>
   <p class="section-note">
     目覚まし・通知・権限など <b>OS の機能</b>をスクリプトから使うための入口です（名前空間 <code>SEED.Platform</code>）。
     W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で<b>目覚ましの予約</b>（<code>Alarms</code>。この節の後半）、
     W1-4a で<b>鳴動</b>（<code>Alarms.GetRinging</code> / <code>StopRinging</code>・音と通知）と<b>起動理由</b>（<code>App.LaunchReason</code>）・<code>Window.SetShowWhenLocked</code>、
     W1-5 で<b>通知</b>（<code>Notifications</code>）と<b>権限</b>（<code>Permissions</code>）が加わりました。
-    画面・アプリの残りは後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
+    W1-6 で<b>画面・アプリ・触感</b>（<code>Window.SetKeepScreenOn</code> / <code>SetSystemBarsVisible</code>・<code>App.MoveTaskToBack</code> / <code>OpenUrl</code> / <code>OpenAppSettings</code>・<code>Haptics</code>）と
+    <b>ディープリンク</b>（<code>LaunchKind.DeepLink</code>・<code>LaunchInfo.Uri</code>）が加わりました（この節の最後。docs/app_platform_roadmap.md §2.3）。Android では別プロセス <code>:seed_platform</code>（Java）へ、
     デスクトップ（エディタの Play・単体起動）ではエンジンの中の<b>模擬</b>へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
     名前空間とクラス名が同じなので <code>using SEED.Platform;</code> を推奨します（修飾するなら <code>SEED.Platform.Platform.IsSupported</code>）。
   </p>
@@ -2146,8 +2147,8 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="api"><code class="sig">Alarms.GetRinging()</code><span class="desc">RingingAlarm?。鳴動中の予約（r.Id / ScheduledAtUtcMs / StartedAtUtcMs / PayloadJson / Simulated）。鳴っていなければ null（失敗も null。Platform.LastError）。毎フレーム読まない</span></div>
   <div class="api"><code class="sig">Alarms.StopRinging(id = null)</code><span class="desc">bool。鳴動を止める（解除・スヌーズ）。音・振動・鳴動の通知が止まり ring_stopped(Stopped) が届く。id を省くと今鳴っているもの。待ち行列にいる予約の ID なら鳴らさずに外す。鳴っていなくても true（冪等）</span></div>
   <div class="api"><code class="sig">AlarmRingStoppedEvent / AlarmQueuedEvent .TryParse(json, out e)</code><span class="desc">"platform.alarm.ring_stopped"（e.Reason: Stopped / Timeout / Error）/ "platform.alarm.queued"（e.WaitingFor）。AlarmMissedReason に StartFailed</span></div>
-  <div class="api"><code class="sig">App.LaunchReason</code><span class="desc">LaunchInfo。この起動の理由（Kind: Launcher / Alarm / NotificationTap / NotificationAction / AlarmClockInfo / Other・Id・ActionId・ScheduledAtUtcMs・FiredAtUtcMs・PayloadJson）。Android でも IPC なし。デスクトップは常に Launcher</span></div>
-  <div class="api"><code class="sig">LaunchInfo.EventName / LaunchInfo.TryParseEvent(json, out e)</code><span class="desc">"platform.launch"。アプリが動いている間に目覚まし・通知の操作で開き直された。LaunchInfo.ActionOpen == "open"（鳴動の通知の「開く」）</span></div>
+  <div class="api"><code class="sig">App.LaunchReason</code><span class="desc">LaunchInfo。この起動の理由（Kind: Launcher / Alarm / NotificationTap / NotificationAction / AlarmClockInfo / Other / DeepLink〈W1-6〉・Id・ActionId・ScheduledAtUtcMs・FiredAtUtcMs・PayloadJson・Uri〈W1-6〉）。Android でも IPC なし。デスクトップは Launcher（単体起動の --deep-link=&lt;URI&gt; があれば DeepLink）</span></div>
+  <div class="api"><code class="sig">LaunchInfo.EventName / LaunchInfo.TryParseEvent(json, out e)</code><span class="desc">"platform.launch"。アプリが動いている間に目覚まし・通知の操作・ディープリンク・ランチャーで開き直された。LaunchInfo.ActionOpen == "open"（鳴動の通知の「開く」）</span></div>
   <div class="api"><code class="sig">Window.SetShowWhenLocked(on)</code><span class="desc">bool。ロック画面の上に出す＋画面を点ける の切り替え（ロックは解除しない）。目覚ましで起動したときは自動で上がるので、鳴動を片付けたら false で下ろす。Window.ErrorNoActivity == "no_activity"</span></div>
 <pre><span class="k">public override void</span> OnStart()
 {
@@ -2230,6 +2231,33 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     Android 13 以降、通知の確認の画面は利用者が 2 回拒否すると二度と出ません（<code>DeniedPermanently</code>）。求める前に理由を画面で説明し、
     <code>DeniedPermanently</code> になったら <code>OpenSettings(PermissionKind.PostNotifications)</code> で設定の画面へ案内してください。
     確認の画面の外側を押して閉じたときは <code>Denied</code> のままで、次の <code>Request</code> でもう一度出る見込みです（実機では未確認）。
+  </div>
+  <h3>画面・アプリ・触感・ディープリンク（Window・App・Haptics。W1-6）</h3>
+  <p class="section-note">
+    画面の切り替え（点けたまま・システムバー）、アプリとしての操作（閉じずに背面へ・URL を開く・アプリ情報）、触感、ディープリンクで開かれたときの URL です。
+    Android ではどれもメインプロセスが答える（IPC なし）ので、最初の呼び出しでも <code>connecting</code> になりません。機能（<code>android.features</code>）の opt-in は要りません
+    （ディープリンクで開かれるには機能 <code>deep_links</code> と <code>android.deep_links</code> の intent-filter が要る）。デスクトップは模擬です。
+    どれも案（roadmap §2.3）の void ではなく bool を返します（false なら <code>Platform.LastError</code>）。
+  </p>
+  <div class="api"><code class="sig">Window.SetKeepScreenOn(on)</code><span class="desc">bool。画面を点けたままにする（Android の FLAG_KEEP_SCREEN_ON。前面に見えている間だけ・電源ボタンの消灯は止めない・既定 false）。模擬は記録とログだけ</span></div>
+  <div class="api"><code class="sig">Window.SetSystemBarsVisible(on)</code><span class="desc">bool。ステータスバー・ナビゲーションバーを出す・隠す（起動時の既定は android.system_bars）。安全領域 Screen.SafeArea が追従する（次のフレーム以降）。模擬は記録とログだけ</span></div>
+  <div class="api"><code class="sig">App.MoveTaskToBack()</code><span class="desc">bool。閉じずに背面へ（戻るの最上位で。閉じるとプロセスが終わり次の起動が冷える）。戻ると起動理由 Launcher の platform.launch。模擬はログだけ</span></div>
+  <div class="api"><code class="sig">App.OpenUrl(url)</code><span class="desc">bool。ブラウザ等で開く（ACTION_VIEW。http / https / mailto / tel / 独自の scheme）。App.ErrorNoHandler "no_handler"（開けるアプリが無い）/ ErrorSchemeNotAllowed "scheme_not_allowed"（file: / content: / javascript:）/ ErrorInvalidArgument "invalid_argument"（空・scheme なし・制御文字・8192 文字超）。模擬は同じ規則で判定し http / https / mailto だけを PC の既定のアプリで開く（SEED_PLATFORM_SIM_NO_OPEN=1 なら開かない）</span></div>
+  <div class="api"><code class="sig">App.OpenAppSettings()</code><span class="desc">bool。端末の「アプリ情報」（権限の種類ごとの画面は Permissions.OpenSettings）。模擬はログだけ</span></div>
+  <div class="api"><code class="sig">Haptics.Tap() / Haptics.Vibrate(ms)</code><span class="desc">bool。軽いクリックの触感 / 決まった長さの振動（1〜Haptics.MaxVibrateMilliseconds〈5000〉。長い値は 5000 にそろえる）。振動子が無ければ Haptics.ErrorNoVibrator "no_vibrator"。Android 13+ は利用者の「振動と触感」の設定が効く（切られていると振動しないが true を返す）。模擬は記録とログだけ</span></div>
+  <div class="api"><code class="sig">LaunchKind.DeepLink / LaunchInfo.Uri</code><span class="desc">URL（ディープリンク）で開かれた。起動のときは App.LaunchReason、動いている間は platform.launch。最近のタスクからの開き直しは Launcher</span></div>
+<pre><span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+{
+    <span class="c">// 戻るの最上位で閉じずに背面へ（Android の戻るキーは KeyCode.Escape で届く）</span>
+    <span class="k">if</span> (<span class="t">SEED.Input</span>.GetKeyDown(<span class="t">SEED.KeyCode</span>.Escape) &amp;&amp; !CloseTopDialog()) <span class="t">App</span>.MoveTaskToBack();
+}
+<span class="t">LaunchInfo</span> launch = <span class="t">App</span>.LaunchReason;
+<span class="k">if</span> (launch.Kind == <span class="t">LaunchKind</span>.DeepLink) HandleLink(launch.Uri);   <span class="c">// Uri は検査してから使う</span></pre>
+  <div class="warn">
+    ディープリンクの <code>Uri</code> は<b>他のアプリも送れる入力</b>です（Android の MainActivity はランチャーのために外から起動でき、intent-filter を通らない明示の起動でも同じに見えます）。
+    scheme・host・パスを検査し、お金やデータを動かす操作は URL だけで行わず、画面で利用者に確かめてから行ってください。
+    目覚ましで上がった SetShowWhenLocked を下ろし忘れても、ランチャー・最近のタスクから開き直したときはエンジンが下ろします（W1-6）。ただしアプリを開いたまま
+    電源ボタンを押したときは下ろし忘れのままなので、鳴動を片付けたら <code>SetShowWhenLocked(false)</code> を呼ぶ約束は変わりません。
   </div>
 </section>
 

@@ -8,7 +8,8 @@
 //                         33 以下は特別なアクセスの画面が無いのでアプリ情報
 //    record_audio / send_sms（v2）… アプリ情報
 //  開けない（ActivityNotFoundException。端末に画面が無い・メーカーが外した）ときはアプリ情報
-//  （Settings.ACTION_APPLICATION_DETAILS_SETTINGS・package:<アプリ ID>）を開く。それも駄目なら false。
+//  （Settings.ACTION_APPLICATION_DETAILS_SETTINGS・package:<アプリ ID>。Intent と URI は W1-6 で app/AppSettingsScreen に共通化）を開く。
+//  それも駄目なら false。
 //  Activity から開く（FLAG_ACTIVITY_NEW_TASK なし）ので、利用者が戻ると MainActivity の onResume が来る（PermissionRequests・
 //  PermissionMonitor がそこで状態を見直す）。
 // ============================================================
@@ -19,13 +20,13 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
-import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
 import android.util.Log;
 
 import com.seedengine.runtime.platform.PlatformContract;
 import com.seedengine.runtime.platform.PlatformJson;
+import com.seedengine.runtime.platform.app.AppSettingsScreen;
 
 /**
  * 設定の画面（static のみ。UI スレッドから呼ぶ）。
@@ -34,12 +35,6 @@ public final class PermissionSettings {
 
     private PermissionSettings() {
     }
-
-    /** アプリを指す URI の scheme（package:<アプリ ID>）。 */
-    private static final String PACKAGE_SCHEME = "package";
-
-    /** URI の fragment を付けない。 */
-    private static final String NO_FRAGMENT = null;
 
     /**
      * 種類の設定の画面を開く（開けなければアプリ情報）。UI スレッドで呼ぶこと。
@@ -57,7 +52,7 @@ public final class PermissionSettings {
         if (Settings.ACTION_APPLICATION_DETAILS_SETTINGS.equals(primary.getAction())) {
             return false;
         }
-        return tryStart(activity, applicationDetails(activity), kind);
+        return tryStart(activity, AppSettingsScreen.intent(activity), kind);
     }
 
     /**
@@ -74,28 +69,18 @@ public final class PermissionSettings {
                         .putExtra(Settings.EXTRA_APP_PACKAGE, context.getPackageName());
             case EXACT_ALARM:
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    return new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, packageUri(context));
+                    return new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, AppSettingsScreen.packageUri(context));
                 }
                 break;
             case FULL_SCREEN_INTENT:
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    return new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, packageUri(context));
+                    return new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, AppSettingsScreen.packageUri(context));
                 }
                 break;
             default:
                 break;
         }
-        return applicationDetails(context);
-    }
-
-    /** アプリ情報の画面の Intent。 */
-    private static Intent applicationDetails(Context context) {
-        return new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri(context));
-    }
-
-    /** package:<アプリ ID>。 */
-    private static Uri packageUri(Context context) {
-        return Uri.fromParts(PACKAGE_SCHEME, context.getPackageName(), NO_FRAGMENT);
+        return AppSettingsScreen.intent(context);
     }
 
     /**

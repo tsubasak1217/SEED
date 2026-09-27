@@ -2803,13 +2803,14 @@ var ratio = new SEED.Vector2(t.Position.x / SEED.Screen.Width, t.Position.y / SE
 
 ---
 
-## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限）
+## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感）
 
 目覚まし・通知・権限など **OS の機能**をスクリプトから使うための入口です（名前空間 `SEED.Platform`）。
 W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で**目覚ましの予約**（`Alarms`。この節の後半）、
 W1-4a で**鳴動**（`Alarms.GetRinging` / `StopRinging`・音と通知）と**起動理由**（`App.LaunchReason`）・`Window.SetShowWhenLocked`、
-W1-5 で**通知**（`Notifications`）と**権限**（`Permissions`）が加わりました。画面・アプリの残り（`Window` の他の切り替え・`App.MoveTaskToBack` 等）は
-後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
+W1-5 で**通知**（`Notifications`）と**権限**（`Permissions`）、W1-6 で**画面・アプリ・触感**（`Window.SetKeepScreenOn` / `SetSystemBarsVisible`・
+`App.MoveTaskToBack` / `OpenUrl` / `OpenAppSettings`・`Haptics`）と**ディープリンク**（`LaunchKind.DeepLink`・`LaunchInfo.Uri`）が加わりました
+（この節の最後。設計は docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
 デスクトップ（エディタの Play・単体起動）ではエンジンの中の**模擬**へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
 
 ```csharp
@@ -2919,7 +2920,7 @@ Alarms.ErrorScheduleFailed       // "schedule_failed"         … AlarmManager �
 | `platform.alarms.rescheduled` | `AlarmsRescheduledEvent` | `Reason`（`Boot` / `TimeChanged` / `PackageReplaced` / `PermissionChanged` / `Unknown`）・`ReasonName`・`Count`・`Missed`・`Failed` | 控えから張り直した（控えが空なら届かない）。`TimeChanged` ではアプリが次の時刻を計算し直して予約し直す |
 | `platform.alarm.ring_stopped` | `AlarmRingStoppedEvent` | `Id`・`Reason`（`Stopped` / `Timeout` / `Error` / `Unknown`）・`ReasonName`・`ScheduledAtUtcMs`・`PayloadJson`・`Simulated` | 鳴動が終わった（W1-4a）。`StopRinging`・安全弁（`MaxRingMinutes`）・鳴らし続けられなかった。待ち行列に次があれば続けて鳴り始める |
 | `platform.alarm.queued` | `AlarmQueuedEvent` | `Id`・`ScheduledAtUtcMs`・`WaitingFor`（今鳴っている予約の ID）・`PayloadJson`・`Simulated` | 別の予約の鳴動中に時刻が来た（W1-4a）。捨てずに待たせ、今の鳴動が止まったら続けて鳴らす（`fired` の後に届く） |
-| `platform.launch` | `LaunchInfo`（`TryParseEvent`） | `Kind`・`Id`・`ActionId`・`ScheduledAtUtcMs`・`FiredAtUtcMs`・`PayloadJson` | アプリが動いている間に目覚まし・通知の操作で開き直された（Android の onNewIntent。W1-4a）。起動のときの理由は `App.LaunchReason` |
+| `platform.launch` | `LaunchInfo`（`TryParseEvent`） | `Kind`・`Id`・`ActionId`・`ScheduledAtUtcMs`・`FiredAtUtcMs`・`PayloadJson`・`Uri`（W1-6） | アプリが動いている間に目覚まし・通知の操作・ディープリンク（W1-6）・ランチャーで開き直された（Android の onNewIntent。W1-4a）。起動のときの理由は `App.LaunchReason` |
 
 | 項目 | Android | デスクトップ（模擬） |
 |---|---|---|
@@ -2947,9 +2948,10 @@ bool ok = Alarms.StopRinging("morning");                  // 止める（解除�
 bool ok2 = Alarms.StopRinging();                          // ID を省くと今鳴っているもの。鳴っていなくても true（冪等）
 // 待ち行列にいる予約の ID を渡すと、鳴らさずに外す（ring_stopped(Stopped) が届く）
 
-// 起動理由（Android でも IPC なし。デスクトップの模擬は常に Launcher）
+// 起動理由（Android でも IPC なし。デスクトップの模擬は Launcher〈単体起動の --deep-link=<URI> があれば DeepLink〉）
 LaunchInfo launch = App.LaunchReason;
-// launch.Kind（LaunchKind.Launcher / Alarm / NotificationTap / NotificationAction / AlarmClockInfo / Other）  launch.KindName
+// launch.Kind（LaunchKind.Launcher / Alarm / NotificationTap / NotificationAction / AlarmClockInfo / Other / DeepLink〈W1-6〉）  launch.KindName
+// launch.Uri（DeepLink のときの URL。ほかは ""。W1-6。後の「画面・アプリ・触感・ディープリンク」）
 // launch.Id（予約の ID）  launch.ActionId（通知の操作。鳴動の通知の「開く」は LaunchInfo.ActionOpen == "open"）
 // launch.ScheduledAtUtcMs  launch.FiredAtUtcMs（配信を受けた時刻。鳴動画面が出るまでの遅れを測る起点）  launch.PayloadJson
 this.On(LaunchInfo.EventName, (string json) =>             // "platform.launch": 動いている間に目覚まし・通知の操作で開き直された
@@ -3090,6 +3092,65 @@ if (Permissions.Check(PermissionKind.ExactAlarm) == PermissionStatus.NeedsSettin
 - `Check` の失敗は案（roadmap §2.3）に無い `PermissionStatus.Unknown`、`OpenSettings` は void ではなく bool を返す（失敗を見分けるため）。
 
 > **重要**: Android 13 以降、通知の確認の画面は利用者が 2 回拒否すると二度と出ません（`DeniedPermanently`）。求める前に理由を画面で説明し、`DeniedPermanently` になったら `OpenSettings(PermissionKind.PostNotifications)` で設定の画面へ案内してください。確認の画面の外側を押して閉じた（どちらも選ばなかった）ときは `Denied` のままで、次の `Request` でもう一度出る見込みです（実機では未確認）。
+
+### 画面・アプリ・触感・ディープリンク（`Window`・`App`・`Haptics`。W1-6）
+
+画面の切り替え（点けたまま・システムバー）、アプリとしての操作（閉じずに背面へ・URL を開く・アプリ情報）、触感、ディープリンクで開かれたときの URL です。
+Android ではどれもメインプロセスが答える（IPC なし）ので、最初の呼び出しでも `connecting` になりません。機能（`android.features`）の opt-in は要りません
+（ディープリンクで開かれるには、機能 `deep_links` と `android.deep_links` の intent-filter が要ります。docs/project_system.md）。デスクトップは模擬です（下の表）。
+
+```csharp
+using SEED.Platform;
+
+// 画面（すぐ返る。切り替えは少し後に効く。false なら Platform.LastError）
+bool a = Window.SetKeepScreenOn(true);            // 画面を点けたままにする（前面に見えている間だけ。電源ボタンの消灯は止めない。既定は false）
+bool b = Window.SetSystemBarsVisible(false);      // ステータスバー・ナビゲーションバーを隠す（true で出す）。起動時の既定は android.system_bars
+                                                  // 安全領域 SEED.Screen.SafeArea はこれに追従する（次のフレーム以降）
+
+// アプリ（false なら Platform.LastError）
+bool back = App.MoveTaskToBack();                 // 閉じずに背面へ（戻るの最上位で。閉じるとプロセスが終わり、次の起動が冷える）
+bool opened = App.OpenUrl("https://example.com"); // ブラウザ等で開く（http / https / mailto / tel / アプリ独自の scheme）
+bool settings = App.OpenAppSettings();            // 端末の「アプリ情報」（権限の種類ごとの画面は Permissions.OpenSettings）
+App.ErrorNoHandler          // "no_handler"         … その URL を開けるアプリが無い（Android）
+App.ErrorSchemeNotAllowed   // "scheme_not_allowed" … file: / content: / javascript: は開かない
+App.ErrorInvalidArgument    // "invalid_argument"   … 空・scheme が無い・制御文字・App.MaxUrlLength（8192）文字を超える
+App.ErrorNoActivity         // "no_activity"        … 画面（Activity）が無い（Android）
+
+// 触感（同期。振動子の無い端末は false・Platform.LastError == Haptics.ErrorNoVibrator〈"no_vibrator"〉）
+Haptics.Tap();                                    // 軽いクリックの触感（ボタンを押したときなど）
+Haptics.Vibrate(40);                              // 40 ms の振動（1〜Haptics.MaxVibrateMilliseconds〈5000〉。長い値は 5000 にそろえる。0 以下は invalid_argument）
+
+// ディープリンク（起動のときは App.LaunchReason、動いている間は platform.launch）
+LaunchInfo launch = App.LaunchReason;
+if (launch.Kind == LaunchKind.DeepLink) HandleLink(launch.Uri);
+this.On(LaunchInfo.EventName, (string json) =>
+{
+    if (LaunchInfo.TryParseEvent(json, out LaunchInfo e) && e.Kind == LaunchKind.DeepLink) HandleLink(e.Uri);
+});
+
+// 例: 戻るの最上位で閉じずに背面へ（Android の戻るキーは KeyCode.Escape で届く。§6.5）
+public override void Update(ref NativeFrameContext ctx)
+{
+    if (SEED.Input.GetKeyDown(SEED.KeyCode.Escape) && !CloseTopDialog()) App.MoveTaskToBack();
+}
+```
+
+| 項目 | Android | デスクトップ（模擬） |
+|---|---|---|
+| `SetKeepScreenOn` | 窓の `FLAG_KEEP_SCREEN_ON` | 状態を記録してログだけ |
+| `SetSystemBarsVisible` | バーを出す・隠す（隠している間は端からのスワイプで一時的に出せ、アプリへ戻ると隠し直す）。安全領域がバーの分だけ変わる | 状態を記録してログだけ（安全領域は全画面のまま） |
+| `MoveTaskToBack` | `moveTaskToBack(true)`。ランチャー・最近のタスクから戻ると起動理由 `Launcher` の `platform.launch` が届く | ログだけ |
+| `OpenUrl` | `ACTION_VIEW`（ブラウザは別のタスクで開き、戻るとアプリへ）。開けるアプリが無ければ `no_handler` | 同じ規則で判定し、`http` / `https` / `mailto` だけを PC の既定のアプリで開く（ほかの scheme は判定だけで true）。環境変数 `SEED_PLATFORM_SIM_NO_OPEN=1` なら何も開かない |
+| `OpenAppSettings` | 設定の「アプリ情報」 | ログだけ |
+| `Haptics` | `Tap` は端末の「クリック」、`Vibrate` は決まった長さ。Android 13+ は利用者の「振動と触感」の設定（`Tap` はタッチ、`Vibrate` はメディア）が効く（切られていると振動しないが、戻り値は true のまま） | 回数を記録してログだけ（振動しない） |
+| ディープリンク | intent-filter に合った URL（と、他のアプリが明示して送った URL）で `DeepLink`・`Uri`。最近のタスクからの開き直しは `Launcher` | 単体起動の `SEED.exe … --deep-link=<URI>` のときだけ `DeepLink` |
+
+> **重要**: ディープリンクの `Uri` は**他のアプリも送れる入力**です（Android の MainActivity はランチャーのために外から起動でき、intent-filter を通らない明示の起動でも同じに見えます）。scheme・host・パスを検査し、お金やデータを動かす操作は URL だけで行わず、画面で利用者に確かめてから行ってください。
+
+> **重要**: 目覚ましで上がった「ロック画面の上に出す」（`SetShowWhenLocked`）を下ろし忘れても、ランチャー・最近のタスクから開き直したときはエンジンが下ろします（W1-6）。ただしアプリを開いたまま電源ボタンを押したときは下ろし忘れのまま（ロック画面が出ない）なので、鳴動を片付けたら `SetShowWhenLocked(false)` を呼ぶ約束は変わりません。
+
+- `MoveTaskToBack`・`OpenAppSettings`・`Haptics.Tap` / `Vibrate`・`SetKeepScreenOn`・`SetSystemBarsVisible` は、案（roadmap §2.3）の void ではなく bool を返します（失敗を見分けるため）。`LaunchKind.DeepLink` は列挙の末尾に足しました（既存の値の番号は変えない）。
+- 仕組み（命令・URL の規則・パッケージの可視性・振動の種類）は docs/android.md §25.15。
 
 ---
 

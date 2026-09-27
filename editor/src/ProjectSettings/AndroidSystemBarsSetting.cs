@@ -7,7 +7,7 @@
 //    visible … 出したまま（時刻・電池が見えるべきアプリ向け。バーの分は安全領域 Screen.SafeArea で避ける）
 //  SeedAndroid（editor/src/Android/Platform/）がビルドのたびに app/src/seedFeatures/res/values/seed_platform.xml の
 //  bool seed_system_bars_visible へ書き、MainActivity（SystemBarsController.java）が起動時に読む。
-//  スクリプトから実行中に切り替える API は W1-6。デスクトップ（Windows）の実行には影響しない。
+//  スクリプトから実行中に切り替える API は Window.SetSystemBarsVisible（W1-6。docs/android.md §25.15.3）。デスクトップ（Windows）の実行には影響しない。
 //  値の表（ここ）と読み方は ScreenOrientationSetting と同じ形。docs/android.md §25.10。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。

@@ -3683,6 +3683,8 @@ W1-1 は**橋渡し**だけ: スクリプトの命令が Java の別プロセス
 | `platform/service/notification/*.java` | 通知（W1-5。§25.13）: `NotificationModule`・`NotificationRequestReader`・`NotificationContent`・`NotificationActionItem`・`NotificationChannelSpec`・`NotificationChannels`・`NotificationCategories`・`NotificationFactory` |
 | `platform/permission/*.java` | 権限（W1-5。§25.14。メインプロセス）: `PermissionKind`・`PermissionStatusProbe`・`PermissionHistory`・`PermissionRequests`・`PermissionSettings`・`PermissionMonitor`・`PermissionEvents`・`PermissionLifecycle` |
 | `platform/DeclaredPermissions.java` | APK が宣言している権限（両プロセス。機能 notifications・権限の命令の「機能の有無」の判定。W1-5） |
+| `platform/window/*.java`・`platform/app/*.java`・`platform/haptics/HapticFeedback.java`・`platform/DeviceVibrator.java` | 画面とアプリ（W1-6。§25.15）: `LockScreenPresence`・`SystemBarsHost`・`UrlPolicy`・`UrlLauncher`・`AppSettingsScreen`・触感と共通の振動子。`local/` に `WindowToggleCommand` と 7 命令 |
+| `runtime/src/engine/platform/bridge/{app,haptics}/`・`desktop_sim/{window_*,haptics_*,app_commands,url_opener,launch_uri}.rs` | エンジン側の URL・振動の長さの規則と、画面とアプリの模擬（W1-6。§25.15.8） |
 | `src/debug/java/…/platform/DebugPlatformReceiver.java` | デバッグ版だけの adb の入口（§25.7） |
 | `native/src/platform_bridge/{mod,android_bridge,java_bridge,inbox,jni_exports}.rs` | 糊（エンジンへの登録・JNI の持ち物・イベントの箱・2 本の JNI 関数） |
 | `native/src/platform_bridge/alarm_prep.rs` | `alarm.schedule` を送る前に音源（`assets://`）を書き出す（W1-3。中身はエンジンの `bridge/alarm/sound_export.rs`） |
@@ -3821,11 +3823,13 @@ MSYS_NO_PATHCONV=1 "$ADB" shell am broadcast -n $APP/com.seedengine.runtime.plat
 
 | 機能 | 権限 |
 |---|---|
-| `alarm` | `USE_EXACT_ALARM`、`SCHEDULE_EXACT_ALARM`（`maxSdkVersion="32"`）、`RECEIVE_BOOT_COMPLETED`、`WAKE_LOCK`、`VIBRATE`、`USE_FULL_SCREEN_INTENT`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`POST_NOTIFICATIONS` |
+| `alarm` | `USE_EXACT_ALARM`、`SCHEDULE_EXACT_ALARM`（`maxSdkVersion="32"`）、`RECEIVE_BOOT_COMPLETED`、`WAKE_LOCK`、`USE_FULL_SCREEN_INTENT`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`POST_NOTIFICATIONS`（W1-2 は `VIBRATE` も入れていた。W1-6 で main の常設へ移した） |
 | `notifications` | `POST_NOTIFICATIONS` |
 | `deep_links` | （なし。intent-filter だけ） |
 
 - `PlatformProvider` は機能によらず main に常設（§25.6）。
+- `VIBRATE`（normal 権限）は W1-6 から機能によらず main の `AndroidManifest.xml` に常設（触感の `Haptics` はゲームにも使う。鳴動の振動も同じ権限。§25.15.5）。
+  features が空の APK にも入る。
 - 表に無い名前はビルドで注意を出して無視する（保存では消さない）。ディープリンクの形の誤り（scheme が無い・大文字・`path_prefix` が `/` で始まらない・
   `path_prefix` があるのに host が無い〈host が無いと Android は path を照合しない〉等）はビルドを何もしないうちに止め、プロジェクト設定ウィンドウの
   保存も止める（同じ関数 `AndroidPlatformFeatureResolver` / `AndroidDeepLinkRules`）。
@@ -3894,7 +3898,8 @@ project_settings.json の android 節（features / deep_links / system_bars / ap
   （`WindowInsetsCompat.Type.systemBars()`）と切り欠きの和を安全領域として `nativeOnScreenChanged` で渡し、`onApplyWindowInsets` のたびに
   報告し直すので、バーが見えている間はステータスバーとナビゲーションバーの分が `Screen.SafeArea` から外れる（**コードを読んで確かめた。
   実機では未確認**）。UI を安全領域へ自動で寄せる仕組みは無い（既存の backlog「安全領域の自動反映」）ので、スクリプト・UI 側で避ける。
-- 実行中にスクリプトから切り替える API（`Window.SetSystemBarsVisible`）とバーの文字色（明暗）の指定は W1-6。
+- 実行中にスクリプトから切り替える API（`Window.SetSystemBarsVisible`）は W1-6 で入れた（§25.15.3。`SystemBarsController` が「今の出し方」を持ち、フォーカスが
+  戻ったときの隠し直しもそれに従う）。バーの文字色（明暗）の指定は W1-6 の指示に入らず持ち越し（[backlog.md](backlog.md)）。
 
 #### 25.10.5 確かめ方
 
@@ -3938,7 +3943,7 @@ dotnet run --project editor/tools/SeedAndroid -- check --project 'D:\SEED_projec
   `<service android:foregroundServiceType>` に宣言されているかの要件チェックは、`RingService` を足す W1-4 で配布物のマニフェスト（`aapt2 dump xmltree`）から見る。
 - 手で `gradlew` を叩くと、最後に置いた断片（別のプロジェクトのものでも）がそのまま入る（上の 25.10.3）。
 - システムバーを出したままのときのバーの文字色（明暗）は選べない（テーマの既定のまま。暗い AppCompat のテーマなので白い文字になる見込み＝推論・
-  実機で未確認）。明るい画面のアプリでは見えにくい（W1-6）。
+  実機で未確認）。明るい画面のアプリでは見えにくい（W1-6 では入れず持ち越し。[backlog.md](backlog.md)）。
 
 
 ### 25.11 目覚ましの予約（W1-3・2026-09-27）
@@ -4138,20 +4143,20 @@ W1-4a は**実機での計測を除く部分**で、実 GameActivity をフル�
    RingAudio         … MediaPlayer（USAGE_ALARM 固定・ループ・漸増）。専用のスレッド SEEDRingAudio で準備する
    RingSoundSource   … 音源の候補（予約の音 → 同梱の既定の音 → 端末の既定のアラーム音）
    AlarmStreamVolume … force_volume / keep_volume（STREAM_ALARM を鳴動中だけ変え、止めたら戻す）
-   RingVibration     … 繰り返しの振動（API 31+ は VibratorManager。種類はアラーム）
+   RingVibration     … 繰り返しの振動（API 31+ は VibratorManager。種類はアラーム。振動子の取り方は W1-6 で platform/DeviceVibrator に共通化）
    RingNotification  … チャネル seed_platform_alarm と鳴動の通知（フルスクリーン通知・本文のタップ・「開く」）
    RingWakeLock      … 部分ウェイクロック（受信機からの引き継ぎ・鳴動の長さ＋余裕）
  platform/service/PlatformEntryIntents … PlatformEntry 行きの PendingIntent と起動理由の JSON（要求コードの表）
 [メインプロセス] platform/
  LaunchReason・LaunchInfo … 起動の Intent → 起動理由（onCreate・onNewIntent）。SeedPlatform が「この起動の理由」を預かる
- local/MainProcessCommands … IPC に行かない命令の表（platform.launch_reason・window.set_show_when_locked）。SeedPlatform.invoke が先に引く
+ local/MainProcessCommands … IPC に行かない命令の表（platform.launch_reason・window.set_show_when_locked。W1-5 で権限、W1-6 で画面・アプリ・触感〈§25.15.2〉）。SeedPlatform.invoke が先に引く
  AndroidManifest.xml（main）… activity-alias PlatformEntry（exported=false・targetActivity=MainActivity・lib_name の meta-data）を常設
  res/raw/seed_alarm_default.wav（runtime/android/tools/gen_alarm_default_tone.py で作る）・res/values/seed_platform_strings.xml（チャネル名など）
 ```
 
 機能の表（`platform_features.json`）の `alarm` に `<service RingService>`（`:seed_platform`・exported=false・directBootAware・
-`foregroundServiceType="mediaPlayback"`）を足した。権限（`FOREGROUND_SERVICE`・`FOREGROUND_SERVICE_MEDIA_PLAYBACK`・`WAKE_LOCK`・`VIBRATE`・
-`USE_FULL_SCREEN_INTENT`・`POST_NOTIFICATIONS`）は W1-2 から入っている。名前は `wire.rs` の `wire::alarm`・`wire::launch`・`wire::window` と
+`foregroundServiceType="mediaPlayback"`）を足した。権限（`FOREGROUND_SERVICE`・`FOREGROUND_SERVICE_MEDIA_PLAYBACK`・`WAKE_LOCK`・
+`USE_FULL_SCREEN_INTENT`・`POST_NOTIFICATIONS`）は W1-2 から入っている（`VIBRATE` は W1-6 から main に常設。§25.15.5）。名前は `wire.rs` の `wire::alarm`・`wire::launch`・`wire::window` と
 `PlatformContract.java` で揃え、`wire::tests::java_contract_matches_wire` が突き合わせる。
 
 #### 25.12.2 発火から鳴動まで（順序）
@@ -4198,11 +4203,13 @@ W1-4a は**実機での計測を除く部分**で、実 GameActivity をフル�
   `lib_name` を読み、無ければ `libmain.so` を探して `IllegalArgumentException` で落ちる（`javap -c` で確かめた）。別名が対象の meta-data を受け継ぐかは
   確かめていない（推論では受け継がない）ので、MainActivity と同じ値を置いた（`AndroidPipelineTests` が一致を確かめる）。
 - `LaunchReason`（メインプロセス）: 部品名が別名のときだけ extra を信用し、種類が `alarm` / `notification_tap` / `notification_action` /
-  `alarm_clock_info` 以外なら `other`。それ以外の起動は action が MAIN（か無し）なら `launcher`、ほかは `other`。最近のタスクからの開き直し
+  `alarm_clock_info` 以外なら `other`。それ以外の起動は action が MAIN（か無し）なら `launcher`、VIEW で data があれば `deep_link`（W1-6。§25.15.6）、
+  ほかは `other`。最近のタスクからの開き直し
   （`FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`）は、タスクの元の Intent（目覚ましで起きたタスクなら鳴動の起動理由）がもう一度届くので `launcher` にする。
 - `MainActivity.onCreate`（`super.onCreate` の前）: 起動理由を決めて `SeedPlatform` に預け、`alarm` なら `setShowWhenLocked(true)`・`setTurnScreenOn(true)`
   （API 27。最初のフレームより前にロック画面の上に出す。ロックは解除しない）。`onNewIntent`: `setIntent` → 同じく決めて預け、`alarm` なら上げ、
-  イベント `platform.launch`（seq 0・data = 起動理由）を流す。起動のときの理由はイベントにしない（`App.LaunchReason` で読む。二重に扱わせない）。
+  `launcher` なら下ろし（W1-6 の忘れ対策。§25.15.7）、イベント `platform.launch`（seq 0・data = 起動理由）を流す。起動のときの理由はイベントにしない
+  （`App.LaunchReason` で読む。二重に扱わせない）。
 - **`launchMode` は既に `singleTask`**（段階0 から。2 つ目のインスタンスで android_main が同じプロセスで再び呼ばれて落ちるのを防ぐため）。別名の起動も
   既存の MainActivity へ `onNewIntent` で届く（singleTask の照合は別名の対象の部品で行われる〈AOSP の記憶。W1-4b の実機で確かめる〉）ので、鳴動画面を
   出すときに Activity が重なる問題は起きない見込み。変えていない。
@@ -4215,7 +4222,8 @@ W1-4a は**実機での計測を除く部分**で、実 GameActivity をフル�
 | 命令 | 引数 → 返答 | 中身 |
 |---|---|---|
 | `platform.launch_reason` | `{}` → `{launch: {kind, id, action_id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json}}` | `SeedPlatform` が預かった「この起動の理由」（最後に届いた Intent の理由。既定は `launcher`） |
-| `window.set_show_when_locked` | `{on: 真偽}` → `{on}` | `Activity.runOnUiThread` で `setShowWhenLocked(on)`・`setTurnScreenOn(on)`（すぐ返る）。`on` が真偽でなければ `invalid_argument`、Activity が無ければ `no_activity` |
+| `window.set_show_when_locked` | `{on: 真偽}` → `{on}` | `Activity.runOnUiThread` で `setShowWhenLocked(on)`・`setTurnScreenOn(on)`（すぐ返る）。`on` が真偽でなければ `invalid_argument`、Activity が無ければ `no_activity`（W1-6 で `WindowToggleCommand` に乗せ替えた。振る舞いは同じ） |
+| W1-6 の 7 命令 | §25.15.2 | `window.set_keep_screen_on` / `set_system_bars_visible`・`app.move_task_to_back` / `open_url` / `open_app_settings`・`haptics.tap` / `vibrate` |
 
 #### 25.12.6 起動時の照合（W1-3 の持ち越し）
 
@@ -4541,3 +4549,252 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell appops get $APP USE_FULL_SCREEN_INTEN
   機能ごとの bool を足す（W1-2 の仕組み）。
 - 通知の小さなアイコンは Android 標準の絵（プロジェクトごとのアイコンが無い）。
 - 設定の画面を開けたのに onResume が来ない（開けたが前面に出なかった等）と、その要求の結果は次の onResume まで届かない。
+
+### 25.15 画面とアプリ（Window・App・Haptics・ディープリンク。W1-6・2026-09-27）
+
+スクリプトの `Window.SetKeepScreenOn` / `SetSystemBarsVisible`・`App.MoveTaskToBack` / `OpenUrl` / `OpenAppSettings`・`Haptics.Tap` / `Vibrate`・
+`App.LaunchReason` の `LaunchKind.DeepLink` と `LaunchInfo.Uri`（[scripting_api.md](scripting_api.md) §7.13）の Android 側。どれもメインプロセスの
+`local/` の命令（IPC なし。`:seed_platform` を起こさず、最初の呼び出しでも `connecting` にならない）で、機能（`android.features`）の opt-in は要らない
+（ディープリンクの intent-filter だけは機能 `deep_links`）。設計は [app_platform_roadmap.md](app_platform_roadmap.md) §2.3・§4 の X-3。
+
+#### 25.15.1 構成
+
+```
+[メインプロセス] app/src/main/java/com/seedengine/runtime/platform/
+ local/MainProcessCommands … 表に 7 行を足した（25.15.2 の命令）
+   WindowToggleCommand       … 画面の切り替えの共通の形（{on} を読む・Activity を取る・runOnUiThread へ投げる・返答 {on}）。
+                                ShowWhenLockedCommand（W1-4a。乗せ替えただけ）・KeepScreenOnCommand・SystemBarsVisibleCommand がこれを継ぐ
+   MoveTaskToBackCommand・OpenUrlCommand・OpenAppSettingsCommand・HapticsTapCommand・HapticsVibrateCommand
+ window/LockScreenPresence … setShowWhenLocked・setTurnScreenOn を対で切り替える（LaunchReason と ShowWhenLockedCommand で共通）
+ window/SystemBarsHost     … システムバーを実行中に切り替えられる Activity の約束（MainActivity が実装。中身は SystemBarsController）
+ app/UrlPolicy             … open_url の URL の規則（java.* だけ。Rust の bridge/app/url_rules.rs と同じ規則）
+ app/UrlLauncher           … ACTION_VIEW を startActivity（アプリの Context・NEW_TASK・呼び出し元のスレッドで同期）
+ app/AppSettingsScreen     … アプリ情報の画面（ACTION_APPLICATION_DETAILS_SETTINGS。permission/PermissionSettings の受け皿もこれに寄せた）
+ haptics/HapticFeedback    … 触感（EFFECT_CLICK・createOneShot。API 33+ は振動の種類つき）
+ DeviceVibrator            … 既定の振動子（API 31+ は VibratorManager。W1-4a の RingVibration〈:seed_platform〉と共通化）
+ LaunchReason・LaunchInfo  … ディープリンク（deep_link・uri。25.15.6）と開き直しの忘れ対策（25.15.7）
+[MainActivity・SystemBarsController] SystemBarsHost を実装し、SystemBarsController に「今の出し方」を持たせた（25.15.3）
+[AndroidManifest.xml（main）] <uses-permission android:name="android.permission.VIBRATE" /> を常設（機能の表の alarm から移した。25.15.5）
+[エンジン] runtime/src/engine/platform/bridge/
+ wire.rs … wire::window に 2 命令・wire::app・wire::haptics・wire::launch の uri と deep_link・MAX_URL_LENGTH
+ app/url_rules.rs（URL の規則）・haptics/mod.rs（ms の規則）
+ desktop_sim/ window_state.rs・window_commands.rs・haptics_state.rs・haptics_commands.rs・app_commands.rs・url_opener.rs・launch_uri.rs（25.15.8）
+ runtime/src/main.rs … 単体起動の --deep-link=<URI>
+[C#] scripting/src/Api/Platform/ Window/Window.cs・App/App.cs・App/AppJson.cs・App/LaunchInfo.cs（Uri）・App/LaunchKind.cs（DeepLink）・Haptics/Haptics.cs
+```
+
+#### 25.15.2 命令（メインプロセスで答える）
+
+| 命令 | 引数 → 返答 | 中身 | 失敗の理由 |
+|---|---|---|---|
+| `window.set_keep_screen_on` | `{on}` → `{on}` | UI スレッドで窓の `FLAG_KEEP_SCREEN_ON`（API 1）を出し入れする（すぐ返る）。見えている間だけ効き、権限は要らない | `invalid_argument`（on が真偽でない）・`no_activity` |
+| `window.set_system_bars_visible` | `{on}` → `{on}` | UI スレッドで `MainActivity.setSystemBarsVisible` → `SystemBarsController.setVisible`（25.15.3） | 同上 |
+| `app.move_task_to_back` | `{}` → `{}` | UI スレッドで `moveTaskToBack(true)`（API 1。回せたかはログだけ） | `no_activity` |
+| `app.open_url` | `{url}` → `{scheme}` | `UrlPolicy` で判定 → `UrlLauncher`（25.15.4）。呼び出し元のスレッドで同期 | `invalid_argument`・`scheme_not_allowed`・`no_activity`・`no_handler` |
+| `app.open_app_settings` | `{}` → `{}` | UI スレッドで `ACTION_APPLICATION_DETAILS_SETTINGS`＋`package:<アプリ ID>`（Activity から開くので戻ると onResume。開けなければログだけ） | `no_activity` |
+| `haptics.tap` | `{}` → `{}` | `HapticFeedback.tap`（25.15.5）。呼び出し元のスレッドで同期 | `no_vibrator`・`not_initialized` |
+| `haptics.vibrate` | `{ms}` → `{ms}` | ms は 1 以上の数（小数は切り捨て）で、5000 を超えたら 5000 にそろえる → `HapticFeedback.vibrate` | `invalid_argument`・`no_vibrator`・`not_initialized` |
+
+名前・上限は `wire.rs` と `PlatformContract.java` の両方に置き、`wire::tests::java_contract_matches_wire` が突き合わせる（W1-6 で文字列 20 組・数 3 組を足した）。
+C# の名前（`AppJson`・`Window`・`Haptics` の定数）は手で揃える。
+
+#### 25.15.3 システムバーと安全領域（window.set_system_bars_visible）
+
+- `SystemBarsController` に「今の出し方」（起動時は `android.system_bars` の既定）を持たせ、`setVisible` で切り替えると以後はその状態になる。
+  `onWindowFocusChanged`（通知の引き下ろしの後など）の隠し直しは、今の状態が「隠す」のときだけ（W1-2 までは起動時の既定に従っていた）。
+- 隠す = 窓の `FLAG_FULLSCREEN` を付け（今と同じなら触らない＝フォーカスが戻るたびに窓の属性を書き換えない）・`BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`・
+  `hide(systemBars())`。出す = `FLAG_FULLSCREEN` を外して `show(systemBars())`。起動時の隠した状態（テーマの `windowFullscreen`）と「出した後に隠した」状態を
+  そろえるために付け直す。`FLAG_FULLSCREEN` の非推奨（API 30）の注意は理由を書いて抑えた（W1-2 から出ていた javac の注意が消えた）。
+- **安全領域は WindowInsets の経路で追従する（コードを読んで確かめた。Pixel 6a では切り欠きとステータスバーが同じ 132 px なので値が変わらず、追従そのものは実機で
+  未確認。§25.15.10）**: GameActivity（games-activity 4.4.0）は `onCreateSurfaceView` で描画面に
+  `ViewCompat.setOnApplyWindowInsetsListener(mSurfaceView, this)` を付け、`onApplyWindowInsets` は WindowInsets を消費せずに返す（`javap -c` で読んだ）。
+  バーを出し入れすると WindowInsets が配り直され、`MainActivity.onApplyWindowInsets` → `ScreenReporter.reportAfterLayout` → `report` が、見えているバー
+  （`getInsets(systemBars() | displayCutout())`）と隠れていても数えるナビゲーションバーから安全領域を計算し直し、前回と違えば `nativeOnScreenChanged` で渡す
+  （レイアウトの後の `onGlobalLayout` からも同じ `report` が走る）。追従しない箇所は見つからなかったので `ScreenReporter` は変えていない。出したときは
+  ステータスバーの分が上端に入り、隠したときは切り欠きとナビゲーションバーの分だけに戻る見込み。スクリプトの `Screen.SafeArea` は次のフレームから変わる。
+- バーの文字色（明暗）の切り替えは W1-6 の指示に入っていないので作っていない（[backlog.md](backlog.md)）。
+
+#### 25.15.4 URL を開く（app.open_url）
+
+- **URL の規則**（`app/UrlPolicy.java`・`bridge/app/url_rules.rs`。同じ入力を JVM〈29 件〉と Rust の単体テストで確かめた）: 空でない・8192 文字（Unicode の符号位置）以下・
+  制御文字（U+0000〜U+001F・U+007F）を含まない・先頭に RFC 3986 §3.1 の scheme（英字で始まり、英数字と `+ - .` が続く）がある（外れたら `invalid_argument`）。
+  scheme を小文字にそろえて `file` / `content` / `javascript` なら `scheme_not_allowed`。それ以外（`http` / `https` / `mailto` / `tel` / アプリ独自の scheme）は開いてみる。
+- **開き方**: `new Intent(ACTION_VIEW, Uri.parse(url).normalizeScheme())` に `FLAG_ACTIVITY_NEW_TASK` を付け、**アプリの Context** の `startActivity` を
+  **エンジンのスレッドで同期に**呼ぶ。`ActivityNotFoundException` なら `no_handler`（ほかの例外は `SeedPlatform.invoke` の受け止めで `internal_error`）。
+  - **`resolveActivity` と `<queries>` は使わない（パッケージの可視性の結論）**: Android 11 以降は PackageManager の問い合わせ（`queryIntentActivities` など、他のアプリの
+    情報を返すもの）の結果がパッケージの可視性で絞られ、ブラウザがあるかを確かめたいときは `<queries>` に VIEW・BROWSABLE・`https` の `<intent>` を宣言する。一方
+    「`startActivity()` は他のアプリの Activity を始めるのにパッケージの可視性を必要としないので、URL を開くために `<queries>` を足す必要は無い（暗黙・明示の
+    どちらの Intent でも）。開けるアプリが無ければ `ActivityNotFoundException`（まれ）なので捕まえて扱う」（developer.android.com「Fulfill common use cases while
+    having limited package visibility」の「Open URLs in a browser or other app」と、「Package visibility filtering on Android」。2026-09-27 に読んだ）。
+    `resolveActivity` を先に引くと、`<queries>` に書けない独自の scheme や `tel` で、開けるアプリがあるのに `no_handler` を返しうるので、`startActivity` の結果で決めた。
+  - **スレッド**: `ContextImpl.startActivity` と `Instrumentation.execStartActivity` に呼び出しのスレッドの確かめは無く、開けないときは
+    `checkStartActivityResult` が `ActivityNotFoundException` を投げる（AOSP の android16-release のソースを読んだ）。Activity の `startActivity` は描画面の View
+    （入力の取り消し）に触るので使わない。Context の外からの起動なので NEW_TASK が要り、ブラウザは自分のタスクで開いて、戻ると MainActivity に戻る。
+    前面のアプリからの起動なので背面からの起動の制限には当たらない見込み（推論。実機で未確認）。
+  - `CATEGORY_BROWSABLE` は付けていない（`tel` などで BROWSABLE を宣言しない受け手があるため。付けるかは [backlog.md](backlog.md)）。
+- ログには URL を出さない（トークンを含みうる）。scheme と長さだけ。
+
+#### 25.15.5 触感（haptics.tap / vibrate）と VIBRATE
+
+- `tap` = `VibrationEffect.createPredefined(EFFECT_CLICK)`（API 29 = minSdk）、`vibrate` = `VibrationEffect.createOneShot(ms, DEFAULT_AMPLITUDE)`。
+- 振動の種類（API 33 以降。`VibrationAttributes.createForUsage` と `Vibrator.vibrate(effect, attributes)` は 33 から）: `tap` は `USAGE_TOUCH`（AOSP の説明
+  「典型的な触感はタッチの触感。タップ・長押し・ドラッグ・スクロール」）、`vibrate` は `USAGE_MEDIA`（同「音楽・動画・アニメーション・ゲームなど、タッチの触感では
+  ない対話的なもの」）。利用者の「振動と触感」の設定が種類ごとに効く（切られていれば受け付けても振動しない。Pixel 6a で `dumpsys vibrator_manager` の
+  `ignored_for_settings` を見た。§25.15.10）。API 29〜32 は種類なし（`vibrate(effect)`）。
+- 振動子は `DeviceVibrator`（API 31+ は `VibratorManager.getDefaultVibrator`、それより前は `getSystemService(Vibrator.class)`）。`hasVibrator()` が false なら `no_vibrator`。
+  `Vibrator` は Binder 越しのシステムサービスなので、エンジンのスレッドのまま鳴らす。
+- **`VIBRATE` を main の `AndroidManifest.xml` に常設し、機能の表の `alarm` から外した**（normal 権限＝インストール時に自動で許可・利用者の確認も Play の申告も無い。
+  android-36 の android.jar に入っている framework の AndroidManifest.xml を aapt2 で読むと `protectionLevel=0x1000`＝`PROTECTION_NORMAL`（0）＋`PROTECTION_FLAG_INSTANT`
+  〈`javap` で定数を確かめた〉。`VibrationEffect` を鳴らすには `VIBRATE` が要る〈developer.android.com「Haptics APIs」〉。触感はゲームにも使う）。features が空のゲームの APK にも入る（roadmap §2.8 の AC-11 の例外）。鳴動の振動（`RingVibration`）も同じ権限で動く。
+  Play の要件チェックの `permission_policies` には `VIBRATE` の行が無いので変えていない（機能の表のどの機能のものでもないので「features に無い機能の権限」の
+  注意にもならない。`AndroidPipelineTests` で確かめる）。
+
+#### 25.15.6 ディープリンク（LaunchKind.DeepLink）
+
+- `LaunchReason.classify`: PlatformEntry を通らない起動で action が `ACTION_VIEW` なら、data（`Intent.getDataString`）を `uri` にした `deep_link`。data が無い・
+  8192 文字（符号位置）を超える VIEW は `other`（ログで警告）。最近のタスクからの開き直しは従来どおり `launcher`（タスクの元の Intent が届いても、同じ URL を
+  二度処理させない）。
+- 冷えた起動（`onCreate`）ならスクリプトの `App.LaunchReason`、起動済み（singleTask の `onNewIntent`）ならイベント `platform.launch`（data に `uri`）で届く。
+- 機能 `deep_links` の intent-filter（W1-2 の断片。VIEW・DEFAULT・BROWSABLE と scheme / host / path_prefix。§25.10.1）に合った URL が MainActivity へ届く。
+  ただし MainActivity はランチャーのために exported なので、**他のアプリが明示の Intent で任意の VIEW＋data を送れる**（intent-filter を通らない）。
+  `uri` は信用できない入力として、アプリが検査してから使う（[scripting_api.md](scripting_api.md) §7.13 の重要）。
+- 起動理由の JSON に `uri` を足した（Java の `LaunchInfo`・Rust の `wire::launch::KEY_URI`・C# の `LaunchInfo.Uri`。ほかの種類は空文字）。C# の
+  `LaunchKind.DeepLink` は列挙の末尾に足した（既存の値の番号を変えない）。
+- logcat には URI を出さない（トークンを含みうる。`LaunchInfo.toString` は scheme と長さだけ）。
+- デスクトップ: 単体起動の `SEED.exe … --deep-link=<URI>`（`runtime/src/main.rs` → `bridge::set_desktop_launch_uri`。空・長すぎはログだけで無視）で、模擬の
+  起動理由が `deep_link` になる。エディタの Play には渡す口が無い（起動引数だけ）。
+
+#### 25.15.7 開き直しの忘れ対策（ロック画面の上に出したまま）
+
+目覚ましの起動（`alarm`）で上げた showWhenLocked・turnScreenOn は、アプリが `Window.SetShowWhenLocked(false)` で下ろす約束（W1-4a）。下ろし忘れたまま背面へ回り、
+次にランチャー・最近のタスクから開き直したとき（`onNewIntent` で `launcher`）は `LaunchReason` が下ろす（`window/LockScreenPresence.apply(false)`・logcat の
+`ランチャー・最近のタスクからの開き直しなので、ロック画面の上に出す・画面を点けるを下ろしました（忘れ対策）`）。ランチャー・最近のタスクから開ける＝端末のロックは
+解除されているので、下ろしても鳴動画面が隠れることは無い。冷えた起動（`onCreate`）の窓は最初から下りているので何もしない。鳴動が止まった（`ring_stopped`）ときに
+自動で下ろすことはしない（鳴動画面の後の画面を続けたいアプリがある。W1-4a の backlog の決定）。アプリを開いたまま電源ボタンを押す場合は、下ろし忘れていれば
+ロック画面が出ない（AC-5）ので、「鳴動を片付けたらアプリが下ろす」約束は変わらない。`deep_link`・通知の本文のタップでは下ろさない（指示の範囲。[backlog.md](backlog.md)）。
+
+#### 25.15.8 デスクトップの模擬
+
+| 命令 | 模擬の振る舞い |
+|---|---|
+| `window.set_show_when_locked` / `set_keep_screen_on` / `set_system_bars_visible` | 受け付けて状態（`window_state.rs`。システムバーはスクリプトが切り替えるまで「既定」）に記録し、`[SEED PLATFORM] 模擬: …` のログ。ウィンドウ・安全領域は変わらない |
+| `haptics.tap` / `vibrate` | 回数と最後の長さを記録してログ（振動しない）。`vibrate` の ms の規則は Android と同じ（`bridge/haptics`） |
+| `app.move_task_to_back` / `open_app_settings` | ログだけ（ウィンドウを背面へ回さない・設定の画面は無い） |
+| `app.open_url` | Android と同じ規則で判定（`bridge/app`）し、通ったもののうち `http` / `https` / `mailto` だけを PC の既定のアプリで開く（`url_opener.rs`）。ほかの scheme（独自・`tel`・Windows のドライブ文字 `c:` 等）は判定だけで `ok`（返答の `opened` が false） |
+| `platform.launch_reason` | `launcher`。単体起動の `--deep-link=<URI>` があれば `deep_link`・`uri` |
+
+- PC で開く手段はシェルを通さない: Windows は専用のスレッドで COM を初期化（アパートメント・OLE1 DDE なし）して `ShellExecuteW("open", URL)`（`windows-sys` に
+  `Win32_UI_Shell`・`Win32_System_Com` の機能を足した）、macOS は `open <URL>`、その他の Unix は `xdg-open <URL>`（`std::process::Command` の引数 1 つ）。
+  `cmd /c start "" <URL>` は `&` `%` `^` を解釈し、URL の中身でコマンドが走りうるので使わない（`open` クレート 5.4.4 もこの形を insecure の機能の裏へ下げている。
+  `~/.cargo/registry` の実ソースを読んだ）。どれも呼び出し元（スクリプトのフレーム）を待たせない。
+- **開かない**: 単体テスト（`cfg(test)`）と環境変数 `SEED_PLATFORM_SIM_NO_OPEN=1` のときは判定とログだけ（`DryRunUrlOpener`）。自動の確かめ・この段階の PC の Play はこれで回した。
+- エディタの Play の区切りで画面の状態と触感の記録を既定へ戻す（起動引数のディープリンクはプロセスのものなので残す）。
+
+#### 25.15.9 確かめ方（adb・実機）
+
+```bash
+# Git Bash。APP・SERIAL・ADB は §25.12.8 と同じ。端末は画面が点いてロックが解除され、前面がランチャーのときだけ使う（私物の端末。エミュレータは使わない）
+APP=com.wakeorpay.seed
+SERIAL=2B011JEGR02535
+ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
+"$ADB" devices -l
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window | grep -E "mCurrentFocus|isKeyguardShowing|mDreamingLockscreen"
+# 1. 確かめ用のシーンで起動（PlatformSmoke.cs の W1-6 の部分: 起動直後に SetKeepScreenOn(true) → SetSystemBarsVisible(false) → 2 秒後に true →
+#    その 1 秒後に SetKeepScreenOn(false)〈前後の Screen.SafeArea をログへ〉・Haptics.Tap / Vibrate(40)・OpenUrl の断る URL と開けない独自の scheme〈no_handler〉。
+#    実機では https・アプリ情報・背面へは試さない〈アプリの外へ出るため〉）。目覚ましの確かめは音が鳴る（§25.12.8）
+dotnet run --project editor/tools/SeedAndroid -- run --project 'D:\SEED_projects\WakeOrPay' --serial $SERIAL --scene scenes/PlatformSmoke.scene --logcat-seconds 40
+# 2. システムバーを隠している 2 秒の間に: 窓の属性（FULLSCREEN・KEEP_SCREEN_ON）とバーの InsetsSource（grep の形は未確認。dumpsys の版で変わりうる）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window windows | grep -E "Window\{.*$APP|fl=" | grep -E -A1 "$APP" | head -6
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window | grep -E "InsetsSource.*(statusBars|navigationBars)" | head -6
+# 3. 安全領域の変化（Java の報告と、スクリプトが読んだ Screen.SafeArea の隠す前・隠している間・戻した後）
+"$ADB" -s $SERIAL logcat -d -s SEED SEEDPlatform | grep -E "SEED SCREEN\] Java 報告|システムバー|画面を点けたまま|PlatformSmoke\] 画面"
+# 4. ディープリンク（W1-2 の intent-filter が要る: 一時的に project_settings.json の android.features に "deep_links"、android.deep_links に
+#    { "scheme": "wakeorpay", "host": "alarm" } を足して入れ直す。確かめたら戻す）
+#    冷えた起動（アプリを止めてから）→ App.LaunchReason が DeepLink・Uri。起動中に送ると onNewIntent → platform.launch
+"$ADB" -s $SERIAL shell am force-stop $APP
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am start -W -a android.intent.action.VIEW -d "wakeorpay://alarm/x" $APP
+"$ADB" -s $SERIAL logcat -d -s SEED SEEDPlatform | grep -E "起動理由|起動後に届いた Intent|PlatformSmoke\] 起動"
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am start -W -a android.intent.action.VIEW -d "wakeorpay://alarm/y" $APP   # 起動中 → platform.launch
+# 5. 背面へ: 起動中の PlatformSmoke へ決まったディープリンクを送ると App.MoveTaskToBack() を呼ぶ（URL を検査してから使う例。4 の intent-filter が要る）。
+#    タスクが残り（visible=false）、前面がランチャーになり、pid は変わらない
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am start -W -a android.intent.action.VIEW -d "wakeorpay://alarm/smoke-back" $APP
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am stack list | grep -B1 -A2 $APP
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window | grep mCurrentFocus
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell pidof $APP
+# 6. 忘れ対策: ランチャーと同じ Intent で開き直す（HOT で戻る）→ SEEDPlatform に
+#    「ランチャー・最近のタスクからの開き直しなので、ロック画面の上に出す・画面を点けるを下ろしました（忘れ対策）」
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n $APP/com.seedengine.runtime.MainActivity
+"$ADB" -s $SERIAL logcat -d -s SEEDPlatform | grep -E "忘れ対策|起動後に届いた Intent"
+# 7. 触感が振動子に届いたか（種類と、利用者の設定で無視されたか。読むだけ）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys vibrator_manager | grep $APP | head
+# 8. 後片付け（止めると予約も消える）
+"$ADB" -s $SERIAL shell am force-stop $APP
+```
+
+期待するログ（1）: `[PlatformSmoke] 画面とアプリ: Window.SetKeepScreenOn(true) ok` → SEEDPlatform の `画面を点けたままにする: true` → `SetSystemBarsVisible(false) ok` →
+SEED の `システムバー: 隠す（Window.SetSystemBarsVisible）`・`[SEED SCREEN] Java 報告: … insets=(…)`（安全領域の値が変わる端末だけ。Pixel 6a は切り欠きとステータスバーが
+同じ高さで値が変わらず、報告も出ない）→ `Haptics.Tap() ok`（利用者の設定で触感が切られていれば振動しない）→
+`App.OpenUrl(file:///sdcard/x) は scheme_not_allowed で断られる … ok`（javascript・scheme なしも）→ `App.OpenUrl(seedsmoke-nohandler://probe) は開けるアプリが無い（no_handler） ok`
+→ 2 秒後に `SetSystemBarsVisible(true) ok` → 1 秒後に `戻した後の Screen.SafeArea = …`・`SetKeepScreenOn(false) ok` →
+`画面とアプリの確かめ: OK`。
+
+#### 25.15.10 確認結果（2026-09-27）
+
+- Rust: `cargo build` が通り、変えたファイルに警告は無い。`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests` が 100 件
+  すべて通った（新規 20 件: URL の規則 5・振動の長さ 2・模擬の画面 3・模擬の触感 2・模擬の起動理由とアプリ 5〈記録するだけの係で「http / https / mailto だけを渡す」
+  「断った URL は渡らない」〉・起動引数のディープリンク 1・URL を開く係 2。W1-4a の模擬の画面と起動理由の 2 件は新しいファイルへ移した。`java_contract_matches_wire` に
+  文字列 20 組・数 3 組を足した）。
+- Java: `javac -Xlint:all`（android-36 の android.jar・`--release 17`・AAR の classes.jar・仮の R）で `platform` と `MainActivity` を含む main・debug の Java の全 84 ファイル（＋仮の R）が通り、
+  注意は既存の `MainActivity` の this-escape だけ（W1-2 からの `SystemBarsController` の非推奨は理由を書いて抑えたので消えた）。`UrlPolicy` を JVM で動かし、
+  Rust の単体テストと同じ入力 29 件（http / https / mailto / tel / 独自 / 大文字・ドライブ文字の `c:`・file / content / javascript・空・scheme なし・数字始まり・空白・
+  改行・DEL・タブ・日本語・8192 文字の境目〈絵文字は 1 文字〉）がすべて期待どおり。使った API の版は `api-versions.xml` で確かめた（`createPredefined`・`EFFECT_CLICK` 29、
+  `createOneShot` 26、`VibrationAttributes` 30・`createForUsage` と `USAGE_MEDIA` と `vibrate(effect, attributes)` 33、`VibratorManager` 31、`moveTaskToBack` 1、
+  `FLAG_KEEP_SCREEN_ON` 1・`FLAG_FULLSCREEN` 1〈30 で非推奨〉、`ACTION_APPLICATION_DETAILS_SETTINGS` 9、`Uri.normalizeScheme` 16）。
+- C#: `SEEDScripting.csproj` は警告 0・エラー 0。`AndroidPipelineTests` 161 件が通った（機能の表の `alarm` から `VIBRATE` を外した・main のマニフェストに `VIBRATE`・
+  どの機能も `VIBRATE` を持たない・断片の権限 8 に直した）。
+- PC の Play（`SEED.exe --mode=play --assets-root=D:/SEED_projects/WakeOrPay/assets --scene=assets://scenes/PlatformSmoke.scene`、環境変数
+  `SEED_PLATFORM_SIM_NO_OPEN=1`、`--deep-link=wakeorpay://alarm/smoke?from=pc`。`timeout` で止め、SEED.exe は残っていない）: 起動理由 `deep_link`（Uri つき）→
+  `SetKeepScreenOn(true)`・`SetSystemBarsVisible(false)`（状態の記録のログ）→ `Tap`・`Vibrate(40)`・`Vibrate(0)` は `invalid_argument`・`Vibrate(60000)` は 5000 ms に
+  そろう → `OpenUrl` の file / javascript は `scheme_not_allowed`、scheme なしは `invalid_argument`、独自の scheme は判定だけ、https は「開きません（判定だけ）」→
+  `OpenAppSettings`・`MoveTaskToBack` はログだけ → 2015 ms 後に `SetSystemBarsVisible(true)` → `SetKeepScreenOn(false)` → `画面とアプリの確かめ: OK`。
+  W1-3〜W1-5 の確かめ（目覚まし・鳴動・待ち行列・通知・権限）もすべて OK のまま。起動引数と環境変数なしの回でも、起動理由 `launcher`（Uri は空）・
+  スクリプトは https を送らない・`画面とアプリの確かめ: OK`。**ブラウザは一度も開いていない**（`SystemUrlOpener` の `ShellExecuteW` はコンパイルだけで、実行していない）。
+- APK（Wake or Pay・arm64-v8a・debug。SeedAndroid build 133 秒）: aapt2 で、生成した断片に `VIBRATE` が無く、配布物の権限に `VIBRATE`（main 由来）と `alarm`・`notifications` の
+  8 つ・デバッグ版の `INTERNET`・androidx の 1 つ。features を空にした写し（`appCategory=0`）でも `VIBRATE` が入り、ほかの機能の権限は無い。`deep_links` の機能と
+  `{ "scheme": "wakeorpay", "host": "alarm" }` を一時的に足すと、MainActivity に VIEW・DEFAULT・BROWSABLE・`scheme="wakeorpay" host="alarm"` の intent-filter が
+  MAIN・LAUNCHER と並んで入った（確かめた後に設定を元のバイト列へ戻した）。dexdump で `window/`・`app/`・`haptics/` の 6 クラス（と内部クラス）・`DeviceVibrator`・
+  `local/` の新しい 8 クラス（`WindowToggleCommand` と 7 命令）が dex にあり、`MainActivity` が `SystemBarsHost` を実装している。
+- **実機（Pixel 6a・Android 16）**: 画面が点いてロックが解け、前面がランチャーになった時点で行った（それまでは `Dozing`・`isKeyguardShowing=true` で待った）。
+  `deep_links` を一時的に足した APK を `SeedAndroid run --scene scenes/PlatformSmoke.scene`（COLD 1536 ms）で入れ、`dumpsys window` を 1 秒ごとに読んだ:
+  - システムバー: 起動時（`system_bars=visible`）は `InsetsSource type=statusBars … visible=true`・窓の `fl=` に `FULLSCREEN` なし → `SetSystemBarsVisible(false)` の間は
+    `visible=false`・`fl=KEEP_SCREEN_ON … FULLSCREEN …` → `true` で `visible=true`・`FULLSCREEN` が外れる → `SetKeepScreenOn(false)` の後は `KEEP_SCREEN_ON` も外れた。
+  - 安全領域: 隠す前・隠している間・戻した後のどれも `Screen.SafeArea = (0, 132, 1080, 2205)` で変わらなかった。Java の報告の内訳が `cutout=(0,132,0,0)・bars=(0,132,0,63)・
+    navIgnoringVisibility=(0,0,0,63)` で、この端末は切り欠きの上端（132 px）がステータスバーの高さ（132 px）と同じ、ナビゲーションバー（63 px）は隠れていても数えるので、
+    バーを隠しても値が同じになる（設計どおり。値が変わらないので報告も出ない）。値が変わる端末での追従は未確認のまま。
+  - 触感: `dumpsys vibrator_manager` の記録で、`Tap` は `usage: TOUCH`・`Prebaked=CLICK`、`Vibrate(40)` は `usage: MEDIA`・`Step=40ms` として振動子に届き、どちらも
+    `ignored_for_settings`（この端末は利用者の設定で触感が切られている〈`settings get system haptic_feedback_enabled` = 0〉。設定は触っていない）。同じ回の鳴動の振動は
+    `usage: ALARM` で 3031 ms 鳴って `cancelled_by_user`（`StopRinging`）＝ main に常設した `VIBRATE` と `DeviceVibrator` で `RingVibration` が動いた。
+  - `OpenUrl`: file / javascript は `scheme_not_allowed`、scheme なしは `invalid_argument`、`seedsmoke-nohandler://probe` は `no_handler`（`ActivityNotFoundException` の経路）。
+  - ディープリンク: 起動中に `am start -W -a VIEW -d "wakeorpay://alarm/x" com.wakeorpay.seed` → `intent has been delivered to currently running top-most instance`・
+    SEEDPlatform の `起動後に届いた Intent の理由: deep_link wakeorpay:…（19 文字）`（URI はログに出ない）→ スクリプトの `platform.launch` が `Kind=DeepLink・
+    Uri wakeorpay://alarm/x`。強制停止の後の冷えた起動（COLD 862 ms）は `起動理由: deep_link wakeorpay:…（22 文字）`（開始シーンは Main なので、スクリプトの
+    `App.LaunchReason` は読んでいない。同じ `LaunchInfo.toJson` を通る起動中の経路で確かめた）。
+  - 背面へ: `wakeorpay://alarm/smoke-back` を送ると PlatformSmoke が `App.MoveTaskToBack()` → `閉じずに背面へ: 背面へ回しました`・前面がランチャー・
+    `am stack list` にタスク（`visible=false`）が残り、pid も同じ。続けて MAIN・LAUNCHER で開き直すと HOT で戻り、`…下ろしました（忘れ対策）`・
+    `起動後に届いた Intent の理由: launcher`。
+  - 同じ回で PlatformSmoke の W1-1〜W1-5 の部分も実機で通った（接続 660 ms・ping 1.3 / 0.82 / 0.74 ms・目覚ましは予定から 13 ms で発火・3 秒の鳴動と
+    `StopRinging`・通知は許可が無く `notifications_disabled`・`Permissions.Request` の確認の画面で利用者が許可 → `permission_result`（granted）と `permission_changed`）。
+  - 最後に `am force-stop` で止め、`dumpsys alarm` にこのアプリの予約が残っていないことを見た。端末に入っているのは `deep_links` を足した版の APK のまま
+    （プロジェクト設定は元のバイト列へ戻した）。
+
+#### 25.15.11 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機で残っている確認: 安全領域の値が変わる端末（切り欠きがステータスバーより低い・切り欠きの無い端末）でバーの出し入れに追従するか、触感が設定で切られていない端末で
+  実際に振動するか、https の URL がブラウザで開いて戻れるか、`OpenAppSettings` の画面、冷えた起動のディープリンクをスクリプトの `App.LaunchReason` で読むこと。
+- `Haptics` は利用者の設定で振動しなくても `true`（受け付けた）を返す（設定で無視されたかはスクリプトから分からない）。
+- バーの文字色（明暗）を選べない（W1-6 の指示に入らず持ち越し）。
+- 開き直しで下ろすのは `launcher` だけ（`deep_link`・通知の本文のタップ・`other` では下ろさない）。
+- `App.OpenUrl` に `CATEGORY_BROWSABLE` を付けていない。前面にいないとき（背面からの起動の制限）に `startActivity` が黙って断られた場合は `ok` を返しうる（推論）。
+- `Haptics` は Android 12L 以前（API 29〜32）で振動の種類が付かない。
+- デスクトップの模擬が PC で開くのは `http` / `https` / `mailto` だけ（独自の scheme・`tel` は判定だけ）。Windows の `ShellExecuteW` の経路は実行して確かめていない。
+- App Links（`autoVerify` と `assetlinks.json`）は W5。アプリを終える API は入れていない（MoveTaskToBack で足りる。backlog の Android 節）。

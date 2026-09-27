@@ -2066,6 +2066,9 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   「（最近のタスクから消した・強制停止・クラッシュ等。直前の logcat を確認してください）」に直した（`AndroidRunOutputFormatter.AppExitedText`。
   「ホーム画面」も挙げない: ホームへ戻ってもプロセスは背面で続く。最近のタスクから消したときに終わることは実機では未確認〈AOSP の既定の振る舞い〉）。
   終了確認のダイアログからアプリを終える等に要るなら、エンジンの終了要求（Android は `finish()`）をスクリプト API へ出す（add-script-api）。
+  → 2026-09-27（W1-6）: 戻るの最上位で「閉じずに背面へ」回す `App.MoveTaskToBack`（`moveTaskToBack(true)`）を足した（アプリ向けの既定。docs/android.md §25.15）。
+  終える API は入れていない（MainActivity の破棄はプロセスごと終わるので次の起動が冷え、目覚ましアプリには背面へで足りる）。ゲームの「終了」ボタンに要るなら、
+  `finishAndRemoveTask`＋セーブの書き出しの順を決めて足す（未着手）。
 - [ ] **段階C-3 の「Android（自動）で実機を優先する」経路とエディタの画面を実機・GUI で確かめていない** — 2026-09-25（段階C-3）。確認中は Pixel 6a が
   USB につながっていたが触らない約束のため、エミュレータの自動起動は「選んだ端末が見えなければエミュレータ」の経路（同じ起動・待ち合わせのコード）で確かめた。
   実機がつながった状態の `Android（自動）`（実機を選ぶ）、実機を外した状態の `Android（自動）`（エミュレータを起動）、実行先セレクタの `Android（自動）` の行と
@@ -2224,10 +2227,12 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   UI スレッドから `nativeFlushSaveData` を呼ぶ。ストアの Mutex が守るのは 1 回の Set と 1 回の書き出しだけなので、スクリプトがキーを
   順に書き換えている最中に入ると半端な組み合わせがディスクに残りうる（推測。実測はしていない）。`SaveData.Batch` を足すか、
   「1 文書を 1 キーに入れる」使い方を scripting_api.md に書く。関連: `runtime/android/native/src/jni_exports.rs`、`save/mod.rs`。
-- [ ] **配布版で起動の理由（Intent）を受け取る経路が無い** — 2026-09-27（W0）。`MainActivity.forwardLaunchOptions` は
+- [x] **配布版で起動の理由（Intent）を受け取る経路が無い** — 2026-09-27（W0）記載 / 同日 W1-4a・W1-6 で対応。`MainActivity.forwardLaunchOptions` は
   デバッグ版だけ（他のアプリの Intent で途中のシーンへ飛べないため）で、`onNewIntent` も無い。目覚まし・通知のボタン・ディープリンクで
   起きたことをスクリプトが知れない。W1-P6（エクスポートしない activity-alias 経由の Intent だけを信用する）で解く。関連:
   `runtime/android/app/src/main/java/com/seedengine/runtime/MainActivity.java:192-233`。
+  → W1-4a で `onNewIntent` と起動理由（`App.LaunchReason`・`platform.launch`。目覚まし・通知の操作は PlatformEntry 経由だけを信用）、W1-6 でディープリンク
+  （`LaunchKind.DeepLink`・`LaunchInfo.Uri`。他のアプリも送れる入力として扱う）を入れた（docs/android.md §25.12.4・§25.15.6）。`forwardLaunchOptions` はデバッグ版だけのまま。
 - [x] **プロジェクトごとに権限・サービス・受信機・intent-filter を足す仕組みが無い** — 2026-09-27（W0）記載 / 同日 W1-2 で対応。main のマニフェストには
   `<uses-permission>`・`<service>`・`<receiver>`・`<provider>` が 1 つも無く、`INTERNET` はデバッグ版のマニフェストだけ。
   `AndroidAppSettings.ExtraData` は保存で消えないだけで、ビルドのどこからも読まれない。W1-2（`android.features` → マニフェストの断片）で解く。
@@ -2242,7 +2247,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [x] **アプリ向けの既定を選べない（システムバーを常に隠す・`appCategory="game"` 固定）** — 2026-09-27（W0）記載 / 同日 W1-2 で起動時の既定を対応。
   `MainActivity` は常にシステムバーを隠し（`hideSystemBars`）、マニフェストは `android:appCategory="game"` 固定。時刻や電池が見えるべきアプリには向かない。
   → W1-2 で `android.system_bars`（`SystemBarsController.java` が生成した bool を読む）と `android.app_category`（`-Pseed.appCategory` →
-  `manifestPlaceholders`）で選べるようにした。実行中の切り替え（`Window.SetSystemBarsVisible`）とバーの文字色は W1-6。実機の見た目は下の W1-2 の項目。
+  `manifestPlaceholders`）で選べるようにした。実行中の切り替え（`Window.SetSystemBarsVisible`）は W1-6 で入れた（docs/android.md §25.15.3）。バーの文字色は
+  下の別項目（W1-6 でも入れず持ち越し）。実機の見た目は下の W1-2 の項目。
 
 ### W1: Android サービス層（`SEED.Platform`）
 
@@ -2289,6 +2295,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `connecting` → `platform.connected` → ping 3 回（`:seed_platform` の pid・1 ms 未満か）→ 試験イベントの到達を logcat で見る。あわせて adb の
   `DebugPlatformReceiver`（PING・EMIT_TEST_EVENT）、`:seed_platform` が最初の接続まで居ないこと、`run-as … kill -9 <:seed_platform の pid>` の後に
   `platform.disconnected` → 次の呼び出しで接続し直すこと（ゲームのプロセスが道連れにならないこと）を確かめる。結果を roadmap §2.10 と android.md §25.8 へ。
+  → 2026-09-27（W1-6 の実機の回。docs/android.md §25.15.10）: PlatformSmoke の流れは通った（`connecting` → `platform.connected` 660 ms・`:seed_platform` の pid 3775 →
+  ping 1.3 / 0.82 / 0.74 ms → 試験イベントが届いた）。`DebugPlatformReceiver`・`kill -9` の後の接続し直しは未実施。
 - [ ] **プラットフォームの記録の永続化と「既読」の扱い（W1-1 の割り切り）** — 2026-09-27（W1-1）。`EventJournal` はメモリの中だけで、
   `platform.poll_events` で取り出した時点で既読にして捨てる。`:seed_platform` が死ぬと未読が消え、取り出した直後にメインプロセスが死ぬと
   そのイベントはスクリプトへ届かない。目覚ましの記録（鳴った・止めた）は取りこぼせないので、W1-3 で端末保護ストレージへ書き、W1-4 で
@@ -2327,6 +2335,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `[SEED SCREEN] Java 報告` の insets にバーの分が入るか（ScreenReporter が `systemBars()` を足す。コードを読んだだけ）、`システムバー: 出したまま` の
   起動ログ、`dumpsys package com.wakeorpay.seed` の権限（USE_EXACT_ALARM は許可済み・POST_NOTIFICATIONS は未許可のはず）を見る。
   上の W1-1 の実機の確認（§25.7）と一緒に行う。結果を android.md §25.10.6 と roadmap §2.10 へ。
+  → 2026-09-27（W1-6 の実機の回）: `システムバー: 出したまま（system_bars=visible）` の起動ログ・`InsetsSource statusBars visible=true`・窓の `fl=` に `FULLSCREEN` なし・
+  `[SEED SCREEN] Java 報告: … insets=(0,132,0,63)`（`bars=(0,132,0,63)`）を見た。権限の `dumpsys package`・appCategory は未確認。
 - [ ] **プロジェクト設定ウィンドウの「Android のプラットフォーム機能」小節の目視** — 2026-09-27（W1-2）。WPF の画面はエージェントが見られないので、
   チェックボックス・コンボ・ディープリンクの行（追加・削除・`deep_links` の機能を切るとたたまれる）・注意と誤りの行の見た目と、保存で止まる動きを
   利用者が確かめる。判断と値の出し入れは単体テスト済み。関連: `editor/src/ProjectSettings/ProjectSettingsWindow.AndroidPlatform.cs`。
@@ -2336,8 +2346,9 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `FOREGROUND_SERVICE_<種類>` の権限の組を確かめる項目を `AndroidPlatformFeatureChecks` に足す。
   → W1-4a（2026-09-27）で `RingService`（`mediaPlayback`）を機能の表に足したが、この要件チェックは範囲外として入れていない（機能の表の
   単体テストと aapt2 の手の確認で種類と権限の組を確かめた）。W1-4b か W1-7 で足す。
-- [ ] **システムバーを出したままのときの文字色（明暗）を選べない** — 2026-09-27（W1-2）。テーマの既定のまま（暗い AppCompat のテーマなので白い文字の見込み。
-  推論・実機で未確認）。明るい画面のアプリではステータスバーの時刻・電池が見えにくい。W1-6 の `Window` の API（と必要ならプロジェクト設定）で
+- [ ] **システムバーを出したままのときの文字色（明暗）を選べない** — 2026-09-27（W1-2）。W1-6 の指示（`Window` の 3 つの切り替え）に入らず持ち越し（W1-7 か W2 のテーマと一緒に）。
+  テーマの既定のまま（暗い AppCompat のテーマなので白い文字の見込み。
+  推論・実機で未確認）。明るい画面のアプリではステータスバーの時刻・電池が見えにくい。`Window` の API（W1-6 の `SetSystemBarsVisible` の隣。と必要ならプロジェクト設定）で
   `WindowInsetsControllerCompat.setAppearanceLightStatusBars` を選べるようにする。
 - [x] **W1-3 目覚ましの予約（setAlarmClock・予約の控え・再起動／時刻・タイムゾーン／更新／権限の変化で張り直す・音源の書き出し）** — 2026-09-27 記載 / 同日実装（実機の確認は下の項目）。
   W1-0: `BootReceiver` は強制停止からの復帰（Android 15+ は停止状態から出たときに `BOOT_COMPLETED`。実機では `LOCKED_BOOT_COMPLETED` も）も兼ねる。
@@ -2352,6 +2363,7 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `platform.alarm.fired` が届き控えが空になること・強制停止 → 開き直しで `BootReceiver` が過ぎた予約を `platform.alarm.missed`（device_off）に
   すること・`run-as` で端末保護ストレージ（`/data/user_de/0/<APP>/files/seed_platform/`）の控え・記録が読めることを見る。`sound_asset` の書き出しは
   Wake or Pay に音のアセットがまだ無いので、音を足してから確かめる。W1-1・W1-2 の実機の確認（上）と一緒に行う。
+  → 2026-09-27（W1-6 の実機の回）: 5 秒後の予約が予定から 13 ms で `platform.alarm.fired`・控えが空になった。`dumpsys alarm`・`BootReceiver`・`run-as` は未実施。
 - [ ] **目覚ましの音源の書き出しに掃除が無い** — 2026-09-27（W1-3）。`files/seed_platform/sounds/<内容のハッシュ>.<拡張子>` は内容が変わるたびに増え、
   消さない（予約から外れた音も残る）。書き出しはメインプロセス、控えは `:seed_platform` にあり、掃除をどちらがいつ行うか（控えのどの予約からも
   指されていないファイルを、予約の直後の書き出しとぶつからない時機に消す）を決める。音は小さい見込みなので急がない。関連:
@@ -2382,6 +2394,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   (b) 画面オフ・ロック中の冷えた起動（AC-1・AC-12。フルスクリーン通知 → `PlatformEntry` → GameActivity。別名に置いた lib_name の meta-data が要るか・
   別名の `onNewIntent` の部品名もここで確かめる）、(c) 使用中のヘッドアップ通知の本文のタップ・「開く」。音の開始の速さ（専用のスレッドでの準備）も測る。
   実機では `force_volume` を試さない（端末の音量を変えない約束）。
+  → 2026-09-27（W1-6 の実機の回）: 1 回の予約が鳴り、3004 ms で `StopRinging` → `ring_stopped(stopped)`・`GetRinging` が空。振動は `dumpsys vibrator_manager` で
+  `usage: ALARM` 3031 ms・`cancelled_by_user`。計測と (a)〜(c)・`dumpsys` の RingService / audio_flinger / notification は未実施。
 - [ ] **鳴動の待ち行列がプロセスの中だけ** — 2026-09-27（W1-4a）。鳴動中に配信された予約は `RingRegistry` の待ち行列にだけあり、控えからは消してある。
   待っている間に `:seed_platform` が殺されると、その予約は黙って失われる（`ring_stopped` も `missed` も記録されない）。待ち行列を控えに残すか、
   端末保護ストレージへ書くかを W1-7 で決める。関連: `platform/service/alarm/ring/RingRegistry.java`。
@@ -2394,9 +2408,13 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   → W1-5（2026-09-27）では変えなかった（W1-5 の指示の範囲は新しい通知の API と権限だけ）。鳴動中はその予約がもう控えから消えているので、ステータスバーの
   目覚ましの印は次の予約のもの（鳴動への入口にならない）。出し直すなら `setDeleteIntent` に `:seed_platform` の exported=false の受信機（Activity を開かないので
   トランポリンの禁止に当たらない）を置き、`RingService` が同じ通知を出し直す案。W1-4b の実機で「消せるか」を確かめてから決める。
-- [ ] **目覚ましで起動したアプリがロック画面の上に残る（`SetShowWhenLocked(false)` の呼び忘れ）** — 2026-09-27（W1-4a）。`alarm` の起動では
+- [x] **目覚ましで起動したアプリがロック画面の上に残る（`SetShowWhenLocked(false)` の呼び忘れ）** — 2026-09-27（W1-4a）記載 / 同日 W1-6 で決めて対策（下の → ）。`alarm` の起動では
   エンジンが showWhenLocked を上げ、下ろすのはアプリ（scripting_api.md §7.13 に明記）。呼び忘れると AC-5 に反する。鳴動が止まった（`ring_stopped`）後に
   エンジンが自動で下ろす既定を足すかを W1-6 で決める（鳴動画面を出したまま解除の後の画面を続けたいアプリもあるので、今は自動にしていない）。
+  → W1-6 で決めた: `ring_stopped` での自動の下ろしは入れない（上の理由のまま）。代わりに**ランチャー・最近のタスクからの開き直し**（`onNewIntent` で起動理由が
+  `launcher`）で `LaunchReason` が `setShowWhenLocked(false)`・`setTurnScreenOn(false)` に戻す（忘れ対策。開き直せる＝ロックは解除済みなので鳴動画面は隠れない。
+  docs/android.md §25.15.7）。残る穴: アプリを開いたまま電源ボタンを押したときは、下ろし忘れていればロック画面が出ない（AC-5）ので、アプリが下ろす約束は変わらない
+  （scripting_api.md §7.13 の重要）。`deep_link`・通知の本文のタップ・`other` の開き直しでは下ろさない（指示の範囲が `launcher`。広げるかは下の W1-6 の項目）。実機では未確認。
 - [x] **W1-5 通知と権限（チャネル・常駐・ボタン・トランポリン無し・実行時権限の結果イベント・正確なアラーム／フルスクリーン通知の状態と設定画面）** — 2026-09-27 記載 /
   同日実装（実機の確認は下の項目）。正典は docs/android.md §25.13（通知）・§25.14（権限）。`:seed_platform` の `service/notification/NotificationModule`、
   メインプロセスの `local/Permission*Command` と `platform/permission/`、`MainActivity` の `onResume`・`onRequestPermissionsResult` の受け口、デスクトップの模擬、
@@ -2407,6 +2425,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   `permission_result`、設定の画面から戻ったときの `permission_changed`、`onRequestPermissionsResult` と `onResume` の順序（記憶では結果が先）、確認の画面を
   外側のタップで閉じたときの rationale（記憶では変わらない＝`denied` のまま。公式の文書に記述が無い）を確かめる。
   確認の画面が出たら確かめる側は操作しない。`pm grant/revoke`・`appops set` で状態を作るのは利用者の了承を得てから。
+  → 2026-09-27（W1-6 の実機の回）: 新しく入れた直後は `Check(PostNotifications) = Denied` で `Show` が `notifications_disabled`、最後の `Permissions.Request` の
+  確認の画面で利用者が許可 → `permission_result`（granted）→ `permission_changed`（granted）。通知の表示・ボタン・本文のタップ・設定の画面は未実施。
 - [ ] **`denied_permanently` の判定が「拒否の覚え」に頼る** — 2026-09-27（W1-5）。Android の `shouldShowRequestPermissionRationale` だけでは「一度も求めていない・
   確認の画面を外側で閉じた」と「二度拒否されて画面が出ない」を見分けられないので、メインプロセスの SharedPreferences（`seed_platform_permissions`）に
   「はっきり拒否された」を覚える（`platform/permission/PermissionHistory`）。アプリのデータを消した後・端末の移行の後は覚えが無く、永続の拒否が
@@ -2419,9 +2439,30 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   （アプリのアイコンはステータスバーでは形の影しか出ないため使っていない）。プロジェクト設定（例 `android.notification_icon`）から単色のアイコンを生成して使う形は未着手。
 - [ ] **設定の画面を開いた要求は次の onResume まで結果が来ない** — 2026-09-27（W1-5）。`startActivity` が例外なく戻ったのに設定の画面が前面に出なかった
   （背面からの起動の制限など）ときは、利用者が次にアプリを前面へ戻すまで `permission_result` が届かない。スクリプトに時間切れは無い。
-- [ ] **W1-6 画面とアプリ（`Window.SetShowWhenLocked`・`SetKeepScreenOn`・`SetSystemBarsVisible`・`App.MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク）** — 2026-09-27。
+- [x] **W1-6 画面とアプリ（`Window.SetShowWhenLocked`・`SetKeepScreenOn`・`SetSystemBarsVisible`・`App.MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク）** — 2026-09-27 記載 /
+  同日実装（実機の確認は下の項目）。正典は docs/android.md §25.15。
   → `Window.SetShowWhenLocked` と `App.LaunchReason`（起動理由）は W1-4a で先に入れた（docs/android.md §25.12.5）。残りはこの段階で。
   「アプリを終える API が無い」（Android 節）は `MoveTaskToBack`（閉じずに背面へ）で目覚ましアプリの用は足りるが、終える API もここで一緒に決める。
+  → メインプロセスの `local/` に 7 命令と共通の形 `WindowToggleCommand`、`SystemBarsController` の実行中の切り替え（安全領域は既存の WindowInsets の経路で追従する
+  ことをコードで確かめた）、`App.OpenUrl`（URL の規則＋`startActivity`＋`ActivityNotFoundException` で `no_handler`。`resolveActivity`・`<queries>` は使わない）、
+  `Haptics`（`DeviceVibrator` を `RingVibration` と共通化。`VIBRATE` を main に常設し機能 `alarm` から外した）、ディープリンク（`deep_link`・`uri`）、開き直しの忘れ対策、
+  デスクトップの模擬（`OpenUrl` は http / https / mailto だけを `ShellExecuteW` で開く。`SEED_PLATFORM_SIM_NO_OPEN=1` で開かない。単体起動の `--deep-link`）、C# の
+  `Window`・`App`・`Haptics`・`LaunchKind.DeepLink`・`LaunchInfo.Uri`。終える API は入れないと決めた（Android 節の項目に理由）。
+- [ ] **W1-6 の実機の確認の残り** — 2026-09-27（W1-6）。同日に Pixel 6a（Android 16）で大半を確かめた（docs/android.md §25.15.10: バーの出し入れ・`KEEP_SCREEN_ON`・
+  `OpenUrl` の断る URL と `no_handler`・触感が `usage TOUCH / MEDIA` で届くこと・ディープリンクの起動中と冷えた起動・ディープリンクで呼んだ `MoveTaskToBack` の後の
+  タスク・開き直しの忘れ対策）。残り: (1) 安全領域の値が変わる端末（切り欠きがステータスバーより低い・切り欠きが無い）でバーの出し入れに追従するか
+  （Pixel 6a は切り欠きとステータスバーが同じ 132 px で値が変わらない）、(2) 触感が設定で切られていない端末で実際に振動するか（この端末は `ignored_for_settings`）、
+  (3) https の URL がブラウザで開いて戻れるか・`OpenAppSettings` の画面（アプリの外へ出るので確かめ用のスクリプトでは実機で呼んでいない）、(4) 冷えた起動の
+  ディープリンクをスクリプトの `App.LaunchReason` で読むこと（開始シーンが Main なので Java のログだけを見た）。端末に入っているのは `deep_links` を足した版の APK。
+- [ ] **開き直しで showWhenLocked を下ろすのが `launcher` だけ** — 2026-09-27（W1-6）。指示の範囲に合わせ、`deep_link`・`notification_tap`・`other` の `onNewIntent`
+  では下ろさない。どれも利用者がロックを解除して操作した結果なので下ろしてよい見込み（`notification_action` の「開く」は鳴動の通知からなので除く）。広げるなら
+  `LaunchReason.applyWindowFlags` の条件だけ。関連: `runtime/android/app/src/main/java/com/seedengine/runtime/platform/LaunchReason.java`。
+- [ ] **`App.OpenUrl` に `CATEGORY_BROWSABLE` を付けるか** — 2026-09-27（W1-6）。今は付けない（公式の「URL を開く」の例は付けるが、`tel` などで BROWSABLE を宣言しない
+  受け手があると `no_handler` になるため）。URL がサーバの文面などアプリの外から来る場合、BROWSABLE を付けると「ブラウザから開かれてよい」と宣言した部品だけが
+  対象になる（安全側）。付けるなら端末の電話・メールのアプリで `tel` / `mailto` が開けるかを実機で確かめてから。関連: `platform/app/UrlLauncher.java`。
+- [ ] **`Haptics` の Android 12L 以前（API 29〜32）は振動の種類が付かない** — 2026-09-27（W1-6）。`VibrationAttributes.createForUsage` と `vibrate(effect, attributes)` が
+  API 33 からなので、それより前は `vibrate(effect)`（種類なし）。利用者の「タッチの触感」の設定が効くかは未確認（Pixel 6a は Android 16 なので確かめられない。
+  エミュレータ API 29〜32 で見る）。関連: `platform/haptics/HapticFeedback.java`。
 - [ ] **W1-S 保存の耐久性** — 2026-09-27。上の「SaveData の書き出しに…隙間がある」「UI スレッドからの自動書き出し…」を直す。
 - [ ] **W1-7 通しの確認（AC-1〜14）** — 2026-09-27。確かめ用のシーン（例 `templates/scenes/platform_probe.scene`）、Java の JVM 単体テスト、docs。
 - [ ] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27。Wake or Pay の起床確認「振る」を v1 に残すなら（アプリ仕様 §10 U-04）。

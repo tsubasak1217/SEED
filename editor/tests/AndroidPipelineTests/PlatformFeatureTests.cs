@@ -69,7 +69,7 @@ public static class PlatformFeatureTests
         harness.Add("断片: 同じ設定からは同じバイト列（features の順によらない）・設定が変われば指紋も変わる", WriterIsDeterministic);
         harness.Add("置き場: 機能が空でも書く・同じ中身は書かない・古いファイルは消す", StagerWritesAndCleans);
         harness.Add("Gradle: seed.appCategory は既定の game 以外だけ渡す・断片の中身は APK の指紋に入る", GradlePropertyAndFingerprint);
-        harness.Add("取り決め: build.gradle.kts の語彙・置き場・main のマニフェスト（PlatformProvider・PlatformEntry）・Java のリソース名が中核と一致", ContractsMatchRepository);
+        harness.Add("取り決め: build.gradle.kts の語彙・置き場・main のマニフェスト（PlatformProvider・PlatformEntry・VIBRATE）・Java のリソース名が中核と一致", ContractsMatchRepository);
     }
 
     // ── 機能の表 ────────────────────────────────────────────
@@ -84,7 +84,7 @@ public static class PlatformFeatureTests
         var expected = new[]
         {
             "android.permission.USE_EXACT_ALARM", "android.permission.SCHEDULE_EXACT_ALARM", "android.permission.RECEIVE_BOOT_COMPLETED",
-            "android.permission.WAKE_LOCK", "android.permission.VIBRATE", "android.permission.USE_FULL_SCREEN_INTENT",
+            "android.permission.WAKE_LOCK", "android.permission.USE_FULL_SCREEN_INTENT",
             "android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK", "android.permission.POST_NOTIFICATIONS",
         };
         Check.Equal(string.Join(",", expected), string.Join(",", alarm.Permissions.Select(p => p.Name)), "alarm の権限");
@@ -119,6 +119,8 @@ public static class PlatformFeatureTests
         Check.True(deepLinks.DeepLinkFilters && deepLinks.Permissions.Count == 0, "deep_links は intent-filter だけ（名前は大文字小文字・空白を問わず引ける）");
         Check.Equal("alarm,notifications", string.Join(",", catalog.FeaturesRequesting("android.permission.POST_NOTIFICATIONS")), "POST_NOTIFICATIONS を要る機能");
         Check.Equal(0, catalog.FeaturesRequesting("android.permission.INTERNET").Count, "INTERNET はどの機能のものでもない");
+        // W1-6: VIBRATE（normal 権限。触感はゲームにも使う）は機能ではなく main のマニフェストに常設（ContractsMatchRepository で確かめる）
+        Check.Equal(0, catalog.FeaturesRequesting("android.permission.VIBRATE").Count, "VIBRATE はどの機能のものでもない（main に常設）");
     }
 
     /// <summary>部品の Java のソース。</summary>
@@ -207,7 +209,8 @@ public static class PlatformFeatureTests
         var settings = new AndroidAppSettings { Features = new() { "Notifications", " alarm ", "alarm", "future_x", "FUTURE_X", "" } };
         var set = AndroidPlatformFeatureResolver.Resolve(settings, AndroidPlatformFeatureCatalog.BuiltIn);
         Check.Equal("alarm,notifications", string.Join(",", set.FeatureNames), "表の順（書いた順によらない）・重なりなし");
-        Check.Equal(9, set.Permissions.Count, "POST_NOTIFICATIONS は 1 つ");
+        // alarm の 8（W1-6 で VIBRATE を main の常設へ移した）＋ notifications の POST_NOTIFICATIONS（alarm と重なるので 1 つ）
+        Check.Equal(8, set.Permissions.Count, "POST_NOTIFICATIONS は 1 つ");
         Check.Equal(1, set.Permissions.Count(p => p.Name == "android.permission.POST_NOTIFICATIONS"), "重なりなし");
         Check.Equal("future_x", string.Join(",", set.UnknownFeatures), "知らない名前（大文字小文字違いは 1 つ）");
         Check.True(set.Warnings.Single().Contains("future_x") && set.Warnings.Single().Contains("alarm / notifications / deep_links"), $"注意に使える機能: {set.Warnings.Single()}");
@@ -331,7 +334,7 @@ public static class PlatformFeatureTests
         var files = AndroidPlatformManifestWriter.Render(set);
         var manifest = XDocument.Parse(files.ManifestText).Root!;
         var permissions = manifest.Elements("uses-permission").ToList();
-        Check.Equal(9, permissions.Count, "権限 9");
+        Check.Equal(8, permissions.Count, "権限 8（W1-6 で VIBRATE は main の常設へ移した）");
         var schedule = permissions.Single(p => (string?)p.Attribute(AndroidNs + "name") == "android.permission.SCHEDULE_EXACT_ALARM");
         Check.Equal("32", (string?)schedule.Attribute(AndroidNs + "maxSdkVersion"), "maxSdkVersion");
         // alarm の受信機 2 つ（W1-3）と鳴動の前景サービス（W1-4a）。ディープリンクが無いので MainActivity の要素は書かない
@@ -485,6 +488,11 @@ public static class PlatformFeatureTests
         var manifest = File.ReadAllText(Path.Combine(engine.AndroidDir, "app", "src", "main", "AndroidManifest.xml"));
         Check.True(manifest.Contains("android:appCategory=\"${seedAppCategory}\""), "main のマニフェストの appCategory");
         Check.True(manifest.Contains("android:name=\".platform.service.PlatformProvider\""), "PlatformProvider は main に常設");
+
+        // W1-6: VIBRATE は main に常設（SEED.Platform の Haptics と鳴動の振動。features が空の APK にも入る）
+        var mainPermissions = XDocument.Parse(manifest).Root!.Elements("uses-permission")
+            .Select(p => (string?)p.Attribute(AndroidNs + "name")).ToList();
+        Check.True(mainPermissions.Contains("android.permission.VIBRATE"), "VIBRATE は main のマニフェストに常設");
 
         // 信頼できる起動の入口 PlatformEntry（W1-4a）: main に常設の activity-alias・exported=false・対象は MainActivity・
         // GameActivity が起動の部品の ActivityInfo から読む lib_name を別名にも持つ・Java の定数と同じ名前

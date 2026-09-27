@@ -1,7 +1,8 @@
 // ============================================================
 //  platform/bridge/wire.rs — プラットフォーム機能（SEED.Platform）の JSON の約束（W1-1・W1-3 で目覚まし wire::alarm・
 //  W1-4a で鳴動〈wire::alarm の get_ringing / stop_ringing 等〉・起動理由 wire::launch・画面 wire::window を追加・
-//  W1-5 で通知 wire::notification・権限 wire::permission を追加）
+//  W1-5 で通知 wire::notification・権限 wire::permission を追加・W1-6 で画面の切り替え・ディープリンク〈wire::launch の uri〉・
+//  アプリ wire::app・触感 wire::haptics を追加）
 //
 //  【役割】
 //  エンジン・Java（メインプロセスの SeedPlatform と :seed_platform の PlatformProvider）・C#（SEED.Platform）の
@@ -87,6 +88,10 @@ pub const ERROR_INTERNAL_PANIC: &str = "internal_panic";
 
 /// module / method の名前の最大の長さ（バイト）。
 pub const MAX_NAME_LEN: usize = 64;
+
+/// URL（app.open_url の url・ディープリンクの起動理由の uri）の最大の長さ（Unicode の符号位置の数。W1-6）。
+/// Java の PlatformContract.MAX_URL_LENGTH と一致させる。
+pub const MAX_URL_LENGTH: usize = 8192;
 
 /// module / method の名前が約束どおりか（1〜MAX_NAME_LEN 文字の小文字英数字と `_`）。
 ///
@@ -338,6 +343,10 @@ pub mod launch {
     pub const KIND_ALARM_CLOCK_INFO: &str = "alarm_clock_info";
     /// 種類: それ以外。
     pub const KIND_OTHER: &str = "other";
+    /// 種類: ディープリンク（W1-6。PlatformEntry を通らない VIEW＋data の Intent。どのアプリからでも送れるので中身はアプリが検査する）。
+    pub const KIND_DEEP_LINK: &str = "deep_link";
+    /// 起動理由: ディープリンクの URI（deep_link のとき。ほかは空。W1-6）。
+    pub const KEY_URI: &str = "uri";
     /// 通知の操作の ID: 鳴動の通知の「開く」。
     pub const ACTION_OPEN: &str = "open";
 }
@@ -349,10 +358,69 @@ pub mod window {
     pub const MODULE: &str = "window";
     /// ロック画面の上に出す＋画面を点ける の切り替え。引数 `{ on }`。
     pub const METHOD_SET_SHOW_WHEN_LOCKED: &str = "set_show_when_locked";
-    /// set_show_when_locked の引数・返答: 上げるか。
+    /// 画面を点けたままにする（Android の FLAG_KEEP_SCREEN_ON）の切り替え。引数 `{ on }`（W1-6）。
+    pub const METHOD_SET_KEEP_SCREEN_ON: &str = "set_keep_screen_on";
+    /// システムバー（ステータスバー・ナビゲーションバー）を出す・隠すの切り替え。引数 `{ on }`（W1-6。起動時の既定は android.system_bars）。
+    pub const METHOD_SET_SYSTEM_BARS_VISIBLE: &str = "set_system_bars_visible";
+    /// 画面の切り替えの命令の引数・返答: 入れるか。
     pub const KEY_ON: &str = "on";
     /// 操作する Activity が無い（Android）。
     pub const ERROR_NO_ACTIVITY: &str = "no_activity";
+}
+
+/// アプリ（W1-6。モジュール "app"。Android はメインプロセスが答える）の名前・欄・理由
+/// （Java の PlatformContract の *APP*・URL_SCHEME_*・C# の AppJson と一致させる）。
+///
+/// 命令: `move_task_to_back {}` → `{}`・`open_url { url }` → `{ scheme }`・`open_app_settings {}` → `{}`。
+/// open_url の URL の規則は bridge::app（Java の app/UrlPolicy と同じ）。失敗の理由のうち `invalid_argument` は目覚ましと同じ文字列。
+pub mod app {
+    /// アプリのモジュール。
+    pub const MODULE: &str = "app";
+    /// 閉じずに背面へ（戻るの最上位で使う）。
+    pub const METHOD_MOVE_TASK_TO_BACK: &str = "move_task_to_back";
+    /// URL を開く（Android は ACTION_VIEW）。
+    pub const METHOD_OPEN_URL: &str = "open_url";
+    /// 端末の「アプリ情報」の画面を開く。
+    pub const METHOD_OPEN_APP_SETTINGS: &str = "open_app_settings";
+    /// open_url の引数: 開く URL。
+    pub const KEY_URL: &str = "url";
+    /// open_url の返答: 小文字にそろえた scheme。
+    pub const KEY_SCHEME: &str = "scheme";
+    /// open_url の返答（デスクトップの模擬だけ）: PC の既定のアプリへ実際に渡したか。
+    pub const KEY_OPENED: &str = "opened";
+    /// 断る scheme: 端末のファイル。
+    pub const SCHEME_FILE: &str = "file";
+    /// 断る scheme: ContentProvider（アプリの中身を他のアプリへ渡しうる）。
+    pub const SCHEME_CONTENT: &str = "content";
+    /// 断る scheme: スクリプトの実行。
+    pub const SCHEME_JAVASCRIPT: &str = "javascript";
+    /// open_url で断る scheme の一覧（小文字）。
+    pub const DENIED_SCHEMES: [&str; 3] = [SCHEME_FILE, SCHEME_CONTENT, SCHEME_JAVASCRIPT];
+    /// open_url: その URL を開けるアプリが無い（Android の ActivityNotFoundException）。
+    pub const ERROR_NO_HANDLER: &str = "no_handler";
+    /// open_url: 断る scheme（DENIED_SCHEMES）。
+    pub const ERROR_SCHEME_NOT_ALLOWED: &str = "scheme_not_allowed";
+}
+
+/// 触感（W1-6。モジュール "haptics"。Android はメインプロセスが振動子を鳴らして答える）の名前・欄・上限・理由
+/// （Java の PlatformContract の *HAPTICS*・*VIBRATE*・C# の Haptics と一致させる）。
+///
+/// 命令: `tap {}` → `{}`・`vibrate { ms }` → `{ ms }`（ms の規則は bridge::haptics。Java の HapticsVibrateCommand と同じ）。
+pub mod haptics {
+    /// 触感のモジュール。
+    pub const MODULE: &str = "haptics";
+    /// 軽いクリックの触感（Android は VibrationEffect.EFFECT_CLICK）。
+    pub const METHOD_TAP: &str = "tap";
+    /// 決まった長さの振動（Android は VibrationEffect.createOneShot）。
+    pub const METHOD_VIBRATE: &str = "vibrate";
+    /// vibrate の引数・返答: 長さ（ミリ秒）。
+    pub const KEY_MS: &str = "ms";
+    /// vibrate の ms の下限（これより小さい値は invalid_argument）。
+    pub const MIN_VIBRATE_MS: i64 = 1;
+    /// vibrate の ms の上限（これより大きい値はこれにそろえる）。
+    pub const MAX_VIBRATE_MS: i64 = 5000;
+    /// 端末に振動子が無い（Android）。
+    pub const ERROR_NO_VIBRATOR: &str = "no_vibrator";
 }
 
 /// 通知（W1-5。モジュール "notification"。Android は :seed_platform の NotificationModule が答える。機能 `notifications`）の名前・欄・
@@ -618,9 +686,24 @@ mod tests {
             ("LAUNCH_KIND_NOTIFICATION_ACTION", launch::KIND_NOTIFICATION_ACTION),
             ("LAUNCH_KIND_ALARM_CLOCK_INFO", launch::KIND_ALARM_CLOCK_INFO), ("LAUNCH_KIND_OTHER", launch::KIND_OTHER),
             ("LAUNCH_ACTION_OPEN", launch::ACTION_OPEN),
-            // W1-4a: 画面
+            // W1-6: ディープリンク
+            ("LAUNCH_KIND_DEEP_LINK", launch::KIND_DEEP_LINK), ("KEY_LAUNCH_URI", launch::KEY_URI),
+            // W1-4a: 画面（W1-6 で画面を点けたまま・システムバー）
             ("MODULE_WINDOW", window::MODULE), ("METHOD_WINDOW_SET_SHOW_WHEN_LOCKED", window::METHOD_SET_SHOW_WHEN_LOCKED),
+            ("METHOD_WINDOW_SET_KEEP_SCREEN_ON", window::METHOD_SET_KEEP_SCREEN_ON),
+            ("METHOD_WINDOW_SET_SYSTEM_BARS_VISIBLE", window::METHOD_SET_SYSTEM_BARS_VISIBLE),
             ("KEY_WINDOW_ON", window::KEY_ON), ("ERROR_NO_ACTIVITY", window::ERROR_NO_ACTIVITY),
+            // W1-6: アプリ
+            ("MODULE_APP", app::MODULE), ("METHOD_APP_MOVE_TASK_TO_BACK", app::METHOD_MOVE_TASK_TO_BACK),
+            ("METHOD_APP_OPEN_URL", app::METHOD_OPEN_URL), ("METHOD_APP_OPEN_APP_SETTINGS", app::METHOD_OPEN_APP_SETTINGS),
+            ("KEY_APP_URL", app::KEY_URL), ("KEY_APP_SCHEME", app::KEY_SCHEME),
+            ("URL_SCHEME_FILE", app::SCHEME_FILE), ("URL_SCHEME_CONTENT", app::SCHEME_CONTENT),
+            ("URL_SCHEME_JAVASCRIPT", app::SCHEME_JAVASCRIPT),
+            ("ERROR_NO_HANDLER", app::ERROR_NO_HANDLER), ("ERROR_SCHEME_NOT_ALLOWED", app::ERROR_SCHEME_NOT_ALLOWED),
+            // W1-6: 触感
+            ("MODULE_HAPTICS", haptics::MODULE), ("METHOD_HAPTICS_TAP", haptics::METHOD_TAP),
+            ("METHOD_HAPTICS_VIBRATE", haptics::METHOD_VIBRATE), ("KEY_HAPTICS_MS", haptics::KEY_MS),
+            ("ERROR_NO_VIBRATOR", haptics::ERROR_NO_VIBRATOR),
             // W1-5: 通知
             ("MODULE_NOTIFICATION", notification::MODULE),
             ("METHOD_NOTIFICATION_ENSURE_CHANNEL", notification::METHOD_ENSURE_CHANNEL),
@@ -682,6 +765,9 @@ mod tests {
             ("MAX_NOTIFICATION_PAYLOAD_LENGTH", notification::MAX_PAYLOAD_LENGTH as f64),
             ("MAX_NOTIFICATION_ACTIONS", notification::MAX_ACTIONS as f64),
             ("FIRST_PERMISSION_REQUEST_ID", permission::FIRST_REQUEST_ID as f64),
+            // W1-6: URL の長さ・振動の長さ
+            ("MAX_URL_LENGTH", MAX_URL_LENGTH as f64),
+            ("MIN_VIBRATE_MS", haptics::MIN_VIBRATE_MS as f64), ("MAX_VIBRATE_MS", haptics::MAX_VIBRATE_MS as f64),
         ];
         for (java, rust) in numbers {
             // Java の数の書き方（桁区切りの _・long の L）を落としてから読む

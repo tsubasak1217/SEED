@@ -8,7 +8,8 @@
 //    ・起動の Intent の「seed.」で始まる文字列の extra（起動するシーン等）を JSON にしてネイティブへ渡す
 //      （デバッグ版の APK だけ。理由は forwardLaunchOptions のコメント。段階C-3）
 //    ・システムバーの既定の出し方（隠す＝ゲーム向けの既定／出す＝アプリ向け。プロジェクト設定 android.system_bars。
-//      中身は SystemBarsController。契機の受け口だけここ。W1-2）
+//      中身は SystemBarsController。契機の受け口だけここ。W1-2）と、スクリプトからの実行中の切り替えの受け口
+//      （platform/window/SystemBarsHost。SEED.Platform の Window.SetSystemBarsVisible。W1-6）
 //    ・安全領域と画面の回転をネイティブへ知らせる（中身は ScreenReporter。契機の受け口だけここ）
 //    ・音量キーの対象をメディアの音量にし、音声フォーカスを前面で要求・前面を離れるときに手放す
 //      （中身は AudioFocusController。契機の受け口だけここ）
@@ -48,6 +49,7 @@ import com.google.androidgamesdk.GameActivity;
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.SeedPlatform;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
+import com.seedengine.runtime.platform.window.SystemBarsHost;
 
 /**
  * SEED ランタイムの唯一の Activity。
@@ -56,7 +58,7 @@ import com.seedengine.runtime.platform.permission.PermissionLifecycle;
  * onCreate で読む）と一致させてある。Cargo 側の出力名 libSEED.so（runtime/android/native の
  * [lib] name）とも同じ。</p>
  */
-public class MainActivity extends GameActivity {
+public class MainActivity extends GameActivity implements SystemBarsHost {
 
     /** ネイティブライブラリ名（libSEED.so）。Cargo の [lib] name とマニフェストの lib_name と一致させる。 */
     private static final String NATIVE_LIBRARY_NAME = "SEED";
@@ -287,10 +289,29 @@ public class MainActivity extends GameActivity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        // 通知の引き下ろし等でシステムバーが出た後、フォーカスが戻ったら再び隠す（隠す設定のときだけ。SystemBarsController）。
+        // 通知の引き下ろし等でシステムバーが出た後、フォーカスが戻ったら再び隠す（今の状態が「隠す」のときだけ。
+        // 今の状態は起動時の既定か、スクリプトの Window.SetSystemBarsVisible で切り替えたもの。SystemBarsController）。
         if (hasFocus && systemBars != null) {
             systemBars.onFocusRegained();
         }
+    }
+
+    /**
+     * システムバーを出す・隠すを実行中に切り替える（W1-6。SEED.Platform の window.set_system_bars_visible を受けた
+     * platform/local/SystemBarsVisibleCommand が UI スレッドで呼ぶ）。以後のフォーカスが戻ったときの隠し直しもこの状態に従う。
+     * 安全領域は WindowInsets の配り直し（onApplyWindowInsets → ScreenReporter）でネイティブへ知らせ直される。
+     *
+     * @param visible 出すなら true、隠すなら false
+     */
+    @Override
+    public void setSystemBarsVisible(boolean visible) {
+        if (systemBars == null) {
+            // onCreate の途中（super.onCreate の前）に届くことは無い見込み（命令は UI スレッドへ投げられ、onCreate の後に動く）
+            Log.w(LOG_TAG, "システムバーの切り替えが onCreate の前に届いたので無視しました");
+            return;
+        }
+        systemBars.setVisible(visible);
+        Log.i(LOG_TAG, "システムバー: " + (visible ? "出す" : "隠す") + "（Window.SetSystemBarsVisible）");
     }
 
     /**

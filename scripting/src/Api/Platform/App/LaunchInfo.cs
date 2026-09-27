@@ -3,13 +3,15 @@ using System.Text.Json;
 namespace SEED.Platform;
 
 /// <summary>
-/// 起動理由（<see cref="App.LaunchReason"/> とイベント "platform.launch" の中身。不変値型。W1-4a）。
+/// 起動理由（<see cref="App.LaunchReason"/> とイベント "platform.launch" の中身。不変値型。W1-4a・W1-6 で <see cref="Uri"/>）。
 ///
 /// <para>
 /// Android では、プラットフォーム層が自分で作った PendingIntent（exported=false の入口 PlatformEntry を通るもの）の起動だけを
 /// <see cref="LaunchKind.Alarm"/> などとして信用する（リリース版でも取れ、他のアプリの Intent では偽造できない）。
 /// それ以外の起動は <see cref="LaunchKind.Launcher"/>（MAIN）か <see cref="LaunchKind.Other"/>。最近のタスクからの開き直しは
-/// <see cref="LaunchKind.Launcher"/>（止めた後の目覚ましで鳴動画面を出し直さないため）。デスクトップは常に <see cref="LaunchKind.Launcher"/>。
+/// <see cref="LaunchKind.Launcher"/>（止めた後の目覚ましで鳴動画面を出し直さないため）。URL で開かれたら <see cref="LaunchKind.DeepLink"/> と
+/// <see cref="Uri"/>（W1-6。他のアプリも送れるので中身を検査する）。デスクトップは <see cref="LaunchKind.Launcher"/>（単体起動の
+/// --deep-link=&lt;URI&gt; があれば <see cref="LaunchKind.DeepLink"/>）。
 /// </para>
 /// </summary>
 public readonly struct LaunchInfo
@@ -41,14 +43,19 @@ public readonly struct LaunchInfo
     /// <summary>予約・通知に渡した任意の JSON（無ければ空文字）。</summary>
     public string PayloadJson { get; }
 
+    /// <summary>ディープリンクの URL（<see cref="LaunchKind.DeepLink"/> のとき。ほかは空文字。W1-6）。</summary>
+    public string Uri { get; }
+
     /// <summary>デスクトップの模擬が作ったか。</summary>
     public bool Simulated { get; }
 
     /// <summary>ランチャーの起動（理由が取れなかったときの既定）。</summary>
-    internal static LaunchInfo Launcher => new LaunchInfo(LaunchJson.KindLauncher, string.Empty, string.Empty, 0, 0, string.Empty, false);
+    internal static LaunchInfo Launcher =>
+        new LaunchInfo(LaunchJson.KindLauncher, string.Empty, string.Empty, 0, 0, string.Empty, string.Empty, false);
 
     /// <summary>値を作る。</summary>
-    internal LaunchInfo(string kindName, string id, string actionId, long scheduledAtUtcMs, long firedAtUtcMs, string payloadJson, bool simulated)
+    internal LaunchInfo(string kindName, string id, string actionId, long scheduledAtUtcMs, long firedAtUtcMs, string payloadJson, string uri,
+        bool simulated)
     {
         KindName = kindName;
         Kind = LaunchJson.ParseKind(kindName);
@@ -57,6 +64,7 @@ public readonly struct LaunchInfo
         ScheduledAtUtcMs = scheduledAtUtcMs;
         FiredAtUtcMs = firedAtUtcMs;
         PayloadJson = payloadJson;
+        Uri = uri;
         Simulated = simulated;
     }
 
@@ -68,6 +76,7 @@ public readonly struct LaunchInfo
         AlarmJson.GetLong(launch, AlarmJson.KeyScheduledAtUtcMs),
         AlarmJson.GetLong(launch, AlarmJson.KeyFiredAtUtcMs),
         AlarmJson.GetString(launch, AlarmJson.KeyPayloadJson),
+        AlarmJson.GetString(launch, LaunchJson.KeyUri),
         AlarmJson.GetBool(launch, AlarmJson.KeySimulated));
 
     /// <summary>
@@ -79,7 +88,8 @@ public readonly struct LaunchInfo
     public static bool TryParseEvent(string json, out LaunchInfo value) =>
         AlarmJson.TryReadEvent(json, EventName, FromJson, out value);
 
-    /// <summary>ログ向けの 1 行（例 "alarm morning" / "notification_action morning/open" / "launcher"）。</summary>
+    /// <summary>ログ向けの 1 行（例 "alarm morning" / "notification_action morning/open" / "deep_link wakeorpay://alarm/x" / "launcher"）。</summary>
     public override string ToString() =>
-        KindName + (string.IsNullOrEmpty(Id) ? string.Empty : " " + Id) + (string.IsNullOrEmpty(ActionId) ? string.Empty : "/" + ActionId);
+        KindName + (string.IsNullOrEmpty(Id) ? string.Empty : " " + Id) + (string.IsNullOrEmpty(ActionId) ? string.Empty : "/" + ActionId)
+        + (string.IsNullOrEmpty(Uri) ? string.Empty : " " + Uri);
 }

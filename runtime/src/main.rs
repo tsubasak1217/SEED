@@ -39,6 +39,10 @@ const GPU_TIMING_ENV: &str = "SEED_GPU_TIMING";
 /// GPU_TIMING_ENV を有効とみなす値。
 const GPU_TIMING_ENV_ON: &str = "1";
 
+/// ディープリンクでの起動を PC で試す起動引数（検証用。`--deep-link=<URI>`。W1-6）。
+/// SEED.Platform の模擬の起動理由（スクリプトの App.LaunchReason）が DeepLink・Uri = <URI> になる（docs/android.md §25.15）。
+const DEEP_LINK_ARG: &str = "--deep-link=";
+
 fn main() {
     // アセット形式のマイグレーション系サブコマンド。
     //   - `--upgrade-project <パス> [--dry-run]` … プロジェクト配下の一括アップグレード
@@ -79,7 +83,20 @@ fn main() {
     //   副作用は消費電力/ウェイクアップの微増のみ（リアルタイムレンダラでは定番の対処）。
     raise_timer_resolution();
 
+    // 検証用: ディープリンクでの起動（W1-6）。SEED.Platform の模擬を作る前（最初の呼び出しより前）に預ける。
+    register_desktop_deep_link();
+
     App::run(parse_args());
+}
+
+/// 起動引数 `--deep-link=<URI>` を SEED.Platform の模擬へ預ける（無ければ何もしない。規則に合わなければログだけで起動は続ける）。
+fn register_desktop_deep_link() {
+    let Some(uri) = std::env::args().find_map(|arg| arg.strip_prefix(DEEP_LINK_ARG).map(str::to_string)) else {
+        return;
+    };
+    if let Err(err) = engine::platform::bridge::set_desktop_launch_uri(&uri) {
+        eprintln!("{} 起動引数 {DEEP_LINK_ARG} を使いません: {err}", engine::platform::bridge::LOG_PREFIX);
+    }
 }
 
 /// システムタイマ分解能を 1ms に設定する（Windows のみ）。

@@ -1,13 +1,19 @@
 // ============================================================
-//  MainProcessCommands.java — メインプロセスで答える命令の表（IPC に行かない命令。W1-4a・W1-5 で権限を追加）
+//  MainProcessCommands.java — メインプロセスで答える命令の表（IPC に行かない命令。W1-4a・W1-5 で権限・W1-6 で画面・アプリ・触感を追加）
 //
 //  SeedPlatform.invoke がまずここを引き、載っている命令はその場で答える（:seed_platform を起こさない・待たない）。
-//  メインプロセスの持ち物（起動の Intent・Activity の窓・実行時の許可の確認の画面）を扱う命令だけを置く:
-//    platform.launch_reason       … この起動の理由（LaunchReasonCommand）
-//    window.set_show_when_locked  … ロック画面の上に出す＋画面を点ける の切り替え（ShowWhenLockedCommand）
-//    permission.check             … 権限の今の状態（PermissionCheckCommand。W1-5）
-//    permission.request           … 権限を求める（PermissionRequestCommand。結果は platform.permission_result。W1-5）
-//    permission.open_settings     … 権限の設定の画面を開く（PermissionOpenSettingsCommand。W1-5）
+//  メインプロセスの持ち物（起動の Intent・Activity の窓とタスク・実行時の許可の確認の画面・振動子）を扱う命令だけを置く:
+//    platform.launch_reason          … この起動の理由（LaunchReasonCommand）
+//    window.set_show_when_locked     … ロック画面の上に出す＋画面を点ける の切り替え（ShowWhenLockedCommand）
+//    window.set_keep_screen_on       … 画面を点けたままにする の切り替え（KeepScreenOnCommand。W1-6）
+//    window.set_system_bars_visible  … システムバーを出す・隠す の切り替え（SystemBarsVisibleCommand。W1-6）
+//    app.move_task_to_back           … 閉じずに背面へ（MoveTaskToBackCommand。W1-6）
+//    app.open_url                    … URL を端末のアプリで開く（OpenUrlCommand。W1-6）
+//    app.open_app_settings           … 端末の「アプリ情報」の画面を開く（OpenAppSettingsCommand。W1-6）
+//    haptics.tap / haptics.vibrate   … 触感（HapticsTapCommand・HapticsVibrateCommand。W1-6）
+//    permission.check                … 権限の今の状態（PermissionCheckCommand。W1-5）
+//    permission.request              … 権限を求める（PermissionRequestCommand。結果は platform.permission_result。W1-5）
+//    permission.open_settings        … 権限の設定の画面を開く（PermissionOpenSettingsCommand。W1-5）
 //  命令を足すときは、この表に 1 行と、Rust の wire.rs・デスクトップの模擬（desktop_sim の SIM_COMMANDS）に同じ名前を足す。
 //  "platform" モジュールの他の命令（ping など）は :seed_platform の CorePlatformModule が答える（表は module と method の組で引く）。
 // ============================================================
@@ -45,6 +51,21 @@ public final class MainProcessCommands {
                 new LaunchReasonCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_WINDOW, PlatformContract.METHOD_WINDOW_SET_SHOW_WHEN_LOCKED),
                 new ShowWhenLockedCommand());
+        // W1-6: 画面の切り替え・アプリ・触感
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_WINDOW, PlatformContract.METHOD_WINDOW_SET_KEEP_SCREEN_ON),
+                new KeepScreenOnCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_WINDOW, PlatformContract.METHOD_WINDOW_SET_SYSTEM_BARS_VISIBLE),
+                new SystemBarsVisibleCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_APP, PlatformContract.METHOD_APP_MOVE_TASK_TO_BACK),
+                new MoveTaskToBackCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_APP, PlatformContract.METHOD_APP_OPEN_URL),
+                new OpenUrlCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_APP, PlatformContract.METHOD_APP_OPEN_APP_SETTINGS),
+                new OpenAppSettingsCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_HAPTICS, PlatformContract.METHOD_HAPTICS_TAP),
+                new HapticsTapCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_HAPTICS, PlatformContract.METHOD_HAPTICS_VIBRATE),
+                new HapticsVibrateCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_PERMISSION, PlatformContract.METHOD_PERMISSION_CHECK),
                 new PermissionCheckCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_PERMISSION, PlatformContract.METHOD_PERMISSION_REQUEST),

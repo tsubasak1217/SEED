@@ -1,15 +1,16 @@
 // ============================================================
 //  PlatformContract.java — アプリのプラットフォーム機能（SEED.Platform）の約束の置き場（W1-1・W1-3 で目覚まし・
-//  W1-4a で鳴動・起動理由・画面の命令・W1-5 で通知・権限を追加）
+//  W1-4a で鳴動・起動理由・画面の命令・W1-5 で通知・権限・W1-6 で画面の切り替え・アプリ・触感・ディープリンクを追加）
 //
 //  メインプロセス（SeedPlatform・PlatformConnection）と :seed_platform プロセス（service/ の PlatformProvider 等）の
 //  両方が使う名前・キー・理由の名前を 1 か所に集める（マジックナンバー・文字列を散らさない）。
 //  エンジン側（Rust）の対になる正典は runtime/src/engine/platform/bridge/wire.rs（目覚ましは wire::alarm、起動理由は
-//  wire::launch、画面は wire::window、通知は wire::notification、権限は wire::permission）、C# 側は scripting/src/Api/Platform/
-//  （目覚ましは Alarms/AlarmJson.cs、起動理由は App/LaunchJson.cs、通知は Notifications/NotificationJson.cs、権限は
+//  wire::launch、画面は wire::window、通知は wire::notification、権限は wire::permission、アプリは wire::app、触感は
+//  wire::haptics）、C# 側は scripting/src/Api/Platform/（目覚ましは Alarms/AlarmJson.cs、起動理由は App/LaunchJson.cs、
+//  アプリは App/AppJson.cs、画面は Window/Window.cs、触感は Haptics/Haptics.cs、通知は Notifications/NotificationJson.cs、権限は
 //  Permissions/PermissionJson.cs）。値を変えるときは 3 か所を必ず揃える（Rust の単体テスト wire::tests::java_contract_matches_wire が、
 //  このファイルの文字列の定数と wire.rs を突き合わせる）。
-//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12、通知は §25.13、権限は §25.14）。
+//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12、通知は §25.13、権限は §25.14、画面とアプリは §25.15）。
 // ============================================================
 
 package com.seedengine.runtime.platform;
@@ -301,6 +302,13 @@ public final class PlatformContract {
     public static final String LAUNCH_KIND_ALARM_CLOCK_INFO = "alarm_clock_info";
     /** 起動の種類: それ以外（ランチャー以外の action で起動された・プラットフォーム層の Intent が読めなかった）。 */
     public static final String LAUNCH_KIND_OTHER = "other";
+    /**
+     * 起動の種類: ディープリンク（W1-6）。PlatformEntry を通らない ACTION_VIEW＋data の Intent（intent-filter〈機能 deep_links〉に
+     * 合った URL・他のアプリからの明示の Intent）。uri に Intent の data。どのアプリからでも送れるので中身は信用しない（アプリが検査する）。
+     */
+    public static final String LAUNCH_KIND_DEEP_LINK = "deep_link";
+    /** 起動理由: ディープリンクの URI（deep_link のとき。ほかは空。W1-6）。 */
+    public static final String KEY_LAUNCH_URI = "uri";
     /** 通知の操作の ID: 鳴動の通知の「開く」。 */
     public static final String LAUNCH_ACTION_OPEN = "open";
 
@@ -310,8 +318,50 @@ public final class PlatformContract {
     public static final String MODULE_WINDOW = "window";
     /** ロック画面の上に出す＋画面を点ける（setShowWhenLocked・setTurnScreenOn）の切り替え。引数 { on }。 */
     public static final String METHOD_WINDOW_SET_SHOW_WHEN_LOCKED = "set_show_when_locked";
-    /** set_show_when_locked の引数・返答: 上げるか。 */
+    /** 画面を点けたままにする（窓の FLAG_KEEP_SCREEN_ON）の切り替え。引数 { on }（W1-6）。 */
+    public static final String METHOD_WINDOW_SET_KEEP_SCREEN_ON = "set_keep_screen_on";
+    /** システムバー（ステータスバー・ナビゲーションバー）を出すかの切り替え。引数 { on }（W1-6。起動時の既定は android.system_bars）。 */
+    public static final String METHOD_WINDOW_SET_SYSTEM_BARS_VISIBLE = "set_system_bars_visible";
+    /** 画面の切り替えの命令（set_show_when_locked / set_keep_screen_on / set_system_bars_visible）の引数・返答: 入れるか。 */
     public static final String KEY_WINDOW_ON = "on";
+
+    // ── アプリ（W1-6。モジュール "app"。メインプロセスで答える〈local/〉。IPC なし）──
+
+    /** アプリのモジュール。 */
+    public static final String MODULE_APP = "app";
+    /** 閉じずに背面へ（Activity.moveTaskToBack(true)。戻るの最上位で使う）。引数なし。返答 {}。 */
+    public static final String METHOD_APP_MOVE_TASK_TO_BACK = "move_task_to_back";
+    /** URL を開く（ACTION_VIEW）。引数 { url }。返答 { scheme }。開けるアプリが無ければ ERROR_NO_HANDLER。 */
+    public static final String METHOD_APP_OPEN_URL = "open_url";
+    /** 端末の「アプリ情報」の画面を開く（Settings.ACTION_APPLICATION_DETAILS_SETTINGS）。引数なし。返答 {}。 */
+    public static final String METHOD_APP_OPEN_APP_SETTINGS = "open_app_settings";
+    /** open_url の引数: 開く URL。 */
+    public static final String KEY_APP_URL = "url";
+    /** open_url の返答: URL の scheme（小文字にそろえたもの）。 */
+    public static final String KEY_APP_SCHEME = "scheme";
+    /** URL（open_url の url・ディープリンクの uri）の最大の長さ（Unicode の符号位置の数）。Rust の wire::MAX_URL_LENGTH と一致させる。 */
+    public static final int MAX_URL_LENGTH = 8192;
+    /** open_url で断る scheme: 端末のファイル（file:）。 */
+    public static final String URL_SCHEME_FILE = "file";
+    /** open_url で断る scheme: ContentProvider（content:。アプリの中身を他のアプリへ渡しうる）。 */
+    public static final String URL_SCHEME_CONTENT = "content";
+    /** open_url で断る scheme: スクリプトの実行（javascript:）。 */
+    public static final String URL_SCHEME_JAVASCRIPT = "javascript";
+
+    // ── 触感（W1-6。モジュール "haptics"。メインプロセスで答える〈local/〉。権限 VIBRATE は main のマニフェストに常設）──
+
+    /** 触感のモジュール。 */
+    public static final String MODULE_HAPTICS = "haptics";
+    /** 軽いクリックの触感（VibrationEffect.EFFECT_CLICK）。引数なし。返答 {}。 */
+    public static final String METHOD_HAPTICS_TAP = "tap";
+    /** 決まった長さの振動（VibrationEffect.createOneShot）。引数 { ms }。返答 { ms }（上限にそろえた後の値）。 */
+    public static final String METHOD_HAPTICS_VIBRATE = "vibrate";
+    /** vibrate の引数・返答: 振動の長さ（ミリ秒。小数は切り捨て）。 */
+    public static final String KEY_HAPTICS_MS = "ms";
+    /** vibrate の ms の下限（これより小さい値は invalid_argument）。Rust の wire::haptics::MIN_VIBRATE_MS と一致させる。 */
+    public static final long MIN_VIBRATE_MS = 1L;
+    /** vibrate の ms の上限（これより大きい値はこれにそろえる）。Rust の wire::haptics::MAX_VIBRATE_MS と一致させる。 */
+    public static final long MAX_VIBRATE_MS = 5000L;
 
     // ── 鳴動の通知（W1-4a。:seed_platform の RingService）──
 
@@ -497,6 +547,12 @@ public final class PlatformContract {
     public static final String ERROR_NOTIFICATIONS_DISABLED = "notifications_disabled";
     /** 通知のチャネルが無い（W1-5。先に notification.ensure_channel）。 */
     public static final String ERROR_CHANNEL_NOT_FOUND = "channel_not_found";
+    /** open_url: その URL を開けるアプリが端末に無い（W1-6。startActivity の ActivityNotFoundException）。 */
+    public static final String ERROR_NO_HANDLER = "no_handler";
+    /** open_url: 断る scheme（W1-6。URL_SCHEME_FILE / CONTENT / JAVASCRIPT）。 */
+    public static final String ERROR_SCHEME_NOT_ALLOWED = "scheme_not_allowed";
+    /** 触感: 端末に振動子が無い（W1-6。Vibrator.hasVibrator が false）。 */
+    public static final String ERROR_NO_VIBRATOR = "no_vibrator";
 
     /** module / method の名前の最大の長さ（文字）。Rust の wire::MAX_NAME_LEN と一致させる。 */
     public static final int MAX_NAME_LENGTH = 64;
