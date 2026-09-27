@@ -805,7 +805,9 @@ pub(super) fn apply_component_data_in_place(
         | ComponentData::CanvasWrapComponent(_)
         | ComponentData::CanvasGridComponent(_)
         | ComponentData::CanvasLayoutItemComponent(_)
-        | ComponentData::CanvasSafeAreaComponent(_) => {
+        | ComponentData::CanvasSafeAreaComponent(_)
+        // ジェスチャーを受けるノード（W2-2）も値だけの純データ
+        | ComponentData::CanvasGestureComponent(_) => {
             crate::engine::structs::objects::actor::canvas_layout_slots::apply_in_place(world, entity, data);
             SlotApply::Applied
         }
@@ -1127,6 +1129,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::CanvasGridComponent(_) => ComponentKind::CanvasGrid,
         ComponentData::CanvasLayoutItemComponent(_) => ComponentKind::CanvasLayoutItem,
         ComponentData::CanvasSafeAreaComponent(_) => ComponentKind::CanvasSafeArea,
+        ComponentData::CanvasGestureComponent(_) => ComponentKind::CanvasGesture,
     }
 }
 

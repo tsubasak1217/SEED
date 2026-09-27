@@ -81,11 +81,20 @@ impl InputSequencePlayer {
     /// 初回は dt = 0 で呼ばれる想定で、その時点で `t <= 0` のイベントが発火する。
     /// 負の dt は 0 として扱う（時計が巻き戻る環境でも順序を壊さない）。
     pub fn advance(&mut self, dt: f32) -> Vec<InjectAction> {
+        self.advance_timed(dt).into_iter().map(|(_, action)| action).collect()
+    }
+
+    /// `advance` と同じだが、各操作の「予定の時刻からの遅れ（秒。0 以上）」も返す（W2-2）。
+    ///
+    /// 呼び出し側は「今 − 遅れ」を操作の時刻にできる（フレームの刻みに依らず、シーケンスの t どおりの時刻になる）。
+    /// ジェスチャーの記録（長押しの時間・速度の推定）はこの時刻を使う。
+    pub fn advance_timed(&mut self, dt: f32) -> Vec<(f32, InjectAction)> {
         self.elapsed += dt.max(0.0);
 
         let mut due = Vec::new();
         while self.next < self.events.len() && self.events[self.next].t <= self.elapsed {
-            due.push(self.events[self.next].action);
+            let event = self.events[self.next];
+            due.push(((self.elapsed - event.t).max(0.0), event.action));
             self.next += 1;
         }
         due

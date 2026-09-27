@@ -37,6 +37,9 @@ impl ApplicationHandler for App {
     /// それからサーフェスを破棄してイベントループを待機させる（surface_lifecycle.rs）。
     /// デスクトップでは届かない。
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        // アプリが背面へ回った: ジェスチャーの指をすべて取り消す（押下の見た目を戻す。前面へ戻った最初のフレームで配る。W2-2）。
+        // タッチの状態・マウスの状態には触れない（フォーカスを失ったときの従来の安全弁のまま）。
+        self.input.cancel_gesture_pointers();
         self.enter_background();
         self.handle_suspended(event_loop);
     }

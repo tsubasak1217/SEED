@@ -173,7 +173,9 @@ pub fn default_component_data(current: &ComponentData) -> Option<ComponentData> 
         | ComponentData::CanvasWrapComponent(_)
         | ComponentData::CanvasGridComponent(_)
         | ComponentData::CanvasLayoutItemComponent(_)
-        | ComponentData::CanvasSafeAreaComponent(_)) => {
+        | ComponentData::CanvasSafeAreaComponent(_)
+        | ComponentData::CanvasGestureComponent(_)) => {
+            // W2-2 の CanvasGesture も同じ表（canvas_layout_slots）から既定値を作る
             use crate::engine::structs::objects::actor::canvas_layout_slots;
             return canvas_layout_slots::kind_of_data(layout_data).and_then(canvas_layout_slots::default_data);
         }
@@ -605,6 +607,7 @@ mod tests {
             ComponentData::CanvasGridComponent(crate::engine::components::CanvasGridComponent::default()),
             ComponentData::CanvasLayoutItemComponent(crate::engine::components::CanvasLayoutItemComponent::default()),
             ComponentData::CanvasSafeAreaComponent(crate::engine::components::CanvasSafeAreaComponent::default()),
+            ComponentData::CanvasGestureComponent(crate::engine::components::CanvasGestureComponent::default()),
         ];
         for d in &supported {
             assert!(

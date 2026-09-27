@@ -2,8 +2,8 @@
 //  canvas_layout_ops.rs — レイアウトの部品（W2-1b）のインスペクタ更新
 //
 //  ・handle_set_canvas_layout_field: SET_CANVAS_LAYOUT_FIELD:{actor},{slot},{key},{value}
-//      CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea の 1 つの欄を書き換える。
-//      5 種とも値だけの純データなので、欄ごとの分岐を書かずに「コンポーネントを JSON にして、鍵の指す欄を
+//      CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea と W2-2 の CanvasGesture の
+//      1 つの欄を書き換える。6 種とも値だけの純データなので、欄ごとの分岐を書かずに「コンポーネントを JSON にして、鍵の指す欄を
 //      置き換えて、元の型へ戻す」で扱う（データ駆動。欄を足しても、ここは直さなくてよい）。
 //        - key   … serde の欄の名前。入れ子は "/" で区切る（例 "padding/left"。FieldReset の field_path と同じ書式）
 //        - value … JSON の値として読めればそれ（数値・true/false）、読めなければ文字列（列挙の名前 "space_between" など）
@@ -17,8 +17,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::engine::components::{
-    CanvasComponent, CanvasGridComponent, CanvasLayoutItemComponent, CanvasSafeAreaComponent,
-    CanvasStackComponent, CanvasUnit, CanvasWrapComponent, ComponentKind,
+    CanvasComponent, CanvasGestureComponent, CanvasGridComponent, CanvasLayoutItemComponent,
+    CanvasSafeAreaComponent, CanvasStackComponent, CanvasUnit, CanvasWrapComponent, ComponentKind,
 };
 use crate::engine::ecs::{Entity, World};
 
@@ -83,6 +83,8 @@ fn set_layout_field(world: &mut World, kind: ComponentKind, entity: Entity, key:
         ComponentKind::CanvasGrid => apply::<CanvasGridComponent>(world, entity, key, value),
         ComponentKind::CanvasLayoutItem => apply::<CanvasLayoutItemComponent>(world, entity, key, value),
         ComponentKind::CanvasSafeArea => apply::<CanvasSafeAreaComponent>(world, entity, key, value),
+        // ジェスチャーを受けるノード（W2-2）: 旗・軸（any / horizontal / vertical）・最小のヒット領域
+        ComponentKind::CanvasGesture => apply::<CanvasGestureComponent>(world, entity, key, value),
         _ => false,
     }
 }
@@ -194,5 +196,20 @@ mod tests {
         assert!(!world.get::<CanvasSafeAreaComponent>(e).unwrap().bottom);
         assert!(!set_layout_field(&mut world, ComponentKind::CanvasStack, e, "spacing", "1"), "実体が無い");
         assert!(!set_layout_field(&mut world, ComponentKind::Sprite, e, "bottom", "true"), "種類が違う");
+    }
+
+    /// ジェスチャーを受けるノード（W2-2）の旗・軸・大きさも同じ命令で書き換えられる（範囲外の軸は捨てる）。
+    #[test]
+    fn set_layout_field_updates_gesture_component() {
+        use crate::engine::components::GestureDragAxis;
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, CanvasGestureComponent::default());
+        assert!(set_layout_field(&mut world, ComponentKind::CanvasGesture, e, "drag", "true"));
+        assert!(set_layout_field(&mut world, ComponentKind::CanvasGesture, e, "drag_axis", "vertical"));
+        assert!(set_layout_field(&mut world, ComponentKind::CanvasGesture, e, "min_hit_size_dp", "56"));
+        assert!(!set_layout_field(&mut world, ComponentKind::CanvasGesture, e, "drag_axis", "diagonal"));
+        let c = world.get::<CanvasGestureComponent>(e).unwrap();
+        assert!(c.drag && c.drag_axis == GestureDragAxis::Vertical && c.min_hit_size_dp == 56.0);
     }
 }

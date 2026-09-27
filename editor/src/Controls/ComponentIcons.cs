@@ -50,6 +50,8 @@ internal static class ComponentIcons
         ["CanvasGridComponent"]         = "Icon.Component.CanvasGrid",
         ["CanvasLayoutItemComponent"]   = "Icon.Component.CanvasLayoutItem",
         ["CanvasSafeAreaComponent"]     = "Icon.Component.CanvasSafeArea",
+        // ジェスチャーを受けるノード（W2-2）
+        ["CanvasGestureComponent"]      = "Icon.Component.CanvasGesture",
         // ライト
         ["LightComponent"]              = "Icon.Component.Light",
         ["JointAttachComponent"]        = "Icon.Component.JointAttach",

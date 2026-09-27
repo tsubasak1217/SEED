@@ -17,6 +17,6 @@ pub mod phase;
 pub mod state;
 pub mod test_sequence;
 
-pub use bridge::{PointerBridge, PointerBridgePolicy, MOUSE_FINGER_RAW_ID};
+pub use bridge::{FingerEvent, PointerBridge, PointerBridgePolicy, MOUSE_FINGER_RAW_ID};
 pub use phase::TouchPhase;
 pub use state::{PrimaryFinger, TouchPoint, TouchState, MAX_TOUCHES};

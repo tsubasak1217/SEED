@@ -173,6 +173,8 @@ CATALOG = [
     ("Icon.Component.CanvasGrid", "view-grid-outline"),
     ("Icon.Component.CanvasLayoutItem", "resize"),
     ("Icon.Component.CanvasSafeArea", "fit-to-screen-outline"),
+    # ジェスチャーを受けるノード（CanvasGestureComponent。W2-2）。指で触れる記号。
+    ("Icon.Component.CanvasGesture", "gesture-tap"),
     ("Icon.File.SpriteMesh", "vector-triangle"),
     # スキンスプライトのボーン操作（インスペクタの「ボーンアクターを生成」ボタン等）。
     # Icon.Component.JointAttach と同じ mdi:bone だが、用途が別なのでキーを分ける。

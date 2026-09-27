@@ -1,11 +1,13 @@
 // ============================================================
-//  actor/canvas_layout_slots.rs — レイアウトの部品（W2-1b）のスロットの出し入れを 1 か所にまとめる
+//  actor/canvas_layout_slots.rs — キャンバス UI の純データの部品のスロットの出し入れを 1 か所にまとめる
 //
-//  W2-1b で足した 5 種（CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea）は、
-//  どれも「値だけの純データ」で、スロットの作成・保存・読込・複製・削除・既定値・インスペクタへの送信の
-//  手順がまったく同じになる。各連携点（scene.rs の build_actor・slot_ops.rs・component_ops.rs・
-//  component_reset_ops.rs・field_edit.rs・slot_to_data）に 5 本ずつ腕を並べる代わりに、連携点は
-//  ここの関数を 1 行呼ぶだけにする（種類を足すときの直し漏れを防ぐ。種類ごとの違いはこのファイルの表だけ）。
+//  W2-1b で足した 5 種（CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea）と、
+//  W2-2 で足した CanvasGesture（ジェスチャーを受けるノード）は、どれも「値だけの純データ」で、スロットの作成・
+//  保存・読込・複製・削除・既定値・インスペクタへの送信の手順がまったく同じになる。各連携点（scene.rs の
+//  build_actor・slot_ops.rs・component_ops.rs・component_reset_ops.rs・field_edit.rs・slot_to_data）に種類ごとの
+//  腕を並べる代わりに、連携点はここの関数を 1 行呼ぶだけにする（種類を足すときの直し漏れを防ぐ。
+//  種類ごとの違いはこのファイルの表だけ）。名前の「layout」は W2-1b の名残（インスペクタの鍵・IPC の
+//  SET_CANVAS_LAYOUT_FIELD も同じ。W2-2 の CanvasGesture もこの鍵・命令で編集する）。
 //
 //  【種類の表】`LAYOUT_KINDS`（エディタの "type" 名 ⇔ ComponentKind）。match の腕はこのファイルの中だけにある。
 // ============================================================
@@ -13,8 +15,8 @@
 use serde::Serialize;
 
 use crate::engine::components::{
-    CanvasGridComponent, CanvasLayoutItemComponent, CanvasSafeAreaComponent, CanvasStackComponent,
-    CanvasWrapComponent, ComponentData, ComponentKind,
+    CanvasGestureComponent, CanvasGridComponent, CanvasLayoutItemComponent, CanvasSafeAreaComponent,
+    CanvasStackComponent, CanvasWrapComponent, ComponentData, ComponentKind,
 };
 use crate::engine::ecs::{Entity, World};
 
@@ -23,13 +25,15 @@ use super::ComponentSlot;
 /// インスペクタへ送る JSON で、レイアウトの部品の値を入れる鍵（スロット共通の "enabled" と鍵がぶつからないよう入れ子にする）。
 pub const INSPECTOR_KEY: &str = "layout";
 
-/// レイアウトの部品の種類の表（エディタの "type" 名 ⇔ ComponentKind）。
-pub const LAYOUT_KINDS: [(&str, ComponentKind); 5] = [
+/// キャンバス UI の純データの部品の種類の表（エディタの "type" 名 ⇔ ComponentKind）。
+pub const LAYOUT_KINDS: [(&str, ComponentKind); 6] = [
     ("CanvasStackComponent", ComponentKind::CanvasStack),
     ("CanvasWrapComponent", ComponentKind::CanvasWrap),
     ("CanvasGridComponent", ComponentKind::CanvasGrid),
     ("CanvasLayoutItemComponent", ComponentKind::CanvasLayoutItem),
     ("CanvasSafeAreaComponent", ComponentKind::CanvasSafeArea),
+    // ジェスチャーを受けるノード（W2-2）
+    ("CanvasGestureComponent", ComponentKind::CanvasGesture),
 ];
 
 /// レイアウトの部品の種類か。
@@ -50,6 +54,7 @@ pub fn kind_of_data(data: &ComponentData) -> Option<ComponentKind> {
         ComponentData::CanvasGridComponent(_) => Some(ComponentKind::CanvasGrid),
         ComponentData::CanvasLayoutItemComponent(_) => Some(ComponentKind::CanvasLayoutItem),
         ComponentData::CanvasSafeAreaComponent(_) => Some(ComponentKind::CanvasSafeArea),
+        ComponentData::CanvasGestureComponent(_) => Some(ComponentKind::CanvasGesture),
         _ => None,
     }
 }
@@ -89,6 +94,10 @@ pub fn insert_from_data(
             world.insert(slot_entity, CanvasSafeAreaComponent::from_data(d.clone()));
             ComponentSlot::new::<CanvasSafeAreaComponent>(name, ComponentKind::CanvasSafeArea, slot_entity)
         }
+        ComponentData::CanvasGestureComponent(d) => {
+            world.insert(slot_entity, CanvasGestureComponent::from_data(d.clone()));
+            ComponentSlot::new::<CanvasGestureComponent>(name, ComponentKind::CanvasGesture, slot_entity)
+        }
         _ => return None,
     };
     Some(slot)
@@ -108,6 +117,9 @@ pub fn apply_in_place(world: &mut World, slot_entity: Entity, data: &ComponentDa
         }
         ComponentData::CanvasSafeAreaComponent(d) => {
             world.insert(slot_entity, CanvasSafeAreaComponent::from_data(d.clone()))
+        }
+        ComponentData::CanvasGestureComponent(d) => {
+            world.insert(slot_entity, CanvasGestureComponent::from_data(d.clone()))
         }
         _ => return false,
     }
@@ -133,6 +145,9 @@ pub fn to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentData> {
         ComponentKind::CanvasSafeArea => world
             .get::<CanvasSafeAreaComponent>(slot.entity)
             .map(|c| ComponentData::CanvasSafeAreaComponent(c.to_data())),
+        ComponentKind::CanvasGesture => world
+            .get::<CanvasGestureComponent>(slot.entity)
+            .map(|c| ComponentData::CanvasGestureComponent(c.to_data())),
         _ => None,
     }
 }
@@ -158,6 +173,9 @@ pub fn remove(world: &mut World, kind: ComponentKind, slot_entity: Entity) -> bo
         ComponentKind::CanvasSafeArea => {
             world.remove::<CanvasSafeAreaComponent>(slot_entity);
         }
+        ComponentKind::CanvasGesture => {
+            world.remove::<CanvasGestureComponent>(slot_entity);
+        }
         _ => return false,
     }
     true
@@ -174,6 +192,9 @@ pub fn default_data(kind: ComponentKind) -> Option<ComponentData> {
         }
         ComponentKind::CanvasSafeArea => {
             ComponentData::CanvasSafeAreaComponent(CanvasSafeAreaComponent::default().to_data())
+        }
+        ComponentKind::CanvasGesture => {
+            ComponentData::CanvasGestureComponent(CanvasGestureComponent::default().to_data())
         }
         _ => return None,
     })
@@ -195,6 +216,7 @@ pub fn inspector_json(data: &ComponentData) -> Option<(&'static str, String)> {
         ComponentData::CanvasGridComponent(d) => ("CanvasGridComponent", fragment(d)),
         ComponentData::CanvasLayoutItemComponent(d) => ("CanvasLayoutItemComponent", fragment(d)),
         ComponentData::CanvasSafeAreaComponent(d) => ("CanvasSafeAreaComponent", fragment(d)),
+        ComponentData::CanvasGestureComponent(d) => ("CanvasGestureComponent", fragment(d)),
         _ => return None,
     };
     Some((type_name, json))

@@ -75,6 +75,10 @@ mod text_expand;
 mod pick_2d;
 /// Play 中のキャンバス UI ポインタイベント（OnPointerEnter/Down/Click 等）の判定と配信。
 mod pointer_events;
+/// Play 中のジェスチャー（アリーナを回して OnGesture* を配る。W2-2）。
+mod gesture_events;
+/// レイアウトの表からジェスチャーの当たり判定の材料を作る（W2-2）。
+mod gesture_scene;
 mod canvas_drop;
 mod render;
 /// 描画サーフェスの破棄・再生成（Android の suspended / resumed）とイベントループの待機切替。
@@ -841,6 +845,9 @@ pub struct App {
     /// Play 中のキャンバス UI ポインタ状態（ホバー中・押下中のアクター）。
     /// Play 開始／終了・シーン遷移でリセットする（破棄済みエンティティを持ち越さないため）。
     pointer:            pointer_events::PointerState,
+    /// Play 中のジェスチャーの状態（指ごとのアリーナ・閾値の表・配り残し。W2-2）。
+    /// ポインタ状態と同じく Play 開始／終了・シーン遷移でリセットする。
+    gestures:           gesture_events::GestureState,
     /// 直前フレームのカーソル座標（ビューポートローカル）。
     last_cursor_pos:    Option<(f32, f32)>,
     /// ギズモ描画用の単位行列モデルバッファ。
@@ -1661,6 +1668,7 @@ impl App {
             pending_pick:       None,
             pick_2d_cycle:      None,
             pointer:            pointer_events::PointerState::default(),
+            gestures:           gesture_events::GestureState::default(),
             last_cursor_pos:    None,
             line_model_buf:     None,
             tool_mode:          ToolMode::Select,

@@ -1,7 +1,7 @@
 // ============================================================
-//  canvas_layout_api.rs — レイアウトの部品（W2-1b）のスクリプト API（host_api のコンポーネントレジストリの一部）
+//  canvas_layout_api.rs — レイアウトの部品（W2-1b）と CanvasGesture（W2-2）のスクリプト API（host_api のコンポーネントレジストリの一部）
 //
-//  C# の SEED.CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea が名前指定で読み書きする欄を、
+//  C# の SEED.CanvasStack・CanvasWrap・CanvasGrid・CanvasLayoutItem・CanvasSafeArea・CanvasGesture が名前指定で読み書きする欄を、
 //  host_api.rs の read_floats / write_floats / has_component / slot_is_kind から 1 行で呼べるようにまとめる
 //  （5 種ぶんの分岐を host_api.rs へ並べない）。どれもスロット格納型なので locate でスロットを解決する。
 //
@@ -16,9 +16,9 @@
 // ============================================================
 
 use crate::engine::components::{
-    CanvasGridComponent, CanvasLayoutItemComponent, CanvasPadding, CanvasSafeAreaComponent,
-    CanvasStackComponent, CanvasWrapComponent, CrossAlign, HiddenChildren, IndexedEnum, ItemAlign,
-    LayoutDirection, MainAlign,
+    CanvasGestureComponent, CanvasGridComponent, CanvasLayoutItemComponent, CanvasPadding,
+    CanvasSafeAreaComponent, CanvasStackComponent, CanvasWrapComponent, CrossAlign, GestureDragAxis,
+    HiddenChildren, IndexedEnum, ItemAlign, LayoutDirection, MainAlign,
 };
 use crate::engine::ecs::{Component, Entity, World};
 
@@ -32,6 +32,8 @@ pub const KIND_CANVAS_GRID: &str = "CanvasGrid";
 pub const KIND_CANVAS_LAYOUT_ITEM: &str = "CanvasLayoutItem";
 /// C# `SEED.CanvasSafeArea` の ComponentKindName。
 pub const KIND_CANVAS_SAFE_AREA: &str = "CanvasSafeArea";
+/// C# `SEED.CanvasGesture` の ComponentKindName（W2-2）。
+pub const KIND_CANVAS_GESTURE: &str = "CanvasGesture";
 
 /// 余白の要素数（左・上・右・下）。
 const PADDING_LEN: usize = 4;
@@ -42,7 +44,12 @@ const PAIR_LEN: usize = 2;
 pub fn is_layout_component(component: &str) -> bool {
     matches!(
         component,
-        KIND_CANVAS_STACK | KIND_CANVAS_WRAP | KIND_CANVAS_GRID | KIND_CANVAS_LAYOUT_ITEM | KIND_CANVAS_SAFE_AREA
+        KIND_CANVAS_STACK
+            | KIND_CANVAS_WRAP
+            | KIND_CANVAS_GRID
+            | KIND_CANVAS_LAYOUT_ITEM
+            | KIND_CANVAS_SAFE_AREA
+            | KIND_CANVAS_GESTURE
     )
 }
 
@@ -54,6 +61,7 @@ pub fn entity_has(world: &World, entity: Entity, component: &str) -> bool {
         KIND_CANVAS_GRID => world.get::<CanvasGridComponent>(entity).is_some(),
         KIND_CANVAS_LAYOUT_ITEM => world.get::<CanvasLayoutItemComponent>(entity).is_some(),
         KIND_CANVAS_SAFE_AREA => world.get::<CanvasSafeAreaComponent>(entity).is_some(),
+        KIND_CANVAS_GESTURE => world.get::<CanvasGestureComponent>(entity).is_some(),
         _ => false,
     }
 }
@@ -158,6 +166,21 @@ pub fn read(world: &World, entity: Entity, component: &str, field: &str, out: &m
                 "top" => put_bool(out, c.top),
                 "right" => put_bool(out, c.right),
                 "bottom" => put_bool(out, c.bottom),
+                _ => None,
+            }
+        }
+        // ジェスチャーを受けるノード（W2-2）: 旗は 0/1、軸は添字（GestureDragAxis の並び）、最小のヒット領域は dp
+        KIND_CANVAS_GESTURE => {
+            let c = world.get::<CanvasGestureComponent>(entity)?;
+            match field {
+                "enabled" => put_bool(out, c.enabled),
+                "tap" => put_bool(out, c.tap),
+                "long_press" => put_bool(out, c.long_press),
+                "drag" => put_bool(out, c.drag),
+                "fling" => put_bool(out, c.fling),
+                "drag_axis" => put_enum(out, c.drag_axis),
+                "press_feedback" => put_bool(out, c.press_feedback),
+                "min_hit_size_dp" => put(out, &[c.min_hit_size_dp]),
                 _ => None,
             }
         }
@@ -326,6 +349,21 @@ pub fn write(world: &mut World, entity: Entity, component: &str, field: &str, v:
                 _ => false,
             }
         }
+        // ジェスチャーを受けるノード（W2-2）。書き換えは次に触れた指から効く（触れている指はそのときの値のまま）
+        KIND_CANVAS_GESTURE => {
+            let Some(c) = get_mut::<CanvasGestureComponent>(world, entity) else { return false };
+            match field {
+                "enabled" => assign(&mut c.enabled, take_bool(v)),
+                "tap" => assign(&mut c.tap, take_bool(v)),
+                "long_press" => assign(&mut c.long_press, take_bool(v)),
+                "drag" => assign(&mut c.drag, take_bool(v)),
+                "fling" => assign(&mut c.fling, take_bool(v)),
+                "drag_axis" => assign(&mut c.drag_axis, take_enum::<GestureDragAxis>(v)),
+                "press_feedback" => assign(&mut c.press_feedback, take_bool(v)),
+                "min_hit_size_dp" => assign(&mut c.min_hit_size_dp, take_f32(v).filter(|x| *x >= 0.0)),
+                _ => false,
+            }
+        }
         _ => false,
     }
 }
@@ -374,6 +412,25 @@ mod tests {
         assert!(!write(&mut world, g, KIND_CANVAS_GRID, "no_such", &[1.0]));
         assert_eq!(world.get::<CanvasGridComponent>(g).unwrap(), &CanvasGridComponent::default());
         assert!(write(&mut world, g, KIND_CANVAS_GRID, "columns", &[0.0]), "0 = 自動は書ける");
+    }
+
+    /// CanvasGesture（W2-2）の旗・軸・大きさの読み書き（範囲外の軸・負の大きさは書かない）。
+    #[test]
+    fn gesture_fields_round_trip() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, CanvasGestureComponent::default());
+        let mut out = [0.0f32; 4];
+        assert!(write(&mut world, e, KIND_CANVAS_GESTURE, "drag", &[1.0]));
+        assert!(write(&mut world, e, KIND_CANVAS_GESTURE, "drag_axis", &[2.0]));
+        assert!(!write(&mut world, e, KIND_CANVAS_GESTURE, "drag_axis", &[3.0]));
+        assert!(!write(&mut world, e, KIND_CANVAS_GESTURE, "min_hit_size_dp", &[-1.0]));
+        assert!(write(&mut world, e, KIND_CANVAS_GESTURE, "min_hit_size_dp", &[56.0]));
+        assert_eq!(read(&world, e, KIND_CANVAS_GESTURE, "drag_axis", &mut out), Some(1));
+        assert_eq!(out[0], 2.0);
+        let c = world.get::<CanvasGestureComponent>(e).unwrap();
+        assert!(c.drag && c.drag_axis == GestureDragAxis::Vertical && c.min_hit_size_dp == 56.0);
+        assert!(is_layout_component(KIND_CANVAS_GESTURE) && entity_has(&world, e, KIND_CANVAS_GESTURE));
     }
 
     /// 名前の判定と実体の判定（種類の違うエンティティは false）。

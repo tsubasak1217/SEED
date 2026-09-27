@@ -441,7 +441,7 @@
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
-<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー 例外 エラー クラッシュ 落ちる SCRIPT ERROR NullReference 未処理例外 スタックトレース デバッガ ポインタ ポインター クリック ボタン UI OnPointerEnter OnPointerExit OnPointerDown OnPointerUp OnPointerClick raycast_target ポインタ判定 マウス タイトル リザルト ショップ">
+<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー 例外 エラー クラッシュ 落ちる SCRIPT ERROR NullReference 未処理例外 スタックトレース デバッガ ポインタ ポインター クリック ボタン UI OnPointerEnter OnPointerExit OnPointerDown OnPointerUp OnPointerClick raycast_target ポインタ判定 マウス タイトル リザルト ショップ ジェスチャー ジェスチャ gesture OnGestureTap OnGestureLongPress OnGestureDragStart OnGestureDragUpdate OnGestureDragEnd OnGestureFling OnGesturePressDown OnGesturePressCancel OnGesturePressUp GestureEvent GestureKind タップ 長押し ドラッグ フリック スワイプ 押下 取り消し スクロール 捕捉 slop アリーナ">
   <h2>2. ライフサイクル関数</h2>
   <p class="section-note"><code>SEEDScript</code> を継承して override。1 フレーム内で以下の順に呼ばれます。不要なものは override 不要。</p>
   <div class="api"><code class="sig">BeginFrame(ref ctx)</code><span class="desc">フレーム開始時。入力取得や状態リセット向け</span></div>
@@ -520,6 +520,43 @@
     <span class="k">public override void</span> OnPointerUp()    =&gt; Tint(Hover);
     <span class="k">public override void</span> OnPointerClick() =&gt; <span class="t">SEED.Debug</span>.Log(<span class="s">"押された"</span>);
 }</pre>
+  <div class="warn"><b>重要</b>: 同じアクターに有効な <b>CanvasGesture</b>（次節）も付いていると、<code>OnPointerDown</code> / <code>OnPointerUp</code> / <code>OnPointerClick</code> は届きません（押す・離す・クリックはジェスチャーの <code>OnGesturePressDown</code> / <code>OnGesturePressUp</code> / <code>OnGestureTap</code> が受け持つ）。<code>OnPointerEnter</code> / <code>OnPointerExit</code> は届きます。CanvasGesture を付けていないアクターの <code>OnPointer*</code> は従来のままです。</div>
+
+  <h3 id="lc-gesture">ジェスチャーコールバック（CanvasGesture：タップ・長押し・ドラッグ・フリック・押下の見た目。W2-2）</h3>
+  <p class="section-note">自分のアクター（2D キャンバスのノード）に <b>CanvasGesture</b>（「コンポーネント追加 → UI → Canvas Gesture」）を付けると、Play 中の指（PC はマウスの左ボタン・入力の注入も 1 本の指）の操作が届きます。指ごとの<b>ジェスチャーアリーナ</b>で、押した位置の当たり判定の経路（子 → 親）のノードが受けたいジェスチャーを競い、最初に成り立った 1 つが勝ちます。規則の正典は <code>docs/input_gestures.md</code>。</p>
+  <div class="api"><code class="sig">OnGestureTap(GestureEvent e)</code><span class="desc">タップ（押して・動かず・離した。PressUp の直後）</span></div>
+  <div class="api"><code class="sig">OnGestureLongPress(GestureEvent e)</code><span class="desc">長押し（500ms 動かずに押し続けた。指はまだ触れている）</span></div>
+  <div class="api"><code class="sig">OnGestureDragStart(GestureEvent e)</code><span class="desc">ドラッグの始まり（8 dp を超えて動いた。e.Delta は押した位置からの移動）</span></div>
+  <div class="api"><code class="sig">OnGestureDragUpdate(GestureEvent e)</code><span class="desc">ドラッグの途中（1 フレームに 1 回まで。e.Delta は前のドラッグのイベントからの移動）</span></div>
+  <div class="api"><code class="sig">OnGestureDragEnd(GestureEvent e)</code><span class="desc">ドラッグの終わり（e.Velocity は離した時点の速度。取り消しなら e.Canceled）</span></div>
+  <div class="api"><code class="sig">OnGestureFling(GestureEvent e)</code><span class="desc">フリック（離した時点の速度が 50 dp/秒 以上。DragEnd の直後）</span></div>
+  <div class="api"><code class="sig">OnGesturePressDown(GestureEvent e)</code><span class="desc">押下の見た目を出す（単独のボタンはすぐ、スクロールの中は 100ms 後か離したとき）</span></div>
+  <div class="api"><code class="sig">OnGesturePressCancel(GestureEvent e)</code><span class="desc">押下の見た目を戻す（外へ出た・スクロールに負けた・複数指・取り消し）</span></div>
+  <div class="api"><code class="sig">OnGesturePressUp(GestureEvent e)</code><span class="desc">押下の見た目を戻す（タップ・長押しとして離した）</span></div>
+  <div class="api"><code class="sig">e.Kind / e.PointerId</code><span class="desc">GestureKind（Tap / LongPress / DragStart / DragUpdate / DragEnd / Fling / PressDown / PressCancel / PressUp）／ 指の番号（0 起点）</span></div>
+  <div class="api"><code class="sig">e.Position / e.ScreenPosition / e.LocalPosition / e.StartPosition</code><span class="desc">Vector2（キャンバスの画素・中央原点 ／ 画面の画素・左上原点 ／ ノードの見た目の左上が原点・ノードの単位 ／ 押した位置）</span></div>
+  <div class="api"><code class="sig">e.Delta / e.DeltaDp / e.TotalDelta</code><span class="desc">Vector2（移動量 画素 ／ dp ／ 押した位置からの移動。横だけ・縦だけのドラッグは Delta を軸へ射影）</span></div>
+  <div class="api"><code class="sig">e.Velocity / e.VelocityDp</code><span class="desc">Vector2（速度 画素/秒 ／ dp/秒。直近 100ms の標本の最小二乗・上限 8000 dp/秒）</span></div>
+  <div class="api"><code class="sig">e.DpScale / e.Duration / e.Canceled</code><span class="desc">float（1 dp の画素数）／ float（押してからの秒。イベントの時刻）／ bool（取り消しで来た DragEnd）</span></div>
+  <table>
+    <tr><th>規則</th><th>内容</th></tr>
+    <tr><td>勝ち負け</td><td>ドラッグは軸に沿って 8 dp・長押しは 500ms・タップは離したときに勝ちを申し出て、最初の 1 つが勝つ。離したときに勝者がいなければ最初の（子の）タップ</td></tr>
+    <tr><td>軸</td><td>横だけのドラッグは縦の動きでは始まらない（縦の一覧の中の横スクロールは最初の動きの向きで持ち主が決まる）</td></tr>
+    <tr><td>捕捉</td><td>勝ったドラッグはその指を捕まえ、ノードの外へ出ても DragUpdate / DragEnd が届く</td></tr>
+    <tr><td>取り消し</td><td>18 dp を超えて動く・ノード（最小のヒット領域 + 8 dp）の外へ出る・スクロールに負ける・2 本目の指・アプリが背面へ → PressCancel</td></tr>
+    <tr><td>最小のヒット領域</td><td>見た目が 48 dp より小さいノードは広げる。重なる所は見た目に近いノード。CanvasClip の外で押した指は参加しない</td></tr>
+    <tr><td>閾値</td><td><code>project_settings.json</code> の <code>"gestures"</code> で上書き（touch_slop_dp・tap_slop_dp・long_press_ms・press_delay_ms・tap_max_ms・min/max_fling_velocity_dp・velocity_*）</td></tr>
+  </table>
+<pre><span class="c">// スクロールの中のボタン（押した色 → スクロールしたら戻す → 離したら押された）</span>
+<span class="k">public class</span> <span class="t">RowButton</span> : <span class="t">SEEDScript</span>
+{
+    <span class="k">private void</span> Tint(<span class="k">float</span> v) { <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">SEED.Sprite</span>&gt;() <span class="k">is</span> { } s) s.Color = <span class="k">new</span> <span class="t">SEED.Color</span>(v, v, v, 1f); }
+    <span class="k">public override void</span> OnGesturePressDown(<span class="t">SEED.GestureEvent</span> e)   =&gt; Tint(0.7f);
+    <span class="k">public override void</span> OnGesturePressCancel(<span class="t">SEED.GestureEvent</span> e) =&gt; Tint(1f);
+    <span class="k">public override void</span> OnGesturePressUp(<span class="t">SEED.GestureEvent</span> e)     =&gt; Tint(1f);
+    <span class="k">public override void</span> OnGestureTap(<span class="t">SEED.GestureEvent</span> e)         =&gt; <span class="t">SEED.Debug</span>.Log(<span class="s">"押された"</span>);
+}</pre>
+  <div class="warn"><b>重要</b>: ジェスチャーのコールバックは <b>CanvasGesture を付けたアクター</b>にだけ届きます。受けるジェスチャーを全部外した CanvasGesture は「遮る板」になります（後ろのノードへ指を渡さない。ジェスチャーを受けない Sprite は遮らない）。</div>
 
   <h3>スクリプト例外の扱い</h3>
   <p class="section-note">ライフサイクル関数・物理イベントコールバックの中で<b>未処理の例外</b>（<code>Nullable</code> の <code>.Value</code>、<code>NullReferenceException</code>、<code>IndexOutOfRangeException</code> など）が発生しても、<b>ランタイムプロセスは落ちません</b>。エンジンがすべてのコールバック境界で例外を捕捉します。</p>
@@ -928,7 +965,7 @@ icon.SetParent(<span class="k">null</span>);     <span class="c">// シーンの
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="AudioDictionary 音声辞書 辞書 キー グループ 用途 TryGetPath DefaultVolume PlayDict 素材差し替え DictionaryKey RayTracingExcluded レイトレ レイトレーシング 対象外 除外 BLAS TLAS 反射 GI AO 影 負荷 軽量化 rt_exclude Visible 表示 非表示 表示切替 隠す 可視 可視性 目アイコン eye 描画停止 レンダラー Renderer.enabled visible Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst Tint 色味 着色 ティント アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed WorldToScreen WorldToCanvas ワールド スクリーン 画面座標 スクリーン座標 キャンバス座標 射影 変換 頭上UI HPバー ダメージ表示 ミニマップ プレースホルダ 差し込み スロット slot num string image color 記法 バインド Bindable 番号指定 エスケープ 四捨五入 SetSlotText SetSlotNumber SetSlotImage SetSlotColor SlotCount フォールバック transform.GameObject ct.GameObject 所有アクタ アクタ取得 参照から辿る ルート直付け 他コンポーネントを辿る CanvasClip 切り抜き クリップ clip scissor はみ出し スクロール領域 マスク CanvasStack CanvasWrap CanvasGrid CanvasLayoutItem CanvasSafeArea レイアウト layout 並べる 縦 横 スタック 折り返し wrap グリッド 格子 セル 列数 間隔 余白 padding spacing 揃え align stretch 伸ばす flex 中身に合わせる fit 親に合わせる fill 安全領域 SafeArea 切り欠き ノッチ ステータスバー ジェスチャーバー dp 密度 DPI LayoutDirection MainAlign CrossAlign ItemAlign HiddenChildren CanvasPadding">
+<section id="sec-components" data-keywords="AudioDictionary 音声辞書 辞書 キー グループ 用途 TryGetPath DefaultVolume PlayDict 素材差し替え DictionaryKey RayTracingExcluded レイトレ レイトレーシング 対象外 除外 BLAS TLAS 反射 GI AO 影 負荷 軽量化 rt_exclude Visible 表示 非表示 表示切替 隠す 可視 可視性 目アイコン eye 描画停止 レンダラー Renderer.enabled visible Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst Tint 色味 着色 ティント アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed WorldToScreen WorldToCanvas ワールド スクリーン 画面座標 スクリーン座標 キャンバス座標 射影 変換 頭上UI HPバー ダメージ表示 ミニマップ プレースホルダ 差し込み スロット slot num string image color 記法 バインド Bindable 番号指定 エスケープ 四捨五入 SetSlotText SetSlotNumber SetSlotImage SetSlotColor SlotCount フォールバック transform.GameObject ct.GameObject 所有アクタ アクタ取得 参照から辿る ルート直付け 他コンポーネントを辿る CanvasClip 切り抜き クリップ clip scissor はみ出し スクロール領域 マスク CanvasStack CanvasWrap CanvasGrid CanvasLayoutItem CanvasSafeArea レイアウト layout 並べる 縦 横 スタック 折り返し wrap グリッド 格子 セル 列数 間隔 余白 padding spacing 揃え align stretch 伸ばす flex 中身に合わせる fit 親に合わせる fill 安全領域 SafeArea 切り欠き ノッチ ステータスバー ジェスチャーバー dp 密度 DPI LayoutDirection MainAlign CrossAlign ItemAlign HiddenChildren CanvasPadding CanvasGesture GestureDragAxis ジェスチャー タップ 長押し ドラッグ フリック ボタン スライダ シート 最小のヒット領域 48dp MinHitSizeDp PressFeedback 押下 遮る">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-visible">GameObject.Visible（アクターの表示 / 非表示）</h3>
@@ -1366,6 +1403,14 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <p>CanvasComponent を持つノード（パネル）に付けると、キャンバス領域を Screen.SafeArea の内側へ辺ごとに縮めます（W2-1b）。子のアンカー・コンテナは縮めた領域を基準にし、画面の回転とシステムバーの出し入れに次のフレームから追従します。PC の Play とエディタでは画面全体（PC では環境変数 SEED_SIM_SAFE_AREA=左,上,右,下 で模擬できる）。Sprite の大きさは変えないので、背景は親に置きます。ルートキャンバスの「寸法の単位」を dp にすると、ルートの大きさは「画面 ÷ 1 dp の画素数」になり、子は dp で並びます（1 dp = Screen.DPI ÷ 基準 DPI。PC は SEED_SIM_SCALE_FACTOR で端末の密度を模擬できる）。</p>
   <div class="api"><code class="sig">safe.Enabled</code><span class="desc">bool（get/set。既定 true）</span></div>
   <div class="api"><code class="sig">safe.Left / safe.Top / safe.Right / safe.Bottom</code><span class="desc">bool（get/set。その辺を安全領域へ寄せるか。既定すべて true）</span></div>
+  <h3 id="cmp-canvasgesture">CanvasGesture（ジェスチャーを受けるノード：ボタン・スクロール・スライダ・シートの入力）</h3>
+  <p>2D キャンバスのノードに付けると、そのノードが指ごとのジェスチャーアリーナに参加し、同じアクターのスクリプトへ <code>OnGestureTap</code> などが届きます（W2-2。<a href="#lc-gesture">ジェスチャーコールバック</a>）。当たり判定の形は CanvasComponent があればキャンバス領域、無ければ最初の Sprite の矩形で、見た目が <code>MinHitSizeDp</code>（既定 48 dp）より小さければ中心をそろえて広げます。変更は次に触れた指から効きます。</p>
+  <div class="api"><code class="sig">g.Enabled</code><span class="desc">bool（get/set。既定 true。false の間は当たり判定の候補にもならない）</span></div>
+  <div class="api"><code class="sig">g.Tap / g.LongPress / g.Drag / g.Fling</code><span class="desc">bool（get/set。受けるジェスチャー。既定はタップだけ。フリックはドラッグを受けなくても指を取れる）</span></div>
+  <div class="api"><code class="sig">g.DragAxis</code><span class="desc">GestureDragAxis（get/set。Any（既定）/ Horizontal / Vertical）</span></div>
+  <div class="api"><code class="sig">g.PressFeedback</code><span class="desc">bool（get/set。PressDown / PressCancel / PressUp を受ける。既定 true）</span></div>
+  <div class="api"><code class="sig">g.MinHitSizeDp</code><span class="desc">float（get/set。最小のヒット領域 dp。既定 48。0 = 広げない）</span></div>
+  <p class="section-note">付け方の例: ボタン＝既定のまま、縦スクロール＝Tap=false・Drag=true・Fling=true・DragAxis=Vertical（枠に CanvasClip）、左スワイプの行・横のスライダ＝Tap=true・Drag=true・DragAxis=Horizontal、遮る板＝Tap=false（旗をすべて外す）。</p>
   <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>
   <p class="section-note">点列を結ぶ 1 本の線をワールド空間に描きます。太さは<b>ワールド単位（m）</b>で、線は常にカメラを向くリボンとして描かれます（遠いほど細く見えます）。点列は毎フレーム <code>SetPoints</code> で丸ごと差し替える使い方が基本です。</p>
   <div class="api"><code class="sig">line.Width</code><span class="desc">float（get/set。線の太さ。ワールド単位 m。0 で非表示）</span></div>
@@ -1485,6 +1530,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
     <tr><td><code>CanvasGrid</code></td><td><code>gameObject.GetComponent&lt;CanvasGrid&gt;()</code></td><td>子を格子に並べるコンテナ。列数（0 = 自動）・セルの縦横比・間隔・余白・セルの中の置き方</td></tr>
     <tr><td><code>CanvasLayoutItem</code></td><td><code>gameObject.GetComponent&lt;CanvasLayoutItem&gt;()</code></td><td>コンテナの子の側の指定。伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる</td></tr>
     <tr><td><code>CanvasSafeArea</code></td><td><code>gameObject.GetComponent&lt;CanvasSafeArea&gt;()</code></td><td>ノードの領域を Screen.SafeArea の内側へ縮める。有効・辺ごとの適用</td></tr>
+    <tr><td><code>CanvasGesture</code></td><td><code>gameObject.GetComponent&lt;CanvasGesture&gt;()</code></td><td>ジェスチャーを受けるノード（W2-2）。タップ・長押し・ドラッグ・フリックの旗・ドラッグの軸・押下の見た目・最小のヒット領域。イベントは OnGesture*</td></tr>
     <tr><td><code>Text</code></td><td><code>gameObject.GetComponent&lt;Text&gt;()</code></td><td>キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・縁取り・枠と自動折り返し（BoxWidth/BoxHeight/Wrap）・太さ（Weight）・ドロップシャドウ（ShadowOffset/ShadowColor/ShadowSoftness）・整列・行送り・レイヤー</td></tr>
     <tr><td><code>ControlPointPath</code></td><td><code>gameObject.GetComponent&lt;ControlPointPath&gt;()</code></td><td>コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用）</td></tr>
   </table>

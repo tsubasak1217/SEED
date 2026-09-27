@@ -304,6 +304,9 @@
     `drops_oldest_when_full`・`ipc::tests::parses_script_debug_commands` と共有している。
   - `engine::core::font::inline::icon_set::tests::poll_keeps_previous_content_on_parse_failure` … .icons のキャッシュ（`invalidate_all`）を
     他の icon_set のテストと共有している。
+  - `engine::core::font::inline::image_meta::tests::poll_keeps_previous_aspect_on_decode_failure` … 画像のアスペクト比のキャッシュ
+    （`invalidate_all`）を他の image_meta のテストと共有している（2026-09-28 の W2-2 の全体実行で `set_save_int_writes_flag_and_keeps_other_keys`
+    と一緒に落ちた。2 つとも単体では通る。W2-2 は触っていないファイル）。
   上の項目と同じく、グローバル状態を触るテストをミューテックスで直列化するか、状態をテストごとに持てる形にする。
 
 ## deferred の幾何法線（2026-09-13 の遠景ドットノイズ対策の残件）
@@ -1663,10 +1666,14 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [ ] **ジェスチャ（ピンチ・回転・長押し・ダブルタップ・フリック）の組み込み API が無い（段階A 以降）** — 2026-09-24。
   今は `GetTouch` の位置と `DeltaPosition` からスクリプトで組み立てる（docs/scripting_api.md §6.5 の例）。
   `Touch.TapCount` / 押下時間 / 圧力（winit の `Touch::force`）も未公開。必要になったら `TouchState` に足して FFI の並びを拡張する。
+  → **2026-09-28 の W2-2 で、タップ・長押し・ドラッグ・フリック（と押下の取り消し・指ごとの捕捉）は CanvasGesture のジェスチャーアリーナに入った**
+  （キャンバス UI のノード向け。docs/input_gestures.md）。**ピンチ・回転・ダブルタップ・`Touch.TapCount`・押下時間・圧力は無いまま**（ピンチは W2-8 のグラフのズームで足す）。
 - [ ] **キャンバス UI のポインタイベントは指0 の 1 本だけ（複数指の UI 操作は未対応）** — 2026-09-24。
   `pointer_events.rs` はマウス 1 本（＝指0）で Enter / Down / Click を判定する。2 本目以降の指でボタンを押す、
   2 つのボタンを同時に押す（仮想パッド＋ボタン）といった操作はできない。指ごとのポインタ状態を持たせる必要がある。
   また指を離した後もマウス位置が最後の位置に残るため、ボタンのホバー状態（OnPointerEnter 済み）が次に触れるまで残る（Unity と同じ挙動）。
+  → 2026-09-28 の W2-2: **CanvasGesture を付けたノードは指ごと**（2 本の指で別々のボタンを同時に押せる・スクロールに負けた押下は取り消し）。
+  `OnPointer*` 自体は従来のまま（指0 だけ）なので、複数指の UI は CanvasGesture で作る（docs/input_gestures.md §7）。
 - [ ] **MCP の入力注入からタッチを合成しない** — 2026-09-24。エディタ／MCP の `INPUT_MOUSE_*` 注入は `Input` の注入層に入り、
   実マウスとは別に OR 合成される。PC の「マウス左ボタン → 指」の合成は実マウスだけが対象なので、AI の操作で
   `Input.GetTouch` を使うスクリプトを試すことはできない。注入層にもタッチ（指の追加・移動・離し）の操作を足すのが筋。
@@ -2657,6 +2664,16 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **W1-7 で見つけたこと: Direct Boot の間は adb が使えない（試験の道具）** — 2026-09-27（W1-7 の T4）。再起動の後、最初のロック解除まで adb が
   `unauthorized` のままだった。Direct Boot の間の振る舞いは、解除した後に端末保護ストレージの記録（`journal.json`）と logcat のバッファ（main は約 5 分で
   消える。events・system は残っていた）から確かめた。W1-9 で解除前の鳴動画面を確かめるときも同じ（解除前の出来事を端末保護ストレージへ書き残す仕組みがあると楽）。
+- [x] **W1-7 の手作業の確認（通知のボタン・本文のタップ・電源ボタン・通知の設定画面）** — 2026-09-28 実施（利用者の手を借りた。roadmap §2.9.2 の
+  「W1-7 の手作業の確認」M1〜M8）。AC-7（鳴動の通知の「開く」・本文を、生きているとき・メインプロセスが死んでいるときの両方）・AC-2 の後半（タスクを消した後に
+  通知からアプリへ戻る）・AC-5（普通の起動で電源ボタン → ロック画面）を満たし、ロック中のヘッドアップ通知のタップが指紋の解除を求めることを記録した。
+  残り: W1-5 のアプリの通知（`Notifications.Show` のボタン・payload）のタップ、実行時の確認の画面・`appops` の拒否（AC-8 の残り）、戻る／ホーム／スワイプで止まらないこと（AC-3）。
+- [ ] **W1-7 で見つけたこと: 通知をオフにするとアプリが止められ、`PermissionChanged` が届かない** — 2026-09-28（W1-7 の手作業の確認 M7）。
+  端末の通知の設定で「すべての通知」をオフにすると `POST_NOTIFICATIONS` が取り消され、Android がアプリの両プロセスを止めた（`Killing … PermissionHelper`。
+  鳴動中なら `:seed_platform` ごと止まる＝見張りの予約は残るので戻せる見込み。試していない）。戻ると新しいプロセスで起動し直し、`PermissionMonitor` の前回の状態は
+  メモリにしかないので比べる相手が無く、`platform.permission_changed`（granted → denied）は届かない。オンに戻したとき（denied → granted）はプロセスが止められず届いた。
+  アプリは起動時の `Permissions.Check` で拒否を知れるので実害は小さいが、scripting_api.md の `PermissionChanged` の説明に「取り消しは起動し直しで知る」と書くか、
+  前回の状態を SharedPreferences に残して起動し直しでも比べるかを決める。関連: `platform/permission/PermissionMonitor.java`。
 - [x] **（任意）W1-8 センサー（重力を除いた加速度）** — 2026-09-27 記載 / 同日対応（実機の確認を除く）。Wake or Pay の起床確認「振る」を v1 に残すと決まった（アプリ仕様 §10 U-04）ので
   `SEED.Platform.Sensors` を入れた（docs/android.md §25.16・scripting_api.md §7.13・app_platform_roadmap.md §2.10）。W1-8 で見つけた、今はやらないことは下の 7 件。
 - [ ] **W1-8 の実機の確認** — 2026-09-27（W1-8）。→ その後の実機の回で静置（1 秒に 49〜56 個・最大 0.0 m/s²）と振る（振り始め ≥ 2 m/s² を最大 180 秒待って
@@ -2699,10 +2716,12 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   → 2026-09-27 に実施（結果と決定は roadmap §3.8）。E-06 は (a)「操作は android-activity の API、知らせは MainActivity の上書き」に決定。
   切り抜きは scissor（矩形）＋SDF（角丸・円）、描かないは「次のフレームの要求を 1 か所で決めて Wait / WaitUntil」。試作は既定で無効の
   起動の指定 `ui_spike`（PC `--ui-spike=`・環境変数 `SEED_UI_SPIKE`、Android `--es seed.ui_spike`）で残した。以下はその持ち越し。
-- [ ] **W2-0 の実機（Pixel 6a）の確認が未実施** — 2026-09-27。adb が `unauthorized`（USB デバッグの許可待ち）のまま 1 時間以上戻らなかった。
-  Android の試作は `cargo ndk` と SeedAndroid の `build`（`com.seedengine.uispike`）まで。ソフトキーボードが出るか・入力とアクションが届くか・日本語の
-  変換中の区間と添字の単位・数字のキーボード・IME の高さ（W2-6a の頭）と、止めたときの fps・CPU・GPU・入力での再開の遅れ（W2-10a の頭）を、
-  roadmap §3.8.6 の手順で確かめる。E-06 の決定はソースを読んだ結果に拠るので、崩れたら (b) へ戻す。
+- [x] **W2-0 の実機（Pixel 6a）の確認が未実施** — 2026-09-27。adb が `unauthorized`（USB デバッグの許可待ち）のまま 1 時間以上戻らなかった。
+  → 2026-09-28 に W2-0 の APK の控えで確かめた（roadmap §3.8.7）。E-06 は (a) で確定（Simeji のかな入力・「漢字」への変換・完了・数字のキーボード・
+  IME の高さ 979 px・戻る）。描かないは 0 fps・CPU 82.9% → 6.0%・タップで同じ周回に再開（0.07〜4.78 ms）。残る未確認は Gboard・複数行・release の .so。
+- [ ] **一度も本文が入っていないときに `text_input_state()` を読むと落ちる**（android-activity 0.6.1 が null の本文を `slice::from_raw_parts` に渡す。
+  debug は panic → abort、release は未定義動作）— 2026-09-28（W2-0 の実機で `ime` の試作の最初の起動が落ちた。roadmap §3.8.1 の I-12）。
+  本番はネイティブから読まない。試作の `ime` を使うときは起動の前に `clear` を積む（§3.8.6）。android-activity を上げるときに直っているかを見る。
 - [ ] **W2-0 の試作のコードを本番に置き換えたら消す** — 2026-09-27。`runtime/src/engine/core/ui_spike/`・`app/ui_spike_hooks.rs`・
   `runtime/android/native/src/ui_spike/`・`app/.../spike/ImeSpikeLog.java`（MainActivity の 4 つの上書きの中の呼び出し）・`LaunchArgs.ui_spike`・
   起動オプション `ui_spike`。`renderer/ui_clip.rs` と `ui_draw_pass.rs` の切り抜き（ランの分割・scissor）は W2-1 で本番の形にする前提で残す。
@@ -2774,7 +2793,22 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (2) 3D ワールドキャンバス（透視）の配下は切らない。(3) **エディタの GPU の ID 描画（3D ビューでのキャンバスの選択）は切り抜きを見ない**
   （切り抜かれて見えない子もクリックで選べる。エディタの 2D ビューの選択と Play のポインタイベントは CPU の `pick_2d` なので切り抜く）。
   ID 描画のアイテムに切り抜きの番号を持たせ、`draw_canvas_id_items` で scissor を張る（W2-1b）。(4) 角丸・円の切り抜きは W2-4（シェーダーの SDF）。
-- [ ] **W2-2 ジェスチャーアリーナ（タップ・長押し・ドラッグ・フリック・押下の取り消し・指ごとの捕捉・タッチの時刻）** — 2026-09-27。
+- [x] **W2-2 ジェスチャーアリーナ（タップ・長押し・ドラッグ・フリック・押下の取り消し・指ごとの捕捉・タッチの時刻）** — 2026-09-27。
+  → **2026-09-28 に済**（roadmap §3.8.5・正典 docs/input_gestures.md）。`CanvasGestureComponent` を付けたノードだけが参加し、付けていないノードの
+  `OnPointer*` は不変（WarashibeFishing の複製で図鑑のボタンの縁 56 点のクリックが変更の前後で一致）。残りは下の「W2-2 の残り」。
+- [ ] **W2-2 の残り（ジェスチャー）** — 2026-09-28。(1) **実機（Pixel 6a）で指の確認が未実施**（タップ・スクロールの中のボタンの押下の待ち・
+  フリックの速度・複数指・背面へ回したときの取り消し。単体テストと PC の注入だけ。W2-6a・W2-10a の頭でまとめて行う）。(2) **Android のタッチの時刻は
+  受け取った時刻で代用**: winit 0.30.13 は MotionEvent の eventTime を `WindowEvent::Touch` に渡さず、履歴の標本（historical）も捨てる
+  （`platform_impl/android/mod.rs` の `handle_input_event` を読んだ）。移動は vsync ごとにまとめて届くので、速度の推定は 1 フレームに 1 標本・受け取りの揺れを含む。
+  直すなら winit を上げる（時刻が渡るようになったら）か、MainActivity の `dispatchTouchEvent` で eventTime を JNI で控えて突き合わせる。
+  (3) **閾値の表はプロジェクト設定の JSON（`"gestures"`）だけ**（エディタのプロジェクト設定の画面に欄が無い）。(4) **「動いている」の申告
+  （`GestureArenaSet::activity`）は呼び出し元が無い**（W2-10a で「描く理由」へつなぐ）。(5) **W2-3 への申し送り**: 行の再利用で押している行のノードが
+  消えると PressCancel の配り先が無い（部品側で戻す）。スクロールの慣性中のタップで止める・慣性中の押下の見た目の扱いは部品側。
+  (6) ピンチ・ダブルタップ・3D ワールドキャンバスのノードは無い。(7) 内部解像度固定（レターボックス）では dp を画面の DPI から求めるので、slop・最小の
+  ヒット領域が内部解像度の画素で少しずれる。(8) **動いているエディタでのインスペクタの目視は未確認**（ビルドとエディタのテストは通る）。
+  (9) 指が触れている間（と指のイベントが来たフレーム）は、ジェスチャーの当たり判定のためにレイアウトの表をもう 1 つ作る（ポインタイベントの表と
+  同じ文脈だが、ポインタイベントは表を外へ出さないので使い回していない）。シーンに CanvasGesture が 1 つも無ければ作らない。重くなったら共有する。
+  関連: `runtime/src/engine/core/input/gesture/`・`app/gesture_events.rs`・`app/gesture_scene.rs`・`editor/src/Panels/InspectorPanel.CanvasGesture.cs`。
 - [ ] **W2-3 スクロールと一覧（慣性・跳ね返り・入れ子・行の再利用・左スワイプの操作）** — 2026-09-27。
 - [ ] **W2-4 基本の部品（ボタン・トグル・スライダ＋数値欄・選択・進捗・グラデーション・9 スライス・円の切り抜き）** — 2026-09-27。
   Draw にグラデーションが無く、9 スライスも `batch2d.rs:19` の TODO のまま。
@@ -2799,6 +2833,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   2D パーティクルは伸ばさない**（Sprite だけが矩形いっぱいに描かれる）。(4) **安全領域・親に合わせる・コンテナは回転していないノードを前提**
   （回転したノードの安全領域は外接矩形）。(5) スクリプトから**ルートキャンバスの単位（dp）を読み書きできない**（C# に Canvas の型が無い。
   インスペクタだけ）。スクリプトから **1 dp の画素数（dp の倍率）を読む API も無い**（入力の座標は画素のまま。W2-2 のジェスチャーで閾値を dp で持つときに要る）。
+  → W2-2（2026-09-28）でジェスチャーのイベントの中だけ読めるようにした（`GestureEvent.DpScale`・`DeltaDp`・`VelocityDp`。閾値はエンジンが dp で持つ）。
+  いつでも読める API（`Screen.DpScale` など）はまだ無い。
   (6) **動いているエディタでの追加・編集の目視は未確認**（WPF のインスペクタは既存の書き方に倣っただけ。ビルドとエディタのテストは通る）。
   (7) エディタの GPU の ID 描画の切り抜きは CPU の計算（`canvas_id_scissors`）までを単体テストで確かめただけで、3D ビューでの実際のクリックは未確認。
   関連: `runtime/src/engine/core/canvas_layout/`・`editor/src/Panels/InspectorPanel.CanvasLayout.cs`・`scripting/src/Api/Canvas*.cs`。

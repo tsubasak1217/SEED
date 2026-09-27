@@ -115,6 +115,32 @@ public abstract class SEEDScript : IScriptComponent
     /// </summary>
     public virtual void OnPointerClick() {}
 
+    // ── ジェスチャーのコールバック（W2-2）──────────────────
+    // Play 中、自分のアクターが **CanvasGesture**（ジェスチャーを受けるノード）を持つときだけ届く。
+    // 指（ポインタ）ごとのジェスチャーアリーナで、押した位置の当たり判定の経路（子 → 親）のノードが競い、
+    // 最初に成り立った 1 つが勝つ（他は負け）。勝ったドラッグは指を捕捉する（外へ出ても届く）。
+    // 呼ばれるのはスクリプトフェーズ（Update 等）より前。規則の正典は docs/input_gestures.md。
+    // 押下の見た目は PressDown → (PressUp → Tap | PressCancel) の順に届く（ボタンの色はこの 3 つで変える）。
+
+    /// <summary>タップが成り立ったときに呼ばれる（押して・動かず・離した。<see cref="OnGesturePressUp"/> の直後）。</summary>
+    public virtual void OnGestureTap(SEED.GestureEvent e) {}
+    /// <summary>長押しが成り立ったときに呼ばれる（長押しの時間に達した。指はまだ触れている）。</summary>
+    public virtual void OnGestureLongPress(SEED.GestureEvent e) {}
+    /// <summary>ドラッグが始まったときに呼ばれる（slop を超えて競いに勝った。<c>e.Delta</c> は押した位置からの移動）。</summary>
+    public virtual void OnGestureDragStart(SEED.GestureEvent e) {}
+    /// <summary>ドラッグの途中で呼ばれる（1 フレームに 1 回まで。<c>e.Delta</c> は前のドラッグのイベントからの移動）。</summary>
+    public virtual void OnGestureDragUpdate(SEED.GestureEvent e) {}
+    /// <summary>ドラッグが終わったときに呼ばれる（<c>e.Velocity</c> は離した時点の速度。取り消しなら <c>e.Canceled</c>）。</summary>
+    public virtual void OnGestureDragEnd(SEED.GestureEvent e) {}
+    /// <summary>フリックのときに呼ばれる（離した時点の速度がフリックの最小の速度以上。DragEnd の直後）。</summary>
+    public virtual void OnGestureFling(SEED.GestureEvent e) {}
+    /// <summary>押下の見た目を出すときに呼ばれる（タップ・長押しで勝ちそうになった）。</summary>
+    public virtual void OnGesturePressDown(SEED.GestureEvent e) {}
+    /// <summary>押下の見た目を戻すときに呼ばれる（外へ出た・スクロールに負けた・複数指・取り消し）。</summary>
+    public virtual void OnGesturePressCancel(SEED.GestureEvent e) {}
+    /// <summary>押下の見た目を戻すときに呼ばれる（タップ・長押しとして離した）。</summary>
+    public virtual void OnGesturePressUp(SEED.GestureEvent e) {}
+
     // ── 名前付きイベント（SEED.Events）の購読ヘルパ ────────────
     // Events.Subscribe を直接呼ぶと解除はスクリプト側の責任になるが、
     // ここ（this.On）経由なら購読ハンドルをインスタンスが保持し、

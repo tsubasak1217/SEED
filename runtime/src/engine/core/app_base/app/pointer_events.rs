@@ -319,6 +319,12 @@ impl App {
         if emits.is_empty() {
             return;
         }
+        // 両方あるノード（有効な CanvasGesture も持つ）の押す・離す・クリックはジェスチャーが受け持つ（W2-2）。
+        // CanvasGesture を持たないノードへのイベントは一切変えない（状態遷移も上のまま）。
+        let emits = super::gesture_events::filter_pointer_emits_for_gesture_nodes(emits, |e| self.is_gesture_node(e));
+        if emits.is_empty() {
+            return;
+        }
 
         // ── ④ スクリプトへ配信（物理イベントと同一経路）────────────────
         self.dispatch_pointer_events(emits);

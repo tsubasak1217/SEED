@@ -331,6 +331,52 @@ public static unsafe class ScriptBridge
         }
     }
 
+    // ─── ジェスチャーのイベント（W2-2）───────────────────────
+
+    /// <summary>
+    /// ジェスチャーのイベント（タップ・長押し・ドラッグ・フリック・押下の見た目）をスクリプトへ通知する。
+    /// Rust の update_gestures（app/gesture_events.rs）が呼ぶ。自エンティティを束縛してから、種類に応じたコールバックを呼ぶ。
+    /// Rust 側は省略可能な入口として取り出す（この関数が無い古い DLL でも CLR の起動は失敗しない）。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void OnGestureEvent(nint h, NativeGestureEvent* ev)
+    {
+        try
+        {
+            if (Get(h) is not SEEDScript ss) return;
+            ss.BindEntity(ev->SelfIndex, ev->SelfGeneration);
+            var e = new SEED.GestureEvent(
+                (SEED.GestureKind)ev->Kind,
+                ev->PointerId,
+                new SEED.Vector2(ev->PositionX, ev->PositionY),
+                new SEED.Vector2(ev->ScreenX, ev->ScreenY),
+                new SEED.Vector2(ev->LocalX, ev->LocalY),
+                new SEED.Vector2(ev->StartX, ev->StartY),
+                new SEED.Vector2(ev->DeltaX, ev->DeltaY),
+                new SEED.Vector2(ev->VelocityX, ev->VelocityY),
+                ev->DpScale,
+                ev->Duration,
+                ev->Canceled != 0);
+            switch (e.Kind)
+            {
+                case SEED.GestureKind.Tap:         ss.OnGestureTap(e);         break;
+                case SEED.GestureKind.LongPress:   ss.OnGestureLongPress(e);   break;
+                case SEED.GestureKind.DragStart:   ss.OnGestureDragStart(e);   break;
+                case SEED.GestureKind.DragUpdate:  ss.OnGestureDragUpdate(e);  break;
+                case SEED.GestureKind.DragEnd:     ss.OnGestureDragEnd(e);     break;
+                case SEED.GestureKind.Fling:       ss.OnGestureFling(e);       break;
+                case SEED.GestureKind.PressDown:   ss.OnGesturePressDown(e);   break;
+                case SEED.GestureKind.PressCancel: ss.OnGesturePressCancel(e); break;
+                case SEED.GestureKind.PressUp:     ss.OnGesturePressUp(e);     break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            ReportScriptException(h, ScriptCallback.OnGestureEvent, ex);
+        }
+    }
+
     // ─── スクリプトコンパイル ─────────────────────────────────
 
     /// <summary>
@@ -1316,6 +1362,7 @@ public static unsafe class ScriptBridge
         OnStart,
         OnDestroy,
         OnPhysicsEvent,
+        OnGestureEvent,
     }
 
     /// <summary>

@@ -1031,8 +1031,10 @@ pub fn build_actor(
             | ComponentData::CanvasWrapComponent(_)
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
-            | ComponentData::CanvasSafeAreaComponent(_)) => {
-                // レイアウトの部品（W2-1b の 5 種）を ECS ワールドに挿入してスロットを登録する
+            | ComponentData::CanvasSafeAreaComponent(_)
+            | ComponentData::CanvasGestureComponent(_)) => {
+                // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）を
+                // ECS ワールドに挿入してスロットを登録する
                 // （種類ごとの処理は canvas_layout_slots にまとめてある）
                 use crate::engine::structs::objects::actor::canvas_layout_slots;
                 if let Some(slot) =

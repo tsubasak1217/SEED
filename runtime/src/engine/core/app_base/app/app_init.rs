@@ -108,6 +108,13 @@ impl App {
             shadow_quality.pcf_radius_texels,
             shadow_quality.pcf_taps,
         );
+        // ジェスチャーの閾値の表（W2-2。project_settings.json の "gestures"。無ければ既定値）。
+        // 相談で最初に見る値なので、プロジェクトが上書きしているときだけ起動ログへ残す。
+        let gesture_thresholds = crate::engine::core::input::gesture::parse_gesture_thresholds(&settings_json);
+        self.gestures.set_thresholds(gesture_thresholds);
+        if *self.gestures.thresholds() != crate::engine::core::input::gesture::GestureThresholds::default() {
+            eprintln!("[SEED INIT] gestures (project_settings) {:?}", self.gestures.thresholds());
+        }
         // 目標フレームレート（0 = 無制限）と垂直同期モードも同じ JSON から読む。
         // どちらも起動時に一度だけ決まり、実行中に変わらない
         //（vsync はスワップチェーン再構成が必要なため、切り替えには再起動が要る）。
@@ -884,6 +891,8 @@ impl App {
         // 破棄済みエンティティを掴んだままだと、世代違いの別アクターへ Exit が飛ぶ。
         if opts.reset_pointer {
             self.pointer.reset();
+            // ジェスチャーの指とアリーナも捨てる（旧シーンのノードへ取り消しを配らない。W2-2）
+            self.gestures.reset();
         }
         // コンポーネント音源を停止し、play_on_start の発火記録をリセットする
         // （新シーンの play_on_start を再発火させるため。BGM は継続する）。

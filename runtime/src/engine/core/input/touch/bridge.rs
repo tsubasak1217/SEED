@@ -28,6 +28,11 @@
 //  触れ始めたフレームのうちに離れたタップは TouchState 側が Ended を次フレームへ送るので、
 //  マウスも「押下フレーム → 次フレームで解放」になる（GetMouseButton で押下中を見るスクリプトも取りこぼさない）。
 //  指0 が入れ替わって解放と押下が同じフレームに重なるときは、押下を次フレームへ回す。
+//
+//  【指の単位のイベントの控え（W2-2）】
+//  TouchState へ入れた指の単位のイベント（触れた・動いた・離れた・取り消し）を、入れた順に控えておく（journal）。
+//  Input が各イベントの直後に取り出して時刻を付け、ジェスチャーの記録（gesture/pointer_log.rs）へ積む。
+//  入力源の調停（実マウスを無視する・合成の指を取り消す）の結果がそのままジェスチャーにも効く（二重の判断を持たない）。
 // ============================================================
 
 use winit::event::{MouseButton, TouchPhase as RawTouchPhase};
@@ -85,6 +90,19 @@ pub struct PointerBridge {
     held_by: Option<u64>,
     /// マウス左ボタンから合成した指が触れている最中か。
     mouse_finger_active: bool,
+    /// TouchState へ入れた指の単位のイベントの控え（入れた順。Input が取り出して時刻を付ける。W2-2）。
+    journal: Vec<FingerEvent>,
+}
+
+/// TouchState へ入れた指の単位のイベント 1 件（控え。W2-2 のジェスチャーの記録の元）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FingerEvent {
+    /// 指の生 ID（マウスから合成した指は MOUSE_FINGER_RAW_ID）。
+    pub raw_id: u64,
+    /// イベントの種類。
+    pub kind: RawTouchPhase,
+    /// 位置（入力座標系）。
+    pub position: Vector2<f32>,
 }
 
 impl PointerBridge {
@@ -94,6 +112,7 @@ impl PointerBridge {
             policy,
             held_by: None,
             mouse_finger_active: false,
+            journal: Vec::new(),
         }
     }
 
@@ -116,10 +135,10 @@ impl PointerBridge {
     ) {
         // 実タッチが触れ始めたら、マウスから合成した指は取り消す（同じ操作を 2 本に数えない）。
         if kind == RawTouchPhase::Started && self.mouse_finger_active {
-            touch.apply(MOUSE_FINGER_RAW_ID, RawTouchPhase::Cancelled, mouse.position());
+            self.apply_finger(touch, MOUSE_FINGER_RAW_ID, RawTouchPhase::Cancelled, mouse.position());
             self.mouse_finger_active = false;
         }
-        touch.apply(raw_id, kind, position);
+        self.apply_finger(touch, raw_id, kind, position);
         self.sync_mouse_from_touch(mouse, touch);
     }
 
@@ -145,7 +164,7 @@ impl PointerBridge {
         }
         mouse.process_cursor_moved(position.x, position.y);
         if self.mouse_finger_active {
-            touch.apply(MOUSE_FINGER_RAW_ID, RawTouchPhase::Moved, position);
+            self.apply_finger(touch, MOUSE_FINGER_RAW_ID, RawTouchPhase::Moved, position);
         }
     }
 
@@ -172,11 +191,11 @@ impl PointerBridge {
         if pressed {
             // 実タッチが触れている間は合成しない（タッチの昇格マウスを 2 本目に数えないため）。
             if !self.mouse_finger_active && touch.down_count() == 0 {
-                touch.apply(MOUSE_FINGER_RAW_ID, RawTouchPhase::Started, mouse.position());
+                self.apply_finger(touch, MOUSE_FINGER_RAW_ID, RawTouchPhase::Started, mouse.position());
                 self.mouse_finger_active = true;
             }
         } else if self.mouse_finger_active {
-            touch.apply(MOUSE_FINGER_RAW_ID, RawTouchPhase::Ended, mouse.position());
+            self.apply_finger(touch, MOUSE_FINGER_RAW_ID, RawTouchPhase::Ended, mouse.position());
             self.mouse_finger_active = false;
         }
     }
@@ -192,7 +211,20 @@ impl PointerBridge {
         self.sync_mouse_from_touch(mouse, touch);
     }
 
+    // ─── 指の単位のイベントの控え（W2-2）────────────────────
+
+    /// 控えた指の単位のイベントを入れた順に取り出す（Input が各イベントの直後に呼んで時刻を付ける）。
+    pub fn take_journal(&mut self) -> Vec<FingerEvent> {
+        std::mem::take(&mut self.journal)
+    }
+
     // ─── 内部 ──────────────────────────────────────────────
+
+    /// 指の単位のイベントを TouchState へ入れ、控えにも残す（TouchState へ入れる唯一の入れ口）。
+    fn apply_finger(&mut self, touch: &mut TouchState, raw_id: u64, kind: RawTouchPhase, position: Vector2<f32>) {
+        touch.apply(raw_id, kind, position);
+        self.journal.push(FingerEvent { raw_id, kind, position });
+    }
 
     /// 実マウスの入力を無視すべきか（タッチがポインタを握っている）。
     ///
@@ -295,6 +327,37 @@ mod tests {
         fn phases(&self) -> Vec<TouchPhase> {
             self.touch.iter().map(|t| t.phase).collect()
         }
+    }
+
+    // ─── 指の単位のイベントの控え（W2-2）──────────────────
+
+    /// 控えは TouchState へ入れたイベントと同じ並び（合成の指の取り消し・実マウスの無視を含む）。
+    #[test]
+    fn journal_records_arbitrated_finger_events() {
+        // デスクトップ: 左ボタンで合成の指 → 動く → 実タッチが触れて合成の指は取り消し
+        let mut r = Rig::new(MOUSE_SIMULATES);
+        r.cursor(1.0, 1.0);
+        r.button(true);
+        r.cursor(3.0, 1.0);
+        r.touch(5, RawTouchPhase::Started, 9.0, 9.0);
+        let kinds: Vec<_> = r.bridge.take_journal().iter().map(|e| (e.raw_id, e.kind)).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (MOUSE_FINGER_RAW_ID, RawTouchPhase::Started),
+                (MOUSE_FINGER_RAW_ID, RawTouchPhase::Moved),
+                (MOUSE_FINGER_RAW_ID, RawTouchPhase::Cancelled),
+                (5, RawTouchPhase::Started),
+            ]
+        );
+        assert!(r.bridge.take_journal().is_empty(), "取り出したら空");
+        // Android: タッチが握っている間の実マウスは控えにも出ない
+        let mut r = Rig::new(TOUCH_DRIVES);
+        r.touch(0, RawTouchPhase::Started, 1.0, 1.0);
+        r.button(true);
+        r.cursor(50.0, 50.0);
+        let kinds: Vec<_> = r.bridge.take_journal().iter().map(|e| (e.raw_id, e.kind)).collect();
+        assert_eq!(kinds, vec![(0, RawTouchPhase::Started)]);
     }
 
     // ─── タッチ → マウス ───────────────────────────────────

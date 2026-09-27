@@ -549,8 +549,10 @@ impl App {
             | ComponentData::CanvasWrapComponent(_)
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
-            | ComponentData::CanvasSafeAreaComponent(_)) => {
-                    // レイアウトの部品（W2-1b の 5 種）: 値を serde の書式のまま "layout" の中へ入れて送る
+            | ComponentData::CanvasSafeAreaComponent(_)
+            | ComponentData::CanvasGestureComponent(_)) => {
+                    // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）:
+                    // 値を serde の書式のまま "layout" の中へ入れて送る
                     // （スロット共通の "enabled" と鍵がぶつからない。エディタは JSON を読むだけ）。
                     crate::engine::structs::objects::actor::canvas_layout_slots::inspector_json(&layout_data)
                         .map(|(type_name, json)| (type_name, json))

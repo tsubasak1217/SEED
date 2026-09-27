@@ -27,6 +27,10 @@ pub use state::InjectedInputState;
 
 use std::time::{Duration, Instant};
 
+use winit::event::MouseButton;
+
+use crate::engine::structs::tensor::Vector2;
+
 // ============================================================
 //  応答文字列（IPC）
 // ============================================================
@@ -64,6 +68,22 @@ pub struct InputInjection {
     /// **一時停止はここに含めない**（Pause は Play の一部であり、
     /// 押下を解放してしまうと再開時に操作が失われるため）。
     was_playing: bool,
+    /// 操作を当てた直後の注入の指の状態の写し（当てた順。Input が取り出す。W2-2）。
+    pointer_snapshots: Vec<InjectedPointerSnapshot>,
+}
+
+/// 注入の操作を当てた直後の「注入の指」（マウスの左ボタン）の状態の写し（W2-2 のジェスチャーの記録の元）。
+///
+/// Input が取り出し、押下と座標の変化から触れた・動いた・離れたを作る（gesture/pointer_log.rs の
+/// InjectedPointerTracker）。座標が注入されていなければ None（Input が実カーソルの位置を使う）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InjectedPointerSnapshot {
+    /// 操作の時刻（単発の操作は当てた時刻、シーケンスは予定の時刻）。
+    pub at: Instant,
+    /// 注入で左ボタンが押されているか。
+    pub left_held: bool,
+    /// 注入の座標（入力座標）。
+    pub position: Option<Vector2<f32>>,
 }
 
 /// `tick` の結果。App 側が IPC 応答を送るかどうかを判断するために返す。
@@ -83,6 +103,7 @@ impl InputInjection {
             sequence: None,
             last_tick_at: None,
             was_playing: false,
+            pointer_snapshots: Vec::new(),
         }
     }
 
@@ -101,6 +122,21 @@ impl InputInjection {
     /// 単発アクションを適用する（即座に注入状態へ反映される）。
     pub fn apply_action(&mut self, action: InjectAction) {
         self.state.apply(action);
+        self.note_pointer(Instant::now());
+    }
+
+    /// 注入の指の状態の写しを当てた順に取り出す（W2-2。Input が各操作の直後に呼ぶ）。
+    pub fn take_pointer_snapshots(&mut self) -> Vec<InjectedPointerSnapshot> {
+        std::mem::take(&mut self.pointer_snapshots)
+    }
+
+    /// 今の注入の指の状態を控える（時刻 `at`）。
+    fn note_pointer(&mut self, at: Instant) {
+        self.pointer_snapshots.push(InjectedPointerSnapshot {
+            at,
+            left_held: self.state.is_button_held(MouseButton::Left),
+            position: self.state.position(),
+        });
     }
 
     /// シーケンス再生を開始する。
@@ -122,6 +158,8 @@ impl InputInjection {
     pub fn release_all(&mut self) {
         self.state.release_all();
         self.sequence = None;
+        // 注入の指が触れていれば、ここで離れたことにする（W2-2 のジェスチャーの記録）
+        self.note_pointer(Instant::now());
     }
 
     /// フレーム末に呼ぶ。押下エッジと 1 フレーム限りの累積値を畳む。
@@ -168,11 +206,15 @@ impl InputInjection {
 
         // ── (3) シーケンスを進め、締め切りを迎えたイベントを注入する ──────────
         if let Some(player) = self.sequence.as_mut() {
-            let due = player.advance(dt.as_secs_f32());
-            for action in due {
+            let due = player.advance_timed(dt.as_secs_f32());
+            let finished = player.is_finished();
+            for (lateness, action) in due {
                 self.state.apply(action);
+                // 操作の時刻はシーケンスの予定の時刻（今 − 遅れ）。フレームの刻みに依らない（W2-2）
+                let at = now.checked_sub(Duration::from_secs_f32(lateness)).unwrap_or(now);
+                self.note_pointer(at);
             }
-            if player.is_finished() {
+            if finished {
                 self.sequence = None;
                 outcome.sequence_finished = true;
             }

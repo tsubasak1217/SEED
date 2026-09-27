@@ -486,6 +486,67 @@ public class Button : SEEDScript
 }
 ```
 
+> **重要**: 同じアクターに有効な **CanvasGesture**（次節のジェスチャー）も付いていると、`OnPointerDown` / `OnPointerUp` / `OnPointerClick` は届きません（押す・離す・クリックはジェスチャーの `OnGesturePressDown` / `OnGesturePressUp` / `OnGestureTap` が受け持つ。スクロールに負けた押下でクリックが起きる取り違えを防ぐため）。`OnPointerEnter` / `OnPointerExit` は届きます。CanvasGesture を付けていないアクターの `OnPointer*` は従来のままです。
+
+### ジェスチャーコールバック（CanvasGesture：タップ・長押し・ドラッグ・フリック・押下の見た目。W2-2）
+
+自分のアクター（2D キャンバスのノード）に **CanvasGesture**（「コンポーネント追加 → UI → Canvas Gesture」。§7）を付けると、Play 中の指（PC はマウスの左ボタン・エディタ／MCP の入力の注入も 1 本の指）の操作が以下のコールバックで届きます。指ごとの**ジェスチャーアリーナ**で、押した位置の当たり判定の経路（子 → 親）のノードが受けたいジェスチャーを競い、最初に成り立った 1 つが勝ちます（他は負け）。規則の正典は `docs/input_gestures.md`。
+
+```csharp
+// SEEDScript の override（引数はすべて SEED.GestureEvent）
+public override void OnGestureTap(SEED.GestureEvent e)          // タップ（押して・動かず・離した。PressUp の直後）
+public override void OnGestureLongPress(SEED.GestureEvent e)    // 長押し（500ms 動かずに押し続けた。指はまだ触れている）
+public override void OnGestureDragStart(SEED.GestureEvent e)    // ドラッグの始まり（8 dp を超えて動いた。e.Delta は押した位置からの移動）
+public override void OnGestureDragUpdate(SEED.GestureEvent e)   // ドラッグの途中（1 フレームに 1 回まで。e.Delta は前のドラッグのイベントからの移動）
+public override void OnGestureDragEnd(SEED.GestureEvent e)      // ドラッグの終わり（e.Velocity は離した時点の速度。取り消しなら e.Canceled）
+public override void OnGestureFling(SEED.GestureEvent e)        // フリック（離した時点の速度が 50 dp/秒 以上。DragEnd の直後）
+public override void OnGesturePressDown(SEED.GestureEvent e)    // 押下の見た目を出す
+public override void OnGesturePressCancel(SEED.GestureEvent e)  // 押下の見た目を戻す（外へ出た・スクロールに負けた・複数指・取り消し）
+public override void OnGesturePressUp(SEED.GestureEvent e)      // 押下の見た目を戻す（タップ・長押しとして離した）
+
+// SEED.GestureEvent（値型）
+e.Kind            // GestureKind: Tap / LongPress / DragStart / DragUpdate / DragEnd / Fling / PressDown / PressCancel / PressUp
+e.PointerId       // int: 指の番号（0 起点。ジェスチャーに参加している指の間。Touch.FingerId とは別）
+e.Position        // Vector2: 今の位置（キャンバスの画素。画面の中央が原点・Y 下向き。Input.MousePositionCanvas と同じ）
+e.ScreenPosition  // Vector2: 今の位置（画面の画素・左上原点。Input.MousePos・Touch.Position と同じ）
+e.LocalPosition   // Vector2: ノードの見た目の矩形の左上が原点・ノードの単位（dp のキャンバスなら dp。スライダのどこを押したか）
+e.StartPosition   // Vector2: 押した位置（キャンバスの画素）
+e.Delta           // Vector2: 移動量（画素。横だけ・縦だけのドラッグは軸へ射影）
+e.DeltaDp         // Vector2: 移動量（dp）
+e.Velocity        // Vector2: 速度（画素/秒。直近 100ms の標本の最小二乗・上限 8000 dp/秒。軸のドラッグは射影）
+e.VelocityDp      // Vector2: 速度（dp/秒）
+e.TotalDelta      // Vector2: 押した位置からの移動（射影しない）
+e.DpScale         // float: 1 dp の画素数（PC の 100% は 1、Pixel 6a は 2.625）
+e.Duration        // float: 押してからの秒（入力イベントの時刻で測る。フレームの時刻に依らない）
+e.Canceled        // bool: DragEnd が取り消し（アプリが背面へ・一時停止・OS の取り消し）で来た（速度 0）
+
+// 例: スクロールの中のボタン（押した色 → スクロールしたら戻す → 離したら押された）
+public class RowButton : SEEDScript
+{
+    private void Tint(float v) { if (gameObject.GetComponent<SEED.Sprite>() is { } s) s.Color = new SEED.Color(v, v, v, 1f); }
+    public override void OnGesturePressDown(SEED.GestureEvent e)   => Tint(0.7f);
+    public override void OnGesturePressCancel(SEED.GestureEvent e) => Tint(1f);
+    public override void OnGesturePressUp(SEED.GestureEvent e)     => Tint(1f);
+    public override void OnGestureTap(SEED.GestureEvent e)         => SEED.Debug.Log("押された");
+}
+```
+
+| 規則 | 内容 |
+|---|---|
+| 勝ち負け | ドラッグは軸に沿って 8 dp 動いたら・長押しは 500ms で・タップは離したときに勝ちを申し出て、最初の 1 つが勝つ。離したときに勝者がいなければ最初の（子の）タップ。同じ移動で複数のドラッグが申し出たら子が先 |
+| 軸 | 横だけのドラッグは縦の動きでは始まらない（縦の一覧の中の横スクロールは最初の動きの向きで持ち主が決まる） |
+| 捕捉 | 勝ったドラッグはその指を捕まえ、ノードの外へ出ても DragUpdate / DragEnd が届く |
+| 押下の見た目 | 単独のボタンは押した瞬間に PressDown、ドラッグ（スクロール）の中のボタンは 100ms 待ってから（速いタップは離したときに PressDown → PressUp → Tap）。入れ子のボタンは内側だけが押される |
+| タップの許容移動 | 押した位置から 18 dp を超えて動く・ノード（最小のヒット領域 + 8 dp）の外へ出るとタップ・長押しは成り立たず PressCancel |
+| 複数指 | 指ごとに別の競い。押しているボタンに 2 本目の指が触れたら両方とも取り消し。1 つのノードのドラッグは 1 本の指まで（スクロール中の一覧の中は別の指で押しても反応しない） |
+| 最小のヒット領域 | 見た目が 48 dp より小さいノードは中心をそろえて広げる。広げた領域が重なる所は見た目に近いノード |
+| 切り抜き | CanvasClip の外で押した指は参加しない |
+| 閾値 | `project_settings.json` の `"gestures"`（`touch_slop_dp`・`tap_slop_dp`・`long_press_ms`・`press_delay_ms`・`tap_max_ms`・`min_fling_velocity_dp`・`max_fling_velocity_dp`・`velocity_*`）で上書きできる |
+
+> **重要**: ジェスチャーのコールバックは **CanvasGesture を付けたアクター**にだけ届きます（付けていないアクターは参加しない）。呼ばれるのはスクリプトフェーズ（`Update` 等）より前で、同じフレームの `Update` から結果を参照できます。3D ワールド内のキャンバスには届きません。
+
+> **重要**: 受けるジェスチャーを全部外した CanvasGesture は「遮る板」になります（後ろのノードへ指を渡さない）。ダイアログの板・覆いに付けると、後ろのボタンが押されません。ジェスチャーを受けない Sprite は遮りません。
+
 ### スクリプト例外の扱い
 
 ライフサイクル関数・物理イベントコールバックの中で**未処理の例外**（`Nullable` の `.Value`、`NullReferenceException`、`IndexOutOfRangeException` など）が発生しても、**ランタイムプロセスは落ちません**。エンジン側がすべてのコールバック境界で例外を捕捉します。
@@ -1915,6 +1976,35 @@ if (gameObject.GetComponent<CanvasSafeArea>() is { } safe)
 
 > **重要**: ルートキャンバスの寸法の単位（インスペクタの「寸法の単位」px / dp）を **dp** にすると、ルートの大きさは「画面 ÷ 1 dp の画素数」になり、子の位置・大きさ・余白は縦横同じ倍率で画素へ換算されます（auto_scale は使わない）。1 dp = `Screen.DPI` ÷ 基準 DPI（Android は densityDpi ÷ 160、PC は OS の表示スケール）。PC では環境変数 `SEED_SIM_SCALE_FACTOR`（例 2.625 = Pixel 6a）で端末の密度を模擬できます。
 
+### CanvasGesture（ジェスチャーを受けるノード：ボタン・スクロール・スライダ・シートの入力）
+
+2D キャンバスのノードに **CanvasGesture**（「コンポーネント追加 → UI → Canvas Gesture」）を付けると、そのノードが指ごとのジェスチャーアリーナに参加し、
+同じアクターのスクリプトへ `OnGestureTap` などが届きます（§2「ジェスチャーコールバック」。W2-2）。当たり判定の形は CanvasComponent があればキャンバス領域、
+無ければ最初の Sprite の矩形で、見た目が `MinHitSizeDp`（既定 48 dp）より小さければ中心をそろえて広げます。
+
+```csharp
+if (gameObject.GetComponent<CanvasGesture>() is { } g)
+{
+    g.Enabled         // bool（get/set。既定 true。false の間は当たり判定の候補にもならない＝後ろのノードへ届く）
+    g.Tap             // bool（get/set。タップを受ける。既定 true）
+    g.LongPress       // bool（get/set。長押しを受ける。既定 false）
+    g.Drag            // bool（get/set。ドラッグを受ける。既定 false）
+    g.Fling           // bool（get/set。フリックを受ける。既定 false。ドラッグを受けなくても指を取れる）
+    g.DragAxis        // GestureDragAxis（get/set。Any / Horizontal / Vertical。既定 Any）
+    g.PressFeedback   // bool（get/set。PressDown / PressCancel / PressUp を受ける。既定 true）
+    g.MinHitSizeDp    // float（get/set。最小のヒット領域 dp。既定 48。0 = 広げない）
+}
+
+// 部品ごとの付け方（例）
+// ボタン        … 既定のまま（Tap・PressFeedback）
+// 縦スクロール  … Tap=false, Drag=true, Fling=true, DragAxis=Vertical（枠に CanvasClip）
+// 左スワイプの行 … Tap=true, Drag=true, DragAxis=Horizontal（縦の一覧の中でも縦の動きは一覧へ譲る）
+// スライダ      … Tap=true, Drag=true, DragAxis=Horizontal（e.LocalPosition.x で値を決める）
+// 遮る板        … Tap=false（旗をすべて外す。ダイアログの板・覆い）
+```
+
+> **重要**: 変更は**次に触れた指から**効きます（触れている指は押したときの値のまま）。スクリプトから CanvasGesture を付けたプレハブを生成しても、次の指から参加します。
+
 ### Skybox（天球の色調整：時間帯・天候の演出）
 
 equirectangular 画像 1 枚を天球として描く `Skybox` コンポーネントを、実行時に読み書きします。
@@ -2098,6 +2188,7 @@ public class FishingLine : SEEDScript
 | `CanvasGrid` | `gameObject.GetComponent<CanvasGrid>()` | 子を格子に並べるコンテナ。列数（0 = 最小幅から自動）・セルの縦横比・間隔・余白・セルの中の置き方 |
 | `CanvasLayoutItem` | `gameObject.GetComponent<CanvasLayoutItem>()` | コンテナの子の側の指定。伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる |
 | `CanvasSafeArea` | `gameObject.GetComponent<CanvasSafeArea>()` | ノードの領域を Screen.SafeArea の内側へ縮める。有効・辺ごとの適用（Left/Top/Right/Bottom） |
+| `CanvasGesture` | `gameObject.GetComponent<CanvasGesture>()` | ジェスチャーを受けるノード（W2-2）。タップ・長押し・ドラッグ・フリックの旗・ドラッグの軸・押下の見た目・最小のヒット領域（dp）。イベントは `OnGesture*` |
 | `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
 | `ControlPointPath` | `gameObject.GetComponent<ControlPointPath>()` | コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用） |
 

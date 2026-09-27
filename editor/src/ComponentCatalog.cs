@@ -86,6 +86,8 @@ public static class ComponentCatalog
             new("CanvasGridComponent", "Canvas Grid", "CanvasGrid", "子を格子のセルへ並べる（列数固定か、セルの最小幅で自動。セルの縦横比・間隔）", ComponentActorTarget.Actor2D),
             new("CanvasLayoutItemComponent", "Canvas Layout Item", "CanvasLayoutItem", "コンテナの子の側の指定（伸ばす重み・大きさの指定と上下限・揃えの上書き・無視させる・親に合わせる）", ComponentActorTarget.Actor2D),
             new("CanvasSafeAreaComponent", "Canvas Safe Area", "CanvasSafeArea", "このノードのキャンバス領域を画面の安全領域（切り欠き・システムバーを避けた内側）へ縮める。辺ごとに選べる", ComponentActorTarget.Actor2D),
+            // ジェスチャー（W2-2）。規則の正典は docs/input_gestures.md
+            new("CanvasGestureComponent", "Canvas Gesture", "CanvasGesture", "タップ・長押し・ドラッグ・フリックを受ける（指ごとに子 → 親で競い、押下の見た目の取り消しと最小 48 dp のヒット領域つき）。スクリプトの OnGesture* で受ける", ComponentActorTarget.Actor2D),
         }),
         ("ライト", new List<ComponentEntry>
         {

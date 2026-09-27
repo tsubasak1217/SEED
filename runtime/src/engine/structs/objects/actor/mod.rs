@@ -518,7 +518,9 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
         | ComponentKind::CanvasWrap
         | ComponentKind::CanvasGrid
         | ComponentKind::CanvasLayoutItem
-        | ComponentKind::CanvasSafeArea => canvas_layout_slots::to_data(world, slot),
+        | ComponentKind::CanvasSafeArea
+        // ジェスチャーを受けるノード（W2-2）も同じ表で変換する
+        | ComponentKind::CanvasGesture => canvas_layout_slots::to_data(world, slot),
         ComponentKind::InteractionSource => {
             // インタラクションソースをシリアライズ用データに変換する
             world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)

@@ -920,6 +920,13 @@ impl App {
                 crate::profile_scope!("UI/ポインタイベント");
                 self.update_pointer_events();
             }
+            // ジェスチャー（W2-2。タップ・長押し・ドラッグ・フリック・押下の見た目）を配る。
+            // ポインタイベントと同じく**スクリプトフェーズより前**（このフレームの Update から結果が見える）。
+            // CanvasGesture を持つノードが無く指も無ければ、記録を取り出すだけで何もしない。
+            {
+                crate::profile_scope!("UI/ジェスチャー");
+                self.update_gestures();
+            }
             // スクリプトの Input API 用に入力状態への読み取り専用ポインタを公開する。
             // 入力イベントの処理はイベントハンドラ側で行われるため、
             // フェーズ実行中に self.input が変更されることはない。
@@ -1031,6 +1038,10 @@ impl App {
                 self.update_component_audio();
             }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
+        } else if self.mode == RuntimeMode::Play {
+            // 一時停止のフレーム: ジェスチャーの触れている指をすべて取り消す（取り消しのイベントは再開した
+            // 最初のフレームで配る。一時停止の間の指のイベントは Input::end_frame が捨てる。W2-2）
+            self.hold_gestures_while_paused();
         }
 
         // ─ 1-6.5 モデル非同期ロードの完成品を反映する ───────

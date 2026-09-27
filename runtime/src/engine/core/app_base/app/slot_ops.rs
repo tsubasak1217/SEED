@@ -549,8 +549,9 @@ impl App {
                     | ComponentKind::CanvasWrap
                     | ComponentKind::CanvasGrid
                     | ComponentKind::CanvasLayoutItem
-                    | ComponentKind::CanvasSafeArea => {
-                        // レイアウトの部品（W2-1b の 5 種）
+                    | ComponentKind::CanvasSafeArea
+                    | ComponentKind::CanvasGesture => {
+                        // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）
                         crate::engine::structs::objects::actor::canvas_layout_slots::remove(
                             &mut scene.world, kind, slot_entity);
                     }
@@ -1076,8 +1077,9 @@ impl App {
             | ComponentData::CanvasWrapComponent(_)
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
-            | ComponentData::CanvasSafeAreaComponent(_)) => {
-                // レイアウトの部品（W2-1b の 5 種）を複製する（新しいスロット専用エンティティへ挿入）
+            | ComponentData::CanvasSafeAreaComponent(_)
+            | ComponentData::CanvasGestureComponent(_)) => {
+                // キャンバス UI の純データの部品（W2-1b の 5 種と W2-2 の CanvasGesture）を複製する（新しいスロット専用エンティティへ挿入）
                 use crate::engine::structs::objects::actor::canvas_layout_slots;
                 let slot_entity = scene.world.spawn();
                 let slot = canvas_layout_slots::insert_from_data(
@@ -1622,8 +1624,9 @@ impl App {
             | ComponentData::CanvasWrapComponent(_)
             | ComponentData::CanvasGridComponent(_)
             | ComponentData::CanvasLayoutItemComponent(_)
-            | ComponentData::CanvasSafeAreaComponent(_)) => {
-                    // レイアウトの部品（W2-1b の 5 種）をスロット専用エンティティへ復元する
+            | ComponentData::CanvasSafeAreaComponent(_)
+            | ComponentData::CanvasGestureComponent(_)) => {
+                    // キャンバス UI の純データの部品（W2-1b の 5 種と W2-2 の CanvasGesture）をスロット専用エンティティへ復元する
                     use crate::engine::structs::objects::actor::canvas_layout_slots;
                     if let Some(slot) = canvas_layout_slots::insert_from_data(
                         &mut scene.world, slot_entity, slot_data.name, &layout_data)

@@ -742,6 +742,20 @@ impl ScriptComponent {
         unsafe { (host.physics_event_fn)(handle, &raw); }
     }
 
+    /// ジェスチャーのイベント（W2-2）をスクリプトへ通知する。
+    ///
+    /// SEEDScripting.dll に入口（ScriptBridge.OnGestureEvent）が無ければ何もしない（戻り値 false）。
+    /// run_physics_event_raw と同じく、呼び出し側は World への参照を保持せずに呼ぶこと。
+    pub(crate) fn run_gesture_event_raw(
+        host:   &ScriptingHost,
+        handle: isize,
+        event:  &crate::engine::core::scripting::gesture_ffi::RawGestureEvent,
+    ) -> bool {
+        let Some(gesture_fn) = host.gesture_event_fn else { return false };
+        unsafe { gesture_fn(handle, event) };
+        true
+    }
+
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> ScriptComponentData {
         ScriptComponentData {

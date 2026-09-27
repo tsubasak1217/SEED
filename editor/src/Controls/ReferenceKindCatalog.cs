@@ -131,6 +131,8 @@ internal static class ReferenceKindCatalog
         ["CanvasGrid"]       = "CanvasGridComponent",
         ["CanvasLayoutItem"] = "CanvasLayoutItemComponent",
         ["CanvasSafeArea"]   = "CanvasSafeAreaComponent",
+        // ジェスチャーを受けるノード（W2-2。スクリプトの SEED.CanvasGesture）
+        ["CanvasGesture"]    = "CanvasGestureComponent",
         ["Animator"]        = "AnimatorComponent",
         ["ParticleEmitter"] = "ParticleEmitterComponent",
         ["InputMap"]        = "InputMapComponent",
@@ -166,6 +168,7 @@ internal static class ReferenceKindCatalog
         ["CanvasGrid"]        = "CanvasGrid（格子に並べる）",
         ["CanvasLayoutItem"]  = "CanvasLayoutItem（レイアウトの子の指定）",
         ["CanvasSafeArea"]    = "CanvasSafeArea（安全領域）",
+        ["CanvasGesture"]     = "CanvasGesture（ジェスチャーを受ける）",
         ["Animator"]          = "Animator",
         ["ParticleEmitter"]   = "ParticleEmitter",
         ["InputMap"]          = "InputMap",

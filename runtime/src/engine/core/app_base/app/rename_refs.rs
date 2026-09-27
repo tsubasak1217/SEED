@@ -258,7 +258,9 @@ fn rewrite_refs_in_slots(
             | ComponentKind::CanvasWrap
             | ComponentKind::CanvasGrid
             | ComponentKind::CanvasLayoutItem
-            | ComponentKind::CanvasSafeArea => {}
+            | ComponentKind::CanvasSafeArea
+            // ジェスチャーを受けるノード（W2-2）は旗・軸・大きさだけで、アクター名参照は無い。
+            | ComponentKind::CanvasGesture => {}
         }
     }
 

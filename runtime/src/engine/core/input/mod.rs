@@ -1,6 +1,8 @@
 pub mod action_map;
 pub mod cursor_visibility;
 pub mod gamepad;
+/// ジェスチャーアリーナ（タップ・長押し・ドラッグ・フリック・押下の取り消し・指ごとの捕捉。W2-2）
+pub mod gesture;
 pub mod inject;
 /// OS 固有のキー（Android の戻るキー等）をエンジンの KeyCode へ置き換える表（platform::PlatformTraits::key_remap が選ぶ）。
 pub mod key_remap;
@@ -23,6 +25,10 @@ use winit::window::Window;
 
 use crate::engine::platform;
 use crate::engine::structs::tensor::Vector2;
+use gesture::pointer_log::{
+    pointer_clock_now, pointer_clock_secs, InjectedPointerTracker, PointerEventLog, PointerLogEntry, PointerPhase,
+    INJECTED_POINTER_KEY,
+};
 use keyboard::KeyboardState;
 use mouse::MouseState;
 use touch::{PointerBridge, PointerBridgePolicy, TouchPoint, TouchState};
@@ -106,6 +112,14 @@ pub struct Input {
     /// 「実入力の挙動をひとつも変えない」ことと「注入だけを一括解放できる」ことを
     /// 同時に満たすため（詳細は inject モジュール）。
     injection: InputInjection,
+    /// 時刻つきの指のイベントの記録（W2-2 のジェスチャーアリーナが読む。gesture/pointer_log.rs）。
+    ///
+    /// 実タッチ・マウスの合成の指（PointerBridge の控え）・注入の指・全部の取り消しを、受け取った時刻つきで積む。
+    /// ジェスチャーの処理（App の update_gestures）が取り出し、取り出されなかった分は end_frame で捨てる。
+    /// TouchState・MouseState・注入の状態には一切触れない（従来の入力の読み手の値は変わらない）。
+    pointer_log: PointerEventLog,
+    /// 注入のマウスの左ボタンと座標を 1 本の指のイベントへ直す追跡（W2-2）。
+    injected_pointer: InjectedPointerTracker,
     /// ウィンドウ実サイズ → 描画解像度 の写像。`None` = 等倍（従来動作）。
     ///
     /// 写像の**唯一の所有者**がここであることが重要。App 側にも同じ情報を持たせると、
@@ -129,6 +143,8 @@ impl Input {
             pointer_bridge: PointerBridge::new(policy),
             gamepad: GamepadState::new(),
             injection: InputInjection::new(),
+            pointer_log: PointerEventLog::new(),
+            injected_pointer: InjectedPointerTracker::default(),
             view_map: None,
             is_active: true,
         }
@@ -190,6 +206,7 @@ impl Input {
         if self.is_active {
             self.pointer_bridge
                 .on_mouse_button(button, pressed, &mut self.mouse, &mut self.touch);
+            self.journal_finger_events();
         }
     }
 
@@ -215,6 +232,7 @@ impl Input {
                 &mut self.mouse,
                 &mut self.touch,
             );
+            self.journal_finger_events();
         }
     }
 
@@ -238,6 +256,7 @@ impl Input {
                 &mut self.mouse,
                 &mut self.touch,
             );
+            self.journal_finger_events();
         }
     }
 
@@ -248,6 +267,51 @@ impl Input {
     pub fn cancel_touches(&mut self) {
         self.pointer_bridge
             .cancel_real_touches(&mut self.mouse, &mut self.touch);
+        // ジェスチャーはマウスの合成の指も含めてすべて取り消す（押下の見た目を戻す。W2-2）
+        self.pointer_log.record_cancel_all(pointer_clock_now());
+    }
+
+    /// ジェスチャーの指だけをすべて取り消す（アプリが背面へ回った。W2-2）。
+    ///
+    /// TouchState・MouseState には触れない（従来の振る舞いを変えない）。記録に「全部の取り消し」を積むだけで、
+    /// 次に動いたフレーム（前面へ戻った最初のフレーム）でアリーナが PressCancel・DragEnd（取り消し）を配る。
+    pub fn cancel_gesture_pointers(&mut self) {
+        self.pointer_log.record_cancel_all(pointer_clock_now());
+    }
+
+    // ─── ジェスチャーの記録（W2-2）──────────────────────────
+
+    /// 積んだ時刻つきの指のイベントを時刻の順に取り出す（ジェスチャーの処理がフレームに 1 回呼ぶ）。
+    pub fn take_pointer_events(&mut self) -> Vec<PointerLogEntry> {
+        self.pointer_log.take()
+    }
+
+    /// PointerBridge が TouchState へ入れた指の単位のイベントを、今の時刻で記録へ移す。
+    fn journal_finger_events(&mut self) {
+        let events = self.pointer_bridge.take_journal();
+        if events.is_empty() {
+            return;
+        }
+        let time = pointer_clock_now();
+        for e in events {
+            let phase = match e.kind {
+                RawTouchPhase::Started => PointerPhase::Down,
+                RawTouchPhase::Moved => PointerPhase::Move,
+                RawTouchPhase::Ended => PointerPhase::Up,
+                RawTouchPhase::Cancelled => PointerPhase::Cancel,
+            };
+            self.pointer_log.record(e.raw_id, phase, [e.position.x, e.position.y], time);
+        }
+    }
+
+    /// 注入の操作を当てた直後の状態から、注入の指のイベントを記録へ積む（位置は注入の座標、無ければ実カーソル）。
+    fn journal_injected_pointer(&mut self) {
+        for snap in self.injection.take_pointer_snapshots() {
+            let p = snap.position.unwrap_or_else(|| self.mouse.position());
+            if let Some((phase, at)) = self.injected_pointer.observe(snap.left_held, [p.x, p.y]) {
+                self.pointer_log.record(INJECTED_POINTER_KEY, phase, at, pointer_clock_secs(snap.at));
+            }
+        }
     }
 
     /// `WindowEvent::MouseWheel` を処理する。
@@ -276,6 +340,11 @@ impl Input {
         // タッチ由来の左ボタンの解放・押下（素早いタップの解放など）をここで入れるため。
         self.pointer_bridge
             .end_frame(&mut self.mouse, &mut self.touch);
+        // 控えは各イベントの直後に記録へ移しているので通常は空（念のため空にする。TouchState の end_frame が
+        // 次フレームへ回したイベントを入れ直すのは控えを通らない＝既に記録済みの指を二重に記録しない）。
+        // 取り出されなかったジェスチャーの記録（Edit・一時停止のフレーム）も捨てる（W2-2）
+        self.pointer_bridge.take_journal();
+        self.pointer_log.clear();
     }
 
     // ─── キーボード API ────────────────────────────────────────
@@ -612,6 +681,7 @@ impl Input {
     /// 押下は明示の解放（up / `release_injected_input`）まで保持される。
     pub fn apply_injected_action(&mut self, action: InjectAction) {
         self.injection.apply_action(action);
+        self.journal_injected_pointer();
     }
 
     /// 時間軸付きシーケンスの再生を開始する。
@@ -624,6 +694,7 @@ impl Input {
     /// 注入中の押下・移動量・再生中シーケンスをすべて破棄する。
     pub fn release_injected_input(&mut self) {
         self.injection.release_all();
+        self.journal_injected_pointer();
     }
 
     /// 毎フレーム 1 回、IPC 処理の直後に呼ぶ。シーケンスを実時間で進める。
@@ -632,7 +703,9 @@ impl Input {
     /// （Play を止めたのに押しっぱなしが残らないようにする安全弁）。
     /// `paused` の間はシーケンスの時計だけを止め、押下はそのまま保持する。
     pub fn tick_injection(&mut self, playing: bool, paused: bool) -> InjectTickOutcome {
-        self.injection.tick(playing, paused, Instant::now())
+        let outcome = self.injection.tick(playing, paused, Instant::now());
+        self.journal_injected_pointer();
+        outcome
     }
 
     // ─── アクティブフラグ ──────────────────────────────────────
@@ -856,5 +929,103 @@ mod tests {
         input.cancel_touches();
         assert!(input.is_release_mouse(MouseButton::Left));
         assert_eq!(input.touch(0).unwrap().phase, TouchPhase::Canceled);
+    }
+
+    // ─── ジェスチャーの記録（W2-2）───────────────────────────
+
+    use gesture::pointer_log::PointerInputEvent;
+
+    /// 記録から指のイベントだけを (鍵, 段階, 位置) にする（全部の取り消しは鍵 0・Cancel）。
+    fn log_summary(entries: &[PointerLogEntry]) -> Vec<(u64, PointerPhase, [f32; 2])> {
+        entries
+            .iter()
+            .map(|e| match e {
+                PointerLogEntry::Pointer(PointerInputEvent { pointer, phase, position, .. }) => (*pointer, *phase, *position),
+                PointerLogEntry::CancelAll { .. } => (0, PointerPhase::Cancel, [0.0, 0.0]),
+            })
+            .collect()
+    }
+
+    /// デスクトップ: マウスの左ボタンの合成の指が、触れた → 動いた → 離れたとして記録される。
+    /// 左ボタンを押していない移動・右ボタンは記録しない。フレームの終わりで捨てる。
+    #[test]
+    fn desktop_mouse_finger_is_logged_for_gestures() {
+        use touch::MOUSE_FINGER_RAW_ID;
+        let mut input = Input::new();
+        input.process_cursor_moved(10.0, 20.0);
+        input.process_mouse_button(MouseButton::Right, true);
+        input.process_mouse_button(MouseButton::Left, true);
+        input.process_cursor_moved(15.0, 20.0);
+        input.process_mouse_button(MouseButton::Left, false);
+        let log = input.take_pointer_events();
+        assert_eq!(
+            log_summary(&log),
+            vec![
+                (MOUSE_FINGER_RAW_ID, PointerPhase::Down, [10.0, 20.0]),
+                (MOUSE_FINGER_RAW_ID, PointerPhase::Move, [15.0, 20.0]),
+                (MOUSE_FINGER_RAW_ID, PointerPhase::Up, [15.0, 20.0]),
+            ]
+        );
+        assert!(log.windows(2).all(|w| w[0].time() <= w[1].time()), "時刻は受け取った順");
+        input.process_mouse_button(MouseButton::Left, true);
+        input.end_frame();
+        assert!(input.take_pointer_events().is_empty(), "取り出されなかった記録はフレームの終わりで捨てる");
+    }
+
+    /// Android の方針: 実タッチの指がそのまま記録され、フォーカスを失うと全部の取り消しが積まれる。
+    #[test]
+    fn android_touches_and_focus_loss_are_logged() {
+        let mut input = Input::with_pointer_policy(ANDROID_POLICY);
+        input.process_touch(4, RawTouchPhase::Started, 1.0, 2.0);
+        input.process_touch(4, RawTouchPhase::Moved, 3.0, 2.0);
+        input.cancel_touches();
+        input.cancel_gesture_pointers();
+        assert_eq!(
+            log_summary(&input.take_pointer_events()),
+            vec![
+                (4, PointerPhase::Down, [1.0, 2.0]),
+                (4, PointerPhase::Move, [3.0, 2.0]),
+                (0, PointerPhase::Cancel, [0.0, 0.0]),
+                (0, PointerPhase::Cancel, [0.0, 0.0]),
+            ]
+        );
+    }
+
+    /// 注入: 座標と左ボタンが 1 本の指（INJECTED_POINTER_KEY）になる。解放（RELEASE_ALL）で離れる。
+    #[test]
+    fn injected_mouse_becomes_a_gesture_pointer() {
+        let mut input = Input::new();
+        input.apply_injected_action(InjectAction::MousePos { x: 100.0, y: 50.0 });
+        input.apply_injected_action(InjectAction::MouseButton { button: MouseButton::Left, down: true });
+        input.apply_injected_action(InjectAction::MousePos { x: 120.0, y: 50.0 });
+        input.apply_injected_action(InjectAction::Key { key: KeyCode::KeyA, down: true });
+        input.release_injected_input();
+        assert_eq!(
+            log_summary(&input.take_pointer_events()),
+            vec![
+                (INJECTED_POINTER_KEY, PointerPhase::Down, [100.0, 50.0]),
+                (INJECTED_POINTER_KEY, PointerPhase::Move, [120.0, 50.0]),
+                (INJECTED_POINTER_KEY, PointerPhase::Up, [120.0, 50.0]),
+            ]
+        );
+        assert_eq!(input.touch_count(), 0, "注入は TouchState を変えない（従来どおり）");
+    }
+
+    /// 注入のシーケンス: 1 回の tick でまとめて当たった操作も、予定の時刻（t）の間隔で記録される。
+    #[test]
+    fn injected_sequence_uses_scheduled_times() {
+        let json = r#"[{"t":0.0,"mouse_pos":[10,10]},{"t":0.0,"mouse_button":"left","down":true},
+                       {"t":0.1,"mouse_pos":[30,10]},{"t":0.25,"mouse_button":"left","down":false}]"#;
+        let mut input = Input::new();
+        assert!(input.start_injected_sequence(InputSequencePlayer::from_json(json).unwrap()));
+        input.tick_injection(true, false);
+        // 0.3 秒遅れて次の tick（1 フレームが大きく遅れた）→ 残りの 2 件が同じ tick で当たる
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        input.tick_injection(true, false);
+        let log = input.take_pointer_events();
+        assert_eq!(log.len(), 3, "{log:?}");
+        let (t0, t1, t2) = (log[0].time(), log[1].time(), log[2].time());
+        assert!(((t1 - t0) - 0.1).abs() < 0.02, "動いたのは押してから 0.1 秒後（予定の時刻）: {}", t1 - t0);
+        assert!(((t2 - t0) - 0.25).abs() < 0.02, "離したのは 0.25 秒後: {}", t2 - t0);
     }
 }
