@@ -7,7 +7,8 @@ namespace SEED.Platform;
 /// スクリプト → エンジン（Rust）→ Android では JNI → Java の SeedPlatform → 別プロセス :seed_platform、
 /// デスクトップではエンジンの中の模擬（DesktopSimBridge）へ届く。どちらも同じ形の JSON で答える
 /// （docs/android.md §25・docs/app_platform_roadmap.md §2.2）。
-/// 型付きの API はこの上へ作る（W1-3 で <see cref="Alarms"/>。Notifications などは W1-5 以降）。W1-1 のスクリプト向けは
+/// 型付きの API はこの上へ作る（W1-3 で <see cref="Alarms"/>、W1-4a で <see cref="App"/>・<see cref="Window"/>、W1-5 で
+/// <see cref="Notifications"/>・<see cref="Permissions"/>）。W1-1 のスクリプト向けは
 /// <see cref="IsSupported"/>・<see cref="IsSimulated"/>・<see cref="LastError"/>・<see cref="PlatformDiagnostics"/>・
 /// <see cref="PlatformEvents"/> だけで、生の命令（TryInvoke）は公開しない。
 /// </para>

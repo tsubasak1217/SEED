@@ -104,8 +104,8 @@ impl DesktopSimBridge {
         }
     }
 
-    /// 模擬のイベントを 1 つ積む（通し番号は試験イベント・発火と共通）。
-    fn push_event(&self, name: &str, now_utc_ms: i64, data: Value) {
+    /// 模擬のイベントを 1 つ積む（通し番号は試験イベント・発火と共通。W1-5 で権限の結果〈permission_commands.rs〉も使う）。
+    pub(super) fn push_event(&self, name: &str, now_utc_ms: i64, data: Value) {
         let seq = self.next_event_seq();
         let time_ms = u64::try_from(now_utc_ms).unwrap_or_default();
         self.events.push(wire::event_json(name, seq, time_ms, data));

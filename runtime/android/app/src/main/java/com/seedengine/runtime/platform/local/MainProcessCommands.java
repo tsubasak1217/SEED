@@ -1,10 +1,13 @@
 // ============================================================
-//  MainProcessCommands.java — メインプロセスで答える命令の表（IPC に行かない命令。W1-4a）
+//  MainProcessCommands.java — メインプロセスで答える命令の表（IPC に行かない命令。W1-4a・W1-5 で権限を追加）
 //
 //  SeedPlatform.invoke がまずここを引き、載っている命令はその場で答える（:seed_platform を起こさない・待たない）。
-//  メインプロセスの持ち物（起動の Intent・Activity の窓）を扱う命令だけを置く:
+//  メインプロセスの持ち物（起動の Intent・Activity の窓・実行時の許可の確認の画面）を扱う命令だけを置く:
 //    platform.launch_reason       … この起動の理由（LaunchReasonCommand）
 //    window.set_show_when_locked  … ロック画面の上に出す＋画面を点ける の切り替え（ShowWhenLockedCommand）
+//    permission.check             … 権限の今の状態（PermissionCheckCommand。W1-5）
+//    permission.request           … 権限を求める（PermissionRequestCommand。結果は platform.permission_result。W1-5）
+//    permission.open_settings     … 権限の設定の画面を開く（PermissionOpenSettingsCommand。W1-5）
 //  命令を足すときは、この表に 1 行と、Rust の wire.rs・デスクトップの模擬（desktop_sim の SIM_COMMANDS）に同じ名前を足す。
 //  "platform" モジュールの他の命令（ping など）は :seed_platform の CorePlatformModule が答える（表は module と method の組で引く）。
 // ============================================================
@@ -42,6 +45,12 @@ public final class MainProcessCommands {
                 new LaunchReasonCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_WINDOW, PlatformContract.METHOD_WINDOW_SET_SHOW_WHEN_LOCKED),
                 new ShowWhenLockedCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_PERMISSION, PlatformContract.METHOD_PERMISSION_CHECK),
+                new PermissionCheckCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_PERMISSION, PlatformContract.METHOD_PERMISSION_REQUEST),
+                new PermissionRequestCommand());
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_PERMISSION, PlatformContract.METHOD_PERMISSION_OPEN_SETTINGS),
+                new PermissionOpenSettingsCommand());
         return Collections.unmodifiableMap(table);
     }
 

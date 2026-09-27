@@ -2803,12 +2803,13 @@ var ratio = new SEED.Vector2(t.Position.x / SEED.Screen.Width, t.Position.y / SE
 
 ---
 
-## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由）
+## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限）
 
 目覚まし・通知・権限など **OS の機能**をスクリプトから使うための入口です（名前空間 `SEED.Platform`）。
 W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で**目覚ましの予約**（`Alarms`。この節の後半）、
-W1-4a で**鳴動**（`Alarms.GetRinging` / `StopRinging`・音と通知）と**起動理由**（`App.LaunchReason`）・`Window.SetShowWhenLocked` が加わりました。
-通知・権限などは後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
+W1-4a で**鳴動**（`Alarms.GetRinging` / `StopRinging`・音と通知）と**起動理由**（`App.LaunchReason`）・`Window.SetShowWhenLocked`、
+W1-5 で**通知**（`Notifications`）と**権限**（`Permissions`）が加わりました。画面・アプリの残り（`Window` の他の切り替え・`App.MoveTaskToBack` 等）は
+後の段階で足されます（docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
 デスクトップ（エディタの Play・単体起動）ではエンジンの中の**模擬**へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
 
 ```csharp
@@ -2989,6 +2990,106 @@ private void OnDismissPressed(string id)
 > **重要**: 目覚ましで起動したアプリは、ロック画面の上に出たままになります。鳴動を片付けたら必ず `Window.SetShowWhenLocked(false)` で下ろしてください（下ろさないと、アプリを開いたまま電源ボタンを押してもロック画面が出ません）。ロックは解除しないので、鳴動画面より先（お金の操作など）へ進むときは利用者にロックを解除してもらう設計にしてください。
 
 > **重要**: 鳴動はアプリのスクリプトが `StopRinging` を呼ぶまで続きます（通知に「止める」ボタンはありません）。通知の「開く」は起動理由 `NotificationAction`（`ActionId == "open"`）でアプリを開くだけです。
+
+### 通知（`Notifications`。W1-5）
+
+チャネルを作って通知を出します。Android では別プロセス `:seed_platform` が出すので、**エンジンが落ちても・アプリを閉じても通知は残ります**
+（例: スヌーズ中の知らせ）。本文のタップとボタン（最大 3 つ）はどちらも**アプリを直接開き**（Android 12+ の通知のトランポリンの禁止に合わせて
+受信機を挟まない）、起動理由が `LaunchKind.NotificationTap`（`Id` = 通知の ID）か `LaunchKind.NotificationAction`（`ActionId` = ボタンの ID）に
+なります。デスクトップは模擬で、画面には何も出さず `[SEED PLATFORM] 通知: …` のログだけです。
+Android では APK に機能 `notifications`（か `alarm`。どちらも `POST_NOTIFICATIONS` を入れる）が要り、Android 13 以降は通知の実行時の許可が要ります（次の「権限」）。
+
+```csharp
+using SEED.Platform;
+
+// チャネル（起動のたびに呼んでよい。同じ ID は名前と説明だけ変わる。重要度は作った後は利用者だけが変えられる）
+bool ok = Notifications.EnsureChannel("reminders", "リマインダー", NotificationImportance.High, "スヌーズ中の知らせ");
+// NotificationImportance.Low（音なし）/ Default（音あり）/ High（音あり・画面の上に出る）。"seed_platform" で始まる ID は使えない
+
+// 出す（同期で「受け付けたか」だけ。false なら Platform.LastError）
+bool shown = Notifications.Show(new NotificationRequest
+{
+    Id = "snooze",                                   // 1〜128 文字。同じ ID は置き換え。Cancel もこの ID
+    ChannelId = "reminders",                         // EnsureChannel で作ったもの
+    Title = "スヌーズ中", Body = "7:10 にもう一度鳴ります", // Body は長文でも通知を開くと全部見える（BigTextStyle）。どちらも 4096 文字まで
+    Ongoing = true,                                  // 常駐（スワイプで消えにくい・本文を押しても消えない）。false なら本文を押すと消える
+    Category = NotificationRequest.CategoryReminder, // "alarm" / "reminder" / "status" / "event" / "progress"（それ以外は付けない）
+    Actions = new[] { new NotificationAction("stop", "止める"), new NotificationAction("open", "開く") }, // 最大 3。ID は重ならないこと
+    PayloadJson = "{\"alarm\":\"morning\"}",          // 起動理由の PayloadJson にそのまま戻る（16384 文字まで）
+});
+bool cancelled = Notifications.Cancel("snooze");    // 出ていない ID でも true（冪等）
+bool enabled = Notifications.AreEnabled;             // アプリの通知が端末で有効か（:seed_platform へ問い合わせる。毎フレーム読まない）
+Notifications.IsSupported                            // bool（IPC なし。APK に機能が無いと分かった後は false）
+NotificationRequest.MaxActions                       // 3
+
+// ボタン・本文のタップで開かれたとき（起動のときは App.LaunchReason、動いている間は platform.launch）
+this.On(LaunchInfo.EventName, (string json) =>
+{
+    if (!LaunchInfo.TryParseEvent(json, out LaunchInfo e)) return;
+    if (e.Kind == LaunchKind.NotificationAction && e.Id == "snooze" && e.ActionId == "stop")
+        Notifications.Cancel("snooze");             // ボタンを押しても通知は消えないので、アプリが消す
+});
+
+// 失敗の理由（Platform.LastError）
+Notifications.ErrorNotificationsDisabled // "notifications_disabled" … 通知が無効（Android 13+ の許可が無い・利用者が切った・チャネルが止められた）
+Notifications.ErrorChannelNotFound       // "channel_not_found"      … チャネルが無い（先に EnsureChannel）
+Notifications.ErrorFeatureNotEnabled     // "feature_not_enabled"    … APK に機能 notifications（か alarm）が無い
+Notifications.ErrorInvalidArgument       // "invalid_argument"       … ID が空・ボタンが 4 つ以上・ボタンの ID の重なり・長すぎる文字列・予約済みのチャネル ID
+```
+
+| 項目 | Android | デスクトップ（模擬） |
+|---|---|---|
+| 出す場所 | `:seed_platform` の `NotificationManager.notify(tag = Id, …)`（アプリを閉じても残る） | プロセスの中の一覧と `[SEED PLATFORM] 通知: …` のログ。**Play を止めるとチャネルも通知も消える** |
+| 本文のタップ・ボタン | アプリを直接開く（信頼できる入口 `PlatformEntry` 経由）。起動理由 `NotificationTap` / `NotificationAction`（`Id`・`ActionId`・`PayloadJson`） | 押す手段は無い（起動理由は常に `Launcher`） |
+| 許可 | Android 13+ は `POST_NOTIFICATIONS`（無いと `notifications_disabled`）。12 以前は利用者が切っていなければ出る | `AreEnabled` は常に true |
+| チャネル | 端末の設定の「通知」に名前が出る。作った後の重要度は利用者だけが変えられる | 名前と説明だけ持つ |
+
+> **重要**: ボタンを押しても通知は消えません（Android の決まり）。起動理由（`NotificationAction`）を見て処理したら `Notifications.Cancel(id)` で消してください。常駐でない通知は本文を押すと消えます。`EnsureChannel` と `Cancel` は、案（roadmap §2.3）の void ではなく bool を返します（接続中・機能なしを見分けるため）。
+
+### 権限（`Permissions`。W1-5）
+
+通知・正確なアラーム・フルスクリーン通知の**状態**を調べ、**求め**、**設定の画面**を開きます。Android ではメインプロセスが答えるので
+（IPC なし）、最初の呼び出しでも `connecting` になりません。デスクトップの模擬は v1 の 3 種が常に `Granted` です。
+
+```csharp
+using SEED.Platform;
+
+PermissionStatus s = Permissions.Check(PermissionKind.PostNotifications); // 失敗は Unknown（Platform.LastError）。呼ぶたびに問い合わせる（軽い）
+// PermissionStatus.Granted / Denied / DeniedPermanently / NeedsSettings / NotApplicable / Unknown
+int requestId = Permissions.Request(PermissionKind.PostNotifications);    // すぐ要求の ID（1 以上）を返す。失敗は 0。結果はイベント
+bool opened = Permissions.OpenSettings(PermissionKind.ExactAlarm);         // 設定の画面（結果のイベントは無い。戻って変わっていれば permission_changed）
+// PermissionKind.PostNotifications / ExactAlarm / FullScreenIntent / RecordAudio・SendSms（v2 の予約。常に NotApplicable）
+
+this.On(PermissionResultEvent.Name, (string json) =>           // "platform.permission_result"
+{
+    if (PermissionResultEvent.TryParse(json, out PermissionResultEvent e) && e.RequestId == requestId)
+        SEED.Debug.Log($"{e.Kind} → {e.Status}");                // e.RequestId  e.Kind  e.KindName  e.Status  e.StatusName  e.Simulated
+});
+this.On(PermissionChangedEvent.Name, (string json) => { });     // "platform.permission_changed": 前面へ戻ったときに状態が変わっていた（e.Kind・e.Status）
+
+// 失敗の理由（Platform.LastError）
+Permissions.ErrorFeatureNotEnabled // "feature_not_enabled" … APK にその種類の機能が無い（通知は notifications か alarm、ほかは alarm）
+Permissions.ErrorInvalidArgument   // "invalid_argument"    … PermissionKind.Unknown を渡した等
+Permissions.ErrorNoActivity        // "no_activity"         … 画面（Activity）が無い（Request・OpenSettings）
+
+// 例: 目覚ましを予約する前に確かめる（Android 12 系で正確なアラームの特別なアクセスが無いと Alarms.Schedule が失敗する）
+if (Permissions.Check(PermissionKind.ExactAlarm) == PermissionStatus.NeedsSettings)
+    Permissions.Request(PermissionKind.ExactAlarm);             // 説明を出してから。設定の画面が開き、戻ると permission_result
+```
+
+| 種類 | Android の状態（`Check`） | `Request` のとき | `OpenSettings` の画面 |
+|---|---|---|---|
+| `PostNotifications` | 13+: 許可なら `Granted`（通知が設定で切られていれば `NeedsSettings`）、未許可は `Denied`、二度拒否されて確認の画面が出なくなったら `DeniedPermanently`。12 以前: 通知の設定で `Granted` か `NeedsSettings` | 13+ で未許可なら実行時の確認の画面（永続の拒否なら画面は出ずにすぐ `DeniedPermanently`）。`NeedsSettings` なら通知の設定の画面 | アプリの通知の設定 |
+| `ExactAlarm` | 13+: `Granted`（`USE_EXACT_ALARM`）。12 系: 特別なアクセスで `Granted` か `NeedsSettings`。11 以前: `NotApplicable` | `NeedsSettings` なら「アラームとリマインダー」の設定の画面 | 同じ（11 以前はアプリ情報） |
+| `FullScreenIntent` | 14+: 特別なアクセスで `Granted` か `NeedsSettings`。13 以前: `Granted` | `NeedsSettings` なら「全画面通知」の設定の画面 | 同じ（13 以前はアプリ情報） |
+| `RecordAudio` / `SendSms` | `NotApplicable`（v2 の予約） | すぐ `NotApplicable` | アプリ情報 |
+
+- `Request` の結果: 既に `Granted`・`NotApplicable` なら画面を出さずに次のフレームで届く。確認の画面・設定の画面なら、利用者が答えて（戻って）から届く。同じ種類を重ねて求めると、出ている画面の結果がそれぞれの ID で届く。
+- `PermissionChangedEvent`: 前面へ戻るたび（Android の onResume）に、APK に機能がある 3 種を前回の onResume と比べ、違えば届く（確認の画面で許可したときも `PermissionResultEvent` の後に届く）。プロセスの最初の onResume では届かない。
+- 模擬: `Check` は v1 の 3 種が `Granted`（v2 は `NotApplicable`）、`Request` は画面を出さずに次のフレームで `permission_result`、`OpenSettings` はログだけ、`PermissionChangedEvent` は起きない。
+- `Check` の失敗は案（roadmap §2.3）に無い `PermissionStatus.Unknown`、`OpenSettings` は void ではなく bool を返す（失敗を見分けるため）。
+
+> **重要**: Android 13 以降、通知の確認の画面は利用者が 2 回拒否すると二度と出ません（`DeniedPermanently`）。求める前に理由を画面で説明し、`DeniedPermanently` になったら `OpenSettings(PermissionKind.PostNotifications)` で設定の画面へ案内してください。確認の画面の外側を押して閉じた（どちらも選ばなかった）ときは `Denied` のままで、次の `Request` でもう一度出る見込みです（実機では未確認）。
 
 ---
 

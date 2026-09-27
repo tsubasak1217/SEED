@@ -15,7 +15,8 @@
 //  止めるボタンは置かない（止めるかどうかはアプリのスクリプトが決めて StopRinging を呼ぶ。W1-P2）。
 //
 //  【POST_NOTIFICATIONS が無いとき】Android 13 以降で通知の許可が無くても前景サービスは動く（通知が出ないだけ）。音と振動は続く。
-//  ログで警告する（通知の許可を求める API は W1-5）。
+//  ログで警告する（通知の許可はスクリプトの Permissions.Request(PostNotifications) で求める。W1-5）。
+//  鳴動の通知は W1-5 のアプリの通知（notification/NotificationModule）を通らず、機能 notifications の有無と関係なく出す。
 // ============================================================
 
 package com.seedengine.runtime.platform.service.alarm.ring;

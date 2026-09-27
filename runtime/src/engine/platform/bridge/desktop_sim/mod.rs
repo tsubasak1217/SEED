@@ -22,9 +22,15 @@
 //        止める・安全弁（poll_events の中で max_ring_minutes を見る）で platform.alarm.ring_stopped。音は鳴らさない（ring_commands.rs）
 //    platform.launch_reason … 常に launcher（app_commands.rs）
 //    window.set_show_when_locked … 受け付けてログだけ（app_commands.rs）
+//  【W1-5 の命令】（Java の :seed_platform の NotificationModule・メインプロセスの Permission*Command と同じ意味）
+//    notification.ensure_channel / show / cancel / are_enabled … チャネルと出ている通知をプロセスの中に持ち、
+//        show は [SEED PLATFORM] 通知: … のログ。are_enabled は常に true（notification_commands.rs・notification_state.rs）
+//    permission.check / request / open_settings … v1 の種類は常に granted、v2 の予約の種類は not_applicable。
+//        request はすぐ platform.permission_result を積む（permission_commands.rs）
 //
 //  【ファイル】mod.rs（表と共通）・alarm_book.rs（模擬の予約表）・alarm_commands.rs（目覚ましの命令と発火）・
 //  ring_state.rs（鳴動の状態）・ring_commands.rs（鳴動の命令とイベント）・app_commands.rs（起動理由・画面）・
+//  notification_state.rs（通知の状態）・notification_commands.rs（通知の命令）・permission_commands.rs（権限の命令）・
 //  wall_clock.rs（壁時計。テストで進める）
 // ============================================================
 
@@ -34,6 +40,12 @@ mod alarm_book;
 mod alarm_commands;
 /// 模擬の起動理由と画面の命令（W1-4a）。
 mod app_commands;
+/// 模擬の通知の命令（W1-5）。
+mod notification_commands;
+/// 模擬の通知の状態（W1-5）。
+mod notification_state;
+/// 模擬の権限の命令（W1-5）。
+mod permission_commands;
 /// 模擬の鳴動の命令とイベント（W1-4a）。
 mod ring_commands;
 /// 模擬の鳴動の状態（W1-4a）。
@@ -41,7 +53,7 @@ mod ring_state;
 /// 壁時計（テストで差し替える）。
 mod wall_clock;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -49,11 +61,12 @@ use serde_json::{json, Map, Value};
 
 use super::event_queue::{PlatformEventQueue, DEFAULT_EVENT_QUEUE_CAPACITY};
 use super::wire::{
-    self, alarm as alarm_names, launch as launch_names, window as window_names, METHOD_EMIT_TEST_EVENT, METHOD_PING,
-    METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME,
+    self, alarm as alarm_names, launch as launch_names, notification as notification_names, permission as permission_names,
+    window as window_names, METHOD_EMIT_TEST_EVENT, METHOD_PING, METHOD_VERSION, MODULE_PLATFORM, TEST_EVENT_NAME,
 };
 use super::{PlatformBridge, PlatformBridgeKind};
 use alarm_book::SimAlarmBook;
+use notification_state::SimNotificationBoard;
 use ring_state::SimRingState;
 pub use wall_clock::{SystemWallClock, WallClock};
 
@@ -130,6 +143,35 @@ const SIM_COMMANDS: &[SimCommand] = &[
         method: window_names::METHOD_SET_SHOW_WHEN_LOCKED,
         handler: DesktopSimBridge::handle_window_set_show_when_locked,
     },
+    // W1-5: 通知
+    SimCommand {
+        module: notification_names::MODULE,
+        method: notification_names::METHOD_ENSURE_CHANNEL,
+        handler: DesktopSimBridge::handle_notification_ensure_channel,
+    },
+    SimCommand { module: notification_names::MODULE, method: notification_names::METHOD_SHOW, handler: DesktopSimBridge::handle_notification_show },
+    SimCommand {
+        module: notification_names::MODULE,
+        method: notification_names::METHOD_CANCEL,
+        handler: DesktopSimBridge::handle_notification_cancel,
+    },
+    SimCommand {
+        module: notification_names::MODULE,
+        method: notification_names::METHOD_ARE_ENABLED,
+        handler: DesktopSimBridge::handle_notification_are_enabled,
+    },
+    // W1-5: 権限
+    SimCommand { module: permission_names::MODULE, method: permission_names::METHOD_CHECK, handler: DesktopSimBridge::handle_permission_check },
+    SimCommand {
+        module: permission_names::MODULE,
+        method: permission_names::METHOD_REQUEST,
+        handler: DesktopSimBridge::handle_permission_request,
+    },
+    SimCommand {
+        module: permission_names::MODULE,
+        method: permission_names::METHOD_OPEN_SETTINGS,
+        handler: DesktopSimBridge::handle_permission_open_settings,
+    },
 ];
 
 /// デスクトップの模擬の PlatformBridge。
@@ -145,6 +187,10 @@ pub struct DesktopSimBridge {
     alarms: SimAlarmBook,
     /// 模擬の鳴動の状態（今鳴っている 1 つと待ち行列。W1-4a）。
     ringing: SimRingState,
+    /// 模擬の通知（チャネルと出ている通知。W1-5）。
+    notifications: SimNotificationBoard,
+    /// 次に払い出す権限の要求の ID（W1-5。Play の区切りでも戻さない＝古い回のイベントと取り違えない）。
+    next_permission_request_id: AtomicI64,
     /// 予定時刻と比べる壁時計（テストでは手で進める時計）。
     clock: Arc<dyn WallClock>,
 }
@@ -169,6 +215,8 @@ impl DesktopSimBridge {
             started_at: Instant::now(),
             alarms: SimAlarmBook::new(),
             ringing: SimRingState::new(),
+            notifications: SimNotificationBoard::new(),
+            next_permission_request_id: AtomicI64::new(permission_names::FIRST_REQUEST_ID),
             clock,
         }
     }
@@ -250,9 +298,10 @@ impl PlatformBridge for DesktopSimBridge {
     }
 
     fn reset_session(&self) {
-        // Play の区切り: 予約・鳴動・積んだイベントを捨てる（Play を止めれば模擬の予約も鳴動も消える）
+        // Play の区切り: 予約・鳴動・通知（チャネルも）・積んだイベントを捨てる（Play を止めれば模擬の予約も鳴動も通知も消える）
         self.alarms.clear();
         self.ringing.clear();
+        self.notifications.clear();
         self.events.clear();
     }
 }
@@ -304,14 +353,18 @@ mod tests {
         assert_eq!(reply["echo"], json!({}));
     }
 
-    /// version: プロトコルの版と、模擬が知っているモジュール（名前の順。W1-3 で alarm、W1-4a で window が加わった）。
+    /// version: プロトコルの版と、模擬が知っているモジュール（名前の順。W1-3 で alarm、W1-4a で window、
+    /// W1-5 で notification・permission が加わった）。
     #[test]
     fn version_reports_protocol() {
         let sim = DesktopSimBridge::new();
         let reply = parse(&sim.invoke(MODULE_PLATFORM, METHOD_VERSION, "{}").unwrap());
         assert_eq!(reply[wire::KEY_OK], Value::Bool(true));
         assert_eq!(reply["protocol"], Value::from(wire::PROTOCOL_VERSION));
-        assert_eq!(reply["modules"], json!([alarm_names::MODULE, MODULE_PLATFORM, window_names::MODULE]));
+        assert_eq!(
+            reply["modules"],
+            json!([alarm_names::MODULE, notification_names::MODULE, permission_names::MODULE, MODULE_PLATFORM, window_names::MODULE])
+        );
     }
 
     /// emit_test_event: 積んだイベントが poll_events で順に出て、通し番号が 1 から増える。取り出した後は空。

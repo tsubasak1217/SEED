@@ -17,9 +17,10 @@
 //  :seed_platform を呼ばない（プロセスの起動は最初の invoke まで遅らせる。描画のスレッドで待たない仕組みは PlatformConnection）。
 //  R8 は使っていない（app/build.gradle.kts）ので、JNI から名前で呼ぶ invoke が消されることは無い。
 //
-//  【メインプロセスで答える命令（W1-4a）】
+//  【メインプロセスで答える命令（W1-4a・W1-5）】
 //  invoke はまず local/MainProcessCommands の表を引き、起動理由（platform.launch_reason）・画面の操作
-//  （window.set_show_when_locked）はその場で答える（IPC に行かない）。それ以外を :seed_platform へ送る。
+//  （window.set_show_when_locked）・権限（permission.check / request / open_settings。W1-5）はその場で答える
+//  （IPC に行かない）。それ以外を :seed_platform へ送る。
 //  「この起動の理由」（LaunchReason が onCreate・onNewIntent で決めたもの）はここに預かる。
 // ============================================================
 
@@ -137,12 +138,14 @@ public final class SeedPlatform {
     }
 
     /**
-     * メインプロセスの中で作ったイベント（seq 0）をエンジンへ渡す（LaunchReason の platform.launch など）。
+     * メインプロセスの中で作ったイベント（seq 0）をエンジンへ渡す（LaunchReason の platform.launch、W1-5 の権限の
+     * platform.permission_result・platform.permission_changed〈permission/PermissionEvents。別パッケージなので public〉など）。
+     * どのスレッドから呼んでもよい（ネイティブ側は箱へ積むだけ）。
      *
      * @param name 名前（PlatformContract.EVENT_*）
      * @param data 中身
      */
-    static void emitLocalEvent(String name, JSONObject data) {
+    public static void emitLocalEvent(String name, JSONObject data) {
         JSONObject event = PlatformJson.event(name, PlatformContract.LOCAL_EVENT_SEQ, System.currentTimeMillis(), data);
         deliverEvent(PlatformJson.utf8(event.toString()));
     }

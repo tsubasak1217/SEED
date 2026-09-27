@@ -1,14 +1,15 @@
 // ============================================================
 //  PlatformContract.java — アプリのプラットフォーム機能（SEED.Platform）の約束の置き場（W1-1・W1-3 で目覚まし・
-//  W1-4a で鳴動・起動理由・画面の命令を追加）
+//  W1-4a で鳴動・起動理由・画面の命令・W1-5 で通知・権限を追加）
 //
 //  メインプロセス（SeedPlatform・PlatformConnection）と :seed_platform プロセス（service/ の PlatformProvider 等）の
 //  両方が使う名前・キー・理由の名前を 1 か所に集める（マジックナンバー・文字列を散らさない）。
 //  エンジン側（Rust）の対になる正典は runtime/src/engine/platform/bridge/wire.rs（目覚ましは wire::alarm、起動理由は
-//  wire::launch、画面は wire::window）、C# 側は scripting/src/Api/Platform/（目覚ましは Alarms/AlarmJson.cs、起動理由は
-//  App/LaunchJson.cs）。値を変えるときは 3 か所を必ず揃える（Rust の単体テスト wire::tests::java_contract_matches_wire が、
+//  wire::launch、画面は wire::window、通知は wire::notification、権限は wire::permission）、C# 側は scripting/src/Api/Platform/
+//  （目覚ましは Alarms/AlarmJson.cs、起動理由は App/LaunchJson.cs、通知は Notifications/NotificationJson.cs、権限は
+//  Permissions/PermissionJson.cs）。値を変えるときは 3 か所を必ず揃える（Rust の単体テスト wire::tests::java_contract_matches_wire が、
 //  このファイルの文字列の定数と wire.rs を突き合わせる）。
-//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12）。
+//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12、通知は §25.13、権限は §25.14）。
 // ============================================================
 
 package com.seedengine.runtime.platform;
@@ -292,7 +293,7 @@ public final class PlatformContract {
     public static final String LAUNCH_KIND_LAUNCHER = "launcher";
     /** 起動の種類: 目覚ましの鳴動（フルスクリーン通知・鳴動の通知の本文のタップ）。ロック画面の上に出し画面を点ける。 */
     public static final String LAUNCH_KIND_ALARM = "alarm";
-    /** 起動の種類: 通知の本文のタップ（W1-5 の通知。W1-4a では作らない）。 */
+    /** 起動の種類: 通知の本文のタップ（W1-5 の通知。service/notification/NotificationFactory が作る）。 */
     public static final String LAUNCH_KIND_NOTIFICATION_TAP = "notification_tap";
     /** 起動の種類: 通知の操作（ボタン）。action_id に操作の ID。 */
     public static final String LAUNCH_KIND_NOTIFICATION_ACTION = "notification_action";
@@ -316,6 +317,124 @@ public final class PlatformContract {
 
     /** 鳴動の通知チャネルの ID（重要度 HIGH・チャネルの音なし＝音は RingService が USAGE_ALARM で鳴らす）。 */
     public static final String NOTIFICATION_CHANNEL_ALARM = "seed_platform_alarm";
+
+    // ── 通知（W1-5。モジュール "notification"。:seed_platform の service/notification/NotificationModule。機能 notifications）──
+
+    /** 通知のモジュール。 */
+    public static final String MODULE_NOTIFICATION = "notification";
+    /** チャネルを作る（あれば名前・説明だけ変わる）。引数 { channel_id, name, importance, description }。返答 { channel_id }。 */
+    public static final String METHOD_NOTIFICATION_ENSURE_CHANNEL = "ensure_channel";
+    /** 通知を出す（同じ id は置き換え）。引数 { id, channel_id, title, body, ongoing, category, actions, payload_json }。返答 { id }。 */
+    public static final String METHOD_NOTIFICATION_SHOW = "show";
+    /** 通知を消す（無い id でも成功）。引数 { id }。返答 { id }。 */
+    public static final String METHOD_NOTIFICATION_CANCEL = "cancel";
+    /** アプリの通知が端末で有効か。返答 { enabled }。 */
+    public static final String METHOD_NOTIFICATION_ARE_ENABLED = "are_enabled";
+
+    /** 通知の ID（アプリが決める文字列。NotificationManager の tag にする）。 */
+    public static final String KEY_NOTIFICATION_ID = "id";
+    /** チャネルの ID。 */
+    public static final String KEY_NOTIFICATION_CHANNEL_ID = "channel_id";
+    /** チャネルの表示名（端末の設定の「通知」に出る）。 */
+    public static final String KEY_NOTIFICATION_CHANNEL_NAME = "name";
+    /** チャネルの重要度（下の NOTIFICATION_IMPORTANCE_*）。 */
+    public static final String KEY_NOTIFICATION_IMPORTANCE = "importance";
+    /** チャネルの説明。 */
+    public static final String KEY_NOTIFICATION_DESCRIPTION = "description";
+    /** 通知の題。 */
+    public static final String KEY_NOTIFICATION_TITLE = "title";
+    /** 通知の本文（BigTextStyle で長文も出す）。 */
+    public static final String KEY_NOTIFICATION_BODY = "body";
+    /** 常駐（setOngoing）か。 */
+    public static final String KEY_NOTIFICATION_ONGOING = "ongoing";
+    /** 種類（下の NOTIFICATION_CATEGORY_* → Notification.CATEGORY_*。知らない値は付けない）。 */
+    public static final String KEY_NOTIFICATION_CATEGORY = "category";
+    /** 操作（ボタン）の配列（最大 MAX_NOTIFICATION_ACTIONS）。 */
+    public static final String KEY_NOTIFICATION_ACTIONS = "actions";
+    /** 操作の ID（押すと起動理由 notification_action の action_id）。 */
+    public static final String KEY_NOTIFICATION_ACTION_ID = "id";
+    /** 操作の表示の文字。 */
+    public static final String KEY_NOTIFICATION_ACTION_LABEL = "label";
+    /** 起動理由にそのまま返す任意の JSON。 */
+    public static final String KEY_NOTIFICATION_PAYLOAD_JSON = "payload_json";
+    /** are_enabled の返答: 通知が有効か。 */
+    public static final String KEY_NOTIFICATIONS_ENABLED = "enabled";
+
+    /** 重要度: 低い（NotificationManager.IMPORTANCE_LOW）。 */
+    public static final String NOTIFICATION_IMPORTANCE_LOW = "low";
+    /** 重要度: 普通（IMPORTANCE_DEFAULT）。 */
+    public static final String NOTIFICATION_IMPORTANCE_DEFAULT = "default";
+    /** 重要度: 高い（IMPORTANCE_HIGH。ヘッドアップ通知）。 */
+    public static final String NOTIFICATION_IMPORTANCE_HIGH = "high";
+    /** 種類: 目覚まし（Notification.CATEGORY_ALARM）。 */
+    public static final String NOTIFICATION_CATEGORY_ALARM = "alarm";
+    /** 種類: 予定の知らせ（CATEGORY_REMINDER）。 */
+    public static final String NOTIFICATION_CATEGORY_REMINDER = "reminder";
+    /** 種類: 状態の表示（CATEGORY_STATUS）。 */
+    public static final String NOTIFICATION_CATEGORY_STATUS = "status";
+    /** 種類: 予定表の出来事（CATEGORY_EVENT）。 */
+    public static final String NOTIFICATION_CATEGORY_EVENT = "event";
+    /** 種類: 進み具合（CATEGORY_PROGRESS）。 */
+    public static final String NOTIFICATION_CATEGORY_PROGRESS = "progress";
+
+    /** 通知・チャネル・操作の ID の最大の長さ（Unicode の符号位置の数）。 */
+    public static final int MAX_NOTIFICATION_ID_LENGTH = 128;
+    /** 題・本文・操作の文字・チャネルの名前と説明の最大の長さ（Unicode の符号位置の数）。 */
+    public static final int MAX_NOTIFICATION_TEXT_LENGTH = 4096;
+    /** payload_json の最大の長さ（Unicode の符号位置の数）。 */
+    public static final int MAX_NOTIFICATION_PAYLOAD_LENGTH = 16384;
+    /** 操作（ボタン）の最大の数。 */
+    public static final int MAX_NOTIFICATION_ACTIONS = 3;
+    /** アプリが使えないチャネルの ID の接頭辞（鳴動の NOTIFICATION_CHANNEL_ALARM などプラットフォーム層のもの）。 */
+    public static final String RESERVED_NOTIFICATION_CHANNEL_PREFIX = "seed_platform";
+
+    // ── 権限（W1-5。モジュール "permission"。メインプロセスで答える〈local/Permission*Command・permission/〉。IPC なし）──
+
+    /** 権限のモジュール。 */
+    public static final String MODULE_PERMISSION = "permission";
+    /** 今の状態。引数 { kind }。返答 { kind, status }。 */
+    public static final String METHOD_PERMISSION_CHECK = "check";
+    /** 求める。引数 { kind }。返答 { kind, request_id }。結果はイベント EVENT_PERMISSION_RESULT。 */
+    public static final String METHOD_PERMISSION_REQUEST = "request";
+    /** 設定の画面を開く。引数 { kind }。返答 { kind }（開くのは UI スレッドで少し後）。 */
+    public static final String METHOD_PERMISSION_OPEN_SETTINGS = "open_settings";
+
+    /** 引数・返答・イベント: 種類（下の PERMISSION_KIND_*）。 */
+    public static final String KEY_PERMISSION_KIND = "kind";
+    /** 返答・イベント: 状態（下の PERMISSION_STATUS_*）。 */
+    public static final String KEY_PERMISSION_STATUS = "status";
+    /** request の返答・permission_result: 要求の ID。 */
+    public static final String KEY_PERMISSION_REQUEST_ID = "request_id";
+
+    /** 種類: 通知（Android 13+ は実行時の許可 POST_NOTIFICATIONS。12 以前は通知の設定）。 */
+    public static final String PERMISSION_KIND_POST_NOTIFICATIONS = "post_notifications";
+    /** 種類: 正確なアラーム（Android 12 系は特別なアクセス。13+ は USE_EXACT_ALARM。11 以前は要らない）。 */
+    public static final String PERMISSION_KIND_EXACT_ALARM = "exact_alarm";
+    /** 種類: フルスクリーン通知（Android 14+ は特別なアクセス。13 以前はインストール時に許可）。 */
+    public static final String PERMISSION_KIND_FULL_SCREEN_INTENT = "full_screen_intent";
+    /** 種類: 録音（v2 の予約。今は常に not_applicable）。 */
+    public static final String PERMISSION_KIND_RECORD_AUDIO = "record_audio";
+    /** 種類: SMS の送信（v2 の予約。今は常に not_applicable）。 */
+    public static final String PERMISSION_KIND_SEND_SMS = "send_sms";
+
+    /** 状態: 許可されている。 */
+    public static final String PERMISSION_STATUS_GRANTED = "granted";
+    /** 状態: 許可されていない（もう一度求めれば確認の画面が出る見込み）。 */
+    public static final String PERMISSION_STATUS_DENIED = "denied";
+    /** 状態: 許可されず、求めても確認の画面が出ない（設定の画面へ案内する）。 */
+    public static final String PERMISSION_STATUS_DENIED_PERMANENTLY = "denied_permanently";
+    /** 状態: 設定の画面で利用者が切り替える種類で、今は切られている。 */
+    public static final String PERMISSION_STATUS_NEEDS_SETTINGS = "needs_settings";
+    /** 状態: この OS の版・この段階では要らない（扱わない）。 */
+    public static final String PERMISSION_STATUS_NOT_APPLICABLE = "not_applicable";
+
+    /** 要求の結果（seq 0。data = { request_id, kind, status }）。 */
+    public static final String EVENT_PERMISSION_RESULT = "platform.permission_result";
+    /** 前面へ戻ったとき（onResume）に状態が前回と違った（seq 0。data = { kind, status }）。 */
+    public static final String EVENT_PERMISSION_CHANGED = "platform.permission_changed";
+
+    /** 最初に払い出す要求の ID（0 は C# の Permissions.Request の「要求できなかった」の印）。 */
+    public static final int FIRST_PERMISSION_REQUEST_ID = 1;
 
     // ── イベントの名前（スクリプトの SEED.Events にもこの名前で流れる）──
 
@@ -374,6 +493,10 @@ public final class PlatformContract {
     public static final String ERROR_FEATURE_NOT_ENABLED = "feature_not_enabled";
     /** 画面の命令: 操作する Activity が無い（破棄された・まだ作られていない）。 */
     public static final String ERROR_NO_ACTIVITY = "no_activity";
+    /** 通知が端末で無効（W1-5。Android 13+ の POST_NOTIFICATIONS が無い・利用者が切った・チャネルが止められた）。 */
+    public static final String ERROR_NOTIFICATIONS_DISABLED = "notifications_disabled";
+    /** 通知のチャネルが無い（W1-5。先に notification.ensure_channel）。 */
+    public static final String ERROR_CHANNEL_NOT_FOUND = "channel_not_found";
 
     /** module / method の名前の最大の長さ（文字）。Rust の wire::MAX_NAME_LEN と一致させる。 */
     public static final int MAX_NAME_LENGTH = 64;

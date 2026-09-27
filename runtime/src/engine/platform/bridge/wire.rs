@@ -1,6 +1,7 @@
 // ============================================================
 //  platform/bridge/wire.rs — プラットフォーム機能（SEED.Platform）の JSON の約束（W1-1・W1-3 で目覚まし wire::alarm・
-//  W1-4a で鳴動〈wire::alarm の get_ringing / stop_ringing 等〉・起動理由 wire::launch・画面 wire::window を追加）
+//  W1-4a で鳴動〈wire::alarm の get_ringing / stop_ringing 等〉・起動理由 wire::launch・画面 wire::window を追加・
+//  W1-5 で通知 wire::notification・権限 wire::permission を追加）
 //
 //  【役割】
 //  エンジン・Java（メインプロセスの SeedPlatform と :seed_platform の PlatformProvider）・C#（SEED.Platform）の
@@ -354,6 +355,141 @@ pub mod window {
     pub const ERROR_NO_ACTIVITY: &str = "no_activity";
 }
 
+/// 通知（W1-5。モジュール "notification"。Android は :seed_platform の NotificationModule が答える。機能 `notifications`）の名前・欄・
+/// 理由・上限（Java の PlatformContract の *NOTIFICATION*・C# の NotificationJson と一致させる）。
+///
+/// 通知の形: `{ id, channel_id, title, body, ongoing, category, actions: [ { id, label }, … ], payload_json }`。
+/// チャネルの形: `{ channel_id, name, importance, description }`。`id` は文字列のまま通知の tag にする（int の ID の表を持たない）。
+/// 失敗の理由のうち `invalid_argument`・`feature_not_enabled` は目覚ましと同じ文字列（wire::alarm の ERROR_*）。
+pub mod notification {
+    /// 通知のモジュール。
+    pub const MODULE: &str = "notification";
+    /// チャネルを作る（あれば名前・説明だけ変わる）。
+    pub const METHOD_ENSURE_CHANNEL: &str = "ensure_channel";
+    /// 通知を出す（同じ id は置き換え）。
+    pub const METHOD_SHOW: &str = "show";
+    /// 通知を消す（無い id でも成功）。
+    pub const METHOD_CANCEL: &str = "cancel";
+    /// アプリの通知が端末で有効か。
+    pub const METHOD_ARE_ENABLED: &str = "are_enabled";
+
+    /// 通知の ID（アプリが決める文字列）。
+    pub const KEY_ID: &str = "id";
+    /// チャネルの ID。
+    pub const KEY_CHANNEL_ID: &str = "channel_id";
+    /// チャネルの表示名（端末の設定の「通知」に出る）。
+    pub const KEY_CHANNEL_NAME: &str = "name";
+    /// チャネルの重要度（IMPORTANCE_*）。
+    pub const KEY_IMPORTANCE: &str = "importance";
+    /// チャネルの説明。
+    pub const KEY_DESCRIPTION: &str = "description";
+    /// 通知の題。
+    pub const KEY_TITLE: &str = "title";
+    /// 通知の本文（長文は折りたたみを開くと全部見える）。
+    pub const KEY_BODY: &str = "body";
+    /// 常駐（スワイプで消えにくい）か。
+    pub const KEY_ONGOING: &str = "ongoing";
+    /// 種類（CATEGORY_*。知らない値は付けない）。
+    pub const KEY_CATEGORY: &str = "category";
+    /// 操作（ボタン）の配列（最大 MAX_ACTIONS）。
+    pub const KEY_ACTIONS: &str = "actions";
+    /// 操作の ID（押すと起動理由 notification_action の action_id になる）。
+    pub const KEY_ACTION_ID: &str = "id";
+    /// 操作の表示の文字。
+    pub const KEY_ACTION_LABEL: &str = "label";
+    /// 起動理由にそのまま返す任意の JSON。
+    pub const KEY_PAYLOAD_JSON: &str = "payload_json";
+    /// are_enabled の返答: 通知が有効か。
+    pub const KEY_ENABLED: &str = "enabled";
+
+    /// 重要度: 低い（音なし・ステータスバーに出ない）。
+    pub const IMPORTANCE_LOW: &str = "low";
+    /// 重要度: 普通（音あり）。
+    pub const IMPORTANCE_DEFAULT: &str = "default";
+    /// 重要度: 高い（ヘッドアップ通知）。
+    pub const IMPORTANCE_HIGH: &str = "high";
+    /// 種類: 目覚まし。
+    pub const CATEGORY_ALARM: &str = "alarm";
+    /// 種類: 利用者が決めた予定の知らせ。
+    pub const CATEGORY_REMINDER: &str = "reminder";
+    /// 種類: 状態の表示。
+    pub const CATEGORY_STATUS: &str = "status";
+    /// 種類: 予定表の出来事。
+    pub const CATEGORY_EVENT: &str = "event";
+    /// 種類: 長い処理の進み具合。
+    pub const CATEGORY_PROGRESS: &str = "progress";
+
+    /// 通知が端末で無効（Android 13+ の POST_NOTIFICATIONS が無い・利用者が切った・チャネルが止められた）。
+    pub const ERROR_NOTIFICATIONS_DISABLED: &str = "notifications_disabled";
+    /// チャネルが無い（ensure_channel を先に呼ぶ）。
+    pub const ERROR_CHANNEL_NOT_FOUND: &str = "channel_not_found";
+
+    /// 通知・チャネル・操作の ID の最大の長さ（Unicode の符号位置の数）。
+    pub const MAX_ID_LENGTH: usize = 128;
+    /// 題・本文・操作の文字・チャネルの名前と説明の最大の長さ（Unicode の符号位置の数）。
+    pub const MAX_TEXT_LENGTH: usize = 4096;
+    /// payload_json の最大の長さ（Unicode の符号位置の数）。
+    pub const MAX_PAYLOAD_LENGTH: usize = 16384;
+    /// 操作（ボタン）の最大の数（Android の通知の標準の見た目が並べられる数）。
+    pub const MAX_ACTIONS: usize = 3;
+    /// アプリが使えないチャネルの ID の接頭辞（鳴動の通知チャネル seed_platform_alarm などプラットフォーム層のもの）。
+    pub const RESERVED_CHANNEL_PREFIX: &str = "seed_platform";
+}
+
+/// 権限（W1-5。モジュール "permission"。Android はメインプロセスが Activity を使って答える）の名前・欄・種類・状態
+/// （Java の PlatformContract の *PERMISSION*・C# の PermissionJson と一致させる）。
+///
+/// 命令の引数は `{ kind }`。check の返答 `{ kind, status }`・request の返答 `{ kind, request_id }`（結果は
+/// イベント `platform.permission_result { request_id, kind, status }`）・open_settings の返答 `{ kind }`。
+/// 前面へ戻ったとき（Android の onResume）に状態が前回と違えば `platform.permission_changed { kind, status }`。
+pub mod permission {
+    /// 権限のモジュール。
+    pub const MODULE: &str = "permission";
+    /// 今の状態を返す。
+    pub const METHOD_CHECK: &str = "check";
+    /// 求める（実行時の確認の画面か設定の画面）。結果は platform.permission_result。
+    pub const METHOD_REQUEST: &str = "request";
+    /// 設定の画面を開く（結果のイベントは無い。戻ったときに変わっていれば platform.permission_changed）。
+    pub const METHOD_OPEN_SETTINGS: &str = "open_settings";
+
+    /// 引数・返答・イベント: 種類（KIND_*）。
+    pub const KEY_KIND: &str = "kind";
+    /// 返答・イベント: 状態（STATUS_*）。
+    pub const KEY_STATUS: &str = "status";
+    /// request の返答・permission_result: 要求の ID（FIRST_REQUEST_ID から増える）。
+    pub const KEY_REQUEST_ID: &str = "request_id";
+
+    /// 種類: 通知（Android 13+ の POST_NOTIFICATIONS。12 以前は通知の設定）。
+    pub const KIND_POST_NOTIFICATIONS: &str = "post_notifications";
+    /// 種類: 正確なアラーム（Android 12 系の特別なアクセス。13+ は USE_EXACT_ALARM）。
+    pub const KIND_EXACT_ALARM: &str = "exact_alarm";
+    /// 種類: フルスクリーン通知（Android 14+ の特別なアクセス）。
+    pub const KIND_FULL_SCREEN_INTENT: &str = "full_screen_intent";
+    /// 種類: 録音（v2 の予約。今は常に not_applicable）。
+    pub const KIND_RECORD_AUDIO: &str = "record_audio";
+    /// 種類: SMS の送信（v2 の予約。今は常に not_applicable）。
+    pub const KIND_SEND_SMS: &str = "send_sms";
+
+    /// 状態: 許可されている。
+    pub const STATUS_GRANTED: &str = "granted";
+    /// 状態: 許可されていない（もう一度求めれば確認の画面が出る見込み）。
+    pub const STATUS_DENIED: &str = "denied";
+    /// 状態: 許可されず、求めても確認の画面が出ない（設定の画面へ案内する）。
+    pub const STATUS_DENIED_PERMANENTLY: &str = "denied_permanently";
+    /// 状態: 設定の画面で利用者が切り替える種類で、今は切られている。
+    pub const STATUS_NEEDS_SETTINGS: &str = "needs_settings";
+    /// 状態: この OS の版・この段階では要らない（扱わない）。
+    pub const STATUS_NOT_APPLICABLE: &str = "not_applicable";
+
+    /// 要求の結果（request の結果）。
+    pub const EVENT_RESULT: &str = "platform.permission_result";
+    /// 前面へ戻ったときに状態が変わっていた。
+    pub const EVENT_CHANGED: &str = "platform.permission_changed";
+
+    /// 最初に払い出す要求の ID（0 は「要求できなかった」の印に使う）。
+    pub const FIRST_REQUEST_ID: i64 = 1;
+}
+
 // ============================================================
 //  ユニットテスト
 // ============================================================
@@ -485,6 +621,48 @@ mod tests {
             // W1-4a: 画面
             ("MODULE_WINDOW", window::MODULE), ("METHOD_WINDOW_SET_SHOW_WHEN_LOCKED", window::METHOD_SET_SHOW_WHEN_LOCKED),
             ("KEY_WINDOW_ON", window::KEY_ON), ("ERROR_NO_ACTIVITY", window::ERROR_NO_ACTIVITY),
+            // W1-5: 通知
+            ("MODULE_NOTIFICATION", notification::MODULE),
+            ("METHOD_NOTIFICATION_ENSURE_CHANNEL", notification::METHOD_ENSURE_CHANNEL),
+            ("METHOD_NOTIFICATION_SHOW", notification::METHOD_SHOW), ("METHOD_NOTIFICATION_CANCEL", notification::METHOD_CANCEL),
+            ("METHOD_NOTIFICATION_ARE_ENABLED", notification::METHOD_ARE_ENABLED),
+            ("KEY_NOTIFICATION_ID", notification::KEY_ID), ("KEY_NOTIFICATION_CHANNEL_ID", notification::KEY_CHANNEL_ID),
+            ("KEY_NOTIFICATION_CHANNEL_NAME", notification::KEY_CHANNEL_NAME),
+            ("KEY_NOTIFICATION_IMPORTANCE", notification::KEY_IMPORTANCE),
+            ("KEY_NOTIFICATION_DESCRIPTION", notification::KEY_DESCRIPTION), ("KEY_NOTIFICATION_TITLE", notification::KEY_TITLE),
+            ("KEY_NOTIFICATION_BODY", notification::KEY_BODY), ("KEY_NOTIFICATION_ONGOING", notification::KEY_ONGOING),
+            ("KEY_NOTIFICATION_CATEGORY", notification::KEY_CATEGORY), ("KEY_NOTIFICATION_ACTIONS", notification::KEY_ACTIONS),
+            ("KEY_NOTIFICATION_ACTION_ID", notification::KEY_ACTION_ID),
+            ("KEY_NOTIFICATION_ACTION_LABEL", notification::KEY_ACTION_LABEL),
+            ("KEY_NOTIFICATION_PAYLOAD_JSON", notification::KEY_PAYLOAD_JSON),
+            ("KEY_NOTIFICATIONS_ENABLED", notification::KEY_ENABLED),
+            ("NOTIFICATION_IMPORTANCE_LOW", notification::IMPORTANCE_LOW),
+            ("NOTIFICATION_IMPORTANCE_DEFAULT", notification::IMPORTANCE_DEFAULT),
+            ("NOTIFICATION_IMPORTANCE_HIGH", notification::IMPORTANCE_HIGH),
+            ("NOTIFICATION_CATEGORY_ALARM", notification::CATEGORY_ALARM),
+            ("NOTIFICATION_CATEGORY_REMINDER", notification::CATEGORY_REMINDER),
+            ("NOTIFICATION_CATEGORY_STATUS", notification::CATEGORY_STATUS),
+            ("NOTIFICATION_CATEGORY_EVENT", notification::CATEGORY_EVENT),
+            ("NOTIFICATION_CATEGORY_PROGRESS", notification::CATEGORY_PROGRESS),
+            ("ERROR_NOTIFICATIONS_DISABLED", notification::ERROR_NOTIFICATIONS_DISABLED),
+            ("ERROR_CHANNEL_NOT_FOUND", notification::ERROR_CHANNEL_NOT_FOUND),
+            ("RESERVED_NOTIFICATION_CHANNEL_PREFIX", notification::RESERVED_CHANNEL_PREFIX),
+            // W1-5: 権限
+            ("MODULE_PERMISSION", permission::MODULE), ("METHOD_PERMISSION_CHECK", permission::METHOD_CHECK),
+            ("METHOD_PERMISSION_REQUEST", permission::METHOD_REQUEST),
+            ("METHOD_PERMISSION_OPEN_SETTINGS", permission::METHOD_OPEN_SETTINGS),
+            ("KEY_PERMISSION_KIND", permission::KEY_KIND), ("KEY_PERMISSION_STATUS", permission::KEY_STATUS),
+            ("KEY_PERMISSION_REQUEST_ID", permission::KEY_REQUEST_ID),
+            ("PERMISSION_KIND_POST_NOTIFICATIONS", permission::KIND_POST_NOTIFICATIONS),
+            ("PERMISSION_KIND_EXACT_ALARM", permission::KIND_EXACT_ALARM),
+            ("PERMISSION_KIND_FULL_SCREEN_INTENT", permission::KIND_FULL_SCREEN_INTENT),
+            ("PERMISSION_KIND_RECORD_AUDIO", permission::KIND_RECORD_AUDIO),
+            ("PERMISSION_KIND_SEND_SMS", permission::KIND_SEND_SMS),
+            ("PERMISSION_STATUS_GRANTED", permission::STATUS_GRANTED), ("PERMISSION_STATUS_DENIED", permission::STATUS_DENIED),
+            ("PERMISSION_STATUS_DENIED_PERMANENTLY", permission::STATUS_DENIED_PERMANENTLY),
+            ("PERMISSION_STATUS_NEEDS_SETTINGS", permission::STATUS_NEEDS_SETTINGS),
+            ("PERMISSION_STATUS_NOT_APPLICABLE", permission::STATUS_NOT_APPLICABLE),
+            ("EVENT_PERMISSION_RESULT", permission::EVENT_RESULT), ("EVENT_PERMISSION_CHANGED", permission::EVENT_CHANGED),
         ];
         for (java, rust) in strings {
             assert_eq!(java_constant(&source, java), *rust, "PlatformContract.{java} と wire.rs が食い違う");
@@ -498,6 +676,12 @@ mod tests {
             ("DEFAULT_ALARM_MAX_RING_MINUTES", alarm::DEFAULT_MAX_RING_MINUTES as f64),
             ("MIN_ALARM_MAX_RING_MINUTES", alarm::MIN_MAX_RING_MINUTES as f64),
             ("MILLIS_PER_MINUTE", alarm::MILLIS_PER_MINUTE as f64),
+            // W1-5: 通知の上限・権限の要求の ID
+            ("MAX_NOTIFICATION_ID_LENGTH", notification::MAX_ID_LENGTH as f64),
+            ("MAX_NOTIFICATION_TEXT_LENGTH", notification::MAX_TEXT_LENGTH as f64),
+            ("MAX_NOTIFICATION_PAYLOAD_LENGTH", notification::MAX_PAYLOAD_LENGTH as f64),
+            ("MAX_NOTIFICATION_ACTIONS", notification::MAX_ACTIONS as f64),
+            ("FIRST_PERMISSION_REQUEST_ID", permission::FIRST_REQUEST_ID as f64),
         ];
         for (java, rust) in numbers {
             // Java の数の書き方（桁区切りの _・long の L）を落としてから読む

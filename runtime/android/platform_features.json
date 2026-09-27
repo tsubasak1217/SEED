@@ -12,7 +12,8 @@
     "（mediaPlayback・:seed_platform・exported=false・directBootAware）を足した。Java のクラスが無い部品を宣言すると起動時に落ちるので、クラスを足すのと同じ変更で足すこと",
     "（単体テスト AndroidPipelineTests が、宣言した com.seedengine.runtime.* のクラスの Java のソースがあるかを確かめる）。",
     "PlatformProvider と activity-alias PlatformEntry（W1-4a）は機能によらず main のマニフェストに常設（:seed_platform は最初の呼び出しまで起動せず、",
-    "PlatformEntry は exported=false で intent-filter も無いので害が無い）。Google Play の方針に関わる注意は play_requirements.json の permission_policies。"
+    "PlatformEntry は exported=false で intent-filter も無いので害が無い）。Google Play の方針に関わる注意は play_requirements.json の permission_policies。",
+    "notifications は権限だけ（W1-5。通知は常設の PlatformProvider の NotificationModule が出し、Java は POST_NOTIFICATIONS の宣言の有無で機能を判定する）。"
   ],
   "format_version": 1,
   "features": [
@@ -78,7 +79,7 @@
     {
       "name": "notifications",
       "label": "通知",
-      "description": "通知を出す（Android 13 以降は実行時の許可が要る）。通知のボタンからの起動・チャネルは W1-5。",
+      "description": "通知を出す（チャネル・常駐・ボタン最大 3 つ。ボタンと本文のタップはアプリを直接開く）。Android 13 以降は実行時の許可が要る（Permissions.Request）。部品は無く、通知は既存の PlatformProvider（:seed_platform）が出す（W1-5）。",
       "permissions": [
         { "name": "android.permission.POST_NOTIFICATIONS" }
       ],

@@ -3,7 +3,7 @@
 //
 //  PlatformProvider は ContentProvider の call の method（"<module>.<method>"）をモジュールの名前で振り分け、
 //  モジュールがメソッドの名前で処理を選ぶ。機能を増やすときは、このインターフェースを実装したモジュールを
-//  PlatformProvider のモジュール表に 1 行足す（W1-3 の alarm、W1-5 の notifications など）。JNI やエンジンは変えない。
+//  PlatformProvider のモジュール表に 1 行足す（W1-3 の alarm、W1-5 の notification など）。JNI やエンジンは変えない。
 // ============================================================
 
 package com.seedengine.runtime.platform.service;

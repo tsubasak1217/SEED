@@ -3679,7 +3679,10 @@ W1-1 は**橋渡し**だけ: スクリプトの命令が Java の別プロセス
 | `platform/service/EventRecorder.java`・`PlatformStorage.java`・`DurableFile.java` | 記録＋呼び鈴の窓口・端末保護ストレージの置き場・原子的な書き込み（W1-3） |
 | `platform/service/alarm/*.java` | 目覚ましの予約（W1-3。§25.11）: `AlarmModule`・`AlarmRequestReader`・`AlarmEntry`・`AlarmStore`・`AlarmScheduler`・`AlarmBook`・`AlarmRearmPlan`・`AlarmEvents`・`AlarmReceiver`・`BootReceiver`（W1-4a で `AlarmStartup`） |
 | `platform/service/alarm/ring/*.java`・`platform/service/PlatformEntryIntents.java` | 鳴動（W1-4a。§25.12）: `RingService`・`RingControl`・`RingRegistry`・`RingSession`・`RingAudio`・`RingSoundSource`・`AlarmStreamVolume`・`RingVibration`・`RingNotification`・`RingWakeLock` と PlatformEntry 行きの PendingIntent |
-| `platform/LaunchReason.java`・`LaunchInfo.java`・`platform/local/*.java` | 起動理由とメインプロセスで答える命令（W1-4a。§25.12.4・§25.12.5） |
+| `platform/LaunchReason.java`・`LaunchInfo.java`・`platform/local/*.java` | 起動理由とメインプロセスで答える命令（W1-4a。§25.12.4・§25.12.5。W1-5 で権限の 3 命令 `Permission*Command`・`PermissionArguments`） |
+| `platform/service/notification/*.java` | 通知（W1-5。§25.13）: `NotificationModule`・`NotificationRequestReader`・`NotificationContent`・`NotificationActionItem`・`NotificationChannelSpec`・`NotificationChannels`・`NotificationCategories`・`NotificationFactory` |
+| `platform/permission/*.java` | 権限（W1-5。§25.14。メインプロセス）: `PermissionKind`・`PermissionStatusProbe`・`PermissionHistory`・`PermissionRequests`・`PermissionSettings`・`PermissionMonitor`・`PermissionEvents`・`PermissionLifecycle` |
+| `platform/DeclaredPermissions.java` | APK が宣言している権限（両プロセス。機能 notifications・権限の命令の「機能の有無」の判定。W1-5） |
 | `src/debug/java/…/platform/DebugPlatformReceiver.java` | デバッグ版だけの adb の入口（§25.7） |
 | `native/src/platform_bridge/{mod,android_bridge,java_bridge,inbox,jni_exports}.rs` | 糊（エンジンへの登録・JNI の持ち物・イベントの箱・2 本の JNI 関数） |
 | `native/src/platform_bridge/alarm_prep.rs` | `alarm.schedule` を送る前に音源（`assets://`）を書き出す（W1-3。中身はエンジンの `bridge/alarm/sound_export.rs`） |
@@ -4310,3 +4313,231 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am stack remove <taskId>             
 - `RingRegistry`・`PlatformEntryIntents` の JVM の単体テストは W1-7（今は Rust の模擬が同じ規則を単体テストで持つ）。
 - 起動時の照合と `BootReceiver` は同じ放送で起きたプロセスで並んで走る（AlarmBook の lock で直列）。正確なアラームの許可の放送で起きたとき、
   照合が先に過ぎた予約を見つけると、理由が `permission_revoked` ではなく `device_off` になる（どちらが先かは決まらない。害は理由の違いだけ）。
+
+### 25.13 通知（NotificationModule・チャネル・常駐とボタン・トランポリン無しの起動。W1-5・2026-09-27）
+
+スクリプトの `Notifications.EnsureChannel` / `Show` / `Cancel` / `AreEnabled`（[scripting_api.md](scripting_api.md) §7.13）の Android 側。
+`:seed_platform` の `PlatformProvider` のモジュール表に `"notification"`（`service/notification/NotificationModule`）を足した。受信機・サービスは無く、
+機能の表 `platform_features.json` の `notifications` は権限 `POST_NOTIFICATIONS` だけ（設計は [app_platform_roadmap.md](app_platform_roadmap.md) §2.3・§2.5・§2.6）。
+
+#### 25.13.1 構成
+
+```
+[:seed_platform] platform/service/notification/
+ NotificationModule        … "notification" の 4 命令。機能の判定（POST_NOTIFICATIONS の宣言）
+ NotificationRequestReader … 引数の検査（Rust の bridge/notification/request.rs と同じ規則）
+ NotificationContent・NotificationActionItem・NotificationChannelSpec … 検査済みの値
+ NotificationChannels      … チャネルを作る・今出せるか（通知が有効か・チャネルがあるか・止められていないか）
+ NotificationCategories    … 種類の語彙 → Notification.CATEGORY_*
+ NotificationFactory       … android.app.Notification の組み立て（BigTextStyle・常駐・種類・ボタン・PlatformEntry 行きの PendingIntent）
+[両プロセス] platform/DeclaredPermissions … APK が宣言している権限（機能の有無の判定）
+[:seed_platform] platform/service/PlatformEntryIntents … 要求コード 5（本文のタップ）・6（ボタン）と identity（Intent.setIdentifier）を足した
+```
+
+#### 25.13.2 命令
+
+| 命令 | 引数 → 返答 | 中身 |
+|---|---|---|
+| `notification.ensure_channel` | `{channel_id, name, importance, description}` → `{channel_id}` | `NotificationManager.createNotificationChannel`（既にあれば名前と説明だけ変わる）。`importance` は `low` / `default` / `high`（→ `IMPORTANCE_LOW` / `DEFAULT` / `HIGH`。無ければ `default`） |
+| `notification.show` | `{id, channel_id, title, body, ongoing, category, actions: [{id, label}], payload_json}` → `{id}` | `notify(tag = id, 7300, n)`。通知が無効 → `notifications_disabled`、チャネルが無い → `channel_not_found`、チャネルが利用者に止められている（重要度 NONE）→ `notifications_disabled` |
+| `notification.cancel` | `{id}` → `{id}` | `cancel(tag = id, 7300)`（無い ID でも成功＝冪等） |
+| `notification.are_enabled` | `{}` → `{enabled}` | `areNotificationsEnabled()`（Android 13+ は POST_NOTIFICATIONS の許可も含む） |
+
+- **検査**（Java と Rust の模擬で同じ）: 通知・チャネル・ボタンの ID は 1〜128 文字、題・本文・ボタンの文字・チャネルの名前と説明は 4096 文字まで、`payload_json` は 16384 文字まで、
+  ボタンは 3 つまで（ID の重なりは誤り）、`seed_platform` で始まるチャネルの ID は不可（鳴動のチャネル `seed_platform_alarm` の設定を守る）。知らない `category` は誤りにせず付けない（ログ）。
+- **機能の判定**: APK に `POST_NOTIFICATIONS` の宣言が無ければ 4 命令とも `feature_not_enabled`（`DeclaredPermissions` が `PackageInfo.requestedPermissions` を 1 回読んで持つ）。
+  部品が無いので `notifications` と `alarm` を見分ける印が無く、`alarm` だけの APK（`alarm` も `POST_NOTIFICATIONS` を入れる）でも通知は使える。Android 12 以前の端末では
+  権限が無くても通知を出せるので、この判定の目的は「宣言の無い APK が版によって動いたり動かなかったりしない」こと。鳴動の通知（`RingNotification`）はこの判定を通らない（W1-4a のまま）。
+  `requestedPermissions` には、その版に無い権限の名前（Android 12 以前の `POST_NOTIFICATIONS`）も残り、`maxSdkVersion` を超えた宣言だけが落ちる（AOSP main の
+  `ParsingPackageUtils.parseUsesPermission` を読んで確かめた。Android 10〜12 の旧パーサは読んでいない）。
+- **ID**: 文字列の ID をそのまま tag にし、int の ID は定数 7300（鳴動の通知は tag なしの 7201・7202）。int の ID の表を持たない。
+- **見た目**: 題・本文（`BigTextStyle` で長文も開けば全部見える）・種類・常駐（`setOngoing`）。常駐でない通知は本文のタップで消える（`setAutoCancel`）。
+  ボタンを押しても消えない（Android の決まり。アプリが `Cancel`）。小さなアイコンは Android 標準の `ic_popup_reminder`（プロジェクトごとのアイコンは backlog）。
+- **どこから出すか**: `:seed_platform` が出すので、メインプロセス（エンジン）が死んでも通知は残り、ボタンから冷えた状態でアプリを起動できる。
+
+#### 25.13.3 本文のタップ・ボタン（トランポリン無し）と PendingIntent の同一性
+
+- 本文のタップは起動理由 `notification_tap {id, payload_json}`、ボタンは `notification_action {id, action_id, payload_json}`。どちらも `PlatformEntry` 行きの
+  Activity の PendingIntent（W1-4a の `PlatformEntryIntents`）で、受信機・サービスを挟まない（Android 12+ の通知のトランポリンの禁止）。読み手は W1-4a の `LaunchReason`
+  （アプリが死んでいれば `App.LaunchReason`、生きていれば `onNewIntent` → `platform.launch`）。
+- **同一性の決め方**: 要求コードは用途ごとの定数（5 = 本文のタップ・6 = ボタン）のまま、`Intent.setIdentifier`（API 29 = minSdk）に「用途・通知の ID・ボタンの ID」を
+  長さ付きで並べた文字列（例 `6:action:6:snooze:4:stop:`）を入れる。
+  - 要求コードを ID から作る（ハッシュ）形は、文字列から int への写像なので衝突が必ずありうる。衝突すると `FLAG_UPDATE_CURRENT` が別の通知の起動理由を書き換え、
+    古い通知を押すと新しい通知の ID で起動する。
+  - identifier は `Intent.filterEquals` の比べる欄に入り、`PendingIntentRecord.Key` は要求コード＋`filterEquals` で同一性を決める（AOSP main の `Intent.java`・
+    `PendingIntentRecord.java` を読んで確かめた）。長さ付きの並べ方は ID に `:` を含んでも曖昧にならない（単射）。identifier は IntentFilter の照合に使われない。
+  - 同じ通知を出し直すと同じ PendingIntent の extras（payload）が新しくなる。ボタンを減らして出し直したときの古い PendingIntent は、通知から参照されなくなれば OS が片付ける。
+
+#### 25.13.4 デスクトップの模擬
+
+`desktop_sim/notification_state.rs`（チャネルと出ている通知）・`notification_commands.rs`（4 命令）。`show` は `[SEED PLATFORM] 通知: <題> — <本文>（id …・チャネル …・常駐・種類 …・操作 [id:文字, …]・payload …）`
+のログ、`cancel` は `通知を消しました: <id>（出ている通知 N 件）`、`are_enabled` は常に true。チャネルが無ければ実機と同じく `channel_not_found`。
+エディタの Play の区切りでチャネルも通知も捨てる。ボタンを押す手段は無い。
+
+#### 25.13.5 確かめ方（adb・実機）
+
+```bash
+# Git Bash。APP・SERIAL・ADB は §25.12.8 と同じ。端末は画面が点いてロックが解除され、前面がランチャーのときだけ使う
+# 1. 確かめ用のシーン（PlatformSmoke.cs: 起動時に Check を 3 種＋RecordAudio → つながったら EnsureChannel("smoke") → Show(smoke_note・ボタン 2 つ・常駐)
+#    → 3 秒後に Cancel → 目覚ましの確かめの最後に Permissions.Request(PostNotifications)。目覚ましの確かめは音が鳴る〈§25.12.8〉）
+dotnet run --project editor/tools/SeedAndroid -- run --project 'D:\SEED_projects\WakeOrPay' --serial $SERIAL --scene scenes/PlatformSmoke.scene --logcat-seconds 40
+# 2. 出ている間（つながってから 3 秒以内）に通知の中身（tag=smoke_note・id=7300・チャネル smoke・ongoing・actions 2 つ）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys notification --noredact | grep -E -B2 -A25 "smoke_note" | head -60
+# 3. チャネル（アプリのチャネルの一覧に smoke〈重要度 4 = HIGH〉）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys notification --noredact | grep -E "NotificationChannel\{mId='smoke'" | head
+# 4. ログ
+"$ADB" -s $SERIAL logcat -d -s SEED SEEDPlatform | grep -E "PlatformSmoke|通知|権限"
+```
+
+- `cmd notification allow_listener` は要らない（通知の中身は `dumpsys notification --noredact` で見える）。
+- 通知の許可（Android 13+）が無い端末では `Show` が `notifications_disabled` で失敗する（PlatformSmoke は想定どおりとして数える）。許可は利用者が確認の画面で与える
+  （`Permissions.Request`。§25.14）。`pm grant` / `pm revoke` で状態を作るのは**利用者の了承を得てから**（端末の設定を変える）。
+- ボタンを押して起動理由（`notification_action`）を確かめるのは、実機で通知を引き下ろして手で押す（アプリを閉じておけば冷えた起動の `App.LaunchReason`、開いていれば `platform.launch`）。
+  PlatformSmoke の通知は 3 秒で消えるので、手で押す確かめは通知を消さない版のスクリプトで行う。
+
+#### 25.13.6 確認結果（2026-09-27）
+
+- Rust の単体テスト 82 件が通った（`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests`。W1-4a の 68 件＋新規 14 件:
+  通知の引数の検査 6・権限の種類 2・模擬の通知 3〈チャネル → 出す → 置き換え → 消す・誤り・Play の区切り〉・模擬の権限 3〈check・request → permission_result・open_settings〉。
+  `java_contract_matches_wire` に通知・権限の名前 49 組と数 5 つ〈上限 4・最初の要求の ID〉を足した）。
+- Java は `javac -Xlint:all`（android-36 の android.jar・`--release 17`・R は仮のもの）で `platform` パッケージ 64 ファイル＋デバッグの受信機が警告 0。`MainActivity` を含む
+  main の 68 ファイル（AAR の classes.jar を並べた classpath）でも、ソースの警告は既存の 2 件（`MainActivity` の this-escape・`SystemBarsController` の非推奨）だけ。
+  使った API の版は `api-versions.xml` で確かめた（`notify(String,int,Notification)` 5・`areNotificationsEnabled` 24・`createNotificationChannel` / `getNotificationChannel` 26・
+  `Notification.Builder(Context,String)` 26・`CATEGORY_ALARM` / `STATUS` / `EVENT` / `PROGRESS` 21・`CATEGORY_REMINDER` 23・`BigTextStyle` 16・`Intent.setIdentifier` 29）。
+- PC の Play（`SEED.exe --mode=play --assets-root=D:\SEED_projects\WakeOrPay\assets --scene=assets://scenes/PlatformSmoke.scene`）: `EnsureChannel(smoke) ok` →
+  `[SEED PLATFORM] 通知: PlatformSmoke の通知 — …（id smoke_note・チャネル smoke・常駐・種類 status・操作 [later:あとで, open:開く]・payload {"smoke":"note"}）` →
+  3004 ms 後に `通知を消しました: smoke_note（出ている通知 0 件）`。目覚ましの確かめ（W1-4a）も `鳴動の確かめ: OK` のまま。`timeout` で止めた後に SEED.exe は残っていない。
+- APK（Wake or Pay・arm64-v8a・debug。SeedAndroid build 137.7 秒）: dexdump で `service/notification/` の 8 クラス（と内部クラス）・`permission/` の 8 クラス・`local/` の
+  `Permission*` 4 クラス・`DeclaredPermissions` が dex に入り、`MainActivity` に `onRequestPermissionsResult` がある。aapt2 で `POST_NOTIFICATIONS` ほか権限 9。
+- **実機（Pixel 6a）は未実施**（`adb devices` に端末が無かった）。上の手順が残っている。
+
+### 25.14 権限（状態・求める・設定の画面・前面へ戻ったときの変化。W1-5・2026-09-27）
+
+スクリプトの `Permissions.Check` / `Request` / `OpenSettings` とイベント `platform.permission_result`・`platform.permission_changed`
+（[scripting_api.md](scripting_api.md) §7.13）の Android 側。Activity（実行時の確認の画面・設定の画面・rationale）が要るので、`:seed_platform` ではなく
+**メインプロセス**が答える（`local/` の命令表。IPC なし・`connecting` にならない）。
+
+#### 25.14.1 構成
+
+```
+[メインプロセス] platform/
+ local/PermissionCheckCommand・PermissionRequestCommand・PermissionOpenSettingsCommand … permission.check / request / open_settings（MainProcessCommands の表）
+ local/PermissionArguments   … 引数 { kind } と機能の有無（feature_not_enabled）
+ local/HostActivity          … Activity（弱参照）に加えてアプリの Context（Activity が無くても check できる）
+ permission/PermissionKind        … 種類（wire の名前・扱うか・機能の名前・マニフェストの権限）
+ permission/PermissionStatusProbe … 状態の判定表（下）
+ permission/PermissionHistory     … 「はっきり拒否された」の覚え（SharedPreferences seed_platform_permissions。メインプロセスだけ）
+ permission/PermissionRequests    … 要求の ID・確認の画面（requestPermissions）・設定の画面の待ち・permission_result
+ permission/PermissionSettings    … 種類ごとの設定の画面（開けなければアプリ情報）
+ permission/PermissionMonitor     … onResume のたびに前回と比べて permission_changed
+ permission/PermissionEvents      … イベントを作って SeedPlatform.emitLocalEvent（seq 0。W1-5 で public にした）
+ permission/PermissionLifecycle   … MainActivity の onResume・onRequestPermissionsResult の受け口（失敗はログに残して Activity を止めない）
+MainActivity … onResume（super・音声フォーカスの後）で PermissionLifecycle.onResume、onRequestPermissionsResult（super の後）で PermissionLifecycle へ
+```
+
+#### 25.14.2 状態の判定表（`permission.check`・結果・変化で共通）
+
+| 種類 | API | 状態 |
+|---|---|---|
+| `post_notifications` | 33+ | `checkSelfPermission(POST_NOTIFICATIONS)` が許可 → `areNotificationsEnabled()` なら `granted`、切られていれば `needs_settings`。不許可 → rationale が true なら `denied`、false で拒否の覚えがあれば `denied_permanently`、無ければ `denied` |
+| | 29〜32 | `areNotificationsEnabled()` で `granted` か `needs_settings`（実行時の許可が無い） |
+| `exact_alarm` | 33+ | `USE_EXACT_ALARM` が許可なら `granted`、無ければ `canScheduleExactAlarms()` で `granted` / `needs_settings` |
+| | 31〜32 | `canScheduleExactAlarms()` で `granted` / `needs_settings` |
+| | 29〜30 | `not_applicable` |
+| `full_screen_intent` | 34+ | `canUseFullScreenIntent()` で `granted` / `needs_settings` |
+| | 29〜33 | `granted`（インストール時に許可） |
+| `record_audio` / `send_sms` | — | `not_applicable`（v2 の予約） |
+
+- **機能の判定が先**: `post_notifications` は `POST_NOTIFICATIONS`、`exact_alarm` は `USE_EXACT_ALARM` か `SCHEDULE_EXACT_ALARM`、`full_screen_intent` は `USE_FULL_SCREEN_INTENT` の
+  宣言が無ければ 3 命令とも `feature_not_enabled`（説明に足すべき機能の名前）。Android 13+ で宣言の無い権限を求めると、確認の画面を出さずに拒否が返り `denied_permanently` に
+  見えてしまうため。v2 の種類は判定しない。
+- **`denied_permanently` の決め方**: Android は「二度と確認の画面が出ない」を直接は教えず、`shouldShowRequestPermissionRationale` は「一度拒否された」ときだけ true
+  （一度も求めていない・二度拒否された、はどちらも false）。そこで確認の画面の結果で「はっきり拒否された」ことを覚える（`PermissionHistory`）:
+  求めた後の rationale が true → `denied`（一度目の拒否。覚える）／ false で求める前が true → `denied_permanently`（二度目の拒否。覚える）／ 前後とも false → 覚えがあれば
+  `denied_permanently`（画面が出なかった）、無ければ `denied`（画面の外側で閉じた。覚えない）。許可を見たら覚えを消す。
+  「二度の拒否で以後画面が出ない」「rationale は一度拒否されたときだけ true」は developer.android.com「Request runtime permissions」で確かめた。「画面の外側で閉じても
+  rationale は変わらない」は公式の文書に記述が無く記憶による（実機で確かめる。backlog）。
+  単純な規則「拒否で rationale が false なら denied_permanently」だと、最初の確認の画面を外側のタップで閉じただけで `denied_permanently` になる（次の `Request` で画面はまた出るのに
+  設定の画面へ案内してしまう）ので、この形にした。アプリのデータを消すと覚えも消える（そのとき永続の拒否は `denied` に見え続ける。`Request` しても画面が出ずに
+  `denied` が返り、画面の外側で閉じた場合と区別できないので覚えも付かない）。
+
+#### 25.14.3 求め方（`permission.request`）と結果
+
+- エンジンのスレッドで要求の ID（1 から）を払い出してすぐ `{kind, request_id}` を返し、結果は `platform.permission_result {request_id, kind, status}`（seq 0）:
+  1. 今の状態が `granted` / `not_applicable` → 画面を出さずにすぐ結果（次のフレームでスクリプトへ）。
+  2. Android 13+ の `post_notifications` で `denied` / `denied_permanently` → UI スレッドで `Activity.requestPermissions([POST_NOTIFICATIONS], 0x5EED)` →
+     `onRequestPermissionsResult` で状態を決める（永続の拒否なら OS は画面を出さずにすぐ拒否を返す）。空の結果（中断・別の確認が出ている）は今の状態。
+  3. それ以外（`needs_settings`）→ UI スレッドで設定の画面を開き、利用者が戻った `onResume` で今の状態を結果にする。開けなければすぐ今の状態。
+- 同じ種類の要求が重なったら、出ている画面の結果をそれぞれの ID で返す（確認の画面は一度に 1 つ。AOSP main の `Activity.requestPermissions` は重ねて呼ぶと空の結果で取り消す）。
+- 要求コード `0x5EED` は下位 16 bit に収まる（androidx の `ActivityResultRegistry` が払い出す番号は 0x10000 以上なので重ならない）。`MainActivity.onRequestPermissionsResult` は
+  super（androidx の ComponentActivity 1.8.0。登録の無い番号なら何もしない〈`javap -c` で確かめた〉）の後に渡す。androidx が付けた非推奨は `@SuppressWarnings("deprecation")` で抑えた
+  （Activity Result API は onCreate の間の登録が要り、エンジンのスレッドから好きな時に求める作りに合わない）。フレームワークの 4 引数版（`deviceId` つき）の既定の実装は
+  3 引数版を呼ぶ（AOSP main で確認）。
+- 待ちの表は UI スレッドだけが触る（`request` はエンジンのスレッドで ID の払い出し〈原子変数〉と UI スレッドへの投げ込みだけ）。
+
+#### 25.14.4 設定の画面（`permission.open_settings`・`request` の 3）
+
+| 種類 | 画面（Intent。版は `api-versions.xml`、入力は AOSP main の `Settings.java` の説明で確かめた） |
+|---|---|
+| `post_notifications` | `Settings.ACTION_APP_NOTIFICATION_SETTINGS`＋extra `EXTRA_APP_PACKAGE`（API 26） |
+| `exact_alarm` | API 31+: `Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM`＋data `package:<アプリ ID>`。30 以下: アプリ情報 |
+| `full_screen_intent` | API 34+: `Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT`＋data `package:<アプリ ID>`（必須）。33 以下: アプリ情報 |
+| `record_audio` / `send_sms` | アプリ情報 |
+
+開けない（`ActivityNotFoundException`・`SecurityException`）ときは `Settings.ACTION_APPLICATION_DETAILS_SETTINGS`＋`package:<アプリ ID>`。Activity から
+`FLAG_ACTIVITY_NEW_TASK` なしで開く（利用者が戻ると onResume）。`open_settings` はすぐ `{kind}` を返し、結果のイベントは無い。
+
+#### 25.14.5 前面へ戻ったときの変化（`platform.permission_changed`）
+
+- `MainActivity.onResume` のたびに、APK に機能がある 3 種の状態を調べ、前の onResume で見た状態（プロセスの中の表。UI スレッドだけ）と違えば
+  `platform.permission_changed {kind, status}`（seq 0）。プロセスの最初の onResume は覚えるだけ。スクリプトの `Check` は表を書き換えない（流れを決めるため）。
+- 確認の画面で許可したときは、`permission_result`（onRequestPermissionsResult）→ `permission_changed`（直後の onResume）の順に両方届く（結果は onResume より先に配られる
+  という順序は記憶による。実機で確かめる）。
+- 機能の無いゲームでは宣言の一覧（1 回読んで持つ）を見るだけで、システムのサービスへは問い合わせない。
+
+#### 25.14.6 デスクトップの模擬
+
+`desktop_sim/permission_commands.rs`。`check` は v1 の 3 種が `granted`、v2 の 2 種が `not_applicable`。`request` は要求の ID（1 から。Play の区切りでも戻さない）を返し、
+同じフレームで `platform.permission_result`（`simulated: true`）を積む（次のフレームでスクリプトへ）。`open_settings` はログだけ。`permission_changed` は起きない。
+
+#### 25.14.7 確かめ方（adb・実機）
+
+```bash
+# Git Bash。APP・SERIAL・ADB は §25.12.8 と同じ
+# 状態（権限の許可・特別なアクセス。読むだけ）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys package $APP | grep -E "POST_NOTIFICATIONS|USE_EXACT_ALARM|SCHEDULE_EXACT_ALARM|USE_FULL_SCREEN_INTENT"
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell appops get $APP SCHEDULE_EXACT_ALARM      # Android 12 系の特別なアクセス（13+ の USE_EXACT_ALARM はインストール時の許可）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell appops get $APP USE_FULL_SCREEN_INTENT    # Android 14+ のフルスクリーン通知（op の名前は AOSP main の AppOpsManager で確認）
+# ログ（要求・結果・変化）
+"$ADB" -s $SERIAL logcat -d -s SEED SEEDPlatform | grep -E "PlatformSmoke|権限"
+# 状態を作る操作（端末の設定を変える）は利用者の了承を得てから:
+#   pm grant / pm revoke $APP android.permission.POST_NOTIFICATIONS、appops set $APP SCHEDULE_EXACT_ALARM deny など
+```
+
+- 期待するログ（PlatformSmoke）: `[PlatformSmoke] 権限: Check(PostNotifications) = …`（3 種＋`RecordAudio = NotApplicable`）→ 目覚ましの確かめの後に
+  `権限: Request(PostNotifications) → 要求 1` → 許可が無ければ確認の画面が出る（**確かめる側は操作しない**。利用者が答えるまで結果は来ない）→ 答えると SEEDPlatform の
+  `権限 post_notifications の要求 1 の結果: …` → `[PlatformSmoke] 権限: 結果 要求 1: post_notifications → …` → `通知と権限の確かめ: OK`。既に許可済みなら画面なしで `granted`。
+- 設定の画面から戻る確かめ（手で）: `Permissions.OpenSettings(PermissionKind.FullScreenIntent)` → 設定で切り替えて戻る → SEEDPlatform の
+  `権限 full_screen_intent の状態が変わりました: granted → needs_settings` → `platform.permission_changed`。
+
+#### 25.14.8 確認結果（2026-09-27）
+
+- 単体テスト・javac・APK は §25.13.6（同じ回）。模擬の権限の単体テスト 3 件と種類の語彙 2 件が通った。
+- PC の Play: `Check(PostNotifications) = Granted`・`Check(ExactAlarm) = Granted`・`Check(FullScreenIntent) = Granted`・`Check(RecordAudio) = NotApplicable` →
+  目覚ましの確かめの後に `Request(PostNotifications) → 要求 1` → 次のフレームで `platform.permission_result {"kind":"post_notifications","request_id":1,"simulated":true,"status":"granted"}` →
+  `通知と権限の確かめ: OK`。
+- 使った API の版は `api-versions.xml` で確かめた（`requestPermissions` / `shouldShowRequestPermissionRationale` / `onRequestPermissionsResult` / `checkSelfPermission` 23・
+  `canScheduleExactAlarms` 31・`canUseFullScreenIntent` 34・`ACTION_REQUEST_SCHEDULE_EXACT_ALARM` 31・`ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT` 34・`ACTION_APP_NOTIFICATION_SETTINGS` /
+  `EXTRA_APP_PACKAGE` 26・`PackageInfoFlags` 33・`POST_NOTIFICATIONS` / `USE_EXACT_ALARM` 33・`SCHEDULE_EXACT_ALARM` 31・`USE_FULL_SCREEN_INTENT` 29。minSdk 29 より新しいものは版で分けた。
+  `Manifest.permission` の定数は文字列がコンパイル時に埋め込まれるので古い端末でも名前として比べられる）。
+- **実機（Pixel 6a）は未実施**（`adb devices` に端末が無かった）。確認の画面の出方・rationale の実際の値・設定の画面から戻ったときの `permission_changed`・
+  `onRequestPermissionsResult` と `onResume` の順序は、実機でまだ一度も通していない。
+
+#### 25.14.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機での確認すべて（§25.13.5・§25.14.7）。
+- `denied_permanently` の判定は覚え（`PermissionHistory`）に頼る。アプリのデータを消した後・端末の移行の後は覚えが無く、永続の拒否が `denied` に見え続ける。
+- `notifications` だけ・`alarm` だけの APK を見分けない（どちらも `POST_NOTIFICATIONS` を入れる）。機能ごとの印が要るなら、生成する `res/values/seed_platform.xml` に
+  機能ごとの bool を足す（W1-2 の仕組み）。
+- 通知の小さなアイコンは Android 標準の絵（プロジェクトごとのアイコンが無い）。
+- 設定の画面を開けたのに onResume が来ない（開けたが前面に出なかった等）と、その要求の結果は次の onResume まで届かない。

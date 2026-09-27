@@ -14,6 +14,15 @@
 //  【要求コード】PlatformEntry 行きの Intent は部品が同じで action も data も付けないので、PendingIntent の同一性
 //  （要求コード＋Intent.filterEquals。extras は含まない）は**要求コードだけ**で決まる。用途ごとに下の REQUEST_* を使い分け、
 //  FLAG_UPDATE_CURRENT で extras（起動理由）を最新に書き換える（鳴動は同時に 1 つなので、同じ用途の PendingIntent は共有してよい）。
+//
+//  【通知の PendingIntent の同一性（W1-5）】アプリの通知は同時にいくつも出るので、用途ごとの要求コードだけでは足りない
+//  （共有すると FLAG_UPDATE_CURRENT で別の通知の起動理由に書き換わり、古い通知を押すと新しい通知の ID で起動する）。
+//  要求コードを通知の ID から作る（ハッシュ）形は、文字列から int への写像なので必ずどこかで衝突する（鳩の巣）。そこで
+//  要求コードは用途（本文のタップ・操作）ごとの定数のまま、Intent.setIdentifier（API 29 = minSdk）に「用途・通知の ID・操作の ID」を
+//  長さ付きで並べた文字列（identity）を入れる。identifier は Intent.filterEquals の比べる欄に入り（AOSP の Intent.java で確認）、
+//  PendingIntentRecord.Key は要求コード＋filterEquals で同一性を決める（同 PendingIntentRecord.java で確認）ので、
+//  identity が違えば別の PendingIntent になる。長さ付きの並べ方は区切り文字を含む ID でも曖昧にならない（単射）。
+//  identifier は IntentFilter の照合には使われない（別名 PlatformEntry は intent-filter を持たないので、どのみち関係ない）。
 //  このクラスは :seed_platform で使う（メインプロセスの読み手は platform/LaunchReason.java）。
 // ============================================================
 
@@ -48,11 +57,23 @@ public final class PlatformEntryIntents {
     /** 要求コード: 鳴動の通知の「開く」の操作。 */
     public static final int REQUEST_RING_ACTION_OPEN = 4;
 
+    /** 要求コード: アプリの通知（W1-5）の本文のタップ（通知ごとの区別は identity。上の【通知の PendingIntent の同一性】）。 */
+    public static final int REQUEST_NOTIFICATION_TAP = 5;
+
+    /** 要求コード: アプリの通知（W1-5）の操作（ボタン）。通知・操作ごとの区別は identity。 */
+    public static final int REQUEST_NOTIFICATION_ACTION = 6;
+
     /** 起動理由の数の欄が無いときの値。 */
     public static final long NO_TIME = 0L;
 
     /** 起動理由の文字列の欄が無いときの値。 */
     public static final String NO_TEXT = "";
+
+    /** identity の部品の区切り（長さの後ろと部品の後ろに置く。長さで切り出すので、部品が同じ文字を含んでも曖昧にならない）。 */
+    private static final char IDENTITY_SEPARATOR = ':';
+
+    /** identifier を付けない（用途ごとの要求コードだけで区別する鳴動の PendingIntent）。 */
+    private static final String NO_IDENTITY = null;
 
     /**
      * 起動理由の JSON を作る（{kind, id, action_id, scheduled_at_utc_ms, fired_at_utc_ms, payload_json}。
@@ -88,6 +109,21 @@ public final class PlatformEntryIntents {
      * @return PendingIntent（FLAG_IMMUTABLE。受け手に書き換えさせない）
      */
     public static PendingIntent activity(Context context, int requestCode, JSONObject launch, boolean noUserAction) {
+        return activity(context, requestCode, NO_IDENTITY, launch, noUserAction);
+    }
+
+    /**
+     * PlatformEntry（→ MainActivity）を開く PendingIntent を、要求コードと identity の組で作る（既にあれば extras を書き換える。W1-5）。
+     *
+     * @param context      :seed_platform の Context
+     * @param requestCode  用途ごとの要求コード（REQUEST_*）
+     * @param identity     同じ用途の中での区別（identity で作る。null なら付けない＝要求コードだけで区別）
+     * @param launch       起動理由（launchJson）
+     * @param noUserAction 利用者の操作によらない起動か（フルスクリーン通知）
+     * @return PendingIntent（FLAG_IMMUTABLE）
+     */
+    public static PendingIntent activity(Context context, int requestCode, String identity, JSONObject launch,
+                                         boolean noUserAction) {
         int flags = Intent.FLAG_ACTIVITY_NEW_TASK;
         if (noUserAction) {
             flags |= Intent.FLAG_ACTIVITY_NO_USER_ACTION;
@@ -97,7 +133,29 @@ public final class PlatformEntryIntents {
                 .setClassName(context.getPackageName(), PlatformContract.PLATFORM_ENTRY_ALIAS)
                 .addFlags(flags)
                 .putExtra(PlatformContract.EXTRA_LAUNCH, launch.toString());
+        if (identity != null) {
+            // PendingIntent の同一性の欄（filterEquals）に入る。IntentFilter の照合には使われない（API 29）
+            intent.setIdentifier(identity);
+        }
         return PendingIntent.getActivity(context, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    /**
+     * 部品を長さ付きで並べた identity を作る（例 ["tap", "a:b"] → "3:tap:3:a:b:"）。
+     *
+     * <p>各部品を「符号単位の長さ・区切り・部品・区切り」で並べる。読み手は長さの分だけ切り出せるので、部品が区切りの文字を
+     * 含んでも、別の部品の並びと同じ文字列にならない（単射。要求コードを文字列から作るハッシュと違って衝突しない）。</p>
+     *
+     * @param parts 部品（null は空の部品として扱う）
+     * @return identity
+     */
+    public static String identity(String... parts) {
+        StringBuilder identity = new StringBuilder();
+        for (String part : parts) {
+            String text = part != null ? part : NO_TEXT;
+            identity.append(text.length()).append(IDENTITY_SEPARATOR).append(text).append(IDENTITY_SEPARATOR);
+        }
+        return identity.toString();
     }
 }

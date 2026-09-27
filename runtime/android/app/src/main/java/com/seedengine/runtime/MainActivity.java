@@ -17,6 +17,8 @@
 //    ・起動理由（中身は platform/LaunchReason。W1-4a）: onCreate（super.onCreate の前）と onNewIntent で Intent を見て、
 //      信頼できる入口 PlatformEntry（exported=false の activity-alias）経由なら起動理由を読み、目覚ましの鳴動なら
 //      ロック画面の上に出して画面を点ける。onNewIntent ではイベント platform.launch を流す
+//    ・権限（中身は platform/permission/PermissionLifecycle。W1-5）: onResume で設定の画面から戻った要求に結果を返し、
+//      権限の状態が前回と違えば platform.permission_changed を流す。onRequestPermissionsResult で実行時の確認の画面の結果を渡す
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
@@ -45,6 +47,7 @@ import com.google.androidgamesdk.GameActivity;
 
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.SeedPlatform;
+import com.seedengine.runtime.platform.permission.PermissionLifecycle;
 
 /**
  * SEED ランタイムの唯一の Activity。
@@ -153,11 +156,29 @@ public class MainActivity extends GameActivity {
         LaunchReason.onNewIntent(this, intent);
     }
 
-    /** 前面に来た。音声フォーカスを要求する（得られるまでネイティブは音声を止めたまま）。 */
+    /**
+     * 前面に来た。音声フォーカスを要求する（得られるまでネイティブは音声を止めたまま）。
+     * 権限の設定の画面から戻ったときの結果と、権限の状態の変化の知らせもここ（W1-5。中身は PermissionLifecycle）。
+     */
     @Override
     protected void onResume() {
         super.onResume();
         audioFocus.request();
+        PermissionLifecycle.onResume(this);
+    }
+
+    /**
+     * 実行時の許可の確認の画面の結果（W1-5。SEED.Platform の Permissions.Request が Activity.requestPermissions で出したもの）。
+     * super（androidx の ActivityResultRegistry へ配る）の後に PermissionLifecycle へ渡す（自分の要求コードのときだけ処理される）。
+     * 非推奨の注意を抑えるのは、androidx の ComponentActivity がこの受け口を非推奨（Activity Result API を推す）にしているため。
+     * Activity Result API は onCreate の間に登録が要り、エンジンのスレッドから好きな時に求める今の作りに合わないので、
+     * プラットフォームの Activity.requestPermissions とこの受け口を使う。
+     */
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        PermissionLifecycle.onRequestPermissionsResult(this, requestCode, permissions, grantResults);
     }
 
     /** 前面を離れる。音声フォーカスを手放す（ネイティブは音声を止める）。 */

@@ -20,7 +20,8 @@
 //  すぐ {"ok":false,"error":"connecting"} を返す（プロセスの起動の約 120 ms を描画のスレッドで待たない）。
 //  つながったら platform.connected のイベントが届く（docs/android.md §25）。
 //
-//  JSON の形とエラーの理由の名前は wire.rs。目覚まし（W1-3）の共通部品（引数の検査・音源の書き出し）は alarm/。
+//  JSON の形とエラーの理由の名前は wire.rs。目覚まし（W1-3）の共通部品（引数の検査・音源の書き出し）は alarm/、
+//  通知（W1-5）の引数の検査は notification/、権限（W1-5）の種類の語彙は permission/。
 //
 //  【Play の区切り】エディタの Play の開始・停止で reset_session を呼び、実装ごとの「前の回の状態」を捨てる
 //  （デスクトップの模擬は予約表とイベント。Android の実機の予約は Play と関係ないので触らない）。
@@ -32,6 +33,10 @@ pub mod alarm;
 pub mod desktop_sim;
 /// イベントの待ち行列（上限つき）。
 pub mod event_queue;
+/// 通知の共通部品（引数の検査。W1-5）。
+pub mod notification;
+/// 権限の共通部品（種類の語彙と引数の読み取り。W1-5）。
+pub mod permission;
 /// JSON の約束（名前・形・エラーの理由）。
 pub mod wire;
 

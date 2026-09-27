@@ -2296,6 +2296,8 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
   → **W1-3 で永続化は済み**（端末保護ストレージの `seed_platform/journal.json` へ足す・取り出すたびに原子的に書く。docs/android.md §25.11.6）。
   残りは ack と onResume の取り直し（W1-4）。取り出した直後にメインプロセスが死ぬと届かないのは変わらない。
   → W1-4a（2026-09-27）の範囲に入れなかったので、ack と onResume の取り直しは W1-4b 以降（W1-5 の通知の操作の知らせと合わせて決める）。
+  → W1-5（2026-09-27）で決めた: 通知の本文・ボタンの操作は記録（EventJournal）を通らず、PlatformEntry 行きの Intent（起動理由。死んでいれば起動、生きていれば
+  `platform.launch`）で届くので、ack・onResume の取り直しの要否は通知と独立（残るのは目覚ましの記録だけ。W1-4b 以降のまま）。権限のイベントもメインプロセスの中で作る（seq 0）。
   関連: `runtime/android/app/src/main/java/com/seedengine/runtime/platform/service/EventJournal.java`。
 - [ ] **最初の SEED.Platform の呼び出しが `connecting` で失敗する（使い勝手）** — 2026-09-27（W1-1）。`:seed_platform` の起動（約 120 ms）を
   描画のスレッドで待たないための形だが、アプリの API（W1-3 の `Alarms.Schedule` など）が起動の直後に失敗しうる。W1-2 の `android.features` に
@@ -2389,10 +2391,34 @@ W0 の調査で見つかった既存の不具合・制限を置く。関連す�
 - [ ] **鳴動の通知を利用者がスワイプで消せる（Android 14+）** — 2026-09-27（W1-4a）。前景サービスの通知でも Android 14 以降は消せる（公式の変更。記憶・要確認）。
   消しても鳴動は続くが、通知からアプリへ戻れなくなる。`setDeleteIntent` で出し直すか、アプリの鳴動画面への別の入口（ステータスバーの目覚ましの印）で
   足りるかを W1-5 で決める。
+  → W1-5（2026-09-27）では変えなかった（W1-5 の指示の範囲は新しい通知の API と権限だけ）。鳴動中はその予約がもう控えから消えているので、ステータスバーの
+  目覚ましの印は次の予約のもの（鳴動への入口にならない）。出し直すなら `setDeleteIntent` に `:seed_platform` の exported=false の受信機（Activity を開かないので
+  トランポリンの禁止に当たらない）を置き、`RingService` が同じ通知を出し直す案。W1-4b の実機で「消せるか」を確かめてから決める。
 - [ ] **目覚ましで起動したアプリがロック画面の上に残る（`SetShowWhenLocked(false)` の呼び忘れ）** — 2026-09-27（W1-4a）。`alarm` の起動では
   エンジンが showWhenLocked を上げ、下ろすのはアプリ（scripting_api.md §7.13 に明記）。呼び忘れると AC-5 に反する。鳴動が止まった（`ring_stopped`）後に
   エンジンが自動で下ろす既定を足すかを W1-6 で決める（鳴動画面を出したまま解除の後の画面を続けたいアプリもあるので、今は自動にしていない）。
-- [ ] **W1-5 通知と権限（チャネル・常駐・ボタン・トランポリン無し・実行時権限の結果イベント・正確なアラーム／フルスクリーン通知の状態と設定画面）** — 2026-09-27。
+- [x] **W1-5 通知と権限（チャネル・常駐・ボタン・トランポリン無し・実行時権限の結果イベント・正確なアラーム／フルスクリーン通知の状態と設定画面）** — 2026-09-27 記載 /
+  同日実装（実機の確認は下の項目）。正典は docs/android.md §25.13（通知）・§25.14（権限）。`:seed_platform` の `service/notification/NotificationModule`、
+  メインプロセスの `local/Permission*Command` と `platform/permission/`、`MainActivity` の `onResume`・`onRequestPermissionsResult` の受け口、デスクトップの模擬、
+  C# の `Notifications`・`Permissions` と関連の型、PlatformSmoke の拡張。
+- [ ] **W1-5 の実機の確認（通知・権限）** — 2026-09-27（W1-5）。実装した日は Pixel 6a が USB に無かった。docs/android.md §25.13.5・§25.14.7 の手順で、
+  `dumpsys notification --noredact` に `smoke_note`（tag・id 7300・チャネル smoke・ongoing・ボタン 2 つ）が出て 3 秒で消えること、ボタン・本文のタップで
+  `notification_action` / `notification_tap` の起動理由が取れること（冷えた起動・起動中の `platform.launch`）、`Permissions.Request(PostNotifications)` の確認の画面と
+  `permission_result`、設定の画面から戻ったときの `permission_changed`、`onRequestPermissionsResult` と `onResume` の順序（記憶では結果が先）、確認の画面を
+  外側のタップで閉じたときの rationale（記憶では変わらない＝`denied` のまま。公式の文書に記述が無い）を確かめる。
+  確認の画面が出たら確かめる側は操作しない。`pm grant/revoke`・`appops set` で状態を作るのは利用者の了承を得てから。
+- [ ] **`denied_permanently` の判定が「拒否の覚え」に頼る** — 2026-09-27（W1-5）。Android の `shouldShowRequestPermissionRationale` だけでは「一度も求めていない・
+  確認の画面を外側で閉じた」と「二度拒否されて画面が出ない」を見分けられないので、メインプロセスの SharedPreferences（`seed_platform_permissions`）に
+  「はっきり拒否された」を覚える（`platform/permission/PermissionHistory`）。アプリのデータを消した後・端末の移行の後は覚えが無く、永続の拒否が
+  `denied` に見え続ける（`Request` しても画面が出ずに `denied` が返り、覚えも付かない。画面の外側で閉じた場合と区別できないため）。`Request` を続けて呼んで
+  画面が出ないこと（結果が一瞬で返る等）を手がかりにする案は未検討。
+- [ ] **`notifications` だけ・`alarm` だけの APK を見分けない** — 2026-09-27（W1-5）。機能 `notifications` は部品が無く、どちらの機能も `POST_NOTIFICATIONS` を入れるので、
+  Java は宣言の有無（`DeclaredPermissions`）で判定し、`alarm` だけの APK でも `Notifications` が使える（指示の「notifications が無い APK では feature_not_enabled」とは
+  `alarm` だけの APK で食い違う）。厳密に分けるなら、SeedAndroid が生成する `res/values/seed_platform.xml` に機能ごとの bool を足して読む（W1-2 の仕組み）。
+- [ ] **アプリの通知の小さなアイコンが Android 標準の絵** — 2026-09-27（W1-5）。`NotificationFactory` は `android.R.drawable.ic_popup_reminder` を使う
+  （アプリのアイコンはステータスバーでは形の影しか出ないため使っていない）。プロジェクト設定（例 `android.notification_icon`）から単色のアイコンを生成して使う形は未着手。
+- [ ] **設定の画面を開いた要求は次の onResume まで結果が来ない** — 2026-09-27（W1-5）。`startActivity` が例外なく戻ったのに設定の画面が前面に出なかった
+  （背面からの起動の制限など）ときは、利用者が次にアプリを前面へ戻すまで `permission_result` が届かない。スクリプトに時間切れは無い。
 - [ ] **W1-6 画面とアプリ（`Window.SetShowWhenLocked`・`SetKeepScreenOn`・`SetSystemBarsVisible`・`App.MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク）** — 2026-09-27。
   → `Window.SetShowWhenLocked` と `App.LaunchReason`（起動理由）は W1-4a で先に入れた（docs/android.md §25.12.5）。残りはこの段階で。
   「アプリを終える API が無い」（Android 節）は `MoveTaskToBack`（閉じずに背面へ）で目覚ましアプリの用は足りるが、終える API もここで一緒に決める。

@@ -9,10 +9,13 @@ public enum LaunchKind
     /// <summary>"alarm": 目覚ましの鳴動（フルスクリーン通知・鳴動の通知の本文のタップ）。ロック画面の上に出て画面が点いている。</summary>
     Alarm,
 
-    /// <summary>"notification_tap": 通知の本文のタップ（W1-5 の通知）。</summary>
+    /// <summary>"notification_tap": 通知（<see cref="Notifications.Show"/>。W1-5）の本文のタップ。<see cref="LaunchInfo.Id"/> に通知の ID。</summary>
     NotificationTap,
 
-    /// <summary>"notification_action": 通知の操作（ボタン）。<see cref="LaunchInfo.ActionId"/> に操作の ID（鳴動の通知の「開く」は "open"）。</summary>
+    /// <summary>
+    /// "notification_action": 通知の操作（ボタン）。<see cref="LaunchInfo.ActionId"/> に操作の ID（鳴動の通知の「開く」は "open"、
+    /// <see cref="Notifications.Show"/> の通知は <see cref="NotificationAction.Id"/>）、<see cref="LaunchInfo.Id"/> に通知・予約の ID。
+    /// </summary>
     NotificationAction,
 
     /// <summary>"alarm_clock_info": ステータスバー・ロック画面の「次の目覚まし」の表示を押した。</summary>

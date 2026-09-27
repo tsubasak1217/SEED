@@ -112,6 +112,9 @@ public static class PlatformFeatureTests
         Check.True(alarm.Permissions.Any(p => p.Name == "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"), "種類の権限も alarm にある");
 
         Check.Equal("android.permission.POST_NOTIFICATIONS", catalog.Find("notifications")!.Permissions.Single().Name, "notifications の権限");
+        // W1-5: 通知は main に常設の PlatformProvider（:seed_platform）の NotificationModule が出すので、機能の部品は要らない
+        // （Java は POST_NOTIFICATIONS の宣言の有無で機能を判定する。platform/DeclaredPermissions）
+        Check.Equal(0, catalog.Find("notifications")!.ApplicationElements.Count, "notifications は権限だけ（部品なし）");
         var deepLinks = catalog.Find(" Deep_Links ")!;
         Check.True(deepLinks.DeepLinkFilters && deepLinks.Permissions.Count == 0, "deep_links は intent-filter だけ（名前は大文字小文字・空白を問わず引ける）");
         Check.Equal("alarm,notifications", string.Join(",", catalog.FeaturesRequesting("android.permission.POST_NOTIFICATIONS")), "POST_NOTIFICATIONS を要る機能");
