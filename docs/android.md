@@ -4284,6 +4284,39 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am stack remove <taskId>             
 # (c) 使用中はヘッドアップ通知 → 本文のタップで起動理由 alarm、「開く」で notification_action/open（onNewIntent なら platform.launch）
 ```
 
+W1-4b で**デバッグ版の受信機から予約・停止できる**ようにした（スクリプトの無いシーンで鳴らして測るため。`app/src/debug/` だけ。配布版には入らない）。
+予約は必ず `max_ring_minutes` 1 にし、私物の端末では音を最小にする（`--ef force_volume 0.0 --ez vibrate false --ef fade_in_seconds 60`。STREAM_ALARM を
+端末の最小の段階〈Pixel 6a は 1/7〉にし、止めれば元へ戻る。`force_volume` は `--ef` で渡す〈`--ei` だと型が合わず「触らない」になり、利用者の音量のまま鳴る〉。
+`:seed_platform` を殺す試験では戻らないので使わない）。`title`・`body` に空白を入れない（`adb shell` が 1 行にして端末のシェルが空白で分ける）。
+受信機はメインプロセス（directBootAware でない）なので、再起動の後の最初のロック解除の前は届かない。エンジンの居ないメインプロセスでも呼び鈴を登録するので、
+そこで取り出された記録（`alarm.fired` など）は捨てられる（スクリプトで記録を受ける確かめと混ぜない）。
+
+```bash
+R=$APP/com.seedengine.runtime.platform.DebugPlatformReceiver; A=com.seedengine.runtime.platform; Q="--ef force_volume 0.0 --ez vibrate false --ef fade_in_seconds 60"
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am broadcast -f 0x20 -n $R -a $A.SCHEDULE --ei seconds 90 --es id t1 --ei max_ring_minutes 1 $Q
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am broadcast -f 0x20 -n $R -a $A.GET_RINGING          # [debug] alarm.get_ringing … reply={"ok":true,"ringing":…}
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am broadcast -f 0x20 -n $R -a $A.STOP_RINGING --es id t1
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am broadcast -f 0x20 -n $R -a $A.CANCEL_ALL
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am broadcast -f 0x20 -n $R -a $A.LIST
+"$ADB" -s $SERIAL logcat -d -s SEEDPlatform | grep '\[debug\] alarm\.'   # 1 行「[debug] alarm.<命令>（温|冷: 接続込み） rtt_us=… request=… reply=…」
+# 冷えた状態にする: 予約の後に両プロセスを落とす（am kill。残れば run-as $APP kill -9 <pid>。force-stop は予約を消すので使わない）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am kill $APP
+# 音の開始はログ（RingAudio の「鳴らし始めました」）と AudioFlinger（dumpsys media.audio_flinger の Active と AT::add の履歴）で見る（無音でも測れる）
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys media.audio_flinger | grep -E "AT::add|Active" | tail
+# 画面: 鳴動中は isKeyguardShowing=true・mKeyguardOccluded=true（ロック画面の上）。エンジンの最初のフレームは SEED の「[SEED FRAME 0] end」
+MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell dumpsys window | grep -E "mCurrentFocus|isKeyguardShowing|mKeyguardOccluded="
+```
+
+**実測（W1-4b・2026-09-27。Pixel 6a・Android 16。正典は [app_platform_roadmap.md](app_platform_roadmap.md) §2.9.2）**: Wake or Pay の既定の開始シーン
+（空・スクリプトなし）で、画面オフ・ロック中・両プロセスが無い冷えた状態から、予定時刻を 0 として中央値（3 回）で `:seed_platform` の起動 +39 ms →
+`AlarmReceiver` の受信 +181 ms → `startForeground` の完了 +216 ms → **音 +261 ms**（AudioFlinger のトラック +368 ms）→ フルスクリーン通知の起動 +308 ms →
+メインプロセスの起動 +326 ms → `MainActivity.onCreate`（起動理由 `alarm`）+804 ms → `Displayed` +1155 ms → **エンジンの最初のフレーム +2030 ms**
+（最大 +2102 ms。うち DrawContext の作成 0.52〜0.70 s）。鳴動中はロック画面の上（`KEYGUARD_OCCLUDE`・解除なし）。`force-idle` の下でも音 +535 ms・
+最初のフレーム +2128 ms（発火の時点は `min_time_to_alarm` の仕組みで IDLE ではない）。(a) タスクを消しても音は続いた。`:seed_platform` を `kill -9` すると
+音・通知・前景サービスが消え、作り直されず、`ring_stopped` も記録されない（`START_NOT_STICKY`。backlog）。アプリが前面（ロック画面の上・画面点灯）のときの
+次の予約はヘッドアップ通知になり、「開く」はロック中は解除を求め、解除の後に既存の MainActivity へ `onNewIntent`（`notification_action`）で届いた（Activity は
+積まれない）。adb の `am start -n …/PlatformEntry` は `not exported` で拒否。
+
 #### 25.12.9 確認結果（2026-09-27）
 
 - Rust の単体テスト 68 件が通った（`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests`。W1-3 の 56 件＋
@@ -4306,11 +4339,16 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am stack remove <taskId>             
   権限（`FOREGROUND_SERVICE_MEDIA_PLAYBACK` など）、`res/raw/seed_alarm_default.wav`（Stored）と文言 4 つ。dexdump で `alarm/ring/` の 10 クラス
   （と内部クラス）・`LaunchReason`・`LaunchInfo`・`local/` の 5 クラス・`PlatformEntryIntents`・`AlarmStartup` が dex に入っている。
 - **実機（Pixel 6a）は未実施**（`adb devices` に端末が無かった）。§25.12.8 の手順が残っている。
+  → 実機は W1-6 の回（§25.15.10。PlatformSmoke の 3 秒の鳴動）と **W1-4b**（§25.12.8 の「実測」・[app_platform_roadmap.md](app_platform_roadmap.md) §2.9.2）で確かめた。
+  W1-4b ではデバッグの受信機に予約・停止の命令を足し（`javac -Xlint:all` で警告 0・APK に入れて実機で `LIST`・`SCHEDULE` などが答えることを確かめた）、
+  冷えた起動・Doze・タスクの削除・`:seed_platform` の死・別名の `onNewIntent` を測った。再起動の試験は見送った。
 
 #### 25.12.10 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
 
-- 実機での確認すべて（§25.12.8）と W1-4b（実 GameActivity の冷えた起動の計測〈AC-12〉・音の開始の速さ・ヘッドアップ通知からの起動・
-  別名での `onNewIntent` の部品名・`START_NOT_STICKY` で `:seed_platform` が殺されたときの振る舞い）。
+- ~~実機での確認すべて（§25.12.8）と W1-4b（実 GameActivity の冷えた起動の計測〈AC-12〉・音の開始の速さ・ヘッドアップ通知からの起動・
+  別名での `onNewIntent` の部品名・`START_NOT_STICKY` で `:seed_platform` が殺されたときの振る舞い）。~~ → W1-4b で測った（§25.12.8 の「実測」）。
+  残るのは、再起動と Direct Boot（ロック解除の前の鳴動）・ヘッドアップ通知の本文のタップ・戻る／ホーム／通知のスワイプで止まらないこと・安全弁の実機・
+  `:seed_platform` の死からの復帰（`START_NOT_STICKY`。設計案は roadmap §2.9.2）と、そのときの `force_volume` の音量の戻し・既定の音のループの継ぎ目。
 - `force_volume` / `keep_volume` の音量の変更が Android 17 の背面の音の制限の免除に入るか（X-7。実機では試さない約束なので未確認）。
 - ロック解除の前（Direct Boot）: `RingService` は directBootAware だが、鳴動画面の `MainActivity` は directBootAware でないのでフルスクリーン通知から
   開けない見込み。端末の既定のアラーム音も読めない見込み（同梱の音は読める）。W1-9。

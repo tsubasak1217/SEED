@@ -153,6 +153,7 @@ Flutter 版は鳴動の確実さを `alarm` パッケージ 5.12.0 のネイテ�
 | 再起動直後（ロック解除前） | 非対応（最初のロック解除まで戻らない。記憶・要確認） | 予約の控えと既定の音を**端末保護ストレージ**に置き、受信機・鳴動サービスを `directBootAware` にする（W1-9）。W1-0 で、exported=false・directBootAware の受信機に `LOCKED_BOOT_COMPLETED` が届き、端末保護ストレージの控えから張り直せることを確かめた（強制停止からの復帰で観測。再起動そのものでは未確認）。ロック解除前はエンジンの画面を出せない見込みなので、Java だけの鳴動画面か音と通知だけにする（E-10） |
 
 > W1-0 のスパイク（2026-09-27、Pixel 6a・Android 16。§2.9.1）の結果: (1) 別プロセスの前景サービスは、鳴動画面のタスクを消しても鳴り続けた（確認済み）。(2) フルスクリーン通知から **Java だけの**鳴動画面が、ロック画面の上に冷えた状態で出た（予定時刻から +0.95 s）。GameActivity での計測は W1-4 の頭へ移した。(3) `ContentResolver.call` の往復は 0.64〜0.87 ms（`ContentProviderClient` を持てば 0.36〜0.51 ms）で、10 ms を大きく下回る（確認済み）。(4) Doze の下の測定は、利用者の操作で Doze を抜けたため無効（再試験が要る）。(5) 再起動は未実施（利用者の許可待ち）。(1) の結果で E-01 を決めたので、同一プロセス案は比べ直さない（§5）。
+> → W1-4b（2026-09-27。§2.9.2）: (2) は実 GameActivity で予定時刻 +2.03 s（エンジンの最初のフレーム・中央値）、(4) は SEED の APK で測り直して時刻どおり（発火の時点は `min_time_to_alarm` の仕組みで IDLE ではない）、(1) は SEED の `RingService` でも確かめた。(5) は W1-4b でも見送った。
 
 ### 2.3 スクリプト API（案）
 
@@ -322,10 +323,10 @@ W1-2 で実装した（2026-09-27。正典は docs/android.md §25.10、キー�
 
 | # | 基準 |
 |---|---|
-| AC-1 | 画面オフ・ロック中に、予定時刻から **2 秒以内に音**が鳴り始め、**3 秒以内に**ロック画面の上にエンジンの画面（最初のフレーム）が出る。`dumpsys deviceidle force-idle` の下でも同じ。根拠（W1-0 の実測。§2.9.1）: 両プロセスが無い冷えた状態から、配信 +1 ms・音 +0.73 s・Java だけの鳴動画面の最初のフレーム +0.95 s（温かいときは音 +0.15 s・画面 +0.22 s）。エンジンの画面が 3 秒に収まるかは X-1 と AC-12 が前提で、W1-4 の頭で測る |
-| AC-2 | 鳴動中に最近のタスクからアプリを消しても**音が続き**、通知からアプリへ戻れる |
-| AC-3 | 戻る・ホーム・通知のスワイプでは止まらない。`StopRinging` でだけ止まる。`MaxRingMinutes` で自動で止まり、`AlarmRingStopped(Timeout)` が次の起動で届く |
-| AC-4 | `adb reboot` の後も予約が残り（`dumpsys alarm`）、時刻どおりに鳴る。端末の時刻・タイムゾーンを変えても、アプリが渡した UTC の時刻で鳴る（壁時計の再計算はアプリが `AlarmsRescheduled(TimeChanged)` を受けて行う） |
+| AC-1 | 画面オフ・ロック中に、予定時刻から **2 秒以内に音**が鳴り始め、**3 秒以内に**ロック画面の上にエンジンの画面（最初のフレーム）が出る。`dumpsys deviceidle force-idle` の下でも同じ。根拠（W1-0 の実測。§2.9.1）: 両プロセスが無い冷えた状態から、配信 +1 ms・音 +0.73 s・Java だけの鳴動画面の最初のフレーム +0.95 s（温かいときは音 +0.15 s・画面 +0.22 s）。エンジンの画面が 3 秒に収まるかは X-1 と AC-12 が前提で、W1-4 の頭で測る。**実機 W1-4b（2026-09-27。§2.9.2 の T1・T3）: 満たした**。実 GameActivity（Wake or Pay・スクリプトの無い空の開始シーン）を両プロセスが無い冷えた状態から、画面オフ・ロック中の 3 回の中央値で、音 +0.26 s（`RingAudio` の開始。AudioFlinger のトラックの開始は +0.37 s）・エンジンの最初のフレーム +2.03 s（最大 +2.10 s）。`force-idle` の下（T3）でも音 +0.54 s（トラック +0.69 s）・最初のフレーム +2.13 s。ただし T3 の発火の時点は深い Doze（IDLE）ではなかった（`setAlarmClock` の予約が `min_time_to_alarm`〈この端末は 1 時間〉より近いと、DeviceIdleController が自分で IDLE を抜ける。§2.9.2） |
+| AC-2 | 鳴動中に最近のタスクからアプリを消しても**音が続き**、通知からアプリへ戻れる。**実機 W1-4b（§2.9.2 の T2）: 前半を満たした**（鳴り始め +4.2 s に `am stack remove` → メインプロセスは `onDestroy` で終わり、`:seed_platform` と `USAGE_ALARM` の再生は 3 s 後・13 s 後とも続いた）。「通知からアプリへ戻れる」は adb では確かめていない（タップが要る） |
+| AC-3 | 戻る・ホーム・通知のスワイプでは止まらない。`StopRinging` でだけ止まる。`MaxRingMinutes` で自動で止まり、`AlarmRingStopped(Timeout)` が次の起動で届く。**実機 W1-4b（§2.9.2）: 一部**。`StopRinging` で止まり `ring_stopped(stopped)` が記録された（7 回すべて）・タスクを消しても止まらない（T2）。**`:seed_platform` がプロセスごと殺されると黙って止まる**（T5。`ring_stopped` も無い。backlog）。戻る・ホーム・スワイプ・安全弁は実機では未確認 |
+| AC-4 | `adb reboot` の後も予約が残り（`dumpsys alarm`）、時刻どおりに鳴る。端末の時刻・タイムゾーンを変えても、アプリが渡した UTC の時刻で鳴る（壁時計の再計算はアプリが `AlarmsRescheduled(TimeChanged)` を受けて行う）。**実機 W1-4b: 未実施**（利用者が外出先で端末を使っていて、再起動で PIN の入力が要るため見送った。手順は §2.9.2 の T4） |
 | AC-5 | 鳴っていないときは、アプリを開いたまま画面を消して電源ボタンを押すと**ロック画面が出る**（アプリが上に出ない） |
 | AC-6 | 目覚ましで起動したとき、**リリース版でも** `App.LaunchReason` が `Alarm`・予約 ID・予定時刻・payload を返す。`adb shell am start -n <applicationId>/com.seedengine.runtime.MainActivity --es …` で偽装しても `Alarm` にならない |
 | AC-7 | 通知のボタンを押すと、アプリが死んでいても起動し `NotificationAction`（ボタンの ID・payload）が取れる。生きていれば `Intent` イベントで届く |
@@ -333,7 +334,7 @@ W1-2 で実装した（2026-09-27。正典は docs/android.md §25.10、キー�
 | AC-9 | エンジンを意図的に落としても（デバッグ命令で panic）鳴り続ける |
 | AC-10 | `SaveData.Save()` の直後にプロセスを `kill -9`（デバッグ版の `run-as`）する試験を 100 回繰り返しても save.json が消えず壊れない。壊した save.json からは前の世代で起動する |
 | AC-11 | `features` を書いていないプロジェクトの APK には、W1 の権限・サービスが 1 つも入らない（`aapt2 dump permissions` / `badging`）。例外: `VIBRATE`（normal 権限。W1-6 から触感のために main に常設。ゲームにも使う）と常設の `PlatformProvider`・`PlatformEntry` |
-| AC-12 | 鳴動画面の最初のフレームが、フルスクリーン通知から 3 秒以内に出る（冷えた起動・Pixel 6a）。出るまでも音は鳴っている（前提: §4 の X-1。起動の初期化の同期を解く） |
+| AC-12 | 鳴動画面の最初のフレームが、フルスクリーン通知から 3 秒以内に出る（冷えた起動・Pixel 6a）。出るまでも音は鳴っている（前提: §4 の X-1。起動の初期化の同期を解く）。**実機 W1-4b（2026-09-27。§2.9.2 の T1）: 満たした**（フルスクリーン通知の起動 → エンジンの最初のフレームが 3 回の中央値 1.72 s・最大 1.82 s。その間も音は鳴っている）。X-1 の同期の初期化は解いていないままで収まった（空のシーン・スクリプトの型 1 つ。実アプリの鳴動画面では測り直す） |
 | AC-13 | デスクトップの Play で同じスクリプトが動き（予約は模擬のタイマー、通知はログ、権限は許可）、デバッグ命令で「いま鳴った」を起こせる |
 | AC-14 | `docs/scripting_api.md`（と html）・`docs/android.md` の新しい節・`docs/project_system.md` の `android` 節が更新され、Play の要件チェックが新しい権限を扱う |
 
@@ -353,8 +354,9 @@ adb shell run-as <applicationId> kill -9 <メインのプロセスの pid>
 # 最近のタスクから消す（スワイプと同じ removeTask。W1-0 で確認）
 adb shell am stack list                          # 鳴動画面の taskId を調べる
 adb shell am stack remove <taskId>
-# デバッグ版の受信機へ命令する（暗黙の放送はマニフェストの受信機に届かないので -n を付ける。§2.6）
-adb shell am broadcast -n <applicationId>/com.seedengine.runtime.platform.DebugControlReceiver -a com.seedengine.runtime.platform.SCHEDULE --ei seconds 90
+# デバッグ版の受信機へ命令する（暗黙の放送はマニフェストの受信機に届かないので -n を付ける。§2.6）。SEED の受信機の名前は DebugPlatformReceiver
+# （W1-4b で SCHEDULE / CANCEL_ALL / STOP_RINGING / GET_RINGING / LIST を足した。予約は必ず max_ring_minutes 1。docs/android.md §25.12.8）
+adb shell am broadcast -n <applicationId>/com.seedengine.runtime.platform.DebugPlatformReceiver -a com.seedengine.runtime.platform.SCHEDULE --ei seconds 90 --es id t1 --ei max_ring_minutes 1
 # 特別なアクセスを拒否して試す（Android 14+）
 adb shell appops set <applicationId> SCHEDULE_EXACT_ALARM deny
 adb shell appops set <applicationId> USE_FULL_SCREEN_INTENT deny
@@ -395,9 +397,9 @@ Java だけの使い捨てアプリ（applicationId `com.seedengine.platformspik
 
 | 項目 | 理由 | 次に行う所 |
 |---|---|---|
-| Doze の下の時刻精度（§2.2 の (4)・AC-1 の後半） | 1 回目は、発火の前に利用者が端末を使い始めて Doze を抜けたので無効。`scripts/t3_doze.sh` は、使い始めたら予約を取り消して中止するよう直した | W1-0 の残り（端末を使っていない時間に再試験） |
-| 再起動の後の張り直しと Direct Boot（§2.2 の (5)・AC-4・E-10） | `adb reboot` は利用者の許可が要る。`scripts/t7_reboot_procedure.sh --reboot-permitted` で、ロックを解除しないまま張り直され鳴るか（`LOCKED_BOOT_COMPLETED`・`user_unlocked=false`）まで見る | W1-0 の残り（許可待ち） |
-| 実際の GameActivity をフルスクリーン通知から冷えた状態で出す計測（§2.2 の (2)・AC-12） | スパイクの鳴動画面は Java だけの Activity。SEED の冷えた起動（.NET の展開・CLR・GPU・シーン。X-1）を含む本当の危険はこちらにある | W1-4 の頭（`PlatformEntry` と起動理由を作った直後に測る） |
+| ~~Doze の下の時刻精度（§2.2 の (4)・AC-1 の後半）~~ | 1 回目は、発火の前に利用者が端末を使い始めて Doze を抜けたので無効。`scripts/t3_doze.sh` は、使い始めたら予約を取り消して中止するよう直した | **済（W1-4b の T3。§2.9.2）**: SEED の APK で測り直した（配信の受信 +0.24 s・音 +0.54 s・最初のフレーム +2.13 s）。発火の時点は IDLE ではなく、その理由は Android の仕組み（`min_time_to_alarm`）と分かった。1 回目が INACTIVE だったのも、利用者の操作より先にこの仕組みで IDLE を抜けていた見込み（推論） |
+| 再起動の後の張り直しと Direct Boot（§2.2 の (5)・AC-4・E-10） | `adb reboot` は利用者の許可が要る。`scripts/t7_reboot_procedure.sh --reboot-permitted` で、ロックを解除しないまま張り直され鳴るか（`LOCKED_BOOT_COMPLETED`・`user_unlocked=false`）まで見る | **未実施のまま**（W1-4b でも見送った。1 回の許可は得たが、試験の日は利用者が外出先で端末を使っていて、再起動で PIN の入力が要るため。手順は §2.9.2 の T4） |
+| ~~実際の GameActivity をフルスクリーン通知から冷えた状態で出す計測（§2.2 の (2)・AC-12）~~ | スパイクの鳴動画面は Java だけの Activity。SEED の冷えた起動（.NET の展開・CLR・GPU・シーン。X-1）を含む本当の危険はこちらにある | **済（W1-4b の T1。§2.9.2）**: 画面オフ・ロック中の冷えた起動で、エンジンの最初のフレームが予定時刻 +2.03 s（中央値）・フルスクリーン通知から 1.72 s |
 
 **途中で見つけたこと**
 
@@ -412,15 +414,107 @@ Java だけの使い捨てアプリ（applicationId `com.seedengine.platformspik
 | F-7 | `setAlarmClock` の配信には **10 秒の一時許可**が付く（`dumpsys alarm` の `temporaryAppAllowlistDuration=10000`・理由 `ALARM_MANAGER_ALARM_CLOCK`）。前面で重いアプリが動いている使用中の端末では、発火から前景サービスの許可まで 1.79 s かかった | `AlarmReceiver` は重い処理をせず、真っ先に `startForegroundService` する（10 秒を過ぎると背面の起動の制限に当たる見込み。推論）。W1-4 |
 | F-8 | §2.6 の誤り 2 件（Play 以外のインストールでのフルスクリーン通知の既定・adb の暗黙の放送） | §2.6 を直した |
 
+### 2.9.2 W1-4b の実機の結果（2026-09-27、Pixel 6a / Android 16）
+
+Wake or Pay のデバッグ版 APK（`com.wakeorpay.seed`・arm64-v8a）を Pixel 6a（Android 16・`CP1A.260405.005`）に入れ、**スクリプトの無い既定の開始シーン**
+（`scenes/Main.scene`。空）で鳴動を測った（`PlatformSmoke.scene` は予約と停止をスクリプトがするので使わない）。予約・停止は W1-4b でデバッグ版の受信機
+`DebugPlatformReceiver` に足した命令（`SCHEDULE`・`CANCEL_ALL`・`STOP_RINGING`・`GET_RINGING`・`LIST`。docs/android.md §25.12.8）で行い、
+時間は予定時刻（`trigger_at_utc_ms`）からの差を端末の時計（`logcat -v epoch`）で測った。予約はすべて `max_ring_minutes` 1 で、鳴り始めから 20 秒以内に
+`STOP_RINGING` で止めた（T1 は約 5 秒）。**T3 からは利用者の依頼で音を最小にした**（`force_volume` 0＝STREAM_ALARM の最小の段階 1/7・振動なし・漸増 60 秒。
+止めた後に STREAM_ALARM が試験の前の値〈speaker 5〉に戻ったことを `dumpsys audio` で確かめた）。W1-0 のスパイク（`com.seedengine.platformspike`）は
+予約・プロセスが無いことを確かめてから試験の前にアンインストールした。計測のスクリプトと証拠（logcat・dumpsys）はリポジトリの外
+（`C:\Users\k023g\.claude\jobs\434062fd\tmp\wop_w1_4b\` の `scripts/`・`results/`。生ログは私物端末の他のアプリの情報を含むので入れない）。エミュレータでは測っていない。
+
+| 試験 | 結果 | 数値・観察 | 証拠（`results/` の下） |
+|---|---|---|---|
+| T1 ロック画面からの冷えた起動（AC-1・AC-12・X-1） | **満たした**（3 回とも） | 画面オフ（`Dozing`）・ロック中・両プロセスを `am kill` した状態から、中央値で**音 +261 ms**（AudioFlinger のトラックの開始 +368 ms）・フルスクリーン通知の起動 +308 ms・**エンジンの最初のフレーム +2030 ms**（最大 +2102 ms）・通知から最初のフレームまで 1722 ms。鳴動中は `isKeyguardShowing=true`・`mKeyguardOccluded=true`（ロックは解けずに上に出た）・遷移は `KEYGUARD_OCCLUDE`・起動理由 `alarm`（起動の部品名は別名 `PlatformEntry`。GameActivity は `libSEED.so` を見つけて読んだ）。前景サービスは `Background started FGS: Allowed`（`uidState: RCVR`） | `t1_run1`・`t1_run3`・`t1_run4`（`result.env`・`stream.txt`・`2_ringing_*`）。`t1_run2` は画面が点いたロック中の参考 |
+| T2 最近のタスクから消す（AC-2） | **音は続いた** | 鳴り始め +4.2 s に `am stack remove` → メインプロセスは `MainActivity.onDestroy(isFinishing=true)` から 0.4 s で終わり、`:seed_platform` と `USAGE_ALARM` の `state:started` は消して 3.3 s 後・13.4 s 後とも続いた。`RingService.onTaskRemoved` は「鳴らし続けます」。+18.9 s の `STOP_RINGING`（受信機が新しいメインプロセスを起こした）で `stopped:true`・`ring_stopped(stopped)` | `t2_task_remove` |
+| T5 鳴動中に `:seed_platform` を `kill -9` | **黙って止まった**（直していない。設計案は下） | 鳴り始め +4.4 s に kill → 約 0.1 s でプロセスの死・`am_foreground_service_stop`・鳴動の通知の取り消し（`notification_canceled`）・AudioFlinger のトラックの終了。10 s 待っても作り直されない（`START_NOT_STICKY`。`dumpsys activity services` は空）。メインプロセス（ロック画面の上の MainActivity）は生き残った（unstable な client）。次の命令で `:seed_platform` は作り直されたが `RingRegistry` は空で `stop_ringing` は `stopped:false`、`ring_stopped` も `missed` も記録されない | `t5_kill_platform` |
+| T6 `PlatformEntry` 経由の `onNewIntent` | **既存の MainActivity に届いた**（経路は利用者のタップ） | MainActivity がロック画面の上にいる（画面点灯）ときに 12 秒後の予約が鳴ると、フルスクリーン通知は起動されず**ヘッドアップ通知**になった（`sysui_heads_up_status 1`）。その場にいた利用者が「開く」を押した（+4.1 s `notification_action_clicked`）→ 指紋の確認（alternate bouncer。+5.6 s で認証・解除）→ `START … PlatformEntry … result code=3`（先頭の既存の Activity へ配達）→ `起動後に届いた Intent の理由: notification_action t6/open` → エンジンに `platform.launch`。タスクは 1 つのまま・ActivityRecord も pid も同じ（Activity は積まれない）。adb の `am start -n …/PlatformEntry --es …LAUNCH '{…}'` は `SecurityException: Permission Denial … not exported from uid 10424` で拒否（adb から起動理由を偽装できない。直後の `START u0 … from uid 2000 … result code=0` の行は出るが、Intent は届かず起動理由のログも無い） | `t6_platform_entry` |
+| T3 Doze（`force-idle`。AC-1 の後半・W1-0 の残り） | **時刻どおりに鳴った**（発火の時点は IDLE ではない） | `battery unplug` → `force-idle` で `mState=IDLE` → 30 s 後に DeviceIdleController が自分で ACTIVE → `QUICK_DOZE_DELAY` へ移った（`device_idle: [0,alarm]`。`setAlarmClock` の予約が `min_time_to_alarm`〈この端末は `+1h0m0s`〉より近いと深い Doze に留まらない Android の仕組み。AOSP の記憶と実機の記録から。他の wake-from-idle の予約はこの間に無かった）。発火は `device_idle_wake_from_idle`・受信 +240 ms・音 +535 ms（トラック +689 ms。T1 より遅い分には `force_volume` で音量を 5 → 1 にする処理が入っている。内訳は測っていない）・最初のフレーム +2128 ms。止めて 5 に戻った。`unforce`・`battery reset` で戻した | `t3_doze`（`idle_timeline.txt`・`deviceidle_log_excerpt.txt`） |
+| T4 再起動と Direct Boot（AC-4・E-10） | **未実施** | 利用者は外出先で端末を使っていて（T6 で指紋で解除した）、再起動すると PIN の入力が要り、解除まで他のアプリの通知も止まるため、指示の「迷えば未実施」に従った。手順は下 | `scripts/t4_reboot.sh` |
+
+T1 の段階ごとの時刻（予定時刻からの ms。3 回は画面オフ・ロック中。2 回目は前の回の目覚ましが点けた画面のまま〈この端末は充電中に画面を消さない設定〉で、参考）:
+
+| 段階 | 1 回目 | 3 回目 | 4 回目 | **中央値** | 参考: 2 回目（画面点灯・ロック中） | 参考: T2 の鳴動 |
+|---|---|---|---|---|---|---|
+| `:seed_platform` の起動（`am_proc_start`） | 65 | 38 | 39 | **39** | 57 | 56 |
+| `PlatformProvider.onCreate` | 191 | 163 | 174 | **174** | 184 | 169 |
+| `AlarmReceiver.onReceive` の先頭（受信） | 199 | 170 | 181 | **181** | 191 | 182 |
+| `startForegroundService` | 210 | 177 | 187 | **187** | 203 | 192 |
+| `startForeground` の完了 | 231 | 206 | 216 | **216** | 226 | 219 |
+| 音（`RingAudio` の `MediaPlayer.start`） | 261 | 312 | 252 | **261** | 278 | 246 |
+| 音（AudioFlinger のトラックの開始 `AT::add`） | 366 | 424 | 368 | **368** | 366 | 312 |
+| フルスクリーン通知の起動（`START u0 … PlatformEntry`） | 308 | 311 | 279 | **308** | 269 | 279 |
+| メインプロセスの起動 | 327 | 326 | 314 | **326** | 281 | 294 |
+| `MainActivity.onCreate`（起動理由 `alarm`・`KEYGUARD_OCCLUDE` の要求） | 651 | 804 | 1080 | **804** | 735 | 551 |
+| `Displayed`（システム。起動時間 +806 / +864 / +1200 ms） | 1107 | 1155 | 1465 | **1155** | 1089 | 897 |
+| エンジンの描画面の作成（`[SEED SURFACE] created`） | 1153 | 1184 | 1487 | **1184** | 1107 | 914 |
+| **エンジンの最初のフレーム**（`[SEED FRAME 0] end`） | 2030 | 1980 | 2102 | **2030** | 1732 | 1548 |
+| フルスクリーン通知 → 最初のフレーム | 1722 | 1669 | 1823 | **1722** | 1463 | 1269 |
+
+エンジンの中の内訳（1・3・4 回目）: `android_main` の開始 +688 / +836 / +1112 ms、同梱 .NET の準備 72 / 51 / 40 ms（展開済みの確認だけ。
+展開は無い）、CLR の起動（ランタイム起動）139 / 57 / 124 ms、**DrawContext の作成 695 / 625 / 524 ms**（パイプラインキャッシュ 656 KiB を読んだ上で）・
+描画パイプラインの生成の合計 794 / 699 / 576 ms、最初のフレームの処理 64 / 49 / 23 ms。シーンは空（アクター 0）で、スクリプトの型は 1 つ（`PlatformSmoke`。
+付けたアクターは無い）。W1-0 の Java だけの鳴動画面（+0.95 s）との差の約 1 秒は、メインプロセスの起動から `onCreate` まで（0.3〜0.8 s）とパイプラインの生成（約 0.6 s）。
+
+**T5 の設計案（直していない）**: ① 鳴らし始めに「鳴動中の予約・鳴り始め・安全弁の時刻・`force_volume` の前の音量」を端末保護ストレージ（`seed_platform/ringing.json`。
+`DurableFile`）へ書き、止めたら消す。② 作り直しの道は 2 つ。(a) `START_STICKY` にして、作り直された `onStartCommand(null)` で ①から続きを鳴らす
+（システムの作り直しは遅れ〈1 s から倍々〉が入るうえ、背面からの前景サービスの起動の制限に当たるかは未確認）。(b) 鳴動中は数秒先に「見張りの予約」
+（`setAlarmClock` か `setExactAndAllowWhileIdle`）を張り直し続け、止めたら取り消す。プロセスが死ぬと見張りが発火し、`AlarmReceiver` が ①を見て鳴動を戻す
+（`setAlarmClock` の配信が前景サービスの起動を許されることは T1〜T3 で確かめた。`setExactAndAllowWhileIdle` でも許されるかは未確認）。(b) を推す
+（`setAlarmClock` なら既に確かめた例外の中で動く。見張りがステータスバーの目覚ましの印に出る点は要検討）。③ 戻せなかったとき（許可が無い等）は
+`alarm.ring_stopped{reason:"error"}` を記録してアプリに知らせる。④ `:seed_platform` の起動時の照合（`AlarmStartup`）で ①の残りを見つけたら、
+`force_volume` の前の音量へ戻す（G-6）。どちらも実機で T5 をもう一度行って確かめる（音量を変える予約では行わない）。
+
+**途中で見つけたこと（W1-4b）**
+
+| # | 見つけたこと | 扱い |
+|---|---|---|
+| G-1 | 冷えた起動の約 2 秒のうち、描画パイプラインの生成（DrawContext 0.52〜0.70 s）と、メインプロセスの起動から `onCreate` まで（0.32〜0.77 s）が大きい。.NET の準備と CLR の起動は合わせて 0.1〜0.2 s。3 秒には収まったが、実アプリの鳴動画面（シーンとスクリプト）に使える余りは約 1 秒 | X-1 の根拠として backlog へ。W1-7 で実アプリの鳴動画面で測り直す |
+| G-2 | システムの `Displayed`（窓の最初の描画。+1.1 s）からエンジンの最初のフレーム（+2.0 s）まで約 0.9 s、窓は出ているがエンジンの絵がまだ無い（その間に見えるのは窓の背景のはず。画面は見ていない。推論） | 鳴動画面の色に合わせた窓の背景・スプラッシュを backlog へ |
+| G-3 | 既定の音（2.22 s の WAV）を `MediaPlayer` のループで鳴らすと、AudioFlinger のトラックが約 2.4 s ごとに止まり（`AT::remove … I`）約 65〜70 ms で再開する（`AT::add … A`）。ループの継ぎ目で途切れている見込み（聴いて確かめていない） | 途切れの無いループ（`setNextMediaPlayer`・`AudioTrack` の `setLoopPoints`・音源の作り方）を backlog へ |
+| G-4 | アプリが前面（ロック画面の上・画面点灯）のときに次の予約が鳴ると、フルスクリーン通知は起動されずヘッドアップ通知になる（T6。F-2 と同じ判断）。`onNewIntent`（`platform.launch`）は来ないので、前面のアプリは `platform.alarm.fired` と `GetRinging` で鳴動を知る。通知の「開く」はロック中は解除（指紋・PIN）を求めた（`dismissKeyguardThenExecute` → alternate bouncer） | アプリの作り方の注意として backlog へ。「開く」・本文のタップを解除なしで鳴動画面へ出せるか（別名をマニフェストで showWhenLocked にする等）は W1-7 |
+| G-5 | 鳴動の通知には、ロック中はシステムが `NO_CLEAR` を付けていた（`dumpsys notification` の `flags`。元の `originalFlags` には無い） | backlog「鳴動の通知をスワイプで消せる」の手がかり（解除後に消せるかは未確認） |
+| G-6 | `:seed_platform` が鳴動中に死ぬと、`force_volume` で変えた STREAM_ALARM の音量が元に戻らない見込み（`AlarmStreamVolume.restore` は `RingAudio` の停止の経路でしか呼ばれない。コードを読んだだけ。利用者の音量を守るため実機では試していない） | T5 の設計案の④。backlog へ |
+| G-7 | 停止状態から出たとき（`adb install -r` の後の最初の放送）、`BootReceiver` に `LOCKED_BOOT_COMPLETED`・`BOOT_COMPLETED` が 2 回ずつ（計 4 回）届いた | backlog の「`rescheduled`（boot）が 2 回記録されうる」に追記 |
+| G-8 | `AudioHardening background playback would be muted … level: full` が T2 の鳴り始め +364 ms（画面が出る前）に 1 回記録された（音は続いた。F-1 と同じ） | X-7 のまま |
+| G-9 | 試験の道具の注意: (a) `adb shell am broadcast … --es title "W1-4b 計測"` は端末のシェルが空白で分けて題が切れる（`title` と `body` に空白を入れない）。(b) この端末は充電中に画面を消さない設定（`stay_on_while_plugged_in=15`。設定は変えていない）で、目覚ましが点けた画面は消えない。次の回の前にロック中を確かめて `input keyevent KEYCODE_SLEEP` で消した。(c) Git Bash で関数を `&` で起こした `adb logcat` は `kill` で止まらず 3 本漏れた（スクリプトを直し、漏れて書き足された行は切り落とした）。(d) エンジンの居ないメインプロセス（受信機だけで起きたプロセス）も呼び鈴を登録するので、そこで取り出された記録は捨てられる（受け取りの確認〈ack〉が無い間の割り切り） | (a)(b)(d) は docs/android.md §25.12.8 と受信機の説明に書いた |
+
+**T4（再起動）の手順（未実施。許可の 1 回は残っている）**:
+
+```bash
+# 前提: USB で接続・画面オフ・ロック中・利用者が使っていない・adb reboot の許可（1 回）。音は最小。スクリプトなら次の 1 行（リポジトリの外の scripts/t4_reboot.sh）
+bash scripts/t4_reboot.sh --reboot-permitted t4 240 t4_reboot
+# 手で行う場合（Git Bash。MSYS_NO_PATHCONV=1）
+APP=com.wakeorpay.seed; R=$APP/com.seedengine.runtime.platform.DebugPlatformReceiver; A=com.seedengine.runtime.platform
+adb shell dumpsys audio | grep -A8 '^- STREAM_ALARM:'                 # 試験の前の音量を控える
+adb shell am broadcast -f 0x20 -n $R -a $A.SCHEDULE --ei seconds 240 --es id t4 --ei max_ring_minutes 1 --ef force_volume 0.0 --ez vibrate false --ef fade_in_seconds 60
+adb shell run-as $APP cat /data/user_de/0/$APP/files/seed_platform/alarms.json   # 控え（端末保護ストレージ）
+adb shell dumpsys alarm | grep -B1 -A10 "Alarm{.* $APP}"                        # 保留中の予約
+adb reboot; adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2; done
+adb logcat -v epoch -b main,system,crash,events -T 1.000 > after_reboot.txt &    # 起動の頭から全部。ロックは解除しない
+adb shell am get-started-user-state 0                                           # RUNNING_LOCKED のはず
+# 見るもの: BootReceiver の LOCKED_BOOT_COMPLETED の張り直しと dumpsys alarm の予約・発火の AlarmReceiver / RingService / 音（USAGE_ALARM）・
+#   MainActivity（directBootAware でない）が出ないこと・PlatformProvider（directBootAware でない）が解除まで作られないこと（推論）
+adb shell am broadcast -f 0x20 -n $R -a $A.STOP_RINGING --es id t4   # 受信機は directBootAware でないので解除前は届かない見込み。届かなければ ↓
+adb shell am force-stop $APP                                          # 予約も消える。force_volume の音量は戻らないので ↓ で確かめる
+adb shell dumpsys audio | grep -A8 '^- STREAM_ALARM:'                  # 控えと違えば: adb shell cmd media_session volume --stream 4 --set <控えの値>
+```
+
+**端末の最終状態（12:09）**: このアプリの予約 0（`dumpsys alarm`・`alarm.list` が空）・鳴動なし（`get_ringing` が null）・`am force-stop` 済みでプロセスなし・
+`deviceidle unforce`（`mForceIdle=false`・ACTIVE）・`battery reset`（USB 給電の実際の値）・STREAM_ALARM は試験の前と同じ（speaker 5）・
+スパイクのアプリは削除済み・画面は消灯しロック中（`Dozing`・`isKeyguardShowing=true`）。端末には W1-4b の受信機を足したデバッグ版の APK（11:59 に入れたもの）が残っている。
+
 ### 2.10 段階と見積もり
 
 | 段階 | 内容 | 規模（段階A の 1 段階≒1〜2 時間のエージェント作業＋実機確認、を単位にした目安） |
 |---|---|---|
-| W1-0 | スパイク: 別プロセスの前景サービス・フルスクリーン通知から GameActivity・`ContentResolver.call`・Doze・再起動（§2.2 の 5 点）。JNI の手段（今の流儀の延長か jni クレートか）を決める。**済（2026-09-27。§2.9.1）**: 別プロセスの鳴動・最近のタスク・強制停止・プロセス間の呼び出し・前景サービスの種類を確かめ、E-01〜E-03・E-10 を決めた。**残り**: Doze の再試験、再起動と Direct Boot の試験（利用者の許可待ち）。実 GameActivity の冷えた起動の計測は W1-4 の頭へ移した | 1〜2（済）＋残り 0.5 |
+| W1-0 | スパイク: 別プロセスの前景サービス・フルスクリーン通知から GameActivity・`ContentResolver.call`・Doze・再起動（§2.2 の 5 点）。JNI の手段（今の流儀の延長か jni クレートか）を決める。**済（2026-09-27。§2.9.1）**: 別プロセスの鳴動・最近のタスク・強制停止・プロセス間の呼び出し・前景サービスの種類を確かめ、E-01〜E-03・E-10 を決めた。**残り**: ~~Doze の再試験~~（W1-4b の T3 で済。§2.9.2）、再起動と Direct Boot の試験（W1-4b でも見送り。§2.9.2 の T4 に手順）。実 GameActivity の冷えた起動の計測は W1-4 の頭へ移した（W1-4b の T1 で済）。スパイクのアプリは 2026-09-27 に端末から削除した | 1〜2（済）＋残り 0.5 |
 | W1-1 | 橋渡し: `SeedPlatform.invoke`・`nativeOnPlatformEvent`・イベントキュー・`ScriptHostApi` の新カテゴリ・C# の `SEED.Platform` の骨組み・デスクトップの模擬。**採用（E-02）**: プロセスの間は `ContentProviderClient` を持ち続けて `call`、`:seed_platform` からの知らせは Binder のコールバック（`call` の `putBinder` で登録）、JNI は `jni` クレート 0.22（Rust 側はここで初めて試すので、最初に `invoke` の往復を 1 本通す）。最初の呼び出しは `:seed_platform` の起動で約 120 ms 待つので、描画のスレッドから外す。**済（2026-09-27。実機の確認は残り。docs/android.md §25）**: JNI は 2 本＋登録 1 本（`invoke`・`nativeOnPlatformEvent`・`nativeRegisterPlatformBridge(Class)`）。jni 0.22.4 は Cargo.lock の版をそのまま使え（新しい依存なし）、受け手は `EnvUnowned`/`JClass`/`JByteArray` を引数に取って `with_env`、呼ぶ側は `attach_current_thread`（ローカルフレームと Java の例外の後始末を任せられる）で、Android 向けのコンパイルは最初の 1 回で通った。分かったこと: ① client は **unstable** で取る（安定な取得は `:seed_platform` の死でゲームのプロセスまで片付けられる。AOSP の説明）。② 「最初の呼び出しを描画のスレッドから外す」は、つながっていない呼び出しが背面で接続を始めて**すぐ `connecting` で失敗**し、つながったら `platform.connected` のイベントを送る形にした（スクリプトは待って呼び直す）。③ 知らせは「呼び鈴（oneway・未読あり）→ メインが `platform.poll_events` で取り出す」にし、記録を正本にした（取りこぼしても次の呼び鈴か接続で取れる）。④ スパイクには `putBinder` のコールバックの実装が無かった（W1-0 は放送で測った）ので、ここで新しく書いた。PC の模擬で ping 0.04〜0.11 ms（初回 15 ms は JIT）、試験イベントが次のフレームでスクリプトへ届いた。**実機の往復・呼び鈴は未確認**（端末が USB に無かった） | 2 |
 | W1-2 | 機能の opt-in: `android.features` など新キー → SeedAndroid → Gradle → マニフェストの断片、`appCategory`・`system_bars`、Play の要件チェック。断片の差し込み方（AGP の variant API か library module か）をここで確かめる（W1-0 では試していない）。**済（2026-09-27。docs/android.md §25.10）**: 新キー 4 つ（`features`・`deep_links`・`system_bars`・`app_category`）をエディタのモデルとプロジェクト設定ウィンドウ（機能のチェックボックス・コンボ・ディープリンクの一覧。判断は WPF 非依存の `AndroidPlatformSettingsEditor`）に足し、SeedAndroid が APK の工程の Gradle の前に `runtime/android/app/src/seedFeatures/`（断片のマニフェストと `res/values/seed_platform.xml`。追跡しない・空でも必ず書く）を生成する。機能 → 権限の対応は機能の表 `runtime/android/platform_features.json`（データ。W1-3・W1-4 は行を足すだけ）。差し込み方は **AGP の variant API**（E-04）。`appCategory` は `-Pseed.appCategory`。システムバーは生成した bool を `SystemBarsController` が読む。Play の要件チェックに機能と権限の一致・権限ごとの申告の注意を足した。Wake or Pay の実ビルドを aapt2 で確かめた（権限 9・appCategory=7・intent-filter・bool=true、features を空にした写しでは権限なし・game・false）。**実機は未確認**（端末が USB に無かった）。`PlatformProvider` は main に常設のまま | 1〜2（済） |
 | W1-3 | 目覚まし: `AlarmStore`・`AlarmScheduler`（setAlarmClock）・`AlarmReceiver`・`BootReceiver`（時刻・タイムゾーン・更新・権限の変化）・音源の書き出し。`BootReceiver` は**強制停止からの復帰も兼ねる**（Android 15+ は停止状態から出たときに `BOOT_COMPLETED` を届ける。実機では `LOCKED_BOOT_COMPLETED` も届いた）。張り直しは必ず `setAlarmClock`（`BOOT_COMPLETED` から直接鳴らさない。E-10）。**済（2026-09-27。実機の確認は残り。docs/android.md §25.11）**: `:seed_platform` の `platform/service/alarm/`（`AlarmModule` の `alarm.schedule`／`cancel`／`cancel_all`／`list`／`can_schedule_exact`、控え `AlarmStore`〈端末保護ストレージの `seed_platform/alarms.json`・一時ファイル → fsync → rename → フォルダの fsync〉、`AlarmScheduler`〈要求コードは定数・予約ごとの区別は data の URI `seedalarm://alarm/<ID>`・extras の予定時刻で古い配信を捨てる〉、組み合わせの `AlarmBook`、振り分けの `AlarmRearmPlan`、`AlarmReceiver`〈発火 → `platform.alarm.fired` を記録 → 控えから消す〉、`BootReceiver`〈6 つの放送。まだ先は張り直し・過ぎたものは鳴らさずに `platform.alarm.missed`、控えがあれば `platform.alarms.rescheduled`〉）。受信機はどちらも exported=false・`:seed_platform`・directBootAware で、機能の表の `alarm` に足した。記録（`EventJournal`）も端末保護ストレージへ永続化し、エンジンが居ない間の記録が次の接続で届くようにした（backlog の W1-1 の割り切りの半分）。音源は、メインプロセスの糊が初回に `platform.paths` で書き出し先を聞き、エンジンの `sound_export` が `sounds/<FNV-1a 64bit>.<拡張子>` へ書いて `sound_path` にする。デスクトップの模擬は壁時計で `platform.alarm.fired` を流し、Play の区切りで予約を消す。C# は `Alarms`・`AlarmRequest`・`ScheduledAlarm`・`AlarmFiredEvent`・`AlarmMissedEvent`・`AlarmsRescheduledEvent`（`CancelAll` は §2.3 の案の void ではなく bool を返す）。PC の Play で 5 秒後の予約が 11 ms 遅れで届き控えが空になった。W1-0 のスパイクの控えが使っていた `InputStream.readAllBytes` は API 33 からで minSdk 29 では落ちるため `Files.readAllBytes` にした。**W1-4 へ持ち越す**: `RingService` の起動（`AlarmReceiver.onReceive` の先頭の印）・showIntent を `PlatformEntry` 行きに・ロック解除の前に鳴ったときの扱い（W1-9 と）・既定の音・記録の ack と onResume の取り直し。Android 10〜14 の強制停止の後の保険（起動のたびの張り直し）は backlog | 2（済） |
-| W1-4 | **頭で、実 GameActivity をフルスクリーン通知から冷えた状態で出す計測**（AC-12・X-1。W1-0 から移した）。鳴動: `RingService`（音・バイブ・WakeLock・フォーカス喪失で止めない・安全弁）・フルスクリーン通知・`PlatformEntry`・起動理由・onCreate での showWhenLocked。W1-0 からの見直し: `AlarmReceiver` は真っ先に `startForegroundService`（一時許可は 10 秒）し、**控えの fsync はその後**。**音の開始を早める**（冷えたプロセスでは `startForeground` から音まで約 340 ms。`MediaPlayer` の準備を前倒し）。端末の使用中はヘッドアップ通知になるので、**本文のタップから鳴動画面へ**行けるようにする。音は `USAGE_ALARM` 固定（X-7）。**4a 済（2026-09-27。実機の計測を除く部分。docs/android.md §25.12）・4b（実機の計測と調整）残**: 4a は `platform/service/alarm/ring/`（`RingService`〈mediaPlayback・`:seed_platform`・directBootAware〉・状態の正本 `RingRegistry`〈static。モジュールとサービスは同じプロセスなので bindService を使わない〉・`RingAudio`〈USAGE_ALARM 固定・ループ・漸増・専用のスレッドで準備して音を前倒し〉・`AlarmStreamVolume`〈force/keep_volume〉・`RingVibration`・`RingNotification`〈チャネル `seed_platform_alarm`・フルスクリーン通知・本文のタップ・「開く」〉・`RingWakeLock`）、`AlarmReceiver` の先頭の `startForegroundService`（例外は `alarm.missed(start_failed)`）と「鳴動へ渡す → `fired` を記録」の順、待ち行列（`alarm.queued`）・安全弁（`ring_stopped(timeout)`）・`alarm.get_ringing` / `stop_ringing`、既定の音（`res/raw/seed_alarm_default.wav`）、main に常設の `activity-alias PlatformEntry`（exported=false。**GameActivity が起動の部品の meta-data から lib_name を読むので別名にも置いた**）と起動理由（`LaunchReason`。onCreate の super の前・onNewIntent で `platform.launch`。最近のタスクからの開き直しは launcher）、メインプロセスで答える命令（`platform.launch_reason`・`window.set_show_when_locked`）、`:seed_platform` の起動時の照合（`AlarmStartup`。W1-3 の持ち越し）、デスクトップの模擬、C# の `Alarms.GetRinging` / `StopRinging`・`App.LaunchReason`・`Window.SetShowWhenLocked`。`launchMode` は既に `singleTask` で変えていない。4b: 実 GameActivity の冷えた起動の計測（AC-12）・最近のタスクから消しても鳴る（AC-2）・ヘッドアップ通知から・`START_NOT_STICKY` の振る舞いを実機で | 2〜3（4a 済） |
+| W1-4 | **頭で、実 GameActivity をフルスクリーン通知から冷えた状態で出す計測**（AC-12・X-1。W1-0 から移した）。鳴動: `RingService`（音・バイブ・WakeLock・フォーカス喪失で止めない・安全弁）・フルスクリーン通知・`PlatformEntry`・起動理由・onCreate での showWhenLocked。W1-0 からの見直し: `AlarmReceiver` は真っ先に `startForegroundService`（一時許可は 10 秒）し、**控えの fsync はその後**。**音の開始を早める**（冷えたプロセスでは `startForeground` から音まで約 340 ms。`MediaPlayer` の準備を前倒し）。端末の使用中はヘッドアップ通知になるので、**本文のタップから鳴動画面へ**行けるようにする。音は `USAGE_ALARM` 固定（X-7）。**4a 済（2026-09-27。実機の計測を除く部分。docs/android.md §25.12）・4b 済（2026-09-27。実機の計測。§2.9.2。残件は W1-7）**: 4a は `platform/service/alarm/ring/`（`RingService`〈mediaPlayback・`:seed_platform`・directBootAware〉・状態の正本 `RingRegistry`〈static。モジュールとサービスは同じプロセスなので bindService を使わない〉・`RingAudio`〈USAGE_ALARM 固定・ループ・漸増・専用のスレッドで準備して音を前倒し〉・`AlarmStreamVolume`〈force/keep_volume〉・`RingVibration`・`RingNotification`〈チャネル `seed_platform_alarm`・フルスクリーン通知・本文のタップ・「開く」〉・`RingWakeLock`）、`AlarmReceiver` の先頭の `startForegroundService`（例外は `alarm.missed(start_failed)`）と「鳴動へ渡す → `fired` を記録」の順、待ち行列（`alarm.queued`）・安全弁（`ring_stopped(timeout)`）・`alarm.get_ringing` / `stop_ringing`、既定の音（`res/raw/seed_alarm_default.wav`）、main に常設の `activity-alias PlatformEntry`（exported=false。**GameActivity が起動の部品の meta-data から lib_name を読むので別名にも置いた**）と起動理由（`LaunchReason`。onCreate の super の前・onNewIntent で `platform.launch`。最近のタスクからの開き直しは launcher）、メインプロセスで答える命令（`platform.launch_reason`・`window.set_show_when_locked`）、`:seed_platform` の起動時の照合（`AlarmStartup`。W1-3 の持ち越し）、デスクトップの模擬、C# の `Alarms.GetRinging` / `StopRinging`・`App.LaunchReason`・`Window.SetShowWhenLocked`。`launchMode` は既に `singleTask` で変えていない。4b: 実 GameActivity の冷えた起動の計測（AC-12）・最近のタスクから消しても鳴る（AC-2）・ヘッドアップ通知から・`START_NOT_STICKY` の振る舞いを実機で。**4b の結果（§2.9.2）**: 画面オフ・ロック中の冷えた起動で音 +0.26 s・エンジンの最初のフレーム +2.03 s（中央値。AC-1・AC-12 を満たした）、`force-idle` の下でも音 +0.54 s・最初のフレーム +2.13 s、タスクを消しても音は続いた（AC-2）、`:seed_platform` を殺すと黙って止まり作り直されない（直さず、設計案を §2.9.2 に）、別名の `onNewIntent` は既存の MainActivity に届き Activity は積まれない（利用者の「開く」のタップで確かめた）・adb からの別名の起動は拒否。再起動の試験は見送った。**残件（W1-7）**: 再起動と Direct Boot・`:seed_platform` の死からの復帰と音量の戻し・ループの継ぎ目・前面のときのヘッドアップ通知と「開く」の解除・戻る／ホーム／スワイプ・安全弁の実機・60 分 | 2〜3（4a・4b 済） |
 | W1-5 | 通知と権限: チャネル・常駐とボタン・トランポリン無しの起動・実行時権限と結果・特別なアクセスの状態と設定画面。**済（2026-09-27。実機の確認は残り。docs/android.md §25.13・§25.14）**: 通知は `:seed_platform` の `service/notification/`（`NotificationModule` の `notification.ensure_channel`／`show`／`cancel`／`are_enabled`。文字列の ID をそのまま `notify(tag, 7300, n)` の tag にし int の ID の表を持たない。`BigTextStyle`・常駐・種類〈alarm / reminder / status / event / progress → `CATEGORY_*`〉・ボタン最大 3。本文のタップ〈`notification_tap`〉とボタン〈`notification_action`〉は W1-4a の `PlatformEntryIntents` で Activity を直接開く＝トランポリン無し。通知が無効なら `notifications_disabled`、チャネルが無ければ `channel_not_found`）。PendingIntent の同一性は、要求コードを用途ごとの定数（5・6）のまま **`Intent.setIdentifier`（API 29 = minSdk）に「用途・通知の ID・ボタンの ID」を長さ付きで並べる**形にした（ハッシュの要求コードは衝突しうる。identifier が `filterEquals` と `PendingIntentRecord.Key` に入ることは AOSP のソースで確かめた）。機能 `notifications` は権限だけで、Java は `POST_NOTIFICATIONS` の宣言の有無（`DeclaredPermissions`）で判定する（`alarm` だけの APK でも通知は使える）。権限はメインプロセスの `local/`（`permission.check`／`request`／`open_settings`）と `platform/permission/`（判定表・「はっきり拒否された」の覚え〈rationale だけでは永続の拒否と「一度も求めていない・画面を外側で閉じた」を見分けられないため〉・`requestPermissions` と `onRequestPermissionsResult`・設定の画面と onResume での結果・onResume ごとの `permission_changed`）。`MainActivity` に `onResume` と `onRequestPermissionsResult` の受け口。デスクトップの模擬（通知はログと一覧、権限は常に許可・`request` はすぐ結果）、C# の `Notifications`・`NotificationRequest`・`NotificationAction`・`NotificationImportance`・`Permissions`・`PermissionKind`・`PermissionStatus`・`PermissionResultEvent`・`PermissionChangedEvent`（`EnsureChannel`・`Cancel`・`OpenSettings` は案の void ではなく bool、列挙の先頭に `Unknown`）。PC の Play で通知の表示と 3 秒後の消去・権限の要求と結果を確かめた。**実機は未確認**（端末が USB に無かった） | 2（済） |
 | W1-6 | 画面とアプリ: `Window.*`（動的な showWhenLocked・画面を点けたまま・システムバー）・`MoveTaskToBack`・`OpenUrl`・`Haptics`・ディープリンク。**済（2026-09-27。実機の確認は残り。docs/android.md §25.15）**: メインプロセスの `local/` に 7 命令（`window.set_keep_screen_on` / `set_system_bars_visible`・`app.move_task_to_back` / `open_url` / `open_app_settings`・`haptics.tap` / `vibrate`）と共通の形 `WindowToggleCommand`（W1-4a の `set_show_when_locked` も乗せ替え）。システムバーは `SystemBarsController` に「今の出し方」を持たせて `MainActivity`（`window/SystemBarsHost`）から切り替え、フォーカスが戻ったときの隠し直しも今の状態に従う。安全領域は WindowInsets → `ScreenReporter` の既存の経路で追従する（GameActivity の insets の受け口を `javap` で読んで確かめた。直す箇所は無かった）。`OpenUrl` は URL の規則（Java の `UrlPolicy` と Rust の `url_rules.rs`。file / content / javascript を断る）→ アプリの Context の `startActivity`（ACTION_VIEW・NEW_TASK・エンジンのスレッドで同期）→ `ActivityNotFoundException` で `no_handler`。**`resolveActivity` と `<queries>` は使わない**（公式の「startActivity はパッケージの可視性を必要としない」。resolveActivity は可視性で絞られ独自の scheme で誤って no_handler になりうる）。`Haptics` は `EFFECT_CLICK`（USAGE_TOUCH）と `createOneShot`（USAGE_MEDIA。API 33+）で、振動子は W1-4a の `RingVibration` と共通の `DeviceVibrator`。**`VIBRATE` を main に常設**し機能 `alarm` から外した。ディープリンクは `LaunchReason` が PlatformEntry 以外の VIEW＋data を `deep_link`・`uri` にする（起動理由の JSON・C# の `LaunchInfo.Uri`）。忘れ対策: ランチャー・最近のタスクからの開き直し（onNewIntent の launcher）で showWhenLocked・turnScreenOn を下ろす。デスクトップの模擬は画面・触感を記録、`OpenUrl` は同じ規則で判定して http / https / mailto だけを PC の既定のアプリで開く（`ShellExecuteW`。`cmd /c start` はシェルの解釈で危ないので使わない。`SEED_PLATFORM_SIM_NO_OPEN=1` なら開かない）、単体起動の `--deep-link=<URI>` で `deep_link`。Rust の単体テスト 100 件・JVM で URL の規則 29 件・`AndroidPipelineTests` 161 件・PC の Play（W1-6 の確かめと W1-3〜W1-5 の確かめがすべて OK）・APK の aapt2（`VIBRATE` が features が空の APK にも main から入る・`deep_links` の intent-filter）と dexdump を確かめた。**実機（Pixel 6a）でも確かめた**: バーの出し入れ（`InsetsSource statusBars visible=false/true`・窓の `FULLSCREEN`・`KEEP_SCREEN_ON` の出し入れ）、`OpenUrl` の断る URL と `no_handler`、触感は `usage TOUCH / MEDIA` で振動子に届いた（端末の設定で触感が切られていて `ignored_for_settings`）、ディープリンク（起動中の `platform.launch`・冷えた起動の `deep_link`）、ディープリンクで呼んだ `MoveTaskToBack`（タスクが残り前面がランチャー）と開き直しの忘れ対策。安全領域はこの端末では切り欠きとステータスバーが同じ高さで値が変わらず、追従は未確認。バーの文字色は持ち越し（backlog） | 1（済） |
 | W1-S | 保存の耐久性（§2.7） | 1 |
@@ -612,6 +706,8 @@ Java だけの使い捨てアプリ（applicationId `com.seedengine.platformspik
    → 同日に W1-5（通知と権限。docs/android.md §25.13・§25.14）と W1-6（画面とアプリ・触感・ディープリンク。§25.15）を実装。W1-6 の日に初めて実機（Pixel 6a）で
      PlatformSmoke を通し、W1-1〜W1-6 の流れ（接続・往復・予約と発火・3 秒の鳴動・権限の要求）が動いた（§25.15.10）。次は W1-S（保存の耐久性）と
      W1-7（通しの確認）。W1-4b（冷えた起動の計測・最近のタスクから消しても鳴るか等）は端末で残っている。
+   → 同日に W1-4b（実機の計測。§2.9.2）を行った: 冷えた起動は音 +0.26 s・エンジンの最初のフレーム +2.03 s（AC-1・AC-12 を満たす）、Doze の下でも
+     時刻どおり（W1-0 の残りの Doze は済）、タスクを消しても鳴り続ける、`:seed_platform` の死で黙って止まる（設計案）。再起動と Direct Boot は見送り（手順は §2.9.2）。
 
 ## 7. backlog との対応
 

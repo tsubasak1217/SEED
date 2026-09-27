@@ -11,7 +11,9 @@
 
   ・DebugPlatformReceiver … プラットフォーム機能（SEED.Platform）を adb から確かめる受信機（W1-1。docs/android.md §25）。
     adb の am broadcast から届くよう exported=true（intent-filter は持たせない。暗黙の放送は届かないので -n で部品を指定する）。
-    メインプロセスで動き、ping の往復の計測と試験イベントの送出を行う。配布版（release）には入らない。
+    メインプロセスで動き、ping の往復の計測と試験イベントの送出、目覚ましの予約・取り消し・鳴動の停止と照会（W1-4b。
+    SCHEDULE / CANCEL_ALL / STOP_RINGING / GET_RINGING / LIST）を行う。配布版（release）には入らない。
+    directBootAware ではないので、再起動の後の最初のロック解除の前は届かない。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
