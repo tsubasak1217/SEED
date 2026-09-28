@@ -219,6 +219,10 @@ ScrollTo は Animating。慣性・ScrollTo の途中に触れると Held（指�
 6. `SEED.Time.Fps` と GPU の計測（android.md §22.6）でスクロール中 60 fps を保つか（UC-2）。1,000 件の ListView と、静的な 1,000 行の一覧の両方
 7. 手触りの調整が要れば `fling_friction`・`bounce_drag`（インスペクタ）で詰め、既定を変えるなら constants.rs と §3 の表を直す
 
+**2026-09-28 の実機の回（Pixel 6a / Android 17。詳細は roadmap §3.9）**: ギャラリーのページ（一覧・ホイールを含む）を `input swipe` で払い続けると、
+開発用の既定の .so（`dev`・最適化なし）は **23〜26 fps**（CPU 38 ms/フレーム）、`develop`・`release` の .so は **59.7 fps**（8.5〜8.7 ms）。止まると 10 フレームで
+`描画を止めます` → 0 fps。手触りの感想（慣性・跳ね返り）と行のスワイプ（1〜5）は fps を直すまで保留（未実施）。
+
 ## 12. 制限と持ち越し
 
 - **端の表示**: Android 12 以降の伸び（stretch）・それ以前の光（glow）の表示は無い（Clamp は黙って止まる）。W2-4 以降の部品で必要なら足す

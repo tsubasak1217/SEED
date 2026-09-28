@@ -1582,6 +1582,9 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   UI が無いフレームはトーンマップを提示先へ直接書けば 1 パスと 1 枚ぶんの帯域を減らせる。LDR 中間を 8bit にする案もある（パイプラインの
   カラー形式が HDR 前提なので別パイプラインが要る）。クラスタ構築は静止したシーンでは毎フレーム作り直さずに済む余地。
   関連: `app/frame_renderer.rs` のトーンマップ・`RenderFrame::present_to_swapchain`・`renderer/clustered.rs`。
+  → 2026-09-28 午後（W2 の見本の実機。roadmap §3.9）: **3D の物が無い UI だけのシーンでも**スクロール中の GPU は 7.3〜7.9 ms/フレームで、うち
+  トーンマップ 0.9〜1.6・提示 0.9〜1.0・オーバーレイ 0.35〜1.1・前方 0.3〜0.5・クラスタ 0.2〜0.4 ms が毎フレーム走る（ui は 3.5〜4.1 ms）。60 fps の律速ではないが、
+  UI だけのアプリでは 3D の経路を飛ばして UI を提示先へ直接描く道があれば約 3 ms/フレームの GPU（電池）を減らせる（推論）。
 - [x] **横向き・動くシーン・影ありの実機計測** — 2026-09-25（段階D-3 の残り）/ 2026-09-26 対応。わらしべフィッシング（動くシーン・影あり）で縦・横、
   debug と release の .so を測った（docs/android.md §22.10）。結果は下の「利用者のゲーム（わらしべフィッシング）で `mobile` が 60 fps に届かない」。
   以下は記載時のメモ。計測は縦・静止した `proj_bench` だけで、影の深度パスは
@@ -2850,6 +2853,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   全アクターをたどる）・「UI/ポインタイベント」5.9〜11.4 ms（ポインタのイベントの表）。どれも描画の表とは別に 2D の木を 1 回ずつたどっている。
   直すなら (a) 2D 物理のボディやスクリーン座標を読むスクリプトが無ければ作らない、(b) 描画の表と文脈が同じなら使い回す、(c) 変わっていない部分木の
   結果を覚える。行の多い一覧は ListView で作れば避けられる。関連: `app/physics2d_ops.rs`・`host_api::publish_screen_positions`・`app/pointer_events.rs`。
+  → 2026-09-28 午後の実機（Pixel 6a。roadmap §3.9 の原因 3）: W2 の見本のスクロール中、「物理/2D 同期」「UI/2D スクリーン座標収集」「UI/ポインタイベント」
+  「UI/ジェスチャー」「描画/スプライト収集・ソート」「エディタ状態収集」の合計が dev の .so でギャラリー 13.2 ms（フレームの 35%）・ナビゲーション 6.8 ms（51%）、
+  release の .so で 2.1 ms（25%）・1.9 ms（26%）。見本には 2D 物理のボディが無いのに 2D 同期が毎フレーム全 2D アクタの文脈を作り（`update_physics_2d` →
+  `collect_actor2d_contexts`）、Android の Play でも「エディタ状態収集」（release 0.1〜0.24 ms）が走る。
 - [x] **W2-4 基本の部品（ボタン・トグル・スライダ＋数値欄・選択・進捗・グラデーション・9 スライス・円の切り抜き）** — 2026-09-27。
   Draw にグラデーションが無く、9 スライスも `batch2d.rs:19` の TODO のまま。
   → **2026-09-28 に済**（正典 docs/ui_components.md。roadmap §3.8.5）。形と塗りは SpriteComponent の 4 つの欄（`shape`・`fill`・`nine_slice`・`shadow`）と
@@ -2939,6 +2946,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   ScreenStack）を APK にすると、プレハブが pak に無く、ダイアログ・シート・覆い・トースト・画面の枠を作れない見込み（**推論。実機では未確認**）。
   W2-9 のギャラリーは欄にパスを明示して避けた（pak に入ることを確かめた）。直すなら収録の起点に SEEDScripting の既定のプレハブ（`templates/ui/prefabs/` の
   該当ファイル）を足すか、部品の既定の値をシーンに書き出す。関連: `editor/src/Packaging/Collect/AssetCollector.cs`・`scripting/src/Api/UI/Navigation/`。
+  → **2026-09-28 午後に実機で確認**（Pixel 6a。roadmap §3.9）: `ui_navigation.scene` を APK にすると画面が真っ黒（背景の 1 枚だけ）で、logcat に
+  `[Script] Instantiate 失敗 (assets://ui/prefabs/screen_frame.actor): IO error: No such file or directory`。pak の中身（61 ファイル中 39）に `screen_frame.actor` が
+  無かった。同じ pak にギャラリーのシーンがあったのでダイアログ・シート・覆い・トーストは入っていた（ナビゲーションだけのプロジェクトでは欠ける見込み。推論）。
+  試験ではプロジェクトのスクリプトに `"assets://ui/prefabs/screen_frame.actor"` の文字列を書いて収録させて避けた（`ScreenStack` は枠を作れないとログだけで画面が空になる）。
 - [ ] **W2-9 の残り（テーマ）** — 2026-09-28。(1) **実機（Pixel 6a）で未確認**: 端末のダークテーマの切り替えで `onConfigurationChanged` → `platform.ui_mode_changed` →
   テーマが切り替わること・`app.ui_mode` の値（手順は ui_theme.md §11・android.md §25.17）。(2) **エディタに埋め込んだ Play では OS の明暗の変化が届かない**
   （子のウィンドウに WM_SETTINGCHANGE が来ない。単体起動は届く。問い合わせは効く）。(3) **種の色の規則は Material 3 の fromSeed（HCT）の近似ではない**
@@ -2984,6 +2995,36 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **add-script-api の Skill に「新しい種類の FFI（`ScriptHostApi` の欄）を足す手順」が無い（既存）** — 2026-09-28（W2-10a）。W1-1 の `SEED.Platform`・
   W2-10a の `SEED.Redraw` は、`host_api.rs` の構造体と `HOST_API` の末尾・`ScriptHost.cs` の構造体の末尾に同じ順で 1 欄ずつ足し、別ファイルに
   `pub(super) extern "system" fn ffi_xxx` を置く形で足した（サイズや版の照合は無いので、両方のビルドが要る）。Skill に節を足す。
+- [ ] **開発用の APK の libSEED.so が最適化なし（`dev`）で、UI の見本のスクロールが 19〜26 fps** — 2026-09-28（W2 の実機の回で発見。roadmap §3.9 の原因 1。直していない）。
+  SeedAndroid の `run` / `install` とエディタの Android の実行は、`--release`（配布用）でなければ `cargo ndk … build`（`dev`＝SEED クレートは opt-level 0）で .so を作る
+  （`editor/src/Android/Steps/NativeBuildStep.cs`・`AndroidRunRequest.OptimizesNative`）。同じ APK の中身で .so だけを替えると、スクロール中のギャラリーは
+  dev 23〜26 fps（CPU 38.0 ms/フレーム）→ `develop`（opt-level 1）59.7 fps（8.7 ms）→ release 59.7 fps（8.5 ms）、グラフは 19〜24 fps（41.5 ms）→ 59.7（9.7）→ 59.3〜60.0（9.2）。
+  PC の Play は既に `[profile.develop]`（ルートの Cargo.toml）が既定。直すなら開発用の APK の既定を `--profile develop` にし（cargo-ndk 4.1.2 が jniLibs へ写すことは
+  手で確かめた）、ネイティブをデバッグするときだけ `dev` を選べる指定を残す。指紋（`AndroidStepFingerprints.Native`）にプロファイルを入れる。初回の develop の
+  ビルドは依存を含めて 6 分 21 秒（差分のビルドの時間は未計測）。develop はギャラリーのスクロールの最初に山が残る（最大 26 ms・16.7 ms 超 5/240。release は 1/240）。
+- [ ] **「描画/UI 描画順の統合・GPU 積み込み」が毎フレームすべてを作り直す（テキストのレイアウト・GPU バッファ・`SEED.Draw` の三角形分割）** — 2026-09-28
+  （W2 の実機の回。roadmap §3.9 の原因 2。直していない）。`UiZoneDraw::build`（`renderer/ui_draw_pass.rs`）が毎フレーム、見えている全テキストのレイアウトと
+  グリフの四角形（`CanvasTextRenderer::build_grouped` → `append_item` → `resolve_layout_with_images`）、ゾーンごとに新しい頂点・添字のバッファ
+  （`font/mod.rs` の `build_gpu_batch` の `create_buffer_init`）、全 `SEED.Draw` の三角形分割（`Primitive2dRenderer::push`）を作る。実機の平均は dev の .so で
+  ギャラリー 12.8 ms・グラフ 30.4 ms、release で 1.39 ms・3.72 ms（グラフのフレームの 40%）。グラフを隠すと 0.39 ms・GPU 7.6 → 5.4 ms。主にスクロールの最初の
+  十数フレームに山（release 12.9・develop 19.8・dev 209 ms。初めて見える文字のグリフのラスタライズと見られる。推論＝区間の中を分けて測っていない）。
+  C# のグラフも毎フレーム全部の図形を積み直す（棒グラフ 3 つで release 0.45〜0.80 ms。隠しても減らない）。直すなら (a) テキストのレイアウトと局所座標の四角形を
+  文字列・書体・大きさ・折り返しの幅が変わるまで覚える、(b) 頂点・添字のバッファを使い回す（`InstanceStream` と同じ形）、(c) `SEED.Draw` の保持型の描画
+  （データ・表示範囲が変わるまで三角形分割を覚える）と、隠れた・動いていないグラフは積まない、(d) 数字などよく使うグリフを先に焼く。まず区間を
+  「テキスト」「プリミティブ」「スプライト」「アップロード」に分けて測る。関連: `app/frame_renderer.rs` の 5002 行付近・`font/canvas_text.rs`・`renderer/primitive2d/`・
+  `scripting/src/Api/UI/Charts/`。
+- [ ] **UI だけのシーンでも CPU に「描画/Submit・Present」1.4〜2.5 ms と「BeginFrame(スワップチェーン取得)」の山（最大 7.4 ms）が残る** — 2026-09-28
+  （W2 の実機の回。roadmap §3.9）。どの .so でも同じ値（wgpu・ドライバ側は dev でも opt-level 2）で、release のナビゲーションでは最大の区間。中身は分けて測っていない
+  （毎フレーム作って捨てる文字のバッファの後始末が乗っているかは未確認。推論）。
+- [ ] **ギャラリー・グラフの見本（`templates/ui/scenes/ui_gallery.scene`・`ui_charts.scene`）が 540×1200 dp 固定** — 2026-09-28（W2 の実機の回で発見）。
+  Pixel 6a（1080×2400 px・2.625 倍＝411×914 dp）では右の約 130 dp（テーマの帯の 4 つ目のボタン「森・丸」・「ゆっくり」・数値欄・グラフの右端）が切れ、
+  上のテーマの帯・見出しがステータスバーに重なる（`system_bars: visible`。安全領域を見ていない）。ナビゲーションの見本は画面の大きさと安全領域に合って収まる。
+  直すなら見本のルートを画面の幅に合わせ（アンカーで伸ばす・行の折り返し）、上端に安全領域の余白を取る（ナビゲーションの見本と同じ作り）。
+- [ ] **W2 の実機の手触りの確認の残り** — 2026-09-28（roadmap §3.9 で fps の計測へ切り替えたため未実施）。スクロールの慣性・跳ね返りの感想と行のスワイプ
+  （ui_scroll_list.md §11）、時刻ホイールの回し心地・循環・触感（ui_components.md §11.9）、戻るの段の順（ダイアログ → シート → 画面 → 根）と予測型の戻るの見た目
+  （ui_navigation.md §12）、グラフのピンチの手触り（中点の固定・縦のスクロールとの取り合い。倍率 1〜6 の範囲と吹き出しはログで確認済み。ui_charts.md §10）、
+  端末のダークテーマの切り替えの追従（ui_theme.md §11）、M7（android.md §25.14.7）。
+  release の .so の試験の APK（`com.seedengine.uidevice`。作業フォルダの UiDevice）が端末に入ったまま。上の「開発用の APK の .so」を直してから行うのがよい。
 - [ ] **W2-11 通しの確認（UC-1〜12）** — 2026-09-27。
 - [ ] **PC の Play のスクリプトのコンパイルで `System.Text.Json` を参照できない** — 2026-09-27（Wake or Pay の W3-D で発見）。`using System.Text.Json;` が `CS0234: 'Json' does not exist in the namespace 'System.Text'` で失敗する。Play のコンパイル（ScriptAssemblyManager の Roslyn）が「その時点で読み込まれているアセンブリ」だけを参照に入れるため、共有フレームワークの `System.Text.Json.dll` が参照に入らない。Wake or Pay は反射なしの小さな JSON（`assets/scripts/Json/`）を自作して回避した。直し方の案: 参照の集合を「読み込み済み」ではなく、同梱の .NET の `shared/Microsoft.NETCore.App/<版>/` の参照用アセンブリ一式（または許可リスト）から作る。Android の同梱 CoreCLR と SeedPak の事前コンパイル（`--scripts`）の参照も同じ集合にそろえる。関連: `scripting/` の Compilation、`docs/scripting_api.md`（使える .NET の範囲を明記する）。
 - [ ] **SEED.exe を前面に出さずに起動する引数が無い（自動の見た目の検査が利用者の画面を奪う）** — 2026-09-27（W2-1a の画素比較で発見。利用者から「頻繁に起動しているのはなぜ？」）。今は STARTUPINFO の SW_SHOWNOACTIVATE で起動し最背面へ送って凌いでいる。案: `--window=hidden|offscreen|minimized` と、描画をオフスクリーンのテクスチャに向けてスクリーンショットだけ撮る `--headless-render`（決まったフレーム数で撮って終了）。W2 以降の見た目の回帰検査（UC の自動化）と CI で使う。関連: `runtime/src/main.rs`、IPC の SCREENSHOT。

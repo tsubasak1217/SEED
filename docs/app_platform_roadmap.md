@@ -923,6 +923,95 @@ W2-0 のときに作った APK の控え（`com.seedengine.uispike`・デバッ�
   久しぶりのフレームの重さ（R-13。入力の直後の最初のフレームも同じく重くなりうる）は W2-10 で扱う。
 - 未確認: Gboard（利用者の端末は Simeji）、複数行（`show_multiline`）、横画面、配布版（release）の .so での数値、消費電力そのもの。
 
+### 3.9 W2 の実機の結果（2026-09-28 14:05〜14:40、Pixel 6a / Android 17）
+
+**経緯**: 利用者と W2 の手触りの確認（各正典の「実機の確かめ方」: スクロールと一覧・時刻ホイール・戻るの段・グラフのピンチ・明暗の追従・M7）を始めたが、
+開発用の APK（SeedAndroid の既定＝libSEED.so が cargo の `dev` プロファイル。SEED クレートは最適化なし）でギャラリーが 24〜29 fps しか出ず、
+利用者の判断（「UI だけの表示なら 60 fps で安定させたい。ほかの挙動の改善は fps が直ってから」）で**手触りの確認は止め、fps の計測と原因の特定へ切り替えた**。
+コードは変えていない（計測だけ）。
+
+**条件**: 作業フォルダの試験のプロジェクト UiDevice（`templates/ui` の写し＋W2-3 の `UiList.scene`。`com.seedengine.uidevice`・`render_policy: on_demand`・
+描画品質 `mobile`・`system_bars: visible`・`android.features: [notifications]`。3 つの見本のシーンを `scenes[]` に登録して pak に入れ、`am start --es seed.scene` で
+切り替えた）。計測は `--es seed.gpu_timing 1` の `[SEED GPU]`、`[SEED HEARTBEAT]`、`[PERF f=…]`、IPC（TCP。§21 の接続トークン）の `PROFILE_DUMP:8`
+（スコープの木の平均・最大と 1 フレームごとの CPU 時間。最初の 240 フレーム）。スクロールは `input swipe`（縦 1,200 px・180 ms を上へ 3 回・下へ 3 回を 4 周。
+ギャラリー・グラフは x=150 px のページ、ナビゲーションは「一覧」のタブ〈`SCRIPT_DEBUG:nav,tab,1`〉の中央）。同じ APK の中身で .so だけを
+`dev`・`develop`（opt-level 1。PC の Play の既定の構成。`cargo ndk … build --profile develop` で手で作り `--skip-rust` で詰めた）・`release`（`--release`）に替えた。
+`dumpsys gfxinfo` は SurfaceView を数えず（Total frames rendered: 0）、`dumpsys SurfaceFlinger --latency <BLAST の層>` は画面の周期（16,666,667 ns＝60 Hz）の行しか
+返さなかったので使っていない。
+
+| シーン | .so | スクロール中の fps（3 秒ごと） | 1 フレームの CPU 平均 / 中央 / 90% / 最大（ms） | 16.7 ms 超 | GPU 合計（ms） |
+|---|---|---|---|---|---|
+| ギャラリー | dev | **23.0〜26.0** | 38.0 / 35.8 / 40.5 / 231 | 208/208 | 7.4〜7.5 |
+| ギャラリー | develop | 59.7 | 8.7 / 8.1 / 10.7 / 26.2 | 5/240 | 7.7〜7.9 |
+| ギャラリー | release | **59.7** | 8.5 / 8.5 / 10.6 / 17.9 | 1/240 | 7.8〜7.9 |
+| ナビゲーション（一覧のタブ） | dev | 59.3 | 13.4 / 13.7 / 15.3 / 16.9 | 3/240 | 6.9 |
+| ナビゲーション | develop | 59.3〜59.7 | 7.4 / 6.4 / 9.3 / 12.4 | 0/240 | 7.4 |
+| ナビゲーション | release | 59.7 | 7.3 / 6.7 / 9.2 / 12.4 | 0/240 | 7.3〜7.5 |
+| グラフ | dev | **19.3〜24.3** | 41.5 / 41.5 / 43.4 / 45.8 | 191/191 | 8.2〜8.6 |
+| グラフ | develop | 59.7 | 9.7 / 9.5 / 12.5 / 15.6 | 0/240 | 7.4〜7.6 |
+| グラフ | release | **59.3〜60.0** | 9.2 / 8.7 / 10.6 / 12.2 | 0/240 | 7.6 |
+| グラフ（`chart,only,none` で 5 つとも隠す） | release | 59.3〜59.7 | 7.0 / 7.1 / 8.7 / 12.5 | 0/240 | 5.4〜5.5 |
+
+- **止まる画面は止まっている**: 3 シーン・3 つの .so とも、触らない間は `[SEED REDRAW] 描画を止めます（理由の無いフレームが 10 回…）` の後 `[SEED HEARTBEAT]` が **0.0 fps**
+  （静止時の fps 0 は正しい。問題はスクロール中だけ）。起こしてから最初のフレームの頭まで: 入力 0.03〜0.48 ms（117 回）・IPC 0.03〜1.10 ms（33 回）。
+- **GPU は律速ではない**（どの .so でも 7.4〜8.6 ms。ui 3.5〜4.1・トーンマップ 0.9〜1.6・提示 0.9〜1.0・オーバーレイ 0.35〜1.1・前方 0.3〜0.5・クラスタ 0.2〜0.4）。
+  UI だけのシーンでも 3D の経路（クラスタ・前方・トーンマップ・提示のコピー）が毎フレーム約 3 ms 走る（backlog「固定分 約 4.5 ms」）。
+
+**60 fps に届かなかった原因（数値から上位 3 つ）**
+
+1. **開発用の APK の libSEED.so が最適化なし（`dev`）**。同じシーン・同じ操作で、ギャラリー 38.0 → 8.5 ms・グラフ 41.5 → 9.2 ms（release）、
+   `develop`（opt-level 1）でも 8.7・9.7 ms で 59.4〜59.6 fps。ナビゲーションは dev でも 59.3 fps だが 90% が 15.3 ms で余裕が無い。
+   場所: `editor/src/Android/Steps/NativeBuildStep.cs`（`cargo ndk … build`、`AndroidRunRequest.OptimizesNative` のときだけ `--release`）。PC の Play は既に
+   `[profile.develop]`（ルートの Cargo.toml）が既定。**直し方の案**: 開発用の APK の既定を `--profile develop` にする（ネイティブのデバッグ用に `dev` を選べる
+   指定を残す。指紋 `AndroidStepFingerprints.Native` にプロファイルを入れる）。cargo-ndk 4.1.2 は `--profile develop` の .so を jniLibs へ写した（確認済み）。
+   見込み: ギャラリー・グラフで 24〜26 fps → 59.4〜59.6 fps（develop の実測）。初回の develop のビルドは依存を含めて 6 分 21 秒（2 回目以降の差分は未計測）。
+2. **「描画/UI 描画順の統合・GPU 積み込み」**（`app/frame_renderer.rs` の 5002 行付近 → `renderer/ui_draw_pass.rs` の `UiZoneDraw::build`）。毎フレーム、
+   見えている全テキストのレイアウトとグリフの四角形（`CanvasTextRenderer::build_grouped` → `append_item` → `resolve_layout_with_images`）、新しい頂点・添字の
+   GPU バッファ（`font/mod.rs` の `build_gpu_batch` の `create_buffer_init`）、全 `SEED.Draw` の三角形分割（`Primitive2dRenderer::push`）を作り直す。
+   平均: dev でギャラリー 12.8 ms（34%）・グラフ 30.4 ms（73%）、release で 1.39 ms・3.72 ms（グラフのフレームの 40%）。グラフを隠すと 0.39 ms（GPU も 7.6 → 5.4 ms）
+   ＝グラフ 5 つ（`SEED.Draw`・目盛りの文字・枠のスプライト）で約 3.3 ms。**主にスクロールの最初の十数フレームに山**（release 12.9 ms・develop 19.8 ms・dev 209 ms）があり、
+   初めて見える文字のグリフのラスタライズと見られる（推論。区間の中を分けて測っていない）。C# 側もグラフは毎フレーム全部の図形を積み直す（release で棒グラフ 3 つ
+   0.45〜0.80 ms。隠しても減らない）。**直し方の案**: (a) テキストのレイアウトと局所座標のグリフの四角形を、文字列・書体・大きさ・折り返しの幅が変わるまで覚える、
+   (b) 頂点・添字のバッファを使い回す（大きくなるときだけ作り直し `write_buffer`。スプライトの `InstanceStream` と同じ形）、(c) `SEED.Draw` に保持型の描画
+   （データ・表示範囲が変わるまで三角形分割を覚える）を足し、グラフはパン・ズーム・データの変化のときだけ積み直す。隠れたグラフは積まない、(d) よく使う文字
+   （数字・時刻）のグリフをテーマの読み込み時に先に焼く。見込み: グラフのシーンで release 約 −3 ms/フレーム（隠したときの実測の差）、最初の山の縮小（推論）。
+3. **変化に関係なく毎フレーム 2D の木全体をたどる処理**（backlog の既存の項目「2D の全ノードを毎フレームたどる…」）。「物理/2D 同期」「UI/2D スクリーン座標収集」
+   「UI/ポインタイベント」「UI/ジェスチャー」「描画/スプライト収集・ソート」「エディタ状態収集」の合計が dev でギャラリー 13.2 ms（35%）・ナビゲーション 6.8 ms（51%）、
+   release で 2.1 ms（25%）・1.9 ms（26%）。見本のシーンには 2D 物理のボディが無いのに `physics2d_ops.rs` の `update_physics_2d` が全 2D アクタの文脈の表を
+   毎フレーム作り、Android の Play でもエディタ状態の収集が走る。**直し方の案**: 2D 物理のボディ・コライダーが無ければ 2D 同期を飛ばす、描画の表と同じ走査の結果を
+   使い回す、木・レイアウトが変わったときだけポインタの表を作り直す、エディタにつながっていなければエディタ状態を集めない。見込み: release で約 −1.5〜2 ms/フレーム（推論）。
+
+- 次に大きい固定分: **「描画/Submit・Present」1.4〜2.5 ms**（どの .so でも同じ＝wgpu・ドライバ側。release のナビゲーションで最大の区間）と
+  「描画/BeginFrame(スワップチェーン取得)」の山（最大 7.4 ms）。
+
+**そのほかの発見**
+
+- **画面の組み立ての見本（`ui_navigation.scene`）が実機で真っ黒**: `[Script] Instantiate 失敗 (assets://ui/prefabs/screen_frame.actor): IO error: No such file or directory`。
+  `ScreenStack` の既定の枠のプレハブが pak の収録に入らない（backlog の既存の項目「SEED.UI の部品が既定で読むプレハブがパッケージに入らない」を実機で確認）。
+  試験ではプロジェクトのスクリプトにパスを書いて収録させて避けた。ダイアログ・シート・覆い・トーストのプレハブはギャラリーのシーンが欄に書いていたので同じ pak に入った。
+- **ギャラリー・グラフの見本は 540×1200 dp 固定**で、Pixel 6a（1080×2400 px・2.625 倍＝411×914 dp）では右の約 130 dp（テーマの帯の 4 つ目のボタン・「ゆっくり」・
+  数値欄・グラフの右端）が切れ、上の帯・見出しがステータスバーに重なる（安全領域を見ていない）。ナビゲーションの見本は画面に合って収まる。
+- 利用者がギャラリーで触った範囲（手触りの評価ではない）: ダイアログ 3 回・下のシート・上の覆いが開いて閉じた（`[UI] modal: … close …`）。根での戻るジェスチャーで
+  `CoreBackPreview startBackNavigation` → `onBackNavigationDone backType=4 triggerBack=true` → `[UI] back: move_task_to_back` → `ActivityTaskManager: moveTaskToBack`
+  → `[SEED LIFECYCLE] background … suspended` → 2.5 秒後にランチャーから開き直して**同じ pid（1664）で `resumed: サーフェスを再生成しました`**（HOT）。
+  backType 4 はアプリの戻るの受け口（callback）へ渡す種類（Android の BackNavigationInfo の値は記憶による）で、予測型の戻るのアニメーションの見た目は確かめていない。
+  画面の右端（x=1,032〜1,040 px など）のタップで戻るの取り扱いが始まって取り消される（`triggerBack=false`）ことが 14 回あったが、アプリへの指は奪われていない
+  （`edge-swipe is stealing input gesture` は本当の戻る・ホームのジェスチャーの 3 回だけ）。
+- 利用者は計測の合間にグラフの見本でも 2 本指のピンチを試した（手触りの感想は聞いていない）: release の .so で `[UI] chart: pinch end zoom=` が 1.053 → 1.406 → 4.84 →
+  **6（上限で止まる）**、すぼめて **1 で止まる**（別のグラフでも 2.027 → 4.035 → 1.719 → 1）。ペナルティ履歴の棒のタップで吹き出し（`bar select index=114 … "1/21 0 コイン・0 円"`）。
+  dev の .so（19〜24 fps）では 4 回のピンチで倍率がほとんど動かなかった（1 → 1.111）。指の中点の値が固定されるか・縦のスクロールとの取り合いは確かめていない。
+- 「端末」を選んだときの `app.ui_mode` の問い合わせは実機で `dark` を返した（`[SEED.UI] 端末の明暗: dark`・`mode System → Dark（端末 Dark）`）。
+- Android 17 は前面のアプリを `adb install -r` で入れ替えると SystemUI の `PackageUpdateActivity` がアプリを起動し直す（試験の手順では入れた直後に 1 回起動する）。
+
+**未実施**（手触りの確認を止めたため。release の .so の APK を端末に入れたまま＝次の回はそのまま使える）: スクロールの慣性・跳ね返りの手触りの感想と行のスワイプ、
+時刻ホイールの回し心地・循環・触感、戻るの段（ダイアログ → シート → 画面 → 根）の順とナビゲーションの見本での戻る、グラフのピンチの手触り
+（中点の固定・縦のスクロールとの取り合い。倍率の範囲と吹き出しは上のとおりログで確認）、
+端末のダークモードの切り替えの追従（`ui_mode_changed`）、M7（通知の取り消しの後の `permission_changed`）。端末の設定は利用者が何も変えていない
+（ダークモード オン・タップ時のバイブ オフ〈0〉・試験のアプリの通知の許可なし）。
+
+証拠（私物端末のログなのでリポジトリに入れていない）: 作業フォルダ `tmp/w2_dev/` の `logcat_full.txt`（全体）・`perf/<dbg2|dev|rel>_<gallery|nav|charts>/`
+（`report.txt`・`profile_dump.json`・`logcat.txt`・`idle.png`・`swipe_end.png`）・`perf/rel_charts_none2/`・`shots/`。駆動と集計は `perf_drive.py`・`perf_report.py`。
+
 ## 4. W1・W2 にまたがる要件
 
 | # | 要件 | 理由・根拠 | どこで |

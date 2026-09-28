@@ -4728,6 +4728,8 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell "run-as $APP cat shared_prefs/seed_pl
   通知をオフにしたとき（M7）はプロセスが止められて届かなかったので、前回の状態を保存する形に直した（§25.14.5。**直した後の実機の確認は未実施**。手順は §25.14.7）。
 - M7 の修正（2026-09-28・W2-10a と同じ回）: `PermissionChangeTracker` を JVM で動かし 14 項目が期待どおり（`run_jvm_checks.sh`。`javac --release 17 -Xlint:all` の注意なし）。
   アプリの Java 全体（112 ファイル＋仮の R）の `javac -Xlint:all` は注意 156 件で、W1-8 と同じ（AAR の classfile と MainActivity の this-escape だけ）。
+- 2026-09-28 午後の W2 の実機の回（roadmap §3.9）で M7 を試す予定だった（通知の機能を入れた試験の APK `com.seedengine.uidevice`）が、fps の計測へ切り替えたため
+  **未実施のまま**（利用者は通知の設定を変えていない。その APK の `POST_NOTIFICATIONS` は一度も求めていないので未許可）。
 
 #### 25.14.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
 
@@ -5187,3 +5189,6 @@ SEED.UI のテーマの「端末に従う」（`UiTheme.SetBrightnessMode(UiBrig
   `app.ui_mode` = `yes`、模擬の差し替えで `platform.ui_mode_changed`（`no` → `yes`）が届きテーマの明暗が切り替わることを確かめた。
 - **実機は未確認**（端末に触らない回だった）。確かめ方: ギャラリー（`templates/ui` を `assets/ui` へ）を SeedAndroid の `run` で入れ、テーマの帯の「端末」を押し、
   クイック設定のダークテーマを切り替える。logcat の `端末の明暗の設定が変わりました: yes → no`（NightMode）と `[UI] theme: changed default Light` を見る。
+  → 2026-09-28 午後の W2 の実機の回（Pixel 6a / Android 17。roadmap §3.9）: 端末のダークテーマ オン（`cmd uimode night` = yes）で、「端末」を押したときの
+  問い合わせ（`app.ui_mode`）の結果は C# 側で dark（`[SEED.UI] 端末の明暗: dark`）。切り替えの知らせ（`onConfigurationChanged` → `platform.ui_mode_changed`）は
+  未実施（fps の計測へ切り替えた）。
