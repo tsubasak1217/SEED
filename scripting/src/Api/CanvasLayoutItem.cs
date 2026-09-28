@@ -81,4 +81,41 @@ public readonly struct CanvasLayoutItem : IComponentHandle<CanvasLayoutItem>
         get => ScriptHost.TryGetBool(_entity, Comp, "fill_height", out var b) && b;
         set => ScriptHost.TrySetBool(_entity, Comp, "fill_height", value);
     }
+
+    // ── 実行中だけの見た目の上書き（W2-7。保存しない・インスペクタに出ない）──
+    //  レイアウト（大きさ・並び・安全領域）は変えず、置かれた後の見た目だけを変える（CSS の transform に近い）。
+    //  画面の組み立て（SEED.UI.ScreenStack・Dialog・BottomSheet・Toast）が出入りの動きと重なりの前後に使う。
+    //  Play の開始・シーンの読み込みで 0 に戻る。
+
+    /// <summary>
+    /// 見た目の平行移動（get/set。キャンバスの単位。dp のルートの下なら dp）。置かれた後に足す（親に合わせた・コンテナが並べたノードも動く）。
+    /// 子孫も一緒に動き、当たり判定・切り抜きも動いた位置になる。有限でない値は書かない。
+    /// </summary>
+    public Vector2 Translate
+    {
+        get => ScriptHost.TryGetVec2(_entity, Comp, "translate", out var v) ? v : Vector2.Zero;
+        set => ScriptHost.TrySetVec2(_entity, Comp, "translate", value);
+    }
+
+    /// <summary>
+    /// 見た目の平行移動（get/set。自分の置かれた矩形の大きさに対する割合）。(1, 0) で自分の幅だけ右、(0, -1) で高さだけ上。
+    /// 画面の大きさを知らずに「右から入る」「上から降りる」を書ける。<see cref="Translate"/> と足し合わせる。
+    /// 自分の矩形（コンテナ・親に合わせるの矩形か CanvasComponent の領域）が無いノードでは効かない。
+    /// </summary>
+    public Vector2 TranslateFraction
+    {
+        get => ScriptHost.TryGetVec2(_entity, Comp, "translate_fraction", out var v) ? v : Vector2.Zero;
+        set => ScriptHost.TrySetVec2(_entity, Comp, "translate_fraction", value);
+    }
+
+    /// <summary>
+    /// 自分と子孫の表示（Sprite・SkinnedSprite・Text・2D パーティクル）のレイヤーに足す値（get/set。整数・±16,777,216 まで）。
+    /// 祖先の値と足し合わせる。重なる画面（画面のスタック・ダイアログ・シート・トースト）を、中身のレイヤーに依らず前後させる。
+    /// 描画の並び・ポインタの最前面・ジェスチャーの遮りが同じ値で比べる。<c>SEED.Draw</c> の図形には効かない。
+    /// </summary>
+    public int LayerBias
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "layer_bias", out var v) ? (int)v : 0;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "layer_bias", value);
+    }
 }

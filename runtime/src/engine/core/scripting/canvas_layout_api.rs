@@ -160,6 +160,10 @@ pub fn read(world: &World, entity: Entity, component: &str, field: &str, out: &m
                 "align_self" => put_enum(out, c.align_self),
                 "fill_width" => put_bool(out, c.fill_width),
                 "fill_height" => put_bool(out, c.fill_height),
+                // 実行中だけの見た目の上書き（W2-7。保存しない）
+                "translate" => put(out, &c.translate),
+                "translate_fraction" => put(out, &c.translate_fraction),
+                "layer_bias" => put(out, &[c.layer_bias as f32]),
                 _ => None,
             }
         }
@@ -226,6 +230,16 @@ fn take_finite<const N: usize>(v: &[f32]) -> Option<[f32; N]> {
 fn take_padding(v: &[f32]) -> Option<CanvasPadding> {
     take_finite::<PADDING_LEN>(v).map(CanvasPadding::from_array)
 }
+
+/// レイヤーの底上げ（整数。W2-7）。f32 で正確に表せる範囲（±2^24）の整数だけを受ける。
+fn take_layer_bias(v: &[f32]) -> Option<i32> {
+    take_f32(v)
+        .filter(|x| x.fract() == 0.0 && x.abs() <= MAX_EXACT_LAYER_BIAS)
+        .map(|x| x as i32)
+}
+
+/// f32 で整数を正確に表せる上限（2^24。レイヤーの底上げの受け口の範囲）。
+const MAX_EXACT_LAYER_BIAS: f32 = 16_777_216.0;
 
 /// 0 以上の整数（Grid の列数）。
 fn take_count(v: &[f32]) -> Option<u32> {
@@ -342,6 +356,10 @@ pub fn write(world: &mut World, entity: Entity, component: &str, field: &str, v:
                 "align_self" => assign(&mut c.align_self, take_enum::<ItemAlign>(v)),
                 "fill_width" => assign(&mut c.fill_width, take_bool(v)),
                 "fill_height" => assign(&mut c.fill_height, take_bool(v)),
+                // 実行中だけの見た目の上書き（W2-7。保存しない。有限の値だけ受ける）
+                "translate" => assign(&mut c.translate, take_finite::<PAIR_LEN>(v)),
+                "translate_fraction" => assign(&mut c.translate_fraction, take_finite::<PAIR_LEN>(v)),
+                "layer_bias" => assign(&mut c.layer_bias, take_layer_bias(v)),
                 _ => false,
             }
         }
@@ -440,6 +458,31 @@ mod tests {
         let c = world.get::<CanvasGestureComponent>(e).unwrap();
         assert!(c.drag && c.drag_axis == GestureDragAxis::Vertical && c.min_hit_size_dp == 56.0);
         assert!(is_layout_component(KIND_CANVAS_GESTURE) && entity_has(&world, e, KIND_CANVAS_GESTURE));
+    }
+
+    /// 実行中だけの見た目の上書き（W2-7）の読み書き（有限の 2 要素・整数の底上げだけを受ける）。
+    #[test]
+    fn layout_item_visual_overrides_round_trip() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, CanvasLayoutItemComponent::default());
+        let mut out = [0.0f32; 4];
+        assert!(write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "translate", &[12.5, -4.0]));
+        assert!(write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "translate_fraction", &[1.0, 0.0]));
+        assert!(write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "layer_bias", &[3_000_000.0]));
+        assert!(!write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "translate", &[f32::NAN, 0.0]), "NaN は書かない");
+        assert!(!write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "translate_fraction", &[1.0]), "要素数の違い");
+        assert!(!write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "layer_bias", &[1.5]), "整数でない");
+        assert!(!write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "layer_bias", &[1.0e9]), "f32 で正確に表せない");
+        assert_eq!(read(&world, e, KIND_CANVAS_LAYOUT_ITEM, "translate", &mut out), Some(2));
+        assert_eq!(&out[..2], &[12.5, -4.0]);
+        assert_eq!(read(&world, e, KIND_CANVAS_LAYOUT_ITEM, "translate_fraction", &mut out), Some(2));
+        assert_eq!(&out[..2], &[1.0, 0.0]);
+        assert_eq!(read(&world, e, KIND_CANVAS_LAYOUT_ITEM, "layer_bias", &mut out), Some(1));
+        assert_eq!(out[0], 3_000_000.0);
+        let c = world.get::<CanvasLayoutItemComponent>(e).unwrap();
+        assert_eq!((c.translate, c.translate_fraction, c.layer_bias), ([12.5, -4.0], [1.0, 0.0], 3_000_000));
+        assert!(write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "layer_bias", &[-200.0]), "負の底上げも書ける");
     }
 
     /// 名前の判定と実体の判定（種類の違うエンティティは false）。

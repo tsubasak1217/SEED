@@ -2025,8 +2025,17 @@ if (gameObject.GetComponent<CanvasLayoutItem>() is { } item)
     item.AlignSelf         // ItemAlign（get/set。Auto（既定・コンテナに従う）/ Start / Center / End / Stretch）
     item.FillWidth         // bool（get/set。コンテナの外の子で使う。親の CanvasComponent の領域の幅いっぱい）
     item.FillHeight        // bool（get/set。同じく高さ）
+
+    // 実行中だけの見た目の上書き（W2-7。保存しない・インスペクタに出ない。Play の開始・シーンの読み込みで 0 に戻る）
+    item.Translate         // Vector2（get/set。置かれた後に足す平行移動。キャンバスの単位。レイアウト〈大きさ・並び・安全領域〉は変えない）
+    item.TranslateFraction // Vector2（get/set。同じく自分の置かれた矩形の大きさに対する割合。(1, 0) で自分の幅だけ右＝画面の外から入る）
+    item.LayerBias         // int（get/set。自分と子孫の表示〈Sprite・SkinnedSprite・Text・2D パーティクル〉のレイヤーに足す値。祖先と足し合わせる）
 }
 ```
+
+> **重要（W2-7）**: `Translate`・`TranslateFraction` は親に合わせた（`FillWidth`/`FillHeight`）・コンテナが並べたノードも動かせます（`Position` は使われないため）。
+> 子孫も一緒に動き、当たり判定・切り抜き・`ScreenPosition` も動いた位置になります。祖先のずらしは子孫の `CanvasSafeArea` の計算に入れません（横から入ってくる画面の箱が縮み直さない）。
+> `LayerBias` は重なる画面（画面のスタック・ダイアログ・シート・トースト）の前後を中身のレイヤーに依らず決めるためのもので、描画の並び・ポインタの最前面・ジェスチャーの遮りが同じ値で比べます。`SEED.Draw` の図形には効きません。画面の組み立ての部品（§7.18）が使います。
 
 > **重要**: 列挙の数値は固定です（`LayoutDirection` Vertical=0 / Horizontal=1、`MainAlign` Start=0〜SpaceEvenly=5、`CrossAlign` Start=0 / Center=1 / End=2 / Stretch=3、`ItemAlign` Auto=0〜Stretch=4、`HiddenChildren` Collapse=0 / KeepSpace=1）。範囲外の値の書き込みは無視されます。
 
@@ -3136,6 +3145,8 @@ Screen.SafeArea       // Rect:  安全領域（カメラ穴・切り欠き・ジ
                       //        安全領域の無い環境（デスクトップ）では全画面 (0, 0, Width, Height)
 Screen.Orientation    // ScreenOrientation: 画面の向き（Android は端末の回転から 4 方向、デスクトップはウィンドウの縦横比）
 Screen.DPI            // float: OS が報告する論理 DPI（Android は densityDpi、Windows は 96 × 表示スケール）。取れなければ 96
+Screen.DpScale        // float: 1 dp の画素数（表示倍率。Android は densityDpi ÷ 160〈Pixel 6a は 2.625〉、Windows は表示スケール）。
+                      //        dp のルートキャンバスのレイアウトと同じ値。画素 → dp は「画素 ÷ DpScale」（安全領域の余白を dp にする等。W2-7）
 
 // ScreenOrientation（Unity と同じ意味）
 ScreenOrientation.Portrait            // 縦長・正立（端末の上端が上）
@@ -3946,6 +3957,106 @@ wheel.RowPrefab                        // string（行のプレハブ。子に L
 
 > **重要**: ホイールの値の変化で他の部品は作り直されません（書くのはその列の行の文字だけ）。列が動いている間はエンジンが「動いている」を申告するので
 > `render_policy: on_demand` でも止まらず、止まって 10 フレームで描画が止まります。
+
+---
+
+## 7.18 画面の組み立て（SEED.UI：画面のスタック・タブ・ダイアログ・シート・覆い・トースト・戻るの段・フォーカス。W2-7）
+
+1 つのシーンに画面をプレハブとして出し入れするための部品です（正典は docs/ui_navigation.md）。見本は `templates/ui/scenes/ui_navigation.scene`
+（テンプレートライブラリの「UI 部品」から取り込むと `assets/ui/...`）。部品のプレハブ: `screen_stack.actor`・`screen_frame.actor`・`tab_host.actor`・
+`modal_host.actor`・`dialog.actor`・`bottom_sheet.actor`・`top_sheet.actor`・`toast_host.actor`・`toast.actor`。
+
+```csharp
+using SEED.UI;
+
+// ── 画面のスタック（ScreenStack。ノードは screen_stack.actor の作り: Screens・Veil・Blocker）──
+var stack = UiWidget.Of<ScreenStack>(GameObject.Find("RootStack"));
+ScreenHandle h = stack.Push("assets://ui/prefabs/edit.actor");                     // 既定の出入り（DefaultTransition。既定 Push = 右から）
+stack.Push(prefab, NavTransition.Cover);                                           // 上から覆う
+stack.Push(prefab, NavTransition.Fade, args: alarmId,                              // 画面へ値を渡す（UiScreen.OnScreenEnter）
+           options: new ScreenOptions { Opaque = true, KeepState = false,          // 覆われたら実体を手放す（戻ったら作り直す）
+                                        IgnoreBack = true, SafeArea = true });     // 戻るを無視（鳴動の画面）・安全領域の中に置く
+stack.Pop(result);            // bool: 1 つ下ろす（根だけなら false）。結果は下ろした画面の手札へ
+stack.Replace(prefab);        // いちばん上を置き換える
+stack.PopToRoot();            // 根まで下ろす
+stack.SetRoot(prefab, NavTransition.Fade);  // 根からやり直す
+stack.Depth  stack.Top  stack.CanPop  stack.IsTransitioning
+stack.Changed += s => { };    // 落ち着いた（動きが終わった）後
+h.Closed += x => Debug.Log(x.Result);  var r = await h.WhenClosed;   // 閉じるのを待つ
+
+// ── 画面のスクリプト（画面のプレハブの根に付ける。任意）──
+public class EditScreen : UiScreen
+{
+    protected override void OnScreenEnter(object? args) { }   // 作られて値を受けた（作り直しでも）
+    protected override void OnScreenShown() { }               // 上の画面になった（動きの後。タブへ戻ったときも）
+    protected override void OnScreenHidden() { }              // 覆われた・タブを離れた
+    protected override void OnScreenExit() { }                // 下ろされる直前
+    protected override bool OnBackPressed()                    // 戻る。true = 受けた（スタックは下ろさない）
+    {
+        if (!dirty) return false;
+        Dialog.Show(new DialogOptions { Title = "変更を保存していません", PositiveText = "戻る", NegativeText = "とどまる" })!
+              .Completed += r => { if (r == DialogResult.Positive) Close(); };
+        return true;
+    }
+    // Close(result) で自分を下ろす・Navigator（積んだスタック）・Handle・Args
+}
+
+// ── 下のタブ（TabHost・TabBar・TabItem。tab_host.actor: Pages/Tab0..〈ScreenStack〉・TabBar/Item0..）──
+var tabs = UiWidget.Of<TabHost>(GameObject.Find("TabHost"));
+tabs.Select(1);               // 選んでいるタブを押すと根へ戻る（TabReselected）
+tabs.SelectedIndex  tabs.CurrentStack  tabs.StackAt(i)  tabs.Count
+tabs.TabChanged += (t, i) => { };  tabs.TabReselected += (t, i) => { /* 先頭へスクロール */ };
+// フィールド: TabNames（Pages の子の名前）・InitialTab・BackToFirstTab（既定 true）・ResetOnLeave（既定 false）
+
+// ── ダイアログ・シート・覆い（シーンに ModalHost〈modal_host.actor〉を置く）──
+DialogHandle? d = Dialog.Show(new DialogOptions
+{
+    Title = "削除しますか？", Message = "…", PositiveText = "削除", NegativeText = "やめる", NeutralText = "",   // ボタン 1〜3
+    DismissOnScrimTap = true, CancelableByBack = true,
+});
+DialogResult r = await d!.ResultAsync;          // Positive / Negative / Neutral / Dismissed（幕・戻る）。d.Completed += r => …
+ModalHandle? s = BottomSheet.Show(new SheetOptions { ContentPrefab = "assets://…/sound_list.actor", Args = …,
+                                                     HalfDetent = true, StartHalf = true, HeightFraction = 0.9f });
+ModalHandle? o = TopSheet.Show(new OverlayOptions { ContentPrefab = "assets://…/profile.actor" });
+s.Close(result);  await s.WhenClosed;           // 中身から閉じる（結果つき）。幕・戻る・つまみで閉じたら結果 null
+ModalHost.Current!.Count(ModalKind.Dialog)      // 開いている数
+
+// ── トースト（シーンに ToastHost〈toast_host.actor〉を置く）──
+Toast.Show("保存しました");                       // ToastLength.Short（motion.toast_short）/ Long
+ToastHost.Current!.Show("…", 5f);               // 秒を指定。同時に count.toast_visible 個まで・あふれた分は待つ・横へ払うと消える
+
+// ── 戻るの段（Android の戻る・PC の Esc。部品が毎フレーム読むので、スクリプトは何もしなくてよい）──
+BackDispatcher.Dispatch();                        // 画面の「戻る」ボタンから戻るを配る
+using var layer = BackDispatcher.AddLayer(450, "my-panel", () => { /* 受けたら */ return true; });   // 独自の層（順は BackOrder の間に）
+BackDispatcher.Dispatched += r => { };            // r.Handled・r.Layer
+BackDispatcher.MoveTaskToBackWhenUnhandled = true; // どの層も受けなければ Platform.App.MoveTaskToBack()（既定）
+
+// ── フォーカス（キーボードで動かす相手と、画面ごとの範囲）──
+UiFocus.Request(item)  UiFocus.Release(item)  UiFocus.Current  UiFocus.TopScope  UiFocus.Changed
+public class MyField : UiWidget, IFocusable, IBackConsumer { … }   // FocusOwner・OnFocusChanged・HandleBack（W2-6 の入力欄の形）
+```
+
+**戻るの段の順**（`BackOrder`）: Focus（100。今のフォーカスが `IBackConsumer` なら。W2-6 の入力欄が IME を閉じる）→ Dialog（200）→ Sheet（300）→
+Overlay（400）→ Navigation（500。画面のスタック・タブを**内側から**: 上の画面の `IgnoreBack`・`OnBackPressed` → 1 つ下ろす → 最初のタブ以外なら最初のタブへ）→
+どれも受けなければ `SEED.Platform.App.MoveTaskToBack()`（閉じずに背面へ。デスクトップの模擬はログだけ）。閉じられないダイアログも戻るは受けます（後ろへ回さない）。
+
+**重なりと入力**: 画面のスタックの段 i は `LayerBias = i × LayerStep`（既定 `layer.stack_step` = 10,000。タブの中のスタックは 1,000）、
+覆い・シート・ダイアログ・トーストは帯（`layer.overlay`・`sheet`・`dialog`・`toast` = 100 万・200 万・300 万・400 万）。
+**画面の中の表示のレイヤーは段の値より小さく**（タブの中なら 1,000 未満）保ってください。積んだ画面の枠（`screen_frame.actor`）は遮る板を持ち、
+下の画面は入力を受けません。落ち着いた後は不透明な画面の下の画面を隠します（描かない）。
+
+| テーマのトークン（抜粋。全部は docs/ui_navigation.md §7） | 既定 | 意味 |
+|---|---|---|
+| `motion.push`・`motion.cover`・`motion.fade` と `*_curve` | 0.3 秒・Material 3 standard | 画面の出入り（曲線は x1・y1・x2・y2） |
+| `motion.overlay`・`motion.overlay_curve` | 0.22 秒・easeOut | 上からの覆い（Flutter 版の top_sheet） |
+| `motion.dialog`・`motion.sheet`・`motion.toast` | 0.2・0.25・0.2 秒 | ダイアログ・シート・トーストの出入り |
+| `motion.toast_short`・`motion.toast_long` | 2・3.5 秒 | トーストを見せる時間（実時間） |
+| `opacity.scrim`・`opacity.dialog_scrim` | 0.54・0.32 | 幕の濃さ |
+| `ratio.push_parallax`・`ratio.dialog_scale_from`・`ratio.sheet_max_height` | 0.3・0.9・0.9 | 視差・ダイアログの出始めの大きさ・シートの高さ |
+
+> **重要**: 画面のプレハブは次のフレームにできあがる（`Instantiate` の遅延）ので、画面の枠 → 中身の 2 フレームかけて作り、できあがるまで隠します。
+> 積み下ろしは並びをすぐ変え、動きは順に流します（動いている途中の次の操作は、今の動きを飛ばしてから始める）。
+> 動きの間は `Redraw.KeepAlive` で描き続け、落ち着いたら `render_policy: on_demand` で描画が止まります。
 
 ---
 

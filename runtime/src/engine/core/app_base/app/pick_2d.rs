@@ -33,7 +33,7 @@ use super::App;
 use super::canvas_text_bounds::TextBoundsMap;
 use crate::engine::core::canvas_layout::clip::point_inside_clip_chain;
 use crate::engine::core::canvas_layout::{
-    AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind,
+    biased_layer, AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind,
     CanvasParentFrame,
 };
 
@@ -575,7 +575,8 @@ pub(super) fn pick_candidates_from_table(
                             kind: PickKind2d::Sprite,
                             zone: my_zone,
                             depth,
-                            layer: sc.layer,
+                            // 描画と同じ前後（コンポーネントのレイヤー + ノードの底上げ。W2-7）
+                            layer: biased_layer(sc.layer, placement.layer_bias),
                         });
                     }
                 }
@@ -608,7 +609,7 @@ pub(super) fn pick_candidates_from_table(
                     kind: PickKind2d::Sprite,
                     zone: my_zone,
                     depth,
-                    layer: ss.layer,
+                    layer: biased_layer(ss.layer, placement.layer_bias),
                 });
                 break;
             }
@@ -647,7 +648,7 @@ pub(super) fn pick_candidates_from_table(
                         kind: PickKind2d::Sprite,
                         zone: my_zone,
                         depth,
-                        layer: tc.layer,
+                        layer: biased_layer(tc.layer, placement.layer_bias),
                     });
                 }
             }
@@ -664,7 +665,7 @@ pub(super) fn pick_candidates_from_table(
                     kind: PickKind2d::Canvas,
                     zone: my_zone,
                     depth,
-                    layer: 0,
+                    layer: biased_layer(0, placement.layer_bias),
                 });
             }
         }

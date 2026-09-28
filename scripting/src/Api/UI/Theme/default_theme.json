@@ -1,6 +1,7 @@
 {
   "_about": "SEED.UI の既定のテーマ（W2-4）。部品はここにあるトークン（例 color.primary・radius.button）の値で見た目を決める。W2-9 でプロジェクトのテーマ JSON への差し替え・実行中の切り替えを本格化する。書式: グループ（color・radius・space・size・text・motion・opacity）の中に名前 → 値。色は sRGB の #RRGGBB か #RRGGBBAA（読み込むときに線形へ直す）、それ以外は数。長さはキャンバスの単位（dp のキャンバスなら dp）、時間は秒。先頭が _ の鍵は説明で、読まない。正典は docs/ui_components.md §5。",
   "_source": "色は Wake or Pay の既定のテーマ midnight（themes.json の seedColor #6C4BFF・dark）から作った暗い配色。大きさ・時間は Material Design 3 の部品の寸法（押せる大きさ 48、スイッチ 52×32、チェックボックス 18 の枠を 24 の中に等）と Android の既定の動きの時間を目安にした。ホイール（W2-5）の行の高さ 32・文字 21・帯の角丸 8 と余白 9・帯の外の濃さ 0.447・動きの 0.3 秒と 0.2 秒は Flutter の CupertinoDatePicker・CupertinoPicker（2026-09-28 に master のソースで確かめた）。",
+  "_w2_7": "W2-7（画面の組み立て）で足したもの: 画面の出入り・覆い・ダイアログ・シート・トーストの時間と曲線（motion.*。曲線は x1・y1・x2・y2 = CSS の cubic-bezier。push・cover は Material 3 の standard の曲線、覆いは Flutter 版の top_sheet の 220ms・easeOut）、幕の色と濃さ（color.scrim・opacity.scrim〈覆い・シート 0.54 = Flutter 版〉・opacity.dialog_scrim〈0.32 = Material 3〉）、トーストの色（color.inverse_surface）、割合（ratio.*）、速さ（speed.*。dp/秒）、数（count.*）、重なりのレイヤーの底上げ（layer.*。画面のスタックの 1 段・覆い・シート・ダイアログ・トーストの帯）。正典は docs/ui_navigation.md。",
   "name": "default",
   "color": {
     "primary": "#7C5CFF",
@@ -19,7 +20,10 @@
     "disabled": "#3A3645",
     "on_disabled": "#7C7689",
     "shadow": "#000000",
-    "error": "#FF5252"
+    "error": "#FF5252",
+    "scrim": "#000000",
+    "inverse_surface": "#ECE6F5",
+    "on_inverse_surface": "#1E1B26"
   },
   "radius": {
     "button": 12,
@@ -29,7 +33,11 @@
     "segment": 20,
     "checkbox": 4,
     "progress": 4,
-    "wheel_band": 8
+    "wheel_band": 8,
+    "dialog": 28,
+    "sheet": 28,
+    "toast": 8,
+    "tab_indicator": 16
   },
   "space": {
     "xs": 4,
@@ -54,7 +62,18 @@
     "shadow_blur": 8,
     "shadow_offset": 2,
     "wheel_item": 32,
-    "wheel_band_inset": 9
+    "wheel_band_inset": 9,
+    "tab_bar": 64,
+    "tab_indicator_width": 56,
+    "tab_indicator_height": 28,
+    "dialog_width": 312,
+    "dialog_padding": 24,
+    "dialog_button_height": 40,
+    "handle_width": 32,
+    "handle_height": 4,
+    "handle_area": 24,
+    "toast_height": 48,
+    "drag_dismiss": 96
   },
   "text": {
     "title": 20,
@@ -70,12 +89,48 @@
     "repeat_min_interval": 0.03,
     "repeat_accel": 0.5,
     "wheel": 0.3,
-    "wheel_correct": 0.2
+    "wheel_correct": 0.2,
+    "push": 0.3,
+    "push_curve": { "x1": 0.2, "y1": 0.0, "x2": 0.0, "y2": 1.0 },
+    "cover": 0.3,
+    "cover_curve": { "x1": 0.2, "y1": 0.0, "x2": 0.0, "y2": 1.0 },
+    "fade": 0.3,
+    "fade_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 },
+    "overlay": 0.22,
+    "overlay_curve": { "x1": 0.0, "y1": 0.0, "x2": 0.58, "y2": 1.0 },
+    "dialog": 0.2,
+    "dialog_curve": { "x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 1.0 },
+    "sheet": 0.25,
+    "toast": 0.2,
+    "toast_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 },
+    "toast_short": 2.0,
+    "toast_long": 3.5
   },
   "opacity": {
     "pressed": 0.16,
     "disabled": 0.38,
     "shadow": 0.35,
-    "wheel_dim": 0.447
+    "wheel_dim": 0.447,
+    "scrim": 0.54,
+    "dialog_scrim": 0.32
+  },
+  "ratio": {
+    "push_parallax": 0.3,
+    "dialog_scale_from": 0.9,
+    "sheet_max_height": 0.9
+  },
+  "speed": {
+    "fling_dismiss": 300
+  },
+  "count": {
+    "toast_visible": 3
+  },
+  "layer": {
+    "stack_step": 10000,
+    "modal_step": 10000,
+    "overlay": 1000000,
+    "sheet": 2000000,
+    "dialog": 3000000,
+    "toast": 4000000
   }
 }

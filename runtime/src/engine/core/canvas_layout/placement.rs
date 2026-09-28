@@ -90,6 +90,17 @@ pub struct CanvasNodePlacement {
     /// このノードの矩形を決めたか。false のノードは W2-1a までとまったく同じ計算で置かれている。
     /// 読み手（キャンバス枠・2D 物理とギズモ）は true のときだけ表の矩形（eff_size・有効位置）を読む。
     pub layout_adjusted: bool,
+    /// このノードの表示（スプライト・テキスト・パーティクル・図形）のレイヤーに足す値（W2-7）。
+    /// 祖先と自分の `CanvasLayoutItem.layer_bias` の和。読み手は `コンポーネントの layer + layer_bias` で並べる（`biased_layer`）。
+    pub layer_bias: i32,
+}
+
+/// コンポーネントのレイヤーにノードの底上げを足す（W2-7。飽和して i32 の範囲に収める）【純関数】。
+///
+/// 描画の並び・ポインタの最前面・ジェスチャーの遮り（R3）が同じ値で比べるための 1 か所。
+#[inline]
+pub fn biased_layer(layer: i32, layer_bias: i32) -> i32 {
+    layer.saturating_add(layer_bias)
 }
 
 impl CanvasNodePlacement {
@@ -350,6 +361,9 @@ pub fn resolve(
         world_rs,
         cumul_scale: child_cumul_scale,
         zone,
+        // レイヤーの底上げと見た目の平行移動は親のまま受け継ぐ（自分の分は走査の place_node が足す。W2-7）
+        layer_bias: parent.layer_bias,
+        visual_shift: parent.visual_shift,
     };
 
     CanvasNodePlacement {
@@ -369,6 +383,7 @@ pub fn resolve(
         sprite_fill: [None, None],
         layout_rect: None,
         layout_adjusted: dp_root_viewport.is_some(),
+        layer_bias: parent.layer_bias,
     }
 }
 
@@ -427,6 +442,9 @@ pub fn resolve_in_rect(
         world_rs,
         cumul_scale: child_cumul_scale,
         zone: parent.zone,
+        // レイヤーの底上げと見た目の平行移動は親のまま受け継ぐ（自分の分は走査の place_node が足す。W2-7）
+        layer_bias: parent.layer_bias,
+        visual_shift: parent.visual_shift,
     };
     CanvasNodePlacement {
         root_auto: None,
@@ -445,6 +463,56 @@ pub fn resolve_in_rect(
         sprite_fill: [0, 1].map(|a| slot.fill[a].then_some(slot.size[a])),
         layout_rect: Some(slot.size),
         layout_adjusted: true,
+        layer_bias: parent.layer_bias,
+    }
+}
+
+/// 置いたノードを、親のローカルの画素で `offset` だけ平行移動する【純関数・W2-7】。
+///
+/// `CanvasLayoutItem.translate*`（見た目の平行移動）の本体。レイアウト（大きさ・並び・安全領域・子の箱）は変えず、
+/// 有効位置とワールド行列だけをずらす（子へ渡す文脈の行列も同じだけずれるので、子孫はそのまま付いてくる）。
+/// 子へ渡す `visual_shift` へワールドの画素のずれを足す（子孫の安全領域をずらす前の位置で求めるため）。
+/// 読み手（キャンバス枠・2D 物理・ScreenPosition）がずらした位置を読むよう `layout_adjusted` を立てる。
+///
+/// # 引数
+/// * `placement` - 置いた結果（安全領域を当てた後）
+/// * `parent`    - 親から受け取った文脈
+/// * `offset`    - 平行移動（親のローカルの画素）
+pub fn translate_placement(
+    placement: &CanvasNodePlacement,
+    parent: &CanvasParentFrame,
+    offset: [f32; 2],
+) -> CanvasNodePlacement {
+    let eff = &placement.eff_transform;
+    let eff_transform = CanvasTransform {
+        position: [eff.position[0] + offset[0], eff.position[1] + offset[1]],
+        ..eff.clone()
+    };
+    let world_rs = mat4x4_mul(
+        parent.world_rs,
+        CanvasTransform {
+            scale: [1.0, 1.0],
+            ..eff_transform.clone()
+        }
+        .to_mat4_sized(placement.eff_size[0], placement.eff_size[1]),
+    );
+    // 親のローカルのずれ → ワールドのずれ（親の行列の回転の部分を掛ける。行列は列ベクトルの流儀で [行][列]）
+    let m = &parent.world_rs;
+    let world_offset = [
+        m[0][0] * offset[0] + m[0][1] * offset[1],
+        m[1][0] * offset[0] + m[1][1] * offset[1],
+    ];
+    let shift = placement.child_frame.visual_shift;
+    CanvasNodePlacement {
+        eff_transform,
+        world_rs,
+        layout_adjusted: true,
+        child_frame: CanvasParentFrame {
+            world_rs,
+            visual_shift: [shift[0] + world_offset[0], shift[1] + world_offset[1]],
+            ..placement.child_frame
+        },
+        ..placement.clone()
     }
 }
 

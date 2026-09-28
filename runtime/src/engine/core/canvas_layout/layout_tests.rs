@@ -497,3 +497,133 @@ fn measure_calls_are_linear_in_node_count() {
     }
     assert!((ratios[1] - ratios[0]).abs() < 0.25, "ノードが 4 倍でも 1 ノードあたりの回数はほぼ同じ: {ratios:?}");
 }
+
+// ─── 見た目の上書き（W2-7: 平行移動・レイヤーの底上げ）─────────────
+
+/// 親に合わせた画面を translate_fraction で右へずらす（右から入ってくる途中）。大きさ・子の並びは変わらず、子孫が付いてくる。
+#[test]
+fn translate_fraction_moves_filled_node_and_descendants() {
+    let mut world = World::new();
+    let mut root = canvas_node(&mut world, "Root", CanvasTransform::default(), [400.0, 800.0]);
+    let mut screen = canvas_node(&mut world, "Screen", CanvasTransform::default(), [1.0, 1.0]);
+    add_item(&mut world, &mut screen, CanvasLayoutItemComponent { fill_width: true, fill_height: true, translate_fraction: [0.25, 0.0], ..CanvasLayoutItemComponent::default() });
+    add_stack(&mut world, &mut screen, CanvasStackComponent { padding: CanvasPadding { left: 10.0, top: 20.0, right: 0.0, bottom: 0.0 }, ..vstack() });
+    screen.add_child(sprite_node(&mut world, "Row", CanvasTransform::default(), [100.0, 40.0]));
+    root.add_child(screen);
+    let roots = vec![root];
+    let table = table_of(&roots, &world);
+    let s = placed(&table, &roots, "Screen");
+    assert!(near(origin(s), [100.0, 0.0]), "幅 400 の 0.25 = 100 だけ右: {:?}", origin(s));
+    assert_eq!(s.sprite_size(1.0, 1.0), [400.0, 800.0], "大きさはレイアウトのまま");
+    assert!(s.layout_adjusted);
+    assert!(near(origin(placed(&table, &roots, "Row")), [110.0, 20.0]), "子はずらした親の中の同じ位置");
+    assert_eq!(table.stats.translated, 1);
+}
+
+/// translate（キャンバスの単位）は親の累積スケールを掛けて画素にし、割合（自分のキャンバスの領域に対する）と足し合わせる。
+#[test]
+fn translate_units_scale_with_parent_and_add_to_fraction() {
+    // 累積スケール 2 の親（scale 2 のキャンバス）の下: translate 40 → 80 画素
+    let mut world = World::new();
+    let mut root = canvas_node(&mut world, "Root", CanvasTransform::default(), [800.0, 800.0]);
+    let mut scaled = canvas_node(&mut world, "Scaled", CanvasTransform { scale: [2.0, 2.0], ..CanvasTransform::default() }, [400.0, 400.0]);
+    let mut toast = sprite_node(&mut world, "Toast", CanvasTransform { position: [0.0, 100.0], ..CanvasTransform::default() }, [200.0, 50.0]);
+    add_item(&mut world, &mut toast, CanvasLayoutItemComponent { translate: [40.0, 0.0], ..CanvasLayoutItemComponent::default() });
+    scaled.add_child(toast);
+    root.add_child(scaled);
+    let roots = vec![root];
+    let table = table_of(&roots, &world);
+    let base = origin(placed(&table, &roots, "Scaled"));
+    let t = origin(placed(&table, &roots, "Toast"));
+    assert!(near([t[0] - base[0], t[1] - base[1]], [80.0, 200.0]), "位置 (0,100) と translate (40,0) が 2 倍: {base:?} → {t:?}");
+
+    // 割合はキャンバスの領域（200×100）に対する割合。単位と足し合わせる
+    let mut world2 = World::new();
+    let mut root2 = canvas_node(&mut world2, "Root", CanvasTransform::default(), [400.0, 800.0]);
+    let mut panel = canvas_node(&mut world2, "Panel", CanvasTransform::default(), [200.0, 100.0]);
+    add_item(&mut world2, &mut panel, CanvasLayoutItemComponent { translate: [5.0, 0.0], translate_fraction: [0.5, -1.0], ..CanvasLayoutItemComponent::default() });
+    root2.add_child(panel);
+    let roots2 = vec![root2];
+    let table2 = table_of(&roots2, &world2);
+    assert!(near(origin(placed(&table2, &roots2, "Panel")), [105.0, -100.0]), "{:?}", origin(placed(&table2, &roots2, "Panel")));
+}
+
+/// 何も上書きしないノード（CanvasLayoutItem なし・値が 0）の表は従来とまったく同じ（行列も底上げも）。
+#[test]
+fn zero_visual_overrides_leave_table_unchanged() {
+    let build = |item: Option<CanvasLayoutItemComponent>| {
+        let mut world = World::new();
+        let mut root = canvas_node(&mut world, "Root", CanvasTransform::default(), [400.0, 800.0]);
+        let mut panel = canvas_node(&mut world, "Panel", CanvasTransform { position: [3.0, 7.0], rotation: 15.0, ..CanvasTransform::default() }, [200.0, 100.0]);
+        if let Some(item) = item {
+            add_item(&mut world, &mut panel, item);
+        }
+        panel.add_child(sprite_node(&mut world, "Child", CanvasTransform { position: [1.0, 2.0], ..CanvasTransform::default() }, [10.0, 10.0]));
+        root.add_child(panel);
+        let roots = vec![root];
+        let table = table_of(&roots, &world);
+        (roots, table)
+    };
+    let (roots_a, a) = build(None);
+    let (roots_b, b) = build(Some(CanvasLayoutItemComponent::default()));
+    for name in ["Root", "Panel", "Child"] {
+        let (pa, pb) = (placed(&a, &roots_a, name), placed(&b, &roots_b, name));
+        assert_eq!(pa.world_rs, pb.world_rs, "{name} の行列");
+        assert_eq!(pa.layer_bias, 0);
+        assert_eq!(pb.layer_bias, 0);
+    }
+    assert_eq!(b.stats.translated, 0);
+}
+
+/// レイヤーの底上げは祖先から足し合わせて子孫へ伝わる。兄弟には伝わらない。
+#[test]
+fn layer_bias_accumulates_down_the_tree() {
+    let mut world = World::new();
+    let mut root = canvas_node(&mut world, "Root", CanvasTransform::default(), [400.0, 800.0]);
+    let mut modal = canvas_node(&mut world, "Modal", CanvasTransform::default(), [400.0, 800.0]);
+    add_item(&mut world, &mut modal, CanvasLayoutItemComponent { layer_bias: 3_000_000, ..CanvasLayoutItemComponent::default() });
+    let mut card = canvas_node(&mut world, "Card", CanvasTransform::default(), [200.0, 100.0]);
+    add_item(&mut world, &mut card, CanvasLayoutItemComponent { layer_bias: 10, ..CanvasLayoutItemComponent::default() });
+    card.add_child(sprite_node(&mut world, "Label", CanvasTransform::default(), [50.0, 20.0]));
+    modal.add_child(card);
+    root.add_child(modal);
+    root.add_child(sprite_node(&mut world, "Sibling", CanvasTransform::default(), [10.0, 10.0]));
+    let roots = vec![root];
+    let table = table_of(&roots, &world);
+    assert_eq!(placed(&table, &roots, "Root").layer_bias, 0);
+    assert_eq!(placed(&table, &roots, "Modal").layer_bias, 3_000_000);
+    assert_eq!(placed(&table, &roots, "Card").layer_bias, 3_000_010);
+    assert_eq!(placed(&table, &roots, "Label").layer_bias, 3_000_010, "子孫は祖先の和");
+    assert_eq!(placed(&table, &roots, "Sibling").layer_bias, 0, "兄弟には伝わらない");
+    assert_eq!(biased_layer(5, placed(&table, &roots, "Label").layer_bias), 3_000_015);
+    assert_eq!(biased_layer(i32::MAX, 10), i32::MAX, "飽和する");
+}
+
+/// 横から入ってくる画面の中の安全領域の箱は、ずらす前の位置で縮める（途中で右の辺が画面の外へ出ても縮み直さない）。
+#[test]
+fn safe_area_inside_translated_node_ignores_translation() {
+    let viewport = [1080.0, 2400.0];
+    let safe = CanvasRect { min: [-540.0, -1064.0], max: [540.0, 1137.0] };
+    let build = |fraction: f32| {
+        let mut world = World::new();
+        let mut root = canvas_node(&mut world, "Root", CanvasTransform::default(), viewport);
+        let mut frame = canvas_node(&mut world, "Frame", CanvasTransform::default(), [1.0, 1.0]);
+        add_item(&mut world, &mut frame, CanvasLayoutItemComponent { fill_width: true, fill_height: true, translate_fraction: [fraction, 0.0], ..CanvasLayoutItemComponent::default() });
+        let mut body = canvas_node(&mut world, "Body", CanvasTransform::default(), [1.0, 1.0]);
+        add_item(&mut world, &mut body, CanvasLayoutItemComponent { fill_width: true, fill_height: true, ..CanvasLayoutItemComponent::default() });
+        add(&mut world, &mut body, ComponentKind::CanvasSafeArea, CanvasSafeAreaComponent { enabled: true, left: true, top: true, right: true, bottom: true });
+        body.add_child(sprite_node(&mut world, "BottomRight", CanvasTransform { anchor: [1.0, 1.0], ..CanvasTransform::default() }, [10.0, 10.0]));
+        frame.add_child(body);
+        root.add_child(frame);
+        let roots = vec![root];
+        let table = play_table(&roots, &world, viewport, CanvasScreenEnv { dp_scale: 1.0, safe_area: Some(safe) });
+        let body = placed(&table, &roots, "Body").eff_size;
+        let br = origin(placed(&table, &roots, "BottomRight"));
+        (body, br)
+    };
+    let (body0, br0) = build(0.0);
+    let (body_half, br_half) = build(0.5);
+    assert!(near(body0, [1080.0, 2201.0]), "{body0:?}");
+    assert!(near(body_half, body0), "半分ずらしても箱の大きさは同じ: {body_half:?}");
+    assert!(near(br_half, [br0[0] + 540.0, br0[1]]), "中身はずらした分だけ動くだけ: {br0:?} → {br_half:?}");
+}

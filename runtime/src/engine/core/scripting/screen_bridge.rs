@@ -18,10 +18,12 @@
 //    kind 1 = 安全領域  … out[0..4] = x, y, 幅, 高さ（描画ターゲット座標・左上原点）
 //    kind 2 = 向き      … out[0]    = ScreenOrientation の数値（C# の SEED.ScreenOrientation と同じ）
 //    kind 3 = DPI       … out[0]    = 論理 DPI
+//    kind 4 = 1 dp の画素数 … out[0] = DPI ÷ プラットフォームの基準 DPI（dp のルートキャンバスのレイアウトと同じ式。W2-7）
 // ============================================================
 
 use std::cell::Cell;
 
+use crate::engine::core::canvas_layout::dp_scale_from_dpi;
 use crate::engine::platform;
 use crate::engine::platform::screen::ScreenSnapshot;
 
@@ -36,6 +38,8 @@ pub const SCREEN_QUERY_SAFE_AREA: i32 = 1;
 pub const SCREEN_QUERY_ORIENTATION: i32 = 2;
 /// 論理 DPI（1 要素）。
 pub const SCREEN_QUERY_DPI: i32 = 3;
+/// 1 dp の画素数（1 要素。W2-7）。
+pub const SCREEN_QUERY_DP_SCALE: i32 = 4;
 
 /// どの問い合わせでも書き込む要素数の上限（C# 側はこの容量のバッファを渡す）。
 pub const SCREEN_QUERY_MAX_FLOATS: usize = 4;
@@ -116,6 +120,11 @@ pub fn snapshot_floats(
             out[SCREEN_FIELD_SCALAR] = snapshot.dpi;
             SCREEN_SCALAR_FLOATS
         }
+        // レイアウト（canvas_screen_env.rs の canvas_screen_from_snapshot）と同じ式・同じ基準 DPI
+        SCREEN_QUERY_DP_SCALE => {
+            out[SCREEN_FIELD_SCALAR] = dp_scale_from_dpi(snapshot.dpi, platform::CURRENT.reference_dpi as f32);
+            SCREEN_SCALAR_FLOATS
+        }
         _ => return None,
     };
     Some((out, len))
@@ -183,6 +192,9 @@ mod tests {
         assert_eq!(query(SCREEN_QUERY_ORIENTATION, SCREEN_QUERY_MAX_FLOATS).0, 1);
         assert_eq!(query(SCREEN_QUERY_ORIENTATION, SCREEN_QUERY_MAX_FLOATS).1[0], 1.0);
         assert_eq!(query(SCREEN_QUERY_DPI, SCREEN_QUERY_MAX_FLOATS), (1, [420.0, 0.0, 0.0, 0.0]));
+        // 1 dp の画素数 = DPI ÷ 基準 DPI（レイアウトの dp のルートと同じ式。W2-7）
+        let reference = platform::CURRENT.reference_dpi as f32;
+        assert_eq!(query(SCREEN_QUERY_DP_SCALE, SCREEN_QUERY_MAX_FLOATS), (1, [420.0 / reference, 0.0, 0.0, 0.0]));
         // 2 回目も同じ（写しは次の公開まで変わらない）
         assert_eq!(query(SCREEN_QUERY_SAFE_AREA, SCREEN_QUERY_MAX_FLOATS), (4, [0.0, 136.0, 1080.0, 2201.0]));
     }

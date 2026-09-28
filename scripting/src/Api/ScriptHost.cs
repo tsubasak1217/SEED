@@ -593,6 +593,8 @@ public static unsafe class ScriptHost
     public const int ScreenQueryOrientation = 2;
     /// <summary>画面情報の種別: 論理 DPI（1 要素）。</summary>
     public const int ScreenQueryDpi = 3;
+    /// <summary>画面情報の種別: 1 dp の画素数（1 要素。W2-7）。</summary>
+    public const int ScreenQueryDpScale = 4;
     /// <summary>どの種別でも書き込まれる要素数の上限（Rust 側 SCREEN_QUERY_MAX_FLOATS と一致）。</summary>
     public const int ScreenQueryMaxFloats = 4;
 

@@ -1,0 +1,2787 @@
+{
+ "name": "NavList",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Canvas",
+   "component": {
+    "type": "CanvasComponent",
+    "data": {
+     "width": 1.0,
+     "height": 1.0,
+     "auto_scale": false,
+     "viewport_ref": {
+      "type": "window"
+     },
+     "gravity_mode": "world_down",
+     "draw_zone": "foreground",
+     "pivot": [
+      0.0,
+      0.0
+     ]
+    }
+   }
+  },
+  {
+   "name": "LayoutItem",
+   "component": {
+    "type": "CanvasLayoutItemComponent",
+    "data": {
+     "fill_width": true,
+     "fill_height": true
+    }
+   }
+  },
+  {
+   "name": "Stack",
+   "component": {
+    "type": "CanvasStackComponent",
+    "data": {
+     "enabled": true,
+     "direction": "vertical",
+     "spacing": 12.0,
+     "padding": {
+      "left": 16.0,
+      "top": 16.0,
+      "right": 16.0,
+      "bottom": 16.0
+     },
+     "main_align": "start",
+     "cross_align": "stretch",
+     "reverse": false,
+     "fit_width": false,
+     "fit_height": false,
+     "hidden_children": "collapse"
+    }
+   }
+  },
+  {
+   "name": "NavSampleScreen",
+   "component": {
+    "type": "ScriptComponent",
+    "data": {
+     "type_name": "assets://ui/scripts/NavSampleScreen.cs",
+     "fields": {
+      "Role": "list"
+     }
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Title",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "一覧（タブ 1）",
+       "font_size": 20.0,
+       "color": [
+        0.838799,
+        0.791298,
+        0.913099,
+        1.0
+       ],
+       "align": "left",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 360.0,
+       "box_height": 28.0,
+       "wrap": false
+      }
+     }
+    },
+    {
+     "name": "LayoutItem",
+     "component": {
+      "type": "CanvasLayoutItemComponent",
+      "data": {
+       "preferred_height": 28.0
+      }
+     }
+    }
+   ],
+   "children": []
+  },
+  {
+   "name": "PushButton",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [
+        0.201556,
+        0.107023,
+        1.0,
+        1.0
+       ],
+       "width": 120.0,
+       "height": 48.0,
+       "layer": 0,
+       "shape": {
+        "kind": "rect",
+        "corner_radii": [
+         12.0,
+         12.0,
+         12.0,
+         12.0
+        ]
+       }
+      }
+     }
+    },
+    {
+     "name": "Gesture",
+     "component": {
+      "type": "CanvasGestureComponent",
+      "data": {
+       "tap": true,
+       "long_press": true
+      }
+     }
+    },
+    {
+     "name": "Button",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.Button",
+       "fields": {
+        "Variant": "Filled"
+       }
+      }
+     }
+    },
+    {
+     "name": "LayoutItem",
+     "component": {
+      "type": "CanvasLayoutItemComponent",
+      "data": {
+       "preferred_width": 0.0,
+       "preferred_height": 48.0
+      }
+     }
+    }
+   ],
+   "children": [
+    {
+     "name": "Label",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       0.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.5,
+       0.5
+      ],
+      "anchor": [
+       0.5,
+       0.5
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "詳細を積む（タブの中）",
+         "font_size": 14.0,
+         "color": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+         ],
+         "align": "center",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 320.0,
+         "box_height": 48.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    }
+   ]
+  },
+  {
+   "name": "List",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Canvas",
+     "component": {
+      "type": "CanvasComponent",
+      "data": {
+       "width": 1.0,
+       "height": 1.0,
+       "auto_scale": false,
+       "viewport_ref": {
+        "type": "window"
+       },
+       "gravity_mode": "world_down",
+       "draw_zone": "foreground",
+       "pivot": [
+        0.0,
+        0.0
+       ]
+      }
+     }
+    },
+    {
+     "name": "LayoutItem",
+     "component": {
+      "type": "CanvasLayoutItemComponent",
+      "data": {
+       "flex": 1.0
+      }
+     }
+    },
+    {
+     "name": "Clip",
+     "component": {
+      "type": "CanvasClipComponent",
+      "data": {
+       "enabled": true
+      }
+     }
+    },
+    {
+     "name": "Scroll",
+     "component": {
+      "type": "CanvasScrollComponent",
+      "data": {
+       "enabled": true,
+       "direction": "vertical",
+       "edge": "bounce",
+       "inertia": true,
+       "snap": "none",
+       "snap_interval": 0.0,
+       "hand_off_to_parent": true,
+       "content_size": "auto"
+      }
+     }
+    }
+   ],
+   "children": [
+    {
+     "name": "Content",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       0.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Canvas",
+       "component": {
+        "type": "CanvasComponent",
+        "data": {
+         "width": 1.0,
+         "height": 1.0,
+         "auto_scale": false,
+         "viewport_ref": {
+          "type": "window"
+         },
+         "gravity_mode": "world_down",
+         "draw_zone": "foreground",
+         "pivot": [
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "name": "Stack",
+       "component": {
+        "type": "CanvasStackComponent",
+        "data": {
+         "enabled": true,
+         "direction": "vertical",
+         "spacing": 8.0,
+         "padding": {
+          "left": 0.0,
+          "top": 0.0,
+          "right": 0.0,
+          "bottom": 0.0
+         },
+         "main_align": "start",
+         "cross_align": "stretch",
+         "reverse": false,
+         "fit_width": false,
+         "fit_height": true,
+         "hidden_children": "collapse"
+        }
+       }
+      },
+      {
+       "name": "LayoutItem",
+       "component": {
+        "type": "CanvasLayoutItemComponent",
+        "data": {
+         "fill_width": true
+        }
+       }
+      }
+     ],
+     "children": [
+      {
+       "name": "Row0",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 1",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row1",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 2",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row2",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 3",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row3",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 4",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row4",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 5",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row5",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 6",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row6",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 7",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row7",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 8",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row8",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 9",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row9",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 10",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row10",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 11",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row11",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 12",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row12",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 13",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row13",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 14",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row14",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 15",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row15",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 16",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row16",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 17",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row17",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 18",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row18",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 19",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Row19",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Sprite",
+         "component": {
+          "type": "SpriteComponent",
+          "data": {
+           "texture_path": "",
+           "color": [
+            0.012983,
+            0.01096,
+            0.019382,
+            1.0
+           ],
+           "width": 1.0,
+           "height": 56.0,
+           "layer": 0,
+           "shape": {
+            "kind": "rect",
+            "corner_radii": [
+             12.0,
+             12.0,
+             12.0,
+             12.0
+            ]
+           }
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 56.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           16.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.5
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "行 20",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "middle",
+             "layer": 0
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

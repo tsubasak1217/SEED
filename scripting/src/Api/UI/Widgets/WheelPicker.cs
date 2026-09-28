@@ -24,8 +24,16 @@ namespace SEED.UI;
 // ============================================================
 
 /// <summary>ホイールの列（中央の行が選ばれる）。</summary>
-public sealed class WheelPicker : UiWidget
+public sealed class WheelPicker : UiWidget, IFocusable
 {
+    // ── フォーカス（W2-7: WheelFocus は UiFocus の窓口になった。範囲 = 画面・ダイアログごと）──
+
+    /// <inheritdoc />
+    GameObject IFocusable.FocusOwner => Owner;
+
+    /// <inheritdoc />
+    void IFocusable.OnFocusChanged(bool focused) { }
+
     /// <summary>子の窓の名前。</summary>
     private const string ViewportChild = "Viewport";
     /// <summary>子の中央の帯の名前。</summary>

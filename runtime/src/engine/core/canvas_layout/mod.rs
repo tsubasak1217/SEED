@@ -65,7 +65,7 @@ pub use anchor::{child_anchor_basis, node_anchor_offset, root_anchor_offset, NO_
 pub use clip::{CanvasClipRegion, ClipRectSource};
 pub use frame::{AutoScaleDivisor, CanvasLayoutEnv, CanvasParentFrame, IDENTITY_MAT4};
 pub use pass::CanvasLayoutPass;
-pub use placement::{resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement};
+pub use placement::{biased_layer, resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement};
 pub use safe_area::CanvasRect;
 pub use scroll_view::CanvasScrollRegion;
 pub use table::{CanvasLayoutNode, CanvasLayoutStats, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};

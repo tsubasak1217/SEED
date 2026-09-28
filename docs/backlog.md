@@ -2879,7 +2879,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （帯の中だけ拡大・不透明、外は 0.447）はせず、帯の中の度合いで連続に補間している（帯の境をまたぐ行は中間の濃さ）。オフアクシス（列ごとの左右の傾き）と
   行の中での遠近の横の歪みも無い。(3) **最小・最大の時刻**（CupertinoDatePicker の minimumDate/maximumDate。値で時・分の列の選べない行が変わる）が TimeWheel に無い
   （列の `SetItemEnabled` で作れる）。(4) **キーボードのフォーカスは仮**（`WheelFocus` = 最後に触れたホイール）。W2-6（入力欄）・W2-7（画面のスタック）の
-  フォーカスへ寄せる。PC でマウスのホイール（`Input.MouseScroll`）で回す操作も無い。(5) **無限のスクロールではない**（中身 ≒ 20 万単位の中で止まるたびに真ん中へ戻す。
+  フォーカスへ寄せる → **2026-09-28 の W2-7 で `UiFocus`（フォーカスの範囲）の窓口にした**（覆われた画面・選んでいないタブのホイールは矢印キーを受けない）。PC でマウスのホイール（`Input.MouseScroll`）で回す操作も無い。(5) **無限のスクロールではない**（中身 ≒ 20 万単位の中で止まるたびに真ん中へ戻す。
   止めずに最速のフリックを 25 回以上続けると端で跳ね返る）。(6) ScrollTo の曲線は easeInOut だけ（Flutter の午前/午後の連動は easeOut）。(7) 読み上げ（アクセシビリティ）が無い。
   関連: `scripting/src/Api/UI/Wheel/`・`scripting/src/Api/UI/Widgets/WheelPicker.cs`・`TimeWheel.cs`・`templates/ui/`。
 - [ ] **一覧の行の使い回しがシーン操作のコマンド（ヒエラルキーの送信つき）になる（既存・W2-3）** — 2026-09-28（W2-5 の確かめで `SEED_REDRAW_LOG=1` の
@@ -2890,7 +2890,23 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   `scripting/src/Api/UI/ListView.cs`。
 - [ ] **W2-6 文字入力と IME・文字の寸法（`Text.Measure`）・グリフの追い出し** — 2026-09-27。
   グリフのアトラス（4096²・約 2,500 字）はあふれると追い出さずに描かない（`font/atlas.rs:17-19,183-194`）。日本語のアプリでは足りなくなりうる。
-- [ ] **W2-7 画面の組み立て（タブ・画面のスタック・ダイアログ・シート・戻るの段・トースト）** — 2026-09-27。
+- [x] **W2-7 画面の組み立て（タブ・画面のスタック・ダイアログ・シート・戻るの段・トースト）** — 2026-09-27。
+  → **2026-09-28 に済**（正典 docs/ui_navigation.md。roadmap §3.8.5）。C# の `SEED.UI` の `ScreenStack`・`UiScreen`・`TabHost`・`TabBar`・`ModalHost`・`Dialog`・
+  `BottomSheet`・`TopSheet`・`ToastHost`・`Toast`・`BackDispatcher`・`UiFocus`。Rust は `CanvasLayoutItem` の実行中だけの `translate`・`translate_fraction`・
+  `layer_bias`（保存しない）と `Screen.DpScale`。見本は `templates/ui/scenes/ui_navigation.scene`。残りは下の「W2-7 の残り」。
+- [ ] **W2-7 の残り（画面の組み立て）** — 2026-09-28。(1) **実機（Pixel 6a）で未確認**（戻るボタン・戻るジェスチャーの段の順〈UC-6〉・背面へ回って戻る・
+  バーを表示した安全領域〈UC-7〉・動きの 60 fps。手順は ui_navigation.md §12）。エディタに埋め込んだ Play でも未確認（PC の Esc がエディタの操作と重ならないか）。
+  (2) **部分木の透明度（CanvasGroup の alpha）が無い**: フェードは幕（背景の色）を通して入れ替え、ダイアログの札・トーストは透明度で出入りしない。
+  足すなら `layer_bias` と同じく表の配置へ「祖先の濃さの積」を持たせ、描画アイテムの色へ掛ける。(3) **`SEED.Draw` の図形に `layer_bias` が効かない**
+  （図形は座標空間の持ち主のノードしか持たない。`PrimitiveSpace` に底上げを持たせれば効く）。(4) **画面の中の表示のレイヤーは段の値〈10,000・タブの中 1,000〉
+  より小さく**という約束だけ（大きなレイヤーの表示を持つ画面を積むと前後が崩れる。検査やエディタの警告は無い）。(5) ダイアログの本文の高さは文字の数からの
+  見積もり（`DialogLayout`。W2-6c の `Text.Measure` へ替える）。(6) **下からのシートの「先に広げる」が無い**（半分の段で中身の一覧を上へ引くと一覧が先に動く。
+  W2-3 の入れ子は内側が先・端の残りを外側へだけ。Android の nested pre-scroll 相当を足すなら canvas_scroll/nesting.rs）。開く・閉じる曲線は ScrollTo の
+  easeInOut 固定。(7) 上からの覆いの作りは最小（Flutter 版の固定の頭・一覧の外の閉じる・左右の余白・四隅の角丸は W3 のプレハブで）。
+  (8) **予測型の戻る**（Android 14+ の戻るジェスチャーの途中ののぞき見・`OnBackInvokedCallback`）は扱わない。(9) `CanvasLayoutItem` の実行中だけの欄は
+  インスペクタに出ない（Play 中に値を見るには `SCRIPT_DEBUG` かスクリプト）。(10) Wake or Pay の仕様 §3.7 は「タブの最上位 → 背面へ」だけで、
+  W2-7 の依頼の「根のタブ以外なら根のタブへ」（`TabHost.BackToFirstTab` 既定 true）と違う。W3 でどちらにするか決める（false で仕様どおり）。
+  関連: `scripting/src/Api/UI/Navigation/`・`runtime/src/engine/core/canvas_layout/`・`templates/ui/`。
 - [ ] **W2-8 グラフ（折れ線・積み上げ棒・軸・吹き出し・パンとズーム）** — 2026-09-27。
 - [ ] **W2-9 テーマ（トークンの JSON・実行中の切り替え）と `templates/ui/` の見本・ギャラリー** — 2026-09-27。
 - [ ] **W2-10 描かなくてよいときは描かない** — 2026-09-27。前面では毎フレーム描き続け、UI と提示だけで Pixel 6a の GPU 約 4.5 ms を使う
@@ -2924,6 +2940,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **W2-11 通しの確認（UC-1〜12）** — 2026-09-27。
 - [ ] **PC の Play のスクリプトのコンパイルで `System.Text.Json` を参照できない** — 2026-09-27（Wake or Pay の W3-D で発見）。`using System.Text.Json;` が `CS0234: 'Json' does not exist in the namespace 'System.Text'` で失敗する。Play のコンパイル（ScriptAssemblyManager の Roslyn）が「その時点で読み込まれているアセンブリ」だけを参照に入れるため、共有フレームワークの `System.Text.Json.dll` が参照に入らない。Wake or Pay は反射なしの小さな JSON（`assets/scripts/Json/`）を自作して回避した。直し方の案: 参照の集合を「読み込み済み」ではなく、同梱の .NET の `shared/Microsoft.NETCore.App/<版>/` の参照用アセンブリ一式（または許可リスト）から作る。Android の同梱 CoreCLR と SeedPak の事前コンパイル（`--scripts`）の参照も同じ集合にそろえる。関連: `scripting/` の Compilation、`docs/scripting_api.md`（使える .NET の範囲を明記する）。
 - [ ] **SEED.exe を前面に出さずに起動する引数が無い（自動の見た目の検査が利用者の画面を奪う）** — 2026-09-27（W2-1a の画素比較で発見。利用者から「頻繁に起動しているのはなぜ？」）。今は STARTUPINFO の SW_SHOWNOACTIVATE で起動し最背面へ送って凌いでいる。案: `--window=hidden|offscreen|minimized` と、描画をオフスクリーンのテクスチャに向けてスクリーンショットだけ撮る `--headless-render`（決まったフレーム数で撮って終了）。W2 以降の見た目の回帰検査（UC の自動化）と CI で使う。関連: `runtime/src/main.rs`、IPC の SCREENSHOT。
+  → 2026-09-28（W2-7 の回帰）: 最背面の窓でも**利用者の OS のマウスカーソルが窓の上にあると `OnPointerEnter`（ホバー）が起き**、図鑑の矢印の色が変わって
+  画素比較が揺れた（推論。撮り直しで差 0）。オフスクリーンの撮影か「実のカーソルを無視して注入だけを使う」起動の引数があれば避けられる。
 - [x] **`frame_renderer.rs` の未使用の import `sprite_world_corners`** — 2026-09-27（W2-1a の後に rust-analyzer が指摘）。警告の総数は変わっていないが、W2-1a で使われなくなった可能性。W2-1b で確かめて消す。
   → **2026-09-28 に W2-1b で消した**: rustc も `unused import` を出していた（W2-1a より前から、どこからも呼ばれていなかった）。import と、呼び手の無くなった
   関数 `canvas_collect::sprite_world_corners` の本体を消した。
@@ -2934,7 +2952,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （回転したノードの安全領域は外接矩形）。(5) スクリプトから**ルートキャンバスの単位（dp）を読み書きできない**（C# に Canvas の型が無い。
   インスペクタだけ）。スクリプトから **1 dp の画素数（dp の倍率）を読む API も無い**（入力の座標は画素のまま。W2-2 のジェスチャーで閾値を dp で持つときに要る）。
   → W2-2（2026-09-28）でジェスチャーのイベントの中だけ読めるようにした（`GestureEvent.DpScale`・`DeltaDp`・`VelocityDp`。閾値はエンジンが dp で持つ）。
-  いつでも読める API（`Screen.DpScale` など）はまだ無い。
+  いつでも読める API（`Screen.DpScale` など）はまだ無い。→ **2026-09-28 の W2-7 で `Screen.DpScale` を足した**（dp のルートのレイアウトと同じ値）。
   (6) **動いているエディタでの追加・編集の目視は未確認**（WPF のインスペクタは既存の書き方に倣っただけ。ビルドとエディタのテストは通る）。
   (7) エディタの GPU の ID 描画の切り抜きは CPU の計算（`canvas_id_scissors`）までを単体テストで確かめただけで、3D ビューでの実際のクリックは未確認。
   関連: `runtime/src/engine/core/canvas_layout/`・`editor/src/Panels/InspectorPanel.CanvasLayout.cs`・`scripting/src/Api/Canvas*.cs`。

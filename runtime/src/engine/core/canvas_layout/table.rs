@@ -143,6 +143,8 @@ pub struct CanvasLayoutStats {
     pub scrolls: u32,
     /// スクロールの見える範囲の外として飛ばしたノードの数（W2-3。性能の診断）。
     pub culled: u32,
+    /// 見た目の平行移動（CanvasLayoutItem.translate*）でずらしたノードの数（W2-7。診断）。
+    pub translated: u32,
 }
 
 /// レイアウトの表（1 フレーム・1 文脈ぶん）。

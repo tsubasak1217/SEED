@@ -1437,6 +1437,8 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">item.PreferredSize / item.MinSize / item.MaxSize</code><span class="desc">Vector2（get/set。大きさの指定・下限・上限。0 の軸は指定なし）</span></div>
   <div class="api"><code class="sig">item.AlignSelf</code><span class="desc">ItemAlign（get/set。Auto（既定・コンテナに従う）/ Start / Center / End / Stretch）</span></div>
   <div class="api"><code class="sig">item.FillWidth / item.FillHeight</code><span class="desc">bool（get/set。コンテナの外の子で使う。親の CanvasComponent の領域いっぱいに広げる）</span></div>
+  <div class="api"><code class="sig">item.Translate / item.TranslateFraction</code><span class="desc">Vector2（get/set。W2-7・実行中だけ・保存しない）。置かれた後に足す平行移動（キャンバスの単位／自分の矩形に対する割合）。親に合わせた・コンテナが並べたノードも動き、子孫・当たり判定・切り抜きも付いてくる。レイアウトと子孫の安全領域は変えない</span></div>
+  <div class="api"><code class="sig">item.LayerBias</code><span class="desc">int（get/set。W2-7・実行中だけ）。自分と子孫の表示（Sprite・Text・パーティクル）のレイヤーに足す値（祖先と足し合わせる）。重なる画面・ダイアログ・シート・トーストの前後。描画・ポインタの最前面・ジェスチャーの遮りが同じ値で比べる。SEED.Draw には効かない</span></div>
   <h3 id="cmp-canvassafearea">CanvasSafeArea（安全領域：切り欠き・ステータスバー・ジェスチャーバーを避ける）</h3>
   <p>CanvasComponent を持つノード（パネル）に付けると、キャンバス領域を Screen.SafeArea の内側へ辺ごとに縮めます（W2-1b）。子のアンカー・コンテナは縮めた領域を基準にし、画面の回転とシステムバーの出し入れに次のフレームから追従します。PC の Play とエディタでは画面全体（PC では環境変数 SEED_SIM_SAFE_AREA=左,上,右,下 で模擬できる）。Sprite の大きさは変えないので、背景は親に置きます。ルートキャンバスの「寸法の単位」を dp にすると、ルートの大きさは「画面 ÷ 1 dp の画素数」になり、子は dp で並びます（1 dp = Screen.DPI ÷ 基準 DPI。PC は SEED_SIM_SCALE_FACTOR で端末の密度を模擬できる）。</p>
   <div class="api"><code class="sig">safe.Enabled</code><span class="desc">bool（get/set。既定 true）</span></div>
@@ -2192,6 +2194,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="api"><code class="sig">Screen.SafeArea</code><span class="desc">Rect。安全領域（カメラ穴・切り欠き・ジェスチャーバーを避けた範囲。左上原点）。安全領域の無い環境（デスクトップ）では全画面 (0, 0, Width, Height)</span></div>
   <div class="api"><code class="sig">Screen.Orientation</code><span class="desc">ScreenOrientation。画面の向き（Android は端末の回転から 4 方向、デスクトップはウィンドウの縦横比）</span></div>
   <div class="api"><code class="sig">Screen.DPI</code><span class="desc">float。OS が報告する論理 DPI（Android は densityDpi、Windows は 96 × 表示スケール）。取れなければ 96</span></div>
+  <div class="api"><code class="sig">Screen.DpScale</code><span class="desc">float。1 dp の画素数（Android は densityDpi ÷ 160、Pixel 6a は 2.625。Windows は表示スケール）。dp のルートキャンバスと同じ値。画素 → dp は「画素 ÷ DpScale」（W2-7）</span></div>
   <div class="api"><code class="sig">ScreenOrientation.Portrait / PortraitUpsideDown</code><span class="desc">縦長・正立 / 縦長・逆さ</span></div>
   <div class="api"><code class="sig">ScreenOrientation.LandscapeLeft / LandscapeRight</code><span class="desc">横長。縦持ちから反時計回りに倒した向き（端末の上端が左。デスクトップの横長ウィンドウもこれ）／ 時計回りに倒した向き（端末の上端が右）</span></div>
   <div class="api"><code class="sig">new Rect(x, y, width, height)</code><span class="desc">不変値型の矩形。new Rect(position, size) でも作れる。Rect.Zero = (0, 0, 0, 0)</span></div>
@@ -2608,7 +2611,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   </table>
 </section>
 
-<section id="sec-ui-widgets" data-keywords="UI部品 SEED.UI Button ボタン Toggle トグル スイッチ Checkbox チェックボックス Slider スライダ NumberField 数値欄 ステッパー SegmentedControl セグメント ChipGroup チップ RadioGroup ラジオ SelectItem ProgressBar 進捗 プログレス ProgressRing 輪 UiWidget Of Interactable SetInteractable Busy 二重押し Clicked LongPressed Released ValueChanged SelectionChanged Changed UiTheme UiTokens テーマ トークン color.primary radius.button 押下 無効 長押し 連続 KeepAlive W2-4">
+<section id="sec-ui-widgets" data-keywords="UI部品 SEED.UI Button ボタン Toggle トグル スイッチ Checkbox チェックボックス Slider スライダ NumberField 数値欄 ステッパー SegmentedControl セグメント ChipGroup チップ RadioGroup ラジオ SelectItem ProgressBar 進捗 プログレス ProgressRing 輪 UiWidget Of Interactable SetInteractable Busy 二重押し Clicked LongPressed Released ValueChanged SelectionChanged Changed UiTheme UiTokens テーマ トークン color.primary radius.button 押下 無効 長押し 連続 KeepAlive W2-4 画面の組み立て ナビゲーション ScreenStack 画面のスタック Push Pop Replace PopToRoot SetRoot NavTransition 押し込み 覆う フェード ScreenOptions ScreenHandle UiScreen OnBackPressed TabHost TabBar TabItem タブ Dialog ダイアログ DialogOptions DialogResult BottomSheet シート TopSheet 覆い ModalHost Toast トースト ToastHost BackDispatcher 戻る 戻るの段 MoveTaskToBack UiFocus FocusScope フォーカス IFocusable LayerBias TranslateFraction DpScale W2-7">
   <h2>7.16 UI 部品（SEED.UI：ボタン・トグル・スライダ・数値欄・選択・進捗とテーマ。W2-4）</h2>
   <p>部品は<strong>アクタ（プレハブ）に付けるスクリプト</strong>です。ScriptComponent の型名に <code>SEED.UI.Button</code> のように書いて付けます（見本のプレハブは <code>templates/ui/prefabs/</code>、ギャラリーは <code>templates/ui/scenes/ui_gallery.scene</code>）。部品は「状態（値・無効・押下）→ 見た目」を 1 か所で決めてプレハブの子（Sprite・Text）へ当て、色・角丸・大きさ・文字の大きさ・動きの時間はテーマのトークン（<code>UiTokens</code>）から取ります。正典は docs/ui_components.md。</p>
   <div class="api"><code class="sig">UiWidget.Of&lt;T&gt;(gameObject)</code><span class="desc">T?（そのアクタに付いた部品。相手の OnStart の前は null＝見つかるまで引き直す）</span></div>
@@ -2653,6 +2656,31 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     wheel.ValueSettled += (_, t) =&gt; SEED.<span class="t">Debug</span>.Log(<span class="s">$"alarm {t:HH:mm}"</span>);  <span class="c">// 全列が止まった</span>
 }</pre>
   <p>12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えると午前/午後の列が動き、午前/午後の列を指で変えると時が 12 ずれます（Flutter の CupertinoDatePicker と同じ）。分の 59 → 00・時の 23 → 0 はそれぞれの列の中でつながります。値の変化で他の部品は作り直されず、列が動いている間はエンジンが「動いている」を申告するので <code>render_policy: on_demand</code> でも止まりません。</p>
+
+  <h2>7.18 画面の組み立て（SEED.UI：画面のスタック・タブ・ダイアログ・シート・覆い・トースト・戻るの段・フォーカス。W2-7）</h2>
+  <p>1 つのシーンに画面をプレハブとして出し入れする部品。見本は <code>templates/ui/scenes/ui_navigation.scene</code>、部品のプレハブは <code>screen_stack.actor</code>・<code>screen_frame.actor</code>・<code>tab_host.actor</code>・<code>modal_host.actor</code>・<code>dialog.actor</code>・<code>bottom_sheet.actor</code>・<code>top_sheet.actor</code>・<code>toast_host.actor</code>・<code>toast.actor</code>。正典は docs/ui_navigation.md。</p>
+  <div class="api"><code class="sig">stack.Push(prefab, transition, args, options) / Pop(result) / Replace / PopToRoot / SetRoot</code><span class="desc">ScreenStack。出入りは NavTransition.Push（右から）/ Cover（上から）/ Fade（幕を通して）/ None。ScreenOptions: Opaque・KeepState（false = 覆われたら手放して戻ったら作り直す）・IgnoreBack・SafeArea。ScreenHandle（Closed・WhenClosed・Result）を返す</span></div>
+  <div class="api"><code class="sig">stack.Depth / Top / CanPop / IsTransitioning / Changed</code><span class="desc">段の数・いちばん上の手札・下ろせるか・動いているか・落ち着いた後の知らせ</span></div>
+  <div class="api"><code class="sig">class X : UiScreen — OnScreenEnter(args) / OnScreenShown / OnScreenHidden / OnScreenExit / OnBackPressed() / Close(result)</code><span class="desc">画面のスクリプトの土台（任意）。OnBackPressed が true なら戻るを受けてスタックは下ろさない（未保存の確認・鳴動の画面）</span></div>
+  <div class="api"><code class="sig">tabs.Select(i) / SelectedIndex / CurrentStack / StackAt(i) / TabChanged / TabReselected</code><span class="desc">TabHost（タブごとの ScreenStack を隠して保つ）。選んでいるタブを押すと根へ戻る。BackToFirstTab（既定 true）・ResetOnLeave</span></div>
+  <div class="api"><code class="sig">Dialog.Show(DialogOptions) → DialogHandle</code><span class="desc">題・本文・ボタン 1〜3（中立・いいえ・はいの順）・DismissOnScrimTap・CancelableByBack。ResultAsync / Completed で DialogResult（Positive / Negative / Neutral / Dismissed）</span></div>
+  <div class="api"><code class="sig">BottomSheet.Show(SheetOptions) / TopSheet.Show(OverlayOptions) → ModalHandle</code><span class="desc">下からのシート（半分・全体の段。つまみ・板のドラッグとフリック・中身の一覧から渡った残りで閉じる）・上からの覆い（幕のタップ・つまみを上へ）。Close(result)・WhenClosed</span></div>
+  <div class="api"><code class="sig">Toast.Show(message, ToastLength) / ToastHost.Current.Show(message, seconds)</code><span class="desc">下に一時的に出る知らせ（同時に count.toast_visible 個まで・待ち・横へ払って消す・実時間で消える）。ToastHost.BottomOffset でタブのバーの上に出す</span></div>
+  <div class="api"><code class="sig">BackDispatcher.Dispatch() / AddLayer(order, name, handler) / Dispatched / MoveTaskToBackWhenUnhandled</code><span class="desc">戻るの段: Focus 100 → Dialog 200 → Sheet 300 → Overlay 400 → Navigation 500（スタック・タブを内側から）→ どれも受けなければ Platform.App.MoveTaskToBack()</span></div>
+  <div class="api"><code class="sig">UiFocus.Request(item) / Release / Current / TopScope / Changed — IFocusable・IBackConsumer</code><span class="desc">キーボードで動かす相手と画面ごとの範囲（上の画面・開いている面の範囲だけが今のフォーカス。WheelFocus もここへ寄せた）</span></div>
+  <table>
+    <tr><th>トークン</th><th>既定</th><th>使う所</th></tr>
+    <tr><td><code>motion.push</code>・<code>cover</code>・<code>fade</code>（と <code>*_curve</code>）</td><td>0.3 秒</td><td>画面の出入り（曲線は x1・y1・x2・y2）</td></tr>
+    <tr><td><code>motion.overlay</code>・<code>dialog</code>・<code>sheet</code>・<code>toast</code></td><td>0.22・0.2・0.25・0.2</td><td>覆い・ダイアログ・シート・トーストの出入り</td></tr>
+    <tr><td><code>opacity.scrim</code>・<code>opacity.dialog_scrim</code></td><td>0.54・0.32</td><td>幕の濃さ</td></tr>
+    <tr><td><code>layer.stack_step</code>・<code>overlay</code>・<code>sheet</code>・<code>dialog</code>・<code>toast</code></td><td>1 万・100〜400 万</td><td>重なりのレイヤーの底上げ（画面の中の表示のレイヤーは段の値より小さく）</td></tr>
+  </table>
+<pre><span class="k">var</span> stack = <span class="t">UiWidget</span>.Of&lt;<span class="t">ScreenStack</span>&gt;(<span class="t">GameObject</span>.Find(<span class="s">"RootStack"</span>));
+<span class="k">var</span> h = stack.Push(<span class="s">"assets://ui/prefabs/edit.actor"</span>, <span class="t">NavTransition</span>.Push, args: alarmId);
+h.Closed += x =&gt; SEED.<span class="t">Debug</span>.Log(x.Result);
+<span class="k">var</span> r = <span class="k">await</span> <span class="t">Dialog</span>.Show(<span class="k">new</span> <span class="t">DialogOptions</span> { Title = <span class="s">"削除しますか？"</span>, PositiveText = <span class="s">"削除"</span>, NegativeText = <span class="s">"やめる"</span> })!.ResultAsync;
+<span class="t">Toast</span>.Show(<span class="s">"保存しました"</span>);</pre>
+  <p>積んだ画面の枠は遮る板を持ち、下の画面は入力を受けません。落ち着いた後は不透明な画面の下を隠して描きません。動きの間だけ <code>Redraw.KeepAlive</code> で描き続け、<code>render_policy: on_demand</code> なら落ち着いて 10 フレームで描画が止まります。</p>
 </section>
 
 

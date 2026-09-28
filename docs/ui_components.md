@@ -126,6 +126,9 @@ JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`
 | `radius.wheel_band` / `size.wheel_band_inset` / `opacity.wheel_dim` | 8 / 9 / 0.447 | ホイールの中央の帯の角丸・左右の余白／帯の外の行の濃さ（帯の色は `color.surface_variant`、文字は `color.on_surface`・選べない行は `color.on_disabled`） |
 | `motion.wheel` / `motion.wheel_correct` | 0.3 / 0.2 | ホイールをタップ・スクリプト・キーで動かす時間と午前/午後の連動／選べない行から戻す時間 |
 
+画面の組み立て（W2-7）のトークン（画面の出入りの時間と曲線・幕・ダイアログ・シート・トースト・タブ・重なりのレイヤー）は [ui_navigation.md](ui_navigation.md) §9
+（名前は `NavTokens`。曲線は `motion.push_curve` の `.x1`・`.y1`・`.x2`・`.y2` の 4 つの数＝CSS の cubic-bezier。`UiCurve.FromTheme`）。
+
 ## 6. 基本の部品（`SEED.UI`。部品ごとの状態と見た目）
 
 部品は**アクタ（プレハブ）に付けるスクリプト**（`UiWidget` の派生。ScriptComponent の型名に `SEED.UI.Button` などを書く）。スクリプトは
@@ -310,7 +313,9 @@ TimeWheel（Sprite = 全体〈透明〉・SEED.UI.TimeWheel）
   押した位置が映っている行は、見た目の式の逆（映る位置 → 平らな距離。二分法）で求める。**動いている間のタップは止めるだけ**（前のフレームも止まっていた列だけが受ける。
   慣性の途中の窓は触れた指で止まる＝W2-3 の Held）。
 - **キーボード**: 最後に指で触れた（またはスクリプトが `Focus()` した）ホイール 1 つだけが上下の矢印で 1 つずつ動く（`WheelFocus`）。時刻ホイールは左右の矢印で自分の列の間を移す。
-  連続で押すと行き先を積み上げる。入力欄のフォーカス（W2-6）・画面のスタック（W2-7）ができたらそちらへ寄せる（backlog）。
+  連続で押すと行き先を積み上げる。**W2-7 で `WheelFocus` は `UiFocus`（フォーカスの範囲）の窓口になった**: ホイールはいちばん前の範囲（上の画面・
+  開いているダイアログ・シート・覆い）の中にあるときだけ今の相手になり、覆われた画面・選んでいないタブのホイールは矢印キーを受けない
+  （閉じる・戻ると覚えていた相手へ戻る。[ui_navigation.md](ui_navigation.md) §7）。入力欄（W2-6）も同じ仕組みに乗る。
 - **スクリプト**: `SelectIndex(項目, animate)`・`SetValue(値, animate)`・`StepBy(n)`。animate = true は `motion.wheel` 秒の ScrollTo（easeInOut）、false はすぐ移す。
   最初の描画の前（窓の大きさ・中身の長さが分かる前）に呼んだら、分かったときに黙って置く（イベントを出さない）。`Configure(数, 文字, 端をつなげる, 項目)` で作り直すときも黙って置き直す。
 - **無効**（`Interactable = false`）: 文字・帯を `opacity.disabled` で薄くし、遮る板（Blocker）を見せて窓のスクロールに指を渡さない（CanvasScroll の `enabled = false` は位置を 0 にするので使わない）。
@@ -371,6 +376,6 @@ TimeWheel（Sprite = 全体〈透明〉・SEED.UI.TimeWheel）
 - **オフアクシス**（`offAxisFraction`。列ごとに左右へ傾ける）・**遠近の横の歪み**（行の中での横の倍率の変化）は無い（行ごとに一様な倍率）
 - **無限のスクロールではない**: 中身の長さ ≒ 20 万の中で止まるたびに真ん中へ戻す。止めずに 25 回以上最速でフリックし続けると端に着く（跳ね返る）
 - **最小・最大の時刻**（CupertinoDatePicker の minimumDate/maximumDate。時の列・分の列の選べない行が値で変わる）は無い（列ごとの `SetItemEnabled` で作れる。backlog）
-- **キーボードのフォーカス**は仮（最後に触れたホイール）。W2-6/W2-7 のフォーカスへ寄せる。マウスのホイールで回す操作は無い（backlog）
+- **キーボードのフォーカス**: 最後に触れたホイール（W2-7 でフォーカスの範囲へ寄せた。§11.5）。マウスのホイールで回す操作は無い（backlog）
 - **読み上げ**（アクセシビリティ）は無い
 - **実機の手触り・触感**: 未確認（§11.9）

@@ -15,6 +15,9 @@
     動き（UiTween の途中の行き先の変更）。
     W2-5: ホイールの行の見た目（距離 → 位置・縮み・拡大・濃さ。Flutter の円柱の投影の行列と照合）と逆算（タップ）、循環の添字（負・大きな値）と
     近い向きの行・真ん中の周へ戻す判定、位置 ↔ 行、選べる行の探し方、12/24 時間の変換と午前/午後の連動、分の刻みの丸め。
+    W2-7: 動きの曲線、画面の出入りの置き方、画面のスタックの積み下ろしと落ち着いた状態（見せる・隠す・手放す）、タブごとのスタックと戻る、
+    戻るの段の順序（128 通りの状態で 1 回ずつ押す）、ダイアログのボタン・結果・本文の行の見積もり、シートの段と閉じる判定・幕の濃さ、
+    ドラッグで閉じる判定、トーストの並びと時間、フォーカスの範囲と移り方、重なりのレイヤーの帯、タブの見た目。
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -58,6 +61,10 @@
     <!-- W2-5: ホイールの純粋な計算（行の曲面の見た目・循環の添字と位置・時刻の 12/24 時間と連動と分の刻み） -->
     <Compile Include="..\..\..\scripting\src\Api\UI\Wheel\*.cs">
       <Link>Linked\Wheel\%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- W2-7: 画面の組み立ての純粋な計算（出入りの置き方・スタック・タブ・戻るの段・ダイアログ・シート・トースト・フォーカス・レイヤー） -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\Navigation\Model\*.cs">
+      <Link>Linked\Navigation\%(Filename)%(Extension)</Link>
     </Compile>
     <!-- 既定のテーマのデータ（SEEDScripting に埋め込むものと同じファイル）を出力へ写す -->
     <None Include="..\..\..\scripting\src\Api\UI\Theme\default_theme.json">

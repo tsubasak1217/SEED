@@ -32,7 +32,7 @@ use crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector;
 use crate::engine::core::renderer::SpriteDrawItem;
 use crate::engine::core::renderer::ui_clip::UiClipId;
 use crate::engine::core::canvas_layout::{
-    AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind,
+    biased_layer, AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind,
     CanvasNodePlacement, CanvasParentFrame,
 };
 use crate::engine::core::renderer::ui_draw_pass::Particle2dDrawItem;
@@ -848,7 +848,8 @@ fn collect_node_draw_items(
             emitter: slot.entity,
             model: node_mesh_gpu_mat,
             zone: my_zone,
-            layer: pe.layer,
+            // レイヤー = コンポーネントの値 + ノードの底上げ（W2-7。重なる画面の前後。0 なら従来のまま）
+            layer: biased_layer(pe.layer, placement.layer_bias),
             clip: node_clip,
         });
     }
@@ -950,7 +951,7 @@ fn collect_node_draw_items(
                     tex,
                     mesh: None,
                     zone: my_zone,
-                    layer: sc.layer,
+                    layer: biased_layer(sc.layer, placement.layer_bias),
                     clip: node_clip,
                     style,
                 });
@@ -991,7 +992,7 @@ fn collect_node_draw_items(
             tex,
             mesh: Some(mesh_draw),
             zone: my_zone,
-            layer: ss.layer,
+            layer: biased_layer(ss.layer, placement.layer_bias),
             clip: node_clip,
             // スキンスプライトは形と塗りを持たない（W2-4）
             style: None,
@@ -1044,9 +1045,10 @@ fn collect_node_draw_items(
             my_zone,
             out,
         );
-        // インライン画像もテキストと同じ切り抜きの中に入れる
+        // インライン画像もテキストと同じ切り抜きの中に入れ、テキストと同じ底上げのレイヤーに出す（W2-7）
         for image in &mut out[inline_start..] {
             image.clip = node_clip;
+            image.layer = biased_layer(image.layer, placement.layer_bias);
         }
         text_out.push(CanvasTextItem {
             doc: expanded.doc.clone(),
@@ -1060,7 +1062,7 @@ fn collect_node_draw_items(
             line_spacing: tc.line_spacing,
             model: text_model,
             zone: my_zone,
-            layer: tc.layer,
+            layer: biased_layer(tc.layer, placement.layer_bias),
             // フォント指定と縁取りはコンポーネントの値をそのまま渡す
             font_path: tc.font_path.clone(),
             outline_width: tc.outline_width,
@@ -1483,7 +1485,8 @@ pub(super) fn collect_canvas_id_items(
                 tex_path,
                 mesh,
                 zone: placement.zone,
-                layer,
+                // 描画と同じ並び（コンポーネントのレイヤー + ノードの底上げ。W2-7）
+                layer: biased_layer(layer, placement.layer_bias),
                 kind,
                 clip: node.clip,
             });
@@ -1772,7 +1775,7 @@ pub(super) fn walk_3d_canvas_children_id(
                     // layer は呼び出し側のキャンバス内レイヤーソートに使用する
                     out.push((
                         mc_total + my_dfs + 1, to_gpu_mat(sw), tex_path, None,
-                        sc.layer, UiDrawKind::Sprite,
+                        biased_layer(sc.layer, placement.layer_bias), UiDrawKind::Sprite,
                     ));
                     pushed = true;
                     break;
@@ -1805,7 +1808,7 @@ pub(super) fn walk_3d_canvas_children_id(
                     to_gpu_mat(sw),
                     tex_path,
                     Some(mesh_draw),
-                    ss.layer,
+                    biased_layer(ss.layer, placement.layer_bias),
                     UiDrawKind::Sprite,
                 ));
                 pushed = true;
@@ -1825,7 +1828,7 @@ pub(super) fn walk_3d_canvas_children_id(
                 // テクスチャなし = 白フォールバック（枠全面 alpha=1）
                 out.push((
                     mc_total + my_dfs + 1, to_gpu_mat(sw), None, None,
-                    item.layer, UiDrawKind::Text,
+                    biased_layer(item.layer, placement.layer_bias), UiDrawKind::Text,
                 ));
             }
         }

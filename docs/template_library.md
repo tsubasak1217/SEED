@@ -61,7 +61,9 @@ templates/
   terrain/   HeightMap/, layers.json, props.json, …
   input/     playerInput.inputmap, …
   scripts/   FollowCamera.cs, …
-  ui/        prefabs/（UI 部品のプレハブ。W2-5 のホイールの行・列・時刻ホイールを含む）・scenes/ui_gallery.scene・scripts/・textures/（W2-4・W2-5。docs/ui_components.md）
+  ui/        prefabs/（UI 部品のプレハブ。W2-5 のホイールの行・列・時刻ホイール、W2-7 の画面の組み立て〈screen_stack・screen_frame・tab_host・modal_host・
+             dialog・bottom_sheet・top_sheet・toast_host・toast〉と見本の画面 nav_* を含む）・scenes/ui_gallery.scene・scenes/ui_navigation.scene・scripts/・textures/
+             （W2-4・W2-5・W2-7。docs/ui_components.md・docs/ui_navigation.md）
 ```
 
 - `templates/shaders/toon.wgsl` は、プロジェクトへは **`assets/shaders/toon.wgsl`** としてコピーされる。

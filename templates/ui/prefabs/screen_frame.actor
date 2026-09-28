@@ -1,0 +1,164 @@
+{
+ "name": "ScreenFrame",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Canvas",
+   "component": {
+    "type": "CanvasComponent",
+    "data": {
+     "width": 1.0,
+     "height": 1.0,
+     "auto_scale": false,
+     "viewport_ref": {
+      "type": "window"
+     },
+     "gravity_mode": "world_down",
+     "draw_zone": "foreground",
+     "pivot": [
+      0.0,
+      0.0
+     ]
+    }
+   }
+  },
+  {
+   "name": "LayoutItem",
+   "component": {
+    "type": "CanvasLayoutItemComponent",
+    "data": {
+     "fill_width": true,
+     "fill_height": true
+    }
+   }
+  },
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [
+      0.006049,
+      0.005182,
+      0.009134,
+      1.0
+     ],
+     "width": 1.0,
+     "height": 1.0,
+     "layer": 0,
+     "raycast_target": true
+    }
+   }
+  },
+  {
+   "name": "Gesture",
+   "component": {
+    "type": "CanvasGestureComponent",
+    "data": {
+     "tap": false,
+     "press_feedback": false,
+     "min_hit_size_dp": 0.0
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Body",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Canvas",
+     "component": {
+      "type": "CanvasComponent",
+      "data": {
+       "width": 1.0,
+       "height": 1.0,
+       "auto_scale": false,
+       "viewport_ref": {
+        "type": "window"
+       },
+       "gravity_mode": "world_down",
+       "draw_zone": "foreground",
+       "pivot": [
+        0.0,
+        0.0
+       ]
+      }
+     }
+    },
+    {
+     "name": "LayoutItem",
+     "component": {
+      "type": "CanvasLayoutItemComponent",
+      "data": {
+       "fill_width": true,
+       "fill_height": true
+      }
+     }
+    },
+    {
+     "name": "SafeArea",
+     "component": {
+      "type": "CanvasSafeAreaComponent",
+      "data": {
+       "enabled": true,
+       "left": true,
+       "top": true,
+       "right": true,
+       "bottom": true
+      }
+     }
+    }
+   ],
+   "children": []
+  }
+ ]
+}

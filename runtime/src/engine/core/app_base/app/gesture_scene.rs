@@ -35,7 +35,8 @@ use crate::engine::core::canvas_layout::scroll_view::scroll_of;
 use crate::engine::core::canvas_scroll::CanvasScrollState;
 use crate::engine::core::canvas_layout::clip::corners_aabb;
 use crate::engine::core::canvas_layout::{
-    AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind, CanvasParentFrame,
+    biased_layer, AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutTable, CanvasNodeKind,
+    CanvasParentFrame,
 };
 use crate::engine::core::input::gesture::{ClipAabb, GestureHitNode, GestureHitScene, PaintOrder};
 use crate::engine::core::input::gesture::hit_slop::NodeHitShape;
@@ -189,7 +190,8 @@ pub(super) fn gesture_nodes_from_table(
         }
         let paint = PaintOrder {
             zone_front: zone_front(placement.zone),
-            layer: sprite.map_or(0, |s| s.layer),
+            // 描画と同じ前後（最初の Sprite のレイヤー + ノードの底上げ。W2-7: 覆い・ダイアログの板が後ろの部品を遮る）
+            layer: biased_layer(sprite.map_or(0, |s| s.layer), placement.layer_bias),
             dfs: row,
         };
         by_row.insert(row as u32, nodes.len());

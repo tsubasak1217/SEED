@@ -1,0 +1,56 @@
+namespace SEED.UI;
+
+// ============================================================
+//  NavNode.cs — 画面の組み立てが画面・幕・板のノードへ当てる小道具（W2-7）
+//
+//  CanvasLayoutItem の実行中だけの見た目の上書き（TranslateFraction・Translate・LayerBias。runtime の
+//  canvas_layout の translate_placement・layer_bias）と、Sprite の濃さを 1 か所で当てる。
+//  ノードに該当のコンポーネントが無ければ何もしない（プレハブの作りが違っても落ちない）。
+//  書き込みは前の値と同じなら FFI を呼ばない（止まっている画面は何も書かない）。
+// ============================================================
+
+/// <summary>ノードへ見た目を当てる小道具。</summary>
+internal static class NavNode
+{
+    /// <summary>自分の大きさに対するずらしを当てる。</summary>
+    public static void SetFraction(GameObject node, Vector2 fraction)
+    {
+        if (node.GetComponent<CanvasLayoutItem>() is { } item && item.TranslateFraction != fraction) item.TranslateFraction = fraction;
+    }
+
+    /// <summary>キャンバスの単位のずらしを当てる。</summary>
+    public static void SetTranslate(GameObject node, Vector2 translate)
+    {
+        if (node.GetComponent<CanvasLayoutItem>() is { } item && item.Translate != translate) item.Translate = translate;
+    }
+
+    /// <summary>レイヤーの底上げを当てる。</summary>
+    public static void SetBias(GameObject node, int bias)
+    {
+        if (node.GetComponent<CanvasLayoutItem>() is { } item && item.LayerBias != bias) item.LayerBias = bias;
+    }
+
+    /// <summary>見せる・隠す（前の値と同じなら書かない）。</summary>
+    public static void SetVisible(GameObject node, bool visible)
+    {
+        if (node.IsValid && node.Visible != visible) node.Visible = visible;
+    }
+
+    /// <summary>Sprite の色（濃さを掛けて）を当てる。</summary>
+    public static void SetSpriteColor(GameObject node, Color color)
+    {
+        if (node.GetComponent<Sprite>() is { } sprite && !sprite.Color.Equals(color)) sprite.Color = color;
+    }
+
+    /// <summary>大きさの倍率を当てる（pivot の周り）。</summary>
+    public static void SetScale(GameObject node, Vector2 scale)
+    {
+        if (node.GetComponent<CanvasTransform>() is { } ct && ct.Scale != scale) ct.Scale = scale;
+    }
+
+    /// <summary>作ったノードができあがったか（2D のアクターは構築のとき CanvasTransform を持つ）。</summary>
+    public static bool IsBuilt(GameObject node) => node.IsValid && node.GetComponent<CanvasTransform>() is not null;
+
+    /// <summary>エンティティの鍵（登録簿の辞書の鍵）。</summary>
+    public static (uint, uint) Key(GameObject node) => (node.Entity.Index, node.Entity.Generation);
+}

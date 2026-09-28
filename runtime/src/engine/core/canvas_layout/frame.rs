@@ -26,6 +26,12 @@ pub const IDENTITY_MAT4: [[f32; 4]; 4] = [
 /// 最上位ノードの親の累積スケール（倍率なし）。
 pub const UNIT_CUMUL_SCALE: [f32; 2] = [1.0, 1.0];
 
+/// レイヤーの底上げなし（W2-7）。
+pub const NO_LAYER_BIAS: i32 = 0;
+
+/// 見た目の平行移動なし（W2-7）。
+pub const NO_VISUAL_SHIFT: [f32; 2] = [0.0, 0.0];
+
 /// 親から子へ渡すレイアウトの文脈。
 ///
 /// フォルダノード（レイアウト透明）は受け取った文脈をそのまま子へ渡し、
@@ -41,6 +47,12 @@ pub struct CanvasParentFrame {
     pub cumul_scale: [f32; 2],
     /// 描画ゾーン（ルートキャンバスの draw_zone をサブツリーへ継承する）。
     pub zone: CanvasDrawZone,
+    /// 子孫の表示のレイヤーに足す値（祖先の `CanvasLayoutItem.layer_bias` の和。W2-7）。
+    /// 重なる画面（画面のスタック・覆い・ダイアログ・シート・トースト）の前後を、中身のレイヤーに依らず決める。
+    pub layer_bias: i32,
+    /// 祖先の見た目の平行移動の和（ワールドの画素。`CanvasLayoutItem.translate*`。W2-7）。
+    /// 安全領域をずらす前の位置で求める（画面が横から入ってくる途中で、中身の箱が画面の端に合わせて縮まない）ために持つ。
+    pub visual_shift: [f32; 2],
 }
 
 impl CanvasParentFrame {
@@ -54,6 +66,8 @@ impl CanvasParentFrame {
             world_rs: IDENTITY_MAT4,
             cumul_scale: UNIT_CUMUL_SCALE,
             zone,
+            layer_bias: NO_LAYER_BIAS,
+            visual_shift: NO_VISUAL_SHIFT,
         }
     }
 
@@ -70,7 +84,7 @@ impl CanvasParentFrame {
         cumul_scale: [f32; 2],
         zone: CanvasDrawZone,
     ) -> Self {
-        Self { anchor_basis, world_rs, cumul_scale, zone }
+        Self { anchor_basis, world_rs, cumul_scale, zone, layer_bias: NO_LAYER_BIAS, visual_shift: NO_VISUAL_SHIFT }
     }
 
     /// 最上位（親が居ない）か。ルートキャンバスだけが持つ規則（自動解像度・自動スケール・

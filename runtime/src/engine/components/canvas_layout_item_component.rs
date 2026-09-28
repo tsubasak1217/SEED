@@ -11,8 +11,15 @@
 //    - fill_*        … 親に合わせる（コンテナの外の子で使う。親の CanvasComponent の領域いっぱいに広げる）
 //  大きさの単位はキャンバスの単位（スプライトの幅・高さと同じ。親の累積スケールが掛かる）。
 //
+//  【実行中だけの見た目の上書き（W2-7。保存しない・インスペクタに出ない）】
+//    - translate          … 置かれた後に足す平行移動（キャンバスの単位。レイアウト〈大きさ・並び・安全領域〉は変えない＝CSS の transform）
+//    - translate_fraction … 同じく、自分の大きさ（置かれた矩形）に対する割合（画面の出入り: 右から = (1, 0) → (0, 0)）
+//    - layer_bias         … 自分と子孫の表示（スプライト・テキスト・パーティクル・図形）のレイヤーに足す値（重なる画面・覆い・ダイアログの前後）
+//  画面の組み立て（SEED.UI の ScreenStack・ダイアログ・シート・トースト）がスクリプトから毎フレーム書く。
+//  #[serde(skip)] なので .scene / .actor には出ない（読み込むと 0）。
+//
 //  【データとロジックの分離】このファイルはデータだけ。読むのはレイアウトの走査（canvas_layout/measure.rs・pass.rs）。
-//  規則の正典は docs/canvas_camera_rework.md §6.3。
+//  規則の正典は docs/canvas_camera_rework.md §6.3（見た目の上書きは §6.7）。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -57,6 +64,15 @@ pub struct CanvasLayoutItemComponent {
     /// 親の高さに合わせる（同上）。
     #[serde(default)]
     pub fill_height: bool,
+    /// 見た目の平行移動（キャンバスの単位。置かれた後に足す。実行中だけ・保存しない。W2-7）。
+    #[serde(skip)]
+    pub translate: [f32; 2],
+    /// 見た目の平行移動（自分の置かれた矩形の大きさに対する割合。実行中だけ・保存しない。W2-7）。
+    #[serde(skip)]
+    pub translate_fraction: [f32; 2],
+    /// 自分と子孫の表示のレイヤーに足す値（実行中だけ・保存しない。W2-7）。
+    #[serde(skip)]
+    pub layer_bias: i32,
 }
 
 /// シリアライズ用データ（実体と同じ型）。
@@ -94,6 +110,29 @@ impl CanvasLayoutItemComponent {
     /// 親に合わせる軸（幅・高さ）。
     pub fn fill(&self) -> [bool; 2] {
         [self.fill_width, self.fill_height]
+    }
+
+    /// 見た目の平行移動を持つか（どちらかの成分が 0 でない有限値。NaN・無限大は持たないとみなす）。
+    pub fn has_translation(&self) -> bool {
+        self.translate
+            .iter()
+            .chain(self.translate_fraction.iter())
+            .any(|v| v.is_finite() && *v != 0.0)
+    }
+
+    /// 見た目の平行移動（親のローカルの画素）【純関数】。
+    ///
+    /// 平行移動 = translate × 親までの累積スケール ＋ translate_fraction × 自分の矩形の大きさ（画素）。
+    /// 有限でない成分は 0 として扱う（壊れた値で行列を壊さない）。
+    ///
+    /// # 引数
+    /// * `parent_cumul_scale` - 親までの累積スケール（キャンバスの単位 → 画素。dp のルートの下なら 1 dp の画素数）
+    /// * `own_size_px`        - 自分の置かれた矩形の大きさ（親のローカルの画素。矩形が無ければ 0）
+    pub fn translation_px(&self, parent_cumul_scale: [f32; 2], own_size_px: [f32; 2]) -> [f32; 2] {
+        let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+        [0, 1].map(|a| {
+            finite(self.translate[a]) * parent_cumul_scale[a] + finite(self.translate_fraction[a]) * own_size_px[a]
+        })
     }
 }
 
@@ -148,5 +187,41 @@ mod tests {
         let json = serde_json::to_string(&c.to_data()).unwrap();
         let back: CanvasLayoutItemComponentData = serde_json::from_str(&json).unwrap();
         assert_eq!(CanvasLayoutItemComponent::from_data(back), c);
+    }
+
+    /// 実行中だけの見た目の上書き（W2-7）は保存しない（書き出さず、読むと 0）。
+    #[test]
+    fn runtime_visual_fields_are_not_serialized() {
+        let c = CanvasLayoutItemComponent {
+            fill_width: true,
+            translate: [12.0, -3.0],
+            translate_fraction: [1.0, 0.0],
+            layer_bias: 3_000_000,
+            ..CanvasLayoutItemComponent::default()
+        };
+        let json = serde_json::to_string(&c.to_data()).unwrap();
+        assert!(!json.contains("translate"), "{json}");
+        assert!(!json.contains("layer_bias"), "{json}");
+        let back = CanvasLayoutItemComponent::from_data(serde_json::from_str(&json).unwrap());
+        assert_eq!(back.translate, [0.0, 0.0]);
+        assert_eq!(back.translate_fraction, [0.0, 0.0]);
+        assert_eq!(back.layer_bias, 0);
+        assert!(back.fill_width, "保存する欄はそのまま");
+    }
+
+    /// 見た目の平行移動 = 単位 × 累積スケール ＋ 割合 × 矩形。壊れた値は 0 として扱う。
+    #[test]
+    fn translation_px_combines_units_and_fraction() {
+        let mut c = CanvasLayoutItemComponent::default();
+        assert!(!c.has_translation());
+        assert_eq!(c.translation_px([2.625, 2.625], [400.0, 800.0]), [0.0, 0.0]);
+        c.translate = [10.0, 0.0];
+        c.translate_fraction = [0.0, -0.5];
+        assert!(c.has_translation());
+        assert_eq!(c.translation_px([2.0, 3.0], [400.0, 800.0]), [20.0, -400.0]);
+        c.translate = [f32::NAN, 0.0];
+        c.translate_fraction = [0.0, f32::INFINITY];
+        assert!(!c.has_translation(), "有限でない値だけなら持たない");
+        assert_eq!(c.translation_px([2.0, 3.0], [400.0, 800.0]), [0.0, 0.0]);
     }
 }

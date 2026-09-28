@@ -208,6 +208,22 @@ UiRoot（Canvas・単位 dp）
 
 CanvasScrollComponent を持つノードは、走査が子へ渡す文脈（行列）をスクロールの位置 × 子の累積スケールだけ平行移動する（`canvas_layout/scroll_view.rs`）。窓がコンテナなら、スクロールの軸は箱の長さを決めずに並べる。窓・中身の大きさは表の `scroll_regions` に積む。切り抜きと「見える範囲の外を飛ばす」が有効な窓の子孫は、部分木の範囲が見える範囲（切り抜き + cache_extent）と交わらなければ表の行に `culled` を立て、描画アイテム・ID 描画・当たり判定（`is_drawn_in_view`・`is_pickable_in_view`）から外す。表の行はアクター木と 1 対 1 のまま。スクロールを使わない木の計算は変わらない。規則の正典は [ui_scroll_list.md](ui_scroll_list.md) §5。
 
+### 6.7 見た目の上書き（平行移動・レイヤーの底上げ。W2-7）
+
+`CanvasLayoutItemComponent` の**実行中だけの欄**（`#[serde(skip)]`＝`.scene`・`.actor` に出ない・インスペクタに出ない・読み込むと 0）。
+画面の組み立て（[ui_navigation.md](ui_navigation.md)）が出入りの動きと重なりの前後に使う。スクリプトは `CanvasLayoutItem.Translate`・`TranslateFraction`・`LayerBias`。
+
+| 欄 | 規則 |
+|---|---|
+| `translate`（キャンバスの単位）・`translate_fraction`（割合） | 置かれた後（1. の配置・2. の安全領域の後、3. のコンテナの並べ方の前）に、有効位置とワールド行列だけを親のローカルで平行移動する（`placement::translate_placement`）。移動量 = `translate × 親の累積スケール + translate_fraction × 自分の矩形`（自分の矩形 = レイアウトが割り当てた矩形 → CanvasComponent の領域 → 無ければ割合は効かない）。大きさ・並び・子の箱は変えず、子孫は子へ渡す文脈の行列ごと付いてくる。`layout_adjusted` を立てる（枠・2D 物理・`ScreenPosition` も動いた位置を読む） |
+| 祖先の平行移動と安全領域 | 子へ渡す文脈に祖先の移動量の和（ワールドの画素。`CanvasParentFrame.visual_shift`）を持たせ、子孫の `CanvasSafeArea` は安全領域を同じだけずらしてから縮める量を求める（横から入ってくる画面・下から出るシートの中身の箱が、途中で画面の端に合わせて縮み直さない） |
+| `layer_bias`（整数） | 自分と子孫の表示のレイヤーに足す値（祖先の和。飽和）。表の配置（`CanvasNodePlacement.layer_bias`）に持たせ、描画アイテム（スプライト・スキンスプライト・テキストとインライン画像・2D パーティクル）・`pick_2d` の最前面・ジェスチャーの遮り（R3 の `PaintOrder.layer`）・エディタの ID 描画が `biased_layer(コンポーネントの layer, layer_bias)` で並べる。`SEED.Draw` の図形には効かない |
+| 既定（すべて 0） | 従来とまったく同じ計算（CanvasLayoutItem を持たないノード・値が 0 のノードは何もしない。`zero_visual_overrides_leave_table_unchanged`）。WarashibeFishing は CanvasLayoutItem を使っていない（W2-7 の回帰で図鑑の画素・クリックの一致を確かめた） |
+
+単体テスト: `layout_tests.rs` の `translate_fraction_moves_filled_node_and_descendants`・`translate_units_scale_with_parent_and_add_to_fraction`・
+`zero_visual_overrides_leave_table_unchanged`・`layer_bias_accumulates_down_the_tree`・`safe_area_inside_translated_node_ignores_translation`、
+`canvas_layout_item_component.rs` の保存しない・移動量の計算、`canvas_layout_api.rs` の読み書き。
+
 ## 段階実装計画
 
 1. **Phase A（カメラ）**: インスペクタの表記変更・アスペクト比 UI・

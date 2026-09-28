@@ -14,6 +14,9 @@
 //        1. 親のコンテナが割り当てた矩形があればそこへ（resolve_in_rect）。無ければ自分のアンカー・位置（resolve）
 //           で置き、CanvasLayoutItem の fill_* があれば親の領域に合わせる
 //        2. CanvasSafeArea があれば箱を安全領域の内側へ縮める（resize_box）
+//        2b. CanvasLayoutItem の見た目の上書き（W2-7。実行中だけ）: レイヤーの底上げ（layer_bias）を祖先の分に足して
+//           子へ渡し、見た目の平行移動（translate・translate_fraction）で有効位置と行列だけをずらす（translate_placement）。
+//           安全領域は祖先のずらしを戻した位置で求める（CanvasParentFrame.visual_shift。横から入ってくる画面の箱が縮まない）
 //        3. コンテナ（CanvasStack・CanvasWrap・CanvasGrid）なら子を測って並べ（measure.rs・containers/）、
 //           子ごとの矩形を「割り当て待ち」に積む。fit の軸は箱を中身に合わせる
 //      子は必ずコンテナより後に訪ねる（深さ優先）ので、2 段の計算（測る → 並べる）が 1 回の走査の中で終わる。
@@ -44,9 +47,10 @@ use super::frame::{CanvasLayoutEnv, CanvasParentFrame};
 use super::lookup::{layout_item_of, safe_area_of};
 use super::measure::{box_per_rect, container_inner, LayoutMeasurer};
 use super::placement::{
-    pass_through_frame, resize_box, resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement,
+    pass_through_frame, resize_box, resolve, resolve_in_rect, translate_placement, CanvasNodeInput,
+    CanvasNodePlacement,
 };
-use super::safe_area::{inset_box, world_rect_to_local};
+use super::safe_area::{inset_box, world_rect_to_local, CanvasRect};
 use super::scroll_view::{
     axis_directions, expand, local_far_edge, node_bounds, offset_px, scroll_of, translate_frame, union, viewport_size,
     CanvasScrollRegion, ClipAabb, ScrollNode,
@@ -455,6 +459,9 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         // ── 2. 安全領域（CanvasComponent を持つノードの箱を縮める）──
         let safe_applied = self.apply_safe_area(actor, frame, &mut placement);
 
+        // ── 2b. 見た目の上書き（W2-7。レイヤーの底上げと平行移動。コンテナの並べ方より前に当て、子孫が付いてくる）──
+        self.apply_visual_overrides(actor, frame, &mut placement);
+
         // ── 3. コンテナ（子を測って並べ、子ごとの矩形を割り当て待ちに積む）──
         let child_cumul = placement.child_frame.cumul_scale;
         let Some(spec) = container_of(actor, self.world, child_cumul) else {
@@ -555,6 +562,36 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         Some(slot)
     }
 
+    /// CanvasLayoutItem の見た目の上書き（W2-7。実行中だけの値）を当てる。
+    ///
+    /// - レイヤーの底上げ: 祖先の分（`frame.layer_bias`）に自分の `layer_bias` を足し、自分の表示と子へ渡す文脈に持たせる
+    /// - 見た目の平行移動: `translate × 親の累積スケール + translate_fraction × 自分の矩形` だけ有効位置と行列をずらす
+    ///   （自分の矩形 = レイアウトが割り当てた矩形。無ければ CanvasComponent の領域。どちらも無ければ割合は効かない）
+    ///
+    /// CanvasLayoutItem を持たない・値がすべて 0 のノードは何もしない（従来とまったく同じ計算のまま）。
+    fn apply_visual_overrides(&mut self, actor: &Actor, frame: &CanvasParentFrame, placement: &mut CanvasNodePlacement) {
+        let Some(item) = layout_item_of(actor, self.world) else { return };
+        if item.layer_bias != 0 {
+            let bias = placement.layer_bias.saturating_add(item.layer_bias);
+            placement.layer_bias = bias;
+            placement.child_frame.layer_bias = bias;
+        }
+        if !item.has_translation() {
+            return;
+        }
+        let own_size = match (placement.layout_rect, placement.canvas_base) {
+            (Some(rect), _) => rect,
+            (None, Some(_)) => placement.eff_size,
+            (None, None) => [0.0, 0.0],
+        };
+        let offset = item.translation_px(frame.cumul_scale, own_size);
+        if offset == [0.0, 0.0] {
+            return;
+        }
+        *placement = translate_placement(placement, frame, offset);
+        self.table.stats.translated += 1;
+    }
+
     /// 安全領域の部品があれば、ノードの箱を安全領域の内側へ縮める（W2-1b）。
     ///
     /// # 戻り値
@@ -571,6 +608,17 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         }
         let Some(component) = safe_area_of(actor, self.world) else { return false };
         let Some(box_size) = placement.box_size() else { return false };
+        // 祖先の見た目の平行移動（W2-7）の分だけ安全領域も一緒にずらす＝ずらす前の位置で縮める量を求める
+        // （横から入ってくる画面・下から出るシートの途中で、中身の箱が画面の端に合わせて縮み直さない）
+        let shift = frame.visual_shift;
+        let safe_world = if shift == [0.0, 0.0] {
+            safe_world
+        } else {
+            CanvasRect {
+                min: [safe_world.min[0] + shift[0], safe_world.min[1] + shift[1]],
+                max: [safe_world.max[0] + shift[0], safe_world.max[1] + shift[1]],
+            }
+        };
         let safe_local = world_rect_to_local(&placement.world_rs, safe_world);
         let rect = inset_box(box_size, safe_local, component.edges());
         *placement = resize_box(placement, frame, rect.min, rect.size());

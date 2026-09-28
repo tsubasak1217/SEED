@@ -125,4 +125,23 @@ public static class Screen
             return ScriptHost.ScreenQuery(ScriptHost.ScreenQueryDpi, ScalarCount, v) ? v[IndexScalar] : DefaultDpi;
         }
     }
+
+    /// <summary>
+    /// 1 dp の画素数（表示倍率。Android は densityDpi ÷ 160、Windows は表示スケール。Pixel 6a は 2.625、PC の 100% は 1。W2-7）。
+    /// dp のルートキャンバス（<c>CanvasComponent.unit = dp</c>）のレイアウトと同じ値なので、画素（<see cref="SafeArea"/> など）と
+    /// キャンバスの単位（dp）の換算に使う: <c>dp = 画素 ÷ DpScale</c>。取得できなければ <see cref="DefaultDpScale"/>。
+    /// </summary>
+    public static float DpScale
+    {
+        get
+        {
+            Span<float> v = stackalloc float[ScriptHost.ScreenQueryMaxFloats];
+            return ScriptHost.ScreenQuery(ScriptHost.ScreenQueryDpScale, ScalarCount, v) && v[IndexScalar] > 0f
+                ? v[IndexScalar]
+                : DefaultDpScale;
+        }
+    }
+
+    /// <summary><see cref="DpScale"/> が取得できないときの値（倍率なし）。</summary>
+    public const float DefaultDpScale = 1f;
 }

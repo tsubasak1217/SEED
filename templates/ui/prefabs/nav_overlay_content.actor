@@ -1,0 +1,350 @@
+{
+ "name": "NavOverlay",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Canvas",
+   "component": {
+    "type": "CanvasComponent",
+    "data": {
+     "width": 1.0,
+     "height": 1.0,
+     "auto_scale": false,
+     "viewport_ref": {
+      "type": "window"
+     },
+     "gravity_mode": "world_down",
+     "draw_zone": "foreground",
+     "pivot": [
+      0.0,
+      0.0
+     ]
+    }
+   }
+  },
+  {
+   "name": "Stack",
+   "component": {
+    "type": "CanvasStackComponent",
+    "data": {
+     "enabled": true,
+     "direction": "vertical",
+     "spacing": 12.0,
+     "padding": {
+      "left": 16.0,
+      "top": 16.0,
+      "right": 16.0,
+      "bottom": 16.0
+     },
+     "main_align": "start",
+     "cross_align": "stretch",
+     "reverse": false,
+     "fit_width": false,
+     "fit_height": true,
+     "hidden_children": "collapse"
+    }
+   }
+  },
+  {
+   "name": "NavSampleScreen",
+   "component": {
+    "type": "ScriptComponent",
+    "data": {
+     "type_name": "assets://ui/scripts/NavSampleScreen.cs",
+     "fields": {
+      "Role": "overlay"
+     }
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Title",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "プロフィール（上からの覆い）",
+       "font_size": 20.0,
+       "color": [
+        0.838799,
+        0.791298,
+        0.913099,
+        1.0
+       ],
+       "align": "left",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 360.0,
+       "box_height": 28.0,
+       "wrap": false
+      }
+     }
+    },
+    {
+     "name": "LayoutItem",
+     "component": {
+      "type": "CanvasLayoutItemComponent",
+      "data": {
+       "preferred_height": 28.0
+      }
+     }
+    }
+   ],
+   "children": []
+  },
+  {
+   "name": "Info",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "Lv 3・朝型・連続 5 日",
+       "font_size": 16.0,
+       "color": [
+        0.396755,
+        0.361307,
+        0.47932,
+        1.0
+       ],
+       "align": "left",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 360.0,
+       "box_height": 22.0,
+       "wrap": false
+      }
+     }
+    },
+    {
+     "name": "LayoutItem",
+     "component": {
+      "type": "CanvasLayoutItemComponent",
+      "data": {
+       "preferred_height": 22.0
+      }
+     }
+    }
+   ],
+   "children": []
+  },
+  {
+   "name": "CloseButton",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     0.0,
+     0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [
+        0.201556,
+        0.107023,
+        1.0,
+        1.0
+       ],
+       "width": 120.0,
+       "height": 48.0,
+       "layer": 0,
+       "shape": {
+        "kind": "rect",
+        "corner_radii": [
+         12.0,
+         12.0,
+         12.0,
+         12.0
+        ]
+       }
+      }
+     }
+    },
+    {
+     "name": "Gesture",
+     "component": {
+      "type": "CanvasGestureComponent",
+      "data": {
+       "tap": true,
+       "long_press": true
+      }
+     }
+    },
+    {
+     "name": "Button",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.Button",
+       "fields": {
+        "Variant": "Filled"
+       }
+      }
+     }
+    },
+    {
+     "name": "LayoutItem",
+     "component": {
+      "type": "CanvasLayoutItemComponent",
+      "data": {
+       "preferred_width": 0.0,
+       "preferred_height": 48.0
+      }
+     }
+    }
+   ],
+   "children": [
+    {
+     "name": "Label",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [
+       0.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.5,
+       0.5
+      ],
+      "anchor": [
+       0.5,
+       0.5
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "閉じる",
+         "font_size": 14.0,
+         "color": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+         ],
+         "align": "center",
+         "vertical_align": "middle",
+         "layer": 0,
+         "box_width": 320.0,
+         "box_height": 48.0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    }
+   ]
+  }
+ ]
+}

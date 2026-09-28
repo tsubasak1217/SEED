@@ -258,6 +258,9 @@ public static class Program
         // ── 時刻ホイール（W2-5）─────────────────────────────────
         WheelTests.Register(h);
 
+        // ── 画面の組み立て（W2-7）───────────────────────────────
+        NavigationTests.Register(h, theme);
+
         return h.Run();
     }
 }
