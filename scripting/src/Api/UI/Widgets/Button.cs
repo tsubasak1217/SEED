@@ -135,7 +135,8 @@ public sealed class Button : UiWidget
         if (TextOf(LabelChild) is { } label)
         {
             label.Color = look.Content;
-            if (LabelSize.Length > 0) label.FontSize = Theme.Number(LabelSize, label.FontSize);
+            // 大きさ（LabelSize が空なら変えない）・書体・太さ（W2-9）
+            UiTextStyle.Apply(label, Theme, LabelSize);
         }
         if (SpriteOf(IconChild) is { } icon) icon.Color = look.Content;
     }

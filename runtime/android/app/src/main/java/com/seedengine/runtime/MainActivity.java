@@ -59,6 +59,7 @@ import com.google.androidgamesdk.gametextinput.State;
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.LeftoverVolumeNudge;
 import com.seedengine.runtime.platform.SeedPlatform;
+import com.seedengine.runtime.platform.app.NightMode;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
 import com.seedengine.runtime.platform.sensor.SensorFeeds;
 import com.seedengine.runtime.platform.window.SystemBarsHost;
@@ -147,6 +148,8 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
         // IsSupported を正しく読めるよう android_main より前に）。:seed_platform は呼ばない（プロセスの起動の約 120 ms を
         // ここで待たない。つなぐのはスクリプトが最初に呼んだとき・背面のスレッドで。platform/PlatformConnection）。
         SeedPlatform.init(this);
+        // 端末の明暗の設定の起動時の値を覚える（W2-9。onConfigurationChanged で変わったときだけ platform.ui_mode_changed を流す）
+        NightMode.remember(getResources().getConfiguration());
         // 起動理由（PlatformEntry 経由の目覚まし・通知の操作か、ランチャーか）。目覚ましの鳴動なら、最初のフレームより前に
         // ロック画面の上に出して画面を点ける（setShowWhenLocked・setTurnScreenOn。W1-4a）
         LaunchReason.onCreate(this);
@@ -274,13 +277,15 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     }
 
     /**
-     * 構成が変わった（回転など。マニフェストの configChanges で Activity は作り直されない）。
+     * 構成が変わった（回転・明暗の設定など。マニフェストの configChanges で Activity は作り直されない）。
      * レイアウトがまだ前の向きなら報告は onGlobalLayout に任せる（ScreenReporter.reportAfterRotation）。
+     * 夜の表示の bit が変わったら platform.ui_mode_changed を流す（W2-9。SEED.UI のテーマの「端末に従う」）。
      */
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         screenReporter.reportAfterRotation();
+        NightMode.onConfigurationChanged(newConfig);
     }
 
     /**

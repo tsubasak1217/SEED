@@ -1,9 +1,11 @@
 {
-  "_about": "SEED.UI の既定のテーマ（W2-4）。部品はここにあるトークン（例 color.primary・radius.button）の値で見た目を決める。W2-9 でプロジェクトのテーマ JSON への差し替え・実行中の切り替えを本格化する。書式: グループ（color・radius・space・size・text・motion・opacity）の中に名前 → 値。色は sRGB の #RRGGBB か #RRGGBBAA（読み込むときに線形へ直す）、それ以外は数。長さはキャンバスの単位（dp のキャンバスなら dp）、時間は秒。先頭が _ の鍵は説明で、読まない。正典は docs/ui_components.md §5。",
+  "_about": "SEED.UI の既定のテーマ（W2-4。W2-9 で明暗の組・書体・切り替えの動きを足した）。部品はここにあるトークン（例 color.primary・radius.button）の値で見た目を決める。書式の正典は docs/ui_theme.md（グループ・extends・brightness・light / dark の節・seed_color・app のグループ）、トークンの表は docs/ui_theme.md §8（UiTokenCatalog）。色は sRGB の #RRGGBB か #RRGGBBAA（読み込むときに線形へ直す）、書体は assets:// のパス（空 = 組み込み）、それ以外は数。長さはキャンバスの単位（dp のキャンバスなら dp）、時間は秒。先頭が _ の鍵は説明で、読まない。最上位の値は暗い方（brightness: dark）で、light の節が明るい方で表示するときの上書き（これで既定のテーマは明暗の両方に対応する）。",
   "_source": "色は Wake or Pay の既定のテーマ midnight（themes.json の seedColor #6C4BFF・dark）から作った暗い配色。大きさ・時間は Material Design 3 の部品の寸法（押せる大きさ 48、スイッチ 52×32、チェックボックス 18 の枠を 24 の中に等）と Android の既定の動きの時間を目安にした。ホイール（W2-5）の行の高さ 32・文字 21・帯の角丸 8 と余白 9・帯の外の濃さ 0.447・動きの 0.3 秒と 0.2 秒は Flutter の CupertinoDatePicker・CupertinoPicker（2026-09-28 に master のソースで確かめた）。",
   "_w2_7": "W2-7（画面の組み立て）で足したもの: 画面の出入り・覆い・ダイアログ・シート・トーストの時間と曲線（motion.*。曲線は x1・y1・x2・y2 = CSS の cubic-bezier。push・cover は Material 3 の standard の曲線、覆いは Flutter 版の top_sheet の 220ms・easeOut）、幕の色と濃さ（color.scrim・opacity.scrim〈覆い・シート 0.54 = Flutter 版〉・opacity.dialog_scrim〈0.32 = Material 3〉）、トーストの色（color.inverse_surface）、割合（ratio.*）、速さ（speed.*。dp/秒）、数（count.*）、重なりのレイヤーの底上げ（layer.*。画面のスタックの 1 段・覆い・シート・ダイアログ・トーストの帯）。正典は docs/ui_navigation.md。",
   "_w2_8": "W2-8（グラフ）で足したもの: 系列の色（chart_series_1〜4。1 は主の色、2 は Wake or Pay のカードの赤）・格子線・軸・目盛りの文字・基準線・空の棒・選んだ列の強調（Flutter 版 penalty_bar_chart.dart の主の色 12%）、線の太さ 2・点の半径 2.5・基準線 1.5・縦軸の文字の列 46・横軸の文字の行 26（Flutter 版 wake_time_chart.dart の値）、棒の太さ 0.7・空の棒の高さ 0.015・最小の太さ 2（penalty_bar_chart.dart）、慣性の減速 0.135（Flutter の BouncingScrollSimulation）。正典は docs/ui_charts.md §7。",
+  "_w2_9": "W2-9（テーマ）で足したもの: brightness（dark）、書体（font.family = 部品の文字の書体・空は組み込み、font.weight・font.weight_title = SEED.Text.Weight の太さ。0 = 書体そのまま）、テーマの切り替えの色の補間の時間と曲線（motion.theme 0.3 秒・motion.theme_curve = fastOutSlowIn）、明るい方の配色（light の節。暗い方と同じ種の色 #6C4BFF を主の色にし、面・文字は Material 3 の明るい配色の段を目安に選んだ。押下の重ね色は黒・濃さ 0.1〈Material 3 の pressed〉）。",
   "name": "default",
+  "brightness": "dark",
   "color": {
     "primary": "#7C5CFF",
     "on_primary": "#FFFFFF",
@@ -115,6 +117,11 @@
     "chart_axis": 11,
     "chart_tooltip": 12
   },
+  "font": {
+    "family": "",
+    "weight": 0,
+    "weight_title": 0
+  },
   "motion": {
     "short": 0.15,
     "medium": 0.25,
@@ -138,7 +145,9 @@
     "toast_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 },
     "toast_short": 2.0,
     "toast_long": 3.5,
-    "chart_zoom": 0.25
+    "chart_zoom": 0.25,
+    "theme": 0.3,
+    "theme_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 }
   },
   "opacity": {
     "pressed": 0.16,
@@ -173,5 +182,44 @@
     "sheet": 2000000,
     "dialog": 3000000,
     "toast": 4000000
+  },
+  "light": {
+    "_about": "明るい方で表示するとき（UiTheme の明暗の選び方が System で端末が明るい・Light を強制）に上の値へ重ねる。色はすべてここで置き直す。",
+    "color": {
+      "primary": "#6C4BFF",
+      "on_primary": "#FFFFFF",
+      "background": "#F6F3FA",
+      "surface": "#FFFFFF",
+      "surface_variant": "#E8E3F0",
+      "on_surface": "#1D1A24",
+      "on_surface_muted": "#5E5970",
+      "outline": "#8C8699",
+      "selected": "#E6DEFF",
+      "on_selected": "#22105C",
+      "knob": "#FFFFFF",
+      "knob_off": "#7A7489",
+      "state_layer": "#000000",
+      "disabled": "#E4E0EA",
+      "on_disabled": "#A19CAB",
+      "shadow": "#000000",
+      "error": "#D32F2F",
+      "scrim": "#000000",
+      "inverse_surface": "#322F3A",
+      "on_inverse_surface": "#F4EFFA",
+      "chart_series_1": "#6C4BFF",
+      "chart_series_2": "#E53935",
+      "chart_series_3": "#00838F",
+      "chart_series_4": "#F9A825",
+      "chart_grid": "#E6E1EE",
+      "chart_axis": "#8C8699",
+      "chart_label": "#5E5970",
+      "chart_reference": "#5E5970",
+      "chart_empty_bar": "#DAD5E3",
+      "chart_highlight": "#6C4BFF1A"
+    },
+    "opacity": {
+      "pressed": 0.1,
+      "shadow": 0.18
+    }
   }
 }

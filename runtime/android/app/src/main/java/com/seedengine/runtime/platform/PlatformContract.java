@@ -339,6 +339,18 @@ public final class PlatformContract {
     public static final String KEY_APP_URL = "url";
     /** open_url の返答: URL の scheme（小文字にそろえたもの）。 */
     public static final String KEY_APP_SCHEME = "scheme";
+    /** 端末の明暗の設定（W2-9。Configuration.uiMode の夜の bit）。引数なし。返答 { night }。 */
+    public static final String METHOD_APP_UI_MODE = "ui_mode";
+    /** ui_mode の返答・EVENT_UI_MODE_CHANGED の data: 夜の表示か（APP_NIGHT_*）。 */
+    public static final String KEY_APP_NIGHT = "night";
+    /** night: 夜の表示（UI_MODE_NIGHT_YES）。 */
+    public static final String APP_NIGHT_YES = "yes";
+    /** night: 夜の表示でない（UI_MODE_NIGHT_NO）。 */
+    public static final String APP_NIGHT_NO = "no";
+    /** night: 取れない（UI_MODE_NIGHT_UNDEFINED）。 */
+    public static final String APP_NIGHT_UNKNOWN = "unknown";
+    /** 端末の明暗の設定が変わった（W2-9。MainActivity.onConfigurationChanged。seq 0。data = { night }）。 */
+    public static final String EVENT_UI_MODE_CHANGED = "platform.ui_mode_changed";
     /** URL（open_url の url・ディープリンクの uri）の最大の長さ（Unicode の符号位置の数）。Rust の wire::MAX_URL_LENGTH と一致させる。 */
     public static final int MAX_URL_LENGTH = 8192;
     /** open_url で断る scheme: 端末のファイル（file:）。 */

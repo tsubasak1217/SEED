@@ -149,6 +149,13 @@ impl ApplicationHandler for App {
                 self.on_touch(touch);
             }
 
+            // OS の明暗の設定が変わった（W2-9）: SEED.Platform の模擬が OS の設定を読み直し、変わっていれば
+            // platform.ui_mode_changed を積む（SEED.UI のテーマの「端末に従う」。模擬が無ければ何もしない）。
+            // 描く理由（Screen）は note_window_event_for_redraw が積む。
+            WindowEvent::ThemeChanged(_) => {
+                crate::engine::platform::bridge::notify_host_ui_mode_changed();
+            }
+
             // 文字入力（IME）。今は W2-0 の試作のログだけ（ui_spike の ime のときだけ出す。既定では何もしない）。
             // IME を許可しない限り（既定）winit は Ime を送ってこない（ui_spike_hooks.rs の allow_desktop_ime_if_requested）。
             WindowEvent::Ime(ime) => {

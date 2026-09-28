@@ -30,6 +30,10 @@ public sealed class ChartLabelPool
         public string Align = "";
         public Color Color = new(-1f, -1f, -1f, -1f);
         public float FontSize = float.NaN;
+        /// <summary>前に書いた書体（W2-9。null = まだ書いていない）。</summary>
+        public string? FontFamily;
+        /// <summary>前に書いた太さ（W2-9）。</summary>
+        public float FontWeight = float.NaN;
         public int Layer = int.MinValue;
         public bool Visible = true;
 
@@ -38,6 +42,12 @@ public sealed class ChartLabelPool
 
     /// <summary>文字を置く親のノード。</summary>
     private readonly GameObject _parent;
+
+    /// <summary>文字の書体（テーマの font.family。グラフが ApplyLook で入れる。W2-9）。</summary>
+    public string FontFamily { get; set; } = string.Empty;
+
+    /// <summary>文字の太さ（テーマの font.weight。W2-9）。</summary>
+    public float FontWeight { get; set; }
     /// <summary>文字のプレハブ（assets:// のパス）。</summary>
     private readonly string _prefab;
     /// <summary>使えるノード。</summary>
@@ -110,6 +120,8 @@ public sealed class ChartLabelPool
         if (s.Align != align) { t.Align = align; s.Align = align; }
         if (!s.Color.Equals(color)) { t.Color = color; s.Color = color; }
         if (s.FontSize != fontSize) { t.FontSize = fontSize; s.FontSize = fontSize; }
+        if (s.FontFamily != FontFamily) { t.FontPath = FontFamily; s.FontFamily = FontFamily; }
+        if (s.FontWeight != FontWeight) { t.Weight = FontWeight; s.FontWeight = FontWeight; }
         if (s.Layer != layer) { t.Layer = layer; s.Layer = layer; }
         return true;
     }

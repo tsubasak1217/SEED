@@ -371,7 +371,9 @@ pub mod window {
 /// アプリ（W1-6。モジュール "app"。Android はメインプロセスが答える）の名前・欄・理由
 /// （Java の PlatformContract の *APP*・URL_SCHEME_*・C# の AppJson と一致させる）。
 ///
-/// 命令: `move_task_to_back {}` → `{}`・`open_url { url }` → `{ scheme }`・`open_app_settings {}` → `{}`。
+/// 命令: `move_task_to_back {}` → `{}`・`open_url { url }` → `{ scheme }`・`open_app_settings {}` → `{}`・
+/// `ui_mode {}` → `{ night }`（W2-9。端末の明暗の設定）・模擬だけ `sim_set_ui_mode { night }` → `{ night }`（Android には無く unknown_method）。
+/// イベント `platform.ui_mode_changed { night }`（W2-9。Android は MainActivity.onConfigurationChanged・PC はウィンドウの ThemeChanged と模擬の命令）。
 /// open_url の URL の規則は bridge::app（Java の app/UrlPolicy と同じ）。失敗の理由のうち `invalid_argument` は目覚ましと同じ文字列。
 pub mod app {
     /// アプリのモジュール。
@@ -400,6 +402,22 @@ pub mod app {
     pub const ERROR_NO_HANDLER: &str = "no_handler";
     /// open_url: 断る scheme（DENIED_SCHEMES）。
     pub const ERROR_SCHEME_NOT_ALLOWED: &str = "scheme_not_allowed";
+    /// 端末の明暗の設定（W2-9。Android は Configuration.uiMode の夜の bit・デスクトップの模擬は OS の「アプリのモード」）。
+    pub const METHOD_UI_MODE: &str = "ui_mode";
+    /// 模擬だけ（W2-9）: 端末の明暗を差し替える。引数 `{ night }`（yes / no / unknown、system で差し替えをやめる）。
+    pub const METHOD_SIM_SET_UI_MODE: &str = "sim_set_ui_mode";
+    /// ui_mode の返答・ui_mode_changed の data・sim_set_ui_mode の引数: 夜の表示か。
+    pub const KEY_NIGHT: &str = "night";
+    /// night: 夜の表示（暗い。Android の UI_MODE_NIGHT_YES）。
+    pub const NIGHT_YES: &str = "yes";
+    /// night: 夜の表示でない（明るい。UI_MODE_NIGHT_NO）。
+    pub const NIGHT_NO: &str = "no";
+    /// night: 取れない（UI_MODE_NIGHT_UNDEFINED・PC で設定が無い）。
+    pub const NIGHT_UNKNOWN: &str = "unknown";
+    /// sim_set_ui_mode の night: 差し替えをやめて OS の設定へ戻す（模擬だけ）。
+    pub const NIGHT_SYSTEM: &str = "system";
+    /// 端末の明暗の設定が変わった（W2-9。data `{ night }`）。
+    pub const EVENT_UI_MODE_CHANGED: &str = "platform.ui_mode_changed";
 }
 
 /// 触感（W1-6。モジュール "haptics"。Android はメインプロセスが振動子を鳴らして答える）の名前・欄・上限・理由
@@ -771,6 +789,10 @@ mod tests {
             ("URL_SCHEME_FILE", app::SCHEME_FILE), ("URL_SCHEME_CONTENT", app::SCHEME_CONTENT),
             ("URL_SCHEME_JAVASCRIPT", app::SCHEME_JAVASCRIPT),
             ("ERROR_NO_HANDLER", app::ERROR_NO_HANDLER), ("ERROR_SCHEME_NOT_ALLOWED", app::ERROR_SCHEME_NOT_ALLOWED),
+            // W2-9: 端末の明暗（sim_set_ui_mode と NIGHT_SYSTEM は模擬だけなので Java には無い）
+            ("METHOD_APP_UI_MODE", app::METHOD_UI_MODE), ("KEY_APP_NIGHT", app::KEY_NIGHT),
+            ("APP_NIGHT_YES", app::NIGHT_YES), ("APP_NIGHT_NO", app::NIGHT_NO), ("APP_NIGHT_UNKNOWN", app::NIGHT_UNKNOWN),
+            ("EVENT_UI_MODE_CHANGED", app::EVENT_UI_MODE_CHANGED),
             // W1-6: 触感
             ("MODULE_HAPTICS", haptics::MODULE), ("METHOD_HAPTICS_TAP", haptics::METHOD_TAP),
             ("METHOD_HAPTICS_VIBRATE", haptics::METHOD_VIBRATE), ("KEY_HAPTICS_MS", haptics::KEY_MS),

@@ -122,7 +122,7 @@ public sealed class TabBar : UiWidget
             if (node.FindChild(LabelChild).GetComponent<Text>() is { } label)
             {
                 label.Color = look.Content;
-                label.FontSize = Theme.Number(UiTokens.TextCaption, label.FontSize);
+                UiTextStyle.Apply(label, Theme, UiTokens.TextCaption);
             }
         }
     }

@@ -142,7 +142,7 @@ public abstract class SelectionGroup : UiWidget
             if (node.FindChild(LabelChild).GetComponent<Text>() is { } label)
             {
                 label.Color = look.Label;
-                label.FontSize = Theme.Number(UiTokens.TextLabel, label.FontSize);
+                UiTextStyle.Apply(label, Theme, UiTokens.TextLabel);
             }
             var dot = node.FindChild(DotChild);
             if (dot.IsValid)

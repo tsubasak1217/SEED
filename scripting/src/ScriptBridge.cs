@@ -174,6 +174,13 @@ public static unsafe class ScriptBridge
             // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
             Console.Error.WriteLine($"[SEEDScripting] プラットフォームのイベントの配信で例外: {ex}");
         }
+
+        // テーマの切り替えの色の補間を進める（W2-9。イベント〈端末の明暗の変化〉の後・スクリプトの Update の前）
+        try { SEED.UI.UiTheme.TickFrame(ctx->UnscaledDeltaTime); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] テーマの切り替えの補間で例外: {ex}");
+        }
     }
 
     /// <summary>プラットフォームのイベントを最後に配ったフレームの実時間（同一フレームの二重配信よけ）。</summary>
@@ -442,6 +449,8 @@ public static unsafe class ScriptBridge
             SEED.Events.ClearAll();
             // 同じ理由で、プラットフォームのイベントの静的なハンドラ（PlatformEvents.OnEvent）も外す（W1-1）。
             SEED.Platform.PlatformEvents.ResetHandlers();
+            // テーマ（W2-9）も既定へ戻し、UiTheme.Changed の受け手を外す（同じ理由＋読み直した後は既定のテーマから始める）。
+            SEED.UI.UiTheme.ResetForReload();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }
@@ -474,6 +483,8 @@ public static unsafe class ScriptBridge
             ClearAllErrorState();
             SEED.Events.ClearAll();
             SEED.Platform.PlatformEvents.ResetHandlers();
+            // テーマ（W2-9）も既定へ戻し、UiTheme.Changed の受け手を外す（同じ理由＋読み直した後は既定のテーマから始める）。
+            SEED.UI.UiTheme.ResetForReload();
             var path = Encoding.UTF8.GetString(pathPtr, pathLen);
             return ScriptAssemblyManager.LoadPrecompiled(path);
         }
@@ -506,6 +517,8 @@ public static unsafe class ScriptBridge
             ClearAllErrorState();
             SEED.Events.ClearAll();
             SEED.Platform.PlatformEvents.ResetHandlers();
+            // テーマ（W2-9）も既定へ戻し、UiTheme.Changed の受け手を外す（同じ理由＋読み直した後は既定のテーマから始める）。
+            SEED.UI.UiTheme.ResetForReload();
             // Rust 側のバッファは呼び出しの間だけ有効なので、ここで配列へ写してから渡す。
             var bytes = new ReadOnlySpan<byte>(dataPtr, dataLen).ToArray();
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);

@@ -3585,6 +3585,27 @@ public override void Update(ref NativeFrameContext ctx)
 - `MoveTaskToBack`・`OpenAppSettings`・`Haptics.Tap` / `Vibrate`・`SetKeepScreenOn`・`SetSystemBarsVisible` は、案（roadmap §2.3）の void ではなく bool を返します（失敗を見分けるため）。`LaunchKind.DeepLink` は列挙の末尾に足しました（既存の値の番号は変えない）。
 - 仕組み（命令・URL の規則・パッケージの可視性・振動の種類）は docs/android.md §25.15。
 
+### 端末の明暗（`App.UiMode`・`platform.ui_mode_changed`。W2-9）
+
+端末の明暗の設定（ダークモード）です。SEED.UI のテーマの「端末に従う」（`UiTheme.SetBrightnessMode(UiBrightnessMode.System)`）がこれを使うので、
+ふつうは直接呼びません。Android はメインプロセスが答える（IPC なし）。正典は docs/ui_theme.md §4。
+
+```csharp
+using SEED.Platform;
+
+SystemUiMode mode = App.UiMode;                   // SystemUiMode.Dark / Light / Unknown（呼ぶたびに問い合わせる）
+this.On(App.UiModeChangedEvent, (string json) =>  // "platform.ui_mode_changed"（設定が変わったとき）
+{
+    if (App.TryParseUiModeEvent(json, out SystemUiMode now)) Debug.Log($"明暗: {now}");
+});
+PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // デスクトップの模擬だけ: 差し替えて、変わればイベント（null で OS の設定へ戻す。Android は false）
+```
+
+| 項目 | Android | デスクトップ（模擬） |
+|---|---|---|
+| `UiMode` | `Configuration.uiMode` の夜の bit（YES → Dark・NO → Light・UNDEFINED → Unknown） | Windows の「既定のアプリ モード」（レジストリ `AppsUseLightTheme`。0 = Dark）。ほかの OS は Unknown。差し替えがあればその値 |
+| `platform.ui_mode_changed`（data `night` = `yes` / `no` / `unknown`） | `MainActivity.onConfigurationChanged` で夜の bit が変わったとき（`configChanges` に `uiMode` があるので Activity は作り直されない） | 単体起動のウィンドウの ThemeChanged（OS の設定の変化。エディタに埋め込んだ Play では届かない）と `SimulateUiMode` |
+
 ### センサー（`Sensors`。W1-8）
 
 端末を振る・揺らすの判定に使う**重力を除いた加速度**です。Android ではメインプロセスが `SensorManager` の `TYPE_LINEAR_ACCELERATION`
@@ -3796,7 +3817,7 @@ SwipeGroup.For(listNode).CloseAll();          // 一覧のスクロールが始�
 部品は**アクタ（プレハブ）に付けるスクリプト**です。ScriptComponent の型名に `SEED.UI.Button` のように書いて付けます
 （見本のプレハブは `templates/ui/prefabs/`、全部を並べたギャラリーは `templates/ui/scenes/ui_gallery.scene`）。
 見た目はプレハブの子（Sprite・Text の色・形・位置）で、部品は「状態（値・無効・押下）→ 見た目」を 1 か所で決めて当てます。
-色・角丸・大きさ・文字の大きさ・動きの時間は**テーマのトークン**（`UiTokens`）から取ります。規則の正典は `docs/ui_components.md`。
+色・角丸・大きさ・文字の大きさ・書体・動きの時間は**テーマのトークン**（`UiTokens`）から取ります。規則の正典は `docs/ui_components.md`（テーマは `docs/ui_theme.md`。W2-9）。
 
 ```csharp
 using SEED.UI;
@@ -3880,32 +3901,81 @@ bar.SetValue(0.35f)        // 0..1。塗りの幅が motion.medium 秒で伸び�
 ring.SetValue(0.7f)        // 弧の角度 = 値 × 360（真上から時計回り・端は丸い）。形と塗りの弧で描く
 ```
 
-### UiTheme・UiTokens（テーマのトークン）
+### UiTheme・UiTokens（テーマ：読み込み・継承・明暗・切り替え。W2-4・W2-9）
+
+テーマはトークン（例 `color.primary`・`radius.button`）の値の表で、プロジェクトのアセットの JSON です。書いていないトークンは基のテーマ（`extends`）→
+組み込みの既定のテーマ（`default_theme.json`。暗い方＋明るい方）の値。切り替えると表示中の全部品（と `ThemeStyle` を付けた飾り）がその場で見た目を当て直します。
+JSON の書き方・継承・明暗・Wake or Pay のテーマの写し方・**トークンの表（名前・型・既定値・使う部品）の正典は docs/ui_theme.md**。
 
 ```csharp
-UiTheme.Current            // UiThemeData（今のテーマ。既定は SEEDScripting に埋め込んだ default_theme.json）
-UiTheme.Color(UiTokens.ColorPrimary)        // Color（線形。JSON の #RRGGBB は sRGB で書き、読むときに線形へ直す）
-UiTheme.Number(UiTokens.RadiusButton)       // float
-UiTheme.LoadAsset("assets://ui/theme/my_theme.json")   // bool: 差し替える（書いていないトークンは既定のテーマ）。部品は次のフレームで作り直す
-UiTheme.Use(UiThemeData.Parse(json, UiTheme.Default, out var error))
+using SEED.UI;
+
+UiThemeDefinition? forest = UiTheme.Load("assets://ui/themes/forest.json");   // 継承を解いたテーマ（読めない・壊れていれば null。知らない名前・型の誤りは警告して既定の値）
+UiTheme.Apply(forest);                          // すぐ切り替える（null で組み込みの既定のテーマ）。全部品をその場で当て直す
+UiTheme.Apply(forest, animate: true);           // 色を行き先の motion.theme 秒（既定 0.3）・motion.theme_curve で補間する（数・書体は最初から行き先）
+UiTheme.LoadAsset("assets://ui/themes/forest.json", animate: false)   // bool: Load ＋ Apply
+UiTheme.FromJson("{\"brightness\":\"light\",\"seed_color\":\"#FF7043\"}")   // UiThemeDefinition?: ファイルなしで作る（Wake or Pay の seedColor など）
+UiTheme.BuiltIn / UiTheme.Definition            // UiThemeDefinition: 組み込みの既定のテーマ / 当てているテーマ（Name・Brightness・Supports(明暗)・Resolve(明暗)・Warnings・ChainOrigins）
+UiTheme.Current                                 // UiThemeData（今の値の表。補間の途中は途中の表）: Color / Number / Text / TryColor / Has / Describe
+UiTheme.Color(UiTokens.ColorPrimary)            // Color（線形。JSON の #RRGGBB は sRGB で書き、読むときに線形へ直す）
+UiTheme.Number(UiTokens.RadiusButton)           // float
+UiTheme.Text(UiTokens.FontFamily)               // string（書体の assets:// のパス。空 = 組み込み）
+UiTheme.Color("app.kakugo.danger")              // アプリ独自のトークン（JSON の app のグループ）
+UiTheme.Changed += change => { }                // Action<UiThemeChange>（Theme・Brightness・Animated）: 切り替えごとに 1 回（補間の途中のフレームでは呼ばない）
+UiTheme.Version                                 // int: 見た目が変わるたびに増える（補間の毎フレームも）
+UiTheme.IsTransitioning                         // bool: 補間の途中か
+
+// 明暗（テーマが light / dark の節か brightness で対応している明暗だけ。対応していなければテーマの明暗のまま）
+UiTheme.SetBrightnessMode(UiBrightnessMode.System, animate: false)   // Theme（既定）/ System（端末に従う）/ Light / Dark（強制）
+UiTheme.Brightness                              // UiBrightness.Dark / Light（表示している明暗）
+UiTheme.BrightnessMode                          // 選び方
+UiTheme.SystemBrightness                        // UiBrightness?（System のときに問い合わせた端末の明暗。不明は null）
+UiTheme.AnimateSystemChanges = true             // 端末の明暗の変化で色を補間する（既定 false）
 ```
 
-| トークン（例） | 使う所 |
+```jsonc
+// assets/ui/themes/forest_round.json（継承と一部だけの上書き）
+{ "name": "forest_round", "extends": "forest.json", "color": { "primary": "#00796B" }, "radius": { "button": 24 }, "font": { "weight": 0.35 } }
+```
+
+| トークン（例。全部は docs/ui_theme.md §8） | 使う所 |
 |---|---|
 | `color.primary`・`color.on_primary` | 塗りのボタン・オンのスイッチ・スライダ・進捗 |
-| `color.surface`・`color.surface_variant`・`color.on_surface` | 面・溝・台・文字 |
+| `color.background`・`color.surface`・`color.surface_variant`・`color.on_surface` | 背景・面・溝・台・文字 |
 | `color.selected`・`color.on_selected`・`color.outline` | 選んだ項目・枠 |
 | `color.disabled`・`color.on_disabled`・`color.state_layer` | 無効・押下の重ね色 |
 | `radius.button`・`radius.chip`・`radius.card`・`radius.segment` | 角丸 |
 | `size.touch_min`・`size.toggle_knob`・`size.slider_thumb`・`size.ring_thickness` | 大きさ |
 | `text.title`・`text.body`・`text.label`・`text.caption` | 文字の大きさ |
-| `motion.short`・`motion.medium`・`motion.repeat_interval` | 動きの時間（秒） |
+| `font.family`・`font.weight`・`font.weight_title` | 部品の文字の書体・太さ（W2-9） |
+| `motion.short`・`motion.medium`・`motion.theme` | 動きの時間（秒） |
 | `opacity.pressed`・`opacity.disabled` | 濃さ |
 
-> **重要**: 部品は見た目を変えたとき `SEED.Redraw.Request()`、動いている間は `Redraw.KeepAlive` を呼ぶので、`render_policy: on_demand` でも止まりません。全トークンの表と既定値は docs/ui_components.md §5。
+> **重要**: 部品は見た目を変えたとき `SEED.Redraw.Request()`、動いている間は `Redraw.KeepAlive` を呼ぶので、`render_policy: on_demand` でも止まりません。
+> テーマの補間の間もエンジンが毎フレーム当て直して描き直しを頼みます。テーマ・選び方はシーンの切り替えをまたいで残り、スクリプトを読み直すと（コンパイル・
+> ホットリロード）既定へ戻って `UiTheme.Changed` の受け手も外れます。エディタに埋め込んだ Play の開始・停止では読み直さないので前の Play のテーマが残ります。
+> 起動のスクリプトの `OnStart` でテーマと選び方を当て、`Changed` に足した受け手は `OnDestroy` で外してください。W2-4 の `UiTheme.Use(UiThemeData)` は無くしました（`UiTheme.Apply` を使う）。
 
 ```csharp
 UiWidget.RefreshCount      // long: 全部品が見た目を作り直した回数（計測用。ホイールを回している間に他の部品が作り直されないことを見る）
+UiRegistry.Count           // int: 登録している部品の数（診断用）
+UiTokenCatalog.All         // IReadOnlyList<UiTokenInfo>（Name・Kind・UsedBy）: トークンの表
+UiTokenCatalog.Match(token, out UiTokenKind kind)   // Known / AppDefined / UnknownName / UnknownGroup
+```
+
+### ThemeStyle（部品でない飾りをテーマに結び付ける。W2-9）
+
+画面の背景・カード・見出し・説明の文字のような部品のスクリプトを持たない見た目は、アクタに ScriptComponent（型名 `SEED.UI.ThemeStyle`）を付けて
+欄にトークンの名前を書くと、テーマが替わるたびに自分の Sprite・Text へ当て直します（空の欄は触らない。引けないトークンは 1 度だけ警告）。
+
+| 欄 | 当てる所 | 例 |
+|---|---|---|
+| `SpriteColor`・`BorderColor`・`CornerRadius` | Sprite の色・縁の色・四隅の角丸 | `color.background`・`color.outline`・`radius.card` |
+| `TextColor`・`TextSize` | Text の色・大きさ | `color.on_surface`・`text.title` |
+| `TextFont`・`TextWeight` | Text の書体・太さ（既定 `font.family`・`font.weight`） | 見出しは `font.weight_title` |
+
+```csharp
+UiTextStyle.Apply(text, UiTheme.Current, UiTokens.TextBody)   // 自作の部品の文字へ大きさ・書体・太さを当てる（同じ値は書かない）
 ```
 
 ## 7.17 UI 部品（SEED.UI：ホイール・時刻ホイール。W2-5）

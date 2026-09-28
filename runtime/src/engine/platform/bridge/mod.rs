@@ -123,6 +123,12 @@ pub trait PlatformBridge: Send + Sync {
     /// デスクトップの模擬は目覚ましの予約表と積んだイベントを空にする（Play を止めれば予約は消える）。
     /// Android は実機の予約を Play と関係なく持つので何もしない。
     fn reset_session(&self) {}
+
+    /// ホスト（PC のウィンドウ）が OS の明暗の設定の変化を知った（W2-9。winit の WindowEvent::ThemeChanged）。既定は何もしない。
+    ///
+    /// デスクトップの模擬は OS の設定を読み直し、変わっていれば platform.ui_mode_changed を積む。Android は Java の
+    /// MainActivity.onConfigurationChanged が自分でイベントを出すので何もしない。
+    fn notify_host_ui_mode_changed(&self) {}
 }
 
 /// OS の糊が登録した実装（プロセスで 1 つ。最初の登録だけが有効）。
@@ -218,6 +224,18 @@ pub fn next_timed_event_delay_ms() -> Option<u64> {
         eprintln!("{LOG_PREFIX} 次の予定の問い合わせ中に panic しました（予定なしとして扱います）");
         None
     })
+}
+
+/// ホストのウィンドウが OS の明暗の設定の変化を知った（W2-9。winit の WindowEvent::ThemeChanged から）。
+///
+/// まだ作られていない模擬は作らない（SEED.Platform を使わないプロジェクトでは何もしない）。panic は受け止めてログだけ。
+pub fn notify_host_ui_mode_changed() {
+    let Some(bridge) = existing_bridge() else {
+        return;
+    };
+    if panic::catch_unwind(AssertUnwindSafe(|| bridge.notify_host_ui_mode_changed())).is_err() {
+        eprintln!("{LOG_PREFIX} 明暗の設定の変化の処理中に panic しました");
+    }
 }
 
 /// 届いているイベントを取り出す（エンジンがフレームの頭で 1 回呼ぶ）。基盤が無ければ空。

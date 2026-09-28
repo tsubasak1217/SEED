@@ -86,6 +86,19 @@ public static class PlatformDiagnostics
         return Platform.TryInvoke(ModulePlatform, MethodEmitTestEvent, request, out _);
     }
 
+    /// <summary>
+    /// デスクトップの模擬だけ: 端末の明暗（<see cref="App.UiMode"/>）を差し替え、変わったら <see cref="App.UiModeChangedEvent"/> を流す（W2-9）。
+    /// OS の設定を変えずに、端末の明暗に従うテーマ（SEED.UI の UiBrightnessMode.System）の切り替えを PC で試すため。
+    /// Android の実機では unknown_method（false）。
+    /// </summary>
+    /// <param name="mode">差し替える明暗（null で差し替えをやめ OS の設定へ戻す）。</param>
+    /// <returns>受け付けたら true（失敗なら <see cref="Platform.LastError"/>）。</returns>
+    public static bool SimulateUiMode(SystemUiMode? mode)
+    {
+        string night = mode is { } m ? AppJson.ToNight(m) : AppJson.NightSystem;
+        return Platform.TryInvoke(AppJson.Module, AppJson.MethodSimSetUiMode, PlatformJson.StringObject((AppJson.KeyNight, night)), out _);
+    }
+
     /// <summary>ping の返答を読み、合言葉の一致を確かめて結果にする。</summary>
     private static PlatformPingResult ReadPingReply(string reply, string nonce, double elapsedMs)
     {

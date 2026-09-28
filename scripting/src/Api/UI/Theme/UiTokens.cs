@@ -1,12 +1,12 @@
 namespace SEED.UI;
 
 // ============================================================
-//  UiTokens.cs — 部品が読むテーマのトークンの名前の一覧（W2-4）
+//  UiTokens.cs — 部品が読むテーマのトークンの名前の一覧（W2-4。W2-9 で書体・テーマの切り替えの動きを足した）
 //
 //  トークン = テーマの JSON の「グループ.名前」（例 color.primary・radius.button）。値の表（既定）は
 //  Theme/default_theme.json（SEEDScripting に埋め込み）。部品はここの名前だけを使い、値を直接書かない
-//  （テーマの差し替えで全部品の見た目が変わる。W2-9 で本格化）。名前と役割の正典は docs/ui_components.md §5。
-//  足すときは default_theme.json・docs の表にも足すこと（無い名前は既定のテーマ → 最後の既定値の順で引く）。
+//  （テーマの差し替えで全部品の見た目が変わる）。型と「使う部品」の表（1 か所）は UiTokenCatalog、正典は docs/ui_theme.md §8。
+//  足すときは UiTokenCatalog・default_theme.json にも足すこと（テストが 3 つの揃いと docs の表を確かめる）。
 // ============================================================
 
 /// <summary>テーマのトークンの名前。</summary>
@@ -124,6 +124,14 @@ public static class UiTokens
     /// <summary>ホイールの行の文字（W2-5。Flutter の日時のホイールの文字 21）。</summary>
     public const string TextWheel = "text.wheel";
 
+    // ── 書体（W2-9）────────────────────────────────────────
+    /// <summary>部品の文字の書体（assets:// の .ttf / .otf。空 = 組み込みの書体）。</summary>
+    public const string FontFamily = "font.family";
+    /// <summary>部品の文字の太さ（SEED.Text.Weight。キャンバスの単位。0 = 書体そのまま・正で太く）。</summary>
+    public const string FontWeight = "font.weight";
+    /// <summary>見出しの文字の太さ（ダイアログの題・ThemeStyle で見出しに当てたもの）。</summary>
+    public const string FontWeightTitle = "font.weight_title";
+
     // ── 動き（秒）────────────────────────────────────────────
     /// <summary>短い動き（スイッチのつまみ・押下の色）。</summary>
     public const string MotionShort = "motion.short";
@@ -139,6 +147,10 @@ public static class UiTokens
     public const string MotionWheel = "motion.wheel";
     /// <summary>ホイールが選べない行に止まったとき、選べる行へ戻す時間（W2-5。Flutter の CupertinoDatePicker の 200ms）。</summary>
     public const string MotionWheelCorrect = "motion.wheel_correct";
+    /// <summary>テーマを動きありで切り替えるときの色の補間の時間（W2-9。UiTheme.Apply(…, animate: true)）。</summary>
+    public const string MotionTheme = "motion.theme";
+    /// <summary>テーマの色の補間の曲線（4 つの成分 .x1・.y1・.x2・.y2。W2-9）。</summary>
+    public const string MotionThemeCurve = "motion.theme_curve";
 
     // ── 濃さ（0..1）──────────────────────────────────────────
     /// <summary>押下の重ね色の濃さ。</summary>
@@ -150,7 +162,10 @@ public static class UiTokens
     /// <summary>ホイールの中央の帯の外の行の濃さ（W2-5。Flutter の _kOverAndUnderCenterOpacity 0.447）。</summary>
     public const string OpacityWheelDim = "opacity.wheel_dim";
 
-    /// <summary>部品が読むすべてのトークン（ギャラリー・テストが既定のテーマに揃っているかを確かめる）。</summary>
+    /// <summary>
+    /// 部品が読むすべてのトークン（曲線の <see cref="MotionThemeCurve"/> は 4 つの成分へ展開済み。
+    /// ギャラリー・テストが既定のテーマに揃っているかを確かめる）。
+    /// </summary>
     public static readonly string[] All =
     {
         ColorPrimary, ColorOnPrimary, ColorBackground, ColorSurface, ColorSurfaceVariant, ColorOnSurface,
@@ -162,8 +177,11 @@ public static class UiTokens
         SizeSliderTrack, SizeSliderThumb, SizeSliderThumbPressed, SizeProgressBar, SizeRingThickness,
         SizeRadioDot, SizeShadowBlur, SizeShadowOffset, SizeWheelItem, SizeWheelBandInset,
         TextTitle, TextBody, TextLabel, TextCaption, TextWheel,
+        FontFamily, FontWeight, FontWeightTitle,
         MotionShort, MotionMedium, MotionRepeatInterval, MotionRepeatMinInterval, MotionRepeatAccel,
-        MotionWheel, MotionWheelCorrect,
+        MotionWheel, MotionWheelCorrect, MotionTheme,
+        MotionThemeCurve + UiCurve.SuffixX1, MotionThemeCurve + UiCurve.SuffixY1,
+        MotionThemeCurve + UiCurve.SuffixX2, MotionThemeCurve + UiCurve.SuffixY2,
         OpacityPressed, OpacityDisabled, OpacityShadow, OpacityWheelDim,
     };
 }

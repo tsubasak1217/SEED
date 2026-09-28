@@ -1,0 +1,13 @@
+{
+  "_about": "見本のテーマ（W2-9）: 朝焼け（明るい方だけ）。Wake or Pay の sunrise（themes.json の seedColor #FF7043・brightness light）を docs/ui_theme.md §6 の写し方で書き（brightness と seed_color）、背景と溝を暖かい色に置き直した例。面・文字の残りは組み込みの既定のテーマの明るい方（light の節）の値。",
+  "name": "sunrise",
+  "brightness": "light",
+  "seed_color": "#FF7043",
+  "color": {
+    "background": "#FFF5F0",
+    "surface_variant": "#F6E4DC",
+    "outline": "#9A857C",
+    "chart_grid": "#F1E2DB",
+    "chart_empty_bar": "#EAD8D0"
+  }
+}

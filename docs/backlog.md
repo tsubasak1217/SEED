@@ -2408,6 +2408,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   → W1-4a（2026-09-27）で `RingService`（`mediaPlayback`）を機能の表に足したが、この要件チェックは範囲外として入れていない（機能の表の
   単体テストと aapt2 の手の確認で種類と権限の組を確かめた）。W1-4b か W1-7 で足す。
 - [ ] **システムバーを出したままのときの文字色（明暗）を選べない** — 2026-09-27（W1-2）。W1-6 の指示（`Window` の 3 つの切り替え）に入らず持ち越し（W1-7 か W2 のテーマと一緒に）。
+  → 2026-09-28 の W2-9（テーマ）でも入れていない（指示の範囲外）。テーマの明暗（`UiTheme.Brightness`・`UiTheme.Changed`）が出来たので、`Window` にバーの明暗の切り替えを足し、
+  明るいテーマで暗いアイコンにする形で入れる（W2-11 か W3）。
   テーマの既定のまま（暗い AppCompat のテーマなので白い文字の見込み。
   推論・実機で未確認）。明るい画面のアプリではステータスバーの時刻・電池が見えにくい。`Window` の API（W1-6 の `SetSystemBarsVisible` の隣。と必要ならプロジェクト設定）で
   `WindowInsetsControllerCompat.setAppearanceLightStatusBars` を選べるようにする。
@@ -2925,7 +2927,35 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （365 本の積み上げの棒は 1 フレームの UI の積み込み 7.2 ms。配布版・実機の値は未計測）。(9) 縦の格子線・凡例・目盛りの文字の衝突の検出は無い。
   (10) 軽い三角形分割の折れ線はつなぎの内側で本体が重なる（半透明の太い線ではわずかに濃い）。つなぎは丸だけ。
   関連: `scripting/src/Api/UI/Charts/`・`runtime/src/engine/core/renderer/primitive2d/`・`runtime/src/engine/core/input/gesture/pinch.rs`・`templates/ui/`。
-- [ ] **W2-9 テーマ（トークンの JSON・実行中の切り替え）と `templates/ui/` の見本・ギャラリー** — 2026-09-27。
+- [x] **W2-9 テーマ（トークンの JSON・実行中の切り替え）と `templates/ui/` の見本・ギャラリー** — 2026-09-27 記載 / 2026-09-28 実装。
+  正典 docs/ui_theme.md。継承（`extends`）と一部だけの上書き・既定のテーマへの落ち方、知らない名前・型の誤りの警告、トークンの表 1 か所（`UiTokenCatalog`。docs の表は
+  テストが一致を確かめる）、明暗（`light` / `dark` の節・`brightness`・`UiBrightnessMode`・端末の明暗 `app.ui_mode` と `platform.ui_mode_changed`）、切り替えの
+  その場の当て直し（`UiRegistry`）と色の補間・`UiTheme.Changed`、書体のトークン（`font.*`）、飾りの結び付け `ThemeStyle`、種の色 `seed_color`（Wake or Pay の写し方）、
+  見本のテーマ 3 つとギャラリーの仕上げ（テーマの帯・一覧・画面の組み立て・グラフ）。残りは下の「W2-9 の残り」。
+- [ ] **SEED.UI の部品が既定で読むプレハブがパッケージに入らない（W2-7 からの既存の不具合）** — 2026-09-28（W2-9 のギャラリーの APK の組み立てで発見）。
+  `ModalHost` の `DialogPrefab`・`SheetPrefab`・`OverlayPrefab`、`ToastHost` の `ToastPrefab`、`ScreenStack` の `FramePrefab` の既定の値
+  （`assets://ui/prefabs/dialog.actor` など）は SEEDScripting の中の定数で、パッケージの収録（`AssetCollector`。プロジェクトの .cs・シーン・データの
+  `assets://` の文字列と runtime/src だけを辿る）が拾わない。欄を空のまま使うシーン（`templates/ui/scenes/ui_navigation.scene` の ModalHost・ToastHost・
+  ScreenStack）を APK にすると、プレハブが pak に無く、ダイアログ・シート・覆い・トースト・画面の枠を作れない見込み（**推論。実機では未確認**）。
+  W2-9 のギャラリーは欄にパスを明示して避けた（pak に入ることを確かめた）。直すなら収録の起点に SEEDScripting の既定のプレハブ（`templates/ui/prefabs/` の
+  該当ファイル）を足すか、部品の既定の値をシーンに書き出す。関連: `editor/src/Packaging/Collect/AssetCollector.cs`・`scripting/src/Api/UI/Navigation/`。
+- [ ] **W2-9 の残り（テーマ）** — 2026-09-28。(1) **実機（Pixel 6a）で未確認**: 端末のダークテーマの切り替えで `onConfigurationChanged` → `platform.ui_mode_changed` →
+  テーマが切り替わること・`app.ui_mode` の値（手順は ui_theme.md §11・android.md §25.17）。(2) **エディタに埋め込んだ Play では OS の明暗の変化が届かない**
+  （子のウィンドウに WM_SETTINGCHANGE が来ない。単体起動は届く。問い合わせは効く）。(3) **種の色の規則は Material 3 の fromSeed（HCT）の近似ではない**
+  （色相を保って明るさだけを動かす。第 3・第 4 の色・面の色みは作らない）。Wake or Pay の W3 で Flutter 版と見比べて足りなければ HCT を足す。
+  (4) **補間は色だけ**で、補間の間は全部品を毎フレーム当て直す（部品 128 のギャラリーで debug の PC は約 50 回/秒。部品の多い画面・実機で重ければ、色だけの軽い当て直しの口を部品に足す）。
+  (5) **部品の文字の書体は常にテーマのもの**（部品ごとの書体の上書きが無い）。太さの違う書体ファイルの同時使用は W2-6c。(6) トークンの値の範囲は調べない（型だけ）。
+  (7) 見本のシーン `ui_navigation.scene`・`ui_charts.scene` の飾りには `ThemeStyle` を付けていない（焼き込みの色のまま）。(8) 既定の暗い方の `on_primary` / `primary` は
+  4.35:1（AA の 4.5 に少し足りない。W2-4 の値のまま）。(9) テーマをエディタで編集する画面（E-07 の (b) の辞書コンポーネント）は無い。(10) `ThemeStyle` は単色の塗り・縁・角丸・
+  文字だけ（グラデーションの色・影の色は結び付けられない）。(11) システムバーのアイコンの明暗をテーマの明暗に合わせる仕組みは無い（下の「システムバーを出したままのときの
+  文字色（明暗）を選べない」。`UiTheme.Changed` から当てる形にする）。
+  (12) **エディタに埋め込んだ Play の区切りでテーマの状態が戻らない**: `UiTheme` は SEEDScripting の静的な状態で、埋め込みの Play（ENTER_PLAY / EXIT_PLAY）は
+  スクリプトを読み直さないので、前の Play の最後のテーマ・選び方が次の Play に残る（W2-4 の `UiTheme.Use` から同じ。`SEED.Debug` のコマンドの受け手など
+  ほかの C# の静的な状態も同じ）。今は「起動のスクリプトの OnStart でテーマを当てる」約束で避ける（ギャラリーは `UiGalleryThemeBar.StartTheme`）。
+  直すなら Play の区切りで C# へ知らせる入口（ScriptBridge の `ResetPlaySession` と `clr_host/entry_points.rs`・`play_mode_ops.rs` の enter_play / exit_play）を足す。
+  (13) テーマの JSON はスクリプトが文字列で読むので、パッケージの収録が拾うには完全な `assets://` のパスをどこかに書く必要がある（`extends` の相対パスは拾われない。
+  ui_theme.md §7.1）。テーマの JSON の `extends` を収録が辿る（JSON の相対パスを解く）ようにすれば要らなくなる。
+  関連: `scripting/src/Api/UI/Theme/`・`Widgets/ThemeStyle.cs`・`runtime/src/engine/platform/bridge/desktop_sim/ui_mode_*.rs`・`templates/ui/`。
 - [ ] **W2-10 描かなくてよいときは描かない** — 2026-09-27。前面では毎フレーム描き続け、UI と提示だけで Pixel 6a の GPU 約 4.5 ms を使う
   （上の「固定分 約 4.5 ms」の項目）。止まっている画面の多いアプリの電池に効く。
   → W2-0 で方式を決めた（roadmap §3.8.3・§3.8.4）。部品を作り始める前に「描く理由」の API だけ先に決める（§3.8.5）。

@@ -19,7 +19,7 @@
 | `runtime/src/engine/core/app_base/app/sprite_style_ipc.rs` | エディタの編集（`SET_SPRITE_FIELD`・`SET_CANVAS_CLIP_FIELD`）とインスペクタへ送る JSON |
 | `editor/src/Panels/InspectorPanel.SpriteStyle.cs` | インスペクタ（「形」「塗り」「9 スライス」「影」の節・切り抜きの形） |
 | `scripting/src/Api/Sprite.cs`・`CanvasClip.cs`・`SpriteStyleTypes.cs` | `SEED.Sprite` の形と塗りのプロパティ・`SEED.CanvasClip.Shape` |
-| `scripting/src/Api/UI/Theme/` | テーマ（`UiTokens` = トークンの名前・`default_theme.json` = 既定の値の表・`UiThemeData`・`UiTheme`・`UiColorMath`） |
+| `scripting/src/Api/UI/Theme/` | テーマ（`UiTokens` = トークンの名前・`default_theme.json` = 既定の値の表・`UiThemeData`・`UiTheme`・`UiColorMath`。W2-9 で継承・明暗・切り替え・トークンの表 `UiTokenCatalog` を足した。正典は [ui_theme.md](ui_theme.md)） |
 | `scripting/src/Api/UI/Looks/` | 状態 → 見た目と値の計算（純粋な計算。`editor/tests/UiComponentsTests` で検算） |
 | `scripting/src/Api/UI/Widgets/` | 部品のスクリプト（`UiWidget` の派生。部品ごとに 1 ファイル） |
 | `scripting/src/Api/UI/Wheel/` | ホイールの純粋な計算（W2-5。行の曲面の見た目 `WheelLook`・その値の組 `WheelLookParams`・循環の添字と位置 `WheelLoop`・時刻の 12/24 時間と連動と分の刻み `TimeWheelMath`） |
@@ -97,38 +97,13 @@
 
 ## 5. テーマのトークン（部品が読む値）
 
-部品は色・角丸・大きさ・文字の大きさ・動きの時間を直接書かず、トークン（`UiTokens`）で引く。既定の値の表は `scripting/src/Api/UI/Theme/default_theme.json`
-（SEEDScripting に埋め込み。Wake or Pay の既定のテーマ midnight〈seedColor #6C4BFF・dark〉から作った暗い配色）。
-JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`・`opacity`）の中に名前 → 値。色は sRGB の `#RRGGBB` / `#RRGGBBAA`（読み込みで線形へ）、
-それ以外は数。先頭が `_` の鍵は説明。最上位に `"color.primary": "#…"` と直接書いてもよい。書いていないトークンは既定のテーマの値。
-`UiTheme.LoadAsset(path)`・`UiTheme.Use(theme)` で差し替えると、部品は次のフレームで見た目を作り直す（実行中のテーマ交換の本格化・ギャラリーでの切り替えは W2-9）。
-
-| トークン | 既定 | 使う所 |
-|---|---|---|
-| `color.primary` / `color.on_primary` | #7C5CFF / #FFFFFF | 塗りのボタン・オンのスイッチ・スライダ・進捗・選んだラジオ／その上の文字 |
-| `color.background` / `color.surface` / `color.surface_variant` | #121018 / #1E1B26 / #2E2A3A | 画面の背景／面（カード・数値欄）／溝・オフのスイッチ・セグメントの台 |
-| `color.on_surface` / `color.on_surface_muted` / `color.outline` | #ECE6F5 / #A9A2B8 / #6E6780 | 面の文字／控えめな文字・オフのチェックボックス・ラジオの輪／枠線 |
-| `color.selected` / `color.on_selected` | #4A3AA8 / #EDE7FF | 選んだセグメント・チップ・薄い塗りのボタン |
-| `color.knob` / `color.knob_off` | #FFFFFF / #A9A2B8 | スイッチのつまみ（オン・オフ） |
-| `color.state_layer` / `opacity.pressed` | #FFFFFF / 0.16 | 押下の重ね色とその濃さ |
-| `color.disabled` / `color.on_disabled` / `opacity.disabled` | #3A3645 / #7C7689 / 0.38 | 無効の塗り・文字・全体の濃さ |
-| `color.shadow` / `opacity.shadow` / `color.error` | #000000 / 0.35 / #FF5252 | 影・エラー（W2-6） |
-| `radius.button` / `chip` / `card` / `field` / `segment` / `checkbox` / `progress` | 12 / 16 / 20 / 12 / 20 / 4 / 4 | 角丸 |
-| `space.xs` / `s` / `m` / `l` / `xl` | 4 / 8 / 12 / 16 / 24 | 余白 |
-| `size.touch_min` / `border` / `check_border` | 48 / 1 / 2 | 押せる最小の大きさ・細い枠・チェックボックスとラジオの枠 |
-| `size.toggle_knob` / `toggle_knob_off` / `toggle_inset` | 24 / 16 / 4 | スイッチのつまみ（オン・オフ） |
-| `size.slider_track` / `slider_thumb` / `slider_thumb_pressed` | 4 / 20 / 24 | スライダ |
-| `size.progress_bar` / `ring_thickness` / `radio_dot` / `shadow_blur` / `shadow_offset` | 8 / 6 / 10 / 8 / 2 | 進捗・ラジオの点・影 |
-| `text.title` / `body` / `label` / `caption` | 20 / 16 / 14 / 12 | 文字の大きさ |
-| `motion.short` / `medium` | 0.15 / 0.25 | つまみ・進捗の動き（秒） |
-| `motion.repeat_interval` / `repeat_min_interval` / `repeat_accel` | 0.12 / 0.03 / 0.5 | 数値欄の長押しの連続（最初の間隔・最短の間隔・1 秒ごとに何倍になるか） |
-| `size.wheel_item` / `text.wheel` | 32 / 21 | ホイールの行の高さ（1 行ぶんのスクロール・スナップの間隔）／行の文字（W2-5。§11） |
-| `radius.wheel_band` / `size.wheel_band_inset` / `opacity.wheel_dim` | 8 / 9 / 0.447 | ホイールの中央の帯の角丸・左右の余白／帯の外の行の濃さ（帯の色は `color.surface_variant`、文字は `color.on_surface`・選べない行は `color.on_disabled`） |
-| `motion.wheel` / `motion.wheel_correct` | 0.3 / 0.2 | ホイールをタップ・スクリプト・キーで動かす時間と午前/午後の連動／選べない行から戻す時間 |
-
-グラフ（W2-8）のトークン（系列の色・線の太さ・点・棒・格子線・目盛りの文字・吹き出し・慣性）は [ui_charts.md](ui_charts.md) §7（名前は `ChartTokens`）。
-画面の組み立て（W2-7）のトークン（画面の出入りの時間と曲線・幕・ダイアログ・シート・トースト・タブ・重なりのレイヤー）は [ui_navigation.md](ui_navigation.md) §9
-（名前は `NavTokens`。曲線は `motion.push_curve` の `.x1`・`.y1`・`.x2`・`.y2` の 4 つの数＝CSS の cubic-bezier。`UiCurve.FromTheme`）。
+部品は色・角丸・大きさ・文字の大きさ・書体・動きの時間を直接書かず、トークン（`UiTokens`）で引く。**トークンの一覧（名前・型・既定値〈暗い方・明るい方〉・
+使う部品）と、テーマの JSON の書き方・継承・明暗・切り替えの正典は [ui_theme.md](ui_theme.md)**（表は §8。`UiTokenCatalog` と `default_theme.json` から作り、テストが一致を確かめる）。
+既定の値の表は `scripting/src/Api/UI/Theme/default_theme.json`（SEEDScripting に埋め込み）。値の出典: 色は Wake or Pay の既定のテーマ midnight
+（seedColor #6C4BFF・dark）から作った暗い配色（W2-9 で同じ種の色の明るい配色を `light` の節に足した）、大きさ・時間は Material Design 3 の部品の寸法
+（押せる大きさ 48、スイッチ 52×32、チェックボックス 18 の枠を 24 の中に等）と Android の既定の動きの時間、ホイールは Flutter の CupertinoDatePicker（§11）。
+`UiTheme.Apply(theme)`（W2-9）で差し替えると、表示中の全部品がその場で見た目を当て直す（W2-4 の `UiTheme.Use` は無くした。`UiTheme.LoadAsset(path)` は残る）。
+部品の文字は大きさに加えて書体（`font.family`）・太さ（`font.weight`）もテーマから当てる（W2-9。`UiTextStyle`）。
 
 ## 6. 基本の部品（`SEED.UI`。部品ごとの状態と見た目）
 
@@ -158,6 +133,7 @@ JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`
 **見本**: `templates/ui/scenes/ui_gallery.scene`（ルートは dp。形と塗り〈角丸・四隅ごと・円・楕円・縁だけの輪・グラデーション 2・3・4 色と放射・縁・
 9 スライス〈伸ばす・繰り返す〉・丸いアバター・円の切り抜き・角丸のカード・影・弧〉と全部品の状態〈押下・無効・オン/オフ・値〉を並べる）。
 `scripts/UiGalleryDemo.cs` がスライダ ↔ 数値欄 ↔ 進捗をつなぎ、「全部を無効にする」で全部品を無効にする（デバッグの命令 `ui,disable` / `ui,enable` / `ui,theme,<path>`）。
+**W2-9 で上にテーマの帯・縦のスクロールのページ・一覧・画面の組み立て・グラフの段を足した**（[ui_theme.md](ui_theme.md) §9）。
 テンプレートライブラリの「UI 部品」（`ui` のフォルダ）からプロジェクトへ取り込むと `assets/ui/...` になる。
 
 ## 7. エディタ
@@ -209,7 +185,7 @@ JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`
 - **弧は円だけ**（楕円の弧は無い）。影は形ごとのぼかしの近似（広がり〈spread〉・内側の影は無い）。放射グラデーションの中心・半径は割合だけ
 - **インスペクタの ⟲**: 形と塗りの欄の行には既定値へ戻すボタンが無い（入れ子の欄は既定の JSON に無いので、共通のリセットが効かない）
 - **部品の見た目のアニメーション**: 押下の色は即座に切り替わる（色の補間なし）。スイッチ・進捗は動く
-- **W2-5 以降**: 時刻ホイール（W2-5 で済。§11）、文字入力の欄（W2-6。数値欄のキーボード入力は `TrySetText` だけ用意）、テーマの交換とギャラリーの切り替え（W2-9）、
+- **W2-5 以降**: 時刻ホイール（W2-5 で済。§11）、文字入力の欄（W2-6。数値欄のキーボード入力は `TrySetText` だけ用意）、テーマの交換とギャラリーの切り替え（W2-9 で済。[ui_theme.md](ui_theme.md)）、
   部品の押下の見た目の `Recycled` での戻し（一覧の行に部品を置くとき）
 
 ## 11. ホイールと時刻ホイール（W2-5。2026-09-28）

@@ -23,6 +23,29 @@ public static class Program
         return theme;
     }
 
+    /// <summary>
+    /// トークンの表（Markdown）を作って出す（--token-table）か、docs の印の間を書き直す（--update-docs &lt;path&gt;）。
+    /// </summary>
+    private static int WriteTokenTable(string[] args)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "default_theme.json");
+        var source = UiThemeSource.Parse(File.ReadAllText(path), UiThemePaths.BuiltInOrigin);
+        var builtIn = UiThemeResolver.Build(source, source, _ => null);
+        string table = ThemeTokenTable.Build(builtIn.Resolve(UiBrightness.Dark), builtIn.Resolve(UiBrightness.Light));
+        if (args[0] == PrintTableOption)
+        {
+            Console.Out.Write(table);
+            return 0;
+        }
+        if (args.Length < 2 || !ThemeTokenTable.Update(args[1], table))
+        {
+            Console.Error.WriteLine($"{UpdateDocsOption} <docs のパス>: 表の印が見つかりません");
+            return 1;
+        }
+        Console.WriteLine($"{args[1]} の表を書き直しました（{UiTokenCatalog.All.Count} 行）");
+        return 0;
+    }
+
     /// <summary>2 色がほぼ等しいか。</summary>
     private static void SameColor(Color expected, Color actual, string what)
     {
@@ -32,8 +55,17 @@ public static class Program
         Check.Close(expected.a, actual.a, Eps, what + " a");
     }
 
-    public static int Main()
+    /// <summary>docs の表を標準出力へ出すオプション（W2-9）。</summary>
+    private const string PrintTableOption = "--token-table";
+    /// <summary>docs の表を書き直すオプション（W2-9。続けて docs のパス）。</summary>
+    private const string UpdateDocsOption = "--update-docs";
+
+    public static int Main(string[] args)
     {
+        // W2-9: docs/ui_theme.md のトークンの表を作る（テストは走らせない）
+        if (args.Length > 0 && (args[0] == PrintTableOption || args[0] == UpdateDocsOption))
+            return WriteTokenTable(args);
+
         var h = new TestHarness();
         var theme = LoadDefault();
 
@@ -45,20 +77,24 @@ public static class Program
             Check.Equal("default", theme.Name, "名前");
         });
 
-        h.Add("テーマ: グループの平坦化・sRGB → 線形・説明の鍵を読まない・最上位の直書き", () =>
+        h.Add("テーマ: グループの平坦化・sRGB → 線形・説明の鍵を読まない・最上位の直書き（W2-9: アプリ独自は app のグループ）", () =>
         {
             var t = UiThemeData.Parse(
-                "{\"_about\":\"x\",\"color\":{\"a\":\"#FFFFFF\",\"b\":\"#80808080\",\"_note\":\"#000000\"},"
-                + "\"radius\":{\"button\":12},\"kakugo.danger\":\"#FF0000\",\"deep\":{\"x\":{\"y\":3}}}", null, out var err);
+                "{\"_about\":\"x\",\"app\":{\"a\":\"#FFFFFF\",\"b\":\"#80808080\",\"_note\":\"#000000\",\"deep\":{\"x\":{\"y\":3}}},"
+                + "\"radius\":{\"button\":12},\"app.kakugo.danger\":\"#FF0000\"}", null, out var err);
             Check.Equal("", err, "読める");
-            SameColor(new Color(1f, 1f, 1f, 1f), t.Color("color.a"), "白");
+            SameColor(new Color(1f, 1f, 1f, 1f), t.Color("app.a"), "白");
             // #80 = 128/255 = 0.50196（sRGB）→ 線形 0.21586
-            Check.Close(0.21586, t.Color("color.b").r, 1e-4, "sRGB の中間の灰色は線形で約 0.216");
-            Check.Close(128.0 / 255.0, t.Color("color.b").a, 1e-4, "アルファは線形へ直さない");
-            Check.True(!t.Has("color._note"), "_ で始まる鍵は読まない");
+            Check.Close(0.21586, t.Color("app.b").r, 1e-4, "sRGB の中間の灰色は線形で約 0.216");
+            Check.Close(128.0 / 255.0, t.Color("app.b").a, 1e-4, "アルファは線形へ直さない");
+            Check.True(!t.Has("app._note"), "_ で始まる鍵は読まない");
             Check.Close(12, t.Number("radius.button"), Eps, "数");
-            SameColor(new Color(1f, 0f, 0f, 1f), t.Color("kakugo.danger"), "最上位の直書き");
-            Check.Close(3, t.Number("deep.x.y"), Eps, "入れ子");
+            SameColor(new Color(1f, 0f, 0f, 1f), t.Color("app.kakugo.danger"), "最上位の直書き");
+            Check.Close(3, t.Number("app.deep.x.y"), Eps, "入れ子");
+            Check.Equal(0, t.Warnings.Count, "警告なし");
+            var typo = UiThemeData.Parse("{\"color\":{\"primery\":\"#000000\"},\"kakugo\":{\"danger\":\"#FF0000\"}}", null, out _);
+            Check.Equal(2, typo.Warnings.Count, "W2-9: 表に無い名前・知らないグループは警告して読まない");
+            Check.True(!typo.Has("color.primery") && !typo.Has("kakugo.danger"), "読まない");
         });
 
         h.Add("テーマ: 壊れた JSON は空・書いていないトークンは代わりのテーマ・最後は既定値", () =>
@@ -263,6 +299,9 @@ public static class Program
 
         // ── グラフ（W2-8）─────────────────────────────────────
         ChartTests.Register(h, theme);
+
+        // ── W2-9: テーマ（読み込み・継承・明暗・補間・種の色・表） ──
+        ThemeTests.Register(h);
 
         return h.Run();
     }

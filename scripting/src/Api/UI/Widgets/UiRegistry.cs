@@ -10,6 +10,7 @@ namespace SEED.UI;
 //  （アクターの entity）に登録し、OnDestroy で外す。組み合わせる側（数値欄のボタン・選択の項目とグループ・画面のスクリプト）は
 //  `UiWidget.Of<T>(gameObject)` で相手を引く。スクリプトの OnStart の順は決まっていないので、引く側は見つかるまで
 //  毎フレーム引き直してよい（`Version` が変わったときだけ引き直せば安い）。
+//  W2-9: テーマの切り替え（UiTheme.Apply・明暗の変化・色の補間）は、ここの全部品の見た目をその場で当て直す（Snapshot）。
 // ============================================================
 
 /// <summary>部品のスクリプトの登録簿。</summary>
@@ -39,6 +40,27 @@ public static class UiRegistry
             if (list.Count == 0) ByActor.Remove(key);
             Version++;
         }
+    }
+
+    /// <summary>登録している部品の数（診断用）。</summary>
+    public static int Count
+    {
+        get
+        {
+            int count = 0;
+            foreach (var list in ByActor.Values) count += list.Count;
+            return count;
+        }
+    }
+
+    /// <summary>
+    /// 登録しているすべての部品の写し（テーマの当て直し用。当て直しの途中で登録・解除が起きても壊れないように写す）。
+    /// </summary>
+    internal static List<UiWidget> Snapshot()
+    {
+        var all = new List<UiWidget>();
+        foreach (var list in ByActor.Values) all.AddRange(list);
+        return all;
     }
 
     /// <summary>アクターの部品のうち型 T の最初のもの（無ければ null）。</summary>

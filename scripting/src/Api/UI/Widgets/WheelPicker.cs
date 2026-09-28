@@ -364,6 +364,8 @@ public sealed class WheelPicker : UiWidget, IFocusable
             Enabled = Theme.Color(UiTokens.ColorOnSurface),
             Disabled = Theme.Color(UiTokens.ColorOnDisabled),
             Fade = fade,
+            FontFamily = Theme.Text(UiTokens.FontFamily),
+            FontWeight = Theme.Number(UiTokens.FontWeight),
         };
         float extent = ResolvedItemExtent;
         if (MathF.Abs(extent - _extent) > float.Epsilon)

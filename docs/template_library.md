@@ -63,8 +63,9 @@ templates/
   scripts/   FollowCamera.cs, …
   ui/        prefabs/（UI 部品のプレハブ。W2-5 のホイールの行・列・時刻ホイール、W2-7 の画面の組み立て〈screen_stack・screen_frame・tab_host・modal_host・
              dialog・bottom_sheet・top_sheet・toast_host・toast〉と見本の画面 nav_*、W2-8 のグラフ〈line_chart・bar_chart・chart_label〉を含む）・
-             scenes/ui_gallery.scene・scenes/ui_navigation.scene・scenes/ui_charts.scene・scripts/・textures/
-             （W2-4・W2-5・W2-7・W2-8。docs/ui_components.md・docs/ui_navigation.md・docs/ui_charts.md）
+             scenes/ui_gallery.scene・scenes/ui_navigation.scene・scenes/ui_charts.scene・scripts/・textures/・
+             themes/（見本のテーマ forest・sunrise・forest_round。W2-9）・prefabs/list_row.actor（一覧の行。W2-9）
+             （W2-4・W2-5・W2-7・W2-8・W2-9。docs/ui_components.md・docs/ui_navigation.md・docs/ui_charts.md・docs/ui_theme.md）
 ```
 
 - `templates/shaders/toon.wgsl` は、プロジェクトへは **`assets/shaders/toon.wgsl`** としてコピーされる。

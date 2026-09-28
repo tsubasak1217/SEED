@@ -1,0 +1,251 @@
+{
+ "name": "ListRow",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [
+      0.012983,
+      0.01096,
+      0.019382,
+      1.0
+     ],
+     "width": 500.0,
+     "height": 56.0,
+     "layer": 0
+    }
+   }
+  },
+  {
+   "name": "ThemeStyle",
+   "component": {
+    "type": "ScriptComponent",
+    "data": {
+     "type_name": "SEED.UI.ThemeStyle",
+     "fields": {
+      "SpriteColor": "color.surface"
+     }
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Title",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     16.0,
+     6.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "項目",
+       "font_size": 16.0,
+       "color": [
+        0.838799,
+        0.791298,
+        0.913099,
+        1.0
+       ],
+       "align": "left",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 468.0,
+       "box_height": 24.0,
+       "wrap": false
+      }
+     }
+    },
+    {
+     "name": "ThemeStyle",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.ThemeStyle",
+       "fields": {
+        "TextColor": "color.on_surface",
+        "TextSize": "text.body"
+       }
+      }
+     }
+    }
+   ],
+   "children": []
+  },
+  {
+   "name": "Sub",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     16.0,
+     32.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Text",
+     "component": {
+      "type": "TextComponent",
+      "data": {
+       "content": "説明",
+       "font_size": 12.0,
+       "color": [
+        0.396755,
+        0.361307,
+        0.47932,
+        1.0
+       ],
+       "align": "left",
+       "vertical_align": "middle",
+       "layer": 0,
+       "box_width": 468.0,
+       "box_height": 18.0,
+       "wrap": false
+      }
+     }
+    },
+    {
+     "name": "ThemeStyle",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.ThemeStyle",
+       "fields": {
+        "TextColor": "color.on_surface_muted",
+        "TextSize": "text.caption"
+       }
+      }
+     }
+    }
+   ],
+   "children": []
+  },
+  {
+   "name": "Divider",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [
+     16.0,
+     55.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+     1.0,
+     1.0
+    ],
+    "pivot": [
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [
+        0.155926,
+        0.135633,
+        0.215861,
+        1.0
+       ],
+       "width": 468.0,
+       "height": 1.0,
+       "layer": 0
+      }
+     }
+    },
+    {
+     "name": "ThemeStyle",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.ThemeStyle",
+       "fields": {
+        "SpriteColor": "color.outline"
+       }
+      }
+     }
+    }
+   ],
+   "children": []
+  }
+ ]
+}

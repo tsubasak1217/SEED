@@ -86,4 +86,35 @@ public static class App
     /// <returns>受け付けたら true（false なら <see cref="Platform.LastError"/>）。</returns>
     public static bool OpenAppSettings() =>
         Platform.TryInvoke(AppJson.Module, AppJson.MethodOpenAppSettings, PlatformJson.StringObject(), out _);
+
+    /// <summary>
+    /// 端末の明暗の設定が変わったイベントの名前（W2-9。data.night = "yes" / "no" / "unknown"。<see cref="TryParseUiModeEvent"/> で読む）。
+    /// Android は MainActivity.onConfigurationChanged で夜の bit が変わったとき、PC は OS のアプリのモードが変わったとき
+    /// （単体起動のウィンドウの ThemeChanged。エディタに埋め込んだ Play では届かない）と模擬の <see cref="PlatformDiagnostics.SimulateUiMode"/>。
+    /// </summary>
+    public const string UiModeChangedEvent = "platform.ui_mode_changed";
+
+    /// <summary>
+    /// 端末の明暗の設定（W2-9。呼ぶたびに問い合わせる。Android でも IPC なしで答えるので軽い）。
+    /// SEED.UI の <c>UiTheme.SetBrightnessMode(UiBrightnessMode.System)</c> がこれを使う。取れなければ <see cref="SystemUiMode.Unknown"/>。
+    /// デスクトップの模擬は Windows の「既定のアプリ モード」（レジストリの AppsUseLightTheme）か、差し替えの値。
+    /// </summary>
+    public static SystemUiMode UiMode =>
+        Platform.TryInvoke(AppJson.Module, AppJson.MethodUiMode, PlatformJson.StringObject(), out string reply)
+            ? AppJson.ReadNight(reply)
+            : SystemUiMode.Unknown;
+
+    /// <summary>
+    /// <see cref="UiModeChangedEvent"/> のイベントの JSON を読む。
+    /// </summary>
+    /// <param name="json">イベントの JSON（SEED.Events・PlatformEvents.OnEvent が渡すもの）。</param>
+    /// <param name="mode">新しい明暗。</param>
+    /// <returns>このイベントで、data を読めたら true。</returns>
+    public static bool TryParseUiModeEvent(string json, out SystemUiMode mode)
+    {
+        bool ok = AlarmJson.TryReadEvent(json, UiModeChangedEvent,
+            data => AppJson.ToUiMode(AlarmJson.GetString(data, AppJson.KeyNight)), out SystemUiMode read);
+        mode = ok ? read : SystemUiMode.Unknown;
+        return ok;
+    }
 }

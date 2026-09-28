@@ -85,4 +85,6 @@ netcorehost = { version = "0.20", default-features = false, features = ["net10_0
 # SEED.Platform のデスクトップの模擬（platform/bridge/desktop_sim/url_opener.rs。W1-6 の App.OpenUrl を PC の既定のアプリで開く）:
 #   Win32_UI_Shell                … ShellExecuteW（シェルを通さずに URL を既定のアプリへ渡す）
 #   Win32_System_Com              … CoInitializeEx / CoUninitialize（ShellExecute の前に開くスレッドで COM を初期化する）
-windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Time", "Wdk_System_SystemServices", "Win32_UI_Shell", "Win32_System_Com"] }
+# SEED.Platform のデスクトップの模擬（platform/bridge/desktop_sim/os_ui_mode.rs。W2-9 の App.UiMode = OS の明暗の設定）:
+#   Win32_System_Registry         … RegGetValueW（HKCU の Personalize\AppsUseLightTheme を読む）
+windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Time", "Wdk_System_SystemServices", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Registry"] }

@@ -11,6 +11,7 @@
 //    app.move_task_to_back           … 閉じずに背面へ（MoveTaskToBackCommand。W1-6）
 //    app.open_url                    … URL を端末のアプリで開く（OpenUrlCommand。W1-6）
 //    app.open_app_settings           … 端末の「アプリ情報」の画面を開く（OpenAppSettingsCommand。W1-6）
+//    app.ui_mode                     … 端末の明暗の設定（UiModeCommand。W2-9。変化は MainActivity から platform.ui_mode_changed）
 //    haptics.tap / haptics.vibrate   … 触感（HapticsTapCommand・HapticsVibrateCommand。W1-6）
 //    permission.check                … 権限の今の状態（PermissionCheckCommand。W1-5）
 //    permission.request              … 権限を求める（PermissionRequestCommand。結果は platform.permission_result。W1-5）
@@ -71,6 +72,9 @@ public final class MainProcessCommands {
                 new OpenUrlCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_APP, PlatformContract.METHOD_APP_OPEN_APP_SETTINGS),
                 new OpenAppSettingsCommand());
+        // W2-9: 端末の明暗の設定
+        table.put(PlatformContract.providerMethod(PlatformContract.MODULE_APP, PlatformContract.METHOD_APP_UI_MODE),
+                new UiModeCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_HAPTICS, PlatformContract.METHOD_HAPTICS_TAP),
                 new HapticsTapCommand());
         table.put(PlatformContract.providerMethod(PlatformContract.MODULE_HAPTICS, PlatformContract.METHOD_HAPTICS_VIBRATE),

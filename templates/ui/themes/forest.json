@@ -1,0 +1,26 @@
+{
+  "_about": "見本のテーマ（W2-9）: 早朝の森（暗い方だけ）。Wake or Pay の forest（themes.json の seedColor #2E7D32・brightness dark）を docs/ui_theme.md §6 の写し方で書き（brightness と seed_color）、面と文字を緑がかった暗い色に置き直した例。主の色・選択の色は種の色から作る（UiSeedColors）。書いていないトークンは組み込みの既定のテーマの暗い方の値。",
+  "name": "forest",
+  "brightness": "dark",
+  "seed_color": "#2E7D32",
+  "color": {
+    "background": "#0D1510",
+    "surface": "#17221A",
+    "surface_variant": "#243328",
+    "on_surface": "#E2EEE3",
+    "on_surface_muted": "#9DB3A1",
+    "outline": "#5D7361",
+    "knob_off": "#9DB3A1",
+    "disabled": "#2B382E",
+    "on_disabled": "#6E8271",
+    "inverse_surface": "#E2EEE3",
+    "on_inverse_surface": "#17221A",
+    "chart_series_3": "#80CBC4",
+    "chart_series_4": "#FFE082",
+    "chart_grid": "#253328",
+    "chart_axis": "#5D7361",
+    "chart_label": "#9DB3A1",
+    "chart_reference": "#9DB3A1",
+    "chart_empty_bar": "#2B382E"
+  }
+}

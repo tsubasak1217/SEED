@@ -304,6 +304,7 @@ public abstract class ChartView : UiWidget
     {
         Look = ChartLook.From(Theme);
         _lookDirty = true;
+        ApplyLabelFonts();
         // 空の文字・吹き出しは「前に書いた値と同じなら書かない」ので、テーマが替わったら書き直させる（色・文字の大きさ）
         _lastEmpty = "\0";
         _lastTooltipText = "\0";
@@ -490,7 +491,21 @@ public abstract class ChartView : UiWidget
         if (_xLabelsNode.IsValid) _xLabels = new ChartLabelPool(_xLabelsNode, LabelPrefab);
         if (_yLabelsNode.IsValid) _yLabels = new ChartLabelPool(_yLabelsNode, LabelPrefab);
         if (_plotLabelsNode.IsValid) _plotLabels = new ChartLabelPool(_plotLabelsNode, LabelPrefab);
+        ApplyLabelFonts();
         if (Ink is null) Debug.LogWarning($"{LogPrefix} {gameObject.Name}: 子の {InkChild} が無いので描けません");
+    }
+
+    /// <summary>目盛りの文字の書体と太さをテーマから入れる（W2-9。次に置き直すときに文字へ当たる）。</summary>
+    private void ApplyLabelFonts()
+    {
+        string family = Theme.Text(UiTokens.FontFamily);
+        float weight = Theme.Number(UiTokens.FontWeight);
+        foreach (var pool in new[] { _xLabels, _yLabels, _plotLabels })
+        {
+            if (pool is null) continue;
+            pool.FontFamily = family;
+            pool.FontWeight = weight;
+        }
     }
 
     /// <summary>± のボタンを引いてつなぐ（登録簿が変わったときだけ）。</summary>
@@ -697,7 +712,7 @@ public abstract class ChartView : UiWidget
             t.Align = AlignCenter;
             t.VerticalAlign = "middle";
             t.Color = Look.Label;
-            t.FontSize = Theme.Number(UiTokens.TextBody);
+            UiTextStyle.Apply(t, Theme, UiTokens.TextBody);
         }
         if (_emptyNode.GetComponent<CanvasTransform>() is { } ct) ct.Position = new Vector2(PlotRect.X, PlotRect.Y);
     }
@@ -811,6 +826,7 @@ public abstract class ChartView : UiWidget
                 t.VerticalAlign = "middle";
                 t.Color = Look.OnTooltip;
                 t.FontSize = fontSize;
+                UiTextStyle.ApplyFont(t, Theme);
                 t.Layer = OverlayLayer;
             }
         }

@@ -29,6 +29,10 @@ internal readonly struct WheelRowStyle
     public Color Disabled { get; init; }
     /// <summary>部品全体の濃さ（無効の部品は opacity.disabled）。</summary>
     public float Fade { get; init; }
+    /// <summary>書体（font.family。W2-9）。</summary>
+    public string FontFamily { get; init; }
+    /// <summary>文字の太さ（font.weight。W2-9）。</summary>
+    public float FontWeight { get; init; }
 }
 
 /// <summary>ホイールの行（使い回しと見た目の当て方）。</summary>
@@ -147,6 +151,10 @@ internal sealed class WheelRows
             if (st.StyleVersion != _styleVersion)
             {
                 text.FontSize = style.FontSize;
+                // 書体・太さ（W2-9。同じ値は書かない）
+                string family = style.FontFamily ?? string.Empty;
+                if (text.FontPath != family) text.FontPath = family;
+                if (text.Weight != style.FontWeight) text.Weight = style.FontWeight;
                 text.BoxWidth = width;
                 text.BoxHeight = extent;
                 st.StyleVersion = _styleVersion;

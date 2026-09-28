@@ -59,8 +59,23 @@ public static class PlatformEvents
 
     /// <summary>
     /// ハンドラを全部外す（ホットリロードで旧アセンブリのデリゲートを掴んだままにしないため。ScriptBridge が呼ぶ）。
+    /// エンジンの受け口（<see cref="AddEngineListener"/>）は外さない（SEEDScripting 自身のメソッドなので古いアセンブリを掴まない）。
     /// </summary>
     internal static void ResetHandlers() => OnEvent = null;
+
+    /// <summary>エンジン（SEEDScripting の中）の受け口: イベントの名前 → 受け手（スクリプトの読み直しで外れない。W2-9）。</summary>
+    private static readonly System.Collections.Generic.Dictionary<string, Action<string>> EngineListeners = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// エンジンの中の受け手を足す（W2-9: SEED.UI のテーマが端末の明暗の変化を受ける）。スクリプトからは使わない
+    /// （スクリプトは <c>this.On("platform.…", …)</c>）。<see cref="OnEvent"/> と SEED.Events より先に呼ぶ。
+    /// </summary>
+    /// <param name="name">イベントの名前（"platform.…"）。</param>
+    /// <param name="handler">受け手（イベントの JSON を受ける）。</param>
+    internal static void AddEngineListener(string name, Action<string> handler)
+    {
+        EngineListeners[name] = EngineListeners.TryGetValue(name, out var existing) ? existing + handler : handler;
+    }
 
     /// <summary>イベントを 1 件、<see cref="OnEvent"/> と SEED.Events へ配る（ハンドラの例外はログに残して続ける）。</summary>
     private static void Dispatch(string json)
@@ -74,6 +89,19 @@ public static class PlatformEvents
         if (!name.StartsWith(Prefix, StringComparison.Ordinal))
         {
             name = Prefix + name;
+        }
+
+        // エンジンの中の受け手（W2-9。テーマの端末の明暗）を先に呼ぶ（スクリプトの受け手が新しい状態を読めるように）
+        if (EngineListeners.TryGetValue(name, out var engine))
+        {
+            try
+            {
+                engine(json);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[Platform] {name} のエンジンの受け手で例外: {e}");
+            }
         }
 
         Action<string, string>? handlers = OnEvent;

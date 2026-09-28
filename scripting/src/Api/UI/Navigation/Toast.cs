@@ -171,7 +171,7 @@ public sealed class Toast : UiWidget
         if (TextOf(LabelChild) is { } label)
         {
             label.Color = Theme.Color(NavTokens.ColorOnInverseSurface);
-            label.FontSize = Theme.Number(UiTokens.TextBody, label.FontSize);
+            UiTextStyle.Apply(label, Theme, UiTokens.TextBody);
         }
     }
 }

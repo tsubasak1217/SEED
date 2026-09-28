@@ -151,7 +151,7 @@ public sealed class NumberField : UiWidget
         {
             text.Content = ValueMath.Format(Value, Format, Suffix);
             text.Color = disabled ? Theme.Color(UiTokens.ColorOnDisabled) : Theme.Color(UiTokens.ColorOnSurface);
-            text.FontSize = Theme.Number(UiTokens.TextBody, text.FontSize);
+            UiTextStyle.Apply(text, Theme, UiTokens.TextBody);
         }
         // 範囲の端では片側のボタンを無効にする（全体が無効なら両方）
         _minus?.SetInteractable(!disabled && Value > Math.Min(Min, Max));

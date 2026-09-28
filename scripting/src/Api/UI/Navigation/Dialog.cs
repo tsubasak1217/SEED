@@ -196,7 +196,16 @@ public sealed class Dialog : ModalPlane
             card.Color = Theme.Color(UiTokens.ColorSurface);
             card.CornerRadius = Theme.Number(NavTokens.RadiusDialog);
         }
-        if (gameObject.FindChild(TitleChild).GetComponent<Text>() is { } title) title.Color = Theme.Color(UiTokens.ColorOnSurface);
-        if (gameObject.FindChild(MessageChild).GetComponent<Text>() is { } message) message.Color = Theme.Color(UiTokens.ColorOnSurfaceMuted);
+        if (gameObject.FindChild(TitleChild).GetComponent<Text>() is { } title)
+        {
+            title.Color = Theme.Color(UiTokens.ColorOnSurface);
+            // 書体と見出しの太さ（W2-9。大きさは Layout が文字の量と一緒に決める）
+            UiTextStyle.ApplyFont(title, Theme, UiTokens.FontWeightTitle);
+        }
+        if (gameObject.FindChild(MessageChild).GetComponent<Text>() is { } message)
+        {
+            message.Color = Theme.Color(UiTokens.ColorOnSurfaceMuted);
+            UiTextStyle.ApplyFont(message, Theme);
+        }
     }
 }

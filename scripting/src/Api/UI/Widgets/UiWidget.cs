@@ -10,7 +10,8 @@ namespace SEED.UI;
 //  この土台は次を受け持つ:
 //    - 登録簿（UiRegistry）への登録と `Of<T>` での引き当て（組み合わせる側が相手のスクリプトを引く）
 //    - 無効（`Interactable`）
-//    - テーマが替わったら次のフレームで見た目を作り直す（UiTheme.Version）
+//    - テーマが替わったら見た目を作り直す（W2-9: UiTheme が登録簿の全部品へその場で ReapplyTheme を呼ぶ。
+//      登録の前に替わった分は OnStart で、取りこぼしは毎フレームの UiTheme.Version の見比べで拾う）
 //    - 見た目を変えたら SEED.Redraw.Request()（render_policy: on_demand でも描き直す。W2-10a）
 //  スクリプトは ScriptComponent の type_name に型名（例 "SEED.UI.Button"）を書いて付ける（templates/ui/prefabs/）。
 // ============================================================
@@ -86,6 +87,13 @@ public abstract class UiWidget : SEEDScript
     /// ギャラリーの `ui,stats` で確かめる）。
     /// </summary>
     public static long RefreshCount { get; private set; }
+
+    /// <summary>テーマが替わった: 今のテーマで見た目を当て直す（UiTheme から。毎フレームの見比べで 2 度作らないよう版を揃える）。</summary>
+    internal void ReapplyTheme()
+    {
+        _themeVersion = UiTheme.Version;
+        Refresh();
+    }
 
     /// <summary>見た目を作り直して描き直しを頼む。</summary>
     protected void Refresh()

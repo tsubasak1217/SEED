@@ -4780,6 +4780,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell "run-as $APP cat shared_prefs/seed_pl
 | `app.move_task_to_back` | `{}` → `{}` | UI スレッドで `moveTaskToBack(true)`（API 1。回せたかはログだけ） | `no_activity` |
 | `app.open_url` | `{url}` → `{scheme}` | `UrlPolicy` で判定 → `UrlLauncher`（25.15.4）。呼び出し元のスレッドで同期 | `invalid_argument`・`scheme_not_allowed`・`no_activity`・`no_handler` |
 | `app.open_app_settings` | `{}` → `{}` | UI スレッドで `ACTION_APPLICATION_DETAILS_SETTINGS`＋`package:<アプリ ID>`（Activity から開くので戻ると onResume。開けなければログだけ） | `no_activity` |
+| `app.ui_mode`（W2-9） | `{}` → `{night}` | 端末の明暗の設定（`Configuration.uiMode` の夜の bit。§25.17） | （なし。取れなければ `unknown`） |
 | `haptics.tap` | `{}` → `{}` | `HapticFeedback.tap`（25.15.5）。呼び出し元のスレッドで同期 | `no_vibrator`・`not_initialized` |
 | `haptics.vibrate` | `{ms}` → `{ms}` | ms は 1 以上の数（小数は切り捨て）で、5000 を超えたら 5000 にそろえる → `HapticFeedback.vibrate` | `invalid_argument`・`no_vibrator`・`not_initialized` |
 
@@ -5155,3 +5156,34 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell am force-stop $APP
 - `Sensors.Read` は毎フレーム JSON の文字列を作って読む（W1 の他の API と同じ経路。専用の FFI にはしていない）。
 - メインプロセスだけのモジュール（表に無い命令を `:seed_platform` へ送らない）は `sensor` だけ。W1-6 までの `window`・`app`・`haptics`・`permission` の
   表に無い命令は従来どおり `:seed_platform` へ送られ、最初は `connecting`、つながると `unknown_method`。
+
+### 25.17 端末の明暗（app.ui_mode・platform.ui_mode_changed。W2-9・2026-09-28）
+
+SEED.UI のテーマの「端末に従う」（`UiTheme.SetBrightnessMode(UiBrightnessMode.System)`。[ui_theme.md](ui_theme.md) §4）の源。スクリプトは
+`App.UiMode`（`SystemUiMode`）・`App.UiModeChangedEvent`（[scripting_api.md](scripting_api.md) の「端末の明暗」）。メインプロセスの `local/` の命令（IPC なし）。
+
+```
+[メインプロセス] app/src/main/java/com/seedengine/runtime/platform/
+ local/UiModeCommand      … app.ui_mode: MainActivity（無ければアプリの Context）の今の構成の夜の bit → {night: yes / no / unknown}
+ local/MainProcessCommands … 表に 1 行
+ app/NightMode            … 夜の bit → wire の語・起動時の値を覚える（remember）・変化で platform.ui_mode_changed（seq 0。SeedPlatform.emitLocalEvent）
+ PlatformContract         … METHOD_APP_UI_MODE・KEY_APP_NIGHT・APP_NIGHT_YES / NO / UNKNOWN・EVENT_UI_MODE_CHANGED（wire.rs と突き合わせる）
+[MainActivity] onCreate で NightMode.remember、onConfigurationChanged で NightMode.onConfigurationChanged（configChanges に uiMode があるので作り直されない）
+[エンジン] wire::app（METHOD_UI_MODE・METHOD_SIM_SET_UI_MODE〈模擬だけ〉・KEY_NIGHT・NIGHT_*・EVENT_UI_MODE_CHANGED）、
+ desktop_sim/ ui_mode_state.rs（差し替えと最後に知らせた値）・ui_mode_commands.rs（命令とイベント）・os_ui_mode.rs（Windows のレジストリ
+ HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize の AppsUseLightTheme。windows-sys の Win32_System_Registry）、
+ PlatformBridge::notify_host_ui_mode_changed（既定は何もしない）・bridge::notify_host_ui_mode_changed（app/render.rs の WindowEvent::ThemeChanged から。模擬が無ければ作らない）
+[C#] Platform/App/App.cs（UiMode・UiModeChangedEvent・TryParseUiModeEvent）・App/SystemUiMode.cs・App/AppJson.cs・PlatformDiagnostics.SimulateUiMode・
+ PlatformEvents.AddEngineListener（SEED.UI の受け口。スクリプトの読み直しで外れない）
+```
+
+- **Android**: `app.ui_mode` はいつでも答える（Activity が無ければアプリの Context）。イベントは夜の bit が前に見た値と違うときだけ（回転などの構成の変化では出さない）。
+- **デスクトップの模擬**: 値は差し替え（`app.sim_set_ui_mode {night}`。`system` で OS の設定へ戻す）→ OS の設定の順。イベントは最後に知らせた値
+  （問い合わせの返答かイベント）と違うときだけ。ウィンドウの ThemeChanged は単体起動の最上位のウィンドウにだけ届く（エディタに埋め込んだ Play では OS の変化が届かない）。
+  エディタの Play の区切りで差し替えを捨てる。`sim_set_ui_mode` は Android には無い（`app` は `local/` だけのモジュールではないので、表に無い命令は従来どおり
+  `:seed_platform` へ送られ、最初は `connecting`、つながると `unknown_method`）。
+- **確認（2026-09-28・PC）**: `cargo test -p SEED --lib -- platform::bridge`（102 件。模擬の 4 件と Java の名前の突き合わせ）、`javac -Xlint:all`（main・debug の 114 ファイル。
+  注意 156 件は W2-10a と同じ＝足した 2 ファイルは 0）、`cargo ndk -t arm64-v8a -P 29 build`、SeedAndroid の APK の組み立て。PC のギャラリーで、この PC（OS はダーク）の
+  `app.ui_mode` = `yes`、模擬の差し替えで `platform.ui_mode_changed`（`no` → `yes`）が届きテーマの明暗が切り替わることを確かめた。
+- **実機は未確認**（端末に触らない回だった）。確かめ方: ギャラリー（`templates/ui` を `assets/ui` へ）を SeedAndroid の `run` で入れ、テーマの帯の「端末」を押し、
+  クイック設定のダークテーマを切り替える。logcat の `端末の明暗の設定が変わりました: yes → no`（NightMode）と `[UI] theme: changed default Light` を見る。

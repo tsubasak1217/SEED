@@ -1,0 +1,24 @@
+{
+  "_about": "見本のテーマ（W2-9）: 継承と一部だけの上書きの例。forest.json（同じフォルダ）を基にして、角丸・文字の太さ・主の色（青緑。白い文字と 4.5:1 以上）だけを変える。ほかのトークンは forest → 組み込みの既定のテーマの順に落ちる。明暗は forest を受け継ぐ（暗い方だけ）。",
+  "name": "forest_round",
+  "extends": "forest.json",
+  "color": {
+    "primary": "#00796B"
+  },
+  "radius": {
+    "button": 24,
+    "chip": 20,
+    "card": 28,
+    "field": 20,
+    "segment": 24,
+    "dialog": 32,
+    "sheet": 32
+  },
+  "text": {
+    "label": 15
+  },
+  "font": {
+    "weight": 0.35,
+    "weight_title": 0.7
+  }
+}

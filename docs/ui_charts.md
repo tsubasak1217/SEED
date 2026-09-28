@@ -188,22 +188,13 @@ C# の側（位置の計算 `Rebuild`・積む `Paint`）は 1 つのグラフ�
 
 ## 7. テーマのトークン（`ChartTokens`。既定の値は `default_theme.json`）
 
-| トークン | 既定 | 使う所 |
-|---|---|---|
-| `color.chart_series_1`〜`4` | #7C5CFF / #FF5252 / #4DD0E1 / #FFD54F | 系列・積み上げの段（1 は主の色、2 は Wake or Pay のカードの赤） |
-| `color.chart_grid` / `chart_axis` / `chart_label` / `chart_reference` | #352F45 / #6E6780 / #A9A2B8 / #A9A2B8 | 格子線・軸の線・目盛りの文字・基準線 |
-| `color.chart_empty_bar` / `chart_highlight` | #3A3645 / #7C5CFF1F | 合計 0 の棒・選んだ列 |
-| `color.inverse_surface` / `on_inverse_surface` | （W2-7） | 吹き出しの面と文字 |
-| `size.chart_line` / `chart_dot` / `chart_dot_selected` / `chart_dot_min_spacing` | 2 / 2.5 / 5 / 6 | 線・点の印 |
-| `size.chart_grid` / `chart_axis` / `chart_reference` | 1 / 1 / 1.5 | 線の太さ |
-| `size.chart_y_axis` / `chart_x_axis` / `chart_x_label_spacing` / `chart_y_label_spacing` / `chart_label_gap` / `chart_plot_pad` | 46 / 26 / 48 / 32 / 6 / 8 | 枠の割り付け（Flutter 版の reservedSize 46・26） |
-| `size.chart_touch_slop` / `chart_smooth_step` / `chart_bar_min` / `chart_tooltip_padding` / `chart_tooltip_gap` | 24 / 2 / 2 / 8 / 10 | 当たり・曲線・棒・吹き出し |
-| `radius.chart_bar` / `chart_tooltip` | 4 / 8 | 角丸 |
-| `text.chart_axis` / `chart_tooltip` | 11 / 12 | 文字の大きさ |
-| `ratio.chart_bar_width` / `chart_empty_bar` / `chart_fling_drag` / `chart_zoom_step` | 0.7 / 0.015 / 0.135 / 2 | 棒・慣性・± |
-| `opacity.chart_area` / `speed.chart_fling_stop` / `motion.chart_zoom` / `count.chart_y_intervals` | 0.35 / 20 / 0.25 / 4 | 塗り・慣性・± の動き・縦軸の区間 |
+グラフのトークン（系列の色・格子線・軸・目盛りの文字・基準線・空の棒・選んだ列の強調・吹き出し、線・点・枠の割り付け・当たり・棒の大きさ、角丸、文字、
+棒の割合・慣性・± の倍率、塗りの濃さ・動き・縦軸の区間）の**一覧（名前・型・既定値・使う部品）の正典は [ui_theme.md](ui_theme.md) §8**（W2-9 で 1 つの表にまとめた）。
+値の出典: 線の太さ 2・点の半径 2.5・基準線 1.5・縦軸の文字の列 46・横軸の文字の行 26 は Flutter 版の wake_time_chart.dart、棒の太さ 0.7・空の棒の高さ 0.015・
+最小の太さ 2・選んだ列の強調（主の色の 12%）は penalty_bar_chart.dart、慣性の減速 0.135 は Flutter の BouncingScrollSimulation、系列 2 は Wake or Pay のカードの赤。
 
-テーマを差し替えると（`UiTheme.Use`）次のフレームで見た目の値を読み直し、位置を計算し直す（`ChartLook.From`）。
+テーマを差し替えると（`UiTheme.Apply`。W2-9）その場で見た目の値を読み直し（`ChartLook.From`）、次の更新で位置を計算し直す。グラフの面の色は部品が当てないので、
+プレハブ（`line_chart.actor`・`bar_chart.actor`）の根に `ThemeStyle`（`color.surface`）を付けた（W2-9）。
 
 ## 8. 見本（`templates/ui/scenes/ui_charts.scene`）
 

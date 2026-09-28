@@ -40,6 +40,11 @@
 //        sensor.sim_inject（模擬だけの命令。Android では unknown_method）で入れた標本だけ。read は前回の read からの最大の大きさと
 //        標本の数を返して 0 に戻す（sensor_commands.rs・sensor_state.rs）
 //
+//  【W2-9 の命令】（Java のメインプロセスの local/UiModeCommand と同じ意味）
+//    app.ui_mode … 端末の明暗の設定（OS の「既定のアプリ モード」。os_ui_mode.rs）。返答 { night, simulated }
+//    app.sim_set_ui_mode … 模擬だけ（Android では unknown_method）。差し替えて、変わったら platform.ui_mode_changed を積む。
+//        ウィンドウの ThemeChanged（OS の設定の変化）でも差し替えていなければ積む（ui_mode_commands.rs・ui_mode_state.rs）
+//
 //  【ファイル】mod.rs（表と共通）・alarm_book.rs（模擬の予約表）・alarm_commands.rs（目覚ましの命令と発火）・
 //  ring_state.rs（鳴動の状態）・ring_commands.rs（鳴動の命令とイベント）・app_commands.rs（起動理由・アプリ）・
 //  launch_uri.rs（起動引数のディープリンク）・url_opener.rs（URL を PC で開く係）・window_state.rs / window_commands.rs（画面）・
@@ -75,6 +80,12 @@ mod sensor_commands;
 mod sensor_state;
 /// URL を PC の既定のアプリで開く係（W1-6）。
 mod url_opener;
+/// 模擬の端末の明暗の命令とイベント（W2-9）。
+mod ui_mode_commands;
+/// 模擬の端末の明暗（差し替えと最後に知らせた値。W2-9）。
+mod ui_mode_state;
+/// PC の OS の明暗の設定を読む（W2-9）。
+mod os_ui_mode;
 /// 壁時計（テストで差し替える）。
 mod wall_clock;
 /// 模擬の画面の命令（W1-4a・W1-6）。
@@ -101,6 +112,7 @@ use notification_state::SimNotificationBoard;
 use ring_state::SimRingState;
 use sensor_state::SimSensorBoard;
 use window_state::SimWindowState;
+use ui_mode_state::SimUiModeState;
 pub use haptics_state::SimHapticsSnapshot;
 pub use launch_uri::set_desktop_launch_uri;
 pub use url_opener::{DryRunUrlOpener, SystemUrlOpener, UrlOpener, DESKTOP_OPENABLE_SCHEMES, NO_OPEN_ENV};
@@ -234,6 +246,9 @@ const SIM_COMMANDS: &[SimCommand] = &[
         method: sensor_names::METHOD_SIM_INJECT,
         handler: DesktopSimBridge::handle_sensor_sim_inject,
     },
+    // W2-9: 端末の明暗（sim_set_ui_mode は模擬だけ）
+    SimCommand { module: app_names::MODULE, method: app_names::METHOD_UI_MODE, handler: DesktopSimBridge::handle_app_ui_mode },
+    SimCommand { module: app_names::MODULE, method: app_names::METHOD_SIM_SET_UI_MODE, handler: DesktopSimBridge::handle_app_sim_set_ui_mode },
 ];
 
 /// デスクトップの模擬の PlatformBridge。
@@ -259,6 +274,8 @@ pub struct DesktopSimBridge {
     haptics: SimHapticsLog,
     /// 模擬のセンサー（動いている種類と、sim_inject で入れた標本。W1-8）。
     sensors: SimSensorBoard,
+    /// 模擬の端末の明暗（OS の設定と差し替え・最後に知らせた値。W2-9）。
+    ui_mode: SimUiModeState,
     /// app.open_url の URL を PC の既定のアプリへ渡す係（W1-6。単体テストでは判定だけ・記録だけの係）。
     url_opener: Arc<dyn UrlOpener>,
     /// 単体起動の起動引数 --deep-link=<URI>（W1-6。無ければ None ＝ launcher）。Play の区切りでも消さない（プロセスの起動引数）。
@@ -306,6 +323,7 @@ impl DesktopSimBridge {
             window: SimWindowState::new(),
             haptics: SimHapticsLog::new(),
             sensors: SimSensorBoard::new(),
+            ui_mode: SimUiModeState::new(os_ui_mode::read_os_night),
             url_opener,
             launch_uri,
             clock,
@@ -408,6 +426,11 @@ impl PlatformBridge for DesktopSimBridge {
         Some(u64::try_from(due.saturating_sub(self.clock.now_utc_ms())).unwrap_or(0))
     }
 
+    fn notify_host_ui_mode_changed(&self) {
+        // OS の明暗の設定が変わった（ウィンドウの ThemeChanged）: 差し替えていなければ、変わっていれば platform.ui_mode_changed を積む
+        self.on_host_ui_mode_changed();
+    }
+
     fn reset_session(&self) {
         // Play の区切り: 予約・鳴動・通知（チャネルも）・画面の状態・触感の記録・センサー（W1-8）・積んだイベントを捨てる
         // （Play を止めれば模擬の予約も鳴動も通知も消え、画面は既定へ戻り、センサーは止まる。起動引数のディープリンクはプロセスのものなので残す）
@@ -417,6 +440,7 @@ impl PlatformBridge for DesktopSimBridge {
         self.window.clear();
         self.haptics.clear();
         self.sensors.clear();
+        self.ui_mode.clear();
         self.events.clear();
     }
 }

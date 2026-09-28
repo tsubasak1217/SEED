@@ -20,6 +20,10 @@
     ドラッグで閉じる判定、トーストの並びと時間、フォーカスの範囲と移り方、重なりのレイヤーの帯、タブの見た目。
     W2-8: グラフの目盛りの自動（切りの良い刻み・時刻と日付の候補）、軸の範囲の自動、書式（時刻・日付・数）、座標の変換、パンとズームの
     範囲の制限、慣性、単調な 3 次補間（行き過ぎない）、最寄りの点と棒の列、棒の形、枠の割り付けと吹き出し、見える範囲の点と欠けた値。
+    W2-9: テーマの読み込み（知らない名前・型の誤りの警告）、継承と一部だけの上書き（基のテーマ → 既定の順に落ちる・読めない基・輪・深すぎ）、
+    明暗の対応と重ねる順、明暗の選び方の規則、色の補間と進み具合、種の色の配色（コントラストの約束）、見やすさ、見本のテーマ、
+    トークンの表の完全性（定数〈反射〉・表・既定のテーマの揃い）と docs/ui_theme.md の表の一致。
+    表の作り直し: このテストを引数「update-docs のオプション ＋ docs/ui_theme.md」で走らせる（Program.cs の UpdateDocsOption）。
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -45,14 +49,11 @@
       <Link>Linked\Vector3.cs</Link>
     </Compile>
     <!-- テスト対象（SEED.UI のテーマ・見た目・値の計算） -->
-    <Compile Include="..\..\..\scripting\src\Api\UI\Theme\UiTokens.cs">
-      <Link>Linked\UiTokens.cs</Link>
-    </Compile>
-    <Compile Include="..\..\..\scripting\src\Api\UI\Theme\UiThemeData.cs">
-      <Link>Linked\UiThemeData.cs</Link>
-    </Compile>
-    <Compile Include="..\..\..\scripting\src\Api\UI\Theme\UiColorMath.cs">
-      <Link>Linked\UiColorMath.cs</Link>
+    <!-- W2-9: テーマは Theme/ の純粋な計算をすべて（トークンの表・読み込み・継承・明暗・種の色・補間）。
+         実行中だけのもの（UiTheme = エンジンの Assets・Redraw・登録簿、UiSystemBrightness = SEED.Platform）は除く -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\Theme\*.cs"
+             Exclude="..\..\..\scripting\src\Api\UI\Theme\UiTheme.cs;..\..\..\scripting\src\Api\UI\Theme\UiSystemBrightness.cs">
+      <Link>Linked\Theme\%(Filename)%(Extension)</Link>
     </Compile>
     <Compile Include="..\..\..\scripting\src\Api\UI\Looks\*.cs">
       <Link>Linked\Looks\%(Filename)%(Extension)</Link>
@@ -75,6 +76,15 @@
     <!-- 既定のテーマのデータ（SEEDScripting に埋め込むものと同じファイル）を出力へ写す -->
     <None Include="..\..\..\scripting\src\Api\UI\Theme\default_theme.json">
       <Link>default_theme.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- W2-9: 見本のテーマ（templates/ui/themes）と、トークンの表を載せた正典（docs/ui_theme.md。表が一致するかを確かめる） -->
+    <None Include="..\..\..\templates\ui\themes\*.json">
+      <Link>themes\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\..\docs\ui_theme.md">
+      <Link>ui_theme.md</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->

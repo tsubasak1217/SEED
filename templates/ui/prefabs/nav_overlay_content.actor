@@ -139,6 +139,19 @@
        "preferred_height": 28.0
       }
      }
+    },
+    {
+     "name": "ThemeStyle",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.ThemeStyle",
+       "fields": {
+        "TextColor": "color.on_surface",
+        "TextWeight": "font.weight_title"
+       }
+      }
+     }
     }
    ],
    "children": []
@@ -198,6 +211,18 @@
       "type": "CanvasLayoutItemComponent",
       "data": {
        "preferred_height": 22.0
+      }
+     }
+    },
+    {
+     "name": "ThemeStyle",
+     "component": {
+      "type": "ScriptComponent",
+      "data": {
+       "type_name": "SEED.UI.ThemeStyle",
+       "fields": {
+        "TextColor": "color.on_surface_muted"
+       }
       }
      }
     }

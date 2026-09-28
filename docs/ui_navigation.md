@@ -212,23 +212,11 @@ SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライ�
 
 ## 9. テーマのトークン（画面の組み立て。`NavTokens`）
 
-| トークン | 既定 | 使う所 |
-|---|---|---|
-| `color.scrim` / `color.inverse_surface` / `color.on_inverse_surface` | #000000 / #ECE6F5 / #1E1B26 | 幕 / トーストの面・文字 |
-| `radius.dialog` / `sheet` / `toast` / `tab_indicator` | 28 / 28 / 8 / 16 | ダイアログ・シートと覆い・トースト・タブの印の角丸 |
-| `size.tab_bar` / `tab_indicator_width` / `tab_indicator_height` | 64 / 56 / 28 | タブのバーの高さ・印 |
-| `size.dialog_width` / `dialog_padding` / `dialog_button_height` | 312 / 24 / 40 | ダイアログ |
-| `size.handle_width` / `handle_height` / `handle_area` | 32 / 4 / 24 | つまみ（M3 の drag handle） |
-| `size.toast_height` / `drag_dismiss` | 48 / 96 | トースト・ドラッグで閉じる距離 |
-| `motion.push` / `cover` / `fade`（と `*_curve`） | 0.3 / 0.3 / 0.3 | 画面の出入り（曲線は x1・y1・x2・y2 の 4 つ。push・cover は Material 3 standard (0.2, 0, 0, 1)、fade は fastOutSlowIn） |
-| `motion.overlay`（と `_curve`） | 0.22・easeOut (0, 0, 0.58, 1) | 上からの覆い（Flutter 版） |
-| `motion.dialog`（と `_curve`）/ `motion.sheet` / `motion.toast`（と `_curve`） | 0.2 / 0.25 / 0.2 | ダイアログ・シート・トースト |
-| `motion.toast_short` / `toast_long` | 2 / 3.5 | トーストを見せる秒（実時間） |
-| `opacity.scrim` / `dialog_scrim` | 0.54 / 0.32 | 覆い・シート（Flutter 版の 54%）/ ダイアログ（Material 3） |
-| `ratio.push_parallax` / `dialog_scale_from` / `sheet_max_height` | 0.3 / 0.9 / 0.9 | 押し込みの視差・ダイアログの出始めの大きさ・シートの高さ |
-| `speed.fling_dismiss` | 300 | フリックで閉じる速さ（dp/秒。Flutter 版の top_sheet の 300） |
-| `count.toast_visible` | 3 | 同時に見せるトースト |
-| `layer.stack_step` / `modal_step` / `overlay` / `sheet` / `dialog` / `toast` | 10,000 / 10,000 / 100 万 / 200 万 / 300 万 / 400 万 | 重なりのレイヤーの底上げ（§6） |
+画面の組み立てのトークン（幕・トーストの色、ダイアログ・シート・トースト・タブの角丸と大きさ、つまみ、出入りの時間と曲線、幕の濃さ、割合・速さ・数、重なりのレイヤー）の
+**一覧（名前・型・既定値・使う部品）の正典は [ui_theme.md](ui_theme.md) §8**（W2-9 で 1 つの表にまとめた）。値の出典: 画面の出入りの push・cover は
+Material 3 の standard (0.2, 0, 0, 1)、fade は fastOutSlowIn、上からの覆いは Flutter 版の top_sheet の 220ms・easeOut (0, 0, 0.58, 1)、覆い・シートの幕は
+Flutter 版の 54%・ダイアログの幕は Material 3 の 32%、フリックで閉じる速さは Flutter 版の top_sheet の 300 dp/秒、つまみは M3 の drag handle、
+重なりのレイヤーの帯は §6。曲線は `motion.push_curve` の `.x1`・`.y1`・`.x2`・`.y2` の 4 つの数（CSS の cubic-bezier。`UiCurve.FromTheme`）。
 
 ## 10. 見本（`templates/ui/scenes/ui_navigation.scene`）
 
