@@ -33,6 +33,11 @@ namespace SEED;
 /// <b>上限</b>: 1 フレームあたり 4096 図形・1 図形あたり 1024 点。
 /// 超過分は描画されず警告ログが出る。
 /// </para>
+///
+/// <para>
+/// <b>見た目の拡張（W2-8）</b>: <see cref="DrawStyle"/> を受け取るメソッド（点列は <c>ReadOnlySpan</c>）は、画面の 1 画素の
+/// アンチエイリアスと線形のグラデーションを使える。線の下の塗り（<see cref="Area"/>）はグラフの面を点の数に比例する手間で塗る。
+/// </para>
 /// </summary>
 public static unsafe class Draw
 {
@@ -54,6 +59,8 @@ public static unsafe class Draw
     private const int KindRoundedRect = 6;
     /// <summary>図形種別: 3 次ベジエ曲線。</summary>
     private const int KindBezier = 7;
+    /// <summary>図形種別: 線の下の塗り（W2-8）。</summary>
+    private const int KindArea = 8;
 
     /// <summary>共通ヘッダの float 個数（color4 + mode + thickness + layer + srt5）。</summary>
     private const int HeaderFloats = 12;
@@ -61,6 +68,15 @@ public static unsafe class Draw
     private const int ExtraFloats = 5;
     /// <summary>パラメータ配列の総 float 個数（Rust 側 PRIM_PARAM_FLOATS と一致必須）。</summary>
     private const int ParamFloats = HeaderFloats + ExtraFloats;
+
+    /// <summary>見た目の拡張（W2-8）の float 個数（Rust 側 PRIM_STYLE_FLOATS と一致必須。旗 1 + 終わりの色 4 + 始点 2 + 終点 2）。</summary>
+    private const int StyleFloats = 9;
+    /// <summary>見た目の拡張つきのパラメータ配列の総 float 個数（Rust 側 PRIM_PARAM_FLOATS_STYLED と一致必須）。</summary>
+    private const int StyledParamFloats = ParamFloats + StyleFloats;
+    /// <summary>見た目の拡張の旗: 画面の 1 画素のフェザー（Rust 側 PRIM_STYLE_FLAG_PIXEL_FEATHER）。</summary>
+    private const int StyleFlagPixelFeather = 1;
+    /// <summary>見た目の拡張の旗: 線形のグラデーション（Rust 側 PRIM_STYLE_FLAG_GRADIENT）。</summary>
+    private const int StyleFlagGradient = 2;
 
     /// <summary>1 図形あたりの点数上限（Rust 側 MAX_POINTS_PER_PRIMITIVE と一致）。</summary>
     public const int MaxPointsPerPrimitive = 1024;
@@ -359,6 +375,94 @@ public static unsafe class Draw
             extras, pts, 4, space);
     }
 
+    // ── 見た目の拡張つきの図形（W2-8）────────────────────────────
+
+    /// <summary>2 点を結ぶ直線を見た目の拡張つきで描く。</summary>
+    /// <param name="a">始点。</param>
+    /// <param name="b">終点。</param>
+    /// <param name="color">色（RGBA）。</param>
+    /// <param name="style">見た目の拡張（画面の画素のフェザー・グラデーション）。</param>
+    /// <param name="thickness">線の太さ（描画空間の単位。dp のキャンバスなら dp）。</param>
+    /// <param name="layer">描画レイヤー（大きいほど手前）。</param>
+    /// <param name="space">座標空間（null = スクリーンスペース）。</param>
+    public static void Line(
+        Vector2 a, Vector2 b, Color color, DrawStyle style,
+        float thickness = 1f, int layer = 0, CanvasTransform? space = null)
+    {
+        Vector2* pts = stackalloc Vector2[2] { a, b };
+        Submit(KindPolyline, color, DrawMode.Fill, thickness, layer, Transform2D.Identity,
+            new Extras(0f), pts, 2, space, style, styled: true);
+    }
+
+    /// <summary>折れ線を見た目の拡張つきで描く（点列は配列の一部でもよい。1024 点を超えた分は描かれない）。</summary>
+    /// <param name="points">点列（2 点以上）。</param>
+    /// <param name="closed">true なら末尾と先頭を繋いで閉じる。</param>
+    /// <param name="color">色（RGBA）。</param>
+    /// <param name="style">見た目の拡張。</param>
+    /// <param name="thickness">線の太さ（描画空間の単位）。</param>
+    /// <param name="layer">描画レイヤー（大きいほど手前）。</param>
+    /// <param name="space">座標空間（null = スクリーンスペース）。</param>
+    public static void Polyline(
+        ReadOnlySpan<Vector2> points, bool closed, Color color, DrawStyle style,
+        float thickness = 1f, int layer = 0, CanvasTransform? space = null)
+    {
+        SubmitSpan(KindPolyline, points, Transform2D.Identity, color, DrawMode.Fill,
+            thickness, layer, new Extras(closed ? 1f : 0f), space, style);
+    }
+
+    /// <summary>多角形を見た目の拡張つきで塗る（自己交差しない単純多角形。凹多角形は耳刈りで塗られる）。</summary>
+    /// <param name="points">輪郭の点列（3 点以上）。</param>
+    /// <param name="color">色（RGBA）。</param>
+    /// <param name="style">見た目の拡張。</param>
+    /// <param name="layer">描画レイヤー（大きいほど手前）。</param>
+    /// <param name="space">座標空間（null = スクリーンスペース）。</param>
+    public static void Polygon(
+        ReadOnlySpan<Vector2> points, Color color, DrawStyle style,
+        int layer = 0, CanvasTransform? space = null)
+    {
+        SubmitSpan(KindPolygon, points, Transform2D.Identity, color, DrawMode.Fill,
+            1f, layer, default, space, style);
+    }
+
+    /// <summary>円を見た目の拡張つきで塗る（グラフの点の印など）。</summary>
+    /// <param name="center">中心座標。</param>
+    /// <param name="radius">半径（描画空間の単位）。</param>
+    /// <param name="color">色（RGBA）。</param>
+    /// <param name="style">見た目の拡張。</param>
+    /// <param name="layer">描画レイヤー（大きいほど手前）。</param>
+    /// <param name="space">座標空間（null = スクリーンスペース）。</param>
+    public static void Circle(
+        Vector2 center, float radius, Color color, DrawStyle style,
+        int layer = 0, CanvasTransform? space = null)
+    {
+        Vector2* pts = stackalloc Vector2[1] { center };
+        var extras = new Extras(radius, 1f, 1f);
+        Submit(KindCircle, color, DrawMode.Fill, 1f, layer, Transform2D.Identity,
+            extras, pts, 1, space, style, styled: true);
+    }
+
+    /// <summary>
+    /// 線の下の塗り（W2-8。グラフの面）: 折れ線 <paramref name="points"/>（左 → 右）と基準線 y = <paramref name="baselineY"/> の間を塗る。
+    /// <para>
+    /// 線分ごとに縦の台形の帯で塗る（多角形の耳刈りを使わないので点が多くても軽い）。線分が基準線をまたぐときは交点で切って両側を塗る。
+    /// アンチエイリアスの帯は上の縁（基準線から遠い側）だけに張る（基準線と左右の端は軸・切り抜きに重なる前提）。
+    /// 上から下へ薄くするには <see cref="DrawStyle.WithLinearGradient"/> で縦のグラデーションを付ける。
+    /// </para>
+    /// </summary>
+    /// <param name="points">上の縁の点列（2 点以上。1024 点を超えた分は描かれない）。</param>
+    /// <param name="baselineY">基準線の y（描画空間。Y 下向き）。</param>
+    /// <param name="color">色（RGBA。グラデーションなら始点の色）。</param>
+    /// <param name="style">見た目の拡張（既定 = 従来のフェザー・単色）。</param>
+    /// <param name="layer">描画レイヤー（大きいほど手前）。</param>
+    /// <param name="space">座標空間（null = スクリーンスペース）。</param>
+    public static void Area(
+        ReadOnlySpan<Vector2> points, float baselineY, Color color, DrawStyle style = default,
+        int layer = 0, CanvasTransform? space = null)
+    {
+        SubmitSpan(KindArea, points, Transform2D.Identity, color, DrawMode.Fill,
+            1f, layer, new Extras(baselineY), space, style);
+    }
+
     // ── 内部実装 ────────────────────────────────────────────────
 
     /// <summary>
@@ -401,14 +505,31 @@ public static unsafe class Draw
     }
 
     /// <summary>
+    /// 見た目の拡張つきで、点列（配列の一部でもよい）を（上限まで）固定して発行する（W2-8）。
+    /// </summary>
+    private static void SubmitSpan(
+        int kind, ReadOnlySpan<Vector2> points, Transform2D srt, Color color, DrawMode mode,
+        float thickness, int layer, Extras extras, CanvasTransform? space, DrawStyle style)
+    {
+        if (points.Length == 0) return;
+        int n = points.Length > MaxPointsPerPrimitive ? MaxPointsPerPrimitive : points.Length;
+        fixed (Vector2* buf = points)
+        {
+            Submit(kind, color, mode, thickness, layer, srt, extras, buf, n, space, style, styled: true);
+        }
+    }
+
+    /// <summary>
     /// パラメータ配列を組み立てて FFI へ 1 コマンド発行する（全図形の唯一の出口）。
+    /// <paramref name="styled"/> が false（既存のメソッド）なら従来どおり <see cref="ParamFloats"/> 個だけを送る
+    /// （従来の見た目のまま）。true（W2-8 の拡張のメソッド）なら末尾に見た目の拡張を足した <see cref="StyledParamFloats"/> 個を送る。
     /// </summary>
     private static void Submit(
         int kind, Color color, DrawMode mode, float thickness, int layer,
         Transform2D srt, Extras extras, Vector2* points, int pointCount,
-        CanvasTransform? space)
+        CanvasTransform? space, DrawStyle style = default, bool styled = false)
     {
-        float* p = stackalloc float[ParamFloats];
+        float* p = stackalloc float[StyledParamFloats];
         // 共通ヘッダ（Rust 側 PRIM_HEADER_FLOATS の並びと一致必須）
         p[0] = color.r; p[1] = color.g; p[2] = color.b; p[3] = color.a;
         p[4] = (float)mode;
@@ -420,9 +541,19 @@ public static unsafe class Draw
         // 図形別スカラ
         p[12] = extras.E0; p[13] = extras.E1; p[14] = extras.E2;
         p[15] = extras.E3; p[16] = extras.E4;
+        // 見た目の拡張（W2-8。Rust 側 PrimitiveStyle::from_params の並びと一致必須）
+        if (styled)
+        {
+            int flags = (style.PixelFeather ? StyleFlagPixelFeather : 0) | (style.HasGradient ? StyleFlagGradient : 0);
+            p[ParamFloats] = flags;
+            p[ParamFloats + 1] = style.GradientEnd.r; p[ParamFloats + 2] = style.GradientEnd.g;
+            p[ParamFloats + 3] = style.GradientEnd.b; p[ParamFloats + 4] = style.GradientEnd.a;
+            p[ParamFloats + 5] = style.GradientFrom.x; p[ParamFloats + 6] = style.GradientFrom.y;
+            p[ParamFloats + 7] = style.GradientTo.x; p[ParamFloats + 8] = style.GradientTo.y;
+        }
 
         // Vector2 は float 2 個のみの構造体なので float* として渡せる
         var entity = space.HasValue ? space.Value.Owner : Entity.None;
-        ScriptHost.DrawPrimitive(kind, entity, p, ParamFloats, (float*)points, pointCount);
+        ScriptHost.DrawPrimitive(kind, entity, p, styled ? StyledParamFloats : ParamFloats, (float*)points, pointCount);
     }
 }

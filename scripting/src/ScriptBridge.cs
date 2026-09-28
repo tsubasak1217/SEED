@@ -356,7 +356,10 @@ public static unsafe class ScriptBridge
                 new SEED.Vector2(ev->VelocityX, ev->VelocityY),
                 ev->DpScale,
                 ev->Duration,
-                ev->Canceled != 0);
+                ev->Canceled != 0,
+                ev->Scale,
+                ev->ScaleX,
+                ev->ScaleY);
             switch (e.Kind)
             {
                 case SEED.GestureKind.Tap:         ss.OnGestureTap(e);         break;
@@ -368,6 +371,9 @@ public static unsafe class ScriptBridge
                 case SEED.GestureKind.PressDown:   ss.OnGesturePressDown(e);   break;
                 case SEED.GestureKind.PressCancel: ss.OnGesturePressCancel(e); break;
                 case SEED.GestureKind.PressUp:     ss.OnGesturePressUp(e);     break;
+                case SEED.GestureKind.PinchStart:  ss.OnGesturePinchStart(e);  break;
+                case SEED.GestureKind.PinchUpdate: ss.OnGesturePinchUpdate(e); break;
+                case SEED.GestureKind.PinchEnd:    ss.OnGesturePinchEnd(e);    break;
             }
         }
         catch (Exception ex)

@@ -4,7 +4,8 @@ namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// Rust 側 RawGestureEvent（#[repr(C)]。runtime/src/engine/core/scripting/gesture_ffi.rs）と同じメモリレイアウトの
-/// ジェスチャーのイベント（W2-2）。フィールドの並び・型を必ず一致させること（すべて 4 バイト・詰め物なし・19 個）。
+/// ジェスチャーのイベント（W2-2）。フィールドの並び・型を必ず一致させること（すべて 4 バイト・詰め物なし・22 個。
+/// W2-8 でピンチの倍率 Scale・ScaleX・ScaleY を末尾に足した）。
 ///
 /// Kind は Rust の GestureEventKind の数値 = <see cref="SEED.GestureKind"/>。
 /// 位置はキャンバスの画素（画面の中央が原点・Y 下向き）、Screen* は画面の画素（左上原点）、
@@ -44,4 +45,8 @@ public struct NativeGestureEvent
     public float Duration;
     /// <summary>取り消しで終わったか（0 / 1）。</summary>
     public int Canceled;
+    /// <summary>ピンチの倍率（W2-8。全体・横・縦。ピンチの始まりからの比。ピンチ以外は 1）。</summary>
+    public float Scale;
+    public float ScaleX;
+    public float ScaleY;
 }

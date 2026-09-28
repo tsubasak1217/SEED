@@ -2717,18 +2717,20 @@ unsafe extern "system" fn ffi_draw_primitive(
     point_count: i32,
 ) -> i32 {
     use crate::engine::core::renderer::primitive2d::{
-        push_command, PrimitiveCommand, PrimitiveDrawMode, PrimitiveKind, Transform2d,
-        MAX_POINTS_PER_PRIMITIVE, PRIM_EXTRA_FLOATS, PRIM_HEADER_FLOATS, PRIM_PARAM_FLOATS,
+        push_command, PrimitiveCommand, PrimitiveDrawMode, PrimitiveKind, PrimitiveStyle, Transform2d,
+        MAX_POINTS_PER_PRIMITIVE, PRIM_EXTRA_FLOATS, PRIM_HEADER_FLOATS, PRIM_PARAM_FLOATS, PRIM_PARAM_FLOATS_STYLED,
     };
 
-    // 図形種別・パラメータ長の検証（C# 側の実装ミスを黙って丸めない）
+    // 図形種別・パラメータ長の検証（C# 側の実装ミスを黙って丸めない）。
+    // 長さは従来の PRIM_PARAM_FLOATS か、末尾に見た目の拡張（W2-8）を足した PRIM_PARAM_FLOATS_STYLED のどちらか。
     let Some(kind) = PrimitiveKind::from_i32(kind) else {
         return 0;
     };
-    if params.is_null() || param_count as usize != PRIM_PARAM_FLOATS {
+    let count = param_count.max(0) as usize;
+    if params.is_null() || (count != PRIM_PARAM_FLOATS && count != PRIM_PARAM_FLOATS_STYLED) {
         return 0;
     }
-    let p = std::slice::from_raw_parts(params, PRIM_PARAM_FLOATS);
+    let p = std::slice::from_raw_parts(params, count);
 
     // 点列（NULL / 0 個も許容する。図形側で必要数を検査する）
     let n_points = (point_count.max(0) as usize).min(MAX_POINTS_PER_PRIMITIVE);
@@ -2761,6 +2763,8 @@ unsafe extern "system" fn ffi_draw_primitive(
         },
         extras,
         points: pts,
+        // 見た目の拡張（W2-8）: 従来の長さなら既定（従来と同じ見た目）
+        style: PrimitiveStyle::from_params(&p[PRIM_PARAM_FLOATS..]),
     };
     if push_command(cmd) {
         1

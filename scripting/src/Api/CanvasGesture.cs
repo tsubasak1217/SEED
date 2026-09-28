@@ -90,6 +90,17 @@ public readonly struct CanvasGesture : IComponentHandle<CanvasGesture>
         set => CanvasLayoutFieldAccess.SetEnum(_entity, Comp, "drag_axis", value);
     }
 
+    /// <summary>
+    /// ピンチを受ける（get/set。既定 false。W2-8）。同じノードに触れた 2 本の指の間の距離の変化を OnGesturePinch* で受ける
+    /// （グラフの拡大縮小）。ピンチが始まると 2 本の指のタップ・長押し・ドラッグは取り消される。外側のノード（縦の一覧など）の
+    /// ドラッグに取られている指ではピンチにならない。
+    /// </summary>
+    public bool Pinch
+    {
+        get => ScriptHost.TryGetBool(_entity, Comp, "pinch", out var b) && b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "pinch", value);
+    }
+
     /// <summary>押下の見た目のイベント（PressDown / PressCancel / PressUp）を受ける（get/set。既定 true）。</summary>
     public bool PressFeedback
     {

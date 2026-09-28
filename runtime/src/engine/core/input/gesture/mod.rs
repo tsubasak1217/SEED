@@ -18,6 +18,7 @@
 //    recognizers/    … 認識器ごとの判定の規則（tap・long_press・drag・fling）
 //    arena.rs        … 指 1 本のアリーナ（勝ち負け・捕捉・押下の見た目）
 //    arena_set.rs    … すべての指（時刻の順の処理・複数指の規則・時刻の出来事・「動いている」の申告）
+//    pinch.rs        … 2 本指のピンチ（W2-8。アリーナとは別にすべての指を見て、始まったら 2 本の指を捕捉する）
 //    events.rs       … 出すイベント（種類の番号は C# と一致）とドラッグの途中のまとめ
 //    tests.rs        … 合成の指の列でアリーナを通して確かめる試験
 //
@@ -29,6 +30,7 @@ pub mod arena;
 pub mod arena_set;
 pub mod events;
 pub mod hit_slop;
+pub mod pinch;
 pub mod pointer_log;
 pub mod pointer_track;
 pub mod recognizers;
@@ -40,7 +42,7 @@ pub mod velocity;
 mod tests;
 
 pub use arena_set::{GestureActivity, GestureArenaSet};
-pub use events::{GestureEmit, GestureEventKind};
+pub use events::{GestureEmit, GestureEventKind, NO_SCALE};
 pub use hit_slop::{ClipAabb, GestureHitNode, PaintOrder};
 pub use pointer_log::{
     pointer_clock_now, pointer_clock_secs, InjectedPointerTracker, PointerEventLog, PointerInputEvent, PointerKey,

@@ -260,9 +260,15 @@ pub fn fill_contour(mesh: &mut Mesh2d, contour: &[[f32; 2]], feather: f32) {
         return;
     }
 
+    push_contour_feather(mesh, &pts, feather);
+}
+
+/// 閉輪郭の外側へ幅 `feather` のアンチエイリアス帯（alpha 1 → 0）と、凸の角の隙間を塞ぐ三角形を張る
+/// （`fill_contour` と W2-8 の `fill_convex` が共有する。`pts` は重複点を除いた 3 点以上）。
+fn push_contour_feather(mesh: &mut Mesh2d, pts: &[[f32; 2]], feather: f32) {
     // ── フェザー帯（外向き法線へ feather だけ押し出し、alpha 1 → 0）──
     // 巻き方向によって「外側」が反転するため面積の符号で補正する。
-    let flip = if signed_area(&pts) >= 0.0 { 1.0 } else { -1.0 };
+    let flip = if signed_area(pts) >= 0.0 { 1.0 } else { -1.0 };
     let n = pts.len();
     // 各辺の外向き法線（正規化済み）。縮退辺は None。
     let normals: Vec<Option<[f32; 2]>> = (0..n)
@@ -300,6 +306,170 @@ pub fn fill_contour(mesh: &mut Mesh2d, contour: &[[f32; 2]], feather: f32) {
             ([p[0] + np[0] * feather, p[1] + np[1] * feather], 0.0),
             ([p[0] + nc[0] * feather, p[1] + nc[1] * feather], 0.0),
         );
+    }
+}
+
+// ─── 軽い三角形分割（W2-8。見た目の拡張つきの図形だけ）──────────────
+
+/// つなぎの扇の弦と円のずれの許容量（フェザーの幅＝画面の 1 画素に対する割合）。
+const LEAN_JOIN_TOLERANCE: f32 = 0.25;
+/// つなぎの扇の最大の分割数（太い線の 180° の折り返しで 8 枚）。
+const LEAN_JOIN_MAX_SEGMENTS: u32 = 8;
+/// 曲がっていないとみなす外積の大きさ（単位ベクトルどうし）。
+const LEAN_STRAIGHT_EPSILON: f32 = 1e-4;
+
+/// 2D の内積。
+#[inline]
+fn dot(a: [f32; 2], b: [f32; 2]) -> f32 {
+    a[0] * b[0] + a[1] * b[1]
+}
+
+/// 点 + ベクトル × k。
+#[inline]
+fn offset(p: [f32; 2], v: [f32; 2], k: f32) -> [f32; 2] {
+    [p[0] + v[0] * k, p[1] + v[1] * k]
+}
+
+/// つなぎの扇の分割数【純関数】: 弦と円のずれが許容量（フェザーの幅 × LEAN_JOIN_TOLERANCE。フェザーが無ければ 1 単位 × 同じ割合）
+/// 以下になる最小の数（1〜LEAN_JOIN_MAX_SEGMENTS）。1 枚の扇の角度 θ の弦のずれは r(1 − cos(θ/2))。
+/// 例: 太さ 2 dp（半径 1）・フェザー 1 画素（PC の 1 dp = 1 画素）で直角は 2 枚、太さ 8 の半径 4 で直角は 4 枚。
+pub fn lean_join_segments(sweep: f32, radius: f32, feather: f32) -> u32 {
+    let tolerance = LEAN_JOIN_TOLERANCE * if feather > 0.0 { feather } else { 1.0 };
+    if !(radius > tolerance) || !(sweep > 0.0) {
+        return 1;
+    }
+    let step = 2.0 * (1.0 - tolerance / radius).acos();
+    ((sweep / step).ceil() as u32).clamp(1, LEAN_JOIN_MAX_SEGMENTS)
+}
+
+/// 輪郭が凸か（連続する辺の外積の符号がそろう。0 は問わない）。
+pub fn is_convex(pts: &[[f32; 2]]) -> bool {
+    let n = pts.len();
+    if n < 3 {
+        return false;
+    }
+    let mut sign = 0.0f32;
+    for i in 0..n {
+        let c = cross(sub(pts[(i + 1) % n], pts[i]), sub(pts[(i + 2) % n], pts[(i + 1) % n]));
+        if c.abs() <= POINT_EPSILON {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = c.signum();
+        } else if c.signum() != sign {
+            return false;
+        }
+    }
+    sign != 0.0
+}
+
+/// 凸の輪郭を扇で塗る（耳刈りを使わない）。凸でなければ従来の `fill_contour`（耳刈り）。フェザーは `fill_contour` と同じ。
+pub fn fill_convex(mesh: &mut Mesh2d, contour: &[[f32; 2]], feather: f32) {
+    let pts = dedup_points(contour, true);
+    if pts.len() < 3 {
+        return;
+    }
+    if !is_convex(&pts) {
+        fill_contour(mesh, &pts, feather);
+        return;
+    }
+    // ── 本体（alpha = 1）: 頂点 0 からの扇 ──
+    for i in 1..pts.len() - 1 {
+        mesh.push_tri((pts[0], 1.0), (pts[i], 1.0), (pts[i + 1], 1.0));
+    }
+    if feather > 0.0 {
+        push_contour_feather(mesh, &pts, feather);
+    }
+}
+
+/// 帯の 1 枚（4 点。a→b が内側 alpha_ab、c→d が外側 alpha_cd）を三角形 2 枚で積む。
+#[inline]
+fn push_band(mesh: &mut Mesh2d, a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2], alpha_ab: f32, alpha_cd: f32) {
+    mesh.push_tri((a, alpha_ab), (b, alpha_ab), (c, alpha_cd));
+    mesh.push_tri((a, alpha_ab), (c, alpha_cd), (d, alpha_cd));
+}
+
+/// 折れ線を 1 本の帯として描く（見た目の拡張つきの折れ線。W2-8）。
+///
+/// - 線分ごと: 本体（太さ）の四角形 2 枚 + 両側のフェザーの帯 4 枚
+/// - つなぎ: 曲がる**外側**だけに、太さの半分の半径の扇（角度 22.5° ごとに 1 枚・最大 8 枚）とそのフェザー。内側は隣の線分の本体が重なる
+///   （不透明な線では見えない。半透明の太い線ではつなぎの内側がわずかに濃くなる＝従来の丸いつなぎと同じ性質）
+/// - 開いた線の両端: 端から外へフェザーの帯（切りっぱなしの端）
+/// 従来の `stroke_polyline`（線分ごとの四角形の耳刈り・つなぎごとの 8 角形の円）より三角形が少なく、点ごとの配列の確保が無い。
+pub fn stroke_polyline_lean(mesh: &mut Mesh2d, points: &[[f32; 2]], closed: bool, thickness: f32, feather: f32) {
+    let pts = dedup_points(points, closed);
+    if pts.len() < 2 {
+        return;
+    }
+    let half = thickness.max(MIN_THICKNESS) * 0.5;
+    let n = pts.len();
+    let seg_count = if closed { n } else { n - 1 };
+    // ── 線分ごとの帯 ──
+    for i in 0..seg_count {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let Some(d) = normalize(sub(b, a)) else {
+            continue;
+        };
+        let nrm = [-d[1], d[0]];
+        let (al, bl, ar, br) = (offset(a, nrm, half), offset(b, nrm, half), offset(a, nrm, -half), offset(b, nrm, -half));
+        push_band(mesh, al, bl, br, ar, 1.0, 1.0);
+        if feather > 0.0 {
+            push_band(mesh, al, bl, offset(bl, nrm, feather), offset(al, nrm, feather), 1.0, 0.0);
+            push_band(mesh, ar, br, offset(br, nrm, -feather), offset(ar, nrm, -feather), 1.0, 0.0);
+        }
+    }
+    // ── 曲がる外側の丸いつなぎ ──
+    let joints = if closed { 0..n } else { 1..n.saturating_sub(1) };
+    for i in joints {
+        let p = pts[i];
+        let (Some(d0), Some(d1)) = (normalize(sub(p, pts[(i + n - 1) % n])), normalize(sub(pts[(i + 1) % n], p))) else {
+            continue;
+        };
+        let turn = cross(d0, d1);
+        if turn.abs() <= LEAN_STRAIGHT_EPSILON && dot(d0, d1) > 0.0 {
+            continue; // まっすぐ続く
+        }
+        // 外側: 曲がる向きの反対（法線 n = d を +90° 回したもの。turn > 0 なら +n の側へ曲がる → 外は −n）
+        let side = if turn > 0.0 { -1.0 } else { 1.0 };
+        let from = [-d0[1] * side, d0[0] * side];
+        let to = [-d1[1] * side, d1[0] * side];
+        let a0 = from[1].atan2(from[0]);
+        let mut sweep = to[1].atan2(to[0]) - a0;
+        // 外側を回る短い方の角度（折り返しは半周）
+        while sweep > std::f32::consts::PI {
+            sweep -= std::f32::consts::TAU;
+        }
+        while sweep < -std::f32::consts::PI {
+            sweep += std::f32::consts::TAU;
+        }
+        let segs = lean_join_segments(sweep.abs(), half, feather);
+        let mut prev_dir = from;
+        for k in 1..=segs {
+            let ang = a0 + sweep * k as f32 / segs as f32;
+            let dir = [ang.cos(), ang.sin()];
+            let (e0, e1) = (offset(p, prev_dir, half), offset(p, dir, half));
+            mesh.push_tri((p, 1.0), (e0, 1.0), (e1, 1.0));
+            if feather > 0.0 {
+                push_band(mesh, e0, e1, offset(e1, dir, feather), offset(e0, prev_dir, feather), 1.0, 0.0);
+            }
+            prev_dir = dir;
+        }
+    }
+    // ── 開いた線の両端のフェザー（端の外へ。角の隙間は三角形で塞ぐ）──
+    if !closed && feather > 0.0 {
+        for (p, q, outward) in [(pts[0], pts[1], -1.0f32), (pts[n - 1], pts[n - 2], -1.0f32)] {
+            // q → p の向きが端の外（端の点 p から、隣の点 q と反対へ）
+            let Some(d) = normalize(sub(q, p)) else {
+                continue;
+            };
+            let out = [d[0] * outward, d[1] * outward];
+            let nrm = [-d[1], d[0]];
+            let (l, r) = (offset(p, nrm, half), offset(p, nrm, -half));
+            let (lo, ro) = (offset(l, out, feather), offset(r, out, feather));
+            push_band(mesh, l, r, ro, lo, 1.0, 0.0);
+            mesh.push_tri((l, 1.0), (lo, 0.0), (offset(l, nrm, feather), 0.0));
+            mesh.push_tri((r, 1.0), (ro, 0.0), (offset(r, nrm, -feather), 0.0));
+        }
     }
 }
 
@@ -354,6 +524,76 @@ pub fn stroke_polyline(
             let circle = arc_points(pts[i], half, half, 0.0, 360.0, JOIN_SEGMENTS, false);
             fill_contour(mesh, &circle, feather);
         }
+    }
+}
+
+// ─── 線の下の塗り（W2-8。グラフの面）─────────────────────────
+
+/// 2 点の和（a + b × k）。
+#[inline]
+fn add_scaled(a: [f32; 2], b: [f32; 2], k: f32) -> [f32; 2] {
+    [a[0] + b[0] * k, a[1] + b[1] * k]
+}
+
+/// 線の下の塗り（`PrimitiveKind::Area`）: 折れ線 `points`（左 → 右）と基準線 y = `base_y` の間を塗る。
+///
+/// - 本体: 線分ごとに縦の台形（線分の 2 点と、その真下〈基準線の上〉の 2 点）を三角形 2 枚で張る。線分が基準線を
+///   またぐときは交点で切り、基準線の上側と下側をそれぞれ三角形で塗る。耳刈り（`triangulate_ear_clip`）を使わないので、
+///   点の数に比例する手間で済む（グラフの 365 点でも軽い）。
+/// - アンチエイリアスの帯: 上の縁（基準線から遠い側へ押し出す）だけに張る。縁の折れ目で帯が開く側（次の線分が外側から
+///   離れる向き＝山の頂）は三角形で塞ぐ。基準線と左右の端には帯を張らない（グラフでは軸と切り抜きの縁に重なる）。
+pub fn fill_area(mesh: &mut Mesh2d, points: &[[f32; 2]], base_y: f32, feather: f32) {
+    let pts = dedup_points(points, false);
+    if pts.len() < 2 {
+        return;
+    }
+    // 上の縁を「基準線の同じ側にある切れ端」に分ける（またぐ線分は交点で 2 つに切る）
+    let mut pieces: Vec<([f32; 2], [f32; 2])> = Vec::with_capacity(pts.len());
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (da, db) = (a[1] - base_y, b[1] - base_y);
+        if da * db < 0.0 {
+            let t = da / (da - db);
+            let c = [a[0] + (b[0] - a[0]) * t, base_y];
+            pieces.push((a, c));
+            pieces.push((c, b));
+        } else {
+            pieces.push((a, b));
+        }
+    }
+    // ── 本体（alpha = 1）: 切れ端ごとに縦の台形（交点で切れた切れ端は三角形に潰れる）──
+    for &(a, b) in &pieces {
+        let (a0, b0) = ([a[0], base_y], [b[0], base_y]);
+        mesh.push_tri((a, 1.0), (b, 1.0), (b0, 1.0));
+        mesh.push_tri((a, 1.0), (b0, 1.0), (a0, 1.0));
+    }
+    if feather <= 0.0 {
+        return;
+    }
+    // ── 上の縁のフェザー帯（alpha 1 → 0。基準線から遠い側へ押し出す）──
+    // 前の切れ端の (終点, 外向きの法線, 基準線の上側か)
+    let mut prev: Option<([f32; 2], [f32; 2], bool)> = None;
+    for &(a, b) in &pieces {
+        let Some(d) = normalize(sub(b, a)) else {
+            continue;
+        };
+        // 画面は Y 下向き: 基準線より上（y が小さい）の切れ端は上向き（n.y < 0）が外、下の切れ端は下向きが外
+        let above = (a[1] + b[1]) * 0.5 <= base_y;
+        let mut n = [d[1], -d[0]];
+        if (above && n[1] > 0.0) || (!above && n[1] < 0.0) {
+            n = [-n[0], -n[1]];
+        }
+        let (ao, bo) = (add_scaled(a, n, feather), add_scaled(b, n, feather));
+        mesh.push_tri((a, 1.0), (b, 1.0), (bo, 0.0));
+        mesh.push_tri((a, 1.0), (bo, 0.0), (ao, 0.0));
+        // 折れ目の隙間: 同じ側で続き、この切れ端が前の切れ端の外側から離れる向き（山の頂）なら三角形で塞ぐ
+        if let Some((prev_end, prev_n, prev_above)) = prev {
+            let same_point = (prev_end[0] - a[0]).abs() < POINT_EPSILON && (prev_end[1] - a[1]).abs() < POINT_EPSILON;
+            if same_point && prev_above == above && d[0] * prev_n[0] + d[1] * prev_n[1] < 0.0 {
+                mesh.push_tri((a, 1.0), (add_scaled(a, prev_n, feather), 0.0), (ao, 0.0));
+            }
+        }
+        prev = Some((b, n, above));
     }
 }
 
@@ -714,22 +954,28 @@ pub fn tessellate(cmd: &PrimitiveCommand, feather: f32) -> Mesh2d {
         .collect();
     let outline = cmd.mode == PrimitiveDrawMode::Outline;
     let thickness = cmd.thickness;
+    // 見た目の拡張つき（W2-8）は軽い三角形分割。従来の図形は今までと同じ分割（頂点・見た目を変えない）
+    let lean = cmd.style.extended;
 
     // 図形ごとの「閉輪郭」または「折れ線」を作って共通処理へ渡す。
     match cmd.kind {
         // ── 任意多角形（Rect / Triangle / Polygon）──
         PrimitiveKind::Polygon => {
-            emit_closed(&mut mesh, &src, outline, thickness, feather);
+            emit_closed(&mut mesh, &src, outline, thickness, feather, lean);
         }
         // ── 角丸多角形 ──
         PrimitiveKind::RoundedRect => {
             let rounded = round_corners(&dedup_points(&src, true), cmd.extras[0]);
-            emit_closed(&mut mesh, &rounded, outline, thickness, feather);
+            emit_closed(&mut mesh, &rounded, outline, thickness, feather, lean);
         }
         // ── 折れ線（Line 含む）──
         PrimitiveKind::Polyline => {
             let closed = cmd.extras[0] >= 0.5;
-            stroke_polyline(&mut mesh, &src, closed, thickness, feather);
+            if lean {
+                stroke_polyline_lean(&mut mesh, &src, closed, thickness, feather);
+            } else {
+                stroke_polyline(&mut mesh, &src, closed, thickness, feather);
+            }
         }
         // ── 円・楕円 ──
         PrimitiveKind::Circle => {
@@ -744,7 +990,7 @@ pub fn tessellate(cmd: &PrimitiveCommand, feather: f32) -> Mesh2d {
             // 360° ちょうどだと始点と終点が重なるので最後の 1 点を落とす
             let mut c = arc_points(center, rx, ry, 0.0, 360.0, segs, false);
             c.pop();
-            emit_closed(&mut mesh, &c, outline, thickness, feather);
+            emit_closed(&mut mesh, &c, outline, thickness, feather, lean);
         }
         // ── 正多角形 ──
         PrimitiveKind::RegularPolygon => {
@@ -767,7 +1013,7 @@ pub fn tessellate(cmd: &PrimitiveCommand, feather: f32) -> Mesh2d {
                     ]
                 })
                 .collect();
-            emit_closed(&mut mesh, &c, outline, thickness, feather);
+            emit_closed(&mut mesh, &c, outline, thickness, feather, lean);
         }
         // ── リング（円環セクタ）──
         PrimitiveKind::Ring => {
@@ -824,25 +1070,34 @@ pub fn tessellate(cmd: &PrimitiveCommand, feather: f32) -> Mesh2d {
             let pl = bezier_points(src[0], src[1], src[2], src[3], cmd.extras[0] as u32);
             stroke_polyline(&mut mesh, &pl, false, thickness, feather);
         }
+        // ── 線の下の塗り（W2-8。基準線の y は SRT を掛けた描画空間の値として扱う＝グラフは SRT を使わない）──
+        PrimitiveKind::Area => {
+            let base_y = cmd.srt.apply([0.0, cmd.extras[0]])[1];
+            fill_area(&mut mesh, &src, base_y, feather);
+        }
     }
     mesh
 }
 
 /// 閉輪郭を Fill / Outline のどちらかで出力する共通処理。
+///
+/// `lean`（見た目の拡張つきの図形。W2-8）なら軽い三角形分割（輪郭の線は 1 本の帯、凸の塗りは扇）。
 fn emit_closed(
     mesh: &mut Mesh2d,
     contour: &[[f32; 2]],
     outline: bool,
     thickness: f32,
     feather: f32,
+    lean: bool,
 ) {
     if contour.len() < 3 {
         return;
     }
-    if outline {
-        stroke_polyline(mesh, contour, true, thickness, feather);
-    } else {
-        fill_contour(mesh, contour, feather);
+    match (outline, lean) {
+        (true, false) => stroke_polyline(mesh, contour, true, thickness, feather),
+        (true, true) => stroke_polyline_lean(mesh, contour, true, thickness, feather),
+        (false, false) => fill_contour(mesh, contour, feather),
+        (false, true) => fill_convex(mesh, contour, feather),
     }
 }
 
@@ -867,7 +1122,113 @@ mod tests {
             srt: Transform2d::IDENTITY,
             extras: [0.0; PRIM_EXTRA_FLOATS],
             points: Vec::new(),
+            style: Default::default(),
         }
+    }
+
+    /// 線の下の塗り（W2-8）: 本体の面積は折れ線と基準線の間の面積（台形の和）。帯は上の縁の外側だけ（本体を覆わない）。
+    #[test]
+    fn area_fill_covers_trapezoids_between_line_and_baseline() {
+        let mut c = cmd(PrimitiveKind::Area);
+        // 基準線 y = 100。山（y が小さいほど高い）: (0,60) → (10,20) → (20,60)
+        c.points = vec![[0.0, 60.0], [10.0, 20.0], [20.0, 60.0]];
+        c.extras[0] = 100.0;
+        let mesh = tessellate(&c, 1.0);
+        // 台形 2 つ: (40 + 80) / 2 × 10 × 2 = 1200
+        assert!((solid_area(&mesh) - 1200.0).abs() < 1e-3, "面積 {}", solid_area(&mesh));
+        // 帯の外縁（alpha 0）の点はすべて縁より上（基準線から遠い側）
+        for v in mesh.verts.iter().filter(|v| v.alpha == 0.0) {
+            assert!(v.pos[1] < 60.5, "帯は上の縁の外側だけ: {:?}", v.pos);
+        }
+        // 山の頂の隙間を塞ぐ三角形がある（帯 2 本 × 2 枚 + 頂 1 枚 = 5 枚の帯の三角形）
+        let feather_tris = mesh.idx.chunks_exact(3).filter(|t| t.iter().any(|&i| mesh.verts[i as usize].alpha == 0.0)).count();
+        assert_eq!(feather_tris, 5);
+    }
+
+    /// 基準線をまたぐ線分は交点で切り、上側と下側の両方を塗る（面積は三角形 2 つ）。
+    #[test]
+    fn area_fill_splits_segments_crossing_the_baseline() {
+        let mut c = cmd(PrimitiveKind::Area);
+        c.points = vec![[0.0, 80.0], [20.0, 120.0]];
+        c.extras[0] = 100.0;
+        let mesh = tessellate(&c, 0.0);
+        // 交点 x = 10。上側: 底 10 × 高さ 20 / 2 = 100、下側も 100
+        assert!((solid_area(&mesh) - 200.0).abs() < 1e-3, "面積 {}", solid_area(&mesh));
+        assert!(mesh.verts.iter().all(|v| v.alpha == 1.0), "フェザー 0 なら帯は無い");
+    }
+
+    /// 軽い三角形分割（W2-8）: 本体の面積は従来と同じ（線分の四角形 + 外側のつなぎの扇）で、三角形はずっと少ない。
+    #[test]
+    fn lean_stroke_matches_area_with_fewer_triangles() {
+        let mut legacy = cmd(PrimitiveKind::Polyline);
+        legacy.points = (0..365).map(|i| [i as f32 * 1.25, 100.0 + ((i * 37) % 23) as f32]).collect();
+        let mut lean = legacy.clone();
+        lean.style = crate::engine::core::renderer::primitive2d::PrimitiveStyle { extended: true, ..Default::default() };
+        let (a, b) = (tessellate(&legacy, 1.0), tessellate(&lean, 1.0));
+        eprintln!("365 点の折れ線の三角形: 従来 {} / 軽い {}", a.triangle_count(), b.triangle_count());
+        assert!(b.triangle_count() * 2 < a.triangle_count(), "三角形は半分未満: 従来 {} / 軽い {}", a.triangle_count(), b.triangle_count());
+        // 本体（alpha 1）は線分の四角形の和 + つなぎの扇。直線の区間だけで比べる: まっすぐな 2 線分の本体の面積 = 長さ × 太さ
+        let mut straight = cmd(PrimitiveKind::Polyline);
+        straight.points = vec![[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]];
+        straight.style = lean.style;
+        let m = tessellate(&straight, 0.0);
+        assert!((solid_area(&m) - 20.0 * 2.0).abs() < 1e-3, "面積 {}", solid_area(&m));
+    }
+
+    /// 軽い三角形分割（W2-8）: 直角に曲がる外側は太さの半分の半径の四分円で塞がる（面積 = 2 線分 + 四分円の近似）。
+    #[test]
+    fn lean_stroke_fills_outer_corner_with_round_join() {
+        let mut c = cmd(PrimitiveKind::Polyline);
+        c.points = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+        c.thickness = 4.0;
+        c.style = crate::engine::core::renderer::primitive2d::PrimitiveStyle { extended: true, ..Default::default() };
+        let m = tessellate(&c, 0.0);
+        // 2 線分の四角形（10×4 × 2 = 80）+ 外側の四分円（π × 2² / 4 ≈ 3.14 を扇で近似）。内側の重なり（2×2）も面積に数える
+        let segs = lean_join_segments(std::f32::consts::FRAC_PI_2, 2.0, 0.0);
+        let fan = segs as f32 * 0.5 * 4.0 * (std::f32::consts::FRAC_PI_2 / segs as f32).sin();
+        assert!((solid_area(&m) - (80.0 + fan)).abs() < 1e-3, "面積 {} / 期待 {}", solid_area(&m), 80.0 + fan);
+        assert!(fan > 2.8 && fan < std::f32::consts::PI, "扇は四分円の内側で近い: {fan}");
+        // 点ごとに 1 本の帯: 三角形は 2 線分 × 2 + 扇の枚数
+        assert_eq!(m.triangle_count(), 4 + segs as usize);
+    }
+
+    /// つなぎの扇の分割数: 細い線は少なく、太い線・大きな角度ほど多い（上限 8）。
+    #[test]
+    fn lean_join_segments_follow_chord_error() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        assert_eq!(lean_join_segments(FRAC_PI_2, 1.0, 1.0), 2, "太さ 2・1 画素のフェザーで直角は 2 枚");
+        assert_eq!(lean_join_segments(PI, 1.0, 1.0), 3, "折り返しは 3 枚");
+        assert_eq!(lean_join_segments(FRAC_PI_2, 0.2, 1.0), 1, "半径が許容量以下なら 1 枚");
+        assert_eq!(lean_join_segments(PI, 100.0, 1.0), 8, "上限 8");
+        assert!(lean_join_segments(FRAC_PI_2, 4.0, 1.0) > lean_join_segments(FRAC_PI_2, 1.0, 1.0), "太いほど多い");
+    }
+
+    /// 凸の塗り（W2-8）は扇、凹は従来の耳刈り。面積は同じ。
+    #[test]
+    fn lean_fill_uses_fan_for_convex_and_ear_clip_otherwise() {
+        let square = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        assert!(is_convex(&square));
+        let concave = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [5.0, 3.0], [0.0, 10.0]];
+        assert!(!is_convex(&concave));
+        for shape in [&square[..], &concave[..]] {
+            let (mut a, mut b) = (Mesh2d::new(), Mesh2d::new());
+            fill_contour(&mut a, shape, 1.0);
+            fill_convex(&mut b, shape, 1.0);
+            assert!((solid_area(&a) - solid_area(&b)).abs() < 1e-3);
+            assert_eq!(a.triangle_count(), b.triangle_count(), "同じ数（凸は扇、凹は耳刈りへ）");
+        }
+    }
+
+    /// 1,000 点の塗りも点の数に比例する三角形の数（耳刈りを使わない）。
+    #[test]
+    fn area_fill_triangle_count_is_linear() {
+        let mut c = cmd(PrimitiveKind::Area);
+        c.points = (0..1000).map(|i| [i as f32, 50.0 + (i % 7) as f32]).collect();
+        c.extras[0] = 100.0;
+        let mesh = tessellate(&c, 1.0);
+        // 本体 2 枚 + 帯 2 枚（+ 頂の塞ぎ最大 1 枚）/ 線分
+        assert!(mesh.triangle_count() <= 999 * 5, "{}", mesh.triangle_count());
+        assert!(mesh.triangle_count() >= 999 * 4);
     }
 
     /// 円の分割数は半径に応じて増え、上下限でクランプされる。

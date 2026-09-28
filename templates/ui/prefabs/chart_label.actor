@@ -1,0 +1,52 @@
+{
+ "name": "ChartLabel",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Text",
+   "component": {
+    "type": "TextComponent",
+    "data": {
+     "content": "",
+     "font_size": 11.0,
+     "color": [
+      0.396755,
+      0.361307,
+      0.47932,
+      1.0
+     ],
+     "align": "center",
+     "vertical_align": "middle",
+     "layer": 0,
+     "box_width": 48.0,
+     "box_height": 16.0,
+     "wrap": false
+    }
+   }
+  }
+ ],
+ "children": []
+}

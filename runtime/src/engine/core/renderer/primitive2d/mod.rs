@@ -8,6 +8,8 @@
 //  【構成】
 //   - queue.rs      : スクリプトが積むコマンドのスレッドローカルキューと型定義
 //   - tessellate.rs : コマンド → 三角形メッシュ（純粋な 2D 幾何。GPU 非依存）
+//   - 見た目の拡張（W2-8。queue.rs の PrimitiveStyle）: 画面の 1 画素のフェザー・線形グラデーション（頂点の色）。
+//     グラフの線の下の塗り（PrimitiveKind::Area）とあわせて SEED.UI のグラフが使う。既定は従来と同じ見た目
 //   - pass.rs       : NDC 変換・バッファ管理・wgpu パイプライン
 //   - ../shaders/primitive2d.wgsl : 頂点は NDC 直値・フェザーでアンチエイリアス
 //
@@ -37,6 +39,7 @@ pub use pass::{
     Primitive2dRenderer, PrimitiveRange, PrimitiveSpaceCollector, PrimitiveSpaceTarget,
 };
 pub use queue::{
-    push_command, take_commands, PrimitiveCommand, PrimitiveDrawMode, PrimitiveKind, Transform2d,
-    MAX_POINTS_PER_PRIMITIVE, PRIM_EXTRA_FLOATS, PRIM_HEADER_FLOATS, PRIM_PARAM_FLOATS,
+    push_command, take_commands, PrimitiveCommand, PrimitiveDrawMode, PrimitiveGradient, PrimitiveKind, PrimitiveStyle,
+    Transform2d, MAX_POINTS_PER_PRIMITIVE, PRIM_EXTRA_FLOATS, PRIM_HEADER_FLOATS, PRIM_PARAM_FLOATS,
+    PRIM_PARAM_FLOATS_STYLED, PRIM_STYLE_FLOATS,
 };

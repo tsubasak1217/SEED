@@ -126,6 +126,7 @@ JSON はグループ（`color`・`radius`・`space`・`size`・`text`・`motion`
 | `radius.wheel_band` / `size.wheel_band_inset` / `opacity.wheel_dim` | 8 / 9 / 0.447 | ホイールの中央の帯の角丸・左右の余白／帯の外の行の濃さ（帯の色は `color.surface_variant`、文字は `color.on_surface`・選べない行は `color.on_disabled`） |
 | `motion.wheel` / `motion.wheel_correct` | 0.3 / 0.2 | ホイールをタップ・スクリプト・キーで動かす時間と午前/午後の連動／選べない行から戻す時間 |
 
+グラフ（W2-8）のトークン（系列の色・線の太さ・点・棒・格子線・目盛りの文字・吹き出し・慣性）は [ui_charts.md](ui_charts.md) §7（名前は `ChartTokens`）。
 画面の組み立て（W2-7）のトークン（画面の出入りの時間と曲線・幕・ダイアログ・シート・トースト・タブ・重なりのレイヤー）は [ui_navigation.md](ui_navigation.md) §9
 （名前は `NavTokens`。曲線は `motion.push_curve` の `.x1`・`.y1`・`.x2`・`.y2` の 4 つの数＝CSS の cubic-bezier。`UiCurve.FromTheme`）。
 

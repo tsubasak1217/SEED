@@ -488,7 +488,7 @@ public class Button : SEEDScript
 
 > **重要**: 同じアクターに有効な **CanvasGesture**（次節のジェスチャー）も付いていると、`OnPointerDown` / `OnPointerUp` / `OnPointerClick` は届きません（押す・離す・クリックはジェスチャーの `OnGesturePressDown` / `OnGesturePressUp` / `OnGestureTap` が受け持つ。スクロールに負けた押下でクリックが起きる取り違えを防ぐため）。`OnPointerEnter` / `OnPointerExit` は届きます。CanvasGesture を付けていないアクターの `OnPointer*` は従来のままです。
 
-### ジェスチャーコールバック（CanvasGesture：タップ・長押し・ドラッグ・フリック・押下の見た目。W2-2）
+### ジェスチャーコールバック（CanvasGesture：タップ・長押し・ドラッグ・フリック・押下の見た目・ピンチ。W2-2・W2-8）
 
 自分のアクター（2D キャンバスのノード）に **CanvasGesture**（「コンポーネント追加 → UI → Canvas Gesture」。§7）を付けると、Play 中の指（PC はマウスの左ボタン・エディタ／MCP の入力の注入も 1 本の指）の操作が以下のコールバックで届きます。指ごとの**ジェスチャーアリーナ**で、押した位置の当たり判定の経路（子 → 親）のノードが受けたいジェスチャーを競い、最初に成り立った 1 つが勝ちます（他は負け）。規則の正典は `docs/input_gestures.md`。
 
@@ -503,9 +503,12 @@ public override void OnGestureFling(SEED.GestureEvent e)        // フリック�
 public override void OnGesturePressDown(SEED.GestureEvent e)    // 押下の見た目を出す
 public override void OnGesturePressCancel(SEED.GestureEvent e)  // 押下の見た目を戻す（外へ出た・スクロールに負けた・複数指・取り消し）
 public override void OnGesturePressUp(SEED.GestureEvent e)      // 押下の見た目を戻す（タップ・長押しとして離した）
+public override void OnGesturePinchStart(SEED.GestureEvent e)   // ピンチの始まり（CanvasGesture.Pinch のノード。2 本の指の間が 8 dp 変わった。e.Scale は 1。W2-8）
+public override void OnGesturePinchUpdate(SEED.GestureEvent e)  // ピンチの途中（1 フレームに 1 回まで。e.Scale は始まりからの倍率・e.Position は 2 本の指の中点・e.Delta は中点の移動）
+public override void OnGesturePinchEnd(SEED.GestureEvent e)     // ピンチの終わり（どちらかの指を離した・取り消し〈e.Canceled〉）
 
 // SEED.GestureEvent（値型）
-e.Kind            // GestureKind: Tap / LongPress / DragStart / DragUpdate / DragEnd / Fling / PressDown / PressCancel / PressUp
+e.Kind            // GestureKind: Tap / LongPress / DragStart / DragUpdate / DragEnd / Fling / PressDown / PressCancel / PressUp / PinchStart / PinchUpdate / PinchEnd
 e.PointerId       // int: 指の番号（0 起点。ジェスチャーに参加している指の間。Touch.FingerId とは別）
 e.Position        // Vector2: 今の位置（キャンバスの画素。画面の中央が原点・Y 下向き。Input.MousePositionCanvas と同じ）
 e.ScreenPosition  // Vector2: 今の位置（画面の画素・左上原点。Input.MousePos・Touch.Position と同じ）
@@ -518,7 +521,9 @@ e.VelocityDp      // Vector2: 速度（dp/秒）
 e.TotalDelta      // Vector2: 押した位置からの移動（射影しない）
 e.DpScale         // float: 1 dp の画素数（PC の 100% は 1、Pixel 6a は 2.625）
 e.Duration        // float: 押してからの秒（入力イベントの時刻で測る。フレームの時刻に依らない）
-e.Canceled        // bool: DragEnd が取り消し（アプリが背面へ・一時停止・OS の取り消し）で来た（速度 0）
+e.Canceled        // bool: DragEnd・PinchEnd が取り消し（アプリが背面へ・一時停止・OS の取り消し）で来た（速度 0）
+e.Scale           // float: ピンチの倍率（今の 2 本の指の間の距離 ÷ ピンチが始まったときの距離。ピンチ以外は 1。W2-8）
+e.ScaleX / e.ScaleY // float: 横・縦の幅の比（始まったときの幅が 1 画素以下の向きは 1）
 
 // 例: スクロールの中のボタン（押した色 → スクロールしたら戻す → 離したら押された）
 public class RowButton : SEEDScript
@@ -539,6 +544,7 @@ public class RowButton : SEEDScript
 | 押下の見た目 | 単独のボタンは押した瞬間に PressDown、ドラッグ（スクロール）の中のボタンは 100ms 待ってから（速いタップは離したときに PressDown → PressUp → Tap）。入れ子のボタンは内側だけが押される |
 | タップの許容移動 | 押した位置から 18 dp を超えて動く・ノード（最小のヒット領域 + 8 dp）の外へ出るとタップ・長押しは成り立たず PressCancel |
 | 複数指 | 指ごとに別の競い。押しているボタンに 2 本目の指が触れたら両方とも取り消し。1 つのノードのドラッグは 1 本の指まで（スクロール中の一覧の中は別の指で押しても反応しない） |
+| ピンチ（W2-8） | `Pinch` のノードに 2 本の指が触れ、指の間が 8 dp 変わったら始まる（2 本の指のタップ・ドラッグは取り消し、以後はピンチだけが受ける）。外側のノード（縦の一覧など）のドラッグに取られている指ではピンチにならない。倍率と中点だけ（回転は無い）。規則は `docs/input_gestures.md` §2.6 |
 | 最小のヒット領域 | 見た目が 48 dp より小さいノードは中心をそろえて広げる。広げた領域が重なる所は見た目に近いノード |
 | 切り抜き | CanvasClip の外で押した指は参加しない |
 | 閾値 | `project_settings.json` の `"gestures"`（`touch_slop_dp`・`tap_slop_dp`・`long_press_ms`・`press_delay_ms`・`tap_max_ms`・`min_fling_velocity_dp`・`max_fling_velocity_dp`・`velocity_*`）で上書きできる |
@@ -2035,7 +2041,7 @@ if (gameObject.GetComponent<CanvasLayoutItem>() is { } item)
 
 > **重要（W2-7）**: `Translate`・`TranslateFraction` は親に合わせた（`FillWidth`/`FillHeight`）・コンテナが並べたノードも動かせます（`Position` は使われないため）。
 > 子孫も一緒に動き、当たり判定・切り抜き・`ScreenPosition` も動いた位置になります。祖先のずらしは子孫の `CanvasSafeArea` の計算に入れません（横から入ってくる画面の箱が縮み直さない）。
-> `LayerBias` は重なる画面（画面のスタック・ダイアログ・シート・トースト）の前後を中身のレイヤーに依らず決めるためのもので、描画の並び・ポインタの最前面・ジェスチャーの遮りが同じ値で比べます。`SEED.Draw` の図形には効きません。画面の組み立ての部品（§7.18）が使います。
+> `LayerBias` は重なる画面（画面のスタック・ダイアログ・シート・トースト）の前後を中身のレイヤーに依らず決めるためのもので、描画の並び・ポインタの最前面・ジェスチャーの遮りが同じ値で比べます。`SEED.Draw` の図形にも `space` のノードの値が足されます（2026-09-28・W2-8 から。積んだ画面の中のグラフが背景の下に隠れない）。画面の組み立ての部品（§7.18）が使います。
 
 > **重要**: 列挙の数値は固定です（`LayoutDirection` Vertical=0 / Horizontal=1、`MainAlign` Start=0〜SpaceEvenly=5、`CrossAlign` Start=0 / Center=1 / End=2 / Stretch=3、`ItemAlign` Auto=0〜Stretch=4、`HiddenChildren` Collapse=0 / KeepSpace=1）。範囲外の値の書き込みは無視されます。
 
@@ -2077,6 +2083,7 @@ if (gameObject.GetComponent<CanvasGesture>() is { } g)
     g.Drag            // bool（get/set。ドラッグを受ける。既定 false）
     g.Fling           // bool（get/set。フリックを受ける。既定 false。ドラッグを受けなくても指を取れる）
     g.DragAxis        // GestureDragAxis（get/set。Any / Horizontal / Vertical。既定 Any）
+    g.Pinch           // bool（get/set。ピンチ〈2 本指の拡大縮小〉を受ける。既定 false。W2-8）
     g.PressFeedback   // bool（get/set。PressDown / PressCancel / PressUp を受ける。既定 true）
     g.MinHitSizeDp    // float（get/set。最小のヒット領域 dp。既定 48。0 = 広げない）
 }
@@ -2086,6 +2093,7 @@ if (gameObject.GetComponent<CanvasGesture>() is { } g)
 // 縦スクロール  … Tap=false, Drag=true, Fling=true, DragAxis=Vertical（枠に CanvasClip）
 // 左スワイプの行 … Tap=true, Drag=true, DragAxis=Horizontal（縦の一覧の中でも縦の動きは一覧へ譲る）
 // スライダ      … Tap=true, Drag=true, DragAxis=Horizontal（e.LocalPosition.x で値を決める）
+// グラフ        … Tap=true, LongPress=true, Drag=true, Fling=true, DragAxis=Horizontal, Pinch=true, PressFeedback=false（SEED.UI.LineChart / BarChart。§7.19）
 // 遮る板        … Tap=false（旗をすべて外す。ダイアログの板・覆い）
 ```
 
@@ -2710,7 +2718,9 @@ zone（背景 / 前面） → layer（昇順・大きいほど手前） → 同�
 
 > **重要（2026-09 修正）**: 以前は「全スプライト → 全プリミティブ → 全テキスト」の順に描いていたため、`layer` は同じ種別の中でしか効かず、**低い layer のテキストが高い layer のスプライトより手前に出る**不具合がありました。現在は 3 種を 1 本の描画列へマージするため、`layer 1002` のテキストは `layer 2002` のスプライトに正しく覆われます。
 
-描画ゾーン（Canvas の背景／前面）は `space` に渡したキャンバスのゾーンを継承し、スクリーンスペース（`space: null`）は前面ゾーン扱いです。3D ワールドキャンバス（Actor3D + Canvas）配下では、レイヤーは**そのキャンバス内で完結**します（キャンバス同士はヒエラルキー順に前後）。
+描画ゾーン（Canvas の背景／前面）は `space` に渡したキャンバスのゾーンを継承し、スクリーンスペース（`space: null`）は前面ゾーン扱いです。
+`space` のノードとその祖先の `CanvasLayoutItem` のレイヤーの底上げ（W2-7 の画面のスタックの段）も図形のレイヤーに足されます（2026-09-28・W2-8 から。
+積んだ画面の中の図形が画面の背景の下に隠れない。底上げの無いノードでは従来と同じ）。3D ワールドキャンバス（Actor3D + Canvas）配下では、レイヤーは**そのキャンバス内で完結**します（キャンバス同士はヒエラルキー順に前後）。
 
 GPU ピッキング（クリック選択）もこの描画順と同一の規則で並ぶため、**見た目で最前面にあるものがクリックで選ばれます**。
 
@@ -2805,6 +2815,29 @@ void DrawRingGauge(Vector2 center, float value)
 }
 ```
 
+### 見た目の拡張（DrawStyle）と線の下の塗り（Area。W2-8）
+
+`DrawStyle` を受け取るメソッド（点列は `ReadOnlySpan<Vector2>`＝配列の一部でも渡せる）は、次の見た目を選べます。既存のメソッド（`DrawStyle` なし）の見た目は変わりません。
+
+```csharp
+var style = DrawStyle.Crisp;                           // アンチエイリアスの帯を画面の 1 画素にする（dp のキャンバスでも縁がにじまない）
+var grad  = DrawStyle.Crisp.WithLinearGradient(
+    new Vector2(0f, top), new Vector2(0f, bottom), color.WithAlpha(0f));   // 始点で図形の色 → 終点で透明（頂点の色の線形補間）
+
+Draw.Line(a, b, color, style, thickness: 1f, layer: 0, space: ink);
+Draw.Polyline(points.AsSpan(0, n), false, color, style, thickness: 2f, layer: 0, space: ink);   // 1024 点まで
+Draw.Polygon(outline, color, style, layer: 0, space: ink);        // 塗り（凸は扇・凹は耳刈り）
+Draw.Circle(center, 2.5f, color, style, layer: 0, space: ink);
+Draw.Area(points, baselineY, color.WithAlpha(0.35f), grad, layer: 0, space: ink);   // 線の下の塗り（折れ線と基準線 y の間）
+```
+
+| 項目 | 内容 |
+|---|---|
+| `DrawStyle.PixelFeather`（`Crisp`） | アンチエイリアスの帯（フェザー）を画面の 1 画素にする。既定は描画空間の 1 単位（dp のキャンバスでは 1 dp = 2.625 画素の端末で 2.6 画素ににじむ）。線の太さは描画空間の単位のまま。3D ワールドキャンバスでは効かない |
+| `WithLinearGradient(from, to, end)` | 始点 `from` で図形の色、終点 `to` で `end`、軸の外は端の色（点列と同じ空間） |
+| `Draw.Area(points, baselineY, …)` | 折れ線（左 → 右）と基準線の間を縦の台形の帯で塗る（多角形の耳刈りを使わないので点が多くても軽い）。基準線をまたぐ線分は交点で切って両側を塗る。アンチエイリアスは上の縁だけ |
+| 軽い三角形分割 | `DrawStyle` を受け取るメソッドの折れ線は 1 本の帯（線分ごとの帯と曲がる外側だけの丸いつなぎ）、凸の塗りは扇で分ける（365 点の折れ線で三角形 15,986 → 4,757）。従来のメソッドは今までと同じ分割 |
+
 ### 制限
 
 | 項目 | 上限・制限 |
@@ -2813,7 +2846,7 @@ void DrawRingGauge(Vector2 center, float value)
 | 1 図形の点数 | 1024（`Draw.MaxPointsPerPrimitive`）。超過分は切り捨て |
 | `Polygon` の形状 | 自己交差しない単純多角形のみ（凹は可）。穴あき・自己交差は結果が保証されない |
 | 半透明の太い折れ線 | 角（ジョイント）がわずかに濃くなる（帯が重なるため）。不透明色では見えない |
-| アンチエイリアス | 輪郭の外側 1px のフェザー帯による近似（スクリーンスペースでは 1 画面 px） |
+| アンチエイリアス | 輪郭の外側 1px のフェザー帯による近似（スクリーンスペースでは 1 画面 px。キャンバスの中では描画空間の 1 単位。画面の 1 画素にするには `DrawStyle.Crisp`） |
 
 > **重要**: `Draw.*` は「呼んだフレームだけ描く」API です。図形を出し続けたいなら毎フレーム呼んでください。Play していないフレームに積まれたコマンドは破棄されます。
 
@@ -4057,6 +4090,73 @@ Overlay（400）→ Navigation（500。画面のスタック・タブを**内側
 > **重要**: 画面のプレハブは次のフレームにできあがる（`Instantiate` の遅延）ので、画面の枠 → 中身の 2 フレームかけて作り、できあがるまで隠します。
 > 積み下ろしは並びをすぐ変え、動きは順に流します（動いている途中の次の操作は、今の動きを飛ばしてから始める）。
 > 動きの間は `Redraw.KeepAlive` で描き続け、落ち着いたら `render_policy: on_demand` で描画が止まります。
+
+## 7.19 グラフ（SEED.UI：LineChart・BarChart。W2-8）
+
+折れ線・棒（縦・横・積み上げ）・軸・吹き出し・パンとズームのグラフ。プレハブ（`templates/ui/prefabs/line_chart.actor`・`bar_chart.actor`。目盛りの文字は
+`chart_label.actor`）を置き、画面のスクリプトからデータを渡す。大きさはグラフのノードの **Sprite の幅・高さ**（dp のキャンバスでは dp）。
+正典は `docs/ui_charts.md`（作り・描き方と性能の数値・目盛りの選び方・パンとズーム・吹き出し・トークン）。見本は `templates/ui/scenes/ui_charts.scene`。
+
+```csharp
+using SEED.UI;
+
+// データの形: X・値は軸の書式に合わせた数（日付 = DateOnly.DayNumber、時刻 = 0 時からの分、数）。値が null の点は「記録なし」
+var points = new List<ChartPoint>
+{
+    ChartPoint.Minutes(new DateOnly(2026, 9, 27), TimeSpan.FromMinutes(425)),  // 9/27 7:05
+    ChartPoint.Minutes(new DateOnly(2026, 9, 28), null),                        // 記録なし（点を打たずに前後をつなぐ）
+    ChartPoint.Day(new DateOnly(2026, 9, 29), 410),                             // X = 日の番号・値 = 410
+};
+
+// 折れ線（LineChart）
+var line = UiWidget.Of<LineChart>(GameObject.Find("WakeWeek"))!;
+line.XFormat = ChartValueFormat.Date;          // 横軸の目盛り M/d（1・2・3・7・14・30・61・91・182・365 日から間引く）
+line.YFormat = ChartValueFormat.TimeOfDay;     // 縦軸の目盛り H:mm（15・30・60・120・180・360・720 分から）。上下 30 分の余白・最小 2 時間
+line.Interactive = false;                      // パンとズームを受けない（30 日の島）。true なら横のドラッグ・払う・ピンチ・± で 1〜MaxZoom 倍
+line.Smooth = true;                            // 単調な 3 次補間（点と点の間で行き過ぎない）
+line.FillArea = true;                          // 線の下の塗り（線の色から下へ透明へのグラデーション）
+line.FixedXRange = new ChartRange(first.DayNumber, today.DayNumber);   // X の全体を固定（null = データの最初〜最後）
+line.TooltipFormatter = p => $"{ChartFormat.Date(p.X)} {ChartFormat.TimeOfDay(p.Y ?? 0, padHour: true)}";  // 吹き出し（M/d HH:mm）
+line.SetSeries(points);                        // 系列 0（SetSeries(index, points) で系列を足す。色は color.chart_series_N）
+line.SetReferenceLine(average, "平均 7:12");   // 基準線（平均の横線）
+line.PointSelected += (chart, series, index) => { /* タップ・長押しで選んだ点（外したら -1, -1） */ };
+
+// 棒（BarChart）: 値を下から積む（BarDatum(x, 段1, 段2, ...)）。合計 0 の列も最低の高さで出す
+var bars = UiWidget.Of<BarChart>(GameObject.Find("PenaltyHistory"))!;
+bars.Orientation = BarOrientation.Vertical;    // Horizontal = 横の棒（X が上から下）
+bars.SlotWidth = 1f;                           // 列の間隔（X の単位。日なら 1）
+bars.SetData(days.Select(d => new BarDatum(d.Day.DayNumber, d.Coins, d.Yen)).ToList());
+bars.BarSelected += (chart, index) => { /* 列をタップ（空の高さまで当たり） */ };
+bars.Select(lastLossIndex);                    // スクリプトから選ぶ（notify: true で BarSelected を出す）
+bars.XLabelFormatter = (v, step) => $"{(int)v}月";   // 目盛りの文字を独自に（値, 刻み）
+
+// 共通（ChartView）
+line.ZoomIn(); line.ZoomOut(); line.ZoomBy(2.0);        // 真ん中を中心に（上下限で止まる。animate: false ですぐ）
+line.ShowRange(new ChartRange(start, start + 30));      // 範囲をちょうど見せる
+line.ScrollToEnd();                                     // 右端（最新）へ
+line.ClearSelection();
+line.Viewport.Zoom; line.Viewport.Visible;              // 今の倍率・見える範囲（ChartViewport）
+line.ValueRangeOptions = LineChart.DefaultRangeOptions(ChartValueFormat.TimeOfDay);   // 値の範囲の決め方（AutoRangeOptions）
+line.FixedValueRange = new ChartRange(300, 600);        // 値の範囲を固定（null = 自動）
+line.MarkDirty();                                       // 書式・刻みの候補などの欄を変えたら作り直す
+```
+
+| 部品・型 | 役割 |
+|---|---|
+| `ChartView`（土台） | 欄: `Interactive`・`MaxZoom`（6）・`ShowTooltip`・`XFormat`・`YFormat`・`XSteps`・`YSteps`（刻みの候補 "15,30,60"）・`ShowYAxis`・`ShowXAxis`・`ShowGrid`・`EmptyText`（「まだ記録はありません」）・`LabelPrefab`。スクリプト: `XLabelFormatter`・`YLabelFormatter`・`ValueRangeOptions`・`FixedValueRange`・`FixedXRange`・`Viewport`・`ViewChanged`・`ZoomIn/ZoomOut/ZoomBy`・`ShowRange`・`ScrollToEnd`・`ClearSelection`・`MarkDirty`・計測の `RebuildCount`・`LastDrawCount`・`LastRebuildMs`・`LastPaintMs` |
+| `LineChart` | 欄: `Smooth`・`FillArea`・`ShowDots`（点が詰まる倍率では打たない）・`Gaps`（`Connect` / `Break`）。`SetSeries`・`ClearSeries`・`GetSeries`・`SetReferenceLine`・`ClearReferenceLine`・`Select(series, index, notify)`・`Selected`・`PointSelected`・`TooltipFormatter`・`DefaultRangeOptions(format)` |
+| `BarChart` | 欄: `Orientation`・`SlotWidth`・`ShowEmptyBars`・`HighlightSelection`。`SetData`・`Get`・`Select(index, notify)`・`SelectX`・`SelectedIndex`・`BarSelected`・`TooltipFormatter`・`StackColors` |
+| 純粋な計算 | `ChartTicks`（`NiceStep`・`StepFromCandidates`・`Generate`・`NiceBounds`）・`ChartAxis`・`ChartAutoRange`（`AutoRangeOptions`）・`ChartFormat`（`TimeOfDay`・`Date`・`Number`）・`ChartMapping`・`ChartViewport`・`ChartFling`・`MonotoneCubic`・`ChartHit`・`BarGeometry`・`ChartLayout`・`LinePath`・`ChartTokens`・`ChartLook` |
+
+| 操作 | 振る舞い |
+|---|---|
+| タップ・長押し | 折れ線は横の距離 24 dp 以内の最寄りの点、棒は押した列（縦は問わない）を選んで吹き出し。選んだ点がパンで外へ出たら隠す |
+| 横のドラッグ・払う | パン（指の下の値が付いてくる）と慣性（1 秒で速度 0.135 倍）。端で止まる。倍率 1 や `Interactive = false` ではドラッグを受けない（親のスクロールへ渡す） |
+| 2 本指のピンチ | 倍率 = 始めの倍率 × `e.Scale`（1〜MaxZoom）。始めのフォーカスの値を今のフォーカスへ置く（ズームと 2 本指のパン） |
+| ± のボタン | グラフの子に `ZoomIn`・`ZoomOut`（`SEED.UI.Button`）を置くとつながる。真ん中を中心に 2 倍・½（0.25 秒）。上限・下限で押せない |
+
+> **重要**: グラフは毎フレーム `SEED.Draw` で描く（`render_policy: on_demand` で止まっている間は描かない）。データ・見える範囲・大きさ・テーマが変わったフレームだけ
+> 位置を計算し直し、目盛りの文字（プレハブのノード）は変わった値だけを書き換える。性能の数値（365 点の折れ線・365 本の棒）は `docs/ui_charts.md` §3.1。
 
 ---
 

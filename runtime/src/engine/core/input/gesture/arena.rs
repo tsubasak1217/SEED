@@ -26,7 +26,7 @@
 use crate::engine::components::CanvasGestureComponent;
 use crate::engine::ecs::Entity;
 
-use super::events::{GestureEmit, GestureEventKind};
+use super::events::{GestureEmit, GestureEventKind, NO_SCALE};
 use super::pointer_track::PointerTrack;
 use super::recognizers::{drag, fling, long_press, tap, MemberState, RecognizerKind};
 use super::scene::GestureScene;
@@ -199,6 +199,7 @@ impl PointerArena {
             time,
             duration: self.track.elapsed(time),
             canceled,
+            scale: NO_SCALE,
         });
     }
 

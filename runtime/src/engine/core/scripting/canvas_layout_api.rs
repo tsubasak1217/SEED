@@ -188,6 +188,7 @@ pub fn read(world: &World, entity: Entity, component: &str, field: &str, out: &m
                 "drag" => put_bool(out, c.drag),
                 "fling" => put_bool(out, c.fling),
                 "drag_axis" => put_enum(out, c.drag_axis),
+                "pinch" => put_bool(out, c.pinch),
                 "press_feedback" => put_bool(out, c.press_feedback),
                 "min_hit_size_dp" => put(out, &[c.min_hit_size_dp]),
                 _ => None,
@@ -384,6 +385,7 @@ pub fn write(world: &mut World, entity: Entity, component: &str, field: &str, v:
                 "drag" => assign(&mut c.drag, take_bool(v)),
                 "fling" => assign(&mut c.fling, take_bool(v)),
                 "drag_axis" => assign(&mut c.drag_axis, take_enum::<GestureDragAxis>(v)),
+                "pinch" => assign(&mut c.pinch, take_bool(v)),
                 "press_feedback" => assign(&mut c.press_feedback, take_bool(v)),
                 "min_hit_size_dp" => assign(&mut c.min_hit_size_dp, take_f32(v).filter(|x| *x >= 0.0)),
                 _ => false,
@@ -455,8 +457,12 @@ mod tests {
         assert!(write(&mut world, e, KIND_CANVAS_GESTURE, "min_hit_size_dp", &[56.0]));
         assert_eq!(read(&world, e, KIND_CANVAS_GESTURE, "drag_axis", &mut out), Some(1));
         assert_eq!(out[0], 2.0);
+        // ピンチ（W2-8）の旗も同じ口で読み書きできる
+        assert!(write(&mut world, e, KIND_CANVAS_GESTURE, "pinch", &[1.0]));
+        assert_eq!(read(&world, e, KIND_CANVAS_GESTURE, "pinch", &mut out), Some(1));
+        assert_eq!(out[0], 1.0);
         let c = world.get::<CanvasGestureComponent>(e).unwrap();
-        assert!(c.drag && c.drag_axis == GestureDragAxis::Vertical && c.min_hit_size_dp == 56.0);
+        assert!(c.drag && c.drag_axis == GestureDragAxis::Vertical && c.min_hit_size_dp == 56.0 && c.pinch);
         assert!(is_layout_component(KIND_CANVAS_GESTURE) && entity_has(&world, e, KIND_CANVAS_GESTURE));
     }
 

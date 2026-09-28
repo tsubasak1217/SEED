@@ -5020,6 +5020,12 @@ impl App {
                         //
                         // 並び順はレイヤー昇順の**安定ソート**（スプライト・テキストと同じ規約）。
                         let mut cmds = take_commands();
+                        // 座標空間の持ち主のノードのレイヤーの底上げ（W2-7 の layer_bias）を足してから並べる（W2-8。
+                        // スプライト・テキストと同じ biased_layer。底上げ 0 の空間の図形は変わらない）
+                        crate::engine::core::renderer::primitive2d::pass::apply_space_layer_bias(
+                            &mut cmds,
+                            &prim_spaces.map,
+                        );
                         cmds.sort_by_key(|c| c.layer);
                         let (mut prim_bg, mut prim_fg):
                             (Vec<PrimitiveCommand>, Vec<PrimitiveCommand>) =

@@ -9,7 +9,10 @@
 //  判定はイベントの時刻だけで決まる（フレームが遅れても、離した時刻が長押しの期限より前ならタップ）。
 //
 //  【複数指の規則】（docs/input_gestures.md §2.4）
-//    - 指ごとに別のアリーナ（2 本の指が別々のノードを同時にタップできる。ピンチは今回は無い）
+//    - 指ごとに別のアリーナ（2 本の指が別々のノードを同時にタップできる）
+//    - ピンチ（W2-8。pinch.rs）: ピンチを受けるノードに触れた 2 本の指の距離が変わったら、2 本の指のアリーナを取り消して
+//      ピンチが指を捕捉する（どちらかの指が外側のノードのドラッグに取られていれば始めない）。始まったピンチのノードと子孫には、
+//      3 本目の指は参加しない
 //    - 別の指が押しているノード（タップ・長押しの競い中、または長押しの後に押している間）に次の指が触れたら
 //      「複数指になった」として、前の指のそのノードのタップ・長押しを降ろし（押していれば PressCancel）、
 //      次の指のアリーナにもそのノードのタップ・長押しを入れない
@@ -33,6 +36,7 @@ use crate::engine::ecs::Entity;
 
 use super::arena::{NodeBlock, PointerArena};
 use super::events::{coalesce_drag_updates, GestureEmit};
+use super::pinch::{PinchMove, PinchTracker};
 use super::pointer_log::{PointerInputEvent, PointerKey, PointerLogEntry, PointerPhase};
 use super::pointer_track::PointerTrack;
 use super::recognizers::MemberState;
@@ -64,6 +68,8 @@ pub struct GestureArenaSet {
     arenas: Vec<PointerArena>,
     /// 前に `take_touched` してから触れた指の経路のノード（W2-3）。
     touched: Vec<Entity>,
+    /// 2 本指のピンチ（W2-8。アリーナとは別にすべての指を見る）。
+    pinch: PinchTracker,
 }
 
 impl GestureArenaSet {
@@ -76,6 +82,7 @@ impl GestureArenaSet {
     pub fn reset(&mut self) {
         self.arenas.clear();
         self.touched.clear();
+        self.pinch.reset();
     }
 
     /// 前に呼んでから触れた指の経路のノードを取り出す（W2-3。同じノードが何度も入りうる）。
@@ -101,6 +108,8 @@ impl GestureArenaSet {
         if nodes.is_empty() {
             return out;
         }
+        // ピンチ（W2-8）: 集合のノードのピンチは取り消しの PinchEnd で終える
+        self.pinch.cancel_nodes(nodes, time, &mut out);
         let mut keep = Vec::with_capacity(self.arenas.len());
         for mut arena in std::mem::take(&mut self.arenas) {
             let winner_in_set = arena
@@ -128,14 +137,16 @@ impl GestureArenaSet {
 
     /// 触れている指が無いか。
     pub fn is_idle(&self) -> bool {
-        self.arenas.is_empty()
+        self.arenas.is_empty() && self.pinch.is_idle()
     }
 
     /// 「動いている」かの申告。
     pub fn activity(&self, metrics: &GestureMetrics) -> GestureActivity {
+        // ピンチが捕捉した指（W2-8）はアリーナを持たないので足す
+        let pinching = self.pinch.captured_pointer_count();
         GestureActivity {
-            active_pointers: self.arenas.len(),
-            dragging_pointers: self.arenas.iter().filter(|a| a.dragging_node().is_some()).count(),
+            active_pointers: self.arenas.len() + pinching,
+            dragging_pointers: self.arenas.iter().filter(|a| a.dragging_node().is_some()).count() + pinching,
             next_deadline: self
                 .arenas
                 .iter()
@@ -220,22 +231,26 @@ impl GestureArenaSet {
         metrics: &GestureMetrics,
         out: &mut Vec<GestureEmit>,
     ) {
-        // 離れが届かないまま同じ指が触れた（イベントの取りこぼし）: 前のアリーナを取り消してからやり直す
+        // 離れが届かないまま同じ指が触れた（イベントの取りこぼし）: 前のアリーナ・ピンチを取り消してからやり直す
         if let Some(i) = self.find(e.pointer) {
             let mut stale = self.arenas.remove(i);
             stale.cancel(e.time, out);
         }
+        self.pinch.release(e.pointer, e.time, true, out);
         let path = scene.hit_path(e.position);
         if path.is_empty() {
             return;
         }
+        // ピンチ（W2-8）: 経路にピンチを受けるノードがあれば覚える（アリーナに入れない指も数える）
+        self.pinch.on_down(e.pointer, &path, e.position);
         // スクロールへの知らせ（W2-3）: 触れたノード（慣性中のスクロールを触れて止める）
         self.touched.extend(path.iter().map(|(key, _)| *key));
         // 別の指がドラッグで捕捉しているノードのうち、経路で最も根に近いもの（経路は葉 → 根なので添字が最大のもの）。
         // そのノードと、その子孫（経路でそれより前）には、この指は参加しない
-        let captured_up_to = path
-            .iter()
-            .rposition(|(key, _)| self.arenas.iter().any(|a| a.dragging_node() == Some(*key)));
+        // 始まったピンチのノード（W2-8）も同じ扱い（そのノードと子孫には 3 本目の指は参加しない）
+        let captured_up_to = path.iter().rposition(|(key, _)| {
+            self.arenas.iter().any(|a| a.dragging_node() == Some(*key)) || self.pinch.is_pinching(*key)
+        });
         let mut blocks = Vec::with_capacity(path.len());
         for (i, (key, _)) in path.iter().enumerate() {
             if captured_up_to.is_some_and(|k| i <= k) {
@@ -270,6 +285,16 @@ impl GestureArenaSet {
         metrics: &GestureMetrics,
         out: &mut Vec<GestureEmit>,
     ) {
+        // ピンチ（W2-8）: 始まったピンチの指はピンチだけが受ける。候補の組の距離が変わったら始められるかを確かめる
+        match self.pinch.on_move(e.pointer, e.position, e.time, metrics.touch_slop_px, out) {
+            PinchMove::Captured => return,
+            PinchMove::Ready(session) => {
+                if self.try_start_pinch(session, e.time, out) {
+                    return;
+                }
+            }
+            PinchMove::Ignored => {}
+        }
         let Some(i) = self.find(e.pointer) else { return };
         let dragging_elsewhere: Vec<Entity> = self
             .arenas
@@ -283,6 +308,7 @@ impl GestureArenaSet {
 
     /// 離れた。
     fn pointer_up(&mut self, e: &PointerInputEvent, metrics: &GestureMetrics, out: &mut Vec<GestureEmit>) {
+        self.pinch.release(e.pointer, e.time, false, out);
         let Some(i) = self.find(e.pointer) else { return };
         let mut arena = self.arenas.remove(i);
         arena.on_up(e.position, e.time, metrics, out);
@@ -290,6 +316,7 @@ impl GestureArenaSet {
 
     /// OS に取り消された。
     fn pointer_cancel(&mut self, e: &PointerInputEvent, out: &mut Vec<GestureEmit>) {
+        self.pinch.release(e.pointer, e.time, true, out);
         let Some(i) = self.find(e.pointer) else { return };
         let mut arena = self.arenas.remove(i);
         arena.track.finish_at(e.position, e.time);
@@ -301,5 +328,29 @@ impl GestureArenaSet {
         for mut arena in std::mem::take(&mut self.arenas) {
             arena.cancel(time, out);
         }
+        self.pinch.cancel_all(time, out);
+    }
+
+    /// ピンチの候補の組を始める（W2-8）。どちらかの指が外側のノードのドラッグに取られていれば始めない（false）。
+    /// 始めるときは 2 本の指のアリーナを取り消してから（PressCancel・取り消しの DragEnd）、PinchStart を出す。
+    fn try_start_pinch(&mut self, session: usize, time: f64, out: &mut Vec<GestureEmit>) -> bool {
+        let Some(fingers) = self.pinch.session_fingers(session) else { return false };
+        let outer_captured = fingers.iter().any(|key| {
+            let outer = self.pinch.outer_of(*key);
+            self.find(*key)
+                .and_then(|i| self.arenas[i].dragging_node())
+                .is_some_and(|node| outer.contains(&node))
+        });
+        if outer_captured {
+            return false;
+        }
+        for key in fingers {
+            if let Some(i) = self.find(key) {
+                let mut arena = self.arenas.remove(i);
+                arena.cancel(time, out);
+            }
+        }
+        self.pinch.start(session, time, out);
+        true
     }
 }

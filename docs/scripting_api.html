@@ -236,6 +236,7 @@
     <a href="#sec-ui">UI 部品（ListView・SwipeActions）</a>
     <a href="#sec-ui-widgets">UI 部品（ボタン・トグル・スライダ…）</a>
     <a href="#sec-ui-wheel">UI 部品（時刻ホイール）</a>
+    <a href="#sec-ui-charts">UI 部品（グラフ）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -526,7 +527,7 @@
 }</pre>
   <div class="warn"><b>重要</b>: 同じアクターに有効な <b>CanvasGesture</b>（次節）も付いていると、<code>OnPointerDown</code> / <code>OnPointerUp</code> / <code>OnPointerClick</code> は届きません（押す・離す・クリックはジェスチャーの <code>OnGesturePressDown</code> / <code>OnGesturePressUp</code> / <code>OnGestureTap</code> が受け持つ）。<code>OnPointerEnter</code> / <code>OnPointerExit</code> は届きます。CanvasGesture を付けていないアクターの <code>OnPointer*</code> は従来のままです。</div>
 
-  <h3 id="lc-gesture">ジェスチャーコールバック（CanvasGesture：タップ・長押し・ドラッグ・フリック・押下の見た目。W2-2）</h3>
+  <h3 id="lc-gesture">ジェスチャーコールバック（CanvasGesture：タップ・長押し・ドラッグ・フリック・押下の見た目・ピンチ。W2-2・W2-8）</h3>
   <p class="section-note">自分のアクター（2D キャンバスのノード）に <b>CanvasGesture</b>（「コンポーネント追加 → UI → Canvas Gesture」）を付けると、Play 中の指（PC はマウスの左ボタン・入力の注入も 1 本の指）の操作が届きます。指ごとの<b>ジェスチャーアリーナ</b>で、押した位置の当たり判定の経路（子 → 親）のノードが受けたいジェスチャーを競い、最初に成り立った 1 つが勝ちます。規則の正典は <code>docs/input_gestures.md</code>。</p>
   <div class="api"><code class="sig">OnGestureTap(GestureEvent e)</code><span class="desc">タップ（押して・動かず・離した。PressUp の直後）</span></div>
   <div class="api"><code class="sig">OnGestureLongPress(GestureEvent e)</code><span class="desc">長押し（500ms 動かずに押し続けた。指はまだ触れている）</span></div>
@@ -537,11 +538,15 @@
   <div class="api"><code class="sig">OnGesturePressDown(GestureEvent e)</code><span class="desc">押下の見た目を出す（単独のボタンはすぐ、スクロールの中は 100ms 後か離したとき）</span></div>
   <div class="api"><code class="sig">OnGesturePressCancel(GestureEvent e)</code><span class="desc">押下の見た目を戻す（外へ出た・スクロールに負けた・複数指・取り消し）</span></div>
   <div class="api"><code class="sig">OnGesturePressUp(GestureEvent e)</code><span class="desc">押下の見た目を戻す（タップ・長押しとして離した）</span></div>
-  <div class="api"><code class="sig">e.Kind / e.PointerId</code><span class="desc">GestureKind（Tap / LongPress / DragStart / DragUpdate / DragEnd / Fling / PressDown / PressCancel / PressUp）／ 指の番号（0 起点）</span></div>
+  <div class="api"><code class="sig">OnGesturePinchStart(GestureEvent e)</code><span class="desc">ピンチの始まり（CanvasGesture.Pinch のノード。2 本の指の間が 8 dp 変わった。2 本の指のタップ・ドラッグは取り消し。e.Scale は 1。W2-8）</span></div>
+  <div class="api"><code class="sig">OnGesturePinchUpdate(GestureEvent e)</code><span class="desc">ピンチの途中（1 フレームに 1 回まで。e.Scale は始まりからの倍率・e.Position は 2 本の指の中点・e.Delta は中点の移動）</span></div>
+  <div class="api"><code class="sig">OnGesturePinchEnd(GestureEvent e)</code><span class="desc">ピンチの終わり（どちらかの指を離した・取り消し〈e.Canceled〉）</span></div>
+  <div class="api"><code class="sig">e.Kind / e.PointerId</code><span class="desc">GestureKind（Tap / LongPress / DragStart / DragUpdate / DragEnd / Fling / PressDown / PressCancel / PressUp / PinchStart / PinchUpdate / PinchEnd）／ 指の番号（0 起点。ピンチは 0）</span></div>
   <div class="api"><code class="sig">e.Position / e.ScreenPosition / e.LocalPosition / e.StartPosition</code><span class="desc">Vector2（キャンバスの画素・中央原点 ／ 画面の画素・左上原点 ／ ノードの見た目の左上が原点・ノードの単位 ／ 押した位置）</span></div>
   <div class="api"><code class="sig">e.Delta / e.DeltaDp / e.TotalDelta</code><span class="desc">Vector2（移動量 画素 ／ dp ／ 押した位置からの移動。横だけ・縦だけのドラッグは Delta を軸へ射影）</span></div>
   <div class="api"><code class="sig">e.Velocity / e.VelocityDp</code><span class="desc">Vector2（速度 画素/秒 ／ dp/秒。直近 100ms の標本の最小二乗・上限 8000 dp/秒）</span></div>
-  <div class="api"><code class="sig">e.DpScale / e.Duration / e.Canceled</code><span class="desc">float（1 dp の画素数）／ float（押してからの秒。イベントの時刻）／ bool（取り消しで来た DragEnd）</span></div>
+  <div class="api"><code class="sig">e.DpScale / e.Duration / e.Canceled</code><span class="desc">float（1 dp の画素数）／ float（押してからの秒。イベントの時刻）／ bool（取り消しで来た DragEnd・PinchEnd）</span></div>
+  <div class="api"><code class="sig">e.Scale / e.ScaleX / e.ScaleY</code><span class="desc">float（ピンチの倍率: 今の 2 本の指の間の距離 ÷ 始まったときの距離 ／ 横・縦の幅の比〈始まったときの幅が 1 画素以下の向きは 1〉。ピンチ以外は 1。W2-8）</span></div>
   <table>
     <tr><th>規則</th><th>内容</th></tr>
     <tr><td>勝ち負け</td><td>ドラッグは軸に沿って 8 dp・長押しは 500ms・タップは離したときに勝ちを申し出て、最初の 1 つが勝つ。離したときに勝者がいなければ最初の（子の）タップ</td></tr>
@@ -549,6 +554,7 @@
     <tr><td>捕捉</td><td>勝ったドラッグはその指を捕まえ、ノードの外へ出ても DragUpdate / DragEnd が届く</td></tr>
     <tr><td>取り消し</td><td>18 dp を超えて動く・ノード（最小のヒット領域 + 8 dp）の外へ出る・スクロールに負ける・2 本目の指・アプリが背面へ → PressCancel</td></tr>
     <tr><td>最小のヒット領域</td><td>見た目が 48 dp より小さいノードは広げる。重なる所は見た目に近いノード。CanvasClip の外で押した指は参加しない</td></tr>
+    <tr><td>ピンチ（W2-8）</td><td><code>Pinch</code> のノードに 2 本の指が触れ、指の間が 8 dp 変わったら始まる（2 本の指のタップ・ドラッグは取り消し、以後はピンチだけが受ける）。外側のノード（縦の一覧など）のドラッグに取られている指ではピンチにならない。倍率と中点だけ（回転は無い）。規則は <code>docs/input_gestures.md</code> §2.6</td></tr>
     <tr><td>閾値</td><td><code>project_settings.json</code> の <code>"gestures"</code> で上書き（touch_slop_dp・tap_slop_dp・long_press_ms・press_delay_ms・tap_max_ms・min/max_fling_velocity_dp・velocity_*）</td></tr>
   </table>
 <pre><span class="c">// スクロールの中のボタン（押した色 → スクロールしたら戻す → 離したら押された）</span>
@@ -1448,9 +1454,10 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">g.Enabled</code><span class="desc">bool（get/set。既定 true。false の間は当たり判定の候補にもならない）</span></div>
   <div class="api"><code class="sig">g.Tap / g.LongPress / g.Drag / g.Fling</code><span class="desc">bool（get/set。受けるジェスチャー。既定はタップだけ。フリックはドラッグを受けなくても指を取れる）</span></div>
   <div class="api"><code class="sig">g.DragAxis</code><span class="desc">GestureDragAxis（get/set。Any（既定）/ Horizontal / Vertical）</span></div>
+  <div class="api"><code class="sig">g.Pinch</code><span class="desc">bool（get/set。ピンチ〈2 本指の拡大縮小〉を受ける。既定 false。W2-8）</span></div>
   <div class="api"><code class="sig">g.PressFeedback</code><span class="desc">bool（get/set。PressDown / PressCancel / PressUp を受ける。既定 true）</span></div>
   <div class="api"><code class="sig">g.MinHitSizeDp</code><span class="desc">float（get/set。最小のヒット領域 dp。既定 48。0 = 広げない）</span></div>
-  <p class="section-note">付け方の例: ボタン＝既定のまま、縦スクロール＝Tap=false・Drag=true・Fling=true・DragAxis=Vertical（枠に CanvasClip）、左スワイプの行・横のスライダ＝Tap=true・Drag=true・DragAxis=Horizontal、遮る板＝Tap=false（旗をすべて外す）。</p>
+  <p class="section-note">付け方の例: ボタン＝既定のまま、縦スクロール＝Tap=false・Drag=true・Fling=true・DragAxis=Vertical（枠に CanvasClip）、左スワイプの行・横のスライダ＝Tap=true・Drag=true・DragAxis=Horizontal、遮る板＝Tap=false（旗をすべて外す）、グラフ＝Tap・LongPress・Drag・Fling・DragAxis=Horizontal・Pinch=true・PressFeedback=false（<a href="#sec-ui-charts">グラフ</a>）。</p>
 
   <h3 id="cmp-canvasscroll">CanvasScroll（スクロールの領域：一覧・横の帯・ページ送り・ホイール）</h3>
   <p>2D キャンバスのノードに付けると、そのノードが中身（子）をずらして見せる窓になります（W2-3。<a href="#lc-scroll">スクロールコールバック</a>）。窓の大きさは CanvasComponent があればキャンバスの箱、無ければ最初の Sprite の矩形。窓の外を切るには同じノードに <a href="#cmp-canvasclip">CanvasClip</a> を付けます（付けると、窓の外の子を描画アイテムと当たり判定から外します＝1,000 行でも見えている行の分しか描かない）。指のドラッグは <a href="#cmp-canvasgesture">CanvasGesture</a> を付けなくても受けます（向きに合わせた軸のドラッグとフリック。中の行のボタンは W2-2 のアリーナで 100ms 待ってから押下になる）。</p>
@@ -1924,6 +1931,19 @@ wallet = AppendPayment(wallet, amount: 100);   <span class="c">// アプリ側�
 <span class="t">Draw</span>.Ring(center, 34f, 42f, fill, StartDegrees,
     StartDegrees + 360f * <span class="t">Mathf</span>.Clamped01(value), layer: 21);</pre>
 
+  <h3 id="draw-style">見た目の拡張（DrawStyle）と線の下の塗り（Area。W2-8）</h3>
+  <p><code>DrawStyle</code> を受け取るメソッド（点列は <code>ReadOnlySpan&lt;Vector2&gt;</code>＝配列の一部でも渡せる）は次の見た目を選べます。既存のメソッド（<code>DrawStyle</code> なし）の見た目は変わりません。<code>space</code> のノードとその祖先のレイヤーの底上げ（W2-7 の画面のスタックの段）も図形のレイヤーに足されます（W2-8 から）。</p>
+  <div class="api"><code class="sig">DrawStyle.Crisp / style.PixelFeather</code><span class="desc">アンチエイリアスの帯を画面の 1 画素にする（既定は描画空間の 1 単位＝dp のキャンバスでは 2.625 倍の端末で 2.6 画素ににじむ）。線の太さは描画空間の単位のまま。3D ワールドキャンバスでは効かない</span></div>
+  <div class="api"><code class="sig">style.WithLinearGradient(Vector2 from, Vector2 to, Color end)</code><span class="desc">始点で図形の色 → 終点で end（軸の外は端の色。頂点の色の線形補間で正確）</span></div>
+  <div class="api"><code class="sig">Draw.Line(a, b, color, style, thickness, layer, space)</code><span class="desc">見た目の拡張つきの直線</span></div>
+  <div class="api"><code class="sig">Draw.Polyline(ReadOnlySpan&lt;Vector2&gt; points, bool closed, color, style, thickness, layer, space)</code><span class="desc">折れ線（1024 点まで）。1 本の帯と曲がる外側だけの丸いつなぎで分ける（365 点で三角形 15,986 → 4,757）</span></div>
+  <div class="api"><code class="sig">Draw.Polygon(ReadOnlySpan&lt;Vector2&gt; points, color, style, layer, space)</code><span class="desc">塗り（凸は扇・凹は耳刈り）</span></div>
+  <div class="api"><code class="sig">Draw.Circle(center, radius, color, style, layer, space)</code><span class="desc">円（グラフの点の印など）</span></div>
+  <div class="api"><code class="sig">Draw.Area(ReadOnlySpan&lt;Vector2&gt; points, float baselineY, color, style = default, layer, space)</code><span class="desc">線の下の塗り: 折れ線（左 → 右）と基準線 y の間を縦の台形の帯で塗る（耳刈りを使わず点が多くても軽い）。基準線をまたぐ線分は交点で切る。アンチエイリアスは上の縁だけ</span></div>
+<pre><span class="k">var</span> grad = <span class="t">DrawStyle</span>.Crisp.WithLinearGradient(<span class="k">new</span> <span class="t">Vector2</span>(0f, top), <span class="k">new</span> <span class="t">Vector2</span>(0f, bottom), color.WithAlpha(0f));
+<span class="t">Draw</span>.Area(points, bottom, color.WithAlpha(0.35f), grad, layer: 0, space: ink);   <span class="c">// 線の下を上から下へ薄く</span>
+<span class="t">Draw</span>.Polyline(points, <span class="k">false</span>, color, <span class="t">DrawStyle</span>.Crisp, thickness: 2f, layer: 0, space: ink);</pre>
+
   <h3 id="draw-limits">制限</h3>
   <table>
     <tr><th>項目</th><th>上限・制限</th></tr>
@@ -1931,7 +1951,7 @@ wallet = AppendPayment(wallet, amount: 100);   <span class="c">// アプリ側�
     <tr><td>1 図形の点数</td><td>1024（<code>Draw.MaxPointsPerPrimitive</code>）。超過分は切り捨て</td></tr>
     <tr><td><code>Polygon</code> の形状</td><td>自己交差しない単純多角形のみ（凹は可）。穴あき・自己交差は結果が保証されない</td></tr>
     <tr><td>半透明の太い折れ線</td><td>角（ジョイント）がわずかに濃くなる（帯が重なるため）。不透明色では見えない</td></tr>
-    <tr><td>アンチエイリアス</td><td>輪郭の外側 1px のフェザー帯による近似（スクリーンスペースでは 1 画面 px）</td></tr>
+    <tr><td>アンチエイリアス</td><td>輪郭の外側 1px のフェザー帯による近似（スクリーンスペースでは 1 画面 px。キャンバスの中では描画空間の 1 単位。画面の 1 画素にするには <code>DrawStyle.Crisp</code>）</td></tr>
   </table>
   <div class="warn">
     <code>Draw.*</code> は<b>呼んだフレームだけ描く</b> API です。図形を出し続けたいなら毎フレーム呼んでください。
@@ -2681,6 +2701,29 @@ h.Closed += x =&gt; SEED.<span class="t">Debug</span>.Log(x.Result);
 <span class="k">var</span> r = <span class="k">await</span> <span class="t">Dialog</span>.Show(<span class="k">new</span> <span class="t">DialogOptions</span> { Title = <span class="s">"削除しますか？"</span>, PositiveText = <span class="s">"削除"</span>, NegativeText = <span class="s">"やめる"</span> })!.ResultAsync;
 <span class="t">Toast</span>.Show(<span class="s">"保存しました"</span>);</pre>
   <p>積んだ画面の枠は遮る板を持ち、下の画面は入力を受けません。落ち着いた後は不透明な画面の下を隠して描きません。動きの間だけ <code>Redraw.KeepAlive</code> で描き続け、<code>render_policy: on_demand</code> なら落ち着いて 10 フレームで描画が止まります。</p>
+</section>
+
+<!-- ════════════════ 7.19 グラフ（W2-8） ════════════════ -->
+<section id="sec-ui-charts" data-keywords="UI部品 SEED.UI グラフ チャート chart 折れ線 LineChart 棒 BarChart 積み上げ 横の棒 軸 目盛り 格子線 吹き出し ツールチップ tooltip パン ズーム ピンチ pinch 拡大 縮小 慣性 ChartPoint BarDatum ChartRange ChartValueFormat TimeOfDay Date 起床時間 ペナルティ 平均 基準線 SetSeries SetData SetReferenceLine Select PointSelected BarSelected ZoomIn ZoomOut ShowRange ScrollToEnd ChartTicks NiceStep ChartFormat MonotoneCubic 滑らか 線の下の塗り FillArea Smooth">
+  <h2>7.19 グラフ（SEED.UI：LineChart・BarChart。W2-8）</h2>
+  <p>折れ線・棒（縦・横・積み上げ）・軸・吹き出し・パンとズーム。プレハブ <code>templates/ui/prefabs/line_chart.actor</code>・<code>bar_chart.actor</code>（目盛りの文字は <code>chart_label.actor</code>）を置き、画面のスクリプトからデータを渡す。大きさはグラフのノードの Sprite の幅・高さ（dp）。正典は docs/ui_charts.md、見本は <code>templates/ui/scenes/ui_charts.scene</code>。</p>
+  <div class="api"><code class="sig">ChartPoint.Minutes(day, timeOfDay) / ChartPoint.Day(day, y) / new ChartPoint(x, y?)</code><span class="desc">折れ線の点。X・値は軸の書式に合わせた数（日付 = DayNumber・時刻 = 0 時からの分・数）。値 null は記録なし（点を打たずに前後をつなぐ。Gaps = Break で切る）</span></div>
+  <div class="api"><code class="sig">new BarDatum(x, params double[] values)</code><span class="desc">棒の 1 本（値を下から積む。負・NaN は 0。合計 0 の列も最低の高さで出す）</span></div>
+  <div class="api"><code class="sig">line.SetSeries(points) / SetSeries(index, points) / ClearSeries / SetReferenceLine(value, label)</code><span class="desc">LineChart。欄 Smooth（単調な 3 次補間）・FillArea（線の下の塗り）・ShowDots・Gaps。PointSelected(chart, series, index)・Select・TooltipFormatter</span></div>
+  <div class="api"><code class="sig">bars.SetData(bars) / Select(index, notify) / SelectX / SelectedIndex / BarSelected</code><span class="desc">BarChart。欄 Orientation（Vertical / Horizontal）・SlotWidth・ShowEmptyBars・HighlightSelection。StackColors・TooltipFormatter</span></div>
+  <div class="api"><code class="sig">XFormat / YFormat / XSteps / YSteps / XLabelFormatter / YLabelFormatter</code><span class="desc">軸の書式（Number / TimeOfDay〈H:mm。15〜720 分の刻み〉/ Date〈M/d。1〜365 日の刻み〉）・刻みの候補（"15,30,60"）・文字を独自に（値, 刻み）</span></div>
+  <div class="api"><code class="sig">ValueRangeOptions / FixedValueRange / FixedXRange</code><span class="desc">値の範囲の決め方（AutoRangeOptions。時刻の既定は上下 30 分・最小 2 時間・0〜24 時）・値と X の範囲の固定</span></div>
+  <div class="api"><code class="sig">Interactive / MaxZoom / ZoomIn() / ZoomOut() / ZoomBy(f) / ShowRange(range) / ScrollToEnd() / Viewport</code><span class="desc">パンとズーム（横のドラッグ・払う〈慣性〉・2 本指のピンチ・子の ZoomIn / ZoomOut ボタン。1〜MaxZoom 倍〈既定 6〉・端で止まる）。倍率 1・Interactive=false ではドラッグを受けない</span></div>
+  <div class="api"><code class="sig">ShowTooltip / ClearSelection() / ShowYAxis / ShowXAxis / ShowGrid / EmptyText</code><span class="desc">タップ・長押しで最寄りの点（横 24 dp 以内）・列（空の高さまで）を選んで吹き出し。データが無いと「まだ記録はありません」</span></div>
+<pre><span class="k">var</span> line = <span class="t">UiWidget</span>.Of&lt;<span class="t">LineChart</span>&gt;(<span class="t">GameObject</span>.Find(<span class="s">"WakeWeek"</span>))!;
+line.XFormat = <span class="t">ChartValueFormat</span>.Date;  line.YFormat = <span class="t">ChartValueFormat</span>.TimeOfDay;
+line.TooltipFormatter = p =&gt; <span class="s">$"{</span><span class="t">ChartFormat</span>.Date(p.X)<span class="s">} {</span><span class="t">ChartFormat</span>.TimeOfDay(p.Y ?? 0, padHour: <span class="k">true</span>)<span class="s">}"</span>;
+line.SetSeries(points);
+line.SetReferenceLine(average, <span class="s">"平均 7:12"</span>);
+<span class="k">var</span> bars = <span class="t">UiWidget</span>.Of&lt;<span class="t">BarChart</span>&gt;(<span class="t">GameObject</span>.Find(<span class="s">"PenaltyHistory"</span>))!;
+bars.SetData(days.Select(d =&gt; <span class="k">new</span> <span class="t">BarDatum</span>(d.Day.DayNumber, d.Coins, d.Yen)).ToList());
+bars.BarSelected += (_, i) =&gt; ShowLogOf(i);</pre>
+  <div class="warn"><b>重要</b>: グラフは毎フレーム <code>SEED.Draw</code>（見た目の拡張）で描く。データ・見える範囲・大きさ・テーマが変わったフレームだけ位置を計算し直し、目盛りの文字のノードは変わった値だけ書き換える。性能の数値は docs/ui_charts.md §3.1。</div>
 </section>
 
 

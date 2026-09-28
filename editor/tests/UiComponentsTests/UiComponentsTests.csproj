@@ -18,6 +18,8 @@
     W2-7: 動きの曲線、画面の出入りの置き方、画面のスタックの積み下ろしと落ち着いた状態（見せる・隠す・手放す）、タブごとのスタックと戻る、
     戻るの段の順序（128 通りの状態で 1 回ずつ押す）、ダイアログのボタン・結果・本文の行の見積もり、シートの段と閉じる判定・幕の濃さ、
     ドラッグで閉じる判定、トーストの並びと時間、フォーカスの範囲と移り方、重なりのレイヤーの帯、タブの見た目。
+    W2-8: グラフの目盛りの自動（切りの良い刻み・時刻と日付の候補）、軸の範囲の自動、書式（時刻・日付・数）、座標の変換、パンとズームの
+    範囲の制限、慣性、単調な 3 次補間（行き過ぎない）、最寄りの点と棒の列、棒の形、枠の割り付けと吹き出し、見える範囲の点と欠けた値。
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -65,6 +67,10 @@
     <!-- W2-7: 画面の組み立ての純粋な計算（出入りの置き方・スタック・タブ・戻るの段・ダイアログ・シート・トースト・フォーカス・レイヤー） -->
     <Compile Include="..\..\..\scripting\src\Api\UI\Navigation\Model\*.cs">
       <Link>Linked\Navigation\%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- W2-8: グラフの純粋な計算（目盛り・範囲・書式・座標・パンとズーム・慣性・補間・当たり・棒の形・枠・線の点・トークンの名前） -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\Charts\Model\*.cs">
+      <Link>Linked\Charts\%(Filename)%(Extension)</Link>
     </Compile>
     <!-- 既定のテーマのデータ（SEEDScripting に埋め込むものと同じファイル）を出力へ写す -->
     <None Include="..\..\..\scripting\src\Api\UI\Theme\default_theme.json">

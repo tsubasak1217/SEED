@@ -7,7 +7,7 @@ namespace SEEDEditor.Panels;
 /// InspectorPanel の「ジェスチャーを受けるノード」（CanvasGestureComponent。W2-2）の実装。
 ///
 /// ■ 対象
-///   受けるジェスチャーの旗（タップ・長押し・ドラッグ・フリック）、ドラッグの軸、押下の見た目のイベントの有無、
+///   受けるジェスチャーの旗（タップ・長押し・ドラッグ・フリック・ピンチ〈W2-8〉）、ドラッグの軸、押下の見た目のイベントの有無、
 ///   ヒット領域の最小の大きさ（dp）。規則の正典は docs/input_gestures.md。
 ///
 /// ■ 値の受け渡し
@@ -46,6 +46,7 @@ public partial class InspectorPanel
         body.Children.Add(rows.Check("長押し", "long_press", false));
         body.Children.Add(rows.Check("ドラッグ", "drag", false));
         body.Children.Add(rows.Check("フリック", "fling", false));
+        body.Children.Add(rows.Check("ピンチ（2 本指の拡大縮小）", "pinch", false));
 
         // 無関係な欄は出さない（Inspector の条件付き表示の方針）
         var wantsPress = LayoutBool(rows.Values, "tap", true) || LayoutBool(rows.Values, "long_press", false);
@@ -59,7 +60,9 @@ public partial class InspectorPanel
         body.Children.Add(CanvasLayoutHint(
             "指ごとに、押した位置の子 → 親のノードが受けたいジェスチャーを競い、最初に成り立った 1 つが勝ちます"
             + "（ドラッグは 8 dp 動いたら、長押しは 500ms で、タップは離したとき）。勝ったドラッグは指を捕まえ、外へ出ても届きます。"
-            + "スクリプトの OnGestureTap / OnGestureLongPress / OnGestureDrag* / OnGestureFling / OnGesturePress* で受けます。"));
+            + "スクリプトの OnGestureTap / OnGestureLongPress / OnGestureDrag* / OnGestureFling / OnGesturePress* で受けます。"
+            + "ピンチは同じノードに触れた 2 本の指の間が 8 dp 変わったら始まり、OnGesturePinchStart / Update / End（e.Scale）で受けます"
+            + "（2 本の指のタップ・ドラッグは取り消されます）。"));
         body.Children.Add(CanvasLayoutHint(
             "当たり判定の形は CanvasComponent があればキャンバス領域、無ければ最初の Sprite の矩形。見た目が最小のヒット領域より"
             + "小さければ中心をそろえて広げ、広げた領域が重なる所は見た目に近いノードが受けます。旗をすべて外すと、後ろのノードへ"

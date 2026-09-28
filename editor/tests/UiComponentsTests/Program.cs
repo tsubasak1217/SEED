@@ -261,6 +261,9 @@ public static class Program
         // ── 画面の組み立て（W2-7）───────────────────────────────
         NavigationTests.Register(h, theme);
 
+        // ── グラフ（W2-8）─────────────────────────────────────
+        ChartTests.Register(h, theme);
+
         return h.Run();
     }
 }

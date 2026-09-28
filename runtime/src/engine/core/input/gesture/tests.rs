@@ -556,3 +556,123 @@ fn cancel_nodes_ends_captured_drag() {
     assert!(r.run(&[mv(1, 120.0, 50.0, 0.08), up(1, 120.0, 50.0, 0.1)], 0.1).is_empty());
     assert!(r.set.is_idle());
 }
+
+// ─── ピンチ（W2-8。docs/input_gestures.md §2.6）──────────────
+
+/// グラフのような「タップ・横のドラッグ・フリック・ピンチ」を受けるノード。
+fn chart() -> CanvasGestureComponent {
+    CanvasGestureComponent {
+        drag: true,
+        fling: true,
+        drag_axis: GestureDragAxis::Horizontal,
+        pinch: true,
+        press_feedback: false,
+        ..button()
+    }
+}
+
+/// 2 本の指を広げる: 距離の変化が slop（8 dp）を超えたら PinchStart（倍率 1）、以後は始めたときの距離との比。
+/// 離すと PinchEnd。2 本とも同じノードなのでタップにはならない（複数指の規則）。
+#[test]
+fn pinch_starts_after_slop_and_reports_scale_from_start() {
+    let mut r = Rig::new(vec![node(1, [0.0, 0.0, 400.0, 200.0], 0, chart())], 1.0);
+    // 2 本の指を 100 画素あけて置く（横に並ぶ）
+    let out = r.run(&[down(1, 150.0, 100.0, 0.0), down(2, 250.0, 100.0, 0.01)], 0.01);
+    assert!(out.is_empty(), "まだ何も起きない（押下の見た目は受けない設定）: {out:?}");
+    // 片方を 6 画素動かす（距離 106。変化 6 < slop 8）→ まだ始まらない。横のドラッグの slop（8）にも届かない
+    assert!(r.run(&[mv(2, 256.0, 100.0, 0.02)], 0.02).is_empty());
+    // さらに 4 画素（距離 110。変化 10 > 8）→ 始まる。始めたときの距離 110 が倍率の分母
+    let emits = r.frame(&[mv(2, 260.0, 100.0, 0.03)], 0.03);
+    assert_eq!(summary(&emits), vec![(1, PinchStart)], "ドラッグ（片方の指の横 10 画素）より先にピンチが取る: {emits:?}");
+    assert_eq!(emits[0].scale, [1.0, 1.0, 1.0]);
+    assert_eq!(emits[0].position, [205.0, 100.0], "位置は 2 本の指の中点");
+    // 指の間を 220 へ（両方を 55 画素ずつ外へ）→ 倍率 2（横も 2、縦は幅 0 なので 1）
+    let emits = r.frame(&[mv(1, 95.0, 100.0, 0.05), mv(2, 315.0, 100.0, 0.05)], 0.05);
+    assert_eq!(summary(&emits), vec![(1, PinchUpdate)], "1 フレームの途中は 1 件にまとまる");
+    assert!((emits[0].scale[0] - 2.0).abs() < 1e-5 && (emits[0].scale[1] - 2.0).abs() < 1e-5, "{:?}", emits[0].scale);
+    assert_eq!(emits[0].scale[2], 1.0, "始めたときの縦の幅が 0 の向きは 1");
+    assert_eq!(emits[0].delta, [0.0, 0.0], "中点は動いていない");
+    assert!((emits[0].duration - 0.02).abs() < 1e-9, "時間はピンチを始めてから");
+    // 1 本離す → PinchEnd（取り消しではない）。残った指は離すまで何も起こさない
+    let emits = r.frame(&[up(1, 95.0, 100.0, 0.06)], 0.06);
+    assert_eq!(summary(&emits), vec![(1, PinchEnd)]);
+    assert!(!emits[0].canceled);
+    assert!(r.run(&[mv(2, 400.0, 100.0, 0.07), up(2, 400.0, 100.0, 0.08)], 0.08).is_empty(), "残った指はタップもドラッグもしない");
+    assert!(r.set.is_idle());
+}
+
+/// 1 本目の指でグラフを横にドラッグしている途中に 2 本目が触れて広げると、ドラッグは取り消しの DragEnd で終わり、ピンチが取る。
+#[test]
+fn pinch_takes_over_the_nodes_own_drag() {
+    let mut r = Rig::new(vec![node(1, [0.0, 0.0, 400.0, 200.0], 0, chart())], 1.0);
+    let out = r.run(&[down(1, 100.0, 100.0, 0.0), mv(1, 120.0, 100.0, 0.02)], 0.02);
+    assert_eq!(out, vec![(1, DragStart)]);
+    // 2 本目はドラッグ中のノードのアリーナには入らないが、ピンチの組には入る
+    assert!(r.run(&[down(2, 300.0, 100.0, 0.03)], 0.03).is_empty());
+    let emits = r.frame(&[mv(2, 330.0, 100.0, 0.05)], 0.05);
+    assert_eq!(summary(&emits), vec![(1, DragEnd), (1, PinchStart)]);
+    assert!(emits[0].canceled, "ドラッグは取り消しで終わる（フリックにしない）");
+    // 以後 1 本目の動きはピンチだけ
+    let out = r.run(&[mv(1, 60.0, 100.0, 0.07)], 0.07);
+    assert_eq!(out, vec![(1, PinchUpdate)]);
+}
+
+/// 縦の一覧（外側）が 1 本目の指でスクロールしている間に、中のグラフへ 2 本目が触れて広げてもピンチにしない。
+#[test]
+fn pinch_does_not_start_when_outer_scroll_owns_a_finger() {
+    let list = node(1, [0.0, 0.0, 400.0, 800.0], 0, scroller(GestureDragAxis::Vertical));
+    let mut graph = node(2, [0.0, 100.0, 400.0, 300.0], 1, chart());
+    graph.ancestors = vec![0];
+    let mut r = Rig::new(vec![list, graph], 1.0);
+    let out = r.run(&[down(1, 100.0, 200.0, 0.0), mv(1, 100.0, 230.0, 0.02)], 0.02);
+    assert_eq!(out, vec![(1, DragStart)], "縦の動きは一覧が取る");
+    // 2 本目はグラフの上（一覧の子。一覧がドラッグ中なのでアリーナには入らない）
+    assert!(r.run(&[down(2, 300.0, 200.0, 0.03)], 0.03).is_empty());
+    let out = r.run(&[mv(2, 340.0, 200.0, 0.05), mv(1, 60.0, 240.0, 0.05)], 0.05);
+    assert!(out.iter().all(|(n, k)| *n == 1 && *k == DragUpdate), "ピンチにならず一覧のスクロールが続く: {out:?}");
+}
+
+/// ピンチを受けないノードでは 2 本の指を広げても何も起きない（従来どおり。W2-2 の複数指の規則）。
+#[test]
+fn nodes_without_pinch_get_no_pinch_events() {
+    let settings = CanvasGestureComponent { pinch: false, ..chart() };
+    let mut r = Rig::new(vec![node(1, [0.0, 0.0, 400.0, 200.0], 0, settings)], 1.0);
+    let out = r.run(&[down(1, 150.0, 100.0, 0.0), down(2, 250.0, 100.0, 0.01), mv(2, 250.0, 150.0, 0.03)], 0.03);
+    assert!(out.iter().all(|(_, k)| !matches!(k, PinchStart | PinchUpdate | PinchEnd)), "{out:?}");
+}
+
+/// 始まったピンチのノードには 3 本目の指は参加しない（タップにならない）。取り消し（CancelAll）は取り消しの PinchEnd。
+#[test]
+fn third_finger_is_blocked_and_cancel_all_ends_pinch() {
+    let mut r = Rig::new(vec![node(1, [0.0, 0.0, 400.0, 200.0], 0, chart())], 1.0);
+    let out = r.run(&[down(1, 150.0, 100.0, 0.0), down(2, 250.0, 100.0, 0.01), mv(2, 270.0, 100.0, 0.02)], 0.02);
+    assert_eq!(out, vec![(1, PinchStart)]);
+    let out = r.run(&[down(3, 350.0, 150.0, 0.03), up(3, 350.0, 150.0, 0.05)], 0.05);
+    assert!(out.is_empty(), "3 本目はタップにならない: {out:?}");
+    let emits = r.frame(&[PointerLogEntry::CancelAll { time: 0.06 }], 0.06);
+    assert_eq!(summary(&emits), vec![(1, PinchEnd)]);
+    assert!(emits[0].canceled);
+    assert!(r.set.is_idle());
+}
+
+/// ピンチの間は「動いている」（W2-10a）: ピンチが捕捉した 2 本の指を数える。
+#[test]
+fn pinch_counts_as_activity() {
+    let mut r = Rig::new(vec![node(1, [0.0, 0.0, 400.0, 200.0], 0, chart())], 1.0);
+    r.run(&[down(1, 150.0, 100.0, 0.0), down(2, 250.0, 100.0, 0.01), mv(2, 280.0, 100.0, 0.02)], 0.02);
+    let a = r.set.activity(&r.metrics);
+    assert_eq!((a.active_pointers, a.dragging_pointers), (2, 2));
+    assert!(a.is_active());
+}
+
+/// 縦に並んだ 2 本の指のピンチ: 全体・縦の倍率は変わり、横は始めたときの幅が 0 なので 1。倍率 1 未満（すぼめる）も出る。
+#[test]
+fn pinch_scale_components_and_shrinking() {
+    let mut r = Rig::new(vec![node(1, [0.0, 0.0, 400.0, 400.0], 0, chart())], 1.0);
+    r.run(&[down(1, 200.0, 100.0, 0.0), down(2, 200.0, 300.0, 0.01), mv(2, 200.0, 280.0, 0.02)], 0.02);
+    let emits = r.frame(&[mv(2, 200.0, 190.0, 0.04)], 0.04);
+    assert_eq!(summary(&emits), vec![(1, PinchUpdate)]);
+    assert!((emits[0].scale[0] - 0.5).abs() < 1e-5 && (emits[0].scale[2] - 0.5).abs() < 1e-5, "{:?}", emits[0].scale);
+    assert_eq!(emits[0].scale[1], 1.0);
+    assert_eq!(emits[0].delta, [0.0, -45.0], "中点の移動（190 と 100 の中点 145 ← 280 と 100 の中点 190）");
+}

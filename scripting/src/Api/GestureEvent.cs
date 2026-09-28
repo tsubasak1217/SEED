@@ -4,7 +4,7 @@ namespace SEED;
 //  GestureEvent.cs — ジェスチャーのイベント（W2-2。SEEDScript.OnGesture* の引数）
 //
 //  エンジンのジェスチャーアリーナ（runtime/src/engine/core/input/gesture/）が、CanvasGesture を付けたノードへ
-//  タップ・長押し・ドラッグ・フリック・押下の見た目のイベントを配る。規則の正典は docs/input_gestures.md。
+//  タップ・長押し・ドラッグ・フリック・押下の見た目・ピンチ（W2-8）のイベントを配る。規則の正典は docs/input_gestures.md。
 //  【重要】GestureKind の数値は Rust 側 gesture/events.rs の GestureEventKind と必ず一致させること（FFI で数値のまま渡る）。
 // ============================================================
 
@@ -29,6 +29,12 @@ public enum GestureKind
     PressCancel = 7,
     /// <summary>押下の見た目を戻す（タップ・長押しとして離した）。</summary>
     PressUp = 8,
+    /// <summary>ピンチが始まった（W2-8。同じノードに触れた 2 本の指の間の距離が slop を超えて変わった。倍率は 1）。</summary>
+    PinchStart = 9,
+    /// <summary>ピンチの途中（1 フレームに 1 回までにまとめる。倍率はピンチの始まりからの比）。</summary>
+    PinchUpdate = 10,
+    /// <summary>ピンチが終わった（どちらかの指を離した・取り消された）。</summary>
+    PinchEnd = 11,
 }
 
 /// <summary>
@@ -76,8 +82,20 @@ public readonly struct GestureEvent
     /// <summary>押してからの時間（秒。入力イベントの時刻で測る。フレームの時刻に依らない）。</summary>
     public float Duration { get; }
 
-    /// <summary>取り消しで終わったか（DragEnd が指の取り消し・アプリが背面へ・一時停止で来たとき true。速度は 0）。</summary>
+    /// <summary>取り消しで終わったか（DragEnd・PinchEnd が指の取り消し・アプリが背面へ・一時停止で来たとき true。速度は 0）。</summary>
     public bool Canceled { get; }
+
+    /// <summary>
+    /// ピンチの倍率（W2-8）: 今の 2 本の指の間の距離 ÷ ピンチが始まったときの距離（PinchStart で 1、広げると 1 より大きく、すぼめると小さい）。
+    /// ピンチ以外のイベントは 1。ピンチの <see cref="Position"/> は 2 本の指の中点、<see cref="Delta"/> は前のピンチのイベントからの中点の移動。
+    /// </summary>
+    public float Scale { get; }
+
+    /// <summary>ピンチの横の倍率（横の幅の比。始まったときの横の幅が 1 画素以下なら 1）。</summary>
+    public float ScaleX { get; }
+
+    /// <summary>ピンチの縦の倍率（縦の幅の比。始まったときの縦の幅が 1 画素以下なら 1）。</summary>
+    public float ScaleY { get; }
 
     /// <summary>移動量（dp）。</summary>
     public Vector2 DeltaDp => DpScale > 0f ? Delta / DpScale : Delta;
@@ -91,7 +109,8 @@ public readonly struct GestureEvent
     /// <summary>エンジン（FFI）から受け取った値で作る。</summary>
     internal GestureEvent(
         GestureKind kind, int pointerId, Vector2 position, Vector2 screenPosition, Vector2 localPosition,
-        Vector2 startPosition, Vector2 delta, Vector2 velocity, float dpScale, float duration, bool canceled)
+        Vector2 startPosition, Vector2 delta, Vector2 velocity, float dpScale, float duration, bool canceled,
+        float scale = 1f, float scaleX = 1f, float scaleY = 1f)
     {
         Kind = kind;
         PointerId = pointerId;
@@ -104,9 +123,12 @@ public readonly struct GestureEvent
         DpScale = dpScale;
         Duration = duration;
         Canceled = canceled;
+        Scale = scale;
+        ScaleX = scaleX;
+        ScaleY = scaleY;
     }
 
     /// <summary>デバッグ表示用（例: <c>Gesture(DragUpdate #0 pos=(10.00, 20.00) delta=(0.00, 5.00) vel=(0.00, 300.00))</c>）。</summary>
     public override string ToString()
-        => $"Gesture({Kind} #{PointerId} pos={Position} delta={Delta} vel={Velocity}{(Canceled ? " canceled" : "")})";
+        => $"Gesture({Kind} #{PointerId} pos={Position} delta={Delta} vel={Velocity}{(Scale != 1f ? $" scale={Scale:0.###}" : "")}{(Canceled ? " canceled" : "")})";
 }

@@ -140,6 +140,15 @@ public abstract class SEEDScript : IScriptComponent
     public virtual void OnGesturePressCancel(SEED.GestureEvent e) {}
     /// <summary>押下の見た目を戻すときに呼ばれる（タップ・長押しとして離した）。</summary>
     public virtual void OnGesturePressUp(SEED.GestureEvent e) {}
+    /// <summary>
+    /// ピンチが始まったときに呼ばれる（W2-8。CanvasGesture の Pinch が有効なノードだけ。同じノードに触れた 2 本の指の間の距離が
+    /// slop を超えて変わった。2 本の指のタップ・ドラッグは取り消される。<c>e.Scale</c> は 1、<c>e.Position</c> は 2 本の指の中点）。
+    /// </summary>
+    public virtual void OnGesturePinchStart(SEED.GestureEvent e) {}
+    /// <summary>ピンチの途中で呼ばれる（1 フレームに 1 回まで。<c>e.Scale</c> は始まりからの倍率、<c>e.Delta</c> は中点の移動）。</summary>
+    public virtual void OnGesturePinchUpdate(SEED.GestureEvent e) {}
+    /// <summary>ピンチが終わったときに呼ばれる（どちらかの指を離した・取り消された。取り消しなら <c>e.Canceled</c>）。</summary>
+    public virtual void OnGesturePinchEnd(SEED.GestureEvent e) {}
 
     // ── スクロールのコールバック（W2-3）──────────────────
     // Play 中、自分のアクターが **CanvasScroll**（スクロールの領域）を持つときだけ届く（スクリプトフェーズより前）。

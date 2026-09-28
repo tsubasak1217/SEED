@@ -9,6 +9,7 @@
 //
 //  【まとめ】ドラッグの途中（DragUpdate）は 1 フレームに指 1 本・ノード 1 つにつき 1 件へまとめる
 //  （移動量は足し合わせ、位置・速度・時刻は最新）。間に同じ指・同じノードの別の種類が挟まったらまとめない。
+//  ピンチの途中（PinchUpdate。W2-8）も同じ規則でまとめる（倍率は最新＝ピンチの始まりからの比なので足さない）。
 // ============================================================
 
 use crate::engine::ecs::Entity;
@@ -35,6 +36,12 @@ pub enum GestureEventKind {
     PressCancel = 7,
     /// 押下の見た目を戻す（タップ・長押しとして離した）。PressUp → Tap の順に届く。
     PressUp = 8,
+    /// ピンチが始まった（W2-8。同じノードに触れた 2 本の指の間の距離が slop を超えて変わった。倍率は 1）。
+    PinchStart = 9,
+    /// ピンチの途中（1 フレームに 1 回までにまとめる。倍率はピンチの始まりからの比）。
+    PinchUpdate = 10,
+    /// ピンチが終わった（どちらかの指を離した・取り消された）。
+    PinchEnd = 11,
 }
 
 impl GestureEventKind {
@@ -56,9 +63,21 @@ impl GestureEventKind {
             GestureEventKind::PressDown => "PressDown",
             GestureEventKind::PressCancel => "PressCancel",
             GestureEventKind::PressUp => "PressUp",
+            GestureEventKind::PinchStart => "PinchStart",
+            GestureEventKind::PinchUpdate => "PinchUpdate",
+            GestureEventKind::PinchEnd => "PinchEnd",
         }
     }
+
+    /// 1 フレームの中で足し合わせてまとめる途中のイベント（DragUpdate・PinchUpdate）か。
+    #[inline]
+    pub fn is_coalesced_update(self) -> bool {
+        matches!(self, GestureEventKind::DragUpdate | GestureEventKind::PinchUpdate)
+    }
 }
+
+/// 倍率がないイベントの倍率（全体・横・縦がすべて 1）。
+pub const NO_SCALE: [f32; 3] = [1.0, 1.0, 1.0];
 
 /// ノードへ届ける 1 件。位置・移動量・速度はキャンバスの画素（画面の中央が原点・Y 下向き）。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,24 +100,28 @@ pub struct GestureEmit {
     pub time: f64,
     /// 押してからの時間（秒）。
     pub duration: f64,
-    /// 取り消しで終わったか（DragEnd が指の取り消しで来たとき true。速度は 0）。
+    /// 取り消しで終わったか（DragEnd・PinchEnd が指の取り消しで来たとき true。速度は 0）。
     pub canceled: bool,
+    /// ピンチの倍率（W2-8。[全体, 横, 縦] = 今の指の間の距離 ÷ ピンチが始まったときの距離。ピンチ以外は 1）。
+    pub scale: [f32; 3],
 }
 
-/// ドラッグの途中を 1 フレームぶんまとめる【純関数】（冒頭の「まとめ」の規則）。
+/// ドラッグ・ピンチの途中を 1 フレームぶんまとめる【純関数】（冒頭の「まとめ」の規則）。
 pub fn coalesce_drag_updates(emits: Vec<GestureEmit>) -> Vec<GestureEmit> {
     let mut out: Vec<GestureEmit> = Vec::with_capacity(emits.len());
     for e in emits {
-        if e.kind == GestureEventKind::DragUpdate {
-            // 同じ指・同じノードの直近のイベントがドラッグの途中なら、そこへ足し込む
+        if e.kind.is_coalesced_update() {
+            // 同じ指・同じノードの直近のイベントが同じ種類の途中なら、そこへ足し込む
             let last_same = out.iter_mut().rev().find(|o| o.node == e.node && o.pointer_id == e.pointer_id);
             if let Some(prev) = last_same {
-                if prev.kind == GestureEventKind::DragUpdate {
+                if prev.kind == e.kind {
                     prev.delta = [prev.delta[0] + e.delta[0], prev.delta[1] + e.delta[1]];
                     prev.position = e.position;
                     prev.velocity = e.velocity;
                     prev.time = e.time;
                     prev.duration = e.duration;
+                    // 倍率は始まりからの比なので足さずに最新へ
+                    prev.scale = e.scale;
                     continue;
                 }
             }
@@ -129,6 +152,9 @@ mod tests {
             GestureEventKind::PressDown,
             GestureEventKind::PressCancel,
             GestureEventKind::PressUp,
+            GestureEventKind::PinchStart,
+            GestureEventKind::PinchUpdate,
+            GestureEventKind::PinchEnd,
         ];
         for (i, k) in kinds.iter().enumerate() {
             assert_eq!(k.id(), i as i32, "{}", k.label());
@@ -148,7 +174,31 @@ mod tests {
             time: 0.0,
             duration: 0.0,
             canceled: false,
+            scale: NO_SCALE,
         }
+    }
+
+    /// ピンチの途中も同じ指・同じノードでまとめ、移動量は足し、倍率は最新にする（W2-8）。
+    #[test]
+    fn coalesces_pinch_updates_keeping_latest_scale() {
+        use GestureEventKind::*;
+        let mut a = ev(1, 0, PinchUpdate, 2.0);
+        a.scale = [1.2, 1.3, 1.0];
+        let mut b = ev(1, 0, PinchUpdate, 3.0);
+        b.scale = [1.5, 1.6, 1.0];
+        let out = coalesce_drag_updates(vec![ev(1, 0, PinchStart, 0.0), a, b, ev(1, 0, PinchEnd, 0.0)]);
+        let kinds: Vec<_> = out.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, vec![PinchStart, PinchUpdate, PinchEnd]);
+        assert_eq!(out[1].delta[0], 5.0, "移動量は足し合わせ");
+        assert_eq!(out[1].scale, [1.5, 1.6, 1.0], "倍率は最新");
+    }
+
+    /// ドラッグの途中とピンチの途中は別の種類としてまとめない。
+    #[test]
+    fn does_not_merge_drag_into_pinch() {
+        use GestureEventKind::*;
+        let out = coalesce_drag_updates(vec![ev(1, 0, DragUpdate, 1.0), ev(1, 0, PinchUpdate, 2.0)]);
+        assert_eq!(out.len(), 2);
     }
 
     /// 同じ指・同じノードの途中は足し合わせ、別の指は別々、間に別の種類が挟まればまとめない。

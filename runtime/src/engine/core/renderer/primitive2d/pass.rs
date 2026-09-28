@@ -33,6 +33,14 @@ use crate::engine::ecs::Entity;
 /// この値がそのまま「1 画面 px のフェザー」になる。
 pub const FEATHER_UNITS: f32 = 1.0;
 
+/// 見た目の拡張の「画面の画素のフェザー」（W2-8。`PrimitiveStyle::pixel_feather`）の帯の幅（画面の画素）。
+pub const PIXEL_FEATHER_PX: f32 = 1.0;
+/// 画面の画素のフェザーを描画空間へ直した幅の下限・上限（退化した行列で帯が消える・巨大になるのを防ぐ）。
+const PIXEL_FEATHER_MIN_UNITS: f32 = 1e-3;
+const PIXEL_FEATHER_MAX_UNITS: f32 = 1e3;
+/// 1 画素あたりの NDC の長さ・面積の比をゼロとみなす大きさ。
+const NDC_EPSILON: f32 = 1e-12;
+
 /// 頂点バッファの初期容量（頂点数）。
 const INITIAL_VERTEX_CAPACITY: u64 = 4096;
 /// インデックスバッファの初期容量（インデックス数）。
@@ -117,6 +125,9 @@ pub struct PrimitiveSpace {
     /// この空間へ描く図形の切り抜きの番号（空間の持ち主のノードと同じ。レイアウトの表の領域。W2-1a）。
     /// 3D ワールドキャンバス配下は切り抜かないので常に None。
     pub clip: Option<UiClipId>,
+    /// 空間の持ち主のノードのレイヤーの底上げ（W2-7 の `CanvasLayoutItem.layer_bias` の和。W2-8）。
+    /// この空間へ描く図形のレイヤーに足す（スプライト・テキストと同じ `biased_layer`）。3D ワールドキャンバス配下は 0。
+    pub layer_bias: i32,
 }
 
 /// キャンバスアクター entity → 座標空間のマップ。
@@ -148,12 +159,14 @@ impl PrimitiveSpaceCollector {
     ///
     /// `zone` は 2D キャンバスの描画ゾーン（`world3d = true` のときは無視される）。
     /// `clip` はこの空間へ描く図形の切り抜きの番号（`world3d = true` のときは無視して None にする）。
+    /// `layer_bias` は持ち主のノードのレイヤーの底上げ（W2-8。`world3d = true` のときは 0 にする）。
     pub fn insert(
         &mut self,
         entity: Entity,
         model: [[f32; 4]; 4],
         zone: CanvasDrawZone,
         clip: Option<UiClipId>,
+        layer_bias: i32,
     ) {
         let target = if self.world3d {
             PrimitiveSpaceTarget::World3d
@@ -170,8 +183,23 @@ impl PrimitiveSpaceCollector {
                 world3d_group,
                 // 3D ワールドキャンバス（透視）は scissor で正しく切れないので切り抜かない
                 clip: if self.world3d { None } else { clip },
+                // 3D ワールドキャンバスはキャンバスごとの並びなので底上げしない
+                layer_bias: if self.world3d { 0 } else { layer_bias },
             },
         );
+    }
+}
+
+/// 図形のレイヤーへ、座標空間の持ち主のノードのレイヤーの底上げを足す【純関数に近い: コマンドの layer だけを書き換える】（W2-8）。
+///
+/// スプライト・テキストは収集のときに `biased_layer(layer, layer_bias)` で並ぶので、同じ規則を図形にも当てる
+/// （画面のスタックで積んだ画面の中の `SEED.Draw` が、底上げした画面の背景の下に隠れないように）。
+/// スクリーンスペース（`space = None`）と、解決できない空間の図形は変えない。底上げ 0 なら従来と同じ。
+pub fn apply_space_layer_bias(cmds: &mut [super::queue::PrimitiveCommand], spaces: &PrimitiveSpaceMap) {
+    for c in cmds.iter_mut() {
+        if let Some(bias) = c.space.and_then(|e| spaces.get(&e)).map(|s| s.layer_bias).filter(|b| *b != 0) {
+            c.layer = crate::engine::core::canvas_layout::biased_layer(c.layer, bias);
+        }
     }
 }
 
@@ -349,10 +377,22 @@ impl Primitive2dRenderer {
                     None => continue,
                 },
             };
-            let mesh = tessellate(cmd, FEATHER_UNITS);
+            // フェザーの幅（W2-8）: 既定は描画空間の 1 単位（従来どおり）。見た目の拡張で画面の画素を選んだ図形は、
+            // 画面の 1 画素ぶんの描画空間の長さ（dp のキャンバスでも縁がにじまない。3D ワールドキャンバスは従来どおり）
+            let feather = if cmd.style.pixel_feather && !depth_tested {
+                pixel_feather_units(model, screen_model, view_proj)
+            } else {
+                FEATHER_UNITS
+            };
+            let mesh = tessellate(cmd, feather);
             if mesh.is_empty() {
                 continue;
             }
+            // グラデーション（W2-8）の軸は SRT を掛けた描画空間の点（メッシュの頂点と同じ空間）
+            let (grad_from, grad_to) = cmd
+                .style
+                .gradient
+                .map_or(([0.0; 2], [0.0; 2]), |g| (cmd.srt.apply(g.from), cmd.srt.apply(g.to)));
             // 頂点を NDC へ変換して積む。投影に失敗した頂点は None を記録し、
             // その頂点を含む三角形は捨てる（カメラ背後の 3D キャンバスなど）。
             let base = self.verts.len() as u32;
@@ -363,7 +403,8 @@ impl Primitive2dRenderer {
                     Some(ndc) => {
                         self.verts.push(PrimitiveVertex {
                             position: ndc,
-                            color: cmd.color,
+                            // 単色なら従来の色。グラデーションなら頂点の位置の色（三角形の中は線形補間で正確）
+                            color: cmd.style.color_at(cmd.color, grad_from, grad_to, v.pos),
                             edge: v.alpha,
                         });
                         mapped.push(Some(next));
@@ -464,6 +505,38 @@ impl Primitive2dRenderer {
     }
 }
 
+// ─── 画面の画素のフェザー（W2-8）─────────────────────────────────
+
+/// 画面の 1 画素が描画空間で何単位か【純関数】（`PrimitiveStyle::pixel_feather` の帯の幅）。
+///
+/// 描画空間の原点と単位ベクトル（x・y）と、スクリーンスペース（1 単位 = 1 画素）の原点と単位ベクトルを同じ射影で NDC へ写し、
+/// 「描画空間の 1 単位が何画素か」（面積の比の平方根。縦横の倍率が違っても平均の大きさ）で `PIXEL_FEATHER_PX` を割る。
+/// 射影できない・退化しているときは従来の `FEATHER_UNITS`。
+pub fn pixel_feather_units(model: &[[f32; 4]; 4], screen_model: &[[f32; 4]; 4], view_proj: &[[f32; 4]; 4]) -> f32 {
+    let local = (project(0.0, 0.0, model, view_proj), project(1.0, 0.0, model, view_proj), project(0.0, 1.0, model, view_proj));
+    let screen = (
+        project(0.0, 0.0, screen_model, view_proj),
+        project(1.0, 0.0, screen_model, view_proj),
+        project(0.0, 1.0, screen_model, view_proj),
+    );
+    let ((Some(o), Some(x), Some(y)), (Some(so), Some(sx), Some(sy))) = (local, screen) else {
+        return FEATHER_UNITS;
+    };
+    // 1 画素あたりの NDC の長さ（スクリーンスペースは軸にそろっている）
+    let (ndc_per_px_x, ndc_per_px_y) = (sx[0] - so[0], sy[1] - so[1]);
+    if ndc_per_px_x.abs() <= NDC_EPSILON || ndc_per_px_y.abs() <= NDC_EPSILON {
+        return FEATHER_UNITS;
+    }
+    // 描画空間の単位ベクトルを画素へ直し、その平行四辺形の面積（画素²/単位²）
+    let ux = [(x[0] - o[0]) / ndc_per_px_x, (x[1] - o[1]) / ndc_per_px_y];
+    let uy = [(y[0] - o[0]) / ndc_per_px_x, (y[1] - o[1]) / ndc_per_px_y];
+    let area = (ux[0] * uy[1] - ux[1] * uy[0]).abs();
+    if !(area.is_finite() && area > NDC_EPSILON) {
+        return FEATHER_UNITS;
+    }
+    (PIXEL_FEATHER_PX / area.sqrt()).clamp(PIXEL_FEATHER_MIN_UNITS, PIXEL_FEATHER_MAX_UNITS)
+}
+
 // ─── 座標変換 ────────────────────────────────────────────────
 
 /// キャンバスローカル座標 (x, y) を NDC へ射影する。
@@ -547,16 +620,75 @@ mod tests {
         let mut c = PrimitiveSpaceCollector::new();
         // 2D キャンバス配下（ゾーンがそのまま保持される）
         c.world3d = false;
-        c.insert(e2d, M, CanvasDrawZone::Background, None);
+        c.insert(e2d, M, CanvasDrawZone::Background, None, 0);
         // 3D ワールドキャンバス配下（ゾーン指定を渡してもワールドスペースになる）
         c.world3d = true;
-        c.insert(e3d, M, CanvasDrawZone::Background, None);
+        c.insert(e3d, M, CanvasDrawZone::Background, None, 7);
 
         assert_eq!(
             c.map[&e2d].target,
             PrimitiveSpaceTarget::Canvas2d(CanvasDrawZone::Background)
         );
         assert_eq!(c.map[&e3d].target, PrimitiveSpaceTarget::World3d);
+        assert_eq!(c.map[&e3d].layer_bias, 0, "3D ワールドキャンバスは底上げしない");
+    }
+
+    /// レイヤーの底上げ（W2-8）: 空間の持ち主の底上げを図形のレイヤーに足す。0・スクリーンスペース・解決できない空間は変えない。
+    #[test]
+    fn space_layer_bias_is_added_to_primitive_layers() {
+        use super::super::queue::{PrimitiveDrawMode, PrimitiveKind, Transform2d, PRIM_EXTRA_FLOATS};
+        const M: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let (biased, plain, missing) = (Entity::from_raw(1, 0), Entity::from_raw(2, 0), Entity::from_raw(3, 0));
+        let mut c = PrimitiveSpaceCollector::new();
+        c.insert(biased, M, CanvasDrawZone::Foreground, None, 10000);
+        c.insert(plain, M, CanvasDrawZone::Foreground, None, 0);
+        let cmd = |space: Option<Entity>, layer: i32| PrimitiveCommand {
+            kind: PrimitiveKind::Polygon,
+            space,
+            color: [1.0; 4],
+            mode: PrimitiveDrawMode::Fill,
+            thickness: 1.0,
+            layer,
+            srt: Transform2d::IDENTITY,
+            extras: [0.0; PRIM_EXTRA_FLOATS],
+            points: Vec::new(),
+            style: Default::default(),
+        };
+        let mut cmds = vec![cmd(Some(biased), 3), cmd(Some(plain), 3), cmd(None, 3), cmd(Some(missing), 3)];
+        apply_space_layer_bias(&mut cmds, &c.map);
+        let layers: Vec<i32> = cmds.iter().map(|c| c.layer).collect();
+        assert_eq!(layers, vec![10003, 3, 3, 3]);
+    }
+
+    /// 画面の画素のフェザー（W2-8）: 描画空間の 1 単位が 2.625 画素（dp のキャンバスの Pixel 6a）なら帯は 1/2.625 単位、
+    /// 1 画素なら 1 単位（従来と同じ）。縦横の倍率が違えば面積の平均。退化した行列は従来の 1 単位。
+    #[test]
+    fn pixel_feather_units_follow_the_space_scale() {
+        let ident = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let scaled = |sx: f32, sy: f32| {
+            let mut m = ident;
+            m[0][0] = sx;
+            m[1][1] = sy;
+            m
+        };
+        assert!((pixel_feather_units(&ident, &ident, &ident) - 1.0).abs() < 1e-6);
+        let f = pixel_feather_units(&scaled(2.625, 2.625), &ident, &ident);
+        assert!((f - 1.0 / 2.625).abs() < 1e-6, "{f}");
+        let f = pixel_feather_units(&scaled(4.0, 1.0), &ident, &ident);
+        assert!((f - 0.5).abs() < 1e-6, "縦横 4 と 1 の面積の平均 2 画素: {f}");
+        assert_eq!(pixel_feather_units(&scaled(0.0, 0.0), &ident, &ident), FEATHER_UNITS, "退化");
+        // スクリーンスペースが 2 画素 = 1 NDC 単位（画面の倍率）でも、描画空間と同じ比なら 1 単位
+        assert!((pixel_feather_units(&scaled(2.0, 2.0), &scaled(2.0, 2.0), &ident) - 1.0).abs() < 1e-6);
     }
 
     /// 頂点構造体のサイズと属性オフセットが一致する（wgsl のレイアウト契約）。

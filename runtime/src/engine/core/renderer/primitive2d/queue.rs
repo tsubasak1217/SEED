@@ -44,6 +44,29 @@ pub const PRIM_EXTRA_FLOATS: usize = 5;
 /// FFI パラメータ配列の総 float 個数（C# 側と完全一致必須）。
 pub const PRIM_PARAM_FLOATS: usize = PRIM_HEADER_FLOATS + PRIM_EXTRA_FLOATS;
 
+/// 見た目の拡張（W2-8。`PrimitiveStyle`）の float 個数。パラメータ配列の末尾に続く（無ければ従来の見た目）。
+/// 内訳: 旗(1) + グラデーションの終わりの色 RGBA(4) + グラデーションの始点(2) + 終点(2) = 9
+pub const PRIM_STYLE_FLOATS: usize = 9;
+
+/// 見た目の拡張つきのパラメータ配列の総 float 個数（C# の `Draw` の拡張の呼び出しと一致必須）。
+pub const PRIM_PARAM_FLOATS_STYLED: usize = PRIM_PARAM_FLOATS + PRIM_STYLE_FLOATS;
+
+/// 見た目の拡張の旗: アンチエイリアスの帯を画面の 1 画素の幅にする。
+pub const PRIM_STYLE_FLAG_PIXEL_FEATHER: u32 = 1;
+/// 見た目の拡張の旗: 線形のグラデーションで塗る。
+pub const PRIM_STYLE_FLAG_GRADIENT: u32 = 2;
+
+/// 見た目の拡張の中の位置（旗）。
+const STYLE_FLAGS: usize = 0;
+/// 見た目の拡張の中の位置（終わりの色の先頭）。
+const STYLE_COLOR_END: usize = 1;
+/// 見た目の拡張の中の位置（始点の先頭）。
+const STYLE_FROM: usize = 5;
+/// 見た目の拡張の中の位置（終点の先頭）。
+const STYLE_TO: usize = 7;
+/// グラデーションの軸の長さの二乗の下限（これ以下は軸が無いとみなし、始めの色で塗る）。
+const GRADIENT_AXIS_EPSILON_SQ: f32 = 1e-12;
+
 // ─── 図形種別・描画モード ────────────────────────────────────
 
 /// プリミティブの図形種別。値は C# 側 `Draw.cs` の kind 定数と一致必須。
@@ -68,6 +91,10 @@ pub enum PrimitiveKind {
     RoundedRect = 6,
     /// 3 次ベジエ曲線。points = p0..p3 / extras[0] = 分割数。常に線として描く。
     Bezier = 7,
+    /// 線の下の塗り（W2-8。グラフの面）。points = 上の縁の折れ線（左 → 右）/ extras[0] = 基準線の y（描画空間）。
+    /// 縁と基準線の間を縦の台形の帯で塗る（多角形の耳刈りを使わないので点が多くても線形の手間）。
+    /// アンチエイリアスの帯は上の縁（基準線から遠い側）だけに張る。
+    Area = 8,
 }
 
 impl PrimitiveKind {
@@ -82,6 +109,7 @@ impl PrimitiveKind {
             5 => Some(Self::Arc),
             6 => Some(Self::RoundedRect),
             7 => Some(Self::Bezier),
+            8 => Some(Self::Area),
             _ => None,
         }
     }
@@ -150,6 +178,74 @@ impl Transform2d {
     }
 }
 
+// ─── 見た目の拡張（W2-8）───────────────────────────────────────
+
+/// 線形のグラデーション（始点で `PrimitiveCommand::color`、終点で `color_end`。軸の外は端の色）。
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PrimitiveGradient {
+    /// 終点の色（RGBA 0..1。ストレートアルファ）。
+    pub color_end: [f32; 4],
+    /// 始点（点列と同じ空間。SRT を掛ける前）。
+    pub from: [f32; 2],
+    /// 終点（同上）。
+    pub to: [f32; 2],
+}
+
+/// 図形の見た目の拡張（W2-8）。既定は従来と同じ（描画空間の 1 単位のフェザー・単色・従来の三角形分割）。
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct PrimitiveStyle {
+    /// 見た目の拡張つきで積まれた（C# の DrawStyle を受けるメソッド）。true なら軽い三角形分割を使う
+    /// （折れ線は 1 本の帯と外側だけの丸いつなぎ、凸の塗りは扇。tessellate.rs の「軽い三角形分割」）。
+    pub extended: bool,
+    /// アンチエイリアスの帯を画面の 1 画素にする（dp のキャンバスでも縁がにじまない。3D ワールドキャンバスでは効かない）。
+    pub pixel_feather: bool,
+    /// 線形のグラデーション（None = 単色）。
+    pub gradient: Option<PrimitiveGradient>,
+}
+
+impl PrimitiveStyle {
+    /// パラメータ配列の末尾（`PRIM_STYLE_FLOATS` 個）から読む【純関数】。短ければ既定。
+    pub fn from_params(tail: &[f32]) -> Self {
+        if tail.len() < PRIM_STYLE_FLOATS {
+            return Self::default();
+        }
+        let raw = tail[STYLE_FLAGS];
+        let flags = if raw.is_finite() && raw > 0.0 { raw as u32 } else { 0 };
+        let gradient = (flags & PRIM_STYLE_FLAG_GRADIENT != 0).then(|| PrimitiveGradient {
+            color_end: [
+                tail[STYLE_COLOR_END],
+                tail[STYLE_COLOR_END + 1],
+                tail[STYLE_COLOR_END + 2],
+                tail[STYLE_COLOR_END + 3],
+            ],
+            from: [tail[STYLE_FROM], tail[STYLE_FROM + 1]],
+            to: [tail[STYLE_TO], tail[STYLE_TO + 1]],
+        });
+        Self { extended: true, pixel_feather: flags & PRIM_STYLE_FLAG_PIXEL_FEATHER != 0, gradient }
+    }
+
+    /// 描画空間の点 `p` の色【純関数】（グラデーションが無ければ `base`）。
+    ///
+    /// `from`・`to` は SRT を掛けた後の描画空間の点で渡す（呼び出し側が `Transform2d::apply` する）。
+    /// 軸へ射影した割合 t = clamp(dot(p − from, to − from) / |to − from|², 0, 1) で `base` → `color_end` を線形に補間する
+    /// （三角形の中は頂点の色の線形補間なので、線形のグラデーションは頂点の色だけで正確に出る）。
+    pub fn color_at(&self, base: [f32; 4], from: [f32; 2], to: [f32; 2], p: [f32; 2]) -> [f32; 4] {
+        let Some(g) = self.gradient else { return base };
+        let axis = [to[0] - from[0], to[1] - from[1]];
+        let len_sq = axis[0] * axis[0] + axis[1] * axis[1];
+        if len_sq <= GRADIENT_AXIS_EPSILON_SQ {
+            return base;
+        }
+        let t = (((p[0] - from[0]) * axis[0] + (p[1] - from[1]) * axis[1]) / len_sq).clamp(0.0, 1.0);
+        [
+            base[0] + (g.color_end[0] - base[0]) * t,
+            base[1] + (g.color_end[1] - base[1]) * t,
+            base[2] + (g.color_end[2] - base[2]) * t,
+            base[3] + (g.color_end[3] - base[3]) * t,
+        ]
+    }
+}
+
 // ─── コマンド ────────────────────────────────────────────────
 
 /// スクリプトが積んだ 1 図形ぶんの描画コマンド。
@@ -178,6 +274,8 @@ pub struct PrimitiveCommand {
     pub extras: [f32; PRIM_EXTRA_FLOATS],
     /// 図形の点列（意味は `PrimitiveKind` の説明を参照）。
     pub points: Vec<[f32; 2]>,
+    /// 見た目の拡張（W2-8。既定は従来の見た目）。
+    pub style: PrimitiveStyle,
 }
 
 // ─── スレッドローカルキュー ──────────────────────────────────
@@ -250,7 +348,41 @@ mod tests {
             srt: Transform2d::IDENTITY,
             extras: [0.0; PRIM_EXTRA_FLOATS],
             points: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            style: PrimitiveStyle::default(),
         }
+    }
+
+    /// 見た目の拡張（W2-8）: 短い配列・旗 0 は既定、旗で画面の画素のフェザーとグラデーションを選ぶ。
+    #[test]
+    fn primitive_style_parses_flags_and_gradient() {
+        assert_eq!(PrimitiveStyle::from_params(&[]), PrimitiveStyle::default(), "拡張なし（従来の長さ）は既定");
+        let plain = PrimitiveStyle::from_params(&[0.0; PRIM_STYLE_FLOATS]);
+        assert!(plain.extended && !plain.pixel_feather && plain.gradient.is_none(), "拡張つき・旗 0 は軽い三角形分割だけ");
+        let s = PrimitiveStyle::from_params(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert!(s.pixel_feather && s.gradient.is_none());
+        let s = PrimitiveStyle::from_params(&[3.0, 0.1, 0.2, 0.3, 0.0, 0.0, 10.0, 0.0, 110.0]);
+        assert!(s.pixel_feather);
+        let g = s.gradient.expect("旗 2 でグラデーション");
+        assert_eq!(g.color_end, [0.1, 0.2, 0.3, 0.0]);
+        assert_eq!((g.from, g.to), ([0.0, 10.0], [0.0, 110.0]));
+        let broken = PrimitiveStyle::from_params(&[f32::NAN; PRIM_STYLE_FLOATS]);
+        assert!(!broken.pixel_feather && broken.gradient.is_none(), "壊れた旗は旗なし");
+    }
+
+    /// グラデーションの色: 始点で元の色、終点で終わりの色、途中は線形、軸の外は端の色、軸が無ければ元の色。
+    #[test]
+    fn primitive_gradient_color_is_linear_along_axis() {
+        let s = PrimitiveStyle::from_params(&[2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0]);
+        let base = [0.0, 0.0, 1.0, 1.0];
+        let (from, to) = ([0.0, 0.0], [0.0, 100.0]);
+        assert_eq!(s.color_at(base, from, to, [5.0, 0.0]), base, "始点の高さ");
+        assert_eq!(s.color_at(base, from, to, [5.0, 100.0]), [1.0, 0.0, 0.0, 0.0], "終点の高さ");
+        let mid = s.color_at(base, from, to, [30.0, 25.0]);
+        assert!((mid[0] - 0.25).abs() < 1e-6 && (mid[2] - 0.75).abs() < 1e-6 && (mid[3] - 0.75).abs() < 1e-6, "{mid:?}");
+        assert_eq!(s.color_at(base, from, to, [0.0, -50.0]), base, "軸の手前は始めの色");
+        assert_eq!(s.color_at(base, from, to, [0.0, 500.0]), [1.0, 0.0, 0.0, 0.0], "軸の先は終わりの色");
+        assert_eq!(s.color_at(base, from, from, [0.0, 50.0]), base, "軸の長さ 0 は元の色");
+        assert_eq!(PrimitiveStyle::default().color_at(base, from, to, [0.0, 50.0]), base, "グラデーションなし");
     }
 
     /// take_commands はキューを空にする（毎フレームクリアの保証）。

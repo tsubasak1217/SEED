@@ -2,7 +2,7 @@
 //  canvas_gesture_component.rs — ジェスチャーを受けるノード（W2-2。W2-P3「ジェスチャーの調停」）
 //
 //  2D キャンバスのノードに付けると、そのノードが指（ポインタ）ごとのジェスチャーアリーナに参加する。
-//  受けたいジェスチャー（タップ・長押し・ドラッグ・フリック）を旗で選び、ドラッグの軸・押下の見た目の
+//  受けたいジェスチャー（タップ・長押し・ドラッグ・フリック・ピンチ〈W2-8〉）を旗で選び、ドラッグの軸・押下の見た目の
 //  イベント（PressDown / PressCancel / PressUp）の有無・ヒット領域の最小の大きさ（dp）を持つ。
 //    - ヒット領域: CanvasComponent があればキャンバス領域、無ければ最初の有効な Sprite の矩形
 //      （切り抜きの矩形と同じ選び方）。見た目が最小の大きさより小さければ、中心をそろえて広げる（既定 48 dp）
@@ -69,6 +69,10 @@ pub struct CanvasGestureComponent {
     /// ドラッグ・フリックの軸。
     #[serde(default)]
     pub drag_axis: GestureDragAxis,
+    /// ピンチを受ける（W2-8。同じノードに触れた 2 本の指の間の距離の変化。PinchStart / PinchUpdate / PinchEnd）。
+    /// ピンチが始まると 2 本の指のタップ・長押し・ドラッグは取り消される（外側のノードのドラッグに取られている指ではピンチにしない）。
+    #[serde(default)]
+    pub pinch: bool,
     /// 押下の見た目のイベント（PressDown / PressCancel / PressUp）を受ける（タップ・長押しを受けるノードだけ）。
     #[serde(default = "default_true")]
     pub press_feedback: bool,
@@ -90,6 +94,7 @@ impl Default for CanvasGestureComponent {
             drag: false,
             fling: false,
             drag_axis: GestureDragAxis::default(),
+            pinch: false,
             press_feedback: default_true(),
             min_hit_size_dp: DEFAULT_MIN_HIT_SIZE_DP,
         }
@@ -117,6 +122,11 @@ impl CanvasGestureComponent {
         self.drag || self.fling
     }
 
+    /// ピンチを受けるか（W2-8。有効なときだけ）。
+    pub fn wants_pinch(&self) -> bool {
+        self.enabled && self.pinch
+    }
+
     /// ヒット領域の最小の大きさ（dp。負・NaN は 0＝広げない）。
     pub fn min_hit_size(&self) -> f32 {
         if self.min_hit_size_dp.is_finite() && self.min_hit_size_dp > 0.0 { self.min_hit_size_dp } else { 0.0 }
@@ -139,6 +149,7 @@ mod tests {
         let d: CanvasGestureComponentData = serde_json::from_str("{}").unwrap();
         assert_eq!(d, CanvasGestureComponent::default());
         assert!(d.wants_press() && !d.wants_drag_recognizer());
+        assert!(!d.wants_pinch(), "ピンチは既定で受けない（W2-8）");
         assert_eq!(d.min_hit_size(), 48.0);
     }
 

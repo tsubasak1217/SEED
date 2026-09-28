@@ -8,6 +8,7 @@
 //
 //  【C# との契約】`RawGestureEvent` のフィールドの並び・型は scripting/src/NativeGestureEvent.cs と完全に一致させる
 //  （すべて 4 バイトの値。詰め物は無い）。種類の数値は gesture/events.rs の GestureEventKind = C# の SEED.GestureKind。
+//  W2-8 でピンチの倍率（scale・scale_x・scale_y）を末尾に足した（22 個）。
 // ============================================================
 
 use crate::engine::core::input::gesture::GestureEmit;
@@ -48,6 +49,10 @@ pub(crate) struct RawGestureEvent {
     pub duration: f32,
     /// 取り消しで終わったか（0 / 1）。
     pub canceled: i32,
+    /// ピンチの倍率（W2-8。全体・横・縦。ピンチの始まりからの比。ピンチ以外は 1）。
+    pub scale: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
 }
 
 /// ジェスチャーのイベントをスクリプトへ通知する入口の型（引数は (ハンドル, イベント)）。
@@ -89,6 +94,9 @@ impl RawGestureEvent {
             dp_scale,
             duration: emit.duration as f32,
             canceled: i32::from(emit.canceled),
+            scale: emit.scale[0],
+            scale_x: emit.scale[1],
+            scale_y: emit.scale[2],
         }
     }
 }
@@ -102,10 +110,10 @@ mod tests {
     use super::*;
     use crate::engine::core::input::gesture::GestureEventKind;
 
-    /// 大きさは 19 × 4 バイト（C# の NativeGestureEvent と同じ。フィールドを足したら両方を直す）。
+    /// 大きさは 22 × 4 バイト（C# の NativeGestureEvent と同じ。フィールドを足したら両方を直す。W2-8 で倍率の 3 つを足した）。
     #[test]
     fn layout_matches_csharp_contract() {
-        assert_eq!(std::mem::size_of::<RawGestureEvent>(), 19 * 4);
+        assert_eq!(std::mem::size_of::<RawGestureEvent>(), 22 * 4);
         assert_eq!(std::mem::align_of::<RawGestureEvent>(), 4);
     }
 
@@ -123,10 +131,12 @@ mod tests {
             time: 1.0,
             duration: 0.25,
             canceled: true,
+            scale: [1.5, 2.0, 1.0],
         };
         let raw = RawGestureEvent::from_emit(&emit, emit.node, [800.0, 600.0], [5.0, 6.0], 2.0);
         assert_eq!((raw.kind, raw.pointer_id, raw.self_index, raw.self_generation), (4, 2, 3, 1));
         assert_eq!((raw.screen_x, raw.screen_y), (390.0, 320.0));
         assert_eq!((raw.local_x, raw.local_y, raw.dp_scale, raw.duration, raw.canceled), (5.0, 6.0, 2.0, 0.25, 1));
+        assert_eq!((raw.scale, raw.scale_x, raw.scale_y), (1.5, 2.0, 1.0), "ピンチの倍率（W2-8）");
     }
 }

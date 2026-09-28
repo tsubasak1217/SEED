@@ -767,6 +767,8 @@ pub(super) fn collect_sprite_items(
                     canvas_mat_to_gpu(frame.world_rs, canvas_scale, y_sign),
                     frame.zone,
                     clip.filter(|_| clip_enabled),
+                    // フォルダの子と同じ底上げ（W2-8。SEED.Draw の図形のレイヤーに足す）
+                    frame.layer_bias,
                 );
             }
             DrawnNode::Placed { actor, frame, placement, clip, culled } => {
@@ -828,7 +830,8 @@ fn collect_node_draw_items(
     );
     // スクリプト 2D プリミティブの座標空間として登録する
     // （`SEED.Draw.*(space: canvasTransform)` がこの行列を引く。切り抜きもこのノードと同じ）。
-    space_out.insert(actor.entity, node_mesh_gpu_mat, my_zone, node_clip);
+    // レイヤーの底上げ（W2-7 の layer_bias）もこのノードと同じ値を図形へ足す（W2-8。画面のスタックの中のグラフ）。
+    space_out.insert(actor.entity, node_mesh_gpu_mat, my_zone, node_clip, placement.layer_bias);
     // スクロールの見える範囲の外（W2-3）: 座標空間だけを登録し、スプライト・テキスト・パーティクルは作らない
     if space_only {
         return;
