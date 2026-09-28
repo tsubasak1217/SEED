@@ -108,6 +108,18 @@ public sealed class AndroidEnginePaths
     /// <summary>pak とスクリプトの DLL を作るコンソールツール（editor/tools/SeedPak）。</summary>
     public string SeedPakProjectDir => Path.Combine(RepositoryRoot, "editor", "tools", "SeedPak");
 
+    /// <summary>
+    /// cargo の出力先（runtime/target/）。ワークスペースのルートの .cargo/config.toml の build.target-dir が
+    /// ここを指す（PC の SEED.exe と Android の libSEED.so が同じ置き場に出る。Android は target/&lt;Rust のターゲット&gt;/&lt;プロファイル&gt;/）。
+    /// </summary>
+    public string CargoTargetDir => Path.Combine(RuntimeDir, "target");
+
+    /// <summary>
+    /// ランタイムのビルド構成の表のフォルダ（editor/config/。runtime_build_configs.json がある）。
+    /// PC の Play と Android の libSEED.so が同じ表から構成（debug / develop / release）を選ぶ（Native/AndroidNativeProfile.cs）。
+    /// </summary>
+    public string RuntimeBuildConfigDir => Path.Combine(RepositoryRoot, "editor", "config");
+
     /// <summary>リポジトリのルートを指定して作る。</summary>
     /// <param name="repositoryRoot">リポジトリのルート（runtime/ の親）。</param>
     public AndroidEnginePaths(string repositoryRoot)

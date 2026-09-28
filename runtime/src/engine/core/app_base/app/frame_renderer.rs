@@ -1563,15 +1563,20 @@ impl App {
         // 読み戻しバッファは 1 フレーム 1 回しか読めないので同じ規約で扱う。
         let mut did_orbit_readback = false;
 
-        // ピック結果デコード用 MC 情報 (base, dfs_id, slot_i, instance_count)
-        let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = {
+        // 世界線の全 MC（ピックの情報と影を落とすモデルの集合の両方の材料）。
+        // 以前は 2 か所で同じ走査（アクタの木全体をたどる）をしていたので、1 回だけにして使い回す（2026-09-28）。
+        // この区間は &self だけで、下の shadow_caster_paths までシーンを書き換えない（同じ結果になる）。
+        let wl_mcs = {
+            crate::profile_scope!("エディタ状態収集/MC の走査");
             if let Some(scene) = &self.scene {
                 collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
-                    .into_iter()
-                    .map(|(base, dfs, slot_i, mc)| (base, dfs, slot_i, mc.instance_mats.len()))
-                    .collect()
             } else { vec![] }
         };
+        // ピック結果デコード用 MC 情報 (base, dfs_id, slot_i, instance_count)
+        let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = wl_mcs
+            .iter()
+            .map(|&(base, dfs, slot_i, mc)| (base, dfs, slot_i, mc.instance_mats.len()))
+            .collect();
         // MC インスタンスの総数（キャンバス ID オフセット計算用）
         // 全 MC の (base + count) の最大値 = 割り当て済み ID の上限
         let mc_total_instances: u32 = wl_mc_pick_infos.iter()
@@ -1698,22 +1703,20 @@ impl App {
         // 粒度は「共有バッチ（モデルパス）単位」。同一モデルを共有する複数アクターで
         // cast_shadows が混在する場合、1 つでも true ならそのバッチ全体が影を落とす
         // （インスタンス単位の影除外は R2 では未対応・TODO）。
-        let shadow_caster_paths: std::collections::HashSet<String> =
-            if let Some(scene) = &self.scene {
-                collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
-                    .into_iter()
-                    // 非表示（visible=false）の MC は影も落とさない。
-                    // 実際には非表示 MC のインスタンスが統合バッチへ積まれないため
-                    // 影パスからも自動的に消えるが、キャスター集合の意味を
-                    // 「今フレーム影を落とすモデル」に保つためここでも除外する。
-                    .filter(|(_, _, _, mc)| mc.cast_shadows && mc.visible && !mc.source_path.is_empty())
-                    // Phase R7: シャドウキャスター集合も batch_key で識別する
-                    // （shared_model_batches のキーが batch_key のため一致させる）。
-                    .map(|(_, _, _, mc)| mc.batch_key())
-                    .collect()
-            } else {
-                std::collections::HashSet::new()
-            };
+        // 材料は上のピック情報と同じ走査の結果（wl_mcs。シーンが無ければ空＝従来の空集合と同じ）。
+        let shadow_caster_paths: std::collections::HashSet<String> = wl_mcs
+            .iter()
+            // 非表示（visible=false）の MC は影も落とさない。
+            // 実際には非表示 MC のインスタンスが統合バッチへ積まれないため
+            // 影パスからも自動的に消えるが、キャスター集合の意味を
+            // 「今フレーム影を落とすモデル」に保つためここでも除外する。
+            .filter(|(_, _, _, mc)| mc.cast_shadows && mc.visible && !mc.source_path.is_empty())
+            // Phase R7: シャドウキャスター集合も batch_key で識別する
+            // （shared_model_batches のキーが batch_key のため一致させる）。
+            .map(|(_, _, _, mc)| mc.batch_key())
+            .collect();
+        // MC の走査結果（シーンの借用）はここまで（下の build_text_expand_map が &mut self を取る）
+        drop(wl_mcs);
         // 影を落とすモデルが 1 つでもあり、かつ 3D 表示（2D ビューでない）なら影を有効化。
         let shadow_has_casters = !shadow_caster_paths.is_empty() && !edit_view_2d;
 
@@ -1742,7 +1745,11 @@ impl App {
         // 本文とスロットの展開はエディタ・Play を問わず要る（描画が使う）ので、
         // 実測より前に必ず 1 回だけ更新する。以降のフレーム内では
         // canvas_collect / canvas_text がこの結果を表引きするだけになる。
-        self.build_text_expand_map();
+        {
+            // 本文の展開は Play でも毎フレーム要る（描画が使う）。区間の内訳を実機で見るため分けて測る（2026-09-28）
+            crate::profile_scope!("エディタ状態収集/テキスト展開");
+            self.build_text_expand_map();
+        }
         let text_bounds_pre = if in_editor {
             self.build_text_bounds_map()
         } else {
@@ -5115,6 +5122,11 @@ impl App {
                         if let Some(p) = self.primitive2d.as_mut() {
                             p.begin();
                         }
+                        // キャンバスのテキストも同じ順（begin_frame → 全ゾーンの build → upload。2026-09-28 から
+                        // 全ゾーンの字を 1 本の使い回しの GPU バッファへ送る。行分割の使い回しの世代もここで進める）
+                        if let Some(ct) = self.canvas_text.as_mut() {
+                            ct.begin_frame();
+                        }
 
                         // 2D 背景ゾーン（全キャンバス横断で 1 セグメント）
                         let zone_bg = UiZoneDraw::build(
@@ -5127,7 +5139,6 @@ impl App {
                             &mut sb.main,
                             self.primitive2d.as_mut(),
                             self.canvas_text.as_mut(),
-                            &draw_ctx.device, &draw_ctx.queue,
                             &UiZoneBuildParams {
                                 prim_spaces: &prim_spaces.map,
                                 prim_screen_model: &prim_screen_model,
@@ -5150,7 +5161,6 @@ impl App {
                             &mut sb.main,
                             self.primitive2d.as_mut(),
                             self.canvas_text.as_mut(),
-                            &draw_ctx.device, &draw_ctx.queue,
                             &UiZoneBuildParams {
                                 prim_spaces: &prim_spaces.map,
                                 prim_screen_model: &prim_screen_model,
@@ -5178,7 +5188,6 @@ impl App {
                             &mut sb.main,
                             self.primitive2d.as_mut(),
                             self.canvas_text.as_mut(),
-                            &draw_ctx.device, &draw_ctx.queue,
                             &UiZoneBuildParams {
                                 prim_spaces: &prim_spaces.map,
                                 prim_screen_model: &prim_screen_model,
@@ -5206,6 +5215,11 @@ impl App {
                     // プリミティブ頂点も全ゾーンぶんを積み終えたのでここで 1 度だけ upload する。
                     if let Some(p) = self.primitive2d.as_mut() {
                         p.upload(&draw_ctx.device, &draw_ctx.queue);
+                    }
+                    // キャンバスのテキストも全ゾーンぶんを積み終えたのでここで 1 度だけ送る
+                    // （描画を記録する前。バッファを作り直しても記録済みのパスが古いほうを読まないように）
+                    if let Some(ct) = self.canvas_text.as_mut() {
+                        ct.upload(&draw_ctx.device, &draw_ctx.queue);
                     }
                     // main パス記録で 'rp ライフタイムに使うためバッファハンドルを clone
                     let main_inst_buf = draw_ctx.sprites.borrow().main.buffer();

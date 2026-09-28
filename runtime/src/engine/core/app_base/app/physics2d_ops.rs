@@ -732,20 +732,31 @@ impl App {
 
         // ── Actor2d コンテキストを一括収集（read-only borrow で完結させる）────
         let contexts: Vec<Actor2dPhysicsCtx> = if let Some(scene) = &self.scene {
-            // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
-            let (win_w, win_h) = viewport_size
-                .map(|[w, h]| (w, h))
-                .unwrap_or((1280.0, 720.0));
-            let (canvas_vp_overrides, root_auto_sizes) =
-                self.build_2d_layout_maps(scene, viewport_size, win_w, win_h);
-            collect_actor2d_contexts(
-                scene,
-                self.active_world_line,
-                viewport_size,
-                &canvas_vp_overrides,
-                &root_auto_sizes,
-                self.edit_view_is_2d(),
-            )
+            if self.mode == RuntimeMode::Play
+                && !super::frame_scan_gates::world_has_2d_colliders(&scene.world)
+            {
+                // Play で 2D のコライダーが 1 つも無ければ、文脈の表（＝ 2D の木全体のレイアウトの表）を作らない（2026-09-28）。
+                // 物理ワールドにボディが無い（ボディは Collider2dComponent からしか作られない）ので、下の処理が文脈を使う所
+                // （書き戻し・キネマティックの送信・静的ボディの再登録・ドラッグ）はどれもコライダーを持つ文脈か
+                // 物理のボディの ID でしか引かず、空の表と同じ結果になる（frame_scan_gates.rs）。受信・重力・ビューポートの
+                // 控えは従来どおり行う。Edit（編集時の 2D 物理）はドラッグの押し戻しの状態を持つので従来どおり毎回作る。
+                Vec::new()
+            } else {
+                // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
+                let (win_w, win_h) = viewport_size
+                    .map(|[w, h]| (w, h))
+                    .unwrap_or((1280.0, 720.0));
+                let (canvas_vp_overrides, root_auto_sizes) =
+                    self.build_2d_layout_maps(scene, viewport_size, win_w, win_h);
+                collect_actor2d_contexts(
+                    scene,
+                    self.active_world_line,
+                    viewport_size,
+                    &canvas_vp_overrides,
+                    &root_auto_sizes,
+                    self.edit_view_is_2d(),
+                )
+            }
         } else {
             return;
         };

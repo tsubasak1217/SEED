@@ -1,11 +1,15 @@
 // ============================================================
 //  NativeBuildStep.cs — cargo ndk で libSEED.so を作り、app/src/main/jniLibs/<ABI>/ へ置く
 //
-//  cargo ndk -t <ABI>... -P <最低 API> -o <jniLibs> build [--release]（作業フォルダ runtime/android/native）。
+//  cargo ndk -t <ABI>... -P <最低 API> -o <jniLibs> build [<プロファイルの引数>]（作業フォルダ runtime/android/native）。
+//  プロファイルは準備で決めたもの（Native/AndroidNativeProfile.cs。開発用の既定は develop＝PC の Play と同じ構成の表の既定、
+//  配布用・--release は --release、--native-profile debug なら引数なし＝cargo の dev）。
 //  計画が「古い」と判断した ABI だけを作る。ANDROID_NDK_HOME には道具の解決で決めた表記をそのまま渡す
 //  （表記が変わると cc 系の依存が作り直されるため。Toolchain/AndroidToolchain.cs）。
 //  cargo ndk を呼ぶ前に、作る ABI の jniLibs の .so を消す（RemovePreviousLibraries。cargo-ndk は
-//  コピー先の方が新しいと写さないため、debug ⇔ release の切り替えで別のプロファイルの .so が APK に残るのを防ぐ）。
+//  コピー先の方が新しいと写さないため、プロファイルの切り替えで別のプロファイルの .so が APK に残るのを防ぐ）。
+//  cargo ndk の後に、そのプロファイルの出力（runtime/target/<Rust のターゲット>/<出力フォルダ>/libSEED.so）が jniLibs へ
+//  写っているかを確かめ、写っていなければここで写す（EnsureCopiedFromProfileOutput。cargo-ndk の版による写し方の違いに備える）。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
@@ -63,8 +67,10 @@ public sealed class NativeBuildStep : IAndroidPipelineStep
         {
             "-P", AndroidRuntimeContract.MinApiLevel.ToString(CultureInfo.InvariantCulture), "-o", context.Engine.JniLibsDir, "build",
         });
-        // --release の指定か、配布用（release）のビルド（段階D。配布物は常に最適化した .so）
-        if (context.Request.OptimizesNative) arguments.Add("--release");
+        // プロファイル（開発用の既定は develop。配布用・--release は --release。Native/AndroidNativeProfile.cs）
+        var profile = context.NativeProfile;
+        arguments.AddRange(profile.CargoArguments);
+        log.Info($"libSEED.so の構成: {profile.Describe()}");
 
         var spec = new ChildProcessSpec
         {
@@ -85,6 +91,7 @@ public sealed class NativeBuildStep : IAndroidPipelineStep
         foreach (var abi in decision.Abis)
         {
             var library = context.Engine.NativeLibraryPath(abi);
+            EnsureCopiedFromProfileOutput(profile.BuiltLibraryPath(context.Engine, abi), library, log);
             if (!File.Exists(library))
             {
                 throw new AndroidPipelineException(AndroidFailureKind.Build, $"cargo ndk の後に {library} がありません。");
@@ -97,9 +104,37 @@ public sealed class NativeBuildStep : IAndroidPipelineStep
     }
 
     /// <summary>
+    /// cargo ndk の後、このプロファイルの出力（<paramref name="built"/>）が jniLibs（<paramref name="library"/>）へ写っているかを確かめ、
+    /// 写っていなければ（無い・大きさが違う）ここで写す。
+    /// cargo-ndk 4.1.2 は --profile develop の出力を -o へ写す（2026-09-28 に確認）が、版によって写し方・写す元が違っても
+    /// 「このプロファイルで作った .so が APK に入る」ことを保つための保険。出力が見つからなければ何もしない
+    /// （target-dir を変えている環境。その場合は cargo-ndk の写しをそのまま使い、無ければ呼び出し元が失敗にする）。
+    /// </summary>
+    /// <param name="built">このプロファイルの cargo の出力（runtime/target/&lt;ターゲット&gt;/&lt;出力フォルダ&gt;/libSEED.so）。</param>
+    /// <param name="library">jniLibs の .so。</param>
+    /// <param name="log">工程のログ。</param>
+    internal static void EnsureCopiedFromProfileOutput(string built, string library, AndroidPhaseLog log)
+    {
+        if (!File.Exists(built)) return;
+        var builtLength = new FileInfo(built).Length;
+        if (File.Exists(library) && new FileInfo(library).Length == builtLength) return;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(library)!);
+            File.Copy(built, library, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new AndroidPipelineException(AndroidFailureKind.Build,
+                $"{built} を {library} へ写せませんでした（{ex.Message}）。ほかのプログラムが開いていないか確認してください。");
+        }
+        log.Info($"cargo ndk が写さなかったので、このプロファイルの出力を写しました: {built} → {library}");
+    }
+
+    /// <summary>
     /// これから作る ABI の jniLibs の .so（前のビルドで写したもの）を消す。
     /// cargo-ndk（4.1.2 で確認）は「コピー先の更新時刻がビルドの成果物と同じか新しければ写さない」（is_fresh）。
-    /// そのため debug ⇔ release を切り替えると、Rust に変更が無く今回のプロファイルの成果物が前のコピーより古いとき、
+    /// そのため debug ⇔ release（2026-09-28 からは develop も）を切り替えると、Rust に変更が無く今回のプロファイルの成果物が前のコピーより古いとき、
     /// cargo ndk は成功しても写さず、もう一方のプロファイルの .so が APK に入ってしまう
     /// （2026-09-26 に実機で確認: 配布用のビルドの後の開発用の run で、配布用の .so が開発用の APK に入った。
     /// 逆向きでは配布用の APK / AAB に開発用の .so が入りうる）。消しておけば cargo-ndk は必ず写す。

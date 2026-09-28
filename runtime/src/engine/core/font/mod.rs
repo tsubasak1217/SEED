@@ -42,12 +42,19 @@ pub mod screen_hint;
 pub mod rasterizer;
 /// SDF アトラスの共通定数とアウトライン太さ変換
 pub mod sdf;
+/// 2 値画像の厳密な二乗距離変換（グリフの SDF を画素数に比例の時間で焼く。2026-09-28）
+pub mod sdf_edt;
 /// テキスト寸法計算（GPU 非依存の純関数。描画とピックで共有する）
 pub mod text_layout;
+/// キャンバスのテキストのレイアウトの使い回し（文字列・書体・大きさ・枠が同じなら前のフレームの配置を使う。2026-09-28）
+pub mod text_layout_cache;
+/// キャンバスのテキストの頂点・添字を使い回しの GPU バッファへ送る（毎フレーム作って捨てない。2026-09-28）
+pub mod text_gpu_stream;
 /// テキストの自動折り返し（枠幅に収める行分割・簡易禁則。GPU 非依存の純関数）
 pub mod text_wrap;
 
 use ab_glyph::{Font, InvalidFont, PxScale, ScaleFont};
+use std::collections::HashSet;
 use wgpu::util::DeviceExt;
 
 use atlas::{GlyphAtlas, GlyphInfo, GlyphKey};
@@ -155,6 +162,12 @@ impl TextBatch {
 
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
+    }
+
+    /// 中身を空にする（確保した領域は残す。フレームごとに同じバッチへ積み直すため）。
+    pub fn clear(&mut self) {
+        self.vertices.clear();
+        self.indices.clear();
     }
 
     /// 現在までに積んだインデックス数。
@@ -295,6 +308,11 @@ pub struct FontSystem {
     pub atlas: GlyphAtlas,
     pipeline: TextPipeline,
     atlas_bg: wgpu::BindGroup,
+    /// アトラスに置けない字（アウトラインが無い・アトラスが満杯で入らなかった）の表（2026-09-28）。
+    ///
+    /// どちらも結果が変わらない（フォント ID の実体は固定・アトラスは追い出さない）ので、焼き直さずに飛ばす。
+    /// `prepare_glyphs` の返り値は従来と同じ（どちらの字も返さない）。
+    unplaceable: HashSet<GlyphKey>,
 }
 
 impl FontSystem {
@@ -334,6 +352,7 @@ impl FontSystem {
             atlas,
             pipeline,
             atlas_bg,
+            unplaceable: HashSet::new(),
         })
     }
 
@@ -381,16 +400,29 @@ impl FontSystem {
                 result.push((ch, *info));
                 continue;
             }
+            // 焼いても描くものが無い・アトラスに入らないと分かっている字は焼き直さない（2026-09-28）。
+            // 以前はスペースなどアウトラインの無い字をフレームごとに焼きに行っていた（PC の計測で 1 フレーム約 25 回）。
+            if self.unplaceable.contains(&key) {
+                continue;
+            }
 
             // 未キャッシュ: 固定 em サイズで距離場を焼いてアトラスへ入れる。
+            // 初めて出る文字だけがここへ来る（呼び出し回数＝そのフレームに新しく焼いた字数。スクロール開始の山の切り分け用）
+            crate::profile_scope!("描画/UI/テキスト/グリフ焼き");
             let font = self.registry.font(font_id);
             let Some(glyph) = rasterize_glyph_sdf(font, ch) else {
                 // アウトラインなし（スペース等）→ 描くものが無いので飛ばす。
                 // 送り幅が要る場合は `advance_em` を使うこと。
+                // フォント ID ごとの実体は変わらない（registry は読み直さない）ので、結果は何度焼いても同じ＝覚えてよい。
+                self.unplaceable.insert(key);
                 continue;
             };
-            if let Some(info) = self.atlas.insert(key, &glyph) {
-                result.push((ch, info));
+            match self.atlas.insert(key.clone(), &glyph) {
+                Some(info) => result.push((ch, info)),
+                // アトラスが満杯（追い出しはしない＝空きは増えない）: 同じ大きさの字は二度と入らないので覚える
+                None => {
+                    self.unplaceable.insert(key);
+                }
             }
         }
 
@@ -480,6 +512,31 @@ impl FontSystem {
         pass.set_bind_group(0, &self.atlas_bg, &[]);
         pass.set_vertex_buffer(0, gpu.vertex_buf.slice(..));
         pass.set_index_buffer(gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(first_index..(first_index + index_count), 0, 0..1);
+    }
+
+    /// 使い回しのバッファ（`text_gpu_stream::TextGpuStream`）の **部分区間だけ**をレンダーパスへ描画する。
+    ///
+    /// - `uploaded_indices`: そのバッファへ今のフレームで送った添字の数（区間がこれを超えたら描かない）
+    /// - `first_index` / `index_count`: 区間（`index_count` が 0 なら何もしない）
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_buffers_range<'pass>(
+        &'pass self,
+        vertex_buf: &'pass wgpu::Buffer,
+        index_buf: &'pass wgpu::Buffer,
+        uploaded_indices: u32,
+        first_index: u32,
+        index_count: u32,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        // 空区間、または送った範囲の外の指定は描かない（安全側に倒す。draw_text_batch_range と同じ規則）。
+        if index_count == 0 || first_index + index_count > uploaded_indices {
+            return;
+        }
+        pass.set_pipeline(&self.pipeline.pipeline);
+        pass.set_bind_group(0, &self.atlas_bg, &[]);
+        pass.set_vertex_buffer(0, vertex_buf.slice(..));
+        pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(first_index..(first_index + index_count), 0, 0..1);
     }
 

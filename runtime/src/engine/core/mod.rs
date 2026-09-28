@@ -7,6 +7,8 @@ pub mod canvas_scroll;
 /// アプリがバックグラウンドにいるか（Android の suspended〜resumed）の共有状態と、その間スレッドを眠らせる待機。
 pub mod background_gate;
 pub mod clock;
+/// フレームごとの使い回しの表を引く速いハッシュ（Fx 方式。2026-09-28）
+pub mod fast_hash;
 pub mod font;
 pub mod input;
 pub mod loader;

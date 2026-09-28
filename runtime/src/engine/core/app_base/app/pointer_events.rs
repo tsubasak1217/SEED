@@ -261,48 +261,53 @@ impl App {
                 self.pointer.reset();
                 return;
             };
-            let (overrides, root_auto) = self.build_ss_layout_maps(
-                &scene.actors,
-                &scene.world,
-                wl,
-                win_w,
-                win_h,
-                None,
-            );
-            let mesh_of =
-                |path: &str| super::sprite_bone_ops::load_sprite_mesh_cached(&mesh_cache, path);
+            // raycast_target = true の Sprite / SkinnedSprite が 1 つも無ければ候補は必ず空なので、
+            // 木の走査（レイアウトの表の作成を含む）を省いて「当たり無し」とする（2026-09-28。frame_scan_gates.rs）。
+            // 状態遷移（ホバーの Exit・押下の取り消し）は下で従来どおり行う（当たり無しの入力として）。
+            if super::frame_scan_gates::world_has_pointer_targets(&scene.world) {
+                let (overrides, root_auto) = self.build_ss_layout_maps(
+                    &scene.actors,
+                    &scene.world,
+                    wl,
+                    win_w,
+                    win_h,
+                    None,
+                );
+                let mesh_of =
+                    |path: &str| super::sprite_bone_ops::load_sprite_mesh_cached(&mesh_cache, path);
 
-            const IDENTITY: [[f32; 4]; 4] = [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ];
-            let mut counter: u32 = 0;
-            walk_pick_candidates_2d(
-                &scene.actors,
-                &scene.world,
-                wl,
-                canvas_x,
-                canvas_y,
-                &mut counter,
-                IDENTITY,
-                [1.0, 1.0],
-                None,
-                0,
-                crate::engine::components::CanvasDrawZone::Foreground,
-                Some([win_w, win_h]),
-                &overrides,
-                &root_auto,
-                // Play の実合成は常に「画面中央原点」（設計空間表示は Edit 専用）。
-                false,
-                &mesh_of,
-                // ポインタイベントはテキストを対象にしない（TextComponent は
-                // raycast_target を持たない）。空の表を渡して明示する。
-                &TextBoundsMap::new(),
-                PickFilter2d::POINTER_EVENT,
-                &mut cands,
-            );
+                const IDENTITY: [[f32; 4]; 4] = [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ];
+                let mut counter: u32 = 0;
+                walk_pick_candidates_2d(
+                    &scene.actors,
+                    &scene.world,
+                    wl,
+                    canvas_x,
+                    canvas_y,
+                    &mut counter,
+                    IDENTITY,
+                    [1.0, 1.0],
+                    None,
+                    0,
+                    crate::engine::components::CanvasDrawZone::Foreground,
+                    Some([win_w, win_h]),
+                    &overrides,
+                    &root_auto,
+                    // Play の実合成は常に「画面中央原点」（設計空間表示は Edit 専用）。
+                    false,
+                    &mesh_of,
+                    // ポインタイベントはテキストを対象にしない（TextComponent は
+                    // raycast_target を持たない）。空の表を渡して明示する。
+                    &TextBoundsMap::new(),
+                    PickFilter2d::POINTER_EVENT,
+                    &mut cands,
+                );
+            }
         }
         let hit = frontmost_candidate(&cands);
 

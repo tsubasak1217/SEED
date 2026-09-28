@@ -56,54 +56,42 @@ pub fn rasterize_glyph_bitmap(
 /// - `0   (0.0)` = 外側で `spread` ピクセル以上離れている
 ///
 /// `spread` はサーチ半径（ピクセル）。大きいほど遠くまで勾配が続く。
+///
+/// 【2026-09-28 から厳密な距離変換（sdf_edt.rs）で求める】以前の総当たり（各画素のまわり ±spread を全部見る）と
+/// 全画素で同じ値になる（理由は sdf_edt.rs の冒頭。下のテストが実際のグリフで確かめる）。
+/// 「反対側の画素までの二乗距離」を spread²+1 で切り詰めるところまでが総当たりと同じ意味で、以降の式は総当たりのまま。
 pub fn generate_sdf(bitmap: &[u8], width: u32, height: u32, spread: u32) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
     let spread_f = spread as f32;
-    let spread_sq = (spread * spread) as usize;
+    // 総当たりが「見つからなかった」ときに使っていた値（spread² より 1 大きい）。これ以上の距離は同じ値に切り詰める
+    let not_found_sq = i64::from(spread) * i64::from(spread) + 1;
+    let inside_at = |i: usize| bitmap[i] >= SDF_INSIDE_THRESHOLD;
+    // 外側の画素 → いちばん近い内側の画素、内側の画素 → いちばん近い外側の画素（どちらも二乗距離の整数）
+    let to_inside = super::sdf_edt::squared_distance_to_targets(w, h, inside_at);
+    let to_outside = super::sdf_edt::squared_distance_to_targets(w, h, |i| !inside_at(i));
     let mut sdf = vec![0u8; w * h];
 
-    for y in 0..h {
-        for x in 0..w {
-            let inside = bitmap[y * w + x] >= 128;
+    for (i, out) in sdf.iter_mut().enumerate() {
+        let inside = inside_at(i);
+        let nearest_opposite = if inside { to_outside[i] } else { to_inside[i] };
+        let min_dist_sq = nearest_opposite.min(not_found_sq);
 
-            let x_min = x.saturating_sub(spread as usize);
-            let x_max = (x + spread as usize + 1).min(w);
-            let y_min = y.saturating_sub(spread as usize);
-            let y_max = (y + spread as usize + 1).min(h);
-
-            let mut min_dist_sq = spread_sq + 1;
-
-            'outer: for sy in y_min..y_max {
-                let dy = sy as isize - y as isize;
-                for sx in x_min..x_max {
-                    let dx = sx as isize - x as isize;
-                    let d_sq = (dx * dx + dy * dy) as usize;
-                    if d_sq >= min_dist_sq {
-                        continue;
-                    }
-                    if (bitmap[sy * w + sx] >= 128) != inside {
-                        min_dist_sq = d_sq;
-                        if min_dist_sq == 0 {
-                            break 'outer;
-                        }
-                    }
-                }
-            }
-
-            let dist = (min_dist_sq as f32).sqrt();
-            let norm = (dist / spread_f).min(1.0);
-            let val = if inside {
-                0.5 + 0.5 * norm
-            } else {
-                0.5 - 0.5 * norm
-            };
-            sdf[y * w + x] = (val * 255.0).clamp(0.0, 255.0) as u8;
-        }
+        let dist = (min_dist_sq as f32).sqrt();
+        let norm = (dist / spread_f).min(1.0);
+        let val = if inside {
+            0.5 + 0.5 * norm
+        } else {
+            0.5 - 0.5 * norm
+        };
+        *out = (val * 255.0).clamp(0.0, 255.0) as u8;
     }
 
     sdf
 }
+
+/// カバレッジ（0..255）がこれ以上の画素を「内側」とする（総当たりの頃からの閾値）。
+const SDF_INSIDE_THRESHOLD: u8 = 128;
 
 
 // ── サイズ非依存 SDF グリフ ───────────────────────────────────
@@ -254,6 +242,101 @@ mod tests {
     fn builtin_font() -> FontArc {
         FontArc::try_from_slice(crate::engine::core::font::DEFAULT_FONT_BYTES)
             .expect("組み込みフォントは必ず読める")
+    }
+
+    /// 2026-09-28 までの総当たりの SDF（検算用にそのまま残す。各画素のまわり ±spread の正方形を全部見る）。
+    fn generate_sdf_brute_force(bitmap: &[u8], width: u32, height: u32, spread: u32) -> Vec<u8> {
+        let w = width as usize;
+        let h = height as usize;
+        let spread_f = spread as f32;
+        let spread_sq = (spread * spread) as usize;
+        let mut sdf = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let inside = bitmap[y * w + x] >= 128;
+                let x_min = x.saturating_sub(spread as usize);
+                let x_max = (x + spread as usize + 1).min(w);
+                let y_min = y.saturating_sub(spread as usize);
+                let y_max = (y + spread as usize + 1).min(h);
+                let mut min_dist_sq = spread_sq + 1;
+                'outer: for sy in y_min..y_max {
+                    let dy = sy as isize - y as isize;
+                    for sx in x_min..x_max {
+                        let dx = sx as isize - x as isize;
+                        let d_sq = (dx * dx + dy * dy) as usize;
+                        if d_sq >= min_dist_sq {
+                            continue;
+                        }
+                        if (bitmap[sy * w + sx] >= 128) != inside {
+                            min_dist_sq = d_sq;
+                            if min_dist_sq == 0 {
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                let dist = (min_dist_sq as f32).sqrt();
+                let norm = (dist / spread_f).min(1.0);
+                let val = if inside { 0.5 + 0.5 * norm } else { 0.5 - 0.5 * norm };
+                sdf[y * w + x] = (val * 255.0).clamp(0.0, 255.0) as u8;
+            }
+        }
+        sdf
+    }
+
+    /// 【見た目を変えないことの検証】実際のグリフ（rasterize_glyph_sdf と同じ em 64・パディング込み）で、
+    /// 距離変換の SDF が総当たりと全画素一致する（英数字・記号・かな・漢字・全角数字）。
+    #[test]
+    fn distance_transform_sdf_matches_brute_force_on_real_glyphs() {
+        use crate::engine::core::font::sdf::SDF_SPREAD_PX;
+        let font = builtin_font();
+        let text = "AgWm@&%#8.,;:!?()[]{}|/\\~^_ あいうえおがぱゃっーアイウエオ漢字日本語図鑑釣竿魚鳴動０１２３４５６７８９：／";
+        let mut checked = 0;
+        for ch in text.chars() {
+            let Some((bitmap, bw, bh, _, _)) = rasterize_glyph_bitmap(&font, ch, SDF_EM_PX) else {
+                continue;
+            };
+            // rasterize_glyph_sdf と同じパディング
+            let pad = SDF_SPREAD_PX;
+            let (pw, ph) = (bw + pad * 2, bh + pad * 2);
+            let mut padded = vec![0u8; (pw * ph) as usize];
+            for row in 0..bh as usize {
+                let dst = (row + pad as usize) * pw as usize + pad as usize;
+                padded[dst..dst + bw as usize].copy_from_slice(&bitmap[row * bw as usize..(row + 1) * bw as usize]);
+            }
+            assert_eq!(
+                generate_sdf(&padded, pw, ph, pad),
+                generate_sdf_brute_force(&padded, pw, ph, pad),
+                "'{ch}'（{pw}x{ph}）で総当たりと違う"
+            );
+            checked += 1;
+        }
+        assert!(checked > 60, "アウトラインを持つ字を十分に確かめた: {checked}");
+    }
+
+    /// 境界の細かい形（1 画素の点・線・市松・端に接する塗り・spread より遠い画素）でも総当たりと全画素一致する。
+    #[test]
+    fn distance_transform_sdf_matches_brute_force_on_patterns() {
+        let (w, h) = (23u32, 19u32);
+        let patterns: Vec<Box<dyn Fn(u32, u32) -> bool>> = vec![
+            Box::new(|x, y| x == 11 && y == 9),
+            Box::new(|x, _| x == 3),
+            Box::new(|x, y| (x + y) % 2 == 0),
+            Box::new(|x, _| x < 2),
+            Box::new(|x, y| x > 18 && y > 15),
+            Box::new(|_, _| false),
+            Box::new(|_, _| true),
+        ];
+        for (i, pattern) in patterns.iter().enumerate() {
+            let bitmap: Vec<u8> = (0..w * h).map(|k| if pattern(k % w, k / w) { 200 } else { 30 }).collect();
+            for spread in [1u32, 4, 8] {
+                assert_eq!(
+                    generate_sdf(&bitmap, w, h, spread),
+                    generate_sdf_brute_force(&bitmap, w, h, spread),
+                    "模様 {i}・spread {spread}"
+                );
+            }
+        }
     }
 
     /// 【見た目サイズ不変の検証】

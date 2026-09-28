@@ -32,6 +32,7 @@ public static class AutoTargetAndSceneTests
         harness.Add("未保存の確認: 他の確認と同じ言い回し・ボタンは 保存して実行／保存せず実行／キャンセル・変更があるときだけ", UnsavedPrompt);
         harness.Add("Output: 起動するシーン・保存して実行・保存に失敗・保存せず実行・キャンセルの行と色", OutputLines);
         harness.Add("pak の起点: 開いている未登録のシーンは ForPlay の指定から足す・登録済み・「開始シーンからプレイ」・パッケージ化は足さない", OpenSceneBecomesPakSeed);
+        harness.Add("libSEED.so の構成: 実行ボタンはツールバーの構成の id を渡す・未指定と空白は表の既定・パッケージ化は既定か --release", PlayPassesRuntimeBuildConfig);
     }
 
     /// <summary>開いているシーン → エディタの指定 → 中核の pak の起点の判断（段階C-4）。</summary>
@@ -65,6 +66,22 @@ public static class AutoTargetAndSceneTests
 
         var package = AndroidEditorRunRequests.ForPackage(temp.Combine("Game"), new[] { "arm64-v8a" }, release: false);
         Check.True(package.ScenePath is null, "パッケージ化ウィンドウはシーンを渡さない（pak は登録シーンだけから作る）");
+    }
+
+    /// <summary>
+    /// 実行ボタンの指定は libSEED.so の構成にツールバーのランタイムのビルド構成（PC の Play と同じ id）を入れる（2026-09-28）。
+    /// 未指定・空白なら null（中核が runtime_build_configs.json の既定＝develop にする）。パッケージ化の開発用は既定、Release は --release。
+    /// </summary>
+    private static void PlayPassesRuntimeBuildConfig()
+    {
+        var auto = RunTargetCatalogBuilder.AndroidAuto(null);
+        Check.Equal("debug", AndroidEditorRunRequests.ForPlay("D:/proj", auto, null, null, null, "debug").NativeProfile, "ツールバーの構成の id");
+        Check.Equal("develop", AndroidEditorRunRequests.ForPlay("D:/proj", auto, null, null, null, " develop ").NativeProfile, "前後の空白は外す");
+        Check.True(AndroidEditorRunRequests.ForPlay("D:/proj", auto, null, null).NativeProfile is null, "未指定は表の既定");
+        Check.True(AndroidEditorRunRequests.ForPlay("D:/proj", auto, null, null, null, "  ").NativeProfile is null, "空白だけは表の既定");
+        var package = AndroidEditorRunRequests.ForPackage("D:/proj", new[] { "arm64-v8a" }, release: false);
+        Check.True(package.NativeProfile is null && !package.OptimizesNative, "パッケージ化の開発用は表の既定（develop）");
+        Check.True(AndroidEditorRunRequests.ForPackage("D:/proj", new[] { "arm64-v8a" }, release: true).OptimizesNative, "Release は --release");
     }
 
     /// <summary>自動: 準備で端末が決まる。</summary>

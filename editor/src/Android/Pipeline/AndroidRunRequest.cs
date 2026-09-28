@@ -11,6 +11,7 @@
 //
 //  【ビルドの種類と形式（段階D。docs/android.md §24）】
 //    Variant = Debug（既定。デバッグ用の鍵・debuggable）/ Release（配布用。アップロード鍵で署名・Rust は --release）
+//    開発用の Rust の構成は NativeProfile（既定は runtime_build_configs.json の既定＝develop。Native/AndroidNativeProfile.cs）
 //    Format  = Apk（既定）/ Aab（配布用の Build だけ）
 //    署名の鍵は KeystorePath・KeyAlias（無ければ packaging_settings.json の android.signing）、パスワードは SigningSecrets
 //    （メモリだけ。JSON に読み書きしない。無ければ環境変数）。食い違いの検査は AndroidRunPipeline.ValidateVariant。
@@ -143,6 +144,15 @@ public sealed record AndroidRunRequest
     /// <summary>libSEED.so を --release で作るか（<see cref="Release"/> の指定か、配布用のビルド）。</summary>
     [JsonIgnore]
     public bool OptimizesNative => Release || Variant == AndroidBuildVariant.Release;
+
+    /// <summary>
+    /// 開発用の libSEED.so を作る構成の id（editor/config/runtime_build_configs.json の id。debug / develop / release）。
+    /// null なら表の既定（develop＝最適化 1 ＋デバッグ情報。PC の Play の既定と同じ）。ネイティブのデバッガで追うときは debug
+    /// （cargo の dev・最適化なし）。<see cref="Release"/>・配布用のビルドは常に release で、食い違う id は誤り。
+    /// 決め方は Native/AndroidNativeProfile.cs（SeedAndroid の --native-profile・エディタの実行ボタンはツールバーの構成）。
+    /// </summary>
+    [JsonPropertyName("native_profile")]
+    public string? NativeProfile { get; init; }
 
     /// <summary>libSEED.so のビルドを飛ばす。</summary>
     [JsonPropertyName("skip_rust_build")]

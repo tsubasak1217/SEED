@@ -13,6 +13,7 @@ using System.IO;
 using SEEDEditor.Android.Dotnet;
 using SEEDEditor.Android.Gradle;
 using SEEDEditor.Android.Icons;
+using SEEDEditor.Android.Native;
 using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Project;
 using SEEDEditor.Android.Toolchain;
@@ -30,14 +31,17 @@ public static class AndroidStepFingerprints
     /// </summary>
     /// <param name="engine">エンジン側の置き場。</param>
     /// <param name="abi">ABI。</param>
-    /// <param name="release">--release か。</param>
+    /// <param name="profile">
+    /// libSEED.so の cargo のプロファイル（Native/AndroidNativeProfile.cs）。材料は cargo のプロファイル名
+    /// （dev / develop / release）。プロファイルを替えれば .so の中身が変わるので作り直す。
+    /// </param>
     /// <param name="ndkPath">NDK の場所（分からなければ null）。</param>
     /// <returns>指紋。</returns>
-    public static AndroidStepFingerprint Native(AndroidEnginePaths engine, AndroidAbi abi, bool release, string? ndkPath)
+    public static AndroidStepFingerprint Native(AndroidEnginePaths engine, AndroidAbi abi, AndroidNativeProfile profile, string? ndkPath)
     {
         var builder = new AndroidFingerprintBuilder()
             .AddValue("abi", abi.Name)
-            .AddValue("profile", release ? "release" : "debug")
+            .AddValue("profile", profile.CargoProfile)
             .AddValue("api_level", AndroidRuntimeContract.MinApiLevel.ToString(CultureInfo.InvariantCulture))
             .AddValue("ndk", ndkPath);
         AddRepositoryTrees(builder, engine, AndroidBuildInputs.NativeSources);

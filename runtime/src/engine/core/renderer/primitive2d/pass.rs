@@ -21,7 +21,8 @@
 use std::collections::HashMap;
 
 use super::queue::PrimitiveCommand;
-use super::tessellate::tessellate;
+use super::tess_cache::TessellationCache;
+use super::tessellate::Mesh2d;
 use crate::engine::components::CanvasDrawZone;
 use crate::engine::core::renderer::ui_clip::UiClipId;
 use crate::engine::ecs::Entity;
@@ -229,6 +230,10 @@ pub struct Primitive2dRenderer {
     vertex_capacity: u64,
     /// インデックスバッファの容量（インデックス数）。
     index_capacity: u64,
+    /// 三角形分割の使い回し（形が同じなら前のフレームの分割を使う。2026-09-28。tess_cache.rs）。
+    tess_cache: TessellationCache,
+    /// メッシュの頂点 → 積んだ頂点の番号の対応の作業領域（図形ごとに確保し直さない。射影に失敗した頂点は None）。
+    vertex_map: Vec<Option<u32>>,
 }
 
 impl Primitive2dRenderer {
@@ -338,13 +343,22 @@ impl Primitive2dRenderer {
             index_buf: None,
             vertex_capacity: 0,
             index_capacity: 0,
+            tess_cache: TessellationCache::new(),
+            vertex_map: Vec::new(),
         }
     }
 
-    /// フレーム開始。CPU 蓄積バッファを空にする。
+    /// フレーム開始。CPU 蓄積バッファを空にし、三角形分割の使い回しの世代を進める
+    /// （前のフレームで使わなかった形を捨てる）。
     pub fn begin(&mut self) {
         self.verts.clear();
         self.indices.clear();
+        self.tess_cache.advance_generation();
+    }
+
+    /// 三角形分割の使い回しの回数（使い回した・作った。診断用）。
+    pub fn tessellation_stats(&self) -> (u64, u64) {
+        self.tess_cache.stats()
     }
 
     /// コマンド列を 1 レンジぶん積む。
@@ -384,7 +398,19 @@ impl Primitive2dRenderer {
             } else {
                 FEATHER_UNITS
             };
-            let mesh = tessellate(cmd, feather);
+            // 形が前のフレームと同じなら分割を使い回す（色・行列は下で毎フレーム掛ける。tess_cache.rs）。
+            // 図形ごとの区間の計測は置かない（1 フレーム数百回の計測そのものが実機で 0.2 ms ほど乗り、内訳を歪めるため）
+            let shape = self.tess_cache.tessellate(cmd, feather);
+            // 画面（NDC の [-1, 1]²）の完全に外にある図形は頂点を射影・積まない（1 画素も描かれない。offscreen_cull.rs）。
+            // 3D ワールドキャンバス（深度テストあり）は判定しない
+            if !depth_tested
+                && shape
+                    .bounds
+                    .is_some_and(|b| super::offscreen_cull::bounds_outside_viewport(b, model, view_proj))
+            {
+                continue;
+            }
+            let mesh = &shape.mesh;
             if mesh.is_empty() {
                 continue;
             }
@@ -393,36 +419,17 @@ impl Primitive2dRenderer {
                 .style
                 .gradient
                 .map_or(([0.0; 2], [0.0; 2]), |g| (cmd.srt.apply(g.from), cmd.srt.apply(g.to)));
-            // 頂点を NDC へ変換して積む。投影に失敗した頂点は None を記録し、
-            // その頂点を含む三角形は捨てる（カメラ背後の 3D キャンバスなど）。
-            let base = self.verts.len() as u32;
-            let mut mapped: Vec<Option<u32>> = Vec::with_capacity(mesh.verts.len());
-            let mut next = base;
-            for v in &mesh.verts {
-                match project(v.pos[0], v.pos[1], model, view_proj) {
-                    Some(ndc) => {
-                        self.verts.push(PrimitiveVertex {
-                            position: ndc,
-                            // 単色なら従来の色。グラデーションなら頂点の位置の色（三角形の中は線形補間で正確）
-                            color: cmd.style.color_at(cmd.color, grad_from, grad_to, v.pos),
-                            edge: v.alpha,
-                        });
-                        mapped.push(Some(next));
-                        next += 1;
-                    }
-                    None => mapped.push(None),
-                }
-            }
-            for tri in mesh.idx.chunks_exact(3) {
-                let (a, b, c) = (
-                    mapped[tri[0] as usize],
-                    mapped[tri[1] as usize],
-                    mapped[tri[2] as usize],
-                );
-                if let (Some(a), Some(b), Some(c)) = (a, b, c) {
-                    self.indices.extend_from_slice(&[a, b, c]);
-                }
-            }
+            // 頂点を NDC へ変換して積む。投影に失敗した頂点を含む三角形は捨てる（カメラ背後の 3D キャンバスなど）。
+            // 単色なら従来の色。グラデーションなら頂点の位置の色（三角形の中は線形補間で正確）
+            append_projected_mesh(
+                mesh,
+                model,
+                view_proj,
+                |pos| cmd.style.color_at(cmd.color, grad_from, grad_to, pos),
+                &mut self.verts,
+                &mut self.indices,
+                &mut self.vertex_map,
+            );
         }
         PrimitiveRange {
             first_index,
@@ -537,6 +544,63 @@ pub fn pixel_feather_units(model: &[[f32; 4]; 4], screen_model: &[[f32; 4]; 4], 
     (PIXEL_FEATHER_PX / area.sqrt()).clamp(PIXEL_FEATHER_MIN_UNITS, PIXEL_FEATHER_MAX_UNITS)
 }
 
+/// 図形のメッシュの頂点を NDC へ射影して `verts` に積み、三角形の添字を `indices` に積む【純関数】。
+///
+/// 射影できない頂点（クリップの w が 0 以下＝カメラの背後）を含む三角形は捨てる（2026-09-28 より前と同じ規則・同じ値）。
+/// 2D の UI は w が一定なので全頂点を射影でき、そのときは対応表を作らずに「積み始めの番号 + メッシュの添字」を足すだけにする
+/// （対応表の経路と同じ値。射影できない頂点に当たったら、その位置から対応表の経路へ切り替える）。
+/// `vertex_map` は対応表の作業領域（図形ごとに確保し直さないため呼び出し側が持つ）。
+fn append_projected_mesh(
+    mesh: &Mesh2d,
+    model: &[[f32; 4]; 4],
+    view_proj: &[[f32; 4]; 4],
+    color_at: impl Fn([f32; 2]) -> [f32; 4],
+    verts: &mut Vec<PrimitiveVertex>,
+    indices: &mut Vec<u32>,
+    vertex_map: &mut Vec<Option<u32>>,
+) {
+    let base = verts.len() as u32;
+    verts.reserve(mesh.verts.len());
+    indices.reserve(mesh.idx.len());
+    // ① 全頂点を射影できる前提で積む
+    let mut first_failure: Option<usize> = None;
+    for (i, v) in mesh.verts.iter().enumerate() {
+        match project(v.pos[0], v.pos[1], model, view_proj) {
+            Some(ndc) => verts.push(PrimitiveVertex { position: ndc, color: color_at(v.pos), edge: v.alpha }),
+            None => {
+                first_failure = Some(i);
+                break;
+            }
+        }
+    }
+    let Some(failed_at) = first_failure else {
+        // 全頂点を積めた: メッシュの頂点 i は base + i（対応表の経路と同じ値）
+        indices.extend(mesh.idx.iter().map(|&i| base + i));
+        return;
+    };
+    // ② 対応表の経路（①で積んだ頂点はそのまま使う。射影できない頂点は None で、それを含む三角形は捨てる）
+    vertex_map.clear();
+    vertex_map.reserve(mesh.verts.len());
+    vertex_map.extend((0..failed_at as u32).map(|i| Some(base + i)));
+    let mut next = base + failed_at as u32;
+    for v in &mesh.verts[failed_at..] {
+        match project(v.pos[0], v.pos[1], model, view_proj) {
+            Some(ndc) => {
+                verts.push(PrimitiveVertex { position: ndc, color: color_at(v.pos), edge: v.alpha });
+                vertex_map.push(Some(next));
+                next += 1;
+            }
+            None => vertex_map.push(None),
+        }
+    }
+    for tri in mesh.idx.chunks_exact(3) {
+        let (a, b, c) = (vertex_map[tri[0] as usize], vertex_map[tri[1] as usize], vertex_map[tri[2] as usize]);
+        if let (Some(a), Some(b), Some(c)) = (a, b, c) {
+            indices.extend_from_slice(&[a, b, c]);
+        }
+    }
+}
+
 // ─── 座標変換 ────────────────────────────────────────────────
 
 /// キャンバスローカル座標 (x, y) を NDC へ射影する。
@@ -546,7 +610,8 @@ pub fn pixel_feather_units(model: &[[f32; 4]; 4], screen_model: &[[f32; 4]; 4], 
 /// - `view_proj` : 行優先（`vp[row][col]`）のカメラ行列
 ///
 /// 戻り値 `None` = クリップ空間の w が 0 以下（カメラ背後・退化行列）。
-fn project(
+/// 画面の外の判定（offscreen_cull.rs）も同じ式で外接矩形の隅を射影する。
+pub(super) fn project(
     x: f32,
     y: f32,
     model: &[[f32; 4]; 4],
@@ -575,6 +640,146 @@ fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-09-28 より前の手順（対応表を必ず作る）。append_projected_mesh の検算用。
+    fn append_reference(
+        mesh: &Mesh2d,
+        model: &[[f32; 4]; 4],
+        view_proj: &[[f32; 4]; 4],
+        verts: &mut Vec<PrimitiveVertex>,
+        indices: &mut Vec<u32>,
+    ) {
+        let base = verts.len() as u32;
+        let mut mapped: Vec<Option<u32>> = Vec::new();
+        let mut next = base;
+        for v in &mesh.verts {
+            match project(v.pos[0], v.pos[1], model, view_proj) {
+                Some(ndc) => {
+                    verts.push(PrimitiveVertex { position: ndc, color: [v.pos[0], v.pos[1], 0.5, 1.0], edge: v.alpha });
+                    mapped.push(Some(next));
+                    next += 1;
+                }
+                None => mapped.push(None),
+            }
+        }
+        for tri in mesh.idx.chunks_exact(3) {
+            if let (Some(a), Some(b), Some(c)) = (mapped[tri[0] as usize], mapped[tri[1] as usize], mapped[tri[2] as usize]) {
+                indices.extend_from_slice(&[a, b, c]);
+            }
+        }
+    }
+
+    /// 全頂点を射影できるとき・途中の頂点が射影できないとき（カメラの背後）のどちらも、従来の手順と同じ頂点と添字になる。
+    /// 2 つ目の図形を続けて積む（積み始めの番号が 0 でない）場合も確かめる。
+    #[test]
+    fn projected_mesh_matches_reference_with_and_without_failures() {
+        use super::super::tessellate::Vert2d;
+        let ident = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        // w = 1 - x（x >= 1 の頂点はカメラの背後）
+        let mut vp = ident;
+        vp[3] = [-1.0, 0.0, 0.0, 1.0];
+        let mesh = Mesh2d {
+            verts: [[0.0, 0.0], [0.5, 0.0], [0.2, 0.4], [1.5, 0.3], [0.1, 0.9], [0.3, 0.7]]
+                .iter()
+                .map(|&pos| Vert2d { pos, alpha: 0.75 })
+                .collect(),
+            idx: vec![0, 1, 2, 1, 3, 2, 2, 4, 5, 0, 2, 5],
+        };
+        for view_proj in [&ident, &vp] {
+            let (mut v_new, mut i_new, mut scratch) = (Vec::new(), Vec::new(), Vec::new());
+            let (mut v_ref, mut i_ref) = (Vec::new(), Vec::new());
+            for _ in 0..2 {
+                append_projected_mesh(&mesh, &ident, view_proj, |p| [p[0], p[1], 0.5, 1.0], &mut v_new, &mut i_new, &mut scratch);
+                append_reference(&mesh, &ident, view_proj, &mut v_ref, &mut i_ref);
+            }
+            assert_eq!(i_new, i_ref, "添字");
+            assert_eq!(v_new.len(), v_ref.len(), "頂点の数");
+            for (a, b) in v_new.iter().zip(&v_ref) {
+                assert_eq!(bytemuck::bytes_of(a), bytemuck::bytes_of(b), "頂点（ビット単位）");
+            }
+        }
+        // 背後の頂点がある射影では、その頂点を含む三角形（1-3-2）だけが落ちる
+        let (mut v, mut i, mut s) = (Vec::new(), Vec::new(), Vec::new());
+        append_projected_mesh(&mesh, &ident, &vp, |_| [1.0; 4], &mut v, &mut i, &mut s);
+        assert_eq!(v.len(), 5, "背後の 1 頂点を除く");
+        assert_eq!(i.len(), 9, "三角形 4 つのうち 1 つが落ちる");
+    }
+
+    /// 【使い回しあり ＝ 毎フレーム作る】push の中身（三角形分割の使い回し tess_cache ＋ 頂点の射影 append_projected_mesh）を
+    /// 何フレームも続けたとき、2026-09-28 より前の手順（毎フレーム tessellate ＋ 対応表で射影）と頂点・添字がビット単位で同じ。
+    /// フレームの間に「形が変わる（点を動かす・太さ）」「色とスクロールの行列だけが変わる」「図形が増える・減る」を混ぜ、
+    /// 形が変わった図形は作り直し（古い分割を使わない）、色・行列だけの変化は使い回すことも確かめる。
+    #[test]
+    fn cached_push_matches_rebuild_every_frame_across_frames() {
+        use super::super::queue::{PrimitiveDrawMode, PrimitiveKind, PrimitiveStyle, Transform2d};
+        use super::super::tess_cache::TessellationCache;
+        use super::super::tessellate::tessellate;
+
+        /// 折れ線（グラフの線）か多角形（棒）を 1 つ作る。
+        fn command(kind: PrimitiveKind, points: Vec<[f32; 2]>, thickness: f32, color: [f32; 4]) -> PrimitiveCommand {
+            PrimitiveCommand {
+                kind,
+                space: None,
+                color,
+                mode: if kind == PrimitiveKind::Polyline { PrimitiveDrawMode::Outline } else { PrimitiveDrawMode::Fill },
+                thickness,
+                layer: 0,
+                srt: Transform2d::IDENTITY,
+                extras: [0.0; super::super::queue::PRIM_EXTRA_FLOATS],
+                points,
+                style: PrimitiveStyle { extended: true, pixel_feather: false, gradient: None },
+            }
+        }
+        /// y 方向へ平行移動する行列（スクロールに相当。列優先で model[3] が平行移動）。
+        fn scrolled(dy: f32) -> [[f32; 4]; 4] {
+            [[0.01, 0.0, 0.0, 0.0], [0.0, -0.01, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [-0.5, 0.5 + dy, 0.0, 1.0]]
+        }
+        let ident = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let line = |dy: f32| command(PrimitiveKind::Polyline, vec![[0.0, 0.0], [20.0, 10.0 + dy], [40.0, 5.0], [60.0, 30.0]], 2.0, [1.0, 0.5, 0.0, 1.0]);
+        let bar = |h: f32| command(PrimitiveKind::Polygon, vec![[70.0, 50.0], [80.0, 50.0], [80.0, 50.0 - h], [70.0, 50.0 - h]], 1.0, [0.2, 0.4, 0.9, 1.0]);
+        // フレームごとの (図形の列, スクロール量)
+        let mut frames: Vec<(Vec<PrimitiveCommand>, f32)> = Vec::new();
+        frames.push((vec![line(0.0), bar(20.0)], 0.0));
+        frames.push((vec![line(0.0), bar(20.0)], 0.1)); // スクロールだけ（使い回す）
+        let mut recolored = bar(20.0);
+        recolored.color = [0.9, 0.1, 0.1, 1.0];
+        frames.push((vec![line(0.0), recolored], 0.2)); // 色だけ（使い回す）
+        frames.push((vec![line(3.5), bar(20.0)], 0.2)); // 線の点が動く（作り直す）
+        let mut thick = line(3.5);
+        thick.thickness = 4.0;
+        frames.push((vec![thick, bar(25.0), line(0.0)], 0.3)); // 太さ・棒の高さが変わり、図形が増える
+        frames.push((vec![bar(25.0)], 0.3)); // 図形が減る
+
+        let mut cache = TessellationCache::new();
+        let (mut scratch, mut rebuilt_last) = (Vec::new(), 0u64);
+        for (frame, (cmds, dy)) in frames.iter().enumerate() {
+            cache.advance_generation();
+            let model = scrolled(*dy);
+            let (mut v_new, mut i_new) = (Vec::new(), Vec::new());
+            let (mut v_ref, mut i_ref) = (Vec::new(), Vec::new());
+            for cmd in cmds {
+                let shape = cache.tessellate(cmd, FEATHER_UNITS);
+                append_projected_mesh(&shape.mesh, &model, &ident, |_| cmd.color, &mut v_new, &mut i_new, &mut scratch);
+                let fresh = tessellate(cmd, FEATHER_UNITS);
+                let start = v_ref.len();
+                append_reference(&fresh, &model, &ident, &mut v_ref, &mut i_ref);
+                // append_reference は色の代わりに位置を入れるので、比べる前にこの図形の色へ揃える
+                for v in &mut v_ref[start..] {
+                    v.color = cmd.color;
+                }
+            }
+            assert_eq!(i_new, i_ref, "フレーム {frame} の添字");
+            assert_eq!(v_new.len(), v_ref.len(), "フレーム {frame} の頂点の数");
+            for (a, b) in v_new.iter().zip(&v_ref) {
+                assert_eq!(bytemuck::bytes_of(a), bytemuck::bytes_of(b), "フレーム {frame} の頂点（ビット単位）");
+            }
+            // 作り直した回数（stats の 2 つ目）の増え方: 形が変わった図形の数だけ増える
+            let rebuilt = cache.stats().1;
+            let expected_new = [2, 0, 0, 1, 3, 0][frame];
+            assert_eq!(rebuilt - rebuilt_last, expected_new, "フレーム {frame} で作り直した図形の数");
+            rebuilt_last = rebuilt;
+        }
+    }
 
     /// 単位行列 × 単位行列では入力座標がそのまま NDC になる。
     #[test]

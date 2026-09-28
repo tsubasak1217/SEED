@@ -23,10 +23,12 @@ use super::inline::color_runs::ColorRuns;
 use super::inline::doc::InlineDoc;
 use super::inline::{IMAGE_PLACEHOLDER, InlineImages};
 use super::sdf::{outline_px_to_sdf, px_to_sdf};
+use super::text_gpu_stream::TextGpuStream;
 use super::text_layout::{
     ResolvedLayout, TextLayoutSpec, TextLocalBox, resolve_layout_with_images,
 };
-use super::{FontSystem, GlyphShading, GpuTextBatch, TextBatch};
+use super::text_layout_cache::{TextLayoutCache, TextLayoutProbe};
+use super::{FontSystem, GlyphShading, TextBatch};
 use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign};
 
 // ─── CanvasTextItem ───────────────────────────────────────────
@@ -142,9 +144,30 @@ impl TextDrawRange {
 /// 生成時のカラー / 深度フォーマットに紐づくため、描画先パスの
 /// アタッチメント構成ごとに 1 インスタンス必要（現状はメインパスと
 /// キャンバスオーバーレイパスが同じ HDR + 深度なので 1 つで足りる）。
+///
+/// 【1 フレームの流れ（2026-09-28 から）】
+///   `begin_frame` → ゾーンごとの `build_grouped`（1 本の CPU のバッチへ積み、区間を返す）→ `upload`（1 回）
+///   → ゾーンごとの描画で `draw_range`。GPU のバッファは持ち続けて使い回す（text_gpu_stream.rs）。
+///   行分割と字の配置は文字列・書体・大きさ・枠が同じなら前のフレームのものを使う（text_layout_cache.rs）。
 pub struct CanvasTextRenderer {
     /// グリフのラスタライズ・アトラス・描画パイプライン。
     font: FontSystem,
+    /// 行分割と字の配置の使い回し（キャンバスのローカルの配置。行列を掛ける前）。
+    layouts: TextLayoutCache<CachedItemLayout>,
+    /// このフレームの全ゾーンの字の頂点・添字（CPU。`begin_frame` で空にする）。
+    frame_batch: TextBatch,
+    /// 使い回しの GPU バッファ（`upload` で `frame_batch` を送る）。
+    gpu: TextGpuStream,
+}
+
+/// 1 つのテキストの「行列を掛ける前」の配置（行分割の結果と、行ごとの字の並び）。
+///
+/// 書体・本文・レイアウトの条件・インライン画像だけで決まる（text_layout_cache.rs のキー）。
+struct CachedItemLayout {
+    /// 行分割・揃え・枠の解決結果。
+    layout: ResolvedLayout,
+    /// 行ごとの字の配置（アトラスの UV と送り幅）。
+    lines: Vec<LineLayout>,
 }
 
 impl CanvasTextRenderer {
@@ -163,7 +186,12 @@ impl CanvasTextRenderer {
             depth_format,
             super::FontConfig::canvas(),
         ) {
-            Ok(font) => Some(Self { font }),
+            Ok(font) => Some(Self {
+                font,
+                layouts: TextLayoutCache::new(),
+                frame_batch: TextBatch::new(),
+                gpu: TextGpuStream::new(),
+            }),
             Err(e) => {
                 eprintln!("[SEED TEXT] フォントの初期化に失敗しました: {e:?}");
                 None
@@ -171,50 +199,35 @@ impl CanvasTextRenderer {
         }
     }
 
-    /// テキストアイテム列を 1 本の GPU バッチへ焼く。
+    /// フレームの頭に呼ぶ（全ゾーンの `build_grouped` より前に 1 回）。
     ///
-    /// - `view_proj`: カメラのビュー射影行列（**行優先** `data[row][col]`）。
-    ///   `Mat4x4::data` をそのまま渡すこと。
-    /// - 返り値 `None` = 描く文字が 1 つも無い（呼び出し側は描画をスキップする）。
-    pub fn build(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        items: &[CanvasTextItem],
-        view_proj: &[[f32; 4]; 4],
-    ) -> Option<GpuTextBatch> {
-        if items.is_empty() {
-            return None;
-        }
-        let mut batch = TextBatch::new();
-        for item in items {
-            self.append_item(&mut batch, item, view_proj);
-        }
-        // 新しく増えたグリフをアトラスへアップロードする（毎フレーム必須）。
-        self.font.flush(queue);
-        self.font.build_gpu_batch(&batch, device)
+    /// CPU のバッチを空にし、行分割の使い回しの世代を進める（前のフレームで描かなかったテキストの配置を捨てる）。
+    pub fn begin_frame(&mut self) {
+        self.frame_batch.clear();
+        self.layouts.advance_generation();
     }
 
-    /// テキストアイテムを**グループ単位に区切って** 1 本の GPU バッチへ焼く。
+    /// テキストアイテムを**グループ単位に区切って**このフレームの CPU のバッチへ積む。
     ///
     /// UI 描画順の統合（スプライト／プリミティブ／テキストをレイヤー順に 1 列へ並べる）で、
     /// 「テキストのラン 1 本」＝「グループ 1 つ」として分割描画するために使う。
-    /// 頂点バッファは従来どおり 1 本しか作らない（グループごとの GPU 確保は発生しない）。
+    /// 全ゾーンぶんを 1 本のバッチへ積み、`upload` で 1 回だけ GPU へ送る（ゾーンごとの GPU 確保は発生しない）。
     ///
     /// - `groups`: 描画順に並んだアイテム区間の列。
-    /// - 返り値: `(GPU バッチ, グループと 1:1 対応するインデックス区間)`。
-    ///   描く文字が 1 つも無ければ `None`（呼び出し側は描画をスキップする）。
+    /// - 返り値: グループと 1:1 対応するインデックス区間（**このフレームのバッチの頭からの番号**）。
+    ///   このゾーンで描く文字が 1 つも無ければ空（呼び出し側はテキストのランを作らない。2026-09-28 より前の
+    ///   「バッチを作れなければ None」と同じ扱い）。
     pub fn build_grouped(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         groups: &[&[CanvasTextItem]],
         view_proj: &[[f32; 4]; 4],
-    ) -> Option<(GpuTextBatch, Vec<TextDrawRange>)> {
+    ) -> Vec<TextDrawRange> {
         if groups.iter().all(|g| g.is_empty()) {
-            return None;
+            return Vec::new();
         }
-        let mut batch = TextBatch::new();
+        crate::profile_scope!("描画/UI/テキスト/配置");
+        let mut batch = std::mem::take(&mut self.frame_batch);
+        let start = batch.index_len();
         let mut ranges: Vec<TextDrawRange> = Vec::with_capacity(groups.len());
         for group in groups {
             // グループ開始時点のインデックス位置を記録し、積み終わりとの差を区間長にする。
@@ -227,11 +240,22 @@ impl CanvasTextRenderer {
                 index_count: batch.index_len() - first_index,
             });
         }
+        // このゾーンで 1 文字も積まなかったら、ランを作らない（従来の「バッチが空なら None」と同じ）
+        if batch.index_len() == start {
+            ranges.clear();
+        }
+        self.frame_batch = batch;
+        ranges
+    }
+
+    /// このフレームに積んだ字を GPU へ送る（全ゾーンの `build_grouped` の後、描画を記録する前に 1 回）。
+    ///
+    /// 新しく焼いたグリフのアトラスの転送もここで行う（描画の前に要る）。
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        crate::profile_scope!("描画/UI/テキスト/GPU 転送");
         // 新しく増えたグリフをアトラスへアップロードする（毎フレーム必須）。
         self.font.flush(queue);
-        self.font
-            .build_gpu_batch(&batch, device)
-            .map(|gpu| (gpu, ranges))
+        self.gpu.upload(device, queue, &self.frame_batch);
     }
 
     /// テキストの表示寸法（キャンバスローカル px の境界矩形と pivot 基準サイズ）を測る。
@@ -256,24 +280,24 @@ impl CanvasTextRenderer {
             .map(|r| (r.bounds, r.pivot_size))
     }
 
-    /// 焼いたバッチをレンダーパスへ描画する。
-    pub fn draw<'pass>(
-        &'pass self,
-        gpu: &'pass GpuTextBatch,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        self.font.draw_text_batch(gpu, pass);
-    }
-
-    /// 焼いたバッチの **1 区間だけ**をレンダーパスへ描画する（ラン単位描画）。
+    /// このフレームに送った字の **1 区間だけ**をレンダーパスへ描画する（ラン単位描画）。
+    ///
+    /// `upload` の前・送った範囲の外の区間は描かない。
     pub fn draw_range<'pass>(
         &'pass self,
-        gpu: &'pass GpuTextBatch,
         range: &TextDrawRange,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.font
-            .draw_text_batch_range(gpu, range.first_index, range.index_count, pass);
+        if let Some((vertex_buf, index_buf, uploaded)) = self.gpu.buffers() {
+            self.font.draw_buffers_range(
+                vertex_buf,
+                index_buf,
+                uploaded,
+                range.first_index,
+                range.index_count,
+                pass,
+            );
+        }
     }
 
     // ── 内部: 1 アイテム分の頂点生成 ─────────────────────────
@@ -298,33 +322,21 @@ impl CanvasTextRenderer {
             return;
         }
 
-        // レイアウト解決。フォント実体は clone（Arc）して借用衝突を避ける
-        // （このあと `self.font` を可変借用してグリフをアトラスへ登録するため）。
+        // レイアウト（行分割と字の配置）は書体・本文・条件・画像が同じなら前のフレームのものを使う
+        // （text_layout_cache.rs。キーが同じなら作り直しと同じ結果。行列・色はこの後で毎フレーム掛ける）。
         let font_id = self.font.registry.font_id(&item.font_path);
-        let font = self.font.registry.font(font_id).clone();
         let spec = item.layout_spec();
-        // 記法・スロットは展開済み（app::text_expand）。
-        // 画像は 1 文字ぶんの代替文字として本文に埋まり、送り幅だけが効く
-        // （画像の絵そのものはスプライト経路が描く）。
         let doc = &item.doc;
-        let Some(layout) = resolve_layout_with_images(&font, &doc.text, &spec, &doc.images) else {
+        let probe = TextLayoutProbe { font_id, text: &doc.text, spec: &spec, images: &doc.images };
+        // 借用を分ける（表を引く間に、作る側が字をアトラスへ登録するため font を可変で使う）
+        let Self { font: font_system, layouts, .. } = self;
+        let Some(cached) =
+            layouts.get_or_insert_with(probe, || Self::layout_item(font_system, font_id, item, &spec))
+        else {
             return;
         };
-
-        // 行ごとにグリフを準備する（範囲は resolve_layout が決めた行分割）。
-        // `prepare_glyphs` はアウトラインを持たない文字（スペース等）を返さないため、
-        // 送り幅はフォントから別途取得して補う（さもないと空白が詰まる）。
-        let mut lines: Vec<LineLayout> = Vec::with_capacity(layout.lines.len());
-        for wrapped in &layout.lines {
-            let text = layout.text[wrapped.range.clone()].to_string();
-            lines.push(self.layout_line(
-                &text,
-                wrapped.range.start,
-                item.font_size,
-                &item.font_path,
-                &layout.images,
-            ));
-        }
+        let layout: &ResolvedLayout = &cached.layout;
+        let lines: &[LineLayout] = &cached.lines;
 
         // px → SDF テクスチャ単位の変換は 1 度だけ行う（グリフごとに同じ値）。
         let outline_dist = outline_px_to_sdf(item.outline_width, item.font_size);
@@ -341,8 +353,8 @@ impl CanvasTextRenderer {
             shadow.softness = px_to_sdf(item.shadow_softness, item.font_size);
             emit_glyph_quads(
                 batch,
-                &layout,
-                &lines,
+                layout,
+                lines,
                 [
                     pivot_offset[0] + item.shadow_offset[0],
                     pivot_offset[1] + item.shadow_offset[1],
@@ -367,8 +379,8 @@ impl CanvasTextRenderer {
             };
             emit_glyph_quads(
                 batch,
-                &layout,
-                &lines,
+                layout,
+                lines,
                 pivot_offset,
                 item.font_size,
                 &body,
@@ -378,6 +390,42 @@ impl CanvasTextRenderer {
                 view_proj,
             );
         }
+    }
+
+    /// 1 つのテキストの行分割と字の配置を作る（使い回しの表に無いときだけ呼ばれる）。
+    ///
+    /// 空文字・大きさ 0 は None（append_item が先に弾く）。
+    fn layout_item(
+        font_system: &mut FontSystem,
+        font_id: u16,
+        item: &CanvasTextItem,
+        spec: &TextLayoutSpec,
+    ) -> Option<CachedItemLayout> {
+        // フォント実体は clone（Arc）して借用衝突を避ける
+        // （このあと `font_system` を可変借用してグリフをアトラスへ登録するため）。
+        let font = font_system.registry.font(font_id).clone();
+        // 記法・スロットは展開済み（app::text_expand）。
+        // 画像は 1 文字ぶんの代替文字として本文に埋まり、送り幅だけが効く
+        // （画像の絵そのものはスプライト経路が描く）。
+        let doc = &item.doc;
+        let layout = resolve_layout_with_images(&font, &doc.text, spec, &doc.images)?;
+
+        // 行ごとにグリフを準備する（範囲は resolve_layout が決めた行分割）。
+        // `prepare_glyphs` はアウトラインを持たない文字（スペース等）を返さないため、
+        // 送り幅はフォントから別途取得して補う（さもないと空白が詰まる）。
+        let mut lines: Vec<LineLayout> = Vec::with_capacity(layout.lines.len());
+        for wrapped in &layout.lines {
+            let text = layout.text[wrapped.range.clone()].to_string();
+            lines.push(Self::layout_line(
+                font_system,
+                &text,
+                wrapped.range.start,
+                item.font_size,
+                &item.font_path,
+                &layout.images,
+            ));
+        }
+        Some(CachedItemLayout { layout, lines })
     }
 
     /// 1 行分のグリフを準備し、行幅を測る。
@@ -391,7 +439,7 @@ impl CanvasTextRenderer {
     /// （画像の絵はスプライト経路が描く）。ここで代替文字をフォントへ渡すと
     /// 未定義グリフ（豆腐）が本文中へ描かれてしまうため、必ず除外する。
     fn layout_line(
-        &mut self,
+        font_system: &mut FontSystem,
         line: &str,
         line_start: usize,
         font_size: f32,
@@ -406,7 +454,7 @@ impl CanvasTextRenderer {
             std::borrow::Cow::Borrowed(line)
         };
         // アウトラインを持つ文字のグリフ情報（アトラス登録込み）。
-        let prepared = self.font.prepare_glyphs(&glyph_src, font_path);
+        let prepared = font_system.prepare_glyphs(&glyph_src, font_path);
 
         let mut glyphs = Vec::with_capacity(line.chars().count());
         let mut width = 0.0f32;
@@ -435,7 +483,7 @@ impl CanvasTextRenderer {
             // フォントから直接引く。ここを落とすと空白が消えて字が詰まる。
             let advance = match &info {
                 Some(i) => i.advance_px(font_size),
-                None => self.font.advance_em(font_path, ch) * font_size,
+                None => font_system.advance_em(font_path, ch) * font_size,
             };
             width += advance;
             glyphs.push(PlacedGlyph {

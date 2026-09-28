@@ -114,7 +114,7 @@ Android の APK へ同梱する形は §10。
 | `project_settings.json` | ランタイムが必ず読む。常に同梱する |
 | `start_scene` / `scenes[].path` | 登録シーン。実体が無いものは警告して飛ばす |
 | 追加の起点（SeedPak の `--extra-scene`。段階C-4） | 呼び出し側が足すシーン。登録シーンと同じく、そのシーンと参照先を入れる。**パッケージ化ウィンドウは使わない**（配布物は登録シーンから作る）。Android の実行（エディタ・SeedAndroid）が、シーンマネージャに未登録の起動シーン（開いているシーン）を APK の pak に入れるために渡す（§10.2・[android.md](android.md) §20.10）。実体が無いもの・アセットルートの外は欠落（参照元 `(指定された起点)`）として報告して飛ばす |
-| エンジン内蔵参照 | `runtime/src` の `.rs` に書かれた `assets://` のうち**実在するもの**（`terrain/layers.json` など）。テスト用ダミーは実在しないので自然に落ちる |
+| エンジン内蔵参照 | `runtime/src` の `.rs` に書かれた `assets://` のうち**実在するもの**（`terrain/layers.json` など）。テスト用ダミーは実在しないので自然に落ちる。2026-09-28 から、隣の**エンジンの C# ライブラリ `scripting/src` の `.cs` の定数**（コメント行を除く）も同じ扱いで起点に足す（SEED.UI の部品の既定のプレハブ `ScreenStack.DefaultFramePrefab = "assets://ui/prefabs/screen_frame.actor"` など。シーンの欄が空だと部品がこの値を読むのに、シーンにもプロジェクトのスクリプトにも現れず pak から漏れていた。場所は runtime/src の `../../scripting/src`〈`AssetCollector.ScriptingLibrarySourceRoot`〉） |
 | 追加同梱フォルダ | 設定で指定したフォルダを丸ごと（§3 の逃げ道） |
 | 常時同梱拡張子 | 既定は空（`.cs` は事前コンパイル DLL で配るため。§3 参照）。設定した場合は除外ルールに従う |
 | 全 `.cs`（走査専用） | 除外ルールに当たらない全 .cs を、参照グラフでの到達可否と無関係に**走査だけ**する（同梱はしない） |

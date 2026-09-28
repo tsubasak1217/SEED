@@ -13,6 +13,7 @@
 //   6. PackageLayout         : 配布物のフォルダ構成と旧レイアウトの後始末の判定
 //   7. 追加の起点            : Collect(extraSeeds)・AssetPakBuilder の extraSeeds・SeedPak の --extra-scene
 //                              （Android の実行で未登録のシーンを pak に入れる。段階C-4。ExtraSeedTests.cs）
+//   8. エンジンの C# ライブラリの定数 : scripting/src の既定のプレハブを起点に足す（2026-09-28。EngineLibraryReferenceTests.cs）
 // ============================================================
 
 using System;
@@ -67,6 +68,7 @@ public static class Program
         RegisterRuleTests(h);
         RegisterDotnetBundlerTests(h);
         ExtraSeedTests.Register(h);
+        EngineLibraryReferenceTests.Register(h);
 
         return h.Run();
     }

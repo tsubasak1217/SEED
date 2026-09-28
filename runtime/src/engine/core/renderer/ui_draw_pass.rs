@@ -31,7 +31,6 @@
 //  外接矩形で張る。テキスト・図形・パーティクルは外接矩形の scissor だけ（docs/ui_components.md の制限）。
 // ============================================================
 
-use crate::engine::core::font::GpuTextBatch;
 use crate::engine::core::font::canvas_text::{CanvasTextItem, CanvasTextRenderer, TextDrawRange};
 use crate::engine::core::renderer::batch2d::{
     draw_sprite_batches, InstanceStream, SpriteBatchList, SpriteDrawItem, SpriteStreamGpu,
@@ -154,13 +153,12 @@ struct UiZoneRunEntry {
 /// 1 ゾーン分の統合描画列。
 ///
 /// `build` で GPU へ積み、`draw` でレンダーパスへ流す。
-/// テキストの頂点バッファはゾーンにつき 1 本だけ作り、ランは区間で参照する。
+/// テキストの頂点は全ゾーンで 1 本の使い回しのバッファ（CanvasTextRenderer が持つ。2026-09-28 から）に入り、
+/// ランはそのバッファの区間で参照する。
 #[derive(Default)]
 pub struct UiZoneDraw {
     /// 描画順に並んだラン列（切り抜きの矩形付き）。
     runs: Vec<UiZoneRunEntry>,
-    /// このゾーンのテキスト頂点バッチ（テキストが 1 文字も無ければ None）。
-    text_gpu: Option<GpuTextBatch>,
 }
 
 /// `UiZoneDraw::build` に渡す構築パラメータ。
@@ -192,13 +190,12 @@ impl UiZoneDraw {
     /// 呼び出し順の制約:
     /// - `sprite_stream` は事前に `begin()` 済みで、全 `build` 後に `upload()` すること。
     /// - `primitive2d` も同様（`begin()` → 各 `build` → `upload()`）。
+    /// - `canvas_text` も同様（`begin_frame()` → 各 `build` → `upload()`。2026-09-28 から）。
     pub fn build(
         mut segments: Vec<UiDrawSegment>,
         sprite_stream: &mut InstanceStream,
         primitive2d: Option<&mut Primitive2dRenderer>,
         canvas_text: Option<&mut CanvasTextRenderer>,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         params: &UiZoneBuildParams<'_>,
     ) -> Self {
         // ── 1) 描画順（セグメント番号 + ラン + 切り抜きの番号）を決める ──────────────
@@ -243,23 +240,20 @@ impl UiZoneDraw {
             *slot.get_or_insert_with(|| clip_ndc_rect(params.clip_regions, id, params.clip_view_proj))
         };
 
-        // ── 2) テキストを 1 本のバッチへ焼く（ランごとの区間付き）────
+        // ── 2) テキストをフレームのバッチへ積む（ランごとの区間付き）────
         // グループはラン順に並べるので、後段でラン列と 1:1 に取り出せる。
+        // 区間はフレームのバッチの頭からの番号（全ゾーンで 1 本。CanvasTextRenderer::upload で 1 回だけ送る）。
         let mut text_ranges: Vec<TextDrawRange> = Vec::new();
-        let mut text_gpu: Option<GpuTextBatch> = None;
         if let Some(ct) = canvas_text {
+            crate::profile_scope!("描画/UI/テキスト");
             let groups: Vec<&[CanvasTextItem]> = ordered
                 .iter()
                 .filter(|(_, r, _)| r.kind == UiDrawKind::Text)
                 .map(|(si, r, _)| &segments[*si].texts[r.start..r.end])
                 .collect();
             if !groups.is_empty() {
-                if let Some((gpu, ranges)) =
-                    ct.build_grouped(device, queue, &groups, params.text_view_proj)
-                {
-                    text_gpu = Some(gpu);
-                    text_ranges = ranges;
-                }
+                // このゾーンで 1 文字も無ければ空（テキストのランを作らない。従来と同じ）
+                text_ranges = ct.build_grouped(&groups, params.text_view_proj);
             }
         }
 
@@ -283,6 +277,7 @@ impl UiZoneDraw {
             let clip = resolve_clip(*clip_id);
             match run.kind {
                 UiDrawKind::Sprite => {
+                    crate::profile_scope!("描画/UI/スプライト");
                     // このランのぶんだけイテレータから取り出して push する。
                     // → テクスチャ融合はラン内で閉じる（ランを跨いだ融合は起きない）。
                     // 角丸・楕円の切り抜きの中のスプライトは形と塗りの経路で画素ごとに切る（W2-4）
@@ -290,6 +285,7 @@ impl UiZoneDraw {
                     runs.push(UiZoneRunEntry { run: UiZoneRun::Sprite(list), clip });
                 }
                 UiDrawKind::Primitive => {
+                    crate::profile_scope!("描画/UI/図形");
                     if let Some(p) = primitive2d.as_deref_mut() {
                         let range = p.push(
                             &segments[*si].primitives[run.start..run.end],
@@ -325,7 +321,7 @@ impl UiZoneDraw {
             }
         }
 
-        Self { runs, text_gpu }
+        Self { runs }
     }
 
     /// 切り抜きの矩形を持つランの数（描画呼び出しの増え方の計測用）。
@@ -415,8 +411,8 @@ impl UiZoneDraw {
                     }
                 }
                 UiZoneRun::Text(range) => {
-                    if let (Some(ct), Some(gpu)) = (canvas_text, self.text_gpu.as_ref()) {
-                        ct.draw_range(gpu, range, pass);
+                    if let Some(ct) = canvas_text {
+                        ct.draw_range(range, pass);
                     }
                 }
             }

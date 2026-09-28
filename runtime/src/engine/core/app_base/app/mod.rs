@@ -75,6 +75,8 @@ mod text_expand;
 mod pick_2d;
 /// Play 中のキャンバス UI ポインタイベント（OnPointerEnter/Down/Click 等）の判定と配信。
 mod pointer_events;
+/// 毎フレームの 2D の全走査を「対象が無ければ走らせない」ための判定（2D のコライダー・ポインタイベントの的。2026-09-28）。
+mod frame_scan_gates;
 /// Play 中のジェスチャー（アリーナを回して OnGesture* を配る。W2-2）。
 mod gesture_events;
 /// レイアウトの表からジェスチャーの当たり判定の材料を作る（W2-2）。

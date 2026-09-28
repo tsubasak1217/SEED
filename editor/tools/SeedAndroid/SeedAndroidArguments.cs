@@ -174,6 +174,12 @@ public sealed record SeedAndroidCommandLine
     /// <summary>--release。</summary>
     public bool Release { get; init; }
 
+    /// <summary>
+    /// --native-profile の値（libSEED.so の構成の id。editor/config/runtime_build_configs.json の debug / develop / release）。
+    /// 表にあるかは中核の準備が確かめる（Native/AndroidNativeProfile.cs）。この型はファイルを読まない。
+    /// </summary>
+    public string? NativeProfile { get; init; }
+
     /// <summary>--skip-rust。</summary>
     public bool SkipNativeBuild { get; init; }
 
@@ -325,6 +331,9 @@ public static class SeedAndroidArguments
     /// <summary>check で確かめる配布物（段階D）。</summary>
     public const string ArtifactOption = "--artifact";
 
+    /// <summary>libSEED.so の構成（runtime_build_configs.json の id。既定は表の既定＝develop。2026-09-28）。</summary>
+    public const string NativeProfileOption = "--native-profile";
+
     // ── オプションの名前（値を取らないもの）──────────────────────
 
     /// <summary>--release。</summary>
@@ -417,6 +426,10 @@ public static class SeedAndroidArguments
                                     端末が警告を出して開始シーンで起動する）
           --abi <ABI[,ABI]>         arm64-v8a / x86_64（省略時は端末から判定。端末が無ければ両方）
           --release                 Rust 側を --release でビルドする（開発用の APK はデバッグ署名のまま。配布用は常に --release）
+          --native-profile <構成>   libSEED.so の構成（editor/config/runtime_build_configs.json の id: debug / develop / release。
+                                    省略時は表の既定＝develop〈最適化 1 ＋デバッグ情報。PC の Play の既定と同じ〉。
+                                    ネイティブのデバッガで追うときは debug〈cargo の dev・最適化なし・UI の見本は 20 fps 台〉。
+                                    --release は release と同じ。配布用は常に release）
           --variant <debug|release> ビルドの種類（既定 debug＝開発用。release＝配布用: debuggable でない・INTERNET なし・
                                     アップロード鍵で署名。release は push・--push-scripts・--assets-dir と一緒に使えない）
           --format <apk|aab>        形式（既定 apk。aab は配布用の build だけ。端末へは直接入れられない）
@@ -425,7 +438,7 @@ public static class SeedAndroidArguments
           --cert-name <名前>        keystore create の証明書の名前（CN。省略時は SEED Upload Key）
           --artifact <パス>         check で確かめる APK / AAB
           --config <JSON>           指定をまとめた設定 JSON（キーは project / assets_dir / serial / emulator_fallback / avd /
-                                    scene / abis / release / skip_rust_build / skip_gradle / no_install / no_launch / no_logcat /
+                                    scene / abis / release / native_profile / skip_rust_build / skip_gradle / no_install / no_launch / no_logcat /
                                     push_scripts / rebuild / logcat_seconds / log_file / ipc_port。project・assets_dir・log_file の相対パスは
                                     JSON のフォルダから、scene はアセットルートから。コマンドラインが優先）
           --skip-rust               libSEED.so のビルドを飛ばす
@@ -526,7 +539,7 @@ public static class SeedAndroidArguments
             if (arg is not (ConfigOption or ProjectOption or AssetsDirOption or SerialOption or AbiOption or LogcatSecondsOption
                 or LogFileOption or ApplicationIdOption or SinceOption or AvdOption or SceneOption or IpcPortOption or OutOption
                 or OverlayAssetsOption or VariantOption or FormatOption or KeystoreOption or KeyAliasOption or CertificateNameOption
-                or ArtifactOption))
+                or ArtifactOption or NativeProfileOption))
             {
                 return Fail($"不明な引数です: {arg}");
             }
@@ -552,6 +565,7 @@ public static class SeedAndroidArguments
                 case KeyAliasOption:        line = line with { KeyAlias = value }; break;
                 case CertificateNameOption: line = line with { CertificateName = value }; break;
                 case ArtifactOption:        line = line with { ArtifactPath = value }; break;
+                case NativeProfileOption:   line = line with { NativeProfile = value.Trim() }; break;
                 case VariantOption:
                     if (!Variants.TryGetValue(value, out var variant))
                     {
@@ -654,6 +668,11 @@ public static class SeedAndroidArguments
             return $"{CertificateNameOption} は keystore create で使います";
         }
         if (line.ArtifactPath is not null && command != SeedAndroidCommand.Check) return $"{ArtifactOption} は check で使います";
+        // libSEED.so の構成は .so を作るサブコマンドだけで意味を持つ（push などは .so を作らない）
+        if (line.NativeProfile is not null && command is not (SeedAndroidCommand.Build or SeedAndroidCommand.Install or SeedAndroidCommand.Run or SeedAndroidCommand.Check))
+        {
+            return $"{NativeProfileOption} は build / install / run で使います";
+        }
 
         // 配布用の指定（--variant / --format / --keystore / --key-alias）は build / install / run / check で使う
         var distributionFlags = line.Variant is not null || line.Format is not null
@@ -725,6 +744,7 @@ public static class SeedAndroidArguments
             ScenePath       = line.ScenePath ?? baseline.ScenePath,
             Abis            = line.Abis ?? baseline.Abis,
             Release         = line.Release || baseline.Release,
+            NativeProfile   = line.NativeProfile ?? baseline.NativeProfile,
             SkipNativeBuild = line.SkipNativeBuild || baseline.SkipNativeBuild,
             SkipGradle      = line.SkipGradle || baseline.SkipGradle,
             NoInstall       = line.NoInstall || baseline.NoInstall,

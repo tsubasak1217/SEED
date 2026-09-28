@@ -558,7 +558,9 @@ public partial class MainWindow
 
         var projectDir = string.IsNullOrWhiteSpace(ProjectContext.RootDir) ? AssetsPath : ProjectContext.RootDir;
         var scene = AndroidRunSceneChoice.Decide(_playFromStartScene, _currentScenePath, AssetsPath);
-        var request = AndroidEditorRunRequests.ForPlay(projectDir, target, scene.ScenePath, ConfiguredEmulatorAvd, ConfiguredIpcPort);
+        // libSEED.so はツールバーのランタイムのビルド構成（PC の Play と同じ。既定 develop）で作る（2026-09-28）
+        var request = AndroidEditorRunRequests.ForPlay(
+            projectDir, target, scene.ScenePath, ConfiguredEmulatorAvd, ConfiguredIpcPort, CurrentRuntimeBuildConfig.Id);
         if (!controller.TryStart(request, target.Text))
         {
             WriteAndroidLine(AndroidRunOutputFormatter.NotStarted(AndroidAlreadyRunningReason));

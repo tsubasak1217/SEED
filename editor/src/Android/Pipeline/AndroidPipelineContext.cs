@@ -11,6 +11,7 @@
 using System.Collections.Generic;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Icons;
+using SEEDEditor.Android.Native;
 using SEEDEditor.Android.Plan;
 using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Project;
@@ -44,6 +45,12 @@ public sealed class AndroidPipelineContext
 
     /// <summary>今回の ABI。</summary>
     public required IReadOnlyList<AndroidAbi> Abis { get; init; }
+
+    /// <summary>
+    /// libSEED.so を作る cargo のプロファイル（準備で決める。Native/AndroidNativeProfile.cs）。
+    /// 指紋（AndroidStepFingerprints.Native）と libSEED.so の工程（Steps/NativeBuildStep.cs）が同じ値を読む。
+    /// </summary>
+    public required AndroidNativeProfile NativeProfile { get; init; }
 
     /// <summary>対象の端末（端末の工程が無ければ null）。</summary>
     public AdbDevice? Device { get; init; }

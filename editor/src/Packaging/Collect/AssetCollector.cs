@@ -10,7 +10,8 @@
 //     （以降の実在チェックはハッシュ参照だけで済み、I/O が起きない）。
 //  2. 起点を積む: project_settings.json / start_scene / scenes[].path /
 //     呼び出し側が足す追加の起点（Collect(extraSeeds)。Android の実行で開いている未登録のシーン等）/
-//     ランタイムに焼き込まれた assets:// パス / 追加フォルダ / 常時同梱拡張子 /
+//     ランタイムに焼き込まれた assets:// パス（runtime/src の Rust と、エンジンの C# ライブラリ scripting/src の定数。
+//     SEED.UI の部品の既定のプレハブなど。2026-09-28）/ 追加フォルダ / 常時同梱拡張子 /
 //     除外ルールに当たらない全 .cs（走査専用。同梱はしない。下記【型参照対策】参照）。
 //  3. ワークリスト方式で閉包を取る。テキスト系ファイルは中身を走査して
 //     参照を取り出し（AssetReferenceScanner）、実在するものをキューへ積む。
@@ -116,9 +117,21 @@ public sealed class AssetCollector
     /// <summary>欠落の重複報告を防ぐキー集合（参照先 + 参照元）。</summary>
     private readonly HashSet<string> _missingKeys;
 
-    /// <summary>ランタイム側の Rust ソースから assets:// パスを拾う正規表現。</summary>
-    private static readonly Regex RustAssetPathRegex =
+    /// <summary>ランタイム側の Rust ソース・エンジンの C# ライブラリのソースから、引用符で囲んだ assets:// パスを拾う正規表現。</summary>
+    private static readonly Regex QuotedAssetPathRegex =
         new("\"(assets://[^\"]*)\"", RegexOptions.Compiled);
+
+    /// <summary>
+    /// エンジンの C# ライブラリ（SEEDScripting。SEED.UI など）のソースの、runtime/src から見た場所（リポジトリの scripting/src）。
+    /// SEEDScripting は runtime/src の Rust と同じくエンジンの一部で、全プロジェクトに同梱される。
+    /// </summary>
+    private static readonly string[] ScriptingLibrarySourceFromRuntimeSource = { "..", "..", "scripting", "src" };
+
+    /// <summary>C# の 1 行コメントの始まり（/// の文書コメントも含む。例として書いたパスは起点にしない）。</summary>
+    private const string CSharpLineCommentPrefix = "//";
+
+    /// <summary>C# のソースの拡張子のパターン（ライブラリのソースの列挙用）。</summary>
+    private const string CSharpSourcePattern = "*.cs";
 
     /// <summary>
     /// 拡張子の切れ目（ドット + 英数字）を見つける正規表現。
@@ -535,9 +548,19 @@ public sealed class AssetCollector
     }
 
     /// <summary>
-    /// runtime/src の Rust ソースに書かれた assets:// パスを列挙する。
+    /// runtime/src の Rust ソースと、エンジンの C# ライブラリ（scripting/src）の定数に書かれた assets:// パスを列挙する。
     /// エンジンが内蔵で読むアセット（terrain/layers.json など）を取りこぼさないため。
-    /// 実在チェックは呼び出し側で行う（テスト用ダミーはここで落ちる）。
+    /// 実在チェックは呼び出し側で行う（テスト用ダミー・プロジェクトに無い既定のプレハブはここで落ちる）。
+    ///
+    /// <para>
+    /// 【C# ライブラリも見る理由（2026-09-28。docs/backlog.md「SEED.UI の部品が既定で読むプレハブがパッケージに入らない」）】
+    /// SEED.UI の部品（ScreenStack・ModalHost・ToastHost・WheelPicker・グラフ）は、シーンの欄が空のとき
+    /// ライブラリの定数（例 <c>ScreenStack.DefaultFramePrefab = "assets://ui/prefabs/screen_frame.actor"</c>）のプレハブを読む。
+    /// この値はシーンにもプロジェクトのスクリプトにも現れないので参照グラフでは辿れず、実機（APK）でだけ
+    /// 「Instantiate 失敗」になっていた（ナビゲーションの見本が真っ黒）。Rust の内蔵参照と同じ扱いで起点に足す
+    /// （プロジェクトにそのファイルがあるときだけ入る。無いプロジェクトでは何も起きない）。
+    /// コメント行（// と ///）の中の例のパスは拾わない。
+    /// </para>
     /// </summary>
     /// <returns>アセットルート相対パスの一覧。</returns>
     private IEnumerable<string> ReadRuntimeBuiltinReferences()
@@ -551,13 +574,49 @@ public sealed class AssetCollector
             try { text = File.ReadAllText(rs); }
             catch { continue; }
 
-            foreach (Match m in RustAssetPathRegex.Matches(text))
+            foreach (Match m in QuotedAssetPathRegex.Matches(text))
             {
                 var rel = AssetPathUtil.NormalizeRelative(
                     m.Groups[1].Value[AssetPathUtil.AssetsScheme.Length..]);
                 if (rel.Length > 0) yield return rel;
             }
         }
+
+        // ── エンジンの C# ライブラリの定数（SEED.UI の部品の既定のプレハブなど）──
+        var scriptingRoot = ScriptingLibrarySourceRoot(_runtimeSourceRoot);
+        if (scriptingRoot is null) yield break;
+        foreach (var cs in Directory.EnumerateFiles(scriptingRoot, CSharpSourcePattern, SearchOption.AllDirectories))
+        {
+            string[] lines;
+            try { lines = File.ReadAllLines(cs); }
+            catch { continue; }
+
+            foreach (var line in lines)
+            {
+                // 例として書いたパス（コメント）は起点にしない
+                if (line.TrimStart().StartsWith(CSharpLineCommentPrefix, StringComparison.Ordinal)) continue;
+                foreach (Match m in QuotedAssetPathRegex.Matches(line))
+                {
+                    var rel = AssetPathUtil.NormalizeRelative(
+                        m.Groups[1].Value[AssetPathUtil.AssetsScheme.Length..]);
+                    if (rel.Length > 0) yield return rel;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// runtime/src から、エンジンの C# ライブラリのソースの場所（リポジトリの scripting/src）を決める。無ければ null。
+    /// </summary>
+    /// <param name="runtimeSourceRoot">runtime/src の絶対パス。</param>
+    /// <returns>scripting/src の絶対パス（無ければ null）。</returns>
+    public static string? ScriptingLibrarySourceRoot(string? runtimeSourceRoot)
+    {
+        if (string.IsNullOrEmpty(runtimeSourceRoot)) return null;
+        var parts = new List<string> { runtimeSourceRoot };
+        parts.AddRange(ScriptingLibrarySourceFromRuntimeSource);
+        var dir = Path.GetFullPath(Path.Combine(parts.ToArray()));
+        return Directory.Exists(dir) ? dir : null;
     }
 
     /// <summary>

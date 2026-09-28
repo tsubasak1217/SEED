@@ -32,6 +32,13 @@
     <Compile Include="..\..\src\Android\**\*.cs">
       <Link>Linked\Android\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Compile>
+    <!-- libSEED.so の構成（debug / develop / release）は PC の Play と同じ表から選ぶ（src/Android/Native/AndroidNativeProfile.cs。2026-09-28） -->
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfig.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeBuildConfig.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfigCatalog.cs">
+      <Link>Linked\Runtime\BuildConfig\RuntimeBuildConfigCatalog.cs</Link>
+    </Compile>
     <!-- ランタイムとの IPC の行の送受信と命令の文字列（PC の名前付きパイプと Android の TCP で共有。段階D-1） -->
     <Compile Include="..\..\src\Ipc\IpcLineChannel.cs">
       <Link>Linked\Ipc\IpcLineChannel.cs</Link>

@@ -434,12 +434,13 @@ dotnet run --project editor/tools/SeedAndroid -- check --project D:\path\to\Proj
 | `--avd <AVD>` | `--serial auto`（と `emulator_fallback`）でエミュレータを起動するときの AVD。省略時は `emulator -list-avds` の一覧に `seed_pixel6_api35` があればそれ、無ければ先頭。一覧に無い名前はエラー（別の AVD を勝手に起動しない） |
 | `--scene <シーン>` | 端末で起動するシーン（段階C-3。§20.10）。アセットルートからの相対パス（`scenes/Main.scene`）・`assets://…`・アセットルートの中の絶対パス。起動の工程が `am start --es seed.scene '<相対パス>'` で渡す。省略時は `project_settings.json` の開始シーン。アセットルートの外・`..` は指定の誤り（終了コード 1）。シーンマネージャに未登録のシーンは pak の収録の起点に足す（段階C-4。SeedPak `--extra-scene`。切り替えた最初の `run` は pak・APK・インストールをやり直す）。プロジェクトに無いシーンは警告を出して渡し、端末が logcat に警告を出して開始シーンで起動する |
 | `--abi <ABI[,ABI]>` | `arm64-v8a` / `x86_64`。省略時は端末の `ro.product.cpu.abilist` の先頭から選ぶ（端末が決まらなければ両方） |
-| `--release` | Rust 側を `--release` でビルド（開発用の APK はデバッグ署名のまま。配布用は常に `--release`） |
+| `--release` | Rust 側を `--release` でビルド（開発用の APK はデバッグ署名のまま。配布用は常に `--release`）。`--native-profile release` と同じ |
+| `--native-profile <構成>` | libSEED.so の構成（2026-09-28・§5.4）。`editor/config/runtime_build_configs.json` の id（`debug` / `develop` / `release`。PC の Play と同じ表）。省略時は表の既定＝`develop`（`cargo ndk … build --profile develop`。最適化 1 ＋デバッグ情報）。ネイティブのデバッガで追うときは `debug`（cargo の dev・最適化なし）。`build` / `install` / `run` / `check` で使える。配布用・`--release` と食い違う値・表に無い値は指定の誤り（終了コード 1）。設定 JSON の `native_profile` |
 | `--variant <debug\|release>` | ビルドの種類（段階D・§24.4）。既定 `debug`。`release` は debuggable でない・INTERNET なし・アップロード鍵で署名（`push`・`--push-scripts`・`--assets-dir` と一緒に使えない）。書かずに `--format aab` か `--keystore` / `--key-alias` を指定すると `release` とみなす |
 | `--format <apk\|aab>` | 形式（段階D）。既定 `apk`。`aab` は配布用の `build` だけ（端末へは直接入れられない） |
 | `--keystore <パス>` / `--key-alias <別名>` | 配布用の署名の鍵（段階D。省略時はプロジェクトの `packaging_settings.json` の `android.signing`）。パスワードは環境変数 `SEED_ANDROID_KEYSTORE_PASSWORD`（キーが違えば `SEED_ANDROID_KEY_PASSWORD`）か対話の入力（§24.5） |
 | `--cert-name <名前>` / `--artifact <パス>` | `keystore create` の証明書の名前（CN）／ `check` で確かめる APK / AAB（段階D） |
-| `--config <JSON>` | 指定をまとめた設定 JSON（キーは `AndroidRunRequest` の snake_case: `project` / `assets_dir` / `serial` / `emulator_fallback` / `avd` / `scene` / `abis` / `release` / `skip_rust_build` / `skip_gradle` / `no_install` / `no_launch` / `no_logcat` / `push_scripts` / `rebuild` / `logcat_seconds` / `log_file` / `ipc_port` / `variant` / `format` / `keystore` / `key_alias`。`project`・`assets_dir`・`log_file`・`keystore` の相対パスは JSON のフォルダから、`scene` はアセットルートから。パスワードは JSON から読まない。コマンドラインが優先） |
+| `--config <JSON>` | 指定をまとめた設定 JSON（キーは `AndroidRunRequest` の snake_case: `project` / `assets_dir` / `serial` / `emulator_fallback` / `avd` / `scene` / `abis` / `release` / `native_profile` / `skip_rust_build` / `skip_gradle` / `no_install` / `no_launch` / `no_logcat` / `push_scripts` / `rebuild` / `logcat_seconds` / `log_file` / `ipc_port` / `variant` / `format` / `keystore` / `key_alias`。`project`・`assets_dir`・`log_file`・`keystore` の相対パスは JSON のフォルダから、`scene` はアセットルートから。パスワードは JSON から読まない。コマンドラインが優先） |
 | `--skip-rust` / `--skip-gradle` / `--no-install` / `--no-launch` / `--no-logcat` | 工程を飛ばす（`--skip-gradle` は pak とスクリプト・同梱 .NET・Gradle をまとめて飛ばす） |
 | `--push-scripts` | `run` でもスクリプトの DLL を作り直して `files/bin/` へ送る |
 | `--rebuild` | 変更の有無で工程を自動で飛ばさない（すべて作り直し、入れ直す） |
@@ -527,6 +528,37 @@ adb -s emulator-5554 logcat -s SEED RustPanic                                  #
 | `.cs` を変えた `run`（build_and_run.ps1 経由） | 26.8 秒（SeedPak 4.5・Gradle 2.3・install 2.6・起動 1.9・logcat 12。.so と同梱 .NET は飛ばす） |
 | `push`（スクリプトの DLL だけ） | 8.3 秒（SeedPak `--scripts-only`＋転送 6.5・起動 1.8。logcat を除く） |
 | arm64 の `build`（別の ABI へ切り替え。.so は増分ビルド） | 47.1 秒（.so 19.2・SeedPak 6.7・同梱 .NET 1.2・Gradle 19.9） |
+
+### 5.4 libSEED.so の構成（プロファイル。2026-09-28）
+
+開発用の APK の libSEED.so は、PC の Play と同じ構成の表 `editor/config/runtime_build_configs.json`（id・cargo のプロファイル名・出力フォルダ）から選ぶ
+（`editor/src/Android/Native/AndroidNativeProfile.cs`）。**既定は表の既定＝`develop`**（ルートの `Cargo.toml` の `[profile.develop]`＝`inherits = "dev"`・`opt-level = 1`。
+デバッグ情報は残る）。2026-09-28 までは cargo の `dev`（SEED クレートは最適化なし）で、UI の見本のスクロールが 19〜26 fps しか出なかった
+（`develop` で 59 fps 台。[app_platform_roadmap.md](app_platform_roadmap.md) §3.9）。
+
+| 決め方（上ほど強い） | 構成 | cargo ndk の引数 |
+|---|---|---|
+| 配布用（`--variant release`） | 常に `release` | `--release` |
+| `--release`（設定 JSON の `release`） | `release` | `--release` |
+| `--native-profile <id>`（設定 JSON の `native_profile`。エディタの実行ボタンはツールバーのランタイムのビルド構成の id） | その構成 | `dev` は引数なし・`release` は `--release`・ほかは `--profile <名前>` |
+| どれも無い（パッケージ化ウィンドウの開発用の `Develop` を含む） | 表の既定（`develop`） | `--profile develop` |
+
+- **dev（最適化なし）へ戻す**: `SeedAndroid run --native-profile debug …`（設定 JSON なら `"native_profile": "debug"`）。エディタの実行ボタンは
+  ツールバーのランタイムのビルド構成（Debug / Develop / Release）をそのまま渡す（PC の Play と Android の実行で同じ構成）。
+- cargo は `runtime/target/<Rust のターゲット>/<出力フォルダ>/libSEED.so`（`develop` なら `…/aarch64-linux-android/develop/`）へ出し、cargo-ndk（4.1.2）が
+  `-o` の jniLibs へ写す。SeedAndroid は写す前に jniLibs の .so を消し（§10）、写した後に「このプロファイルの出力と同じ大きさか」を確かめ、
+  違えば（無ければ）自分で写す（`Steps/NativeBuildStep.cs` の `EnsureCopiedFromProfileOutput`。cargo-ndk の版による写し方の違いへの保険）。
+- 工程の指紋（`AndroidStepFingerprints.Native`）は cargo のプロファイル名を材料にするので、構成を替えた最初の実行は .so を作り直す。
+- 準備と libSEED.so の工程のログに `libSEED.so の構成: Develop（id=develop・cargo --profile develop・runtime_build_configs.json の既定）` の 1 行が出る。
+
+所要時間（2026-09-28・この PC・arm64 だけ）:
+
+| 項目 | 実測 |
+|---|---|
+| `develop` の初回（依存を含む） | 6 分 21 秒（前回の計測の回。W2 の実機の回） |
+| `develop` の増分（SEED クレートの数ファイルを変えた後） | cargo 2 分 25 秒〜3 分 46 秒（4 回: 2 分 29 秒・2 分 46 秒・2 分 25 秒・3 分 46 秒。工程は 146〜231 秒）。`#[cfg(test)]` の中だけの変更は 28 秒 |
+| 変更なし（`--profile develop` で既に最新） | cargo 1.0 秒（工程 2.1 秒。cargo-ndk が写し直す） |
+| APK 内の libSEED.so（develop・AGP がシンボルを削ったもの） | 29.4 MB（未ストリップ 491〜492 MB） |
 
 ---
 
@@ -2157,7 +2189,7 @@ Android の実行の行は書き手が色と出どころを決めて出す（`An
 | ビルドの種類 | `開発用（デバッグ署名。端末で試す）`（既定）／`配布用（release。アップロード鍵で署名）`（段階D） |
 | 形式 | 配布用だけ: `APK`／`AAB（Google Play へ出す）`（段階D） |
 | ABI | `arm64-v8a（実機・配布用）`（既定）／`x86_64（PC のエミュレータ用）`／`両方` |
-| Rust の最適化 | 開発用だけ: `Release`（`cargo --release`。初回は数分）／`Debug`。配布用は常に Release |
+| Rust の最適化 | 開発用だけ: `Release`（`cargo --release`。初回は数分）／`Develop`（`runtime_build_configs.json` の既定の構成＝`--profile develop`。2026-09-28 までは `Debug`＝cargo の dev〈最適化なし〉。保存する値は従来の `Debug` のまま。§5.4）。配布用は常に Release |
 | 署名 | 開発用は**デバッグ署名の APK**（この PC のデバッグ用の鍵。端末へ入れて試せるがストアへは出せない。画面に明記）。配布用は「署名」の欄: キーストア（参照）・別名・パスワード（「保存」でエディタの保護保存。§24.5）・「この場所に新しいキーストアを作る」（確認用のパスワード・証明書の名前）・鍵の保管の注意 |
 | アイコン | プロジェクト設定の `android.icon` / `icon_background` の今の値と誤り（設定はプロジェクト設定ウィンドウ。§24.7） |
 | Google Play の要件 | 配布用だけ: 「要件を確認」（ビルドをせずに設定と前回の配布物を確かめる）と、ビルドの結果の一覧（合格・知らせ・注意・不合格をアイコンと色で。§24.8） |

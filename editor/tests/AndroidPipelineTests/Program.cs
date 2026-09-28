@@ -26,6 +26,8 @@ namespace AndroidPipelineTests;
 ///  14. アプリのプラットフォーム機能の opt-in: 機能の表・設定 → 機能・マニフェストの断片・置き場・Gradle の値と指紋・
 ///      リポジトリとの取り決め（PlatformFeatureTests。W1-2・§25.10）
 ///  15. 同じく設定の読み書き・設定ウィンドウの編集の状態・Google Play の要件チェック（PlatformSettingsTests。W1-2）
+///  16. libSEED.so の cargo のプロファイル: 構成の表の既定（develop）・--release・配布用・debug・誤り・指紋・出力の写し・
+///      SeedAndroid の --native-profile（NativeProfileTests。2026-09-28）
 /// 端末・adb・cargo・Gradle は使わない（IPC はループバックの偽のランタイム）。
 /// </summary>
 public static class Program
@@ -50,6 +52,7 @@ public static class Program
         LauncherIconTests.Register(harness);
         PlatformFeatureTests.Register(harness);
         PlatformSettingsTests.Register(harness);
+        NativeProfileTests.Register(harness);
         return harness.Run();
     }
 }

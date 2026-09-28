@@ -34,6 +34,7 @@ using System.Threading.Tasks;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Icons;
 using SEEDEditor.Android.Ipc;
+using SEEDEditor.Android.Native;
 using SEEDEditor.Android.Plan;
 using SEEDEditor.Android.Platform;
 using SEEDEditor.Android.Processes;
@@ -180,6 +181,9 @@ public sealed class AndroidRunPipeline
         // ── 起動するシーンがシーンマネージャに未登録なら、pak の収録の起点に足す（段階C-4）──
         var pakExtraScenes = DecidePakExtraScenes(request, launchScene, project, log);
 
+        // ── libSEED.so の構成（PC の Play と同じ構成の表から。指定の誤りは端末を用意する前に弾く）──
+        var nativeProfile = ResolveNativeProfile(request, log, buildScope);
+
         // ── 端末と ABI ──
         var (device, adb) = await ResolveDeviceAsync(request, runState, log, cancellationToken).ConfigureAwait(false);
         var abis = await ResolveAbisAsync(request, device, adb, log, cancellationToken).ConfigureAwait(false);
@@ -191,7 +195,7 @@ public sealed class AndroidRunPipeline
         var context = new AndroidPipelineContext
         {
             Request = request, Engine = _engine, Toolchain = _toolchain, Project = project, Identity = identity,
-            ScreenOrientation = orientation, Abis = abis, Device = device, Adb = adb,
+            ScreenOrientation = orientation, Abis = abis, NativeProfile = nativeProfile, Device = device, Adb = adb,
             Stamps = stamps, RunState = runState, RunStatePath = runStatePath, LaunchScene = launchScene,
             PakExtraScenes = pakExtraScenes,
             // エディタとの IPC のポートと接続トークン（起動の工程が am start の extra seed.ipc_port・seed.ipc_token で渡す。段階D-1）。
@@ -212,7 +216,7 @@ public sealed class AndroidRunPipeline
             var ndkPath = TryGetNdk();
             foreach (var abi in abis)
             {
-                context.CurrentFingerprints[AndroidStepKeys.Native(abi)] = AndroidStepFingerprints.Native(_engine, abi, request.OptimizesNative, ndkPath);
+                context.CurrentFingerprints[AndroidStepKeys.Native(abi)] = AndroidStepFingerprints.Native(_engine, abi, nativeProfile, ndkPath);
             }
             context.CurrentFingerprints[AndroidStepKeys.PackageContent] = AndroidStepFingerprints.PackageContent(_engine, project, pakExtraScenes);
             context.CurrentFingerprints[AndroidStepKeys.DotnetBundle] = AndroidStepFingerprints.DotnetBundle(_engine, abis);
@@ -314,6 +318,26 @@ public sealed class AndroidRunPipeline
             return "署名の指定（キーストア・別名・パスワード）は配布用（release）のビルドで使います（開発用はデバッグ用の鍵で署名します）。";
         }
         return null;
+    }
+
+    /// <summary>
+    /// libSEED.so を作る cargo のプロファイルを決めてログへ出す（指定の誤りは例外。Native/AndroidNativeProfile.cs）。
+    /// 構成の表（editor/config/runtime_build_configs.json）は PC の Play と同じもの。表を読めなければ組み込みの表で続ける（警告）。
+    /// </summary>
+    /// <param name="request">指定。</param>
+    /// <param name="log">準備のログ。</param>
+    /// <param name="buildScope">APK を作る工程があるか（無ければログに出さない。push などは .so を作らない）。</param>
+    /// <returns>プロファイル。</returns>
+    private AndroidNativeProfile ResolveNativeProfile(AndroidRunRequest request, AndroidPhaseLog log, bool buildScope)
+    {
+        var catalog = AndroidNativeProfileResolver.LoadCatalog(_engine, out var warnings);
+        var profile = AndroidNativeProfileResolver.Resolve(request, catalog);
+        if (buildScope)
+        {
+            foreach (var warning in warnings) log.Warn(warning);
+            log.Info($"libSEED.so の構成: {profile.Describe()}");
+        }
+        return profile;
     }
 
     /// <summary>ランチャーのアイコンの元を決めてログへ出す（設定の誤りは例外。段階D）。</summary>

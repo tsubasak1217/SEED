@@ -487,6 +487,15 @@ public partial class PackagingWindow : Window
         "出力: {出力フォルダ}/{ゲーム名}/{ゲーム名}-{ABI}-{debug|release}.{apk|aab}（ABI が両方なら arm64-v8a+x86_64。" +
         "配布用の APK と AAB は同じフォルダに並べて置けます）";
 
+    /// <summary>Android の開発用の「Rust の最適化」の選択肢: cargo の --release。</summary>
+    private const string AndroidReleaseNativeLabel = "Release";
+
+    /// <summary>
+    /// Android の開発用の「Rust の最適化」の選択肢: runtime_build_configs.json の既定の構成（Develop＝最適化 1 ＋デバッグ情報）。
+    /// 保存する値は BuildType.Debug（2026-09-28 までの「Debug」＝cargo の dev と同じ欄。設定ファイルの互換のため）。
+    /// </summary>
+    private const string AndroidDevelopNativeLabel = "Develop";
+
     /// <summary>Android の開発用の署名の説明（画面に明記する）。</summary>
     private const string AndroidSigningNote =
         "開発用の APK はデバッグ署名です（Android の debug 版と同じく、この PC のデバッグ用の鍵で署名）。" +
@@ -531,11 +540,14 @@ public partial class PackagingWindow : Window
         var release = _data.Android.Variant == AndroidBuildVariant.Release;
         if (!release)
         {
-            // 開発用だけ: Rust の最適化を選べる（配布用は常に Release）
+            // 開発用だけ: Rust の最適化を選べる（配布用は常に Release）。
+            // Release でないほうは runtime_build_configs.json の既定の構成（Develop＝最適化 1 ＋デバッグ情報。2026-09-28 まで
+            // cargo の dev＝最適化なし）で作るので「Develop」と出す。保存する値は従来どおり BuildType.Debug（設定ファイルの互換）。
+            // 最適化なしの .so が要るときは SeedAndroid の --native-profile debug（docs/android.md §5.1）。
             SettingsPane.Children.Add(BuildComboRow("Rust の最適化",
-                ["Release", "Debug"],
-                _data.Android.BuildType == BuildType.Debug ? "Debug" : "Release",
-                v => _data.Android.BuildType = v == "Debug" ? BuildType.Debug : BuildType.Release));
+                [AndroidReleaseNativeLabel, AndroidDevelopNativeLabel],
+                _data.Android.BuildType == BuildType.Debug ? AndroidDevelopNativeLabel : AndroidReleaseNativeLabel,
+                v => _data.Android.BuildType = v == AndroidDevelopNativeLabel ? BuildType.Debug : BuildType.Release));
             SettingsPane.Children.Add(BuildSectionSubHeader("署名"));
             SettingsPane.Children.Add(BuildNoteBlock(AndroidSigningNote, PlatformAvailability.RequiresSetup));
         }
@@ -1214,7 +1226,7 @@ public partial class PackagingWindow : Window
         var request = variant == AndroidBuildVariant.Release
             ? AndroidEditorRunRequests.ForReleasePackage(projectDir, abis, format, null, null, LoadStoredAndroidSecrets())
             : AndroidEditorRunRequests.ForPackage(projectDir, abis, _data.Android.BuildType == BuildType.Release);
-        AppendLog($"ABI: {string.Join(", ", abis)}・Rust: {(request.OptimizesNative ? "Release（--release）" : "Debug")}・プロジェクト: {projectDir}");
+        AppendLog($"ABI: {string.Join(", ", abis)}・Rust: {SEEDEditor.Android.Native.AndroidNativeProfileResolver.DescribeRequested(request)}・プロジェクト: {projectDir}");
 
         SetStatus("Android の APK を作成中…");
         SetProgress(ProgressAndroidStart);

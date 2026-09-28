@@ -7,6 +7,8 @@
 //                            端末なら そのシリアル＋emulator_fallback（見えなければエミュレータで実行。段階C-3）。
 //                            起動するシーン（開いているシーン）とエミュレータの AVD（エディタの設定）も渡す。
 //                            一時停止などの IPC のポート（エディタの設定 android.ipc_port。未設定なら既定。段階D-1）も渡す。
+//                            libSEED.so の構成はツールバーのランタイムのビルド構成（PC の Play と同じ id。既定 develop）を渡す
+//                            （2026-09-28。Android/Native/AndroidNativeProfile.cs）。
 //                            開いているシーンがシーンマネージャに未登録なら、中核の準備がそれを pak の収録の起点に足す
 //                            （ScenePath から決める。Android/Project/AndroidPakSceneSeeds。SeedAndroid の --scene と同じ経路。段階C-4）
 //    パッケージ化ウィンドウ … Goal = Build: 端末を使わずに APK を作るだけ（ABI と Rust の最適化を指定）。
@@ -28,8 +30,8 @@ namespace SEEDEditor.AndroidRun;
 public static class AndroidEditorRunRequests
 {
     /// <summary>
-    /// 実行ボタン（Play）の指定。ABI は端末から決め、Rust は debug（SeedAndroid の既定と同じ。最適化したものは
-    /// パッケージ化ウィンドウで作る）。logcat は止めるまで流す。
+    /// 実行ボタン（Play）の指定。ABI は端末から決め、Rust はツールバーのランタイムのビルド構成（<paramref name="nativeProfile"/>。
+    /// 未指定なら構成の表の既定＝develop。SeedAndroid の既定と同じ）。logcat は止めるまで流す。
     /// </summary>
     /// <param name="projectDir">プロジェクトのルート。</param>
     /// <param name="target">実行先（Android（自動）か端末の行）。</param>
@@ -42,9 +44,14 @@ public static class AndroidEditorRunRequests
     /// 端末のランタイムが一時停止などの IPC を待ち受けるポート（エディタの設定 android.ipc_port。未設定なら null＝既定のポート、
     /// 0 なら使わない。段階D-1）。
     /// </param>
+    /// <param name="nativeProfile">
+    /// libSEED.so の構成の id（ツールバーのランタイムのビルド構成。editor/config/runtime_build_configs.json の debug / develop / release。
+    /// null なら表の既定＝develop）。PC の Play と Android の実行で同じ構成を使う（2026-09-28）。
+    /// </param>
     /// <returns>指定。</returns>
     public static AndroidRunRequest ForPlay(
-        string projectDir, RunTargetEntry target, string? scenePath, string? emulatorAvd, int? ipcPort = null) => new()
+        string projectDir, RunTargetEntry target, string? scenePath, string? emulatorAvd, int? ipcPort = null,
+        string? nativeProfile = null) => new()
     {
         Goal = AndroidRunGoal.Run,
         ProjectDir = projectDir,
@@ -54,6 +61,7 @@ public static class AndroidEditorRunRequests
         Avd = string.IsNullOrWhiteSpace(emulatorAvd) ? null : emulatorAvd.Trim(),
         ScenePath = scenePath,
         IpcPort = ipcPort,
+        NativeProfile = string.IsNullOrWhiteSpace(nativeProfile) ? null : nativeProfile.Trim(),
     };
 
     /// <summary>
@@ -61,7 +69,7 @@ public static class AndroidEditorRunRequests
     /// </summary>
     /// <param name="projectDir">プロジェクトのルート。</param>
     /// <param name="abis">APK に詰める ABI の名前。</param>
-    /// <param name="release">Rust を --release でビルドするか。</param>
+    /// <param name="release">Rust を --release でビルドするか（しなければ構成の表の既定＝develop。2026-09-28 まで dev）。</param>
     /// <returns>指定。</returns>
     public static AndroidRunRequest ForPackage(string projectDir, IReadOnlyList<string> abis, bool release) => new()
     {
