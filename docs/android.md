@@ -4762,6 +4762,10 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell "run-as $APP cat shared_prefs/seed_pl
   アプリの Java 全体（112 ファイル＋仮の R）の `javac -Xlint:all` は注意 156 件で、W1-8 と同じ（AAR の classfile と MainActivity の this-escape だけ）。
 - 2026-09-28 午後の W2 の実機の回（roadmap §3.9）で M7 を試す予定だった（通知の機能を入れた試験の APK `com.seedengine.uidevice`）が、fps の計測へ切り替えたため
   **未実施のまま**（利用者は通知の設定を変えていない。その APK の `POST_NOTIFICATIONS` は一度も求めていないので未許可）。
+- **M7 の実機（2026-09-29・roadmap §3.9.2）**: 通知をオフ → `Killing …(16176) PermissionHelper` → 開き直した新しいプロセスの最初の onResume で
+  `権限 post_notifications の状態が変わりました: granted → denied`（保存した前回と比べて出た＝§25.14.5 の修正が効いた）。エンジンは受け取った（`[SEED PLATFORM]
+  イベントを受け取りました`）が、**スクリプトの受け手（見本のシーンの試験用スクリプト。`OnStart` で `PlatformEvents.OnEvent`・`this.On`）には届かなかった**（受け手の
+  `OnStart` が 0.86 秒後）。§25.14.5 の「後から `On` するスクリプトは受け取れないことがある」が実機で起きた（backlog）。オンへ戻して前面へ戻ると `denied → granted` は届いた。
 
 #### 25.14.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
 

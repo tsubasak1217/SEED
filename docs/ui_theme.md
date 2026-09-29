@@ -464,6 +464,8 @@ CupertinoDatePicker（[ui_components.md](ui_components.md) §11）、画面の�
   `app.ui_mode` の値。手順: ギャラリーを SeedAndroid の `run` で入れ、「端末」を選んで、端末のクイック設定のダークテーマを切り替える（`[UI] theme:` を logcat で見る）。
   → 2026-09-28 の実機の回（roadmap §3.9）: 「端末」を押したときの `app.ui_mode` は `dark`（`[SEED.UI] 端末の明暗: dark`・`mode System → Dark（端末 Dark）`）。
   テーマの 4 つのボタンの切り替え（端末に従うのまま。朝焼けは dark に非対応の警告の後 light）も実機で動いた。**ダークテーマの切り替えの追従は未実施**（fps の計測へ切り替えた）。
+  → 2026-09-29（roadmap §3.9.2）: 「端末」で端末のダークテーマをオフ → オン。2 回とも `platform.ui_mode_changed` → Light / Dark（利用者「すぐ切り替わる」。設定アプリで
+  変えたので知らせはアプリが前面へ戻ったときに届く）。デバッグの命令 `theme,mode,system` で選ぶと帯のセグメントの表示が「テーマ」のまま（見本の表示の同期。backlog）。
 - **PC のエディタに埋め込んだ Play では OS の明暗の変化が届かない**（子のウィンドウに WM_SETTINGCHANGE が来ない。問い合わせは効く）。単体起動の SEED.exe では届く。
 - **種の色の規則は Material 3 の fromSeed（HCT）の近似ではない**（色相を保って明るさだけを動かす）。第 3・第 4 の色・面の色みは作らない。
 - **補間は色だけ**（大きさ・角丸・書体は最初から行き先）。補間の間は全部品を毎フレーム当て直す（部品 128・グラフ 2 のギャラリーの 3 秒の補間で、debug の PC は当て直しが約 50 回/秒＝`UiTheme.Version` が 151 進んだ）。
