@@ -20,6 +20,10 @@ public struct ChartLook
     public float YAxis, XAxis, XLabelSpacing, YLabelSpacing, LabelGap, PlotPad, TouchSlop, SmoothStep, BarMin;
     /// <summary>吹き出しの余白・点との間・角丸、棒の角丸、目盛りの文字・吹き出しの文字の大きさ。</summary>
     public float TooltipPadding, TooltipGap, TooltipRadius, BarRadius, AxisText, TooltipText;
+    /// <summary>日付線のハンドル（LineChart。W2 の手直し P2-4）の直径・縁の太さ。</summary>
+    public float Handle, HandleBorder;
+    /// <summary>日付線のハンドルの縁の色（グラフの面の色。塗りは選んだ系列の色）。</summary>
+    public Color HandleBorderColor;
     /// <summary>棒の太さの割合・空の棒の高さの割合・慣性の減速・± の倍率・線の下の塗りの濃さ・慣性の止まる速さ・± の動きの時間。</summary>
     public float BarWidth, EmptyBarRatio, FlingDrag, ZoomStep, AreaOpacity, FlingStop, ZoomMotion;
     /// <summary>縦軸の区間の数の上限。</summary>
@@ -70,6 +74,9 @@ public struct ChartLook
             BarRadius = theme.Number(ChartTokens.RadiusBar),
             AxisText = theme.Number(ChartTokens.TextAxis),
             TooltipText = theme.Number(ChartTokens.TextTooltip),
+            Handle = theme.Number(ChartTokens.SizeHandle),
+            HandleBorder = theme.Number(ChartTokens.SizeHandleBorder),
+            HandleBorderColor = theme.Color(ChartTokens.ColorHandleBorder),
             BarWidth = theme.Number(ChartTokens.RatioBarWidth),
             EmptyBarRatio = theme.Number(ChartTokens.RatioEmptyBar),
             FlingDrag = theme.Number(ChartTokens.RatioFlingDrag),

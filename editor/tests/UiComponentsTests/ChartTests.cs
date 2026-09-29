@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using SEED;
 using SEED.UI;
 using SpriteRigTests; // テストランナー（TestHarness / Check）を共有する
@@ -10,11 +11,19 @@ namespace UiComponentsTests;
 /// グラフ（W2-8）の純粋な計算のテスト（docs/ui_charts.md）: 目盛りの自動（範囲 → 切りの良い刻み）・軸の範囲の自動・書式（時刻・日付・数）・
 /// 座標の変換・パンとズームの範囲の制限・慣性・単調な 3 次補間（行き過ぎない）・最寄りの点と棒の列・棒の形・枠の割り付けと吹き出し・
 /// 見える範囲の点と欠けた値・塊。
+/// W2 の手直し P2-4: 大きさの読み方（レイアウトの大きさ・Sprite・最初のレイアウトを待つ）、日付線のハンドルの吸い付き（最寄りの値のある点）・
+/// 置き場・指の X、ハンドルのトークン、プレハブ（line_chart.actor）と見本の折れ線（ui_charts.scene・ui_gallery.scene）の子 Handle の作り。
 /// </summary>
 public static class ChartTests
 {
     /// <summary>浮動小数の比較の許容量。</summary>
     private const double Eps = 1e-6;
+    /// <summary>ハンドルの見た目の直径の範囲（dp。利用者の要望の案〈docs/backlog.md〉の 16〜20）。</summary>
+    private const double HandleMinDiameter = 16, HandleMaxDiameter = 20;
+    /// <summary>ハンドルの当たりの最小の大きさ（dp。Material・Android のアクセシビリティの 48。docs/input_gestures.md §6）。</summary>
+    private const double HandleHitSize = 48;
+    /// <summary>吹き出し・ハンドルのレイヤーの足し分（ChartView.OverlayLayerOffset と同じ 1。プレハブの初めの値）。</summary>
+    private const int OverlayLayer = 1;
 
     /// <summary>テストを登録する。</summary>
     public static void Register(TestHarness h, UiThemeData theme)
@@ -419,6 +428,214 @@ public static class ChartTests
             var custom = new ChartAxis { Formatter = (v, s) => $"{v}円" };
             Check.Equal("5円", custom.Label(5), "文字を独自に");
         });
+
+        // ── W2 の手直し P2-4: 大きさの読み方 ─────────────────────
+        h.Add("P2-4 大きさ: レイアウトの表にあれば LayoutSize・無ければ Sprite（壊れた値も Sprite）", () =>
+        {
+            var sprite = V(508, 170);
+            var laid = V(379, 170);
+            Check.True(ChartSizing.Choose(true, laid, sprite) == laid, "表にある: コンテナに伸ばされた大きさ（411 dp の画面の 379）");
+            Check.True(ChartSizing.Choose(false, laid, sprite) == sprite, "表に無い（最初のフレーム・3D ワールドキャンバス）: Sprite");
+            Check.True(ChartSizing.Choose(false, Vector2.Zero, sprite) == sprite, "表に無いときの LayoutSize（0）は使わない");
+            Check.True(ChartSizing.Choose(true, V(0, 0), sprite) == V(0, 0), "表にあって 0（畳まれた）: 0 のまま（描かない）");
+            Check.True(ChartSizing.Choose(true, V(float.NaN, 170), sprite) == sprite, "非数は Sprite");
+            Check.True(ChartSizing.Choose(true, V(float.PositiveInfinity, 170), sprite) == sprite, "無限は Sprite");
+            Check.True(ChartSizing.Choose(true, V(-1, 170), sprite) == sprite, "負は Sprite");
+        });
+
+        h.Add("P2-4 大きさ: 最初のレイアウトを読めるまで描かない（上限のフレームを超えたら描く・一度描いたら戻らない）", () =>
+        {
+            const int max = ChartSizing.DefaultMaxLayoutWaitFrames;
+            // 普通: 最初のフレームは表に無く、次のフレームで読める
+            var wait = new ChartLayoutWait();
+            Check.True(!wait.Step(false, max), "1 フレーム目（表に無い）は描かない");
+            Check.True(wait.Step(true, max), "2 フレーム目（読めた）から描く");
+            Check.True(wait.Step(false, max), "一度描いたら、後で表に無くなっても描き続ける（Sprite の大きさ）");
+            // ずっと表に無い（3D ワールドキャンバスの下）: 上限まで待ってから描く
+            var never = new ChartLayoutWait();
+            int waited = 0;
+            while (!never.Step(false, max)) waited++;
+            Check.Equal(max, waited, $"最大 {max} フレーム待つ");
+            Check.True(never.Ready, "その次のフレームから描く");
+            // 上限 0 以下は待たない
+            var none = new ChartLayoutWait();
+            Check.True(none.Step(false, 0), "上限 0 は最初のフレームから描く");
+            Check.True(max >= 1 && max <= 5, "上限は次のフレームの表（1）を待てて、描かない時間が短い（5 フレーム以内）");
+        });
+
+        // ── W2 の手直し P2-4: 日付線のハンドル ────────────────────
+        h.Add("P2-4 ハンドルの吸い付き: X だけで最寄り・値の無い点を飛ばす・同じ距離は小さい添字・範囲の外は端の点・点 0 個・1 個", () =>
+        {
+            var pts = new List<ChartPoint>
+            {
+                new(0, 50), new(1, null), new(2, 10), new(3, 90), new(4, null), new(5, null), new(6, 70), new(8, 30),
+            };
+            Check.Equal(2, ChartHit.NearestValuedX(pts, 2.4, 0, 8), "X だけで最寄り（縦の値は見ない）");
+            Check.Equal(0, ChartHit.NearestValuedX(pts, 0.9, 0, 8), "値の無い 1 を飛ばして 0（距離 0.9 < 1.1）");
+            Check.Equal(2, ChartHit.NearestValuedX(pts, 1.2, 0, 8), "値の無い 1 を飛ばして 2（距離 0.8 < 1.2）");
+            Check.Equal(3, ChartHit.NearestValuedX(pts, 4.4, 0, 8), "値の無い 4・5 を飛ばして 3（距離 1.4 < 1.6）");
+            Check.Equal(6, ChartHit.NearestValuedX(pts, 4.6, 0, 8), "値の無い 4・5 を飛ばして 6（距離 1.4 < 1.6）");
+            Check.Equal(0, ChartHit.NearestValuedX(pts, 1.0, 0, 8), "同じ距離（0 と 2 から 1）は小さい添字");
+            Check.Equal(6, ChartHit.NearestValuedX(pts, 7.0, 0, 8), "同じ距離（6 と 8 から 1）は小さい添字");
+            Check.Equal(3, ChartHit.NearestValuedX(pts, 3.0, 0, 8), "ちょうど点の上");
+            // 見えている範囲 [2, 6] の外の指は端の点で止まる（範囲の外の点は選ばない）
+            Check.Equal(2, ChartHit.NearestValuedX(pts, -100, 2, 6), "左の外 → 見えている左端の点（範囲の外の 0 は選ばない）");
+            Check.Equal(6, ChartHit.NearestValuedX(pts, 100, 2, 6), "右の外 → 見えている右端の点（範囲の外の 8 は選ばない）");
+            Check.Equal(2, ChartHit.NearestValuedX(pts, 0.1, 1.5, 6), "範囲の左の外で、範囲の外の近い点（0）より範囲の中の端の点");
+            Check.Equal(6, ChartHit.NearestValuedX(pts, 7.9, 2, 7.5), "範囲の右の外で、範囲の外の近い点（8）より範囲の中の端の点");
+            Check.Equal(3, ChartHit.NearestValuedX(pts, 5, 2.5, 5.5), "範囲の中に値のある点が 1 つ（3）");
+            Check.Equal(-1, ChartHit.NearestValuedX(pts, 4.5, 4, 5), "範囲の中に値のある点が無い（4・5 は値なし）");
+            Check.Equal(-1, ChartHit.NearestValuedX(pts, 4.5, 6.5, 7.5), "範囲の中に点が無い");
+            Check.Equal(-1, ChartHit.NearestValuedX(new List<ChartPoint>(), 1, 0, 8), "点 0 個");
+            var one = new List<ChartPoint> { new(5, 42) };
+            Check.Equal(0, ChartHit.NearestValuedX(one, -3, 0, 10), "点 1 個（どこを指しても）");
+            Check.Equal(0, ChartHit.NearestValuedX(one, 99, 0, 10), "点 1 個（右の外）");
+            Check.Equal(-1, ChartHit.NearestValuedX(one, 5, 6, 10), "点 1 個が範囲の外");
+            Check.Equal(-1, ChartHit.NearestValuedX(new List<ChartPoint> { new(5, null) }, 5, 0, 10), "値の無い点 1 個");
+            Check.Equal(-1, ChartHit.NearestValuedX(pts, double.NaN, 0, 8), "非数の指");
+            Check.Equal(-1, ChartHit.NearestValuedX(pts, 3, 6, 2), "逆の範囲");
+            // 同じ X の点が並ぶ（値あり・なし）: 小さい添字
+            var dup = new List<ChartPoint> { new(1, 5), new(3, 1), new(3, 2), new(3, null), new(6, 9) };
+            Check.Equal(1, ChartHit.NearestValuedX(dup, 3.4, 0, 10), "同じ X が並べば小さい添字（右から）");
+            Check.Equal(1, ChartHit.NearestValuedX(dup, 2.9, 0, 10), "同じ X が並べば小さい添字（左から）");
+            Check.Equal(1, ChartHit.NearestValuedX(dup, 4.4, 0, 10), "左の候補が同じ X の並びなら小さい添字まで戻る");
+            // 指を右へ小刻みに送ると 1 点ずつ変わる（30 日の見本と同じく 7 日に 1 日〈3・10・17・24〉記録が無い）
+            var days = new List<ChartPoint>();
+            for (int d = 0; d < 30; d++) days.Add(new ChartPoint(d, d % 7 == 3 ? null : 420 + d));
+            var seen = new List<int>();
+            for (double x = 11; x <= 15; x += 0.25)
+            {
+                int k = ChartHit.NearestValuedX(days, x, 0, 29);
+                if (seen.Count == 0 || seen[^1] != k) seen.Add(k);
+            }
+            Check.Equal("11,12,13,14,15", string.Join(",", seen), "記録のある日を 1 つずつ（11〜15 に欠けた日なし）");
+            seen.Clear();
+            for (double x = 15; x <= 19; x += 0.25)
+            {
+                int k = ChartHit.NearestValuedX(days, x, 0, 29);
+                if (seen.Count == 0 || seen[^1] != k) seen.Add(k);
+            }
+            Check.Equal("15,16,18,19", string.Join(",", seen), "欠けた日（17）は飛ばす");
+        });
+
+        h.Add("P2-4 ハンドルの置き場: 丸の中心の X = 日付線・丸の下端 = 面の下の縁・面の中の判定（端の半単位）・指の X", () =>
+        {
+            // 見本の WakeWeek（508×170・縦軸の列 46・横軸の行 26・余白 8）の面
+            var plot = ChartLayout.Plot(508, 170, new ChartFrameSpec { YAxisWidth = 46, XAxisHeight = 26, PadTop = 8, PadRight = 8 });
+            var pos = ChartLayout.HandlePosition(plot, 100, 18);
+            Check.Close(46 + 100 - 9, pos.x, Eps, "左 = 面の左 + 日付線の X − 半径（中心の X = 日付線）");
+            Check.Close(plot.Bottom - 18, pos.y, Eps, "上 = 面の下端 − 直径（丸の下端 = 面の下の縁 = 横軸の線）");
+            Check.True(pos.y + 18 <= plot.Bottom + 1e-4, "横軸の文字の行（面の下）に重ならない");
+            var edge = ChartLayout.HandlePosition(plot, 0, 18);
+            Check.Close(plot.X - 9, edge.x, Eps, "面の左端の点では丸の左半分が縦軸の列へ出る（グラフの子なので切れない）");
+            Check.True(ChartLayout.HandlePosition(plot, 10, -5) == V(plot.X + 10, plot.Bottom), "負の直径は 0（点）");
+            // 面の中の判定（吹き出しと同じ半単位の許容）
+            Check.True(ChartLayout.InsidePlot(0, 454) && ChartLayout.InsidePlot(454, 454), "両端の点は出す");
+            Check.True(ChartLayout.InsidePlot(-0.5f, 454) && ChartLayout.InsidePlot(454.5f, 454), "半単位の許容");
+            Check.True(!ChartLayout.InsidePlot(-0.51f, 454) && !ChartLayout.InsidePlot(454.51f, 454), "外へ出たら隠す");
+            // 指の X = ハンドルの左上 + LocalPosition − 面の左（ハンドルがどこにあっても同じ指の位置は同じ X）
+            Check.Close(137 + 9 - 46, ChartLayout.HandleFingerPlotX(V(137, 128), V(9, 9), plot), Eps, "ハンドルの真ん中を押した指 = 日付線の X");
+            Check.Close(137 - 15 - 46, ChartLayout.HandleFingerPlotX(V(137, 128), V(-15, 30), plot), Eps, "当たりの広がり（見た目の外）も同じ式");
+            float a = ChartLayout.HandleFingerPlotX(V(137, 128), V(40, 0), plot);
+            float b = ChartLayout.HandleFingerPlotX(V(157, 128), V(20, 0), plot);
+            Check.Close(a, b, Eps, "ハンドルが 20 動いても、同じ指の位置（LocalPosition が 20 減る）なら同じ X");
+        });
+
+        h.Add("P2-4 テーマ: ハンドルの直径は 16〜20・縁は半径より細い・見た目の値（ChartLook）が読む・縁の色は面の色", () =>
+        {
+            double d = theme.Number(ChartTokens.SizeHandle), border = theme.Number(ChartTokens.SizeHandleBorder);
+            Check.True(d >= HandleMinDiameter && d <= HandleMaxDiameter, $"直径 {d} は 16〜20");
+            Check.True(border >= 0 && border < d / 2, $"縁 {border} は半径より細い");
+            var look = ChartLook.From(theme);
+            Check.Close(d, look.Handle, Eps, "ChartLook.Handle");
+            Check.Close(border, look.HandleBorder, Eps, "ChartLook.HandleBorder");
+            Check.True(look.HandleBorderColor == theme.Color(UiTokens.ColorSurface), "縁の色 = color.surface（グラフの面）");
+            Check.Equal(UiTokens.ColorSurface, ChartTokens.ColorHandleBorder, "縁の色のトークンは color.surface の別名");
+        });
+
+        h.Add("P2-4 プレハブ: line_chart.actor と見本の折れ線（WakeWeek・WakeHistory・GalleryLine）の子 Handle の作り", () =>
+        {
+            using var prefab = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "prefabs", "line_chart.actor")));
+            var handle = CheckHandleChild(prefab.RootElement, "line_chart.actor");
+            // 見本の折れ線はプレハブの参照ではなく中身の写し: 同じ Handle を持つ（配置の違いは無い）
+            using var charts = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "scenes", "ui_charts.scene")));
+            using var gallery = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "scenes", "ui_gallery.scene")));
+            foreach (var (doc, name) in new[] { (charts, "WakeWeek"), (charts, "WakeHistory"), (gallery, "GalleryLine") })
+            {
+                var node = FindNode(doc.RootElement.GetProperty("actors"), name);
+                Check.True(node.HasValue, $"見本に {name} がある");
+                if (!node.HasValue) continue;
+                var copy = CheckHandleChild(node.Value, name);
+                Check.True(JsonElement.DeepEquals(handle, copy), $"{name} の Handle はプレハブと同じ");
+            }
+        });
+    }
+
+    /// <summary>グラフのノードの子 Handle を確かめて返す（Tooltip の直前・非表示・楕円・横のドラッグだけ・当たり 48・GestureRelay・手前のレイヤー）。</summary>
+    private static JsonElement CheckHandleChild(JsonElement chart, string what)
+    {
+        var names = new List<string>();
+        foreach (var c in chart.GetProperty("children").EnumerateArray()) names.Add(c.GetProperty("name").GetString() ?? "");
+        int at = names.IndexOf("Handle");
+        Check.True(at >= 0 && at + 1 < names.Count && names[at + 1] == "Tooltip",
+            $"{what}: Handle は Tooltip の直前（同じレイヤーで吹き出しがハンドルの上に描かれる）: {string.Join(",", names)}");
+        var handle = Child(chart, "Handle");
+        var tooltip = Child(chart, "Tooltip");
+        Check.True(handle.TryGetProperty("visible", out var visible) && !visible.GetBoolean(), $"{what}: はじめは非表示（選んだ点が無い）");
+        var transform = handle.GetProperty("canvas_transform");
+        Check.True(transform.GetProperty("pivot")[0].GetSingle() == 0 && transform.GetProperty("pivot")[1].GetSingle() == 0
+                   && transform.GetProperty("anchor")[0].GetSingle() == 0 && transform.GetProperty("anchor")[1].GetSingle() == 0,
+            $"{what}: pivot・anchor は 0（位置 = 左上。ChartLayout.HandlePosition の前提）");
+        var sprite = Data(handle, "SpriteComponent");
+        Check.Equal("ellipse", sprite.GetProperty("shape").GetProperty("kind").GetString(), $"{what}: 丸（楕円）");
+        Check.Equal(Data(tooltip, "SpriteComponent").GetProperty("layer").GetInt32(), sprite.GetProperty("layer").GetInt32(),
+            $"{what}: 吹き出しと同じ手前のレイヤー");
+        Check.Equal(OverlayLayer, sprite.GetProperty("layer").GetInt32(), $"{what}: レイヤー 1（面の図形より手前）");
+        var gesture = Data(handle, "CanvasGestureComponent");
+        Check.True(gesture.GetProperty("drag").GetBoolean(), $"{what}: ドラッグを受ける");
+        Check.Equal("horizontal", gesture.GetProperty("drag_axis").GetString(), $"{what}: 横だけ（縦の移動は縦のスクロールへ渡る）");
+        foreach (var off in new[] { "tap", "long_press", "fling", "pinch", "press_feedback" })
+            Check.True(!gesture.TryGetProperty(off, out var flag) || !flag.GetBoolean(), $"{what}: {off} は受けない（タップはグラフへ届く）");
+        Check.Close(HandleHitSize, gesture.GetProperty("min_hit_size_dp").GetDouble(), Eps, $"{what}: 当たりは 48 dp");
+        bool relay = false;
+        foreach (var c in handle.GetProperty("components").EnumerateArray())
+        {
+            var comp = c.GetProperty("component");
+            if (comp.GetProperty("type").GetString() == "ScriptComponent"
+                && comp.GetProperty("data").GetProperty("type_name").GetString() == "SEED.UI.GestureRelay") relay = true;
+        }
+        Check.True(relay, $"{what}: ドラッグをグラフへ渡す GestureRelay");
+        return handle;
+    }
+
+    /// <summary>JSON の子（名前で引く）。</summary>
+    private static JsonElement Child(JsonElement node, string name)
+    {
+        foreach (var c in node.GetProperty("children").EnumerateArray())
+            if (c.GetProperty("name").GetString() == name) return c;
+        throw new InvalidOperationException($"子 {name} が無い");
+    }
+
+    /// <summary>JSON のコンポーネントの data（型の名前で引く）。</summary>
+    private static JsonElement Data(JsonElement node, string type)
+    {
+        foreach (var c in node.GetProperty("components").EnumerateArray())
+        {
+            var comp = c.GetProperty("component");
+            if (comp.GetProperty("type").GetString() == type) return comp.GetProperty("data");
+        }
+        throw new InvalidOperationException($"{type} が無い");
+    }
+
+    /// <summary>シーンの木から名前のノードを探す（深さ優先）。</summary>
+    private static JsonElement? FindNode(JsonElement nodes, string name)
+    {
+        foreach (var n in nodes.EnumerateArray())
+        {
+            if (n.GetProperty("name").GetString() == name) return n;
+            if (n.TryGetProperty("children", out var kids) && FindNode(kids, name) is { } found) return found;
+        }
+        return null;
     }
 
     /// <summary>点を作る（短く書くため）。</summary>

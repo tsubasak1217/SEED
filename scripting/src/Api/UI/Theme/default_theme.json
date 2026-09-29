@@ -4,6 +4,7 @@
   "_w2_7": "W2-7（画面の組み立て）で足したもの: 画面の出入り・覆い・ダイアログ・シート・トーストの時間と曲線（motion.*。曲線は x1・y1・x2・y2 = CSS の cubic-bezier。push・cover は Material 3 の standard の曲線、覆いは Flutter 版の top_sheet の 220ms・easeOut）、幕の色と濃さ（color.scrim・opacity.scrim〈覆い・シート 0.54 = Flutter 版〉・opacity.dialog_scrim〈0.32 = Material 3〉）、トーストの色（color.inverse_surface）、割合（ratio.*）、速さ（speed.*。dp/秒）、数（count.*）、重なりのレイヤーの底上げ（layer.*。画面のスタックの 1 段・覆い・シート・ダイアログ・トーストの帯）。正典は docs/ui_navigation.md。",
   "_w2_8": "W2-8（グラフ）で足したもの: 系列の色（chart_series_1〜4。1 は主の色、2 は Wake or Pay のカードの赤）・格子線・軸・目盛りの文字・基準線・空の棒・選んだ列の強調（Flutter 版 penalty_bar_chart.dart の主の色 12%）、線の太さ 2・点の半径 2.5・基準線 1.5・縦軸の文字の列 46・横軸の文字の行 26（Flutter 版 wake_time_chart.dart の値）、棒の太さ 0.7・空の棒の高さ 0.015・最小の太さ 2（penalty_bar_chart.dart）、慣性の減速 0.135（Flutter の BouncingScrollSimulation）。正典は docs/ui_charts.md §7。",
   "_w2_9": "W2-9（テーマ）で足したもの: brightness（dark）、書体（font.family = 部品の文字の書体・空は組み込み、font.weight・font.weight_title = SEED.Text.Weight の太さ。0 = 書体そのまま）、テーマの切り替えの色の補間の時間と曲線（motion.theme 0.3 秒・motion.theme_curve = fastOutSlowIn）、明るい方の配色（light の節。暗い方と同じ種の色 #6C4BFF を主の色にし、面・文字は Material 3 の明るい配色の段を目安に選んだ。押下の重ね色は黒・濃さ 0.1〈Material 3 の pressed〉）。",
+  "_w2_fix2": "W2 の手直し P2 で足したもの: ダイアログの区画の間隔（size.dialog_title_gap 16 = 題 → 本文、size.dialog_actions_gap 24 = 本文〈本文が無ければ題〉→ ボタンの行。Flutter master の AlertDialog〈Material 3〉の contentPadding の上 16・下 24。2026-09-29 に packages/flutter/lib/src/material/dialog.dart を取得して確かめた）。行のフルスワイプ（P2-3。SwipeActions）: ratio.swipe_full 0.6・ratio.swipe_full_cancel 0.55（構える・解くずらし量の行の幅に対する割合）、motion.swipe_full 0.15（「削除」の文字の置き場の補間）・motion.swipe_dismiss 0.2（確定で行を外へ流し切る）・motion.swipe_collapse 0.2（一覧が消した行を畳む）は docs/backlog.md の案（iOS の値は公開されていないので決めた値）。color.on_error（削除の面 color.error の上の文字。白。主の色の上の文字と同じく 3:1 以上）。グラフの日付線のハンドル（P2-4。LineChart）: size.chart_handle 18（丸の直径。利用者の要望の案〈docs/backlog.md: 見た目 16〜20 dp〉の中ほどで、スライダのつまみ size.slider_thumb 20 より一回り小さくし面の下の線と点を隠しすぎない。当たりはプレハブの min_hit_size_dp 48）・size.chart_handle_border 2（縁の太さ。折れ線の太さ size.chart_line 2 と同じ。縁の色は面の color.surface・塗りは選んだ系列の色）。",
   "name": "default",
   "brightness": "dark",
   "color": {
@@ -24,6 +25,7 @@
     "on_disabled": "#7C7689",
     "shadow": "#000000",
     "error": "#FF5252",
+    "on_error": "#FFFFFF",
     "scrim": "#000000",
     "inverse_surface": "#ECE6F5",
     "on_inverse_surface": "#1E1B26",
@@ -83,6 +85,8 @@
     "tab_indicator_height": 28,
     "dialog_width": 312,
     "dialog_padding": 24,
+    "dialog_title_gap": 16,
+    "dialog_actions_gap": 24,
     "dialog_button_height": 40,
     "handle_width": 32,
     "handle_height": 4,
@@ -107,7 +111,9 @@
     "chart_smooth_step": 2,
     "chart_bar_min": 2,
     "chart_tooltip_padding": 8,
-    "chart_tooltip_gap": 10
+    "chart_tooltip_gap": 10,
+    "chart_handle": 18,
+    "chart_handle_border": 2
   },
   "text": {
     "title": 20,
@@ -149,7 +155,10 @@
     "back_preview_curve": { "x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 1.0 },
     "chart_zoom": 0.25,
     "theme": 0.3,
-    "theme_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 }
+    "theme_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 },
+    "swipe_full": 0.15,
+    "swipe_dismiss": 0.2,
+    "swipe_collapse": 0.2
   },
   "opacity": {
     "pressed": 0.16,
@@ -168,7 +177,9 @@
     "chart_bar_width": 0.7,
     "chart_empty_bar": 0.015,
     "chart_fling_drag": 0.135,
-    "chart_zoom_step": 2
+    "chart_zoom_step": 2,
+    "swipe_full": 0.6,
+    "swipe_full_cancel": 0.55
   },
   "speed": {
     "fling_dismiss": 300,
@@ -206,6 +217,7 @@
       "on_disabled": "#A19CAB",
       "shadow": "#000000",
       "error": "#D32F2F",
+      "on_error": "#FFFFFF",
       "scrim": "#000000",
       "inverse_surface": "#322F3A",
       "on_inverse_surface": "#F4EFFA",

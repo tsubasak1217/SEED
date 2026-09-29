@@ -256,7 +256,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `color.primary` | 色 | #7C5CFF | #6C4BFF | Button（Filled の塗り・Outlined と Text の文字）・Toggle（オンの台）・Checkbox（オンの塗り）・Slider・ProgressBar・ProgressRing・RadioGroup（選んだ輪と点） |
 | `color.on_primary` | 色 | #FFFFFF | 〃 | Button（Filled の文字）・Checkbox（印） |
 | `color.background` | 色 | #121018 | #F6F3FA | ScreenStack（画面の背景・動きの幕）・ThemeStyle（画面の背景） |
-| `color.surface` | 色 | #1E1B26 | #FFFFFF | NumberField・TabBar・Dialog・BottomSheet・TopSheet（面）・ThemeStyle（カード・島） |
+| `color.surface` | 色 | #1E1B26 | #FFFFFF | NumberField・TabBar・Dialog・BottomSheet・TopSheet（面）・ThemeStyle（カード・島）・LineChart（日付線のハンドルの縁） |
 | `color.surface_variant` | 色 | #2E2A3A | #E8E3F0 | Toggle（オフの台）・Slider（溝）・SegmentedControl（台）・ProgressBar・ProgressRing（溝）・WheelPicker・TimeWheel（中央の帯） |
 | `color.on_surface` | 色 | #ECE6F5 | #1D1A24 | NumberField・SegmentedControl・ChipGroup・RadioGroup（文字）・TabBar（選んだタブ）・Dialog（題）・WheelPicker（行の文字）・ThemeStyle |
 | `color.on_surface_muted` | 色 | #A9A2B8 | #5E5970 | Checkbox（オフの枠）・RadioGroup（選んでいない輪）・TabBar（選んでいないタブ）・Dialog（本文）・BottomSheet・TopSheet（つまみ）・ThemeStyle |
@@ -269,7 +269,8 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `color.disabled` | 色 | #3A3645 | #E4E0EA | Button・NumberField・SegmentedControl・ChipGroup（無効の塗り・枠） |
 | `color.on_disabled` | 色 | #7C7689 | #A19CAB | Button・NumberField・Slider・SegmentedControl・ChipGroup・RadioGroup・TabBar・WheelPicker（無効の文字・選べない行） |
 | `color.shadow` | 色 | #000000 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
-| `color.error` | 色 | #FF5252 | #D32F2F | （W2-6 の入力欄が使う予定。今は部品は読まない） |
+| `color.error` | 色 | #FF5252 | #D32F2F | ThemeStyle（一覧の行の削除の面。templates/ui の list_row）・（W2-6 の入力欄が使う予定） |
+| `color.on_error` | 色 | #FFFFFF | 〃 | ThemeStyle（削除の面の上の文字。templates/ui の list_row） |
 | `color.scrim` | 色 | #000000 | 〃 | Dialog・BottomSheet・TopSheet（幕） |
 | `color.inverse_surface` | 色 | #ECE6F5 | #322F3A | Toast（面）・LineChart・BarChart（吹き出しの面） |
 | `color.on_inverse_surface` | 色 | #1E1B26 | #F4EFFA | Toast（文字）・LineChart・BarChart（吹き出しの文字） |
@@ -300,7 +301,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `space.xs` | 数 | 4 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
 | `space.s` | 数 | 8 | 〃 | ToastHost（トーストの間隔） |
 | `space.m` | 数 | 12 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
-| `space.l` | 数 | 16 | 〃 | ToastHost（画面の端との間） |
+| `space.l` | 数 | 16 | 〃 | ToastHost（画面の端との間）・SwipeActions（フルスワイプの文字と行の見た目の端の間） |
 | `space.xl` | 数 | 24 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
 | `size.touch_min` | 数 | 48 | 〃 | （部品は読まない。CanvasGesture の最小のヒット領域 48 dp の目安） |
 | `size.border` | 数 | 1 | 〃 | Button（Outlined）・NumberField・ChipGroup（細い枠） |
@@ -323,6 +324,8 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.tab_indicator_height` | 数 | 28 | 〃 | TabBar（選択の印の高さ） |
 | `size.dialog_width` | 数 | 312 | 〃 | Dialog（札の幅） |
 | `size.dialog_padding` | 数 | 24 | 〃 | Dialog（内側の余白） |
+| `size.dialog_title_gap` | 数 | 16 | 〃 | Dialog（題 → 本文の間隔） |
+| `size.dialog_actions_gap` | 数 | 24 | 〃 | Dialog（本文〈無ければ題〉→ ボタンの行の間隔） |
 | `size.dialog_button_height` | 数 | 40 | 〃 | Dialog（ボタンの高さ） |
 | `size.handle_width` | 数 | 32 | 〃 | BottomSheet・TopSheet（つまみの幅） |
 | `size.handle_height` | 数 | 4 | 〃 | BottomSheet・TopSheet（つまみの太さ） |
@@ -348,6 +351,8 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.chart_bar_min` | 数 | 2 | 〃 | BarChart（棒の最小の太さ） |
 | `size.chart_tooltip_padding` | 数 | 8 | 〃 | LineChart・BarChart（吹き出しの内側の余白） |
 | `size.chart_tooltip_gap` | 数 | 10 | 〃 | LineChart・BarChart（吹き出しと点の間） |
+| `size.chart_handle` | 数 | 18 | 〃 | LineChart（日付線のハンドルの直径） |
+| `size.chart_handle_border` | 数 | 2 | 〃 | LineChart（日付線のハンドルの縁の太さ） |
 | `text.title` | 数 | 20 | 〃 | Dialog（題）・ThemeStyle（見出し） |
 | `text.body` | 数 | 16 | 〃 | NumberField・Toast・Dialog（本文）・LineChart・BarChart（データが無いときの文字）・ThemeStyle |
 | `text.label` | 数 | 14 | 〃 | Button・SegmentedControl・ChipGroup・RadioGroup・Dialog（ボタン）・ThemeStyle |
@@ -367,6 +372,9 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `motion.wheel_correct` | 数 | 0.2 | 〃 | WheelPicker（選べない行から戻す時間） |
 | `motion.theme` | 数 | 0.3 | 〃 | UiTheme（動きありの切り替えの色の補間の時間） |
 | `motion.theme_curve` | 曲線 | 0.4, 0, 0.2, 1 | 〃 | UiTheme（色の補間の曲線） |
+| `motion.swipe_full` | 数 | 0.15 | 〃 | SwipeActions（フルスワイプの文字の置き場の補間） |
+| `motion.swipe_dismiss` | 数 | 0.2 | 〃 | SwipeActions（確定で行を外へ流し切る） |
+| `motion.swipe_collapse` | 数 | 0.2 | 〃 | （部品は読まない。一覧の持ち主が消した行の高さを畳む時間。見本の UiGallerySections） |
 | `motion.push` | 数 | 0.3 | 〃 | ScreenStack（押し込み） |
 | `motion.push_curve` | 曲線 | 0.2, 0, 0, 1 | 〃 | ScreenStack（押し込み） |
 | `motion.cover` | 数 | 0.3 | 〃 | ScreenStack（覆う画面） |
@@ -391,6 +399,8 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `opacity.scrim` | 数 | 0.54 | 〃 | BottomSheet・TopSheet（幕の濃さ） |
 | `opacity.dialog_scrim` | 数 | 0.32 | 〃 | Dialog（幕の濃さ） |
 | `opacity.chart_area` | 数 | 0.35 | 〃 | LineChart（線の下の塗りの上端） |
+| `ratio.swipe_full` | 数 | 0.6 | 〃 | SwipeActions（フルスワイプで構えるずらし量。行の幅に対する） |
+| `ratio.swipe_full_cancel` | 数 | 0.55 | 〃 | SwipeActions（構えを解くずらし量。行の幅に対する） |
 | `ratio.push_parallax` | 数 | 0.3 | 〃 | ScreenStack（押し込みの視差） |
 | `ratio.dialog_scale_from` | 数 | 0.9 | 〃 | Dialog（出るときの最初の大きさ） |
 | `ratio.sheet_max_height` | 数 | 0.9 | 〃 | BottomSheet（最大の高さ） |
@@ -426,15 +436,44 @@ CupertinoDatePicker（[ui_components.md](ui_components.md) §11）、画面の�
   | `sunrise.json` | Wake or Pay の sunrise を §6 の写し方で（`brightness: light`・`seed_color: #FF7043`）＋背景と溝を暖かい色に。明るい方だけ（面・文字の残りは既定の `light` の節） |
   | `forest_round.json` | 継承と一部だけの上書き: `extends: forest.json` で角丸・文字の太さ・主の色（青緑）だけを変える。ほかは forest → 既定の順に落ちる |
 
-- **ギャラリー**（`templates/ui/scenes/ui_gallery.scene`。ルートは dp の 540×1200）: 上に固定の**テーマの帯**（`ThemeBar`・`UiGalleryThemeBar.cs`:
+- **ギャラリー**（`templates/ui/scenes/ui_gallery.scene`。ルートは dp。画面の幅と安全領域に合わせる＝W2 の手直し P2-5）: 上に固定の**テーマの帯**（`ThemeBar`・`UiGalleryThemeBar.cs`:
   テーマの 4 つのボタン〈既定・森・朝焼け・森・丸〉・明暗の選び方のセグメント〈テーマ・端末・明・暗〉・「ゆっくり」のトグル〈色の補間〉。始めに `StartTheme`〈空 = 組み込みの既定のテーマ〉と選び方「テーマのまま」を当てる）、下は縦のスクロールのページ
-  （`Page/Content`）に W2-4 の形と塗り・基本の部品、W2-5 の時刻ホイール、W2-3 の一覧（100 行の `ListView`。行 `prefabs/list_row.actor` は `ThemeStyle` で結び付け）、
+  （`Page/Content`）に W2-4 の形と塗り・基本の部品、W2-5 の時刻ホイール、W2-3 の一覧（100 行の `ListView`。行 `prefabs/list_row.actor` は `ThemeStyle` で結び付け。W2 の手直し P2-3 で左へ払うと削除のボタン・大きく払うとそのまま削除〈フルスワイプ。
+行のスクリプト `UiGalleryListRow.cs`・削除の面は `color.error`・文字は `color.on_error`。[ui_scroll_list.md](ui_scroll_list.md) §7.1〉）、
   W2-7 の呼び出し（ダイアログ・下のシート・上の覆い・トースト。根の `ModalHost`・`ToastHost`）、W2-8 のグラフ（折れ線 30 日・積み上げの棒 12 か月。
   `UiGallerySections.cs`）。部品でない飾り（背景・見出し・島・カード・説明の文字・進捗の文字）には `ThemeStyle` を付けた。
   グラフのプレハブ（`line_chart.actor`・`bar_chart.actor`）の面と、シート・覆いの中身（`nav_sheet_content`・`nav_overlay_content`）の文字にも `ThemeStyle` を付けた。
+- **ギャラリーの作り**（W2 の手直し P2-5。2026-09-29。それまでは 540×1200 dp 固定の絶対配置で、Pixel 6a〈411×914 dp〉では右が切れ、帯がステータスバーに重なった）:
+  部品の名前は変えていない（見本のスクリプトは名前を深さ優先で引く）。レイアウトの規則は [canvas_camera_rework.md](canvas_camera_rework.md) §6.3〜§6.6。
+
+  ```
+  UiGallery（dp のルート）
+  ├─ Background（親いっぱい。画面の端まで塗る）
+  ├─ Body（CanvasComponent・親いっぱい・CanvasSafeArea 4 辺・縦の CanvasStack〈cross_align stretch〉）
+  │   ├─ ThemeBar（縦の Stack・余白 左右 16 上下 8・間隔 8）: ThemeHeading・ThemeButtons（横の Stack。4 つのボタンを flex で等分・文字は真ん中）・
+  │   │   ThemeOptions（横の Stack・間隔 12: 明暗の BrightnessMode〈flex・最大 300 dp。中の 4 項目も flex で等分〉・「ゆっくり」のトグルと文字）
+  │   └─ Page（flex 1・切り抜き・縦のスクロール。中身の大きさは auto＝中身の並びに合う。窓そのものが縦の Stack〈cross_align stretch〉）
+  │       └─ Content（縦の Stack〈余白 16・末尾 24・間隔 24〉。幅は窓の Stack が渡す）
+  │           ├─ Title
+  │           ├─ ShapesSection（見出し・Shapes〈CanvasWrap。形と塗りを折り返す〉）
+  │           ├─ WidgetsSection（見出し・ButtonRow・ControlRow・ValueRow・SelectRow〈CanvasWrap〉・Chips〈ChipGroup に CanvasWrap〉・
+  │           │   ProgressRow〈棒の上の文字の分だけ上の余白〉・ToggleAllRow）
+  │           ├─ WheelsSection（見出し・Wheels〈CanvasWrap。列 = 説明の文字 ＋ 島。時刻ホイールは島の子＝重ねたまま並ぶ〉）
+  │           ├─ ListSection（見出し・List〈幅は親に合わせる。行 list_row.actor も一覧の幅に合う〉）
+  │           ├─ NavSection（見出し・NavButtons〈横の Stack。4 つを flex で等分〉）
+  │           └─ ChartsSection（見出し・GalleryLine・GalleryBars〈幅は親に合わせる。グラフは LayoutSize を読む〉）
+  ├─ Modals・Toasts（画面全体。重ねる面・トースト）
+  ```
+
+  段の縦の位置は画面の幅で変わる（折り返しの行の数が変わる。中身の高さは窓 540 で 2,230 dp・411 dp で 2,826 dp・360 dp で 3,050 dp）。
+  PC の確かめ（窓 540・411 dp の模擬〈`SEED_SIM_SCALE_FACTOR=1.3139`・`SEED_SIM_SAFE_AREA=0,32,0,21`〉・360 dp〈倍率 1.5〉）: ページの右の余白の列が
+  すべて背景の色（違う画素 0）、帯の 4 つのボタンの文字は 76 dp（360 dp）でも枠の中、411 dp の模擬で帯は y=32 px（ステータスバーの模擬の下）から、
+  ページの下の端は 1,179 px（ジェスチャーの帯の模擬の上）。テーマ・明暗・トグルのタップ、ボタン・チップ、ホイールの値、一覧のフルスワイプの削除、ダイアログが動く。
 - **デバッグの命令**（`SCRIPT_DEBUG:`）: `theme,<default|forest|sunrise|round|assets://….json>`・`theme,mode,<theme|system|light|dark>`・
   `theme,sysmode,<dark|light|unknown|system>`（模擬の端末の明暗）・`theme,animate,<on|off>`・`theme,info`（今のテーマ・明暗・版・鎖・トークンの値・部品の数）、
-  `gallery,scroll,<位置>`・`gallery,open,<dialog|sheet|overlay|toast>`・`gallery,stats`、W2-4・W2-5 の `ui,…`（`ui,theme,<path>` も残す）。
+  `gallery,scroll,<位置>`・`gallery,scroll,<ノードの名前>`（そのノードの上の端がページの窓の上の端に来る位置へ。範囲へ収める。段の位置は画面の幅で変わるので
+  名前で指す。W2 の手直し P2-5）・`gallery,open,<dialog|sheet|overlay|toast>`・`gallery,stats`・`gallery,haptic,<none|tap|vibrate>`（一覧の行のフルスワイプで構えたときの触感。
+  見本の既定は vibrate）・`gallery,list`（件数・開いている行・畳んでいる数・一覧の位置と画面の矩形。W2 の手直し P2-3）、W2-4・W2-5 の `ui,…`（`ui,theme,<path>` も残す）。
 
 ## 10. 検証（2026-09-28・PC）
 

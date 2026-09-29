@@ -15,9 +15,15 @@ namespace SEED.UI;
 //      ├─ XLabels（Sprite〈透明〉・CanvasClip。横軸の文字〈パンで動く〉を左右の端で切る）
 //      ├─ YLabels（縦軸の文字）
 //      ├─ Empty（Text。データが無いときの「まだ記録はありません」）
+//      ├─ Handle（任意。W2 の手直し P2-4。日付線のハンドル＝Sprite〈楕円〉・CanvasGesture〈横のドラッグだけ・当たり 48 dp〉・GestureRelay。
+//      │          今は LineChart だけが出す。無いプレハブは今までどおり）
 //      ├─ Tooltip（Sprite〈角丸〉）└─ Text（吹き出し）
 //      └─ ZoomIn・ZoomOut（任意。SEED.UI.Button。± で拡大縮小）
-//  大きさはグラフのノードの Sprite の幅・高さ（dp のキャンバスでは dp）。子の位置と大きさはこのスクリプトが決める。
+//  子の pivot・anchor は 0（位置 = 左上）。子の位置と大きさはこのスクリプトが決める。
+//  【大きさ】（W2 の手直し P2-4）レイアウトが決めた大きさ（CanvasTransform.LayoutSize。コンテナ・親に合わせる〈fill〉で伸ばされた
+//  大きさ＝描かれる背景と同じ。前のフレームの描画の値）。表に無いとき（最初のフレーム・3D ワールドキャンバスの下など）は Sprite の
+//  幅・高さ（dp のキャンバスでは dp）。最初のレイアウトを読めるまで（上限 ChartSizing.DefaultMaxLayoutWaitFrames）は描かずに待つ
+//  （伸ばされたグラフが 1 フレームだけ Sprite の大きさで背景からはみ出さないように。ChartSizing.cs）。
 //
 //  【描き方】線・面・点・棒・格子線は SEED.Draw（イミディエイトモード）で毎フレーム積む（W2-10a の on_demand で止まっている間は
 //  フレームが回らないので積まない）。見た目の拡張（W2-8）の「画面の 1 画素のアンチエイリアス」を使う（dp のキャンバスでも縁がにじまない）。
@@ -25,8 +31,13 @@ namespace SEED.UI;
 //  【操作】（W2-2 のジェスチャー）タップ・長押し → 最寄りの点・棒を選んで吹き出し。横のドラッグ → パン、払う → 慣性、
 //  2 本指のピンチ → 拡大縮小（1〜MaxZoom 倍）、ZoomIn・ZoomOut のボタン → 真ん中を中心に拡大縮小。端で止まる。
 //  パンとズームができない（Interactive = false か倍率 1）ときはドラッグを受けない（縦の一覧・横のページ送りへ指を渡す）。
+//  【日付線のハンドル】（P2-4）選んだ点があり日付線が面の中に見えている間だけ、日付線の下（丸の下端 = 面の下の縁）に出す。
+//  ハンドルは葉なので、同じ横の移動ではパンより先に指を取る（アリーナの規則。縦の移動は取らない＝縦のスクロールへ渡る）。
+//  倍率 1 でグラフがドラッグを受けないときも効く。指の X（イベントの LocalPosition ＋ ハンドルの左上）を面の中の X へ直し、
+//  選んでいる系列の値のある点のうち見えている範囲の中で最寄りの点へ吸い付く（面の外の指は端の点で止まる。自動のパンは無い）。
+//  点が変わるたびに PointSelected と軽い触感（HandleHaptic。1 フレームに 1 回まで）。離しても取り消されても選びは残す。
 //
-//  派生（LineChart・BarChart）は「データの範囲」「面の範囲」「位置の計算」「描く」「選ぶ」「吹き出しの文字」を決める。
+//  派生（LineChart・BarChart）は「データの範囲」「面の範囲」「位置の計算」「描く」「選ぶ」「吹き出しの文字」「ハンドルの位置と吸い付き」を決める。
 // ============================================================
 
 /// <summary>グラフの共通の土台（LineChart・BarChart）。</summary>
@@ -110,6 +121,12 @@ public abstract class ChartView : UiWidget
     /// <summary>目盛りの文字のプレハブ。</summary>
     [SerializeField(Label = "文字のプレハブ")]
     public string LabelPrefab = "assets://ui/prefabs/chart_label.actor";
+    /// <summary>
+    /// 日付線のハンドル（子 Handle。今は LineChart）で選ぶ点が変わるたびに軽い触感（SEED.Platform.Haptics.Tap。Android の端末だけ・
+    /// 1 フレームに 1 回まで）。
+    /// </summary>
+    [SerializeField(Label = "ハンドルの触感")]
+    public bool HandleHaptic = true;
 
     // ── スクリプトからの設定 ─────────────────────────────────
     /// <summary>X の目盛りの文字を独自に作る（値, 刻み）→ 文字。null = 書式の既定。</summary>
@@ -173,6 +190,22 @@ public abstract class ChartView : UiWidget
     private Button? _zoomIn, _zoomOut;
     private int _registryVersion = -1;
     private int _pendingFrames;
+    // 大きさ（W2 の手直し P2-4）
+    /// <summary>グラフのノードの CanvasTransform（レイアウトの大きさを読む。アクタの根に直付けなので始めに 1 度引けばよい）。</summary>
+    private CanvasTransform? _transform;
+    /// <summary>最初のレイアウトを待つ判定。</summary>
+    private ChartLayoutWait _layoutWait;
+    /// <summary>描いてよい（最初のレイアウトを読めた・待つ上限を超えた）。</summary>
+    private bool _layoutReady;
+    // 日付線のハンドル（W2 の手直し P2-4）
+    /// <summary>子 Handle（無ければ null＝ハンドルなし）。</summary>
+    private ChartHandle? _handle;
+    /// <summary>ハンドルを指で引いている。</summary>
+    private bool _handleDragging;
+    /// <summary>このフレームにハンドルで選ぶ点が変わった（触感はフレームの更新で 1 回だけ鳴らす）。</summary>
+    private bool _handleHapticPending;
+    /// <summary>今のハンドルのドラッグで点が変わった回数・触感を鳴らした回数（ログ用）。</summary>
+    private int _handleMoves, _handleHaptics;
     // パン・ズームの動き
     private ChartFling? _fling;
     private float _flingTime;
@@ -217,6 +250,21 @@ public abstract class ChartView : UiWidget
     protected abstract bool ClearSelectionCore();
     /// <summary>吹き出しを出す点（面の左上が原点）と文字。出さないなら false。</summary>
     protected abstract bool TooltipAnchor(out Vector2 plotLocal, out string text);
+    /// <summary>
+    /// 日付線のハンドルを出す X（日付線の X。面の左上が原点）と塗りの色。出さないなら false
+    /// （既定は出さない。LineChart が選んだ点の X と系列の色を返す。棒グラフのハンドルは backlog）。
+    /// </summary>
+    protected virtual bool HandleAnchor(out float plotX, out Color fill)
+    {
+        plotX = 0f;
+        fill = default;
+        return false;
+    }
+    /// <summary>
+    /// ハンドルを引く指の X（面の左上が原点）の最寄りの点へ選びを移す（見えている範囲の中の点だけ）。変わったら true
+    /// （PointSelected などの知らせとログは派生が出す。土台は触感と描き直しを受け持つ）。
+    /// </summary>
+    protected virtual bool SelectNearestX(float plotX) => false;
 
     // ── 公開の操作 ────────────────────────────────────────────
 
@@ -305,17 +353,24 @@ public abstract class ChartView : UiWidget
         Look = ChartLook.From(Theme);
         _lookDirty = true;
         ApplyLabelFonts();
-        // 空の文字・吹き出しは「前に書いた値と同じなら書かない」ので、テーマが替わったら書き直させる（色・文字の大きさ）
+        // 空の文字・吹き出し・ハンドルは「前に書いた値と同じなら書かない」ので、テーマが替わったら書き直させる（色・文字の大きさ）
         _lastEmpty = "\0";
         _lastTooltipText = "\0";
+        _handle?.InvalidateLook();
     }
 
     /// <inheritdoc />
     protected override void OnWidgetUpdate(float dt)
     {
-        if (_registryVersion != UiRegistry.Version) BindZoomButtons();
+        if (_registryVersion != UiRegistry.Version)
+        {
+            _registryVersion = UiRegistry.Version;
+            BindZoomButtons();
+            _handle?.TryBind();
+        }
         ReadSize();
         StepMotion(dt);
+        FlushHandleHaptic();
         bool labelsPending = (_xLabels?.Pending ?? false) || (_yLabels?.Pending ?? false) || (_plotLabels?.Pending ?? false);
         if (_dataDirty || _viewDirty || _layoutDirty || _lookDirty || labelsPending)
         {
@@ -326,6 +381,8 @@ public abstract class ChartView : UiWidget
             if (labelsPending && _pendingFrames++ < MaxPendingFrames) Redraw.Request();
             else if (!labelsPending) _pendingFrames = 0;
         }
+        // 最初のレイアウトを待つ間（上限つき）・ハンドルを引いている間は次のフレームも回す（render_policy: on_demand でも止まらない）
+        if (!_layoutReady || _handleDragging) Redraw.Request();
         var paint = System.Diagnostics.Stopwatch.StartNew();
         Paint();
         LastPaintMs = paint.Elapsed.TotalMilliseconds;
@@ -401,6 +458,63 @@ public abstract class ChartView : UiWidget
     public override void OnGesturePinchEnd(GestureEvent e)
     {
         if (Interactive) Debug.Log($"{LogPrefix} pinch end zoom={Viewport.Zoom:0.###}");
+    }
+
+    // ── 日付線のハンドル（W2 の手直し P2-4。子 Handle の GestureRelay から）────────────
+
+    /// <summary>ハンドルを引き始めた（見せているときだけ受ける。慣性・± の動きは止める＝指の下で面が流れない）。</summary>
+    private void OnHandleDragStart(GestureEvent e)
+    {
+        if (_handle is not { IsShown: true } || !ShowTooltip || !HasData) return;
+        StopMotion();
+        _handleDragging = true;
+        _handleMoves = _handleHaptics = 0;
+        Debug.Log($"{LogPrefix} handle start");
+        MoveHandleTo(e);
+    }
+
+    /// <summary>ハンドルを引いている途中。</summary>
+    private void OnHandleDragUpdate(GestureEvent e)
+    {
+        if (_handleDragging) MoveHandleTo(e);
+    }
+
+    /// <summary>離した・取り消された（どちらも選びは残す＝戻さない）。</summary>
+    private void OnHandleDragEnd(GestureEvent e)
+    {
+        if (_handleDragging) EndHandleDrag(e.Canceled ? "canceled" : "released");
+    }
+
+    /// <summary>ハンドルのドラッグを終える（選びは残す）。</summary>
+    private void EndHandleDrag(string reason)
+    {
+        _handleDragging = false;
+        Debug.Log($"{LogPrefix} handle end ({reason}) moves={_handleMoves} haptics={_handleHaptics}");
+        Redraw.Request();
+    }
+
+    /// <summary>
+    /// 指の X（イベントの LocalPosition ＋ ハンドルの左上 − 面の左）の最寄りの点へ選びを移す。変わったら触感（このフレームの終わりに 1 回）と描き直し。
+    /// </summary>
+    private void MoveHandleTo(GestureEvent e)
+    {
+        // 隠れたハンドル（選びが消えた・面の外へ出た）はエンジンの当たりの材料に無く、LocalPosition が意味を持たない
+        if (_handle is not { IsShown: true } handle) return;
+        float plotX = ChartLayout.HandleFingerPlotX(handle.Position, e.LocalPosition, PlotRect);
+        if (!SelectNearestX(plotX)) return;
+        _handleMoves++;
+        if (HandleHaptic) _handleHapticPending = true;
+        // 選びだけが変わった: 位置の計算はやり直さず、描き直しだけ頼む（吹き出し・日付線・ハンドルは毎フレームの Paint が置く）
+        Redraw.Request();
+    }
+
+    /// <summary>ハンドルで選ぶ点が変わったフレームに 1 回だけ触感を鳴らす（ドラッグの始まりと途中が同じフレームに来ても 1 回）。</summary>
+    private void FlushHandleHaptic()
+    {
+        if (!_handleHapticPending) return;
+        _handleHapticPending = false;
+        SEED.Platform.Haptics.Tap();
+        _handleHaptics++;
     }
 
     // ── 内部 ──────────────────────────────────────────────────
@@ -488,6 +602,15 @@ public abstract class ChartView : UiWidget
         _tooltipNode = gameObject.FindChild(TooltipChild);
         Ink = gameObject.FindChild(InkChild).GetComponent<CanvasTransform>();
         _gesture = gameObject.GetComponent<CanvasGesture>();
+        _transform = gameObject.GetComponent<CanvasTransform>();
+        // 日付線のハンドル（任意）。GestureRelay の登録は後のことがあるので、つなぐのは登録簿が変わるたび（OnWidgetUpdate）
+        _handle = ChartHandle.Find(gameObject);
+        if (_handle is { } handle)
+        {
+            handle.DragStarted += OnHandleDragStart;
+            handle.DragUpdated += OnHandleDragUpdate;
+            handle.DragEnded += OnHandleDragEnd;
+        }
         if (_xLabelsNode.IsValid) _xLabels = new ChartLabelPool(_xLabelsNode, LabelPrefab);
         if (_yLabelsNode.IsValid) _yLabels = new ChartLabelPool(_yLabelsNode, LabelPrefab);
         if (_plotLabelsNode.IsValid) _plotLabels = new ChartLabelPool(_plotLabelsNode, LabelPrefab);
@@ -511,7 +634,6 @@ public abstract class ChartView : UiWidget
     /// <summary>± のボタンを引いてつなぐ（登録簿が変わったときだけ）。</summary>
     private void BindZoomButtons()
     {
-        _registryVersion = UiRegistry.Version;
         var zoomIn = Of<Button>(gameObject.FindChild(ZoomInChild));
         var zoomOut = Of<Button>(gameObject.FindChild(ZoomOutChild));
         if (!ReferenceEquals(zoomIn, _zoomIn))
@@ -551,17 +673,30 @@ public abstract class ChartView : UiWidget
         _zoomOut?.SetInteractable(Interactive && target > Viewport.MinZoom + ZoomLimitEpsilon);
     }
 
-    /// <summary>グラフの大きさ（ノードの Sprite）を読む。変わったら割り付けし直す。</summary>
+    /// <summary>
+    /// グラフの大きさを読む（W2 の手直し P2-4: レイアウトの表にあれば LayoutSize〈前のフレームの描画の値〉、無ければ Sprite の幅・高さ。
+    /// ChartSizing）。変わったら割り付けし直す。最初のレイアウトを読めるまで（上限つき）は描かない（<c>_layoutReady</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 毎フレーム読む（コンテナ・親に合わせる・画面の回転で大きさが変わった次のフレームに追従する）。LayoutSize の最初の読み出しは
+    /// エンジンがそのフレームの表の索引を作る（表の行数に比例。フレームに 1 回・読むスクリプトの間で共有）。費用は docs/ui_charts.md §3.1。
+    /// </remarks>
     private void ReadSize()
     {
+        bool hasLayout = _transform is { } ct && ct.HasLayout;
+        bool wasReady = _layoutReady;
+        _layoutReady = _layoutWait.Step(hasLayout, ChartSizing.DefaultMaxLayoutWaitFrames);
+        // 描き始めるフレームは、大きさが Sprite と同じでも位置の計算をやり直す（待つ間に隠した空の文字を置き直す）
+        if (_layoutReady && !wasReady) _layoutDirty = true;
         var sprite = SpriteOf();
         if (sprite is null) return;
-        float w = sprite.Value.Width, h = sprite.Value.Height;
+        var size = ChartSizing.Choose(hasLayout, hasLayout ? _transform!.Value.LayoutSize : Vector2.Zero,
+            new Vector2(sprite.Value.Width, sprite.Value.Height));
         int layer = sprite.Value.Layer;
-        if (w != _width || h != _height || layer != BaseLayer)
+        if (size.x != _width || size.y != _height || layer != BaseLayer)
         {
-            _width = w;
-            _height = h;
+            _width = size.x;
+            _height = size.y;
             BaseLayer = layer;
             _layoutDirty = true;
         }
@@ -696,11 +831,11 @@ public abstract class ChartView : UiWidget
         }
     }
 
-    /// <summary>空のときの文字（データが無いときだけ、面の真ん中）。</summary>
+    /// <summary>空のときの文字（データが無いときだけ、面の真ん中。最初のレイアウトを待つ間は出さない）。</summary>
     private void PlaceEmpty()
     {
         if (!_emptyNode.IsValid) return;
-        string text = HasData ? "" : EmptyText;
+        string text = HasData || !_layoutReady ? "" : EmptyText;
         if (text == _lastEmpty) return;
         _lastEmpty = text;
         _emptyNode.Visible = text.Length > 0;
@@ -729,13 +864,14 @@ public abstract class ChartView : UiWidget
         if (_lastDragAxis != axis) { g.DragAxis = axis; _lastDragAxis = axis; }
     }
 
-    /// <summary>毎フレーム: 格子線・データ・選んだ印を積み、吹き出しを置く。</summary>
+    /// <summary>毎フレーム: 格子線・データ・選んだ印を積み、吹き出しと日付線のハンドルを置く（最初のレイアウトを待つ間は積まずに隠す）。</summary>
     private void Paint()
     {
         LastDrawCount = 0;
-        if (Ink is not { } ink || PlotRect.Width <= 0f || PlotRect.Height <= 0f)
+        if (!_layoutReady || Ink is not { } ink || PlotRect.Width <= 0f || PlotRect.Height <= 0f)
         {
             PlaceTooltip();
+            PlaceHandle();
             return;
         }
         if (HasData)
@@ -745,6 +881,7 @@ public abstract class ChartView : UiWidget
             PaintSelection(ink, Map);
         }
         PlaceTooltip();
+        PlaceHandle();
     }
 
     /// <summary>格子線（値の目盛り）と軸の線（値の 0 側の端）。</summary>
@@ -789,9 +926,9 @@ public abstract class ChartView : UiWidget
         if (!_tooltipNode.IsValid) return;
         Vector2 anchor = default;
         string text = "";
-        // 選んだ点が見える範囲の外（パンで外へ出た）なら隠す
-        bool show = ShowTooltip && HasData && Ink is not null && TooltipAnchor(out anchor, out text)
-            && anchor.x >= -Half && anchor.x <= PlotRect.Width + Half && anchor.y >= -Half && anchor.y <= PlotRect.Height + Half;
+        // 選んだ点が見える範囲の外（パンで外へ出た）なら隠す。最初のレイアウトを待つ間も隠す
+        bool show = _layoutReady && ShowTooltip && HasData && Ink is not null && TooltipAnchor(out anchor, out text)
+            && ChartLayout.InsidePlot(anchor.x, PlotRect.Width) && ChartLayout.InsidePlot(anchor.y, PlotRect.Height);
         if (!show)
         {
             if (_tooltipShown != false) { _tooltipNode.Visible = false; _tooltipShown = false; }
@@ -830,5 +967,27 @@ public abstract class ChartView : UiWidget
                 t.Layer = OverlayLayer;
             }
         }
+    }
+
+    /// <summary>
+    /// 日付線のハンドルを置く（W2 の手直し P2-4）: 選んだ点があり日付線が面の中に見えているときだけ、丸の中心の X = 日付線の X・
+    /// 丸の下端 = 面の下の縁に、選んだ系列の色（縁は面の色）で、吹き出しと同じ手前のレイヤーに出す。書くのは値が変わったときだけ。
+    /// </summary>
+    private void PlaceHandle()
+    {
+        if (_handle is not { } handle) return;
+        float lineX = 0f;
+        Color fill = default;
+        bool show = _layoutReady && ShowTooltip && HasData && Ink is not null && HandleAnchor(out lineX, out fill)
+            && ChartLayout.InsidePlot(lineX, PlotRect.Width);
+        if (!show)
+        {
+            handle.Hide();
+            // 引いている間に隠れた（選びが消えた・別の指のパンで外へ出た）: 以後のこの指は受けない（隠れたノードの LocalPosition は使えない）
+            if (_handleDragging) EndHandleDrag("hidden");
+            return;
+        }
+        handle.Show(ChartLayout.HandlePosition(PlotRect, lineX, Look.Handle), Look.Handle, fill, Look.HandleBorderColor,
+            Look.HandleBorder, OverlayLayer);
     }
 }

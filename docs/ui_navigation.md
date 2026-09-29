@@ -90,13 +90,41 @@ UiNavigation（Canvas・単位 dp）
 
 | 項目 | 規則 |
 |---|---|
-| 作り | `Scrim`（幕・タップ）と `Card`（面・角丸 `radius.dialog`・遮る板・縦に Title・Message・Buttons）は兄弟（札の上のタップが幕に届かない） |
-| ボタン | 1〜3 つ。左から中立・いいえ・はい（Material 3 の並び）。文字が空のボタンは出さない。どれも空なら「OK」の Positive だけ |
+| 作り | `Scrim`（幕・タップ）と `Card`（面・角丸 `radius.dialog`・遮る板・縦の CanvasStack〈余白・間隔 0〉に Title・Message・Buttons）は兄弟（札の上のタップが幕に届かない） |
+| ボタン | 1〜3 つ。左から中立・いいえ・はい（Material 3 の並び）。文字が空のボタンは出さない。どれも空なら「OK」の Positive だけ。幅 = 文字の幅の見積もり ＋ 左右 1.5 em（高さより狭くしない）、ボタンの間 8（プレハブ） |
 | 結果 | `Positive` / `Negative` / `Neutral` / `Dismissed`（幕のタップ・戻る・`Dismiss()`）。1 回だけ（連打・閉じる途中の戻るで 2 度出さない） |
 | 幕のタップ | `DismissOnScrimTap`（既定 true）なら Dismissed。false なら何もしない |
 | 戻る | `CancelableByBack`（既定 true）なら Dismissed。false でも**戻るは受ける**（後ろの画面へ回さない＝必ず答えさせる） |
-| 動き | 幕の濃さ 0 → `opacity.dialog_scrim`（0.32）、札の大きさ `ratio.dialog_scale_from`（0.9）→ 1（`motion.dialog` 0.2 秒・`motion.dialog_curve`）。出るときは逆 |
-| 大きさ | 札の幅 `size.dialog_width`（312）・余白 `size.dialog_padding`（24）。本文の高さは文字の数からの見積もり（`DialogLayout`。`Text.Measure` は W2-6c） |
+| 動き | 幕の濃さ 0 → `opacity.dialog_scrim`（0.32）、札の大きさ `ratio.dialog_scale_from`（0.9）→ 1（`motion.dialog` 0.2 秒・`motion.dialog_curve`）。出るときは逆。札の大きさは実行中の見た目の倍率（`CanvasLayoutItem.VisualScale`。札の矩形の中心の周りに背景・題・本文・ボタンが一体で縮む。§6）に「開き具合の倍率 × 予測型の戻るのプレビューの倍率（§5.1）」を書く（W2 の手直し P2-1。`DialogMetrics.CardScale`）。戻るを確定した後は、プレビューの倍率を保ったまま出る（縮めた姿勢から閉じる） |
+| 大きさ | 札の幅 `size.dialog_width`（312）・余白 `size.dialog_padding`（24。上下左右）・間隔 `size.dialog_title_gap`（16。題 → 本文）と `size.dialog_actions_gap`（24。本文〈本文が無ければ題〉→ ボタンの行）・ボタンの高さ `size.dialog_button_height`（40）。札の高さは中身から決める（下の「札の縦の割り付け」） |
+
+**札の縦の割り付け（W2 の手直し P2-1。`Navigation/Model/DialogMetrics.cs`）**: 札の高さ = 上の余白 ＋ 題 ＋ 間隔 ＋ 本文 ＋ 間隔 ＋ ボタンの行 ＋ 下の余白
+（出さない区画〈空の題・空の本文〉とその間隔は数えない）。`Dialog.Layout` がこれを札の `CanvasLayoutItem.PreferredSize` と背景の `Sprite.Size` の両方へ書く
+（札は親〈Dialog の CanvasStack〉が矩形を割り当てるので、札の CanvasStack の `fit_height` では背景のスプライトが伸びない。`canvas_layout/pass.rs` の
+「中身に合わせる」は割り当ての無いノードだけ。以前はこれで背景がプレハブの 160 のまま中身がはみ出し、上下の余白が 7.6 dp に見えた。roadmap §3.9.2 (a)）。
+間隔は区画ごとに違うので札の CanvasStack の等間隔の `spacing` は 0 にし、2 つの見える区画の間に下の区画の「上の間隔」（本文の上 = `size.dialog_title_gap`、
+ボタンの行の上 = `size.dialog_actions_gap`）を入れて、**上の区画の枠（CanvasLayoutItem の高さ）に足す**（題の枠 = 題の行 ＋ 下の間隔。Text は枠の上端に置かれるので
+間隔は枠の下の空きになる。Text の `BoxHeight` は行の高さだけ）。トークンの値を変えても、区画を隠しても同じ計算で合う（`DialogTests` で検算）。
+
+| 中身（既定のテーマ） | 札の高さ（dp） | 内訳 |
+|---|---|---|
+| 題 ＋ 本文 1 行 ＋ ボタン | 178.4 | 24 ＋ 28（題 20 × 1.4）＋ 16 ＋ 22.4（本文 16 × 1.4）＋ 24 ＋ 40 ＋ 24 |
+| 題なし（本文 1 行 ＋ ボタン） | 134.4 | 24 ＋ 22.4 ＋ 24 ＋ 40 ＋ 24 |
+| 本文なし（題 ＋ ボタン） | 140 | 24 ＋ 28 ＋ 24 ＋ 40 ＋ 24 |
+| 題 ＋ 本文 3 行 ＋ ボタン | 223.2 | 24 ＋ 28 ＋ 16 ＋ 67.2 ＋ 24 ＋ 40 ＋ 24 |
+
+- 値の出典: Flutter master の `packages/flutter/lib/src/material/dialog.dart` の AlertDialog（Material 3。2026-09-29 に取得して確かめた）の titlePadding
+  左上右 24・contentPadding の上 16（題があるとき）と下 24・actionsPadding（M3）の下 24・ボタンの間 8（buttonPadding.horizontal 16 ÷ 2）・角丸 28・最小の幅 280。
+  **Flutter と違うところ**: 本文の無いときの題 → ボタンは Flutter が題の下の余白 20、SEED は `size.dialog_actions_gap`（24）にそろえた（トークンを増やさない）。
+  題の無いときの本文の上は Flutter が contentPadding の上 16、SEED は余白の 24（`size.dialog_padding` は上下左右で 1 つ）。
+- **文字の高さの見積もり**（`DialogLayout`。`Text.Measure` は W2-6c）: 題は折り返さない（改行があればその行の数）、本文は中の幅（312 − 24 × 2 = 264）で折り返す。
+  行の数はエンジンの折り返しの規則（`runtime/src/engine/core/font/text_wrap.rs`: ASCII の英数字と ' - の語・空白は行末でぶら下げる・日本語は 1 文字ずつ・
+  行頭禁則のぶら下げ 2 文字まで・行末禁則の追い出し・入りきらない語の強制分割）を C# で真似て（`TextWrapEstimate`）、1 文字の送り幅は組み込みの書体
+  （M PLUS Rounded 1c Regular）の表（`BuiltInFontAdvance`。SEED の文字の大きさ 1 = 書体の ascent − descent〈1395 単位〉なので全角 = 1000 / 1395 = 0.7168 em・
+  数字 0.4444 em・空白 0.1935 em。ASCII は文字ごと、半角カナ 0.3584 em、それ以外は全角）から取る。枠にぎりぎりの行（余裕が大きさ × 0.001 未満）は折れる側に倒す
+  （行が足りなくなって本文がボタンに重なるより、1 行余る方がよい）。行の高さ = 大きさ × `DialogLayout.LineHeightEm`（1.4。M3 の本文 20 / 14 ≒ 1.43）で、
+  題と本文の Text の `LineSpacing` もこの値にして、描く行送り（枠ありの Text は大きさ × 行間。行送りの余白は行の上下へ半分ずつ）と見積もりを一致させる。
+  以前（全角 1 em・半角 0.55 em の 2 種類）は「寝坊で失う最大金額が 3,000 円になります。」（幅 232.8）を 2 行と見積もっていた。
 
 ### 3.3 下からのシート（`BottomSheet`）
 
@@ -227,13 +255,15 @@ SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライ�
   安全領域の計算に入れない**（横から入る画面の中身の箱が、途中で画面の端に合わせて縮み直さない。`CanvasParentFrame.visual_shift`）。
 - `SEED.Draw` の図形には底上げが効かない（図形はノードではなく座標空間の持ち主を持つだけ。§13）。
 - 値が 0（既定）のノードは従来とまったく同じ計算（単体テスト `zero_visual_overrides_leave_table_unchanged`）。
-- **見た目の倍率**（3b）は予測型の戻るのプレビュー（§5.1）が画面の枠・ダイアログの札・シートの板に当てる。エンジンは倍率を行列に入れず大きさと子の位置への掛け算
+- **見た目の倍率**（3b）は予測型の戻るのプレビュー（§5.1）が画面の枠・ダイアログの札・シートの板に当てる（ダイアログの出入りの動きも。P2-1）。エンジンは倍率を行列に入れず大きさと子の位置への掛け算
   （サイズ倍率・子の累積スケール）で持つので、中心が動かないよう位置をずらし、子の累積スケールごと縮める（`canvas_layout/placement.rs` の `scale_placement`）。
   倍率を当てたノードのコンテナの並びは倍率の空間で求め、**子孫の安全領域は倍率の前の位置・大きさで求める**（縮めている画面の中身の箱がステータスバーの分の余白を
   失わない。`CanvasParentFrame.visual_scale` と `visual_shift` の写像）。既定 (1, 1) のノードは倍率の計算を通らず、表はビット単位で今と同じ（golden の単体テスト
   `default_visual_scale_keeps_golden_table`）。
-- **ダイアログの出入り（backlog「文字とボタンが札の左上を中心に縮む」）を直せる口**: 今の `Dialog` は保存される `CanvasTransform.Scale`（pivot の周りだが、
-  入れ子のキャンバスの子は左上へ寄る）で札を縮めている。`VisualScale` は子も札の中心へ寄るので、出入りの動きをこちらへ替えれば直る（直すのは P2）。
+- **ダイアログの出入りも見た目の倍率**（W2 の手直し P2-1。2026-09-29）: 以前の `Dialog` は保存される `CanvasTransform.Scale`（pivot の周りだが、
+  入れ子のキャンバスの子は札の左上へ寄る）で札を縮めていたので、閉じる途中に背景は中心へ、題・本文・ボタンは左上へ縮んだ（roadmap §3.9.2 (b)）。
+  出入りを `VisualScale` へ替え、プレビューと同じ欄なので「開き具合の倍率 × プレビューの倍率」を書く（§3.2 の「動き」）。`NavNode.SetScale` は消した
+  （シート・覆い・トーストの出入りは平行移動だけで、`CanvasTransform.Scale` を使う所は無くなった）。
 
 ## 7. フォーカス（`UiFocus`・`FocusScope`）
 
@@ -265,7 +295,8 @@ SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライ�
 **一覧（名前・型・既定値・使う部品）の正典は [ui_theme.md](ui_theme.md) §8**（W2-9 で 1 つの表にまとめた）。値の出典: 画面の出入りの push・cover は
 Material 3 の standard (0.2, 0, 0, 1)、fade は fastOutSlowIn、上からの覆いは Flutter 版の top_sheet の 220ms・easeOut (0, 0, 0.58, 1)、覆い・シートの幕は
 Flutter 版の 54%・ダイアログの幕は Material 3 の 32%、フリックで閉じる速さは Flutter 版の top_sheet の 300 dp/秒、つまみは M3 の drag handle、
-重なりのレイヤーの帯は §6。曲線は `motion.push_curve` の `.x1`・`.y1`・`.x2`・`.y2` の 4 つの数（CSS の cubic-bezier。`UiCurve.FromTheme`）。
+ダイアログの区画の間隔（`size.dialog_title_gap` 16・`size.dialog_actions_gap` 24。W2 の手直し P2-1）は Flutter master の AlertDialog（Material 3）の
+contentPadding の上 16・下 24（2026-09-29 にソースで確かめた。§3.2）、重なりのレイヤーの帯は §6。曲線は `motion.push_curve` の `.x1`・`.y1`・`.x2`・`.y2` の 4 つの数（CSS の cubic-bezier。`UiCurve.FromTheme`）。
 予測型の戻るのプレビュー（3b。§5.1）の `ratio.back_preview_scale` 0.9 は Material 3 の予測型の戻る（画面が 90% まで縮む）、`size.back_preview_shift` 8 dp は
 同じく縮めた画面を指の向きへ寄せる動き、`motion.back_preview_curve` (0, 0, 0, 1) は Android の開発者向け文書の独自の予測型の戻るの例の GestureInterpolator から
 取った値で、**どれも記憶による**（実機で見比べて調整する）。元へ戻る時間は `motion.short`。
@@ -311,6 +342,15 @@ Flutter 版の 54%・ダイアログの幕は Material 3 の 32%、フリック�
   中身の大きさで測られるコンテナと伸ばされたコンテナの並び・安全領域が縮み直さない）、`UiComponentsTests`（128 通りの問いの一致・問いの無い層・知らせの頻度・
   プレビューの移り変わり〈始まり・進み・取り消し・確定の 2 つの順・遅れた知らせ・Android 13・ボタンの戻る・時間切れ・閉じなかった確定・番号の食い違い・数え直し・
   諦め・読み直し〉・姿勢の計算・テーマの値）。Play と実機は未確認（§12）。
+- **W2 の手直し P2-1（2026-09-29・PC）**: `UiComponentsTests` 101/101（ダイアログの 9 件: 札の高さと区画の下の間隔・トークンの値を変えたとき・間隔のトークン・
+  本文の見積もり〈1 行の本文・全角の長文の折り返しの位置・改行・空文字〉・禁則・英文の語と強制分割と数字まじりと幅・ぎりぎりの行・出入りの倍率の合成・
+  プレハブの既定の値）。見積もりは、fontTools で書体の本当の送り幅を読んでエンジンの `text_wrap.rs` を真似た Python の計算と 26 の文字列で行が一致した。
+  Play（540×1200・倍率 1）の撮影を画素で測った: 題 ＋ 本文 1 行 ＋ 3 ボタン（「寝坊で失う…」）の札は 312.00 × 178.43（計算 178.4）、上の余白（札の上端 →
+  題の字面の上端）31.25（計算 31.30 = 24 ＋ 行送りの余白の半分 4 ＋ 字面の上の空き 3.30）、下の余白（ボタンの下端 → 札の下端）24.06（以前は 12.6 と 7.2）。
+  題なし 134.4・本文なし 140・本文 3 行 223.2 も計算との差 0.9 px 以内。閉じる途中（`motion.dialog` を 3 秒・直線にした作業フォルダだけのテーマ）の 23 枚で、
+  札の中心は (270, 600) から 0.05 px 以内、題の字面の左上と OK の文字の右下は「札の中心の周りに倍率を掛けた位置」から 1.6 px 以内（倍率 0.900 の枚で、
+  以前の「札の左上へ寄る」予測とは 15.6 / 8.9 px 違う）。予測型の戻るの模擬（進み 1.0 = 0.9 倍）→ Esc の確定では、縮めた 0.90 から跳ばずに 0.86 まで縮みながら閉じた。
+  グラフの吹き出しは文字の送り幅 ＋ 余白 8 × 2 の幅になり（例「9/11 06:49」62 px。以前の見積もり〈半角 0.55 em〉では 82 px）、字面は札の中に収まる。
 
 ## 12. 実機での確かめ方（Pixel 6a。W2-7 の時点で未実施）
 
@@ -355,7 +395,10 @@ logcat を `[UI] back` と 3a の Java のログ（[android.md](android.md) §25
   `CanvasGroup` のような部分木の濃さは backlog
 - **`SEED.Draw` の図形に底上げが効かない**: 画面の中で `SEED.Draw` を使うと、上に積んだ画面より手前に描かれることがある（画面の中は Sprite・Text で作る）
 - **画面の中の表示のレイヤーは段の値（10,000・タブの中は 1,000）より小さく**: 大きなレイヤーの表示を持つ画面を積むと前後が崩れる
-- **ダイアログの本文の高さは見積もり**（全角 1 em・半角 0.55 em・行 1.4 em）。`Text.Measure`（W2-6c）ができたら測った値へ替える
+- **ダイアログの本文の高さは見積もり**（W2 の手直し P2-1 でエンジンの折り返しの規則と組み込みの書体の送り幅の表に合わせた。§3.2）。`Text.Measure`（W2-6c）が
+  できたら測った値へ替える。テーマの `font.family` でほかの書体を当てると送り幅が違うので合わない。本文の中の埋め込みの記法（`[icon:…]` など）は文字のまま数える
+  （大きめになる）。本文が長くても札はスクロールしない（札が画面より高くなる）・ボタンが中の幅に入りきらなくても Material 3 のように縦に積まない。
+  開いている間にテーマを替えても札の大きさ・間隔は作り直さない（色・角丸・書体は追従）
 - **シートの「先に広げる」が無い**: 半分の段で中身の一覧を上へ引くと一覧が先に動く（Android の BottomSheetBehavior・Flutter の DraggableScrollableSheet はシートが先）。
   W2-3 の入れ子は「内側が先・端の残りを外側へ」だけ。開く・閉じる曲線は ScrollTo の easeInOut 固定
 - **上からの覆いの作りは最小**: Flutter 版の「固定の頭＋スクロールする中身＋一覧の外の閉じる」・左右の余白・四隅の角丸は W3 のプレハブで作る

@@ -6,6 +6,8 @@
 //    - ThemeDefault / ThemeForest / ThemeSunrise / ThemeRound … 組み込みの既定・森（暗）・朝焼け（明）・森・丸（森を基にした一部だけの上書き）
 //    - BrightnessMode（セグメント）… テーマのまま・端末に従う・明るい方を強制・暗い方を強制（UiTheme.SetBrightnessMode）
 //    - AnimateToggle … オンなら色を補間しながら切り替える（テーマの motion.theme 秒）
+//  帯の中は画面の幅に合わせて並べる（W2 の手直し P2-5）: 縦の CanvasStack に見出し・ThemeButtons（4 つのボタンを横の CanvasStack で
+//  等分）・ThemeOptions（明暗のセグメント〈伸ばす・最大 300 dp〉・トグル・文字）。部品は名前で深さ優先に引くので行の入れ物の下でも届く。
 //  切り替えは UiTheme が表示中の全部品（と ThemeStyle を付けた飾り）へその場で当て直す。知らせ（UiTheme.Changed）をログへ出す。
 //  始めに StartTheme（空 = 組み込みの既定のテーマ）と選び方「テーマのまま」を当てる（アプリの起動のスクリプトと同じ形）。
 //  デバッグの命令（SCRIPT_DEBUG:theme,<名前>）: default・forest・sunrise・round・<assets:// の .json>（切り替え）・

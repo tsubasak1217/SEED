@@ -176,7 +176,8 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
     void IBackPreviewTarget.ClearBackPreview() => ApplyBackPreviewPose(BackPreviewPose.Identity);
 
     /// <summary>
-    /// プレビューの姿勢を当てる（既定: 縮めるノードの真ん中の周りに縮める。面は横へずらさない）。端を留める面は派生で上書きする。
+    /// プレビューの姿勢を当てる（既定: 縮めるノードの真ん中の周りに縮める。面は横へずらさない）。端を留める面（シート・覆い）と、
+    /// 出入りの動きにも同じ見た目の倍率を使う面（ダイアログ。開き具合の倍率との積を書く）は派生で上書きする。
     /// </summary>
     protected virtual void ApplyBackPreviewPose(BackPreviewPose pose)
         => NavNode.SetVisualScale(BackPreviewNode, new Vector2(pose.Scale, pose.Scale));

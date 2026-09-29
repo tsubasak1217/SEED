@@ -55,7 +55,7 @@ public static class UiTokenCatalog
         new(UiTokens.ColorPrimary, UiTokenKind.Color, "Button（Filled の塗り・Outlined と Text の文字）・Toggle（オンの台）・Checkbox（オンの塗り）・Slider・ProgressBar・ProgressRing・RadioGroup（選んだ輪と点）"),
         new(UiTokens.ColorOnPrimary, UiTokenKind.Color, "Button（Filled の文字）・Checkbox（印）"),
         new(UiTokens.ColorBackground, UiTokenKind.Color, "ScreenStack（画面の背景・動きの幕）・ThemeStyle（画面の背景）"),
-        new(UiTokens.ColorSurface, UiTokenKind.Color, "NumberField・TabBar・Dialog・BottomSheet・TopSheet（面）・ThemeStyle（カード・島）"),
+        new(UiTokens.ColorSurface, UiTokenKind.Color, "NumberField・TabBar・Dialog・BottomSheet・TopSheet（面）・ThemeStyle（カード・島）・LineChart（日付線のハンドルの縁）"),
         new(UiTokens.ColorSurfaceVariant, UiTokenKind.Color, "Toggle（オフの台）・Slider（溝）・SegmentedControl（台）・ProgressBar・ProgressRing（溝）・WheelPicker・TimeWheel（中央の帯）"),
         new(UiTokens.ColorOnSurface, UiTokenKind.Color, "NumberField・" + Selections + "（文字）・TabBar（選んだタブ）・Dialog（題）・WheelPicker（行の文字）・ThemeStyle"),
         new(UiTokens.ColorOnSurfaceMuted, UiTokenKind.Color, "Checkbox（オフの枠）・RadioGroup（選んでいない輪）・TabBar（選んでいないタブ）・Dialog（本文）・BottomSheet・TopSheet（つまみ）・ThemeStyle"),
@@ -68,7 +68,8 @@ public static class UiTokenCatalog
         new(UiTokens.ColorDisabled, UiTokenKind.Color, "Button・NumberField・SegmentedControl・ChipGroup（無効の塗り・枠）"),
         new(UiTokens.ColorOnDisabled, UiTokenKind.Color, "Button・NumberField・Slider・" + Selections + "・TabBar・WheelPicker（無効の文字・選べない行）"),
         new(UiTokens.ColorShadow, UiTokenKind.Color, GuideOnly),
-        new(UiTokens.ColorError, UiTokenKind.Color, "（W2-6 の入力欄が使う予定。今は部品は読まない）"),
+        new(UiTokens.ColorError, UiTokenKind.Color, "ThemeStyle（一覧の行の削除の面。templates/ui の list_row）・（W2-6 の入力欄が使う予定）"),
+        new(UiTokens.ColorOnError, UiTokenKind.Color, "ThemeStyle（削除の面の上の文字。templates/ui の list_row）"),
         new(NavTokens.ColorScrim, UiTokenKind.Color, "Dialog・BottomSheet・TopSheet（幕）"),
         new(NavTokens.ColorInverseSurface, UiTokenKind.Color, "Toast（面）・" + Charts + "（吹き出しの面）"),
         new(NavTokens.ColorOnInverseSurface, UiTokenKind.Color, "Toast（文字）・" + Charts + "（吹き出しの文字）"),
@@ -103,7 +104,7 @@ public static class UiTokenCatalog
         new(UiTokens.SpaceXs, UiTokenKind.Number, GuideOnly),
         new(UiTokens.SpaceS, UiTokenKind.Number, "ToastHost（トーストの間隔）"),
         new(UiTokens.SpaceM, UiTokenKind.Number, GuideOnly),
-        new(UiTokens.SpaceL, UiTokenKind.Number, "ToastHost（画面の端との間）"),
+        new(UiTokens.SpaceL, UiTokenKind.Number, "ToastHost（画面の端との間）・SwipeActions（フルスワイプの文字と行の見た目の端の間）"),
         new(UiTokens.SpaceXl, UiTokenKind.Number, GuideOnly),
 
         // ── 大きさ ──────────────────────────────────────────
@@ -128,6 +129,8 @@ public static class UiTokenCatalog
         new(NavTokens.SizeTabIndicatorHeight, UiTokenKind.Number, "TabBar（選択の印の高さ）"),
         new(NavTokens.SizeDialogWidth, UiTokenKind.Number, "Dialog（札の幅）"),
         new(NavTokens.SizeDialogPadding, UiTokenKind.Number, "Dialog（内側の余白）"),
+        new(NavTokens.SizeDialogTitleGap, UiTokenKind.Number, "Dialog（題 → 本文の間隔）"),
+        new(NavTokens.SizeDialogActionsGap, UiTokenKind.Number, "Dialog（本文〈無ければ題〉→ ボタンの行の間隔）"),
         new(NavTokens.SizeDialogButtonHeight, UiTokenKind.Number, "Dialog（ボタンの高さ）"),
         new(NavTokens.SizeHandleWidth, UiTokenKind.Number, "BottomSheet・TopSheet（つまみの幅）"),
         new(NavTokens.SizeHandleHeight, UiTokenKind.Number, "BottomSheet・TopSheet（つまみの太さ）"),
@@ -153,6 +156,8 @@ public static class UiTokenCatalog
         new(ChartTokens.SizeBarMin, UiTokenKind.Number, "BarChart（棒の最小の太さ）"),
         new(ChartTokens.SizeTooltipPadding, UiTokenKind.Number, Charts + "（吹き出しの内側の余白）"),
         new(ChartTokens.SizeTooltipGap, UiTokenKind.Number, Charts + "（吹き出しと点の間）"),
+        new(ChartTokens.SizeHandle, UiTokenKind.Number, "LineChart（日付線のハンドルの直径）"),
+        new(ChartTokens.SizeHandleBorder, UiTokenKind.Number, "LineChart（日付線のハンドルの縁の太さ）"),
 
         // ── 文字の大きさ ────────────────────────────────────
         new(UiTokens.TextTitle, UiTokenKind.Number, "Dialog（題）・ThemeStyle（見出し）"),
@@ -178,6 +183,9 @@ public static class UiTokenCatalog
         new(UiTokens.MotionWheelCorrect, UiTokenKind.Number, "WheelPicker（選べない行から戻す時間）"),
         new(UiTokens.MotionTheme, UiTokenKind.Number, "UiTheme（動きありの切り替えの色の補間の時間）"),
         new(UiTokens.MotionThemeCurve, UiTokenKind.Curve, "UiTheme（色の補間の曲線）"),
+        new(UiTokens.MotionSwipeFull, UiTokenKind.Number, "SwipeActions（フルスワイプの文字の置き場の補間）"),
+        new(UiTokens.MotionSwipeDismiss, UiTokenKind.Number, "SwipeActions（確定で行を外へ流し切る）"),
+        new(UiTokens.MotionSwipeCollapse, UiTokenKind.Number, "（部品は読まない。一覧の持ち主が消した行の高さを畳む時間。見本の UiGallerySections）"),
         new(NavTokens.MotionPush, UiTokenKind.Number, "ScreenStack（押し込み）"),
         new(NavTokens.MotionPushCurve, UiTokenKind.Curve, "ScreenStack（押し込み）"),
         new(NavTokens.MotionCover, UiTokenKind.Number, "ScreenStack（覆う画面）"),
@@ -206,6 +214,8 @@ public static class UiTokenCatalog
         new(ChartTokens.OpacityArea, UiTokenKind.Number, "LineChart（線の下の塗りの上端）"),
 
         // ── 割合 ────────────────────────────────────────────
+        new(UiTokens.RatioSwipeFull, UiTokenKind.Number, "SwipeActions（フルスワイプで構えるずらし量。行の幅に対する）"),
+        new(UiTokens.RatioSwipeFullCancel, UiTokenKind.Number, "SwipeActions（構えを解くずらし量。行の幅に対する）"),
         new(NavTokens.RatioPushParallax, UiTokenKind.Number, "ScreenStack（押し込みの視差）"),
         new(NavTokens.RatioDialogScaleFrom, UiTokenKind.Number, "Dialog（出るときの最初の大きさ）"),
         new(NavTokens.RatioSheetMaxHeight, UiTokenKind.Number, "BottomSheet（最大の高さ）"),

@@ -9,13 +9,21 @@ namespace SEED.UI;
 //  【プレハブ】templates/ui/prefabs/dialog.actor（ModalHost が Dialogs の帯の下に作る）:
 //      Dialog（Canvas・親に合わせる・CanvasStack〈縦・中央・中央〉・このスクリプト）
 //      ├─ Scrim（Sprite = 幕・親に合わせる〈並べない〉・CanvasGesture〈タップ〉・GestureRelay）
-//      └─ Card（Canvas・Sprite〈面・角丸〉・受けるジェスチャーの無い CanvasGesture〈遮る板〉・CanvasStack〈縦・余白〉・幅の指定）
+//      └─ Card（Canvas・Sprite〈面・角丸〉・受けるジェスチャーの無い CanvasGesture〈遮る板〉・CanvasStack〈縦・余白・間隔 0〉・大きさの指定）
 //         ├─ Title（Text）・Message（Text〈折り返し〉）
 //         └─ Buttons（CanvasStack〈横・右寄せ〉）└─ Neutral・Negative・Positive（SEED.UI.Button）
 //  Card は Scrim の兄弟（Scrim の子にすると Card の上のタップが幕のタップになる。W2-2 の遮り R3 は祖先を遮らない）。
 //  【開き方】ModalHost.Current.ShowDialog(new DialogOptions { … }) → DialogHandle（ResultAsync / Completed）。
-//  【動き】幕の濃さ 0 → opacity.dialog_scrim、札の大きさ ratio.dialog_scale_from → 1（motion.dialog・motion.dialog_curve）。
-//  出るときは逆。部分木の透明度が無いので札そのものはフェードしない（docs/backlog.md）。
+//  【大きさ】（Layout。W2 の手直し P2-1）札の幅は size.dialog_width。題・本文の行の数は見積もり（DialogLayout。Text.Measure は W2-6c）で、
+//    題・本文の Text の行間を DialogLayout.LineHeightEm にして、描く行送りと見積もりの行の高さを一致させる。
+//    札の高さ = 余白 ＋ 題 ＋ 間隔 ＋ 本文 ＋ 間隔 ＋ ボタンの行 ＋ 余白（DialogMetrics。出さない区画とその間隔は数えない）を、
+//    札の CanvasLayoutItem と背景の Sprite の両方へ書く（札は親の CanvasStack が矩形を割り当てるので、札の CanvasStack の fit_height では
+//    背景のスプライトが伸びない）。間隔は区画ごとに違う（size.dialog_title_gap・size.dialog_actions_gap）ので札の CanvasStack の間隔は 0 にし、
+//    間隔は上の区画の枠（CanvasLayoutItem の高さ = 中身 ＋ 下の間隔）の下の空きにする（Text は枠の上端に置かれる）。
+//  【動き】幕の濃さ 0 → opacity.dialog_scrim、札の大きさ ratio.dialog_scale_from → 1（motion.dialog・motion.dialog_curve）。出るときは逆。
+//    札の大きさは実行中の見た目の倍率（CanvasLayoutItem.VisualScale。札の矩形の中心の周りに、背景・題・本文・ボタンが一体で縮む）へ
+//    「開き具合の倍率 × 予測型の戻るのプレビューの倍率」を書く（W2 の手直し P2-1。以前の保存される CanvasTransform.Scale では、
+//    入れ子のキャンバスの子が札の左上へ寄って縮んだ）。部分木の透明度が無いので札そのものはフェードしない（docs/backlog.md）。
 // ============================================================
 
 /// <summary>ダイアログ。</summary>
@@ -26,13 +34,26 @@ public sealed class Dialog : ModalPlane
     private const string CardChild = "Card";
     private const string TitleChild = "Card/Title";
     private const string MessageChild = "Card/Message";
+    private const string ButtonsChild = "Card/Buttons";
     private const string NeutralChild = "Card/Buttons/Neutral";
     private const string NegativeChild = "Card/Buttons/Negative";
     private const string PositiveChild = "Card/Buttons/Positive";
+    /// <summary>ボタンの文字の子の名前。</summary>
+    private const string ButtonLabelChild = "Label";
     /// <summary>ボタンの文字の左右の余白（ボタンの幅 = 文字の幅 + 余白）。</summary>
     private const float ButtonTextPaddingEm = 1.5f;
-    /// <summary>ダイアログの札の縮み（出入りの動き）の中心（札の真ん中）。</summary>
-    private static readonly Vector2 CardPivot = new(0.5f, 0.5f);
+    /// <summary>ボタンの文字の左右（余白を掛ける数）。</summary>
+    private const float ButtonTextPaddingSides = 2f;
+    /// <summary>札の CanvasStack の等間隔の間隔（区画ごとの間隔は上の区画の枠が持つので使わない）。</summary>
+    private const float CardStackSpacing = 0f;
+    /// <summary>倍率なし（開いた・プレビューなし）。</summary>
+    private const float NoScale = 1f;
+
+    /// <summary>ボタンの結果と子の道（左から中立・いいえ・はい）。</summary>
+    private static readonly (DialogResult Result, string Path)[] ButtonPaths =
+    {
+        (DialogResult.Neutral, NeutralChild), (DialogResult.Negative, NegativeChild), (DialogResult.Positive, PositiveChild),
+    };
 
     /// <inheritdoc />
     public override ModalKind Kind => ModalKind.Dialog;
@@ -59,6 +80,10 @@ public sealed class Dialog : ModalPlane
     private readonly System.Collections.Generic.Dictionary<DialogResult, Button> _buttons = new();
     /// <summary>出入りの動き（0 = 閉じた・1 = 開いた）。</summary>
     private UiTween _open = UiTween.At(0f);
+    /// <summary>開き具合から決めた札の倍率（出入りの動き。1 = 開いた）。</summary>
+    private float _openScale = NoScale;
+    /// <summary>予測型の戻るのプレビューの倍率（W2 の手直し 3b。1 = プレビューなし）。確定した後も出終わるまで保つ。</summary>
+    private float _previewScale = NoScale;
 
     /// <inheritdoc />
     protected override void OnPlaneStart()
@@ -73,52 +98,93 @@ public sealed class Dialog : ModalPlane
         _open.Retarget(1f, Theme.Number(NavTokens.MotionDialog));
     }
 
-    /// <summary>題・本文・ボタンを当て、文字の大きさから札の中の高さを見積もる。</summary>
+    /// <summary>
+    /// 題・本文・ボタンを当て、札の縦の割り付け（区画の枠の高さ・札の高さ。DialogMetrics）を決めて書く。
+    /// </summary>
     private void Layout()
     {
         float width = Theme.Number(NavTokens.SizeDialogWidth);
         float padding = Theme.Number(NavTokens.SizeDialogPadding);
-        float inner = Math.Max(0f, width - 2f * padding);
-        if (_card.GetComponent<CanvasLayoutItem>() is { } cardItem) cardItem.PreferredSize = new Vector2(width, 0f);
-        if (_card.GetComponent<CanvasStack>() is { } stack) stack.Padding = CanvasPadding.All(padding);
-        if (_card.GetComponent<CanvasTransform>() is { } ct) ct.Pivot = CardPivot;
+        float inner = DialogMetrics.InnerWidth(width, padding);
 
-        SetText(TitleChild, _options.Title, UiTokens.TextTitle, inner, wrap: false);
-        SetText(MessageChild, _options.Message, UiTokens.TextBody, inner, wrap: true);
+        // 題（折り返さない。改行があればその行の数）と本文（中の幅で折り返す）の高さの見積もり、ボタンの行
+        float titleHeight = SetText(TitleChild, _options.Title, UiTokens.TextTitle, inner, wrap: false);
+        float messageHeight = SetText(MessageChild, _options.Message, UiTokens.TextBody, inner, wrap: true);
+        float buttonHeight = Theme.Number(NavTokens.SizeDialogButtonHeight);
+        LayoutButtons(buttonHeight);
 
+        // 縦の割り付け: 区画の枠 = 中身 ＋ 下の間隔（次に見える区画の上の間隔）、札の高さ = 余白 × 2 ＋ 枠の和
+        var layout = DialogMetrics.Arrange(padding, DialogMetrics.Sections(
+            titleHeight, messageHeight, buttonHeight,
+            Theme.Number(NavTokens.SizeDialogTitleGap), Theme.Number(NavTokens.SizeDialogActionsGap)));
+        SetSlot(TitleChild, inner, layout.SlotHeights[DialogMetrics.TitleSection]);
+        SetSlot(MessageChild, inner, layout.SlotHeights[DialogMetrics.MessageSection]);
+        SetSlot(ButtonsChild, inner, layout.SlotHeights[DialogMetrics.ButtonsSection]);
+
+        // 札: 並べ方（余白・等間隔の間隔 0）と大きさ。背景のスプライトも同じ大きさにする
+        // （ボタンの背景と同じ。コンテナが伸ばさない軸はスプライトの大きさのまま描かれる）
+        if (_card.GetComponent<CanvasStack>() is { } stack)
+        {
+            stack.Padding = CanvasPadding.All(padding);
+            stack.Spacing = CardStackSpacing;
+        }
+        var cardSize = new Vector2(width, layout.CardHeight);
+        if (_card.GetComponent<CanvasLayoutItem>() is { } cardItem) cardItem.PreferredSize = cardSize;
+        if (_card.GetComponent<Sprite>() is { } cardBackground) cardBackground.Size = cardSize;
+    }
+
+    /// <summary>
+    /// 文字の子へ中身・大きさ・行間・枠を当てる（空なら隠す）。戻り値は中身の高さ（行の数の見積もり × 行の高さ。隠したら 0）。
+    /// </summary>
+    /// <param name="path">子の道。</param>
+    /// <param name="content">文字。</param>
+    /// <param name="sizeToken">大きさのトークン。</param>
+    /// <param name="boxWidth">枠の幅（札の中の幅）。</param>
+    /// <param name="wrap">枠の幅で折り返すか（題は折り返さない）。</param>
+    private float SetText(string path, string content, string sizeToken, float boxWidth, bool wrap)
+    {
+        var node = gameObject.FindChild(path);
+        var text = node.GetComponent<Text>();
+        bool visible = content.Length > 0 && text is not null;
+        node.Visible = visible;
+        if (!visible || text is not { } shown) return 0f;
+        float size = Theme.Number(sizeToken, shown.FontSize);
+        float height = DialogLayout.EstimateHeight(content, size, wrap ? boxWidth : DialogLayout.NoWrapWidth);
+        shown.Content = content;
+        shown.FontSize = size;
+        // 描く行送り（大きさ × 行間）を見積もりの行の高さにそろえる（行送りの余白は行の上下へ半分ずつ）
+        shown.LineSpacing = DialogLayout.LineHeightEm;
+        shown.BoxWidth = boxWidth;
+        shown.BoxHeight = height;
+        shown.Wrap = wrap;
+        return height;
+    }
+
+    /// <summary>区画の枠（CanvasLayoutItem の大きさ = 中の幅 × 〈中身 ＋ 下の間隔〉）を当てる（出さない区画〈0〉は書かない）。</summary>
+    private void SetSlot(string path, float width, float height)
+    {
+        if (!(height > 0f)) return;
+        if (gameObject.FindChild(path).GetComponent<CanvasLayoutItem>() is { } item) item.PreferredSize = new Vector2(width, height);
+    }
+
+    /// <summary>出すボタンへ文字と大きさ（幅 = 文字の幅の見積もり ＋ 左右の余白。高さより狭くしない）を当て、出さないボタンを隠す。</summary>
+    private void LayoutButtons(float height)
+    {
         var shown = DialogModel.Buttons(_options);
         float labelSize = Theme.Number(UiTokens.TextLabel);
-        float height = Theme.Number(NavTokens.SizeDialogButtonHeight);
-        foreach (var (result, path) in new[] { (DialogResult.Neutral, NeutralChild), (DialogResult.Negative, NegativeChild), (DialogResult.Positive, PositiveChild) })
+        foreach (var (result, path) in ButtonPaths)
         {
             var node = gameObject.FindChild(path);
             bool visible = shown.Contains(result);
             node.Visible = visible;
             if (!visible) continue;
             string text = DialogModel.ButtonText(_options, result);
-            if (node.FindChild("Label").GetComponent<Text>() is { } label) label.Content = text;
-            float w = Math.Max(DialogLayout.EstimateWidth(text, labelSize) + ButtonTextPaddingEm * 2f * labelSize, height);
+            if (node.FindChild(ButtonLabelChild).GetComponent<Text>() is { } label) label.Content = text;
+            float w = Math.Max(DialogLayout.EstimateWidth(text, labelSize) + ButtonTextPaddingEm * ButtonTextPaddingSides * labelSize, height);
             if (node.GetComponent<CanvasLayoutItem>() is { } item) item.PreferredSize = new Vector2(w, height);
             // ボタンの背景は指定の大きさで描かれる（コンテナが伸ばさない軸はスプライトの大きさのまま）ので合わせる
             if (node.GetComponent<Sprite>() is { } bg) bg.Size = new Vector2(w, height);
         }
-    }
-
-    /// <summary>文字の子へ本文と枠を当てる（空なら隠す）。高さは行の数の見積もり（Text.Measure は W2-6c）。</summary>
-    private void SetText(string path, string content, string sizeToken, float boxWidth, bool wrap)
-    {
-        var node = gameObject.FindChild(path);
-        bool visible = content.Length > 0;
-        node.Visible = visible;
-        if (!visible || node.GetComponent<Text>() is not { } text) return;
-        float size = Theme.Number(sizeToken, text.FontSize);
-        float height = wrap ? DialogLayout.EstimateHeight(content, size, boxWidth) : size * DialogLayout.LineHeightEm;
-        text.Content = content;
-        text.FontSize = size;
-        text.BoxWidth = boxWidth;
-        text.BoxHeight = height;
-        text.Wrap = wrap;
-        if (node.GetComponent<CanvasLayoutItem>() is { } item) item.PreferredSize = new Vector2(boxWidth, height);
     }
 
     /// <summary>幕のタップ・ボタンをつなぐ（部品の OnStart の順は決まっていないので、登録簿が変わるたびに引き直す）。</summary>
@@ -131,7 +197,7 @@ public sealed class Dialog : ModalPlane
             _scrimRelay = relay;
             relay.Tapped += (_, _) => OnScrimTapped();
         }
-        foreach (var (result, path) in new[] { (DialogResult.Neutral, NeutralChild), (DialogResult.Negative, NegativeChild), (DialogResult.Positive, PositiveChild) })
+        foreach (var (result, path) in ButtonPaths)
         {
             if (_buttons.ContainsKey(result) || Of<Button>(gameObject.FindChild(path)) is not { } button) continue;
             _buttons[result] = button;
@@ -170,6 +236,17 @@ public sealed class Dialog : ModalPlane
     protected override bool ClosesOnBack => _options.CancelableByBack;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// 札の倍率は出入りの動きと同じ欄（VisualScale）なので、プレビューの倍率を覚えて開き具合の倍率との積を書く。
+    /// 確定した戻るの後はプレビューの倍率を保ったまま出る動きが進む（縮めた姿勢のまま出る。ClearBackPreview は出終わってから来る）。
+    /// </remarks>
+    protected override void ApplyBackPreviewPose(BackPreviewPose pose)
+    {
+        _previewScale = pose.Scale;
+        ApplyCardScale();
+    }
+
+    /// <inheritdoc />
     protected override void OnPlaneUpdate(float dt)
     {
         Bind();
@@ -190,9 +267,15 @@ public sealed class Dialog : ModalPlane
         float p = UiCurve.FromTheme(Theme, NavTokens.MotionDialogCurve, UiCurve.Decelerate).Evaluate(linear);
         var scrim = Theme.Color(NavTokens.ColorScrim);
         NavNode.SetSpriteColor(_scrim, scrim.WithAlpha(Theme.Number(NavTokens.OpacityDialogScrim) * p));
-        float from = Theme.Number(NavTokens.RatioDialogScaleFrom, 1f);
-        float s = from + (1f - from) * p;
-        NavNode.SetScale(_card, new Vector2(s, s));
+        _openScale = DialogMetrics.OpenScale(p, Theme.Number(NavTokens.RatioDialogScaleFrom, NoScale));
+        ApplyCardScale();
+    }
+
+    /// <summary>札へ見た目の倍率（開き具合 × プレビュー。札の矩形の中心の周りに、背景と中身が一体で縮む）を書く。</summary>
+    private void ApplyCardScale()
+    {
+        float s = DialogMetrics.CardScale(_openScale, _previewScale);
+        NavNode.SetVisualScale(_card, new Vector2(s, s));
     }
 
     /// <inheritdoc />

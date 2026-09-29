@@ -20,8 +20,20 @@
     ドラッグで閉じる判定、トーストの並びと時間、フォーカスの範囲と移り方、重なりのレイヤーの帯、タブの見た目。
     W2 の手直し 3b: 受ける層の問い（128 通りで毎回 Press と一致・問いの無い層・背面へ回さないアプリ）、受ける層の知らせの頻度、
     予測型の戻るのプレビューの移り変わり（始まり・進み・取り消し・確定・遅れた知らせ・番号の食い違い・確定待ちの時間切れ）と姿勢の計算。
+    W2 の手直し P2-1: ダイアログの札の縦の割り付け（区画の枠 = 中身 ＋ 下の間隔・札の高さ・トークンの値を変えたとき）、文字の見積もり
+    （エンジンの折り返しの規則〈語・空白のぶら下げ・禁則・強制分割〉と組み込みの書体の送り幅）、出入りの倍率（開き具合 × プレビュー）、
+    プレハブ（templates/ui/prefabs/dialog.actor）の既定の値が計算と矛盾しないこと（DialogTests.cs）。
+    W2 の手直し P2-3: 行のフルスワイプ（構える・解くのヒステリシス・行の幅が使えないとき・ドラッグの範囲・離したときの決め方・
+    「削除」の文字の置き場の補間・状態の機械の列と構えた回数＝触感の回数・ボタンのタップの確定・消した行を畳む長さ・既定のテーマの値・
+    一覧の行のプレハブ templates/ui/prefabs/list_row.actor の作り。SwipeTests.cs）。
     W2-8: グラフの目盛りの自動（切りの良い刻み・時刻と日付の候補）、軸の範囲の自動、書式（時刻・日付・数）、座標の変換、パンとズームの
     範囲の制限、慣性、単調な 3 次補間（行き過ぎない）、最寄りの点と棒の列、棒の形、枠の割り付けと吹き出し、見える範囲の点と欠けた値。
+    W2 の手直し P2-4: グラフの大きさの読み方（レイアウトの大きさ・Sprite・最初のレイアウトを待つ上限）、日付線のハンドルの吸い付き
+    （値のある点・同じ距離・範囲の外・点 0 個と 1 個）と置き場と指の X、ハンドルのトークン、プレハブ（line_chart.actor）と見本の折れ線
+    （ui_charts.scene・ui_gallery.scene）の子 Handle の作り（ChartTests.cs）。
+    W2 の手直し P2-5: 見本のシーン（ui_gallery.scene・ui_charts.scene）の作り（安全領域の Body・縦の Stack・flex のページ・中身の大きさは自動・
+    窓の縦の Stack と余白を持つ Content）、360 dp の画面でも並べ切れること（折り返しの子・横の Stack の伸ばさない子の和・並べる子の大きさ）、
+    WakeHistory の ± が右の端に付くこと、一覧の行の Front の縦の Stack（文字と区切り線が行の幅に伸びる）（SampleLayoutTests.cs）。
     W2-9: テーマの読み込み（知らない名前・型の誤りの警告）、継承と一部だけの上書き（基のテーマ → 既定の順に落ちる・読めない基・輪・深すぎ）、
     明暗の対応と重ねる順、明暗の選び方の規則、色の補間と進み具合、種の色の配色（コントラストの約束）、見やすさ、見本のテーマ、
     トークンの表の完全性（定数〈反射〉・表・既定のテーマの揃い）と docs/ui_theme.md の表の一致。
@@ -63,6 +75,10 @@
     <Compile Include="..\..\..\scripting\src\Api\UI\SwipeMath.cs">
       <Link>Linked\SwipeMath.cs</Link>
     </Compile>
+    <!-- W2 の手直し P2-3: 行のスワイプの状態の機械（構え・解く・確定・流し切り。UiTween を使う） -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\SwipeModel.cs">
+      <Link>Linked\SwipeModel.cs</Link>
+    </Compile>
     <!-- W2-5: ホイールの純粋な計算（行の曲面の見た目・循環の添字と位置・時刻の 12/24 時間と連動と分の刻み） -->
     <Compile Include="..\..\..\scripting\src\Api\UI\Wheel\*.cs">
       <Link>Linked\Wheel\%(Filename)%(Extension)</Link>
@@ -95,6 +111,26 @@
     </None>
     <None Include="..\..\..\docs\ui_theme.md">
       <Link>ui_theme.md</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- W2 の手直し P2-1: ダイアログのプレハブ（既定の高さ・間隔・行間が DialogMetrics の計算と矛盾しないかを確かめる） -->
+    <None Include="..\..\..\templates\ui\prefabs\dialog.actor">
+      <Link>prefabs\dialog.actor</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- W2 の手直し P2-3: 一覧の行のプレハブ（SwipeActions のフルスワイプの前提どおりの作りかを確かめる） -->
+    <None Include="..\..\..\templates\ui\prefabs\list_row.actor">
+      <Link>prefabs\list_row.actor</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- W2 の手直し P2-4: 折れ線のプレハブと、中身を写した見本の折れ線（日付線のハンドルの子 Handle の作りがそろっているかを確かめる）。
+         見本のシーンは P2-5 でも読む（画面の幅と安全領域に合わせる作り。SampleLayoutTests.cs） -->
+    <None Include="..\..\..\templates\ui\prefabs\line_chart.actor">
+      <Link>prefabs\line_chart.actor</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\..\templates\ui\scenes\ui_charts.scene;..\..\..\templates\ui\scenes\ui_gallery.scene">
+      <Link>scenes\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->

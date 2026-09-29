@@ -30,7 +30,10 @@ internal static class NavNode
         if (node.GetComponent<CanvasLayoutItem>() is { } item && item.LayerBias != bias) item.LayerBias = bias;
     }
 
-    /// <summary>見た目の倍率を当てる（自分の矩形の中心の周り。W2 の手直し 3b。予測型の戻るのプレビュー）。</summary>
+    /// <summary>
+    /// 見た目の倍率を当てる（自分の矩形の中心の周り。子孫も一体で縮む。W2 の手直し 3b の予測型の戻るのプレビューと、
+    /// P2-1 のダイアログの出入り。保存される CanvasTransform.Scale は入れ子のキャンバスの子が左上へ寄るので、出入りの動きには使わない）。
+    /// </summary>
     public static void SetVisualScale(GameObject node, Vector2 scale)
     {
         if (node.GetComponent<CanvasLayoutItem>() is { } item && item.VisualScale != scale) item.VisualScale = scale;
@@ -46,12 +49,6 @@ internal static class NavNode
     public static void SetSpriteColor(GameObject node, Color color)
     {
         if (node.GetComponent<Sprite>() is { } sprite && !sprite.Color.Equals(color)) sprite.Color = color;
-    }
-
-    /// <summary>大きさの倍率を当てる（pivot の周り）。</summary>
-    public static void SetScale(GameObject node, Vector2 scale)
-    {
-        if (node.GetComponent<CanvasTransform>() is { } ct && ct.Scale != scale) ct.Scale = scale;
     }
 
     /// <summary>作ったノードができあがったか（2D のアクターは構築のとき CanvasTransform を持つ）。</summary>

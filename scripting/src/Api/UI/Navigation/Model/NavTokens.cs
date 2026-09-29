@@ -41,8 +41,18 @@ public static class NavTokens
     public const string SizeTabIndicatorHeight = "size.tab_indicator_height";
     /// <summary>ダイアログの札の幅（Material 3 の 280〜560 の間）。</summary>
     public const string SizeDialogWidth = "size.dialog_width";
-    /// <summary>ダイアログの札の内側の余白。</summary>
+    /// <summary>ダイアログの札の内側の余白（上下左右。Material 3 の 24）。</summary>
     public const string SizeDialogPadding = "size.dialog_padding";
+    /// <summary>
+    /// ダイアログの題 → 本文の間隔（W2 の手直し P2-1）。既定 16 は Flutter master の AlertDialog（Material 3）の contentPadding の上 16
+    /// （packages/flutter/lib/src/material/dialog.dart。2026-09-29 に取得して確かめた）。
+    /// </summary>
+    public const string SizeDialogTitleGap = "size.dialog_title_gap";
+    /// <summary>
+    /// ダイアログの本文 → ボタンの行の間隔（本文が無ければ題 → ボタンの行。W2 の手直し P2-1）。既定 24 は同じ AlertDialog の contentPadding の下 24
+    /// （Material 3 の actionsPadding の上は 0）。本文の無いときの Flutter は題の下の余白 20 だが、SEED はこの値にそろえる。
+    /// </summary>
+    public const string SizeDialogActionsGap = "size.dialog_actions_gap";
     /// <summary>ダイアログのボタンの高さ。</summary>
     public const string SizeDialogButtonHeight = "size.dialog_button_height";
     /// <summary>つまみ（シート・覆いのグラブバー）の幅。</summary>
@@ -140,7 +150,8 @@ public static class NavTokens
     private static readonly string[] Numbers =
     {
         RadiusDialog, RadiusSheet, RadiusToast, RadiusTabIndicator,
-        SizeTabBar, SizeTabIndicatorWidth, SizeTabIndicatorHeight, SizeDialogWidth, SizeDialogPadding, SizeDialogButtonHeight,
+        SizeTabBar, SizeTabIndicatorWidth, SizeTabIndicatorHeight, SizeDialogWidth, SizeDialogPadding, SizeDialogTitleGap, SizeDialogActionsGap,
+        SizeDialogButtonHeight,
         SizeHandleWidth, SizeHandleHeight, SizeHandleArea, SizeToastHeight, SizeDragDismiss, SizeBackPreviewShift,
         MotionPush, MotionCover, MotionFade, MotionOverlay, MotionDialog, MotionSheet, MotionToast, MotionToastShort, MotionToastLong,
         OpacityScrim, OpacityDialogScrim,

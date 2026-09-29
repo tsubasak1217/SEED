@@ -991,6 +991,7 @@ W2-0 のときに作った APK の控え（`com.seedengine.uispike`・デバッ�
   試験ではプロジェクトのスクリプトにパスを書いて収録させて避けた。ダイアログ・シート・覆い・トーストのプレハブはギャラリーのシーンが欄に書いていたので同じ pak に入った。
 - **ギャラリー・グラフの見本は 540×1200 dp 固定**で、Pixel 6a（1080×2400 px・2.625 倍＝411×914 dp）では右の約 130 dp（テーマの帯の 4 つ目のボタン・「ゆっくり」・
   数値欄・グラフの右端）が切れ、上の帯・見出しがステータスバーに重なる（安全領域を見ていない）。ナビゲーションの見本は画面に合って収まる。
+  → 2026-09-29 の W2 の手直し P2-5 で両方の見本を画面の幅と安全領域に合わせた（ui_theme.md §9・ui_charts.md §8。PC の模擬で確かめた・実機は未確認）。
 - 利用者がギャラリーで触った範囲（手触りの評価ではない）: ダイアログ 3 回・下のシート・上の覆いが開いて閉じた（`[UI] modal: … close …`）。根での戻るジェスチャーで
   `CoreBackPreview startBackNavigation` → `onBackNavigationDone backType=4 triggerBack=true` → `[UI] back: move_task_to_back` → `ActivityTaskManager: moveTaskToBack`
   → `[SEED LIFECYCLE] background … suspended` → 2.5 秒後にランチャーから開き直して**同じ pid（1664）で `resumed: サーフェスを再生成しました`**（HOT）。
@@ -1241,6 +1242,56 @@ W2-0 のときに作った APK の控え（`com.seedengine.uispike`・デバッ�
 - **端末の最終状態**（20:20）: 試験アプリ（`com.seedengine.uidevice`。predictive_back ありの APK が入ったまま）は force-stop 済み・前面はランチャー。端末の設定は変えていない。
   自分が流した logcat は止め、`gradlew --stop`・`dotnet build-server shutdown` 済み。証拠は `tmp/w2_fix1/`（`device/logs/`・`device/marks.txt`・`device/shots/`・
   `regress/`〈回帰の撮影と比べた結果 `final_compare.txt`〉）。
+
+#### 3.9.4 W2 の手直し P2（UI の部品の 5 件。2026-09-29〜30）
+
+§3.9.2 で見つかったことと利用者の要望のうち、UI の部品（SEED.UI の C#・テンプレートの見本）の 5 件を直した。**Rust は変えていない**
+（WarashibeFishing の見た目と操作は変えないを最優先にした）。
+
+| # | 何を | 正典 | 要点 |
+|---|---|---|---|
+| P2-1 | ダイアログの札の高さ・余白・本文の見積もり・出入りの動き（(a)(b)） | [ui_navigation.md](ui_navigation.md) §3.2 | 札の高さを C# で計算し（余白 ＋ 題 ＋ 間隔 ＋ 本文 ＋ 間隔 ＋ ボタン ＋ 余白。`DialogMetrics`）、札の `CanvasLayoutItem` と背景の Sprite の両方へ書く。間隔はトークン `size.dialog_title_gap` 16・`size.dialog_actions_gap` 24（Flutter の Material 3 の AlertDialog）。本文の見積もりをエンジンの折り返しの規則（`TextWrapEstimate`）と組み込みの書体の送り幅（`BuiltInFontAdvance`。hmtx ÷ (hhea.ascent − descent)。全角は 1 em でなく 0.7168）へ直し、題・本文の行間を 1.4 にして描く行送りと見積もりをそろえた。出入りの倍率を `CanvasLayoutItem.VisualScale`（予測型の戻るのプレビューの倍率との積）へ |
+| P2-2 | 時刻ホイールを循環させない | [ui_components.md](ui_components.md) §11.3・§11.6 | `TimeWheel.Loop`（既定 true＝従来どおり）・`SetLoop`。false なら時 0〜23・分 0〜59（刻みの最後）の端で止まる（W2-3 の跳ね返り）。12 時間表記は 24 行のまま 23 ↔ 0 の継ぎ目だけ無くなる。ギャラリーに循環なしの `TimeNoLoop`。Wake or Pay は W3 で false・24 時間表記に |
+| P2-3 | 行のフルスワイプで削除 | [ui_scroll_list.md](ui_scroll_list.md) §7・§7.1 | `SwipeActions.FullSwipe`（既定オフ）。行の幅 × `ratio.swipe_full` 0.6 で構えて触感 1 回（Tap／Vibrate を選べる。見本は Vibrate 20 ms）、`ratio.swipe_full_cancel` 0.55 を下回ると解く。構えている間は「削除」の文字を行の見た目の後ろの端へ `motion.swipe_full` 0.15 秒で補間。構えたまま離すと `motion.swipe_dismiss` 0.2 秒で流し切って `FullSwiped`（開いた行のボタンのタップは `Commit()`）。見本の一覧は高さを `motion.swipe_collapse` 0.2 秒で畳んでからデータを消す |
+| P2-4 | グラフの幅と日付線のハンドル | [ui_charts.md](ui_charts.md) §2.1・§6.1 | `ChartView.ReadSize` を `HasLayout ? LayoutSize : Sprite` に（最初のレイアウトが読めるまで最大 3 フレーム描かずに待つ）。折れ線に子 `Handle`（18 dp の丸・48 dp の当たり・横だけのドラッグ・GestureRelay）: 葉なのでパン・ピンチより先に指を取り、値のある最寄りの点へ吸い付き、日付線・吹き出しが付いてくる。点が変わるたびに `Haptics.Tap`（`HandleHaptic`） |
+| P2-5 | 見本の画面の幅 | [ui_theme.md](ui_theme.md) §9・[ui_charts.md](ui_charts.md) §8 | ギャラリー・グラフの見本を Body（安全領域 4 辺・縦の Stack）→ 帯と Page（flex 1・スクロール）→ 段ごとの Stack と行ごとの Wrap に組み直した（540・411・360 dp で右が切れない）。一覧の行の文字・区切り線も行の幅に、WakeHistory の ± はグラフの右の端に付く |
+
+**PC の検証**（2026-09-29〜30。単体テスト・ビルドはすべて実行して出力を確かめた）:
+
+- `dotnet build`: SEEDScripting 警告 0・SEEDEditor エラー 0（警告 25 は既存のもの）。エディタのテスト: UiComponentsTests 124/124（P1 の終わりの 93 から P2 で 31 件増）・
+  UiListViewTests 11/11・ThemeContrastTests 62・TemplateImportTests 21/21・ScriptPrecompileTests 16/16・ProjectSystemTests 64/64・AndroidPipelineTests 171/171・
+  AndroidRunUiTests 102/102・MigrationTests 28/28・InspectorLogicTests 21/21・ComponentCatalogTests 12/12。見本のスクリプトを SEEDScripting.dll に対してコンパイルして警告 0。
+  Rust は変えていない（`git diff --stat -- runtime/` が空）ので cargo の検証はしていない。
+- **見た目・動作の回帰**（§3.9.3 と同じ道具。変更前 = 作業の始めに写した 4853fbe5 の `SEED.exe` と `SEEDScripting.dll`、変更後 = 作業ツリー。わらしべフィッシングは複製
+  `tmp/w2_1a/wf`。起動 20 回を 1 本にまとめた）: 図鑑の画面全体 921,600 画素 × 3 フレームとも**差 0**、Prev / Next の縁の 56 点のクリックは当たり 34・外れ 22 の並びも
+  撮影も **56 点とも同一**（クリックの前の最初の 1 枚だけは図鑑のフェードインの途中を撮った時刻が違って一致しない。平均の明るさ 59・138、P1 の撮影は 165）、MainGame の
+  ポーズメニューの 6 枚の選ばれた行は変更前・変更後とも 100・100・010・001・001・000、MainGame・proLogue の UI の範囲は動く背景の範囲の外の差 0〜9 画素（最大 1/255）。
+- 部品ごとの確かめ（撮影・ログは `tmp/w2_fix2/item1`〜`item5`・`verify`）: ダイアログの札 312 × 178.4 dp（計算 178.4）・上下左右の余白 24 dp（411 dp の模擬でも 24.00 dp）、
+  閉じる途中の 23 枚で題の左上と OK の右下が札の中心の周りの倍率の位置から 1.6 px 以内。本文の見積もりの行数は、fontTools の送り幅でエンジンの折り返しを真似た計算と
+  26 の文字列で一致。循環なしの時刻ホイールは 0・23・00・55 の端で越えず、12 時間表記で時の列を 1 行ずつ引くと 11 ↔ 12 で午前/午後が入れ替わる。フルスワイプは構え →
+  流し切り → 畳み → 件数 99・戻すと解く・タップで削除。グラフは 411 dp の模擬で右の端 519 px（窓 540）、ハンドルで 1 点ずつ移り、ズームした後もハンドルはパンにならず、
+  ハンドルの上の縦の引きはページのスクロールになる。見本は 540・411（安全領域の模擬つき）・360 dp で右が切れない。
+
+**実機の結果**（2026-09-30 01:37〜02:08。Pixel 6a・Android 17。試験アプリは `tmp/w2_fix2/device/UiDevice`〈P2 の後の templates/ui をそのまま写し、見本の根に
+`DeviceProbe`・`MarkLog` を付けたもの。predictive_back なし〉を SeedAndroid の `build`〈develop の .so。Rust は変えていないので P1 の .so のまま〉で組み、`install` で入れた。
+利用者への依頼は 1 回に 1 つ〈5 回〉、依頼の間と返事から 2 分は端末を操作しなかった）:
+
+| 依頼 | 結果 | 感想（利用者）・ログ（実行して確かめた値） |
+|---|---|---|
+| 0 準備（ロックを解除してホーム画面） | — | 送ってから 10 分は返事が無く未実施として扱った（端末はロック画面のまま・自動操作はしない）。その後「できます」。前面がランチャーであることを確かめて起動 |
+| 1 フルスワイプの削除（ギャラリーの一覧） | ✓ | 「問題ない」（構えた瞬間の文字の動き・震え・流し切りと詰まり・タップでの削除）。ログ: 構え 33 回（どれも Vibrate）・確定 31 回（うちタップ 1）→ 件数 100 → 69・解く 3・開く 17・閉じる 13 |
+| 2 時刻ホイール（止めて離す・循環なしの端） | ✓ | 「止めて離して勝手に回ることは無し」「端の止まり方も自然」。依頼の間の離し 76 回のうち速度を 0 にしたのは 8 回（`lift_probe_dp` 0〜50。閾値 50 ちょうどが 1 回）、フリックのまま残った最小は 70 dp/秒（backlog「W2 の手直し P1 の残り」の (2)） |
+| 3 グラフの日付線のハンドル（ギャラリーの折れ線） | ✓ | 「ok」（見た目・吸い付き・吹き出しの追従・縦の引きでページのスクロール）。ハンドルのドラッグ 4 回・選びの変化 417 回・添字 0〜29 の端で止まる |
+| 4 ダイアログの見た目と閉じる動き（ナビゲーションの見本の 3 ボタン） | ✓ | 「余白・間隔は自然」「閉じる・開く動きで中身が背景と一体で動く」。開く 22 回・閉じる 22 回 |
+
+- 見本は Pixel 6a（411×914 dp）で画面の幅に収まり、テーマの帯はステータスバーの下から始まる（撮影 `tmp/w2_fix2/device/shots/u1_gallery_start.png`）。
+- 利用者の作業の後（返事から 2 分）にギャラリーを `adb input swipe` で 24 回払って測った: 描いていた時間 28.48 秒で 1,703 フレーム＝**59.8 fps**（3 秒ごとの窓で 59.6〜60.5。
+  止めた 18 回の区間は on_demand で描かない時間）。コンテナで組み直した後も 60 fps を保つ（§3.9.1 の 59.3〜60）。FATAL・panic・試験アプリの例外は 0。
+- **端末の最終状態**（02:08）: 試験アプリ（`com.seedengine.uidevice`。P2 の APK が入ったまま）は force-stop 済み・前面はランチャー。端末の設定は変えていない。自分が流した
+  logcat は止め、`gradlew --stop`・`dotnet build-server shutdown` 済み。証拠は `tmp/w2_fix2/`（`device/logs/`〈`session.txt`・`req2_release_analysis.txt`・
+  `req3_handle_analysis.txt`・`fps_analysis.txt`〉・`device/marks.txt`・`device/shots/`・`regress/`・`verify/`）。
+- 残り（backlog の W2 節）: `Haptics.Tap` の選び方の実機（端末のタップ時のバイブがオフ）、ズームした後のハンドルとパンの取り合いの実機、予測型の戻るとダイアログの出入りの合成の実機、
+  R2 の余裕が小さいこと。
 
 ## 4. W1・W2 にまたがる要件
 

@@ -2,7 +2,7 @@
 
 キャンバス UI の**スクロール**（指のドラッグ・離した後の慣性・端の跳ね返り・スナップ・入れ子・スクリプトからの ScrollTo）と、
 **一覧**（見えている行だけをプレハブから作って使い回す `SEED.UI.ListView`）、**スワイプの操作**（行を横へずらすと削除などのボタンが出る
-`SEED.UI.SwipeActions`）の規則。背景と段階は [app_platform_roadmap.md](app_platform_roadmap.md) §3.3 の「スクロール」「一覧」と §3.8.5 の W2-3。
+`SEED.UI.SwipeActions`。大きく払うとそのまま削除するフルスワイプは W2 の手直し P2-3 の §7.1）の規則。背景と段階は [app_platform_roadmap.md](app_platform_roadmap.md) §3.3 の「スクロール」「一覧」と §3.8.5 の W2-3。
 
 | 置き場 | 役割 |
 |---|---|
@@ -21,7 +21,7 @@
 | `runtime/src/engine/core/app_base/app/scroll_events.rs` | フレームの処理（ジェスチャーの受け取り・物理・イベントの配達・大きさの受け取り・描く理由） |
 | `runtime/src/engine/core/scripting/canvas_scroll_api.rs`・`scroll_ffi.rs` | スクリプトの欄・イベントの FFI |
 | `scripting/src/Api/CanvasScroll.cs`・`ScrollEvent.cs` | `SEED.CanvasScroll`・`SEED.ScrollEvent`・`SEEDScript.OnScroll*` |
-| `scripting/src/Api/UI/` | `SEED.UI.ListView`・`ListViewLayout`・`ListViewRecycler`・`SwipeActions`・`SwipeGroup`・`SwipeMath` |
+| `scripting/src/Api/UI/` | `SEED.UI.ListView`・`ListViewLayout`・`ListViewRecycler`・`SwipeActions`・`SwipeGroup`・`SwipeMath`・`SwipeModel`（W2 の手直し P2-3。スワイプの状態の機械） |
 | `editor/src/Panels/InspectorPanel.CanvasScroll.cs` | インスペクタ（「コンポーネント追加 → UI → Canvas Scroll」） |
 
 ---
@@ -147,6 +147,7 @@ ScrollTo は Animating。慣性・ScrollTo の途中に触れると Held（指�
 | 使い回すとき | 付け替える前に `GameObject.CancelGestures()` で行と子孫の押下・ドラッグを取り消し（PressCancel・取り消しの DragEnd が次のフレームに届く＝**W2-2 の持ち越し「押している行が消えると PressCancel の届け先が無い」の手当て**）、`Recycled(行, 前の番号)` を呼ぶ |
 | 中身の長さ | 行の並びの全体の長さを、スクロールの `Fixed` の中身の大きさにする |
 | 行の配置 | 行のスクロールの軸の位置を「行の先頭 + pivot × 行の長さ」にする（交差の軸はプレハブの値のまま） |
+| 並びの変更 | `SetExtentOf`・`SetRowExtent`・間隔・余白を変えたら、次の `Update` で付いたままの行も置き直す（中身は入れ直さない。W2 の手直し P2-3。以前は付け替わる行だけが動き、`Refresh` するまで他の行が古い位置に残った）。同じ関数を毎フレーム渡し直すと、関数の返す長さの変化（消した行を畳む動き。§7.1）がそのフレームの並びに効く |
 
 `GameObject.Visible` の書き込みは、同じフレームに `Instantiate` したばかりのアクターにも効くようにした（以前は構築前のアクターを受けずに黙って失敗していた。
 コマンドは発行順に当たるので、生成の後に表示フラグが当たる）。
@@ -158,11 +159,63 @@ ScrollTo は Animating。慣性・ScrollTo の途中に触れると Held（指�
 | 規則 | 内容 |
 |---|---|
 | 作り | 行: CanvasGesture（tap=false・drag・fling・drag_axis=horizontal）。子に Actions（右端の操作のボタン）と Front（ずらす見た目。**受けるジェスチャーの無い CanvasGesture＝遮る板**にして、閉じているとき後ろの操作のボタンを押せないようにする） |
-| ずらす | Front を閉じた 0 〜 開いた量（操作のボタンの幅）の間でずらす（端より先へは引けない）。移動は行のローカルの位置の差（キャンバスの単位） |
+| レイヤー | Front の部分木（面・文字）の表示のレイヤーを Actions の部分木より上にする。描く順は「ゾーン → レイヤー → 種別（スプライト → 図形 → パーティクル → 文字）」（`renderer/ui_draw_order.rs`）なので、同じレイヤーだと Actions の文字が閉じた行の Front の面の上に出る（W2 の手直し P2-3 の PC の確かめで見つけた。見本の行は Actions 0・Front 1） |
+| ずらす | Front を閉じた 0 〜 開いた量（操作のボタンの幅）の間でずらす（端より先へは引けない。フルスワイプなら行の幅いっぱいまで＝§7.1）。移動は行のローカルの位置の差（キャンバスの単位） |
+| ずらし方 | Front に `CanvasLayoutItem` があれば実行中だけの見た目のずらし `CanvasLayoutItem.Translate`（保存しない。親に合わせる〈fill_width〉ノードも動く。[canvas_camera_rework.md](canvas_camera_rework.md) §6.7）、無ければ `CanvasTransform.Position`（W2-3 の使い方のまま） |
 | 開く・閉じる | 離したときの横の速さが 120 dp/秒（`item_touch_helper_swipe_escape_velocity`）以上なら向きで決める。遅ければ開いた量の半分（`getSwipeThreshold` = 0.5）以上ずらしていれば開く |
 | 動き | 250ms（`DEFAULT_SWIPE_ANIMATION_DURATION`）・Material の fastOutSlowIn。動いている間は `Redraw.Request()` |
 | 組（`SwipeGroup`） | ある行のドラッグが始まると、同じ組の他の開いている行が閉じる。一覧のスクロールが始まったら持ち主が `CloseAll`（`OnScrollStart` から） |
-| 行の使い回し | `Reset()` ですぐ閉じる（ListView の `Recycled` から） |
+| 行の使い回し | `Reset()` ですぐ閉じる（ListView の `Recycled` から。フルスワイプの構え・確定・文字の位置も戻す） |
+| 分け方 | 規則と値は `SwipeMath`（純粋な計算）、状態の移り変わりは `SwipeModel`（純粋な状態の機械。W2 の手直し P2-3）、エンジンへの当てはめ（ノードを動かす・テーマを読む・触感・コールバック）は `SwipeActions`。`editor/tests/UiComponentsTests`（SwipeTests.cs）と `UiListViewTests` が前の 2 つを単体で試す |
+
+### 7.1 フルスワイプで削除（W2 の手直し P2-3。2026-09-29）
+
+行を大きく払うとそのまま確定（削除）する。iOS のメールのフルスワイプの削除に当たる（利用者の要望「削除されるスワイプの閾値を越した瞬間に『削除』の
+テキストを右から左側へ補間で移動させ、端末を単発のバイブレーションで揺らす」。roadmap §3.9.2 の (f)）。`FullSwipe = true` で有効（**既定はオフ**＝§7 のまま）。
+
+| 規則 | 内容 |
+|---|---|
+| 行の幅 | `RowExtent`（0 以下は自動: Front の `CanvasTransform.LayoutSize.x`〈前のフレームの描画。P1-4〉、まだ無ければ Front の Sprite の幅）。使えない値（0 以下・NaN・無限）の間は構えず、ドラッグは開いた量まで |
+| ドラッグの範囲 | 閉じた 0 〜 操作の側へ行の幅いっぱい（開いた量の方が大きければ開いた量） |
+| 構える | 操作の側へのずらし量 ≧ 行の幅 × `ratio.swipe_full`（0.6）。ただし開いた量（ボタンの幅）より手前では構えない（狭い行でボタンを見せるだけの払いが削除にならない） |
+| 解く | 構えた後、行の幅 × `ratio.swipe_full_cancel`（0.55）を**下回ったら**解く（ヒステリシス。閾値の近くで指が揺れても構え・解くがばたつかない。解く割合を構える割合より大きくしたテーマでも解くずらし量は構えるずらし量を超えない） |
+| 触感 | 構えた瞬間に 1 回（`ArmHaptic`: `None`／`Tap`〈既定。`Haptics.Tap`＝端末の「タップ時のバイブ」の設定が効く〉／`Vibrate`〈`Haptics.Vibrate(VibrateMilliseconds)`。既定 20 ms＝backlog の案〉）。解いたときは既定で出さない（`DisarmHaptic` で選べる）。PC の模擬は振動せず `[SEED PLATFORM] 模擬: 触感 …（n 回目）` のログ |
+| 「削除」の文字（`FullSwipeLabel`） | 構えていない間は元の位置（作った時・欄に渡した時の位置を控える）、構えている間は **Front の後ろの端 ＋ `space.l`（16）** に付いて指と一緒に動く。構える・解くの切り替わりで 2 つの置き場の重み 0 ↔ 1 を `motion.swipe_full`（0.15 秒・fastOutSlowIn。途中で行き先が変わっても跳ばない）で補間する。元の左の端は文字の anchor・pivot・position と大きさ（レイアウトの大きさ → Text の枠 → Sprite の幅）から求めるので、**文字の親（Actions）は行の左の端から行いっぱいに置く**（CanvasComponent・fill_width・fill_height） |
+| 離したとき | 取り消し（`e.Canceled`）→ 構えを解いて元の状態へ（開いていた行は開いたまま）／構えている → **確定**（ただし閉じる向きへ 120 dp/秒以上で払って離したら確定せず閉じる＝速さが勝つ §7 の考え方）／構えていない → §7 の開く・閉じる（ボタンの幅より先で遅く離したら開く） |
+| 確定 | Front を行の幅の外まで `motion.swipe_dismiss`（0.2 秒・fastOutSlowIn）で流し切り（文字は Front の後ろの端に付いたまま行の左の端 ＋ 余白へ）、流し切ったら `FullSwiped`。流し始めに `CommitStarted`。確定した行は組の「開いている行」に数えず（`Closed` は呼ばない）、**`Reset` まで指も `Open`・`Close`・`Commit` も受けない**（二重に確定しない） |
+| ボタンのタップ | 開いた行の操作のボタンのタップ（例 `SEED.UI.GestureRelay` の `Tapped`）から `Commit()` を呼ぶと同じ確定の流れ（触感は出さない。文字は Front の後ろの端へ動く） |
+| コールバック | `Armed`（触感の後）・`Disarmed`・`Opened`・`Closed`・`CommitStarted`・`FullSwiped`。状態は `IsArmed`・`IsCommitted`・`LabelWeight`・`ArmCount`・`ResolvedRowExtent` |
+| ずらし方 | 文字のノードも Front と同じ（`CanvasLayoutItem` があれば Translate、無ければ Position） |
+
+**トークン**（表の正典は [ui_theme.md](ui_theme.md) §8。値は docs/backlog.md の案。iOS の閾値・時間は公開されていないので決めた値）:
+
+| トークン | 既定 | 使う所 |
+|---|---|---|
+| `ratio.swipe_full` | 0.6 | 構える（行の幅に対する割合） |
+| `ratio.swipe_full_cancel` | 0.55 | 解く（同上） |
+| `motion.swipe_full` | 0.15 秒 | 「削除」の文字の置き場の補間 |
+| `motion.swipe_dismiss` | 0.2 秒 | 確定で行を外へ流し切る |
+| `motion.swipe_collapse` | 0.2 秒 | 一覧の持ち主が消した行の高さを畳む（部品は読まない） |
+| `space.l` | 16 | 文字と Front の後ろの端の間 |
+| `color.error`・`color.on_error` | #FF5252・#FFFFFF（明るい方 #D32F2F・#FFFFFF） | 見本の行の削除の面と文字（ThemeStyle）。文字と面のコントラストはボタンの文字と同じく 3:1 以上（テスト） |
+
+**一覧の畳み方**（見本: `templates/ui/scripts/UiGallerySections.cs`〈一覧の持ち主〉・`UiGalleryListRow.cs`〈行〉・`prefabs/list_row.actor`）:
+
+1. 行の `FullSwiped` → 行のスクリプトが `SEED.Events.Raise(UiGalleryListRow.FullSwipedEvent, 行)` で持ち主へ知らせる
+2. 持ち主はデータを項目の番号の列で持ち、その行の項目を「畳んでいる」に入れる。毎フレーム、行ごとの長さ `SwipeMath.CollapsedExtent`
+   （`motion.swipe_collapse` の 0.2 秒・fastOutSlowIn で 56 → 0）を `ListView.SetExtentOf` で渡し直す（ListView が付いたままの行も置き直す＝下の行が詰まる）。
+   畳んでいる行の見た目は `CanvasLayoutItem.VisualScale` で縦に縮め、縮んだ分の半分だけ `Translate` で上へずらして上の端をそろえる（下の行と重ならない）
+3. 畳み終わったらデータから消して `SetCount`・`Refresh`。書き直す行は項目が変わるので行のスクリプトが `Reset`（使い回す行も `Recycled` から `Reset`）
+4. 一覧（窓の `CanvasScroll.IsDragging` の始まり）かページ（`OnScrollStart`）のスクロールが始まったら `SwipeGroup.CloseAll`
+
+見本の行（`list_row.actor`）の Front は CanvasComponent と縦の CanvasStack（左右の余白 16・上 6・cross_align stretch）で、Title（高さ 26）・Sub（23）・
+Divider（1）は行の幅 − 32 に伸びる（W2 の手直し P2-5。ギャラリーを画面の幅に合わせた後、一覧が 500 dp より狭くなっても区切り線・文字の枠が行の右の端を越えない）。
+文字の枠（`Text.BoxWidth`）はレイアウトが伸ばさない（[canvas_camera_rework.md](canvas_camera_rework.md) §6.3 の規則 3）ので、行のスクリプト `UiGalleryListRow` が
+Title・Sub の `LayoutSize.x` に合わせて書き直す。書き直すのは行ができた最初の描画の後と、一覧の持ち主（`UiGallerySections`）が一覧の幅の変化を
+`UiGalleryListRow.RefitTextBoxes()` で知らせた後だけ（行は止まっている間に毎フレーム自分の幅を読まない）。
+見本の触感は **Vibrate**（利用者の端末〈Pixel 6a〉は「タップ時のバイブ」がオフで `Haptics.Tap` を感じないため）。デバッグの命令 `gallery,haptic,<none|tap|vibrate>` で切り替え、
+`gallery,list` で件数・開いている行・畳んでいる数・一覧の位置と画面の矩形を `[UI] gallery: list …` へ出す。構える・解く・開く・閉じる・確定・流し切り・消した項目は
+`[UI] gallery: swipe …` の 1 行ずつ（実機の確かめで logcat から読む）。
 
 ## 8. イベントとスクリプト
 
@@ -205,6 +258,22 @@ ScrollTo は Animating。慣性・ScrollTo の途中に触れると Held（指�
     スプライト 62〜74・テキスト 28〜34、フレーム（CPU）3.8 ms（debug）・60 fps。行のボタンのタップ、行のスワイプと一覧のスクロールで閉じる、
     ボタンを押したまま一覧を先頭へ移すと行が使い回されて PressCancel・離しても Tap にならない
 - **回帰**: WarashibeFishing の複製の図鑑のボタンの縁 56 点のクリック（当たり 34・外れ 22）と図鑑の画素が変更の前後で一致（スクロールを使わないゲームは不変）。
+- **フルスワイプ（W2 の手直し P2-3・2026-09-29）**:
+  - **単体テスト（C#）** `editor/tests/UiComponentsTests`（115 件。うち P2-3 の 12 件＝SwipeTests.cs）: 構える・解くのヒステリシス（0.59 → 構えない・0.6 → 構える・
+    0.57 → 構えたまま・0.55 ちょうど → 構えたまま・0.54 → 解く）、行の幅 0・負・NaN・無限（構えない・ドラッグは開いた量まで・文字を動かさない）、狭い行（ボタンの幅より
+    手前で構えない）、ドラッグの範囲（有効・無効・左側の操作・ボタンなし）、離したときの決め方（構えている・右へ速い払い・ボタンより先・速い払い・遅い払い・取り消し）、
+    文字の置き場（重み 0・0.5・1・構えている間は指に付く・流し切ると行の左の端・左側の操作）、状態の機械の列（越える → 戻る → 越える → 離す＝確定と構えた回数 2＝触感 2 回、
+    流し切った後は Reset まで受けない、越える → 戻る → 離す＝開く／閉じる、取り消し、開いた行のタップの確定、無効・幅が分からない・左側）、畳む長さ、既定のテーマの値、
+    行のプレハブの作り（fill・ジェスチャー・色のトークン・レイヤー）。見やすさのテストに `color.on_error` / `color.error`（3:1）を足した。`UiListViewTests` 11 件もそのまま通る。
+  - **PC**（`templates/ui` を作業フォルダ `tmp/w2_fix2/item3/proj` へ写し、SEED.exe〈HEAD の debug〉の Play を IPC の指の注入〈`mouse_pos`・`mouse_button` を 20 ms ごと〉で操作。
+    起動 3 回。撮影 `tmp/w2_fix2/item3/shots/run2/`・`run3/`）: 行 1 を左へ 380 dp 払って止める → `swipe armed item=1 offset=-316.7 width=500 haptic=Vibrate`・
+    `模擬: 触感 vibrate 20 ms（1 回目）`、撮影で赤い面が広がり「削除」が Front の端の右へ付く（A1）→ 離す → `commit offset=-364.2` → `dismissed` → `collapse` →
+    `removed item=1 index=1 count=99`（流し切り・畳みの途中 A20〜A23、詰まった後 A3）。70% → 50% へ戻す → `disarmed offset=-273.2`（0.55 × 500 = 275 を下回った所）・
+    「削除」が右のボタンの枠へ戻る（B2）→ 離す → `opened`（B3）。開いた行の削除の面のタップ → `tap` → `commit offset=-96` → `removed … count=98`（C1・C2）。
+    `gallery,haptic,tap` → 構える → `模擬: 触感 tap（1 回目）` → 0 付近へ戻して離す → `disarmed`・閉じたまま（D1）。行を開いて一覧を縦にドラッグ → `closed`（E1・E2）、
+    行を開いてページを動かす → `closed`（F1）。明るい方（`theme,mode,light`）で構えると削除の面 #D32F2F・文字は白（H1。`shots/run3/`）。`[UI]` のログに例外・警告なし。
+    1 回目の起動で、同じレイヤーの「削除」の文字が閉じた行の Front の上に出ることを見つけ（文字はスプライトより手前に描かれる）、行のプレハブの Front の部分木を
+    レイヤー 1 にした（§7 のレイヤー）。畳む途中の細い文字の横線の欠けは、一覧の慣性の途中（G1〜G4）でも同じなので既存の描き方（§12・docs/backlog.md）。
 
 ## 11. 実機での確かめ方（Pixel 6a。W2-3 の時点で未実施）
 
@@ -218,6 +287,11 @@ ScrollTo は Animating。慣性・ScrollTo の途中に触れると Held（指�
 5. 行を左へスワイプ → 開く・閉じるの閾値（速さ 120 dp/秒・半分）と 250ms の動き。一覧をスクロールすると閉じる
 6. `SEED.Time.Fps` と GPU の計測（android.md §22.6）でスクロール中 60 fps を保つか（UC-2）。1,000 件の ListView と、静的な 1,000 行の一覧の両方
 7. 手触りの調整が要れば `fling_friction`・`bounce_drag`（インスペクタ）で詰め、既定を変えるなら constants.rs と §3 の表を直す
+8. **フルスワイプ（W2 の手直し P2-3。§7.1）**: ギャラリーの一覧（`templates/ui/scenes/ui_gallery.scene` の「一覧」。logcat で `[UI] gallery: swipe`・`[UI] gallery: list` を見る）で、
+   行を大きく左へ払う → 行の幅の 6 割を越えた瞬間に振動 1 回（見本は `Haptics.Vibrate(20)`。端末の「メディアの振動」の設定が効く）・「削除」の文字が Front の端へ付いて指と一緒に動く →
+   離すと行が左へ流れて高さが畳まれ、件数が 1 減る（`swipe armed` → `commit` → `dismissed` → `removed … count=99`）。越えた後に 5.5 割より手前へ戻すと文字が右のボタンの
+   枠へ戻る（`disarmed`）→ 離すと開く・閉じるの判定どおり。開いた行の削除の面のタップでも消える。構え・解くを行き来して振動の回数とばたつきが無いこと、
+   速く払って離したとき・構えたまま右へ速く払い戻したときの手触り（確定しない）、`gallery,haptic,tap` に切り替えたときの「タップ時のバイブ」の効き方を確かめる
 
 **2026-09-28 の実機の回（Pixel 6a / Android 17。詳細は roadmap §3.9）**: ギャラリーのページ（一覧・ホイールを含む）を `input swipe` で払い続けると、
 開発用の既定の .so（`dev`・最適化なし）は **23〜26 fps**（CPU 38 ms/フレーム）、`develop`・`release` の .so は **59.7 fps**（8.5〜8.7 ms）。止まると 10 フレームで
@@ -243,3 +317,9 @@ ScrollTo は Animating。慣性・ScrollTo の途中に触れると Held（指�
   スクロール自体に端をつなげるループは無く、循環は ListView の使い回しで作る。docs/ui_components.md §11）、
   シート（W2-7。下へ引いて閉じる）
 - **実機の手触り**: 未確認（§11）
+- **フルスワイプ（W2 の手直し P2-3）**: 実機（Pixel 6a）の手触り・振動は未確認（§11 の 8）。消した行を畳む動きは部品ではなく一覧の持ち主（見本）が
+  `ListView.SetExtentOf` で行う（`ListView` に消す動きの API は無い。Wake or Pay の一覧で要るなら部品へ上げる。docs/backlog.md）。文字の元の置き場は
+  「文字の親が行いっぱい」を前提に anchor・pivot・大きさから求める（回転・Scale ≠ 1 の文字は外れる）。見本では、流し切りの 0.2 秒の間に一覧を大きく動かして
+  その行が使い回されると `Reset` で確定が取り消される（削除されない）。畳む途中は行が小数の画素の位置に置かれ、細い文字の横線が欠けて見えることがある
+  （PC の撮影 A22・A23。一覧の慣性の途中〈G1〜G4〉と小数の位置で止まった明るい方〈H2〉でも同じように欠けるので、フルスワイプ固有ではなく小数の画素の位置の
+  文字の描き方。docs/backlog.md）

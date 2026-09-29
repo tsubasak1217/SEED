@@ -12,6 +12,8 @@ namespace SEED.UI;
 //    - 割り当てた行をその行の位置へ置き、Bind(行, 番号) でデータを入れて見せる。外れた行は隠す
 //    - 行を別の番号へ使い回す前に、その行の押下・ドラッグを取り消す（GameObject.CancelGestures。押している行が別のデータに
 //      変わっても元の押下の Tap が届かない＝W2-2 の持ち越し「押している行が消えると PressCancel の届け先が無い」への手当て）
+//    - 並び（行の長さ・間隔・余白）が変わったら、付いたままの行も次の Update で置き直す（W2 の手直し P2-3。中身は入れ直さない。
+//      データが変わったときは Refresh・SetCount で入れ直す）
 //  見た目（行の形）はプレハブ、データはスクリプト（Bind）。
 //
 //  【使い方】（持ち主のスクリプトの Update から毎フレーム Update を呼ぶ）
@@ -92,6 +94,11 @@ public sealed class ListView
     private bool _contentDirty = true;
     /// <summary>付いている行の中身を入れ直す必要があるか（Refresh）。</summary>
     private bool _rebindAll;
+    /// <summary>
+    /// 並びを作り直したので、付いたままの行も置き直す必要があるか（行の長さ・間隔・余白の変更。中身は入れ直さない）。
+    /// W2 の手直し P2-3: 消した行の高さを SetExtentOf で毎フレーム変えて畳むとき、下の行が同じフレームで詰まるように。
+    /// </summary>
+    private bool _placeAll;
     private readonly ListViewRecycler _recycler = new();
     private readonly List<RowSlot> _slots = new();
     /// <summary>作ったがまだ構築されていない行（プレハブの構築は作ったフレームの末尾）。</summary>
@@ -128,7 +135,10 @@ public sealed class ListView
         _rebindAll = true;
     }
 
-    /// <summary>行ごとの長さにする（null で固定の長さへ戻す）。</summary>
+    /// <summary>
+    /// 行ごとの長さにする（null で固定の長さへ戻す）。次の Update で並びを作り直し、付いたままの行も置き直す（中身は入れ直さない）。
+    /// 同じ関数を毎フレーム渡し直すと、関数の返す長さの変化（消した行を畳む動きなど）がそのフレームの並びに効く。
+    /// </summary>
     public void SetExtentOf(Func<int, float>? extentOf)
     {
         _extentOf = extentOf;
@@ -185,6 +195,7 @@ public sealed class ListView
                 : ListViewLayout.Variable(_count, _extentOf, _spacing, _leading, _trailing);
             _layoutDirty = false;
             _contentDirty = true;
+            _placeAll = true;
         }
         return _layout;
     }
@@ -244,17 +255,19 @@ public sealed class ListView
                 slot.Shown = true;
             }
         }
-        // データ・並びが変わった: 付いたままの行も置き直して入れ直す
-        if (_rebindAll)
+        // データが変わった（Refresh・SetCount）: 付いたままの行も置き直して入れ直す。
+        // 並びだけが変わった（行の長さ・間隔・余白）: 付いたままの行を置き直す（中身は入れ直さない）
+        if (_rebindAll || _placeAll)
         {
             foreach (var (slotIndex, index) in _recycler.BoundSlots())
             {
                 bool justBound = result.Bound.Exists(b => b.Slot == slotIndex);
                 if (justBound) continue;
                 Place(_slots[slotIndex], index, layout, axis);
-                Bind(_slots[slotIndex].Row, index);
+                if (_rebindAll) Bind(_slots[slotIndex].Row, index);
             }
             _rebindAll = false;
+            _placeAll = false;
         }
         // 足りない行を作る（作った行は次のフレームから使える。作っている途中の数だけ差し引く）
         int toCreate = result.Missing.Count - _pending.Count;

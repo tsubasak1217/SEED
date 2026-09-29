@@ -409,7 +409,7 @@ public static class ThemeTests
         var sampleFiles = Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "themes"), "*.json")
             .ToDictionary(p => "assets://ui/themes/" + Path.GetFileName(p), File.ReadAllText);
 
-        h.Add("W2-9 見やすさ: 既定のテーマと見本のテーマの文字と面のコントラスト（本文 4.5・主の色の上 3）", () =>
+        h.Add("W2-9 見やすさ: 既定のテーマと見本のテーマの文字と面のコントラスト（本文 4.5・主の色とエラーの面の上 3）", () =>
         {
             var tables = new List<UiThemeData> { dark, light };
             foreach (var origin in sampleFiles.Keys)
@@ -433,6 +433,8 @@ public static class ThemeTests
                 Pair(NavTokens.ColorOnInverseSurface, NavTokens.ColorInverseSurface, BodyContrast);
                 Pair(ChartTokens.ColorLabel, UiTokens.ColorSurface, BodyContrast);
                 Pair(UiTokens.ColorOnPrimary, UiTokens.ColorPrimary, LargeContrast);
+                // W2 の手直し P2-3: 削除の面の上の「削除」の文字（ボタンの文字と同じく 3:1。暗い方の #FF5252 に白で 3.19）
+                Pair(UiTokens.ColorOnError, UiTokens.ColorError, LargeContrast);
             }
         });
 

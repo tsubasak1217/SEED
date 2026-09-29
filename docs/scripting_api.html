@@ -1456,7 +1456,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">item.FillWidth / item.FillHeight</code><span class="desc">bool（get/set。コンテナの外の子で使う。親の CanvasComponent の領域いっぱいに広げる）</span></div>
   <div class="api"><code class="sig">item.Translate / item.TranslateFraction</code><span class="desc">Vector2（get/set。W2-7・実行中だけ・保存しない）。置かれた後に足す平行移動（キャンバスの単位／自分の矩形に対する割合）。親に合わせた・コンテナが並べたノードも動き、子孫・当たり判定・切り抜きも付いてくる。レイアウトと子孫の安全領域は変えない</span></div>
   <div class="api"><code class="sig">item.LayerBias</code><span class="desc">int（get/set。W2-7・実行中だけ）。自分と子孫の表示（Sprite・Text・パーティクル）のレイヤーに足す値（祖先と足し合わせる）。重なる画面・ダイアログ・シート・トーストの前後。描画・ポインタの最前面・ジェスチャーの遮りが同じ値で比べる。SEED.Draw には効かない</span></div>
-  <div class="api"><code class="sig">item.VisualScale</code><span class="desc">Vector2（get/set。既定 (1, 1)。W2 の手直し 3b・実行中だけ・保存しない）。自分の置かれた矩形の<b>中心の周り</b>の倍率。子孫（入れ子のキャンバスの子も中心へ寄る）・当たり判定・切り抜き・LayoutRect も一緒に縮む。レイアウト（大きさ・並び・安全領域・LayoutSize）は倍率の前のまま。Translate の後に掛かる。既定のノードの計算は一切変わらない。SEED.UI の予測型の戻るのプレビューが使う（保存される CanvasTransform.Scale は pivot の周りで、入れ子のキャンバスの子は左上へ寄る）</span></div>
+  <div class="api"><code class="sig">item.VisualScale</code><span class="desc">Vector2（get/set。既定 (1, 1)。W2 の手直し 3b・実行中だけ・保存しない）。自分の置かれた矩形の<b>中心の周り</b>の倍率。子孫（入れ子のキャンバスの子も中心へ寄る）・当たり判定・切り抜き・LayoutRect も一緒に縮む。レイアウト（大きさ・並び・安全領域・LayoutSize）は倍率の前のまま。Translate の後に掛かる。既定のノードの計算は一切変わらない。SEED.UI の予測型の戻るのプレビューとダイアログの出入りの動き（札の大きさ 0.9 ↔ 1。W2 の手直し P2-1）が使う（保存される CanvasTransform.Scale は pivot の周りで、入れ子のキャンバスの子は左上へ寄る）</span></div>
   <h3 id="cmp-canvassafearea">CanvasSafeArea（安全領域：切り欠き・ステータスバー・ジェスチャーバーを避ける）</h3>
   <p>CanvasComponent を持つノード（パネル）に付けると、キャンバス領域を Screen.SafeArea の内側へ辺ごとに縮めます（W2-1b）。子のアンカー・コンテナは縮めた領域を基準にし、画面の回転とシステムバーの出し入れに次のフレームから追従します。PC の Play とエディタでは画面全体（PC では環境変数 SEED_SIM_SAFE_AREA=左,上,右,下 で模擬できる）。Sprite の大きさは変えないので、背景は親に置きます。ルートキャンバスの「寸法の単位」を dp にすると、ルートの大きさは「画面 ÷ 1 dp の画素数」になり、子は dp で並びます（1 dp = Screen.DPI ÷ 基準 DPI。PC は SEED_SIM_SCALE_FACTOR で端末の密度を模擬できる）。</p>
   <div class="api"><code class="sig">safe.Enabled</code><span class="desc">bool（get/set。既定 true）</span></div>
@@ -1469,7 +1469,7 @@ ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
   <div class="api"><code class="sig">g.Pinch</code><span class="desc">bool（get/set。ピンチ〈2 本指の拡大縮小〉を受ける。既定 false。W2-8）</span></div>
   <div class="api"><code class="sig">g.PressFeedback</code><span class="desc">bool（get/set。PressDown / PressCancel / PressUp を受ける。既定 true）</span></div>
   <div class="api"><code class="sig">g.MinHitSizeDp</code><span class="desc">float（get/set。最小のヒット領域 dp。既定 48。0 = 広げない）</span></div>
-  <p class="section-note">付け方の例: ボタン＝既定のまま、縦スクロール＝Tap=false・Drag=true・Fling=true・DragAxis=Vertical（枠に CanvasClip）、左スワイプの行・横のスライダ＝Tap=true・Drag=true・DragAxis=Horizontal、遮る板＝Tap=false（旗をすべて外す）、グラフ＝Tap・LongPress・Drag・Fling・DragAxis=Horizontal・Pinch=true・PressFeedback=false（<a href="#sec-ui-charts">グラフ</a>）。</p>
+  <p class="section-note">付け方の例: ボタン＝既定のまま、縦スクロール＝Tap=false・Drag=true・Fling=true・DragAxis=Vertical（枠に CanvasClip）、左スワイプの行・横のスライダ＝Tap=true・Drag=true・DragAxis=Horizontal、遮る板＝Tap=false（旗をすべて外す）、グラフ＝Tap・LongPress・Drag・Fling・DragAxis=Horizontal・Pinch=true・PressFeedback=false（<a href="#sec-ui-charts">グラフ</a>）、子のつまみ（グラフの日付線のハンドル）＝Tap=false・Drag=true・DragAxis=Horizontal・PressFeedback=false・MinHitSizeDp=48 ＋ SEED.UI.GestureRelay（葉なので同じ横の移動では親のパンより先に指を取る。e.LocalPosition はつまみの左上が原点）。</p>
 
   <h3 id="cmp-canvasscroll">CanvasScroll（スクロールの領域：一覧・横の帯・ページ送り・ホイール）</h3>
   <p>2D キャンバスのノードに付けると、そのノードが中身（子）をずらして見せる窓になります（W2-3。<a href="#lc-scroll">スクロールコールバック</a>）。窓の大きさは CanvasComponent があればキャンバスの箱、無ければ最初の Sprite の矩形。窓の外を切るには同じノードに <a href="#cmp-canvasclip">CanvasClip</a> を付けます（付けると、窓の外の子を描画アイテムと当たり判定から外します＝1,000 行でも見えている行の分しか描かない）。指のドラッグは <a href="#cmp-canvasgesture">CanvasGesture</a> を付けなくても受けます（向きに合わせた軸のドラッグとフリック。中の行のボタンは W2-2 のアリーナで 100ms 待ってから押下になる）。</p>
@@ -2613,7 +2613,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 </section>
 
 <!-- ════════════════ 7.15 UI 部品 ════════════════ -->
-<section id="sec-ui" data-keywords="UI部品 SEED.UI ListView SwipeActions 一覧 リスト 行 仮想化 使い回し リサイクル recycle Recycled bind SetCount SetExtentOf Refresh ScrollToIndex RowOf IndexOf VisibleRange CreatedRowCount CacheExtent スワイプ swipe 削除 編集 ボタン SwipeGroup Open Close Reset IsOpen Offset IsDragging IsAnimating CloseAll ItemTouchHelper actionsExtent CanvasScroll CanvasGesture CancelGestures 一覧の行 行のプレハブ W2-3">
+<section id="sec-ui" data-keywords="UI部品 SEED.UI ListView SwipeActions 一覧 リスト 行 仮想化 使い回し リサイクル recycle Recycled bind SetCount SetExtentOf Refresh ScrollToIndex RowOf IndexOf VisibleRange CreatedRowCount CacheExtent スワイプ swipe 削除 編集 ボタン SwipeGroup Open Close Reset IsOpen Offset IsDragging IsAnimating CloseAll ItemTouchHelper actionsExtent CanvasScroll CanvasGesture CancelGestures 一覧の行 行のプレハブ W2-3 フルスワイプ FullSwipe 大きく払う そのまま削除 構える 解く Armed Disarmed Commit CommitStarted FullSwiped IsArmed IsCommitted LabelWeight ArmCount RowExtent ResolvedRowExtent FullSwipeLabel SwipeHaptic ArmHaptic DisarmHaptic VibrateMilliseconds 触感 振動 バイブ Haptics SwipeModel SwipeMath CollapsedExtent 畳む ratio.swipe_full motion.swipe_full motion.swipe_dismiss motion.swipe_collapse color.on_error GestureRelay Translate">
   <h2>7.15 UI 部品（SEED.UI：ListView・SwipeActions。W2-3）</h2>
   <p class="section-note">部品の振る舞いは C# の <code>SEED.UI</code> 名前空間（SEEDScripting に同梱。エンジンを更新すれば全プロジェクトに届く）、見た目はプレハブ（行の形）とテーマです。スクロール自体（位置・慣性・窓の外を飛ばす）はエンジン（<a href="#cmp-canvasscroll">CanvasScroll</a>）が動かします。規則の正典は <code>docs/ui_scroll_list.md</code>。</p>
 
@@ -2640,7 +2640,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx) =&gt; list.Update();   <span class="c">// 毎フレーム呼ぶ（変化が無ければ何もしない）</span>
 }</pre>
   <div class="api"><code class="sig">list.SetCount(int n)</code><span class="desc">行の数を変える（次の Update で入れ直す）</span></div>
-  <div class="api"><code class="sig">list.SetExtentOf(Func&lt;int, float&gt; extent)</code><span class="desc">行ごとの長さ（null で固定へ戻す）</span></div>
+  <div class="api"><code class="sig">list.SetExtentOf(Func&lt;int, float&gt; extent)</code><span class="desc">行ごとの長さ（null で固定へ戻す。付いたままの行も次の Update で置き直す＝毎フレーム渡し直すと畳む動きになる）</span></div>
   <div class="api"><code class="sig">list.Refresh()</code><span class="desc">データが変わった: 付いている行の中身を入れ直す</span></div>
   <div class="api"><code class="sig">list.ScrollToIndex(int i, float seconds, float align)</code><span class="desc">行 i を窓の先頭へ（揃え 0 = 先頭・0.5 = 中央・1 = 終わり。時間 0 はすぐ移す）</span></div>
   <div class="api"><code class="sig">list.RowOf(int i) / list.IndexOf(GameObject row)</code><span class="desc">GameObject?（行 i に付いている行。見えていなければ null） ／ int（行が付いている番号。−1 = 付いていない）</span></div>
@@ -2681,7 +2681,54 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <tr><td>動き</td><td>250ms・Material の fastOutSlowIn。動いている間は <a href="#sec-redraw"><code>Redraw.Request()</code></a>（on_demand でも止まらない）</td></tr>
     <tr><td>組</td><td>ある行のドラッグが始まると、同じ組の他の開いている行が閉じる</td></tr>
     <tr><td>軸</td><td>縦の一覧の中では、最初の指の動きが横ならスワイプ、縦なら一覧のスクロール（W2-2 のアリーナの軸の競い）</td></tr>
+    <tr><td>ずらし方</td><td>Front に <code>CanvasLayoutItem</code> があれば <code>CanvasLayoutItem.Translate</code>（実行中だけ・保存しない。fill_width の行も動く）、無ければ <code>CanvasTransform.Position</code></td></tr>
+    <tr><td>レイヤー</td><td>Front の部分木の表示のレイヤーを Actions の部分木より上にする（同じレイヤーでは文字がスプライトより手前に描かれ、Actions の文字が閉じた行の上に出る）</td></tr>
   </table>
+
+  <h3 id="ui-swipe-full">SwipeActions のフルスワイプ（大きく払うとそのまま削除。W2 の手直し P2-3）</h3>
+<pre><span class="c">// 行のプレハブ（templates/ui/prefabs/list_row.actor）: Row（CanvasComponent・CanvasLayoutItem fill_width・CanvasGesture 横のドラッグ）</span>
+<span class="c">//   ├─ Actions（CanvasComponent・fill_width/fill_height・削除の面〈color.error〉・CanvasGesture タップ・SEED.UI.GestureRelay）</span>
+<span class="c">//   │   └─ Label（「削除」。右の端のボタンの枠の真ん中）</span>
+<span class="c">//   └─ Front（fill_width・行の見た目・遮る板。レイヤーは Actions より上。CanvasComponent と縦の CanvasStack〈左右の余白 16〉＝W2 の手直し P2-5）</span>
+<span class="c">//       └─ Title・Sub・Divider（行の幅 − 余白に伸びる。文字の枠〈BoxWidth〉はレイアウトが伸ばさないので行のスクリプトが LayoutSize.x に合わせる）</span>
+swipe = <span class="k">new</span> <span class="t">SwipeActions</span>(gameObject.FindChild(<span class="s">"Front"</span>), actionsExtent: 96f)
+{
+    FullSwipe = <span class="k">true</span>,                                            <span class="c">// 既定 false（W2-3 のまま）</span>
+    FullSwipeLabel = gameObject.FindChild(<span class="s">"Actions/Label"</span>),      <span class="c">// 構えたら Front の後ろの端に付いて動く文字（任意）</span>
+    ArmHaptic = <span class="t">SwipeHaptic</span>.Vibrate,                             <span class="c">// 構えたときの触感（None / Tap〈既定〉/ Vibrate）</span>
+    Group = <span class="t">SwipeGroup</span>.For(gameObject.Parent),
+    Armed = s =&gt; { }, Disarmed = s =&gt; { },                       <span class="c">// 閾値を越えた・戻した</span>
+    FullSwiped = s =&gt; <span class="t">SEED.Events</span>.Raise(<span class="s">"RowDeleted"</span>, gameObject), <span class="c">// 流し切った → 持ち主が行を畳んでデータから消し、書き直しで Reset</span>
+};
+<span class="c">// 開いた行の削除の面のタップ（GestureRelay.Tapped）から: 同じ確定の流れ（流し切り → FullSwiped）</span>
+<span class="k">if</span> (swipe.IsOpen) swipe.Commit();</pre>
+  <div class="api"><code class="sig">swipe.FullSwipe</code><span class="desc">bool（get/set）。フルスワイプを有効にする（既定 false = W2-3 のまま）</span></div>
+  <div class="api"><code class="sig">swipe.RowExtent / swipe.ResolvedRowExtent</code><span class="desc">float。行の幅（0 以下 = 自動: Front の LayoutSize.x → Sprite の幅） ／ 今使っている行の幅（get のみ）</span></div>
+  <div class="api"><code class="sig">swipe.FullSwipeLabel</code><span class="desc">GameObject?（get/set）。構えたときに Front の後ろの端 ＋ space.l へ付いて動く文字のノード（元の位置は渡した時に控える。親は行いっぱい）</span></div>
+  <div class="api"><code class="sig">swipe.ArmHaptic / swipe.DisarmHaptic / swipe.VibrateMilliseconds</code><span class="desc">SwipeHaptic（None・Tap・Vibrate）: 構えたとき（既定 Tap）・解いたとき（既定 None）の触感 ／ int: Vibrate の長さ（既定 20 ms）</span></div>
+  <div class="api"><code class="sig">swipe.Commit()</code><span class="desc">確定の流れを始める（Front を行の幅の外まで流し切り → FullSwiped）。開いた行の操作のボタンのタップから呼ぶ。確定の後は何もしない</span></div>
+  <div class="api"><code class="sig">swipe.Armed / Disarmed / CommitStarted / FullSwiped</code><span class="desc">Action&lt;SwipeActions&gt;: 構えた（触感の後）・解いた・確定して流し始めた・流し切った（確定のコールバック）</span></div>
+  <div class="api"><code class="sig">swipe.IsArmed / swipe.IsCommitted / swipe.LabelWeight / swipe.ArmCount</code><span class="desc">構えているか ／ 確定したか（Reset まで操作を受けない） ／ 文字の置き場の重み（0 = 元・1 = Front の端） ／ 構えた回数（触感の回数）</span></div>
+  <table>
+    <tr><th>規則</th><th>内容（値は docs/backlog.md の案。iOS の値は公開されていないので決めた値。テーマのトークンで変えられる）</th></tr>
+    <tr><td>ドラッグの範囲</td><td>閉じた 0 〜 操作の側へ行の幅いっぱい</td></tr>
+    <tr><td>構える・解く</td><td>行の幅 × <code>ratio.swipe_full</code>（0.6）以上で構え、構えた後 × <code>ratio.swipe_full_cancel</code>（0.55）を下回ったら解く（ヒステリシス）。ボタンの幅より手前では構えない。行の幅が分からない間は構えない</td></tr>
+    <tr><td>触感</td><td>構えた瞬間に 1 回（<code>ArmHaptic</code>。既定 <code>Tap</code>）。解いたときは出さない（<code>DisarmHaptic</code> で変えられる）</td></tr>
+    <tr><td>文字</td><td>構えていない間は元の位置、構えている間は Front の後ろの端 ＋ <code>space.l</code>。切り替わりを <code>motion.swipe_full</code>（0.15 秒）で補間。文字の親は行いっぱいに置く</td></tr>
+    <tr><td>離したとき</td><td>取り消し → 構えを解いて元へ／構えている → 確定（閉じる向きへ速く払ったときは除く）／構えていない → 開く・閉じるの規則</td></tr>
+    <tr><td>確定</td><td>Front を行の幅の外まで <code>motion.swipe_dismiss</code>（0.2 秒）で流し切り → <code>FullSwiped</code>。<code>Reset</code> まで指も <code>Open</code>・<code>Close</code>・<code>Commit</code> も受けない（二重に確定しない）</td></tr>
+    <tr><td>畳む</td><td>部品は畳まない。持ち主が <code>ListView.SetExtentOf</code> に <code>SwipeMath.CollapsedExtent(56f, 経過, motion.swipe_collapse)</code> を毎フレーム渡して行の高さを 0 へ畳み、畳み終わったらデータから消して <code>SetCount</code>・<code>Refresh</code>（見本 <code>templates/ui/scripts/UiGallerySections.cs</code>）</td></tr>
+  </table>
+  <table>
+    <tr><th>トークン</th><th>既定</th><th>意味</th></tr>
+    <tr><td><code>ratio.swipe_full</code></td><td>0.6</td><td>構えるずらし量（行の幅に対する割合）</td></tr>
+    <tr><td><code>ratio.swipe_full_cancel</code></td><td>0.55</td><td>構えを解くずらし量（同上）</td></tr>
+    <tr><td><code>motion.swipe_full</code></td><td>0.15</td><td>「削除」の文字の置き場の補間（秒）</td></tr>
+    <tr><td><code>motion.swipe_dismiss</code></td><td>0.2</td><td>確定で行を外へ流し切る（秒）</td></tr>
+    <tr><td><code>motion.swipe_collapse</code></td><td>0.2</td><td>消した行を畳む（秒。一覧の持ち主が読む）</td></tr>
+    <tr><td><code>color.on_error</code></td><td>#FFFFFF</td><td>削除の面（<code>color.error</code>）の上の文字</td></tr>
+  </table>
+  <p class="section-note">状態の移り変わりは純粋な <code>SEED.UI.SwipeModel</code>、規則の計算は <code>SEED.UI.SwipeMath</code>（<code>UpdateArmed</code>・<code>DecideRelease</code>・<code>LabelShift</code>・<code>CollapsedExtent</code> など）。正典は <code>docs/ui_scroll_list.md</code> §7.1。</p>
 </section>
 
 <section id="sec-ui-widgets" data-keywords="UI部品 SEED.UI Button ボタン Toggle トグル スイッチ Checkbox チェックボックス Slider スライダ NumberField 数値欄 ステッパー SegmentedControl セグメント ChipGroup チップ RadioGroup ラジオ SelectItem ProgressBar 進捗 プログレス ProgressRing 輪 UiWidget Of Interactable SetInteractable Busy 二重押し Clicked LongPressed Released ValueChanged SelectionChanged Changed UiTheme UiTokens テーマ トークン color.primary radius.button 押下 無効 長押し 連続 KeepAlive W2-4 テーマの切り替え 継承 extends 明暗 ライト ダーク ダークモード brightness UiBrightnessMode SetBrightnessMode Apply Load FromJson Changed ThemeStyle UiTextStyle UiTokenCatalog seed_color 種の色 書体 font.family font.weight UiMode ui_mode W2-9 画面の組み立て ナビゲーション ScreenStack 画面のスタック Push Pop Replace PopToRoot SetRoot NavTransition 押し込み 覆う フェード ScreenOptions ScreenHandle UiScreen OnBackPressed TabHost TabBar TabItem タブ Dialog ダイアログ DialogOptions DialogResult BottomSheet シート TopSheet 覆い ModalHost Toast トースト ToastHost BackDispatcher 戻る 戻るの段 MoveTaskToBack UiFocus FocusScope フォーカス IFocusable LayerBias TranslateFraction DpScale W2-7 WouldHandle WouldConsumeBack 受ける層 予測型の戻る プレビュー IBackPreviewTarget BackPreviewPose VisualScale back_preview_scale 縮める">
@@ -2711,11 +2758,12 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 <span class="t">UiTheme</span>.SetBrightnessMode(<span class="t">UiBrightnessMode</span>.System);           <span class="c">// 端末の明暗に従う</span></pre>
 </section>
 
-<section id="sec-ui-wheel" data-keywords="UI部品 SEED.UI ホイール 時刻ホイール ピッカー ドラム WheelPicker TimeWheel TimeOnly 時刻 時間 分 午前 午後 12時間 24時間 AM PM 分の刻み MinuteStep Use24Hour SetUse24Hour SetMinuteStep SelectIndex SetValue StepBy Focus SelectionChanged Settled ValueChanged ValueSettled Configure SetLabels SetItemEnabled 選べない 循環 ループ 端をつなげる 触感 Haptics キーボード 矢印 曲面 円柱 CupertinoDatePicker WheelLook WheelLoop TimeWheelMath size.wheel_item text.wheel radius.wheel_band opacity.wheel_dim motion.wheel W2-5">
+<section id="sec-ui-wheel" data-keywords="UI部品 SEED.UI ホイール 時刻ホイール ピッカー ドラム WheelPicker TimeWheel TimeOnly 時刻 時間 分 午前 午後 12時間 24時間 AM PM 分の刻み MinuteStep Use24Hour SetUse24Hour SetMinuteStep Loop SetLoop SelectIndex SetValue StepBy Focus SelectionChanged Settled ValueChanged ValueSettled Configure SetLabels SetItemEnabled 選べない 循環 循環なし ループ 端をつなげる 触感 Haptics キーボード 矢印 曲面 円柱 CupertinoDatePicker WheelLook WheelLoop TimeWheelMath size.wheel_item text.wheel radius.wheel_band opacity.wheel_dim motion.wheel W2-5">
   <h2>7.17 UI 部品（SEED.UI：ホイール・時刻ホイール。W2-5）</h2>
   <p>上下に流れて窓の中央の行が選ばれる<strong>ホイールの列</strong>（<code>WheelPicker</code>）と、それを並べた<strong>時刻ホイール</strong>（<code>TimeWheel</code>。値は <code>System.TimeOnly</code>）。見本は <code>templates/ui/prefabs/wheel_picker.actor</code>・<code>time_wheel.actor</code>（行は <code>wheel_row.actor</code>）とギャラリー。スクロール（ドラッグ・慣性・行ごとのスナップ）はエンジンの CanvasScroll、行の曲面の見た目・端をつなげる循環・イベント・触感は部品が受け持ちます。正典は docs/ui_components.md §11。</p>
   <div class="api"><code class="sig">timeWheel.Value / SetValue(t, animate) / ValueChanged / ValueSettled</code><span class="desc">TimeOnly。SetValue は分の刻みへ丸めて各列を近い向きへ動かす（ValueChanged は 1 回）。ValueChanged は回している途中も届き、ValueSettled は全列が止まったとき</span></div>
   <div class="api"><code class="sig">timeWheel.Use24Hour / SetUse24Hour(bool) / MinuteStep / SetMinuteStep(int)</code><span class="desc">24 時間表記（false = 12 時間表記＋午前/午後の列）・分の刻み（1 時間を割り切る数。値は最も近い刻みへ。23:58 → 0:00）</span></div>
+  <div class="api"><code class="sig">timeWheel.Loop / SetLoop(bool)</code><span class="desc">端をつなげる（既定 true）。false なら時・分の列は 0 や 23・59 の端で止まる（値は変えず列だけ作り直す。W2 の手直し P2-2）。午前/午後の列は元々つながらないので影響しない</span></div>
   <div class="api"><code class="sig">timeWheel.HourFormat / MinuteFormat / AmLabel / PmLabel / MeridiemOnLeft / HourColumn / MinuteColumn / MeridiemColumn / IsMoving</code><span class="desc">書式（既定 "0" / "00"）・午前/午後の文字と位置（既定は左）・列（WheelPicker）・動いているか</span></div>
   <div class="api"><code class="sig">wheel.SelectIndex(i, animate) / SetValue(v, animate) / StepBy(n) / Focus()</code><span class="desc">中央へ動かす（つなげる列は近い向きへ回る。最初の描画の前は置けるようになったとき黙って置く）・選べる項目を進める・キーボード（↑↓）の相手にする</span></div>
   <div class="api"><code class="sig">wheel.SelectionChanged / Settled</code><span class="desc">event Action&lt;WheelPicker, int&gt;: 中央の項目が変わるたび（動きの途中も）／止まった（選べない行からは戻り終えてから）</span></div>
@@ -2736,7 +2784,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     wheel.SetValue(<span class="t">TimeOnly</span>.FromDateTime(<span class="t">DateTime</span>.Now), animate: <span class="k">false</span>);  <span class="c">// 新規の初期値は現在時刻</span>
     wheel.ValueSettled += (_, t) =&gt; SEED.<span class="t">Debug</span>.Log(<span class="s">$"alarm {t:HH:mm}"</span>);  <span class="c">// 全列が止まった</span>
 }</pre>
-  <p>12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えると午前/午後の列が動き、午前/午後の列を指で変えると時が 12 ずれます（Flutter の CupertinoDatePicker と同じ）。分の 59 → 00・時の 23 → 0 はそれぞれの列の中でつながります。値の変化で他の部品は作り直されず、列が動いている間はエンジンが「動いている」を申告するので <code>render_policy: on_demand</code> でも止まりません。</p>
+  <p>12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えると午前/午後の列が動き、午前/午後の列を指で変えると時が 12 ずれます（Flutter の CupertinoDatePicker と同じ）。<code>Loop</code>（既定 true）が true なら分の 59 → 00・時の 23 → 0 はそれぞれの列の中でつながります。<code>Loop = false</code> にすると時 0〜23・分 0〜（60 − 刻み）の両端で止まり（CanvasScroll の端の跳ね返り）、23 と 0 は隣り合いません（12 時間表記の時の列は 24 行のまま。11 ↔ 12 の連動は変わりません）。値の変化で他の部品は作り直されず、列が動いている間はエンジンが「動いている」を申告するので <code>render_policy: on_demand</code> でも止まりません。</p>
 
   <h2>7.18 画面の組み立て（SEED.UI：画面のスタック・タブ・ダイアログ・シート・覆い・トースト・戻るの段・フォーカス。W2-7）</h2>
   <p>1 つのシーンに画面をプレハブとして出し入れする部品。見本は <code>templates/ui/scenes/ui_navigation.scene</code>、部品のプレハブは <code>screen_stack.actor</code>・<code>screen_frame.actor</code>・<code>tab_host.actor</code>・<code>modal_host.actor</code>・<code>dialog.actor</code>・<code>bottom_sheet.actor</code>・<code>top_sheet.actor</code>・<code>toast_host.actor</code>・<code>toast.actor</code>。正典は docs/ui_navigation.md。</p>
@@ -2745,7 +2793,9 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
   <div class="api"><code class="sig">class X : UiScreen — OnScreenEnter(args) / OnScreenShown / OnScreenHidden / OnScreenExit / OnBackPressed() / Close(result)</code><span class="desc">画面のスクリプトの土台（任意）。OnBackPressed が true なら戻るを受けてスタックは下ろさない（未保存の確認・鳴動の画面）</span></div>
   <div class="api"><code class="sig">protected override bool WouldConsumeBack()</code><span class="desc">今戻るが来たら OnBackPressed が true を返すか（副作用なしの問い）。OnBackPressed を上書きしたら同じ条件でこれも上書きする。上書きしないと「受ける」とみなされ、根でも Android の予測型の戻る（ホームへ戻る見た目）が出ない</span></div>
   <div class="api"><code class="sig">tabs.Select(i) / SelectedIndex / CurrentStack / StackAt(i) / TabChanged / TabReselected</code><span class="desc">TabHost（タブごとの ScreenStack を隠して保つ）。選んでいるタブを押すと根へ戻る。BackToFirstTab（既定 true）・ResetOnLeave</span></div>
-  <div class="api"><code class="sig">Dialog.Show(DialogOptions) → DialogHandle</code><span class="desc">題・本文・ボタン 1〜3（中立・いいえ・はいの順）・DismissOnScrimTap・CancelableByBack。ResultAsync / Completed で DialogResult（Positive / Negative / Neutral / Dismissed）</span></div>
+  <div class="api"><code class="sig">Dialog.Show(DialogOptions) → DialogHandle</code><span class="desc">題・本文・ボタン 1〜3（中立・いいえ・はいの順）・DismissOnScrimTap・CancelableByBack。ResultAsync / Completed で DialogResult（Positive / Negative / Neutral / Dismissed）。札の幅は size.dialog_width、高さは中身から（余白 ＋ 題 ＋ size.dialog_title_gap ＋ 本文 ＋ size.dialog_actions_gap ＋ ボタンの行 ＋ 余白。空の題・本文とその間隔は数えない。既定のテーマで 題 ＋ 本文 1 行 ＋ ボタン = 178.4 dp。W2 の手直し P2-1）。出入りの大きさ（ratio.dialog_scale_from 0.9 ↔ 1）は CanvasLayoutItem.VisualScale に「開き具合 × 予測型の戻るのプレビューの倍率」を書く（札の中心の周りに背景・文字・ボタンが一体で縮む。戻るを確定した後は縮めた姿勢のまま閉じる）</span></div>
+  <div class="api"><code class="sig">DialogLayout.EstimateLines(text, size, boxWidth) / EstimateHeight / EstimateWidth(text, size) / LineHeightEm / NoWrapWidth</code><span class="desc">W2 の手直し P2-1。文字の行の数・高さ・幅の見積もり（Text.Measure は W2-6c）。エンジンの折り返しの規則（語・空白のぶら下げ・日本語は 1 文字ずつ・禁則・強制分割）と組み込みの書体の送り幅（全角 0.7168 em ＝ 書体の 1000 / 1395）で求める。高さ = 行の数 × 大きさ × LineHeightEm（1.4。Dialog は題と本文の Text.LineSpacing をこの値にして描く行送りと一致させる）。枠 NoWrapWidth（0）は折り返さない。EstimateWidth は改行を含むなら最も広い行。テーマの font.family でほかの書体を当てると合わない</span></div>
+  <div class="api"><code class="sig">DialogMetrics.Sections(title, message, buttons, titleGap, actionsGap) / Arrange(padding, sections) / CardScale(open, preview)</code><span class="desc">W2 の手直し P2-1。ダイアログの札の縦の割り付け（区画の枠 = 中身 ＋ 下の間隔。札の CanvasStack の間隔は 0）と札の高さ、出入りの倍率の合成（純粋な計算）</span></div>
   <div class="api"><code class="sig">BottomSheet.Show(SheetOptions) / TopSheet.Show(OverlayOptions) → ModalHandle</code><span class="desc">下からのシート（半分・全体の段。つまみ・板のドラッグとフリック・中身の一覧から渡った残りで閉じる）・上からの覆い（幕のタップ・つまみを上へ）。Close(result)・WhenClosed</span></div>
   <div class="api"><code class="sig">Toast.Show(message, ToastLength) / ToastHost.Current.Show(message, seconds)</code><span class="desc">下に一時的に出る知らせ（同時に count.toast_visible 個まで・待ち・横へ払って消す・実時間で消える）。ToastHost.BottomOffset でタブのバーの上に出す</span></div>
   <div class="api"><code class="sig">BackDispatcher.Dispatch() / AddLayer(order, name, handler) / Dispatched / MoveTaskToBackWhenUnhandled</code><span class="desc">戻るの段: Focus 100 → Dialog 200 → Sheet 300 → Overlay 400 → Navigation 500（スタック・タブを内側から）→ どれも受けなければ Platform.App.MoveTaskToBack()</span></div>
@@ -2756,6 +2806,8 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <tr><th>トークン</th><th>既定</th><th>使う所</th></tr>
     <tr><td><code>motion.push</code>・<code>cover</code>・<code>fade</code>（と <code>*_curve</code>）</td><td>0.3 秒</td><td>画面の出入り（曲線は x1・y1・x2・y2）</td></tr>
     <tr><td><code>motion.overlay</code>・<code>dialog</code>・<code>sheet</code>・<code>toast</code></td><td>0.22・0.2・0.25・0.2</td><td>覆い・ダイアログ・シート・トーストの出入り</td></tr>
+    <tr><td><code>size.dialog_width</code>・<code>dialog_padding</code>・<code>dialog_button_height</code></td><td>312・24・40 dp</td><td>ダイアログの札の幅・内側の余白（上下左右）・ボタンの高さ</td></tr>
+    <tr><td><code>size.dialog_title_gap</code>・<code>dialog_actions_gap</code></td><td>16・24 dp</td><td>ダイアログの題 → 本文・本文（無ければ題）→ ボタンの行の間隔（W2 の手直し P2-1。Flutter の AlertDialog〈Material 3〉の contentPadding の上 16・下 24）</td></tr>
     <tr><td><code>opacity.scrim</code>・<code>opacity.dialog_scrim</code></td><td>0.54・0.32</td><td>幕の濃さ</td></tr>
     <tr><td><code>layer.stack_step</code>・<code>overlay</code>・<code>sheet</code>・<code>dialog</code>・<code>toast</code></td><td>1 万・100〜400 万</td><td>重なりのレイヤーの底上げ（画面の中の表示のレイヤーは段の値より小さく）</td></tr>
     <tr><td><code>ratio.back_preview_scale</code>・<code>size.back_preview_shift</code>・<code>motion.back_preview_curve</code></td><td>0.9・8 dp・(0, 0, 0, 1)</td><td>予測型の戻るのプレビュー（いちばん小さい倍率・画面のずらし・進み具合の曲線。3b）</td></tr>
@@ -2769,26 +2821,30 @@ h.Closed += x =&gt; SEED.<span class="t">Debug</span>.Log(x.Result);
 </section>
 
 <!-- ════════════════ 7.19 グラフ（W2-8） ════════════════ -->
-<section id="sec-ui-charts" data-keywords="UI部品 SEED.UI グラフ チャート chart 折れ線 LineChart 棒 BarChart 積み上げ 横の棒 軸 目盛り 格子線 吹き出し ツールチップ tooltip パン ズーム ピンチ pinch 拡大 縮小 慣性 ChartPoint BarDatum ChartRange ChartValueFormat TimeOfDay Date 起床時間 ペナルティ 平均 基準線 SetSeries SetData SetReferenceLine Select PointSelected BarSelected ZoomIn ZoomOut ShowRange ScrollToEnd ChartTicks NiceStep ChartFormat MonotoneCubic 滑らか 線の下の塗り FillArea Smooth">
+<section id="sec-ui-charts" data-keywords="UI部品 SEED.UI グラフ チャート chart 折れ線 LineChart 棒 BarChart 積み上げ 横の棒 軸 目盛り 格子線 吹き出し ツールチップ tooltip パン ズーム ピンチ pinch 拡大 縮小 慣性 ChartPoint BarDatum ChartRange ChartValueFormat TimeOfDay Date 起床時間 ペナルティ 平均 基準線 SetSeries SetData SetReferenceLine Select PointSelected BarSelected ZoomIn ZoomOut ShowRange ScrollToEnd ChartTicks NiceStep ChartFormat MonotoneCubic 滑らか 線の下の塗り FillArea Smooth 日付線 ハンドル つまみ スクラブ scrub Handle HandleHaptic 触感 吸い付き NearestValuedX HandlePosition HandleFingerPlotX InsidePlot GestureRelay 親の幅 幅に合わせる 見切れ LayoutSize HasLayout ChartSizing ChartLayoutWait size.chart_handle size.chart_handle_border">
   <h2>7.19 グラフ（SEED.UI：LineChart・BarChart。W2-8）</h2>
-  <p>折れ線・棒（縦・横・積み上げ）・軸・吹き出し・パンとズーム。プレハブ <code>templates/ui/prefabs/line_chart.actor</code>・<code>bar_chart.actor</code>（目盛りの文字は <code>chart_label.actor</code>）を置き、画面のスクリプトからデータを渡す。大きさはグラフのノードの Sprite の幅・高さ（dp）。正典は docs/ui_charts.md、見本は <code>templates/ui/scenes/ui_charts.scene</code>。</p>
+  <p>折れ線・棒（縦・横・積み上げ）・軸・吹き出し・パンとズーム・日付線のハンドル。プレハブ <code>templates/ui/prefabs/line_chart.actor</code>・<code>bar_chart.actor</code>（目盛りの文字は <code>chart_label.actor</code>）を置き、画面のスクリプトからデータを渡す。大きさは<b>レイアウトが決めた大きさ</b>（<a href="#cmp-canvastransform">CanvasTransform</a>.LayoutSize。縦の CanvasStack の cross_align stretch・CanvasLayoutItem の fill_width で伸ばせば画面の幅に合う。前のフレームの描画の値。W2 の手直し P2-4）。レイアウトの表に無い所（3D ワールドキャンバスの下など）ではグラフのノードの Sprite の幅・高さ（dp）。最初のレイアウトを読めるまで（最大 3 フレーム）は描かない。正典は docs/ui_charts.md、見本は <code>templates/ui/scenes/ui_charts.scene</code>。</p>
   <div class="api"><code class="sig">ChartPoint.Minutes(day, timeOfDay) / ChartPoint.Day(day, y) / new ChartPoint(x, y?)</code><span class="desc">折れ線の点。X・値は軸の書式に合わせた数（日付 = DayNumber・時刻 = 0 時からの分・数）。値 null は記録なし（点を打たずに前後をつなぐ。Gaps = Break で切る）</span></div>
   <div class="api"><code class="sig">new BarDatum(x, params double[] values)</code><span class="desc">棒の 1 本（値を下から積む。負・NaN は 0。合計 0 の列も最低の高さで出す）</span></div>
-  <div class="api"><code class="sig">line.SetSeries(points) / SetSeries(index, points) / ClearSeries / SetReferenceLine(value, label)</code><span class="desc">LineChart。欄 Smooth（単調な 3 次補間）・FillArea（線の下の塗り）・ShowDots・Gaps。PointSelected(chart, series, index)・Select・TooltipFormatter</span></div>
+  <div class="api"><code class="sig">line.SetSeries(points) / SetSeries(index, points) / ClearSeries / SetReferenceLine(value, label)</code><span class="desc">LineChart。欄 Smooth（単調な 3 次補間）・FillArea（線の下の塗り）・ShowDots・Gaps。PointSelected(chart, series, index)（タップ・長押し・日付線のハンドルで選んだ点）・Select・TooltipFormatter</span></div>
   <div class="api"><code class="sig">bars.SetData(bars) / Select(index, notify) / SelectX / SelectedIndex / BarSelected</code><span class="desc">BarChart。欄 Orientation（Vertical / Horizontal）・SlotWidth・ShowEmptyBars・HighlightSelection。StackColors・TooltipFormatter</span></div>
   <div class="api"><code class="sig">XFormat / YFormat / XSteps / YSteps / XLabelFormatter / YLabelFormatter</code><span class="desc">軸の書式（Number / TimeOfDay〈H:mm。15〜720 分の刻み〉/ Date〈M/d。1〜365 日の刻み〉）・刻みの候補（"15,30,60"）・文字を独自に（値, 刻み）</span></div>
   <div class="api"><code class="sig">ValueRangeOptions / FixedValueRange / FixedXRange</code><span class="desc">値の範囲の決め方（AutoRangeOptions。時刻の既定は上下 30 分・最小 2 時間・0〜24 時）・値と X の範囲の固定</span></div>
-  <div class="api"><code class="sig">Interactive / MaxZoom / ZoomIn() / ZoomOut() / ZoomBy(f) / ShowRange(range) / ScrollToEnd() / Viewport</code><span class="desc">パンとズーム（横のドラッグ・払う〈慣性〉・2 本指のピンチ・子の ZoomIn / ZoomOut ボタン。1〜MaxZoom 倍〈既定 6〉・端で止まる）。倍率 1・Interactive=false ではドラッグを受けない</span></div>
+  <div class="api"><code class="sig">Interactive / MaxZoom / ZoomIn() / ZoomOut() / ZoomBy(f) / ShowRange(range) / ScrollToEnd() / Viewport</code><span class="desc">パンとズーム（横のドラッグ・払う〈慣性〉・2 本指のピンチ・子の ZoomIn / ZoomOut ボタン。1〜MaxZoom 倍〈既定 6〉・端で止まる）。倍率 1・Interactive=false ではドラッグを受けない。± のボタンの置き場は部品が決めない（見本は anchor x 1 でグラフの右の端に付け、グラフが親の幅に伸び縮みしても付いてくる。W2 の手直し P2-5）</span></div>
   <div class="api"><code class="sig">ShowTooltip / ClearSelection() / ShowYAxis / ShowXAxis / ShowGrid / EmptyText</code><span class="desc">タップ・長押しで最寄りの点（横 24 dp 以内）・列（空の高さまで）を選んで吹き出し。データが無いと「まだ記録はありません」</span></div>
+  <div class="api"><code class="sig">子 Handle（line_chart.actor） / HandleHaptic</code><span class="desc">日付線のハンドル（折れ線。W2 の手直し P2-4）。選んだ点の縦の線の下の丸（直径 size.chart_handle 18・縁 size.chart_handle_border 2・当たり 48 dp・面の下の縁に乗る）を押して横へ引くと、パン・ピンチより先に指を取り、選んでいる系列の値のある点のうち見えている範囲で指の X に最も近い点へ吸い付く（日付線・点・吹き出しが付いてくる。面の外の指は端の点で止まる・自動のパンは無い）。点が変わるたびに PointSelected と触感（HandleHaptic。既定 true・1 フレームに 1 回まで）。縦の移動は取らない（縦のスクロールへ渡る）・倍率 1 でも効く・離しても取り消されても選びは残す。子 Handle の無いプレハブ・棒グラフには出ない</span></div>
+  <div class="api"><code class="sig">ChartSizing.Choose / ChartLayoutWait / ChartHit.NearestValuedX / ChartLayout.HandlePosition / HandleFingerPlotX / InsidePlot</code><span class="desc">純粋な計算（P2-4）: 使う大きさ（LayoutSize か Sprite）・最初のレイアウトの待ち（上限 DefaultMaxLayoutWaitFrames = 3）・ハンドルの吸い付き先・置き場・指の X（ハンドルの左上 ＋ イベントの LocalPosition − 面の左）・面の中の判定</span></div>
 <pre><span class="k">var</span> line = <span class="t">UiWidget</span>.Of&lt;<span class="t">LineChart</span>&gt;(<span class="t">GameObject</span>.Find(<span class="s">"WakeWeek"</span>))!;
 line.XFormat = <span class="t">ChartValueFormat</span>.Date;  line.YFormat = <span class="t">ChartValueFormat</span>.TimeOfDay;
 line.TooltipFormatter = p =&gt; <span class="s">$"{</span><span class="t">ChartFormat</span>.Date(p.X)<span class="s">} {</span><span class="t">ChartFormat</span>.TimeOfDay(p.Y ?? 0, padHour: <span class="k">true</span>)<span class="s">}"</span>;
 line.SetSeries(points);
 line.SetReferenceLine(average, <span class="s">"平均 7:12"</span>);
+line.PointSelected += (chart, series, index) =&gt; { <span class="c">/* タップ・長押し・日付線のハンドルで選んだ点 */</span> };
+line.HandleHaptic = <span class="k">true</span>;   <span class="c">// 日付線のハンドル（子 Handle）で点が変わるたびの触感（既定 true）</span>
 <span class="k">var</span> bars = <span class="t">UiWidget</span>.Of&lt;<span class="t">BarChart</span>&gt;(<span class="t">GameObject</span>.Find(<span class="s">"PenaltyHistory"</span>))!;
 bars.SetData(days.Select(d =&gt; <span class="k">new</span> <span class="t">BarDatum</span>(d.Day.DayNumber, d.Coins, d.Yen)).ToList());
 bars.BarSelected += (_, i) =&gt; ShowLogOf(i);</pre>
-  <div class="warn"><b>重要</b>: グラフは毎フレーム <code>SEED.Draw</code>（見た目の拡張）で描く。データ・見える範囲・大きさ・テーマが変わったフレームだけ位置を計算し直し、目盛りの文字のノードは変わった値だけ書き換える。性能の数値は docs/ui_charts.md §3.1。</div>
+  <div class="warn"><b>重要</b>: グラフは毎フレーム <code>SEED.Draw</code>（見た目の拡張）で描く。データ・見える範囲・大きさ・テーマが変わったフレームだけ位置を計算し直し、目盛りの文字のノードは変わった値だけ書き換える。性能の数値は docs/ui_charts.md §3.1。大きさ（LayoutSize）も毎フレーム読む（コンテナ・画面の回転で変わった次のフレームに追従する。フレームで最初の読み出しがレイアウトの表の索引を作る費用は同じ §3.1 の末尾）。</div>
 </section>
 
 

@@ -202,7 +202,7 @@
       "type": "CanvasComponent",
       "data": {
        "width": 312.0,
-       "height": 160.0,
+       "height": 178.4,
        "auto_scale": false,
        "viewport_ref": {
         "type": "window"
@@ -229,7 +229,7 @@
         1.0
        ],
        "width": 312.0,
-       "height": 160.0,
+       "height": 178.4,
        "layer": 0,
        "shape": {
         "kind": "rect",
@@ -261,7 +261,7 @@
       "data": {
        "enabled": true,
        "direction": "vertical",
-       "spacing": 16.0,
+       "spacing": 0.0,
        "padding": {
         "left": 24.0,
         "top": 24.0,
@@ -272,7 +272,7 @@
        "cross_align": "stretch",
        "reverse": false,
        "fit_width": false,
-       "fit_height": true,
+       "fit_height": false,
        "hidden_children": "collapse"
       }
      }
@@ -282,7 +282,8 @@
      "component": {
       "type": "CanvasLayoutItemComponent",
       "data": {
-       "preferred_width": 312.0
+       "preferred_width": 312.0,
+       "preferred_height": 178.4
       }
      }
     }
@@ -330,6 +331,7 @@
          ],
          "align": "left",
          "vertical_align": "top",
+         "line_spacing": 1.4,
          "layer": 0,
          "box_width": 264.0,
          "box_height": 28.0,
@@ -342,7 +344,7 @@
        "component": {
         "type": "CanvasLayoutItemComponent",
         "data": {
-         "preferred_height": 28.0
+         "preferred_height": 44.0
         }
        }
       }
@@ -391,6 +393,7 @@
          ],
          "align": "left",
          "vertical_align": "top",
+         "line_spacing": 1.4,
          "layer": 0,
          "box_width": 264.0,
          "box_height": 22.4,
@@ -403,7 +406,7 @@
        "component": {
         "type": "CanvasLayoutItemComponent",
         "data": {
-         "preferred_height": 22.4
+         "preferred_height": 46.4
         }
        }
       }

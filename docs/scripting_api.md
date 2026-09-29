@@ -2057,7 +2057,7 @@ if (gameObject.GetComponent<CanvasLayoutItem>() is { } item)
 }
 ```
 
-> **重要（W2 の手直し 3b）**: `VisualScale` は保存される `CanvasTransform.Scale`（pivot の周り。入れ子のキャンバスの子は左上へ寄る）と違い、**矩形の中心の周り**に部分木ごと縮みます（入れ子のキャンバスの子も中心へ寄る）。既定 (1, 1) のノードのレイアウトの計算は一切変わりません。SEED.UI の予測型の戻るのプレビュー（§7.18）が画面の枠・ダイアログの札・シートの板に使います。
+> **重要（W2 の手直し 3b）**: `VisualScale` は保存される `CanvasTransform.Scale`（pivot の周り。入れ子のキャンバスの子は左上へ寄る）と違い、**矩形の中心の周り**に部分木ごと縮みます（入れ子のキャンバスの子も中心へ寄る）。既定 (1, 1) のノードのレイアウトの計算は一切変わりません。SEED.UI の予測型の戻るのプレビュー（§7.18）が画面の枠・ダイアログの札・シートの板に使います。ダイアログの出入りの動き（札の大きさ 0.9 ↔ 1）もこの欄です（W2 の手直し P2-1。以前は `CanvasTransform.Scale` で、文字とボタンが札の左上へ寄って縮んだ）。
 
 > **重要（W2-7）**: `Translate`・`TranslateFraction` は親に合わせた（`FillWidth`/`FillHeight`）・コンテナが並べたノードも動かせます（`Position` は使われないため）。
 > 子孫も一緒に動き、当たり判定・切り抜き・`ScreenPosition` も動いた位置になります。祖先のずらしは子孫の `CanvasSafeArea` の計算に入れません（横から入ってくる画面の箱が縮み直さない）。
@@ -2114,6 +2114,8 @@ if (gameObject.GetComponent<CanvasGesture>() is { } g)
 // 左スワイプの行 … Tap=true, Drag=true, DragAxis=Horizontal（縦の一覧の中でも縦の動きは一覧へ譲る）
 // スライダ      … Tap=true, Drag=true, DragAxis=Horizontal（e.LocalPosition.x で値を決める）
 // グラフ        … Tap=true, LongPress=true, Drag=true, Fling=true, DragAxis=Horizontal, Pinch=true, PressFeedback=false（SEED.UI.LineChart / BarChart。§7.19）
+// 子のつまみ    … Tap=false, Drag=true, DragAxis=Horizontal, PressFeedback=false, MinHitSizeDp=48 ＋ SEED.UI.GestureRelay
+//                 （グラフの日付線のハンドル。葉なので同じ横の移動では親のパンより先に指を取る。e.LocalPosition はつまみの左上が原点。§7.19）
 // 遮る板        … Tap=false（旗をすべて外す。ダイアログの板・覆い）
 ```
 
@@ -3834,7 +3836,7 @@ public class AlarmList : SEEDScript
 }
 
 list.SetCount(n);                   // 行の数を変える（次の Update で入れ直す）
-list.SetExtentOf(i => i % 2 == 0 ? 56f : 96f);  // 行ごとの長さ（null で固定へ戻す）
+list.SetExtentOf(i => i % 2 == 0 ? 56f : 96f);  // 行ごとの長さ（null で固定へ戻す。付いたままの行も次の Update で置き直す＝毎フレーム渡し直すと畳む動きになる）
 list.Refresh();                     // データが変わった: 付いている行の中身を入れ直す
 list.ScrollToIndex(500, 0.3f, 0f);  // 行 500 を窓の先頭へ（揃え 0 = 先頭・0.5 = 中央・1 = 終わり。時間 0 はすぐ移す）
 list.RowOf(500)                     // GameObject?: 行 500 に付いている行（見えていなければ null）
@@ -3883,6 +3885,56 @@ SwipeGroup.For(listNode).CloseAll();          // 一覧のスクロールが始�
 | 動き | 250ms・Material の fastOutSlowIn。動いている間は `Redraw.Request()`（on_demand でも止まらない） |
 | 組 | ある行のドラッグが始まると、同じ組の他の開いている行が閉じる |
 | 軸 | 縦の一覧の中では、最初の指の動きが横ならスワイプ、縦なら一覧のスクロール（W2-2 のアリーナの軸の競い） |
+| ずらし方 | Front に `CanvasLayoutItem` があれば `CanvasLayoutItem.Translate`（実行中だけ・保存しない。fill_width の行も動く）、無ければ `CanvasTransform.Position` |
+| レイヤー | Front の部分木の表示のレイヤーを Actions の部分木より上にする（同じレイヤーでは文字がスプライトより手前に描かれ、Actions の文字が閉じた行の上に出る） |
+
+### SwipeActions のフルスワイプ（大きく払うとそのまま削除。W2 の手直し P2-3）
+
+```csharp
+// 行のプレハブ（templates/ui/prefabs/list_row.actor）: Row（CanvasComponent・CanvasLayoutItem fill_width・CanvasGesture 横のドラッグ）
+//   ├─ Actions（CanvasComponent・fill_width/fill_height・削除の面〈color.error〉・CanvasGesture タップ・SEED.UI.GestureRelay）
+//   │   └─ Label（「削除」。右の端のボタンの枠の真ん中）
+//   └─ Front（fill_width・行の見た目・遮る板。レイヤーは Actions より上。CanvasComponent と縦の CanvasStack〈左右の余白 16〉＝W2 の手直し P2-5）
+//       └─ Title・Sub・Divider（行の幅 − 余白に伸びる。文字の枠〈BoxWidth〉はレイアウトが伸ばさないので行のスクリプトが LayoutSize.x に合わせる）
+swipe = new SwipeActions(gameObject.FindChild("Front"), actionsExtent: 96f)
+{
+    FullSwipe = true,                                            // 既定 false（W2-3 のまま）
+    FullSwipeLabel = gameObject.FindChild("Actions/Label"),      // 構えたら Front の後ろの端に付いて動く文字（任意）
+    ArmHaptic = SwipeHaptic.Vibrate,                             // 構えたときの触感（None / Tap〈既定〉/ Vibrate）
+    Group = SwipeGroup.For(gameObject.Parent),
+    Armed = s => { }, Disarmed = s => { },                       // 閾値を越えた・戻した
+    FullSwiped = s => SEED.Events.Raise("RowDeleted", gameObject), // 流し切った → 持ち主が行を畳んでデータから消し、書き直しで Reset
+};
+// 開いた行の削除の面のタップ（GestureRelay.Tapped）から: 同じ確定の流れ（流し切り → FullSwiped）
+if (swipe.IsOpen) swipe.Commit();
+
+swipe.RowExtent = 0f;               // 行の幅（0 以下 = 自動: Front の LayoutSize.x → Sprite の幅）。swipe.ResolvedRowExtent で今の値
+swipe.DisarmHaptic = SwipeHaptic.None;   // 解いたときの触感（既定 None）
+swipe.VibrateMilliseconds = 20;     // Vibrate の長さ（既定 20 ms）
+swipe.IsArmed / swipe.IsCommitted / swipe.LabelWeight / swipe.ArmCount
+swipe.CommitStarted = s => { };     // 確定して流し始めた（構えたまま離した・Commit）
+```
+
+| 規則 | 内容（値は docs/backlog.md の案。iOS の値は公開されていないので決めた値。テーマのトークンで変えられる） |
+|---|---|
+| ドラッグの範囲 | 閉じた 0 〜 操作の側へ行の幅いっぱい |
+| 構える・解く | 行の幅 × `ratio.swipe_full`（0.6）以上で構え、構えた後 × `ratio.swipe_full_cancel`（0.55）を下回ったら解く（ヒステリシス）。ボタンの幅より手前では構えない。行の幅が分からない間は構えない |
+| 触感 | 構えた瞬間に 1 回（`ArmHaptic`。既定 `Tap`）。解いたときは出さない（`DisarmHaptic` で変えられる） |
+| 文字 | 構えていない間は元の位置、構えている間は Front の後ろの端 ＋ `space.l`。切り替わりを `motion.swipe_full`（0.15 秒）で補間。文字の親は行いっぱいに置く |
+| 離したとき | 取り消し → 構えを解いて元へ／構えている → 確定（閉じる向きへ速く払ったときは除く）／構えていない → 開く・閉じるの規則 |
+| 確定 | Front を行の幅の外まで `motion.swipe_dismiss`（0.2 秒）で流し切り → `FullSwiped`。`Reset` まで指も `Open`・`Close`・`Commit` も受けない（二重に確定しない） |
+| 畳む | 部品は畳まない。持ち主が `ListView.SetExtentOf` に `SwipeMath.CollapsedExtent(56f, 経過, motion.swipe_collapse)` を毎フレーム渡して行の高さを 0 へ畳み、畳み終わったらデータから消して `SetCount`・`Refresh`（見本 `templates/ui/scripts/UiGallerySections.cs`） |
+
+| トークン | 既定 | 意味 |
+|---|---|---|
+| `ratio.swipe_full` | 0.6 | 構えるずらし量（行の幅に対する割合） |
+| `ratio.swipe_full_cancel` | 0.55 | 構えを解くずらし量（同上） |
+| `motion.swipe_full` | 0.15 | 「削除」の文字の置き場の補間（秒） |
+| `motion.swipe_dismiss` | 0.2 | 確定で行を外へ流し切る（秒） |
+| `motion.swipe_collapse` | 0.2 | 消した行を畳む（秒。一覧の持ち主が読む） |
+| `color.on_error` | #FFFFFF | 削除の面（`color.error`）の上の文字 |
+
+状態の移り変わりは純粋な `SEED.UI.SwipeModel`、規則の計算は `SEED.UI.SwipeMath`（`UpdateArmed`・`DecideRelease`・`LabelShift`・`CollapsedExtent` など）。正典は `docs/ui_scroll_list.md` §7.1。
 
 ## 7.16 UI 部品（SEED.UI：ボタン・トグル・スライダ・数値欄・選択・進捗とテーマ。W2-4）
 
@@ -4088,6 +4140,7 @@ timeWheel.ValueChanged                 // event Action<TimeWheel, TimeOnly>（�
 timeWheel.ValueSettled                 // event Action<TimeWheel, TimeOnly>（全列が止まった）
 timeWheel.Use24Hour / SetUse24Hour(false)   // 24 時間表記（false = 12 時間表記＋午前/午後の列。値はそのまま）
 timeWheel.MinuteStep / SetMinuteStep(5)     // 分の刻み（1 時間を割り切る数。値は最も近い刻みへ丸める。23:58 → 0:00）
+timeWheel.Loop / SetLoop(false)        // 端をつなげる（既定 true）。false なら時・分の列は 0 や 23・59 の端で止まる（値は変えず列だけ作り直す）
 timeWheel.HourFormat / MinuteFormat    // string（既定 "0" / "00"）
 timeWheel.AmLabel / PmLabel / MeridiemOnLeft   // 午前/午後の文字（既定「午前」「午後」）・列を左に置く（既定 true）
 timeWheel.HourColumn / MinuteColumn / MeridiemColumn   // WheelPicker?（列。キーボードの Focus などに）
@@ -4095,7 +4148,10 @@ timeWheel.IsMoving                     // bool（どれかの列が動いてい�
 ```
 
 - 12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えると午前/午後の列が動き、午前/午後の列を指で変えると時が 12 ずれます（Flutter の CupertinoDatePicker と同じ）。
-- 分の 59 → 00・時の 23 → 0 はそれぞれの列の中でつながります（分が一周しても時は変わりません）。
+- `Loop`（既定 true）が true のときは分の 59 → 00・時の 23 → 0 がそれぞれの列の中でつながります（分が一周しても時は変わりません）。
+  `Loop = false` にすると時 0〜23・分 0〜（60 − 刻み）の両端で止まり（CanvasScroll の端の跳ね返り）、23 と 0 は隣り合いません。
+  12 時間表記の時の列は Loop の有無によらず 24 行のまま（11 ↔ 12 の午前/午後の連動は変わりません。23 ↔ 0 の継ぎ目が無くなるだけです）。
+  午前/午後の列は元々つながらないので影響しません。
 
 ### WheelPicker（ホイールの列）
 
@@ -4193,6 +4249,10 @@ DialogHandle? d = Dialog.Show(new DialogOptions
     DismissOnScrimTap = true, CancelableByBack = true,
 });
 DialogResult r = await d!.ResultAsync;          // Positive / Negative / Neutral / Dismissed（幕・戻る）。d.Completed += r => …
+// 札の大きさは中身から決まる（W2 の手直し P2-1。下の「ダイアログの大きさと動き」）。文字の見積もりはスクリプトからも使える:
+int lines = DialogLayout.EstimateLines("寝坊で失う最大金額が 3,000 円になります。", 16f, 264f);   // 1（エンジンの折り返しの規則・組み込みの書体の送り幅）
+float h = DialogLayout.EstimateHeight(text, 16f, 264f);   // 行の数 × 16 × DialogLayout.LineHeightEm（1.4）。枠 DialogLayout.NoWrapWidth（0）は折り返さない
+float w = DialogLayout.EstimateWidth("やめる", 14f);       // 1 行の幅（改行を含むなら最も広い行）= 30.1
 ModalHandle? s = BottomSheet.Show(new SheetOptions { ContentPrefab = "assets://…/sound_list.actor", Args = …,
                                                      HalfDetent = true, StartHalf = true, HeightFraction = 0.9f });
 ModalHandle? o = TopSheet.Show(new OverlayOptions { ContentPrefab = "assets://…/profile.actor" });
@@ -4243,16 +4303,28 @@ Overlay（400）→ Navigation（500。画面のスタック・タブを**内側
 Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じなければ元へ戻る）。問えない層（`IBackConsumer`・`OnBackPressed` を上書きした画面・問いの無い `AddLayer`）は
 「受ける」とみなします。PC では `PlatformDiagnostics.SimulateBackGesture` で流した手ぶり＋Esc キーで試せます。
 
+**ダイアログの大きさと動き（W2 の手直し P2-1。2026-09-29。正典は docs/ui_navigation.md §3.2）**: 札の幅は `size.dialog_width`、高さは
+「余白 `size.dialog_padding` ＋ 題 ＋ `size.dialog_title_gap` ＋ 本文 ＋ `size.dialog_actions_gap` ＋ ボタンの行 ＋ 余白」（空の題・本文とその間隔は数えない。
+本文が無ければ題 → ボタンの行は `size.dialog_actions_gap`）で、`Dialog` が札の `CanvasLayoutItem.PreferredSize` と背景の `Sprite.Size` に書きます
+（既定のテーマで 題 ＋ 本文 1 行 ＋ ボタン = 178.4 dp。純粋な計算は `DialogMetrics.Arrange`・`DialogMetrics.Sections`）。区画ごとの間隔は札の CanvasStack の
+等間隔ではなく、上の区画の枠の高さに足します（札の CanvasStack の間隔は 0）。題・本文の高さは見積もり（`DialogLayout`。`Text.Measure` は W2-6c）:
+行の数はエンジンの折り返しの規則（語・空白のぶら下げ・日本語は 1 文字ずつ・禁則・強制分割）と組み込みの書体の送り幅（全角 0.7168 em ＝ 書体の 1000 / 1395）で求め、
+題と本文の `Text.LineSpacing` を `DialogLayout.LineHeightEm`（1.4）にして描く行送りと一致させます（テーマの `font.family` でほかの書体を当てると合いません）。
+出入りの動きの札の大きさ（`ratio.dialog_scale_from` 0.9 ↔ 1）は `CanvasLayoutItem.VisualScale`（札の矩形の中心の周りに背景・文字・ボタンが一体で縮む）に
+「開き具合の倍率 × 予測型の戻るのプレビューの倍率」（`DialogMetrics.CardScale`）を書きます。戻るを確定した後は、縮めた姿勢のまま閉じます。
+
 **重なりと入力**: 画面のスタックの段 i は `LayerBias = i × LayerStep`（既定 `layer.stack_step` = 10,000。タブの中のスタックは 1,000）、
 覆い・シート・ダイアログ・トーストは帯（`layer.overlay`・`sheet`・`dialog`・`toast` = 100 万・200 万・300 万・400 万）。
 **画面の中の表示のレイヤーは段の値より小さく**（タブの中なら 1,000 未満）保ってください。積んだ画面の枠（`screen_frame.actor`）は遮る板を持ち、
 下の画面は入力を受けません。落ち着いた後は不透明な画面の下の画面を隠します（描かない）。
 
-| テーマのトークン（抜粋。全部は docs/ui_navigation.md §7） | 既定 | 意味 |
+| テーマのトークン（抜粋。全部は docs/ui_theme.md §8） | 既定 | 意味 |
 |---|---|---|
 | `motion.push`・`motion.cover`・`motion.fade` と `*_curve` | 0.3 秒・Material 3 standard | 画面の出入り（曲線は x1・y1・x2・y2） |
 | `motion.overlay`・`motion.overlay_curve` | 0.22 秒・easeOut | 上からの覆い（Flutter 版の top_sheet） |
 | `motion.dialog`・`motion.sheet`・`motion.toast` | 0.2・0.25・0.2 秒 | ダイアログ・シート・トーストの出入り |
+| `size.dialog_width`・`size.dialog_padding`・`size.dialog_button_height` | 312・24・40 dp | ダイアログの札の幅・内側の余白（上下左右）・ボタンの高さ |
+| `size.dialog_title_gap`・`size.dialog_actions_gap` | 16・24 dp | ダイアログの題 → 本文・本文（無ければ題）→ ボタンの行の間隔（W2 の手直し P2-1。Flutter の AlertDialog〈Material 3〉の contentPadding の上 16・下 24） |
 | `motion.toast_short`・`motion.toast_long` | 2・3.5 秒 | トーストを見せる時間（実時間） |
 | `opacity.scrim`・`opacity.dialog_scrim` | 0.54・0.32 | 幕の濃さ |
 | `ratio.push_parallax`・`ratio.dialog_scale_from`・`ratio.sheet_max_height` | 0.3・0.9・0.9 | 視差・ダイアログの出始めの大きさ・シートの高さ |
@@ -4265,8 +4337,10 @@ Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じな�
 ## 7.19 グラフ（SEED.UI：LineChart・BarChart。W2-8）
 
 折れ線・棒（縦・横・積み上げ）・軸・吹き出し・パンとズームのグラフ。プレハブ（`templates/ui/prefabs/line_chart.actor`・`bar_chart.actor`。目盛りの文字は
-`chart_label.actor`）を置き、画面のスクリプトからデータを渡す。大きさはグラフのノードの **Sprite の幅・高さ**（dp のキャンバスでは dp）。
-正典は `docs/ui_charts.md`（作り・描き方と性能の数値・目盛りの選び方・パンとズーム・吹き出し・トークン）。見本は `templates/ui/scenes/ui_charts.scene`。
+`chart_label.actor`）を置き、画面のスクリプトからデータを渡す。大きさは**レイアウトが決めた大きさ**（`CanvasTransform.LayoutSize`。縦の `CanvasStack` の
+cross_align stretch・`CanvasLayoutItem` の fill_width で伸ばせば画面の幅に合う。前のフレームの描画の値。W2 の手直し P2-4）。レイアウトの表に無い所
+（3D ワールドキャンバスの下など）ではグラフのノードの **Sprite の幅・高さ**（dp のキャンバスでは dp）。最初のレイアウトを読めるまで（最大 3 フレーム）は描かない。
+正典は `docs/ui_charts.md`（作り・大きさ・描き方と性能の数値・目盛りの選び方・パンとズーム・吹き出し・日付線のハンドル・トークン）。見本は `templates/ui/scenes/ui_charts.scene`。
 
 ```csharp
 using SEED.UI;
@@ -4290,7 +4364,8 @@ line.FixedXRange = new ChartRange(first.DayNumber, today.DayNumber);   // X の�
 line.TooltipFormatter = p => $"{ChartFormat.Date(p.X)} {ChartFormat.TimeOfDay(p.Y ?? 0, padHour: true)}";  // 吹き出し（M/d HH:mm）
 line.SetSeries(points);                        // 系列 0（SetSeries(index, points) で系列を足す。色は color.chart_series_N）
 line.SetReferenceLine(average, "平均 7:12");   // 基準線（平均の横線）
-line.PointSelected += (chart, series, index) => { /* タップ・長押しで選んだ点（外したら -1, -1） */ };
+line.PointSelected += (chart, series, index) => { /* タップ・長押し・日付線のハンドルで選んだ点（外したら -1, -1） */ };
+line.HandleHaptic = true;                      // 日付線のハンドル（プレハブの子 Handle）で点が変わるたびの軽い触感（既定 true。1 フレームに 1 回まで）
 
 // 棒（BarChart）: 値を下から積む（BarDatum(x, 段1, 段2, ...)）。合計 0 の列も最低の高さで出す
 var bars = UiWidget.Of<BarChart>(GameObject.Find("PenaltyHistory"))!;
@@ -4314,20 +4389,22 @@ line.MarkDirty();                                       // 書式・刻みの候
 
 | 部品・型 | 役割 |
 |---|---|
-| `ChartView`（土台） | 欄: `Interactive`・`MaxZoom`（6）・`ShowTooltip`・`XFormat`・`YFormat`・`XSteps`・`YSteps`（刻みの候補 "15,30,60"）・`ShowYAxis`・`ShowXAxis`・`ShowGrid`・`EmptyText`（「まだ記録はありません」）・`LabelPrefab`。スクリプト: `XLabelFormatter`・`YLabelFormatter`・`ValueRangeOptions`・`FixedValueRange`・`FixedXRange`・`Viewport`・`ViewChanged`・`ZoomIn/ZoomOut/ZoomBy`・`ShowRange`・`ScrollToEnd`・`ClearSelection`・`MarkDirty`・計測の `RebuildCount`・`LastDrawCount`・`LastRebuildMs`・`LastPaintMs` |
-| `LineChart` | 欄: `Smooth`・`FillArea`・`ShowDots`（点が詰まる倍率では打たない）・`Gaps`（`Connect` / `Break`）。`SetSeries`・`ClearSeries`・`GetSeries`・`SetReferenceLine`・`ClearReferenceLine`・`Select(series, index, notify)`・`Selected`・`PointSelected`・`TooltipFormatter`・`DefaultRangeOptions(format)` |
-| `BarChart` | 欄: `Orientation`・`SlotWidth`・`ShowEmptyBars`・`HighlightSelection`。`SetData`・`Get`・`Select(index, notify)`・`SelectX`・`SelectedIndex`・`BarSelected`・`TooltipFormatter`・`StackColors` |
-| 純粋な計算 | `ChartTicks`（`NiceStep`・`StepFromCandidates`・`Generate`・`NiceBounds`）・`ChartAxis`・`ChartAutoRange`（`AutoRangeOptions`）・`ChartFormat`（`TimeOfDay`・`Date`・`Number`）・`ChartMapping`・`ChartViewport`・`ChartFling`・`MonotoneCubic`・`ChartHit`・`BarGeometry`・`ChartLayout`・`LinePath`・`ChartTokens`・`ChartLook` |
+| `ChartView`（土台） | 欄: `Interactive`・`MaxZoom`（6）・`ShowTooltip`・`XFormat`・`YFormat`・`XSteps`・`YSteps`（刻みの候補 "15,30,60"）・`ShowYAxis`・`ShowXAxis`・`ShowGrid`・`EmptyText`（「まだ記録はありません」）・`LabelPrefab`・`HandleHaptic`（日付線のハンドルの触感。既定 true。P2-4）。スクリプト: `XLabelFormatter`・`YLabelFormatter`・`ValueRangeOptions`・`FixedValueRange`・`FixedXRange`・`Viewport`・`ViewChanged`・`ZoomIn/ZoomOut/ZoomBy`・`ShowRange`・`ScrollToEnd`・`ClearSelection`・`MarkDirty`・計測の `RebuildCount`・`LastDrawCount`・`LastRebuildMs`・`LastPaintMs` |
+| `LineChart` | 欄: `Smooth`・`FillArea`・`ShowDots`（点が詰まる倍率では打たない）・`Gaps`（`Connect` / `Break`）。`SetSeries`・`ClearSeries`・`GetSeries`・`SetReferenceLine`・`ClearReferenceLine`・`Select(series, index, notify)`・`Selected`・`PointSelected`・`TooltipFormatter`・`DefaultRangeOptions(format)`。プレハブの子 `Handle` があれば日付線のハンドル（下の表） |
+| `BarChart` | 欄: `Orientation`・`SlotWidth`・`ShowEmptyBars`・`HighlightSelection`。`SetData`・`Get`・`Select(index, notify)`・`SelectX`・`SelectedIndex`・`BarSelected`・`TooltipFormatter`・`StackColors`（日付線のハンドルは無い） |
+| 純粋な計算 | `ChartTicks`（`NiceStep`・`StepFromCandidates`・`Generate`・`NiceBounds`）・`ChartAxis`・`ChartAutoRange`（`AutoRangeOptions`）・`ChartFormat`（`TimeOfDay`・`Date`・`Number`）・`ChartMapping`・`ChartViewport`・`ChartFling`・`MonotoneCubic`・`ChartHit`（ハンドルの吸い付き `NearestValuedX`）・`BarGeometry`・`ChartLayout`（`HandlePosition`・`HandleFingerPlotX`・`InsidePlot`）・`LinePath`・`ChartSizing`（大きさの選び方 `Choose`・待つ上限 `DefaultMaxLayoutWaitFrames`）・`ChartLayoutWait`・`ChartTokens`・`ChartLook` |
 
 | 操作 | 振る舞い |
 |---|---|
 | タップ・長押し | 折れ線は横の距離 24 dp 以内の最寄りの点、棒は押した列（縦は問わない）を選んで吹き出し。選んだ点がパンで外へ出たら隠す |
 | 横のドラッグ・払う | パン（指の下の値が付いてくる）と慣性（1 秒で速度 0.135 倍）。端で止まる。倍率 1 や `Interactive = false` ではドラッグを受けない（親のスクロールへ渡す） |
 | 2 本指のピンチ | 倍率 = 始めの倍率 × `e.Scale`（1〜MaxZoom）。始めのフォーカスの値を今のフォーカスへ置く（ズームと 2 本指のパン） |
-| ± のボタン | グラフの子に `ZoomIn`・`ZoomOut`（`SEED.UI.Button`）を置くとつながる。真ん中を中心に 2 倍・½（0.25 秒）。上限・下限で押せない |
+| ± のボタン | グラフの子に `ZoomIn`・`ZoomOut`（`SEED.UI.Button`）を置くとつながる。真ん中を中心に 2 倍・½（0.25 秒）。上限・下限で押せない。置き場は部品が決めない（見本は anchor x 1 でグラフの右の端に付け、グラフが親の幅に伸び縮みしても付いてくる。W2 の手直し P2-5） |
+| 日付線のハンドル（折れ線。W2 の手直し P2-4） | 選んだ点の縦の線（日付線）の下の丸（直径 `size.chart_handle` 18・当たり 48 dp・面の下の縁に乗る）。押して横へ引くと、パン・ピンチより先に指を取り、選んでいる系列の値のある点のうち見えている範囲で指の X に最も近い点へ吸い付く（日付線・点・吹き出しが付いてくる。面の外の指は端の点で止まる・自動のパンは無い）。点が変わるたびに `PointSelected` と触感（`HandleHaptic`）。縦の移動は取らない（縦のスクロールへ渡る）。倍率 1 でも効く。離しても取り消されても選びは残す |
 
 > **重要**: グラフは毎フレーム `SEED.Draw` で描く（`render_policy: on_demand` で止まっている間は描かない）。データ・見える範囲・大きさ・テーマが変わったフレームだけ
 > 位置を計算し直し、目盛りの文字（プレハブのノード）は変わった値だけを書き換える。性能の数値（365 点の折れ線・365 本の棒）は `docs/ui_charts.md` §3.1。
+> 大きさ（`LayoutSize`）も毎フレーム読む（コンテナ・画面の回転で変わった次のフレームに追従する。フレームで最初の読み出しがレイアウトの表の索引を作る費用は同じ §3.1 の末尾）。
 
 ---
 

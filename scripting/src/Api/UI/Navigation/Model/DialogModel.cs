@@ -1,6 +1,4 @@
-using System;
 using System.Collections.Generic;
-using System.Globalization;
 
 namespace SEED.UI;
 
@@ -12,7 +10,7 @@ namespace SEED.UI;
 //  - 幕（背景を暗くする面）のタップ: DismissOnScrimTap なら Dismissed で閉じる、そうでなければ何もしない
 //  - 戻る: CancelableByBack なら Dismissed で閉じる。そうでなくても戻るは受ける（後ろの画面へ回さない。確認を必ず答えさせる）
 //  - 結果は 1 回だけ（DialogResultLatch。ボタンの連打・閉じる動きの途中の戻るで 2 度出さない）
-//  - 本文の高さ: 文字の寸法を測る API（Text.Measure）は W2-6c なので、文字の数から行の数を見積もる（DialogLayout）
+//  - 本文の行の数の見積もりは DialogLayout.cs（Text.Measure は W2-6c）、札の縦の割り付けと出入りの倍率は DialogMetrics.cs
 // ============================================================
 
 /// <summary>ダイアログの結果。</summary>
@@ -99,80 +97,5 @@ public sealed class DialogResultLatch
         if (Result.HasValue) return false;
         Result = result;
         return true;
-    }
-}
-
-/// <summary>ダイアログの文字の大きさの見積もり（Text.Measure〈W2-6c〉までの仮）。</summary>
-public static class DialogLayout
-{
-    /// <summary>全角の文字の幅（文字の大きさに対する割合）。</summary>
-    private const float WideCharEm = 1.0f;
-    /// <summary>半角の文字の幅（文字の大きさに対する割合。M PLUS Rounded 1c の英数字の平均に近い値）。</summary>
-    private const float NarrowCharEm = 0.55f;
-    /// <summary>行の高さ（文字の大きさに対する割合。SEED の Text の既定の行間 1.0 に上下の余白を足した見積もり）。</summary>
-    public const float LineHeightEm = 1.4f;
-    /// <summary>半角とみなす符号位置の上限（ASCII と半角カナの手前まで）。</summary>
-    private const int NarrowCodePointMax = 0x7F;
-    /// <summary>半角カナの範囲（U+FF61〜U+FF9F）。</summary>
-    private const int HalfWidthKanaFirst = 0xFF61;
-    /// <summary>半角カナの範囲の終わり。</summary>
-    private const int HalfWidthKanaLast = 0xFF9F;
-
-    /// <summary>
-    /// 本文の行の数の見積もり（改行と、枠の幅での折り返し。1 文字単位で折る＝SEED の日本語の折り返しと同じ考え方）。
-    /// </summary>
-    /// <param name="text">本文。</param>
-    /// <param name="fontSize">文字の大きさ。</param>
-    /// <param name="boxWidth">枠の幅（文字の大きさと同じ単位）。</param>
-    public static int EstimateLines(string text, float fontSize, float boxWidth)
-    {
-        if (string.IsNullOrEmpty(text)) return 0;
-        if (!(fontSize > 0f) || !(boxWidth > 0f)) return 1;
-        int lines = 1;
-        float x = 0f;
-        var e = StringInfo.GetTextElementEnumerator(text);
-        while (e.MoveNext())
-        {
-            string element = (string)e.Current;
-            if (element == "\n" || element == "\r\n")
-            {
-                lines++;
-                x = 0f;
-                continue;
-            }
-            if (element == "\r") continue;
-            float w = CharWidthEm(element) * fontSize;
-            if (x > 0f && x + w > boxWidth)
-            {
-                lines++;
-                x = 0f;
-            }
-            x += w;
-        }
-        return lines;
-    }
-
-    /// <summary>本文の高さの見積もり（行の数 × 行の高さ）。</summary>
-    public static float EstimateHeight(string text, float fontSize, float boxWidth)
-        => EstimateLines(text, fontSize, boxWidth) * fontSize * LineHeightEm;
-
-    /// <summary>1 行の文字の幅の見積もり（ボタンの幅を文字に合わせる）。</summary>
-    public static float EstimateWidth(string text, float fontSize)
-    {
-        if (string.IsNullOrEmpty(text) || !(fontSize > 0f)) return 0f;
-        float width = 0f;
-        var e = StringInfo.GetTextElementEnumerator(text);
-        while (e.MoveNext()) width += CharWidthEm((string)e.Current) * fontSize;
-        return width;
-    }
-
-    /// <summary>1 文字（書記素）の幅（文字の大きさに対する割合）。</summary>
-    private static float CharWidthEm(string element)
-    {
-        // 壊れたサロゲートは全角とみなす（例外にしない）
-        if (!System.Text.Rune.TryGetRuneAt(element, 0, out var rune)) return WideCharEm;
-        int cp = rune.Value;
-        bool narrow = cp <= NarrowCodePointMax || (cp >= HalfWidthKanaFirst && cp <= HalfWidthKanaLast);
-        return narrow ? NarrowCharEm : WideCharEm;
     }
 }

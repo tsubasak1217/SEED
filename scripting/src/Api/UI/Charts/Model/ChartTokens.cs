@@ -38,6 +38,11 @@ public static class ChartTokens
     public const string ColorTooltip = "color.inverse_surface";
     /// <summary>吹き出しの文字。</summary>
     public const string ColorOnTooltip = "color.on_inverse_surface";
+    /// <summary>
+    /// 日付線のハンドル（LineChart の選んだ点の縦の線の下の丸。W2 の手直し P2-4）の縁の色（グラフの面と同じ color.surface。
+    /// 塗りは選んだ系列の色なので、同じ色の線・点の上に乗っても縁で見分けられる）。
+    /// </summary>
+    public const string ColorHandleBorder = "color.surface";
 
     // ── 大きさ（キャンバスの単位＝dp）──────────────────────────
     /// <summary>折れ線の太さ（Flutter 版の barWidth 2）。</summary>
@@ -76,6 +81,12 @@ public static class ChartTokens
     public const string SizeTooltipPadding = "size.chart_tooltip_padding";
     /// <summary>吹き出しと点の間。</summary>
     public const string SizeTooltipGap = "size.chart_tooltip_gap";
+    /// <summary>
+    /// 日付線のハンドルの直径（見た目。W2 の手直し P2-4。当たりはプレハブの CanvasGesture の min_hit_size_dp 48 で広げる）。
+    /// </summary>
+    public const string SizeHandle = "size.chart_handle";
+    /// <summary>日付線のハンドルの縁の太さ（形の内側に引く。0 = 縁なし）。</summary>
+    public const string SizeHandleBorder = "size.chart_handle_border";
 
     // ── 角丸・文字 ──────────────────────────────────────────
     /// <summary>棒の先の角丸。</summary>
@@ -112,10 +123,10 @@ public static class ChartTokens
     public static IReadOnlyList<string> All { get; } = new[]
     {
         ColorSeries1, ColorSeries2, ColorSeries3, ColorSeries4, ColorGrid, ColorAxis, ColorLabel, ColorReference,
-        ColorEmptyBar, ColorHighlight, ColorTooltip, ColorOnTooltip,
+        ColorEmptyBar, ColorHighlight, ColorTooltip, ColorOnTooltip, ColorHandleBorder,
         SizeLine, SizeDot, SizeDotSelected, SizeDotMinSpacing, SizeGrid, SizeAxis, SizeReference, SizeYAxis, SizeXAxis,
         SizeXLabelSpacing, SizeYLabelSpacing, SizeLabelGap, SizePlotPad, SizeTouchSlop, SizeSmoothStep, SizeBarMin,
-        SizeTooltipPadding, SizeTooltipGap,
+        SizeTooltipPadding, SizeTooltipGap, SizeHandle, SizeHandleBorder,
         RadiusBar, RadiusTooltip, TextAxis, TextTooltip,
         RatioBarWidth, RatioEmptyBar, RatioFlingDrag, RatioZoomStep, OpacityArea, SpeedFlingStop, MotionZoom, CountYIntervals,
     };

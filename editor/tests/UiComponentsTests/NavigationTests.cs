@@ -504,18 +504,7 @@ public static class NavigationTests
             Check.Equal(DialogResult.Positive, latch.Result, "最初の結果のまま");
         });
 
-        h.Add("W2-7 ダイアログ: 本文の行の数の見積もり（全角・半角・改行・折り返し）", () =>
-        {
-            Check.Equal(0, DialogLayout.EstimateLines("", 16f, 264f), "空は 0 行");
-            Check.Equal(1, DialogLayout.EstimateLines("変更を保存していません", 16f, 264f), "11 文字 × 16 = 176 < 264 は 1 行");
-            Check.Equal(2, DialogLayout.EstimateLines(new string('あ', 17), 16f, 264f), "17 文字 = 272 > 264 は 2 行");
-            Check.Equal(1, DialogLayout.EstimateLines(new string('a', 29), 16f, 264f), "半角 29 文字 = 255.2 < 264 は 1 行");
-            Check.Equal(2, DialogLayout.EstimateLines(new string('a', 31), 16f, 264f), "半角 31 文字 = 272.8 > 264 は 2 行");
-            Check.Equal(3, DialogLayout.EstimateLines("一行目\n二行目\n三行目", 16f, 264f), "改行");
-            Check.Close(2 * 16 * DialogLayout.LineHeightEm, DialogLayout.EstimateHeight(new string('あ', 17), 16f, 264f), Eps, "高さ = 行 × 行の高さ");
-            Check.Equal(1, DialogLayout.EstimateLines("abc", 0f, 264f), "大きさ 0 でも落ちない");
-            Check.Close(16 * 2 + 16 * 0.55 * 2, DialogLayout.EstimateWidth("保存OK", 16f), 1e-3, "幅（全角 2 + 半角 2）");
-        });
+        // 本文の行の数・札の高さ・出入りの倍率（W2 の手直し P2-1）は DialogTests.cs
 
         // ── シート ─────────────────────────────────────────────
         h.Add("W2-7 シート: 板の高さ・段（半分・全体）・スナップの間隔・位置 → 段・幕の濃さ・安全領域の余白", () =>

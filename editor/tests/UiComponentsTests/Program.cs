@@ -297,8 +297,17 @@ public static class Program
         // ── 画面の組み立て（W2-7）───────────────────────────────
         NavigationTests.Register(h, theme);
 
+        // ── ダイアログの大きさと動き（W2 の手直し P2-1）─────────────
+        DialogTests.Register(h, theme);
+
+        // ── 行のフルスワイプで削除（W2 の手直し P2-3）────────────────
+        SwipeTests.Register(h, theme);
+
         // ── グラフ（W2-8）─────────────────────────────────────
         ChartTests.Register(h, theme);
+
+        // ── 見本の画面の幅（dp の画面いっぱい＋安全領域。W2 の手直し P2-5）──
+        SampleLayoutTests.Register(h);
 
         // ── W2-9: テーマ（読み込み・継承・明暗・補間・種の色・表） ──
         ThemeTests.Register(h);

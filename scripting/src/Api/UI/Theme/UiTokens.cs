@@ -1,7 +1,8 @@
 namespace SEED.UI;
 
 // ============================================================
-//  UiTokens.cs — 部品が読むテーマのトークンの名前の一覧（W2-4。W2-9 で書体・テーマの切り替えの動きを足した）
+//  UiTokens.cs — 部品が読むテーマのトークンの名前の一覧（W2-4。W2-9 で書体・テーマの切り替えの動きを、
+//                W2 の手直し P2-3 でスワイプのフルスワイプの割合・動きと削除の面の文字の色を足した）
 //
 //  トークン = テーマの JSON の「グループ.名前」（例 color.primary・radius.button）。値の表（既定）は
 //  Theme/default_theme.json（SEEDScripting に埋め込み）。部品はここの名前だけを使い、値を直接書かない
@@ -45,8 +46,10 @@ public static class UiTokens
     public const string ColorOnDisabled = "color.on_disabled";
     /// <summary>影。</summary>
     public const string ColorShadow = "color.shadow";
-    /// <summary>エラー（W2-6 の入力欄）。</summary>
+    /// <summary>エラー（W2-6 の入力欄）・削除の面（見本の一覧の行 list_row の Actions。W2 の手直し P2-3）。</summary>
     public const string ColorError = "color.error";
+    /// <summary>エラー・削除の面の上の文字（W2 の手直し P2-3。Material 3 の onError に当たる）。</summary>
+    public const string ColorOnError = "color.on_error";
 
     // ── 角丸（キャンバスの単位）──────────────────────────────
     /// <summary>ボタン。</summary>
@@ -151,6 +154,15 @@ public static class UiTokens
     public const string MotionTheme = "motion.theme";
     /// <summary>テーマの色の補間の曲線（4 つの成分 .x1・.y1・.x2・.y2。W2-9）。</summary>
     public const string MotionThemeCurve = "motion.theme_curve";
+    /// <summary>
+    /// フルスワイプの「削除」の文字の置き場（元の位置 ↔ Front の後ろの端）の補間の時間（SwipeActions。W2 の手直し P2-3。
+    /// 既定 0.15 秒は docs/backlog.md の案。iOS の値は公開されていないので決めた値）。
+    /// </summary>
+    public const string MotionSwipeFull = "motion.swipe_full";
+    /// <summary>フルスワイプの確定で行の見た目を外へ流し切る時間（SwipeActions。W2 の手直し P2-3。既定 0.2 秒は backlog の案）。</summary>
+    public const string MotionSwipeDismiss = "motion.swipe_dismiss";
+    /// <summary>消した行の高さを畳む時間（部品は読まない。一覧の持ち主〈見本の UiGallerySections〉が使う。W2 の手直し P2-3。既定 0.2 秒は backlog の案）。</summary>
+    public const string MotionSwipeCollapse = "motion.swipe_collapse";
 
     // ── 濃さ（0..1）──────────────────────────────────────────
     /// <summary>押下の重ね色の濃さ。</summary>
@@ -162,6 +174,15 @@ public static class UiTokens
     /// <summary>ホイールの中央の帯の外の行の濃さ（W2-5。Flutter の _kOverAndUnderCenterOpacity 0.447）。</summary>
     public const string OpacityWheelDim = "opacity.wheel_dim";
 
+    // ── 割合（0..1）──────────────────────────────────────────
+    /// <summary>
+    /// フルスワイプで構えるずらし量（行の幅に対する割合。SwipeActions。W2 の手直し P2-3。既定 0.6 は docs/backlog.md の案。
+    /// iOS の値は公開されていないので決めた値。操作のボタンの幅より手前では構えない）。
+    /// </summary>
+    public const string RatioSwipeFull = "ratio.swipe_full";
+    /// <summary>構えた後に解くずらし量（行の幅に対する割合。構える割合より小さくして行き来でばたつかない。既定 0.55 は backlog の案）。</summary>
+    public const string RatioSwipeFullCancel = "ratio.swipe_full_cancel";
+
     /// <summary>
     /// 部品が読むすべてのトークン（曲線の <see cref="MotionThemeCurve"/> は 4 つの成分へ展開済み。
     /// ギャラリー・テストが既定のテーマに揃っているかを確かめる）。
@@ -170,7 +191,7 @@ public static class UiTokens
     {
         ColorPrimary, ColorOnPrimary, ColorBackground, ColorSurface, ColorSurfaceVariant, ColorOnSurface,
         ColorOnSurfaceMuted, ColorOutline, ColorSelected, ColorOnSelected, ColorKnob, ColorKnobOff,
-        ColorStateLayer, ColorDisabled, ColorOnDisabled, ColorShadow, ColorError,
+        ColorStateLayer, ColorDisabled, ColorOnDisabled, ColorShadow, ColorError, ColorOnError,
         RadiusButton, RadiusChip, RadiusCard, RadiusField, RadiusSegment, RadiusCheckbox, RadiusProgress, RadiusWheelBand,
         SpaceXs, SpaceS, SpaceM, SpaceL, SpaceXl,
         SizeTouchMin, SizeBorder, SizeCheckBorder, SizeToggleKnob, SizeToggleKnobOff, SizeToggleInset,
@@ -182,6 +203,8 @@ public static class UiTokens
         MotionWheel, MotionWheelCorrect, MotionTheme,
         MotionThemeCurve + UiCurve.SuffixX1, MotionThemeCurve + UiCurve.SuffixY1,
         MotionThemeCurve + UiCurve.SuffixX2, MotionThemeCurve + UiCurve.SuffixY2,
+        MotionSwipeFull, MotionSwipeDismiss, MotionSwipeCollapse,
         OpacityPressed, OpacityDisabled, OpacityShadow, OpacityWheelDim,
+        RatioSwipeFull, RatioSwipeFullCancel,
     };
 }

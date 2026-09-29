@@ -228,7 +228,9 @@ CanvasScrollComponent を持つノードは、走査が子へ渡す文脈（行�
 `zero_visual_overrides_leave_table_unchanged`・`layer_bias_accumulates_down_the_tree`・`safe_area_inside_translated_node_ignores_translation`、
 `visual_scale_tests.rs`（3b: golden・中心と子孫・回転と pivot と Scale・中身で測られるコンテナ・伸ばされたコンテナ・安全領域）、
 `canvas_layout_item_component.rs` の保存しない・移動量の計算・倍率の既定、`canvas_layout_api.rs` の読み書き。
-ダイアログの出入りを保存される `CanvasTransform.Scale`（子は左上へ寄る）から `visual_scale` へ替えると、文字とボタンも札の中心へ寄る（backlog。P2）。
+ダイアログの出入りは保存される `CanvasTransform.Scale`（子は左上へ寄る）から `visual_scale` へ替えた（**済** 2026-09-29・W2 の手直し P2-1。
+SEED.UI の `Dialog` が「開き具合の倍率 × 予測型の戻るのプレビューの倍率」を書く。閉じる途中の撮影で、題の字面の左上と OK の文字の右下が札の中心の周りに
+倍率を掛けた位置から 1.6 px 以内。[ui_navigation.md](ui_navigation.md) §3.2・§11）。
 
 ### 6.8 レイアウトの結果をスクリプトへ（表を資源へ移す・遅延の索引・1 フレーム遅れ。W2 Item 4・2026-09-29）
 

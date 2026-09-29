@@ -2,8 +2,10 @@
 //  UiGalleryDemo.cs — UI 部品のギャラリー（templates/ui/scenes/ui_gallery.scene）の結線（W2-4・W2-5）
 //
 //  W2-9 でギャラリーは「上のテーマの帯（ThemeBar・UiGalleryThemeBar.cs）＋縦のスクロールのページ（Page/Content・
-//  UiGallerySections.cs が一覧・画面の組み立て・グラフの段をつなぐ）」になった。部品の名前は FindChild の深さ優先で引くので、
-//  ここ（W2-4・W2-5 の段）はページの中へ移っても同じ名前のまま。
+//  UiGallerySections.cs が一覧・画面の組み立て・グラフの段をつなぐ）」になった。W2 の手直し P2-5 で帯とページを安全領域の内側の
+//  Body（縦の CanvasStack）へ入れ、ページの中身を段（ShapesSection など）と行ごとの折り返し（CanvasWrap）で画面の幅に合わせた。
+//  部品の名前は FindChild の深さ優先で引くので、段・行の入れ物の下へ移っても同じ名前のまま。パス（"RoundClip/HitPad"）は
+//  FindChild が直下の子から辿るので、先頭の名前だけ深さ優先で引いてから残りを辿る（FindNode）。
 //  ギャラリーのルートに付ける。部品（SEED.UI.*）はそれぞれのスクリプトで動くので、ここは組み合わせだけを行う:
 //    - スライダ ↔ 数値欄 を同期し、進捗の棒・輪へ値を映す（同じ値は知らせないので往復しない）
 //    - 「全部を無効にする」ボタンで全部品の Interactable を切り替える（押下・無効の見た目を並べて見るため）
@@ -13,7 +15,8 @@
 //  デバッグの命令（SCRIPT_DEBUG:ui,<名前>）: disable（全部品を無効）・enable（戻す）・theme,<assets:// のテーマ>・
 //  mark <文字>（ログへ区切りを出す。検査が場面ごとにログを分けるため）・
 //  time,<時刻ホイール>,<HH:mm>[,jump]（値の設定。既定は動きあり）・time24,<時刻ホイール>,<on|off>（24 時間表記）・
-//  timestep,<時刻ホイール>,<分>（分の刻み）・wheel,<ホイール>,<値>[,jump]・focus,<ホイール>[,<Hour|Minute|Meridiem>]（キーボードの相手）・
+//  timestep,<時刻ホイール>,<分>（分の刻み）・loop,<時刻ホイール>,<on|off>（端をつなげるか。W2 の手直し P2-2）・
+//  wheel,<ホイール>,<値>[,jump]・focus,<ホイール>[,<Hour|Minute|Meridiem>]（キーボードの相手）・
 //  stats（部品が見た目を作り直した回数 UiWidget.RefreshCount。ホイールを回している間に他の部品が作り直されないことを見る）。
 // ============================================================
 using System;
@@ -39,14 +42,16 @@ public class UiGalleryDemo : SEEDScript
     private static readonly string[] CheckNames = { "CheckOff", "CheckOn", "CheckDisabled" };
     /// <summary>選択のグループの名前。</summary>
     private static readonly string[] GroupNames = { "Segmented", "Chips", "Radios" };
-    /// <summary>時刻ホイールの名前（W2-5）。</summary>
-    private static readonly string[] TimeWheelNames = { "Time24", "Time12" };
+    /// <summary>時刻ホイールの名前（W2-5。TimeNoLoop は端をつなげない見本＝W2 の手直し P2-2）。</summary>
+    private static readonly string[] TimeWheelNames = { "Time24", "Time12", "TimeNoLoop" };
     /// <summary>数のホイールの名前（W2-5）。</summary>
     private static readonly string[] WheelNames = { "Snooze" };
     /// <summary>時刻の書式（ログ・命令）。</summary>
     private const string TimeFormat = "HH:mm";
     /// <summary>値の設定の命令で「すぐ移す」を表す語。</summary>
     private const string JumpWord = "jump";
+    /// <summary>ノードのパスの区切り（FindChild と同じ）。</summary>
+    private const char PathSeparator = '/';
 
     /// <summary>つないだ部品（二重につながない）。</summary>
     private readonly HashSet<UiWidget> _bound = new();
@@ -180,6 +185,11 @@ public class UiGalleryDemo : SEEDScript
                 tws.SetMinuteStep(step);
                 Report($"timestep {p[1]} {tws.MinuteStep}");
                 break;
+            // W2 の手直し P2-2: 端をつなげるか（false なら 0 や 23・59 の端で止まる）
+            case "loop" when p.Length > 2 && Find<TimeWheel>(p[1]) is { } twl:
+                twl.SetLoop(p[2] == "on");
+                Report($"loop {p[1]} {(twl.Loop ? "on" : "off")}");
+                break;
             case "wheel" when p.Length > 2 && Find<WheelPicker>(p[1]) is { } wp && int.TryParse(p[2], out var value):
                 wp.SetValue(value, animate: !(p.Length > 3 && p[3] == JumpWord));
                 break;
@@ -243,8 +253,20 @@ public class UiGalleryDemo : SEEDScript
     /// <summary>時刻の文字（HH:mm）。</summary>
     private static string Hm(TimeOnly t) => t.ToString(TimeFormat, CultureInfo.InvariantCulture);
 
-    /// <summary>名前（パス）の部品を引く（ギャラリーの直下から）。</summary>
-    private T? Find<T>(string path) where T : UiWidget => UiWidget.Of<T>(gameObject.FindChild(path));
+    /// <summary>名前（パス）の部品を引く（ギャラリーの下から。FindNode）。</summary>
+    private T? Find<T>(string path) where T : UiWidget => UiWidget.Of<T>(FindNode(path));
+
+    /// <summary>
+    /// 名前かパスのノードを引く。名前は深さ優先（FindChild）。パスは先頭の名前を深さ優先で引き、残りをそこからの子のパスで辿る
+    /// （FindChild のパスは直下の子から 1 段ずつ辿るので、段・行の入れ物の下へ移った "RoundClip/HitPad" は届かない。W2 の手直し P2-5）。
+    /// </summary>
+    private GameObject FindNode(string path)
+    {
+        int separator = path.IndexOf(PathSeparator);
+        if (separator < 0) return gameObject.FindChild(path);
+        var head = gameObject.FindChild(path[..separator]);
+        return head.IsValid ? head.FindChild(path[(separator + 1)..]) : head;
+    }
 
     /// <summary>知らせをログと画面へ出す。</summary>
     private void Report(string message)

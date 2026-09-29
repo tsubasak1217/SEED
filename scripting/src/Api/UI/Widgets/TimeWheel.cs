@@ -10,13 +10,17 @@ namespace SEED.UI;
 //      TimeWheel（Sprite = 全体の大きさ〈透明〉・このスクリプト）
 //      ├─ Band（Sprite = 全列にまたがる中央の帯〈角丸〉）
 //      ├─ Meridiem（WheelPicker の列。端をつながない 2 行。24 時間表記では隠す）
-//      ├─ Hour（WheelPicker の列。24 行・端をつなげる）
-//      └─ Minute（WheelPicker の列。60 ÷ 刻み 行・端をつなげる）
+//      ├─ Hour（WheelPicker の列。24 行。Loop で端をつなげるか決める）
+//      └─ Minute（WheelPicker の列。60 ÷ 刻み 行。Loop で端をつなげるか決める）
 //  列は WheelPicker（別のスクリプト）なので、登録簿（UiRegistry）から引いてつなぐ（相手の OnStart の後になるまで引き直す）。
 //  列の横の位置と幅はこの部品が決める（全体の幅を列の数で等分。午前/午後の列は MeridiemOnLeft で左か右）。
 //  【値】TimeOnly（秒は 0）。時の列の項目と「午前/午後の連動の状態」（TimeWheelMath.MeridiemState）から時を、分の列の項目 × 刻みから分を作る。
 //  【連動】12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えたら午前/午後の列を動かす（Flutter の CupertinoDatePicker と同じ。
 //  TimeWheelMath の説明）。午前/午後の列を指で変えたら時が 12 ずれる（時の列は動かない＝表示は 12 時間で同じ）。
+//  【循環】Loop（既定 true＝従来どおり）で時・分の列の端をつなげるか選ぶ（W2-5 は固定で true だった。利用者の要望「0 の位置で止まる」に
+//  W2 の手直し P2-2 で対応）。false のときは時 0〜23・分 0〜（60 − 刻み）の両端で W2-3 の CanvasScroll の端（bounce）に当たって止まる
+//  （午前/午後の列は元々つながないので変わらない）。12 時間表記の時の列は Loop の有無によらず 24 行のまま（23 ↔ 0 の継ぎ目が無くなるだけで、
+//  11 ↔ 12 の午前/午後の連動はそのまま）。実行中に切り替えるのは SetLoop(bool)（値は保ったまま列を作り直す）。
 //  【イベント】ValueChanged（値が変わるたび。指で回している途中も）・ValueSettled（全列が止まったとき）。
 //  スクリプトからの SetValue は ValueChanged を 1 回だけ出し、列が動いている途中の値は知らせない（止まったら列から値を確かめ直す）。
 // ============================================================
@@ -43,6 +47,12 @@ public sealed class TimeWheel : UiWidget
     /// <summary>分の刻み（1 時間を割り切る数。1・5 など）。</summary>
     [SerializeField(Label = "分の刻み")]
     public int MinuteStep = 1;
+    /// <summary>
+    /// 端をつなげる（既定 true＝従来どおり。false なら時・分の列は 0 や 23・59 などの端で W2-3 の CanvasScroll の
+    /// 端（bounce）に当たって止まる＝利用者の要望「0 の位置で止まる」）。午前/午後の列は元々つながないので影響しない。
+    /// </summary>
+    [SerializeField(Label = "端をつなげる")]
+    public bool Loop = true;
     /// <summary>時（0〜23。最初の値。動かすと今の値に書き換わる）。</summary>
     [SerializeField(Label = "時")]
     public int Hour = 7;
@@ -147,12 +157,33 @@ public sealed class TimeWheel : UiWidget
         SetValueCore(t);
         if (ColumnsBound)
         {
-            _minute!.Configure(TimeWheelMath.MinuteRows(s), MinuteLabel, looping: true, TimeWheelMath.ItemOfMinute(t.Minute, s));
+            _minute!.Configure(TimeWheelMath.MinuteRows(s), MinuteLabel, looping: Loop, TimeWheelMath.ItemOfMinute(t.Minute, s));
             _programmatic = _hour!.IsReady;
             _hour.SelectIndex(t.Hour, animate: false);
             _meridiem?.SelectIndex(_state.AmPm, animate: false);
         }
         if (changed) ValueChanged?.Invoke(this, t);
+    }
+
+    /// <summary>
+    /// 端をつなげるかを実行中に変える（値は変えず、時・分の列を新しい Loop で作り直して今の値の行へ黙って置く。
+    /// `SetMinuteStep` と同じ流儀。午前/午後の列は元々つながないので触らない）。
+    /// </summary>
+    public void SetLoop(bool loop)
+    {
+        if (Loop == loop) return;
+        Loop = loop;
+        // 時の列は今の値の時（項目 = 時）へ置き直すので、午前/午後の連動の状態も「入れ替わりなし」へそろえる
+        // （12 時間表記で午前/午後の列を指で変えた後＝入れ替わった状態のまま置き直すと、次に時の列を動かしたとき時が 12 ずれる。
+        //  SetUse24Hour・SetMinuteStep と同じ）
+        _state = TimeWheelMath.StateFor(_value.Hour);
+        if (ColumnsBound)
+        {
+            int step = TimeWheelMath.NormalizeMinuteStep(MinuteStep);
+            _hour!.Configure(TimeWheelMath.HourRows, HourLabel, looping: Loop, _value.Hour);
+            _minute!.Configure(TimeWheelMath.MinuteRows(step), MinuteLabel, looping: Loop, TimeWheelMath.ItemOfMinute(_value.Minute, step));
+            _meridiem?.SelectIndex(_state.AmPm, animate: false);
+        }
     }
 
     // ── 部品の土台（UiWidget）───────────────────────────────────
@@ -229,8 +260,8 @@ public sealed class TimeWheel : UiWidget
         if (_meridiem is not null) { _meridiem.SelectionChanged += OnMeridiemChanged; _meridiem.Settled += OnColumnSettled; }
         if (!ColumnsBound) return;
         int step = TimeWheelMath.NormalizeMinuteStep(MinuteStep);
-        _hour!.Configure(TimeWheelMath.HourRows, HourLabel, looping: true, _value.Hour);
-        _minute!.Configure(TimeWheelMath.MinuteRows(step), MinuteLabel, looping: true, TimeWheelMath.ItemOfMinute(_value.Minute, step));
+        _hour!.Configure(TimeWheelMath.HourRows, HourLabel, looping: Loop, _value.Hour);
+        _minute!.Configure(TimeWheelMath.MinuteRows(step), MinuteLabel, looping: Loop, TimeWheelMath.ItemOfMinute(_value.Minute, step));
         _meridiem?.Configure(TimeWheelMath.MeridiemCount, MeridiemLabel, looping: false, _state.AmPm);
         LayoutColumns();
         Refresh();

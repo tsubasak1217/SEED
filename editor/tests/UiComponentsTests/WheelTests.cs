@@ -256,6 +256,25 @@ public static class WheelTests
             Check.Equal(3, WheelLoop.StepItem(0, 3, 30, looping: false, _ => true), "3 歩");
         });
 
+        // ── 循環なしの列（cycles = 1。W2 の手直し P2-2・TimeWheel.Loop = false の経路）─────
+        h.Add("ホイール: 循環なしの列（cycles = 1）は行 = 項目・中身が項目の数どおりで、端の外は丸められる", () =>
+        {
+            // 時刻ホイールが実際に使う項目の数（時 24・分は 1/5 分刻みで 60/12）で、周の数が 1（つなげるときの奇数・約 20 万とは違う）
+            foreach (int count in new[] { TimeWheelMath.HourRows, TimeWheelMath.MinuteRows(1), TimeWheelMath.MinuteRows(5) })
+            {
+                Check.Equal(1, WheelLoop.CycleCount(count, Extent, looping: false), $"count={count} は循環なしなら周 1 つ");
+                Check.Equal(count, WheelLoop.TotalRows(count, 1), $"count={count} の行の数 = 項目の数（周 1 つ）");
+            }
+            int hourRows = TimeWheelMath.HourRows; // 24
+            // 端の行の位置（0 行目・末尾の行）と、範囲の外の位置は端の行へ丸められる（つなげる列のように別の周へは行かない）
+            Check.Close(0.0, WheelLoop.PositionOfRow(0, Extent), Eps, "先頭の行の位置は 0");
+            Check.Close((hourRows - 1) * (double)Extent, WheelLoop.PositionOfRow(hourRows - 1, Extent), Eps, "末尾の行の位置 = (count−1) × 行の高さ");
+            Check.Equal(0, WheelLoop.RowAtPosition(-1_000_000f, Extent, hourRows), "範囲よりずっと前でも先頭の行に丸める（回らない）");
+            Check.Equal(hourRows - 1, WheelLoop.RowAtPosition(1_000_000f, Extent, hourRows), "範囲よりずっと後でも末尾の行に丸める（回らない）");
+            // 中央付近は循環ありと同じ式（位置 → 行はそのまま。循環の有無は周の数と全体の行数だけの違い）
+            Check.Equal(7, WheelLoop.RowAtPosition(WheelLoop.PositionOfRow(7, Extent), Extent, hourRows), "中の行は普通に往復する");
+        });
+
         // ── 12/24 時間と午前/午後の連動・分の刻み ─────────────────────
         h.Add("時刻ホイール: 12/24 時間の表示の時", () =>
         {
@@ -285,6 +304,29 @@ public static class WheelTests
             Check.True(TimeWheelMath.OnHourItemChanged(ref s, 0), "23 → 0 で入れ替わる");
             Check.Equal(TimeWheelMath.Am, s.AmPm, "午前になる");
             Check.Equal(0, TimeWheelMath.HourOfItem(0, s), "0 時（午前 12 時）");
+        });
+
+        h.Add("時刻ホイール: 12 時間表記・循環なし（Loop = false）は時の列の 23 ↔ 0 を越えない。11 ↔ 12 の連動は変わらない", () =>
+        {
+            const int hourRows = TimeWheelMath.HourRows; // 24（12 時間表記でも変わらない。§docs/ui_components.md §11.6）
+            // WheelPicker.StepBy は非ループの列で WheelLoop.StepItem を使う（TimeWheel.Loop = false を渡したときの列の経路）。
+            // つなげる列（対比）は 23 → 00・00 → 23 と回るが、つなげない列は端で止まり、23 と 0 が隣り合わない
+            Check.Equal(23, WheelLoop.StepItem(23, 1, hourRows, looping: false, _ => true), "循環なし: 23 から進めない（0 へ回らない）");
+            Check.Equal(0, WheelLoop.StepItem(23, 1, hourRows, looping: true, _ => true), "対比（循環あり）: 23 → 00 と回る");
+            Check.Equal(0, WheelLoop.StepItem(0, -1, hourRows, looping: false, _ => true), "循環なし: 0 から戻れない（23 へ回らない）");
+            Check.Equal(23, WheelLoop.StepItem(0, -1, hourRows, looping: true, _ => true), "対比（循環あり）: 00 → 23 と回る");
+            // 端（項目 0・23）は端のまま動けないので、越えて起きるはずの午前/午後の入れ替わりも起きない
+            // （23 → 0 で入れ替わるのは既存のテスト「時の列が 11 → 12・23 → 0 を越えると…」のとおりだが、循環なしではその遷移自体に到達できない）
+            var atZero = TimeWheelMath.StateFor(0);
+            Check.True(!TimeWheelMath.OnHourItemChanged(ref atZero, WheelLoop.StepItem(0, -1, hourRows, looping: false, _ => true)),
+                "循環なしで 0 から戻ろうとしても項目は 0 のまま→入れ替わらない");
+            var atTwentyThree = TimeWheelMath.StateFor(23);
+            Check.True(!TimeWheelMath.OnHourItemChanged(ref atTwentyThree, WheelLoop.StepItem(23, 1, hourRows, looping: false, _ => true)),
+                "循環なしで 23 から進もうとしても項目は 23 のまま→入れ替わらない");
+            // 内側の 11 ↔ 12 の連動は Loop の有無に関わらず同じ（TimeWheelMath は Loop を知らない。WheelLoop が端の届き方だけを変える）
+            var s = TimeWheelMath.StateFor(11);
+            Check.True(TimeWheelMath.OnHourItemChanged(ref s, WheelLoop.StepItem(11, 1, hourRows, looping: false, _ => true)), "循環なしでも 11 → 12 は届き、入れ替わる");
+            Check.Equal(TimeWheelMath.Pm, s.AmPm, "午後になる（循環なしでも変わらない連動）");
         });
 
         h.Add("時刻ホイール: 午前/午後の列を指で変えると時が 12 ずれ、その後の時の列の連動も保たれる", () =>

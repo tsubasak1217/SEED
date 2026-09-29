@@ -1,15 +1,16 @@
 # グラフ（W2-8 の正典。2026-09-28）
 
 キャンバス UI の**グラフ**（`SEED.UI` の `LineChart`・`BarChart`）の規則: 折れ線（点の印・滑らかな曲線・線の下の塗り・基準線）、棒（縦・横・積み上げ・角丸・
-空の棒）、軸（目盛り・格子線・目盛りの文字の書式）、吹き出し（タップ・長押しで最寄りの点・列）、パンとズーム（横のドラッグ・慣性・2 本指のピンチ・± のボタン）。
+空の棒）、軸（目盛り・格子線・目盛りの文字の書式）、吹き出し（タップ・長押しで最寄りの点・列）、パンとズーム（横のドラッグ・慣性・2 本指のピンチ・± のボタン）、
+日付線のハンドル（折れ線の選んだ点の縦の線の下の丸を横に引いて選びを変える。W2 の手直し P2-4。§6.1）、親の幅に合わせる大きさ（レイアウトの大きさを読む。P2-4。§2.1）。
 背景と段階は [app_platform_roadmap.md](app_platform_roadmap.md) §3.3 の「グラフ」・§3.8.5 の W2-8。使う画面は Wake or Pay のアクティビティ
 （起床時間の遷移〈30 日〉・起床時間の全期間・ペナルティ履歴。`D:\SEED_projects\WakeOrPay\docs\WAKEORPAY_SEED_SPEC.md` の S-05・S-05a・S-05b）。
 Flutter 版は `fl_chart`（`lib/features/activity/wake_time_chart.dart`・`penalty_bar_chart.dart`）。
 
 | 置き場 | 役割 |
 |---|---|
-| `scripting/src/Api/UI/Charts/Model/` | 純粋な計算（エンジンに触れない。`editor/tests/UiComponentsTests` の `ChartTests` で検算）: 範囲（`ChartRange`）・データの形（`ChartData`: `ChartPoint`・`BarDatum`・`GapMode`・`ChartValueFormat`・`BarOrientation`）・目盛り（`ChartTicks`）・軸 1 本の目盛りと文字（`ChartAxis`）・範囲の自動（`ChartAutoRange`）・書式（`ChartFormat`）・値 ⇔ 位置（`ChartMapping`）・パンとズーム（`ChartViewport`）・慣性（`ChartFling`）・単調な 3 次補間（`MonotoneCubic`）・当たり（`ChartHit`）・棒の形（`BarGeometry`）・枠と吹き出しの置き場（`ChartLayout`）・線の点（`LinePath`）・トークンの名前（`ChartTokens`）・テーマ → 見た目の値（`ChartLook`） |
-| `scripting/src/Api/UI/Charts/` | 部品のスクリプト: 共通の土台 `ChartView`（枠・軸・文字・吹き出し・パンとズーム・描き方）、`LineChart`、`BarChart`、目盛りの文字のノードの使い回し `ChartLabelPool` |
+| `scripting/src/Api/UI/Charts/Model/` | 純粋な計算（エンジンに触れない。`editor/tests/UiComponentsTests` の `ChartTests` で検算）: 範囲（`ChartRange`）・データの形（`ChartData`: `ChartPoint`・`BarDatum`・`GapMode`・`ChartValueFormat`・`BarOrientation`）・目盛り（`ChartTicks`）・軸 1 本の目盛りと文字（`ChartAxis`）・範囲の自動（`ChartAutoRange`）・書式（`ChartFormat`）・値 ⇔ 位置（`ChartMapping`）・パンとズーム（`ChartViewport`）・慣性（`ChartFling`）・単調な 3 次補間（`MonotoneCubic`）・当たり（`ChartHit`。ハンドルの吸い付き `NearestValuedX` も）・棒の形（`BarGeometry`）・枠と吹き出し・ハンドルの置き場（`ChartLayout`）・線の点（`LinePath`）・大きさの読み方と最初のレイアウトの待ち（`ChartSizing`・`ChartLayoutWait`。P2-4）・トークンの名前（`ChartTokens`）・テーマ → 見た目の値（`ChartLook`） |
+| `scripting/src/Api/UI/Charts/` | 部品のスクリプト: 共通の土台 `ChartView`（枠・軸・文字・吹き出し・パンとズーム・描き方・日付線のハンドルの受け持ち）、`LineChart`、`BarChart`、目盛りの文字のノードの使い回し `ChartLabelPool`、日付線のハンドルのノードの読み書き `ChartHandle`（P2-4） |
 | `scripting/src/Api/Draw.cs`・`DrawTypes.cs` | `SEED.Draw` の見た目の拡張（`DrawStyle`: 画面の 1 画素のアンチエイリアス・線形グラデーション）・線の下の塗り（`Draw.Area`）・点列を `ReadOnlySpan` で渡すメソッド |
 | `runtime/src/engine/core/renderer/primitive2d/` | 見た目の拡張の受け口（`queue.rs` の `PrimitiveStyle`）・`PrimitiveKind::Area`・軽い三角形分割（`tessellate.rs` の `stroke_polyline_lean`・`fill_convex`）・画面の画素のフェザーと頂点の色（`pass.rs`）・座標空間のレイヤーの底上げ（`pass.rs` の `apply_space_layer_bias`） |
 | `runtime/src/engine/core/input/gesture/pinch.rs` | 2 本指のピンチ（アリーナとは別にすべての指を見る。[input_gestures.md](input_gestures.md) §2.6） |
@@ -21,7 +22,10 @@ Flutter 版は `fl_chart`（`lib/features/activity/wake_time_chart.dart`・`pena
 ## 1. 使い方
 
 グラフはプレハブ（`templates/ui/prefabs/line_chart.actor`・`bar_chart.actor`）を置き、画面のスクリプトからデータを渡す。
-大きさはグラフのノードの **Sprite の幅・高さ**（dp のキャンバスでは dp）。書式や操作はインスペクタの欄（ScriptComponent の fields）かスクリプトで決める。
+大きさは**レイアウトが決めた大きさ**（`CanvasTransform.LayoutSize`。縦の `CanvasStack` の cross_align stretch・`CanvasLayoutItem` の fill_width などで伸ばされた大きさ
+＝描かれる背景と同じ。W2 の手直し P2-4）。レイアウトの表に無い所（3D ワールドキャンバスの下など）ではグラフのノードの **Sprite の幅・高さ**（dp のキャンバスでは dp。§2.1）。
+画面の幅に合わせるには、グラフを縦のスタック（cross_align stretch）に入れるか fill_width にする（Sprite の幅は伸ばす前の値のままでよい）。
+書式や操作はインスペクタの欄（ScriptComponent の fields）かスクリプトで決める。
 
 ```csharp
 // 起床時間の遷移（30 日の島。Wake or Pay の S-05）
@@ -43,8 +47,8 @@ bars.Select(lastLossIndex);                       // 既定は最後に何か失
 
 | 部品 | プレハブ | 主な欄（インスペクタ） | スクリプト |
 |---|---|---|---|
-| 共通（`ChartView`） | — | `Interactive`（パンとズーム）・`MaxZoom`（6）・`ShowTooltip`・`XFormat`・`YFormat`・`XSteps`・`YSteps`（刻みの候補 "15,30,60"）・`ShowYAxis`・`ShowXAxis`・`ShowGrid`・`EmptyText`（「まだ記録はありません」）・`LabelPrefab` | `XLabelFormatter`・`YLabelFormatter`・`ValueRangeOptions`・`FixedValueRange`・`FixedXRange`・`ZoomIn/ZoomOut/ZoomBy`・`ShowRange`・`ScrollToEnd`・`ClearSelection`・`Viewport`・`ViewChanged`・`MarkDirty` |
-| `LineChart` | `line_chart.actor` | `Smooth`（単調な 3 次補間）・`FillArea`（線の下の塗り）・`ShowDots`・`Gaps`（`Connect`・`Break`） | `SetSeries(index, points)`・`ClearSeries`・`SetReferenceLine`・`Select`・`Selected`・`PointSelected`・`TooltipFormatter`・`DefaultRangeOptions(format)` |
+| 共通（`ChartView`） | — | `Interactive`（パンとズーム）・`MaxZoom`（6）・`ShowTooltip`・`XFormat`・`YFormat`・`XSteps`・`YSteps`（刻みの候補 "15,30,60"）・`ShowYAxis`・`ShowXAxis`・`ShowGrid`・`EmptyText`（「まだ記録はありません」）・`LabelPrefab`・`HandleHaptic`（日付線のハンドルで点が変わるたびの触感。既定 true。P2-4） | `XLabelFormatter`・`YLabelFormatter`・`ValueRangeOptions`・`FixedValueRange`・`FixedXRange`・`ZoomIn/ZoomOut/ZoomBy`・`ShowRange`・`ScrollToEnd`・`ClearSelection`・`Viewport`・`ViewChanged`・`MarkDirty` |
+| `LineChart` | `line_chart.actor`（子 `Handle` = 日付線のハンドル。§6.1） | `Smooth`（単調な 3 次補間）・`FillArea`（線の下の塗り）・`ShowDots`・`Gaps`（`Connect`・`Break`） | `SetSeries(index, points)`・`ClearSeries`・`SetReferenceLine`・`Select`・`Selected`・`PointSelected`（タップ・ハンドルで選んだ点）・`TooltipFormatter`・`DefaultRangeOptions(format)` |
 | `BarChart` | `bar_chart.actor` | `Orientation`（`Vertical`・`Horizontal`）・`SlotWidth`（列の間隔。日なら 1）・`ShowEmptyBars`・`HighlightSelection` | `SetData(bars)`・`Select`・`SelectX`・`SelectedIndex`・`BarSelected`・`TooltipFormatter`・`StackColors` |
 
 ## 2. 作り（ノードと分担）
@@ -57,9 +61,13 @@ Chart（Sprite = 全体〈背景〉・CanvasGesture〈タップ・長押し・�
 ├─ XLabels（Sprite〈透明〉・CanvasClip。横軸の文字。パンで動き、グラフの左右の端で切れる）
 ├─ YLabels（縦軸の文字）
 ├─ Empty（Text。データが無いときだけ）
+├─ Handle（任意。折れ線の日付線のハンドル。Sprite〈楕円〉・CanvasGesture〈横のドラッグだけ・当たり 48 dp〉・GestureRelay・レイヤー +1。§6.1。
+│          Tooltip の直前＝吹き出しと重なれば吹き出しが上。無いプレハブは今までどおり）
 ├─ Tooltip（Sprite〈角丸〉・レイヤー +1）└─ Text
 └─ ZoomIn・ZoomOut（任意。SEED.UI.Button。子にあれば ChartView がつなぎ、上限・下限で押せなくする）
 ```
+
+子の pivot・anchor は 0（位置 = 左上。ChartView が位置と大きさを書く）。
 
 | 側 | 受け持つもの |
 |---|---|
@@ -74,10 +82,20 @@ Chart（Sprite = 全体〈背景〉・CanvasGesture〈タップ・長押し・�
 **データの単位**: X・値は軸の書式に合わせた数（日付 = `DateOnly.DayNumber`・時刻 = 0 時からの分・数）。`ChartPoint.Day(day, y)`・`ChartPoint.Minutes(day, timeOfDay)`。
 欠けた値（`Y = null`）の点は打たず、前後の点を線でつなぐ（`GapMode.Connect`。Wake or Pay の「記録の無い日は点を打たず線をつなぐ」）。`Break` で線を切る。
 
+### 2.1 大きさ（親の幅に合わせる。W2 の手直し P2-4・2026-09-29）
+
+| 項目 | 規則 |
+|---|---|
+| 読む値 | `CanvasTransform.HasLayout` なら `LayoutSize`（レイアウトが決めた大きさ＝コンテナ・親に合わせる・セル・安全領域で伸ばされた大きさ。描かれる背景のスプライトと同じ。[scripting_api.md](scripting_api.md) の CanvasTransform）、無ければ Sprite の幅・高さ。`LayoutSize` が壊れた値（非数・無限・負）のときも Sprite（`ChartSizing.Choose`） |
+| 1 フレーム遅れ | `LayoutSize` は**前のフレームの描画**の値。コンテナが大きさを変えたフレーム（画面の回転・隣の部品の出し入れ）は、背景（その場の大きさ）と中身（前の大きさ）が 1 フレームずれ、次のフレームで作り直す（`_layoutDirty` の流れ） |
+| 最初のフレーム | 表は描画で作るので、グラフの最初のフレーム（Play の開始・生成した直後）は `HasLayout = false`。**レイアウトを 1 度読めるまで描かない**（格子線・線・棒・吹き出し・ハンドル・空の文字を出さない。位置の計算は Sprite の大きさで進め、目盛りの文字のノードは先に作っておく）。待つのは最大 `ChartSizing.DefaultMaxLayoutWaitFrames` = 3 フレーム（`ChartLayoutWait`）で、超えたら Sprite の大きさで描く。待つ間は `Redraw.Request()` で次のフレームを回す（on_demand でも止まらない） |
+| 決めた理由 | Sprite の大きさで 1 フレーム描くと、伸ばされた・縮められたグラフは最初のフレームだけ中身が背景からはみ出す（右が見切れる・右が空く）。空の背景を 1 フレーム見せる方が目立たない（最初のフレームは目盛りの文字もまだ無い＝従来も中身が揃うのは 2 フレーム目）。普通は次のフレームで読めるので待ちは 1 フレーム。上限は 3D ワールドキャンバスの下など表に載らない所のため（そこでは最初の 3 フレームだけ出ない）。1 度描き始めたら待ちに戻らない |
+| 読む頻度 | 毎フレーム読む（大きさが変わった次のフレームに追従する）。費用は §3.1 の末尾（行の多いギャラリーで PC の最適化なしの exe で 1 フレーム約 0.19 ms。フレームに 1 回の表の索引の作り直しが主で、読むスクリプトの間で共有。on_demand の止まっている間は 0） |
+
 ## 3. 描き方（SEED.Draw と Rust への足し分）
 
 線・面・点・棒・格子線は `SEED.Draw`（イミディエイトモード）で、グラフの子の `Ink` の座標空間（面の左上が原点・dp）へ積む。レイヤーはグラフの Sprite の
-レイヤー（面の図形）と +1（吹き出し）。同じレイヤーでは「スプライト → 図形 → 文字」の順なので、目盛りの文字は線の上に出る。
+レイヤー（面の図形）と +1（吹き出し・日付線のハンドル）。同じレイヤーでは「スプライト → 図形 → 文字」の順なので、目盛りの文字は線の上に出る。
 
 ### 3.1 判断と数値（SEED.Draw だけでは足りなかった所）
 
@@ -105,13 +123,22 @@ Chart（Sprite = 全体〈背景〉・CanvasGesture〈タップ・長押し・�
 C# の側（位置の計算 `Rebuild`・積む `Paint`）は 1 つのグラフで 0.05〜0.9 ms（`UiChartsDemo` の `chart,stats`。変わったフレームだけ計算し直す）。
 最適化なしの build の値なので、配布版（release）はずっと軽い（未計測）。「グラフなし」の前の値 8.51 は計測の窓の最初のフレームの揺れを含む（最悪 49.6 ms）。
 
+**大きさを毎フレーム読む費用**（W2 の手直し P2-4・2026-09-29・PC・`runtime/target/debug`〈最適化なし〉・540×1200・continuous・何もしない 5 秒の `PROFILE_DUMP`。
+行の多いギャラリー〈`ui_gallery.scene`。折れ線 1・棒 1〉）: `スクリプト/Update/LineChart` は変更前（HEAD の DLL）0.074 ms → 変更後 0.259 ms（+0.185）、
+`Update/BarChart` は 0.035 → 0.045 ms（+0.010）。フレームで最初に `HasLayout` を読むとエンジンがレイアウトの表の索引（Entity → 行。表の行数に比例）を作り直すので、
+先に読んだ折れ線がそれを払い、後の棒は引くだけ。探りのデバッグの命令で測ると、索引を作る最初の読み出しは 149〜270 µs、2 回目は 2〜4 µs。
+グラフは 2 回とも作り直しの回数が増えない（大きさが揺れない）。最適化した .so（実機）ではずっと小さい見込み（未計測）で、render_policy: on_demand の
+止まっている間はフレームが回らないので 0。**読む頻度は下げていない**（下げると、コンテナ・画面の回転で大きさが変わってから追従するまでが延びる）。
+索引を表と一緒に持ち越す（Rust）と最初の読み出しの分も消える（docs/backlog.md の「W2 の手直し P1 の残り」の (6)）。
+
 ### 3.2 見た目の値
 
 | 図形 | 値（トークン） |
 |---|---|
 | 線 | 太さ `size.chart_line` 2・系列の色 `color.chart_series_1〜4`・画面の 1 画素のアンチエイリアス |
 | 点の印 | 半径 `size.chart_dot` 2.5。点の間隔（X の中央値 × 今の倍率の 1 単位の長さ）が `size.chart_dot_min_spacing` 6 未満なら打たない（全期間を縮めると点が詰まる。倍率だけで決まるのでパンで点が出たり消えたりしない） |
-| 選んだ点 | 縦の案内線（`color.chart_reference`）と半径 `size.chart_dot_selected` 5 の点 |
+| 選んだ点 | 縦の案内線（日付線。`color.chart_reference`）と半径 `size.chart_dot_selected` 5 の点 |
+| 日付線のハンドル（P2-4） | 直径 `size.chart_handle` 18 の丸。塗りは選んだ系列の色、縁は面の色 `color.surface`（太さ `size.chart_handle_border` 2。同じ色の線・点の上でも見分けられる）。丸の下端が面の下の縁（横軸の線）に乗る。レイヤー +1（吹き出しと同じ） |
 | 滑らかな曲線 | 単調な 3 次補間（Fritsch–Carlson。点と点の間で行き過ぎない）。区間を横の間隔 ÷ `size.chart_smooth_step` 2 に分ける（上限 16。横に詰まった区間は分けない） |
 | 線の下の塗り | 線の色 × `opacity.chart_area` 0.35 → 基準線（面の下の縁）で透明。グラデーションの上端は見えている線のいちばん上 |
 | 基準線 | 太さ `size.chart_reference` 1.5・`color.chart_reference`・線の上に左揃えの文字 |
@@ -182,34 +209,70 @@ C# の側（位置の計算 `Rebuild`・積む `Paint`）は 1 つのグラフ�
 | `BarChart` | 押した位置の X の列（列の幅の中なら**縦は問わない＝空の高さまで当たり**。Wake or Pay の「列全体が当たり判定」）。列の外を押しても選びは変えない（Flutter 版と同じ） | 棒の先（空の棒は最低の高さ）の上 |
 
 - 選んだ点・列がパンで見える範囲の外へ出たら吹き出しを隠す（選びは保つ。戻れば出る）。
-- 吹き出しの大きさは文字の数からの見積もり（`DialogLayout.EstimateWidth`。W2-6c の `Text.Measure` へ替える）。面は `color.inverse_surface`・`radius.chart_tooltip` 8、
+- 吹き出しの大きさは文字の見積もり（`DialogLayout.EstimateWidth`＝組み込みの書体の送り幅の表。2026-09-29 の W2 の手直し P2-1 で文字の幅にほぼ合うようになり、
+  以前より小さくなった。W2-6c の `Text.Measure` へ替える）。面は `color.inverse_surface`・`radius.chart_tooltip` 8、
   文字は `color.on_inverse_surface`・`text.chart_tooltip` 12（W2-7 のトーストと同じ inverse surface）。
 - イベント: `LineChart.PointSelected(chart, series, index)`（外したら −1, −1）・`BarChart.BarSelected(chart, index)`。スクリプトから `Select` で選べる（`notify` で出す）。
+
+### 6.1 日付線のハンドル（折れ線。W2 の手直し P2-4・2026-09-29）
+
+利用者の要望（2026-09-29 の実機の確認）: 「日付線の下部に丸いハンドルを用意して、そこを押して左右に動かすと日付線だけを動かせるといい」。
+
+| 項目 | 規則 |
+|---|---|
+| 作り | プレハブの子 `Handle`（§2）: Sprite〈楕円〉・`CanvasGesture`（`drag` = true・`drag_axis` = horizontal・`fling`・`tap`・`long_press`・`pinch`・`press_feedback` = false・`min_hit_size_dp` 48）・`SEED.UI.GestureRelay`（子のノードのドラッグをグラフの部品へ渡す）。はじめは非表示。子 `Handle` が無いプレハブ（利用者が作った古いもの）ではハンドルを出さず今までどおり。見本の折れ線（`ui_charts.scene` の WakeWeek・WakeHistory、`ui_gallery.scene` の GalleryLine）はプレハブの参照ではなく中身の写しなので、同じ `Handle` を足した（テストがプレハブと同じかを確かめる） |
+| 出すとき | 選んだ点があり、日付線が面の中に見えている間だけ（`ShowTooltip`・データあり。吹き出しと同じ半単位の許容 `ChartLayout.InsidePlot`）。パンで外へ出たら隠す（選びは保つ）。最初のレイアウトを待つ間（§2.1）も出さない |
+| 置き場 | 丸の中心の X = 日付線の X、丸の下端 = 面の下の縁（中心の Y = 面の下端 − 半径。`ChartLayout.HandlePosition`）。**理由**: 横軸の文字の行（面の下）に重ならず、日付線の下の端に付いて見え、グラフの子（面の切り抜きの外）なので面の端でも切れない。左端の点では丸の左半分が縦軸の列へ、右端の点では右の余白（8 dp）から 1 dp 出る |
+| 見た目 | 塗り = 選んだ系列の色、縁 = 面の色（§3.2・§7）。レイヤー = 吹き出しと同じ手前（+1）。木の順は Tooltip の直前なので、重なれば吹き出しが上（同じレイヤーでは文字がスプライトより手前に描かれるため、吹き出しの文字だけが上に出る食い違いを避けた）。見せる・隠す・動かす・色は値が変わったときだけ FFI で書く（`ChartHandle`） |
+| 当たりとアリーナ | 当たりは 48 dp（見た目 18 dp を中心をそろえて広げる。[input_gestures.md](input_gestures.md) §3）。ハンドルは葉なので、同じ横の移動ではグラフのパンより先に指を取る（§2.2 の規則 4）。縦の移動は取らない＝縦のスクロールへ渡る。倍率 1・`Interactive = false` でグラフがドラッグを受けないときも効く。タップ・長押しは受けない（グラフのタップ＝最寄りの点の選びへ届く） |
+| 指 → 面の中の X | 指の X（グラフの単位）= ハンドルの左上（前のフレームに書いた位置）＋ イベントの `LocalPosition.x`、面の中の X = それ − 面の左（`ChartLayout.HandleFingerPlotX`）。**`LocalPosition` を選んだ理由**: エンジンがジェスチャーを配る前に、そのときの World（＝前のフレームに書いたハンドルの位置）でノードの行列の逆を求め、ノードの単位（dp）へ直した値（`hit_slop.rs` の `local_position_in_units`・`gesture_events.rs`）なので、dp のキャンバス・祖先の `Scale`・`VisualScale` の下でもグラフの単位と一致する。`DeltaDp`・`TotalDelta`（画素）は倍率の下でずれ、`Position` は画面の矩形（1 フレーム遅れの `LayoutRect`）との換算が要る。ハンドルは指に付いて動くが、位置を書くのは毎フレームの `Paint` だけ（イベントの中では書かない）なので、イベントの座標の原点と覚えた位置が食い違わない |
+| 吸い付き | 選んでいる系列の、値のある点のうち見えている範囲（端の半単位を含む）の中で、X の距離が最小の点（縦の距離は見ない・距離の上限なし・同じ距離なら小さい添字。`ChartHit.NearestValuedX`）。日付線・大きな点・吹き出し・ハンドルはその点へ付いてくる。指が面の外（左右）へ出たら見えている範囲の端の点で止まる（自動のパンは無い＝backlog）。押した瞬間はハンドルの中心を押していなくても指の X で決める（slop の 8 dp を超えた所で最寄りの点） |
+| 知らせと触感 | 点が変わるたびに `LineChart.PointSelected` とログ `[UI] chart: line handle …`。軽い触感 `Haptics.Tap`（`HandleHaptic`。既定 true・1 フレームに 1 回まで＝ドラッグの始まりと途中が同じフレームでも 1 回）。選びだけが変わるので位置の計算（`Rebuild`）はやり直さず、描き直しだけ頼む |
+| 離す・取り消し | 離しても**取り消されても選びは残す**（戻さない）。取り消しは 2 本目の指のピンチ・OS の横取り・背面へ回るなど選びと関係の無い理由で来るうえ、途中の点ごとに `PointSelected` を出し済みで、戻すともう 1 度知らせて吹き出しが跳ねるため（パンの取り消しも見える範囲を戻さないのと同じ） |
+| その他 | 引き始めに慣性・± の動きを止める（指の下で面が流れない）。引いている間は `Redraw.Request()` で描き続ける。引いている間にハンドルが隠れた（データの差し替えで選びが消えた・別の指のパンで外へ出た）らその指のドラッグは終える。棒グラフ（`BarChart`）はハンドルを出さない（土台の `HandleAnchor`・`SelectNearestX` を上書きすれば足せる。backlog） |
 
 ## 7. テーマのトークン（`ChartTokens`。既定の値は `default_theme.json`）
 
 グラフのトークン（系列の色・格子線・軸・目盛りの文字・基準線・空の棒・選んだ列の強調・吹き出し、線・点・枠の割り付け・当たり・棒の大きさ、角丸、文字、
-棒の割合・慣性・± の倍率、塗りの濃さ・動き・縦軸の区間）の**一覧（名前・型・既定値・使う部品）の正典は [ui_theme.md](ui_theme.md) §8**（W2-9 で 1 つの表にまとめた）。
+棒の割合・慣性・± の倍率、塗りの濃さ・動き・縦軸の区間、日付線のハンドルの直径 `size.chart_handle`・縁 `size.chart_handle_border`〈P2-4〉）の
+**一覧（名前・型・既定値・使う部品）の正典は [ui_theme.md](ui_theme.md) §8**（W2-9 で 1 つの表にまとめた）。ハンドルの縁の色は面の `color.surface`（`ChartTokens.ColorHandleBorder` は別名）。
 値の出典: 線の太さ 2・点の半径 2.5・基準線 1.5・縦軸の文字の列 46・横軸の文字の行 26 は Flutter 版の wake_time_chart.dart、棒の太さ 0.7・空の棒の高さ 0.015・
 最小の太さ 2・選んだ列の強調（主の色の 12%）は penalty_bar_chart.dart、慣性の減速 0.135 は Flutter の BouncingScrollSimulation、系列 2 は Wake or Pay のカードの赤。
+ハンドルの直径 18 は利用者の要望の案（backlog: 見た目 16〜20 dp）の中ほどで、スライダのつまみ（`size.slider_thumb` 20）より一回り小さくして面の下の線と点を隠しすぎない。
+縁 2 は折れ線の太さと同じ（どちらも決めた値。当たりはプレハブの 48 dp）。
 
 テーマを差し替えると（`UiTheme.Apply`。W2-9）その場で見た目の値を読み直し（`ChartLook.From`）、次の更新で位置を計算し直す。グラフの面の色は部品が当てないので、
 プレハブ（`line_chart.actor`・`bar_chart.actor`）の根に `ThemeStyle`（`color.surface`）を付けた（W2-9）。
 
 ## 8. 見本（`templates/ui/scenes/ui_charts.scene`）
 
-ルートは dp（540×1200）。縦のスクロール（`Page`。中身の高さ 1,300）の中に 5 つのグラフ。`scripts/UiChartsDemo.cs` がサンプルデータ（種の固定の乱数）を入れる。
+ルートは dp。画面の幅と安全領域に合わせる（W2 の手直し P2-5。それまでは 540×1200 dp 固定の絶対配置で、Pixel 6a では右が切れ見出しがステータスバーに重なった）:
+
+```
+UiCharts（dp のルート・UiChartsDemo）
+├─ Background（親いっぱい。画面の端まで塗る）
+└─ Body（CanvasComponent・親いっぱい・CanvasSafeArea 4 辺・縦の CanvasStack〈cross_align stretch〉）
+    └─ Page（flex 1・切り抜き・縦のスクロール。中身の大きさは auto＝中身の並びに合う。窓そのものが縦の Stack〈cross_align stretch〉）
+        └─ Content（縦の Stack〈余白 16・間隔 16〉。幅は窓の Stack が渡す）
+            ├─ Title
+            └─ WakeWeekSection・WakeHistorySection・MonthlySection・PenaltySection・WeekdaySection
+                （縦の Stack・間隔 4: 見出し ＋ グラフ。グラフの幅は親に合わせる〈LayoutSize を読む。§2.1〉・高さは Sprite のまま）
+```
+
+`WakeHistory` の ± のボタン（`ZoomOut`・`ZoomIn`）は anchor x 1（グラフの右の端に付く）・位置 x −84・−40・y −34（見出しの行の右）。コンテナが置いたグラフの子の
+anchor の基準は伸ばされた矩形なので、グラフの幅が変わっても右の端から同じ位置に来る。`scripts/UiChartsDemo.cs` がサンプルデータ（種の固定の乱数）を入れる（名前で引く）。
 
 | ノード | 中身 |
 |---|---|
-| `WakeWeek` | 起床時間の遷移（30 日・固定・滑らかな曲線・線の下の塗り・平均の基準線・7 日に 1 日の記録なし） |
-| `WakeHistory` | 起床時間の全期間（365 日・12% の記録なし・パン・ピンチ・± のボタン。吹き出しは `M/d HH:mm`） |
+| `WakeWeek` | 起床時間の遷移（30 日・固定・滑らかな曲線・線の下の塗り・平均の基準線・7 日に 1 日の記録なし。点を選ぶと日付線のハンドル〈P2-4〉） |
+| `WakeHistory` | 起床時間の全期間（365 日・12% の記録なし・パン・ピンチ・± のボタン。吹き出しは `M/d HH:mm`。日付線のハンドル〈P2-4〉） |
 | `MonthlyPenalty` | 月ごとの寝坊ペナルティ（12 か月・コインとカードの積み上げ・固定・横軸は「9月」） |
 | `PenaltyHistory` | ペナルティ履歴（365 日・積み上げ・0 の日は最低の高さ・パンとピンチ・最後に何か失った日を選んでおく） |
 | `WeekdayBars` | 曜日ごとの寝坊（横の棒・固定） |
 
 デバッグの命令（`SCRIPT_DEBUG:chart,<名前>[,<値>]`）: `stats`（倍率・見える範囲・選び・作り直しの回数・図形の数・時間）・`zoom <グラフ>,<倍率>`・
-`show <グラフ>,<最初からの日数>,<日数>`・`select <グラフ>,<添字>`・`clear <グラフ>`・`mark <文字>`・`only <グラフ|none|all>`・`style <グラフ>,<滑らか 0/1>,<塗り 0/1>`。
+`show <グラフ>,<最初からの日数>,<日数>`・`select <グラフ>,<添字>`（折れ線は値のある点なら日付線のハンドルも出る）・`clear <グラフ>`・`mark <文字>`・`only <グラフ|none|all>`・`style <グラフ>,<滑らか 0/1>,<塗り 0/1>`。
+見本のシーンの配置は P2-4 では変えず、W2 の手直し P2-5 で上の作り（画面の幅と安全領域に合わせる）にした。
 テンプレートライブラリの「UI 部品」（`ui` のフォルダ）からプロジェクトへ取り込むと `assets/ui/...` になる（`LabelPrefab` の既定 `assets://ui/prefabs/chart_label.actor`）。
 
 ## 9. 検証（2026-09-28・PC）
@@ -235,6 +298,34 @@ C# の側（位置の計算 `Rebuild`・積む `Paint`）は 1 つのグラフ�
 - **回帰**（WarashibeFishing の複製。変更前の SEED.exe と SEEDScripting.dll〈HEAD〉で撮った基準と比べた）: 図鑑の画面 3 フレーム × 2 回とも差 0 画素、
   図鑑のボタンの縁の 56 点のクリックは当たり 34・外れ 22 で、各クリックの後の画面まで基準と一致。
 
+**W2 の手直し P2-4（2026-09-29・PC）**: 単体テスト `UiComponentsTests` 121 件（うち P2-4 の 6 件: 大きさの選び方〈LayoutSize・Sprite・壊れた値〉、
+最初のレイアウトの待ち〈次のフレームで読める・上限 3 フレーム・戻らない〉、ハンドルの吸い付き〈X だけ・値の無い点を飛ばす・同じ距離・範囲の外は端の点・
+点 0 個と 1 個・同じ X の並び・30 日の見本の並びで 1 点ずつ〉、置き場と指の X、トークン、プレハブと見本の折れ線 3 つの `Handle` の作り）。
+PC の確かめは作業フォルダの写しのプロジェクト（`templates/ui` の写し＋`ui_charts.scene` を縦の `CanvasStack`〈cross_align stretch〉と fill_width の下に
+組み直した写し。グラフの Sprite の幅はわざと 300）を `SEED.exe` で開き、IPC の注入で操作した（起動 5 回。撮影は `tmp/w2_fix2/item4/shots/`）:
+
+- 窓 540: 5 つのグラフが Sprite の幅 300 ではなく伸ばされた 508 dp（面 454）で描かれた。411 dp の模擬（`SEED_SIM_SCALE_FACTOR=1.3139`）では 379 dp（面 325）で、
+  右の端は画面の 519 px（窓 540）で切れない。曜日の棒（高さ 170 の Panel の下で fill_width）も同じ。
+- WakeWeek（固定・倍率 1）の 12 日目を選ぶ → 日付線の下にハンドル（面の下の縁に乗る）。ハンドルを押して右へ 3.96 日ぶん・左へ 4.98 日ぶん 2 px ずつ引くと、
+  選びが 13・14・15・16 → 15・14・13・12・11 と 1 つずつ変わり、触感 9 回（`moves=9 haptics=9`）。離した後も 11 のまま。411 dp の模擬でも同じ 9 回。
+- 見た目の倍率 0.8（中身の `CanvasLayoutItem.VisualScale`）の下でも、1 日が 12.52 px に縮んだぶんだけ引くと同じく 1 つずつ 9 回（`DeltaDp` で換算していたら 3 回になる）。
+- 右の端の近く（26）から面の右の外（面の右の端 516 px より右の 529 px）まで引くと 29 で止まり、左の外（29 px）まで戻すと 0 で止まった。
+- WakeHistory の倍率 1（パンできない）と 4 倍（パンできる）の両方で、ハンドルのドラッグは選びだけが変わり見える範囲は動かない（4 倍: [136.5, 227.5] のまま）。
+  4 倍でハンドルの外の横のドラッグ 60 px はパンになった（[124.47, 215.47]。60 × 91 / 454 = 12.03 日）。ハンドルは選んだ点に付いて一緒に動いた。
+- 411 dp の模擬で、ハンドルの上から縦に 150 px 引くとページがスクロールし（グラフの矩形の上が 100.9 → −38.6 px）、選びは変わらない（ハンドルのドラッグは始まらない）。
+- ギャラリー（行の多いシーン）で大きさを毎フレーム読む費用: §3.1 の末尾。
+
+**W2 の手直し P2-5（2026-09-29・PC）**: 見本（§8）を画面の幅と安全領域に合わせる作りにした後、作業フォルダの写しのプロジェクト（`templates/ui` の写し＋
+探りのスクリプト）を `SEED.exe` で開いて撮影した（`tmp/w2_fix2/item5/shots/c540`・`c411`）:
+
+- 窓 540: 5 つのグラフが 508 dp（面 454）で右の端 524 px。中身は 1,176.4 dp で画面に収まる（スクロールしない。以前は中身の高さを 1,300 に固定していた）。
+  ± は − 440〜476・+ 484〜520 px（変更前と同じ位置）。
+- 411 dp の模擬（`SEED_SIM_SCALE_FACTOR=1.3139`・`SEED_SIM_SAFE_AREA=0,32,0,21`）: グラフは 378.99 dp（面 325）で右の端 518.98 px。ページは y 32〜1,179 px
+  （ステータスバーとジェスチャーの帯の模擬の内側）で、見出しは y 53 px から。いちばん下までスクロールした曜日の棒の下の端は 1,158.0 px。± の + の右の端は 513.72 px
+  （グラフの右の端 − 4 dp）。撮影の右の余白の列（x ≧ 520）・上の 31 行・下の 20 行は背景の色だけ（違う画素 0）。
+- 両方で: WakeWeek の点を選ぶと日付線のハンドルが面の下の縁に出る（411 dp で丸の下の端 327.36 px ＝ 面の下の端）、± のタップで倍率 1 → 2 → 4 → 2 → 1、
+  WakeHistory の選択。`[UI]` のログに警告・例外なし。
+
 ## 10. 実機での確かめ方（Pixel 6a。W2-8 の時点で未実施）
 
 利用者と一緒に行う。見本のプロジェクト（`templates/ui` を `assets/ui` へ写し、`start_scene` を `assets://ui/scenes/ui_charts.scene`、`render_policy: on_demand`）を
@@ -245,6 +336,10 @@ SeedAndroid の `run` で入れ、`[UI] chart:` を logcat で見る。
 3. 横に払う → 慣性で流れて端で止まる。縦に払う → ページのスクロール（斜めの指で取り違えない。UC-3）
 4. 点・列のタップで吹き出し、長押しでも出る。ペナルティ履歴の細い列（1 倍で 1.2 dp の間隔）を指で選べるか（列の幅が狭すぎる所は拡大してから選ぶ）
 5. `SEED.Time.Fps`・`chart,stats` でパン・ピンチの間の 60 fps（配布版の .so で。最適化なしでは 365 本の棒の積み上げが重い〈§3.1〉）
+6. （W2 の手直し P2-4）点を選ぶと日付線の下にハンドル。ハンドルを押して左右へ動かす → 日付線・大きな点・吹き出しが最寄りの点へ吸い付いて 1 点ずつ動き、
+   点が変わるたびに軽い触感（`[UI] chart: line handle …` のログと手触り）。4 倍に拡大した全期間で、ハンドルを引いてもパンにならない・ハンドルの外を引くとパンになる。
+   ハンドルの上から縦に払う → ページがスクロールする。ハンドルを引きながら 2 本目の指でピンチ → ハンドルのドラッグが取り消され（`handle end (canceled)`）選びは残る。
+   丸の大きさ（18 dp）・当たり（48 dp）・面の下の縁に乗せた置き場が指で押しやすいか。画面の幅に合わせた見本（P2-5 の後）で右が切れないか
 
 **2026-09-28 の実機の回（roadmap §3.9）**: ページの縦のスクロール中、dev の .so は 19〜24 fps（「描画/UI 描画順の統合・GPU 積み込み」が 30.4 ms＝73%）、
 release の .so は 59.3〜60.0 fps（同 3.72 ms＝40%。5 つのグラフを `chart,only,none` で隠すと 0.39 ms・GPU 7.6 → 5.4 ms）。毎フレームの `SEED.Draw` の積み直しと
@@ -257,9 +352,13 @@ release の .so は 59.3〜60.0 fps（同 3.72 ms＝40%。5 つのグラフを `
 
 ## 11. 制限と持ち越し
 
-- **グラフの大きさはノードの Sprite の幅・高さ**（レイアウトのコンテナが伸ばした大きさはスクリプトから読めない。コンテナに入れるときは `CanvasLayoutItem` の大きさの指定で
-  Sprite と同じ値にする）
-  - P2 で `ChartView.ReadSize` を `CanvasTransform.LayoutSize` へ替える口ができた（2026-09-29。値は前のフレームの描画のもの。`HasLayout` が false の間〈最初のフレームなど〉は Sprite の大きさへ落とす想定。[scripting_api.md](scripting_api.md) 第 7 節）
+- ~~**グラフの大きさはノードの Sprite の幅・高さ**~~ → **2026-09-29 の W2 の手直し P2-4 でレイアウトの大きさ（`LayoutSize`）を読むようにした**（§2.1）。残り:
+  コンテナが大きさを変えたフレームは背景と中身が 1 フレームずれる（`LayoutSize` が前のフレームの描画の値のため）。最初のフレームは描かない（3D ワールドキャンバスの下では
+  最初の 3 フレーム）。見本のシーン（ページが 540 dp 固定・グラフは固定の位置）の画面の幅に合わせる作り直しは P2-5（WakeHistory の ± のボタンは固定の位置〈x 424・468〉
+  なので、グラフが細くなると右の外へ出る。右の端に寄せる置き方が要る）→ **P2-5 で直した**（§8。± は anchor x 1 で右の端に付く）
+- **日付線のハンドルは折れ線だけ**（棒グラフは付けていない。土台の `HandleAnchor`・`SelectNearestX` を `BarChart` で上書きすれば足せる）。**面の端へ寄せても自動でパンしない**
+  （見えている範囲の端の点で止まる。拡大しているときは、ハンドルを離してパンしてから続ける）。ハンドルを押しても大きくならない（押した見た目なし）。
+  右の端の点ではハンドルの丸が面の右の余白（8 dp）から 1 dp はみ出す。ピンチでの取り消し・実機の手触りは未確認（§10 の 6）
 - **吹き出しの大きさは文字の数からの見積もり**（W2-6c の `Text.Measure` へ替える）。長い文字・複数行の吹き出しは位置がずれうる
 - **隠れた（祖先が非表示の）グラフも毎フレーム `SEED.Draw` を積む**（座標空間が解決できないので Rust 側で捨てる。FFI の呼び出しだけが残る。棒 365 本で約 0.4 ms）。2026-09-28 夕に `Paint` で描く面から根までの `Visible` を辿って省く形を試したが、`GameObject.Parent`（`ffi_parent_of`）が呼ぶたびにアクタの木全体をたどるため、見えているグラフでも 1 つ 1 フレーム約 0.02〜0.04 ms 増え（実機・develop。グラフの見本の `Update/BarChart` 0.397 → 0.473 ms・`Update/LineChart` 0.109 → 0.150 ms）、普通のスクロールで損になったので入れていない。入れるなら実効の表示を 1 回の FFI で引ける口（描画の表の `is_drawn`）を先に足す（backlog）
 - **ピンチは倍率と中点だけ**（回転は無い）。ピンチを 1 本離すと残った指は何もしない（Flutter の InteractiveViewer は残った指でパンを続ける）。PC で 2 本の指の入力を注入できない

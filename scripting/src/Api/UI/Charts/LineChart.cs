@@ -13,6 +13,9 @@ namespace SEED.UI;
 //  【Wake or Pay】起床時間の遷移（30 日の島は Interactive = false・FixedXRange = 30 日）と全期間（パンとピンチ 1〜6 倍）。
 //  値は 0 時からの分（YFormat = TimeOfDay。縦軸は H:mm、上下 30 分の余白・最小 2 時間の幅・目盛りは 15/30/60/120/180/360 分から）。
 //  X は日の番号（XFormat = Date。横軸は M/d を間引く）。吹き出しの文字は TooltipFormatter で M/d HH:mm などにできる。
+//  【日付線のハンドル】（W2 の手直し P2-4。プレハブの子 Handle があるとき）選んだ点の縦の案内線（日付線）の下に、選んだ系列の色の丸を出す。
+//  ハンドルを横へ引くと、選んでいる系列の値のある点のうち見えている範囲の中で指の X に最も近い点へ選びが吸い付く
+//  （ChartHit.NearestValuedX。日付線・大きな点・吹き出しが付いてくる。点が変わるたびに PointSelected）。置き場・触感は土台（ChartView）。
 // ============================================================
 
 /// <summary>折れ線のグラフ。</summary>
@@ -354,6 +357,35 @@ public sealed class LineChart : ChartView
         if (!TryGetSelected(out var p)) return false;
         plotLocal = Map.ToLocal(p.X, p.Y!.Value);
         text = TooltipText(p);
+        return true;
+    }
+
+    /// <inheritdoc />
+    protected override bool HandleAnchor(out float plotX, out Color fill)
+    {
+        plotX = 0f;
+        fill = default;
+        if (!TryGetSelected(out var p)) return false;
+        // 日付線（選んだ点の縦の案内線）の X と、選んだ系列の色
+        plotX = Map.XToLocal(p.X);
+        fill = Look.SeriesColor(_selSeries);
+        return true;
+    }
+
+    /// <inheritdoc />
+    protected override bool SelectNearestX(float plotX)
+    {
+        if (_selSeries < 0 || _selSeries >= _series.Count || !(Map.Width > 0f)) return false;
+        // 候補は見えている範囲の中の点だけ（面の外の指は端の点で止まる）。端の半単位の許容は、吹き出し・ハンドルを出す条件
+        // （ChartLayout.InsidePlot）と同じ幅を値の単位に直したもの
+        double tolerance = Half / Map.XUnitLength;
+        var points = _series[_selSeries].Points;
+        int k = ChartHit.NearestValuedX(points, Map.LocalToX(plotX), Map.X.Min - tolerance, Map.X.Max + tolerance);
+        if (k < 0 || k == _selIndex) return false;
+        _selIndex = k;
+        var p = points[k];
+        Debug.Log($"{LogPrefix} line handle series={_selSeries} index={k} x={p.X:0.###} y={p.Y:0.###} text=\"{TooltipText(p)}\"");
+        PointSelected?.Invoke(this, _selSeries, _selIndex);
         return true;
     }
 
