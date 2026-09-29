@@ -905,6 +905,9 @@ impl App {
             // プラットフォーム機能（SEED.Platform）のイベントを基盤（Android の Java・デスクトップの模擬）から取り出し、
             // スクリプトへ見せる箱へ移す。C# の PlatformEvents.Poll が BeginFrame（フレームに 1 回）で配る（W1-1）。
             crate::engine::core::scripting::platform_bridge::publish_platform_events();
+            // 文字入力（W2-6a）: Android の IME の知らせ（本文の写し・完了・キーボードの表示と高さ）をハブへ当てる
+            // （このフレームのスクリプトから結果が見える。知らせが無ければ箱を 1 回見るだけ。text_input_hooks.rs）。
+            self.pump_text_input_messages();
             // アニメーション評価（スクリプト更新より前に実行し、スクリプトが上書き可能にする）。
             // AnimatorComponent のクリップを進めて対象アクターの Transform 等へ書き込む。
             {
@@ -10032,6 +10035,11 @@ impl App {
                 ipc.send(&reply);
             }
         }
+
+        // 文字入力（W2-6a）: このフレームにスクリプトが求めたキーボードの出し入れ・入力欄の切り替え・IME の本文の送り返し・
+        // 候補窓の位置を、プラットフォームへ 1 度にまとめて当てる（Android は登録された実装、PC はウィンドウ。
+        // 入力欄の場が無く変化も無ければ何もしない。text_input_hooks.rs）。
+        self.flush_text_input_platform();
 
         // 目標フレームレート（project_settings.json の target_fps）まで待ち、
         // フレーム統計（fps / フレーム時間）を更新する。

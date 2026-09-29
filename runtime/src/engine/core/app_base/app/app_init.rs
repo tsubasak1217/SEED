@@ -392,9 +392,10 @@ impl App {
             w.request_redraw();
         }
         eprintln!("[SEED INIT] window set_visible + request_redraw");
-        // W2-0 の試作（ui_spike の ime。PC だけ）: ウィンドウに IME を許可して Ime イベントを観察する。
-        // 指定が無ければ何もしない（winit の既定どおり IME は切り離されたまま）。ui_spike_hooks.rs
-        self.allow_desktop_ime_if_requested();
+        // 文字入力（W2-6a）: PC のキーボードの模擬の高さ（SEED_SIM_KEYBOARD_HEIGHT）を読む。ウィンドウの IME は
+        // 入力欄にフォーカスがある間だけ許可する（フレームの末尾の flush_text_input_platform。既定は winit の既定どおり
+        // 切り離されたまま＝入力欄の無いゲームは従来と同じ）。text_input_hooks.rs
+        self.init_text_input_from_env();
 
         let hwnd = self.window_hwnd();
         if let Some(ipc) = &self.ipc {

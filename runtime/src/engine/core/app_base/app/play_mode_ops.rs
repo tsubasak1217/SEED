@@ -106,6 +106,8 @@ impl App {
         crate::engine::core::scripting::platform_bridge::clear_platform_events();
         // 前回 Play のスクリプトの描画の要求（KeepAlive・常に描く・方針の上書き）を捨て、描画を止めていれば起こす（W2-10a）。
         self.reset_redraw_for_play_session();
+        // 前回 Play の入力欄の場と、積まれた IME の知らせを捨てる（W2-6a。text_input_hooks.rs）
+        self.reset_text_input_for_play_session();
         // JointAttach 子孫の相対ローカルは Play 開始時点の姿勢から採り直す
         // （Edit で竿先を動かした結果を必ず反映させるため）。
         self.joint_attach_child_locals.clear();
@@ -288,6 +290,8 @@ impl App {
         crate::engine::core::scripting::platform_bridge::clear_platform_events();
         // スクリプトの描画の要求を捨て、描画を止めていれば起こす（Edit は毎フレーム描く。W2-10a）。
         self.reset_redraw_for_play_session();
+        // 入力欄の場を捨てる（キーボードを隠し、PC の窓の IME の許可を外す命令は次のフレームの末尾で出る。W2-6a）
+        self.reset_text_input_for_play_session();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         // 開始状態の記録も必ず捨てる（次の Play へ持ち越さない）。
         if self.mode != RuntimeMode::Play {

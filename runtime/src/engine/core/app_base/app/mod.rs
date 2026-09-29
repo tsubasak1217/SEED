@@ -127,8 +127,9 @@ mod render_resolution;
 mod render_quality;
 /// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）
 pub(crate) mod frame_pacing;
-// アプリ基盤 W2-0 のスパイク（PC の IME のログ。既定で無効。描かないときの試作は W2-10a で redraw_hooks へ置き換えた）
-mod ui_spike_hooks;
+/// 文字入力（W2-6a。engine/core/text_input）を App へつなぐ所（PC の IME とキー・IPC の注入・Android の知らせ・
+/// フレームの末尾のプラットフォームへの命令。W2-0 の試作 ui_spike_hooks の ime を置き換えた）
+mod text_input_hooks;
 /// 「描く理由」の判定（render_policy の on_demand。W2-10a）を App とイベントループへつなぐ所
 mod redraw_hooks;
 /// レイアウトの一本化（W2-1a）の同値の性質テスト（旧 5 か所の写しと新しい表の突き合わせ。テスト専用）。
@@ -675,11 +676,6 @@ pub struct LaunchArgs {
     /// 優先され、無いものは pak から読む）。配布版・PC は常に false（従来どおり pak → 配布物の PAK 外 → ファイルシステムの順。
     /// engine::asset_fs::FilesystemLayer）。
     pub asset_overlay: bool,
-    /// アプリ基盤 W2-0 のスパイクの指定（既定で無効の試作。書式は engine::core::ui_spike::config）。
-    ///
-    /// PC は --ui-spike=<指定> か環境変数 SEED_UI_SPIKE、Android は起動オプション seed.ui_spike
-    /// （起動オプションを渡すのはデバッグ版の APK だけ）。None なら何もしない（従来どおり）。
-    pub ui_spike: Option<String>,
 }
 
 // ============================================================
@@ -1631,10 +1627,6 @@ impl App {
         let script_reload_source = scripting_host
             .as_ref()
             .and_then(|_| Self::script_reload_source(&args));
-
-        // アプリ基盤 W2-0 のスパイクの指定（既定で無効。指定が無ければ何もしない。engine::core::ui_spike。
-        // 残っているのは文字入力の ime だけ。PC は ui_spike_hooks.rs が config() を読む）
-        crate::engine::core::ui_spike::install(args.ui_spike.as_deref());
 
         Self {
             window:         None,

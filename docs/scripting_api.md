@@ -2156,6 +2156,8 @@ if (gameObject.GetComponent<CanvasScroll>() is { } s)
     s.ViewportSize     // Vector2（窓の大きさ）
     s.ContentSize      // Vector2（中身の大きさ）
     s.MaxPosition      // Vector2（位置の最大 = 中身 − 窓）
+    s.EndInset         // Vector2（get/set。中身の末尾に足す余白・0 以上・実行中だけで保存しない。W2-6b の入力欄がキーボードを避けるときに使う。
+                       //   次のフレームの描画から ContentSize・MaxPosition に入る）
 
     // 操作
     s.ScrollTo(new Vector2(0, 1200), 0.3f);  // 時間をかけて動かす（Curves.easeInOut。次のフレームから。指で触れると止まる）
@@ -4405,6 +4407,90 @@ line.MarkDirty();                                       // 書式・刻みの候
 > **重要**: グラフは毎フレーム `SEED.Draw` で描く（`render_policy: on_demand` で止まっている間は描かない）。データ・見える範囲・大きさ・テーマが変わったフレームだけ
 > 位置を計算し直し、目盛りの文字（プレハブのノード）は変わった値だけを書き換える。性能の数値（365 点の折れ線・365 本の棒）は `docs/ui_charts.md` §3.1。
 > 大きさ（`LayoutSize`）も毎フレーム読む（コンテナ・画面の回転で変わった次のフレームに追従する。フレームで最初の読み出しがレイアウトの表の索引を作る費用は同じ §3.1 の末尾）。
+
+## 7.20 文字入力（SEED.UI.TextField・SEED.TextInput・SEED.TextMeasure。W2-6）
+
+1 行の入力欄。日本語の変換（変換中の文字の下線・確定）・数字だけの欄（数字のキーボード）・完了のアクション・カーソル（点滅）・選択・最大の長さ・
+貼り付けとコピーの禁止・キーボードを避ける（スクロールの中身の末尾の余白と送り・ダイアログの持ち上げ）・戻るで先にキーボードを閉じる。
+プレハブは `templates/ui/prefabs/text_field.actor`（文字の欄）・`number_input.actor`（数値の欄。幅 112・数字は中央で大きめ）。
+本文・選択・変換中の区間はエンジンが持ち（PC は IME とキー、Android は IME の知らせをエンジンが吸収する）、部品は見た目とフォーカスを受け持つ。
+添字は string の添字（UTF-16 の単位）。正典は `docs/ui_text_input.md`、見本は `templates/ui/scenes/ui_text_input.scene`。
+
+```csharp
+using SEED.UI;
+
+// 入力欄（プレハブを置き、画面のスクリプトから引く。欄はインスペクタでも決められる）
+var field = UiWidget.Of<TextField>(gameObject.FindChild("NameField"))!;
+field.Placeholder = "例：田中太郎";            // 例の文（本文が空のときに薄く出す）
+field.Kind = TextInputKind.Text;               // Text（文字。日本語の変換）/ Number（0〜9 だけ。全角の数字は半角へ・ほかは捨てる。数字のキーボード）
+field.Action = TextInputAction.Done;           // キーボードのアクションのボタン・PC の Enter（Done・Next・Go・Search・Send・Previous・None）
+field.MaxLength = 20;                          // 最大の長さ（見た目の文字＝書記素の数。0 = 制限なし。変換中は超えてよく、確定したら切り詰める）
+field.AllowPaste = false;                      // 貼り付けを禁止（PC の Ctrl+V・Shift+Insert を止め、Android は IME からの一度の大きな挿入を戻す）
+field.AllowCopy = false;                       // コピー・切り取りを禁止（PC の Ctrl+C・Ctrl+X）
+field.Align = TextFieldAlign.Center;           // 揃え（Left / Center。数値の欄は Center）
+field.TextSize = TextFieldTokens.TextFieldNumber;   // 文字の大きさのトークン（既定 text.field 16・数値の欄は text.field_number 24）
+field.Filled = false;                          // 塗りのある種類（既定は枠だけ = Material 3 の Outlined）
+field.SelectAllOnFocus = false;                // フォーカスを得たら全選択
+field.UnfocusOnDone = true;                    // 完了（Done）でフォーカスを外す（キーボードも隠れる）
+field.AvoidKeyboard = true;                    // キーボードを避ける（祖先の縦の CanvasScroll の末尾の余白と送り・ダイアログの持ち上げ）
+field.SetError(true);                          // エラーの見た目（枠とカーソルが color.error）
+
+string text = field.Text;                      // 本文（フォーカスの間はエンジンの本文に追従する）
+field.SetText("30");                           // 本文を置く（フォーカスの間は入力中の本文も差し替える。notify: true で TextChanged も出す）
+bool written = field.SetTextUnlessFocused("3");// フォーカスが無いときだけ置く（スライダなど外の値との双方向）
+field.Focus(); field.Unfocus(); field.SelectAll();
+bool f = field.IsFocused; bool c = field.IsComposing; TextInputState s = field.State;   // s.Text・s.SelectionStart/End・s.CompositionStart/End・s.Caret
+
+field.TextChanged += (tf, t) => { };           // 本文が変わった（打鍵・変換中の文字の変化〈1 文字ごと〉・貼り付け・確定）
+field.Submitted += (tf, action) => { };        // 完了などのアクション（Done・Next …）
+field.FocusChanged += (tf, focused) => { };    // フォーカスを得た・失った（欄の外のタップ・戻る・完了・別の欄のタップ）
+field.PasteBlocked += tf => { };               // 貼り付けを禁止した欄で貼り付けを止めた
+
+// 数字の欄の値（Wake or Pay の数値の欄: 数字として読めれば範囲へ収める・読めなければ前の値のまま）
+if (NumberText.TryParseClamped(field.Text, 1, 5, out long minutes)) slider.SetValue(minutes, notify: false);
+field.SetText(NumberText.Format(minutes));     // フォーカスが外れた・完了したときに収めた値の文字へ直す
+
+// ダイアログの 1 行の入力（名前の変更。Positive のときだけ InputText が入る。前後の空白を落とす）
+var handle = Dialog.Show(new DialogOptions
+{
+    Title = "名前の変更", PositiveText = "変更", NegativeText = "やめる",
+    Input = new DialogInputOptions { Text = current, Placeholder = "例：田中太郎", MaxLength = 20, TrimResult = true, SubmitOnDone = true },
+});
+handle!.Completed += r => { if (r == DialogResult.Positive && handle.InputText is { Length: > 0 } name) current = name; };
+
+// 部品を使わずに直接（入力欄の場。同時に 1 つ）
+int session = SEED.TextInput.Begin(new TextInputOptions { Kind = TextInputKind.Number, Action = TextInputAction.Done, MaxLength = 7,
+                                                           AllowPaste = true, AllowCopy = true }, "1000");   // 選択は既定で末尾
+foreach (var e in SEED.TextInput.TakeEvents(session)) { }   // e.Kind: TextChanged / SelectionChanged / Action（e.Action）/ PasteBlocked / KeyboardShown（e.KeyboardHeight）/ KeyboardHidden
+SEED.TextInput.TryGetState(session, out var st);            // 本文・選択・変換中の区間・版
+SEED.TextInput.SetText(session, "12", 2, 2); SEED.TextInput.SetSelection(session, 0, 2);
+SEED.TextInput.ShowKeyboard(session); SEED.TextInput.HideKeyboard(session);
+SEED.TextInput.SetCaretRect(session, rectInScreenPixels);   // PC の IME の候補窓が避ける矩形（画面の画素）
+bool active = SEED.TextInput.IsActive(session); int now = SEED.TextInput.ActiveSession;
+SEED.TextInput.End(session);                                // キーボードを隠し、PC の IME の許可を外す（変換中の文字は確定扱い）
+float kb = SEED.TextInput.KeyboardHeight;                   // ソフトキーボードの高さ（画面の下端から・画面の画素・見えていなければ 0）
+bool shown = SEED.TextInput.KeyboardVisible;
+
+// 1 行の文字の寸法（描画と同じ送り幅。記法は解かない。W2-6c の Text.Measure の芽）
+float w = SEED.TextMeasure.LineWidth("こんにちは", text.FontPath, text.FontSize);
+float[] stops = SEED.TextMeasure.CaretOffsets("abc", text.FontPath, text.FontSize);   // 長さ = 文字数 + 1（添字 i の前の端の x）
+var (ascent, descent) = SEED.TextMeasure.Metrics(text.FontPath, text.FontSize);
+
+// スクロールの中身の末尾の余白（実行中だけ。入力欄がキーボードを避けるときに使う）
+scroll.EndInset = new Vector2(0f, 300f);
+```
+
+| 操作 | 振る舞い |
+|---|---|
+| 欄のタップ | フォーカス（タップの位置へカーソル）。フォーカスの間のタップはカーソルを移し、閉じられていたキーボードを出し直す |
+| 欄の長押し | すべてを選ぶ |
+| 欄の外のタップ（押して動かさずに離す） | フォーカスを外す（キーボードが隠れる）。スクロールのドラッグでは外さない。別の欄・ボタンのタップはそちらが先に受ける |
+| 戻る（Android の戻る・PC の Esc） | 戻るの段（BackDispatcher）の Focus の層: キーボードが出ていれば（PC は常に）フォーカスを外して受ける。Android でキーボードを閉じた後の戻るは、フォーカスを外して後ろの層（ダイアログ・画面）へ回す |
+| PC のキー | 文字（IME の変換・確定を含む）・Backspace・Delete・←→（Shift で選択）・Home・End・Enter（アクション）・Ctrl+A・Ctrl+C/X/V（禁止の欄では止める）。変換中のキーは IME が受ける |
+| Android | 文字・数字のキーボード（EditorInfo）、変換中の文字と確定、完了のボタン（onEditorAction）、キーボードの表示と高さ（WindowInsets）。数字の欄でも IME の側でかなへ切り替えられるので、エンジンが数字以外を捨てる |
+
+> **重要**: 入力欄にフォーカスがある間も、キーの状態（`Input.GetKey` など）は従来どおり届く（入力欄が受けたキーもゲームの入力に残る）。ゲームのショートカットを
+> 打鍵で動かしたくない画面は `SEED.TextInput.ActiveSession != 0` の間は止める。エディタのショートカット（Play 中の Ctrl+Z など）は入力欄が受けたキーでは動かない。
 
 ---
 

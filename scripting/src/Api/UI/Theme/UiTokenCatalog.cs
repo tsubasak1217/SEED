@@ -46,29 +46,29 @@ public static class UiTokenCatalog
     /// <summary>部品が読まない目安のトークン（プレハブ・画面を作るときの寸法）。</summary>
     private const string GuideOnly = "（部品は読まない。プレハブ・画面の寸法の目安）";
     /// <summary>文字を持つすべての部品。</summary>
-    private const string AllTexts = "文字を持つ全部品（Button・" + Selections + "・NumberField・TabBar・Dialog・Toast・WheelPicker・" + Charts + "・ThemeStyle）";
+    private const string AllTexts = "文字を持つ全部品（Button・" + Selections + "・NumberField・TextField・TabBar・Dialog・Toast・WheelPicker・" + Charts + "・ThemeStyle）";
 
     /// <summary>表（docs の表の並び）。</summary>
     private static readonly UiTokenInfo[] Entries =
     {
         // ── 色 ──────────────────────────────────────────────
-        new(UiTokens.ColorPrimary, UiTokenKind.Color, "Button（Filled の塗り・Outlined と Text の文字）・Toggle（オンの台）・Checkbox（オンの塗り）・Slider・ProgressBar・ProgressRing・RadioGroup（選んだ輪と点）"),
+        new(UiTokens.ColorPrimary, UiTokenKind.Color, "Button（Filled の塗り・Outlined と Text の文字）・Toggle（オンの台）・Checkbox（オンの塗り）・Slider・ProgressBar・ProgressRing・RadioGroup（選んだ輪と点）・TextField（フォーカスの枠・カーソル）"),
         new(UiTokens.ColorOnPrimary, UiTokenKind.Color, "Button（Filled の文字）・Checkbox（印）"),
         new(UiTokens.ColorBackground, UiTokenKind.Color, "ScreenStack（画面の背景・動きの幕）・ThemeStyle（画面の背景）"),
         new(UiTokens.ColorSurface, UiTokenKind.Color, "NumberField・TabBar・Dialog・BottomSheet・TopSheet（面）・ThemeStyle（カード・島）・LineChart（日付線のハンドルの縁）"),
-        new(UiTokens.ColorSurfaceVariant, UiTokenKind.Color, "Toggle（オフの台）・Slider（溝）・SegmentedControl（台）・ProgressBar・ProgressRing（溝）・WheelPicker・TimeWheel（中央の帯）"),
-        new(UiTokens.ColorOnSurface, UiTokenKind.Color, "NumberField・" + Selections + "（文字）・TabBar（選んだタブ）・Dialog（題）・WheelPicker（行の文字）・ThemeStyle"),
-        new(UiTokens.ColorOnSurfaceMuted, UiTokenKind.Color, "Checkbox（オフの枠）・RadioGroup（選んでいない輪）・TabBar（選んでいないタブ）・Dialog（本文）・BottomSheet・TopSheet（つまみ）・ThemeStyle"),
-        new(UiTokens.ColorOutline, UiTokenKind.Color, "Button（Outlined の枠）・Toggle（オフの台の枠）・NumberField・ChipGroup（枠）"),
+        new(UiTokens.ColorSurfaceVariant, UiTokenKind.Color, "Toggle（オフの台）・Slider（溝）・SegmentedControl（台）・ProgressBar・ProgressRing（溝）・WheelPicker・TimeWheel（中央の帯）・TextField（Filled の塗り）"),
+        new(UiTokens.ColorOnSurface, UiTokenKind.Color, "NumberField・" + Selections + "（文字）・TabBar（選んだタブ）・Dialog（題）・WheelPicker（行の文字）・TextField（文字・変換中の下線）・ThemeStyle"),
+        new(UiTokens.ColorOnSurfaceMuted, UiTokenKind.Color, "Checkbox（オフの枠）・RadioGroup（選んでいない輪）・TabBar（選んでいないタブ）・Dialog（本文）・BottomSheet・TopSheet（つまみ）・TextField（例の文）・ThemeStyle"),
+        new(UiTokens.ColorOutline, UiTokenKind.Color, "Button（Outlined の枠）・Toggle（オフの台の枠）・NumberField・ChipGroup（枠）・TextField（フォーカスの無い枠）"),
         new(UiTokens.ColorSelected, UiTokenKind.Color, "Button（Tonal）・SegmentedControl・ChipGroup（選んだ項目）・TabBar（選択の印）"),
         new(UiTokens.ColorOnSelected, UiTokenKind.Color, "Button（Tonal の文字）・SegmentedControl・ChipGroup（選んだ項目の文字）"),
         new(UiTokens.ColorKnob, UiTokenKind.Color, "Toggle（オンのつまみ）"),
         new(UiTokens.ColorKnobOff, UiTokenKind.Color, "Toggle（オフのつまみ）"),
         new(UiTokens.ColorStateLayer, UiTokenKind.Color, "Button・Toggle・Checkbox・" + Selections + "・TabBar（押下の重ね色）"),
-        new(UiTokens.ColorDisabled, UiTokenKind.Color, "Button・NumberField・SegmentedControl・ChipGroup（無効の塗り・枠）"),
-        new(UiTokens.ColorOnDisabled, UiTokenKind.Color, "Button・NumberField・Slider・" + Selections + "・TabBar・WheelPicker（無効の文字・選べない行）"),
+        new(UiTokens.ColorDisabled, UiTokenKind.Color, "Button・NumberField・SegmentedControl・ChipGroup・TextField（無効の塗り・枠）"),
+        new(UiTokens.ColorOnDisabled, UiTokenKind.Color, "Button・NumberField・Slider・" + Selections + "・TabBar・WheelPicker・TextField（無効の文字・選べない行）"),
         new(UiTokens.ColorShadow, UiTokenKind.Color, GuideOnly),
-        new(UiTokens.ColorError, UiTokenKind.Color, "ThemeStyle（一覧の行の削除の面。templates/ui の list_row）・（W2-6 の入力欄が使う予定）"),
+        new(UiTokens.ColorError, UiTokenKind.Color, "ThemeStyle（一覧の行の削除の面。templates/ui の list_row）・TextField（エラーの枠・カーソル）"),
         new(UiTokens.ColorOnError, UiTokenKind.Color, "ThemeStyle（削除の面の上の文字。templates/ui の list_row）"),
         new(NavTokens.ColorScrim, UiTokenKind.Color, "Dialog・BottomSheet・TopSheet（幕）"),
         new(NavTokens.ColorInverseSurface, UiTokenKind.Color, "Toast（面）・" + Charts + "（吹き出しの面）"),
@@ -83,12 +83,13 @@ public static class UiTokenCatalog
         new(ChartTokens.ColorReference, UiTokenKind.Color, "LineChart（基準線とその文字）"),
         new(ChartTokens.ColorEmptyBar, UiTokenKind.Color, "BarChart（合計 0 の棒）"),
         new(ChartTokens.ColorHighlight, UiTokenKind.Color, "BarChart（選んだ列の背景）"),
+        new(TextFieldTokens.ColorSelection, UiTokenKind.Color, "TextField（選択の背景）"),
 
         // ── 角丸 ────────────────────────────────────────────
         new(UiTokens.RadiusButton, UiTokenKind.Number, "Button"),
         new(UiTokens.RadiusChip, UiTokenKind.Number, "ChipGroup"),
         new(UiTokens.RadiusCard, UiTokenKind.Number, "ThemeStyle（カード・島）"),
-        new(UiTokens.RadiusField, UiTokenKind.Number, "NumberField"),
+        new(UiTokens.RadiusField, UiTokenKind.Number, "NumberField・TextField"),
         new(UiTokens.RadiusSegment, UiTokenKind.Number, "SegmentedControl"),
         new(UiTokens.RadiusCheckbox, UiTokenKind.Number, "Checkbox"),
         new(UiTokens.RadiusProgress, UiTokenKind.Number, "ProgressBar"),
@@ -109,7 +110,7 @@ public static class UiTokenCatalog
 
         // ── 大きさ ──────────────────────────────────────────
         new(UiTokens.SizeTouchMin, UiTokenKind.Number, "（部品は読まない。CanvasGesture の最小のヒット領域 48 dp の目安）"),
-        new(UiTokens.SizeBorder, UiTokenKind.Number, "Button（Outlined）・NumberField・ChipGroup（細い枠）"),
+        new(UiTokens.SizeBorder, UiTokenKind.Number, "Button（Outlined）・NumberField・ChipGroup・TextField（細い枠）"),
         new(UiTokens.SizeCheckBorder, UiTokenKind.Number, "Checkbox・RadioGroup（枠）・Toggle（オフの台の枠）"),
         new(UiTokens.SizeToggleKnob, UiTokenKind.Number, "Toggle（オン・押している間のつまみ）"),
         new(UiTokens.SizeToggleKnobOff, UiTokenKind.Number, "Toggle（オフのつまみ）"),
@@ -158,6 +159,12 @@ public static class UiTokenCatalog
         new(ChartTokens.SizeTooltipGap, UiTokenKind.Number, Charts + "（吹き出しと点の間）"),
         new(ChartTokens.SizeHandle, UiTokenKind.Number, "LineChart（日付線のハンドルの直径）"),
         new(ChartTokens.SizeHandleBorder, UiTokenKind.Number, "LineChart（日付線のハンドルの縁の太さ）"),
+        new(TextFieldTokens.SizeFieldHeight, UiTokenKind.Number, "（部品は読まない。入力欄のプレハブ text_field・number_input の高さの目安）"),
+        new(TextFieldTokens.SizeFieldPadding, UiTokenKind.Number, "TextField（左右の内側の余白）"),
+        new(TextFieldTokens.SizeFieldFocusBorder, UiTokenKind.Number, "TextField（フォーカス・エラーの枠の太さ）"),
+        new(TextFieldTokens.SizeCaret, UiTokenKind.Number, "TextField（カーソルの太さ）"),
+        new(TextFieldTokens.SizeCompositionUnderline, UiTokenKind.Number, "TextField（変換中の文字の下線の太さ）"),
+        new(TextFieldTokens.SizeKeyboardGap, UiTokenKind.Number, "TextField（キーボードを避けるときの欄とキーボードの間）"),
 
         // ── 文字の大きさ ────────────────────────────────────
         new(UiTokens.TextTitle, UiTokenKind.Number, "Dialog（題）・ThemeStyle（見出し）"),
@@ -167,6 +174,8 @@ public static class UiTokenCatalog
         new(UiTokens.TextWheel, UiTokenKind.Number, "WheelPicker・TimeWheel（行の文字）"),
         new(ChartTokens.TextAxis, UiTokenKind.Number, Charts + "（目盛りの文字）"),
         new(ChartTokens.TextTooltip, UiTokenKind.Number, Charts + "（吹き出しの文字）"),
+        new(TextFieldTokens.TextField, UiTokenKind.Number, "TextField（文字の欄の文字・例の文）"),
+        new(TextFieldTokens.TextFieldNumber, UiTokenKind.Number, "TextField（数値の欄〈number_input〉の文字）"),
 
         // ── 書体（W2-9）──────────────────────────────────────
         new(UiTokens.FontFamily, UiTokenKind.Text, AllTexts),
@@ -186,6 +195,7 @@ public static class UiTokenCatalog
         new(UiTokens.MotionSwipeFull, UiTokenKind.Number, "SwipeActions（フルスワイプの文字の置き場の補間）"),
         new(UiTokens.MotionSwipeDismiss, UiTokenKind.Number, "SwipeActions（確定で行を外へ流し切る）"),
         new(UiTokens.MotionSwipeCollapse, UiTokenKind.Number, "（部品は読まない。一覧の持ち主が消した行の高さを畳む時間。見本の UiGallerySections）"),
+        new(TextFieldTokens.MotionCaretBlink, UiTokenKind.Number, "TextField（カーソルの点滅の半周期）"),
         new(NavTokens.MotionPush, UiTokenKind.Number, "ScreenStack（押し込み）"),
         new(NavTokens.MotionPushCurve, UiTokenKind.Curve, "ScreenStack（押し込み）"),
         new(NavTokens.MotionCover, UiTokenKind.Number, "ScreenStack（覆う画面）"),

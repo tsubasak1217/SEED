@@ -653,6 +653,10 @@ pub(super) fn key_from_name(name: &str) -> Option<KeyCode> {
         "DownArrow" => KeyCode::ArrowDown,
         "LeftArrow" => KeyCode::ArrowLeft,
         "RightArrow" => KeyCode::ArrowRight,
+        // ── 編集キー（W2-6 の入力欄の注入 INPUT_TEXT:key・INPUT_KEY でも使う）──
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "Insert" => KeyCode::Insert,
         // ── 修飾キー ──
         "LeftShift" => KeyCode::ShiftLeft,
         "RightShift" => KeyCode::ShiftRight,

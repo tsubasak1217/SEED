@@ -45,6 +45,10 @@ pub mod screen_bridge;
 pub mod platform_bridge;
 // スクリプトの描画の要求 API（SEED.Redraw）の FFI（W2-10a。実体は engine/core/redraw/script_requests.rs）
 pub mod redraw_bridge;
+// 文字入力 API（SEED.TextInput）の FFI（W2-6a。実体は engine/core/text_input/hub.rs）
+pub mod text_input_bridge;
+// 1 行の文字の寸法 API（SEED.TextMeasure）の FFI（W2-6b。入力欄のカーソルの位置。W2-6c の Text.Measure の芽）
+pub mod text_measure_bridge;
 // ControlPoint パス評価（時刻 → ワールド位置／進行方向）の純関数層
 pub mod path_query;
 // カメラのワールド→スクリーン射影（Camera.WorldToScreen / WorldToCanvas）の純関数層

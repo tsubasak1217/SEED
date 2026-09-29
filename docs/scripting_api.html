@@ -237,6 +237,7 @@
     <a href="#sec-ui-widgets">UI 部品（ボタン・トグル・スライダ…）</a>
     <a href="#sec-ui-wheel">UI 部品（時刻ホイール）</a>
     <a href="#sec-ui-charts">UI 部品（グラフ）</a>
+    <a href="#sec-ui-textinput">UI 部品（文字入力）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -2845,6 +2846,31 @@ line.HandleHaptic = <span class="k">true</span>;   <span class="c">// 日付線�
 bars.SetData(days.Select(d =&gt; <span class="k">new</span> <span class="t">BarDatum</span>(d.Day.DayNumber, d.Coins, d.Yen)).ToList());
 bars.BarSelected += (_, i) =&gt; ShowLogOf(i);</pre>
   <div class="warn"><b>重要</b>: グラフは毎フレーム <code>SEED.Draw</code>（見た目の拡張）で描く。データ・見える範囲・大きさ・テーマが変わったフレームだけ位置を計算し直し、目盛りの文字のノードは変わった値だけ書き換える。性能の数値は docs/ui_charts.md §3.1。大きさ（LayoutSize）も毎フレーム読む（コンテナ・画面の回転で変わった次のフレームに追従する。フレームで最初の読み出しがレイアウトの表の索引を作る費用は同じ §3.1 の末尾）。</div>
+</section>
+
+<!-- ════════════════ 7.20 文字入力（W2-6） ════════════════ -->
+<section id="sec-ui-textinput" data-keywords="UI部品 SEED.UI 文字入力 入力欄 テキスト入力 テキストボックス TextField TextInput TextMeasure IME 日本語 変換 変換中 未確定 確定 ひらがな かな漢字 キーボード ソフトキーボード 数字のキーボード 数値の欄 数値入力 number_input text_field 例の文 プレースホルダ placeholder カーソル キャレット 点滅 選択 全選択 SelectAll 最大の長さ MaxLength 貼り付け ペースト paste コピー copy 切り取り 禁止 AllowPaste AllowCopy PasteBlocked 完了 Done 次へ Next Submitted TextChanged FocusChanged Focus Unfocus SetText SetTextUnlessFocused SetError エラー キーボードを避ける AvoidKeyboard KeyboardHeight KeyboardVisible EndInset 持ち上げ ダイアログの入力 DialogInputOptions InputText 名前の変更 TrimResult NumberText TryParseClamped 起床確認 計算 文字入力の確認 BeginSession Begin End TakeEvents TryGetState SetSelection ShowKeyboard HideKeyboard SetCaretRect ActiveSession IsActive TextInputKind TextInputAction TextInputEvent TextInputState LineWidth CaretOffsets Metrics 送り幅 文字の幅 W2-6">
+  <h2>7.20 文字入力（SEED.UI.TextField・SEED.TextInput・SEED.TextMeasure。W2-6）</h2>
+  <p>1 行の入力欄。日本語の変換（変換中の文字の下線・確定）・数字だけの欄（数字のキーボード）・完了のアクション・カーソル（点滅）・選択・最大の長さ・貼り付けとコピーの禁止・キーボードを避ける（スクロールの中身の末尾の余白と送り・ダイアログの持ち上げ）・戻るで先にキーボードを閉じる。プレハブは <code>templates/ui/prefabs/text_field.actor</code>（文字の欄）・<code>number_input.actor</code>（数値の欄。幅 112・数字は中央で大きめ）。本文・選択・変換中の区間はエンジンが持ち（PC は IME とキー、Android は IME の知らせをエンジンが吸収する）、部品は見た目とフォーカスを受け持つ。添字は string の添字（UTF-16）。正典は docs/ui_text_input.md、見本は <code>templates/ui/scenes/ui_text_input.scene</code>。</p>
+  <div class="api"><code class="sig">field.Placeholder / Kind / Action / MaxLength / AllowPaste / AllowCopy / Align / TextSize / Filled / SelectAllOnFocus / UnfocusOnDone / AvoidKeyboard</code><span class="desc">TextField の欄。Kind = Text（文字・日本語の変換）/ Number（0〜9 だけ・全角の数字は半角へ・数字のキーボード）。Action = Done（既定）・Next・Go・Search・Send・Previous・None。MaxLength は書記素の数（0 = なし。変換中は超えてよく確定で切り詰める）。Align = Left / Center。TextSize は文字の大きさのトークン（text.field 16・数値の欄は text.field_number 24）</span></div>
+  <div class="api"><code class="sig">field.Text / SetText(text, notify) / SetTextUnlessFocused(text) / Focus() / Unfocus() / SelectAll() / SetError(bool)</code><span class="desc">本文（フォーカスの間はエンジンの本文に追従）。SetTextUnlessFocused はフォーカスが無いときだけ置く（スライダとの双方向）。SetError はエラーの見た目（枠・カーソルが color.error）</span></div>
+  <div class="api"><code class="sig">field.IsFocused / IsComposing / State</code><span class="desc">フォーカス・変換中か・状態（TextInputState: Text・SelectionStart / End・CompositionStart / End・Caret・HasSelection・IsComposing）</span></div>
+  <div class="api"><code class="sig">field.TextChanged / Submitted / FocusChanged / PasteBlocked</code><span class="desc">本文が変わった（変換中の文字の変化を含む＝1 文字ごと）・完了などのアクション・フォーカスを得た・失った・貼り付けを止めた</span></div>
+  <div class="api"><code class="sig">new DialogOptions { Input = new DialogInputOptions { Text, Placeholder, Kind, MaxLength, AllowPaste, TrimResult, SubmitOnDone } }</code><span class="desc">ダイアログの 1 行の入力（本文とボタンの行の間。開いたらフォーカス。Positive のときだけ handle.InputText に入る。TrimResult で前後の空白を落とす。キーボードが札に重なれば札を持ち上げる）</span></div>
+  <div class="api"><code class="sig">NumberText.TryParseClamped(text, min, max, out value) / NumberText.Format(value)</code><span class="desc">数字の欄の値（読めれば範囲へ収める・読めなければ false＝前の値のまま）と書き戻す文字</span></div>
+  <div class="api"><code class="sig">TextInput.Begin(options, text, selStart, selEnd) / End(session) / ActiveSession / IsActive(session)</code><span class="desc">部品を使わない直接の窓口（入力欄の場。同時に 1 つ。Begin でキーボードが出て PC は IME を許可、End で隠して許可を外す）</span></div>
+  <div class="api"><code class="sig">TextInput.TakeEvents(session) / TryGetState(session, out state) / SetText / SetSelection / ShowKeyboard / HideKeyboard / SetCaretRect(session, rect)</code><span class="desc">出来事（TextChanged・SelectionChanged・Action・PasteBlocked・KeyboardShown〈高さ〉・KeyboardHidden）・状態・本文・選択・キーボードの出し入れ・PC の IME の候補窓が避ける矩形（画面の画素）</span></div>
+  <div class="api"><code class="sig">TextInput.KeyboardHeight / KeyboardVisible</code><span class="desc">ソフトキーボードの高さ（画面の下端から・画面の画素。見えていなければ 0）。PC は模擬（環境変数 SEED_SIM_KEYBOARD_HEIGHT か IPC の INPUT_TEXT:keyboard）のときだけ</span></div>
+  <div class="api"><code class="sig">TextMeasure.LineWidth(text, fontPath, size) / CaretOffsets(text, fontPath, size) / Metrics(fontPath, size)</code><span class="desc">1 行の文字の寸法（描画と同じ送り幅。記法は解かない。W2-6c の Text.Measure の芽）。CaretOffsets は長さ = 文字数 + 1（添字 i の前の端の x）</span></div>
+  <div class="api"><code class="sig">scroll.EndInset</code><span class="desc">CanvasScroll の中身の末尾に足す余白（Vector2・0 以上・実行中だけ）。入力欄がキーボードを避けるときに使う</span></div>
+<pre><span class="k">var</span> field = <span class="t">UiWidget</span>.Of&lt;<span class="t">TextField</span>&gt;(gameObject.FindChild(<span class="s">"NameField"</span>))!;
+field.Placeholder = <span class="s">"例：田中太郎"</span>;  field.MaxLength = 20;
+field.TextChanged += (tf, t) =&gt; { <span class="c">/* 1 文字ごと（変換中の文字も） */</span> };
+field.Submitted += (tf, action) =&gt; { <span class="c">/* Done など */</span> };
+<span class="k">if</span> (<span class="t">NumberText</span>.TryParseClamped(grace.Text, 1, 5, <span class="k">out long</span> v)) slider.SetValue(v, notify: <span class="k">false</span>);
+<span class="k">var</span> handle = <span class="t">Dialog</span>.Show(<span class="k">new</span> <span class="t">DialogOptions</span> { Title = <span class="s">"名前の変更"</span>, PositiveText = <span class="s">"変更"</span>, NegativeText = <span class="s">"やめる"</span>,
+    Input = <span class="k">new</span> <span class="t">DialogInputOptions</span> { Text = current, Placeholder = <span class="s">"例：田中太郎"</span> } });</pre>
+  <div class="warn"><b>重要</b>: 入力欄にフォーカスがある間も、キーの状態（Input.GetKey など）は従来どおり届く。ゲームのショートカットを打鍵で動かしたくない画面は <code>SEED.TextInput.ActiveSession != 0</code> の間は止める。戻る（Android の戻る・PC の Esc）は BackDispatcher の Focus の層: キーボードが出ていれば（PC は常に）フォーカスを外して受け、Android でキーボードを閉じた後の戻るはフォーカスを外して後ろの層へ回す。</div>
 </section>
 
 

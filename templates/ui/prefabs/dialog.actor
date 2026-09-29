@@ -414,6 +414,47 @@
      "children": []
     },
     {
+     "name": "Input",
+     "actor_kind": "Actor2D",
+     "visible": false,
+     "canvas_transform": {
+      "position": [
+       0.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "LayoutItem",
+       "component": {
+        "type": "CanvasLayoutItemComponent",
+        "data": {
+         "preferred_width": 264.0,
+         "preferred_height": 52.0
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
      "name": "Buttons",
      "actor_kind": "Actor2D",
      "canvas_transform": {

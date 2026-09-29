@@ -21,7 +21,7 @@
 | `runtime/android/native/src/redraw_waker.rs`・`runtime/android/app/.../redraw/RedrawWaker.java` | Android の文字入力の受け口から起こす JNI |
 | `runtime/src/engine/physics/result_backlog.rs` | 止めている間に物理の結果の待ち行列が伸び続けないための上限 |
 
-W2-0 の試作（起動の指定 `ui_spike` の `idle=`・`wake_ms=`）はこの仕組みに置き換えて外した（`ime` は W2-6a で使うので残した）。
+W2-0 の試作（起動の指定 `ui_spike` の `idle=`・`wake_ms=`）はこの仕組みに置き換えて外した（`ime` も 2026-09-30 の W2-6a で本番の文字入力に置き換えて外した）。
 
 ---
 
@@ -203,12 +203,9 @@ adb -s $S shell input tap 540 1900
 # 3. プラットフォームのイベントで起きる（JNI の nativeOnPlatformEvent）: 止まってからデバッグの受信機で試験イベントを流す
 #    → 描画を再開します（理由: platform_event）とスクリプトの [PROBE] platform_event name=platform.test_event
 MSYS_NO_PATHCONV=1 adb -s $S shell am broadcast -n $R -a com.seedengine.runtime.platform.EMIT_TEST_EVENT --es message redraw
-# 4. 文字入力で起きる（JNI の RedrawWaker）: ime の試作でキーボードを出し、止まってから文字を送る → 理由: text_input
-#    （起動の前に clear を積む。W2-0 の I-12。roadmap §3.8.6）
-adb -s $S shell am force-stop $APP
-adb -s $S shell "run-as $APP sh -c 'mkdir -p files/ui_spike && echo clear > files/ui_spike/ime_cmd'"
-adb -s $S shell am start -W -n $ACT --es seed.ui_spike ime
-adb -s $S shell "run-as $APP sh -c 'echo show_text > files/ui_spike/ime_cmd'"; sleep 3; adb -s $S shell input text abc
+# 4. 文字入力で起きる（W2-6a の JNI。text_input/jni_receivers.rs が知らせを積むときに起こす）: 見本の ui_text_input.scene の入力欄をタップして
+#    キーボードを出し、止まってから文字を送る → 理由: text_input（W2-0 の ime の試作は W2-6a で外した。docs/ui_text_input.md §13）
+adb -s $S shell input text abc
 # 5. IPC で起きる: adb forward で TCP の IPC へつなぎ（android.md §21）、止まってから SCRIPT_DEBUG:probe,mark → SCRIPT_DEBUG_OK の往復の時間
 # 6. 画面の変化で起きる: 回転など（端末の設定を変えるので利用者の了承を得てから）→ 理由: screen（[SEED SCREEN] の報告の直後）
 # 7. 音声フォーカスで起きる: 他のアプリで音を鳴らす → 理由: system_event（[SEED AUDIO] の報告の直後）

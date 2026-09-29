@@ -12,6 +12,7 @@
 //          phase … 段階の番号（ScrollPhase）、is_scrolling / is_dragging / has_metrics … 0/1
 //    状態（書き）: position … 2 要素（すぐ移す＝Jump。動きを止め、範囲へ収める）、
 //          scroll_to … 3 要素（x, y, 秒。0 以下ならすぐ移す。次のフレームのスクロールのシステムが動かし始める）
+//    状態（読み書き）: end_inset … 2 要素（中身の末尾に足す余白。0 以上。実行中だけ。W2-6b の入力欄がキーボードを避けるのに使う）
 //  値の単位はキャンバスの単位（dp のキャンバスなら dp）。
 // ============================================================
 
@@ -82,6 +83,7 @@ pub fn read(world: &World, entity: Entity, field: &str, out: &mut [f32]) -> Opti
         "viewport_size" => put_pair(out, metrics.map_or([0.0; AXES], |m| m.viewport)),
         "content_extent" => put_pair(out, metrics.map_or([0.0; AXES], |m| m.content)),
         "max_position" => put_pair(out, [0, 1].map(|a| metrics.map_or(0.0, |m| m.max_position(a)))),
+        "end_inset" => put_pair(out, state.end_inset),
         _ => None,
     }
 }
@@ -122,6 +124,7 @@ pub fn write(world: &mut World, entity: Entity, field: &str, v: &[f32]) -> bool 
     match field {
         "position" => return jump(world, entity, v),
         "scroll_to" => return scroll_to(world, entity, v),
+        "end_inset" => return set_end_inset(world, entity, v),
         _ => {}
     }
     let Some(c) = world.get_mut::<CanvasScrollComponent>(entity) else { return false };
@@ -148,6 +151,16 @@ pub fn write(world: &mut World, entity: Entity, field: &str, v: &[f32]) -> bool 
         "bounce_drag" => assign(&mut c.bounce_drag, take_f32(v).filter(|x| *x > 0.0 && *x < 1.0)),
         _ => false,
     }
+}
+
+/// 中身の末尾の余白を置く（2 要素。有限の 0 以上。次のフレームの描画が中身の大きさへ足す。W2-6b のキーボードを避ける）。
+fn set_end_inset(world: &mut World, entity: Entity, v: &[f32]) -> bool {
+    let Some([x, y]) = take::<PAIR_LEN>(v).filter(|a| a.iter().all(|value| value.is_finite() && *value >= 0.0)) else {
+        return false;
+    };
+    let Some(state) = state_mut(world, entity) else { return false };
+    state.end_inset = [f64::from(x), f64::from(y)];
+    true
 }
 
 /// 状態を可変で引く（無ければ作る。設定が無ければ None）。
@@ -257,5 +270,19 @@ mod tests {
         assert_eq!(read(&world, e, "is_scrolling", &mut out), Some(1));
         assert_eq!(out[0], 0.0);
         assert!(!write(&mut world, e, "position", &[f32::NAN, 0.0]));
+    }
+
+    /// 中身の末尾の余白（W2-6b のキーボードを避ける）: 0 以上の 2 要素だけ書け、読み返せる。
+    #[test]
+    fn end_inset_round_trip() {
+        let (mut world, e) = world_with_scroll();
+        let mut out = [0.0f32; 4];
+        assert_eq!(read(&world, e, "end_inset", &mut out), Some(2));
+        assert_eq!(&out[..2], &[0.0, 0.0], "既定は 0");
+        assert!(write(&mut world, e, "end_inset", &[0.0, 180.0]));
+        assert_eq!(read(&world, e, "end_inset", &mut out), Some(2));
+        assert_eq!(&out[..2], &[0.0, 180.0]);
+        assert!(!write(&mut world, e, "end_inset", &[0.0, -1.0]), "負は書けない");
+        assert!(!write(&mut world, e, "end_inset", &[5.0]), "要素数が違う");
     }
 }

@@ -25,8 +25,9 @@
 //    debug_hooks   … 検証用フック（システムプロパティで意図的 panic・複数指の合成タッチ列）
 //    debug_save_test … 検証用フック（セーブの書き出しタイミングの確認。debug.seed.save_test）
 //    sysprop       … Android システムプロパティの読み取り
-//    ui_spike/     … アプリ基盤 W2-0 のスパイク（文字入力〈GameTextInput〉を android-activity の API で試す。
-//                    起動オプション seed.ui_spike に ime があるときだけ。既定で無効）
+//    text_input/   … 文字入力（GameTextInput。W2-6a・E-06）: エンジンの命令を複製した AndroidApp の API で実行する実装の登録と、
+//                    Java（input/TextInputBridge）からの IME の知らせ（本文の写し・完了・キーボードの表示と高さ）の JNI
+//                    （W2-0 の試作 ui_spike/ をこれに置き換えた）
 //
 //  全体像・ビルド手順は docs/android.md を参照。
 // ============================================================
@@ -52,5 +53,5 @@ mod logcat;
 mod platform_bridge;
 mod redraw_waker;
 mod sysprop;
+mod text_input;
 mod touch_timeline;
-mod ui_spike;

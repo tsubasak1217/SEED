@@ -503,9 +503,11 @@ pub(super) fn apply_scroll_metrics(world: &mut World, regions: &[CanvasScrollReg
     for region in regions {
         let Some(state) = world.get_mut::<CanvasScrollState>(region.slot) else { continue };
         let ppu = region.px_per_unit.map(|v| if v > 0.0 && v.is_finite() { f64::from(v) } else { 1.0 });
+        // 中身の末尾の余白（キーボードを避ける。W2-6b。既定 0 なら従来どおり）は中身の大きさへ足す（範囲・跳ね返り・ScrollTo が同じ値を使う）
+        let end_inset = state.end_inset;
         state.metrics = Some(ScrollMetrics {
             viewport: [0, 1].map(|a| f64::from(region.viewport_px[a]) / ppu[a]),
-            content: [0, 1].map(|a| f64::from(region.content_px[a]) / ppu[a]),
+            content: [0, 1].map(|a| f64::from(region.content_px[a]) / ppu[a] + end_inset[a].max(0.0)),
             px_per_unit: ppu,
             dp_scale: f64::from(region.dp_scale),
             axis_dirs: region.axis_dirs,

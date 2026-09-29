@@ -253,23 +253,23 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 <!-- token-table:begin（editor/tests/UiComponentsTests の --update-docs が作る。手で直さない） -->
 | トークン | 型 | 既定（暗い方） | 既定（明るい方） | 使う部品 |
 |---|---|---|---|---|
-| `color.primary` | 色 | #7C5CFF | #6C4BFF | Button（Filled の塗り・Outlined と Text の文字）・Toggle（オンの台）・Checkbox（オンの塗り）・Slider・ProgressBar・ProgressRing・RadioGroup（選んだ輪と点） |
+| `color.primary` | 色 | #7C5CFF | #6C4BFF | Button（Filled の塗り・Outlined と Text の文字）・Toggle（オンの台）・Checkbox（オンの塗り）・Slider・ProgressBar・ProgressRing・RadioGroup（選んだ輪と点）・TextField（フォーカスの枠・カーソル） |
 | `color.on_primary` | 色 | #FFFFFF | 〃 | Button（Filled の文字）・Checkbox（印） |
 | `color.background` | 色 | #121018 | #F6F3FA | ScreenStack（画面の背景・動きの幕）・ThemeStyle（画面の背景） |
 | `color.surface` | 色 | #1E1B26 | #FFFFFF | NumberField・TabBar・Dialog・BottomSheet・TopSheet（面）・ThemeStyle（カード・島）・LineChart（日付線のハンドルの縁） |
-| `color.surface_variant` | 色 | #2E2A3A | #E8E3F0 | Toggle（オフの台）・Slider（溝）・SegmentedControl（台）・ProgressBar・ProgressRing（溝）・WheelPicker・TimeWheel（中央の帯） |
-| `color.on_surface` | 色 | #ECE6F5 | #1D1A24 | NumberField・SegmentedControl・ChipGroup・RadioGroup（文字）・TabBar（選んだタブ）・Dialog（題）・WheelPicker（行の文字）・ThemeStyle |
-| `color.on_surface_muted` | 色 | #A9A2B8 | #5E5970 | Checkbox（オフの枠）・RadioGroup（選んでいない輪）・TabBar（選んでいないタブ）・Dialog（本文）・BottomSheet・TopSheet（つまみ）・ThemeStyle |
-| `color.outline` | 色 | #6E6780 | #8C8699 | Button（Outlined の枠）・Toggle（オフの台の枠）・NumberField・ChipGroup（枠） |
+| `color.surface_variant` | 色 | #2E2A3A | #E8E3F0 | Toggle（オフの台）・Slider（溝）・SegmentedControl（台）・ProgressBar・ProgressRing（溝）・WheelPicker・TimeWheel（中央の帯）・TextField（Filled の塗り） |
+| `color.on_surface` | 色 | #ECE6F5 | #1D1A24 | NumberField・SegmentedControl・ChipGroup・RadioGroup（文字）・TabBar（選んだタブ）・Dialog（題）・WheelPicker（行の文字）・TextField（文字・変換中の下線）・ThemeStyle |
+| `color.on_surface_muted` | 色 | #A9A2B8 | #5E5970 | Checkbox（オフの枠）・RadioGroup（選んでいない輪）・TabBar（選んでいないタブ）・Dialog（本文）・BottomSheet・TopSheet（つまみ）・TextField（例の文）・ThemeStyle |
+| `color.outline` | 色 | #6E6780 | #8C8699 | Button（Outlined の枠）・Toggle（オフの台の枠）・NumberField・ChipGroup（枠）・TextField（フォーカスの無い枠） |
 | `color.selected` | 色 | #4A3AA8 | #E6DEFF | Button（Tonal）・SegmentedControl・ChipGroup（選んだ項目）・TabBar（選択の印） |
 | `color.on_selected` | 色 | #EDE7FF | #22105C | Button（Tonal の文字）・SegmentedControl・ChipGroup（選んだ項目の文字） |
 | `color.knob` | 色 | #FFFFFF | 〃 | Toggle（オンのつまみ） |
 | `color.knob_off` | 色 | #A9A2B8 | #7A7489 | Toggle（オフのつまみ） |
 | `color.state_layer` | 色 | #FFFFFF | #000000 | Button・Toggle・Checkbox・SegmentedControl・ChipGroup・RadioGroup・TabBar（押下の重ね色） |
-| `color.disabled` | 色 | #3A3645 | #E4E0EA | Button・NumberField・SegmentedControl・ChipGroup（無効の塗り・枠） |
-| `color.on_disabled` | 色 | #7C7689 | #A19CAB | Button・NumberField・Slider・SegmentedControl・ChipGroup・RadioGroup・TabBar・WheelPicker（無効の文字・選べない行） |
+| `color.disabled` | 色 | #3A3645 | #E4E0EA | Button・NumberField・SegmentedControl・ChipGroup・TextField（無効の塗り・枠） |
+| `color.on_disabled` | 色 | #7C7689 | #A19CAB | Button・NumberField・Slider・SegmentedControl・ChipGroup・RadioGroup・TabBar・WheelPicker・TextField（無効の文字・選べない行） |
 | `color.shadow` | 色 | #000000 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
-| `color.error` | 色 | #FF5252 | #D32F2F | ThemeStyle（一覧の行の削除の面。templates/ui の list_row）・（W2-6 の入力欄が使う予定） |
+| `color.error` | 色 | #FF5252 | #D32F2F | ThemeStyle（一覧の行の削除の面。templates/ui の list_row）・TextField（エラーの枠・カーソル） |
 | `color.on_error` | 色 | #FFFFFF | 〃 | ThemeStyle（削除の面の上の文字。templates/ui の list_row） |
 | `color.scrim` | 色 | #000000 | 〃 | Dialog・BottomSheet・TopSheet（幕） |
 | `color.inverse_surface` | 色 | #ECE6F5 | #322F3A | Toast（面）・LineChart・BarChart（吹き出しの面） |
@@ -284,10 +284,11 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `color.chart_reference` | 色 | #A9A2B8 | #5E5970 | LineChart（基準線とその文字） |
 | `color.chart_empty_bar` | 色 | #3A3645 | #DAD5E3 | BarChart（合計 0 の棒） |
 | `color.chart_highlight` | 色 | #7C5CFF1F | #6C4BFF1A | BarChart（選んだ列の背景） |
+| `color.selection` | 色 | #7C5CFF66 | #6C4BFF40 | TextField（選択の背景） |
 | `radius.button` | 数 | 12 | 〃 | Button |
 | `radius.chip` | 数 | 16 | 〃 | ChipGroup |
 | `radius.card` | 数 | 20 | 〃 | ThemeStyle（カード・島） |
-| `radius.field` | 数 | 12 | 〃 | NumberField |
+| `radius.field` | 数 | 12 | 〃 | NumberField・TextField |
 | `radius.segment` | 数 | 20 | 〃 | SegmentedControl |
 | `radius.checkbox` | 数 | 4 | 〃 | Checkbox |
 | `radius.progress` | 数 | 4 | 〃 | ProgressBar |
@@ -304,7 +305,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `space.l` | 数 | 16 | 〃 | ToastHost（画面の端との間）・SwipeActions（フルスワイプの文字と行の見た目の端の間） |
 | `space.xl` | 数 | 24 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
 | `size.touch_min` | 数 | 48 | 〃 | （部品は読まない。CanvasGesture の最小のヒット領域 48 dp の目安） |
-| `size.border` | 数 | 1 | 〃 | Button（Outlined）・NumberField・ChipGroup（細い枠） |
+| `size.border` | 数 | 1 | 〃 | Button（Outlined）・NumberField・ChipGroup・TextField（細い枠） |
 | `size.check_border` | 数 | 2 | 〃 | Checkbox・RadioGroup（枠）・Toggle（オフの台の枠） |
 | `size.toggle_knob` | 数 | 24 | 〃 | Toggle（オン・押している間のつまみ） |
 | `size.toggle_knob_off` | 数 | 16 | 〃 | Toggle（オフのつまみ） |
@@ -353,6 +354,12 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.chart_tooltip_gap` | 数 | 10 | 〃 | LineChart・BarChart（吹き出しと点の間） |
 | `size.chart_handle` | 数 | 18 | 〃 | LineChart（日付線のハンドルの直径） |
 | `size.chart_handle_border` | 数 | 2 | 〃 | LineChart（日付線のハンドルの縁の太さ） |
+| `size.field_height` | 数 | 52 | 〃 | （部品は読まない。入力欄のプレハブ text_field・number_input の高さの目安） |
+| `size.field_padding` | 数 | 16 | 〃 | TextField（左右の内側の余白） |
+| `size.field_focus_border` | 数 | 2 | 〃 | TextField（フォーカス・エラーの枠の太さ） |
+| `size.caret` | 数 | 2 | 〃 | TextField（カーソルの太さ） |
+| `size.composition_underline` | 数 | 2 | 〃 | TextField（変換中の文字の下線の太さ） |
+| `size.keyboard_gap` | 数 | 16 | 〃 | TextField（キーボードを避けるときの欄とキーボードの間） |
 | `text.title` | 数 | 20 | 〃 | Dialog（題）・ThemeStyle（見出し） |
 | `text.body` | 数 | 16 | 〃 | NumberField・Toast・Dialog（本文）・LineChart・BarChart（データが無いときの文字）・ThemeStyle |
 | `text.label` | 数 | 14 | 〃 | Button・SegmentedControl・ChipGroup・RadioGroup・Dialog（ボタン）・ThemeStyle |
@@ -360,8 +367,10 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `text.wheel` | 数 | 21 | 〃 | WheelPicker・TimeWheel（行の文字） |
 | `text.chart_axis` | 数 | 11 | 〃 | LineChart・BarChart（目盛りの文字） |
 | `text.chart_tooltip` | 数 | 12 | 〃 | LineChart・BarChart（吹き出しの文字） |
-| `font.family` | 文字列 | （空＝組み込み） | 〃 | 文字を持つ全部品（Button・SegmentedControl・ChipGroup・RadioGroup・NumberField・TabBar・Dialog・Toast・WheelPicker・LineChart・BarChart・ThemeStyle） |
-| `font.weight` | 数 | 0 | 〃 | 文字を持つ全部品（Button・SegmentedControl・ChipGroup・RadioGroup・NumberField・TabBar・Dialog・Toast・WheelPicker・LineChart・BarChart・ThemeStyle） |
+| `text.field` | 数 | 16 | 〃 | TextField（文字の欄の文字・例の文） |
+| `text.field_number` | 数 | 24 | 〃 | TextField（数値の欄〈number_input〉の文字） |
+| `font.family` | 文字列 | （空＝組み込み） | 〃 | 文字を持つ全部品（Button・SegmentedControl・ChipGroup・RadioGroup・NumberField・TextField・TabBar・Dialog・Toast・WheelPicker・LineChart・BarChart・ThemeStyle） |
+| `font.weight` | 数 | 0 | 〃 | 文字を持つ全部品（Button・SegmentedControl・ChipGroup・RadioGroup・NumberField・TextField・TabBar・Dialog・Toast・WheelPicker・LineChart・BarChart・ThemeStyle） |
 | `font.weight_title` | 数 | 0 | 〃 | Dialog（題）・ThemeStyle（見出し） |
 | `motion.short` | 数 | 0.15 | 〃 | Toggle（つまみ）・Toast・TopSheet（引いた後の戻り） |
 | `motion.medium` | 数 | 0.25 | 〃 | ProgressBar・ProgressRing（値の伸び縮み） |
@@ -375,6 +384,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `motion.swipe_full` | 数 | 0.15 | 〃 | SwipeActions（フルスワイプの文字の置き場の補間） |
 | `motion.swipe_dismiss` | 数 | 0.2 | 〃 | SwipeActions（確定で行を外へ流し切る） |
 | `motion.swipe_collapse` | 数 | 0.2 | 〃 | （部品は読まない。一覧の持ち主が消した行の高さを畳む時間。見本の UiGallerySections） |
+| `motion.caret_blink` | 数 | 0.5 | 〃 | TextField（カーソルの点滅の半周期） |
 | `motion.push` | 数 | 0.3 | 〃 | ScreenStack（押し込み） |
 | `motion.push_curve` | 曲線 | 0.2, 0, 0, 1 | 〃 | ScreenStack（押し込み） |
 | `motion.cover` | 数 | 0.3 | 〃 | ScreenStack（覆う画面） |

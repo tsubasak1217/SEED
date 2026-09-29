@@ -57,10 +57,10 @@ public static class ThemeTests
             Check.Equal(0, builtInSource.Warnings.Count, "既定のテーマの読み込みの警告 " + string.Join(" / ", builtInSource.Warnings));
             var names = UiTokenCatalog.All.Select(i => i.Name).ToList();
             Check.Equal(names.Count, names.Distinct().Count(), "表に同じ名前が 2 度無い");
-            foreach (var type in new[] { typeof(UiTokens), typeof(NavTokens), typeof(ChartTokens) })
+            foreach (var type in new[] { typeof(UiTokens), typeof(NavTokens), typeof(ChartTokens), typeof(TextFieldTokens) })
                 foreach (var token in ConstTokens(type))
                     Check.True(UiTokenCatalog.TryGet(token, out _), $"{type.Name} の {token} が表にある");
-            foreach (var token in UiTokens.All.Concat(NavTokens.All).Concat(ChartTokens.All))
+            foreach (var token in UiTokens.All.Concat(NavTokens.All).Concat(ChartTokens.All).Concat(TextFieldTokens.All))
                 Check.True(UiTokenCatalog.Match(token, out _) == UiTokenMatch.Known, $"部品の読む {token} が表で引ける");
             foreach (var info in UiTokenCatalog.All)
             {

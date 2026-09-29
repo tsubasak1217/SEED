@@ -410,6 +410,9 @@ logcat を `[UI] back` と 3a の Java のログ（[android.md](android.md) §25
 - **PC の Esc**: エディタの Play（埋め込み）では Esc がエディタの操作と重なる可能性（未確認。単体の SEED.exe で確かめた）
 - **W2-6（入力欄）へ**: 入力欄は `IFocusable`（範囲に属す）＋ `IBackConsumer`（Android では IME が先に閉じる。PC は戻るでフォーカスを外す）で乗る。
   フォーカスした入力欄を画面の外へ出さない（キーボードを避ける）スクロールは W2-6b
+  → **2026-09-30 の W2-6b で済**（docs/ui_text_input.md §8・§10）: `SEED.UI.TextField` は `IFocusable`・`IBackConsumer`（キーボードが出ていれば〈PC は常に〉フォーカスを外して受け、
+  Android でキーボードを閉じた後の戻るは外して後ろの層へ回す）。ダイアログは `DialogOptions.Input`（1 行の入力つき。`DialogHandle.InputText`）と、キーボードが札に
+  重なったときの持ち上げ（`IKeyboardInsetTarget`）を持つ。札の縦の割り付けは `DialogMetrics.Sections` の入力の区画（`InputSection`）
 - **W2-8 以降へ**: グラフ（横スクロール・ピンチ）はタブの中の画面に置く。テーマの実行中の切り替え（W2-9）で、開いている面・トーストも次のフレームで作り直す（今も
   `UiTheme.Version` で追従）
 - **実機（Pixel 6a）で未確認**（§12）。エディタに埋め込んだ Play での動きも未確認

@@ -101,6 +101,8 @@ pub enum InjectCommand {
     Sequence(InputSequencePlayer),
     /// 注入中の押下をすべて解放する。
     ReleaseAll,
+    /// 文字入力の注入（`INPUT_TEXT:`。入力欄の受け口へ直接入れる。W2-6。書式は text_command.rs）。
+    Text(super::text_command::TextInjectCommand),
     /// 解釈できなかった（reason は `INPUT_ERROR:` に載せる短い識別子）。
     Invalid(String),
 }
@@ -142,6 +144,12 @@ pub fn parse_inject_command(line: &str) -> Option<InjectCommand> {
         parse_scroll(rest)
     } else if let Some(rest) = line.strip_prefix(CMD_SEQUENCE) {
         parse_sequence(rest)
+    } else if let Some(rest) = line.strip_prefix(super::text_command::CMD_TEXT) {
+        // 文字入力の注入（W2-6）。文字列の引数は " で始めれば JSON の文字列（前後の空白を入れられる）
+        match super::text_command::parse_text_command(rest) {
+            Ok(text) => InjectCommand::Text(text),
+            Err(reason) => InjectCommand::Invalid(sanitize_reason(&reason)),
+        }
     } else {
         InjectCommand::Invalid(sanitize_reason("unknown_command"))
     };

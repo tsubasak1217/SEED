@@ -1,0 +1,155 @@
+{
+ "name": "ui_text_input",
+ "actors": [
+  {
+   "name": "UiTextInput",
+   "actor_kind": "Actor2D",
+   "components": [
+    {"name": "Canvas", "component": {"type": "CanvasComponent", "data": {"width": 540.0, "height": 1200.0, "auto_scale": false, "viewport_ref": {"type": "window"}, "gravity_mode": "world_down", "draw_zone": "foreground", "pivot": [0.0, 0.0], "unit": "dp"}}},
+    {"name": "UiTextInputDemo", "component": {"type": "ScriptComponent", "data": {"type_name": "assets://ui/scripts/UiTextInputDemo.cs"}}}
+   ],
+   "children": [
+    {
+     "name": "Background",
+     "actor_kind": "Actor2D",
+     "components": [
+      {"name": "Sprite", "component": {"type": "SpriteComponent", "data": {"texture_path": "", "color": [0.006049, 0.005182, 0.009134, 1.0], "width": 1.0, "height": 1.0, "layer": 0}}},
+      {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"fill_width": true, "fill_height": true}}}
+     ],
+     "children": []
+    },
+    {
+     "name": "Body",
+     "actor_kind": "Actor2D",
+     "components": [
+      {"name": "Canvas", "component": {"type": "CanvasComponent", "data": {"width": 1.0, "height": 1.0, "auto_scale": false, "viewport_ref": {"type": "window"}, "gravity_mode": "world_down", "draw_zone": "foreground", "pivot": [0.0, 0.0]}}},
+      {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"fill_width": true, "fill_height": true}}},
+      {"name": "SafeArea", "component": {"type": "CanvasSafeAreaComponent", "data": {"enabled": true, "left": true, "top": true, "right": true, "bottom": true}}},
+      {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "vertical", "spacing": 0.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "stretch", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+     ],
+     "children": [
+      {
+       "name": "Page",
+       "actor_kind": "Actor2D",
+       "components": [
+        {"name": "Sprite", "component": {"type": "SpriteComponent", "data": {"texture_path": "", "color": [0.0, 0.0, 0.0, 0.0], "width": 540.0, "height": 1200.0, "layer": 0}}},
+        {"name": "Clip", "component": {"type": "CanvasClipComponent", "data": {"enabled": true}}},
+        {"name": "Scroll", "component": {"type": "CanvasScrollComponent", "data": {"enabled": true, "direction": "vertical", "edge": "bounce", "inertia": true, "snap": "none", "snap_interval": 0.0, "hand_off_to_parent": true, "content_size": "auto"}}},
+        {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"flex": 1.0}}},
+        {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "vertical", "spacing": 0.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "stretch", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+       ],
+       "children": [
+        {
+         "name": "Content",
+         "actor_kind": "Actor2D",
+         "components": [
+          {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "vertical", "spacing": 12.0, "padding": {"left": 16.0, "top": 16.0, "right": 16.0, "bottom": 24.0}, "main_align": "start", "cross_align": "stretch", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+         ],
+         "children": [
+          {"name": "Title", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "文字入力の見本（W2-6）", "font_size": 20.0, "color": [0.838799, 0.791298, 0.913099, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 32.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 32.0}}}
+          ], "children": []},
+
+          {"name": "NameLabel", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "文字の欄（例の文・最大 20 文字）", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+          {"name": "NameSlot", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 52.0}}},
+           {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "vertical", "spacing": 0.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "stretch", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+          ], "children": []},
+          {"name": "NameEcho", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+
+          {"name": "GraceLabel", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "数値の欄（起床猶予 1〜5 分。スライダと双方向）", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+          {"name": "GraceRow", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 52.0}}},
+           {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "horizontal", "spacing": 16.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "center", "cross_align": "center", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+          ], "children": [
+           {"name": "GraceSlot", "actor_kind": "Actor2D", "components": [
+            {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_width": 112.0, "preferred_height": 52.0}}}
+           ], "children": []},
+           {"name": "GraceUnit", "actor_kind": "Actor2D", "components": [
+            {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "分", "font_size": 16.0, "color": [0.838799, 0.791298, 0.913099, 1.0], "align": "left", "vertical_align": "middle", "layer": 0, "box_width": 40.0, "box_height": 52.0, "wrap": false}}},
+            {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_width": 40.0, "preferred_height": 52.0}}}
+           ], "children": []}
+          ]},
+          {"name": "GraceSliderSlot", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 48.0}}},
+           {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "vertical", "spacing": 0.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "stretch", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+          ], "children": []},
+
+          {"name": "CalcLabel", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "計算の起床確認（数字の欄＋答える）", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+          {"name": "CalcQuestion", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "12 + 7 = ?", "font_size": 20.0, "color": [0.838799, 0.791298, 0.913099, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 28.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 28.0}}}
+          ], "children": []},
+          {"name": "CalcRow", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 52.0}}},
+           {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "horizontal", "spacing": 16.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "center", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+          ], "children": []},
+          {"name": "CalcResult", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+
+          {"name": "TypingLabel", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "文字入力の起床確認（貼り付け・コピー禁止。打つたびに全文一致を見る）", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+          {"name": "TypingSample", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "おはようございます", "font_size": 20.0, "color": [0.838799, 0.791298, 0.913099, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 28.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 28.0}}}
+          ], "children": []},
+          {"name": "TypingSlot", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 52.0}}},
+           {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "vertical", "spacing": 0.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "stretch", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+          ], "children": []},
+          {"name": "TypingResult", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+
+          {"name": "DialogLabel", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "ダイアログの中の 1 行の入力（名前の変更。前後の空白を落とす）", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+          {"name": "DialogRow", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 48.0}}},
+           {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "horizontal", "spacing": 16.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "center", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+          ], "children": []},
+          {"name": "DialogResult", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "名前: つばさ", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+
+          {"name": "Spacer", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 520.0}}}
+          ], "children": []},
+          {"name": "BottomLabel", "actor_kind": "Actor2D", "components": [
+           {"name": "Text", "component": {"type": "TextComponent", "data": {"content": "スクロールの下の欄（キーボードを避ける）", "font_size": 14.0, "color": [0.396755, 0.361307, 0.47932, 1.0], "align": "left", "vertical_align": "top", "layer": 0, "box_width": 508.0, "box_height": 20.0, "wrap": false}}},
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 20.0}}}
+          ], "children": []},
+          {"name": "BottomSlot", "actor_kind": "Actor2D", "components": [
+           {"name": "LayoutItem", "component": {"type": "CanvasLayoutItemComponent", "data": {"preferred_height": 52.0}}},
+           {"name": "Stack", "component": {"type": "CanvasStackComponent", "data": {"enabled": true, "direction": "vertical", "spacing": 0.0, "padding": {"left": 0.0, "top": 0.0, "right": 0.0, "bottom": 0.0}, "main_align": "start", "cross_align": "stretch", "reverse": false, "fit_width": false, "fit_height": false, "hidden_children": "collapse"}}}
+          ], "children": []}
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
