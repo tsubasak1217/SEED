@@ -61,6 +61,9 @@ rodio              = "0.20"
 # ゲームパッド入力（.inputmap の GamepadButton / GamepadAxis 評価基盤）。
 # クロスプラットフォームのパッド抽象。毎フレーム next_event() でイベントをポンプする。
 gilrs              = "0.11"
+# 入力欄（W2-6。engine/core/text_input）の削除・カーソルの移動・最大の長さを書記素（見た目の 1 文字）で数える。
+# 推移的依存として既にビルドツリーに存在する（Cargo.lock の 1.13.2）。
+unicode-segmentation = "1.13"
 
 # ── C# スクリプトホスト（hostfxr 経由で .NET CLR を起動）─────────────────
 # PC は既定の機能（nethost-download・net10_0・utils）のまま。nethost で PC の .NET（または bin/dotnet の同梱）を探す。
@@ -87,4 +90,8 @@ netcorehost = { version = "0.20", default-features = false, features = ["net10_0
 #   Win32_System_Com              … CoInitializeEx / CoUninitialize（ShellExecute の前に開くスレッドで COM を初期化する）
 # SEED.Platform のデスクトップの模擬（platform/bridge/desktop_sim/os_ui_mode.rs。W2-9 の App.UiMode = OS の明暗の設定）:
 #   Win32_System_Registry         … RegGetValueW（HKCU の Personalize\AppsUseLightTheme を読む）
-windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Time", "Wdk_System_SystemServices", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Registry"] }
+# 入力欄のコピー・切り取り・貼り付け（engine/core/text_input/clipboard.rs。W2-6 の PC の Ctrl+C/X/V）:
+#   Win32_System_DataExchange     … OpenClipboard / GetClipboardData / SetClipboardData / EmptyClipboard / CloseClipboard
+#   Win32_System_Memory           … GlobalAlloc / GlobalLock / GlobalUnlock（クリップボードへ渡すメモリ）
+#   Win32_System_Ole              … CF_UNICODETEXT（クリップボードの形式）
+windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Time", "Wdk_System_SystemServices", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole"] }

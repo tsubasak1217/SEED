@@ -71,6 +71,15 @@ public sealed class DialogHandle : ModalHandle
     /// <summary>決まった結果（閉じる前は null）。</summary>
     public DialogResult? DialogResult { get; private set; }
 
+    /// <summary>
+    /// 入力欄の結果の文字（W2-6b。<see cref="DialogOptions.Input"/> があり Positive で閉じたときだけ。TrimResult なら前後の空白を落とす。
+    /// それ以外は null）。
+    /// </summary>
+    public string? InputText { get; private set; }
+
+    /// <summary>入力欄の結果の文字を置く（Dialog が Positive を選んだときに閉じる前に呼ぶ）。</summary>
+    internal void SetInputText(string? text) => InputText = text;
+
     /// <summary>結果が決まった（閉じる動きの後）。</summary>
     public event Action<DialogResult>? Completed;
 

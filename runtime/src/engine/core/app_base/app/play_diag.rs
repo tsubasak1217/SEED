@@ -222,7 +222,7 @@ const WD_POLL_INTERVAL_MS: u64 = 500;
 /// 監視スレッドを 1 度だけ spawn するためのフラグ。
 static WD_SPAWNED: AtomicBool = AtomicBool::new(false);
 
-/// 描画を意図して止めているか（W2-0 の試作「描かなくてよいときは描かない」。app/ui_spike_hooks.rs）。
+/// 描画を意図して止めているか（render_policy の on_demand。W2-10a の app/redraw_hooks.rs が立てる）。
 /// true の間はフレームが途絶えても凍結の警告（[PLAY_WD]）を出さない。既定は false（従来どおり）。
 static INTENTIONALLY_IDLE: AtomicBool = AtomicBool::new(false);
 

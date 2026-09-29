@@ -140,6 +140,10 @@ pub struct CanvasScrollState {
     pub reported_position: [f64; AXES],
     /// 開始のイベントを出して、まだ終了のイベントを出していないか。
     pub reported_scrolling: bool,
+    /// 中身の末尾に足す余白（スクロールの単位。軸ごと。実行中だけ・保存しない）。スクリプト（SEED.CanvasScroll.EndInset）が書く。
+    /// 入力欄がソフトキーボードを避けるとき（W2-6b）、窓のうちキーボードに隠れる分だけ足して、中身の最後までキーボードの上へ
+    /// スクロールできるようにする（Flutter の Scaffold の resizeToAvoidBottomInset に当たる）。0 なら従来どおり。
+    pub end_inset: [f64; AXES],
 }
 
 impl CanvasScrollState {

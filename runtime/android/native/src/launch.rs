@@ -100,8 +100,6 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
             args.render_quality.preset, args.render_quality.knobs, args.gpu_timing
         ));
     }
-    // アプリ基盤 W2-0 のスパイクの指定（am start --es seed.ui_spike '<指定>'。検証用・既定で無効）。
-    args.ui_spike = options.ui_spike.clone();
     args
 }
 
@@ -253,8 +251,6 @@ fn play_launch_args(
         render_quality: Default::default(),
         gpu_timing: false,
         asset_overlay,
-        // W2-0 のスパイクの指定も launch_args が起動オプション（seed.ui_spike）から入れる。
-        ui_spike: None,
     }
 }
 

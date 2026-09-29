@@ -3929,6 +3929,14 @@ pub struct ScriptHostApi {
     // (op, value) → op ごとの値（-1 = 知らない op・読めない値）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     redraw:                  unsafe extern "system" fn(i32, f32) -> i32,
+    // 文字入力（SEED.TextInput。W2-6a。実体は text_input_bridge.rs → engine/core/text_input/hub.rs）。
+    // (op, session, ints, intsLen, text, textLen, outInts, outIntsCap, outText, outTextCap) → op ごとの値（-1 = 知らない op・今の場でない）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    text_input:              unsafe extern "system" fn(i32, i32, *const i32, i32, *const u8, i32, *mut i32, i32, *mut u8, i32) -> i32,
+    // 1 行の文字の寸法（SEED.TextMeasure。W2-6b。実体は text_measure_bridge.rs）。
+    // (op, font, fontLen, size, text, textLen, out, outCap) → op ごとの数（-1 = 知らない op・大きさが正でない）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    text_measure:            unsafe extern "system" fn(i32, *const u8, i32, f32, *const u8, i32, *mut f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3980,6 +3988,8 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     platform_invoke:         super::platform_bridge::ffi_platform_invoke,
     platform_poll_events:    super::platform_bridge::ffi_platform_poll_events,
     redraw:                  super::redraw_bridge::ffi_redraw,
+    text_input:              super::text_input_bridge::ffi_text_input,
+    text_measure:            super::text_measure_bridge::ffi_text_measure,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

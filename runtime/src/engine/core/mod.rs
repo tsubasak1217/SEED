@@ -27,9 +27,10 @@ pub mod save;
 pub mod scripting;
 /// 配布パッケージ版の起動ログ（標準出力のファイル化）と panic 通知。
 pub mod startup_log;
+/// 文字入力の受け口（入力欄の状態・PC の IME とキー・Android の IME の知らせ・スクリプトの窓口。W2-6a。docs/ui_text_input.md）。
+/// W2-0 のスパイク（ui_spike）の最後の試作（ime）をこれに置き換えて、ui_spike は外した。
+pub mod text_input;
 pub mod transform_sync;
-/// アプリ基盤 W2-0 のスパイク（IME の試作。既定で無効。描かないときの判定は redraw、切り抜きは canvas_layout へ本番化した）。
-pub mod ui_spike;
 pub mod window;
 
 pub use input::Input;

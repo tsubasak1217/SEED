@@ -6,7 +6,8 @@ namespace SEED.UI;
 // ============================================================
 //  DialogMetrics.cs — ダイアログの札の縦の割り付けと、出入りの倍率（W2 の手直し P2-1。純粋な計算）
 //
-//  【札の高さ】札（Card）は縦の CanvasStack（余白 size.dialog_padding・間隔 0）に 題・本文・ボタンの行 を並べる。
+//  【札の高さ】札（Card）は縦の CanvasStack（余白 size.dialog_padding・間隔 0）に 題・本文・（入力欄）・ボタンの行 を並べる
+//    （入力欄は W2-6b の DialogOptions.Input のときだけ。題・本文との間は size.dialog_title_gap、ボタンの行との間は size.dialog_actions_gap）。
 //    札の高さ = 上の余白 ＋ 題 ＋ 間隔 ＋ 本文 ＋ 間隔 ＋ ボタンの行 ＋ 下の余白（出していない区画とその間隔は数えない）。
 //    これを C# で求めて札の CanvasLayoutItem.PreferredSize と背景の Sprite.Size に書く（札は親の CanvasStack が矩形を割り当てるので、
 //    CanvasStack の fit_height〈中身に合わせる〉では背景のスプライトが伸びない。canvas_layout/pass.rs の「割り当てがあれば割り当てが勝つ」）。
@@ -58,8 +59,10 @@ public static class DialogMetrics
     public const int TitleSection = 0;
     /// <summary>本文の区画の番号。</summary>
     public const int MessageSection = 1;
+    /// <summary>1 行の入力欄の区画の番号（W2-6b。DialogOptions.Input が無ければ高さ 0 で出さない）。</summary>
+    public const int InputSection = 2;
     /// <summary>ボタンの行の区画の番号。</summary>
-    public const int ButtonsSection = 2;
+    public const int ButtonsSection = 3;
 
     /// <summary>札の上下の余白の数（上と下）。</summary>
     private const float VerticalPaddingCount = 2f;
@@ -71,18 +74,21 @@ public static class DialogMetrics
     private const float NoGapAbove = 0f;
 
     /// <summary>
-    /// ダイアログの 3 つの区画（題・本文・ボタンの行の順）。高さ 0 の区画は出さない。
+    /// ダイアログの 4 つの区画（題・本文・1 行の入力欄〈W2-6b〉・ボタンの行の順）。高さ 0 の区画は出さない。
     /// </summary>
     /// <param name="titleHeight">題の枠の高さ（題が空なら 0）。</param>
     /// <param name="messageHeight">本文の枠の高さ（本文が空なら 0）。</param>
     /// <param name="buttonsHeight">ボタンの行の高さ。</param>
-    /// <param name="titleGap">題 → 本文の間隔（size.dialog_title_gap）。</param>
-    /// <param name="actionsGap">本文（本文が無ければ題）→ ボタンの行の間隔（size.dialog_actions_gap）。</param>
-    public static IReadOnlyList<DialogSection> Sections(float titleHeight, float messageHeight, float buttonsHeight, float titleGap, float actionsGap)
+    /// <param name="titleGap">題 → 本文の間隔（size.dialog_title_gap）。題・本文 → 入力欄の間隔にも使う。</param>
+    /// <param name="actionsGap">本文（本文が無ければ題・入力欄があれば入力欄）→ ボタンの行の間隔（size.dialog_actions_gap）。</param>
+    /// <param name="inputHeight">1 行の入力欄の高さ（W2-6b。入力欄が無ければ 0＝出さない）。</param>
+    public static IReadOnlyList<DialogSection> Sections(float titleHeight, float messageHeight, float buttonsHeight, float titleGap, float actionsGap,
+        float inputHeight = 0f)
         => new[]
         {
             new DialogSection(titleHeight, NoGapAbove),
             new DialogSection(messageHeight, titleGap),
+            new DialogSection(inputHeight, titleGap),
             new DialogSection(buttonsHeight, actionsGap),
         };
 

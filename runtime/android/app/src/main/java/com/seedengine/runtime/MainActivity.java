@@ -25,10 +25,10 @@
 //    ・鳴動の音量の後始末（中身は platform/LeftoverVolumeNudge。W1-7）: onResume で、:seed_platform が戻せずに残した
 //      force_volume の前の音量があれば、前面にいる今のうちに戻させる（Android 17 は背面からの音量の変更を無視する）
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
-//    ・アプリ基盤 W2-0 のスパイク（文字入力の通知の観察。中身は spike/ImeSpikeLog。デバッグ版の APK を seed.ui_spike に ime で
-//      起動したときだけ。既定では各受け口は super を呼ぶだけで従来どおり）
-//    ・描画を止めている間（render_policy の on_demand。W2-10a）の起こし: 文字入力の受け口（stateChanged など）は winit が
-//      WindowEvent にしないので、redraw/RedrawWaker でネイティブのイベントループを起こす（on_demand でなければ理由を積むだけ）
+//    ・文字入力（W2-6a。E-06。中身は input/TextInputBridge）: GameActivity の受け口（stateChanged・onEditorAction・
+//      onSoftwareKeyboardVisibilityChanged・onApplyWindowInsets の IME の高さ）を上書きし（super を先に呼ぶ）、ネイティブへ渡す
+//      （winit は TextEvent・TextAction を読み捨てるため）。ネイティブは受け取ると描画を止めていてもイベントループを起こす
+//      （W2-0 のスパイクの spike/ImeSpikeLog はこれに置き換えて外した）
 //    ・タッチの時刻の控え（中身は input/TouchTimeline。2026-09-29）: processMotionEvent で、GameActivity の glue へ渡す前に
 //      MotionEvent の時刻と履歴をネイティブへ送る（winit はどちらも捨てるので。ジェスチャーの速度の推定に使う。docs/input_gestures.md §5）
 //    ・予測型の戻る（中身は back/BackCallbackController。W2 の手直し P1-3・docs/android.md §25.18）: プロジェクト設定
@@ -56,13 +56,13 @@ import java.nio.charset.StandardCharsets;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import androidx.core.graphics.Insets;
 import androidx.core.view.WindowInsetsCompat;
 
 import com.google.androidgamesdk.GameActivity;
 import com.google.androidgamesdk.gametextinput.State;
 
 import com.seedengine.runtime.back.BackCallbackController;
+import com.seedengine.runtime.input.TextInputBridge;
 import com.seedengine.runtime.input.TouchTimeline;
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.LeftoverVolumeNudge;
@@ -72,8 +72,6 @@ import com.seedengine.runtime.platform.app.NightMode;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
 import com.seedengine.runtime.platform.sensor.SensorFeeds;
 import com.seedengine.runtime.platform.window.SystemBarsHost;
-import com.seedengine.runtime.redraw.RedrawWaker;
-import com.seedengine.runtime.spike.ImeSpikeLog;
 
 /**
  * SEED ランタイムの唯一の Activity。
@@ -165,8 +163,6 @@ public class MainActivity extends GameActivity implements SystemBarsHost, BackCa
         // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
         setAppDirectoryEnvironment();
         forwardLaunchOptions();
-        // W2-0 のスパイク: seed.ui_spike に ime があるデバッグ版の起動だけ、文字入力の通知を logcat へ出す（既定で無効）
-        ImeSpikeLog.configure(this);
         // SEED.Platform の JNI の入口を用意し、ネイティブへ SeedPlatform のクラスを渡す（エンジンが最初のフレームから
         // IsSupported を正しく読めるよう android_main より前に）。:seed_platform は呼ばない（プロセスの起動の約 120 ms を
         // ここで待たない。つなぐのはスクリプトが最初に呼んだとき・背面のスレッドで。platform/PlatformConnection）。
@@ -245,55 +241,44 @@ public class MainActivity extends GameActivity implements SystemBarsHost, BackCa
     }
 
     /**
-     * WindowInsets（システムバー・切り欠き）が変わった。GameActivity の処理（IME 等）の後に、
-     * レイアウトが確定してから安全領域をネイティブへ知らせる。
+     * WindowInsets（システムバー・切り欠き・IME）が変わった。GameActivity の処理（IME 等）の後に、
+     * レイアウトが確定してから安全領域をネイティブへ知らせる。IME の高さ（ime().bottom）が変わっていれば
+     * 文字入力の窓口（TextInputBridge）がネイティブへ渡す（W2-6a。キーボードは描画面に重なるので、入力欄をずらすのはエンジン）。
      */
     @Override
     public WindowInsetsCompat onApplyWindowInsets(View view, WindowInsetsCompat insets) {
         WindowInsetsCompat result = super.onApplyWindowInsets(view, insets);
         screenReporter.reportAfterLayout();
-        // W2-0 のスパイク: IME の範囲（キーボードの高さ）の取り方の確かめ（既定では何もしない）
-        ImeSpikeLog.onWindowInsets(insets);
+        TextInputBridge.onWindowInsets(insets);
         return result;
     }
 
     /**
      * 文字入力の状態が変わった（GameTextInput の InputConnection から。UI スレッド）。
-     * super がネイティブへ渡す（onTextInputEventNative）。W2-0 のスパイクでは中身を logcat へ出す（既定では何もしない）。
+     * super がネイティブの glue へ渡す（onTextInputEventNative。winit は読み捨てる）ので、本番の経路は TextInputBridge
+     * （状態の丸ごとの写しを JNI でエンジンの箱へ。受け取ると描画を止めていてもイベントループを起こす。W2-6a）。
      */
     @Override
     public void stateChanged(State newState, boolean dismissed) {
         super.stateChanged(newState, dismissed);
-        ImeSpikeLog.onState(newState, dismissed);
-        // 描画を止めている間（render_policy の on_demand）でも描き直すよう、ネイティブのイベントループを起こす（W2-10a）
-        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
+        TextInputBridge.onState(newState);
     }
 
     /**
-     * 完了などのアクションが来た（UI スレッド）。super がネイティブへ渡す（onEditorActionNative）が、
-     * winit はそれを読み捨てる（docs/app_platform_roadmap.md §3.8）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。
+     * 完了などのアクションが来た（UI スレッド）。super がネイティブの glue へ渡す（onEditorActionNative）が、
+     * winit はそれを読み捨てる（docs/app_platform_roadmap.md §3.8）ので、TextInputBridge でエンジンへ渡す（W2-6a）。
      */
     @Override
     public void onEditorAction(int action) {
         super.onEditorAction(action);
-        ImeSpikeLog.onEditorAction(action);
-        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
+        TextInputBridge.onEditorAction(action);
     }
 
-    /** ソフトキーボードの表示が変わった（UI スレッド）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。 */
+    /** ソフトキーボードの表示が変わった（UI スレッド）。TextInputBridge でエンジンへ渡す（W2-6a）。 */
     @Override
     public void onSoftwareKeyboardVisibilityChanged(boolean visible) {
         super.onSoftwareKeyboardVisibilityChanged(visible);
-        ImeSpikeLog.onKeyboardVisibility(visible);
-        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
-    }
-
-    /** IME の占める範囲が変わった（UI スレッド）。W2-0 のスパイクでは logcat へ出す（既定では何もしない）。 */
-    @Override
-    public void onImeInsetsChanged(Insets insets) {
-        super.onImeInsetsChanged(insets);
-        ImeSpikeLog.onImeInsets(insets);
-        RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
+        TextInputBridge.onKeyboardVisibility(visible);
     }
 
     /**

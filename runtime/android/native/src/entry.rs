@@ -22,8 +22,8 @@ use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 
 use crate::{
-    app_dirs, debug_hooks, debug_save_test, device_info, dotnet_runtime, heartbeat, launch, logcat, platform_bridge, touch_timeline,
-    ui_spike,
+    app_dirs, debug_hooks, debug_save_test, device_info, dotnet_runtime, heartbeat, launch, logcat, platform_bridge, text_input,
+    touch_timeline,
 };
 
 /// android_main に一度入ったか（同一プロセスでの 2 回目を検出する）。
@@ -73,9 +73,9 @@ fn android_main(app: AndroidApp) {
     debug_save_test::run_if_enabled();
 
     let mut args = launch::launch_args(&app);
-    // 検証用: アプリ基盤 W2-0 のスパイク（起動オプション seed.ui_spike に ime があるときだけ文字入力の試作を始める。
-    // 既定では何もしない）。AndroidApp は複製して渡し、winit へは元のものを渡す（同じ Activity を指す）。
-    ui_spike::start_if_requested(&app, args.ui_spike.as_deref());
+    // 文字入力（W2-6a。E-06）: エンジンの文字入力の命令を実行する実装を登録する（App を作る前）。AndroidApp は複製して
+    // 持ち、winit へは元のものを渡す（同じ Activity を指す）。IME の知らせは Java の TextInputBridge → JNI（text_input/）。
+    text_input::install(&app);
     // 同梱 .NET を files/dotnet/ へ展開し（初回だけ）、C# スクリプトを動かす起動材料を作る（段階B）。
     // 用意できなければ None のまま（エンジンはスクリプト無しで起動する）。
     args.embedded_clr = dotnet_runtime::prepare(&app);

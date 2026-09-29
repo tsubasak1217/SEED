@@ -46,6 +46,33 @@ public sealed class DialogOptions
     public bool DismissOnScrimTap { get; init; } = true;
     /// <summary>戻るで閉じるか（Dismissed）。false でも戻るは受ける（後ろへ回さない）。</summary>
     public bool CancelableByBack { get; init; } = true;
+    /// <summary>
+    /// 1 行の入力欄（W2-6b。null なら出さない）。本文とボタンの行の間に入力欄を置き、開いたらフォーカスを当てる（キーボードが出る）。
+    /// 結果の文字は <c>DialogHandle.InputText</c>（Positive のときだけ入る）。
+    /// </summary>
+    public DialogInputOptions? Input { get; init; }
+}
+
+/// <summary>ダイアログの 1 行の入力欄の中身（W2-6b。名前の変更など）。</summary>
+public sealed class DialogInputOptions
+{
+    /// <summary>初めの文字。</summary>
+    public string Text { get; init; } = string.Empty;
+    /// <summary>例の文（空のときに薄く出す。例「例：田中太郎」）。</summary>
+    public string Placeholder { get; init; } = string.Empty;
+    /// <summary>入力の種類。</summary>
+    public TextInputKind Kind { get; init; } = TextInputKind.Text;
+    /// <summary>最大の長さ（書記素の数。0 = 制限なし）。</summary>
+    public int MaxLength { get; init; }
+    /// <summary>貼り付けを許すか。</summary>
+    public bool AllowPaste { get; init; } = true;
+    /// <summary>結果の文字の前後の空白を落とすか（既定 true。名前の変更）。</summary>
+    public bool TrimResult { get; init; } = true;
+    /// <summary>キーボードの完了（Done）で Positive を選ぶか（既定 true）。</summary>
+    public bool SubmitOnDone { get; init; } = true;
+
+    /// <summary>結果の文字（TrimResult なら前後の空白を落とす）。</summary>
+    public string Finish(string text) => TrimResult ? (text ?? string.Empty).Trim() : text ?? string.Empty;
 }
 
 /// <summary>ダイアログの決め方。</summary>

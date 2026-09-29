@@ -192,12 +192,6 @@ fn parse_args() -> LaunchArgs {
     let gpu_timing = raw.iter().any(|a| a == GPU_TIMING_ARG)
         || std::env::var(GPU_TIMING_ENV).is_ok_and(|v| v.trim() == GPU_TIMING_ENV_ON);
 
-    // 検証用: アプリ基盤 W2-0 のスパイクの指定（--ui-spike=<指定> か環境変数 SEED_UI_SPIKE。既定は無効）。
-    let ui_spike = engine::core::ui_spike::spec_from_desktop(
-        &raw,
-        std::env::var(engine::core::ui_spike::ENV_VAR).ok(),
-    );
-
     LaunchArgs {
         parent_hwnd,
         parent_pid,
@@ -217,6 +211,5 @@ fn parse_args() -> LaunchArgs {
         gpu_timing,
         // 上書き層（pak より先にアセットルートを読む）は Android のデバッグ版の差し替え専用。PC は従来の読む順のまま（§23）。
         asset_overlay: false,
-        ui_spike,
     }
 }

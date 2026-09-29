@@ -31,6 +31,7 @@ dependencies = [
  "texpresso",
  "tobj",
  "toml",
+ "unicode-segmentation",
  "urlencoding",
  "wgpu",
  "windows-sys 0.59.0",

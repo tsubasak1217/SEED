@@ -27,14 +27,24 @@ namespace SEED.UI;
 // ============================================================
 
 /// <summary>ダイアログ。</summary>
-public sealed class Dialog : ModalPlane
+/// <remarks>
+/// 【1 行の入力（W2-6b）】DialogOptions.Input があれば、札の Input の枠（dialog.actor の Card/Input。既定は隠す）へ入力欄
+/// （templates/ui/prefabs/text_field.actor）を作って本文とボタンの行の間に並べ、開いたらフォーカスを当てる（キーボードが出る）。
+/// Positive を選ぶと入力欄の文字（TrimResult なら前後の空白を落とす）を DialogHandle.InputText へ置いてから閉じる。
+/// キーボードの完了（SubmitOnDone）でも Positive。キーボードが札に重なるときは札を持ち上げる（IKeyboardInsetTarget。
+/// 札の上端は安全領域の上端 ＋ size.keyboard_gap より上へは行かない）。
+/// </remarks>
+public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
 {
     /// <summary>子の名前。</summary>
     private const string ScrimChild = "Scrim";
     private const string CardChild = "Card";
     private const string TitleChild = "Card/Title";
     private const string MessageChild = "Card/Message";
+    private const string InputChild = "Card/Input";
     private const string ButtonsChild = "Card/Buttons";
+    /// <summary>入力欄のプレハブ（W2-6b）。</summary>
+    private const string TextFieldPrefab = "assets://ui/prefabs/text_field.actor";
     private const string NeutralChild = "Card/Buttons/Neutral";
     private const string NegativeChild = "Card/Buttons/Negative";
     private const string PositiveChild = "Card/Buttons/Positive";
@@ -84,6 +94,15 @@ public sealed class Dialog : ModalPlane
     private float _openScale = NoScale;
     /// <summary>予測型の戻るのプレビューの倍率（W2 の手直し 3b。1 = プレビューなし）。確定した後も出終わるまで保つ。</summary>
     private float _previewScale = NoScale;
+    /// <summary>入力欄のノード（W2-6b。入力が無ければ無効）。</summary>
+    private GameObject _inputNode = new(Entity.None);
+    /// <summary>つないだ入力欄（部品の OnStart の後に登録簿から引く）。</summary>
+    private TextField? _input;
+    /// <summary>札の持ち上げ（キャンバスの単位。キーボードを避ける。0 = 持ち上げない）。</summary>
+    private float _liftUnits;
+
+    /// <summary>キーボードを避ける入れ物の根（ダイアログの根）。</summary>
+    public GameObject InsetOwner => Owner;
 
     /// <inheritdoc />
     protected override void OnPlaneStart()
@@ -91,6 +110,8 @@ public sealed class Dialog : ModalPlane
         _options = Options as DialogOptions ?? new DialogOptions();
         _scrim = gameObject.FindChild(ScrimChild);
         _card = gameObject.FindChild(CardChild);
+        CreateInput();
+        KeyboardInsets.Register(this);
         Layout();
         ApplyOpen(0f);
         NavNode.SetVisible(Owner, true);
@@ -112,13 +133,18 @@ public sealed class Dialog : ModalPlane
         float messageHeight = SetText(MessageChild, _options.Message, UiTokens.TextBody, inner, wrap: true);
         float buttonHeight = Theme.Number(NavTokens.SizeDialogButtonHeight);
         LayoutButtons(buttonHeight);
+        // 1 行の入力欄（W2-6b）: 欄の高さは size.field_height、幅は札の中の幅（入力が無ければ 0＝出さない）
+        float inputHeight = _inputNode.IsValid ? Theme.Number(TextFieldTokens.SizeFieldHeight) : 0f;
+        if (_inputNode.IsValid && _inputNode.GetComponent<Sprite>() is { } inputBackground)
+            inputBackground.Size = new Vector2(inner, inputHeight);
 
         // 縦の割り付け: 区画の枠 = 中身 ＋ 下の間隔（次に見える区画の上の間隔）、札の高さ = 余白 × 2 ＋ 枠の和
         var layout = DialogMetrics.Arrange(padding, DialogMetrics.Sections(
             titleHeight, messageHeight, buttonHeight,
-            Theme.Number(NavTokens.SizeDialogTitleGap), Theme.Number(NavTokens.SizeDialogActionsGap)));
+            Theme.Number(NavTokens.SizeDialogTitleGap), Theme.Number(NavTokens.SizeDialogActionsGap), inputHeight));
         SetSlot(TitleChild, inner, layout.SlotHeights[DialogMetrics.TitleSection]);
         SetSlot(MessageChild, inner, layout.SlotHeights[DialogMetrics.MessageSection]);
+        SetSlot(InputChild, inner, layout.SlotHeights[DialogMetrics.InputSection]);
         SetSlot(ButtonsChild, inner, layout.SlotHeights[DialogMetrics.ButtonsSection]);
 
         // 札: 並べ方（余白・等間隔の間隔 0）と大きさ。背景のスプライトも同じ大きさにする
@@ -187,11 +213,42 @@ public sealed class Dialog : ModalPlane
         }
     }
 
+    /// <summary>入力があれば入力欄を札の Input の枠に作る（W2-6b。枠を見せる。中身は部品の OnStart の後に Bind で当てる）。</summary>
+    private void CreateInput()
+    {
+        var slot = gameObject.FindChild(InputChild);
+        bool wanted = _options.Input is not null && slot.IsValid;
+        if (slot.IsValid) NavNode.SetVisible(slot, wanted);
+        if (!wanted) return;
+        _inputNode = GameObject.Instantiate(TextFieldPrefab, slot);
+        if (!_inputNode.IsValid) Debug.LogWarning($"{LogPrefix} 入力欄のプレハブを作れませんでした（{TextFieldPrefab}）");
+    }
+
+    /// <summary>入力欄をつなぐ（中身を当て、完了で Positive、開いたらフォーカス）。</summary>
+    private void BindInput()
+    {
+        if (_input is not null || !_inputNode.IsValid || _options.Input is not { } spec) return;
+        if (Of<TextField>(_inputNode) is not { } field) return;
+        _input = field;
+        field.Placeholder = spec.Placeholder;
+        field.Kind = spec.Kind;
+        field.MaxLength = spec.MaxLength;
+        field.AllowPaste = spec.AllowPaste;
+        field.UnfocusOnDone = false;
+        field.SetText(spec.Text);
+        field.Submitted += (_, action) =>
+        {
+            if (spec.SubmitOnDone && action == TextInputAction.Done) Choose(DialogResult.Positive);
+        };
+        field.Focus();
+    }
+
     /// <summary>幕のタップ・ボタンをつなぐ（部品の OnStart の順は決まっていないので、登録簿が変わるたびに引き直す）。</summary>
     private void Bind()
     {
         if (_registryVersion == UiRegistry.Version) return;
         _registryVersion = UiRegistry.Version;
+        BindInput();
         if (_scrimRelay is null && Of<GestureRelay>(_scrim) is { } relay)
         {
             _scrimRelay = relay;
@@ -205,12 +262,48 @@ public sealed class Dialog : ModalPlane
         }
     }
 
-    /// <summary>ボタン・幕・戻るで結果を決めて閉じる（1 回だけ）。</summary>
+    /// <summary>ボタン・幕・戻るで結果を決めて閉じる（1 回だけ）。Positive なら入力欄の文字を手札へ置いてから閉じる（W2-6b）。</summary>
     private void Choose(DialogResult result)
     {
         if (Phase is ModalPhase.Exiting or ModalPhase.Closed) return;
         if (!_latch.TryComplete(result)) return;
+        if (_input is { } field)
+        {
+            // フォーカスを外して変換中の文字を確定扱いにし、キーボードを隠してから文字を読む
+            field.Unfocus();
+            if (result == DialogResult.Positive && _options.Input is { } spec && Handle is DialogHandle handle)
+                handle.SetInputText(spec.Finish(field.Text));
+        }
+        ClearKeyboardLift();
+        KeyboardInsets.Unregister(this);
         RequestClose(result);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 札の下端 ＋ 余白がキーボードの上端を越えた分だけ札を上へずらす（CanvasLayoutItem.Translate。持ち上げる前の矩形で測る）。
+    /// 札の上端は安全領域の上端 ＋ 余白より上へは行かない（KeyboardInsetMath.LiftPx）。
+    /// </remarks>
+    public void ApplyKeyboardLift(float keyboardTopPx, float gapPx)
+    {
+        if (!_card.IsValid || _card.GetComponent<CanvasTransform>() is not { } t || !t.HasLayout) return;
+        var rect = t.LayoutRect;
+        float pxPerUnit = KeyboardInsetMath.PxPerUnit(rect.height, t.LayoutSize.y);
+        // 今の持ち上げを戻した矩形（画面の画素）で測る（持ち上げた矩形で測ると、持ち上げの分だけ少なく見える）
+        var resting = new Rect(rect.x, rect.y + _liftUnits * pxPerUnit, rect.width, rect.height);
+        float lift = KeyboardInsetMath.LiftPx(resting, keyboardTopPx, gapPx, Screen.SafeArea.y + gapPx);
+        _liftUnits = KeyboardInsetMath.PxToUnits(lift, pxPerUnit);
+        NavNode.SetTranslate(_card, new Vector2(0f, -_liftUnits));
+        Redraw.Request();
+    }
+
+    /// <inheritdoc />
+    public void ClearKeyboardLift()
+    {
+        if (_liftUnits == 0f) return;
+        _liftUnits = 0f;
+        if (_card.IsValid) NavNode.SetTranslate(_card, Vector2.Zero);
+        Redraw.Request();
     }
 
     /// <summary>幕のタップ。</summary>
@@ -259,7 +352,14 @@ public sealed class Dialog : ModalPlane
     }
 
     /// <inheritdoc />
-    protected override void OnBeginExit() => _open.Retarget(0f, Theme.Number(NavTokens.MotionDialog));
+    /// <remarks>入力欄のフォーカスとキーボードの持ち上げもここで手放す（ボタンを通らずに閉じたとき〈Dismiss・シーンの切り替え〉も）。</remarks>
+    protected override void OnBeginExit()
+    {
+        _input?.Unfocus();
+        ClearKeyboardLift();
+        KeyboardInsets.Unregister(this);
+        _open.Retarget(0f, Theme.Number(NavTokens.MotionDialog));
+    }
 
     /// <summary>開き具合（0〜1）→ 幕の濃さと札の大きさ（曲線を通す）。</summary>
     private void ApplyOpen(float linear)

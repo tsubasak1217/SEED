@@ -5,8 +5,8 @@
 //  render_policy の on_demand で描画を止めている間、イベントループは眠っている。Android の文字入力（IME の本文の変化・
 //  完了などのアクション・キーボードの表示と高さ）は GameActivity の glue がルーパーを起こすが、winit はそれを
 //  WindowEvent にしない（読み捨てる。docs/app_platform_roadmap.md §3.8.1 の I-1・I-10）ので、エンジンは気付けない。
-//  MainActivity の IME の受け口（stateChanged など）が Java の RedrawWaker.requestRedraw を呼び、ここへ届く。
-//  W2-6a で本文を受け取る JNI を足したら、その受け口もここと同じく起こす（または本文の受け取りの中で raise する）。
+//  W2-6a からは、IME の知らせ（本文の写し・完了・キーボードの表示と高さ）は text_input/jni_receivers.rs が受け取り、
+//  エンジンの箱へ積むときに起こす（engine::core::text_input::inbox::push）。ここは本文を運ばない知らせ用に残す。
 //
 //  【nativeRequestRedraw(int reason)】（Java の `com.seedengine.runtime.redraw.RedrawWaker` の `private static native void`）
 //  番号は engine::core::redraw::reason の EXTERNAL_REASON_*（0 = 文字入力・1 = 画面・2 = その他）。UI スレッドから呼ばれる。

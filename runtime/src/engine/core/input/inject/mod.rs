@@ -20,8 +20,10 @@
 pub mod command;
 pub mod sequence;
 pub mod state;
+pub mod text_command;
 
 pub use command::{parse_inject_command, InjectAction, InjectCommand, INJECT_COMMAND_PREFIX};
+pub use text_command::TextInjectCommand;
 pub use sequence::InputSequencePlayer;
 pub use state::InjectedInputState;
 

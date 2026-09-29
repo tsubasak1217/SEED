@@ -312,6 +312,9 @@ public static class Program
         // ── W2-9: テーマ（読み込み・継承・明暗・補間・種の色・表） ──
         ThemeTests.Register(h);
 
+        // ── W2-6b: 入力欄（置き場・スクロール・タップ・点滅・キーボードを避ける量・数字の欄・記法の逃がし・見た目・ダイアログの入力）──
+        TextFieldTests.Register(h, theme);
+
         return h.Run();
     }
 }

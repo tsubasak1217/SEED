@@ -5,6 +5,7 @@
   "_w2_8": "W2-8（グラフ）で足したもの: 系列の色（chart_series_1〜4。1 は主の色、2 は Wake or Pay のカードの赤）・格子線・軸・目盛りの文字・基準線・空の棒・選んだ列の強調（Flutter 版 penalty_bar_chart.dart の主の色 12%）、線の太さ 2・点の半径 2.5・基準線 1.5・縦軸の文字の列 46・横軸の文字の行 26（Flutter 版 wake_time_chart.dart の値）、棒の太さ 0.7・空の棒の高さ 0.015・最小の太さ 2（penalty_bar_chart.dart）、慣性の減速 0.135（Flutter の BouncingScrollSimulation）。正典は docs/ui_charts.md §7。",
   "_w2_9": "W2-9（テーマ）で足したもの: brightness（dark）、書体（font.family = 部品の文字の書体・空は組み込み、font.weight・font.weight_title = SEED.Text.Weight の太さ。0 = 書体そのまま）、テーマの切り替えの色の補間の時間と曲線（motion.theme 0.3 秒・motion.theme_curve = fastOutSlowIn）、明るい方の配色（light の節。暗い方と同じ種の色 #6C4BFF を主の色にし、面・文字は Material 3 の明るい配色の段を目安に選んだ。押下の重ね色は黒・濃さ 0.1〈Material 3 の pressed〉）。",
   "_w2_fix2": "W2 の手直し P2 で足したもの: ダイアログの区画の間隔（size.dialog_title_gap 16 = 題 → 本文、size.dialog_actions_gap 24 = 本文〈本文が無ければ題〉→ ボタンの行。Flutter master の AlertDialog〈Material 3〉の contentPadding の上 16・下 24。2026-09-29 に packages/flutter/lib/src/material/dialog.dart を取得して確かめた）。行のフルスワイプ（P2-3。SwipeActions）: ratio.swipe_full 0.6・ratio.swipe_full_cancel 0.55（構える・解くずらし量の行の幅に対する割合）、motion.swipe_full 0.15（「削除」の文字の置き場の補間）・motion.swipe_dismiss 0.2（確定で行を外へ流し切る）・motion.swipe_collapse 0.2（一覧が消した行を畳む）は docs/backlog.md の案（iOS の値は公開されていないので決めた値）。color.on_error（削除の面 color.error の上の文字。白。主の色の上の文字と同じく 3:1 以上）。グラフの日付線のハンドル（P2-4。LineChart）: size.chart_handle 18（丸の直径。利用者の要望の案〈docs/backlog.md: 見た目 16〜20 dp〉の中ほどで、スライダのつまみ size.slider_thumb 20 より一回り小さくし面の下の線と点を隠しすぎない。当たりはプレハブの min_hit_size_dp 48）・size.chart_handle_border 2（縁の太さ。折れ線の太さ size.chart_line 2 と同じ。縁の色は面の color.surface・塗りは選んだ系列の色）。",
+  "_w2_6": "W2-6b（入力欄 SEED.UI.TextField）で足したもの: color.selection（選択の背景。主の色の 40%）、size.field_height 52（Material 3 の Outlined text field の 56 を目安に、Wake or Pay の数値の欄〈約 51 dp〉に合わせた）・size.field_padding 16（左右の内側の余白。Material 3 と同じ）・size.field_focus_border 2（フォーカス・エラーの枠。Material 3 と同じ）・size.caret 2（カーソルの太さ。Flutter の cursorWidth 2）・size.composition_underline 2（変換中の下線）・size.keyboard_gap 16（キーボードを避けるときの余白）、text.field 16（Material 3 の bodyLarge）・text.field_number 24（数値の欄の大きめの数字）、motion.caret_blink 0.5（Flutter の EditableText の点滅の半周期 500ms）。正典は docs/ui_text_input.md §9。",
   "name": "default",
   "brightness": "dark",
   "color": {
@@ -38,7 +39,8 @@
     "chart_label": "#A9A2B8",
     "chart_reference": "#A9A2B8",
     "chart_empty_bar": "#3A3645",
-    "chart_highlight": "#7C5CFF1F"
+    "chart_highlight": "#7C5CFF1F",
+    "selection": "#7C5CFF66"
   },
   "radius": {
     "button": 12,
@@ -113,7 +115,13 @@
     "chart_tooltip_padding": 8,
     "chart_tooltip_gap": 10,
     "chart_handle": 18,
-    "chart_handle_border": 2
+    "chart_handle_border": 2,
+    "field_height": 52,
+    "field_padding": 16,
+    "field_focus_border": 2,
+    "caret": 2,
+    "composition_underline": 2,
+    "keyboard_gap": 16
   },
   "text": {
     "title": 20,
@@ -122,7 +130,9 @@
     "caption": 12,
     "wheel": 21,
     "chart_axis": 11,
-    "chart_tooltip": 12
+    "chart_tooltip": 12,
+    "field": 16,
+    "field_number": 24
   },
   "font": {
     "family": "",
@@ -158,7 +168,8 @@
     "theme_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 },
     "swipe_full": 0.15,
     "swipe_dismiss": 0.2,
-    "swipe_collapse": 0.2
+    "swipe_collapse": 0.2,
+    "caret_blink": 0.5
   },
   "opacity": {
     "pressed": 0.16,
@@ -230,7 +241,8 @@
       "chart_label": "#5E5970",
       "chart_reference": "#5E5970",
       "chart_empty_bar": "#DAD5E3",
-      "chart_highlight": "#6C4BFF1A"
+      "chart_highlight": "#6C4BFF1A",
+      "selection": "#6C4BFF40"
     },
     "opacity": {
       "pressed": 0.1,

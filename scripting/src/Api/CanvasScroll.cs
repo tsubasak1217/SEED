@@ -230,6 +230,17 @@ public readonly struct CanvasScroll : IComponentHandle<CanvasScroll>
     /// <summary>位置の最大（中身 − 窓。0 以上）。</summary>
     public Vector2 MaxPosition => ScriptHost.TryGetVec2(_entity, Comp, "max_position", out var v) ? v : Vector2.Zero;
 
+    /// <summary>
+    /// 中身の末尾に足す余白（キャンバスの単位。0 以上。実行中だけで保存しない。W2-6b）。入力欄（SEED.UI.TextField）が
+    /// ソフトキーボードを避けるとき、窓のうちキーボードに隠れる分を足して、中身の最後までキーボードの上へスクロールできるようにする。
+    /// 次のフレームの描画から <see cref="ContentSize"/>・<see cref="MaxPosition"/> に入る。
+    /// </summary>
+    public Vector2 EndInset
+    {
+        get => ScriptHost.TryGetVec2(_entity, Comp, "end_inset", out var v) ? v : Vector2.Zero;
+        set => ScriptHost.TrySetVec2(_entity, Comp, "end_inset", value);
+    }
+
     // ── 操作 ──────────────────────────────────────────────
 
     /// <summary>

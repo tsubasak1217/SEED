@@ -156,10 +156,10 @@ impl ApplicationHandler for App {
                 crate::engine::platform::bridge::notify_host_ui_mode_changed();
             }
 
-            // 文字入力（IME）。今は W2-0 の試作のログだけ（ui_spike の ime のときだけ出す。既定では何もしない）。
-            // IME を許可しない限り（既定）winit は Ime を送ってこない（ui_spike_hooks.rs の allow_desktop_ime_if_requested）。
+            // 文字入力（IME。W2-6a）: 今の入力欄の場へ変換中の文字・確定を当てる（text_input_hooks.rs）。
+            // winit は IME を許可した窓にだけ Ime を送る（許可は入力欄にフォーカスがある間だけ）。
             WindowEvent::Ime(ime) => {
-                self.log_desktop_ime_event(&ime);
+                self.on_text_input_ime(&ime);
             }
 
             // ── メインループ ──────────────────────────────────

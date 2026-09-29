@@ -99,6 +99,17 @@
     <Compile Include="..\..\..\scripting\src\Api\UI\Charts\Model\*.cs">
       <Link>Linked\Charts\%(Filename)%(Extension)</Link>
     </Compile>
+    <!-- W2-6b: 入力欄の純粋な計算（文字の置き場・スクロール・タップの添字・点滅・キーボードを避ける量・数字の欄の値・記法の逃がし・
+         見た目・トークンの名前）と、ダイアログの入力の型が読む文字入力の型（値だけ）と矩形 -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\TextInput\Model\*.cs">
+      <Link>Linked\TextInput\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\TextInputTypes.cs">
+      <Link>Linked\TextInputTypes.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\Rect.cs">
+      <Link>Linked\Rect.cs</Link>
+    </Compile>
     <!-- 既定のテーマのデータ（SEEDScripting に埋め込むものと同じファイル）を出力へ写す -->
     <None Include="..\..\..\scripting\src\Api\UI\Theme\default_theme.json">
       <Link>default_theme.json</Link>

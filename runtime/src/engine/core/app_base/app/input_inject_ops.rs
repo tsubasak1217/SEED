@@ -16,7 +16,7 @@
 
 use crate::engine::core::app_base::app::RuntimeMode;
 use crate::engine::core::input::inject::{
-    InjectCommand, INJECT_ERROR_NOT_PLAYING, INJECT_ERROR_SEQUENCE_BUSY,
+    InjectAction, InjectCommand, INJECT_ERROR_NOT_PLAYING, INJECT_ERROR_SEQUENCE_BUSY,
     INJECT_REPLY_ERROR_PREFIX, INJECT_REPLY_OK, INJECT_REPLY_SEQUENCE_DONE,
 };
 
@@ -47,6 +47,11 @@ impl App {
 
             InjectCommand::Action(action) => {
                 self.input.apply_injected_action(action);
+                // 入力欄にフォーカスがあれば、注入のキーの押下も編集の操作（Backspace・矢印・Ctrl+A など）として回す
+                // （修飾キーは上で注入の状態へ入れた後に読む。文字は入らない＝INPUT_TEXT:commit で入れる。W2-6a）
+                if let InjectAction::Key { key, down: true } = action {
+                    self.route_injected_key_to_text_input(key);
+                }
                 self.reply_input_ok();
             }
 
@@ -54,6 +59,9 @@ impl App {
                 self.input.release_injected_input();
                 self.reply_input_ok();
             }
+
+            // 文字入力の注入（INPUT_TEXT:。W2-6。入力欄の受け口へ直接入れる。text_input_hooks.rs）
+            InjectCommand::Text(command) => self.handle_text_inject(command),
 
             InjectCommand::Sequence(player) => {
                 if self.input.start_injected_sequence(player) {

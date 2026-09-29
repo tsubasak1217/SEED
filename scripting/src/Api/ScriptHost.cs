@@ -477,6 +477,109 @@ public static unsafe class ScriptHost
         return _api.Redraw(op, value);
     }
 
+    // ── 文字入力（SEED.TextInput。W2-6a）──────────────────────────
+    // op の番号と結果は Rust 側 runtime/src/engine/core/scripting/text_input_bridge.rs の TEXT_OP_* / TEXT_RESULT_* と一致させる。
+
+    /// <summary>場を始める（ints = 種類・アクション・最大の長さ・旗・選択の起点・動く端、text = 初めの本文）。新しい場の番号。</summary>
+    internal const int TextInputOpBegin = 0;
+    /// <summary>場を終える。</summary>
+    internal const int TextInputOpEnd = 1;
+    /// <summary>状態を読む（outInts = 選択 2・変換中の区間 2・版、outText = 本文の UTF-8。戻り値は本文のバイト数）。</summary>
+    internal const int TextInputOpGetState = 2;
+    /// <summary>本文と選択を置く（ints = 選択の起点・動く端。-1 で末尾）。</summary>
+    internal const int TextInputOpSetText = 3;
+    /// <summary>選択を置く（ints = 起点・動く端）。</summary>
+    internal const int TextInputOpSetSelection = 4;
+    /// <summary>出来事を取り出す（outInts = [番号, 添え] の組）。書いた組の数。</summary>
+    internal const int TextInputOpTakeEvents = 5;
+    /// <summary>キーボードを出す。</summary>
+    internal const int TextInputOpShowKeyboard = 6;
+    /// <summary>キーボードを隠す。</summary>
+    internal const int TextInputOpHideKeyboard = 7;
+    /// <summary>候補窓が避ける矩形を置く（ints = x・y・幅・高さ。画面の画素）。</summary>
+    internal const int TextInputOpSetCaretRect = 8;
+    /// <summary>キーボードの状態を読む（outInts = 見えているか・高さの画素）。</summary>
+    internal const int TextInputOpKeyboard = 9;
+    /// <summary>今の場の番号（無ければ 0）。</summary>
+    internal const int TextInputOpActive = 10;
+    /// <summary>受け付けた。</summary>
+    internal const int TextInputResultOk = 0;
+    /// <summary>知らない op・今の場でない・読めない値（FFI が使えないときもこれ）。</summary>
+    internal const int TextInputResultInvalid = -1;
+    /// <summary>GetState の outInts の要素の数（Rust 側 STATE_OUT_INTS）。</summary>
+    internal const int TextInputStateInts = 5;
+    /// <summary>Keyboard の outInts の要素の数（Rust 側 KEYBOARD_OUT_INTS）。</summary>
+    internal const int TextInputKeyboardInts = 2;
+    /// <summary>出来事 1 つの outInts の要素の数（Rust 側 EVENT_INTS）。</summary>
+    internal const int TextInputEventInts = 2;
+    /// <summary>本文を受け取る入れ物の最初の大きさ（足りなければ Rust の答えの大きさで取り直す）。</summary>
+    private const int TextInputInitialTextCapacity = 256;
+
+    /// <summary>
+    /// 文字入力の op を呼ぶ（ints と text を渡し、outInts・outText へ受け取る）。FFI が使えないときは
+    /// <see cref="TextInputResultInvalid"/>（例外にしない＝入力欄は動かない）。
+    /// </summary>
+    internal static int TextInputCall(int op, int session, ReadOnlySpan<int> ints, string? text, Span<int> outInts, Span<byte> outText)
+    {
+        if (!_available || _api.TextInput == null) return TextInputResultInvalid;
+        // 本文は長くなりうる（貼り付け・プログラムからの設定）ので、短ければスタック・長ければ ArrayPool（Utf8Arg）
+        string value = text ?? string.Empty;
+        using var tb = new Utf8Arg(value, stackalloc byte[Utf8Arg.StackBytesFor(value)]);
+        fixed (int* ip = ints)
+        fixed (byte* tp = tb.Bytes)
+        fixed (int* oi = outInts)
+        fixed (byte* ot = outText)
+            return _api.TextInput(op, session, ip, ints.Length, tp, tb.Length, oi, outInts.Length, ot, outText.Length);
+    }
+
+    /// <summary>
+    /// 場の状態を読む（本文は入れ物に収まらなければ取り直す）。場が今の場でなければ false。
+    /// </summary>
+    /// <param name="session">場の番号。</param>
+    /// <param name="text">本文。</param>
+    /// <param name="ints">選択の起点・動く端・変換の始め・終わり（無ければ -1）・版（要素 <see cref="TextInputStateInts"/>）。</param>
+    internal static bool TextInputGetState(int session, out string text, Span<int> ints)
+    {
+        text = string.Empty;
+        byte[] buffer = new byte[TextInputInitialTextCapacity];
+        int length = TextInputCall(TextInputOpGetState, session, ReadOnlySpan<int>.Empty, null, ints, buffer);
+        if (length < 0) return false;
+        if (length > buffer.Length)
+        {
+            buffer = new byte[length];
+            length = TextInputCall(TextInputOpGetState, session, ReadOnlySpan<int>.Empty, null, ints, buffer);
+            if (length < 0 || length > buffer.Length) return false;
+        }
+        text = Encoding.UTF8.GetString(buffer, 0, length);
+        return true;
+    }
+
+    // ── 1 行の文字の寸法（SEED.TextMeasure。W2-6b）──────────────────
+    // op の番号は Rust 側 runtime/src/engine/core/scripting/text_measure_bridge.rs の MEASURE_OP_* と一致させる。
+
+    /// <summary>1 行の幅（out[0]）。</summary>
+    internal const int TextMeasureOpLineWidth = 0;
+    /// <summary>UTF-16 の添字ごとのカーソルの x（長さ + 1 個）。</summary>
+    internal const int TextMeasureOpCaretStops = 1;
+    /// <summary>アセント・ディセント（2 個）。</summary>
+    internal const int TextMeasureOpMetrics = 2;
+    /// <summary>読めない値・知らない op（FFI が使えないときもこれ）。</summary>
+    internal const int TextMeasureInvalid = -1;
+
+    /// <summary>文字の寸法の op を呼ぶ（戻り値は op ごとの数。-1 = 読めない値）。</summary>
+    internal static int TextMeasureCall(int op, string? fontPath, float size, string? text, Span<float> output)
+    {
+        if (!_available || _api.TextMeasure == null) return TextMeasureInvalid;
+        string font = fontPath ?? string.Empty;
+        string value = text ?? string.Empty;
+        using var fb = new Utf8Arg(font, stackalloc byte[Utf8Arg.StackBytesFor(font)]);
+        using var tb = new Utf8Arg(value, stackalloc byte[Utf8Arg.StackBytesFor(value)]);
+        fixed (byte* fp = fb.Bytes)
+        fixed (byte* tp = tb.Bytes)
+        fixed (float* outp = output)
+            return _api.TextMeasure(op, fp, fb.Length, size, tp, tb.Length, outp, output.Length);
+    }
+
     // ── カメラ射影（SEED.Camera.WorldToScreen）──────────────────
 
     /// <summary>
@@ -1391,4 +1494,8 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<byte*, int, int> PlatformPollEvents;
     /// <summary>(op, value) → op ごとの値（op 0=Request / 1=RequestAfter(秒) / 2=KeepAlive(秒) / 3=SetContinuous(0 以外で真) は 0、4=IsContinuous は 1/0、5=SetPolicy(番号・-1 で外す) は 0、6=GetPolicy は方針の番号。知らない op・読めない値=-1）（描画の要求。SEED.Redraw。W2-10a）</summary>
     public delegate* unmanaged[Cdecl]<int, float, int> Redraw;
+    /// <summary>(op, session, ints, intsLen, text, textLen, outInts, outIntsCap, outText, outTextCap) → op ごとの値（op 0=Begin は場の番号、2=GetState は本文のバイト数、5=TakeEvents は組の数、10=Active は場の番号〈無ければ 0〉、ほかは 0。知らない op・今の場でない=-1）（文字入力。SEED.TextInput。W2-6a）</summary>
+    public delegate* unmanaged[Cdecl]<int, int, int*, int, byte*, int, int*, int, byte*, int, int> TextInput;
+    /// <summary>(op, font, fontLen, size, text, textLen, out float*, cap) → op 0=LineWidth は 1、1=CaretStops は必要な数（長さ + 1。cap 不足なら書かない）、2=Metrics は 2。読めない値=-1（1 行の文字の寸法。SEED.TextMeasure。W2-6b）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, float, byte*, int, float*, int, int> TextMeasure;
 }

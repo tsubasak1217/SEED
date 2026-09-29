@@ -1,0 +1,272 @@
+{
+ "name": "NumberInput",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [0.0, 0.0],
+  "rotation": 0.0,
+  "scale": [1.0, 1.0],
+  "pivot": [0.0, 0.0],
+  "anchor": [0.0, 0.0],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [0.0, 0.0, 0.0, 0.0],
+     "width": 112.0,
+     "height": 52.0,
+     "layer": 0,
+     "shape": {
+      "kind": "rect",
+      "corner_radii": [12.0, 12.0, 12.0, 12.0],
+      "border_width": 1.0,
+      "border_color": [0.155926, 0.135633, 0.215861, 1.0]
+     }
+    }
+   }
+  },
+  {
+   "name": "Gesture",
+   "component": {
+    "type": "CanvasGestureComponent",
+    "data": {
+     "tap": true,
+     "long_press": true
+    }
+   }
+  },
+  {
+   "name": "TextField",
+   "component": {
+    "type": "ScriptComponent",
+    "data": {
+     "type_name": "SEED.UI.TextField",
+     "fields": {
+      "Text": "",
+      "Placeholder": "",
+      "Kind": "Number",
+      "Action": "Done",
+      "MaxLength": "7",
+      "AllowPaste": "true",
+      "AllowCopy": "true",
+      "Align": "Center",
+      "TextSize": "text.field_number",
+      "Interactable": "true"
+     }
+    }
+   }
+  }
+ ],
+ "children": [
+  {
+   "name": "Viewport",
+   "actor_kind": "Actor2D",
+   "canvas_transform": {
+    "position": [16.0, 0.0],
+    "rotation": 0.0,
+    "scale": [1.0, 1.0],
+    "pivot": [0.0, 0.0],
+    "anchor": [0.0, 0.0],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+   },
+   "components": [
+    {
+     "name": "Sprite",
+     "component": {
+      "type": "SpriteComponent",
+      "data": {
+       "texture_path": "",
+       "color": [0.0, 0.0, 0.0, 0.0],
+       "width": 80.0,
+       "height": 52.0,
+       "layer": 0
+      }
+     }
+    },
+    {
+     "name": "Clip",
+     "component": {
+      "type": "CanvasClipComponent",
+      "data": {
+       "enabled": true
+      }
+     }
+    }
+   ],
+   "children": [
+    {
+     "name": "Selection",
+     "actor_kind": "Actor2D",
+     "visible": false,
+     "canvas_transform": {
+      "position": [0.0, 6.0],
+      "rotation": 0.0,
+      "scale": [1.0, 1.0],
+      "pivot": [0.0, 0.0],
+      "anchor": [0.0, 0.0],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [0.201556, 0.107023, 1.0, 0.4],
+         "width": 1.0,
+         "height": 30.0,
+         "layer": 0
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Content",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [0.0, 26.0],
+      "rotation": 0.0,
+      "scale": [1.0, 1.0],
+      "pivot": [0.0, 0.0],
+      "anchor": [0.0, 0.0],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "",
+         "font_size": 24.0,
+         "color": [0.838799, 0.791298, 0.913099, 1.0],
+         "align": "left",
+         "vertical_align": "middle",
+         "layer": 0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Composition",
+     "actor_kind": "Actor2D",
+     "visible": false,
+     "canvas_transform": {
+      "position": [0.0, 40.0],
+      "rotation": 0.0,
+      "scale": [1.0, 1.0],
+      "pivot": [0.0, 0.0],
+      "anchor": [0.0, 0.0],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [0.838799, 0.791298, 0.913099, 1.0],
+         "width": 1.0,
+         "height": 2.0,
+         "layer": 0
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Caret",
+     "actor_kind": "Actor2D",
+     "visible": false,
+     "canvas_transform": {
+      "position": [0.0, 11.0],
+      "rotation": 0.0,
+      "scale": [1.0, 1.0],
+      "pivot": [0.0, 0.0],
+      "anchor": [0.0, 0.0],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Sprite",
+       "component": {
+        "type": "SpriteComponent",
+        "data": {
+         "texture_path": "",
+         "color": [0.201556, 0.107023, 1.0, 1.0],
+         "width": 2.0,
+         "height": 30.0,
+         "layer": 0
+        }
+       }
+      }
+     ],
+     "children": []
+    },
+    {
+     "name": "Placeholder",
+     "actor_kind": "Actor2D",
+     "canvas_transform": {
+      "position": [40.0, 26.0],
+      "rotation": 0.0,
+      "scale": [1.0, 1.0],
+      "pivot": [0.0, 0.0],
+      "anchor": [0.0, 0.0],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Text",
+       "component": {
+        "type": "TextComponent",
+        "data": {
+         "content": "",
+         "font_size": 24.0,
+         "color": [0.396755, 0.361307, 0.47932, 1.0],
+         "align": "center",
+         "vertical_align": "middle",
+         "layer": 0,
+         "wrap": false
+        }
+       }
+      }
+     ],
+     "children": []
+    }
+   ]
+  }
+ ]
+}

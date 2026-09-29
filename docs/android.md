@@ -80,9 +80,11 @@ runtime/                      パッケージ SEED
                               音声フォーカスの報告。§16）
     src/platform_bridge/      アプリのプラットフォーム機能（SEED.Platform）の橋渡し（native → Java の SeedPlatform.invoke と
                               Java → native のイベント。jni クレート 0.22 を使うのはここだけ。§25）
-    src/redraw_waker.rs       Java（MainActivity の文字入力の受け口 → redraw/RedrawWaker）から「描く理由」を積み、描画を止めている間の
+    src/redraw_waker.rs       Java（redraw/RedrawWaker）から「描く理由」を積み、描画を止めている間の
                               イベントループを起こす JNI（render_policy の on_demand。W2-10a。docs/redraw_policy.md）。画面・音声フォーカス・
-                              プラットフォームのイベントの JNI も、値の変化・受け取りのときに同じく起こす
+                              プラットフォームのイベント・文字入力の JNI も、値の変化・受け取りのときに同じく起こす
+    src/text_input/           文字入力（GameTextInput。W2-6a・E-06。§25.19）: エンジンの命令を複製した AndroidApp の API で実行する
+                              実装の登録（platform.rs）と、Java（input/TextInputBridge）からの IME の知らせの JNI（jni_receivers.rs）
     src/launch.rs             起動モード（APK 内 pak／開発用の置き場）の判定 → エンジンの起動引数（LaunchArgs。§13）
     src/dotnet_runtime/       同梱 .NET の展開（files/dotnet/）・スクリプトの DLL の置き場の選択 → CLR の起動材料（LaunchArgs.embedded_clr。§17）
     src/apk_package/          APK の assets/seed/ を配布物として読む読み口（ApkPackageSource・ApkAsset。§13）
@@ -131,6 +133,7 @@ runtime/android/
   app/src/main/java/com/seedengine/runtime/AudioFocusController.java 音声フォーカスの要求・放棄と、変化のネイティブへの通知（§16）
   app/src/main/java/com/seedengine/runtime/DotnetJniLibraries.java 同梱 .NET の暗号ライブラリを System.loadLibrary する（JNI_OnLoad。§17.8）
   app/src/main/java/com/seedengine/runtime/redraw/RedrawWaker.java 描く理由をネイティブへ知らせて、描画を止めている間のイベントループを起こす（W2-10a。docs/redraw_policy.md）
+  app/src/main/java/com/seedengine/runtime/input/TextInputBridge.java 文字入力の知らせ（本文の写し・完了・キーボードの表示と IME の高さ）をネイティブへ渡す（W2-6a。§25.19）
   app/src/main/java/com/seedengine/runtime/platform/          SEED.Platform のメインプロセス側（JNI の入口 SeedPlatform・:seed_platform への接続。§25）
   app/src/main/java/com/seedengine/runtime/platform/service/  SEED.Platform の :seed_platform プロセス側（Java だけ。PlatformProvider ほか。§25）
   app/src/debug/java/com/seedengine/runtime/platform/         デバッグ版だけの adb の入口（DebugPlatformReceiver。§25.7）
@@ -5380,3 +5383,30 @@ Android の予測型の戻る（戻るの手ぶりの途中で今の画面が縮
 - 手ぶりの途中でコールバックを外したとき（途中で受ける層が変わったとき）の振る舞いは確かめていない（取り消しが届く見込み。3b で扱う）。
 - スクリプトの準備の前（起動の直後）に届いたイベントは基盤の箱（上限 256 件）に保持されるので、その間の長い手ぶりは古い progressed から捨てられ、警告が出る。
 - プロジェクト設定ウィンドウに欄が無い（`project_settings.json` に手で書く）。
+
+### 25.19 文字入力（GameTextInput。W2-6a・E-06・2026-09-30）
+
+正典は [ui_text_input.md](ui_text_input.md)（§6 が Android）。経路の決定は [app_platform_roadmap.md](app_platform_roadmap.md) §3.8.4 の E-06。
+W2-0 の試作（`native/src/ui_spike/`・`spike/ImeSpikeLog.java`・起動オプション `seed.ui_spike`）はこれに置き換えて外した。
+
+```
+IME（GameTextInput の InputConnection）─ UI スレッド ─→ MainActivity（GameActivity の受け口を上書き。super を先に呼ぶ）
+    stateChanged(State, dismissed)            → TextInputBridge.onState        → nativeOnTextState(byte[] 本文の UTF-8, 選択 2・変換中の区間 2〈UTF-16。無ければ -1〉)
+    onEditorAction(int)                       → TextInputBridge.onEditorAction → nativeOnEditorAction(IME_ACTION_*)
+    onSoftwareKeyboardVisibilityChanged(bool) → TextInputBridge.onKeyboardVisibility → nativeOnKeyboardVisibility
+    onApplyWindowInsets(WindowInsetsCompat)   → TextInputBridge.onWindowInsets → nativeOnImeHeight(ime().bottom の画素。前と同じなら送らない)
+        → native text_input/jni_receivers.rs → engine::core::text_input::inbox（積むとイベントループを起こす）
+        → フレームの頭でハブへ（スクリプトの前）
+
+エンジン → IME（フレームの末尾に 1 度だけ。native text_input/platform.rs。複製した AndroidApp）
+    SetEditorInfo(kind, action) → set_ime_editor_info（Text = TYPE_CLASS_TEXT / Number = TYPE_CLASS_NUMBER、アクション、IME_FLAG_NO_FULLSCREEN・IMG_FLAG_NO_EXTRACT_UI）
+    SetState(UTF-16 の状態)     → set_text_input_state（IME から同じ状態の stateChanged が返ってくる）
+    ShowKeyboard / HideKeyboard → show_soft_input(false) / hide_soft_input(false)
+```
+
+- 登録は `android_main`（`entry.rs`）が App を作る前に `text_input::install(&app)`（`AndroidApp` を複製して持つ。winit へは元を渡す）。
+- winit の `TextEvent`・`TextAction` は使わない（読み捨てられる）。ネイティブから `text_input_state()` を読まない（UI スレッド以外で読むと途中の本文・一度も本文が入っていないと落ちる）。
+- **ログ**: 本文は出さない。`adb logcat -s SEED` の `[SEED TEXT INPUT]` に知らせの種類と長さ・添字（`IME の状態: 長さ 3（UTF-16）・選択 3..3・変換 Some((0, 3))`・`IME のアクション: 6`・
+  `キーボードの表示: true`・`IME の高さ: 979 px`）と実行した命令（`命令: SetEditorInfo(number, done)` など）が出る。
+- 試験アプリ: `com.seedengine.uidevice`（開始のシーン `ui_text_input.scene`）。手順は [ui_text_input.md](ui_text_input.md) §13。
+- 古い libSEED.so（関数が無い）では Java が 1 度だけ警告を出して続ける（文字入力は届かない）。

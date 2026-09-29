@@ -2739,7 +2739,9 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **一度も本文が入っていないときに `text_input_state()` を読むと落ちる**（android-activity 0.6.1 が null の本文を `slice::from_raw_parts` に渡す。
   debug は panic → abort、release は未定義動作）— 2026-09-28（W2-0 の実機で `ime` の試作の最初の起動が落ちた。roadmap §3.8.1 の I-12）。
   本番はネイティブから読まない。試作の `ime` を使うときは起動の前に `clear` を積む（§3.8.6）。android-activity を上げるときに直っているかを見る。
-- [ ] **W2-0 の試作のコードを本番に置き換えたら消す** — 2026-09-27。`runtime/src/engine/core/ui_spike/`・`app/ui_spike_hooks.rs`・
+  → 2026-09-30 の W2-6a: 本番の受け口（`runtime/android/native/src/text_input/`）は `text_input_state()` を読まない（Java の上書きで状態を受け取る）。
+  winit が TextEvent の後に読む経路だけが残る（そのときは本文が入っている）。android-activity を上げるときに見る、は残す。
+- [x] **W2-0 の試作のコードを本番に置き換えたら消す** — 2026-09-27。`runtime/src/engine/core/ui_spike/`・`app/ui_spike_hooks.rs`・
   `runtime/android/native/src/ui_spike/`・`app/.../spike/ImeSpikeLog.java`（MainActivity の 4 つの上書きの中の呼び出し）・`LaunchArgs.ui_spike`・
   起動オプション `ui_spike`。`renderer/ui_clip.rs` と `ui_draw_pass.rs` の切り抜き（ランの分割・scissor）は W2-1 で本番の形にする前提で残す。
   → 2026-09-27（W2-1a）: **切り抜きの分は済**（名前で根を指定する `UiClipCollector`・`ui_spike` の `clip=`・計測のログ `log_clip_runs` を消し、
@@ -2747,13 +2749,18 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   roadmap §3.8.6 の実機確認〈W2-6a の頭〉で使うので残した）。
   → 2026-09-28（W2-10a）: **描かないときの分も済**（`ui_spike/idle_redraw.rs`・`ui_spike_hooks.rs` の描かない部分・`idle=`・`wake_ms=` を消し、
   本番の `engine/core/redraw`・`app/redraw_hooks.rs` に置き換えた。`idle=` などは知らない項目として警告になる）。残りは文字入力（`ime`）だけ。
-- [ ] **winit 0.30 は Android の文字入力のイベント（`TextEvent`・`TextAction`）を読み捨てる** — 2026-09-27（W2-0 で読んだ）。android-activity は
+  → **2026-09-30（W2-6a）: 文字入力の分も済**。`engine/core/ui_spike/`・`app/ui_spike_hooks.rs`・`runtime/android/native/src/ui_spike/`・`spike/ImeSpikeLog.java`・
+  `LaunchArgs.ui_spike`・起動オプション `seed.ui_spike`・`--ui-spike`・`SEED_UI_SPIKE` を消し、本番の `engine/core/text_input/`・`app/text_input_hooks.rs`・
+  `native/src/text_input/`・`input/TextInputBridge.java` に置き換えた（docs/ui_text_input.md）。古い起動の指定 `ui_spike` は知らないキーとして読み飛ばす。
+- [x] **winit 0.30 は Android の文字入力のイベント（`TextEvent`・`TextAction`）を読み捨てる** — 2026-09-27（W2-0 で読んだ）。android-activity は
   glue のフラグから 1 度だけ取り出す作りなので、winit が先に取ると SEED は受け取れない（特に完了などのアクション）。W2-6 は MainActivity の
   `stateChanged`・`onEditorAction` の上書きで受け取る（roadmap §3.8.1 の I-1・I-5）。winit を上げるときに扱いを見直す。
-- [ ] **GameTextInput の選択・変換中の区間の添字は UTF-16 の単位**（android-activity の `TextSpan` の説明と `text_input_state()` の丸めはバイト数が前提）
+  → 2026-09-30 の W2-6a で上書き → `TextInputBridge` → JNI の経路にした（winit の読み捨ては残るが頼らない）。winit を上げるときに扱いを見直す、は残る。
+- [x] **GameTextInput の選択・変換中の区間の添字は UTF-16 の単位**（android-activity の `TextSpan` の説明と `text_input_state()` の丸めはバイト数が前提）
   — 2026-09-27（W2-0 で読んだ）。W2-6 の受け口で UTF-8 の境界へ変換する。`set_text_input_state` へ渡す添字も UTF-16（§3.8.1 の I-6）。
-- [ ] **UI スレッド以外で `text_input_state()` を読むと途中の本文を読みうる**（GameTextInput の本文のバッファはロックの外で上書きされる）
-  — 2026-09-27（W2-0 で読んだ）。本番は Java の上書きで状態を受け取り、ネイティブからは読まない（§3.8.1 の I-7）。
+  → 2026-09-30 の W2-6a で対応（`engine/core/text_input/indices.rs`・`edit_state.rs` の `from_utf16`・`to_utf16`。サロゲートの途中は前の境界へ）。
+- [x] **UI スレッド以外で `text_input_state()` を読むと途中の本文を読みうる**（GameTextInput の本文のバッファはロックの外で上書きされる）
+  — 2026-09-27（W2-0 で読んだ）。本番は Java の上書きで状態を受け取り、ネイティブからは読まない（§3.8.1 の I-7）。→ 2026-09-30 の W2-6a で読まない形にした。
 - [x] **切り抜きの試作の制限** — 2026-09-27（W2-0）。
   → 2026-09-27 に W2-1a で解消: 根は `CanvasClipComponent`、2D パーティクル・`SEED.Draw` の図形（座標空間の表に番号）も切り、
   メインパスはビューポート（Play のゲーム領域）の内側へ交差させ、当たり判定（`pick_2d`）も同じ領域で切る。残る制限
@@ -2773,6 +2780,9 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **Windows の IME はエディタに埋め込んだ Play（WPF の子ウィンドウ）での候補窓の位置・WPF の IME との取り合いが未確認** — 2026-09-27（W2-0）。
   今の SEED は `set_ime_allowed` を呼ばない（winit の既定で IME は切り離されたまま）ので、Play の窓では日本語を入力できない。単体の SEED.exe での
   許可と候補窓の位置の指定は試作の `ime` で通したが、日本語の実入力は W2-6 で確かめる（§3.8.1 の I-11）。
+  → 2026-09-30 の W2-6a: 入力欄の場がある間だけ `set_ime_allowed(true)`（文字の欄）と `set_ime_cursor_area`（カーソルの矩形）を呼ぶようにした。
+  単体の SEED.exe では IPC の注入（`INPUT_TEXT:`）で受け口を確かめたが、**人の手の日本語の IME での実入力（候補窓の位置を含む）と、エディタに埋め込んだ Play での
+  振る舞いは未確認**のまま（PC で日本語の IME を自動では打てない）。
 - [x] **W2-1a レイアウト計算の一本化と切り抜きの本番化** — 2026-09-27 に完了（roadmap §3.8.5 の W2-1 行・docs/canvas_camera_rework.md §6）。
   `canvas_layout`（純関数と 1 回の走査・表）、`CanvasClipComponent`（インスペクタ・スクリプト `SEED.CanvasClip`）、描画の scissor
   （スプライト・テキスト・2D パーティクル・Draw の図形・メインパスのビューポートとの交差）と当たり判定の切り抜き。
@@ -2917,6 +2927,27 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   `scripting/src/Api/UI/ListView.cs`。
 - [ ] **W2-6 文字入力と IME・文字の寸法（`Text.Measure`）・グリフの追い出し** — 2026-09-27。
   グリフのアトラス（4096²・約 2,500 字）はあふれると追い出さずに描かない（`font/atlas.rs:17-19,183-194`）。日本語のアプリでは足りなくなりうる。
+  → **2026-09-30 に W2-6a（受け口）・W2-6b（入力欄の部品）は済**（正典 docs/ui_text_input.md。roadmap §3.10）。残りは **W2-6c**（`Text.Measure`〈複数行・折り返し・
+  枠の大きさ。W2-6b で 1 行の送り幅の `SEED.TextMeasure` を足したので、その上に作る〉とグリフの追い出し）と、下の「W2-6 の残り」。
+- [ ] **W2-6 の残り（文字入力・入力欄）** — 2026-09-30（W2-6a/b）。(1) **実機（Pixel 6a）の確認は利用者の手の確認待ち**（手順は docs/ui_text_input.md §13。
+  日本語のかな入力と変換と確定・数字のキーボード・完了・キーボードを避ける・戻るでキーボードが閉じる・貼り付け禁止の欄）。Gboard（利用者の端末は Simeji）・横画面は未確認。
+  (2) **複数行の入力欄が無い**（`TYPE_TEXT_FLAG_MULTI_LINE`・改行・行の折り返しと縦のスクロール。Wake or Pay の v1 は 1 行だけ。v2 のメッセージで要る）。
+  (3) **Android のしずく形のカーソルのつまみ・選択のハンドル・長押しのメニュー（コピー・貼り付け）・ドラッグでの選択が無い**（長押しは全選択。利用者の参考の画面
+  〈Flutter 版の数値の欄〉にはつまみがある。任意とされた）。(4) **Android の貼り付けの見分けは推測**（変換の外の 2 書記素以上の一度の挿入を戻す。次の単語の予測の候補・
+  音声入力も止まる。1 文字ずつ貼る IME・変換中として貼る IME は止まらない。`engine/core/text_input/filter.rs` の `PASTE_MIN_GRAPHEMES`）。
+  (5) **PC の Ctrl の組み合わせは物理キーの位置で読む**（AZERTY などの配列では Ctrl+A などの位置が違う。`text_input/keys.rs`）。
+  (6) **入力欄が受けたキーもキーの状態（`Input.GetKey`）に残る**（ゲームのショートカットは画面の側で `TextInput.ActiveSession` を見て止める。入力欄が受けたキーを
+  ゲームの入力から隠すかは、ゲームで入力欄を使うときに決める）。(7) **キーボードを避けるのは縦の CanvasScroll とダイアログだけ**（下からのシート・上からの覆いの中の欄は避けない。
+  `IKeyboardInsetTarget` を実装すれば足せる）。(8) **最大の長さの数え方**（unicode-segmentation の拡張書記素。端末の IME の数え方と違うことがある）。
+  (9) エディタに埋め込んだ Play での IME（上の「Windows の IME はエディタに埋め込んだ Play」）。(10) 人の手の日本語の IME（PC）の実入力は未確認（IPC の注入だけ）。
+  (11) 入力欄の本文の読み上げ（アクセシビリティ）が無い。(12) IPC の `INPUT_TEXT:`（文字入力の注入）は MCP のツールにしていない（`seed_send_ipc` で送れる。
+  要るなら editor/SeedMcpServer に `game_input_text` を足し、docs/editor_mcp.md のツール表と seed_batch の enum を更新する）。
+  関連: `runtime/src/engine/core/text_input/`・`scripting/src/Api/UI/Widgets/TextField.cs`・`scripting/src/Api/UI/TextInput/`。
+- [ ] **`.gitignore` の `Release/` が `editor/src/Android/Release/` のソースを無視している（リポジトリに入っていない）** — 2026-09-30（W2-6 の作業ツリーで SeedAndroid が
+  `SEEDEditor.Android.Release` を見つけられずに落ちて見つけた）。ビルドの成果物のための `Release/` の規則（`.gitignore` の 18 行）が、ソースのフォルダ
+  `editor/src/Android/Release/`（`AndroidRequirementReport.cs` など 12 ファイル）に当たり、`git ls-files` に出ない。主の作業ツリーにはファイルがあるので気付きにくいが、
+  新しい作業ツリー・clone では SeedAndroid・エディタがビルドできない（W2-6 では主の作業ツリーから写してビルドした）。直すなら `.gitignore` に
+  `!editor/src/Android/Release/` を足してソースを追加する（直していない。主の作業ツリーの判断）。
 - [x] **W2-7 画面の組み立て（タブ・画面のスタック・ダイアログ・シート・戻るの段・トースト）** — 2026-09-27。
   → **2026-09-28 に済**（正典 docs/ui_navigation.md。roadmap §3.8.5）。C# の `SEED.UI` の `ScreenStack`・`UiScreen`・`TabHost`・`TabBar`・`ModalHost`・`Dialog`・
   `BottomSheet`・`TopSheet`・`ToastHost`・`Toast`・`BackDispatcher`・`UiFocus`。Rust は `CanvasLayoutItem` の実行中だけの `translate`・`translate_fraction`・
