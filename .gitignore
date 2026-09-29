@@ -16,6 +16,9 @@ Thumbs.db
 # ビルド成果物
 Debug/
 Release/
+# 上の Release/ はビルド成果物の規則だが、同じ名前のソースのフォルダ（Android の配布の検査。docs/android.md §24）まで
+# 無視していた（2026-09-26 から git に入っていなかった）。ソースなので打ち消す。
+!editor/src/Android/Release/
 x64/
 x86/
 bin/
