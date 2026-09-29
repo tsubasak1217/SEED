@@ -72,6 +72,12 @@ public class NavSampleScreen : UiScreen
 
     protected override void OnScreenExit() => Debug.Log($"{LogPrefix} exit {Role} depth={_depth}");
 
+    /// <summary>
+    /// 今、戻るが来たら受けるか（副作用なしの問い。OnBackPressed と同じ条件＝詳細の画面に未保存の変更があるときだけ）。
+    /// 受けない根の画面では、予測型の戻るがシステムへ渡り、ホームへ戻る見た目が出る（W2 の手直し 3b）。
+    /// </summary>
+    protected override bool WouldConsumeBack() => Role == "detail" && _dirty;
+
     protected override bool OnBackPressed()
     {
         if (Role != "detail" || !_dirty) return false;

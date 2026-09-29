@@ -50,6 +50,22 @@ public static class PlatformFeatureTests
         "action:android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED",
     };
 
+    /// <summary>
+    /// 機能なし（android 節の無いプロジェクト。WarashibeFishing など）の生成物の指紋。予測型の戻る（W2 の手直し P1-3）を足す前の
+    /// 書き手で 2026-09-29 に控えた値。false・未設定のプロジェクトの生成物を 1 バイトも変えないことの見張り
+    /// （書き手の形を意図して変えたときだけ、ここを新しい値に直す）。
+    /// </summary>
+    private const string EmptyFilesDigestBeforePredictiveBack = "d732e6c95d08a127427c11cf37e7ac90f5dab4cae43b71390843e182bbdac458";
+
+    /// <summary>Wake or Pay と同じ機能の設定（予測型の戻るだけを変えて比べる）。</summary>
+    private static AndroidAppSettings AppLikeSettings(bool? predictiveBack) => new()
+    {
+        Features = new() { "alarm", "notifications" },
+        SystemBars = "visible",
+        AppCategory = "productivity",
+        PredictiveBack = predictiveBack,
+    };
+
     /// <summary>機能の表の要素の属性の値（無ければ null）。</summary>
     private static string? Attr(AndroidManifestElement element, string name) =>
         element.Attributes.Where(a => a.Key == name).Select(a => a.Value).FirstOrDefault();
@@ -66,12 +82,14 @@ public static class PlatformFeatureTests
         harness.Add("機能: 同じ権限の maxSdkVersion は広いほう（無制限が勝つ・両方あれば大きいほう）", MergePermissionsWidensMaxSdk);
         harness.Add("ディープリンク: 機能があるときだけ・形の誤り（大文字・scheme なし・host なしの path・/ 無し・ポート）・注意・重なり", ResolveDeepLinks);
         harness.Add("システムバー・分類: 正規化と知らない値の注意", ResolveSystemBarsAndCategory);
-        harness.Add("断片: 機能なしは中身の無い <manifest>・values は false", WriterEmpty);
+        harness.Add("予測型の戻る: true のときだけ使う・使わないときはログも従来のまま（W2 の手直し P1-3）", ResolvePredictiveBack);
+        harness.Add("断片: 機能なしは中身の無い <manifest>・values は false（予測型の戻るを足す前と同じ指紋）", WriterEmpty);
+        harness.Add("断片: 予測型の戻るは true のときだけ values に seed_predictive_back（マニフェストは変えない・false は従来と同じバイト列）", WriterPredictiveBack);
         harness.Add("断片: alarm と notifications の権限（SCHEDULE_EXACT_ALARM は maxSdkVersion 32）・system_bars visible は true", WriterAlarmAndNotifications);
         harness.Add("断片: ディープリンクは MainActivity へ 1 件 1 つの intent-filter（autoVerify は true のときだけ・値はエスケープ）", WriterDeepLinks);
         harness.Add("断片: 同じ設定からは同じバイト列（features の順によらない）・設定が変われば指紋も変わる", WriterIsDeterministic);
         harness.Add("置き場: 機能が空でも書く・同じ中身は書かない・古いファイルは消す", StagerWritesAndCleans);
-        harness.Add("Gradle: seed.appCategory は既定の game 以外だけ渡す・断片の中身は APK の指紋に入る", GradlePropertyAndFingerprint);
+        harness.Add("Gradle: seed.appCategory は既定の game 以外だけ渡す・seed.predictiveBack は使うときだけ（使わなければ引数も指紋も従来どおり）・断片の中身は APK の指紋に入る", GradlePropertyAndFingerprint);
         harness.Add("取り決め: build.gradle.kts の語彙・置き場・main のマニフェスト（PlatformProvider・PlatformEntry・VIBRATE）・Java のリソース名が中核と一致", ContractsMatchRepository);
     }
 
@@ -206,8 +224,24 @@ public static class PlatformFeatureTests
             Check.True(set.Features.Count == 0 && set.Permissions.Count == 0 && set.DeepLinks.Count == 0, "機能なし");
             Check.Equal(AndroidSystemBarsSetting.Hidden, set.SystemBars, "システムバーの既定");
             Check.Equal(AndroidAppCategorySetting.Game, set.AppCategory, "分類の既定");
+            Check.True(!set.PredictiveBack, "予測型の戻るは既定で使わない（W2 の手直し P1-3）");
             Check.True(set.Warnings.Count == 0 && set.Errors.Count == 0, "注意も誤りもない");
         }
+    }
+
+    /// <summary>予測型の戻る（W2 の手直し P1-3）: true のときだけ使う（false・未設定は使わない）。ログの 1 行は使うときだけ変わる。</summary>
+    private static void ResolvePredictiveBack()
+    {
+        var catalog = AndroidPlatformFeatureCatalog.BuiltIn;
+        var on = AndroidPlatformFeatureResolver.Resolve(new AndroidAppSettings { PredictiveBack = true }, catalog);
+        Check.True(on.PredictiveBack, "true は使う");
+        Check.True(on.Describe().EndsWith("・予測型の戻る"), $"ログに出る: {on.Describe()}");
+        Check.True(on.Warnings.Count == 0 && on.Errors.Count == 0, "注意も誤りもない");
+        var off = AndroidPlatformFeatureResolver.Resolve(new AndroidAppSettings { PredictiveBack = false, SystemBars = "visible" }, catalog);
+        Check.True(!off.PredictiveBack, "false は使わない");
+        var unset = AndroidPlatformFeatureResolver.Resolve(new AndroidAppSettings { SystemBars = "visible" }, catalog);
+        Check.Equal(unset.Describe(), off.Describe(), "false と未設定のログは同じ（従来の 1 行）");
+        Check.True(!off.Describe().Contains("予測型の戻る"), "使わないときはログを変えない");
     }
 
     /// <summary>features のそろえ方と知らない名前。</summary>
@@ -328,9 +362,37 @@ public static class PlatformFeatureTests
         var boolean = values.Root!.Element("bool")!;
         Check.Equal(AndroidPlatformManifestWriter.SystemBarsVisibleResourceName, (string?)boolean.Attribute("name"), "リソース名");
         Check.Equal("false", boolean.Value, "隠す");
+        Check.Equal(1, values.Root.Elements("bool").Count(), "予測型の戻るの印は書かない（W2 の手直し P1-3）");
         Check.True(files.ManifestText.StartsWith("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"), "UTF-8 の宣言と LF");
         Check.True(!files.Files.Values.Any(bytes => bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF), "BOM なし");
         Check.True(!files.ManifestText.Contains('\r'), "CR なし");
+        Check.Equal(EmptyFilesDigestBeforePredictiveBack, files.Digest,
+            "android 節の無いプロジェクト（WarashibeFishing など）の生成物は予測型の戻るを足す前とバイト単位で同じ");
+    }
+
+    /// <summary>予測型の戻る（W2 の手直し P1-3）: values の印は true のときだけ。マニフェストの断片は変えない。</summary>
+    private static void WriterPredictiveBack()
+    {
+        var catalog = AndroidPlatformFeatureCatalog.BuiltIn;
+        var unset = AndroidPlatformManifestWriter.Render(AndroidPlatformFeatureResolver.Resolve(AppLikeSettings(null), catalog));
+        var off = AndroidPlatformManifestWriter.Render(AndroidPlatformFeatureResolver.Resolve(AppLikeSettings(false), catalog));
+        Check.Equal(unset.Digest, off.Digest, "false と未設定は同じバイト列");
+        Check.True(unset.Files.All(pair => pair.Value.SequenceEqual(off.Files[pair.Key])), "バイト列も同じ");
+        Check.Equal(1, XDocument.Parse(off.ValuesText).Root!.Elements("bool").Count(), "使わないときは seed_system_bars_visible だけ");
+        Check.True(!off.ValuesText.Contains(AndroidPlatformManifestWriter.PredictiveBackResourceName)
+                   && !off.ValuesText.Contains(AndroidAppSettings.PredictiveBackKey), "頭のコメントにも書かない");
+
+        var on = AndroidPlatformManifestWriter.Render(AndroidPlatformFeatureResolver.Resolve(AppLikeSettings(true), catalog));
+        Check.Equal(off.ManifestText, on.ManifestText, "マニフェストの断片は変えない（enableOnBackInvokedCallback は main のマニフェストのプレースホルダ）");
+        var bools = XDocument.Parse(on.ValuesText).Root!.Elements("bool").ToList();
+        Check.Equal(2, bools.Count, "システムバーと予測型の戻るの 2 つ");
+        Check.Equal(AndroidPlatformManifestWriter.SystemBarsVisibleResourceName, (string?)bools[0].Attribute("name"), "システムバーが先（従来の並び）");
+        Check.Equal("true", bools[0].Value, "visible のまま");
+        Check.Equal(AndroidPlatformManifestWriter.PredictiveBackResourceName, (string?)bools[1].Attribute("name"), "予測型の戻るの印");
+        Check.Equal("true", bools[1].Value, "true");
+        Check.True(on.ValuesText.Contains($"{AndroidAppSettings.PredictiveBackKey}: true"), "頭のコメントに設定を書く");
+        Check.True(on.Digest != off.Digest, "指紋が変わる（APK を作り直す）");
+        Check.True(!on.ValuesText.Contains('\r'), "CR なし");
     }
 
     /// <summary>alarm と notifications。</summary>
@@ -467,6 +529,25 @@ public static class PlatformFeatureTests
         var staged = AndroidStepFingerprints.Gradle(engine, plain, null, none);
         Directory.Delete(engine.PlatformFeaturesStagingDir, recursive: true);
         Check.True(staged.Inputs != AndroidStepFingerprints.Gradle(engine, plain, null, none).Inputs, "置き場が無くなれば作り直す");
+
+        // 予測型の戻る（W2 の手直し P1-3）: 使うときだけ -Pseed.predictiveBack=true。使わないプロジェクトの引数は予測型の戻るを足す前と同じ並び
+        Check.Equal(
+            "assembleDebug -Pseed.abis=arm64-v8a -Pseed.orientation=both -Pseed.applicationId=com.seedengine.mygame -Pseed.appName=My Game " +
+            "-Pseed.versionCode=1 -Pseed.versionName=1.0 --console=plain",
+            string.Join(" ", GradleInvocation.Build(plain).Arguments), "使わないプロジェクトの引数は従来と同じ");
+        Check.True(!GradleInvocation.Build(plain).Properties.Any(p => p.Name == GradleInvocation.PredictiveBackProperty), "使わなければ一覧（指紋の材料）にも無い");
+        var predictive = plain with { PredictiveBack = true };
+        Check.True(GradleInvocation.Build(predictive).Arguments.Contains("-Pseed.predictiveBack=true"), "使うときだけ渡す");
+        Check.Equal(
+            string.Join(" ", GradleInvocation.Build(plain with { AppCategory = "productivity" }).Arguments).Replace(" --console=plain", string.Empty) +
+            " -Pseed.predictiveBack=true --console=plain",
+            string.Join(" ", GradleInvocation.Build(plain with { AppCategory = "productivity", PredictiveBack = true }).Arguments),
+            "並びは分類の後（署名の前）");
+        var predictiveFiles = AndroidPlatformManifestWriter.Render(AndroidPlatformFeatureResolver.Resolve(new AndroidAppSettings { PredictiveBack = true }, catalog));
+        var plainNow = AndroidStepFingerprints.Gradle(engine, plain, null, none).Inputs;
+        Check.Equal(plainNow, AndroidStepFingerprints.Gradle(engine, plain with { PredictiveBack = false }, null, none).Inputs, "false は指紋を変えない");
+        Check.True(plainNow != AndroidStepFingerprints.Gradle(engine, predictive, null, none).Inputs, "-P が変われば作り直す");
+        Check.True(plainNow != AndroidStepFingerprints.Gradle(engine, plain, null, predictiveFiles).Inputs, "values の印が変われば作り直す");
     }
 
     // ── リポジトリとの取り決め ──────────────────────────────
@@ -525,6 +606,26 @@ public static class PlatformFeatureTests
         Check.Equal("false", defaultBool.Value, "main の既定値は false（従来どおり隠す）");
         var java = File.ReadAllText(Path.Combine(engine.AndroidDir, "app", "src", "main", "java", "com", "seedengine", "runtime", "SystemBarsController.java"));
         Check.True(java.Contains($"R.bool.{AndroidPlatformManifestWriter.SystemBarsVisibleResourceName}"), "Java が同じ名前を読む");
+
+        // 予測型の戻る（W2 の手直し P1-3）: main のマニフェストのプレースホルダ・Gradle のプロパティ名と既定値 "false"・
+        // res の既定値 false・Java の R.bool の名前・Gradle の食い違いの確かめの行が書き手の出力と一致する
+        Check.True(manifest.Contains("android:enableOnBackInvokedCallback=\"${seedEnableOnBackInvokedCallback}\""),
+            "main のマニフェストの enableOnBackInvokedCallback はプレースホルダ");
+        Check.True(gradle.Contains("manifestPlaceholders[\"seedEnableOnBackInvokedCallback\"] = seedEnableOnBackInvokedCallback"),
+            "build.gradle.kts がプレースホルダを置き換える");
+        Check.True(gradle.Contains($"seedProperty(\"{GradleInvocation.PredictiveBackProperty["seed.".Length..]}\")"), "予測型の戻るのプロパティ名が一致");
+        Check.True(gradle.Contains($"val predictiveBackEnabledValue = \"{GradleInvocation.PredictiveBackEnabledValue}\""), "「使う」の値が一致");
+        Check.True(gradle.Contains("val predictiveBackDisabledValue = \"false\""), "Gradle の既定値（渡されないとき）は \"false\"");
+        var predictiveDefault = defaults.Root.Elements("bool").Single(e => (string?)e.Attribute("name") == AndroidPlatformManifestWriter.PredictiveBackResourceName);
+        Check.Equal("false", predictiveDefault.Value, "main の既定値は false（従来の戻るキー）");
+        var backController = File.ReadAllText(Path.Combine(engine.AndroidDir, "app", "src", "main", "java", "com", "seedengine", "runtime", "back", "BackCallbackController.java"));
+        Check.True(backController.Contains($"R.bool.{AndroidPlatformManifestWriter.PredictiveBackResourceName}"), "Java が同じ名前の印を読む");
+        var predictiveValues = AndroidPlatformManifestWriter.Render(AndroidPlatformFeatureResolver.Resolve(
+            new AndroidAppSettings { PredictiveBack = true }, AndroidPlatformFeatureCatalog.BuiltIn)).ValuesText;
+        var resourceLine = Regex.Match(gradle, "val predictiveBackResourceLine = \"(?<line>(?:[^\"\\\\]|\\\\.)*)\"");
+        Check.True(resourceLine.Success, "build.gradle.kts に predictiveBackResourceLine がある");
+        Check.True(predictiveValues.Contains(resourceLine.Groups["line"].Value.Replace("\\\"", "\"")),
+            "Gradle の食い違いの確かめの行が書き手の出力に含まれる");
 
         // 生成物は追跡しない
         var gitignore = File.ReadAllText(Path.Combine(engine.AndroidDir, ".gitignore"));

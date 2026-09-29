@@ -123,7 +123,8 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   "features": ["alarm", "notifications", "deep_links"],
   "deep_links": [ { "scheme": "https", "host": "example.com", "path_prefix": "/wake", "auto_verify": true } ],
   "system_bars": "visible",
-  "app_category": "productivity"
+  "app_category": "productivity",
+  "predictive_back": true
 }
 ```
 
@@ -136,6 +137,7 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
 | `deep_links` | アプリを開く URL の一覧（オブジェクトの配列。W1-2）。各要素は `scheme`（必須・小文字）・`host`（任意・小文字。`*.example.com` 可。`path_prefix` を書くなら必須）・`path_prefix`（任意・`/` で始まる）・`auto_verify`（真偽。true なら `android:autoVerify="true"`。https / http と host があるときだけ検証される）。`features` に `deep_links` があるときだけ、1 件ごとに MainActivity の intent-filter（VIEW・DEFAULT・BROWSABLE）になる。形の誤りはビルドと保存を止める。開かれた URL はスクリプトの `App.LaunchReason`（`LaunchKind.DeepLink`・`LaunchInfo.Uri`）と `platform.launch` で読める（W1-6。docs/android.md §25.15.6） |
 | `system_bars` | 起動したときのシステムバー（ステータスバー・ナビゲーションバー）。`hidden`（既定。従来のゲームの振る舞い。端からのスワイプで一時的に出せる）/ `visible`（出したまま。アプリ向け。描画はバーの裏まで広がるので UI は `Screen.SafeArea` で避ける）。知らない値は注意を出して `hidden`。実行中の切り替えはスクリプトの `Window.SetSystemBarsVisible`（W1-6） |
 | `app_category` | マニフェストの `android:appCategory`。`game`（既定。従来の固定値）/ `productivity` / `audio` / `video` / `image` / `social` / `news` / `maps` / `accessibility`（SDK の attrs_manifest.xml の enum と同じ語彙）。知らない値は注意を出して `game` |
+| `predictive_back` | 予測型の戻るを使うか（真偽。W2 の手直し P1-3）。`true` のときだけ、マニフェストの `android:enableOnBackInvokedCallback` を `"true"` にし（Gradle へ `-Pseed.predictiveBack=true`）、生成する values に印 `seed_predictive_back` を足す。Android 13 以上で戻るを `OnBackInvokedCallback` で受け、手ぶりの進み具合を `platform.back_*` で、確定を従来どおり `KeyCode.Escape` で届ける（docs/android.md §25.18）。無い・`false`（既定）は従来の戻るキー → Escape で、Gradle の引数・生成物も従来と同じ。`true` / `false` と文字列の `"true"` / `"false"` だけを読み、ほかは未設定。保存は `true` のときだけ書く。設定ウィンドウに欄は無い（手で書く。ウィンドウで保存しても消えない） |
 
 - どれも省略でき、何も設定していなければ節ごと保存しない。型の違う値は未設定として読み、知らないキーは保存で失わない
   （`deep_links` の各要素の知らないキーも保つ。`features` に文字列 1 つを書いたときは 1 要素の配列として読む）。

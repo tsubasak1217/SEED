@@ -1590,6 +1590,11 @@ pub(super) const DEFAULT_PROJECT_RESOLUTION: (u32, u32) = (1920, 1080);
 impl App {
     /// App インスタンスを生成する（EventLoop は run() で生成される）。
     pub fn new(args: LaunchArgs) -> Self {
+        // 指のイベントの時計（gesture/pointer_log.rs）の起点を今に決める。起点は最初に時刻を求めたときに決まり、
+        // 起点より前の時刻は 0 に潰れるので、Android の MotionEvent の時刻（受け取るより数 ms 前。touch/os_timing/）を
+        // 記録するより前に決めておく（最初のタッチで決まると、その指の時刻が 0 に潰れる）。
+        crate::engine::core::input::gesture::pointer_clock_now();
+
         // 親プロセス（エディタ）の監視を開始する。
         // 親が終了した際に自プロセスも自動終了するバックグラウンドスレッドが起動する。
         crate::engine::core::parent_guard::watch(args.parent_pid);

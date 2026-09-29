@@ -27,6 +27,8 @@ pub mod host_api;
 pub mod canvas_layout_api;
 /// CanvasScroll（W2-3）のスクリプト API の欄（設定と実行中の状態。canvas_layout_api から呼ぶ）
 pub mod canvas_scroll_api;
+/// CanvasTransform の読み取り専用の欄（前のフレームの描画のレイアウト: HasLayout・LayoutSize・LayoutRect。W2 Item 4。host_api から呼ぶ）
+pub mod canvas_layout_results_api;
 /// スプライトの形と塗り・切り抜きの形（W2-4）のスクリプト API の欄（host_api の Sprite・CanvasClip から呼ぶ）
 pub mod sprite_style_api;
 /// ジェスチャーのイベントを C# へ渡す FFI の型（W2-2）

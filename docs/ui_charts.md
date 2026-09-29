@@ -259,6 +259,7 @@ release の .so は 59.3〜60.0 fps（同 3.72 ms＝40%。5 つのグラフを `
 
 - **グラフの大きさはノードの Sprite の幅・高さ**（レイアウトのコンテナが伸ばした大きさはスクリプトから読めない。コンテナに入れるときは `CanvasLayoutItem` の大きさの指定で
   Sprite と同じ値にする）
+  - P2 で `ChartView.ReadSize` を `CanvasTransform.LayoutSize` へ替える口ができた（2026-09-29。値は前のフレームの描画のもの。`HasLayout` が false の間〈最初のフレームなど〉は Sprite の大きさへ落とす想定。[scripting_api.md](scripting_api.md) 第 7 節）
 - **吹き出しの大きさは文字の数からの見積もり**（W2-6c の `Text.Measure` へ替える）。長い文字・複数行の吹き出しは位置がずれうる
 - **隠れた（祖先が非表示の）グラフも毎フレーム `SEED.Draw` を積む**（座標空間が解決できないので Rust 側で捨てる。FFI の呼び出しだけが残る。棒 365 本で約 0.4 ms）。2026-09-28 夕に `Paint` で描く面から根までの `Visible` を辿って省く形を試したが、`GameObject.Parent`（`ffi_parent_of`）が呼ぶたびにアクタの木全体をたどるため、見えているグラフでも 1 つ 1 フレーム約 0.02〜0.04 ms 増え（実機・develop。グラフの見本の `Update/BarChart` 0.397 → 0.473 ms・`Update/LineChart` 0.109 → 0.150 ms）、普通のスクロールで損になったので入れていない。入れるなら実効の表示を 1 回の FFI で引ける口（描画の表の `is_drawn`）を先に足す（backlog）
 - **ピンチは倍率と中点だけ**（回転は無い）。ピンチを 1 本離すと残った指は何もしない（Flutter の InteractiveViewer は残った指でパンを続ける）。PC で 2 本の指の入力を注入できない

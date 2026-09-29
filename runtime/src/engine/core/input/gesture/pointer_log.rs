@@ -15,10 +15,13 @@
 //    - 全部の取り消し（フォーカスを失った・アプリが背面へ回った）
 //  位置は入力座標（描画ターゲットの画素・左上原点。Input::mouse_position と同じ）。
 //
-//  【時刻】`pointer_clock_secs` の秒（プロセスで 1 つの単調な時計の起点からの秒）。イベントを受け取った
-//  瞬間（winit のイベントハンドラ）の時刻を使う。Android の MotionEvent の時刻（eventTime）は winit 0.30.13 が
-//  WindowEvent::Touch に渡さないので、受け取った時刻で代用する（docs/input_gestures.md §5・docs/backlog.md）。
-//  注入のシーケンスは予定の時刻（シーケンスの t）から逆算した時刻を使う（フレームの刻みに依らない）。
+//  【時刻】`pointer_clock_secs` の秒（プロセスで 1 つの単調な時計の起点からの秒）。
+//    - PC（マウスの合成の指）: イベントを受け取った瞬間（winit のイベントハンドラ）の時刻
+//    - Android（実タッチ）: MainActivity の processMotionEvent が控えた MotionEvent の時刻（eventTime）と履歴の標本
+//      （input/touch/os_timing/。winit 0.30.13 は WindowEvent::Touch に時刻も履歴も渡さないので、Java で控えて突き合わせる）。
+//      控えが見つからないイベントは受け取った時刻に戻る。指ごとに時刻が逆行しないよう time_floor.rs で切り上げる
+//    - 注入のシーケンス: 予定の時刻（シーケンスの t）から逆算した時刻（フレームの刻みに依らない）
+//  時計の起点は App の初期化の最初（app/mod.rs の App::new）で決める（起点より前の時刻は 0 に潰れるので、控えの時刻より先に）。
 //
 //  【寿命】積んだイベントはアリーナが取り出す（take）。取り出されないまま（Edit・一時停止）フレームが
 //  終わったら Input::end_frame が捨てる（clear）。上限を超えた移動は捨てる（押す・離す・取り消しは残す）。
@@ -158,9 +161,19 @@ pub fn pointer_clock_secs(at: Instant) -> f64 {
     at.saturating_duration_since(epoch).as_secs_f64()
 }
 
-/// 今の時刻（`pointer_clock_secs(Instant::now())`）。
+/// 今の時刻（`pointer_clock_secs(Instant::now())`。最初の呼び出しが時計の起点を決める）。
 pub fn pointer_clock_now() -> f64 {
     pointer_clock_secs(Instant::now())
+}
+
+/// 指のイベントの時計の秒を Instant へ戻す（診断ログで CLOCK_MONOTONIC の ns へ直すため）。
+///
+/// # 戻り値
+/// 起点がまだ決まっていない・秒が負や非有限・Instant で表せないときは None。
+pub fn pointer_clock_instant(secs: f64) -> Option<Instant> {
+    let epoch = *CLOCK_EPOCH.get()?;
+    let offset = std::time::Duration::try_from_secs_f64(secs).ok()?;
+    epoch.checked_add(offset)
 }
 
 // ─── 注入の指 ─────────────────────────────────────────────
@@ -274,5 +287,15 @@ mod tests {
         let b = a + std::time::Duration::from_millis(250);
         let (sa, sb) = (pointer_clock_secs(a), pointer_clock_secs(b));
         assert!(sb >= sa);
+    }
+
+    /// 秒 → Instant → 秒の往復（1 ns 以内）。負の秒は None。
+    #[test]
+    fn clock_instant_round_trip() {
+        let now = pointer_clock_now();
+        let at = pointer_clock_instant(now).expect("起点は決まっている");
+        assert!((pointer_clock_secs(at) - now).abs() < 1e-9);
+        assert_eq!(pointer_clock_instant(-1.0), None);
+        assert_eq!(pointer_clock_instant(f64::NAN), None);
     }
 }

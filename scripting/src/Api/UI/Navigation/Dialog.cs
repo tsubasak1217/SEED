@@ -162,6 +162,14 @@ public sealed class Dialog : ModalPlane
     }
 
     /// <inheritdoc />
+    /// <remarks>予測型の戻るのプレビュー（3b）で縮めるのは札（真ん中の周り。幕はそのまま）。</remarks>
+    protected override GameObject BackPreviewNode => _card;
+
+    /// <inheritdoc />
+    /// <remarks>戻るで閉じない（CancelableByBack = false）ダイアログは縮めない（戻るは受けるが何も起きない）。</remarks>
+    protected override bool ClosesOnBack => _options.CancelableByBack;
+
+    /// <inheritdoc />
     protected override void OnPlaneUpdate(float dt)
     {
         Bind();

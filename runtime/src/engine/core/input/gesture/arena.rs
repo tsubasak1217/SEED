@@ -378,24 +378,37 @@ impl PointerArena {
     }
 
     /// 指が離れた（呼び出し側はこの後アリーナを捨てる）。
-    pub fn on_up(&mut self, position: [f32; 2], time: f64, metrics: &GestureMetrics, out: &mut Vec<GestureEmit>) {
+    ///
+    /// # 戻り値
+    /// ドラッグが勝っていた指なら離した結果（速度と、規則 R1〜R3 で 0 にした理由。診断ログの材料。
+    /// recognizers/fling.rs の `release_outcome`）。それ以外は None。
+    pub fn on_up(
+        &mut self,
+        position: [f32; 2],
+        time: f64,
+        metrics: &GestureMetrics,
+        out: &mut Vec<GestureEmit>,
+    ) -> Option<fling::ReleaseOutcome> {
         self.track.finish_at(position, time);
         if let Some(w) = self.winner {
             let node = self.members[w].node;
             match self.members[w].kind {
                 RecognizerKind::Drag => {
                     let settings = self.nodes[node].settings.clone();
-                    let velocity = fling::release_velocity(
-                        self.track.velocity.estimate(time, &metrics.velocity),
+                    // 離しの速度（R1 止まっていた・R3 幅が短い・R2 持ち上げの揺れに当たれば 0。docs/input_gestures.md §5.1）
+                    let outcome = fling::release_outcome(
+                        &self.track.velocity.release_estimate(time, &metrics.velocity),
                         settings.drag_axis,
                         metrics,
                     );
+                    let velocity = outcome.velocity;
                     if settings.drag {
                         self.emit(node, GestureEventKind::DragEnd, time, [0.0, 0.0], velocity, false, out);
                     }
                     if settings.fling && fling::is_fling(velocity, metrics) {
                         self.emit(node, GestureEventKind::Fling, time, [0.0, 0.0], velocity, false, out);
                     }
+                    return Some(outcome);
                 }
                 RecognizerKind::LongPress => {
                     if self.nodes[node].pressed {
@@ -405,7 +418,7 @@ impl PointerArena {
                 }
                 RecognizerKind::Tap => {}
             }
-            return;
+            return None;
         }
         // 勝者がいない: 並びで最初の（まだ競っている）タップが、時間の上限の内なら勝つ
         for i in 0..self.members.len() {
@@ -420,6 +433,7 @@ impl PointerArena {
                 _ => self.lose(i, time, out),
             }
         }
+        None
     }
 
     /// 指が取り消された（OS の取り消し・フォーカスを失った・アプリが背面へ・Play の停止。呼び出し側はこの後捨てる）。

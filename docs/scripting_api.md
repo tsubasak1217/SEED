@@ -1315,10 +1315,26 @@ if (gameObject.GetComponent<CanvasTransform>() is { } ct)   // CanvasTransform?�
     ct.Anchor              // Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）
     ct.ScreenPosition      // Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル）
     ct.GameObject          // GameObject（この CanvasTransform を持つアクタ。参照フィールドで受けた CanvasTransform から他のコンポーネントを辿るときに使う）
+
+    // ── レイアウトの結果（get のみ。前のフレームの描画のレイアウトの表。2026-09-29）──
+    ct.HasLayout           // bool（前のフレームの描画のレイアウトの表にこのノードがあったか。false なら下の 2 つは Zero）
+    ct.LayoutSize          // Vector2（レイアウトが決めたこのノードの大きさ。このノードのキャンバスの単位＝Sprite.Width/Height と同じ。dp のキャンバスなら dp）
+    ct.LayoutRect          // Rect（その矩形の画面の上の外接矩形。画素・左上原点・Y 下向き＝ScreenPosition・Screen.SafeArea・Input.MousePos と同じ。dp は ÷ Screen.DpScale）
+}
+
+// 例: コンテナ（CanvasStack の Stretch・flex・親に合わせる）に伸ばされたノードの、描かれる大きさで描き直す
+if (gameObject.GetComponent<CanvasTransform>() is { } node && node.HasLayout)
+{
+    Vector2 size = node.LayoutSize;   // Sprite.Width は元の値のまま。伸ばされた幅はこちら
+    Rect onScreen = node.LayoutRect;  // 画面の画素（タップ位置 Input.MousePos と比べられる）
 }
 ```
 
 > `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標で、書き込み時に子孫へ差分が伝播します（上記「親子の追従」参照）。
+
+> **重要**: `HasLayout` / `LayoutSize` / `LayoutRect` は **1 フレーム遅れ**です。レイアウトの表はスクリプトのフェーズの後（描画）で作るので、`Update` などで読む値は**前のフレームの描画**の値です（`CanvasScroll.ViewportSize` と同じ）。このフレームに `Position`・レイアウトの部品を書き換えても、結果が読めるのは次のフレームからです（レイアウトが大きさを決めていない軸の `LayoutSize` だけは、読んだ時点の `Sprite.Width` / `Height`・Text の枠そのもの）。`HasLayout` が false になるのは、まだ描画していないとき（Play の最初のフレーム・シーンを読み込んで最初の描画の前・このフレームに `Instantiate` したノード）と、表に無いノード（3D ワールドキャンバスや 3D アクターの下・フォルダ）です。非表示・非アクティブのノードも表にあるので true です。読むのは Play（エディタの Play・SEED.exe）のゲームの画面の表だけです。
+
+> **重要**: `LayoutSize` の決め方（軸ごと）: CanvasComponent を持つノードは**キャンバス領域**（コンテナ・親に合わせる・安全領域・中身に合わせる・dp のルートを反映）。持たないノードは、レイアウトが大きさを決めた軸（コンテナが伸ばした・セルいっぱい・親に合わせた）ならその大きさ、それ以外は Sprite の大きさ → Text の枠 → レイアウトが割り当てた矩形 → 0 です。Sprite を持つノードでは **`LayoutSize` ＝ 描かれるスプライトの大きさ**（キャンバスの単位）で、`LayoutRect` は描かれるスプライトの 4 隅（自分の回転・Scale・pivot を含む。回転していれば外接矩形）と一致します。コンテナに伸ばされても `Sprite.Width` / `Height` は元の値のままなので、描く大きさには `LayoutSize` を使ってください。
 
 ### Model（3D モデルの表示切替・描画オフセット）
 
@@ -2036,8 +2052,12 @@ if (gameObject.GetComponent<CanvasLayoutItem>() is { } item)
     item.Translate         // Vector2（get/set。置かれた後に足す平行移動。キャンバスの単位。レイアウト〈大きさ・並び・安全領域〉は変えない）
     item.TranslateFraction // Vector2（get/set。同じく自分の置かれた矩形の大きさに対する割合。(1, 0) で自分の幅だけ右＝画面の外から入る）
     item.LayerBias         // int（get/set。自分と子孫の表示〈Sprite・SkinnedSprite・Text・2D パーティクル〉のレイヤーに足す値。祖先と足し合わせる）
+    item.VisualScale       // Vector2（get/set。既定 (1, 1)。W2 の手直し 3b。自分の置かれた矩形の中心の周りの倍率。子孫・当たり判定・切り抜き・LayoutRect も一緒に縮む。
+                           //  レイアウト〈大きさ・並び・安全領域・LayoutSize〉は倍率の前のまま。Translate の後に掛かる。保存しない。Play の開始・シーンの読み込みで 1 に戻る）
 }
 ```
+
+> **重要（W2 の手直し 3b）**: `VisualScale` は保存される `CanvasTransform.Scale`（pivot の周り。入れ子のキャンバスの子は左上へ寄る）と違い、**矩形の中心の周り**に部分木ごと縮みます（入れ子のキャンバスの子も中心へ寄る）。既定 (1, 1) のノードのレイアウトの計算は一切変わりません。SEED.UI の予測型の戻るのプレビュー（§7.18）が画面の枠・ダイアログの札・シートの板に使います。
 
 > **重要（W2-7）**: `Translate`・`TranslateFraction` は親に合わせた（`FillWidth`/`FillHeight`）・コンテナが並べたノードも動かせます（`Position` は使われないため）。
 > 子孫も一緒に動き、当たり判定・切り抜き・`ScreenPosition` も動いた位置になります。祖先のずらしは子孫の `CanvasSafeArea` の計算に入れません（横から入ってくる画面の箱が縮み直さない）。
@@ -2321,7 +2341,7 @@ public class FishingLine : SEEDScript
 | （アクター自身） | `gameObject.Visible` | アクターと全子孫の**描画だけ**を止める表示フラグ。スクリプト・物理は動き続ける |
 | （アクター自身） | `gameObject.Name` | アクター名（`Find` / `FindChild` の照合キー）。動的生成物へ一意な名前を付ける用途。既存アクターの改名は参照が追従しない |
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
-| `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
+| `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー・前のフレームのレイアウトの結果（HasLayout・LayoutSize・LayoutRect。読み取り専用） |
 | `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）・レイトレ除外（`RayTracingExcluded`）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget）・形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影。W2-4） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
@@ -3296,6 +3316,8 @@ private void Measure()
 
 > **重要**: イベントはすぐには届きません。エンジンがフレームの頭で取り出し、次の BeginFrame で配ります（`EmitTestEvent` を呼んだフレームの中では見えません）。受け口は `this.On("platform.…", (string json) => …)` を推奨します（スクリプトの破棄で自動的に外れる）。`PlatformEvents.OnEvent` に足したハンドラは `OnDestroy` で必ず外してください（ホットリロードではエンジンが全部外します）。
 
+> **重要**: 起動の直後（エディタでは Play の開始の直後）に届いたイベントは、最初のシーンのスクリプトの `OnStart` がすべて済むまでエンジンが保持し、`OnStart` の次のフレームの BeginFrame でまとめて配ります。`OnStart` で `this.On` した受け手は、起動し直した直後の `platform.permission_changed` なども受け取れます（2026-09-29 から。上限 256 件を超えた古い分は捨てるので、起動時の状態は `Permissions.Check` などでも確かめてください）。`OnStart` の中で生成したアクターのスクリプトは 1 フレーム遅れて `OnStart` するため、保持していた分を受け取れないことがあります。
+
 ### 目覚まし（`Alarms`。W1-3 は予約の基盤）
 
 決まった時刻に確実に鳴らすための**予約**です。Android では別プロセス `:seed_platform` が予約の控え（端末保護ストレージ）を持ち、
@@ -3605,6 +3627,56 @@ PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // デスクトップ�
 |---|---|---|
 | `UiMode` | `Configuration.uiMode` の夜の bit（YES → Dark・NO → Light・UNDEFINED → Unknown） | Windows の「既定のアプリ モード」（レジストリ `AppsUseLightTheme`。0 = Dark）。ほかの OS は Unknown。差し替えがあればその値 |
 | `platform.ui_mode_changed`（data `night` = `yes` / `no` / `unknown`） | `MainActivity.onConfigurationChanged` で夜の bit が変わったとき（`configChanges` に `uiMode` があるので Activity は作り直されない） | 単体起動のウィンドウの ThemeChanged（OS の設定の変化。エディタに埋め込んだ Play では届かない）と `SimulateUiMode` |
+
+### 予測型の戻る（`App.SetBackCallbackEnabled`・`platform.back_*`。W2 の手直し P1-3）
+
+Android の予測型の戻る（戻るの手ぶりの途中で画面が縮み、前の画面が覗く。根ではホームへ戻る見た目）の土台です。**opt-in** で、プロジェクト設定
+`android.predictive_back: true` の APK の Android 13 以上だけで働きます（docs/project_system.md・docs/android.md §25.18）。無い・false の APK（既定）では何も変わらず、
+戻るは従来どおり `KeyCode.Escape` だけで届きます。ふつうは SEED.UI の戻るの段（BackDispatcher）が呼ぶので、スクリプトから直接は呼びません
+（SEED.UI の部品を置いたシーンでは、受ける層の有無を自動で知らせ、手ぶりの間に閉じるものを縮めて見せる。W2 の手直し 3b。§7.18）。
+
+```csharp
+using SEED.Platform;
+
+// 受ける層（ダイアログ・画面のスタックなど）があるかを知らせる（起動したときは「受ける」。状態が変わったときだけ呼ぶ）
+bool enabled = App.SetBackCallbackEnabled(true);   // true = 受ける層がある（アプリが戻るを受け、手ぶりのイベントと Escape が届く）
+App.SetBackCallbackEnabled(false);                 // false = 受ける層が無い（根。システムに任せて背面へ回る見た目。Android 13〜15 でランチャー以外から起動した根は Escape が届く）
+                                                   // 返り値 = 基盤が受け付けて予測型の戻るが有効か（無効・失敗なら false。何もしていない）
+App.IsPredictiveBackEnabled                        // bool: 最後の SetBackCallbackEnabled の返答の enabled（一度も呼んでいなければ false。模擬は常に false）
+
+// 手ぶりのイベント（4 つとも BackGestureEvent.TryParse で読める）
+App.BackStartedEvent      // "platform.back_started"    … 始まり（Android 14 以上。data: gesture, progress, edge, touch_x, touch_y）
+App.BackProgressedEvent   // "platform.back_progressed" … 進み具合（Android 14 以上。毎フレーム。data は始まりと同じ形）
+App.BackCancelledEvent    // "platform.back_cancelled"  … 取り消し（Android 14 以上。指を戻した。data: gesture）
+App.BackInvokedEvent      // "platform.back_invoked"    … 確定（Android 13 以上。data: gesture）。続けて KeyCode.Escape が届く（同じフレームとは限らない）
+this.On(App.BackProgressedEvent, (string json) =>
+{
+    if (BackGestureEvent.TryParse(json, out BackGestureEvent e))
+    {
+        BackGesturePhase phase = e.Phase;   // Started / Progressed / Cancelled / Invoked（イベントの名前から）
+        long gesture = e.Gesture;           // 手ぶりの通し番号（1 から。同じ手ぶりの始まり〜取り消し / 確定は同じ番号。始まりの無い確定は新しい番号）
+        float progress = e.Progress;        // 0〜1（始まり・進み具合だけ）
+        BackEdge edge = e.Edge;             // BackEdge.Left / Right / None（端からの手ぶりでない＝ボタンの戻る）
+        float x = e.TouchX, y = e.TouchY;   // 指の位置（窓の座標の px。取れないとき〈ボタンの戻る・模擬〉は 0）
+        bool simulated = e.Simulated;       // デスクトップの模擬が作ったか
+    }
+});
+
+// デスクトップの模擬だけ: 手ぶりのイベントを流して PC でプレビューを試す（Invoked は知らせだけ。確定の Escape は Esc キーで押す。Android は false）
+PlatformDiagnostics.SimulateBackGesture(BackGesturePhase.Started, 0f, BackEdge.Left);
+PlatformDiagnostics.SimulateBackGesture(BackGesturePhase.Progressed, 0.5f, BackEdge.Left);   // 進み具合は 0〜1 にそろえる
+PlatformDiagnostics.SimulateBackGesture(BackGesturePhase.Invoked);                            // 既定は progress 0・BackEdge.Left
+```
+
+| 項目 | Android（`android.predictive_back: true`・13 以上） | デスクトップ（模擬） |
+|---|---|---|
+| `SetBackCallbackEnabled(true)` | 自分のコールバックを登録（起動したときの状態） | 記録してログだけ（変わったときだけ）。返り値は false |
+| `SetBackCallbackEnabled(false)` | 36 以上: 外してシステムの背面行き（`moveTaskToBackCallback`）を登録。33〜35: ランチャーから起動した根だけ外す（それ以外は残して Escape → `App.MoveTaskToBack`） | 同上 |
+| イベント | 13: 確定だけ。14 以上: 始まり・進み具合・取り消し・確定 | `SimulateBackGesture` で流したものだけ（`Simulated` = true） |
+| 確定の Escape | 確定で合成の戻るキー → `KeyCode.Escape`（従来の戻るキーと同じ入口） | Esc キー（模擬は注入しない） |
+| `android.predictive_back` が無い・false | 何も登録しない。イベントは届かず、戻るは従来どおり Escape だけ。`SetBackCallbackEnabled` は false | — |
+
+> **重要**: 確定の知らせ（`platform.back_invoked`）と `KeyCode.Escape` は別の道で届き、同じフレームとは限りません。戻るの処理（閉じる・下ろす）は従来どおり Escape で 1 回だけ行い、手ぶりのイベントは見た目（縮める・プレビュー）にだけ使ってください（`Gesture` の番号で同じ手ぶりかを見分ける）。
 
 ### センサー（`Sensors`。W1-8）
 
@@ -4101,6 +4173,9 @@ public class EditScreen : UiScreen
               .Completed += r => { if (r == DialogResult.Positive) Close(); };
         return true;
     }
+    protected override bool WouldConsumeBack() => dirty;       // 今戻るが来たら OnBackPressed が true か（副作用なしの問い。
+                                                               // OnBackPressed を上書きしたら同じ条件で上書きする。上書きしないと
+                                                               // 「受ける」とみなされ、根でも Android の予測型の戻る〈ホームへ戻る見た目〉が出ない）
     // Close(result) で自分を下ろす・Navigator（積んだスタック）・Handle・Args
 }
 
@@ -4130,9 +4205,28 @@ ToastHost.Current!.Show("…", 5f);               // 秒を指定。同時に co
 
 // ── 戻るの段（Android の戻る・PC の Esc。部品が毎フレーム読むので、スクリプトは何もしなくてよい）──
 BackDispatcher.Dispatch();                        // 画面の「戻る」ボタンから戻るを配る
-using var layer = BackDispatcher.AddLayer(450, "my-panel", () => { /* 受けたら */ return true; });   // 独自の層（順は BackOrder の間に）
+using var layer = BackDispatcher.AddLayer(450, "my-panel", () => { /* 受けたら */ return true; });   // 独自の層（順は BackOrder の間に。問いなし＝いつも受けるとみなす）
+using var layer2 = BackDispatcher.AddLayer(450, "my-panel", () => panel.Close(),                      // W2 の手直し 3b: 受けるかの問いつき
+                                            wants: () => panel.IsOpen,                                // 副作用の無い「今押されたら受けるか」（予測型の戻るの根の判定）
+                                            preview: () => panel);                                    // 任意: 手ぶりの間に縮めて見せる相手（IBackPreviewTarget。null = 縮めない）
+bool handles = BackDispatcher.WouldHandle();     // 今押したらアプリが受けるか（副作用なし。どれかの層が受ける or MoveTaskToBackWhenUnhandled = false）
 BackDispatcher.Dispatched += r => { };            // r.Handled・r.Layer
 BackDispatcher.MoveTaskToBackWhenUnhandled = true; // どの層も受けなければ Platform.App.MoveTaskToBack()（既定）
+
+// 予測型の戻るのプレビューの相手（W2 の手直し 3b。ScreenStack の上の画面・Dialog・BottomSheet・TopSheet が実装済み。独自の層で使うときだけ）
+public class MyPanel : IBackPreviewTarget
+{
+    public bool IsBackPreviewValid => isOpen;         // 今もプレビューできるか（false になったらすぐ元へ戻される）
+    public bool IsBackPreviewExiting => isClosing;    // 確定の後、閉じる動きの途中か（終わったら ClearBackPreview が呼ばれる）
+    public void ApplyBackPreview(BackPreviewPose pose)    // pose.Scale（1 → 0.9）・pose.ShiftX（画面用の横のずらし。キャンバスの単位）
+    {
+        if (node.GetComponent<CanvasLayoutItem>() is { } item) item.VisualScale = new Vector2(pose.Scale, pose.Scale);
+    }
+    public void ClearBackPreview()
+    {
+        if (node.GetComponent<CanvasLayoutItem>() is { } item) item.VisualScale = Vector2.One;
+    }
+}
 
 // ── フォーカス（キーボードで動かす相手と、画面ごとの範囲）──
 UiFocus.Request(item)  UiFocus.Release(item)  UiFocus.Current  UiFocus.TopScope  UiFocus.Changed
@@ -4142,6 +4236,12 @@ public class MyField : UiWidget, IFocusable, IBackConsumer { … }   // FocusOwn
 **戻るの段の順**（`BackOrder`）: Focus（100。今のフォーカスが `IBackConsumer` なら。W2-6 の入力欄が IME を閉じる）→ Dialog（200）→ Sheet（300）→
 Overlay（400）→ Navigation（500。画面のスタック・タブを**内側から**: 上の画面の `IgnoreBack`・`OnBackPressed` → 1 つ下ろす → 最初のタブ以外なら最初のタブへ）→
 どれも受けなければ `SEED.Platform.App.MoveTaskToBack()`（閉じずに背面へ。デスクトップの模擬はログだけ）。閉じられないダイアログも戻るは受けます（後ろへ回さない）。
+
+**予測型の戻る（W2 の手直し 3b。`android.predictive_back: true` の Android 13 以上）**: 戻るの段はフレームに 1 回 `WouldHandle()` を計算し、変わったときだけ
+`App.SetBackCallbackEnabled` で基盤へ知らせます（根ではシステムが背面へ回し、ホームへ戻る見た目が出る。無効〈PC・設定なし〉と分かったら以後は計算しない）。
+手ぶりの間は最初に受ける層の相手を縮めて見せ（画面は指の向きへ少しずれ、下の画面が覗く・ダイアログの札・シートの板は下の辺・覆いの板は上の辺を留める）、
+Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じなければ元へ戻る）。問えない層（`IBackConsumer`・`OnBackPressed` を上書きした画面・問いの無い `AddLayer`）は
+「受ける」とみなします。PC では `PlatformDiagnostics.SimulateBackGesture` で流した手ぶり＋Esc キーで試せます。
 
 **重なりと入力**: 画面のスタックの段 i は `LayerBias = i × LayerStep`（既定 `layer.stack_step` = 10,000。タブの中のスタックは 1,000）、
 覆い・シート・ダイアログ・トーストは帯（`layer.overlay`・`sheet`・`dialog`・`toast` = 100 万・200 万・300 万・400 万）。
@@ -4156,6 +4256,7 @@ Overlay（400）→ Navigation（500。画面のスタック・タブを**内側
 | `motion.toast_short`・`motion.toast_long` | 2・3.5 秒 | トーストを見せる時間（実時間） |
 | `opacity.scrim`・`opacity.dialog_scrim` | 0.54・0.32 | 幕の濃さ |
 | `ratio.push_parallax`・`ratio.dialog_scale_from`・`ratio.sheet_max_height` | 0.3・0.9・0.9 | 視差・ダイアログの出始めの大きさ・シートの高さ |
+| `ratio.back_preview_scale`・`size.back_preview_shift`・`motion.back_preview_curve` | 0.9・8 dp・(0, 0, 0, 1) | 予測型の戻るのプレビュー（いちばん小さい倍率・画面のずらし・進み具合の曲線。3b。取り消しで戻る時間は `motion.short`） |
 
 > **重要**: 画面のプレハブは次のフレームにできあがる（`Instantiate` の遅延）ので、画面の枠 → 中身の 2 フレームかけて作り、できあがるまで隠します。
 > 積み下ろしは並びをすぐ変え、動きは順に流します（動いている途中の次の操作は、今の動きを飛ばしてから始める）。

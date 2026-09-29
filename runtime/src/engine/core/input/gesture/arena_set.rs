@@ -28,6 +28,10 @@
 //    - `nodes_under_pointers` … 今触れている指の経路のノード（触れて止めたスクロールを、指を離したら再び動かすため）
 //    - `cancel_nodes` … 一覧の行を使い回すとき、その行（と子孫）の押下とドラッグを取り消す（PressCancel・取り消しの DragEnd を出す。
 //      押している行が消えて PressCancel の届け先が無くなる W2-2 の持ち越しへの手当て）
+//
+//  【離した結果の控え（2026-09-29）】ドラッグに勝った指を離すたびに、速度と 0 にした理由（R1〜R3）を控える
+//  （release_report.rs）。`process` の頭で前のフレームの分を捨て、App が `take_release_reports` で取り出して
+//  診断ログ `[SEED GESTURE] release`（Android だけ）にする。
 // ============================================================
 
 use std::collections::HashSet;
@@ -40,6 +44,7 @@ use super::pinch::{PinchMove, PinchTracker};
 use super::pointer_log::{PointerInputEvent, PointerKey, PointerLogEntry, PointerPhase};
 use super::pointer_track::PointerTrack;
 use super::recognizers::MemberState;
+use super::release_report::ReleaseReport;
 use super::scene::GestureScene;
 use super::thresholds::GestureMetrics;
 
@@ -70,6 +75,8 @@ pub struct GestureArenaSet {
     touched: Vec<Entity>,
     /// 2 本指のピンチ（W2-8。アリーナとは別にすべての指を見る）。
     pinch: PinchTracker,
+    /// このフレームの `process` でドラッグの指を離した結果（診断ログの材料。release_report.rs）。
+    releases: Vec<ReleaseReport>,
 }
 
 impl GestureArenaSet {
@@ -83,6 +90,12 @@ impl GestureArenaSet {
         self.arenas.clear();
         self.touched.clear();
         self.pinch.reset();
+        self.releases.clear();
+    }
+
+    /// このフレームの `process` でドラッグの指を離した結果を取り出す（診断ログ `[SEED GESTURE] release` の材料）。
+    pub fn take_release_reports(&mut self) -> Vec<ReleaseReport> {
+        std::mem::take(&mut self.releases)
     }
 
     /// 前に呼んでから触れた指の経路のノードを取り出す（W2-3。同じノードが何度も入りうる）。
@@ -170,6 +183,8 @@ impl GestureArenaSet {
         metrics: &GestureMetrics,
     ) -> Vec<GestureEmit> {
         let mut out = Vec::new();
+        // 離した結果の控えはこのフレームの分だけ持つ（取り出されなかった前のフレームの分を溜めない）
+        self.releases.clear();
         for entry in entries {
             self.advance_to(entry.time(), metrics, &mut out);
             match entry {
@@ -306,12 +321,14 @@ impl GestureArenaSet {
         self.arenas[i].on_move(e.position, e.time, scene, metrics, &dragging_elsewhere, out);
     }
 
-    /// 離れた。
+    /// 離れた（ドラッグの指なら離した結果を控える）。
     fn pointer_up(&mut self, e: &PointerInputEvent, metrics: &GestureMetrics, out: &mut Vec<GestureEmit>) {
         self.pinch.release(e.pointer, e.time, false, out);
         let Some(i) = self.find(e.pointer) else { return };
         let mut arena = self.arenas.remove(i);
-        arena.on_up(e.position, e.time, metrics, out);
+        if let Some(outcome) = arena.on_up(e.position, e.time, metrics, out) {
+            self.releases.push(ReleaseReport { pointer: e.pointer, outcome, dp_scale: metrics.dp_scale });
+        }
     }
 
     /// OS に取り消された。

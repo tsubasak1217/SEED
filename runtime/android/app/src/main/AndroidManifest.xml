@@ -11,9 +11,15 @@
     ビルド時に決まる（app/build.gradle.kts。値が無ければ @string/app_name = SEED Runtime。docs/android.md §18）。
   ・android:icon="${seedAppIcon}" … ランチャーのアイコン。プロジェクト設定の android.icon があれば SeedAndroid が生成した
     @mipmap/ic_launcher（各密度の mipmap とアダプティブアイコン）、無ければシステムの既定のアイコン（docs/android.md §24）。
-  ・android:enableOnBackInvokedCallback="false" … targetSdk 36（Android 16）で既定になった予測型の「戻る」を使わない。
-    使うと Android 16 以降の端末で KEYCODE_BACK がアプリへ届かなくなり、戻るキー → Escape（スクリプトの
-    Input.GetKeyDown(KeyCode.Escape)。docs/android.md §14.5）が効かなくなるため（公式の一時的な回避。§24）。
+  ・android:enableOnBackInvokedCallback="${seedEnableOnBackInvokedCallback}" … targetSdk 36（Android 16）で既定になった予測型の
+    「戻る」を使うか。プロジェクト設定 android.predictive_back からビルド時に決まる（app/build.gradle.kts の seed.predictiveBack。
+    W2 の手直し P1-3・docs/android.md §25.18）:
+      "false"（既定。predictive_back が無い・false のプロジェクト）… 使わない。KEYCODE_BACK が従来どおりアプリへ届き、
+        戻るキー → Escape（スクリプトの Input.GetKeyDown(KeyCode.Escape)。§14.5）。使うと Android 16 以降の端末で KEYCODE_BACK が
+        アプリへ届かなくなるため（公式の一時的な回避。§24）
+      "true"（predictive_back が true）… 使う。KEYCODE_BACK の代わりに MainActivity の back/BackCallbackController が
+        OnBackInvokedCallback（API 33 以上）で戻るを受け、手ぶりを platform.back_* で知らせ、確定したら合成の KEYCODE_BACK を
+        従来の入口（GameActivity.onKeyDown）へ渡す（スクリプトには同じく Escape で届く）。res の印 seed_predictive_back と対。
   ・android:appCategory="${seedAppCategory}" … アプリの分類。プロジェクト設定の android.app_category からビルド時に決まる
     （app/build.gradle.kts の語彙の表。無ければ game＝従来の固定値。W1-2・docs/android.md §25.10）。game は Android 16 の
     「大画面で向き・サイズ変更の制限を無視する」変更の対象外にもなる（それ以外の分類では大画面で制限が無視される）。
@@ -51,7 +57,7 @@
         android:allowBackup="false"
         android:allowNativeHeapPointerTagging="false"
         android:appCategory="${seedAppCategory}"
-        android:enableOnBackInvokedCallback="false"
+        android:enableOnBackInvokedCallback="${seedEnableOnBackInvokedCallback}"
         android:icon="${seedAppIcon}"
         android:label="${seedAppLabel}"
         android:theme="@style/Theme.SeedRuntime">

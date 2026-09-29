@@ -208,21 +208,48 @@ UiRoot（Canvas・単位 dp）
 
 CanvasScrollComponent を持つノードは、走査が子へ渡す文脈（行列）をスクロールの位置 × 子の累積スケールだけ平行移動する（`canvas_layout/scroll_view.rs`）。窓がコンテナなら、スクロールの軸は箱の長さを決めずに並べる。窓・中身の大きさは表の `scroll_regions` に積む。切り抜きと「見える範囲の外を飛ばす」が有効な窓の子孫は、部分木の範囲が見える範囲（切り抜き + cache_extent）と交わらなければ表の行に `culled` を立て、描画アイテム・ID 描画・当たり判定（`is_drawn_in_view`・`is_pickable_in_view`）から外す。表の行はアクター木と 1 対 1 のまま。スクロールを使わない木の計算は変わらない。規則の正典は [ui_scroll_list.md](ui_scroll_list.md) §5。
 
-### 6.7 見た目の上書き（平行移動・レイヤーの底上げ。W2-7）
+### 6.7 見た目の上書き（平行移動・レイヤーの底上げ・倍率。W2-7・W2 の手直し 3b）
 
-`CanvasLayoutItemComponent` の**実行中だけの欄**（`#[serde(skip)]`＝`.scene`・`.actor` に出ない・インスペクタに出ない・読み込むと 0）。
-画面の組み立て（[ui_navigation.md](ui_navigation.md)）が出入りの動きと重なりの前後に使う。スクリプトは `CanvasLayoutItem.Translate`・`TranslateFraction`・`LayerBias`。
+`CanvasLayoutItemComponent` の**実行中だけの欄**（`#[serde(skip)]`＝`.scene`・`.actor` に出ない・インスペクタに出ない・Undo・プレハブの差分に出ない・
+読み込むと 0、`visual_scale` だけは 1）。画面の組み立て（[ui_navigation.md](ui_navigation.md)）が出入りの動き・重なりの前後・予測型の戻るのプレビューに使う。
+スクリプトは `CanvasLayoutItem.Translate`・`TranslateFraction`・`LayerBias`・`VisualScale`。
 
 | 欄 | 規則 |
 |---|---|
 | `translate`（キャンバスの単位）・`translate_fraction`（割合） | 置かれた後（1. の配置・2. の安全領域の後、3. のコンテナの並べ方の前）に、有効位置とワールド行列だけを親のローカルで平行移動する（`placement::translate_placement`）。移動量 = `translate × 親の累積スケール + translate_fraction × 自分の矩形`（自分の矩形 = レイアウトが割り当てた矩形 → CanvasComponent の領域 → 無ければ割合は効かない）。大きさ・並び・子の箱は変えず、子孫は子へ渡す文脈の行列ごと付いてくる。`layout_adjusted` を立てる（枠・2D 物理・`ScreenPosition` も動いた位置を読む） |
 | 祖先の平行移動と安全領域 | 子へ渡す文脈に祖先の移動量の和（ワールドの画素。`CanvasParentFrame.visual_shift`）を持たせ、子孫の `CanvasSafeArea` は安全領域を同じだけずらしてから縮める量を求める（横から入ってくる画面・下から出るシートの中身の箱が、途中で画面の端に合わせて縮み直さない） |
 | `layer_bias`（整数） | 自分と子孫の表示のレイヤーに足す値（祖先の和。飽和）。表の配置（`CanvasNodePlacement.layer_bias`）に持たせ、描画アイテム（スプライト・スキンスプライト・テキストとインライン画像・2D パーティクル）・`pick_2d` の最前面・ジェスチャーの遮り（R3 の `PaintOrder.layer`）・エディタの ID 描画が `biased_layer(コンポーネントの layer, layer_bias)` で並べる。`SEED.Draw` の図形にも座標空間の持ち主のノードの値を足す（2026-09-28 の W2-8。`primitive2d/pass.rs` の `apply_space_layer_bias`。積んだ画面の中のグラフが背景の下に隠れない） |
-| 既定（すべて 0） | 従来とまったく同じ計算（CanvasLayoutItem を持たないノード・値が 0 のノードは何もしない。`zero_visual_overrides_leave_table_unchanged`）。WarashibeFishing は CanvasLayoutItem を使っていない（W2-7 の回帰で図鑑の画素・クリックの一致を確かめた） |
+| `visual_scale`（軸ごとの倍率。既定 (1, 1)。3b） | 平行移動の後（3. のコンテナの並べ方の前）に、**自分の置かれた矩形の中心**の周りに部分木ごと縮める・広げる（`placement::scale_placement`）。中心 = 描画の矩形（Scale × 大きさ。レイアウトが割り当てた矩形か CanvasComponent の領域）の中央、どちらも無ければ pivot の点。エンジンの倍率は行列に入れないので、有効位置 = 位置 + R × ((1 − s) × pivot の点から中心への差)、サイズ倍率・キャンバス領域の実効の大きさ・スプライトを描く大きさ・割り当てた矩形・子の累積スケールを × s、行列を組み直す（部分木の点 p → 中心 + R·diag(s)·R⁻¹·(p − 中心)。ノードの軸に沿う）。基準の大きさ（`canvas_base`・単位）は変えない（`LayoutSize` は倍率の前、`LayoutRect` は縮んだ矩形）。倍率を当てたノードのコンテナの並びは倍率の空間で求める（親が割り当てた矩形は × s してから箱にする）。有限でない成分は 1。`layout_adjusted` を立てる |
+| 祖先の倍率と安全領域 | 文脈に祖先の倍率の積（`CanvasParentFrame.visual_scale`）を持たせ、`visual_shift` と組で「倍率とずらしの前のワールドの点 p → `visual_scale × p + visual_shift`」の写像にする。子孫の `CanvasSafeArea` は安全領域をこの写像で写してから縮める量を求める（縮めている画面の中身の箱がステータスバーの分の余白を失わない）。回転したノードの縦横で違う倍率では近似 |
+| 計測の記憶の鍵（3b） | `LayoutMeasurer` の鍵に親の累積スケール（ビット）を足した（倍率を当てた部分木は、親のコンテナが倍率の前に測った同じノードを倍率の空間で測り直す）。倍率の無い木では 1 つのノードはいつも同じ累積スケールで測られるので、引ける・引けないも結果も従来と同じ |
+| 既定（すべて 0・倍率 1） | 従来とまったく同じ計算（CanvasLayoutItem を持たないノード・値が既定のノードは何もしない。`zero_visual_overrides_leave_table_unchanged`、倍率は `visual_scale_tests.rs` の golden の指紋 `default_visual_scale_keeps_golden_table`＝倍率を足す前のコードで取った表のビット列と一致）。WarashibeFishing は CanvasLayoutItem を使っていない（W2-7 の回帰で図鑑の画素・クリックの一致を確かめた） |
 
 単体テスト: `layout_tests.rs` の `translate_fraction_moves_filled_node_and_descendants`・`translate_units_scale_with_parent_and_add_to_fraction`・
 `zero_visual_overrides_leave_table_unchanged`・`layer_bias_accumulates_down_the_tree`・`safe_area_inside_translated_node_ignores_translation`、
-`canvas_layout_item_component.rs` の保存しない・移動量の計算、`canvas_layout_api.rs` の読み書き。
+`visual_scale_tests.rs`（3b: golden・中心と子孫・回転と pivot と Scale・中身で測られるコンテナ・伸ばされたコンテナ・安全領域）、
+`canvas_layout_item_component.rs` の保存しない・移動量の計算・倍率の既定、`canvas_layout_api.rs` の読み書き。
+ダイアログの出入りを保存される `CanvasTransform.Scale`（子は左上へ寄る）から `visual_scale` へ替えると、文字とボタンも札の中心へ寄る（backlog。P2）。
+
+### 6.8 レイアウトの結果をスクリプトへ（表を資源へ移す・遅延の索引・1 フレーム遅れ。W2 Item 4・2026-09-29）
+
+スクリプトの `CanvasTransform.HasLayout`・`LayoutSize`・`LayoutRect`（読み取り専用。[scripting_api.md](scripting_api.md) 第 7 節）の置き場。
+コードの正典は `canvas_layout/results.rs`（資源と受け渡し）・`canvas_layout/node_extent.rs`（大きさと矩形の純関数）・
+`scripting/canvas_layout_results_api.rs`（レジストリの欄）。
+
+| 項目 | 規則 |
+|---|---|
+| どの表か | フレームの描画がフレームに 1 回作るメインの 2D キャンバスの表のうち、**Play のゲームの画面**の表だけ（エディタに埋め込んだ Play・SEED.exe の単体の Play。`LayoutFrameView::GameScreen`）。一時停止の見た目（エディタの見た目で描く）は前の表を残し（再開した最初のフレームも読める）、Edit・アクター編集タブ・サムネイルの撮影は空にする。3D ワールドキャンバスの子の表（`build_world_canvas_layout`）は渡さない |
+| 置き場 | 表は描画が使う `Arc<CanvasLayoutTable>` のまま（写さない）。描画のブロックを出た所（`frame_renderer.rs` の「レイアウトの表をスクリプトへ」）で、シーンの World の資源 `CanvasLayoutResults` へ移す（`CanvasLayoutHandoff::apply`。資源があれば中身を差し替える）。シーンを差し替えると World ごと消えるので、別のシーンの Entity と取り違えない。App の欄・thread_local の写しは持たない |
+| 索引 | Entity → 行の索引（スクリプトへ見せる行だけ）は、最初に読まれたときにだけ作る（`OnceLock`）。スクリプトが一度も読まなければ、フレームごとの追加の仕事は Arc の受け渡しと資源の差し替えだけ |
+| 1 フレーム遅れ | 表はスクリプトのフェーズの後（描画）で作るので、次のフレームのスクリプト（ポインタ・ジェスチャー・スクロールのイベントと各フェーズ）が読むのは**前のフレームの描画**の値（CanvasScroll の窓の大きさ〈`apply_scroll_metrics`〉と同じ流儀）。まだ描画していない（Play の最初のフレーム・シーンを読み込んで最初の描画の前・そのフレームに生成したノード）は `HasLayout = false` |
+| 見せる行 | 配置を持ち（CanvasTransform を持つ・フォルダでない）、2D レイアウト木の中（`in_2d_tree`。3D ワールドキャンバス・3D アクターの下でない）で、祖先まで表の世界線にいる行（`results::is_script_visible`）。非表示・非アクティブ・スクロールの見える範囲の外の行も見せる（配置は求めてある） |
+| 大きさ（LayoutSize） | 軸ごと。CanvasComponent を持つノードはキャンバスの基準の大きさ（`canvas_base`。コンテナ・親に合わせる・セル・安全領域・中身に合わせる・dp のルートを反映。dp のルート自身は dp）。持たないノードは、1. レイアウトが大きさを決めた軸（`sprite_fill`）→ その大きさ ÷ サイズ倍率、2. 最初の有効な Sprite、3. Text の枠、4. レイアウトが割り当てた矩形（`layout_rect`）、5. 0。2・3 は `lookup.rs` の関数（走査の「自分の大きさ」と同じ）で、読んだ時点のスロットから引く。単位はノードのキャンバスの単位（Sprite の幅・高さと同じ） |
+| 矩形（LayoutRect） | 描くスプライトと同じ行列（親の行列 × 有効トランスフォーム〈位置・pivot・回転・Scale〉。`clip.rs` の `sprite_rect_corners`）で大きさの矩形を写した 4 隅の外接矩形を、画面の画素（左上が原点）へ: 画素 = キャンバスのワールド座標 + 基準ビューポート ÷ 2（`ScreenPosition` と同じ基準。内部解像度の固定ではその解像度の画素）。Sprite を持つノードは描かれるスプライトの 4 隅、CanvasComponent を持つノードはキャンバス領域（エディタの枠・CanvasClip の矩形）と一致する |
+| 同じフレームの書き換え | 位置・レイアウトの部品は次のフレームの描画から。レイアウトが大きさを決めていない軸の大きさ（Sprite・Text の枠）だけは読んだ時点のスロットの値（毎フレームすべての行の Sprite を控えないため） |
+| 制限 | auto_scale のルートキャンバス自身のキャンバス領域は基準の大きさの画素のまま（子は自動スケールで縮むので、画面の大きさと設計解像度が違うと見た目の範囲と一致しない。エディタの枠・CanvasClip と同じ既存の規則）。dp のルート・子のキャンバス・スプライトのノードには当たらない |
+
+単体テスト: `canvas_layout/results_tests.rs`（伸ばされたノードの大きさと描画のスプライトとの一致・dp のルート＋安全領域の画素の矩形・
+レイアウトの無いノード・見せない行・索引は読むまで作らない・受け渡し）、`host_api.rs` の `canvas_transform_layout_fields_are_read_only`（レジストリの往復）。
 
 ## 段階実装計画
 

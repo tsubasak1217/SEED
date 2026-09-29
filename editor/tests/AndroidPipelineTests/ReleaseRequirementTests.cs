@@ -81,7 +81,13 @@ public static class ReleaseRequirementTests
         Check.True(gradle.Contains($"val seedTargetSdk = {AndroidRuntimeContract.TargetApiLevel}"), "build.gradle.kts の seedTargetSdk と中核の値が同じ");
         Check.True(gradle.Contains($"val seedMinSdk = {AndroidRuntimeContract.MinApiLevel}"), "minSdk も同じ");
         var manifest = File.ReadAllText(Path.Combine(engine.AndroidDir, "app", "src", "main", "AndroidManifest.xml"));
-        Check.True(manifest.Contains("android:enableOnBackInvokedCallback=\"false\""), "targetSdk 36 でも戻るキーを受け取る（予測型の戻るを使わない）");
+        // targetSdk 36 でも戻るキーを受け取る: 予測型の戻るはプロジェクト設定 android.predictive_back の opt-in で、Gradle の既定値は "false"
+        // （W2 の手直し P1-3。マニフェストはプレースホルダ、渡されなければ build.gradle.kts の seedEnableOnBackInvokedCallback が "false"）
+        Check.True(manifest.Contains("android:enableOnBackInvokedCallback=\"${seedEnableOnBackInvokedCallback}\""), "予測型の戻るはプレースホルダで決める");
+        Check.True(gradle.Contains("val predictiveBackDisabledValue = \"false\"")
+                   && gradle.Contains("val seedEnableOnBackInvokedCallback = if (seedPredictiveBack) predictiveBackEnabledValue else predictiveBackDisabledValue")
+                   && gradle.Contains("null, predictiveBackDisabledValue -> false"),
+            "渡されない・false なら enableOnBackInvokedCallback=\"false\"（従来どおり戻るキーを受け取る）");
         Check.True(manifest.Contains("android:icon=\"${seedAppIcon}\""), "アイコンはビルドで決める");
         Check.True(table.PageSizeBytes == 16384 && table.RequiredAbis.Contains("arm64-v8a"), "16 KB と arm64");
         Check.True(PlayRequirements.Load(Path.Combine(engine.WorkDir, "nothing.json"), out var missing) is null && missing!.Contains("ありません"), "無い表は null と理由");

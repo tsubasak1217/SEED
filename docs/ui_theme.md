@@ -329,6 +329,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.handle_area` | 数 | 24 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
 | `size.toast_height` | 数 | 48 | 〃 | Toast（高さ） |
 | `size.drag_dismiss` | 数 | 96 | 〃 | Toast・TopSheet（引いて閉じる距離） |
+| `size.back_preview_shift` | 数 | 8 | 〃 | BackDispatcher（予測型の戻るのプレビューで画面をずらす量） |
 | `size.chart_line` | 数 | 2 | 〃 | LineChart（線の太さ） |
 | `size.chart_dot` | 数 | 2.5 | 〃 | LineChart（点の半径） |
 | `size.chart_dot_selected` | 数 | 5 | 〃 | LineChart（選んだ点の半径） |
@@ -381,6 +382,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `motion.toast_curve` | 曲線 | 0.4, 0, 0.2, 1 | 〃 | Toast（出入り） |
 | `motion.toast_short` | 数 | 2 | 〃 | ToastHost（短いトーストを出しておく時間） |
 | `motion.toast_long` | 数 | 3.5 | 〃 | ToastHost（長いトーストを出しておく時間） |
+| `motion.back_preview_curve` | 曲線 | 0, 0, 0, 1 | 〃 | BackDispatcher（予測型の戻るのプレビューの縮み具合） |
 | `motion.chart_zoom` | 数 | 0.25 | 〃 | LineChart・BarChart（± の拡大縮小） |
 | `opacity.pressed` | 数 | 0.16 | 0.1 | Button・Toggle・Checkbox・SegmentedControl・ChipGroup・RadioGroup・TabBar（押下の重ね色の濃さ） |
 | `opacity.disabled` | 数 | 0.38 | 〃 | Toggle・Checkbox・Slider・ProgressBar・ProgressRing・WheelPicker・TimeWheel（無効の濃さ） |
@@ -392,6 +394,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `ratio.push_parallax` | 数 | 0.3 | 〃 | ScreenStack（押し込みの視差） |
 | `ratio.dialog_scale_from` | 数 | 0.9 | 〃 | Dialog（出るときの最初の大きさ） |
 | `ratio.sheet_max_height` | 数 | 0.9 | 〃 | BottomSheet（最大の高さ） |
+| `ratio.back_preview_scale` | 数 | 0.9 | 〃 | BackDispatcher（予測型の戻るのプレビューのいちばん小さい倍率） |
 | `ratio.chart_bar_width` | 数 | 0.7 | 〃 | BarChart（棒の太さ） |
 | `ratio.chart_empty_bar` | 数 | 0.015 | 〃 | BarChart（合計 0 の棒の高さ） |
 | `ratio.chart_fling_drag` | 数 | 0.135 | 〃 | LineChart・BarChart（払った後の慣性の減速） |

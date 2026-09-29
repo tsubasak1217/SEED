@@ -163,20 +163,62 @@ W2-7 の依頼（タブの根以外なら根のタブへ）に合わせて既定
 - キーは画面の組み立ての部品（`ScreenStack`・`TabHost`・`ModalPlane`・`ModalHost`・`ToastHost`）が毎フレーム `PollBackKey()` で読み、同じフレームに 1 回だけ配る。
 - スクリプトは `AddLayer(順, 名前, 受けたら true)` で自分の層を足せる（戻り値を Dispose で外す）。`Dispatch()` は画面の「戻る」ボタンから呼ぶ。`Dispatched` で結果を知る。
 - 作りかけ（スクリプトが動く前）の面がある種類の層は戻るを受けて捨てる（開いた直後の二度押しで後ろが閉じない）。閉じる動きの途中の面も受けるだけ。
-- **Android の実機**: キーボードが出ているときの 1 回目の戻るは IME 自身が閉じ、アプリには届かない（W2-0 の I-11）。Android 14 以降の「予測型の戻る」
-  （戻るジェスチャーの途中で前の画面をのぞかせる）は扱わない（§13）。
+- **Android の実機**: キーボードが出ているときの 1 回目の戻るは IME 自身が閉じ、アプリには届かない（W2-0 の I-11）。Android 13 以降の「予測型の戻る」
+  （戻るジェスチャーの途中で閉じるものを縮めて見せる）はプロジェクト設定 `android.predictive_back` で opt-in（§5.1。既定は従来どおり）。
+
+### 5.1 受ける層の問いと予測型の戻る（W2 の手直し 3b。2026-09-29）
+
+**受ける層があるか**（`BackDispatcher.WouldHandle()`）: 層の handler は呼ぶと閉じる・下ろすまでするので、層は副作用の無い問い（wants）を持つ
+（`BackChain.Add(順, 名前, handler, wants, preview)`・`BackChain.WouldHandle()` が上の層から問い、最初に true の層の名前と順を返す純粋な計算）。
+**問いの無い層は受けるとみなす**（安全側: 受けると答えてもアプリには Escape が届き、受けなければ今の `MoveTaskToBack` で背面へ回るので、見た目が出ないだけ）。
+`MoveTaskToBackWhenUnhandled = false` のアプリは常に受ける。
+
+| 層 | 問い（副作用なし。handler と同じ決め方） | プレビューの相手 |
+|---|---|---|
+| Focus | 今のフォーカスが `IBackConsumer`（中身は問えないので受けるとみなす） | なし |
+| Dialog・Sheet・Overlay | `ModalHost.Count(種類) > 0`（`ModalHost.WantsBack`。面があれば `HandleBack` は必ず true） | 最後に開いた面が開いていて戻るで閉じるとき（`CancelableByBack`）: ダイアログの札（真ん中）・シートの板（下の辺を留める）・覆いの板（上の辺を留める） |
+| Navigation | 見えているナビゲーターのどれか（内側から）: `ScreenStack` は上の画面が `ScreenOptions.IgnoreBack` か `UiScreen.WouldConsumeBack()`（既定は `UiScreen.IgnoreBack` か `OnBackPressed` を上書きした型なら true＝受けるとみなす。画面が同じ条件で上書きすれば正確に答える）か根より上、`TabHost` は `TabModel.DecideBack != None` | 最初に受けるのが根より上のスタックのとき（戻るを無視する画面・出入りの途中・できあがっていない画面は無し）: 上の画面の枠（真ん中・指の向きへずらす）。`OnBackPressed` を上書きした画面も縮め、確定しても下ろさなければ（未保存の確認など）元へ戻す。タブの切り替えは無し |
+| スクリプトの層 | `AddLayer(順, 名前, handler, wants, preview)` の wants（`AddLayer(順, 名前, handler)` は問いなし＝受ける） | preview（任意） |
+
+出入りの途中の `ScreenStack` も同じ規則（`HandleBack` は今の動きを終えてから決めるが、並びは積み下ろしの時点で変わっているので答えは同じ。依頼の「出入りの途中は受ける」は
+押した結果と食い違う〈根へ戻る途中の戻るは背面へ回る〉ので採らなかった）。検査: 128 通りの状態で押す前に毎回「`WouldHandle()` == 押した結果が背面へ回らない」と層の名前が一致。
+
+**基盤への知らせ**（3a の `App.SetBackCallbackEnabled`）: `PollBackKey`（フレームに 1 回）の中で `WouldHandle()` を計算し、前回と違うとき（とスクリプトの読み直しの後の
+最初のフレーム）だけ送る（`BackCallbackSync`）。返り値（予測型の戻るが有効か）が false なら以後は計算も送りもしない（PC・`predictive_back` の無いアプリ）。
+Android 側は、受ける（true）ならアプリのコールバックを登録したまま（戻るで Escape と手ぶりの知らせが届く）、受けない（根）ならシステムに任せる
+（Android 16 以上はシステムの「背面へ回す」コールバック＝ホームへ戻る見た目。13〜15 はランチャーから起動した根だけ外す。詳しくは [android.md](android.md) §25.18）。
+ログ `[UI] back: callback on=… predictive=…`（送ったときだけ）。
+
+**プレビュー**（`BackPreview.cs`・純粋な移り変わりは `Model/BackPreviewModel.cs`）: 3a の知らせをエンジンの受け口（`PlatformEvents.AddEngineListener`）で受ける。
+
+| 知らせ・キー | すること |
+|---|---|
+| `platform.back_started` | 最初に受ける層の相手を問う（無ければ何も縮めない）→ 姿勢を当て始める |
+| `platform.back_progressed`（毎フレーム） | 倍率 = 1 − (1 − `ratio.back_preview_scale` 0.9) × 曲線（`motion.back_preview_curve`）(進み具合)。画面は指の動く向き（左の端からなら右）へ `size.back_preview_shift`（8 dp）× 同じ曲線 |
+| `platform.back_cancelled` | 今の姿勢から元へ（`motion.short`） |
+| `platform.back_invoked` | Escape を待つ（姿勢はそのまま。0.5 秒〈`BackPreviewModel.KeyWaitTimeout`〉来なければ元へ） |
+| Escape（`PollBackKey`） | 手ぶりの途中・確定待ちなら**確定**: 姿勢を保ったまま `Dispatch()` → 相手が閉じる・下ろす動きに入ればその姿勢から続け（終わったら元の姿勢へ。ノードは消えている）、入らなければ（別の層が受けた・画面が下ろさなかった）元へ戻す。それ以外はふつうの戻る |
+
+- 画面のスタック: 上の画面を縮める間、下の画面の実体が隠れていれば見せる（`KeepState = false` で手放した画面は背景のまま）。確定して下ろすときは、見せていた下の画面を
+  視差の位置へ跳ばさず 0 のまま見せる（`Run.FromPreview`）。取り消したら隠し直す。
+- **遅れた知らせ**: invoked の知らせ（プラットフォームのイベントの箱）と Escape（入力の状態）は別の道で届き同じフレームとは限らない。手ぶりの番号で「確定・取り消し・
+  諦めた手ぶりの遅れた知らせ」を捨てる。started は必ず新しい手ぶり（番号は Java はプロセスごと、PC の模擬は Play の区切りごとに 1 から）。started の来なかった
+  手ぶりの progressed は新しい手ぶりとして始める。Android 13（invoked だけ）・3 ボタン・キーボード・PC の Esc だけのときは従来どおり（プレビューなし）。
+- **取り残し防止**: 相手が無効になった（画面の切り替え・タブを離れた・面が閉じた・層の破棄）らすぐ元へ。スクリプトの読み直しでは次のフレームで元へ。
+- ログ `[UI] back-preview: start #番号 edge=… target=…`・`invoked`・`cancel`・`commit … → 層`・`abandon`（progressed は出さない）。
 
 ## 6. 重なりのレイヤーと見た目の上書き（CanvasLayoutItem の実行中だけの欄）
 
 SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライト → 図形 → パーティクル → テキスト）」の順（`ui_draw_order.rs`）なので、同じレイヤーの画面を重ねると
-**下の画面の文字が上の画面の板より手前に出る**。W2-7 で `CanvasLayoutItemComponent` に**保存しない**（`#[serde(skip)]`）欄を 3 つ足した（規則の正典は
-[canvas_camera_rework.md](canvas_camera_rework.md) §6.7）。
+**下の画面の文字が上の画面の板より手前に出る**。W2-7 で `CanvasLayoutItemComponent` に**保存しない**（`#[serde(skip)]`）欄を 3 つ足した（W2 の手直し 3b で
+見た目の倍率を 1 つ足した。規則の正典は [canvas_camera_rework.md](canvas_camera_rework.md) §6.7）。Undo・インスペクタ・シーンの保存・プレハブの差分には出ない。
 
 | 欄（スクリプト） | 意味 |
 |---|---|
 | `LayerBias`（`layer_bias`） | 自分と子孫の表示（Sprite・SkinnedSprite・Text〈インライン画像〉・2D パーティクル）のレイヤーに足す値。祖先の値と足し合わせる。描画の並び・ポインタの最前面（`pick_2d`）・ジェスチャーの遮り（R3）・ID 描画が同じ値で比べる |
 | `TranslateFraction`（`translate_fraction`） | 置かれた後の平行移動（自分の置かれた矩形の大きさに対する割合）。親に合わせた・コンテナが並べたノードも動く（`Position` は使われないため） |
 | `Translate`（`translate`） | 同じくキャンバスの単位（× 親の累積スケール） |
+| `VisualScale`（`visual_scale`。W2 の手直し 3b。既定 (1, 1)） | 自分の置かれた矩形（割り当てた矩形か CanvasComponent の領域。無ければ自分の位置）の**中心の周り**の倍率。子孫（入れ子のキャンバスの子も中心へ寄る）・描画・当たり判定・切り抜き・`LayoutRect` がそろって縮む。レイアウト（大きさ・並び・安全領域・`LayoutSize`）は倍率の前のまま。平行移動の後に掛かる |
 
 - 画面のスタックの段 i の枠は `i × LayerStep`（既定 `layer.stack_step` = 10,000。タブの中のスタックは 1,000）。置き換え・やり直しの入る画面は出る画面より半段上。
   幕と遮る板はすべての画面より上。**画面の中の表示のレイヤーは段の値より小さく保つ**（タブの中なら 1,000 未満）。
@@ -185,6 +227,13 @@ SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライ�
   安全領域の計算に入れない**（横から入る画面の中身の箱が、途中で画面の端に合わせて縮み直さない。`CanvasParentFrame.visual_shift`）。
 - `SEED.Draw` の図形には底上げが効かない（図形はノードではなく座標空間の持ち主を持つだけ。§13）。
 - 値が 0（既定）のノードは従来とまったく同じ計算（単体テスト `zero_visual_overrides_leave_table_unchanged`）。
+- **見た目の倍率**（3b）は予測型の戻るのプレビュー（§5.1）が画面の枠・ダイアログの札・シートの板に当てる。エンジンは倍率を行列に入れず大きさと子の位置への掛け算
+  （サイズ倍率・子の累積スケール）で持つので、中心が動かないよう位置をずらし、子の累積スケールごと縮める（`canvas_layout/placement.rs` の `scale_placement`）。
+  倍率を当てたノードのコンテナの並びは倍率の空間で求め、**子孫の安全領域は倍率の前の位置・大きさで求める**（縮めている画面の中身の箱がステータスバーの分の余白を
+  失わない。`CanvasParentFrame.visual_scale` と `visual_shift` の写像）。既定 (1, 1) のノードは倍率の計算を通らず、表はビット単位で今と同じ（golden の単体テスト
+  `default_visual_scale_keeps_golden_table`）。
+- **ダイアログの出入り（backlog「文字とボタンが札の左上を中心に縮む」）を直せる口**: 今の `Dialog` は保存される `CanvasTransform.Scale`（pivot の周りだが、
+  入れ子のキャンバスの子は左上へ寄る）で札を縮めている。`VisualScale` は子も札の中心へ寄るので、出入りの動きをこちらへ替えれば直る（直すのは P2）。
 
 ## 7. フォーカス（`UiFocus`・`FocusScope`）
 
@@ -217,6 +266,9 @@ SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライ�
 Material 3 の standard (0.2, 0, 0, 1)、fade は fastOutSlowIn、上からの覆いは Flutter 版の top_sheet の 220ms・easeOut (0, 0, 0.58, 1)、覆い・シートの幕は
 Flutter 版の 54%・ダイアログの幕は Material 3 の 32%、フリックで閉じる速さは Flutter 版の top_sheet の 300 dp/秒、つまみは M3 の drag handle、
 重なりのレイヤーの帯は §6。曲線は `motion.push_curve` の `.x1`・`.y1`・`.x2`・`.y2` の 4 つの数（CSS の cubic-bezier。`UiCurve.FromTheme`）。
+予測型の戻るのプレビュー（3b。§5.1）の `ratio.back_preview_scale` 0.9 は Material 3 の予測型の戻る（画面が 90% まで縮む）、`size.back_preview_shift` 8 dp は
+同じく縮めた画面を指の向きへ寄せる動き、`motion.back_preview_curve` (0, 0, 0, 1) は Android の開発者向け文書の独自の予測型の戻るの例の GestureInterpolator から
+取った値で、**どれも記憶による**（実機で見比べて調整する）。元へ戻る時間は `motion.short`。
 
 ## 10. 見本（`templates/ui/scenes/ui_navigation.scene`）
 
@@ -254,6 +306,11 @@ Flutter 版の 54%・ダイアログの幕は Material 3 の 32%、フリック�
   56 点のクリックは当たり 34・外れ 22 で、各クリックの後の画面まで一致。最終のビルドの 1 回目の図鑑の撮影（2 回とも）だけ Next の矢印 1 つ（5,831 画素）が
   明るかった。図鑑の `ZukanArrow` のホバー（`OnPointerEnter` で 1.35 倍）の見た目と一致し、同じビルドで撮り直した 2 回（カーソルの位置を記録。窓の外）は差 0
   だったので、撮影の間に利用者の OS のマウスカーソルが窓のその位置にあったためと見ている（推論。その 2 回のカーソルの位置は記録していない）。
+- **W2 の手直し 3b（2026-09-29・PC の単体テストだけ）**: `cargo test --lib canvas_layout`（見た目の倍率: 既定の木の表が倍率を足す前のコードとビット単位で同じ〈golden の指紋〉、
+  倍率 0.9 で矩形の中心が動かない・子と入れ子のキャンバスの子が中心へ寄る・描画と当たり判定の 4 隅・切り抜き・LayoutRect がそろう・回転と pivot と Scale のノード・
+  中身の大きさで測られるコンテナと伸ばされたコンテナの並び・安全領域が縮み直さない）、`UiComponentsTests`（128 通りの問いの一致・問いの無い層・知らせの頻度・
+  プレビューの移り変わり〈始まり・進み・取り消し・確定の 2 つの順・遅れた知らせ・Android 13・ボタンの戻る・時間切れ・閉じなかった確定・番号の食い違い・数え直し・
+  諦め・読み直し〉・姿勢の計算・テーマの値）。Play と実機は未確認（§12）。
 
 ## 12. 実機での確かめ方（Pixel 6a。W2-7 の時点で未実施）
 
@@ -276,6 +333,22 @@ Flutter 版の 54%・ダイアログの幕は Material 3 の 32%、フリック�
 3 ボタンのナビゲーション・キーボード・回転は行っていない）。予測型の戻るのアニメーションは出ない（マニフェストの `enableOnBackInvokedCallback="false"`）。ダイアログは
 上下の余白が 7.6 dp（札が 160 dp のまま中身に伸びない）、出入りで文字とボタンだけ札の左上を中心に縮む（撮影で確認。どちらも backlog）。
 
+**予測型の戻る（W2 の手直し 3b。2026-09-29 に Pixel 6a・Android 17 で 1〜4 を確かめた。結果は [app_platform_roadmap.md](app_platform_roadmap.md) §3.9.3）**: 見本のプロジェクトのプロジェクト設定に `android.predictive_back: true` を足した APK を Pixel 6a へ入れ、
+logcat を `[UI] back` と 3a の Java のログ（[android.md](android.md) §25.18）で見る。PC では Play 中のスクリプトから
+`PlatformDiagnostics.SimulateBackGesture(BackGesturePhase.Started, 0, BackEdge.Left)` → `Progressed`（0.2・0.5・1.0）→ Esc キー（確定）か `Cancelled` を流し、
+`[UI] back-preview:` のログと画面（上の画面・札・板が縮む）で同じ流れを確かめられる（模擬は Escape を注入しないので確定は Esc キー。`Invoked` だけ流すと 0.5 秒で戻る）。
+
+1. 起動直後に `[UI] back: callback on=… predictive=true` が 1 回（毎フレームは出ない）。見本の画面（`NavSampleScreen`）は `OnBackPressed` と同じ条件で
+   `WouldConsumeBack()`（副作用なしの問い。未保存の詳細の画面だけ true）も上書きしているので、根では `on=false`（受ける層なし）になり、根の戻るはシステムへ渡る（4）。
+   `OnBackPressed` だけを上書きして `WouldConsumeBack` を上書きしない画面は「受けるかもしれない」とみなして `on=true` のまま（根の戻るは従来どおり Escape → `move_task_to_back`）
+2. 積んだ画面で端からゆっくりスワイプ: 上の画面が指に付いて 90% まで縮み、指の向きへ少しずれ、後ろに下の画面が見える。指を戻すと元へ戻る（`cancel`）。
+   離すと縮んだ姿勢から右へ下ろされ、下の画面は動かない（`commit … → navigation`）。未保存の詳細（偶数段）は離すと確認のダイアログが出て、縮んだ画面は元へ戻る
+3. ダイアログ・シート（下の辺を留める）・覆い（上の辺を留める）で同じ。閉じないダイアログ（`CancelableByBack = false`）は縮まない
+4. 根でスワイプ（見本は `WouldConsumeBack` を上書き済み）: `callback on=false` の後、アプリ全体が縮んで後ろにホームが見え、離すとホームへ戻る見た目で背面へ回る（Android 16 以上。
+   13〜15 はランチャーから起動したときだけ。それ以外は従来どおり Escape → `move_task_to_back`）。開き直すと同じ画面のまま
+5. 3 ボタンのナビゲーションの戻る: 見た目は変わらず、従来どおり 1 回ずつ段が効く（Android 14 以上はキーの down で started・up で invoked が届く）
+6. すばやく 2 回スワイプ・スワイプの途中で画面が切り替わる（トーストの時間切れなど）・回転: 縮んだまま取り残されない（`abandon`）
+
 ## 13. 制限と持ち越し
 
 - **部分木の透明度が無い**: フェードは「幕（背景の色）を通して」入れ替える。ダイアログの札・トーストは透明度で出入りしない（札は大きさ、トーストは位置）。
@@ -286,7 +359,11 @@ Flutter 版の 54%・ダイアログの幕は Material 3 の 32%、フリック�
 - **シートの「先に広げる」が無い**: 半分の段で中身の一覧を上へ引くと一覧が先に動く（Android の BottomSheetBehavior・Flutter の DraggableScrollableSheet はシートが先）。
   W2-3 の入れ子は「内側が先・端の残りを外側へ」だけ。開く・閉じる曲線は ScrollTo の easeInOut 固定
 - **上からの覆いの作りは最小**: Flutter 版の「固定の頭＋スクロールする中身＋一覧の外の閉じる」・左右の余白・四隅の角丸は W3 のプレハブで作る
-- **予測型の戻る**（Android 14+ の戻るジェスチャーの途中ののぞき見）は扱わない。`OnBackInvokedCallback` を使うなら W1 の Java 側から
+- **予測型の戻る（3b。§5.1）の残る制限**: 問えない層（`IBackConsumer`・`OnBackPressed` の上書き・問いの無いスクリプトの層）は受けるとみなす（根でも
+  システムに任せず Escape が届く）。フォーカス（入力欄）・タブの切り替え・スクリプトの層は縮めない（相手なし）。Android 13 は進み具合が届かないのでプレビューなし
+  （invoked と Escape だけ）。受ける層の有無の知らせは UI スレッドを通るので約 1 フレーム遅れ、その間の戻るはシステムへ行く（3a）。手ぶりの途中に受ける層が無くなった
+  ときの Android の振る舞い（cancelled が来る見込み）は未確認。回転したノードの縦横で違う倍率は、子孫の安全領域の写し方が近似。倍率・ずらし・曲線の既定値は記憶による
+  （§9）。実機では未確認
 - **PC の Esc**: エディタの Play（埋め込み）では Esc がエディタの操作と重なる可能性（未確認。単体の SEED.exe で確かめた）
 - **W2-6（入力欄）へ**: 入力欄は `IFocusable`（範囲に属す）＋ `IBackConsumer`（Android では IME が先に閉じる。PC は戻るでフォーカスを外す）で乗る。
   フォーカスした入力欄を画面の外へ出さない（キーボードを避ける）スクロールは W2-6b

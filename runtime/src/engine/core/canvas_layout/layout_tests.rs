@@ -24,10 +24,10 @@ use crate::engine::structs::objects::Actor;
 /// 浮動小数の比較の許容量（画素）。
 const EPS: f32 = 1e-3;
 
-// ─── 木を作る道具 ─────────────────────────────────────────
+// ─── 木を作る道具（results_tests.rs〈W2 Item 4〉も使う）───────────────
 
 /// キャンバスのノード（CanvasTransform + CanvasComponent）。
-fn canvas_node(world: &mut World, name: &str, ct: CanvasTransform, size: [f32; 2]) -> Actor {
+pub(super) fn canvas_node(world: &mut World, name: &str, ct: CanvasTransform, size: [f32; 2]) -> Actor {
     let entity = world.spawn();
     world.insert(entity, ct);
     let mut actor = Actor::new_2d(entity, name);
@@ -38,7 +38,7 @@ fn canvas_node(world: &mut World, name: &str, ct: CanvasTransform, size: [f32; 2
 }
 
 /// スプライトのノード（CanvasTransform + SpriteComponent）。
-fn sprite_node(world: &mut World, name: &str, ct: CanvasTransform, size: [f32; 2]) -> Actor {
+pub(super) fn sprite_node(world: &mut World, name: &str, ct: CanvasTransform, size: [f32; 2]) -> Actor {
     let entity = world.spawn();
     world.insert(entity, ct);
     let mut actor = Actor::new_2d(entity, name);
@@ -49,38 +49,38 @@ fn sprite_node(world: &mut World, name: &str, ct: CanvasTransform, size: [f32; 2
 }
 
 /// CanvasTransform だけのノード（中身に合わせるコンテナ用）。
-fn bare_node(world: &mut World, name: &str) -> Actor {
+pub(super) fn bare_node(world: &mut World, name: &str) -> Actor {
     let entity = world.spawn();
     world.insert(entity, CanvasTransform::default());
     Actor::new_2d(entity, name)
 }
 
 /// コンポーネントのスロットを足す。
-fn add<T: crate::engine::ecs::Component>(world: &mut World, actor: &mut Actor, kind: ComponentKind, value: T) {
+pub(super) fn add<T: crate::engine::ecs::Component>(world: &mut World, actor: &mut Actor, kind: ComponentKind, value: T) {
     let slot = world.spawn();
     world.insert(slot, value);
     actor.add_slot_typed::<T>("Slot", kind, slot);
 }
 
 /// 縦の 1 列のコンテナを足す。
-fn add_stack(world: &mut World, actor: &mut Actor, c: CanvasStackComponent) {
+pub(super) fn add_stack(world: &mut World, actor: &mut Actor, c: CanvasStackComponent) {
     add(world, actor, ComponentKind::CanvasStack, c);
 }
 
 /// 子の側の指定を足す。
-fn add_item(world: &mut World, actor: &mut Actor, c: CanvasLayoutItemComponent) {
+pub(super) fn add_item(world: &mut World, actor: &mut Actor, c: CanvasLayoutItemComponent) {
     add(world, actor, ComponentKind::CanvasLayoutItem, c);
 }
 
 /// 何の文脈も使わない表（ルートの左上が原点）。
-fn table_of(roots: &[Actor], world: &World) -> CanvasLayoutTable {
+pub(super) fn table_of(roots: &[Actor], world: &World) -> CanvasLayoutTable {
     let empty: HashMap<Entity, [f32; 2]> = HashMap::new();
     let env = CanvasLayoutEnv::without_viewport(&empty, AutoScaleDivisor::Raw);
     CanvasLayoutPass::run(roots, world, 0, CanvasParentFrame::viewport_root(CanvasDrawZone::Foreground), &env)
 }
 
 /// Play と同じ文脈（ビューポート中央が原点・設計空間でない）の表。
-fn play_table(roots: &[Actor], world: &World, viewport: [f32; 2], screen: CanvasScreenEnv) -> CanvasLayoutTable {
+pub(super) fn play_table(roots: &[Actor], world: &World, viewport: [f32; 2], screen: CanvasScreenEnv) -> CanvasLayoutTable {
     let empty: HashMap<Entity, [f32; 2]> = HashMap::new();
     let env = CanvasLayoutEnv {
         viewport_size: Some(viewport),
@@ -94,7 +94,7 @@ fn play_table(roots: &[Actor], world: &World, viewport: [f32; 2], screen: Canvas
 }
 
 /// 表の行を名前で引く（行の配置と、その行のアクター）。
-fn placed<'t>(table: &'t CanvasLayoutTable, roots: &[Actor], name: &str) -> &'t CanvasNodePlacement {
+pub(super) fn placed<'t>(table: &'t CanvasLayoutTable, roots: &[Actor], name: &str) -> &'t CanvasNodePlacement {
     table
         .iter_with_actors(roots)
         .find(|(_, a)| a.name == name)
@@ -108,12 +108,12 @@ fn origin(p: &CanvasNodePlacement) -> [f32; 2] {
 }
 
 /// 2 つの点がほぼ等しいか。
-fn near(a: [f32; 2], b: [f32; 2]) -> bool {
+pub(super) fn near(a: [f32; 2], b: [f32; 2]) -> bool {
     (a[0] - b[0]).abs() < EPS && (a[1] - b[1]).abs() < EPS
 }
 
 /// 既定の縦の 1 列（有効・縦・先頭）。
-fn vstack() -> CanvasStackComponent {
+pub(super) fn vstack() -> CanvasStackComponent {
     CanvasStackComponent::default()
 }
 

@@ -3,8 +3,8 @@ namespace SEED.UI;
 // ============================================================
 //  NavNode.cs — 画面の組み立てが画面・幕・板のノードへ当てる小道具（W2-7）
 //
-//  CanvasLayoutItem の実行中だけの見た目の上書き（TranslateFraction・Translate・LayerBias。runtime の
-//  canvas_layout の translate_placement・layer_bias）と、Sprite の濃さを 1 か所で当てる。
+//  CanvasLayoutItem の実行中だけの見た目の上書き（TranslateFraction・Translate・LayerBias・VisualScale。runtime の
+//  canvas_layout の translate_placement・layer_bias・scale_placement）と、Sprite の濃さを 1 か所で当てる。
 //  ノードに該当のコンポーネントが無ければ何もしない（プレハブの作りが違っても落ちない）。
 //  書き込みは前の値と同じなら FFI を呼ばない（止まっている画面は何も書かない）。
 // ============================================================
@@ -28,6 +28,12 @@ internal static class NavNode
     public static void SetBias(GameObject node, int bias)
     {
         if (node.GetComponent<CanvasLayoutItem>() is { } item && item.LayerBias != bias) item.LayerBias = bias;
+    }
+
+    /// <summary>見た目の倍率を当てる（自分の矩形の中心の周り。W2 の手直し 3b。予測型の戻るのプレビュー）。</summary>
+    public static void SetVisualScale(GameObject node, Vector2 scale)
+    {
+        if (node.GetComponent<CanvasLayoutItem>() is { } item && item.VisualScale != scale) item.VisualScale = scale;
     }
 
     /// <summary>見せる・隠す（前の値と同じなら書かない）。</summary>

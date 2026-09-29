@@ -18,6 +18,12 @@ namespace SEED.UI;
 //
 //  キーの読み取りは、画面の組み立ての部品（ScreenStack・TabHost・ModalHost・ToastHost）が毎フレーム PollBackKey を呼ぶ。
 //  同じフレームに何度呼ばれても 1 回だけ配る（Time.UnscaledElapsedTime で見分ける）。
+//
+//  【予測型の戻る（W2 の手直し 3b。Android 13 以上・プロジェクト設定 android.predictive_back。docs/android.md §25.18）】
+//    - 受ける層があるか（WouldHandle）: 各層の副作用の無い問いで決める（BackChain.WouldHandle）。PollBackKey の中で計算し、前回と
+//      違うとき（とスクリプトの読み直しの後の最初のフレーム）だけ App.SetBackCallbackEnabled で基盤へ知らせる（BackCallbackSync）。
+//      無効（PC・predictive_back の無いアプリ）と分かったら以後は計算も送りもしない。根（受ける層なし）ではシステムが背面へ回す。
+//    - プレビュー（BackPreview.cs）: 手ぶりの間、最初に受ける層の相手（画面・ダイアログの札・シートの板）を縮めて見せ、Escape で確定する。
 // ============================================================
 
 /// <summary>戻るの段（シーンに 1 つ。静的）。</summary>
@@ -40,6 +46,8 @@ public static class BackDispatcher
 
     /// <summary>層の並び。</summary>
     private static readonly BackChain Chain = CreateChain();
+    /// <summary>「アプリが戻るを受けるか」の基盤への知らせの状態（予測型の戻る。W2 の手直し 3b）。</summary>
+    private static readonly BackCallbackSync CallbackSync = new();
     /// <summary>最後にキーを読んだフレームの時刻（同じフレームで 2 度配らない）。</summary>
     private static float _lastPollTime = float.NaN;
 
@@ -49,20 +57,31 @@ public static class BackDispatcher
     /// <summary>戻るを配った（結果。ログ・検査・画面の演出に使う）。</summary>
     public static event Action<BackDispatchResult>? Dispatched;
 
-    /// <summary>既定の層を並べる。</summary>
+    /// <summary>既定の層を並べる（受けるかの問いと、予測型の戻るのプレビューの相手つき）。</summary>
     private static BackChain CreateChain()
     {
         var chain = new BackChain();
-        chain.Add(BackOrder.Focus, LayerFocus, UiFocus.HandleBack);
-        chain.Add(BackOrder.Dialog, LayerDialog, () => ModalHost.Current?.HandleBack(ModalKind.Dialog) ?? false);
-        chain.Add(BackOrder.Sheet, LayerSheet, () => ModalHost.Current?.HandleBack(ModalKind.Sheet) ?? false);
-        chain.Add(BackOrder.Overlay, LayerOverlay, () => ModalHost.Current?.HandleBack(ModalKind.Overlay) ?? false);
-        chain.Add(BackOrder.Navigation, LayerNavigation, NavigatorRegistry.DispatchBack);
+        // フォーカス: 相手が IBackConsumer なら受けるとみなす（中身は問えない）。プレビューはしない
+        chain.Add(BackOrder.Focus, LayerFocus, UiFocus.HandleBack, UiFocus.WantsBack);
+        chain.Add(BackOrder.Dialog, LayerDialog,
+            () => ModalHost.Current?.HandleBack(ModalKind.Dialog) ?? false,
+            () => ModalHost.Current?.WantsBack(ModalKind.Dialog) ?? false,
+            () => ModalHost.Current?.BackPreviewTarget(ModalKind.Dialog));
+        chain.Add(BackOrder.Sheet, LayerSheet,
+            () => ModalHost.Current?.HandleBack(ModalKind.Sheet) ?? false,
+            () => ModalHost.Current?.WantsBack(ModalKind.Sheet) ?? false,
+            () => ModalHost.Current?.BackPreviewTarget(ModalKind.Sheet));
+        chain.Add(BackOrder.Overlay, LayerOverlay,
+            () => ModalHost.Current?.HandleBack(ModalKind.Overlay) ?? false,
+            () => ModalHost.Current?.WantsBack(ModalKind.Overlay) ?? false,
+            () => ModalHost.Current?.BackPreviewTarget(ModalKind.Overlay));
+        chain.Add(BackOrder.Navigation, LayerNavigation, NavigatorRegistry.DispatchBack, NavigatorRegistry.WouldHandleBack, NavigatorRegistry.BackPreviewTarget);
         return chain;
     }
 
     /// <summary>
     /// 層を足す（戻り値を Dispose すると外れる。スクリプトの OnDestroy で外すこと）。
+    /// 受けるかの問いを持たない層は「いつも受ける」とみなす（予測型の戻るの根の判定。必要なら問いつきの版を使う）。
     /// </summary>
     /// <param name="order">順の値（BackOrder。小さいほど先）。</param>
     /// <param name="name">名前（ログ）。</param>
@@ -70,14 +89,35 @@ public static class BackDispatcher
     public static IDisposable AddLayer(int order, string name, Func<bool> handler) => Chain.Add(order, name, handler);
 
     /// <summary>
+    /// 層を足す（受けるかの問いとプレビューの相手つき。W2 の手直し 3b）。戻り値を Dispose すると外れる。
+    /// </summary>
+    /// <param name="order">順の値（BackOrder。小さいほど先）。</param>
+    /// <param name="name">名前（ログ）。</param>
+    /// <param name="handler">戻るを受けたら true（閉じる・下ろすまでする）。</param>
+    /// <param name="wants">副作用の無い「今押されたら受けるか」の問い（null = いつも受ける）。予測型の戻るで、受けないときは
+    /// システムに任せる（根なら背面へ回る見た目が出る）。</param>
+    /// <param name="preview">予測型の戻るで縮めて見せる相手（null・null を返す = 何も縮めない）。</param>
+    public static IDisposable AddLayer(int order, string name, Func<bool> handler, Func<bool>? wants, Func<IBackPreviewTarget?>? preview = null)
+        => Chain.Add(order, name, handler, wants, preview);
+
+    /// <summary>
+    /// 今戻るが押されたら、アプリが受けるか（副作用なし。どれかの層が受ける、または <see cref="MoveTaskToBackWhenUnhandled"/> が false）。
+    /// false のとき戻るを押すと背面へ回る（予測型の戻るではシステムが回し、ホームへ戻る見た目が出る）。
+    /// </summary>
+    public static bool WouldHandle() => BackCallbackSync.AppHandlesBack(Chain.WouldHandle(), MoveTaskToBackWhenUnhandled);
+
+    /// <summary>
     /// このフレームに戻る（Escape）が押されていたら配る（1 フレームに 1 回だけ）。画面の組み立ての部品が Update から呼ぶ。
+    /// 予測型の戻るのプレビューを進め、受ける層の有無が変わっていれば基盤へ知らせる（W2 の手直し 3b）。
     /// </summary>
     public static void PollBackKey()
     {
         float now = Time.UnscaledElapsedTime;
         if (now == _lastPollTime) return;
         _lastPollTime = now;
-        if (Input.GetKeyDown(KeyCode.Escape)) Dispatch();
+        BackPreview.Tick(Time.UnscaledDeltaTime);
+        if (Input.GetKeyDown(KeyCode.Escape)) BackPreview.OnBackKey();
+        SyncBackCallback();
     }
 
     /// <summary>
@@ -107,5 +147,31 @@ public static class BackDispatcher
         var parts = new System.Collections.Generic.List<string>();
         foreach (var (order, name) in Chain.Describe()) parts.Add($"{order}:{name}");
         return string.Join(", ", parts);
+    }
+
+    /// <summary>最初に受ける層のプレビューの相手（BackPreview が手ぶりの始まりに問う）。</summary>
+    internal static IBackPreviewTarget? PreviewTargetOfFirstLayer() => Chain.PreviewTarget();
+
+    /// <summary>
+    /// スクリプトを読み直す前（ScriptBridge から）: 次のフレームで受ける層の有無を送り直し、プレビューを捨てる（相手は次のフレームで元へ）。
+    /// </summary>
+    internal static void ResetForReload()
+    {
+        CallbackSync.Reset();
+        BackPreview.ResetForReload();
+        _lastPollTime = float.NaN;
+    }
+
+    /// <summary>
+    /// 受ける層の有無が前回と違えば基盤へ知らせる（予測型の戻るが無効と分かったら以後は計算もしない）。
+    /// </summary>
+    private static void SyncBackCallback()
+    {
+        if (CallbackSync.Stopped) return;
+        bool handles = WouldHandle();
+        if (!CallbackSync.ShouldSend(handles)) return;
+        bool enabled = SEED.Platform.App.SetBackCallbackEnabled(handles);
+        CallbackSync.OnReplied(handles, enabled);
+        Debug.Log($"{LogPrefix} callback on={handles} predictive={enabled}{(enabled ? string.Empty : "（無効なので以後は送らない）")}");
     }
 }

@@ -44,12 +44,17 @@
 //    app.ui_mode … 端末の明暗の設定（OS の「既定のアプリ モード」。os_ui_mode.rs）。返答 { night, simulated }
 //    app.sim_set_ui_mode … 模擬だけ（Android では unknown_method）。差し替えて、変わったら platform.ui_mode_changed を積む。
 //        ウィンドウの ThemeChanged（OS の設定の変化）でも差し替えていなければ積む（ui_mode_commands.rs・ui_mode_state.rs）
+//  【W2 の手直し P1-3 の命令】（Java のメインプロセスの local/BackCallbackCommand と、back/ のコールバックが流すイベントの代わり）
+//    app.set_back_callback … アプリが戻るを受けるかを記録してログ（変わったときだけ）。予測型の戻るは無いので enabled は false
+//    app.sim_back_gesture … 模擬だけ（Android では unknown_method）。戻るの手ぶりのイベント（platform.back_*）を積む
+//        （back_commands.rs・back_state.rs）
 //
 //  【ファイル】mod.rs（表と共通）・alarm_book.rs（模擬の予約表）・alarm_commands.rs（目覚ましの命令と発火）・
 //  ring_state.rs（鳴動の状態）・ring_commands.rs（鳴動の命令とイベント）・app_commands.rs（起動理由・アプリ）・
 //  launch_uri.rs（起動引数のディープリンク）・url_opener.rs（URL を PC で開く係）・window_state.rs / window_commands.rs（画面）・
 //  haptics_state.rs / haptics_commands.rs（触感）・notification_state.rs（通知の状態）・notification_commands.rs（通知の命令）・
-//  permission_commands.rs（権限の命令）・sensor_state.rs / sensor_commands.rs（センサー）・wall_clock.rs（壁時計。テストで進める）
+//  permission_commands.rs（権限の命令）・sensor_state.rs / sensor_commands.rs（センサー）・wall_clock.rs（壁時計。テストで進める）・
+//  back_state.rs / back_commands.rs（予測型の戻る）
 // ============================================================
 
 /// 模擬の目覚ましの予約表。
@@ -58,6 +63,10 @@ mod alarm_book;
 mod alarm_commands;
 /// 模擬の起動理由とアプリの命令（W1-4a・W1-6）。
 mod app_commands;
+/// 模擬の予測型の戻るの命令（W2 の手直し P1-3）。
+mod back_commands;
+/// 模擬の予測型の戻るの状態（受けるかの記録と手ぶりの番号。W2 の手直し P1-3）。
+mod back_state;
 /// 模擬の触感の命令（W1-6）。
 mod haptics_commands;
 /// 模擬の触感の記録（W1-6）。
@@ -107,12 +116,14 @@ use super::wire::{
 };
 use super::{PlatformBridge, PlatformBridgeKind};
 use alarm_book::SimAlarmBook;
+use back_state::SimBackState;
 use haptics_state::SimHapticsLog;
 use notification_state::SimNotificationBoard;
 use ring_state::SimRingState;
 use sensor_state::SimSensorBoard;
 use window_state::SimWindowState;
 use ui_mode_state::SimUiModeState;
+pub use back_state::SimBackSnapshot;
 pub use haptics_state::SimHapticsSnapshot;
 pub use launch_uri::set_desktop_launch_uri;
 pub use url_opener::{DryRunUrlOpener, SystemUrlOpener, UrlOpener, DESKTOP_OPENABLE_SCHEMES, NO_OPEN_ENV};
@@ -249,6 +260,17 @@ const SIM_COMMANDS: &[SimCommand] = &[
     // W2-9: 端末の明暗（sim_set_ui_mode は模擬だけ）
     SimCommand { module: app_names::MODULE, method: app_names::METHOD_UI_MODE, handler: DesktopSimBridge::handle_app_ui_mode },
     SimCommand { module: app_names::MODULE, method: app_names::METHOD_SIM_SET_UI_MODE, handler: DesktopSimBridge::handle_app_sim_set_ui_mode },
+    // W2 の手直し P1-3: 予測型の戻る（sim_back_gesture は模擬だけ）
+    SimCommand {
+        module: app_names::MODULE,
+        method: app_names::METHOD_SET_BACK_CALLBACK,
+        handler: DesktopSimBridge::handle_app_set_back_callback,
+    },
+    SimCommand {
+        module: app_names::MODULE,
+        method: app_names::METHOD_SIM_BACK_GESTURE,
+        handler: DesktopSimBridge::handle_app_sim_back_gesture,
+    },
 ];
 
 /// デスクトップの模擬の PlatformBridge。
@@ -276,6 +298,8 @@ pub struct DesktopSimBridge {
     sensors: SimSensorBoard,
     /// 模擬の端末の明暗（OS の設定と差し替え・最後に知らせた値。W2-9）。
     ui_mode: SimUiModeState,
+    /// 模擬の予測型の戻る（アプリが戻るを受けるかの記録と手ぶりの番号。W2 の手直し P1-3）。
+    back: SimBackState,
     /// app.open_url の URL を PC の既定のアプリへ渡す係（W1-6。単体テストでは判定だけ・記録だけの係）。
     url_opener: Arc<dyn UrlOpener>,
     /// 単体起動の起動引数 --deep-link=<URI>（W1-6。無ければ None ＝ launcher）。Play の区切りでも消さない（プロセスの起動引数）。
@@ -324,6 +348,7 @@ impl DesktopSimBridge {
             haptics: SimHapticsLog::new(),
             sensors: SimSensorBoard::new(),
             ui_mode: SimUiModeState::new(os_ui_mode::read_os_night),
+            back: SimBackState::new(),
             url_opener,
             launch_uri,
             clock,
@@ -432,7 +457,8 @@ impl PlatformBridge for DesktopSimBridge {
     }
 
     fn reset_session(&self) {
-        // Play の区切り: 予約・鳴動・通知（チャネルも）・画面の状態・触感の記録・センサー（W1-8）・積んだイベントを捨てる
+        // Play の区切り: 予約・鳴動・通知（チャネルも）・画面の状態・触感の記録・センサー（W1-8）・予測型の戻るの記録と手ぶりの番号
+        // （W2 の手直し P1-3）・積んだイベントを捨てる
         // （Play を止めれば模擬の予約も鳴動も通知も消え、画面は既定へ戻り、センサーは止まる。起動引数のディープリンクはプロセスのものなので残す）
         self.alarms.clear();
         self.ringing.clear();
@@ -441,6 +467,7 @@ impl PlatformBridge for DesktopSimBridge {
         self.haptics.clear();
         self.sensors.clear();
         self.ui_mode.clear();
+        self.back.clear();
         self.events.clear();
     }
 }

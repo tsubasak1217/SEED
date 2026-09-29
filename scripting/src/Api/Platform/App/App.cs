@@ -20,6 +20,14 @@ namespace SEED.Platform;
 /// <see cref="OpenAppSettings"/> は端末の「アプリ情報」を開く。どれも同期で「受け付けたか」だけを返す（false なら
 /// <see cref="Platform.LastError"/>）。
 /// </para>
+///
+/// <para><b>予測型の戻る（W2 の手直し P1-3・opt-in）</b><br/>
+/// プロジェクト設定 android.predictive_back を true にした APK の Android 13 以上では、戻るの手ぶりの進み具合がイベント
+/// <see cref="BackStartedEvent"/> / <see cref="BackProgressedEvent"/> / <see cref="BackCancelledEvent"/> / <see cref="BackInvokedEvent"/>
+/// （<see cref="BackGestureEvent.TryParse"/> で読む）で届き、確定すると従来どおり <c>KeyCode.Escape</c> も届く。
+/// 受ける層が無い（根）ときは <see cref="SetBackCallbackEnabled"/>(false) でシステムに任せる（背面へ回る見た目が出る）。
+/// ふつうは SEED.UI の戻るの段（BackDispatcher）が呼ぶので、スクリプトから直接は呼ばない。
+/// </para>
 /// </summary>
 public static class App
 {
@@ -116,5 +124,48 @@ public static class App
             data => AppJson.ToUiMode(AlarmJson.GetString(data, AppJson.KeyNight)), out SystemUiMode read);
         mode = ok ? read : SystemUiMode.Unknown;
         return ok;
+    }
+
+    // ── 予測型の戻る（W2 の手直し P1-3。docs/android.md §25.18）──
+
+    /// <summary>
+    /// 戻るの手ぶりが始まったイベントの名前（Android 14 以上。data の gesture・progress・edge・touch_x・touch_y を
+    /// <see cref="BackGestureEvent.TryParse"/> で読む）。
+    /// </summary>
+    public const string BackStartedEvent = "platform.back_started";
+
+    /// <summary>戻るの手ぶりが進んだイベントの名前（Android 14 以上。毎フレーム届く。data は <see cref="BackStartedEvent"/> と同じ形）。</summary>
+    public const string BackProgressedEvent = "platform.back_progressed";
+
+    /// <summary>戻るの手ぶりが取り消されたイベントの名前（Android 14 以上。指を戻した。data は gesture だけ）。</summary>
+    public const string BackCancelledEvent = "platform.back_cancelled";
+
+    /// <summary>
+    /// 戻るが確定したイベントの名前（Android 13 以上。data は gesture だけ）。Android では続けて <c>KeyCode.Escape</c> が届く
+    /// （別の道で届くので同じフレームとは限らない）。
+    /// </summary>
+    public const string BackInvokedEvent = "platform.back_invoked";
+
+    /// <summary>
+    /// 予測型の戻るが有効か（最後の <see cref="SetBackCallbackEnabled"/> の返答。一度も呼んでいなければ false）。
+    /// Android でプロジェクト設定 android.predictive_back が true の APK・Android 13 以上のときだけ true になる（デスクトップの模擬は常に false）。
+    /// </summary>
+    public static bool IsPredictiveBackEnabled { get; private set; }
+
+    /// <summary>
+    /// アプリが戻るを受けるかを知らせる（予測型の戻る。W2 の手直し P1-3）。受ける層（ダイアログ・画面のスタックなど）があるときは true
+    /// （アプリのコールバックが戻るを受け、手ぶりのイベントと Escape が届く）、無い（根）ときは false（システムに任せ、背面へ回る見た目が出る。
+    /// Android 13〜15 でランチャー以外から起動した根は従来どおり Escape が届くので、<see cref="MoveTaskToBack"/> で背面へ回す）。
+    /// 起動したときは「受ける」状態。すぐ返る（切り替えは UI スレッドで少し後）。ふつうは SEED.UI の BackDispatcher が状態の変わったときだけ呼ぶ。
+    /// 予測型の戻るが無効なら何もしない。デスクトップの模擬は記録してログだけ。
+    /// </summary>
+    /// <param name="on">受ける層があるなら true、無ければ false。</param>
+    /// <returns>基盤が受け付けて、予測型の戻るが有効なら true（<see cref="IsPredictiveBackEnabled"/> も同じ値になる）。
+    /// false なら何もしていない（無効・失敗。失敗は <see cref="Platform.LastError"/>）。</returns>
+    public static bool SetBackCallbackEnabled(bool on)
+    {
+        bool accepted = Platform.TryInvoke(AppJson.Module, BackJson.MethodSetBackCallback, PlatformJson.BoolObject(BackJson.KeyOn, on), out string reply);
+        IsPredictiveBackEnabled = accepted && AlarmJson.ReadReplyBool(reply, BackJson.KeyEnabled);
+        return IsPredictiveBackEnabled;
     }
 }

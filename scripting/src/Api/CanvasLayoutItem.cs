@@ -82,10 +82,10 @@ public readonly struct CanvasLayoutItem : IComponentHandle<CanvasLayoutItem>
         set => ScriptHost.TrySetBool(_entity, Comp, "fill_height", value);
     }
 
-    // ── 実行中だけの見た目の上書き（W2-7。保存しない・インスペクタに出ない）──
+    // ── 実行中だけの見た目の上書き（W2-7・W2 の手直し 3b。保存しない・インスペクタに出ない）──
     //  レイアウト（大きさ・並び・安全領域）は変えず、置かれた後の見た目だけを変える（CSS の transform に近い）。
-    //  画面の組み立て（SEED.UI.ScreenStack・Dialog・BottomSheet・Toast）が出入りの動きと重なりの前後に使う。
-    //  Play の開始・シーンの読み込みで 0 に戻る。
+    //  画面の組み立て（SEED.UI.ScreenStack・Dialog・BottomSheet・Toast）が出入りの動き・重なりの前後・予測型の戻るのプレビューに使う。
+    //  Play の開始・シーンの読み込みで 0（VisualScale は 1）に戻る。
 
     /// <summary>
     /// 見た目の平行移動（get/set。キャンバスの単位。dp のルートの下なら dp）。置かれた後に足す（親に合わせた・コンテナが並べたノードも動く）。
@@ -117,5 +117,20 @@ public readonly struct CanvasLayoutItem : IComponentHandle<CanvasLayoutItem>
     {
         get => ScriptHost.TryGetFloat(_entity, Comp, "layer_bias", out var v) ? (int)v : 0;
         set => ScriptHost.TrySetFloat(_entity, Comp, "layer_bias", value);
+    }
+
+    /// <summary>
+    /// 見た目の倍率（get/set。軸ごと。既定 (1, 1)。W2 の手直し 3b）。自分の置かれた矩形（レイアウトが割り当てた矩形か
+    /// CanvasComponent の領域。無ければ自分の位置）の<b>中心の周り</b>に縮める・広げる。子孫・描画・当たり判定・切り抜き・
+    /// <see cref="CanvasTransform.LayoutRect"/> がそろって付いてくる（入れ子のキャンバスの子も中心へ寄る）。
+    /// レイアウト（大きさ・並び・安全領域・<see cref="CanvasTransform.LayoutSize"/>）は倍率の前のまま。<see cref="Translate"/> の後に掛かる。
+    /// 保存される <see cref="CanvasTransform.Scale"/>（pivot の周り。入れ子のキャンバスの子は左上へ寄る）と違い、実行中だけ・保存しない。
+    /// SEED.UI の予測型の戻るのプレビュー（BackDispatcher）が画面・ダイアログの札・シートの板を縮めるのに使う。有限でない値は書かない。
+    /// Play の開始・シーンの読み込みで (1, 1) に戻る。
+    /// </summary>
+    public Vector2 VisualScale
+    {
+        get => ScriptHost.TryGetVec2(_entity, Comp, "visual_scale", out var v) ? v : Vector2.One;
+        set => ScriptHost.TrySetVec2(_entity, Comp, "visual_scale", value);
     }
 }

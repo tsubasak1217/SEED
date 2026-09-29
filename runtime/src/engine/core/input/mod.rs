@@ -29,9 +29,22 @@ use gesture::pointer_log::{
     pointer_clock_now, pointer_clock_secs, InjectedPointerTracker, PointerEventLog, PointerLogEntry, PointerPhase,
     INJECTED_POINTER_KEY,
 };
+use gesture::time_floor::PointerTimeFloor;
 use keyboard::KeyboardState;
 use mouse::MouseState;
+use touch::os_timing::{self, OsTouchStamp};
 use touch::{PointerBridge, PointerBridgePolicy, TouchPoint, TouchState};
+
+/// winit の Touch 1 件に一致した OS の時刻の控え（ジェスチャーの記録の時刻に使う。touch/os_timing/）。
+#[derive(Clone, Copy)]
+struct StampedTouch<'a> {
+    /// winit の Touch::id。
+    raw_id: u64,
+    /// winit の Touch::phase。
+    phase: RawTouchPhase,
+    /// 一致した控え（MotionEvent の時刻と、Moved なら履歴の標本）。
+    stamp: &'a OsTouchStamp,
+}
 
 // ─── InputState ────────────────────────────────────────────────────────────
 
@@ -114,10 +127,14 @@ pub struct Input {
     injection: InputInjection,
     /// 時刻つきの指のイベントの記録（W2-2 のジェスチャーアリーナが読む。gesture/pointer_log.rs）。
     ///
-    /// 実タッチ・マウスの合成の指（PointerBridge の控え）・注入の指・全部の取り消しを、受け取った時刻つきで積む。
+    /// 実タッチ・マウスの合成の指（PointerBridge の控え）・注入の指・全部の取り消しを、時刻つきで積む
+    /// （Android の実タッチは MotionEvent の時刻と履歴の標本。控えが無ければ受け取った時刻）。
     /// ジェスチャーの処理（App の update_gestures）が取り出し、取り出されなかった分は end_frame で捨てる。
     /// TouchState・MouseState・注入の状態には一切触れない（従来の入力の読み手の値は変わらない）。
     pointer_log: PointerEventLog,
+    /// 実タッチ・マウスの合成の指の記録の時刻を、指ごと・全部の取り消しより前へ逆行させない下限（gesture/time_floor.rs）。
+    /// MotionEvent の時刻と受け取った時刻が混ざっても、記録を時刻の順へ並べたときに同じ指の順が入れ替わらない。
+    touch_time_floor: PointerTimeFloor,
     /// 注入のマウスの左ボタンと座標を 1 本の指のイベントへ直す追跡（W2-2）。
     injected_pointer: InjectedPointerTracker,
     /// ウィンドウ実サイズ → 描画解像度 の写像。`None` = 等倍（従来動作）。
@@ -144,6 +161,7 @@ impl Input {
             gamepad: GamepadState::new(),
             injection: InputInjection::new(),
             pointer_log: PointerEventLog::new(),
+            touch_time_floor: PointerTimeFloor::new(),
             injected_pointer: InjectedPointerTracker::default(),
             view_map: None,
             is_active: true,
@@ -246,17 +264,36 @@ impl Input {
     /// - `raw_id` … OS が付けた指の ID（winit の `Touch::id`）
     /// - `phase`  … winit のタッチイベント種別（Started / Moved / Ended / Cancelled）
     /// - `x`, `y` … ウィンドウのクライアント座標（物理ピクセル）
+    ///
+    /// # 時刻（ジェスチャーの記録だけ。docs/input_gestures.md §5）
+    /// Android では MainActivity が控えた MotionEvent の時刻と履歴（touch/os_timing/）を、ID・段階・位置のビットで突き合わせる。
+    /// 一致すればその時刻で記録し、Moved なら履歴の標本も同じ指の Moved として先に積む。一致しなければ受け取った時刻。
+    /// PC では誰も控えを積まないので、突き合わせはロックも取らずに None（従来どおり受け取った時刻）。
+    /// 突き合わせは入力の受付を止めている間（`is_active` が false）も行う（箱の控えを Touch の順に消費し続けるため）。
     pub fn process_touch(&mut self, raw_id: u64, phase: RawTouchPhase, x: f32, y: f32) {
-        if self.is_active {
-            let ([tx, ty], _inside) = self.window_pos_to_input([x, y]);
-            self.pointer_bridge.on_touch(
-                raw_id,
-                phase,
-                Vector2::new(tx, ty),
-                &mut self.mouse,
-                &mut self.touch,
-            );
-            self.journal_finger_events();
+        let stamp = os_timing::take_matching(raw_id, phase, x, y);
+        self.process_touch_stamped(raw_id, phase, x, y, stamp.as_ref());
+    }
+
+    /// `process_touch` の本体（一致した控えを受け取る。単体テストは控えを直接渡す）。
+    fn process_touch_stamped(&mut self, raw_id: u64, phase: RawTouchPhase, x: f32, y: f32, stamp: Option<&OsTouchStamp>) {
+        if !self.is_active {
+            return;
+        }
+        let received = Instant::now();
+        let ([tx, ty], _inside) = self.window_pos_to_input([x, y]);
+        self.pointer_bridge.on_touch(
+            raw_id,
+            phase,
+            Vector2::new(tx, ty),
+            &mut self.mouse,
+            &mut self.touch,
+        );
+        let stamped = stamp.map(|stamp| StampedTouch { raw_id, phase, stamp });
+        let recorded = self.journal_finger_events_at(pointer_clock_secs(received), stamped);
+        // 実機の確かめ用（Android だけ。触れた・離れたときに記録の時刻と MotionEvent の時刻を 1 行。os_timing/diag.rs）
+        if platform::CURRENT.lifecycle_diag_log {
+            os_timing::diag::observe(raw_id, phase, stamp, recorded, received);
         }
     }
 
@@ -268,7 +305,7 @@ impl Input {
         self.pointer_bridge
             .cancel_real_touches(&mut self.mouse, &mut self.touch);
         // ジェスチャーはマウスの合成の指も含めてすべて取り消す（押下の見た目を戻す。W2-2）
-        self.pointer_log.record_cancel_all(pointer_clock_now());
+        self.record_gesture_cancel_all();
     }
 
     /// ジェスチャーの指だけをすべて取り消す（アプリが背面へ回った。W2-2）。
@@ -276,7 +313,14 @@ impl Input {
     /// TouchState・MouseState には触れない（従来の振る舞いを変えない）。記録に「全部の取り消し」を積むだけで、
     /// 次に動いたフレーム（前面へ戻った最初のフレーム）でアリーナが PressCancel・DragEnd（取り消し）を配る。
     pub fn cancel_gesture_pointers(&mut self) {
-        self.pointer_log.record_cancel_all(pointer_clock_now());
+        self.record_gesture_cancel_all();
+    }
+
+    /// ジェスチャーの記録へ「全部の取り消し」を今の時刻で積み、以後の指の記録がそれより前にならないようにする。
+    fn record_gesture_cancel_all(&mut self) {
+        let now = pointer_clock_now();
+        self.touch_time_floor.note_cancel_all(now);
+        self.pointer_log.record_cancel_all(now);
     }
 
     // ─── ジェスチャーの記録（W2-2）──────────────────────────
@@ -286,13 +330,26 @@ impl Input {
         self.pointer_log.take()
     }
 
-    /// PointerBridge が TouchState へ入れた指の単位のイベントを、今の時刻で記録へ移す。
+    /// PointerBridge が TouchState へ入れた指の単位のイベントを、今の時刻で記録へ移す（マウスの合成の指）。
     fn journal_finger_events(&mut self) {
+        self.journal_finger_events_at(pointer_clock_now(), None);
+    }
+
+    /// PointerBridge が TouchState へ入れた指の単位のイベントを記録へ移す。
+    ///
+    /// # 引数
+    /// * `received` - 受け取った時刻（pointer_log の時計の秒。控えの無いイベントに使う）
+    /// * `stamped`  - winit の Touch に一致した OS の時刻の控え（その Touch のイベントだけに使う）
+    ///
+    /// # 戻り値
+    /// 控えの Touch 自身のイベントを記録した時刻（控えが無ければ、受け取った Touch のイベントの時刻。無ければ None。診断用）。
+    ///
+    /// 時刻はすべて `touch_time_floor` で指ごと・全部の取り消しより前へ逆行しないよう切り上げる。
+    /// 控えの履歴の標本（Moved だけ）は、その Touch の前に同じ指の Moved として積む（ジェスチャーの記録だけ。
+    /// TouchState・スクリプトの Input のタッチの状態と差分は変えない）。
+    fn journal_finger_events_at(&mut self, received: f64, stamped: Option<StampedTouch<'_>>) -> Option<f64> {
         let events = self.pointer_bridge.take_journal();
-        if events.is_empty() {
-            return;
-        }
-        let time = pointer_clock_now();
+        let mut own_time = None;
         for e in events {
             let phase = match e.kind {
                 RawTouchPhase::Started => PointerPhase::Down,
@@ -300,8 +357,27 @@ impl Input {
                 RawTouchPhase::Ended => PointerPhase::Up,
                 RawTouchPhase::Cancelled => PointerPhase::Cancel,
             };
+            // この Touch 自身のイベントか（desktop の方針で実タッチが触れたときに先に出る合成の指の取り消しは別）
+            let own = stamped.filter(|s| s.raw_id == e.raw_id && s.phase == e.kind);
+            let time = match own {
+                Some(s) => {
+                    if e.kind == RawTouchPhase::Moved {
+                        for sample in &s.stamp.history {
+                            let (position, _inside) = self.window_pos_to_input(sample.position);
+                            let t = self.touch_time_floor.clamp(e.raw_id, pointer_clock_secs(sample.time));
+                            self.pointer_log.record(e.raw_id, PointerPhase::Move, position, t);
+                        }
+                    }
+                    self.touch_time_floor.clamp(e.raw_id, pointer_clock_secs(s.stamp.current.time))
+                }
+                None => self.touch_time_floor.clamp(e.raw_id, received),
+            };
             self.pointer_log.record(e.raw_id, phase, [e.position.x, e.position.y], time);
+            if own.is_some() || stamped.is_none() {
+                own_time = Some(time);
+            }
         }
+        own_time
     }
 
     /// 注入の操作を当てた直後の状態から、注入の指のイベントを記録へ積む（位置は注入の座標、無ければ実カーソル）。
@@ -1044,6 +1120,123 @@ mod tests {
             ]
         );
         assert_eq!(input.touch_count(), 0, "注入は TouchState を変えない（従来どおり）");
+    }
+
+    // ─── OS の時刻の控え（Android の MotionEvent の時刻と履歴。touch/os_timing/）─────
+
+    use gesture::pointer_log::pointer_clock_instant;
+    use std::time::Duration;
+    use touch::os_timing::OsTouchSample;
+
+    /// 控え 1 件（時刻は `base` からのミリ秒。ns は見分けの番号）。
+    fn os_stamp(
+        id: u64,
+        phase: RawTouchPhase,
+        position: [f32; 2],
+        base: Instant,
+        ms: u64,
+        history: &[([f32; 2], u64)],
+    ) -> OsTouchStamp {
+        let sample = |p: [f32; 2], ms: u64| OsTouchSample {
+            position: p,
+            time: base + Duration::from_millis(ms),
+            monotonic_ns: i64::try_from(ms).unwrap_or(i64::MAX),
+        };
+        OsTouchStamp {
+            pointer_id: id,
+            phase,
+            current: sample(position, ms),
+            history: history.iter().map(|(p, ms)| sample(*p, *ms)).collect(),
+        }
+    }
+
+    /// 記録を (段階, 位置, 時刻) の列にする（全部の取り消しは Cancel・位置 0）。
+    fn timed(entries: &[PointerLogEntry]) -> Vec<(PointerPhase, [f32; 2], f64)> {
+        entries
+            .iter()
+            .map(|e| match e {
+                PointerLogEntry::Pointer(p) => (p.phase, p.position, p.time),
+                PointerLogEntry::CancelAll { time } => (PointerPhase::Cancel, [0.0, 0.0], *time),
+            })
+            .collect()
+    }
+
+    /// 過去の時刻の基準（時計の起点より後。受け取った時刻がこれより 30 ms 以上後になるよう待つ）。
+    fn past_base() -> Instant {
+        let base = pointer_clock_instant(pointer_clock_now()).expect("起点は決まっている");
+        std::thread::sleep(Duration::from_millis(30));
+        base
+    }
+
+    /// 控えが一致した Touch は MotionEvent の時刻で記録し、Moved の履歴は同じ指の Moved として先に積む。
+    /// スクリプトのタッチの状態（TouchState）は今の位置だけ（履歴は入れない）。
+    #[test]
+    fn stamped_touches_use_os_time_and_history() {
+        let mut input = Input::with_pointer_policy(ANDROID_POLICY);
+        let base = past_base();
+        let secs = |ms: u64| pointer_clock_secs(base + Duration::from_millis(ms));
+        let down = os_stamp(4, RawTouchPhase::Started, [10.0, 20.0], base, 2, &[]);
+        input.process_touch_stamped(4, RawTouchPhase::Started, 10.0, 20.0, Some(&down));
+        let mv = os_stamp(4, RawTouchPhase::Moved, [16.0, 20.0], base, 14, &[([12.0, 20.0], 6), ([14.0, 20.0], 10)]);
+        input.process_touch_stamped(4, RawTouchPhase::Moved, 16.0, 20.0, Some(&mv));
+        let log = input.take_pointer_events();
+        assert_eq!(
+            timed(&log),
+            vec![
+                (PointerPhase::Down, [10.0, 20.0], secs(2)),
+                (PointerPhase::Move, [12.0, 20.0], secs(6)),
+                (PointerPhase::Move, [14.0, 20.0], secs(10)),
+                (PointerPhase::Move, [16.0, 20.0], secs(14)),
+            ]
+        );
+        let t = input.touch(0).expect("指が 1 本");
+        assert_eq!((t.position.x, t.position.y), (16.0, 20.0), "TouchState は今の位置だけ");
+        assert_eq!(input.touch_count(), 1, "履歴は TouchState の指を増やさない");
+    }
+
+    /// 控えの無い Touch は受け取った時刻。控えの時刻がそれより前でも、同じ指の記録は逆行しない（切り上げる）。
+    #[test]
+    fn unmatched_touches_fall_back_and_never_go_backwards() {
+        let mut input = Input::with_pointer_policy(ANDROID_POLICY);
+        let base = past_base();
+        let down = os_stamp(1, RawTouchPhase::Started, [0.0, 0.0], base, 2, &[]);
+        input.process_touch_stamped(1, RawTouchPhase::Started, 0.0, 0.0, Some(&down));
+        input.process_touch(1, RawTouchPhase::Moved, 5.0, 0.0);
+        let late = os_stamp(1, RawTouchPhase::Moved, [9.0, 0.0], base, 20, &[([7.0, 0.0], 18)]);
+        input.process_touch_stamped(1, RawTouchPhase::Moved, 9.0, 0.0, Some(&late));
+        let log = timed(&input.take_pointer_events());
+        assert_eq!(log.len(), 4);
+        let received = log[1].2;
+        assert!(received >= pointer_clock_secs(base + Duration::from_millis(30)), "控えが無ければ受け取った時刻");
+        assert_eq!((log[2].1, log[2].2), ([7.0, 0.0], received), "受け取った時刻より前の履歴は切り上げる");
+        assert_eq!((log[3].1, log[3].2), ([9.0, 0.0], received));
+        assert!(log.windows(2).all(|w| w[0].2 <= w[1].2), "同じ指の記録は時刻の順のまま: {log:?}");
+    }
+
+    /// 全部の取り消しより後に届いた Touch は、控えの時刻が取り消しより前でも取り消しより前へ並ばない。
+    #[test]
+    fn touches_after_cancel_all_stay_after_it() {
+        let mut input = Input::with_pointer_policy(ANDROID_POLICY);
+        let base = past_base();
+        input.cancel_gesture_pointers();
+        let down = os_stamp(2, RawTouchPhase::Started, [3.0, 3.0], base, 5, &[]);
+        input.process_touch_stamped(2, RawTouchPhase::Started, 3.0, 3.0, Some(&down));
+        let log = timed(&input.take_pointer_events());
+        assert_eq!(log[0].0, PointerPhase::Cancel, "取り消しが先: {log:?}");
+        assert_eq!(log[1].0, PointerPhase::Down);
+        assert_eq!(log[1].2, log[0].2, "取り消しの時刻まで切り上げる");
+    }
+
+    /// 入力の受付を止めている間は記録しない（控えも使わない）。
+    #[test]
+    fn inactive_input_records_nothing() {
+        let mut input = Input::with_pointer_policy(ANDROID_POLICY);
+        let base = past_base();
+        input.set_active(false);
+        let down = os_stamp(0, RawTouchPhase::Started, [1.0, 1.0], base, 1, &[]);
+        input.process_touch_stamped(0, RawTouchPhase::Started, 1.0, 1.0, Some(&down));
+        assert!(input.take_pointer_events().is_empty());
+        assert_eq!(input.touch_count(), 0);
     }
 
     /// 注入のシーケンス: 1 回の tick でまとめて当たった操作も、予定の時刻（t）の間隔で記録される。

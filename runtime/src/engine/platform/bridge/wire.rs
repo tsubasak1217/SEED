@@ -375,6 +375,14 @@ pub mod window {
 /// `ui_mode {}` → `{ night }`（W2-9。端末の明暗の設定）・模擬だけ `sim_set_ui_mode { night }` → `{ night }`（Android には無く unknown_method）。
 /// イベント `platform.ui_mode_changed { night }`（W2-9。Android は MainActivity.onConfigurationChanged・PC はウィンドウの ThemeChanged と模擬の命令）。
 /// open_url の URL の規則は bridge::app（Java の app/UrlPolicy と同じ）。失敗の理由のうち `invalid_argument` は目覚ましと同じ文字列。
+///
+/// 予測型の戻る（W2 の手直し P1-3。プロジェクト設定 android.predictive_back が true の APK の Android 13 以降だけ。docs/android.md §25.18）:
+/// 命令 `set_back_callback { on }` → `{ on, enabled }`（アプリが戻るを受けるか。Java の back/BackCallbackController が自分の
+/// コールバックを出し入れする）・模擬だけ `sim_back_gesture { phase, progress, edge }` → `{ gesture }`（Android には無く unknown_method）。
+/// イベント `platform.back_started` / `back_progressed { gesture, progress, edge, touch_x, touch_y }`（API 34 以上）・
+/// `platform.back_cancelled { gesture }`（API 34 以上）・`platform.back_invoked { gesture }`（API 33 以上。続けて Java が合成した
+/// KEYCODE_BACK がスクリプトへ Escape で届く）。gesture は手ぶりの通し番号（started で 1 増える。started の無い invoked〈API 33・
+/// 模擬〉は invoked で 1 増える）。
 pub mod app {
     /// アプリのモジュール。
     pub const MODULE: &str = "app";
@@ -418,6 +426,66 @@ pub mod app {
     pub const NIGHT_SYSTEM: &str = "system";
     /// 端末の明暗の設定が変わった（W2-9。data `{ night }`）。
     pub const EVENT_UI_MODE_CHANGED: &str = "platform.ui_mode_changed";
+
+    // ── 予測型の戻る（W2 の手直し P1-3）──
+
+    /// アプリの戻るのコールバックを出し入れする。引数 `{ on }`（true = アプリが戻るを受ける〈受ける層がある〉/ false = 受ける層が無い
+    /// 〈根。システムに任せて背面へ〉）。返答 `{ on, enabled }`（enabled が false なら何もしていない）。
+    pub const METHOD_SET_BACK_CALLBACK: &str = "set_back_callback";
+    /// set_back_callback の引数・返答: アプリが戻るを受けるか。
+    pub const KEY_ON: &str = "on";
+    /// set_back_callback の返答: 予測型の戻るが有効か（Android は APK の印 seed_predictive_back が true で API 33 以上。模擬は常に false）。
+    pub const KEY_ENABLED: &str = "enabled";
+    /// 模擬だけ: 戻るの手ぶりのイベントを 1 つ積む（PC でプレビューを試す）。引数 `{ phase, progress, edge }`。返答 `{ gesture }`。
+    pub const METHOD_SIM_BACK_GESTURE: &str = "sim_back_gesture";
+    /// sim_back_gesture の引数: 段階（PHASE_*。模擬だけ）。
+    pub const KEY_PHASE: &str = "phase";
+    /// phase: 手ぶりが始まった（platform.back_started を積む）。
+    pub const PHASE_STARTED: &str = "started";
+    /// phase: 手ぶりが進んだ（platform.back_progressed を積む）。
+    pub const PHASE_PROGRESSED: &str = "progressed";
+    /// phase: 手ぶりが取り消された（platform.back_cancelled を積む）。
+    pub const PHASE_CANCELLED: &str = "cancelled";
+    /// phase: 戻るが確定した（platform.back_invoked だけを積む。PC の確定は Esc キーなので Escape は注入しない）。
+    pub const PHASE_INVOKED: &str = "invoked";
+    /// 戻るの手ぶりが始まった（Android 14 以上の OnBackAnimationCallback.onBackStarted。data `{ gesture, progress, edge, touch_x, touch_y }`）。
+    pub const EVENT_BACK_STARTED: &str = "platform.back_started";
+    /// 戻るの手ぶりが進んだ（onBackProgressed。毎フレーム届くので 1 件ごとのログは出さない。data は started と同じ形）。
+    pub const EVENT_BACK_PROGRESSED: &str = "platform.back_progressed";
+    /// 戻るの手ぶりが取り消された（onBackCancelled。data `{ gesture }`）。
+    pub const EVENT_BACK_CANCELLED: &str = "platform.back_cancelled";
+    /// 戻るが確定した（onBackInvoked。data `{ gesture }`。Android は続けて合成の KEYCODE_BACK → Escape が届く）。
+    pub const EVENT_BACK_INVOKED: &str = "platform.back_invoked";
+    /// 戻るのイベントの data: 手ぶりの通し番号（1 から）。
+    pub const KEY_GESTURE: &str = "gesture";
+    /// 戻るのイベントの data・sim_back_gesture の引数: 進み具合（0〜1。Android の BackEvent.getProgress）。
+    pub const KEY_PROGRESS: &str = "progress";
+    /// 戻るのイベントの data・sim_back_gesture の引数: 手ぶりを始めた端（EDGE_*）。
+    pub const KEY_EDGE: &str = "edge";
+    /// 戻るのイベントの data: 指の x（窓の座標の px。取れないとき〈ボタンの戻る・模擬〉は 0）。
+    pub const KEY_TOUCH_X: &str = "touch_x";
+    /// 戻るのイベントの data: 指の y（窓の座標の px。取れないときは 0）。
+    pub const KEY_TOUCH_Y: &str = "touch_y";
+    /// edge: 左の端から（BackEvent.EDGE_LEFT）。
+    pub const EDGE_LEFT: &str = "left";
+    /// edge: 右の端から（BackEvent.EDGE_RIGHT）。
+    pub const EDGE_RIGHT: &str = "right";
+    /// edge: 端からの手ぶりでない（ボタンの戻る。Android 16 の BackEvent.EDGE_NONE と、知らない値）。
+    pub const EDGE_NONE: &str = "none";
+}
+
+/// 1 件ごとの「受け取りました」のログを出さないイベント（毎フレーム届くもの。W2 の手直し P1-3）。
+///
+/// Android の受け取りの箱（runtime/android/native の platform_bridge/inbox.rs）は件数だけ数え、次のほかのイベントのログに添える。
+/// デスクトップの模擬も、これらを積むときはログを出さない。
+pub const HIGH_FREQUENCY_EVENTS: [&str; 1] = [app::EVENT_BACK_PROGRESSED];
+
+/// 1 件ごとのログを出さないイベントか（HIGH_FREQUENCY_EVENTS にあるか）。
+///
+/// # 引数
+/// * `name` - イベントの名前（`platform.` で始まる）
+pub fn is_high_frequency_event(name: &str) -> bool {
+    HIGH_FREQUENCY_EVENTS.contains(&name)
 }
 
 /// 触感（W1-6。モジュール "haptics"。Android はメインプロセスが振動子を鳴らして答える）の名前・欄・上限・理由
@@ -700,6 +768,15 @@ mod tests {
         assert!(validate_event_json("{not json").is_err());
     }
 
+    /// 1 件ごとのログを出さないのは毎フレーム届く back_progressed だけ（始まり・取り消し・確定はログに残す）。
+    #[test]
+    fn only_back_progressed_is_high_frequency() {
+        assert!(is_high_frequency_event(app::EVENT_BACK_PROGRESSED));
+        for name in [app::EVENT_BACK_STARTED, app::EVENT_BACK_CANCELLED, app::EVENT_BACK_INVOKED, app::EVENT_UI_MODE_CHANGED, TEST_EVENT_NAME] {
+            assert!(!is_high_frequency_event(name), "{name}");
+        }
+    }
+
     /// 引数の JSON: 空は空のオブジェクト、壊れたものは ERROR_INVALID_JSON。
     #[test]
     fn parse_request_rules() {
@@ -793,6 +870,14 @@ mod tests {
             ("METHOD_APP_UI_MODE", app::METHOD_UI_MODE), ("KEY_APP_NIGHT", app::KEY_NIGHT),
             ("APP_NIGHT_YES", app::NIGHT_YES), ("APP_NIGHT_NO", app::NIGHT_NO), ("APP_NIGHT_UNKNOWN", app::NIGHT_UNKNOWN),
             ("EVENT_UI_MODE_CHANGED", app::EVENT_UI_MODE_CHANGED),
+            // W2 の手直し P1-3: 予測型の戻る（sim_back_gesture・phase は模擬だけなので Java には無い）
+            ("METHOD_APP_SET_BACK_CALLBACK", app::METHOD_SET_BACK_CALLBACK), ("KEY_APP_ON", app::KEY_ON),
+            ("KEY_APP_ENABLED", app::KEY_ENABLED),
+            ("EVENT_BACK_STARTED", app::EVENT_BACK_STARTED), ("EVENT_BACK_PROGRESSED", app::EVENT_BACK_PROGRESSED),
+            ("EVENT_BACK_CANCELLED", app::EVENT_BACK_CANCELLED), ("EVENT_BACK_INVOKED", app::EVENT_BACK_INVOKED),
+            ("KEY_BACK_GESTURE", app::KEY_GESTURE), ("KEY_BACK_PROGRESS", app::KEY_PROGRESS), ("KEY_BACK_EDGE", app::KEY_EDGE),
+            ("KEY_BACK_TOUCH_X", app::KEY_TOUCH_X), ("KEY_BACK_TOUCH_Y", app::KEY_TOUCH_Y),
+            ("BACK_EDGE_LEFT", app::EDGE_LEFT), ("BACK_EDGE_RIGHT", app::EDGE_RIGHT), ("BACK_EDGE_NONE", app::EDGE_NONE),
             // W1-6: 触感
             ("MODULE_HAPTICS", haptics::MODULE), ("METHOD_HAPTICS_TAP", haptics::METHOD_TAP),
             ("METHOD_HAPTICS_VIBRATE", haptics::METHOD_VIBRATE), ("KEY_HAPTICS_MS", haptics::KEY_MS),

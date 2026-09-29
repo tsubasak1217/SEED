@@ -164,6 +164,8 @@ pub fn read(world: &World, entity: Entity, component: &str, field: &str, out: &m
                 "translate" => put(out, &c.translate),
                 "translate_fraction" => put(out, &c.translate_fraction),
                 "layer_bias" => put(out, &[c.layer_bias as f32]),
+                // 見た目の倍率（W2 の手直し 3b。保存しない。既定 (1, 1)）
+                "visual_scale" => put(out, &c.visual_scale),
                 _ => None,
             }
         }
@@ -361,6 +363,8 @@ pub fn write(world: &mut World, entity: Entity, component: &str, field: &str, v:
                 "translate" => assign(&mut c.translate, take_finite::<PAIR_LEN>(v)),
                 "translate_fraction" => assign(&mut c.translate_fraction, take_finite::<PAIR_LEN>(v)),
                 "layer_bias" => assign(&mut c.layer_bias, take_layer_bias(v)),
+                // 見た目の倍率（W2 の手直し 3b。有限の 2 要素だけ受ける）
+                "visual_scale" => assign(&mut c.visual_scale, take_finite::<PAIR_LEN>(v)),
                 _ => false,
             }
         }
@@ -489,6 +493,23 @@ mod tests {
         let c = world.get::<CanvasLayoutItemComponent>(e).unwrap();
         assert_eq!((c.translate, c.translate_fraction, c.layer_bias), ([12.5, -4.0], [1.0, 0.0], 3_000_000));
         assert!(write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "layer_bias", &[-200.0]), "負の底上げも書ける");
+    }
+
+    /// 見た目の倍率（W2 の手直し 3b）の読み書き（既定 (1, 1)・有限の 2 要素だけを受ける）。
+    #[test]
+    fn layout_item_visual_scale_round_trip() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, CanvasLayoutItemComponent::default());
+        let mut out = [0.0f32; 4];
+        assert_eq!(read(&world, e, KIND_CANVAS_LAYOUT_ITEM, "visual_scale", &mut out), Some(2));
+        assert_eq!(&out[..2], &[1.0, 1.0], "既定は倍率なし");
+        assert!(write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "visual_scale", &[0.9, 0.9]));
+        assert!(!write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "visual_scale", &[f32::NAN, 1.0]), "NaN は書かない");
+        assert!(!write(&mut world, e, KIND_CANVAS_LAYOUT_ITEM, "visual_scale", &[0.5]), "要素数の違い");
+        assert_eq!(read(&world, e, KIND_CANVAS_LAYOUT_ITEM, "visual_scale", &mut out), Some(2));
+        assert_eq!(&out[..2], &[0.9, 0.9]);
+        assert_eq!(world.get::<CanvasLayoutItemComponent>(e).unwrap().visual_scale, [0.9, 0.9]);
     }
 
     /// 名前の判定と実体の判定（種類の違うエンティティは false）。

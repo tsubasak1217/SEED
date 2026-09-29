@@ -89,6 +89,7 @@
     "handle_area": 24,
     "toast_height": 48,
     "drag_dismiss": 96,
+    "back_preview_shift": 8,
     "chart_line": 2,
     "chart_dot": 2.5,
     "chart_dot_selected": 5,
@@ -145,6 +146,7 @@
     "toast_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 },
     "toast_short": 2.0,
     "toast_long": 3.5,
+    "back_preview_curve": { "x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 1.0 },
     "chart_zoom": 0.25,
     "theme": 0.3,
     "theme_curve": { "x1": 0.4, "y1": 0.0, "x2": 0.2, "y2": 1.0 }
@@ -162,6 +164,7 @@
     "push_parallax": 0.3,
     "dialog_scale_from": 0.9,
     "sheet_max_height": 0.9,
+    "back_preview_scale": 0.9,
     "chart_bar_width": 0.7,
     "chart_empty_bar": 0.015,
     "chart_fling_drag": 0.135,

@@ -21,6 +21,8 @@
 //    seed.versionCode / seed.versionName … android.version_code / version_name → versionCode・versionName
 //    seed.launcherIcon                 … generated なら生成したアイコン（@mipmap/ic_launcher）→ android:icon
 //    seed.appCategory                  … android.app_category → android:appCategory（語彙の表。W1-2）
+//    seed.predictiveBack               … android.predictive_back → android:enableOnBackInvokedCallback（true のときだけ渡される。
+//                                        W2 の手直し P1-3・docs/android.md §25.18）
 //    seed.signing.*                    … 配布用（release）の署名。キーストアの場所・別名・パスワード（パスワードは必ず環境変数。
 //                                        SeedAndroid の Signing/。このファイル・gradle.properties・コマンドラインには書かない）
 //  渡されなければ既定値（com.seedengine.runtime・SEED Runtime・システムの既定のアイコン・appCategory=game 等。手で gradlew を叩いたときもこれ）。
@@ -44,7 +46,8 @@ val seedMinSdk = 29
  * https://developer.android.com/google/play/requirements/target-sdk。要件の表は runtime/android/play_requirements.json）。
  * 36 にしたことで効く動作の変更と対処（docs/android.md §24）:
  *   ・予測型の「戻る」… 既定で有効になり KEYCODE_BACK がアプリへ届かなくなる → マニフェストの
- *     android:enableOnBackInvokedCallback="false" で従来どおり届ける（戻るキー → Escape。§14.5）
+ *     android:enableOnBackInvokedCallback="false" で従来どおり届ける（戻るキー → Escape。§14.5）。プロジェクト設定
+ *     android.predictive_back が true のときだけ "true"（下の「予測型の戻る」。Java の OnBackInvokedCallback で受ける。§25.18）
  *   ・大画面（最小幅 600dp 以上）での向き・サイズ変更の制限の無視 … ゲーム（android:appCategory="game"）は対象外
  *   ・エッジツーエッジの無効化の廃止 … 35 の時点で既に強制（安全領域は ScreenReporter で扱い済み）
  * SeedAndroid の AndroidRuntimeContract.TargetApiLevel と一致させる（要件チェックの材料）。
@@ -199,15 +202,48 @@ val seedAppCategory = seedProperty("appCategory")?.lowercase()?.let { value ->
     }
 } ?: defaultAppCategory
 
+// ── 予測型の戻る（プロジェクト設定 android.predictive_back。W2 の手直し P1-3・docs/android.md §25.18）──────────
+// SeedAndroid（editor/src/Android/Gradle/GradleInvocation.cs）は predictive_back が true のときだけ -Pseed.predictiveBack=true を渡す
+// （無い・false のプロジェクトには何も渡さない＝Gradle の引数も APK の工程の指紋も従来と同じ）。マニフェストの
+// android:enableOnBackInvokedCallback="${seedEnableOnBackInvokedCallback}" へ入る。渡されなければ従来どおり "false"
+// （KEYCODE_BACK がアプリへ届き、戻るキー → Escape。§14.5）。"true" のときは Java の back/BackCallbackController が
+// OnBackInvokedCallback（API 33 以上）で戻るを受ける。その印は res の R.bool.seed_predictive_back（SeedAndroid が生成する
+// src/seedFeatures/res/values/seed_platform.xml に true のときだけ入る。main の既定値は false）で、下の「断片」の後で食い違いを確かめる。
+
+/** seed.predictiveBack の「使う」の値（SeedAndroid の GradleInvocation.PredictiveBackEnabledValue と同じ）。 */
+val predictiveBackEnabledValue = "true"
+
+/** seed.predictiveBack の「使わない」の値（渡されないときと同じ。マニフェストの従来の値）。 */
+val predictiveBackDisabledValue = "false"
+
+/**
+ * このビルドで予測型の戻るを使うか（前後の空白を落として小文字へ）。知らない値は、設定ミスでビルドを止めるより従来の動作へ
+ * 倒すほうが安全なので、警告を出して使わない（appCategory と同じ方針）。
+ */
+val seedPredictiveBack = when (val value = seedProperty("predictiveBack")?.lowercase()) {
+    null, predictiveBackDisabledValue -> false
+    predictiveBackEnabledValue -> true
+    else -> {
+        logger.warn(
+            "SEED: seed.predictiveBack=\"${value}\" は不明な値です（使える値: ${predictiveBackEnabledValue}, ${predictiveBackDisabledValue}）。" +
+                "\"${predictiveBackDisabledValue}\" として扱います。"
+        )
+        false
+    }
+}
+
+/** マニフェストの android:enableOnBackInvokedCallback に入れる値（${seedEnableOnBackInvokedCallback}）。 */
+val seedEnableOnBackInvokedCallback = if (seedPredictiveBack) predictiveBackEnabledValue else predictiveBackDisabledValue
+
 // ── プラットフォーム機能の断片（プロジェクト設定 android.features / deep_links / system_bars。W1-2・E-04）──────────
 // SeedAndroid（editor/src/Android/Platform/）が Gradle の前に毎回 src/seedFeatures/ を生成し直す（機能が空でも中身の無い
 // マニフェストを書く。古い生成物を残さないため）。ここは生成物を variant の API で足すだけ（下の androidComponents）:
 //   AndroidManifest.xml … 機能ごとの <uses-permission> と MainActivity への intent-filter（ディープリンク）。main のマニフェストに
 //                         上書き（overlay）のマニフェストとしてマージされる（下の androidComponents のコメント。実ビルドで確かめた）
 //   res/values/seed_platform.xml … seed_system_bars_visible（main の res/values/seed_platform_defaults.xml の既定値 false を
-//                         独立した res の層で上書きする）
+//                         独立した res の層で上書きする）と、predictive_back が true のときだけ seed_predictive_back（W2 の手直し P1-3）
 // 生成物が無い（手で gradlew を叩いた・一度も SeedAndroid を通していない）ときは、マニフェストは足さず、res の層は空のまま
-// （＝機能なし・システムバーを隠す従来の振る舞い）。
+// （＝機能なし・システムバーを隠す・予測型の戻るを使わない従来の振る舞い）。
 
 /** 生成物の置き場（app/ からの相対。SeedAndroid の AndroidEnginePaths.PlatformFeaturesStagingDir と同じ）。 */
 val seedFeaturesDir = "src/seedFeatures"
@@ -217,6 +253,30 @@ val seedFeaturesManifest = "$seedFeaturesDir/AndroidManifest.xml"
 
 /** 生成する res（values/seed_platform.xml）。 */
 val seedFeaturesRes = "$seedFeaturesDir/res"
+
+/** 生成する values（SeedAndroid の AndroidPlatformFeatureFiles.ValuesRelativePath と同じ）。 */
+val seedFeaturesValues = "$seedFeaturesRes/values/seed_platform.xml"
+
+/**
+ * 生成した values の「予測型の戻るを使う」の行（SeedAndroid の AndroidPlatformManifestWriter が predictive_back が true のときだけ書く。
+ * 字下げ・改行を除いた 1 行。AndroidPipelineTests の取り決めのテストが書き手の出力と突き合わせる）。
+ */
+val predictiveBackResourceLine = "<bool name=\"seed_predictive_back\">true</bool>"
+
+/** 生成した values に予測型の戻るの印（true）が入っているか（生成物が無ければ false＝main の既定値）。 */
+val seedFeaturesPredictiveBack = file(seedFeaturesValues).let { values ->
+    values.isFile && values.readText().contains(predictiveBackResourceLine)
+}
+
+// 予測型の戻るの食い違い（-P と生成した res の印が違う）を知らせる。マニフェストが "true" なのに印が false だと Java がコールバックを
+// 登録せず、戻るが Escape に届かない（根ではシステムの戻るが Activity を finish → プロセスの終了になりうる）。SeedAndroid は同じ設定から
+// 両方を作るので起きない（手で gradlew を叩いた・生成物が古いとき）。ビルドは止めない（ほかの値の読み方と同じ方針）。
+if (seedFeaturesPredictiveBack != seedPredictiveBack) {
+    logger.warn(
+        "SEED: 予測型の戻るの設定が食い違っています（seed.predictiveBack → ${seedPredictiveBack}・${seedFeaturesValues} の " +
+            "seed_predictive_back → ${seedFeaturesPredictiveBack}）。SeedAndroid でビルドし直してください（docs/android.md §25.18）。"
+    )
+}
 
 // ── 配布用（release）の署名（docs/android.md §24）─────────────────────────────
 // SeedAndroid（editor/src/Android/Signing/・Gradle/GradleInvocation.cs）がプロジェクトの packaging_settings.json の
@@ -274,9 +334,12 @@ android {
         manifestPlaceholders["seedAppIcon"] = seedAppIcon
         // AndroidManifest.xml の ${seedAppCategory} を置き換える（アプリの分類。上の「アプリの分類」。W1-2）。
         manifestPlaceholders["seedAppCategory"] = seedAppCategory
+        // AndroidManifest.xml の ${seedEnableOnBackInvokedCallback} を置き換える（予測型の戻る。上の「予測型の戻る」。W2 の手直し P1-3）。
+        manifestPlaceholders["seedEnableOnBackInvokedCallback"] = seedEnableOnBackInvokedCallback
         logger.lifecycle("SEED: screen_orientation=$seedOrientationSetting → screenOrientation=$seedScreenOrientation")
         logger.lifecycle("SEED: applicationId=$seedApplicationId label=$seedAppLabel versionCode=$seedVersionCode versionName=$seedVersionName")
         logger.lifecycle("SEED: targetSdk=$seedTargetSdk icon=$seedAppIcon appCategory=$seedAppCategory releaseSigning=${if (seedReleaseSigningReady) "ready" else "none"}")
+        logger.lifecycle("SEED: enableOnBackInvokedCallback=${seedEnableOnBackInvokedCallback}（予測型の戻る。android.predictive_back）")
     }
 
     signingConfigs {

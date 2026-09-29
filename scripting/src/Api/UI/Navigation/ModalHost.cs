@@ -14,7 +14,8 @@ namespace SEED.UI;
 //  帯のノードのレイヤーの底上げはテーマの帯の値、帯の中の j 番目の面は j × layer.modal_step（あとから開いた面が手前）。
 //  面のプレハブを帯の下に作り、面のスクリプト（ModalPlane）が OnWidgetStart で開く約束を受け取る（Claim）。
 //  【戻る】ダイアログ → シート → 覆いの順の層（BackOrder）で、その種類の最後に開いた面が受ける。
-//  面が 1 つも無い種類の層は受けない（次の層へ）。
+//  面が 1 つも無い種類の層は受けない（次の層へ）。受けるかの問いは面の数（WantsBack）、予測型の戻るのプレビューの相手は
+//  その面（ModalPlane が IBackPreviewTarget。戻るで閉じる開いた面だけ。W2 の手直し 3b）。
 // ============================================================
 
 /// <summary>覆い・シート・ダイアログを開く所。</summary>
@@ -155,6 +156,28 @@ public sealed class ModalHost : UiWidget
         }
         // 作りかけ（まだスクリプトが動いていない）の面があれば、戻るは受けて捨てる（開いた直後の二度押しで後ろが閉じない）
         return _opening[kind] > 0;
+    }
+
+    /// <summary>
+    /// 種類の層が戻るを受けるか（副作用なし。W2 の手直し 3b）。面が 1 つでもあれば（作りかけを含む）<see cref="HandleBack"/> は必ず true。
+    /// </summary>
+    public bool WantsBack(ModalKind kind) => Count(kind) > 0;
+
+    /// <summary>
+    /// 種類の層の予測型の戻るのプレビューの相手（<see cref="HandleBack"/> が尋ねる面＝最後に開いた閉じていない面が、開いていて
+    /// 戻るで閉じるときだけ。閉じる動きの途中・作りかけ・閉じない面は null。W2 の手直し 3b）。
+    /// </summary>
+    internal IBackPreviewTarget? BackPreviewTarget(ModalKind kind)
+    {
+        var list = _planes[kind];
+        for (int i = list.Count - 1; i >= 0; i--)
+        {
+            var plane = list[i];
+            if (plane.Phase is ModalPhase.Closed) continue;
+            IBackPreviewTarget target = plane;
+            return target.IsBackPreviewValid ? target : null;
+        }
+        return null;
     }
 
     /// <summary>種類の帯のノード（無ければ自分）。</summary>

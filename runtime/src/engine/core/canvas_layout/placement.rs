@@ -12,6 +12,9 @@
 //    - dp のルートキャンバス（CanvasComponent.unit = Dp）… `resolve` の中の分岐（units.rs）
 //    - 矩形を割り当てる（コンテナ・親に合わせる）… `resolve_in_rect`
 //    - 箱を縮める・中身に合わせる（安全領域・fit）… `resize_box`
+//  W2-7・W2 の手直し 3b で足したもの（CanvasLayoutItem の実行中だけの見た目。既定の値のノードは呼ばない）:
+//    - 見た目の平行移動 … `translate_placement`
+//    - 見た目の倍率（矩形の中心の周り）… `scale_placement`
 // ============================================================
 
 use crate::engine::components::{
@@ -361,9 +364,10 @@ pub fn resolve(
         world_rs,
         cumul_scale: child_cumul_scale,
         zone,
-        // レイヤーの底上げと見た目の平行移動は親のまま受け継ぐ（自分の分は走査の place_node が足す。W2-7）
+        // レイヤーの底上げと見た目の平行移動・倍率は親のまま受け継ぐ（自分の分は走査の place_node が足す。W2-7・3b）
         layer_bias: parent.layer_bias,
         visual_shift: parent.visual_shift,
+        visual_scale: parent.visual_scale,
     };
 
     CanvasNodePlacement {
@@ -442,9 +446,10 @@ pub fn resolve_in_rect(
         world_rs,
         cumul_scale: child_cumul_scale,
         zone: parent.zone,
-        // レイヤーの底上げと見た目の平行移動は親のまま受け継ぐ（自分の分は走査の place_node が足す。W2-7）
+        // レイヤーの底上げと見た目の平行移動・倍率は親のまま受け継ぐ（自分の分は走査の place_node が足す。W2-7・3b）
         layer_bias: parent.layer_bias,
         visual_shift: parent.visual_shift,
+        visual_scale: parent.visual_scale,
     };
     CanvasNodePlacement {
         root_auto: None,
@@ -511,6 +516,89 @@ pub fn translate_placement(
             world_rs,
             visual_shift: [shift[0] + world_offset[0], shift[1] + world_offset[1]],
             ..placement.child_frame
+        },
+        ..placement.clone()
+    }
+}
+
+/// 見た目の倍率の中心を決める矩形の中央の割合（W2 の手直し 3b。矩形の左上 0・右下 1 に対する中央）。
+const RECT_CENTER_FRACTION: f32 = 0.5;
+
+/// 倍率なしの軸の倍率（W2 の手直し 3b。行列を組むときにスケールを外す値）。
+const UNIT_SCALE: [f32; 2] = [1.0, 1.0];
+
+/// 置いたノードを、自分の置かれた矩形の中心の周りに `scale` 倍する【純関数・W2 の手直し 3b】。
+///
+/// `CanvasLayoutItem.visual_scale`（見た目の倍率）の本体。ノードの部分木（自分の描画・キャンバス領域・子孫）の
+/// 点 p（親のローカル）をまとめて `中心 + R·diag(s)·R⁻¹·(p − 中心)` へ写す（R はノードの回転。ノードの軸に沿って縮む）。
+/// エンジンの倍率は行列に入れず、大きさと子の位置への掛け算（サイズ倍率・子の累積スケール）で持つので、写像を次の欄で表す:
+///   - 有効位置 = 位置 + R × ((1 − s) × 中心の差)（中心の差 = pivot の点から描画の矩形〈ノードの Scale × 大きさ〉の中央へ）
+///   - サイズ倍率・キャンバス領域の実効の大きさ・スプライトを描く大きさ・割り当てた矩形 × s（自分の描画・枠・切り抜き・当たり判定）
+///   - 子の累積スケール × s（子の位置・大きさ・アンカー。入れ子のキャンバスの子孫も同じ比で中心へ寄る）
+///   - 行列はスケールを外した有効トランスフォームと新しい大きさで組み直す（子の原点も中心へ寄る）
+/// レイアウトの基準の大きさ（canvas_base。キャンバスの単位）は変えない（倍率の前の大きさ）。
+/// 子へ渡す見た目の写像（visual_scale・visual_shift）へ自分の倍率を重ねる（子孫の安全領域は倍率の前の位置で求める）。
+/// 読み手（キャンバス枠・2D 物理・ScreenPosition）が表の矩形を読むよう `layout_adjusted` を立てる。
+/// 矩形を持たない（CanvasComponent もレイアウトの割り当ても無い）ノードは pivot の点を中心にする。
+///
+/// # 引数
+/// * `placement` - 置いた結果（安全領域・見た目の平行移動を当てた後）
+/// * `parent`    - 親から受け取った文脈
+/// * `scale`     - 倍率（軸ごと。有限の値。1 の軸は大きさを変えない）
+pub fn scale_placement(
+    placement: &CanvasNodePlacement,
+    parent: &CanvasParentFrame,
+    scale: [f32; 2],
+) -> CanvasNodePlacement {
+    let eff = &placement.eff_transform;
+    // 中心の差（pivot の点から中心へ。ノードの回転の前の軸で）: 描画の矩形 = Scale × 大きさ の中央
+    let has_region = placement.canvas_base.is_some() || placement.layout_rect.is_some();
+    let center = if has_region {
+        [0, 1].map(|a| eff.scale[a] * placement.eff_size[a] * (RECT_CENTER_FRACTION - eff.pivot[a]))
+    } else {
+        [0.0, 0.0]
+    };
+    let (sin, cos) = eff.rotation.to_radians().sin_cos();
+    let rotate = |v: [f32; 2]| [cos * v[0] - sin * v[1], sin * v[0] + cos * v[1]];
+    // 有効位置 = 位置 + R × ((1 − s) × 中心の差)（中心は動かない）
+    let moved = rotate([0, 1].map(|a| (1.0 - scale[a]) * center[a]));
+    let eff_transform = CanvasTransform {
+        position: [eff.position[0] + moved[0], eff.position[1] + moved[1]],
+        ..eff.clone()
+    };
+    let eff_size = [0, 1].map(|a| placement.eff_size[a] * scale[a]);
+    let world_rs = mat4x4_mul(
+        parent.world_rs,
+        CanvasTransform {
+            scale: UNIT_SCALE,
+            ..eff_transform.clone()
+        }
+        .to_mat4_sized(eff_size[0], eff_size[1]),
+    );
+    // 動かない中心のワールドの点（親の行列で、親のローカルの「位置 + R × 中心の差」を写す。行列は [行][列]・平行移動は列 3）
+    let arm = rotate(center);
+    let local_center = [eff.position[0] + arm[0], eff.position[1] + arm[1]];
+    let m = &parent.world_rs;
+    let world_center = [
+        m[0][0] * local_center[0] + m[0][1] * local_center[1] + m[0][3],
+        m[1][0] * local_center[0] + m[1][1] * local_center[1] + m[1][3],
+    ];
+    let frame = &placement.child_frame;
+    CanvasNodePlacement {
+        eff_transform,
+        size_scale: [0, 1].map(|a| placement.size_scale[a] * scale[a]),
+        eff_size,
+        world_rs,
+        sprite_fill: [0, 1].map(|a| placement.sprite_fill[a].map(|v| v * scale[a])),
+        layout_rect: placement.layout_rect.map(|r| [r[0] * scale[0], r[1] * scale[1]]),
+        layout_adjusted: true,
+        child_frame: CanvasParentFrame {
+            world_rs,
+            cumul_scale: [0, 1].map(|a| frame.cumul_scale[a] * scale[a]),
+            // 子孫の見た目の写像へ重ねる: p → 中心 + s × (visual_scale × p + visual_shift − 中心)
+            visual_scale: [0, 1].map(|a| frame.visual_scale[a] * scale[a]),
+            visual_shift: [0, 1].map(|a| scale[a] * frame.visual_shift[a] + (1.0 - scale[a]) * world_center[a]),
+            ..*frame
         },
         ..placement.clone()
     }

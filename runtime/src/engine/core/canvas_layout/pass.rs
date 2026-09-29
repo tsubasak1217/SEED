@@ -16,7 +16,10 @@
 //        2. CanvasSafeArea があれば箱を安全領域の内側へ縮める（resize_box）
 //        2b. CanvasLayoutItem の見た目の上書き（W2-7。実行中だけ）: レイヤーの底上げ（layer_bias）を祖先の分に足して
 //           子へ渡し、見た目の平行移動（translate・translate_fraction）で有効位置と行列だけをずらす（translate_placement）。
-//           安全領域は祖先のずらしを戻した位置で求める（CanvasParentFrame.visual_shift。横から入ってくる画面の箱が縮まない）
+//           安全領域は祖先のずらしを戻した位置で求める（CanvasParentFrame.visual_shift。横から入ってくる画面の箱が縮まない）。
+//           見た目の倍率（visual_scale。W2 の手直し 3b）は平行移動の後の矩形の中心の周りに縮める（scale_placement）。
+//           子の累積スケールごと縮むので、このノードのコンテナの並び・子孫の配置は倍率の空間で求まり、子孫の安全領域は
+//           倍率の前の位置・大きさで求める（CanvasParentFrame.visual_scale と visual_shift の写像）。既定 (1, 1) のノードは通らない
 //        3. コンテナ（CanvasStack・CanvasWrap・CanvasGrid）なら子を測って並べ（measure.rs・containers/）、
 //           子ごとの矩形を「割り当て待ち」に積む。fit の軸は箱を中身に合わせる
 //      子は必ずコンテナより後に訪ねる（深さ優先）ので、2 段の計算（測る → 並べる）が 1 回の走査の中で終わる。
@@ -43,11 +46,11 @@ use super::clip::{
 };
 use super::containers::spec::container_of;
 use super::containers::{clamp_size, Constraint, LayoutSlot, AXIS_X, AXIS_Y};
-use super::frame::{CanvasLayoutEnv, CanvasParentFrame};
+use super::frame::{CanvasLayoutEnv, CanvasParentFrame, NO_VISUAL_SCALE};
 use super::lookup::{layout_item_of, safe_area_of};
 use super::measure::{box_per_rect, container_inner, LayoutMeasurer};
 use super::placement::{
-    pass_through_frame, resize_box, resolve, resolve_in_rect, translate_placement, CanvasNodeInput,
+    pass_through_frame, resize_box, resolve, resolve_in_rect, scale_placement, translate_placement, CanvasNodeInput,
     CanvasNodePlacement,
 };
 use super::safe_area::{inset_box, world_rect_to_local, CanvasRect};
@@ -459,10 +462,11 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         // ── 2. 安全領域（CanvasComponent を持つノードの箱を縮める）──
         let safe_applied = self.apply_safe_area(actor, frame, &mut placement);
 
-        // ── 2b. 見た目の上書き（W2-7。レイヤーの底上げと平行移動。コンテナの並べ方より前に当て、子孫が付いてくる）──
-        self.apply_visual_overrides(actor, frame, &mut placement);
+        // ── 2b. 見た目の上書き（W2-7・3b。レイヤーの底上げ・平行移動・倍率。コンテナの並べ方より前に当て、子孫が付いてくる）──
+        let visual_scale = self.apply_visual_overrides(actor, frame, &mut placement);
 
         // ── 3. コンテナ（子を測って並べ、子ごとの矩形を割り当て待ちに積む）──
+        // 見た目の倍率（3b）を当てたノードは、子の累積スケール・サイズ倍率・箱がそろって倍率の空間にあるので、並びもその空間で求める
         let child_cumul = placement.child_frame.cumul_scale;
         let Some(spec) = container_of(actor, self.world, child_cumul) else {
             return placement;
@@ -473,9 +477,14 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
             // 親のコンテナの下: 親が測ったときと同じ条件で箱を決める（測った結果の表を引ける）
             (Some(slot), false) => {
                 let preferred = layout_item_of(actor, self.world).map_or([None, None], |it| it.preferred());
+                // 割り当てられた矩形は親のローカル（倍率の前）なので、倍率を当てたノードは倍率の空間の大きさにする
+                let slot_size = match visual_scale {
+                    Some(s) => [slot.size[AXIS_X] * s[AXIS_X], slot.size[AXIS_Y] * s[AXIS_Y]],
+                    None => slot.size,
+                };
                 let tight: Constraint = [AXIS_X, AXIS_Y].map(|a| {
                     slot.fill[a]
-                        .then_some(slot.size[a])
+                        .then_some(slot_size[a])
                         .or(preferred[a].map(|p| p * placement.size_scale[a]))
                 });
                 let canvas_box = input.canvas.map(|cc| [cc.width * child_cumul[AXIS_X], cc.height * child_cumul[AXIS_Y]]);
@@ -562,34 +571,49 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         Some(slot)
     }
 
-    /// CanvasLayoutItem の見た目の上書き（W2-7。実行中だけの値）を当てる。
+    /// CanvasLayoutItem の見た目の上書き（W2-7・W2 の手直し 3b。実行中だけの値）を当てる。
     ///
     /// - レイヤーの底上げ: 祖先の分（`frame.layer_bias`）に自分の `layer_bias` を足し、自分の表示と子へ渡す文脈に持たせる
     /// - 見た目の平行移動: `translate × 親の累積スケール + translate_fraction × 自分の矩形` だけ有効位置と行列をずらす
     ///   （自分の矩形 = レイアウトが割り当てた矩形。無ければ CanvasComponent の領域。どちらも無ければ割合は効かない）
+    /// - 見た目の倍率（3b）: 平行移動の後の矩形の中心の周りに縮める・広げる（`scale_placement`。子孫・描画・当たり判定が付いてくる）
     ///
-    /// CanvasLayoutItem を持たない・値がすべて 0 のノードは何もしない（従来とまったく同じ計算のまま）。
-    fn apply_visual_overrides(&mut self, actor: &Actor, frame: &CanvasParentFrame, placement: &mut CanvasNodePlacement) {
-        let Some(item) = layout_item_of(actor, self.world) else { return };
+    /// CanvasLayoutItem を持たない・値が既定（0・倍率 1）のノードは何もしない（従来とまったく同じ計算のまま）。
+    ///
+    /// # 戻り値
+    /// 当てた見た目の倍率（倍率を当てなければ None。コンテナの並べ方が矩形の大きさを倍率の空間へ合わせるのに使う）。
+    fn apply_visual_overrides(
+        &mut self,
+        actor: &Actor,
+        frame: &CanvasParentFrame,
+        placement: &mut CanvasNodePlacement,
+    ) -> Option<[f32; 2]> {
+        let item = layout_item_of(actor, self.world)?;
         if item.layer_bias != 0 {
             let bias = placement.layer_bias.saturating_add(item.layer_bias);
             placement.layer_bias = bias;
             placement.child_frame.layer_bias = bias;
         }
-        if !item.has_translation() {
-            return;
+        if item.has_translation() {
+            let own_size = match (placement.layout_rect, placement.canvas_base) {
+                (Some(rect), _) => rect,
+                (None, Some(_)) => placement.eff_size,
+                (None, None) => [0.0, 0.0],
+            };
+            let offset = item.translation_px(frame.cumul_scale, own_size);
+            if offset != [0.0, 0.0] {
+                *placement = translate_placement(placement, frame, offset);
+                self.table.stats.translated += 1;
+            }
         }
-        let own_size = match (placement.layout_rect, placement.canvas_base) {
-            (Some(rect), _) => rect,
-            (None, Some(_)) => placement.eff_size,
-            (None, None) => [0.0, 0.0],
-        };
-        let offset = item.translation_px(frame.cumul_scale, own_size);
-        if offset == [0.0, 0.0] {
-            return;
+        // 見た目の倍率（既定 (1, 1) は has_visual_scale が false＝ここで素通し。計算は従来のまま）
+        if !item.has_visual_scale() {
+            return None;
         }
-        *placement = translate_placement(placement, frame, offset);
-        self.table.stats.translated += 1;
+        let scale = item.effective_visual_scale();
+        *placement = scale_placement(placement, frame, scale);
+        self.table.stats.scaled += 1;
+        Some(scale)
     }
 
     /// 安全領域の部品があれば、ノードの箱を安全領域の内側へ縮める（W2-1b）。
@@ -611,7 +635,11 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         // 祖先の見た目の平行移動（W2-7）の分だけ安全領域も一緒にずらす＝ずらす前の位置で縮める量を求める
         // （横から入ってくる画面・下から出るシートの途中で、中身の箱が画面の端に合わせて縮み直さない）
         let shift = frame.visual_shift;
-        let safe_world = if shift == [0.0, 0.0] {
+        let safe_world = if frame.visual_scale != NO_VISUAL_SCALE {
+            // 祖先の見た目の倍率（3b）もあるときは同じ写像（p → 倍率 × p + ずらし）で安全領域を写す＝倍率の前の位置・大きさで
+            // 縮める量を求め、縮めた箱も倍率どおりに縮む（予測型の戻るで縮めている画面の中身が縮み直さない）
+            visual_rect(safe_world, frame.visual_scale, shift)
+        } else if shift == [0.0, 0.0] {
             safe_world
         } else {
             CanvasRect {
@@ -624,6 +652,18 @@ impl<'w, 'e> TableBuilder<'w, 'e> {
         *placement = resize_box(placement, frame, rect.min, rect.size());
         self.table.stats.safe_areas += 1;
         true
+    }
+}
+
+/// ワールドの矩形を見た目の写像（p → scale × p + shift。W2 の手直し 3b）で写す【純関数】。
+///
+/// 負の倍率（裏返し）では端が入れ替わるので、写した 2 つの端の小さい方・大きい方を取り直す。
+fn visual_rect(rect: CanvasRect, scale: [f32; 2], shift: [f32; 2]) -> CanvasRect {
+    let a = [0, 1].map(|k| scale[k] * rect.min[k] + shift[k]);
+    let b = [0, 1].map(|k| scale[k] * rect.max[k] + shift[k]);
+    CanvasRect {
+        min: [a[0].min(b[0]), a[1].min(b[1])],
+        max: [a[0].max(b[0]), a[1].max(b[1])],
     }
 }
 

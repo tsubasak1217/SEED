@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use crate::engine::components::{CanvasGestureComponent, ComponentKind, ScriptComponent};
 use crate::engine::core::input::gesture::{
-    pointer_clock_now, GestureArenaSet, GestureEmit, GestureHitScene, GestureThresholds, PointerLogEntry,
+    pointer_clock_now, GestureArenaSet, GestureEmit, GestureHitScene, GestureThresholds, PointerLogEntry, ReleaseReport,
 };
 use crate::engine::core::scripting::gesture_ffi::RawGestureEvent;
 use crate::engine::core::scripting::{publish_input, publish_physics_sender, with_actors, with_world, ScriptingHost};
@@ -185,6 +185,8 @@ impl App {
         let entries = entries_to_canvas(entries, window);
         let mut emits = std::mem::take(&mut self.gestures.pending);
         emits.extend(self.gestures.arenas.process(&entries, now, &scene, &metrics));
+        // ドラッグの指を離した結果（速度と 0 にした理由。実機の確かめ用のログ。Android だけ）
+        log_release_reports(self.gestures.arenas.take_release_reports());
         // スクロールのシステムへ（ドラッグ・フリック・触れた指。W2-3）
         let touched = self.gestures.arenas.take_touched();
         let under = self.gestures.arenas.nodes_under_pointers();
@@ -307,6 +309,17 @@ impl App {
         }
         publish_input(None);
         publish_physics_sender(None);
+    }
+}
+
+/// ドラッグの指を離した結果を `[SEED GESTURE] release …` の 1 行ずつ出す（`platform::CURRENT.lifecycle_diag_log` が真の
+/// ときだけ＝Android。PC では出さない。行の形は gesture/release_report.rs。docs/input_gestures.md §5.1 の規則の確かめ用）。
+fn log_release_reports(reports: Vec<ReleaseReport>) {
+    if !crate::engine::platform::CURRENT.lifecycle_diag_log {
+        return;
+    }
+    for report in &reports {
+        eprintln!("{}", report.diag_line());
     }
 }
 

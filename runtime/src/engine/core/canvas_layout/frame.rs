@@ -32,6 +32,9 @@ pub const NO_LAYER_BIAS: i32 = 0;
 /// 見た目の平行移動なし（W2-7）。
 pub const NO_VISUAL_SHIFT: [f32; 2] = [0.0, 0.0];
 
+/// 見た目の倍率なし（W2 の手直し 3b）。
+pub const NO_VISUAL_SCALE: [f32; 2] = [1.0, 1.0];
+
 /// 親から子へ渡すレイアウトの文脈。
 ///
 /// フォルダノード（レイアウト透明）は受け取った文脈をそのまま子へ渡し、
@@ -52,7 +55,13 @@ pub struct CanvasParentFrame {
     pub layer_bias: i32,
     /// 祖先の見た目の平行移動の和（ワールドの画素。`CanvasLayoutItem.translate*`。W2-7）。
     /// 安全領域をずらす前の位置で求める（画面が横から入ってくる途中で、中身の箱が画面の端に合わせて縮まない）ために持つ。
+    /// 祖先に見た目の倍率（3b）があるときは、下の `visual_scale` と組で「倍率とずらしの前のワールドの点 p →
+    /// 実際のワールドの点 `visual_scale × p + visual_shift`」の写像の平行移動の部分になる（倍率が 1 なら従来どおりずらしの和）。
     pub visual_shift: [f32; 2],
+    /// 祖先の見た目の倍率の積（ワールドの軸ごと。`CanvasLayoutItem.visual_scale`。W2 の手直し 3b。既定 (1, 1)）。
+    /// 安全領域を倍率の前の位置・大きさで求める（予測型の戻るで縮めている画面の中身の箱が、画面の端に合わせて縮み直さない）ために持つ。
+    /// 回転したノードの縦横で違う倍率はワールドの軸へ写すと近似になる（同じ倍率・回転なしなら正確）。
+    pub visual_scale: [f32; 2],
 }
 
 impl CanvasParentFrame {
@@ -68,6 +77,7 @@ impl CanvasParentFrame {
             zone,
             layer_bias: NO_LAYER_BIAS,
             visual_shift: NO_VISUAL_SHIFT,
+            visual_scale: NO_VISUAL_SCALE,
         }
     }
 
@@ -84,7 +94,15 @@ impl CanvasParentFrame {
         cumul_scale: [f32; 2],
         zone: CanvasDrawZone,
     ) -> Self {
-        Self { anchor_basis, world_rs, cumul_scale, zone, layer_bias: NO_LAYER_BIAS, visual_shift: NO_VISUAL_SHIFT }
+        Self {
+            anchor_basis,
+            world_rs,
+            cumul_scale,
+            zone,
+            layer_bias: NO_LAYER_BIAS,
+            visual_shift: NO_VISUAL_SHIFT,
+            visual_scale: NO_VISUAL_SCALE,
+        }
     }
 
     /// 最上位（親が居ない）か。ルートキャンバスだけが持つ規則（自動解像度・自動スケール・

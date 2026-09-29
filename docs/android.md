@@ -153,7 +153,8 @@ runtime/android/
   `isMinifyEnabled = false`・`signingConfigs.release`。署名の材料 `seed.signing.*` が揃わなければ `preReleaseBuild` で止める）。
 - ランチャーのアイコン（段階D・§24.7）: `android:icon="${seedAppIcon}"`。`seed.launcherIcon=generated` なら `@mipmap/ic_launcher`
   （`src/seedIcon/res/`）、無ければシステムの既定のアイコン。
-- `android:enableOnBackInvokedCallback="false"`（段階D）: targetSdk 36 の予測型の「戻る」を使わず、戻るキーをネイティブへ届ける（§24.2）。
+- `android:enableOnBackInvokedCallback="${seedEnableOnBackInvokedCallback}"`（段階D・W2 の手直し P1-3）: 既定の `"false"` は targetSdk 36 の予測型の「戻る」を
+  使わず、戻るキーをネイティブへ届ける（§24.2）。プロジェクト設定 `android.predictive_back` が true のときだけ `"true"`（`-Pseed.predictiveBack=true`。§25.18）。
 
 - `applicationId`・`versionCode`・`versionName`・ランチャーの名前（`android:label="${seedAppLabel}"`）はプロジェクト設定の
   `android` 節から Gradle のプロジェクトプロパティで受け取る（§18。渡されなければ `com.seedengine.runtime` / `SEED Runtime` 等）。
@@ -913,6 +914,7 @@ winit WindowEvent::Touch { id, phase, location }    Android: MotionEvent の各�
 | `runtime/src/engine/core/scripting/host_api.rs`（`ffi_input_touch`）・`input_bridge.rs`（`TOUCH_*`） | FFI（`ScriptHostApi` の末尾に `input_touch` を追加） |
 | `scripting/src/Api/Touch.cs`・`TouchPhase.cs`・`Input.cs`・`ScriptHost.cs` | C# API |
 | `runtime/android/native/src/debug_hooks.rs` | `debug.seed.touch_test` を読んで合成タッチ列を要求する |
+| `runtime/android/app/…/input/TouchTimeline.java`・`runtime/android/native/src/touch_timeline.rs`・`runtime/src/engine/core/input/touch/os_timing/` | MotionEvent の時刻（eventTime）と履歴の控え（2026-09-29）。winit が捨てる時刻と履歴を `MainActivity.processMotionEvent`（glue へ渡す前）で控えて JNI で積み、`Input::process_touch` が winit の Touch と突き合わせてジェスチャーの記録にだけ使う（`Input.GetTouch` の値は変えない。[input_gestures.md](input_gestures.md) §5） |
 
 ### 12.2 決まりごと
 
@@ -957,6 +959,8 @@ winit WindowEvent::Touch { id, phase, location }    Android: MotionEvent の各�
 | `[SEED TOUCH] Started id=0 pos=(540.0, 1200.0) ...` | winit から届いた生イベント（`app/lifecycle_diag.rs`） |
 | `[SEED TOUCH FRAME] f=12 n=1 #0:Began(540.0,1200.0)d(0.0,0.0) \| mouse=(540.0,1200.0) L=PD-` | フレーム末の入力状態。`n` = `Input.TouchCount`、`#指番号:段階(位置)d(移動量)` が `GetTouch(i)`、`mouse` と `L`（P=押下中 / D=押した瞬間 / U=離した瞬間）がタッチ由来のマウス。変化のあったフレームだけ出る |
 | `[SEED TOUCH TEST] Started id=0x5eed0000 pos=(...)` | 検証用の合成タッチ列（下記） |
+| `[SEED TOUCH TIME] java DOWN id=0 ev_ns=… pos=(…)` / `[SEED TOUCH TIME] id=0 Started matched=yes ev_ns=… rec_ns=… lag_ms=… hist=… matched_moves=n/m` | MotionEvent の時刻の控え（2026-09-29。Java の行はデバッグ版の APK の DOWN・UP だけ）。`matched=yes` で `rec_ns`（ジェスチャーの記録の時刻）が `ev_ns`（MotionEvent の時刻）と 1 µs 以内で一致すれば控えが効いている。`lag_ms` は受け取った時刻との差、`hist` は Ended までに記録した履歴の標本の数 |
+| `[SEED GESTURE] release id=0 v_dp=(0,0) raw_dp=(…) rule=lift_off lift_probe_dp=…` | ドラッグの指を離した速度と、0 にした理由（`ok`・`stopped`・`lift_off`・`short_span`。[input_gestures.md](input_gestures.md) §5.1） |
 
 ```powershell
 # 1 本指（実機・エミュレータ共通）
@@ -1258,6 +1262,9 @@ wgpu 25 の `Features::PIPELINE_CACHE`（Vulkan のみ）が使える環境で�
 - アプリは自動で終了しない（ネイティブ側が処理済みにするので onBackPressed は呼ばれない。§10）。ポーズ・終了確認はスクリプトが決める。
 - 置き換え元を論理キー（BrowserBack）でなく Android のキーコードにしたのは、PC のキーボードの「ブラウザの戻る」キー
   （物理キー KeyCode::BrowserBack）と混同しないため。
+- 予測型の戻る（opt-in。プロジェクト設定 `android.predictive_back`。W2 の手直し P1-3）は §25.18。使う APK の Android 13 以上では KEYCODE_BACK の
+  代わりに `OnBackInvokedCallback` が戻るを受け、確定したら合成の KEYCODE_BACK をこの節と同じ入口（GameActivity の onKeyDown）へ渡すので、
+  スクリプトには同じく Escape で届く（手ぶりの進み具合は別に `platform.back_*` のイベントで届く）。使わない APK（既定）はこの節のまま。
 
 ### 14.6 確認方法
 
@@ -3418,6 +3425,7 @@ Google Play へ出せる配布物を作れるようにした。**開発用（deb
   Gradle 側も `preReleaseBuild` で止める二重の守り）。
 - **targetSdk を 35 → 36 に上げた**（Google Play は 2026-08-31 以降の新規・更新に API 36 以上を求める。§24.2）。Android 16 の
   予測型の「戻る」で KEYCODE_BACK が届かなくなるのを `android:enableOnBackInvokedCallback="false"` で止めた（戻るキー → Escape は従来どおり。§14.5）。
+  予測型の戻るを使う opt-in（プロジェクト設定 `android.predictive_back`）は W2 の手直し P1-3 で足した（§25.18。既定は今も `"false"`）。
 - アイコンはプロジェクト設定 `android.icon`（PNG）から各密度の mipmap とアダプティブアイコン（前景＋背景色 `android.icon_background`）を
   ビルドのときに生成する（NuGet を足さない .NET 標準だけの PNG の読み書き。§24.7）。
 - 配布用のビルドは、ビルドの前（設定）と後（できた配布物を aapt2・zipalign・apksigner / keytool・ELF で読み直す）に Google Play の要件を
@@ -3438,7 +3446,7 @@ targetSdk 36 で効く動作の変更（[behavior-changes-16](https://developer.
 
 | 変更 | 影響 | 対処 |
 |---|---|---|
-| 予測型の「戻る」が既定になり、`onBackPressed` が呼ばれず `KEYCODE_BACK` がアプリへ届かない | GameActivity が戻るキーをネイティブへ渡せず、スクリプトの `Input.GetKeyDown(KeyCode.Escape)`（§14.5）が効かなくなる | マニフェストの `<application android:enableOnBackInvokedCallback="false">`（公式の一時的な回避。将来の Android で効かなくなったら `OnBackInvokedCallback` へ移す。backlog） |
+| 予測型の「戻る」が既定になり、`onBackPressed` が呼ばれず `KEYCODE_BACK` がアプリへ届かない | GameActivity が戻るキーをネイティブへ渡せず、スクリプトの `Input.GetKeyDown(KeyCode.Escape)`（§14.5）が効かなくなる | マニフェストの `<application android:enableOnBackInvokedCallback="false">`（公式の一時的な回避。将来の Android で効かなくなったら `OnBackInvokedCallback` へ移す。backlog）。W2 の手直し P1-3 から値はプレースホルダで、プロジェクト設定 `android.predictive_back` が true のときだけ `"true"`（`OnBackInvokedCallback` で受けて Escape へ渡す。§25.18） |
 | エッジツーエッジの無効化（`windowOptOutEdgeToEdgeEnforcement`）の廃止 | 無し（35 で既に強制。無効化はしていない。安全領域は §15） | — |
 | 最小幅 600dp 以上の画面で向き・サイズ変更・縦横比の制限を無視 | ゲーム（`android:appCategory="game"`）は対象外 | 既に `appCategory="game"` |
 | その他（`elegantTextHeight`・JobScheduler・健康の権限・Bluetooth 等） | SEED は使っていない | — |
@@ -3683,7 +3691,7 @@ SeedPak / SeedAndroid に ILC の工程（ABI ごと・パックの取得・NDK 
 
 - Google Play Console への実際の提出（内部テストへのアップロード）は未確認（アカウントが要る）。
 - 予測型の「戻る」の無効化（`enableOnBackInvokedCallback="false"`）は公式にも一時的な回避。将来の Android で効かなくなる前に `OnBackInvokedCallback` で
-  戻るをネイティブへ渡す形に移す。
+  戻るをネイティブへ渡す形に移す。→ W2 の手直し P1-3 で、その形を opt-in（`android.predictive_back: true`）として作った（§25.18）。既定は今も `"false"`。
 - Gradle のデーモンが配布用のビルドの後も次のビルドまで署名のパスワードを環境に持つ（§24.5）。
 - ネイティブのデバッグシンボル（`ndk.debugSymbolLevel`）を AAB に入れていないので、Play Console のクラッシュのスタックに関数名が出ない。
 - アセットフォルダの中にアイコンの PNG を置くと、`project_settings.json` から参照されているとみなされ pak にも入る（数十 KB）。気になるならアセットの外に置いて `../` で指定する。
@@ -4695,7 +4703,14 @@ MainActivity … onResume（super・音声フォーカスの後）で Permission
   （W1-7 の手作業の確認 M7。roadmap §2.9.2）。以前は前回の状態がプロセスの中の表だけで、起動し直すと比べる相手が無く `granted → denied` が届かなかった。
   今は起動し直した最初の onResume でも保存した値と比べて流す。書くのは状態が変わったときだけで、`commit`（同期）にした（止められる前にディスクへ届いたかを
   言い切るため。`apply` は Activity の停止のときに Android が待つはずだが確かめていない）。
-  起動し直した直後に流したイベントは最初のフレームで配られるので、それより後に `On` するスクリプトは受け取れないことがある（推論。スクリプトは起動時に `Check` でも確かめる）。
+  ~~起動し直した直後に流したイベントは最初のフレームで配られるので、それより後に `On` するスクリプトは受け取れないことがある~~（§25.14.8 の実機の M7 で起きた）。
+  **2026-09-29 に直した（W2 の手直し P1-2）**: エンジンは、最初のシーンのスクリプトの `OnStart` が済むまで（スクリプトのある BeginFrame を 1 回回し終えるまで）
+  プラットフォームのイベントを取り出さずに基盤の箱（上限 256 件・古いものから捨てる）に保持し、`OnStart` の**次のフレーム**の BeginFrame でまとめて配る
+  （`runtime/src/engine/core/scripting/platform_bridge.rs` の `mark_scripts_ready`）。`OnStart` で `this.On`・`PlatformEvents.OnEvent` に登録した受け手に届く。
+  残る注意: (1) `OnStart` の中で生成したアクターのスクリプトは、その次のフレームで `OnStart` するので、保持していた分が配られるのと同じフレームになり、
+  並びによっては受け取れないことがある（スクリプトのシステムはスクリプトごとに OnStart → BeginFrame を順に呼ぶため）。(2) 保持するのは起動（エディタでは Play の開始）
+  から最初の準備までだけで、Play の中のシーンの切り替えでは従来どおり届いたフレームで配る。(3) エディタの Play の区切り（開始・停止）では従来どおり捨てる。
+  起動時の状態は、これまでどおり `Check` でも確かめる（イベントは「変化」の知らせで、保持の上限を超えた古い分は捨てられる）。
 - 確認の画面で許可したときは、`permission_result`（onRequestPermissionsResult）→ `permission_changed`（直後の onResume）の順に両方届く（結果は onResume より先に配られる
   という順序は記憶による。実機で確かめる）。
 - 機能の無いゲームでは宣言の一覧（1 回読んで持つ）を見るだけで、システムのサービスへは問い合わせない。
@@ -4766,6 +4781,9 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell "run-as $APP cat shared_prefs/seed_pl
   `権限 post_notifications の状態が変わりました: granted → denied`（保存した前回と比べて出た＝§25.14.5 の修正が効いた）。エンジンは受け取った（`[SEED PLATFORM]
   イベントを受け取りました`）が、**スクリプトの受け手（見本のシーンの試験用スクリプト。`OnStart` で `PlatformEvents.OnEvent`・`this.On`）には届かなかった**（受け手の
   `OnStart` が 0.86 秒後）。§25.14.5 の「後から `On` するスクリプトは受け取れないことがある」が実機で起きた（backlog）。オンへ戻して前面へ戻ると `denied → granted` は届いた。
+- **直した後（2026-09-29・W2 の手直し P1-2。roadmap §3.9.3）**: スクリプトの準備まで保持して配る形にした（§25.14.5）。同じ機序（受け手の OnStart より前に届く知らせ）を、
+  起動の直後の `EMIT_TEST_EVENT`（デバッグ版の受信機）で実機で確かめた: 変更前の APK は `platform.connected`・`platform.test_event` とも受け手に届かず、変更後は受け手の
+  OnStart の 0.28 秒後に 2 件とも届いた。M7 そのもの（通知の取り消し → 開き直す）の再確認は利用者の操作が要るので未実施（backlog）。
 
 #### 25.14.9 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
 
@@ -4819,6 +4837,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s $SERIAL shell "run-as $APP cat shared_prefs/seed_pl
 | `app.open_url` | `{url}` → `{scheme}` | `UrlPolicy` で判定 → `UrlLauncher`（25.15.4）。呼び出し元のスレッドで同期 | `invalid_argument`・`scheme_not_allowed`・`no_activity`・`no_handler` |
 | `app.open_app_settings` | `{}` → `{}` | UI スレッドで `ACTION_APPLICATION_DETAILS_SETTINGS`＋`package:<アプリ ID>`（Activity から開くので戻ると onResume。開けなければログだけ） | `no_activity` |
 | `app.ui_mode`（W2-9） | `{}` → `{night}` | 端末の明暗の設定（`Configuration.uiMode` の夜の bit。§25.17） | （なし。取れなければ `unknown`） |
+| `app.set_back_callback`（W2 の手直し P1-3） | `{on}` → `{on, enabled}` | 予測型の戻るが有効なら UI スレッドで自分のコールバックを出し入れする（§25.18。無効なら何もせず `enabled: false`） | `invalid_argument`・`no_activity` |
 | `haptics.tap` | `{}` → `{}` | `HapticFeedback.tap`（25.15.5）。呼び出し元のスレッドで同期 | `no_vibrator`・`not_initialized` |
 | `haptics.vibrate` | `{ms}` → `{ms}` | ms は 1 以上の数（小数は切り捨て）で、5000 を超えたら 5000 にそろえる → `HapticFeedback.vibrate` | `invalid_argument`・`no_vibrator`・`not_initialized` |
 
@@ -5228,3 +5247,136 @@ SEED.UI のテーマの「端末に従う」（`UiTheme.SetBrightnessMode(UiBrig
   → 2026-09-28 午後の W2 の実機の回（Pixel 6a / Android 17。roadmap §3.9）: 端末のダークテーマ オン（`cmd uimode night` = yes）で、「端末」を押したときの
   問い合わせ（`app.ui_mode`）の結果は C# 側で dark（`[SEED.UI] 端末の明暗: dark`）。切り替えの知らせ（`onConfigurationChanged` → `platform.ui_mode_changed`）は
   未実施（fps の計測へ切り替えた）。
+
+### 25.18 予測型の戻る（opt-in。W2 の手直し P1-3・2026-09-29）
+
+Android の予測型の戻る（戻るの手ぶりの途中で今の画面が縮み、前の画面が覗く。根ではホームへ戻る見た目）を SEED.UI の戻るの段で出すための土台。
+**opt-in**（プロジェクト設定 `android.predictive_back: true`）で、無い・false のプロジェクト（WarashibeFishing など）は Gradle の引数・生成物・戻るの
+振る舞いが従来と同じ（§25.18.6）。この段（3a）は設定・マニフェスト・Java のコールバック・イベントと命令・C# の API まで。SEED.UI の BackDispatcher が
+「受ける層があるか」を知らせ、進み具合で画面を縮める見た目は次の段（3b。[ui_navigation.md](ui_navigation.md) §5.1。§25.18.5 の末尾）。
+
+#### 25.18.1 設定 → マニフェスト・res・Gradle
+
+| 置き場 | predictive_back が無い・false | true |
+|---|---|---|
+| `project_settings.json` の `android` 節 | キーを書かない（false も書かない） | `"predictive_back": true`（エディタの設定ウィンドウに欄は無い。手で書く。ウィンドウで保存しても消えない） |
+| Gradle の引数（`GradleInvocation`） | 渡さない（引数も APK の工程の指紋も従来と同じ） | `-Pseed.predictiveBack=true`（`seed.appCategory` の後・署名の前） |
+| main のマニフェスト `android:enableOnBackInvokedCallback="${seedEnableOnBackInvokedCallback}"` | `"false"`（build.gradle.kts の既定。知らない値も警告して `"false"`） | `"true"` |
+| 生成する `src/seedFeatures/res/values/seed_platform.xml` | 従来と同じバイト列（`seed_system_bars_visible` だけ。頭のコメントも同じ） | `<bool name="seed_predictive_back">true</bool>` と頭のコメントの 1 行を足す |
+| main の `res/values/seed_platform_defaults.xml` | `seed_predictive_back` = false（既定値。生成物が無いときもこれ） | 生成物の true が上書きする |
+
+- 型の読み方: `AndroidAppSettings.PredictiveBack`（`bool?`）。JSON の true / false と文字列の `"true"` / `"false"`（大文字小文字・空白は問わない）だけを読み、
+  ほかの型・語は未設定。`AndroidPlatformFeatureResolver` → `AndroidPlatformFeatureSet.PredictiveBack`（true のときだけ）→ `AndroidPlatformManifestWriter`
+  （values）と `GradleBuildStep.Parameters`（`GradleBuildParameters.PredictiveBack`）。ログの 1 行（`Describe`）は使うときだけ末尾に「・予測型の戻る」。
+- build.gradle.kts は `-P` と生成した values の印（`predictiveBackResourceLine`）が食い違えば警告する（手で gradlew を叩いた・生成物が古いとき。
+  マニフェストが `"true"` なのに印が false だと、Java がコールバックを登録せず戻るが Escape に届かない。根ではシステムの戻るが finish → プロセスの終了になりうる）。
+  ビルドは止めない。ログに `SEED: enableOnBackInvokedCallback=<値>` を 1 行出す。
+
+#### 25.18.2 Java（MainActivity は受け口だけ）
+
+```
+[メインプロセス] app/src/main/java/com/seedengine/runtime/
+ back/BackCallbackController   … 本体。有効か（印 R.bool.seed_predictive_back が true かつ API 33 以上）を決め、onCreate（super.onCreate の後）の attach で
+                                  「アプリが戻るを受ける」状態で始める。setAppHandlesBack(on)（UI スレッド・同じ状態なら何もしない・変わったらログ 1 行）
+ back/BackDispatcherApi33      … 窓の OnBackInvokedDispatcher（API 33）への登録と外し（API 33 以上の端末でだけ作る）
+ back/BackInvokedCallbackApi33 … API 33 の OnBackInvokedCallback（確定だけ）
+ back/BackAnimationCallbackApi34 … API 34 以上の OnBackAnimationCallback（始まり・進み具合・取り消し・確定。BackEvent を型の無い値へ）
+ back/BackSystemCallbacksApi36 … API 36 の SystemOnBackInvokedCallbacks.moveTaskToBackCallback
+ back/BackGestureReporter      … 手ぶりの番号・イベント（SeedPlatform.emitLocalEvent。seq 0）・確定で BackKeyInjector
+ back/BackKeyInjector          … 合成の KEYCODE_BACK を GameActivity の onKeyDown / onKeyUp へ（§25.18.4）
+ platform/app/BackCallbackHost … MainActivity が実装する口（isPredictiveBackEnabled・setAppHandlesBack。window/SystemBarsHost と同じ形）
+ platform/local/BackCallbackCommand … app.set_back_callback（MainProcessCommands の表に 1 行）
+ PlatformContract              … METHOD_APP_SET_BACK_CALLBACK・KEY_APP_ON・KEY_APP_ENABLED・EVENT_BACK_*・KEY_BACK_*・BACK_EDGE_*（wire.rs と突き合わせる）
+```
+
+- API 33 未満の端末でも読み込めるよう、`android.window` の型は API ごとのクラスに閉じ込め、SDK_INT で分けて作る（API 34 の型のクラスは static の `create` を通す）。
+- 自分のコールバックは `PRIORITY_DEFAULT`（0）で登録する（同じ優先度は後から登録したものが上＝IME が出ている間は IME が先に戻るを受ける見込み。記憶による）。
+
+| API | アプリが受ける（on。起動したときの状態） | 受ける層が無い＝根（off） |
+|---|---|---|
+| 33 | `BackInvokedCallbackApi33` を登録（確定だけ届く） | 起動の Intent がランチャーの起動（ACTION_MAIN＋CATEGORY_LAUNCHER だけ・data / type なし）なら外す（システムが背面へ回す。Android 12 以降の「ランチャーの根は finish しない」。記憶による）。それ以外の起動（PlatformEntry の別名・`am start -n`〈SeedAndroid の run〉）は残す（システムの戻るが finish → プロセスの終了になるおそれ。Escape → `App.MoveTaskToBack` の従来の道で背面へ） |
+| 34・35 | `BackAnimationCallbackApi34` を登録（始まり・進み具合・取り消し・確定） | 33 と同じ |
+| 36 以上 | 34 と同じ（システムの背面行きを登録していれば外す） | 自分のコールバックを外し、`SystemOnBackInvokedCallbacks.moveTaskToBackCallback` を `PRIORITY_DEFAULT` で登録（どこから起動した根でも finish せずに背面へ回り、「ホームへ戻る」の予測アニメーションが出る見込み。記憶による。実機で確かめる） |
+
+- ランチャーの起動かは onCreate の時点の `getIntent()`（singleTask の根なのでタスクの最初の Intent）で決める。判定はシステムの判定より厳しくする
+  （厳しい側に外れても自分のコールバックを残すだけ。緩い側に外れると finish → プロセスの終了）。
+- MainActivity は破棄と同時にプロセスを終えるので、コールバックを外す後始末はしない。
+
+#### 25.18.3 イベントと命令
+
+| 名前 | いつ（API） | data |
+|---|---|---|
+| `platform.back_started` | 手ぶりの始まり（34 以上。ボタンの戻るでもキーの down で来る見込み〈記憶による〉） | `{ gesture, progress, edge, touch_x, touch_y }` |
+| `platform.back_progressed` | 手ぶりが進んだ（34 以上。毎フレーム。ログは出さない） | 同じ |
+| `platform.back_cancelled` | 取り消し（34 以上。指を戻した） | `{ gesture }` |
+| `platform.back_invoked` | 確定（33 以上）。流した後に合成の KEYCODE_BACK を渡す（→ Escape） | `{ gesture }` |
+
+- `gesture` は手ぶりの通し番号（1 から）。started で 1 増え、progressed・cancelled・invoked は同じ番号。started の無い invoked（API 33・ボタンの戻る）は invoked で 1 増える。
+- `progress` は 0〜1（BackEvent.getProgress。範囲外・有限でなければそろえる）。`edge` は `left` / `right` / `none`（API 36 の EDGE_NONE〈ボタンの戻る〉と知らない値）。
+  `touch_x` / `touch_y` は窓の座標の px（有限でなければ 0。ボタンの戻るでは NaN の見込み〈記憶による〉で、org.json が NaN で例外になるのを避ける）。
+- 命令 `app.set_back_callback { on }` → `{ on, enabled }`。`enabled` は予測型の戻るが有効か（無効なら何もしない）。Activity が無ければ `no_activity`、`on` が真偽でなければ
+  `invalid_argument`。メインプロセスで答える（IPC なし）。
+- デスクトップの模擬（`desktop_sim/back_commands.rs`・`back_state.rs`）: `app.set_back_callback` は記録してログ（変わったときだけ）→ `{ on, enabled: false, simulated: true }`。
+  模擬だけの `app.sim_back_gesture { phase: started | progressed | cancelled | invoked, progress, edge }` → 同じ形のイベントを積む（`simulated: true`。
+  指の位置は 0。invoked は知らせだけで Escape は注入しない＝PC の確定は Esc キー）。番号の決まりは Java と同じ。エディタの Play の区切りで記録と番号を捨てる。
+  Android では `sim_back_gesture` は無い（`app` は local だけのモジュールではないので、最初は `connecting`、つながると `unknown_method`）。
+- ログ: Android の受け取りの箱（`platform_bridge/inbox.rs`）は `platform.back_progressed` の 1 件ごとの「受け取りました」を出さずに数え、次のほかのイベントの行に
+  「その前の毎フレームのイベント N 件はログを省きました」と添える（`wire::is_high_frequency_event`）。模擬も progressed は出さない。
+
+#### 25.18.4 合成の KEYCODE_BACK（`BackKeyInjector`）
+
+`OnBackInvokedCallback` を使うと、システムは KEYCODE_BACK をアプリの onKeyDown / onKeyUp へ届けない。確定（onBackInvoked）で `platform.back_invoked` を流した後、
+`KEYCODE_BACK` の down と up を合成して GameActivity の `onKeyDown` / `onKeyUp` へ直接渡す（従来の戻るキーと同じ入口 → `onKeyDownNative` → glue → winit → key_remap → Escape。§14.5）。
+
+- 値は adb の `input keyevent KEYCODE_BACK` と同じ（§14.7 でこの道が Escape になると確かめ済み）: downTime・eventTime = `SystemClock.uptimeMillis()`、repeat 0、meta 0、
+  deviceId = `KeyCharacterMap.VIRTUAL_KEYBOARD`（-1）、scanCode 0、flags 0、source = `InputDevice.SOURCE_KEYBOARD`。up は `KeyEvent.changeAction(down, ACTION_UP)`。
+- winit 0.30.13 の `platform_impl/android/keycodes.rs` の `to_physical_key` は key_code だけで `Unidentified(NativeKeyCode::Android(4))` を決める（deviceId・source・flags は
+  見ない）。論理キーのために `InputDevice.getDevice(deviceId)` の KeyCharacterMap を読む（android-activity 0.6.1 の `input/sdk.rs`。0 は引けずに警告になるので -1 にした。
+  -1 が端末の仮想キーボードとして引けるのは記憶による。引けなくても論理キーが BrowserBack になるだけで Escape は変わらない）。glue の `default_key_filter` は音量・カメラ・ズームだけを捨てる。
+- down と up を続けて渡すので、エンジンは同じフレームに押して離したと見る（`Input.GetKeyDown(Escape)` は true。`[SEED KEY FRAME] … Escape:down+up`）。
+- `onKeyUp` を直接呼ぶので up に FLAG_TRACKING が付かず、ネイティブが受け取らなかった（破棄の後）ときも Activity.onKeyUp が onBackPressed（finish）を呼ぶことは無い。
+  受け取らなければ `[SEED BACK] 合成の KEYCODE_BACK をネイティブが受け取りませんでした` を出す。
+- **知らせ（`platform.back_invoked`）とキー（Escape）は別の道で届く**ので、同じフレームとは限らない（SEED.UI は番号で同じ手ぶりかを見分ける。3b）。
+
+#### 25.18.5 スクリプト（C#）
+
+`App.SetBackCallbackEnabled(bool on)`（返り値＝基盤が受け付けて予測型の戻るが有効か）・`App.IsPredictiveBackEnabled`（最後の返答の enabled。一度も呼んでいなければ false）・
+イベントの名前 `App.BackStartedEvent` / `BackProgressedEvent` / `BackCancelledEvent` / `BackInvokedEvent`・読み取り `BackGestureEvent.TryParse(json, out e)`
+（`Phase`・`Gesture`・`Progress`・`Edge`〈`BackEdge.None / Left / Right`〉・`TouchX`・`TouchY`・`Simulated`）・模擬 `PlatformDiagnostics.SimulateBackGesture(phase, progress, edge)`。
+詳しくは [scripting_api.md](scripting_api.md) の「予測型の戻る」。置き場は `scripting/src/Api/Platform/App/`（`App.cs`・`BackJson.cs`・`BackGestureEvent.cs`・`BackEdge.cs`・
+`BackGesturePhase.cs`）と `PlatformDiagnostics.cs`。
+**SEED.UI の部品（ScreenStack・TabHost・ModalHost・ToastHost）を置いたシーンでは、戻るの段（BackDispatcher）が受ける層の有無を自動で知らせる**（フレームに 1 回
+`WouldHandle` を計算し、変わったときだけ `SetBackCallbackEnabled`。無効と分かったら以後は呼ばない）。手ぶりの間は閉じるものを縮めて見せ、Escape で確定する
+（W2 の手直し 3b。[ui_navigation.md](ui_navigation.md) §5.1）。SEED.UI を使わないアプリ（WarashibeFishing）は誰も呼ばないので、起動したときの「受ける」のまま。
+
+#### 25.18.6 predictive_back の無いプロジェクト（WarashibeFishing など）で変わらないこと
+
+- Gradle の引数（`-Pseed.predictiveBack` を渡さない）・APK の工程の指紋の材料（プロパティの一覧）・生成物（`seedFeatures` の 2 ファイル。単体テスト
+  `断片: 機能なしは…` が足す前の SHA-256 と突き合わせる）・マージ後のマニフェストの `enableOnBackInvokedCallback="false"` は従来と同じ。
+- Java は何も登録しない（`[SEED BACK] 予測型の戻る: 使わない（…）` を起動時に 1 行出すだけ）。戻るキーは従来どおり KEYCODE_BACK → Escape。
+- APK の中身としては、新しいクラス（`back/` など）と res の既定値 `seed_predictive_back` が入るので dex と resources.arsc のバイト列は変わる（振る舞いは変わらない）。
+
+#### 25.18.7 確かめたこと（2026-09-29・PC）と実機の確かめ方
+
+- PC: `cargo test --lib bridge`（模擬の新しい 6 件と Java の名前の突き合わせ・`is_high_frequency_event`）、`cargo build`、`cargo ndk -t arm64-v8a -P 29 build --profile develop`、
+  `javac -Xlint:all`（android-36 の android.jar・`--release 17`・AAR の classes.jar・仮の R。main・debug の 123 ファイル＋仮の R で、注意は既存の MainActivity の this-escape 1 件だけ）、
+  `dotnet build`（SEEDScripting・SEEDEditor）、`editor/tests/AndroidPipelineTests`（171 件）。Gradle・実機は使っていない（**build.gradle.kts の変更は Gradle で動かしていない**）。
+- 実機（監督役が確かめる）: predictive_back を true にした試験のプロジェクト（`D:\SEED_projects\` の外に作る）を SeedAndroid の `run` で入れ、
+  `adb logcat -s SEED SEEDPlatform`（または `| grep -E "SEED BACK|back_|SEED KEY"`）で見る。
+  1. 起動: `[SEED BACK] 予測型の戻る: 有効（API 3x）`・`[SEED BACK] アプリが戻るを受ける（自分のコールバックを登録。…）`・`SEED: enableOnBackInvokedCallback=true`（Gradle の出力）
+  2. `adb shell input keyevent 4`: `[SEED BACK] 手ぶりの始まり gesture=1 edge=…`（34 以上）→ `[SEED BACK] 確定 gesture=1（進み具合 0 件）→ 合成の KEYCODE_BACK → Escape`
+     → `[SEED KEY] pressed … physical=Unidentified(Android(0x0004))` → `[SEED KEY FRAME] f=… Escape:down+up`
+  3. 端からの戻るの手ぶり（指で）: 始まり → （受け取りの箱の）`… platform.back_invoked（その前の毎フレームのイベント N 件はログを省きました）`・途中で指を戻すと `取り消し`
+  4. スクリプトから `App.SetBackCallbackEnabled(false)`（3b の前は試験のスクリプトか `SCRIPT_DEBUG`）: API 36 以上で `受ける層なし（根）→ 自分のコールバックを外し、
+     システムの背面行き（moveTaskToBackCallback）を登録` → 戻るでホームへ戻る予測アニメーション・`pidof` が同じ（プロセスが生きたまま背面へ）
+  5. predictive_back の無いプロジェクト（WarashibeFishing）: `[SEED BACK] 予測型の戻る: 使わない…`・`SEED: enableOnBackInvokedCallback=false`・戻るキー → Escape が従来どおり
+
+#### 25.18.8 制限・持ち越し
+
+- SEED.UI との結び付け（BackDispatcher が層の有無を `SetBackCallbackEnabled` で知らせる・縮む見た目）は 3b。この段では誰も `SetBackCallbackEnabled` を呼ばないので、
+  有効な APK は常に「アプリが受ける」状態（根でも Escape → `App.MoveTaskToBack`。システムの「ホームへ戻る」の見た目は出ない）。
+- 記憶による点（実機で確かめる）: API 36 の `moveTaskToBackCallback` の振る舞いと登録の仕方、API 33〜35 のランチャーの根の背面行きの条件、ボタンの戻るの
+  `onBackStarted`（進み具合 0）と NaN の指の位置、同じ優先度のコールバックの順（IME）、`InputDevice.getDevice(-1)`。
+- 手ぶりの途中でコールバックを外したとき（途中で受ける層が変わったとき）の振る舞いは確かめていない（取り消しが届く見込み。3b で扱う）。
+- スクリプトの準備の前（起動の直後）に届いたイベントは基盤の箱（上限 256 件）に保持されるので、その間の長い手ぶりは古い progressed から捨てられ、警告が出る。
+- プロジェクト設定ウィンドウに欄が無い（`project_settings.json` に手で書く）。

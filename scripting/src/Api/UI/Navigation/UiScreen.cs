@@ -13,6 +13,8 @@ namespace SEED.UI;
 //    OnScreenHidden()    … 覆われた・タブを離れた（動きが終わった後）
 //    OnScreenExit()      … 下ろされる・置き換えられる（実体を消す直前）
 //    OnBackPressed()     … 戻るを受けた。true を返すとスタックは下ろさない（未保存の確認ダイアログを出す・鳴動の画面で無視する）
+//    WouldConsumeBack()  … 今、戻るが来たら OnBackPressed が true を返すか（副作用なしの問い。予測型の戻るの判定に使う。
+//                           OnBackPressed を上書きしたら、同じ条件でこれも上書きする。上書きしなければ「受ける」とみなす）
 //  付けなくてもよい（ただのプレハブも積める）。Close(result) で自分を下ろし、結果を積んだ側へ返す（ScreenHandle.Closed）。
 // ============================================================
 
@@ -53,6 +55,35 @@ public abstract class UiScreen : UiWidget
 
     /// <summary>戻るを受けた。true を返すとスタックは下ろさない（既定は IgnoreBack の値）。</summary>
     protected internal virtual bool OnBackPressed() => IgnoreBack;
+
+    /// <summary>OnBackPressed を上書きした画面の型か（型ごとに 1 度だけ調べる。型を弱く持つので、スクリプトの読み直しで古い型を掴まない）。</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Type, object> OverridesBackByType = new();
+
+    /// <summary>
+    /// 今、戻るが来たら <see cref="OnBackPressed"/> が true を返すか（副作用なしの問い。W2 の手直し 3b）。
+    /// 画面のスタックが「戻るを受ける層があるか」（<see cref="BackDispatcher.WouldHandle"/>）を答えるのに使い、受ける層が無い
+    /// （根で、この画面も受けない）ときは Android の予測型の戻るをシステムへ渡す（ホームへ戻る見た目が出る）。
+    /// 既定は、IgnoreBack か、OnBackPressed を上書きしている型なら true（中身は問えないので受けるとみなす＝安全側）。
+    /// OnBackPressed を上書きした画面は、同じ条件でこれも上書きすると、受けないときに根の振る舞いが出せる。
+    /// ダイアログを開く・状態を変えるなどの副作用を持たせないこと（フレームに 1 回呼ばれうる）。
+    /// </summary>
+    protected internal virtual bool WouldConsumeBack() => IgnoreBack || OverridesOnBackPressed(GetType());
+
+    /// <summary>戻るを受けそうか（画面のスタックの問いの入口。<see cref="WouldConsumeBack"/> を呼ぶ）。</summary>
+    internal bool MayConsumeBack() => WouldConsumeBack();
+
+    /// <summary>型が OnBackPressed を上書きしているか（UiScreen 自身の既定の実装でなければ true）。</summary>
+    private static bool OverridesOnBackPressed(Type type)
+    {
+        var known = OverridesBackByType.GetValue(type, t =>
+        {
+            var method = t.GetMethod(nameof(OnBackPressed),
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
+                binder: null, types: Type.EmptyTypes, modifiers: null);
+            return method is not null && method.DeclaringType != typeof(UiScreen);
+        });
+        return (bool)known;
+    }
 
     /// <summary>自分を下ろす（いちばん上のときだけ。結果は ScreenHandle.Closed へ）。</summary>
     public bool Close(object? result = null) => Navigator is { } nav && Handle is { } handle && nav.Close(handle, result);

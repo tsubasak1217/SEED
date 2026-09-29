@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using SEED;
+using SEED.Platform;
 using SEED.UI;
 using SpriteRigTests; // テストランナー（TestHarness / Check）を共有する
 
@@ -12,6 +13,8 @@ namespace UiComponentsTests;
 /// 動きの曲線（UiCurve）・出入りの置き方（TransitionMath）・画面のスタック（ScreenStackModel）・タブ（TabModel）・
 /// 戻るの段（BackChain・NavigatorOrder）・ダイアログ（DialogModel）・シート（SheetMath）・ドラッグで閉じる（DragDismissMath）・
 /// トースト（ToastQueue）・フォーカス（FocusModel）・重なりのレイヤー（UiLayers）・タブの見た目（TabLooks）。
+/// W2 の手直し 3b: 受ける層の問い（BackChain.WouldHandle）・知らせの頻度（BackCallbackSync）・予測型の戻るのプレビュー
+/// （BackPreviewModel・BackPreviewMath）。
 /// </summary>
 public static class NavigationTests
 {
@@ -19,6 +22,8 @@ public static class NavigationTests
     private const double Eps = 1e-4;
     /// <summary>画面のプレハブの例。</summary>
     private const string A = "assets://a.actor", B = "assets://b.actor", C = "assets://c.actor", D = "assets://d.actor";
+    /// <summary>どの層も受けなかったときの名前（BackDispatcher.LayerMoveTaskToBack と同じ。BackDispatcher はエンジンに依るのでリンクしない）。</summary>
+    private const string BackDispatcherLayerMoveTaskToBack = "move_task_to_back";
 
     public static void Register(TestHarness h, UiThemeData theme)
     {
@@ -264,12 +269,18 @@ public static class NavigationTests
                                 SelectedTab = tab,
                                 TabDepth = tabDepth,
                             };
-                            // 1 回ずつ押して、期待どおりの層が受け、最後は背面へ回る
+                            // 1 回ずつ押して、期待どおりの層が受け、最後は背面へ回る。
+                            // 押す前に毎回、副作用の無い問い（WouldHandle。3b）が「押したら背面へ回らないか」と受ける層の名前に一致する
                             for (int press = 0; press < 12 && !app.MovedToBack; press++)
                             {
+                                var query = app.Query();
+                                bool wouldHandle = BackCallbackSync.AppHandlesBack(query, moveTaskToBackWhenUnhandled: true);
                                 string expected = app.Expected();
                                 string actual = app.Press();
-                                Check.Equal(expected, actual, $"状態 {bits}/{rootDepth}/{tab}/{tabDepth} の {press + 1} 回目");
+                                string at = $"状態 {bits}/{rootDepth}/{tab}/{tabDepth} の {press + 1} 回目";
+                                Check.Equal(expected, actual, at);
+                                Check.Equal(actual != BackDispatcherLayerMoveTaskToBack, wouldHandle, $"{at}: WouldHandle と押した結果");
+                                if (wouldHandle) Check.Equal(FakeApp.LayerOf(actual), query.Layer, $"{at}: 問いの層 = 受けた層");
                             }
                             Check.True(app.MovedToBack, $"状態 {bits}/{rootDepth}/{tab}/{tabDepth} は最後に背面へ");
                             patterns++;
@@ -288,6 +299,187 @@ public static class NavigationTests
                 ("tab2", 7, true),
             });
             Check.Equal("tab,tab2,host,root", string.Join(",", order), "内側から・隠れた物は尋ねない");
+        });
+
+        // ── 受ける層があるか・予測型の戻る（W2 の手直し 3b）──────────────
+        h.Add("3b 戻る: 受ける層の問いは配らない・問いの無い層は受けるとみなす・最初に受ける層のプレビューの相手", () =>
+        {
+            var chain = new BackChain();
+            int handlerCalls = 0;
+            var dialogTarget = new FakeTarget("dialog");
+            var navTarget = new FakeTarget("nav");
+            bool dialogOpen = false;
+            chain.Add(BackOrder.Dialog, "dialog", () => { handlerCalls++; return dialogOpen; }, () => dialogOpen, () => dialogTarget);
+            chain.Add(450, "script", () => { handlerCalls++; return false; });
+            chain.Add(BackOrder.Navigation, "nav", () => { handlerCalls++; return true; }, () => true, () => navTarget);
+            var q = chain.WouldHandle();
+            Check.True(q.Handled && q.Layer == "script" && q.Order == 450, $"問いの無い層（スクリプトの 450）で止まる: {q}");
+            Check.True(chain.PreviewTarget() is null, "最初に受ける層（スクリプト）に相手が無ければ、下の層に相手があっても縮めない");
+            Check.Equal(0, handlerCalls, "問いは handler を呼ばない（閉じる・下ろすをしない）");
+            dialogOpen = true;
+            Check.Equal("dialog", chain.WouldHandle().Layer, "ダイアログが開けばダイアログ");
+            Check.True(ReferenceEquals(dialogTarget, chain.PreviewTarget()), "ダイアログの相手");
+            dialogOpen = false;
+            Check.Equal(BackDispatchResult.Unhandled, new BackChain().WouldHandle(), "層が無ければ受けない");
+            // 問いの無い層は handler が false を返す（押すと背面へ回る）ときも「受ける」と答える（安全側。Escape は届く）
+            var d = chain.Dispatch();
+            Check.True(d.Handled && d.Layer == "nav", "配ると問いの無いスクリプトの層は受けず nav が受ける");
+            var lonely = new BackChain();
+            lonely.Add(1, "never", () => false);
+            Check.True(lonely.WouldHandle().Handled && !lonely.Dispatch().Handled, "問いの無い層: 問いは受ける・配ると受けない（安全側のずれ）");
+        });
+
+        h.Add("3b 戻る: 背面へ回さないアプリは常に受ける・受ける層の知らせは変わったときだけ・無効なら以後は送らない・読み直しで送り直す", () =>
+        {
+            Check.True(!BackCallbackSync.AppHandlesBack(BackDispatchResult.Unhandled, moveTaskToBackWhenUnhandled: true), "根では受けない");
+            Check.True(BackCallbackSync.AppHandlesBack(BackDispatchResult.Unhandled, moveTaskToBackWhenUnhandled: false), "背面へ回さないなら受ける");
+            Check.True(BackCallbackSync.AppHandlesBack(new BackDispatchResult(true, "nav", BackOrder.Navigation), true), "層が受ける");
+            var sync = new BackCallbackSync();
+            Check.True(sync.ShouldSend(true) && sync.ShouldSend(false), "最初（読み直しの後）はどちらでも送る");
+            sync.OnReplied(true, enabled: true);
+            Check.True(!sync.ShouldSend(true), "同じ値は送らない");
+            Check.True(sync.ShouldSend(false), "変わったら送る");
+            sync.OnReplied(false, enabled: true);
+            Check.True(sync.ShouldSend(true) && !sync.ShouldSend(false), "また変わったら送る");
+            sync.OnReplied(true, enabled: false);
+            Check.True(sync.Stopped && !sync.ShouldSend(false) && !sync.ShouldSend(true), "予測型の戻るが無効（PC・設定なし）なら以後は送らない");
+            sync.Reset();
+            Check.True(!sync.Stopped && sync.LastSent is null && sync.ShouldSend(true), "読み直しで送り直す");
+        });
+
+        h.Add("3b プレビュー: 姿勢（倍率 1 → 0.9・指の向きへ 8 dp）・端の向き・端を留めるずらし・壊れた値", () =>
+        {
+            var start = BackPreviewMath.Pose(0f, 1f, 0.9f, 8f);
+            Check.True(start == BackPreviewPose.Identity, "進み 0 は元の姿勢");
+            var mid = BackPreviewMath.Pose(0.5f, 1f, 0.9f, 8f);
+            Check.Close(0.95, mid.Scale, Eps, "半分で 0.95");
+            Check.Close(4, mid.ShiftX, Eps, "半分で 4 dp");
+            var end = BackPreviewMath.Pose(1f, -1f, 0.9f, 8f);
+            Check.Close(0.9, end.Scale, Eps, "最後は 0.9");
+            Check.Close(-8, end.ShiftX, Eps, "右の端からなら左へ");
+            Check.True(BackPreviewMath.Pose(float.NaN, 1f, 0.9f, 8f) == BackPreviewPose.Identity, "NaN は元の姿勢");
+            Check.Close(0.9, BackPreviewMath.Pose(3f, 0f, 0.9f, 8f).Scale, Eps, "範囲の外は 1 へ収める");
+            Check.Close(1, BackPreviewMath.ShiftSign(SEED.Platform.BackEdge.Left), Eps, "左の端からの手ぶりは右へ（指の向き）");
+            Check.Close(-1, BackPreviewMath.ShiftSign(SEED.Platform.BackEdge.Right), Eps, "右の端からは左へ");
+            Check.Close(0, BackPreviewMath.ShiftSign(SEED.Platform.BackEdge.None), Eps, "ボタンの戻るはずらさない");
+            Check.Close(35, BackPreviewMath.AnchorOffset(700f, 0.9f, BackPreviewAnchor.Bottom), Eps, "下を留める: 減った高さ 70 の半分だけ下へ");
+            Check.Close(-35, BackPreviewMath.AnchorOffset(700f, 0.9f, BackPreviewAnchor.Top), Eps, "上を留める: 上へ");
+            Check.Close(0, BackPreviewMath.AnchorOffset(700f, 0.9f, BackPreviewAnchor.Center), Eps, "真ん中はずらさない");
+            Check.Close(0, BackPreviewMath.AnchorOffset(0f, 0.9f, BackPreviewAnchor.Bottom), Eps, "高さが分からなければずらさない");
+            Check.Close(0, BackPreviewMath.AnchorOffset(float.NaN, 0.9f, BackPreviewAnchor.Top), Eps, "NaN の高さもずらさない");
+        });
+
+        h.Add("3b プレビュー: 手ぶり（始まり → 進み → 取り消し → 元へ戻る）と遅れた知らせ", () =>
+        {
+            var m = NewPreview(theme);
+            Check.Equal(BackPreviewStep.Begin, m.Receive(BackGesturePhase.Started, 1, 0f, BackEdge.Left), "started で始める");
+            Check.Equal(BackPreviewPhase.Tracking, m.Phase, "手ぶりの途中");
+            Check.True(m.Pose == BackPreviewPose.Identity, "進み 0 は元の姿勢");
+            Check.Equal(BackPreviewStep.Update, m.Receive(BackGesturePhase.Progressed, 1, 0.5f, BackEdge.Left), "進む");
+            float half = UiCurve.Decelerate.Evaluate(0.5f);
+            Check.Close(1 - 0.1 * half, m.Pose.Scale, Eps, "倍率 = 1 − 0.1 × 曲線(0.5)");
+            Check.Close(8 * half, m.Pose.ShiftX, Eps, "ずらし = 8 × 曲線(0.5)");
+            m.Receive(BackGesturePhase.Progressed, 1, 1f, BackEdge.Left);
+            Check.Close(0.9, m.Pose.Scale, Eps, "最後まで引くと 0.9");
+            Check.Equal(BackPreviewStep.Cancel, m.Receive(BackGesturePhase.Cancelled, 1, 0f, BackEdge.None), "取り消し");
+            Check.Equal(BackPreviewPhase.Settling, m.Phase, "元へ戻る動き");
+            Check.Close(0.9, m.Pose.Scale, Eps, "取り消した瞬間は今の姿勢のまま（跳ばない）");
+            Check.Equal(BackPreviewStep.Update, m.Tick(m.SettleDuration / 2f), "戻る途中");
+            Check.True(m.Pose.Scale > 0.9f && m.Pose.Scale < 1f, $"途中の倍率 {m.Pose.Scale}");
+            Check.Equal(BackPreviewStep.Finish, m.Tick(m.SettleDuration), "戻り終わる");
+            Check.True(m.Phase == BackPreviewPhase.Idle && m.Pose == BackPreviewPose.Identity, "元の姿勢");
+            Check.Equal(BackPreviewStep.None, m.Receive(BackGesturePhase.Progressed, 1, 0.7f, BackEdge.Left), "取り消した手ぶりの遅れた進みは捨てる");
+            Check.Equal(BackPreviewStep.None, m.Receive(BackGesturePhase.Invoked, 1, 0f, BackEdge.None), "遅れた確定も捨てる");
+            Check.Equal(BackPreviewStep.None, m.Tick(1f), "何もしていなければ時間は何もしない");
+        });
+
+        h.Add("3b プレビュー: 確定（Escape が先・invoked が先）・遅れた知らせ・Android 13（invoked だけ）・ボタンの戻る", () =>
+        {
+            var m = NewPreview(theme);
+            // Escape が先に届く: その手ぶりを確定し、後から来た invoked・progressed は捨てる
+            m.Receive(BackGesturePhase.Started, 2, 0f, BackEdge.Right);
+            m.Receive(BackGesturePhase.Progressed, 2, 0.6f, BackEdge.Right);
+            Check.True(m.OnKey(), "手ぶりの途中の Escape は確定");
+            Check.True(m.Phase == BackPreviewPhase.Idle && m.LastFinished == 2, "確定した手ぶりを覚える");
+            Check.Equal(BackPreviewStep.None, m.Receive(BackGesturePhase.Invoked, 2, 0f, BackEdge.None), "遅れた invoked は捨てる");
+            Check.Equal(BackPreviewStep.None, m.Receive(BackGesturePhase.Progressed, 2, 0.9f, BackEdge.Right), "遅れた progressed も捨てる");
+            Check.True(!m.OnKey(), "もうプレビューは無い（次の Escape はふつうの戻る）");
+
+            // invoked が先に届く: Escape を待つ（姿勢はそのまま）→ Escape で確定
+            m.Receive(BackGesturePhase.Started, 3, 0f, BackEdge.Left);
+            m.Receive(BackGesturePhase.Progressed, 3, 0.8f, BackEdge.Left);
+            float before = m.Pose.Scale;
+            Check.Equal(BackPreviewStep.Await, m.Receive(BackGesturePhase.Invoked, 3, 0f, BackEdge.None), "確定の知らせ");
+            Check.Equal(BackPreviewPhase.AwaitingKey, m.Phase, "Escape を待つ");
+            Check.Close(before, m.Pose.Scale, Eps, "待つ間も姿勢はそのまま");
+            Check.Equal(BackPreviewStep.None, m.Tick(BackPreviewModel.KeyWaitTimeout / 2f), "時間切れの前");
+            Check.True(m.OnKey(), "Escape で確定");
+
+            // Android 13: started の無い invoked はプレビューしない
+            Check.Equal(BackPreviewStep.None, m.Receive(BackGesturePhase.Invoked, 4, 0f, BackEdge.None), "invoked だけならプレビューなし");
+            Check.True(!m.IsActive && !m.OnKey(), "Escape はふつうの戻る");
+
+            // ボタンの戻る（Android 14 以上）: started（進み 0・端なし）→ invoked → Escape。姿勢は元のまま
+            Check.Equal(BackPreviewStep.Begin, m.Receive(BackGesturePhase.Started, 5, 0f, BackEdge.None), "キーの down で started");
+            Check.True(m.Pose == BackPreviewPose.Identity, "進み 0・端なしは元の姿勢");
+            m.Receive(BackGesturePhase.Invoked, 5, 0f, BackEdge.None);
+            Check.True(m.OnKey(), "Escape で確定（見た目は変わらない）");
+        });
+
+        h.Add("3b プレビュー: 確定待ちの時間切れ・確定したのに閉じなかった・番号の食い違い・数え直し・諦め・読み直し", () =>
+        {
+            var m = NewPreview(theme);
+            // PC の模擬: invoked の後に Esc を押さない → 時間切れで元へ戻す。その後の Escape はふつうの戻る
+            m.Receive(BackGesturePhase.Started, 1, 0f, BackEdge.Left);
+            m.Receive(BackGesturePhase.Progressed, 1, 1f, BackEdge.Left);
+            m.Receive(BackGesturePhase.Invoked, 1, 0f, BackEdge.None);
+            Check.Equal(BackPreviewStep.None, m.Tick(BackPreviewModel.KeyWaitTimeout * 0.9f), "まだ待つ");
+            Check.Equal(BackPreviewStep.Cancel, m.Tick(BackPreviewModel.KeyWaitTimeout * 0.2f), "時間切れで戻し始める");
+            Check.Equal(BackPreviewPhase.Settling, m.Phase, "元へ戻る動き");
+            Check.True(!m.OnKey(), "時間切れの後の Escape はふつうの戻る（戻る動きはそのまま）");
+            SettleToEnd(m);
+            Check.Equal(BackPreviewPhase.Idle, m.Phase, "戻り終わる");
+
+            // 確定したのに相手が閉じなかった（別の層が受けた）: 確定したときの姿勢から元へ戻す
+            m.Receive(BackGesturePhase.Started, 2, 0f, BackEdge.Left);
+            m.Receive(BackGesturePhase.Progressed, 2, 1f, BackEdge.Left);
+            Check.True(m.OnKey(), "確定");
+            m.SettleBack();
+            Check.Equal(BackPreviewPhase.Settling, m.Phase, "戻る動き");
+            Check.Close(0.9, m.Pose.Scale, Eps, "確定したときの姿勢から");
+            SettleToEnd(m);
+            Check.True(m.Phase == BackPreviewPhase.Idle && m.Pose == BackPreviewPose.Identity, "元の姿勢へ戻り終わる");
+
+            // 番号の食い違い: started の来なかった手ぶりの progressed は新しい手ぶりとして始める。前の手ぶりの取り消しは捨てる
+            m.Receive(BackGesturePhase.Started, 3, 0f, BackEdge.Left);
+            Check.Equal(BackPreviewStep.Begin, m.Receive(BackGesturePhase.Progressed, 4, 0.4f, BackEdge.Left), "知らない番号の進みは始める");
+            Check.Equal(4L, m.Gesture, "手ぶり 4");
+            Check.Equal(BackPreviewStep.None, m.Receive(BackGesturePhase.Cancelled, 3, 0f, BackEdge.None), "前の手ぶりの取り消しは捨てる");
+            Check.Equal(BackPreviewStep.Update, m.Receive(BackGesturePhase.Started, 4, 0.5f, BackEdge.Left), "同じ手ぶりの 2 度目の started は進みだけ");
+            Check.True(m.OnKey(), "確定");
+
+            // 数え直し（模擬の Play の区切り）: 確定した番号と同じ番号の started も新しい手ぶり
+            Check.Equal(BackPreviewStep.Begin, m.Receive(BackGesturePhase.Started, 4, 0f, BackEdge.Left), "started は必ず新しい手ぶり");
+            Check.Equal(BackPreviewPhase.Tracking, m.Phase, "手ぶりの途中");
+
+            // 諦め（相手が無効になった）: すぐやめて、その手ぶりの遅れた知らせは捨てる
+            m.Abandon();
+            Check.True(!m.IsActive && m.Pose == BackPreviewPose.Identity, "すぐ元の姿勢");
+            Check.Equal(BackPreviewStep.None, m.Receive(BackGesturePhase.Progressed, 4, 0.9f, BackEdge.Left), "諦めた手ぶりの進みは捨てる");
+
+            // 読み直し: 番号も最初から
+            m.Reset();
+            Check.True(m.Gesture == BackPreviewModel.NoGesture && m.LastFinished == BackPreviewModel.NoGesture, "番号を忘れる");
+            Check.Equal(BackPreviewStep.Begin, m.Receive(BackGesturePhase.Progressed, 1, 0.3f, BackEdge.None), "読み直しの後は 1 から");
+        });
+
+        h.Add("3b テーマ: プレビューの倍率 0.9・ずらし 8 dp・曲線（減速）が既定のテーマにある", () =>
+        {
+            Check.Close(0.9, theme.Number(NavTokens.RatioBackPreviewScale), Eps, "ratio.back_preview_scale");
+            Check.Close(8, theme.Number(NavTokens.SizeBackPreviewShift), Eps, "size.back_preview_shift");
+            Check.Equal(UiCurve.Decelerate, UiCurve.FromTheme(theme, NavTokens.MotionBackPreviewCurve, UiCurve.Linear), "motion.back_preview_curve");
+            var m = NewPreview(theme);
+            Check.Close(theme.Number(UiTokens.MotionShort), m.SettleDuration, Eps, "元へ戻る時間は motion.short");
         });
 
         // ── ダイアログ ─────────────────────────────────────────
@@ -479,6 +671,48 @@ public static class NavigationTests
         });
     }
 
+    /// <summary>元へ戻る動きを終わりまで進める（回数の上限つき。終わらなければ検査で落とす）。</summary>
+    private static void SettleToEnd(BackPreviewModel m)
+    {
+        const int MaxTicks = 100;
+        for (int i = 0; i < MaxTicks; i++)
+        {
+            if (m.Tick(m.SettleDuration) == BackPreviewStep.Finish) return;
+        }
+        Check.True(false, $"元へ戻る動きが {MaxTicks} 回で終わらない（段階 {m.Phase}）");
+    }
+
+    /// <summary>テーマの値で設定したプレビューの移り変わり（BackPreview.Configure と同じ読み方）。</summary>
+    private static BackPreviewModel NewPreview(UiThemeData theme) => new()
+    {
+        MinScale = theme.Number(NavTokens.RatioBackPreviewScale, BackPreviewModel.DefaultMinScale),
+        MaxShift = theme.Number(NavTokens.SizeBackPreviewShift, BackPreviewModel.DefaultMaxShift),
+        Curve = UiCurve.FromTheme(theme, NavTokens.MotionBackPreviewCurve, UiCurve.Decelerate),
+        SettleDuration = theme.Number(UiTokens.MotionShort, BackPreviewModel.DefaultSettleDuration),
+    };
+
+    /// <summary>プレビューの相手の見本（姿勢を覚えるだけ）。</summary>
+    private sealed class FakeTarget : IBackPreviewTarget
+    {
+        /// <summary>名前（検査の文言）。</summary>
+        public string Name { get; }
+        /// <summary>最後に当てた姿勢。</summary>
+        public BackPreviewPose Pose { get; private set; } = BackPreviewPose.Identity;
+
+        public FakeTarget(string name) => Name = name;
+
+        /// <inheritdoc />
+        public bool IsBackPreviewValid => true;
+        /// <inheritdoc />
+        public bool IsBackPreviewExiting => false;
+        /// <inheritdoc />
+        public void ApplyBackPreview(BackPreviewPose pose) => Pose = pose;
+        /// <inheritdoc />
+        public void ClearBackPreview() => Pose = BackPreviewPose.Identity;
+        /// <inheritdoc />
+        public override string ToString() => Name;
+    }
+
     /// <summary>
     /// 戻るの段の全パターンの検査に使う小さなアプリ（BackChain の既定の並びと、タブ・スタックの決め方を使う）。
     /// 期待（Expected）は仕様の順を素直に書き下したもの、実際（Press）は BackChain・NavigatorOrder・TabModel が決める。
@@ -508,53 +742,77 @@ public static class NavigationTests
         /// <summary>戻るを 1 回押す（BackChain で配り、受けた層の名前を返す）。</summary>
         public string Press()
         {
-            var chain = new BackChain();
             string handledBy = string.Empty;
-            chain.Add(BackOrder.Focus, "focus", () => { if (!ImeOpen) return false; ImeOpen = false; return true; });
-            chain.Add(BackOrder.Dialog, "dialog", () => { if (Dialogs == 0) return false; Dialogs--; return true; });
-            chain.Add(BackOrder.Sheet, "sheet", () => { if (Sheets == 0) return false; Sheets--; return true; });
-            chain.Add(BackOrder.Overlay, "overlay", () => { if (Overlays == 0) return false; Overlays--; return true; });
+            var result = BuildChain(name => handledBy = name).Dispatch();
+            if (!result.Handled)
+            {
+                MovedToBack = true;
+                return BackDispatcherLayerMoveTaskToBack;
+            }
+            return result.Layer == "nav" ? handledBy : result.Layer;
+        }
+
+        /// <summary>今押したら受ける層（副作用なし。BackChain.WouldHandle。3b）。</summary>
+        public BackDispatchResult Query() => BuildChain(_ => { }).WouldHandle();
+
+        /// <summary>Press の結果の名前 → 層の名前（nav:… は nav）。</summary>
+        public static string LayerOf(string pressed) => pressed.StartsWith("nav:", StringComparison.Ordinal) ? "nav" : pressed;
+
+        /// <summary>
+        /// 既定の並びと同じ層を、受けるかの問い（handler と同じ決め方を副作用なしで）つきで作る（押すたびに作り直す）。
+        /// </summary>
+        /// <param name="handledBy">Navigation の層の中で受けたナビゲーターの名前を受け取る。</param>
+        private BackChain BuildChain(Action<string> handledBy)
+        {
+            var chain = new BackChain();
+            chain.Add(BackOrder.Focus, "focus", () => { if (!ImeOpen) return false; ImeOpen = false; return true; }, () => ImeOpen);
+            chain.Add(BackOrder.Dialog, "dialog", () => { if (Dialogs == 0) return false; Dialogs--; return true; }, () => Dialogs > 0);
+            chain.Add(BackOrder.Sheet, "sheet", () => { if (Sheets == 0) return false; Sheets--; return true; }, () => Sheets > 0);
+            chain.Add(BackOrder.Overlay, "overlay", () => { if (Overlays == 0) return false; Overlays--; return true; }, () => Overlays > 0);
             chain.Add(BackOrder.Navigation, "nav", () =>
             {
-                // ナビゲーター: 根のスタック（深さ 1）・タブ（深さ 2）・選んだタブのスタック（深さ 3。根のスタックが上の段のときだけ見える）
-                var navigators = new List<(string, int, bool)>
+                foreach (var n in ActiveNavigators())
                 {
-                    ("root", 1, true),
-                    ("tabhost", 2, RootDepth == 1),
-                    ("tabstack", 3, RootDepth == 1),
-                };
-                foreach (var n in NavigatorOrder.InnermostFirst(navigators))
-                {
+                    if (!NavigatorWants(n)) continue;
                     switch (n)
                     {
-                        case "tabstack" when TabDepth > 1:
+                        case "tabstack":
                             TabDepth--;
-                            handledBy = "nav:tab";
+                            handledBy("nav:tab");
                             return true;
                         case "tabhost":
-                            var tabs = new TabModel(2, SelectedTab);
-                            if (tabs.DecideBack(TabDepth, backToFirstTab: true) == TabBackAction.SelectFirst)
-                            {
-                                SelectedTab = TabModel.FirstTab;
-                                handledBy = "nav:first-tab";
-                                return true;
-                            }
-                            break;
-                        case "root" when RootDepth > 1:
+                            SelectedTab = TabModel.FirstTab;
+                            handledBy("nav:first-tab");
+                            return true;
+                        case "root":
                             RootDepth--;
-                            handledBy = "nav:root";
+                            handledBy("nav:root");
                             return true;
                     }
                 }
                 return false;
-            });
-            var result = chain.Dispatch();
-            if (!result.Handled)
-            {
-                MovedToBack = true;
-                return "move_task_to_back";
-            }
-            return result.Layer == "nav" ? handledBy : result.Layer;
+            }, () => ActiveNavigators().Any(NavigatorWants));
+            return chain;
         }
+
+        /// <summary>
+        /// 見えているナビゲーター（内側から）: 根のスタック（深さ 1）・タブ（深さ 2）・選んだタブのスタック（深さ 3。根のスタックが
+        /// 上の段のときだけ見える）。
+        /// </summary>
+        private List<string> ActiveNavigators() => NavigatorOrder.InnermostFirst(new List<(string, int, bool)>
+        {
+            ("root", 1, true),
+            ("tabhost", 2, RootDepth == 1),
+            ("tabstack", 3, RootDepth == 1),
+        });
+
+        /// <summary>ナビゲーターが戻るを受けるか（副作用なし。ScreenStack は根より上・TabHost は最初のタブへ戻せる）。</summary>
+        private bool NavigatorWants(string navigator) => navigator switch
+        {
+            "tabstack" => TabDepth > 1,
+            "tabhost" => new TabModel(2, SelectedTab).DecideBack(TabDepth, backToFirstTab: true) == TabBackAction.SelectFirst,
+            "root" => RootDepth > 1,
+            _ => false,
+        };
     }
 }

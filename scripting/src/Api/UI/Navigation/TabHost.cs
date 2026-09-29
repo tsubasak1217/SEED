@@ -179,5 +179,13 @@ public sealed class TabHost : UiWidget, INavigator
     }
 
     /// <inheritdoc />
+    /// <remarks>HandleBack と同じ決め方（TabModel.DecideBack が None でなければ受ける。PopStack は段が 2 以上なので必ず下ろせる）。</remarks>
+    bool INavigator.WouldHandleBack() => _model.DecideBack(CurrentStack?.Depth ?? 1, BackToFirstTab) != TabBackAction.None;
+
+    /// <inheritdoc />
+    /// <remarks>タブの切り替え（最初のタブへ戻す）は縮めて見せない（相手なし）。</remarks>
+    IBackPreviewTarget? INavigator.BackPreviewTarget => null;
+
+    /// <inheritdoc />
     protected override void ApplyLook() { }
 }

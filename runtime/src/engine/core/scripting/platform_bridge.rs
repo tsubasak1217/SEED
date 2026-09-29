@@ -24,9 +24,23 @@
 //  エンジン（app の frame_renderer）がフレームの頭（スクリプトのフェーズより前）で publish_platform_events を 1 回呼び、
 //  基盤に届いていたイベントをこの箱へ移す。C# の PlatformEvents.Poll（ScriptBridge.BeginFrame からフレームに 1 回）が
 //  箱から 1 件ずつ取り出して配る。箱と預かった返答はスクリプトのスレッド（メインスレッド）だけが触るので thread_local。
+//
+//  【スクリプトの準備の前に届いたイベント（W2 の手直し P1-2・2026-09-29）】
+//  起動の直後（Android の起動し直しの最初の onResume など）に届いたイベントを、最初のシーンのスクリプトが OnStart で
+//  受け手（PlatformEvents.OnEvent・this.On）を登録する前に配ると、受け手がいないまま消える（実機の M7 で起きた。
+//  スクリプトのシステムはスクリプトごとに「OnStart → BeginFrame」を順に呼ぶので、先に回ったスクリプトの BeginFrame の
+//  Poll が、後のスクリプトの OnStart より前に配ってしまう）。
+//  そこで「スクリプトの準備ができた」印（SCRIPTS_READY）が立つまでは基盤からイベントを取り出さず、基盤の箱
+//  （Android の受け取りの箱・デスクトップの模擬の箱。どちらも上限 DEFAULT_EVENT_QUEUE_CAPACITY 件・古いものから捨てる）に残す。
+//  印はスクリプトのシステムが「スクリプトのある BeginFrame」を回し終えたとき（＝その時点で有効なスクリプトの OnStart が
+//  すべて済んだとき）に立て（mark_scripts_ready）、次のフレームの頭で保持していた分をまとめて移す（＝OnStart の次のフレームの
+//  BeginFrame で配る。1 フレーム遅れ）。印は Play の区切り（clear_platform_events）でだけ倒すので、Play の中のシーンの
+//  切り替えでは保持しない（従来どおり届いたフレームで配る）。
 // ============================================================
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+
+use crate::engine::core::redraw::{self, RedrawReason};
 
 use crate::engine::platform::bridge::{
     self, wire, FrontTake, PlatformBridgeStatus, PlatformEventQueue, PushOutcome, DEFAULT_EVENT_QUEUE_CAPACITY,
@@ -59,12 +73,20 @@ thread_local! {
     static PENDING_REPLY: RefCell<Option<String>> = const { RefCell::new(None) };
     /// スクリプトへ見せるイベントの箱（フレームの頭で移し、C# が 1 件ずつ取り出す）。
     static SCRIPT_EVENTS: PlatformEventQueue = const { PlatformEventQueue::new(DEFAULT_EVENT_QUEUE_CAPACITY) };
+    /// スクリプトの準備ができたか（ファイル冒頭の「スクリプトの準備の前に届いたイベント」）。
+    /// 立つまでは publish_platform_events が基盤からイベントを取り出さない（基盤の箱に保持する）。
+    static SCRIPTS_READY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// 基盤に届いていたイベントをスクリプトへ見せる箱へ移す（App がフレームの頭で 1 回呼ぶ）。
 ///
-/// スクリプトが取り出さないまま上限を超えたら古いものから捨て、1 行だけ知らせる。
+/// スクリプトの準備の印（`mark_scripts_ready`）が立つまでは何もしない＝基盤の箱に保持し、印が立った後の最初の呼び出しで
+/// まとめて移す。スクリプトが取り出さないまま上限を超えたら古いものから捨て、1 行だけ知らせる。
 pub fn publish_platform_events() {
+    // 準備の前に移すと、OnStart で受け手を登録する前のスクリプトへ配って取りこぼす（保持は基盤の箱に任せる）
+    if !SCRIPTS_READY.with(Cell::get) {
+        return;
+    }
     let events = bridge::poll_events();
     if events.is_empty() {
         return;
@@ -84,14 +106,33 @@ pub fn publish_platform_events() {
     }
 }
 
+/// スクリプトの準備ができたことを知らせる（スクリプトのシステムが、スクリプトのある BeginFrame を回し終えるたびに呼ぶ）。
+///
+/// 呼ばれた時点で、そのフレームに有効なスクリプトの OnStart はすべて済んでいる（OnStart は各スクリプトの BeginFrame の直前）。
+/// 初めて立ったときは、保持していたイベントを次のフレームの頭で移して配れるよう、描画を止めていても次のフレームを起こす
+/// （`render_policy: on_demand` で止まったまま保持し続けないため。起こすのは Play の回ごとに 1 回だけ）。
+pub fn mark_scripts_ready() {
+    let was_ready = SCRIPTS_READY.with(|ready| ready.replace(true));
+    if !was_ready {
+        redraw::wake::raise(RedrawReason::PlatformEvent);
+    }
+}
+
+/// スクリプトの準備の印が立っているか（試験・診断用）。
+pub fn scripts_ready() -> bool {
+    SCRIPTS_READY.with(Cell::get)
+}
+
 /// 前の回のイベントと預かった返答を捨てる（エディタの Play の開始・停止で持ち越さないため）。
 ///
 /// 基盤の側の前の回の状態（デスクトップの模擬の目覚ましの予約表と箱。W1-3）も捨て、残っていれば取り出して捨てる。
+/// スクリプトの準備の印も倒す（次の Play の最初のシーンの OnStart まで、また基盤の箱に保持する）。
 pub fn clear_platform_events() {
     bridge::reset_session();
     let _ = bridge::poll_events();
     SCRIPT_EVENTS.with(|queue| queue.clear());
     PENDING_REPLY.with(|slot| slot.borrow_mut().take());
+    SCRIPTS_READY.with(|ready| ready.set(false));
 }
 
 /// 状態の番号（FFI の約束）。
@@ -373,8 +414,11 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     #[test]
     fn simulated_test_event_reaches_script_queue() {
+        let _guard = SIM_EVENTS_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut out = vec![0u8; 4096];
         clear_platform_events();
+        // スクリプトの準備ができた後の流れ（準備の前の保持は下の held_until_scripts_ready で確かめる）
+        mark_scripts_ready();
         let len = invoke(wire::MODULE_PLATFORM, wire::METHOD_EMIT_TEST_EVENT, r#"{"message":"端から端"}"#, &mut out);
         assert_eq!(parse(&out, len)[wire::KEY_OK], Value::Bool(true));
         // 公開前はスクリプトから見えない
@@ -393,5 +437,79 @@ mod tests {
         clear_platform_events();
         publish_platform_events();
         assert_eq!(unsafe { ffi_platform_poll_events(out.as_mut_ptr(), out.len() as i32) }, PLATFORM_RESULT_NONE);
+    }
+
+    /// 模擬の箱（プロセスで 1 つ）を使うテストどうしを直列にする錠（箱はスレッドローカルでないため、並行に走ると
+    /// 片方の片付け〈clear_platform_events〉がもう片方の積んだイベントを捨てる）。
+    #[cfg(not(target_os = "android"))]
+    static SIM_EVENTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 公開して取り出した試験イベントの message を順に集める（テスト用）。
+    #[cfg(not(target_os = "android"))]
+    fn take_test_messages(out: &mut [u8]) -> Vec<String> {
+        let mut messages = Vec::new();
+        loop {
+            let taken = unsafe { ffi_platform_poll_events(out.as_mut_ptr(), out.len() as i32) };
+            if taken <= 0 {
+                return messages;
+            }
+            let event = parse(out, taken);
+            messages.push(event[wire::KEY_DATA]["message"].as_str().unwrap_or_default().to_string());
+        }
+    }
+
+    /// スクリプトの準備の前に届いたイベントは、何フレーム公開を呼んでも基盤の箱に残り（取りこぼさない）、
+    /// 準備の印が立った後の最初の公開で、届いた順のまま 1 回だけスクリプトの箱へ移る（W2 の手直し P1-2。実機の M7）。
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn held_until_scripts_ready() {
+        let _guard = SIM_EVENTS_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut out = vec![0u8; 4096];
+        clear_platform_events();
+        assert!(!scripts_ready(), "Play の区切りの直後は準備の前");
+        invoke(wire::MODULE_PLATFORM, wire::METHOD_EMIT_TEST_EVENT, r#"{"message":"起動の直後 1"}"#, &mut out);
+        invoke(wire::MODULE_PLATFORM, wire::METHOD_EMIT_TEST_EVENT, r#"{"message":"起動の直後 2"}"#, &mut out);
+        // 準備の前のフレーム（スクリプトの OnStart がまだ）: 何度公開しても見えない
+        const FRAMES_BEFORE_READY: usize = 3;
+        for _ in 0..FRAMES_BEFORE_READY {
+            publish_platform_events();
+            assert!(take_test_messages(&mut out).is_empty(), "準備の前にスクリプトの箱へ移った");
+        }
+        // OnStart を配り終えたフレームの後: 次の公開で届いた順に移る
+        mark_scripts_ready();
+        assert!(scripts_ready());
+        publish_platform_events();
+        assert_eq!(take_test_messages(&mut out), vec!["起動の直後 1".to_string(), "起動の直後 2".to_string()]);
+        // 2 度目の公開で重ねて移らない（重複して配らない）
+        publish_platform_events();
+        assert!(take_test_messages(&mut out).is_empty(), "保持していた分が 2 回移った");
+        // 準備の後に届いた分は従来どおり次の公開で移る
+        invoke(wire::MODULE_PLATFORM, wire::METHOD_EMIT_TEST_EVENT, r#"{"message":"準備の後"}"#, &mut out);
+        publish_platform_events();
+        assert_eq!(take_test_messages(&mut out), vec!["準備の後".to_string()]);
+        clear_platform_events();
+    }
+
+    /// Play の区切り（clear_platform_events）は保持していた分を捨て、準備の印も倒す（前の回の分を次の回へ持ち越さない）。
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn play_boundary_drops_held_events_and_resets_ready() {
+        let _guard = SIM_EVENTS_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut out = vec![0u8; 4096];
+        clear_platform_events();
+        mark_scripts_ready();
+        // 前の回: 準備の後に届いて、まだ公開していない分
+        invoke(wire::MODULE_PLATFORM, wire::METHOD_EMIT_TEST_EVENT, r#"{"message":"前の回"}"#, &mut out);
+        // Play の区切り
+        clear_platform_events();
+        assert!(!scripts_ready(), "区切りで準備の印が倒れていない");
+        // 次の回: 準備の前に届いた分は保持され、前の回の分は捨てられている
+        invoke(wire::MODULE_PLATFORM, wire::METHOD_EMIT_TEST_EVENT, r#"{"message":"次の回"}"#, &mut out);
+        publish_platform_events();
+        assert!(take_test_messages(&mut out).is_empty(), "次の回の準備の前に移った");
+        mark_scripts_ready();
+        publish_platform_events();
+        assert_eq!(take_test_messages(&mut out), vec!["次の回".to_string()], "前の回の分が残っているか、次の回の分が消えた");
+        clear_platform_events();
     }
 }

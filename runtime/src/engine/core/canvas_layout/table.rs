@@ -145,6 +145,8 @@ pub struct CanvasLayoutStats {
     pub culled: u32,
     /// 見た目の平行移動（CanvasLayoutItem.translate*）でずらしたノードの数（W2-7。診断）。
     pub translated: u32,
+    /// 見た目の倍率（CanvasLayoutItem.visual_scale）で縮めた・広げたノードの数（W2 の手直し 3b。診断）。
+    pub scaled: u32,
 }
 
 /// レイアウトの表（1 フレーム・1 文脈ぶん）。

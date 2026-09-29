@@ -10,7 +10,8 @@
 //  アプリは App/AppJson.cs、画面は Window/Window.cs、触感は Haptics/Haptics.cs、通知は Notifications/NotificationJson.cs、権限は
 //  Permissions/PermissionJson.cs、センサーは Sensors/SensorJson.cs）。値を変えるときは 3 か所を必ず揃える（Rust の単体テスト
 //  wire::tests::java_contract_matches_wire が、このファイルの文字列の定数と wire.rs を突き合わせる）。
-//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12、通知は §25.13、権限は §25.14、画面とアプリは §25.15、センサーは §25.16）。
+//  全体像は docs/android.md §25（目覚ましは §25.11、鳴動は §25.12、通知は §25.13、権限は §25.14、画面とアプリは §25.15、センサーは §25.16、
+//  端末の明暗は §25.17、予測型の戻る〈W2 の手直し P1-3〉は §25.18）。
 // ============================================================
 
 package com.seedengine.runtime.platform;
@@ -351,6 +352,42 @@ public final class PlatformContract {
     public static final String APP_NIGHT_UNKNOWN = "unknown";
     /** 端末の明暗の設定が変わった（W2-9。MainActivity.onConfigurationChanged。seq 0。data = { night }）。 */
     public static final String EVENT_UI_MODE_CHANGED = "platform.ui_mode_changed";
+
+    // ── 予測型の戻る（W2 の手直し P1-3。プロジェクト設定 android.predictive_back が true の APK の API 33 以上だけ。docs/android.md §25.18）──
+
+    /**
+     * アプリの戻るのコールバックを出し入れする（local/BackCallbackCommand → MainActivity → back/BackCallbackController）。
+     * 引数 { on }（true = アプリが戻るを受ける〈受ける層がある〉/ false = 受ける層が無い〈根。システムに任せて背面へ〉）。返答 { on, enabled }。
+     */
+    public static final String METHOD_APP_SET_BACK_CALLBACK = "set_back_callback";
+    /** set_back_callback の引数・返答: アプリが戻るを受けるか。 */
+    public static final String KEY_APP_ON = "on";
+    /** set_back_callback の返答: 予測型の戻るが有効か（印 seed_predictive_back が true で API 33 以上。false なら何もしていない）。 */
+    public static final String KEY_APP_ENABLED = "enabled";
+    /** 戻るの手ぶりが始まった（API 34 以上の OnBackAnimationCallback.onBackStarted。seq 0。data = { gesture, progress, edge, touch_x, touch_y }）。 */
+    public static final String EVENT_BACK_STARTED = "platform.back_started";
+    /** 戻るの手ぶりが進んだ（onBackProgressed。毎フレーム届く。data は EVENT_BACK_STARTED と同じ形）。 */
+    public static final String EVENT_BACK_PROGRESSED = "platform.back_progressed";
+    /** 戻るの手ぶりが取り消された（onBackCancelled。data = { gesture }）。 */
+    public static final String EVENT_BACK_CANCELLED = "platform.back_cancelled";
+    /** 戻るが確定した（API 33 以上の onBackInvoked。data = { gesture }。続けて合成の KEYCODE_BACK をネイティブへ渡す）。 */
+    public static final String EVENT_BACK_INVOKED = "platform.back_invoked";
+    /** 戻るのイベントの data: 手ぶりの通し番号（1 から。back/BackGestureReporter が数える）。 */
+    public static final String KEY_BACK_GESTURE = "gesture";
+    /** 戻るのイベントの data: 進み具合（0〜1。BackEvent.getProgress）。 */
+    public static final String KEY_BACK_PROGRESS = "progress";
+    /** 戻るのイベントの data: 手ぶりを始めた端（BACK_EDGE_*。BackEvent.getSwipeEdge）。 */
+    public static final String KEY_BACK_EDGE = "edge";
+    /** 戻るのイベントの data: 指の x（窓の座標の px。BackEvent.getTouchX。取れないとき〈ボタンの戻る〉は 0）。 */
+    public static final String KEY_BACK_TOUCH_X = "touch_x";
+    /** 戻るのイベントの data: 指の y（窓の座標の px。BackEvent.getTouchY。取れないときは 0）。 */
+    public static final String KEY_BACK_TOUCH_Y = "touch_y";
+    /** edge: 左の端から（BackEvent.EDGE_LEFT）。 */
+    public static final String BACK_EDGE_LEFT = "left";
+    /** edge: 右の端から（BackEvent.EDGE_RIGHT）。 */
+    public static final String BACK_EDGE_RIGHT = "right";
+    /** edge: 端からの手ぶりでない（API 36 の BackEvent.EDGE_NONE〈ボタンの戻る〉と、知らない値）。 */
+    public static final String BACK_EDGE_NONE = "none";
     /** URL（open_url の url・ディープリンクの uri）の最大の長さ（Unicode の符号位置の数）。Rust の wire::MAX_URL_LENGTH と一致させる。 */
     public static final int MAX_URL_LENGTH = 8192;
     /** open_url で断る scheme: 端末のファイル（file:）。 */

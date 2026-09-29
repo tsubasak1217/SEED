@@ -68,6 +68,8 @@ public sealed class TopSheet : ModalPlane
     private UiTween _settle = UiTween.At(0f);
     /// <summary>準備を待ったフレーム。</summary>
     private int _prepareFrames;
+    /// <summary>予測型の戻るのプレビューで上の辺を留めるずらし（キャンバスの単位・下が正。3b。引いたずらしと足して当てる）。</summary>
+    private float _previewOffset;
 
     /// <inheritdoc />
     protected override void OnPlaneStart()
@@ -221,6 +223,26 @@ public sealed class TopSheet : ModalPlane
         return true;
     }
 
+    /// <inheritdoc />
+    /// <remarks>予測型の戻るのプレビュー（3b）で縮めるのは板。</remarks>
+    protected override GameObject BackPreviewNode => _panel;
+
+    /// <inheritdoc />
+    protected override bool ClosesOnBack => _options.CancelableByBack;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 板の上の辺を留めて縮める（真ん中の周りに縮めた後、減った高さの半分だけ上へ戻す。板の高さはレイアウトの結果の LayoutSize〈1 フレーム遅れ。
+    /// 開いている板は動かない〉。読めなければ留めない）。ずらしは DragUp の引いたずらしと足して当てる（ApplyDrag）。
+    /// </remarks>
+    protected override void ApplyBackPreviewPose(BackPreviewPose pose)
+    {
+        NavNode.SetVisualScale(_panel, new Vector2(pose.Scale, pose.Scale));
+        float height = _panel.GetComponent<CanvasTransform>() is { } ct ? ct.LayoutSize.y : 0f;
+        _previewOffset = BackPreviewMath.AnchorOffset(height, pose.Scale, BackPreviewAnchor.Top);
+        ApplyDrag();
+    }
+
     /// <summary>開き具合 → 板のずらし（自分の高さに対する割合）と幕の濃さ。</summary>
     private void ApplyOpen(float linear)
     {
@@ -229,8 +251,8 @@ public sealed class TopSheet : ModalPlane
         NavNode.SetSpriteColor(_scrim, Theme.Color(NavTokens.ColorScrim).WithAlpha(Theme.Number(NavTokens.OpacityScrim) * p));
     }
 
-    /// <summary>引いた距離 → 板のずらし（キャンバスの単位。上へ引くほど上へ）。</summary>
-    private void ApplyDrag() => NavNode.SetTranslate(_panel, new Vector2(0f, -_dragOffset));
+    /// <summary>引いた距離 → 板のずらし（キャンバスの単位。上へ引くほど上へ）。予測型の戻るのプレビューの上の辺を留めるずらしも足す（3b）。</summary>
+    private void ApplyDrag() => NavNode.SetTranslate(_panel, new Vector2(0f, -_dragOffset + _previewOffset));
 
     /// <inheritdoc />
     protected override void ApplyLook()

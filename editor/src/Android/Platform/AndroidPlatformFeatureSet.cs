@@ -2,9 +2,10 @@
 //  AndroidPlatformFeatureSet.cs — プロジェクト設定から決まった「このビルドのプラットフォーム機能」（W1-2）
 //
 //  【役割】
-//  AndroidPlatformFeatureResolver がプロジェクト設定（android.features / deep_links / system_bars / app_category）と
-//  機能の表から作る結果。マニフェストの断片の組み立て（AndroidPlatformManifestWriter）・Gradle のプロパティ
-//  （seed.appCategory）・ログ・Google Play の要件チェック（Release/AndroidPlatformFeatureChecks）が同じこれを見る。
+//  AndroidPlatformFeatureResolver がプロジェクト設定（android.features / deep_links / system_bars / app_category /
+//  predictive_back〈W2 の手直し P1-3〉）と機能の表から作る結果。マニフェストの断片の組み立て（AndroidPlatformManifestWriter）・
+//  Gradle のプロパティ（seed.appCategory・seed.predictiveBack）・ログ・Google Play の要件チェック（Release/AndroidPlatformFeatureChecks）が
+//  同じこれを見る。
 //  並びは機能の表の順（features に書いた順によらず、生成物が同じバイト列になるように）。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
@@ -41,6 +42,13 @@ public sealed record AndroidPlatformFeatureSet
     /// <summary>android:appCategory（正規化済み。AndroidAppCategorySetting の値）。</summary>
     public string AppCategory { get; init; } = AndroidAppCategorySetting.Default;
 
+    /// <summary>
+    /// 予測型の戻るを使うか（W2 の手直し P1-3。プロジェクト設定 android.predictive_back が true のときだけ true）。
+    /// true のときだけ Gradle へ seed.predictiveBack=true を渡し（マニフェストの enableOnBackInvokedCallback="true"）、values に
+    /// seed_predictive_back を書く（false のプロジェクトの引数と生成物は従来と同じバイト列）。
+    /// </summary>
+    public bool PredictiveBack { get; init; }
+
     /// <summary>注意（ログ・設定ウィンドウに出す。ビルドは続ける）。</summary>
     public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
 
@@ -61,12 +69,15 @@ public sealed record AndroidPlatformFeatureSet
     /// </summary>
     public IReadOnlySet<string> PermissionNames => Permissions.Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
 
-    /// <summary>ログ用の一行（例 機能 alarm, notifications・権限 9・ディープリンク 0・システムバー visible・appCategory productivity）。</summary>
+    /// <summary>
+    /// ログ用の一行（例 機能 alarm, notifications・権限 9・ディープリンク 0・システムバー visible・appCategory productivity。
+    /// 予測型の戻るを使うときだけ末尾に「・予測型の戻る」）。
+    /// </summary>
     /// <returns>説明。</returns>
     public string Describe()
     {
         var features = Features.Count == 0 ? "なし" : string.Join(", ", FeatureNames);
         return $"機能 {features}・権限 {Permissions.Count}・部品 {ApplicationElements.Count}・ディープリンク {DeepLinks.Count}・" +
-               $"システムバー {SystemBars}・appCategory {AppCategory}";
+               $"システムバー {SystemBars}・appCategory {AppCategory}" + (PredictiveBack ? "・予測型の戻る" : string.Empty);
     }
 }

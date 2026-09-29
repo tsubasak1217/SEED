@@ -18,6 +18,10 @@
 //      kMinFlingVelocity = 50.0、kMaxFlingVelocity = 8000.0
 //    - Flutter gestures/velocity_tracker.dart: _horizonMilliseconds = 100、_historySize = 20、
 //      _assumePointerMoveStoppedMilliseconds = 40、最小二乗の次数 2
+//
+//  速度の推定の頑健化（2026-09-29。velocity.rs の R2〜R4。docs/input_gestures.md §5.1）の 3 つの鍵
+//  （velocity_lift_off_ms・velocity_min_span_ms・velocity_min_sample_interval_ms）は SEED が決めた値で、
+//  出典は各定数のコメント（Android の vsync ごとの入力のまとめ・実機の記録・USB HID の報告の間隔）。0 でその規則を切る。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -73,6 +77,28 @@ pub const DEFAULT_VELOCITY_DEGREE: usize = 2;
 /// 速度の推定の次数の上限（2 次より高い次数は指の揺れを拾いすぎるので受け付けない）。
 pub const MAX_VELOCITY_DEGREE: usize = 2;
 
+/// 「1 フレーム」の長さを決める画面の更新の頻度（Hz）。R2・R3 の既定値（1 フレーム = 1000 / 60 ms）の元。
+/// 出典: Android は指の移動を vsync（Pixel 6a の表示は 60 Hz）ごとに 1 つの MotionEvent へまとめて届ける
+/// （Choreographer の入力のまとめ）。受け取りの時刻で並べた標本は、1 フレームの中では µs しか離れない。
+pub const REFERENCE_FRAME_RATE_HZ: f32 = 60.0;
+
+/// R2（持ち上げの揺れ）: 離した時刻からこの長さだけ前までを「持ち上げの間」とみなす（ミリ秒。0 = R2 を切る）。
+/// 離した時刻 − `velocity_stop_ms` から、離した時刻 − この長さまでの標本の速度が最小のフリックの速度より遅ければ
+/// （＝離す前に指がほぼ止まっていた）、離しの速度を 0 にする（velocity.rs・recognizers/fling.rs）。
+/// 出典: 1 フレーム（1000 / 60 ms）。2026-09-29 の実機の記録（docs/app_platform_roadmap.md §3.9.2 の (c)）で、止めてから離した指の
+/// 位置の飛び（1.5〜4.2 dp。指の腹が転がる）は 3 回とも離したフレームの 1 回分の中にあった。`velocity_stop_ms` 以上にすると R2 は効かない。
+pub const DEFAULT_VELOCITY_LIFT_OFF_MS: f32 = MILLIS_PER_SECOND / REFERENCE_FRAME_RATE_HZ;
+
+/// R3（幅の短すぎる推定）: 推定に使った標本の時間の幅（最新 − 最古）がこれより短ければ速度 0（ミリ秒。0 = R3 を切る）。
+/// 出典: 1 フレーム（1000 / 60 ms）。1 フレームより短い幅は、受け取りのまとまり（1 回の vsync の入力）の中の標本だけから出た値で、
+/// 物理の速度ではない（受け取りの時刻では µs しか離れない標本の傾きが膨らむ。実機で 5,800〜7,700 dp/秒になった）。
+pub const DEFAULT_VELOCITY_MIN_SPAN_MS: f32 = MILLIS_PER_SECOND / REFERENCE_FRAME_RATE_HZ;
+
+/// R4（標本の間隔の下限）: 前の標本との間隔がこれより短い標本は、前の標本と入れ替える（新しい方を残す。ミリ秒。0 = R4 を切る）。
+/// 出典: USB HID の最速の報告の間隔 1 ms（1000 Hz のポーリング）。タッチパネルの走査は速い機種でも 720 Hz ≈ 1.4 ms。
+/// これより短い間隔の標本は受け取りのまとまり（同じ入力の塊を µs 差で受け取った）で、物理の標本ではない。
+pub const DEFAULT_VELOCITY_MIN_SAMPLE_INTERVAL_MS: f32 = 1.0;
+
 /// 標本の数の下限（2 未満では速度を推定しない）。
 pub const MIN_VELOCITY_MAX_SAMPLES: usize = 2;
 
@@ -109,6 +135,12 @@ pub struct GestureThresholds {
     pub velocity_stop_ms: f32,
     /// 速度の推定の多項式の次数（1 = 直線・2 = 2 次）。
     pub velocity_degree: usize,
+    /// R2: 持ち上げの間（離した時刻からさかのぼるミリ秒。0 = R2 を切る）。
+    pub velocity_lift_off_ms: f32,
+    /// R3: 推定に使う標本の時間の幅の下限（ミリ秒。0 = R3 を切る）。
+    pub velocity_min_span_ms: f32,
+    /// R4: 標本の間隔の下限（ミリ秒。これより短い間隔の標本は前の標本と入れ替える。0 = R4 を切る）。
+    pub velocity_min_sample_interval_ms: f32,
 }
 
 impl Default for GestureThresholds {
@@ -125,6 +157,9 @@ impl Default for GestureThresholds {
             velocity_max_samples: DEFAULT_VELOCITY_MAX_SAMPLES,
             velocity_stop_ms: DEFAULT_VELOCITY_STOP_MS,
             velocity_degree: DEFAULT_VELOCITY_DEGREE,
+            velocity_lift_off_ms: DEFAULT_VELOCITY_LIFT_OFF_MS,
+            velocity_min_span_ms: DEFAULT_VELOCITY_MIN_SPAN_MS,
+            velocity_min_sample_interval_ms: DEFAULT_VELOCITY_MIN_SAMPLE_INTERVAL_MS,
         }
     }
 }
@@ -163,6 +198,13 @@ impl GestureThresholds {
             velocity_max_samples: self.velocity_max_samples.max(MIN_VELOCITY_MAX_SAMPLES),
             velocity_stop_ms: positive_or(self.velocity_stop_ms, d.velocity_stop_ms),
             velocity_degree: self.velocity_degree.clamp(1, MAX_VELOCITY_DEGREE),
+            // R2〜R4 は 0 で規則を切れる（負・NaN は既定値へ戻す）
+            velocity_lift_off_ms: non_negative_or(self.velocity_lift_off_ms, d.velocity_lift_off_ms),
+            velocity_min_span_ms: non_negative_or(self.velocity_min_span_ms, d.velocity_min_span_ms),
+            velocity_min_sample_interval_ms: non_negative_or(
+                self.velocity_min_sample_interval_ms,
+                d.velocity_min_sample_interval_ms,
+            ),
         }
     }
 
@@ -187,6 +229,9 @@ impl GestureThresholds {
                 max_samples: t.velocity_max_samples,
                 stop_secs: ms_to_secs(t.velocity_stop_ms),
                 degree: t.velocity_degree,
+                lift_off_secs: ms_to_secs(t.velocity_lift_off_ms),
+                min_span_secs: ms_to_secs(t.velocity_min_span_ms),
+                min_sample_interval_secs: ms_to_secs(t.velocity_min_sample_interval_ms),
             },
         }
     }
@@ -199,10 +244,16 @@ pub struct VelocityParams {
     pub horizon_secs: f64,
     /// 標本の最大数。
     pub max_samples: usize,
-    /// 指が止まったとみなす標本の間隔（秒）。
+    /// 指が止まったとみなす標本の間隔（秒）。R1 と、R2 の見る区間の始まり（離した時刻 − これ）。
     pub stop_secs: f64,
     /// 多項式の次数（1〜2）。
     pub degree: usize,
+    /// R2: 持ち上げの間（秒。0 = R2 を切る）。
+    pub lift_off_secs: f64,
+    /// R3: 推定に使う標本の時間の幅の下限（秒。0 = R3 を切る）。
+    pub min_span_secs: f64,
+    /// R4: 標本の間隔の下限（秒。0 = R4 を切る）。
+    pub min_sample_interval_secs: f64,
 }
 
 /// 画素・秒へ換算した閾値（1 フレームぶん。アリーナと認識器はこれだけを読む）。
@@ -272,6 +323,26 @@ mod tests {
         assert_eq!(t.press_delay_ms, 100.0, "Android TAP_TIMEOUT / Flutter kPressTimeout");
         assert_eq!((t.min_fling_velocity_dp, t.max_fling_velocity_dp), (50.0, 8000.0));
         assert_eq!((t.velocity_horizon_ms, t.velocity_max_samples, t.velocity_stop_ms), (100.0, 20, 40.0));
+        // 頑健化（R2・R3 は 60 Hz の 1 フレーム、R4 は USB HID の 1 ms）
+        assert!((t.velocity_lift_off_ms - 1000.0 / 60.0).abs() < 1e-4, "R2 = 1 フレーム");
+        assert!((t.velocity_min_span_ms - 1000.0 / 60.0).abs() < 1e-4, "R3 = 1 フレーム");
+        assert_eq!(t.velocity_min_sample_interval_ms, 1.0, "R4 = 1 ms");
+        let v = GestureMetrics::default().velocity;
+        assert!((v.lift_off_secs - 1.0 / 60.0).abs() < 1e-6 && (v.min_span_secs - 1.0 / 60.0).abs() < 1e-6);
+        assert!((v.min_sample_interval_secs - 0.001).abs() < 1e-9);
+    }
+
+    /// 頑健化の鍵（R2〜R4）: 設定で上書きでき、0 は規則を切る値として残り、負・NaN は既定値へ戻す。
+    #[test]
+    fn robust_velocity_keys_parse_and_sanitize() {
+        let t = parse_gesture_thresholds(
+            r#"{"gestures":{"velocity_lift_off_ms":0,"velocity_min_span_ms":25,"velocity_min_sample_interval_ms":2}}"#,
+        );
+        assert_eq!((t.velocity_lift_off_ms, t.velocity_min_span_ms, t.velocity_min_sample_interval_ms), (0.0, 25.0, 2.0));
+        let t = parse_gesture_thresholds(r#"{"gestures":{"velocity_lift_off_ms":-5,"velocity_min_span_ms":-1}}"#);
+        let d = GestureThresholds::default();
+        assert_eq!((t.velocity_lift_off_ms, t.velocity_min_span_ms), (d.velocity_lift_off_ms, d.velocity_min_span_ms));
+        assert_eq!(t.velocity_min_sample_interval_ms, d.velocity_min_sample_interval_ms, "書いていない欄は既定値");
     }
 
     /// 換算: dp の倍率 1・2・3 で slop が 8・16・24 画素、時間は秒。

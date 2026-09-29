@@ -9,6 +9,7 @@
 //    deep_links   … 表で deep_link_filters の機能（deep_links）が有効なときだけ、1 件ずつ検査（AndroidDeepLinkRules）して
 //                   intent-filter にする。機能が無いのに一覧がある・機能があるのに一覧が空は注意。誤りのある件は入れない
 //    system_bars / app_category … 正規化（知らない値は注意を出して既定値。screen_orientation と同じ方針）
+//    predictive_back … true のときだけ使う（W2 の手直し P1-3。型違いは設定の読み取りで未設定になっている＝使わない）
 //  誤り（Errors）が 1 つでもあればビルドは何も作らずに止め、プロジェクト設定ウィンドウは保存しない（同じ関数で判定する）。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
@@ -70,6 +71,7 @@ public static class AndroidPlatformFeatureResolver
             DeepLinks = deepLinks,
             SystemBars = systemBars,
             AppCategory = appCategory,
+            PredictiveBack = settings.PredictiveBack == true,
             Warnings = warnings,
             Errors = errors,
         };

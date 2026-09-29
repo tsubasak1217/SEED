@@ -21,7 +21,10 @@ use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 
-use crate::{app_dirs, debug_hooks, debug_save_test, device_info, dotnet_runtime, heartbeat, launch, logcat, platform_bridge, ui_spike};
+use crate::{
+    app_dirs, debug_hooks, debug_save_test, device_info, dotnet_runtime, heartbeat, launch, logcat, platform_bridge, touch_timeline,
+    ui_spike,
+};
 
 /// android_main に一度入ったか（同一プロセスでの 2 回目を検出する）。
 static ANDROID_MAIN_ENTERED: AtomicBool = AtomicBool::new(false);
@@ -56,6 +59,10 @@ fn android_main(app: AndroidApp) {
     // アプリのプラットフォーム機能（SEED.Platform）の Android の橋渡しをエンジンへ登録する（App を作る前。W1-1）。
     // Java 側（SeedPlatform.init）は MainActivity.onCreate が super.onCreate の前に済ませている。:seed_platform はまだ起こさない。
     platform_bridge::install();
+
+    // CLOCK_MONOTONIC の読み口をエンジンへ入れる（MotionEvent の時刻の控えの診断ログ `[SEED TOUCH TIME] rec_ns=` の換算に使う。
+    // 控えそのものは Java の TouchTimeline → touch_timeline.rs の JNI が積む。docs/input_gestures.md §5）。
+    touch_timeline::install_clock();
 
     // 検証用: システムプロパティ debug.seed.panic_test=1 のときだけ意図的に panic する
     //（panic が logcat に残ることの確認用。通常起動では何もしない）。

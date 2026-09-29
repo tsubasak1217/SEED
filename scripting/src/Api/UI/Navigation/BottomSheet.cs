@@ -222,6 +222,21 @@ public sealed class BottomSheet : ModalPlane
         return true;
     }
 
+    /// <inheritdoc />
+    /// <remarks>予測型の戻るのプレビュー（3b）で縮めるのは板。</remarks>
+    protected override GameObject BackPreviewNode => _panel;
+
+    /// <inheritdoc />
+    protected override bool ClosesOnBack => _options.CancelableByBack;
+
+    /// <inheritdoc />
+    /// <remarks>板の下の辺を留めて縮める（真ん中の周りに縮めた後、減った高さの半分だけ下へ戻す。板の高さは測った _panelHeight）。</remarks>
+    protected override void ApplyBackPreviewPose(BackPreviewPose pose)
+    {
+        NavNode.SetVisualScale(_panel, new Vector2(pose.Scale, pose.Scale));
+        NavNode.SetTranslate(_panel, new Vector2(0f, BackPreviewMath.AnchorOffset(_panelHeight, pose.Scale, BackPreviewAnchor.Bottom)));
+    }
+
     /// <summary>位置へ motion.sheet 秒で動かす（曲線は CanvasScroll の ScrollTo の easeInOut）。</summary>
     private void ScrollTo(float position)
     {

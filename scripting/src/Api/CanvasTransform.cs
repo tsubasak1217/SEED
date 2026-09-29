@@ -1,3 +1,5 @@
+using System;
+
 namespace SEED;
 
 /// <summary>
@@ -14,6 +16,25 @@ public readonly struct CanvasTransform : IComponentHandle<CanvasTransform>
 
     /// <summary>コンポーネント名（Rust 側レジストリのキー）。</summary>
     private const string Comp = "CanvasTransform";
+
+    // ── レイアウトの結果の欄（読み取り専用。Rust 側 runtime/src/engine/core/scripting/canvas_layout_results_api.rs と一致させる）──
+
+    /// <summary>欄: 前のフレームの描画のレイアウトの表にこのノードがあったか（1 要素。0/1）。</summary>
+    private const string FieldHasLayout = "has_layout";
+    /// <summary>欄: レイアウトの大きさ（2 要素。ノードのキャンバスの単位）。</summary>
+    private const string FieldLayoutSize = "layout_size";
+    /// <summary>欄: 画面の矩形（4 要素。x, y, 幅, 高さの画素）。</summary>
+    private const string FieldLayoutRect = "layout_rect";
+    /// <summary>画面の矩形の要素数（x, y, 幅, 高さ）。</summary>
+    private const int LayoutRectLength = 4;
+    /// <summary>画面の矩形: 左上の X の位置。</summary>
+    private const int LayoutRectX = 0;
+    /// <summary>画面の矩形: 左上の Y の位置。</summary>
+    private const int LayoutRectY = 1;
+    /// <summary>画面の矩形: 幅の位置。</summary>
+    private const int LayoutRectWidth = 2;
+    /// <summary>画面の矩形: 高さの位置。</summary>
+    private const int LayoutRectHeight = 3;
 
     internal CanvasTransform(Entity entity) { _entity = entity; }
 
@@ -119,4 +140,55 @@ public readonly struct CanvasTransform : IComponentHandle<CanvasTransform>
     /// </summary>
     public Vector2 ScreenPosition
         => ScriptHost.TryGetScreenPosition(_entity, out var v) ? v : Vector2.Zero;
+
+    // ── レイアウトの結果（読み取り専用。前のフレームの描画のレイアウトの表）────────────
+
+    /// <summary>
+    /// 前のフレームの描画のレイアウトの表にこのノードがあったか（get のみ）。
+    /// false のとき <see cref="LayoutSize"/> と <see cref="LayoutRect"/> は Zero。
+    ///
+    /// <para><b>1 フレーム遅れ</b>：レイアウトの表はスクリプトのフェーズの後（描画）で作るので、Update などで読む値は
+    /// <b>前のフレームの描画</b>の値（<see cref="CanvasScroll.ViewportSize"/> と同じ）。このフレームに位置・レイアウトの部品を
+    /// 書き換えても、読めるのは次のフレームから（レイアウトが大きさを決めていない軸の <see cref="LayoutSize"/> だけは、
+    /// 読んだ時点の Sprite の大きさ・Text の枠そのもの）。</para>
+    ///
+    /// <para><b>false になるとき</b>：まだ描画していない（Play の最初のフレーム・シーンを読み込んで最初の描画の前・このフレームに生成したノード）、
+    /// 3D ワールドキャンバス（CanvasComponent を持つ 3D アクター）の下のノード、3D アクターの下のノード、フォルダ、
+    /// エディタの Edit（読むのは Play のゲームの画面の表だけ）。非表示・非アクティブのノードは表の行があるので true。</para>
+    /// </summary>
+    public bool HasLayout => ScriptHost.TryGetBool(_entity, Comp, FieldHasLayout, out var b) && b;
+
+    /// <summary>
+    /// レイアウトが決めたこのノードの大きさ（get のみ。前のフレームの描画の値。<see cref="HasLayout"/> が false なら Zero）。
+    ///
+    /// <para><b>単位</b>：このノードのキャンバスの単位（<see cref="Sprite.Width"/> / <see cref="Sprite.Height"/> と同じ。dp のキャンバスの下なら dp）。</para>
+    ///
+    /// <para><b>決め方</b>（軸ごと）：CanvasComponent を持つノードはキャンバス領域の大きさ（コンテナ・親に合わせる・安全領域・中身に合わせる・
+    /// dp のルートを反映）。持たないノードは、レイアウトが大きさを決めた軸（コンテナが伸ばした・セルいっぱい・親に合わせた）ならその大きさ、
+    /// それ以外は Sprite の大きさ → Text の枠 → レイアウトが割り当てた矩形 → 0。Sprite を持つノードでは描かれるスプライトの大きさと一致する
+    /// （コンテナに伸ばされても <c>Sprite.Width</c> は元の値のままなので、描く大きさを知りたいときはこちらを読む）。</para>
+    /// </summary>
+    public Vector2 LayoutSize
+        => ScriptHost.TryGetVec2(_entity, Comp, FieldLayoutSize, out var v) ? v : Vector2.Zero;
+
+    /// <summary>
+    /// このノードの矩形の画面の上の外接矩形（get のみ。前のフレームの描画の値。<see cref="HasLayout"/> が false なら <see cref="Rect.Zero"/>）。
+    ///
+    /// <para><b>座標</b>：画面の画素・描画ターゲットの左上が原点・Y 下向き（<see cref="ScreenPosition"/>・<see cref="Screen.SafeArea"/>・
+    /// <see cref="Input.MousePos"/> と同じ）。dp にするには <see cref="Screen.DpScale"/> で割る。</para>
+    ///
+    /// <para><b>矩形</b>：<see cref="LayoutSize"/> の矩形を、このノードの位置・pivot・回転・Scale（描画と同じ行列）で画面へ写した 4 隅の外接矩形。
+    /// Sprite を持つノードは描かれるスプライトの 4 隅、CanvasComponent を持つノードはキャンバス領域（CanvasClip で切る矩形と同じ）。
+    /// 回転していれば 4 隅を囲む矩形。</para>
+    /// </summary>
+    public Rect LayoutRect
+    {
+        get
+        {
+            Span<float> v = stackalloc float[LayoutRectLength];
+            return ScriptHost.TryGetFloats(_entity, Comp, FieldLayoutRect, v) == LayoutRectLength
+                ? new Rect(v[LayoutRectX], v[LayoutRectY], v[LayoutRectWidth], v[LayoutRectHeight])
+                : Rect.Zero;
+        }
+    }
 }

@@ -147,6 +147,12 @@ public static class UiFocus
     /// <summary>今のフォーカスへ戻るを尋ねる（BackDispatcher の Focus の層）。</summary>
     internal static bool HandleBack() => Model.Current is IBackConsumer consumer && consumer.HandleBack();
 
+    /// <summary>
+    /// 今のフォーカスが戻るを受けそうか（副作用なし。BackDispatcher の Focus の層の問い。W2 の手直し 3b）。
+    /// IBackConsumer の中身は問えないので、相手が IBackConsumer なら受けるとみなす（安全側）。
+    /// </summary>
+    internal static bool WantsBack() => Model.Current is IBackConsumer;
+
     /// <summary>今のフォーカスが変わっていたら、外れた相手と新しい相手へ知らせる。</summary>
     private static void Notify()
     {

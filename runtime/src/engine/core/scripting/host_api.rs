@@ -34,6 +34,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // SCRIPT_DEBUG IPC で積まれたデバッグコマンドの待ち行列（ffi_script_debug_take が取り出す）
 use crate::engine::core::scripting::debug_command;
 use crate::engine::core::scripting::canvas_layout_api;
+// CanvasTransform の読み取り専用の欄（前のフレームの描画のレイアウト: has_layout・layout_size・layout_rect。W2 Item 4）
+use crate::engine::core::scripting::canvas_layout_results_api;
 use crate::engine::core::scripting::sprite_style_api;
 
 use crate::engine::components::{
@@ -977,6 +979,11 @@ fn read_floats(
                 "scale"    => put(out, &t.scale),
                 "pivot"    => put(out, &t.pivot),
                 "anchor"   => put(out, &t.anchor),
+                // 前のフレームの描画のレイアウト（読み取り専用。write_floats には無い。W2 Item 4）:
+                // has_layout（0/1）・layout_size（2 要素）・layout_rect（4 要素）。資源 CanvasLayoutResults から引く
+                f if canvas_layout_results_api::is_field(f) => {
+                    canvas_layout_results_api::read(world, entity, || actor_of_entity(entity), f, out)
+                }
                 _          => None,
             }
         }
@@ -4124,6 +4131,80 @@ mod tests {
             // 種別が違えば解決しない
             assert_eq!(
                 resolve_component_slot(&world, root, "Camera", Some("Water Volume"), -1), None);
+        });
+    }
+
+    /// CanvasTransform の読み取り専用の欄（has_layout・layout_size・layout_rect。W2 Item 4）はレジストリから読め、
+    /// 書き込みは受け付けない。資源が無い（まだ描画していない）ときは has_layout = 0・ほかは 0 を並べる。
+    #[test]
+    fn canvas_transform_layout_fields_are_read_only() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use crate::engine::components::{CanvasComponent, CanvasDrawZone};
+        use crate::engine::core::canvas_layout::{
+            AutoScaleDivisor, CanvasLayoutEnv, CanvasLayoutPass, CanvasLayoutResults, CanvasParentFrame,
+            CanvasScreenEnv,
+        };
+
+        /// Play のゲームの画面の大きさ（画素）。
+        const VIEWPORT: [f32; 2] = [200.0, 100.0];
+        let mut world = World::new();
+        // ルートのキャンバス（200×100）の下に、位置 (10, 20)・Sprite 30×40 のノード
+        let root_entity = world.spawn();
+        world.insert(root_entity, CanvasTransform::default());
+        let mut root = Actor::new_2d(root_entity, "Root");
+        let canvas = world.spawn();
+        world.insert(canvas, CanvasComponent { width: 200.0, height: 100.0, auto_scale: false, ..CanvasComponent::default() });
+        root.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, canvas);
+        let node = world.spawn();
+        world.insert(node, CanvasTransform { position: [10.0, 20.0], ..CanvasTransform::default() });
+        let mut child = Actor::new_2d(node, "Node");
+        let sprite = world.spawn();
+        world.insert(sprite, SpriteComponent { width: 30.0, height: 40.0, ..SpriteComponent::default() });
+        child.add_slot_typed::<SpriteComponent>("Sprite", ComponentKind::Sprite, sprite);
+        root.add_child(child);
+        let actors = std::vec![root];
+
+        let mut out = [0.0f32; MAX_FLOAT_FIELD_LEN];
+        // まだ描画していない（資源が無い）: has_layout = 0、大きさ・矩形は 0
+        with_actors(&actors, || {
+            assert_eq!(read_floats(&world, node, "CanvasTransform", "has_layout", &mut out), Some(1));
+            assert_eq!(out[0], 0.0);
+            assert_eq!(read_floats(&world, node, "CanvasTransform", "layout_size", &mut out), Some(2));
+            assert_eq!(&out[..2], &[0.0, 0.0]);
+            assert_eq!(read_floats(&world, node, "CanvasTransform", "layout_rect", &mut out), Some(4));
+            assert_eq!(out, [0.0; 4]);
+        });
+
+        // 描画の後に資源へ移すのと同じ: Play の文脈（中央原点）の表を置く
+        let empty: HashMap<Entity, [f32; 2]> = HashMap::new();
+        let env = CanvasLayoutEnv {
+            viewport_size: Some(VIEWPORT),
+            viewport_overrides: &empty,
+            root_auto_sizes: &empty,
+            design_space: false,
+            auto_scale_divisor: AutoScaleDivisor::Raw,
+            screen: CanvasScreenEnv::NONE,
+        };
+        let table = CanvasLayoutPass::run(
+            &actors, &world, 0, CanvasParentFrame::viewport_root(CanvasDrawZone::Foreground), &env);
+        world.insert_resource(CanvasLayoutResults::new(Arc::new(table), VIEWPORT));
+
+        with_actors(&actors, || {
+            assert!(has_component(&world, node, "CanvasTransform"));
+            assert_eq!(read_floats(&world, node, "CanvasTransform", "has_layout", &mut out), Some(1));
+            assert_eq!(out[0], 1.0);
+            assert_eq!(read_floats(&world, node, "CanvasTransform", "layout_size", &mut out), Some(2));
+            assert_eq!(&out[..2], &[30.0, 40.0], "Sprite の大きさ（アクターのスロットから読む）");
+            assert_eq!(read_floats(&world, node, "CanvasTransform", "layout_rect", &mut out), Some(4));
+            assert_eq!(out, [10.0, 20.0, 30.0, 40.0], "ルートの左上が画面の左上（画素）");
+            // 読み取り専用: 書き込みは受け付けない（値も変わらない）
+            assert!(!write_floats(&mut world, node, "CanvasTransform", "layout_size", &[1.0, 2.0]));
+            assert!(!write_floats(&mut world, node, "CanvasTransform", "has_layout", &[0.0]));
+            assert_eq!(read_floats(&world, node, "CanvasTransform", "layout_size", &mut out), Some(2));
+            assert_eq!(&out[..2], &[30.0, 40.0]);
+            // CanvasTransform を持たない entity（Sprite のスロット）は読めない（C# は既定値）
+            assert_eq!(read_floats(&world, sprite, "CanvasTransform", "has_layout", &mut out), None);
         });
     }
 

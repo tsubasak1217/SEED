@@ -55,6 +55,11 @@ public static class NavTokens
     public const string SizeToastHeight = "size.toast_height";
     /// <summary>ドラッグで閉じる距離（覆い・トースト。これ以上引いて離すと閉じる）。</summary>
     public const string SizeDragDismiss = "size.drag_dismiss";
+    /// <summary>
+    /// 予測型の戻るのプレビューで、画面を指の動く向き（左の端からの手ぶりなら右）へずらすいちばん大きな量（W2 の手直し 3b）。
+    /// 既定 8 dp は Material 3 の予測型の戻るの動き（縮めた画面を端の近くへ寄せ、8 dp の余白を残す）から取った値で、記憶による。
+    /// </summary>
+    public const string SizeBackPreviewShift = "size.back_preview_shift";
 
     // ── 動き（秒）と曲線 ─────────────────────────────────────
     /// <summary>押し込み（右から入る・右へ出る）の時間。</summary>
@@ -87,6 +92,12 @@ public static class NavTokens
     public const string MotionToastShort = "motion.toast_short";
     /// <summary>トーストを出しておく時間（長い）。</summary>
     public const string MotionToastLong = "motion.toast_long";
+    /// <summary>
+    /// 予測型の戻るのプレビューの、手ぶりの進み具合 → 縮み具合の曲線（W2 の手直し 3b）。既定 (0, 0, 0, 1) は Android の開発者向け文書の
+    /// 「独自の予測型の戻るの動き」の例の GestureInterpolator（PathInterpolator(0, 0, 0, 1)）で、記憶による。
+    /// 取り消したときに元へ戻る時間は motion.short。
+    /// </summary>
+    public const string MotionBackPreviewCurve = "motion.back_preview_curve";
 
     // ── 濃さ ────────────────────────────────────────────────
     /// <summary>覆い・シートの幕の濃さ（Flutter 版の黒 54%）。</summary>
@@ -101,6 +112,11 @@ public static class NavTokens
     public const string RatioDialogScaleFrom = "ratio.dialog_scale_from";
     /// <summary>下からのシートの最大の高さ（覆う領域の高さに対する割合）。</summary>
     public const string RatioSheetMaxHeight = "ratio.sheet_max_height";
+    /// <summary>
+    /// 予測型の戻るのプレビューのいちばん小さい倍率（手ぶりを最後まで引いたときの大きさ。W2 の手直し 3b）。
+    /// 既定 0.9 は Material 3 の予測型の戻る（画面が 90% まで縮む）から取った値で、記憶による。
+    /// </summary>
+    public const string RatioBackPreviewScale = "ratio.back_preview_scale";
     /// <summary>フリックで閉じる速さ（dp/秒。覆い・トースト。Flutter 版の 300）。</summary>
     public const string SpeedFlingDismiss = "speed.fling_dismiss";
     /// <summary>同時に見せるトーストの数（それより多い分は待たせる）。</summary>
@@ -125,10 +141,10 @@ public static class NavTokens
     {
         RadiusDialog, RadiusSheet, RadiusToast, RadiusTabIndicator,
         SizeTabBar, SizeTabIndicatorWidth, SizeTabIndicatorHeight, SizeDialogWidth, SizeDialogPadding, SizeDialogButtonHeight,
-        SizeHandleWidth, SizeHandleHeight, SizeHandleArea, SizeToastHeight, SizeDragDismiss,
+        SizeHandleWidth, SizeHandleHeight, SizeHandleArea, SizeToastHeight, SizeDragDismiss, SizeBackPreviewShift,
         MotionPush, MotionCover, MotionFade, MotionOverlay, MotionDialog, MotionSheet, MotionToast, MotionToastShort, MotionToastLong,
         OpacityScrim, OpacityDialogScrim,
-        RatioPushParallax, RatioDialogScaleFrom, RatioSheetMaxHeight, SpeedFlingDismiss, CountToastVisible,
+        RatioPushParallax, RatioDialogScaleFrom, RatioSheetMaxHeight, RatioBackPreviewScale, SpeedFlingDismiss, CountToastVisible,
         LayerStackStep, LayerModalStep, LayerOverlay, LayerSheet, LayerDialog, LayerToast,
     };
 
@@ -139,6 +155,7 @@ public static class NavTokens
     public static readonly string[] Curves =
     {
         MotionPushCurve, MotionCoverCurve, MotionFadeCurve, MotionOverlayCurve, MotionDialogCurve, MotionToastCurve,
+        MotionBackPreviewCurve,
     };
 
     /// <summary>画面の組み立てが読むすべてのトークン（曲線は 4 つの成分に展開する）。</summary>

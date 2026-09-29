@@ -12,6 +12,8 @@
 //      機能が無ければ中身の無い <manifest/>（古い生成物を残さないため、空でも必ず書く）
 //    res/values/seed_platform.xml
 //      <bool name="seed_system_bars_visible">                      … system_bars が visible なら true
+//      <bool name="seed_predictive_back">true</bool>                 … predictive_back が true のときだけ（W2 の手直し P1-3。
+//                                                                      false のプロジェクトは頭のコメントも含めて従来と同じバイト列）
 //  main のマニフェストの MainActivity は相対名（.MainActivity）で、ここは完全修飾名で書く（マージは名前空間
 //  com.seedengine.runtime で解いた完全修飾名で同じ activity とみなす。2026-09-27 に実ビルドの aapt2 で確かめた）。
 //  同じ入力からは同じバイト列（UTF-8・BOM なし・改行 LF・字下げ 4）を作る（APK の工程の指紋が中身の SHA-256 のため）。
@@ -45,6 +47,13 @@ public static class AndroidPlatformManifestWriter
     /// （単体テストが 3 か所を突き合わせる）。
     /// </summary>
     public const string SystemBarsVisibleResourceName = "seed_system_bars_visible";
+
+    /// <summary>
+    /// 予測型の戻るを使う印の bool のリソース名（W2 の手直し P1-3）。Java の back/BackCallbackController の
+    /// R.bool.seed_predictive_back と、main の res/values/seed_platform_defaults.xml の既定値（false）と、build.gradle.kts の
+    /// 食い違いの確かめ（predictiveBackResourceLine）と一致させる（単体テストが突き合わせる）。
+    /// </summary>
+    public const string PredictiveBackResourceName = "seed_predictive_back";
 
     /// <summary>ディープリンクの intent-filter の action。</summary>
     public const string ViewAction = "android.intent.action.VIEW";
@@ -110,19 +119,35 @@ public static class AndroidPlatformManifestWriter
         writer.WriteEndElement();
     });
 
-    /// <summary>values（seed_system_bars_visible）を書く。</summary>
+    /// <summary>
+    /// values（seed_system_bars_visible と、予測型の戻るを使うときだけ seed_predictive_back）を書く。
+    /// 予測型の戻るを使わないときは頭のコメントも含めて W1-2 と同じバイト列（APK の工程の指紋を変えない）。
+    /// </summary>
     /// <param name="set">このビルドのプラットフォーム機能。</param>
     /// <returns>UTF-8 のバイト列。</returns>
     public static byte[] WriteValues(AndroidPlatformFeatureSet set) => WriteDocument(writer =>
     {
-        writer.WriteComment(GeneratedNotice + NewLine + $"  {AndroidAppSettings.SystemBarsKey}: {set.SystemBars} ");
+        var comment = GeneratedNotice + NewLine + $"  {AndroidAppSettings.SystemBarsKey}: {set.SystemBars} ";
+        if (set.PredictiveBack)
+        {
+            // 予測型の戻る（W2 の手直し P1-3）: true のときだけコメントの行を足す（false では何も足さない）
+            comment += NewLine + $"  {AndroidAppSettings.PredictiveBackKey}: {AndroidPlatformFeatureCatalog.XmlTrue} ";
+        }
+        writer.WriteComment(comment);
         writer.WriteStartElement("resources");
-        writer.WriteStartElement("bool");
-        writer.WriteAttributeString("name", SystemBarsVisibleResourceName);
-        writer.WriteString(set.SystemBarsVisible ? AndroidPlatformFeatureCatalog.XmlTrue : AndroidPlatformFeatureCatalog.XmlFalse);
-        writer.WriteEndElement();
+        WriteBool(writer, SystemBarsVisibleResourceName, set.SystemBarsVisible);
+        if (set.PredictiveBack) WriteBool(writer, PredictiveBackResourceName, true);
         writer.WriteEndElement();
     });
+
+    /// <summary>&lt;bool name="…"&gt;true / false&lt;/bool&gt; を 1 つ書く。</summary>
+    private static void WriteBool(XmlWriter writer, string name, bool value)
+    {
+        writer.WriteStartElement("bool");
+        writer.WriteAttributeString("name", name);
+        writer.WriteString(value ? AndroidPlatformFeatureCatalog.XmlTrue : AndroidPlatformFeatureCatalog.XmlFalse);
+        writer.WriteEndElement();
+    }
 
     /// <summary>MainActivity へのディープリンクの intent-filter（1 件 1 つ）を書く。</summary>
     private static void WriteLaunchActivityFilters(XmlWriter writer, IReadOnlyList<AndroidDeepLinkSetting> links)

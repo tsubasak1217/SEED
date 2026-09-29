@@ -118,6 +118,11 @@ pub fn register(schedule: &mut Schedule) {
                         if c.needs_resolve { sc.refs_dirty = false; }
                     }
                 }
+                // 4. この時点で、このフレームに有効なスクリプトの OnStart はすべて済んでいる
+                //    （OnStart は各スクリプトの BeginFrame の直前に呼ぶため）。プラットフォームのイベントの
+                //    「スクリプトの準備」の印を立て、起動の直後から保持していたイベントを次のフレームの頭で
+                //    配らせる（W2 の手直し P1-2。scripting/platform_bridge.rs の冒頭）。何度呼んでも同じ。
+                crate::engine::core::scripting::platform_bridge::mark_scripts_ready();
             }
         }));
     }

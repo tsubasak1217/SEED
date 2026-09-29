@@ -10,6 +10,7 @@ namespace SEED.UI;
 //    - 祖先（自分を含む）に隠れた（Visible = false）ノードがあれば見えていない（選んでいないタブ・覆われて隠れた画面）
 //    - 祖先に画面のスタックの枠があり、それがそのスタックのいちばん上でなければ上の段ではない（透ける画面の下など）
 //  祖先の数（深さ）が多いほど内側（タブの中のスタックは、タブを持つ画面のスタックより先に尋ねる）。
+//  予測型の戻る（W2 の手直し 3b）: 同じ並びで、副作用の無い問い（WouldHandleBack）とプレビューの相手（BackPreviewTarget）も尋ねる。
 // ============================================================
 
 /// <summary>戻るを受けるナビゲーター（画面のスタック・タブ）。</summary>
@@ -20,6 +21,16 @@ internal interface INavigator
 
     /// <summary>戻るを受けたら true（下ろした・最初のタブへ戻した・画面が受けた）。</summary>
     bool HandleBack();
+
+    /// <summary>
+    /// 今戻るが押されたら受けるか（副作用なし。<see cref="HandleBack"/> と同じ決め方を、閉じる・下ろすをせずに。W2 の手直し 3b）。
+    /// </summary>
+    bool WouldHandleBack();
+
+    /// <summary>
+    /// 予測型の戻るのプレビューの相手（戻ると下ろす画面。下ろさない〈最初のタブへ戻す・画面が受ける・無視〉なら null。W2 の手直し 3b）。
+    /// </summary>
+    IBackPreviewTarget? BackPreviewTarget { get; }
 }
 
 /// <summary>ナビゲーターの登録簿（静的）。</summary>
@@ -54,17 +65,47 @@ internal static class NavigatorRegistry
     /// <returns>どれかが受けたら true。</returns>
     public static bool DispatchBack()
     {
+        foreach (var navigator in ActiveInnermostFirst())
+        {
+            if (navigator.HandleBack()) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 見えていて上の段の中にあるナビゲーターのどれかが戻るを受けるか（副作用なし。戻るの段の Navigation の層の問い。W2 の手直し 3b）。
+    /// </summary>
+    public static bool WouldHandleBack()
+    {
+        foreach (var navigator in ActiveInnermostFirst())
+        {
+            if (navigator.WouldHandleBack()) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 最初に戻るを受けるナビゲーター（内側から）の予測型の戻るのプレビューの相手（無ければ null。W2 の手直し 3b）。
+    /// </summary>
+    public static IBackPreviewTarget? BackPreviewTarget()
+    {
+        foreach (var navigator in ActiveInnermostFirst())
+        {
+            if (navigator.WouldHandleBack()) return navigator.BackPreviewTarget;
+        }
+        return null;
+    }
+
+    /// <summary>見えていて上の段の中にあるナビゲーター（内側から。登録簿の写しから作る）。</summary>
+    private static List<INavigator> ActiveInnermostFirst()
+    {
         var candidates = new List<(INavigator, int, bool)>();
         foreach (var navigator in Navigators.ToArray())
         {
             var (depth, active) = Inspect(navigator.NavigatorNode);
             candidates.Add((navigator, depth, active));
         }
-        foreach (var navigator in NavigatorOrder.InnermostFirst(candidates))
-        {
-            if (navigator.HandleBack()) return true;
-        }
-        return false;
+        return NavigatorOrder.InnermostFirst(candidates);
     }
 
     /// <summary>ノードが見えていて、祖先の画面のスタックの上の段の中にあるか（フォーカスの範囲を前へ出すか決める）。</summary>

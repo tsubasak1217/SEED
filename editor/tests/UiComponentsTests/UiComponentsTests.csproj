@@ -18,6 +18,8 @@
     W2-7: 動きの曲線、画面の出入りの置き方、画面のスタックの積み下ろしと落ち着いた状態（見せる・隠す・手放す）、タブごとのスタックと戻る、
     戻るの段の順序（128 通りの状態で 1 回ずつ押す）、ダイアログのボタン・結果・本文の行の見積もり、シートの段と閉じる判定・幕の濃さ、
     ドラッグで閉じる判定、トーストの並びと時間、フォーカスの範囲と移り方、重なりのレイヤーの帯、タブの見た目。
+    W2 の手直し 3b: 受ける層の問い（128 通りで毎回 Press と一致・問いの無い層・背面へ回さないアプリ）、受ける層の知らせの頻度、
+    予測型の戻るのプレビューの移り変わり（始まり・進み・取り消し・確定・遅れた知らせ・番号の食い違い・確定待ちの時間切れ）と姿勢の計算。
     W2-8: グラフの目盛りの自動（切りの良い刻み・時刻と日付の候補）、軸の範囲の自動、書式（時刻・日付・数）、座標の変換、パンとズームの
     範囲の制限、慣性、単調な 3 次補間（行き過ぎない）、最寄りの点と棒の列、棒の形、枠の割り付けと吹き出し、見える範囲の点と欠けた値。
     W2-9: テーマの読み込み（知らない名前・型の誤りの警告）、継承と一部だけの上書き（基のテーマ → 既定の順に落ちる・読めない基・輪・深すぎ）、
@@ -65,9 +67,17 @@
     <Compile Include="..\..\..\scripting\src\Api\UI\Wheel\*.cs">
       <Link>Linked\Wheel\%(Filename)%(Extension)</Link>
     </Compile>
-    <!-- W2-7: 画面の組み立ての純粋な計算（出入りの置き方・スタック・タブ・戻るの段・ダイアログ・シート・トースト・フォーカス・レイヤー） -->
+    <!-- W2-7: 画面の組み立ての純粋な計算（出入りの置き方・スタック・タブ・戻るの段・ダイアログ・シート・トースト・フォーカス・レイヤー）。
+         W2 の手直し 3b: 戻るの段の問い・予測型の戻るのプレビューの移り変わり・受ける層の知らせ（BackPreviewModel ほか） -->
     <Compile Include="..\..\..\scripting\src\Api\UI\Navigation\Model\*.cs">
       <Link>Linked\Navigation\%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- 3b: プレビューの移り変わりが読む手ぶりの列挙（SEED.Platform の値だけの型。3a） -->
+    <Compile Include="..\..\..\scripting\src\Api\Platform\App\BackEdge.cs">
+      <Link>Linked\Platform\BackEdge.cs</Link>
+    </Compile>
+    <Compile Include="..\..\..\scripting\src\Api\Platform\App\BackGesturePhase.cs">
+      <Link>Linked\Platform\BackGesturePhase.cs</Link>
     </Compile>
     <!-- W2-8: グラフの純粋な計算（目盛り・範囲・書式・座標・パンとズーム・慣性・補間・当たり・棒の形・枠・線の点・トークンの名前） -->
     <Compile Include="..\..\..\scripting\src\Api\UI\Charts\Model\*.cs">

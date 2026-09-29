@@ -16,7 +16,10 @@
 //    deep_links     … アプリを開く URL（W1-2。AndroidDeepLinkSetting の配列。機能 deep_links を書いたときだけ intent-filter になる）
 //    system_bars    … システムバーの既定の出し方（W1-2。hidden＝既定・ゲーム／visible＝アプリ。AndroidSystemBarsSetting）
 //    app_category   … android:appCategory（W1-2。game＝既定／productivity 等。AndroidAppCategorySetting）
-//  W1-2 の 4 つは SeedAndroid の editor/src/Android/Platform/ が読み、マニフェストの断片・Gradle のプロパティにする
+//    predictive_back … 予測型の戻るを使うか（W2 の手直し P1-3。真偽。無い・false＝従来の戻るキー → Escape。true のときだけ
+//                      マニフェストの android:enableOnBackInvokedCallback を "true" にし、res の印 seed_predictive_back を足す。
+//                      docs/android.md §25.18）
+//  W1-2 の 4 つと predictive_back は SeedAndroid の editor/src/Android/Platform/ が読み、マニフェストの断片・Gradle のプロパティにする
 //  （docs/android.md §25.10）。
 //  どれも省略できる。省略したものはビルド時に既定値になる（既定値の作り方と値の検査は
 //  editor/src/Android/Project/AndroidAppIdentityResolver.cs。ID は .seedproj の名前から
@@ -81,6 +84,15 @@ public sealed class AndroidAppSettings
     /// <summary>アプリの分類のキー（W1-2。AndroidAppCategorySetting）。</summary>
     public const string AppCategoryKey = "app_category";
 
+    /// <summary>予測型の戻るを使うかのキー（W2 の手直し P1-3。真偽）。</summary>
+    public const string PredictiveBackKey = "predictive_back";
+
+    /// <summary>真偽を文字列で書いたときの「真」（寛容な読み取り。大文字小文字・前後の空白は問わない）。</summary>
+    private const string TrueText = "true";
+
+    /// <summary>真偽を文字列で書いたときの「偽」（寛容な読み取り）。</summary>
+    private const string FalseText = "false";
+
     /// <summary>アプリ ID（例 com.example.mygame）。null / 空なら既定値。</summary>
     public string? ApplicationId { get; set; }
 
@@ -116,10 +128,16 @@ public sealed class AndroidAppSettings
     /// <summary>アプリの分類（W1-2。書かれた表記のまま）。null / 空なら game（従来の固定値）。</summary>
     public string? AppCategory { get; set; }
 
+    /// <summary>
+    /// 予測型の戻るを使うか（W2 の手直し P1-3）。true のときだけ有効（null・false は従来の戻るキー → Escape）。
+    /// 保存は true のときだけ書く（false・null はキーを省く＝既定）。
+    /// </summary>
+    public bool? PredictiveBack { get; set; }
+
     /// <summary>このクラスが知らないキー（新しいエディタが足したもの）。保存で失わないために持つ。</summary>
     public Dictionary<string, JsonElement> ExtraData { get; set; } = new();
 
-    /// <summary>何も設定されていないか（節ごと省略して保存してよいか）。</summary>
+    /// <summary>何も設定されていないか（節ごと省略して保存してよいか。predictive_back は true のときだけ「設定あり」）。</summary>
     [JsonIgnore]
     public bool IsEmpty =>
         string.IsNullOrWhiteSpace(ApplicationId)
@@ -132,7 +150,32 @@ public sealed class AndroidAppSettings
         && (DeepLinks is null || DeepLinks.All(link => link.IsBlank))
         && string.IsNullOrWhiteSpace(SystemBars)
         && string.IsNullOrWhiteSpace(AppCategory)
+        && PredictiveBack != true
         && ExtraData.Count == 0;
+
+    /// <summary>
+    /// 真偽の値を寛容に読む（W2 の手直し P1-3 の predictive_back。JSON の true / false と、文字列の "true" / "false"〈大文字小文字・前後の
+    /// 空白は問わない〉。それ以外の型・語は null＝未設定）。
+    /// </summary>
+    /// <param name="element">値。</param>
+    /// <returns>真偽（読めなければ null）。</returns>
+    internal static bool? ReadBooleanOrNull(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.True:
+                return true;
+            case JsonValueKind.False:
+                return false;
+            case JsonValueKind.String:
+                var text = element.GetString()?.Trim();
+                if (string.Equals(text, TrueText, StringComparison.OrdinalIgnoreCase)) return true;
+                if (string.Equals(text, FalseText, StringComparison.OrdinalIgnoreCase)) return false;
+                return null;
+            default:
+                return null;
+        }
+    }
 
     /// <summary>
     /// 入力欄の文字列を値にする（前後の空白を落とし、空なら null＝既定値）。
@@ -193,6 +236,9 @@ internal sealed class AndroidAppSettingsJsonConverter : JsonConverter<AndroidApp
                 case AndroidAppSettings.AppCategoryKey:
                     settings.AppCategory = ReadText(property.Value);
                     break;
+                case AndroidAppSettings.PredictiveBackKey:
+                    settings.PredictiveBack = AndroidAppSettings.ReadBooleanOrNull(property.Value);
+                    break;
                 default:
                     // 知らないキーはそのまま保つ（Clone で JsonDocument の寿命から切り離す）
                     settings.ExtraData[property.Name] = property.Value.Clone();
@@ -233,6 +279,8 @@ internal sealed class AndroidAppSettingsJsonConverter : JsonConverter<AndroidApp
         }
         WriteTextIfSet(writer, AndroidAppSettings.SystemBarsKey, value.SystemBars);
         WriteTextIfSet(writer, AndroidAppSettings.AppCategoryKey, value.AppCategory);
+        // W2 の手直し P1-3: 予測型の戻るは true のときだけ書く（false・未設定は既定なのでキーを省く）
+        if (value.PredictiveBack == true) writer.WriteBoolean(AndroidAppSettings.PredictiveBackKey, true);
         foreach (var (key, element) in value.ExtraData)
         {
             writer.WritePropertyName(key);

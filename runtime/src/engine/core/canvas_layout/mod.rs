@@ -29,6 +29,9 @@
 //    safe_area.rs … 安全領域で箱を縮める純関数
 //    ── W2-3（スクロール）──
 //    scroll_view.rs … スクロールの窓の平行移動・窓と中身の大きさ・ノードの範囲（見える範囲の外を飛ばす判定の材料）
+//    ── W2 Item 4（レイアウトの結果をスクリプトへ）──
+//    node_extent.rs … 表の 1 行から「レイアウトが決めたノードの大きさ」と矩形を求める純関数（LayoutSize・LayoutRect の中身）
+//    results.rs     … 前のフレームの描画の表を持つ ECS の資源（CanvasLayoutResults）・遅延の索引・描画からの受け渡し
 //
 //  【表の作り手と持ち主】（ECS の流儀: 表はフレームの文脈として作って読み手へ渡す）
 //    - フレームの描画（frame_renderer）は、メインの 2D キャンバスの表をフレームに 1 回作り、
@@ -36,6 +39,8 @@
 //    - 文脈（ビューポート・自動解像度の表・設計空間表示）が違う読み手（エディタのクリック選択・
 //      Play のポインタイベント・2D 物理）は、同じ `CanvasLayoutPass` で自分の文脈の表を作る。
 //      計算の実体は 1 つなので、文脈が同じなら値は必ず一致する。
+//    - Play のゲームの画面の表は、描画の後にシーンの World の資源（results.rs の CanvasLayoutResults）へ移し、
+//      次のフレームのスクリプト（CanvasTransform.LayoutSize・LayoutRect）が読む（1 フレーム遅れ）。
 //
 //  【番号（DFS）】表の並びは `find_actor_by_dfs` と同じ規則（世界線の一致するルート → 自身 → 子を
 //  深さ優先。子は世界線を問わず数える）。表の添字がそのまま DFS 番号になる。
@@ -47,8 +52,10 @@ pub mod containers;
 pub mod frame;
 pub mod lookup;
 pub mod measure;
+pub mod node_extent;
 pub mod pass;
 pub mod placement;
+pub mod results;
 pub mod safe_area;
 pub mod scroll_view;
 pub mod table;
@@ -59,13 +66,19 @@ mod tests;
 #[cfg(test)]
 mod layout_tests;
 #[cfg(test)]
+mod results_tests;
+#[cfg(test)]
 mod scroll_tests;
+#[cfg(test)]
+mod visual_scale_tests;
 
 pub use anchor::{child_anchor_basis, node_anchor_offset, root_anchor_offset, NO_ANCHOR_BASIS};
 pub use clip::{CanvasClipRegion, ClipRectSource};
 pub use frame::{AutoScaleDivisor, CanvasLayoutEnv, CanvasParentFrame, IDENTITY_MAT4};
+pub use node_extent::{node_extent, NodeExtent, OwnSize};
 pub use pass::CanvasLayoutPass;
 pub use placement::{biased_layer, resolve, resolve_in_rect, CanvasNodeInput, CanvasNodePlacement};
+pub use results::{CanvasLayoutHandoff, CanvasLayoutResults, LayoutFrameView, NodeLayoutReadout};
 pub use safe_area::CanvasRect;
 pub use scroll_view::CanvasScrollRegion;
 pub use table::{CanvasLayoutNode, CanvasLayoutStats, CanvasLayoutTable, CanvasNodeFlags, CanvasNodeKind};

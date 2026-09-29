@@ -2160,6 +2160,10 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
 - [ ] **予測型の「戻る」の無効化は一時的な回避** — 2026-09-26。targetSdk 36 で KEYCODE_BACK が届かなくなるのを `android:enableOnBackInvokedCallback="false"`
   で止めている（公式にも一時的な回避とある）。将来の Android で効かなくなる前に、`OnBackInvokedCallback`（`MainActivity`）で戻るを受けてネイティブの
   Escape へ渡す形へ移す（予測型の戻るのアニメーションにも対応できる）。
+  → 2026-09-29（W2 の手直し P1-3）: その形を **opt-in** で作った（プロジェクト設定 `android.predictive_back: true` で `enableOnBackInvokedCallback="true"`・
+  `OnBackInvokedCallback`／`OnBackAnimationCallback` で受けて合成の KEYCODE_BACK → Escape。docs/android.md §25.18）。**既定（設定なし・false）は今も `"false"` の回避のまま**
+  （WarashibeFishing などゲームの戻るの振る舞いを変えないため）。将来の Android で `"false"` が効かなくなったら、既定を true 側へ移す（ゲームも SEED.UI を
+  使わなければ、起動したときの「アプリが受ける」のまま Escape が届く）。
 - [ ] **Gradle のデーモンが配布用のビルドの後も署名のパスワードを環境に持つ（低優先）** — 2026-09-26。デーモンはビルドのたびにクライアントの環境変数に
   合わせるので、次のビルドまで `ORG_GRADLE_PROJECT_seed.signing.*` が残る（同じ Windows ユーザーのプロセスからは読める。DPAPI と同じ前提）。
   配布用だけ `--no-daemon` にするか、ビルドの後に一時的なデーモンを止める案（起動が 10〜20 秒遅くなる）。
@@ -2820,6 +2824,9 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   受け取った時刻で代用**: winit 0.30.13 は MotionEvent の eventTime を `WindowEvent::Touch` に渡さず、履歴の標本（historical）も捨てる
   （`platform_impl/android/mod.rs` の `handle_input_event` を読んだ）。移動は vsync ごとにまとめて届くので、速度の推定は 1 フレームに 1 標本・受け取りの揺れを含む。
   直すなら winit を上げる（時刻が渡るようになったら）か、MainActivity の `dispatchTouchEvent` で eventTime を JNI で控えて突き合わせる。
+  → **(2) は 2026-09-29 に済（W2 の手直し P1-1）**: `MainActivity.processMotionEvent`（GameActivity の glue へ渡す前）で MotionEvent の時刻と履歴を控えて JNI で
+  エンジンの箱へ送り、winit の Touch と ID・段階・位置のビットで突き合わせて記録の時刻にする（履歴の標本もジェスチャーの記録へ。API 34 以上は ns。
+  docs/input_gestures.md §5・§5.1）。
   (3) **閾値の表はプロジェクト設定の JSON（`"gestures"`）だけ**（エディタのプロジェクト設定の画面に欄が無い）。(4) **「動いている」の申告
   （`GestureArenaSet::activity`）は呼び出し元が無い**（W2-10a で「描く理由」へつなぐ → 2026-09-28 につないだ。済）。(5) **W2-3 への申し送り**: 行の再利用で押している行のノードが
   消えると PressCancel の配り先が無い（部品側で戻す）。スクロールの慣性中のタップで止める・慣性中の押下の見た目の扱いは部品側。
@@ -2924,7 +2931,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   見積もり（`DialogLayout`。W2-6c の `Text.Measure` へ替える）。(6) **下からのシートの「先に広げる」が無い**（半分の段で中身の一覧を上へ引くと一覧が先に動く。
   W2-3 の入れ子は内側が先・端の残りを外側へだけ。Android の nested pre-scroll 相当を足すなら canvas_scroll/nesting.rs）。開く・閉じる曲線は ScrollTo の
   easeInOut 固定。(7) 上からの覆いの作りは最小（Flutter 版の固定の頭・一覧の外の閉じる・左右の余白・四隅の角丸は W3 のプレハブで）。
-  (8) **予測型の戻る**（Android 14+ の戻るジェスチャーの途中ののぞき見・`OnBackInvokedCallback`）は扱わない。(9) `CanvasLayoutItem` の実行中だけの欄は
+  (8) **予測型の戻る**（Android 14+ の戻るジェスチャーの途中ののぞき見・`OnBackInvokedCallback`）は扱わない（→ **2026-09-29 の W2 の手直し P1-3 で opt-in として
+  入れた**: `BackDispatcher.WouldHandle`・進み具合のプレビュー〈画面・札・板を縮める。実行中の倍率 `CanvasLayoutItem.VisualScale`〉。docs/ui_navigation.md §5.1）。(9) `CanvasLayoutItem` の実行中だけの欄は
   インスペクタに出ない（Play 中に値を見るには `SCRIPT_DEBUG` かスクリプト）。(10) Wake or Pay の仕様 §3.7 は「タブの最上位 → 背面へ」だけで、
   W2-7 の依頼の「根のタブ以外なら根のタブへ」（`TabHost.BackToFirstTab` 既定 true）と違う。W3 でどちらにするか決める（false で仕様どおり）。
   関連: `scripting/src/Api/UI/Navigation/`・`runtime/src/engine/core/canvas_layout/`・`templates/ui/`。
@@ -3079,6 +3087,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   オンにして。ui_components.md §11.9 の 2）、3 ボタンのナビゲーションの戻る・キーボードが出ているときの戻る・回転・シートのつまみを払って閉じる・覆いとトーストの払い
   （ui_navigation.md §12 の 1〜6 の残り）、慣性の途中のタップ・PressCancel・1,000 行の比較（ui_scroll_list.md §11 の 3・4・6）、グラフの縁と目盛りの目視（ui_charts.md §10 の 1）、
   ギャラリーの形と塗りの目視（ui_components.md §9）。M7 の「スクロールへ届く」は下の項目を直してからもう一度。
+  → 2026-09-29（W2 の手直し P1 の後。roadmap §3.9.3）に足す分: **M7 の「スクリプトへ届く」**（P1-2 で直した。通知の取り消し → 開き直すを利用者の操作で）、
+  **時刻ホイールを止めて離す**（P1-1。利用者の指で。`[SEED GESTURE] release … rule=… lift_probe_dp=…` で R2 の閾値の余裕を見る）、**予測型の戻るの残り**
+  （ui_navigation.md §12 の予測型の戻るの 5・6: 3 ボタンのナビゲーション・すばやく 2 回・途中で画面が切り替わる・回転。キーボードが出ているときの優先順）。
+  予測型の戻るの 1〜4（根・積んだ画面・ダイアログ）は利用者の指で確かめた。
 - [ ] **行を大きく左へ払ったらそのまま削除（フルスワイプ）。利用者の要望** — 2026-09-29（W2 の手触りの確認。roadmap §3.9.2）。利用者の言葉:「大きく左にスワイプしたら
   そのまま削除されるといい。削除されるスワイプの閾値を越した瞬間に『削除』のテキストを右から左側へ補間で移動させ、端末を単発のバイブレーションで揺らすと、手触りとして
   分かりやすい」（iOS のメールなどのフルスワイプの削除に当たる）。案: `SwipeActions` にフルスワイプ（既定はオフ）を足す。閾値は行の幅の 0.6 程度（操作のボタンの幅より先。
@@ -3095,7 +3107,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   循環なしを既定にする（W3）。関連: docs/ui_components.md §11.3・§11.10。
 - [ ] **Wake or Pay の時刻は 24 時間表記だけにする（午前/午後の列を出さない）。アプリの決定** — 2026-09-29（利用者の指摘「午前、午後の表示は不要」。roadmap §3.9.2）。
   W3 の画面で `TimeWheel` を 24 時間表記に固定する。エンジンの 12 時間表記（午前/午後の列・連動）は汎用の部品として残す。
-- [ ] **指を離す瞬間の小さな飛びで、最速に近いフリックが起きる（時刻ホイール・Android）** — 2026-09-29（利用者の指摘「細かい指の動きに反応してしまっているのか、
+- [x] **指を離す瞬間の小さな飛びで、最速に近いフリックが起きる（時刻ホイール・Android）** — 2026-09-29（利用者の指摘「細かい指の動きに反応してしまっているのか、
   指を離す際にダイアルが想定していない方向や量で動いてしまうことがある」。roadmap §3.9.2 の (c)）。ログ（`[SEED TOUCH FRAME]` と見本の `[UI] time`）: ホイールの上で
   離した 94 回のうち、指をほぼ止めてから離した 25 回（最後の 3 フレームの移動がどれも 1 dp 未満）の 3 回で、離した直後に 1 フレーム 3〜4 行（約 5,800〜7,700 dp/秒）で
   流れ始めて 98〜109 分進んだ。3 回とも、離した瞬間の指の位置の飛び（上へ 1.5〜4.2 dp）と同じ向きで、2 回はそれまでの指の向きと逆。見立て（推論）: Android では速度の
@@ -3105,13 +3117,22 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   100 ms の移動量 ÷ 時間」の数倍で切り詰め、最後の標本が向きを反転していれば捨てる、(4) ホイールでは小さい離しの速度（例 300 dp/秒未満）を 0 にして最寄りの行へ寄せる
   だけにする。確かめ方: 今回の `[SEED TOUCH FRAME]` の 3 回を標本の時刻の揺れつきで再生する単体テスト。関連: `runtime/src/engine/core/input/gesture/velocity.rs`・
   `pointer_track.rs`・`arena.rs`（`on_up`）・`recognizers/fling.rs`、作業フォルダ `tmp/w2_feel/release_jitter.py`。
-- [ ] **予測型の戻るのアニメーションが出ない** — 2026-09-29（利用者「戻るアクションで、他のアプリのようにアプリ自体が縮小して後ろが見えるようにはならない」。
+  → **2026-09-29 に W2 の手直し P1-1 で直した**（roadmap §3.9.3）: (1) の根本（MotionEvent の時刻と履歴を `processMotionEvent` で控えて JNI で突き合わせる）と、
+  速度の推定の頑健化 R1〜R4（止まっていた・持ち上げの揺れ・幅の短い推定・間隔の短い標本。docs/input_gestures.md §5.1）。問題の 3 回の再生は速度 0（規則が無いと 8,000 dp/秒）。
+  実機の `adb input` で、記録の時刻が MotionEvent の時刻（差 62〜203 ns）・止めて離すと `rule=stopped` を確かめた。**利用者の指で時刻ホイールを止めて離す確かめは未実施**
+  （上の「W2 の手直し P1 の残り」の (2)。R2 の閾値の余裕を `lift_probe_dp` で見る）。(4) のホイールだけの小さな速度の切り捨ては入れていない（P2 で要るか決める）。
+- [x] **予測型の戻るのアニメーションが出ない** — 2026-09-29（利用者「戻るアクションで、他のアプリのようにアプリ自体が縮小して後ろが見えるようにはならない」。
   roadmap §3.9.2 の (d)）。原因（コードとログで確認）: マニフェストの `android:enableOnBackInvokedCallback="false"`（Android 16 以降で KEYCODE_BACK を Escape へ写すための
   一時的な回避。`runtime/android/app/src/main/AndroidManifest.xml`・docs/android.md §14.5・§24）で、戻るは全部アプリのコールバック（`CoreBackPreview … backType=4`）になり、
   根でも SEED が自分で `moveTaskToBack` するのでシステムの「縮んでホームが見える」動きが使われない。案: (a) Android 13+ の `OnBackInvokedCallback`（14+ は
   `OnBackAnimationCallback` の進み具合と指の位置）を Java 側で登録し、進み具合を SEED.UI の `BackDispatcher` へ流して、段ごとに自前でのぞき・縮みを描く（画面のスタックの
   pop のプレビュー、ダイアログ・シートの縮み。確定で今の Dispatch・取り消しで戻す）、(b) 段が空（根）のときはコールバックを外してシステムの既定（ホームへの縮小）に任せる、
   (c) Escape への写しが要るゲームと予測型を使う UI アプリをプロジェクト設定で選べるようにする。docs/ui_navigation.md §13 の「予測型の戻るは扱わない」を見直す。
+  → **2026-09-29 に W2 の手直し P1-3 で (a)(b)(c) を入れた**（roadmap §3.9.3・docs/android.md §25.18・docs/ui_navigation.md §5.1）: プロジェクト設定 `android.predictive_back: true`
+  （既定 false＝WarashibeFishing などは従来どおり）、`OnBackInvokedCallback`／`OnBackAnimationCallback`・合成の KEYCODE_BACK → Escape、`BackDispatcher.WouldHandle` が
+  受ける層の有無を知らせて根ではシステムへ渡す（API 36 以上は `moveTaskToBackCallback`）、受ける層があれば進み具合で画面・札・板を縮める（実行中の倍率
+  `CanvasLayoutItem.VisualScale`）。**利用者の指で確かめた**: 根で「アプリ全体が縮んで後ろにホーム」「離すとホームへ」、積んだ画面で「縮んで後ろにホームのタブ」
+  「取り消しで元へ」「離すと縮んだ姿勢から下りる」。残りは上の「W2 の手直し P1 の残り」の (9)。
 - [ ] **ダイアログの上下の余白が 7.6 dp しかない（札が中身の高さに伸びない・本文の行の見積もりが多い）** — 2026-09-29（利用者「ダイアログのテキストやボタンのレイアウトが
   やたら端が狭くて変な感じ。これがデフォルトならもう少し余裕を持たせてほしい」。roadmap §3.9.2 の (a)）。実測（撮影を画素で測った）: 札 311.6 × 160.0 dp、左の余白 24.0 dp
   （`size.dialog_padding` は既に Material 3 の 24 dp）。札の背景がプレハブの高さ 160 dp のままで（`Dialog.Layout` は札の `CanvasLayoutItem.PreferredSize` の高さに 0 を書くだけ）、
@@ -3131,21 +3152,52 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   見本のシーンが 540 dp 固定なのは上の項目「ギャラリー・グラフの見本が 540×1200 dp 固定」だが、グラフの部品そのものも大きさをノードの Sprite の幅・高さから読む
   （`ChartView.ReadSize`。コードで確認。docs/ui_charts.md §11 の持ち越し）ので、コンテナ・アンカーで伸ばしても追従しない。案: レイアウトが決めた大きさをスクリプトから
   読める口（`CanvasLayoutTable` の結果）を足して `ReadSize` をそちらへ替える、または「親の幅に合わせる」欄でグラフが自分の Sprite の幅を書き直す。見本は画面の幅に合わせて作り直す。
+  → 2026-09-29（W2 の手直し P1-4）: **読む口を足した**（`CanvasTransform.HasLayout`・`LayoutSize`〈キャンバスの単位〉・`LayoutRect`〈画面の画素の外接矩形〉。前のフレームの
+  描画の表の値＝1 フレーム遅れ。docs/scripting_api.md の CanvasTransform・docs/canvas_camera_rework.md §6.8）。PC で見本の WakeWeek が 2 フレーム目から
+  `size=(508,170) rect=(16,76,508,170)` を返すことを確かめた。**`ChartView.ReadSize` の差し替えと見本の作り直しは P2**（最初のフレームは HasLayout=false なので
+  Sprite の値で作って次のフレームで作り直す・コンテナが大きさを変えたフレームは背景と中身が 1 フレームずれる、に注意）。
 - [ ] **日付線（選んだ点の縦の線）の下に丸いハンドルを付け、ハンドルで左右へ動かして選びを変える。利用者の要望** — 2026-09-29（roadmap §3.9.2）。利用者の言葉:
   「日付線の下部に丸いハンドルを用意して、そこを押して左右に動かすと日付線だけを動かせるといい」。案: 選んだ点の縦の線の下端（横の軸の上）に丸いハンドル（見た目 16〜20 dp・
   当たりは 48 dp 以上＝`min_hit_size_dp`）。ハンドルの上で押したドラッグはパン・ピンチより先に勝つ（ハンドルの上だけ先にドラッグを主張する）。動かす間は最寄りの点（棒は列）へ
   吸い付き、吹き出しが付いてくる。点が変わるたびに触感 1 回（`Haptics.Tap`。ホイールと同じく 1 フレーム 1 回まで）。面の端へ寄せたら横へ送る（自動のパン）。離したら選びは残す。
   関連: `scripting/src/Api/UI/Charts/ChartView.cs`（`SelectAtLocal`・ジェスチャー）・`LineChart.cs`・`BarChart.cs`。
-- [ ] **起動し直した直後の `platform.permission_changed` がスクリプトに届かない（M7 の実機）** — 2026-09-29（roadmap §3.9.2・docs/android.md §25.14.8）。通知をオフにされて
+- [x] **起動し直した直後の `platform.permission_changed` がスクリプトに届かない（M7 の実機）** — 2026-09-29（roadmap §3.9.2・docs/android.md §25.14.8）。通知をオフにされて
   Android がアプリを止め、開き直した最初の onResume で `granted → denied` は出て（前回の状態の保存が効いた）エンジンも受け取ったが、見本のシーンの試験用スクリプト
   （`OnStart` で `PlatformEvents.OnEvent`・`this.On`）には届かなかった（受け手の `OnStart` が知らせの 0.86 秒後）。§25.14.5 の「後から `On` するスクリプトは受け取れないことが
   ある」が実機で起きた。案: (a) 起動から最初のスクリプトのフレームまでに届いたプラットフォームの知らせを取っておき、シーンのスクリプトの `OnStart` が済んだ後に配る、
   (b) 最後の変化を読み直せる口（例: 種類ごとの最後の `PermissionChanged`）を足す、(c) それまでは「起動時は `Permissions.Check` で確かめる」を Wake or Pay の起動の手順に入れる。
   関連: プラットフォームの知らせの配り方（`runtime/src/engine/platform/bridge/event_queue.rs`・`runtime/src/engine/core/scripting/platform_bridge.rs`・
   `scripting/src/Api/Platform/PlatformEvents.cs`）・docs/scripting_api.md の `PermissionChangedEvent`。
+  → **2026-09-29 に W2 の手直し P1-2 で (a) を入れた**（roadmap §3.9.3・docs/android.md §25.14.5）: 最初のシーンのスクリプトの OnStart が済むまでエンジンは基盤の箱から
+  取り出さず、OnStart の次のフレームの BeginFrame でまとめて配る（Play の区切りでは従来どおり捨てる）。実機で、起動の直後に積んだ試験イベントと `platform.connected` が
+  見本のスクリプトへ届くことを確かめた（変更前の APK は 2 件とも届かなかった）。**M7 そのもの（通知の許可の取り消し → 開き直す）の再確認は未実施**（利用者の操作が要る。
+  「W2 の実機の確認の残り（2026-09-29 の後）」の M7 の「スクリプトへ届く」）。
 - [ ] **ギャラリーの見本: デバッグの命令で明暗の選び方を変えても帯のセグメントの表示が変わらない** — 2026-09-29（W2 の手触りの確認の準備で発見。roadmap §3.9.2）。
   `SCRIPT_DEBUG:theme,mode,system` で選び方は System になる（`[UI] theme: mode System → Dark`）が、テーマの帯の「テーマ・端末・明・暗」の表示は「テーマ」のまま。
   利用者の指の操作では起きない。案: `UiGalleryThemeBar` の命令の処理でセグメントの選びも（知らせずに）そろえる。関連: `templates/ui/scripts/UiGalleryThemeBar.cs`。
+- [ ] **W2 の手直し P1 の残り（2026-09-29。roadmap §3.9.3）** — P1（タッチの時刻と離しの速度・起動直後のイベントの保持・予測型の戻る・レイアウトの矩形）で
+  見つけた・残したもの。直していない。
+  (1) **9 本目の指で winit が panic しうる（推論・未実行）**: GameActivity の glue は指を 8 本に切る（GameActivityEvents.cpp の上限）のに、winit 0.30.13 は
+  action の指の添字（8 以上になりうる）で `pointer_at_index` を呼ぶ（`platform_impl/android/mod.rs` を読んだ）。P1-1 の控え（`TouchTimeline`）は glue に合わせて
+  8 本まで。実機で 9 本指を当てて確かめ、要るなら winit を上げるかパッチ。
+  (2) **離しの速度の R2（持ち上げの揺れ）の閾値が、実機の「ほぼ止めた指」に近い**: 記録（roadmap §3.9.2 (c)）の止めた指は 12〜48 dp/秒で、R2 の閾値は
+  最小のフリックの速度 50 dp/秒（`min_fling_velocity_dp`）。時刻ホイールを利用者の指で止めて離してもらい、`[SEED GESTURE] release … lift_probe_dp=` で余裕を見て決める
+  （`velocity_lift_off_ms` などは project_settings.json の `"gestures"` で変えられる）。止めた時間が 40 ms より短いと R2 の区間に払いが入り、小さな逆向きのフリックが残りうる。
+  (3) **R3（幅の短すぎる推定を捨てる）は DragStart・DragUpdate の速度にも効く**: ドラッグの最初の 1 フレームの速度（`CanvasScroll.Velocity`・`GestureEvent.Velocity`）が 0 になる
+  （離しの速度・フリックは影響なし。C# の部品は DragEnd と Fling の速度だけを読むことを確かめた）。見た目への影響は無い見込み。
+  (4) **`CanvasTransform.ScreenPosition` はスクロールの平行移動を足していないように読める（推論・未実行）**: `collect_actor2d_contexts` を読んだ。スクロールしても
+  ScreenPosition は動かず、`LayoutRect`（P1-4）だけ動く可能性。スクロールの中のノードで両方をログへ出して確かめる。
+  (5) **Scale ≠ 1 かつ pivot ≠ 0 のキャンバスのノードで、子の箱の原点とキャンバスの領域がずれるように読める（推論・未実行）**（P1-4 の調べで読んだ）。
+  (6) **`LayoutSize` の索引は、スクリプトが読むフレームごとに表の行数に比例して作り直す**（資源はフレームごとに差し替わるため。P2 でグラフが毎フレーム読むと
+  行の多いシーンで効く。要るなら表と一緒に索引も持ち越す）。
+  (7) **プロジェクト設定 `android.predictive_back` の欄がエディタの設定ウィンドウに無い**（JSON を手で書く。ウィンドウで保存しても消えない）。
+  (8) `BackGestureEvent` が JSON の数の読み取りにセンサーの `SensorJson.GetFloat` を借りている（`PlatformJson` へ移すとよい）。
+  (9) 予測型の戻る（P1-3）: 手ぶりの途中でコールバックを外したときの振る舞い（onBackCancelled が来る見込み）・ボタンの戻る（3 ボタンのナビゲーション）で
+  `onBackStarted` が来るか・IME が出ているときの優先順は実機で確かめていない（記憶による前提。docs/android.md §25.18）。API 33〜35 でランチャー以外から起動した根は、
+  受ける層が無くても自分のコールバックを残す（システムの戻るが finish → プロセスの終了になるおそれがあるため。見た目はホームへ戻る予測アニメーションにならない）。
+  (10) エディタの Play でインスペクタから CanvasLayoutItem の欄を書き換える（serde を通す往復）と、Play 中の実行中の欄（`translate`・`visual_scale`）が既定値へ戻る
+  （`translate` の従来の振る舞いと同じ）。(11) `scroll_view::translate_frame` は `visual_shift` を更新しないので、スクロールの中の `CanvasSafeArea` はスクロールした位置で
+  安全領域を求める（既存）。
 - [ ] **W2-11 通しの確認（UC-1〜12）** — 2026-09-27。
 - [ ] **PC の Play のスクリプトのコンパイルで `System.Text.Json` を参照できない** — 2026-09-27（Wake or Pay の W3-D で発見）。`using System.Text.Json;` が `CS0234: 'Json' does not exist in the namespace 'System.Text'` で失敗する。Play のコンパイル（ScriptAssemblyManager の Roslyn）が「その時点で読み込まれているアセンブリ」だけを参照に入れるため、共有フレームワークの `System.Text.Json.dll` が参照に入らない。Wake or Pay は反射なしの小さな JSON（`assets/scripts/Json/`）を自作して回避した。直し方の案: 参照の集合を「読み込み済み」ではなく、同梱の .NET の `shared/Microsoft.NETCore.App/<版>/` の参照用アセンブリ一式（または許可リスト）から作る。Android の同梱 CoreCLR と SeedPak の事前コンパイル（`--scripts`）の参照も同じ集合にそろえる。関連: `scripting/` の Compilation、`docs/scripting_api.md`（使える .NET の範囲を明記する）。
 - [ ] **SEED.exe を前面に出さずに起動する引数が無い（自動の見た目の検査が利用者の画面を奪う）** — 2026-09-27（W2-1a の画素比較で発見。利用者から「頻繁に起動しているのはなぜ？」）。今は STARTUPINFO の SW_SHOWNOACTIVATE で起動し最背面へ送って凌いでいる。案: `--window=hidden|offscreen|minimized` と、描画をオフスクリーンのテクスチャに向けてスクリーンショットだけ撮る `--headless-render`（決まったフレーム数で撮って終了）。W2 以降の見た目の回帰検査（UC の自動化）と CI で使う。関連: `runtime/src/main.rs`、IPC の SCREENSHOT。

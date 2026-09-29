@@ -15,6 +15,8 @@
 //      app/src/seedFeatures/ へ AndroidManifest.xml と res/values/seed_platform.xml を置く（Platform/AndroidPlatformFeatureStager。
 //      機能が空でも中身の無いマニフェストを必ず置く）。build.gradle.kts が variant の API で main へ重ねる
 //    - アプリの分類: android.app_category を seed.appCategory で渡す（既定の game は渡さない）
+//  【W2 の手直し P1-3 で足したこと】
+//    - 予測型の戻る: android.predictive_back が true のときだけ seed.predictiveBack=true を渡す（Java の印は断片の values）
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
@@ -59,6 +61,7 @@ public sealed class GradleBuildStep : IAndroidPipelineStep
             Signing = context.Signing,
             LauncherIcon = context.LauncherIcon is not null,
             AppCategory = context.PlatformFeatures.AppCategory,
+            PredictiveBack = context.PlatformFeatures.PredictiveBack,
         };
 
     /// <inheritdoc />

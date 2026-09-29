@@ -17,7 +17,10 @@
 //    seed.versionName   … 版の文字列（versionName）
 //    seed.launcherIcon  … generated（Icons/ が src/seedIcon/res へアイコンを生成したとき。段階D）
 //    seed.appCategory   … android:appCategory（プロジェクト設定 android.app_category。既定の game は渡さない。W1-2）
-//  （W1-2 の features / deep_links / system_bars はプロパティではなく、生成したマニフェストの断片 src/seedFeatures/ で渡す）
+//    seed.predictiveBack … android:enableOnBackInvokedCallback（プロジェクト設定 android.predictive_back が true のときだけ true を渡す。
+//                          無い・false のプロジェクトには渡さない＝引数も指紋も従来と同じ。W2 の手直し P1-3・docs/android.md §25.18）
+//  （W1-2 の features / deep_links / system_bars はプロパティではなく、生成したマニフェストの断片 src/seedFeatures/ で渡す。
+//    predictive_back の Java の印 seed_predictive_back も同じ断片の values に入る）
 //    seed.signing.storeFile / seed.signing.keyAlias          … 配布用の署名のキーストアと別名（release だけ。段階D）
 //    seed.signing.storePassword / seed.signing.keyPassword   … 同じくパスワード（必ず環境変数。一覧には伏せ字で載る）
 //  アプリの識別情報を渡さなければ build.gradle.kts の既定値（com.seedengine.runtime・SEED Runtime 等）になる。
@@ -71,6 +74,12 @@ public sealed record GradleBuildParameters(
     /// android:appCategory（正規化済み。null か既定の game なら渡さず build.gradle.kts の既定値。W1-2）。
     /// </summary>
     public string? AppCategory { get; init; }
+
+    /// <summary>
+    /// 予測型の戻るを使うか（W2 の手直し P1-3。true のときだけ seed.predictiveBack=true を渡す。false なら渡さず build.gradle.kts の
+    /// 既定値〈enableOnBackInvokedCallback="false"〉）。
+    /// </summary>
+    public bool PredictiveBack { get; init; }
 }
 
 /// <summary>Gradle のプロジェクトプロパティ 1 つ。</summary>
@@ -144,6 +153,12 @@ public static class GradleInvocation
     /// <summary>アプリの分類（W1-2。build.gradle.kts の seedProperty("appCategory")）。</summary>
     public const string AppCategoryProperty = "seed.appCategory";
 
+    /// <summary>予測型の戻る（W2 の手直し P1-3。build.gradle.kts の seedProperty("predictiveBack")）。</summary>
+    public const string PredictiveBackProperty = "seed.predictiveBack";
+
+    /// <summary>予測型の戻るを使うときの値（build.gradle.kts の predictiveBackEnabledValue と同じ）。</summary>
+    public const string PredictiveBackEnabledValue = "true";
+
     /// <summary>配布用の署名のキーストア（段階D）。</summary>
     public const string SigningStoreFileProperty = "seed.signing.storeFile";
 
@@ -210,6 +225,9 @@ public static class GradleInvocation
         {
             Add(AppCategoryProperty, parameters.AppCategory);
         }
+
+        // 予測型の戻る（W2 の手直し P1-3。使うときだけ渡す。使わないプロジェクトの引数と APK の工程の指紋は従来と同じ）
+        if (parameters.PredictiveBack) Add(PredictiveBackProperty, PredictiveBackEnabledValue);
 
         // 配布用の署名（release だけ。パスワードは秘密として必ず環境変数）
         if (parameters.Variant == AndroidBuildVariant.Release && parameters.Signing is { } signing)

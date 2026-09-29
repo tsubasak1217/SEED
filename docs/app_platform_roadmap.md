@@ -1184,6 +1184,64 @@ W2-0 のときに作った APK の控え（`com.seedengine.uispike`・デバッ�
 証拠（私物端末のログなのでリポジトリに入れていない）: 作業フォルダ `tmp/w2_feel/` の `logcat_full.txt`（全体）・`marks.txt`（依頼と返事の時刻）・項目ごとの切り出し
 （上の表）・`shots/`・解析の使い捨て `release_jitter.py`・`pinch_check.py`・`touch_tracks.py`・`fit_layout.py`・`ipc.py`。
 
+#### 3.9.3 W2 の手直し P1（エンジンと Android 側の 4 件。2026-09-29）
+
+§3.9.2 で見つかったことのうち、エンジンと Android 側の 4 件を直した（UI の部品の手直しは P2）。**WarashibeFishing の見た目と操作は変えない**を最優先にした。
+
+| # | 何を | 正典 | 要点 |
+|---|---|---|---|
+| P1-1 | Android のタッチの正しい時刻と、離す瞬間の誤フリック（(c)） | [input_gestures.md](input_gestures.md) §5・§5.1 | `MainActivity.processMotionEvent`（glue へ渡す前）で MotionEvent の時刻と履歴を控え、JNI でエンジンの箱へ。winit の Touch と ID・段階・位置のビットで突き合わせて記録の時刻にする（履歴の標本も。API 34 以上は ns。見つからなければ受け取った時刻）。速度の推定に R1〜R4（止まっていた・持ち上げの揺れ・幅の短い推定・間隔の短い標本）。問題の 3 回の再生は速度 0（規則が無いと 8,000 dp/秒） |
+| P1-2 | 起動直後のプラットフォームのイベントの取りこぼし（(e)） | [android.md](android.md) §25.14.5 | 最初のシーンのスクリプトの OnStart が済むまでエンジンは基盤の箱から取り出さず、OnStart の次のフレームの BeginFrame でまとめて配る。Play の区切りでは従来どおり捨てる |
+| P1-3 | 予測型の戻る（opt-in。(d)） | [android.md](android.md) §25.18・[ui_navigation.md](ui_navigation.md) §5.1 | プロジェクト設定 `android.predictive_back: true` で `enableOnBackInvokedCallback="true"`・`OnBackInvokedCallback`／`OnBackAnimationCallback`・合成の KEYCODE_BACK → Escape。SEED.UI の `BackDispatcher.WouldHandle` が受ける層の有無を知らせ、根ではシステムへ渡す（API 36 は `moveTaskToBackCallback`）。受ける層があれば進み具合で画面・札・板を縮める（実行中の倍率 `CanvasLayoutItem.VisualScale`）。設定の無いプロジェクトは Gradle の引数・生成物・戻るが従来と同じ |
+| P1-4 | レイアウトの矩形を C# で読む（(f) のグラフの見切れの土台） | [scripting_api.md](scripting_api.md) の CanvasTransform・[canvas_camera_rework.md](canvas_camera_rework.md) §6.8 | `CanvasTransform.HasLayout`・`LayoutSize`・`LayoutRect`（前のフレームの描画の表＝1 フレーム遅れ）。`ChartView.ReadSize` の差し替えは P2 |
+
+**PC の検証**（2026-09-29。単体テスト・ビルドはすべて実行して出力を確かめた）:
+
+- Rust の単体テスト（gesture・core::input・platform::bridge・platform_bridge・redraw・canvas_layout・host_api・desktop_sim・canvas_scroll・script_system）: **484 件成功・0 件失敗**。
+  `cargo build` の警告は変更前と同じ 311 件（触ったファイルからは 0）。`cargo ndk -t arm64-v8a -P 29 build --profile develop` 成功（seed-android の警告 0）。
+- `javac -Xlint:all`（main・debug の 124 ファイル）: 誤り 0・注意 1（既存の MainActivity の this-escape）。`dotnet build`（SEEDScripting 警告 0・SEEDEditor エラー 0）。
+  エディタのテスト: AndroidPipelineTests 171/171・UiComponentsTests 93/93・UiListViewTests 11/11・ProjectSystemTests 64/64・AndroidRunUiTests 102/102・ThemeContrastTests 62/62・
+  MigrationTests 28/28・InspectorLogicTests 21/21・ComponentCatalogTests 12/12。
+- **見た目・動作の回帰**（§3.9.1 と同じ道具。変更前 = 作業の始めに写した a51a1b5e の `SEED.exe` と `SEEDScripting.dll`、変更後 = 作業ツリー。わらしべフィッシングは複製
+  `tmp/w2_1a/wf`・セーブは `SEED_SAVE_DIR`・SEED.exe はフォーカスを奪わず最背面・カーソルの見張り付きで、起動 22 回を 1 本にまとめた。カーソルが窓に乗ったのは 0 回）:
+  図鑑の画面全体 921,600 画素 × 3 フレームとも**差 0**、Prev / Next の縁の 56 点のクリックは当たり 34・外れ 22 で撮影が **56 点とも同一**、MainGame のポーズメニューの 6 枚の
+  選ばれた行は変更前・変更後・期待（100・100・010・001・001・000）が**すべて一致**、MainGame・proLogue の UI の範囲は変更前どうし（3 回目）と同じ程度の差（動く背景の透け。
+  最大 9/255 は変更前どうしでも 8/255）、UI の見本 3 つ（ギャラリー・画面の組み立て・グラフ）は画面全体が**差 0**。
+- 探り（変更後だけ・tmp の写しにデバッグの命令を足した）: 画面の組み立ての見本で、根は `WouldHandle=false`・シートを開くと true・模擬の手ぶりで板が縮み（進み具合 0.5・1.0）、
+  取り消しで**撮影が開く前と差 0**、Esc の確定で縮んだ姿勢から閉じる。積んだ画面も縮み・下の画面が覗き、取り消しで差 0、確定で下りる。グラフの見本の WakeWeek は
+  1 フレーム目 `HasLayout=false`、2 フレーム目から `LayoutSize=(508,170)`・`LayoutRect=(16,76,508,170)`。
+
+**実機の結果**（2026-09-29 19:42〜。Pixel 6a・Android 17〈API 37〉。試験アプリは §3.9.2 の `tmp/w2_feel/UiDevice` の写し `tmp/w2_fix1/device/UiDevice`〈predictive_back なし〉と
+`UiDeviceBack`〈`android.predictive_back: true` だけ違う〉を SeedAndroid の `build`〈develop の .so〉で組み、`adb install -r` で入れた。aapt2 で、マージ後のマニフェストの
+`enableOnBackInvokedCallback` が false / true・res の `seed_predictive_back` が false / true になっていることを確かめた。Gradle の出力にも `SEED: enableOnBackInvokedCallback=…`）:
+
+- **P1-1（時刻）**: `adb shell input swipe` と `input motionevent` で 3 通り。控えは Started・Ended とも `matched=yes`、記録の時刻は MotionEvent の時刻と
+  **62〜203 ns の差**（`rec_ns` − `ev_ns`。換算の往復）、受け取りの遅れ `lag_ms` は 2.1〜16.6 ms、移動は 8/8・3/3・48/48 が一致（履歴の標本 8・0・48）。
+  速い払い（120 ms で 900 px）は `v_dp=(0,-2857) rule=ok`（名目 900 px ÷ 0.12 s ÷ 2.625 = 2,857 dp/秒と一致）、止めて離す（0.6 秒止めてから 2 px 動かして UP）は
+  `v_dp=(0,0) rule=stopped`、ゆっくりの払い（800 ms で 60 px）は `raw_dp=(0,-29)` を `rule=lift_off` で 0。利用者の指での時刻ホイールの確かめは P2 の後の回に残す（backlog）。
+- **P1-2（取りこぼし）**: 試験アプリを止めて起動し、同じシェルで続けて `am broadcast … EMIT_TEST_EVENT`（スクリプトの開始の約 1 秒前に届く）。**変更前の APK**（§3.9.2 の
+  0bf8981c）はエンジンが `platform.connected`・`platform.test_event` を受け取ったのに見本のスクリプト（`DeviceProbe`）へ 1 件も届かなかった。**変更後**は受け手の
+  OnStart（`[PROBE] start` 1790678562.351）の 0.28 秒後に 2 件とも届いた（`[PROBE] event platform.connected`・`platform.test_event … pre_start_fix1`）。
+- **P1-3（予測型の戻る）**:
+  - predictive_back なしの APK: 起動で `[SEED BACK] 予測型の戻る: 使わない`、根で `input keyevent 4` → `[SEED KEY] … Android(0x0004)` → `Escape` → `moveTaskToBack`
+    （同じ pid のまま背面へ）。従来と同じ。
+  - predictive_back ありの APK（自動）: 起動で `有効（API 37）`・`アプリが戻るを受ける`、最初のフレームで SEED.UI が `callback on=False`（根）→ `moveTaskToBackCallback` を登録。
+    根で `input keyevent 4` → システムが背面へ（`moveTaskToBack`・同じ pid）。シートを開くと `on=True`、`input keyevent 4` → `back_started`（edge=none）→ `back_invoked` →
+    合成の KEYCODE_BACK → `Escape:down+up`（**1 回だけ**）→ シートが閉じ、`on=False` へ戻る。
+  - **利用者の指（1/3・根）**: 戻るの手ぶりで「アプリ全体が縮んで後ろにホーム画面が見えた」「指を離すとホームへ戻った」（はい・はい）。システムのログは
+    `BackNavigationInfo{mType=TYPE_RETURN_TO_HOME (1)}`・`onBackNavigationDone backType=1, triggerBack=true`（§3.9.2 では全部 `backType=4`〈アプリのコールバック〉だった）。
+  - **利用者の指（2/3・積んだ画面『詳細 1』）**: 「少し縮み、後ろにホーム（タブ 0）が見えた」「取り消すと元の大きさに戻った」「離すと縮んだ姿勢からホームへ戻った」
+    （はい・はい・はい。指摘なし）。ログは `back-preview: start #2 … target=StackPreview` → 取り消し（進み具合 205 件）→ `cancel #2`、確定は `commit #3 → navigation`
+    （進み具合 18 件の後に invoked → Escape）。
+  - **利用者の指（3/3・ダイアログ）**: 「札が少し縮み、背景と中の文字・ボタンが一緒に札の中心へ向かって縮んだ」「取り消すと元に戻った」「離すとダイアログが閉じ、
+    アプリはホームのタブのまま残った」（はい・はい・はい。§3.9.2 (b) の「文字だけ左上へ縮む」は、プレビューの縮み〈実行中の倍率〉では起きない。出入りの動きの (b) は P2）。
+  - 利用者の確認の間の手ぶりは 20 回（左端 18・右端 2。取り消し 4・確定 16・取り残し〈abandon〉0）、確定の Escape は 16 回とも 1 回ずつ、根の戻るの
+    `TYPE_RETURN_TO_HOME` は 4 回、`FATAL`・`panic` は 0（`tmp/w2_fix1/device/logs/user_session.txt`・`marks.txt`）。利用者への依頼は 1 回に 1 つ（3 回）、依頼の間と
+    返事から 2 分は端末を操作しなかった。
+- **端末の最終状態**（20:20）: 試験アプリ（`com.seedengine.uidevice`。predictive_back ありの APK が入ったまま）は force-stop 済み・前面はランチャー。端末の設定は変えていない。
+  自分が流した logcat は止め、`gradlew --stop`・`dotnet build-server shutdown` 済み。証拠は `tmp/w2_fix1/`（`device/logs/`・`device/marks.txt`・`device/shots/`・
+  `regress/`〈回帰の撮影と比べた結果 `final_compare.txt`〉）。
+
 ## 4. W1・W2 にまたがる要件
 
 | # | 要件 | 理由・根拠 | どこで |

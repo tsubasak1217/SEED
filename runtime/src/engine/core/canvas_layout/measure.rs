@@ -32,8 +32,12 @@ use super::placement::{child_cumul_scale_of, size_scale_of, NO_AUTO_SCALE};
 /// 倍率が 0 とみなせる大きさ（箱と矩形の換算で 0 除算しない）。
 const SCALE_EPSILON: f32 = 1e-12;
 
-/// 測った結果を覚える鍵（エンティティと、軸ごとの決まった大きさの浮動小数のビット）。
-type MeasureKey = (Entity, [Option<u32>; 2]);
+/// 測った結果を覚える鍵（エンティティと、軸ごとの決まった大きさの浮動小数のビットと、親の累積スケールのビット）。
+///
+/// 親の累積スケールも鍵に入れる（W2 の手直し 3b）: 見た目の倍率を当てたノードの部分木は、親のコンテナが倍率の前の
+/// 累積スケールで測った同じノードを、倍率の空間の累積スケールで測り直す（同じ決まった大きさでも結果が違う）。
+/// 見た目の倍率の無い木では、1 つのノードは 1 回の走査の中でいつも同じ累積スケールで測られるので、引ける・引けないは従来と同じ。
+type MeasureKey = (Entity, [Option<u32>; 2], [u32; 2]);
 
 /// 決まった大きさを鍵のビットにする（-0.0 と 0.0 も別の鍵。同じ値なら同じビット）。
 fn constraint_key(constraint: Constraint) -> [Option<u32>; 2] {
@@ -112,7 +116,7 @@ impl<'w> LayoutMeasurer<'w> {
     /// * `parent_cumul` - 親（コンテナ）の子の累積スケール
     /// * `constraint`   - 軸ごとの決まった大きさ
     pub fn measure(&mut self, actor: &Actor, parent_cumul: [f32; 2], constraint: Constraint) -> [f32; 2] {
-        let key = (actor.entity, constraint_key(constraint));
+        let key = (actor.entity, constraint_key(constraint), parent_cumul.map(f32::to_bits));
         if let Some(size) = self.cache.get(&key) {
             return *size;
         }

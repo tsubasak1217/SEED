@@ -50,4 +50,5 @@ libc = "0.2"
 # 版は android-activity 0.6.1（winit 経由）が使う 0.22 に揃える（Cargo.lock の jni 0.22.4 を共有し、新しい依存を増やさない。
 # JavaVM の singleton も android-activity と同じものになる）。cpal・oboe が使う 0.21 とは API の形が違うので混ぜない。
 # 既存の 4 関数（jni_exports.rs）は従来どおり jni クレートを使わずに生ポインタで受ける（E-02。docs/app_platform_roadmap.md §5）。
+# タッチの時刻の控え（touch_timeline.rs。2026-09-29）も配列の読み取りにこのクレートを使う（int[]・float[]・long[] の get_region）。
 jni = "0.22"

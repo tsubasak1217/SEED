@@ -28,11 +28,13 @@ namespace SEED.UI;
 //    - 動いている間だけ Redraw.KeepAlive（on_demand でも動きの途中で止まらず、終わったら 10 フレームで止まる）
 //  【戻る】ナビゲーター（INavigator）として戻るの段に登録する: 上の画面の ScreenOptions.IgnoreBack・UiScreen.OnBackPressed
 //  → 根より上なら 1 つ下ろす → 根なら受けない（外のタブ・アプリへ）。
+//  予測型の戻る（W2 の手直し 3b）の問い・プレビュー（上の画面を縮めて下の画面を見せ、確定したらその姿勢から下ろす）は
+//  ScreenStack.BackPreview.cs。
 //  【フォーカス】画面の枠ごとにフォーカスの範囲（FocusScope）を作り、上の画面の範囲を前へ出す。
 // ============================================================
 
 /// <summary>画面のスタック（画面を積む・戻す・置き換える・根まで戻る）。</summary>
-public sealed class ScreenStack : UiWidget, INavigator
+public sealed partial class ScreenStack : UiWidget, INavigator
 {
     /// <summary>枠のプレハブの既定（templates/ui を assets/ui へ取り込んだ置き場）。</summary>
     public const string DefaultFramePrefab = "assets://ui/prefabs/screen_frame.actor";
@@ -119,6 +121,8 @@ public sealed class ScreenStack : UiWidget, INavigator
         public float Duration;
         public UiCurve Curve;
         public float Parallax;
+        /// <summary>予測型の戻るのプレビューで見せていた下の画面へ戻る（戻る画面は視差の位置から動かさず、最初から見せたまま。3b）。</summary>
+        public bool FromPreview;
     }
 
     /// <summary>並びと状態。</summary>
@@ -242,7 +246,7 @@ public sealed class ScreenStack : UiWidget, INavigator
             handle = new ScreenHandle(incoming.Id, incoming.Prefab);
             _handles[incoming.Id] = handle;
         }
-        _runs.Enqueue(new Run { Change = change });
+        _runs.Enqueue(new Run { Change = change, FromPreview = IsPreviewedPop(change) });
         Debug.Log($"{LogPrefix} {gameObject.Name} {op} in={incoming} out={change.Outgoing?.ToString() ?? "-"} {change.Transition} depth={_model.Count}");
         Redraw.Request();
         return handle;
@@ -266,6 +270,8 @@ public sealed class ScreenStack : UiWidget, INavigator
     /// <inheritdoc />
     protected override void OnWidgetDestroy()
     {
+        // 予測型の戻るのプレビューの相手はこれで無効になる（BackPreview が次のフレームで手放す。3b）
+        _destroyed = true;
         NavigatorRegistry.Unregister(this);
         foreach (var instance in _instances.Values)
         {
@@ -481,8 +487,9 @@ public sealed class ScreenStack : UiWidget, INavigator
         var poses = TransitionMath.Evaluate(change.Transition, change.Direction, progress, run.Parallax);
         if (Get(change.Incoming) is { } incoming)
         {
-            NavNode.SetFraction(incoming.Frame, poses.Incoming.Fraction);
-            NavNode.SetVisible(incoming.Frame, poses.Incoming.Visible);
+            // 予測型の戻るのプレビューで見せていた下の画面は、見せていた位置（0）のまま動かさない（跳ばない。3b）
+            NavNode.SetFraction(incoming.Frame, run.FromPreview ? Vector2.Zero : poses.Incoming.Fraction);
+            NavNode.SetVisible(incoming.Frame, run.FromPreview || poses.Incoming.Visible);
         }
         if (Get(change.Outgoing) is { } outgoing)
         {

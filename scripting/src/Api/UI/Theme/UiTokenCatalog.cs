@@ -134,6 +134,7 @@ public static class UiTokenCatalog
         new(NavTokens.SizeHandleArea, UiTokenKind.Number, GuideOnly),
         new(NavTokens.SizeToastHeight, UiTokenKind.Number, "Toast（高さ）"),
         new(NavTokens.SizeDragDismiss, UiTokenKind.Number, "Toast・TopSheet（引いて閉じる距離）"),
+        new(NavTokens.SizeBackPreviewShift, UiTokenKind.Number, "BackDispatcher（予測型の戻るのプレビューで画面をずらす量）"),
         new(ChartTokens.SizeLine, UiTokenKind.Number, "LineChart（線の太さ）"),
         new(ChartTokens.SizeDot, UiTokenKind.Number, "LineChart（点の半径）"),
         new(ChartTokens.SizeDotSelected, UiTokenKind.Number, "LineChart（選んだ点の半径）"),
@@ -192,6 +193,7 @@ public static class UiTokenCatalog
         new(NavTokens.MotionToastCurve, UiTokenKind.Curve, "Toast（出入り）"),
         new(NavTokens.MotionToastShort, UiTokenKind.Number, "ToastHost（短いトーストを出しておく時間）"),
         new(NavTokens.MotionToastLong, UiTokenKind.Number, "ToastHost（長いトーストを出しておく時間）"),
+        new(NavTokens.MotionBackPreviewCurve, UiTokenKind.Curve, "BackDispatcher（予測型の戻るのプレビューの縮み具合）"),
         new(ChartTokens.MotionZoom, UiTokenKind.Number, Charts + "（± の拡大縮小）"),
 
         // ── 濃さ（0..1）────────────────────────────────────
@@ -207,6 +209,7 @@ public static class UiTokenCatalog
         new(NavTokens.RatioPushParallax, UiTokenKind.Number, "ScreenStack（押し込みの視差）"),
         new(NavTokens.RatioDialogScaleFrom, UiTokenKind.Number, "Dialog（出るときの最初の大きさ）"),
         new(NavTokens.RatioSheetMaxHeight, UiTokenKind.Number, "BottomSheet（最大の高さ）"),
+        new(NavTokens.RatioBackPreviewScale, UiTokenKind.Number, "BackDispatcher（予測型の戻るのプレビューのいちばん小さい倍率）"),
         new(ChartTokens.RatioBarWidth, UiTokenKind.Number, "BarChart（棒の太さ）"),
         new(ChartTokens.RatioEmptyBar, UiTokenKind.Number, "BarChart（合計 0 の棒の高さ）"),
         new(ChartTokens.RatioFlingDrag, UiTokenKind.Number, Charts + "（払った後の慣性の減速）"),

@@ -29,6 +29,11 @@
 //      起動したときだけ。既定では各受け口は super を呼ぶだけで従来どおり）
 //    ・描画を止めている間（render_policy の on_demand。W2-10a）の起こし: 文字入力の受け口（stateChanged など）は winit が
 //      WindowEvent にしないので、redraw/RedrawWaker でネイティブのイベントループを起こす（on_demand でなければ理由を積むだけ）
+//    ・タッチの時刻の控え（中身は input/TouchTimeline。2026-09-29）: processMotionEvent で、GameActivity の glue へ渡す前に
+//      MotionEvent の時刻と履歴をネイティブへ送る（winit はどちらも捨てるので。ジェスチャーの速度の推定に使う。docs/input_gestures.md §5）
+//    ・予測型の戻る（中身は back/BackCallbackController。W2 の手直し P1-3・docs/android.md §25.18）: プロジェクト設定
+//      android.predictive_back が true の APK で API 33 以上のときだけ、onCreate（super.onCreate の後）で戻るのコールバックを登録し、
+//      スクリプトの App.SetBackCallbackEnabled（platform/app/BackCallbackHost の口）で出し入れする。無効なら何もしない（従来の戻るキー）
 //  だけを行う。画面の向きの固定はマニフェスト（ビルド時にプロジェクト設定から決まる）。全体像は docs/android.md。
 // ============================================================
 
@@ -43,6 +48,7 @@ import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
+import android.view.MotionEvent;
 import android.view.View;
 
 import java.nio.charset.StandardCharsets;
@@ -56,9 +62,12 @@ import androidx.core.view.WindowInsetsCompat;
 import com.google.androidgamesdk.GameActivity;
 import com.google.androidgamesdk.gametextinput.State;
 
+import com.seedengine.runtime.back.BackCallbackController;
+import com.seedengine.runtime.input.TouchTimeline;
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.LeftoverVolumeNudge;
 import com.seedengine.runtime.platform.SeedPlatform;
+import com.seedengine.runtime.platform.app.BackCallbackHost;
 import com.seedengine.runtime.platform.app.NightMode;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
 import com.seedengine.runtime.platform.sensor.SensorFeeds;
@@ -73,7 +82,7 @@ import com.seedengine.runtime.spike.ImeSpikeLog;
  * onCreate で読む）と一致させてある。Cargo 側の出力名 libSEED.so（runtime/android/native の
  * [lib] name）とも同じ。</p>
  */
-public class MainActivity extends GameActivity implements SystemBarsHost {
+public class MainActivity extends GameActivity implements SystemBarsHost, BackCallbackHost {
 
     /** ネイティブライブラリ名（libSEED.so）。Cargo の [lib] name とマニフェストの lib_name と一致させる。 */
     private static final String NATIVE_LIBRARY_NAME = "SEED";
@@ -137,8 +146,22 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
     /** システムバーの既定の出し方（UI スレッド専用。リソースを読むので onCreate で作る。W1-2）。 */
     private SystemBarsController systemBars;
 
+    /**
+     * MotionEvent の時刻と履歴の控えをネイティブへ送る係（UI スレッド専用。アプリの情報を読むので onCreate で作る。
+     * processMotionEvent から使う。2026-09-29）。
+     */
+    private TouchTimeline touchTimeline;
+
+    /**
+     * 予測型の戻る（UI スレッド専用。リソースと起動の Intent を読むので onCreate で作る。W2 の手直し P1-3）。
+     * 予測型の戻るが無効な APK・端末でも作る（何も登録しない）。
+     */
+    private BackCallbackController backCallbacks;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // タッチの時刻の控え: 描画面（super.onCreate が作る SurfaceView）が触れられるより前に用意する
+        touchTimeline = new TouchTimeline(this);
         // super.onCreate がネイティブ側（android_main のスレッド）を起動するので、その前に行う。
         setAppDirectoryEnvironment();
         forwardLaunchOptions();
@@ -164,6 +187,10 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
         audioFocus = new AudioFocusController(this);
         // 描画面（SurfaceView）は super.onCreate の中で作られる。以降、安全領域・回転の変化を知らせる。
         screenReporter.attach(mSurfaceView);
+        // 予測型の戻る（W2 の手直し P1-3）: 有効（android.predictive_back が true の APK・API 33 以上）なら、アプリが戻るを受ける状態で
+        // 始める（自分のコールバックを登録。SEED.UI を使わないゲームも Escape で戻るを受けられる）。無効なら何もしない（従来の戻るキー）
+        backCallbacks = new BackCallbackController(this);
+        backCallbacks.attach();
     }
 
     /**
@@ -267,6 +294,28 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
         super.onImeInsetsChanged(insets);
         ImeSpikeLog.onImeInsets(insets);
         RedrawWaker.requestRedraw(RedrawWaker.REASON_TEXT_INPUT);
+    }
+
+    /**
+     * 描画面の指・マウスの MotionEvent（GameActivity の SurfaceView の OnTouchListener・OnGenericMotionListener・
+     * captured pointer から呼ばれる。UI スレッド）。super が GameActivity の glue へ渡し、ネイティブの winit が Touch にする。
+     *
+     * <p>super を呼ぶ<b>前に</b>、同じ MotionEvent の時刻と履歴を TouchTimeline でネイティブへ送る（winit は時刻も履歴も捨てるので。
+     * docs/input_gestures.md §5）。前に送るのは、ネイティブのスレッドが winit の Touch を作るより先に控えが箱にあるようにするため
+     * （後に送ると、glue が起こしたネイティブのスレッドの方が先に Touch を処理して、控えが間に合わないことがある）。
+     * 控えは例外を握りつぶすので、glue への受け渡し（タッチの本流）は必ず行う。</p>
+     *
+     * <p>glue が受け取らないとき（ネイティブが破棄された後。GameActivity の isNativeDestroyed は private で読めず、公開の
+     * getGameActivityNativeHandle は 4.4.0 の実装〈javap で確かめた〉が生きている間 0 を返すので判定に使えない）は、控えだけが
+     * 箱に残る。箱は上限つきで、後の Touch が一致すればその前の控えとして捨てられるので、害は無い。この Activity は破棄と同時に
+     * プロセスを終える（onDestroy）ので、その状態はほぼ起きない。</p>
+     */
+    @Override
+    protected boolean processMotionEvent(MotionEvent event) {
+        if (touchTimeline != null) {
+            touchTimeline.record(event);
+        }
+        return super.processMotionEvent(event);
     }
 
     /** 描画面のレイアウトが確定した（回転・リサイズの後に来る）。大きさ・安全領域・回転を知らせる。 */
@@ -382,6 +431,32 @@ public class MainActivity extends GameActivity implements SystemBarsHost {
         }
         systemBars.setVisible(visible);
         Log.i(LOG_TAG, "システムバー: " + (visible ? "出す" : "隠す") + "（Window.SetSystemBarsVisible）");
+    }
+
+    /**
+     * 予測型の戻るが有効か（W2 の手直し P1-3。platform/local/BackCallbackCommand がエンジンのスレッドから呼ぶ。リソースを読むだけ）。
+     *
+     * @return APK の印 seed_predictive_back が true で API 33 以上なら true
+     */
+    @Override
+    public boolean isPredictiveBackEnabled() {
+        return BackCallbackController.isEnabledFor(this);
+    }
+
+    /**
+     * アプリが戻るを受けるかを切り替える（W2 の手直し P1-3。SEED.Platform の app.set_back_callback を受けた
+     * platform/local/BackCallbackCommand が UI スレッドで呼ぶ）。中身は back/BackCallbackController。
+     *
+     * @param on 受ける層があるなら true、無い（根）なら false
+     */
+    @Override
+    public void setAppHandlesBack(boolean on) {
+        if (backCallbacks == null) {
+            // onCreate の途中に届くことは無い見込み（命令は UI スレッドへ投げられ、onCreate の後に動く）
+            Log.w(LOG_TAG, "予測型の戻るの切り替えが onCreate の前に届いたので無視しました");
+            return;
+        }
+        backCallbacks.setAppHandlesBack(on);
     }
 
     /**

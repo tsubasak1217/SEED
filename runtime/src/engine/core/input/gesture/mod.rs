@@ -11,8 +11,10 @@
 //  【構成】（1 ファイル 1 責務。World・FFI に触れない純ロジック。App 側は app/gesture_scene.rs・app/gesture_events.rs）
 //    thresholds.rs   … 閾値の表（名前付きの既定値と出典・プロジェクト設定の "gestures"・dp → 画素の換算）
 //    pointer_log.rs  … 時刻つきの指のイベントの記録（Input が積み、アリーナが読む）と時計・注入の指
+//    time_floor.rs   … 記録の時刻を指ごと・全部の取り消しより前へ逆行させない下限（Input が使う）
 //    pointer_track.rs… 指 1 本の追跡（押した位置・時刻・今の位置・速度）
-//    velocity.rs     … 速度の推定（直近の標本の最小二乗）
+//    velocity.rs     … 速度の推定（直近の標本の最小二乗と、頑健化の規則 R1〜R4）
+//    release_report.rs … ドラッグの指を離した結果の控え（診断ログ `[SEED GESTURE] release` の行）
 //    hit_slop.rs     … 当たり判定（最小のヒット領域・近い方・遮り・切り抜き）と経路の選び方
 //    scene.rs        … アリーナが問い合わせるノードの世界（トレイトと、フレームごとの材料 GestureHitScene）
 //    recognizers/    … 認識器ごとの判定の規則（tap・long_press・drag・fling）
@@ -23,7 +25,7 @@
 //    tests.rs        … 合成の指の列でアリーナを通して確かめる試験
 //
 //  【座標と時刻】アリーナの位置はキャンバスの画素（画面の中央が原点・Y 下向き）、時刻は pointer_log の時計の秒
-//  （入力イベントを受け取った時刻。フレームの時刻に依らない）。
+//  （入力イベントの時刻。Android は MotionEvent の時刻、PC は受け取った時刻。フレームの時刻に依らない）。
 // ============================================================
 
 pub mod arena;
@@ -34,8 +36,10 @@ pub mod pinch;
 pub mod pointer_log;
 pub mod pointer_track;
 pub mod recognizers;
+pub mod release_report;
 pub mod scene;
 pub mod thresholds;
+pub mod time_floor;
 pub mod velocity;
 
 #[cfg(test)]
@@ -45,8 +49,10 @@ pub use arena_set::{GestureActivity, GestureArenaSet};
 pub use events::{GestureEmit, GestureEventKind, NO_SCALE};
 pub use hit_slop::{ClipAabb, GestureHitNode, PaintOrder};
 pub use pointer_log::{
-    pointer_clock_now, pointer_clock_secs, InjectedPointerTracker, PointerEventLog, PointerInputEvent, PointerKey,
-    PointerLogEntry, PointerPhase, INJECTED_POINTER_KEY,
+    pointer_clock_instant, pointer_clock_now, pointer_clock_secs, InjectedPointerTracker, PointerEventLog,
+    PointerInputEvent, PointerKey, PointerLogEntry, PointerPhase, INJECTED_POINTER_KEY,
 };
+pub use release_report::ReleaseReport;
 pub use scene::{GestureHitScene, GestureScene};
 pub use thresholds::{parse_gesture_thresholds, GestureMetrics, GestureThresholds};
+pub use time_floor::PointerTimeFloor;

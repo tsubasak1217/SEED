@@ -451,6 +451,8 @@ public static unsafe class ScriptBridge
             SEED.Platform.PlatformEvents.ResetHandlers();
             // テーマ（W2-9）も既定へ戻し、UiTheme.Changed の受け手を外す（同じ理由＋読み直した後は既定のテーマから始める）。
             SEED.UI.UiTheme.ResetForReload();
+            // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
+            SEED.UI.BackDispatcher.ResetForReload();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }
@@ -485,6 +487,8 @@ public static unsafe class ScriptBridge
             SEED.Platform.PlatformEvents.ResetHandlers();
             // テーマ（W2-9）も既定へ戻し、UiTheme.Changed の受け手を外す（同じ理由＋読み直した後は既定のテーマから始める）。
             SEED.UI.UiTheme.ResetForReload();
+            // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
+            SEED.UI.BackDispatcher.ResetForReload();
             var path = Encoding.UTF8.GetString(pathPtr, pathLen);
             return ScriptAssemblyManager.LoadPrecompiled(path);
         }
@@ -519,6 +523,8 @@ public static unsafe class ScriptBridge
             SEED.Platform.PlatformEvents.ResetHandlers();
             // テーマ（W2-9）も既定へ戻し、UiTheme.Changed の受け手を外す（同じ理由＋読み直した後は既定のテーマから始める）。
             SEED.UI.UiTheme.ResetForReload();
+            // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
+            SEED.UI.BackDispatcher.ResetForReload();
             // Rust 側のバッファは呼び出しの間だけ有効なので、ここで配列へ写してから渡す。
             var bytes = new ReadOnlySpan<byte>(dataPtr, dataLen).ToArray();
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);

@@ -1944,6 +1944,19 @@ impl App {
         //   `self` を可変借用する前に確定させておく。
         let draw_offscreen_for_thumbnail = self.thumbnail_session.is_some();
 
+        // ── スクリプトが次のフレームに読むレイアウトの表（W2 Item 4。canvas_layout/results.rs）──────────
+        //   読み手（CanvasTransform.HasLayout・LayoutSize・LayoutRect）が見るのは **Play のゲームの画面**の
+        //   メインの 2D キャンバスの表だけ（エディタに埋め込んだ Play と SEED.exe の単体の Play の両方）。
+        //   一時停止の見た目（エディタの見た目で描く）は前の表を残し、Edit・アクター編集タブ・サムネイルの撮影は空にする。
+        //   描画の中ではシーンを可変で借りられないので、表（Arc）をここへ受け取り、描画のブロックを出た所で
+        //   シーンの World の資源へ移す（下の「レイアウトの表をスクリプトへ」）。描画しなかったフレームは何もしない。
+        let layout_frame_view = crate::engine::core::canvas_layout::LayoutFrameView::classify(
+            self.mode == RuntimeMode::Play,
+            self.paused,
+            is_actor_edit_2d || draw_offscreen_for_thumbnail,
+        );
+        let mut canvas_layout_handoff = crate::engine::core::canvas_layout::CanvasLayoutHandoff::Keep;
+
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
         {
@@ -4478,18 +4491,22 @@ impl App {
                     //    キャンバス枠・（エディタでは）ID 描画で使い回す。文脈は 3 者とも同じ）──
                     // レイアウト（アンカー・自動解像度・スケールモード・ワールド行列・切り抜きの領域）の計算は
                     // canvas_layout の 1 か所にあり、読み手はこの表を読むだけ。
-                    let canvas_layout_2d: Option<crate::engine::core::canvas_layout::CanvasLayoutTable> =
+                    // 表は Arc で持つ（描画が使い回し、描画の後にスクリプトの資源へ写さずに渡す。W2 Item 4）。
+                    // 基準ビューポート（ウィンドウ。内部解像度の固定ではその解像度）は、表と「画面の画素への換算」で同じ値を使う
+                    let main_layout_viewport = [
+                        window_size.map_or(1280.0, |s| s.width as f32),
+                        window_size.map_or(720.0, |s| s.height as f32),
+                    ];
+                    let canvas_layout_2d: Option<std::sync::Arc<crate::engine::core::canvas_layout::CanvasLayoutTable>> =
                         if is_canvas {
                             self.scene.as_ref().map(|scene| {
                                 let wl = self.active_world_line;
                                 let is_scene_ss = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
-                                let vp_w = window_size.map_or(1280.0, |s| s.width as f32);
-                                let vp_h = window_size.map_or(720.0, |s| s.height as f32);
                                 let play_gvp = if is_scene_ss && !in_editor { Some(game_viewport) } else { None };
-                                build_main_canvas_layout(
-                                    &scene.actors, &scene.world, wl, is_scene_ss, [vp_w, vp_h], play_gvp,
+                                std::sync::Arc::new(build_main_canvas_layout(
+                                    &scene.actors, &scene.world, wl, is_scene_ss, main_layout_viewport, play_gvp,
                                     self.project_resolution, edit_view_2d,
-                                )
+                                ))
                             })
                         } else {
                             None
@@ -4499,6 +4516,13 @@ impl App {
                     if let Some(table) = canvas_layout_2d.as_ref() {
                         self.canvas_scroll.store_layout_regions(table);
                     }
+                    // スクリプトが次のフレームに読む表を決める（Play のゲームの画面の表だけを共有する。W2 Item 4。
+                    // 資源へ移すのは描画のブロックを出た所）
+                    canvas_layout_handoff = crate::engine::core::canvas_layout::CanvasLayoutHandoff::for_frame(
+                        layout_frame_view,
+                        canvas_layout_2d.as_ref(),
+                        main_layout_viewport,
+                    );
 
                     let (
                         items_2d_bg, items_2d_fg, canvas3d_segments,
@@ -8760,7 +8784,8 @@ impl App {
                                             // フレームの表を使い回す。Play（ID 描画を有効にしたとき）は、描画の後でゲーム領域が
                                             // 描画解像度へ写されている（game_viewport が変わる）ので、旧実装どおりその値で作り直す。
                                             let rebuilt_layout;
-                                            let canvas_layout = match canvas_layout_2d.as_ref() {
+                                            // （フレームの表は Arc。中身の参照を取り出して、作り直した表と同じ型にそろえる）
+                                            let canvas_layout = match canvas_layout_2d.as_deref() {
                                                 Some(table) if in_editor => table,
                                                 _ => {
                                                     let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
@@ -9484,6 +9509,16 @@ impl App {
                 Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                 Err(e) => eprintln!("Render error: {e:?}"),
             }
+        }
+
+        // ── レイアウトの表をスクリプトへ（W2 Item 4。canvas_layout/results.rs）──────────
+        //   描画のブロックを出てシーンを可変で借りられるここで、このフレームの表（Play のゲームの画面の表）を
+        //   シーンの World の資源 CanvasLayoutResults へ移す。次のフレームのスクリプト（ポインタ・ジェスチャー・スクロールの
+        //   イベントと各フェーズ）が CanvasTransform.HasLayout・LayoutSize・LayoutRect で読む＝前のフレームの描画の値。
+        //   索引はスクリプトが読んだときにだけ作るので、読まなければ仕事は Arc の受け渡しだけ。
+        //   資源はシーンの World に置くので、シーンを差し替えると古い表も一緒に消える（別のシーンの Entity と取り違えない）。
+        if let Some(scene) = self.scene.as_mut() {
+            canvas_layout_handoff.apply(&mut scene.world);
         }
 
         // ここから「サブミット後処理」区間（プロファイラ計測）。

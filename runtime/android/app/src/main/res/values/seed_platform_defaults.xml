@@ -8,7 +8,12 @@
 
   ・seed_system_bars_visible … true ならシステムバー（ステータスバー・ナビゲーションバー）を隠さない（アプリ向け）。
     既定の false は従来のゲームの振る舞い（全画面・端からのスワイプで一時的に出せる）。MainActivity → SystemBarsController が読む。
+  ・seed_predictive_back … true なら予測型の戻る（W2 の手直し P1-3・docs/android.md §25.18）を使う印。プロジェクト設定
+    android.predictive_back が true のときだけ SeedAndroid が生成物に true を書く（false のプロジェクトは生成物に何も足さない）。
+    マニフェストの android:enableOnBackInvokedCallback（app/build.gradle.kts の seedEnableOnBackInvokedCallback）と対で、
+    MainActivity → back/BackCallbackController が読む（API 33 以上でコールバックを登録する）。既定の false は従来の戻るキー（→ Escape）。
 -->
 <resources>
     <bool name="seed_system_bars_visible">false</bool>
+    <bool name="seed_predictive_back">false</bool>
 </resources>

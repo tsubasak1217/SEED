@@ -99,6 +99,19 @@ public static class PlatformDiagnostics
         return Platform.TryInvoke(AppJson.Module, AppJson.MethodSimSetUiMode, PlatformJson.StringObject((AppJson.KeyNight, night)), out _);
     }
 
+    /// <summary>
+    /// デスクトップの模擬だけ: 予測型の戻るの手ぶりのイベント（<see cref="App.BackStartedEvent"/> ほか）を 1 つ流す（W2 の手直し P1-3）。
+    /// 端末が無くても SEED.UI の予測型の戻るのプレビュー（縮む見た目）を PC で試すため。手ぶりの番号は Android と同じ決まり
+    /// （Started で 1 増え、Started の無い Invoked も 1 増える）。<see cref="BackGesturePhase.Invoked"/> は確定の知らせだけで、
+    /// Escape は注入しない（PC の確定は Esc キー）。イベントは次のフレーム以降に届く。Android の実機では unknown_method（false）。
+    /// </summary>
+    /// <param name="phase">段階。</param>
+    /// <param name="progress">進み具合（0〜1。範囲外はそろえる。Started・Progressed だけが使う）。</param>
+    /// <param name="edge">手ぶりを始めた端（Started・Progressed だけが使う）。</param>
+    /// <returns>受け付けたら true（失敗なら <see cref="Platform.LastError"/>）。</returns>
+    public static bool SimulateBackGesture(BackGesturePhase phase, float progress = 0f, BackEdge edge = BackEdge.Left) =>
+        Platform.TryInvoke(AppJson.Module, BackJson.MethodSimBackGesture, BackJson.SimGestureRequest(phase, progress, edge), out _);
+
     /// <summary>ping の返答を読み、合言葉の一致を確かめて結果にする。</summary>
     private static PlatformPingResult ReadPingReply(string reply, string nonce, double elapsedMs)
     {

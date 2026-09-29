@@ -50,6 +50,7 @@ public static class PlatformSettingsTests
             },
             SystemBars = "visible",
             AppCategory = "productivity",
+            PredictiveBack = true,
         };
         settings.DeepLinks[2].ExtraData["path_pattern"] = JsonDocument.Parse("\"/a.*\"").RootElement.Clone();
         var json = JsonSerializer.Serialize(settings, Options);
@@ -57,6 +58,7 @@ public static class PlatformSettingsTests
         Check.True(json.Contains("\"deep_links\":[{\"scheme\":\"https\",\"host\":\"example.com\",\"path_prefix\":\"/wake\",\"auto_verify\":true},{\"scheme\":\"wakeorpay\",\"path_pattern\":\"/a.*\"}]"),
             $"deep_links（空の行なし・auto_verify は true のときだけ・知らないキーは保つ）: {json}");
         Check.True(json.Contains("\"system_bars\":\"visible\"") && json.Contains("\"app_category\":\"productivity\""), "system_bars・app_category");
+        Check.True(json.Contains("\"predictive_back\":true"), $"predictive_back（W2 の手直し P1-3。true のときだけ書く）: {json}");
 
         var back = JsonSerializer.Deserialize<AndroidAppSettings>(json)!;
         Check.Equal("alarm,notifications,future_x", string.Join(",", back.Features!), "features の往復");
@@ -65,11 +67,13 @@ public static class PlatformSettingsTests
         Check.True(back.DeepLinks[1].ExtraData.ContainsKey("path_pattern"), "知らないキーを保つ");
         Check.Equal("visible", back.SystemBars, "system_bars");
         Check.Equal("productivity", back.AppCategory, "app_category");
-        Check.Equal(0, back.ExtraData.Count, "新しい 4 キーは ExtraData に入らない");
+        Check.Equal(true, back.PredictiveBack, "predictive_back の往復");
+        Check.Equal(0, back.ExtraData.Count, "新しいキーは ExtraData に入らない");
 
-        // 何も無ければ書かない
+        // 何も無ければ書かない（predictive_back の false も既定なので書かない）
         var minimal = JsonSerializer.Serialize(new AndroidAppSettings { Features = new(), DeepLinks = new() { new AndroidDeepLinkSetting() } }, Options);
         Check.Equal("{}", minimal, "空の一覧・空の行は書かない");
+        Check.Equal("{}", JsonSerializer.Serialize(new AndroidAppSettings { PredictiveBack = false }, Options), "predictive_back の false は書かない");
     }
 
     /// <summary>寛容な読み取り。</summary>
@@ -86,6 +90,19 @@ public static class PlatformSettingsTests
         Check.True(wrong.IsEmpty, "型違いだけなら空の節");
         Check.True(!new AndroidAppSettings { SystemBars = "visible" }.IsEmpty, "system_bars だけでも空ではない");
         Check.True(new AndroidAppSettings { DeepLinks = new() { new AndroidDeepLinkSetting() } }.IsEmpty, "空の行だけなら空");
+
+        // 予測型の戻る（W2 の手直し P1-3）: 真偽と真偽の文字列だけを読み、それ以外は未設定（保存で失わないのは true のときだけ意味がある）
+        Check.Equal(true, JsonSerializer.Deserialize<AndroidAppSettings>("{\"predictive_back\":true}")!.PredictiveBack, "true");
+        Check.Equal(false, JsonSerializer.Deserialize<AndroidAppSettings>("{\"predictive_back\":false}")!.PredictiveBack, "false");
+        Check.Equal(true, JsonSerializer.Deserialize<AndroidAppSettings>("{\"predictive_back\":\" TRUE \"}")!.PredictiveBack, "真偽の文字列（大文字・空白）");
+        Check.Equal(false, JsonSerializer.Deserialize<AndroidAppSettings>("{\"predictive_back\":\"false\"}")!.PredictiveBack, "偽の文字列");
+        foreach (var bad in new[] { "1", "\"yes\"", "null", "{}", "[true]" })
+        {
+            var read = JsonSerializer.Deserialize<AndroidAppSettings>($"{{\"predictive_back\":{bad}}}")!;
+            Check.True(read.PredictiveBack is null && read.IsEmpty && read.ExtraData.Count == 0, $"型違いは未設定（{bad}）");
+        }
+        Check.True(!new AndroidAppSettings { PredictiveBack = true }.IsEmpty, "predictive_back が true だけでも空ではない（節を消さない）");
+        Check.True(new AndroidAppSettings { PredictiveBack = false }.IsEmpty, "false だけなら空（既定と同じ）");
     }
 
     /// <summary>機能とコンボ。</summary>
