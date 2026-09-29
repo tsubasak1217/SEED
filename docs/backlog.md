@@ -3410,3 +3410,21 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (6) **動いているエディタでの追加・編集の目視は未確認**（WPF のインスペクタは既存の書き方に倣っただけ。ビルドとエディタのテストは通る）。
   (7) エディタの GPU の ID 描画の切り抜きは CPU の計算（`canvas_id_scissors`）までを単体テストで確かめただけで、3D ビューでの実際のクリックは未確認。
   関連: `runtime/src/engine/core/canvas_layout/`・`editor/src/Panels/InspectorPanel.CanvasLayout.cs`・`scripting/src/Api/Canvas*.cs`。
+
+### W3: Wake or Pay の移植で見つかったエンジンの不具合・制限（2026-09-30〜。移植先は D:\SEED_projects\WakeOrPay）
+
+- [ ] **パッケージの収録が末尾 `/` のフォルダ参照を拾わない（Android でデータファイルが APK に入らない）** — 2026-09-30（W3-0 で発見）。
+  スクリプトの `"assets://common/data/"` のような末尾が `/` のフォルダの参照が収録されず、Wake or Pay の APK にデータの JSON が 1 つも入らなかった
+  （pak の収録 27 件。プロジェクトの `packaging_settings.json` の `additional_folders` に `common/data`・`common/themes` を足して 47 件にして回避）。
+  原因（コードを読んで確認・直していない）: `editor/src/Packaging/Collect/AssetPathUtil.NormalizeRelative` が末尾の `/` を落とさず
+  （`CollapseDotSegments` も `..`・`./` を含まない限り素通し）、`AssetCollector` の `_dirsOnDisk`（末尾 `/` なしで登録）と一致しない
+  （`CollectFrom` の `_dirsOnDisk.Contains(rel)`、参照の候補の照合 `_dirsOnDisk.Contains(cand)` も同じ形の見込み）。
+  案: `NormalizeRelative` で末尾の `/` を落とす（ファイルの参照には影響しない）＋単体テスト。PC の Play はディスクから直接読むので気づけない。
+  W3-D/W3-S の DomainSmoke も Android では同じ理由で動かない見込み（推測）。
+- [ ] **PC の 1 倍で小さな文字の細い横線が消える・かすれる** — 2026-09-30（W3-0 で発見）。16 px 以下で長音符「ー」が消えたりかすれたりする
+  （「トークン」が「ト クン」、「データ」が「デ タ」。1.3139 倍の模擬では正常）。上の「W2 の手直し P2-3 の残り」(1)・「P2-1 の残り」(1) と同じ見立て
+  （SDF を画素の中心で 1 回だけ読む）。実機（2.625 倍）では未確認。
+- [ ] **中身に合わせる（fit）コンテナを親のスタックに置くと背景の Sprite が伸びない** — 2026-09-30（W3-0 で発見）。ダイアログの札と同じ規則
+  （`CanvasLayoutItem` の中身に合わせた大きさが背景の Sprite へ届かない）。Wake or Pay はアラームのタブの権限の帯の高さを固定して回避。
+- [ ] **`Text.Measure` が無いので複数行の文字の高さ・枠の幅を見積もりで決めている** — 2026-09-30（W3-0）。Wake or Pay のシェルは文字の枠の幅を
+  仮に 360/328 dp で固定・複数行は行の数から高さを決めている。W2-6c の `Text.Measure` で置き換える。
