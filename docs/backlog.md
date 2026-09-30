@@ -3621,3 +3621,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **PC の Play のスクリプトのコンパイルで `Uri`（System.Private.Uri）が参照に無い**（CS0103。System.Text.Json の件と同じ根: 参照の集合が「読み込み済み」だけ）。
   (5) トーストの札が下の押す場所を覆う（仕様どおり。庭の下のボタンが押せない間がある）。
   (6) `Time` は描画を止めている間は進まない（設計どおり）ので、実時間の計時は `Stopwatch` を使う必要がある → docs/redraw_policy.md に明記する。
+- [ ] **W3-5（オンボーディング S-10）で見つかったプラットフォーム API の不足** — 2026-10-01（Wake or Pay の W3-5 で発見。プロジェクト側で回避済み）。
+  (1) **`SEED.Platform.App` に OS の版（SDK_INT）を取る API が無い**（権限の段の出し分けを、権限の状態〈「その版では要らない」〉で代用している）。
+  (2) **スクリプトへ「前面へ戻った（onResume）」を知らせるイベントが無い**（`platform.permission_changed` は変わったときだけ、`platform.launch` は開き直しだけ。
+  設定の画面から戻ったときの問い直しを「1 秒以上あいたフレーム」で判定して回避 → 実機で未確認の前提）。`platform.resumed`／`platform.paused` を足す。
+  (3) **デスクトップの模擬の権限は常に Granted で、状態を変える手段も変化のイベントも無い**（Wake or Pay は `PermissionSimulation` と `perm,set|preset|answer|resume` の命令で代用）。
+  模擬に IPC か環境変数で状態を与えられるようにする。
+  (4) SeedAndroid のビルドで Gradle の常駐プロセスが出力をつかんだままになり、`| Out-File` でつないだコマンドが `gradlew --stop` まで返らない。
+  (5) docs のイベント名の表記ゆれ: `platform.permission.changed` と書かれた箇所があるが、実際は `platform.permission_changed`（コードは定数）。docs を揃える。

@@ -97,6 +97,8 @@ templates/**/*.png
 templates/**/*.jpg
 templates/**/*.jpeg
 templates/**/*.tga
+# テンプレートアクタの見本の画像（templates/<folder>/thumbnails/。192×192 の小さな PNG）は追跡する。docs/template_library.md §9
+!templates/**/thumbnails/*.png
 templates/**/*.bmp
 templates/**/*.gif
 templates/**/*.hdr
