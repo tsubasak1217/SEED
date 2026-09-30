@@ -3548,3 +3548,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   動きは Rust の `CanvasScroll.ScrollTo`（`motion.sheet` 0.25 秒・easeInOut）がスクロールの物理の時計で進めるので、C# から「始めのフレームを数えない・1 フレームの上限
   （1/30 秒）」を置けない。中身（`SheetOptions.ContentPrefab`）の組み立てが重いと開く動きが飛ぶ見込み（推論。Wake or Pay は今は使っていない）。案: `ScrollTo` に
   1 フレームの上限を足す（Rust の `canvas_scroll` の補間）か、シートの開閉を C# の `UiTween` で位置を書いて動かす。関連: `scripting/src/Api/UI/Navigation/BottomSheet.cs`・docs/ui_navigation.md §2・§13。
+- [ ] **W3-3（アクティビティ・プロフィール）で見つかった UI 部品の制限** — 2026-09-30（Wake or Pay の W3-3 で発見。プロジェクト側で回避済み）。
+  (1) **ダイアログの入力欄（`text_field.actor` の 280 dp）が入力の枠（264 dp）より広く、右へ 16 dp はみ出す**（Wake or Pay は `DialogInputFit` で回避。テンプレートの幅か枠の余白を合わせる）。
+  (2) **幅いっぱいのボタンで文字の枠が伸びず、文字が真ん中に来ない**（`WrappedText.FitWidth` で回避。`Text.Measure`〈W2-6c〉か、ボタンの文字の枠を親の幅に合わせる規則）。
+  (3) **グラフの横軸の端の目盛りの文字が切れる**（縦軸なしの棒グラフで「10/2」が「0/2」）。端の目盛りの文字は内側へ寄せるか余白を取る。
+  (4) **縦軸の文字の間隔の既定 32 だと、高さ 160 の折れ線で 30 分おきの目盛りが 60 分おきに間引かれる**（Wake or Pay はトークン `size.chart_y_label_spacing` を 24 に）。既定値の見直し。
+  (5) **TopSheet に「高さいっぱい」の指定が無い**（中身の側で高さを計算〈`TopSheetFit`〉）。
+  (6) `Text.Measure`（W2-6c）が無いので幅は見積もり（既出）。
