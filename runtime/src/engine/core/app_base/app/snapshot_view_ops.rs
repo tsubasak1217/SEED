@@ -326,9 +326,12 @@ pub(super) fn snapshot_view_refusal(command: &IpcCommand) -> Option<ViewRefusal>
         C::Reparent { .. } => plain("REPARENT"),
         C::Rename { .. } | C::RenameActor { .. } => plain("RENAME"),
         C::CreateGroup { .. } | C::CreateGroupWithChildren { .. } => plain("CREATE_GROUP"),
-        C::AddActor { .. } | C::AddActor2D { .. } | C::AddActorChild { .. } | C::AddActor2dChild { .. } | C::WrapActor { .. } => {
-            plain("ADD_ACTOR")
-        }
+        C::AddActor { .. }
+        | C::AddActor2D { .. }
+        | C::AddActorChild { .. }
+        | C::AddActor2dChild { .. }
+        | C::WrapActor { .. }
+        | C::AddTemplateActor { .. } => plain("ADD_ACTOR"),
         C::AddComponent { .. } | C::RemoveComponentSlot { .. } | C::RenameComponentSlot { .. } | C::DuplicateComponent { .. } => {
             plain("EDIT_COMPONENT")
         }
@@ -417,6 +420,9 @@ mod tests {
         );
         let field = IpcCommand::SetLightField { actor_dfs_id: 1, slot_idx: 0, key: "intensity".into(), value: "2".into() };
         assert_eq!(snapshot_view_refusal(&field).unwrap().label, "FIELD_EDIT");
+        // テンプレートアクタの追加もツリーの編集なので、写しには入れない
+        let template = IpcCommand::AddTemplateActor { world_line: 0, parent_dfs_id: None, path: "a.actor".into() };
+        assert_eq!(snapshot_view_refusal(&template).unwrap().label, "ADD_ACTOR");
     }
 
     /// 見るための命令（選択・カメラ・問い合わせ・表示の設定・終わる命令）は通すこと。

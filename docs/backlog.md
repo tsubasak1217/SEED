@@ -1145,6 +1145,53 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   `FileTypeIcons` の `.ttf`/`.otf`/`.ttc` を文書アイコンの流用から差し替えた。
   同時に `.blend` 系へ `Icon.File.Blender`（mdi `blender-software`）を追加している。
 
+## テンプレートアクタ（2026-10-01 実装時の残件。正典: docs/template_library.md §9）
+
+- [ ] **実行中に読む部品の `.actor` がプロジェクトへコピーされる（決定との兼ね合いが未決）** — 2026-10-01。
+  利用者の決定は「プロジェクト上へ `.actor` を暗黙に作らない」だが、`SEED.UI` の部品のいくつかは実行中に
+  `assets://ui/prefabs/*.actor` を `Instantiate` して中身を作る（ホイールの行 `wheel_row`・グラフの目盛り `chart_label`・
+  画面の枠 `screen_frame`・ModalHost の `dialog` / `bottom_sheet` / `top_sheet` / `text_field`・ToastHost の `toast`）。
+  無いと部品が動かない（ホイールに行が出ない等）ので、いまは「動かすのに要るファイル」としてコピーし、状態の行に列挙している
+  （追加したアクタ自身のプレハブではなく、リンクも付かない）。選択肢: (a) このまま、(b) エンジン側の既定の部品を
+  `assets://` の解決で引けるようにする（パッケージ化・Android の同梱も要る）、(c) 部品のスクリプトがファイル無しで行やラベルを
+  組み立てる。利用者に確認してから決める。関連: `templates/ui/template_actors.json` の `requires`、
+  `editor/src/Templates/Actors/TemplateActorDependencyPlanner.cs`、`scripting/src/Api/UI/Widgets/WheelPicker.cs`（`DefaultRowPrefab`）ほか。
+
+- [ ] **見本のサムネイル画像が git で追跡されない** — 2026-10-01。サムネイルの規約は `templates/<フォルダ>/thumbnails/<名前>.png`
+  （推奨 192×192）だが、`.gitignore` の `templates/**/*.png` に当たるので、置いてもローカルにしか残らない。共有するなら
+  `!templates/*/thumbnails/*.png` の例外を足す（`.gitattributes` で `*.png` は LFS）。画像はまだ 1 枚も無い（後で入れる）。
+
+- [ ] **一覧の行（list_row）が見本のスクリプトをプロジェクトへコピーする** — 2026-10-01。`templates/ui/prefabs/list_row.actor` の
+  ルートのスクリプトは見本の `assets://ui/scripts/UiGalleryListRow.cs`（フルスワイプで削除）なので、追加するとその `.cs` が
+  プロジェクトへ入り、プロジェクトのスクリプトとしてコンパイルされる。エンジンのスクリプト（`SEED.UI.*`）に削除の動きを持たせれば
+  コピーは要らなくなる。また、追加の直後はスクリプトのコンパイル前なので、動きが付くのは再コンパイルの後（未確認。朝の確認で見る）。
+
+- [ ] **追加した位置が常にキャンバスの左上** — 2026-10-01。テンプレートに保存された `CanvasTransform`（アンカー左上・位置 0）の
+  まま入れているので、UI 部品は追加先のキャンバスの左上に出る。ビューの中央や選択中のアクタの近くへ置く規則を足すと手間が減る。
+  関連: `runtime/src/engine/core/app_base/app/template_actor_ops.rs`。
+
+- [ ] **3D の見本がほとんど無い** — 2026-10-01。`templates/actors/` のうち登録できたのは BrainStem だけ（`NewActor.actor` は参照先の
+  `models/bunny/bunny.obj` がライブラリに無い・`camera.actor` は名前が "NewActor(1)" の空のアクタ・`NewActor(1) (copy)…` は重複）。
+  カメラ・ライト・当たり判定付きの床など、3D の基本のテンプレートアクタを作って載せるとよい。
+
+- [ ] **ランタイムが追加を断ったときのダイアログの文言が「シーンの読み込みに失敗しました」** — 2026-10-01。
+  テンプレートアクタの追加をランタイムが断ると（読めない・組み立てられない・追加先が消えた）、既存のアクタ追加の拒否と同じ
+  `LOAD_ERROR:` で返すので、エディタは `RuntimeManager` の LOAD_ERROR の表示（「シーンの読み込みに失敗しました」のダイアログ）で出す。
+  既存の「子として追加」の拒否（2D の子に 3D など）も同じ文言。窓の状態の行へ返す専用の応答（例 `TEMPLATE_ACTOR_ERROR:`）か、
+  LOAD_ERROR の文言を「操作に失敗しました」へ一般化するかを決める。関連: `editor/src/Runtime/RuntimeManager.cs`（LOAD_ERROR の分岐）、
+  `runtime/src/engine/core/app_base/app/template_actor_ops.rs::reject_template_actor`。
+
+- [ ] **依存の閉包のたびにライブラリ全体を索引する** — 2026-10-01。`AssetCollector` は構築時にライブラリ（数百 MB・数千ファイル）を
+  全列挙するので、依存のあるテンプレートを追加するたびに数百ミリ秒かかりうる（UI スレッドの外なので固まりはしない）。
+  遅いと感じたら索引を窓の寿命だけ使い回す。関連: `TemplateActorDependencyPlanner.Plan`。
+
+- [ ] **（既存・読んで気付いた）右クリック「子として追加」直後のリネームが別のノードに付くことがある** — 2026-10-01。
+  `HierarchyPanel.OnHierarchyUpdated` は「追加前に無かった DFS 番号」の最初のノードを新しいアクタとみなすが、子を木の途中へ
+  入れると後ろのノードの番号が 1 つずつずれ、**末尾のノード**が「新しい番号」になる。親が最後のサブツリーでないとき、
+  新しいアクタではなく末尾のアクタが選ばれてリネームが始まる（コードを読んだだけで、実機では未確認）。
+  テンプレートアクタの追加はこの仕組みを使わず、ランタイムが追加したアクタを選択している。関連:
+  `editor/src/Panels/HierarchyPanel.xaml.cs`（`_pendingActorRenameAfterAdd` / `_preAddNodeIds`）。
+
 ## プロジェクトパネルの非表示ルール／テキスト編集（2026-09-12 実装時の残件）
 
 - [ ] **Windows の隠し属性・システム属性は見ていない** — 2026-09-12。非表示判定（`ProjectPanelVisibilityRules`）は

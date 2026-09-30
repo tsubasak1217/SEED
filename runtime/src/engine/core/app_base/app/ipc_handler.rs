@@ -1256,6 +1256,10 @@ impl App {
                 IpcCommand::WrapActor { child_dfs, is_2d } => {
                     self.handle_wrap_actor(child_dfs, is_2d);
                 }
+                // テンプレートアクタ（まっさらなアクタとして追加。app/template_actor_ops.rs）
+                IpcCommand::AddTemplateActor { world_line, parent_dfs_id, path } => {
+                    self.handle_add_template_actor(world_line, parent_dfs_id, &path);
+                }
                 IpcCommand::RemoveActor(dfs_id) => {
                     self.handle_remove_actor(dfs_id);
                 }

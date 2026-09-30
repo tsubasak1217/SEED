@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    テンプレートアクタの窓（editor/src/Templates/Actors/TemplateActorPickerWindow）の見た目を
+    「実物の XAML」で確かめるための検証用コンソール。
+
+    TemplateImportTests（純ロジックの単体テスト）と役割を分けている:
+      - あちら: カタログ・検索・まっさらな木・依存のコピーを WPF 抜きで検証する
+      - こちら: 実際の窓の XAML を組み立ててオフスクリーン描画し、PNG に落とす
+               （窓は GUI を起動しないと見えないので、目視確認の材料を作る）
+
+    SEEDEditor 本体をプロジェクト参照するのは、窓の XAML・共通ボタン書式・
+    ツリーの三角・アイコンがすべて本体アセンブリの中にあるため。**エディタは起動しない**
+    （App はリソース読み込みのために生成するだけで、Run() は呼ばない）。
+    ランタイムへも何も送らない（送信は標準出力へ書くだけの偽物）。
+
+    実行例（オプションの先頭に付くハイフン 2 個は XML コメントに書けないため省略して記す）:
+      dotnet run (project=editor/tests/TemplateActorPickerPreviewProbe) (区切り) (out) "C:\temp\out"
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.TemplateActorPickerPreview</RootNamespace>
+    <AssemblyName>TemplateActorPickerPreviewProbe</AssemblyName>
+    <!-- 本体と同じ RID（本体の参照の復元条件をそろえる。VersionControlPanelPreviewProbe と同じ）-->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\SEEDEditor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WPF のリソース探索先を本体へ向ける初期化は VersionControlPanelPreviewProbe のものを共有する -->
+    <Compile Include="..\VersionControlPanelPreviewProbe\ResourceAssemblyInitializer.cs">
+      <Link>Linked\ResourceAssemblyInitializer.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

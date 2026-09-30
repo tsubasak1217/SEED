@@ -119,6 +119,8 @@ public sealed class TemplateLibrary
         {
             var name = Path.GetFileName(dir);
             if (IsHidden(name)) continue;
+            // ライブラリ自身の付帯物（サムネイルのフォルダ等）はテンプレートではないので出さない
+            if (TemplateLibraryMetadata.IsMetadataEntry(name)) continue;
 
             var (count, bytes) = MeasureFolder(dir);
             entries.Add(new TemplateEntry(
@@ -134,6 +136,8 @@ public sealed class TemplateLibrary
         {
             var name = Path.GetFileName(file);
             if (IsHidden(name)) continue;
+            // テンプレートアクタのカタログ等の付帯ファイルはプロジェクトへコピーする物ではない
+            if (TemplateLibraryMetadata.IsMetadataEntry(name)) continue;
 
             long size;
             try { size = new FileInfo(file).Length; }

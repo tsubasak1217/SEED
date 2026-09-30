@@ -196,6 +196,8 @@ pub(crate) mod jointattach_scene_gizmo;
 pub(crate) mod skybox_scene_gizmo;
 pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
+/// テンプレートアクタの追加（ADD_TEMPLATE_ACTOR）: まっさらなアクタとして Canvas の規則で入れる
+mod template_actor_ops;
 /// ロジック配置（LOGIC_PLACE）: パターン生成 → 接地 → アクタ生成／制御点追記
 mod logic_placement_ops;
 mod placement_mode;

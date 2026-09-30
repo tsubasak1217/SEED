@@ -554,6 +554,13 @@ public partial class MainWindow
             };
             addActorMenu.Items.Add(add2DItem);
 
+            // テンプレートアクタ（UI 部品など）を選ぶ窓を開く。追加先はヒエラルキーのルートと同じ扱い
+            // （2D の部品は最初のルートキャンバスの下へ。キャンバスが無ければランタイムが作る）。
+            var addTemplateItem = new MenuItem { Header = "テンプレートアクタ..." };
+            addTemplateItem.Click += (_, _) =>
+                OpenTemplateActorPicker(PanelHierarchy.CreateRootTemplateActorTarget());
+            addActorMenu.Items.Add(addTemplateItem);
+
             menu.Items.Add(addActorMenu);
             menu.Items.Add(new Separator());
             AddViewportMenuItem(menu, "ペースト", "Ctrl+V", () => _runtimeManager?.SendToRuntime("PASTE"));

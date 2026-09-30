@@ -657,7 +657,8 @@ impl App {
 
     /// アクターを world_line `wl` のルートアクター（唯一のトップレベル）の子にする。
     /// ルートが見つからない場合（想定外）はトップレベルへフォールバックする。
-    fn attach_actor_to_wl_root(&mut self, actor: Actor, wl: u32) {
+    /// テンプレートアクタの追加（template_actor_ops.rs）からも使う。
+    pub(super) fn attach_actor_to_wl_root(&mut self, actor: Actor, wl: u32) {
         let scene = self.scene.as_mut().unwrap();
         if let Some(root) = scene.actors.iter_mut().find(|a| a.world_line == wl) {
             root.add_child(actor);
@@ -776,7 +777,15 @@ impl App {
     /// 戻り値は作成したキャンバスアクターのエンティティ。
     fn spawn_default_root_canvas(&mut self) -> Entity {
         // 生成先はアクティブタブの world_line（ビューポート配置経路のみが呼ぶため通常 0）
-        let wl = self.active_world_line;
+        self.spawn_default_root_canvas_in(self.active_world_line)
+    }
+
+    /// 既定のルートキャンバスを world_line `wl` に作る（`spawn_default_root_canvas` の本体）。
+    ///
+    /// テンプレートアクタの追加（template_actor_ops.rs）は追加先の world_line を
+    /// 命令で受け取るので、アクティブタブに頼らず明示できる入口を分けてある。
+    /// 戻り値は作成したキャンバスアクターのエンティティ。
+    pub(super) fn spawn_default_root_canvas_in(&mut self, wl: u32) -> Entity {
         let scene = self.scene.as_mut().unwrap();
 
         // アクター本体（CanvasTransform）と Canvas スロットをそれぞれ spawn する

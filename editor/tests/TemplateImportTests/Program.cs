@@ -51,6 +51,8 @@ public static class Program
         RegisterImporterTests(h);
         RegisterLocatorTests(h);
         RegisterFormatTests(h);
+        // テンプレートアクタ（カタログ・検索・まっさらな木・依存のコピー。TemplateActorTests.cs）
+        TemplateActorTests.Register(h);
 
         return h.Run();
     }

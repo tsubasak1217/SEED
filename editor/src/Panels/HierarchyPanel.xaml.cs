@@ -1265,6 +1265,9 @@ public partial class HierarchyPanel : UserControl
 
         sub.Items.Add(item3D);
         sub.Items.Add(item2D);
+        // テンプレートアクタ（UI 部品など、コンポーネントとスクリプトが付いたアクタ）を選ぶ窓を開く。
+        // 空白の右クリックならルート、子追加の導線なら右クリックしたノードの子が追加先になる。
+        sub.Items.Add(BuildTemplateActorMenuItem(asChild ? _rightClickedNode : null));
         // ロジック配置は「1 クリックで 1 体足す」通常操作とは性質が違う（ダイアログを開く）
         // ので、同じ階層に並べつつ 1 段下げる。通常の追加は従来どおり 1 クリックのまま。
         sub.Items.Add(BuildLogicPlacementSubMenu(
@@ -1412,6 +1415,11 @@ public partial class HierarchyPanel : UserControl
             m3d.Items.Add(child3d);
             sub.Items.Add(m3d);
         }
+
+        // ── テンプレートアクタ（対象アクタの子として追加。窓を開く）──────────
+        // 2D/3D の可否は窓の中で、選んだテンプレートの種別と「子として追加」と同じ規則で判定する
+        // （2D の子に 3D は不可・Canvas 無しの 3D の子に 2D は不可。理由は窓の状態の行に出す）。
+        sub.Items.Add(BuildTemplateActorMenuItem(target));
 
         // ── ロジック配置（対象アクタの子として、パターンでまとめて生成）──────
         // 生成物は必ずグループフォルダにまとまるため、「親としてラップ」に相当する

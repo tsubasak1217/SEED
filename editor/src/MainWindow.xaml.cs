@@ -588,6 +588,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelHierarchy.PrefabSourceOpenRequested += id => PanelInspector.OpenPrefabSource(id);
         // 選択アクターのビューポート所属（is_vp）に応じてシーンタブ（ワールド/ビューポート）を自動切替する
         PanelHierarchy.SelectionKindResolved += OnHierarchySelectionKindResolved;
+        // 右クリック「アクタを追加」→「テンプレートアクタ...」でテンプレートアクタの窓を開く（MainWindow.TemplateActors.cs）
+        PanelHierarchy.TemplateActorPickerRequested += OpenTemplateActorPicker;
         PanelInspector.SetRuntime(_runtimeManager);
         PanelInspector.SetAssetsPath(AssetsPath);
         PanelInspector.TransformCommitted += MarkDirty;

@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "sort_order": 20,
+  "entries": [
+    {
+      "path": "BrainStem.actor",
+      "name": "歩くモデル（BrainStem）",
+      "description": "アニメーション付きの glTF モデルに、カプセルの当たり判定と入力の割り当て（playerInput.inputmap）を付けた見本。モデル models/BrainStem.glb（約 3 MB）と input/playerInput.inputmap がコピーされる。",
+      "category": "3D/見本",
+      "tags": ["model", "glb", "gltf", "animation", "character", "モデル", "キャラクター", "アニメーション", "当たり判定", "collider", "brainstem"],
+      "thumbnail": ""
+    },
+    {
+      "path": "NewActor2D.actor2d",
+      "name": "キャンバスと当たり判定（2D の見本）",
+      "description": "1920×1080 の Canvas に、スプライトと 2D の当たり判定（箱）を並べた見本。見本の画像 textures/symmetryORE2.png がコピーされる。",
+      "category": "2D/見本",
+      "tags": ["canvas", "sprite", "collider 2d", "2d", "キャンバス", "スプライト", "当たり判定", "見本"],
+      "thumbnail": ""
+    }
+  ]
+}

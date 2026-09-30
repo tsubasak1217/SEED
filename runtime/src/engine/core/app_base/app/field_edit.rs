@@ -330,6 +330,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // 1 件だけ積む（二重記録を避けるためここでは対象外）。
         | IpcCommand::CameraApplyDebug { .. }
         | IpcCommand::WrapActor { .. }
+        // テンプレートアクタの追加はハンドラ側が ActorTreeSnapshotCommand を 1 件積む（2D/3D の追加と同じ）。
+        | IpcCommand::AddTemplateActor { .. }
         | IpcCommand::RemoveActor(..)
         | IpcCommand::RenameActor { .. }
         | IpcCommand::Rename { .. }

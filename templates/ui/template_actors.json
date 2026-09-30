@@ -1,0 +1,234 @@
+{
+  "format_version": 1,
+  "sort_order": 10,
+  "entries": [
+    {
+      "path": "prefabs/button.actor",
+      "name": "ボタン",
+      "description": "押すと Clicked が届く角丸のボタン（SEED.UI.Button）。文字は子の Label、色と角丸は Sprite、見た目の種類は Variant（Filled・Outlined・Text など）で変える。",
+      "category": "UI/基本",
+      "tags": ["button", "ボタン", "押す", "タップ", "tap", "click", "filled", "outlined"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/round_button.actor",
+      "name": "丸ボタン",
+      "description": "円いボタン（SEED.UI.Button）。アイコンや 1 文字を載せる小さな操作に使う。大きさは Sprite の幅と高さで変える。",
+      "category": "UI/基本",
+      "tags": ["round button", "丸ボタン", "円", "アイコン", "fab", "icon button", "button"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/card.actor",
+      "name": "カード",
+      "description": "角丸の面に画像・題・本文を並べたカード。中身の文字と画像は子のアクタで差し替える。見本の画像 ui/textures/avatar.png がコピーされる。",
+      "category": "UI/基本",
+      "tags": ["card", "カード", "パネル", "panel", "surface", "面"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/toggle.actor",
+      "name": "トグル",
+      "description": "オン・オフを切り替えるスイッチ（SEED.UI.Toggle）。切り替わると Changed が届く。",
+      "category": "UI/入力",
+      "tags": ["toggle", "switch", "トグル", "スイッチ", "オンオフ", "on off"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/checkbox.actor",
+      "name": "チェックボックス",
+      "description": "チェックを付け外しする箱（SEED.UI.Checkbox）。切り替わると Changed が届く。",
+      "category": "UI/入力",
+      "tags": ["checkbox", "check", "チェック", "チェックボックス", "選択"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/radio_group.actor",
+      "name": "ラジオボタン",
+      "description": "並びの中から 1 つだけ選ぶ（SEED.UI.RadioGroup と子の SEED.UI.SelectItem）。項目は子を複製して増やす。選び直すと SelectionChanged が届く。",
+      "category": "UI/入力",
+      "tags": ["radio", "radio button", "ラジオ", "ラジオボタン", "単一選択", "select"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/chip_group.actor",
+      "name": "チップ",
+      "description": "小さな札を並べて選ぶ（SEED.UI.ChipGroup）。Multiple で複数選択にできる。項目は子の Chip を複製して増やす。",
+      "category": "UI/入力",
+      "tags": ["chip", "chips", "チップ", "タグ", "tag", "filter", "複数選択"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/segmented.actor",
+      "name": "セグメント",
+      "description": "横に並んだ区切りから 1 つを選ぶ（SEED.UI.SegmentedControl）。表示の切り替えに使う。",
+      "category": "UI/入力",
+      "tags": ["segmented", "segment", "セグメント", "切り替え", "タブ風", "select"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/slider.actor",
+      "name": "スライダー",
+      "description": "つまみを動かして値を選ぶ（SEED.UI.Slider）。値が変わると ValueChanged が届く。",
+      "category": "UI/入力",
+      "tags": ["slider", "スライダー", "つまみ", "値", "音量", "volume", "range"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/number_field.actor",
+      "name": "数値の欄（増減ボタン）",
+      "description": "－ と ＋ のボタンで数を増減する欄（SEED.UI.NumberField）。Min・Max・Step・Suffix を Inspector で決める。",
+      "category": "UI/入力",
+      "tags": ["number", "stepper", "数値", "数", "増減", "カウンター", "counter", "plus minus"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/text_field.actor",
+      "name": "入力欄",
+      "description": "文字を打ち込む欄（SEED.UI.TextField）。Placeholder・MaxLength・Kind を Inspector で決める。確定で Submitted が届く。",
+      "category": "UI/入力",
+      "tags": ["text field", "text input", "input", "入力", "入力欄", "テキスト", "文字", "キーボード"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/number_input.actor",
+      "name": "数値の入力欄",
+      "description": "数字だけを打ち込む中央寄せの入力欄（SEED.UI.TextField の Kind = Number）。",
+      "category": "UI/入力",
+      "tags": ["number input", "numeric", "数値", "数字", "入力", "テンキー", "text field"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/wheel_picker.actor",
+      "name": "ホイール",
+      "description": "回して値を選ぶドラム（SEED.UI.WheelPicker）。Min・Max・Format を Inspector で決める。実行中に行を作る部品 ui/prefabs/wheel_row.actor がコピーされる。",
+      "category": "UI/入力",
+      "tags": ["wheel", "picker", "drum", "ホイール", "ドラム", "ピッカー", "回す", "選ぶ"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/time_wheel.actor",
+      "name": "時刻ホイール",
+      "description": "時・分（と午前・午後）のホイールを並べた時刻の選択（SEED.UI.TimeWheel）。値が変わると ValueChanged が届く。行の部品 ui/prefabs/wheel_row.actor がコピーされる。",
+      "category": "UI/入力",
+      "tags": ["time", "time picker", "clock", "時刻", "時間", "目覚まし", "アラーム", "alarm", "wheel", "ホイール"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/progress_bar.actor",
+      "name": "進捗の棒",
+      "description": "横に伸びる進み具合の棒（SEED.UI.ProgressBar）。Value（0〜1）で長さが決まる。",
+      "category": "UI/表示",
+      "tags": ["progress", "progress bar", "bar", "進捗", "プログレスバー", "ゲージ", "gauge", "読み込み"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/progress_ring.actor",
+      "name": "進捗の輪",
+      "description": "円く回る進み具合の輪（SEED.UI.ProgressRing）。値の表示にも、待ちの回転にも使える。",
+      "category": "UI/表示",
+      "tags": ["progress ring", "spinner", "loading", "進捗", "輪", "円", "くるくる", "読み込み"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/avatar.actor",
+      "name": "アバター",
+      "description": "丸く切り抜いた画像（人物のアイコンなど）。画像は Sprite の texture_path で差し替える。見本の画像 ui/textures/avatar.png がコピーされる。",
+      "category": "UI/表示",
+      "tags": ["avatar", "アバター", "アイコン", "プロフィール", "profile", "画像", "image", "丸"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/list_row.actor",
+      "name": "一覧の行",
+      "description": "題と補足を並べた一覧の 1 行。左へ払うと削除のボタンが出て、払い切ると消える見本の動き付き。見本のスクリプト ui/scripts/UiGalleryListRow.cs がコピーされる。",
+      "category": "UI/一覧とスクロール",
+      "tags": ["list", "list row", "row", "一覧", "行", "リスト", "スワイプ", "swipe", "削除"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/screen_stack.actor",
+      "name": "画面のスタック",
+      "description": "画面（プレハブ）を積んだり下ろしたりする所（SEED.UI.ScreenStack）。Push・Pop で画面を出し入れし、RootPrefab に最初の画面を指定する。画面の枠 ui/prefabs/screen_frame.actor がコピーされる。",
+      "category": "UI/ナビゲーション",
+      "tags": ["screen stack", "navigation", "navigator", "画面", "スタック", "遷移", "push", "pop", "ナビゲーション"],
+      "thumbnail": "",
+      "requires": ["prefabs/screen_frame.actor"]
+    },
+    {
+      "path": "prefabs/tab_host.actor",
+      "name": "下のタブ",
+      "description": "下のタブのバーと、タブごとの画面のスタック（SEED.UI.TabHost）。タブを切り替えると TabChanged が届く。画面の枠 ui/prefabs/screen_frame.actor がコピーされる。",
+      "category": "UI/ナビゲーション",
+      "tags": ["tab", "tabs", "tab bar", "bottom navigation", "タブ", "タブバー", "切り替え", "ナビゲーション"],
+      "thumbnail": "",
+      "requires": ["prefabs/screen_frame.actor"]
+    },
+    {
+      "path": "prefabs/modal_host.actor",
+      "name": "ダイアログ・シートの受け皿",
+      "description": "ダイアログ・下からのシート・上からの覆いを開く所（SEED.UI.ModalHost。シーンに 1 つ）。スクリプトから開くと、ui/prefabs の dialog・bottom_sheet・top_sheet（とダイアログの入力欄 text_field）を使う。それらがコピーされる。",
+      "category": "UI/ナビゲーション",
+      "tags": ["modal", "modal host", "dialog", "sheet", "bottom sheet", "overlay", "ダイアログ", "シート", "モーダル", "ポップアップ", "popup"],
+      "thumbnail": "",
+      "requires": ["prefabs/dialog.actor", "prefabs/bottom_sheet.actor", "prefabs/top_sheet.actor", "prefabs/text_field.actor"]
+    },
+    {
+      "path": "prefabs/toast_host.actor",
+      "name": "トーストの受け皿",
+      "description": "下から短い知らせ（トースト）を出す所（SEED.UI.ToastHost。シーンに 1 つ）。Toast.Show で出す。トーストの部品 ui/prefabs/toast.actor がコピーされる。",
+      "category": "UI/ナビゲーション",
+      "tags": ["toast", "snackbar", "notification", "トースト", "通知", "知らせ", "メッセージ"],
+      "thumbnail": "",
+      "requires": ["prefabs/toast.actor"]
+    },
+    {
+      "path": "prefabs/dialog.actor",
+      "name": "ダイアログ（見た目を作る用）",
+      "description": "ダイアログの面そのもの（SEED.UI.Dialog）。普段は受け皿が実行中に作るので、シーンに置いたままだと Play で消える。見た目を調整したらアクタファイル化し、ModalHost の DialogPrefab に指定する。",
+      "category": "UI/重ねる面の見た目",
+      "tags": ["dialog", "alert", "ダイアログ", "確認", "ポップアップ", "popup", "見た目"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/bottom_sheet.actor",
+      "name": "下からのシート（見た目を作る用）",
+      "description": "下から引き出す板の面（SEED.UI.BottomSheet）。受け皿が実行中に作る部品なので、シーンに置いたままだと Play で消える。見た目を作ったらアクタファイル化して ModalHost の SheetPrefab に指定する。",
+      "category": "UI/重ねる面の見た目",
+      "tags": ["bottom sheet", "sheet", "シート", "下から", "引き出し", "見た目"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/top_sheet.actor",
+      "name": "上からの覆い（見た目を作る用）",
+      "description": "上から降りてくる覆いの面（SEED.UI.TopSheet）。受け皿が実行中に作る部品なので、シーンに置いたままだと Play で消える。見た目を作ったらアクタファイル化して ModalHost の OverlayPrefab に指定する。",
+      "category": "UI/重ねる面の見た目",
+      "tags": ["top sheet", "overlay", "覆い", "上から", "オプション", "見た目"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/toast.actor",
+      "name": "トースト（見た目を作る用）",
+      "description": "トースト 1 枚の面（SEED.UI.Toast）。ToastHost が実行中に作る部品。見た目を作ったらアクタファイル化して ToastHost の ToastPrefab に指定する。",
+      "category": "UI/重ねる面の見た目",
+      "tags": ["toast", "snackbar", "トースト", "通知", "見た目"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/line_chart.actor",
+      "name": "折れ線グラフ",
+      "description": "折れ線のグラフ（SEED.UI.LineChart）。値はスクリプトから渡す。目盛りの文字の部品 ui/prefabs/chart_label.actor がコピーされる。",
+      "category": "UI/グラフ",
+      "tags": ["line chart", "chart", "graph", "折れ線", "グラフ", "チャート", "推移"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/bar_chart.actor",
+      "name": "棒グラフ",
+      "description": "棒のグラフ（SEED.UI.BarChart）。値はスクリプトから渡し、棒を選ぶと BarSelected が届く。目盛りの文字の部品 ui/prefabs/chart_label.actor がコピーされる。",
+      "category": "UI/グラフ",
+      "tags": ["bar chart", "chart", "graph", "棒", "棒グラフ", "グラフ", "チャート", "集計"],
+      "thumbnail": ""
+    }
+  ]
+}

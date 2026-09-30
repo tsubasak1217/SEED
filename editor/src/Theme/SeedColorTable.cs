@@ -310,6 +310,21 @@ public static class SeedColorTable
     public const string WAVEFORM_CENTER_LINE = "#3A5A52";
 
     // ══════════════════════════════════════════════════════════
+    //  テンプレートアクタのサムネイルの枠（画像が無いときの頭文字の板）
+    //
+    //  テンプレートアクタの窓（Templates/Actors/TemplateActorPickerWindow）の一覧は、
+    //  見本の画像（templates/<フォルダ>/thumbnails/<名前>.png）が無い間、
+    //  灰色の板に表示名の頭文字を置いて「枠」だけを見せる（docs/template_library.md §9.4）。
+    //  頭文字は読ませる文字なので 4.5 以上の比を要求する。
+    // ══════════════════════════════════════════════════════════
+
+    /// <summary>頭文字の板の地色（通常ボタンと同じ灰色。一覧の地色 FIELD_BG から一段浮かせる）。</summary>
+    public const string THUMBNAIL_PLACEHOLDER_BG = "#3A3A3D";
+
+    /// <summary>頭文字の色（本文より一段落として「仮の絵」であることを示す）。</summary>
+    public const string THUMBNAIL_PLACEHOLDER_FG = "#C8C8C8";
+
+    // ══════════════════════════════════════════════════════════
     //  コントラストの基準（WCAG 2.1）
     // ══════════════════════════════════════════════════════════
 
@@ -419,6 +434,9 @@ public static class SeedColorTable
         new("波形/通常のタイル",     SURFACE_WINDOW, null,                  WAVEFORM_FG, MIN_RATIO_NON_TEXT),
         new("波形/ホバー中のタイル", SURFACE_WINDOW, ICON_OVERLAY_HOVER,    WAVEFORM_FG, MIN_RATIO_NON_TEXT),
         new("波形/選択中のタイル",   SURFACE_WINDOW, ICON_OVERLAY_PRESSED,  WAVEFORM_FG, MIN_RATIO_NON_TEXT),
+
+        // ── テンプレートアクタのサムネイルの枠（画像が無いときの頭文字は読ませる文字）──
+        new("サムネイル/頭文字の板", THUMBNAIL_PLACEHOLDER_BG, null, THUMBNAIL_PLACEHOLDER_FG, MIN_RATIO_TEXT),
     };
 
     // ══════════════════════════════════════════════════════════

@@ -70,6 +70,44 @@
     <Compile Include="..\..\src\Templates\TemplateImporter.cs">
       <Link>Linked\Templates\TemplateImporter.cs</Link>
     </Compile>
+    <Compile Include="..\..\src\Templates\TemplateLibraryMetadata.cs">
+      <Link>Linked\Templates\TemplateLibraryMetadata.cs</Link>
+    </Compile>
+
+    <!--
+      テンプレートアクタ（editor/src/Templates/Actors/）の UI 非依存の部分。
+      窓（TemplateActorPickerWindow）と表示モデル・サムネイルの読み込みは WPF なので取り込まない。
+    -->
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorCatalogFormat.cs">
+      <Link>Linked\Templates\Actors\TemplateActorCatalogFormat.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorEntry.cs">
+      <Link>Linked\Templates\Actors\TemplateActorEntry.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorCatalog.cs">
+      <Link>Linked\Templates\Actors\TemplateActorCatalog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorSearch.cs">
+      <Link>Linked\Templates\Actors\TemplateActorSearch.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorFlattener.cs">
+      <Link>Linked\Templates\Actors\TemplateActorFlattener.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorDependencyPlanner.cs">
+      <Link>Linked\Templates\Actors\TemplateActorDependencyPlanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorStaging.cs">
+      <Link>Linked\Templates\Actors\TemplateActorStaging.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorTarget.cs">
+      <Link>Linked\Templates\Actors\TemplateActorTarget.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorIpc.cs">
+      <Link>Linked\Templates\Actors\TemplateActorIpc.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorInstaller.cs">
+      <Link>Linked\Templates\Actors\TemplateActorInstaller.cs</Link>
+    </Compile>
 
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">

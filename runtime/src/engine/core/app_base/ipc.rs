@@ -492,6 +492,11 @@ pub enum IpcCommand {
     /// child_dfs をその新規アクターの子へ移動する（右クリック「親として追加（ラップ）」用）。
     /// フォーマット: WRAP_ACTOR:{child_dfs},{is_2d(0|1)}
     WrapActor { child_dfs: u32, is_2d: bool },
+    /// テンプレートアクタを「まっさらなアクタ」として追加する（プレハブのリンクを付けない）。
+    /// `path` はエディタがまっさらにした木を書き出した一時ファイル（.actor / .actor2d）。
+    /// 置き方は app/template_actor_ops.rs（2D は Canvas の規則。Undo は 1 操作）。
+    /// フォーマット: ADD_TEMPLATE_ACTOR:{world_line},{parent_dfs|-1},{path}（path はカンマを含みうるので最後）
+    AddTemplateActor { world_line: u32, parent_dfs_id: Option<u32>, path: String },
     /// アクターを削除する
     RemoveActor(u32),
     /// アクターをリネームする
@@ -1731,6 +1736,29 @@ fn parse2u_tail(rest: &str) -> Option<(u32, u32, &str)> {
     ))
 }
 
+/// 親の欄で「ルート（親なし）」を表す値（エディタの TemplateActorIpc.RootParentId と一致させる）。
+const ROOT_PARENT_TOKEN: &str = "-1";
+
+/// `ADD_TEMPLATE_ACTOR:` の残り `{world_line},{parent_dfs|-1},{path}` を解釈する。
+///
+/// path（まっさらにした木の一時ファイル）はカンマを含みうるので、先頭から 2 つだけ区切って
+/// 残りを丸ごと path にする。数値でない欄・空の path があれば None（半端なコマンドを実行しない）。
+fn parse_add_template_actor(rest: &str) -> Option<IpcCommand> {
+    let mut it = rest.splitn(3, ',');
+    let world_line: u32 = it.next()?.trim().parse().ok()?;
+    let parent_raw = it.next()?.trim();
+    let parent_dfs_id = if parent_raw == ROOT_PARENT_TOKEN {
+        None
+    } else {
+        Some(parent_raw.parse::<u32>().ok()?)
+    };
+    let path = it.next()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(IpcCommand::AddTemplateActor { world_line, parent_dfs_id, path: path.to_string() })
+}
+
 /// `rest` から `u32, u32, u32, <tail>` をカンマ区切りでパースして (a, b, c, tail) を返す。
 /// tail にカンマが含まれてもよい（JSON 文字列等）。json の中身にカンマがあるため
 /// `splitn(4, ',')` で先頭 3 フィールドのみを厳密に切り出し、残り全部を tail とする
@@ -2218,6 +2246,11 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                             // ADD_ACTOR_2D_CHILD:{parent_dfs_id}
                             s["ADD_ACTOR_2D_CHILD:".len()..].trim().parse::<u32>().ok()
                                 .map(|id| IpcCommand::AddActor2dChild { parent_dfs_id: id })
+                        }
+                        s if s.starts_with("ADD_TEMPLATE_ACTOR:") => {
+                            // ADD_TEMPLATE_ACTOR:{world_line},{parent_dfs_id|-1},{path}
+                            // path はカンマを含みうるので、先頭から 2 つだけ区切って残りを丸ごと path にする
+                            parse_add_template_actor(&s["ADD_TEMPLATE_ACTOR:".len()..])
                         }
                         s if s.starts_with("WRAP_ACTOR:") => {
                             // WRAP_ACTOR:{child_dfs},{is_2d(0|1)}
@@ -3432,6 +3465,35 @@ mod tests {
         assert!(matches!(commands[1], IpcCommand::Resume));
         assert!(matches!(commands[2], IpcCommand::Detach));
         assert!(matches!(commands[3], IpcCommand::Stop), "最後の行は改行が無くても読む");
+    }
+
+    /// テンプレートアクタの追加（ADD_TEMPLATE_ACTOR:{wl},{親|-1},{パス}）。パスはカンマを含んでよく、
+    /// 親 -1 はルート。数値でない欄・空のパスの行はコマンドにしない。
+    #[test]
+    fn read_loop_parses_add_template_actor() {
+        let (commands, _) = read_all(
+            "ADD_TEMPLATE_ACTOR:0,-1,C:\\tmp\\a,b.actor\n\
+             ADD_TEMPLATE_ACTOR:2,7,C:\\tmp\\x.actor2d\n\
+             ADD_TEMPLATE_ACTOR:0,x,C:\\tmp\\bad.actor\n\
+             ADD_TEMPLATE_ACTOR:0,-1,\n",
+        );
+        assert_eq!(commands.len(), 2, "壊れた行は捨てる");
+        match &commands[0] {
+            IpcCommand::AddTemplateActor { world_line, parent_dfs_id, path } => {
+                assert_eq!(*world_line, 0);
+                assert_eq!(*parent_dfs_id, None, "-1 はルート");
+                assert_eq!(path, "C:\\tmp\\a,b.actor", "パスのカンマを区切りにしない");
+            }
+            _ => panic!("AddTemplateActor を期待した"),
+        }
+        match &commands[1] {
+            IpcCommand::AddTemplateActor { world_line, parent_dfs_id, path } => {
+                assert_eq!(*world_line, 2);
+                assert_eq!(*parent_dfs_id, Some(7));
+                assert_eq!(path, "C:\\tmp\\x.actor2d");
+            }
+            _ => panic!("AddTemplateActor を期待した"),
+        }
     }
 
     /// 実行中の差し替えの命令（RELOAD_SCENE[:パス] / RELOAD_ASSET:パス）が HotReload になり、従来の RELOAD_SCRIPTS は
