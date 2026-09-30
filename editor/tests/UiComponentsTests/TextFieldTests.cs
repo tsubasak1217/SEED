@@ -135,6 +135,54 @@ public static class TextFieldTests
             Check.Equal(" a ", new DialogInputOptions { TrimResult = false }.Finish(" a "), "TrimResult = false はそのまま");
         });
 
+        h.Add("W2-6b 欄の外のタップ: 外で押して動かさずに離したら外す・OS に取り消された指（戻るのジェスチャー）は数えない", () =>
+        {
+            const float slop = 21f;
+            var outside = new Vector2(37f, 1571f);
+            var tracker = new OutsideTapTracker();
+            // 実機の手順 11 の指: 左端で押し、19 px 動いたところで Gesture Monitor に奪われた（取り消し）
+            Check.True(!tracker.Update(new OutsideTapInput(true, false, outside, false, false), slop), "押しただけでは外さない");
+            Check.True(!tracker.Update(new OutsideTapInput(false, true, new Vector2(56f, 1569f), false, true), slop), "取り消しはタップではない");
+            // ふつうのタップ
+            Check.True(!tracker.Update(new OutsideTapInput(true, false, outside, false, false), slop), "押した");
+            Check.True(tracker.Update(new OutsideTapInput(false, true, new Vector2(40f, 1571f), false, false), slop), "動かさずに離したら外す");
+            // 押して離すのが同じフレーム（素早いタップ）
+            Check.True(tracker.Update(new OutsideTapInput(true, true, outside, false, false), slop), "同じフレームの押しと離しも外す");
+            // 欄の中で押した・動いた（ドラッグ・スクロール）・押さずに離した
+            Check.True(!tracker.Update(new OutsideTapInput(true, true, outside, true, false), slop), "欄の中のタップは外さない");
+            tracker.Update(new OutsideTapInput(true, false, outside, false, false), slop);
+            Check.True(!tracker.Update(new OutsideTapInput(false, true, new Vector2(37f, 1500f), false, false), slop), "動いたら（スクロール）外さない");
+            Check.True(!tracker.Update(new OutsideTapInput(false, true, outside, false, false), slop), "押していない離しは数えない");
+            // Reset で覚えている押下を捨てる（フォーカスを得たとき）
+            tracker.Update(new OutsideTapInput(true, false, outside, false, false), slop);
+            tracker.Reset();
+            Check.True(!tracker.Update(new OutsideTapInput(false, true, outside, false, false), slop), "Reset の後の離しは数えない");
+        });
+
+        h.Add("W2-6b 入力欄の戻る: キーボードが出ていた・PC・後ろに受ける層が無い根では受け、Android のキーボードの後は後ろの層へ回す", () =>
+        {
+            Check.True(TextFieldBackPolicy.Consumes(keyboardShown: true, isDevice: true, laterLayerHandles: true), "キーボードが出ていれば受ける");
+            Check.True(TextFieldBackPolicy.Consumes(keyboardShown: false, isDevice: false, laterLayerHandles: true), "PC は受ける（Esc の 1 回目はフォーカスだけ）");
+            Check.True(!TextFieldBackPolicy.Consumes(keyboardShown: false, isDevice: true, laterLayerHandles: true), "ダイアログ・画面のスタックがあれば回す（手順 9）");
+            Check.True(TextFieldBackPolicy.Consumes(keyboardShown: false, isDevice: true, laterLayerHandles: false), "根では受ける（手順 11: アプリを背面へ回さない）");
+        });
+
+        h.Add("W2-6b 戻るの段: フォーカスより後ろの層だけを問う（WouldHandleAfter。副作用なし）", () =>
+        {
+            var chain = new BackChain();
+            int handled = 0;
+            bool dialogOpen = false;
+            chain.Add(BackOrder.Focus, "focus", () => { handled++; return true; }, () => true);
+            chain.Add(BackOrder.Dialog, "dialog", () => { handled++; return dialogOpen; }, () => dialogOpen);
+            chain.Add(BackOrder.Navigation, "navigation", () => { handled++; return false; }, () => false);
+            Check.True(!chain.WouldHandleAfter(BackOrder.Focus).Handled, "根（ダイアログが閉じていてナビゲーションも受けない）");
+            dialogOpen = true;
+            var after = chain.WouldHandleAfter(BackOrder.Focus);
+            Check.True(after.Handled && after.Order == BackOrder.Dialog, "ダイアログが開いていればダイアログ");
+            Check.Equal("focus", chain.WouldHandle().Layer, "全体の問いはフォーカスの層から");
+            Check.Equal(0, handled, "問いは処理を呼ばない");
+        });
+
         h.Add("W2-6b 入力欄: トークンは既定のテーマにあり、値は docs の出どころどおり", () =>
         {
             Check.Close(52, theme.Number(TextFieldTokens.SizeFieldHeight), Eps, "欄の高さ");

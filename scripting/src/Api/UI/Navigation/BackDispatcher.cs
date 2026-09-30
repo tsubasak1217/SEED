@@ -7,7 +7,8 @@ namespace SEED.UI;
 //
 //  戻る（Android の戻るキー・戻るジェスチャーは runtime の key_remap.rs で Escape になる。PC の Esc も同じ）を、
 //  上の層から順に配り、最初に「受けた」層で止める:
-//    1. Focus（100）      … 今のフォーカス（W2-6 の入力欄が IME を閉じる・フォーカスを外す。IBackConsumer）
+//    1. Focus（100）      … 今のフォーカス（W2-6 の入力欄がフォーカスを外す。IBackConsumer。後ろの層が受けるなら回し、根なら受ける＝
+//                           TextFieldBackPolicy・WouldHandleAfterFocus）
 //    2. Dialog（200）     … いちばん上のダイアログ（閉じる。閉じられないダイアログも戻るは受ける）
 //    3. Sheet（300）      … いちばん上の下からのシート
 //    4. Overlay（400）    … いちばん上の上からの覆い
@@ -105,6 +106,13 @@ public static class BackDispatcher
     /// false のとき戻るを押すと背面へ回る（予測型の戻るではシステムが回し、ホームへ戻る見た目が出る）。
     /// </summary>
     public static bool WouldHandle() => BackCallbackSync.AppHandlesBack(Chain.WouldHandle(), MoveTaskToBackWhenUnhandled);
+
+    /// <summary>
+    /// フォーカスの層より後ろの層（ダイアログ・シート・覆い・画面のスタック・スクリプトが足した層）が今の戻るを受けるか（副作用なし）。
+    /// 入力欄（TextField）が、キーボードを閉じた後の戻るを後ろの層へ回すか、根なので自分で受けてアプリを背面へ回さないかを決めるのに使う
+    /// （W2-6b。TextFieldBackPolicy）。どの層も受けなければ false（戻るは背面へ回る道になる）。
+    /// </summary>
+    public static bool WouldHandleAfterFocus() => Chain.WouldHandleAfter(BackOrder.Focus).Handled;
 
     /// <summary>
     /// このフレームに戻る（Escape）が押されていたら配る（1 フレームに 1 回だけ）。画面の組み立ての部品が Update から呼ぶ。

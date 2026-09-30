@@ -5400,7 +5400,7 @@ IME（GameTextInput の InputConnection）─ UI スレッド ─→ MainActivit
 
 エンジン → IME（フレームの末尾に 1 度だけ。native text_input/platform.rs。複製した AndroidApp）
     SetEditorInfo(kind, action) → set_ime_editor_info（Text = TYPE_CLASS_TEXT / Number = TYPE_CLASS_NUMBER、アクション、IME_FLAG_NO_FULLSCREEN・IMG_FLAG_NO_EXTRACT_UI）
-    SetState(UTF-16 の状態)     → set_text_input_state（IME から同じ状態の stateChanged が返ってくる）
+    SetState(UTF-16 の状態)     → set_text_input_state（同じ状態の stateChanged が返るとは限らない。2026-09-30 の Simeji では返らなかった。ui_text_input.md §5）
     ShowKeyboard / HideKeyboard → show_soft_input(false) / hide_soft_input(false)
 ```
 
@@ -5408,5 +5408,8 @@ IME（GameTextInput の InputConnection）─ UI スレッド ─→ MainActivit
 - winit の `TextEvent`・`TextAction` は使わない（読み捨てられる）。ネイティブから `text_input_state()` を読まない（UI スレッド以外で読むと途中の本文・一度も本文が入っていないと落ちる）。
 - **ログ**: 本文は出さない。`adb logcat -s SEED` の `[SEED TEXT INPUT]` に知らせの種類と長さ・添字（`IME の状態: 長さ 3（UTF-16）・選択 3..3・変換 Some((0, 3))`・`IME のアクション: 6`・
   `キーボードの表示: true`・`IME の高さ: 979 px`）と実行した命令（`命令: SetEditorInfo(number, done)` など）が出る。
-- 試験アプリ: `com.seedengine.uidevice`（開始のシーン `ui_text_input.scene`）。手順は [ui_text_input.md](ui_text_input.md) §13。
+- 試験アプリ: `com.seedengine.uidevice`（開始のシーン `ui_text_input.scene`）。手順は [ui_text_input.md](ui_text_input.md) §13、結果は §13.1。
+- **戻る**: キーボードが出ている間の 1 回目は IME が閉じる（アプリへは届かない）。2 回目以降は入力欄の規則（根の画面では 2 回目はフォーカスを外すだけ・3 回目で背面へ、
+  ダイアログなどの中なら 2 回目でその層が閉じる。[ui_text_input.md](ui_text_input.md) §8）。戻るのジェスチャーは画面の端の指を奪う（`[SEED TOUCH] Cancelled`）ので、
+  入力欄は取り消された指を欄の外のタップと数えない（2026-09-30 の実機で、これがフォーカスを先に外してアプリを背面へ回していた）。
 - 古い libSEED.so（関数が無い）では Java が 1 度だけ警告を出して続ける（文字入力は届かない）。

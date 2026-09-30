@@ -123,6 +123,21 @@ public sealed class BackChain
     public BackDispatchResult WouldHandle() => FirstWanting()?.AsResult ?? BackDispatchResult.Unhandled;
 
     /// <summary>
+    /// 順が <paramref name="order"/> より後ろ（値が大きい）の層のうち、今戻るが押されたら受ける最初の層（副作用なし。無ければ Unhandled）。
+    /// 入力欄（W2-6b の TextField）が、キーボードを閉じた後の戻るを後ろの層へ回すか、根なので自分で受けるかを決めるのに使う。
+    /// </summary>
+    /// <param name="order">この順より後ろの層だけを問う（例 BackOrder.Focus）。</param>
+    public BackDispatchResult WouldHandleAfter(int order)
+    {
+        foreach (var layer in _layers.ToArray())
+        {
+            if (!_layers.Contains(layer) || layer.Order <= order) continue;
+            if (layer.WouldHandle) return layer.AsResult;
+        }
+        return BackDispatchResult.Unhandled;
+    }
+
+    /// <summary>
     /// 最初に受ける層のプレビューの相手（予測型の戻るで縮めて見せる。受ける層が無い・相手が無ければ null）。
     /// </summary>
     public IBackPreviewTarget? PreviewTarget() => FirstWanting()?.Preview?.Invoke();

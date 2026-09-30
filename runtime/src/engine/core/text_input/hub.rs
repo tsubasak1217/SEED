@@ -8,9 +8,12 @@
 //    - キーボード: 表示と高さ（画面の画素。Android は IME の知らせ、PC は模擬）。変わったら場へ知らせを積む
 //    - プラットフォームとの食い違い: 要求（出す・隠す）と「最後に当てた状態」から、フレームの末尾に命令の並びを作る
 //      （`take_platform_commands`。欄から欄へ移るときの「隠す → 出す」を畳む）
-//    - Android の古い写しの見張り（EchoBarrier）: 場を始めて IME の本文を差し替えたら、その返り（同じ状態の stateChanged）が
-//      来るまでの写しは前の欄のものなので捨てる（前の欄の打鍵の遅れた写しで新しい欄の本文を上書きしない）。
-//      返りが来ないときのために時間で外す（ECHO_BARRIER_TIMEOUT）
+//    - Android の古い写しの見張り（EchoBarrier）: 場を始めて IME の本文を差し替えた直後（ECHO_BARRIER_TIMEOUT の間）は、
+//      **前の欄の最後の本文と同じ本文の写しだけ**を捨てる（前の欄の遅れた写し〈古い InputConnection の finishComposingText など〉で
+//      新しい欄の本文を上書きしない）。それ以外の写し（新しい欄での最初の打鍵）はすぐ受けて見張りを外す。差し替えた状態と同じ写し（返り）も見張りを外す。
+//      2026-09-30 の実機（Simeji）: 欄の開始 12 回のどれにも 600 ms 以内の返りが来なかった（12 回ともキーボードが隠れている間の差し替え。
+//      時間切れのログは 6 回）ので、以前の「返りが来るまで全部捨てる」作りでは、フォーカスの直後 500 ms 以内の最初の打鍵が抜けていた
+//      （docs/ui_text_input.md §5）。
 // ============================================================
 
 use std::sync::{Mutex, MutexGuard};
@@ -25,7 +28,7 @@ use super::session::{TextInputEvent, TextSession};
 /// ログの頭。
 pub const LOG_PREFIX: &str = "[SEED TEXT INPUT]";
 
-/// IME の本文を差し替えた後、その返りを待つ最長の時間（過ぎたら古い写しの見張りを外す）。
+/// IME の本文を差し替えた後、前の欄の遅れた写しを捨てる最長の時間（過ぎたら古い写しの見張りを外す）。
 pub const ECHO_BARRIER_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// キーボードの状態（画面の画素）。
@@ -69,10 +72,40 @@ struct AppliedState {
 /// Android の古い写しの見張り。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EchoBarrier {
-    /// 返りを待つ状態（差し替えた状態）。
+    /// 差し替えた状態（同じ写しが返ってきたら見張りを外す）。
     expected: Utf16State,
+    /// 差し替える前に IME が持っていた本文（前の欄の最後の本文。この本文の写しだけを捨てる。分からなければ None＝何も捨てない）。
+    stale_text: Option<String>,
     /// 差し替えた時刻。
     since: Instant,
+}
+
+/// Android の写しを見張りに照らした結果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarrierVerdict {
+    /// 見張りが無い・時間切れ・新しい欄の写し: 受ける（見張りは外す）。
+    Accept,
+    /// 差し替えた状態の返り: 当てても変わらないので捨て、見張りを外す。
+    Echo,
+    /// 前の欄の遅れた写し: 捨てる（見張りは残す）。
+    Stale,
+}
+
+impl EchoBarrier {
+    /// 写しを照らす。
+    fn judge(&self, state: &Utf16State, now: Instant) -> BarrierVerdict {
+        if self.expected == *state {
+            return BarrierVerdict::Echo;
+        }
+        let within = now.duration_since(self.since) < ECHO_BARRIER_TIMEOUT;
+        let same_as_previous_field = self.stale_text.as_deref() == Some(state.text.as_str());
+        // 新しい欄の本文と同じ本文なら前の欄の写しと区別できないが、当てても本文は変わらないので受ける
+        if within && same_as_previous_field && state.text != self.expected.text {
+            BarrierVerdict::Stale
+        } else {
+            BarrierVerdict::Accept
+        }
+    }
 }
 
 /// 文字入力のハブ。
@@ -92,6 +125,8 @@ pub struct TextInputHub {
     applied: AppliedState,
     /// Android の古い写しの見張り。
     echo_barrier: Option<EchoBarrier>,
+    /// IME が今持っているはずの本文（最後に受けた写し・最後に差し替えた本文。Android だけ。前の欄の遅れた写しの見分けに使う）。
+    last_ime_text: Option<String>,
     /// PC のキーボードの模擬の高さ（画面の画素。None = 模擬しない）。
     simulated_keyboard_px: Option<i32>,
 }
@@ -255,21 +290,28 @@ impl TextInputHub {
         }
     }
 
-    /// Android の IME の状態の写しを当てる（古い写しの見張りの間は、返りが来るまで捨てる）。
+    /// Android の IME の状態の写しを当てる（古い写しの見張りの間は、前の欄の最後の本文と同じ本文の写しだけを捨てる）。
     fn apply_platform_state(&mut self, state: &Utf16State, now: Instant) {
+        // IME が今持っている本文を覚える（場が無い間の写し〈前の欄の後片付け〉も、次の欄の見張りの手がかりになる）
+        self.last_ime_text = Some(state.text.clone());
         if let Some(barrier) = &self.echo_barrier {
-            if barrier.expected == *state {
-                // 返りが来た（同じ状態なので当てても変わらない）
-                self.echo_barrier = None;
-                return;
+            match barrier.judge(state, now) {
+                BarrierVerdict::Echo => {
+                    // 差し替えた状態の返り（当てても変わらない）
+                    self.echo_barrier = None;
+                    return;
+                }
+                BarrierVerdict::Stale => {
+                    // 前の欄の遅れた写し: 捨てる（本文は出さず、長さだけ）
+                    eprintln!(
+                        "{LOG_PREFIX} 前の欄の遅れた写しを捨てました（長さ {}・UTF-16）",
+                        state.text.encode_utf16().count()
+                    );
+                    return;
+                }
+                // 新しい欄での打鍵・時間切れ: 受けて見張りを外す
+                BarrierVerdict::Accept => self.echo_barrier = None,
             }
-            if now.duration_since(barrier.since) < ECHO_BARRIER_TIMEOUT {
-                // 前の欄の遅れた写し: 捨てる
-                return;
-            }
-            // 返りが来ないまま時間が過ぎた: 見張りを外して受ける
-            eprintln!("{LOG_PREFIX} IME の本文の差し替えの返りが {ECHO_BARRIER_TIMEOUT:?} 来なかったので、見張りを外して受けます");
-            self.echo_barrier = None;
         }
         if let Some(session) = self.session.as_mut() {
             session.apply_platform_state(state);
@@ -298,10 +340,15 @@ impl TextInputHub {
                     let state = session.state().to_utf16();
                     commands.push(PlatformCommand::SetState(state.clone()));
                     session.mark_ime_synced();
-                    self.echo_barrier = expects_echo.then_some(EchoBarrier { expected: state, since: now });
+                    // 見張り: 差し替える前に IME が持っていた本文（前の欄の最後の本文）の写しだけを、しばらく捨てる
+                    let stale_text = self.last_ime_text.take();
+                    self.last_ime_text = Some(state.text.clone());
+                    self.echo_barrier = expects_echo.then_some(EchoBarrier { expected: state, stale_text, since: now });
                     self.applied.editor = Some(editor);
                 } else if session.ime_out_of_sync() {
-                    commands.push(PlatformCommand::SetState(session.state().to_utf16()));
+                    let state = session.state().to_utf16();
+                    self.last_ime_text = Some(state.text.clone());
+                    commands.push(PlatformCommand::SetState(state));
                     session.mark_ime_synced();
                 }
                 // PC: 文字の欄だけ IME を許可する（数字の欄は直接の文字で入る）
@@ -413,27 +460,65 @@ mod tests {
         assert_eq!(commands, vec![PlatformCommand::HideKeyboard, PlatformCommand::AllowIme(false)]);
     }
 
-    /// Android: 本文を差し替えた後は、その返りが来るまで古い写しを捨てる（返りの後は受ける）。時間が過ぎたら受ける。
-    #[test]
-    fn echo_barrier_drops_stale_states() {
-        let mut hub = TextInputHub::default();
-        let start = Instant::now();
-        hub.begin(text_config(), TextEditState::with_caret_at_end("new"));
-        flush(&mut hub, start);
-        let stale = Utf16State { text: "old!".into(), selection_start: 4, selection_end: 4, composition: None };
-        hub.apply_platform_messages(vec![PlatformTextMessage::State(stale.clone())], start);
-        assert_eq!(hub.active().unwrap().state().text, "new", "前の欄の遅れた写しは捨てる");
-        let echo = Utf16State { text: "new".into(), selection_start: 3, selection_end: 3, composition: None };
-        let typed = Utf16State { text: "news".into(), selection_start: 4, selection_end: 4, composition: None };
-        hub.apply_platform_messages(vec![PlatformTextMessage::State(echo), PlatformTextMessage::State(typed)], start);
-        assert_eq!(hub.active().unwrap().state().text, "news", "返りの後の写しは受ける");
+    /// 写しを作る（選択は末尾・変換なし）。
+    fn typed(text: &str) -> Utf16State {
+        let end = text.encode_utf16().count();
+        Utf16State { text: text.into(), selection_start: end, selection_end: end, composition: None }
+    }
 
-        // 返りが来ないまま時間が過ぎたら受ける
-        hub.begin(text_config(), TextEditState::with_caret_at_end("x"));
-        flush(&mut hub, start);
+    /// 前の欄 A で本文 `a_text` を打ち終えてから、新しい欄 B（`b_text`）を始めて命令を出した状態のハブを作る。
+    fn switched_hub(a_text: &str, b_text: &str, now: Instant) -> TextInputHub {
+        let mut hub = TextInputHub::default();
+        hub.begin(text_config(), TextEditState::default());
+        flush(&mut hub, now);
+        hub.apply_platform_messages(vec![PlatformTextMessage::State(typed(a_text))], now);
+        hub.begin(text_config(), TextEditState::with_caret_at_end(b_text));
+        flush(&mut hub, now);
+        hub
+    }
+
+    /// Android: 新しい欄を始めた直後は、前の欄の最後の本文と同じ本文の写し（遅れた写し）だけを捨てる。返りの後の打鍵は受ける。
+    #[test]
+    fn echo_barrier_drops_only_previous_field_states() {
+        let start = Instant::now();
+        let mut hub = switched_hub("old!", "new", start);
+        // 前の欄の遅れた写し（古い InputConnection の finishComposingText など）は捨てる
+        hub.apply_platform_messages(vec![PlatformTextMessage::State(typed("old!"))], start);
+        assert_eq!(hub.active().unwrap().state().text, "new", "前の欄の遅れた写しは捨てる");
+        // 返り（差し替えた状態）と、その後の打鍵は受ける
+        hub.apply_platform_messages(
+            vec![PlatformTextMessage::State(typed("new")), PlatformTextMessage::State(typed("news"))],
+            start,
+        );
+        assert_eq!(hub.active().unwrap().state().text, "news", "返りの後の写しは受ける");
+    }
+
+    /// Android（2026-09-30 の実機の不具合）: 返りが来なくても、新しい欄での最初の打鍵は時間を待たずに受ける。
+    #[test]
+    fn first_keystroke_right_after_focus_is_kept() {
+        let start = Instant::now();
+        let mut hub = switched_hub("19", "", start);
+        let soon = start + Duration::from_millis(10);
+        hub.apply_platform_messages(vec![PlatformTextMessage::State(typed("お"))], soon);
+        assert_eq!(hub.active().unwrap().state().text, "お", "フォーカスの直後の最初の打鍵は抜けない");
+        // 見張りは外れたので、その後に前の欄と同じ本文が来ても（利用者が打ち直した）受ける
+        hub.apply_platform_messages(vec![PlatformTextMessage::State(typed("19"))], soon);
+        assert_eq!(hub.active().unwrap().state().text, "19");
+    }
+
+    /// 見張りの時間が過ぎたら、前の欄と同じ本文の写しも受ける。新しい欄の本文と同じ本文なら捨てない（当てても変わらない）。
+    #[test]
+    fn echo_barrier_times_out_and_ignores_same_text() {
+        let start = Instant::now();
+        let mut hub = switched_hub("old!", "x", start);
         let later = start + ECHO_BARRIER_TIMEOUT + Duration::from_millis(1);
-        hub.apply_platform_messages(vec![PlatformTextMessage::State(stale)], later);
-        assert_eq!(hub.active().unwrap().state().text, "old!");
+        hub.apply_platform_messages(vec![PlatformTextMessage::State(typed("old!"))], later);
+        assert_eq!(hub.active().unwrap().state().text, "old!", "時間切れの後は受ける");
+
+        let mut same = switched_hub("abc", "abc", start);
+        let caret_at_start = Utf16State { text: "abc".into(), selection_start: 0, selection_end: 0, composition: None };
+        same.apply_platform_messages(vec![PlatformTextMessage::State(caret_at_start)], start);
+        assert_eq!(same.active().unwrap().state().focus, 0, "同じ本文は前の欄の写しと区別できないが、受けてよい");
     }
 
     /// キーボードの高さの変化は場へ知らせる（見えていないときの高さは 0 に見せる）。模擬の高さもすぐ変わる。

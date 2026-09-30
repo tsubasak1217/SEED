@@ -20,8 +20,10 @@ namespace SEED.UI;
 //    （文字・数字のキーボード・完了）がエンジンの側で吸収される。
 //  【フォーカス】UiFocus（W2-7）の相手（IFocusable）。欄のタップでフォーカス（タップの位置へカーソル）・長押しで全選択、
 //    欄の外のタップ（押して離すまで動かさない）でフォーカスを外す、完了（Done）でフォーカスを外す（UnfocusOnDone）。
-//    戻る（BackDispatcher の Focus の層。IBackConsumer）: キーボードが出ていれば〈または PC なら〉フォーカスを外して受ける。
-//    Android でキーボードを閉じた後の戻るは、フォーカスを外して後ろの層（ダイアログ・画面）へ回す（受けない）。
+//    戻る（BackDispatcher の Focus の層。IBackConsumer）: 必ずフォーカスを外す。キーボードが出ていれば〈または PC なら〉受ける。
+//    Android でキーボードを閉じた後の戻るは、後ろに受ける層（ダイアログ・シート・覆い・画面のスタック）があれば回し（ダイアログは 2 回目で閉じる）、
+//    無い根では受ける（2 回目はフォーカスを外すだけ・3 回目で背面へ。TextFieldBackPolicy）。欄の外のタップは OS に取り消された指を数えない
+//    （戻るのジェスチャーの指。OutsideTapTracker）。
 //  【見た目】状態 → 見た目は TextFieldLooks（純粋な計算）、置き場は TextFieldLayout（純粋な計算）。点滅は motion.caret_blink ごとに
 //    切り替え、次の切り替えの時刻を Redraw.RequestAfter で申告する（render_policy: on_demand でも点滅する）。
 //  【キーボードを避ける】KeyboardAvoider（スクロールの窓の末尾の余白と送り・ダイアログの持ち上げ）。
@@ -133,10 +135,8 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
     private int _pendingCaret = NoIndex;
     /// <summary>フォーカスを得るときに全選択するか（長押し）。</summary>
     private bool _pendingSelectAll;
-    /// <summary>欄の外で押した（離したときにフォーカスを外すか決める）。</summary>
-    private bool _pressedOutside;
-    /// <summary>押した位置（画面の画素）。</summary>
-    private Vector2 _pressPosition;
+    /// <summary>欄の外のタップの見分け（押してから離すまで。OS に取り消された指は数えない）。</summary>
+    private readonly OutsideTapTracker _outsideTap = new();
     /// <summary>最後に送ったカーソルの矩形（画面の画素）。</summary>
     private Rect _sentCaretRect = Rect.Zero;
     /// <summary>キーボードの避け方。</summary>
@@ -254,14 +254,18 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// 必ずフォーカスを外し、受けるかは TextFieldBackPolicy で決める: キーボードが出ていた・PC（模擬を含む。閉じるソフトキーボードが無い）・
+    /// 後ろに戻るを受ける層が無い（根。回すとアプリが背面へ回る）なら受ける。Android でキーボードを閉じた後の戻るは、後ろに層
+    /// （ダイアログ・シート・覆い・画面のスタック）があればそこへ回す（ダイアログは 2 回目の戻るで閉じる）。
+    /// </remarks>
     public bool HandleBack()
     {
         if (!IsFocused) return false;
         bool keyboardShown = TextInput.KeyboardVisible;
-        // PC（模擬を含む）には閉じるソフトキーボードが無いので、戻る（Esc）はフォーカスを外して受ける
         bool device = SEED.Platform.Platform.IsSupported && !SEED.Platform.Platform.IsSimulated;
         Unfocus();
-        return keyboardShown || !device;
+        return TextFieldBackPolicy.Consumes(keyboardShown, device, BackDispatcher.WouldHandleAfterFocus());
     }
 
     /// <inheritdoc />
@@ -348,7 +352,7 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
         if (_session == 0) return;
         _scroll = 0f;
         _sentCaretRect = Rect.Zero;
-        _pressedOutside = false;
+        _outsideTap.Reset();
         _avoider?.Invalidate();
         ResetBlink();
         ReadState();
@@ -453,18 +457,34 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
         if (float.IsFinite(next)) Redraw.RequestAfter(next);
     }
 
-    /// <summary>欄の外を押して、動かさずに離したらフォーカスを外す（別の欄・ボタンのタップはそちらが先に受ける）。</summary>
+    /// <summary>
+    /// 欄の外を押して、動かさずに離したらフォーカスを外す（別の欄・ボタンのタップはそちらが先に受ける）。
+    /// OS に取り消された指（Android の戻るのジェスチャー・通知の引き下ろしが画面の端の指を奪ったとき）はタップと数えない
+    /// （OutsideTapTracker。2026-09-30 の実機で、戻るのジェスチャーの指が欄の外のタップになり、戻るキーより先にフォーカスが外れた）。
+    /// </summary>
     private void UpdateOutsideTap()
     {
-        if (Input.GetMouseButtonDown(MouseButton.Left))
-        {
-            _pressPosition = Input.MousePosition;
-            _pressedOutside = !ScreenRect().Contains(_pressPosition);
-        }
-        if (!Input.GetMouseButtonUp(MouseButton.Left) || !_pressedOutside) return;
-        _pressedOutside = false;
+        bool pressed = Input.GetMouseButtonDown(MouseButton.Left);
+        bool released = Input.GetMouseButtonUp(MouseButton.Left);
+        if (!pressed && !released) return;
+        var position = Input.MousePosition;
+        var input = new OutsideTapInput(pressed, released, position, ScreenRect().Contains(position), released && AnyTouchCanceled());
         float slopPx = OutsideTapSlopDp * Math.Max(Screen.DpScale, float.Epsilon);
-        if (Vector2.Distance(Input.MousePosition, _pressPosition) <= slopPx) Unfocus();
+        if (_outsideTap.Update(input, slopPx)) Unfocus();
+    }
+
+    /// <summary>
+    /// このフレームに OS に取り消された指があるか（Android は指 0 がマウスの左ボタンを動かし、指の取り消しは左ボタンの離しと同じフレームに
+    /// TouchPhase.Canceled として一覧に残る。PC のマウスの指は取り消されない）。
+    /// </summary>
+    private static bool AnyTouchCanceled()
+    {
+        int count = Input.TouchCount;
+        for (int i = 0; i < count; i++)
+        {
+            if (Input.GetTouch(i).Phase == TouchPhase.Canceled) return true;
+        }
+        return false;
     }
 
     // ── 置き場 ──

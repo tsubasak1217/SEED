@@ -4272,6 +4272,8 @@ using var layer2 = BackDispatcher.AddLayer(450, "my-panel", () => panel.Close(),
                                             wants: () => panel.IsOpen,                                // 副作用の無い「今押されたら受けるか」（予測型の戻るの根の判定）
                                             preview: () => panel);                                    // 任意: 手ぶりの間に縮めて見せる相手（IBackPreviewTarget。null = 縮めない）
 bool handles = BackDispatcher.WouldHandle();     // 今押したらアプリが受けるか（副作用なし。どれかの層が受ける or MoveTaskToBackWhenUnhandled = false）
+bool behind = BackDispatcher.WouldHandleAfterFocus(); // Focus の層より後ろの層（ダイアログ・シート・覆い・画面）が受けるか（副作用なし。背面へ回すのは数えない）。
+                                                  // IBackConsumer の入力欄が「根ではキーボードを閉じた後の戻るも受ける」ために読む（W2-6 の実機の直し）
 BackDispatcher.Dispatched += r => { };            // r.Handled・r.Layer
 BackDispatcher.MoveTaskToBackWhenUnhandled = true; // どの層も受けなければ Platform.App.MoveTaskToBack()（既定）
 
@@ -4484,8 +4486,8 @@ scroll.EndInset = new Vector2(0f, 300f);
 |---|---|
 | 欄のタップ | フォーカス（タップの位置へカーソル）。フォーカスの間のタップはカーソルを移し、閉じられていたキーボードを出し直す |
 | 欄の長押し | すべてを選ぶ |
-| 欄の外のタップ（押して動かさずに離す） | フォーカスを外す（キーボードが隠れる）。スクロールのドラッグでは外さない。別の欄・ボタンのタップはそちらが先に受ける |
-| 戻る（Android の戻る・PC の Esc） | 戻るの段（BackDispatcher）の Focus の層: キーボードが出ていれば（PC は常に）フォーカスを外して受ける。Android でキーボードを閉じた後の戻るは、フォーカスを外して後ろの層（ダイアログ・画面）へ回す |
+| 欄の外のタップ（押して動かさずに離す） | フォーカスを外す（キーボードが隠れる）。スクロールのドラッグでは外さない。別の欄・ボタンのタップはそちらが先に受ける。OS に取り消された指（`TouchPhase.Canceled`。Android の戻るのジェスチャーが端の指を奪ったときなど）はタップと数えない |
+| 戻る（Android の戻る・PC の Esc） | 戻るの段（BackDispatcher）の Focus の層: 必ずフォーカスを外す。キーボードが出ていれば（PC は常に）受ける。Android でキーボードを閉じた後の戻る（1 回目は IME が閉じるので 2 回目）は、後ろに戻るを受ける層（ダイアログ・シート・覆い・画面のスタック）があればそこへ回し（ダイアログが閉じる）、無い根の画面では受ける（アプリは背面へ回らない。3 回目で背面へ） |
 | PC のキー | 文字（IME の変換・確定を含む）・Backspace・Delete・←→（Shift で選択）・Home・End・Enter（アクション）・Ctrl+A・Ctrl+C/X/V（禁止の欄では止める）。変換中のキーは IME が受ける |
 | Android | 文字・数字のキーボード（EditorInfo）、変換中の文字と確定、完了のボタン（onEditorAction）、キーボードの表示と高さ（WindowInsets）。数字の欄でも IME の側でかなへ切り替えられるので、エンジンが数字以外を捨てる |
 
