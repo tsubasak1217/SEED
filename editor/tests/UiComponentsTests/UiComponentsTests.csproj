@@ -38,6 +38,9 @@
     明暗の対応と重ねる順、明暗の選び方の規則、色の補間と進み具合、種の色の配色（コントラストの約束）、見やすさ、見本のテーマ、
     トークンの表の完全性（定数〈反射〉・表・既定のテーマの揃い）と docs/ui_theme.md の表の一致。
     表の作り直し: このテストを引数「update-docs のオプション ＋ docs/ui_theme.md」で走らせる（Program.cs の UpdateDocsOption）。
+    遷移の時計の直し（2026-09-30）: 動きの 1 フレームの上限・始めのフレームを数えない（MotionStep）、入ってくる中身の落ち着き待ち
+    （ContentSettleGate）、画面の出入り 1 回の時計（TransitionClock）と、Wake or Pay の編集画面の重いフレームの列での直す前との比べ
+    （TransitionClockTests.cs。対象は Navigation/Model/*.cs の取り込みに含まれる）。
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

@@ -19,10 +19,13 @@ namespace SEED.UI;
 //  【積み下ろし】Push・Pop・Replace・PopToRoot・SetRoot は並び（ScreenStackModel）をすぐ変え、出入りの計画を順に動かす。
 //  動いている途中に次の操作が来たら、今の動きを終わりまで飛ばして次を始める。作る画面の実体（枠・中身）は 2 フレームで
 //  できあがる（枠を作る → 枠の Body の下へ中身を作る）。できあがるまで枠は隠しておく（最初の 1 フレームがちらつかない）。
+//  【出入りの時計】（遷移の時計の直し。2026-09-30。TransitionClock）入ってくる画面が落ち着く（画面のスクリプトへ Enter を届けて
+//  1 フレーム描いた。ContentSettleGate）まで時計を止め、動かし始めたフレームの経過は数えず、1 フレームで足す経過に上限
+//  （MotionStep.MaxFrameSeconds）を置く。組み立て・Enter の重いフレームで動きが飛ばず、その分だけ長くかかる。
 //
 //  【見せ方・遮り・描かない】
 //    - 段 i の枠のレイヤーの底上げ = i × LayerStep（上の画面の板が下の画面の文字より手前に出る。UiLayers）
-//    - 出入りの間は Blocker を見せて入力を止める（動いている画面のボタンを押させない）
+//    - 出入りの間は Blocker を見せて入力を止める（動いている画面のボタンを押させない。入ってくる画面が落ち着くのを待つ間も）
 //    - 落ち着いたら、不透明な上の画面より下の枠を隠す（描かない・当たり判定に出ない＝入力を受けない）。
 //      KeepState = false の画面は実体を手放し、戻ってきたら作り直す
 //    - 動いている間だけ Redraw.KeepAlive（on_demand でも動きの途中で止まらず、終わったら 10 フレームで止まる）
@@ -108,6 +111,8 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         public int WaitFrames;
         public int LookupFrames;
         public bool Entered;
+        /// <summary>落ち着いたか（Enter を届けて 1 フレーム描いた。出入りの時計を進めてよいか。遷移の時計の直し）。</summary>
+        public ContentSettleGate Settle;
         public FocusScope? Scope;
         public UiScreen? Screen;
     }
@@ -116,9 +121,10 @@ public sealed partial class ScreenStack : UiWidget, INavigator
     private sealed class Run
     {
         public required ScreenChange Change { get; init; }
+        /// <summary>始まりの置き方を当てたか（実体ができあがった。時計は入ってくる画面が落ち着くまで止まっていることがある）。</summary>
         public bool Started;
-        public float Elapsed;
-        public float Duration;
+        /// <summary>動きの時計（落ち着くまで止める・動かし始めたフレームは数えない・1 フレームの上限。Begin で作り直す）。</summary>
+        public TransitionClock Clock = new(0f);
         public UiCurve Curve;
         public float Parallax;
         /// <summary>予測型の戻るのプレビューで見せていた下の画面へ戻る（戻る画面は視差の位置から動かさず、最初から見せたまま。3b）。</summary>
@@ -365,6 +371,9 @@ public sealed partial class ScreenStack : UiWidget, INavigator
                     else WaitBuild(instance);
                     break;
                 case BuildPhase.Ready:
+                    // 落ち着き待ちのフレームを数えてから画面のスクリプトを探す（このフレームに届けた Enter は次のフレームから数える。
+                    // ContentSettleGate の約束の順）
+                    instance.Settle.Frame();
                     LookupScreen(instance);
                     break;
             }
@@ -383,6 +392,8 @@ public sealed partial class ScreenStack : UiWidget, INavigator
     /// <summary>画面のスクリプト（UiScreen）を探し、見つかったら渡す値を届ける（1 回）。</summary>
     private void LookupScreen(Instance instance)
     {
+        // 中身を作れなかった画面は Enter を届ける相手がいない（出入りの時計を待たせない）
+        if (!instance.Content.IsValid) instance.Settle.MarkEntered();
         if (instance.Entered || instance.LookupFrames > MaxScreenLookupFrames || !instance.Content.IsValid) return;
         instance.LookupFrames++;
         var screen = Of<UiScreen>(instance.Content);
@@ -396,6 +407,8 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         screen.Navigator = this;
         screen.Handle = instance.Handle;
         instance.Entered = true;
+        // 出入りの時計は、このフレーム（Enter の中の変更）と画面のスクリプトの最初の Update を描いた後から進める
+        instance.Settle.MarkEntered();
         screen.Enter(instance.Entry.Args);
         // 既に落ち着いていて上の画面で、スタックが見えている（選んでいないタブではない）なら、見えたことも知らせる
         if (_current is null && _runs.Count == 0 && _model.Top?.Id == instance.Entry.Id && NavigatorRegistry.IsActiveNode(Owner))
@@ -417,14 +430,18 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         _current = run;
         var change = run.Change;
         if (change.Incoming is { } incoming && !_instances.ContainsKey(incoming.Id)) CreateInstance(incoming);
-        run.Duration = NavMotion.Duration(Theme, change.Transition);
+        run.Clock = new TransitionClock(NavMotion.Duration(Theme, change.Transition));
         run.Curve = NavMotion.Curve(Theme, change.Transition);
         run.Parallax = NavMotion.Parallax(Theme);
     }
 
-    /// <summary>出入りを 1 フレーム進める（実体ができあがるまで待つ）。</summary>
+    /// <summary>
+    /// 出入りを 1 フレーム進める: 実体ができあがるまで待ち（できあがったら始まりの置き方）、入ってくる画面が落ち着くまで時計を止め、
+    /// 動かし始めたフレームは数えず、1 フレームの経過に上限を置いて進める（TransitionClock）。
+    /// </summary>
     private void Step(Run run, float dt)
     {
+        // 実体（枠・中身）ができあがるまで待つ。できあがったら始まりの置き方・遮る板
         if (!run.Started)
         {
             if (!InvolvedReady(run.Change))
@@ -434,14 +451,21 @@ public sealed partial class ScreenStack : UiWidget, INavigator
             }
             Start(run);
         }
-        run.Elapsed += dt;
-        if (run.Duration <= 0f || run.Elapsed >= run.Duration)
+
+        // 時計: 入ってくる画面が落ち着くまで止める（待つ間も描き続けて、Enter の後のフレームを描かせる）
+        if (!run.Clock.Tick(IncomingSettled(run.Change), dt))
+        {
+            Redraw.Request();
+            return;
+        }
+        if (run.Clock.IsDone)
         {
             Finish(run);
             return;
         }
-        ApplyPoses(run, run.Curve.Evaluate(run.Elapsed / run.Duration));
-        Redraw.KeepAlive(run.Duration - run.Elapsed + KeepAliveMargin);
+        ApplyPoses(run, run.Curve.Evaluate(run.Clock.Linear));
+        // 残りは動きの時計で数える（重いフレームで実時間が延びても、毎フレーム延ばし直すので途中で止まらない）
+        Redraw.KeepAlive(run.Clock.Remaining + KeepAliveMargin);
     }
 
     /// <summary>入ってくる・出ていく画面の実体ができあがったか。</summary>
@@ -451,7 +475,17 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         return true;
     }
 
-    /// <summary>動きの始まり: 底上げ・最初の置き方・見せる・遮る板を出す。</summary>
+    /// <summary>
+    /// 入ってくる画面が落ち着いたか（Enter を届けて 1 フレーム描いた・画面のスクリプトの無い画面は待つ上限を過ぎた。ContentSettleGate）。
+    /// 前から居る画面（下ろして戻る下の画面）はとうに落ち着いているので待たない。入ってくる画面の実体が無ければ待たない。
+    /// </summary>
+    private bool IncomingSettled(ScreenChange change) => Get(change.Incoming) is not { } incoming || incoming.Settle.IsSettled;
+
+    /// <summary>
+    /// 動きの始まり（実体ができあがったフレーム。時計は入ってくる画面が落ち着くまで止まる）: 底上げ・最初の置き方・見せる・遮る板を出す。
+    /// 動きの無い出入り（None・長さ 0）は入れ替えの姿を当てず（出ていく画面を見せたまま）、時計が動いたフレームの Finish で入れ替える
+    /// （落ち着く前の、Enter を受けていない画面を一瞬見せない）。
+    /// </summary>
     private void Start(Run run)
     {
         run.Started = true;
@@ -474,10 +508,11 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         // 幕と遮る板はすべての画面より手前
         NavNode.SetBias(_veil, UiLayers.ScreenBias(top + 1, step));
         NavNode.SetBias(_blocker, UiLayers.ScreenBias(top + 1, step) + 1);
-        bool animated = TransitionMath.IsAnimated(change.Transition) && run.Duration > 0f;
-        NavNode.SetVisible(_blocker, animated);
+        bool animated = TransitionMath.IsAnimated(change.Transition) && run.Clock.Duration > 0f;
+        // 遮る板は動きの無い出入りでも出す（入ってくる画面が落ち着くのを待つ間、並びの変わった後ろの画面を押させない）
+        NavNode.SetVisible(_blocker, true);
         NavNode.SetVisible(_veil, animated && change.Transition == NavTransition.Fade);
-        ApplyPoses(run, 0f);
+        if (animated) ApplyPoses(run, 0f);
     }
 
     /// <summary>進み具合の置き方を当てる。</summary>

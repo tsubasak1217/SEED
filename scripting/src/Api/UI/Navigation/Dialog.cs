@@ -90,6 +90,8 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
     private readonly System.Collections.Generic.Dictionary<DialogResult, Button> _buttons = new();
     /// <summary>出入りの動き（0 = 閉じた・1 = 開いた）。</summary>
     private UiTween _open = UiTween.At(0f);
+    /// <summary>出入りの動きの 1 フレームの進め（入る動きを始めたフレームは数えない・上限。遷移の時計の直し）。</summary>
+    private MotionStep _step;
     /// <summary>開き具合から決めた札の倍率（出入りの動き。1 = 開いた）。</summary>
     private float _openScale = NoScale;
     /// <summary>予測型の戻るのプレビューの倍率（W2 の手直し 3b。1 = プレビューなし）。確定した後も出終わるまで保つ。</summary>
@@ -117,6 +119,9 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
         NavNode.SetVisible(Owner, true);
         BeginEnter();
         _open.Retarget(1f, Theme.Number(NavTokens.MotionDialog));
+        // 入る動きを始めたフレーム（OnStart と同じフレームの Update で最初に進める）の経過は数えない。そこには前のフレームの
+        // ダイアログの組み立ての時間が入っている（docs/ui_navigation.md §2「出入りの時計」）
+        _step.SkipNext();
     }
 
     /// <summary>
@@ -344,7 +349,8 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
     {
         Bind();
         if (!_open.IsRunning) return;
-        ApplyOpen(_open.Advance(dt));
+        // 1 フレームで進める時間は上限まで（重いフレームで出入りが飛ばない。入る動きの始めのフレームは 0）
+        ApplyOpen(_open.Advance(_step.Next(dt)));
         Redraw.KeepAlive(_open.Remaining);
         if (_open.IsRunning) return;
         if (Phase == ModalPhase.Entering) EndEnter();

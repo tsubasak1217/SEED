@@ -297,6 +297,9 @@ public static class Program
         // ── 画面の組み立て（W2-7）───────────────────────────────
         NavigationTests.Register(h, theme);
 
+        // ── 遷移の時計（落ち着くまで待つ・始めのフレームを数えない・1 フレームの上限。2026-09-30）──
+        TransitionClockTests.Register(h);
+
         // ── ダイアログの大きさと動き（W2 の手直し P2-1）─────────────
         DialogTests.Register(h, theme);
 

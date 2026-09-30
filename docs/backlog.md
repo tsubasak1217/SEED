@@ -3517,7 +3517,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   フォーカスの層を飛ばして戻る手段か、docs/ui_text_input.md §8 に書く。
   (5) **欄ごとに余白を決められない**（`size.field_padding` はテーマ全体。余白 16 では幅 112 に「250000」の最後の桁が欠けた〈確認済み〉。12 でも 7 桁は欠ける見込み〈推定〉）。
   (6) **選択を禁止する設定が無い**（Flutter の `enableInteractiveSelection: false` に当たるもの。コピーは止まるので実害は小さい）。
-- [ ] **Wake or Pay の実機確認（2026-09-30 11:40〜15:00、Pixel 6a）で見つかった SEED 側の課題**（記録: `D:\SEED_projects\WakeOrPay\docs\device_checks6-09-30_w3_device.md`）。
+- [ ] **Wake or Pay の実機確認（2026-09-30 11:40〜15:00、Pixel 6a）で見つかった SEED 側の課題**（記録: `D:\SEED_projects\WakeOrPay\docs\device_checks\2026-09-30_w3_device.md`）。
   (1) **大きな文字が粗く見える**（利用者の指摘。鳴動画面の時刻など 150 px 超）。原因: SDF の字形を `SDF_EM_PX = 64` の固定解像度で、二値化したビットマップから
   距離場を焼いて拡大しているため、輪郭が 64 px の格子に丸められ、2.5 倍以上の拡大で角が丸まり曲線が波打つ（`runtime/src/engine/core/font/sdf.rs`・`rasterizer.rs`。コードで確認）。
   案: 大きさの段を 2 つ持つ（例: 64 と 192。大きな文字だけ高い解像度で焼く。アトラスの消費に注意）／輪郭（ベジェ）から直接距離場を作る（品質は上、手間は大）。
@@ -3527,6 +3527,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **画面の遷移の途中で背面へ回ると遷移が凍ったまま残る**（`ScreenHandle` は下ろし終えて実体を消すときに初めて IsClosed になるので、アプリが「閉じる途中」を
   「出ている」と数えて再鳴動で鳴動画面を出し直せなかった。直すのは WakeOrPay 側だが、SEED 側の案: `ScreenHandle.IsClosing` を出す／背面へ回るとき進行中の遷移を即座に終える。
   docs/ui_navigation.md に「背面へ回ると遷移は凍る」ことを書く）。
+  → **2026-09-30 に docs/ui_navigation.md §2「出入りの時計」へ「背面へ回ると遷移は凍る（前面へ戻ると続きから。閉じる途中の画面は動き終えるまで IsClosed にならない）」を書いた**
+  （遷移の時計の直し）。`ScreenHandle.IsClosing`・背面へ回るとき進行中の遷移を終える、は未着手（Wake or Pay は W3-2c で自分の側を直した）。
   (5) **端末の触感の設定で USAGE_MEDIA の振動が捨てられる**（`Haptics.Vibrate` はシステムまで届いていた〈`ignored_for_settings`〉。この端末はタップとメディアの振動が OFF）。
   仕様として「利用者の設定に従う」でよいか、UI の触感を USAGE_TOUCH にするか（同じく設定に従う）を決めて docs/scripting_api.md に書く。
   → **2026-09-30 20:44〜21:11 の再確認（W3-2c の直し入り。利用者の手＋adb の自動操作）**: スヌーズ後の再鳴動（ロック中・解除中・冷えた起動）、鳴動中の通知のタップ、
@@ -3534,3 +3536,15 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   鳴動画面の時刻に 5〜12 秒重なる**（文言「アプリを開いて解除してください」もこの場面に合わない。前面のときはヘッドアップを抑えるか、文言を変える）。
   (7) 鳴動を止めるたびに `LegacyMessageQueue … MediaPlayer$EventHandler … dead thread` の警告（害は見えない。RingLoopPlayer の解放の順）。
   (8) 背面にいる間 `[PLAY_WD] stuck at stage=frame_end` が 5 秒ごとに出る（止まっているのを「詰まった」と数えている〈推測〉。背面では見張りを止める）。
+- [x] **一覧 → 編集画面へ移るとき右から入る動きが見えずパッと出る（SEED の `ScreenStack` の出入りの時計）** — 2026-09-30（Wake or Pay の実機確認の 1-a。W3-2c の報告で
+  SEED 側と切り分け: 入ってくる画面ができあがったフレームから経過を足すので、組み立て・`OnScreenEnter` の重いフレームの時間で動きが見える前に終わる。PC の `nav,probe` で撮影を
+  並べた 1 回目は最初に見えるフレームで 8 割が過ぎ、実機は 4 フレームが平均 90 ms 前後で `OnScreenEnter` が積み終わりの後に来ていた。記録:
+  `D:\SEED_projects\WakeOrPay\docs\device_checks\2026-09-30_w3_device.md`・README の W3-2c の節）。
+  → **2026-09-30 に済**（遷移の時計の直し。docs/ui_navigation.md §2「出入りの時計」）: 入ってくる画面が落ち着く（Enter を届けて 1 フレーム描いた。`ContentSettleGate`）まで時計を
+  止め、動かし始めたフレームの経過は数えず、1 フレームで足す経過を 1/30 秒（`MotionStep.MaxFrameSeconds`）までにした（`TransitionClock`・`ScreenStack.Step`）。
+  ダイアログ・上からの覆い（中身の Enter も待つ）・トーストにも上限と始めのフレームの規則を当てた。PC の同じ測定で、撮影を並べた 1 回目の途中の姿 3 枚（x = 0.24 から）→
+  11 枚（x = 0.962 から）、撮影なしは 15・16 枚 → 17 枚。**実機（Pixel 6a）での再確認は残り**（`MaxWaitFrames` 10・「Enter の後 1 フレーム」は PC の測定から決めた値）。
+- [ ] **下からのシート（`BottomSheet`）の開く・閉じる動きに出入りの時計の規則が効いていない** — 2026-09-30（遷移の時計の直しで、当てられなかった所として確認）。
+  動きは Rust の `CanvasScroll.ScrollTo`（`motion.sheet` 0.25 秒・easeInOut）がスクロールの物理の時計で進めるので、C# から「始めのフレームを数えない・1 フレームの上限
+  （1/30 秒）」を置けない。中身（`SheetOptions.ContentPrefab`）の組み立てが重いと開く動きが飛ぶ見込み（推論。Wake or Pay は今は使っていない）。案: `ScrollTo` に
+  1 フレームの上限を足す（Rust の `canvas_scroll` の補間）か、シートの開閉を C# の `UiTween` で位置を書いて動かす。関連: `scripting/src/Api/UI/Navigation/BottomSheet.cs`・docs/ui_navigation.md §2・§13。

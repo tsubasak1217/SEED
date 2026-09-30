@@ -68,6 +68,10 @@ public sealed class TopSheet : ModalPlane
     private UiTween _settle = UiTween.At(0f);
     /// <summary>準備を待ったフレーム。</summary>
     private int _prepareFrames;
+    /// <summary>中身の落ち着き待ち（中身の画面のスクリプトへ Enter を届けて 1 フレーム描くまで降りない。遷移の時計の直し）。</summary>
+    private ContentSettleGate _contentSettle;
+    /// <summary>動きの 1 フレームの進め（上限。降りる動きは準備のフレームで始め、次のフレームから進めるので始めのフレームは元から数えない）。</summary>
+    private MotionStep _step;
     /// <summary>予測型の戻るのプレビューで上の辺を留めるずらし（キャンバスの単位・下が正。3b。引いたずらしと足して当てる）。</summary>
     private float _previewOffset;
 
@@ -91,6 +95,8 @@ public sealed class TopSheet : ModalPlane
     protected override void OnPlaneUpdate(float dt)
     {
         Bind();
+        // 中身ができあがった後のフレームを、Enter を届けるより前に数える（ContentSettleGate の約束の順）
+        if (_contentRoot.IsValid && NavNode.IsBuilt(_contentRoot)) _contentSettle.Frame();
         EnterContent();
         switch (Phase)
         {
@@ -107,11 +113,14 @@ public sealed class TopSheet : ModalPlane
         }
     }
 
-    /// <summary>準備: 中身ができあがったら見せて降りる（中身の高さが並びに入ってから動かす）。</summary>
+    /// <summary>
+    /// 準備: 中身ができあがり、中身の画面のスクリプトへ Enter を届けて 1 フレーム描いたら（画面のスクリプトの無い中身は待つ上限の後）
+    /// 見せて降りる（中身の高さが並びに入り、中身の組み立ての重いフレームが済んでから動かす。ContentSettleGate）。
+    /// </summary>
     private void Prepare()
     {
         Redraw.Request();
-        bool contentReady = !_contentRoot.IsValid || NavNode.IsBuilt(_contentRoot);
+        bool contentReady = !_contentRoot.IsValid || (NavNode.IsBuilt(_contentRoot) && _contentSettle.IsSettled);
         if (!contentReady && ++_prepareFrames <= MaxPrepareFrames) return;
         NavNode.SetVisible(Owner, true);
         BeginEnter();
@@ -121,7 +130,8 @@ public sealed class TopSheet : ModalPlane
     /// <summary>降りる・上がる動き。</summary>
     private void Animate(float dt)
     {
-        ApplyOpen(_open.Advance(dt));
+        // 1 フレームで進める時間は上限まで（重いフレームで降りる・上がる動きが飛ばない）
+        ApplyOpen(_open.Advance(_step.Next(dt)));
         Redraw.KeepAlive(_open.Remaining);
         if (_open.IsRunning) return;
         if (Phase == ModalPhase.Entering) EndEnter();
@@ -132,7 +142,7 @@ public sealed class TopSheet : ModalPlane
     private void Settle(float dt)
     {
         if (_dragging || !_settle.IsRunning) return;
-        _dragOffset = _settle.Advance(dt);
+        _dragOffset = _settle.Advance(_step.Next(dt));
         ApplyDrag();
         Redraw.KeepAlive(_settle.Remaining);
     }
@@ -210,6 +220,8 @@ public sealed class TopSheet : ModalPlane
     {
         if (_contentEntered || !_contentRoot.IsValid || Of<UiScreen>(_contentRoot) is not { } screen) return;
         _contentEntered = true;
+        // 降りる動きは、このフレーム（Enter の中の変更）と中身のスクリプトの最初の Update を描いた後から
+        _contentSettle.MarkEntered();
         screen.Enter(_options.Args);
     }
 

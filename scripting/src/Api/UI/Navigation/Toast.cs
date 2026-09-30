@@ -43,6 +43,8 @@ public sealed class Toast : UiWidget
     private UiTween _settle = UiTween.At(0f);
     /// <summary>引いているか。</summary>
     private bool _dragging;
+    /// <summary>動きの 1 フレームの進め（入る動きを始めたフレームは数えない・上限。遷移の時計の直し）。</summary>
+    private MotionStep _step;
 
     /// <summary>
     /// シーンの ToastHost へトーストを出す（ToastHost が無ければ null・警告）。
@@ -70,6 +72,8 @@ public sealed class Toast : UiWidget
         ApplyPose();
         NavNode.SetVisible(Owner, true);
         _enter.Retarget(1f, Theme.Number(NavTokens.MotionToast));
+        // 入る動きを始めたフレーム（OnStart と同じフレームの Update で最初に進める）の経過は数えない（組み立ての時間が入っている）
+        _step.SkipNext();
     }
 
     /// <summary>出ていく（direction: −1 = 左・1 = 右へスワイプ、0 = 下へ）。</summary>
@@ -85,7 +89,9 @@ public sealed class Toast : UiWidget
     /// <inheritdoc />
     protected override void OnWidgetUpdate(float dt)
     {
-        float step = Time.UnscaledDeltaTime;
+        // 1 フレームで動きに足す時間は上限まで（重いフレームで入る・出る動きが飛ばない。入る動きの始めのフレームは 0）。
+        // 見せる時間（2 秒・3.5 秒）は ToastHost が実時間で数えるので、ここの上限では延びない
+        float step = _step.Next(Time.UnscaledDeltaTime);
         bool moving = false;
         if (_enter.IsRunning)
         {
