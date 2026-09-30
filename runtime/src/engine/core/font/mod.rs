@@ -52,6 +52,9 @@ pub mod text_layout_cache;
 pub mod text_gpu_stream;
 /// テキストの自動折り返し（枠幅に収める行分割・簡易禁則。GPU 非依存の純関数）
 pub mod text_wrap;
+/// 文字の塗り方（text.wgsl）の CPU の写しと試験（細い横画が副画素の位置で消えないこと。2026-10-01）
+#[cfg(test)]
+mod text_aa_tests;
 
 use ab_glyph::{Font, InvalidFont, PxScale, ScaleFont};
 use std::collections::HashSet;

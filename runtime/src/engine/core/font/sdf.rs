@@ -33,11 +33,31 @@ pub const SDF_SPREAD_EM: f32 = SDF_SPREAD_PX as f32 / SDF_EM_PX;
 /// 距離場は内側 0.5→1.0、外側 0.5→0.0 の 2 方向へ広がるのでスプレッドの 2 倍。
 pub const SDF_RANGE_EM: f32 = 2.0 * SDF_SPREAD_EM;
 
-/// アウトラインとして表現できる SDF 距離の上限。
+/// 画素の中心から画素の縁までの距離（SDF_EM_PX 空間のピクセル = テクセル）。
 ///
-/// 0.5 = スプレッド一杯（テクスチャ値 0.0 の位置）。これ以上外側の距離は
-/// 焼かれていないので、太さを増やしても縁は広がらない。
-pub const MAX_OUTLINE_SDF: f32 = 0.5;
+/// 距離場の値は「字の縁（2 値にしたビットマップの内側と外側の画素の**境目**）までの距離」を表す
+/// （2026-10-01 から。docs/ui_components.md §12）。距離変換が返すのは「反対側の画素の**中心**までの距離」なので、
+/// そこからこの半画素を引いて縁までの距離にする。引かないと縁の前後 1 テクセルだけ値の傾きが 2 倍になり、
+/// 画面の画素の幅で平滑化したときに縁が硬く・細い線が細く出る（縁取り・太さも半テクセル細かった）。
+pub const SDF_PIXEL_CENTER_TO_EDGE_PX: f32 = 0.5;
+
+/// SDF の値で字の縁を表す値 (= 0.5)。内側はこれより大きく（1.0 まで）、外側は小さい（0.0 まで）。
+///
+/// シェーダー（text.wgsl の `TEXT_SDF_EDGE`）と同じ値。縁から 0 / 1 までの値の幅もこの値に等しい。
+pub const SDF_EDGE_VALUE: f32 = 0.5;
+
+/// 1 テクセル（SDF_EM_PX 空間の 1 ピクセル）進むと SDF の値がいくつ変わるか (= 0.0625)。
+///
+/// エッジ 0.5 からスプレッドぶん離れると 0 / 1 に届く。シェーダー（text.wgsl の `TEXT_SDF_VALUE_PER_TEXEL`）と同じ式。
+pub const SDF_VALUE_PER_TEXEL: f32 = SDF_EDGE_VALUE / SDF_SPREAD_PX as f32;
+
+/// アウトラインとして表現できる SDF 距離の上限 (= 0.46875)。
+///
+/// グリフのクアッドの端（パディングの外周の画素の中心）は字の縁から
+/// 少なくとも `スプレッド − 半画素` 離れている。そこまでを上限にする（これより太い縁取りは
+/// クアッドの端で切れて四角く見えるので頭打ちにする）。距離を縁から測るようにした 2026-10-01 より前の
+/// 上限 0.5（中心から測った 8 テクセル = 縁から 7.5 テクセル）と同じ所まで塗る。
+pub const MAX_OUTLINE_SDF: f32 = (SDF_SPREAD_PX as f32 - SDF_PIXEL_CENTER_TO_EDGE_PX) * SDF_VALUE_PER_TEXEL;
 
 // ─── 変換ヘルパー ────────────────────────────────────────────
 
@@ -47,7 +67,7 @@ pub const MAX_OUTLINE_SDF: f32 = 0.5;
 /// - `font_size_px`    : そのテキストのフォントサイズ（px）
 ///
 /// 返り値は「エッジ(0.5) から外側へ何テクスチャ単位ぶん広げるか」。
-/// 0.5 = スプレッド一杯（これ以上太くできない上限）。
+/// `MAX_OUTLINE_SDF`（= 0.46875。クアッドの端まで）がこれ以上太くできない上限。
 /// `font_size <= 0` や `width <= 0` は 0（＝縁取りなし）を返す。
 /// 任意の px 量を SDF テクスチャ単位へ変換する（**符号つき**）。
 ///
@@ -87,6 +107,10 @@ mod tests {
     fn sdf_constants_are_consistent() {
         assert!((SDF_SPREAD_EM - 0.125).abs() < 1e-6);
         assert!((SDF_RANGE_EM - 0.25).abs() < 1e-6);
+        assert!((SDF_VALUE_PER_TEXEL - 0.0625).abs() < 1e-6);
+        // 縁取りの上限 = 縁から 7.5 テクセル（パディングの外周の画素の中心まで）
+        assert!((MAX_OUTLINE_SDF - 0.46875).abs() < 1e-6);
+        assert!(MAX_OUTLINE_SDF < 0.5, "縁取りの上限はテクスチャ値 0 より内側（クアッドの端で切れない）");
     }
 
     /// 太さ 0 / サイズ 0 は縁取りなし（0）。
@@ -97,7 +121,7 @@ mod tests {
         assert_eq!(outline_px_to_sdf(4.0, 0.0), 0.0);
     }
 
-    /// スプレッドを超える太さは 0.5 で頭打ちになる。
+    /// スプレッドを超える太さは MAX_OUTLINE_SDF（クアッドの端まで）で頭打ちになる。
     #[test]
     fn outline_clamps_at_spread_limit() {
         // font_size 24 で SDF_RANGE_EM(=0.25) 相当 = 6px。その倍を渡す。
@@ -123,7 +147,7 @@ mod tests {
         let a = px_to_sdf(2.0, 40.0);
         let b = px_to_sdf(-2.0, 40.0);
         assert!((a + b).abs() < 1e-6, "正負対称");
-        // 0.125em（= スプレッド）を超えると ±0.5 で頭打ち。
+        // 0.125em（= スプレッド）を超えると ±MAX_OUTLINE_SDF で頭打ち。
         assert!((px_to_sdf(1000.0, 40.0) - MAX_OUTLINE_SDF).abs() < 1e-6);
         assert!((px_to_sdf(-1000.0, 40.0) + MAX_OUTLINE_SDF).abs() < 1e-6);
     }

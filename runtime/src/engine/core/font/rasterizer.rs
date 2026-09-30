@@ -50,22 +50,27 @@ pub fn rasterize_glyph_bitmap(
 
 /// ビットマップ（閾値 128）から Single-channel SDF を生成する。
 ///
-/// 出力値:
-/// - `255 (1.0)` = 内側で `spread` ピクセル以上離れている
-/// - `128 (0.5)` = エッジ上
-/// - `0   (0.0)` = 外側で `spread` ピクセル以上離れている
+/// 出力値（**字の縁までの距離**。縁 = 2 値にしたビットマップの内側と外側の画素の境目）:
+/// - `255 (1.0)` = 内側で縁から `spread` ピクセル以上離れている
+/// - `128 (0.5)` = 縁の上（内側と外側の隣り合う画素のちょうど真ん中）
+/// - `0   (0.0)` = 外側で縁から `spread` ピクセル以上離れている
+///
+/// 値は 1 ピクセルあたり `0.5 / spread` で一定に変わる（`sdf::SDF_VALUE_PER_TEXEL`）。シェーダー（text.wgsl）は
+/// この傾きを前提に「画面の 1 画素ぶんの値の変化」を UV の微分から求めて平滑化するので、傾きが揃っていることが要る。
 ///
 /// `spread` はサーチ半径（ピクセル）。大きいほど遠くまで勾配が続く。
 ///
-/// 【2026-09-28 から厳密な距離変換（sdf_edt.rs）で求める】以前の総当たり（各画素のまわり ±spread を全部見る）と
+/// 【2026-09-28 から厳密な距離変換（sdf_edt.rs）で求める】総当たり（各画素のまわりを全部見る）と
 /// 全画素で同じ値になる（理由は sdf_edt.rs の冒頭。下のテストが実際のグリフで確かめる）。
-/// 「反対側の画素までの二乗距離」を spread²+1 で切り詰めるところまでが総当たりと同じ意味で、以降の式は総当たりのまま。
+///
+/// 【2026-10-01 から縁までの距離にした（docs/ui_components.md §12）】距離変換が返す「反対側の画素の中心までの距離」から
+/// 半画素（`SDF_PIXEL_CENTER_TO_EDGE_PX`）を引く。以前は中心までの距離のままで、縁の前後 1 ピクセルだけ傾きが 2 倍・
+/// ほかは縁から半画素遠い値だった（0.5 の等値線の位置＝字の形は変わらない。縁取り・太さは半ピクセル細かった）。
 pub fn generate_sdf(bitmap: &[u8], width: u32, height: u32, spread: u32) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
-    let spread_f = spread as f32;
-    // 総当たりが「見つからなかった」ときに使っていた値（spread² より 1 大きい）。これ以上の距離は同じ値に切り詰める
-    let not_found_sq = i64::from(spread) * i64::from(spread) + 1;
+    // これより遠い画素は縁までの距離が spread を超えて値が変わらない（1.0 / 0.0）ので切り詰める
+    let far_sq = sdf_far_distance_sq(spread);
     let inside_at = |i: usize| bitmap[i] >= SDF_INSIDE_THRESHOLD;
     // 外側の画素 → いちばん近い内側の画素、内側の画素 → いちばん近い外側の画素（どちらも二乗距離の整数）
     let to_inside = super::sdf_edt::squared_distance_to_targets(w, h, inside_at);
@@ -75,16 +80,7 @@ pub fn generate_sdf(bitmap: &[u8], width: u32, height: u32, spread: u32) -> Vec<
     for (i, out) in sdf.iter_mut().enumerate() {
         let inside = inside_at(i);
         let nearest_opposite = if inside { to_outside[i] } else { to_inside[i] };
-        let min_dist_sq = nearest_opposite.min(not_found_sq);
-
-        let dist = (min_dist_sq as f32).sqrt();
-        let norm = (dist / spread_f).min(1.0);
-        let val = if inside {
-            0.5 + 0.5 * norm
-        } else {
-            0.5 - 0.5 * norm
-        };
-        *out = (val * 255.0).clamp(0.0, 255.0) as u8;
+        *out = sdf_value(nearest_opposite.min(far_sq), inside, spread);
     }
 
     sdf
@@ -92,6 +88,32 @@ pub fn generate_sdf(bitmap: &[u8], width: u32, height: u32, spread: u32) -> Vec<
 
 /// カバレッジ（0..255）がこれ以上の画素を「内側」とする（総当たりの頃からの閾値）。
 const SDF_INSIDE_THRESHOLD: u8 = 128;
+
+/// SDF の値の最大（u8）。
+const SDF_VALUE_MAX: f32 = 255.0;
+
+/// 「反対側の画素の中心までの二乗距離」の切り詰めの値（`(spread + 1)²`）。
+///
+/// これ以上離れた画素は縁までの距離（中心までの距離 − 半画素）が `spread` を超え、値は 1.0 / 0.0 で変わらない。
+/// 総当たりの検算（テスト）もこの半径の正方形の中だけを探せば同じ値になる。
+fn sdf_far_distance_sq(spread: u32) -> i64 {
+    let radius = i64::from(spread) + 1;
+    radius * radius
+}
+
+/// 「反対側の画素の中心までの二乗距離」→ SDF の値（u8）【純関数。生成と検算で共有する唯一の式】。
+///
+/// 縁までの距離 = 中心までの距離 − 半画素。`spread` で 0..1 に正規化し、内側は 0.5 から上、外側は 0.5 から下へ。
+/// 0..1 → 0..255 は四捨五入（切り捨てだと全体が 1/255 ずつ外側へ寄る）。
+fn sdf_value(dist_sq_to_opposite_center: i64, inside: bool, spread: u32) -> u8 {
+    use super::sdf::{SDF_EDGE_VALUE, SDF_PIXEL_CENTER_TO_EDGE_PX};
+    let to_edge = ((dist_sq_to_opposite_center as f32).sqrt() - SDF_PIXEL_CENTER_TO_EDGE_PX).max(0.0);
+    let norm = (to_edge / spread as f32).min(1.0);
+    // 縁（0.5）から、縁までの距離の割合だけ内側は上・外側は下へ（spread 以上離れると 1.0 / 0.0）
+    let offset = SDF_EDGE_VALUE * norm;
+    let val = if inside { SDF_EDGE_VALUE + offset } else { SDF_EDGE_VALUE - offset };
+    (val * SDF_VALUE_MAX).round().clamp(0.0, SDF_VALUE_MAX) as u8
+}
 
 
 // ── サイズ非依存 SDF グリフ ───────────────────────────────────
@@ -244,30 +266,33 @@ mod tests {
             .expect("組み込みフォントは必ず読める")
     }
 
-    /// 2026-09-28 までの総当たりの SDF（検算用にそのまま残す。各画素のまわり ±spread の正方形を全部見る）。
+    /// 総当たりの SDF（距離変換の検算用。2026-09-28 までの総当たりの探し方を残す）。
+    ///
+    /// 各画素のまわりの「切り詰めの半径（spread + 1）」の正方形を全部見て、反対側の画素の中心までの二乗距離の最小を探す。
+    /// 値への変換は生成と同じ `sdf_value`（2026-10-01 に縁までの距離へ改めた式）を使う＝このテストが確かめるのは距離変換の正しさ。
     fn generate_sdf_brute_force(bitmap: &[u8], width: u32, height: u32, spread: u32) -> Vec<u8> {
         let w = width as usize;
         let h = height as usize;
-        let spread_f = spread as f32;
-        let spread_sq = (spread * spread) as usize;
+        let far_sq = sdf_far_distance_sq(spread);
+        let radius = spread as usize + 1;
         let mut sdf = vec![0u8; w * h];
         for y in 0..h {
             for x in 0..w {
-                let inside = bitmap[y * w + x] >= 128;
-                let x_min = x.saturating_sub(spread as usize);
-                let x_max = (x + spread as usize + 1).min(w);
-                let y_min = y.saturating_sub(spread as usize);
-                let y_max = (y + spread as usize + 1).min(h);
-                let mut min_dist_sq = spread_sq + 1;
+                let inside = bitmap[y * w + x] >= SDF_INSIDE_THRESHOLD;
+                let x_min = x.saturating_sub(radius);
+                let x_max = (x + radius + 1).min(w);
+                let y_min = y.saturating_sub(radius);
+                let y_max = (y + radius + 1).min(h);
+                let mut min_dist_sq = far_sq;
                 'outer: for sy in y_min..y_max {
-                    let dy = sy as isize - y as isize;
+                    let dy = sy as i64 - y as i64;
                     for sx in x_min..x_max {
-                        let dx = sx as isize - x as isize;
-                        let d_sq = (dx * dx + dy * dy) as usize;
+                        let dx = sx as i64 - x as i64;
+                        let d_sq = dx * dx + dy * dy;
                         if d_sq >= min_dist_sq {
                             continue;
                         }
-                        if (bitmap[sy * w + sx] >= 128) != inside {
+                        if (bitmap[sy * w + sx] >= SDF_INSIDE_THRESHOLD) != inside {
                             min_dist_sq = d_sq;
                             if min_dist_sq == 0 {
                                 break 'outer;
@@ -275,16 +300,41 @@ mod tests {
                         }
                     }
                 }
-                let dist = (min_dist_sq as f32).sqrt();
-                let norm = (dist / spread_f).min(1.0);
-                let val = if inside { 0.5 + 0.5 * norm } else { 0.5 - 0.5 * norm };
-                sdf[y * w + x] = (val * 255.0).clamp(0.0, 255.0) as u8;
+                sdf[y * w + x] = sdf_value(min_dist_sq, inside, spread);
             }
         }
         sdf
     }
 
-    /// 【見た目を変えないことの検証】実際のグリフ（rasterize_glyph_sdf と同じ em 64・パディング込み）で、
+    /// 【縁までの距離の検証（2026-10-01）】縦の境目（左が内側）の SDF は、境目を挟む 2 画素が 0.5 を中心に対称で、
+    /// そこから 1 画素ごとに `SDF_VALUE_PER_TEXEL`（spread で割った値）ずつ一定に変わる（縁の前後だけ傾きが 2 倍にならない）。
+    #[test]
+    fn sdf_measures_distance_to_the_edge_with_constant_slope() {
+        use crate::engine::core::font::sdf::SDF_VALUE_PER_TEXEL;
+        const W: u32 = 24;
+        const EDGE_X: usize = 12; // x < 12 が内側
+        const SPREAD: u32 = 8;
+        let bitmap: Vec<u8> = (0..W * 3).map(|k| if (k % W) < EDGE_X as u32 { 255 } else { 0 }).collect();
+        let sdf = generate_sdf(&bitmap, W, 3, SPREAD);
+        let at = |x: usize| f32::from(sdf[W as usize + x]) / SDF_VALUE_MAX;
+        // 1/255 の量子化の誤差まで許す
+        let tol = 1.0 / SDF_VALUE_MAX;
+        // 境目を挟む 2 画素は縁から半画素 → 0.5 ± 半テクセルぶん
+        assert!((at(EDGE_X - 1) - (0.5 + 0.5 * SDF_VALUE_PER_TEXEL)).abs() <= tol, "内側の隣 {}", at(EDGE_X - 1));
+        assert!((at(EDGE_X) - (0.5 - 0.5 * SDF_VALUE_PER_TEXEL)).abs() <= tol, "外側の隣 {}", at(EDGE_X));
+        // spread の手前までは 1 画素ごとに同じ量だけ変わる
+        for k in 1..(SPREAD as usize - 1) {
+            let step_in = at(EDGE_X - 1 - k) - at(EDGE_X - k);
+            let step_out = at(EDGE_X + k - 1) - at(EDGE_X + k);
+            assert!((step_in - SDF_VALUE_PER_TEXEL).abs() <= 2.0 * tol, "内側 {k}: {step_in}");
+            assert!((step_out - SDF_VALUE_PER_TEXEL).abs() <= 2.0 * tol, "外側 {k}: {step_out}");
+        }
+        // 境目の前後の傾き（1 画素ぶん）も同じ（以前は 2 倍だった）
+        let across = at(EDGE_X - 1) - at(EDGE_X);
+        assert!((across - SDF_VALUE_PER_TEXEL).abs() <= 2.0 * tol, "境目をまたぐ傾き {across}");
+    }
+
+    /// 【距離変換の正しさの検証】実際のグリフ（rasterize_glyph_sdf と同じ em 64・パディング込み）で、
     /// 距離変換の SDF が総当たりと全画素一致する（英数字・記号・かな・漢字・全角数字）。
     #[test]
     fn distance_transform_sdf_matches_brute_force_on_real_glyphs() {
