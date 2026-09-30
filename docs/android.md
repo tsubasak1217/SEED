@@ -5400,7 +5400,7 @@ IME（GameTextInput の InputConnection）─ UI スレッド ─→ MainActivit
 
 エンジン → IME（フレームの末尾に 1 度だけ。native text_input/platform.rs。複製した AndroidApp）
     SetEditorInfo(kind, action) → set_ime_editor_info（Text = TYPE_CLASS_TEXT / Number = TYPE_CLASS_NUMBER、アクション、IME_FLAG_NO_FULLSCREEN・IMG_FLAG_NO_EXTRACT_UI）
-    SetState(UTF-16 の状態)     → set_text_input_state（同じ状態の stateChanged が返るとは限らない。2026-09-30 の Simeji では返らなかった。ui_text_input.md §5）
+    SetState(UTF-16 の状態)     → set_text_input_state（同じ状態の stateChanged が返るとは限らない。2026-09-30 の Simeji では、キーボードが隠れている間の差し替えには返らず、出したまま欄を移ったときだけ返った。ui_text_input.md §5）
     ShowKeyboard / HideKeyboard → show_soft_input(false) / hide_soft_input(false)
 ```
 
