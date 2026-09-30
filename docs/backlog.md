@@ -3654,3 +3654,5 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (2) エディタに埋め込んだ Play では、エディタの別のパネルを押しただけで窓のフォーカスが外れ `platform.paused` が届く（PC の近似）。
   (3) エディタの `RuntimeManager` は `PLATFORM_SIM_OK` / `PLATFORM_SIM_ERROR` の応答の振り分けを持たず、MCP の `seed_send_ipc`（`EditorCommandExecutor.ExecuteSendIpc` は送るだけ）から送ったときに応答を待てない
   （自動の確かめは単体起動の SEED.exe に TCP でつなぐ）。MCP のツールにするなら応答の待ち合わせと `seed_batch` の enum を足す。
+- [ ] **PC の模擬で `App.Platform` はホストの OS（Windows）、`App.OsVersion` は模擬の Android の API レベルを返す** — 2026-10-01（W3-5b で指摘）。スクリプトが版を API レベルとして
+  読むには `Platform.IsSimulated` と組み合わせる必要がある。docs/scripting_api.md §7.13 に一言足す（または模擬のときは `App.Platform` も Android を返す設定を用意する）。
