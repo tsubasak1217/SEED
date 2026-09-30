@@ -1,3 +1,7 @@
+// App の中では、下で足した App.Platform（OS の種類。2026-10-01）がクラス SEED.Platform.Platform の名前を隠すので、
+// クラスはこの別名で呼ぶ（利用者のスクリプトの Platform.IsSupported などには影響しない）。
+using PlatformApi = SEED.Platform.Platform;
+
 namespace SEED.Platform;
 
 /// <summary>
@@ -18,7 +22,13 @@ namespace SEED.Platform;
 /// 戻る（Android の戻るキーはスクリプトには <c>KeyCode.Escape</c> で届く）の最上位では <see cref="MoveTaskToBack"/> で閉じずに背面へ回す
 /// （閉じるとプロセスごと終わり、次の起動が冷える）。<see cref="OpenUrl"/> はブラウザ・メール・電話・その URL を受けるアプリで開き、
 /// <see cref="OpenAppSettings"/> は端末の「アプリ情報」を開く。どれも同期で「受け付けたか」だけを返す（false なら
-/// <see cref="Platform.LastError"/>）。
+/// <see cref="SEED.Platform.Platform.LastError"/>）。
+/// </para>
+///
+/// <para><b>OS の種類と版・前面と背面（2026-10-01）</b><br/>
+/// <see cref="Platform"/>（<see cref="PlatformKind"/>）と <see cref="OsVersion"/>（Android の API レベル）で OS の版による出し分けをする。
+/// 前面へ戻った・前面を離れたことはイベント <see cref="ResumedEvent"/> / <see cref="PausedEvent"/>（<see cref="AppLifecycleEvent.TryParse"/>）
+/// で届く（設定の画面から戻ったときに権限を問い直す契機）。
 /// </para>
 ///
 /// <para><b>予測型の戻る（W2 の手直し P1-3・opt-in）</b><br/>
@@ -31,16 +41,16 @@ namespace SEED.Platform;
 /// </summary>
 public static class App
 {
-    /// <summary><see cref="Platform.LastError"/>: その URL を開けるアプリが端末に無い（<see cref="OpenUrl"/>。Android）。</summary>
+    /// <summary><see cref="SEED.Platform.Platform.LastError"/>: その URL を開けるアプリが端末に無い（<see cref="OpenUrl"/>。Android）。</summary>
     public const string ErrorNoHandler = "no_handler";
 
-    /// <summary><see cref="Platform.LastError"/>: 開かない scheme（file: / content: / javascript:。<see cref="OpenUrl"/>）。</summary>
+    /// <summary><see cref="SEED.Platform.Platform.LastError"/>: 開かない scheme（file: / content: / javascript:。<see cref="OpenUrl"/>）。</summary>
     public const string ErrorSchemeNotAllowed = "scheme_not_allowed";
 
-    /// <summary><see cref="Platform.LastError"/>: URL の形が約束に合わない（空・scheme が無い・制御文字・8192 文字を超える。<see cref="OpenUrl"/>）。</summary>
+    /// <summary><see cref="SEED.Platform.Platform.LastError"/>: URL の形が約束に合わない（空・scheme が無い・制御文字・8192 文字を超える。<see cref="OpenUrl"/>）。</summary>
     public const string ErrorInvalidArgument = "invalid_argument";
 
-    /// <summary><see cref="Platform.LastError"/>: 操作する画面（Activity）が無い（Android）。</summary>
+    /// <summary><see cref="SEED.Platform.Platform.LastError"/>: 操作する画面（Activity）が無い（Android）。</summary>
     public const string ErrorNoActivity = Window.ErrorNoActivity;
 
     /// <summary>URL の最大の長さ（Unicode の符号位置の数。<see cref="OpenUrl"/> と <see cref="LaunchInfo.Uri"/>）。</summary>
@@ -48,19 +58,19 @@ public static class App
 
     /// <summary>
     /// この起動の理由（呼ぶたびに問い合わせる。Android でも IPC なしで答えるので軽い）。
-    /// 取れなければ <see cref="LaunchKind.Launcher"/>（<see cref="Platform.LastError"/> に理由）。
+    /// 取れなければ <see cref="LaunchKind.Launcher"/>（<see cref="SEED.Platform.Platform.LastError"/> に理由）。
     /// </summary>
     public static LaunchInfo LaunchReason
     {
         get
         {
-            if (!Platform.TryInvoke(LaunchJson.ModulePlatform, LaunchJson.MethodLaunchReason, PlatformJson.StringObject(), out string reply))
+            if (!PlatformApi.TryInvoke(LaunchJson.ModulePlatform, LaunchJson.MethodLaunchReason, PlatformJson.StringObject(), out string reply))
             {
                 return LaunchInfo.Launcher;
             }
             if (!AlarmJson.TryReadReplyObject(reply, LaunchJson.KeyLaunch, LaunchInfo.FromJson, out LaunchInfo launch))
             {
-                Platform.LastError = Platform.ErrorInvalidReply;
+                PlatformApi.LastError = PlatformApi.ErrorInvalidReply;
                 return LaunchInfo.Launcher;
             }
             return launch;
@@ -72,9 +82,9 @@ public static class App
     /// 背面へ回ったアプリはランチャー・最近のタスクから開き直すと前面に戻る（起動理由は <see cref="LaunchKind.Launcher"/> の platform.launch）。
     /// すぐ返る（回すのは UI スレッドで少し後）。デスクトップの模擬は何もしない（ログだけ）。
     /// </summary>
-    /// <returns>受け付けたら true（false なら <see cref="Platform.LastError"/>）。</returns>
+    /// <returns>受け付けたら true（false なら <see cref="SEED.Platform.Platform.LastError"/>）。</returns>
     public static bool MoveTaskToBack() =>
-        Platform.TryInvoke(AppJson.Module, AppJson.MethodMoveTaskToBack, PlatformJson.StringObject(), out _);
+        PlatformApi.TryInvoke(AppJson.Module, AppJson.MethodMoveTaskToBack, PlatformJson.StringObject(), out _);
 
     /// <summary>
     /// URL を端末のアプリで開く（Android の ACTION_VIEW。W1-6）。http / https（ブラウザ）・mailto（メール）・tel（電話）・
@@ -83,17 +93,53 @@ public static class App
     /// PC の既定のアプリで開く（ほかの scheme は判定だけで true。環境変数 SEED_PLATFORM_SIM_NO_OPEN=1 なら何も開かない）。
     /// </summary>
     /// <param name="url">開く URL（例 "https://example.com"）。</param>
-    /// <returns>開いたら true（false なら <see cref="Platform.LastError"/>）。</returns>
+    /// <returns>開いたら true（false なら <see cref="SEED.Platform.Platform.LastError"/>）。</returns>
     public static bool OpenUrl(string url) =>
-        Platform.TryInvoke(AppJson.Module, AppJson.MethodOpenUrl, PlatformJson.StringObject((AppJson.KeyUrl, url)), out _);
+        PlatformApi.TryInvoke(AppJson.Module, AppJson.MethodOpenUrl, PlatformJson.StringObject((AppJson.KeyUrl, url)), out _);
 
     /// <summary>
     /// 端末の「アプリ情報」の画面を開く（Android の Settings.ACTION_APPLICATION_DETAILS_SETTINGS。W1-6）。権限の種類ごとの画面は
     /// <see cref="Permissions.OpenSettings"/>。すぐ返る（開くのは UI スレッドで少し後）。デスクトップの模擬は何もしない（ログだけ）。
     /// </summary>
-    /// <returns>受け付けたら true（false なら <see cref="Platform.LastError"/>）。</returns>
+    /// <returns>受け付けたら true（false なら <see cref="SEED.Platform.Platform.LastError"/>）。</returns>
     public static bool OpenAppSettings() =>
-        Platform.TryInvoke(AppJson.Module, AppJson.MethodOpenAppSettings, PlatformJson.StringObject(), out _);
+        PlatformApi.TryInvoke(AppJson.Module, AppJson.MethodOpenAppSettings, PlatformJson.StringObject(), out _);
+
+    // ── OS の種類と版（2026-10-01。W3-5 で見つかった不足）──
+
+    /// <summary>
+    /// 動いている OS の種類（Android の端末は <see cref="PlatformKind.Android"/>、デスクトップの模擬はホストの OS〈<see cref="PlatformKind.Windows"/> など〉）。
+    /// 最初に成功した値を控えるので毎フレーム読んでよい（Android でも IPC なし）。取れなければ <see cref="PlatformKind.Unknown"/>
+    /// （<see cref="SEED.Platform.Platform.LastError"/> に理由。次に読まれたときに問い直す）。
+    /// </summary>
+    public static PlatformKind Platform => AppOsInfo.TryGet(out PlatformKind platform, out _) ? platform : PlatformKind.Unknown;
+
+    /// <summary>
+    /// OS の版の番号（Android は Build.VERSION.SDK_INT＝API レベル。例 Android 13 = 33・14 = 34）。
+    /// 権限の段の出し分け（通知の実行時の許可は 33 以上・フルスクリーン通知の特別なアクセスは 34 以上など）に使う。
+    /// デスクトップの模擬は 0（環境変数 SEED_PLATFORM_SIM_OS_VERSION に整数を書くとその値。版で分ける画面を PC で試す）。
+    /// 最初に成功した値を控えるので毎フレーム読んでよい。取れなければ 0（<see cref="SEED.Platform.Platform.LastError"/> に理由）。
+    /// </summary>
+    public static int OsVersion => AppOsInfo.TryGet(out _, out int osVersion) ? osVersion : 0;
+
+    // ── 前面・背面の知らせ（2026-10-01。W3-5 で見つかった不足）──
+
+    /// <summary>
+    /// 前面へ戻ったイベントの名前（"platform.resumed"。data は <see cref="AppLifecycleEvent.TryParse"/> で読む: Count・BackgroundMs）。
+    /// Android は MainActivity.onResume（<b>プロセスの起動の最初の onResume では届かない</b>＝必ず <see cref="PausedEvent"/> の後）。
+    /// 戻ったときの権限の結果・変化のイベントより後に届くので、設定の画面から戻ったときの問い直しはこれを受けて
+    /// <see cref="Permissions.Check"/> すればよい。デスクトップの模擬は窓がフォーカスを得たとき（Play の間だけ）と
+    /// <see cref="PlatformDiagnostics.SimulateLifecycle"/>。
+    /// </summary>
+    public const string ResumedEvent = "platform.resumed";
+
+    /// <summary>
+    /// 前面を離れたイベントの名前（"platform.paused"。data は Count）。Android は MainActivity.onPause。背面にいる間は描画の面が無く
+    /// フレームが回らないことが多いので、背面にいる間には届かず、戻ったときに <see cref="ResumedEvent"/> の直前に届くことがある
+    /// （保存などをこれに頼らない）。デスクトップの模擬は窓がフォーカスを失ったとき（エディタの別のパネルを押しただけでも）と
+    /// <see cref="PlatformDiagnostics.SimulateLifecycle"/>。
+    /// </summary>
+    public const string PausedEvent = "platform.paused";
 
     /// <summary>
     /// 端末の明暗の設定が変わったイベントの名前（W2-9。data.night = "yes" / "no" / "unknown"。<see cref="TryParseUiModeEvent"/> で読む）。
@@ -108,7 +154,7 @@ public static class App
     /// デスクトップの模擬は Windows の「既定のアプリ モード」（レジストリの AppsUseLightTheme）か、差し替えの値。
     /// </summary>
     public static SystemUiMode UiMode =>
-        Platform.TryInvoke(AppJson.Module, AppJson.MethodUiMode, PlatformJson.StringObject(), out string reply)
+        PlatformApi.TryInvoke(AppJson.Module, AppJson.MethodUiMode, PlatformJson.StringObject(), out string reply)
             ? AppJson.ReadNight(reply)
             : SystemUiMode.Unknown;
 
@@ -161,10 +207,10 @@ public static class App
     /// </summary>
     /// <param name="on">受ける層があるなら true、無ければ false。</param>
     /// <returns>基盤が受け付けて、予測型の戻るが有効なら true（<see cref="IsPredictiveBackEnabled"/> も同じ値になる）。
-    /// false なら何もしていない（無効・失敗。失敗は <see cref="Platform.LastError"/>）。</returns>
+    /// false なら何もしていない（無効・失敗。失敗は <see cref="SEED.Platform.Platform.LastError"/>）。</returns>
     public static bool SetBackCallbackEnabled(bool on)
     {
-        bool accepted = Platform.TryInvoke(AppJson.Module, BackJson.MethodSetBackCallback, PlatformJson.BoolObject(BackJson.KeyOn, on), out string reply);
+        bool accepted = PlatformApi.TryInvoke(AppJson.Module, BackJson.MethodSetBackCallback, PlatformJson.BoolObject(BackJson.KeyOn, on), out string reply);
         IsPredictiveBackEnabled = accepted && AlarmJson.ReadReplyBool(reply, BackJson.KeyEnabled);
         return IsPredictiveBackEnabled;
     }

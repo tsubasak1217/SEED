@@ -26,6 +26,9 @@
 //
 //  【Play の区切り】エディタの Play の開始・停止で reset_session を呼び、実装ごとの「前の回の状態」を捨てる
 //  （デスクトップの模擬は予約表とイベント。Android の実機の予約は Play と関係ないので触らない）。
+//
+//  【ホストの窓の知らせ】PC の窓の出来事のうち模擬が使うもの（OS の明暗の変化・窓のフォーカスの出入り〈2026-10-01。
+//  Android の onResume / onPause の代わり〉）は notify_host_* で渡す。Android の実装は何もしない（Java が自分で流す）。
 // ============================================================
 
 /// 目覚ましの共通部品（引数の検査・音源の書き出し。W1-3）。
@@ -129,6 +132,13 @@ pub trait PlatformBridge: Send + Sync {
     /// デスクトップの模擬は OS の設定を読み直し、変わっていれば platform.ui_mode_changed を積む。Android は Java の
     /// MainActivity.onConfigurationChanged が自分でイベントを出すので何もしない。
     fn notify_host_ui_mode_changed(&self) {}
+
+    /// ホストの窓のフォーカスが出入りした（2026-10-01。winit の WindowEvent::Focused。App が Play の間だけ呼ぶ）。既定は何もしない。
+    ///
+    /// デスクトップの模擬は Android の onResume / onPause の代わりにし、状態が変わったら platform.resumed / paused を積む。
+    /// Android は Java の MainActivity.onResume / onPause（platform/app/AppLifecycle）が自分でイベントを出すので何もしない
+    /// （winit も Android の窓のフォーカスを Focused で届けるが、それは onResume / onPause と同じではないので使わない）。
+    fn notify_host_focus_changed(&self, _focused: bool) {}
 }
 
 /// OS の糊が登録した実装（プロセスで 1 つ。最初の登録だけが有効）。
@@ -235,6 +245,19 @@ pub fn notify_host_ui_mode_changed() {
     };
     if panic::catch_unwind(AssertUnwindSafe(|| bridge.notify_host_ui_mode_changed())).is_err() {
         eprintln!("{LOG_PREFIX} 明暗の設定の変化の処理中に panic しました");
+    }
+}
+
+/// ホストの窓のフォーカスが出入りした（2026-10-01。winit の WindowEvent::Focused から、App が Play の間だけ呼ぶ）。
+///
+/// デスクトップの模擬はまだ作られていなければ作る（スクリプトが SEED.Platform を呼ばずに platform.resumed を受けるだけでも
+/// 届くように。起動の直後の分は「スクリプトの準備までは基盤の箱に保持する」仕組みに乗る）。panic は受け止めてログだけ。
+pub fn notify_host_focus_changed(focused: bool) {
+    let Some(bridge) = current_bridge() else {
+        return;
+    };
+    if panic::catch_unwind(AssertUnwindSafe(|| bridge.notify_host_focus_changed(focused))).is_err() {
+        eprintln!("{LOG_PREFIX} 窓のフォーカスの出入りの処理中に panic しました");
     }
 }
 

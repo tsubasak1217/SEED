@@ -248,6 +248,12 @@ public static class Haptics { public static void Tap(); public static void Vibra
 - **ディープリンク**（features: "deep_links"）: `android.deep_links: [{ "scheme": "wakeorpay", "host": "…", "path_prefix": "…", "auto_verify": false }]` を MainActivity の intent-filter にする。受け取った URI は `LaunchKind.DeepLink`。v1 のアプリは使わないが、W1 で仕組みを入れ、App Links（`autoVerify` と `assetlinks.json`）は W5。
 - **W1-6 の実装で案から変えたところ**（2026-09-27。docs/android.md §25.15・scripting_api.md §7.13）: `Window.SetKeepScreenOn` / `SetSystemBarsVisible`・`App.MoveTaskToBack` / `OpenAppSettings`・`Haptics.Tap` / `Vibrate` は void ではなく bool（受け付けたか。失敗は `Platform.LastError`）。`LaunchKind.DeepLink` は既存の値の番号を変えないよう列挙の末尾（`Other` の後）。`App.OpenUrl` は `file:` / `content:` / `javascript:` を断り（`scheme_not_allowed`）、開けるアプリが無ければ `no_handler`。`Haptics.Vibrate` は 1〜5000 ms（長い値はそろえる）。
 - **センサー（W1-8 で入れた。2026-09-27。docs/android.md §25.16・scripting_api.md §7.13）**: アプリ仕様 §10 U-04 で「振る」を v1 に残すと決まったので、v2 から W1-8 へ前倒しした。`Sensors.IsSupported(SensorKind)`・`Start(SensorKind, int rateHz = 50)`・`Stop`・`Read(SensorKind, out SensorSample)`（`Acceleration`・`TimestampMs`・`PeakMagnitude`・`SampleCount`）。重力を除いた加速度（`TYPE_LINEAR_ACCELERATION`、無い端末は加速度から低域通過で重力を引いた値）で、`PeakMagnitude` と `SampleCount` は前回の `Read` からの分（フレームに依らず振りを落とさない）。標本ごとのイベントは流さない。案に無かったものとして、出どころを返す `Sensors.GetSource` と、模擬だけで標本を入れる `Sensors.SimulateSample` を足した。「振った」の判定（閾値・回数・時間）はアプリの純粋ロジック（scripting_api.md に例）。
+- **OS の種類と版・前面と背面・模擬の権限の操作（2026-10-01 に足した。W3-5 で見つかった不足。docs/android.md §25.20・scripting_api.md §7.13）**:
+  `App.Platform`（`PlatformKind`）・`App.OsVersion`（Android は `Build.VERSION.SDK_INT`、模擬は 0 か環境変数 `SEED_PLATFORM_SIM_OS_VERSION`）、
+  イベント `platform.resumed`（`count`・`background_ms`。プロセスの起動の最初の onResume では出さない）/ `platform.paused`（`count`）と `AppLifecycleEvent`
+  （イベントの名前は既存の `platform.<名前>` の規則。案の「Intent」「PermissionChanged」と同じく `App` の定数 `ResumedEvent` / `PausedEvent`）。
+  デスクトップの模擬は窓のフォーカスの出入りを onResume / onPause の代わりにし、権限の状態と求めたときの答えを環境変数・IPC `PLATFORM_SIM`・
+  `PlatformDiagnostics.SimulatePermission` / `SimulatePermissionAnswer` / `SimulateLifecycle` で与える（W1-P7 の「デスクトップでも同じ API が動く」の延長）。
 - **v2（W5）で足すもの**: 読み上げ（TTS。鳴動音の上に重ねる）、録音（AAC/m4a・マイク権限）、安全な保存（Android Keystore）、ネットワークの権限を配布版へ入れる設定、ファイルの選択（SAF。音源の取り込み）。（センサーは W1-8 へ前倒しした。上の項目）
 
 ### 2.4 JNI の流儀（今の決まりと、W1 で足す部分）

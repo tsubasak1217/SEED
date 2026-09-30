@@ -11,7 +11,7 @@ use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
-use super::App;
+use super::{App, RuntimeMode};
 
 impl ApplicationHandler for App {
     /// ウィンドウ・レンダラーを初期化し、IPC へ READY を通知する。
@@ -125,6 +125,12 @@ impl ApplicationHandler for App {
                     // 同じ理由で、タッチの離れが届かず指（と指0 由来の左ボタン押下）が
                     // 残り続けないよう、実タッチの指を取り消す（安全弁）。
                     self.input.cancel_touches();
+                }
+                // SEED.Platform の前面・背面（2026-10-01）: デスクトップの模擬は窓のフォーカスの出入りを Android の
+                // onResume / onPause の代わりにし、変わったら platform.resumed / paused を積む。Edit 中（エディタの編集ビュー）は
+                // スクリプトが動いていないので渡さない。Android の実装は何もしない（Java の MainActivity が自分で流す）。
+                if self.mode == RuntimeMode::Play {
+                    crate::engine::platform::bridge::notify_host_focus_changed(focused);
                 }
             }
 

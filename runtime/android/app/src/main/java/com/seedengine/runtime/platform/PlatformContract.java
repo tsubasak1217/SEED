@@ -353,6 +353,28 @@ public final class PlatformContract {
     /** 端末の明暗の設定が変わった（W2-9。MainActivity.onConfigurationChanged。seq 0。data = { night }）。 */
     public static final String EVENT_UI_MODE_CHANGED = "platform.ui_mode_changed";
 
+    // ── OS の種類と版・前面と背面の知らせ（2026-10-01。W3-5 で見つかった不足。メインプロセスで答える・流す）──
+
+    /** OS の種類と版（local/OsInfoCommand）。引数なし。返答 { platform, os_version }。 */
+    public static final String METHOD_APP_OS_INFO = "os_info";
+    /** os_info の返答: OS の種類（APP_PLATFORM_*。Android の端末では常に APP_PLATFORM_ANDROID）。 */
+    public static final String KEY_APP_PLATFORM = "platform";
+    /** os_info の返答: OS の版の番号（Build.VERSION.SDK_INT。API レベル）。 */
+    public static final String KEY_APP_OS_VERSION = "os_version";
+    /** platform: Android。 */
+    public static final String APP_PLATFORM_ANDROID = "android";
+    /**
+     * 前面へ戻った（MainActivity.onResume。プロセスの最初の onResume では流さない＝必ず EVENT_APP_PAUSED の後。
+     * seq 0。data = { count, background_ms }。platform/app/AppLifecycle）。
+     */
+    public static final String EVENT_APP_RESUMED = "platform.resumed";
+    /** 前面を離れた（MainActivity.onPause。seq 0。data = { count }。platform/app/AppLifecycle）。 */
+    public static final String EVENT_APP_PAUSED = "platform.paused";
+    /** resumed / paused の data: 何回目の知らせか（それぞれ 1 から。プロセスの中で数える）。 */
+    public static final String KEY_APP_LIFECYCLE_COUNT = "count";
+    /** resumed の data: 背面にいた時間（ミリ秒。直前の onPause から。SystemClock.elapsedRealtime の差）。 */
+    public static final String KEY_APP_BACKGROUND_MS = "background_ms";
+
     // ── 予測型の戻る（W2 の手直し P1-3。プロジェクト設定 android.predictive_back が true の APK の API 33 以上だけ。docs/android.md §25.18）──
 
     /**

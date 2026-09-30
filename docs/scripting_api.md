@@ -3260,14 +3260,16 @@ var ratio = new SEED.Vector2(t.Position.x / SEED.Screen.Width, t.Position.y / SE
 
 ---
 
-## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感／W1-8 のセンサー）
+## 7.13 Platform（アプリのプラットフォーム機能・W1-1 の骨組み／W1-3 の目覚まし／W1-4a の鳴動・起動理由／W1-5 の通知・権限／W1-6 の画面・アプリ・触感／W1-8 のセンサー／2026-10-01 の OS の版・前面と背面・模擬の権限の操作）
 
 目覚まし・通知・権限など **OS の機能**をスクリプトから使うための入口です（名前空間 `SEED.Platform`）。
 W1-1 の橋渡しの骨組み（状態・往復の確かめ・イベントの受け口）に、W1-3 で**目覚ましの予約**（`Alarms`。この節の後半）、
 W1-4a で**鳴動**（`Alarms.GetRinging` / `StopRinging`・音と通知）と**起動理由**（`App.LaunchReason`）・`Window.SetShowWhenLocked`、
 W1-5 で**通知**（`Notifications`）と**権限**（`Permissions`）、W1-6 で**画面・アプリ・触感**（`Window.SetKeepScreenOn` / `SetSystemBarsVisible`・
 `App.MoveTaskToBack` / `OpenUrl` / `OpenAppSettings`・`Haptics`）と**ディープリンク**（`LaunchKind.DeepLink`・`LaunchInfo.Uri`）、
-W1-8 で**センサー**（`Sensors`。重力を除いた加速度）が加わりました（この節の最後。設計は docs/app_platform_roadmap.md §2.3）。Android では別プロセス `:seed_platform`（Java）へ、
+W1-8 で**センサー**（`Sensors`。重力を除いた加速度）が加わりました（この節の最後。設計は docs/app_platform_roadmap.md §2.3）。
+2026-10-01 に **OS の種類と版**（`App.Platform` / `App.OsVersion`）・**前面と背面の知らせ**（`platform.resumed` / `platform.paused`）・
+**デスクトップの模擬の権限の操作**（環境変数・IPC `PLATFORM_SIM`・`PlatformDiagnostics.SimulatePermission` など）を足しました（「画面・アプリ・触感・ディープリンク」の後）。Android では別プロセス `:seed_platform`（Java）へ、
 デスクトップ（エディタの Play・単体起動）ではエンジンの中の**模擬**へ届き、どちらも同じ形の JSON で答えます（仕組みは docs/android.md §25）。
 
 ```csharp
@@ -3510,7 +3512,8 @@ Notifications.ErrorInvalidArgument       // "invalid_argument"       … ID が�
 ### 権限（`Permissions`。W1-5）
 
 通知・正確なアラーム・フルスクリーン通知の**状態**を調べ、**求め**、**設定の画面**を開きます。Android ではメインプロセスが答えるので
-（IPC なし）、最初の呼び出しでも `connecting` になりません。デスクトップの模擬は v1 の 3 種が常に `Granted` です。
+（IPC なし）、最初の呼び出しでも `connecting` になりません。デスクトップの模擬は既定で v1 の 3 種が `Granted` で、状態と「求めたときの答え」を
+環境変数・IPC・スクリプトで変えられます（2026-10-01。後の「デスクトップの模擬の操作」）。
 
 ```csharp
 using SEED.Platform;
@@ -3527,6 +3530,7 @@ this.On(PermissionResultEvent.Name, (string json) =>           // "platform.perm
         SEED.Debug.Log($"{e.Kind} → {e.Status}");                // e.RequestId  e.Kind  e.KindName  e.Status  e.StatusName  e.Simulated
 });
 this.On(PermissionChangedEvent.Name, (string json) => { });     // "platform.permission_changed": 前面へ戻ったときに状態が変わっていた（e.Kind・e.Status）
+this.On(App.ResumedEvent, (string json) => { /* 設定の画面から戻った: 変わっていなくても Check で問い直す */ }); // "platform.resumed"（2026-10-01）
 
 // 失敗の理由（Platform.LastError）
 Permissions.ErrorFeatureNotEnabled // "feature_not_enabled" … APK にその種類の機能が無い（通知は notifications か alarm、ほかは alarm）
@@ -3547,7 +3551,8 @@ if (Permissions.Check(PermissionKind.ExactAlarm) == PermissionStatus.NeedsSettin
 
 - `Request` の結果: 既に `Granted`・`NotApplicable` なら画面を出さずに次のフレームで届く。確認の画面・設定の画面なら、利用者が答えて（戻って）から届く。同じ種類を重ねて求めると、出ている画面の結果がそれぞれの ID で届く。
 - `PermissionChangedEvent`: 前面へ戻るたび（Android の onResume）に、APK に機能がある 3 種を前回の onResume と比べ、違えば届く（確認の画面で許可したときも `PermissionResultEvent` の後に届く）。前回の状態は端末に保存されるので、**設定で通知をオフにされて Android がアプリを止め、起動し直した最初の onResume でも届く**（`granted → denied`。W1-7 の M7 を直した）。インストール後の最初の onResume（前回の状態が無い）では届かない。起動し直した直後の分は最初のフレームで配られるので、それより後に `On` するスクリプトは受け取れないことがある（起動時は `Check` でも確かめる）。
-- 模擬: `Check` は v1 の 3 種が `Granted`（v2 は `NotApplicable`）、`Request` は画面を出さずに次のフレームで `permission_result`、`OpenSettings` はログだけ、`PermissionChangedEvent` は起きない。
+- 模擬: `Check` は模擬の状態（既定は v1 の 3 種が `Granted`・v2 は常に `NotApplicable`）、`Request` は画面を出さずに模擬の利用者の答え（既定は許可）を当てて次のフレームで `permission_result`（状態が変われば続けて `permission_changed`）、`OpenSettings` はログだけ。模擬の状態を変えたときもすぐ `permission_changed`（2026-10-01 から。後の「デスクトップの模擬の操作」）。
+- 設定の画面から戻ったときに状態が**変わっていなければ `permission_changed` は届きません**。戻ったときの問い直しは `App.ResumedEvent`（`platform.resumed`。2026-10-01）を受けて `Check` してください。
 - `Check` の失敗は案（roadmap §2.3）に無い `PermissionStatus.Unknown`、`OpenSettings` は void ではなく bool を返す（失敗を見分けるため）。
 
 > **重要**: Android 13 以降、通知の確認の画面は利用者が 2 回拒否すると二度と出ません（`DeniedPermanently`）。求める前に理由を画面で説明し、`DeniedPermanently` になったら `OpenSettings(PermissionKind.PostNotifications)` で設定の画面へ案内してください。確認の画面の外側を押して閉じた（どちらも選ばなかった）ときは `Denied` のままで、次の `Request` でもう一度出る見込みです（実機では未確認）。
@@ -3610,6 +3615,89 @@ public override void Update(ref NativeFrameContext ctx)
 
 - `MoveTaskToBack`・`OpenAppSettings`・`Haptics.Tap` / `Vibrate`・`SetKeepScreenOn`・`SetSystemBarsVisible` は、案（roadmap §2.3）の void ではなく bool を返します（失敗を見分けるため）。`LaunchKind.DeepLink` は列挙の末尾に足しました（既存の値の番号は変えない）。
 - 仕組み（命令・URL の規則・パッケージの可視性・振動の種類）は docs/android.md §25.15。
+
+### OS の種類と版・前面と背面（`App.Platform` / `App.OsVersion`・`platform.resumed` / `platform.paused`。2026-10-01）
+
+OS の版による出し分け（通知の実行時の許可は Android 13 以上など）と、**前面へ戻った・前面を離れた**ことの知らせです（Wake or Pay の W3-5 で見つかった不足）。
+Android はメインプロセスが答える・流す（IPC なし）ので、最初の呼び出しでも `connecting` になりません。デスクトップは模擬です（下の表）。
+
+```csharp
+using SEED.Platform;
+
+// OS の種類と版（最初に成功した値を控えるので毎フレーム読んでよい。取れなければ Unknown / 0 で Platform.LastError に理由）
+PlatformKind os = App.Platform;   // PlatformKind.Android / Windows / MacOS / Linux / Unknown（デスクトップはホストの OS）
+int version = App.OsVersion;      // Android は Build.VERSION.SDK_INT（API レベル。13 = 33・14 = 34）。デスクトップの模擬は 0（環境変数 SEED_PLATFORM_SIM_OS_VERSION で差し替え）
+
+// 例: 通知の実行時の許可の段は Android 13（API 33）以上だけ出す（PC で試すなら SEED_PLATFORM_SIM_OS_VERSION=33）
+bool showNotificationStep = App.OsVersion >= 33;
+
+// 前面・背面の知らせ（SEED.Events。2 つとも AppLifecycleEvent.TryParse で読める）
+App.ResumedEvent   // "platform.resumed" … 前面へ戻った（Android の onResume。プロセスの起動の最初の onResume では届かない＝必ず paused の後）
+App.PausedEvent    // "platform.paused"  … 前面を離れた（Android の onPause）
+this.On(App.ResumedEvent, (string json) =>
+{
+    if (AppLifecycleEvent.TryParse(json, out AppLifecycleEvent e))
+    {
+        AppLifecyclePhase phase = e.Phase;  // Resumed / Paused（イベントの名前から）
+        long count = e.Count;               // 何回目か（前面・背面それぞれ 1 から。Android はプロセスの中、模擬は Play の回の中で数える）
+        long away = e.BackgroundMs;         // 背面にいた時間（ミリ秒。resumed だけ。paused は 0）
+        bool simulated = e.Simulated;       // デスクトップの模擬が作ったか
+    }
+    RefreshPermissions();                   // 例: 設定の画面から戻ったら、変化のイベントが無くても Permissions.Check で問い直す
+});
+
+// デスクトップの模擬だけ: 前面・背面の出入りを起こす（窓のフォーカスの出入りと同じ扱い。Android は false・"unknown_method"）
+PlatformDiagnostics.SimulateLifecycle(AppLifecyclePhase.Paused);
+PlatformDiagnostics.SimulateLifecycle(AppLifecyclePhase.Resumed);
+```
+
+| 項目 | Android | デスクトップ（模擬） |
+|---|---|---|
+| `App.Platform` | `Android` | ホストの OS（Windows なら `Windows`） |
+| `App.OsVersion` | `Build.VERSION.SDK_INT`（API レベル） | 0。環境変数 `SEED_PLATFORM_SIM_OS_VERSION` に 0 以上の整数を書くとその値（読めない値はログに出して 0） |
+| `platform.resumed` | `MainActivity.onResume` の最後（権限の結果・変化〈`permission_result` / `permission_changed`〉の後）。**プロセスの起動の最初の onResume では届かない** | 窓がフォーカスを得たとき（Play の間だけ）・`SimulateLifecycle(Resumed)`・IPC `PLATFORM_SIM:lifecycle,resumed`。Play の始まりは「前面」で、始まりの前面は知らせない |
+| `platform.paused` | `MainActivity.onPause` の最初 | 窓がフォーカスを失ったとき（**エディタに埋め込んだ Play では、エディタの別のパネルを押しただけでも届く**）・`SimulateLifecycle(Paused)`・IPC `PLATFORM_SIM:lifecycle,paused` |
+| 同じ状態への移り | 起きない（onResume と onPause は交互） | 知らせない（前面で前面へ・背面で背面へは何もしない） |
+| スクリプトの準備の前 | 起動の直後に届いた分はエンジンが保持し、最初のシーンの `OnStart` の後に配る（ほかのプラットフォームのイベントと同じ） | 同じ |
+
+> **重要**: `platform.paused` は背面にいる間に届くとは限りません。Android では背面にいる間は描画の面が無くフレームが回らないことが多く、戻ったときに `platform.resumed` の直前にまとめて届くことがあります（推論。実機で確かめる）。セーブの書き出しなど「背面へ回る前に済ませたい処理」を `paused` に頼らないでください（セーブはエンジンが背面へ回るときに書き出します）。
+
+> **重要**: 起動のときの状態は `platform.resumed` では分かりません（最初の onResume では届かない）。起動時は `OnStart` で `App.OsVersion`・`Permissions.Check` などを読み、`resumed` は「戻ったときの問い直し」にだけ使ってください。
+
+- `App.Platform` は名前空間 `SEED.Platform` のクラス `Platform`（`Platform.IsSupported` など）とは別物です（`App` の中の OS の種類）。
+- 仕組み（Java の `platform/app/AppLifecycle`・`local/OsInfoCommand`・模擬の窓のフォーカス）は docs/android.md §25.20。
+
+### デスクトップの模擬の操作（権限の状態と答え・前面と背面・OS の版。2026-10-01）
+
+PC の Play（エディタ・単体起動）で、権限の流れ（「拒否 → 求める → 許可」「設定の画面から戻る」）と前面・背面を**端末なしで決まった状態から**試すための口です。
+**起動時の状態は環境変数**、**実行中の変更は IPC（`PLATFORM_SIM`）かスクリプト（`PlatformDiagnostics`）**で与えます。どれも模擬だけで、Android の実機には効きません。
+
+```csharp
+using SEED.Platform;
+
+// 実行中に変える（模擬だけ。Android は false・Platform.LastError == "unknown_method"）
+PlatformDiagnostics.SimulatePermission(PermissionKind.PostNotifications, PermissionStatus.Denied);   // 状態を変える。変わればすぐ platform.permission_changed（Simulated = true）
+PlatformDiagnostics.SimulatePermissionAnswer(PermissionKind.ExactAlarm, PermissionStatus.Granted);   // Permissions.Request のときの模擬の利用者の答え
+PlatformDiagnostics.SimulatePermissionAnswer(null, null);   // kind = null ですべての種類・answer = null で「答えない」（閉じた・何も変えずに戻った）
+PlatformDiagnostics.SimulateLifecycle(AppLifecyclePhase.Paused);   // 前面・背面（上の節）
+// v2 の予約の種類（RecordAudio・SendSms）は常に NotApplicable で変えられない（false・"invalid_argument"）
+```
+
+| 何を | 起動時（環境変数） | 実行中（IPC。応答 `PLATFORM_SIM_OK:{返答}` / `PLATFORM_SIM_ERROR:{理由}`） | 実行中（スクリプト） |
+|---|---|---|---|
+| 権限の状態 | `SEED_PLATFORM_SIM_PERMISSIONS=post_notifications=denied;exact_alarm=needs_settings` | `PLATFORM_SIM:permission,<kind>,<status>` | `PlatformDiagnostics.SimulatePermission(kind, status)` |
+| 求めたときの答え | `SEED_PLATFORM_SIM_PERMISSION_ANSWER=none;exact_alarm=granted`（種類を書かない項目・`all=` はすべて。既定は `granted`） | `PLATFORM_SIM:permission_answer,<kind\|all>,<status\|none>` | `PlatformDiagnostics.SimulatePermissionAnswer(kind?, status?)` |
+| 前面・背面 | — | `PLATFORM_SIM:lifecycle,<resumed\|paused>` | `PlatformDiagnostics.SimulateLifecycle(phase)` |
+| OS の版 | `SEED_PLATFORM_SIM_OS_VERSION=33` | — | — |
+
+- 種類・状態は wire の名前（`post_notifications` / `exact_alarm` / `full_screen_intent`、`granted` / `denied` / `denied_permanently` / `needs_settings` / `not_applicable`、答えはさらに `none`）。
+  環境変数の読めない項目はログ（`[SEED PLATFORM] 模擬: … の項目を飛ばしました`）に出して飛ばし、読めた項目だけを使います。
+- `Request` の模擬の規則: 今の状態が `Granted`・`NotApplicable`・`DeniedPermanently` なら答えを当てずにその状態が結果（Android でも確認の画面が出ない）。
+  `Denied`・`NeedsSettings` なら答えの状態が結果（`none` なら変わらない）。状態が変われば `permission_result` の後に `permission_changed`。
+- 状態を変えると**すぐ** `permission_changed` が届きます（Android は前面へ戻ったときに気づく。模擬は背面の模擬の間に変えてもすぐ知らせる）。同じ状態への変更では届きません。
+- `OpenSettings` は開かずにログだけです（変えるなら上の口で）。`App.OpenUrl` を開かないのは従来どおり `SEED_PLATFORM_SIM_NO_OPEN=1`。
+- エディタの **Play を止める・始めると、実行中の変更は捨てられ起動時の設定へ戻ります**（ほかの模擬の状態と同じ）。IPC の `PLATFORM_SIM` は Play 中だけ受け付けます（`not_playing`）。
+- IPC の理由: `not_playing`（Play 中でない）・`not_simulated`（模擬でない）・`unknown_verb`・`bad_arguments`（引数の数の違い）・`invalid_argument`（種類・状態の名前の誤り、v2 の予約の種類）。
 
 ### 端末の明暗（`App.UiMode`・`platform.ui_mode_changed`。W2-9）
 

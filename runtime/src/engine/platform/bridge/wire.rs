@@ -472,6 +472,46 @@ pub mod app {
     pub const EDGE_RIGHT: &str = "right";
     /// edge: 端からの手ぶりでない（ボタンの戻る。Android 16 の BackEvent.EDGE_NONE と、知らない値）。
     pub const EDGE_NONE: &str = "none";
+
+    // ── OS の種類と版（2026-10-01。W3-5 で見つかった不足。Android はメインプロセスの local/OsInfoCommand が答える）──
+
+    /// OS の種類と版を返す。引数なし。返答 `{ platform, os_version }`（模擬は simulated も）。
+    pub const METHOD_OS_INFO: &str = "os_info";
+    /// os_info の返答: OS の種類（PLATFORM_*）。
+    pub const KEY_PLATFORM: &str = "platform";
+    /// os_info の返答: OS の版の番号（Android は Build.VERSION.SDK_INT〈API レベル〉。デスクトップの模擬は 0 か環境変数の値）。
+    pub const KEY_OS_VERSION: &str = "os_version";
+    /// platform: Android。
+    pub const PLATFORM_ANDROID: &str = "android";
+    /// platform: Windows（デスクトップの模擬）。
+    pub const PLATFORM_WINDOWS: &str = "windows";
+    /// platform: macOS（デスクトップの模擬）。
+    pub const PLATFORM_MACOS: &str = "macos";
+    /// platform: Linux（デスクトップの模擬）。
+    pub const PLATFORM_LINUX: &str = "linux";
+    /// platform: 知らない OS。
+    pub const PLATFORM_UNKNOWN: &str = "unknown";
+
+    // ── 前面・背面の知らせ（2026-10-01。Android は MainActivity の onResume / onPause、模擬は窓のフォーカスの出入り）──
+
+    /// 前面へ戻った（Android の onResume。プロセスの起動の最初の onResume では出さない＝必ず paused の後に来る。
+    /// data `{ count, background_ms }`）。
+    pub const EVENT_RESUMED: &str = "platform.resumed";
+    /// 前面を離れた（Android の onPause。data `{ count }`）。
+    pub const EVENT_PAUSED: &str = "platform.paused";
+    /// resumed / paused の data: 何回目の知らせか（それぞれ 1 から。Android はプロセスの中、模擬は Play の回の中で数える）。
+    pub const KEY_LIFECYCLE_COUNT: &str = "count";
+    /// resumed の data: 背面にいた時間（ミリ秒。直前の paused から）。
+    pub const KEY_BACKGROUND_MS: &str = "background_ms";
+    /// 模擬だけ: 前面・背面の出入りを起こす（窓のフォーカスの出入りと同じ扱い）。引数 `{ phase }`（LIFECYCLE_*）。
+    /// 返答 `{ phase, changed }`（既にその状態なら changed = false でイベントは出さない）。
+    pub const METHOD_SIM_LIFECYCLE: &str = "sim_lifecycle";
+    /// sim_lifecycle の phase: 前面へ戻る（platform.resumed を積む）。
+    pub const LIFECYCLE_RESUMED: &str = "resumed";
+    /// sim_lifecycle の phase: 前面を離れる（platform.paused を積む）。
+    pub const LIFECYCLE_PAUSED: &str = "paused";
+    /// sim_lifecycle の返答: 状態が変わった（イベントを積んだ）か。
+    pub const KEY_CHANGED: &str = "changed";
 }
 
 /// 1 件ごとの「受け取りました」のログを出さないイベント（毎フレーム届くもの。W2 の手直し P1-3）。
@@ -642,6 +682,23 @@ pub mod permission {
 
     /// 最初に払い出す要求の ID（0 は「要求できなかった」の印に使う）。
     pub const FIRST_REQUEST_ID: i64 = 1;
+
+    // ── デスクトップの模擬だけ（2026-10-01。Android には無く、:seed_platform へ送られて unknown_method）──
+
+    /// 模擬の状態を変える。引数 `{ kind, status }`（v1 の種類だけ）。変わったら platform.permission_changed を積む。
+    /// 返答 `{ kind, status, changed }`。
+    pub const METHOD_SIM_SET: &str = "sim_set";
+    /// 模擬の利用者の答え（request のときに当てる状態）を決める。引数 `{ kind, answer }`（kind は KIND_ALL で全部、
+    /// answer は STATUS_* か ANSWER_NONE）。返答 `{ kind, answer }`。
+    pub const METHOD_SIM_ANSWER: &str = "sim_answer";
+    /// sim_answer の引数・返答: 答え（STATUS_* か ANSWER_NONE）。
+    pub const KEY_ANSWER: &str = "answer";
+    /// sim_set の返答: 状態が変わった（permission_changed を積んだ）か。
+    pub const KEY_CHANGED: &str = "changed";
+    /// answer: 答えない（確認の画面の外を押して閉じた・設定の画面で何も変えずに戻った。状態は変わらない）。
+    pub const ANSWER_NONE: &str = "none";
+    /// sim_answer の kind: すべての種類。
+    pub const KIND_ALL: &str = "all";
 }
 
 /// センサー（W1-8。モジュール "sensor"。Android はメインプロセスの Java〈platform/sensor/〉が SensorManager から受けて答える。IPC なし）の
@@ -878,6 +935,12 @@ mod tests {
             ("KEY_BACK_GESTURE", app::KEY_GESTURE), ("KEY_BACK_PROGRESS", app::KEY_PROGRESS), ("KEY_BACK_EDGE", app::KEY_EDGE),
             ("KEY_BACK_TOUCH_X", app::KEY_TOUCH_X), ("KEY_BACK_TOUCH_Y", app::KEY_TOUCH_Y),
             ("BACK_EDGE_LEFT", app::EDGE_LEFT), ("BACK_EDGE_RIGHT", app::EDGE_RIGHT), ("BACK_EDGE_NONE", app::EDGE_NONE),
+            // 2026-10-01: OS の種類と版・前面と背面の知らせ（sim_lifecycle・LIFECYCLE_*・KEY_CHANGED と PLATFORM_ の
+            // デスクトップの名前は模擬だけなので Java には無い）
+            ("METHOD_APP_OS_INFO", app::METHOD_OS_INFO), ("KEY_APP_PLATFORM", app::KEY_PLATFORM),
+            ("KEY_APP_OS_VERSION", app::KEY_OS_VERSION), ("APP_PLATFORM_ANDROID", app::PLATFORM_ANDROID),
+            ("EVENT_APP_RESUMED", app::EVENT_RESUMED), ("EVENT_APP_PAUSED", app::EVENT_PAUSED),
+            ("KEY_APP_LIFECYCLE_COUNT", app::KEY_LIFECYCLE_COUNT), ("KEY_APP_BACKGROUND_MS", app::KEY_BACKGROUND_MS),
             // W1-6: 触感
             ("MODULE_HAPTICS", haptics::MODULE), ("METHOD_HAPTICS_TAP", haptics::METHOD_TAP),
             ("METHOD_HAPTICS_VIBRATE", haptics::METHOD_VIBRATE), ("KEY_HAPTICS_MS", haptics::KEY_MS),

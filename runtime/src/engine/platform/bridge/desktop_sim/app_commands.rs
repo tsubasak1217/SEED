@@ -9,7 +9,10 @@
 //    app.open_url             … URL の規則（bridge::app。Android と同じ）で判定し、通ったもののうち http / https / mailto だけを
 //                               PC の既定のアプリで開く（url_opener.rs。ほかの scheme は判定だけ）。返答 { scheme, opened, simulated }（W1-6）
 //    app.open_app_settings    … 何もしない（ログだけ）。返答 { simulated }（W1-6）
+//    app.os_info              … ホストの OS の種類と模擬の版（os_info.rs。既定 0・環境変数 SEED_PLATFORM_SIM_OS_VERSION）。
+//                               返答 { platform, os_version, simulated }（2026-10-01）
 //  platform.launch のイベント（起動後の Intent）は模擬では出ない。画面の命令は window_commands.rs。
+//  前面・背面（platform.resumed / paused）は lifecycle_commands.rs。
 // ============================================================
 
 use serde_json::{json, Map, Value};
@@ -63,6 +66,14 @@ impl DesktopSimBridge {
     pub(super) fn handle_app_open_app_settings(&self, _request: &Value) -> SimResult {
         eprintln!("{LOG_PREFIX} 模擬: アプリ情報の画面（デスクトップでは何もしません。Android では端末の設定のアプリ情報）");
         Ok(simulated_reply())
+    }
+
+    /// app.os_info: ホストの OS の種類と模擬の版（起動のときに読んだ値）。
+    pub(super) fn handle_app_os_info(&self, _request: &Value) -> SimResult {
+        let mut fields = simulated_reply();
+        fields.insert(app::KEY_PLATFORM.into(), Value::from(self.os_info.platform));
+        fields.insert(app::KEY_OS_VERSION.into(), Value::from(self.os_info.os_version));
+        Ok(fields)
     }
 }
 
@@ -126,6 +137,19 @@ mod tests {
     /// 命令を送って返答の JSON を読む（テスト用）。
     fn call(sim: &DesktopSimBridge, module: &str, method: &str, request: Value) -> Value {
         serde_json::from_str(&sim.invoke(module, method, &request.to_string()).unwrap()).unwrap()
+    }
+
+    /// OS の種類と版: ホストの OS の名前・既定の版 0（単体テストは環境変数を読まない）・模擬の印。
+    #[test]
+    fn os_info_reports_host_platform_and_default_version() {
+        let (sim, _) = sim_with(None);
+        let reply = call(&sim, app::MODULE, app::METHOD_OS_INFO, json!({}));
+        assert_eq!(reply[wire::KEY_OK], Value::Bool(true));
+        assert_eq!(reply[app::KEY_OS_VERSION], Value::from(0));
+        assert_eq!(reply[alarm_names::KEY_SIMULATED], Value::Bool(true));
+        #[cfg(target_os = "windows")]
+        assert_eq!(reply[app::KEY_PLATFORM], Value::from(app::PLATFORM_WINDOWS));
+        assert!(reply[app::KEY_PLATFORM].is_string());
     }
 
     /// 起動理由: 起動引数が無ければランチャー（uri は空）。欄はそろっていて、模擬の印つき。

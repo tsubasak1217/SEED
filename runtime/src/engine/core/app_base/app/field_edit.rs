@@ -479,6 +479,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::SaveData(..)
         // デバッグコマンドは Play 中のスクリプトへの指示であってシーンの編集ではない。
         | IpcCommand::ScriptDebug { .. }
+        // SEED.Platform の模擬の操作は Play 中の OS の状態の模擬であってシーンの編集ではない（2026-10-01）。
+        | IpcCommand::PlatformSim { .. }
         | IpcCommand::SetEditPhysics { .. }
         | IpcCommand::SetEditPhysicsAll { .. }
         | IpcCommand::SetEditPhysics2d { .. }

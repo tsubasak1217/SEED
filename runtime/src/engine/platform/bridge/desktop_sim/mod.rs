@@ -27,8 +27,10 @@
 //  【W1-5 の命令】（Java の :seed_platform の NotificationModule・メインプロセスの Permission*Command と同じ意味）
 //    notification.ensure_channel / show / cancel / are_enabled … チャネルと出ている通知をプロセスの中に持ち、
 //        show は [SEED PLATFORM] 通知: … のログ。are_enabled は常に true（notification_commands.rs・notification_state.rs）
-//    permission.check / request / open_settings … v1 の種類は常に granted、v2 の予約の種類は not_applicable。
-//        request はすぐ platform.permission_result を積む（permission_commands.rs）
+//    permission.check / request / open_settings … 状態は模擬の表（既定は v1 の種類が granted、v2 の予約の種類は not_applicable）。
+//        request は模擬の利用者の答えを当てて、すぐ platform.permission_result（変われば permission_changed も）を積む
+//        （permission_commands.rs）。2026-10-01 から、起動時の状態と答えを環境変数で与えられ（permission_config.rs）、
+//        模擬だけの permission.sim_set / sim_answer で実行中に変えられる（表は permission_state.rs）
 //  【W1-6 の命令】（Java のメインプロセスの local/ の命令と同じ意味）
 //    window.set_keep_screen_on / set_system_bars_visible … 受け付けて記録しログだけ（window_commands.rs・window_state.rs）
 //    app.move_task_to_back / open_app_settings … 何もしない（ログだけ。app_commands.rs）
@@ -48,13 +50,19 @@
 //    app.set_back_callback … アプリが戻るを受けるかを記録してログ（変わったときだけ）。予測型の戻るは無いので enabled は false
 //    app.sim_back_gesture … 模擬だけ（Android では unknown_method）。戻るの手ぶりのイベント（platform.back_*）を積む
 //        （back_commands.rs・back_state.rs）
+//  【2026-10-01 の命令】（W3-5 で見つかった不足。Java のメインプロセスの local/OsInfoCommand と platform/app/AppLifecycle の代わり）
+//    app.os_info … ホストの OS の種類と模擬の版（既定 0・環境変数 SEED_PLATFORM_SIM_OS_VERSION。app_commands.rs・os_info.rs）
+//    app.sim_lifecycle … 模擬だけ。前面・背面の出入り（platform.resumed / paused）を起こす。窓のフォーカスの出入り
+//        （notify_host_focus_changed。Play の間だけ）でも同じく積む（lifecycle_commands.rs・lifecycle_state.rs）
 //
 //  【ファイル】mod.rs（表と共通）・alarm_book.rs（模擬の予約表）・alarm_commands.rs（目覚ましの命令と発火）・
 //  ring_state.rs（鳴動の状態）・ring_commands.rs（鳴動の命令とイベント）・app_commands.rs（起動理由・アプリ）・
 //  launch_uri.rs（起動引数のディープリンク）・url_opener.rs（URL を PC で開く係）・window_state.rs / window_commands.rs（画面）・
 //  haptics_state.rs / haptics_commands.rs（触感）・notification_state.rs（通知の状態）・notification_commands.rs（通知の命令）・
-//  permission_commands.rs（権限の命令）・sensor_state.rs / sensor_commands.rs（センサー）・wall_clock.rs（壁時計。テストで進める）・
-//  back_state.rs / back_commands.rs（予測型の戻る）
+//  permission_config.rs（権限の起動時の設定）・permission_state.rs（権限の状態と答え）・permission_commands.rs（権限の命令）・
+//  sensor_state.rs / sensor_commands.rs（センサー）・wall_clock.rs（壁時計。テストで進める）・
+//  back_state.rs / back_commands.rs（予測型の戻る）・os_info.rs（OS の種類と版）・
+//  lifecycle_state.rs / lifecycle_commands.rs（前面・背面）
 // ============================================================
 
 /// 模擬の目覚ましの予約表。
@@ -73,12 +81,22 @@ mod haptics_commands;
 mod haptics_state;
 /// 起動引数のディープリンク（W1-6）。
 mod launch_uri;
+/// 模擬の前面・背面の命令とイベント（2026-10-01）。
+mod lifecycle_commands;
+/// 模擬の前面・背面の状態（2026-10-01）。
+mod lifecycle_state;
 /// 模擬の通知の命令（W1-5）。
 mod notification_commands;
 /// 模擬の通知の状態（W1-5）。
 mod notification_state;
-/// 模擬の権限の命令（W1-5）。
+/// 模擬の OS の種類と版（2026-10-01）。
+mod os_info;
+/// 模擬の権限の命令（W1-5。2026-10-01 に状態の操作）。
 mod permission_commands;
+/// 模擬の権限の起動時の設定（環境変数。2026-10-01）。
+mod permission_config;
+/// 模擬の権限の状態と答え（2026-10-01）。
+mod permission_state;
 /// 模擬の鳴動の命令とイベント（W1-4a）。
 mod ring_commands;
 /// 模擬の鳴動の状態（W1-4a）。
@@ -118,7 +136,11 @@ use super::{PlatformBridge, PlatformBridgeKind};
 use alarm_book::SimAlarmBook;
 use back_state::SimBackState;
 use haptics_state::SimHapticsLog;
+use lifecycle_state::SimLifecycleState;
 use notification_state::SimNotificationBoard;
+use os_info::SimOsInfo;
+use permission_config::SimPermissionConfig;
+use permission_state::SimPermissionBoard;
 use ring_state::SimRingState;
 use sensor_state::SimSensorBoard;
 use window_state::SimWindowState;
@@ -248,6 +270,17 @@ const SIM_COMMANDS: &[SimCommand] = &[
         method: permission_names::METHOD_OPEN_SETTINGS,
         handler: DesktopSimBridge::handle_permission_open_settings,
     },
+    // 2026-10-01: 模擬の権限の状態と答えの操作（模擬だけ。IPC の PLATFORM_SIM とスクリプトの PlatformDiagnostics）
+    SimCommand {
+        module: permission_names::MODULE,
+        method: permission_names::METHOD_SIM_SET,
+        handler: DesktopSimBridge::handle_permission_sim_set,
+    },
+    SimCommand {
+        module: permission_names::MODULE,
+        method: permission_names::METHOD_SIM_ANSWER,
+        handler: DesktopSimBridge::handle_permission_sim_answer,
+    },
     // W1-8: センサー（sim_inject は模擬だけ）
     SimCommand { module: sensor_names::MODULE, method: sensor_names::METHOD_START, handler: DesktopSimBridge::handle_sensor_start },
     SimCommand { module: sensor_names::MODULE, method: sensor_names::METHOD_STOP, handler: DesktopSimBridge::handle_sensor_stop },
@@ -270,6 +303,13 @@ const SIM_COMMANDS: &[SimCommand] = &[
         module: app_names::MODULE,
         method: app_names::METHOD_SIM_BACK_GESTURE,
         handler: DesktopSimBridge::handle_app_sim_back_gesture,
+    },
+    // 2026-10-01: OS の種類と版・前面と背面の出入り（sim_lifecycle は模擬だけ）
+    SimCommand { module: app_names::MODULE, method: app_names::METHOD_OS_INFO, handler: DesktopSimBridge::handle_app_os_info },
+    SimCommand {
+        module: app_names::MODULE,
+        method: app_names::METHOD_SIM_LIFECYCLE,
+        handler: DesktopSimBridge::handle_app_sim_lifecycle,
     },
 ];
 
@@ -300,6 +340,12 @@ pub struct DesktopSimBridge {
     ui_mode: SimUiModeState,
     /// 模擬の予測型の戻る（アプリが戻るを受けるかの記録と手ぶりの番号。W2 の手直し P1-3）。
     back: SimBackState,
+    /// 模擬の権限の状態と答え（起動時の設定は環境変数。2026-10-01）。
+    permissions: SimPermissionBoard,
+    /// 模擬の前面・背面（窓のフォーカスの出入りと sim_lifecycle。2026-10-01）。
+    lifecycle: SimLifecycleState,
+    /// 模擬の OS の種類と版（起動のときに 1 回読む。2026-10-01）。
+    os_info: SimOsInfo,
     /// app.open_url の URL を PC の既定のアプリへ渡す係（W1-6。単体テストでは判定だけ・記録だけの係）。
     url_opener: Arc<dyn UrlOpener>,
     /// 単体起動の起動引数 --deep-link=<URI>（W1-6。無ければ None ＝ launcher）。Play の区切りでも消さない（プロセスの起動引数）。
@@ -349,10 +395,19 @@ impl DesktopSimBridge {
             sensors: SimSensorBoard::new(),
             ui_mode: SimUiModeState::new(os_ui_mode::read_os_night),
             back: SimBackState::new(),
+            permissions: SimPermissionBoard::new(permission_config_for_process()),
+            lifecycle: SimLifecycleState::new(),
+            os_info: SimOsInfo::from_host(),
             url_opener,
             launch_uri,
             clock,
         }
+    }
+
+    /// 権限の起動時の設定を差し替える（単体テストで環境変数を使わずに状態と答えを与える）。
+    #[cfg(test)]
+    pub(super) fn replace_permission_config(&self, config: SimPermissionConfig) {
+        self.permissions.reconfigure(config);
     }
 
     /// 模擬のイベントの通し番号を 1 つ払い出す（試験イベントと目覚ましで共通）。
@@ -456,10 +511,16 @@ impl PlatformBridge for DesktopSimBridge {
         self.on_host_ui_mode_changed();
     }
 
+    fn notify_host_focus_changed(&self, focused: bool) {
+        // 窓のフォーカスの出入り（Play の間だけ届く）を Android の onResume / onPause の代わりにする（変わったときだけ積む）
+        self.on_host_focus_changed(focused);
+    }
+
     fn reset_session(&self) {
         // Play の区切り: 予約・鳴動・通知（チャネルも）・画面の状態・触感の記録・センサー（W1-8）・予測型の戻るの記録と手ぶりの番号
-        // （W2 の手直し P1-3）・積んだイベントを捨てる
-        // （Play を止めれば模擬の予約も鳴動も通知も消え、画面は既定へ戻り、センサーは止まる。起動引数のディープリンクはプロセスのものなので残す）
+        // （W2 の手直し P1-3）・権限の実行中の変更（起動時の設定へ戻す）と前面・背面（前面へ戻す。2026-10-01）・積んだイベントを捨てる
+        // （Play を止めれば模擬の予約も鳴動も通知も消え、画面は既定へ戻り、センサーは止まる。起動引数のディープリンク・
+        // 環境変数の設定・OS の版はプロセスのものなので残す）
         self.alarms.clear();
         self.ringing.clear();
         self.notifications.clear();
@@ -468,8 +529,15 @@ impl PlatformBridge for DesktopSimBridge {
         self.sensors.clear();
         self.ui_mode.clear();
         self.back.clear();
+        self.permissions.clear();
+        self.lifecycle.clear();
         self.events.clear();
     }
+}
+
+/// このプロセスの権限の起動時の設定（環境変数。単体テストでは環境変数を読まず空＝従来の既定）。
+fn permission_config_for_process() -> SimPermissionConfig {
+    if cfg!(test) { SimPermissionConfig::default() } else { SimPermissionConfig::from_env() }
 }
 
 /// 経過ミリ秒（u128）を JSON に入れられる u64 へ（あふれたら上限で止める）。

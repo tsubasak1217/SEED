@@ -3621,7 +3621,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **PC の Play のスクリプトのコンパイルで `Uri`（System.Private.Uri）が参照に無い**（CS0103。System.Text.Json の件と同じ根: 参照の集合が「読み込み済み」だけ）。
   (5) トーストの札が下の押す場所を覆う（仕様どおり。庭の下のボタンが押せない間がある）。
   (6) `Time` は描画を止めている間は進まない（設計どおり）ので、実時間の計時は `Stopwatch` を使う必要がある → docs/redraw_policy.md に明記する。
-- [ ] **W3-5（オンボーディング S-10）で見つかったプラットフォーム API の不足** — 2026-10-01（Wake or Pay の W3-5 で発見。プロジェクト側で回避済み）。
+- [x] **W3-5（オンボーディング S-10）で見つかったプラットフォーム API の不足** — 2026-10-01（Wake or Pay の W3-5 で発見。プロジェクト側で回避済み）。
   (1) **`SEED.Platform.App` に OS の版（SDK_INT）を取る API が無い**（権限の段の出し分けを、権限の状態〈「その版では要らない」〉で代用している）。
   (2) **スクリプトへ「前面へ戻った（onResume）」を知らせるイベントが無い**（`platform.permission_changed` は変わったときだけ、`platform.launch` は開き直しだけ。
   設定の画面から戻ったときの問い直しを「1 秒以上あいたフレーム」で判定して回避 → 実機で未確認の前提）。`platform.resumed`／`platform.paused` を足す。
@@ -3629,3 +3629,28 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   模擬に IPC か環境変数で状態を与えられるようにする。
   (4) SeedAndroid のビルドで Gradle の常駐プロセスが出力をつかんだままになり、`| Out-File` でつないだコマンドが `gradlew --stop` まで返らない。
   (5) docs のイベント名の表記ゆれ: `platform.permission.changed` と書かれた箇所があるが、実際は `platform.permission_changed`（コードは定数）。docs を揃える。
+  → **2026-10-01 に (1)(2)(3)(5) を済**（docs/android.md §25.20・scripting_api.md §7.13）:
+  (1) `App.OsVersion`（Android は `Build.VERSION.SDK_INT`、PC の模擬は 0 か環境変数 `SEED_PLATFORM_SIM_OS_VERSION`）と `App.Platform`（`PlatformKind`）。
+  (2) `platform.resumed`（`count`・`background_ms`。プロセスの起動の最初の onResume では出さない・戻ったときの権限の結果と変化の後）/ `platform.paused`（`count`）と
+  `AppLifecycleEvent`。PC の模擬は窓のフォーカスの出入り（Play の間だけ）と `PlatformDiagnostics.SimulateLifecycle`・IPC `PLATFORM_SIM:lifecycle,…`。
+  (3) PC の模擬の権限: 起動時の状態 `SEED_PLATFORM_SIM_PERMISSIONS`・求めたときの答え `SEED_PLATFORM_SIM_PERMISSION_ANSWER`（`none` で答えない）、実行中は
+  IPC `PLATFORM_SIM:permission,<kind>,<status>` / `permission_answer,<kind|all>,<status|none>` と `PlatformDiagnostics.SimulatePermission` / `SimulatePermissionAnswer`。
+  変えるとすぐ `permission_changed`、`Request` は答えを当てて結果（変われば `permission_changed` も）、`OpenSettings` はログだけ。
+  (5) SEED の docs・html・コードと Wake or Pay を検索したが `platform.permission.changed` の誤記は見つからなかった（すでに `platform.permission_changed` で揃っている）。
+  C# の `PermissionChangedEvent` の説明の「プロセスの最初の onResume では届かない」を正しい「インストール後の最初の onResume」に直した。
+  (4) は別の項目へ分けた（次の項目）。実機での確かめは下の「前面・背面の知らせと OS の版の実機の確かめ」。
+- [ ] **SeedAndroid のビルドで Gradle の常駐プロセスが出力をつかんだままになる** — 2026-10-01（W3-5 の (4) から分けた）。
+  `| Out-File` でつないだコマンドが `gradlew --stop` まで返らない（常駐プロセスが標準出力の書き込み側を持ち続け、読み手が終わりを受け取れない）。
+  Git Bash でファイルへ直接リダイレクトする（`> file 2>&1`）と、常駐プロセスが残っていても SeedAndroid の終わりで返る（2026-10-01 の APK の組み立てで確かめた。PowerShell の `>` は未確認）。案: SeedAndroid が Gradle を
+  `--no-daemon` か、常駐プロセスへ出力を渡さない形で起動する。
+- [ ] **前面・背面の知らせ（`platform.resumed` / `paused`）と OS の版の実機の確かめ** — 2026-10-01（PC の模擬と APK の組み立てまでで、端末には入れていない）。
+  (1) 設定の画面へ行って戻る・ホームへ行って戻る・通知の引き下ろし・電源ボタンで、`paused` / `resumed` の組と `count`・`background_ms`。
+  (2) `paused` が背面にいる間に配られるか（背面の間はフレームが回らないので、戻ったときに `resumed` の直前にまとめて届く見込み＝推論）。
+  (3) 起動の最初の onResume で `resumed` が出ないこと（目覚ましでロック画面の上に起動したときも）。(4) 設定の画面から戻ったときに `permission_changed` → `resumed` の順。
+  (5) `App.OsVersion` が Pixel 6a（Android 17）の API レベルを返すこと。手順は docs/android.md §25.20.6。
+- [ ] **PC の模擬の制限（2026-10-01 の追加で残したもの）** — 2026-10-01。
+  (1) 模擬の `permission_changed` は変えたときにすぐ届く（Android は前面へ戻ったときに気づく）。「背面の間に変わっていて、戻ったときに気づく」の順は
+  `PLATFORM_SIM:lifecycle,paused` → `permission,…` → `lifecycle,resumed` で近づけられるが、変化のイベントは paused と resumed の間に届く。
+  (2) エディタに埋め込んだ Play では、エディタの別のパネルを押しただけで窓のフォーカスが外れ `platform.paused` が届く（PC の近似）。
+  (3) エディタの `RuntimeManager` は `PLATFORM_SIM_OK` / `PLATFORM_SIM_ERROR` の応答の振り分けを持たず、MCP の `seed_send_ipc`（`EditorCommandExecutor.ExecuteSendIpc` は送るだけ）から送ったときに応答を待てない
+  （自動の確かめは単体起動の SEED.exe に TCP でつなぐ）。MCP のツールにするなら応答の待ち合わせと `seed_batch` の enum を足す。

@@ -112,6 +112,64 @@ public static class PlatformDiagnostics
     public static bool SimulateBackGesture(BackGesturePhase phase, float progress = 0f, BackEdge edge = BackEdge.Left) =>
         Platform.TryInvoke(AppJson.Module, BackJson.MethodSimBackGesture, BackJson.SimGestureRequest(phase, progress, edge), out _);
 
+    /// <summary>
+    /// デスクトップの模擬だけ: 権限の状態を変える（2026-10-01）。変わったら <see cref="PermissionChangedEvent"/>（"platform.permission_changed"）を
+    /// 次のフレームで流す（Android は前面へ戻ったときに気づくが、模擬は変えたときに知らせる）。IPC の
+    /// <c>PLATFORM_SIM:permission,&lt;kind&gt;,&lt;status&gt;</c> と同じ。起動時の状態は環境変数 SEED_PLATFORM_SIM_PERMISSIONS
+    /// （例 "post_notifications=denied;exact_alarm=needs_settings"）。Play を止めると起動時の状態へ戻る。
+    /// v2 の予約の種類（<see cref="PermissionKind.RecordAudio"/>・<see cref="PermissionKind.SendSms"/>）は常に NotApplicable で変えられない
+    /// （invalid_argument）。Android の実機では unknown_method（false）。
+    /// </summary>
+    /// <param name="kind">種類（v1 の 3 種）。</param>
+    /// <param name="status">新しい状態（<see cref="PermissionStatus.Unknown"/> は invalid_argument）。</param>
+    /// <returns>受け付けたら true（同じ状態でも true。失敗なら <see cref="Platform.LastError"/>）。</returns>
+    public static bool SimulatePermission(PermissionKind kind, PermissionStatus status)
+    {
+        string kindName = PermissionJson.KindName(kind);
+        string statusName = PermissionJson.StatusName(status);
+        if (kindName.Length == 0 || statusName.Length == 0)
+        {
+            Platform.LastError = Permissions.ErrorInvalidArgument;
+            return false;
+        }
+        return Platform.TryInvoke(PermissionJson.Module, PermissionJson.MethodSimSet,
+            PlatformJson.StringObject((PermissionJson.KeyKind, kindName), (PermissionJson.KeyStatus, statusName)), out _);
+    }
+
+    /// <summary>
+    /// デスクトップの模擬だけ: <see cref="Permissions.Request"/> のときの模擬の利用者の答えを決める（2026-10-01）。
+    /// 求めた種類が Denied・NeedsSettings のとき、この答えの状態になって結果（と、変われば変化のイベント）が届く。
+    /// Granted・NotApplicable・DeniedPermanently のときは Android と同じく答えを当てずに今の状態が結果になる。
+    /// 既定は Granted（従来の「求めれば許可」）。IPC の <c>PLATFORM_SIM:permission_answer,&lt;kind|all&gt;,&lt;status|none&gt;</c> と同じ。
+    /// 起動時の答えは環境変数 SEED_PLATFORM_SIM_PERMISSION_ANSWER（例 "none" / "denied;exact_alarm=granted"）。Android の実機では unknown_method（false）。
+    /// </summary>
+    /// <param name="kind">種類（null ですべての種類）。</param>
+    /// <param name="answer">答えの状態（null で「答えない」＝確認の画面の外を押して閉じた・設定の画面で何も変えずに戻った）。</param>
+    /// <returns>受け付けたら true（失敗なら <see cref="Platform.LastError"/>）。</returns>
+    public static bool SimulatePermissionAnswer(PermissionKind? kind, PermissionStatus? answer)
+    {
+        string kindName = kind is { } k ? PermissionJson.KindName(k) : PermissionJson.KindAll;
+        string answerName = answer is { } a ? PermissionJson.StatusName(a) : PermissionJson.AnswerNone;
+        if (kindName.Length == 0 || answerName.Length == 0)
+        {
+            Platform.LastError = Permissions.ErrorInvalidArgument;
+            return false;
+        }
+        return Platform.TryInvoke(PermissionJson.Module, PermissionJson.MethodSimAnswer,
+            PlatformJson.StringObject((PermissionJson.KeyKind, kindName), (PermissionJson.KeyAnswer, answerName)), out _);
+    }
+
+    /// <summary>
+    /// デスクトップの模擬だけ: 前面・背面の出入りを起こす（2026-10-01。窓のフォーカスの出入りと同じ扱い）。
+    /// 状態が変わったら <see cref="App.ResumedEvent"/> / <see cref="App.PausedEvent"/> を次のフレームで流す（既にその状態なら何もしない）。
+    /// Play の始まりは前面。IPC の <c>PLATFORM_SIM:lifecycle,&lt;resumed|paused&gt;</c> と同じ。Android の実機では unknown_method（false）。
+    /// </summary>
+    /// <param name="phase">移る先。</param>
+    /// <returns>受け付けたら true（状態が変わらなくても true。失敗なら <see cref="Platform.LastError"/>）。</returns>
+    public static bool SimulateLifecycle(AppLifecyclePhase phase) =>
+        Platform.TryInvoke(AppJson.Module, AppJson.MethodSimLifecycle,
+            PlatformJson.StringObject((AppJson.KeyPhase, AppJson.ToPhaseWord(phase))), out _);
+
     /// <summary>ping の返答を読み、合言葉の一致を確かめて結果にする。</summary>
     private static PlatformPingResult ReadPingReply(string reply, string nonce, double elapsedMs)
     {

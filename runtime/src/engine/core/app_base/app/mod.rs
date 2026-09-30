@@ -44,6 +44,8 @@ mod input_inject_ops;
 mod save_data_ops;
 /// デバッグコマンド IPC（SCRIPT_DEBUG）のハンドラ。
 mod script_debug_ops;
+/// SEED.Platform のデスクトップの模擬の操作 IPC（PLATFORM_SIM。2026-10-01）のハンドラ。
+mod platform_sim_ops;
 /// 未保存クリップのライブプレビュー（ANIM_PREVIEW_CLIP）
 mod anim_preview_clip_ops;
 mod hierarchy_sync;

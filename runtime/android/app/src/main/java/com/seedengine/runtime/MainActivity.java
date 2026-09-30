@@ -22,6 +22,8 @@
 //      権限の状態が前回と違えば platform.permission_changed を流す。onRequestPermissionsResult で実行時の確認の画面の結果を渡す
 //    ・センサー（中身は platform/sensor/SensorFeeds。W1-8）: onPause でスクリプトが始めたセンサーの登録を外し（背面で電池を使わない）、
 //      onResume で登録し直す
+//    ・前面・背面の知らせ（中身は platform/app/AppLifecycle。2026-10-01）: onResume の最後に platform.resumed（プロセスの最初の
+//      onResume では流さない）、onPause の最初に platform.paused を流す（スクリプトが設定の画面から戻ったときに権限を問い直す契機）
 //    ・鳴動の音量の後始末（中身は platform/LeftoverVolumeNudge。W1-7）: onResume で、:seed_platform が戻せずに残した
 //      force_volume の前の音量があれば、前面にいる今のうちに戻させる（Android 17 は背面からの音量の変更を無視する）
 //    ・Activity 破棄時のセーブ書き出し（JNI）とプロセス終了（理由は onDestroy のコメント）
@@ -67,6 +69,7 @@ import com.seedengine.runtime.input.TouchTimeline;
 import com.seedengine.runtime.platform.LaunchReason;
 import com.seedengine.runtime.platform.LeftoverVolumeNudge;
 import com.seedengine.runtime.platform.SeedPlatform;
+import com.seedengine.runtime.platform.app.AppLifecycle;
 import com.seedengine.runtime.platform.app.BackCallbackHost;
 import com.seedengine.runtime.platform.app.NightMode;
 import com.seedengine.runtime.platform.permission.PermissionLifecycle;
@@ -205,6 +208,8 @@ public class MainActivity extends GameActivity implements SystemBarsHost, BackCa
      * 権限の設定の画面から戻ったときの結果と、権限の状態の変化の知らせもここ（W1-5。中身は PermissionLifecycle）。
      * スクリプトが始めていたセンサーを登録し直す（W1-8。中身は SensorFeeds）。
      * 戻せずに残した鳴動の音量があれば :seed_platform に戻させる（W1-7。中身は LeftoverVolumeNudge。無ければファイルを 1 つ見るだけ）。
+     * 最後に、前面へ戻ったことを platform.resumed で知らせる（2026-10-01。中身は AppLifecycle。プロセスの最初の onResume では流さない。
+     * 権限の結果・変化の後に置くので、スクリプトが resumed を受けた時点で戻ったときの権限のイベントは届いている）。
      */
     @Override
     protected void onResume() {
@@ -213,6 +218,7 @@ public class MainActivity extends GameActivity implements SystemBarsHost, BackCa
         PermissionLifecycle.onResume(this);
         SensorFeeds.onHostResumed();
         LeftoverVolumeNudge.onHostResumed(this);
+        AppLifecycle.onResumed();
     }
 
     /**
@@ -230,12 +236,14 @@ public class MainActivity extends GameActivity implements SystemBarsHost, BackCa
     }
 
     /**
-     * 前面を離れる。音声フォーカスを手放す（ネイティブは音声を止める）。
+     * 前面を離れる。最初に platform.paused で知らせる（2026-10-01。中身は AppLifecycle）。
+     * 音声フォーカスを手放す（ネイティブは音声を止める）。
      * センサーの登録を外す（W1-8。背面で電池を使わない。start の状態は残り、onResume で登録し直す）。
      */
     @Override
     protected void onPause() {
         super.onPause();
+        AppLifecycle.onPaused();
         audioFocus.abandon();
         SensorFeeds.onHostPaused();
     }

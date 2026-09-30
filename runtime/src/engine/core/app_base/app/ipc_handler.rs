@@ -193,6 +193,8 @@ impl App {
                 IpcCommand::InputInject(inject) => self.handle_input_inject(inject),
                 IpcCommand::SaveData(payload) => self.handle_save_data(payload),
                 IpcCommand::ScriptDebug { name, arg } => self.handle_script_debug(name, arg),
+                // SEED.Platform のデスクトップの模擬の操作（2026-10-01。判定と応答は platform_sim_ops.rs）
+                IpcCommand::PlatformSim { verb, args } => self.handle_platform_sim(verb, args),
                 IpcCommand::Pause => {
                     if self.pause_keeps_game_view() {
                         // TCP（Android の端末）: ゲームの時間・物理・スクリプトだけを止め、画面はゲームのカメラのまま

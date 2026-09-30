@@ -1168,6 +1168,14 @@ pub enum IpcCommand {
     /// AI が「釣り上げ演出をその場で起こす」のような<b>ゲーム内の手順を
     /// 途中から再現する</b>ために使う（人の操作を真似るより速く・確実）。
     ScriptDebug { name: String, arg: String },
+
+    // ─── SEED.Platform のデスクトップの模擬の操作（2026-10-01）──────────────
+    /// `PLATFORM_SIM:{verb},{arg1},{arg2}…` — PC の Play の模擬の権限の状態・答え・前面と背面を実行中に変える。
+    ///
+    /// 動詞と引数の意味（どの模擬の命令へ渡すか）は `app/platform_sim_ops.rs` の表が正典
+    /// （応答: `PLATFORM_SIM_OK:{返答の JSON}` / `PLATFORM_SIM_ERROR:{reason}`）。
+    /// 自動の確かめで「通知を拒否された状態 → 設定の画面から戻ったら許可」のような流れを端末なしで作るために使う。
+    PlatformSim { verb: String, args: Vec<String> },
 }
 
 // ============================================================
@@ -1299,6 +1307,12 @@ const SCRIPT_DEBUG_PREFIX: &str = "SCRIPT_DEBUG:";
 /// `SCRIPT_DEBUG:` の name と arg を分ける文字（arg 側の `,` は分割しない）。
 const SCRIPT_DEBUG_SEPARATOR: char = ',';
 
+/// `PLATFORM_SIM:{verb},{args…}` の接頭辞（SEED.Platform のデスクトップの模擬の操作。2026-10-01）。
+const PLATFORM_SIM_PREFIX: &str = "PLATFORM_SIM:";
+
+/// `PLATFORM_SIM:` の動詞と引数を分ける文字（引数どうしも同じ文字で分ける。値に `,` は含まない約束）。
+const PLATFORM_SIM_SEPARATOR: char = ',';
+
 /// エディタメニューのプラグインアクション要求の接頭辞。
 pub const PLUGIN_ACTION_PREFIX: &str = "PLUGIN_ACTION:";
 
@@ -1339,6 +1353,19 @@ fn parse_script_debug(line: &str) -> Option<IpcCommand> {
     let name = name.trim();
     if name.is_empty() || name.contains(char::is_whitespace) { return None; }
     Some(IpcCommand::ScriptDebug { name: name.to_string(), arg: arg.trim().to_string() })
+}
+
+/// `PLATFORM_SIM:{verb},{arg1},{arg2}…` を分解する【書式の唯一の定義】（2026-10-01）。
+///
+/// - `verb` は必須（空・空白を含むなら `None`）。前後の空白は落とす。
+/// - 引数は `,` ごとに分け、それぞれ前後の空白を落とす（数は動詞ごとに `app/platform_sim_ops.rs` の表が確かめる）。
+/// - 動詞の意味は解釈しない（知らない動詞も運び、応答 `PLATFORM_SIM_ERROR:unknown_verb` はハンドラが返す）。
+fn parse_platform_sim(line: &str) -> Option<IpcCommand> {
+    let rest = line.strip_prefix(PLATFORM_SIM_PREFIX)?;
+    let mut parts = rest.split(PLATFORM_SIM_SEPARATOR).map(str::trim);
+    let verb = parts.next()?;
+    if verb.is_empty() || verb.contains(char::is_whitespace) { return None; }
+    Some(IpcCommand::PlatformSim { verb: verb.to_string(), args: parts.map(str::to_string).collect() })
 }
 
 /// `RENDER_ACTOR_THUMBNAIL:` コマンドの接頭辞（図鑑画像の生成）。
@@ -3389,6 +3416,9 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                         // デバッグコマンド。名前と引数へ割るだけで、意味づけは
                         // ゲーム側の C# スクリプト（SEED.Debug.OnCommand）が持つ。
                         s if s.starts_with(SCRIPT_DEBUG_PREFIX) => parse_script_debug(s),
+                        // SEED.Platform のデスクトップの模擬の操作（2026-10-01）。動詞と引数へ割るだけで、
+                        // どの模擬の命令へ渡すかは app/platform_sim_ops.rs の表が持つ。
+                        s if s.starts_with(PLATFORM_SIM_PREFIX) => parse_platform_sim(s),
 
                         _                    => None,
                     }
@@ -3657,6 +3687,30 @@ mod tests {
         assert!(parse_script_debug("SCRIPT_DEBUG:catch test,arg").is_none());
         // 接頭辞が違えば None
         assert!(parse_script_debug("SCRIPT_DEBUGX:a,b").is_none());
+    }
+
+    /// SEED.Platform の模擬の操作（PLATFORM_SIM）の書式が正しく分解されること（2026-10-01）。
+    ///
+    /// 「動詞と引数を `,` で割る」「それぞれの前後の空白は落とす」「引数は省略可」「動詞が空／空白入りは弾く」。
+    #[test]
+    fn parses_platform_sim_commands() {
+        assert!(matches!(
+            parse_platform_sim("PLATFORM_SIM:permission, post_notifications ,denied"),
+            Some(IpcCommand::PlatformSim { ref verb, ref args })
+                if verb == "permission" && args == &["post_notifications".to_string(), "denied".to_string()]
+        ));
+        assert!(matches!(
+            parse_platform_sim("PLATFORM_SIM:lifecycle,paused"),
+            Some(IpcCommand::PlatformSim { ref verb, ref args }) if verb == "lifecycle" && args == &["paused".to_string()]
+        ));
+        assert!(matches!(
+            parse_platform_sim("PLATFORM_SIM: status "),
+            Some(IpcCommand::PlatformSim { ref verb, ref args }) if verb == "status" && args.is_empty()
+        ));
+        assert!(parse_platform_sim("PLATFORM_SIM:").is_none());
+        assert!(parse_platform_sim("PLATFORM_SIM: ,a").is_none());
+        assert!(parse_platform_sim("PLATFORM_SIM:per mission,a").is_none());
+        assert!(parse_platform_sim("PLATFORM_SIMX:permission").is_none());
     }
 
     /// カバー場（I3.1）のシミュレート系 3 コマンドが正しく解釈されること。

@@ -9,8 +9,11 @@ namespace SEED.Platform;
 /// 通知（Android 13+）は実行時の確認の画面、正確なアラーム・フルスクリーン通知（と設定で切られた通知）は設定の画面を開き、利用者が戻ったときの
 /// 状態が結果になる。既に許可されている・要らない種類は画面を出さずに結果だけが届く。前面へ戻ったとき（設定の画面から戻った等）に状態が
 /// 前回と違えば <see cref="PermissionChangedEvent"/>（"platform.permission_changed"）が届く。
-/// デスクトップの模擬は v1 の 3 種が常に <see cref="PermissionStatus.Granted"/>（v2 の予約の種類は <see cref="PermissionStatus.NotApplicable"/>）で、
-/// <see cref="Request"/> は画面を出さずに次のフレームで結果を返す。
+/// デスクトップの模擬は既定で v1 の 3 種が <see cref="PermissionStatus.Granted"/>（v2 の予約の種類は常に <see cref="PermissionStatus.NotApplicable"/>）で、
+/// <see cref="Request"/> は画面を出さずに次のフレームで結果を返す。2026-10-01 から、模擬の状態は起動時に環境変数
+/// SEED_PLATFORM_SIM_PERMISSIONS で与えられ、実行中に <see cref="PlatformDiagnostics.SimulatePermission"/>（IPC の PLATFORM_SIM:permission,…）で
+/// 変えられ（変えたらすぐ <see cref="PermissionChangedEvent"/>）、<see cref="Request"/> の結果は模擬の利用者の答え
+/// （<see cref="PlatformDiagnostics.SimulatePermissionAnswer"/>・環境変数 SEED_PLATFORM_SIM_PERMISSION_ANSWER。既定は許可）で決まる。
 /// </para>
 ///
 /// <para><b>状態の決め方（Android）</b><br/>

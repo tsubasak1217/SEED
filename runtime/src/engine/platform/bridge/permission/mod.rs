@@ -1,7 +1,8 @@
 // ============================================================
 //  platform/bridge/permission/mod.rs — 権限（SEED.Platform の Permissions。W1-5）のエンジン側の共通部品
 //
-//  【置くもの】種類（PermissionKind）の語彙と、命令の引数 { kind } の読み取り。
+//  【置くもの】種類（PermissionKind）と状態（PermissionStatus。2026-10-01 の模擬の権限の操作で足した）の語彙と、
+//  命令の引数 { kind } の読み取り。
 //  Android では権限の命令はメインプロセスの Java（platform/local/Permission*Command・platform/permission/）が答え、
 //  デスクトップでは模擬（desktop_sim/permission_commands.rs）がここを使って答える。
 //  名前・欄・状態は wire::permission（Java の PlatformContract・C# の PermissionJson と一致させる）。全体像は docs/android.md §25.14。
@@ -51,6 +52,55 @@ impl PermissionKind {
     pub fn is_implemented(self) -> bool {
         !matches!(self, Self::RecordAudio | Self::SendSms)
     }
+
+    /// ALL の中の位置（種類ごとの表〈配列〉の添字。ALL の並びを変えると表の並びも変わるので、表は必ずこれで引く）。
+    pub fn index(self) -> usize {
+        // ALL はすべての種類を 1 つずつ持つので必ず見つかる（見つからないのは ALL の書き漏れ＝単体テストで気づく）
+        Self::ALL.iter().position(|kind| *kind == self).unwrap_or_default()
+    }
+}
+
+/// 権限の状態（wire の STATUS_* と 1 対 1。Android の PermissionStatusProbe が返す語彙と同じ）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionStatus {
+    /// 許可されている。
+    Granted,
+    /// 許可されていない（もう一度求めれば確認の画面が出る見込み）。
+    Denied,
+    /// 許可されず、求めても確認の画面が出ない（設定の画面へ案内する）。
+    DeniedPermanently,
+    /// 設定の画面で利用者が切り替える種類で、今は切られている。
+    NeedsSettings,
+    /// この OS の版・この段階では要らない（扱わない）。
+    NotApplicable,
+}
+
+impl PermissionStatus {
+    /// すべての状態（wire の順）。
+    pub const ALL: [PermissionStatus; 5] =
+        [Self::Granted, Self::Denied, Self::DeniedPermanently, Self::NeedsSettings, Self::NotApplicable];
+
+    /// wire の名前から引く（知らない名前は None）。
+    pub fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.wire_name() == name)
+    }
+
+    /// wire の名前。
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Granted => names::STATUS_GRANTED,
+            Self::Denied => names::STATUS_DENIED,
+            Self::DeniedPermanently => names::STATUS_DENIED_PERMANENTLY,
+            Self::NeedsSettings => names::STATUS_NEEDS_SETTINGS,
+            Self::NotApplicable => names::STATUS_NOT_APPLICABLE,
+        }
+    }
+
+    /// 知らない名前のときの説明（返答の detail・ログ用。知っている名前を並べる）。
+    pub fn describe_unknown(field: &str, name: &str) -> String {
+        let known: Vec<&str> = Self::ALL.iter().map(|status| status.wire_name()).collect();
+        format!("{field} は {} のどれかにしてください（{name}）", known.join(" / "))
+    }
 }
 
 /// 命令の引数 `{ kind }` を読む。
@@ -85,6 +135,25 @@ mod tests {
         let implemented: Vec<_> = PermissionKind::ALL.into_iter().filter(|kind| kind.is_implemented()).collect();
         assert_eq!(implemented, vec![PermissionKind::PostNotifications, PermissionKind::ExactAlarm, PermissionKind::FullScreenIntent]);
         assert_eq!(PermissionKind::from_wire("camera"), None);
+    }
+
+    /// 状態: wire の名前との行き来が 1 対 1。知らない名前は None で、説明に欄の名前と知っている名前が入る。
+    #[test]
+    fn statuses_round_trip_through_wire_names() {
+        for status in PermissionStatus::ALL {
+            assert_eq!(PermissionStatus::from_wire(status.wire_name()), Some(status));
+        }
+        assert_eq!(PermissionStatus::from_wire("Granted"), None);
+        let detail = PermissionStatus::describe_unknown("status", "maybe");
+        assert!(detail.contains("status") && detail.contains(names::STATUS_NEEDS_SETTINGS) && detail.contains("maybe"), "{detail}");
+    }
+
+    /// 種類の添字: ALL の位置と一致し、重ならない（種類ごとの表を引く）。
+    #[test]
+    fn kind_index_matches_all_order() {
+        for (position, kind) in PermissionKind::ALL.into_iter().enumerate() {
+            assert_eq!(kind.index(), position);
+        }
     }
 
     /// 引数: 種類が無い・文字列でない・知らない名前は誤り（欄の名前が説明に入る）。

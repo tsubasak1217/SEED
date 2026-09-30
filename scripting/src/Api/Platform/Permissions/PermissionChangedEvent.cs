@@ -6,8 +6,10 @@ namespace SEED.Platform;
 /// <para>
 /// Android でアプリが前面へ戻ったとき（onResume。設定の画面から戻った・通知の引き下ろしから戻った等）に、APK に機能が入っている 3 種
 /// （通知・正確なアラーム・フルスクリーン通知）の状態を前回の onResume と比べ、違っていれば種類ごとに届く。確認の画面で許可したときも、
-/// <see cref="PermissionResultEvent"/> の後にこれが届く（どちらを受けてもよい）。プロセスの最初の onResume では届かない（比べる前回が無い）。
-/// デスクトップの模擬では起きない。
+/// <see cref="PermissionResultEvent"/> の後にこれが届く（どちらを受けてもよい）。インストール後の最初の onResume では届かない（比べる前回が無い）。
+/// デスクトップの模擬では、模擬の状態を変えたとき（<see cref="PlatformDiagnostics.SimulatePermission"/>・IPC の PLATFORM_SIM:permission,…）と、
+/// 求めた結果で状態が変わったとき（結果の後）にすぐ届く（<see cref="Simulated"/> が true。2026-10-01 から）。
+/// 設定の画面から戻ったときに状態が変わっていないと届かないので、戻ったときの問い直しは <see cref="App.ResumedEvent"/> を受けて行う。
 /// </para>
 /// </summary>
 public readonly struct PermissionChangedEvent
@@ -27,7 +29,7 @@ public readonly struct PermissionChangedEvent
     /// <summary>状態の元の文字列。</summary>
     public string StatusName { get; }
 
-    /// <summary>デスクトップの模擬が作ったか（今は常に false）。</summary>
+    /// <summary>デスクトップの模擬が作ったか（2026-10-01 から、模擬の状態の変化で true）。</summary>
     public bool Simulated { get; }
 
     /// <summary>値を作る。</summary>

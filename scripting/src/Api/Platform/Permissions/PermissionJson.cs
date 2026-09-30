@@ -44,6 +44,34 @@ internal static class PermissionJson
     /// <summary>「要求できなかった」の要求の ID（払い出す ID は 1 から）。</summary>
     internal const int NoRequestId = 0;
 
+    // ── デスクトップの模擬だけ（2026-10-01。PlatformDiagnostics.SimulatePermission / SimulatePermissionAnswer）──
+
+    /// <summary>模擬の状態を変える。引数 { kind, status }。返答 { kind, status, changed }。</summary>
+    internal const string MethodSimSet = "sim_set";
+
+    /// <summary>求めたときの模擬の利用者の答えを決める。引数 { kind, answer }。返答 { kind, answer }。</summary>
+    internal const string MethodSimAnswer = "sim_answer";
+
+    /// <summary>sim_answer の引数: 答え（状態の文字列か <see cref="AnswerNone"/>）。</summary>
+    internal const string KeyAnswer = "answer";
+
+    /// <summary>answer: 答えない（状態は変わらない）。</summary>
+    internal const string AnswerNone = "none";
+
+    /// <summary>sim_answer の kind: すべての種類。</summary>
+    internal const string KindAll = "all";
+
+    /// <summary>状態を wire の名前にする（<see cref="PermissionStatus.Unknown"/> は空文字）。</summary>
+    internal static string StatusName(PermissionStatus status) => status switch
+    {
+        PermissionStatus.Granted => StatusGranted,
+        PermissionStatus.Denied => StatusDenied,
+        PermissionStatus.DeniedPermanently => StatusDeniedPermanently,
+        PermissionStatus.NeedsSettings => StatusNeedsSettings,
+        PermissionStatus.NotApplicable => StatusNotApplicable,
+        _ => string.Empty,
+    };
+
     /// <summary>種類を wire の名前にする（<see cref="PermissionKind.Unknown"/> は空文字）。</summary>
     internal static string KindName(PermissionKind kind) => kind switch
     {

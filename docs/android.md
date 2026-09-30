@@ -3754,6 +3754,8 @@ W1-1 は**橋渡し**だけ: スクリプトの命令が Java の別プロセス
 | `runtime/src/engine/platform/bridge/{app,haptics}/`・`desktop_sim/{window_*,haptics_*,app_commands,url_opener,launch_uri}.rs` | エンジン側の URL・振動の長さの規則と、画面とアプリの模擬（W1-6。§25.15.8） |
 | `platform/sensor/*.java`・`platform/local/Sensor*.java` | センサー（W1-8。§25.16。メインプロセス）: `SensorFeeds`・`SensorFeed`・`SensorKind`・`SensorSource`・`FeedListener`・`GravityFilter`・`SampleAccumulator`・`SensorReading`・`SensorStartResult`。`local/` に 3 命令と `SensorArguments` |
 | `runtime/src/engine/platform/bridge/sensor/`・`desktop_sim/sensor_{state,commands}.rs` | エンジン側のセンサーの引数の規則と模擬（W1-8。§25.16.6） |
+| `platform/app/AppLifecycle.java`・`platform/local/OsInfoCommand.java` | 前面・背面の知らせ（`platform.resumed` / `paused`）と OS の種類と版（`app.os_info`）（2026-10-01。§25.20） |
+| `runtime/src/engine/platform/bridge/desktop_sim/{os_info,lifecycle_state,lifecycle_commands,permission_config,permission_state}.rs`・`core/app_base/app/platform_sim_ops.rs` | 模擬の OS の版・前面と背面（窓のフォーカス）・権限の状態と答え（環境変数）と IPC `PLATFORM_SIM`（2026-10-01。§25.20） |
 | `src/debug/java/…/platform/DebugPlatformReceiver.java` | デバッグ版だけの adb の入口（§25.7） |
 | `native/src/platform_bridge/{mod,android_bridge,java_bridge,inbox,jni_exports}.rs` | 糊（エンジンへの登録・JNI の持ち物・イベントの箱・2 本の JNI 関数） |
 | `native/src/platform_bridge/alarm_prep.rs` | `alarm.schedule` を送る前に音源（`assets://`）を書き出す（W1-3。中身はエンジンの `bridge/alarm/sound_export.rs`） |
@@ -4722,6 +4724,8 @@ MainActivity … onResume（super・音声フォーカスの後）で Permission
 
 `desktop_sim/permission_commands.rs`。`check` は v1 の 3 種が `granted`、v2 の 2 種が `not_applicable`。`request` は要求の ID（1 から。Play の区切りでも戻さない）を返し、
 同じフレームで `platform.permission_result`（`simulated: true`）を積む（次のフレームでスクリプトへ）。`open_settings` はログだけ。`permission_changed` は起きない。
+→ **2026-10-01 から**、状態は模擬の表（既定は上のとおり）で、起動時の状態と「求めたときの答え」を環境変数で与え、実行中に `permission.sim_set` / `sim_answer`
+（IPC `PLATFORM_SIM`・`PlatformDiagnostics`）で変えられる。`request` は答えを当てた状態を結果にし、状態が変われば `permission_changed` も積む（§25.20.3）。
 
 #### 25.14.7 確かめ方（adb・実機）
 
@@ -5413,3 +5417,121 @@ IME（GameTextInput の InputConnection）─ UI スレッド ─→ MainActivit
   ダイアログなどの中なら 2 回目でその層が閉じる。[ui_text_input.md](ui_text_input.md) §8）。戻るのジェスチャーは画面の端の指を奪う（`[SEED TOUCH] Cancelled`）ので、
   入力欄は取り消された指を欄の外のタップと数えない（2026-09-30 の実機で、これがフォーカスを先に外してアプリを背面へ回していた）。
 - 古い libSEED.so（関数が無い）では Java が 1 度だけ警告を出して続ける（文字入力は届かない）。
+
+### 25.20 OS の種類と版・前面と背面の知らせ・デスクトップの模擬の権限（2026-10-01。W3-5 で見つかった不足）
+
+Wake or Pay のオンボーディング（W3-5）で回避策を入れた 3 つの不足（backlog「W3-5（オンボーディング S-10）で見つかったプラットフォーム API の不足」）を埋めた。
+スクリプトの API は [scripting_api.md](scripting_api.md) §7.13 の「OS の種類と版・前面と背面」「デスクトップの模擬の操作」。
+
+```
+[メインプロセス] app/src/main/java/com/seedengine/runtime/platform/
+ local/OsInfoCommand       … app.os_info: {platform: "android", os_version: Build.VERSION.SDK_INT}（IPC なし・Activity 不要）
+ local/MainProcessCommands … 表に 1 行
+ app/AppLifecycle          … onResume → platform.resumed {count, background_ms}（プロセスの最初の onResume では流さない）・
+                             onPause → platform.paused {count}（どちらも seq 0。SeedPlatform.emitLocalEvent。例外はログに残して飲み込む）
+ PlatformContract          … METHOD_APP_OS_INFO・KEY_APP_PLATFORM・KEY_APP_OS_VERSION・APP_PLATFORM_ANDROID・EVENT_APP_RESUMED / PAUSED・
+                             KEY_APP_LIFECYCLE_COUNT・KEY_APP_BACKGROUND_MS（wire.rs の java_contract_matches_wire が突き合わせる）
+[MainActivity] onResume の最後（PermissionLifecycle・SensorFeeds・LeftoverVolumeNudge の後）に AppLifecycle.onResumed、onPause の最初に AppLifecycle.onPaused
+[エンジン] wire::app（METHOD_OS_INFO・KEY_PLATFORM・KEY_OS_VERSION・PLATFORM_*・EVENT_RESUMED / PAUSED・KEY_LIFECYCLE_COUNT・KEY_BACKGROUND_MS・
+            METHOD_SIM_LIFECYCLE〈模擬だけ〉・LIFECYCLE_RESUMED / PAUSED・KEY_CHANGED）、
+          wire::permission（METHOD_SIM_SET・METHOD_SIM_ANSWER・KEY_ANSWER・KEY_CHANGED・ANSWER_NONE・KIND_ALL。模擬だけ）、
+          bridge::permission::PermissionStatus（状態の語彙）
+ desktop_sim/ os_info.rs（ホストの OS と SEED_PLATFORM_SIM_OS_VERSION）・app_commands.rs（app.os_info）・
+              lifecycle_state.rs（前面・背面の状態と回数）・lifecycle_commands.rs（sim_lifecycle と窓のフォーカス → イベント）・
+              permission_config.rs（環境変数の読み取り）・permission_state.rs（状態と答えの表・求めたときの規則 decide_request）・permission_commands.rs（命令）
+ PlatformBridge::notify_host_focus_changed（既定は何もしない）・bridge::notify_host_focus_changed（app/render.rs の WindowEvent::Focused から。Play の間だけ）
+ IPC PLATFORM_SIM:{verb},{args…}（core/app_base/ipc.rs の parse_platform_sim → app/platform_sim_ops.rs の動詞の表 → 模擬だけの命令）
+[C#] Platform/App/App.cs（Platform・OsVersion・ResumedEvent・PausedEvent）・PlatformKind.cs・AppLifecyclePhase.cs・AppLifecycleEvent.cs・
+     AppOsInfo.cs（最初に成功した os_info を控える）・AppJson.cs、PlatformDiagnostics.SimulatePermission / SimulatePermissionAnswer / SimulateLifecycle、
+     Permissions/PermissionJson.cs（模擬の名前・StatusName）
+```
+
+#### 25.20.1 OS の種類と版（`app.os_info`）
+
+- Android: `Build.VERSION.SDK_INT`（API レベル）と `platform = "android"`。メインプロセスの表で答える（`:seed_platform` を起こさない・`connecting` にならない）。
+- デスクトップの模擬: `platform` はホストの OS（`std::env::consts::OS` → `windows` / `macos` / `linux`。表に無い OS は `unknown`）、`os_version` は 0。
+  環境変数 `SEED_PLATFORM_SIM_OS_VERSION` に 0〜int の上限の整数を書くとその値（読めない値は `[SEED PLATFORM] 模擬: … を読めないので 0 にします` を出して 0）。
+  値は模擬を作るときに 1 回読む。単体テストは環境変数を読まない。
+- C# の `App.Platform` / `App.OsVersion` は最初に成功した返答を控える（`AppOsInfo`。失敗は控えず次に読まれたときに問い直す）。`App` の中ではプロパティ `App.Platform` が
+  クラス `SEED.Platform.Platform` の名前を隠すので、`App.cs` はクラスを別名 `PlatformApi` で呼ぶ（利用者のスクリプトには影響しない）。
+
+#### 25.20.2 前面・背面（`platform.resumed` / `platform.paused`）
+
+- **Android**: `MainActivity.onPause` の最初に `platform.paused {count}`、`onResume` の最後に `platform.resumed {count, background_ms}`。
+  プロセスの最初の onResume（起動）では流さない（`resumed` は必ず `paused` の後＝「戻った」だけ。`MainActivity.onDestroy` はプロセスを終えるので Activity は 1 つ）。
+  `background_ms` は `SystemClock.elapsedRealtime` の差。onResume の最後に置くので、戻ったときの `permission_result` / `permission_changed`（PermissionLifecycle）の後に届く。
+  スクリプトの準備（最初のシーンの OnStart）の前に届いた分は、ほかのイベントと同じくエンジンが保持してから配る（§25.14.5）。
+  winit も Android の窓のフォーカスを `WindowEvent::Focused` で届けるが、糊（AndroidPlatformBridge）は `notify_host_focus_changed` を実装しないので使わない
+  （onResume / onPause と窓のフォーカスは同じではない。例: 通知の引き下ろし）。
+- **背面の間の配り方（推論・実機で未確認）**: `paused` は UI スレッドから箱へ積むだけで、エンジンのフレームで配る。背面へ回ると onStop で描画の面が無くなり
+  フレームが回らないことが多いので、`paused` は背面にいる間には配られず、戻ったときに `resumed` の直前に届く見込み。スクリプトは保存などを `paused` に頼らない
+  （セーブはエンジンが背面へ回るときに書き出す）。
+- **デスクトップの模擬**: 窓のフォーカスの出入り（winit の `WindowEvent::Focused`。App が **Play の間だけ** `bridge::notify_host_focus_changed` を呼ぶ。Edit 中は渡さない）と
+  模擬だけの命令 `app.sim_lifecycle {phase}`（IPC `PLATFORM_SIM:lifecycle,…`・`PlatformDiagnostics.SimulateLifecycle`）。始まり（模擬を作ったとき・Play の区切り）は「前面」で、
+  始まりの前面は知らせない。同じ状態への移りは知らせない（重なった知らせを 1 つにする）。`background_ms` は模擬の壁時計の差。
+  winit 0.30 の Windows の `Focused` は「アクティブ（WM_NCACTIVATE）かつフォーカス（WM_SETFOCUS）」の変化で出る。**エディタに埋め込んだ Play では、エディタの別のパネルを
+  押しただけでも `paused` が出る**（PC の近似）。模擬がまだ無ければ窓のフォーカスで作る（スクリプトが SEED.Platform を呼ばずに `resumed` を受けるだけでも届くように）。
+
+#### 25.20.3 デスクトップの模擬の権限
+
+- 状態は種類ごとの表（`permission_state.rs`）。既定は v1 の 3 種が `granted`、v2 の予約の 2 種は常に `not_applicable`（Android と同じく変えられない。`invalid_argument`）。
+- 起動時の設定（`permission_config.rs`。模擬を作るときに 1 回読む。単体テストは読まない）:
+  `SEED_PLATFORM_SIM_PERMISSIONS=post_notifications=denied;exact_alarm=needs_settings`（項目は `;` 区切りの「種類=状態」）、
+  `SEED_PLATFORM_SIM_PERMISSION_ANSWER=none;exact_alarm=granted`（「種類=答え」「all=答え」か種類を書かない「答え」＝すべて。書いた順に当てる。答えは状態の名前か `none`。既定は `granted`）。
+  読めない項目は `[SEED PLATFORM] 模擬: <環境変数> の項目を飛ばしました: …` を出して飛ばし、読めた項目だけを使う。読めたら `模擬: 権限の起動時の設定 状態 […]・答え […]` を 1 行出す。
+- `permission.request` の規則（`decide_request`。Android の `Permissions.Request` の振る舞いに合わせた）:
+
+| 今の状態 | 結果（`permission_result` の status） | 状態の変化 |
+|---|---|---|
+| `granted` / `not_applicable` | 今の状態（画面を出さない） | なし |
+| `denied_permanently` | 今の状態（Android 13+ の通知と同じく確認の画面が出ない） | なし |
+| `denied` / `needs_settings` | 答えの状態（`none` なら今の状態） | 変われば `permission_result` の後に `permission_changed` |
+
+- `permission.sim_set {kind, status}`: 状態を変え、**変わったらすぐ** `permission_changed {kind, status, simulated: true}` を積む（Android は前面へ戻ったときに気づくが、
+  模擬は変えたときに知らせる。エディタの Play ではフォーカスが外れやすく、「戻ったときに知らせる」にするとエディタで操作している間ずっと届かないため）。同じ状態ならイベントなし。
+  返答 `{kind, status, changed}`。
+- `permission.sim_answer {kind, answer}`: 答えを決める（`kind` は `all` も可）。返答 `{kind, answer}`。
+- `permission.open_settings`: 開かずにログだけ（従来どおり。ログに `PLATFORM_SIM:permission,<kind>,<状態>` で変えられることを添える）。
+- エディタの Play の区切り（`reset_session`）で、状態と答えは起動時の設定へ、前面・背面は「前面・回数 0」へ戻る。
+
+#### 25.20.4 IPC `PLATFORM_SIM`
+
+`PLATFORM_SIM:{verb},{arg1},{arg2}…`（`ipc.rs` の `parse_platform_sim` は動詞と引数に割るだけ。値に `,` は含まない約束）。`app/platform_sim_ops.rs` の表で模擬だけの命令へ置き換えて送る:
+
+| 動詞 | 命令 | 例 |
+|---|---|---|
+| `permission,<kind>,<status>` | `permission.sim_set` | `PLATFORM_SIM:permission,post_notifications,denied` |
+| `permission_answer,<kind\|all>,<status\|none>` | `permission.sim_answer` | `PLATFORM_SIM:permission_answer,all,none` |
+| `lifecycle,<resumed\|paused>` | `app.sim_lifecycle` | `PLATFORM_SIM:lifecycle,paused` |
+
+- 応答は必ず 1 行: `PLATFORM_SIM_OK:{命令の返答の JSON}` / `PLATFORM_SIM_ERROR:{理由}`。理由は `not_playing`（Play 中でない。Edit 中に変えても Play の開始で戻るので断る）・
+  `not_simulated`（基盤が模擬でない＝Android の端末）・`unknown_verb`・`bad_arguments`（引数の数が表と違う）・命令の理由（`invalid_argument` など）。
+- イベントは次のフレームでスクリプトへ届く（描画を止めていても模擬のイベントがループを起こす）。スクリプトの準備の前に送った分は保持してから配る（確かめた。§25.20.5）。
+- エディタの `RuntimeManager` は `PLATFORM_SIM_*` の応答の振り分けを持たない（MCP の `seed_send_ipc` は送るだけで、応答を待ち合わせる口は無い）。
+  自動の確かめは単体起動の SEED.exe に TCP（`--ipc-port`）でつなぐ形で行った。
+
+#### 25.20.5 確認結果（2026-10-01・PC と APK の組み立て）
+
+- Rust の単体テスト（`cargo test -p SEED --lib -- platform::bridge core::scripting::platform_bridge platform::tests platform_sim_ops parses_platform_sim parses_script_debug`）155 件が通った
+  （足したもの: 模擬の権限の設定の読み取り・状態の表と求めたときの規則・命令・前面と背面の状態・命令とフォーカス・OS の版・IPC の表と書式・状態の語彙・Java の名前の突き合わせ）。
+- PC の Play（単体起動の SEED.exe `--mode=play`・フォーカスを奪わない起動・IPC のポート 47741・試験のプロジェクトは UiDevice の複製）:
+  環境変数の状態（`post_notifications=denied;exact_alarm=needs_settings`）と OS の版 33 が `OnStart` の `Check`・`App.OsVersion` に出た。
+  `PLATFORM_SIM:permission,…` → 次のフレームで `permission_changed`（`Simulated=True`）、同じ状態は `changed:false` でイベントなし。
+  `Request` は答えを当てて `permission_result` → `permission_changed` の順、答え `none` は結果だけ、`denied_permanently` は答えを当てない。`OpenSettings` はログだけ。
+  `PLATFORM_SIM:lifecycle,paused` → `resumed` で `paused #1` / `resumed #1 背面 1602 ms`、前面で `resumed` は `changed:false`。
+  窓のフォーカス（SEED の窓へ WM_NCACTIVATE・WM_SETFOCUS / WM_KILLFOCUS を送る。前面の窓は動かさない）で `paused` / `resumed`（`窓のフォーカス`）が届いた。
+  `PlatformDiagnostics.SimulatePermission` / `SimulatePermissionAnswer` / `SimulateLifecycle` も同じ。v2 の種類・知らない動詞・引数の数の違い・知らない phase は理由つきで断った。
+  読めない環境変数（`camera=denied`・`=` の無い項目・答え `yes`・版 `abc`）は飛ばして既定に戻った。READY の直後（スクリプトの準備の前）に送った
+  `permission_changed`・`paused`・`resumed` は、スクリプトの `OnStart` の後に届いた。
+- APK（arm64-v8a・debug・`com.seedengine.platformprobe`）の組み立て（`dotnet run --project editor/tools/SeedAndroid -- build --project <試験のプロジェクト> --abi arm64-v8a`）が通った（cargo ndk 285 秒・Gradle 156 秒・55.1 MB。`compileDebugJavaWithJavac` で `AppLifecycle`・`OsInfoCommand` が通り、dex に入り、libSEED.so に `platform.resumed`・`PLATFORM_SIM:` の文字列がある）。端末には入れていない。
+- WarashibeFishing の回帰（PC。窓のフォーカスの経路を足したので、`tmp/w2_6/regress` の仕組みの写しで、わらしべの複製を撮った）: `zukan` は 3 フレームとも画素の差 0、`MainGame`・`proLogue` の UI の枠は動く背景のマスクの外の差が 0〜8 画素・最大 1（前回 2026-09-30 の回帰と同じ程度の揺れ）。
+- **実機は未確認**（端末に触らない回だった）。
+
+#### 25.20.6 制限・持ち越し（[backlog.md](backlog.md) の「アプリ基盤」節）
+
+- 実機で確かめること: (1) 設定の画面へ行って戻る・ホームへ行って戻る・通知の引き下ろし・電源ボタンで、`paused` / `resumed` の組と `count`・`background_ms`。
+  (2) `paused` が背面にいる間に配られるか（戻ったときにまとめて届く見込み）。(3) 起動の最初の onResume で `resumed` が出ないこと（目覚ましでロック画面の上に起動したときも）。
+  (4) 設定の画面から戻ったときに `permission_changed` → `resumed` の順で届くこと。(5) `App.OsVersion` が Pixel 6a（Android 17）の API レベルを返すこと。
+- 模擬の `permission_changed` は変えたときにすぐ届く（Android は前面へ戻ったとき）。模擬で「背面の間に変えて、戻ったときに気づく」を再現する口は無い
+  （`lifecycle,paused` → `permission,…` → `lifecycle,resumed` の順に送ると、変化は paused と resumed の間に届く）。
+- エディタに埋め込んだ Play では窓のフォーカスが頻繁に出入りし、`paused` / `resumed` が多く届く。自動の確かめはフォーカスを奪わない単体起動で行う。
