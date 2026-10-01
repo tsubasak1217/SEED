@@ -26,11 +26,11 @@
 //  TODO: キューブマップ 6 枚対応（現状 equirect 1 枚のみ）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::engine::components::{ComponentKind, SkyboxComponent, SkyboxMode, Transform};
 use crate::engine::ecs::{Entity, World};
@@ -158,12 +158,12 @@ impl SkyboxPipelines {
 
         // 共有の内向き UV 球メッシュ（位置のみ）を生成する。
         let (positions, indices) = generate_uv_sphere(SPHERE_STACKS, SPHERE_SECTORS, SPHERE_RADIUS);
-        let sphere_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let sphere_vbuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Skybox Sphere VBuf"),
             contents: bytemuck::cast_slice(&positions),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let sphere_ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let sphere_ibuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Skybox Sphere IBuf"),
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
@@ -324,7 +324,7 @@ impl SkyboxSystem {
             };
             if !self.gpu.contains_key(&entity) {
                 // uniform バッファを新規確保する（BG は下で作る）。
-                let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                let uniform_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                     label: Some("Skybox Uniform"),
                     size: std::mem::size_of::<SkyboxUniform>() as u64,
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -558,7 +558,7 @@ fn load_equirect_texture_ldr(
         eprintln!("[SEED skybox] テクスチャの寸法が不正: path={path:?} → 描画スキップ");
         return None;
     }
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some("Skybox Equirect Texture (LDR sRGB)"),
         size: wgpu::Extent3d {
             width: w,
@@ -624,7 +624,7 @@ fn load_equirect_texture_hdr(
     }
 
     // ③ Rgba16Float テクスチャを確保（sRGB なし＝リニア。1.0 超の輝度を保持）。
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some("Skybox Equirect Texture (HDR Rgba16Float)"),
         size: wgpu::Extent3d {
             width: w,

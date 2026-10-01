@@ -94,10 +94,14 @@ pub fn launch_args(app: &AndroidApp) -> LaunchArgs {
     // どの起動モードでも同じに効く。無ければ project_settings.json の render_quality かプラットフォームの既定（mobile）。
     args.render_quality = options.quality_launch();
     args.gpu_timing = options.gpu_timing_enabled();
-    if args.render_quality != Default::default() || args.gpu_timing {
+    // GPU メモリの内訳の計測（am start --es seed.gpu_mem_log 1）と描画の構成の上書き（--es seed.render_profile full|ui）。
+    // どちらも計測・検証用（docs/rendering_profiles.md）。無ければ計測なし・project_settings.json の render.profile のまま。
+    args.gpu_mem_log = options.gpu_mem_log_enabled();
+    args.render_profile = options.render_profile.clone();
+    if args.render_quality != Default::default() || args.gpu_timing || args.gpu_mem_log || args.render_profile.is_some() {
         logcat::info(&format!(
-            "起動オプションの描画品質: プリセット={:?} つまみ={:?} GPU 計測={}",
-            args.render_quality.preset, args.render_quality.knobs, args.gpu_timing
+            "起動オプションの描画品質: プリセット={:?} つまみ={:?} GPU 計測={} GPU メモリの計測={} 描画の構成={:?}",
+            args.render_quality.preset, args.render_quality.knobs, args.gpu_timing, args.gpu_mem_log, args.render_profile
         ));
     }
     args
@@ -250,6 +254,8 @@ fn play_launch_args(
         // 描画品質の指定・GPU 計測は launch_args が起動オプションから入れる（起動モードとは独立）。
         render_quality: Default::default(),
         gpu_timing: false,
+        gpu_mem_log: false,
+        render_profile: None,
         asset_overlay,
     }
 }

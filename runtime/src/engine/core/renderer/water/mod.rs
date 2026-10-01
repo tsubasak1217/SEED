@@ -51,6 +51,7 @@ pub mod params;
 /// 実装は **L3 と共有する共通モジュール**（`renderer::shade_params`）へ昇格済みで、
 /// ここはその再輸出である（`water::shade_params::...` という既存の呼び名を保つ）。
 /// 水面側は `WATER_DIALECT` を渡して使う。
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 pub use crate::engine::core::renderer::shade_params;
 pub mod shading_asset;
 /// 水面反射パスが走らないフレーム（前方描画・水面反射 off）の「空の映り込み」の資源と規則。
@@ -305,7 +306,7 @@ impl WaterRenderer {
         // 1×1 のゼロテクスチャ（場と同じ Rgba16Float）とゼロ UBO。
         // ゼロ UBO は inv_extent = 0 なので、波紋サンプルの UV は常に 0 に潰れ、
         // 高さも勾配も 0＝W1 と同じ見た目になる（分岐を増やさずに無効化できる）。
-        let fallback_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let fallback_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Water Ripple Fallback"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -316,7 +317,7 @@ impl WaterRenderer {
             view_formats:    &[],
         });
         let fallback_field_view = fallback_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let fallback_field_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        let fallback_field_uniform = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Water Ripple Fallback Uniform"),
             size:  std::mem::size_of::<super::interaction::InteractionFieldUniformGpu>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -348,7 +349,7 @@ impl WaterRenderer {
         // ── ショアフィールドが無いフレーム用のフォールバック（Phase W1.5）──
         // 1×1×1 のゼロ配列テクスチャ。パラメータのレイヤ番号が負のときシェーダは
         // サンプルしないので中身は問われないが、BindGroup には必ず何か要る。
-        let fallback_shore = device.create_texture(&wgpu::TextureDescriptor {
+        let fallback_shore = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Water Shore Fallback"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -443,7 +444,7 @@ impl WaterRenderer {
         // ── 配列テクスチャの遅延確保（レイヤ数は上限固定。増減で作り直さない）──
         let res = SHORE_FIELD_RESOLUTION as u32;
         if self.shore_tex.is_none() {
-            let tex = device.create_texture(&wgpu::TextureDescriptor {
+            let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
                 label:           Some("Water Shore Field"),
                 size: wgpu::Extent3d {
                     width:                 res,
@@ -762,7 +763,7 @@ impl WaterRenderer {
         //    BindGroup エントリが要るため。中身は全ゼロで無害）。
         if self.shade_params_buf.is_none() || self.shade_params_capacity < count {
             let capacity = count.max(1);
-            self.shade_params_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.shade_params_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Water Shade Params Storage"),
                 size:  (capacity * std::mem::size_of::<ShadeParamBlock>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -776,7 +777,7 @@ impl WaterRenderer {
 
         if self.params_buf.is_none() || self.params_capacity < count {
             let capacity = count.max(1);
-            self.params_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.params_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Water Params Storage"),
                 size:  (capacity * std::mem::size_of::<WaterParams>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -791,7 +792,7 @@ impl WaterRenderer {
         let w = width.max(1);
         let h = height.max(1);
         if self.grab_tex.is_none() || self.grab_width != w || self.grab_height != h {
-            let tex = device.create_texture(&wgpu::TextureDescriptor {
+            let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
                 label:           Some("Water Scene Grab"),
                 size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 mip_level_count: 1,

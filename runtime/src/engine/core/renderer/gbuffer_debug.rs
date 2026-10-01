@@ -16,6 +16,7 @@
 //  WGSL リフレクションで BGL を起こす利点がない。velocity_debug.rs と同じ手書き構成に揃える。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::pipeline::get_shader_source;
 use super::view_mode::GBufferDebugChannel;
 
@@ -144,7 +145,7 @@ impl GBufferDebugPipeline {
             cache,
         });
 
-        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("GBuffer Debug Params"),
             size:               std::mem::size_of::<GBufferDebugParams>() as u64,
             usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

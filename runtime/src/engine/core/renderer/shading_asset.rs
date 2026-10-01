@@ -31,6 +31,7 @@
 //   - pipelines/deferred_lighting*.toml : rt_off / rt_on 変種の連結順の正典
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -1205,7 +1206,7 @@ impl ShadingAssetCache {
     /// サイズは `SHADE_PARAM_MAX` 個ぶんの `vec4`（固定長）。宣言数に関わらず
     /// 同じ大きさなので、アセットを差し替えてもバッファを作り直す必要が無い。
     pub fn params_buffer(&self, device: &wgpu::Device) -> &wgpu::Buffer {
-        self.params_buf.get_or_init(|| device.create_buffer(&wgpu::BufferDescriptor {
+        self.params_buf.get_or_init(|| device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("shading_asset_params"),
             size:  std::mem::size_of::<ShadeParamBlock>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

@@ -3594,6 +3594,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   → PC 等倍の細い横線は **2026-10-01 に済**（docs/ui_components.md §12。正確には平滑化の幅 fwidth(d) が細い横画の上で 0 になっていた。MSDF でも同じ平滑化の規則を使う）。
   (2) **背面のアプリのメモリが約 740 MB で、低メモリのときに Android に止められた**（14:01。予約は残り鳴動は正常）。UI だけのアプリとしては大きい。内訳の計測
   （グリフのアトラス 4096²・GPU バッファ・テクスチャ・CoreCLR）と削減を後で行う。
+  → **2026-10-02 に GPU の分を計測して減らした**（下の「実機確認 2 回目」(2) と docs/rendering_profiles.md。グリフのアトラスは 16 MiB で主因ではなかった。CoreCLR などの
+  GPU 以外は未計測）。
   (3) **Android 17 の音量の締め付けの警告**（いまは除外扱いで効いている。将来、鳴動中の最大音量への引き上げが無視される恐れ〈推測〉）。docs/android.md §25 に注記して追う。
   (4) **画面の遷移の途中で背面へ回ると遷移が凍ったまま残る**（`ScreenHandle` は下ろし終えて実体を消すときに初めて IsClosed になるので、アプリが「閉じる途中」を
   「出ている」と数えて再鳴動で鳴動画面を出し直せなかった。直すのは WakeOrPay 側だが、SEED 側の案: `ScreenHandle.IsClosing` を出す／背面へ回るとき進行中の遷移を即座に終える。
@@ -3682,9 +3684,16 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   → **済（2026-10-01）**: 開発用のビルドの pak に印（`.seed/build.json`。SeedPak `--debug-build`。SeedAndroid は `--variant debug` のときだけ付ける）を入れ、ランタイムが起動時に読んで
   `Application.IsDebugBuild` にし、`IsDebugAllowed => !IsPackaged || IsDebugBuild` にした（release は印を入れず、配布前の検査 `debug_build_mark` が印のある配布物を不合格にする。
   docs/android.md §24.14・docs/scripting_api.md §7.11・docs/packaging.md §4）。**実機でデバッグの命令・開発用の機能が出ることは次の実機確認で確かめる**（下の「開発用のビルドの印の残り」）。
-  (2) **【高】背面でも GPU の割り当て約 705 MB（GL mtrack）が残る**（TOTAL PSS 背面 796 MB・前面 853 MB。前回の低メモリでの停止の原因）。UI だけのアプリでも
+  (2) ~~**【高】背面でも GPU の割り当て約 705 MB（GL mtrack）が残る**（TOTAL PSS 背面 796 MB・前面 853 MB。前回の低メモリでの停止の原因）。UI だけのアプリでも
   Deferred（`deferred=true`・`gi=Rt`）の G-Buffer・bindless 4096 などの 3D の資源を確保している見込み（推測。内訳は未計測）。案: プロジェクト設定で 3D の描画資源を
-  確保しない「2D/UI だけ」の構成を用意する、背面へ回ったら解放する、資源ごとの計測のログ。
+  確保しない「2D/UI だけ」の構成を用意する、背面へ回ったら解放する、資源ごとの計測のログ。~~
+  → **済（2026-10-02。PC での確認まで）**: GPU メモリの内訳の計測（`renderer/gpu_mem`。`SEED_GPU_MEM_LOG=1` / `--gpu-mem-log` / Android `seed.gpu_mem_log=1`・
+  IPC `GPU_MEM_REPORT`。追跡した資源の分類ごとの合計と上位 20 件・wgpu-hal の確保ブロック・VK_EXT_memory_budget のヒープの使用量）と、描画の構成
+  `"render": { "profile": "ui" }`（`renderer/render_profile`。既定 `full` は従来どおり）を入れ、Wake or Pay の設定を ui にした（docs/rendering_profiles.md）。
+  推測は半分外れで、Deferred は `mobile` 品質ですでに止まっていた。大きかったのは **スキニングの compute のパイプラインのローカルメモリの予約（PC で約 450 MiB）**・
+  **bindless のメガバッファ 224 MiB**（RT の無い端末でも確保）・**Play のピッキングの ID バッファ 39.6 MiB**・影 56 MiB・GI 13 MiB と、wgpu の既定の
+  GPU メモリの方針（大きな塊・2 の冪への切り上げ）。PC（1080x2400・`mobile`）でヒープの使用量 1307.1 → 285.1 MiB・画面は full と画素単位で同じ。
+  **実機の `dumpsys meminfo` での確認と、背面での解放（見積り約 46 MiB・未実装）は下の「描画の構成と GPU メモリの計測の残り」**。
   (3) 編集画面の組み立てが約 0.39 秒（4 フレーム × 約 95 ms。時刻ホイールの行の生成の見込み）で、押してから約 0.4 秒は画面が変わらない。WakeOrPay 側の最適化（行の使い回し・作り置き）が主だが、
   プレハブの Instantiate とスクリプトの開始の重さは SEED 側でも計測して軽くする余地がある。
 - [ ] **開発用のビルドの印の残り** — 2026-10-01（上の (1) の対応。docs/android.md §24.14）。
@@ -3710,3 +3719,35 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   隠れている間は測り直さない（前回の値を保つ）か、非表示の子も数える。
   (2) **ScreenStack・ModalHost に「覆いを全画面の下に残す」口が無い**（オプションのサブ画面の間、覆いを閉じずに下に置くのに、レイヤーの付け替え・戻るの層・フォーカスの後ろ回しを
   アプリ側で組んだ〈`ModalParking`〉）。`StackPreview`（予測型の戻るのプレビュー）と `NavigatorRegistry` の戻るの口が internal で使えない。
+
+## 描画の構成（render.profile）と GPU メモリの計測 — 2026-10-02 実装時の残件（正典: docs/rendering_profiles.md）
+
+- [ ] **【高】スキニングの compute のパイプラインがローカルメモリを大きく予約する（full の 3D の作品）** — 2026-10-02（GPU メモリの計測で発見）。
+  `renderer/shaders/skin_compute.wgsl` はノードの TRS・ワールド行列をスレッドごとの `var<private>` 配列（`node_t/r/s`・`alt_t/r/s` 各 64×16 B・`world` 64×64 B ≒ 10 KB / スレッド）に持ち、
+  `SkinComputePipeline::new` を作るだけで PC（RTX 3060 Laptop）のヒープの使用量が +450.8 MiB 増える（wgpu-hal の資源の確保は 0。docs/rendering_profiles.md §5）。
+  `ui` の構成はパイプライン本体を作らないので避けたが、**`full`（WarashibeFishing など）は従来どおり予約する**。Mali（Pixel 6a）の量は未計測（`--es seed.gpu_mem_log 1` の
+  `節目 DrawPipelines::new の後` で分かる）。案: private 配列を workgroup の共有メモリ（1 ワークグループ 64 スレッドで同じノード列を共有できる形にする）か storage の作業領域へ移す／
+  スキンメッシュが現れたときに初めてパイプラインを作る（遅延生成。最初の 1 回だけ待つ）。
+- [ ] **full でも RT の無い GPU（Android の Mali 等）で bindless のメガバッファ 224 MiB を確保する** — 2026-10-02。bindless は RT のヒットシェーディングの土台（B1〜B3）で、
+  RT が使えない GPU では読む側が無い。`Renderer::new` の `supports_bindless` を `supports_rt` でも絞れば 3D の作品の Android も 224 MiB 減る（full の振る舞いを変えるので今回は
+  `ui` だけにした。決めてから）。関連: `renderer/mod.rs`・`renderer/bindless.rs`（`BINDLESS_*_BUFFER_BYTES`）。
+- [ ] **full でも単体の Play でピッキングの ID バッファ（画面と同じ大きさの Rgba32Float。1080x2400 で 39.6 MiB）を確保し、窓の大きさの知らせのたびに作り直す** — 2026-10-02。
+  Play では既定で ID パスを描かない（`SEED_ID_PASS_IN_PLAY` のときだけ）。`ui` は作らないようにした（`App::id_buffer_wanted`）。full でも「描くときに作る」にする案。
+  同じ大きさの知らせでも作り直している（`event_handler.rs::on_resize`）。
+- [ ] **UI だけの構成（ui）の実機の確かめ** — 2026-10-02。APK `C:\Users\k023g\.claude\jobs\434062fd\tmp\w3_device\wakeorpay-uiprofile.apk`（`ui` の設定入り・開発用）を入れ、
+  `dumpsys meminfo` の GL mtrack / EGL mtrack / TOTAL PSS を前面（一覧）・背面（1 分後）で、`--es seed.render_profile full` と比べて記録する。`--es seed.gpu_mem_log 1` で
+  `[SEED GPU MEM]` の「実際の確保」（VK_EXT_memory_budget の heapUsage）が GL mtrack と近いか・`節目` の値も見る。背面で 30 分以上止められないこと（以前は約 25 分）。
+  手順は docs/rendering_profiles.md §7。見込みは GL mtrack 100〜150 MB（推論）。
+- [ ] **ui の背面での解放（未実装・見積り約 46 MiB）** — 2026-10-02。`platform.paused` / suspended で post_ldr・scene_hdr（`RtPool`。30.9 MiB）と深度 2 枚（15.4 MiB）を捨て、
+  前面の最初のフレームで作り直す案（`RtPool` に捨てる口・`Renderer` の深度を Option に）。グリフのアトラス（16 MiB）は捨てると全部の文字の焼き直しになるので残す。
+  実機の背面の値を見てから決める（docs/rendering_profiles.md §12）。
+- [ ] **ui の構成で止めていないもの** — 2026-10-02（docs/rendering_profiles.md §10）。(1) 3D のパーティクル（ParticleEmitter）と LineRenderer は `scene_3d=false` でも描く
+  （2D の粒子と同じ系で 3D だけを分けていない）。(2) ModelComponent の GPU への読み込み・地形のメッシュの組み立ては止めていない（描かないだけ）。(3) 3D のパイプライン
+  （メッシュ・G-Buffer・デファード・反射・AO・水…）は作る（起動時間は変わらない。実機の DrawContext 約 1 秒）。(4) クラスタの資源 3.4 MiB。(5) UI を重ねる post_ldr は
+  Rgba16Float（1080x2400 で 19.8 MiB）。スワップチェインへ直接重ねれば減るが合成の精度が変わり full と画素が一致しなくなる。(6) エディタのプロジェクト設定の画面に欄が無い（JSON を直接書く）。
+- [ ] **GPU メモリの計測の残り** — 2026-10-02。(1) 生存は推定（同じ場所・同じラベルで後の世代に作り直したら前のものは捨てた、とみなす）。資産ごとに作る場所（スプライトの画像・モデル）は
+  作った累計で、シーンを切り替えるゲームでは多めに出る（`gpu_mem/category.rs` の `ACCUMULATING_SITES`）。(2) 新しく GPU 資源を作るコードは `GpuMemDeviceExt` の `*_tracked` を
+  使わないと計測から漏れる（素の `create_texture` を検出する仕組みは無い。テストか clippy の禁止で守る案）。(3) BLAS / TLAS は追跡していない（wgpu-hal の「加速構造」の行には出る）。
+  (4) MCP のツールにはしていない（IPC `GPU_MEM_REPORT` だけ。要れば `seed_batch` の enum とツール表へ）。(5) Mali の VK_EXT_memory_budget の heapUsage が GL mtrack と同じ数え方かは未確認。
+- [ ] **PC（NVIDIA・Windows）でスワップチェインを作るとヒープの使用量が約 156 MiB 増える** — 2026-10-02（低）。1080x2400 の 3 枚の論理値は 29.7 MiB。提示の仕組みの分と見る（推論）。
+  Android には関係しない（EGL mtrack）。PC の配布物でメモリが問題になったら、フレーム遅延・提示モードを変えて測る。

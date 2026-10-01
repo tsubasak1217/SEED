@@ -20,8 +20,8 @@
 //    レイアウト（pipeline.rs）と一致させること。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::engine::components::particle_emitter_component::MAX_PARTICLE_MODEL_VERTS;
 
@@ -80,12 +80,12 @@ impl ShapeMesh {
     ) -> Self {
         // 位置のみ頂点へ詰め替える（bytemuck で bytes 化するため repr(C) の ShapeVertex を使う）。
         let verts: Vec<ShapeVertex> = positions.iter().map(|&p| ShapeVertex { pos: p }).collect();
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vbuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let ibuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
             contents: bytemuck::cast_slice(indices),
             usage: wgpu::BufferUsages::INDEX,

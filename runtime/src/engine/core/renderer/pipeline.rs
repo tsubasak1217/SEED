@@ -3,6 +3,7 @@
 // レンダーパイプラインは TOML 設定 + WGSL リフレクションで自動構築。
 // コンピュートパイプライン（MeshletCullPipeline, SkinComputePipeline）は手動定義。
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::pipeline_config::{RenderPipelineBuilder, parse_compare};
 use crate::engine::core::loader::model::{CULL_FACE_COUNT, CULL_FACE_VARIANTS};
 
@@ -585,8 +586,14 @@ impl MeshletCullPipeline {
 ///
 /// per_frame（joints storage + カウント uniform）・static（頂点属性群の read-only storage）・
 /// output（変形後頂点の read-write storage）の 3 つの BindGroupLayout を保持する。
+///
+/// 【pipeline が None のとき】3D のシーンを描かない描画の構成（render_profile の scene_3d=false。UI だけの構成）。
+/// skin_compute.wgsl はノードごとの TRS・ワールド行列をスレッドごとの private 配列（約 10 KB / スレッド）に持つため、
+/// パイプラインを作るとドライバが「同時に走りうる全スレッド分」のローカルメモリを予約する
+/// （RTX 3060 Laptop の実測で +450 MiB。docs/rendering_profiles.md §5）。3D のモデルを描かない構成では
+/// ディスパッチが起きないので、パイプライン本体を作らず BindGroupLayout だけを持つ（`dispatch_lod` は何もしない）。
 pub struct SkinComputePipeline {
-    pub pipeline:      wgpu::ComputePipeline,
+    pub pipeline:      Option<wgpu::ComputePipeline>,
     pub per_frame_bgl: wgpu::BindGroupLayout,
     pub static_bgl:    wgpu::BindGroupLayout,
     pub output_bgl:    wgpu::BindGroupLayout,
@@ -596,11 +603,17 @@ impl SkinComputePipeline {
     /// パイプラインを生成する（`DrawPipelines` 構築時に 1 回）。
     /// 実 GPU テストからも直接生成できるよう pub（`SkinDeformPipeline::new` と同じ流儀）。
     pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("Skin Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/skin_compute.wgsl").into()),
-        });
+        Self::build(device, cache, true)
+    }
 
+    /// BindGroupLayout だけを作り、パイプライン本体（ローカルメモリを大きく予約する）は作らない
+    /// （3D のシーンを描かない描画の構成向け。スキンメッシュの資源の BindGroup は従来どおり作れる）。
+    pub fn layouts_only(device: &wgpu::Device) -> Self {
+        Self::build(device, None, false)
+    }
+
+    /// 共通の生成（`with_pipeline` が false ならパイプライン本体を作らない）。
+    fn build(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>, with_pipeline: bool) -> Self {
         let ro_storage = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -653,18 +666,25 @@ impl SkinComputePipeline {
             entries: &[rw_storage(0)],
         });
 
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("Skin Compute Layout"),
-            bind_group_layouts:   &[&per_frame_bgl, &static_bgl, &output_bgl],
-            push_constant_ranges: &[],
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("Skin Compute Pipeline"),
-            layout:              Some(&layout),
-            module:              &shader,
-            entry_point:         Some("cs_main"),
-            compilation_options: Default::default(),
-            cache,
+        // パイプライン本体（シェーダのコンパイルと、private 配列のためのローカルメモリの予約を伴う）。
+        let pipeline = with_pipeline.then(|| {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label:  Some("Skin Compute Shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/skin_compute.wgsl").into()),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label:                Some("Skin Compute Layout"),
+                bind_group_layouts:   &[&per_frame_bgl, &static_bgl, &output_bgl],
+                push_constant_ranges: &[],
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label:               Some("Skin Compute Pipeline"),
+                layout:              Some(&layout),
+                module:              &shader,
+                entry_point:         Some("cs_main"),
+                compilation_options: Default::default(),
+                cache,
+            })
         });
 
         Self { pipeline, per_frame_bgl, static_bgl, output_bgl }
@@ -1018,7 +1038,7 @@ impl SpritePipeline {
         });
 
         // 白 1×1 フォールバックテクスチャ（テクスチャ未設定時に使用）
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let white_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Sprite White Fallback Tex"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -1064,8 +1084,7 @@ impl SpritePipeline {
             1.0, 1.0,  1.0, 1.0,   // tri2 v1: 右下
             0.0, 1.0,  0.0, 1.0,   // tri2 v2: 左下
         ];
-        use wgpu::util::DeviceExt;
-        let unit_quad_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let unit_quad_vbuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Sprite Unit Quad VBuf"),
             contents: bytemuck::cast_slice(quad_verts),
             usage:    wgpu::BufferUsages::VERTEX,
@@ -1145,7 +1164,7 @@ impl CanvasIdPipeline {
                 .build(get_shader_source);
 
         // 白 1×1 テクスチャ（alpha=1）を作成してフォールバックビューとする
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let white_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("CanvasId White Fallback Tex"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -1277,10 +1296,9 @@ impl BarFillPipeline {
         ndc_x1:  f32,
         ndc_y1:  f32,
     ) {
-        use wgpu::util::DeviceExt;
         let uniform = BarFillUniform { color, x0: ndc_x0, y0: ndc_y0, x1: ndc_x1, y1: ndc_y1 };
         // フレームごとに小さなユニフォームバッファを生成して即時描画する
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("BarFill Uniform Buf"),
             contents: bytemuck::bytes_of(&uniform),
             usage:    wgpu::BufferUsages::UNIFORM,
@@ -1813,7 +1831,7 @@ impl ParticlePipelines {
         });
 
         // 既定白 1x1 テクスチャ（テクスチャ未指定エミッタ用。フラグメントの use_texture=0 と併用）。
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let white_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Particle White 1x1"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -1969,7 +1987,13 @@ impl DrawPipelines {
         };
         let unlit_line          = UnlitPipeline::new(device, sf, df, cache);
         let meshlet_cull        = MeshletCullPipeline::new(device, cache);
-        let skin_compute        = SkinComputePipeline::new(device, cache);
+        // 3D のシーンを描かない描画の構成（UI だけ）ではスキニングのディスパッチが起きないので、
+        // ローカルメモリを大きく予約するパイプライン本体を作らない（BindGroupLayout だけ。上の型のコメント）。
+        let skin_compute        = if super::render_profile::active_flags().scene_3d {
+            SkinComputePipeline::new(device, cache)
+        } else {
+            SkinComputePipeline::layouts_only(device)
+        };
         // RT スキン BLAS 用の変形 compute（Phase RT-Skin）。
         let skin_deform         = SkinDeformPipeline::new(device, cache);
         // 2D メッシュ変形スキニング compute（Phase A1）。

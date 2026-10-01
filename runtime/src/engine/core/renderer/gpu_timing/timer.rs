@@ -18,6 +18,7 @@
 //  計測は既定でオフ（Renderer が TIMESTAMP_QUERY 系の feature を要求したときだけ作られる）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -85,7 +86,7 @@ impl GpuPassTimer {
             count: MAX_MARKS,
         });
         let bytes = u64::from(MAX_MARKS) * TIMESTAMP_BYTES;
-        let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let resolve_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("GPU Pass Timer Resolve"),
             size: bytes,
             usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
@@ -93,7 +94,7 @@ impl GpuPassTimer {
         });
         let slots = (0..READBACK_SLOTS)
             .map(|index| ReadbackSlot {
-                buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                buffer: device.create_buffer_tracked(&wgpu::BufferDescriptor {
                     label: Some(&format!("GPU Pass Timer Readback {index}")),
                     size: bytes,
                     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,

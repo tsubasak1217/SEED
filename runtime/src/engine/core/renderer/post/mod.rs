@@ -23,6 +23,7 @@ mod bloom;
 #[cfg(test)]
 mod tests_color_pipeline;
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 pub use rt_pool::RtPool;
 pub use post_pass::{PostPipeline, run_post_stage};
 // レターボックス（内部解像度固定）用のビューポート付き実行。最終プレゼント段のみが使う。
@@ -326,7 +327,7 @@ impl PostContext {
         });
 
         // 既定マスク（白 1x1, R=1 = 全面適用）。
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let white_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Post White Mask"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,

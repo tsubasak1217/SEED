@@ -39,6 +39,13 @@ const GPU_TIMING_ENV: &str = "SEED_GPU_TIMING";
 /// GPU_TIMING_ENV を有効とみなす値。
 const GPU_TIMING_ENV_ON: &str = "1";
 
+/// GPU メモリの内訳の計測を有効にする起動引数（計測用。renderer/gpu_mem。環境変数 SEED_GPU_MEM_LOG=1 でも同じ）。
+const GPU_MEM_LOG_ARG: &str = "--gpu-mem-log";
+
+/// 描画の構成の名前の起動引数（検証用。`--render-profile=<full|ui>`。renderer/render_profile）。
+/// project_settings.json の render.profile より優先する。
+const RENDER_PROFILE_ARG: &str = "--render-profile=";
+
 /// ディープリンクでの起動を PC で試す起動引数（検証用。`--deep-link=<URI>`。W1-6）。
 /// SEED.Platform の模擬の起動理由（スクリプトの App.LaunchReason）が DeepLink・Uri = <URI> になる（docs/android.md §25.15）。
 const DEEP_LINK_ARG: &str = "--deep-link=";
@@ -192,6 +199,15 @@ fn parse_args() -> LaunchArgs {
     let gpu_timing = raw.iter().any(|a| a == GPU_TIMING_ARG)
         || std::env::var(GPU_TIMING_ENV).is_ok_and(|v| v.trim() == GPU_TIMING_ENV_ON);
 
+    // 計測用: GPU メモリの内訳（起動引数。環境変数 SEED_GPU_MEM_LOG は gpu_mem::request が見る。既定は無効）。
+    let gpu_mem_log = raw.iter().any(|a| a == GPU_MEM_LOG_ARG);
+
+    // 検証用: 描画の構成の名前（full / ui。無ければ project_settings.json の render.profile）。
+    let render_profile = raw
+        .iter()
+        .find(|a| a.starts_with(RENDER_PROFILE_ARG))
+        .map(|a| a[RENDER_PROFILE_ARG.len()..].to_string());
+
     LaunchArgs {
         parent_hwnd,
         parent_pid,
@@ -209,6 +225,8 @@ fn parse_args() -> LaunchArgs {
         embedded_clr: None,
         render_quality,
         gpu_timing,
+        gpu_mem_log,
+        render_profile,
         // 上書き層（pak より先にアセットルートを読む）は Android のデバッグ版の差し替え専用。PC は従来の読む順のまま（§23）。
         asset_overlay: false,
     }

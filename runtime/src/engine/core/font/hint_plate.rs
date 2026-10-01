@@ -19,7 +19,6 @@
 //  （詳細は renderer/shaders/hint_plate.wgsl のコメント）。
 // ============================================================
 
-use wgpu::util::DeviceExt;
 
 // ── 頂点型 ────────────────────────────────────────────────────
 
@@ -28,6 +27,7 @@ use wgpu::util::DeviceExt;
 /// `half` / `radius` はクアッドの 4 頂点で同じ値を持つ
 /// （フラグメントで矩形中心からの距離を測るための「板の素性」であり、
 ///   頂点ごとに変わるのは `position` と `local` だけ）。
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HintPlateVertex {
@@ -153,7 +153,7 @@ impl HintPlate {
         for r in rects {
             verts.extend_from_slice(&r.to_vertices(screen_w, screen_h));
         }
-        let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Hint Plate VB"),
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,

@@ -12,8 +12,8 @@
 //  6. 次フレームの 0. で受領する
 // ============================================================
 
-use wgpu::util::DeviceExt;
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::uniforms::GpuCullData;
 
 /// GPU→CPU 可視性読み戻しのマップ完了通知（`map_after_submit` → `try_read_results`）。
@@ -118,7 +118,7 @@ impl HiZSystem {
             mip_levels,
             _pad: 0,
         };
-        let screen_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let screen_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("HiZ ScreenInfo Buffer"),
             contents: bytemuck::bytes_of(&screen_info),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -450,7 +450,7 @@ fn create_hiz_texture(
     height: u32,
     mip_levels: u32,
 ) -> (wgpu::Texture, wgpu::TextureView, Vec<wgpu::TextureView>) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some("Hi-Z Texture"),
         size: wgpu::Extent3d {
             width,
@@ -500,19 +500,19 @@ fn create_instance_buffers(
     let aabb_size = (cap * std::mem::size_of::<GpuCullData>() as u64).max(32);
     let result_size = (cap * 4).max(16);
 
-    let aabb_buf = device.create_buffer(&wgpu::BufferDescriptor {
+    let aabb_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
         label: Some("HiZ AABB Buffer"),
         size: aabb_size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let result_buf = device.create_buffer(&wgpu::BufferDescriptor {
+    let result_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
         label: Some("HiZ Result Buffer"),
         size: result_size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-    let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+    let staging_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
         label: Some("HiZ Readback Staging"),
         size: result_size,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,

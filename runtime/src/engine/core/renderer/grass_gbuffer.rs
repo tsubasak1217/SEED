@@ -33,8 +33,8 @@
 //  持たせ、毎フレーム 4 バイトだけ部分更新する（`update_time`）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use super::pipeline::{get_shader_source, MeshPipeline};
 
@@ -488,7 +488,7 @@ impl GrassInstanceBuffer {
         let instances = clamp_new_instances(device, instances);
         let (buffer, capacity) = create_instance_buffer(device, instances);
 
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("grass_uniform"),
             contents: bytemuck::bytes_of(&uniform),
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -605,7 +605,7 @@ fn create_instance_buffer(
     let dummy: [GrassInstanceGpu; GRASS_EMPTY_DUMMY_ELEMENTS] = Default::default();
     let data: &[GrassInstanceGpu] = if instances.is_empty() { &dummy } else { instances };
 
-    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
         label:    Some("grass_instances"),
         contents: bytemuck::cast_slice(data),
         usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -621,7 +621,7 @@ fn create_instance_buffer(
 /// 余剰要素はゼロ初期化されないが、`count` が実本数までしか描かないため参照されない。
 fn create_sized_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     let cap = capacity.max(GRASS_MIN_CAPACITY);
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.create_buffer_tracked(&wgpu::BufferDescriptor {
         label:              Some("grass_instances"),
         size:               (cap * std::mem::size_of::<GrassInstanceGpu>()) as wgpu::BufferAddress,
         usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

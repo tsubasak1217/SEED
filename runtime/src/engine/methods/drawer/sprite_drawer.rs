@@ -8,6 +8,7 @@
 //   - GpuSpriteTexture: アップロード済みテクスチャ＋テクスチャ BindGroup（テクスチャ単位で永続キャッシュ）
 //   - load_sprite_texture: ファイル→GpuSpriteTexture
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::sync::Arc;
 
 // ============================================================
@@ -112,7 +113,7 @@ pub fn load_sprite_texture(
     let mut rgba = rgba.into_raw();
     crate::engine::core::renderer::texture::alpha_bleed::bleed_alpha_edges_default(w, h, &mut rgba);
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some("SpriteTexture"),
         size: wgpu::Extent3d {
             width: w,

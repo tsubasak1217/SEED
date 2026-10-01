@@ -1,0 +1,29 @@
+{
+  "_comment": "描画の構成（render profile）の正典（データ）。ランタイム（runtime/src/engine/core/renderer/render_profile/catalog.rs）がビルド時に埋め込む。どの構成を使うかは project_settings.json の render.profile（無ければ default_profile）。flags に書かない旗は既定（full と同じ＝すべて用意する）。旗の意味と効き方は docs/rendering_profiles.md。",
+  "format_version": 1,
+  "default_profile": "full",
+  "profiles": [
+    {
+      "name": "full",
+      "label": "3D あり（従来どおり）",
+      "description": "3D の描画資源（影・GI・bindless・レイトレーシング・G-Buffer・後処理・Play のピッキング）をすべて用意する。既定。",
+      "flags": {}
+    },
+    {
+      "name": "ui",
+      "label": "2D/UI だけ",
+      "description": "キャンバス（2D）・文字・図形・スプライトだけを描くアプリ向け。3D のシーン（モデル・地形・水・天球・SEED.Draw3D）を描かず、影・GI・bindless・レイトレーシング・G-Buffer・後処理（ブルーム・ビネット・FXAA）・Play のピッキングの資源を作らない。GPU メモリも小さな塊で確保する（memory_usage）。",
+      "flags": {
+        "scene_3d": false,
+        "deferred": false,
+        "shadows": false,
+        "gi": false,
+        "bindless": false,
+        "ray_tracing": false,
+        "post": false,
+        "picking": false,
+        "memory_hint": "memory_usage"
+      }
+    }
+  ]
+}

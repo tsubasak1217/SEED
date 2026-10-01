@@ -23,7 +23,11 @@ doctest = false
 
 [dependencies]
 winit = "0.30"
-wgpu = "25"
+# counters … wgpu-core / wgpu-hal の内部の計数（資源の数・確保したブロックのバイト数・GPU メモリの確保の回数）を有効にする。
+#   GPU メモリの内訳の計測（renderer/gpu_mem。docs/rendering_profiles.md §4）が「wgpu-hal が確保したブロック」の合計を
+#   読むために使う（Device::get_internal_counters）。資源の生成・破棄ごとに原子的な足し引きが 1 回増えるだけで、
+#   描画の速さに見える差は無い（wgpu の既定の機能に入っていないので明示する）。
+wgpu = { version = "25", features = ["counters"] }
 pollster = "0.3"
 raw-window-handle = "0.6"
 gltf = { version = "1", features = ["utils", "KHR_materials_transmission"] }
@@ -76,6 +80,13 @@ netcorehost = "0.20"
 #   net10_0 … get_function_with_unmanaged_callers_only（net5_0 以上）と load_assembly_from_bytes（net8_0 以上）
 [target.'cfg(target_os = "android")'.dependencies]
 netcorehost = { version = "0.20", default-features = false, features = ["net10_0"] }
+
+# ── Vulkan の生の問い合わせ（GPU メモリの計測。renderer/gpu_mem/heap_budget.rs）─────────────
+# VK_EXT_memory_budget でプロセスのヒープの実使用量を読む（wgpu の as_hal で物理デバイスとインスタンスを借りる）。
+# 版は wgpu-hal 25 が使う ash と同じ 0.38（Cargo.lock の 0.38.0。新しい依存は増えない。型が wgpu-hal と一致する必要がある）。
+# wgpu の Vulkan バックエンドがあるプラットフォーム（Windows・Android・Linux）だけ。
+[target.'cfg(any(windows, target_os = "android", target_os = "linux"))'.dependencies]
+ash = "0.38"
 
 [target.'cfg(windows)'.dependencies]
 # 追加 feature の用途（起動ログ機構 core/startup_log/）:

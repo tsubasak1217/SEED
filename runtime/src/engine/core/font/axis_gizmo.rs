@@ -11,10 +11,10 @@
 //    - ラベル: FontSystem による "X" "Y" "Z" テキスト
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::{FontConfig, FontSystem, GpuTextBatch, TextBatch};
 use crate::engine::structs::transforms::Quaternion;
 use crate::engine::structs::utils::color::Color;
-use wgpu::util::DeviceExt;
 
 // ── AxisHit — ドットのヒット情報 ─────────────────────────────
 
@@ -375,7 +375,7 @@ impl AxisGizmo {
         );
 
         let geo_count = geo.len() as u32;
-        let geo_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let geo_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Axis Gizmo Geo Buffer"),
             contents: bytemuck::cast_slice(&geo),
             usage: wgpu::BufferUsages::VERTEX,

@@ -300,7 +300,13 @@ PROFILE_DUMP_ERROR:{理由}
 
 ダンプ JSON は数十 KB になりうるため IPC 行には載せず、一時ファイル
 （`%TEMP%\seed_profile_dump_<ナノ秒>.json`）へ書き出して**パスだけ**を返します
-（IPC は 1 行 1 メッセージのため）。ファイルの中身は次の形です。
+（IPC は 1 行 1 メッセージのため）。
+
+> 時間ではなく **GPU メモリの内訳**（資源の分類ごとの大きさ・上位 20 件・Vulkan のヒープの実使用量）は、同じ形の
+> 一発の IPC `GPU_MEM_REPORT[:<パス>]` → `GPU_MEM_REPORT_DONE:{JSON のパス}` で取れる（起動時に `--gpu-mem-log` /
+> `SEED_GPU_MEM_LOG=1` で計測を有効にしておく。正典は [rendering_profiles.md](rendering_profiles.md) §4）。
+
+ファイルの中身は次の形です。
 
 ```json
 {

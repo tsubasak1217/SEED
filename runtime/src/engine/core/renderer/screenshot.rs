@@ -38,6 +38,7 @@
 //       — エディタ（MCP 経由の AI）からの `SCREENSHOT:` に応答する。ファイル後半参照。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -176,7 +177,7 @@ fn begin_copy(
         align_up(width * BYTES_PER_PIXEL, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer_size = u64::from(padded_bytes_per_row) * u64::from(height);
 
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
         label: Some("Screenshot Readback"),
         size: buffer_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,

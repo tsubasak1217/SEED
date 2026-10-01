@@ -18,6 +18,7 @@
 //  RT 影の受光は範囲外（TODO）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS};
 use super::pipeline::CullPipelineSet;
 use super::pipeline_config::{vertex_buffer_layout, parse_compare};
@@ -918,7 +919,7 @@ pub fn draw_sequential_one<'p>(
 /// 中身は不定（屈折オフのフラグメントはサンプルしない）。透明パイプラインの group4 binding15 を
 /// 常に満たすためだけに存在する。
 fn create_dummy_refract_view(device: &wgpu::Device) -> wgpu::TextureView {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label:           Some("Refraction Dummy 1x1"),
         size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         mip_level_count: 1,

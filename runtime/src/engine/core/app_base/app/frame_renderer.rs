@@ -485,6 +485,12 @@ impl App {
         // 早期 return 経路（描画一時停止・最小化・サーフェスエラー）では end_frame が
         // 呼ばれないが、次フレームの begin_frame が記録をクリアするので破綻しない。
         profiling::begin_frame();
+        // GPU メモリの計測（gpu_mem）のフレーム番号を進める（作り直しの判定に使う。無効でも数えるだけ）。
+        self.gpu_mem_frame_start();
+        // 描画の構成（render_profile）が 3D のシーンを描くか（UI だけの構成は false。起動時に決まりフレーム内不変）。
+        // false のとき、3D のモデル（地形のチャンクを含む）・水・天球・SEED.Draw3D をこのフレームの描画から外す
+        // （中身があれば種類ごとに 1 回警告。render_profile_ops.rs）。full（既定）は true＝従来どおり。
+        let scene_3d = self.render_profile.flags.scene_3d;
 
         let dbg_frame = DEBUG_FRAME.fetch_add(1, Ordering::Relaxed);
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
@@ -1229,6 +1235,11 @@ impl App {
                 // Play モード（非ポーズ時）: is_main=true の CameraComponent を探す
                 // スケーリングモードに応じたビューポート矩形・射影アスペクト比・実効 FOV を計算する
                 let game_cam = scene.find_main_camera().map(|(tf, cd)| {
+                    // 3D を描かない構成で 3D（透視）のメインカメラがあれば 1 回だけ知らせる（3D の中身は描かない）。
+                    // 2D の正射カメラ（スプライトの 2D ゲーム）は構成によらず使う。
+                    if !scene_3d && matches!(cd.projection, crate::engine::components::CameraProjection::Perspective) {
+                        super::render_profile_ops::warn_3d_skipped_once("3D（透視）のメインカメラ", 1);
+                    }
                     // シェーディングアセット（L3-a）: メインカメラの指定を控える。
                     // ここでしか CameraComponentData に触れないため、この場で拾うのが最も安い。
                     main_camera_shading_asset    = cd.shading_asset.clone();
@@ -2074,16 +2085,36 @@ impl App {
 
                     // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
                     // タプル: (id_base, dfs_id, slot_i, &ModelComponent)
-                    let all_mcs: Vec<(u32, u32, usize, &ModelComponent)> =
-                        collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line);
+                    // 3D を描かない構成（scene_3d=false）では 1 つも描かない（集めて数を警告するだけ）。
+                    // 空にしておけば、統合バッチ・影のキャスター・半透明・アウトライン・RT の対象も空になる。
+                    let all_mcs: Vec<(u32, u32, usize, &ModelComponent)> = {
+                        let collected =
+                            collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line);
+                        if scene_3d {
+                            collected
+                        } else {
+                            super::render_profile_ops::warn_3d_skipped_once(
+                                "3D のモデル（地形のチャンクを含む）", collected.len(),
+                            );
+                            Vec::new()
+                        }
+                    };
 
                     // 水ボリューム収集（Phase W1）: WaterVolumeComponent を持つアクタを
                     // ワールド空間の中間表現（ResolvedWaterVolume）へ解決する。所有 Vec を返すので
                     // scene の借用は残らない。描画は WBOIT 合成後の専用パスで行う（下記 [WATER]）。
-                    let water_volumes: Vec<crate::engine::water::ResolvedWaterVolume> =
-                        crate::engine::water::collect_water_volumes(
+                    // 3D を描かない構成では水も描かない（コースティクス・水面反射・岸波の資源も作らない）。
+                    let water_volumes: Vec<crate::engine::water::ResolvedWaterVolume> = {
+                        let collected = crate::engine::water::collect_water_volumes(
                             &scene.actors, &scene.world, self.active_world_line,
                         );
+                        if scene_3d {
+                            collected
+                        } else {
+                            super::render_profile_ops::warn_3d_skipped_once("水（WaterVolume）", collected.len());
+                            Vec::new()
+                        }
+                    };
                     // ── 岸波のショアフィールド更新（Phase W1.5）────────────────────────
                     //
                     // 【何をするか】水域ごとに「水深・符号付き岸距離・岸方向」の俯瞰 2D を
@@ -2860,7 +2891,11 @@ impl App {
                     // ── スカイボックス: GPU 同期（Phase R9）────────────────────
                     // uniform バッファ・BindGroup の確保／更新とテクスチャロードを行う。
                     // 描画はメインパスの最初（begin_scene_pass_to 直後）で行う。0 個なら即 return。
-                    if self.skybox_system.has_skyboxes() {
+                    // 3D を描かない構成では天球を同期しない（テクスチャも読まない。描画側も下で外す）。
+                    if !scene_3d && self.skybox_system.has_skyboxes() {
+                        super::render_profile_ops::warn_3d_skipped_once("天球（Skybox）", 1);
+                    }
+                    if scene_3d && self.skybox_system.has_skyboxes() {
                         self.skybox_system.sync_gpu(
                             &draw_ctx.device, &draw_ctx.queue,
                             &draw_ctx.pipelines.skybox,
@@ -5310,6 +5345,13 @@ impl App {
                         crate::profile_scope!("描画/3D プリミティブ収集・構築");
                         use crate::engine::core::renderer::primitive3d::Primitive3dRange;
                         let cmds = crate::engine::core::renderer::primitive3d::take_commands();
+                        // 3D を描かない構成ではキューを空にするだけで描かない（数を 1 回警告する）。
+                        let cmds = if scene_3d {
+                            cmds
+                        } else {
+                            super::render_profile_ops::warn_3d_skipped_once("SEED.Draw3D の図形", cmds.len());
+                            Vec::new()
+                        };
                         let (mut depth_on, mut depth_off) = (Vec::new(), Vec::new());
                         for c in cmds {
                             if c.depth_test {
@@ -7355,7 +7397,7 @@ impl App {
                         // G-Buffer デバッグ表示中は天球も描かない。背景ピクセルには G-Buffer が
                         // 無い（＝可視化パスが黒で塗る）ため、そこへ天球を描くと「値の無い領域」と
                         // 「値のある領域」の境界が分からなくなる。
-                        if !edit_view_2d && !gbuffer_debug_active && self.skybox_system.has_skyboxes() {
+                        if scene_3d && !edit_view_2d && !gbuffer_debug_active && self.skybox_system.has_skyboxes() {
                             self.skybox_system.draw(
                                 &mut pass,
                                 &draw_ctx.pipelines.skybox,
@@ -10035,6 +10077,10 @@ impl App {
                 ipc.send(&reply);
             }
         }
+
+        // GPU メモリの計測（gpu_mem）: 描画が回り続けるアプリは AUTO_REPORT_FRAME フレーム目に起動後の内訳を 1 回出す
+        // （計測が無効なら何もしない。gpu_mem_ops.rs）。
+        self.gpu_mem_frame_end();
 
         // 文字入力（W2-6a）: このフレームにスクリプトが求めたキーボードの出し入れ・入力欄の切り替え・IME の本文の送り返し・
         // 候補窓の位置を、プラットフォームへ 1 度にまとめて当てる（Android は登録された実装、PC はウィンドウ。

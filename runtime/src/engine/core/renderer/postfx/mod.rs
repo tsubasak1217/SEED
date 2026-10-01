@@ -25,6 +25,7 @@
 pub mod asset;
 mod bake;
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 pub use bake::{SpritePostfxCache, resolve_baked};
 // asset モジュールの型・関数は bake から `super::asset::...` で参照する。
 // default_postfx_json は雛形生成の正典として公開する（現状は C# 側が雛形を書き出すため
@@ -208,7 +209,7 @@ impl PostfxContext {
         });
 
         // 既定マスク（白 1x1, R=1 = 全面適用）。
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let white_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Postfx White Mask"),
             size: wgpu::Extent3d {
                 width: 1,

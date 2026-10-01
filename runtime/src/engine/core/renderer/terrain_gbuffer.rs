@@ -36,10 +36,10 @@
 //  バインドグループをキャッシュする（テクスチャ配列とサンプラは全パレットで共有）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::engine::core::loader::model::{CullFace, Model, CULL_FACE_VARIANTS};
 use crate::engine::terrain::layers::{texture_path, TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
@@ -251,7 +251,7 @@ impl TerrainLayerResources {
                 0.0,
             ],
         };
-        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let ubuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("terrain_layer_uniform"),
             contents: bytemuck::bytes_of(&uniform),
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

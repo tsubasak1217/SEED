@@ -33,6 +33,7 @@
 //  .r のみを AO 値として使う（imos_blur.rs のフォーマット解説と一致）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::deferred::DeferredLightingPipelines;
 use super::imos_blur::{IMOS_BLUR_FORMAT, ImosBlur};
 use super::pipeline::get_shader_source;
@@ -189,7 +190,7 @@ impl AoPipelines {
         };
 
         // AoParams UBO（毎フレーム write_params で更新）。
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("AO Params UBO"),
             size: std::mem::size_of::<AoParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -211,7 +212,7 @@ impl AoPipelines {
 
         // 白 1x1（R=1）。AO=Off 時と AO 生成パスの t_ao スロットを埋める。
         // Rgba16Float = 4×f16。R=1.0 の f16 は 0x3C00（LE: 00 3C）。A も 1.0 にする。
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let white_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("AO White 1x1"),
             size: wgpu::Extent3d {
                 width: 1,
@@ -460,7 +461,7 @@ fn make_tex(
     h: u32,
     usage: wgpu::TextureUsages,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: w,

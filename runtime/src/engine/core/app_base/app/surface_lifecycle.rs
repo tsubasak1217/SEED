@@ -44,6 +44,8 @@ impl App {
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
+        // GPU メモリの計測（有効なときだけ）: サーフェスを捨てた後に背面へ残る量（ヒープの使用量）を 1 行残す。
+        crate::engine::core::renderer::gpu_mem::checkpoint("背面へ回った後（サーフェスを捨てた後）");
         event_loop.set_control_flow(SUSPENDED_CONTROL_FLOW);
     }
 

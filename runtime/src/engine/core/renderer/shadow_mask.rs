@@ -36,6 +36,7 @@
 //  max_color_attachment_bytes_per_sample=32 を超過するため不可。未使用の .a へ同梱してバイト予算内に収める）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::deferred::DeferredLightingPipelines;
@@ -320,7 +321,7 @@ impl ShadowMaskPipelines {
             )
         });
 
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Shadow Mask Params UBO"),
             size: std::mem::size_of::<ShadowMaskParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -573,7 +574,7 @@ fn make_layered(
     usage: wgpu::TextureUsages,
 ) -> LayeredTex {
     let layers = RT_SHADOW_MASK_LIGHTS;
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: w,

@@ -30,6 +30,7 @@
 //    - receive_shadows（モデル側の影受け無効化）は未対応（TODO）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use crate::engine::structs::tensor::Mat4x4;
 use crate::engine::structs::tensor::vector3::Vector3;
 use crate::engine::structs::tensor::vector4::Vector4;
@@ -50,6 +51,8 @@ pub const SPOT_SHADOW_SIZE: u32 = 1024;
 pub const MAX_SHADOW_SPOTS: usize = 4;
 /// シャドウ深度テクスチャのフォーマット。
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// 影を描かない構成（描画の構成の shadows=false）で作る置き場の深度の 1 辺（バインドを満たすだけの最小）。
+pub const SHADOW_PLACEHOLDER_SIZE: u32 = 1;
 
 // CSM の解像度・分割係数・バイアス・PCF は **shadow_settings.rs（ShadowQuality）** が
 // 唯一の正典で、project_settings.json の `shadow` ブロックから供給される。
@@ -192,13 +195,39 @@ impl ShadowResources {
     ///
     /// group 4 の複合 BindGroup（ライト＋シャドウ）は本構造体を渡して
     /// `LightBuffer::new` が生成する（生成順: ShadowResources → LightBuffer）。
+    /// CSM の解像度はシャドウ品質（shadow.resolution）、スポットは SPOT_SHADOW_SIZE。
     pub fn new(
         device:     &wgpu::Device,
         camera_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
+        // CSM の解像度はプロジェクト設定（shadow.resolution）で決まる。
+        // 起動時に 1 回だけ読み、以後はこの実体に固定する（dir_size）。
+        Self::with_sizes(device, camera_bgl, shadow_quality().resolution, SPOT_SHADOW_SIZE)
+    }
+
+    /// 影を描かない構成（描画の構成の shadows=false）向けの置き場を生成する。
+    ///
+    /// group 4 の複合 BindGroup は深度の配列テクスチャ（CSM_CASCADE_COUNT 層・MAX_SHADOW_SPOTS 層）を
+    /// 必ず要求するので、層の数はそのままに 1 辺 SHADOW_PLACEHOLDER_SIZE の深度だけを作る
+    /// （1024 の CSM＋スポットで 2 組 56 MiB → 数十バイト）。影は描画品質の上限（shadows=false）で
+    /// 1 灯も採用されないので、この深度は描かれも読まれもしない。
+    pub fn new_placeholder(
+        device:     &wgpu::Device,
+        camera_bgl: &wgpu::BindGroupLayout,
+    ) -> Self {
+        Self::with_sizes(device, camera_bgl, SHADOW_PLACEHOLDER_SIZE, SHADOW_PLACEHOLDER_SIZE)
+    }
+
+    /// CSM とスポットの深度の 1 辺を指定してシャドウリソース一式を生成する（new / new_placeholder の共通部分）。
+    fn with_sizes(
+        device:     &wgpu::Device,
+        camera_bgl: &wgpu::BindGroupLayout,
+        dir_size:   u32,
+        spot_size:  u32,
+    ) -> Self {
         // 深度テクスチャ配列を生成するヘルパー。
         let make_array_tex = |label: &str, size: u32, layers: u32| {
-            device.create_texture(&wgpu::TextureDescriptor {
+            device.create_texture_tracked(&wgpu::TextureDescriptor {
                 label:           Some(label),
                 size:            wgpu::Extent3d {
                     width:                 size,
@@ -233,16 +262,13 @@ impl ShadowResources {
             })
         };
 
-        // CSM の解像度はプロジェクト設定（shadow.resolution）で決まる。
-        // 起動時に 1 回だけ読み、以後はこの実体に固定する（下の dir_size）。
-        let dir_size = shadow_quality().resolution;
         let dir_tex = make_array_tex("CSM Depth Array", dir_size, CSM_CASCADE_COUNT as u32);
         let dir_layer_views: Vec<_> = (0..CSM_CASCADE_COUNT as u32)
             .map(|i| make_layer_view(&dir_tex, "CSM Layer View", i))
             .collect();
         let dir_array_view = make_array_view(&dir_tex, "CSM Array View");
 
-        let spot_tex = make_array_tex("Spot Shadow Array", SPOT_SHADOW_SIZE, MAX_SHADOW_SPOTS as u32);
+        let spot_tex = make_array_tex("Spot Shadow Array", spot_size, MAX_SHADOW_SPOTS as u32);
         let spot_layer_views: Vec<_> = (0..MAX_SHADOW_SPOTS as u32)
             .map(|i| make_layer_view(&spot_tex, "Spot Layer View", i))
             .collect();
@@ -262,7 +288,7 @@ impl ShadowResources {
         });
 
         // シャドウ行列 UBO（ゼロ初期化）。
-        let ubo = device.create_buffer(&wgpu::BufferDescriptor {
+        let ubo = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("Shadow Matrices UBO"),
             size:               std::mem::size_of::<ShadowMatricesUbo>() as u64,
             usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

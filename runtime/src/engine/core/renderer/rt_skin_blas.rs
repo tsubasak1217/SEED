@@ -44,6 +44,7 @@
 //    bindless レコードの生成は rt_shadow.rs の責務（非スキンと共通）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -736,14 +737,14 @@ fn create_slot(
     let index_count  = prim.get_lod_index_buffer(lod).1;
 
     // 変形後ローカル位置バッファ。compute の出力（STORAGE）かつ BLAS の頂点入力（BLAS_INPUT）。
-    let out_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let out_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
         label:              Some("RT Skin Deformed Positions"),
         size:               vertex_count as u64 * SKIN_DEFORM_VERTEX_STRIDE,
         usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
         mapped_at_creation: false,
     });
 
-    let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let params_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
         label:              Some("RT Skin Deform Params"),
         size:               std::mem::size_of::<SkinDeformParams>() as u64,
         usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -1207,7 +1208,6 @@ mod tests {
     #[test]
     #[ignore = "実 GPU が必要。--ignored で実行する"]
     fn skin_deform_builds_blas_on_gpu() {
-        use wgpu::util::DeviceExt;
         use crate::engine::core::loader::model::{SkinVertex, Vertex};
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -1244,23 +1244,23 @@ mod tests {
         ];
         let indices: Vec<u32> = (0..TRI_INDICES).collect();
 
-        let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vb = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("test vb"), contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
                  | wgpu::BufferUsages::BLAS_INPUT | wgpu::BufferUsages::COPY_DST,
         });
-        let svb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let svb = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("test svb"), contents: bytemuck::cast_slice(&skins),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
         });
-        let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let ib = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("test ib"), contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT,
         });
         // 単位行列 1 本ぶんのジョイント行列（MAX_JOINTS 本ぶん確保する）。
         let jmats = vec![[[1.0f32, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
                           [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]; MAX_JOINTS];
-        let jbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let jbuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("test jmats"), contents: bytemuck::cast_slice(&jmats),
             usage: wgpu::BufferUsages::STORAGE,
         });
@@ -1274,13 +1274,13 @@ mod tests {
         let mut out_bufs = Vec::new();
         let mut entry_bgs = Vec::new();
         for g in 0..GEOM_COUNT {
-            let out_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            let out_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("test out"),
                 size: TRI_VERTS as u64 * SKIN_DEFORM_VERTEX_STRIDE,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
                 mapped_at_creation: false,
             });
-            let pbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let pbuf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                 label: Some("test params"), contents: bytemuck::bytes_of(&params),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });

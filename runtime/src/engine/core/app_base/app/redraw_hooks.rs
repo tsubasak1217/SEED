@@ -348,6 +348,9 @@ impl App {
                 stats.wakes,
                 stats.timer_wakes,
             );
+            // GPU メモリの計測（gpu_mem）: 最初に待機へ入ったとき＝起動して画面が落ち着いたときに内訳を 1 回出す
+            // （計測が無効・もう出したなら何もしない。gpu_mem_ops.rs）。
+            self.gpu_mem_on_idle();
         }
     }
 

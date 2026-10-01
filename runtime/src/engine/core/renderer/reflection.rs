@@ -27,6 +27,7 @@
 //  （frame_renderer は camera_buf.bind_group と deferred::create_gbuffer_bind_group をそのまま流用）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::ddgi::GiResources;
 use super::deferred::DeferredLightingPipelines;
 use super::pipeline::get_shader_source;
@@ -336,7 +337,7 @@ impl ReflectionPipelines {
         });
 
         // ReflectionParams UBO（初期値は既定強度で write_params にて毎フレーム更新）。
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Reflection Params UBO"),
             size: std::mem::size_of::<ReflectionParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -358,7 +359,7 @@ impl ReflectionPipelines {
         });
         // スカイボックスパラメータ UBO（既定は「無し」＝enabled 0。
         // スカイボックスのあるフレームだけ `update_sky` が上書きする）。
-        let sky_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let sky_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Reflection Sky Params UBO"),
             size: std::mem::size_of::<ReflectionSkyUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -375,7 +376,7 @@ impl ReflectionPipelines {
         const SKY_DUMMY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
         /// 上のフォーマットの 1 テクセルのバイト数。
         const SKY_DUMMY_TEXEL_BYTES: u32 = 4;
-        let sky_dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let sky_dummy_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Reflection Sky Dummy 1x1"),
             size: wgpu::Extent3d {
                 width: 1,
@@ -1083,7 +1084,7 @@ mod tests {
         // 天球バインドは本タスクで後から足した分なので、ここが通ることが
         // 「binding 3..5 の種別（uniform / texture / sampler）が Rust と WGSL で一致している」
         // ことの実機側の証拠になる。
-        let hdr = device.create_texture(&wgpu::TextureDescriptor {
+        let hdr = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("reflection test scene hdr"),
             size: wgpu::Extent3d {
                 width: 1,

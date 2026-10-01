@@ -19,9 +19,9 @@
 // format. Visibility uses .rg (mean depth, mean depth^2); radiance uses .rgb.
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::cell::Cell;
 
-use wgpu::util::DeviceExt;
 
 use super::{
     GI_ATLAS_FORMAT, GI_DEFAULT_DIMS, GI_PROBE_WG_THREADS, grid::GiGrid, params::GiParams,
@@ -67,19 +67,49 @@ pub struct GiResources {
     cleared: Cell<bool>,
 }
 
+/// GI を使わない構成（描画の構成の gi=false）で作る置き場のアトラスの 1 辺（バインドを満たすだけの最小）。
+const GI_PLACEHOLDER_ATLAS_SIZE: u32 = 1;
+
 impl GiResources {
     /// アトラス2枚（＋履歴2枚）・GiParams バッファ・サンプラーを生成する。
     /// compute BindGroup は `attach`（ライトバッファ・TLAS・平均アルベドが揃った後）で作る。
     pub fn new(device: &wgpu::Device, supported: bool) -> Self {
-        // 次元は固定（UI では変えない）。原点/間隔は fit で後から設定する。
-        let grid = GiGrid {
+        let grid = Self::default_grid();
+        let irradiance = grid.irradiance_atlas_size();
+        let visibility = grid.visibility_atlas_size();
+        Self::build(device, supported, grid, irradiance, visibility)
+    }
+
+    /// GI を使わない構成（描画の構成の gi=false）向けの置き場を生成する。
+    ///
+    /// group 4（binding 10〜13）はアトラスのテクスチャを必ず要求するので、1 辺 GI_PLACEHOLDER_ATLAS_SIZE の
+    /// アトラスだけを作る（既定の 2048 プローブで 4 枚 13 MiB → 数十バイト）。GiParams は無効（enabled=0）の
+    /// ままで、`supported=false` なので compute も attach されない＝アトラスは書かれも読まれもしない
+    /// （GI は描画品質の上限で平坦な環境光）。
+    pub fn new_placeholder(device: &wgpu::Device) -> Self {
+        let atlas = (GI_PLACEHOLDER_ATLAS_SIZE, GI_PLACEHOLDER_ATLAS_SIZE);
+        Self::build(device, false, Self::default_grid(), atlas, atlas)
+    }
+
+    /// 既定のプローブ格子（次元は固定。原点/間隔は fit で後から設定する）。
+    fn default_grid() -> GiGrid {
+        GiGrid {
             dims: GI_DEFAULT_DIMS,
             origin: [0.0; 3],
             spacing: [1.0; 3],
-        };
+        }
+    }
 
-        let (iw, ih) = grid.irradiance_atlas_size();
-        let (vw, vh) = grid.visibility_atlas_size();
+    /// アトラスの寸法を指定して生成する（new / new_placeholder の共通部分）。
+    fn build(
+        device: &wgpu::Device,
+        supported: bool,
+        grid: GiGrid,
+        irradiance_size: (u32, u32),
+        visibility_size: (u32, u32),
+    ) -> Self {
+        let (iw, ih) = irradiance_size;
+        let (vw, vh) = visibility_size;
 
         // アトラス（サンプル＋storage 書込＋コピー元/先）。
         let atlas_usage = wgpu::TextureUsages::STORAGE_BINDING
@@ -90,7 +120,7 @@ impl GiResources {
         let hist_usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
 
         let mk = |label: &str, w: u32, h: u32, usage: wgpu::TextureUsages| {
-            let tex = device.create_texture(&wgpu::TextureDescriptor {
+            let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
                     width: w.max(1),
@@ -126,12 +156,12 @@ impl GiResources {
         });
 
         let disabled = GiParams::disabled(&grid);
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let params_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("GI Params Uniform (live)"),
             contents: bytemuck::bytes_of(&disabled),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let params_disabled_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let params_disabled_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("GI Params Uniform (disabled)"),
             contents: bytemuck::bytes_of(&disabled),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

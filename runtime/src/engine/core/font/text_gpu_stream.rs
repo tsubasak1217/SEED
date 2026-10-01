@@ -14,6 +14,7 @@
 //    4. 描画は `buffers` の組と区間で行う（区間が送った添字の数を超えたら描かない）
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::TextBatch;
 use super::pipeline::TextVertex;
 
@@ -54,7 +55,7 @@ impl TextGpuStream {
         let need_vertices = batch.vertices.len() as u64;
         if self.vertex_buf.is_none() || self.vertex_capacity < need_vertices {
             self.vertex_capacity = grown_capacity(self.vertex_capacity, INITIAL_VERTEX_CAPACITY, need_vertices);
-            self.vertex_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.vertex_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Canvas Text Vertex Stream"),
                 size: self.vertex_capacity * std::mem::size_of::<TextVertex>() as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -64,7 +65,7 @@ impl TextGpuStream {
         let need_indices = batch.indices.len() as u64;
         if self.index_buf.is_none() || self.index_capacity < need_indices {
             self.index_capacity = grown_capacity(self.index_capacity, INITIAL_INDEX_CAPACITY, need_indices);
-            self.index_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.index_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Canvas Text Index Stream"),
                 size: self.index_capacity * std::mem::size_of::<u32>() as u64,
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,

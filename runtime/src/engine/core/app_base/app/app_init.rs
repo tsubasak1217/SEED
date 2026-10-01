@@ -84,6 +84,10 @@ impl App {
         // render_quality.<プラットフォーム> ← 起動オプション（計測・検証用）の順に重ねる（renderer/quality/resolve.rs）。
         // シャドウ品質・目標 fps の上限に使うので、それらを読む前・Renderer::new より前に決める。
         self.resolve_render_quality(&settings_json);
+        // 描画の構成（render.profile。full / ui）も同じ JSON から決める。UI だけの構成では 3D の描画資源
+        // （bindless・影・GI・レイトレ・Play のピッキング）を作らないので、品質を決めた後・Renderer::new より前に決め、
+        // 止めた機能を品質の上限へ重ねる（renderer/render_profile。既定の full は何も変えない）。
+        self.resolve_render_profile(&settings_json);
         // シャドウマップ品質（解像度・影距離・カスケード分割・バイアス・PCF）も同じ JSON から読む。
         //
         // 【ここで読む理由】直後の `Renderer::new`（→ DrawContext::new）が
@@ -151,10 +155,16 @@ impl App {
         // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
         // ウィンドウの大きさを OS が決めるプラットフォーム（Android）でも指定しない
         //（ウィンドウ＝端末の画面。描画はサーフェスの実サイズで行う。engine/platform/mod.rs 参照）。
+        // PC の検証用に、環境変数 SEED_SIM_WINDOW_SIZE（"幅x高さ"）で最初の窓の大きさだけを上書きできる
+        // （端末の画面の大きさで描画の資源を確かめる GPU メモリの計測用。project_resolution＝UI の基準は変えない）。
         let physical_size = if self.mode == RuntimeMode::Play
             && crate::engine::platform::CURRENT.app_sizes_window
         {
-            Some(self.project_resolution)
+            let simulated = crate::engine::platform::screen::simulated::simulated_window_size();
+            if let Some((w, h)) = simulated {
+                eprintln!("[SEED INIT] 窓の大きさを {w}x{h} にします（SEED_SIM_WINDOW_SIZE。検証用）");
+            }
+            Some(simulated.unwrap_or(self.project_resolution))
         } else {
             None
         };
@@ -182,8 +192,13 @@ impl App {
         // パスごとの GPU 時間の計測（起動オプション・--gpu-timing・SEED_GPU_TIMING）は、デバイスの feature を
         // 要求するかに効くので Renderer::new より前に伝える（既定は無効＝従来どおり）。
         crate::engine::core::renderer::gpu_timing::request(self.gpu_timing_launch);
+        // GPU メモリの内訳の計測（--gpu-mem-log・SEED_GPU_MEM_LOG=1・Android の seed.gpu_mem_log）も、
+        // Renderer::new の中で作る資源（深度など）から記録するため、ここで有効にする（既定は無効＝記録しない）。
+        crate::engine::core::renderer::gpu_mem::request(self.gpu_mem_log_launch);
         let mut renderer = Renderer::new(window.clone(), self.vsync_mode, self.is_embedded());
         eprintln!("[SEED INIT] Renderer::new() done");
+        // GPU メモリの計測（有効なときだけ）: デバイス・サーフェス・深度を作った直後の量。
+        renderer.log_gpu_mem_checkpoint("Renderer::new の後（デバイス・スワップチェイン・深度）");
         // 計測が要求され、デバイスが対応していれば計測器を作る（フレームループが節目でタイムスタンプを書く）。
         if renderer.gpu_timing_supported() {
             let timer = crate::engine::core::renderer::gpu_timing::GpuPassTimer::new(
@@ -237,10 +252,16 @@ impl App {
         );
         let draw_ctx_elapsed = pipelines_started.elapsed();
         eprintln!("[SEED INIT] DrawContext created ({} ms)", draw_ctx_elapsed.as_millis());
+        // GPU メモリの計測（有効なときだけ）: パイプライン一式と 3D の共有資源（影・GI・クラスタ・bindless）の後。
+        renderer.log_gpu_mem_checkpoint("DrawContext::new の後（パイプライン・影・GI・クラスタ・bindless）");
 
         let scene = crate::engine::core::app_base::scene::Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
-        let id_buffer = IdBuffer::new(&ctx.device, size.width, size.height);
+        // ピッキングの ID バッファ（画面と同じ大きさの Rgba32Float）。UI だけの構成の単体の Play では使わないので
+        // 作らない（Edit・埋め込みの Play・SEED_ID_PASS_IN_PLAY・full は従来どおり作る。render_profile_ops.rs）。
+        let id_buffer = self
+            .id_buffer_wanted()
+            .then(|| IdBuffer::new(&ctx.device, size.width, size.height));
         let line_model_buf = ctx.create_identity_model_bg_for_unlit();
 
         let canvas_overlay_camera_buf = ctx.create_camera_buffer();
@@ -251,7 +272,7 @@ impl App {
         self.mark_audio_dictionary_dirty();
         self.camera_buf = Some(camera_buf);
         self.canvas_overlay_camera_buf = Some(canvas_overlay_camera_buf);
-        self.id_buffer = Some(id_buffer);
+        self.id_buffer = id_buffer;
         self.line_model_buf = Some(line_model_buf);
 
         // キャンバステキスト描画器（TextComponent 用）。
@@ -335,6 +356,8 @@ impl App {
             pipelines_started.elapsed().as_millis(),
             draw_ctx_elapsed.as_millis(),
         );
+        // GPU メモリの計測（有効なときだけ）: 文字・2D/3D の図形の描画器（グリフのアトラス）の後。
+        renderer.log_gpu_mem_checkpoint("描画器の後（文字・図形）");
 
         self.renderer = Some(renderer);
         self.window = Some(window);
@@ -376,6 +399,10 @@ impl App {
             let load_ms = t_load.elapsed().as_secs_f64() * 1000.0;
             let actor_count = self.scene.as_ref().map(|s| s.actors.len()).unwrap_or(0);
             eprintln!("[SEED INIT] load_play_scene done  actors={actor_count} ({load_ms:.0}ms)");
+            // GPU メモリの計測（有効なときだけ）: シーン（スプライトの画像・モデル）を読んだ後。
+            if let Some(renderer) = &self.renderer {
+                renderer.log_gpu_mem_checkpoint("シーンを読んだ後");
+            }
             // 物理スレッドは初回フレームまで起動を遅延する。
             // ここで起動するとロード中に物理演算が進み、アクターが意図しない初期状態になる。
             // update_physics() / update_physics_2d() の先頭で自動起動される。

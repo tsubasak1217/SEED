@@ -69,10 +69,10 @@
 //    layout_tests がサイズ・オフセットを固定値で検証する。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::engine::components::particle_emitter_component::{
     CURVE_LUT_SAMPLES, DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG, EmitMode, MAX_PARTICLE_TEXTURES,
@@ -328,14 +328,14 @@ impl EmitterGpuState {
         // パーティクルプールを 0 埋めして確保（全 dead 初期状態を保証する）。
         let byte_size = capacity as usize * PARTICLE_STRIDE as usize;
         let zeros = vec![0u8; byte_size];
-        let particle_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let particle_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Pool Buffer"),
             contents: &zeros,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // エミッタパラメータ uniform（毎フレーム write_buffer で更新）。
-        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Particle Emitter Params"),
             size: std::mem::size_of::<GpuEmitterParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -343,7 +343,7 @@ impl EmitterGpuState {
         });
 
         // カーブ LUT（初期データ入り。世代変化かつ同サイズなら write_buffer で更新）。
-        let lut_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let lut_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Curve LUT"),
             contents: bytemuck::cast_slice(lut_data),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -1045,7 +1045,7 @@ impl ParticleSystem {
                         queue.write_buffer(&g.lut_buf, 0, bytemuck::cast_slice(&lut));
                     } else {
                         // サイズ変更（random_color 本数の増減）: バッファ＋BG を作り直す。
-                        g.lut_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        g.lut_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                             label: Some("Particle Curve LUT"),
                             contents: bytemuck::cast_slice(&lut),
                             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -1116,7 +1116,7 @@ impl ParticleSystem {
                 for mut sp in steps {
                     sp.use_texture = use_texture;
                     sp.shape_mode = params.shape_mode;
-                    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    let buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                         label: Some("Particle Prewarm Params"),
                         contents: bytemuck::bytes_of(&sp),
                         usage: wgpu::BufferUsages::UNIFORM,
@@ -1596,7 +1596,7 @@ fn load_particle_textures(
     }
 
     // texture_2d_array を確保して全レイヤを一括アップロードする。
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some("Particle Texture Array"),
         size: wgpu::Extent3d {
             width: w,

@@ -32,6 +32,7 @@
 //    - rect/point のソフトシャドウ（複数サンプル面光源）は未対応。v1 はハード 1 本。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -327,7 +328,7 @@ impl RtShadowResources {
         // TLAS インスタンス順（custom_data）に平均アルベド（.rgb）＋不透明度（.a=base_color_factor.a）を
         // 詰める。GI compute の binding4 と、色付き影（rt_shadow_on.wgsl の group4 binding14）の両方が読む。
         // BindGroup 生成前に作る（create_rt_bind_group が binding14 として参照するため）。
-        let albedo_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let albedo_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("RT Instance Avg Albedo"),
             size:               (MAX_RT_INSTANCES as u64) * 16,
             usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

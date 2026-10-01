@@ -24,6 +24,7 @@
 //  CPU 側（image::imageops::resize）で作る方が総コストが小さい。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::HashMap;
 
 use image::RgbaImage;
@@ -254,7 +255,7 @@ fn upload_array_texture(
     label: &str,
 ) -> wgpu::Texture {
     let mips = mip_level_count(TERRAIN_LAYER_TEXTURE_SIZE);
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: TERRAIN_LAYER_TEXTURE_SIZE,

@@ -19,6 +19,7 @@
 //  そのまま使われる（従来と同じ値）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use crate::engine::core::renderer::reflection_sky::{ReflectionSkySource, ReflectionSkyUniform};
 
 /// このフレームに水面へ映す空のフォールバックを使うかを決める【純関数】。
@@ -53,8 +54,7 @@ pub struct WaterSkyFallback {
 impl WaterSkyFallback {
     /// 資源を作る（uniform は無効値で初期化する）。
     pub fn new(device: &wgpu::Device) -> Self {
-        use wgpu::util::DeviceExt;
-        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Water Surface Sky Fallback Uniform"),
             contents: bytemuck::bytes_of(&ReflectionSkyUniform::disabled()),
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -70,7 +70,7 @@ impl WaterSkyFallback {
             mipmap_filter:  wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let dummy_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Water Surface Sky Fallback Dummy"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,

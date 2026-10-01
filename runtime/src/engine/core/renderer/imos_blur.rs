@@ -33,6 +33,7 @@
 /// WGSL 本体は **rgba 全 4 チャンネル**を集計する（.r=AO / .rgb=SSGI カラー /
 /// .rgba=水面反射のプリマルチプライドぼかし）。ランニング和はチャンネル独立のため、
 /// .r だけ・.rgb だけを読む既存用途の結果は以前と**ビット単位で不変**である。
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 pub const IMOS_BLUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// いもすブラーパラメータ UBO（WGSL imos_blur.wgsl の ImosBlurParams と #[repr(C)] 一致・16B）。
@@ -175,14 +176,13 @@ impl ImosBlur {
         height: i32,
         radius: i32,
     ) {
-        use wgpu::util::DeviceExt;
         let params = ImosBlurParams {
             radius,
             horizontal,
             width,
             height,
         };
-        let ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let ubo = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Imos Blur Params"),
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM,

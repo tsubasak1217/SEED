@@ -28,6 +28,7 @@
 //  `SEED_ID_PASS_IN_PLAY` で有効化する（`id_pass_enabled_in_play` 参照）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::{
     gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS},
     pipeline::{DrawPipelines, CanvasIdUniform},
@@ -79,7 +80,7 @@ pub struct IdBuffer {
 
 impl IdBuffer {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("World Pos ID Buffer Texture"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -97,7 +98,7 @@ impl IdBuffer {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // 1ピクセル = 16 bytes。bytes_per_row は 256 の倍数が必要なので 256 で確保。
-        let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let readback_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("World Pos ID Readback Buffer"),
             size:               ROW_ALIGNMENT,
             usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
@@ -189,7 +190,7 @@ impl IdBuffer {
     /// 全画面が要る用途（図鑑サムネイルの切り抜きマスク）はそのつど確保する。
     /// フル解像度 × 16 byte/px と大きいので、使い終わったら速やかに破棄すること。
     pub fn create_full_readback_buffer(&self, device: &wgpu::Device) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
+        device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("World Pos ID Full Readback Buffer"),
             size:               self.padded_bytes_per_row() as u64 * self.height as u64,
             usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
@@ -420,9 +421,8 @@ pub fn prepare_canvas_id_bg(
     model:     [[f32; 4]; 4],
     actor_id:  u32,
 ) -> (wgpu::Buffer, wgpu::BindGroup) {
-    use wgpu::util::DeviceExt;
     let uniform = CanvasIdUniform { model, actor_id, _pad: [0; 3] };
-    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
         label:    Some("CanvasId Uniform Buf"),
         contents: bytemuck::bytes_of(&uniform),
         usage:    wgpu::BufferUsages::UNIFORM,

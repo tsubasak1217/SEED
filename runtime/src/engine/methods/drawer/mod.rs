@@ -12,6 +12,7 @@ pub mod line_ribbon;
 mod sprite_drawer;
 
 // drawing files が use super::gpu_resources::... 等で参照できるようモジュール別名を作成
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 pub(crate) use crate::engine::core::renderer::gpu_resources;
 pub(crate) use crate::engine::core::renderer::pipeline;
 pub(crate) use crate::engine::core::renderer::uniforms;
@@ -183,21 +184,33 @@ impl DrawContext {
         // シーン描画パイプラインは HDR（scene_format）でビルドし、トーンマップ後に
         // スワップチェーンへ直接描くパスのみ surface_format を使う（Phase R3）。
         let pipelines = DrawPipelines::new(&device, &queue, scene_format, surface_format, depth_format, cache);
+        // GPU メモリの計測（有効なときだけ）: パイプライン一式を作った直後の量（ドライバのシェーダの置き場を含む）。
+        crate::engine::core::renderer::gpu_mem::checkpoint("DrawPipelines::new の後");
         // HDR ポストプロセスの静的リソース（トーンマップ／ビネットのパイプライン等）。
         let post      = PostContext::new(&device, &queue, scene_format, surface_format, cache);
         // テクスチャ単位ポスト（.postfx）の静的リソース（作業フォーマットは常に Rgba16Float）。
         let postfx    = PostfxContext::new(&device, &queue, cache);
         let defaults  = DefaultTex::new(&device, &queue);
+        crate::engine::core::renderer::gpu_mem::checkpoint("後処理・既定のテクスチャの後");
+        // 描画の構成（render_profile。起動時に App が登録済み）。UI だけの構成は影・GI の資源を作らず、
+        // バインドを満たすだけの 1x1 の置き場にする（full＝既定は従来どおり）。
+        let profile_flags = crate::engine::core::renderer::render_profile::active_flags();
         // シャドウリソース（深度配列・比較サンプラー・シャドウ行列 UBO）を先に生成し、
         // ライトバッファが group 4 の複合 BindGroup（ライト binding 0/1 ＋
         // シャドウ binding 2〜5）を構築する際に参照させる。
         // max_bind_groups=5（group 0〜4）のデバイスがあるため group 5 は使わない。
         // レイアウトは mesh パイプライン由来（skinned とレイアウト互換のため共用）。
-        let shadow       = ShadowResources::new(&device, &pipelines.mesh.camera_bgl);
+        // 影を描かない構成（shadows=false）では 1x1 の置き場（影は描画品質の上限で 1 灯も採用されない）。
+        let make_shadow = || if profile_flags.allocates_shadows() {
+            ShadowResources::new(&device, &pipelines.mesh.camera_bgl)
+        } else {
+            ShadowResources::new_placeholder(&device, &pipelines.mesh.camera_bgl)
+        };
+        let shadow       = make_shadow();
         // カメラプレビュー用のシャドウ実体（同一構成・別テクスチャ）。
         // CSM はカメラ視錐台にフィットさせる＝カメラ固有のため、プレビュー
         // （ゲームカメラの映像）はメインカメラの CSM を流用できない。
-        let shadow_preview = ShadowResources::new(&device, &pipelines.mesh.camera_bgl);
+        let shadow_preview = make_shadow();
         // クラスタ資源（Phase C1）: group 4 の binding 7〜9 を供給する。
         // 生成順は「クラスタバッファ → LightBuffer（クラスタを参照する複合 BG を作る）
         // → クラスタの compute BindGroup（ライトバッファを参照する）」の 2 段構え。
@@ -205,9 +218,14 @@ impl DrawContext {
         let mut clusters = ClusterResources::new(&device);
         // DDGI リソース（Phase RT-GI）。group 4 binding 10〜13 を供給するため LightBuffer より先に作る。
         // 次元は固定・原点/間隔はシーンフィット（frame_renderer が gi.fit を呼ぶ）。
-        let mut gi = GiResources::new(
-            &device, crate::engine::core::renderer::rt_shadow::rt_shadows_supported(),
-        );
+        // GI を使わない構成（gi=false）では 1x1 の置き場（compute も attach されず、GI は平坦な環境光）。
+        let mut gi = if profile_flags.allocates_gi() {
+            GiResources::new(
+                &device, crate::engine::core::renderer::rt_shadow::rt_shadows_supported(),
+            )
+        } else {
+            GiResources::new_placeholder(&device)
+        };
         let light_buffer = LightBuffer::new(
             &device, &pipelines.mesh.lights_bgl, &shadow, &shadow_preview, &clusters, &gi,
         );
@@ -243,6 +261,7 @@ impl DrawContext {
         } else {
             None
         };
+        crate::engine::core::renderer::gpu_mem::checkpoint("影・クラスタ・GI・ライト・RT・bindless の後");
         // スプライトバッチャ（Phase R6）: 永続インスタンスバッファを初期容量で確保する。
         let sprites = RefCell::new(SpriteBatcher::new(&device, &pipelines.sprite.shape.params_bgl));
         let sprite_skin = crate::engine::core::renderer::SpriteSkinCache::new();
@@ -375,8 +394,7 @@ impl DrawContext {
     /// ID パス用のベースオフセット bind group を生成する。
     /// 複数モデルを ID パスで描画する際、モデルごとに異なる base 値を渡す。
     pub fn create_id_base_bg(&self, base: u32) -> (wgpu::Buffer, wgpu::BindGroup) {
-        use wgpu::util::DeviceExt;
-        let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let buf = self.device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("ID Base Buffer"),
             contents: bytemuck::bytes_of(&base),
             usage:    wgpu::BufferUsages::UNIFORM,
@@ -393,9 +411,8 @@ impl DrawContext {
     }
 
     pub fn create_identity_model_bg_for_unlit(&self) -> (wgpu::Buffer, wgpu::BindGroup) {
-        use wgpu::util::DeviceExt;
         let uniform = uniforms::ModelUniform::identity();
-        let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let buf = self.device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Identity Model Buffer"),
             contents: bytemuck::bytes_of(&uniform),
             usage:    wgpu::BufferUsages::UNIFORM,

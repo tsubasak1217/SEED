@@ -19,6 +19,7 @@
 //  無言だと原因不明の「字が出ない」になるため、最初の 1 回だけ警告を出す。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::HashMap;
 
 use super::rasterizer::GlyphSdf;
@@ -135,7 +136,7 @@ pub struct GlyphAtlas {
 
 impl GlyphAtlas {
     pub fn new(device: &wgpu::Device, atlas_size: u32) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Glyph Atlas"),
             size: wgpu::Extent3d {
                 width: atlas_size,

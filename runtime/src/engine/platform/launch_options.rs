@@ -26,6 +26,9 @@
 //  つまみの上書き（seed.quality_overrides。`キー=値,キー=値`）・パスごとの GPU 時間の計測（seed.gpu_timing=1）。
 //  エディタ・SeedAndroid は渡さない（手で am start するときだけ）。project_settings.json の render_quality より優先する
 //  （renderer/quality/resolve.rs）。読み方は launch.rs が quality_launch / gpu_timing_enabled で LaunchArgs へ入れる。
+//  【gpu_mem_log / render_profile（計測・検証用）】GPU メモリの内訳の計測（seed.gpu_mem_log=1。renderer/gpu_mem）と
+//  描画の構成の名前の上書き（seed.render_profile=full|ui。project_settings.json の render.profile より優先。
+//  renderer/render_profile）。どちらも手で am start するときだけ渡す（docs/rendering_profiles.md）。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -55,6 +58,15 @@ pub const GPU_TIMING_KEY: &str = "gpu_timing";
 
 /// gpu_timing を有効とみなす値（Java は文字列の extra だけを渡す）。
 const GPU_TIMING_ON: &str = "1";
+
+/// GPU メモリの内訳の計測の JSON のキー（am start の extra seed.gpu_mem_log。renderer/gpu_mem・計測用）。
+pub const GPU_MEM_LOG_KEY: &str = "gpu_mem_log";
+
+/// gpu_mem_log を有効とみなす値（Java は文字列の extra だけを渡す）。
+const GPU_MEM_LOG_ON: &str = "1";
+
+/// 描画の構成の名前の JSON のキー（am start の extra seed.render_profile。renderer/render_profile・検証用）。
+pub const RENDER_PROFILE_KEY: &str = "render_profile";
 
 /// 待ち受けに使えるポートの最小値（0 は「OS に選ばせる」なので、エディタが forward できず使えない）。
 const MIN_IPC_PORT: u16 = 1;
@@ -106,6 +118,12 @@ pub struct LaunchOptions {
     /// パスごとの GPU 時間を測るか（"1" で有効。段階D-2・計測用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_timing: Option<String>,
+    /// GPU メモリの内訳を測るか（"1" で有効。renderer/gpu_mem・計測用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_mem_log: Option<String>,
+    /// 描画の構成の名前（full / ui。project_settings.json の render.profile より優先。renderer/render_profile・検証用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_profile: Option<String>,
     // W2-0 のスパイクの指定 ui_spike（seed.ui_spike）は W2-6a で文字入力を本番にしたので外した
     // （知らないキーは読み飛ばすので、古い起動の指定があっても落ちない）。
 }
@@ -134,7 +152,13 @@ impl LaunchOptions {
         if options.ipc_token.as_deref().is_some_and(|token| token.trim().is_empty()) {
             options.ipc_token = None;
         }
-        for text in [&mut options.quality, &mut options.quality_overrides, &mut options.gpu_timing] {
+        for text in [
+            &mut options.quality,
+            &mut options.quality_overrides,
+            &mut options.gpu_timing,
+            &mut options.gpu_mem_log,
+            &mut options.render_profile,
+        ] {
             if text.as_deref().is_some_and(|value| value.trim().is_empty()) {
                 *text = None;
             }
@@ -153,6 +177,11 @@ impl LaunchOptions {
     /// パスごとの GPU 時間を測るか（"1" のときだけ。段階D-2）。
     pub fn gpu_timing_enabled(&self) -> bool {
         self.gpu_timing.as_deref().is_some_and(|value| value.trim() == GPU_TIMING_ON)
+    }
+
+    /// GPU メモリの内訳を測るか（"1" のときだけ。renderer/gpu_mem）。
+    pub fn gpu_mem_log_enabled(&self) -> bool {
+        self.gpu_mem_log.as_deref().is_some_and(|value| value.trim() == GPU_MEM_LOG_ON)
     }
 
     /// JSON にする（Java 側が作る形と同じ。テストの往復と記録用）。
@@ -422,6 +451,23 @@ mod tests {
         assert!(!LaunchOptions::default().gpu_timing_enabled());
         assert!(!LaunchOptions::from_json("{\"gpu_timing\":\"0\"}").unwrap().gpu_timing_enabled());
         assert_eq!(LaunchOptions::default().quality_launch(), Default::default(), "指定が無ければ上書きなし");
+    }
+
+    /// GPU メモリの計測と描画の構成の上書き: キーの名前・計測は "1" だけ有効・空白だけは指定なし。
+    #[test]
+    fn gpu_mem_and_render_profile_use_their_keys() {
+        let options =
+            LaunchOptions::from_json("{\"gpu_mem_log\":\"1\",\"render_profile\":\"full\"}").unwrap();
+        assert!(options.gpu_mem_log_enabled());
+        assert_eq!(options.render_profile.as_deref(), Some("full"));
+        let json = options.to_json();
+        for key in [GPU_MEM_LOG_KEY, RENDER_PROFILE_KEY] {
+            assert!(json.contains(&format!("\"{key}\"")), "キーは {key}: {json}");
+        }
+        assert!(!LaunchOptions::default().gpu_mem_log_enabled());
+        assert!(!LaunchOptions::from_json("{\"gpu_mem_log\":\"0\"}").unwrap().gpu_mem_log_enabled());
+        let blank = LaunchOptions::from_json("{\"gpu_mem_log\":\" \",\"render_profile\":\"\"}").unwrap();
+        assert_eq!(blank, LaunchOptions::default(), "空白だけは指定なし");
     }
 
     #[test]

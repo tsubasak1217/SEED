@@ -9,6 +9,7 @@
 //  要するパスも同じプールから名前で確保する前提の設計。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::HashMap;
 
 /// プールが保持する 1 枚のレンダーターゲット。
@@ -68,7 +69,7 @@ impl RtPool {
             }
         }
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some(name),
             size: wgpu::Extent3d {
                 width,

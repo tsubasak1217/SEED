@@ -37,6 +37,9 @@ impl App {
     /// SetWindowLong(WS_CHILD) が生成する中間的な WM_SIZE を使うと
     /// depth と color attachment の不一致が起こるため、親がいる場合は GetClientRect(parent) を優先する。
     pub(super) fn on_resize(&mut self, size: PhysicalSize<u32>) {
+        // GPU メモリの計測（gpu_mem）: ここで作り直す資源（深度・ID バッファ）の前のものを「捨てた」と数えるため、
+        // 世代を進める（起動中は最初のフレームの前に何度か届く。計測が無効でも数えるだけ）。
+        crate::engine::core::renderer::gpu_mem::advance_generation();
         let effective_size = self.get_parent_client_size().unwrap_or(size);
         // スワップチェーンは常にウィンドウ（親クライアント）実サイズで再構成する。
         // 内部解像度固定モードでも「最終的に映す先」は実サイズなので、ここは変えない。
@@ -56,7 +59,8 @@ impl App {
             .unwrap_or(effective_size);
         self.camera
             .set_aspect_ratio(target.width, target.height);
-        if target.width > 0 && target.height > 0 {
+        // UI だけの構成の単体の Play では ID バッファを作らない（id_buffer_wanted。full は従来どおり作り直す）。
+        if target.width > 0 && target.height > 0 && self.id_buffer_wanted() {
             if let Some(dc) = &self.draw_ctx {
                 self.id_buffer = Some(IdBuffer::new(
                     &dc.device,

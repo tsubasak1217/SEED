@@ -17,11 +17,11 @@
 //  `&DrawContext` だけで焼き込みを完結でき、frame_renderer への割り込みが不要になる。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use wgpu::util::DeviceExt;
 
 use crate::engine::core::renderer::post::{VignetteParams, run_post_stage};
 use crate::engine::methods::drawer::{DrawContext, GpuSpriteTexture, load_sprite_texture};
@@ -154,7 +154,7 @@ pub fn resolve_baked(
 
 /// 作業テクスチャ（リニア HDR, 描画/サンプル/storage の 3 用途）を確保する。
 fn make_work(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some("Postfx Work"),
         size: wgpu::Extent3d {
             width: w,
@@ -373,7 +373,7 @@ fn blur_step(
         width: w,
         height: h,
     };
-    let ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let ubo = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
         label: Some("Postfx Blur Params"),
         contents: bytemuck::bytes_of(&params),
         usage: wgpu::BufferUsages::UNIFORM,

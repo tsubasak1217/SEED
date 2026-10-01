@@ -18,6 +18,7 @@
 //  `begin() → push() × N → upload()` の順に使い、push が返すレンジを draw へ渡す。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::HashMap;
 
 use super::queue::PrimitiveCommand;
@@ -453,7 +454,7 @@ impl Primitive2dRenderer {
                 cap *= CAPACITY_GROWTH_FACTOR;
             }
             self.vertex_capacity = cap;
-            self.vertex_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.vertex_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Primitive2D Vertex Buffer"),
                 size: cap * std::mem::size_of::<PrimitiveVertex>() as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -468,7 +469,7 @@ impl Primitive2dRenderer {
                 cap *= CAPACITY_GROWTH_FACTOR;
             }
             self.index_capacity = cap;
-            self.index_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.index_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Primitive2D Index Buffer"),
                 size: cap * std::mem::size_of::<u32>() as u64,
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,

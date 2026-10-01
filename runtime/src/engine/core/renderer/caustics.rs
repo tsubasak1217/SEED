@@ -27,6 +27,7 @@
 //  サンプラーを持たない（フル解像度＝1:1 対応で補間が不要）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::pipeline::get_shader_source;
 use super::pipeline_config::RenderPipelineBuilder;
 
@@ -140,7 +141,7 @@ impl CausticsPipelines {
         let field_bgl  = bgls.remove(2);
         let params_bgl = bgls.remove(1);
 
-        let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Water Caustics Uniform"),
             size:  std::mem::size_of::<CausticsUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -149,7 +150,7 @@ impl CausticsPipelines {
 
         // 機能 OFF 用のダミー 1x1（黒）。deferred の binding12 を常に埋められるようにする
         // （DeferredLightingPipelines の mask_dummy_* と同じ役割）。
-        let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let dummy_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Water Caustics Dummy 1x1"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -175,7 +176,7 @@ impl CausticsPipelines {
         let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
         // 影の屈折オフセット用ダミー 1x1（ゼロ＝オフセット無し）。
-        let dummy_offset_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let dummy_offset_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Water Caustics Offset Dummy 1x1"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -350,7 +351,7 @@ impl CausticsTargets {
         if self.tex.is_some() && self.w == w && self.h == h {
             return false;
         }
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
+        let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("water_caustics"),
             size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -362,7 +363,7 @@ impl CausticsTargets {
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         // 影の屈折オフセット（location 1）。同一パスの MRT なので必ず同サイズで確保する。
-        let offset_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let offset_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("water_caustics_offset"),
             size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,

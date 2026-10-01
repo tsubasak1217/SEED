@@ -1387,6 +1387,14 @@ impl App {
         if !self.terrain.grass_gpu_dirty {
             return;
         }
+        // 3D を描かない構成（描画の構成の scene_3d=false）では草の GPU 資源を作らない（描かない）。
+        // 散布があれば 1 回だけ警告する。汚れの印は落とさない（毎フレームここで戻るだけ＝安い）。
+        if !crate::engine::core::renderer::render_profile::active_flags().scene_3d {
+            super::render_profile_ops::warn_3d_skipped_once(
+                "地形の散布（草・プロップ）のチャンク", self.terrain.scatter.len(),
+            );
+            return;
+        }
         let t_start = std::time::Instant::now();
 
         // ─── ① 全チャンクのインスタンスをプロップ添字ごとに、かつチャンク順で束ねる ───
@@ -1565,6 +1573,11 @@ impl TerrainState {
     ///   走らせるための基準（実アップロードは呼び出し側の毎フレーム経路が担う）。
     pub(super) fn rebuild_scatter_models_gpu(&mut self, ctx: &DrawContext, _camera_pos: [f32; 3]) {
         if !self.grass_gpu_dirty {
+            return;
+        }
+        // 3D を描かない構成（描画の構成の scene_3d=false）では散布モデルの GPU 資源を作らない（描かない。
+        // 警告は rebuild_grass_gpu が出す）。
+        if !crate::engine::core::renderer::render_profile::active_flags().scene_3d {
             return;
         }
         let t_start = std::time::Instant::now();

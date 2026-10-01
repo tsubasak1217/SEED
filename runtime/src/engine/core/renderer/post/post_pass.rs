@@ -15,6 +15,7 @@
 //  リフレクションが BGL を生成するため、本ランナーを拡張して対応する（R4 のブルーム合成等）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::super::letterbox::LetterboxRect;
 use super::super::pipeline_config::RenderPipelineBuilder;
 
@@ -164,10 +165,9 @@ fn run_post_stage_impl(
     load: bool,
     viewport: Option<LetterboxRect>,
 ) {
-    use wgpu::util::DeviceExt;
 
     // ── group 0: パラメータ UBO ──────────────────────────────
-    let param_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let param_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
         label: Some("Post Params UBO"),
         contents: params,
         usage: wgpu::BufferUsages::UNIFORM,

@@ -154,9 +154,16 @@ pub mod letterbox;
 pub mod quality;
 /// パスごとの GPU 時間の計測（タイムスタンプ。計測用・既定オフ。Android 段階D-2）
 pub mod gpu_timing;
+/// GPU メモリの内訳の計測（資源ごとの大きさ・分類と、Vulkan のヒープの実使用量。デバッグ用・既定オフ）。
+/// エンジンの GPU 資源の生成はすべて `gpu_mem::GpuMemDeviceExt` の `*_tracked` を通す（docs/rendering_profiles.md §4）。
+pub mod gpu_mem;
+/// 描画の構成（full / ui。project_settings.json の render.profile）。UI だけのアプリで 3D の描画資源を作らない
+/// （docs/rendering_profiles.md）。
+pub mod render_profile;
 
 /// 垂直同期（VSync）モードとプレゼントモード選択（純関数＋単体テスト）。
 pub mod present_mode;
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 pub use present_mode::{VsyncMode, parse_vsync_mode};
 
 /// サムネイル撮影専用のオフスクリーンカラーターゲット（提示フレームを汚さないため）。
@@ -299,10 +306,27 @@ struct DepthTexture {
     height:          u32,
 }
 
+/// 3D 用（メインパス）の深度のラベル。GPU メモリの計測（gpu_mem）は場所とラベルで「同じ資源の作り直し」を
+/// 見分けるので、UI 用の深度とはラベルを分ける。
+const MAIN_DEPTH_LABEL: &str = "Depth Texture";
+/// UI のオーバーレイ用（論理サイズ。描画スケールが 1 未満のときだけ）の深度のラベル。
+const OVERLAY_DEPTH_LABEL: &str = "Overlay Depth Texture";
+
 impl DepthTexture {
+    /// 3D 用（メインパス）の深度を作る。
     fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Depth Texture"),
+        Self::with_label(device, width, height, MAIN_DEPTH_LABEL)
+    }
+
+    /// UI のオーバーレイ用の深度を作る（中身は 3D 用と同じ。ラベルだけが違う）。
+    fn new_overlay(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        Self::with_label(device, width, height, OVERLAY_DEPTH_LABEL)
+    }
+
+    /// ラベルを指定して深度を作る。
+    fn with_label(device: &wgpu::Device, width: u32, height: u32, label: &'static str) -> Self {
+        let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
+            label: Some(label),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count:    1,
@@ -439,8 +463,19 @@ impl Renderer {
         // 影のレイクエリには両方が必須のため、両対応の場合のみ RT 対応とみなす
         // （ドライバによっては片方のみ対応もあり得るため個別に確認する）。
         let af = adapter.features();
-        let supports_rt = af.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+        // 描画の構成（render_profile。UI だけの構成は ray_tracing / bindless を求めない）。起動時に App が登録済み。
+        // full（既定）はすべて true なので、ここから下の判定は従来と同じになる。
+        let profile_flags = render_profile::active_flags();
+        let adapter_rt = af.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
             && af.contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE);
+        let supports_rt = adapter_rt && profile_flags.requests_ray_tracing();
+        if adapter_rt && !profile_flags.requests_ray_tracing() {
+            eprintln!(
+                "{} レイトレーシングは描画の構成 {} が止めています（ray_tracing=false か scene_3d=false。RT の機能をデバイスへ求めず、RT の資源も作りません）",
+                render_profile::LOG_TAG,
+                render_profile::active_name()
+            );
+        }
         // 対応フラグをグローバルへ設定する。頂点/インデックスバッファ生成時に
         // BLAS_INPUT 用途を付与するか否か（gpu_resources）を本フラグで判断する。
         // request_device より前に設定する必要はないが、以降のリソース生成に効くよう早めに設定。
@@ -455,7 +490,8 @@ impl Renderer {
                 (false, false) => "RAY_QUERY と ACCELERATION_STRUCTURE の両方が非対応",
                 (true,  false) => "ACCELERATION_STRUCTURE が非対応",
                 (false, true ) => "RAY_QUERY が非対応",
-                (true,  true ) => "不明",
+                // GPU は対応しているが、描画の構成（ray_tracing=false）が止めている。
+                (true,  true ) => "描画の構成が止めている",
             };
             eprintln!("[SEED RT] インラインレイトレ: 非対応（{reason}）→ シャドウマップ経路を使用");
         }
@@ -471,6 +507,9 @@ impl Renderer {
                 eprintln!(
                     "[SEED GI] DDGI: 有効（プローブ {probes} 個 / 更新 {ppf}個×{rpp}レイ/フレーム）"
                 );
+            } else if adapter_rt {
+                // GPU は対応しているが、描画の構成（ray_tracing=false）が止めている。
+                eprintln!("[SEED GI] DDGI: 描画の構成が止めています（ray_tracing=false か scene_3d=false）→ フラットアンビエントを使用");
             } else {
                 eprintln!("[SEED GI] DDGI: 非対応（EXPERIMENTAL_RAY_QUERY 非対応）→ フラットアンビエントを使用");
             }
@@ -490,7 +529,9 @@ impl Renderer {
         let bindless_feat = af.contains(wgpu::Features::TEXTURE_BINDING_ARRAY)
             && af.contains(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
         let bindless_array_cap = adapter_limits.max_binding_array_elements_per_shader_stage;
-        let supports_bindless = bindless_feat && bindless_array_cap > 0;
+        // 描画の構成が bindless を止めていれば（UI だけの構成）、対応 GPU でも求めず確保しない
+        // （テクスチャ配列 4096 枠とメガバッファ 224 MiB。RT のヒットシェーディングの土台なので RT が無ければ使わない）。
+        let supports_bindless = bindless_feat && bindless_array_cap > 0 && profile_flags.allocates_bindless();
         // テクスチャ配列容量 = 目安上限をアダプタ上限（配列要素数・sampled テクスチャ数）でクランプ。
         let bindless_capacity = BINDLESS_MAX_TEXTURES
             .min(bindless_array_cap)
@@ -508,7 +549,9 @@ impl Renderer {
                 if supports_partially_bound { "対応" } else { "非対応（全スロットをダミーで充填）" }
             );
         } else {
-            let reason = if !bindless_feat {
+            let reason = if !profile_flags.allocates_bindless() {
+                "描画の構成が止めている（bindless=false か scene_3d=false）"
+            } else if !bindless_feat {
                 "TEXTURE_BINDING_ARRAY / 非一様インデックスが非対応"
             } else {
                 "binding_array 要素数上限が 0"
@@ -650,7 +693,9 @@ impl Renderer {
                     },
                     ..wgpu::Limits::default()
                 },
-                memory_hints:      wgpu::MemoryHints::default(),
+                // GPU メモリの確保の方針は描画の構成で決める（full は従来どおり Performance＝wgpu の既定。
+                // UI だけの構成は MemoryUsage＝小さな塊で確保し、使い切らない塊を抱えない。render_profile/flags.rs）。
+                memory_hints:      profile_flags.memory_hint.to_wgpu(),
                 ..Default::default()
             },
         ))
@@ -658,6 +703,9 @@ impl Renderer {
 
         let device = Arc::new(device);
         let queue  = Arc::new(queue);
+        // GPU メモリの計測（有効なときだけ）: 節目の 1 行がヒープの使用量・wgpu-hal の計数を読めるよう登録する。
+        gpu_mem::install_probe(&adapter, &device);
+        gpu_mem::checkpoint("デバイスを作った直後");
 
         // GPU が PIPELINE_CACHE をサポートする場合のみキャッシュを生成する。
         // 置き場（Android はアプリのキャッシュフォルダ）・アダプタごとのファイル名・前回保存分の
@@ -669,6 +717,7 @@ impl Renderer {
             supports_pipeline_cache,
         );
         pipeline_cache::shared::install(pipeline_cache.as_ref().map(|c| c.cache()));
+        gpu_mem::checkpoint("パイプラインキャッシュを開いた後");
 
         let surface_caps   = surface.get_capabilities(&adapter);
         // sRGB フォーマットを優先して選択する。
@@ -714,6 +763,7 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        gpu_mem::checkpoint("スワップチェインを作った後");
         // 端末ごとのサーフェス実寸と形式は Android 検証で最初に見る値なので残す
         //（デスクトップは従来どおり出さない。platform::CURRENT.lifecycle_diag_log）。
         if crate::engine::platform::CURRENT.lifecycle_diag_log {
@@ -937,6 +987,40 @@ impl Renderer {
         self.gpu_timing_supported
     }
 
+    /// GPU メモリの計測（gpu_mem）用: このプロセスの Vulkan のヒープの実使用量（VK_EXT_memory_budget）。
+    /// Vulkan でない・拡張に対応しない GPU では None。
+    pub fn gpu_memory_heaps(&self) -> Option<Vec<gpu_mem::HeapUsage>> {
+        gpu_mem::query_heap_usage(&self.adapter)
+    }
+
+    /// GPU メモリの計測（gpu_mem）用: wgpu-hal の内部の計数（確保ブロックの合計・確保の回数。Cargo の counters 機能）。
+    pub fn gpu_hal_memory(&self) -> gpu_mem::HalMemory {
+        gpu_mem::HalMemory::from_counters(&self.device.get_internal_counters())
+    }
+
+    /// GPU メモリの計測（gpu_mem）用: 起動の節目ごとの 1 行（計測が無効なら何もしない）。
+    ///
+    /// 「実際の確保（ヒープの使用量）」が資源の合計より大きいとき、どの節目（デバイスの生成・パイプラインの生成・
+    /// シーンの読み込み…）で増えたかを切り分けるために、追跡した合計・wgpu-hal の確保ブロック・ヒープの使用量を並べる。
+    pub fn log_gpu_mem_checkpoint(&self, label: &str) {
+        // 中身は gpu_mem::checkpoint（Renderer::new で登録したアダプタとデバイスで読む）。
+        gpu_mem::checkpoint(label);
+    }
+
+    /// GPU メモリの計測（gpu_mem）用: スワップチェインの見積り（サーフェスが無い＝背面の間は None）。
+    ///
+    /// 枚数は「要求したフレーム遅延 + 1」（wgpu の Vulkan 実装が minImageCount に渡す値）。ドライバは
+    /// これより多く作ることがあるので見積りとして扱う。
+    pub fn swapchain_estimate(&self) -> Option<gpu_mem::SwapchainEstimate> {
+        self.surface.as_ref()?;
+        Some(gpu_mem::SwapchainEstimate::new(
+            self.config.width,
+            self.config.height,
+            self.config.format,
+            self.config.desired_maximum_frame_latency + 1,
+        ))
+    }
+
     /// UI 用の深度（論理サイズ）を、今の描画スケールに合わせて用意する・捨てる。
     ///
     /// 3D の描画解像度が論理サイズと同じ（等倍）なら要らない（UI も 3D 用の深度を使う＝従来どおり）。
@@ -952,7 +1036,7 @@ impl Renderer {
             .as_ref()
             .is_some_and(|d| d.width == logical.width && d.height == logical.height);
         if !matches {
-            self.overlay_depth = Some(DepthTexture::new(&self.device, logical.width, logical.height));
+            self.overlay_depth = Some(DepthTexture::new_overlay(&self.device, logical.width, logical.height));
         }
     }
 

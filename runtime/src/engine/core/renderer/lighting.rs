@@ -25,8 +25,8 @@
 //  厳密に一致させること。
 // ============================================================
 
-use wgpu::util::DeviceExt;
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::shadow::ShadowResources;
 
 // ─── LightingPass ────────────────────────────────────────────
@@ -430,7 +430,7 @@ impl LightBuffer {
     ) -> Self {
         // storage 配列は最初から MAX_LIGHTS 分ゼロ確保する（実行時サイズ変更を避ける）。
         let init_lights = vec![GpuLight::zeroed(); MAX_LIGHTS];
-        let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let lights_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Lights Storage Buffer"),
             contents: bytemuck::cast_slice(&init_lights),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -451,14 +451,14 @@ impl LightBuffer {
         // そのため reflection_rt は meta を read-only storage として読む（レイアウトは 32B・
         // vec3 が 16B 整列で std140/std430 一致＝値は不変）。他パスの uniform バインドは
         // 用途のスーパーセットなので不変（両用途を持つバッファは uniform でも storage でもバインド可）。
-        let meta_buffer_main = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let meta_buffer_main = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Meta Uniform (main camera)"),
             contents: bytemuck::bytes_of(&init_meta),
             usage: wgpu::BufferUsages::UNIFORM
                 | wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST,
         });
-        let meta_buffer_preview = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let meta_buffer_preview = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Meta Uniform (camera preview, view_mode=0 固定)"),
             contents: bytemuck::bytes_of(&init_meta),
             usage: wgpu::BufferUsages::UNIFORM

@@ -1,5 +1,5 @@
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::path::Path;
-use wgpu::util::DeviceExt;
 use rayon::prelude::*;
 use crate::engine::core::loader::model::{
     Model, ModelNode, Primitive, Vertex, TextureData, TextureSource, SamplerData,
@@ -105,7 +105,7 @@ pub fn upload_rgba8(
         wgpu::TextureFormat::Rgba8UnormSrgb
     };
 
-    let texture = device.create_texture_with_data(
+    let texture = device.create_texture_with_data_tracked(
         queue,
         &wgpu::TextureDescriptor {
             label,
@@ -217,7 +217,7 @@ fn upload_ready(
     let block_bytes = format.block_bytes();
     let is_bc = format.is_block_compressed();
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label,
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         mip_level_count,
@@ -540,7 +540,7 @@ impl GpuMaterial {
 
         // COPY_DST を付与して、インライン値編集時に uniform を in-place で
         // `queue.write_buffer` 更新できるようにする（GpuModel 全体の再生成を回避＝OOM 対策）。
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Material Uniform"),
             contents: bytemuck::bytes_of(&uniform),
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -818,14 +818,14 @@ impl GpuPrimitive {
             wgpu::BufferUsages::INDEX
         };
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Vertex Buffer"),
             contents: bytemuck::cast_slice::<Vertex, u8>(&prim.vertices),
             usage:    vertex_usage,
         });
 
         let smooth_normals = compute_smooth_normals(&prim.vertices, &prim.indices);
-        let smooth_normal_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let smooth_normal_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Smooth Normal Buffer"),
             contents: bytemuck::cast_slice::<[f32; 3], u8>(&smooth_normals),
             usage:    wgpu::BufferUsages::VERTEX,
@@ -843,7 +843,7 @@ impl GpuPrimitive {
         let skin_vertex_buffer = if prim.skin_vertices.is_empty() {
             None
         } else {
-            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            Some(device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                 label:    Some("Skin Vertex Buffer"),
                 contents: bytemuck::cast_slice::<SkinVertex, u8>(&prim.skin_vertices),
                 usage:    skin_vertex_usage,
@@ -852,7 +852,7 @@ impl GpuPrimitive {
 
         // LOD0（フル解像度）インデックスバッファ。BLAS 構築（rt_shadow.rs）はこのバッファを
         // 参照するため、RT 対応時は BLAS_INPUT 用途（index_usage）が必須。
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Index Buffer"),
             contents: bytemuck::cast_slice(&prim.indices),
             usage:    index_usage,
@@ -868,7 +868,7 @@ impl GpuPrimitive {
         // （LOD0 面がラスタ面より外に出る箇所）、逆に内側へ引っ込む箇所では影が抜けて
         // 境界が明るく浮く。LOD ごとに BLAS を作るには LOD1〜3 にも BLAS_INPUT が要る。
         let lod_index_buffers: Vec<wgpu::Buffer> = prim.lod_indices.iter()
-            .map(|lod_idx| device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            .map(|lod_idx| device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                 label:    Some("LOD Index Buffer"),
                 contents: bytemuck::cast_slice(lod_idx),
                 usage:    index_usage,
@@ -960,12 +960,12 @@ impl GpuPrimitive {
             return (None, None, 0);
         }
 
-        let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Meshlet Index Buffer"),
             contents: bytemuck::cast_slice(&expanded),
             usage:    wgpu::BufferUsages::INDEX,
         });
-        let desc_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let desc_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Meshlet Desc Buffer"),
             contents: bytemuck::cast_slice(&gpu_meshlets),
             usage:    wgpu::BufferUsages::STORAGE,
@@ -1469,7 +1469,7 @@ impl GpuModel {
 
         // ── 単位行列ジョイント bind group ─────────────────────
         let identity_joints = JointUniform::identity();
-        let joint_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let joint_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Identity Joints"),
             contents: bytemuck::bytes_of(&identity_joints),
             usage:    wgpu::BufferUsages::STORAGE,
@@ -2295,7 +2295,7 @@ impl InstancedModelBatch {
             .map(|lod| {
                 model.nodes.iter().enumerate().map(|(i, node)| {
                     if node.mesh_index.is_none() { return None; }
-                    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    let buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                         label:              Some(&format!("Node[{}] LOD[{}] Instance Buffer", i, lod)),
                         size:               inst_buf_size,
                         usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -2323,7 +2323,7 @@ impl InstancedModelBatch {
             .map(|lod| {
                 model.nodes.iter().enumerate().map(|(i, node)| {
                     if node.mesh_index.is_none() { return None; }
-                    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    let buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                         label:              Some(&format!("Node[{i}] LOD[{lod}] Prev Instance Buffer")),
                         size:               prev_buf_size,
                         usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -2345,7 +2345,7 @@ impl InstancedModelBatch {
         // 前フレーム行列が無いノード用のフォールバック（恒等行列 1 件）。
         // 実際には lod_node_prev が lod_node_data と同形なので使われないが、
         // 「group4 未バインドで描画してパニック」を構造的に不可能にするための保険。
-        let identity_prev_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let identity_prev_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Identity Prev Instance Buffer"),
             contents: bytemuck::bytes_of(&PrevModelUniform::identity()),
             usage:    wgpu::BufferUsages::STORAGE,
@@ -2369,7 +2369,7 @@ impl InstancedModelBatch {
         let id_buf_size = (4 * n as u64).max(16);
         let id_data: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..NUM_LODS)
             .map(|lod| {
-                let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                let buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                     label:              Some(&format!("Instance ID Buffer LOD[{}]", lod)),
                     size:               id_buf_size,
                     usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -2423,20 +2423,20 @@ impl InstancedModelBatch {
                 );
                 return None;
             }
-            let cmd_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            let cmd_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label:              Some("Meshlet Cull Cmd Buffer"),
                 size:               cmd_buf_size,
                 usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
                 mapped_at_creation: false,
             });
-            let count_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            let count_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label:              Some("Meshlet Cull Count Buffer"),
                 size:               4,
                 usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT
                                   | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            let params_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label:              Some("Meshlet Cull Params Buffer"),
                 size:               std::mem::size_of::<MeshletCullParams>() as u64,
                 usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -3400,7 +3400,7 @@ pub struct CameraBuffer {
 
 impl CameraBuffer {
     pub fn new(device: &wgpu::Device, camera_bgl: &wgpu::BindGroupLayout) -> Self {
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("Camera Uniform Buffer"),
             size:               std::mem::size_of::<CameraUniform>() as u64,
             usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -3449,7 +3449,7 @@ pub struct GpuLineBatch {
 
 impl GpuLineBatch {
     pub fn new(device: &wgpu::Device, vertices: &[ColorVertex]) -> Self {
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label:    Some("Line Batch Vertex Buffer"),
             contents: bytemuck::cast_slice(vertices),
             usage:    wgpu::BufferUsages::VERTEX,
@@ -3476,14 +3476,14 @@ pub struct GpuGizmoBatch {
 impl GpuGizmoBatch {
     pub fn new(device: &wgpu::Device, lines: &[GizmoVertex], tris: &[ColorVertex]) -> Self {
         let line_buffer = if lines.is_empty() { None } else {
-            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            Some(device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                 label:    Some("Gizmo Line Buffer"),
                 contents: bytemuck::cast_slice(lines),
                 usage:    wgpu::BufferUsages::VERTEX,
             }))
         };
         let tri_buffer = if tris.is_empty() { None } else {
-            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            Some(device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                 label:    Some("Gizmo Tri Buffer"),
                 contents: bytemuck::cast_slice(tris),
                 usage:    wgpu::BufferUsages::VERTEX,

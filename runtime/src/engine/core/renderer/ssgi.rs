@@ -19,6 +19,7 @@
 //  ## フォーマット: SSGI_FORMAT=Rgba16Float（.rgb を使う）。imos_blur は .rgb 集計対応済み。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::deferred::DeferredLightingPipelines;
 use super::imos_blur::{IMOS_BLUR_FORMAT, ImosBlur};
 use super::pipeline::get_shader_source;
@@ -122,7 +123,7 @@ impl SsgiPipelines {
             "fs_ssgi",
             "ssgi_gen",
         );
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("SSGI Params UBO"),
             size: std::mem::size_of::<SsgiParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -140,7 +141,7 @@ impl SsgiPipelines {
             ..Default::default()
         });
         // ダミー 1x1（黒）。SSGI 非使用時の t_ssgi スロットを埋める（GiParams.gi_mode で不参照）。
-        let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let dummy_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("SSGI Dummy 1x1"),
             size: wgpu::Extent3d {
                 width: 1,
@@ -374,7 +375,7 @@ fn make_tex(
     h: u32,
     usage: wgpu::TextureUsages,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: w,

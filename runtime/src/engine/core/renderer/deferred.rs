@@ -17,6 +17,7 @@
 //  5 要素になる（pipeline_config.rs の `num_groups` 決定ロジック参照）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::pipeline::get_shader_source;
 use super::pipeline_config::RenderPipelineBuilder;
 
@@ -217,7 +218,7 @@ impl DeferredLightingPipelines {
 
         // シャドウマスク用ダミー 1x1×4 配列（白＝遮蔽なし）＋ Filtering サンプラー（Phase RT-Shadow-Denoise）。
         // マスク非対象フレーム／RT 非対応 GPU の group1 binding10/11 を埋める（常在させる）。
-        let mask_dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let mask_dummy_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Deferred Shadow Mask Dummy 1x1x4"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: super::shadow_mask::RT_SHADOW_MASK_LIGHTS },
             mip_level_count: 1, sample_count: 1,

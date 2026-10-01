@@ -44,6 +44,7 @@
 /// テクスチャ生成時にパニックするため、その手前で丸める。
 /// 実際にここへ当たるのは「巨大なマルチモニタ環境でウィンドウを最大化した」
 /// ような極端な場合だけで、通常運転では素通りする。
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 pub const MAX_TARGET_EDGE_PX: u32 = 8192;
 
 /// オフスクリーンターゲットに必要な使い方（ビット和）。
@@ -122,7 +123,7 @@ impl ThumbnailRenderTarget {
     /// `spec.width` / `spec.height` は [`sanitize_size`] を通した値であること
     /// （0 や上限超過はここでは検査しない。呼び出し側の責任で弾く）。
     pub fn new(device: &wgpu::Device, spec: TargetSpec) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some(TARGET_LABEL),
             size: wgpu::Extent3d {
                 width: spec.width,

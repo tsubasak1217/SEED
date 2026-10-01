@@ -41,6 +41,7 @@
 //    本モジュールとは独立に追加する。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use bytemuck::{Pod, Zeroable};
 
 use crate::engine::interaction::{
@@ -448,7 +449,7 @@ impl InteractionFieldRenderer {
         // ── 場テクスチャ 2 枚（ping-pong）──
         //   wgpu はテクスチャをゼロ初期化するため、初回フレームの読み側は 0（場が無い）。
         let make_tex = |label: &str| {
-            device.create_texture(&wgpu::TextureDescriptor {
+            device.create_texture_tracked(&wgpu::TextureDescriptor {
                 label:           Some(label),
                 size: wgpu::Extent3d {
                     width:                 INTERACTION_FIELD_RESOLUTION,
@@ -470,7 +471,7 @@ impl InteractionFieldRenderer {
         let view1 = tex1.create_view(&wgpu::TextureViewDescriptor::default());
 
         // ── パラメータ UBO ──
-        let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("interaction_field_uniform"),
             size:  std::mem::size_of::<InteractionFieldUniformGpu>() as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -478,7 +479,7 @@ impl InteractionFieldRenderer {
         });
 
         // ── ソース配列（固定容量。毎フレームの再確保を避ける）──
-        let sources_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let sources_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("interaction_field_sources"),
             size:  (INTERACTION_MAX_SOURCES * std::mem::size_of::<InteractionSourceGpu>())
                        as wgpu::BufferAddress,
@@ -489,7 +490,7 @@ impl InteractionFieldRenderer {
         // ── 水域の物性矩形配列（固定容量。Phase I2.1）──
         //   水が 0 個のフレームでも中身を読まないだけでバインドは常に有効にしておく
         //   （storage バッファはサイズ 0 を作れず、毎フレームの BindGroup 再生成も避けたい）。
-        let water_regions_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let water_regions_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("interaction_field_water_regions"),
             size:  (INTERACTION_MAX_WATER_REGIONS
                         * std::mem::size_of::<WaterPhysicsRegionGpu>()) as wgpu::BufferAddress,

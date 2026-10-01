@@ -3189,6 +3189,27 @@ CPU と GPU の内訳（ms。「待ちを除く CPU」＝CPU の 1 フレーム 
 - 3D の画素が約 3 倍の横の方が縦より速い（`mobile` で 44.6 対 38.2 fps）。理由は未調査（§7・§22.8 と同じ傾向）。
 - **熱**: 約 40 分続けて測る間に電池の温度が 29.1 → 最高 36.5 ℃ になり、途中から熱状態 1（軽度）になった。後半の再計測は下がることがある（横の `mobile` 44.6 → 36.9 fps。少し冷ました後は 43.7。縦 38.2 → 37.6）。表の値は計測の順と温度の差を含む。
 
+### 22.11 GPU メモリ（UI だけの描画の構成と内訳の計測。2026-10-02）
+
+**背景**: 2D の UI だけの Wake or Pay が、Pixel 6a で前面の GL mtrack 約 723 MB・TOTAL PSS 約 850〜875 MB、背面でも GL mtrack 約 705 MB を抱え、
+背面に入って約 25 分で `lowmemorykiller` に止められた（3 回。WakeOrPay の `docs/device_checks/2026-10-01_w3_device2.md`・`2026-10-02_w3_device3.md`）。
+UI だけのアプリでも、エンジンが 3D の描画資源（bindless のメガバッファ 224 MiB・シャドウマップ・GI・Play のピッキングの ID バッファ）を確保し、
+スキニングの compute のパイプラインがスレッドごとの private 配列のためにローカルメモリを大きく予約していた（PC の実測。正典は [rendering_profiles.md](rendering_profiles.md)）。
+
+**入れたもの**:
+
+- **描画の構成** `project_settings.json` の `"render": { "profile": "ui" }`（既定 `full`＝従来どおり）。3D の資源とパスを作らず、
+  GPU メモリを小さな塊で確保する（`MemoryHints::MemoryUsage`）。画面は full と画素単位で同じ（PC で確認）。
+- **GPU メモリの内訳の計測**（既定オフ）: `am start … --es seed.gpu_mem_log 1` で、logcat に `[SEED GPU MEM]`（起動後・起動の節目・背面へ回るとき）を出す。
+  追跡した資源の分類ごとの合計と上位 20 件・wgpu-hal の確保ブロック・**VK_EXT_memory_budget のヒープの使用量（GL mtrack に当たる値）**を並べる。
+- 起動オプション `--es seed.render_profile full|ui`（検証用。設定より優先）で、同じ APK のまま full と ui を比べられる。
+
+**PC での効果**（Wake or Pay・1080x2400・`mobile` 品質。[rendering_profiles.md](rendering_profiles.md) §6）: ヒープの使用量 1307.1 → 285.1 MiB、
+追跡した資源 409.3 → 76.2 MiB。**実機の値は未計測**（`ui` の設定入りの APK `C:\Users\k023g\.claude\jobs\434062fd\tmp\w3_device\wakeorpay-uiprofile.apk` を作成済み。
+次の実機確認で `dumpsys meminfo` の GL mtrack / EGL mtrack / TOTAL PSS と `[SEED GPU MEM]` を前面・背面で記録する。手順は [rendering_profiles.md](rendering_profiles.md) §7）。
+
+**スワップチェイン**は GL mtrack ではなく EGL mtrack（実機の前面で 51.8 MB）に出る。形式（Rgba8UnormSrgb）・枚数（フレーム遅延 2）は変えていない（同 §11）。
+
 ---
 
 ## 23. 実行中の差し替え（ホットリロード。段階D・2026-09-25）

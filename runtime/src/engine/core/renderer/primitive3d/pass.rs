@@ -22,6 +22,7 @@
 //  `begin() → push() × N → upload()` の順に使い、push が返すレンジを draw へ渡す。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::build::build;
 use super::queue::Primitive3dCommand;
 
@@ -182,7 +183,7 @@ impl Primitive3dRenderer {
                 count: None,
             }],
         });
-        let camera_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let camera_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Primitive3D Camera Buffer"),
             size: std::mem::size_of::<Primitive3dCameraUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -366,7 +367,7 @@ impl Primitive3dRenderer {
                 cap *= CAPACITY_GROWTH_FACTOR;
             }
             self.vertex_capacity = cap;
-            self.vertex_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.vertex_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Primitive3D Vertex Buffer"),
                 size: cap * std::mem::size_of::<Primitive3dVertex>() as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -381,7 +382,7 @@ impl Primitive3dRenderer {
                 cap *= CAPACITY_GROWTH_FACTOR;
             }
             self.index_capacity = cap;
-            self.index_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            self.index_buf = Some(device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some("Primitive3D Index Buffer"),
                 size: cap * std::mem::size_of::<u32>() as u64,
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,

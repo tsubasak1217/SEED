@@ -29,6 +29,7 @@
 //  （mask_b レイヤ）で受け取る。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::imos_blur::IMOS_BLUR_FORMAT;
 
 /// バイラテラルブラーパラメータ UBO（WGSL shadow_mask_bilateral.wgsl の BilateralParams と
@@ -209,7 +210,6 @@ impl ShadowMaskBilateral {
         ema_alpha: f32,
         ema_enable: u32,
     ) {
-        use wgpu::util::DeviceExt;
         let params = ShadowMaskBilateralParams {
             radius,
             horizontal,
@@ -220,7 +220,7 @@ impl ShadowMaskBilateral {
             _pad0: 0,
             _pad1: 0,
         };
-        let ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let ubo = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Shadow Mask Bilateral Params"),
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM,
@@ -430,7 +430,7 @@ mod tests {
         const H: u32 = 8;
         let make = |label: &str, usage: wgpu::TextureUsages| -> wgpu::TextureView {
             device
-                .create_texture(&wgpu::TextureDescriptor {
+                .create_texture_tracked(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
                         width: W,

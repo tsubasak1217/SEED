@@ -5,8 +5,8 @@
 //  ピンの先端（底辺中央）が選択位置に対応し、アイコンは上方向に展開する。
 // ============================================================
 
-use wgpu::util::DeviceExt;
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 const ICON_SIZE_PX: f32 = 32.0;
 
 static ICON_BYTES: &[u8] =
@@ -79,7 +79,7 @@ impl IconOverlay {
         let rgba = img.into_raw();
 
         // テクスチャ作成
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Icon Overlay Texture"),
             size: wgpu::Extent3d {
                 width: img_w,
@@ -282,7 +282,7 @@ impl IconOverlay {
         }
 
         let vertex_count = verts.len() as u32;
-        let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Icon Overlay Vertex Buffer"),
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,

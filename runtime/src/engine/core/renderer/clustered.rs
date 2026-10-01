@@ -30,8 +30,8 @@
 //  透視カメラ以外（2D オルソ・正射ゲームカメラ）でも enabled=0 にして線形走査へ落とす。
 // ============================================================
 
-use wgpu::util::DeviceExt;
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::lighting::{GpuLight, LIGHT_KIND_DIRECTIONAL, MAX_LIGHTS};
 
 // ─── クラスタ分割数（WGSL: cluster_common.wgsl と一致必須）─────
@@ -217,27 +217,27 @@ impl ClusterResources {
         // フラグメントが読むのは count=0（＝局所ライト無し）で、未初期化メモリを
         // 参照しない。ただし enabled=0 のときフラグメントはそもそも読まない。
         let init_grid = vec![ClusterCell::default(); CLUSTER_COUNT as usize];
-        let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let grid_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Cluster Grid Buffer"),
             contents: bytemuck::cast_slice(&init_grid),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // インデックスリスト（最悪ケース容量。ゼロ初期化）。
-        let indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let indices_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Cluster Light Index Buffer"),
             size: (CLUSTER_LIGHT_POOL as u64) * std::mem::size_of::<u32>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let cursor_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let cursor_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Cluster Cursor Buffer"),
             contents: bytemuck::bytes_of(&0u32),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let params_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Cluster Params Uniform (main camera)"),
             contents: bytemuck::bytes_of(&ClusterParams::disabled()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -245,7 +245,7 @@ impl ClusterResources {
 
         // プレビュー用は生成時に enabled=0 を書いたきり更新しない（COPY_DST も不要だが、
         // 将来カメラごとのクラスタ（方式 a）へ拡張するときのために付けておく）。
-        let params_disabled_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let params_disabled_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Cluster Params Uniform (disabled)"),
             contents: bytemuck::bytes_of(&ClusterParams::disabled()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

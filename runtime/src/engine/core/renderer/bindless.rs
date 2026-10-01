@@ -44,6 +44,7 @@
 // （テスト・レイアウト照合で全 API の健全性自体は担保している。）
 #![allow(dead_code)]
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -703,7 +704,7 @@ impl BindlessResources {
         let capacity = capacity.max(1); // 最低 1（ダミー分）
 
         // ── ダミー 1x1 白テクスチャ（index 0）─────────────────
-        let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let dummy_texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Bindless Dummy White"),
             size: wgpu::Extent3d {
                 width: 1,
@@ -777,19 +778,19 @@ impl BindlessResources {
         });
 
         // ── メガバッファ ─────────────────────────────────────
-        let uv_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uv_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Bindless UV Megabuffer"),
             size: BINDLESS_UV_BUFFER_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let index_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Bindless Index Megabuffer"),
             size: BINDLESS_INDEX_BUFFER_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let normal_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let normal_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Bindless Normal Megabuffer"),
             size: BINDLESS_NORMAL_BUFFER_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -797,7 +798,7 @@ impl BindlessResources {
         });
 
         // ── インスタンステーブル ────────────────────────────
-        let instance_table = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_table = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("Bindless Instance Table"),
             size: (BINDLESS_MAX_INSTANCES as u64)
                 * std::mem::size_of::<BindlessInstanceRecord>() as u64,

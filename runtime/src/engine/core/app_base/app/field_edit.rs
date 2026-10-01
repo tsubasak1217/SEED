@@ -516,7 +516,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::GetSceneShadingParams
         | IpcCommand::ValidateWgsl { .. }
         // プロファイラの一発計測。計測するだけでシーンを変えない。
-        | IpcCommand::ProfileDump { .. } => FieldEditTarget::None,
+        | IpcCommand::ProfileDump { .. }
+        // GPU メモリの内訳。計測を出すだけでシーンを変えない。
+        | IpcCommand::GpuMemReport { .. } => FieldEditTarget::None,
     }
 }
 

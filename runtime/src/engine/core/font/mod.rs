@@ -56,9 +56,9 @@ pub mod text_wrap;
 #[cfg(test)]
 mod text_aa_tests;
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use ab_glyph::{Font, InvalidFont, PxScale, ScaleFont};
 use std::collections::HashSet;
-use wgpu::util::DeviceExt;
 
 use atlas::{GlyphAtlas, GlyphInfo, GlyphKey};
 use pipeline::{TextPipeline, TextVertex};
@@ -462,12 +462,12 @@ impl FontSystem {
             return None;
         }
 
-        let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Text Vertex Buffer"),
             contents: bytemuck::cast_slice(&batch.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("Text Index Buffer"),
             contents: bytemuck::cast_slice(&batch.indices),
             usage: wgpu::BufferUsages::INDEX,

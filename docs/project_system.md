@@ -20,7 +20,7 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
                               〈features / deep_links / system_bars / app_category。W1-2〉。docs/android.md §18・§24.7・§25.10）・描画品質プリセット
                               （render_quality 節。プラットフォームごとのプリセット名とつまみの上書き。docs/android.md §22・
                               docs/rendering_roadmap.md「描画品質プリセット」）・描画の止め方（render_policy・render_idle_frames。
-                              docs/redraw_policy.md）・プラグイン有効化
+                              docs/redraw_policy.md）・描画の構成（render 節。full / ui。docs/rendering_profiles.md）・プラグイン有効化
                               （キーの一覧は docs/packaging.md §8.1）
     packaging_settings.json   パッケージ化の設定（android 節の variant / format / signing〈キーストアの場所・別名。パスワードは書かない〉。
                               docs/packaging.md §10.3・docs/android.md §24）
@@ -108,6 +108,27 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
   実行中の差し替えは無い（スクリプトの `SEED.Redraw.Policy` で実行中だけ上書きできる）。Android は pak に入るので書き換えたら APK を作り直す。
 - エディタのプロジェクト設定の画面には欄が無い（JSON を直接書く）。エディタの型に無いキーは `ProjectSettingsData.ExtraData` に保たれ、保存しても消えない
   （`editor/tests/MigrationTests` の `ProjectSettingsKeepsUnknownKeys` と同じ仕組み）。
+
+### project_settings.json の `render` 節（描画の構成。2026-10-02）
+
+2D の UI だけのアプリで、3D の描画資源（bindless・シャドウマップ・GI・レイトレーシング・G-Buffer・Play のピッキングの ID バッファ・
+スキニングの compute のパイプライン）を作らない構成を選ぶ。**既定は `full`（従来どおり）**なので、節を書かないプロジェクトの描画は変わらない。
+正典は [rendering_profiles.md](rendering_profiles.md)。
+
+```jsonc
+"render": { "profile": "ui" }               // 2D/UI だけ
+"render": { "profile": "ui", "post": true }  // 構成を基に旗だけ上書きする
+```
+
+| キー | 意味 |
+|---|---|
+| `render.profile` | 構成の名前（`runtime/config/render_profiles.json` の `name`。`full`〈既定〉/ `ui`）。大文字小文字・前後の空白は問わない。知らない名前は警告して `full` のまま |
+| `render.<旗>` | 構成の旗の上書き（`scene_3d` / `deferred` / `shadows` / `gi` / `bindless` / `ray_tracing` / `post` / `picking` は真偽、`memory_hint` は `"performance"` / `"memory_usage"`）。読めない値はその旗だけ捨てて警告 |
+
+- ランタイムは起動時に 1 回読み（Renderer の生成より前。`renderer/render_profile/resolve.rs`）、`[SEED RENDER PROFILE] profile=… flags: …` を起動ログへ出す。
+  実行中には変えられない（資源は起動時に確保する）。Android は pak に入るので書き換えたら APK を作り直す。
+- 検証用に起動オプションで上書きできる（PC `--render-profile=<名前>[,キー=値…]`・Android `--es seed.render_profile …`）。
+- エディタのプロジェクト設定の画面には欄が無い（JSON を直接書く）。エディタの型に無いキーは `ProjectSettingsData.ExtraData` に保たれ、保存しても消えない。
 
 ### project_settings.json の `android` 節（Android アプリ情報。2026-09-25、アイコンは 2026-09-26・段階D、プラットフォーム機能は 2026-09-27・W1-2）
 

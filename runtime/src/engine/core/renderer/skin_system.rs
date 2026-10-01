@@ -8,10 +8,10 @@
 //    - 頂点シェーダが読む joint VS BG（group 3）を per-LOD で提供
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::gpu_resources::{next_gpu_generation, NUM_LODS};
 use super::pipeline::SkinComputePipeline;
 use crate::engine::core::loader::model::{Animation, AnimationOutputs, Interpolation, Model};
-use wgpu::util::DeviceExt;
 
 // ============================================================
 //  GPU 側データ構造
@@ -501,7 +501,7 @@ impl SkinComputeSystem {
 
         // ── GPU バッファ + 静的 BG の作成 ─────────────────────
         let mk = |label: &str, data: &[u8]| -> wgpu::Buffer {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents: data,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -521,7 +521,7 @@ impl SkinComputeSystem {
         //（16B × 64 = 1KB。有効長は SkinParams.n_anims が示す）。
         let mut anim_table = packed.anims.clone();
         anim_table.resize(MAX_ANIMS, GpuAnimInfo { chan_offset: 0, chan_count: 0, duration: 1e-4, _pad: 0 });
-        let anim_tbl_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let anim_tbl_buf = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some("sk_anims"),
             contents: bytemuck::cast_slice(&anim_table),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -608,13 +608,13 @@ impl SkinComputeSystem {
         let mut lod_jmat_bufs = Vec::with_capacity(NUM_LODS);
 
         for lod in 0..NUM_LODS {
-            let at_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            let at_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some(&format!("sk_atime_lod{lod}")),
                 size: atime_size,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let pm_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            let pm_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some(&format!("sk_params_lod{lod}")),
                 size: params_size,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -635,7 +635,7 @@ impl SkinComputeSystem {
                 ],
             });
 
-            let jm_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            let jm_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
                 label: Some(&format!("sk_jmats_lod{lod}")),
                 size: jmat_size,
                 // COPY_SRC は実 GPU テストのリードバック用（描画経路は読み出さない）。
@@ -786,9 +786,13 @@ impl SkinComputeSystem {
         if visible_count == 0 {
             return;
         }
+        // パイプライン本体が無い（3D を描かない描画の構成。SkinComputePipeline の型のコメント）なら何もしない。
+        let Some(compute) = pipeline.pipeline.as_ref() else {
+            return;
+        };
 
         let wg_count = (visible_count + 63) / 64;
-        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_pipeline(compute);
         pass.set_bind_group(0, &self.lod_per_frame_bgs[lod], &[]);
         pass.set_bind_group(1, &self.static_bg, &[]);
         pass.set_bind_group(2, &self.lod_output_bgs[lod], &[]);
@@ -1114,7 +1118,7 @@ mod tests {
         let compact: Vec<usize> = (0..N_INST).collect();
         skin.upload_lod_poses(&queue, 0, &compact, &poses);
 
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        let readback = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("test readback"),
             size: (N_INST * MAX_JOINTS * std::mem::size_of::<[[f32; 4]; 4]>()) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,

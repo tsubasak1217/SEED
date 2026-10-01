@@ -13,6 +13,11 @@
 //  同じく `SEED_SIM_SCALE_FACTOR`（正の実数）で表示倍率（winit の scale_factor）を上書きできる。
 //  `Screen.DPI` と、dp のルートキャンバスの 1 dp の画素数がこの値になる（PC で端末の密度を模擬する。
 //  例: Pixel 6a の 420 dpi は 2.625）。
+//
+//  同じく `SEED_SIM_WINDOW_SIZE`（"幅x高さ"。物理ピクセル）で Play の窓の最初の大きさを上書きできる
+//  （project_settings.json の window_width / window_height の代わり。端末の画面の大きさで描画の資源を確かめる
+//  GPU メモリの計測用。例: Pixel 6a の `1080x2400`）。窓が画面より大きいと OS が縮めることがある
+//  （実際の大きさは起動ログの描画面の寸法で確かめる）。
 // ============================================================
 
 use std::sync::OnceLock;
@@ -24,6 +29,12 @@ pub const ENV_SIM_SAFE_AREA: &str = "SEED_SIM_SAFE_AREA";
 
 /// 模擬の表示倍率を指定する環境変数の名前。
 pub const ENV_SIM_SCALE_FACTOR: &str = "SEED_SIM_SCALE_FACTOR";
+
+/// Play の窓の最初の大きさを上書きする環境変数の名前（"幅x高さ"）。
+pub const ENV_SIM_WINDOW_SIZE: &str = "SEED_SIM_WINDOW_SIZE";
+
+/// 窓の大きさの幅と高さの区切り（"1080x2400"）。
+const SIZE_SEPARATOR: char = 'x';
 
 /// 値の区切り（左,上,右,下）。
 const SEPARATOR: char = ',';
@@ -81,6 +92,31 @@ pub fn simulated_scale_factor() -> Option<f64> {
     })
 }
 
+/// 窓の大きさの文字列（"幅x高さ"）を読む【純関数】（どちらも 1 以上の整数だけ。大文字の X も受け付ける）。
+pub fn parse_window_size(text: &str) -> Option<(u32, u32)> {
+    let lower = text.trim().to_ascii_lowercase();
+    let (w, h) = lower.split_once(SIZE_SEPARATOR)?;
+    let w = w.trim().parse::<u32>().ok().filter(|v| *v > 0)?;
+    let h = h.trim().parse::<u32>().ok().filter(|v| *v > 0)?;
+    Some((w, h))
+}
+
+/// 環境変数の Play の窓の大きさの上書き（プロセスで 1 度だけ読む。無い・読めなければ None。Android では使わない）。
+pub fn simulated_window_size() -> Option<(u32, u32)> {
+    static SIZE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    *SIZE.get_or_init(|| {
+        if cfg!(target_os = "android") {
+            return None;
+        }
+        let text = std::env::var(ENV_SIM_WINDOW_SIZE).ok()?;
+        let parsed = parse_window_size(&text);
+        if parsed.is_none() {
+            eprintln!("[SEED screen] {ENV_SIM_WINDOW_SIZE}={text:?} を読めません（幅x高さ の 1 以上の整数）。無視します");
+        }
+        parsed
+    })
+}
+
 /// 描画面の大きさに対する模擬の報告（模擬が無ければ None）【純関数（模擬の値を引数で受ける版）】。
 ///
 /// # 引数
@@ -122,6 +158,16 @@ mod tests {
         assert_eq!(parse_scale_factor("0"), None);
         assert_eq!(parse_scale_factor("-1"), None);
         assert_eq!(parse_scale_factor("x"), None);
+    }
+
+    /// 窓の大きさは "幅x高さ"（空白・大文字の X は許す）。0・負・数でない・区切りの無い値は None。
+    #[test]
+    fn parse_window_size_reads_width_and_height() {
+        assert_eq!(parse_window_size("1080x2400"), Some((1080, 2400)));
+        assert_eq!(parse_window_size(" 540 X 1200 "), Some((540, 1200)));
+        assert_eq!(parse_window_size("0x10"), None);
+        assert_eq!(parse_window_size("1080"), None);
+        assert_eq!(parse_window_size("ax2"), None);
     }
 
     /// 模擬の報告は描画面の大きさと一致し（select_for_frame が選ぶ）、回転は無し。

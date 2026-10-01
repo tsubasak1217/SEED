@@ -42,6 +42,7 @@
 //  ID パス・コースティクスパスが既に同じ理由で専用 BindGroup を持っている。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::ddgi::GiResources;
 use super::pipeline::get_shader_source;
 use super::pipeline_config::RenderPipelineBuilder;
@@ -275,7 +276,7 @@ impl WaterReflectionPipelines {
         // スカイボックスパラメータ（既定は「無し」。スカイボックスのあるフレームだけ上書きされる）。
         // **STORAGE** で作る: group3 はバインドレスのテクスチャ配列と同居するため、
         // uniform バッファを置けない（wgpu の bind group 制約）。値・レイアウトは不変。
-        let sky_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        let sky_uniform = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("Water Reflection Sky Params"),
             size:               std::mem::size_of::<ReflectionSkyUniform>() as u64,
             usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -284,7 +285,7 @@ impl WaterReflectionPipelines {
         queue.write_buffer(&sky_uniform, 0, bytemuck::bytes_of(&ReflectionSkyUniform::disabled()));
 
         // ── 機能 OFF 用のダミー 1x1（黒＝A も 0＝反射寄与ゼロ）──────
-        let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let dummy_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Water Reflection Dummy 1x1"),
             size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -664,7 +665,7 @@ impl WaterReflectionBlurTargets {
     fn make_tex(device: &wgpu::Device, label: &str, w: u32, h: u32)
         -> (wgpu::Texture, wgpu::TextureView)
     {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
+        let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some(label),
             size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -1089,7 +1090,7 @@ mod tests {
         // 実行時に water_gate が立った最初のフレームで初めて分かる類の事故なので、
         // 一番間違えやすいこのグループだけでも静的に押さえておく。
         let make_tex = |format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
-            device.create_texture(&wgpu::TextureDescriptor {
+            device.create_texture_tracked(&wgpu::TextureDescriptor {
                 label:           Some("water_reflection test texture"),
                 size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
                 mip_level_count: 1,

@@ -25,6 +25,7 @@
 //  （TODO: 体数が増えたら 1 フレーム 1 エンコーダへまとめる）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -179,7 +180,6 @@ pub struct GpuSpriteMesh {
 impl GpuSpriteMesh {
     /// 検証済み `SpriteMesh` から GPU バッファを構築する。
     fn upload(device: &wgpu::Device, mesh: Arc<SpriteMesh>, label: &str) -> Self {
-        use wgpu::util::DeviceExt;
 
         // バインドポーズ頂点を GPU レイアウトへ詰め替える
         let verts: Vec<SpriteSkinVertex> = (0..mesh.vertex_count())
@@ -198,12 +198,12 @@ impl GpuSpriteMesh {
             })
             .collect();
 
-        let bind_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let bind_vertex_buffer = device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("SpriteMesh BindVerts ({label})")),
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let index_buffer = Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buffer = Arc::new(device.create_buffer_init_tracked(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("SpriteMesh Indices ({label})")),
             contents: bytemuck::cast_slice(&mesh.triangles),
             usage: wgpu::BufferUsages::INDEX,
@@ -249,20 +249,20 @@ impl SpriteSkinInstance {
         let vcount = mesh.mesh.vertex_count() as u64;
         let bcount = mesh.mesh.bone_count() as u64;
 
-        let palette_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let palette_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("SpriteSkin Bone Palette"),
             // 1 ボーン = vec4 × PALETTE_VEC4_PER_BONE（16 bytes/vec4）
             size: (bcount * PALETTE_VEC4_PER_BONE as u64 * 16).max(16),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("SpriteSkin Params"),
             size: std::mem::size_of::<SpriteSkinParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let deformed_buffer = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+        let deformed_buffer = Arc::new(device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some("SpriteSkin Deformed Verts"),
             size: (vcount * DEFORMED_VERTEX_SIZE).max(DEFORMED_VERTEX_SIZE),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,

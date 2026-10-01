@@ -25,6 +25,7 @@
 //  ドローコールをさらに削減できる（現行のテクスチャ管理を大改造しないため未実施）。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use crate::engine::components::CanvasDrawZone;
 use crate::engine::core::renderer::pipeline::{SpriteOutlinePipeline, SpritePipeline};
 use crate::engine::core::renderer::sprite_skin::SkinnedSpriteDraw;
@@ -341,7 +342,7 @@ impl InstanceStream {
         label: &'static str,
         usage: wgpu::BufferUsages,
     ) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
+        device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label: Some(label),
             size: capacity as u64 * stride,
             usage: usage | wgpu::BufferUsages::COPY_DST,

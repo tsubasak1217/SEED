@@ -548,6 +548,7 @@ dotnet run --project editor/tests/PackagingCollectorTests
 | `target_fps` | `60` | フレームレート上限（`0` で無制限）。CPU・GPU の空回りを止めて発熱を抑える |
 | `render_policy` | `"continuous"` | `"on_demand"` で、描く理由（入力・アニメーション・イベント・スクリプトの `SEED.Redraw` の要求など）の無いフレームが続いたら描画を止める（止まっている画面の多いアプリ向け。W2-10a）。既定の `"continuous"` は毎フレーム描く（ゲーム）。エディタの画面に欄は無い（JSON を直接書く）。起動ログ `[SEED INIT] render_policy=…`。[redraw_policy.md](redraw_policy.md) |
 | `render_idle_frames` | `10` | `render_policy` が `"on_demand"` のとき、描く理由の無いフレームがこの回数（1〜600）続いたら止める。[redraw_policy.md](redraw_policy.md) §2 |
+| `render` | （無し＝`full`） | 描画の構成。`{"profile": "ui"}` で 2D/UI だけのアプリ向けに 3D の描画資源（bindless・影・GI・レイトレーシング・G-Buffer・Play のピッキング）を作らず、GPU メモリを小さな塊で確保する（Wake or Pay の PC の計測でプロセスの GPU メモリ 1307 → 285 MiB）。節の中の `profile` 以外のキーは旗の上書き。既定の `full` は従来どおり。エディタの画面に欄は無い（JSON を直接書く）。起動ログ `[SEED RENDER PROFILE]`。Android は pak に入るので書き換えたら APK を作り直す。[rendering_profiles.md](rendering_profiles.md) |
 | `vsync` | `"auto"` | 垂直同期。`"auto"` はパッケージ版＝有効／エディタ埋め込み＝無効。`"on"` / `"off"` で固定 |
 | `game_name` | 空 | ウィンドウタイトル（未設定なら `"SEED"`） |
 | `streaming` | （省略可） | モデルの非同期ロード（ワーカースレッド・先読み・GPU アップロード予算・バッチ常駐時間）。キーの一覧と既定値は [docs/model_streaming.md](model_streaming.md) 6 章 |

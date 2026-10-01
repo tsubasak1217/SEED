@@ -1598,6 +1598,8 @@ TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判
 
 デスクトップ向けの描画経路を、端末の性能に合わせて**データの差し替えだけで**軽くする仕組み。
 モバイル（Android）での計測・プリセットの効果は [android.md](android.md) §22 が正典。
+品質（毎フレームの可否・上限）とは別に、**3D の描画資源そのものを作らない「描画の構成」**（`project_settings.json` の `render.profile`。
+`full`〈既定〉/ `ui`〈2D/UI だけ〉）と GPU メモリの内訳の計測がある（[rendering_profiles.md](rendering_profiles.md)。構成が止めた機能は品質の上限へ重ねる）。
 
 **実機の計測（段階D-3・2026-09-25。表は android.md §22.7）** Pixel 6a（Mali-G78）・縦 1080x2400・debug の .so で、`desktop` 16.4 fps（GPU 59.2 ms）→ `mobile` 59.2 fps（GPU 10.5 ms）。
 最大の要因はデファードのライティング（等倍 41.5 ms。前方描画の約 5 倍。原因は未調査）と SSGI（11 ms）で、前方描画にするだけで等倍でも 59 fps に届く。

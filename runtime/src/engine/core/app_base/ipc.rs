@@ -1069,6 +1069,14 @@ pub enum IpcCommand {
     /// フォーマット: PROFILE_DUMP:{seconds}
     ProfileDump { seconds: f64 },
 
+    /// GPU メモリの内訳を出す（計測用。renderer/gpu_mem。docs/rendering_profiles.md §4）。
+    ///
+    /// 内訳をログ（`[SEED GPU MEM] …`）へ出し、JSON をファイルへ書いて `GPU_MEM_REPORT_DONE:{path}` を返す
+    /// （計測が無効なら `GPU_MEM_REPORT_ERROR:{理由}`）。計測は起動時に --gpu-mem-log / SEED_GPU_MEM_LOG=1 /
+    /// Android の seed.gpu_mem_log=1 で有効にしておく。
+    /// フォーマット: GPU_MEM_REPORT（一時フォルダへ書く）/ GPU_MEM_REPORT:{書き出し先のパス}
+    GpuMemReport { path: String },
+
     // ─── 編集時物理タイムライン ─────────────────────────────────────────────
     /// 再生/停止トグル。
     /// フォーマット: EDIT_PHYSICS_PLAY_PAUSE
@@ -3355,6 +3363,12 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                         // プロファイラ計測の購読 ON/OFF（プロファイラパネルの表示状態と 1 対 1）。
                         "SET_PROFILER:1" => Some(IpcCommand::SetProfilerEnabled(true)),
                         "SET_PROFILER:0" => Some(IpcCommand::SetProfilerEnabled(false)),
+
+                        // GPU メモリの内訳（計測用）。フォーマット: GPU_MEM_REPORT / GPU_MEM_REPORT:{パス}
+                        "GPU_MEM_REPORT" => Some(IpcCommand::GpuMemReport { path: String::new() }),
+                        s if s.starts_with("GPU_MEM_REPORT:") => Some(IpcCommand::GpuMemReport {
+                            path: s["GPU_MEM_REPORT:".len()..].trim().to_string(),
+                        }),
 
                         // プロファイラの一発計測。フォーマット: PROFILE_DUMP:{seconds}
                         s if s.starts_with("PROFILE_DUMP:") => {

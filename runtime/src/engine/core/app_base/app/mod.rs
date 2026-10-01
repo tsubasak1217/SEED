@@ -127,6 +127,10 @@ mod script_boot;
 mod render_resolution;
 /// 描画品質プリセットの App 側の窓口（起動時の決定・フレームごとの描画スケールの判断。段階D-2）
 mod render_quality;
+/// 描画の構成（render.profile。full / ui）の App 側の窓口（起動時の決定・3D を描かない構成での警告）
+mod render_profile_ops;
+/// GPU メモリの内訳の計測（renderer/gpu_mem）の App 側の口（フレームの印・内訳を出すきっかけ・IPC）
+mod gpu_mem_ops;
 /// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）
 pub(crate) mod frame_pacing;
 /// 文字入力（W2-6a。engine/core/text_input）を App へつなぐ所（PC の IME とキー・IPC の注入・Android の知らせ・
@@ -228,6 +232,7 @@ pub(crate) mod cover_emitter_scene_gizmo;
 pub(crate) mod interaction_source_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -340,7 +345,7 @@ impl CameraPreviewResources {
         // 描画し、ブリット時（camera_preview_blit.wgsl）にトーンマップして表示する。
         // メインシーンのパイプラインは HDR_FORMAT でビルドされるため、プレビューの
         // レンダーターゲットも同フォーマットに揃える必要がある。
-        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let color_texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Camera Preview Color"),
             size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -356,7 +361,7 @@ impl CameraPreviewResources {
         //   案A（ミニデファード）でデファードのライティングパスが深度をテクスチャとして
         //   サンプルするため、RENDER_ATTACHMENT に加えて TEXTURE_BINDING を付与する
         //   （メイン深度テクスチャ DepthTexture と同じ用途構成）。
-        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let depth_texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Camera Preview Depth"),
             size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -386,7 +391,7 @@ impl CameraPreviewResources {
         let gbuffer_formats = [GBUFFER0_FORMAT, GBUFFER1_FORMAT, GBUFFER2_FORMAT, GBUFFER3_FORMAT];
         // テクスチャ本体（所有し続ける）とビュー（借用）を同順で 4 枚ぶん生成する。
         let g_tex_view: [(wgpu::Texture, wgpu::TextureView); 4] = std::array::from_fn(|i| {
-            let tex = device.create_texture(&wgpu::TextureDescriptor {
+            let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
                 label:           Some("Camera Preview GBuffer"),
                 size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
@@ -406,7 +411,7 @@ impl CameraPreviewResources {
 
         // プレビュー専用の速度 RT（G-Buffer の RT4 = MRT 5 枚目）。捨て先なので
         // TEXTURE_BINDING は付けない（誰もサンプルしない＝ドライバに意図を明示する）。
-        let velocity_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let velocity_texture = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label:           Some("Camera Preview GBuffer Velocity (discarded)"),
             size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -447,7 +452,7 @@ impl CameraPreviewResources {
         });
 
         // ブリット矩形ユニフォームバッファ (Group 0)
-        let blit_rect_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let blit_rect_buf = device.create_buffer_tracked(&wgpu::BufferDescriptor {
             label:              Some("Camera Preview Blit Rect"),
             size:               BLIT_RECT_BUFFER_SIZE,
             usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -673,6 +678,16 @@ pub struct LaunchArgs {
     ///
     /// PC は --gpu-timing か環境変数 SEED_GPU_TIMING=1、Android は起動オプション seed.gpu_timing=1。
     pub gpu_timing: bool,
+    /// GPU メモリの内訳を計測するか（計測用。renderer/gpu_mem。docs/rendering_profiles.md §4）。
+    ///
+    /// PC は --gpu-mem-log（環境変数 SEED_GPU_MEM_LOG=1 は gpu_mem::request が自分で見る）、
+    /// Android は起動オプション seed.gpu_mem_log=1。
+    pub gpu_mem_log: bool,
+    /// 描画の構成の名前の上書き（検証用。project_settings.json の render.profile より優先する。
+    /// renderer/render_profile。docs/rendering_profiles.md）。
+    ///
+    /// PC は --render-profile=<名前>、Android は起動オプション seed.render_profile。None なら設定どおり。
+    pub render_profile: Option<String>,
     /// アセットルート（ファイルシステム）を「上書き層」として pak より先に読むか（実行中の差し替え。docs/android.md §23）。
     ///
     /// Android の糊（runtime/android/native の launch.rs）が「デバッグ版の APK のパッケージ実行」のときだけ true にする
@@ -1487,11 +1502,23 @@ pub struct App {
     /// 起動オプションで渡された描画品質の指定（計測・検証用。`LaunchArgs::render_quality` の写し）。
     pub(super) quality_launch: crate::engine::core::renderer::quality::QualityLaunchOverrides,
 
+    /// 実効の描画の構成（full / ui。render_profile_ops.rs）。
+    ///
+    /// `handle_resumed` で一度だけ決める（定義の既定 ← project_settings.json の render 節 ← 起動オプション）。
+    /// 既定は full（何も止めない＝従来どおり）。止めた旗は描画品質の上限（render_quality.knobs）へも重ねてある。
+    pub(super) render_profile: crate::engine::core::renderer::render_profile::RenderProfile,
+
     /// パスごとの GPU 時間の計測を起動オプションで要求されたか（`LaunchArgs::gpu_timing` の写し）。
     pub(super) gpu_timing_launch: bool,
 
     /// パスごとの GPU 時間の計測器（計測が要求され、デバイスが対応しているときだけ Some）。
     pub(super) gpu_timer: Option<crate::engine::core::renderer::gpu_timing::GpuPassTimer>,
+
+    /// GPU メモリの内訳の計測を起動オプションで要求されたか（`LaunchArgs::gpu_mem_log` の写し）。
+    pub(super) gpu_mem_log_launch: bool,
+
+    /// 起動オプションで渡された描画の構成の名前（検証用。`LaunchArgs::render_profile` の写し）。
+    pub(super) render_profile_launch: Option<String>,
 
     /// フレーム統計（直近 1 秒の平均 fps・直近フレームの実時間）。
     /// `pace_frame` が毎フレーム更新し、スクリプト API（SEED.Time.Fps /
@@ -1843,8 +1870,12 @@ impl App {
             // 描画品質は handle_resumed で project_settings.json と起動オプションから決める（それまでは何も下げない）。
             render_quality:    crate::engine::core::renderer::quality::RenderQuality::default(),
             quality_launch:    args.render_quality,
+            // 描画の構成は handle_resumed で project_settings.json と起動オプションから決める（それまでは full）。
+            render_profile:    Default::default(),
             gpu_timing_launch: args.gpu_timing,
             gpu_timer:         None,
+            gpu_mem_log_launch:    args.gpu_mem_log,
+            render_profile_launch: args.render_profile,
             frame_stats: frame_pacing::FrameStats::default(),
             // 描画の止め方は handle_resumed で project_settings.json から決める（それまでは既定の continuous）
             redraw: redraw_hooks::RedrawState::default(),

@@ -26,6 +26,7 @@
 //  b[m] を copy_texture_to_texture でミップチェーンの mip m へ書き戻す。
 // ============================================================
 
+use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use super::HDR_FORMAT;
 use super::imos_blur::{IMOS_BLUR_FORMAT, ImosBlur};
 use super::post::{PostPipeline, run_post_stage};
@@ -102,7 +103,7 @@ impl PyramidPipes {
             ..Default::default()
         });
         // マスク引数用の白 1x1（down は group2 を持たないため実際にはバインドされない）。
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+        let white_tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Refract Pyramid White 1x1"),
             size: wgpu::Extent3d {
                 width: 1,
@@ -176,7 +177,7 @@ impl RefractPyramid {
 
         // ── ミップチェーン本体（mip0 は copy_dst、以降も copy_dst で書き戻す）──
         let mip_count = REFRACT_MIP_COUNT.min(max_mips(w, h));
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
+        let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
             label: Some("Refract Pyramid"),
             size: wgpu::Extent3d {
                 width: w,
@@ -369,7 +370,7 @@ fn make_tex(
     h: u32,
     usage: wgpu::TextureUsages,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.create_texture_tracked(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: w.max(1),
