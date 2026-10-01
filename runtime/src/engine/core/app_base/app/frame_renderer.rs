@@ -6072,7 +6072,8 @@ impl App {
                                 let _prof_tlas = ScopeGuard::new("RT/TLAS・BLAS ビルド");
                                 // バインドレス（B2）: 対応 GPU では instance_table も同時に詰めさせる。
                                 // rt_shadow とは別 RefCell のため共有借用で共存できる。
-                                let bindless_ref = draw_ctx.bindless.as_ref().map(|c| c.borrow());
+                                // 資源は使う所が初めて触ったときに作る（bindless_lazy.rs。作った後は従来どおり）。
+                                let bindless_ref = draw_ctx.bindless.as_ref().map(|lazy| lazy.get_or_create().borrow());
                                 // スキンメッシュ（Phase RT-Skin）: 変形後頂点の書き出し compute を
                                 // 渡す。この encoder には既に skin compute（ジョイント行列）が
                                 // 積まれているため、prepare_and_build 内で
@@ -6103,7 +6104,8 @@ impl App {
                             if let (Some(rt_cell), Some(rt_tp), Some(bl_cell)) = (
                                 draw_ctx.rt_shadow.as_ref(),
                                 draw_ctx.pipelines.transparent.rt.as_ref(),
-                                draw_ctx.bindless.as_ref(),
+                                // 資源は使う所が初めて触ったときに作る（bindless_lazy.rs）。
+                                draw_ctx.bindless.as_ref().map(|lazy| lazy.get_or_create()),
                             ) {
                                 let rt = rt_cell.borrow();
                                 let bl = bl_cell.borrow();
@@ -6773,9 +6775,10 @@ impl App {
                             // 色付き影資源（instance_table/UV/index/テクスチャ配列/サンプラー）を 1 回だけ組む。
                             // 非対応 GPU／縮退時は None＝従来の空 gap（empty_bg3）を使う。
                             let colored_shadow_bg: Option<wgpu::BindGroup> = if use_rt {
-                                match (&draw_ctx.bindless, draw_ctx.pipelines.deferred.colored_shadow_bgl.as_ref()) {
-                                    (Some(bl_cell), Some(cs_bgl)) => {
-                                        Some(bl_cell.borrow().create_colored_shadow_bind_group(&draw_ctx.device, cs_bgl))
+                                match (draw_ctx.bindless.as_ref(), draw_ctx.pipelines.deferred.colored_shadow_bgl.as_ref()) {
+                                    (Some(lazy), Some(cs_bgl)) => {
+                                        // 資源は使う所が初めて触ったときに作る（bindless_lazy.rs）。
+                                        Some(lazy.get_or_create().borrow().create_colored_shadow_bind_group(&draw_ctx.device, cs_bgl))
                                     }
                                     _ => None,
                                 }
@@ -7240,8 +7243,9 @@ impl App {
                             let rt_data_bg = rt_refl_ref.as_ref().map(|r| {
                                 let lights = draw_ctx.light_buffer.lights_buffer();
                                 let meta   = draw_ctx.light_buffer.meta_main_buffer();
-                                if let Some(bl_cell) = &draw_ctx.bindless {
-                                    let bl = bl_cell.borrow();
+                                if let Some(lazy) = &draw_ctx.bindless {
+                                    // 資源は使う所が初めて触ったときに作る（bindless_lazy.rs）。
+                                    let bl = lazy.get_or_create().borrow();
                                     refl.create_rt_data_bg_bindless(
                                         &draw_ctx.device, lights, meta,
                                         r.tlas(), r.albedo_buffer(), &bl,
@@ -7567,7 +7571,8 @@ impl App {
                                             // index・テクスチャ配列・サンプラー）も同居する。
                                             // 借用は BindGroup 生成の間だけ保持する。
                                             let bl_ref = if use_rt && wrp.has_bindless() {
-                                                draw_ctx.bindless.as_ref().map(|c| c.borrow())
+                                                // 資源は使う所が初めて触ったときに作る（bindless_lazy.rs）。
+                                                draw_ctx.bindless.as_ref().map(|lazy| lazy.get_or_create().borrow())
                                             } else { None };
                                             let scene_bg = wrp.create_scene_bg(
                                                 &draw_ctx.device, grab_view,

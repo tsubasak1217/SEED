@@ -118,13 +118,13 @@ pub struct DrawContext {
     /// DrawContext は `&self` で共有参照されるため、フレーム内で BLAS/TLAS を再構築する
     /// （`&mut` が要る）には内部可変性が必要。model_cache と同じく RefCell で包む。
     pub rt_shadow:        Option<RefCell<RtShadowResources>>,
-    /// バインドレス基盤（フェーズ B1）。対応 GPU でのみ Some。
-    /// テクスチャ配列レジストリ・UV/index メガバッファ・インスタンステーブルを保持する。
-    /// B1 では確保のみ（消費側 B2/B3 は後続）。登録／解放でダーティ化する BindGroup キャッシュを
-    /// 内包するため `&mut` が要り、DrawContext は `&self` 共有のため RefCell で包む。
-    /// B1 時点では確保のみで読み出し側が無いため未使用警告が出るが、B2 が消費する（意図的保持）。
-    #[allow(dead_code)]
-    pub bindless:         Option<RefCell<crate::engine::core::renderer::BindlessResources>>,
+    /// バインドレス基盤（フェーズ B1）の置き場。bindless に対応し、かつ RT が使える GPU でのみ Some
+    /// （`bindless::bindless_resources_wanted`。RT が無い GPU では機能だけ求めて資源は作らない）。
+    /// テクスチャ配列レジストリ・UV/index メガバッファ・インスタンステーブルは、使う所（モデルの登録・
+    /// RT の影・反射・屈折・水面反射・TLAS）が初めて `get_or_create` したときに作る（bindless_lazy.rs。
+    /// 3D のモデルも RT のパスも無い間は 224 MiB を確保しない）。登録／解放でダーティ化する BindGroup
+    /// キャッシュを内包するため `&mut` が要り、DrawContext は `&self` 共有のため中身は RefCell で包む。
+    pub bindless:         Option<crate::engine::core::renderer::LazyBindless>,
     /// DDGI リソース一式（Phase RT-GI）。アトラス・GiParams・更新 compute BindGroup を持つ。
     /// RT 非対応 GPU でもリソースは生成する（compute は attach されず GI は無効）。
     pub gi:               GiResources,
@@ -250,14 +250,13 @@ impl DrawContext {
                 rt.albedo_buffer(),
             );
         }
-        // バインドレス基盤（フェーズ B1）。対応 GPU でのみ確保する。
-        // 確定容量はデバイス初期化時に global へ設定済み（mod.rs）。非対応 GPU では None で、
-        // 一切の GPU 資源を確保しない（＝従来経路と完全に同一）。
-        let bindless = if crate::engine::core::renderer::bindless_supported() {
+        // バインドレス基盤（フェーズ B1）。bindless に対応し、かつ RT が使える GPU でのみ置き場を用意する
+        // （読むのは RT のパスだけ。bindless::bindless_resources_wanted。RT が無い GPU では機能だけ求めて資源は作らない）。
+        // 資源そのものは使う所が初めて触ったときに作る（bindless_lazy.rs。ここでは GPU の資源を確保しない）。
+        // 確定容量はデバイス初期化時に global へ設定済み（mod.rs）。置き場が無ければ一切の GPU 資源を確保しない。
+        let bindless = if crate::engine::core::renderer::bindless::bindless_resources_wanted() {
             let cap = crate::engine::core::renderer::bindless::bindless_capacity();
-            Some(RefCell::new(
-                crate::engine::core::renderer::BindlessResources::new(&device, &queue, cap),
-            ))
+            Some(crate::engine::core::renderer::LazyBindless::new(&device, &queue, cap))
         } else {
             None
         };
@@ -317,8 +316,9 @@ impl DrawContext {
     /// バインドレス（B2）対応 GPU でのみ、実効マテリアル確定後の GpuModel を
     /// テクスチャ配列・UV/index メガバッファへ登録する（非対応 GPU では何もしない）。
     fn finalize_bindless(&self, gpu: &mut GpuModelInner, model: &Model) {
-        if let Some(cell) = &self.bindless {
-            let mut b = cell.borrow_mut();
+        if let Some(lazy) = &self.bindless {
+            // 最初の 3D モデルの登録で bindless の資源を作る（bindless_lazy.rs）。
+            let mut b = lazy.get_or_create().borrow_mut();
             gpu.register_bindless(model, &self.queue, &mut b);
         }
     }

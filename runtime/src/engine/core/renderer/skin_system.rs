@@ -87,8 +87,17 @@ pub struct GpuSkinParams {
 
 // ─── 上限（超過分は警告してフォールバック）─────────────────────
 
-/// 1 モデルあたりのジョイント数上限（超過分は切り捨て）。
+/// 1 モデルあたりのジョイント数上限（超過分は切り捨て）。skin_compute.wgsl の `MAX_JOINTS` と一致させる。
 pub const MAX_JOINTS: usize = 128;
+/// GPU スキニングで評価できるノード数の上限（skin_compute.wgsl の `MAX_NODES`＝1 ワークグループのレーン数と一致させる）。
+///
+/// 超えるモデルは読み込み時に警告し、上限以上の番号のノードを評価しない（そのノードのチャンネルは使わず、
+/// 親が上限以上のノードは根として扱い、上限以上のノードを指すジョイントは単位行列。シェーダの冒頭のコメント）。
+pub const MAX_NODES: usize = 64;
+/// compute の 1 次元あたりのワークグループ数の上限（wgpu の既定の限界 `max_compute_workgroups_per_dimension`。
+/// 本体は既定の限界でデバイスを作る＝renderer/mod.rs）。1 ワークグループ = 1 インスタンスなので、
+/// これを超えるインスタンス数は y 方向の行へ折り返す（`skin_dispatch_grid`）。
+const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 /// 1 モデルあたりの GPU パッキング対象アニメ数上限。超過分は登録しない（＝再生できない）。
 pub const MAX_ANIMS: usize = 64;
 /// 全アニメ合計のチャンネル数上限。超えた時点で以降のアニメを打ち切る。
@@ -460,6 +469,17 @@ impl SkinComputeSystem {
         let skin = &model.skins[0];
         let n_nodes = model.nodes.len() as u32;
         let n_joints = (skin.joints.len() as u32).min(MAX_JOINTS as u32);
+        // ノード数が上限を超えるモデルは、上限以上の番号のノードを評価しない（shaders/skin_compute.wgsl の冒頭）。
+        // 黙って崩れて見えないよう、読み込みのたびに理由を出す（アニメ数の上限の警告＝pack_animations と同じ流儀）。
+        if model.nodes.len() > MAX_NODES {
+            eprintln!(
+                "[SEED skin] {}: ノード数 {} が GPU スキニングの上限 {MAX_NODES} を超えています。\
+                 {MAX_NODES} 番以降のノードはアニメーションを評価せず、それを親に持つノードは根として扱い、\
+                 それを指すジョイントは単位行列になります（表示が崩れることがあります）。",
+                model.name,
+                model.nodes.len(),
+            );
+        }
 
         // ── バインドポーズ TRS ────────────────────────────────
         let bind_t: Vec<[f32; 4]> = model
@@ -791,13 +811,27 @@ impl SkinComputeSystem {
             return;
         };
 
-        let wg_count = (visible_count + 63) / 64;
+        // 1 ワークグループ = 1 インスタンス（skin_compute.wgsl の冒頭）。
+        let (groups_x, groups_y) = skin_dispatch_grid(visible_count);
         pass.set_pipeline(compute);
         pass.set_bind_group(0, &self.lod_per_frame_bgs[lod], &[]);
         pass.set_bind_group(1, &self.static_bg, &[]);
         pass.set_bind_group(2, &self.lod_output_bgs[lod], &[]);
-        pass.dispatch_workgroups(wg_count, 1, 1);
+        pass.dispatch_workgroups(groups_x, groups_y, 1);
     }
+}
+
+/// インスタンス数ぶんのワークグループ（1 ワークグループ = 1 インスタンス）を並べる格子 `(x, y)` を返す。
+///
+/// x 方向へ並べ、1 次元の上限（`MAX_WORKGROUPS_PER_DIMENSION`）を超える分は y 方向の行へ折り返す
+/// （シェーダは `workgroup_id.x + workgroup_id.y × num_workgroups.x` でインスタンス番号へ戻し、
+/// 最後の行の余りはインスタンス数と比べて何もしない）。インスタンス 0 なら `(0, 0)`（何も走らせない）。
+pub fn skin_dispatch_grid(instances: u32) -> (u32, u32) {
+    let groups_x = instances.min(MAX_WORKGROUPS_PER_DIMENSION);
+    if groups_x == 0 {
+        return (0, 0);
+    }
+    (groups_x, instances.div_ceil(groups_x))
 }
 
 // ============================================================
@@ -1005,6 +1039,39 @@ mod tests {
             src.contains(&format!("array<AnimInfo, {MAX_ANIMS}>")),
             "WGSL のアニメテーブル長が MAX_ANIMS({MAX_ANIMS}) と一致していない"
         );
+        // ノード数の上限（= ワークグループのレーン数）とジョイントの枠数も Rust と WGSL で同じ値にする
+        // （ずれるとノードの評価漏れ・出力バッファの範囲外書き込みになる）。
+        assert!(
+            src.contains(&format!("const MAX_NODES:  u32 = {MAX_NODES}u;")),
+            "WGSL の MAX_NODES が Rust の MAX_NODES({MAX_NODES}) と一致していない"
+        );
+        assert!(
+            src.contains(&format!("const MAX_JOINTS: u32 = {MAX_JOINTS}u;")),
+            "WGSL の MAX_JOINTS が Rust の MAX_JOINTS({MAX_JOINTS}) と一致していない"
+        );
+        // スレッドごとの private 配列を持たない（パイプラインの生成でローカルメモリを大きく予約しない。
+        // docs/rendering_profiles.md §5）。作業用の配列はワークグループの共有メモリに置く。
+        let count_space = |space: naga::AddressSpace| {
+            module.global_variables.iter().filter(|(_, v)| v.space == space).count()
+        };
+        assert_eq!(count_space(naga::AddressSpace::Private), 0, "skin_compute.wgsl に var<private> が戻っている");
+        assert!(count_space(naga::AddressSpace::WorkGroup) > 0, "ノードの行列はワークグループの共有メモリに置く");
+    }
+
+    /// 1 ワークグループ = 1 インスタンスの格子: 1 次元の上限を超えたら y 方向へ折り返し、x × y はインスタンス数以上。
+    #[test]
+    fn dispatch_grid_covers_all_instances() {
+        assert_eq!(skin_dispatch_grid(0), (0, 0), "0 体なら何も走らせない");
+        assert_eq!(skin_dispatch_grid(1), (1, 1));
+        assert_eq!(skin_dispatch_grid(70), (70, 1));
+        assert_eq!(skin_dispatch_grid(MAX_WORKGROUPS_PER_DIMENSION), (MAX_WORKGROUPS_PER_DIMENSION, 1));
+        assert_eq!(skin_dispatch_grid(MAX_WORKGROUPS_PER_DIMENSION + 1), (MAX_WORKGROUPS_PER_DIMENSION, 2));
+        for n in [2u32, 63, 64, 65, 16_384, 200_000, 4_000_000] {
+            let (x, y) = skin_dispatch_grid(n);
+            assert!(x <= MAX_WORKGROUPS_PER_DIMENSION && y <= MAX_WORKGROUPS_PER_DIMENSION, "n={n}: ({x},{y})");
+            assert!(u64::from(x) * u64::from(y) >= u64::from(n), "n={n}: ({x},{y}) が足りない");
+            assert!(u64::from(x) * u64::from(y - 1) < u64::from(n), "n={n}: ({x},{y}) の行が余計");
+        }
     }
 
     /// **実 GPU**: 複数アニメのパッキング＋クロスフェード compute を 1 回走らせ、

@@ -59,8 +59,9 @@ impl App {
             .unwrap_or(effective_size);
         self.camera
             .set_aspect_ratio(target.width, target.height);
-        // UI だけの構成の単体の Play では ID バッファを作らない（id_buffer_wanted。full は従来どおり作り直す）。
-        if target.width > 0 && target.height > 0 && self.id_buffer_wanted() {
+        // ID バッファを起動時から持つ状態（エディタにつながっている等）か、もう作ってある（単体の Play で図鑑の
+        // サムネイルの撮影が作った）ときだけ、描画解像度に合わせて作り直す（id_buffer_ops.rs）。
+        if target.width > 0 && target.height > 0 && (self.id_buffer_wanted() || self.id_buffer.is_some()) {
             if let Some(dc) = &self.draw_ctx {
                 self.id_buffer = Some(IdBuffer::new(
                     &dc.device,

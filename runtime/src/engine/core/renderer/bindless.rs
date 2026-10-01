@@ -73,6 +73,15 @@ pub fn bindless_supported() -> bool {
     BINDLESS_SUPPORTED.load(Ordering::Relaxed)
 }
 
+/// バインドレスの資源（テクスチャ配列・メガバッファ・インスタンス表）を作ってよいか。
+///
+/// バインドレスに対応し、**かつ RT が使える**とき（読む所＝RT の影・反射・屈折・水面反射・TLAS の組み立てが
+/// どれも RT の対応 GPU でしか走らないため）。RT が使えない GPU・構成では機能だけ求めて資源は作らない
+/// （renderer/mod.rs の supports_bindless のコメント。DrawContext::new が置き場を作るかの判断に使う）。
+pub fn bindless_resources_wanted() -> bool {
+    bindless_supported() && super::rt_shadow::rt_shadows_supported()
+}
+
 /// 確定したテクスチャ配列容量を取得する（未設定＝0）。
 pub fn bindless_capacity() -> u32 {
     BINDLESS_CAPACITY.load(Ordering::Relaxed)

@@ -12,9 +12,9 @@
 - **計測で分かった大きいもの**（PC・RTX 3060 Laptop・Vulkan・Wake or Pay を Pixel 6a 相当の 1080x2400・`mobile` 品質で起動。§6）:
   1. **スキニングの compute のパイプライン（`skin_compute.wgsl`）を作るだけでドライバが約 450 MiB を予約**する。
      ノードの TRS・ワールド行列をスレッドごとの `var<private>` 配列（約 10 KB / スレッド）に持つため、ドライバが「同時に走りうる全スレッド分」の
-     ローカルメモリを確保する（資源の確保〈wgpu-hal〉は 0 で、ヒープの使用量だけが 193.6 → 644.4 MiB に跳ねる。§5）。
-  2. **bindless のメガバッファ 224 MiB**（索引 128・UV 64・法線 32 MiB）。RT のヒットシェーディングの土台で、RT の無い GPU（Pixel 6a の Mali-G78）でも確保していた。
-  3. **Play のピッキングの ID バッファ 39.6 MiB**（画面と同じ 1080x2400 の Rgba32Float）。Play では既定で ID パスを描かないのに確保していた。
+     ローカルメモリを確保する（資源の確保〈wgpu-hal〉は 0 で、ヒープの使用量だけが 193.6 → 644.4 MiB に跳ねる。§5）。→ 直した（§14.2）
+  2. **bindless のメガバッファ 224 MiB**（索引 128・UV 64・法線 32 MiB）。RT のヒットシェーディングの土台で、RT の無い GPU（Pixel 6a の Mali-G78）でも確保していた。→ 直した（§14.4）
+  3. **Play のピッキングの ID バッファ 39.6 MiB**（画面と同じ 1080x2400 の Rgba32Float）。Play では既定で ID パスを描かないのに確保していた。→ 直した（§14.5）
   4. **シャドウマップ 56 MiB**（CSM 1024²×3 層＋スポット 1024²×4 層 を本体とカメラのプレビューで 2 組）、**GI（DDGI）のアトラス 13 MiB**（RT が無くても確保）。
   5. wgpu の既定の GPU メモリの方針（`MemoryHints::Performance`）は、転送用に 128 MiB からの塊を持ち、32 MiB 未満の資源を 2 の冪に切り上げて切り出す。
 - **構成 `ui`**（`"render": { "profile": "ui" }`）は上の 1〜4 を作らず（影・GI は 1x1 の置き場）、レイトレーシング・G-Buffer・後処理を止め、
@@ -24,6 +24,11 @@
 - **画面は full と画素単位で同じ**（Wake or Pay の一覧・編集・鳴動・庭・アクティビティのグラフ 8 枚 × `mobile`/`desktop` 品質、
   templates/ui のギャラリー・グラフ・画面遷移の見本 16 枚。違う画素 0。§9）。
 - **実機（Pixel 6a）の `dumpsys meminfo` での確認は次の実機確認で行う**（APK は作成済み。手順は §7・APK は §9.2）。
+- **full の無駄（上の 1〜3）も減らした（2026-10-02 の 2 回目。§14）**: スキニングの compute を「1 ワークグループ = 1 インスタンス・
+  ワークグループの共有メモリ」に作り直し（パイプラインの生成での約 444 MiB の予約が消えた。出力は旧い作りとビット単位で同じ）、
+  bindless の資源は RT が使える GPU でだけ・最初に要るときに作り、エディタに接続していない Play のピッキングの ID バッファは
+  ID パスを描くとき（図鑑のサムネイルの撮影）にだけ作る。Wake or Pay を full（`mobile`）で **1307.1 → 589.1 MiB**、RT を止めた full
+  （RT の無い端末と同じ条件）で 1277.2 → 554.9 MiB、WarashibeFishing のプロローグで 1398.3 → 968.0 MiB（`desktop`）・1264.3 → 778.9 MiB（`mobile`）。
 
 ## 2. 設定
 
@@ -62,10 +67,10 @@
 | `deferred` | G-Buffer を使わず前方描画（G-Buffer の RT を確保しない。AO・反射・SSGI も止まる） | 描画品質の上限 `deferred=false`（`frame_renderer.rs` の `deferred_setting`） |
 | `shadows` | シャドウマップを 1x1 の置き場にし、影を 1 灯も採用しない | `DrawContext::new`（`ShadowResources::new_placeholder`）・品質の上限 `shadows=false` |
 | `gi` | GI のアトラスを 1x1 の置き場にし（compute も付けない）、GI は平坦な環境光 | `DrawContext::new`（`GiResources::new_placeholder`）・品質の上限 `gi=flat` |
-| `bindless` | bindless の機能をデバイスへ求めず、テクスチャ配列（4096 枠）とメガバッファ（224 MiB）を作らない | `Renderer::new`（`supports_bindless`） |
+| `bindless` | bindless の機能をデバイスへ求めず、テクスチャ配列（4096 枠）とメガバッファ（224 MiB）を作らない。true でも RT が使えなければ（GPU が非対応・`ray_tracing=false`）資源は作らず（機能の要求は従来どおり）、使えるときも最初に要るとき（3D モデルの登録・RT のパス）に作る（§14.4） | `Renderer::new`（`supports_bindless`）・`bindless::bindless_resources_wanted`・`bindless_lazy.rs` |
 | `ray_tracing` | RT の機能（RAY_QUERY・加速構造）をデバイスへ求めない（RT のパイプライン・TLAS・DDGI の更新・RT 影を作らない） | `Renderer::new`（`supports_rt`）・品質の上限 `translucency=raster` |
 | `post` | ブルーム・ビネット・FXAA を止める（トーンマップは残す） | 品質の上限 `bloom` / `vignette` / `fxaa` = false |
-| `picking` | 単体の Play（PC の SEED.exe・Android）でピッキングの ID バッファ（画面と同じ大きさの Rgba32Float）を作らない。Edit・エディタに埋め込んだ Play・`SEED_ID_PASS_IN_PLAY` では作る | `app_init.rs`・`event_handler.rs`（`App::id_buffer_wanted`） |
+| `picking` | エディタに接続していない Play（PC の単体の SEED.exe・パッケージ実行・Android）で、ID パスを描くとき（図鑑のサムネイルの撮影）にもピッキングの ID バッファ（画面と同じ大きさの Rgba32Float）を作らない。true（full）でも単体の Play では起動時には作らず、ID パスを描くときに初めて作る。Edit・エディタの Play（埋め込み・名前付きパイプでつながった別プロセス）・`SEED_ID_PASS_IN_PLAY` では旗によらず起動時から作る（§14.5） | `app/id_buffer_ops.rs`（`App::id_buffer_wanted`・`ensure_id_buffer`）・`app_init.rs`・`event_handler.rs`・`thumbnail_ops.rs` |
 | `memory_hint` | `"performance"`（既定）/ `"memory_usage"`。wgpu の `MemoryHints`。gpu-alloc（wgpu 25 の Vulkan）では、performance は転送用の塊を 128〜512 MiB・32 MiB 未満の資源を 2 の冪に切り上げた塊から、memory_usage は転送用 8〜64 MiB・8 MiB 以上の資源を専用に確保する | `Renderer::new`（`DeviceDescriptor::memory_hints`） |
 
 - 旗は「止める」向きにだけ効く。資源は起動時に確保するので、実行中には変えられない（再起動が要る）。
@@ -127,6 +132,8 @@
 Pixel 6a に近い）。窓が画面より大きいと OS が縮めることがある（実際の大きさは起動ログ・スクリーンショットの寸法で確かめる。1920x1080 の画面で 1080x2400 の窓になった）。
 
 ## 5. スキニングの compute がローカルメモリを予約する件
+
+**→ 2026-10-02 の 2 回目で直した（§14.2）。full でもこの予約は起きない（RTX 3060 Laptop で `DrawPipelines::new` の節目 826.9 → 382.6 MiB）。以下は直す前の記録。**
 
 `DrawPipelines::new` の中で、パイプラインの種類ごとにヒープの使用量を測った（PC。RT を求めない ui の構成で、まだスキニングのパイプラインを作っていた途中のビルドに一時的に節目を入れて測った）。`SkinComputePipeline::new` の直後だけが
 **193.6 → 644.4 MiB（+450.8 MiB）**で、ほかの 30 余りの種類（メッシュ・G-Buffer・デファード・反射・AO・SSGI・水…）は合わせて +10 MiB ほどだった。
@@ -220,6 +227,8 @@ memory_usage で小さく・スキニングの予約が無くなるので、**GL
 
 ## 8. 既定（full）が変わらないこと
 
+（この節は ui の構成を足したとき〈2026-10-02 の 1 回目〉の記録。2 回目で full の GPU メモリそのものを減らした〈描画と振る舞いは同じ〉＝§14）
+
 - `render` 節が無ければ構成は `full`（旗はすべて true・`memory_hint` = performance＝wgpu の既定）。品質へ上限を足さない（`quality_caps` が空）。
   デバイスへ求める機能・限界・`MemoryHints`、`DrawContext` の資源（影・GI の大きさ）、スキニングのパイプライン、ID バッファの作り直しは従来と同じ。
 - 計測（`*_tracked`）は無効なら記録しない。wgpu の `counters` 機能は資源の生成・破棄で原子的な足し引きをするだけ。
@@ -305,14 +314,207 @@ APK の pak（`assets/seed/assets.pak`）の `project_settings.json` に `"rende
 |---|---|
 | `runtime/config/render_profiles.json` | 構成の定義（データ） |
 | `runtime/src/engine/core/renderer/render_profile/` | 旗（`flags.rs`）・定義の読み込み（`catalog.rs`）・実効の構成の決定（`resolve.rs`）・今の構成の登録（`mod.rs`）・実 GPU のテスト（`tests_gpu.rs`） |
-| `runtime/src/engine/core/app_base/app/render_profile_ops.rs` | 起動時の決定・品質へ上限・ID バッファの要否・3D を描かなかったことの警告 |
+| `runtime/src/engine/core/app_base/app/render_profile_ops.rs` | 起動時の決定・品質へ上限・3D を描かなかったことの警告 |
+| `runtime/src/engine/core/app_base/app/id_buffer_ops.rs` | ピッキングの ID バッファの持ち方（`decide_id_buffer_policy`: 起動時から／ID パスを描くときに作る／作らない）・`ensure_id_buffer`（§14.5） |
 | `runtime/src/engine/core/renderer/gpu_mem/` | 計測（`track.rs` の `GpuMemDeviceExt`・`category.rs` の分類の表・`size.rs`・`registry.rs`・`report.rs`・`heap_budget.rs`） |
 | `runtime/src/engine/core/app_base/app/gpu_mem_ops.rs` | 計測のきっかけ（フレーム・待機・背面・IPC `GPU_MEM_REPORT`） |
-| `renderer/mod.rs` | `Renderer::new`（RT・bindless・MemoryHints の構成・計測の節目）・`gpu_memory_heaps` / `gpu_hal_memory` / `swapchain_estimate` |
-| `methods/drawer/mod.rs` | `DrawContext::new`（影・GI の置き場） |
-| `renderer/pipeline.rs`・`skin_system.rs` | `SkinComputePipeline::layouts_only`・本体が無ければディスパッチしない |
+| `renderer/mod.rs` | `Renderer::new`（RT・bindless〈機能の要求。資源は RT が使えるときだけ＝§14.4〉・MemoryHints の構成・計測の節目）・`gpu_memory_heaps` / `gpu_hal_memory` / `swapchain_estimate` |
+| `renderer/bindless_lazy.rs` | `LazyBindless`（bindless の資源を最初に要るときに作る。§14.4） |
+| `methods/drawer/mod.rs` | `DrawContext::new`（影・GI の置き場・bindless の置き場〈`LazyBindless`〉）・`finalize_bindless`（最初のモデルの登録で bindless を作る） |
+| `renderer/pipeline.rs`・`skin_system.rs` | `SkinComputePipeline::layouts_only`・本体が無ければディスパッチしない・1 ワークグループ = 1 インスタンスのディスパッチ（`skin_dispatch_grid`）・ノード数の上限 `MAX_NODES`（§14.2） |
+| `renderer/shaders/skin_compute.wgsl` | スキニングの compute（1 レーン = 1 ノード・ワークグループの共有メモリ。§14.2） |
+| `renderer/skin_compute_equivalence/` | 旧いスキニングの compute の写し（`legacy_skin_compute.wgsl`）との突き合わせ（実 GPU・`--ignored`。§14.2） |
 | `renderer/shadow.rs`・`ddgi/resources.rs` | `ShadowResources::new_placeholder`・`GiResources::new_placeholder` |
 | `app/frame_renderer.rs`・`terrain_scatter_ops.rs` | 3D のシーンを描かない（`scene_3d`） |
 | `platform/launch_options.rs`・`android/native/src/launch.rs`・`main.rs` | `seed.gpu_mem_log` / `seed.render_profile`・`--gpu-mem-log` / `--render-profile=` |
 | `platform/screen/simulated.rs` | `SEED_SIM_WINDOW_SIZE` |
 | `runtime/Cargo.toml` | wgpu の `counters` 機能・`ash`（VK_EXT_memory_budget の問い合わせ） |
+| `core/clock/fixed_frame_dt.rs` | 検証用の `SEED_FIXED_FRAME_DT`（フレームの経過時間を固定し、同じフレーム番号のゲームの時刻を実行に依らず揃える。§14.6） |
+
+## 14. full の GPU メモリの無駄の削減（2026-10-02 の 2 回目）
+
+§1 の 1〜3（スキニングの compute の予約・RT の無い GPU の bindless・単体の Play のピッキングの ID バッファ）を、`full`（3D の作品。既定）の
+見た目と振る舞いを変えずに減らした。`ui` の構成の資源は変わらない（同じ条件でヒープの使用量 285.1 → 285.1 MiB）。
+
+### 14.1 効果（PC・RTX 3060 Laptop・Vulkan・ドライバ 616.92・debug の SEED.exe）
+
+**Wake or Pay を `--render-profile=full` で**（2D/UI だけの作品を full で起動。§6 と同じ条件: 1080x2400・2.625 倍・安全領域・一覧が落ち着いた後）。
+単位は MiB（ヒープの使用量＝VK_EXT_memory_budget の heapUsage の合計）。「スキニングだけ」はスキニングの compute だけを直した途中のビルド。
+
+| 条件 | 変更前 | スキニングだけ | 3 つとも | 差 |
+|---|---|---|---|---|
+| full・`mobile` | 1307.1 | 864.7 | **589.1** | −718.0 |
+| full・`desktop` | 1499.1 | 1075.7 | **1026.1** | −472.9 |
+| full・RT を止める（`--render-profile=full,ray_tracing=false`。RT の無い端末と同じ条件）・`mobile` | 1277.2 | — | **554.9** | −722.2 |
+| full・RT を止める・`desktop` | 1471.2 | — | **747.4** | −723.8 |
+| ui・`mobile`（参考。変えていない） | 285.1 | 285.1 | 285.1 | 0 |
+
+| 内訳（full・`mobile`） | 変更前 | 変更後 |
+|---|---|---|
+| `DrawPipelines::new` の後の節目 | 826.9 | 382.6（−444.3。RT を止めると 797.1 → 348.4） |
+| 追跡した資源 | 409.3 | 145.5 |
+| 　bindless | 224.3 | 0（`mobile` 品質では RT のパスが走らず、最初に要るときが来ない） |
+| 　ピッキング（ID） | 39.6 | 0 |
+| wgpu-hal の確保ブロック（確保の回数） | 462.0（13 回） | 197.7（8 回） |
+| Windows の GPU Process Memory（専用 / 確定） | 1075.2 / 1332.1 | 366.6 / 614.0 |
+
+- `desktop` 品質では、RT の半透明（屈折）のための TLAS の組み立てが 3D の中身が無くても毎フレーム走り、そこで bindless を作る
+  （`[SEED BINDLESS] 資源を作りました（最初に要った所 …/frame_renderer.rs:6076…）`）。要る所が走ったので作るのは正しい振る舞いで、
+  224.3 MiB は残る（§14.7）。
+- RT を止めた full は bindless の資源を作らない（`[SEED BINDLESS] レイトレーシングが使えないため、資源（…224 MiB）は作りません…`）。
+
+**WarashibeFishing（3D の作品・既定の full）**: 複製のプロローグを単体の Play で（1280x720・起動から 12 秒後）。
+
+| 条件 | 変更前 | 変更後 | 差 | 内訳 |
+|---|---|---|---|---|
+| `desktop` | 1398.3 | **968.0** | −430.3 | `DrawPipelines::new` の節目 724.3 → 279.9・ID 14.1 → 0・bindless 224.3 → 224.3（最初のモデルの登録で作る） |
+| `mobile` | 1264.3 | **778.9** | −485.4 | 同上 |
+| RT を止める・`mobile`（RT の無い端末と同じ条件） | 1234.4 | **518.8** | −715.6 | `DrawPipelines::new` の節目 694.4 → 245.8・bindless 224.3 → 0・ID 14.1 → 0・追跡した資源 446.5 → 208.2 |
+
+RT の使える PC では、最初のモデルの登録（`drawer/mod.rs` の `finalize_bindless`）で bindless を作る（RT のヒットシェーディングが読むので要る）。
+
+### 14.2 スキニングの compute（`skin_compute.wgsl`）
+
+**旧い作り**: 1 スレッド = 1 インスタンス（64 スレッドのワークグループ）。スレッドがノードの TRS（`node_t/r/s`）・フェード元の TRS（`alt_t/r/s`）・
+ワールド行列（`world`）を `var<private>` 配列に持つ（64 ノード × (16 B × 6 + 64 B) ≒ 10 KB / スレッド）。
+
+**新しい作り**: **1 ワークグループ = 1 インスタンス、1 レーン = 1 ノード**（`@workgroup_size(MAX_NODES)`＝64）。
+
+1. 各レーンが自分のノードの TRS を求める（バインドポーズから始め、そのアニメのチャンネルのうち自分のノードを対象とするものだけを連結列の順に上書き。
+   フェード中は A も同じく求めてノードごとに混ぜる）。結果をワークグループの共有メモリ（`wg_t/r/s`）へ置く。
+2. `workgroupBarrier` の後、レーン 0 が BFS 順に各ノードのローカル行列を作り、親のワールド行列に掛けて `wg_world` へ置く（旧い作りと同じ式の並び）。
+3. `workgroupBarrier` の後、全レーンがジョイント行列（`world[node] * ibm`。余りの枠は単位行列）を 2 枠ずつ書く。
+
+共有メモリは TRS 3 KB ＋ 行列 4 KB ＝ 7 KB / ワークグループ（wgpu の既定の上限 16 KB の内なので、デバイスへ求める上限は変えていない）。
+スレッドごとの配列は持たない（`skin_system::tests::skin_compute_wgsl_is_valid` が「private の大域変数が無い・共有メモリがある」ことを naga で確かめる）。
+ディスパッチはインスタンス数ぶんのワークグループを x 方向へ並べ、1 次元の上限 65,535 を超える分は y 方向の行へ折り返す（`skin_dispatch_grid`。単体テストあり）。
+
+**結果が変わらない根拠**:
+
+- ノードの TRS: 旧い作りは「全ノードの配列をバインドポーズで初期化し、チャンネルを連結列の順に対象ノードへ書く」。新しい作りの各レーンは同じ順に
+  自分のノードのチャンネルだけを当てるので、各ノードに最後に書かれる値（同じノード・同じ属性の重複チャンネルは後が勝つ）は同じ。補間・ブレンドは同じ関数のまま。
+- ワールド行列・ジョイント行列: 同じ BFS の順・同じ式（`world[parent] * trs_to_mat(…)`・`world[node] * ibm`）で計算する。
+- **実 GPU の突き合わせのテスト**（`renderer/skin_compute_equivalence/`）: 旧い作りの写し（`legacy_skin_compute.wgsl`）と新しい作りを、同じ
+  SkinComputeSystem の作り方・同じ再生指定で走らせ、ジョイント行列を浮動小数のビット単位（0 の符号まで）で比べる。RTX 3060 Laptop（Vulkan）で:
+
+| テスト | 中身 | 比べた行列 | 違い |
+|---|---|---|---|
+| `random_models_match_legacy_bitwise` | 乱数のモデル 40 個（ノード 1〜64・ジョイント〜128・アニメ 1〜8 本・LINEAR / STEP / CUBICSPLINE・同じノードと属性への重複チャンネル・根から辿れないノード・ちょうど ±0 の成分・軸に沿った回転）× 131 体（範囲外のアニメ番号・端の時刻・ブレンド率 1 / 0 / 0.5 / 乱数 / NaN・Animator 非駆動） | 670,720 | 0 |
+| `real_models_match_legacy_bitwise` | WarashibeFishing の glb のうちスキン＋アニメのあるもの 69 個（男 59 ノード・鳥 20 ノード・魚・ヤシ・ハイビスカス・カモメ・竿）の全アニメを 33 の時刻で＋ブレンド 64 件 | 1,034,496 | 0 |
+| `random_models_in_one_pass_…`・`real_models_in_one_pass_…` | 本体と同じく複数のモデル（乱数 10 個・実際の 69 個）を 1 つの ComputePass にまとめて走らせた新しい作りを、1 つずつ走らせた旧い作りと | 11,520・79,488 | 0 |
+| `nodes_beyond_limit_are_skipped` | ノード数が上限を超えるモデル（下の「ノード数の上限」）を、上限内に切り詰めたモデルの旧い作りと | 16,768 | 0 |
+
+- 各レーンがローカル行列まで作って共有メモリへ置く形も試したところ、実際の glb で 1,034,496 個中 836 個の行列で値の 0 の符号（+0 / −0）だけが変わった
+  （値の差は 0 ULP）。ローカル行列を「作ってすぐ親に掛ける」旧い作りの式の並びに戻して一致させた（コンパイラが TRS 行列の定数の 0 / 1 の行を掛け算へ
+  畳み込めるかの違いと見ている＝推論）。乱数のモデルにちょうど ±0 の成分を混ぜ、テストがこの違いを捕まえることを確かめた（その形では 20,115 個が違った）。
+- シェーダのコンパイラは GPU ごとに違うので、ほかの GPU では最後の桁の丸めが旧い作りと変わりうる。Intel UHD（Vulkan・同じ PC の内蔵 GPU）では
+  新旧の差が 1e-6 程度（丸め）で、NVIDIA の新しい作りとの差も 1.7e-5 以下だった。なお Intel UHD では**旧い作りの方**が、続けて走らせると一部の
+  インスタンス（SIMD のレーンの並びに沿った組）のジョイント行列が 1 つ前に走らせた別のモデルの出力そのものになることがあった（新しい作りでは出ない。
+  調べるために書いた一時的なテストで確認して消した）。突き合わせのテストは本体と同じ選び方（独立 GPU 優先）でアダプタを選ぶ
+  （環境変数 `SEED_SKIN_EQUIV_ADAPTER` で名前の一部を指定できる）。
+
+**ノード数の上限**（`MAX_NODES` = 64。`skin_system::MAX_NODES` と WGSL の値が一致することをテストで固定）: 旧い作りも 64 ノードの配列で、64 を超える
+モデルでは範囲外の添字になり結果が定まっていなかった。新しい作りは 64 番以上のノードを評価しない（そのノードのチャンネルは使わず、親が 64 番以上の
+ノードは根として扱い、64 番以上のノードを指すジョイントは単位行列）と決め、読み込み時に `[SEED skin] …: ノード数 N が GPU スキニングの上限 64 を
+超えています…` と警告する（WarashibeFishing の最大は男の 59 ノード）。
+
+実行: `cargo test skin_compute_equivalence -- --ignored --nocapture`（実際の glb も比べるときは `SEED_SKIN_EQUIV_MODELS=<フォルダ>`）。
+
+### 14.3 PC（Vulkan・NVIDIA）と Android（Mali）での予約の仕組みの違い
+
+| | PC（RTX 3060 Laptop・Vulkan） | Android（Pixel 6a の Mali-G78 MP20・Vulkan） |
+|---|---|---|
+| 添字が実行時に決まる `var<private>` 配列の置き場 | レジスタに載らず「ローカルメモリ」（デバイスのメモリ。L1/L2 にキャッシュ）へ落ちる | スレッドローカルの記憶域（TLS。システムのメモリ）へ落ちる |
+| 予約の単位（推論） | ドライバがデバイス全体のローカルメモリの置き場を「1 スレッドの大きさ × SM あたりの最大スレッド数 × SM 数」で確保し、より大きなシェーダが現れたら広げる | ドライバが「1 スレッドの大きさ × コアあたりの最大スレッド数 × コア数」の TLS を確保する |
+| 旧い作りの量 | **実測 +444〜451 MiB**（`DrawPipelines::new` の節目。資源の確保〈wgpu-hal〉は 0）。30 SM × 1,536 スレッド × 約 10 KB ≒ 450 MB と符合する | **推定 200〜400 MB**（20 コア × 1,024〜2,048 スレッド × 約 10 KB。コアあたりのスレッド数は公開資料からの推論）。GL mtrack に入る見込み |
+| `var<workgroup>`（共有メモリ）の置き場 | チップ上の shared memory（SM の L1 と分け合う）。デバイスのメモリの予約は無い | 専用のチップ上の記憶域が無く、システムのメモリ（WLS）。走っているワークグループの分だけ（推論: 数 MB） |
+| 新しい作りの量 | 実測 0（節目 826.9 → 382.6 MiB。−444.3 MiB がそのまま消えた） | 推定: TLS の大きな予約は無くなり、WLS の数 MB だけ |
+
+- Android の値は**未計測**（次の実機確認で `--es seed.gpu_mem_log 1` の `節目 DrawPipelines::new の後` と `dumpsys meminfo` の GL mtrack を、
+  旧い APK と比べる＝§7）。
+- 新しい作りの共有メモリ 7 KB・レーン 64 は wgpu の既定の上限（16 KB・256 レーン）の内で、本体はこの既定の上限でデバイスを作っている
+  （Pixel 6a でも起動できている）ので、端末の上限を新たに求めない。
+
+### 14.4 bindless（RT が無いときは作らない・使えるときも最初に要るときに作る）
+
+- **何が bindless を使うか**（調べた結果）: 読むのは RT の色付き影（`deferred.rs` の `rt_bindless`・`shadow_mask`）・RT 反射（`reflection.rs`）・
+  RT 半透明の屈折（`transparency.rs`）・水面反射の RT 変種（`water_reflection.rs`）・シェーディングアセットの RT 変種（`shading_asset.rs`）と、
+  TLAS の組み立て（`rt_shadow.rs` の `prepare_and_build` がインスタンス表を詰める）。どれも RT の対応 GPU（`rt_shadows_supported()`）でしか走らない。
+  書くのは 3D モデルの登録（`DrawContext::upload_model*` の `finalize_bindless`）だけ。地形のレイヤは `texture_2d_array` で bindless を使わない。
+  → **RT が無ければ読む所が無い**。
+- **RT が使えないときは資源を作らない**: `DrawContext` の置き場を `bindless::bindless_resources_wanted()`（bindless に対応し、かつ RT が使える）の
+  ときだけ作る。**デバイスへ求める機能（`TEXTURE_BINDING_ARRAY` ほか）と上限は従来どおり**（デバイスの作り方を変えない。求めなくても読む所は無いが、
+  full の端末の構成を変える必要は無いので安全側に倒した）。起動ログ: `[SEED BINDLESS] レイトレーシングが使えないため、資源（テクスチャ配列・
+  メガバッファ 224 MiB）は作りません（…機能の要求は従来どおり）`。
+- **使えるときも最初に要るときに作る**: `DrawContext.bindless` を資源そのものから置き場（`renderer/bindless_lazy.rs` の `LazyBindless`）に替え、
+  使う所はすべて `get_or_create` を通す。作った直後の中身（空の登録表・空のメガバッファ・ダミーのテクスチャ）は、起動時に作って誰も触っていない状態と
+  同じなので、作る時刻が変わるだけで登録の番号・オフセット・描画は変わらない。作ったときに 1 行出す:
+  `[SEED BINDLESS] 資源を作りました（最初に要った所 <ファイル:行>・テクスチャ配列 N 枠・メガバッファ 224 MiB）`。
+- 効果: RT の無い端末（Android の Mali など）と RT を止めた構成では 224.3 MiB が 0 に、RT のある PC で 3D のモデルも RT のパスも無い間
+  （`mobile` の Wake or Pay）も 0。WarashibeFishing（RT のある PC）は最初のモデルの登録で作る（従来と同じ量）。
+
+### 14.5 ピッキングの ID バッファ
+
+持ち方（`app/id_buffer_ops.rs` の `decide_id_buffer_policy`。純関数・単体テストあり）:
+
+| 状態 | 持ち方 |
+|---|---|
+| Edit・エディタのビューポートへ埋め込み（その場の Play を含む）・エディタの Play（`--mode=play --pipe=`＝`app_env::is_editor_play`）・`SEED_ID_PASS_IN_PLAY` | 起動時から持ち、窓の大きさの知らせのたびに作り直す（従来どおり） |
+| エディタに接続していない Play（単体の `--mode=play`・パッケージ実行・Android）で構成の `picking=true`（full） | 起動時には作らない。ID パスを描くとき（図鑑のサムネイルの撮影＝`RENDER_ACTOR_THUMBNAIL` / `THUMBNAIL`）に初めて作り（`[SEED PICKING] ID バッファを作りました…`）、以後は窓の大きさに合わせる |
+| 同じく `picking=false`（ui） | 作らない（従来どおり） |
+
+- エディタに接続していない Play で ID パスを描くのは図鑑のサムネイルの撮影だけ（`should_draw_id_pass`。一時停止のピックは名前付きパイプでつながった
+  エディタの Play だけで、TCP の一時停止はゲームの見た目のまま）なので、ほかの読み手（ピック・D&D・配置・オービット・コントロールポイント）は
+  ID パスを描いたフレームにしか読まない＝ID バッファが無くても従来と同じ結果になる。
+- 振る舞いの変化（直し）: ui の構成でも、エディタが別のプロセスで起動した Play（`--mode=play --pipe=`）では ID バッファを起動時から持つようにした
+  （1 回目では `is_embedded` だけを見ていたので、その Play の一時停止中のピックが ID バッファ無しで効かなかった。PC のエディタだけの話で、端末には関係しない）。
+
+### 14.6 確かめたこと（2026-10-02）
+
+| 確かめたこと | 結果 |
+|---|---|
+| `cargo build`（runtime・debug） | 0 エラー・警告 311 件（変更前と同じ数。変えた行・新しいファイルに付いた警告は 0） |
+| 単体テスト（`render_profile`・`gpu_mem`・`id_buffer_ops`・`skin_system`・`skin_compute_equivalence`〈GPU の要らない分〉・`fixed_frame_dt`・`launch_options`・`simulated`・`render_quality`・`tests_skin_playback`・`bindless`） | 98 件すべて通過（GPU の要る 7 件は次の行） |
+| 実 GPU のテスト（`--ignored`。RTX 3060 Laptop） | 7 件すべて通過: `skin_compute_equivalence` の 5 件（§14.2 の表）・`skin_system::multi_anim_blend_runs_on_gpu`（既存）・`render_profile::tests_gpu`（既存。ui は影と GI が置き場・bindless 0 件・スキニングのパイプライン本体なし／full はスキニングのパイプラインあり） |
+| GPU メモリの計測 | §14.1 の表（Wake or Pay 5 条件・WarashibeFishing 3 条件） |
+| WarashibeFishing の回帰（下の表） | 図鑑は画素単位で同じ。動く 3D の場面は、変更前と変更後の差が変更前どうし・変更後どうしの差の範囲に入る |
+| 単体の Play での図鑑のサムネイル（TCP の IPC で `RENDER_ACTOR_THUMBNAIL`。魚 3 種とヤシ〈どれもスキン〉× side / front の 8 枚。変更後は ID バッファをここで初めて作る） | 変更前どうし 0 画素・変更後と変更前 0 画素（8 枚とも） |
+| ui の構成（Wake or Pay。W3-7 の verify_a の写し・変更後の SEED.exe） | 21 / 21 通過（起動ログ `profile=ui`）。GPU メモリも 285.1 → 285.1 MiB |
+| Android の APK（試験用のアプリ UiDevice の複製。render 節なし＝full・arm64-v8a・開発用） | 作れた（`dotnet run --project editor/tools/SeedAndroid -- build --project <複製> --abi arm64-v8a`・2026-10-02 07:24〜07:28: libSEED.so〈Develop〉182.0 秒・pak とスクリプト 9.6 秒・Gradle 30.6 秒・`exit=0`。`tmp/gpu_full/android/uidevice-full-gpufull.apk`〈58,942,473 バイト・SHA-256 `699f8d0f…b3f2`〉）。WGSL は埋め込みで、SPIR-V への変換とドライバのコンパイルは端末の起動時（naga の検証は単体テスト、Vulkan での生成は NVIDIA と Intel で確かめた）。**実機には入れていない** |
+
+**WarashibeFishing の回帰**: 複製（tmp/w2_1a/wf）を単体の Play で開き、`SEED_FIXED_FRAME_DT=0.016666668` でゲームの時刻を揃え（300 フレーム目は全 36 回で
+5.017 秒）、変更前（HEAD 65ac203a に `SEED_FIXED_FRAME_DT` の口だけを足した debug）と変更後（debug）を 3 回ずつ撮って、90・180・300 フレーム目の
+違う画素の数（1280x720 = 921,600 画素のうち。3 フレームを合わせた最小〜最大）を比べた。
+
+| 場面 | 変更前どうし | 変更後どうし | 変更前と変更後 |
+|---|---|---|---|
+| 図鑑（zukan）・full と RT を止めた full | 0 | 0 | 0 |
+| プロローグ（島・小屋・男・鳥・ヤシ・ハイビスカスのスキンメッシュが動く）・full | 13〜98 | 31〜98 | 3〜106（差の最大 101） |
+| 同・RT を止めた full | 20〜243 | 38〜267 | 11〜297（差の最大 107） |
+| 釣りの場面（MainGame。海で魚が泳ぐ）・full | 1,053〜1,907 | 1,103〜3,411 | 779〜3,225（差の最大 183） |
+| 同・RT を止めた full | 287〜2,269 | 285〜2,326 | 57〜2,963（差の最大 179） |
+
+- 変更前どうしにも差が残るのは、ゲームの中の乱数（`FishManager` の `System.Random` の種が実行ごと＝魚の出方・泳ぐ位置）・実時間で進む物理のスレッド・
+  非同期のモデルの読み込みの完了するフレーム（プロローグのヤシの葉の縁などが 2 通りに分かれる）のため。差のある所を切り出して見ると、MainGame は海の魚、
+  プロローグは葉の縁などの数画素だった。
+- 時刻を揃える前（`SEED_FIXED_FRAME_DT` なし）は、同じフレーム番号でもゲームの時刻が実行ごとに 0.1〜0.3 秒ずれ（MainGame の 300 フレーム目で 9.14〜9.53 秒）、
+  動く 3D の画素の差がその揺れに埋もれた（最初のフレームに入る起動の時間が版ごとに少し違い、ずれ方が変更前と揃わなかった）。そのため上の口を足して比べ直した。
+  時刻を揃える前の撮影でも、図鑑は画面全体・プロローグの会話の本文は違う画素 0、サムネイル 8 枚も 0 だった。
+
+**決定的な回帰のための `SEED_FIXED_FRAME_DT`**（`core/clock/fixed_frame_dt.rs`。検証用・既定は未設定＝従来どおり）: 最初のフレームの delta に起動
+（パイプラインの生成・シーンの読み込み）の時間が入るため、同じフレーム番号でもゲームの時刻（`[PERF]` の `anim_t`）が実行ごと・版ごとに 0.1〜0.3 秒
+ずれていた（WarashibeFishing の MainGame の 300 フレーム目で 9.14〜9.53 秒）。`SEED_FIXED_FRAME_DT=<秒>` を渡すと、すべてのフレームの delta をその値に
+する（300 フレーム目は全 36 回で 5.017 秒）。物理のスレッドは自分の時計で進み、ゲームの中の乱数（`System.Random` の種）・非同期の読み込みの完了する
+フレームは揃わないので、それらによる差は残る（変更前どうしの差として測ってから比べる）。
+
+### 14.7 残した課題
+
+- **Android（Pixel 6a）での実測**: §14.3 の推定（スキニングの TLS の予約・bindless・ID バッファ）を、次の実機確認で旧い APK と比べる（§7）。
+- **RT のある PC の `desktop` 品質では、3D の中身が無くても RT の半透明の TLAS の組み立てが毎フレーム走り、bindless（224 MiB）を作る**。
+  RT のインスタンスが 0 のフレームで RT のパスと TLAS を飛ばせば作らずに済むが、パスの選び方が変わるので画素の一致を確かめてから
+  （2D だけの作品は ui の構成を使えばよい）。
+- **ノード数 64 を超えるスキンモデル**: 64 番以上のノードを評価しない（警告を出す）。上限を 128 にするには共有メモリが 14 KB（既定の上限 16 KB の内）になり、
+  1 レーンが 2 ノードを受け持つ形にする。
+- **単体の Play での `RENDER_ACTOR_THUMBNAIL` の構図**: 魚・ヤシの side と front が同じ絵になり、魚がごく小さく写る（変更の前後で同じ。
+  エディタからの撮影は確かめていない）。
+- 突き合わせのテストの旧い作りの写しは、旧い作りとの比較のためだけに残している（スキニングの式を変えるときは写しも直すか、テストを外す）。

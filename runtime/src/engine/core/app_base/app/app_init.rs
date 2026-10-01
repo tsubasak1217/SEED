@@ -257,8 +257,10 @@ impl App {
 
         let scene = crate::engine::core::app_base::scene::Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
-        // ピッキングの ID バッファ（画面と同じ大きさの Rgba32Float）。UI だけの構成の単体の Play では使わないので
-        // 作らない（Edit・埋め込みの Play・SEED_ID_PASS_IN_PLAY・full は従来どおり作る。render_profile_ops.rs）。
+        // ピッキングの ID バッファ（画面と同じ大きさの Rgba32Float）。エディタにつながっている（Edit・埋め込み・
+        // エディタの Play）か SEED_ID_PASS_IN_PLAY のときだけ起動時から作る。エディタに接続していない Play
+        // （単体の起動・パッケージ実行・Android）はふだん ID パスを描かないので作らず、図鑑のサムネイルの撮影など
+        // ID パスを描くときに初めて作る（id_buffer_ops.rs）。
         let id_buffer = self
             .id_buffer_wanted()
             .then(|| IdBuffer::new(&ctx.device, size.width, size.height));

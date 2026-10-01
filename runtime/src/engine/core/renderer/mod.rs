@@ -115,6 +115,11 @@ mod tests_skin_playback;
 /// deferred ライティングの黒斑点ノイズの再発を、シェーダと同一式の CPU 写しで止める。
 #[cfg(test)]
 mod tests_geo_normal_precision;
+/// GPU スキニングの compute の作り直し（1 ワークグループ = 1 インスタンス・共有メモリ）が、旧い作り（スレッドごとの
+/// private 配列）と同じ入力でビット単位で同じジョイント行列を出すことの突き合わせ（実 GPU・--ignored。
+/// docs/rendering_profiles.md §14.2）。
+#[cfg(test)]
+mod skin_compute_equivalence;
 // 速度バッファ（モーションベクタ）のデバッグ可視化（SEED_DEBUG_VELOCITY=1 のときだけ構築）。
 pub(crate) mod velocity_debug;
 /// G-Buffer 各チャンネルのデバッグ可視化（シーンビュー表示モード「G-Buffer: 〜」）。
@@ -148,6 +153,9 @@ pub(crate) mod refract_pyramid;
 /// バインドレス基盤（フェーズ B1）: テクスチャ配列レジストリ・UV/index メガバッファ・
 /// インスタンステーブル。RT ヒットシェーディングの土台（消費は B2/B3）。
 pub(crate) mod bindless;
+/// bindless の資源を「最初に要るとき」に作る置き場（DrawContext が持つ。224 MiB のメガバッファを
+/// 3D のモデルも RT のパスも無い間は確保しない）。
+pub(crate) mod bindless_lazy;
 /// 内部解像度固定（fixed）モードのレターボックス写像（描画ビューポート＋入力座標変換の共通式）
 pub mod letterbox;
 /// 描画品質プリセット（データドリブン。描画スケール・機能の上限・後処理の可否。Android 段階D-2）
@@ -201,6 +209,7 @@ pub use rt_shadow::RtShadowResources;
 pub use bindless::{BindlessResources, BindlessInstanceRecord, BindlessModelAlloc,
                    BINDLESS_MAX_TEXTURES, BINDLESS_DUMMY_TEX_INDEX, BINDLESS_FLAG_ELIGIBLE,
                    set_bindless_supported, bindless_supported, bindless_capacity};
+pub use bindless_lazy::LazyBindless;
 pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
 pub use water::{WaterRenderer, WaterParams, WATER_MAX_VOLUMES};
 pub use caustics::CausticsTargets;
@@ -529,8 +538,16 @@ impl Renderer {
         let bindless_feat = af.contains(wgpu::Features::TEXTURE_BINDING_ARRAY)
             && af.contains(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
         let bindless_array_cap = adapter_limits.max_binding_array_elements_per_shader_stage;
-        // 描画の構成が bindless を止めていれば（UI だけの構成）、対応 GPU でも求めず確保しない
-        // （テクスチャ配列 4096 枠とメガバッファ 224 MiB。RT のヒットシェーディングの土台なので RT が無ければ使わない）。
+        // 描画の構成が bindless を止めていれば（UI だけの構成）、対応 GPU でも機能を求めない。
+        //
+        // 【RT が使えないとき】bindless は RT のヒットシェーディングの土台で、読む所（RT の色付き影・反射・
+        // 半透明の屈折・水面反射・TLAS の組み立て）はすべて RT の対応 GPU でしか走らない（deferred / reflection /
+        // transparency / water_reflection / shading_asset が rt_shadows_supported() と組で見る）。そこで RT が
+        // 使えないとき（GPU が非対応・構成が ray_tracing=false）は、テクスチャ配列（4096 枠）とメガバッファ
+        // （224 MiB）を**作らない**（DrawContext が置き場を持たない＝bindless::bindless_resources_wanted）。
+        // ただし**機能（TEXTURE_BINDING_ARRAY ほか）と上限の要求は従来どおり**にする（デバイスの作り方を変えない。
+        // 求めなくても読む所は無いので描画は同じはずだが、full の端末の構成を変える必要は無いので安全側に倒す。
+        // docs/rendering_profiles.md §14.4）。
         let supports_bindless = bindless_feat && bindless_array_cap > 0 && profile_flags.allocates_bindless();
         // テクスチャ配列容量 = 目安上限をアダプタ上限（配列要素数・sampled テクスチャ数）でクランプ。
         let bindless_capacity = BINDLESS_MAX_TEXTURES
@@ -548,6 +565,12 @@ impl Renderer {
                 adapter_limits.max_sampled_textures_per_shader_stage,
                 if supports_partially_bound { "対応" } else { "非対応（全スロットをダミーで充填）" }
             );
+            if !supports_rt {
+                // RT が無ければ bindless を読む所が無い（上のコメント）。機能は求めるが資源は作らない。
+                eprintln!(
+                    "[SEED BINDLESS] レイトレーシングが使えないため、資源（テクスチャ配列・メガバッファ 224 MiB）は作りません（読むのは RT のヒットシェーディングだけ。機能の要求は従来どおり）"
+                );
+            }
         } else {
             let reason = if !profile_flags.allocates_bindless() {
                 "描画の構成が止めている（bindless=false か scene_3d=false）"

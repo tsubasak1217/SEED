@@ -7,11 +7,15 @@
 //    deferred     … G-Buffer（デファード）を使ってよいか。false なら前方描画（G-Buffer の RT を確保しない）
 //    shadows      … シャドウマップを確保するか。false なら 1x1 の置き場だけ作り、影を描かない
 //    gi           … GI（DDGI）のアトラスを確保するか。false なら 1x1 の置き場だけ作り、GI は平坦な環境光
-//    bindless     … bindless のテクスチャ配列（4096 枠）とメガバッファ（224 MiB）を確保するか
+//    bindless     … bindless の機能をデバイスへ求め、テクスチャ配列（4096 枠）とメガバッファ（224 MiB）を確保するか。
+//                   true でも RT が使えなければ資源は作らず（機能の要求は従来どおり）、使えても最初に要るとき
+//                   （3D モデルの登録・RT のパス）まで作らない
 //    ray_tracing  … レイトレーシングの機能（RT 影・RT 反射・DDGI の更新）をデバイスへ求めるか
 //    post         … 後処理（ブルーム・ビネット・FXAA）を使ってよいか。false なら止める（トーンマップは残す）
-//    picking      … Play 中もピッキング用の ID バッファ（画面と同じ大きさの Rgba32Float）を確保するか。
-//                   Edit・エディタに埋め込んだ Play・SEED_ID_PASS_IN_PLAY のときは false でも確保する
+//    picking      … エディタに接続していない Play（単体の起動・パッケージ実行・Android）で、ID パスを描くとき
+//                   （図鑑のサムネイルの撮影）にピッキング用の ID バッファ（画面と同じ大きさの Rgba32Float）を
+//                   作ってよいか。true でも起動時には作らない。Edit・エディタの Play・SEED_ID_PASS_IN_PLAY の
+//                   ときは旗によらず起動時から持つ（app/id_buffer_ops.rs）
 //    memory_hint  … GPU メモリの確保の方針（wgpu の MemoryHints）。
 //                   "performance"（既定。大きな塊でまとめて確保する）/ "memory_usage"（小さな塊で確保する）
 //  旗は「下げる」向きにだけ効く（false で止める）。資源は起動時に確保するので、実行中には変えられない。
@@ -120,7 +124,7 @@ pub struct RenderProfileFlags {
     pub ray_tracing: bool,
     /// 後処理（ブルーム・ビネット・FXAA）を使ってよいか。
     pub post: bool,
-    /// Play 中もピッキングの ID バッファを確保するか。
+    /// エディタに接続していない Play で、ID パスを描くときにピッキングの ID バッファを作ってよいか（起動時には作らない）。
     pub picking: bool,
     /// GPU メモリの確保の方針。
     pub memory_hint: MemoryHint,

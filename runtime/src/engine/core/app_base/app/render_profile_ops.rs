@@ -5,7 +5,7 @@
 //  - 起動時: project_settings.json の render 節と起動オプション（--render-profile= / seed.render_profile）から
 //    実効の構成を決めて App.render_profile へ入れ、プロセスへ登録し（Renderer::new・DrawContext::new が読む）、
 //    描画品質へ「止める」上限を足し、起動ログ `[SEED RENDER PROFILE]` を出す（決め方の正典は renderer/render_profile）。
-//  - Play のピッキングの ID バッファを確保するかの判断（app_init・on_resize）。
+//  - （ピッキングの ID バッファの持ち方の判断は id_buffer_ops.rs。構成の picking の旗はそこで読む）
 //  - 3D を描かない構成で、3D の中身（3D のカメラ・モデル・水・天球・散布・草・SEED.Draw3D）を描かなかったことを
 //    種類ごとに 1 回だけ警告する（黙って消えたように見えないため）。
 //  - GPU メモリの内訳（gpu_mem）の文脈に出す 1 行。
@@ -18,7 +18,7 @@ use crate::engine::core::renderer::render_profile::{
     self, builtin_profile_catalog, resolve_render_profile, LOG_TAG,
 };
 
-use super::{App, RuntimeMode};
+use super::App;
 
 /// 3D を描かなかったことを、もう警告した中身の種類（種類ごとにプロセスで 1 回だけ出す）。
 static SKIPPED_3D_WARNED: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
@@ -76,18 +76,6 @@ impl App {
     /// GPU メモリの内訳（gpu_mem）の文脈に出す 1 行（構成の名前と、止めている旗）。
     pub(super) fn render_profile_summary(&self) -> String {
         format!("（描画の構成 {}: {}）", self.render_profile.name, self.render_profile.flags.describe())
-    }
-
-    /// ピッキングの ID バッファ（画面と同じ大きさの Rgba32Float）を確保するか。
-    ///
-    /// Edit（シーンビューのピック）・エディタに埋め込んだ Play（一時停止でエディタの見た目に切り替わりピックする）・
-    /// Play 中も ID パスを描く指定（SEED_ID_PASS_IN_PLAY）では常に確保する。それ以外の Play（単体の実行・Android）は
-    /// 構成の picking の旗に従う（full は従来どおり確保する）。
-    pub(super) fn id_buffer_wanted(&self) -> bool {
-        self.mode == RuntimeMode::Edit
-            || self.is_embedded()
-            || crate::engine::methods::drawer::id_pass::id_pass_enabled_in_play()
-            || self.render_profile.flags.picking
     }
 }
 

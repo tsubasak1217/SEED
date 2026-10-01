@@ -1,5 +1,8 @@
 use std::time::Instant;
 
+/// 検証用: フレームの経過時間を決まった値にする（環境変数 SEED_FIXED_FRAME_DT。既定は未設定＝実際の経過時間）。
+pub mod fixed_frame_dt;
+
 // ============================================================
 //  FrameContext
 // ============================================================
@@ -179,7 +182,9 @@ impl Clock {
     /// `unscaled_delta_time` / `unscaled_anim_time` は未適用の実時間である。
     pub fn tick(&mut self, time_running: bool, time_scale: f32) -> FrameContext {
         let now            = Instant::now();
-        let mut delta_time = now.duration_since(self.last_frame).as_secs_f32();
+        // 検証用に経過時間を固定する指定（SEED_FIXED_FRAME_DT）があればその値、無ければ実際の経過時間（従来どおり）。
+        let mut delta_time = fixed_frame_dt::fixed_frame_dt()
+            .unwrap_or_else(|| now.duration_since(self.last_frame).as_secs_f32());
         self.last_frame = now;
 
         // デバッグセッション中のみ: ブレークポイントで停止していた間に進んだ

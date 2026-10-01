@@ -129,6 +129,8 @@ mod render_resolution;
 mod render_quality;
 /// 描画の構成（render.profile。full / ui）の App 側の窓口（起動時の決定・3D を描かない構成での警告）
 mod render_profile_ops;
+/// ピッキングの ID バッファの持ち方（エディタにつながっていれば起動時から、単体の Play は ID パスを描くときに作る）
+mod id_buffer_ops;
 /// GPU メモリの内訳の計測（renderer/gpu_mem）の App 側の口（フレームの印・内訳を出すきっかけ・IPC）
 mod gpu_mem_ops;
 /// 目標フレームレート制御（フレーム待ち）とフレーム統計（fps 計測）

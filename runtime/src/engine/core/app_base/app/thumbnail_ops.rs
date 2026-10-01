@@ -457,6 +457,9 @@ impl App {
 
     /// 被写体を隔離ワールド線へ読み込み、状態を退避してジョブを開始する。
     fn begin_thumbnail_job(&mut self, plan: ThumbnailPlan) -> Result<(), String> {
+        // 背景を抜くマスク（ID パス）を描くので ID バッファが要る。エディタに接続していない Play では
+        // 起動時に作っていないので、ここで作る（id_buffer_ops.rs。構図の大きさもこれの寸法から決める）。
+        self.ensure_id_buffer();
         let Some(draw_ctx) = self.draw_ctx.as_ref() else {
             return Err("レンダラーが初期化されていません".to_string());
         };

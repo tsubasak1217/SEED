@@ -1,37 +1,22 @@
 // ============================================================
+//  legacy_skin_compute.wgsl — 旧い skin_compute.wgsl の写し（テスト専用。直さないこと）
+//
+//  コミット 65ac203a 時点の renderer/shaders/skin_compute.wgsl に、この見出し（8 行のコメント）を足しただけの写し。
+//  スレッドごとの private 配列（約 10 KB）を持つ旧い作りで、パイプラインを作るとドライバがローカルメモリを
+//  大きく予約する（docs/rendering_profiles.md §5）。新しい作り（1 ワークグループ = 1 インスタンス）が
+//  同じ入力でビット単位で同じジョイント行列を出すことを、skin_compute_equivalence/equivalence.rs が突き合わせる。
+// ============================================================
+// ============================================================
 //  skin_compute.wgsl — GPU スキニング計算 コンピュートシェーダ
 //
-//  1 ワークグループ = 1 インスタンス、ワークグループの 1 レーン（スレッド）= 1 ノード。
-//    ①  各レーンが自分のノードのバインドポーズ TRS を読み、現在クリップ B のうち
-//        そのノードを対象とするチャンネルを順に補間して上書きする
-//    ①' フェード中（weight < 1）なら、フェード元クリップ A も同様に評価し、
-//        TRS をノードごとに補間する（位置/スケール=lerp、回転=符号合わせ付き nlerp）。
-//        結果の TRS をワークグループの共有メモリへ置く
-//    ②③ レーン 0 が BFS 順に、各ノードのローカル行列を作って親のワールド行列に掛ける（共有メモリ）
-//    ④  全レーンでジョイント行列 = world[node] * ibm を出力バッファへ書き込む
-//
-//  【なぜ 1 スレッド = 1 インスタンスをやめたか（GPU メモリ）】
-//  旧い作りは 1 スレッドが 1 体ぶんのノードの TRS・ワールド行列（node_* / alt_* / world）を
-//  スレッドごとの `var<private>` 配列（約 10 KB / スレッド）に持ち、パイプラインを作るだけで
-//  ヒープの使用量が約 450 MiB 増えていた（RTX 3060 Laptop の実測。docs/rendering_profiles.md §5）。
-//  添字が実行時に決まる private 配列はレジスタに載らずスレッドローカルの記憶域（NVIDIA のローカルメモリ・
-//  Mali の TLS）へ落ち、ドライバが「同時に走りうる全スレッド分」をまとめて予約するため（仕組みは推論）。
-//  いまはノードの TRS とワールド行列をワークグループの共有メモリ（`var<workgroup>`。7 KB / ワークグループ）に
-//  置き、スレッドごとの配列を持たない。共有メモリは走っているワークグループの分だけで済むので、
-//  パイプラインの生成で大きな予約が起きない（RTX 3060 Laptop で確かめた。docs/rendering_profiles.md §14.1）。
-//
-//  【結果は旧い作りと同じ】各ノードの TRS は「バインドポーズに、そのノードを対象とする
-//  チャンネルを連結列の順に上書き」で決まり（同じノード・同じ属性のチャンネルが複数あれば後が勝つ）、
-//  ブレンド・ローカル行列・BFS 順の積・ジョイント行列も旧い作りと同じ式・同じ順で計算する。
-//  旧い作りの写し（skin_compute_equivalence/legacy_skin_compute.wgsl）と同じ入力で突き合わせる
-//  テスト（skin_compute_equivalence/equivalence.rs。実 GPU・--ignored）で、RTX 3060 Laptop（Vulkan）では
-//  浮動小数のビット単位（0 の符号まで）で一致することを確かめた。シェーダのコンパイラは GPU ごとに
-//  違うので、ほかの GPU では最後の桁の丸めが旧い作りと変わることはある（Intel UHD で 1e-6 程度）。
-//
-//  【ノード数の上限 MAX_NODES】共有メモリに置けるノード数（= レーン数）。上限を超えるモデル
-//  （旧い作りでも 64 要素の配列への範囲外の添字になり、結果が定まっていなかった）は、上限以上の番号の
-//  ノードを評価しない: そのノードのチャンネルは使わず、親が上限以上のノードは根として扱い、
-//  上限以上のノードを指すジョイントは単位行列にする（Rust 側 SkinComputeSystem::new が読み込み時に警告する）。
+//  1 スレッド = 1 インスタンス。
+//  各スレッドが独立して:
+//    ① バインドポーズ TRS をロード
+//    ② 現在クリップ B のチャンネルを補間して TRS をオーバーライド
+//    ②' フェード中（weight < 1）なら フェード元クリップ A も同様に評価し、
+//        TRS を per-node で補間（位置/スケール=lerp、回転=符号合わせ付き nlerp）
+//    ③ BFS 順序でワールド行列を計算
+//    ④ ジョイント行列 = world[node] * ibm を出力バッファへ書き込む
 //
 //  group 0: フレームごとのデータ（インスタンスごとの再生指定）
 //  group 1: 静的アニメーションデータ（ロード時に 1 回だけ転送。全アニメ連結済み）
@@ -40,23 +25,11 @@
 //  【複数アニメのパッキング】チャンネル列 `channels` はモデル内の全アニメを連結した 1 本で、
 //  どの範囲がどのアニメかは `anims[]`（chan_offset / chan_count）が持つ。インスタンスは
 //  `anim_samples[]` でアニメ index を指定するため、同じバッチ内で 1 体ごとに別のアニメを
-//  再生できる。
-//
-//  【ディスパッチ】Rust 側（SkinComputeSystem::dispatch_lod）がインスタンス数ぶんのワークグループを
-//  x 方向へ並べる（1 次元の上限を超える分は y 方向の行へ折り返す）。インスタンス番号は
-//  workgroup_id.x + workgroup_id.y × num_workgroups.x。
+//  再生できる（従来は animations[0] 固定だった）。
 // ============================================================
 
-/// 共有メモリに置けるノード数の上限（= 1 ワークグループのレーン数。Rust 側 skin_system::MAX_NODES と一致させる）。
 const MAX_NODES:  u32 = 64u;
-/// 1 インスタンスが出力するジョイント行列の枠数（Rust 側 skin_system::MAX_JOINTS と一致させる）。
 const MAX_JOINTS: u32 = 128u;
-
-/// 単位行列（ジョイント数より後ろの余りの枠と、評価できないノードを指すジョイントに入れる）。
-const IDENTITY = mat4x4<f32>(
-    vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0, 0.0, 0.0),
-    vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0),
-);
 
 // ── Group 0: フレームごとのデータ ────────────────────────────
 
@@ -75,7 +48,7 @@ struct AnimSample {
 @group(0) @binding(0) var<storage, read> anim_samples: array<AnimSample>;
 
 struct SkinParams {
-    n_nodes:    u32,   // ノード数（MAX_NODES を超える番号のノードは評価しない）
+    n_nodes:    u32,   // ノード数（≤ MAX_NODES）
     n_joints:   u32,   // ジョイント数（≤ MAX_JOINTS）
     n_channels: u32,   // 連結チャンネル列の総数
     n_visible:  u32,   // このディスパッチで処理するインスタンス数
@@ -129,14 +102,22 @@ struct AnimInfo {
 /// インデックス: inst_idx * MAX_JOINTS + joint_idx
 @group(2) @binding(0) var<storage, read_write> joint_matrices: array<mat4x4<f32>>;
 
-// ── ワークグループの共有メモリ（1 インスタンスぶん。TRS 64 × 16 B × 3 ＋ 行列 64 × 64 B = 7 KB）──────
+// ── Per-invocation 作業変数 ───────────────────────────────────
 
-/// ノードごとの最終の TRS（各レーンが自分のノードを評価して書く。①①'）。
-var<workgroup> wg_t: array<vec4<f32>, MAX_NODES>;
-var<workgroup> wg_r: array<vec4<f32>, MAX_NODES>;
-var<workgroup> wg_s: array<vec4<f32>, MAX_NODES>;
-/// ノードごとのワールド行列（レーン 0 が BFS 順に親から積む。②③）。
-var<workgroup> wg_world: array<mat4x4<f32>, MAX_NODES>;
+var<private> node_t: array<vec4<f32>, 64>;
+var<private> node_r: array<vec4<f32>, 64>;
+var<private> node_s: array<vec4<f32>, 64>;
+var<private> world:  array<mat4x4<f32>, 64>;
+
+// フェード元クリップ A のポーズ（weight < 1 のときだけ使う）。
+// 【なぜ 2 セット必要か】ブレンドは per-node の TRS レベルで
+//   pose = mix(pose_A[node], pose_B[node], w)
+// と定義される。「B を書いた配列へ A を上書き混合」する 1 セット方式では、
+// A だけが動かすノード（B がバインドポーズのままのノード）を
+// バインドポーズ側へ戻せず、腕だけ元アニメに取り残される破綻が出る。
+var<private> alt_t: array<vec4<f32>, 64>;
+var<private> alt_r: array<vec4<f32>, 64>;
+var<private> alt_s: array<vec4<f32>, 64>;
 
 // ============================================================
 //  補間ヘルパー関数
@@ -227,26 +208,30 @@ fn trs_to_mat(t: vec3<f32>, r: vec4<f32>, s: vec3<f32>) -> mat4x4<f32> {
 }
 
 // ============================================================
-//  1 ノードぶんのポーズ評価
+//  1 クリップぶんのポーズ評価
 // ============================================================
 
-/// 1 ノードの TRS（平行移動 xyz+0・回転 xyzw・スケール xyz+1）。
-struct NodeTrs {
-    t: vec4<f32>,
-    r: vec4<f32>,
-    s: vec4<f32>,
-}
-
-/// アニメ `anim_idx` を時刻 `t` で評価した、ノード `node` の TRS を返す。
+/// アニメ `anim_idx` を時刻 `t` で評価し、TRS 配列（primary=node_* / secondary=alt_*）へ書く。
 ///
-/// バインドポーズから始め、そのアニメのチャンネルのうち `node` を対象とするものだけを連結列の順に上書きする
-/// （同じノード・同じ属性のチャンネルが複数あれば後が勝つ＝旧い作りの「全ノードの配列へ順に書く」と同じ値）。
+/// バインドポーズで初期化してから、そのアニメが持つチャンネルだけを上書きする。
 /// チャンネル範囲はアニメテーブル（anims[]）から引くので、連結された他アニメには触れない。
-/// アニメ本数 0（パッキング失敗）や範囲外 index はチャンネル適用をスキップし、
-/// バインドポーズのまま返す（描画が消えるより静止の方が安全）。
-fn eval_node_pose(anim_idx: u32, t: f32, node: u32) -> NodeTrs {
-    var pose = NodeTrs(bind_t[node], bind_r[node], bind_s[node]);
-    if params.n_anims == 0u || anim_idx >= params.n_anims { return pose; }
+fn eval_pose(anim_idx: u32, t: f32, n_nodes: u32, secondary: bool) {
+    // ── バインドポーズで初期化 ──
+    for (var i = 0u; i < n_nodes; i++) {
+        if secondary {
+            alt_t[i] = bind_t[i];
+            alt_r[i] = bind_r[i];
+            alt_s[i] = bind_s[i];
+        } else {
+            node_t[i] = bind_t[i];
+            node_r[i] = bind_r[i];
+            node_s[i] = bind_s[i];
+        }
+    }
+
+    // アニメ本数 0（パッキング失敗）や範囲外 index はチャンネル適用をスキップし、
+    // バインドポーズのまま返す（描画が消えるより静止の方が安全）。
+    if params.n_anims == 0u || anim_idx >= params.n_anims { return; }
 
     let info  = anims[anim_idx];
     let begin = info.chan_offset;
@@ -255,36 +240,31 @@ fn eval_node_pose(anim_idx: u32, t: f32, node: u32) -> NodeTrs {
 
     for (var ci = begin; ci < end; ci++) {
         let ch = channels[ci];
-        if ch.target_node != node { continue; }
         switch ch.prop_type {
             case 0u: {  // translation
-                pose.t = sample_tvec(ch.ts_offset, ch.ts_count, ch.val_offset, ch.interp, t);
+                let v = sample_tvec(ch.ts_offset, ch.ts_count, ch.val_offset, ch.interp, t);
+                if secondary { alt_t[ch.target_node] = v; } else { node_t[ch.target_node] = v; }
             }
             case 1u: {  // rotation
-                pose.r = sample_rvec(ch.ts_offset, ch.ts_count, ch.val_offset, ch.interp, t);
+                let v = sample_rvec(ch.ts_offset, ch.ts_count, ch.val_offset, ch.interp, t);
+                if secondary { alt_r[ch.target_node] = v; } else { node_r[ch.target_node] = v; }
             }
             case 2u: {  // scale
-                pose.s = sample_svec(ch.ts_offset, ch.ts_count, ch.val_offset, ch.interp, t);
+                let v = sample_svec(ch.ts_offset, ch.ts_count, ch.val_offset, ch.interp, t);
+                if secondary { alt_s[ch.target_node] = v; } else { node_s[ch.target_node] = v; }
             }
             default: {}
         }
     }
-    return pose;
 }
 
 // ============================================================
 //  メインエントリポイント
 // ============================================================
 
-@compute @workgroup_size(MAX_NODES)
-fn cs_main(
-    @builtin(workgroup_id)           wg_id:  vec3<u32>,
-    @builtin(num_workgroups)         wg_num: vec3<u32>,
-    @builtin(local_invocation_index) lane:   u32,
-) {
-    // インスタンス番号はワークグループで一様（workgroup_id と uniform だけから決まる）なので、
-    // ここで抜けても後ろの workgroupBarrier は一様な制御の流れのまま。
-    let inst_idx = wg_id.x + wg_id.y * wg_num.x;
+@compute @workgroup_size(64)
+fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let inst_idx = gid.x;
     if inst_idx >= params.n_visible { return; }
 
     let smp      = anim_samples[inst_idx];
@@ -292,58 +272,46 @@ fn cs_main(
     let n_nodes  = params.n_nodes;
     let n_joints = params.n_joints;
 
-    // ── ①①': 各レーンが自分のノードの TRS を評価し、共有メモリへ置く ──────────────
-    if lane < min(n_nodes, MAX_NODES) {
-        // 現在クリップ B のポーズ（バインドポーズ初期化 + チャンネル適用）
-        var pose = eval_node_pose(smp.anim_b, smp.time_b, lane);
+    // ── ① 現在クリップ B のポーズ（バインドポーズ初期化 + チャンネル適用）──
+    eval_pose(smp.anim_b, smp.time_b, n_nodes, false);
 
-        // ①' クロスフェード: フェード元 A を評価してノードごとに補間する。
-        //   weight = 1（フェード無し）ではこの分岐に入らないため、単一クリップ再生の結果のまま。
-        if w < 1.0 {
-            let alt = eval_node_pose(smp.anim_a, smp.time_a, lane);
-            pose.t = mix(alt.t, pose.t, w);
-            pose.s = mix(alt.s, pose.s, w);
+    // ── ②' クロスフェード: フェード元 A を評価して per-node で補間する ──
+    //   weight = 1（フェード無し）ではこの分岐に入らないため、
+    //   従来の単一クリップ再生とビット単位で同じ結果になる。
+    if w < 1.0 {
+        eval_pose(smp.anim_a, smp.time_a, n_nodes, true);
+        for (var i = 0u; i < n_nodes; i++) {
+            node_t[i] = mix(alt_t[i], node_t[i], w);
+            node_s[i] = mix(alt_s[i], node_s[i], w);
             // 回転は符号合わせ付きの正規化線形補間（最短経路）
-            pose.r = nlerp(alt.r, pose.r, w);
-        }
-
-        wg_t[lane] = pose.t;
-        wg_r[lane] = pose.r;
-        wg_s[lane] = pose.s;
-    }
-    workgroupBarrier();
-
-    // ── ②③: レーン 0 が BFS 順にローカル行列を作り、ワールド行列を積む（親は子より先に並ぶ）──
-    //   ローカル行列は「作ってすぐ親の行列に掛ける」形にしてある（旧い作りと同じ式の並び）。
-    //   各レーンがローカル行列まで作って共有メモリへ置く形も試したが、RTX 3060 Laptop で値の 0 の符号
-    //   （+0 / -0）だけが旧い作りと変わる行列が出た（実際の glb で 1,034,496 個中 836 個。値の差は 0 ULP）。
-    //   ローカル行列の定数の 0 / 1 の行をコンパイラが掛け算へ畳み込めるかどうかの違いと見ている（推論）。
-    if lane == 0u {
-        for (var bi = 0u; bi < n_nodes; bi++) {
-            let ni = bfs_order[bi];
-            // 上限以上の番号のノードは評価しない（ファイル冒頭の「ノード数の上限」）。
-            if ni >= MAX_NODES { continue; }
-            let lm = trs_to_mat(wg_t[ni].xyz, wg_r[ni], wg_s[ni].xyz);
-            let pi = parents[ni];
-            if pi < 0 || u32(pi) >= MAX_NODES {
-                wg_world[ni] = lm;
-            } else {
-                wg_world[ni] = wg_world[u32(pi)] * lm;
-            }
+            node_r[i] = nlerp(alt_r[i], node_r[i], w);
         }
     }
-    workgroupBarrier();
 
-    // ── ④: ジョイント行列 = world[node] * ibm を出力（余りの枠は単位行列）─────────
+    // ── ③ BFS 順序でワールド行列を計算 ──────────────────────────
+    for (var bi = 0u; bi < n_nodes; bi++) {
+        let ni  = bfs_order[bi];
+        let lm  = trs_to_mat(node_t[ni].xyz, node_r[ni], node_s[ni].xyz);
+        let pi  = parents[ni];
+        if pi < 0 {
+            world[ni] = lm;
+        } else {
+            world[ni] = world[u32(pi)] * lm;
+        }
+    }
+
+    // ── ④ ジョイント行列 = world[node] * ibm を出力 ──────────────
     let base = inst_idx * MAX_JOINTS;
-    for (var ji = lane; ji < MAX_JOINTS; ji += MAX_NODES) {
-        var m = IDENTITY;
-        if ji < n_joints {
-            let ni = joint_nodes[ji];
-            if ni < MAX_NODES {
-                m = wg_world[ni] * ibm[ji];
-            }
-        }
-        joint_matrices[base + ji] = m;
+    for (var ji = 0u; ji < n_joints; ji++) {
+        let ni = joint_nodes[ji];
+        joint_matrices[base + ji] = world[ni] * ibm[ji];
+    }
+    // 余剰スロットを単位行列で埋める
+    let id = mat4x4<f32>(
+        vec4(1.0,0.0,0.0,0.0), vec4(0.0,1.0,0.0,0.0),
+        vec4(0.0,0.0,1.0,0.0), vec4(0.0,0.0,0.0,1.0),
+    );
+    for (var ji = n_joints; ji < MAX_JOINTS; ji++) {
+        joint_matrices[base + ji] = id;
     }
 }

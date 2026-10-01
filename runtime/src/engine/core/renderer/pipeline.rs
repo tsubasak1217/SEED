@@ -588,10 +588,14 @@ impl MeshletCullPipeline {
 /// output（変形後頂点の read-write storage）の 3 つの BindGroupLayout を保持する。
 ///
 /// 【pipeline が None のとき】3D のシーンを描かない描画の構成（render_profile の scene_3d=false。UI だけの構成）。
-/// skin_compute.wgsl はノードごとの TRS・ワールド行列をスレッドごとの private 配列（約 10 KB / スレッド）に持つため、
-/// パイプラインを作るとドライバが「同時に走りうる全スレッド分」のローカルメモリを予約する
-/// （RTX 3060 Laptop の実測で +450 MiB。docs/rendering_profiles.md §5）。3D のモデルを描かない構成では
-/// ディスパッチが起きないので、パイプライン本体を作らず BindGroupLayout だけを持つ（`dispatch_lod` は何もしない）。
+/// 3D のモデルを描かない構成ではディスパッチが起きないので、パイプライン本体（シェーダのコンパイル）を作らず
+/// BindGroupLayout だけを持つ（`dispatch_lod` は何もしない）。
+///
+/// 【GPU メモリ】以前の skin_compute.wgsl はノードの TRS・ワールド行列をスレッドごとの private 配列
+/// （約 10 KB / スレッド）に持ち、パイプラインを作るだけでドライバが「同時に走りうる全スレッド分」の
+/// ローカルメモリを予約していた（RTX 3060 Laptop で +450 MiB）。いまは 1 ワークグループ = 1 インスタンスにして
+/// ノードの TRS とワールド行列をワークグループの共有メモリ（7 KB / ワークグループ）に置くので、full でもその予約は起きない
+/// （docs/rendering_profiles.md §5・§14.2）。
 pub struct SkinComputePipeline {
     pub pipeline:      Option<wgpu::ComputePipeline>,
     pub per_frame_bgl: wgpu::BindGroupLayout,
@@ -606,7 +610,7 @@ impl SkinComputePipeline {
         Self::build(device, cache, true)
     }
 
-    /// BindGroupLayout だけを作り、パイプライン本体（ローカルメモリを大きく予約する）は作らない
+    /// BindGroupLayout だけを作り、パイプライン本体（シェーダのコンパイル）は作らない
     /// （3D のシーンを描かない描画の構成向け。スキンメッシュの資源の BindGroup は従来どおり作れる）。
     pub fn layouts_only(device: &wgpu::Device) -> Self {
         Self::build(device, None, false)
@@ -666,7 +670,8 @@ impl SkinComputePipeline {
             entries: &[rw_storage(0)],
         });
 
-        // パイプライン本体（シェーダのコンパイルと、private 配列のためのローカルメモリの予約を伴う）。
+        // パイプライン本体（シェーダのコンパイル。ノードの行列はワークグループの共有メモリに置くので、
+        // スレッドローカルの記憶域の大きな予約は起きない＝skin_compute.wgsl の冒頭）。
         let pipeline = with_pipeline.then(|| {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label:  Some("Skin Compute Shader"),
@@ -1988,7 +1993,7 @@ impl DrawPipelines {
         let unlit_line          = UnlitPipeline::new(device, sf, df, cache);
         let meshlet_cull        = MeshletCullPipeline::new(device, cache);
         // 3D のシーンを描かない描画の構成（UI だけ）ではスキニングのディスパッチが起きないので、
-        // ローカルメモリを大きく予約するパイプライン本体を作らない（BindGroupLayout だけ。上の型のコメント）。
+        // パイプライン本体を作らない（BindGroupLayout だけ。上の型のコメント）。
         let skin_compute        = if super::render_profile::active_flags().scene_3d {
             SkinComputePipeline::new(device, cache)
         } else {

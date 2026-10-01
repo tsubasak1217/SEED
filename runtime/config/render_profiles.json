@@ -6,7 +6,7 @@
     {
       "name": "full",
       "label": "3D あり（従来どおり）",
-      "description": "3D の描画資源（影・GI・bindless・レイトレーシング・G-Buffer・後処理・Play のピッキング）をすべて用意する。既定。",
+      "description": "3D の描画資源（影・GI・bindless・レイトレーシング・G-Buffer・後処理・ピッキング）をすべて使える状態にする。既定。bindless は RT が使える GPU でだけ、最初に要るとき（3D モデルの登録・RT のパス）に作る。エディタに接続していない Play のピッキングの ID バッファは、ID パスを描くとき（図鑑のサムネイルの撮影）に作る。",
       "flags": {}
     },
     {
