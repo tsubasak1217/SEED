@@ -10,6 +10,8 @@
 //    page_size_elf     … すべての .so の LOAD セグメントが 16 KB 以上で整列しているか
 //    page_size_zip     … 非圧縮の .so が zip の中で 16 KB 境界にあるか（APK。圧縮した .so と AAB は対象外）
 //    certificate       … デバッグ用の鍵で署名していないか・指定の鍵（アップロード鍵）の証明書か
+//    debug_build_mark  … 配布物の pak に開発用のビルドの印（PackageLayout.BuildManifestEntryPath）が無いか（あれば不合格。
+//                        配布物でも SEED.Application.IsDebugAllowed が true になり、開発用の機能が利用者に開くため。配布前の安全弁）
 //    inspection_tools  … 道具で調べられなかったこと（あれば不合格。確かめられていないものを合格にしない）
 //    platform_features / play_policy/<権限> … features と配布物の権限の一致・配布物の権限の Google Play の方針（W1-2。
 //                      AndroidPlatformFeatureChecks。期待する値に機能の表があるときだけ）
@@ -74,6 +76,7 @@ public static class AndroidArtifactChecks
         items.Add(PageSizeElf(requirements, facts.NativeLibraries));
         items.Add(PageSizeZip(facts));
         items.Add(Certificate(requirements, facts.Signer, expectation.ExpectedCertificateSha256, facts.Format));
+        items.Add(DebugBuildMark(facts.DebugBuildMark));
         if (facts.ToolProblems.Count > 0)
         {
             items.Add(new(AndroidRequirementIds.Tools, "配布物の調べ", AndroidRequirementSeverity.Failure,
@@ -192,5 +195,40 @@ public static class AndroidArtifactChecks
         var schemes = signer.Schemes.Count == 0 ? string.Empty : $"・方式 {string.Join(", ", signer.Schemes)}";
         return new(AndroidRequirementIds.Certificate, title, AndroidRequirementSeverity.Pass,
             $"{signer.Subject}・SHA-256 {signer.Sha256}{schemes}");
+    }
+
+    /// <summary>
+    /// 配布物の pak に開発用のビルドの印が無いか（配布前の安全弁）。
+    /// 印があると、ランタイムは配布物でも SEED.Application.IsDebugBuild / IsDebugAllowed を true にし、デバッグの命令・開発用の機能
+    /// （チート・開発用の課金の操作・サンプルデータ等）が利用者に開くので不合格。調べていない・読めないときも合格にしない。
+    /// </summary>
+    /// <param name="fact">調べた結果（調べていなければ null）。</param>
+    /// <returns>判定。</returns>
+    public static AndroidRequirementItem DebugBuildMark(AndroidDebugBuildMarkFact? fact)
+    {
+        const string title = "開発用のビルドの印";
+        if (fact is null)
+        {
+            return new(AndroidRequirementIds.DebugBuildMark, title, AndroidRequirementSeverity.Failure,
+                "配布物の pak を調べていません（確かめていないものは合格にしません）。");
+        }
+        if (fact.Error is not null)
+        {
+            return new(AndroidRequirementIds.DebugBuildMark, title, AndroidRequirementSeverity.Failure,
+                $"{fact.PakEntryName} を読めないため、開発用のビルドの印が無いことを確かめられません: {fact.Error}");
+        }
+        if (!fact.PakFound)
+        {
+            return new(AndroidRequirementIds.DebugBuildMark, title, AndroidRequirementSeverity.Pass,
+                $"{fact.PakEntryName} がありません（pak を入れない配布物。印の入れ先が無い）");
+        }
+        return fact.MarkPresent
+            ? new(AndroidRequirementIds.DebugBuildMark, title, AndroidRequirementSeverity.Failure,
+                $"{fact.PakEntryName} に開発用のビルドの印（{PackageLayout.BuildManifestEntryPath}）が入っています。配布物でも " +
+                "SEED.Application.IsDebugAllowed が true になり、デバッグの命令・開発用の機能が利用者に開きます。" +
+                "配布用（--variant release・パッケージ化ウィンドウのビルドの種類＝配布用）でビルドし直してください" +
+                "（SeedPak は --debug-build を付けたときだけ印を入れます）。")
+            : new(AndroidRequirementIds.DebugBuildMark, title, AndroidRequirementSeverity.Pass,
+                $"{fact.PakEntryName} に開発用のビルドの印はありません（配布物の SEED.Application.IsDebugAllowed は false）");
     }
 }

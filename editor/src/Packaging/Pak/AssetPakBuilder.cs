@@ -7,7 +7,9 @@
 //  作るための共通部分。
 //    1. 収録ファイルの決定 … AssetCollector（参照グラフの閉包）
 //    2. 結果の報告         … 件数・サイズ・欠落参照・除外設定との食い違いをログへ
-//    3. 書き出し           … PakWriter（書き換え対象は AssetPathRewriter で assets:// へ）
+//    3. 書き出し           … PakWriter（書き換え対象は AssetPathRewriter で assets:// へ）。
+//                            開発用のビルドなら「ビルドの印」（PakBuildManifest）を生成エントリとして足す。
+//                            予約の名前（ビルドの印のエントリ名）の利用者のファイルは、どちらのビルドでも pak に入れない
 //    4. 書き出し結果の報告
 //  ここが持つのは「呼ぶ順番」と「ログの書式」だけで、判断そのものは各クラスにある。
 //
@@ -127,14 +129,49 @@ public static class AssetPakBuilder
     /// <param name="result">Collect の結果。</param>
     /// <param name="log">ログ出力先（省略可）。</param>
     /// <param name="progress">進捗通知先（省略可）。</param>
-    /// <returns>書き出し結果の統計。</returns>
+    /// <param name="debugBuild">
+    /// 開発用のビルドか（true なら pak に開発用のビルドの印を入れる。PakBuildManifest）。
+    /// 既定は false（配布用。印を入れない＝ランタイムの SEED.Application.IsDebugAllowed は pak 実行で false）。
+    /// SeedPak の --debug-build・パッケージ化ウィンドウのビルド種別 Debug・SeedAndroid の開発用の APK が true を渡す。
+    /// </param>
+    /// <returns>書き出し結果の統計（エントリ数はビルドの印を含む）。</returns>
     public static PakWriteStats Write(
         string pakPath,
         string assetsRoot,
         AssetCollectionResult result,
         Action<string>? log,
-        Action<PakWriteProgress>? progress) =>
-        PakWriter.Write(pakPath, assetsRoot, result.Included, log, progress);
+        Action<PakWriteProgress>? progress,
+        bool debugBuild = false)
+    {
+        var included = ExcludeReservedPaths(result.Included, log);
+        log?.Invoke(PakBuildManifest.Describe(debugBuild));
+        return PakWriter.Write(pakPath, assetsRoot, included, log, progress, PakBuildManifest.EntriesFor(debugBuild));
+    }
+
+    /// <summary>
+    /// 収録一覧から、エンジンの予約の名前（ビルドの印のエントリ名）のファイルを外す（外したものはログで知らせる）。
+    /// 配布用のビルドに利用者のファイルが「開発用の印」として紛れ込まないよう、ビルドの種類に関わらず外す。
+    /// </summary>
+    /// <param name="assets">収録一覧。</param>
+    /// <param name="log">ログ出力先（省略可）。</param>
+    /// <returns>外した後の収録一覧（外すものが無ければ引数そのもの）。</returns>
+    private static IReadOnlyList<CollectedAsset> ExcludeReservedPaths(IReadOnlyList<CollectedAsset> assets, Action<string>? log)
+    {
+        if (!assets.Any(asset => PakBuildManifest.IsReservedPath(asset.RelPath))) return assets;
+
+        var kept = new List<CollectedAsset>(assets.Count);
+        foreach (var asset in assets)
+        {
+            if (PakBuildManifest.IsReservedPath(asset.RelPath))
+            {
+                log?.Invoke($"⚠ エンジンの予約の名前のため pak に入れません: {asset.RelPath}" +
+                            "（ビルドの印に使う名前です。ファイルの名前か置き場所を変えてください）");
+                continue;
+            }
+            kept.Add(asset);
+        }
+        return kept;
+    }
 
     // ============================================================
     //  4. 書き出し結果の報告

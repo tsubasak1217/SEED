@@ -26,6 +26,12 @@ public static class AndroidStepFingerprints
     /// <summary>pak の指紋の材料で、収録の起点に足すシーン 1 つを表す名前（段階C-4）。</summary>
     private const string ExtraSceneMaterialKey = "extra_scene";
 
+    /// <summary>pak の指紋の材料で、開発用のビルドの印を入れることを表す名前（印を入れるときだけ足す）。</summary>
+    private const string DebugBuildMaterialKey = "debug_build_mark";
+
+    /// <summary><see cref="DebugBuildMaterialKey"/> の値（印を入れる）。</summary>
+    private const string DebugBuildMaterialValue = "true";
+
     /// <summary>
     /// libSEED.so（1 つの ABI）の指紋。入力はエンジンのソースとビルドのパラメータ、出力は jniLibs の .so。
     /// </summary>
@@ -58,9 +64,14 @@ public static class AndroidStepFingerprints
     /// pak の収録の起点に足すシーン（未登録の起動シーン。段階C-4。Project/AndroidPakSceneSeeds）。足すシーンが変われば pak の中身が
     /// 変わるので材料に入れる。空なら材料に足さない（足さないときの指紋は段階C-3 までと同じ式）。
     /// </param>
+    /// <param name="debugBuild">
+    /// pak に開発用のビルドの印を入れるか（開発用〈debug〉の APK。AndroidRunRequest.MarksDebugBuild）。印の有無で pak の中身が変わるので
+    /// 材料に入れる（開発用 → 配布用へ切り替えた最初のビルドで、印の入った前回の pak を使い回さない）。入れないときは材料に足さない
+    /// （配布用の指紋は印の仕組みの前と同じ式）。
+    /// </param>
     /// <returns>指紋。</returns>
     public static AndroidStepFingerprint PackageContent(
-        AndroidEnginePaths engine, AndroidProjectInfo? project, IReadOnlyList<string>? extraScenes = null)
+        AndroidEnginePaths engine, AndroidProjectInfo? project, IReadOnlyList<string>? extraScenes = null, bool debugBuild = false)
     {
         var builder = new AndroidFingerprintBuilder();
         if (project is { Mode: AndroidProjectMode.Packaged })
@@ -76,6 +87,7 @@ public static class AndroidStepFingerprints
                 // 1 つずつ別の材料にする（区切り文字を含むパスでも、別の組み合わせと同じ材料にならないように）
                 foreach (var scene in extraScenes) builder.AddValue(ExtraSceneMaterialKey, scene);
             }
+            if (debugBuild) builder.AddValue(DebugBuildMaterialKey, DebugBuildMaterialValue);
         }
         else
         {

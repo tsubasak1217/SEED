@@ -65,6 +65,19 @@ pub const PAK_FILE_NAME: &str = "assets.pak";
 pub const LOOSE_ASSETS_DIR_NAME: &str = "assets";
 
 // ============================================================
+//  pak の中の予約のエントリ（エンジンが書く。利用者のアセットではない）
+// ============================================================
+
+/// pak の中の「ビルドの印」（ビルドの種類を表す小さな JSON）のエントリ名。
+///
+/// パッケージ化（SeedPak・パッケージ化ウィンドウ・SeedAndroid）が **開発用のビルドのときだけ** 書き、
+/// 配布用（release）のビルドでは書かない。中身の形式と読み方は `engine::pak::build_manifest`。
+/// エントリはアセットの名前空間（`assets://`）と同じ表に入るので、利用者のアセットと重ならない
+/// 予約の名前にしてある（エディタ側は同じ名前の利用者のファイルを pak に入れない）。
+/// エディタ側 `PackageLayout.BuildManifestEntryPath` と一致必須。
+pub const BUILD_MANIFEST_ENTRY: &str = ".seed/build.json";
+
+// ============================================================
 //  フォルダ名（配布物の中に作るサブフォルダ）
 // ============================================================
 
@@ -191,6 +204,8 @@ mod tests {
     fn dir_names_match_editor_contract() {
         assert_eq!(PAK_FILE_NAME, "assets.pak");
         assert_eq!(LOOSE_ASSETS_DIR_NAME, "assets");
+        // ビルドの印（pak の中の予約のエントリ。エディタ側 PackageLayout.BuildManifestEntryPath と同じ）
+        assert_eq!(BUILD_MANIFEST_ENTRY, ".seed/build.json");
         assert_eq!(BIN_DIR_NAME, "bin");
         assert_eq!(CACHES_DIR_NAME, "caches");
         assert_eq!(LOGS_DIR_NAME, "logs");

@@ -54,6 +54,17 @@ public static class PackageLayout
     /// </summary>
     public const string PakFileName = "assets.pak";
 
+    // ── pak の中の予約のエントリ（ランタイム側 package_layout.rs と一致必須） ──
+
+    /// <summary>
+    /// pak の中の「ビルドの印」（ビルドの種類を表す小さな JSON）のエントリ名。
+    /// パッケージ化が<b>開発用のビルドのときだけ</b>書き（<c>Pak/PakBuildManifest.cs</c>）、配布用（release）では書かない。
+    /// ランタイムは起動時に読み、スクリプトの <c>SEED.Application.IsDebugBuild</c> / <c>IsDebugAllowed</c> の判定源にする。
+    /// アセットと同じ表に入るので、利用者の同じ名前のファイルは pak に入れない（<c>AssetPakBuilder</c> が外す）。
+    /// ランタイム側 <c>package_layout::BUILD_MANIFEST_ENTRY</c> と一致必須。
+    /// </summary>
+    public const string BuildManifestEntryPath = ".seed/build.json";
+
     // ── フォルダ名（ランタイム側 package_layout.rs と一致必須） ──
 
     /// <summary>

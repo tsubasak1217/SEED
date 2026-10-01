@@ -1255,12 +1255,18 @@ public static unsafe class ScriptHost
     public const int AppEnvKindVsyncEnabled = 3;
 
     /// <summary>
+    /// AppEnv の kind: 開発用のビルドか（pak に開発用の「ビルドの印」がある。Rust 側 APP_ENV_KIND_DEBUG_BUILD と一致）。
+    /// 古いランタイム（この kind を知らない）は -1 を返すので、<see cref="AppEnv"/> は false（安全側）になる。
+    /// </summary>
+    public const int AppEnvKindDebugBuild = 4;
+
+    /// <summary>
     /// 実行環境の真偽値を 1 つ取得する（<see cref="SEED.Application"/> の実体）。
     ///
     /// ホスト API が未登録（エディタ外の単体テスト等）や未知の kind の場合は false を返す。
     /// 「不明なら開発用機能を有効にしない」安全側の既定にしている。
     /// </summary>
-    /// <param name="kind">問い合わせる種類（Packaged / EditorPlay）。</param>
+    /// <param name="kind">問い合わせる種類（Packaged / EditorPlay / VsyncEnabled / DebugBuild）。</param>
     public static bool AppEnv(int kind)
     {
         if (!_available || _api.AppEnv == null) return false;

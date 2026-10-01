@@ -28,6 +28,8 @@ namespace AndroidPipelineTests;
 ///  15. 同じく設定の読み書き・設定ウィンドウの編集の状態・Google Play の要件チェック（PlatformSettingsTests。W1-2）
 ///  16. libSEED.so の cargo のプロファイル: 構成の表の既定（develop）・--release・配布用・debug・誤り・指紋・出力の写し・
 ///      SeedAndroid の --native-profile（NativeProfileTests。2026-09-28）
+///  17. 開発用のビルドの印: debug の APK だけ SeedPak --debug-build・pak の指紋・配布前の検査（印のある配布物は不合格）
+///      （DebugBuildMarkTests。2026-10-01）
 /// 端末・adb・cargo・Gradle は使わない（IPC はループバックの偽のランタイム）。
 /// </summary>
 public static class Program
@@ -53,6 +55,7 @@ public static class Program
         PlatformFeatureTests.Register(harness);
         PlatformSettingsTests.Register(harness);
         NativeProfileTests.Register(harness);
+        DebugBuildMarkTests.Register(harness);
         return harness.Run();
     }
 }

@@ -146,6 +146,15 @@ public sealed record AndroidRunRequest
     public bool OptimizesNative => Release || Variant == AndroidBuildVariant.Release;
 
     /// <summary>
+    /// APK の pak に開発用のビルドの印（<see cref="PackageLayout.BuildManifestEntryPath"/>。SeedPak の --debug-build）を入れるか。
+    /// 開発用（<see cref="Variant"/> = Debug）だけ true、<b>配布用（Release）は必ず false</b>。Rust の最適化
+    /// （<see cref="Release"/>・<see cref="NativeProfile"/>）には依らない（最適化しても開発用の APK はデバッグ署名・debuggable のまま）。
+    /// ランタイムは印を SEED.Application.IsDebugBuild として読み、pak 実行でも IsDebugAllowed を true にする。
+    /// </summary>
+    [JsonIgnore]
+    public bool MarksDebugBuild => Variant == AndroidBuildVariant.Debug;
+
+    /// <summary>
     /// 開発用の libSEED.so を作る構成の id（editor/config/runtime_build_configs.json の id。debug / develop / release）。
     /// null なら表の既定（develop＝最適化 1 ＋デバッグ情報。PC の Play の既定と同じ）。ネイティブのデバッガで追うときは debug
     /// （cargo の dev・最適化なし）。<see cref="Release"/>・配布用のビルドは常に release で、食い違う id は誤り。

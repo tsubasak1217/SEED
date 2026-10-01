@@ -440,7 +440,7 @@ dotnet run --project editor/tools/SeedAndroid -- check --project D:\path\to\Proj
 | `--abi <ABI[,ABI]>` | `arm64-v8a` / `x86_64`。省略時は端末の `ro.product.cpu.abilist` の先頭から選ぶ（端末が決まらなければ両方） |
 | `--release` | Rust 側を `--release` でビルド（開発用の APK はデバッグ署名のまま。配布用は常に `--release`）。`--native-profile release` と同じ |
 | `--native-profile <構成>` | libSEED.so の構成（2026-09-28・§5.4）。`editor/config/runtime_build_configs.json` の id（`debug` / `develop` / `release`。PC の Play と同じ表）。省略時は表の既定＝`develop`（`cargo ndk … build --profile develop`。最適化 1 ＋デバッグ情報）。ネイティブのデバッガで追うときは `debug`（cargo の dev・最適化なし）。`build` / `install` / `run` / `check` で使える。配布用・`--release` と食い違う値・表に無い値は指定の誤り（終了コード 1）。設定 JSON の `native_profile` |
-| `--variant <debug\|release>` | ビルドの種類（段階D・§24.4）。既定 `debug`。`release` は debuggable でない・INTERNET なし・アップロード鍵で署名（`push`・`--push-scripts`・`--assets-dir` と一緒に使えない）。書かずに `--format aab` か `--keystore` / `--key-alias` を指定すると `release` とみなす |
+| `--variant <debug\|release>` | ビルドの種類（段階D・§24.4）。既定 `debug`。`release` は debuggable でない・INTERNET なし・アップロード鍵で署名（`push`・`--push-scripts`・`--assets-dir` と一緒に使えない）。書かずに `--format aab` か `--keystore` / `--key-alias` を指定すると `release` とみなす。**`debug` は pak に開発用のビルドの印を入れ**（SeedPak `--debug-build`・pak の `.seed/build.json`。スクリプトの `SEED.Application.IsDebugBuild` / `IsDebugAllowed` が pak 実行でも true になり、デバッグの命令・開発用の機能が使える）、`release` は入れない（§24.14）。印は `--release`・`--native-profile`（Rust の最適化）には依らない |
 | `--format <apk\|aab>` | 形式（段階D）。既定 `apk`。`aab` は配布用の `build` だけ（端末へは直接入れられない） |
 | `--keystore <パス>` / `--key-alias <別名>` | 配布用の署名の鍵（段階D。省略時はプロジェクトの `packaging_settings.json` の `android.signing`）。パスワードは環境変数 `SEED_ANDROID_KEYSTORE_PASSWORD`（キーが違えば `SEED_ANDROID_KEY_PASSWORD`）か対話の入力（§24.5） |
 | `--cert-name <名前>` / `--artifact <パス>` | `keystore create` の証明書の名前（CN）／ `check` で確かめる APK / AAB（段階D） |
@@ -3433,6 +3433,8 @@ Google Play へ出せる配布物を作れるようにした。**開発用（deb
   ビルドのときに生成する（NuGet を足さない .NET 標準だけの PNG の読み書き。§24.7）。
 - 配布用のビルドは、ビルドの前（設定）と後（できた配布物を aapt2・zipalign・apksigner / keytool・ELF で読み直す）に Google Play の要件を
   確かめて一覧に出す（§24.8）。不合格があっても配布物は作り、SeedAndroid は終了コード 6 で知らせる。
+- 開発用の APK は pak に**開発用のビルドの印**を入れ（スクリプトの `IsDebugAllowed` が pak 実行でも true）、配布用は入れない。
+  配布物に印が入っていれば要件チェック `debug_build_mark` が不合格にする（2026-10-01。§24.14）。
 
 ### 24.2 Google Play の要件（2026-09-26 に公式のページで確かめた。表は `runtime/android/play_requirements.json`）
 
@@ -3493,6 +3495,7 @@ dotnet run --project editor/tools/SeedAndroid -- check --project D:\path\to\Game
 | Rust | `--release` を付けたときだけ最適化 | 常に `--release`（AGP が .so のシンボルを削る） |
 | ABI の既定 | 端末から判定（無ければ両方） | `build` は arm64-v8a（たまたまつながっている端末で変えない）。`install` / `run` は入れる端末の ABI |
 | 起動オプション（シーン・IPC）・run-as・push・差し替え | 使える | 使えない（MainActivity は debuggable のときだけ起動オプションを渡す。push・`--assets-dir`・`--push-scripts` は指定の誤り） |
+| 開発用のビルドの印（pak の `.seed/build.json`。§24.14） | 入れる（SeedPak `--debug-build`。`SEED.Application.IsDebugBuild` / `IsDebugAllowed` が true＝デバッグの命令・開発用の機能が使える） | 入れない（`IsDebugAllowed` は false。配布物の要件チェック `debug_build_mark` が見張る） |
 | 記録のキー（`step_stamps.json`） | `gradle`（従来） | `gradle/release_apk`・`gradle/release_aab`（出力が別なので切り替えても互いを作り直さない） |
 
 - 準備で決めたこと（署名の鍵・証明書の SHA-256・ビルドの前の要件の一覧）は Output / コンソールに出る。パスワードは `********`。
@@ -3569,6 +3572,7 @@ nativeLibraryDir へ展開させる `packaging.jniLibs.useLegacyPackaging = true
 | `format` / `icon` | AAB か（APK は知らせ）・アイコンを設定したか（未設定は注意） | — |
 | `debuggable` / `permissions` | — | debuggable でない（不合格）・INTERNET が無い（あれば注意） |
 | `page_size_elf` / `page_size_zip` | — | すべての .so の LOAD の p_align ≥ 0x4000（zip の中の先頭だけを読む `ElfAlignmentReader`）・APK は `zipalign -c -P 16 4`（AAB は Google Play が整列する） |
+| `debug_build_mark`（2026-10-01・§24.14） | — | 配布物の pak（APK: `assets/seed/assets.pak`・AAB: `base/assets/seed/assets.pak`）のエントリ表に開発用のビルドの印 `.seed/build.json` が**無い**こと（あれば不合格。配布物でも `SEED.Application.IsDebugAllowed` が true になり、開発用の機能が利用者に開くため）。pak の表だけを読む（`PakEntryIndex`。道具は使わない）。pak の無い配布物は合格、読めない pak は不合格 |
 | `platform_features`（W1-2・§25.10） | `android.features` から決まる権限の一覧（知らない機能は注意） | 配布物の権限と比べる: features の機能の権限が無い＝不合格（機能が端末で動かない）・features に無い機能の権限がある＝注意（機能の表のどれかの機能の権限だけを見る。表に無い権限〈INTERNET・androidx の権限等〉は見ない。依存ライブラリが機能と同じ権限を足した場合は区別できないので注意どまり） |
 | `play_policy/<権限>`（W1-2） | features から決まる権限のうち、表の `permission_policies` にあるものの注意 | 配布物の権限について同じ（USE_EXACT_ALARM＝目覚まし・カレンダーのアプリとしての申告と説明・USE_FULL_SCREEN_INTENT＝通話・目覚ましが中核でないと取り上げられる・FOREGROUND_SERVICE_MEDIA_PLAYBACK＝前景サービスの申告。すべて注意） |
 
@@ -3704,6 +3708,39 @@ SeedPak / SeedAndroid に ILC の工程（ABI ごと・パックの取得・NDK 
 - bundletool は SeedAndroid に組み込んでいない（AAB を端末で試すのは §24.10 の手作業）。`build_and_run.ps1`（run の互換ラッパー）に配布用の引数は足していない。
 - パッケージ化ウィンドウの配布用の欄（署名・要件の一覧・キーストアの作成）はエディタを起動して目で確かめていない（WPF 非依存の判断は単体テスト）。
 - versionCode の記録はプロジェクトの `cache/`（PC ごと）。チームで作るなら Play Console の最後の versionCode を正とする。
+
+### 24.14 開発用のビルドの印（`SEED.Application.IsDebugBuild`。2026-10-01）
+
+**背景**: `SEED.Application.IsDebugAllowed`（デバッグの命令・開発用の機能の共通ゲート）は `!IsPackaged` だったので、pak を入れた**開発用の APK でも false** になり、
+デバッグの命令（`SCRIPT_DEBUG:`）とアプリの開発用の機能（Wake or Pay の開発用のチャージ・サンプルデータ）が実機で使えなかった（Wake or Pay の実機確認 2 回目。backlog）。
+
+**仕組み**: 開発用のビルドの pak に「ビルドの印」を入れ、ランタイムが起動時に読む。`IsDebugAllowed = !IsPackaged || IsDebugBuild`。
+
+| 項目 | 内容 |
+|---|---|
+| 印 | pak の予約のエントリ `.seed/build.json`（中身 `{"format":1,"debug":true}`）。pak の形式は変えない（エントリを 1 つ足すだけ。印の無い pak は従来どおり読める）。書き手 `editor/src/Packaging/Pak/PakBuildManifest.cs`、読み手の正典 `runtime/src/engine/pak/build_manifest.rs`（[packaging.md](packaging.md) §4） |
+| 入れる | 開発用（`--variant debug`。既定）の APK。SeedAndroid・エディタの Android 実行・パッケージ化ウィンドウの開発用。中核が SeedPak に `--debug-build` を付ける（`AndroidRunRequest.MarksDebugBuild`。Rust の最適化 `--release`・`--native-profile` には依らない） |
+| 入れない | 配布用（`--variant release`・`--format aab`・`--keystore`）。印の有無は pak の指紋に入る（`AndroidStepFingerprints.PackageContent` の `debug_build_mark`）ので、debug → release へ切り替えた最初のビルドで pak を作り直す（印の入った pak を使い回さない） |
+| ランタイム | `App::init_asset_fs` で pak を開いた直後に 1 回読む（pak の中だけ。APK の PAK 外・上書き層 `files/assets` からは読まない）。起動ログ（logcat の SEED）に `[SEED INIT] build manifest: .seed/build.json あり・debug=true（開発用のビルド。開発用の機能を開く）` の 1 行。無い・読めない・知らない版は false（安全側） |
+| スクリプト | `SEED.Application.IsDebugBuild`（FFI `ffi_app_env` の kind 4）。`IsDebugAllowed` は `!IsPackaged \|\| IsDebugBuild`（[scripting_api.md](scripting_api.md) §7.11） |
+| 安全弁 | 配布物の要件チェック `debug_build_mark`（§24.8）: 配布物の pak の表に印があれば不合格（SeedAndroid の `build`（配布用）・`check` は終了コード 6）。利用者が置いた `assets/.seed/build.json` は pak に入れない |
+
+- 印は「開発用の機能を開くか」だけに使う。上書き層（§23）・起動オプションの受け取り（MainActivity は debuggable のときだけ渡す）の判断は従来どおり APK の debuggable で決まる（`launch_options::was_delivered`）。
+- 開発用の APK を利用者へ配らないこと（pak 実行でも開発用の機能が開く）。配布は必ず `--variant release`（要件チェックが見張る）。
+
+**確認結果（2026-10-01・この PC。端末は使っていない）**
+
+| 確認 | 結果 |
+|---|---|
+| Wake or Pay の開発用 APK（`SeedAndroid build --project D:\SEED_projects\WakeOrPay --abi arm64-v8a`） | 成功（libSEED.so 240.8 秒〈develop・増分〉・SeedPak 17.1 秒・同梱 .NET は変更なしで飛ばし・Gradle 168.9 秒）。準備に `開発用のビルドの印: pak に入れる`、SeedPak は `--scripts --debug-build` で呼ばれた。`app-debug.apk` 58.4 MB |
+| APK の中の pak | `assets/seed/assets.pak`（非圧縮）のエントリ 103 件の最後が `.seed/build.json`（25 バイト・`{"format":1,"debug":true}`）。APK の libSEED.so に読み手の文字列（`[SEED INIT] build manifest:`）、`bin/SEEDScripting.dll` に `get_IsDebugBuild` がある |
+| 配布用の pak（署名の鍵が無いので配布用の APK は作れない → SeedPak を `--debug-build` なしで実行） | エントリ 102 件・`.seed/build.json` なし（ログ `開発用のビルドの印: 入れない`） |
+| 配布前の検査（`SeedAndroid check --artifact`） | 開発用の APK → `[不合格] 開発用のビルドの印: assets/seed/assets.pak に開発用のビルドの印（.seed/build.json）が入っています…`（終了コード 6）。上の配布用の pak に差し替えた写し（署名は無効）→ `[合格] 開発用のビルドの印`（ほかの不合格は差し替えた写しが無署名・debuggable・未整列のため） |
+| PC の非パッケージ実行（`SEED.exe --mode=play --assets-root=<確認用プロジェクト>`） | `IsPackaged=False IsEditorPlay=False IsDebugBuild=False IsDebugAllowed=True`（従来どおり） |
+| PC のパッケージ実行（確認用プロジェクトを SeedPak `--scripts --debug-build` → exe を隣に置いて起動） | 起動ログ `[SEED INIT] build manifest: .seed/build.json あり・debug=true（開発用のビルド。開発用の機能を開く）`・`IsPackaged=True IsDebugBuild=True IsDebugAllowed=True` |
+| PC のパッケージ実行（同じく `--debug-build` なし） | `build manifest: .seed/build.json なし（配布用のビルドとして扱う）`・`IsPackaged=True IsDebugBuild=False IsDebugAllowed=False` |
+| 単体テスト | Rust: `pak::`・`app_env`・`package_layout`・`asset_fs` の 45 件（新規 7: `pak::build_manifest` 6・`app_env` 1。`package_layout` の名前の契約に 1 行）がすべて成功。`cargo test --lib` 全体は 3447 成功・2 失敗（既知の並列実行で落ちるテスト `set_save_int_writes_flag_and_keeps_other_keys`・`poll_keeps_previous_aspect_on_decode_failure`。単体では成功。backlog）。C#: `PackagingCollectorTests` 56 件（新規 6）・`AndroidPipelineTests` 175 件（新規 4）・`AndroidRunUiTests` 102 件。すべて成功 |
+| **実機（Pixel 6a）** | **未確認**。開発用の APK でデバッグの命令（`SCRIPT_DEBUG:`）と開発用の機能が出ることは次の実機確認で確かめる（backlog） |
 
 ---
 

@@ -167,6 +167,14 @@ public sealed class AndroidRunPipeline
         // ── プラットフォーム機能（APK を作るときだけ。android.features 等 → マニフェストの断片。誤りは何もしないうちに弾く。W1-2）──
         var platformFeatures = buildScope ? ResolvePlatformFeatures(project, log) : AndroidPlatformFeatureSet.Empty;
 
+        // ── 開発用のビルドの印（pak を入れる APK を作るときだけ。開発用は入れ、配布用は入れない。AndroidRunRequest.MarksDebugBuild）──
+        if (buildScope && project is { Mode: AndroidProjectMode.Packaged })
+        {
+            log.Info(request.MarksDebugBuild
+                ? $"開発用のビルドの印: pak に入れる（{PackageLayout.BuildManifestEntryPath}。開発用の APK。pak 実行でも SEED.Application.IsDebugAllowed が true）"
+                : "開発用のビルドの印: 入れない（配布用。pak 実行の SEED.Application.IsDebugAllowed は false）");
+        }
+
         // ── 配布用（release）の署名と、ビルドの前の Google Play の要件の判定（段階D）──
         var release = request.Variant == AndroidBuildVariant.Release
             ? await PrepareReleaseAsync(request, project, log, cancellationToken).ConfigureAwait(false)
@@ -218,7 +226,8 @@ public sealed class AndroidRunPipeline
             {
                 context.CurrentFingerprints[AndroidStepKeys.Native(abi)] = AndroidStepFingerprints.Native(_engine, abi, nativeProfile, ndkPath);
             }
-            context.CurrentFingerprints[AndroidStepKeys.PackageContent] = AndroidStepFingerprints.PackageContent(_engine, project, pakExtraScenes);
+            context.CurrentFingerprints[AndroidStepKeys.PackageContent] =
+                AndroidStepFingerprints.PackageContent(_engine, project, pakExtraScenes, request.MarksDebugBuild);
             context.CurrentFingerprints[AndroidStepKeys.DotnetBundle] = AndroidStepFingerprints.DotnetBundle(_engine, abis);
             context.CurrentFingerprints[context.GradleKey] = AndroidStepFingerprints.Gradle(
                 _engine, GradleBuildStep.Parameters(context, ndkPath), launcherIcon, context.PlatformFeatureFiles);

@@ -8,13 +8,18 @@
 //
 //  【保持する情報】
 //  ・エディタからの Play 実行かどうか（EDITOR_PLAY）
+//  ・開発用のビルドかどうか（DEBUG_BUILD。pak の「ビルドの印」。engine::pak::build_manifest）
 //
 //  なお「パッケージ実行（assets.pak を読んで動いている）」かどうかは
 //  `asset_fs::is_packaged()` が既に判定源として存在するため、ここでは重複して持たない。
+//  スクリプトの `SEED.Application.IsDebugAllowed` は `!IsPackaged || IsDebugBuild`（C# 側で組み合わせる）。
 //
 //  【初期化】
-//  `App::new` で起動引数（LaunchArgs）と IPC 接続結果が確定した直後に
-//  `init(...)` を一度だけ呼ぶ。以降は不変（実行中に変化しない）。
+//  ・EDITOR_PLAY: `App::new` で起動引数（LaunchArgs）と IPC 接続結果が確定した直後に `init(...)` を一度だけ呼ぶ。
+//  ・DEBUG_BUILD: `App::init_asset_fs` で pak を開いた直後（asset_fs へ渡す前）に `init_debug_build(...)` を一度だけ呼ぶ。
+//    pak を開かない実行（エディタ・pak の無い開発用の APK）でも false で確定させる。
+//  どちらも以降は不変（実行中に変化しない）。C# 側は初回アクセスで読んでキャッシュするので、
+//  スクリプトが動き出す（シーンのロード）より前に確定している必要がある（どちらもその前に呼ばれる）。
 // ============================================================
 
 use std::sync::OnceLock;
@@ -28,6 +33,12 @@ use std::sync::OnceLock;
 /// `OnceLock` なので 2 回目以降の `init` は無視される（最初の 1 回だけが効く）。
 /// 未初期化のまま参照された場合は `is_editor_play()` が false を返す。
 static EDITOR_PLAY: OnceLock<bool> = OnceLock::new();
+
+/// 開発用のビルドかどうか（pak に開発用の「ビルドの印」が入っていたか）。
+///
+/// `OnceLock` なので 2 回目以降の `init_debug_build` は無視される（最初の 1 回だけが効く）。
+/// 未初期化のまま参照された場合は `is_debug_build()` が false を返す。
+static DEBUG_BUILD: OnceLock<bool> = OnceLock::new();
 
 // ============================================================
 //  判定ロジック（純関数）
@@ -82,6 +93,23 @@ pub fn is_editor_play() -> bool {
     *EDITOR_PLAY.get().unwrap_or(&false)
 }
 
+/// 開発用のビルドかを確定させる。pak を開いた直後（pak を開かない実行でも）に一度だけ呼ぶこと。
+///
+/// - `is_debug_build`: pak のビルドの印を読んだ結果（`engine::pak::build_manifest::BuildManifestRead::is_debug_build`）。
+///   pak を開かない実行では false を渡す
+pub fn init_debug_build(is_debug_build: bool) {
+    // 2 回目以降は Err になるが、最初の値を保つのが正しいので無視する。
+    let _ = DEBUG_BUILD.set(is_debug_build);
+}
+
+/// 開発用のビルド（pak に開発用のビルドの印がある）かを返す。未初期化なら false。
+///
+/// 未初期化時に false を返すのは、この値が開発用の機能を開く側の判定源なので、
+/// 不明なら安全側（＝開発用機能を有効にしない側）へ倒すのが妥当なため（`is_editor_play` と同じ考え方）。
+pub fn is_debug_build() -> bool {
+    *DEBUG_BUILD.get().unwrap_or(&false)
+}
+
 // ============================================================
 //  単体テスト
 // ============================================================
@@ -120,5 +148,23 @@ mod tests {
         // 2 回目以降は無視される
         init(false);
         assert!(is_editor_play());
+    }
+
+    /// 開発用のビルドの印のフラグも、未初期化は false・最初の `init_debug_build` だけが効く。
+    ///
+    /// `DEBUG_BUILD` もプロセス共有の `OnceLock` なので、上と同じく 1 つのテスト関数内で順に検証する
+    /// （crate のテストで `init_debug_build` を呼ぶのはこのテストだけ）。
+    #[test]
+    fn init_debug_build_is_applied_only_once() {
+        // 未初期化なら false（印の無い・pak を開かない実行と同じ安全側）
+        assert!(!is_debug_build());
+
+        // 最初の init が効く
+        init_debug_build(true);
+        assert!(is_debug_build());
+
+        // 2 回目以降は無視される
+        init_debug_build(false);
+        assert!(is_debug_build());
     }
 }

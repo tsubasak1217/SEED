@@ -61,6 +61,9 @@
     <Compile Include="..\..\src\Packaging\Pak\AssetPakBuilder.cs">
       <Link>Linked\Packaging\Pak\AssetPakBuilder.cs</Link>
     </Compile>
+    <Compile Include="..\..\src\Packaging\Pak\PakBuildManifest.cs">
+      <Link>Linked\Packaging\Pak\PakBuildManifest.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Packaging\Runtime\DotnetRuntimeBundler.cs">
       <Link>Linked\Packaging\Runtime\DotnetRuntimeBundler.cs</Link>
     </Compile>

@@ -2493,6 +2493,9 @@ const APP_ENV_KIND_TARGET_FPS: i32 = 2;
 /// `ffi_app_env` の kind: 解決後の垂直同期が有効か（auto の解決結果を含む）。
 /// C# 側 ScriptHost.AppEnvKindVsyncEnabled と同値であること。
 const APP_ENV_KIND_VSYNC_ENABLED: i32 = 3;
+/// `ffi_app_env` の kind: 開発用のビルドか（pak に開発用の「ビルドの印」がある。engine::pak::build_manifest）。
+/// C# 側 ScriptHost.AppEnvKindDebugBuild と同値であること。
+const APP_ENV_KIND_DEBUG_BUILD: i32 = 4;
 
 /// 実行環境の真偽値を 1 つ返す（SEED.Application の判定源）。
 ///
@@ -2526,6 +2529,8 @@ unsafe extern "system" fn ffi_app_env(kind: i32) -> i32 {
         // 解決後の VSync 有無は Renderer::new が確定させたグローバルを読む
         APP_ENV_KIND_VSYNC_ENABLED =>
             crate::engine::core::renderer::present_mode::effective_vsync_on(),
+        // 開発用のビルドの印は App::init_asset_fs が pak を開いた直後に確定させたフラグ
+        APP_ENV_KIND_DEBUG_BUILD => crate::engine::app_env::is_debug_build(),
         // 未知の kind は「偽」と区別できるよう -1 を返す
         _ => return -1,
     };

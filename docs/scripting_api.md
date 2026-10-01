@@ -3109,24 +3109,36 @@ int n = SEED.Events.SubscriberCount("Bite");  // 現在の購読件数（デバ�
 「今このゲームがどういう立場で動いているか」を調べる API です。
 主な用途は **デバッグ機能を配布版で自動的に無効化する** こと。
 デバッグ表示・当たり判定の可視化・チートコマンドを `SEED.Application.IsDebugAllowed` で囲っておけば、
-パッケージ（`assets.pak` 同梱）の実行ファイルではそれらが動かなくなります。
+配布用（release）のパッケージ（`assets.pak` 同梱）ではそれらが動かなくなります。
+開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウのビルド種別 Debug）は pak 実行でも動きます（`IsDebugBuild`）。
 
 ```csharp
-public static bool IsPackaged;      // パッケージ実行（assets.pak 同梱の配布版）なら true
+public static bool IsPackaged;      // パッケージ実行（assets.pak 同梱）なら true（開発用のビルドの pak 実行も true）
 public static bool IsEditorPlay;    // エディタから Play したゲーム実行中なら true
-public static bool IsDebugAllowed;  // デバッグ機能を有効にしてよいか（現在は !IsPackaged）
+public static bool IsDebugBuild;    // 開発用のビルド（pak に開発用のビルドの印がある）なら true。配布用（release）のビルドでは必ず false
+public static bool IsDebugAllowed;  // デバッグ機能を有効にしてよいか（!IsPackaged || IsDebugBuild。配布用のビルドでは必ず false）
 public static int  TargetFps;       // プロジェクト設定の目標フレームレート（0 = 無制限。描画品質プリセットの target_fps の上限を当てた値）。設定値であって実測ではない
 public static bool VsyncEnabled;    // 垂直同期が実際に有効か（設定 "auto" の解決結果を含む）
 ```
 
 ### 各プロパティの値
 
-| 実行のしかた | `IsPackaged` | `IsEditorPlay` | `IsDebugAllowed` |
-|---|---|---|---|
-| エディタで Play | false | **true** | **true** |
-| エディタの編集中ビュー（Edit モード） | false | false | **true** |
-| ビルドした配布版（`assets.pak` あり）を単体起動 | **true** | false | false |
-| 実ファイルの assets を隣に置いた単体起動（pak なし） | false | false | **true** |
+| 実行のしかた | `IsPackaged` | `IsEditorPlay` | `IsDebugBuild` | `IsDebugAllowed` |
+|---|---|---|---|---|
+| エディタで Play | false | **true** | false | **true** |
+| エディタの編集中ビュー（Edit モード） | false | false | false | **true** |
+| 開発用のビルド（SeedAndroid の debug の APK・SeedPak `--debug-build`・パッケージ化ウィンドウの Debug）の pak 実行 | **true** | false | **true** | **true** |
+| 配布用（release）のビルド（`assets.pak` あり）を単体起動 | **true** | false | false | false |
+| 実ファイルの assets を隣に置いた単体起動・pak の無い開発用の APK（`--assets-dir`） | false | false | false | **true** |
+
+### 開発用のビルドの印（`IsDebugBuild` の判定源）
+
+| 項目 | 内容 |
+|---|---|
+| 印の正体 | pak の中の予約のエントリ `.seed/build.json`（中身 `{"format":1,"debug":true}`）。パッケージ化が**開発用のビルドのときだけ**入れる |
+| 入れるビルド | SeedAndroid / エディタの Android 実行の開発用（debug）の APK（`--variant debug`。Rust の最適化 `--release` には依らない）・SeedPak `--debug-build`・パッケージ化ウィンドウのビルド種別 Debug（Windows / macOS / iOS） |
+| 入れないビルド | 配布用（release）の APK / AAB・パッケージ化ウィンドウのビルド種別 Release。Android の配布前の検査は、印のある配布物を不合格にする |
+| 読むとき | 起動時に pak を開いた直後に 1 回（印が無い・読めない・知らない版なら false＝安全側）。pak の外のファイル・端末の上書き層からは読まない |
 
 ### 例: デバッグ表示・デバッグコマンドを配布版で無効化する
 
@@ -3181,9 +3193,12 @@ if (SEED.Application.IsEditorPlay)
 | 呼び出しコスト | キャッシュ後はフィールド読み出しのみ。毎フレームの `if` に直接書いてよい |
 | `IsPackaged` の判定源 | `assets.pak` を開けているかどうか。実ファイルの `assets/` を隣に置いた配布形態では **false** になる |
 | `IsEditorPlay` の判定源 | エディタから `--mode=play` かつ IPC パイプ付きで起動されたか。Edit モードは含まない |
-| ホスト API 未登録時 | すべて false（`IsDebugAllowed` は true）。安全側へ倒す既定 |
+| `IsDebugBuild` の判定源 | pak の開発用のビルドの印（上の表）。pak を使わない実行では false（そのとき `IsDebugAllowed` は `!IsPackaged` で true） |
+| ホスト API 未登録時・古いランタイム | すべて false（`IsDebugAllowed` は true）。安全側へ倒す既定（`IsDebugBuild` を知らないランタイムでも false） |
 
-> **重要**: 「開発中だけ動かしたい処理」は `IsPackaged` / `IsEditorPlay` を直接見ずに、必ず `IsDebugAllowed` で分岐してください。判定方針を変えたくなったとき（配布版でも隠しコマンドで有効化する、エディタ Play のときだけに絞る、など）に書き換える場所が 1 か所で済みます。
+> **重要**: 「開発中だけ動かしたい処理」は `IsPackaged` / `IsEditorPlay` / `IsDebugBuild` を直接見ずに、必ず `IsDebugAllowed` で分岐してください。判定方針を変えたくなったとき（配布版でも隠しコマンドで有効化する、エディタ Play のときだけに絞る、など）に書き換える場所が 1 か所で済みます。開発用の課金の操作・サンプルデータ・デバッグの命令（`SEED.Debug.OnCommand`）の登録もこれで囲ってください。
+
+> **重要**: 配布用（release）のビルドでは `IsDebugBuild` と `IsDebugAllowed` は**必ず false** です（印を入れない・配布前の検査が印を見張る）。開発用の APK（debug）を利用者へ配らないでください。開発用の APK では pak 実行でも開発用の機能が開きます。
 
 > **重要**: `IsDebugAllowed` はあくまで**分岐の共通ゲート**であり、コードそのものを配布版から取り除くわけではありません。チート防止として厳密に守りたい処理は、これに頼らず別途対策してください。
 

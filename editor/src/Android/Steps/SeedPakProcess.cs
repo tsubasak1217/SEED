@@ -43,6 +43,9 @@ public static class SeedPakProcess
     /// <summary>アセットフォルダ（プロジェクトの代わりにアセットルートを直接指定する）。</summary>
     public const string AssetsOption = "--assets";
 
+    /// <summary>pak に開発用のビルドの印を入れる（開発用〈debug〉の APK だけ。配布用には付けない）。</summary>
+    public const string DebugBuildOption = "--debug-build";
+
     /// <summary>SeedPak の終了コード: スクリプトのコンパイル・同梱の失敗（editor/tools/SeedPak/Program.cs）。</summary>
     private const int ScriptsFailedExitCode = 4;
 

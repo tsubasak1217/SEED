@@ -14,6 +14,7 @@
 //   7. 追加の起点            : Collect(extraSeeds)・AssetPakBuilder の extraSeeds・SeedPak の --extra-scene
 //                              （Android の実行で未登録のシーンを pak に入れる。段階C-4。ExtraSeedTests.cs）
 //   8. エンジンの C# ライブラリの定数 : scripting/src の既定のプレハブを起点に足す（2026-09-28。EngineLibraryReferenceTests.cs）
+//   9. 開発用のビルドの印     : AssetPakBuilder.Write(debugBuild)・予約の名前・SeedPak の --debug-build（DebugBuildMarkTests.cs）
 // ============================================================
 
 using System;
@@ -69,6 +70,7 @@ public static class Program
         RegisterDotnetBundlerTests(h);
         ExtraSeedTests.Register(h);
         EngineLibraryReferenceTests.Register(h);
+        DebugBuildMarkTests.Register(h);
 
         return h.Run();
     }

@@ -73,7 +73,7 @@ W1・W2 がつなぐ先。根拠はコードと android.md（W0 で読んだも�
 | `Events` | 名前付きのイベントバス（引数 0〜1 個） | — |
 | `Scene` | 名前で遷移（現在のシーンは全部破棄） | タブ・覆いには向かない（アプリは 1 シーン＋プレハブで組む） |
 | `GameObject.Instantiate` | `.actor` プレハブの生成、親を指定した生成 | 生成・破棄はフレーム末尾に反映 |
-| `Application` | `IsPackaged`・`IsDebugAllowed`（デバッグ機能のゲート） | アプリを終える API が無い（backlog） |
+| `Application` | `IsPackaged`・`IsDebugBuild`・`IsDebugAllowed`（デバッグ機能のゲート。`!IsPackaged \|\| IsDebugBuild`＝開発用の APK〈debug〉は pak 実行でも true、配布用〈release〉は必ず false。2026-10-01） | アプリを終える API が無い（backlog） |
 | `Audio` | BGM・効果音（rodio＋cpal。Android は AAudio、`USAGE_MEDIA` 固定） | アラームの音（`USAGE_ALARM`）では鳴らせない → W1 の鳴動サービスが鳴らす |
 
 ## 2. W1: Android サービス層（`SEED.Platform`）

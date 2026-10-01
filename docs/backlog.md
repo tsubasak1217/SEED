@@ -312,6 +312,8 @@
   上の項目と同じく、グローバル状態を触るテストをミューテックスで直列化するか、状態をテストごとに持てる形にする。
   → 2026-10-01 の文字の直し（`cargo test --lib engine::core::font::` の並列実行）でも `image_meta::tests::missing_path_is_cached_as_failure`・
   `poll_keeps_previous_aspect_on_decode_failure` が落ちた（単体・`--test-threads=1` では通る。直しでは触っていないファイル）。
+  → 2026-10-01 の開発用のビルドの印の `cargo test --lib` 全体実行（3447 成功・2 失敗）でも `poll_keeps_previous_aspect_on_decode_failure` と
+  `set_save_int_writes_flag_and_keeps_other_keys` が落ち、後者が `runtime/save/save.json` へテストの値を書いた（2 件とも単体では通る）。
 
 ## deferred の幾何法線（2026-09-13 の遠景ドットノイズ対策の残件）
 
@@ -3676,11 +3678,21 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **PC の模擬で `App.Platform` はホストの OS（Windows）、`App.OsVersion` は模擬の Android の API レベルを返す** — 2026-10-01（W3-5b で指摘）。スクリプトが版を API レベルとして
   読むには `Platform.IsSimulated` と組み合わせる必要がある。docs/scripting_api.md §7.13 に一言足す（または模擬のときは `App.Platform` も Android を返す設定を用意する）。
 - [ ] **Wake or Pay の実機確認 2 回目（2026-10-01 11:00〜12:50、Pixel 6a）で見つかった SEED 側の課題**（記録: `D:\SEED_projects\WakeOrPay\docs\device_checks6-10-01_w3_device2.md`）。
-  (1) **【高】開発用の APK（SeedAndroid の debug）でも `Application.IsDebugAllowed`（＝`!IsPackaged`）が false になり、デバッグの命令・開発用の機能が使えない**。
-  pak 実行＝配布版という前提が、開発用 APK（debug ビルド・pak 同梱）に合わない。案: SeedAndroid の debug ビルドで pak（または APK の assets）に「開発用」の印を入れ、ランタイムが
-  `Application.IsDebugBuild` として読み、`IsDebugAllowed => !IsPackaged || IsDebugBuild` にする（release ビルドでは必ず false）。
+  (1) ~~**【高】開発用の APK（SeedAndroid の debug）でも `Application.IsDebugAllowed`（＝`!IsPackaged`）が false になり、デバッグの命令・開発用の機能が使えない**~~
+  → **済（2026-10-01）**: 開発用のビルドの pak に印（`.seed/build.json`。SeedPak `--debug-build`。SeedAndroid は `--variant debug` のときだけ付ける）を入れ、ランタイムが起動時に読んで
+  `Application.IsDebugBuild` にし、`IsDebugAllowed => !IsPackaged || IsDebugBuild` にした（release は印を入れず、配布前の検査 `debug_build_mark` が印のある配布物を不合格にする。
+  docs/android.md §24.14・docs/scripting_api.md §7.11・docs/packaging.md §4）。**実機でデバッグの命令・開発用の機能が出ることは次の実機確認で確かめる**（下の「開発用のビルドの印の残り」）。
   (2) **【高】背面でも GPU の割り当て約 705 MB（GL mtrack）が残る**（TOTAL PSS 背面 796 MB・前面 853 MB。前回の低メモリでの停止の原因）。UI だけのアプリでも
   Deferred（`deferred=true`・`gi=Rt`）の G-Buffer・bindless 4096 などの 3D の資源を確保している見込み（推測。内訳は未計測）。案: プロジェクト設定で 3D の描画資源を
   確保しない「2D/UI だけ」の構成を用意する、背面へ回ったら解放する、資源ごとの計測のログ。
   (3) 編集画面の組み立てが約 0.39 秒（4 フレーム × 約 95 ms。時刻ホイールの行の生成の見込み）で、押してから約 0.4 秒は画面が変わらない。WakeOrPay 側の最適化（行の使い回し・作り置き）が主だが、
   プレハブの Instantiate とスクリプトの開始の重さは SEED 側でも計測して軽くする余地がある。
+- [ ] **開発用のビルドの印の残り** — 2026-10-01（上の (1) の対応。docs/android.md §24.14）。
+  (1) **実機の確認**: 印の入った Wake or Pay の開発用 APK（`C:\Users\k023g\.claude\jobs\434062fd\tmp\w3_device\wakeorpay-debugflag.apk`。SHA-256 `271C629B…7D7D`）を入れ、logcat に
+  `[SEED INIT] build manifest: .seed/build.json あり・debug=true` が出ること、`SCRIPT_DEBUG:wop,…` が効くこと、開発用のチャージ・サンプルデータが出ることを確かめる（PC のパッケージ実行では確認済み）。
+  (2) **署名した配布用の APK / AAB での確認**（鍵が無いので未実施）: `build --variant release` の pak に印が入らず、要件チェック `debug_build_mark` が合格になること
+  （今回は SeedPak の配布用の pak と、それに差し替えた無署名の写しで確かめた）。
+  (3) 起動ログの `[SEED ENV] 起動形態: パッケージ実行（配布物）` は印の有無に関わらず同じ（環境の報告は pak を開く前に書く。直後の `[SEED INIT] build manifest:` の行で分かる）。
+  紛らわしければ、印を読んだ後に「パッケージ実行（開発用のビルド）」と書き分ける。
+  (4) パッケージ化ウィンドウの Windows / macOS / iOS の「ビルド種別 Debug」は、印を入れるようになった（pak 実行でも `IsDebugAllowed` が true。以前は false）。
+  ウィンドウの欄に「Debug は開発用の機能が開く」旨の注記は無い（エディタを起動して目で確かめていない）。配布するものは Release で作る。

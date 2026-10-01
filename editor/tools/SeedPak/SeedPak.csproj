@@ -62,6 +62,10 @@
     <Compile Include="..\..\src\Packaging\Pak\AssetPakBuilder.cs">
       <Link>Linked\Packaging\Pak\AssetPakBuilder.cs</Link>
     </Compile>
+    <!-- pak の「ビルドの印」（引数 debug-build で開発用の印を入れる） -->
+    <Compile Include="..\..\src\Packaging\Pak\PakBuildManifest.cs">
+      <Link>Linked\Packaging\Pak\PakBuildManifest.cs</Link>
+    </Compile>
     <!-- 配布物のフォルダ構成（assets.pak の名前）と、収録ルールを読む設定ファイル -->
     <Compile Include="..\..\src\Packaging\PackageLayout.cs">
       <Link>Linked\Packaging\PackageLayout.cs</Link>

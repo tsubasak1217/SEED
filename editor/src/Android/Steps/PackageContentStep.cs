@@ -11,6 +11,11 @@
 //  Project/AndroidPakSceneSeeds）を SeedPak の --extra-scene で渡し、登録シーンに加えて収録の起点にさせる。
 //  足したシーンは pak の指紋にも入っている（Plan/AndroidStepFingerprints.PackageContent）。
 //
+//  【開発用のビルドの印】
+//  開発用（debug）の APK では SeedPak に --debug-build を付け、pak に開発用のビルドの印（.seed/build.json）を入れる
+//  （AndroidRunRequest.MarksDebugBuild。ランタイムは pak 実行でも SEED.Application.IsDebugAllowed を true にする）。
+//  配布用（release）では付けない。印の有無は pak の指紋にも入っている（debug → release へ切り替えた最初のビルドで pak を作り直す）。
+//
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
 
@@ -45,8 +50,9 @@ public sealed class PackageContentStep : IAndroidPipelineStep
         string summary;
         if (context.Project is { Mode: AndroidProjectMode.Packaged } project)
         {
+            var debugBuild = context.Request.MarksDebugBuild;
             await SeedPakProcess.RunAsync(
-                context, SeedPakArguments(project.SourceArgument, packageDir, context.PakExtraScenes), log, cancellationToken)
+                context, SeedPakArguments(project.SourceArgument, packageDir, context.PakExtraScenes, debugBuild), log, cancellationToken)
                 .ConfigureAwait(false);
             var pak = Path.Combine(packageDir, PackageLayout.PakFileName);
             if (!File.Exists(pak))
@@ -58,7 +64,8 @@ public sealed class PackageContentStep : IAndroidPipelineStep
                 : new List<FileInfo>();
             summary = $"{PackageLayout.PakFileName} {new FileInfo(pak).Length / BytesPerMegabyte:F1} MB・" +
                       $"{PackageLayout.BinDirName}/ {binFiles.Count} ファイル {binFiles.Sum(f => f.Length) / BytesPerMegabyte:F1} MB" +
-                      (context.PakExtraScenes.Count > 0 ? $"・追加の起点 {string.Join(" / ", context.PakExtraScenes)}" : string.Empty);
+                      (context.PakExtraScenes.Count > 0 ? $"・追加の起点 {string.Join(" / ", context.PakExtraScenes)}" : string.Empty) +
+                      (debugBuild ? "・開発用のビルドの印あり" : "・開発用のビルドの印なし（配布用）");
         }
         else
         {
@@ -71,13 +78,18 @@ public sealed class PackageContentStep : IAndroidPipelineStep
     }
 
     /// <summary>
-    /// SeedPak の引数を作る（純粋な処理）: pak とスクリプトを置き場へ作り、未登録の起動シーンを --extra-scene で収録の起点に足す。
+    /// SeedPak の引数を作る（純粋な処理）: pak とスクリプトを置き場へ作り、未登録の起動シーンを --extra-scene で収録の起点に足し、
+    /// 開発用のビルドなら --debug-build で pak に開発用のビルドの印を入れる。
     /// </summary>
     /// <param name="projectArgument">プロジェクトの指定（SeedPak の --project へそのまま渡す）。</param>
     /// <param name="packageDir">出力先（APK に入れる配布物の置き場）。</param>
     /// <param name="extraScenes">収録の起点に足すシーン（アセットルートからの相対パス。無ければ空）。</param>
+    /// <param name="debugBuild">
+    /// 開発用（debug）の APK か（<see cref="Pipeline.AndroidRunRequest.MarksDebugBuild"/>）。既定は false＝印を入れない（配布用）。
+    /// </param>
     /// <returns>SeedPak の引数。</returns>
-    public static IReadOnlyList<string> SeedPakArguments(string projectArgument, string packageDir, IReadOnlyList<string> extraScenes)
+    public static IReadOnlyList<string> SeedPakArguments(
+        string projectArgument, string packageDir, IReadOnlyList<string> extraScenes, bool debugBuild = false)
     {
         var arguments = new List<string>
         {
@@ -88,6 +100,7 @@ public sealed class PackageContentStep : IAndroidPipelineStep
             arguments.Add(SeedPakProcess.ExtraSceneOption);
             arguments.Add(scene);
         }
+        if (debugBuild) arguments.Add(SeedPakProcess.DebugBuildOption);
         return arguments;
     }
 }

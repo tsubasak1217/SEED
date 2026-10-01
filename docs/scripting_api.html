@@ -2157,17 +2157,19 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
 </section>
 
 <!-- ════════════════ 7.11 Application ════════════════ -->
-<section id="sec-application" data-keywords="Application アプリケーション 実行環境 パッケージ 配布 ビルド IsPackaged IsEditorPlay IsDebugAllowed デバッグ ゲート 無効化 pak assets.pak エディタ Play TargetFps 目標fps フレームレート VsyncEnabled 垂直同期 vsync">
+<section id="sec-application" data-keywords="Application アプリケーション 実行環境 パッケージ 配布 ビルド IsPackaged IsEditorPlay IsDebugBuild IsDebugAllowed デバッグ ゲート 無効化 開発用 開発用のビルド ビルドの印 debug release APK pak assets.pak .seed/build.json エディタ Play TargetFps 目標fps フレームレート VsyncEnabled 垂直同期 vsync">
   <h2>7.11 Application（実行環境の判定：デバッグ機能のゲート）</h2>
   <p class="section-note">
     「今このゲームがどういう立場で動いているか」を調べる API です。主な用途は
     <b>デバッグ機能を配布版で自動的に無効化する</b>こと。デバッグ表示・当たり判定の可視化・チートコマンドを
-    <code>Application.IsDebugAllowed</code> で囲っておけば、パッケージ（<code>assets.pak</code> 同梱）の
-    実行ファイルではそれらが動かなくなります。
+    <code>Application.IsDebugAllowed</code> で囲っておけば、配布用（release）のパッケージ（<code>assets.pak</code> 同梱）では
+    それらが動かなくなります。開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウのビルド種別 Debug）は
+    pak 実行でも動きます（<code>IsDebugBuild</code>）。
   </p>
-  <div class="api"><code class="sig">Application.IsPackaged</code><span class="desc">bool。パッケージ実行（assets.pak 同梱の配布版）なら true</span></div>
+  <div class="api"><code class="sig">Application.IsPackaged</code><span class="desc">bool。パッケージ実行（assets.pak 同梱）なら true（開発用のビルドの pak 実行も true）</span></div>
   <div class="api"><code class="sig">Application.IsEditorPlay</code><span class="desc">bool。エディタから Play したゲーム実行中なら true（Edit モードは false）</span></div>
-  <div class="api"><code class="sig">Application.IsDebugAllowed</code><span class="desc">bool。デバッグ機能を有効にしてよいか（現在の定義は !IsPackaged）</span></div>
+  <div class="api"><code class="sig">Application.IsDebugBuild</code><span class="desc">bool。開発用のビルド（pak に開発用のビルドの印 .seed/build.json がある）なら true。配布用（release）のビルドでは必ず false</span></div>
+  <div class="api"><code class="sig">Application.IsDebugAllowed</code><span class="desc">bool。デバッグ機能を有効にしてよいか（!IsPackaged || IsDebugBuild。配布用のビルドでは必ず false）</span></div>
   <div class="api"><code class="sig">Application.TargetFps</code><span class="desc">int。プロジェクト設定の目標フレームレート（0 = 無制限。描画品質プリセットの target_fps の上限を当てた値）。設定値であって実測ではない（実測は Time.Fps）</span></div>
   <div class="api"><code class="sig">Application.VsyncEnabled</code><span class="desc">bool。垂直同期が実際に有効か（プロジェクト設定 "auto" の解決結果まで含んだ実際の値）</span></div>
 <pre><span class="c">// デバッグ HUD は開発中だけ出す</span>
@@ -2189,11 +2191,19 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <span class="t">SEED.Debug</span>.OnCommand(<span class="s">"giveitem"</span>, arg =&gt; GiveItem(arg));
 }</pre>
   <table>
-    <tr><th>実行のしかた</th><th>IsPackaged</th><th>IsEditorPlay</th><th>IsDebugAllowed</th></tr>
-    <tr><td>エディタで Play</td><td>false</td><td><b>true</b></td><td><b>true</b></td></tr>
-    <tr><td>エディタの編集中ビュー（Edit モード）</td><td>false</td><td>false</td><td><b>true</b></td></tr>
-    <tr><td>配布版（<code>assets.pak</code> あり）を単体起動</td><td><b>true</b></td><td>false</td><td>false</td></tr>
-    <tr><td>実ファイルの assets を隣に置いた単体起動（pak なし）</td><td>false</td><td>false</td><td><b>true</b></td></tr>
+    <tr><th>実行のしかた</th><th>IsPackaged</th><th>IsEditorPlay</th><th>IsDebugBuild</th><th>IsDebugAllowed</th></tr>
+    <tr><td>エディタで Play</td><td>false</td><td><b>true</b></td><td>false</td><td><b>true</b></td></tr>
+    <tr><td>エディタの編集中ビュー（Edit モード）</td><td>false</td><td>false</td><td>false</td><td><b>true</b></td></tr>
+    <tr><td>開発用のビルド（SeedAndroid の debug の APK・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウの Debug）の pak 実行</td><td><b>true</b></td><td>false</td><td><b>true</b></td><td><b>true</b></td></tr>
+    <tr><td>配布用（release）のビルド（<code>assets.pak</code> あり）を単体起動</td><td><b>true</b></td><td>false</td><td>false</td><td>false</td></tr>
+    <tr><td>実ファイルの assets を隣に置いた単体起動・pak の無い開発用の APK（<code>--assets-dir</code>）</td><td>false</td><td>false</td><td>false</td><td><b>true</b></td></tr>
+  </table>
+  <table>
+    <tr><th>開発用のビルドの印</th><th>内容</th></tr>
+    <tr><td>印の正体</td><td>pak の中の予約のエントリ <code>.seed/build.json</code>（中身 <code>{"format":1,"debug":true}</code>）。パッケージ化が<b>開発用のビルドのときだけ</b>入れる</td></tr>
+    <tr><td>入れるビルド</td><td>SeedAndroid / エディタの Android 実行の開発用（debug）の APK（<code>--variant debug</code>。Rust の最適化 <code>--release</code> には依らない）・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウのビルド種別 Debug（Windows / macOS / iOS）</td></tr>
+    <tr><td>入れないビルド</td><td>配布用（release）の APK / AAB・パッケージ化ウィンドウのビルド種別 Release。Android の配布前の検査は、印のある配布物を不合格にする</td></tr>
+    <tr><td>読むとき</td><td>起動時に pak を開いた直後に 1 回（印が無い・読めない・知らない版なら false＝安全側）。pak の外のファイル・端末の上書き層からは読まない</td></tr>
   </table>
   <table>
     <tr><th>項目</th><th>内容</th></tr>
@@ -2201,12 +2211,19 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <tr><td>呼び出しコスト</td><td>キャッシュ後はフィールド読み出しのみ。毎フレームの <code>if</code> に直接書いてよい</td></tr>
     <tr><td><code>IsPackaged</code> の判定源</td><td><code>assets.pak</code> を開けているかどうか。実ファイルの <code>assets/</code> を隣に置いた配布形態では <b>false</b></td></tr>
     <tr><td><code>IsEditorPlay</code> の判定源</td><td>エディタから <code>--mode=play</code> かつ IPC パイプ付きで起動されたか。Edit モードは含まない</td></tr>
-    <tr><td>ホスト API 未登録時</td><td>すべて false（<code>IsDebugAllowed</code> は true）。安全側へ倒す既定</td></tr>
+    <tr><td><code>IsDebugBuild</code> の判定源</td><td>pak の開発用のビルドの印（上の表）。pak を使わない実行では false（そのとき <code>IsDebugAllowed</code> は <code>!IsPackaged</code> で true）</td></tr>
+    <tr><td>ホスト API 未登録時・古いランタイム</td><td>すべて false（<code>IsDebugAllowed</code> は true）。安全側へ倒す既定（<code>IsDebugBuild</code> を知らないランタイムでも false）</td></tr>
   </table>
   <div class="warn">
-    「開発中だけ動かしたい処理」は <code>IsPackaged</code> / <code>IsEditorPlay</code> を直接見ずに、必ず
+    「開発中だけ動かしたい処理」は <code>IsPackaged</code> / <code>IsEditorPlay</code> / <code>IsDebugBuild</code> を直接見ずに、必ず
     <code>IsDebugAllowed</code> で分岐してください。判定方針を変えたくなったとき（配布版でも隠しコマンドで有効化する、
-    エディタ Play のときだけに絞る、など）に書き換える場所が 1 か所で済みます。
+    エディタ Play のときだけに絞る、など）に書き換える場所が 1 か所で済みます。開発用の課金の操作・サンプルデータ・
+    デバッグの命令（<code>SEED.Debug.OnCommand</code>）の登録もこれで囲ってください。
+  </div>
+  <div class="warn">
+    配布用（release）のビルドでは <code>IsDebugBuild</code> と <code>IsDebugAllowed</code> は<b>必ず false</b> です
+    （印を入れない・配布前の検査が印を見張る）。開発用の APK（debug）を利用者へ配らないでください。
+    開発用の APK では pak 実行でも開発用の機能が開きます。
   </div>
   <div class="warn">
     <code>IsDebugAllowed</code> はあくまで<b>分岐の共通ゲート</b>であり、コードそのものを配布版から取り除くわけではありません。

@@ -78,6 +78,9 @@ public static class AndroidRequirementIds
     /// <summary>署名の証明書（デバッグ用の鍵でないこと）。</summary>
     public const string Certificate = "certificate";
 
+    /// <summary>配布物の pak に開発用のビルドの印が無いこと（配布前の安全弁）。</summary>
+    public const string DebugBuildMark = "debug_build_mark";
+
     /// <summary>配布物を調べる道具（aapt2・zipalign・apksigner・keytool）の問題。</summary>
     public const string Tools = "inspection_tools";
 

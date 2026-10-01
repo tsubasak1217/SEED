@@ -19,6 +19,7 @@ Android の APK へ同梱する形は §10。
 | `editor/src/Packaging/Pak/PakWriter.cs` | `assets.pak` の書き出し |
 | `editor/src/Packaging/Pak/AssetPathRewriter.cs` | 絶対パス → `assets://` の書き換え |
 | `editor/src/Packaging/Pak/AssetPakBuilder.cs` | **PAK 作りの手順**（収集 → 報告 → 書き出し → 報告）とログの書式。パッケージ化ウィンドウと SeedPak が共有する |
+| `editor/src/Packaging/Pak/PakBuildManifest.cs` | 開発用のビルドの印（pak の `.seed/build.json`）の書き手（§4）。読み手の正典は `runtime/src/engine/pak/build_manifest.rs` |
 | `editor/tools/SeedPak/` | エディタを起動せずに `assets.pak` を作るコンソールツール（§10） |
 | `editor/src/Packaging/Scripts/ScriptPackager.cs` | **ユーザースクリプトの事前コンパイル**とスクリプトホストの同梱 |
 | `editor/src/Packaging/Runtime/DotnetRuntimeBundler.cs` | **.NET ランタイムの同梱**（検出・バージョン選択・コピー） |
@@ -230,6 +231,23 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 エントリ表に書いたサイズと実際の書き込み量は必ず一致させる。
 書き出し中に外部からファイルが変わった場合は 0 埋め／切り捨てで整合させ、件数を警告に出す
 （PAK 自体は壊れない）。
+
+### 開発用のビルドの印（`.seed/build.json`。2026-10-01）
+
+開発用のビルドの pak には、収録ファイルの後ろに**ビルドの印**のエントリを 1 つ足す（形式は変えない。`PakWriter` の生成エントリ）。
+ランタイムは起動時に pak を開いた直後に読み、スクリプトの `SEED.Application.IsDebugBuild` にする
+（`IsDebugAllowed = !IsPackaged || IsDebugBuild`。開発用のビルドでは pak 実行でもデバッグの命令・開発用の機能が使える。[scripting_api.md](scripting_api.md) §7.11）。
+
+| 項目 | 内容 |
+|---|---|
+| エントリ名 | `.seed/build.json`（予約の名前。エディタ `PackageLayout.BuildManifestEntryPath`・ランタイム `package_layout::BUILD_MANIFEST_ENTRY`。両側のテストで文字列を固定） |
+| 中身 | UTF-8 の JSON `{"format":1,"debug":true}`（書き手 `editor/src/Packaging/Pak/PakBuildManifest.cs`、読み手の正典 `runtime/src/engine/pak/build_manifest.rs`。知らない版・読めない・`debug` が true でない → 開発用ではない＝安全側） |
+| 入れるとき | **開発用のビルドだけ**: パッケージ化ウィンドウのビルド種別 **Debug**（Windows / macOS / iOS）・SeedPak `--debug-build`・SeedAndroid / エディタの Android 実行の開発用（debug）の APK |
+| 入れないとき | ビルド種別 Release・SeedPak の既定（`--debug-build` なし）・Android の配布用（release）の APK / AAB。Android の配布前の検査（[android.md](android.md) §24.8 の `debug_build_mark`）は印のある配布物を不合格にする |
+| 予約の名前 | 利用者が `assets/.seed/build.json` を置いていても pak に入れない（`AssetPakBuilder` が警告を出して収録一覧から外す。配布用のビルドに印として紛れ込ませないため） |
+
+- **Windows のビルド種別 Debug のパッケージは、2026-10-01 から pak 実行でも `IsDebugAllowed` が true になる**（以前は false）。
+  配布するものは Release で作ること。印を入れたかはビルドのログの `開発用のビルドの印: 入れる／入れない` の行で分かる。
 
 ### 書き換え後のパス表記について
 
@@ -698,6 +716,7 @@ dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォ
 | `--scripts` | 加えて `<出力フォルダ>/bin/` にスクリプトを作る。パッケージ化ウィンドウと同じ `ScriptPackager`（§5）で、アセット配下の `.cs` を `SEEDUserScripts.dll` へ事前コンパイルし、スクリプトホスト（`SEEDScripting.dll`・`SEEDScripting.runtimeconfig.json`・`.deps.json`・Roslyn）を `scripting/bin/Debug/net10.0/` から写す。スクリプトホストの場所は `--runtime-src` の親（`runtime/`）から探す |
 | `--scripts-only` | `bin/` だけを作る（PAK は作らない。Android の `-PushScripts` で DLL だけを差し替えるとき） |
 | `--extra-scene <シーン>` | 段階C-4。`project_settings.json` の登録シーンに加えて**収録の起点にするシーン**（繰り返し指定できる）。アセットルートからの相対パス・`assets://…`・アセットルート内の絶対パス（登録シーンと同じ書き方）。そのシーンと、そこから参照をたどれるものを PAK に入れる（`AssetPakBuilder.Collect` の `extraSeeds` → `AssetCollector.Collect(extraSeeds)`。既定の起点は 1 つも減らさない）。無いシーン・アセットルートの外は `⚠ 追加の起点の実体がありません（スキップ）` と欠落の報告（参照元 `(指定された起点)`）を出して飛ばす（終了コードは変えない）。`--scripts-only` とは併用できない（引数の誤り） |
+| `--debug-build` | 2026-10-01。PAK に**開発用のビルドの印**（`.seed/build.json`。§4）を入れる。ランタイムは pak 実行でも `SEED.Application.IsDebugBuild` / `IsDebugAllowed` を true にする。付けなければ配布用（印を入れない）。SeedAndroid は開発用（debug）の APK のときだけ付ける。`--scripts-only` とは併用できない（引数の誤り） |
 
 - 収録ルールはパッケージ化ウィンドウと同じ `<アセットルート>/packaging_settings.json` の `assets`（無ければ既定値）。
 - アセットルートは**エディタが使うパスと同じ表記**で渡すこと（§7 と同じ注意。シーン内の絶対パス参照の照合と
@@ -708,7 +727,7 @@ dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォ
 - SeedPak は `scripting/SEEDScripting.csproj` を参照しているので、`dotnet run` のたびにスクリプトホストもビルドされ、同梱する
   `SEEDScripting.dll` が常に最新になる（`ScriptPrecompileTests` と同じ組み方）。
 - Android の APK へ入れるときは SeedAndroid（`editor/tools/SeedAndroid`。[android.md](android.md) §5。`runtime/android/build_and_run.ps1` は
-  そのラッパー）の `--project <フォルダ>` がこのツールを `--out runtime/android/app/src/main/assets/seed --scripts` で呼ぶ
+  そのラッパー）の `--project <フォルダ>` がこのツールを `--out runtime/android/app/src/main/assets/seed --scripts`（開発用の APK は `--debug-build` も）で呼ぶ
   （`push`・`--push-scripts` では `--scripts-only`）。アセット・パッケージ化のコードが前回から変わっていなければ呼ばない。
   起動するシーン（エディタの開いているシーン・SeedAndroid の `--scene`）がシーンマネージャに未登録なら、そのシーンを `--extra-scene` で渡す
   （判断は `editor/src/Android/Project/AndroidPakSceneSeeds.cs`。足すシーンは pak の指紋にも入るので、未登録のシーンへ切り替えた最初の実行だけ

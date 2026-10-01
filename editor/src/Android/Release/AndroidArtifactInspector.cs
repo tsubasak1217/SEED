@@ -8,6 +8,8 @@
 //    .so の整列   … zip の中の lib/<ABI>/*.so（AAB は base/lib/）の先頭だけを読み、ELF の LOAD の整列（ElfAlignmentReader）
 //    zip の整列   … APK だけ zipalign -c -P 16 4（非圧縮の .so が 16 KB 境界にあるか。圧縮した .so は対象外）
 //    署名         … APK: apksigner verify --print-certs -v ／ AAB: keytool -printcert -jarfile（JAR 形式の署名）
+//    ビルドの印   … zip の中の pak（APK: assets/seed/assets.pak・AAB: base/assets/seed/assets.pak）のエントリ表だけを読み、
+//                   開発用のビルドの印（PackageLayout.BuildManifestEntryPath）のエントリがあるか（道具は使わない。配布前の安全弁）
 //  道具が無い・失敗したときは例外にせず ToolProblems に理由を入れる（判定は「調べられなかった」＝不合格として出す）。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
@@ -23,6 +25,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using SEEDEditor.Android.Pipeline;
 using SEEDEditor.Android.Processes;
+using SEEDEditor.Android.Project;
 using SEEDEditor.Android.Signing;
 using SEEDEditor.Android.Toolchain;
 using SEEDEditor.Packaging;
@@ -34,6 +37,15 @@ public static class AndroidArtifactInspector
 {
     /// <summary>APK の中の .so の置き場の頭。</summary>
     public const string ApkLibPrefix = "lib/";
+
+    /// <summary>APK の中のアセットの置き場の頭（AAB では base/ の下）。</summary>
+    private const string ApkAssetsPrefix = "assets/";
+
+    /// <summary>
+    /// APK の中の pak の名前（assets/seed/assets.pak。AAB は <see cref="BundleBasePrefix"/> を前に付ける）。
+    /// 配布物のルートの名前は AndroidRuntimeContract.ApkPackageRootName（runtime/android/native の APK_PACKAGE_ROOT と一致）。
+    /// </summary>
+    public const string ApkPakEntry = ApkAssetsPrefix + AndroidRuntimeContract.ApkPackageRootName + "/" + PackageLayout.PakFileName;
 
     /// <summary>AAB の base モジュールの頭。</summary>
     public const string BundleBasePrefix = "base/";
@@ -124,8 +136,40 @@ public static class AndroidArtifactInspector
             ZipAligned = zipAligned,
             ZipAlignDetail = zipAlignDetail,
             Signer = signer,
+            // 開発用のビルドの印（道具は使わない。読めなかった理由は判定の項目そのものに出す）
+            DebugBuildMark = ReadDebugBuildMark(artifactPath, format),
             ToolProblems = problems,
         };
+    }
+
+    /// <summary>
+    /// 配布物の zip の中の pak のエントリ表を読み、開発用のビルドの印（<see cref="PackageLayout.BuildManifestEntryPath"/>）が
+    /// あるかを調べる（配布前の安全弁）。pak の中身は読まない（表だけを先頭から読み進める。AAB の中で圧縮されていても読める）。
+    /// </summary>
+    /// <param name="artifactPath">APK か AAB。</param>
+    /// <param name="format">形式（AAB は base/ の下を見る）。</param>
+    /// <returns>調べた結果（例外は投げず、読めなかった理由を入れて返す）。</returns>
+    public static AndroidDebugBuildMarkFact ReadDebugBuildMark(string artifactPath, AndroidPackageFormat format)
+    {
+        var pakEntry = (format == AndroidPackageFormat.Aab ? BundleBasePrefix : string.Empty) + ApkPakEntry;
+        try
+        {
+            using var archive = ZipFile.OpenRead(artifactPath);
+            var entry = archive.GetEntry(pakEntry);
+            if (entry is null)
+            {
+                // pak を入れない配布物（プロジェクト無しのビルド）。印の入れ先が無い
+                return new AndroidDebugBuildMarkFact(pakEntry, PakFound: false, MarkPresent: false, Error: null);
+            }
+            using var stream = entry.Open();
+            var paths = PakEntryIndex.ReadEntryPaths(stream, $"{Path.GetFileName(artifactPath)} の {pakEntry}");
+            return new AndroidDebugBuildMarkFact(
+                pakEntry, PakFound: true, MarkPresent: PakEntryIndex.Contains(paths, PackageLayout.BuildManifestEntryPath), Error: null);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return new AndroidDebugBuildMarkFact(pakEntry, PakFound: false, MarkPresent: false, Error: ex.Message);
+        }
     }
 
     /// <summary>

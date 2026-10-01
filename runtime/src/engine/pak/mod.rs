@@ -24,11 +24,14 @@
 //  アセット、単体テストはメモリ上の Cursor（`from_source`）。形式の解釈はどの読み口でも同じコードを通る。
 //
 //  【構成】
-//    mod.rs    … PakReader（ヘッダー・エントリ表の解釈と読み出し）
-//    source.rs … PakSource（読み口の抽象）
-//    tests.rs  … 単体テスト
+//    mod.rs            … PakReader（ヘッダー・エントリ表の解釈と読み出し）
+//    source.rs         … PakSource（読み口の抽象）
+//    build_manifest.rs … pak に入った「ビルドの印」（予約のエントリ .seed/build.json。開発用のビルドか）の読み取り。
+//                        バイナリ形式は変えず、エントリを 1 つ足すだけの約束（印が無い pak は従来どおり読める）
+//    tests.rs          … 単体テスト
 // ============================================================
 
+pub mod build_manifest;
 mod source;
 // テスト用の PAK 組み立て（build_pak_bytes）を asset_fs・package_source のテストでも使うため crate 内へ公開する。
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //  AndroidArtifactFacts.cs — できた配布物（APK / AAB）から読み直した事実（段階D）
 //
 //  ビルドの設定ではなく「できたもの」を確かめるための材料。読み方は AndroidArtifactInspector（aapt2・zipalign・apksigner・
-//  keytool・zip の中の .so の ELF）、判定は AndroidArtifactChecks（純粋な処理）。
+//  keytool・zip の中の .so の ELF・zip の中の pak のエントリ表〈開発用のビルドの印〉）、判定は AndroidArtifactChecks（純粋な処理）。
 //
 //  WPF に依存しない（コンソールツール・単体テストからリンクされる）。
 // ============================================================
@@ -20,6 +20,15 @@ namespace SEEDEditor.Android.Release;
 /// <param name="Alignment">ELF の LOAD セグメントの整列（読めなければ null）。</param>
 /// <param name="Error">読めなかった理由（読めたら null）。</param>
 public sealed record AndroidNativeLibraryFact(string EntryName, string Abi, bool Compressed, ElfLoadAlignment? Alignment, string? Error);
+
+/// <summary>
+/// 配布物の pak の開発用のビルドの印（配布前の安全弁。印の正典は PackageLayout.BuildManifestEntryPath・Packaging/Pak/PakBuildManifest.cs）。
+/// </summary>
+/// <param name="PakEntryName">zip の中の pak の名前（APK: assets/seed/assets.pak・AAB: base/assets/seed/assets.pak）。</param>
+/// <param name="PakFound">配布物に pak があるか。</param>
+/// <param name="MarkPresent">pak のエントリ表に開発用のビルドの印のエントリがあるか。</param>
+/// <param name="Error">配布物・pak を読めなかった理由（読めたら null）。</param>
+public sealed record AndroidDebugBuildMarkFact(string PakEntryName, bool PakFound, bool MarkPresent, string? Error);
 
 /// <summary>配布物から読み直した事実。</summary>
 public sealed record AndroidArtifactFacts
@@ -44,6 +53,11 @@ public sealed record AndroidArtifactFacts
 
     /// <summary>署名（読めなければ null）。</summary>
     public SignerCertificate? Signer { get; init; }
+
+    /// <summary>
+    /// pak の開発用のビルドの印（調べなかったら null。判定では「調べていない」として不合格にする）。
+    /// </summary>
+    public AndroidDebugBuildMarkFact? DebugBuildMark { get; init; }
 
     /// <summary>道具を動かせなかった・出力を読めなかった理由（判定に「調べられなかった」として出す）。</summary>
     public IReadOnlyList<string> ToolProblems { get; init; } = Array.Empty<string>();

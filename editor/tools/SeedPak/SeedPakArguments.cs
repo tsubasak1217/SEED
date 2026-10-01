@@ -43,6 +43,12 @@ public sealed record SeedPakOptions(
     /// </summary>
     public IReadOnlyList<string> ExtraScenes { get; init; } = Array.Empty<string>();
 
+    /// <summary>
+    /// --debug-build が指定されたか（pak に開発用のビルドの印を入れる。既定は false＝配布用で印を入れない）。
+    /// SeedAndroid は開発用（debug）の APK のときだけ付ける。ランタイムは印を SEED.Application.IsDebugBuild として読む。
+    /// </summary>
+    public bool DebugBuild { get; init; }
+
     /// <summary>assets.pak を作るか。</summary>
     public bool WritesPak => Content != SeedPakContent.ScriptsOnly;
 
@@ -85,6 +91,12 @@ public static class SeedPakArguments
     /// </summary>
     public const string ExtraSceneOption = "--extra-scene";
 
+    /// <summary>
+    /// pak に開発用のビルドの印（.seed/build.json）を入れる（値を取らない）。付けなければ配布用として印を入れない。
+    /// SeedAndroid が開発用（debug）の APK を作るときに付ける（配布用〈release〉では付けない）。
+    /// </summary>
+    public const string DebugBuildOption = "--debug-build";
+
     /// <summary>使い方を表示する。</summary>
     public const string HelpOption = "--help";
 
@@ -100,6 +112,7 @@ public static class SeedPakArguments
           dotnet run --project editor/tools/SeedPak -- --assets <アセットルート> --out <出力フォルダ>
           dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ> --scripts
           dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ> --extra-scene scenes/Stage2.scene
+          dotnet run --project editor/tools/SeedPak -- --project <プロジェクトフォルダ> --out <出力フォルダ> --scripts --debug-build
 
         オプション:
           --project <フォルダ>      プロジェクトフォルダ。<フォルダ>/assets をアセットルートにする
@@ -115,6 +128,9 @@ public static class SeedPakArguments
                                     アセットルートからの相対パス・assets://…・アセットルート内の絶対パス。そのシーンと
                                     そこから参照をたどれるものを PAK に入れる（Android の実行で、シーンマネージャに未登録の
                                     開いているシーンから起動するため）。無いシーンは警告して飛ばす。--scripts-only とは併用できない
+          --debug-build             pak に開発用のビルドの印（.seed/build.json）を入れる。ランタイムは pak 実行でも
+                                    SEED.Application.IsDebugBuild / IsDebugAllowed を true にする（デバッグの命令・開発用の機能が使える）。
+                                    付けなければ配布用（印を入れない）。配布するビルドには付けないこと。--scripts-only とは併用できない
           --help, -h                この説明を表示する
 
         収録ルールはパッケージ化ウィンドウと同じく <アセットルート>/packaging_settings.json を読む（無ければ既定値）。
@@ -134,12 +150,20 @@ public static class SeedPakArguments
         string? project = null, assets = null, output = null, runtimeSource = null;
         var content = SeedPakContent.PakOnly;
         var extraScenes = new List<string>();
+        var debugBuild = false;
 
         for (int i = 0; i < args.Count; i++)
         {
             var arg = args[i];
             if (arg == HelpOption || arg == HelpShortOption)
                 return new SeedPakParseResult(null, ShowHelp: true, Error: null);
+
+            // 値を取らないフラグ（ビルドの種類。開発用なら pak に印を入れる）
+            if (arg == DebugBuildOption)
+            {
+                debugBuild = true;
+                continue;
+            }
 
             // 値を取らないフラグ（何を作るか）
             if (arg is ScriptsOption or ScriptsOnlyOption)
@@ -177,9 +201,12 @@ public static class SeedPakArguments
         // 追加の起点は PAK の収録にだけ効く。PAK を作らない指定と一緒なら、指定の食い違いとして知らせる
         if (extraScenes.Count > 0 && content == SeedPakContent.ScriptsOnly)
             return Fail($"{ExtraSceneOption} は {ScriptsOnlyOption} と同時に指定できません（PAK を作らないため）");
+        // ビルドの印は PAK の中に入る。PAK を作らない指定と一緒なら、印が入ったと思い込まないよう指定の食い違いとして知らせる
+        if (debugBuild && content == SeedPakContent.ScriptsOnly)
+            return Fail($"{DebugBuildOption} は {ScriptsOnlyOption} と同時に指定できません（印を入れる PAK を作らないため）");
 
         return new SeedPakParseResult(
-            new SeedPakOptions(project, assets, output, runtimeSource, content) { ExtraScenes = extraScenes },
+            new SeedPakOptions(project, assets, output, runtimeSource, content) { ExtraScenes = extraScenes, DebugBuild = debugBuild },
             ShowHelp: false, Error: null);
     }
 

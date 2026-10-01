@@ -6,6 +6,8 @@
 //  （Steps/LaunchStep）。pak はプロジェクト設定の開始シーン・シーン一覧から参照をたどって作る
 //  （editor/src/Packaging/Collect/AssetCollector.cs）ため、どこからも参照されていないシーンはディスクにあっても入らない。
 //  そのときは端末が警告して開始シーンで起動するので、理由と直し方を Output にも出す。
+//  配布前の検査（Release/AndroidArtifactInspector）も、配布物（APK / AAB の zip）の中の pak を読み口（Stream）から読み、
+//  開発用のビルドの印（PackageLayout.BuildManifestEntryPath）が入っていないかを確かめるのに使う。
 //
 //  【形式】正典は runtime/src/engine/pak/mod.rs（書き手は editor/src/Packaging/Pak/PakWriter.cs）:
 //    "SEED"（4 バイト）・版 u32 LE（1）・エントリ数 u32 LE ・［パスの長さ u32・パス（UTF-8）・位置 u64・大きさ u64］× エントリ数
@@ -44,25 +46,39 @@ public static class PakEntryIndex
     public static IReadOnlyList<string> ReadEntryPaths(string pakPath)
     {
         using var stream = File.OpenRead(pakPath);
-        using var reader = new BinaryReader(stream, Encoding.UTF8);
+        return ReadEntryPaths(stream, pakPath);
+    }
+
+    /// <summary>
+    /// 読み口の先頭から pak のエントリ名を読む（表だけ。中身は読まない。前へ読み進めるだけなので Seek できない読み口でもよい。
+    /// 配布物の zip の中の pak〈ZipArchiveEntry.Open〉を読むため）。
+    /// </summary>
+    /// <param name="stream">pak の先頭に位置している読み口（閉じない）。</param>
+    /// <param name="label">誤りの説明に出す pak の場所（ファイルのパス・zip の中の名前）。</param>
+    /// <returns>エントリ名（pak に書かれた表記のまま）。</returns>
+    /// <exception cref="InvalidDataException">形式が違う・途中で切れている。</exception>
+    /// <exception cref="IOException">読めない。</exception>
+    public static IReadOnlyList<string> ReadEntryPaths(Stream stream, string label)
+    {
+        using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         try
         {
-            if (!ReadExactly(reader, Magic.Length, pakPath).SequenceEqual(Magic)) throw new InvalidDataException($"pak の目印が SEED ではありません: {pakPath}");
+            if (!ReadExactly(reader, Magic.Length, label).SequenceEqual(Magic)) throw new InvalidDataException($"pak の目印が SEED ではありません: {label}");
             var version = reader.ReadUInt32();
-            if (version != SupportedVersion) throw new InvalidDataException($"知らない pak の版です（{version}）: {pakPath}");
+            if (version != SupportedVersion) throw new InvalidDataException($"知らない pak の版です（{version}）: {label}");
             var count = reader.ReadUInt32();
             var paths = new List<string>();
             for (var i = 0u; i < count; i++)
             {
                 var length = reader.ReadUInt32();
-                paths.Add(Encoding.UTF8.GetString(ReadExactly(reader, checked((int)length), pakPath)));
-                ReadExactly(reader, OffsetAndSizeBytes, pakPath);
+                paths.Add(Encoding.UTF8.GetString(ReadExactly(reader, checked((int)length), label)));
+                ReadExactly(reader, OffsetAndSizeBytes, label);
             }
             return paths;
         }
         catch (EndOfStreamException ex)
         {
-            throw new InvalidDataException($"pak のエントリ表が途中で切れています: {pakPath}", ex);
+            throw new InvalidDataException($"pak のエントリ表が途中で切れています: {label}", ex);
         }
     }
 

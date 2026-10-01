@@ -1151,8 +1151,8 @@ public partial class PackagingWindow : Window
             await BundleDotnetRuntimeAsync(gameOutDir, phaseWatch);
             SetProgress(ProgressAfterDotnetRuntime);
 
-            // アセットを PAK ファイルにまとめる
-            await PackAssetsAsync(gameOutDir, phaseWatch);
+            // アセットを PAK ファイルにまとめる（ビルド種別 Debug なら開発用のビルドの印を入れる）
+            await PackAssetsAsync(gameOutDir, phaseWatch, MarksDebugBuild(platform));
 
             SetProgress(ProgressComplete);
             AppendLog("");
@@ -1450,6 +1450,27 @@ public partial class PackagingWindow : Window
     }
 
     /// <summary>
+    /// デスクトップ（Windows・macOS・iOS）のパッケージに開発用のビルドの印を入れるか（そのプラットフォームのビルド種別が
+    /// Debug のときだけ。Release は必ず入れない）。印のある pak では、ランタイムが pak 実行でも
+    /// SEED.Application.IsDebugAllowed を true にする（デバッグの命令・開発用の機能が配布物で動く）。
+    /// Android は中核が開発用 / 配布用（AndroidRunRequest.MarksDebugBuild）で決めるのでここは通らない。
+    /// </summary>
+    /// <param name="platform">ビルド対象。</param>
+    /// <returns>印を入れるなら true。</returns>
+    private bool MarksDebugBuild(TargetPlatform platform)
+    {
+        var buildType = platform switch
+        {
+            TargetPlatform.Windows => _data.Windows.BuildType,
+            TargetPlatform.macOS   => _data.MacOs.BuildType,
+            TargetPlatform.iOS     => _data.Ios.BuildType,
+            // 該当しないプラットフォームは配布用として扱う（印を入れない側が安全）
+            _                      => BuildType.Release,
+        };
+        return buildType == BuildType.Debug;
+    }
+
+    /// <summary>
     /// 収録アセットを決定し、assets.pak にまとめて出力先へ書き出す。
     ///
     /// <para>
@@ -1459,7 +1480,8 @@ public partial class PackagingWindow : Window
     /// </summary>
     /// <param name="outputDir">出力フォルダ（ここに assets.pak を作る）。</param>
     /// <param name="phaseWatch">フェーズ所要時間の計測用ストップウォッチ。</param>
-    private async Task PackAssetsAsync(string outputDir, Stopwatch phaseWatch)
+    /// <param name="debugBuild">開発用のビルドか（true なら pak に開発用のビルドの印を入れる。<see cref="MarksDebugBuild"/>）。</param>
+    private async Task PackAssetsAsync(string outputDir, Stopwatch phaseWatch, bool debugBuild)
     {
         var pakPath = PackageLayout.PakPath(outputDir);
 
@@ -1491,7 +1513,7 @@ public partial class PackagingWindow : Window
         PakWriteStats stats = default;
         await Task.Run(() =>
         {
-            stats = AssetPakBuilder.Write(pakPath, _assetsPath, result, LogFromWorker, ReportPakProgress);
+            stats = AssetPakBuilder.Write(pakPath, _assetsPath, result, LogFromWorker, ReportPakProgress, debugBuild);
         });
         LogPhase("PAK 書き出し", phaseWatch);
         AssetPakBuilder.ReportWrite(stats, AppendLog);

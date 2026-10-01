@@ -432,6 +432,8 @@ impl App {
     /// - そうでなく assets.pak が実行ファイルの隣（アセットルートの親）にあれば PAK モードで初期化する
     /// - `self.asset_overlay`（Android のデバッグ版の APK のパッケージ実行。実行中の差し替え。docs/android.md §23）ならアセットルートを
     ///   上書き層として PAK より先に読む（asset_fs::FilesystemLayer::Overlay。配布版・PC は常に従来の順）
+    /// - 開いた PAK の「ビルドの印」を読み、開発用のビルドかを実行環境フラグへ確定させる（`init_debug_build_flag`。
+    ///   PAK が無ければ false。スクリプトの SEED.Application.IsDebugBuild / IsDebugAllowed の判定源）
     fn init_asset_fs(&self) {
         use crate::engine::asset_fs::{self, FilesystemLayer};
         use crate::engine::core::package_layout;
@@ -458,7 +460,9 @@ impl App {
         //   アセットルートのフォルダは無くてよい（PAK 実行では無いのが正常なので読めるかの確認もしない）。
         if let Some(package) = &self.package_source {
             let location = package.describe(package_layout::PAK_FILE_NAME);
-            let pak = open_pak_logged(|| package_source::open_pak(package.as_ref()), &location);
+            let mut pak = open_pak_logged(|| package_source::open_pak(package.as_ref()), &location);
+            // ビルドの印は PAK の中のエントリだけから読む（上書き層・PAK 外のアセットは見ない。asset_fs へ渡す前に読む）
+            init_debug_build_flag(pak.as_mut());
             if filesystem == FilesystemLayer::Overlay {
                 eprintln!(
                     "[SEED INIT] asset_fs: 上書き層 {} を pak より先に読みます（デバッグ版の差し替え。docs/android.md §23）",
@@ -496,9 +500,11 @@ impl App {
         }
 
         // PAK を開けなかったとき（壊れている等）は理由をログに残し、ファイルシステムだけで続ける。
-        let pak = pak_path.as_deref().and_then(|path| {
+        let mut pak = pak_path.as_deref().and_then(|path| {
             open_pak_logged(|| PakReader::open(path), &path.display().to_string())
         });
+        // ビルドの印（PAK が無ければ false。エディタの Play・Edit もここを通る）
+        init_debug_build_flag(pak.as_mut());
         asset_fs::init_with(assets_root, pak, None, filesystem);
     }
 
@@ -1053,6 +1059,28 @@ fn open_pak_logged(
             None
         }
     }
+}
+
+/// PAK の「ビルドの印」を読み、開発用のビルドかを実行環境フラグへ確定させる（`init_asset_fs` 専用）。
+///
+/// 判定と理由を起動ログへ 1 行残す（Android は logcat の SEED タグ）。PAK が無い実行（エディタの Play・Edit・
+/// pak の無い開発用の APK）は「開発用のビルドではない」で確定させる（その実行は IsPackaged が false なので、
+/// スクリプトの IsDebugAllowed は印が無くても true のまま）。
+///
+/// # 引数
+/// * `pak` - 開いた PAK（開いていなければ None）
+fn init_debug_build_flag(pak: Option<&mut crate::engine::pak::PakReader>) {
+    use crate::engine::pak::build_manifest;
+
+    let debug_build = match pak {
+        Some(reader) => {
+            let read = build_manifest::read_from_pak(reader);
+            eprintln!("[SEED INIT] build manifest: {}", read.describe());
+            read.is_debug_build()
+        }
+        None => false,
+    };
+    crate::engine::app_env::init_debug_build(debug_build);
 }
 
 /// project_settings.json の JSON テキストから起動ウィンドウの解像度を決定する純関数。

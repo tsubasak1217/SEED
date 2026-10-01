@@ -5,8 +5,9 @@ namespace SEED;
 ///
 /// 主な用途は <b>デバッグ機能を配布版で無効化する</b> こと。
 /// デバッグ表示・当たり判定の可視化・チートコマンドなどを
-/// <see cref="IsDebugAllowed"/> で囲っておけば、パッケージ（assets.pak 同梱）の
-/// 実行ファイルではそれらが自動的に無効になる。
+/// <see cref="IsDebugAllowed"/> で囲っておけば、配布用（release）のパッケージ（assets.pak 同梱）の
+/// 実行ファイルではそれらが自動的に無効になる。開発用のビルド（SeedAndroid の debug の APK・
+/// パッケージ化ウィンドウの Debug のビルド）は pak 実行でも有効のまま（<see cref="IsDebugBuild"/>）。
 ///
 /// <para><b>値は実行中に変化しない</b><br/>
 /// いずれのプロパティも起動時に確定し、ゲーム実行中に変わることはない。
@@ -43,6 +44,9 @@ public static class Application
     /// <summary>エディタからの Play かどうかのキャッシュ（null = 未取得）。</summary>
     private static bool? _isEditorPlay;
 
+    /// <summary>開発用のビルドかどうかのキャッシュ（null = 未取得）。</summary>
+    private static bool? _isDebugBuild;
+
     /// <summary>目標フレームレートのキャッシュ（null = 未取得）。</summary>
     private static int? _targetFps;
 
@@ -56,7 +60,8 @@ public static class Application
     private const int DefaultTargetFps = 60;
 
     /// <summary>
-    /// パッケージ実行（assets.pak を同梱した配布版として動いている）なら true。
+    /// パッケージ実行（assets.pak を読んで動いている）なら true。配布版だけでなく、pak を入れた開発用のビルド
+    /// （SeedAndroid の debug の APK 等。<see cref="IsDebugBuild"/>）も true。
     ///
     /// エディタからの実行（Edit / Play どちらも）ではアセットを実ファイルから読むため false。
     /// </summary>
@@ -73,8 +78,29 @@ public static class Application
         => _isEditorPlay ??= ScriptHost.AppEnv(ScriptHost.AppEnvKindEditorPlay);
 
     /// <summary>
-    /// デバッグ機能を有効にしてよい実行かどうか（現在の定義は <c>!IsPackaged</c>）。
+    /// 開発用のビルドで動いているなら true（パッケージ化が pak に「開発用のビルドの印」を入れたとき）。
     ///
+    /// <para>
+    /// 印を入れるのは開発用のビルドだけ: SeedAndroid の debug の APK（<c>--variant debug</c>。Rust の最適化
+    /// <c>--release</c> には依らない）・SeedPak の <c>--debug-build</c>・パッケージ化ウィンドウのビルド種別 Debug。
+    /// <b>配布用（release）のビルドでは必ず false</b>（印を入れない。Android の配布前の検査は印のある配布物を不合格にする）。
+    /// pak を使わない実行（エディタの Play・Edit、pak の無い開発用の APK）も false
+    /// （その実行は <see cref="IsPackaged"/> が false なので <see cref="IsDebugAllowed"/> は true になる）。
+    /// </para>
+    /// <para>
+    /// 開発用の機能の分岐には、これではなく <see cref="IsDebugAllowed"/> を使うこと（エディタの Play でも有効になる）。
+    /// </para>
+    /// </summary>
+    public static bool IsDebugBuild
+        => _isDebugBuild ??= ScriptHost.AppEnv(ScriptHost.AppEnvKindDebugBuild);
+
+    /// <summary>
+    /// デバッグ機能を有効にしてよい実行かどうか（定義は <c>!IsPackaged || IsDebugBuild</c>）。
+    ///
+    /// <para>
+    /// エディタの Play・Edit と pak の無い実行では true、開発用のビルド（<see cref="IsDebugBuild"/>）は pak 実行でも true、
+    /// <b>配布用（release）のビルドでは必ず false</b>。
+    /// </para>
     /// <para><b>デバッグ機能の共通ゲート</b><br/>
     /// 「開発中だけ動かしたい処理」は個別に <see cref="IsPackaged"/> や
     /// <see cref="IsEditorPlay"/> を見るのではなく、必ずこのプロパティで分岐すること。
@@ -82,7 +108,7 @@ public static class Application
     /// エディタ Play のときだけに絞る）に、書き換えるのはここ 1 箇所で済む。
     /// </para>
     /// </summary>
-    public static bool IsDebugAllowed => !IsPackaged;
+    public static bool IsDebugAllowed => !IsPackaged || IsDebugBuild;
 
     /// <summary>
     /// プロジェクト設定の目標フレームレート（フレーム／秒）。<c>0</c> なら無制限。
