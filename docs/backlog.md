@@ -3675,3 +3675,12 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （自動の確かめは単体起動の SEED.exe に TCP でつなぐ）。MCP のツールにするなら応答の待ち合わせと `seed_batch` の enum を足す。
 - [ ] **PC の模擬で `App.Platform` はホストの OS（Windows）、`App.OsVersion` は模擬の Android の API レベルを返す** — 2026-10-01（W3-5b で指摘）。スクリプトが版を API レベルとして
   読むには `Platform.IsSimulated` と組み合わせる必要がある。docs/scripting_api.md §7.13 に一言足す（または模擬のときは `App.Platform` も Android を返す設定を用意する）。
+- [ ] **Wake or Pay の実機確認 2 回目（2026-10-01 11:00〜12:50、Pixel 6a）で見つかった SEED 側の課題**（記録: `D:\SEED_projects\WakeOrPay\docs\device_checks6-10-01_w3_device2.md`）。
+  (1) **【高】開発用の APK（SeedAndroid の debug）でも `Application.IsDebugAllowed`（＝`!IsPackaged`）が false になり、デバッグの命令・開発用の機能が使えない**。
+  pak 実行＝配布版という前提が、開発用 APK（debug ビルド・pak 同梱）に合わない。案: SeedAndroid の debug ビルドで pak（または APK の assets）に「開発用」の印を入れ、ランタイムが
+  `Application.IsDebugBuild` として読み、`IsDebugAllowed => !IsPackaged || IsDebugBuild` にする（release ビルドでは必ず false）。
+  (2) **【高】背面でも GPU の割り当て約 705 MB（GL mtrack）が残る**（TOTAL PSS 背面 796 MB・前面 853 MB。前回の低メモリでの停止の原因）。UI だけのアプリでも
+  Deferred（`deferred=true`・`gi=Rt`）の G-Buffer・bindless 4096 などの 3D の資源を確保している見込み（推測。内訳は未計測）。案: プロジェクト設定で 3D の描画資源を
+  確保しない「2D/UI だけ」の構成を用意する、背面へ回ったら解放する、資源ごとの計測のログ。
+  (3) 編集画面の組み立てが約 0.39 秒（4 フレーム × 約 95 ms。時刻ホイールの行の生成の見込み）で、押してから約 0.4 秒は画面が変わらない。WakeOrPay 側の最適化（行の使い回し・作り置き）が主だが、
+  プレハブの Instantiate とスクリプトの開始の重さは SEED 側でも計測して軽くする余地がある。
