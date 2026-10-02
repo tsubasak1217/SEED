@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    文字列表のパネル（editor/src/Panels/LocalizationPanel。docs/localization.md §15）の WPF に依らない部分の単体テスト。
+
+    LocalizationTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness を共有）
+      2. SEEDScripting 本体（ランタイム FFI に依存）を参照せず、多言語の純粋な部分（scripting の Localization/Model/*.cs）を
+         リンクで取り込む。パネルの読み書きが実行中と同じ規則（LocaleJson・LocaleTable・LocaleIndex・PluralRules）を
+         使っていることを、同じソースで確かめる
+      3. エディタ側はモデル・読み書き・控え・規則（editor/src/Localization の Json・Model・IO の WPF に依らないもの、
+         Assets/PanelOpenRuleCatalog）だけを取り込む。監視（LocaleFolderWatcher）は Dispatcher を使うので入れない
+
+    確かめること: 書き出し（LocaleJsonWriter。入れ子・配列・エスケープ・ぶつかり）、形を保つ読み込み（LocaleJsonDocument。
+    templates/locale の往復が元のファイルと同じ）、表のモデル（行と列・未訳の数え方・升目の編集・キーの追加/改名/削除・
+    複数形の形・言語の追加/外す/既定/fallback・並び順・保存で書くファイル）、ディスクの読み書き（BOM 無し・旧版の退避・
+    無い/読めないの区別）、外部変更の控え、見本の取り込み、ダブルクリックの規則（panel_open_rules.json）。
+
+    実行方法: dotnet run（project = editor/tests/LocalizationPanelTests。XML のコメントにハイフン 2 つを書けないので引数の名前は省く）
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.LocalizationPanel</RootNamespace>
+    <AssemblyName>LocalizationPanelTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 多言語の純粋な部分（実行中と同じ規則。LocaleJsonWriter もここに入っている） -->
+    <Compile Include="..\..\..\scripting\src\Api\Localization\Model\*.cs">
+      <Link>Linked\Localization\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- テスト対象: 文字列表のモデル・形を保つ読み書き・ディスクの読み書き（監視は Dispatcher を使うので除く） -->
+    <Compile Include="..\..\src\Localization\Json\*.cs;..\..\src\Localization\Model\*.cs">
+      <Link>Linked\Editor\Localization\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Localization\IO\LocaleFolderIO.cs;..\..\src\Localization\IO\LocaleFolderLocator.cs;..\..\src\Localization\IO\LocaleFolderSnapshot.cs;..\..\src\Localization\IO\LocaleTemplateInstaller.cs">
+      <Link>Linked\Editor\Localization\IO\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- 読み書きが使うエディタの部品（WPF に依らない） -->
+    <Compile Include="..\..\src\Assets\SafeFileWriter.cs;..\..\src\Assets\AssetUriPath.cs;..\..\src\Assets\PanelOpenRuleCatalog.cs;..\..\src\Assets\PanelOpenRuleCatalogProvider.cs;..\..\src\Reload\FileContentHash.cs">
+      <Link>Linked\Editor\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- 見本の取り込み（editor/src/Templates の UI に依らない部分。LocalizationTests と同じ組み合わせ） -->
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs;..\..\src\Packaging\Collect\AssetPathUtil.cs;..\..\src\Packaging\Collect\AssetPackagingSettings.cs;..\..\src\Packaging\Collect\AssetReferenceScanner.cs;..\..\src\Packaging\Collect\CSharpCommentSpans.cs;..\..\src\Packaging\Collect\AssetCollectionResult.cs;..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateCategoryNames.cs;..\..\src\Templates\TemplateEntry.cs;..\..\src\Templates\TemplateLibrary.cs;..\..\src\Templates\TemplateLibraryMetadata.cs;..\..\src\Templates\TemplateImportPlan.cs;..\..\src\Templates\TemplateImporter.cs">
+      <Link>Linked\Templates\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

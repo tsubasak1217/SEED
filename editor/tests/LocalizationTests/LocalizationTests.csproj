@@ -35,7 +35,7 @@
     </Compile>
 
     <!-- テンプレートの取り込み（editor/src/Templates の UI に依らない部分。TemplateImportTests と同じ組み合わせ） -->
-    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs;..\..\src\Packaging\Collect\AssetPathUtil.cs;..\..\src\Packaging\Collect\AssetPackagingSettings.cs;..\..\src\Packaging\Collect\AssetReferenceScanner.cs;..\..\src\Packaging\Collect\AssetCollectionResult.cs;..\..\src\Packaging\Collect\AssetCollector.cs">
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs;..\..\src\Packaging\Collect\AssetPathUtil.cs;..\..\src\Packaging\Collect\AssetPackagingSettings.cs;..\..\src\Packaging\Collect\AssetReferenceScanner.cs;..\..\src\Packaging\Collect\CSharpCommentSpans.cs;..\..\src\Packaging\Collect\AssetCollectionResult.cs;..\..\src\Packaging\Collect\AssetCollector.cs">
       <Link>Linked\Packaging\%(Filename)%(Extension)</Link>
     </Compile>
     <Compile Include="..\..\src\Templates\TemplateCategoryNames.cs;..\..\src\Templates\TemplateEntry.cs;..\..\src\Templates\TemplateLibrary.cs;..\..\src\Templates\TemplateLibraryMetadata.cs;..\..\src\Templates\TemplateImportPlan.cs;..\..\src\Templates\TemplateImporter.cs">

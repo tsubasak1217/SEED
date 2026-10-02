@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "_note": "プロジェクトパネルでダブルクリックしたファイルを、拡張子だけでなく『直上のフォルダ名』でも見て専用のパネルへ回す規則。正典は docs/editor_project_panel.md §10。ここを消してもエディタは動く（Assets/PanelOpenRuleCatalog.cs の組み込み既定へフォールバックする）。上から順に照合し、最初に当たった規則のパネルで開く。",
+
+  "_note_order": "判定はテキストエディタ（text_editable_extensions.json）より前。.json は内蔵エディタでも開けるので、ここを先に見ないと専用のパネルへ届かない。テキストで直したいときは右クリック『テキストエディタで開く』。",
+
+  "_note_panel": "panel は開くパネルの ContentId（editor/settings/layout.xml の鍵と同じ。MainWindow がその ContentId のパネルを前に出し、パネルの OpenFile へパスを渡す）。parent_folder はファイルの直上のフォルダ名（大文字小文字は無視）。",
+
+  "rules": [
+    {
+      "panel": "localization",
+      "parent_folder": "locale",
+      "extensions": [".json"],
+      "note": "多言語の置き場（assets/locale の index.json と <言語>.json。SEED.Localization）を文字列表のパネルで開く。docs/localization.md §15"
+    }
+  ]
+}

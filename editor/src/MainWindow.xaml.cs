@@ -484,6 +484,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 内蔵エディタの動線を横取りしない順序で引かれるので、両方そろっている必要がある。
         LoadShellOpenCatalog();
 
+        // 「直上のフォルダ名」で専用のパネルへ回す規則（locale/*.json → 文字列表）も同じ理由でここで読む
+        // （テキストエディタより先に引かれる。MainWindow.Localization.cs）。
+        LoadPanelOpenRuleCatalog();
+
         EditorLog.Write(
             $"OnWindowLoaded — RuntimeExePath={RuntimeExePath}  構成={CurrentRuntimeBuildConfig}");
 
@@ -655,6 +659,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             ShowAnchorable("animation_timeline");
             PanelAnimationTimeline.LoadAnimFile(path);
         };
+        // 文字列表（ローカライズ）パネルと、規則で専用のパネルへ回すダブルクリック（MainWindow.Localization.cs）
+        InitLocalizationPanel();
 
         // ── スプライトリグ（.sprite_mesh のメッシュ編集）パネル ──
         // アセットルートを渡し、プロジェクトパネルからの起動口を 3 つ繋ぐ:
@@ -1548,6 +1554,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             return;
         }
 
+        // 文字列表（ローカライズ）の未保存も独立して確認する（シーン → スクリプト → 文字列表の順）。
+        if (!PanelLocalization.PromptSaveOnExit())
+        {
+            e.Cancel = true;
+            return;
+        }
+
         // ここまで来たら正常終了。クラッシュ復元用の退避データを消す。
         PanelScriptEditor.ClearRecovery();
 
@@ -1585,6 +1598,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _sceneAutoReloader = null;
         _prefabAutoReloader?.Dispose();
         _prefabAutoReloader = null;
+        // 文字列表の置き場の監視を止める
+        PanelLocalization.StopWatching();
         _scriptReloadStatusTimer?.Stop();
         // Android の実行（ビルドの子プロセス・logcat）と端末の一覧の取得を止める（MainWindow.AndroidRun.cs）
         ShutdownAndroidRun();
@@ -1634,6 +1649,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                     "error_list"     => _errorListPanel,
                     "profiler"       => PanelProfiler,
                     "version_control" => PanelVersionControl,
+                    // 文字列表（ローカライズ）。ContentId は変えない（docs/localization.md §15）
+                    "localization"   => PanelLocalization,
                     _                => null,
                 };
             };
@@ -1713,6 +1730,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 「Output と同じペイン」を指定して補完する（既定では左ペインに入ってしまう）。
         EnsureAnchorable(
             "version_control", "バージョン管理", PanelVersionControl, siblingContentId: "output");
+        // 文字列表（ローカライズ）も同じ下段へ（旧 layout.xml には無い。MainWindow.Localization.cs）
+        EnsureAnchorable(
+            LocalizationContentId, PanelLocalization.Title, PanelLocalization, siblingContentId: "output");
     }
 
     /// <summary>

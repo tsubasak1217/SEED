@@ -4070,8 +4070,9 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   ④Android では端末の言語が null で既定の言語から始まる、を確かめる。
 - [ ] **【低】Android の数・日付の書式は不変文化** — 2026-10-02。言語ごとの書式は表に書く運用（docs/localization.md §9）。言語どおりの書式を
   自動で出すなら ICU を APK に同梱する（`System.Globalization.AppLocalIcu`。APK が数 MB 増える）案。
-- [ ] **【低】テンプレートのカテゴリの表示名が「locale」のまま（editor 側）** — 2026-10-02。`editor/src/Templates/TemplateCategoryNames.cs` の表に
+- [x] **【低】テンプレートのカテゴリの表示名が「locale」のまま（editor 側）** — 2026-10-02。`editor/src/Templates/TemplateCategoryNames.cs` の表に
   `["locale"] = "多言語（文字列の表）"` を 1 行足す。取り込みそのものは今のままで動く（`LocalizationTests` が計画・コピー・読み込みまで確かめている）。
+  → **2026-10-03 済（L2-7）**: 表示名は「ローカライズ」（`["locale"] = "ローカライズ"`。並びは UI 部品の次）。
 - [ ] **【低】`index.json` だけを選んで取り込むと言語の表が付いてこない** — 2026-10-02。言語の表は参照（assets:// のパス）で辿れないので、
   取り込みでは `locale` のカテゴリごと選ぶ運用。直すなら `TemplateImporter` に「同じフォルダの言語の表を同伴する」規則を足す（editor 側）。
 - [ ] **【低】SEED.UI の部品の既定の文字列を L10n から引くか** — 2026-10-02。`DialogOptions.DefaultPositiveText`（"OK"）・`TimeWheel` の
@@ -4087,6 +4088,30 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   `zh-CN` → `zh-Hans` のような書記体系の対応は無い（一覧に `zh-CN` か `zh` を書く）。更新の印は秒の単位なので同じ秒の 2 回目の保存は拾わない。
 - [ ] **【参考】§7.21（Localization）も AI 補完に届かない** — 2026-10-02。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」
   の範囲（`ScriptApiReference.MaxChars = 12000` に対し、Compact の後は約 203,000 字。2026-10-02 に数えた）。
+- [ ] **【中】文字列表（ローカライズ）パネルの GUI での確かめ（未検証）** — 2026-10-03（L2-7）。確かめたのはビルド・モデルの単体テスト
+  （`editor/tests/LocalizationPanelTests` 47 件）・オフスクリーン描画（`LocalizationPanelPreviewProbe` の PNG 5 枚と表明）だけ。エディタを起動して
+  ①「表示 → パネル → 文字列表」とレイアウトの保存・復元（旧 layout.xml に無いときの補完）②升目の編集（ダブルクリック / F2 / 文字の入力・Enter・Escape・
+  Tab）と保存・Ctrl+S（シーンが保存されないこと）③プロジェクトパネルで `assets/locale/en.json` をダブルクリック ④テキストエディタで JSON を書き換えて
+  黙って読み直す／未保存のときは帯 ⑤終了時の確認 ⑥「見本から作る」・言語の追加/外す/既定/fallback（列の見出しの右クリック）⑦浮かせたパネルの
+  スクロールバーの色（MainWindow の暗いスクロールバーの書式が浮いた窓に届くか）、を見る。docs/localization.md §15。
+- [ ] **【低】文字列表のパネルに元に戻す（Undo）が無い** — 2026-10-03（L2-7）。「読み直す」で保存した状態へ戻るだけ。モデル（`LocaleTableModel`）の
+  書き換えは文書（`LocaleJsonDocument`）の項目の並びを替えるだけなので、書き換えの前の文書の写しを積めば作れる。
+- [ ] **【低】文字列表のパネルの保存で JSON のコメント（`//` `/* */`）が消える** — 2026-10-03（L2-7）。読み込みは `LocaleJson.ReadOptions`
+  （コメントを許す）だが、項目の並びにはコメントが残らない。`\u3042` のようなエスケープも文字に戻る・同じ鍵が 2 つある JSON は後の値の 1 つになる。
+  変わったファイルだけを書くので、開いて保存しただけでは消えない。説明は `_` の鍵（`_about`）で書く運用（docs/localization.md §15.7）。
+- [ ] **【低】文字列表のパネルで書けないもの** — 2026-10-03（L2-7）。説明（`_` の鍵）の編集・言語の culture の編集・升目での改行の入力
+  （今は Enter が確定）・キーの並べ替え・一括の検索置換・CSV などの入出力（翻訳者とのやり取り）・ほかの言語の文の写し、は無い（テキストエディタで直す）。
+- [ ] **【低】対になっていないサロゲートのエスケープ（`"\ud800"`）を含む言語の表で、実行中の読み込みが例外を出す（scripting 側）** — 2026-10-03（L2-7 で発見）。
+  `LocaleTable.Parse`・`LocaleIndex.Parse` は `JsonException` しか捕まえないが、`JsonDocument.Parse` はこの JSON で `ArgumentException`
+  （"Cannot transcode invalid UTF-16 string to UTF-8 JSON text."）を投げる（小さなコンソールで確かめた）。「例外を投げない」約束が破れ、
+  `L10n` の読み込みが落ちる。直すなら両方の catch に `ArgumentException` を足す（scripting/src/Api/Localization/Model/）。エディタ側は
+  `editor/src/Localization/Model/LocaleSafeParse.cs` で受け止めて、その表を読み取り専用にしている（LocalizationPanelTests で確かめた）。
+- [ ] **【低】アイコン＋文字のボタンは無効のとき減光しない（エディタ全体の既存の不具合）** — 2026-10-03（L2-7 のオフスクリーン描画で発見）。
+  共通書式のテンプレート（`Theme/SeedButtonStyles.xaml`）は状態の文字色を ContentPresenter の `TextElement.Foreground` に当てるが、
+  ボタンの中身に置いた要素（`AppIcon.WithText` の StackPanel や XAML の StackPanel）は論理の親＝ボタンから文字色を継ぐので届かない
+  （無効のボタンが押せる見た目のまま）。文字列表のパネルは中身の TextBlock・AppIcon の Foreground を ContentPresenter の文字色へ結び付けて
+  回避した（`LocalizationPanel.xaml` の `L10n.ButtonLabel`・`L10n.ButtonIcon`）。直すなら共通書式側で同じ結び付けを持つ部品（または
+  `AppIcon.WithText` が結び付ける）にして、ほかのパネルも揃える。
 - [ ] **【中・アプリ側】Wake or Pay の `StringTable` を L10n へ移す** — 2026-10-02。データの形（入れ子・`_` の説明・`{名前}`・`{{ }}`）は同じなので、
   `assets/common/data/strings.ja.json` → `assets/locale/ja.json` と `index.json`、`Strings.Get/Format` → `L10n.Get` の置き換えで移せる
   （手順は docs/localization.md §11。欠けの印は `⟦key⟧` → `[key]`）。W3 のアプリ側の作業。

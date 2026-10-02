@@ -136,6 +136,8 @@ public partial class MainWindow
         {
             // コピー先はアセットルート配下なので、ツリーを作り直して反映する。
             PanelProject.SetAssetsPath(AssetsPath);
+            // locale を取り込んだら、文字列表のパネルの「置き場がありません」の案内を読み直しに替える
+            PanelLocalization.RefreshIfMissing();
             ShowToast($"テンプレートを {result.CopiedCount} ファイル取り込みました");
         }
     }
@@ -278,6 +280,7 @@ public partial class MainWindow
         MenuItemSpriteRig.IsChecked = IsPanelVisible("sprite_rig");
         MenuItemProfiler.IsChecked = IsPanelVisible("profiler");
         MenuItemVersionControl.IsChecked = IsPanelVisible("version_control");
+        MenuItemLocalization.IsChecked = IsPanelVisible(LocalizationContentId);
         // スクリプト関連ウィンドウの表示状態もチェックへ反映する
         MenuItemOpenDocuments.IsChecked = IsPanelVisible("open_documents");
         MenuItemErrorList.IsChecked     = IsPanelVisible("error_list");
