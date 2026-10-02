@@ -750,6 +750,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         InitScriptAutoReloader();
         // シーン自動再読込を初期化する（今開いている .scene の外部変更を拾う）。
         InitSceneAutoReloader();
+        // プレハブ（.actor / .actor2d）の外部変更の監視を初期化する（MainWindow.PrefabAutoReload.cs）。
+        InitPrefabAutoReloader();
         // ホットリロード成功時: 型キャッシュを**全件**破棄する。
         // 保存した .cs だけでなく、基底クラスや [Serializable] ネスト型を共有する
         // 別スクリプトの [SerializeField] 構成も同時に変わりうるため。
@@ -1572,6 +1574,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _scriptAutoReloader = null;
         _sceneAutoReloader?.Dispose();
         _sceneAutoReloader = null;
+        _prefabAutoReloader?.Dispose();
+        _prefabAutoReloader = null;
         _scriptReloadStatusTimer?.Stop();
         // Android の実行（ビルドの子プロセス・logcat）と端末の一覧の取得を止める（MainWindow.AndroidRun.cs）
         ShutdownAndroidRun();

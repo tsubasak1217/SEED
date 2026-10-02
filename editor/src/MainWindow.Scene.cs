@@ -288,6 +288,8 @@ public partial class MainWindow
         MenuItemPlayScriptHotReload.IsChecked = EditorPreferences.Instance.PlayScriptHotReload;
         // シーン自動再読込の設定値も同様にチェック状態へ反映する（設定ファイルが正）。
         MenuItemAutoReloadScene.IsChecked = EditorPreferences.Instance.AutoReloadScene;
+        // プレハブの外部変更の自動再読込の設定値も同様（設定ファイルが正）。
+        MenuItemAutoReloadPrefabs.IsChecked = EditorPreferences.Instance.AutoReloadPrefabs;
         // プレハブ保存時の自動反映の設定値も同様（設定ファイルが正）。
         MenuItemPrefabAutoPropagate.IsChecked = EditorPreferences.Instance.PrefabAutoPropagateOnSave;
     }
@@ -574,6 +576,9 @@ public partial class MainWindow
             // 成功・失敗どちらでも自己書き込み窓は閉じる（開いたままだと
             // 以後の外部変更を自分の保存と誤認して取り込めなくなる）。
             _sceneAutoReloader?.NotifySelfSaveCompleted();
+            // アクタータブの保存なら、プレハブの外部変更の監視の自己書き込みの窓も閉じる
+            // （保存先のパスは下の PropagateSavedPrefabToScene が使い終わって消すので、その前に）。
+            NotifyActorSaveFinishedToPrefabWatcher();
 
             if (ok)
             {
